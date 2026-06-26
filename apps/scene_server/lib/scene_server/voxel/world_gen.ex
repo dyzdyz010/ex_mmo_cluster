@@ -20,9 +20,10 @@ defmodule SceneServer.Voxel.WorldGen do
   column height — all-air chunks (above terrain) generate empty, all-solid chunks
   (deep underground) fill fast via the batched `Storage.put_solid_blocks/2`.
 
-  Pure + dependency-free (`:erlang.phash2/2` lattice hash), identical across
-  runs/nodes — so the client's cached chunk and a server regeneration agree on
-  `chunk_version = 0` and nothing is re-streamed.
+  Pure + dependency-free (portable SquirrelNoise lattice hash — see `lattice/3`),
+  identical across runs/nodes **and across languages**, so the client can generate
+  the same `chunk_version = 0` terrain locally from the seed and nothing is
+  re-streamed for pristine far/LOD chunks.
   """
 
   import Bitwise
