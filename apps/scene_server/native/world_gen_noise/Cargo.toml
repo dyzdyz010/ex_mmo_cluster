@@ -1,0 +1,17 @@
+[package]
+name = "world_gen_noise"
+version = "0.1.0"
+authors = []
+edition = "2018"
+
+[lib]
+name = "world_gen_noise"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37.3"
+
+# NIF panic 必须 unwind 让 Rustler wrapper 在 FFI 边界 catch_unwind,禁 abort。
+[profile.release]
+panic = "unwind"
