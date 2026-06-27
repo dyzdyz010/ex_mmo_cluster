@@ -211,7 +211,13 @@ defmodule GateServer.Voxel.SubscriptionWorker do
 
       cond do
         # diff (step4.2):already subscribed — skip the Scene round-trip entirely.
-        Map.has_key?(acc.subscriptions, key) ->
+        #
+        # 例外(2026-06-27 resync 硬化):若客户端为该 coord 显式带了 known_version,说明这是一次
+        # **版本感知重快照请求**(client 持旧版本、疑似与权威分歧),必须转发到 Scene —— Scene 端
+        # `ChunkProcess` 的 `known_version != current_version` guard 决定是否重发全快照(版本去重、
+        # idempotent)。这把"重订强制重快照"变成干净单步,不再依赖 unsubscribe 舞蹈 + debounce。
+        # routine coverage 重订(随移动,Known 为空)仍走下面的跳过,不打扰 Scene。
+        Map.has_key?(acc.subscriptions, key) and not Map.has_key?(ctx.known, coord) ->
           {acc, failed?}
 
         true ->

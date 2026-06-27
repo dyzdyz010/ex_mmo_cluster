@@ -685,6 +685,30 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert noop_cell.cell_payload == <<>>
   end
 
+  test "subscribe re-sends the snapshot only when known_version is stale (resync version-dedup)" do
+    lease = start_snapshot_store()
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+    # Advance the chunk to version 1 (no subscriber yet → no stray push).
+    assert {:ok, %{chunk_version: 1}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 60, macro: {0, 0, 0}, block: NormalBlockData.new(3))
+             )
+
+    # known_version == current (1): subscription established WITHOUT re-snapshot. This is what makes a
+    # known_version-carrying resubscribe (the Step B resync path) cheap when the client is already current.
+    assert {:ok, _payload} = ChunkProcess.subscribe(chunk, self(), request_id: 80, known_version: 1)
+    refute_receive {:voxel_chunk_snapshot_payload, _}
+
+    # known_version stale (0 < current 1): the snapshot IS re-pushed — the version-driven re-snapshot the
+    # resync path relies on to heal a diverged client without a full unsubscribe/resubscribe dance.
+    assert {:ok, fresh} = ChunkProcess.subscribe(chunk, self(), request_id: 81, known_version: 0)
+    assert_receive {:voxel_chunk_snapshot_payload, ^fresh}
+    assert {:ok, %{storage: decoded}} = Codec.decode_chunk_snapshot_payload(fresh)
+    assert decoded.chunk_version == 1
+  end
+
   test "apply_intent skips identical solid cells without persisting or pushing deltas" do
     lease = start_snapshot_store()
 
