@@ -376,6 +376,119 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
     assert ChunkDirectory.snapshot(directory).chunk_count == 0
   end
 
+  # 2026-06-27 透明崩溃恢复:ChunkProcess 崩溃后,目录自动把原订阅者重订到新进程,
+  # 带快照让客户端追上,客户端完全无感。
+  describe "transparent ChunkProcess crash recovery" do
+    test "rebuilds the chunk and re-subscribes original subscribers with a snapshot on crash" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
+
+      # self() 作为订阅者:subscribe 立即推一个快照(known_version nil ≠ chunk_version)。
+      assert {:ok, _payload} =
+               ChunkDirectory.subscribe(directory, %{
+                 request_id: 1,
+                 logical_scene_id: scene_id,
+                 chunk_coord: {2, 2, 2},
+                 subscriber: self()
+               })
+
+      # 初次订阅快照。
+      assert_receive {:voxel_chunk_snapshot_payload, _initial}, 2_000
+
+      assert {:ok, old_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {2, 2, 2})
+
+      # 模拟崩溃。
+      Process.exit(old_pid, :kill)
+
+      # 等目录处理 DOWN + 重建。崩溃恢复推第二个快照。
+      assert_receive {:voxel_chunk_snapshot_payload, _recovered}, 2_000
+
+      # (b) chunk 有了新 pid 且 alive。
+      assert {:ok, new_pid} = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {2, 2, 2})
+      assert new_pid != old_pid
+      assert Process.alive?(new_pid)
+
+      # (a) 内部订阅者镜像仍含该订阅者(已重订到新进程)。
+      assert MapSet.member?(directory_subscribers(directory, scene_id, {2, 2, 2}), self())
+    end
+
+    test "does not rebuild or error when an idle (no-subscriber) chunk goes DOWN" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
+
+      # 起一个 chunk 但不订阅(无订阅者镜像)。
+      assert {:ok, pid} =
+               ChunkDirectory.ensure_chunk(directory, %{
+                 logical_scene_id: scene_id,
+                 chunk_coord: {5, 5, 5}
+               })
+
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 2_000
+
+      # 目录仍存活、不重建。
+      assert Process.alive?(directory)
+      # 无订阅者 → 该 coord 不再 hot(不重建)。
+      assert :not_started = ChunkDirectory.lookup_chunk_pid(directory, scene_id, {5, 5, 5})
+    end
+
+    test "clears the subscriber mirror when a subscriber process dies" do
+      chunk_sup = start_supervised!(VoxelChunkSup)
+      directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+      scene_id = unique_scene_id()
+
+      # 临时订阅者进程:订阅后立即被 kill,不影响测试进程。
+      parent = self()
+
+      subscriber =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+
+          send(parent, :never)
+        end)
+
+      assert {:ok, _payload} =
+               ChunkDirectory.subscribe(directory, %{
+                 request_id: 1,
+                 logical_scene_id: scene_id,
+                 chunk_coord: {3, 3, 3},
+                 subscriber: subscriber
+               })
+
+      assert MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber)
+
+      Process.exit(subscriber, :kill)
+
+      # 等目录处理 subscriber DOWN —— 用一次同步 call 作为屏障(目录已串行处理完 DOWN)。
+      _ = ChunkDirectory.snapshot(directory)
+      wait_until(fn -> not MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber) end)
+
+      refute MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber)
+      assert Process.alive?(directory)
+    end
+  end
+
+  # 读目录内部 subscribers 镜像(测试用 :sys.get_state,避免新增公共 API)。
+  defp directory_subscribers(directory, scene_id, chunk_coord) do
+    state = :sys.get_state(directory)
+    Map.get(state.subscribers, {scene_id, chunk_coord}, MapSet.new())
+  end
+
+  defp wait_until(fun, attempts \\ 100) do
+    cond do
+      attempts <= 0 -> :ok
+      fun.() -> :ok
+      true ->
+        Process.sleep(10)
+        wait_until(fun, attempts - 1)
+    end
+  end
+
   defp unique_scene_id do
     System.unique_integer([:positive, :monotonic]) + 10_000_000
   end

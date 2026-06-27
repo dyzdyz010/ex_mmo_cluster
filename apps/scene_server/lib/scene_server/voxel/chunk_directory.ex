@@ -237,7 +237,20 @@ defmodule SceneServer.Voxel.ChunkDirectory do
        chunks: %{},
        # 阶段3 step3.3:monitor 每个 chunk pid → DOWN(idle 驱逐 :normal / 崩溃)时即时从
        # chunks 表清除(让该表也随 idle 驱逐内存有界),崩溃额外 emit。monitors: %{ref => {key, pid}}。
-       monitors: %{}
+       monitors: %{},
+       # 透明崩溃恢复(2026-06-27 订阅活性根因修复)的订阅者镜像 + 续租 + 订阅者 monitor。
+       # 不变量:`subscribers` 镜像 == 已向对应 ChunkProcess 注册的订阅集。subscribe 成功才加、
+       # unsubscribe / 订阅者 DOWN 才减;ChunkProcess 崩溃后由本目录用镜像把同一批订阅者重订到
+       # 新进程(镜像不变)。所有镜像变更都在本(共享单)GenServer 进程内串行,无需 generation tag。
+       #
+       # subscribers: %{key => MapSet<subscriber_pid>} —— 每 chunk 的活订阅者镜像。
+       subscribers: %{},
+       # chunk_leases: %{key => lease | nil} —— 每 chunk 最近一次 subscribe 用的 lease,崩溃重建需要。
+       chunk_leases: %{},
+       # 本目录对每个**唯一** subscriber_pid monitor 一次,用于订阅者(连接)死亡时清镜像防泄漏。
+       # subscriber_monitors: %{ref => subscriber_pid};subscriber_chunks: %{subscriber_pid => MapSet<key>}。
+       subscriber_monitors: %{},
+       subscriber_chunks: %{}
      }}
   end
 
@@ -298,6 +311,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   def handle_call({:subscribe, attrs}, _from, state) do
     attrs = normalize_subscribe_attrs(attrs)
+    key = {attrs.logical_scene_id, attrs.chunk_coord}
 
     case ensure_chunk_in_state(state, attrs) do
       {{:ok, chunk_pid}, next_state} ->
@@ -308,8 +322,13 @@ defmodule SceneServer.Voxel.ChunkDirectory do
         ]
 
         case ChunkProcess.subscribe(chunk_pid, attrs.subscriber, opts) do
-          {:ok, payload} -> {:reply, {:ok, payload}, next_state}
-          {:error, reason} -> {:reply, {:error, reason}, next_state}
+          {:ok, payload} ->
+            # 订阅成功才记镜像 —— 维持"subscribers 镜像 == 已注册订阅集"不变量。
+            next_state = track_subscription(next_state, key, attrs.subscriber, attrs.lease)
+            {:reply, {:ok, payload}, next_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, next_state}
         end
 
       {{:error, reason}, next_state} ->
@@ -338,7 +357,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
               :ok
           end
 
-        {:reply, reply, state}
+        # 镜像同步:无论 chunk 是否仍 hot,都从镜像移除该订阅者(幂等)。
+        next_state = untrack_subscription(state, key, attrs.subscriber)
+        {:reply, reply, next_state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -626,36 +647,232 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
   @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    # 先判 ref 属于 chunk monitor 还是 subscriber monitor(两张 map 分开,先查 chunk)。
     case Map.pop(state.monitors, ref) do
       {{key, ^pid}, monitors} ->
-        # Drop the chunk from the table only if it still points at the dead pid
-        # (a re-`ensure_chunk` may have already replaced it with a fresh process).
-        chunks =
-          case Map.get(state.chunks, key) do
-            ^pid -> Map.delete(state.chunks, key)
-            _other -> state.chunks
-          end
+        handle_chunk_down(%{state | monitors: monitors}, key, pid, reason)
 
-        if reason not in [:normal, :shutdown] do
-          {logical_scene_id, chunk_coord} = key
-
-          CliObserve.emit("voxel_chunk_process_down", fn ->
-            %{
-              logical_scene_id: logical_scene_id,
-              chunk_coord: chunk_coord,
-              reason: inspect(reason)
-            }
-          end)
-        end
-
-        {:noreply, %{state | chunks: chunks, monitors: monitors}}
-
-      {_other, monitors} ->
-        {:noreply, %{state | monitors: monitors}}
+      {_other, _monitors} ->
+        # ref 不在 chunk monitors;可能是某订阅者(连接)死亡。
+        handle_subscriber_down(state, ref, pid)
     end
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  # ChunkProcess DOWN:照旧删表;若镜像里仍有订阅者(必是崩溃,因 idle 驱逐时镜像必空),
+  # 透明重建 ChunkProcess 并把同一批订阅者重订到新进程(带快照让客户端追上)。绝不让本目录崩。
+  defp handle_chunk_down(state, key, pid, reason) do
+    # Drop the chunk from the table only if it still points at the dead pid
+    # (a re-`ensure_chunk` may have already replaced it with a fresh process).
+    chunks =
+      case Map.get(state.chunks, key) do
+        ^pid -> Map.delete(state.chunks, key)
+        _other -> state.chunks
+      end
+
+    state = %{state | chunks: chunks}
+    {logical_scene_id, chunk_coord} = key
+    subs = Map.get(state.subscribers, key, MapSet.new())
+
+    if reason not in [:normal, :shutdown] do
+      CliObserve.emit("voxel_chunk_process_down", fn ->
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: chunk_coord,
+          reason: inspect(reason)
+        }
+      end)
+    end
+
+    if MapSet.size(subs) > 0 do
+      # 有订阅者却 DOWN → 崩溃。透明恢复:重建 + 重订同一批订阅者。
+      recover_crashed_chunk(state, key, subs, reason)
+    else
+      # 无订阅者(idle 驱逐 :normal 或本就无人订阅)→ 只清空镜像空条目,不重建。
+      {:noreply, drop_empty_chunk_mirror(state, key)}
+    end
+  end
+
+  defp recover_crashed_chunk(state, key, subs, reason) do
+    {logical_scene_id, chunk_coord} = key
+    lease = Map.get(state.chunk_leases, key)
+
+    rebuild_attrs = %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: chunk_coord,
+      lease: lease
+    }
+
+    case start_chunk(state, key, rebuild_attrs) do
+      {{:ok, new_pid}, next_state} ->
+        # 对镜像里每个订阅者,重订到新进程并带当前权威快照(补回崩溃间隙丢失的变更)。
+        Enum.each(subs, fn subscriber_pid ->
+          try do
+            ChunkProcess.subscribe(new_pid, subscriber_pid,
+              request_id: 0,
+              send_snapshot?: true,
+              known_version: nil
+            )
+          catch
+            :exit, _exit_reason -> :ok
+          end
+        end)
+
+        CliObserve.emit("voxel_chunk_subscription_recovered", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            subscriber_count: MapSet.size(subs),
+            reason: inspect(reason)
+          }
+        end)
+
+        {:noreply, next_state}
+
+      {{:error, rebuild_reason}, next_state} ->
+        # 重建失败:保留镜像(下次 ensure_chunk 再建时不丢订阅者),只 emit 失败 observe,绝不崩本目录。
+        CliObserve.emit("voxel_chunk_subscription_recovery_failed", fn ->
+          %{
+            logical_scene_id: logical_scene_id,
+            chunk_coord: chunk_coord,
+            subscriber_count: MapSet.size(subs),
+            reason: inspect(rebuild_reason)
+          }
+        end)
+
+        {:noreply, next_state}
+    end
+  end
+
+  # 订阅者(连接)DOWN:从它订阅过的每个 chunk 镜像移除它;清自身 monitor / chunk 集。
+  # ChunkProcess 那边也会自己 DOWN 丢它,这里只清本目录镜像防泄漏。
+  defp handle_subscriber_down(state, ref, subscriber_pid) do
+    case Map.pop(state.subscriber_monitors, ref) do
+      {nil, _subscriber_monitors} ->
+        # 既不是 chunk monitor 也不是已知 subscriber monitor —— 忽略。
+        {:noreply, state}
+
+      {^subscriber_pid, subscriber_monitors} ->
+        keys = Map.get(state.subscriber_chunks, subscriber_pid, MapSet.new())
+
+        subscribers =
+          Enum.reduce(keys, state.subscribers, fn key, acc ->
+            remove_subscriber_from_chunk_mirror(acc, key, subscriber_pid)
+          end)
+
+        {:noreply,
+         %{
+           state
+           | subscribers: subscribers,
+             subscriber_monitors: subscriber_monitors,
+             subscriber_chunks: Map.delete(state.subscriber_chunks, subscriber_pid)
+         }}
+
+      {_other_pid, subscriber_monitors} ->
+        # ref/pid 不一致(理论上不发生),保守地丢掉这条 monitor 条目。
+        {:noreply, %{state | subscriber_monitors: subscriber_monitors}}
+    end
+  end
+
+  # ── 订阅者镜像 + 续租 + 双 monitor 维护 ─────────────────────────────────────
+
+  # subscribe 成功:把订阅者加入 chunk 镜像、记 lease;若该订阅者尚未被本目录 monitor,则 monitor 之。
+  defp track_subscription(state, key, subscriber_pid, lease) do
+    chunk_subs = Map.get(state.subscribers, key, MapSet.new())
+    subscribers = Map.put(state.subscribers, key, MapSet.put(chunk_subs, subscriber_pid))
+    chunk_leases = Map.put(state.chunk_leases, key, lease)
+
+    sub_keys = Map.get(state.subscriber_chunks, subscriber_pid, MapSet.new())
+    already_monitored? = MapSet.size(sub_keys) > 0
+    subscriber_chunks = Map.put(state.subscriber_chunks, subscriber_pid, MapSet.put(sub_keys, key))
+
+    subscriber_monitors =
+      if already_monitored? do
+        state.subscriber_monitors
+      else
+        sub_ref = Process.monitor(subscriber_pid)
+        Map.put(state.subscriber_monitors, sub_ref, subscriber_pid)
+      end
+
+    %{
+      state
+      | subscribers: subscribers,
+        chunk_leases: chunk_leases,
+        subscriber_chunks: subscriber_chunks,
+        subscriber_monitors: subscriber_monitors
+    }
+  end
+
+  # unsubscribe:从 chunk 镜像移除该订阅者;若它再无任何 chunk,demonitor + 清 subscriber_monitors。
+  defp untrack_subscription(state, key, subscriber_pid) do
+    subscribers = remove_subscriber_from_chunk_mirror(state.subscribers, key, subscriber_pid)
+
+    sub_keys =
+      state.subscriber_chunks
+      |> Map.get(subscriber_pid, MapSet.new())
+      |> MapSet.delete(key)
+
+    if MapSet.size(sub_keys) == 0 do
+      {subscriber_monitors, subscriber_chunks} =
+        demonitor_subscriber(state, subscriber_pid)
+
+      %{
+        state
+        | subscribers: subscribers,
+          subscriber_monitors: subscriber_monitors,
+          subscriber_chunks: subscriber_chunks
+      }
+    else
+      %{
+        state
+        | subscribers: subscribers,
+          subscriber_chunks: Map.put(state.subscriber_chunks, subscriber_pid, sub_keys)
+      }
+    end
+  end
+
+  defp demonitor_subscriber(state, subscriber_pid) do
+    subscriber_monitors =
+      state.subscriber_monitors
+      |> Enum.reject(fn {ref, pid} ->
+        if pid == subscriber_pid do
+          Process.demonitor(ref, [:flush])
+          true
+        else
+          false
+        end
+      end)
+      |> Map.new()
+
+    {subscriber_monitors, Map.delete(state.subscriber_chunks, subscriber_pid)}
+  end
+
+  # 从某 chunk 的订阅者镜像里移除一个 pid;镜像变空则删 key 条目(随 idle 驱逐内存有界)。
+  defp remove_subscriber_from_chunk_mirror(subscribers, key, subscriber_pid) do
+    case Map.get(subscribers, key) do
+      nil ->
+        subscribers
+
+      set ->
+        next = MapSet.delete(set, subscriber_pid)
+
+        if MapSet.size(next) == 0 do
+          Map.delete(subscribers, key)
+        else
+          Map.put(subscribers, key, next)
+        end
+    end
+  end
+
+  # idle 驱逐路径:清掉该 chunk 的空镜像 / 续租条目。
+  defp drop_empty_chunk_mirror(state, key) do
+    %{
+      state
+      | subscribers: Map.delete(state.subscribers, key),
+        chunk_leases: Map.delete(state.chunk_leases, key)
+    }
+  end
 
   defp maybe_apply_chunk_lease(_pid, nil), do: :ok
 
