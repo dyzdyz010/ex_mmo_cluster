@@ -2073,7 +2073,47 @@ defmodule SceneServer.Voxel.ChunkProcess do
       macro: intent.macro,
       changed?: changed?,
       persist_result: persist_result,
-      snapshot_payload: snapshot_payload
+      snapshot_payload: snapshot_payload,
+      authoritative: authoritative_cells_for_intent(storage, intent)
+    }
+  end
+
+  # 显式契约(2026-06-27 幽灵块根因修复):每次编辑回复都附带被编辑 macro 的**当前权威态**,
+  # 由 gate 经 0x68 VoxelIntentResult.authoritative 下发,客户端据此点修该格。关键:**no-op 编辑
+  # 也返回当前态** —— 玩家挖一个本地幽灵实心(server 侧已是空气)时,这条 authoritative=empty 让
+  # 客户端立刻清掉幽灵,而不依赖全 chunk resync。条目形状严格对齐 gate codec
+  # `encode_voxel_authoritative/1`,payload_kind/cell_payload 复用 ChunkDelta op 三种 cell 编码
+  # (0=empty/<<>>、1=solid/normal_block、2=refined/refined_cell),客户端可复用同一套 decode/apply。
+  defp authoritative_cells_for_intent(storage, %{macro: macro_index})
+       when is_integer(macro_index) do
+    [build_authoritative_cell(storage, macro_index)]
+  end
+
+  defp authoritative_cells_for_intent(_storage, _intent), do: []
+
+  defp build_authoritative_cell(storage, macro_index) do
+    header = Storage.macro_header_at(storage, macro_index)
+
+    {payload_kind, cell_payload} =
+      cond do
+        header.mode == MacroCellHeader.cell_mode_solid_block() ->
+          {1, Codec.encode_normal_block_data(Storage.normal_block_at(storage, macro_index))}
+
+        header.mode == MacroCellHeader.cell_mode_refined() ->
+          {2, Codec.encode_refined_cell_payload(Storage.refined_cell_at(storage, macro_index))}
+
+        true ->
+          {0, <<>>}
+      end
+
+    %{
+      chunk_coord: storage.chunk_coord,
+      chunk_version: storage.chunk_version,
+      macro_index: macro_index,
+      cell_version: header.cell_version,
+      cell_hash: header.cell_hash,
+      payload_kind: payload_kind,
+      cell_payload: cell_payload
     }
   end
 

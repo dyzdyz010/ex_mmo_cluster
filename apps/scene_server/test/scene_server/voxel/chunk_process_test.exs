@@ -642,6 +642,49 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert debug.lease.lease_id == lease.lease_id
   end
 
+  test "apply_intent reply carries the edited macro's authoritative cell state (point-correction channel)" do
+    lease = start_snapshot_store()
+    chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {1, 1, 1}})
+
+    macro_index = Types.macro_index!({0, 0, 0})
+
+    # put_solid → authoritative reports the macro SOLID (payload_kind 1, non-empty payload).
+    assert {:ok, %{changed?: true, chunk_version: 1, authoritative: [solid_cell]}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 70, macro: {0, 0, 0}, block: NormalBlockData.new(7))
+             )
+
+    assert solid_cell.macro_index == macro_index
+    assert solid_cell.payload_kind == 1
+    assert solid_cell.chunk_version == 1
+    assert byte_size(solid_cell.cell_payload) > 0
+
+    # break (solid → air) → authoritative reports the macro EMPTY (payload_kind 0).
+    assert {:ok, %{changed?: true, authoritative: [empty_cell]}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 71, operation: :break_block, macro: {0, 0, 0})
+             )
+
+    assert empty_cell.macro_index == macro_index
+    assert empty_cell.payload_kind == 0
+    assert empty_cell.cell_payload == <<>>
+
+    # NO-OP break on an already-empty macro (THE ghost case): even with changed?=false the reply
+    # still carries authoritative=EMPTY, so a client holding a phantom solid there can self-correct
+    # without a full-chunk resync. This is the explicit-contract fix for 2026-06-27 ghost blocks.
+    assert {:ok, %{changed?: false, authoritative: [noop_cell]}} =
+             ChunkProcess.apply_intent(
+               chunk,
+               intent_attrs(lease, request_id: 72, operation: :break_block, macro: {0, 0, 0})
+             )
+
+    assert noop_cell.macro_index == macro_index
+    assert noop_cell.payload_kind == 0
+    assert noop_cell.cell_payload == <<>>
+  end
+
   test "apply_intent skips identical solid cells without persisting or pushing deltas" do
     lease = start_snapshot_store()
 

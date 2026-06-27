@@ -1829,7 +1829,9 @@ defmodule GateServer.TcpConnection do
        logical_scene_id: request.logical_scene_id,
        result_code: :accepted,
        result_ref: result.chunk_version,
-       authoritative: [],
+       # 显式契约(2026-06-27 幽灵块根因修复):透传 ChunkProcess 返回的被编辑 macro 当前权威态。
+       # no-op 编辑也带(authoritative=empty),让客户端点修清掉本地幽灵。错误路径仍 [](拒绝不携带格态)。
+       authoritative: Map.get(result, :authoritative, []),
        reason: "ok"
      }}
   end
