@@ -130,9 +130,143 @@ defmodule SceneServer.Voxel.ChunkProcess do
     GenServer.call(server, {:apply_intents, attrs_list}, 30_000)
   end
 
+  @doc """
+  Prefab anti-floating predicate. Two clauses:
+
+    * `prefab_floating?(server, intents)` — read-only GenServer call against the
+      hot chunk, returns a boolean. Server-authoritative backstop for prefab
+      placement (the client already snaps + validates; this is the authority's
+      net). Only inspects `state.storage`; never mutates.
+    * `prefab_floating?(%Storage{}, intents)` — the pure predicate the call
+      delegates to.
+
+  Each intent carries `:macro` (a macro index or local macro coord) and
+  `:micro_slot` (`0..511`). Policy (kept deliberately lenient to avoid false
+  rejects):
+
+    * `own_cells` = the set of `{macro_index, micro_slot}` the prefab itself
+      writes — a neighbor that is one of these is the prefab touching itself and
+      never counts as external support.
+    * For each cell, walk its 6 face neighbors (±1 on a single chunk-local micro
+      axis, each axis `0..127`):
+        - a neighbor off the chunk (any axis `< 0` or `> 127`) cannot be resolved
+          from this chunk's storage → flag `any_out_of_chunk` and skip it;
+        - an in-chunk neighbor that is **not** part of the prefab and is
+          `Storage.micro_solid?/3` → flag `any_solid_neighbor`.
+    * `floating? = not any_solid_neighbor and not any_out_of_chunk`.
+
+  i.e. the batch is rejected only when **every** neighbor of **every** cell is
+  resolvable inside this chunk and none of them is solid. Any cross-chunk
+  neighbor makes the batch pass — it is **lenient at chunk boundaries** so legal
+  placements that butt up against the next chunk are never wrongly rejected (the
+  cross-chunk / same-owner / transaction paths do not run this check — see the
+  TODO at the fast-path call site in gate `tcp_connection.ex`).
+  """
+  @spec prefab_floating?(GenServer.server(), [map()]) :: boolean()
+  @spec prefab_floating?(Storage.t(), [map()]) :: boolean()
+  def prefab_floating?(server, intents)
+      when is_list(intents) and not is_struct(server, Storage) do
+    GenServer.call(server, {:prefab_floating?, intents})
+  end
+
+  # An empty placement writes nothing — never "floating" (matches the gate /
+  # directory empty-batch short-circuits, and keeps a no-op from being rejected).
+  def prefab_floating?(%Storage{}, []), do: false
+
+  def prefab_floating?(%Storage{} = storage, intents) when is_list(intents) do
+    storage = Storage.normalize!(storage)
+    micro = Types.micro_resolution()
+
+    own_cells =
+      MapSet.new(intents, fn intent ->
+        {Types.macro_index_or_coord!(prefab_intent_macro(intent)),
+         prefab_intent_micro_slot(intent)}
+      end)
+
+    {any_solid_neighbor, any_out_of_chunk} =
+      Enum.reduce(intents, {false, false}, fn intent, {solid_acc, out_acc} ->
+        macro_index = Types.macro_index_or_coord!(prefab_intent_macro(intent))
+        micro_slot = prefab_intent_micro_slot(intent)
+
+        {lx, ly, lz} = Types.macro_coord!(macro_index)
+        {mx, my, mz} = Types.micro_coord!(micro_slot)
+
+        # chunk-local micro coord, each axis 0..127 (16 macros × 8 micros).
+        cx = lx * micro + mx
+        cy = ly * micro + my
+        cz = lz * micro + mz
+
+        Enum.reduce(
+          [
+            {cx - 1, cy, cz},
+            {cx + 1, cy, cz},
+            {cx, cy - 1, cz},
+            {cx, cy + 1, cz},
+            {cx, cy, cz - 1},
+            {cx, cy, cz + 1}
+          ],
+          {solid_acc, out_acc},
+          fn neighbor, {solid?, out?} ->
+            classify_prefab_neighbor(storage, own_cells, micro, neighbor, solid?, out?)
+          end
+        )
+      end)
+
+    not any_solid_neighbor and not any_out_of_chunk
+  end
+
+  # Resolve one face neighbor in chunk-local micro space. Out-of-chunk → flag
+  # `out?`; prefab-own → skip; in-chunk + solid → flag `solid?`.
+  defp classify_prefab_neighbor(storage, own_cells, micro, {nx, ny, nz}, solid?, out?) do
+    chunk_micro_edge = Types.chunk_size_in_macro() * micro - 1
+
+    if nx < 0 or ny < 0 or nz < 0 or nx > chunk_micro_edge or ny > chunk_micro_edge or
+         nz > chunk_micro_edge do
+      {solid?, true}
+    else
+      n_macro_index = Types.macro_index!({div(nx, micro), div(ny, micro), div(nz, micro)})
+      n_slot = Types.micro_index!({rem(nx, micro), rem(ny, micro), rem(nz, micro)})
+
+      cond do
+        MapSet.member?(own_cells, {n_macro_index, n_slot}) ->
+          {solid?, out?}
+
+        Storage.micro_solid?(storage, n_macro_index, n_slot) ->
+          {true, out?}
+
+        true ->
+          {solid?, out?}
+      end
+    end
+  end
+
+  defp prefab_intent_macro(intent) do
+    Map.get(intent, :macro) || Map.get(intent, :macro_index) || Map.get(intent, :macro_coord)
+  end
+
+  defp prefab_intent_micro_slot(intent) do
+    Map.get(intent, :micro_slot) || Map.get(intent, :micro_slot_index)
+  end
+
   @doc "Places a solid normal block and increments the chunk version."
   def put_solid_block(server, macro_index_or_coord, block, opts \\ []) do
     GenServer.call(server, {:put_solid_block, macro_index_or_coord, block, opts})
+  end
+
+  @doc """
+  Writes a single refined micro block into the macro at `macro_index_or_coord`
+  (slot `0..511`, `layer_attrs` a `MicroLayer`-friendly map) and bumps the chunk
+  version — the in-memory counterpart to `put_solid_block/4`.
+
+  Internal / test seeding helper (e.g. seeding a solid neighbor so a prefab is
+  not floating); the World-authorized client write path goes through
+  `apply_intent/2` / `apply_intents/2`.
+  """
+  def put_micro_block(server, macro_index_or_coord, micro_slot, layer_attrs, opts \\ []) do
+    GenServer.call(
+      server,
+      {:put_micro_block, macro_index_or_coord, micro_slot, layer_attrs, opts}
+    )
   end
 
   @doc """
@@ -488,47 +622,47 @@ defmodule SceneServer.Voxel.ChunkProcess do
       restore_cell_time(storage.logical_scene_id, storage.chunk_coord)
 
     state =
-     %{
-       logical_scene_id: storage.logical_scene_id,
-       chunk_coord: storage.chunk_coord,
-       storage: storage,
-       lease: lease,
-       cell_tick: restored_cell_tick,
-       sim_time_ms: restored_sim_time_ms,
-       subscribers: %{},
-       subscriber_monitors: %{},
-       pending_fence: pending_fence,
-       # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
-       # attribution and downstream destroy_part dispatch. Tests inject
-       # stubbed names; production wiring uses module-named singletons.
-       object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
-       chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
-       # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
-       simulation_tick: simulation_tick,
-       # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
-       # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
-       simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
-       # Phase 6: per-region FieldTickWorker tracking.
-       # field_regions:        %{region_id => worker_pid}
-       # field_region_monitors: %{monitor_ref => region_id}
-       # field_region_sources: %{source_key => region_id}
-       # field_region_source_keys: %{region_id => source_key}
-       # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
-       field_regions: %{},
-       field_region_monitors: %{},
-       field_region_sources: %{},
-       field_region_source_keys: %{},
-       field_region_cleanup_links: %{},
-       field_refresh_pending?: false,
-       # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
-       # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
-       auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true),
-       # 阶段3 step3.2:idle 驱逐——无订阅者且无活跃 field region 连续 idle 超时则自停,
-       # 让万级 chunk 内存有界(ChunkDirectory 的 alive? 检查在再访问时重启,纯净 chunk 由
-       # WorldGen 重生成、已编辑 chunk 从 DB 重载)。默认禁用(单测的 chunk 不被收走)。
-       idle_eviction: resolve_idle_eviction(opts),
-       idle_ticks: 0
-     }
+      %{
+        logical_scene_id: storage.logical_scene_id,
+        chunk_coord: storage.chunk_coord,
+        storage: storage,
+        lease: lease,
+        cell_tick: restored_cell_tick,
+        sim_time_ms: restored_sim_time_ms,
+        subscribers: %{},
+        subscriber_monitors: %{},
+        pending_fence: pending_fence,
+        # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
+        # attribution and downstream destroy_part dispatch. Tests inject
+        # stubbed names; production wiring uses module-named singletons.
+        object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
+        chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
+        # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
+        simulation_tick: simulation_tick,
+        # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
+        # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
+        simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
+        # Phase 6: per-region FieldTickWorker tracking.
+        # field_regions:        %{region_id => worker_pid}
+        # field_region_monitors: %{monitor_ref => region_id}
+        # field_region_sources: %{source_key => region_id}
+        # field_region_source_keys: %{region_id => source_key}
+        # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
+        field_regions: %{},
+        field_region_monitors: %{},
+        field_region_sources: %{},
+        field_region_source_keys: %{},
+        field_region_cleanup_links: %{},
+        field_refresh_pending?: false,
+        # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
+        # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
+        auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true),
+        # 阶段3 step3.2:idle 驱逐——无订阅者且无活跃 field region 连续 idle 超时则自停,
+        # 让万级 chunk 内存有界(ChunkDirectory 的 alive? 检查在再访问时重启,纯净 chunk 由
+        # WorldGen 重生成、已编辑 chunk 从 DB 重载)。默认禁用(单测的 chunk 不被收走)。
+        idle_eviction: resolve_idle_eviction(opts),
+        idle_ticks: 0
+      }
 
     schedule_idle_check(state.idle_eviction)
     {:ok, state}
@@ -755,6 +889,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end
   end
 
+  def handle_call({:prefab_floating?, intents}, _from, state) when is_list(intents) do
+    {:reply, prefab_floating?(state.storage, intents), state}
+  end
+
   def handle_call({:apply_intents, attrs_list}, _from, state) when is_list(attrs_list) do
     case state.pending_fence do
       %{transaction_id: tid} ->
@@ -962,6 +1100,35 @@ defmodule SceneServer.Voxel.ChunkProcess do
       |> maybe_schedule_field_refresh(true)
 
     push_snapshot_fallbacks(next_state, :put_solid_block)
+
+    {:reply, {:ok, storage}, next_state}
+  end
+
+  def handle_call(
+        {:put_micro_block, macro_index_or_coord, micro_slot, layer_attrs, opts},
+        _from,
+        state
+      ) do
+    storage =
+      state.storage
+      |> Storage.put_micro_block(macro_index_or_coord, micro_slot, layer_attrs, opts)
+      |> bump_chunk_version()
+
+    CliObserve.emit("voxel_chunk_micro_block_put", fn ->
+      %{
+        logical_scene_id: storage.logical_scene_id,
+        chunk_coord: storage.chunk_coord,
+        chunk_version: storage.chunk_version,
+        macro: macro_index_or_coord,
+        micro_slot: micro_slot
+      }
+    end)
+
+    next_state =
+      %{state | storage: storage}
+      |> maybe_schedule_field_refresh(true)
+
+    push_snapshot_fallbacks(next_state, :put_micro_block)
 
     {:reply, {:ok, storage}, next_state}
   end

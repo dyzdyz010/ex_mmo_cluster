@@ -469,4 +469,46 @@ defmodule SceneServer.Voxel.StorageMicroMutationTest do
       assert Storage.refined_cell_at(storage, 100).layers |> hd() |> Map.get(:material_id) == 2
     end
   end
+
+  describe "micro_solid?/3 — prefab adjacency primitive" do
+    test "empty macro reports every slot as not solid" do
+      storage = empty_storage()
+
+      refute Storage.micro_solid?(storage, 0, 0)
+      refute Storage.micro_solid?(storage, 0, 255)
+      refute Storage.micro_solid?(storage, 0, 511)
+    end
+
+    test "solid macro reports every slot as solid" do
+      storage = Storage.put_solid_block(empty_storage(), 7, %{material_id: 2, health: 100})
+
+      assert Storage.micro_solid?(storage, 7, 0)
+      assert Storage.micro_solid?(storage, 7, 320)
+      assert Storage.micro_solid?(storage, 7, 511)
+      # A different (still empty) macro stays not-solid.
+      refute Storage.micro_solid?(storage, 8, 0)
+    end
+
+    test "refined macro reports only occupied slots as solid" do
+      storage =
+        empty_storage()
+        |> Storage.put_micro_block(3, 17, default_layer_attrs(1))
+        |> Storage.put_micro_block(3, 200, default_layer_attrs(1))
+
+      assert Storage.micro_solid?(storage, 3, 17)
+      assert Storage.micro_solid?(storage, 3, 200)
+      refute Storage.micro_solid?(storage, 3, 18)
+      refute Storage.micro_solid?(storage, 3, 0)
+    end
+
+    test "accepts a local macro coord just like a macro index" do
+      storage =
+        Storage.put_solid_block(empty_storage(), {1, 2, 3}, %{material_id: 2, health: 100})
+
+      macro_index = SceneServer.Voxel.Types.macro_index!({1, 2, 3})
+
+      assert Storage.micro_solid?(storage, {1, 2, 3}, 5)
+      assert Storage.micro_solid?(storage, macro_index, 5)
+    end
+  end
 end

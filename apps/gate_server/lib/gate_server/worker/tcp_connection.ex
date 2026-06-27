@@ -2424,6 +2424,66 @@ defmodule GateServer.TcpConnection do
       }
     end)
 
+    # 服务端权威反悬空兜底:放置前只读邻接校验(客户端已 snap+校验,这是兜底)。
+    # 仅覆盖单 chunk fast path —— builtins 都是单 macro、宏格对齐时落单 chunk。
+    # TODO(多 chunk):same-owner fast path / 跨 region transaction 路径暂不接此校验;
+    # 跨 chunk 邻居本就放行(宽松),但多 chunk prefab 的整体悬空判定要在那些路径单独补。
+    if prefab_intents_floating?(chunk_directory, intents) do
+      GateServer.CliObserve.emit("voxel_prefab_floating_rejected", fn ->
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          request_id: request.request_id,
+          logical_scene_id: request.logical_scene_id,
+          blueprint_id: request.blueprint_id,
+          chunk_coord: chunk_coord,
+          cell_count: total,
+          region_id: participant.lease.region_id,
+          lease_id: participant.lease.lease_id
+        }
+      end)
+
+      {:error, %{reason: :prefab_floating, applied_cell_count: 0, total_cell_count: total}}
+    else
+      apply_single_chunk_prefab_after_check(
+        participant,
+        plan,
+        chunk_coord,
+        intents,
+        request,
+        state,
+        total,
+        chunk_directory,
+        started_at
+      )
+    end
+  end
+
+  # 邻接校验失败(chunk 解析失败 / intents 非法)按"非悬空"放行 —— 不让校验本身的
+  # 错误阻断合法放置;真正的下游错误仍由后续 apply_intents 返回。返回 true 仅当
+  # ChunkDirectory 明确判定悬空。
+  defp prefab_intents_floating?(chunk_directory, intents) do
+    case SceneServer.Voxel.ChunkDirectory.prefab_floating?(chunk_directory, intents) do
+      {:ok, floating?} -> floating?
+      {:error, _reason} -> false
+    end
+  rescue
+    _exception -> false
+  catch
+    :exit, _reason -> false
+  end
+
+  defp apply_single_chunk_prefab_after_check(
+         participant,
+         plan,
+         chunk_coord,
+         intents,
+         request,
+         state,
+         total,
+         chunk_directory,
+         started_at
+       ) do
     case SceneServer.Voxel.ChunkDirectory.apply_intents(chunk_directory, intents) do
       {:ok, summary} ->
         register_prefab_scene_object(plan, participant)

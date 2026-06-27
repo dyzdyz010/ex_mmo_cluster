@@ -120,6 +120,20 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   @doc """
+  Read-only prefab anti-floating check, routed to the owning `ChunkProcess`.
+
+  The directory only resolves / starts the chunk (same `ensure_chunk_in_state`
+  path as `apply_intents/2`), then forwards to `ChunkProcess.prefab_floating?/2`.
+  Returns `{:ok, boolean}` or `{:error, reason}` if the chunk could not be
+  resolved / the intents were malformed. The prefab fast path calls this
+  **before** `apply_intents/2` so a floating placement is rejected without ever
+  mutating chunk truth.
+  """
+  def prefab_floating?(server \\ __MODULE__, attrs_list) when is_list(attrs_list) do
+    GenServer.call(server, {:prefab_floating?, attrs_list}, 30_000)
+  end
+
+  @doc """
   形态轨 C5.2:放置 / 清除一个表面元件(火炬/拉杆等)。
 
   目录只负责定位/启动 chunk;`ChunkProcess` 拥有 truth 变更 + lease-fenced 持久化 +
@@ -393,6 +407,26 @@ defmodule SceneServer.Voxel.ChunkDirectory do
             reply = ChunkProcess.apply_intents(chunk_pid, attrs_list)
             emit_apply_intents_result(attrs, normalized_attrs, reply)
             {:reply, reply, next_state}
+
+          {{:error, reason}, next_state} ->
+            {:reply, {:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:prefab_floating?, []}, _from, state) do
+    {:reply, {:ok, false}, state}
+  end
+
+  def handle_call({:prefab_floating?, attrs_list}, _from, state) when is_list(attrs_list) do
+    case normalize_apply_intents_attrs(attrs_list) do
+      {:ok, attrs, _normalized_attrs} ->
+        case ensure_chunk_in_state(state, attrs) do
+          {{:ok, chunk_pid}, next_state} ->
+            {:reply, {:ok, ChunkProcess.prefab_floating?(chunk_pid, attrs_list)}, next_state}
 
           {{:error, reason}, next_state} ->
             {:reply, {:error, reason}, next_state}
@@ -956,7 +990,11 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     |> surface_element_reply()
   end
 
-  defp apply_surface_element_op(chunk_pid, lease, {:clear, %{macro_index: macro_index, face: face}}) do
+  defp apply_surface_element_op(
+         chunk_pid,
+         lease,
+         {:clear, %{macro_index: macro_index, face: face}}
+       ) do
     chunk_pid
     |> ChunkProcess.clear_surface_element(macro_index, face, lease: lease)
     |> surface_element_reply()

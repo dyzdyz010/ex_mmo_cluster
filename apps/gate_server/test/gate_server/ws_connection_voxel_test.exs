@@ -497,6 +497,10 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
+    # 反悬空兜底:在 sphere 占用 macro (1,2,3) 正下方种相邻实心微格,使 prefab
+    # 不再悬空(bump chunk_version 0 → 1)。在订阅前种,无订阅者 → 不投快照。
+    seed_solid_neighbor_below_sphere!(666)
+
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
@@ -505,7 +509,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_receive {:gate_ws_send, initial_bin}
     assert <<0x62, initial_payload::binary>> = initial_bin
     assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
-    assert initial.storage.chunk_version == 0
+    assert initial.storage.chunk_version == 1
 
     # Phase A1-1:Sphere (blueprint 1) anchored at world-micro (8, 16, 24) →
     # world-macro (1, 2, 3) → chunk (0,0,0) local macro (1,2,3). All ~248 micro
@@ -522,12 +526,12 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     # Single-chunk prefabs bypass the World transaction coordinator and land
     # through ChunkDirectory.apply_intents/2. The chunk version bumps once
-    # (0 -> 1), and subscribers receive one compact delta.
+    # (1 -> 2 after the seed block), and subscribers receive one compact delta.
     assert_voxel_intent_accepted(
       request_id: 602,
       client_intent_seq: 13,
       logical_scene_id: 666,
-      result_ref: 1,
+      result_ref: 2,
       timeout: 1_000
     )
 
@@ -538,8 +542,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
     assert delta.logical_scene_id == 666
     assert delta.chunk_coord == {0, 0, 0}
-    assert delta.base_chunk_version == 0
-    assert delta.new_chunk_version == 1
+    assert delta.base_chunk_version == 1
+    assert delta.new_chunk_version == 2
     assert [%{delta_kind: 2, macro_index: 801}] = delta.ops
 
     # No further pushes for this prefab.
@@ -578,6 +582,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
+    # 反悬空兜底:种相邻实心微格(chunk 0 -> 1),使 sphere 不悬空。订阅前种 → 不投快照。
+    seed_solid_neighbor_below_sphere!(scene_id)
+
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
@@ -585,7 +592,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_receive {:gate_ws_send, initial_bin}
     assert <<0x62, _initial_payload::binary>> = initial_bin
 
-    # 首次放置(client_intent_seq 21)→ applied,chunk 0 -> 1,一条 delta。
+    # 首次放置(client_intent_seq 21)→ applied,chunk 1 -> 2(种块后),一条 delta。
     WsConnection.receive_frame(
       pid,
       prefab_place_intent_frame(611, 21, scene_id, 8_888,
@@ -600,14 +607,14 @@ defmodule GateServer.WsConnectionVoxelTest do
       request_id: 611,
       client_intent_seq: 21,
       logical_scene_id: scene_id,
-      result_ref: 1,
+      result_ref: 2,
       timeout: 1_000
     )
 
     assert_receive {:gate_ws_send, delta_bin}, 5_000
     assert <<0x63, delta_payload::binary>> = delta_bin
     assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
-    assert delta.new_chunk_version == 1
+    assert delta.new_chunk_version == 2
 
     # 重试:同 client_intent_seq 21、新 request_id 612。派生 command_id 撞键 →
     # CommandLog.claim 得 {:duplicate, 缓存摘要} → 直接返回缓存,不进 fast-path、
@@ -627,16 +634,16 @@ defmodule GateServer.WsConnectionVoxelTest do
       request_id: 612,
       client_intent_seq: 21,
       logical_scene_id: scene_id,
-      result_ref: 1,
+      result_ref: 2,
       timeout: 1_000
     )
 
     # 没有第二条 chunk delta —— 重试未触碰 chunk。
     refute_receive {:gate_ws_send, _}, 200
 
-    # canonical chunk_version 仍是 1(无二次写)。
+    # canonical chunk_version 仍是 2(种块 1 + 首次放置 2,无二次写)。
     assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {0, 0, 0})
-    assert snapshot.chunk_version == 1
+    assert snapshot.chunk_version == 2
   end
 
   test "prefab place intent uses same-owner fast path across multiple chunks" do
@@ -759,6 +766,10 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
+    # 反悬空兜底:种相邻实心微格(macro (1,1,3) slot,chunk 0 -> 1),使 sphere 不悬空。
+    # 订阅前种 → 无订阅者 → 不投快照,delta/快照断言不受额外帧干扰。
+    seed_solid_neighbor_below_sphere!(logical_scene_id)
+
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
@@ -784,7 +795,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       request_id: 702,
       client_intent_seq: 14,
       logical_scene_id: logical_scene_id,
-      result_ref: 1,
+      result_ref: 2,
       timeout: 10_000
     )
 
@@ -799,8 +810,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
     assert delta.logical_scene_id == logical_scene_id
     assert delta.chunk_coord == {0, 0, 0}
-    assert delta.base_chunk_version == 0
-    assert delta.new_chunk_version == 1
+    assert delta.base_chunk_version == 1
+    assert delta.new_chunk_version == 2
     assert [%{delta_kind: 2, macro_index: ^macro_index, payload: refined_payload}] = delta.ops
     assert {:ok, refined_cell} = SceneVoxelCodec.decode_refined_cell_payload(refined_payload)
     storage_words = refined_cell.occupancy_words
@@ -825,12 +836,12 @@ defmodule GateServer.WsConnectionVoxelTest do
     # Verify cold-path snapshot persistence eventually lands in Postgres.
     flush_chunk_persistence!(logical_scene_id, {0, 0, 0})
     assert {:ok, persisted_row} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
-    assert persisted_row.chunk_version == 1
+    assert persisted_row.chunk_version == 2
 
     assert {:ok, %{storage: persisted_storage}} =
              SceneVoxelCodec.decode_chunk_snapshot_payload(persisted_row.data)
 
-    assert persisted_storage.chunk_version == 1
+    assert persisted_storage.chunk_version == 2
     persisted_header = Enum.at(persisted_storage.macro_headers, macro_index)
     assert persisted_header.mode == MacroCellHeader.cell_mode_refined()
     persisted_cell = Enum.at(persisted_storage.refined_cells, persisted_header.payload_index)
@@ -926,6 +937,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
+    # 反悬空兜底:种相邻实心微格(chunk 0 -> 1),使第一次 sphere 不悬空。订阅前种 → 不投快照。
+    seed_solid_neighbor_below_sphere!(logical_scene_id)
+
     {:ok, pid} = WsConnection.start_link(self())
     put_connection_in_scene(pid)
 
@@ -948,7 +962,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       request_id: 802,
       client_intent_seq: 20,
       logical_scene_id: logical_scene_id,
-      result_ref: 1,
+      result_ref: 2,
       timeout: 10_000
     )
 
@@ -981,9 +995,9 @@ defmodule GateServer.WsConnectionVoxelTest do
     # No further pushes for the rejected place — chunk version不变。
     refute_receive {:gate_ws_send, _}, 200
 
-    # Verify storage still at chunk_version=1 (rejected place doesn't bump).
+    # Verify storage still at chunk_version=2 (种块 1 + 首次放置 2;rejected place 不 bump)。
     assert {:ok, persisted_row} = ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0})
-    assert persisted_row.chunk_version == 1
+    assert persisted_row.chunk_version == 2
 
     # Flush observe + sample logs.
     SceneServer.CliObserve.flush()
@@ -1056,6 +1070,147 @@ defmodule GateServer.WsConnectionVoxelTest do
     """)
   end
 
+  # 服务端权威反悬空兜底:把 sphere 放进**完全空、四周无实心**的 chunk(锚点落内部
+  # macro (1,2,3),无跨 chunk 邻居歧义)→ 服务端判悬空,回 rejected `:prefab_floating`,
+  # 且不产生任何 ChunkDelta(放置被拦在 apply_intents 之前,不改 chunk truth)。
+  test "prefab place into an empty, unsupported chunk is rejected as :prefab_floating" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    logical_scene_id = System.unique_integer([:positive, :monotonic])
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_201,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_201,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    # Subscribe so we would observe any (illegitimate) ChunkDelta push.
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(901, logical_scene_id, {0, 0, 0}))
+    assert_receive {:gate_ws_send, initial_bin}, 5_000
+    assert <<0x62, initial_payload::binary>> = initial_bin
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.storage.chunk_version == 0
+
+    # 不种任何相邻实心块 → sphere 落在内部 macro (1,2,3),四周皆空 → 服务端判悬空。
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(902, 30, logical_scene_id, 9_201,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_result(
+      request_id: 902,
+      client_intent_seq: 30,
+      logical_scene_id: logical_scene_id,
+      reason: ":prefab_floating",
+      timeout: 5_000
+    )
+
+    # No ChunkDelta / snapshot push for a rejected (floating) placement.
+    refute_receive {:gate_ws_send, _}, 300
+
+    # chunk truth untouched: a floating reject never writes, so either no snapshot
+    # row exists or (if some other path persisted) it stays at version 0.
+    case ChunkSnapshotStore.get_snapshot(logical_scene_id, {0, 0, 0}) do
+      {:error, :snapshot_not_found} -> :ok
+      {:ok, %{chunk_version: version}} -> assert version == 0
+    end
+  end
+
+  # 反悬空兜底**不误拒合法放置**:种了相邻实心微格后,同一 sphere 放置 → accepted,
+  # 产生 CellRefined ChunkDelta(证明校验放行支撑充分的放置)。
+  test "prefab place with a seeded adjacent solid neighbor is accepted (not falsely rejected)" do
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    region_id = System.unique_integer([:positive, :monotonic])
+    logical_scene_id = System.unique_integer([:positive, :monotonic])
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {1, 1, 1},
+               owner_scene_instance_ref: 7_202,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, 7_202,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    # 种相邻实心微格(chunk 0 -> 1),使 sphere 不悬空。订阅前种 → 不投快照。
+    seed_solid_neighbor_below_sphere!(logical_scene_id)
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(903, logical_scene_id, {0, 0, 0}))
+    assert_receive {:gate_ws_send, initial_bin}, 5_000
+    assert <<0x62, initial_payload::binary>> = initial_bin
+    assert {:ok, initial} = SceneVoxelCodec.decode_chunk_snapshot_payload(initial_payload)
+    assert initial.storage.chunk_version == 1
+
+    WsConnection.receive_frame(
+      pid,
+      prefab_place_intent_frame(904, 31, logical_scene_id, 9_202,
+        blueprint_id: 1,
+        blueprint_version: 2,
+        anchor: {8, 16, 24},
+        rotation: 0
+      )
+    )
+
+    assert_voxel_intent_accepted(
+      request_id: 904,
+      client_intent_seq: 31,
+      logical_scene_id: logical_scene_id,
+      result_ref: 2,
+      timeout: 5_000
+    )
+
+    # Accepted: a compact CellRefined ChunkDelta on the sphere's macro (1,2,3) = 801.
+    assert_receive {:gate_ws_send, delta_bin}, 5_000
+    assert <<0x63, delta_payload::binary>> = delta_bin
+    assert {:ok, delta} = SceneVoxelCodec.decode_chunk_delta_payload(delta_payload)
+    assert delta.chunk_coord == {0, 0, 0}
+    assert delta.base_chunk_version == 1
+    assert delta.new_chunk_version == 2
+    assert [%{delta_kind: 2, macro_index: 801}] = delta.ops
+  end
+
   defp read_log_lines(path) do
     case File.read(path) do
       {:ok, content} -> String.split(content, "\n", trim: true)
@@ -1103,6 +1258,39 @@ defmodule GateServer.WsConnectionVoxelTest do
              )
 
     assert :ok = ChunkProcess.flush_persistence(chunk_pid)
+  end
+
+  # 服务端权威反悬空兜底:prefab 落在空 chunk 时,新校验会判悬空拒绝。为让"合法放置"
+  # 测试仍 accept,放 prefab 前先在其占用 macro 的正下方种一个**实心微格邻居**,使 prefab
+  # 最低微格贴到实心邻居。bump chunk_version 一次(空 chunk 0 → 1),调用方按需调整版本断言。
+  #
+  # builtin_sphere 锚点 {8,16,24} → world-macro (1,2,3) → chunk (0,0,0) local macro
+  # (1,2,3);sphere 含最低微格 {3,0,3}(贴 macro 底)。其下方面邻居在 chunk-local y=15:
+  # macro (1,1,3) 的 micro slot {3,7,3} = 3 + 7*8 + 3*64 = 251。
+  #
+  # **故意种 refined 微格而非整 solid macro**:`StructuralSupport.structural_solid?`
+  # 只把 `cell_mode_solid_block` 实心宏格当结构,refined 微格不算 → 不会触发
+  # StructuralStress provisioner 起 field region(本测试未启 FieldTickSupervisor,
+  # 起 region 会崩 chunk 进程)。材质用 Ice(4),与 sphere 同,空 chunk 下不激活任何场。
+  defp seed_solid_neighbor_below_sphere!(logical_scene_id, chunk_coord \\ {0, 0, 0}) do
+    assert {:ok, chunk_pid} =
+             SceneServer.Voxel.ChunkDirectory.ensure_chunk(SceneServer.Voxel.ChunkDirectory, %{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: chunk_coord
+             })
+
+    macro_below = {1, 1, 3}
+    neighbor_slot = SceneServer.Voxel.Types.micro_index!({3, 7, 3})
+
+    assert {:ok, _storage} =
+             ChunkProcess.put_micro_block(
+               chunk_pid,
+               macro_below,
+               neighbor_slot,
+               %{material_id: 4, health: 100}
+             )
+
+    :ok
   end
 
   defp popcount(word) when is_integer(word) and word >= 0 do
@@ -2030,6 +2218,30 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   defp ensure_scene_voxel_started do
     ensure_data_voxel_started()
+
+    # 反悬空兜底测试需要在放 prefab 前种相邻实心块。任何块变更去抖后会触发
+    # ChunkProcess 的 field provisioning sweep(StructuralStress / Emergence /
+    # ElectricCircuit),sweep 起 region 时打 FieldTickSupervisor(其依赖 SimRuntime
+    # + SystemActor)。原先这些进程没起 → sweep 崩 chunk 进程。按生产 voxel_sup.ex
+    # 次序补起,使块变更的 field sweep 安全 no-op(无活性场则 detect → :inactive)。
+    if is_nil(Process.whereis(SceneServer.Voxel.Field.SimRuntime)) do
+      start_supervised!(
+        {SceneServer.Voxel.Field.SimRuntime, name: SceneServer.Voxel.Field.SimRuntime}
+      )
+    end
+
+    if is_nil(Process.whereis(SceneServer.Voxel.Field.SystemActor)) do
+      start_supervised!(
+        {SceneServer.Voxel.Field.SystemActor, name: SceneServer.Voxel.Field.SystemActor}
+      )
+    end
+
+    if is_nil(Process.whereis(SceneServer.Voxel.Field.FieldTickSupervisor)) do
+      start_supervised!(
+        {SceneServer.Voxel.Field.FieldTickSupervisor,
+         name: SceneServer.Voxel.Field.FieldTickSupervisor}
+      )
+    end
 
     if is_nil(Process.whereis(SceneServer.VoxelChunkSup)) do
       start_supervised!({SceneServer.VoxelChunkSup, name: SceneServer.VoxelChunkSup})

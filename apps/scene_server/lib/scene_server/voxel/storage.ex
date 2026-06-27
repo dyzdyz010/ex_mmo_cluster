@@ -1250,6 +1250,59 @@ defmodule SceneServer.Voxel.Storage do
   end
 
   @doc """
+  Returns true when the micro slot `micro_slot` inside the macro at
+  `macro_index_or_coord` is filled by authoritative solid voxel truth.
+
+  This is the adjacency primitive behind the prefab anti-floating check
+  (`ChunkProcess.prefab_floating?/2`): a slot counts as a "solid neighbor" when
+
+    * the macro is in `:solid` mode (every one of its 512 micro slots is solid),
+      or
+    * the macro is `:refined` and the slot's bit is set in the refined cell's
+      `occupancy_words` (`bit s` of `word (s div 64)`, `s = mx + my*8 + mz*64`).
+
+  Empty macro cells, a missing refined cell, or an unset occupancy bit all
+  return false.
+
+  ## Examples
+
+      iex> alias SceneServer.Voxel.Storage
+      iex> storage = Storage.new(1, {0, 0, 0})
+      iex> Storage.micro_solid?(storage, 0, 0)
+      false
+      iex> solid = Storage.put_solid_block(storage, 0, %{material_id: 2, health: 100})
+      iex> Storage.micro_solid?(solid, 0, 0) and Storage.micro_solid?(solid, 0, 511)
+      true
+      iex> refined = Storage.put_micro_block(storage, 5, 17, %{material_id: 2, health: 100})
+      iex> Storage.micro_solid?(refined, 5, 17)
+      true
+      iex> Storage.micro_solid?(refined, 5, 18)
+      false
+  """
+  @spec micro_solid?(t(), integer() | term(), 0..511) :: boolean()
+  def micro_solid?(%__MODULE__{} = storage, macro_index_or_coord, micro_slot) do
+    storage = normalize!(storage)
+    macro_index = Types.macro_index_or_coord!(macro_index_or_coord)
+    micro_slot = micro_slot!(micro_slot)
+    header = Enum.at(storage.macro_headers, macro_index)
+
+    cond do
+      header.mode == MacroCellHeader.cell_mode_solid_block() ->
+        true
+
+      header.mode == MacroCellHeader.cell_mode_refined() ->
+        case Enum.at(storage.refined_cells, header.payload_index) do
+          %RefinedCellData{} = cell -> slot_currently_occupied?(cell, micro_slot)
+          _nil -> false
+        end
+
+      # empty (or any unexpected mode) → unoccupied.
+      true ->
+        false
+    end
+  end
+
+  @doc """
   Recomputes per-cell `ObjectCoverRef[]` and chunk-level `ChunkObjectRef[]`
   from the current `MicroLayer.owner_object_id` / `owner_part_id` truth.
 
