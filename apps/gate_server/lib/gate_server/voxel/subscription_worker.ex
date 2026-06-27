@@ -100,18 +100,27 @@ defmodule GateServer.Voxel.SubscriptionWorker do
 
   # ── GenServer ─────────────────────────────────────────────────────────────
 
+  # Connection-driven lease keep-alive interval. Half the route-cache refresh window so
+  # a lease that has drifted into the "near expiry" band (a route-cache miss) is renewed
+  # well before it actually lapses — without the client ever polling.
+  @lease_renew_interval_ms :timer.seconds(15)
+
   @impl true
   def init({connection_pid, opts}) do
     # Monitor (not only link) the connection: a `:normal` connection stop does NOT
     # propagate through the start_link link, so without this the worker would orphan.
     Process.monitor(connection_pid)
 
+    renew_interval = Keyword.get(opts, :lease_renew_interval_ms, @lease_renew_interval_ms)
+    Process.send_after(self(), :renew_leases, renew_interval)
+
     {:ok,
      %{
        connection_pid: connection_pid,
        subscriptions: %{},
        route_cache: RouteCache.new(),
-       refresh_window_ms: Keyword.get(opts, :route_cache_refresh_ms, :timer.seconds(30))
+       refresh_window_ms: Keyword.get(opts, :route_cache_refresh_ms, :timer.seconds(30)),
+       lease_renew_interval_ms: renew_interval
      }}
   end
 
@@ -120,7 +129,35 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     {:stop, :normal, state}
   end
 
+  # Connection-driven lease keep-alive (阶段1-续租). The worker is the owner of this
+  # connection's subscriptions, so it owns their LIVENESS too: it periodically re-routes
+  # each live subscription, which renews a near-expiry lease at World (route_cached treats
+  # near-expiry as a miss → route_chunk → renewal). A non-expiring lease is a cheap cache
+  # hit, so this is nearly free until a lease actually approaches its TTL. Effect: a region
+  # the player is actively subscribed to is NEVER reaped by the region GC — even if they
+  # stand still and never move/re-subscribe. This is the orthogonal fix for the silent
+  # time-based death: the subscription self-maintains its liveness, no client polling.
+  def handle_info(:renew_leases, state) do
+    Process.send_after(self(), :renew_leases, state.lease_renew_interval_ms)
+    {:noreply, renew_subscription_leases(state)}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp renew_subscription_leases(%{subscriptions: subs} = state) when map_size(subs) == 0 do
+    state
+  end
+
+  defp renew_subscription_leases(state) do
+    now = System.system_time(:millisecond)
+
+    Enum.reduce(state.subscriptions, state, fn {{logical_scene_id, coord}, _sub}, acc ->
+      case route_cached(acc, logical_scene_id, coord, now) do
+        {:ok, _route, next} -> next
+        {:error, _reason} -> acc
+      end
+    end)
+  end
 
   @impl true
   def handle_cast({:reconcile, ctx}, state) do
