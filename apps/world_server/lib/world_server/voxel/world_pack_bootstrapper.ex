@@ -144,18 +144,34 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
 
   defp build_plan(opts) do
     with {:ok, logical_scene_id} <-
-           non_negative_integer(Keyword.get(opts, :logical_scene_id, 1), :invalid_logical_scene_id),
+           non_negative_integer(
+             Keyword.get(opts, :logical_scene_id, 1),
+             :invalid_logical_scene_id
+           ),
          {:ok, chunk_min} <- chunk_coord(Keyword.get(opts, :chunk_min, @default_chunk_min)),
          {:ok, chunk_max} <- chunk_coord(Keyword.get(opts, :chunk_max, @default_chunk_max)),
          :ok <- validate_bounds(chunk_min, chunk_max),
          {:ok, batch_size} <-
-           positive_integer(Keyword.get(opts, :batch_size, @default_batch_size), :invalid_batch_size),
+           positive_integer(
+             Keyword.get(opts, :batch_size, @default_batch_size),
+             :invalid_batch_size
+           ),
          {:ok, max_chunks} <- max_chunks(Keyword.get(opts, :max_chunks, @default_max_chunks)),
+         {:ok, materializer_opts} <- materializer_opts(opts),
          chunk_count <- chunk_count(chunk_min, chunk_max),
          :ok <- validate_chunk_budget(chunk_count, max_chunks) do
       version = to_string(Keyword.get(opts, :version, "worldgen-v1"))
       content_version = to_string(Keyword.get(opts, :content_version, version))
       seed = Keyword.get(opts, :seed, nil)
+      custom_materializer? = Keyword.has_key?(opts, :materializer)
+      materializer = Keyword.get(opts, :materializer, materializer())
+
+      materializer_opts =
+        if custom_materializer? do
+          materializer_opts
+        else
+          maybe_put_seed(materializer_opts, seed)
+        end
 
       {:ok,
        %{
@@ -166,11 +182,11 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
          batch_size: batch_size,
          max_chunks: max_chunks,
          ledger: Keyword.get(opts, :ledger, MapLedger),
-         materializer: Keyword.get(opts, :materializer, materializer(seed)),
+         materializer: materializer,
+         materializer_opts: materializer_opts,
          version: version,
          content_version: content_version,
-         world_macro_extent:
-           Keyword.get(opts, :world_macro_extent, @default_world_macro_extent),
+         world_macro_extent: Keyword.get(opts, :world_macro_extent, @default_world_macro_extent),
          publish_auth_pack?: Keyword.get(opts, :publish_auth_pack?, true)
        }}
     end
@@ -220,7 +236,8 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
       logical_scene_id: plan.logical_scene_id,
       chunk_coords: batch,
       ledger: plan.ledger,
-      materializer: plan.materializer
+      materializer: plan.materializer,
+      materializer_opts: plan.materializer_opts
     ]
 
     case WorldPackMaterializer.materialize_chunks(opts) do
@@ -235,17 +252,21 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
     end
   end
 
-  defp materializer(nil), do: {Module.concat([SceneServer, Voxel, WorldGenMaterializer]), :put_snapshot}
+  defp materializer,
+    do: {Module.concat([SceneServer, Voxel, WorldGenMaterializer]), :put_snapshot}
 
-  defp materializer(seed) when is_integer(seed) do
-    module = Module.concat([SceneServer, Voxel, WorldGenMaterializer])
-
-    fn logical_scene_id, chunk_coord, lease ->
-      apply(module, :put_snapshot, [logical_scene_id, chunk_coord, lease, [seed: seed]])
+  defp materializer_opts(opts) do
+    case Keyword.get(opts, :materializer_opts, []) do
+      materializer_opts when is_list(materializer_opts) -> {:ok, materializer_opts}
+      _other -> {:error, :invalid_materializer_opts}
     end
   end
 
-  defp materializer(_seed), do: {Module.concat([SceneServer, Voxel, WorldGenMaterializer]), :put_snapshot}
+  defp maybe_put_seed(materializer_opts, seed) when is_integer(seed) do
+    Keyword.put(materializer_opts, :seed, seed)
+  end
+
+  defp maybe_put_seed(materializer_opts, _seed), do: materializer_opts
 
   defp merge_summary(acc, batch_summary) do
     %{

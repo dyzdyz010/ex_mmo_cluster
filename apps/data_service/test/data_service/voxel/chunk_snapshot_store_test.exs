@@ -328,6 +328,44 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
     assert {:error, :snapshot_not_found} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
+  test "reports snapshot coverage for an explicit inclusive chunk range", %{
+    token_store: token_store
+  } do
+    token =
+      token()
+      |> Map.merge(%{
+        bounds_chunk_min: {-10, -10, -10},
+        bounds_chunk_max: {20, 20, 20}
+      })
+      |> then(&upsert_token(token_store, &1))
+
+    for {coord, version} <- [{{0, 0, 0}, 1}, {{1, 0, 0}, 2}, {{5, 0, 0}, 3}] do
+      assert {:ok, :inserted} =
+               ChunkSnapshotStore.put_snapshot(
+                 snapshot_attrs(token,
+                   chunk_coord: coord,
+                   chunk_version: version,
+                   chunk_hash: hash(coord),
+                   data: :erlang.term_to_binary(coord)
+                 )
+               )
+    end
+
+    assert {:ok, coverage} =
+             ChunkSnapshotStore.coverage(1, {0, 0, 0}, {2, 0, 0})
+
+    assert coverage.logical_scene_id == 1
+    assert coverage.requested_chunk_min == {0, 0, 0}
+    assert coverage.requested_chunk_max == {2, 0, 0}
+    assert coverage.total_scene_chunk_count == 3
+    assert coverage.in_bounds_chunk_count == 2
+    assert coverage.out_of_bounds_chunk_count == 1
+    assert coverage.scene_min_chunk == {0, 0, 0}
+    assert coverage.scene_max_chunk == {5, 0, 0}
+    assert coverage.in_bounds_min_chunk == {0, 0, 0}
+    assert coverage.in_bounds_max_chunk == {1, 0, 0}
+  end
+
   defp command_log_count(command_id) do
     %{rows: [[count]]} =
       Ecto.Adapters.SQL.query!(

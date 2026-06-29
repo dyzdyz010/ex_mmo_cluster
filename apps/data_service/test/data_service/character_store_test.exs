@@ -62,7 +62,8 @@ defmodule DataService.CharacterStoreTest do
   end
 
   test "save_runtime_state on a missing character → {:error, :not_found}" do
-    assert {:error, :not_found} = CharacterStore.save_runtime_state(999_999, %{position: {0, 0, 0}})
+    assert {:error, :not_found} =
+             CharacterStore.save_runtime_state(999_999, %{position: {0, 0, 0}})
   end
 
   test "persisted_position handles integer-keyed and missing positions" do

@@ -12,11 +12,14 @@ defmodule AuthServerWeb.IngameController do
   - `POST /ingame/login_post` -> `login_post/2`
   - `GET /ingame/login_success` -> `login_success/2`
   - `GET /ingame/voxel/world_manifest` -> `voxel_world_manifest/2`
+  - `GET /ingame/voxel/world_pack` -> `voxel_world_pack/2`
   - `GET /ingame/voxel/world_diff` -> `voxel_world_diff/2`
   """
 
   use AuthServerWeb, :controller
   require Logger
+
+  alias MmoContracts.WorldPackIndex
 
   @doc "Render the in-game login form."
   def login(conn, _params) do
@@ -88,6 +91,22 @@ defmodule AuthServerWeb.IngameController do
   def voxel_world_manifest(conn, params) do
     if Application.get_env(:auth_server, :dev_auto_login, false) do
       do_voxel_world_manifest(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  @doc """
+  读取启动阶段使用的紧凑 world-pack 索引。
+
+  这个端点只服务已校验的 `world_pack_index_v1` baseline 目录，不通过
+  `world_diff` 枚举或合成缺失 chunk。
+  """
+  def voxel_world_pack(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_world_pack(conn, params)
     else
       conn
       |> put_status(:forbidden)
@@ -282,6 +301,7 @@ defmodule AuthServerWeb.IngameController do
     pack_version = Keyword.get(pack_config, :version, "worldgen-v1")
     content_version = Keyword.get(pack_config, :content_version, pack_version)
     generated = Keyword.get(pack_config, :generated)
+    pack_index = Keyword.get(pack_config, :pack_index)
 
     snapshot_summary =
       case DataService.Voxel.ChunkSnapshotStore.summary(logical_scene_id) do
@@ -295,8 +315,20 @@ defmodule AuthServerWeb.IngameController do
         {:error, reason} -> %{status: :error, reason: inspect(reason)}
       end
 
-    pack_ready? = pack_status in [:ready, "ready"]
+    pack_ready? = pack_status_ready?(pack_status)
+
+    pack_integrity =
+      world_pack_integrity(
+        generated,
+        snapshot_summary,
+        pack_index,
+        logical_scene_id,
+        content_version
+      )
+
+    pack_verified? = pack_ready? and pack_integrity.status == :ready
     dev_ready? = dev_materialization_ready?(snapshot_summary, lod_summary)
+    baseline_format = world_pack_baseline_format(pack_integrity)
 
     manifest = %{
       schema_version: 1,
@@ -321,14 +353,18 @@ defmodule AuthServerWeb.IngameController do
         content_version: content_version,
         diff_endpoint: "/ingame/voxel/world_diff",
         diff_format: "chunk_snapshot_pages_v1",
+        baseline_endpoint: startup_sync_endpoint(pack_integrity),
+        baseline_format: baseline_format,
         generated: generated,
-        scene_entry_allowed: pack_ready?
+        integrity: pack_integrity,
+        scene_entry_allowed: pack_verified?
       },
       startup_sync: %{
         required: true,
         local_cache_key: "logical_scene:#{logical_scene_id}:#{content_version}",
         client_must_persist_before_scene: true,
-        endpoint: "/ingame/voxel/world_diff",
+        endpoint: startup_sync_endpoint(pack_integrity),
+        format: baseline_format,
         target_content_version: content_version,
         page_limit_default: 64,
         page_limit_max: 512
@@ -340,11 +376,91 @@ defmodule AuthServerWeb.IngameController do
         chunk_snapshots: snapshot_summary,
         lod_projection: lod_summary
       },
-      scene_entry_allowed: pack_ready?,
-      reject_reason: if(pack_ready?, do: nil, else: "world_pack_missing_or_unverified")
+      scene_entry_allowed: pack_verified?,
+      reject_reason: world_pack_reject_reason(pack_ready?, pack_integrity)
     }
 
     voxel_json(conn, manifest)
+  end
+
+  defp do_voxel_world_pack(conn, params) do
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    pack_config = Application.get_env(:auth_server, :voxel_world_pack, [])
+    pack_status = Keyword.get(pack_config, :status, :missing)
+    pack_version = Keyword.get(pack_config, :version, "worldgen-v1")
+    content_version = Keyword.get(pack_config, :content_version, pack_version)
+    generated = Keyword.get(pack_config, :generated)
+    pack_index = Keyword.get(pack_config, :pack_index)
+    pack_ready? = pack_status_ready?(pack_status)
+
+    snapshot_summary =
+      case DataService.Voxel.ChunkSnapshotStore.summary(logical_scene_id) do
+        {:ok, summary} -> summary
+        {:error, reason} -> %{status: :error, reason: inspect(reason)}
+      end
+
+    pack_integrity =
+      world_pack_integrity(
+        generated,
+        snapshot_summary,
+        pack_index,
+        logical_scene_id,
+        content_version
+      )
+
+    cond do
+      not pack_ready? ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_not_ready",
+          logical_scene_id: logical_scene_id,
+          status: pack_status,
+          required_stage: "launcher_worldgen_materialization"
+        })
+
+      is_nil(pack_index) ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_index_missing",
+          logical_scene_id: logical_scene_id,
+          status: pack_status,
+          required_stage: "launcher_world_pack_index_download"
+        })
+
+      pack_integrity.status != :ready ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_incomplete",
+          logical_scene_id: logical_scene_id,
+          status: pack_status,
+          integrity: pack_integrity,
+          required_stage: "launcher_worldgen_materialization"
+        })
+
+      true ->
+        case world_pack_index_for_response(
+               pack_index,
+               generated,
+               logical_scene_id,
+               content_version
+             ) do
+          {:ok, index} ->
+            voxel_json(conn, world_pack_index_response(index, pack_integrity))
+
+          {:error, reason} ->
+            conn
+            |> put_status(:conflict)
+            |> json(%{
+              error: "world_pack_index_invalid",
+              logical_scene_id: logical_scene_id,
+              reason: inspect(reason),
+              required_stage: "launcher_world_pack_index_download"
+            })
+        end
+    end
   end
 
   defp do_voxel_world_diff(conn, params) do
@@ -356,7 +472,23 @@ defmodule AuthServerWeb.IngameController do
     pack_status = Keyword.get(pack_config, :status, :missing)
     pack_version = Keyword.get(pack_config, :version, "worldgen-v1")
     content_version = Keyword.get(pack_config, :content_version, pack_version)
-    pack_ready? = pack_status in [:ready, "ready"]
+    pack_index = Keyword.get(pack_config, :pack_index)
+    pack_ready? = pack_status_ready?(pack_status)
+
+    pack_integrity =
+      case DataService.Voxel.ChunkSnapshotStore.summary(logical_scene_id) do
+        {:ok, snapshot_summary} ->
+          world_pack_integrity(
+            Keyword.get(pack_config, :generated),
+            snapshot_summary,
+            pack_index,
+            logical_scene_id,
+            content_version
+          )
+
+        {:error, reason} ->
+          %{status: :error, reason: inspect(reason)}
+      end
 
     cond do
       not pack_ready? ->
@@ -367,6 +499,29 @@ defmodule AuthServerWeb.IngameController do
           logical_scene_id: logical_scene_id,
           status: pack_status,
           required_stage: "launcher_worldgen_materialization"
+        })
+
+      pack_integrity.status != :ready ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_incomplete",
+          logical_scene_id: logical_scene_id,
+          status: pack_status,
+          integrity: pack_integrity,
+          required_stage: "launcher_worldgen_materialization"
+        })
+
+      Map.get(pack_integrity, :source) == :pack_index and base_version != content_version ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_baseline_not_served_by_world_diff",
+          logical_scene_id: logical_scene_id,
+          target_content_version: content_version,
+          baseline_endpoint: startup_sync_endpoint(pack_integrity),
+          baseline_format: world_pack_baseline_format(pack_integrity),
+          required_stage: "launcher_world_pack_index_download"
         })
 
       base_version == content_version ->
@@ -796,6 +951,272 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp dev_materialization_ready?(_snapshot_summary, _lod_summary), do: false
+
+  defp pack_status_ready?(status), do: status in [:ready, "ready"]
+
+  defp world_pack_reject_reason(false, _pack_integrity), do: "world_pack_missing_or_unverified"
+  defp world_pack_reject_reason(true, %{status: :ready}), do: nil
+  defp world_pack_reject_reason(true, _pack_integrity), do: "world_pack_incomplete"
+
+  defp world_pack_baseline_format(%{source: :pack_index}), do: "world_pack_index_v1"
+  defp world_pack_baseline_format(_pack_integrity), do: "chunk_snapshot_pages_v1"
+
+  defp startup_sync_endpoint(%{source: :pack_index}), do: "/ingame/voxel/world_pack"
+  defp startup_sync_endpoint(_pack_integrity), do: "/ingame/voxel/world_diff"
+
+  defp world_pack_index_for_response(pack_index, generated, logical_scene_id, content_version) do
+    WorldPackIndex.new(
+      logical_scene_id: map_value(pack_index, :logical_scene_id) || logical_scene_id,
+      content_version: map_value(pack_index, :content_version) || content_version,
+      chunk_min: map_value(pack_index, :chunk_min) || map_value(generated, :chunk_min),
+      chunk_max: map_value(pack_index, :chunk_max) || map_value(generated, :chunk_max),
+      payload_layout: map_value(pack_index, :payload_layout),
+      regions: map_value(pack_index, :regions) || []
+    )
+  end
+
+  defp world_pack_index_response(%WorldPackIndex{} = index, pack_integrity) do
+    %{
+      schema_version: 1,
+      format: "world_pack_index_v1",
+      logical_scene_id: index.logical_scene_id,
+      content_version: index.content_version,
+      chunk_min: Tuple.to_list(index.chunk_min),
+      chunk_max: Tuple.to_list(index.chunk_max),
+      chunk_count: WorldPackIndex.chunk_count(index),
+      world_diff_baseline_fallback_allowed: false,
+      payload_layout: world_pack_payload_layout(index.payload_layout),
+      regions: Enum.map(index.regions, &world_pack_index_region/1),
+      integrity: pack_integrity,
+      sliding_window_contract: %{
+        radius: 3,
+        chunk_shape: [7, 7, 7],
+        chunk_count: WorldPackIndex.sliding_window({0, 0, 0}, 3).chunk_count
+      },
+      index_hash: world_pack_index_hash(index)
+    }
+  end
+
+  defp world_pack_payload_layout(nil), do: nil
+
+  defp world_pack_payload_layout(layout) do
+    %{
+      layout: layout.layout,
+      chunk_payload_format: layout.chunk_payload_format,
+      shard_chunk_shape: Tuple.to_list(layout.shard_chunk_shape),
+      shard_origin: Tuple.to_list(layout.shard_origin),
+      file_template: layout.file_template,
+      footer_format: layout.footer_format,
+      compression: layout.compression
+    }
+  end
+
+  defp world_pack_index_region(region) do
+    %{
+      id: region.id,
+      chunk_min: Tuple.to_list(region.chunk_min),
+      chunk_max: Tuple.to_list(region.chunk_max),
+      chunk_count: region.chunk_count,
+      hash: region.hash
+    }
+  end
+
+  defp world_pack_index_hash(%WorldPackIndex{} = index) do
+    canonical =
+      {:world_pack_index_v1, index.logical_scene_id, index.content_version, index.chunk_min,
+       index.chunk_max, world_pack_hash_payload_layout(index.payload_layout),
+       Enum.map(index.regions, fn region ->
+         {region.id, region.chunk_min, region.chunk_max, region.chunk_count, region.hash}
+       end)}
+
+    hash = :crypto.hash(:sha256, :erlang.term_to_binary(canonical))
+    "sha256:" <> Base.encode16(hash, case: :lower)
+  end
+
+  defp world_pack_hash_payload_layout(nil), do: nil
+
+  defp world_pack_hash_payload_layout(layout) do
+    {layout.layout, layout.chunk_payload_format, layout.shard_chunk_shape, layout.shard_origin,
+     layout.file_template, layout.footer_format, layout.compression}
+  end
+
+  defp world_pack_integrity(
+         generated,
+         snapshot_summary,
+         pack_index,
+         logical_scene_id,
+         content_version
+       )
+       when not is_nil(pack_index) do
+    expected_count = generated_chunk_count(generated)
+    expected_min = generated_chunk_bound(generated, :chunk_min)
+    expected_max = generated_chunk_bound(generated, :chunk_max)
+
+    with {:ok, index} <-
+           WorldPackIndex.new(
+             logical_scene_id: map_value(pack_index, :logical_scene_id) || logical_scene_id,
+             content_version: map_value(pack_index, :content_version) || content_version,
+             chunk_min: map_value(pack_index, :chunk_min) || map_value(generated, :chunk_min),
+             chunk_max: map_value(pack_index, :chunk_max) || map_value(generated, :chunk_max),
+             payload_layout: map_value(pack_index, :payload_layout),
+             regions: map_value(pack_index, :regions) || []
+           ),
+         :ok <- pack_index_matches_generated(index, expected_count, expected_min, expected_max),
+         {:ok, summary} <- WorldPackIndex.verify(index) do
+      summary
+      |> Map.put(:source, :pack_index)
+      |> Map.put(:reason, nil)
+      |> Map.put(:generated_bounds, %{min: expected_min, max: expected_max})
+      |> Map.put(:index_bounds, %{
+        min: Tuple.to_list(index.chunk_min),
+        max: Tuple.to_list(index.chunk_max)
+      })
+      |> Map.put(:persisted_chunk_count, map_value(snapshot_summary, :chunk_count))
+    else
+      {:error, %{status: status} = summary} ->
+        summary
+        |> Map.put_new(:status, status)
+        |> Map.put(:source, :pack_index)
+        |> Map.put_new(:expected_chunk_count, expected_count)
+        |> Map.put_new(:generated_bounds, %{min: expected_min, max: expected_max})
+        |> Map.put_new(:persisted_chunk_count, map_value(snapshot_summary, :chunk_count))
+
+      {:error, reason} ->
+        %{
+          status: :invalid,
+          source: :pack_index,
+          reason: inspect(reason),
+          expected_chunk_count: expected_count,
+          persisted_chunk_count: map_value(snapshot_summary, :chunk_count),
+          generated_bounds: %{min: expected_min, max: expected_max}
+        }
+    end
+  end
+
+  defp world_pack_integrity(
+         generated,
+         snapshot_summary,
+         _pack_index,
+         _logical_scene_id,
+         _content_version
+       ) do
+    expected_count = generated_chunk_count(generated)
+    persisted_count = map_value(snapshot_summary, :chunk_count)
+    expected_min = generated_chunk_bound(generated, :chunk_min)
+    expected_max = generated_chunk_bound(generated, :chunk_max)
+    persisted_min = chunk_bound(snapshot_summary, :min_chunk)
+    persisted_max = chunk_bound(snapshot_summary, :max_chunk)
+
+    cond do
+      expected_count == nil ->
+        %{
+          status: :not_declared,
+          reason: "world_pack_generated_chunk_count_missing",
+          expected_chunk_count: nil,
+          persisted_chunk_count: persisted_count,
+          generated_bounds: %{min: expected_min, max: expected_max},
+          persisted_bounds: %{min: persisted_min, max: persisted_max}
+        }
+
+      persisted_count != expected_count ->
+        %{
+          status: :incomplete,
+          reason: "snapshot_count_mismatch",
+          expected_chunk_count: expected_count,
+          persisted_chunk_count: persisted_count,
+          generated_bounds: %{min: expected_min, max: expected_max},
+          persisted_bounds: %{min: persisted_min, max: persisted_max}
+        }
+
+      expected_min != nil and persisted_min != nil and expected_min != persisted_min ->
+        %{
+          status: :incomplete,
+          reason: "snapshot_min_bound_mismatch",
+          expected_chunk_count: expected_count,
+          persisted_chunk_count: persisted_count,
+          generated_bounds: %{min: expected_min, max: expected_max},
+          persisted_bounds: %{min: persisted_min, max: persisted_max}
+        }
+
+      expected_max != nil and persisted_max != nil and expected_max != persisted_max ->
+        %{
+          status: :incomplete,
+          reason: "snapshot_max_bound_mismatch",
+          expected_chunk_count: expected_count,
+          persisted_chunk_count: persisted_count,
+          generated_bounds: %{min: expected_min, max: expected_max},
+          persisted_bounds: %{min: persisted_min, max: persisted_max}
+        }
+
+      true ->
+        %{
+          status: :ready,
+          reason: nil,
+          expected_chunk_count: expected_count,
+          persisted_chunk_count: persisted_count,
+          generated_bounds: %{min: expected_min, max: expected_max},
+          persisted_bounds: %{min: persisted_min, max: persisted_max}
+        }
+    end
+  end
+
+  defp pack_index_matches_generated(_index, nil, _expected_min, _expected_max),
+    do: {:error, :world_pack_generated_chunk_count_missing}
+
+  defp pack_index_matches_generated(index, expected_count, expected_min, expected_max) do
+    index_min = Tuple.to_list(index.chunk_min)
+    index_max = Tuple.to_list(index.chunk_max)
+
+    cond do
+      WorldPackIndex.chunk_count(index) != expected_count ->
+        {:error, :pack_index_chunk_count_mismatch}
+
+      expected_min != nil and index_min != expected_min ->
+        {:error, :pack_index_min_bound_mismatch}
+
+      expected_max != nil and index_max != expected_max ->
+        {:error, :pack_index_max_bound_mismatch}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp generated_chunk_count(generated) do
+    case map_value(generated, :chunk_count) do
+      value when is_integer(value) and value >= 0 -> value
+      _other -> nil
+    end
+  end
+
+  defp generated_chunk_bound(generated, key), do: chunk_bound(generated, key)
+
+  defp chunk_bound(value, key) do
+    case map_value(value, key) do
+      {x, y, z} when is_integer(x) and is_integer(y) and is_integer(z) -> [x, y, z]
+      [x, y, z] when is_integer(x) and is_integer(y) and is_integer(z) -> [x, y, z]
+      _other -> nil
+    end
+  end
+
+  defp map_value(nil, _key), do: nil
+
+  defp map_value(value, key) when is_map(value) do
+    Map.get(value, key) || Map.get(value, Atom.to_string(key))
+  end
+
+  defp map_value(value, key) when is_list(value) do
+    Keyword.get(value, key) || list_key_value(value, Atom.to_string(key))
+  end
+
+  defp map_value(_value, _key), do: nil
+
+  defp list_key_value(value, key) do
+    case List.keyfind(value, key, 0) do
+      {^key, found} -> found
+      _other -> nil
+    end
+  end
 
   defp world_diff_chunk(snapshot) do
     %{

@@ -20,13 +20,15 @@ defmodule WorldServer.WorldSup do
         {WorldServer.Voxel.SceneNodeRegistry, name: WorldServer.Voxel.SceneNodeRegistry},
         {WorldServer.Voxel.SceneNodeMonitor,
          name: WorldServer.Voxel.SceneNodeMonitor, registry: WorldServer.Voxel.SceneNodeRegistry},
-        {WorldServer.Voxel.MapLedger,
-         name: WorldServer.Voxel.MapLedger,
-         write_token_store: DataService.Voxel.WriteTokenStore,
-         scene_node_registry: WorldServer.Voxel.SceneNodeRegistry,
-         # 阶段2:接 per-region durable 目录。物化/续约把 region 行与写令牌**同事务**落库,
-         # boot 时从目录重建 assignments/leases → 懒物化的 region 跨重启自愈(CELL-23)。
-         region_directory: DataService.Voxel.RegionDirectoryStore},
+        {
+          WorldServer.Voxel.MapLedger,
+          # 阶段2:接 per-region durable 目录。物化/续约把 region 行与写令牌**同事务**落库,
+          # boot 时从目录重建 assignments/leases → 懒物化的 region 跨重启自愈(CELL-23)。
+          name: WorldServer.Voxel.MapLedger,
+          write_token_store: DataService.Voxel.WriteTokenStore,
+          scene_node_registry: WorldServer.Voxel.SceneNodeRegistry,
+          region_directory: DataService.Voxel.RegionDirectoryStore
+        },
         world_pack_bootstrapper_child(),
         default_region_bootstrapper_child(),
         {WorldServer.Voxel.TransactionCoordinator,

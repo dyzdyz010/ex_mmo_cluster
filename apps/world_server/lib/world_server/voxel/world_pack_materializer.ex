@@ -27,6 +27,9 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
     * `:ledger` - defaults to `MapLedger`
     * `:materializer` - defaults to
       `{SceneServer.Voxel.WorldGenMaterializer, :put_snapshot}`
+    * `:materializer_opts` - forwarded only to materializers that expose an
+      arity-four call shape `(logical_scene_id, chunk_coord, lease, opts)`.
+      Supplying options to an arity-three materializer fails visibly.
 
   Full-world deployment tooling should call this in bounded batches and publish
   a world-pack `content_version` only after every planned chunk and LOD
@@ -38,6 +41,7 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
          {:ok, raw_chunk_coords} <- fetch_required_option(opts, :chunk_coords),
          ledger <- Keyword.get(opts, :ledger, MapLedger),
          materializer <- Keyword.get(opts, :materializer, default_materializer()),
+         {:ok, materializer_opts} <- materializer_opts(opts),
          :ok <- validate_logical_scene_id(logical_scene_id),
          :ok <- validate_chunk_coords(raw_chunk_coords),
          chunk_coords <- Enum.uniq(raw_chunk_coords),
@@ -46,7 +50,14 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
         routes
         |> Enum.sort_by(fn {chunk_coord, _route} -> chunk_coord end)
         |> Enum.map(fn {chunk_coord, %{lease: lease}} ->
-          {chunk_coord, call_materializer(materializer, logical_scene_id, chunk_coord, lease)}
+          {chunk_coord,
+           call_materializer(
+             materializer,
+             logical_scene_id,
+             chunk_coord,
+             lease,
+             materializer_opts
+           )}
         end)
         |> summarize(logical_scene_id)
 
@@ -83,6 +94,13 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
     {Module.concat([SceneServer, Voxel, WorldGenMaterializer]), :put_snapshot}
   end
 
+  defp materializer_opts(opts) do
+    case Keyword.get(opts, :materializer_opts, []) do
+      materializer_opts when is_list(materializer_opts) -> {:ok, materializer_opts}
+      _other -> {:error, :invalid_materializer_opts}
+    end
+  end
+
   defp route_chunks(ledger, logical_scene_id, chunk_coords) do
     case MapLedger.route_chunks_with_leases_ensuring(ledger, logical_scene_id, chunk_coords) do
       {:ok, routes} when is_map(routes) -> {:ok, routes}
@@ -95,7 +113,8 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
     :exit, reason -> {:error, {:ledger_unavailable, reason}}
   end
 
-  defp call_materializer(fun, logical_scene_id, chunk_coord, lease) when is_function(fun, 3) do
+  defp call_materializer(fun, logical_scene_id, chunk_coord, lease, [])
+       when is_function(fun, 3) do
     fun.(logical_scene_id, chunk_coord, lease)
   rescue
     exception -> {:error, {:materializer_exception, Exception.message(exception)}}
@@ -104,9 +123,14 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
     kind, reason -> {:error, {:materializer_catch, kind, reason}}
   end
 
-  defp call_materializer({module, function}, logical_scene_id, chunk_coord, lease)
-       when is_atom(module) and is_atom(function) do
-    apply(module, function, [logical_scene_id, chunk_coord, lease])
+  defp call_materializer(fun, _logical_scene_id, _chunk_coord, _lease, materializer_opts)
+       when is_function(fun, 3) and materializer_opts != [] do
+    {:error, {:materializer_options_not_supported, 3}}
+  end
+
+  defp call_materializer(fun, logical_scene_id, chunk_coord, lease, materializer_opts)
+       when is_function(fun, 4) do
+    fun.(logical_scene_id, chunk_coord, lease, materializer_opts)
   rescue
     exception -> {:error, {:materializer_exception, Exception.message(exception)}}
   catch
@@ -114,8 +138,52 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
     kind, reason -> {:error, {:materializer_catch, kind, reason}}
   end
 
-  defp call_materializer(_other, _logical_scene_id, _chunk_coord, _lease) do
+  defp call_materializer(
+         {module, function},
+         logical_scene_id,
+         chunk_coord,
+         lease,
+         materializer_opts
+       )
+       when is_atom(module) and is_atom(function) do
+    if materializer_opts == [] do
+      apply(module, function, [logical_scene_id, chunk_coord, lease])
+    else
+      apply_materializer_with_opts(
+        module,
+        function,
+        logical_scene_id,
+        chunk_coord,
+        lease,
+        materializer_opts
+      )
+    end
+  rescue
+    exception -> {:error, {:materializer_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:materializer_exit, reason}}
+    kind, reason -> {:error, {:materializer_catch, kind, reason}}
+  end
+
+  defp call_materializer(_other, _logical_scene_id, _chunk_coord, _lease, _materializer_opts) do
     {:error, :invalid_materializer}
+  end
+
+  defp apply_materializer_with_opts(
+         module,
+         function,
+         logical_scene_id,
+         chunk_coord,
+         lease,
+         materializer_opts
+       ) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, function, 4) do
+      apply(module, function, [logical_scene_id, chunk_coord, lease, materializer_opts])
+    else
+      false -> {:error, {:materializer_options_not_supported, 3}}
+      _other -> {:error, :invalid_materializer}
+    end
   end
 
   defp summarize(results, logical_scene_id) do

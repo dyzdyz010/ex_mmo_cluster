@@ -47,8 +47,10 @@ defmodule WorldServer.Voxel.RegionDirectory do
       RegionAssignment.new(%{
         region_id: row.region_id,
         logical_scene_id: row.logical_scene_id,
-        bounds_chunk_min: {row.bounds_chunk_min_x, row.bounds_chunk_min_y, row.bounds_chunk_min_z},
-        bounds_chunk_max: {row.bounds_chunk_max_x, row.bounds_chunk_max_y, row.bounds_chunk_max_z},
+        bounds_chunk_min:
+          {row.bounds_chunk_min_x, row.bounds_chunk_min_y, row.bounds_chunk_min_z},
+        bounds_chunk_max:
+          {row.bounds_chunk_max_x, row.bounds_chunk_max_y, row.bounds_chunk_max_z},
         owner_scene_instance_ref: row.owner_scene_instance_ref,
         owner_epoch: row.owner_epoch,
         lease_id: row.lease_id,

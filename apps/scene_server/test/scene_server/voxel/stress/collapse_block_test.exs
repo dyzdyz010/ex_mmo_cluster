@@ -91,6 +91,7 @@ defmodule SceneServer.Voxel.Stress.CollapseBlockTest do
     assert {:ok, summary} = ChunkProcess.apply_field_effects(chunk, [collapse(macro)], ctx())
 
     assert summary.rejected_count == 1
+
     assert [%{status: :rejected, action: :collapse_block, reason: :collapse_target_not_solid}] =
              summary.results
 

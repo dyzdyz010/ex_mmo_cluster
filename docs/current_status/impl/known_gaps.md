@@ -10,6 +10,7 @@
 
 ## 体素真值与基线
 
+- **baseline 形态与流送边界决策已定（2026-06-29），实现处于全量物化过渡 → delta 边界迁移中**：目标态为确定性 WorldGen + 设计师 delta D + hash 凭证 H，storage ∝ 修改量；当前仍是 WorldPackBootstrapper/shard 装全量 chunk payload。迁移钥匙是 WorldGen 跨端 bit-exact 确定性。见 [`voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)。
 - WorldGen 噪声降级为 migration 已开始落地：`0x6A` 远景 LOD 不再重跑噪声，默认读 `LodHeightmapStore` 持久化 projection；chunk snapshot 写入可同事务 upsert projection；`LodProjection.Rebuilder` 可显式 backfill projection；`ChunkProcess` 生产默认缺 authoritative snapshot 即失败并输出 `voxel_chunk_materialization_failed`。`DefaultRegionBootstrapper` 开发/demo 可通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；WorldGen / empty chunk 仅保留为显式 dev/test materialization 辅助路径。
 - 服务端真实 WorldGen world-pack 生成入口已补：`WorldPackBootstrapper` 可在启动时按显式 chunk bounds 批量写 canonical snapshots 并发布 ready manifest。仍缺 launcher/update 层的包下载、hash 校验、region manifest/index 和 diff chain 完整校验 UI/流程。
 - runtime diff 的 channel/priority/budget 还未形成最终设计；当前 snapshot 仍可能成为 bulk 数据来源。

@@ -210,7 +210,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       # coordinator loads that snapshot: the valid %BuildTransaction{} struct must
       # survive the load filter and still be swept (aborted from :preparing).
       # Distinct child ids — two TransactionCoordinator children otherwise collide.
-      seed = start_supervised!(Supervisor.child_spec({TransactionCoordinator, []}, id: :seed_coord))
+      seed =
+        start_supervised!(Supervisor.child_spec({TransactionCoordinator, []}, id: :seed_coord))
 
       assert {:ok, %BuildTransaction{}} =
                TransactionCoordinator.begin_transaction(seed, transaction_attrs("tx-keep"))
@@ -218,7 +219,8 @@ defmodule WorldServer.Voxel.TransactionRecoveryWatcherTest do
       persisted = TransactionCoordinator.snapshot(seed)
 
       load_fn = fn ->
-        {:ok, Map.take(persisted, [:transactions, :begin_fingerprints, :decisions, :decision_index])}
+        {:ok,
+         Map.take(persisted, [:transactions, :begin_fingerprints, :decisions, :decision_index])}
       end
 
       coordinator =

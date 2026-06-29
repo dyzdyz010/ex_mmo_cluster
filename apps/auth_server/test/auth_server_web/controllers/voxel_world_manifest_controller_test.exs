@@ -54,20 +54,34 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
 
   test "GET /ingame/voxel/world_manifest allows scene entry only for a ready world pack",
        %{conn: conn} do
+    logical_scene_id = 91_002
+    token = token(logical_scene_id)
+    assert {:ok, _} = WriteTokenStore.upsert_token(token)
+
+    for cx <- -3..3, cy <- -3..3, cz <- -3..3 do
+      chunk_coord = {cx, cy, cz}
+      payload = :erlang.term_to_binary({:snapshot, chunk_coord})
+
+      assert {:ok, :inserted} =
+               ChunkSnapshotStore.put_snapshot(snapshot_attrs(token, chunk_coord, 0, payload))
+    end
+
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-test-pack",
       content_version: "worldgen-test-pack@42",
       world_macro_extent: 32_768,
       generated: %{
-        logical_scene_id: 91_002,
+        logical_scene_id: logical_scene_id,
         chunk_min: [-3, -3, -3],
         chunk_max: [3, 3, 3],
         chunk_count: 343
       }
     )
 
-    conn = get(conn, ~p"/ingame/voxel/world_manifest", %{"logical_scene_id" => "91002"})
+    conn =
+      get(conn, ~p"/ingame/voxel/world_manifest", %{"logical_scene_id" => "#{logical_scene_id}"})
+
     body = json_response(conn, 200)
 
     assert body["scene_entry_allowed"] == true
@@ -78,7 +92,104 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     assert body["world_pack"]["scene_entry_allowed"] == true
     assert body["world_pack"]["generated"]["chunk_count"] == 343
     assert body["world_pack"]["generated"]["chunk_min"] == [-3, -3, -3]
+    assert body["world_pack"]["integrity"]["status"] == "ready"
+    assert body["world_pack"]["integrity"]["expected_chunk_count"] == 343
+    assert body["world_pack"]["integrity"]["persisted_chunk_count"] == 343
     assert body["startup_sync"]["target_content_version"] == "worldgen-test-pack@42"
+  end
+
+  test "GET /ingame/voxel/world_manifest rejects ready status when canonical snapshots are incomplete",
+       %{conn: conn} do
+    logical_scene_id = 91_003
+    token = token(logical_scene_id)
+    assert {:ok, _} = WriteTokenStore.upsert_token(token)
+
+    assert {:ok, :inserted} =
+             ChunkSnapshotStore.put_snapshot(snapshot_attrs(token, {0, 0, 0}, 0, <<"only-one">>))
+
+    Application.put_env(:auth_server, :voxel_world_pack,
+      status: :ready,
+      version: "worldgen-32km-test-pack",
+      content_version: "worldgen-32km-test-pack@1",
+      world_macro_extent: 32_768,
+      generated: %{
+        logical_scene_id: logical_scene_id,
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        chunk_count: 444_596_224
+      }
+    )
+
+    conn =
+      get(conn, ~p"/ingame/voxel/world_manifest", %{"logical_scene_id" => "#{logical_scene_id}"})
+
+    body = json_response(conn, 200)
+
+    assert body["scene_entry_allowed"] == false
+    assert body["reject_reason"] == "world_pack_incomplete"
+    assert body["world_pack"]["scene_entry_allowed"] == false
+    assert body["world_pack"]["integrity"]["status"] == "incomplete"
+    assert body["world_pack"]["integrity"]["reason"] == "snapshot_count_mismatch"
+    assert body["world_pack"]["integrity"]["expected_chunk_count"] == 444_596_224
+    assert body["world_pack"]["integrity"]["persisted_chunk_count"] == 1
+  end
+
+  test "GET /ingame/voxel/world_manifest accepts verified full-pack index without per-chunk DB snapshots",
+       %{conn: conn} do
+    logical_scene_id = 91_013
+
+    Application.put_env(:auth_server, :voxel_world_pack,
+      status: :ready,
+      version: "worldgen-32km-index-pack",
+      content_version: "worldgen-32km-index-pack@1",
+      world_macro_extent: 32_768,
+      generated: %{
+        logical_scene_id: logical_scene_id,
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        chunk_count: 444_596_224
+      },
+      pack_index: %{
+        logical_scene_id: logical_scene_id,
+        content_version: "worldgen-32km-index-pack@1",
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        payload_layout: %{
+          layout: "regular_shard_grid_v1",
+          chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
+          shard_chunk_shape: [16, 106, 16],
+          shard_origin: [-1024, -3, -1024],
+          file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
+          footer_format: "chunk_offset_table_v1",
+          compression: "none"
+        },
+        regions: [
+          %{
+            id: "full-32km",
+            chunk_min: [-1024, -3, -1024],
+            chunk_max: [1023, 102, 1023],
+            chunk_count: 444_596_224,
+            hash: "sha256:full-32km"
+          }
+        ]
+      }
+    )
+
+    conn =
+      get(conn, ~p"/ingame/voxel/world_manifest", %{"logical_scene_id" => "#{logical_scene_id}"})
+
+    body = json_response(conn, 200)
+
+    assert body["scene_entry_allowed"] == true
+    assert body["reject_reason"] == nil
+    assert body["world_pack"]["scene_entry_allowed"] == true
+    assert body["world_pack"]["integrity"]["status"] == "ready"
+    assert body["world_pack"]["integrity"]["source"] == "pack_index"
+    assert body["world_pack"]["integrity"]["expected_chunk_count"] == 444_596_224
+    assert body["world_pack"]["integrity"]["covered_chunk_count"] == 444_596_224
+    assert body["world_pack"]["baseline_format"] == "world_pack_index_v1"
+    assert body["startup_sync"]["endpoint"] == "/ingame/voxel/world_pack"
+    assert body["startup_sync"]["format"] == "world_pack_index_v1"
   end
 
   test "GET /ingame/voxel/world_manifest is disabled outside the dev auth surface",
@@ -100,6 +211,139 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     assert body["required_stage"] == "launcher_worldgen_materialization"
   end
 
+  test "GET /ingame/voxel/world_diff refuses to serve full-pack index baseline fallback",
+       %{conn: conn} do
+    logical_scene_id = 91_014
+
+    Application.put_env(:auth_server, :voxel_world_pack,
+      status: :ready,
+      version: "worldgen-32km-index-pack",
+      content_version: "worldgen-32km-index-pack@1",
+      generated: %{
+        logical_scene_id: logical_scene_id,
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        chunk_count: 444_596_224
+      },
+      pack_index: %{
+        logical_scene_id: logical_scene_id,
+        content_version: "worldgen-32km-index-pack@1",
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        payload_layout: %{
+          layout: "regular_shard_grid_v1",
+          chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
+          shard_chunk_shape: [16, 106, 16],
+          shard_origin: [-1024, -3, -1024],
+          file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
+          footer_format: "chunk_offset_table_v1",
+          compression: "none"
+        },
+        regions: [
+          %{
+            id: "full-32km",
+            chunk_min: [-1024, -3, -1024],
+            chunk_max: [1023, 102, 1023],
+            chunk_count: 444_596_224,
+            hash: "sha256:full-32km"
+          }
+        ]
+      }
+    )
+
+    conn =
+      get(conn, ~p"/ingame/voxel/world_diff", %{
+        "logical_scene_id" => Integer.to_string(logical_scene_id),
+        "base_version" => "",
+        "limit" => "1"
+      })
+
+    body = json_response(conn, 409)
+
+    assert body["error"] == "world_pack_baseline_not_served_by_world_diff"
+    assert body["baseline_endpoint"] == "/ingame/voxel/world_pack"
+    assert body["baseline_format"] == "world_pack_index_v1"
+    assert body["required_stage"] == "launcher_world_pack_index_download"
+  end
+
+  test "GET /ingame/voxel/world_pack serves verified compact full-pack index",
+       %{conn: conn} do
+    logical_scene_id = 91_015
+
+    Application.put_env(:auth_server, :voxel_world_pack,
+      status: :ready,
+      version: "worldgen-32km-index-pack",
+      content_version: "worldgen-32km-index-pack@1",
+      generated: %{
+        logical_scene_id: logical_scene_id,
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        chunk_count: 444_596_224
+      },
+      pack_index: %{
+        logical_scene_id: logical_scene_id,
+        content_version: "worldgen-32km-index-pack@1",
+        chunk_min: [-1024, -3, -1024],
+        chunk_max: [1023, 102, 1023],
+        payload_layout: %{
+          layout: "regular_shard_grid_v1",
+          chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
+          shard_chunk_shape: [16, 106, 16],
+          shard_origin: [-1024, -3, -1024],
+          file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
+          footer_format: "chunk_offset_table_v1",
+          compression: "none"
+        },
+        regions: [
+          %{
+            id: "full-32km",
+            chunk_min: [-1024, -3, -1024],
+            chunk_max: [1023, 102, 1023],
+            chunk_count: 444_596_224,
+            hash: "sha256:full-32km"
+          }
+        ]
+      }
+    )
+
+    conn =
+      get(conn, ~p"/ingame/voxel/world_pack", %{
+        "logical_scene_id" => Integer.to_string(logical_scene_id)
+      })
+
+    body = json_response(conn, 200)
+
+    assert body["format"] == "world_pack_index_v1"
+    assert body["logical_scene_id"] == logical_scene_id
+    assert body["content_version"] == "worldgen-32km-index-pack@1"
+    assert body["chunk_min"] == [-1024, -3, -1024]
+    assert body["chunk_max"] == [1023, 102, 1023]
+    assert body["chunk_count"] == 444_596_224
+    assert body["world_diff_baseline_fallback_allowed"] == false
+    assert body["integrity"]["status"] == "ready"
+    assert body["integrity"]["source"] == "pack_index"
+    assert body["sliding_window_contract"]["radius"] == 3
+    assert body["sliding_window_contract"]["chunk_count"] == 343
+    assert body["payload_layout"]["layout"] == "regular_shard_grid_v1"
+    assert body["payload_layout"]["chunk_payload_format"] == "chunk_snapshot_frame_0x62_v1"
+    assert body["payload_layout"]["shard_chunk_shape"] == [16, 106, 16]
+    assert body["payload_layout"]["shard_origin"] == [-1024, -3, -1024]
+    assert body["payload_layout"]["file_template"] == "packs/tile_{sx}_{sy}_{sz}.vxpack"
+
+    assert [
+             %{
+               "id" => "full-32km",
+               "chunk_min" => [-1024, -3, -1024],
+               "chunk_max" => [1023, 102, 1023],
+               "chunk_count" => 444_596_224,
+               "hash" => "sha256:full-32km"
+             }
+           ] = body["regions"]
+
+    assert is_binary(body["index_hash"])
+    assert String.starts_with?(body["index_hash"], "sha256:")
+  end
+
   test "GET /ingame/voxel/world_diff pages canonical snapshot payloads for a ready pack",
        %{conn: conn} do
     logical_scene_id = 91_004
@@ -115,7 +359,13 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-test-pack",
-      content_version: "worldgen-test-pack@43"
+      content_version: "worldgen-test-pack@43",
+      generated: %{
+        logical_scene_id: logical_scene_id,
+        chunk_min: [0, 0, 0],
+        chunk_max: [1, 0, 0],
+        chunk_count: 2
+      }
     )
 
     conn =

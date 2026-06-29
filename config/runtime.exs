@@ -47,14 +47,18 @@ config :world_server, :default_voxel_region_bootstrap,
   rebuild_lod_projection?: System.get_env("VOXEL_DEV_REGION_REBUILD_LOD", "1") != "0"
 
 world_pack_version = System.get_env("VOXEL_WORLD_PACK_VERSION", "worldgen-v1")
+
 world_pack_status =
   System.get_env(
     "VOXEL_WORLD_PACK_STATUS",
     if(world_pack_generate?, do: "materializing", else: "missing")
   )
 
-world_pack_content_version = System.get_env("VOXEL_WORLD_PACK_CONTENT_VERSION", world_pack_version)
-world_pack_world_macro_extent = String.to_integer(System.get_env("VOXEL_WORLD_MACRO_EXTENT", "32768"))
+world_pack_content_version =
+  System.get_env("VOXEL_WORLD_PACK_CONTENT_VERSION", world_pack_version)
+
+world_pack_world_macro_extent =
+  String.to_integer(System.get_env("VOXEL_WORLD_MACRO_EXTENT", "32768"))
 
 world_pack_seed =
   case System.get_env("VOXEL_WORLD_SEED") do

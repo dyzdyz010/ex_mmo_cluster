@@ -24,8 +24,12 @@ define a dev footprint and it is not called by Gate subscription, Scene
 runtime, or client repair paths. Deployment tooling passes the planned chunk
 range in bounded batches; the materializer routes those chunks through
 `MapLedger`, obtains normal World lease fences, and calls
-`SceneServer.Voxel.WorldGenMaterializer.put_snapshot/3` to write canonical
-chunk snapshots and derived LOD projection rows.
+`SceneServer.Voxel.WorldGenMaterializer.put_snapshot/4` to write canonical
+chunk snapshots. Derived LOD projection rows are still written inline by
+default, but full-pack import tooling can pass
+`materializer_opts: [lod_projection?: false]` and rebuild the derived
+heightmap projection explicitly after the authoritative snapshot range is
+complete.
 
 `WorldServer.Voxel.WorldPackBootstrapper` is the supervised server-side
 orchestrator for that path. It is disabled by default and enabled explicitly by
@@ -36,6 +40,63 @@ orchestrator for that path. It is disabled by default and enabled explicitly by
 `:auth_server, :voxel_world_pack` as `:ready` only after the canonical store has
 been written. While it runs, the manifest stays `materializing`; failures publish
 `failed` and keep scene entry blocked.
+
+`WorldServer.Voxel.WorldPackArtifactBuilder` owns the offline `.vxpack` artifact
+write step after canonical snapshots exist. It verifies the complete
+`MmoContracts.WorldPackIndex` first, then can build one full payload shard from
+`payload_shard_grid/1` / `payload_shard_plan/2`, build a bounded release batch,
+or build the complete release payload set with `build_release/2`. Bounded builds
+return `status: :partial` and do not emit a ready manifest; only a complete shard
+set returns `status: :ready`. This is still a deployment/launcher artifact step,
+not a Gate subscription fallback.
+
+```mermaid
+flowchart LR
+  A[complete WorldPackIndex] --> B[payload_shard_grid]
+  B --> C{selected shard set}
+  C -->|all shards| D[build_release status ready]
+  C -->|max_shards or shard_coords| E[build_release status partial]
+  D --> F[release manifest size/hash]
+  E --> G[progress observe only]
+  F --> H[launcher/verifier gate]
+```
+
+`WorldServer.Voxel.WorldPackReleaseVerifier` owns the release-readiness check
+for generated `.vxpack` payload sets. It verifies the complete expected shard
+set and manifest hash/size first, using streaming file hash checks instead of
+holding every shard in memory. Each shard must also expose a footer entry set
+whose count and local coord bounds match that shard's complete expected chunk
+coverage; a self-consistent manifest for a partial shard is not enough. A
+provided manifest must also contain exactly the expected shard path set, with no
+extra or duplicate shard entries. The verifier then samples normal
+sliding-window payload reads through `.vxpack` footer-table random access. A
+missing shard, hash mismatch, incomplete shard footer, invalid manifest shard
+set, invalid payload frame, or out-of-bounds window returns an explicit
+`:world_pack_release_invalid` error; the verifier never calls materialization or
+runtime snapshot generation to repair the pack.
+
+`WorldServer.Voxel.WorldPackAuthorityCoverage` owns the canonical-store
+readiness probe before `.vxpack` artifact generation. It compares
+`DataService.Voxel.ChunkSnapshotStore.coverage/4` with a complete
+`MmoContracts.WorldPackIndex`, then samples payload shards and normal
+sliding-window centers through canonical `get_snapshot/2` reads. The result is
+`:ready` only when the full bounds count is present, no out-of-bounds chunks are
+seen for that logical scene, and sampled shards/windows are complete. Missing
+canonical snapshots remain an explicit `:incomplete` report.
+
+CLI probes:
+
+- `mix run --no-start scripts/world_pack_authority_coverage.exs`
+  reports current canonical snapshot coverage for the default full32km index and
+  samples normal radius=3 windows. Incomplete authority data returns a non-zero
+  exit code and writes JSON under `.demo/observe/world-pack-authority-coverage/`.
+- `mix run --no-start scripts/world_pack_release_build.exs --pack-root <pack_root>`
+  writes `.vxpack` release payloads. Add `--max-shards N` or
+  `--shard-coords "sx,sy,sz;..."` for bounded progress probes; partial status is
+  not release readiness.
+- `mix run --no-start scripts/world_pack_release_verify.exs --pack-root <pack_root>`
+  validates the complete expected payload set and samples normal sliding-window
+  loads. Missing full-pack payloads return a non-zero exit code.
 
 The world-pack `content_version` must be published only after the entire planned
 world range has been materialized and verified. Runtime missing-snapshot,

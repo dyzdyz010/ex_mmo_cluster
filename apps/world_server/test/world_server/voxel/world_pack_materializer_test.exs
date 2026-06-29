@@ -115,6 +115,55 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
              })
   end
 
+  test "passes explicit materializer options to arity-four materializers" do
+    {ledger, _registry} = start_ledger_with_registry()
+    scene_id = unique_scene_id()
+    test_pid = self()
+
+    materializer = fn logical_scene_id, chunk_coord, lease, materializer_opts ->
+      send(
+        test_pid,
+        {:materializer_opts, logical_scene_id, chunk_coord, lease, materializer_opts}
+      )
+
+      {:ok, :inserted}
+    end
+
+    assert {:ok, summary} =
+             WorldPackMaterializer.materialize_chunks(
+               logical_scene_id: scene_id,
+               chunk_coords: [{0, 0, 0}],
+               ledger: ledger,
+               materializer: materializer,
+               materializer_opts: [lod_projection?: false]
+             )
+
+    assert summary.inserted == 1
+    assert summary.errors == 0
+
+    assert_receive {:materializer_opts, ^scene_id, {0, 0, 0}, lease, [lod_projection?: false]}
+
+    assert lease.logical_scene_id == scene_id
+  end
+
+  test "fails visibly when materializer options target an arity-three materializer" do
+    {ledger, _registry} = start_ledger_with_registry()
+
+    assert {:error, {:world_pack_materialization_failed, summary}} =
+             WorldPackMaterializer.materialize_chunks(
+               logical_scene_id: unique_scene_id(),
+               chunk_coords: [{0, 0, 0}],
+               ledger: ledger,
+               materializer: fn _scene_id, _coord, _lease -> {:ok, :inserted} end,
+               materializer_opts: [lod_projection?: false]
+             )
+
+    assert summary.inserted == 0
+    assert summary.errors == 1
+    assert [%{error: error}] = summary.chunk_errors
+    assert error =~ "materializer_options_not_supported"
+  end
+
   test "returns a structured failure summary when any chunk materialization fails" do
     {ledger, _registry} = start_ledger_with_registry()
     scene_id = unique_scene_id()
@@ -218,6 +267,25 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
              )
   end
 
+  test "world-pack bootstrapper refuses a 32km full authority range before materialization" do
+    test_pid = self()
+
+    assert {:error, {:world_pack_chunk_count_exceeds_limit, 444_596_224, 10_000}} =
+             WorldPackBootstrapper.materialize_once(
+               logical_scene_id: unique_scene_id(),
+               chunk_min: {-1024, -3, -1024},
+               chunk_max: {1023, 102, 1023},
+               max_chunks: 10_000,
+               publish_auth_pack?: false,
+               materializer: fn _logical_scene_id, chunk_coord, _lease ->
+                 send(test_pid, {:unexpected_32km_materialization, chunk_coord})
+                 {:ok, :inserted}
+               end
+             )
+
+    refute_received {:unexpected_32km_materialization, _chunk_coord}
+  end
+
   test "world-pack bootstrapper writes a real WorldGen snapshot through the default materializer" do
     {ledger, _registry} = start_ledger_with_registry()
     scene_id = unique_scene_id()
@@ -242,5 +310,31 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
     assert snapshot.chunk_version == 0
     assert byte_size(snapshot.data) > 1_000
     assert byte_size(snapshot.chunk_hash) == 8
+  end
+
+  test "world-pack bootstrapper forwards default materializer options" do
+    {ledger, _registry} = start_ledger_with_registry()
+    scene_id = unique_scene_id()
+
+    assert {:ok, summary} =
+             WorldPackBootstrapper.materialize_once(
+               logical_scene_id: scene_id,
+               chunk_min: {0, 0, 0},
+               chunk_max: {0, 0, 0},
+               batch_size: 1,
+               max_chunks: 1,
+               ledger: ledger,
+               materializer_opts: [lod_projection?: false],
+               publish_auth_pack?: false
+             )
+
+    assert summary.inserted == 1
+    assert summary.errors == 0
+
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(scene_id, {0, 0, 0})
+    assert snapshot.logical_scene_id == scene_id
+
+    assert {:ok, %{status: :empty, total_cell_count: 0}} =
+             DataService.Voxel.LodHeightmapStore.summary(scene_id, stride: 16)
   end
 end

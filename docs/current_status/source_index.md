@@ -42,6 +42,7 @@ flowchart TD
 | 远景 LOD 根因 | [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md) | heightmap LOD 和拼接缝隙根因；取数源部分已被唯一事实源取代 |
 | Field roadmap | [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) | Phase 7+ 局部场当前推进基准 |
 | Field kernel | [`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) | FieldKernel / FieldRegion / FieldLayer / FieldEffect 架构背景 |
+| baseline 边界决策 | [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) | 确定性 WorldGen + committed delta + hash 凭证；存储/流送/计算三边界；垂直分层 + 范围声明 |
 
 ## 按功能归档视图
 
@@ -60,6 +61,7 @@ flowchart TD
 - [`docs/voxel-server-authority/phase-1c-refined-mutation.md`](../voxel-server-authority/phase-1c-refined-mutation.md)
 - [`docs/voxel-server-authority/phase-1d-canonical-persistence.md`](../voxel-server-authority/phase-1d-canonical-persistence.md)
 - [`docs/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../2026-06-28-权威体素唯一事实源-噪声降为migration.md)
+- [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)
 
 ### 体素事务、Prefab、Object
 

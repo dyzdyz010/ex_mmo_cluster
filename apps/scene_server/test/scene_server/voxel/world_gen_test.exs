@@ -10,7 +10,10 @@ defmodule SceneServer.Voxel.WorldGenTest do
   describe "column_height — layered deterministic noise" do
     test "is deterministic in (wx, wz, seed)" do
       assert WorldGen.column_height(1234, -5678) == WorldGen.column_height(1234, -5678)
-      assert WorldGen.column_height(1234, -5678, seed: 9) == WorldGen.column_height(1234, -5678, seed: 9)
+
+      assert WorldGen.column_height(1234, -5678, seed: 9) ==
+               WorldGen.column_height(1234, -5678, seed: 9)
+
       # A different seed generally yields a different world.
       refute WorldGen.column_height(1234, -5678, seed: 1) ==
                WorldGen.column_height(1234, -5678, seed: 2)

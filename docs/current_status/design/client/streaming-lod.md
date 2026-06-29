@@ -1,16 +1,143 @@
 # 客户端流式与远景渲染当前事实
 
-> 当前唯一事实文档。Voxia 是当前 UE 产品化主线；`clients/web_client` 仍是仓库默认端到端验证/parity 主线；`clients/bevy_client` 是参考实现。
+> 当前唯一事实文档。Voxia 是当前客户端主线和 streaming / baseline / LOD 实跑验收对象；`clients/web_client` 保留为历史 web 端与必要回归参考；`clients/bevy_client` 是参考实现。
 
 ## 客户端地位
 
 | 客户端 | 当前定位 |
 | --- | --- |
-| `clients/web_client` | 仓库级当前主线端到端验证端，默认 parity / npm test 入口 |
-| `clients/Voxia` | UE5.8 native / 产品化客户端，当前近远景渲染、streaming window、debug overlay、stdio CLI 的实跑主线 |
+| `clients/Voxia` | UE5.8 native / 当前客户端主线，近远景渲染、baseline、streaming window、debug overlay、stdio CLI 的实跑验收对象 |
+| `clients/web_client` | 历史 web 端与必要回归参考，不作为本轮 streaming / baseline 主线 |
 | `clients/bevy_client` | Rust/Bevy 参考实现，不作为默认 parity 或主线验收目标 |
 
-该三分法解决了“Voxia flagship”和“web_client 主线验收”之间的表面冲突：两者处在不同维度。
+该三分法的当前解释是：Voxia 负责客户端主线验收；web_client 只在明确要求 web parity 或旧回归时使用。
+
+## Voxia 启动到体素交互时序
+
+当前实现以 `AVoxiaPawn::DriveBootstrap` 和 `UVoxiaTransportSubsystem` 为客户端主轴：先完成 HTTP dev login 与本地 baseline/world-pack gate，再连接 Gate TCP、进入 Scene，最后才打开 active/editable voxel window 并消费服务端权威体素流。
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Pawn as AVoxiaPawn
+  participant Transport as UVoxiaTransportSubsystem
+  participant Auth as AuthServer HTTP
+  participant Baseline as Local baseline files
+  participant Gate as Gate TCP connection
+  participant Worker as Gate SubscriptionWorker
+  participant World as World MapLedger
+  participant Scene as Scene ChunkDirectory / ChunkProcess
+  participant Data as DataService voxel stores
+  participant Store as Voxia VoxelStore / Renderer
+
+  Pawn->>Transport: DriveBootstrap: AutoLogin(username)
+  Transport->>Auth: POST /ingame/auto_login
+  Auth-->>Transport: token + cid + username
+  Transport-->>Pawn: phase=Authenticated
+
+  Pawn->>Transport: RequestTerrainBaseline()
+  Transport->>Auth: GET /ingame/voxel/world_manifest?logical_scene_id
+  Auth->>Data: read snapshot / LOD projection summaries
+  Auth-->>Transport: manifest(scene_entry_allowed, content_version, diff_endpoint)
+
+  alt world pack missing or unverified
+    Transport-->>Pawn: terrain_baseline=Missing/Failed + reject_reason
+    Note over Pawn,Gate: 客户端不得连接 Gate / 进入 Scene；runtime snapshot 不能当 baseline 兜底。
+  else baseline allowed
+    alt local content_version matches
+      Transport->>Baseline: read persisted manifest + chunk_snapshot_frame_0x62_v1 files
+    else baseline_format=chunk_snapshot_pages_v1 and local cache miss or stale
+      loop world_diff pages
+        Transport->>Auth: GET /ingame/voxel/world_diff?cursor&limit
+        Auth->>Data: ChunkSnapshotStore.list_page()
+        Auth-->>Transport: snapshot_payload_b64[] + next_cursor
+        Transport->>Baseline: persist audit JSONL + normalized 0x62 chunk files
+      end
+    else baseline_format=world_pack_index_v1
+      Transport->>Auth: GET /ingame/voxel/world_pack?logical_scene_id
+      Auth-->>Transport: compact full-authority index + hash + radius contract
+      Transport->>Baseline: persist raw index + local index manifest
+      Transport-->>Pawn: terrain_baseline=IndexReady + ready=false
+      Note over Transport,Baseline: 已禁止 world_diff 兜底；index/payload_layout/window plan 已校验。后续 baseline_load 从本地 .vxpack 按窗口 seed VoxelStore，成功后才 ready。
+    end
+    opt baseline cache or supported download succeeded
+      Transport-->>Pawn: terrain baseline Ready
+    end
+  end
+
+  Note over Pawn,Gate: 以下 TCP / Scene / voxel runtime 步骤只在 terrain baseline Ready 后发生。
+  Pawn->>Transport: ConnectGate(gate_host:port)
+  Transport->>Gate: TCP connect + AuthRequest 0x05
+  Gate-->>Transport: Result 0x80 ok
+  Pawn->>Transport: EnterScene()
+  Transport->>Gate: EnterScene 0x02(cid)
+  Gate->>Scene: add_player, fetch location and expected_seq
+  Scene-->>Gate: player scene_ref + spawn location + expected_seq
+  Gate-->>Transport: EnterSceneResult 0x84
+  Transport->>Store: reset movement runtime and clear active voxel window
+
+  Pawn->>Transport: SubscribeAround(predicted position)
+  Transport->>Baseline: LoadTerrainBaselineWindow(center, radius=3)
+  alt local baseline window missing or undecodable
+    Transport-->>Pawn: block subscribe with diagnostic
+  else local window loaded
+    Transport->>Store: seed confirmed VoxelStore from local 0x62 files
+    Transport->>Gate: ChunkSubscribe 0x60(center, radius, known[])
+    Gate->>Worker: reconcile latest complete active window
+    Worker->>World: route / renew lease per chunk
+    World-->>Worker: scene_node + lease / owner_epoch
+    Worker->>Scene: subscribe chunk with known_version
+    Scene->>Data: load/start canonical chunk when needed
+    Scene-->>Gate: ChunkSnapshot 0x62 when known_version differs
+    Gate-->>Transport: forward ChunkSnapshot 0x62
+    Transport->>Store: ApplySnapshot and bump VoxelRevision
+    Note over Gate,Transport: 订阅成功路径通常不发 Result；snapshot 本身就是 ACK。
+  end
+
+  opt initial LOD or voxel-dirty refresh
+    Pawn->>Transport: RequestHeightmapAround()
+    Transport->>Gate: VoxelHeightmapRequest 0x6A
+    Gate->>Scene: AuthoritativeHeightmap.heightmap_region()
+    Scene->>Data: read persistent LOD projection
+    Data-->>Scene: heights + optional materials
+    Scene-->>Gate: VoxelHeightmapRegion payload
+    Gate-->>Transport: VoxelHeightmapRegion 0x6B
+    Transport->>Store: update HeightmapTiers and bump HeightmapRevision
+    Store-->>Pawn: VoxiaWorldActor rebuilds visual-only LOD mesh
+  end
+
+  opt player break / place on editable confirmed hit
+    Pawn->>Transport: SendBlockEdit / EditVoxel
+    Transport->>Gate: VoxelEditIntent 0x70(client_intent_seq, target, face, OCC)
+    Gate->>World: route target chunk and fetch lease
+    World-->>Gate: owner Scene node + lease
+    Gate->>Scene: ChunkDirectory.apply_intent(attrs)
+    Scene->>Data: lease-fenced persist + replication outbox
+    par request acknowledgement
+      Gate-->>Transport: VoxelIntentResult 0x68
+    and subscriber fan-out
+      Scene-->>Gate: ChunkDelta 0x63 or ChunkSnapshot 0x62 fallback
+      Gate-->>Transport: forward authoritative truth frame
+    end
+    Transport->>Store: apply result / delta / snapshot and bump VoxelRevision
+    Transport->>Transport: mark LOD dirty when confirmed truth changed
+  end
+
+  opt desync, migration, or invalidated chunk
+    Gate-->>Transport: ChunkInvalidate 0x69 or unappliable ChunkDelta 0x63
+    Transport->>Store: drop or reject stale local chunk
+    Transport->>Gate: window-preserving ChunkSubscribe 0x60 with known[] resync
+    Note over Transport,Worker: 自动 resync 保留 active window；禁止用 radius=0 缩小服务端可编辑窗口。
+  end
+```
+
+关键约束：
+
+- 本地 baseline 未 Ready 时，Voxia 不能进入正常 Gate/Scene streaming；`ChunkSnapshot` 只能是已验证基线之上的运行时权威同步，不能修补缺失 world pack。
+- Voxia 已支持 `world_pack_index_v1` compact index 下载与落盘，并在 `TerrainBaselineSnapshot()` 暴露 `baseline_format` / `baseline_endpoint` / `pack_index_*` / `pack_payload_*` 字段；该状态先为 `index_ready` 且 `ready=false`，不会继续请求 `world_diff` 伪装下载完整 baseline。`LoadTerrainBaselineWindow` 会按 radius 窗口从本地 `.vxpack` 读取 0x62 payload 并应用到 confirmed `VoxelStore`，成功 seed 当前窗口后才进入正常 Gate/Scene streaming。
+- 进入 Scene 后，`ChunkSubscribe 0x60` 表示完整 active/editable window；自动重订和 resync 必须保留该窗口语义。
+- 客户端不乐观写 confirmed voxel truth；当前 Voxia 几何 confirmed store 只应用 `ChunkSnapshot 0x62`、`ChunkDelta 0x63`、`VoxelIntentResult 0x68` 的 authoritative cells 和 `ChunkInvalidate 0x69`，field store 应用 `0x73/0x74`，`ObjectStateDelta 0x6C` 目前是诊断消费。
+- LOD 远景只读服务端派生 projection：`0x6A` 请求缺 projection cell 时应显式失败，客户端不运行本地噪声兜底。
 
 ## Voxia 近场
 
@@ -93,8 +220,11 @@ flowchart TD
 - [`clients/web_client/README.md`](../../../../clients/web_client/README.md)
 - [`clients/bevy_client/README.md`](../../../../clients/bevy_client/README.md)
 - [`clients/Voxia/README.md`](../../../../clients/Voxia/README.md)
+- [`clients/Voxia/Source/Voxia/Net/README.md`](../../../../clients/Voxia/Source/Voxia/Net/README.md)
 - [`clients/Voxia/Source/Voxia/Gameplay/README.md`](../../../../clients/Voxia/Source/Voxia/Gameplay/README.md)
 - [`clients/Voxia/Source/Voxia/Debug/README.md`](../../../../clients/Voxia/Source/Voxia/Debug/README.md)
+- [`apps/gate_server/lib/gate_server/worker/README.md`](../../../../apps/gate_server/lib/gate_server/worker/README.md)
+- [`apps/scene_server/lib/scene_server/voxel/README.md`](../../../../apps/scene_server/lib/scene_server/voxel/README.md)
 - [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
 - [`docs/2026-06-28-体素世界与远景渲染-当前真相(整合).md`](../../../2026-06-28-体素世界与远景渲染-当前真相(整合).md)

@@ -44,8 +44,7 @@ defmodule SceneServer.Voxel.Field.Kernels.StructuralStressKernel do
         max_effects_per_tick: @default_max_effects_per_tick,
         note: "单 tick 坍塌数封顶防一帧塌整城;链式坍塌跨 tick 收敛;无失支撑 → :done"
       },
-      description:
-        "结构支撑连通分析(从地锚 BFS)→ 失支撑实心结构 cell 坍塌成 debris(:collapse_block,复用归零毁块路径)",
+      description: "结构支撑连通分析(从地锚 BFS)→ 失支撑实心结构 cell 坍塌成 debris(:collapse_block,复用归零毁块路径)",
       assumptions: [
         "chunk-local 地锚(本 chunk 底层 y=0)",
         "二元 supported/unsupported(无应力幅值,留 v2)",

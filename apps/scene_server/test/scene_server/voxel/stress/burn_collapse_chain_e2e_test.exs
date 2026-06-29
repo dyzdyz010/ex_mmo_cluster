@@ -111,7 +111,8 @@ defmodule SceneServer.Voxel.Stress.BurnCollapseChainE2ETest do
       {:transform_material,
        %{macro_index: Types.macro_index!({2, 1, 2}), from: @wood, to: @ash, rule_id: :combustion}}
 
-    assert {:ok, %{applied_count: 1}} = ChunkProcess.apply_field_effects(chunk, [transform], ctx())
+    assert {:ok, %{applied_count: 1}} =
+             ChunkProcess.apply_field_effects(chunk, [transform], ctx())
 
     # field-commit 重 sweep → 力学探到上方失支撑 → 坍塌。
     assert poll_empty(chunk, {2, 2, 2}, 5_000),

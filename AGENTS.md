@@ -58,6 +58,7 @@
    - 稳定子系统目录（如 `movement/`、`combat/`、`npc/`、`worker/`、`sup/`、客户端子目录）应有 `README.md` 说明职责、结构和关系。
    - 涉及监督树、运行时分层、协议层与实现层关系变化的修改，必须同步更新最近的目录 README 或阶段进度文档。
 12. **在写文档的时候要活用mermaid图标对概念进行解释**
+13. **代码中的所有注释全部用中文**
 
 ## 5. 推荐工作流
 
@@ -92,6 +93,7 @@
 - Web 客户端：`clients/web_client/README.md`
 - Bevy 客户端参考实现：`clients/bevy_client/README.md`
 - 项目当前的设计状态和实现状态： `docs/current_status/`
+- 原始文档：`docs/original`
 ---
 
 以下为 Phoenix 1.8 web 应用（`auth_server`、`visualize_server`）的专项指南，由 `phx.new` 规则整理；如与上方仓库级约束冲突，以上方约束为准。

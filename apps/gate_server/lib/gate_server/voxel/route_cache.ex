@@ -104,7 +104,10 @@ defmodule GateServer.Voxel.RouteCache do
 
   defp expired?(entry, now_ms), do: entry.expires_at_ms <= now_ms
 
-  defp contains?(%{bounds_chunk_min: {minx, miny, minz}, bounds_chunk_max: {maxx, maxy, maxz}}, {cx, cy, cz}) do
+  defp contains?(
+         %{bounds_chunk_min: {minx, miny, minz}, bounds_chunk_max: {maxx, maxy, maxz}},
+         {cx, cy, cz}
+       ) do
     cx >= minx and cx < maxx and cy >= miny and cy < maxy and cz >= minz and cz < maxz
   end
 end

@@ -66,6 +66,7 @@ defmodule SceneServer.Voxel.Reaction.ElectricIgnitionE2ETest do
         {ChunkProcess,
          logical_scene_id: 7, chunk_coord: {0, 0, 0}, auto_field_provisioning: false}
       )
+
     source = Types.macro_index!({0, 0, 0})
     iron_target = Types.macro_index!({1, 0, 0})
     wood = Types.macro_index!({0, 1, 0})

@@ -18,7 +18,9 @@ defmodule GateServer.Voxel.RouteCacheTest do
 
   test "hit when a chunk falls in a cached region with a fresh lease" do
     now = 1_000_000
-    cache = RouteCache.put(RouteCache.new(), route(7, {0, 0, 0}, {8, 64, 8}, now + 2_000_000), now)
+
+    cache =
+      RouteCache.put(RouteCache.new(), route(7, {0, 0, 0}, {8, 64, 8}, now + 2_000_000), now)
 
     assert {:ok, %{lease: %{region_id: 7}}} =
              RouteCache.lookup(cache, {3, 10, 5}, now, @refresh_window)
@@ -36,6 +38,7 @@ defmodule GateServer.Voxel.RouteCacheTest do
 
   test "put replaces the entry for the same region (no duplicate growth)" do
     now = 1_000_000
+
     cache =
       RouteCache.new()
       |> RouteCache.put(route(7, {0, 0, 0}, {8, 64, 8}, now + 2_000_000), now)
@@ -46,6 +49,7 @@ defmodule GateServer.Voxel.RouteCacheTest do
 
   test "put evicts already-expired entries as the player roams" do
     now = 1_000_000
+
     cache =
       RouteCache.new()
       |> RouteCache.put(route(1, {0, 0, 0}, {8, 64, 8}, now - 1_000), now - 5_000)
@@ -58,6 +62,7 @@ defmodule GateServer.Voxel.RouteCacheTest do
 
   test "invalidate_region drops a migrated/invalidated region" do
     now = 1_000_000
+
     cache =
       RouteCache.new()
       |> RouteCache.put(route(7, {0, 0, 0}, {8, 64, 8}, now + 2_000_000), now)

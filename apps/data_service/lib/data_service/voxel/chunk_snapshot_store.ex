@@ -143,15 +143,25 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
       when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_list(opts) do
     repo = repo(opts)
 
-    rows =
+    [row] =
       repo.all(
         from(c in VoxelChunkSnapshot,
           where: c.logical_scene_id == ^logical_scene_id,
-          select: {c.coord_x, c.coord_y, c.coord_z, c.chunk_version}
+          select: %{
+            chunk_count: count(c.logical_scene_id),
+            min_x: min(c.coord_x),
+            max_x: max(c.coord_x),
+            min_y: min(c.coord_y),
+            max_y: max(c.coord_y),
+            min_z: min(c.coord_z),
+            max_z: max(c.coord_z),
+            min_version: min(c.chunk_version),
+            max_version: max(c.chunk_version)
+          }
         )
       )
 
-    {:ok, build_summary(logical_scene_id, rows)}
+    {:ok, build_summary(logical_scene_id, row)}
   rescue
     exception -> {:error, Exception.message(exception)}
   catch
@@ -159,6 +169,34 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   end
 
   def summary(_logical_scene_id, _opts), do: {:error, :invalid_logical_scene_id}
+
+  @doc """
+  Reports canonical snapshot coverage for an inclusive chunk range.
+
+  This is a verification/CLI path for world-pack readiness. It only runs
+  aggregate queries against persisted rows and never materializes missing
+  chunks. `chunk_min` and `chunk_max` may be tuples or `[x, y, z]` lists.
+  """
+  @spec coverage(
+          non_neg_integer(),
+          chunk_coord() | [integer()],
+          chunk_coord() | [integer()],
+          keyword()
+        ) ::
+          {:ok, map()} | {:error, term()}
+  def coverage(logical_scene_id, chunk_min, chunk_max, opts \\ [])
+
+  def coverage(logical_scene_id, chunk_min, chunk_max, opts)
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_list(opts) do
+    with {:ok, min_coord} <- normalize_coord(chunk_min),
+         {:ok, max_coord} <- normalize_coord(chunk_max),
+         :ok <- validate_inclusive_bounds(min_coord, max_coord) do
+      do_coverage(logical_scene_id, min_coord, max_coord, opts)
+    end
+  end
+
+  def coverage(_logical_scene_id, _chunk_min, _chunk_max, _opts),
+    do: {:error, :invalid_coverage_request}
 
   @doc """
   Returns a deterministic page of persisted snapshots for launcher/pre-scene
@@ -452,7 +490,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     }
   end
 
-  defp build_summary(logical_scene_id, []) do
+  defp build_summary(logical_scene_id, %{chunk_count: 0}) do
     %{
       logical_scene_id: logical_scene_id,
       status: :empty,
@@ -464,37 +502,127 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     }
   end
 
-  defp build_summary(logical_scene_id, rows) do
-    {min_x, max_x, min_y, max_y, min_z, max_z, min_version, max_version} =
-      Enum.reduce(rows, nil, fn {x, y, z, version}, acc ->
-        case acc do
-          nil ->
-            {x, x, y, y, z, z, version, version}
-
-          {min_x, max_x, min_y, max_y, min_z, max_z, min_version, max_version} ->
-            {
-              min(min_x, x),
-              max(max_x, x),
-              min(min_y, y),
-              max(max_y, y),
-              min(min_z, z),
-              max(max_z, z),
-              min(min_version, version),
-              max(max_version, version)
-            }
-        end
-      end)
-
+  defp build_summary(logical_scene_id, row) do
     %{
       logical_scene_id: logical_scene_id,
       status: :ready,
-      chunk_count: length(rows),
-      min_chunk: {min_x, min_y, min_z},
-      max_chunk: {max_x, max_y, max_z},
-      min_chunk_version: min_version,
-      max_chunk_version: max_version
+      chunk_count: row.chunk_count,
+      min_chunk: {row.min_x, row.min_y, row.min_z},
+      max_chunk: {row.max_x, row.max_y, row.max_z},
+      min_chunk_version: row.min_version,
+      max_chunk_version: row.max_version
     }
   end
+
+  defp do_coverage(
+         logical_scene_id,
+         {min_x, min_y, min_z} = chunk_min,
+         {max_x, max_y, max_z} = chunk_max,
+         opts
+       ) do
+    sql = """
+    SELECT
+      count(*)::bigint AS total_scene_chunk_count,
+      count(*) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      )::bigint AS in_bounds_chunk_count,
+      min(coord_x), min(coord_y), min(coord_z),
+      max(coord_x), max(coord_y), max(coord_z),
+      min(coord_x) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      ),
+      min(coord_y) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      ),
+      min(coord_z) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      ),
+      max(coord_x) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      ),
+      max(coord_y) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      ),
+      max(coord_z) FILTER (
+        WHERE coord_x BETWEEN $2 AND $3
+          AND coord_y BETWEEN $4 AND $5
+          AND coord_z BETWEEN $6 AND $7
+      )
+    FROM voxel_chunks
+    WHERE logical_scene_id = $1
+    """
+
+    %Postgrex.Result{
+      rows: [
+        [
+          total_count,
+          in_bounds_count,
+          scene_min_x,
+          scene_min_y,
+          scene_min_z,
+          scene_max_x,
+          scene_max_y,
+          scene_max_z,
+          in_min_x,
+          in_min_y,
+          in_min_z,
+          in_max_x,
+          in_max_y,
+          in_max_z
+        ]
+      ]
+    } =
+      Ecto.Adapters.SQL.query!(repo(opts), sql, [
+        logical_scene_id,
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        min_z,
+        max_z
+      ])
+
+    {:ok,
+     %{
+       logical_scene_id: logical_scene_id,
+       requested_chunk_min: chunk_min,
+       requested_chunk_max: chunk_max,
+       total_scene_chunk_count: total_count,
+       in_bounds_chunk_count: in_bounds_count,
+       out_of_bounds_chunk_count: total_count - in_bounds_count,
+       scene_min_chunk: coord_or_nil(scene_min_x, scene_min_y, scene_min_z),
+       scene_max_chunk: coord_or_nil(scene_max_x, scene_max_y, scene_max_z),
+       in_bounds_min_chunk: coord_or_nil(in_min_x, in_min_y, in_min_z),
+       in_bounds_max_chunk: coord_or_nil(in_max_x, in_max_y, in_max_z)
+     }}
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    :exit, reason -> {:error, {:snapshot_store_unavailable, reason}}
+  end
+
+  defp coord_or_nil(nil, _y, _z), do: nil
+  defp coord_or_nil(_x, nil, _z), do: nil
+  defp coord_or_nil(_x, _y, nil), do: nil
+  defp coord_or_nil(x, y, z), do: {x, y, z}
+
+  defp validate_inclusive_bounds({min_x, min_y, min_z}, {max_x, max_y, max_z})
+       when min_x <= max_x and min_y <= max_y and min_z <= max_z,
+       do: :ok
+
+  defp validate_inclusive_bounds(_chunk_min, _chunk_max), do: {:error, :invalid_chunk_bounds}
 
   # 梯队4:WriteTokenStore 模块级无状态后,`:write_token_store` opt(原进程句柄)不再需要;
   # 直接走 DB durable fence。保留 catch :exit 以稳健处理 Repo 不可用。

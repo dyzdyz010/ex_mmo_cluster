@@ -41,7 +41,6 @@ defmodule SceneServer.PlayerCharacter do
   @default_location {750.0, 750.0, 185.0}
   @legacy_dev_seed_center_location {750.0, 750.0, 100.0}
 
-
   @lock_retry_attempts 5
   @lock_retry_sleep_ms 5
   # Hold the last direction for up to 2s of silence before assuming the client
@@ -1388,7 +1387,6 @@ defmodule SceneServer.PlayerCharacter do
   end
 
   defp maybe_migrate_legacy_dev_seed_location(position), do: position
-
 
   defp map_float(map, keys, default) do
     keys

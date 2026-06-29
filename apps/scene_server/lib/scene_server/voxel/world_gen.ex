@@ -151,5 +151,4 @@ defmodule SceneServer.Voxel.WorldGen do
       end)
     end
   end
-
 end

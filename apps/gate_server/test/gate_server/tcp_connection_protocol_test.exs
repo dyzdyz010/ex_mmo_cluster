@@ -245,6 +245,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     Repo.delete_all(Character)
     Repo.delete_all(Account)
+
     # 阶段4-B(测试隔离):清 durable region 目录 + epoch 表,避免 MapLedger boot 重载前序测试/
     # 模块的 region(见 ws_connection_voxel_test 同处说明)。
     DataService.Voxel.RegionDirectoryStore.reset()

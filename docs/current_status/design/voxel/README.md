@@ -11,6 +11,44 @@
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
 
+## 当前世界事实模型
+
+当前世界不应把“运行时可读布局”本身当成唯一不可恢复事实。长期权威恢复模型为：
+
+```text
+world(seq=N) = world_snapshot(seq=K) + committed_voxel_events(K+1..N)
+```
+
+其中：
+
+- `world_snapshot` 是可校验的世界快照。最初版本可以来自 immutable world pack / baseline pack；后续应由定期 compact 生成新的 checkpoint snapshot。
+- `committed_voxel_events` 是服务端裁决后已经提交的体素事实事件，而不是客户端原始 intent。它必须能按序 replay，或者已经被后续 checkpoint 覆盖。
+- 运行时可读布局、近场 hot chunk、LOD projection、客户端本地窗口缓存都是 `snapshot + events` 的物化结果或派生索引。它们可以为运行时读写优化，但不能成为唯一不可恢复事实。
+- 服务端向客户端 ACK 成功前，必须保证对应 voxel event、事务结果或等价 checkpoint/snapshot 已 durable；否则崩溃后会丢失已经确认给玩家的世界变化。
+
+```mermaid
+flowchart LR
+  Pack["immutable baseline pack<br/>content_version / hash / index"]
+  Checkpoint["periodic world checkpoint<br/>snapshot seq=K"]
+  Events["committed voxel events<br/>K+1..N"]
+  Runtime["runtime read layout<br/>hot chunks / region index"]
+  Derived["derived stores<br/>LOD projection / client window cache"]
+
+  Pack --> Checkpoint
+  Checkpoint --> Runtime
+  Events --> Runtime
+  Runtime --> Derived
+  Runtime --> Scene["Scene / ChunkProcess authority runtime"]
+  Scene --> Events
+```
+
+恢复和修复规则：
+
+- 如果损坏的是运行时布局、hot cache、LOD projection 或本地 active-window cache，可以删除后从最近 checkpoint 加后续 events 重建。
+- 如果损坏的是 checkpoint / baseline pack / committed event log，则属于权威数据损坏，不能用运行时 snapshot 或客户端缓存静默修复。
+- 定期 compact 的目标是把 `old snapshot + many events` 压成新的 checkpoint，并记录 event high-watermark；旧 events 可以归档，但不能在 checkpoint 验证完成前丢弃。
+- 初始 world pack 与后续 checkpoint 在逻辑上都是 `world_snapshot`，差别只是初始包面向分发安装，checkpoint 面向减少恢复 replay 成本。
+
 ## 三阶段边界
 
 ```mermaid
@@ -57,10 +95,12 @@ flowchart LR
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
 | 远景 LOD 数据源 | `0x6A` 默认读取 `LodHeightmapStore` 持久化 projection；chunk snapshot 写入同事务 upsert projection；已有显式 `LodProjection.Rebuilder`；开发/demo bootstrapper 可触发 projection rebuild；`WorldPackBootstrapper` 可按显式 chunk bounds 生成真实 WorldGen pack；缺 cell 显式失败 | 补齐 launcher 包管理、material/top surface 和完整 dirty/rebuild 调度 |
-| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper | 降级为 migration，生产不进 runtime |
-| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；`WorldPackBootstrapper` 可在启动/部署阶段写真实 WorldGen snapshots；测试/dev 可显式 `missing_chunk_policy: :empty` 或 `worldgen: [enabled?: true]` | 补完整 32km 生成预算/调度、真实地图 import，减少测试空策略依赖 |
-| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入 | 后续需补 launcher/update UI、pack hash/index、region manifest 和 handshake 完整实现 |
+| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper | 升级为长期可用的确定性真值生成器（跨端 bit-exact），承担 baseline 重算；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
+| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；`WorldPackBootstrapper` 可在启动/部署阶段写真实 WorldGen snapshots；测试/dev 可显式 `missing_chunk_policy: :empty` 或 `worldgen: [enabled?: true]` | 懒物化 + 确定性重算；未修改 chunk 不落 snapshot，靠 WorldGen+H 恢复；见 baseline 边界决策 |
+| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入 | seed+maps+D+H 本地重算 + 对 H 校验；launcher 传配方+雕刻+凭证，不传全量 chunk |
+| **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 WorldGen + 设计师 delta D + hash 凭证 H**；storage ∝ 修改量；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
+| 当前世界恢复模型 | 当前已有 canonical chunk snapshot、runtime delta 和持久化 projection 的局部能力，但 checkpoint + committed event log 尚未形成统一恢复链 | `world_current = latest checkpoint + committed voxel events after checkpoint`；运行时布局是物化视图，可重建但 ACK 前必须 durable |
 
 ## 被取代的旧结论
 
@@ -70,12 +110,16 @@ flowchart LR
 | 远景 heightmap 可长期按运行时噪声生成 | 已诊断为平行真值缺陷，后续改派生 mip |
 | 缺 chunk 可静默跑噪声 fallback | 已废止：正式运行时缺块启动失败并输出 `voxel_chunk_materialization_failed`；噪声/空 chunk 只能显式 dev/test opt-in |
 | baseline 缺失可 snapshot/resync 自愈 | 必须拒绝入场，不允许兜底 |
+| 运行时布局就是唯一不可删事实 | 运行时布局应是 `checkpoint + committed voxel events` 的物化结果；只有 checkpoint/event log 等 durable truth 完整时才允许删除并重建运行时布局 |
+| 只靠初始压缩母包即可恢复当前世界 | 只能恢复初始世界；玩家造成的当前世界变化必须来自 committed event log 或后续 checkpoint |
 
 ## 证据源
 
 - [`AGENTS.md`](../../../../AGENTS.md)
 - [`docs/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../../../2026-06-28-权威体素唯一事实源-噪声降为migration.md)
 - [`docs/2026-06-28-体素世界与远景渲染-当前真相(整合).md`](../../../2026-06-28-体素世界与远景渲染-当前真相(整合).md)
+- [`docs/current_status/impl/2026-06-29-world-pack-streaming-handoff.md`](../../impl/2026-06-29-world-pack-streaming-handoff.md)
 - [`docs/plans/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../plans/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)
 - [`docs/2026-06-25-voxel-world-production-architecture.md`](../../../2026-06-25-voxel-world-production-architecture.md)
 - [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
+- [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)

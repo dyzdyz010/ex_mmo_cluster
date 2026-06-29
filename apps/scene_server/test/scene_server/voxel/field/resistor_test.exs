@@ -53,7 +53,11 @@ defmodule SceneServer.Voxel.Field.ResistorTest do
       aabb: {{0, 0, 0}, {2, 2, 0}},
       kernels: [%{id: :circuit_current, module: CircuitCurrentKernel}],
       source_points: [
-        %{macro_index: Types.macro_index!({0, 0, 0}), field_type: :electric_potential, value: 120.0}
+        %{
+          macro_index: Types.macro_index!({0, 0, 0}),
+          field_type: :electric_potential,
+          value: 120.0
+        }
       ]
     })
   end

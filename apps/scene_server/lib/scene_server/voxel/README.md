@@ -6,15 +6,18 @@
 
 `SceneServer.Voxel.WorldGenMaterializer` is the explicit bridge from
 deterministic WorldGen output to canonical chunk snapshots. It generates one
-chunk, encodes the normal snapshot payload, derives LOD projection cells, and
-writes both through `DataService.Voxel.ChunkSnapshotStore` under the caller's
-World-issued lease fence. This is a pre-scene import/materialization tool only:
-ChunkProcess, heightmap reads, and runtime repair paths must still fail visibly
-when canonical data is missing.
+chunk and encodes the normal snapshot payload under the caller's World-issued
+lease fence. Inline LOD projection remains enabled by default for small/import
+calls, but bulk world-pack materialization may pass `lod_projection?: false` to
+write only canonical snapshots and then run an explicit
+`SceneServer.Voxel.LodProjection.Rebuilder` pass. This is a pre-scene
+import/materialization tool only: ChunkProcess, heightmap reads, and runtime
+repair paths must still fail visibly when canonical data is missing.
 
 The formal production caller is `WorldServer.Voxel.WorldPackMaterializer`,
 which runs during deployment-time world-pack construction. Scene owns the chunk
-encoding and LOD projection write, while World owns routing and lease fences.
+encoding and optional inline LOD projection write, while World owns routing,
+lease fences, and bulk materializer options.
 
 `SceneServer.Voxel.LodProjection.Rebuilder` 从 canonical chunk snapshots 回填
 `LodHeightmapStore` 时，以 X/Z column 为单位聚合垂直 chunk：

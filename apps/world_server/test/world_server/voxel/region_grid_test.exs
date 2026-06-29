@@ -96,6 +96,7 @@ defmodule WorldServer.Voxel.RegionGridTest do
 
       # The id round-trips and the bounds contain the original chunk.
       assert RegionGrid.decode_region_id(located.region_id) == {1, {2, 0, -1}}
+
       {{minx, miny, minz}, {maxx, maxy, maxz}} =
         {located.bounds_chunk_min, located.bounds_chunk_max}
 

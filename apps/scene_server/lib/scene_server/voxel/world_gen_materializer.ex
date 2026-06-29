@@ -21,6 +21,15 @@ defmodule SceneServer.Voxel.WorldGenMaterializer do
 
   `lease` must be the current World-issued region lease for `chunk_coord`.
   Missing or stale tokens are returned as explicit DataService errors.
+
+  Options:
+
+    * `:seed` - deterministic WorldGen seed.
+    * `:lod_projection?` - when false, persist only the authoritative chunk
+      snapshot. Bulk world-pack importers use this and rebuild derived LOD
+      rows explicitly after the authoritative range is complete.
+    * `:lod_projection_opts` - forwarded to `LodProjection.cells_for_storage/2`
+      when inline projection is enabled.
   """
   @spec put_snapshot(non_neg_integer(), {integer(), integer(), integer()}, map(), keyword()) ::
           {:ok, :inserted | :updated | :unchanged} | {:error, term()}
@@ -39,7 +48,7 @@ defmodule SceneServer.Voxel.WorldGenMaterializer do
     payload = Codec.encode_chunk_snapshot_payload(%{request_id: 0, storage: storage})
     chunk_hash = Hash.encode64(Codec.chunk_hash(storage))
 
-    with {:ok, lod_projection_cells} <- LodProjection.cells_for_storage(storage),
+    with {:ok, lod_projection_cells, lod_projection?} <- lod_projection_cells(storage, opts),
          attrs <-
            snapshot_attrs(lease, chunk_coord, storage, payload, chunk_hash, lod_projection_cells),
          {:ok, result} <- ChunkSnapshotStore.put_snapshot(attrs) do
@@ -51,6 +60,7 @@ defmodule SceneServer.Voxel.WorldGenMaterializer do
           chunk_version: storage.chunk_version,
           result: result,
           snapshot_bytes: byte_size(payload),
+          lod_projection?: lod_projection?,
           lod_projection_cells: length(lod_projection_cells)
         }
       end)
@@ -78,6 +88,27 @@ defmodule SceneServer.Voxel.WorldGenMaterializer do
 
   def put_snapshot(_logical_scene_id, _chunk_coord, _lease, _opts),
     do: {:error, :invalid_worldgen_materialization_request}
+
+  defp lod_projection_cells(storage, opts) do
+    case Keyword.get(opts, :lod_projection?, true) do
+      false ->
+        {:ok, [], false}
+
+      true ->
+        projection_opts = Keyword.get(opts, :lod_projection_opts, [])
+
+        if is_list(projection_opts) do
+          with {:ok, cells} <- LodProjection.cells_for_storage(storage, projection_opts) do
+            {:ok, cells, true}
+          end
+        else
+          {:error, :invalid_lod_projection_opts}
+        end
+
+      _other ->
+        {:error, :invalid_lod_projection_flag}
+    end
+  end
 
   defp snapshot_attrs(lease, chunk_coord, %Storage{} = storage, payload, chunk_hash, cells) do
     lease

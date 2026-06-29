@@ -78,7 +78,8 @@ defmodule SceneServer.Voxel.Field.StructuralSupport do
   end
 
   defp structural_material?(blocks, payload_index)
-       when is_integer(payload_index) and payload_index >= 0 and payload_index < tuple_size(blocks) do
+       when is_integer(payload_index) and payload_index >= 0 and
+              payload_index < tuple_size(blocks) do
     case elem(blocks, payload_index) do
       %NormalBlockData{material_id: material_id} ->
         MaterialCatalog.default_attribute_value(
