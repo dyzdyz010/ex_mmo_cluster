@@ -12,6 +12,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.Storage
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.SceneNodeRegistry
 
   defmodule FakeInterface do
     use GenServer
@@ -67,9 +68,12 @@ defmodule GateServer.WsConnectionVoxelTest do
     # 造成 rebind epoch / prefab 占用 / edit 路由的顺序相关 flaky。清表使每测试 boot 自洁。
     DataService.Voxel.RegionDirectoryStore.reset()
     DataService.Voxel.RegionEpochStore.reset()
+    ensure_scene_node_registry_started()
+    :ok = SceneNodeRegistry.unregister_scene_node(SceneNodeRegistry, node())
 
     on_exit(fn ->
       stop_named(GateServer.Interface)
+      :ok = SceneNodeRegistry.unregister_scene_node(SceneNodeRegistry, node())
 
       if is_nil(old_observe_log) do
         Application.delete_env(:gate_server, :cli_observe_log)
@@ -229,7 +233,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     # region)。但物化需要一个已注册的 Scene 节点来承载热执行;这里 MapLedger 未配
     # scene_node_registry,所以物化无处可放,客户端得到明确的 :scene_node_unassigned,
     # 而非旧的"越界"拒绝。
-    ensure_map_ledger_started()
+    ensure_map_ledger_started(register_scene_node?: false)
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
@@ -338,6 +342,81 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     subscriptions_after = voxel_subscriptions(pid)
     assert map_size(subscriptions_after) == 1
+  end
+
+  test "latest subscribe window prunes chunks outside the current center" do
+    observe_path = observe_path("ws_chunk_subscribe_window_prune.log")
+    File.rm(observe_path)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    ensure_map_ledger_started()
+    ensure_scene_voxel_started()
+
+    logical_scene_id = 782
+    region_id = System.unique_integer([:positive, :monotonic])
+    owner_scene_instance_ref = 7_101
+
+    assert {:ok, _assignment} =
+             MapLedger.put_region(MapLedger, %{
+               region_id: region_id,
+               logical_scene_id: logical_scene_id,
+               bounds_chunk_min: {0, 0, 0},
+               bounds_chunk_max: {2, 1, 1},
+               owner_scene_instance_ref: owner_scene_instance_ref,
+               owner_epoch: 0,
+               assigned_scene_node: node()
+             })
+
+    assert {:ok, _lease} =
+             MapLedger.issue_lease(MapLedger, region_id, owner_scene_instance_ref,
+               lease_id: System.unique_integer([:positive, :monotonic]),
+               owner_epoch: 1,
+               expires_at_ms: System.system_time(:millisecond) + 60_000,
+               token_version: System.unique_integer([:positive, :monotonic])
+             )
+
+    start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
+
+    {:ok, pid} = WsConnection.start_link(self())
+    put_connection_in_scene(pid)
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(71, logical_scene_id, {0, 0, 0}, 0))
+    assert_receive {:gate_ws_send, first_bin}
+    assert <<0x62, first_payload::binary>> = first_bin
+    assert {:ok, first_snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(first_payload)
+    assert first_snapshot.storage.chunk_coord == {0, 0, 0}
+
+    assert Map.has_key?(voxel_subscriptions(pid), {logical_scene_id, {0, 0, 0}})
+
+    WsConnection.receive_frame(pid, chunk_subscribe_frame(72, logical_scene_id, {1, 0, 0}, 0))
+    assert_receive {:gate_ws_send, second_bin}
+    assert <<0x62, second_payload::binary>> = second_bin
+    assert {:ok, second_snapshot} = SceneVoxelCodec.decode_chunk_snapshot_payload(second_payload)
+    assert second_snapshot.storage.chunk_coord == {1, 0, 0}
+
+    _ = :sys.get_state(pid)
+    subscriptions = voxel_subscriptions(pid)
+    assert MapSet.new(Map.keys(subscriptions)) == MapSet.new([{logical_scene_id, {1, 0, 0}}])
+
+    assert {:ok, old_chunk_pid} =
+             SceneServer.Voxel.ChunkDirectory.ensure_chunk(SceneServer.Voxel.ChunkDirectory, %{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {0, 0, 0}
+             })
+
+    assert {:ok, new_chunk_pid} =
+             SceneServer.Voxel.ChunkDirectory.ensure_chunk(SceneServer.Voxel.ChunkDirectory, %{
+               logical_scene_id: logical_scene_id,
+               chunk_coord: {1, 0, 0}
+             })
+
+    assert %{subscriber_count: 0} = ChunkProcess.debug_state(old_chunk_pid)
+    assert %{subscriber_count: 1} = ChunkProcess.debug_state(new_chunk_pid)
+
+    flush_observe_writer()
+    observe_log = File.read!(observe_path)
+    assert observe_log =~ ~s(event="voxel_reconcile_pruned")
+    assert observe_log =~ "pruned_count: 1"
   end
 
   test "rebinds voxel subscriptions after world migration cutover" do
@@ -1344,8 +1423,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
   end
 
-  test "prefab place intent rejects when any chunk fails to route" do
-    ensure_map_ledger_started()
+  test "prefab place intent rejects when materialization cannot route touched chunks" do
+    ensure_map_ledger_started(register_scene_node?: false)
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
@@ -1353,9 +1432,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     logical_scene_id = 987_650
 
-    # No region is registered for this logical scene. The World node is
-    # reachable, so this verifies route failure classification rather than
-    # world availability.
+    # No region is registered for this logical scene. The World node is reachable,
+    # but materializing the implicit region has no registered live Scene node; the
+    # prefab gate path reports that as its stable `:no_route_for_chunk` enum.
     WsConnection.receive_frame(
       pid,
       prefab_place_intent_frame(703, 16, logical_scene_id, 9_999,
@@ -2202,17 +2281,32 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert got_result_ref == result_ref
   end
 
-  defp ensure_map_ledger_started do
+  defp ensure_map_ledger_started(opts \\ []) do
     ensure_data_voxel_started()
+    ensure_scene_node_registry_started()
+
+    if Keyword.get(opts, :register_scene_node?, true) do
+      :ok = SceneNodeRegistry.register_scene_node(SceneNodeRegistry, node())
+    end
 
     case Process.whereis(MapLedger) do
       nil ->
         start_supervised!(
-          {MapLedger, name: MapLedger, write_token_store: DataService.Voxel.WriteTokenStore}
+          {MapLedger,
+           name: MapLedger,
+           write_token_store: DataService.Voxel.WriteTokenStore,
+           scene_node_registry: SceneNodeRegistry}
         )
 
       _pid ->
         :ok
+    end
+  end
+
+  defp ensure_scene_node_registry_started do
+    case Process.whereis(SceneNodeRegistry) do
+      nil -> start_supervised!({SceneNodeRegistry, name: SceneNodeRegistry})
+      _pid -> :ok
     end
   end
 

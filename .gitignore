@@ -75,6 +75,7 @@ deploy/*-stdout.log
 # Dev launch/debug runtime artifacts (PID files + stray stderr/log captures).
 *.pid
 /server.err
+/.dev-server*.log
 /clients/bevy_client/*.log
 
 # Voxia UE5.8 client is its own independent git repo (clients/Voxia/.git)

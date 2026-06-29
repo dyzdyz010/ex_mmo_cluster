@@ -27,6 +27,7 @@ defmodule WorldServer.WorldSup do
          # 阶段2:接 per-region durable 目录。物化/续约把 region 行与写令牌**同事务**落库,
          # boot 时从目录重建 assignments/leases → 懒物化的 region 跨重启自愈(CELL-23)。
          region_directory: DataService.Voxel.RegionDirectoryStore},
+        world_pack_bootstrapper_child(),
         default_region_bootstrapper_child(),
         {WorldServer.Voxel.TransactionCoordinator,
          name: WorldServer.Voxel.TransactionCoordinator,
@@ -48,6 +49,15 @@ defmodule WorldServer.WorldSup do
     if Keyword.get(opts, :enabled?, false) do
       {WorldServer.Voxel.DefaultRegionBootstrapper,
        Keyword.put_new(opts, :name, WorldServer.Voxel.DefaultRegionBootstrapper)}
+    end
+  end
+
+  defp world_pack_bootstrapper_child do
+    opts = Application.get_env(:world_server, :world_pack_bootstrapper, [])
+
+    if Keyword.get(opts, :enabled?, false) do
+      {WorldServer.Voxel.WorldPackBootstrapper,
+       Keyword.put_new(opts, :name, WorldServer.Voxel.WorldPackBootstrapper)}
     end
   end
 

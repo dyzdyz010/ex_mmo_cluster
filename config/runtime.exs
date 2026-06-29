@@ -26,6 +26,7 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
 # Set DEV_AUTO_LOGIN=true in local/dev/demo deployments to let web and Bevy
 # clients bootstrap a signed token by just sending a username.
 dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
+world_pack_generate? = System.get_env("VOXEL_WORLD_PACK_GENERATE", "0") in ["true", "1"]
 
 config :auth_server, :dev_auto_login, dev_auto_login?
 
@@ -33,7 +34,7 @@ dev_region_bootstrap_env = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP")
 
 dev_region_bootstrap? =
   case dev_region_bootstrap_env do
-    nil -> dev_auto_login?
+    nil -> dev_auto_login? and not world_pack_generate?
     value -> value in ["true", "1"]
   end
 
@@ -41,17 +42,54 @@ config :world_server, :default_voxel_region_bootstrap,
   enabled?: dev_region_bootstrap?,
   logical_scene_id: String.to_integer(System.get_env("VOXEL_DEV_REGION_LOGICAL_SCENE_ID", "1")),
   retry_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_RETRY_MS", "1000")),
-  refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000"))
+  refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000")),
+  seed_terrain?: System.get_env("VOXEL_DEV_REGION_SEED_TERRAIN", "1") != "0",
+  rebuild_lod_projection?: System.get_env("VOXEL_DEV_REGION_REBUILD_LOD", "1") != "0"
 
-# 阶段3 运行时 WorldGen:出生点及一切首触达且 DB 无行的 chunk 由 ChunkProcess 确定性程序化
-# 生成基线地形(version 0,不持久化)。**test 环境关闭**——既有单测启 ChunkProcess 期望空 chunk;
-# dev/prod 默认开,`VOXEL_WORLDGEN=0` 可关,`VOXEL_WORLD_SEED` 选世界种子。
+world_pack_version = System.get_env("VOXEL_WORLD_PACK_VERSION", "worldgen-v1")
+world_pack_status =
+  System.get_env(
+    "VOXEL_WORLD_PACK_STATUS",
+    if(world_pack_generate?, do: "materializing", else: "missing")
+  )
+
+world_pack_content_version = System.get_env("VOXEL_WORLD_PACK_CONTENT_VERSION", world_pack_version)
+world_pack_world_macro_extent = String.to_integer(System.get_env("VOXEL_WORLD_MACRO_EXTENT", "32768"))
+
+world_pack_seed =
+  case System.get_env("VOXEL_WORLD_SEED") do
+    nil -> nil
+    value -> String.to_integer(value)
+  end
+
+config :auth_server, :voxel_world_pack,
+  status: world_pack_status,
+  version: world_pack_version,
+  content_version: world_pack_content_version,
+  world_macro_extent: world_pack_world_macro_extent
+
+config :world_server, :world_pack_bootstrapper,
+  enabled?: world_pack_generate?,
+  logical_scene_id: String.to_integer(System.get_env("VOXEL_WORLD_PACK_LOGICAL_SCENE_ID", "1")),
+  chunk_min: System.get_env("VOXEL_WORLD_PACK_CHUNK_MIN", "-3,-3,-3"),
+  chunk_max: System.get_env("VOXEL_WORLD_PACK_CHUNK_MAX", "3,3,3"),
+  batch_size: String.to_integer(System.get_env("VOXEL_WORLD_PACK_BATCH_SIZE", "64")),
+  max_chunks: System.get_env("VOXEL_WORLD_PACK_MAX_CHUNKS", "10000"),
+  retry_ms: String.to_integer(System.get_env("VOXEL_WORLD_PACK_RETRY_MS", "1000")),
+  version: world_pack_version,
+  content_version: world_pack_content_version,
+  world_macro_extent: world_pack_world_macro_extent,
+  seed: world_pack_seed
+
+# 旧运行时 WorldGen 已降级为 dev migration helper。正式 runtime 不应在缺 chunk /
+# heightmap 时重跑噪声作为第二真值；需要时只能显式设置 VOXEL_WORLDGEN=1 做本地
+# 开发临时材化，默认关闭。
 config :scene_server, :voxel_worldgen,
-  enabled?: config_env() != :test and System.get_env("VOXEL_WORLDGEN", "1") != "0",
+  enabled?: System.get_env("VOXEL_WORLDGEN", "0") == "1",
   seed: String.to_integer(System.get_env("VOXEL_WORLD_SEED", "1337"))
 
 # 阶段3 step3.2 chunk idle 驱逐:无订阅者 + 无活跃 field region 连续 idle 达 evict_after_ms 即自停,
-# 让无界大世界的万级 chunk 进程内存有界(再访问由 WorldGen 重生成 / DB 重载)。test 关闭。
+# 让无界大世界的万级 chunk 进程内存有界(再访问由 DB 重载；WorldGen 仅可显式 dev opt-in)。test 关闭。
 config :scene_server, :voxel_chunk_idle_eviction,
   enabled?: config_env() != :test and System.get_env("VOXEL_CHUNK_IDLE_EVICTION", "1") != "0",
   check_ms: String.to_integer(System.get_env("VOXEL_CHUNK_IDLE_CHECK_MS", "15000")),
@@ -60,8 +98,9 @@ config :scene_server, :voxel_chunk_idle_eviction,
 # 阶段7-bis:peer 等待**轮询**(client 已改)的 give-up 超时。真集群下 peer 一出现即早返回,
 # 此值只是单节点 give-up 上限;默认 250ms(原固定 sleep 1000ms),直接砍每个 interface 的启动
 # 阻塞 → 砍冷启动。慢 gossip 的部署可 `BEACON_CLUSTER_JOIN_WAIT_MS` 调大。
-config :beacon_server, :cluster_join_wait_ms,
-  String.to_integer(System.get_env("BEACON_CLUSTER_JOIN_WAIT_MS", "250"))
+config :beacon_server,
+       :cluster_join_wait_ms,
+       String.to_integer(System.get_env("BEACON_CLUSTER_JOIN_WAIT_MS", "250"))
 
 # ---------------------------------------------------------------------------
 # gate_server listen ports (env-driven so prod container can remap)

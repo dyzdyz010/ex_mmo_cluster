@@ -12,6 +12,10 @@ defmodule WorldServer.Voxel.DevSeedTest do
 
   @noise_opts [seed: 1337, min_height: 2, max_height: 8]
 
+  defp unique_scene_id do
+    910_000 + System.unique_integer([:positive])
+  end
+
   defmodule FakeChunkDirectory do
     @moduledoc false
     use GenServer
@@ -42,6 +46,22 @@ defmodule WorldServer.Voxel.DevSeedTest do
     end
 
     def handle_call(:calls, _from, state), do: {:reply, Enum.reverse(state.calls), state}
+  end
+
+  defmodule FakeLodProjectionRebuilder do
+    @moduledoc false
+
+    def rebuild_scene(logical_scene_id, opts) do
+      send(Keyword.fetch!(opts, :test_pid), {:lod_projection_rebuild, logical_scene_id, opts})
+
+      {:ok,
+       %{
+         logical_scene_id: logical_scene_id,
+         chunk_count: 2,
+         cell_count: 32,
+         batch_count: 1
+       }}
+    end
   end
 
   # Starts a SceneNodeRegistry (with this node registered) + a MapLedger wired to
@@ -115,7 +135,8 @@ defmodule WorldServer.Voxel.DevSeedTest do
   test "picks the region owner from the ledger's scene node registry" do
     registry =
       start_supervised!(
-        {SceneNodeRegistry, name: :"dev_seed_owner_registry_#{System.unique_integer([:positive])}"}
+        {SceneNodeRegistry,
+         name: :"dev_seed_owner_registry_#{System.unique_integer([:positive])}"}
       )
 
     scene_node = :"scene_dev_seed_#{System.unique_integer([:positive])}@example"
@@ -141,10 +162,42 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert route.assignment.assigned_scene_node == scene_node
   end
 
+  test "explicit assigned_scene_node registers the dev node before routing" do
+    registry =
+      start_supervised!(
+        {SceneNodeRegistry,
+         name: :"dev_seed_explicit_registry_#{System.unique_integer([:positive])}"}
+      )
+
+    ledger =
+      start_supervised!(
+        {MapLedger,
+         name: :"dev_seed_explicit_ledger_#{System.unique_integer([:positive])}",
+         write_token_store: WriteTokenStore,
+         scene_node_registry: registry}
+      )
+
+    scene_node = :"explicit_dev_seed_#{System.unique_integer([:positive])}@example"
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               scene_node_registry: registry,
+               logical_scene_id: 90,
+               assigned_scene_node: scene_node,
+               seed_terrain?: false
+             )
+
+    assert Enum.all?(created.regions, &(&1.assigned_scene_node == Atom.to_string(scene_node)))
+    assert {:ok, route} = MapLedger.route_chunk_with_lease(ledger, 90, {0, 0, 0})
+    assert route.assignment.assigned_scene_node == scene_node
+  end
+
   test "fails (and seeds nothing) when no Scene node is registered to host a region" do
     registry =
       start_supervised!(
-        {SceneNodeRegistry, name: :"dev_seed_empty_registry_#{System.unique_integer([:positive])}"}
+        {SceneNodeRegistry,
+         name: :"dev_seed_empty_registry_#{System.unique_integer([:positive])}"}
       )
 
     ledger =
@@ -156,8 +209,9 @@ defmodule WorldServer.Voxel.DevSeedTest do
       )
 
     assert {:error, :scene_node_unassigned} =
-             DevSeed.ensure_default_region(ledger: ledger, logical_scene_id: 90)
+             DevSeed.ensure_default_region(ledger: ledger, logical_scene_id: 900)
 
+    assert %{join_order: []} = SceneNodeRegistry.snapshot(registry)
     assert MapLedger.snapshot(ledger).assignments == %{}
   end
 
@@ -231,10 +285,156 @@ defmodule WorldServer.Voxel.DevSeedTest do
     end)
   end
 
-  test "returns a JSON-safe terrain error when the scene chunk directory is unavailable" do
+  test "materializes missing authoritative baseline snapshots before terrain seeding when requested" do
+    {ledger, _registry} = start_ledger_with_registry()
+    {:ok, fake_dir} = FakeChunkDirectory.start_link()
+    scene_id = unique_scene_id()
+    test_pid = self()
+
+    baseline_writer = fn logical_scene_id, chunk_coord, lease ->
+      send(test_pid, {:baseline_writer, logical_scene_id, chunk_coord, lease.region_id})
+      {:ok, :inserted}
+    end
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: scene_id,
+               chunk_directory: fake_dir,
+               materialize_baseline?: true,
+               baseline_snapshot_writer: baseline_writer
+             )
+
+    assert created.baseline == %{
+             chunk_count: 25,
+             inserted: 25,
+             existing: 0,
+             unchanged: 0,
+             errors: 0,
+             chunk_errors: []
+           }
+
+    baseline_chunks =
+      for _ <- 1..25, into: MapSet.new() do
+        assert_receive {:baseline_writer, ^scene_id, chunk_coord, region_id}
+        assert is_integer(region_id)
+        chunk_coord
+      end
+
+    assert baseline_chunks == for(cx <- -2..2, cz <- -2..2, into: MapSet.new(), do: {cx, 0, cz})
+    assert FakeChunkDirectory.calls(fake_dir) != []
+  end
+
+  test "baseline footprint does not expand the terrain seed footprint" do
+    {ledger, _registry} = start_ledger_with_registry()
+    {:ok, fake_dir} = FakeChunkDirectory.start_link()
+    scene_id = unique_scene_id()
+    test_pid = self()
+
+    baseline_writer = fn logical_scene_id, chunk_coord, _lease ->
+      send(test_pid, {:baseline_writer, logical_scene_id, chunk_coord})
+      {:ok, :inserted}
+    end
+
+    assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: scene_id,
+               chunk_directory: fake_dir,
+               materialize_baseline?: true,
+               baseline_snapshot_writer: baseline_writer,
+               baseline_footprint_chunks: [{0, 0, 0}, {0, 1, 0}],
+               terrain_footprint_chunks: [{0, 0, 0}]
+             )
+
+    assert created.chunk_count == 2
+    assert created.baseline.chunk_count == 2
+    assert created.terrain.chunk_count == 1
+
+    baseline_chunks =
+      for _ <- 1..2, into: MapSet.new() do
+        assert_receive {:baseline_writer, ^scene_id, chunk_coord}
+        chunk_coord
+      end
+
+    assert baseline_chunks == MapSet.new([{0, 0, 0}, {0, 1, 0}])
+
+    seeded_chunks =
+      fake_dir
+      |> FakeChunkDirectory.calls()
+      |> Enum.map(& &1.chunk_coord)
+      |> MapSet.new()
+
+    assert seeded_chunks == MapSet.new([{0, 0, 0}])
+  end
+
+  test "baseline materialization failure prevents terrain writes" do
+    {ledger, _registry} = start_ledger_with_registry()
+    {:ok, fake_dir} = FakeChunkDirectory.start_link()
+    scene_id = unique_scene_id()
+
+    baseline_writer = fn _logical_scene_id, chunk_coord, _lease ->
+      if chunk_coord == {0, 0, 0}, do: {:error, :boom}, else: {:ok, :inserted}
+    end
+
+    assert {:error, {:baseline_materialization_failed, baseline}} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: scene_id,
+               chunk_directory: fake_dir,
+               materialize_baseline?: true,
+               baseline_snapshot_writer: baseline_writer
+             )
+
+    assert baseline.chunk_count == 25
+    assert baseline.inserted == 24
+    assert baseline.errors == 1
+    assert [%{chunk_coord: [0, 0, 0], error: ":boom"}] = baseline.chunk_errors
+    assert FakeChunkDirectory.calls(fake_dir) == []
+  end
+
+  test "explicitly rebuilds LOD projection after dev materialization when requested" do
     {ledger, _registry} = start_ledger_with_registry()
 
     assert {:ok, created} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 93,
+               seed_terrain?: false,
+               rebuild_lod_projection?: true,
+               lod_projection_rebuilder: {FakeLodProjectionRebuilder, :rebuild_scene},
+               lod_projection_rebuild_opts: [test_pid: self(), strides: [16]]
+             )
+
+    assert_receive {:lod_projection_rebuild, 93, opts}
+    assert opts[:strides] == [16]
+
+    assert created.lod_projection == %{
+             status: :ready,
+             logical_scene_id: 93,
+             chunk_count: 2,
+             cell_count: 32,
+             batch_count: 1
+           }
+  end
+
+  test "explicit LOD projection rebuild failure is visible" do
+    {ledger, _registry} = start_ledger_with_registry()
+
+    assert {:error, {:lod_projection_rebuild_failed, :boom}} =
+             DevSeed.ensure_default_region(
+               ledger: ledger,
+               logical_scene_id: 94,
+               seed_terrain?: false,
+               rebuild_lod_projection?: true,
+               lod_projection_rebuilder: fn _scene_id, _opts -> {:error, :boom} end
+             )
+  end
+
+  test "fails with a JSON-safe terrain error when the scene chunk directory is unavailable" do
+    {ledger, _registry} = start_ledger_with_registry()
+
+    assert {:error, {:terrain_seed_failed, terrain}} =
              DevSeed.ensure_default_region(
                ledger: ledger,
                logical_scene_id: 92,
@@ -242,16 +442,16 @@ defmodule WorldServer.Voxel.DevSeedTest do
              )
 
     # Every footprint chunk's apply_intents exits (no such directory); each is
-    # isolated into a per-chunk error so the summary stays JSON-safe.
-    assert created.terrain.errors == 25
-    assert created.terrain.written == 0
-    assert length(created.terrain.chunk_errors) == 25
+    # isolated into a per-chunk error so the diagnostic summary stays JSON-safe.
+    assert terrain.errors == 25
+    assert terrain.written == 0
+    assert length(terrain.chunk_errors) == 25
 
-    assert Enum.all?(created.terrain.chunk_errors, fn entry ->
+    assert Enum.all?(terrain.chunk_errors, fn entry ->
              is_list(entry.chunk_coord) and is_binary(entry.error) and
                entry.error =~ "scene_unavailable"
            end)
 
-    assert {:ok, _json} = Jason.encode(created)
+    assert {:ok, _json} = Jason.encode(terrain)
   end
 end

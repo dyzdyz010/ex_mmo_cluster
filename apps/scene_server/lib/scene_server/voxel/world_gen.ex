@@ -1,15 +1,12 @@
 defmodule SceneServer.Voxel.WorldGen do
   @moduledoc """
-  Deterministic runtime terrain generation for the unbounded voxel world
-  (阶段3 step3.1)。
+  Deterministic development world-seed terrain helper.
 
-  A chunk that is first touched with **no persisted row** is generated on demand
-  from a global world seed — so the world has real procedural terrain everywhere a
-  player can reach (a ~32×32 km showcase scale, but the noise is infinite), not
-  just an empty void beyond the spawn. This is the "transmit the seed, generate
-  the rest locally, only persist what changed" model: a pristine generated chunk
-  is `chunk_version = 0` and is **not** persisted (it re-generates identically on
-  restart / after LRU eviction); only an *edit* bumps the version and writes a row.
+  WorldGen noise is no longer a runtime truth source. Production runtime paths
+  must read authoritative voxel storage, and far/LOD heightmaps must use
+  `SceneServer.Voxel.AuthoritativeHeightmap`. The functions in this module remain
+  available for dev migrations / local materialization tools that write their
+  output into the authoritative store exactly once.
 
   Terrain shape (two summed layers): a rolling **lowland** base (fractal value noise
   centred on sea level, so it dips below into basins/valleys and rises into low
@@ -23,9 +20,8 @@ defmodule SceneServer.Voxel.WorldGen do
   ridged-mountain model) lives in the Rust NIF `SceneServer.Native.WorldGenNoise`
   (architecture rule: heavy compute belongs in Rust — a 1M-cell heightmap is ~39×
   faster than the old Elixir). This module is the thin server-authoritative wrapper;
-  `column_height/3` and `heightmap_region/6` both delegate to the same NIF so the
-  solid chunks and the far/LOD heightmap stay consistent. The world is deterministic
-  in `(wx, wz, seed)`; clients render server-streamed truth and never re-generate it.
+  `column_height/3` and `generate_chunk_storage/3` delegate to the Rust NIF so
+  dev materialization stays deterministic in `(wx, wz, seed)`.
   """
 
   alias SceneServer.Native.WorldGenNoise
@@ -75,15 +71,11 @@ defmodule SceneServer.Voxel.WorldGen do
   end
 
   @doc """
-  Server-authoritative surface heightmap for a `count_x × count_z` grid starting at
-  world-macro column `(origin_x, origin_z)`, sampling every `stride` macros. Returns
-  a flat binary of **big-endian u16** heights (clamped 0..65535; the terrain band
-  tops out near 1.6 km so u8 no longer fits), X fastest (index = i + j*count_x).
-
-  This feeds the client's far/LOD terrain WITHOUT any client-side generation — the
-  server (which owns the WorldGen) computes the heights and streams them, so the
-  client stays a pure renderer of server truth.
+  Development-only noise heightmap helper. Runtime `0x6A` handling must call
+  `SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region/7` instead, because
+  far LOD has to be derived from persisted voxel truth and include edits.
   """
+  @deprecated "runtime LOD must use SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region/7"
   @spec heightmap_region(
           integer(),
           integer(),

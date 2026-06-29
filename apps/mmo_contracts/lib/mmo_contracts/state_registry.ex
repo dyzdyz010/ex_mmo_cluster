@@ -160,6 +160,13 @@ defmodule MmoContracts.StateRegistry do
       spec: "PERS-7/DET-2",
       note: "模拟 tick 调度态;确定性 output_hash 可重建"
     },
+    %{
+      holder: DataService.Voxel.LodHeightmapStore,
+      state_class: :derived,
+      app: :data_service,
+      spec: "PERS-5/I-5",
+      note: "持久化 LOD heightmap projection;从 canonical voxel chunks 可重建,不是独立真值源"
+    },
 
     # —— ephemeral:可丢失,禁止影响最终结算(PERS-8)——
     %{

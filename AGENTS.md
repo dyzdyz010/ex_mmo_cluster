@@ -32,12 +32,13 @@
 
 1. **服务端权威优先**：移动、AOI、战斗、体素、object state、field truth 等核心运行时状态以服务端 authority 为准。客户端可以预测、预览和呈现，但不能成为 confirmed truth 来源。
 2. **confirmed voxel truth 只吃服务端**：在线 `web_client` 只能通过服务端 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot` 更新确认态；本地编辑只允许作为 preview、pending UI 或离线模式能力。
-3. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；World 负责事务、region / scene 路由和跨 app 编排；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 负责 canonical persistence；客户端只消费权威结果。
-4. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；voxel / object / combat truth 写回必须经过 ChunkProcess 或明确的 authority dispatcher。
-5. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
-6. **协议层只追加不破坏**：新增 wire 字段必须保持旧字段字节序和含义稳定；涉及客户端 decoder 的改动，默认以 `clients/web_client` parity / 字节序验收为准。
-7. **显式失败，不静默降级**：连接、鉴权、movement reconcile、voxel intent、field source、kernel effect、消息编解码、NIF 调用、持久化写入失败时，要返回可诊断错误并打结构化日志；禁止吞错后伪装成功。
-8. **迁移期兼容要可见**：PostgreSQL 主路径与 Mnesia 遗留路径并存时，代码和文档必须标明当前来源、兼容原因、退出条件。
+3. **体素基线校验硬失败**：进入场景前必须校验客户端本地 world pack / region manifest / chunk baseline / diff chain 的完整性与版本；缺包、hash 不匹配、manifest 不一致、diff chain 断裂等都视为客户端数据不可被信任，必须拒绝进入场景并返回可诊断错误，禁止用运行时 `ChunkSnapshot`、resync、自愈逻辑或静默兜底绕过校验。
+4. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；World 负责事务、region / scene 路由和跨 app 编排；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 负责 canonical persistence；客户端只消费权威结果。
+5. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；voxel / object / combat truth 写回必须经过 ChunkProcess 或明确的 authority dispatcher。
+6. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
+7. **协议层只追加不破坏**：新增 wire 字段必须保持旧字段字节序和含义稳定；涉及客户端 decoder 的改动，默认以 `clients/web_client` parity / 字节序验收为准。
+8. **显式失败，不静默降级**：连接、鉴权、movement reconcile、voxel intent、field source、kernel effect、消息编解码、NIF 调用、持久化写入失败时，要返回可诊断错误并打结构化日志；禁止吞错后伪装成功。
+9. **迁移期兼容要可见**：PostgreSQL 主路径与 Mnesia 遗留路径并存时，代码和文档必须标明当前来源、兼容原因、退出条件。
 
 ## 4. 工程方法约束
 
@@ -56,6 +57,7 @@
    - Rust 公共模块补 `//!`，公共类型 / 函数补 `///`。
    - 稳定子系统目录（如 `movement/`、`combat/`、`npc/`、`worker/`、`sup/`、客户端子目录）应有 `README.md` 说明职责、结构和关系。
    - 涉及监督树、运行时分层、协议层与实现层关系变化的修改，必须同步更新最近的目录 README 或阶段进度文档。
+12. **在写文档的时候要活用mermaid图标对概念进行解释**
 
 ## 5. 推荐工作流
 
@@ -89,7 +91,7 @@
 - 设计计划：`docs/superpowers/specs/`、`docs/superpowers/plans/`、`docs/plans/`
 - Web 客户端：`clients/web_client/README.md`
 - Bevy 客户端参考实现：`clients/bevy_client/README.md`
-
+- 项目当前的设计状态和实现状态： `docs/current_status/`
 ---
 
 以下为 Phoenix 1.8 web 应用（`auth_server`、`visualize_server`）的专项指南，由 `phx.new` 规则整理；如与上方仓库级约束冲突，以上方约束为准。

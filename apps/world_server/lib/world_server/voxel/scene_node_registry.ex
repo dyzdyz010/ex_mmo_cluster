@@ -55,8 +55,12 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
   re-registering an existing node is a no-op (preserves original
   position in `join_order`).
   """
-  @spec register_scene_node(GenServer.server(), node()) :: :ok
-  def register_scene_node(server \\ __MODULE__, node) when is_atom(node) do
+  @spec register_scene_node(GenServer.server(), node()) :: :ok | {:error, :invalid_scene_node}
+  def register_scene_node(server \\ __MODULE__, node)
+
+  def register_scene_node(_server, nil), do: {:error, :invalid_scene_node}
+
+  def register_scene_node(server, node) when is_atom(node) do
     GenServer.call(server, {:register_scene_node, node})
   end
 
@@ -66,7 +70,11 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
   No-op when the node was never registered.
   """
   @spec unregister_scene_node(GenServer.server(), node()) :: :ok
-  def unregister_scene_node(server \\ __MODULE__, node) when is_atom(node) do
+  def unregister_scene_node(server \\ __MODULE__, node)
+
+  def unregister_scene_node(_server, nil), do: :ok
+
+  def unregister_scene_node(server, node) when is_atom(node) do
     GenServer.call(server, {:unregister_scene_node, node})
   end
 
@@ -85,6 +93,19 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
           {:ok, node()} | {:error, :no_scene_nodes}
   def assign_region(server \\ __MODULE__, region_id) when is_integer(region_id) do
     GenServer.call(server, {:assign_region, region_id})
+  end
+
+  @doc """
+  Reassign `region_id` to the current live join-order, replacing any previous owner.
+
+  This is intentionally explicit instead of changing `assign_region/2` semantics:
+  normal materialization remains sticky, while MapLedger can call this when it has
+  independently proven that a durable assignment points at a stale Scene node.
+  """
+  @spec reassign_region(GenServer.server(), non_neg_integer()) ::
+          {:ok, node()} | {:error, :no_scene_nodes}
+  def reassign_region(server \\ __MODULE__, region_id) when is_integer(region_id) do
+    GenServer.call(server, {:reassign_region, region_id})
   end
 
   @doc """
@@ -120,6 +141,8 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
 
   @impl true
   def handle_call({:register_scene_node, node}, _from, state) do
+    state = sanitize_state(state)
+
     if node in state.join_order do
       {:reply, :ok, state}
     else
@@ -128,6 +151,7 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
   end
 
   def handle_call({:unregister_scene_node, node}, _from, state) do
+    state = sanitize_state(state)
     new_join_order = List.delete(state.join_order, node)
 
     new_cursor =
@@ -140,6 +164,8 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
   end
 
   def handle_call({:assign_region, region_id}, _from, state) do
+    state = sanitize_state(state)
+
     case Map.fetch(state.region_assignments, region_id) do
       {:ok, node} ->
         {:reply, {:ok, node}, state}
@@ -163,7 +189,29 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
     end
   end
 
+  def handle_call({:reassign_region, region_id}, _from, state) do
+    state = sanitize_state(state)
+
+    case state.join_order do
+      [] ->
+        {:reply, {:error, :no_scene_nodes}, state}
+
+      nodes ->
+        chosen = Enum.at(nodes, rem(state.round_robin_cursor, length(nodes)))
+
+        new_state = %{
+          state
+          | region_assignments: Map.put(state.region_assignments, region_id, chosen),
+            round_robin_cursor: state.round_robin_cursor + 1
+        }
+
+        {:reply, {:ok, chosen}, new_state}
+    end
+  end
+
   def handle_call({:lookup_assignment, region_id}, _from, state) do
+    state = sanitize_state(state)
+
     case Map.fetch(state.region_assignments, region_id) do
       {:ok, node} -> {:reply, {:ok, node}, state}
       :error -> {:reply, :error, state}
@@ -171,6 +219,27 @@ defmodule WorldServer.Voxel.SceneNodeRegistry do
   end
 
   def handle_call(:snapshot, _from, state) do
+    state = sanitize_state(state)
     {:reply, Map.take(state, [:join_order, :region_assignments]), state}
   end
+
+  defp sanitize_state(state) do
+    valid_nodes = Enum.filter(state.join_order, &valid_scene_node?/1)
+
+    valid_assignments =
+      state.region_assignments
+      |> Enum.reject(fn {_region_id, node} -> not valid_scene_node?(node) end)
+      |> Map.new()
+
+    cursor = if valid_nodes == [], do: 0, else: state.round_robin_cursor
+
+    %{
+      state
+      | join_order: valid_nodes,
+        region_assignments: valid_assignments,
+        round_robin_cursor: cursor
+    }
+  end
+
+  defp valid_scene_node?(node), do: is_atom(node) and not is_nil(node)
 end

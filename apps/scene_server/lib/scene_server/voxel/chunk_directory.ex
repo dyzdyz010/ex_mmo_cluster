@@ -600,8 +600,23 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     case Map.get(state.chunks, key) do
       pid when is_pid(pid) ->
         if Process.alive?(pid) do
-          maybe_apply_chunk_lease(pid, Map.get(attrs, :lease))
-          {{:ok, pid}, state}
+          lease = Map.get(attrs, :lease)
+
+          case maybe_apply_chunk_lease(pid, Map.get(state.chunk_leases, key), lease) do
+            :ok ->
+              {{:ok, pid}, remember_chunk_lease(state, key, lease)}
+
+            {:error, reason} ->
+              CliObserve.emit("voxel_chunk_lease_apply_failed", fn ->
+                %{
+                  logical_scene_id: attrs.logical_scene_id,
+                  chunk_coord: attrs.chunk_coord,
+                  reason: inspect(reason)
+                }
+              end)
+
+              {{:error, {:lease_apply_failed, reason}}, state}
+          end
         else
           start_chunk(state, key, attrs)
         end
@@ -637,6 +652,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
           state
           |> put_in([:chunks, key], pid)
           |> put_in([:monitors, ref], {key, pid})
+          |> remember_chunk_lease(key, Map.get(attrs, :lease))
 
         {{:ok, pid}, next_state}
 
@@ -785,7 +801,9 @@ defmodule SceneServer.Voxel.ChunkDirectory do
 
     sub_keys = Map.get(state.subscriber_chunks, subscriber_pid, MapSet.new())
     already_monitored? = MapSet.size(sub_keys) > 0
-    subscriber_chunks = Map.put(state.subscriber_chunks, subscriber_pid, MapSet.put(sub_keys, key))
+
+    subscriber_chunks =
+      Map.put(state.subscriber_chunks, subscriber_pid, MapSet.put(sub_keys, key))
 
     subscriber_monitors =
       if already_monitored? do
@@ -874,11 +892,26 @@ defmodule SceneServer.Voxel.ChunkDirectory do
     }
   end
 
-  defp maybe_apply_chunk_lease(_pid, nil), do: :ok
+  defp maybe_apply_chunk_lease(_pid, _cached_lease, nil), do: :ok
 
-  defp maybe_apply_chunk_lease(pid, lease) do
-    _ = ChunkProcess.apply_lease(pid, lease)
-    :ok
+  defp maybe_apply_chunk_lease(_pid, cached_lease, lease) when cached_lease == lease, do: :ok
+
+  defp maybe_apply_chunk_lease(pid, _cached_lease, lease) do
+    case ChunkProcess.apply_lease(pid, lease) do
+      {:ok, _lease} -> :ok
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_apply_lease_reply, other}}
+    end
+  catch
+    :exit, {:timeout, _call} -> {:error, :timeout}
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp remember_chunk_lease(state, _key, nil), do: state
+
+  defp remember_chunk_lease(state, key, lease) do
+    put_in(state, [:chunk_leases, key], lease)
   end
 
   defp normalize_attrs(attrs) when is_map(attrs) do
@@ -1067,34 +1100,51 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   end
 
   defp prewarm_chunk(state, handoff, chunk_coord) do
-    attrs = %{
-      logical_scene_id: handoff.logical_scene_id,
-      chunk_coord: chunk_coord,
-      lease: handoff.new_lease
-    }
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(handoff.logical_scene_id, chunk_coord) do
+      {:ok, snapshot} ->
+        attrs = %{
+          logical_scene_id: handoff.logical_scene_id,
+          chunk_coord: chunk_coord,
+          lease: handoff.new_lease
+        }
 
-    case ensure_chunk_in_state(state, attrs) do
-      {{:ok, chunk_pid}, next_state} ->
-        reply =
-          case DataService.Voxel.ChunkSnapshotStore.get_snapshot(
-                 handoff.logical_scene_id,
-                 chunk_coord
-               ) do
-            {:ok, snapshot} ->
-              load_prewarm_snapshot(chunk_pid, handoff, chunk_coord, snapshot)
+        case ensure_chunk_in_state(state, attrs) do
+          {{:ok, chunk_pid}, next_state} ->
+            {load_prewarm_snapshot(chunk_pid, handoff, chunk_coord, snapshot), next_state}
 
-            {:error, :snapshot_not_found} ->
-              apply_empty_prewarm_lease(chunk_pid, handoff, chunk_coord)
+          {{:error, reason}, next_state} ->
+            {{:error, reason}, next_state}
+        end
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+      {:error, :snapshot_not_found} ->
+        reason = missing_prewarm_snapshot_reason(handoff, chunk_coord)
 
-        {reply, next_state}
+        CliObserve.emit("voxel_migration_prewarm_missing_snapshot", fn ->
+          %{
+            migration_id: handoff.migration_id,
+            logical_scene_id: handoff.logical_scene_id,
+            region_id: handoff.region_id,
+            chunk_coord: chunk_coord,
+            reason: reason
+          }
+        end)
 
-      {{:error, reason}, next_state} ->
-        {{:error, reason}, next_state}
+        {{:error, reason}, state}
+
+      {:error, reason} ->
+        {{:error, reason}, state}
     end
+  end
+
+  defp missing_prewarm_snapshot_reason(handoff, chunk_coord) do
+    {:missing_authoritative_chunk_snapshot,
+     %{
+       logical_scene_id: handoff.logical_scene_id,
+       chunk_coord: chunk_coord,
+       migration_id: handoff.migration_id,
+       stage: :migration_prewarm,
+       reason: :snapshot_not_found
+     }}
   end
 
   defp load_prewarm_snapshot(chunk_pid, handoff, chunk_coord, snapshot) do
@@ -1107,19 +1157,6 @@ defmodule SceneServer.Voxel.ChunkDirectory do
            chunk_version: result.chunk_version,
            changed?: result.changed?
          }}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp apply_empty_prewarm_lease(chunk_pid, handoff, chunk_coord) do
-    case ChunkProcess.apply_lease(chunk_pid, handoff.new_lease) do
-      {:ok, _lease} ->
-        case ChunkProcess.debug_state(chunk_pid) do
-          %{chunk_version: chunk_version} ->
-            {:ok, %{chunk_coord: chunk_coord, status: :empty, chunk_version: chunk_version}}
-        end
 
       {:error, reason} ->
         {:error, reason}

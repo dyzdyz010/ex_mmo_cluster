@@ -1,11 +1,12 @@
 defmodule WorldServer.Voxel.DevSeed do
   @moduledoc """
-  Idempotent development **WorldGen prewarm** for browser/client voxel smoke runs.
+  Idempotent development/demo materialization for browser/client voxel smoke runs.
 
   阶段1 起 DevSeed 不再定义任何 region 边界。世界的分区是隐式的(`RegionGrid`):
-  region = f(chunk_coord),由 `MapLedger` 在路由 miss 时懒物化。DevSeed 退化为纯粹的
-  **出生点地形预热**——把出生点周围一小片 footprint 的 chunk 经 `route_chunks_with_leases_ensuring`
-  路由(顺带物化它们所在的 grid region + 取得各自 region 的 lease),再把起始地形写进去。
+  region = f(chunk_coord),由 `MapLedger` 在路由 miss 时懒物化。DevSeed 是纯粹的
+  **出生点显式 materialization**——把出生点周围一小片 footprint 的 chunk 经
+  `route_chunks_with_leases_ensuring` 路由(顺带物化它们所在的 grid region + 取得各自
+  region 的 lease),再把起始地形写成 canonical snapshots。
   Chunk truth 仍归 `SceneServer.Voxel.ChunkProcess`;写入走与客户端 `0x64 VoxelImpactIntent`
   完全相同的 `apply_intents` 权威路径。
 
@@ -24,12 +25,15 @@ defmodule WorldServer.Voxel.DevSeed do
 
   The seed is idempotent: a second call re-routes (regions already materialized →
   same leases, no churn) and skips macros that already match the desired block
-  (heights are a pure function of world coords).
+  (heights are a pure function of world coords). Any terrain write error is
+  returned as a visible `{:terrain_seed_failed, summary}` error; the caller must
+  retry rather than treating a partially materialized footprint as ready.
   """
 
   alias WorldServer.CliObserve
   alias WorldServer.Voxel.LeaseWriteToken
   alias WorldServer.Voxel.MapLedger
+  alias WorldServer.Voxel.SceneNodeRegistry
   alias WorldServer.Voxel.TerrainNoise
 
   # Chunk size in macros along one axis. Mirrors
@@ -77,23 +81,91 @@ defmodule WorldServer.Voxel.DevSeed do
   epoch + lease) and returns the per-chunk `{assignment, lease}`. Terrain is then
   written per chunk through `apply_intents`, so the call is idempotent.
 
-  Options: `:ledger`, `:logical_scene_id`, `:footprint_chunks` (list of chunk
-  coords; defaults to the 5×5 platform), `:chunk_directory`, `:seed_terrain?`.
+  Options: `:ledger`, `:logical_scene_id`, `:footprint_chunks` (legacy alias for
+  both footprints), `:baseline_footprint_chunks`, `:terrain_footprint_chunks`,
+  `:chunk_directory`, `:seed_terrain?`, `:rebuild_lod_projection?`,
+  `:baseline_materializer`. Baseline
+  materialization creates empty authoritative snapshots only; terrain seeding is
+  limited to `:terrain_footprint_chunks`. `baseline_materializer: :worldgen`
+  explicitly writes SceneServer.WorldGen snapshots instead of empty baseline
+  snapshots and is intended for pre-scene materialization experiments, not as a
+  runtime fallback. A test/dev caller may pass
+  `:assigned_scene_node` to register that node with the default
+  `SceneNodeRegistry` before routing; this does not bypass the normal
+  ledger/materialization path.
   """
   def ensure_default_region(opts \\ []) when is_list(opts) do
     ledger = Keyword.get(opts, :ledger, MapLedger)
     logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
     chunk_directory = Keyword.get(opts, :chunk_directory, @default_chunk_directory)
     seed_terrain? = Keyword.get(opts, :seed_terrain?, true)
-    footprint = Keyword.get(opts, :footprint_chunks, platform_chunk_coords())
+    rebuild_lod_projection? = Keyword.get(opts, :rebuild_lod_projection?, false)
+
+    terrain_footprint =
+      opts
+      |> Keyword.get(
+        :terrain_footprint_chunks,
+        Keyword.get(opts, :footprint_chunks, platform_chunk_coords())
+      )
+      |> Enum.uniq()
+
+    baseline_footprint =
+      opts
+      |> Keyword.get(
+        :baseline_footprint_chunks,
+        Keyword.get(opts, :footprint_chunks, terrain_footprint)
+      )
+      |> Enum.uniq()
+
+    footprint = Enum.uniq(baseline_footprint ++ terrain_footprint)
+
+    materialize_baseline? =
+      Keyword.get(
+        opts,
+        :materialize_baseline?,
+        default_materialize_baseline?(
+          chunk_directory,
+          seed_terrain?,
+          rebuild_lod_projection?
+        )
+      )
+
+    maybe_register_explicit_scene_node(opts)
 
     case route_footprint(ledger, logical_scene_id, footprint) do
       {:ok, routes} ->
-        terrain = maybe_seed_terrain(chunk_directory, logical_scene_id, routes, seed_terrain?)
-        summary = build_summary(logical_scene_id, routes, terrain)
-        emit_seed(summary)
-        emit_terrain(summary, terrain)
-        {:ok, summary}
+        baseline_routes = Map.take(routes, baseline_footprint)
+        terrain_routes = Map.take(routes, terrain_footprint)
+
+        with {:ok, baseline} <-
+               maybe_materialize_baselines(
+                 logical_scene_id,
+                 baseline_routes,
+                 materialize_baseline?,
+                 opts
+               ),
+             {:ok, terrain} <-
+               maybe_seed_terrain(
+                 chunk_directory,
+                 logical_scene_id,
+                 terrain_routes,
+                 seed_terrain?
+               ) do
+          case maybe_rebuild_lod_projection(logical_scene_id, rebuild_lod_projection?, opts) do
+            {:ok, lod_projection} ->
+              summary = build_summary(logical_scene_id, routes, baseline, terrain, lod_projection)
+              emit_seed(summary)
+              emit_baseline(summary, baseline)
+              emit_terrain(summary, terrain)
+              emit_lod_projection(summary, lod_projection)
+              {:ok, summary}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        else
+          {:error, reason} -> {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -115,7 +187,7 @@ defmodule WorldServer.Voxel.DevSeed do
 
   # JSON-safe summary. Includes one entry per distinct materialized region so the
   # dev HTTP endpoint / CLI observer can see what was prepared. No tuples.
-  defp build_summary(logical_scene_id, routes, terrain) do
+  defp build_summary(logical_scene_id, routes, baseline, terrain, lod_projection) do
     regions =
       routes
       |> Map.values()
@@ -139,7 +211,9 @@ defmodule WorldServer.Voxel.DevSeed do
       region_count: length(regions),
       chunk_count: map_size(routes),
       regions: regions,
-      terrain: terrain
+      baseline: baseline,
+      terrain: terrain,
+      lod_projection: lod_projection
     }
   end
 
@@ -150,6 +224,29 @@ defmodule WorldServer.Voxel.DevSeed do
     {:ok, fun.()}
   catch
     :exit, reason -> {:error, {:ledger_unavailable, reason}}
+  end
+
+  defp maybe_register_explicit_scene_node(opts) do
+    case Keyword.get(opts, :assigned_scene_node) do
+      scene_node when is_atom(scene_node) and not is_nil(scene_node) ->
+        registry = Keyword.get(opts, :scene_node_registry, SceneNodeRegistry)
+
+        _ =
+          safe_register_scene_node(fn ->
+            SceneNodeRegistry.register_scene_node(registry, scene_node)
+          end)
+
+        :ok
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp safe_register_scene_node(fun) when is_function(fun, 0) do
+    fun.()
+  catch
+    :exit, _reason -> :ok
   end
 
   defp emit_seed(summary) do
@@ -176,7 +273,281 @@ defmodule WorldServer.Voxel.DevSeed do
     })
   end
 
-  defp maybe_seed_terrain(_chunk_directory, _logical_scene_id, _routes, false), do: nil
+  defp emit_terrain_failed(logical_scene_id, terrain) do
+    CliObserve.emit("voxel_dev_seed_terrain_failed", %{
+      logical_scene_id: logical_scene_id,
+      chunk_coord: terrain.chunk_coord,
+      attempted: terrain.attempted,
+      written: terrain.written,
+      skipped: terrain.skipped,
+      errors: terrain.errors,
+      max_chunk_version: terrain.max_chunk_version,
+      chunk_errors: terrain.chunk_errors
+    })
+  end
+
+  defp emit_baseline(_summary, nil), do: :ok
+
+  defp emit_baseline(summary, baseline) do
+    CliObserve.emit("voxel_dev_seed_baseline_ready", %{
+      logical_scene_id: summary.logical_scene_id,
+      chunk_count: baseline.chunk_count,
+      inserted: baseline.inserted,
+      existing: baseline.existing,
+      unchanged: baseline.unchanged
+    })
+  end
+
+  defp emit_baseline_failed(logical_scene_id, baseline) do
+    CliObserve.emit("voxel_dev_seed_baseline_failed", %{
+      logical_scene_id: logical_scene_id,
+      chunk_count: baseline.chunk_count,
+      inserted: baseline.inserted,
+      existing: baseline.existing,
+      unchanged: baseline.unchanged,
+      errors: baseline.errors,
+      chunk_errors: baseline.chunk_errors
+    })
+  end
+
+  defp emit_lod_projection(_summary, nil), do: :ok
+
+  defp emit_lod_projection(summary, lod_projection) do
+    CliObserve.emit("voxel_dev_seed_lod_projection_ready", %{
+      logical_scene_id: summary.logical_scene_id,
+      status: Map.get(lod_projection, :status),
+      chunk_count: Map.get(lod_projection, :chunk_count),
+      cell_count: Map.get(lod_projection, :cell_count),
+      batch_count: Map.get(lod_projection, :batch_count)
+    })
+  end
+
+  defp maybe_rebuild_lod_projection(_logical_scene_id, false, _opts), do: {:ok, nil}
+
+  defp maybe_rebuild_lod_projection(logical_scene_id, true, opts) do
+    rebuilder =
+      Keyword.get(
+        opts,
+        :lod_projection_rebuilder,
+        {Module.concat([SceneServer, Voxel, LodProjection, Rebuilder]), :rebuild_scene}
+      )
+
+    rebuild_opts = Keyword.get(opts, :lod_projection_rebuild_opts, [])
+
+    case call_lod_projection_rebuilder(rebuilder, logical_scene_id, rebuild_opts) do
+      {:ok, summary} ->
+        {:ok, Map.merge(%{status: :ready}, json_safe_lod_summary(summary))}
+
+      {:error, reason} ->
+        {:error, {:lod_projection_rebuild_failed, reason}}
+    end
+  end
+
+  defp call_lod_projection_rebuilder({module, function}, logical_scene_id, rebuild_opts)
+       when is_atom(module) and is_atom(function) do
+    apply(module, function, [logical_scene_id, rebuild_opts])
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp call_lod_projection_rebuilder(fun, logical_scene_id, rebuild_opts)
+       when is_function(fun, 2) do
+    fun.(logical_scene_id, rebuild_opts)
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp call_lod_projection_rebuilder(_other, _logical_scene_id, _rebuild_opts) do
+    {:error, :invalid_lod_projection_rebuilder}
+  end
+
+  defp json_safe_lod_summary(summary) when is_map(summary) do
+    %{
+      logical_scene_id: Map.get(summary, :logical_scene_id),
+      chunk_count: Map.get(summary, :chunk_count, 0),
+      cell_count: Map.get(summary, :cell_count, 0),
+      batch_count: Map.get(summary, :batch_count, 0)
+    }
+  end
+
+  defp json_safe_lod_summary(_summary) do
+    %{logical_scene_id: nil, chunk_count: 0, cell_count: 0, batch_count: 0}
+  end
+
+  defp default_materialize_baseline?(
+         @default_chunk_directory,
+         seed_terrain?,
+         rebuild_lod_projection?
+       ) do
+    seed_terrain? or rebuild_lod_projection?
+  end
+
+  defp default_materialize_baseline?(
+         _chunk_directory,
+         _seed_terrain?,
+         _rebuild_lod_projection?
+       ) do
+    false
+  end
+
+  defp maybe_materialize_baselines(_logical_scene_id, _routes, false, _opts), do: {:ok, nil}
+
+  defp maybe_materialize_baselines(logical_scene_id, routes, true, opts) do
+    writer = Keyword.get(opts, :baseline_snapshot_writer, baseline_snapshot_writer(opts))
+
+    summary =
+      routes
+      |> Enum.sort_by(fn {chunk_coord, _route} -> chunk_coord end)
+      |> Enum.map(fn {chunk_coord, %{lease: lease}} ->
+        materialize_baseline_chunk(logical_scene_id, chunk_coord, lease, writer)
+      end)
+      |> summarize_baselines()
+
+    if summary.errors == 0 do
+      {:ok, summary}
+    else
+      emit_baseline_failed(logical_scene_id, summary)
+      {:error, {:baseline_materialization_failed, summary}}
+    end
+  end
+
+  defp materialize_baseline_chunk(logical_scene_id, chunk_coord, lease, writer) do
+    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
+      {:ok, _snapshot} ->
+        {chunk_coord, {:ok, :existing}}
+
+      {:error, :snapshot_not_found} ->
+        {chunk_coord, call_baseline_writer(writer, logical_scene_id, chunk_coord, lease)}
+
+      {:error, reason} ->
+        {chunk_coord, {:error, reason}}
+    end
+  catch
+    :exit, reason -> {chunk_coord, {:error, {:snapshot_store_exit, reason}}}
+  end
+
+  defp call_baseline_writer(writer, logical_scene_id, chunk_coord, lease)
+       when is_function(writer, 3) do
+    writer.(logical_scene_id, chunk_coord, lease)
+  rescue
+    exception -> {:error, {:baseline_writer_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:baseline_writer_exit, reason}}
+    kind, reason -> {:error, {:baseline_writer_catch, kind, reason}}
+  end
+
+  defp put_empty_baseline_snapshot(logical_scene_id, chunk_coord, lease) do
+    storage_module = Module.concat([SceneServer, Voxel, Storage])
+    codec_module = Module.concat([SceneServer, Voxel, Codec])
+    hash_module = Module.concat([SceneServer, Voxel, Hash])
+
+    storage = apply(storage_module, :empty, [logical_scene_id, chunk_coord])
+
+    payload =
+      apply(codec_module, :encode_chunk_snapshot_payload, [%{request_id: 0, storage: storage}])
+
+    chunk_hash = apply(hash_module, :encode64, [apply(codec_module, :chunk_hash, [storage])])
+
+    attrs =
+      lease
+      |> Map.take([
+        :logical_scene_id,
+        :region_id,
+        :lease_id,
+        :owner_scene_instance_ref,
+        :owner_epoch
+      ])
+      |> Map.merge(%{
+        chunk_coord: chunk_coord,
+        schema_version: Map.fetch!(storage, :schema_version),
+        chunk_size_in_macro: Map.fetch!(storage, :chunk_size_in_macro),
+        micro_resolution: Map.fetch!(storage, :micro_resolution),
+        chunk_version: Map.fetch!(storage, :chunk_version),
+        chunk_hash: chunk_hash,
+        data: payload
+      })
+
+    DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
+  end
+
+  defp baseline_snapshot_writer(opts) do
+    case Keyword.get(opts, :baseline_materializer, :empty) do
+      :worldgen -> &put_worldgen_baseline_snapshot/3
+      "worldgen" -> &put_worldgen_baseline_snapshot/3
+      _other -> &put_empty_baseline_snapshot/3
+    end
+  end
+
+  defp put_worldgen_baseline_snapshot(logical_scene_id, chunk_coord, lease) do
+    module = Module.concat([SceneServer, Voxel, WorldGenMaterializer])
+
+    with {:module, ^module} <- Code.ensure_loaded(module) do
+      apply(module, :put_snapshot, [logical_scene_id, chunk_coord, lease])
+    else
+      _other -> {:error, :worldgen_materializer_unavailable}
+    end
+  end
+
+  defp summarize_baselines(results) do
+    base =
+      Enum.reduce(
+        results,
+        %{inserted: 0, existing: 0, unchanged: 0, errors: 0, chunk_errors: []},
+        fn
+          {_chunk_coord, {:ok, :inserted}}, acc ->
+            %{acc | inserted: acc.inserted + 1}
+
+          {_chunk_coord, {:ok, :existing}}, acc ->
+            %{acc | existing: acc.existing + 1}
+
+          {_chunk_coord, {:ok, :unchanged}}, acc ->
+            %{acc | unchanged: acc.unchanged + 1}
+
+          {_chunk_coord, {:ok, :updated}}, acc ->
+            %{acc | unchanged: acc.unchanged + 1}
+
+          {chunk_coord, {:ok, other}}, acc ->
+            %{
+              acc
+              | errors: acc.errors + 1,
+                chunk_errors: [
+                  %{
+                    chunk_coord: Tuple.to_list(chunk_coord),
+                    error: inspect({:unexpected_baseline_result, other})
+                  }
+                  | acc.chunk_errors
+                ]
+            }
+
+          {chunk_coord, {:error, reason}}, acc ->
+            %{
+              acc
+              | errors: acc.errors + 1,
+                chunk_errors: [
+                  %{chunk_coord: Tuple.to_list(chunk_coord), error: inspect(reason)}
+                  | acc.chunk_errors
+                ]
+            }
+        end
+      )
+
+    %{
+      chunk_count: length(results),
+      inserted: base.inserted,
+      existing: base.existing,
+      unchanged: base.unchanged,
+      errors: base.errors,
+      chunk_errors: Enum.reverse(base.chunk_errors)
+    }
+  end
+
+  defp maybe_seed_terrain(_chunk_directory, _logical_scene_id, _routes, false), do: {:ok, nil}
 
   defp maybe_seed_terrain(chunk_directory, logical_scene_id, routes, true) do
     # Prepare each distinct region's lease on its owning Scene node once (apply_lease
@@ -190,10 +561,17 @@ defmodule WorldServer.Voxel.DevSeed do
       |> prepare_scene_lease(lease)
     end)
 
-    seed_starter_platform(chunk_directory, logical_scene_id, routes)
+    terrain = seed_starter_platform(chunk_directory, logical_scene_id, routes)
+
+    if terrain.errors == 0 do
+      {:ok, terrain}
+    else
+      emit_terrain_failed(logical_scene_id, terrain)
+      {:error, {:terrain_seed_failed, terrain}}
+    end
   catch
     :exit, reason ->
-      %{
+      terrain = %{
         chunk_coord: Tuple.to_list(@platform_chunk),
         attempted: 0,
         written: 0,
@@ -204,6 +582,9 @@ defmodule WorldServer.Voxel.DevSeed do
         chunk_errors: [],
         error: inspect({:scene_unavailable, reason})
       }
+
+      emit_terrain_failed(logical_scene_id, terrain)
+      {:error, {:terrain_seed_failed, terrain}}
   end
 
   # In single-node dev every region's assigned_scene_node is this node, so the

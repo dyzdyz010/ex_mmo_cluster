@@ -41,6 +41,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.CommandLog
+  alias DataService.Voxel.LodHeightmapStore
   alias DataService.Voxel.WriteTokenStore
 
   @type chunk_coord :: {integer(), integer(), integer()}
@@ -57,9 +58,10 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
           required(:chunk_version) => non_neg_integer(),
           required(:chunk_hash) => binary(),
           required(:data) => binary(),
-          optional(:command_id) => String.t() | nil
+          optional(:command_id) => String.t() | nil,
+          optional(:lod_projection_cells) => [map()]
         }
-  @type put_result :: {:ok, :inserted | :updated | :unchanged} | {:error, atom()}
+  @type put_result :: {:ok, :inserted | :updated | :unchanged} | {:error, term()}
   @type get_result :: {:ok, snapshot()} | {:error, atom()}
 
   @doc """
@@ -122,6 +124,104 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     repo = repo(opts)
 
     repo.all(VoxelChunkSnapshot)
+    |> Map.new(fn row ->
+      snap = to_snapshot(row)
+      {{snap.logical_scene_id, snap.chunk_coord}, snap}
+    end)
+  end
+
+  @doc """
+  Returns coverage metadata for persisted chunk snapshots in one logical scene.
+
+  This is a CLI/manifest read path, not a hot streaming path. It deliberately
+  reports the canonical store as-is and never materializes missing chunks.
+  """
+  @spec summary(non_neg_integer(), keyword()) :: {:ok, map()} | {:error, term()}
+  def summary(logical_scene_id, opts \\ [])
+
+  def summary(logical_scene_id, opts)
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_list(opts) do
+    repo = repo(opts)
+
+    rows =
+      repo.all(
+        from(c in VoxelChunkSnapshot,
+          where: c.logical_scene_id == ^logical_scene_id,
+          select: {c.coord_x, c.coord_y, c.coord_z, c.chunk_version}
+        )
+      )
+
+    {:ok, build_summary(logical_scene_id, rows)}
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    :exit, reason -> {:error, {:snapshot_store_unavailable, reason}}
+  end
+
+  def summary(_logical_scene_id, _opts), do: {:error, :invalid_logical_scene_id}
+
+  @doc """
+  Returns a deterministic page of persisted snapshots for launcher/pre-scene
+  baseline sync.
+
+  This reads canonical rows only. It does not materialize, repair, or synthesize
+  missing chunks; callers use the returned payload as a page of the full
+  launcher diff for a known world-pack content version.
+  """
+  @spec list_page(non_neg_integer(), non_neg_integer(), pos_integer(), keyword()) ::
+          {:ok, [snapshot()]} | {:error, term()}
+  def list_page(logical_scene_id, offset, limit, opts \\ [])
+
+  def list_page(logical_scene_id, offset, limit, opts)
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_integer(offset) and
+             offset >= 0 and is_integer(limit) and limit > 0 and is_list(opts) do
+    repo = repo(opts)
+
+    rows =
+      repo.all(
+        from(c in VoxelChunkSnapshot,
+          where: c.logical_scene_id == ^logical_scene_id,
+          order_by: [asc: c.coord_x, asc: c.coord_y, asc: c.coord_z],
+          offset: ^offset,
+          limit: ^limit
+        )
+      )
+
+    {:ok, Enum.map(rows, &to_snapshot/1)}
+  rescue
+    exception -> {:error, Exception.message(exception)}
+  catch
+    :exit, reason -> {:error, {:snapshot_store_unavailable, reason}}
+  end
+
+  def list_page(_logical_scene_id, _offset, _limit, _opts), do: {:error, :invalid_page_request}
+
+  @doc """
+  Returns persisted snapshots for selected X/Z chunk columns.
+
+  Projection rebuilds need the vertical chunks for the affected horizontal
+  column, not a full-table `snapshot/1` scan.
+  """
+  @spec snapshot_columns(non_neg_integer(), [{integer(), integer()}], keyword()) ::
+          %{optional({non_neg_integer(), chunk_coord()}) => snapshot()}
+  def snapshot_columns(logical_scene_id, column_coords, opts \\ [])
+      when is_integer(logical_scene_id) and logical_scene_id >= 0 and is_list(column_coords) do
+    repo = repo(opts)
+
+    column_coords
+    |> Enum.uniq()
+    |> Enum.flat_map(fn
+      {cx, cz} when is_integer(cx) and is_integer(cz) ->
+        repo.all(
+          from(c in VoxelChunkSnapshot,
+            where:
+              c.logical_scene_id == ^logical_scene_id and c.coord_x == ^cx and c.coord_z == ^cz
+          )
+        )
+
+      _other ->
+        []
+    end)
     |> Map.new(fn row ->
       snap = to_snapshot(row)
       {{snap.logical_scene_id, snap.chunk_coord}, snap}
@@ -201,15 +301,34 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
           compare_and_update(repo, row, snapshot)
       end
 
-    # AUTH-4(梯队1 step1.5b-1):仅在 chunk 写入成功(insert/update/unchanged)后,
-    # 于**同一事务**内登记客户端命令幂等键。失败(stale/conflict)不登记,故合法重试不被堵塞
-    # (exactly-once,而非 at-most-once)。单方块体素 truth 由 chunk_version CAS 天然幂等,
-    # record_once 在此提供 durable replay-protection 审计记录;`command_id` 为 nil(内部/事务
-    # 逐 chunk 写、手动 :persist 等无客户端命令的写)时跳过。
-    maybe_record_command(repo, snapshot, result)
+    case result do
+      {:ok, _} ->
+        case maybe_upsert_lod_projection(repo, snapshot) do
+          :ok ->
+            # AUTH-4(梯队1 step1.5b-1):仅在 chunk 写入成功(insert/update/unchanged)后,
+            # 于**同一事务**内登记客户端命令幂等键。失败(stale/conflict)不登记,故合法重试不被堵塞
+            # (exactly-once,而非 at-most-once)。单方块体素 truth 由 chunk_version CAS 天然幂等,
+            # record_once 在此提供 durable replay-protection 审计记录;`command_id` 为 nil(内部/事务
+            # 逐 chunk 写、手动 :persist 等无客户端命令的写)时跳过。
+            maybe_record_command(repo, snapshot, result)
+            result
 
-    result
+          {:error, reason} ->
+            repo.rollback({:lod_projection_failed, reason})
+        end
+
+      {:error, _reason} ->
+        result
+    end
   end
+
+  defp maybe_upsert_lod_projection(_repo, %{lod_projection_cells: []}), do: :ok
+
+  defp maybe_upsert_lod_projection(repo, %{lod_projection_cells: cells}) when is_list(cells) do
+    LodHeightmapStore.upsert_cells_in_repo(repo, cells)
+  end
+
+  defp maybe_upsert_lod_projection(_repo, _snapshot), do: :ok
 
   defp maybe_record_command(repo, %{command_id: command_id, logical_scene_id: scene_id}, {:ok, _})
        when is_binary(command_id) do
@@ -333,6 +452,50 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
     }
   end
 
+  defp build_summary(logical_scene_id, []) do
+    %{
+      logical_scene_id: logical_scene_id,
+      status: :empty,
+      chunk_count: 0,
+      min_chunk: nil,
+      max_chunk: nil,
+      min_chunk_version: nil,
+      max_chunk_version: nil
+    }
+  end
+
+  defp build_summary(logical_scene_id, rows) do
+    {min_x, max_x, min_y, max_y, min_z, max_z, min_version, max_version} =
+      Enum.reduce(rows, nil, fn {x, y, z, version}, acc ->
+        case acc do
+          nil ->
+            {x, x, y, y, z, z, version, version}
+
+          {min_x, max_x, min_y, max_y, min_z, max_z, min_version, max_version} ->
+            {
+              min(min_x, x),
+              max(max_x, x),
+              min(min_y, y),
+              max(max_y, y),
+              min(min_z, z),
+              max(max_z, z),
+              min(min_version, version),
+              max(max_version, version)
+            }
+        end
+      end)
+
+    %{
+      logical_scene_id: logical_scene_id,
+      status: :ready,
+      chunk_count: length(rows),
+      min_chunk: {min_x, min_y, min_z},
+      max_chunk: {max_x, max_y, max_z},
+      min_chunk_version: min_version,
+      max_chunk_version: max_version
+    }
+  end
+
   # 梯队4:WriteTokenStore 模块级无状态后,`:write_token_store` opt(原进程句柄)不再需要;
   # 直接走 DB durable fence。保留 catch :exit 以稳健处理 Repo 不可用。
   defp validate_write_token(_opts, snapshot) do
@@ -363,7 +526,8 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          {:ok, owner_epoch} <- fetch_non_neg_integer(attrs, :owner_epoch),
          {:ok, chunk_version} <- fetch_non_neg_integer(attrs, :chunk_version),
          {:ok, chunk_hash} <- fetch_chunk_hash(attrs),
-         {:ok, data} <- fetch_binary(attrs, :data) do
+         {:ok, data} <- fetch_binary(attrs, :data),
+         {:ok, lod_projection_cells} <- fetch_lod_projection_cells(attrs) do
       {:ok,
        %{
          logical_scene_id: logical_scene_id,
@@ -380,6 +544,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          sim_time_ms: Map.get(attrs, :sim_time_ms, 0),
          chunk_hash: chunk_hash,
          data: data,
+         lod_projection_cells: lod_projection_cells,
          # AUTH-4(step1.5b-1):客户端命令幂等键,仅单方块编辑路径透传;nil 时跳过登记。
          command_id: normalize_command_id(Map.get(attrs, :command_id))
        }}
@@ -388,6 +553,15 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
 
   defp normalize_command_id(value) when is_binary(value) and byte_size(value) > 0, do: value
   defp normalize_command_id(_value), do: nil
+
+  defp fetch_lod_projection_cells(attrs) do
+    case fetch_optional(attrs, :lod_projection_cells) do
+      :missing -> {:ok, []}
+      {:ok, nil} -> {:ok, []}
+      {:ok, cells} when is_list(cells) -> {:ok, cells}
+      {:ok, _other} -> {:error, :invalid_lod_projection_cells}
+    end
+  end
 
   defp fetch_chunk_hash(attrs) do
     with {:ok, value} <- fetch_required(attrs, :chunk_hash),

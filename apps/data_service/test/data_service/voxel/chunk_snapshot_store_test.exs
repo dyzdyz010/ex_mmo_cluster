@@ -7,10 +7,12 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.CommandLog
+  alias DataService.Voxel.LodHeightmapStore
   alias DataService.Voxel.WriteTokenStore
 
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
+    LodHeightmapStore.reset()
 
     # 梯队1 step1.5b-1:command_id 同事务 record_once 写入共享 voxel_command_log 表,每测试清表。
     CommandLog.reset()
@@ -266,6 +268,64 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
              )
 
     assert command_log_total() == 0
+  end
+
+  test "writes LOD projection cells in the same transaction as a chunk snapshot", %{
+    token_store: token_store
+  } do
+    token = upsert_token(token_store, token())
+
+    attrs =
+      snapshot_attrs(token,
+        chunk_version: 1,
+        chunk_hash: hash(<<1>>),
+        data: <<1>>,
+        lod_projection_cells: [
+          %{
+            logical_scene_id: 1,
+            stride: 16,
+            cell_x: 1,
+            cell_z: 1,
+            height: 123,
+            material_id: 0,
+            source_chunk_coord: {1, 1, 1},
+            source_chunk_version: 1
+          }
+        ]
+      )
+
+    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(attrs)
+
+    assert {:ok, %{heights: <<123::unsigned-big-integer-size(16)>>}} =
+             LodHeightmapStore.heightmap_region(1, 16, 16, 16, 1, 1)
+  end
+
+  test "rolls back the chunk snapshot when LOD projection upsert fails", %{
+    token_store: token_store
+  } do
+    token = upsert_token(token_store, token())
+
+    attrs =
+      snapshot_attrs(token,
+        chunk_version: 1,
+        chunk_hash: hash(<<1>>),
+        data: <<1>>,
+        lod_projection_cells: [
+          %{
+            logical_scene_id: 1,
+            stride: 0,
+            cell_x: 1,
+            cell_z: 1,
+            height: 123,
+            material_id: 0
+          }
+        ]
+      )
+
+    assert {:error, {:lod_projection_failed, :invalid_stride}} =
+             ChunkSnapshotStore.put_snapshot(attrs)
+
+    assert {:error, :snapshot_not_found} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
   end
 
   defp command_log_count(command_id) do

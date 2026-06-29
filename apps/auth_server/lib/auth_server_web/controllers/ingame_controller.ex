@@ -11,6 +11,8 @@ defmodule AuthServerWeb.IngameController do
   - `GET /ingame/login` -> `login/2`
   - `POST /ingame/login_post` -> `login_post/2`
   - `GET /ingame/login_success` -> `login_success/2`
+  - `GET /ingame/voxel/world_manifest` -> `voxel_world_manifest/2`
+  - `GET /ingame/voxel/world_diff` -> `voxel_world_diff/2`
   """
 
   use AuthServerWeb, :controller
@@ -67,6 +69,42 @@ defmodule AuthServerWeb.IngameController do
   def voxel_dev_seed(conn, params) do
     if Application.get_env(:auth_server, :dev_auto_login, false) do
       do_voxel_dev_seed(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  @doc """
+  Read-only pre-scene terrain baseline manifest.
+
+  This endpoint is the client-visible boundary between launcher/update data and
+  scene runtime. It reports whether a trusted local world pack is expected to be
+  present before entering the scene, plus diagnostic coverage for the current
+  development materialization. It never generates terrain and never treats
+  runtime snapshots as a baseline fallback.
+  """
+  def voxel_world_manifest(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_world_manifest(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  @doc """
+  Read-only pre-scene voxel baseline diff page.
+
+  This endpoint is for launcher/client startup synchronization. It pages over
+  canonical persisted chunk snapshots for a configured world-pack
+  `content_version`; it never invokes WorldGen and never repairs missing data.
+  """
+  def voxel_world_diff(conn, params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_world_diff(conn, params)
     else
       conn
       |> put_status(:forbidden)
@@ -183,10 +221,42 @@ defmodule AuthServerWeb.IngameController do
   defp do_voxel_dev_seed(conn, params) do
     module = Module.concat([WorldServer, Voxel, DevSeed])
     logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    seed_terrain? = parse_bool(params["seed_terrain"], true)
+    rebuild_lod_projection? = parse_bool(params["rebuild_lod_projection"], false)
+    baseline_materializer = parse_baseline_materializer(params["baseline_materializer"])
+
+    baseline_radius =
+      case parse_optional_non_negative_int(params["baseline_radius"]) do
+        nil when baseline_materializer == :worldgen -> 3
+        other -> other
+      end
+
+    baseline_opts =
+      case baseline_radius do
+        nil ->
+          []
+
+        radius ->
+          center =
+            {
+              parse_int(params["baseline_center_x"], 0),
+              parse_int(params["baseline_center_y"], 0),
+              parse_int(params["baseline_center_z"], 0)
+            }
+
+          [baseline_footprint_chunks: active_window_chunk_coords(center, radius)]
+      end
 
     with {:module, ^module} <- Code.ensure_loaded(module),
          {:ok, summary} <-
-           apply(module, :ensure_default_region, [[logical_scene_id: logical_scene_id]]) do
+           apply(module, :ensure_default_region, [
+             [
+               logical_scene_id: logical_scene_id,
+               seed_terrain?: seed_terrain?,
+               rebuild_lod_projection?: rebuild_lod_projection?,
+               baseline_materializer: baseline_materializer
+             ] ++ baseline_opts
+           ]) do
       voxel_json(conn, summary)
     else
       {:error, reason} ->
@@ -200,6 +270,140 @@ defmodule AuthServerWeb.IngameController do
         conn
         |> put_status(:service_unavailable)
         |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
+  defp do_voxel_world_manifest(conn, params) do
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    stride = parse_non_negative_int(params["stride"], 16)
+    pack_config = Application.get_env(:auth_server, :voxel_world_pack, [])
+    world_macro_extent = Keyword.get(pack_config, :world_macro_extent, 32_768)
+    pack_status = Keyword.get(pack_config, :status, :missing)
+    pack_version = Keyword.get(pack_config, :version, "worldgen-v1")
+    content_version = Keyword.get(pack_config, :content_version, pack_version)
+    generated = Keyword.get(pack_config, :generated)
+
+    snapshot_summary =
+      case DataService.Voxel.ChunkSnapshotStore.summary(logical_scene_id) do
+        {:ok, summary} -> summary
+        {:error, reason} -> %{status: :error, reason: inspect(reason)}
+      end
+
+    lod_summary =
+      case DataService.Voxel.LodHeightmapStore.summary(logical_scene_id, stride: stride) do
+        {:ok, summary} -> summary
+        {:error, reason} -> %{status: :error, reason: inspect(reason)}
+      end
+
+    pack_ready? = pack_status in [:ready, "ready"]
+    dev_ready? = dev_materialization_ready?(snapshot_summary, lod_summary)
+
+    manifest = %{
+      schema_version: 1,
+      logical_scene_id: logical_scene_id,
+      phase_contract: %{
+        launcher_stage: "world_pack_download_and_hash_validation",
+        pre_scene_stage: "manifest_and_baseline_validation",
+        scene_stage: "runtime_diff_streaming",
+        runtime_snapshot_is_baseline_fallback: false
+      },
+      world: %{
+        generator: "SceneServer.Voxel.WorldGen",
+        generator_role: "one_time_materialization",
+        macro_extent_xz: world_macro_extent,
+        chunk_size_in_macro: 16,
+        approximate_extent_km: world_macro_extent / 1000.0
+      },
+      world_pack: %{
+        required: true,
+        status: pack_status,
+        version: pack_version,
+        content_version: content_version,
+        diff_endpoint: "/ingame/voxel/world_diff",
+        diff_format: "chunk_snapshot_pages_v1",
+        generated: generated,
+        scene_entry_allowed: pack_ready?
+      },
+      startup_sync: %{
+        required: true,
+        local_cache_key: "logical_scene:#{logical_scene_id}:#{content_version}",
+        client_must_persist_before_scene: true,
+        endpoint: "/ingame/voxel/world_diff",
+        target_content_version: content_version,
+        page_limit_default: 64,
+        page_limit_max: 512
+      },
+      dev_materialization: %{
+        status: if(dev_ready?, do: :ready, else: :incomplete),
+        diagnostic_only: true,
+        scene_entry_allowed: false,
+        chunk_snapshots: snapshot_summary,
+        lod_projection: lod_summary
+      },
+      scene_entry_allowed: pack_ready?,
+      reject_reason: if(pack_ready?, do: nil, else: "world_pack_missing_or_unverified")
+    }
+
+    voxel_json(conn, manifest)
+  end
+
+  defp do_voxel_world_diff(conn, params) do
+    logical_scene_id = parse_non_negative_int(params["logical_scene_id"], 1)
+    cursor = parse_non_negative_int(params["cursor"], 0)
+    limit = params["limit"] |> parse_non_negative_int(64) |> min(512)
+    base_version = params["base_version"] || ""
+    pack_config = Application.get_env(:auth_server, :voxel_world_pack, [])
+    pack_status = Keyword.get(pack_config, :status, :missing)
+    pack_version = Keyword.get(pack_config, :version, "worldgen-v1")
+    content_version = Keyword.get(pack_config, :content_version, pack_version)
+    pack_ready? = pack_status in [:ready, "ready"]
+
+    cond do
+      not pack_ready? ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "world_pack_not_ready",
+          logical_scene_id: logical_scene_id,
+          status: pack_status,
+          required_stage: "launcher_worldgen_materialization"
+        })
+
+      base_version == content_version ->
+        voxel_json(conn, %{
+          schema_version: 1,
+          logical_scene_id: logical_scene_id,
+          base_content_version: base_version,
+          target_content_version: content_version,
+          cursor: cursor,
+          next_cursor: nil,
+          complete: true,
+          chunk_count: 0,
+          chunks: []
+        })
+
+      true ->
+        case DataService.Voxel.ChunkSnapshotStore.list_page(logical_scene_id, cursor, limit) do
+          {:ok, snapshots} ->
+            next_cursor = cursor + length(snapshots)
+
+            voxel_json(conn, %{
+              schema_version: 1,
+              logical_scene_id: logical_scene_id,
+              base_content_version: base_version,
+              target_content_version: content_version,
+              cursor: cursor,
+              next_cursor: if(length(snapshots) < limit, do: nil, else: next_cursor),
+              complete: length(snapshots) < limit,
+              chunk_count: length(snapshots),
+              chunks: Enum.map(snapshots, &world_diff_chunk/1)
+            })
+
+          {:error, reason} ->
+            conn
+            |> put_status(:service_unavailable)
+            |> json(%{error: "world_diff_unavailable", reason: inspect(reason)})
+        end
     end
   end
 
@@ -558,6 +762,20 @@ defmodule AuthServerWeb.IngameController do
   defp parse_optional_non_negative_int(nil), do: nil
   defp parse_optional_non_negative_int(value), do: parse_non_negative_int(value, nil)
 
+  defp parse_baseline_materializer("worldgen"), do: :worldgen
+  defp parse_baseline_materializer("WorldGen"), do: :worldgen
+  defp parse_baseline_materializer(:worldgen), do: :worldgen
+  defp parse_baseline_materializer(_value), do: :empty
+
+  defp active_window_chunk_coords({center_x, center_y, center_z}, radius)
+       when is_integer(radius) and radius >= 0 do
+    for cx <- (center_x - radius)..(center_x + radius),
+        cy <- (center_y - radius)..(center_y + radius),
+        cz <- (center_z - radius)..(center_z + radius) do
+      {cx, cy, cz}
+    end
+  end
+
   defp parse_source_owner_ref(params) do
     owner_kind = params["source_owner_kind"] || params["owner_kind"]
     owner_id = params["source_owner_id"] || params["owner_id"]
@@ -566,6 +784,29 @@ defmodule AuthServerWeb.IngameController do
          is_binary(owner_id) and String.trim(owner_id) != "" do
       %{kind: String.trim(owner_kind), id: String.trim(owner_id)}
     end
+  end
+
+  defp dev_materialization_ready?(%{status: status, chunk_count: count}, %{
+         status: lod_status,
+         total_cell_count: cells
+       })
+       when status in [:ready, "ready"] and lod_status in [:ready, "ready"] and count > 0 and
+              cells > 0 do
+    true
+  end
+
+  defp dev_materialization_ready?(_snapshot_summary, _lod_summary), do: false
+
+  defp world_diff_chunk(snapshot) do
+    %{
+      chunk_coord: Tuple.to_list(snapshot.chunk_coord),
+      chunk_version: snapshot.chunk_version,
+      schema_version: snapshot.schema_version,
+      chunk_size_in_macro: snapshot.chunk_size_in_macro,
+      micro_resolution: snapshot.micro_resolution,
+      chunk_hash_b64: Base.encode64(snapshot.chunk_hash),
+      snapshot_payload_b64: Base.encode64(snapshot.data)
+    }
   end
 
   defp parse_number(value, _fallback) when is_integer(value), do: value * 1.0

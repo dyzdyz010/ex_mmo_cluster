@@ -48,6 +48,13 @@ defmodule WorldServer.Voxel.SceneNodeRegistryTest do
 
       assert %{join_order: [:a@h]} = SceneNodeRegistry.snapshot(name)
     end
+
+    test "nil is rejected and never enters join_order", %{name: name} do
+      assert {:error, :invalid_scene_node} = SceneNodeRegistry.register_scene_node(name, nil)
+      assert :ok = SceneNodeRegistry.unregister_scene_node(name, nil)
+
+      assert %{join_order: [], region_assignments: %{}} = SceneNodeRegistry.snapshot(name)
+    end
   end
 
   describe "assign_region (D8.B round-robin)" do
@@ -157,6 +164,18 @@ defmodule WorldServer.Voxel.SceneNodeRegistryTest do
       assert {:ok, :b@h} = SceneNodeRegistry.assign_region(name, 4)
     end
 
+    test "reassign_region explicitly moves a stale owner to the live join order", %{name: name} do
+      :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
+      :ok = SceneNodeRegistry.register_scene_node(name, :b@h)
+      assert {:ok, :a@h} = SceneNodeRegistry.assign_region(name, 1)
+
+      :ok = SceneNodeRegistry.unregister_scene_node(name, :a@h)
+
+      assert {:ok, :a@h} = SceneNodeRegistry.lookup_assignment(name, 1)
+      assert {:ok, :b@h} = SceneNodeRegistry.reassign_region(name, 1)
+      assert {:ok, :b@h} = SceneNodeRegistry.lookup_assignment(name, 1)
+    end
+
     test "unregistering all nodes makes assign_region fail without losing existing regions",
          %{name: name} do
       :ok = SceneNodeRegistry.register_scene_node(name, :a@h)
@@ -165,6 +184,7 @@ defmodule WorldServer.Voxel.SceneNodeRegistryTest do
       :ok = SceneNodeRegistry.unregister_scene_node(name, :a@h)
 
       assert {:error, :no_scene_nodes} = SceneNodeRegistry.assign_region(name, 2)
+      assert {:error, :no_scene_nodes} = SceneNodeRegistry.reassign_region(name, 1)
       assert {:ok, :a@h} = SceneNodeRegistry.lookup_assignment(name, 1)
     end
   end

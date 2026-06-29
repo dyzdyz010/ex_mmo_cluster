@@ -1012,6 +1012,64 @@ defmodule GateServer.CodecTest do
       assert <<0x69, 5, 4, 3>> == IO.iodata_to_binary(iodata)
     end
 
+    test "encodes heightmap region with the legacy fixed height payload when materials are absent" do
+      {:ok, iodata} =
+        Codec.encode(
+          {:voxel_heightmap_region,
+           %{
+             request_id: 9,
+             origin_x: -16,
+             origin_z: 32,
+             stride: 16,
+             count_x: 2,
+             count_z: 1,
+             heights: <<10::16-big, 20::16-big>>
+           }}
+        )
+
+      assert <<0x6B, 9::64-big, -16::32-big-signed, 32::32-big-signed, 16::16-big, 2::16-big,
+               1::16-big, 10::16-big, 20::16-big>> ==
+               IO.iodata_to_binary(iodata)
+    end
+
+    test "encodes heightmap region material ids as an appended typed section" do
+      {:ok, iodata} =
+        Codec.encode(
+          {:voxel_heightmap_region,
+           %{
+             request_id: 9,
+             origin_x: -16,
+             origin_z: 32,
+             stride: 16,
+             count_x: 2,
+             count_z: 1,
+             heights: <<10::16-big, 20::16-big>>,
+             materials: <<101::16-big, 102::16-big>>
+           }}
+        )
+
+      assert <<0x6B, 9::64-big, -16::32-big-signed, 32::32-big-signed, 16::16-big, 2::16-big,
+               1::16-big, 10::16-big, 20::16-big, 0x01::8, 4::32-big, 101::16-big, 102::16-big>> ==
+               IO.iodata_to_binary(iodata)
+    end
+
+    test "rejects heightmap region material sections with the wrong cell count" do
+      assert {:error, :invalid_heightmap_materials} =
+               Codec.encode(
+                 {:voxel_heightmap_region,
+                  %{
+                    request_id: 9,
+                    origin_x: -16,
+                    origin_z: 32,
+                    stride: 16,
+                    count_x: 2,
+                    count_z: 1,
+                    heights: <<10::16-big, 20::16-big>>,
+                    materials: <<101::16-big>>
+                  }}
+               )
+    end
+
     test "encodes voxel intent result" do
       {:ok, iodata} =
         Codec.encode(

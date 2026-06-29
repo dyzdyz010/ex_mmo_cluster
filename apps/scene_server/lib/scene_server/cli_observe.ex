@@ -75,7 +75,7 @@ defmodule SceneServer.CliObserve do
   defp start_or_refresh_writer(path) do
     case Process.whereis(@writer) do
       nil ->
-        {:ok, pid} = GenServer.start_link(@writer, path, name: @writer)
+        {:ok, pid} = GenServer.start(@writer, path, name: @writer)
         :persistent_term.put(@writer_key, %{pid: pid, path: path})
         pid
 

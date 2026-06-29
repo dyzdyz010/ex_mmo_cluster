@@ -249,21 +249,33 @@ defmodule GateServer.WsConnection do
 
   @impl true
   def handle_info({:voxel_chunk_snapshot_payload, payload}, state) when is_binary(payload) do
-    GateServer.CliObserve.emit("ws_voxel_chunk_snapshot_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload)
-    })
+    GateServer.CliObserve.emit(
+      "ws_voxel_chunk_snapshot_forwarded",
+      Map.merge(
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload)
+        },
+        voxel_snapshot_observe_fields(payload)
+      )
+    )
 
     {:noreply, replicate(state, :voxel_chunk_snapshot_payload, payload)}
   end
 
   def handle_info({:voxel_chunk_delta_payload, payload}, state) when is_binary(payload) do
-    GateServer.CliObserve.emit("ws_voxel_chunk_delta_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload)
-    })
+    GateServer.CliObserve.emit(
+      "ws_voxel_chunk_delta_forwarded",
+      Map.merge(
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload)
+        },
+        voxel_delta_observe_fields(payload)
+      )
+    )
 
     {:noreply, replicate(state, :voxel_chunk_delta_payload, payload)}
   end
@@ -444,7 +456,10 @@ defmodule GateServer.WsConnection do
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf,
+      known_count: request |> Map.get(:known, []) |> length(),
+      known_sample: voxel_known_sample(request)
     })
 
     case validate_voxel_subscribe_radius(request.radius_l_inf) do
@@ -2411,6 +2426,8 @@ defmodule GateServer.WsConnection do
   # 阶段4 step4.2+4.3:整框订阅意图投给订阅 worker(唯一所有者,自身权威集做差集)。见
   # tcp_connection 同名函数。
   defp dispatch_voxel_subscribe(request, state) do
+    known_versions = voxel_known_versions(Map.get(request, :known, []))
+
     SubscriptionWorker.reconcile(state.voxel_worker, %{
       request_id: request.request_id,
       client_intent_seq: Map.get(request, :client_intent_seq, 0),
@@ -2418,7 +2435,7 @@ defmodule GateServer.WsConnection do
       center_chunk: request.center_chunk,
       radius: request.radius_l_inf,
       want_snapshot: request.want_snapshot,
-      known: voxel_known_versions(Map.get(request, :known, []))
+      known: known_versions
     })
 
     GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_dispatched", %{
@@ -2427,7 +2444,15 @@ defmodule GateServer.WsConnection do
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
       center_chunk: request.center_chunk,
-      radius: request.radius_l_inf
+      radius: request.radius_l_inf,
+      want_snapshot: request.want_snapshot,
+      known_count: map_size(known_versions),
+      known_sample:
+        known_versions
+        |> Enum.take(8)
+        |> Enum.map(fn {coord, version} ->
+          %{chunk_coord: coord, chunk_version: version}
+        end)
     })
 
     state
@@ -2455,6 +2480,62 @@ defmodule GateServer.WsConnection do
       {chunk_coord, chunk_version}
     end)
   end
+
+  defp voxel_known_sample(request) do
+    request
+    |> Map.get(:known, [])
+    |> Enum.take(8)
+    |> Enum.map(fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
+      %{chunk_coord: chunk_coord, chunk_version: chunk_version}
+    end)
+  end
+
+  defp voxel_snapshot_observe_fields(payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_snapshot_payload(payload) do
+      {:ok, %{request_id: request_id, storage: storage}} ->
+        %{
+          request_id: request_id,
+          logical_scene_id: storage.logical_scene_id,
+          chunk_coord: storage.chunk_coord,
+          chunk_version: storage.chunk_version,
+          normal_blocks: length(storage.normal_blocks),
+          refined_cells: length(storage.refined_cells)
+        }
+
+      {:error, reason} ->
+        %{decode_error: reason}
+    end
+  end
+
+  defp voxel_delta_observe_fields(payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_delta_payload(payload) do
+      {:ok, delta} ->
+        %{
+          logical_scene_id: delta.logical_scene_id,
+          chunk_coord: delta.chunk_coord,
+          base_chunk_version: delta.base_chunk_version,
+          new_chunk_version: delta.new_chunk_version,
+          op_count: length(delta.ops),
+          ops_sample: Enum.take(delta.ops, 4) |> Enum.map(&voxel_delta_op_summary/1)
+        }
+
+      {:error, reason} ->
+        %{decode_error: reason}
+    end
+  end
+
+  defp voxel_delta_op_summary(op) do
+    %{
+      delta_kind: Map.get(op, :delta_kind),
+      macro_index: Map.get(op, :macro_index),
+      cell_version: Map.get(op, :cell_version),
+      cell_hash: Map.get(op, :cell_hash),
+      payload_bytes: byte_size_or_zero(Map.get(op, :payload))
+    }
+  end
+
+  defp byte_size_or_zero(value) when is_binary(value), do: byte_size(value)
+  defp byte_size_or_zero(_value), do: 0
 
   defp observe_message_summary({:auth_request, username, _token, request_id}) do
     %{type: :auth_request, username: username, request_id: request_id, token_redacted?: true}

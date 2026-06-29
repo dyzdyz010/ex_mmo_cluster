@@ -2,6 +2,30 @@
 
 本目录拥有 Scene 侧热体素执行状态。热体素状态指当前租约内、需要被快速读写的区块内存状态。
 
+## 2026-06-28 LOD projection rebuild
+
+`SceneServer.Voxel.WorldGenMaterializer` is the explicit bridge from
+deterministic WorldGen output to canonical chunk snapshots. It generates one
+chunk, encodes the normal snapshot payload, derives LOD projection cells, and
+writes both through `DataService.Voxel.ChunkSnapshotStore` under the caller's
+World-issued lease fence. This is a pre-scene import/materialization tool only:
+ChunkProcess, heightmap reads, and runtime repair paths must still fail visibly
+when canonical data is missing.
+
+The formal production caller is `WorldServer.Voxel.WorldPackMaterializer`,
+which runs during deployment-time world-pack construction. Scene owns the chunk
+encoding and LOD projection write, while World owns routing and lease fences.
+
+`SceneServer.Voxel.LodProjection.Rebuilder` 从 canonical chunk snapshots 回填
+`LodHeightmapStore` 时，以 X/Z column 为单位聚合垂直 chunk：
+
+- 同一 X/Z column 中优先选择最高的非空 storage 作为 projection 来源；整列为空时仍写出空
+  row，保持 0x6A 请求可以区分“权威为空”和“权威数据缺失”。
+- dev bootstrap 的 343 个 baseline chunk 会 coalesce 成 `7x7 = 49` 个 projection
+  cells/columns，不再把 `7x7x7` baseline 误投影成竖向面片墙。
+- `LodProjection` 在扫描单列时预先把 macro headers 规范化成 tuple，避免对每个
+  `(mx,mz,my)` 重复 `Storage.index_macro_headers/normalize!`。
+
 `SceneServer.Voxel.RegionRuntime` 是第一层区域运行时。它记录本地租约，缓存邻区租约元数据，
 并在接受跨边界规则传播之前校验 `BoundaryVoxelEvent` 字段。跨边界事件如果带着旧租约，
 会在影响热状态之前被拒绝。
@@ -24,11 +48,10 @@ chunk version 对该 intent 重试一次。显式 `expected_chunk_version` /
 
 `ChunkProcess.apply_intents/2` / `commit_transaction/2` 是 prefab 和跨 chunk 事务的热路径。
 它们先更新本进程内的权威 storage，再向订阅者 fan-out 一条按最终 macro 合并后的
-`ChunkDelta`，而不是完整 chunk snapshot。完整 snapshot 持久化被拆到后台 task：热路径只
-等待 DataService 写令牌校验通过，PG row lock / 大 binary 写入属于冷路径。后台任务会 emit
-`voxel_chunk_async_persist_queued`、`voxel_chunk_async_persist_finished` 或
-`voxel_chunk_async_persist_down`；`ChunkProcess.flush_persistence/2` 是 CLI / 测试同步点，用于
-在需要检查 PG 最终状态时等待当前 chunk 的后台持久化完成。
+`ChunkDelta`，而不是完整 chunk snapshot。完整 snapshot 持久化当前同步通过
+`DataService.Voxel.ChunkSnapshotStore.put_snapshot/1` 完成；projection cells 会在同一事务内
+upsert，projection 失败会使 snapshot 写入失败。`ChunkProcess.flush_persistence/2` 仍保留为
+CLI / 测试同步点，但 D-4 后没有异步 persist 队列需要 drain。
 
 `ChunkProcess.subscribe/3` 是订阅接口。订阅者会立即拿到当前完整 `ChunkSnapshot`，用于
 初始同步 / 重连 / 版本缺口修复；后续正常编辑和 prefab commit 默认通过 `ChunkDelta`
@@ -40,9 +63,11 @@ chunk version 对该 intent 重试一次。显式 `expected_chunk_version` /
 的代码也可以用 `ChunkDirectory.apply_intent/2` 把已带租约的写入意图路由到拥有者区块，
 但调用者本身不拥有区块真相。
 
-`ChunkDirectory.prewarm_handoff/2` 消费 World 生成的迁移交接载荷。它按预热切片读取
-DataService 中已有的区块快照，加载到目标 Scene 的热区块进程；没有快照的区块会以空区块
-启动并应用新租约。预热切片指迁移前分批加载的半开区块范围。
+`ChunkDirectory.prewarm_handoff/2` 消费 World 生成的迁移交接载荷。它按预热切片先读取
+DataService 中已有的 canonical 区块快照，成功后才启动并加载目标 Scene 的热区块进程。
+缺 snapshot 会返回 `{:missing_authoritative_chunk_snapshot, ...}` 并 emit
+`voxel_migration_prewarm_missing_snapshot`，不会材化空区块。预热切片指迁移前分批加载的半开
+区块范围。
 
 `MigrationPrewarm.prewarm_slices/2` 是 Scene 侧迁移预热适配器。它逐切片调用
 `ChunkDirectory.prewarm_handoff/2`，并返回可提交给 World `mark_slice_prewarmed/3` 的 ACK

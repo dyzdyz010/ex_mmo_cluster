@@ -1,5 +1,76 @@
 # WorldServer 体素边界
 
+## 2026-06-28 stale scene owner repair
+
+`MapLedger.route_chunk_with_lease/3` and the ensuring route path now verify that
+an existing `assigned_scene_node` is still present in
+`SceneNodeRegistry.snapshot/1` before returning the route to Gate. If a persisted
+region assignment points at a stale node from an older dev cluster name, the
+ledger asks `SceneNodeRegistry.reassign_region/2` for the next live scene node,
+persists the updated region owner, issues a fresh lease, and emits
+`voxel_region_scene_owner_reassigned`.
+
+This keeps World as the routing truth source while preventing Gate subscription
+fan-out from repeatedly targeting an unavailable Scene node after a local server
+restart or node-name change. If no live scene node is registered, routing remains
+explicitly failed with `:scene_node_unassigned` instead of silently inventing an
+owner.
+
+## 2026-06-28 world-pack materialization
+
+`WorldServer.Voxel.WorldPackMaterializer` is the production-named
+deployment-time entry point for a newly deployed voxel world. It does not
+define a dev footprint and it is not called by Gate subscription, Scene
+runtime, or client repair paths. Deployment tooling passes the planned chunk
+range in bounded batches; the materializer routes those chunks through
+`MapLedger`, obtains normal World lease fences, and calls
+`SceneServer.Voxel.WorldGenMaterializer.put_snapshot/3` to write canonical
+chunk snapshots and derived LOD projection rows.
+
+`WorldServer.Voxel.WorldPackBootstrapper` is the supervised server-side
+orchestrator for that path. It is disabled by default and enabled explicitly by
+`VOXEL_WORLD_PACK_GENERATE=1`. On startup it reads
+`VOXEL_WORLD_PACK_CHUNK_MIN` / `VOXEL_WORLD_PACK_CHUNK_MAX`, enforces
+`VOXEL_WORLD_PACK_MAX_CHUNKS`, materializes the range in
+`VOXEL_WORLD_PACK_BATCH_SIZE` batches, and publishes
+`:auth_server, :voxel_world_pack` as `:ready` only after the canonical store has
+been written. While it runs, the manifest stays `materializing`; failures publish
+`failed` and keep scene entry blocked.
+
+The world-pack `content_version` must be published only after the entire planned
+world range has been materialized and verified. Runtime missing-snapshot,
+missing-pack, hash-mismatch, or broken-diff-chain cases remain explicit
+pre-scene validation failures. They must not be hidden by ad-hoc WorldGen,
+runtime snapshots, or client-side repair.
+
+## 2026-06-28 dev baseline bootstrap
+
+Update: `DevSeed.ensure_default_region/1` also accepts
+`baseline_materializer: :worldgen` plus `baseline_footprint_chunks`. This path
+routes the requested chunks through `MapLedger`, obtains the normal World lease
+fence, and then asks `SceneServer.Voxel.WorldGenMaterializer` to write canonical
+WorldGen snapshots into DataService. It is an explicit pre-scene
+materialization/import helper, not a Scene runtime fallback. The default dev
+bootstrap still uses empty baseline chunks unless the caller opts into
+`:worldgen`.
+
+`DevSeed` is intentionally limited to local demo/smoke bootstrapping. It is not
+the production launcher/world-pack materialization route; production uses
+`WorldPackMaterializer`.
+
+`DefaultRegionBootstrapper` 现在把“可订阅近场基线”和“开发地形种子”分开：
+
+- 默认 baseline footprint 是以 `{0,0,0}` 为中心、半径 3 chunk 的 `7x7x7 = 343`
+  个 chunk。每个 chunk 必须有权威 snapshot；缺失时由 dev bootstrap 用租约围栏显式写入
+  empty version-0 snapshot。
+- 默认 terrain footprint 仍只写出生点附近 `5x5`、`y=0` 的开发地形。baseline 扩大不会把
+  地形写成竖向 `7x7x7` 墙。
+- 这条路径只属于本地开发/demo materialization。生产 launcher/world-pack 缺包、hash
+  不匹配、diff chain 断裂时不能用 runtime snapshot 兜底，必须在入场前校验失败。
+- bootstrap summary 暴露 `baseline.chunk_count`、`terrain.chunk_count` 和
+  `lod_projection`，便于 stdio CLI/observe 直接判断是 baseline、terrain 还是 LOD
+  projection 问题。
+
 本目录拥有 World 侧体素控制面。控制面指决定“谁拥有区域、谁能写、请求要路由到哪里”的
 低频权威逻辑，不保存完整区块内容，也不执行逐帧体素规则。
 
@@ -73,7 +144,8 @@
   退化为 :pending_commit。所有动作幂等,watcher 自身被 supervisor restart 时重放扫描也无副作用。
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
 - `DefaultRegionBootstrapper` 是 World 监督树里的默认区域准备工人。开发 / demo 配置启用时，
-  它在服务端启动后准备默认区域、续发租约，并在 Scene 还没注册时重试。这样浏览器打开页面后
+  它在服务端启动后通过 `DevSeed` 路由出生点 footprint、续发租约、经 Scene 写 starter
+  chunk snapshots，并默认触发 LOD projection rebuild；Scene 还没注册时会重试。这样浏览器打开页面后
   只负责登录、入场、订阅读取格子状态，不再负责创建或修复世界。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
@@ -82,10 +154,11 @@
   `SceneServer.Voxel.ChunkDirectory` 的 pid/name，runner 会用 `scene_directory_invalidator/1`
   构造一个调用 `ChunkDirectory.invalidate_chunk/2` 的 invalidator 注入到内部启动的
   ledger。两者只在 runner 自己创建 ledger 时生效；调用方自带 `:ledger` 时由调用方决定。
-- `DevSeed` 是本地网页 / CLI 冒烟使用的幂等准备函数。它只准备默认区域、租约和 DataService 写入令牌，
-  不保存区块真相，也不绕过 Scene；默认由 `DefaultRegionBootstrapper` 在服务端生命周期里调用。
-  已有区域再次 seed 时会续发开发租约，并通过 Scene 的批量 intent 路径一次性准备 y=0 的 16×16
-  起始地面，避免长时间运行后出现“能订阅旧快照、但写入被租约过期拒绝”的假健康状态。
+- `DevSeed` 是本地网页 / CLI 冒烟使用的幂等 materialization 函数。它通过
+  `MapLedger.route_chunks_with_leases_ensuring/3` 物化 footprint 所在 region、续发开发租约和
+  DataService 写入令牌，然后逐 chunk 走 Scene 的批量 intent 路径写 canonical snapshots。
+  `ChunkSnapshotStore.put_snapshot` 会在同一事务维护 LOD projection；需要回填旧快照时可显式打开
+  LOD projection rebuild。它不绕过 Scene，也不是生产 runtime 的缺块兜底。
 
 `route_chunk_with_lease/3` 是 Gate 向 Scene 请求区块快照前使用的控制面交接函数。它让客户端路径
 先对齐 World 权威，同时仍然把完整区块真相留在 Scene。

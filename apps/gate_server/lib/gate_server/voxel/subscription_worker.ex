@@ -53,7 +53,12 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     GenServer.start_link(__MODULE__, {connection_pid, opts})
   end
 
-  @doc "Asynchronously route + subscribe the box's not-yet-subscribed chunks."
+  @doc """
+  Asynchronously reconcile the connection's desired active chunk window.
+
+  The latest reconcile is authoritative for the connection's editable near window:
+  chunks outside that box are unsubscribed before new chunks are subscribed.
+  """
   @spec reconcile(pid(), reconcile_ctx()) :: :ok
   def reconcile(worker, ctx) when is_pid(worker) and is_map(ctx) do
     GenServer.cast(worker, {:reconcile, ctx})
@@ -104,6 +109,7 @@ defmodule GateServer.Voxel.SubscriptionWorker do
   # a lease that has drifted into the "near expiry" band (a route-cache miss) is renewed
   # well before it actually lapses — without the client ever polling.
   @lease_renew_interval_ms :timer.seconds(15)
+  @reconcile_batch_size 32
 
   @impl true
   def init({connection_pid, opts}) do
@@ -120,7 +126,10 @@ defmodule GateServer.Voxel.SubscriptionWorker do
        subscriptions: %{},
        route_cache: RouteCache.new(),
        refresh_window_ms: Keyword.get(opts, :route_cache_refresh_ms, :timer.seconds(30)),
-       lease_renew_interval_ms: renew_interval
+       lease_renew_interval_ms: renew_interval,
+       pending_reconcile: nil,
+       reconcile_job: nil,
+       reconcile_scheduled?: false
      }}
   end
 
@@ -142,6 +151,10 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     {:noreply, renew_subscription_leases(state)}
   end
 
+  def handle_info(:process_reconcile, state) do
+    {:noreply, process_reconcile_batch(%{state | reconcile_scheduled?: false})}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   defp renew_subscription_leases(%{subscriptions: subs} = state) when map_size(subs) == 0 do
@@ -161,7 +174,8 @@ defmodule GateServer.Voxel.SubscriptionWorker do
 
   @impl true
   def handle_cast({:reconcile, ctx}, state) do
-    {:noreply, do_reconcile(ctx, state)}
+    emit_reconcile_enqueued(state, ctx)
+    {:noreply, schedule_reconcile(%{state | pending_reconcile: ctx})}
   end
 
   def handle_cast({:unsubscribe, logical_scene_id, chunks}, state) do
@@ -202,10 +216,94 @@ defmodule GateServer.Voxel.SubscriptionWorker do
 
   # ── reconcile (subscribe) ────────────────────────────────────────────────────
 
-  defp do_reconcile(%{center_chunk: center, radius: radius} = ctx, state) do
-    now = System.system_time(:millisecond)
+  defp schedule_reconcile(%{reconcile_scheduled?: true} = state), do: state
 
-    box_coords(center, radius)
+  defp schedule_reconcile(%{pending_reconcile: nil, reconcile_job: nil} = state), do: state
+
+  defp schedule_reconcile(state) do
+    send(self(), :process_reconcile)
+    %{state | reconcile_scheduled?: true}
+  end
+
+  defp process_reconcile_batch(state) do
+    state
+    |> promote_pending_reconcile()
+    |> do_process_reconcile_batch()
+  end
+
+  defp promote_pending_reconcile(%{pending_reconcile: nil} = state), do: state
+
+  defp promote_pending_reconcile(%{pending_reconcile: ctx} = state) do
+    # Latest-wins: movement can produce a new streaming center while an older
+    # radius box is still being fanned out. The newest box is also the complete
+    # active/editable server window, so prune previously subscribed chunks outside
+    # it before continuing. This prevents debug/interactive state from remaining
+    # anchored to the initial spawn window after the player moves.
+    coords = box_coords(ctx.center_chunk, ctx.radius)
+    {state, pruned} = prune_outside_reconcile_window(state, ctx, coords)
+
+    job = %{
+      ctx: ctx,
+      coords: coords,
+      failed?: false
+    }
+
+    emit_reconcile_promoted(state, ctx, length(job.coords))
+    emit_reconcile_pruned(state, ctx, pruned, length(job.coords))
+
+    %{state | pending_reconcile: nil, reconcile_job: job}
+  end
+
+  defp do_process_reconcile_batch(%{reconcile_job: nil} = state), do: state
+
+  defp do_process_reconcile_batch(%{reconcile_job: %{coords: []}} = state) do
+    schedule_reconcile(%{state | reconcile_job: nil})
+  end
+
+  defp do_process_reconcile_batch(%{reconcile_job: job} = state) do
+    {batch, rest} = Enum.split(job.coords, @reconcile_batch_size)
+
+    {state, failed?} =
+      Enum.reduce(batch, {state, job.failed?}, fn coord, {acc, failed?} ->
+        reconcile_coord(acc, job.ctx, coord, failed?)
+      end)
+
+    next_job =
+      case rest do
+        [] -> nil
+        remaining -> %{job | coords: remaining, failed?: failed?}
+      end
+
+    schedule_reconcile(%{state | reconcile_job: next_job})
+  end
+
+  defp reconcile_coord(state, ctx, coord, failed?) do
+    key = {ctx.logical_scene_id, coord}
+
+    cond do
+      Map.has_key?(state.subscriptions, key) and not Map.has_key?(ctx.known, coord) ->
+        emit_reconcile_skipped(state, ctx, coord, :already_subscribed_no_known)
+        {state, failed?}
+
+      true ->
+        case subscribe_one(state, ctx, coord, System.system_time(:millisecond)) do
+          {:ok, next_state} ->
+            {next_state, failed?}
+
+          {:error, reason, next_state} ->
+            unless failed?, do: send_failed(next_state, ctx, coord, reason)
+            {next_state, true}
+        end
+    end
+  end
+
+  @doc false
+  def sync_reconcile_for_debug(%{center_chunk: center, radius: radius} = ctx, state) do
+    now = System.system_time(:millisecond)
+    coords = box_coords(center, radius)
+    {state, _pruned} = prune_outside_reconcile_window(state, ctx, coords)
+
+    coords
     |> Enum.reduce({state, false}, fn coord, {acc, failed?} ->
       key = {ctx.logical_scene_id, coord}
 
@@ -238,6 +336,9 @@ defmodule GateServer.Voxel.SubscriptionWorker do
   end
 
   defp subscribe_one(state, ctx, coord, now) do
+    known_version = Map.get(ctx.known, coord)
+    emit_subscribe_attempt(state, ctx, coord, known_version)
+
     with {:ok, route, state} <- route_cached(state, ctx.logical_scene_id, coord, now),
          {:ok, scene_node} <- Routing.scene_node_for_route(route) do
       lease = Map.fetch!(route, :lease)
@@ -249,29 +350,34 @@ defmodule GateServer.Voxel.SubscriptionWorker do
         subscriber: state.connection_pid,
         lease: lease,
         send_snapshot?: ctx.want_snapshot,
-        known_version: Map.get(ctx.known, coord)
+        known_version: known_version
       }
 
       key = {ctx.logical_scene_id, coord}
-      subscription = build_subscription(ctx.logical_scene_id, coord, ctx.request_id, scene_node, lease)
+
+      subscription =
+        build_subscription(ctx.logical_scene_id, coord, ctx.request_id, scene_node, lease)
 
       case Routing.subscribe(scene_node, attrs) do
         {:ok, _payload} ->
-          emit_routed(state, ctx, coord, route)
+          emit_routed(state, ctx, coord, route, :ok, known_version)
           {:ok, %{state | subscriptions: Map.put(state.subscriptions, key, subscription)}}
 
         # 评审复审 F2:订阅 call 超时但 ChunkProcess 很可能已注册 subscriber(put_subscriber 在快照
         # 编码前),且快照经 send/2 直达连接不受本 call 超时影响。故**记录订阅**(否则日后退订因 map
         # 无此 key 而漏退 Scene → 泄漏);日后退订对 Scene 幂等退订无害。不发 0x68(快照已异步直达)。
         {:error, :timeout} ->
-          emit_routed(state, ctx, coord, route)
+          emit_routed(state, ctx, coord, route, :timeout_recorded, known_version)
           {:ok, %{state | subscriptions: Map.put(state.subscriptions, key, subscription)}}
 
         {:error, reason} ->
+          emit_subscribe_error(state, ctx, coord, known_version, reason)
           {:error, reason, state}
       end
     else
-      {:error, reason} -> {:error, reason, state}
+      {:error, reason} ->
+        emit_subscribe_error(state, ctx, coord, known_version, reason)
+        {:error, reason, state}
     end
   end
 
@@ -302,13 +408,44 @@ defmodule GateServer.Voxel.SubscriptionWorker do
       key = {logical_scene_id, coord}
 
       case Map.pop(acc.subscriptions, key) do
-        {nil, _rest} -> acc
+        {nil, _rest} ->
+          acc
+
         {subscription, rest} ->
           scene_unsubscribe(acc, subscription)
           %{acc | subscriptions: rest}
       end
     end)
   end
+
+  defp prune_outside_reconcile_window(%{subscriptions: subscriptions} = state, ctx, coords) do
+    desired_keys = MapSet.new(coords, fn coord -> {ctx.logical_scene_id, coord} end)
+
+    {next_subscriptions, pruned} =
+      Enum.reduce(subscriptions, {%{}, []}, fn {key, subscription}, {kept, pruned} ->
+        if prune_subscription?(key, subscription, ctx.logical_scene_id, desired_keys) do
+          scene_unsubscribe(state, subscription)
+          {kept, [subscription | pruned]}
+        else
+          {Map.put(kept, key, subscription), pruned}
+        end
+      end)
+
+    {%{state | subscriptions: next_subscriptions}, Enum.reverse(pruned)}
+  end
+
+  defp prune_subscription?(
+         {subscription_scene_id, _coord} = key,
+         subscription,
+         logical_scene_id,
+         desired_keys
+       ) do
+    subscription_scene_id == logical_scene_id and
+      Map.get(subscription, :logical_scene_id) == logical_scene_id and
+      not MapSet.member?(desired_keys, key)
+  end
+
+  defp prune_subscription?(_key, _subscription, _logical_scene_id, _desired_keys), do: false
 
   # ── rebind (migration cutover, rare/sync) ────────────────────────────────────
 
@@ -365,7 +502,8 @@ defmodule GateServer.Voxel.SubscriptionWorker do
   end
 
   defp rebind_one(state, subscription, reason) do
-    with {:ok, route} <- Routing.route_chunk(subscription.logical_scene_id, subscription.chunk_coord),
+    with {:ok, route} <-
+           Routing.route_chunk(subscription.logical_scene_id, subscription.chunk_coord),
          {:ok, scene_node} <- Routing.scene_node_for_route(route) do
       lease = Map.fetch!(route, :lease)
 
@@ -490,6 +628,13 @@ defmodule GateServer.Voxel.SubscriptionWorker do
         z <- (cz - radius)..(cz + radius) do
       {x, y, z}
     end
+    |> Enum.sort_by(fn {x, y, z} ->
+      dx = abs(x - cx)
+      dy = abs(y - cy)
+      dz = abs(z - cz)
+
+      {max(max(dx, dy), dz), dx + dy + dz, dx, dy, dz}
+    end)
   end
 
   defp send_failed(state, ctx, coord, reason) do
@@ -505,7 +650,116 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     )
   end
 
-  defp emit_routed(state, ctx, coord, route) do
+  defp emit_reconcile_enqueued(state, ctx) do
+    GateServer.CliObserve.emit("voxel_reconcile_enqueued", fn ->
+      %{
+        connection_pid: state.connection_pid,
+        request_id: ctx.request_id,
+        logical_scene_id: ctx.logical_scene_id,
+        center_chunk: ctx.center_chunk,
+        radius: ctx.radius,
+        want_snapshot: ctx.want_snapshot,
+        known_count: map_size(ctx.known),
+        pending_reconcile?: not is_nil(state.pending_reconcile),
+        active_job?: not is_nil(state.reconcile_job)
+      }
+    end)
+  end
+
+  defp emit_reconcile_promoted(state, ctx, coord_count) do
+    GateServer.CliObserve.emit("voxel_reconcile_promoted", fn ->
+      %{
+        connection_pid: state.connection_pid,
+        request_id: ctx.request_id,
+        logical_scene_id: ctx.logical_scene_id,
+        center_chunk: ctx.center_chunk,
+        radius: ctx.radius,
+        want_snapshot: ctx.want_snapshot,
+        known_count: map_size(ctx.known),
+        coord_count: coord_count
+      }
+    end)
+  end
+
+  defp emit_reconcile_pruned(_state, _ctx, [], _desired_count), do: :ok
+
+  defp emit_reconcile_pruned(state, ctx, pruned, desired_count) do
+    GateServer.CliObserve.emit("voxel_reconcile_pruned", fn ->
+      %{
+        connection_pid: state.connection_pid,
+        request_id: ctx.request_id,
+        logical_scene_id: ctx.logical_scene_id,
+        center_chunk: ctx.center_chunk,
+        radius: ctx.radius,
+        desired_count: desired_count,
+        pruned_count: length(pruned),
+        subscription_count: map_size(state.subscriptions),
+        pruned_sample:
+          pruned
+          |> Enum.take(8)
+          |> Enum.map(fn subscription ->
+            %{
+              chunk_coord: Map.get(subscription, :chunk_coord),
+              region_id: Map.get(subscription, :region_id),
+              scene_node: Map.get(subscription, :scene_node),
+              lease_id: Map.get(subscription, :lease_id)
+            }
+          end)
+      }
+    end)
+  end
+
+  defp emit_reconcile_skipped(state, ctx, coord, reason) do
+    if trace_coord?(ctx, coord) do
+      GateServer.CliObserve.emit("voxel_reconcile_coord_skipped", fn ->
+        %{
+          connection_pid: state.connection_pid,
+          request_id: ctx.request_id,
+          logical_scene_id: ctx.logical_scene_id,
+          center_chunk: ctx.center_chunk,
+          chunk_coord: coord,
+          radius: ctx.radius,
+          reason: reason,
+          known_version: Map.get(ctx.known, coord)
+        }
+      end)
+    end
+  end
+
+  defp emit_subscribe_attempt(state, ctx, coord, known_version) do
+    if trace_coord?(ctx, coord) do
+      GateServer.CliObserve.emit("voxel_chunk_subscribe_attempt", fn ->
+        %{
+          connection_pid: state.connection_pid,
+          request_id: ctx.request_id,
+          logical_scene_id: ctx.logical_scene_id,
+          center_chunk: ctx.center_chunk,
+          chunk_coord: coord,
+          radius: ctx.radius,
+          want_snapshot: ctx.want_snapshot,
+          known_version: known_version,
+          force_resnapshot?: Map.has_key?(ctx.known, coord)
+        }
+      end)
+    end
+  end
+
+  defp emit_subscribe_error(state, ctx, coord, known_version, reason) do
+    GateServer.CliObserve.emit("voxel_chunk_subscribe_worker_error", fn ->
+      %{
+        connection_pid: state.connection_pid,
+        request_id: ctx.request_id,
+        logical_scene_id: ctx.logical_scene_id,
+        center_chunk: ctx.center_chunk,
+        chunk_coord: coord,
+        radius: ctx.radius,
+        known_version: known_version,
+        reason: reason
+      }
+    end)
+  end
+
+  defp emit_routed(state, ctx, coord, route, result, known_version) do
     GateServer.CliObserve.emit("voxel_chunk_subscribe_routed", fn ->
       assignment = Map.fetch!(route, :assignment)
       lease = Map.fetch!(route, :lease)
@@ -514,12 +768,21 @@ defmodule GateServer.Voxel.SubscriptionWorker do
         connection_pid: state.connection_pid,
         request_id: ctx.request_id,
         logical_scene_id: ctx.logical_scene_id,
-        center_chunk: coord,
+        center_chunk: ctx.center_chunk,
+        chunk_coord: coord,
+        radius: ctx.radius,
+        result: result,
+        known_version: known_version,
+        force_resnapshot?: Map.has_key?(ctx.known, coord),
         region_id: assignment.region_id,
         lease_id: lease.lease_id,
         owner_scene_instance_ref: lease.owner_scene_instance_ref,
         owner_epoch: lease.owner_epoch
       }
     end)
+  end
+
+  defp trace_coord?(ctx, coord) do
+    coord == ctx.center_chunk or Map.has_key?(ctx.known, coord)
   end
 end

@@ -52,6 +52,7 @@ defmodule GateServer.Codec do
   - `0x8F` EffectEvent
   - `0x62` Voxel ChunkSnapshot
   - `0x68` VoxelIntentResult
+  - `0x6B` VoxelHeightmapRegion
   - `0x6F` VoxelDebugProbe
 
   ## Round trip example
@@ -89,10 +90,11 @@ defmodule GateServer.Codec do
   @msg_voxel_object_state_delta 0x6C
   @msg_voxel_debug_probe 0x6F
   # Far/LOD terrain: client requests a coarse surface heightmap region; server
-  # computes it from the authoritative WorldGen and streams it back (no client-side
-  # generation). See protocol §13.7.
+  # derives it from authoritative voxel snapshots / LOD mip truth and streams it
+  # back (no client-side generation). See protocol §13.7.
   @msg_voxel_heightmap_request 0x6A
   @msg_voxel_heightmap_region 0x6B
+  @heightmap_section_materials_u16 0x01
   @msg_voxel_edit_intent 0x70
   @msg_voxel_field_conduct_intent 0x75
 
@@ -688,6 +690,10 @@ defmodule GateServer.Codec do
   # 1 + request_id:u64 + origin_macro_x:i32 + origin_macro_z:i32 + stride:u16 +
   # count_x:u16 + count_z:u16 + heights:u16-be[count_x*count_z] (X fastest). Heights
   # are big-endian u16 (terrain peaks exceed 1 km, so the old u8 no longer fits).
+  #
+  # Optional trailing sections are appended after the fixed height array as
+  # section_type:u8 + section_len:u32 + section_payload. Section 0x01 carries
+  # top-surface material ids as u16-be[count_x*count_z], same X-fastest order.
   def encode(
         {:voxel_heightmap_region,
          %{
@@ -698,15 +704,21 @@ defmodule GateServer.Codec do
            count_x: count_x,
            count_z: count_z,
            heights: heights
-         }}
+         } = region}
       )
       when is_binary(heights) do
-    {:ok,
-     [
-       <<@msg_voxel_heightmap_region, request_id::64-big, origin_x::32-big-signed,
-         origin_z::32-big-signed, stride::16-big, count_x::16-big, count_z::16-big>>,
-       heights
-     ]}
+    cells = count_x * count_z
+
+    with {:ok, material_section} <-
+           encode_heightmap_material_section(Map.get(region, :materials, <<>>), cells) do
+      {:ok,
+       [
+         <<@msg_voxel_heightmap_region, request_id::64-big, origin_x::32-big-signed,
+           origin_z::32-big-signed, stride::16-big, count_x::16-big, count_z::16-big>>,
+         heights,
+         material_section
+       ]}
+    end
   end
 
   def encode(
@@ -945,6 +957,27 @@ defmodule GateServer.Codec do
       <<section_type::8, byte_size(section_data)::32-big, section_data::binary>>
     end)
   end
+
+  defp encode_heightmap_material_section(nil, _cells), do: {:ok, []}
+  defp encode_heightmap_material_section(<<>>, _cells), do: {:ok, []}
+
+  defp encode_heightmap_material_section(materials, cells)
+       when is_binary(materials) and is_integer(cells) and cells >= 0 do
+    expected_bytes = cells * 2
+
+    if byte_size(materials) == expected_bytes do
+      {:ok,
+       [
+         <<@heightmap_section_materials_u16::8, expected_bytes::32-big>>,
+         materials
+       ]}
+    else
+      {:error, :invalid_heightmap_materials}
+    end
+  end
+
+  defp encode_heightmap_material_section(_materials, _cells),
+    do: {:error, :invalid_heightmap_materials}
 
   defp encode_voxel_authoritative(authoritative) do
     Enum.map(authoritative, fn %{

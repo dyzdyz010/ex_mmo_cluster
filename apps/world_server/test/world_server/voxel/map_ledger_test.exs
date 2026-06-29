@@ -776,6 +776,63 @@ defmodule WorldServer.Voxel.MapLedgerTest do
       assert map_size(MapLedger.snapshot(ledger).assignments) == 1
     end
 
+    test "route ensuring reassigns a stale Scene owner to the live registry", %{
+      ledger: ledger
+    } do
+      region_id = RegionGrid.region_id(1, {0, 0, 0})
+
+      assert {:ok, old_assignment} =
+               MapLedger.put_region(ledger, %{
+                 logical_scene_id: 1,
+                 region_id: region_id,
+                 bounds_chunk_min: {0, 0, 0},
+                 bounds_chunk_max: {8, 64, 8},
+                 owner_scene_instance_ref: 1,
+                 owner_epoch: 0,
+                 assigned_scene_node: :stale@h
+               })
+
+      assert old_assignment.assigned_scene_node == :stale@h
+      assert {:ok, old_lease} = MapLedger.issue_lease(ledger, region_id, 1)
+
+      assert {:ok, %{assignment: reassigned, lease: new_lease}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {1, 0, 1})
+
+      assert reassigned.region_id == old_assignment.region_id
+      assert reassigned.assigned_scene_node == node()
+      assert new_lease.region_id == old_lease.region_id
+      assert new_lease.lease_id != old_lease.lease_id
+      assert new_lease.owner_epoch > old_lease.owner_epoch
+    end
+
+    test "route ensuring repairs a historical nil Scene owner", %{ledger: ledger} do
+      region_id = RegionGrid.region_id(1, {0, 0, 0})
+
+      nil_assignment =
+        RegionAssignment.new(%{
+          logical_scene_id: 1,
+          region_id: region_id,
+          bounds_chunk_min: {0, 0, 0},
+          bounds_chunk_max: {8, 64, 8},
+          owner_scene_instance_ref: 1,
+          owner_epoch: 1,
+          assigned_scene_node: nil
+        })
+
+      :sys.replace_state(ledger, fn state ->
+        put_in(state.assignments[region_id], nil_assignment)
+      end)
+
+      assert {:ok, %{assignment: reassigned, lease: lease}} =
+               MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {1, 0, 1})
+
+      assert reassigned.region_id == region_id
+      assert reassigned.assigned_scene_node == node()
+      assert lease.region_id == region_id
+
+      assert MapLedger.snapshot(ledger).assignments[region_id].assigned_scene_node == node()
+    end
+
     test "neighboring chunks across a grid boundary materialize distinct regions", %{
       ledger: ledger
     } do
@@ -895,16 +952,16 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     test "route renews a region's lease when it enters the refresh window (F4 — no stuck expired lease)",
          %{registry: registry} do
       ledger =
-        start_supervised!(
-          {MapLedger,
-           name: :renew_ledger,
-           write_token_store: WriteTokenStore,
-           scene_node_registry: registry,
-           region_directory: RegionDirectoryStore,
-           # Materialized lease is immediately at expiry, so the next route must renew.
-           materialized_lease_ttl_ms: 0,
-           lease_refresh_window_ms: 0}
-        )
+        start_supervised!({
+          MapLedger,
+          # Materialized lease is immediately at expiry, so the next route must renew.
+          name: :renew_ledger,
+          write_token_store: WriteTokenStore,
+          scene_node_registry: registry,
+          region_directory: RegionDirectoryStore,
+          materialized_lease_ttl_ms: 0,
+          lease_refresh_window_ms: 0
+        })
 
       assert {:ok, %{lease: l1}} = MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})
 
@@ -944,18 +1001,18 @@ defmodule WorldServer.Voxel.MapLedgerTest do
     test "region GC reaps an abandoned (long-expired, un-renewed) region from memory and directory",
          %{registry: registry} do
       ledger =
-        start_supervised!(
-          {MapLedger,
-           name: :gc_reap_ledger,
-           write_token_store: WriteTokenStore,
-           scene_node_registry: registry,
-           region_directory: RegionDirectoryStore,
-           # Manual GC only; the materialized lease is immediately expired + reapable.
-           region_gc_enabled?: false,
-           materialized_lease_ttl_ms: 0,
-           lease_refresh_window_ms: 0,
-           region_gc_grace_period_ms: 0}
-        )
+        start_supervised!({
+          MapLedger,
+          # Manual GC only; the materialized lease is immediately expired + reapable.
+          name: :gc_reap_ledger,
+          write_token_store: WriteTokenStore,
+          scene_node_registry: registry,
+          region_directory: RegionDirectoryStore,
+          region_gc_enabled?: false,
+          materialized_lease_ttl_ms: 0,
+          lease_refresh_window_ms: 0,
+          region_gc_grace_period_ms: 0
+        })
 
       assert {:ok, %{assignment: assignment}} =
                MapLedger.route_chunk_with_lease_ensuring(ledger, 1, {0, 0, 0})

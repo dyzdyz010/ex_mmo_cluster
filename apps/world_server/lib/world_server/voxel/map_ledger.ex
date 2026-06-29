@@ -516,7 +516,11 @@ defmodule WorldServer.Voxel.MapLedger do
     {:reply, reply, state}
   end
 
-  defp do_handle_call({:route_chunk_with_lease_ensuring, logical_scene_id, chunk_coord}, _from, state) do
+  defp do_handle_call(
+         {:route_chunk_with_lease_ensuring, logical_scene_id, chunk_coord},
+         _from,
+         state
+       ) do
     {reply, next_state} =
       case route_or_materialize(state, logical_scene_id, chunk_coord) do
         {:ok, assignment, st} ->
@@ -1164,8 +1168,15 @@ defmodule WorldServer.Voxel.MapLedger do
          scene_node_registry: registry
        }) do
     case WorldServer.Voxel.SceneNodeRegistry.assign_region(registry, assignment.region_id) do
-      {:ok, scene_node} ->
+      {:ok, scene_node} when is_atom(scene_node) and not is_nil(scene_node) ->
         {:ok, %{assignment | assigned_scene_node: scene_node}}
+
+      {:ok, nil} ->
+        CliObserve.emit("voxel_region_put_invalid_scene_node", fn ->
+          %{logical_scene_id: assignment.logical_scene_id, region_id: assignment.region_id}
+        end)
+
+        {:error, :scene_node_unassigned}
 
       {:error, :no_scene_nodes} ->
         CliObserve.emit("voxel_region_put_no_scene_nodes", fn ->
@@ -1438,11 +1449,121 @@ defmodule WorldServer.Voxel.MapLedger do
   # {:ok, assignment, next_state} | {:error, reason, next_state}。失败回滚到原 state。
   defp route_or_materialize(state, logical_scene_id, chunk_coord) do
     case route_chunk_in_state(state, logical_scene_id, chunk_coord) do
-      {:ok, assignment} -> ensure_live_lease(state, assignment)
-      {:error, :unassigned_chunk} -> ensure_region_in_state(state, logical_scene_id, chunk_coord)
-      {:error, reason} -> {:error, reason, state}
+      {:ok, assignment} ->
+        with {:ok, live_assignment, st} <- ensure_live_scene_owner(state, assignment) do
+          ensure_live_lease(st, live_assignment)
+        end
+
+      {:error, :unassigned_chunk} ->
+        ensure_region_in_state(state, logical_scene_id, chunk_coord)
+
+      {:error, reason} ->
+        {:error, reason, state}
     end
   end
+
+  defp ensure_live_scene_owner(%{scene_node_registry: nil} = state, assignment) do
+    {:ok, assignment, state}
+  end
+
+  defp ensure_live_scene_owner(%{scene_node_registry: registry} = state, assignment) do
+    case live_scene_nodes(registry) do
+      {:ok, nodes} ->
+        if assignment.assigned_scene_node in nodes do
+          {:ok, assignment, state}
+        else
+          reassign_stale_scene_owner(state, assignment, nodes)
+        end
+
+      {:error, reason} ->
+        CliObserve.emit("voxel_region_scene_owner_liveness_check_failed", fn ->
+          %{
+            logical_scene_id: assignment.logical_scene_id,
+            region_id: assignment.region_id,
+            assigned_scene_node: assignment.assigned_scene_node,
+            reason: inspect(reason)
+          }
+        end)
+
+        {:ok, assignment, state}
+    end
+  end
+
+  defp live_scene_nodes(registry) do
+    case WorldServer.Voxel.SceneNodeRegistry.snapshot(registry) do
+      %{join_order: nodes} when is_list(nodes) ->
+        {:ok, Enum.filter(nodes, &valid_scene_node?/1)}
+
+      other ->
+        {:error, {:bad_registry_snapshot, other}}
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp reassign_stale_scene_owner(state, assignment, live_nodes) do
+    case WorldServer.Voxel.SceneNodeRegistry.reassign_region(
+           state.scene_node_registry,
+           assignment.region_id
+         ) do
+      {:ok, scene_node} when is_atom(scene_node) and not is_nil(scene_node) ->
+        reassigned = %{assignment | assigned_scene_node: scene_node}
+        state_with_assignment = put_in(state.assignments[assignment.region_id], reassigned)
+
+        case issue_lease_for_assignment(
+               state_with_assignment,
+               reassigned,
+               reassigned.owner_scene_instance_ref,
+               ttl_ms: state.materialized_lease_ttl_ms
+             ) do
+          {{:ok, lease}, next_state} ->
+            next_assignment = next_state.assignments[assignment.region_id]
+
+            CliObserve.emit("voxel_region_scene_owner_reassigned", fn ->
+              %{
+                logical_scene_id: assignment.logical_scene_id,
+                region_id: assignment.region_id,
+                old_scene_node: assignment.assigned_scene_node,
+                new_scene_node: scene_node,
+                live_scene_nodes: live_nodes,
+                lease_id: lease.lease_id,
+                owner_epoch: lease.owner_epoch
+              }
+            end)
+
+            {:ok, next_assignment, next_state}
+
+          {{:error, reason}, _state} ->
+            {:error, reason, state}
+        end
+
+      {:error, :no_scene_nodes} ->
+        CliObserve.emit("voxel_region_scene_owner_reassign_failed", fn ->
+          %{
+            logical_scene_id: assignment.logical_scene_id,
+            region_id: assignment.region_id,
+            old_scene_node: assignment.assigned_scene_node,
+            reason: :no_scene_nodes
+          }
+        end)
+
+        {:error, :scene_node_unassigned, state}
+
+      {:ok, nil} ->
+        CliObserve.emit("voxel_region_scene_owner_reassign_failed", fn ->
+          %{
+            logical_scene_id: assignment.logical_scene_id,
+            region_id: assignment.region_id,
+            old_scene_node: assignment.assigned_scene_node,
+            reason: :invalid_scene_node
+          }
+        end)
+
+        {:error, :scene_node_unassigned, state}
+    end
+  end
+
+  defp valid_scene_node?(node), do: is_atom(node) and not is_nil(node)
 
   # 评审 F4:取代 24h TTL 创可贴。route 命中一个 lease 已过期 / 处于刷新窗口内的 region 时,
   # **原地续约**(re-issue:新单调 epoch + 重发写令牌 + 更新目录行,均原子)而非端出一个会让每

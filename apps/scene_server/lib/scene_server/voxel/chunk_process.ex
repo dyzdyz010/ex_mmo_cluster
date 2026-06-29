@@ -25,6 +25,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Field.Provisioners.Emergence
   alias SceneServer.Voxel.Field.Provisioners.StructuralStress
   alias SceneServer.Voxel.Hash
+  alias SceneServer.Voxel.LodProjection
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
@@ -588,8 +589,9 @@ defmodule SceneServer.Voxel.ChunkProcess do
     logical_scene_id = Keyword.fetch!(opts, :logical_scene_id)
     chunk_coord = Keyword.fetch!(opts, :chunk_coord)
     worldgen = resolve_worldgen(opts)
+    missing_chunk_policy = resolve_missing_chunk_policy(opts)
 
-    storage =
+    storage_result =
       case Keyword.get(opts, :storage) do
         nil ->
           # Start from the DB-persisted snapshot (terrain + chunk_version), not an
@@ -599,73 +601,87 @@ defmodule SceneServer.Voxel.ChunkProcess do
           # per batch — making every write pay an extra DB round-trip. Loading once
           # here keeps the version consistent.
           #
-          # 阶段3:DB 无行(从未被编辑的纯净 chunk)时,若开启 WorldGen 则确定性程序化生成
-          # 基线地形(version 0,不持久化),否则空 chunk。
-          load_persisted_storage_or_generate(logical_scene_id, chunk_coord, worldgen)
+          # Runtime truth starts from DB-persisted chunk snapshots. Missing or
+          # corrupt rows are explicit materialization failures unless a caller has
+          # opted into a dev/test materialization policy.
+          load_persisted_storage_or_generate(
+            logical_scene_id,
+            chunk_coord,
+            worldgen,
+            missing_chunk_policy
+          )
 
         provided ->
-          provided
+          {:ok, provided, :provided}
       end
-      |> Storage.normalize!()
 
-    lease = normalize_optional_lease(Keyword.get(opts, :lease))
+    with {:ok, storage0, materialization_source} <- storage_result do
+      storage = Storage.normalize!(storage0)
 
-    pending_fence = load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
+      lease = normalize_optional_lease(Keyword.get(opts, :lease))
 
-    simulators = resolve_simulators(opts)
-    simulation_tick = SimulationTick.new(simulators)
-    schedule_simulation_tick()
+      pending_fence = load_persisted_fence(storage.logical_scene_id, storage.chunk_coord, lease)
 
-    # 梯队1 step1.1b(TIME-1):从持久化恢复 cell_tick/sim_time_ms,并加 restart gap 保证
-    # 跨重启/所有权变更严格单调(逻辑时钟允许跳变,只要不回退)。无持久化行则从 0 起。
-    {restored_cell_tick, restored_sim_time_ms} =
-      restore_cell_time(storage.logical_scene_id, storage.chunk_coord)
+      simulators = resolve_simulators(opts)
+      simulation_tick = SimulationTick.new(simulators)
+      schedule_simulation_tick()
 
-    state =
-      %{
-        logical_scene_id: storage.logical_scene_id,
-        chunk_coord: storage.chunk_coord,
-        storage: storage,
-        lease: lease,
-        cell_tick: restored_cell_tick,
-        sim_time_ms: restored_sim_time_ms,
-        subscribers: %{},
-        subscriber_monitors: %{},
-        pending_fence: pending_fence,
-        # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
-        # attribution and downstream destroy_part dispatch. Tests inject
-        # stubbed names; production wiring uses module-named singletons.
-        object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
-        chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
-        # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
-        simulation_tick: simulation_tick,
-        # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
-        # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
-        simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
-        # Phase 6: per-region FieldTickWorker tracking.
-        # field_regions:        %{region_id => worker_pid}
-        # field_region_monitors: %{monitor_ref => region_id}
-        # field_region_sources: %{source_key => region_id}
-        # field_region_source_keys: %{region_id => source_key}
-        # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
-        field_regions: %{},
-        field_region_monitors: %{},
-        field_region_sources: %{},
-        field_region_source_keys: %{},
-        field_region_cleanup_links: %{},
-        field_refresh_pending?: false,
-        # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
-        # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
-        auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true),
-        # 阶段3 step3.2:idle 驱逐——无订阅者且无活跃 field region 连续 idle 超时则自停,
-        # 让万级 chunk 内存有界(ChunkDirectory 的 alive? 检查在再访问时重启,纯净 chunk 由
-        # WorldGen 重生成、已编辑 chunk 从 DB 重载)。默认禁用(单测的 chunk 不被收走)。
-        idle_eviction: resolve_idle_eviction(opts),
-        idle_ticks: 0
-      }
+      # 梯队1 step1.1b(TIME-1):从持久化恢复 cell_tick/sim_time_ms,并加 restart gap 保证
+      # 跨重启/所有权变更严格单调(逻辑时钟允许跳变,只要不回退)。无持久化行则从 0 起。
+      {restored_cell_tick, restored_sim_time_ms} =
+        restore_cell_time(storage.logical_scene_id, storage.chunk_coord)
 
-    schedule_idle_check(state.idle_eviction)
-    {:ok, state}
+      state =
+        %{
+          logical_scene_id: storage.logical_scene_id,
+          chunk_coord: storage.chunk_coord,
+          storage: storage,
+          materialization_source: materialization_source,
+          lease: lease,
+          cell_tick: restored_cell_tick,
+          sim_time_ms: restored_sim_time_ms,
+          subscribers: %{},
+          subscriber_monitors: %{},
+          pending_fence: pending_fence,
+          # Phase 4 (D7):wired to ObjectRegistry / ChunkDirectory for damage
+          # attribution and downstream destroy_part dispatch. Tests inject
+          # stubbed names; production wiring uses module-named singletons.
+          object_registry: Keyword.get(opts, :object_registry, SceneServer.Voxel.ObjectRegistry),
+          chunk_directory: Keyword.get(opts, :chunk_directory, SceneServer.Voxel.ChunkDirectory),
+          # Phase 5.E:per-chunk low-frequency simulation tick scheduler。
+          simulation_tick: simulation_tick,
+          # Phase 5.E:optional pull-mode邻 chunk 查询函数。默认 nil
+          # （未配置时 simulator 拿到的 env.neighbor_lookup = nil）。
+          simulation_neighbor_lookup: Keyword.get(opts, :simulation_neighbor_lookup, nil),
+          # Phase 6: per-region FieldTickWorker tracking.
+          # field_regions:        %{region_id => worker_pid}
+          # field_region_monitors: %{monitor_ref => region_id}
+          # field_region_sources: %{source_key => region_id}
+          # field_region_source_keys: %{region_id => source_key}
+          # field_region_cleanup_links: %{source_key => [%{chunk_coord:, region_id:}]}
+          field_regions: %{},
+          field_region_monitors: %{},
+          field_region_sources: %{},
+          field_region_source_keys: %{},
+          field_region_cleanup_links: %{},
+          field_refresh_pending?: false,
+          # 世界内容驱动场 provisioning 总开关(默认开)。手动编排 field tick 做确定性
+          # kernel→truth 断言的测试可关掉它,独占控制 field(避免 auto region 干扰)。
+          auto_field_provisioning?: Keyword.get(opts, :auto_field_provisioning, true),
+          # 阶段3 step3.2:idle 驱逐——无订阅者且无活跃 field region 连续 idle 超时则自停,
+          # 让万级 chunk 内存有界(ChunkDirectory 的 alive? 检查在再访问时重启,chunk 从 DB
+          # 重载；dev WorldGen 仅显式 opt-in)。默认禁用(单测的 chunk 不被收走)。
+          idle_eviction: resolve_idle_eviction(opts),
+          idle_ticks: 0
+        }
+
+      schedule_idle_check(state.idle_eviction)
+      {:ok, state}
+    else
+      {:error, reason} ->
+        emit_chunk_materialization_failed(logical_scene_id, chunk_coord, reason)
+        {:stop, reason}
+    end
   end
 
   # idle 驱逐配置:opt `:idle_eviction`([enabled?:, check_ms:, evict_after_ms:] | false)覆盖
@@ -1407,6 +1423,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
        logical_scene_id: state.logical_scene_id,
        chunk_coord: state.chunk_coord,
        chunk_version: state.storage.chunk_version,
+       materialization_source: state.materialization_source,
        storage: state.storage,
        has_lease?: not is_nil(state.lease),
        lease: state.lease,
@@ -1549,9 +1566,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   # 阶段3 step3.2:idle 驱逐。无订阅者 + 无活跃 field region 时累计 idle;连续 idle 达阈值即
-  # 自停(:normal),让万级 chunk 内存有界。任一活跃(有订阅者或 field region)则清零。已编辑
-  # 的 chunk 在编辑路径同步落库,纯净 chunk 由 WorldGen 重生成,故停止无数据丢失;ChunkDirectory
-  # 的 alive? 检查在下次访问时重启。
+  # 自停(:normal),让万级 chunk 内存有界。任一活跃(有订阅者或 field region)则清零。chunk
+  # truth 在编辑路径同步落库;下次访问由 ChunkDirectory 重启并从 DB 重载。
   def handle_info(:idle_check, %{idle_eviction: :disabled} = state), do: {:noreply, state}
 
   def handle_info(:idle_check, %{idle_eviction: eviction} = state) do
@@ -3866,9 +3882,10 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp persist_snapshot(lease, chunk_coord, storage, payload, command_id) do
-    lease
-    |> build_snapshot_attrs(chunk_coord, storage, payload, command_id)
-    |> DataService.Voxel.ChunkSnapshotStore.put_snapshot()
+    case build_snapshot_attrs(lease, chunk_coord, storage, payload, command_id) do
+      {:ok, attrs} -> DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp enqueue_snapshot_persist(_state, nil, _chunk_coord, _storage, _payload) do
@@ -3889,65 +3906,132 @@ defmodule SceneServer.Voxel.ChunkProcess do
       ref = System.unique_integer([:positive, :monotonic])
       payload = payload || encode_snapshot_payload(storage, 0)
       snapshot_bytes = byte_size(payload)
-      attrs = build_snapshot_attrs(lease, chunk_coord, storage, payload)
 
-      case safe_persist_snapshot_with_retry(attrs, 3) do
-        {:ok, persist_result} ->
-          CliObserve.emit("voxel_chunk_persist_committed", fn ->
-            %{
-              logical_scene_id: state.logical_scene_id,
-              chunk_coord: state.chunk_coord,
-              chunk_version: storage.chunk_version,
-              persist_ref: ref,
-              persist_result: persist_result,
-              snapshot_bytes: snapshot_bytes
-            }
-          end)
-
-          {:ok, persist_result, ref, state}
-
+      case build_snapshot_attrs(lease, chunk_coord, storage, payload) do
         {:error, reason} ->
           {:error, reason}
+
+        {:ok, attrs} ->
+          case safe_persist_snapshot_with_retry(attrs, 3) do
+            {:ok, persist_result} ->
+              CliObserve.emit("voxel_chunk_persist_committed", fn ->
+                %{
+                  logical_scene_id: state.logical_scene_id,
+                  chunk_coord: state.chunk_coord,
+                  chunk_version: storage.chunk_version,
+                  persist_ref: ref,
+                  persist_result: persist_result,
+                  snapshot_bytes: snapshot_bytes
+                }
+              end)
+
+              {:ok, persist_result, ref, state}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
       end
     end
   end
 
-  # Loads the persisted chunk snapshot into a Storage on process startup, falling
-  # back to an empty chunk when there is no persisted row or DataService is
-  # unavailable (e.g. `--no-start` tests). Mirrors the decode used by the
-  # persist-stale recovery path so a freshly-(re)started chunk is at the
-  # DB-canonical version + content.
-  defp load_persisted_storage_or_generate(logical_scene_id, chunk_coord, worldgen) do
-    case DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord) do
+  # Loads the persisted chunk snapshot into a Storage on process startup.
+  # Production runtime treats missing/corrupt authoritative rows as explicit
+  # materialization failures. Dev/test callers can opt into WorldGen or empty
+  # storage, and the resulting materialization source remains visible in
+  # `debug_state/1`.
+  defp load_persisted_storage_or_generate(
+         logical_scene_id,
+         chunk_coord,
+         worldgen,
+         missing_chunk_policy
+       ) do
+    case safe_get_persisted_snapshot(logical_scene_id, chunk_coord) do
       {:ok, %{data: data}} when is_binary(data) ->
         case decode_prewarm_payload(data) do
-          {:ok, storage} -> storage
-          _ -> fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
+          {:ok, storage} ->
+            {:ok, storage, :snapshot_store}
+
+          {:error, reason} ->
+            {:error, {:invalid_persisted_chunk_snapshot, reason}}
         end
 
-      _ ->
-        fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
+      {:ok, _snapshot} ->
+        {:error, {:invalid_persisted_chunk_snapshot, :missing_binary_data}}
+
+      {:error, reason} ->
+        materialize_missing_chunk(
+          logical_scene_id,
+          chunk_coord,
+          worldgen,
+          missing_chunk_policy,
+          reason
+        )
     end
-  catch
-    :exit, _ -> fresh_chunk_storage(logical_scene_id, chunk_coord, worldgen)
   end
 
-  # A never-persisted chunk: procedurally generate its baseline terrain when
-  # WorldGen is enabled (阶段3,version 0,not persisted — regenerates identically),
-  # otherwise an empty chunk.
-  defp fresh_chunk_storage(logical_scene_id, chunk_coord, {:worldgen, seed}) do
-    WorldGen.generate_chunk_storage(logical_scene_id, chunk_coord, seed: seed)
+  defp safe_get_persisted_snapshot(logical_scene_id, chunk_coord) do
+    DataService.Voxel.ChunkSnapshotStore.get_snapshot(logical_scene_id, chunk_coord)
   rescue
-    _ -> Storage.empty(logical_scene_id, chunk_coord)
+    exception -> {:error, {:snapshot_store_exception, Exception.message(exception)}}
+  catch
+    :exit, reason -> {:error, {:snapshot_store_exit, reason}}
+    kind, reason -> {:error, {kind, reason}}
   end
 
-  defp fresh_chunk_storage(logical_scene_id, chunk_coord, :disabled) do
-    Storage.empty(logical_scene_id, chunk_coord)
+  # A never-persisted chunk is missing authoritative runtime data. Production
+  # must materialize world data before scene runtime; these arms are explicit
+  # dev/test materialization choices, not silent fallbacks.
+  defp materialize_missing_chunk(
+         logical_scene_id,
+         chunk_coord,
+         {:worldgen, seed},
+         _policy,
+         reason
+       ) do
+    try do
+      storage = WorldGen.generate_chunk_storage(logical_scene_id, chunk_coord, seed: seed)
+
+      CliObserve.emit("voxel_chunk_dev_worldgen_materialized", fn ->
+        %{
+          logical_scene_id: logical_scene_id,
+          chunk_coord: chunk_coord,
+          seed: seed,
+          reason: reason
+        }
+      end)
+
+      {:ok, storage, {:dev_worldgen, reason}}
+    rescue
+      exception ->
+        {:error, {:dev_worldgen_materialization_failed, Exception.message(exception)}}
+    catch
+      kind, caught_reason ->
+        {:error, {:dev_worldgen_materialization_failed, {kind, caught_reason}}}
+    end
+  end
+
+  defp materialize_missing_chunk(logical_scene_id, chunk_coord, :disabled, :empty, reason) do
+    CliObserve.emit("voxel_chunk_empty_materialized", fn ->
+      %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: chunk_coord,
+        reason: reason,
+        policy: :empty
+      }
+    end)
+
+    {:ok, Storage.empty(logical_scene_id, chunk_coord), {:empty_policy, reason}}
+  end
+
+  defp materialize_missing_chunk(logical_scene_id, chunk_coord, :disabled, :error, reason) do
+    {:error,
+     {:missing_authoritative_chunk_snapshot,
+      %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord, reason: reason}}}
   end
 
   # WorldGen config: opt `:worldgen` (`[enabled?:, seed:]` | false) overrides the
-  # `:scene_server, :voxel_worldgen` app env. Default DISABLED so unit tests that
-  # start a ChunkProcess keep getting an empty chunk; production config opts in.
+  # `:scene_server, :voxel_worldgen` app env. Default DISABLED; production should
+  # use launcher/world-pack/materialization, not runtime noise.
   defp resolve_worldgen(opts) do
     config =
       case Keyword.fetch(opts, :worldgen) do
@@ -3962,6 +4046,29 @@ defmodule SceneServer.Voxel.ChunkProcess do
     else
       :disabled
     end
+  end
+
+  defp resolve_missing_chunk_policy(opts) do
+    opts
+    |> Keyword.get(
+      :missing_chunk_policy,
+      Application.get_env(:scene_server, :voxel_missing_chunk_policy, :error)
+    )
+    |> normalize_missing_chunk_policy()
+  end
+
+  defp normalize_missing_chunk_policy(policy) when policy in [:error, "error"], do: :error
+  defp normalize_missing_chunk_policy(policy) when policy in [:empty, "empty"], do: :empty
+  defp normalize_missing_chunk_policy(_policy), do: :error
+
+  defp emit_chunk_materialization_failed(logical_scene_id, chunk_coord, reason) do
+    CliObserve.emit("voxel_chunk_materialization_failed", fn ->
+      %{
+        logical_scene_id: logical_scene_id,
+        chunk_coord: chunk_coord,
+        reason: reason
+      }
+    end)
   end
 
   # 梯队1 step1.1b(TIME-1):从持久化 chunk 行恢复 cell_tick/sim_time_ms。cell_tick 加
@@ -4053,7 +4160,7 @@ defmodule SceneServer.Voxel.ChunkProcess do
   defp build_snapshot_attrs(lease, chunk_coord, storage, payload, command_id \\ nil) do
     chunk_hash = Codec.chunk_hash(storage)
 
-    attrs =
+    base_attrs =
       lease
       |> Map.take([
         :logical_scene_id,
@@ -4072,13 +4179,22 @@ defmodule SceneServer.Voxel.ChunkProcess do
         data: payload
       })
 
-    # AUTH-4(step1.5b-1):仅单方块编辑路径携带 command_id;事务逐 chunk 写传 nil(prefab 幂等
-    # 在 gate 边界单独处理,见 step1.5b-2),内部写也为 nil。ChunkSnapshotStore.do_put 仅在
-    # command_id 非 nil 时同事务 record_once。
-    if is_binary(command_id) do
-      Map.put(attrs, :command_id, command_id)
+    with {:ok, lod_projection_cells} <- LodProjection.cells_for_storage(storage) do
+      attrs = Map.put(base_attrs, :lod_projection_cells, lod_projection_cells)
+
+      # AUTH-4(step1.5b-1):仅单方块编辑路径携带 command_id;事务逐 chunk 写传 nil(prefab 幂等
+      # 在 gate 边界单独处理,见 step1.5b-2),内部写也为 nil。ChunkSnapshotStore.do_put 仅在
+      # command_id 非 nil 时同事务 record_once。
+      attrs =
+        if is_binary(command_id) do
+          Map.put(attrs, :command_id, command_id)
+        else
+          attrs
+        end
+
+      {:ok, attrs}
     else
-      attrs
+      {:error, reason} -> {:error, {:lod_projection_failed, reason}}
     end
   end
 

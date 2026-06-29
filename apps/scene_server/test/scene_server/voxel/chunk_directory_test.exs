@@ -7,6 +7,7 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
   alias DataService.Voxel.WriteTokenStore
+  alias SceneServer.CliObserve
   alias SceneServer.Voxel.ChunkDirectory
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.Codec
@@ -220,6 +221,55 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
     assert Storage.macro_header_at(prewarmed_storage, {2, 0, 0}).mode ==
              MacroCellHeader.cell_mode_solid_block()
+  end
+
+  test "prewarm_handoff rejects missing canonical snapshots without starting empty chunks" do
+    previous_log = Application.get_env(:scene_server, :cli_observe_log)
+    observe_path = observe_path("prewarm-missing-snapshot")
+    File.rm(observe_path)
+    Application.put_env(:scene_server, :cli_observe_log, observe_path)
+
+    on_exit(fn ->
+      CliObserve.flush()
+
+      case previous_log do
+        nil -> Application.delete_env(:scene_server, :cli_observe_log)
+        value -> Application.put_env(:scene_server, :cli_observe_log, value)
+      end
+    end)
+
+    chunk_sup = start_supervised!(VoxelChunkSup)
+    directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
+    scene_id = unique_scene_id()
+    old_lease = lease(scene_id)
+    new_lease = %{old_lease | lease_id: 101, owner_scene_instance_ref: 2_000, owner_epoch: 2}
+
+    handoff = %{
+      migration_id: "migration-missing-snapshot",
+      logical_scene_id: scene_id,
+      region_id: old_lease.region_id,
+      new_lease: new_lease,
+      planned_slices: [
+        %{
+          slice_id: "migration-missing-snapshot:slice:0",
+          bounds_chunk_min: {1, 0, 0},
+          bounds_chunk_max: {2, 1, 1}
+        }
+      ]
+    }
+
+    assert {:error, {:missing_authoritative_chunk_snapshot, meta}} =
+             ChunkDirectory.prewarm_handoff(directory, handoff)
+
+    assert meta.logical_scene_id == scene_id
+    assert meta.chunk_coord == {1, 0, 0}
+    assert meta.stage == :migration_prewarm
+    assert ChunkDirectory.snapshot(directory).chunk_count == 0
+
+    CliObserve.flush()
+    log = File.read!(observe_path)
+    assert log =~ ~s(event="voxel_migration_prewarm_missing_snapshot")
+    assert log =~ "missing_authoritative_chunk_snapshot"
   end
 
   describe "lookup_chunk_pid/3 (Phase 4-bis D1)" do
@@ -466,7 +516,10 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
       # 等目录处理 subscriber DOWN —— 用一次同步 call 作为屏障(目录已串行处理完 DOWN)。
       _ = ChunkDirectory.snapshot(directory)
-      wait_until(fn -> not MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber) end)
+
+      wait_until(fn ->
+        not MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber)
+      end)
 
       refute MapSet.member?(directory_subscribers(directory, scene_id, {3, 3, 3}), subscriber)
       assert Process.alive?(directory)
@@ -481,8 +534,12 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   defp wait_until(fun, attempts \\ 100) do
     cond do
-      attempts <= 0 -> :ok
-      fun.() -> :ok
+      attempts <= 0 ->
+        :ok
+
+      fun.() ->
+        :ok
+
       true ->
         Process.sleep(10)
         wait_until(fun, attempts - 1)
@@ -491,6 +548,13 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
 
   defp unique_scene_id do
     System.unique_integer([:positive, :monotonic]) + 10_000_000
+  end
+
+  defp observe_path(name) do
+    Path.expand(
+      "../../../../../.demo/observe/chunk-directory-#{name}-#{System.unique_integer([:positive])}.log",
+      __DIR__
+    )
   end
 
   defp lease(scene_id) do

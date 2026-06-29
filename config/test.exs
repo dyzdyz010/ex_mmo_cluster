@@ -34,6 +34,11 @@ config :libcluster, topologies: []
 
 config :beacon_server, startup_banner_enabled: false
 
+# Most scene unit tests build isolated chunks without a launcher/world-pack
+# materialization step. Keep that fixture path explicit so production runtime
+# can default to failing on missing authoritative chunk snapshots.
+config :scene_server, :voxel_missing_chunk_policy, :empty
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

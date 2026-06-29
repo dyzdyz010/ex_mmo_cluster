@@ -15,6 +15,8 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
 
   @default_retry_ms 1_000
   @default_refresh_ms :timer.minutes(30)
+  @default_baseline_center_chunk {0, 0, 0}
+  @default_baseline_radius 3
 
   @doc "Starts the default region bootstrapper."
   def start_link(opts \\ []) do
@@ -31,16 +33,34 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
   def init(opts) do
     enabled? = Keyword.get(opts, :enabled?, true)
 
+    baseline_center_chunk =
+      Keyword.get(opts, :baseline_center_chunk, @default_baseline_center_chunk)
+
+    baseline_radius = Keyword.get(opts, :baseline_radius, @default_baseline_radius)
+
+    baseline_footprint_chunks =
+      Keyword.get(
+        opts,
+        :baseline_footprint_chunks,
+        active_window_chunk_coords(baseline_center_chunk, baseline_radius)
+      )
+
     state = %{
       enabled?: enabled?,
       status: if(enabled?, do: :starting, else: :disabled),
       logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
       retry_ms: Keyword.get(opts, :retry_ms, @default_retry_ms),
       refresh_ms: Keyword.get(opts, :refresh_ms, @default_refresh_ms),
-      # 阶段7-bis:出生点地形现在由 ChunkProcess 首触达懒 WorldGen 生成,bootstrapper 只
-      # 预物化出生点 region(暖启,省掉首次订阅等物化),不再 bulk-seed 地形 → 冷启动不再
-      # 背一次性 seed 的 DB I/O。设 seed_terrain?: true 可恢复旧 bulk-seed(默认关)。
-      seed_terrain?: Keyword.get(opts, :seed_terrain?, false),
+      # Runtime ChunkProcess no longer generates missing chunks. The bootstrapper
+      # is therefore an explicit dev/demo materialization step: route regions,
+      # write authoritative starter snapshots, then optionally rebuild LOD
+      # projection rows so near voxel truth and far LOD start from the same store.
+      seed_terrain?: Keyword.get(opts, :seed_terrain?, true),
+      baseline_center_chunk: baseline_center_chunk,
+      baseline_radius: baseline_radius,
+      baseline_footprint_chunks: baseline_footprint_chunks,
+      rebuild_lod_projection?: Keyword.get(opts, :rebuild_lod_projection?, true),
+      lod_projection_rebuild_opts: Keyword.get(opts, :lod_projection_rebuild_opts, []),
       seed_fun: Keyword.get(opts, :seed_fun, &DevSeed.ensure_default_region/1),
       attempts: 0,
       last_error: nil,
@@ -66,14 +86,21 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
 
   @impl true
   def handle_call(:snapshot, _from, state) do
-    {:reply, Map.drop(state, [:seed_fun]), state}
+    {:reply, snapshot_state(state), state}
   end
 
   defp prepare_region(%{enabled?: false} = state), do: state
 
   defp prepare_region(state) do
     attempts = state.attempts + 1
-    opts = [logical_scene_id: state.logical_scene_id, seed_terrain?: state.seed_terrain?]
+
+    opts = [
+      logical_scene_id: state.logical_scene_id,
+      seed_terrain?: state.seed_terrain?,
+      baseline_footprint_chunks: state.baseline_footprint_chunks,
+      rebuild_lod_projection?: state.rebuild_lod_projection?,
+      lod_projection_rebuild_opts: state.lod_projection_rebuild_opts
+    ]
 
     case call_seed(state.seed_fun, opts) do
       {:ok, summary} ->
@@ -121,7 +148,12 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
     CliObserve.emit("voxel_default_region_bootstrap_ready", %{
       logical_scene_id: state.logical_scene_id,
       attempts: state.attempts,
-      status: inspect(state.status)
+      status: inspect(state.status),
+      seed_terrain?: state.seed_terrain?,
+      baseline_chunk_count: length(state.baseline_footprint_chunks),
+      baseline_center_chunk: Tuple.to_list(state.baseline_center_chunk),
+      baseline_radius: state.baseline_radius,
+      rebuild_lod_projection?: state.rebuild_lod_projection?
     })
   end
 
@@ -129,7 +161,27 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
     CliObserve.emit("voxel_default_region_bootstrap_retry", %{
       logical_scene_id: state.logical_scene_id,
       attempts: state.attempts,
+      seed_terrain?: state.seed_terrain?,
+      baseline_chunk_count: length(state.baseline_footprint_chunks),
+      baseline_center_chunk: Tuple.to_list(state.baseline_center_chunk),
+      baseline_radius: state.baseline_radius,
+      rebuild_lod_projection?: state.rebuild_lod_projection?,
       reason: inspect(reason)
     })
+  end
+
+  defp active_window_chunk_coords({center_x, center_y, center_z}, radius)
+       when is_integer(radius) and radius >= 0 do
+    for cx <- (center_x - radius)..(center_x + radius),
+        cy <- (center_y - radius)..(center_y + radius),
+        cz <- (center_z - radius)..(center_z + radius) do
+      {cx, cy, cz}
+    end
+  end
+
+  defp snapshot_state(state) do
+    state
+    |> Map.drop([:seed_fun, :baseline_footprint_chunks])
+    |> Map.put(:baseline_chunk_count, length(state.baseline_footprint_chunks))
   end
 end

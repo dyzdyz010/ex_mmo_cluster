@@ -32,6 +32,8 @@ defmodule AuthServerWeb.Router do
     pipe_through :api
 
     post "/auto_login", IngameController, :auto_login
+    get "/voxel/world_manifest", IngameController, :voxel_world_manifest
+    get "/voxel/world_diff", IngameController, :voxel_world_diff
     post "/voxel/dev_seed", IngameController, :voxel_dev_seed
     post "/voxel/set_temperature", IngameController, :voxel_set_temperature
     post "/voxel/dev_heat_voxel", IngameController, :voxel_dev_heat_voxel

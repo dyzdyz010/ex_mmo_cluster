@@ -7,6 +7,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore
+  alias DataService.Voxel.LodHeightmapStore
   alias DataService.Voxel.WriteTokenStore
   alias SceneServer.CliObserve
   alias SceneServer.Voxel.AttributeCatalog
@@ -24,6 +25,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   setup do
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
+    LodHeightmapStore.reset()
     WriteTokenStore.reset()
 
     previous_log = Application.get_env(:scene_server, :cli_observe_log)
@@ -637,6 +639,9 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, %{storage: stored_storage}} = Codec.decode_chunk_snapshot_payload(snapshot.data)
     assert stored_storage.chunk_version == 2
 
+    assert {:ok, %{heights: <<17::unsigned-big-integer-size(16)>>}} =
+             LodHeightmapStore.heightmap_region(1, 16, 16, 16, 1, 1)
+
     debug = ChunkProcess.debug_state(chunk)
     assert debug.chunk_version == 2
     assert debug.lease.lease_id == lease.lease_id
@@ -652,7 +657,11 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, %{changed?: true, chunk_version: 1, authoritative: [solid_cell]}} =
              ChunkProcess.apply_intent(
                chunk,
-               intent_attrs(lease, request_id: 70, macro: {0, 0, 0}, block: NormalBlockData.new(7))
+               intent_attrs(lease,
+                 request_id: 70,
+                 macro: {0, 0, 0},
+                 block: NormalBlockData.new(7)
+               )
              )
 
     assert solid_cell.macro_index == macro_index
@@ -693,12 +702,18 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, %{chunk_version: 1}} =
              ChunkProcess.apply_intent(
                chunk,
-               intent_attrs(lease, request_id: 60, macro: {0, 0, 0}, block: NormalBlockData.new(3))
+               intent_attrs(lease,
+                 request_id: 60,
+                 macro: {0, 0, 0},
+                 block: NormalBlockData.new(3)
+               )
              )
 
     # known_version == current (1): subscription established WITHOUT re-snapshot. This is what makes a
     # known_version-carrying resubscribe (the Step B resync path) cheap when the client is already current.
-    assert {:ok, _payload} = ChunkProcess.subscribe(chunk, self(), request_id: 80, known_version: 1)
+    assert {:ok, _payload} =
+             ChunkProcess.subscribe(chunk, self(), request_id: 80, known_version: 1)
+
     refute_receive {:voxel_chunk_snapshot_payload, _}
 
     # known_version stale (0 < current 1): the snapshot IS re-pushed — the version-driven re-snapshot the
@@ -707,6 +722,27 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert_receive {:voxel_chunk_snapshot_payload, ^fresh}
     assert {:ok, %{storage: decoded}} = Codec.decode_chunk_snapshot_payload(fresh)
     assert decoded.chunk_version == 1
+
+    # Missing-client sentinel: version 0 is a valid chunk version, so a client
+    # cannot use 0 to mean "I do not have this chunk". The u64 max sentinel
+    # must force a snapshot even when the authoritative chunk is still version 0.
+    empty =
+      start_supervised!(
+        Supervisor.child_spec(
+          {ChunkProcess, logical_scene_id: 1, chunk_coord: {91, 92, 93}},
+          id: {:chunk_process_empty_sentinel, 91, 92, 93}
+        )
+      )
+
+    assert {:ok, empty_payload} =
+             ChunkProcess.subscribe(empty, self(),
+               request_id: 82,
+               known_version: 0xFFFF_FFFF_FFFF_FFFF
+             )
+
+    assert_receive {:voxel_chunk_snapshot_payload, ^empty_payload}
+    assert {:ok, %{storage: empty_decoded}} = Codec.decode_chunk_snapshot_payload(empty_payload)
+    assert empty_decoded.chunk_version == 0
   end
 
   test "apply_intent skips identical solid cells without persisting or pushing deltas" do

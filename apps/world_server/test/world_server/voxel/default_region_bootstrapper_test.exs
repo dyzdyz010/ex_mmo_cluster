@@ -23,7 +23,70 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapperTest do
 
     assert_receive {:seed_called, opts}, 500
     assert Keyword.fetch!(opts, :logical_scene_id) == 77
-    assert %{status: :ready, attempts: 1} = DefaultRegionBootstrapper.snapshot(bootstrapper)
+    assert Keyword.fetch!(opts, :seed_terrain?) == true
+    assert Keyword.fetch!(opts, :rebuild_lod_projection?) == true
+    assert Keyword.fetch!(opts, :lod_projection_rebuild_opts) == []
+
+    baseline = Keyword.fetch!(opts, :baseline_footprint_chunks)
+    assert length(baseline) == 343
+    assert {0, 0, 0} in baseline
+    assert {-3, -3, -3} in baseline
+    assert {3, 3, 3} in baseline
+
+    assert %{status: :ready, attempts: 1, baseline_chunk_count: 343} =
+             DefaultRegionBootstrapper.snapshot(bootstrapper)
+  end
+
+  test "can prepare a custom active baseline window" do
+    parent = self()
+
+    seed_fun = fn opts ->
+      send(parent, {:seed_called, opts})
+      {:ok, %{status: :created}}
+    end
+
+    start_supervised!(
+      {DefaultRegionBootstrapper,
+       enabled?: true,
+       logical_scene_id: 79,
+       seed_fun: seed_fun,
+       baseline_center_chunk: {2, 1, -1},
+       baseline_radius: 1,
+       retry_ms: 10,
+       refresh_ms: :timer.hours(1)}
+    )
+
+    assert_receive {:seed_called, opts}, 500
+    baseline = Keyword.fetch!(opts, :baseline_footprint_chunks)
+    assert length(baseline) == 27
+    assert {2, 1, -1} in baseline
+    assert {1, 0, -2} in baseline
+    assert {3, 2, 0} in baseline
+  end
+
+  test "can explicitly disable terrain seed and LOD rebuild" do
+    parent = self()
+
+    seed_fun = fn opts ->
+      send(parent, {:seed_called, opts})
+      {:ok, %{status: :created}}
+    end
+
+    start_supervised!(
+      {DefaultRegionBootstrapper,
+       enabled?: true,
+       logical_scene_id: 78,
+       seed_fun: seed_fun,
+       seed_terrain?: false,
+       rebuild_lod_projection?: false,
+       retry_ms: 10,
+       refresh_ms: :timer.hours(1)}
+    )
+
+    assert_receive {:seed_called, opts}, 500
+    assert Keyword.fetch!(opts, :logical_scene_id) == 78
+    assert Keyword.fetch!(opts, :seed_terrain?) == false
+    assert Keyword.fetch!(opts, :rebuild_lod_projection?) == false
   end
 
   test "retries until scene ownership is ready" do

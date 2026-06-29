@@ -300,11 +300,17 @@ defmodule GateServer.TcpConnection do
   @impl true
   def handle_info({:voxel_chunk_snapshot_payload, payload}, %{socket: socket} = state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("voxel_chunk_snapshot_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload)
-    })
+    GateServer.CliObserve.emit(
+      "voxel_chunk_snapshot_forwarded",
+      Map.merge(
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload)
+        },
+        voxel_snapshot_observe_fields(payload)
+      )
+    )
 
     send_encoded(socket, {:voxel_chunk_snapshot_payload, payload})
     {:noreply, state}
@@ -312,11 +318,17 @@ defmodule GateServer.TcpConnection do
 
   def handle_info({:voxel_chunk_delta_payload, payload}, %{socket: socket} = state)
       when is_binary(payload) do
-    GateServer.CliObserve.emit("voxel_chunk_delta_forwarded", %{
-      connection_pid: self(),
-      cid: state.cid,
-      bytes: byte_size(payload)
-    })
+    GateServer.CliObserve.emit(
+      "voxel_chunk_delta_forwarded",
+      Map.merge(
+        %{
+          connection_pid: self(),
+          cid: state.cid,
+          bytes: byte_size(payload)
+        },
+        voxel_delta_observe_fields(payload)
+      )
+    )
 
     send_encoded(socket, {:voxel_chunk_delta_payload, payload})
     {:noreply, state}
@@ -737,7 +749,10 @@ defmodule GateServer.TcpConnection do
       cid: state.cid,
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk
+      center_chunk: request.center_chunk,
+      radius: request.radius_l_inf,
+      known_count: request |> Map.get(:known, []) |> length(),
+      known_sample: voxel_known_sample(request)
     })
 
     case validate_voxel_subscribe_radius(request.radius_l_inf) do
@@ -782,12 +797,13 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  # Far/LOD terrain: compute the authoritative surface heightmap from WorldGen and
-  # stream it back. The client renders these server heights directly (no local
-  # generation), so the server stays the single source of truth.
+  # Far/LOD terrain: stream the persistent heightmap projection derived from
+  # authoritative voxel chunks. Missing projection cells are explicit errors;
+  # the runtime path must not call WorldGen noise or snapshot scans as fallback.
   defp dispatch({:voxel_heightmap_request, request}, %{status: :in_scene, socket: socket} = state) do
     %{
       request_id: request_id,
+      logical_scene_id: logical_scene_id,
       origin_x: origin_x,
       origin_z: origin_z,
       stride: stride,
@@ -803,37 +819,91 @@ defmodule GateServer.TcpConnection do
         send_result_error(socket, :invalid_heightmap_request, request_id)
 
       true ->
-        heights =
-          SceneServer.Voxel.WorldGen.heightmap_region(
-            origin_x,
-            origin_z,
-            stride,
-            count_x,
-            count_z
-          )
+        case SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region(
+               logical_scene_id,
+               origin_x,
+               origin_z,
+               stride,
+               count_x,
+               count_z
+             ) do
+          {:ok, %{heights: heights, meta: meta} = result} ->
+            materials = Map.get(result, :materials, <<>>)
+            expected_bytes = cells * 2
 
-        send_encoded(
-          socket,
-          {:voxel_heightmap_region,
-           %{
-             request_id: request_id,
-             origin_x: origin_x,
-             origin_z: origin_z,
-             stride: stride,
-             count_x: count_x,
-             count_z: count_z,
-             heights: heights
-           }}
-        )
+            if is_binary(heights) and is_binary(materials) and
+                 byte_size(heights) == expected_bytes and
+                 byte_size(materials) in [0, expected_bytes] do
+              send_encoded(
+                socket,
+                {:voxel_heightmap_region,
+                 %{
+                   request_id: request_id,
+                   origin_x: origin_x,
+                   origin_z: origin_z,
+                   stride: stride,
+                   count_x: count_x,
+                   count_z: count_z,
+                   heights: heights,
+                   materials: materials
+                 }}
+              )
 
-        GateServer.CliObserve.emit("voxel_heightmap_region_sent", %{
-          connection_pid: self(),
-          cid: state.cid,
-          origin: {origin_x, origin_z},
-          stride: stride,
-          count: {count_x, count_z},
-          bytes: byte_size(heights)
-        })
+              GateServer.CliObserve.emit("voxel_heightmap_region_sent", %{
+                connection_pid: self(),
+                cid: state.cid,
+                request_id: request_id,
+                logical_scene_id: logical_scene_id,
+                origin: {origin_x, origin_z},
+                stride: stride,
+                count: {count_x, count_z},
+                height_bytes: byte_size(heights),
+                material_bytes: byte_size(materials),
+                bytes: byte_size(heights) + byte_size(materials),
+                source: Map.get(meta, :source),
+                decoded_chunk_count: Map.get(meta, :decoded_chunk_count),
+                decoded_column_count: Map.get(meta, :decoded_column_count),
+                decoded_cell_count: Map.get(meta, :decoded_cell_count)
+              })
+            else
+              GateServer.CliObserve.emit("voxel_heightmap_region_failed", %{
+                connection_pid: self(),
+                cid: state.cid,
+                request_id: request_id,
+                logical_scene_id: logical_scene_id,
+                origin: {origin_x, origin_z},
+                stride: stride,
+                count: {count_x, count_z},
+                reason:
+                  inspect(
+                    {:invalid_heightmap_region_bytes,
+                     %{
+                       expected_bytes: expected_bytes,
+                       height_bytes:
+                         if(is_binary(heights), do: byte_size(heights), else: :invalid),
+                       material_bytes:
+                         if(is_binary(materials), do: byte_size(materials), else: :invalid)
+                     }}
+                  )
+              })
+
+              send_result_error(socket, :heightmap_authoritative_data_missing, request_id)
+            end
+
+          {:error, reason} ->
+            GateServer.CliObserve.emit("voxel_heightmap_region_failed", %{
+              connection_pid: self(),
+              cid: state.cid,
+              request_id: request_id,
+              logical_scene_id: logical_scene_id,
+              origin: {origin_x, origin_z},
+              stride: stride,
+              count: {count_x, count_z},
+              reason: inspect(reason)
+            })
+
+            send_result_error(socket, :heightmap_authoritative_data_missing, request_id)
+        end
     end
 
     {:ok, state}
@@ -2895,6 +2965,8 @@ defmodule GateServer.TcpConnection do
   # 异步 route+subscribe。成功路径**不发**结果帧(快照即 ACK,worker 用 subscriber=本连接订阅,
   # 快照经 fan-out 直达 socket);路由/订阅失败由 worker 回 `{:voxel_subscribe_failed, ...}` 编 0x68。
   defp dispatch_voxel_subscribe(request, state) do
+    known_versions = voxel_known_versions(Map.get(request, :known, []))
+
     SubscriptionWorker.reconcile(state.voxel_worker, %{
       request_id: request.request_id,
       client_intent_seq: Map.get(request, :client_intent_seq, 0),
@@ -2902,7 +2974,7 @@ defmodule GateServer.TcpConnection do
       center_chunk: request.center_chunk,
       radius: request.radius_l_inf,
       want_snapshot: request.want_snapshot,
-      known: voxel_known_versions(Map.get(request, :known, []))
+      known: known_versions
     })
 
     GateServer.CliObserve.emit("voxel_chunk_subscribe_dispatched", %{
@@ -2911,7 +2983,15 @@ defmodule GateServer.TcpConnection do
       request_id: request.request_id,
       logical_scene_id: request.logical_scene_id,
       center_chunk: request.center_chunk,
-      radius: request.radius_l_inf
+      radius: request.radius_l_inf,
+      want_snapshot: request.want_snapshot,
+      known_count: map_size(known_versions),
+      known_sample:
+        known_versions
+        |> Enum.take(8)
+        |> Enum.map(fn {coord, version} ->
+          %{chunk_coord: coord, chunk_version: version}
+        end)
     })
 
     state
@@ -2940,6 +3020,62 @@ defmodule GateServer.TcpConnection do
       {chunk_coord, chunk_version}
     end)
   end
+
+  defp voxel_known_sample(request) do
+    request
+    |> Map.get(:known, [])
+    |> Enum.take(8)
+    |> Enum.map(fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
+      %{chunk_coord: chunk_coord, chunk_version: chunk_version}
+    end)
+  end
+
+  defp voxel_snapshot_observe_fields(payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_snapshot_payload(payload) do
+      {:ok, %{request_id: request_id, storage: storage}} ->
+        %{
+          request_id: request_id,
+          logical_scene_id: storage.logical_scene_id,
+          chunk_coord: storage.chunk_coord,
+          chunk_version: storage.chunk_version,
+          normal_blocks: length(storage.normal_blocks),
+          refined_cells: length(storage.refined_cells)
+        }
+
+      {:error, reason} ->
+        %{decode_error: reason}
+    end
+  end
+
+  defp voxel_delta_observe_fields(payload) do
+    case SceneServer.Voxel.Codec.decode_chunk_delta_payload(payload) do
+      {:ok, delta} ->
+        %{
+          logical_scene_id: delta.logical_scene_id,
+          chunk_coord: delta.chunk_coord,
+          base_chunk_version: delta.base_chunk_version,
+          new_chunk_version: delta.new_chunk_version,
+          op_count: length(delta.ops),
+          ops_sample: Enum.take(delta.ops, 4) |> Enum.map(&voxel_delta_op_summary/1)
+        }
+
+      {:error, reason} ->
+        %{decode_error: reason}
+    end
+  end
+
+  defp voxel_delta_op_summary(op) do
+    %{
+      delta_kind: Map.get(op, :delta_kind),
+      macro_index: Map.get(op, :macro_index),
+      cell_version: Map.get(op, :cell_version),
+      cell_hash: Map.get(op, :cell_hash),
+      payload_bytes: byte_size_or_zero(Map.get(op, :payload))
+    }
+  end
+
+  defp byte_size_or_zero(value) when is_binary(value), do: byte_size(value)
+  defp byte_size_or_zero(_value), do: 0
 
   defp resolve_udp_peer(%{udp_peer: nil} = state), do: {nil, state}
 
