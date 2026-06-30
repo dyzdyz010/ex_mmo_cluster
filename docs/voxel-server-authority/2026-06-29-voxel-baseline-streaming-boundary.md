@@ -195,14 +195,14 @@ compact 与运行时 checkpoint 同构——都是"基底 + many events → 新 
 | 层 | 高度范围 | WorldGen 产出 | hash 处理 | 可编辑 |
 |---|---|---|---|---|
 | 高空空气 | 地形顶..+100km（卡门线） | 同质（纯空气） | 范围声明 `H_air` 几 KB | ✓（天空岛 = delta） |
-| 地表地形 | -2km..+2km（地形起伏层，待 Step 2 定） | 异质（山川河流洞穴） | 逐 chunk hash | ✓ |
+| 地表地形 | -2km..+2km（地形起伏层，待 Step 2 定） | 异质（高度起伏 + 材料分层；**洞穴/河流/悬空归 delta**，WorldGen v1=2.5D，见 sync-window 设计稿 W-Q6=A） | fixture 抽样校验（D-14，非逐 chunk hash） | ✓ |
 | 深地 | -12km..-2km（科拉超深） | 异质（矿脉/岩层/地心） | 逐 chunk hash | ✓（可挖到地心，D-9） |
 
 ```mermaid
 flowchart TB
   Space["+100km 卡门线(视觉边界)"]
   Air["高空空气层<br/>WorldGen 同质=空气<br/>范围声明 H_air 几 KB<br/>可编辑: 天空岛 = committed delta"]
-  Terrain["地表地形层 -2km..+2km<br/>WorldGen 异质=山川河流<br/>逐 chunk hash<br/>可编辑: committed delta"]
+  Terrain["地表地形层 -2km..+2km<br/>WorldGen 异质=高度场+材料分层<br/>(洞穴/河流/悬空归 delta, W-Q6=A)<br/>可编辑: committed delta"]
   Deep["深地层 -12km..-2km<br/>WorldGen 异质=矿脉/岩层/地心<br/>逐 chunk hash<br/>可编辑: 挖掘 = committed delta, 难度靠材料物性"]
   Space --> Air --> Terrain --> Deep
 ```
@@ -360,6 +360,7 @@ flowchart TD
 - `2026-06-29`:决策稿落档。七项拍板（D-1..D-7）+ 三边界 + 垂直分层 + 范围声明 + 迁移顺序 + 测试矩阵 + 待拍板 Q-1..Q-7。与 `2026-06-29-world-pack-streaming-handoff.md` 的全量物化路线形成对照:handoff 是"确定性 WorldGen 建立之前的过渡"，本稿是"建立之后的目态"。下一步:Step 1 WorldGen 跨端 bit-exact parity 落地。
 - `2026-06-29`(第二轮):Q-1..Q-7 全部拍板，编入 D-6/D-8..D-13。关键修正:Q-1 揭示"可编辑性 ≠ hash 分层"正交解耦——可编辑区 = 整个世界（-12km..+100km），不限高度；hash 分层由 WorldGen 异质性决定。§6 垂直分层重写。深地因 Q-2 可挖到地心且有内容，升级为异质层（逐 chunk hash），难度靠材料物性涌现（D-9）。
 - `2026-06-29`(第三轮):H 极限压缩拍板（D-14）。H 从 per chunk hash（58GB）改为 D merkle root 签名 + golden fixture + 范围声明（KB-MB），降 5 个数量级。依据:baseline = WorldGen + D，客户端能复算 WorldGen（D-4）+ 有 D（下发），per chunk hash 是冗余校验。代价:抽样校验（fixture）而非逐 chunk，靠 fixture 覆盖 + 跨端 CI parity 缓解。修正 §6.3 量级错误（全高 16B = 470GB 非 2.3TB）。§6.3/§4/§8/§10/§11 同步。
+- `2026-06-30`:§6.2 措辞修正（落实下游 sync-window 设计稿 W-Q6=A 拍板）。地表地形层从「异质=山川河流洞穴 / 逐 chunk hash」改为「异质=高度场+材料分层（洞穴/河流/悬空归 delta，WorldGen v1=2.5D）/ fixture 抽样校验」，消解与 W-Q6=A（2.5D baseline、3D 结构归 delta）的矛盾，并与 D-14（fixture 抽样取代 per-chunk hash）一致。元决策签收：本世界 WorldGen 终局地位=「程序化确定性真值（D-4）」，未来世界 authored 可插拔（承接 6-28 §C），二者各管一段。
 
 ---
 
