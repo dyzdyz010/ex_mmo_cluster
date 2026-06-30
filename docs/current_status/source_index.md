@@ -40,9 +40,11 @@ flowchart TD
 | 体素/远景整合 | [`docs/2026-06-28-体素世界与远景渲染-当前真相(整合).md`](../2026-06-28-体素世界与远景渲染-当前真相(整合).md) | 近场/远景/LOD/skirt/远程交互当前整合草稿 |
 | Voxia streaming | [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md) | UE 客户端近场窗口跟随、debug overlay、stdio CLI、server route repair |
 | 远景 LOD 根因 | [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md) | heightmap LOD 和拼接缝隙根因；取数源部分已被唯一事实源取代 |
+| baseline 边界决策 | [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) | 确定性 WorldGen + committed delta + hash 凭证；存储/流送/计算三边界；垂直分层 + 范围声明 |
+| baseline / streaming 实施计划 | [`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md) | 体素生成、流送、Voxia 本地加载与渲染迁移的 Phase 0-8 执行序列；含 H、H gate、canonical 等名词解释 |
+| WorldGen v1 地形算法 | [`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) | Phase 1 确定性地形算法输入；2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 genesis D-delta |
 | Field roadmap | [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) | Phase 7+ 局部场当前推进基准 |
 | Field kernel | [`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) | FieldKernel / FieldRegion / FieldLayer / FieldEffect 架构背景 |
-| baseline 边界决策 | [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) | 确定性 WorldGen + committed delta + hash 凭证；存储/流送/计算三边界；垂直分层 + 范围声明 |
 
 ## 按功能归档视图
 
@@ -62,6 +64,8 @@ flowchart TD
 - [`docs/voxel-server-authority/phase-1d-canonical-persistence.md`](../voxel-server-authority/phase-1d-canonical-persistence.md)
 - [`docs/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../2026-06-28-权威体素唯一事实源-噪声降为migration.md)
 - [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)
+- [`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md)
+- [`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md)
 
 ### 体素事务、Prefab、Object
 

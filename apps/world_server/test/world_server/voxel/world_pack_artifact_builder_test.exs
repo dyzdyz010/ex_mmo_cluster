@@ -263,6 +263,40 @@ defmodule WorldServer.Voxel.WorldPackArtifactBuilderTest do
     assert verify_summary.reason == :missing_pack_shards
   end
 
+  test "explicit release shard selection stays partial until the full grid is built" do
+    output_dir = temp_dir()
+    on_exit(fn -> File.rm_rf(output_dir) end)
+
+    snapshot_store = fn 91_016, chunk_coord ->
+      {:ok, %{data: :erlang.term_to_binary(chunk_coord)}}
+    end
+
+    assert {:ok, summary} =
+             WorldPackArtifactBuilder.build_release(small_release_index(),
+               output_dir: output_dir,
+               snapshot_store: snapshot_store,
+               shard_coords: [{1, 0, 0}]
+             )
+
+    assert summary.status == :partial
+    assert summary.expected_shards == 2
+    assert summary.built_shards == 1
+    assert summary.remaining_shards == 1
+    assert summary.manifest == nil
+    assert summary.shard_paths == ["packs/tile_1_0_0.vxpack"]
+    refute File.exists?(Path.join(output_dir, "packs/tile_0_0_0.vxpack"))
+    assert File.exists?(Path.join(output_dir, "packs/tile_1_0_0.vxpack"))
+
+    assert {:error, {:world_pack_release_invalid, verify_summary}} =
+             WorldPackReleaseVerifier.verify(small_release_index(), output_dir,
+               window_centers: [{1, 0, 0}],
+               radius: 0
+             )
+
+    assert verify_summary.status == :invalid
+    assert verify_summary.reason == :missing_pack_shards
+  end
+
   test "refuses to build payloads when the authority index is incomplete" do
     output_dir = temp_dir()
     on_exit(fn -> File.rm_rf(output_dir) end)

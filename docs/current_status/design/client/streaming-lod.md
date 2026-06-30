@@ -135,6 +135,7 @@ sequenceDiagram
 
 - 本地 baseline 未 Ready 时，Voxia 不能进入正常 Gate/Scene streaming；`ChunkSnapshot` 只能是已验证基线之上的运行时权威同步，不能修补缺失 world pack。
 - Voxia 已支持 `world_pack_index_v1` compact index 下载与落盘，并在 `TerrainBaselineSnapshot()` 暴露 `baseline_format` / `baseline_endpoint` / `pack_index_*` / `pack_payload_*` 字段；该状态先为 `index_ready` 且 `ready=false`，不会继续请求 `world_diff` 伪装下载完整 baseline。`LoadTerrainBaselineWindow` 会按 radius 窗口从本地 `.vxpack` 读取 0x62 payload 并应用到 confirmed `VoxelStore`，成功 seed 当前窗口后才进入正常 Gate/Scene streaming。
+- 2026-06-30 新增 `-VoxiaWorldGenPreview` / `-VoxiaWorldGenLocalBaseline` dev-only 例外：Voxia 可跳过 HTTP world-pack manifest，按当前 L∞ window 本地生成 `FVoxiaWorldGenV1` chunk snapshot，并在窗口外裁剪 full voxel chunk、改由本地 WorldGen heightmap/LOD 显示。该模式只用于“运行后可见自动生成世界”的本地预览，不作为 H gate、decoder parity、编辑或服务端权威验收。
 - 进入 Scene 后，`ChunkSubscribe 0x60` 表示完整 active/editable window；自动重订和 resync 必须保留该窗口语义。
 - 客户端不乐观写 confirmed voxel truth；当前 Voxia 几何 confirmed store 只应用 `ChunkSnapshot 0x62`、`ChunkDelta 0x63`、`VoxelIntentResult 0x68` 的 authoritative cells 和 `ChunkInvalidate 0x69`，field store 应用 `0x73/0x74`，`ObjectStateDelta 0x6C` 目前是诊断消费。
 - LOD 远景只读服务端派生 projection：`0x6A` 请求缺 projection cell 时应显式失败，客户端不运行本地噪声兜底。
@@ -143,6 +144,7 @@ sequenceDiagram
 
 - 近场是服务端权威 3D chunk 流式。
 - `SubscribeRadius = 3` chunks，当前 debug/interactive near window 是 `7×7×7 = 343` chunks。
+- `-VoxiaWorldGenPreview` 下，近场窗口由客户端本地 WorldGen 生成完整 16^3 chunk snapshot；`ChunkSubscribe` 只记录 active window，不向 server 请求 chunk snapshot，以免本地预览被空 server chunk 覆盖。默认/生产路径不走此分支。
 - 注意：这里的 `343 chunks` 正好是生产预算口径里的 `1 tile`。后续生产近场预算里的 `27 tiles` 指 `3×3×3` 个这样的 tile，不能把数字 27 当作 chunk 数。
 - 近场带 collision、raycast、hit box、edit target。
 - 移动后 streaming center 用 post-movement player position。
@@ -154,6 +156,7 @@ sequenceDiagram
 
 - 协议：`0x6A` heightmap request，`0x6B` heightmap region response。
 - 服务端 `0x6A` 已从 `WorldGen.heightmap_region` 切到 `SceneServer.Voxel.AuthoritativeHeightmap`，默认读取 `DataService.Voxel.LodHeightmapStore` 持久化 projection；缺 projection cell 显式失败，不再运行时重跑噪声兜底。
+- `-VoxiaWorldGenPreview` 下，`RequestHeightmap` 本地生成 heightmap tier 并触发现有 `FVoxiaHeightmapMesher`；这是显式预览分支，不改变默认“远景只读服务端 projection”的约束。
 - `SceneServer.Voxel.LodProjection` 会从权威 chunk storage/snapshot 派生 stride cells；projection row 当前包含 height 与 top material；`ChunkSnapshotStore.put_snapshot` 支持在同一 DB transaction 内写 chunk snapshot 与 projection rows。
 - `0x6B` 固定头与 `heights:u16[]` 之后可追加 typed sections；section `0x01` 是 `materials:u16[]`，与 height 同顺序。Voxia decoder 会跳过未知 section，并把 material 样本暴露到 `lod` / `HeightmapSnapshot()`。
 - `SceneServer.Voxel.LodProjection.Rebuilder` 可显式从 canonical snapshots backfill projection；它是 materialization 工具，不是 runtime heightmap fallback。

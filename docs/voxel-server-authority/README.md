@@ -6,6 +6,8 @@
 
 - **体素 baseline 与流送边界决策（2026-06-29)**:[`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](./2026-06-29-voxel-baseline-streaming-boundary.md) —— 确定性 WorldGen + 设计师 delta D + hash 凭证 H；存储/流送/计算三边界；从全量物化路线迁移到 delta 边界。当前最高层 baseline 形态决策。
 - **体素同步 · 版本 · 滑动窗口 · 渲染设计（2026-06-29，v2 评审加固)**:[`docs/voxel-server-authority/2026-06-29-voxel-sync-window-and-render-design.md`](./2026-06-29-voxel-sync-window-and-render-design.md) —— baseline 边界决策的下游 HOW 设计稿。W-1~W-13:chunk=算法基底⊕offset、版本正交两层（chunk_version⊥H）、客户端三态渲染（窗口内体素/窗外 terrain mip+proxy/远景）、远景 LOD 订阅面、content_version 运行时维护、WorldGen 2.5D 内容维度锁定、浮点 bit-exact 规范、动态层边界。已过 5 视角对抗评审。
+- **体素生成 / 流送 / Voxia 加载渲染实施计划（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](./2026-06-30-voxel-generation-streaming-client-plan.md) —— 把 baseline 边界决策与同步窗口设计拆成 Phase 0-8 执行序列，补 H、H gate、canonical、D/P、checkpoint、LOD projection 等名词解释与验收矩阵。
+- **WorldGen v1 确定性地形生成设计（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](./2026-06-30-worldgen-v1-deterministic-terrain-design.md) —— Phase 1 算法输入。拍板 v1 采用 2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；天然洞穴、水体、遗迹等复杂结构先由 genesis D-delta 冻结进 baseline。
 - **架构对齐迁移主线（2026-06-14 起,当前最高层索引)**:[`docs/voxel-server-authority/2026-06-14-architecture-triage-and-alignment.md`](./2026-06-14-architecture-triage-and-alignment.md) —— 对照冻结规范 v2.0.2 的分诊、四项拍板、规范反哺修订、梯队迁移顺序。本目录原有 Phase 1–8 工作被纳入该主线统筹。
 - 冻结规范(权威):[`docs/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md`](../HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md)（已含 v2.0.2 反哺修订）
 - 架构现状与缺口分析:[`docs/2026-05-07-体素服务器权威化架构进度检查.md`](../2026-05-07-体素服务器权威化架构进度检查.md)
@@ -36,6 +38,8 @@
 | 6 | 局部场最小目标(FieldLayer + 电场 + 温度场 + FieldDebugOverlay) | 已完成 | [`2026-05-13-体素局部场最小目标-索引.md`](../2026-05-13-体素局部场最小目标-索引.md) |
 | 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；7.D3 温度 FieldEffect 写回最小闭环已完成；7.E 第一批材料物性已完成；7.B ConductionPathKernel core/runtime/web 入口已完成；prefab 接入所有局部场的 projection 设计已就位；后续推进以 2026-05-16 roadmap 与 2026-05-19 prefab projection 设计为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) / [`2026-05-19-prefab-field-participant-projection.md`](../plans/2026-05-19-prefab-field-participant-projection.md) |
 | 8 | 物理现象系统(燃烧 / 结冰 / 结构完整度 / 碳化 / 腐蚀 / 相变) | 设计目标稿 | [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](../plans/2026-05-16-phase8-physical-phenomenon-system-architecture.md) |
+| Baseline/streaming delta migration | 体素生成、流送、Voxia 加载渲染从全量物化过渡到确定性 WorldGen + D/P + H gate | 实施计划就位 | [`2026-06-30-voxel-generation-streaming-client-plan.md`](./2026-06-30-voxel-generation-streaming-client-plan.md) |
+| WorldGen v1 | 确定性地形算法：2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 D-delta | 设计目标稿 | [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](./2026-06-30-worldgen-v1-deterministic-terrain-design.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 

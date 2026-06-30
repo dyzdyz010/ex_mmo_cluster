@@ -95,9 +95,9 @@ flowchart LR
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
 | 远景 LOD 数据源 | `0x6A` 默认读取 `LodHeightmapStore` 持久化 projection；chunk snapshot 写入同事务 upsert projection；已有显式 `LodProjection.Rebuilder`；开发/demo bootstrapper 可触发 projection rebuild；`WorldPackBootstrapper` 可按显式 chunk bounds 生成真实 WorldGen pack；缺 cell 显式失败 | 补齐 launcher 包管理、material/top surface 和完整 dirty/rebuild 调度 |
-| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper | 升级为长期可用的确定性真值生成器（跨端 bit-exact），承担 baseline 重算；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
+| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper；Voxia 新增 `-VoxiaWorldGenPreview` 仅作本地可见预览，不进入生产 H gate/authority 验收 | 升级为长期可用的确定性真值生成器（跨端 bit-exact），承担 baseline 重算；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
 | chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；`WorldPackBootstrapper` 可在启动/部署阶段写真实 WorldGen snapshots；测试/dev 可显式 `missing_chunk_policy: :empty` 或 `worldgen: [enabled?: true]` | 懒物化 + 确定性重算；未修改 chunk 不落 snapshot，靠 WorldGen+H 恢复；见 baseline 边界决策 |
-| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入 | seed+maps+D+H 本地重算 + 对 H 校验；launcher 传配方+雕刻+凭证，不传全量 chunk |
+| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | seed+maps+D+H 本地重算 + 对 H 校验；launcher 传配方+雕刻+凭证，不传全量 chunk |
 | **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 WorldGen + 设计师 delta D + hash 凭证 H**；storage ∝ 修改量；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
 | 当前世界恢复模型 | 当前已有 canonical chunk snapshot、runtime delta 和持久化 projection 的局部能力，但 checkpoint + committed event log 尚未形成统一恢复链 | `world_current = latest checkpoint + committed voxel events after checkpoint`；运行时布局是物化视图，可重建但 ACK 前必须 durable |
