@@ -47,6 +47,7 @@
 | D-7 | heightmap-LOD 是否接入统一抽象 | **不接入**，保持独立 `TMap<stride>` 路径，仅复用 `MeshComponentDesc` 工具 | LOD 是被动 push / 多 tier，强套引入恒空状态机 |
 | D-8 | near-skip 参数命名 | 统一 `NearSkipRadiusTiles`，删 VHI `InnerSkipRadiusTiles` 别名 | 同概念两名违显式契约；未上线无兼容包袱 |
 | D-9 | 重构「行为等价」验收口径 | snapshot JSON **字节级不变**（除显式新增字段）+ 既有 12 个 `Voxia.Voxel` automation 绿 + S6 过 Layer-3 像素回归 | 给重构机械可判定的安全网 |
+| D-10 | 远景路线收敛（2026-07-01 拍板） | **SVO 转主力，VHI 冻结当过渡基线**：VHI 不删（零维护安全网）、**停止一切投入**（取消原 §6 的 P0/P1/P2）；SVO 接分帧上传（原 S8 提前）+ RHI 实测 8km FPS，达标后再议是否退役 VHI | VHI 无持久优势：现在与 SVO 同显 2.5D、几何更贵（8km 933k vs 155k quad）、3D 死路；唯一优势分帧上传是 SVO 迟早要做的活。一条远景路=系统正交+维护减半，公共组件全服务 SVO。不盲删=SVO 站稳前留安全网 |
 
 ## 4. 3D-ready 硬约束（D-5 落实）
 
@@ -152,7 +153,9 @@ struct FVoxiaFarFieldPatchUploader {
 
 VHI top+riser 分解 vs SVO octree 遍历；SVO 节点结构 / macro-cell 分块 / seam check；算法层 `MeshEmitter` / `ConfigNormalizer` 模板（过度工程，不抽，仅把 `SameWorldGenConfig` 收成一个 free function）。
 
-## 6. VHI 完善范围
+## 6. VHI 完善范围（⚠️ 2026-07-01 起冻结，见 D-10）
+
+> **D-10 后 VHI 停止投入**：下表 P0/P1/P2 全部取消，VHI 保持现状当过渡基线。SVO 转主力，远景投入转向「SVO 接分帧上传 + 8km FPS 实测」。下表保留作历史记录。
 
 ### 6.1 现在能做（2.5D 源下真完善）
 
@@ -216,3 +219,4 @@ UE 验证回路（关编辑器）：`Build.bat VoxiaEditor Win64 Development -Pr
   - **D-2**：删除 VHI 只写不读的死结构 `EVoxiaVhiFace`/`FVoxiaVhiFaceSample`/`FVoxiaVhiFaceLayer`/`FVoxiaVhiTileArtifact::Faces`（六向 envelope 在 2.5D 源下无数据，3D 归 SVO）。
   - **范围决定（务实调整，已与用户对齐）**：VHI 的 section-pool 分帧上传状态机（`VhiPatchSection`/`FreeVhiSections`/`Pending*` + Queue/Continue，~230 行渲染状态机）**本轮不整块搬进结构体**——它本轮只有 VHI 一个消费者（SVO 上传改造按 D-4 延后），且属渲染状态机（出 bug 表现为视觉损坏、只能 GPU 验证），1-消费者高风险低收益；连同 **D-8**（NearSkip 命名统一，宽 blast、改 snapshot 字段/cmdline/launch 脚本）一并**延后到 S8**（与 SVO per-macro-cell 第二消费者同期落地，届时相对低风险）。本轮已抽出该上传机制的**可复用纯核**（patch 网格数学 + component 描述）。
   - **完整 GPU 验证（用户要求）**：`Build.bat` 退出 0；`Automation` 退出 0，**15 测试全 Success**（新增 FarFieldPatchGrid）；**带 RHI 开窗实跑 VHI 预览**（非 nullrhi），日志 `VHI patch update streamed: uploaded_patches=361 live_sections=361 patch_tiles=8 total_tiles=21024 total_quads=932892` 与文档一致 → ApplyTo + PatchGrid 上传路径正确；`voxia_vhi_tiles_built` 的 `face_sample_count=336384`/`quad_count=932892` 与 D-2 前一致 → 死结构删除未改输出；截图 `Saved/voxia_shot.png` 客户端 183 FPS 正常渲染、无崩溃无损坏。
+- 2026-07-01：**远景路线收敛拍板（D-10）**。对比数据坐实 VHI 无持久优势（8km：VHI 932,892 quad vs SVO 155,399 quad；现阶段两者同显 2.5D；VHI 唯一优势=已验证的分帧上传，恰是 SVO 迟早要做的活）。**SVO 转主力，VHI 冻结当过渡基线**（不删=安全网，停投入=取消 §6 P0/P1/P2）。下一步从「VHI 完善」转为 **SVO 接分帧上传**（把原延后的 S8 `FVoxiaFarFieldPatchUploader`/per-macro-cell 输出提前）→ RHI 实测 SVO 8km FPS 达 120 级 → 达标后再议 VHI 退役。届时 PatchUploader 自然获得第二消费者，section-pool 结构体搬迁不再是 1-消费者高风险。
