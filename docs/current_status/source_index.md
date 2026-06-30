@@ -44,7 +44,8 @@ flowchart TD
 | baseline / streaming 实施计划 | [`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md) | 体素生成、流送、Voxia 本地加载与渲染迁移的 Phase 0-8 执行序列；含 H、H gate、canonical 等名词解释 |
 | WorldGen v1 地形算法 | [`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) | Phase 1 确定性地形算法输入；2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 genesis D-delta |
 | Voxia VHI 实验 | [`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](../voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md) | 新关卡试验 Voxel Hierarchical Impostor；旧 WorldGen preview 与 heightmap LOD 保留 |
-| Voxia SVO 预览设计 | [`docs/voxel-server-authority/2026-06-30-voxia-svo-preview-design.md`](../voxel-server-authority/2026-06-30-voxia-svo-preview-design.md) | 新关卡试验 Sparse Voxel Octree macro-cell mesh proxy；目标为窗口边缘连续、约 8km 远景和 120 FPS 预算 |
+| Voxia SVO 预览设计 | [`docs/voxel-server-authority/2026-06-30-voxia-svo-preview-design.md`](../voxel-server-authority/2026-06-30-voxia-svo-preview-design.md) | 新关卡试验 3D occupancy Sparse Voxel Octree leaf surface；目标为窗口边缘连续、约 8km 远景和 120 FPS 预算 |
+| Voxia 近场窗口内核与 SVO 路线 | [`docs/voxel-server-authority/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md`](../voxel-server-authority/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md) | 按系统正交剥离 `3x3x3 tile` 近场窗口契约，并记录后续 subsystem / renderer / SVO page 化升级目标 |
 | Field roadmap | [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) | Phase 7+ 局部场当前推进基准 |
 | Field kernel | [`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) | FieldKernel / FieldRegion / FieldLayer / FieldEffect 架构背景 |
 

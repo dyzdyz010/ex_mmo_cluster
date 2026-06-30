@@ -1,6 +1,18 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-05-10,**A4-bis-4 段 1 + 段 2 全部落地后**(段 2 = 4 个 sub-commit:SceneNodeMonitor + WorldSup 挂入 / Scene RPC announce / MapLedger.put_region 集成 / default_scene_opts_resolver 按 region 解析)。**生产路径真改变了**(World 端事务路由从固定单 scene_node 改成按 region 解析对应 scene_node)。单 scene_node 部署应等价 — **用户验证待办**:重启 server / 摆 prefab / 破坏方块,应跟段 1 之前等价。A4-bis-cluster 6 step 已落地 4 / 6。
+**Last updated**:2026-06-30,**Voxia near-window / VHI / SVO checkpoint**。旧 A4-bis 接力记录保留在下方；当前会话接手 Voxia 近场窗口、VHI 卡顿和 SVO 远景路线时，先看本节与 `docs/current_status/design/client/streaming-lod.md`。
+
+## 2026-06-30 Voxia near-window / VHI / SVO checkpoint
+
+- Voxia 客户端提交：`9896917 feat(voxia): integrate near-window VHI SVO streaming`。
+- `FVoxiaNearVoxelWindow` 已作为当前近场窗口契约落地：输出 `center_tile` / `center_chunk` / `radius_tiles` / `tile_count` / `chunk_count` / 跨 tile diff，并提供兼容 `TileWindowJson`。
+- `UVoxiaTransportSubsystem` 的 `active_tile_window` 兼容字段、VHI/SVO 近场排除区、`Snapshot().near_window` 均读同一个 near-window snapshot；旧 active tile window 字段只作为无 near-window 时的 fallback。
+- `AVoxiaPawn` 的 debug snapshot、raycast/editable 判定、stream debug overlay 和 `SubscribeAround` 的 last state 回填都改为优先读取 transport near-window。
+- VHI 路线已从“整块 8km 重建/上传”改为 tile artifact 复用 + patch section 分帧上传：`coverage_center_tile` 与近场 `center_tile` 分离，跨一个 tile 时只构建 dirty/upsert/remove tile；默认 `VoxiaVhiPatchTiles=8` 将 21024 tiles 合批为 361 live sections。
+- SVO preview 已从同步单次调用改成 ThreadPool 后台构建 + pending coalesce，并升级为 3D occupancy octree leaf surface；当前仍是 CPU 生成 + single procedural mesh section，不是 GPU raymarch / SVDAG / H gate artifact。
+- 验证证据：`Build.bat VoxiaEditor Win64 Development ... -NoLiveCoding` 通过；`UnrealEditor-Cmd.exe ... Automation RunTests Voxia.Voxel` 退出 0，12 个 voxel tests 全部 success，含 `NearVoxelWindow` / `VhiImpostor` / `SvoPreview`。
+- 可见 VHI smoke：启动 `/Game/Voxia/Maps/L_WorldGenVhiPreview`，near-window 初始 `27 tiles / 9261 chunks`，VHI build `21024 tiles / 932892 quads`，patch upload `361 sections`。上传期间 FPS 约 100+，完成后约 86-92 FPS；bulk reveal 仍出现一次约 16.9 FPS 尖峰。
+- 下一步优先级：若继续追卡顿，先处理首轮 VHI reveal 的单帧尖峰，再把近场 tile window load/unload 改成后台 slab 流送；长期把 VHI/SVO 上传从 ProceduralMesh single/patch section 替换为 runtime mesh / HISM / Nanite-ready artifact。
 
 下个会话开始时,先读这份(landing pad),再按需读 phase-X-*.md / 设计文档。
 
