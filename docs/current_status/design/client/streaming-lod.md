@@ -157,7 +157,7 @@ sequenceDiagram
 - 协议：`0x6A` heightmap request，`0x6B` heightmap region response。
 - 服务端 `0x6A` 已从 `WorldGen.heightmap_region` 切到 `SceneServer.Voxel.AuthoritativeHeightmap`，默认读取 `DataService.Voxel.LodHeightmapStore` 持久化 projection；缺 projection cell 显式失败，不再运行时重跑噪声兜底。
 - `-VoxiaWorldGenPreview` 下，`RequestHeightmap` 本地生成 heightmap tier 并触发现有 `FVoxiaHeightmapMesher`；这是显式预览分支，不改变默认“远景只读服务端 projection”的约束。
-- 2026-06-30 新增独立实验入口 `/Game/Voxia/Maps/L_WorldGenVhiPreview` + `-VoxiaVhiPreview`：旧 `L_WorldGenPreview` 与 2.5D heightmap LOD 仍保留；VHI 只在新关卡/新 flag 下把窗口外 XZ tile 生成为连续 visual-only impostor mesh。默认 `-VoxiaVhiTileRadius=72` / `-VoxiaVhiSamples=4` / `-VoxiaVhiInnerSkipRadius=0` / `-VoxiaVhiSinkCm=100`，按 7 chunk/tile、16 m/chunk 折算覆盖约 ±8.064 km，并让 VHI 与近场 3x3x3 tile 窗口有一圈 underlap，VHI 顶面下沉 100cm 以降低近远边界 z-fighting / 裂缝可见性。
+- 2026-06-30 新增独立实验入口 `/Game/Voxia/Maps/L_WorldGenVhiPreview` + `-VoxiaVhiPreview`：旧 `L_WorldGenPreview` 与 2.5D heightmap LOD 仍保留；VHI 只在新关卡/新 flag 下把窗口外 XZ tile 生成为连续 visual-only impostor mesh。默认 `-VoxiaVhiTileRadius=72` / `-VoxiaVhiSamples=4` / `-VoxiaVhiInnerSkipRadius=0` / `-VoxiaVhiSinkCm=100`，按 7 chunk/tile、16 m/chunk 折算覆盖约 ±8.064 km，并让 VHI 与近场 3x3x3 tile 窗口有一圈 underlap，VHI 顶面下沉 100cm 以降低近远边界 z-fighting / 裂缝可见性。VHI riser 只在相邻 built tile / 外缘之间补高度差；邻居是近场 skip tile 时不再生成竖面，避免 visual-only 面片墙落在玩家近场中间。
 - `SceneServer.Voxel.LodProjection` 会从权威 chunk storage/snapshot 派生 stride cells；projection row 当前包含 height 与 top material；`ChunkSnapshotStore.put_snapshot` 支持在同一 DB transaction 内写 chunk snapshot 与 projection rows。
 - `0x6B` 固定头与 `heights:u16[]` 之后可追加 typed sections；section `0x01` 是 `materials:u16[]`，与 height 同顺序。Voxia decoder 会跳过未知 section，并把 material 样本暴露到 `lod` / `HeightmapSnapshot()`。
 - `SceneServer.Voxel.LodProjection.Rebuilder` 可显式从 canonical snapshots backfill projection；它是 materialization 工具，不是 runtime heightmap fallback。
@@ -167,7 +167,7 @@ sequenceDiagram
 - 远景仅视觉，无碰撞，不可编辑。
 - Heightmap mesh 在离屏线程生成后上传。
 - VHI mesh 在客户端 preview 中从同一 WorldGen 配置生成，可表达垂直面、厚度和未来洞穴/水体外轮廓，但不参与碰撞、编辑、raycast、confirmed truth 或 H gate。
-- 2026-06-30 已新增 SVO preview 设计目标稿，但尚未实现：计划用独立 `L_WorldGenSvoPreview` / `-VoxiaSvoPreview` 试验 Sparse Voxel Octree macro-cell mesh proxy。目标是保持近场完整 `3x3x3 tile`，窗口外约 8km 远景 visual-only，优先验证 near/SVO 边界 seam check、增量 macro-cell cache 和 120 FPS 预算。它与 VHI 一样属于可重建远景派生物，不参与生产协议、confirmed truth、碰撞、编辑或 H gate。
+- 2026-06-30 已新增 SVO preview MVP：独立 `L_WorldGenSvoPreview` / `-VoxiaSvoPreview` 试验 Sparse Voxel Octree macro-cell mesh proxy。当前第一版保持近场完整 `3x3x3 tile`，窗口外约 8km 远景 visual-only，暴露 `svo` / `until_svo` CLI、node/leaf/quad/build_ms 统计和 seam check。它与 VHI 一样属于可重建远景派生物，不参与生产协议、confirmed truth、碰撞、编辑或 H gate；当前还不是 GPU raymarch SVO / SVDAG，也尚未落地持久化 artifact、服务端 materialization、H gate 集成或按 macro-cell 增量上传。
 - `-VoxiaStreamDebug` 在 tile-window 模式默认只画 3x3x3 tile 框与当前 chunk 框；需要逐 chunk 线框时显式加 `-VoxiaStreamDebugChunks`，避免 debug overlay 自身逐帧绘制 9261 个 chunk box。
 
 当前缺口：
@@ -175,7 +175,8 @@ sequenceDiagram
 - projection 表、编辑写入事务路径、显式 rebuild 工具、top material 派生、0x6B material section、Voxia decode/debug 和 heightmap vertex-color material 消费已落地；开发/demo `DefaultRegionBootstrapper` 可通过 `DevSeed` 写 starter chunk snapshots 并触发 projection rebuild；正式 WorldGen world-pack 生成入口已由 `WorldPackBootstrapper` 接入，可按显式 chunk bounds 写 canonical snapshots 并发布 ready manifest。但 launcher 包管理、完整 dirty 调度和跨 chunk/大 stride rebuild 策略尚未落地。
 - 正式 world pack 入场前 materialization 已有服务端生成入口；缺范围或未材化列仍会返回可诊断错误，而不是生成远景。
 - inner-boundary skirt 已在 `FVoxiaHeightmapMesher` 实现并补 AutomationTest 断言，但尚未跑 UE Automation / 实机截图验证。
-- VHI 仍是 Voxia 本地实验分支；生产路径尚未定义 VHI artifact 持久化格式、服务端 materialization、协议订阅面或 H gate 集成。当前本地 8km VHI smoke 为 21024 tiles / 336384 samples / 约 933k quads，VHI tile-to-tile 高度来自同一确定性 WorldGen，所以一般不会出现随机错位；但它仍是非焊接 visual proxy，近远边界通过 underlap + sink 掩盖，不等于生产级几何连续性证明。
+- VHI 仍是 Voxia 本地实验分支；生产路径尚未定义 VHI artifact 持久化格式、服务端 materialization、协议订阅面或 H gate 集成。当前本地 8km VHI smoke 为 21024 tiles / 336384 samples / 约 933k quads，VHI tile-to-tile 高度来自同一确定性 WorldGen，所以一般不会出现随机错位；但它仍是非焊接 visual proxy，近远边界通过 underlap + sink 掩盖，不等于生产级几何连续性证明。2026-06-30 后续优化把 VHI artifact 生成移到 ThreadPool，并合并构建中收到的后续 center tile 请求；若旧后台结果完成时已有更新 pending，则跳过旧结果，避免同一边界双上传。旧 VHI mesh 保持到新 artifact 完成，减少跨 tile 边界时的同步 CPU 卡顿。剩余风险是 ProceduralMesh 大 section 上传仍在 GameThread，若实跑仍有尖峰，下一步应拆 tile/macro-cell section 或增量上传。
+- SVO preview 已有第一版本地实验入口和 CLI 观测；它以 macro-cell 节点代理把 8km 远景 quad 规模压到远低于 VHI 的数量级，并保留 seam check 字段。但当前 SVO 仍是 CPU 生成 + 单 section procedural mesh 上传，`cache_hit_rate` / `upload_queue` 还是 MVP 临时观测默认值；若可见客户端达不到 120 FPS，下一步优先把 SVO artifact 拆成 macro-cell section cache、后台构建和分帧上传。
 - 近场 3x3x3 tile 窗口数据量正确；`VoxiaWorldActor` 已从窗口变化后的同步整窗 mesh 改为按帧预算的增量 near mesh build，默认 `VoxiaNearMeshBuildBudgetMs=4` / `VoxiaNearMeshBuildMaxChunks=512`，并跳过空 chunk 与六面整实心邻居完全遮挡的整实心 chunk。2026-06-30 VHI smoke 中跨 tile 后同步 tile window 装载约 0.31s，near mesh 后台完成约 3.39s，输出 32566 quads，跳过 4418 empty chunks / 2858 occluded full chunks。最终形态仍应演进到按 dirty chunk/tile cache 的增量上传，避免每次 revision 都重组整窗 mesh buffer。
 
 ## 拼接缝隙当前结论
