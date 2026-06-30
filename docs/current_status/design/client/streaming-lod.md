@@ -157,6 +157,7 @@ sequenceDiagram
 - 协议：`0x6A` heightmap request，`0x6B` heightmap region response。
 - 服务端 `0x6A` 已从 `WorldGen.heightmap_region` 切到 `SceneServer.Voxel.AuthoritativeHeightmap`，默认读取 `DataService.Voxel.LodHeightmapStore` 持久化 projection；缺 projection cell 显式失败，不再运行时重跑噪声兜底。
 - `-VoxiaWorldGenPreview` 下，`RequestHeightmap` 本地生成 heightmap tier 并触发现有 `FVoxiaHeightmapMesher`；这是显式预览分支，不改变默认“远景只读服务端 projection”的约束。
+- 2026-06-30 新增独立实验入口 `/Game/Voxia/Maps/L_WorldGenVhiPreview` + `-VoxiaVhiPreview`：旧 `L_WorldGenPreview` 与 2.5D heightmap LOD 仍保留；VHI 只在新关卡/新 flag 下把窗口外 XZ tile 生成为连续 visual-only impostor mesh。默认 `-VoxiaVhiTileRadius=72` / `-VoxiaVhiSamples=4` / `-VoxiaVhiInnerSkipRadius=0` / `-VoxiaVhiSinkCm=100`，按 7 chunk/tile、16 m/chunk 折算覆盖约 ±8.064 km，并让 VHI 与近场 3x3x3 tile 窗口有一圈 underlap，VHI 顶面下沉 100cm 以降低近远边界 z-fighting / 裂缝可见性。
 - `SceneServer.Voxel.LodProjection` 会从权威 chunk storage/snapshot 派生 stride cells；projection row 当前包含 height 与 top material；`ChunkSnapshotStore.put_snapshot` 支持在同一 DB transaction 内写 chunk snapshot 与 projection rows。
 - `0x6B` 固定头与 `heights:u16[]` 之后可追加 typed sections；section `0x01` 是 `materials:u16[]`，与 height 同顺序。Voxia decoder 会跳过未知 section，并把 material 样本暴露到 `lod` / `HeightmapSnapshot()`。
 - `SceneServer.Voxel.LodProjection.Rebuilder` 可显式从 canonical snapshots backfill projection；它是 materialization 工具，不是 runtime heightmap fallback。
@@ -165,12 +166,16 @@ sequenceDiagram
 - 订阅填充用的 `ChunkSnapshot` 不标记 LOD dirty，避免 343 chunk 初始填充造成远景请求风暴。
 - 远景仅视觉，无碰撞，不可编辑。
 - Heightmap mesh 在离屏线程生成后上传。
+- VHI mesh 在客户端 preview 中从同一 WorldGen 配置生成，可表达垂直面、厚度和未来洞穴/水体外轮廓，但不参与碰撞、编辑、raycast、confirmed truth 或 H gate。
+- `-VoxiaStreamDebug` 在 tile-window 模式默认只画 3x3x3 tile 框与当前 chunk 框；需要逐 chunk 线框时显式加 `-VoxiaStreamDebugChunks`，避免 debug overlay 自身逐帧绘制 9261 个 chunk box。
 
 当前缺口：
 
 - projection 表、编辑写入事务路径、显式 rebuild 工具、top material 派生、0x6B material section、Voxia decode/debug 和 heightmap vertex-color material 消费已落地；开发/demo `DefaultRegionBootstrapper` 可通过 `DevSeed` 写 starter chunk snapshots 并触发 projection rebuild；正式 WorldGen world-pack 生成入口已由 `WorldPackBootstrapper` 接入，可按显式 chunk bounds 写 canonical snapshots 并发布 ready manifest。但 launcher 包管理、完整 dirty 调度和跨 chunk/大 stride rebuild 策略尚未落地。
 - 正式 world pack 入场前 materialization 已有服务端生成入口；缺范围或未材化列仍会返回可诊断错误，而不是生成远景。
 - inner-boundary skirt 已在 `FVoxiaHeightmapMesher` 实现并补 AutomationTest 断言，但尚未跑 UE Automation / 实机截图验证。
+- VHI 仍是 Voxia 本地实验分支；生产路径尚未定义 VHI artifact 持久化格式、服务端 materialization、协议订阅面或 H gate 集成。当前本地 8km VHI smoke 为 21024 tiles / 336384 samples / 约 933k quads，VHI tile-to-tile 高度来自同一确定性 WorldGen，所以一般不会出现随机错位；但它仍是非焊接 visual proxy，近远边界通过 underlap + sink 掩盖，不等于生产级几何连续性证明。
+- 近场 3x3x3 tile 窗口数据量正确；`VoxiaWorldActor` 已从窗口变化后的同步整窗 mesh 改为按帧预算的增量 near mesh build，默认 `VoxiaNearMeshBuildBudgetMs=4` / `VoxiaNearMeshBuildMaxChunks=512`，并跳过空 chunk 与六面整实心邻居完全遮挡的整实心 chunk。2026-06-30 VHI smoke 中跨 tile 后同步 tile window 装载约 0.31s，near mesh 后台完成约 3.39s，输出 32566 quads，跳过 4418 empty chunks / 2858 occluded full chunks。最终形态仍应演进到按 dirty chunk/tile cache 的增量上传，避免每次 revision 都重组整窗 mesh buffer。
 
 ## 拼接缝隙当前结论
 
@@ -196,13 +201,15 @@ flowchart TD
 ## Debug / CLI
 
 - `-VoxiaDebugCanvasHUD`：轻量 HUD + 3D stream-state wireframe。
-- `-VoxiaStreamDebug`：仅 wireframe。
+- `-VoxiaStreamDebug`：仅 wireframe；tile-window 模式默认画 27 个 tile box，`-VoxiaStreamDebugChunks` 才画 9261 个 chunk box。
 - `-VoxiaStdioCli`：启用 stdio debug subsystem。
 - `clients/Voxia/scripts/voxia_stdio_cli.js`：启动 headless / real client 并发送命令。
   - `lod`：读取客户端已消费的 server-authoritative heightmap tiers，返回 `revision`、`tier_count`、各 tier 的 `stride/origin/count/cell_count/min_height/max_height/height_sample/material_count/material_sample`。
     - `lod` 同时返回 `voxel_revision` 和 `lod_dirty_revision`；observe 事件 `voxel_lod_dirty` / `voxel_lod_refresh_requested` 用于验证权威编辑是否触发 LOD 重拉。
   - `request_lod`：按当前玩家/streaming 位置立即重发所有 heightmap tier 请求；用于服务端 `lod_rebuild` 后强制客户端重拉。
   - `until_lod [timeout_ms] [min_tiers]`：脚本等待指定数量的 LOD tiers 到达，用于无截图验证 0x6B 消费。
+  - `vhi`：仅在 `-VoxiaWorldGenPreview -VoxiaVhiPreview` 下返回 VHI impostor 状态，含 `enabled`、`revision`、`tile_count`、`face_sample_count`、`quad_count`、中心 tile、半径与 inner skip radius。
+  - `until_vhi [timeout_ms] [min_tiles]`：脚本等待 VHI artifact 生成，用于无截图验证新关卡的窗口外三维远景代理。
 - `scripts/voxia_server_stdio_cli.exs`：连接 live BEAM node，从 Gate / World / Scene / DataService 同查 chunk 状态。
   - `lod_status <scene_id> [stride]`：读取 `LodHeightmapStore.summary/2`，确认 projection 已材化的 stride、cell 覆盖和高度范围。
   - `lod_sample <scene_id> <origin_x> <origin_z> <stride> <count_x> <count_z>`：走运行时 `AuthoritativeHeightmap.heightmap_region/7` 默认路径抽样，返回 meta 与 u16 高度样本。
@@ -231,3 +238,4 @@ flowchart TD
 - [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
 - [`docs/2026-06-28-体素世界与远景渲染-当前真相(整合).md`](../../../2026-06-28-体素世界与远景渲染-当前真相(整合).md)
+- [`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](../../../voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md)

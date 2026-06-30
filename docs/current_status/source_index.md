@@ -43,6 +43,7 @@ flowchart TD
 | baseline 边界决策 | [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) | 确定性 WorldGen + committed delta + hash 凭证；存储/流送/计算三边界；垂直分层 + 范围声明 |
 | baseline / streaming 实施计划 | [`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md) | 体素生成、流送、Voxia 本地加载与渲染迁移的 Phase 0-8 执行序列；含 H、H gate、canonical 等名词解释 |
 | WorldGen v1 地形算法 | [`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) | Phase 1 确定性地形算法输入；2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 genesis D-delta |
+| Voxia VHI 实验 | [`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](../voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md) | 新关卡试验 Voxel Hierarchical Impostor；旧 WorldGen preview 与 heightmap LOD 保留 |
 | Field roadmap | [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) | Phase 7+ 局部场当前推进基准 |
 | Field kernel | [`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) | FieldKernel / FieldRegion / FieldLayer / FieldEffect 架构背景 |
 
@@ -101,6 +102,7 @@ flowchart TD
 - [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
 - [`clients/Voxia/docs/2026-06-26-voxel-perf-optimization-directive.md`](../../clients/Voxia/docs/2026-06-26-voxel-perf-optimization-directive.md)
+- [`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](../voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md)
 - [`docs/2026-06-15-bevy-client-mainline-architecture.md`](../2026-06-15-bevy-client-mainline-architecture.md)
 - [`docs/2026-04-25-bevy-client-web-parity-voxel-migration.md`](../2026-04-25-bevy-client-web-parity-voxel-migration.md)
 
