@@ -9,6 +9,7 @@
 - **体素生成 / 流送 / Voxia 加载渲染实施计划（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](./2026-06-30-voxel-generation-streaming-client-plan.md) —— 把 baseline 边界决策与同步窗口设计拆成 Phase 0-8 执行序列，补 H、H gate、canonical、D/P、checkpoint、LOD projection 等名词解释与验收矩阵。
 - **WorldGen v1 确定性地形生成设计（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](./2026-06-30-worldgen-v1-deterministic-terrain-design.md) —— Phase 1 算法输入。拍板 v1 采用 2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；天然洞穴、水体、遗迹等复杂结构先由 genesis D-delta 冻结进 baseline。
 - **Voxia VHI 新关卡实验计划（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](./2026-06-30-voxia-vhi-experiment-plan.md) —— 在保留旧 `L_WorldGenPreview` 与 heightmap LOD 的前提下，新建 `L_WorldGenVhiPreview` 和 `-VoxiaVhiPreview`，用 Voxel Hierarchical Impostor 试验窗口外三维 visual proxy。
+- **Voxia SVO 远景预览设计（2026-06-30)**:[`docs/voxel-server-authority/2026-06-30-voxia-svo-preview-design.md`](./2026-06-30-voxia-svo-preview-design.md) —— 在独立 `L_WorldGenSvoPreview` 关卡中验证 Sparse Voxel Octree macro-cell mesh proxy，目标是窗口边缘连续、约 8km 远景和 120 FPS 预算。
 - **架构对齐迁移主线（2026-06-14 起,当前最高层索引)**:[`docs/voxel-server-authority/2026-06-14-architecture-triage-and-alignment.md`](./2026-06-14-architecture-triage-and-alignment.md) —— 对照冻结规范 v2.0.2 的分诊、四项拍板、规范反哺修订、梯队迁移顺序。本目录原有 Phase 1–8 工作被纳入该主线统筹。
 - 冻结规范(权威):[`docs/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md`](../HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md)（已含 v2.0.2 反哺修订）
 - 架构现状与缺口分析:[`docs/2026-05-07-体素服务器权威化架构进度检查.md`](../2026-05-07-体素服务器权威化架构进度检查.md)
@@ -42,6 +43,7 @@
 | Baseline/streaming delta migration | 体素生成、流送、Voxia 加载渲染从全量物化过渡到确定性 WorldGen + D/P + H gate | 实施计划就位 | [`2026-06-30-voxel-generation-streaming-client-plan.md`](./2026-06-30-voxel-generation-streaming-client-plan.md) |
 | WorldGen v1 | 确定性地形算法：2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 D-delta | 设计目标稿 | [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](./2026-06-30-worldgen-v1-deterministic-terrain-design.md) |
 | Voxia VHI preview | 新关卡试验 Voxel Hierarchical Impostor；旧 WorldGen preview / heightmap LOD 保留 | 实验实现中 | [`2026-06-30-voxia-vhi-experiment-plan.md`](./2026-06-30-voxia-vhi-experiment-plan.md) |
+| Voxia SVO preview | 新关卡试验 Sparse Voxel Octree macro-cell mesh proxy；目标为无缝、8km 远景、120 FPS 预算 | 设计目标稿 | [`2026-06-30-voxia-svo-preview-design.md`](./2026-06-30-voxia-svo-preview-design.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 

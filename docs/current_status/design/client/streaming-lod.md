@@ -167,6 +167,7 @@ sequenceDiagram
 - 远景仅视觉，无碰撞，不可编辑。
 - Heightmap mesh 在离屏线程生成后上传。
 - VHI mesh 在客户端 preview 中从同一 WorldGen 配置生成，可表达垂直面、厚度和未来洞穴/水体外轮廓，但不参与碰撞、编辑、raycast、confirmed truth 或 H gate。
+- 2026-06-30 已新增 SVO preview 设计目标稿，但尚未实现：计划用独立 `L_WorldGenSvoPreview` / `-VoxiaSvoPreview` 试验 Sparse Voxel Octree macro-cell mesh proxy。目标是保持近场完整 `3x3x3 tile`，窗口外约 8km 远景 visual-only，优先验证 near/SVO 边界 seam check、增量 macro-cell cache 和 120 FPS 预算。它与 VHI 一样属于可重建远景派生物，不参与生产协议、confirmed truth、碰撞、编辑或 H gate。
 - `-VoxiaStreamDebug` 在 tile-window 模式默认只画 3x3x3 tile 框与当前 chunk 框；需要逐 chunk 线框时显式加 `-VoxiaStreamDebugChunks`，避免 debug overlay 自身逐帧绘制 9261 个 chunk box。
 
 当前缺口：
