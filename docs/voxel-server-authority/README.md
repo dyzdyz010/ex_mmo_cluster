@@ -45,7 +45,7 @@
 | WorldGen v1 | 确定性地形算法：2.5D 高度场 + 材料分层 + 稀疏矿脉 replacement；洞穴/水体走 D-delta | 设计目标稿 | [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](./2026-06-30-worldgen-v1-deterministic-terrain-design.md) |
 | Voxia VHI preview | 新关卡试验 Voxel Hierarchical Impostor；旧 WorldGen preview / heightmap LOD 保留 | 实验实现中 | [`2026-06-30-voxia-vhi-experiment-plan.md`](./2026-06-30-voxia-vhi-experiment-plan.md) |
 | Voxia SVO preview | 新关卡试验 Sparse Voxel Octree macro-cell mesh proxy；目标为无缝、8km 远景、120 FPS 预算 | 设计目标稿 | [`2026-06-30-voxia-svo-preview-design.md`](./2026-06-30-voxia-svo-preview-design.md) |
-| Voxia FarField 公共组件 + VHI baseline | 抽 coverage 规划 / 异步生命周期 / 分帧上传三组件（3D-ready）；VHI 定位廉价 2.5D baseline、3D 归 SVO | 本轮 S1–S6 完成（PatchUploader section-pool 搬迁 + D-8 + VHI P0/P1/P2 延后 S7+/S8） | [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](./2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) |
+| Voxia FarField 公共组件 + VHI baseline | 抽 coverage 规划 / 异步生命周期 / 分帧上传三组件（3D-ready）；VHI 定位廉价 2.5D baseline、3D 归 SVO | S1–S7 完成（D-10 SVO 转主力 / VHI 冻结；SVO 分帧上传 8km 实测 191 FPS。VHI 退役时机 + 3D 源切换待定） | [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](./2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 
