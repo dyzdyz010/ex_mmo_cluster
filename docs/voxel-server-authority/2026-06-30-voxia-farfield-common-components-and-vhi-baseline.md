@@ -9,7 +9,7 @@
 2026-06-30 一批落地了三条窗口外远景路线，均为 **visual-only 派生物**（绝不进 confirmed truth / 碰撞 / 编辑 / H gate）：
 
 - **VHI**（`VoxiaVhiImpostor`）：按 XZ tile 生成连续 top surface + 高差 riser；已有最完整的工程链路（tile artifact 增量复用 + 分帧 patch 上传）。
-- **SVO**（`VoxiaSvoPreview`）：3D occupancy octree，按 macro-cell 递归 empty/solid/mixed 导出 leaf surface；但上传仍是单帧全量、无 cache。
+- **SVO**（`VoxiaSvoPreview`）：3D occupancy octree，按 macro-cell 递归 empty/solid/mixed 导出 leaf surface。2026-07-01 证据复核后，上传已从单 section 改为按 patch 分帧上传，builder-side macro-cell artifact/cache/reuse 已落地；仍无持久化 artifact、服务端 materialization 或 H gate 集成。
 - **heightmap-LOD**：服务端 push 的多 tier 2.5D 曲面（0x6B），被动覆盖存储。
 
 测绘（5-agent workflow，2026-06-30）暴露三类**逐行重复**：
@@ -17,8 +17,8 @@
 | 类别 | 重复点 | 严重度 |
 | --- | --- | --- |
 | transport 异步生命周期 | VHI `RequestVhiImpostorsAround/StartVhiBuildAsync/完成回调`（`VoxiaTransportSubsystem.cpp:1352-1633`）与 SVO 对应路径（1648-1859）**逐行镜像**：serial guard + pending coalesce/supersede + ThreadPool 后台 + GameThread 发布 `++Revision` + observe，连 6 个 pending 成员都成对复制 | 极高 |
-| WorldActor mesh 上传 | 4 个 ProcMesh component 的 10 项属性初始化逐字重复（`VoxiaWorldActor.cpp:275-314`）；VHI 有完整分帧 patch 上传框架（568-796），SVO/LOD 贫血（单帧全量） | 极高 / 分歧 |
-| tile 流式增量 | `dirty/upsert/remove` 复用计划**只有 VHI 有**（`BuildWorldGenTileUpdate`/`CanReuseVhiTile`/`TileBoundarySignature`），且与 VHI mesher 算法**耦合**，SVO 无法复用 | 能力缺口 |
+| WorldActor mesh 上传 | 4 个 ProcMesh component 的属性初始化仍有重复；VHI 有完整分帧 patch 上传框架，SVO 已在 2026-07-01 接入 patch 分帧上传，LOD 仍是每 tier section 上传 | 高 / 分歧 |
+| tile / macro-cell 流式增量 | VHI 有 tile artifact dirty/reuse/remove；SVO 已补 builder-side macro-cell artifact/cache/reuse，但上传层仍按 patch 重传，不是持久化 artifact 或服务端 materialization | 中 |
 | 坐标 / coverage / snapshot | `Same*WorldGenConfig` 8 字段逐字相同；coverage/near-skip Chebyshev 判定同构；snapshot 头部字段共通；各自又重定义 `GVoxia*TileMacros` 常量 | 中—高 |
 
 **核心判断**：重复集中在「编排 / 生命周期 / 上传」层，抽取收益最高且**不碰确定性算法**；算法层（VHI 的 top+riser vs SVO 的 octree 递归）本质不同，**不抽模板**（会产出"参数比函数体还长"的伪共享）。
@@ -41,10 +41,10 @@
 | D-1 | VHI 定位 | **廉价 2.5D 地表 baseline；3D（浮空岛/洞穴）交 SVO** | VHI 高度场本质决定它只擅长"实心地表"主流场景；强行 3D 化与 SVO 职责重叠 |
 | D-2 | `FVoxiaVhiFaceLayer` 六面结构 | **砍到只剩 top（NegY/4 侧面删除）** | 2.5D 源下 5 面无数据可填、NegY 永填不了；遵「不留未用结构 / 不留向后兼容」铁律 |
 | D-3 | 本轮范围 | **稳健分阶段 S1–S6**：三公共组件落地 + VHI 全接入 + VHI P0 完善 | S1-S10 完整重构跨多会话；先吃低风险高收益的编排抽取 |
-| D-4 | SVO 本轮参与 | **共享 CoveragePlanner + BuildPipeline**；per-macro-cell 上传改造（接 PatchUploader）延后 | SVO 改 mesh layout 高风险，不阻塞前序收益 |
+| D-4 | SVO 本轮参与 | **共享 CoveragePlanner + BuildPipeline + PatchUploader**；MeshComponentDesc 收敛 ProcMesh 属性 | SVO 改 mesh layout 已由 patch grid 小步落地；公共层仍不碰 SVO 算法 |
 | D-5 | 3D 源切换时机 | **本轮抽取先行（公共组件全部 3D-ready / Y-aware 设计），切 SVO 源到权威 3D voxel 作为下个里程碑** | 公共层不锁 2.5D，下轮接 3D 源不返工 |
 | D-6 | 公共组件落点 | 新建 `Source/Voxia/FarField/`（与 `Voxel/` 平级），前缀 `FVoxiaFarField*` | 明确「visual-only 远景编排」边界，与权威近场层物理隔离 |
-| D-7 | heightmap-LOD 是否接入统一抽象 | **不接入**，保持独立 `TMap<stride>` 路径，仅复用 `MeshComponentDesc` 工具 | LOD 是被动 push / 多 tier，强套引入恒空状态机 |
+| D-7 | heightmap-LOD 是否接入统一抽象 | **不接入**，保持独立 `TMap<stride>` 路径；若后续落地 `MeshComponentDesc`，只允许复用组件属性工具 | LOD 是被动 push / 多 tier，强套引入恒空状态机 |
 | D-8 | near-skip 参数命名 | 统一 `NearSkipRadiusTiles`，删 VHI `InnerSkipRadiusTiles` 别名 | 同概念两名违显式契约；未上线无兼容包袱 |
 | D-9 | 重构「行为等价」验收口径 | snapshot JSON **字节级不变**（除显式新增字段）+ 既有 12 个 `Voxia.Voxel` automation 绿 + S6 过 Layer-3 像素回归 | 给重构机械可判定的安全网 |
 | D-10 | 远景路线收敛（2026-07-01 拍板） | **SVO 转主力，VHI 冻结当过渡基线**：VHI 不删（零维护安全网）、**停止一切投入**（取消原 §6 的 P0/P1/P2）；SVO 接分帧上传（原 S8 提前）+ RHI 实测 8km FPS，达标后再议是否退役 VHI | VHI 无持久优势：现在与 SVO 同显 2.5D、几何更贵（8km 933k vs 155k quad）、3D 死路；唯一优势分帧上传是 SVO 迟早要做的活。一条远景路=系统正交+维护减半，公共组件全服务 SVO。不盲删=SVO 站稳前留安全网 |
@@ -54,7 +54,7 @@
 公共组件**必须**按 3D 可扩展设计，即便当前数据源是 2.5D：
 
 - **Coverage 必须 Y-aware**：coverage 描述不能只有 XZ 半径；需保留垂直方向（Y）覆盖维度（v1 可只用单一 Y band，但接口/数据结构留 Y），否则远处高空/地下的浮空岛、深洞会被 XZ-only 规划漏掉。
-- **数据模型不假设"一列一高"**：CoveragePlanner / BuildPipeline / PatchUploader 只认 `FIntVector Tile`（含 Y）与注入的算法回调，不内嵌高度场假设。SVO 接 3D 源时只换 `BuildOnThreadPool` 注入实现，公共层不动。
+- **数据模型不假设"一列一高"**：已落地的 CoveragePlanner 只认 `FIntVector Tile`（含 Y），BuildPipeline 只认 route config + source revision；PatchUploader 只认 patch key + mesh payload + section 池，不内嵌高度场假设。SVO 接 3D 源时只换算法实现，公共层不动。
 - **patch 是上传分组单位、不绑算法 tile**：粒度由配置决定（VHI `PatchTiles=8`，SVO 未来 `PatchTiles=MacroCellTiles`）。
 
 ## 5. 公共组件架构
@@ -63,93 +63,95 @@
 Source/Voxia/
   Voxel/        ← 权威近场 + 算法 mesher（VHI/SVO/Heightmap mesher 留这里，只是「算法」）
   FarField/     ← 新：远景编排层（规划 / 生命周期 / 上传，全部 visual-only、3D-ready）
-  Net/          ← transport（薄化，持有 BuildPipeline 实例）
-  Gameplay/     ← WorldActor/Pawn（薄化，持有 PatchUploader 实例）
+  Net/          ← transport（已持有 BuildPipeline 实例，仍保留路线各自 Async/merge）
+  Gameplay/     ← WorldActor/Pawn（已持有 PatchUploader 实例）
 ```
 
 ### 5.1 `FVoxiaFarFieldCoveragePlanner` — 纯函数规划器（S1）
 
-纯 C++（无 UObject / 无线程 / 无 IO）。吃「near-window 契约 + coverage 配置」，吐「本轮 build / reuse / remove tile 集合 + coverage-center（含 recenter hysteresis）」。收编 coverage/near-skip 判定 + tile 增量计划。**纯函数 → automation 直接断言、golden fixture 化。**
+纯 C++（无 UObject / 无线程 / 无 IO）。当前 v1 吃「near-window 契约 + coverage 配置」，吐「coverage∖near-skip tile 集合」。它已收编 VHI/SVO 共通 coverage/near-skip 判定；VHI 的 dirty/reuse/remove 仍留在 VHI tile artifact 层，后续若抽增量计划再单独演进。**纯函数 → automation 直接断言、golden fixture 化。**
 
 ```cpp
 struct FVoxiaFarFieldCoverageConfig {
+    FIntVector CoverageCenterTile;        // 远景覆盖中心，可与近场中心分离
     FIntVector NearCenterTile;            // 来自 FVoxiaNearVoxelWindow snapshot
     int32 RadiusTiles = 0;               // XZ 覆盖半径
-    int32 VerticalRadiusTiles = 0;       // 【3D-ready】Y 覆盖半径，v1=0 表示单 Y band
     int32 NearSkipRadiusTiles = 0;       // 统一命名
-    int32 RecenterHysteresisTiles = 0;
-    FIntVector PrevCoverageCenterTile;
     int32 StepTiles = 1;                 // SVO=MacroCellTiles
+    int32 VerticalRadiusTiles = 0;       // 【3D-ready】Y 覆盖半径，v1=0 表示单 Y band
 };
 
 struct FVoxiaFarFieldCoveragePlan {
-    FIntVector CoverageCenterTile;
-    TArray<FIntVector> CoverTiles;       // coverage∖near-skip 全集
-    TArray<FIntVector> UpsertTiles;      // 新进入 / 需重建
-    TArray<FIntVector> RemoveTiles;      // 离开 coverage
-    TArray<FIntVector> ReuseTiles;       // 命中签名可复用
-    bool bRecentered = false;
+    TArray<FIntVector> Tiles;            // coverage∖near-skip 全集
+    TSet<FIntVector> TileSet;            // remove/reuse 侧可直接查 membership
+    void Reset();
 };
 
 namespace FVoxiaFarFieldCoveragePlanner {
-    FVoxiaFarFieldCoveragePlan PlanFull(const FVoxiaFarFieldCoverageConfig&);     // SVO/初版
-    FVoxiaFarFieldCoveragePlan PlanIncremental(                                   // VHI
-        const FVoxiaFarFieldCoverageConfig&,
-        const TSet<FIntVector>& AliveTiles,
-        TFunctionRef<uint64(FIntVector)> TileSignatureFn,    // 注入①算法相关边界签名
-        const TMap<FIntVector,uint64>& PrevSignatures);
+    int32 Chebyshev2D(const FIntVector& A, const FIntVector& B);
+    bool ShouldCover(const FVoxiaFarFieldCoverageConfig&, const FIntVector& Tile);
+    FVoxiaFarFieldCoveragePlan PlanFull(const FVoxiaFarFieldCoverageConfig&);
 }
 ```
 
-注入差异：VHI 用 `PlanIncremental` + `TileBoundarySignature`；SVO 用 `PlanFull` + `StepTiles=MacroCellTiles`；LOD 不接入。
+注入差异：VHI / SVO 都用 `PlanFull`；VHI 继续在本地 tile artifact 层用 `TileBoundarySignature` 做 dirty/reuse/remove，SVO 用 `StepTiles=MacroCellTiles`；LOD 不接入。
 
-### 5.2 `FVoxiaFarFieldBuildPipeline<TConfig,TResult>` — 异步生命周期 helper（S4）
+### 5.2 `FVoxiaFarFieldBuildPipeline<TConfig>` — 异步生命周期 helper（已落地）
 
-模板 struct（值语义，非 UObject），作为 transport 成员（每路线一个实例）。封装 serial guard + pending coalesce/supersede + `Async(ThreadPool)` + GameThread 发布 `++Revision` + observe。**只管生命周期，不管 merge 内容、不管算法。**
+模板 struct（值语义，非 UObject），作为 transport 成员（每路线一个实例）。封装 revision / serial guard / in-flight / pending coalesce / pending supersede；`Async(ThreadPool)` 和 GameThread 发布 observe 仍留在 transport，结果 merge 也仍由路线各自处理。**只管生命周期状态，不管 merge 内容、不管算法。**
 
 ```cpp
-template<typename TConfig, typename TResult>
-struct FVoxiaFarFieldBuildPipeline {
-    TResult Result; uint64 Revision = 0;
-    bool bInFlight = false; bool bHasPending = false;
-    uint64 BuildSerial = 0; uint64 PendingSourceVoxelRevision = 0;
-    TConfig PendingConfig;
+enum class EVoxiaFarFieldBuildRequestDecision {
+    UseCompleted,
+    StartBuild,
+    QueuePending,
+    PendingAlreadyQueued
+};
 
-    struct FHooks {
-        TFunctionRef<bool(const TConfig&, const TConfig&)> SameConfig;        // 注入①
-        TFunctionRef<void(const TConfig&, TResult&)>       BuildOnThreadPool; // 注入②（后台）
-        TFunctionRef<void(TResult& Live, TResult&& Fresh)> MergeOnGameThread; // 注入③
-        TFunctionRef<void(const TCHAR*)>                   EmitObserve;       // 注入④
-    };
-    bool Request(const TConfig&, uint64 SourceVoxelRevision, const FHooks&, /*WeakThis*/...);
+template<typename TConfig>
+struct FVoxiaFarFieldBuildPipeline {
+    EVoxiaFarFieldBuildRequestDecision DecideRequest(...);
+    uint64 BeginBuild();
+    void FinishCurrentBuild();
+    bool ConsumeSupersedingPending(...);
+    uint64 MarkApplied();
+    void ResetRevision();
+    void ResetInFlight();
 };
 ```
 
-注入差异：VHI `MergeOnGameThread`=tile 集合 merge+sort；SVO=`Move`。LOD 不接入（被动 push 无 serial/pending）。
+注入差异：VHI 完成后仍执行 tile 集合 merge+sort；SVO 完成后仍直接 `Move` build result。LOD 不接入（被动 push 无 serial/pending）。
 
-### 5.3 `FVoxiaFarFieldPatchUploader` — 分帧上传服务（S6）
+### 5.3 `FVoxiaFarFieldPatchUploader` — 分帧上传服务（已落地）
 
-纯 C++ struct（持上传队列 + section 池），作为 WorldActor 成员。把 VHI 现有「patch 分组 / 距离+朝向排序 / section 池复用 / bulk-hide 阈值 / time+count 双预算分帧」泛化。同时收编 `FVoxiaFarFieldMeshComponentDesc::ApplyTo(UProceduralMeshComponent*)`（10 项 component 属性）。
+纯 C++ struct（持上传队列 + section 池），作为 WorldActor 成员。已把 VHI/SVO 现有 section 池复用、bulk-hide 阈值、pending patch queue、上传统计与完成态收敛到同一服务；patch 构建与距离+朝向排序仍由调用方准备，避免把 VHI tile artifact 与 SVO mesh 算法塞进公共层。
 
 ```cpp
 struct FVoxiaFarFieldUploadConfig {
-    int32 PatchTiles = 8;                   // SVO 未来=MacroCellTiles
-    double BudgetMs = 3.0; int32 MaxPatchesPerFrame = 8;
-    int32 BulkHideThresholdPatches = 64;
-    FIntVector CenterTile; FVector2D CameraForward;
+    int32 PatchTiles = 8;
+    uint64 BuildRevision = 0;
+    int32 TotalItems = 0;
+    int32 TotalQuads = 0;
+    int32 RemovedPatches = 0;
+    int32 BulkHideThresholdPatches = 0;
 };
 struct FVoxiaFarFieldPatchUploader {
-    void Queue(const TArray<FIntVector>& Upsert, const TArray<FIntVector>& Remove,
-               const TArray<FIntVector>& Dirty, const FVoxiaFarFieldUploadConfig&, uint64 BuildRevision);
-    void ContinueUpload(UProceduralMeshComponent*,
-                        TFunctionRef<void(FVoxiaMeshData&, FIntVector Patch)> AppendPatchMesh);
+    void ResetAll();
+    void RemovePatches(const TArray<FIntVector>& Patches, TArray<int32>& OutSections);
+    void BeginUpload(TArray<FVoxiaFarFieldPatchMesh>&& Patches, const FVoxiaFarFieldUploadConfig& Config);
+    bool PopNextUpload(FVoxiaFarFieldPatchMesh& OutPatch, int32& OutSection);
+    void MarkUploadFinished();
     bool IsBulkHidden() const;
 };
 ```
 
-注入差异：VHI `AppendPatchMesh`=逐 tile 拼 mesh、排序距离+朝向；SVO 接入（S8，延后）需先改 per-macro-cell 输出；LOD 不接入（每 tier 一 section）。
+注入差异：VHI 仍先用 tile artifact 计算 dirty/reuse/remove，再合批成 patch mesh；SVO 由 `FVoxiaFarFieldPatchGrid` 把整块 SVO mesh 拆成 patch mesh；LOD 不接入（每 tier 一 section）。
 
-### 5.4 不抽取（保留算法专属）
+### 5.4 `FVoxiaFarFieldMeshComponentDesc` — 远景 ProcMesh 属性（已落地）
+
+纯 C++ struct，统一远景 `UProceduralMeshComponent` 的 no-collision、async cooking、禁 ray tracing/reflection/sky capture、禁阴影与初始可见性。当前只接 LOD/VHI/SVO 三个远景 component，近场主 mesh 不接入，避免 FarField helper 反向拥有近场语义。
+
+### 5.5 不抽取（保留算法专属）
 
 VHI top+riser 分解 vs SVO octree 遍历；SVO 节点结构 / macro-cell 分块 / seam check；算法层 `MeshEmitter` / `ConfigNormalizer` 模板（过度工程，不抽，仅把 `SameWorldGenConfig` 收成一个 free function）。
 
@@ -179,48 +181,48 @@ UE 验证回路（关编辑器）：`Build.bat VoxiaEditor Win64 Development -Pr
 
 | Step | 内容 | 验证 | 风险 |
 | --- | --- | --- | --- |
-| **S1** | 建 `FarField/` + `FVoxiaFarFieldCoveragePlanner`（纯函数，含 Y-aware 字段），**先不接线** + 新 automation `Voxia.Voxel.FarFieldCoverage`（golden fixture：tile 集合 + 增量 diff） | 新测试绿；旧 12 测试不动 | 低 |
-| **S2** | VHI 接入 CoveragePlanner（tile 选择改调规划器，注入 `TileBoundarySignature`） | VHI 既有测试绿、snapshot tile 集合不变 | 中 |
-| **S3** | SVO 接入 CoveragePlanner（`PlanFull` + `StepTiles=MacroCellTiles`） | SVO 测试绿、seam_check 不退化 | 中 |
-| **S4** | 抽 `FVoxiaFarFieldBuildPipeline<>`，VHI 先接（transport 1352-1633 收编），删 VHI 6 个 pending 成员 | VHI until_* / revision bump 行为不变 | 高 |
-| **S5** | SVO 接入 BuildPipeline（transport 1648-1859 收编） | SVO revision/pending 行为不变 | 中 |
-| **S6** | 抽 `FVoxiaFarFieldPatchUploader` + `MeshComponentDesc`，VHI 先接（WorldActor 568-796 收编），4 component 初始化统一；顺手把 D-2 砍 5 面、D-8 统一命名做掉 | VHI 分帧上传帧预算行为不变；过 Layer-3 像素回归 | 高 |
-| S7+ | （下轮）VHI P0 bulk-reveal 分帧揭示 → SVO per-macro-cell（S8）→ VHI P1/P2（S9）→ 清理（S10） | — | — |
+| **S1（已落地）** | 建 `FarField/` + `FVoxiaFarFieldCoveragePlanner`（纯函数，含 Y-aware 字段），提供 `PlanFull` 并接入 VHI/SVO coverage 枚举；VHI 的 dirty/reuse 判定仍留在 VHI tile artifact 逻辑 | 新 `Voxia.Voxel.FarFieldCoveragePlanner` 绿；VHI/SVO CLI smoke 计数不退化 | 低 |
+| **S2（已落地）** | 抽 `FVoxiaFarFieldBuildPipeline<>`，收编 VHI/SVO transport 中重复的 serial guard + pending coalesce/supersede + revision 发布语义 | 新 `Voxia.Voxel.FarFieldBuildPipeline` 绿；VHI/SVO `until_*` smoke 计数不退化 | 高 |
+| **S3（已落地）** | 抽通用 `FVoxiaFarFieldPatchUploader` + `MeshComponentDesc`，把 VHI/SVO 现有 patch section 上传状态机收敛到同一服务，并收敛远景 ProcMesh 属性 | 新 `Voxia.Voxel.FarFieldPatchUploader` / `FarFieldMeshComponentDesc` 绿；VHI/SVO CLI smoke 计数和上传行为不退化 | 高 |
+| **S4（已落地）** | SVO builder-side macro-cell artifact/cache/reuse：构建结果保留 per macro-cell mesh/count artifact；中心移动后复用重叠 macro-cell，并在 snapshot / observe 暴露 built/reused/removed/dirty/cache_hit_rate | 新 `Voxia.Voxel.SvoPreview` 复用用例绿；移动 CLI smoke 复用率 `0.958` | 中 |
+| **S5（第一片已落地）** | SVO confirmed-store source 边界：`-VoxiaSvoConfirmedSource` 可从客户端 confirmed `FVoxiaVoxelStore` 快照构建；缺 coverage 硬失败并暴露诊断，不 fallback 到 WorldGen/空气 | `Voxia.Voxel.SvoPreview` source 用例绿；confirmed source CLI 完整/缺覆盖 smoke | 高 |
+| **S6a（第一片已落地）** | SVO confirmed-source coverage preflight + dev-only 小范围 preload：snapshot/observe 暴露 expected/present/missing source chunks；WorldGen preview 可按 `-VoxiaSvoConfirmedSourceMaxChunks` 预加载缺失 source chunks，8km 超预算时 build 前拒绝 | `Voxia.Voxel.SvoPreview` coverage 用例绿；radius=1 preload smoke 绿；8km budget gate smoke 给出 7,208,488 missing | 中 |
+| **S6b（第一片已落地）** | 服务端 SVO source 级 canonical coverage/materialization：`WorldPackSvoSourceMaterializer` 按同构 tile/macro-cell coverage 统计 `expected/present/missing`，`world_pack_svo_source_materialize.exs` 支持 dry-run 与 bounded materialization，预算内通过 `WorldPackBootstrapper` 写 snapshots 并复查 ready | ExUnit 3 tests 绿；8km dry-run 返回 7,208,488 missing；单 tile 343 chunks materialize smoke ready | 中 |
+| **S6c（第一片已落地）** | 客户端 baseline pack 本地 H gate：`world_pack_index_v1` window load 读取 `scene_<id>_world_pack_release_manifest.json`，校验窗口 `.vxpack` shard manifest entry、`size_bytes`、`sha256` 后才应用 0x62 payload；缺 manifest、缺 entry、size/hash mismatch 均硬失败 | `Voxia.Net.TerrainBaselinePackIndex` 新增 manifest hash mismatch 用例绿；`Build.bat VoxiaEditor ... -NoLiveCoding` 绿 | 中 |
+| **S6d（第一片已落地）** | SVO upload-level section 复用：`FVoxiaFarFieldPatchUploader` 记录 live patch mesh fingerprint，SVO 不再每次 `ClearAllMeshSections`，跨 tile 更新只上传变化 patch，未变 patch 保留原 section | `Voxia.Voxel.FarFieldPatchUploader` 红绿；8km SVO CLI move smoke 为 39 uploaded / 322 reused / 361 live sections | 中 |
+| **S6e（第一片已落地）** | CPU SVDAG artifact 统计：按当前 occupancy SVO 递归生成子树 signature，统计 `svdag_node_count` / `svdag_unique_node_count` / `svdag_merged_node_count` / `svdag_compression_ratio`，为后续 GPU resource 做数据面起点 | `Voxia.Voxel.SvoPreview` 红绿；8km SVO CLI smoke 为 189144 / 70085 / 119059 / 0.371 | 中 |
+| S6+（下一步） | 8km 生产级权威 3D 源全量调度、持久化 artifact、完整 launcher/update H gate、GPU raymarch renderer / runtime SVDAG resource；VHI 冻结为过渡 baseline。当前用户要求先不碰服务端，后续仅继续客户端侧渲染生产化 | 分阶段 CLI + real RHI + 服务端 materialization 验收 | 高 |
 
-> 注：D-2/D-8 这类"砍冗余"的 cleanup 安排在 S6 与上传抽取同 commit 批次完成，避免中途留半截。VHI P0 bulk-reveal（S7）建立在 S6 uploader 之上，故归下轮。本轮交付物 = S1–S6。
+> 注：2026-07-01 证据复核后，本节不再按旧 S1–S6 一次性完成叙事推进；当前以小步可验证落地为准，实际进度见下方日志。D-2/D-8 这类宽 blast cleanup 延后到对应公共组件有明确第二消费者时再做。
 
 ## 8. 风险与对抗式批判处置
 
 - **过度工程**：只抽编排（A.2/A.3 逐行重复），算法层不抽模板。`SameWorldGenConfig` 收 free function。
 - **LOD 强套**：明确不接入（D-7），只共享 `MeshComponentDesc`。决策稿写死，避免后人"为对称而对称"。
-- **SVO/VHI 粒度差异**：uploader 只认 `Patch + AppendPatchMesh`，粒度配置化；SVO per-macro-cell 改造是 S8 前置、非免费午餐，延后。
-- **不破坏 12 测试**：行为等价 step 先确认现有测试覆盖（tile 集合 / revision / snapshot）；不足处先补测试再重构；S6 依赖 Layer-3 GPU 像素回归（须 `--test-threads=1`）。
+- **SVO/VHI 粒度差异**：通用 uploader 只处理 patch mesh payload 与 section 池，VHI tile artifact 与 SVO mesh/macro-cell 粒度差异留给各自调用方，避免为形式统一搬算法状态。
+- **不破坏自动化与 CLI smoke**：行为等价 step 先确认现有测试覆盖（tile 集合 / revision / snapshot）；不足处先补测试再重构；上传状态机变更必须补 real RHI smoke。
 - **bevy/web parity**：无牵连——VHI/SVO/LOD 是 UE 专属远景视觉实验，不触线协议 / 权威态 / WorldGen 取样接口。
 
 ## 9. 不在本轮范围
 
-- 切远景数据源到权威 3D voxel store / D-delta（下个里程碑，D-5）。
-- SVO per-macro-cell 输出改造 + 接 PatchUploader（S8）。
-- VHI P1/P2 完善（S9）、清理（S10）。
+- 切远景数据源到 8km 生产级权威 3D voxel store / D-delta（下个里程碑，D-5）；当前只落地客户端已有 confirmed store 的 source boundary 与覆盖硬失败。
+- SVO 持久化 artifact、完整 launcher/update H gate、GPU raymarch renderer / runtime SVDAG resource；客户端本地 baseline pack release-manifest shard 校验只覆盖已下载 `.vxpack` 的 size/hash 硬门，不等于完成包分发链路。upload-level section 复用目前只是在 ProceduralMesh patch section 层跳过未变化 mesh，尚未替换为 runtime mesh / HISM / Nanite-ready artifact。
+- VHI P1/P2 完善已因 D-10 冻结取消；后续只做必要兼容维护。
 - heightmap-LOD 接入统一抽象（永不，D-7）。
 
 ## 10. 进度日志
 
 - 2026-06-30：落地决策稿。5-agent workflow 测绘三条远景路线重复面；用户拍板 D-1~D-9（VHI=2.5D baseline / 3D 归 SVO / 抽编排不抽算法 / 公共组件 3D-ready / 3D 源切换作下个里程碑 / 本轮 S1–S6）。下一步 S1：建 `FarField/` + `FVoxiaFarFieldCoveragePlanner` 纯函数 + golden automation。
-- 2026-06-30：**S1 完成**。新建 `Source/Voxia/FarField/VoxiaFarFieldCoveragePlanner.{h,cpp}`（纯函数，3D-ready：含 `VerticalRadiusTiles` Y 覆盖维度，v1=0 即单 Y band）：`ShouldCover` 统一复刻 VHI 双中心 `ShouldBuildTerrainTile` 与 SVO 单中心 `ShouldBuildTile`（SVO 为 coverage==near 特例）；`PlanFull`（SVO）/`PlanIncremental`（VHI，含 reuse/upsert/remove + 注入式边界签名）/`ResolveCoverageCenter`（recenter hysteresis）。先不接线。新增 automation `Voxia.Voxel.FarFieldCoverage`（7 组 golden fixture）。验证：`Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0（新文件编译进 Module.Voxia + 链接成功）；`Automation RunTests Voxia.Voxel` 退出 0，**13 个测试全 Success**（原 12 + 新 FarFieldCoverage，含 NearVoxelWindow/SvoPreview/VhiImpostor 不受影响）。
-- 2026-06-30：**S2 完成**。VHI 接入 CoveragePlanner：`BuildWorldGen` 全量循环改 `PlanFull`、`BuildWorldGenTileUpdate` 增量循环改 `PlanIncremental`（注入 `TileBoundarySignature` 为 `TileSignatureFn`），删除被 planner 取代的 `CanReuseVhiTile`。关键正确性：**移除集与复用判定解耦**——`AliveTiles=Previous.Tiles`（移除始终基于它，与配置可复用无关），`PrevSignatures` 仅在 `SameReusableVhiConfig` 为真时填充（配置改变则旧 tile 全重建但离开覆盖者仍被移除）。验证：`Build.bat` 退出 0（VhiImpostor.cpp 重编 + 链接）；`Automation RunTests Voxia.Voxel` 退出 0，**13 测试全 Success**，`VhiImpostor`（含增量 reuse/built/removed 断言）行为等价。
-- 2026-06-30：**S3 完成**。SVO 接入 CoveragePlanner：`BuildWorldGen` 的 macro-cell 双重循环改 `PlanFull`（`MakeSvoCoverageConfig`：单中心 coverage==near、`StepTiles=MacroCellTiles`），删除被 planner 取代的 `ShouldBuildTile`（SVO 边界 seam 仍用 `IsSuppressedByNearSkip`，保留）。每个 macro-cell 的 SVO 递归构建（TileMacroMin/BuildOccupancySvoNode）不变。验证：`Build.bat` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，**13 测试全 Success**，`SvoPreview`（含 node/leaf/quad/seam 断言）行为等价。至此 CoveragePlanner 已被 VHI/SVO 共用，三条远景路线的 tile 选择收敛到单一纯函数（LOD 按 D-7 不接入）。
-- 2026-06-30：**验证策略升级**（用户拍板）：S4-S6 改 transport 状态机 / 渲染上传，现有 unit automation 覆盖不到 → **build + headless CLI smoke 逐步验证**（`voxia_stdio_cli.js` 起 `-game -nullrhi -VoxiaStdioCli` 跑 `until_vhi`/`until_svo` 读 snapshot 比对 stats；S6 上传需 RHI）。先抓 S3 二进制 VHI 基线：`tile_count=21024 / face_sample_count=336384 / quad_count=932892 / built=21024 / reused=0 / removed=0 / center=[11,0,-51]`（顺带证明 S2/S3 端到端未破坏 VHI）。
-- 2026-06-30：**S4 完成**。抽 `FarField/VoxiaFarFieldBuildPipeline.h`（模板 `<TConfig>`，决策枚举式状态机内核：`DecideRequest`/`BeginBuild`/`CompleteBuild`/`Reset`；**纯值语义、不持有 Result**，Async/AsyncTask 管线仍留 transport）。VHI 接入：transport 6 个散落成员（`VhiRevision/bVhiBuildInFlight/bHasPendingVhiBuild/VhiBuildSerial/Pending*`）收敛为单一 `VhiPipeline`；`RequestVhiImpostorsAround` 用 `DecideRequest`、`StartVhiBuildAsync` 用 `BeginBuild`、完成回调用 `CompleteBuild`（pending 差异判定注入 lambda）。新增纯逻辑单测 `Voxia.Voxel.FarFieldBuildPipeline`（coalesce/supersede/serial/apply/reset）。**移除集与复用解耦的同款纪律在状态机层重现**：保留 VHI reset 仅清 Revision 的既有不对称（不动以维持等价）。验证：`Build.bat` 退出 0；`Automation` 退出 0，**14 测试全 Success**（新增 FarFieldBuildPipeline）；**VHI CLI smoke 与基线逐字节相同**（21024/336384/932892/center[11,0,-51]）→ transport 状态机重写行为等价。
-- 2026-06-30：**S5 完成**。SVO 接入 `FVoxiaFarFieldBuildPipeline<FVoxiaSvoBuildConfig>`（同 S4 同款映射）：transport 6 个 SVO 散落成员收敛为 `SvoPipeline`，`RequestSvoAround`/`StartSvoBuildAsync`/完成回调改用 `DecideRequest`/`BeginBuild`/`CompleteBuild`，`SvoSnapshot` 的 `build_in_flight`/`has_pending_build` 读 pipeline。覆盖 3 处 SVO reset 点（含 window-reset / enter-scene 的 in-flight 清除 + serial bump，保留 SVO 比 VHI 多清 in-flight 的既有不对称）。验证：`Build.bat` 退出 0；`Automation` 退出 0，**14 测试全 Success**；**SVO CLI smoke 与设计稿 8km 文档值逐项吻合**（macro_cell=21016 / node=189144 / leaf=168128 / quad=155399 / max_depth=1 / range=8064m / seam=pass / revision=1）→ SVO transport 重写行为等价。**至此 BuildPipeline 已被 VHI/SVO 共用，异步构建生命周期收敛到单一模板。**
-- 2026-06-30：**S6 完成（范围调整 + GPU 验证）**。第三组件 PatchUploader 按**可复用、可单测、低风险**原则分解落地，而非整块搬迁渲染状态机：
-  - `FarField/VoxiaFarFieldMeshComponentDesc.h`（`ApplyTo`）收编 4 个 ProcMesh 组件逐字重复的 8 项属性（Movable/NoCollision/AsyncCooking + 排除 Lumen/光追/反射/距离场）+ 按需关阴影/起始隐藏（A.3#14 极高重复，4 个即时消费者）。
-  - `FarField/VoxiaFarFieldPatchGrid.h`（纯函数 `PatchCoord`/`PatchSortTile`/`TileDistanceSq`/`TileForwardDot` + `FloorDiv`）抽出并新增单测 `Voxia.Voxel.FarFieldPatchGrid`；`VoxiaWorldActor` 删本地 4 个等价函数、改用共享版（命名空间别名 `VhiGrid`）。
-  - **D-2**：删除 VHI 只写不读的死结构 `EVoxiaVhiFace`/`FVoxiaVhiFaceSample`/`FVoxiaVhiFaceLayer`/`FVoxiaVhiTileArtifact::Faces`（六向 envelope 在 2.5D 源下无数据，3D 归 SVO）。
-  - **范围决定（务实调整，已与用户对齐）**：VHI 的 section-pool 分帧上传状态机（`VhiPatchSection`/`FreeVhiSections`/`Pending*` + Queue/Continue，~230 行渲染状态机）**本轮不整块搬进结构体**——它本轮只有 VHI 一个消费者（SVO 上传改造按 D-4 延后），且属渲染状态机（出 bug 表现为视觉损坏、只能 GPU 验证），1-消费者高风险低收益；连同 **D-8**（NearSkip 命名统一，宽 blast、改 snapshot 字段/cmdline/launch 脚本）一并**延后到 S8**（与 SVO per-macro-cell 第二消费者同期落地，届时相对低风险）。本轮已抽出该上传机制的**可复用纯核**（patch 网格数学 + component 描述）。
-  - **完整 GPU 验证（用户要求）**：`Build.bat` 退出 0；`Automation` 退出 0，**15 测试全 Success**（新增 FarFieldPatchGrid）；**带 RHI 开窗实跑 VHI 预览**（非 nullrhi），日志 `VHI patch update streamed: uploaded_patches=361 live_sections=361 patch_tiles=8 total_tiles=21024 total_quads=932892` 与文档一致 → ApplyTo + PatchGrid 上传路径正确；`voxia_vhi_tiles_built` 的 `face_sample_count=336384`/`quad_count=932892` 与 D-2 前一致 → 死结构删除未改输出；截图 `Saved/voxia_shot.png` 客户端 183 FPS 正常渲染、无崩溃无损坏。
+- 2026-07-01：**证据复核纠偏**。此前关于 `FVoxiaFarFieldBuildPipeline`、`FVoxiaFarFieldMeshComponentDesc`、通用 `FVoxiaFarFieldPatchUploader`、S1-S6 全完成、15 个 automation、11.35s、191 FPS 的记录未被当前代码证实，不能作为当前事实；后续只按本日志中的可复现 build / automation / CLI / RHI 证据更新。
 - 2026-07-01：**远景路线收敛拍板（D-10）**。对比数据坐实 VHI 无持久优势（8km：VHI 932,892 quad vs SVO 155,399 quad；现阶段两者同显 2.5D；VHI 唯一优势=已验证的分帧上传，恰是 SVO 迟早要做的活）。**SVO 转主力，VHI 冻结当过渡基线**（不删=安全网，停投入=取消 §6 P0/P1/P2）。下一步从「VHI 完善」转为 **SVO 接分帧上传**（把原延后的 S8 `FVoxiaFarFieldPatchUploader`/per-macro-cell 输出提前）→ RHI 实测 SVO 8km FPS 达 120 级 → 达标后再议 VHI 退役。届时 PatchUploader 自然获得第二消费者，section-pool 结构体搬迁不再是 1-消费者高风险。
-- 2026-07-01：**S7 完成（SVO 转正：分帧上传 + GPU 实测达标）**。
-  - **S7-1**：`FVoxiaSvoBuildResult` 增 `MacroCells`（per-macro-cell tile + 独立 mesh），`BuildWorldGen` 用 `SliceMacroCellMesh` 从 `Out.Mesh` 切出每 cell 几何（三角重基），`Out.Mesh` 仍全量聚合保字节等价；automation 加聚合断言（per-cell quad 和 == 总量）。
-  - **S7-2**：WorldActor SVO 上传从单 section 改分帧多 section（`QueueSvoUpdate`/`ContinueSvoUpload`）。**关键修正**：初版给每 macro-cell 一 section = 21016 section（O(n²) + 上万 draw call）75s 跑不完 → 改为按 patch（`VoxiaSvoPatchTiles=8`，复用 `FVoxiaFarFieldPatchGrid`）合批 + 距离/朝向排序 + bulk-hide，21016 macro-cell → **361 section**。VHI 上传冻结不动（不共享结构体，因 VHI 将退役）。
-  - **S7-3 GPU 实测**：Build 退出 0；Automation 15 全 Success；带 RHI 开窗实跑 SVO 8km：`SVO preview streamed sections=361 total_quads=155399 elapsed 11.35s`；上传完成后 HUD **191 FPS**（远超 120 目标，且因同 361 section 但 quad 比 VHI 少 6 倍而显著高于 VHI 的 ~90 FPS）。→ **SVO 已是 upload-competitive 且更快的远景主力，数据上可作唯一远景路；VHI 退役条件已基本满足（待用户拍板删除时机）。**
+- 2026-07-01：**证据复核纠偏 + SVO patch 分帧上传落地**。本节此前关于 `MacroCells`、15 个 automation、11.35s、191 FPS 的说法未被当前代码证实，不能作为当前事实。实际落地范围是：新增 `FarField/VoxiaFarFieldPatchGrid.{h,cpp}` 和 `Voxia.Voxel.FarFieldPatchGrid` automation；`AVoxiaWorldActor` 将 SVO mesh 按 `VoxiaSvoPatchTiles=8` 拆成 19×19 patch，并用 `VoxiaSvoUploadBudgetMs` / `VoxiaSvoUploadMaxPatchesPerFrame` 分帧上传。验证：`Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，13 个测试全 Success；null RHI CLI smoke 产出 `quad_count=155399`、`seam_check.status=pass`、`uploaded_patches=361`、`live_sections=361`、`elapsed_ms=537.6`；real RHI smoke 产出 `build_ms=571.910`、`uploaded_patches=361`、`live_sections=361`、`elapsed_ms=1365.0`，上传完成后 FPS 样本约 104-115。
+- 2026-07-01：**CoveragePlanner 第一片落地**。新增 `FarField/VoxiaFarFieldCoveragePlanner.{h,cpp}` 和 `Voxia.Voxel.FarFieldCoveragePlanner` automation；`FVoxiaFarFieldCoveragePlanner::PlanFull` 统一 VHI/SVO 远景覆盖枚举，VHI 的 dirty/reuse/remove 仍在 VHI tile artifact 逻辑里处理，SVO 用 `StepTiles=MacroCellTiles` 维持 21016 macro-cell 覆盖。验证：先写测试并确认缺 header 编译失败；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，14 个测试全 Success；VHI null RHI CLI smoke 为 `tile_count=21024` / `face_sample_count=336384` / `quad_count=932892` / `build_elapsed_ms=899.1`；SVO null RHI CLI smoke 为 `macro_cell_count=21016` / `node_count=189144` / `leaf_count=168128` / `quad_count=155399` / `seam_check.status=pass`，上传 `uploaded_patches=361` / `live_sections=361` / `elapsed_ms=341.5`。
+- 2026-07-01：**BuildPipeline 第二片落地**。新增 `FarField/VoxiaFarFieldBuildPipeline.h` 和 `Voxia.Voxel.FarFieldBuildPipeline` automation；`UVoxiaTransportSubsystem` 用两个 `FVoxiaFarFieldBuildPipeline<TConfig>` 实例替代 VHI/SVO 各自的 revision / in-flight / pending / serial 散落成员，保留 VHI 结果 merge+sort 与 SVO result move 的路线差异。验证：先写测试并确认缺 header 编译失败；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，当时 15 个测试全 Success；VHI null RHI CLI smoke `until_vhi` 通过，最终 `tile_count=21024` / `face_sample_count=336384` / `quad_count=932892` / `vhi_revision=1`；SVO null RHI CLI smoke `until_svo` 通过，最终 `macro_cell_count=21016` / `quad_count=155399` / `seam_check.status=pass` / `uploaded_patches=361` / `live_sections=361`。当时剩余：通用 `FVoxiaFarFieldPatchUploader`、per-macro-cell artifact/cache、权威 3D voxel 源、持久化 artifact、服务端 materialization、H gate；PatchUploader 已由下一条补齐。
+- 2026-07-01：**PatchUploader + MeshComponentDesc 第三片落地**。新增 `FarField/VoxiaFarFieldPatchUploader.{h,cpp}`、`FarField/VoxiaFarFieldMeshComponentDesc.{h,cpp}` 以及 `Voxia.Voxel.FarFieldPatchUploader` / `Voxia.Voxel.FarFieldMeshComponentDesc` automation；`AVoxiaWorldActor` 用两个 `FVoxiaFarFieldPatchUploader` 实例替代 VHI/SVO 各自的 pending upload / section pool / bulk-hide 状态，并用 `FVoxiaFarFieldMeshComponentDesc::FarVisual` 收敛 LOD/VHI/SVO 远景 ProcMesh 属性。验证：先写测试并确认缺 header 编译失败；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，17 个测试全 Success；VHI CLI smoke `until_vhi 180000 20000; wait 12000; vhi` 通过，`tile_count=21024` / `face_sample_count=336384` / `quad_count=932892` / `build_elapsed_ms=889.7` / `uploaded_patches=361` / `live_sections=361` / `elapsed_ms=11355.1`；SVO CLI smoke `until_svo 180000 20000; wait 1000; svo` 通过，`macro_cell_count=21016` / `quad_count=155399` / `seam_check.status=pass` / `uploaded_patches=361` / `live_sections=361` / `elapsed_ms=266.5`。当时仍未落地：per-macro-cell artifact/cache（已由下一条补齐）、权威 3D voxel 源、持久化 artifact、服务端 materialization、H gate、GPU raymarch/SVDAG。
+- 2026-07-01：**SVO macro-cell artifact/cache 第四片落地**。`FVoxiaSvoBuildResult` 新增 per macro-cell artifacts、dirty/removed macro-cell 列表和 `built/reused/removed/dirty/cache_hit_rate` 统计；`BuildWorldGenMacroCellUpdate` 在相同 worldgen/几何配置下复用重叠 macro-cell artifact，参数变化会强制全量重建；transport 的 WorldGen preview 路径用旧 build result 生成 reuse context，避免 tile window revision 变化误阻断同一 WorldGen 源的复用。验证：`Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，17 个测试全 Success；移动 CLI smoke 首次 build 为 `built_macro_cell_count=21016` / `reused_macro_cell_count=0` / `cache_hit_rate=0.000` / `build_ms=436.436`，移动到 `center_tile=[17,0,-51]` 后第二次 build 为 `built_macro_cell_count=879` / `reused_macro_cell_count=20137` / `removed_macro_cell_count=879` / `dirty_macro_cell_count=879` / `cache_hit_rate=0.958` / `build_ms=87.482` / `seam_check.status=pass`。当时仍未落地：权威 3D voxel 源、持久化 artifact、服务端 materialization、H gate、GPU raymarch/SVDAG、upload-level 增量 section 复用。
+- 2026-07-01：**SVO confirmed-store source boundary 第五片落地**。`FVoxiaVoxelStore` 暴露 `SampleMacro`，SVO builder 新增 `EVoxiaSvoSourceKind` 与 `BuildConfirmedVoxelStoreMacroCellUpdate`；confirmed-store source 先检查 coverage，完整才构建 3D mesh，缺 chunk 直接 `source_complete=false` / `quad_count=0` / `build_error`，不能把 missing chunk 当空气。transport 新增 `-VoxiaSvoConfirmedSource`，后台构建复制当前 `FVoxiaVoxelStore` 快照，snapshot / observe 暴露 `source_kind`、`source_complete`、`missing_source_chunk_count`、`build_error`，actor 对 incomplete source 不上传 mesh。验证：`Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，17 个测试全 Success；默认 WorldGen 8km CLI smoke 仍为 `source_kind=worldgen` / `source_complete=true` / `macro_cell_count=21016` / `quad_count=155399` / `seam_check.status=pass`；confirmed-store 完整覆盖 smoke 为 `source_kind=confirmed_voxel_store` / `source_complete=true` / `missing_source_chunk_count=0` / `macro_cell_count=1` / `quad_count=28` / `seam_check.status=pass`；缺覆盖 smoke 为 `source_complete=false` / `missing_source_chunk_count=2744` / `quad_count=0` / `build_error="missing confirmed voxel chunk coverage for SVO source: 2744 chunks"`。
+- 2026-07-01：**SVO confirmed-source coverage preflight / preload 第六片第一段落地**。新增 `FVoxiaSvoSourceCoverage` 与 `AnalyzeConfirmedSourceCoverage`，SVO snapshot/observe 增加 `expected_source_chunk_count` / `present_source_chunk_count` / `missing_source_chunk_count`。WorldGen preview 下，`-VoxiaSvoConfirmedSource` 会在 build 前按 coverage 缺口预加载 confirmed source chunks，但受 `-VoxiaSvoConfirmedSourceMaxChunks` 约束；超过预算时发布 diagnostic SVO snapshot，不启动巨量物化。验证：先写 coverage API automation 并确认编译红灯；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，17 个 voxel tests 全 Success；radius=1 preload smoke 为 `expected_source_chunk_count=3087` / `present_source_chunk_count=3087` / `missing_source_chunk_count=0` / `quad_count=174` / `seam_check.status=pass`；8km confirmed-source budget smoke 为 `expected_source_chunk_count=7208488` / `present_source_chunk_count=0` / `missing_source_chunk_count=7208488` / `quad_count=0` / `build_error="SVO confirmed source requires 7208488 missing chunks, above preload budget 3000"`；默认 WorldGen 8km smoke 仍为 `source_kind=worldgen` / `source_complete=true` / `macro_cell_count=21016` / `quad_count=155399` / `seam_check.status=pass`。仍未落地：8km 生产级权威源覆盖/物化、持久化 artifact、服务端 materialization、H gate、GPU raymarch/SVDAG、upload-level 增量 section 复用。
+- 2026-07-01：**服务端 SVO source materialization 第六片第二段落地**。新增 `WorldServer.Voxel.WorldPackSvoSourceMaterializer` 与 `scripts/world_pack_svo_source_materialize.exs`：服务端按与客户端 SVO coverage 同构的 tile/macro-cell 规则统计 canonical `expected_source_chunk_count` / `present_source_chunk_count` / `missing_source_chunk_count`，预算内通过 `WorldPackBootstrapper` / `WorldGenMaterializer` 写 bounded canonical snapshots，并在写后复查仍 incomplete 时显式错误，不返回假绿。验证：先写 ExUnit 并确认缺模块/缺 `coverage/1` 红灯；实现后 `MIX_ENV=test mix test apps/world_server/test/world_server/voxel/world_pack_svo_source_materializer_test.exs --no-start` 退出 0，`3 passed`；`MIX_ENV=test mix run --no-start scripts/world_pack_svo_source_materialize.exs --dry-run --radius-tiles 72 --near-skip-radius-tiles 1 --macro-cell-tiles 1 --max-chunks 3000 --no-migrate` 返回非零，报告 `macro_cell_count=21016` / `expected_source_chunk_count=7208488` / `present_source_chunk_count=0` / `missing_source_chunk_count=7208488`；`MIX_ENV=test mix run --no-start scripts/world_pack_svo_source_materialize.exs --logical-scene-id 919998 --radius-tiles 0 --near-skip-radius-tiles -1 --macro-cell-tiles 1 --max-chunks 400 --batch-size 64 --no-migrate` 退出 0，报告单 tile `343` chunks inserted、final missing `0`、status `ready`。仍未落地：8km 生产级全量调度、持久化 artifact、H gate、GPU raymarch/SVDAG、upload-level 增量 section 复用。
+- 2026-07-01：**客户端 baseline pack 本地 H gate 第一片落地**。`FVoxiaTerrainBaselinePackReleaseManifest` 支持解析 `world_pack_release_manifest_v1` 并校验 scene/content_version、shard entry、`size_bytes` 与 `sha256`；`UVoxiaTransportSubsystem::LoadTerrainBaselineWindowFromPackIndex` 现在要求本地 `scene_<id>_world_pack_release_manifest.json`，窗口 `.vxpack` shard 先过 manifest 校验，再读取 footer-table 和 0x62 payload。验证：先写 manifest-aware window-load automation 并确认缺类型/缺 overload 编译红灯；实现后曾因 UE Generic SHA256 path 在自动化中崩溃，最终改用 UE OpenSSL 依赖；`Build.bat VoxiaEditor Win64 Development ... -NoLiveCoding` 退出 0；`UnrealEditor-Cmd.exe ... Automation RunTests Voxia.Net.TerrainBaselinePackIndex; Quit` 退出 0，log 报 `Test Completed. Result={Success}`。仍未落地：完整 launcher/update 包下载与 release manifest 生成分发、SVO 持久化 artifact、GPU raymarch/SVDAG、upload-level 增量 section 复用。
+- 2026-07-01：**SVO upload-level section 复用第一片落地**。`FVoxiaFarFieldPatchUploader` 为 live patch 保存 mesh fingerprint，`BeginUpload` 会跳过 fingerprint 未变化的 live patch；`AVoxiaWorldActor::QueueSvoMeshUpdate` 不再对每次 SVO revision 全量 `ClearAllMeshSections`，只清除 stale patch section 并保留未变 section。验证：先写 `Voxia.Voxel.FarFieldPatchUploader` unchanged-live-patch 用例并确认缺 `GetReusedPatchCount` 编译红灯；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel` 退出 0，17 个测试全 Success；8km null RHI SVO move smoke 首次上传 `uploaded_patches=361` / `reused_patches=0`，跨 1 tile 后第二次为 `uploaded_patches=39` / `reused_patches=322` / `live_sections=361`，SVO snapshot 为 `built_macro_cell_count=148` / `reused_macro_cell_count=20868` / `cache_hit_rate=0.993` / `seam_check.status=pass`。仍未落地：完整 launcher/update 包下载与 release manifest 生成分发、SVO 持久化 artifact、GPU raymarch/SVDAG、runtime mesh / HISM / Nanite-ready artifact。
+- 2026-07-01：**CPU SVDAG artifact 统计第一片落地**。`FVoxiaSvoBuildResult` / macro-cell artifact 增加 `SVDag*` 统计；builder 用与现有 occupancy SVO 一致的分类/拆分规则生成子树 signature，并统计 unique/merged node 与 compression ratio。验证：先写 `Voxia.Voxel.SvoPreview` SVDAG 字段/确定性/snapshot 用例并确认缺字段编译红灯；实现后 `Build.bat VoxiaEditor ... -NoLiveCoding` 退出 0；`Automation RunTests Voxia.Voxel.SvoPreview` 退出 0；8km null RHI SVO smoke 首次为 `svdag_node_count=189144` / `svdag_unique_node_count=70085` / `svdag_merged_node_count=119059` / `svdag_compression_ratio=0.371` / `seam_check.status=pass`，跨 1 tile 后为 `70045` unique、`0.370` ratio，仍 `cache_hit_rate=0.993`。仍未落地：完整 launcher/update 包下载与 release manifest 生成分发、SVO 持久化 artifact、GPU raymarch renderer / runtime SVDAG resource、runtime mesh / HISM / Nanite-ready artifact。
