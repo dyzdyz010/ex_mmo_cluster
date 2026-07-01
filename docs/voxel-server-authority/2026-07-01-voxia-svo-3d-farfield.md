@@ -77,4 +77,7 @@
 
 ## 9. 进度日志
 
-- 2026-07-01：落地决策稿。承接 SVO 审计。用户拍板 U-1（客户端本地程序化 3D）/U-2（仅 preview + 流送顺滑）/U-3（悬崖体积 + 浮空岛 + 远山）。确认 preview 近场现算（改 WorldGen 即近场+远景同源变 3D）、本轮不背跨端 bit-exact。下一步 S1：SVO 占用注入化 + 根 Y 真 3D + -Y 面（仍喂列式源，先解耦不改内容）。
+- 2026-07-01：落地决策稿。承接 SVO 审计。用户拍板 U-1（客户端本地程序化 3D）/U-2（仅 preview + 流送顺滑）/U-3（悬崖体积 + 浮空岛 + 远山）。确认 preview 近场现算（改 WorldGen 即近场+远景同源变 3D）、本轮不背跨端 bit-exact。
+- 2026-07-01：**Step A 完成**（Voxia `39e5f8b`）。`WorldGenV1` 加统一权威占用 `IsSolid(x,y,z)`=地表体+透镜状浮空岛；`MaterialAt` 与之一致；`BuildChunkSnapshot` 逐格调用去列式早退（改含岛顶的 `MaxSolidY` 上界 + 地下全实心早退）→ 近场窗口自动 3D（近场 mesher 本就吃任意 3D 体素）。远山调参（lowland 振幅 150→340 + 山脉门槛降）。自测 parity 精确值→语义断言（确定性/落带/有起伏）+ 浮空岛 3D 断言。Voxia.Voxel 15/15 绿。
+- 2026-07-01：**Step B 完成**（Voxia `e672baa`）。SVO `ClassifyBounds` 从 2.5D 高度比较→3D 占用（地表高度带 + `BoxIslandIntersects` 岛带相交）；root Y 上探到岛顶（`SampleMaxIslandTop`）；`MaterialForBounds` 岛叶取岛材质；新增 -Y 底面（`EmitSvoLeafBottom`）。8km quad 155k→407k、mixed 叶 92k→123k。岛参数调优（threshold 0.64→0.56、gap 55→85、halfThick 26→32）。RHI 实测 117–156 FPS（>120）：远景=块状 3D 崖壁/山地/浮空岛（对比之前扁平壳）。Voxia.Voxel 15/15 绿。
+- 2026-07-01：**Step C + D 委派 Fable 模型 agent 实现**（用户指定）。C=跨 tile 增量流送（镜像 VHI `BuildWorldGenTileUpdate`+`FVoxiaVhiReuseContext`+`VhiPatchSection`/`FreeVhiSections` 增量上传，`PlanIncremental`，per-macro-cell 缓存，`cache_hit_rate`/`upload_queue` 接真值）；D=真 seam check（dedup/missing/一致性三项，替空壳）+ 近/远 skirt。每步 build+test+commit（不 push）。完成后主线做 RHI 视觉验证（移动不重刷 + 无缝）。
