@@ -202,7 +202,7 @@ flowchart TD
 - 已增加 inner-boundary skirt pass。
 - 顶部锚定未下沉的真实高度，向下封 `Sink + 余量`。
 - 法线朝中心，X/Y 两轴按 rendered-cell 与 skipped-cell 邻接触发。
-- AutomationTest 已增加“洞边界有朝内竖直 quad / 顶部未下沉 / 底部低于 sunk plateau”断言；2026-07-01 `Voxia.Voxel` 自动化已通过，仍待真实画面边界巡检。
+- AutomationTest 已增加“洞边界有朝内竖直 quad / 顶部未下沉 / 底部低于 sunk plateau”断言；2026-07-01 `Voxia.Voxel` 自动化已通过，2026-07-02 `16x11` 真实 RHI 截图 smoke 已复核单视角边界。
 
 ## Debug / CLI
 
