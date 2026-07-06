@@ -52,6 +52,8 @@
 | Voxia SVO preview | 新关卡试验 Sparse Voxel Octree macro-cell mesh proxy；目标为无缝、8km 远景、120 FPS 预算 | 设计目标稿 | [`2026-06-30-voxia-svo-preview-design.md`](./2026-06-30-voxia-svo-preview-design.md) |
 | Voxia FarField 公共组件 + VHI baseline | 抽 coverage 规划 / 异步生命周期 / 分帧上传三组件（3D-ready）；VHI 定位廉价 2.5D baseline、3D 归 SVO | 进行中（D-10 SVO 转主力 / VHI 冻结已记录；2026-07-01 已落地 SVO patch grid + 分帧上传，8km real RHI 上传后 FPS 样本约 104-115；`FVoxiaFarFieldCoveragePlanner::PlanFull`、`FVoxiaFarFieldBuildPipeline`、`FVoxiaFarFieldPatchUploader`、`FVoxiaFarFieldMeshComponentDesc` 已被 VHI/SVO 远景路径共用；SVO builder-side macro-cell artifact/cache/reuse 已落地，移动 CLI smoke 复用率 `0.958`；SVO confirmed-store source boundary、coverage preflight 和 WorldGen-preview 小范围 preload 预算门禁已落地，8km 超预算时硬拒；2026-07-05 已接 `source_pages` manifest gate、持久化 macro-cell artifact cache、默认 RuntimeMesh / `UDynamicMeshComponent` renderer、保留型 `svo_source_pages_fixture`、严格 `until_svo_source_pages_uploaded` / `until_svo_source_pages_suppressed` 和 `run_svo_source_pages_fixture_smoke.js` runner，并有 source_pages real-RHI 上传、截图审计、3x3x3 多页 fixture、3x3x3 真实 RHI RuntimeMesh 上传、可复用 runner、相邻 tile retained-package 移动证据和 focus suppression 证据。服务端生产权威源调度、launcher/offline 端到端和长期性能待定） | [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](./2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) |
 
+| VLOD-A1 | 体素 LOD 里程碑 A 步 1:切默认分级 + 显式 tier 契约 + L2.5 第三环(四环 7/14/28/56m,quads −64%) | 未开始 | [`phase-vlod-a1-explicit-tiering.md`](./phase-vlod-a1-explicit-tiering.md) |
+
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 
 Phase 6 已落地；Phase 7.A `FieldKernel` kernel-first 迁移已完成；Phase 7.D1 已把
