@@ -12,7 +12,7 @@
 
 - **8km 生产权威源覆盖与物化调度**：缺 d72 / 8km 生产 source pages 的权威覆盖、bounded materialization 和 delta dirty 调度；客户端 fixture / smoke 不能替代真实服务端 source；实施载体为里程碑 C（C1 pages writer、C2 dirty 聚合与 mip 基准、C3 失效通知与 HTTP 分发），覆盖规模参考 `macro_cell_count=21016`。
 - **生产持久化 artifact**：缺服务端或离线管线生成的 source pages / mesh / SVDAG artifact 持久化、`source_revision` / `diff_chain_hash` 与容量淘汰策略；没有它，H gate 无法覆盖生产包版本更新和重拉；实施载体为里程碑 C2/C3。
-- **launcher/update 包下载安装 UI 与 diff-chain 流程**：缺包下载、安装、hash 校验、region manifest/index、diff chain 完整校验和可诊断 UI；缺这条链路会使 baseline 入场硬校验停留在本地包或脚本层；实施载体为里程碑 C4。
+- **launcher/update 包下载安装 UI 与 diff-chain 流程**：缺包下载、安装、hash 校验、region manifest/index、diff chain 完整校验和可诊断 UI；缺这条链路会使 baseline 入场硬校验停留在本地包或脚本层；同时缺 T-12 的 required-set 差集下载、热度驱动推荐预置集（全沙盒下热点为运行时涌现）、传送 gate 补拉与 shard 粒度分级（热区小 shard / 冷区大 shard）；实施载体为里程碑 C4。
 - **runtime diff channel/priority/budget**：缺运行时 diff 的通道、优先级、预算和最终一致性策略；当前 snapshot 仍可能承担 bulk 数据来源；实施载体为服务端 dirty / outbox 设计收口。
 - **32km / 稀疏 chunk / 地图导入调度**：缺完整 32km 生产生成预算、稀疏 chunk 策略、真实地图导入 migration 与完整 dirty/rebuild scheduler；缺口会影响从 demo pack 走向生产 world pack；实施载体为 world-pack materialization 与 data_service 派生表专项。
 - **material 生产端派生**：缺 7m material mip 的服务端派生函数与一致性验证；现有 NIF 只导出 `column_height` / `heightmap_region`，无 material 函数，无法产出 C1 所需的 material 众数 payload；实施载体为里程碑 C1。

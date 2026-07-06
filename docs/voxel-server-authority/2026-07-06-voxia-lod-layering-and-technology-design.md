@@ -173,6 +173,19 @@ flowchart LR
 
 **page 运行时分发通道（T-11，评审 F-3 修订）**：推荐**失效通知（wire 新 opcode，只传 cell 列表 + 新 source_revision）+ payload 走 HTTP 拉取**（复用 auth_server `/ingame/voxel/*` 家族），不在 wire 内嵌 page payload。理由：page 是可缓存静态内容（CDN 友好、多客户端共享同一 revision）、失败重试语义简单、不占用游戏连接带宽。manifest 滚动：重发布 = 追加新 revision 条目 + 保留旧条目至 TTL，客户端按 revision 拉取并过 sha256 gate；缺新页时旧 revision 的 artifact 继续显示并标 stale（时间窗行为，非缺源 fallback）。
 
+**launcher 分发范围契约（T-12，2026-07-06 方向拍板，字段细节随 B1 冻结）**：
+
+1. **范围真相源在服务端 manifest**：pack/pages 的 expected 集合由服务端声明，客户端只做差集下载与 sha256 校验；`required_shard_set = f(logical_scene_id, 角色最后位置, 窗口半径契约)`——三个输入服务端全有，由 `world_manifest` 响应确定性给出。"服务器预读"的正确形态是服务端计算 required set，不是预测玩家行为。
+2. **1m world pack 三段式范围**：
+   - **保底段**（范围静态、内容动态）：出生区/传送枢纽等系统锚点，新角色 required set 的默认值；
+   - **热度段**（范围动态）：服务端按运行时热度指标（订阅密度/编辑密度/人口分布）滚动维护推荐预置集，进 manifest 下发——全沙盒兼容：热点是运行时涌现而非设计时输入，玩家自建城镇自动进预置集；
+   - **窗口段 + 冷区按需**：角色位置窗口差集下载；传送/长途目的地在**入场前 gate 补拉**，大体素包永不进 scene runtime 热路径（三阶段边界纪律）。
+3. **pages 全图单档预下发**：source pages 以 **7m 单档全图覆盖**，launcher 阶段全量/差集拉平至当前 revision（全图单 Y 层 80-160MB、垂直多层 100-400MB 量级）；14/28/56m 不存储不下发（T-4 单档决策的分发面——多档存储只 +14% 空间但失效链复杂度是乘法，且整数规约是全项目唯一被允许参与生产渲染的客户端本地重算，因其为纯整数确定性函数）。
+4. **两条架构不变量**：
+   - **pack = checkpoint 的客户端分发形态**：内容 = `base ⊕ 全部 delta`（含玩家建造），全沙盒不改变管线，只加快 pack 变旧速度（由 compact 周期 + shard 增量更新对冲，热区 shard 高频翻新、冷区长期稳定，失效粒度自适应热度分布）；
+   - **pack 新鲜度只是效率参数**：正确性由登录 `known[]` 对账保证（服务端只对版本不同的 chunk 回 0x62）——pack 旧 = 登录增量大，不 = 错。
+5. **新增设计项（登记，归 C4）**：①热度统计与推荐预置集（observe 驱动 + manifest 字段）；②shard 失效经济学（热区小 shard / 冷区大 shard，或按翻新率自适应切分——shard grid 设计的新约束）。
+
 ## 5. 预算表（P-3；k=4.06 标定于 3D preview 内容；2.5D 生产内容约减半）
 
 | 带 | cells | 叶 | quads（无 merge） | merge 系数（按带） | merge 后 |
@@ -231,7 +244,7 @@ flowchart LR
 
 | 步 | 内容 | 备注 |
 | --- | --- | --- |
-| B1 | **拍板并冻结 T-4（page payload + 规约算子）与 T-11（分发通道语义）为纸面契约**；**pages coverage radius 必须为 manifest 一等字段**（不得隐含 d72——L4 defer 的安全销：将来扩圈是数据变更不是契约变更） | 只写契约不写服务端代码；A 期间即可完成 |
+| B1 | **拍板并冻结 T-4（page payload + 规约算子）、T-11（分发通道语义）与 T-12（launcher 分发范围：required-set、三段式、热度预置集与 shard grid 字段）为纸面契约**；**pages coverage radius 必须为 manifest 一等字段**（不得隐含 d72——L4 defer 的安全销：将来扩圈是数据变更不是契约变更） | 只写契约不写服务端代码；A 期间即可完成 |
 | B2 | fixture 生成器升级：产出**真 7m mip page payload**（从 preview WorldGen 按 T-4 算子计算） | 扩展现有 `svo_source_pages_fixture`，dummy payload 退役 |
 | B3 | **客户端 pages 真消费管线**：page decode → 规约降采样 → 按环建树 → 从 pages 构建 SVDAG payload（用途=raymarch AB 保温，d≤72，不背 L4 生产化，见 §3.3 决策二） | **全新主干代码**（现状 page 只是 hash gate 输入、渲染吃预物化 artifact） |
 | B4 | 客户端 dirty 输入 API（`InvalidateMacroCells`）+ fixture 模拟失效通知的回归 | T-7 的客户端半边 |
@@ -246,11 +259,11 @@ flowchart LR
 | C1 | pages writer（occupancy any-solid + material 众数） | **material 派生规则与 1m migration 一致性在此复核——这是 B1 冻约后唯一残留的服务端侧契约风险**（NIF 现无 material 函数，I-8） |
 | C2 | dirty 聚合 + per-cell mip 比对基准持久化 + `source_revision/diff_chain_hash` 真值 | app 归属建议：聚合器挂 scene_server commit 链旁，pages writer 挂 world_server（`WorldPackSvoSourceMaterializer` 同族），mip 基准表落 data_service——待拍板 |
 | C3 | 失效通知 opcode（0x6D/0x6E 已占用，另配）+ T-11 HTTP 通道 + manifest 滚动 | 客户端 far_visual_sync 适配层已就绪待 opcode |
-| C4 | launcher/update 真实包 + 端到端 smoke | 复用 B 的全部验收入口，服务端产物必须让既有 smoke 全绿 |
+| C4 | launcher/update 真实包 + 端到端 smoke；**按 T-12 实现 required-set 差集下载、热度预置集、传送 gate 补拉与 shard 粒度分级** | 复用 B 的全部验收入口，服务端产物必须让既有 smoke 全绿 |
 
 ### defer（触发条件写死，不排期）
 
-自研 SceneProxy（触发：A2 后实测 hitch/显存仍瓶颈）；按环差异化容器（触发：远环管理成本可测瓶颈）；**L4 第五环扩圈**（触发：§3.3 三条件命中任一；启用形态=低一致性档）；raymarch 升格（路线 §4.2 门槛）；Nanite bake farm（触发：editor 手工 A/B 数据显著）；Event Overlay（协议留 optional event descriptor 字段，玩法到大事件阶段再做）；**同构路线定向加法**（触发：终态裁决稿 §4 画像全命中；形态=处女地基底本地生成，被修改区仍走投影）。
+自研 SceneProxy（触发：A2 后实测 hitch/显存仍瓶颈）；按环差异化容器（触发：远环管理成本可测瓶颈）；**L4 第五环扩圈**（触发：§3.3 三条件命中任一；启用形态=低一致性档）；raymarch 升格（路线 §4.2 门槛）；Nanite bake farm（触发：editor 手工 A/B 数据显著）；Event Overlay（协议留 optional event descriptor 字段，玩法到大事件阶段再做）；**同构路线定向加法**（触发：终态裁决稿 §4 画像全命中；形态=处女地基底本地生成，被修改区仍走投影）；**隐秘区域的 pages/pack 准入规则**（触发：隐私/隐匿玩法立项；背景：7m pages 全服可见轮廓，1m 预置只是细节提前，隐匿闸门须在分发准入层做而非 pack 范围机制）。
 
 ## 10. 不做什么（显式负决策）
 
@@ -269,3 +282,4 @@ flowchart LR
 - v2.3（2026-07-06）：落术语表 [`glossary.md`](./glossary.md)（base / delta / truth / snapshot 四词口径 + 客户端 snapshot-only 推论 + 远区修改回流回路），文首加指针；无技术内容变更。
 - v2.4（2026-07-06）：①数据源终态拍板落稿（[`2026-07-06-projection-route-final-decision.md`](./2026-07-06-projection-route-final-decision.md)）——投影路线为终态，§3.2b 数据源选型不再待拍板；②L4 从"可选 profile"改为 **defer**（§3.3 重写：第五环与 raymarch 保温两决策拆开、三条触发条件写死、启用形态=低一致性档）；③B1 增加"coverage radius 为 manifest 一等字段"硬要求；④B3 SVDAG payload 构建标注为 raymarch AB 保温用途；⑤defer 清单补 L4 扩圈与同构路线定向加法两条。
 - v2.5（2026-07-06）：**T-2 拍板采纳**——L2.5 四环分带（7/14/28/56m）定案：用 +18% quads 买掉 d24/25 处唯一的 4× 跳变，派生环全链 2×、入带角尺寸全部 ≤20px；L0/L1 边界断层仍按 P-2 豁免款由缝隙策略治理。§2 待拍板标记清除；垂直预算降级序列中"撤 L2.5"回退钩子保留（P-3：最终由 observe 数据复核）。
+- v2.6（2026-07-06）：新增 **T-12 launcher 分发范围契约**（required-set 由服务端确定性计算、1m pack 三段式范围含全沙盒兼容的热度预置集、pages 全图 7m 单档预下发、"pack=checkpoint 分发形态"与"pack 新鲜度只是效率参数"两条不变量、热度统计与 shard 失效经济学两项设计登记）；B1 冻结范围扩 T-12；C4 补 required-set/热度预置集/传送 gate 补拉/shard 分级实现项；defer 清单补隐秘区域分发准入规则。

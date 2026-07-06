@@ -22,7 +22,9 @@
 | `ChunkSnapshot`(`0x62`)+ delta 流(`0x63`) | 1m | 近窗 3×3×3 tiles(滑动) | wire | L0 confirmed store:编辑/碰撞/交互的真值副本 |
 | source page(7m occupancy+material mip) | 7m(客户端再整数规约 14/28/56m) | 远区 d≤72(L4 profile 扩 d96) | launcher/update 包(初始)+ HTTP 拉取(增量,dirty 通知触发) | L1-L4 远景,visual-only |
 
-**近窗(活跃区)**:L0 覆盖的 3×3×3 tile 滑动窗口。1m snapshot 只在窗内持有,出窗即弃;窗外任何位置客户端**不持有任何 1m 数据**。
+**近窗(活跃区)**:L0 覆盖的 3×3×3 tile 滑动窗口。1m snapshot 只在窗内持有,出窗即弃;窗外任何位置客户端**不持有任何 1m 合并态**(本地 world pack shard 是磁盘上的 baseline 底座,不是窗外的运行时合并态)。
+
+**world pack 与 checkpoint 的关系**:world pack = checkpoint 的客户端分发形态(初始包与后续 checkpoint 在逻辑上都是 `world_snapshot`),内容 = `base ⊕ 全部 delta` 的 1m 物化,天然含玩家建造。pack 新鲜度只是效率参数——正确性由登录 `known[]` 对账保证,pack 旧只意味着登录增量大。分发范围契约见设计稿 T-12(required-set 三段式)。
 
 ## 2. 两条口径推论
 
