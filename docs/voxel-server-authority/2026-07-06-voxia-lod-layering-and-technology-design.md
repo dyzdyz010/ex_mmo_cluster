@@ -3,6 +3,8 @@
 > 日期：2026-07-06　状态：设计稿 v2（待拍板；v1 经 1 轮对抗评审后修订，修订记录见 §11）
 > 定位：[`2026-07-05-voxia-voxel-lod-production-route.md`](./2026-07-05-voxia-voxel-lod-production-route.md)（生产路线，冻结）的下游细化——把"L0-L4 + SVO + source pages + mesh renderer"的路线拍板落成**每一层的边界、技术选型和选型理由**。本稿不推翻任何已冻结决策；新增决策项用 `T-` 前缀标出，等待拍板。
 > 证据源：GPT-5.5 两份方案的对抗评审（[`2026-07-06-gpt55-lod23-proposal-review.md`](./2026-07-06-gpt55-lod23-proposal-review.md)）、codex 三份代码调研、UE 5.8 源码实地核查（`D:\UE\UE_5.8`）、8km 实测锚点（`_session-handoff.md:32-37`）。
+> 术语口径：base / delta / truth / snapshot 的统一定义见 [`glossary.md`](./glossary.md)（2026-07-06 拍板）——本稿的 source page 即"远区 7m snapshot"。
+> 数据源终态：**投影路线已拍板为终态**（[`2026-07-06-projection-route-final-decision.md`](./2026-07-06-projection-route-final-decision.md)）——§3.2b 的"pages 为唯一生产远景源"不再是待拍板项；同构路线（客户端 WorldGen ⊕ overlay）降格为定向优化选项。
 
 ## 0. 一句话总纲
 
@@ -30,10 +32,10 @@
 | **L2 中远景** | d 9-24 | ~1.0-2.7km | 叶 **14m**（7m 页规约降采样，算子见 T-4） | 同上 | 同上，更新频率降一档 | visual-only |
 | **L2.5 远景过渡** | d 25-40 | ~2.8-4.5km | 叶 **28m** | 同上 | 同上 | visual-only |
 | **L3 远景** | d 41-72 | ~4.6-8.06km | 叶 **56m** | 同上 | 同上，最低频更新，雾融合 | visual-only 轮廓 |
-| **L4 超远景**（可选 profile） | d 73-96 | 8.2-10.75km | SVDAG | runtime SVDAG payload（源自同一 pages；**要求 pages 覆盖扩到 d96，页体积约翻倍**，未扩则 L4 无源禁用） | GPU raymarch composite（debug/AB，升格按路线 §4.2 门槛） | 剪影 |
+| **L4 超远景**（**defer**，触发条件见 §3.3） | d 73-96 | 8.2-10.75km | SVDAG | runtime SVDAG payload（源自同一 pages；**要求 pages 覆盖扩到 d96，页体积约翻倍**，未扩则 L4 无源禁用） | GPU raymarch composite（debug/AB，升格按路线 §4.2 门槛） | 剪影 |
 | **天空层** | 8km+ | — | 无几何 | — | SkyAtmosphere + ExponentialHeightFog + 云/天体 | 氛围 |
 
-与 2026-07-05 路线的差异只有一处：**L2/L3 之间插入 28m 过渡环（L2.5，T-2）**。它是调参决策不是架构决策——在八叉树梯子（112/2^k = 56/28/14/7m）上做 3 个远环只有三种摆法，各有代价；L2.5 是 Pareto 点：
+与 2026-07-05 路线的差异只有一处：**L2/L3 之间插入 28m 过渡环（L2.5，T-2，已拍板 2026-07-06）**。它是调参决策不是架构决策——在八叉树梯子（112/2^k = 56/28/14/7m）上做 3 个远环只有三种摆法，各有代价；L2.5 是 Pareto 点：
 
 | 3 环 vs 4 环 | 全场 quads（无 merge） | 代价 |
 | --- | ---: | --- |
@@ -42,7 +44,7 @@
 | 7/28/56 | ~0.9M | 4× 跳变提前到 1km（34px），最差 |
 | **7/14/28/56（本稿）** | **1.34M** | 全部 2× 跳变，+18% 预算 |
 
-拍掉 T-2 即回退路线原文的 7/14/56，其余设计不受影响。
+**T-2 已拍板采纳四环（2026-07-06）**——派生环全链 2× 跳变、每个入带角尺寸 ≤20px（17/12/15px）、代价 +18% quads。回退钩子保留：若垂直多层落地（B5）后 merge 合计冲破预算，降级序列第二档即撤 L2.5 回 7/14/56（见 §5），其余设计不受影响——回退成本只是一行 tier 配置加一次预算复核。
 
 **角误差验证（P-2 达标性）**：
 
@@ -78,7 +80,7 @@
 - 已建成并通过 automation + 真实 RHI smoke；推倒重来没有收益。
 - **远环 cell 管理开销的诚实说明**（评审 I-10 修订）：`MacroCellTiles` 是全局单值配置，放大它会等比放大所有环的叶尺寸——**不能**用来只放大远环容器。按环差异化容器（远环 448m）= 每环不同 cell 尺寸/叶语义/cache key/boundary，属结构改动，登记 defer（触发条件：远环 cell 管理成本在 observe 中成为可测瓶颈）。现实缓解手段是聚合上传粒度（patch 已聚合 8×8 tiles）与远环低频更新。
 
-**b) 数据源：服务端物化 source pages（7m occupancy+material mip / macro cell），粗环由客户端规约降采样（T-4）**
+**b) 数据源：服务端物化 source pages（7m occupancy+material mip / macro cell），粗环由客户端规约降采样（T-4）——数据源路线部分已终态拍板（2026-07-06 投影路线裁决）,T-4 待冻结的只剩 payload 编码与规约算子细节**
 
 - **为什么不是客户端 WorldGen 采样**（GPT 两版方案的地基）：① S4 仲裁冻结——parity CI 未绿前客户端推导不得驱动渲染，而 parity 已被故意拆除（客户端 3D 化分歧）；② 3D 内容按 W-Q6=A 归 delta，客户端只能重算最无聊的基底，亮点内容全要走服务端修正；③ 窗外 mip 合并 1m diff 需要合并后状态，客户端没有——被修改区必然退化为服务端物化下发，即"次选"本来就是必经之路；④ authored 世界（元决策）无 WorldGen 可采样，pages 管线两个世界通用。**"程序化重算胜过搬字节"的洞察保留，重算放在只有一份实现的服务端**（未修改区服务端直采 mip 分辨率，无需 71TB 全量物化；已修改 chunk 从库中合并降采样）。
 - **为什么 page 装 7m mip 而不是原始 chunk / SVO 节点 / mesh**：原始 chunk 是 71TB 问题；SVO 节点让树编码变成线协议、mesh 路径吃不动；mesh artifact 依赖 BoundarySignature（随玩家窗口位形变化），服务端不可能预发，且 raymarch 吃不了。7m mip 是**唯一同时喂饱 mesh 和 raymarch 两个 renderer 的中立格式**，压缩后 ~1-2KB/cell、radius=72 单 Y 层 ≈ 20-40MB（L4 profile 扩到 d96 时约 +16-32MB）。
@@ -104,11 +106,21 @@
 - **更新频率分带（P-4 的渲染侧）**：L1 跨 tile 即时增量；L2 跨 tile 批量合并；L2.5/L3 低频队列（秒级 coalesce），远环 dirty 永远排在近环之后。
 - **材质/光照口径**：远景沿现状顶点色三桶材质（matte/translucent/emissive）+ 既有补光 RIG；RuntimeMesh 不进 Lumen scene（无距离场/surface cache），远景不投动态阴影；atlas/材质保真属独立专项，不阻塞本稿。
 
-### 3.3 L4：raymarch-only SVDAG profile（可选，维持路线定位）
+### 3.3 L4：raymarch-only SVDAG profile（**defer**，2026-07-06 拍板：不排期、不扩圈，触发条件写死）
 
 技术：runtime SVDAG payload（root table + 去重 node buffer，实测 10.7km 仅 9.3MB）→ ByteAddress buffer → raymarch composite 屏幕合成。
 
-为什么：mesh 路线的 quad 数随视距平方增长，raymarch 成本随屏幕分辨率恒定、数据随 SVDAG 去重亚线性增长——对超远距**渐近正确**（实测 radius 96 @120FPS vs mesh 同视距不可行）。但它只解决视觉、工程风险集中在手写 shader，**不作为 L1-L3 默认**（路线 §4.2 六条升格门槛不变）；作为 L4/AB profile 保温。源数据与 mesh 路线共用同一 pages（T-4 收益）；**前提是 pages 覆盖按 profile 扩到 d96**，未扩则该 profile 显式无源禁用，不得 fallback。
+为什么保留该路线：mesh 路线的 quad 数随视距平方增长，raymarch 成本随屏幕分辨率恒定、数据随 SVDAG 去重亚线性增长——对超远距**渐近正确**（实测 radius 96 @120FPS vs mesh 同视距不可行）。但它只解决视觉、工程风险集中在手写 shader，**不作为 L1-L3 默认**（路线 §4.2 六条升格门槛不变）。
+
+**defer 决策（2026-07-06，两个决策显式拆开）**：
+
+- **决策一（第五环要不要）= defer**。L4 的收益端取决于两个当前无答案的问题——①是否存在需要 >8km 可见的标志性内容；②大气美术是否定调"清澈"（雾若按 8km 收尾，L4 画了也被雾吃掉；雾变薄又反过来削弱对 L2.5/L3 粗糙度的遮蔽——雾预算与几何视距是互补品）。触发条件（**命中任一**再启动扩圈评估）：
+  1. 世界内容出现需要 >8km 可见的标志性结构（天空岛群/巨型地标），美术明确要求；
+  2. 美术定调清澈大气（能见度 >8km），且截图审计中 8km 天空收尾露馅；
+  3. 垂直玩法落地后，高空俯瞰视角的世界尽头截断在真实巡航审计中被判不可接受。
+- **决策二（raymarch 路线保温）= 继续，且与扩圈解耦**。里程碑 B 步 B3 的"从 pages 构建 SVDAG payload"保留，用途标注为 **raymarch AB 保温（d≤72 范围内）**，服务 §4.2 升格门槛的证据采集，不背 L4 生产化名义、不需要 pages 扩圈。
+- **若将来触发启用**：L4 声明为**低一致性档**——不进即时 dirty fan-out，只吃周期性 manifest 刷新（分钟级）或登录/传送重拉；服务端即时失效范围仍停在 d72，新增复杂度被钳制在量变（pages 覆盖 ×1.78、分发 +16-32MB），唯一质变成本（raymarch composite 生产化）归属决策二的升格门槛管辖。L4 不牵动实体 AOI/wire 协议（pages 走 HTTP）。
+- 源数据与 mesh 路线共用同一 pages（T-4 收益）；**前提是 pages 覆盖按 profile 扩到 d96**，未扩则该 profile 显式无源禁用，不得 fallback。
 
 ### 3.4 天空层：无几何
 
@@ -219,9 +231,9 @@ flowchart LR
 
 | 步 | 内容 | 备注 |
 | --- | --- | --- |
-| B1 | **拍板并冻结 T-4（page payload + 规约算子）与 T-11（分发通道语义）为纸面契约** | 只写契约不写服务端代码；A 期间即可完成 |
+| B1 | **拍板并冻结 T-4（page payload + 规约算子）与 T-11（分发通道语义）为纸面契约**；**pages coverage radius 必须为 manifest 一等字段**（不得隐含 d72——L4 defer 的安全销：将来扩圈是数据变更不是契约变更） | 只写契约不写服务端代码；A 期间即可完成 |
 | B2 | fixture 生成器升级：产出**真 7m mip page payload**（从 preview WorldGen 按 T-4 算子计算） | 扩展现有 `svo_source_pages_fixture`，dummy payload 退役 |
-| B3 | **客户端 pages 真消费管线**：page decode → 规约降采样 → 按环建树 → 从 pages 构建 L4 SVDAG payload | **全新主干代码**（现状 page 只是 hash gate 输入、渲染吃预物化 artifact） |
+| B3 | **客户端 pages 真消费管线**：page decode → 规约降采样 → 按环建树 → 从 pages 构建 SVDAG payload（用途=raymarch AB 保温，d≤72，不背 L4 生产化，见 §3.3 决策二） | **全新主干代码**（现状 page 只是 hash gate 输入、渲染吃预物化 artifact） |
 | B4 | 客户端 dirty 输入 API（`InvalidateMacroCells`）+ fixture 模拟失效通知的回归 | T-7 的客户端半边 |
 | B5 | 垂直稀疏多层 + 3D 环距 + near-skip 3D 化 + manifest 占据层清单（进 fixture）| 落地后重新标定 k、复核预算表 |
 
@@ -238,7 +250,7 @@ flowchart LR
 
 ### defer（触发条件写死，不排期）
 
-自研 SceneProxy（触发：A2 后实测 hitch/显存仍瓶颈）；按环差异化容器（触发：远环管理成本可测瓶颈）；raymarch 升格（路线 §4.2 门槛）；Nanite bake farm（触发：editor 手工 A/B 数据显著）；Event Overlay（协议留 optional event descriptor 字段，玩法到大事件阶段再做）。
+自研 SceneProxy（触发：A2 后实测 hitch/显存仍瓶颈）；按环差异化容器（触发：远环管理成本可测瓶颈）；**L4 第五环扩圈**（触发：§3.3 三条件命中任一；启用形态=低一致性档）；raymarch 升格（路线 §4.2 门槛）；Nanite bake farm（触发：editor 手工 A/B 数据显著）；Event Overlay（协议留 optional event descriptor 字段，玩法到大事件阶段再做）；**同构路线定向加法**（触发：终态裁决稿 §4 画像全命中；形态=处女地基底本地生成，被修改区仍走投影）。
 
 ## 10. 不做什么（显式负决策）
 
@@ -254,3 +266,6 @@ flowchart LR
 - v2（2026-07-06）：经 1 轮对抗评审修订。致命项：F-1 撤销 min 42.8 FPS 与 O(N²) 的错误因果绑定（改为推演风险 + 单独立案）；F-2 补规约算子契约（any-solid/众数）与按编辑类型的过滤命中率、签收膨胀语义与覆盖性 seam 定义；F-3 补 T-11 运行时 page 分发通道与 manifest 滚动；F-4 补 collar 的 depth clamp 放宽与 L2.5 第三环的代码改动申报。重要项：L4 pages 覆盖前提（I-1）、垂直清单 revision/失效（I-2）、near-skip 3D 化（I-3）、按带 merge 系数与合计修正 0.51-0.84M（I-4）、垂直预算改口 0.66-2.1M + 降级序列（I-5）、collar 净增量口径（I-6）、补步 4 客户端 pages 真消费主干（I-7）、material 生产端缺口登记（I-8）、P-2 跳变款 L0/L1 显式豁免（I-9）、MacroCellTiles 全局单值澄清（I-10）。次要项：k 标定迁移脚注、cache 淘汰/内存 observe、材质光照口径、tier 语法含 collar、碰撞断言补锚点、fill-bridge 注记。
 - v2.1（2026-07-06）：§9 按用户拍板方向重组为三列里程碑（A 客户端渲染正确 → B 接口冻结+fixture 消费 → C 服务端接入）；步骤内容不变，只改分组与验收口径；显式记录"B1 纸面契约冻结不可推迟"与"C1 material 派生是冻约后唯一残留服务端契约风险"。
 - v2.2（2026-07-06）：补"高频修改世界下的定位澄清"（流式重派生系统定位、三层衰减、SVDAG 编辑弱项不触发论证、换轨触发条件、量化参考）；§8 验收增加 `far_dirty_cells_per_sec` / `rebuild_queue_depth` / `page_refetch_bandwidth` 动态负载 observe 字段（里程碑 C 必含）。
+- v2.3（2026-07-06）：落术语表 [`glossary.md`](./glossary.md)（base / delta / truth / snapshot 四词口径 + 客户端 snapshot-only 推论 + 远区修改回流回路），文首加指针；无技术内容变更。
+- v2.4（2026-07-06）：①数据源终态拍板落稿（[`2026-07-06-projection-route-final-decision.md`](./2026-07-06-projection-route-final-decision.md)）——投影路线为终态，§3.2b 数据源选型不再待拍板；②L4 从"可选 profile"改为 **defer**（§3.3 重写：第五环与 raymarch 保温两决策拆开、三条触发条件写死、启用形态=低一致性档）；③B1 增加"coverage radius 为 manifest 一等字段"硬要求；④B3 SVDAG payload 构建标注为 raymarch AB 保温用途；⑤defer 清单补 L4 扩圈与同构路线定向加法两条。
+- v2.5（2026-07-06）：**T-2 拍板采纳**——L2.5 四环分带（7/14/28/56m）定案：用 +18% quads 买掉 d24/25 处唯一的 4× 跳变，派生环全链 2×、入带角尺寸全部 ≤20px；L0/L1 边界断层仍按 P-2 豁免款由缝隙策略治理。§2 待拍板标记清除；垂直预算降级序列中"撤 L2.5"回退钩子保留（P-3：最终由 observe 数据复核）。
