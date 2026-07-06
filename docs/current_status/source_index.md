@@ -46,6 +46,11 @@ flowchart TD
 | Voxia VHI 实验 | [`docs/voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md`](../voxel-server-authority/2026-06-30-voxia-vhi-experiment-plan.md) | 新关卡试验 Voxel Hierarchical Impostor；旧 WorldGen preview 与 heightmap LOD 保留 |
 | Voxia SVO 预览设计 | [`docs/voxel-server-authority/2026-06-30-voxia-svo-preview-design.md`](../voxel-server-authority/2026-06-30-voxia-svo-preview-design.md) | 新关卡试验 3D occupancy Sparse Voxel Octree leaf surface；目标为窗口边缘连续、约 8km 远景和 120 FPS 预算 |
 | Voxia 近场窗口内核与 SVO 路线 | [`docs/voxel-server-authority/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md`](../voxel-server-authority/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md) | 按系统正交剥离 `3x3x3 tile` 近场窗口契约，并记录后续 subsystem / renderer / SVO page 化升级目标 |
+| 体素 LOD 生产路线 | [`docs/voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md`](../voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md) | 拍板 L0 近景 + L1-L3 SVO mesh 默认生产渲染 + L4 raymarch 可选；VHI 冻结为 2.5D 过渡 baseline |
+| LOD 外部方案评审 | [`docs/voxel-server-authority/2026-07-06-gpt55-lod23-proposal-review.md`](../voxel-server-authority/2026-07-06-gpt55-lod23-proposal-review.md) | GPT-5.5 远景方案对抗评审：数据源裁决、16 条采纳矩阵、UE 5.8 能力边界实证、LOD 预算数学 |
+| LOD 分层与技术选型 | [`docs/voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md`](../voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md) | v2.5 主体已拍板：四环 7/14/28/56m + collar、每层选型、page payload/失效契约、三列里程碑（A/B/C） |
+| 数据源终态裁决 | [`docs/voxel-server-authority/2026-07-06-projection-route-final-decision.md`](../voxel-server-authority/2026-07-06-projection-route-final-decision.md) | 投影路线为终态；同构路线降格为定向优化选项；客户端 WorldGen 永久 preview/fixture 定位 |
+| 体素数据链路术语表 | [`docs/voxel-server-authority/glossary.md`](../voxel-server-authority/glossary.md) | base / delta / overlay / truth / snapshot 统一口径；客户端 snapshot-only 推论；远区修改回流回路 |
 | Field roadmap | [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](../plans/2026-05-16-phase7-local-field-runtime-roadmap.md) | Phase 7+ 局部场当前推进基准 |
 | Field kernel | [`docs/plans/2026-05-14-phase7-field-kernel-architecture.md`](../plans/2026-05-14-phase7-field-kernel-architecture.md) | FieldKernel / FieldRegion / FieldLayer / FieldEffect 架构背景 |
 
@@ -69,6 +74,8 @@ flowchart TD
 - [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)
 - [`docs/voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../voxel-server-authority/2026-06-30-voxel-generation-streaming-client-plan.md)
 - [`docs/voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../voxel-server-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md)
+- [`docs/voxel-server-authority/2026-07-06-projection-route-final-decision.md`](../voxel-server-authority/2026-07-06-projection-route-final-decision.md)
+- [`docs/voxel-server-authority/glossary.md`](../voxel-server-authority/glossary.md)
 
 ### 体素事务、Prefab、Object
 
@@ -108,6 +115,9 @@ flowchart TD
 - [`docs/voxel-server-authority/2026-06-30-voxia-svo-preview-design.md`](../voxel-server-authority/2026-06-30-voxia-svo-preview-design.md)
 - [`docs/2026-06-15-bevy-client-mainline-architecture.md`](../2026-06-15-bevy-client-mainline-architecture.md)
 - [`docs/2026-04-25-bevy-client-web-parity-voxel-migration.md`](../2026-04-25-bevy-client-web-parity-voxel-migration.md)
+- [`docs/voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md`](../voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md)
+- [`docs/voxel-server-authority/2026-07-06-gpt55-lod23-proposal-review.md`](../voxel-server-authority/2026-07-06-gpt55-lod23-proposal-review.md)
+- [`docs/voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md`](../voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md)
 
 ### 已明确被后续文档取代的结论
 
@@ -118,3 +128,5 @@ flowchart TD
 | 移动导致挖放失效 | 根因判据应按订阅覆盖与活性正交分析；移动常是红鲱鱼 | [`2026-06-27-架构设计指导思想-系统正交.md`](../2026-06-27-架构设计指导思想-系统正交.md) |
 | 27 tile 可按 27 chunk 估算 | 生产口径中 1 tile = `7×7×7` chunks；27 tiles = `3×3×3` tiles | [`2026-06-25-voxel-world-production-architecture.md`](../2026-06-25-voxel-world-production-architecture.md) §3.2.0 |
 | `state_flags` 承载 burning/frozen/wet/charred 外观 | 客户端外观应为 material/tag/field 的纯函数，`state_flags` 不作为通用涌现外观位 | [`clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`](../../clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md) |
+| 客户端长期应本地重算 confirmed baseline（seed+maps+D+H，跨端 bit-exact） | 投影路线为终态：客户端 snapshot-only（近窗 1m + 远区 7m 投影），配方不跨 wire；同构路线降格为定向优化选项 | [`docs/voxel-server-authority/2026-07-06-projection-route-final-decision.md`](../voxel-server-authority/2026-07-06-projection-route-final-decision.md) |
+| 远景 2.5D heightmap / VHI 是生产终态形态 | VHI 冻结为 2.5D 过渡 baseline；生产远景 = L1-L3 SVO leaf-surface mesh（source pages 驱动），分带 7/14/28/56m + collar，L4 raymarch defer | [`docs/voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md`](../voxel-server-authority/2026-07-05-voxia-voxel-lod-production-route.md)、[`2026-07-06-voxia-lod-layering-and-technology-design.md`](../voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md) |

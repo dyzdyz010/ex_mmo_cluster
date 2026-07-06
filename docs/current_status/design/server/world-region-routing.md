@@ -62,7 +62,7 @@ flowchart TD
 
 ## Stale Scene Owner Repair
 
-2026-06-28 已修复一个关键运行时问题：持久化 region assignment 可能仍指向旧 dev node 名，导致 Gate 订阅 fan-out 全部路由到不可用 Scene。
+背景问题（已修复）：持久化 region assignment 可能仍指向旧 dev node 名，导致 Gate 订阅 fan-out 全部路由到不可用 Scene。
 
 当前事实：
 

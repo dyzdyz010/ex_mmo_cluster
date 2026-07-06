@@ -1,6 +1,7 @@
 # 当前唯一事实入口
 
 > 本目录记录“此刻为真”的项目状态。日期型设计稿、阶段日志、handoff 和问题复盘仍保留在原位置，作为原始操作日志和证据源；读者需要判断当前状态时，优先读本目录。
+> **形态约定（用体素术语）**：本目录 = snapshot（合并态投影），原始日期文档 = delta 库（事件历史），[source_index.md](source_index.md) = delta 库的索引。合并发生在写入时——本目录任何文档只呈现合并后的当前状态，不含改动记录。
 
 ## 文档治理模型
 
@@ -45,9 +46,11 @@ flowchart LR
 6. **Voxia UE 客户端是当前真实客户端联调焦点**：近场交互、远景 LOD、debug overlay 和 stdio CLI 的最新实跑证据集中在 `clients/Voxia/docs/`；仓库级默认 parity 仍要求关注 `clients/web_client`，Bevy 仅作参考实现。
 7. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 8. **当前文档治理不移动原始文档**：日期文档和阶段文档仍保留为操作日志；本目录负责把它们演进成当前状态。
+9. **体素数据链路已拍板投影路线终态（2026-07-06）**：客户端是 snapshot-only 消费者——近窗 1m 投影（`0x62/0x63`）+ 远区 7m 投影（source pages）；配方（`base ⊕ overlay`）不跨 wire，客户端 WorldGen 永久定位 dev preview / fixture 源，同构路线（客户端本地推导）降格为特定负载画像下的定向优化选项。远景生产分带定为 L1-L3 四环 7/14/28/56m + collar，L4 defer。术语口径（base / delta / overlay / truth / snapshot）以 [`docs/voxel-server-authority/glossary.md`](../voxel-server-authority/glossary.md) 为准，裁决全文见 [`docs/voxel-server-authority/2026-07-06-projection-route-final-decision.md`](../voxel-server-authority/2026-07-06-projection-route-final-decision.md)。
 
 ## 维护规则
 
+- **snapshot 纪律（硬性）**：本目录只保存合并态。禁止按日期追加「YYYY-MM-DD 更新 / 补充 / 后续更正」式叙事条目；新事实直接**改写**正文对应段落，旧表述被覆盖而非并列。决策与事实允许携带日期属性（如「2026-07-06 拍板」），但日期不得作为条目的组织方式。演进过程、逐日证据、被覆盖的旧状态一律留在原始日期文档（delta 库），由 source_index.md 指路。
 - 新增模块事实时，先加到本页模块表，再落对应子文档。
 - 子文档必须写“当前事实 / 证据源 / 被取代结论 / 后续缺口”。
 - 文档内涉及流程、所有权、阶段边界时使用 Mermaid 图解释。

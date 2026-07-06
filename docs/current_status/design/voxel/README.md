@@ -10,6 +10,7 @@
 - 真实地图导入未来应作为同层 migration，灌入同一个权威 store。
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
+- **客户端是 snapshot-only 消费者（2026-07-06 投影路线终态）**：配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。术语口径见 [`glossary.md`](../../../voxel-server-authority/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../voxel-server-authority/2026-07-06-projection-route-final-decision.md)。
 
 ## 当前世界事实模型
 
@@ -83,8 +84,7 @@ flowchart LR
 | 跨 tile 边界新增 | 若旧窗口保留，只新增一片 `3×3 = 9 tiles` |
 | 穿过一个 tile 时间 | 按 `6m/s`，约 `18.67s` |
 
-本轮拍板：先按这个口径继续设计和排查当前 streaming / editability 问题，不再把“同步数据量可能很大”作为当前缺陷的默认解释。
-数据量大的问题后期实际碰到吞吐瓶颈再量化；当前只作为后续风险记录，不能提前当作当前可操作区域不刷新或编辑无效的主因。遇到实际瓶颈时，必须用 observe/CLI 统计 `tiles_changed`、`chunks_changed`、`ops`、`bytes`、`encode_ms`、`send_queue_bytes` 后再针对性设计。
+该口径已拍板冻结：“同步数据量可能很大”不作为当前缺陷的默认解释，不能提前当作可操作区域不刷新或编辑无效的主因；只登记为后续风险。实际碰到吞吐瓶颈时，必须先用 observe/CLI 统计 `tiles_changed`、`chunks_changed`、`ops`、`bytes`、`encode_ms`、`send_queue_bytes` 再针对性设计。
 
 该口径的独立决策记录见
 [`docs/plans/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../plans/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)。
@@ -95,9 +95,9 @@ flowchart LR
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
 | 远景 LOD 数据源 | `0x6A` 默认读取 `LodHeightmapStore` 持久化 projection；chunk snapshot 写入同事务 upsert projection；已有显式 `LodProjection.Rebuilder`；开发/demo bootstrapper 可触发 projection rebuild；`WorldPackBootstrapper` 可按显式 chunk bounds 生成真实 WorldGen pack；缺 cell 显式失败 | 补齐 launcher 包管理、material/top surface 和完整 dirty/rebuild 调度 |
-| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper；Voxia 新增 `-VoxiaWorldGenPreview` 仅作本地可见预览，不进入生产 H gate/authority 验收 | 升级为长期可用的确定性真值生成器（跨端 bit-exact），承担 baseline 重算；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
+| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper；Voxia 新增 `-VoxiaWorldGenPreview` 仅作本地可见预览，不进入生产 H gate/authority 验收 | **服务端单实现**确定性生成器（NIF），承担服务端懒物化与未来 pages writer 未修改区直采；**跨端 bit-exact 目标已关闭**（2026-07-06 投影路线终态：客户端不再重算 baseline）；客户端 C++ 副本永久定位 preview/fixture 源 |
 | chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；`WorldPackBootstrapper` 可在启动/部署阶段写真实 WorldGen snapshots；测试/dev 可显式 `missing_chunk_policy: :empty` 或 `worldgen: [enabled?: true]` | 懒物化 + 确定性重算；未修改 chunk 不落 snapshot，靠 WorldGen+H 恢复；见 baseline 边界决策 |
-| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | seed+maps+D+H 本地重算 + 对 H 校验；launcher 传配方+雕刻+凭证，不传全量 chunk |
+| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **客户端 snapshot-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
 | **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 WorldGen + 设计师 delta D + hash 凭证 H**；storage ∝ 修改量；见 [2026-06-29 baseline 边界决策](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md) |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
 | 当前世界恢复模型 | 当前已有 canonical chunk snapshot、runtime delta 和持久化 projection 的局部能力，但 checkpoint + committed event log 尚未形成统一恢复链 | `world_current = latest checkpoint + committed voxel events after checkpoint`；运行时布局是物化视图，可重建但 ACK 前必须 durable |
@@ -112,6 +112,7 @@ flowchart LR
 | baseline 缺失可 snapshot/resync 自愈 | 必须拒绝入场，不允许兜底 |
 | 运行时布局就是唯一不可删事实 | 运行时布局应是 `checkpoint + committed voxel events` 的物化结果；只有 checkpoint/event log 等 durable truth 完整时才允许删除并重建运行时布局 |
 | 只靠初始压缩母包即可恢复当前世界 | 只能恢复初始世界；玩家造成的当前世界变化必须来自 committed event log 或后续 checkpoint |
+| 客户端长期应 seed+maps+D+H 本地重算 baseline（同构路线，6-29/6-30 原计划） | 2026-07-06 投影路线终态：客户端 snapshot-only（近窗 1m + 远区 7m 双分辨率投影）；配方留服务端（懒物化仍是服务端存储目标）；同构路线降格为"处女地基底本地生成"定向加法，五条件 + 负载画像全命中才评估 |
 
 ## 证据源
 
@@ -123,3 +124,6 @@ flowchart LR
 - [`docs/2026-06-25-voxel-world-production-architecture.md`](../../../2026-06-25-voxel-world-production-architecture.md)
 - [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - [`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](../../../voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)
+- [`docs/voxel-server-authority/glossary.md`](../../../voxel-server-authority/glossary.md)
+- [`docs/voxel-server-authority/2026-07-06-projection-route-final-decision.md`](../../../voxel-server-authority/2026-07-06-projection-route-final-decision.md)
+- [`docs/voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../voxel-server-authority/2026-07-06-voxia-lod-layering-and-technology-design.md)
