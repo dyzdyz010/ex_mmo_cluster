@@ -54,6 +54,7 @@
 
 | VLOD-A1 | 体素 LOD 里程碑 A 步 1:切默认分级 + 显式 tier 契约 + L2.5 第三环(四环 7/14/28/56m,实测 quads 3.70M→1.39M −62%) | 实现完成、核心验收全绿(#9 FPS/#10 截图被 device-removal 阻塞——A2 已诊断坐实机制[远景几何 overdraw 超 TDR 非 OOM]并交付渲染侧全部杠杆,overdraw 根治+FPS/截图复测留 A3 merge) | [`phase-vlod-a1-explicit-tiering.md`](./phase-vlod-a1-explicit-tiering.md) |
 | VLOD-A2 | 体素 LOD 里程碑 A 步 2:远景渲染后端分组件 UDynamicMeshComponent + StaticDraw + 组件级视锥剔除 + Unlit + bulk-hide(消除 RuntimeMesh O(N²)、不动几何) | **范围内完成(2026-07-07)**:渲染侧全部杠杆落地并经 8 次真实 RHI 实测(剔除 250 FPS/消尖峰/O(N²)消除/契约不变/build+automation 绿);device-removal 诊断坐实为「远景几何量 overdraw 超 TDR、非 OOM」,#1 facing/overview + #2 FPS 受此物理约束、按 D6(a) 重挂 A3 merge+A5 | [`phase-vlod-a2-partitioned-staticdraw.md`](./phase-vlod-a2-partitioned-staticdraw.md) |
+| VLOD-A3 | 体素 LOD 里程碑 A 步 3:远景 per-cell greedy merge(限 cell 内、视觉等价、tier 契约不变),quad 1.39M→0.51-0.84M 减半 overdraw,兑现 A2 留下的 device-removal 根治(条件性,A3.0 诊断硬阈值裁决 merge 是否足够) | 决策稿就绪、待拍板 D1-D5 + A3.0 诊断先行 | [`phase-vlod-a3-per-cell-greedy-merge.md`](./phase-vlod-a3-per-cell-greedy-merge.md) |
 
 状态取值:`未开始` / `进行中` / `已完成` / `已搁置`。状态变更时同步更新本表与对应阶段文件的 `进度日志`。
 
