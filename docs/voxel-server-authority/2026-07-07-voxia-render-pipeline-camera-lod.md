@@ -135,7 +135,7 @@ flowchart TD
 
 | # | 开放议题 | 优先级 | 时机/依赖 |
 | --- | --- | --- | --- |
-| F1 | 近 Lit / 远 Unlit **光照色差** | 中 | Step 6 之后独立 A/B（不进纯 merge 对照） |
+| F1 | 近 Lit / 远 Unlit **光照色差** | ✅ 已实施 | Lit 转默认、Unlit 降 alt（`-VoxiaSvoFarUnlitMaterial`）；视觉质量待肉眼确认；见下详情 |
 | F2 | 近/远 **emergence 缝**（远景无发光/温度） | 中-低 | 取决于 emergence gameplay 权重；F1 之后 |
 | F3 | **跨 depth 环界（d4↔d3）裂缝/T-junction** | 中-高（几何正确性） | Step 6 可见 RHI 巡航**顺带肉眼看**（不加 A/B 维度） |
 | F4 | 引擎 per-component **剔除是否真触发**（推断未证） | 低 | Step 6 用 `far_visible` 遥测 + 侧/背视顺带确认 |
@@ -148,6 +148,11 @@ flowchart TD
 - 为何重要：强方向光/阴影/昼夜下，近景边缘（≈112m）会出现 lit/unlit 亮度断层。**可见程度未经真实 RHI 视觉验证**（不臆断）。
 - 关键背景：Unlit 的**崩溃规避理由已失效**——A2.0 曾把崩溃归为 overdraw 而引入 D6 Unlit，A3.0 反转证明崩溃真凶是 **raymarch**（已由 raymarch-off 修复、与 overdraw 正交）。Unlit 现仅剩 perf/overdraw 理由，且 **A3b merge −52% quad → overdraw 减半**已进一步削弱其必要性。
 - 拟定动作：Step 6 纯 merge 跑完后，独立跑一档 **`-VoxiaSvoFarLitMaterial`**（远景改用与近景同一 Lit 材质），量 Lit-far 的 FPS/VRAM 代价；若可接受则评估默认改 Lit 消色差。**FPS delta 必须与 merge 收益单独隔离归因**，不混入纯 merge 对照。
+- **实测 + 决议（2026-07-07 F1，已实施）**：
+  - **DRS 误判纠正**：Step 6 把 `screen_percentage=77` 当动态 DRS，实为**静态 TSR 屏幕百分比**（所有样本恒定 77.00、FPS 却剧烈变——若是 DRS 会反过来靠调分辨率稳住 FPS）。故 Step 6 的 FPS 对比**本就有效、无 DRS 混淆**，merge FPS 中性是真结论（Lumen-bound）。
+  - **Lit-far 代价实测**（merge-ON，`-VoxiaSvoFarLitMaterial`，77% 静态，offscreen）：@-20 Unlit 126.6 vs Lit 120.4（−5%）、@-30 126.7 vs 128.1（噪声内 ≈0）、@-40 Lit 80.3。→ **消色差 FPS 代价基本在噪声内（0~5%）**（Lumen 主导、远景仅占屏一小片）。材质干净生效（无 "material not compiled" 告警）、存活。
+  - **决议（用户拍板）**：**远景默认改 Lit**（`VoxelMaterial`，与近景同材质消色差）；**Unlit 降为 alt**，`-VoxiaSvoFarUnlitMaterial` 逃生门切回 A2-D6 便宜材质。实施：`ResolveSvoPartitionedMaterial` 翻默认（`VoxiaWorldActor.cpp:1239`）+ `.h`/注释同步。验证：编译绿 + `Voxia` 全 **36 测 `Result={Success}` 0 Fail**（零回归）；Lit 路径行为已由 `-VoxiaSvoFarLitMaterial` 真实 RHI run 验证（同 `return VoxelMaterial` 路径）。
+  - **仍开放（视觉）**：远景 7-56m 粗几何在 Lumen 下的视觉质量（是否显脏 / 与近景 1m 光照响应是否协调）+ 近/远交界色差是否肉眼消失——需一次 near+far 可见 RHI 对比截图确认（未做）。
 
 **F2 emergence 缝**：近景烘焙 emergence（热单元 emissive glow / 温度光照，`SolidAtWorld:558`），远景 `MaterialForBounds` 每 leaf 单材质**无 emergence**（A3b 稿 §9.1）。即便 F1 让远景 Lit，发光/温度差异仍在。动作：评估远景是否需烘焙简化 emissive，或接受远景无发光。
 
