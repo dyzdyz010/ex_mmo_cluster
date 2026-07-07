@@ -138,7 +138,8 @@ flowchart TD
 | F1 | 近 Lit / 远 Unlit **光照色差** | ✅ 已实施 | Lit 转默认、Unlit 降 alt（`-VoxiaSvoFarUnlitMaterial`）；视觉质量待肉眼确认；见下详情 |
 | F2 | 近/远 **emergence 缝**（远景无发光/温度） | 中-低 | 取决于 emergence gameplay 权重；F1 之后 |
 | F3 | **跨 depth 环界（d4↔d3）裂缝/T-junction** | 中-高（几何正确性） | Step 6 可见 RHI 巡航**顺带肉眼看**（不加 A/B 维度） |
-| F4 | 引擎 per-component **剔除是否真触发**（推断未证） | 低 | Step 6 用 `far_visible` 遥测 + 侧/背视顺带确认 |
+| F4 | 引擎 per-component **剔除是否真触发** | ✅ 已证 | 可见 RHI 实测 361→101 可见(28%)=剔除真生效；`far_visible` offscreen 卡死=1 是 offscreen 专有 bug |
+| F8 | 远景 voxel **高频边缘白斑伪影**（疑 TSR 上采样 shimmer） | 低-中 | Lit/Unlit 两图都有=材质无关、预存；查 TSR/边缘或降屏幕百分比影响 |
 | F5 | 真实服务器 InScene 下 **CenterTile 来源**未证 | 中 | 独立调查（不阻塞 Step 6 本地预览路径） |
 | F6 | `bStaticBakeReady` 运行期不 gate（设计债） | 低 | 确认设计意图后决定补接线或删字段 |
 | F7 | `MeshComponentDesc.h:27` 头注释过时（Static vs Movable） | 低 | 顺手清理 |
@@ -152,10 +153,26 @@ flowchart TD
   - **DRS 误判纠正**：Step 6 把 `screen_percentage=77` 当动态 DRS，实为**静态 TSR 屏幕百分比**（所有样本恒定 77.00、FPS 却剧烈变——若是 DRS 会反过来靠调分辨率稳住 FPS）。故 Step 6 的 FPS 对比**本就有效、无 DRS 混淆**，merge FPS 中性是真结论（Lumen-bound）。
   - **Lit-far 代价实测**（merge-ON，`-VoxiaSvoFarLitMaterial`，77% 静态，offscreen）：@-20 Unlit 126.6 vs Lit 120.4（−5%）、@-30 126.7 vs 128.1（噪声内 ≈0）、@-40 Lit 80.3。→ **消色差 FPS 代价基本在噪声内（0~5%）**（Lumen 主导、远景仅占屏一小片）。材质干净生效（无 "material not compiled" 告警）、存活。
   - **决议（用户拍板）**：**远景默认改 Lit**（`VoxelMaterial`，与近景同材质消色差）；**Unlit 降为 alt**，`-VoxiaSvoFarUnlitMaterial` 逃生门切回 A2-D6 便宜材质。实施：`ResolveSvoPartitionedMaterial` 翻默认（`VoxiaWorldActor.cpp:1239`）+ `.h`/注释同步。验证：编译绿 + `Voxia` 全 **36 测 `Result={Success}` 0 Fail**（零回归）；Lit 路径行为已由 `-VoxiaSvoFarLitMaterial` 真实 RHI run 验证（同 `return VoxelMaterial` 路径）。
-  - **仍开放（视觉）**：远景 7-56m 粗几何在 Lumen 下的视觉质量（是否显脏 / 与近景 1m 光照响应是否协调）+ 近/远交界色差是否肉眼消失——需一次 near+far 可见 RHI 对比截图确认（未做）。
+  - **视觉确认（2026-07-07，已做）**：Lit-vs-Unlit 同机位可见 RHI 对比（`Saved/far_lit_shell.png` / `far_unlit_shell.png`，远景 shell 俯视）——**Lit 受光偏暗蓝、与近景光照一致（消色差达标）；Unlit 平铺偏亮灰橙、不匹配近景 → Lit-default 正确**。**白斑伪影两图都有 → 非 Lit specular（早期猜测证伪），是预存高频 voxel 边缘伪影（疑 TSR 上采样），登记 F8。Lit-default 未引入新伪影，视觉通过。** 近/远交界的直接色差对比（需近景窗口）暂缺——near 流式 61425 chunk 超时，留后续用更轻近景配置补。
 
 **F2 emergence 缝**：近景烘焙 emergence（热单元 emissive glow / 温度光照，`SolidAtWorld:558`），远景 `MaterialForBounds` 每 leaf 单材质**无 emergence**（A3b 稿 §9.1）。即便 F1 让远景 Lit，发光/温度差异仍在。动作：评估远景是否需烘焙简化 emissive，或接受远景无发光。
 
 **F3 跨环界裂缝**：判据里**无"外邻 tile 深度不同"项**（`IsNearSkipBoundaryFace:589` 只判 near-skip 邻接），无跨环 stitch/skirt 代码；唯一遮缝是 near-skip 24m skirt。d4↔d3 等相邻不同深度环之间是否产生可见裂缝/T-junction 无实证。动作：Step 6 可见 RHI 巡航**重点看环界**；若有缝，设计跨环 stitch 或 skirt（新工作项）。
 
 **F5 服务器路径**：本次端到端只覆盖 `-VoxiaWorldGenPreview` 本地路径；真实服务器下 `NearWindow.CenterTile` 是否服务器 AOI 下发未证。动作：读 `Net/VoxiaTransportSubsystem` 网络分支 + `Interest/VoxiaClientInterestSubsystem` 定论——决定 Step 6 之外的联网 A/B 是否需固定 pawn 位以避免 AOI 抖动引入非 merge 的 tile 集差异。
+
+## 9. 远景优化路线候选（roadmap，2026-07-07 沉淀）
+
+> **Step 6 + A/B/C 实测认识（2026-07-07）**：远景 **FPS 是像素-bound，不是三角形-bound**。帧成本 = base-pass overdraw + **Lumen 全屏 GI（C 实测 ~2-4ms/帧、重载占 ~34%，关掉 +36~40 FPS）** + TSR，全按**像素/覆盖**计价。**merge 守恒覆盖面积（视觉等价硬门槛）→ 只减三角形不减像素 → 天然动不了帧成本 → FPS 中性是必然**，其价值恒在顶点/VRAM/带宽。故要动 FPS 只能减像素成本，方向按**目标**分：
+
+- **FPS 方向（回报最高，均像素/覆盖侧）**：
+  - **Lumen 成本（C 实测：~2-4ms/帧，关掉 +36~40 FPS，最大单一可削减杠杆）**——候选：按距离降 Lumen 质量 / exclude 远景出 GI / 远景更便宜光照。牵渲染管线配置、最复杂但回报最高。
+  - **base-pass overdraw（~6-8ms，帧成本大头）**——要真减**像素/覆盖**：激进 LOD / impostor（VHI 已在）/ 雾遮 far；**merge 这类保覆盖手段无效**。
+  - **剔除（F4 已证，非瓶颈）**——可见 RHI 实测 361→101 可见(28%)，A2 per-component 剔除**真生效**（~72% 出视锥被剔）；offscreen `far_visible` 卡死=1 是遥测 bug、非剔除失效。
+- **VRAM/带宽/规模方向（D，用户 2026-07-07 定：写入后续计划、暂不做）**：
+  - **A5 顶点瘦身**——远景 mesh 顶点属性精简（A2/A3 已提及）。
+  - **Nanite bake**——`EVoxiaFarFieldRenderBackend::NaniteStaticMeshBake`（`FarField/VoxiaFarFieldRenderArtifact.h:14`）枚举已预留、运行期未接；远景静态 shell 天然适合 Nanite。
+  - **趁几何 −57% 推更大 LOD 半径/密度**——merge 腾出的几何预算可换更远可视距离或更细远景。
+- **视觉正确性方向**：F1 视觉确认（Lit 默认是否消缝/不显脏）、F2 emergence 缝、F3 跨环界裂缝。
+
+三方向不冲突、可并行，但**产品若追帧率，FPS 方向（Lumen/剔除）优先于继续减几何**——这是 Step 6 实测倒逼的排序。
