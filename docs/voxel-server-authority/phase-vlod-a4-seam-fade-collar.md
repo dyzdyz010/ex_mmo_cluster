@@ -13,7 +13,9 @@ merge 腾出预算后，补齐里程碑 A 剩的三件事：① 跨 depth 环界
 - **A4 换环 fade**：cell 换 depth 时 0.2-0.5s 材质 dither cross-fade，保旧 artifact 至新上传完成；observe `ring_reassigned_cells`/`fade_in_flight`。
 - **A4 L1 collar 3.5m**：d2-4 加 3.5m collar 档（tier `3.5@4`），depth clamp 1..4→5；merge 后净增约 +56-112k quad（预算可负担）。
 - **A5 顶点瘦身**：CPU mesh 424→~210B/quad；persistent artifact cache 加 LRU 淘汰 + 容量上限 + 孤儿清除；RAM 中间态进 observe。
-- **A 验收**：8km WorldGen preview 长巡航（跨 ≥8 tiles）——per-ring quad/内存预算断言、无洞/无双显/换环不跳、render_perf 门槛、截图审计（含入带角尺寸目视）、cache 淘汰计数 全绿。
+- **近/远视觉一致性（用户 2026-07-07 人肉 A验收 抓出，升为 A 验收硬门槛）**：① 确认 Lit-default 已消除近/远「平亮 vs 受光」色差（旧 Unlit 遗留，`060aaea` 应已修，需 near+far 可见复验）；② **emergence 口径决策**（远景 `EmitQuad(uint16)` 造空 `FEmergenceCell`→无温度/光照发光，近景有——原 F2；base 地形色两侧一致，差在发光与粗材质）；③ **换环无重叠闪烁**（any-solid 膨胀→重叠型边界 z-fighting，A4-3 fade + A4-1 覆盖性 seam 治）；④ 近/远交界 **near-skip suppression 无双显**。
+- **远景滑动跟随正确**：远景以 `CenterTile`=**玩家体位置**为中心随玩家滑动（增量重建，实测复用 0.958-0.988）；长巡航验收其跨环/重定心**无缝、无洞、无残影**（这是"玩家走 1km 远景跟着变"的正确性门）。
+- **A 验收**：8km WorldGen preview 长巡航（跨 ≥8 tiles）——per-ring quad/内存预算断言、**近/远色彩一致 + 换环无重叠闪烁 + 无洞/无双显 + 滑动跟随无残影**、render_perf 门槛、截图审计（含入带角尺寸 + 近/远交界目视）、cache 淘汰计数 全绿。
 
 ## 2. 范围边界（显式非目标）
 
@@ -43,6 +45,14 @@ merge 腾出预算后，补齐里程碑 A 剩的三件事：① 跨 depth 环界
 - persistent artifact cache：**LRU 淘汰 + 容量上限**；旧 `source_revision` 孤儿 artifact 在 gate 通过后清除。
 - RAM 中间态（`FDynamicMesh3`/patch map）纳入 observe 字段。
 
+### 3.5 近/远视觉一致性（用户观察驱动，A4 新增承重）
+> 依据：颜色差**非 debug 色**（已 grep 核实无 per-LOD 调试着色）。近景 `EvaluateEmergenceShading(Cell有场数据)`；远景 `EmitQuad(uint16)`→空 `FEmergenceCell`（仅 MaterialId）→同一着色函数。**同 MaterialId → base 色一致**；差异只在 emergence + 材质分辨率。
+
+- **① Lit 一致复验**：`060aaea` 远景已默认 Lit（与近景同 `VoxelMaterial`）。旧 Unlit「平亮 vs 受光」色差应已消——Step 0 near+far 可见复验坐实。
+- **② emergence 口径（原 F2，D5 决策）**：远景无温度/光照发光。选项：(a) 远景烘焙简化 emissive（热单元 glow 跨近/远一致，代价=pages/material 需带温度或客户端场采样）；(b) 接受远景无发光 + 文档签收（远景 visual-only，涌现只在近景可见可接受）。base 地形色两侧本就一致，此项只关发光。
+- **③ 粗材质签收**：远景每 leaf 单材质（7-56m，any-solid/众数）vs 近景 1m——远景是粗色块，**这是 LOD 的固有代价、非缺陷**，验收只要求「base 色一致 + 换环平滑」，不要求远景细材质。
+- **④ near-skip suppression 无双显**：near-skip 只在 L0 覆盖的 Y 层剔远景（`IsSuppressedByNearSkip`，架构 §7 3D 化留 B5）；A4 验收断言近/远交界不双显、不 z-fight（现单层语义下）。
+
 ## 4. 决策项
 
 | # | 决策 | 选项 | 倾向 |
@@ -51,6 +61,7 @@ merge 腾出预算后，补齐里程碑 A 剩的三件事：① 跨 depth 环界
 | D2 | cross-fade 时长 | 0.2-0.5s | 起步 **0.35s**，真实 RHI 目视调 |
 | D3 | 顶点瘦身布局 | 打包到 ~210B/quad 的具体格式 | 施工时定；automation 守恒断言兜底 |
 | D4 | Lit-default vs 架构 §3.2 d 材质口径分歧 | (a) 回写架构 doc 对齐；(b) 保留分歧 | **(a)**：Lit 已用户拍板 + 视觉确认，回写架构 §3.2 d（"顶点色三桶 matte/translucent/emissive"→"默认 Lit(VoxelMaterial)，Unlit 经 `-VoxiaSvoFarUnlitMaterial` alt"） |
+| D5 | 远景 emergence 口径（原 F2） | (a) 远景烘焙简化 emissive（跨近/远发光一致，代价=pages 带温度/客户端场采样）；(b) 接受远景无发光 + 文档签收 | **待用户拍板**（Step 0 复验后定）：远景 visual-only，(b) 成本最低但热单元跨环"熄灭"可见；(a) 视觉最一致但牵 pages/material 契约。**倾向先 (b) 签收、留 (a) 作后续视觉打磨**，除非 emergence gameplay 权重高 |
 
 ## 5. 验收矩阵（A 验收，架构 §8 口径）
 
@@ -64,6 +75,10 @@ merge 腾出预算后，补齐里程碑 A 剩的三件事：① 跨 depth 环界
 | 6 | cache | LRU 淘汰计数 + 容量上限 + 孤儿清除 可观测 | — |
 | 7 | render_perf | 8km 长巡航（跨 ≥8 tiles）avg/min FPS 门槛 | **按 Lumen-bound 现实设定**（见 §2）；瓶颈=Lumen 非几何 |
 | 8 | 不回归 | `Voxia` automation 全绿 + Build 0 + A2 分组件/StaticDraw/剔除 + A3b merge + Lit-default 不回归 | — |
+| 9 | 近/远色彩一致（用户抓出） | near+far 可见 RHI 目视：base 地形色两侧一致（Lit 一致，无"平亮 vs 受光"断层）；emergence 按 D5 口径签收 | 交界视角截图审计 |
+| 10 | 换环无重叠闪烁（用户抓出） | 巡航跨环无 z-fighting 闪烁；A4-3 cross-fade 生效可观测；`fade_in_flight` 有值 | any-solid 重叠型边界 |
+| 11 | 近/远交界无双显（用户抓出） | near-skip suppression 断言：L0 覆盖处远景被剔、不双显、不 z-fight | `IsSuppressedByNearSkip` |
+| 12 | 远景滑动跟随（用户抓出） | 长巡航跨 ≥8 tiles：`CenterTile` 随玩家更新、增量重建、跨环重定心无缝/无洞/无残影 | 复用率 observe |
 
 ## 6. 三入口
 
@@ -82,10 +97,12 @@ merge 腾出预算后，补齐里程碑 A 剩的三件事：① 跨 depth 环界
 
 ## 8. 进度日志
 
-- 2026-07-07：建档。承接里程碑 A（A1/A2/A3+Lit 已收，见 README 阶段表与各 phase 稿）。本 phase = A4（seam/fade/collar 承重）+ A5（瘦身/cache 可并行）+ A 验收。**战略约束（实测钉死）**：FPS=像素-bound，Lumen ~2-4ms 是最大杠杆，A4/A5 不动 FPS、只收几何/显存/视觉正确性。原自造 F3=本稿 A4 seam、F8 白斑(预存 TSR)/F2 emergence 缝并入视觉打磨后续、D 顶点瘦身=本稿 A5。**尚未开工。**
+- 2026-07-07：建档。承接里程碑 A（A1/A2/A3+Lit 已收，见 README 阶段表与各 phase 稿）。本 phase = A4（seam/fade/collar 承重）+ A5（瘦身/cache 可并行）+ A 验收。**战略约束（实测钉死）**：FPS=像素-bound，Lumen ~2-4ms 是最大杠杆，A4/A5 不动 FPS、只收几何/显存/视觉正确性。原自造 F3=本稿 A4 seam、F8 白斑(预存 TSR)并入视觉打磨后续、F2 emergence 缝升为本稿 D5/§3.5(A验收硬门槛)、D 顶点瘦身=本稿 A5。
+- 2026-07-07（**用户人肉 A验收 抓出四条，全并入本稿**）：用户从 GUI 观察到 ① 近/远色差(经查=旧 Unlit 遗留,`060aaea` Lit-default 应已修,待复验;残差=emergence 无+粗材质,非 debug 色) ② 换环重叠闪烁(=any-solid 膨胀重叠型边界,A4-3 fade 治) ③ 追问近/远交界双显 ④ 追问远景是否随玩家滑动(答:是,CenterTile=玩家体位置增量跟随)。四条已落 §1 目标 / §3.5 / §5 验收#9-12 / §9 Step 0。**尚未开工。**
 
 ## 9. 施工 step（每 step：编译 + 最小 automation + 进度日志；默认不 push）
 
+- **Step 0（当前状态 near+far 可见基线）**：**先看清起点再动手**——用**轻近景配置**（`TileWindowRadius=1` + 短 `VerticalTileRadius` + 长 `until_tile_window_full` 超时，绕开 61425-chunk 流式超时坑）跑一次 near+far 可见 RHI，截交界视角，肉眼记录：Lit-default 是否已消色差①、换环重叠闪烁现状②、近/远交界双显④、滑动跟随（移动几 tile 复验）。产出 A4 的目视基线 + D5 拍板依据。**不写码，纯观测**。
 - **Step 1（A4 seam）**：`RunSvoSeamCheck` 扩跨 depth 覆盖性抽样 + automation 断言（小半径全量）。
 - **Step 2（A4 collar）**：tier 加 `3.5@4` + depth clamp →5 + 预算复核；automation per-ring 落带。
 - **Step 3（A4 fade）**：patch cross-fade + `ring_reassigned_cells`/`fade_in_flight` observe。
