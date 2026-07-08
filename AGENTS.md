@@ -2,16 +2,16 @@
 
 > 本文件是本仓库**跨工具的工程准则单一来源**——**只保留约束性铁律与索引**。任何 AI 代理在本仓库工作前必读。
 > 工程背景、技术栈、命令、结构、编码约定等较长参考内容已迁出，按需查阅：
-> - 工程背景 / 技术栈 / 仓库结构 / 常用命令 / 编码约定 → [`docs/project-engineering-guide.md`](docs/project-engineering-guide.md)
-> - Phoenix 1.8 / `phx.new` 专项规则 → [`docs/phoenix-phx-new-guidelines.md`](docs/phoenix-phx-new-guidelines.md)
-> - 项目“此刻为真”的设计与实现状态 → [`docs/current_status/`](docs/current_status/README.md)
-> - 原始设计文档（证据源）→ [`docs/original/`](docs/original/)
+> - 工程背景 / 技术栈 / 仓库结构 / 常用命令 / 编码约定 → [`docs/30-reference/engineering/project-engineering-guide.md`](docs/30-reference/engineering/project-engineering-guide.md)
+> - Phoenix 1.8 / `phx.new` 专项规则 → [`docs/30-reference/engineering/phoenix-phx-new-guidelines.md`](docs/30-reference/engineering/phoenix-phx-new-guidelines.md)
+> - 项目“此刻为真”的设计与实现状态 → [`docs/00-current-truth/README.md`](docs/00-current-truth/README.md)
+> - 历史归档 / 证据源 → [`docs/20-archive/`（历史归档）· `docs/30-reference/`（长稳参考）](docs/20-archive/)
 
 ## 1. 项目与当前焦点
 
-`ex_mmo_cluster` 是探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目（`gate_server`、`scene_server`、`world_server`、`agent_server`、`auth_server`、`data_service`、`beacon_server`、`mmo_contracts` 等），核心方向是**服务端权威**的移动、AOI、体素、局部场与物理现象运行时。当前推进重点是体素世界生产化（baseline = 算法基底 + delta + 轻量 H，见 [`docs/voxel-server-authority/`](docs/voxel-server-authority/README.md)）与局部场运行时（Phase 7+）。Mnesia 相关 app 是迁移期兼容组件，不要把旧拓扑误认为最终架构。
+`ex_mmo_cluster` 是探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目（`gate_server`、`scene_server`、`world_server`、`agent_server`、`auth_server`、`data_service`、`beacon_server`、`mmo_contracts` 等），核心方向是**服务端权威**的移动、AOI、体素、局部场与物理现象运行时。当前推进重点是体素世界生产化（baseline = 算法基底 + delta + 轻量 H，见 [`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)）与局部场运行时（Phase 7+）。Mnesia 相关 app 是迁移期兼容组件，不要把旧拓扑误认为最终架构。
 
-**客户端口径（统一到 `docs/current_status/`，覆盖任何旧文档的相反表述）**：
+**客户端口径（统一到 `docs/00-current-truth/`，覆盖任何旧文档的相反表述）**：
 
 - `clients/Voxia`（UE5.8）是**当前真实联调焦点**——新功能、近场交互、远景 LOD、debug overlay、stdio CLI 的最新实跑证据在此。
 - `clients/web_client` 是**仓库级默认 parity / oracle 参考**——协议字节序、decoder parity 默认以它验收。
@@ -32,7 +32,7 @@
 
 ### 2.1 架构设计指导思想（系统正交，最高纲领）
 
-详见 [`docs/original/2026-06-27-架构设计指导思想-系统正交.md`](docs/original/2026-06-27-架构设计指导思想-系统正交.md)。动手/设计前先读并过其「开工前自查清单」。三条核心：
+详见 [`docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md`](docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md)。动手/设计前先读并过其「开工前自查清单」。三条核心：
 
 1. **系统正交**：每个系统只负责一件清晰的事；系统间只走**稳定契约**，不共享可变的隐式假设。改 A 莫名弄坏概念上无关的 B，就是隐藏耦合，是设计缺陷。
 2. **自维护不变量**：一个系统对外承诺的**所有**不变量（**含活性/续租/超时/重连等时间性不变量**）必须由它**自己持续维护**；绝不让别的系统的正确性悄悄依赖一个**没人维护**的假设。警惕「一次性建立、之后没人管」的资源（订阅/lease/连接/缓存/content_version）静默失效。
@@ -49,7 +49,7 @@
 5. **功能必须可验证、可测试、可操作**：不能只实现底层核心而让用户无法触发、无法观察、无法判断是否正确。
 6. **用户交互必须三入口覆盖**：涉及用户交互的功能必须提供真实用户操作入口、自动化测试入口、CLI / 日志验证入口，并在最终验收中覆盖这些入口。
 7. **禁止补丁式修复**：遇到 bug 先定位根因和边界归属，再修复；不要用局部 hack、吞错、硬编码等待、临时绕路掩盖架构问题。
-8. **阶段性改动先有决策稿**：新增 phase、重排运行时边界、协议扩展、事务 / supervisor / field runtime 变化，应先在 `docs/voxel-server-authority/` 或 `docs/plans/` 写目标、范围、决策项、测试矩阵和进度日志。
+8. **阶段性改动先有决策稿**：新增 phase、重排运行时边界、协议扩展、事务 / supervisor / field runtime 变化，应先在 `docs/10-active/<子系统>/` 写目标、范围、决策项、测试矩阵和进度日志（收口后移入 `docs/20-archive/`；文档分层见 `docs/README.md`）。
 9. **不确定就查本仓真相源**：对 Phoenix / LiveView / Ecto / Rustler / 协议语义 / FieldRuntime / voxel 事务不确定时，先查本仓 README、阶段文档、协议文档、目录 README 和现有测试，再动手。
 10. **复杂任务职责隔离**：复杂改动尽量把设计、实现、验证分开做；最终说明中要区分实现内容、验证证据和残余风险。
 11. **代码旁文档同步维护**：
@@ -63,7 +63,7 @@
 ## 4. 推荐工作流
 
 1. **定位影响范围**：先判断改动属于哪个 app、客户端、协议层、NIF、数据层、voxel、field runtime 或文档主线。
-2. **读最近文档**：优先读所在目录 `README.md`、`docs/current_status/`、相关阶段文档和测试入口。体素 / 局部场相关改动先读 [`docs/voxel-server-authority/README.md`](docs/voxel-server-authority/README.md) 与 [`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md)。
+2. **读最近文档**：优先读所在目录 `README.md`、`docs/00-current-truth/`、相关阶段文档和测试入口。体素 / 局部场相关改动先读 [`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md) 与 [`docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)。
 3. **设计可观测性**：定义 CLI / observe 产物字段，尤其是连接状态、输入意图、movement 坐标、voxel target、field source、region id、消息收发、错误原因。
 4. **实现与文档同步**：代码、测试、README / 阶段文档一起改；协议、监督树、事务、field runtime 或 authority 边界变化必须落文档。
 5. **验证闭环**：优先跑最小相关测试，再跑必要的 client / smoke；验收说明必须列出命令和可复现产物位置。
@@ -76,18 +76,18 @@
 - Web client 验证：`cd clients/web_client && npm test`；涉及构建 / 类型边界时补 `npm run build`。
 - WebSocket 双客户端 smoke：`node scripts/run_ws_dual_smoke_supervised.js`，结构化产物写入 `.demo/observe/`。
 - Voxia 客户端 CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`；服务端 CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`。
-- 完整命令清单见 [`docs/project-engineering-guide.md`](docs/project-engineering-guide.md) 与 [`docs/current_status/impl/README.md`](docs/current_status/impl/README.md)。
+- 完整命令清单见 [`docs/30-reference/engineering/project-engineering-guide.md`](docs/30-reference/engineering/project-engineering-guide.md) 与 [`docs/00-current-truth/impl/README.md`](docs/00-current-truth/impl/README.md)。
 
 ## 6. 关键路径（索引）
 
-- 项目“此刻为真”入口：[`docs/current_status/README.md`](docs/current_status/README.md)（含模块表、实现速查、已知缺口）
-- 工程背景 / 技术栈 / 命令：[`docs/project-engineering-guide.md`](docs/project-engineering-guide.md)
-- Phoenix phx.new 规则：[`docs/phoenix-phx-new-guidelines.md`](docs/phoenix-phx-new-guidelines.md)
-- 系统正交设计纲领：[`docs/original/2026-06-27-架构设计指导思想-系统正交.md`](docs/original/2026-06-27-架构设计指导思想-系统正交.md)
-- 线协议：[`docs/original/2026-04-10-线协议规范.md`](docs/original/2026-04-10-线协议规范.md)（真值以 `apps/gate_server/lib/gate_server/codec.ex` 为准）
-- 体素权威主索引：[`docs/voxel-server-authority/README.md`](docs/voxel-server-authority/README.md)
-- 体素 baseline 边界决策：[`docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md`](docs/voxel-server-authority/2026-06-29-voxel-baseline-streaming-boundary.md)
-- 体素同步 / 窗口 / 渲染设计：[`docs/voxel-server-authority/2026-06-29-voxel-sync-window-and-render-design.md`](docs/voxel-server-authority/2026-06-29-voxel-sync-window-and-render-design.md)
-- Phase 7 局部场路线图：[`docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/plans/2026-05-16-phase7-local-field-runtime-roadmap.md)
-- 当前会话 / 后续接力：[`docs/voxel-server-authority/_session-handoff.md`](docs/voxel-server-authority/_session-handoff.md)
+- 项目“此刻为真”入口：[`docs/00-current-truth/README.md`](docs/00-current-truth/README.md)（含模块表、实现速查、已知缺口）
+- 工程背景 / 技术栈 / 命令：[`docs/30-reference/engineering/project-engineering-guide.md`](docs/30-reference/engineering/project-engineering-guide.md)
+- Phoenix phx.new 规则：[`docs/30-reference/engineering/phoenix-phx-new-guidelines.md`](docs/30-reference/engineering/phoenix-phx-new-guidelines.md)
+- 系统正交设计纲领：[`docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md`](docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md)
+- 线协议：[`docs/30-reference/protocol/2026-04-10-线协议规范.md`](docs/30-reference/protocol/2026-04-10-线协议规范.md)（真值以 `apps/gate_server/lib/gate_server/codec.ex` 为准）
+- 体素权威主索引：[`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)
+- 体素 baseline 边界决策：[`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
+- 体素同步 / 窗口 / 渲染设计：[`docs/30-reference/protocol/2026-06-29-voxel-sync-window-and-render-design.md`](docs/30-reference/protocol/2026-06-29-voxel-sync-window-and-render-design.md)
+- Phase 7 局部场路线图：[`docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)
+- 当前会话 / 后续接力：[`docs/10-active/cross-cutting/_session-handoff.md`](docs/10-active/cross-cutting/_session-handoff.md)
 - 客户端：[`clients/Voxia/README.md`](clients/Voxia/README.md)、[`clients/web_client/README.md`](clients/web_client/README.md)、[`clients/bevy_client/README.md`](clients/bevy_client/README.md)

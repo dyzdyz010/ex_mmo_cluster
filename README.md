@@ -67,7 +67,7 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
 | Web | Phoenix 1.8 · LiveView 1.1 · Bandit |
 | Persistence | PostgreSQL via Ecto |
 | Native compute | Rust via Rustler 0.37 — `rapier3d-f64` physics, octree, terrain noise |
-| Wire format | Custom binary protocol (`packet:4`); see `docs/2026-04-10-线协议规范.md` |
+| Wire format | Custom binary protocol (`packet:4`); see `docs/30-reference/protocol/2026-04-10-线协议规范.md` |
 
 ## Quickstart
 
