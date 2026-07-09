@@ -104,7 +104,7 @@
 - **为什么现在不自研 UPrimitiveComponent/SceneProxy**：其收益（打包顶点格式省 2-3× 显存、artifact 直传砍 FDynamicMesh3 中间态、组件内 LOD）只在"分组件+StaticDraw 吃完后仍有实测 hitch/显存瓶颈"时兑现。登记为 defer，触发条件写死。
 - **为什么不是 Nanite/HLOD/RVT/impostor**：Nanite 运行时构建是 UE5.8 API 级不可行（NaniteBuilder editor-only，运行时 `BuildFromMeshDescriptions` 强制 fast-build），离线 bake 归 S5 且先做 editor 手工 A/B 再决定建不建 farm；WP/HLOD 对零静态 actor 的纯运行时世界输入为空集；RVT 是 2D 投影缓存，与 3D 远景（崖壁/浮空岛底面）模型冲突；impostor 被 L4 raymarch 支配（逐像素视差/轮廓 vs 八面体近似）。
 - **更新频率分带（P-4 的渲染侧）**：L1 跨 tile 即时增量；L2 跨 tile 批量合并；L2.5/L3 低频队列（秒级 coalesce），远环 dirty 永远排在近环之后。
-- **材质/光照口径**：远景沿现状顶点色三桶材质（matte/translucent/emissive）+ 既有补光 RIG；RuntimeMesh 不进 Lumen scene（无距离场/surface cache），远景不投动态阴影；atlas/材质保真属独立专项，不阻塞本稿。
+- **材质/光照口径（2026-07-09 D4 回写，替代原"顶点色三桶 matte/translucent/emissive"口径）**：远景默认 **Lit**，与近景共用同一顶点色材质 `M_VoxelVertexColor`（材质烘顶点色、线性字节直存契约，DynamicMesh 转换层以 `ReinterpretAsLinear` 严格逆变换、禁 sRGB 双重解码），消除近/远"平亮 vs 受光"色差；Unlit 便宜材质 `M_VoxelFarUnlit` 降为 A/B 逃生门 `-VoxiaSvoFarUnlitMaterial`；换环 patch 过渡经 `M_VoxelFarDither`（Lit + BLEND_Masked + DitherTemporalAA，默认 0.35s，`-VoxiaSvoFadeSeconds=`）后回稳态 Lit + 既有补光 RIG。远景 mesh 不进 Lumen scene（无 mesh distance field / surface cache → 收不到天光间接光，远景偏暗按 A4 稿 D5(b) 签收为大气透视/固有代价），不投动态阴影；atlas/材质保真属独立专项，不阻塞本稿（决策与实证见 [`phase-vlod-a4-seam-fade-collar.md`](../../10-active/voxel-far-field/phase-vlod-a4-seam-fade-collar.md) 决策项 D4/D5）。
 
 ### 3.3 L4：raymarch-only SVDAG profile（**defer**，2026-07-06 拍板：不排期、不扩圈，触发条件写死）
 
