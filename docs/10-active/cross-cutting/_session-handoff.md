@@ -1,7 +1,33 @@
 # Voxel server authority — 会话间衔接备忘
 
-**Last updated**:2026-07-06（LOD 分层设计稿 + GPT-5.5 外部方案评审 checkpoint）。
-> ⚠️ **本备忘停在 2026-07-06。** 2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
+## 2026-07-10 Voxia 远景流送换机检查点
+
+> **当前决策：raymarch 严格不用。** 不要运行任何 `VoxiaSvoRaymarch*` 参数，不把 L4/raymarch 重新列为候选。默认分组件 DynamicMesh mesh 路径是唯一继续路线。
+
+### 已完成到哪里
+
+- 零参数打开 `clients/Voxia/Voxia.uproject`、进入默认关卡即可看到 WorldGen/SVO 预览；第一人称相机已改为无 SpringArm 距离、眼高 60cm、FOV 90。
+- 远景换环材质已移除 `DitherTemporalAA`，使用帧稳定互补 mask；默认 mesh renderer 已取消隐藏的全量 aggregate、full seam 与无用 runtime SVDAG 构建。
+- Phase 2 已完成三切片：patch-native dirty cache、dirty macro-cell 并行构建、受影响 patch 并行聚合。8km 跨 tile 的已验证稳定口径为 built/reused cells=`776/20248`、patch rebuilt/reused=`82/279`、dirty seam=`270944` samples、missing/duplicate/mismatch=`0/0/0`、upload queue=`0`。第二切片 SVO build=`2015.912ms`；第三切片 patch update 从 `113.545ms` 降到 `72.751ms`，aggregation=`43.941ms / 82 tasks`。
+- 第三切片 Development build、`Voxia.Voxel.FarFieldPatchCache`、完整 `Voxia.Voxel.Far`（12/12）与完整 `Voxia.Voxel.SvoPreview` 均通过。日志位于 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_*`，真实 RHI 截图为 `clients/Voxia/Saved/voxia_phase2_parallel_patch_8km_real_rhi.png`；`Saved/` 不入库。
+
+### raymarch 现场
+
+- 2026-07-10 显式 real-RHI 小网格诊断完成 dispatch/readback（16/16 visual samples、root lookup 成功、invalid=0）后，D3D12 3D 与 Compute 队列均超时，CLI 挂住；已终止残留 UE 进程，GPU 恢复正常。
+- 这复现了既有 raymarch dispatch × proxy-mesh go-live 跨队列竞态，不是本轮 patch 聚合优化引入的回归。用户已拍板严格不用，因此没有继续做 raymarch 复测，也不应在新电脑恢复后复测。
+
+### 换机恢复入口与下一步
+
+1. 拉取根仓库 `master`，再进入 `clients/Voxia` 单独拉取其 `master`；本检查点的 Voxia 提交为 `a61b9b765f9348520c8b98ec88b907f2aa949e3d`。
+2. 确认 UE 5.8 安装位置，直接打开 `clients/Voxia/Voxia.uproject`；无需命令行参数。默认地图/模式已写入项目配置。
+3. 第一优先级：预测 3087-chunk slab 预取 + coverage hysteresis，保持旧覆盖到新覆盖 ready。
+4. 第二优先级：把 compact patch 聚合的同步等待与 DynamicMesh CPU 构建真正移出 GameThread，只保留 bounded component submit。并行任务已存在，但调用方仍同步等待约 73ms。
+5. 第三优先级：launcher/offline 生成 validated sharded artifact pack，H gate 后批量 hydrate，消除 32.4 秒开发冷生成。稳态 shimmer 的后续 A/B 只使用默认 mesh 路径。
+
+阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
+
+**Last updated**：2026-07-10（Voxia 远景时序稳定/流送 Phase 2 第三切片换机检查点）。
+> ⚠️ 以上 2026-07-10 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 

@@ -19,19 +19,20 @@
 
 ## Voxia 近远景渲染
 
-> **里程碑 A（客户端渲染正确、零服务端依赖）进行中**：A1 / A2 / A3b 已收口，A4 收尾中。下面按里程碑列**当前剩余**缺口（已完成项与详细进度见 [`voxel-server-authority-phase-overview.md`](../../10-active/cross-cutting/voxel-server-authority-phase-overview.md) 与各 `phase-vlod-*` 稿）。截至 2026-07-08。
+> **里程碑 A（客户端渲染正确、零服务端依赖）已收口**：A1 / A2 / A3b / A4 / A5 与 8km 长巡航验收均已完成。当前剩余主线转入 B/C 的真实 source pages 与服务端生产链路；2026-07-10 的 terrain-only、垂直跨档 identity、原子换入和近远材质统一也已闭环。
 
 - **A1（显式 tier 契约 + 四环 7/14/28/56m 分带）✅ 已完成**（2026-07-06）：`-VoxiaSvoLodRings` 显式契约落地，8km quad 3.70M→1.39M（−62%），per-ring 锚点全命中。
 - **A2（分组件 `UDynamicMeshComponent` + `StaticDraw` + 组件级剔除 + bulk-hide）✅ 已完成**（2026-07-07，8 次真实 RHI 实测）。
-- **【归因反转·重要】8km device-removal 真凶已查明并修复**：A2 曾把 8km 默认 Lumen 崩溃归因为"远景几何 overdraw 超 TDR"，并据此把 merge 定为根治手段。**2026-07-07 A3.0 诊断在完整重启 + 干净 GPU 数据下证伪了该归因**——真凶是 far-mesh-go-live 路径 raymarch probe dispatch × proxy-mesh go-live 的 **GPU 跨队列时序竞态（潜伏 UB）**，与 overdraw / quad 数量 / 渲染后端 / Lumen 全部正交（`r16`=0.49M 与 `r72`=1.39M 同样崩）。**修复 = raymarch 默认关**（`clients/Voxia@1fc93d2`，`ShouldEnableSvoRaymarch()`→false），采纳为生产终态；8km facing + 默认 Lumen 稳态**已无 device-removal**。将来重启 raymarch（L4 超远景）前必须先根因修复跨队列 barrier/fence，不可依赖当前二进制布局的偶然掩盖。
+- **【归因反转·重要】8km device-removal 真凶已查明，raymarch 最终禁用**：A2 曾把 8km 默认 Lumen 崩溃归因为"远景几何 overdraw 超 TDR"，并据此把 merge 定为根治手段。**2026-07-07 A3.0 诊断在完整重启 + 干净 GPU 数据下证伪了该归因**——真凶是 far-mesh-go-live 路径 raymarch probe dispatch × proxy-mesh go-live 的 **GPU 跨队列时序竞态（潜伏 UB）**，与 overdraw / quad 数量 / 渲染后端 / Lumen 全部正交（`r16`=0.49M 与 `r72`=1.39M 同样崩）。默认关闭后，8km facing + 默认 Lumen 稳态已无 device-removal；2026-07-10 显式 real-RHI 复核又在 dispatch/readback 成功后触发 D3D12 3D/Compute 队列超时。当前拍板是 raymarch 严格不用，现行验收不得传入任何 `VoxiaSvoRaymarch*` 参数。
 - **A3b（per-cell masked greedy merge，重定位为纯几何/带宽优化）✅ 已完成**（2026-07-07）：quad 1.39M→593k（−57.3%），视觉等价（覆盖面积守恒 + seam 不回归），4 次真实 RHI 0 device-removal。附带远景默认材质由 Unlit 改 **Lit** 消色差（`-VoxiaSvoFarUnlitMaterial` 降为逃生门）。
-- **A4（跨 depth 覆盖性 seam / 换环 fade / L1 collar）🔄 收尾中**：Step0（目视基线；高空"破洞"判定为机位假象非 bug）、Step1（跨 depth 覆盖性 seam 断言）、Step2（L1 3.5m collar，opt-in 非默认）、backlog A（远场逐面贴壁真材质 + 顶面地表化）已完成（2026-07-08）。**下一步 = A（光照）**：查远景竖直侧面为何偏暗——材质修复后近/远色差观感未变，真因转向光照/LOD（粗 LOD 竖直崖壁收不到 Lumen 天光方位补光），非材质。**仍缺**：Step3 换环 cross-fade、Step4-5 A5 顶点瘦身 + cache LRU、Step6 8km 长巡航 A 验收（收官）。
-- **A5（远景顶点格式瘦身 424→~210B/quad + persistent cache LRU/容量上限）尚未开工**（并入 A4 Step4-5）。
+- **A4（跨 depth 覆盖性 seam / 换环 fade / L1 collar / 8km 验收）✅ 已完成**（2026-07-08）：cross-fade、collar、覆盖性断言和长巡航验收均收口；2026-07-10 又补了 removed patch 延迟提交，未来大范围 coverage 翻转也不会先清空旧远景。
+- **A5（远景顶点格式瘦身 + persistent cache 卫生）✅ 已完成**：紧凑格式已达约 91B/quad，worldgen shape 入 cache key，LRU/容量上限/孤儿清理已落地。
 - **真 7m mip page payload 与客户端 pages 真消费管线**：缺 `svo_source_pages_v1` 中真实 7m occupancy/material payload、page decode、7m→14/28/56m 规约降采样、按环建树和从 pages 构建 SVDAG payload；现状 page 仅作为 hash gate 输入，渲染仍吃预物化 artifact；实施载体为里程碑 B2/B3。
 - **垂直稀疏多层 + 3D 环距 + near-skip 3D 化**：缺 manifest 占据层清单、3D Chebyshev ring distance 和按 L0 覆盖 Y 层裁剪的 near-skip；没有它，垂直玩法会出现整柱误裁或远景真空；实施载体为里程碑 B5。
-- **长巡航与生产门槛验证**：缺跨至少 8 tiles 的 8km 长巡航、per-ring quad/内存预算断言、截图审计与长期帧时间分布；实施载体为里程碑 A 验收（A4 Step6）。**注**：远景 FPS 已实测为**像素-bound 非三角形-bound**，Lumen 全屏 GI（关掉 +36~40FPS）是最大单一 FPS 杠杆；旧的"overdraw 物理约束致 FPS 门槛不可达"口径已不成立。
+- **长期性能分布**：A4 Step6 的跨 tile 8km 长巡航、per-ring 预算与截图审计已完成；仍缺更长时段、更多硬件档位的 p50/p95/p99 帧时间分布。远景 FPS 当前实测为**像素-bound 非三角形-bound**，Lumen 全屏 GI（关掉 +36~40FPS）仍是最大单一 FPS 杠杆。
+- **远景时序稳定与无缝流送（Phase 0/1 + Phase 2 前三切片已落地，整体未收口）**：换环 fade 已去除 `DitherTemporalAA` 的逐帧噪声并加入 `svo_visual_stability`；patch-native cache、dirty-boundary seam、默认取消 aggregate mesh / 无用 runtime SVDAG，以及 dirty macro-cell 与受影响 patch 聚合的并行任务均已落地。8km 跨 tile SVO build 从原始 `135948.497ms` 降到 `2015.912ms`（约 `-98.5%`）；第三切片同构 patch update 从 `113.545ms` 降到 `72.751ms`（约 `-35.9%`），82-task 聚合段为 `43.941ms`。但 2.0 秒级增量仍非无缝，patch/DynamicMesh 调用方仍同步等待，near 仍会生成/装载 3087-chunk slab。剩余实施项是稳态 77% TSR shimmer 定量归因、patch/DynamicMesh 真正离开 GameThread、预测 slab 预取、coverage hysteresis 与 validated sharded artifact pack。阶段真值见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../../10-active/voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)。
 - **heightmap LOD material palette**：缺 catalog 驱动的 material palette；当前 0x6B material section 已被 Voxia decode 并按顶点色表现，但材质色仍非 MaterialCatalog 驱动；实施载体为 LOD material 表现专项（不阻塞里程碑 A）。
-- **raymarch 升格与 Nanite bake**：均为 defer，不是生产缺口。生产远景 renderer 已拍板为 L1-L3 SVO leaf-surface mesh + 分组件 DynamicMesh StaticDraw；raymarch 仅保温为 d≤72 AB profile / L4 候选（触发条件与门槛见 [`2026-07-05` 路线 §4.2](../../30-reference/overview/2026-07-05-voxia-voxel-lod-production-route.md) 与 [`2026-07-06` 设计 §3.3](../../30-reference/overview/2026-07-06-voxia-lod-layering-and-technology-design.md)）；Nanite 渲染/烘焙后端 defer（运行时构建 UE5.8 API 级不可行，离线 bake 触发条件为 editor 手工 A/B 数据显著）。
+- **raymarch 不再是 backlog**：生产远景 renderer 已拍板为 L1-L3 SVO leaf-surface mesh + 分组件 DynamicMesh StaticDraw；2026-07-10 用户进一步拍板 raymarch 严格不用，因此 L4/raymarch 不再作为候选、A/B profile 或待办。旧路线中的 defer/触发条件仅为历史记录。Nanite 渲染/烘焙后端仍 defer（运行时构建 UE5.8 API 级不可行，离线 bake 触发条件为 editor 手工 A/B 数据显著）。
 
 ## 客户端-服务端 wire 契约
 

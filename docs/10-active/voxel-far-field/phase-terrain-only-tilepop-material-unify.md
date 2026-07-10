@@ -1,7 +1,7 @@
 # 决策稿：worldgen 只留地形 + 跨 tile 远景消失修复 + 近/远材质统一
 
 - **日期**：2026-07-10
-- **状态**：诊断中（fable 三线并行），本稿随诊断结论回填
+- **状态**：实现完成（T1/T2/T3 已通过 automation + 真实 RHI smoke；UDS 主观调参另续）
 - **触发**：用户在可视取证会话（L_WorldGenSvoPreview + UDS 光照调参）中拍板三项：
   1. 去掉 worldgen 的浮空结构生成，只生成地形；
   2. 跨越 tile 时远景整体消失再出现，跳变严重，须修复；
@@ -35,5 +35,9 @@
 - 2026-07-10 三线诊断全部回来（两线因 API 断线经 workflow resume 重跑），D-1~D-4 全部回填拍板（见上）。
 - 2026-07-10 **T1 完成**：浮空岛整层移除（WorldGenV1 核心 + SVO 消费面 + 键/观测面 + ps1 透传，净 -375 行），terrain-only 负向契约固化进 WorldGenV1 测试；**6/6 automation Success**（WorldGenV1/SvoPreview/SvoCacheHygiene/SvoSlidingFollow/VhiImpostor/SvoMergeBudget，nullrhi）。Voxia@180e104。
 - 2026-07-10 **T2 Step1 落地（编译通过，回归待跑）**：①RequestSvoAround 列源 CenterTile.Y≡0 归一化（ConfirmedVoxelStore 保留 3D）；②BuildMacroCellUpdate 列源 Y≠0 硬拒绝（H-gate）；③source-pages fixture 删 ±Dy 垂直层预物化/自检（CLI 签名变为 `[tile] [radius] [near_skip] [movement]`），smoke 脚本同步去 --vertical-radius 并强制 Y=0；④SvoPreview 测试 FarSigned 中心 Y=4→0。**用户指示暂停点**：进度先行提交推送。
-- **Resume 指针（下一步）**：① T2 Step1 回归（6 组 automation + 新增"垂直跨档全复用"测试：build@(10,0,10)→reuse@(10,1,10) 断言 Reused==MacroCellCount/Built==0）；② T2 Step2 原子换入（VoxiaWorldActor QueueSvoMeshUpdate 的 RemovedPatches 销毁延后到 MarkUploadFinished 后）；③ T3 材质统一四步（FlatShading→UV overlay 共享 helper→组件 desc 单一源+CastShadow 统一→dither 材质 duplicate 派生）+ 近远一致性契约测试；④ RHI 实跑取证（跨 tile 飞行录像远景不消失 + 近远边界色差）；⑤ 恢复 UDS 调参循环（`--with-sky` + uds_set "Time of Day" 1300 摆正太阳 + UDS 内部 HeightFog 密度，工具链已就绪）。
+- 2026-07-10 **T2 完成**：`NormalizeCenterTileForSource` 成为请求归一化单一入口，新增垂直跨档 100% 复用与非法非零 Y 硬失败回归；uploader 新增 staged removal，`VoxiaWorldActor` 只在 `MarkUploadFinished` 后原子退役旧 patch。`Voxia.Voxel.SvoPreview` 与 `Voxia.Voxel.Far*` 全绿。
+- 2026-07-10 **T3 完成**：DynamicMesh 主 UV overlay 改走 `FVoxiaFarMesher::PrimaryUvForVertex` 共享 helper；`FVoxiaFarFieldMeshComponentDesc` 统一 near/far ProcMesh、DynamicMesh、HISM 的 CastShadow/非 Lumen/RT 属性，DynamicMesh 启用零 normal-overlay FlatShading；`M_VoxelFarDither` 改为完整复制 `M_VoxelVertexColor` 后只叠加 masked dither。`Voxia.Voxel.Far` 10/10 Success。
+- 2026-07-10 **真实 RHI smoke 通过**：近窗从 `center_tile=[11,0,-51]` 垂直跨到 `[11,1,-51]` 后，far SVO 仍保持 `revision=1` / `center_tile=[11,0,-51]` / `far_component_count=35` / `far_visible_component_count=2` / `upload_queue=0`，证明列源没有重建或黑屏窗口；`Saved/voxia_t2_t3_vertical_tile_real_rhi.png` 审计 `1920x1080`、`unique_colors=24522`、`non_black_ratio=1`、`passed=true`。
+- 2026-07-10 **零参数编辑器入口完成并实跑**：`DefaultEngine.ini` 的 game/editor 默认地图统一为 `L_WorldGenSvoPreview`；地图专用 `VoxiaPreviewRuntimeProfile` 只自动启用 WorldGen baseline 与 SVO，PIE 前缀 `UEDPIE_0_` 已纳入精确识别，其他地图不受影响。用户复核指出 40000 cm 概览 SpringArm 不是真实第一人称后，该错误覆盖已移除；入口恢复 Pawn 原生 `arm_length_cm=0` / `eye_height_cm=60` / `field_of_view=90`，并以 `voxia_preview_first_person_camera_ready` 显式观测。只用 `UnrealEditor.exe Voxia.uproject` 启动并点击 Play 后，observe 记录 `activation=map_profile`；默认 8km 构建仍得到 `macro_cell_count=21016` / `quad_count=1329713` / `seam_status=pass`，361 个分区上传完成后的第一人称实际画面为 `.demo/observe/voxia_editor_zero_arg_first_person.png`。
+- **Resume 指针（下一步）**：恢复 UDS 主观调参循环（`--with-sky` + `uds_set "Time of Day" 1300` + UDS 内部 HeightFog 密度），并在真实天空/雾环境下补近远边界最终人工复核；T1/T2/T3 不再是阻塞项。
 - 已知残留（本轮范围外，记账）：近景水/冰 Translucent 与 Emissive bucket 远景无对应（边界落在水面/发光体仍有差异）；远景 CastShadow=true 的 GPU 代价需 -VoxiaFarNoShadow A/B 实测。

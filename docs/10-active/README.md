@@ -6,7 +6,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **26** 篇（按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **28** 篇（按子系统分组）。
 
 ## 索引
 
@@ -52,4 +52,6 @@
 ### voxel-far-field
 
 - [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)
+- [`phase-terrain-only-tilepop-material-unify.md`](voxel-far-field/phase-terrain-only-tilepop-material-unify.md)
+- [`phase-far-temporal-stability-and-seamless-streaming.md`](voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)
 - [`phase-vlod-a4-seam-fade-collar.md`](voxel-far-field/phase-vlod-a4-seam-fade-collar.md)
