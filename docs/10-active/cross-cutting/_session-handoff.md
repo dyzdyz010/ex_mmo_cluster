@@ -1,46 +1,43 @@
 # Voxel server authority — 会话间衔接备忘
 
-## 2026-07-10 Voxia 远景流送换机检查点
+## 2026-07-11 Voxia 近景冷加载与帧尖峰优化检查点
 
 > **当前决策：raymarch 严格不用。** 不要运行任何 `VoxiaSvoRaymarch*` 参数，不把 L4/raymarch 重新列为候选。默认分组件 DynamicMesh mesh 路径是唯一继续路线。
 
-### 已完成到哪里
+### 本轮同步与完成范围
 
-- 零参数打开 `clients/Voxia/Voxia.uproject`、进入默认关卡即可看到 WorldGen/SVO 预览；第一人称相机已改为无 SpringArm 距离、眼高 60cm、FOV 90。
-- 远景换环材质已移除 `DitherTemporalAA`，使用帧稳定互补 mask；默认 mesh renderer 已取消隐藏的全量 aggregate、full seam 与无用 runtime SVDAG 构建。
-- Phase 2 已完成三切片：patch-native dirty cache、dirty macro-cell 并行构建、受影响 patch 并行聚合。8km 跨 tile 的已验证稳定口径为 built/reused cells=`776/20248`、patch rebuilt/reused=`82/279`、dirty seam=`270944` samples、missing/duplicate/mismatch=`0/0/0`、upload queue=`0`。第二切片 SVO build=`2015.912ms`；第三切片 patch update 从 `113.545ms` 降到 `72.751ms`，aggregation=`43.941ms / 82 tasks`。
-- 第三切片 Development build、`Voxia.Voxel.FarFieldPatchCache`、完整 `Voxia.Voxel.Far`（12/12）与完整 `Voxia.Voxel.SvoPreview` 均通过。日志位于 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_*`，真实 RHI 截图为 `clients/Voxia/Saved/voxia_phase2_parallel_patch_8km_real_rhi.png`；`Saved/` 不入库。
+- umbrella 本轮从 `4138acb` 继续更新 current truth；独立 Voxia 性能改动已发布为 `482d21c perf(streaming): accelerate near-window loading`，本文件与阶段文档随本次 umbrella 发布同步收口。
+- Transport 的 WorldGen preview 由“单批生成、等待队列清空、固定 reveal 延时”改为单 producer 的连续生成/应用流水线；默认 batch/high-water/reveal 为 `256/512/0`，请求级 column cache 复用相同 X/Z 的高度计算，并输出 generate/apply/queue/cache/throughput 指标。旧 active coverage 仍保持到 staged window ready，未降低 H gate 或 confirmed truth 边界。
+- `FVoxiaVoxelStore` 对整块同材质实心快照使用紧凑基底 + empty/solid/refined 稀疏例外；delta 与权威纠正直接维护例外，不再把 9261 chunks 展开成约 1700 万个 `TMap` cell。
+- near renderer 从单一 ProcMesh 的全局 section 表改为每 chunk 独立可复用组件；既有 chunk 原位更新，最终 settled revision 以 `0.5ms` 预算重校验。Transport pump、near upload 与 SVO upload 均保证每帧最多一次。
+- SVO reuse context 共享写时复制 macro-cell artifact store，不再在 GameThread 深拷贝约 121MB 几何；observe JSONL 改为 8 MiB/4096 行有界专用 writer，模块退出前无条件 join；CLI 新增 `frame_perf [snapshot|reset]`，报告 p50/p95/p99/max 与 `>8.33/16.67/33.33/50ms` 计数。
+- 安全/架构终审补齐 `macro_index` 0..4095 的 decoder/store 双层硬拒绝、snapshot `chunk_size=16` 与累计 4096 headers 上限；公开 `Pump()` 保持每次显式推进，只有 Subsystem/Pawn/CLI 自动入口使用 `PumpOncePerFrame`。
 
 ### raymarch 现场
 
 - 2026-07-10 显式 real-RHI 小网格诊断完成 dispatch/readback（16/16 visual samples、root lookup 成功、invalid=0）后，D3D12 3D 与 Compute 队列均超时，CLI 挂住；已终止残留 UE 进程，GPU 恢复正常。
 - 这复现了既有 raymarch dispatch × proxy-mesh go-live 跨队列竞态，不是本轮 patch 聚合优化引入的回归。用户已拍板严格不用，因此没有继续做 raymarch 复测，也不应在新电脑恢复后复测。
 
-### 换机恢复入口与下一步
+### 最新真实 RHI 证据
 
-1. 拉取根仓库 `master`，再进入 `clients/Voxia` 单独拉取其 `master`；本检查点的 Voxia 提交为 `067a214ad998133884f437f1b10c9e426f5ead75`。
-2. 确认 UE 5.8 安装位置，直接打开 `clients/Voxia/Voxia.uproject`；无需命令行参数。默认地图/模式已写入项目配置。
-3. 预测 3087-chunk near slab 第一切片已完成：旧 active 保持到 staged window
-   ready，跨界后才 activation，并按预算清理旧 slab。下一步先拆分 SVO
-   near/collar center 与 outer coverage center，再给 outer center 加 hysteresis。
-4. 把 compact patch 聚合的同步等待与 DynamicMesh CPU 构建真正移出
-   GameThread，只保留 bounded component submit。并行任务已存在，但调用方仍同步
-   等待约 73ms。
-5. launcher/offline 生成 validated sharded artifact pack，H gate 后批量
-   hydrate，消除 32.4 秒开发冷生成。稳态 shimmer 的后续 A/B 只使用默认 mesh
-   路径。
+- 固定口径：1600×900、`t.MaxFPS=0`、`r.VSync=0`、near-only、默认 mesh renderer；最终进程正常退出，未出现 device removal。
+- 优化前：9261 chunks data ready=`28423.7ms`；3087 candidates → 855 sections / 78451 quads 完成=`35400.4ms`；加载尾段约 14–19 FPS。
+- 优化后两次干净复测：data ready=`1779.9-1862.4ms`，约 `15.3-16.0x`；最终几何均为 855 sections / 78451 quads。最终一轮生成/apply 总计 `320.74/174.80ms`，queue high-water=`501`，column cache=`441`，stale=`0`。
+- 从 reset 到完整 near mesh：平均 `131.230-135.272 FPS`，p95=`9.907-10.208ms`，`>16.67ms=4`。收敛后 10 秒：平均 `136.012-138.634 FPS`，p95=`9.743-9.969ms`，`>16.67ms=0`。
+- 相邻 slab 预取=`429.7ms`；激活后 pruned=`3087`、components reused=`256`，最终中心 `[12,0,-51]`、898 sections / 82454 quads。跨界窗口平均 `134.279 FPS`，p95/p99/max=`10.211/11.545/15.257ms`，没有 `>16.67ms` 帧。
+- 结论必须保持精确：平均与稳态已超过 120 FPS，但并非每一帧都在 8.33ms 内；冷加载仍有约 64ms 单次极值，p95 仍约 10ms。
 
-### 2026-07-11 可见运行现场
+### 下一步
 
-- 零参数 PIE 已在默认地图可见运行：near window 为 9261 chunks，SVO 为 21016 nodes / 361 patches。PIE 稳定显示 60 FPS，但项目配置已确认 `bUseVSync=False`、`FrameRateLimit=0`、`bSmoothFrameRate=false`，因此该读数不是客户端性能上限证据。
-- 1600x900 独立客户端以 `t.MaxFPS=0`、`r.VSync=0` 和默认 mesh 路径运行，稳态采样为 116.4–129.9 FPS（7.70–8.59 ms）；全程未启用或复测 raymarch。
-- 当前残余风险集中在流送尖峰：开发冷启动生成 9261 个 near chunks 约 24.9 秒，期间约 12–15 FPS；跨 tile 的 revision 2 构建约 392 ms，附近采样降至 20.4–53.4 FPS。
-- 下一步优先拆分并预算化 GameThread 上的 patch/DynamicMesh 工作，补 p50/p95/p99 帧时间分布；outer coverage center 与 hysteresis 作为 Phase 3 下一切片并行推进。
-- 原始现场日志保留在本机忽略目录 `clients/Voxia/Saved/Logs/Voxia_2.log`，可提交的结构化结论已写入阶段文档、current truth 与 Voxia 工程记录。
+1. 用 Unreal Insights/CSV 复现并定位 near-only 的约 `64ms` 单次极值；当前干净复测 near mesh max tick/single-chunk 仅为 `6.823/6.352ms`，不得先验归因给 near mesh 或未启用的 SVO。
+2. 在完整 near+far 跨 tile profile 中，把仍约 `72.751ms` 的 SVO compact patch 聚合同步等待与 DynamicMesh CPU build 真正移出 GameThread，只保留 bounded component submit。
+3. near/collar center 继续精确跟随玩家，outer coverage center 独立增加 hysteresis，减少跨 tile 大规模 ring reassignment。
+4. 用同一 `frame_perf` 口径做连续移动、跨 tile 和低端硬件矩阵；目标从“平均 120+”收紧到 p95≤8.33ms，并持续单列极值和超预算帧。
+5. 生产首次入场仍应由 launcher/offline 生成 validated sharded artifact pack，H gate 后批量 hydrate；不得把 dev-only WorldGen 数据当生产已完成。
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-11（Voxia 预测 near slab 与可见独立客户端性能现场检查点）。
+**Last updated**：2026-07-11（Voxia 近景冷加载热路径、帧时间分布与真实 RHI 收口）。
 > ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。

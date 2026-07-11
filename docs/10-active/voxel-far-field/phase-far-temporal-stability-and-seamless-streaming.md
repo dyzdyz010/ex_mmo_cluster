@@ -1,7 +1,7 @@
 # 决策稿：Voxia 远景时序稳定与无缝流送
 
 - **日期**：2026-07-10
-- **状态**：推进中（Phase 0/1、Phase 2 前三切片与 Phase 3 预测 near slab 第一切片已落地；严格不用 raymarch）
+- **状态**：推进中（Phase 0/1、Phase 2 前三切片，以及 Phase 3 预测 near slab 与近景冷加载热路径已落地；严格不用 raymarch）
 - **触发**：第一人称零参数入口实跑暴露两项生产阻塞：远景体素明显闪烁；冷启动与跨 tile 更新无法支撑无缝游戏体验。
 - **边界**：本阶段只改客户端派生远景与本地 WorldGen preview 的加载/呈现编排，不改变 confirmed voxel truth、H gate、服务端 authority 或 wire codec。
 
@@ -37,6 +37,12 @@ Phase 2 第一切片完成后的真实 RHI 8km 同构对比为：首次 21024-ce
 Phase 2 第二切片把 patch-native 路径的 dirty macro-cell artifact 生成改为独立 per-cell cache 的并行任务，完整 aggregate/offline validation 仍保持原串行覆盖顺序。8km 冷 build 降到 `32358.644ms`（21024 tasks 的并行段 `30511.110ms`）；跨 tile build 降到 `2015.912ms`（776 tasks 的并行段 `1166.957ms`），相对第一切片再降约 `75.8%`，相对原始 `135948.497ms` 累计降低约 `98.5%`。patch 聚合为 `113.545ms`。这已移除最主要的 CPU 浪费，但 2.0 秒增量与 32.4 秒冷生成仍不是生产级无缝流送。
 
 Phase 2 第三切片把受影响 patch 的 compact mesh 聚合拆成 82 个独立 `ParallelFor` 任务，随后仍以稳定 patch key 顺序提交 cache/live/removed 统计。8km 跨 tile patch update 从 `113.545ms` 降到 `72.751ms`（约 `-35.9%`），其中 aggregation 为 `43.941ms`；coverage、dirty/reused cell、rebuilt/reused patch 与 dirty seam 样本完全保持，missing/duplicate/mismatch 仍为 `0/0/0`。该切片缩短了同步聚合，但调用方仍等待整个批次完成，不等于已经移出 GameThread。
+
+2026-07-11 对同一 1600×900、VSync/帧率上限关闭、默认 mesh renderer 的近景冷加载做了逐阶段剖析。优化前 9261 chunks 数据 ready 为 `28423.7ms`，3087 个候选 chunk 收敛成 855 sections / 78451 quads 需要 `35400.4ms`，加载尾段常见 `52-70ms` 帧。根因不是单一“流送速度”：Transport 串行 batch + 固定 reveal 延时、相同 X/Z column 跨垂直 chunk 重算、整块实心快照展开成约 1700 万个 `TMap` cell，以及单一 `UProceduralMeshComponent` 每加 section 都触发全组件 bounds/render-state 更新，共同放大了吞吐和 GameThread 尖峰。
+
+近景热路径优化后，两次干净 Real-RHI 复测把 9261 chunks 数据 ready 降至 `1779.9-1862.4ms`（约 `15.3-16.0x`），最终几何均为 855 sections / 78451 quads。加载至完整 near mesh 的平均为 `131.230-135.272 FPS`，p95=`9.907-10.208ms`，`>16.67ms` 均为 4 帧；收敛后 10 秒平均 `136.012-138.634 FPS`，p95=`9.743-9.969ms`，没有 `>16.67ms` 帧。该结果证明平均与稳态已超过 120 FPS，但不能表述成“每帧 120+”：加载 p95 仍高于 8.33ms。此 profile 使用 `-VoxiaNearWindowOnly`，最终复测 near mesh max tick/single-chunk 仅为 `6.823/6.352ms`，因此约 `64ms` 单次极值尚不能归因于 SVO 或 near mesh，下一轮必须用 Unreal Insights/CSV 单独定位。
+
+相邻 `[12,0,-51]` slab 的 3087 chunks 预取在 `429.7ms` ready，期间 active coverage 仍保持 `[11,0,-51]`；实际跨界后才 activation，并以 pruned=`3087` 收敛。near 组件池复用 `256` 个组件，最终新中心为 898 sections / 82454 quads；跨界窗口平均 `134.279 FPS`，p95/p99/max=`10.211/11.545/15.257ms`，没有 `>16.67ms` 帧。这补齐了首窗之外的真实流送入口验证。
 
 ## 2. 目标与非目标
 
@@ -112,6 +118,9 @@ flowchart LR
 - [x] WorldGen preview near window 依据位置/速度预取即将进入的
   3087-chunk 水平 slab；Transport 分离 active/loading/ready/cleanup，未 ready
   不切 active/editable coverage。
+- [x] 近景冷加载热路径改为流水化 producer/apply、请求级 column cache、整块实心
+  confirmed chunk 紧凑存储，以及每 chunk 独立可复用 ProcMesh；最终 settled revision
+  仍按预算重校验，不降低 confirmed coverage 或几何完整性。
 - [ ] near collar center 继续精确跟随玩家；外层 LOD coverage center 引入
   hysteresis，减少每 tile 的大规模 ring reassignment。
 - [ ] 旧 far patch 保留到新 patch ready，提交后原子退役；连续移动采用
@@ -131,6 +140,7 @@ flowchart LR
 | 移动视觉 | one-tile ring transition | 无洞、无双显、无 temporal noise 爆发；fade 完成后 `fade_in_flight=0` |
 | 几何 | dirty-boundary seam | `seam_status=pass`，missing/duplicate 不回归 |
 | near streaming | one-tile slab | active coverage 切换前预取 ready；游戏中无 post-cross 空窗 |
+| near frame time | cold load + 10s steady | 报告 p50/p95/p99/max；平均达到 120 FPS 时仍需单列 `>8.33/16.67/33.33/50ms` 帧数，禁止只报平均值 |
 | SVO build | one-tile recenter | cost 与 dirty patch 成比例；不得重新 split 全量 1.33M quads |
 | upload | dirty patch submit | 每帧 submit 不超过预算，旧覆盖持续可见，`upload_queue` 收敛到 0 |
 | 冷启动 | validated pack path | 入场后不启动 21016-cell WorldGen 冷 build |
@@ -151,6 +161,9 @@ flowchart LR
 - 2026-07-10：最终 Development 构建退出 0；聚焦 `FarFieldPatchNativeBuild` Success；完整 `Automation RunTests Voxia.Voxel.Far` 12/12 Success，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_far_tests.log`；综合 `Automation RunTests Voxia.Voxel.SvoPreview` Success，覆盖持久 cache、SVDAG、snapshot JSON 与多次 8km full aggregate，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_svo_preview_tests.log`；两者均为 `TEST COMPLETE. EXIT CODE: 0`。残余瓶颈重新排序为：2.0 秒 dirty build、约 114ms GameThread patch 聚合、near 3087-chunk slab，以及 32.4 秒冷生成。下一切片优先预测预取 + coverage hysteresis，并把 patch/DynamicMesh 构建移出 GameThread；冷启动仍必须由 validated sharded artifact pack + 批量 hydrate 解决，不得用提高 GameThread budget 伪装无缝。
 - 2026-07-10：Phase 2 第三切片落地。受影响 patch 聚合改为 82-task `ParallelFor`，8km patch update=`72.751ms`、aggregation=`43.941ms`，相对第二切片 `113.545ms` 降约 `35.9%`；revision 2 保持 built/reused cells=`776/20248`、patch rebuilt/reused=`82/279`、dirty seam=`270944` samples、0 errors、`upload_queue=0`。截图 `clients/Voxia/Saved/voxia_phase2_parallel_patch_8km_real_rhi.png` 为 1920×1080，像素审计及人工检查通过。
 - 2026-07-10：第三切片 Development 构建退出 0；聚焦 `Voxia.Voxel.FarFieldPatchCache` Success；完整 `Automation RunTests Voxia.Voxel.Far` 12/12 Success，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_far_tests.log`；完整 `Automation RunTests Voxia.Voxel.SvoPreview` Success，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_svo_preview_tests.log`。三条验证均未使用 raymarch，默认 mesh snapshot 的 runtime root/node 保持 0。
+- 2026-07-11：完成近景冷加载剖析与可观测面。新增无分配固定环形缓冲 `frame_perf [snapshot|reset]`，直接输出 p50/p95/p99/max 和四档超预算计数；Transport 输出 generate/apply/queue/cache/throughput，near mesh 输出 active/free/created/reused component 与 tick/single-chunk 峰值。observe JSONL 改为 8 MiB/4096 行有界专用 writer，模块退出前排空并无条件 join；调用线程仍即时写 UE 结构化日志。
+- 2026-07-11：完成近景热路径优化。WorldGen producer 与 apply 消费流水化，批量/高水位默认调整为 `256/512`，移除固定 reveal 等待，并以请求级 `(chunk_x,chunk_z)` column cache 消除 21 个垂直 chunk 的重复高度计算；整块同材质实心 confirmed chunk 使用基底 + 稀疏例外，不再展开约 1700 万个 cell；near renderer 改为每 chunk 独立可复用 ProcMesh，更新不再使 855 个 section 反复重建同一组件代理。`Pump`、near upload 与 SVO upload 均增加每帧只执行一次的门禁。
+- 2026-07-11：真实 RHI 1600×900 两次干净验证保持 855 sections / 78451 quads，data ready 从 `28423.7ms` 降至 `1779.9-1862.4ms`。加载窗口平均 `131.230-135.272 FPS`、p95=`9.907-10.208ms`、`>16.67ms=4`；稳态 10 秒平均 `136.012-138.634 FPS`、p95=`9.743-9.969ms`、`>16.67ms=0`。相邻 slab 预取=`429.7ms`，跨界组件复用=`256`，跨界平均 `134.279 FPS`、p95/p99/max=`10.211/11.545/15.257ms`、`>16.67ms=0`。Development build 通过；最终 WorldActor/ClientNetworkReadiness/Observe/Protocol/NearVoxelWindow/Store/SvoArtifactStore/WorldGenV1 共 8 项聚焦 automation 全部 Success；脚本语法与 diff check 通过。安全/架构终审还补齐显式/自动 Pump 语义、observe join、artifact COW，以及所有 voxel macro index/snapshot 上限硬拒绝。near-only 的约 `64ms` 极值尚未归因，需用 Insights/CSV 补 trace；独立已知的全管线残余是把 SVO compact patch 聚合和 DynamicMesh CPU build 真正移出 GameThread，再做 outer coverage hysteresis 与多硬件长巡航。不以降低 H gate、confirmed coverage 或几何完整性换取数字。
 - 2026-07-10：换机前现场冻结。一次显式 raymarch real-RHI 小网格诊断虽完成 16/16 sample readback、root lookup 且 invalid=0，随后 D3D12 3D/Compute 队列均超时并挂住 CLI；已终止残留 UE 进程，GPU 恢复。该现象与旧跨队列竞态一致，不是 patch 优化回归。用户最终拍板 raymarch 严格不用，后续恢复不得再运行相关 profile。下一步按顺序处理预测 slab 预取 + coverage hysteresis、patch/DynamicMesh 真正离开 GameThread、validated sharded artifact pack，并继续稳态 77% TSR shimmer 的无 raymarch A/B。
 - 2026-07-10：换机恢复后完成 Phase 3 预测 near slab 第一切片。新增纯
   `FVoxiaNearWindowPrefetchPolicy`，默认按 12 秒 lookahead 选择最先到达的
