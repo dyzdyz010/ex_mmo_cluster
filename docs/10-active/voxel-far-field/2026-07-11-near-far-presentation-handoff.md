@@ -518,6 +518,55 @@ Phase A-E 已按职责边界落地：
 
 每个 Phase 都必须可独立回滚；不得一次性改写 near pipeline、SVO build 和 uploader。
 
+### 12.2 2026-07-12 用户实跑反馈修正
+
+用户实跑发现两个此前结构化性能验收没有覆盖的视觉回归：近景与远景材质外观不一致，
+以及跨 tile 后近景虽然内部逐 chunk 构建，但肉眼仍像整块一次切换。
+
+根因分属两个正交契约：
+
+1. 完整场景启动携带 `-VoxiaLargeTerrainCleanMaterial`。近景 PMC 把 UV0 固定为
+   `(0.5,0.5)`，生产 `PartitionedDynamicMesh` 远景仍从 compact quad 重建源 UV0；两侧
+   虽绑定同一个 `M_VoxelVertexColor`，材质输入不同，最终纹理外观必然不同。
+2. near pipeline 没有被合并成 tile mesh；每个 chunk 仍有独立 PMC，并在构建完成时立即
+   `SetVisibility(true)`。但原 streaming 预算只限制总处理量（默认每帧最多 32 chunks /
+   0.5ms），简单表面 chunk 可在一帧内连续提交多个，120+ FPS 下肉眼近似一次 reveal。
+   `VoxiaNearMeshProgressivePublish*` 只推进 revision/progress ledger，并非组件可见边界。
+
+修正保持职责不变：
+
+- `FVoxiaFarFieldDynamicMeshBuildOptions::PrimaryUvMode` 成为 PMC/DynamicMesh 共享的 UV
+  呈现契约；clean 模式在 legacy、compact、RuntimeMesh 与 PartitionedDynamicMesh 一致
+  使用 centered UV，且 legacy UV1/UV2 不变。
+- 相邻 handoff 只限制**首次产生可见几何**的 chunk，默认
+  `VoxiaNearMeshStreamingMaxNewRenderableChunksPerFrame=1`；空、全遮挡和已有组件更新仍按
+  原吞吐预算处理，不把视觉节奏反向污染数据加载。
+- `near_mesh.material_profile` 暴露 clean UV / far-unlit override；
+  `near_mesh.publish_budget` 暴露配置、last processed/new-renderable、max 与 total。Verbose
+  日志 `near_chunk_published` 可按 epoch 复核独立提交。
+- retirement tile batch 仍只压缩退出侧冻结视觉，不成为 active near 的加载或 reveal 单元。
+
+自动化已通过 `Voxia.Voxel.FarFieldPatchUploader`、`Voxia.Voxel.TileWindow` 和
+`Voxia.Gameplay.WorldActor`。1600x900 完整 near+far Real-RHI 场景从 tile 11 移动到 tile 12，
+跨界期间共首次发布 `309` 个有几何 chunk，分布在 `309` 个不同 render epoch；单 epoch 最大
+`1` 个，`frame_new_renderable > 1` 次数为 `0`。进入侧 ownership 从
+`resolved/submitted/masked=113/110/376` 逐步推进到 `1029/1029/1295`，没有一次性 tile reveal；
+退出侧仍是 `266 chunks / 3 batches` retirement。
+
+同一场景收敛后 10 秒平均 `125.391 FPS`、最低采样 `121.606 FPS`；16.684 秒 frame profile
+p50/p95/p99/max=`7.997/9.598/10.061/14.855ms`，`>16.67ms=0`。本次为核验逐 chunk epoch
+而启用了 Verbose 日志，结果包含每次发布日志的额外开销，仍保持 120+。ownership 累计上传
+`39.589KB`，最大 texture/total update=`0.037/0.264ms`，material refresh=`1`，premature
+clip/precommit drop/discontinuity 均为 `0`。证据：
+
+- `.demo/observe/voxia_near_material_chunk_pacing_full_20260712.log`
+- `.demo/observe/voxia_near_material_chunk_pacing_full_ue_20260712.log`
+- `.demo/observe/near_handoff_material_uv_parity_20260712.log`
+- `.demo/observe/near_handoff_chunk_publish_policy_20260712.log`
+- `.demo/observe/near_handoff_worldactor_observability_20260712.log`
+- `.demo/observe/near_handoff_regression_presentation_20260712.log`
+- `.demo/observe/near_handoff_regression_retirement_20260712.log`
+
 ## 13. 残余风险
 
 - Masked collar 在交接期仍有像素成本，必须用完整场景 GPU profile 验证。
