@@ -6,7 +6,7 @@
 
 ### 本轮同步与完成范围
 
-- umbrella 本轮从 `4138acb` 继续更新 current truth；独立 Voxia 性能改动已发布为 `482d21c perf(streaming): accelerate near-window loading`，本文件与阶段文档随本次 umbrella 发布同步收口。
+- umbrella 本轮从 `4138acb` 继续更新 current truth；独立 Voxia 性能改动已发布为 `482d21c perf(streaming): accelerate near-window loading`，完整 near+far 实跑口径已发布为 `c3c79d7 docs(perf): record integrated near-far runtime`，本文件与阶段文档随本次 umbrella 发布同步收口。
 - Transport 的 WorldGen preview 由“单批生成、等待队列清空、固定 reveal 延时”改为单 producer 的连续生成/应用流水线；默认 batch/high-water/reveal 为 `256/512/0`，请求级 column cache 复用相同 X/Z 的高度计算，并输出 generate/apply/queue/cache/throughput 指标。旧 active coverage 仍保持到 staged window ready，未降低 H gate 或 confirmed truth 边界。
 - `FVoxiaVoxelStore` 对整块同材质实心快照使用紧凑基底 + empty/solid/refined 稀疏例外；delta 与权威纠正直接维护例外，不再把 9261 chunks 展开成约 1700 万个 `TMap` cell。
 - near renderer 从单一 ProcMesh 的全局 section 表改为每 chunk 独立可复用组件；既有 chunk 原位更新，最终 settled revision 以 `0.5ms` 预算重校验。Transport pump、near upload 与 SVO upload 均保证每帧最多一次。
@@ -27,6 +27,13 @@
 - 相邻 slab 预取=`429.7ms`；激活后 pruned=`3087`、components reused=`256`，最终中心 `[12,0,-51]`、898 sections / 82454 quads。跨界窗口平均 `134.279 FPS`，p95/p99/max=`10.211/11.545/15.257ms`，没有 `>16.67ms` 帧。
 - 结论必须保持精确：平均与稳态已超过 120 FPS，但并非每一帧都在 8.33ms 内；冷加载仍有约 64ms 单次极值，p95 仍约 10ms。
 
+### 完整 near + far 同场补证
+
+- 上述 120+ 数据来自 `-VoxiaNearWindowOnly` 根因隔离 profile，不能当作最终世界展示。2026-07-11 随后以可见独立 `L_WorldGenSvoPreview` 补跑完整组合：confirmed near + 72-tile SVO + 默认 `PartitionedDynamicMesh` + Lumen/UDS + 硬件光追，无任何 raymarch 参数，日志确认 `raymarch_mode=none`。
+- 首窗 near 9261 chunks data ready=`2778.2ms`，near mesh 最终仍为 855 sections / 78451 quads；SVO cold build=`9157.1ms`，21016 macro-cells / 1329713 quads，估算 8064m、`seam_status=pass`；361-patch 上传=`3504.9ms`。
+- 收敛后 12 个连续日志样本平均 `106.0 FPS`、范围 `98.3-109.9 FPS`；首次上传出现 `113.69ms / 8.8 FPS`，相邻 tile 的 82-patch 更新附近仍出现 `30.15ms / 33.2 FPS`。完整环境尚未达到 120+，后续不得再用 near-only 结果代替联合验收。
+- 窗口按用户要求关闭，退出日志为 `RequestExit(0)` / `Game engine shut down`，D3D12 正常析构，无 device removal。
+
 ### 下一步
 
 1. 用 Unreal Insights/CSV 复现并定位 near-only 的约 `64ms` 单次极值；当前干净复测 near mesh max tick/single-chunk 仅为 `6.823/6.352ms`，不得先验归因给 near mesh 或未启用的 SVO。
@@ -37,7 +44,7 @@
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-11（Voxia 近景冷加载热路径、帧时间分布与真实 RHI 收口）。
+**Last updated**：2026-07-11（Voxia 近景冷加载热路径、完整 near+far 联合实跑与真实 RHI 口径收口）。
 > ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
