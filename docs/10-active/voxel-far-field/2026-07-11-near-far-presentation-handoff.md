@@ -538,6 +538,9 @@ Phase A-E 已按职责边界落地：
 - `FVoxiaFarFieldDynamicMeshBuildOptions::PrimaryUvMode` 成为 PMC/DynamicMesh 共享的 UV
   呈现契约；clean 模式在 legacy、compact、RuntimeMesh 与 PartitionedDynamicMesh 一致
   使用 centered UV，且 legacy UV1/UV2 不变。
+- 完整 SVO/VHI 入口使用默认 `Source` 模式，让 near/far 共同消费真实 `T_VoxelMosaic`
+  纹理链；`ConstantCenter` 只保留为显式诊断档。centered UV 会固定采样单个 texel，不能作为
+  正式材质配置。
 - 相邻 handoff 只限制**首次产生可见几何**的 chunk，默认
   `VoxiaNearMeshStreamingMaxNewRenderableChunksPerFrame=1`；空、全遮挡和已有组件更新仍按
   原吞吐预算处理，不把视觉节奏反向污染数据加载。
