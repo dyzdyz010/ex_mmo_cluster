@@ -18,16 +18,30 @@
 
 ### 换机恢复入口与下一步
 
-1. 拉取根仓库 `master`，再进入 `clients/Voxia` 单独拉取其 `master`；本检查点的 Voxia 提交为 `a61b9b765f9348520c8b98ec88b907f2aa949e3d`。
+1. 拉取根仓库 `master`，再进入 `clients/Voxia` 单独拉取其 `master`；本检查点的 Voxia 提交为 `067a214ad998133884f437f1b10c9e426f5ead75`。
 2. 确认 UE 5.8 安装位置，直接打开 `clients/Voxia/Voxia.uproject`；无需命令行参数。默认地图/模式已写入项目配置。
-3. 第一优先级：预测 3087-chunk slab 预取 + coverage hysteresis，保持旧覆盖到新覆盖 ready。
-4. 第二优先级：把 compact patch 聚合的同步等待与 DynamicMesh CPU 构建真正移出 GameThread，只保留 bounded component submit。并行任务已存在，但调用方仍同步等待约 73ms。
-5. 第三优先级：launcher/offline 生成 validated sharded artifact pack，H gate 后批量 hydrate，消除 32.4 秒开发冷生成。稳态 shimmer 的后续 A/B 只使用默认 mesh 路径。
+3. 预测 3087-chunk near slab 第一切片已完成：旧 active 保持到 staged window
+   ready，跨界后才 activation，并按预算清理旧 slab。下一步先拆分 SVO
+   near/collar center 与 outer coverage center，再给 outer center 加 hysteresis。
+4. 把 compact patch 聚合的同步等待与 DynamicMesh CPU 构建真正移出
+   GameThread，只保留 bounded component submit。并行任务已存在，但调用方仍同步
+   等待约 73ms。
+5. launcher/offline 生成 validated sharded artifact pack，H gate 后批量
+   hydrate，消除 32.4 秒开发冷生成。稳态 shimmer 的后续 A/B 只使用默认 mesh
+   路径。
+
+### 2026-07-11 可见运行现场
+
+- 零参数 PIE 已在默认地图可见运行：near window 为 9261 chunks，SVO 为 21016 nodes / 361 patches。PIE 稳定显示 60 FPS，但项目配置已确认 `bUseVSync=False`、`FrameRateLimit=0`、`bSmoothFrameRate=false`，因此该读数不是客户端性能上限证据。
+- 1600x900 独立客户端以 `t.MaxFPS=0`、`r.VSync=0` 和默认 mesh 路径运行，稳态采样为 116.4–129.9 FPS（7.70–8.59 ms）；全程未启用或复测 raymarch。
+- 当前残余风险集中在流送尖峰：开发冷启动生成 9261 个 near chunks 约 24.9 秒，期间约 12–15 FPS；跨 tile 的 revision 2 构建约 392 ms，附近采样降至 20.4–53.4 FPS。
+- 下一步优先拆分并预算化 GameThread 上的 patch/DynamicMesh 工作，补 p50/p95/p99 帧时间分布；outer coverage center 与 hysteresis 作为 Phase 3 下一切片并行推进。
+- 原始现场日志保留在本机忽略目录 `clients/Voxia/Saved/Logs/Voxia_2.log`，可提交的结构化结论已写入阶段文档、current truth 与 Voxia 工程记录。
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-10（Voxia 远景时序稳定/流送 Phase 2 第三切片换机检查点）。
-> ⚠️ 以上 2026-07-10 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
+**Last updated**：2026-07-11（Voxia 预测 near slab 与可见独立客户端性能现场检查点）。
+> ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 

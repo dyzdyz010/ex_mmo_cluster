@@ -1,7 +1,7 @@
 # 决策稿：Voxia 远景时序稳定与无缝流送
 
 - **日期**：2026-07-10
-- **状态**：换机暂停检查点（Phase 0/1 与 Phase 2 前三切片已落地；严格不用 raymarch；后续从预测预取、GameThread 解耦和生产 pack 继续）
+- **状态**：推进中（Phase 0/1、Phase 2 前三切片与 Phase 3 预测 near slab 第一切片已落地；严格不用 raymarch）
 - **触发**：第一人称零参数入口实跑暴露两项生产阻塞：远景体素明显闪烁；冷启动与跨 tile 更新无法支撑无缝游戏体验。
 - **边界**：本阶段只改客户端派生远景与本地 WorldGen preview 的加载/呈现编排，不改变 confirmed voxel truth、H gate、服务端 authority 或 wire codec。
 
@@ -109,9 +109,13 @@ flowchart LR
 
 ### Phase 3：预测预取与中心解耦
 
-- near window 依据位置/速度预取即将进入的 3087-chunk slab，未 ready 不切 active coverage。
-- near collar center 继续精确跟随玩家；外层 LOD coverage center 引入 hysteresis，减少每 tile 的大规模 ring reassignment。
-- 旧 patch 保留到新 patch ready，提交后原子退役；连续移动采用 latest-wins 但每个已完成 revision 仍先发布，避免 publish starvation。
+- [x] WorldGen preview near window 依据位置/速度预取即将进入的
+  3087-chunk 水平 slab；Transport 分离 active/loading/ready/cleanup，未 ready
+  不切 active/editable coverage。
+- [ ] near collar center 继续精确跟随玩家；外层 LOD coverage center 引入
+  hysteresis，减少每 tile 的大规模 ring reassignment。
+- [ ] 旧 far patch 保留到新 patch ready，提交后原子退役；连续移动采用
+  latest-wins 但每个已完成 revision 仍先发布，避免 publish starvation。
 
 ### Phase 4：生产 pack/cache
 
@@ -148,3 +152,27 @@ flowchart LR
 - 2026-07-10：Phase 2 第三切片落地。受影响 patch 聚合改为 82-task `ParallelFor`，8km patch update=`72.751ms`、aggregation=`43.941ms`，相对第二切片 `113.545ms` 降约 `35.9%`；revision 2 保持 built/reused cells=`776/20248`、patch rebuilt/reused=`82/279`、dirty seam=`270944` samples、0 errors、`upload_queue=0`。截图 `clients/Voxia/Saved/voxia_phase2_parallel_patch_8km_real_rhi.png` 为 1920×1080，像素审计及人工检查通过。
 - 2026-07-10：第三切片 Development 构建退出 0；聚焦 `Voxia.Voxel.FarFieldPatchCache` Success；完整 `Automation RunTests Voxia.Voxel.Far` 12/12 Success，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_far_tests.log`；完整 `Automation RunTests Voxia.Voxel.SvoPreview` Success，日志 `clients/Voxia/Saved/Logs/voxia_phase2_parallel_patch_svo_preview_tests.log`。三条验证均未使用 raymarch，默认 mesh snapshot 的 runtime root/node 保持 0。
 - 2026-07-10：换机前现场冻结。一次显式 raymarch real-RHI 小网格诊断虽完成 16/16 sample readback、root lookup 且 invalid=0，随后 D3D12 3D/Compute 队列均超时并挂住 CLI；已终止残留 UE 进程，GPU 恢复。该现象与旧跨队列竞态一致，不是 patch 优化回归。用户最终拍板 raymarch 严格不用，后续恢复不得再运行相关 profile。下一步按顺序处理预测 slab 预取 + coverage hysteresis、patch/DynamicMesh 真正离开 GameThread、validated sharded artifact pack，并继续稳态 77% TSR shimmer 的无 raymarch A/B。
+- 2026-07-10：换机恢复后完成 Phase 3 预测 near slab 第一切片。新增纯
+  `FVoxiaNearWindowPrefetchPolicy`，默认按 12 秒 lookahead 选择最先到达的
+  X/Z 边界且一次只预取相邻 slab；Transport 维护 active/loading/
+  ready-to-activate/cleanup，自身保证旧 active 持续到目标整窗 ready。
+  `terrain_baseline.tile_window_stream`、observe、`near_prefetch` 与
+  `until_tile_window_prefetch_ready` 组成非 GUI 验收面。NullRHI 从
+  `[11,0,-51]` 预取 `[12,0,-51]`：entered/exited/retained=
+  `3087/3087/6174`，ready 时 active 仍为旧中心；跨界后才 activation，
+  `cleanup_chunks=3087` 并收敛到 0。Development build 通过，
+  `Voxia.Voxel.TileWindow`、`Voxia.Voxel.NearVoxelWindow`、
+  `Voxia.Gameplay.WorldActor` 均为 Success。下一切片是把 SVO 的 near/collar
+  center 与 outer coverage center 拆开并加入 hysteresis。
+- 2026-07-11：完成可见编辑器 PIE 与独立客户端性能复核。PIE 在 SVO/near
+  收敛后长期精确为 `60.0 FPS / 16.67ms`，但项目/用户配置均未启用 VSync、
+  FrameRateLimit 或 smooth frame rate，因此不能把该值当作客户端性能上限。
+  1600x900 可见独立 `-game` 窗口显式设置 `t.MaxFPS=0`、`r.VSync=0` 后，
+  稳态连续样本为 `116.4-129.9 FPS`（`7.70-8.59ms`），达到当前 120 FPS
+  目标。未收口的是流送尖峰：首次 9261-chunk near 开发冷生成耗时
+  `24854.0ms` 且曾降至约 `12-15 FPS`；跨 tile revision 2 的 SVO
+  built/reused=`782/20234`、build=`392.295ms`，82-patch 提交附近出现
+  `20.4-53.4 FPS` 低谷。证据在 Voxia 本地
+  `Saved/Logs/Voxia_2.log`（不入库），摘要已写入客户端工程笔记。下一性能
+  验收必须采集 p50/p95/p99，并优先移出 GameThread 上的 patch/DynamicMesh
+  CPU 工作。
