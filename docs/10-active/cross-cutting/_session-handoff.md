@@ -30,21 +30,32 @@
 ### 完整 near + far 同场补证
 
 - 上述 120+ 数据来自 `-VoxiaNearWindowOnly` 根因隔离 profile，不能当作最终世界展示。2026-07-11 随后以可见独立 `L_WorldGenSvoPreview` 补跑完整组合：confirmed near + 72-tile SVO + 默认 `PartitionedDynamicMesh` + Lumen/UDS + 硬件光追，无任何 raymarch 参数，日志确认 `raymarch_mode=none`。
-- 首窗 near 9261 chunks data ready=`2778.2ms`，near mesh 最终仍为 855 sections / 78451 quads；SVO cold build=`9157.1ms`，21016 macro-cells / 1329713 quads，估算 8064m、`seam_status=pass`；361-patch 上传=`3504.9ms`。
-- 收敛后 12 个连续日志样本平均 `106.0 FPS`、范围 `98.3-109.9 FPS`；首次上传出现 `113.69ms / 8.8 FPS`，相邻 tile 的 82-patch 更新附近仍出现 `30.15ms / 33.2 FPS`。完整环境尚未达到 120+，后续不得再用 near-only 结果代替联合验收。
-- 窗口按用户要求关闭，退出日志为 `RequestExit(0)` / `Game engine shut down`，D3D12 正常析构，无 device removal。
+- 复核发现上一条 `106 FPS / 113.69ms` 证据使用了未包含 `frame_perf` 与最新 streaming 默认值的旧 Voxia 二进制，结论作废。已执行完整 `VoxiaEditor Win64 Development` 重建；重建基线的稳定窗口为 `127.622 FPS`、p95=`9.019ms`、max=`10.440ms`，跨 tile 完整加载窗口为 `119.046 FPS`、p95=`9.766ms`、max=`33.404ms`。
+- 当前实现把 compact patch cache 更新/聚合及 `FDynamicMesh3` CPU build 移到 ThreadPool；GameThread 只恢复 cache 账本并按默认 `1` 个 build worker、每帧 `1` 个 prepared patch 提交。patch bounds/fingerprint 也在聚合 worker 生成，上传期间不再逐 patch 重建视锥并遍历全部远景组件来刷新 debug 统计。
+- 最终同场证据：稳定 10 秒为 `136.817 FPS`、p50/p95/p99/max=`7.238/8.386/8.836/10.602ms`，没有 `>16.67ms` 帧；相邻 tile 的完整 near+far 加载窗口为 `124.170 FPS`、p50/p95/p99/max=`7.936/9.190/10.942/22.312ms`，`>16.67ms=1`。SVO revision 2 的后台 patch update=`25.077ms`，GameThread dispatch+finalize=`0.264ms`；82-patch 上传的单帧 GT 极值=`13.717ms`。双 worker A/B 的跨区均值/P99/超 16.67ms 帧为 `121.599 FPS / 13.397ms / 3`，故默认选择单 worker，接受约 0.1 秒上传延迟。
+- 换环闪烁覆盖由仅 42 个 ring 映射 patch 扩展为 ring patch + 小型 dirty replacement，共 `80/82` 个替换 patch 走稳定屏幕空间互补 dither；默认 `VoxiaSvoExtraFadeMaxPatchQuads=32768` 排除两个超大 patch，避免全量 fade 实测产生 `4.392ms` component register 与 `34.328ms` 帧尖峰。最终 `fade_in_flight=0`、`fades_started_total=80`。
+- 证据产物：`.demo/observe/voxia_full_scene_capped_fade_worker1_20260711.log`、`clients/Voxia/Saved/full_scene_capped_fade_worker1.png`；PNG 审计为 1600×900、non-black ratio=`1`、unique colors=`50628`。进程退出 0，无 device removal。
+
+### 近远景交接与长距离活性修复
+
+- near pending 只对未消费后缀去重，逐 chunk 决策点维护 presentation-ready；chunk 离窗/离开垂直呈现带会撤销 ready，重入可再次排队。
+- SVO recenter 只等待 `new near hole - old near hole` 的进入 tile ready；相邻移动通常 `required_tiles=3`，门控期间旧 far live sections 保持非零，cold start 与 same-center update 不门控。状态在 `near_mesh.presentation_ready_chunks` 与 `near_mesh.handoff` 可见。
+- 用户真实长距离移动把残留停滞精确复现为 `147 chunks`：3 个进入 tile × 7×7 columns × 1 个 Y 层。根因是有限垂直呈现带只被 voxel revision 驱动；玩家改变 Y chunk 层而数据不变时无人续排。现由 WorldActor 按玩家 Y 自维护覆盖，旧层退出、新层 catch-up，不依赖下一次 tile/revision 偶然恢复。
+- 最终 Development build 通过；`.demo/observe/near_vertical_liveness_automation_20260711.log` 的 `Voxia.Voxel.TileWindow` 与 `.demo/observe/near_vertical_liveness_worldactor_20260711.log` 的 `Voxia.Gameplay.WorldActor` 均 `Result={Success}` / exit 0。
+- 最终 visible Real-RHI 证据 `.demo/observe/near_vertical_liveness_full_scene_20260711.log`：同一 voxel revision `103` 下玩家 Y priority center `3→5→6→5` 自动触发 441-chunk coverage catch-up，已完成轮次耗时 `93.8/145.9ms`；随后连续水平中心 `10→9→8→7` 的 SVO revisions 2-5 均从 3-tile handoff pending 持续下降到 `ready_tiles=3/3` 后发布，未再固定停在 147。
+- 统一三维 LOD 滑动窗口只完成 [`2026-07-11-3d-lod-sliding-window.md`](../voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 设计与预算评估。用户要求暂停运行时实施；当前 SVO 仍是 2.5D 列 coverage，既有优化全部保留。
 
 ### 下一步
 
 1. 用 Unreal Insights/CSV 复现并定位 near-only 的约 `64ms` 单次极值；当前干净复测 near mesh max tick/single-chunk 仅为 `6.823/6.352ms`，不得先验归因给 near mesh 或未启用的 SVO。
-2. 在完整 near+far 跨 tile profile 中，把仍约 `72.751ms` 的 SVO compact patch 聚合同步等待与 DynamicMesh CPU build 真正移出 GameThread，只保留 bounded component submit。
+2. ~~把 SVO compact patch 聚合与 DynamicMesh CPU build 移出 GameThread。~~ 已完成；下一瓶颈是上传窗口仍有 `14.736ms` GT tick，需继续拆分 component register/render-state 提交，目标是不靠降分辨率把跨区 max 压到 16.67ms 以下。
 3. near/collar center 继续精确跟随玩家，outer coverage center 独立增加 hysteresis，减少跨 tile 大规模 ring reassignment。
 4. 用同一 `frame_perf` 口径做连续移动、跨 tile 和低端硬件矩阵；目标从“平均 120+”收紧到 p95≤8.33ms，并持续单列极值和超预算帧。
 5. 生产首次入场仍应由 launcher/offline 生成 validated sharded artifact pack，H gate 后批量 hydrate；不得把 dev-only WorldGen 数据当生产已完成。
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-11（Voxia 近景冷加载热路径、完整 near+far 联合实跑与真实 RHI 口径收口）。
+**Last updated**：2026-07-11（近远景交接、near 队列/垂直覆盖活性修复；3D LOD 仅设计暂停）。
 > ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。

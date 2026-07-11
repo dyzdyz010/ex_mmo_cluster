@@ -113,7 +113,7 @@ flowchart LR
 - [x] 默认 mesh renderer 不再构建只供 raymarch 使用的 runtime SVDAG root/node payload；当前路线严格不用显式 raymarch profile。
 - [x] patch-native 路径把 dirty macro-cell artifact 生成拆成独立 per-cell cache 的 `ParallelFor` 任务；完整 aggregate/offline validation 保持串行确定性。`macro_cell_build` 暴露 tasks/parallel/build_ms。
 - [x] 受影响 compact patch 聚合改为独立 `ParallelFor` 任务，稳定顺序提交统计；`patch_build` 暴露 aggregation_tasks/parallel/ms，8km patch update 为 `72.751ms`。
-- [ ] 将 compact patch 聚合的同步等待与 DynamicMesh CPU 构建真正移出 GameThread；GameThread 只做 bounded component submit。当前 8km patch update 仍约 73ms，仍可能造成可见卡顿。
+- [x] compact patch cache 更新/聚合整体移入 ThreadPool；每个 dirty patch 的 DynamicMesh CPU build 也在后台完成，GameThread 只消费已完成 mesh 并做 bounded UObject/material/fade/register/SetMesh submit。默认单 worker + 每帧提交 1 个，完整场景跨区 p99=`10.942ms`，仅 1 帧超过 `16.67ms`。
 
 ### Phase 3：预测预取与中心解耦
 
@@ -125,8 +125,10 @@ flowchart LR
   仍按预算重校验，不降低 confirmed coverage 或几何完整性。
 - [ ] near collar center 继续精确跟随玩家；外层 LOD coverage center 引入
   hysteresis，减少每 tile 的大规模 ring reassignment。
-- [ ] 旧 far patch 保留到新 patch ready，提交后原子退役；连续移动采用
-  latest-wins 但每个已完成 revision 仍先发布，避免 publish starvation。
+- [x] 旧 far patch 保留到新 patch ready，提交后原子退役；near recenter 进一步
+  以 `new near hole - old near hole` 的 presentation-ready tile 集合为门控，
+  相邻移动通常只等待 3 个进入 tile，避免远景先挖洞。连续移动始终评估最新
+  Transport revision，不发布已过时中心。
 
 ### Phase 4：生产 pack/cache
 
@@ -192,3 +194,25 @@ flowchart LR
   `Saved/Logs/Voxia_2.log`（不入库），摘要已写入客户端工程笔记。下一性能
   验收必须采集 p50/p95/p99，并优先移出 GameThread 上的 patch/DynamicMesh
   CPU 工作。
+- 2026-07-11：完整 near+far 性能切片收口。patch cache 聚合、bounds/fingerprint
+  与 per-patch DynamicMesh CPU build 均移出 GameThread；默认 build concurrency
+  降为 1、prepared submit 为 1。完整场景稳态为 `136.817 FPS`，p50/p95/p99/max=
+  `7.238/8.386/8.836/10.602ms`，没有 `>16.67ms`；跨 tile 完整加载为
+  `124.170 FPS`，p50/p95/p99/max=`7.936/9.190/10.942/22.312ms`，仅 1 帧
+  `>16.67ms`。换环稳定 fade 覆盖 `80/82` replacement patches。
+- 2026-07-11：近远景交接与长距离停滞根因修复。near pending 只以未消费后缀
+  去重，presentation-ready 在逐 chunk 决策点维护；SVO 新中心只等待
+  `new near hole - old near hole`，相邻移动 required tiles 从 9 降为 3，旧远景
+  live sections 在门控期间保持非零。长距离实跑进一步把稳定残留的 147 pending
+  定位为“玩家 Y chunk 层变化但 voxel revision 不变”，现由 near pipeline
+  自维护有限垂直带，不再等待下一次 tile/revision 偶然恢复。Development build、
+  `Voxia.Voxel.TileWindow` 与 `Voxia.Gameplay.WorldActor` automation 均通过。
+  最终 visible Real-RHI 在 voxel revision `103` 不变时，玩家 Y priority center
+  `3→5→6→5` 自动触发 441-chunk catch-up，已完成轮次为 `93.8/145.9ms`；
+  后续水平连续中心 `10→9→8→7` 的 SVO revisions 2-5 均让 3-tile pending
+  持续归零并发布，没有再停在 147。证据：
+  `.demo/observe/near_vertical_liveness_full_scene_20260711.log`。
+- 2026-07-11：三维 LOD 滑动窗口仅完成设计稿
+  `2026-07-11-3d-lod-sliding-window.md`。经评估它会同时改变 coverage、artifact、
+  source pages、cache version、六方向 seam 与 renderer bounds，用户要求暂停运行时
+  实施；当前代码仍保持 2.5D WorldGen SVO，不能把设计稿表述成已完成能力。
