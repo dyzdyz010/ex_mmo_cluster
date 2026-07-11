@@ -45,17 +45,25 @@
 - 最终 visible Real-RHI 证据 `.demo/observe/near_vertical_liveness_full_scene_20260711.log`：同一 voxel revision `103` 下玩家 Y priority center `3→5→6→5` 自动触发 441-chunk coverage catch-up，已完成轮次耗时 `93.8/145.9ms`；随后连续水平中心 `10→9→8→7` 的 SVO revisions 2-5 均从 3-tile handoff pending 持续下降到 `ready_tiles=3/3` 后发布，未再固定停在 147。
 - 统一三维 LOD 滑动窗口只完成 [`2026-07-11-3d-lod-sliding-window.md`](../voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 设计与预算评估。用户要求暂停运行时实施；当前 SVO 仍是 2.5D 列 coverage，既有优化全部保留。
 
+### 双向呈现所有权交接已实施
+
+- [`2026-07-11-near-far-presentation-handoff.md`](../voxel-far-field/2026-07-11-near-far-presentation-handoff.md) 的 Phase A-E 已落地：结构化 StableFar/NearCollar patch、纯 desired/candidate/live lifecycle、N+1 XYZ ownership、near retirement lease、single-flight pinned/latest-desired、显式 extended/discontinuity。
+- 退出 near 的 frozen components 按完整三维 tile 异步合并为少量 `UDynamicMeshComponent`；原 chunk components 保持注册但隐藏，matching far live 后释放，相同版本折返直接恢复。它只压缩退出侧 draw submission，不改变 active near 逐 chunk 粒度、LOD ring、truth、碰撞或编辑。
+- ownership atlas 只上传脏矩形，材质只在 texture/generation/affected-patch 契约变化时刷新；相邻常用纹理在 initial SVO live 后预热。最终相邻正式移动 `max_texture_upload_us=133.6`、`max_update_us=245.5`，累计约 `41.1KB`，material refresh 1 次。
+- 最终 1600×900 完整 8km 相邻移动：10 秒 `136.982 FPS`、最低 `132.499`；20 秒 p50/p95/p99/max=`7.250/8.148/8.644/16.569ms`，`>16.67ms=0`。三次 250ms 间隔移动为 `136.213 FPS`、最低 `129.108`，near/SVO revision 自行收敛；快速折返恢复 3 batches / 266 chunks，10 秒 `146.548 FPS`。
+- 最终自动化合计 17 个：Presentation 3、NearRetirementRegistry 1、Voxel.Far 12、WorldActor 1，全部 Success。黑窗诊断见 `clients/Voxia/docs/engineering-notes/2026-07-11-runtime-cli-python-black-window.md`；游戏态 CLI 固定 `-DisablePython -NoDDCCleanup`，不需要为该症状清空全部缓存。
+
 ### 下一步
 
-1. 用 Unreal Insights/CSV 复现并定位 near-only 的约 `64ms` 单次极值；当前干净复测 near mesh max tick/single-chunk 仅为 `6.823/6.352ms`，不得先验归因给 near mesh 或未启用的 SVO。
-2. ~~把 SVO compact patch 聚合与 DynamicMesh CPU build 移出 GameThread。~~ 已完成；下一瓶颈是上传窗口仍有 `14.736ms` GT tick，需继续拆分 component register/render-state 提交，目标是不靠降分辨率把跨区 max 压到 16.67ms 以下。
-3. near/collar center 继续精确跟随玩家，outer coverage center 独立增加 hysteresis，减少跨 tile 大规模 ring reassignment。
-4. 用同一 `frame_perf` 口径做连续移动、跨 tile 和低端硬件矩阵；目标从“平均 120+”收紧到 p95≤8.33ms，并持续单列极值和超预算帧。
+1. 留出可见完整窗口给用户继续观察近远交接和主观闪烁；若仍能定位闪烁，只调整 RevisionFade pattern/时长，不改 OwnershipClip、retirement 时序或 LOD 粒度。
+2. 用同一 `frame_perf` 口径补对角、上下层和低端硬件矩阵；当前桌面机已经满足完整场景 120+，但 p95 仍高于 8.33ms，不能描述为每帧锁 120。
+3. near/collar center 继续精确跟随玩家，outer coverage center 可独立评估 hysteresis，减少更长巡航的 ring reassignment；必须保持当前 latest-desired/extended 保护契约。
+4. 统一三维 LOD 滑动窗口仍只停留在设计稿，用户已要求暂停；不得把本轮 XYZ ownership/三维 retirement batch 误写成 SVO coverage 已三维化。
 5. 生产首次入场仍应由 launcher/offline 生成 validated sharded artifact pack，H gate 后批量 hydrate；不得把 dev-only WorldGen 数据当生产已完成。
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-11（近远景交接、near 队列/垂直覆盖活性修复；3D LOD 仅设计暂停）。
+**Last updated**：2026-07-11（双向近远景呈现交接 Phase A-E、长距离活性与完整场景 120+ 收口；3D LOD 仍仅设计暂停）。
 > ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。

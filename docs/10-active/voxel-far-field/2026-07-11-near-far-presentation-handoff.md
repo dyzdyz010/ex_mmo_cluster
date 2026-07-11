@@ -1,7 +1,7 @@
 # 决策稿：Voxia 近远景呈现所有权交接
 
 - **日期**：2026-07-11
-- **状态**：v2 设计完成，待分阶段实施
+- **状态**：Phase A-E 已实施并完成完整场景验收；主观闪烁继续由用户窗口实跑观察
 - **范围**：Voxia 近景 mesh 流水线、派生远景 SVO、渲染 patch 与二者之间的呈现所有权
 - **非范围**：confirmed voxel truth、服务端 authority、near window 数据订阅、SVO 数据算法、三维滑动窗口本体
 
@@ -481,6 +481,40 @@ near_mesh / near_handoff CLI 快照至少暴露：
 - target coalescing、pre-commit drop、pinned drain、预算与 discontinuity。
 - 完整场景 A/B、120 FPS 验收、CLI 自动化和用户窗口实跑。
 - 达标后移除旧的独立 coarse gate 分支，仅保留状态机 fallback。
+
+### 12.1 实施结果（2026-07-11）
+
+Phase A-E 已按职责边界落地：
+
+- `Presentation/` 的纯状态层拥有 desired/candidate/live、N+1 epoch、collar/extended/discontinuity 与 XYZ mask；不依赖 UObject/RHI。
+- `FarField/` 使用结构化 `FVoxiaFarFieldPatchKey(PatchCoord, PresentationClass)`，稳定远景与 3.5m collar 分区保持 source geometry/LOD 不变。
+- `Voxel/` 的 `FVoxiaNearRetirementRegistry` 拥有 lease/version/adopt/release；冻结视觉按完整三维 tile 规划 batch，active near 仍逐 chunk 发布。
+- `AVoxiaWorldActor` 只组合快照与执行渲染命令。退休 batch 的 ProcMesh 快照在 GameThread 取得，`FDynamicMesh3` 在 ThreadPool 构建，下一 epoch 提交；原 chunk component 保持注册但隐藏，折返时直接恢复。
+- ownership atlas 只上传二维脏矩形；MID 只在纹理对象、mask generation 或受影响 patch 集变化时刷新。相邻常用纹理在初始 SVO live 后预热，把资源首建移出移动窗口。
+- 长距离保护集合优先复用仍能容纳新集合的已有 3D 盒，只有越界才按 28/56/112 chunk 容量扩张/重锚；超出 `VoxiaSvoHandoffMaxSpanChunks` 显式进入 discontinuity。
+- stdio CLI 固定带 `-DisablePython -NoDDCCleanup`，并同时接受 `--ue-arg VALUE` / `--ue-arg=VALUE`，避免黑窗和验收参数静默丢失。
+
+实际实现没有新增 LOD，也没有把 3.5m collar 复制成另一层。retirement draw batch 只是退出侧的瞬态呈现压缩：它不改变 confirmed truth、active 3×3×3 窗口、进入侧逐 chunk 粒度、编辑/碰撞或远景 ring。
+
+完整 `L_WorldGenSvoPreview`、1600×900、near 3×3×3 tiles、SVO radius 72、rings `3.5@4,7@8,14@24,28@40,56@72`、默认 `PartitionedDynamicMesh`、real RHI 的最终证据：
+
+| 场景 | 结果 |
+| --- | --- |
+| 相邻一个 tile | 10 秒均值 `136.982 FPS`、最低采样 `132.499 FPS`；20 秒 p50/p95/p99/max=`7.250/8.148/8.644/16.569ms`，`>16.67ms=0` |
+| 三次快速移动（250ms 间隔） | 12 秒均值 `136.213 FPS`、最低 `129.108 FPS`；最终 near/SVO revision 自动完成，p99/max=`9.050/20.080ms` |
+| 快速折返 | 10 秒均值 `146.548 FPS`、最低 `142.171 FPS`；3 个 batch、266 chunks 全部 adopt/restore，p99/max=`8.247/17.406ms` |
+| ownership 更新 | 相邻场景累计上传从优化前约 `4.0MB` 降到 `41.1KB`；正式移动 `max_texture_upload_us=133.6`、`max_update_us=245.5`、material refresh 仅 1 次 |
+| 退休 batch | 266 chunks 合并为 3 个三维 tile batch；worker 最大约 `7.3ms`，GameThread submit 最大 `0.519ms` |
+
+最终自动化：`Voxia.Presentation` 3、`Voxia.Voxel.NearRetirementRegistry` 1、`Voxia.Voxel.Far` 12、`Voxia.Gameplay.WorldActor` 1，合计 17 个用例全部 `Success`。证据：
+
+- `.demo/observe/voxia_near_handoff_prewarmed_adjacent_final_20260711.log`
+- `.demo/observe/voxia_near_handoff_rapid_three_tile_strict_20260711.log`
+- `.demo/observe/voxia_near_handoff_quick_reentry_strict_20260711.log`
+- `.demo/observe/near_handoff_final_presentation_20260711.log`
+- `.demo/observe/near_handoff_final_retirement_registry_20260711.log`
+- `.demo/observe/near_handoff_final_far_voxel_20260711.log`
+- `.demo/observe/near_handoff_final_worldactor_20260711.log`
 
 每个 Phase 都必须可独立回滚；不得一次性改写 near pipeline、SVO build 和 uploader。
 
