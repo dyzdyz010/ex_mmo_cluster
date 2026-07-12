@@ -216,3 +216,26 @@ flowchart LR
   `2026-07-11-3d-lod-sliding-window.md`。经评估它会同时改变 coverage、artifact、
   source pages、cache version、六方向 seam 与 renderer bounds，用户要求暂停运行时
   实施；当前代码仍保持 2.5D WorldGen SVO，不能把设计稿表述成已完成能力。
+- 2026-07-12：在完整 8km near+far Real-RHI 场景完成远景颜色/闪烁 A/B。固定机位
+  下 screen percentage 77/100 的 SSIM=`0.878840`，VSM on/off=`0.995360`，mip
+  bias 0/2=`0.996242`；五帧静止与 20cm 步进序列均未支持“关闭 VSM”或“全局提高
+  分辨率”为主修复。`showflag.Lighting 0` 后灰棕棋盘仍存在，且 settled 状态
+  `fade_in_flight=0`，根因收敛为 WorldGen coarse leaf 侧面错误暴露地下 stone，
+  以及 near/far 主 UV 按 quad 重置导致 LOD/greedy 重分区时纹理相位跳变。
+- 2026-07-12：完成正交修复。`FVoxiaTerrainUv` 统一 near/far 世界轴米制主 UV；
+  WorldGen terrain-only 远景所有代理面统一投影地表材质，confirmed/source-pages
+  继续逐面保留权威材质；renderer artifact 语义版本升到 v4 并硬拒绝旧缓存。
+  Development build 通过；`Voxia.Voxel.FarMeshData` Success；综合
+  `Voxia.Voxel.SvoPreview` Success，材质审计 top dirt/stone=`5130/0`、side
+  dirt/stone=`30490/0`，cross-depth seam=`pass`。真实 RHI 移动复核与帧时间仍按
+  本阶段联合场景门槛执行，不能只凭 NullRHI automation 宣称视觉完全收口。
+- 2026-07-12：完整联合 Real-RHI 复核通过。1600x900、8km、真实 mosaic、TSR
+  77%、VSM、Lumen 路径报告 21016 macro-cells / 960429 quads、seam pass、
+  `primary_uv_mode=world_axis_meters`、`worldgen_material_projection=surface`、
+  artifact v4。关 Lighting 截图保留纹理细节且旧灰色 stone 棋盘消失。跨一个 tile
+  后 revision 2 的 cell built/reused=`782/20234`、patch rebuilt/reused=`86/279`，
+  最终 upload/fade/handoff/ownership pending 均为 0，premature clip/discontinuity
+  均为 0。正常第一人称最终 near=`985 sections / 82589 quads`；纯稳态 12.17 秒
+  平均 `178.303 FPS`，p50/p95/p99/max=`5.584/6.239/6.551/7.541ms`，无
+  `>8.33ms` 帧。带截图和高空诊断恢复的跨界全窗口有 3 个约 194ms 调试帧，不能
+  归因为正常游玩提交尖峰，也不能拿纯稳态结果替代后续长距离人工移动观察。
