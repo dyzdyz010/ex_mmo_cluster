@@ -1,5 +1,40 @@
 # Voxel server authority — 会话间衔接备忘
 
+## 2026-07-12 纯 3D 立方壳迁移检查点
+
+> 当前主线见 [`../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。P0/P1 已完成，P2 进行中；新 planner/pages/mip/exact-surface/stager/Real-RHI preview 全部明确 `live_enabled=false`，不得把旧 WorldGen/source-pages 列 coverage 写成已切换。
+
+### 已完成
+
+- 旧 2.5D WorldGen/heightmap 公共目标已被取代：WorldGen 只允许是 `chunk_xyz -> canonical 3D chunk` 的 migration/materializer；streaming、LOD、cache 与 renderer 不得读取算法语义。
+- Voxia 新增纯空间 `FVoxiaFarFieldCubeShellPlanner`：默认五层 XYZ 壳、每环 span/LOD、负坐标向下量化、完全覆盖才剔除粗 cell、唯一 identity、坐标溢出与 50,000 cell 硬预算。
+- `voxel_shell_plan [tile_x tile_y tile_z] [near_radius]` CLI 与 `voxel_shell_plan` observe 已落；出生区 `[-8880,13,-11440]` 输出 33,635 cells，产物在 `.demo/observe/voxia-transport.jsonl`。
+- 新增 `IVoxiaCanonicalVoxelSource` 和 confirmed-store adapter；SVO confirmed path 已经只通过该接口区分 source unavailable / missing chunk / air / solid。canonical identity 不含 WorldGen，并在 `NormalizeConfig` 默认值填充前硬校验。
+- 新增 `Voxia.Voxel.CanonicalSource`、`Voxia.Voxel.FarFieldCubeShellPlanner`、`Voxia.Voxel.SvoCanonicalSourceGate`。Development build 通过；`Voxia.Voxel` 32/32 通过，日志 `clients/Voxia/Saved/Logs/voxia_pure3d_p0_p1_voxel_regression_v2.log`。
+- P1 已完成：新增 `FVoxiaVoxelBrickId`、`voxia_voxel_source_pages_v2` 和 `dense_material_u16_be_v1`；manifest 身份不含 WorldGen/renderer artifact，payload 保留完整 3D air/material lattice。`Voxia.Voxel.CanonicalPagesV2` 与 `voxel_pages_v2_probe` 通过。
+- P2 第一片已完成：`FVoxiaVoxelMaterialMipBuilder` 产生六向 `empty/uniform/mixed` face summary；mixed face 强制 material=0。洞穴、洞口、浮空体与多材质 fixture 由 `Voxia.Voxel.MaterialMip` 覆盖，`voxel_material_audit` 已实跑。
+- `FVoxiaVoxelSurfaceArtifactBuilder` 已从同一 v2 page 精确扫描实体/空气边界；异材质实体相邻处不出内部面，greedy 只合并同朝向同材质面。均匀块、左右分材质、封闭洞穴和内部浮空体逐单位面校验通过。
+- `FVoxiaVoxelShellArtifactStager` 已把小型 cube-shell 的 26 个计划页全有或全无地 stage 为 26 个 material mip + 26 个 exact surface；缺页、身份错配、derived/raw-face/quad 预算失败时两类集合都发布 0。`Voxia.Voxel.ShellArtifactStager` 与 `voxel_shell_stage_probe` 通过，observe 在 `.demo/observe/voxia-transport.jsonl`。
+- 新增 `FVoxiaVoxelSurfaceMeshAdapter`（canonical X/Y-up/Z → UE X/Z/Y，局部顶点）与 `M_VoxelWorldAligned`（WorldPosition 三轴投影 × VertexColor，零 TextureCoordinate 依赖）；`SurfaceArtifact`、`SurfaceMeshAdapter`、`SurfacePreviewPipeline`、`WorldAlignedMaterialContract` 定向测试通过。
+- 独立 `AVoxiaVoxelSurfacePreviewActor` / `voxel_surface_preview` 已在 Real-RHI 实跑：±8km split 均为 10 quads、raw histogram `2:192/6:192`、`component_registered/upload_complete/real_rhi=true`；洞穴为 15 quads、`2:452/6:28`。截图 `clients/Voxia/Saved/voxel_surface_split_pos8km_oblique.png`、`voxel_surface_split_neg8km_oblique_final.png`、`voxel_surface_cave_pos8km_oblique.png` 可见材质边界、洞内表面和稳定 1m 世界格。
+- P2 完整回归：`Automation RunTests Voxia.Voxel` 为 35/35 success、0 failure、exit 0；日志 `clients/Voxia/Saved/Logs/voxia_pure3d_p2_voxel_regression.log`。
+- exact-surface/Real-RHI 片加入后再次完整回归：`Automation RunTests Voxia.Voxel` 为 39/39 success、0 failure、exit 0；日志 `clients/Voxia/Saved/Logs/voxia_pure3d_p2_surface_regression.log`。
+- 完整 WorldGen/SVO 实机截图随后暴露旧 live 材质仍把数公里绝对米坐标送入默认 half 像素材质；在 `(1234m,-5678m)` 附近一米 UV 会量化成 0 或 4。共享 `FVoxiaTerrainUv` 已改为按 quad 减去整数纹理周期，near greedy、compact far 与 DynamicMesh overlay 同时修复，保留 wrap 相位与每米 texel 密度。renderer artifact 语义版本升至 v5，定向测试 `FarMeshData` / `FarFieldCompactPatchUploader` 均 exit 0；前后截图为 `Saved/ScreenShot_2026-07-12_125944_390.png` / `Saved/worldgen_svo_uv_rebased_v5_ground.png`。
+- 用户已对完整 `L_WorldGenSvoPreview` 完成人工实机验收：贴图尺度观感正确，窗口滑动期间未再看到空洞。该确认只关闭本轮 live UV 数值错误和当前滑窗可见回归，不等于 P3 原子 presentation 或逐体素材质切流完成。
+- 独立 Voxia 仓库已发布 `a4b2d16 feat(voxel): establish pure 3d shell pipeline`，包含本检查点列出的 P0-P2 隐藏路径、Real-RHI 入口与 live UV v5 修复。
+
+### 仍未完成
+
+- live WorldGen/source-pages SVO 仍走旧 `CenterTile.Y==0` 列 coverage；没有切流。
+- WorldGen `SurfaceMaterialId` 特判仍在生产运行时并违反逐体素材质。旧生产材质仍依赖 mesh UV，但绝对坐标精度问题已由 v5 整数周期重基准修复；新 cube-shell 的无 UV world-aligned 材质族、dither/透明/发光变体与 live near/far 切换仍未完成。
+- near/far/mask 尚未实现 GPU fence 后的 generation 原子提交；现有 fade/pending 归零只证明最终收敛。
+
+### 下一步
+
+1. 继续 P2：把 exact surface 接到按环 hidden mesh batch 与 generation staging；验证 v2 page 真消费，而不是继续读取 v1 预物化 renderer artifact。
+2. 为生产近/远、换环 dither、透明与发光补齐同一 world-aligned material function/变体和受控 A/B；全部通过后删除 live far `SurfaceMaterialId` 特判与迁移期 mesh UV。独立 preview 和本次 UV 重基准均不能替代逐材质切流验收。
+3. P3：near/far/mask 双缓冲、render fence、generation 原子 commit；之后才允许切 live 3D coverage。
+
 ## 2026-07-11 Voxia 近景冷加载与帧尖峰优化检查点
 
 > **当前决策：raymarch 严格不用。** 不要运行任何 `VoxiaSvoRaymarch*` 参数，不把 L4/raymarch 重新列为候选。默认分组件 DynamicMesh mesh 路径是唯一继续路线。

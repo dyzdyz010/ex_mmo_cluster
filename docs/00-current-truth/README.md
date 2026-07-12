@@ -44,7 +44,7 @@ flowchart LR
 2. **体素确认态只来自服务端权威结果**：在线客户端确认态只能吃 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot`。
 3. **体素基线校验必须硬失败**：进入场景前必须校验本地 world pack、region manifest、chunk baseline 和 diff chain；缺包或 hash 不匹配不能靠运行时 snapshot/resync 兜底进入场景。
 4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
-5. **WorldGen 噪声已被降级为 migration 决策**：运行时长期目标是只读权威体素 store，远景 LOD / raycast / chunk 服务均派生自 store；当前代码仍存在运行时噪声路径，属于待迁移缺口。
+5. **WorldGen 只允许是纯 3D migration/materializer**：公共目标契约是 `chunk_xyz -> canonical 3D chunk`，不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia P1 已完成隐藏 cube-shell、canonical source 与 v2 XYZ page 契约；P2 已落六向 occupancy/material mip、精确逐材质 surface、全有或全无 shell staging，以及不读取顶点 UV 的独立 Real-RHI adapter/preview。所有新链仍 `live_enabled=false`，live WorldGen/source-pages 列路径仍是明确待迁移缺口。
 6. **Voxia UE 客户端是当前真实客户端联调焦点**：近场交互、远景 LOD、debug overlay 和 stdio CLI 的最新实跑证据集中在 `clients/Voxia/docs/`；仓库级默认 parity 仍要求关注 `clients/web_client`，Bevy 仅作参考实现。
 7. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 8. **当前文档治理不移动原始文档**：日期文档和阶段文档仍保留为操作日志；本目录负责把它们演进成当前状态。

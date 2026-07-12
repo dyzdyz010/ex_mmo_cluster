@@ -30,6 +30,14 @@
 | Web | `clients/web_client/README.md` | 默认端到端验证/parity 主线 |
 | Bevy | `clients/bevy_client/README.md` | 参考实现 / stdio / Rust parity |
 | Voxia UE | `clients/Voxia/README.md` | UE5.8 native/product client |
+| Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | P1 隐藏迁移内核；纯 XYZ cell/span/LOD 规划、预算与 CLI snapshot，尚未切 live coverage |
+| Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
+| Voxia canonical pages v2 | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPages.*` | XYZ brick + span + LOD、X-fastest dense material `u16` codec、manifest identity/hash/路径 gate；不含 renderer artifact version |
+| Voxia 3D material mip | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelMaterialMip.*` | 六向 empty/uniform/mixed face material 归约；mixed 不提供 fallback material |
+| Voxia exact material surface | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelSurfaceArtifact.*` | 从 dense XYZ page 精确提取实体/空气边界；greedy 只合并同朝向同材质面 |
+| Voxia shell artifact staging | `clients/Voxia/Source/Voxia/FarField/VoxiaVoxelShellArtifactStager.*` | plan + page gate + material mip + exact surface 的全有或全无隐藏 staging；不创建 renderer/UObject |
+| Voxia surface renderer adapter | `clients/Voxia/Source/Voxia/FarField/VoxiaVoxelSurfaceMeshAdapter.*` | canonical X/Y(up)/Z → UE X/Z/Y；局部顶点，大世界位置留给 transform |
+| Voxia surface Real-RHI preview | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelSurfacePreviewActor.*` | 独立 debug DynamicMesh + `M_VoxelWorldAligned`；±8km/洞穴可视验收，尚未切生产 WorldActor |
 | Voxia gameplay | `clients/Voxia/Source/Voxia/Gameplay/README.md` | pawn、streaming、HUD、LOD debug |
 | Voxia net | `clients/Voxia/Source/Voxia/Net/README.md` | transport、protocol decode、authority update |
 | Voxia debug | `clients/Voxia/Source/Voxia/Debug/README.md` | stdio CLI |

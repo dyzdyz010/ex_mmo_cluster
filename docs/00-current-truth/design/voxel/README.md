@@ -7,10 +7,12 @@
 **权威体素数据是服务器生命周期里的唯一事实源。**
 
 - WorldGen 噪声只应作为一次性 world-seed migration，开发期用于灌入权威 store。
+- WorldGen 的公共边界是 `chunk_xyz -> canonical 3D chunk`；当前内容即使主要呈现地表，也不得向流送、LOD 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0` 语义。
 - 真实地图导入未来应作为同层 migration，灌入同一个权威 store。
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
 - **客户端是 snapshot-only 消费者（2026-07-06 投影路线终态）**：配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。术语口径见 [`glossary.md`](../../../30-reference/protocol/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
+- Voxia P1 已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell 与 `voxia_voxel_source_pages_v2`：downstream 必须区分 source unavailable、missing chunk、air 与 solid；内容身份只含 scene/content/source/diff/material，不得包含 WorldGen 或 renderer kind。P2 的六向 material mip 只在整面同材质时输出 uniform material；exact surface 则逐实体/空气边界保存所属实体 material，greedy 不跨材质。当前新链仍是隐藏 staging，SVO confirmed-store 采样已走 canonical source 接口。
 
 ## 当前世界事实模型
 
@@ -94,11 +96,11 @@ flowchart LR
 | 主题 | 当前实现/状态 | 目标事实 |
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
-| 远景 LOD 数据源 | `0x6A` 默认读取 `LodHeightmapStore` 持久化 projection；chunk snapshot 写入同事务 upsert projection；已有显式 `LodProjection.Rebuilder`；开发/demo bootstrapper 可触发 projection rebuild；`WorldPackBootstrapper` 可按显式 chunk bounds 生成真实 WorldGen pack；缺 cell 显式失败 | 补齐 launcher 包管理、material/top surface 和完整 dirty/rebuild 调度 |
-| WorldGen 噪声 | 默认关闭，仅保留显式 dev opt-in / migration helper；Voxia 新增 `-VoxiaWorldGenPreview` 仅作本地可见预览，不进入生产 H gate/authority 验收 | **服务端单实现**确定性生成器（NIF），承担服务端懒物化与未来 pages writer 未修改区直采；**跨端 bit-exact 目标已关闭**（2026-07-06 投影路线终态：客户端不再重算 baseline）；客户端 C++ 副本永久定位 preview/fixture 源 |
-| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots 并 rebuild LOD projection；`WorldPackBootstrapper` 可在启动/部署阶段写真实 WorldGen snapshots；测试/dev 可显式 `missing_chunk_policy: :empty` 或 `worldgen: [enabled?: true]` | 懒物化 + 确定性重算；未修改 chunk 不落 snapshot，靠 WorldGen+H 恢复；见 baseline 边界决策 |
+| 远景 LOD 数据源 | `0x6A` 默认仍读取 `LodHeightmapStore` 持久化 projection；该路径是待退役兼容实现。Voxia live source pages 仍为旧列 identity；隐藏路径已有 v2 XYZ pages、六向 material mip、exact surface 与全有或全无 shell staging，尚未切 live coverage | XYZ brick source pages + 通用 3D occupancy/material mip/exact surface；缺 page/chunk/hash/schema 硬失败，不读取 WorldGen 算法 |
+| WorldGen | 服务端与客户端 dev 副本仍暴露 column/heightmap；客户端只允许 preview/fixture，生产不以它重算 baseline | 服务端迁移/离线生成器只公开 `chunk_xyz -> canonical 3D chunk`；当前地表实现只是内部 `density(x,y,z)` 算子。更换算法只改变 content version，不改变 streaming/LOD/render 路径 |
+| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in 旧 WorldGen | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
 | 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **客户端 snapshot-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
-| **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 WorldGen + 设计师 delta D + hash 凭证 H**；storage ∝ 修改量；见 [2026-06-29 baseline 边界决策](../../../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md) |
+| **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 3D WorldGen + 设计师 delta D + hash 凭证 H**；WorldGen 只在 materialization 边界出现，storage ∝ 修改量 |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
 | 当前世界恢复模型 | 当前已有 canonical chunk snapshot、runtime delta 和持久化 projection 的局部能力，但 checkpoint + committed event log 尚未形成统一恢复链 | `world_current = latest checkpoint + committed voxel events after checkpoint`；运行时布局是物化视图，可重建但 ACK 前必须 durable |
 
@@ -108,6 +110,7 @@ flowchart LR
 | --- | --- |
 | 客户端可以只拿 seed 自生成远景基线 | 被真实地图/权威 store 方向取代；客户端不应持第二真值 |
 | 远景 heightmap 可长期按运行时噪声生成 | 已诊断为平行真值缺陷，后续改派生 mip |
+| WorldGen v1 可以把 2.5D heightmap/column 作为公共内容维度 | 已被纯 3D canonical chunk 契约取代；height/column 只能作为待删除实现细节，不能进入 streaming、LOD、cache identity 或 renderer |
 | 缺 chunk 可静默跑噪声 fallback | 已废止：正式运行时缺块启动失败并输出 `voxel_chunk_materialization_failed`；噪声/空 chunk 只能显式 dev/test opt-in |
 | baseline 缺失可 snapshot/resync 自愈 | 必须拒绝入场，不允许兜底 |
 | 运行时布局就是唯一不可删事实 | 运行时布局应是 `checkpoint + committed voxel events` 的物化结果；只有 checkpoint/event log 等 durable truth 完整时才允许删除并重建运行时布局 |
