@@ -1,7 +1,13 @@
+---
+status: archived
+---
+
 # 决策稿：Voxia 远景时序稳定与无缝流送
 
+> ✅ **本文已归档**：patch-native 增量、near 热路径、预测预取、后台 mesh prepare 与联合 near/far 性能证据已经收口。尚未完成的可取消构建、重叠 page/artifact 复用和三轴长巡航已纳入扩展后的里程碑 A，见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
+
 - **日期**：2026-07-10
-- **状态**：推进中（Phase 0/1、Phase 2 前三切片、Phase 3 预测 near slab 与近景冷加载热路径已落地，完整 near+far 综合实跑已补证；严格不用 raymarch）
+- **状态**：已完成并归档（Phase 0/1、Phase 2 前三切片、Phase 3 预测 near slab、近景冷加载热路径与完整 near+far 综合实跑已收口；未完成的增量构建项迁入 A10；严格不用 raymarch）
 - **触发**：第一人称零参数入口实跑暴露两项生产阻塞：远景体素明显闪烁；冷启动与跨 tile 更新无法支撑无缝游戏体验。
 - **边界**：本阶段只改客户端派生远景与本地 WorldGen preview 的加载/呈现编排，不改变 confirmed voxel truth、H gate、服务端 authority 或 wire codec。
 

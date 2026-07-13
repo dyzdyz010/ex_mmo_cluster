@@ -1,7 +1,7 @@
 # 体素数据链路术语表(base / delta / truth / snapshot)
 
 > 日期:2026-07-06 状态:拍板口径(用户定稿)
-> 定位:统一体素数据链路的四层名词,消除"客户端该持有什么数据"类讨论中的口径漂移。本表只管**数据链路分层口径**;实施机制词汇(H、H gate、canonical、checkpoint、golden fixture、content_version 等)仍以 [`2026-06-30-voxel-generation-streaming-client-plan.md`](../../10-active/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) 的名词解释表为准。
+> 定位:统一体素数据链路的四层名词,消除"客户端该持有什么数据"类讨论中的口径漂移。本表只管**数据链路分层口径**;实施机制词汇(H、H gate、canonical、checkpoint、golden fixture、content_version 等)仍可查 [`2026-06-30-voxel-generation-streaming-client-plan.md`](../../90-obsolete/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) 的历史名词解释表，但不得恢复其中客户端本地推导路线。
 > 两表冲突时以本表为准:6-30 表个别词条(如 D"可参与本地 baseline 重算")带有客户端本地推导时代的假设,该路径已被 S4 仲裁挂起,重启五条件见 [`2026-07-06-gpt55-lod23-proposal-review.md`](../../20-archive/voxel-far-field/2026-07-06-gpt55-lod23-proposal-review.md) §2。
 
 ## 1. 四个核心词

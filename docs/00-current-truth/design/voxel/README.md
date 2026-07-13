@@ -12,7 +12,7 @@
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
 - **客户端是 snapshot-only 消费者（2026-07-06 投影路线终态）**：配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。术语口径见 [`glossary.md`](../../../30-reference/protocol/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
-- Voxia P1 已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell 与 `voxia_voxel_source_pages_v2`：downstream 必须区分 source unavailable、missing chunk、air 与 solid；内容身份只含 scene/content/source/diff/material，不得包含 WorldGen 或 renderer kind。P2 的六向 material mip 只在整面同材质时输出 uniform material；exact surface 则逐实体/空气边界保存所属实体 material，greedy 不跨材质。当前新链仍是隐藏 staging，SVO confirmed-store 采样已走 canonical source 接口。
+- Voxia 在扩展里程碑 A 中已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell、`voxia_voxel_source_pages_v2`、六向 material mip、coverage-resolved exact surface、source-neutral scene builder、dev 原子 presentation、唯一 `production_all_features` 组合根，以及 WorldGen/scripted/H-gated `local_disk` 三种 request provider。downstream 必须区分 source unavailable、missing、resolved air 与 solid；内容身份只含 scene/content/source/diff/material，不含 WorldGen、磁盘或 renderer kind。`LoadExpectedBatch` 保持 exact-set 原子 batch 语义；live 本地 provider 则用外部 manifest SHA-256 + expected identity 打开不可变 entry table，只读请求子集并原子发布。当前根把成熟 near 数据泵与 Pure3D far 联合起来，但本地 provider 只接 far，两侧尚未共享 provider/residency/generation；在线 authority provider 仍未实现。
 
 ## 当前世界事实模型
 
@@ -96,7 +96,7 @@ flowchart LR
 | 主题 | 当前实现/状态 | 目标事实 |
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
-| 远景 LOD 数据源 | `0x6A` 默认仍读取 `LodHeightmapStore` 持久化 projection；该路径是待退役兼容实现。Voxia live source pages 仍为旧列 identity；隐藏路径已有 v2 XYZ pages、六向 material mip、exact surface 与全有或全无 shell staging，尚未切 live coverage | XYZ brick source pages + 通用 3D occupancy/material mip/exact surface；缺 page/chunk/hash/schema 硬失败，不读取 WorldGen 算法 |
+| 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收；相邻 Real-RHI worker 约 `0.91-0.95s`。成熟 near 尚未共享该 provider/residency/coverage transaction，所以本地根报告 mixed source mode | A10 继续统一 near/far source identity、residency、coverage generation 与 scene transaction，并补反向依赖/full oracle、离群帧和三轴路线；后续生产 XYZ source pages 只新增服务器 provider，缺 page/chunk/hash/schema 硬失败且不回退 WorldGen |
 | WorldGen | 服务端与客户端 dev 副本仍暴露 column/heightmap；客户端只允许 preview/fixture，生产不以它重算 baseline | 服务端迁移/离线生成器只公开 `chunk_xyz -> canonical 3D chunk`；当前地表实现只是内部 `density(x,y,z)` 算子。更换算法只改变 content version，不改变 streaming/LOD/render 路径 |
 | chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in 旧 WorldGen | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
 | 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **客户端 snapshot-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
@@ -121,7 +121,7 @@ flowchart LR
 
 - [`AGENTS.md`](../../../../AGENTS.md)
 - [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../../../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)
-- [`docs/00-current-truth/2026-06-28-体素世界与远景渲染-当前真相-整合.md`](../../2026-06-28-体素世界与远景渲染-当前真相-整合.md)
+- [`docs/20-archive/voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md`](../../../20-archive/voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md)
 - [`docs/00-current-truth/impl/2026-06-29-world-pack-streaming-handoff.md`](../../impl/2026-06-29-world-pack-streaming-handoff.md)
 - [`docs/30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)
 - [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)

@@ -1,4 +1,10 @@
+---
+status: archived
+---
+
 # 决策稿：Voxia 近远景呈现所有权交接
+
+> ✅ **本文已归档**：Phase A-E、XYZ ownership、near retirement lease、快速折返与完整场景性能验收均已完成。其状态机成果已成为扩展里程碑 A 的输入，当前主线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 - **日期**：2026-07-11
 - **状态**：Phase A-E 已实施并完成完整场景验收；主观闪烁继续由用户窗口实跑观察

@@ -3,7 +3,7 @@
 > 性质：**地基级架构决策稿**。仅决策，未动代码。
 > 适用：scene_server 世界生成/存储/LOD 派生，及所有客户端（Voxia 主线 / bevy / web）的远景渲染取数口径。
 > 纪律：先读 [`docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md`](../../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md) 并过其「开工前自查清单」。
-> 当前整合状态见：[`docs/00-current-truth/2026-06-28-体素世界与远景渲染-当前真相-整合.md`](../../00-current-truth/2026-06-28-体素世界与远景渲染-当前真相-整合.md)。
+> 当前整合状态见：[`docs/00-current-truth/design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)。2026-06-28 旧整合稿已归档。
 
 ---
 
@@ -102,7 +102,7 @@
 
 ## 7. 与其他文档关系
 
-- 整合当前状态（入口）：[`docs/00-current-truth/2026-06-28-体素世界与远景渲染-当前真相-整合.md`](../../00-current-truth/2026-06-28-体素世界与远景渲染-当前真相-整合.md)
+- 整合当前状态（入口）：[`docs/00-current-truth/design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)
 - 远景 LOD + 缝隙根因（原始）：[`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
 - 流式窗口跟随（原始）：[`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - 体素生产架构（原始）：[`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)

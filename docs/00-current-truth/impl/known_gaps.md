@@ -1,64 +1,78 @@
 # 当前已知缺口
 
-本文档是当前缺口的合并态 snapshot,不含改动记录;已完成能力见 impl/README.md 与各模块状态文档,演进过程与证据见原始日期文档(source_index.md 索引)。
+> 本文是缺口的合并态 snapshot。已完成能力见 [`impl/README.md`](README.md) 与各 current-truth 文档；历史过程见 [`source_index.md`](../source_index.md)。
 
 ## 服务端控制面
 
-- **SceneNodeRegistry HA**：缺容量感知 failover 与自动迁移完整方案；stale owner repair 不能覆盖多节点容量调度和故障切换语义；实施载体为服务端控制面 HA 专项，触发条件是跨节点 scene failover / 容量调度验收。
-- **Subscription liveness**：缺服务端自维护订阅活性、自动续租、超时与重连闭环；该缺口会让客户端无操作时的 lease / 订阅隐式失效；实施载体为订阅 worker / Gate-World-Scene 契约收口。
-- **大范围 region/materialization 调度**：缺异步背压、预算、跨节点调度和可观测队列深度；没有这些约束，大范围物化会与在线 scene 运行争抢资源；实施载体为 materialization scheduler / region routing 专项。
+- **SceneNodeRegistry HA**：缺容量感知 failover、自动迁移和多节点容量调度完整方案。
+- **Subscription liveness**：缺由服务端自维护的订阅续租、超时、重连和 stale lease 修复闭环；客户端静止时也不能依赖一次性建立的订阅。
+- **大范围 region/materialization 调度**：缺异步背压、预算、跨节点调度和队列可观测，不能让离线/大范围物化抢占在线 Scene 热路径。
 
-## 体素 baseline / launcher 与包管理
+## 体素 baseline、launcher 与生产 pages
 
-- **8km 生产权威源覆盖与物化调度**：缺 d72 / 8km 生产 source pages 的权威覆盖、bounded materialization 和 delta dirty 调度；客户端 fixture / smoke 不能替代真实服务端 source；实施载体为里程碑 C（C1 pages writer、C2 dirty 聚合与 mip 基准、C3 失效通知与 HTTP 分发），覆盖规模参考 `macro_cell_count=21016`。
-- **生产持久化 artifact**：缺服务端或离线管线生成的 source pages / mesh / SVDAG artifact 持久化、`source_revision` / `diff_chain_hash` 与容量淘汰策略；没有它，H gate 无法覆盖生产包版本更新和重拉；实施载体为里程碑 C2/C3。
-- **launcher/update 包下载安装 UI 与 diff-chain 流程**：缺包下载、安装、hash 校验、region manifest/index、diff chain 完整校验和可诊断 UI；缺这条链路会使 baseline 入场硬校验停留在本地包或脚本层；同时缺 T-12 的 required-set 差集下载、热度驱动推荐预置集（全沙盒下热点为运行时涌现）、传送 gate 补拉与 shard 粒度分级（热区小 shard / 冷区大 shard）；实施载体为里程碑 C4。
-- **runtime diff channel/priority/budget**：缺运行时 diff 的通道、优先级、预算和最终一致性策略；当前 snapshot 仍可能承担 bulk 数据来源；实施载体为服务端 dirty / outbox 设计收口。
-- **32km / 稀疏 chunk / 地图导入调度**：缺完整 32km 生产生成预算、稀疏 chunk 策略、真实地图导入 migration 与完整 dirty/rebuild scheduler；缺口会影响从 demo pack 走向生产 world pack；实施载体为 world-pack materialization 与 data_service 派生表专项。
-- **material 生产端派生**：缺服务端 `chunk_xyz -> canonical dense material page` 的纯 3D 物化与一致性验证；现有 NIF 只导出 `column_height` / `heightmap_region`，仍是待退役高度场接口。客户端隐藏 v2 page/mip 只能作为消费 oracle，不能替代 C1 服务端 writer。
+- **8km 生产权威 pages**：缺服务端纯 3D canonical page writer、bounded materialization、delta dirty 聚合、mip 基准与 `source_revision/diff_chain_hash` 真值。客户端 fixture 不能替代服务端 source。
+- **生产持久化 artifact**：缺 source pages / mesh artifact 的持久化、版本、容量淘汰和重拉策略；旧 SVDAG/raymarch artifact 不再是当前必需交付物。
+- **launcher/update 完整流程**：缺包下载、安装、release manifest/index、diff-chain、required-set 差集下载、传送前补拉与可诊断 UI。
+- **runtime diff budget**：缺远景 page 失效的通道、优先级、合并频率、背压和最终一致性上界。
+- **32km/稀疏世界/真实地图导入**：缺大世界生成预算、稀疏 chunk 策略、地图 migration 与完整 dirty/rebuild scheduler。
+- **服务端 material 派生**：现有 NIF 仍暴露 `column_height/heightmap_region`；缺 `chunk_xyz -> canonical 3D material page` 及与 1m truth 的一致性验证。
 
-## Voxia 近远景渲染
+## Voxia 里程碑 A（当前进行中）
 
-> **旧里程碑 A 的性能/组件化子项已收口，但“客户端渲染正确”结论已于 2026-07-12 重新打开**：A1 / A2 / A3b / A4 / A5 与 8km 长巡航数据仍有效；live WorldGen `SurfaceMaterialId` 特判和非 generation 级原子呈现仍是缺陷。±8km 半精度绝对 UV 拉伸已通过“每 quad 减整数纹理周期”的共享 near/far 契约修复，保留 wrap 相位与 greedy；这只是旧 live 材质的正确性修复，不代表纯 3D cube-shell 已切流。新纯 3D P1 已完成；P2 hidden pages/mip/exact-surface/staging 与独立世界对齐 Real-RHI preview 已落。
+原 A1-A5 已收口：显式 7/14/28/56m tiers、3.5m collar、分组件 DynamicMesh StaticDraw、per-cell greedy merge、seam/fade、紧凑顶点、cache 卫生和原始 8km 长巡航均已有证据。A 已扩展为完整 3D near/far LOD 与客户端数据流送生产化，因此不能再写成“A 完成、开始 B”。
 
-- **A1（显式 tier 契约 + 四环 7/14/28/56m 分带）✅ 已完成**（2026-07-06）：`-VoxiaSvoLodRings` 显式契约落地，8km quad 3.70M→1.39M（−62%），per-ring 锚点全命中。
-- **A2（分组件 `UDynamicMeshComponent` + `StaticDraw` + 组件级剔除 + bulk-hide）✅ 已完成**（2026-07-07，8 次真实 RHI 实测）。
-- **【归因反转·重要】8km device-removal 真凶已查明，raymarch 最终禁用**：A2 曾把 8km 默认 Lumen 崩溃归因为"远景几何 overdraw 超 TDR"，并据此把 merge 定为根治手段。**2026-07-07 A3.0 诊断在完整重启 + 干净 GPU 数据下证伪了该归因**——真凶是 far-mesh-go-live 路径 raymarch probe dispatch × proxy-mesh go-live 的 **GPU 跨队列时序竞态（潜伏 UB）**，与 overdraw / quad 数量 / 渲染后端 / Lumen 全部正交（`r16`=0.49M 与 `r72`=1.39M 同样崩）。默认关闭后，8km facing + 默认 Lumen 稳态已无 device-removal；2026-07-10 显式 real-RHI 复核又在 dispatch/readback 成功后触发 D3D12 3D/Compute 队列超时。当前拍板是 raymarch 严格不用，现行验收不得传入任何 `VoxiaSvoRaymarch*` 参数。
-- **A3b（per-cell masked greedy merge，重定位为纯几何/带宽优化）✅ 已完成**（2026-07-07）：quad 1.39M→593k（−57.3%），视觉等价（覆盖面积守恒 + seam 不回归），4 次真实 RHI 0 device-removal。附带远景默认材质由 Unlit 改 **Lit** 消色差（`-VoxiaSvoFarUnlitMaterial` 降为逃生门）。
-- **A4（跨 depth 覆盖性 seam / 换环 fade / L1 collar / 8km 验收）✅ 已完成**（2026-07-08）：cross-fade、collar、覆盖性断言和长巡航验收均收口；2026-07-10 又补了 removed patch 延迟提交，未来大范围 coverage 翻转也不会先清空旧远景。
-- **A5（远景顶点格式瘦身 + persistent cache 卫生）✅ 已完成**：紧凑格式已达约 91B/quad，worldgen shape 入 cache key，LRU/容量上限/孤儿清理已落地。
-- **v2 page 到 live mesh 的真消费切流**：隐藏 `voxia_voxel_source_pages_v2` 已能 decode 完整 XYZ dense material lattice、构建六向 material mip 和精确逐材质 surface，并对小型 cube-shell 全有或全无 staging；但 live `svo_source_pages_v1` 仍只是 hash gate，渲染仍吃预物化 artifact。仍缺按环 mesh 输入、增量失效、live coverage 切换和删除 WorldGen `SurfaceMaterialId` 分支。
-- **大世界 UV 与材质采样**：`M_VoxelWorldAligned` + 局部 DynamicMesh 的独立调试链已在 ±8km Real-RHI 可见通过，证明材质侧世界坐标路线可行；near PMC、生产 far、dither、透明与发光变体仍使用旧 UV/材质链。必须先补齐这些变体和同点 near/far audit，再切生产默认，不能只替换一条 opaque 稳态路径。
-- **generation 级原子呈现**：现有 removed-patch 延迟退役和 fade 只保证局部/最终收敛，尚未把 near/far/mask 与 render fence 绑定为同一 generation 原子 commit；连续帧中间态闪烁仍未关闭。
-- **垂直稀疏多层 + 3D 环距 + near-skip 3D 化**：缺 manifest 占据层清单、3D Chebyshev ring distance 和按 L0 覆盖 Y 层裁剪的 near-skip；没有它，垂直玩法会出现整柱误裁或远景真空；实施载体为里程碑 B5。
-- **长期性能分布**：A4 Step6 的跨 tile 8km 长巡航、per-ring 预算与截图审计已完成；2026-07-11 near-only 1600x900 uncapped Real-RHI 两次干净复测已补逐帧环形统计：9261 chunks 数据 ready=`1779.9-1862.4ms`，加载至完整 near mesh 的均值 `131.230-135.272 FPS`、p95=`9.907-10.208ms`，稳态 10 秒均值 `136.012-138.634 FPS`、p95=`9.743-9.969ms`，稳态均无 `>16.67ms` 帧。相邻 3087-chunk slab 预取=`429.7ms`，跨 tile 激活/清理窗口平均 `134.279 FPS`、p95/p99/max=`10.211/11.545/15.257ms`、component reused=`256`。这关闭了“near 冷加载十几 FPS”和 near 跨界复用未验证的旧缺口，但 near-only 不能代表最终世界：同日完整 near+far、Lumen/硬件光追可见实跑的首窗 near/SVO data build=`2778.2/9157.1ms`，361-patch 上传=`3504.9ms`，收敛后 12 个样本平均 `106.0 FPS`、范围 `98.3-109.9 FPS`；首次上传极值 `113.69ms / 8.8 FPS`，82-patch 增量更新附近仍有 `30.15ms / 33.2 FPS`。因此完整环境 120+ 与跨 tile SVO 分位数、长时段和更多硬件档位仍是明确缺口，不能承诺所有帧都在 120 FPS 以上。远景 FPS 当前实测为**像素-bound 非三角形-bound**，Lumen 全屏 GI（关掉 +36~40FPS）仍是最大单一稳态 FPS 杠杆。
-- **远景时序稳定与无缝流送（Phase 0/1 + Phase 2 前三切片 + Phase 3 near 预取/热路径已落地，整体未收口）**：换环 fade 已去除 `DitherTemporalAA` 的逐帧噪声并加入 `svo_visual_stability`；patch-native cache、dirty-boundary seam、默认取消 aggregate mesh / 无用 runtime SVDAG，以及 dirty macro-cell 与受影响 patch 聚合的并行任务均已落地。8km 跨 tile SVO build 从原始 `135948.497ms` 降到 `2015.912ms`（约 `-98.5%`）；第三切片同构 patch update 从 `113.545ms` 降到 `72.751ms`（约 `-35.9%`），82-task 聚合段为 `43.941ms`。WorldGen preview 已按速度预取相邻 3087-chunk slab；本轮又落地列高复用、有界 producer/apply、compact confirmed full-chunk、per-chunk PMC、settled revalidation 小预算、具备退出 join 的有界 observe writer、SVO reuse artifact COW store 与 `frame_perf`。decoder/store 同时硬拒绝越界 `macro_index` 与超过 4096 项的 snapshot，性能优化未放松 authority 边界。剩余实施项是稳态 77% TSR shimmer 定量归因、patch/DynamicMesh 真正离开 GameThread、SVO outer coverage hysteresis 与 validated sharded artifact pack。阶段真值见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../../10-active/voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)。
-- **heightmap LOD material palette**：缺 catalog 驱动的 material palette；当前 0x6B material section 已被 Voxia decode 并按顶点色表现，但材质色仍非 MaterialCatalog 驱动；实施载体为 LOD material 表现专项（不阻塞里程碑 A）。
-- **raymarch 不再是 backlog**：生产远景 renderer 已拍板为 L1-L3 SVO leaf-surface mesh + 分组件 DynamicMesh StaticDraw；2026-07-10 用户进一步拍板 raymarch 严格不用，因此 L4/raymarch 不再作为候选、A/B profile 或待办。旧路线中的 defer/触发条件仅为历史记录。Nanite 渲染/烘焙后端仍 defer（运行时构建 UE5.8 API 级不可行，离线 bake 触发条件为 editor 手工 A/B 数据显著）。
+已经完成的扩展成果：
+
+- near 连续 generate/apply、compact confirmed store、per-chunk 可复用组件、patch-native far、后台 patch/mesh prepare 与 bounded GameThread submit；
+- XYZ ownership、near retirement lease、垂直呈现带活性、快速折返和完整场景约 137 FPS 的兼容路径证据；
+- XYZ cube-shell、v2 canonical pages、六向 material mip、coverage-resolved exact surface、source-neutral scene builder；
+- generation barrier、真实 render fence、scene host、显式 dev composition root 与高空 Real-RHI 切代；
+- `LoadExpectedBatch` 的 H-gated 原子磁盘 batch：外部 manifest SHA-256、expected identity/set、page hash/size/decode/空间身份全部通过才发布。
+- H-gated 本地磁盘 request provider：`OpenExpectedManifest` 冻结外部 H+expected identity 校验后的 manifest 超集，`FVoxiaLocalDiskCanonicalVoxelPageProvider` 每代只读 `enter/dirty` 请求页并逐页复核，候选批全成功后才发布；唯一根已以 default 包完成冷启动和相邻 +X 实跑，错误 H 根级硬失败且无 WorldGen fallback。
+- 唯一 `production_all_features` WorldGen 组合根：GameMode 只生成 `AVoxiaUnifiedVoxelWorldActor` 顶层 root，成熟 near 滑窗/数据泵与 Pure3D far 同场运行；legacy/Pure3D standalone 降为显式 probe/compatibility。根级 CLI 要求 near settled、far live 与 XYZ center 一致；地面与高空 Real-RHI 均已通过。
+- Pure3D far 的 A10 S2-S5 首轮增量链：request-oriented WorldGen/scripted provider、required/keep/enter/exit diff、immutable page residency/lease/LRU、cooperative cancellation、material/surface dependency cache、绝对 XYZ `32³` stable patch registry 与 retained/rebuilt/removed real-fence transaction。相邻 default 实跑只请求 `1517/33752` 页，复用 `32199` material、`29533` surface 和 `175/216` far patch；统一根不再创建隐藏 Pure3D near mesh/component。
+- S4 性能收敛首轮：resolved surface 按 page 使用后台优先级并行构建；material/surface cache 改为 source-bound immutable shared refs，stage 映射直接转交；`TFuture::Consume()` 消除完整 generation 复制；coverage diff 在 worker 运行，旧 coverage 在 worker 析构，page lease 以每 tick `1024` 页预算回收。相邻 Real-RHI worker 约 `0.91-0.95s`，far GameThread prepare/finalize/publish 分段约 `4.5-7.5ms`。
+
+当前 A 的剩余门槛：
+
+1. **统一 lifecycle / transaction 尚未完成**：唯一根已完成正常 WorldGen 入场、自动 pawn XYZ 跟随和 near/far 联合 readiness；Pure3D far 已有完整 scene phase、失败保留旧 live、latest-only cancel 与 EndPlay 回收，但当前仍以 near-only `AVoxiaWorldActor` + far-only `AVoxiaPure3DVoxelWorldActor` 两个迁移期子模块组成。两侧没有共享 source identity、coverage generation、page residency 和原子 scene transaction。需抽取成熟 near 能力并补根级 HUD，不能长期把 actor 组合当终态。
+2. **第二轮增量 DAG 与统一 near 数据源**：far 已不再全量请求/提交，共享 artifact ref、并行 surface、异步 coverage plan 和预算化 lease 回收已经落地；但相邻一 tile 仍扫描完整 dependency fingerprint，并重建 `4219` 个 dirty-closure surface。当前 Real-RHI desired→live 约 `0.91-0.95s`，完整移动 p50/p95/p99 约 `4.5/5.6/6.3ms`，不同运行仍出现少量 `16ms+` 离群帧。需补反向依赖索引、增量/full oracle、持续巡航分位数与尖峰归因；near 还未消费同一 request provider/residency。正式作战任务见 [`A10 WorldGen 驱动的完整客户端 3D 滑动世界`](../../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)。
+3. **三轴用户流送验收**：尚缺出生、X/Y/Z、对角、连续移动、快速折返、传送、高空再回地面的同口径 `frame_perf + generation trace + Real-RHI` 长巡航；需证明无需 CLI recenter、desired/live 收敛、每帧无 gap/overlap、无 stale commit，并报告构建延迟和 GT 分位数。
+4. **完整材质族**：`M_VoxelWorldAligned` 已在 debug fixture 与 dev pure-3D world 通过；完整 WorldGen material palette、opaque/dither/透明/发光变体及同点 near/far material audit 尚未统一，全白调试壳不能作为完整场景收口。
+5. **本地连续世界、在线 provider 与兼容实现退役**：H-gated `local_disk` request provider 已用于客户端开发包，但当前 `stationary/adjacent_x/six_axis` 包仍是有限 route fixture；真实用户飞出 manifest 覆盖会显式缺页、保留旧 far live 并使根因 center 失配降为 not-ready，尚不能称为任意方向连续本地世界。成熟 near 也尚未消费同一 provider；服务器/HTTP/在线 authority provider、delta/失效与默认在线接线均未实现并后置。旧 `AVoxiaWorldActor` 的 `svo_source_pages_v1`、heightmap/VHI、`SurfaceMaterialId`、`CenterTile.Y=0` 与二维 near-skip 在统一根中已关闭远场职责，但代码仍存在；A10 应先补本地连续 route/按需 resolver 并抽取 near 模块，后续 authority provider 切流后再删除兼容 far。
+6. **硬件与长巡航矩阵**：唯一根已 settle 的默认 Real-RHI 稳定 5 秒 p50/p95/p99/max=`5.385/6.705/7.368/7.761ms`；最新完整相邻移动 p50/p95/p99/max=`4.507/5.591/6.260/19.767ms`，另一次 far-only 采样出现两个最高 `38.258ms` 离群帧。当前只覆盖一台验证机与单次 +X；低端硬件、长时段、持续多 tile 增量构建及稳定的尖峰上界仍未形成生产门槛证据。
+
+**raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史 L4/raymarch A/B 重新列为 B 的任务。
+
+## 里程碑 B/C（均未开始）
+
+- **B**：冻结 T-4 固定 far page/整数规约、T-11 失效与 HTTP 分发语义、T-12 required-set/shard manifest，并让客户端分别消费 1m near 与 7m far fixture projection。当前通用 v2 page、H-gated batch、本地 request provider 和 source-neutral builder只是 A 的客户端开发基础，不等于 B 已开工。
+- **C**：实现服务端 pages writer、dirty/mip 聚合、失效 opcode、HTTP endpoint、launcher/update 真包与默认在线切流。当前任务不得修改 `apps/*` 来提前实现 C。
 
 ## 客户端-服务端 wire 契约
 
-- **focus hydrate / promote 服务端契约**：缺正式 opcode 分配、服务端租约、权限、长程命中和 hydrate payload 生成；客户端 wire 边界与 outbox 生命周期已就绪但不能替代服务端 authority；实施载体为待服务端契约，需避开既有 `0x60` / `0x62` / `0x63` 语义。
-- **far visual sync 服务端契约**：缺 request/result opcode、低频 visual map / SVO payload 生成和端到端 projection 更新策略；没有服务端 payload，客户端 `far_visual_sync_body_v1` 只能做配置或 loopback 验证；实施载体为里程碑 C3 与 T-11 HTTP page 分发语义。
-- **remote-action 服务端契约**：缺 action request/result opcode、技能 authority、租约/权限/长程命中规则和 authoritative result frame；客户端 pending / retry / ACK 只能证明生命周期，不代表服务端接受或拒绝；实施载体为待服务端契约。
+- **focus hydrate/promote**：缺正式 opcode、服务端租约/权限、长程命中和 authoritative payload。
+- **far page invalidation**：缺正式 opcode 分配、HTTP locator、revision/manifest 滚动与端到端更新策略；`0x6D/0x6E` 已占用，不能复用。
+- **remote action**：缺 action request/result、技能 authority、权限/租约和 authoritative result frame。
 
 ## 远程实体与对象 AOI
 
-- **远程实体 AOI**：缺服务端远程实体 AOI 规则、兴趣分发和真实服务器帧接入；客户端 remote actor store / loopback 不能证明在线 AOI 正确；实施载体为服务端 AOI + interest contract。
-- **对象 AOI 与 ObjectStateDelta body**：缺服务端对象 AOI / 兴趣分发规则，以及属性 / tag patch body 的正式 wire layout；当前 `0x6C` state flags 与调试 payload 不足以承载完整对象状态；实施载体为对象 wire layout 与服务端分发规则。
-- **正式表现资产与大规模 proxy 调参**：缺远程 actor / object 的正式资产、材质细化、特效和生产规模调参；当前 static proxy / HISM 只验证确认态读模型与渲染提交；实施载体为 Gameplay / Art 集成。
+- **远程实体 AOI**：缺服务端兴趣规则、分发和真实服务器帧接入；客户端 loopback/proxy 不能证明在线 AOI。
+- **对象 AOI / ObjectStateDelta**：缺正式属性/tag patch body 与对象兴趣分发规则。
+- **正式表现资产与规模调参**：当前 static proxy/HISM 只验证 confirmed read model 和提交链路。
 
-## 局部场 / 涌现
+## 局部场与涌现
 
-- **FieldSource 生命周期**：缺 generic persistent FieldSource owner 存活探测、预算消耗、自动续租和跨 chunk lifecycle；缺口会让场源活性依赖外部隐式假设；实施载体为 FieldSource owner / lease 专项。
-- **FieldEffect dispatcher batch mutation**：缺 batch mutation dispatcher；单 tick 多次 version bump / fan-out / persist enqueue 会放大写入和广播成本；实施载体为 FieldEffect dispatcher。
-- **Phase 8 effect 边界**：缺 ignite / freeze / melt / damage / object / combat / source effect 的统一 dispatcher；没有统一入口会让 field kernel 绕过 authority 写回边界；实施载体为 Phase 8。
-- **电路与材料物理**：缺完整电路仿真、材料熔断破坏和 tick-by-tick 能量扣减；当前局部场不能表达深层涌现玩法；实施载体为电/热/材料专项。
-- **SurfaceElement runtime**：缺 SurfaceElement 物理参与、客户端完整渲染/解码和 delta 专用 op；缺口会让表面态无法进入权威 runtime 与客户端表现闭环；实施载体为 SurfaceElement protocol/runtime。
-- **Prefab/object field participant projection**：缺 prefab / object 统一 field participant projection 覆盖；对象与局部场仍不能稳定互相影响；实施载体为 object-field projection。
-- **深半导体 C4b**：缺二极管 / 三极管完整玩法和物理模型；该能力需要专门设计，不能由现有导电简化规则自然推出；实施载体为 C4b 专项设计。
+- **FieldSource 生命周期**：缺 persistent owner 存活、预算消耗、自动续租和跨 chunk lifecycle。
+- **FieldEffect batch dispatcher**：缺批量 mutation；多次 version bump/fan-out/persist 会放大写入。
+- **Phase 8 写回边界**：缺 ignite/freeze/melt/damage/object/combat/source effect 的统一 authority dispatcher。
+- **电路与材料物理**：缺完整电路、熔断破坏和逐 tick 能量扣减。
+- **SurfaceElement runtime**：缺完整物理参与、客户端 decode/render 与专用 delta op。
+- **Prefab/object field projection**：缺统一 participant projection。
+- **深半导体 C4b**：二极管/三极管仍需独立设计。
 
-## 客户端 / 验证治理
+## 验证与文档治理
 
-- **当前事实文档维护**：缺随代码变更同步更新 `docs/00-current-truth/**` 的稳定流程；缺口会让 snapshot 再次退化成改动记录或过期状态；实施载体为 PR / checkpoint 文档纪律。
-- **三客户端验收角色区分**：缺持续在 PR / 验收中区分 Web parity oracle、Voxia 实跑焦点和 Bevy 参考实现；混用角色会误把单客户端证据当协议唯一真值；实施载体为验收说明模板与协议改动检查。
+- Voxia 当前代码有未提交改动；交付前需重跑受影响的 `Voxia.Voxel`、`Voxia.Gameplay`、`Voxia.Presentation` 与纯 3D Real-RHI 三轴 smoke。
+- 协议改动仍须区分 Web parity oracle、Voxia 实跑焦点和 Bevy 参考实现，不能把单客户端结果当 wire 唯一真值。
+- `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

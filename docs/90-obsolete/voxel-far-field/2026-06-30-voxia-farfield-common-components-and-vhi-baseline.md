@@ -1,4 +1,11 @@
-# Voxia 远景公共组件抽取 + VHI 2.5D baseline 定位 — 决策稿
+---
+status: obsolete
+superseded_by: docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md
+---
+
+# Voxia 远景公共组件抽取 + VHI 2.5D baseline 定位 — 历史决策稿
+
+> ⚠️ **本文已失效**：公共 FarField 组件的实现历史仍有效，但“VHI 作为 2.5D baseline、SVO 单独承担 3D”的路线已被统一 XYZ cube-shell + canonical page + near/far 原子 presentation 取代。现行路线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 > 当前决策稿。目标：把 VHI / SVO（/heightmap-LOD）三条远景路线里**逐行重复的编排逻辑**抽成正交公共组件，同时把 VHI 的定位明确为「廉价 2.5D 地表 baseline」、把 3D 远景（浮空岛 / 洞穴 / 悬崖背面）的职责归给 SVO。**抽编排，不抽算法。**
 >

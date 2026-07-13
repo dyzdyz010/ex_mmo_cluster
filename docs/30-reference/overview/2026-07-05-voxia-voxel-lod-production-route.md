@@ -1,9 +1,9 @@
 # Voxia 体素管理管线生产路线决策稿
 
 > 日期：2026-07-05  
-> 状态：生产路线拍板稿  
+> 状态：历史生产路线输入；现行里程碑与 renderer 裁决以 2026-07-06 设计稿 v2.13 为准
 > 范围：在“客户端数据管理采用 SVO、加载策略采用滑动窗口”已经确定的前提下，确定 Voxia 近景 / 远景划分、远景数据来源和远景渲染技术路线。本文只记录路线决策，不代表代码已经全部完成。
-> 2026-07-06 下游细化：LOD 分层口径、每层技术选型与理由、失效/seam/垂直契约和三列里程碑（A 客户端渲染正确 → B 接口冻结 + fixture 消费 → C 服务端接入）见 [`2026-07-06-voxia-lod-layering-and-technology-design.md`](2026-07-06-voxia-lod-layering-and-technology-design.md)；外部 GPT-5.5 方案的对抗评审结论（数据源裁决 / 采纳矩阵 / UE 能力边界）见 [`2026-07-06-gpt55-lod23-proposal-review.md`](../../20-archive/voxel-far-field/2026-07-06-gpt55-lod23-proposal-review.md)。
+> **2026-07-13 现行覆盖**：A 已扩展为完整 3D near/far LOD + 客户端流送生产化，当前仍在 A10；B/C 均未开始。A10 已落唯一 `production_all_features` 根；Pure3D far 已完成 WorldGen/H-gated local request page diff/residency、cooperative cancellation、source-bound shared artifact、parallel resolved surface、worker plan、预算化 lease release 与 absolute XYZ stable-patch transaction 首轮实跑。默认本地包也已完成冷启动和相邻差集读取，错误 H 根级硬失败且无 fallback；相邻 Real-RHI worker 约 `0.91-0.95s`。剩余是 near/far 共享 source/residency/generation、反向依赖/full oracle、离群帧与完整三轴 route。服务器/HTTP/在线 authority provider 后置。raymarch 因真实 RHI 3D/Compute 队列超时退出当前路线。详见 [`2026-07-06-voxia-lod-layering-and-technology-design.md`](2026-07-06-voxia-lod-layering-and-technology-design.md) v2.13 与 [`纯 3D active 计划`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。本文后续 raymarch/S6 文字只按历史决策理解。
 
 ## 1. 结论
 
@@ -11,9 +11,9 @@ Voxia 生产路线采用三层结构：
 
 1. **近景 L0**：服务端权威 3D chunk window，目标窗口为玩家中心 `3x3x3 tiles`。这一层负责 confirmed voxel truth、碰撞、raycast、编辑命中、object / field 交互和高保真近场渲染。
 2. **远景 L1-L3**：SVO / SVDAG 作为窗口外 3D 远景主数据结构，远景只做 visual-only 派生物。默认渲染路线采用 **SVO leaf-surface mesh artifact + FarField patch 分帧上传**，先走现有 UE mesh 管线，后续择优切到 `UDynamicMeshComponent`、HISM 或离线 StaticMesh / Nanite bake。
-3. **超远景 L4**：`raymarch-only` 只作为 72-96 tiles 的超大视距 profile 或调试 / 压力测试路线，不作为默认生产 renderer。只有在 camera-correct world-space、深度遮挡、材质、平台兼容、持久化 artifact、H gate 和结构化验收全部完成后，才允许把 raymarching 升为生产默认或部分默认。
+3. **超远景 L4**：仅保留需求触发器，不排期、不绑定 renderer；raymarch 已退出当前路线。若未来确需 >8km，必须另立阶段重新评估 source coverage、renderer 与预算。
 
-一句话：**生产主线不是 VHI，也不是直接手写 raymarch shader 全接管；生产主线是“权威源驱动的 SVO 远景数据 + UE mesh 渲染管线先落地 + raymarching 后置为超远距/可选优化”。**
+一句话：**生产主线不是 VHI 或 raymarch；生产主线是权威投影驱动的完整 3D near/far 数据流 + UE DynamicMesh presentation。**
 
 ## 2. 基础单位和近远划分
 
@@ -32,7 +32,7 @@ Voxia 生产路线采用三层结构：
 | L1 近远过渡 | `2 <= d <= 8` | 约 224m 到 896m | 权威 3D voxel / SVO source artifact | SVO leaf-surface mesh，高 LOD，叶约 7m | visual-only |
 | L2 中远景 | `9 <= d <= 24` | 约 1.0km 到 2.7km | 权威 SVO source artifact | SVO mesh，中 LOD，叶约 14m | visual-only |
 | L3 远景 | `25 <= d <= 72` | 约 2.8km 到 8.064km | 权威 SVO source artifact | SVO mesh，粗 LOD，叶约 56m | visual-only |
-| L4 超远景 | `73 <= d <= 96` | 约 8.2km 到 10.752km | 可选 SVDAG runtime payload / baked horizon | raymarch-only 或离线烘焙 horizon | visual-only |
+| L4 超远景 | `73 <= d <= 96` | 约 8.2km 到 10.752km | 未选型；仅需求触发 | 未选型；raymarch 已退出 | visual-only |
 
 L0 和 L1-L4 的边界必须是半开空间所有权：L0 拥有 confirmed truth 和交互，远景只拥有视觉表达。远景可以 underlap / skirt 来遮缝，但不能把 far visual 当作可编辑、可碰撞或 confirmed truth。
 
@@ -178,10 +178,10 @@ heightmap LOD 保留为旧 projection / 极低成本地表 fallback，不承担 
 - 对长期稳定远景页生成 bake artifact。
 - Nanite 只用于稳定 mesh asset / baked page，不作为热更新 SVO 页的第一阶段默认。
 
-### S6：raymarch 生产门槛
+### S6：raymarch 生产门槛（已取消，仅保留历史）
 
-- 在 L4 或 A/B profile 中持续验证 raymarch。
-- 达成第 4.2 节门槛后，再决定是否让 raymarch 接管 L3/L4，或只保留为 L4 超远景。
+- 不再运行 L4 或 A/B raymarch profile；真实 RHI 队列超时已经关闭该路线。
+- 若未来重新研究，必须作为全新阶段重新授权，不能从本文恢复执行。
 
 ## 8. 验收门槛
 
@@ -232,18 +232,18 @@ heightmap LOD 保留为旧 projection / 极低成本地表 fallback，不承担 
 约束：
 1. 不改变服务端权威边界：confirmed voxel truth 只能来自 ChunkSnapshot / ChunkDelta / VoxelIntentResult / ChunkInvalidate；客户端本地 WorldGen 只允许 preview。
 2. 保持滑动窗口：L0 近景目标为玩家中心 3x3x3 tiles，负责碰撞、raycast、编辑和高保真 chunk mesh。
-3. 远景主线采用 SVO / SVDAG 数据结构；L1-L3 默认 renderer 先走 SVO leaf-surface mesh artifact + FarField patch 上传，不把 raymarching 作为默认生产 renderer。
-4. raymarch-only 只作为 L4 超远景或 A/B profile，除非完成 production camera-correct world-space renderer、深度遮挡、材质、平台、H gate、持久化 artifact 和 CLI 验收门槛。
+3. 远景主线采用 canonical XYZ pages + coverage-resolved surface；L1-L3 renderer 走 DynamicMesh presentation，不运行 raymarch。
+4. L4 只保留需求触发器，renderer 未选型；raymarch 不属于 defer/backlog。
 5. VHI 冻结为 2.5D 过渡 baseline，不再投入 3D 能力；heightmap LOD 只保留为低成本地表 fallback。
-6. 执行顺序按设计稿 §9 三列里程碑：先里程碑 A（客户端渲染正确，零服务端依赖：切分级+tier 契约、RuntimeMesh 分组件+StaticDraw、per-cell greedy merge、seam/fade/collar），再里程碑 B（冻结 T-4/T-11 契约 + fixture 产真 7m mip page + 客户端 pages 真消费管线 + 垂直多层），最后里程碑 C（服务端 dirty 聚合 / pages writer / 失效通知与分发）。B1 纸面契约冻结不可推迟到 C。
+6. 执行顺序按设计稿 v2.13：当前继续扩展里程碑 A（A10 唯一根、Pure3D far S2-S5 增量/并行链与 S2L H-gated 本地 request provider 已落地，继续统一 near/far transaction、补反向依赖/full oracle、离群帧、三轴长巡航与材质族）；服务器/HTTP/在线 authority provider 后置。A 退出后才开始 B 的 1m/7m 投影契约与 fixture oracle，最后 C 才做服务端 writer/dirty/分发。
 
-请先阅读 AGENTS.md、docs/00-current-truth/design/client/streaming-lod.md、clients/Voxia/Source/Voxia/FarField/README.md、本决策稿与 2026-07-06 设计稿。然后从里程碑 A 的 A1 开始给出最小可交付计划。不要改代码，除非我明确要求进入实现。
+请先阅读 AGENTS.md、docs/00-current-truth/design/client/streaming-lod.md、clients/Voxia/Source/Voxia/FarField/README.md 与 2026-07-06 设计稿 v2.13。当前从里程碑 A10 的 resume 继续，不得重做 A1，也不得提前启动 B/C。
 ```
 
 ## 11. 证据源
 
 - [`docs/00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)
-- [`docs/10-active/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../10-active/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)
+- [`docs/90-obsolete/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../90-obsolete/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)
 - [`docs/20-archive/voxel-far-field/2026-07-01-voxia-svo-3d-farfield.md`](../../20-archive/voxel-far-field/2026-07-01-voxia-svo-3d-farfield.md)
 - [`docs/20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md)
 - [`clients/Voxia/Source/Voxia/FarField/README.md`](../../../clients/Voxia/Source/Voxia/FarField/README.md)

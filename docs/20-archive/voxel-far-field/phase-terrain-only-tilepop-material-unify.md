@@ -1,4 +1,10 @@
+---
+status: archived
+---
+
 # 决策稿：worldgen 只留地形 + 跨 tile 远景消失修复 + 近/远材质统一
+
+> ✅ **本文已归档**：T1/T2/T3 与对应 Real-RHI 验收已完成。文中的列源 `Y=0` 只记录迁移期修复，不能作为现行三维设计；当前纯 3D 路线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 - **日期**：2026-07-10
 - **状态**：实现完成（T1/T2/T3 已通过 automation + 真实 RHI smoke；UDS 主观调参另续）

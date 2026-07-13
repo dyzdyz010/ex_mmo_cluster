@@ -1,4 +1,11 @@
-# 2026-06-30 体素生成、流送与客户端加载渲染实施计划
+---
+status: obsolete
+superseded_by: docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md
+---
+
+# 2026-06-30 体素生成、流送与客户端加载渲染实施计划（历史）
+
+> ⚠️ **本文已失效**：其“客户端通过 H gate 后本地推导 confirmed baseline / 跨端 bit-exact WorldGen”核心路线已被 snapshot-only 投影路线关闭；H、H gate、canonical、checkpoint 等术语定义仍可作历史参考。现行数据源裁决见 [`2026-07-06-projection-route-final-decision.md`](../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)，当前 Voxia 实施见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 > 本文是 `2026-06-29-voxel-baseline-streaming-boundary.md` 与
 > `2026-06-29-voxel-sync-window-and-render-design.md` 的执行计划。它把已经拍板的
@@ -154,7 +161,7 @@ flowchart TD
 
 **主要文件**
 
-- `docs/docs/10-active/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`
+- [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](2026-06-30-worldgen-v1-deterministic-terrain-design.md)
 - `apps/scene_server/native/world_gen_noise/src/lib.rs`
 - `apps/scene_server/priv/fixtures/voxel/`
 - `apps/scene_server/test/scene_server/voxel/world_gen_*_test.exs`

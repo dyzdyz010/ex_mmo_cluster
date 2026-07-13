@@ -31,7 +31,7 @@ flowchart LR
 | 服务端控制面 | [design/server/world-region-routing.md](design/server/world-region-routing.md) | World / Region / Scene / Chunk 关系、路由、租约、迁移、stale owner repair |
 | 体素真值与基线 | [design/voxel/README.md](design/voxel/README.md) | 权威体素唯一事实源、WorldGen migration、launcher/入场校验、runtime diff 边界 |
 | 客户端可操作区域 | [design/voxel/client_active_region.md](design/voxel/client_active_region.md) | 近场可编辑窗口、订阅跟随、debug overlay、点击生效条件 |
-| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 近/远渲染、heightmap LOD、tile 口径、远景缺口 |
+| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 完整 3D near/far LOD、流送数据流、原子 presentation、兼容路径与 A10 缺口 |
 | 局部场与涌现 | [design/field/runtime.md](design/field/runtime.md) | FieldLayer / FieldRegion / FieldKernel / FieldRuntime / FieldSource / FieldEffect 状态 |
 | 正交涌现系统 | [design/emergence/orthogonal-systems.md](design/emergence/orthogonal-systems.md) | 材料属性向量、光、化学、结构、客户端外观边界 |
 | 建设 / Prefab / Surface | [design/voxel/building-prefab-surface.md](design/voxel/building-prefab-surface.md) | 建设原语、Prefab transaction、Object provenance、SurfaceElement |
@@ -44,11 +44,12 @@ flowchart LR
 2. **体素确认态只来自服务端权威结果**：在线客户端确认态只能吃 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot`。
 3. **体素基线校验必须硬失败**：进入场景前必须校验本地 world pack、region manifest、chunk baseline 和 diff chain；缺包或 hash 不匹配不能靠运行时 snapshot/resync 兜底进入场景。
 4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
-5. **WorldGen 只允许是纯 3D migration/materializer**：公共目标契约是 `chunk_xyz -> canonical 3D chunk`，不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia P1 已完成隐藏 cube-shell、canonical source 与 v2 XYZ page 契约；P2 已落六向 occupancy/material mip、精确逐材质 surface、全有或全无 shell staging，以及不读取顶点 UV 的独立 Real-RHI adapter/preview。所有新链仍 `live_enabled=false`，live WorldGen/source-pages 列路径仍是明确待迁移缺口。
+5. **Voxia 当前仍处于扩展后的里程碑 A，并已有唯一全要素联合根、Pure3D far 增量链和 H-gated 本地 request provider**：普通 `-VoxiaWorldGenPreview` 默认启动 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features`，由一个顶层 root 同时持有成熟 near 滑窗/数据泵和 Pure3D far，根级 CLI 只有在 near window settled、far live、XYZ center 一致时才 ready；高空 near 全空气按 resolved zero geometry 处理，下方 Pure3D far 继续覆盖。legacy 与 standalone Pure3D 只能通过显式 probe/compatibility 选择。Pure3D far 的 WorldGen 与 `local_disk` provider 共用 page diff/residency、cooperative cancellation、依赖感知 artifact cache 与绝对 XYZ stable-patch transaction；默认本地包冷启动读取 `33752` 页，随后相邻移动只读 `1517` 个 enter 页、复用 `32235` 个 resident 页并保留 `175/216` far patch。错误 manifest H 会使根级 `source_authorized=false`，不创建 generation 且不回退 WorldGen。S4 已把 resolved-surface 工作并行化，把制品缓存改成 source-bound immutable shared refs，以 `TFuture::Consume()` 移交结果，并把 coverage 规划与旧 lease 回收移出单帧重负载；相邻 Real-RHI worker 约 `0.91-0.95s`，far 的 GameThread prepare/finalize/publish 各约 `4.5-7.5ms`。成熟 near 仍使用 WorldGen，所以本地路径诚实报告 `mixed_near_worldgen_far_local_disk`；near/far 共享 source/residency/coverage transaction、完整三轴长巡航/HUD、增量/full oracle 和完整材质族仍未完成，完整移动仍观察到偶发 `16ms+` 离群帧，详见 [A10](../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)。服务器/HTTP/在线 authority provider 与 launcher 真包仍未实现；**里程碑 B/C 均未开始。**
 6. **Voxia UE 客户端是当前真实客户端联调焦点**：近场交互、远景 LOD、debug overlay 和 stdio CLI 的最新实跑证据集中在 `clients/Voxia/docs/`；仓库级默认 parity 仍要求关注 `clients/web_client`，Bevy 仅作参考实现。
 7. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
-8. **当前文档治理不移动原始文档**：日期文档和阶段文档仍保留为操作日志；本目录负责把它们演进成当前状态。
-9. **体素数据链路已拍板投影路线终态（2026-07-06）**：客户端是 snapshot-only 消费者——近窗 1m 投影（`0x62/0x63`）+ 远区 7m 投影（source pages）；配方（`base ⊕ overlay`）不跨 wire，客户端 WorldGen 永久定位 dev preview / fixture 源，同构路线（客户端本地推导）降格为特定负载画像下的定向优化选项。远景生产分带定为 L1-L3 四环 7/14/28/56m + collar，L4 defer。术语口径（base / delta / overlay / truth / snapshot）以 [`docs/30-reference/protocol/glossary.md`](../30-reference/protocol/glossary.md) 为准，裁决全文见 [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
+8. **文档按状态分层治理**：本目录只保存合并态 current truth；完成阶段移入 `20-archive`，被取代路线移入 `90-obsolete`，`10-active` 只保留真正进行中或下一步工作。
+9. **体素数据链路已拍板投影路线终态**：客户端是 snapshot-only 消费者——近窗 1m 投影（`0x62/0x63`）+ 远区 7m 投影（source pages）；配方（`base ⊕ overlay`）不跨 wire，客户端 WorldGen 永久定位 dev preview / fixture 源。远景生产分带为 L1-L3 四环 7/14/28/56m + collar；raymarch 已因真实 RHI 队列超时退出当前路线，不再是 B backlog。术语见 [`glossary.md`](../30-reference/protocol/glossary.md)，裁决见 [`projection-route-final-decision.md`](../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
+10. **运行时根事实与文档根事实同样唯一**：参数可单独验证子系统，但只有一个包含全部已批准成果的生产组合根可以承担联合调试和效果验收。任何新成果未接入该根、未通过根级 readiness/CLI 前，只能写成 probe/地基；禁止维护两条并列“正式客户端”并让它们继续漂移。
 
 ## 维护规则
 

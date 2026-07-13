@@ -6,7 +6,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **28** 篇（按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **24** 篇（按子系统分组）。
 
 ## 索引
 
@@ -46,12 +46,8 @@
 - [`2026-06-17-unit-morphology-and-surface-element-layer.md`](voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md)
 - [`2026-06-27-订阅活性根因-连接驱动正交修复设计.md`](voxel-authority/2026-06-27-订阅活性根因-连接驱动正交修复设计.md)
 - [`2026-06-28-权威体素唯一事实源-噪声降为migration.md`](voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)
-- [`2026-06-30-voxel-generation-streaming-client-plan.md`](voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md)
-- [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md)
 
 ### voxel-far-field
 
-- [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)
-- [`phase-terrain-only-tilepop-material-unify.md`](voxel-far-field/phase-terrain-only-tilepop-material-unify.md)
-- [`phase-far-temporal-stability-and-seamless-streaming.md`](voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)
-- [`phase-vlod-a4-seam-fade-collar.md`](voxel-far-field/phase-vlod-a4-seam-fade-collar.md)
+- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 扩展后的里程碑 A 上位计划；B/C 未开始
+- [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 当前主攻；唯一根、本地 request provider 与 Pure3D far 的 diff/residency/cancel/shared-artifact/parallel-surface/stable-patch 链已落地，继续统一 near/far transaction、反向依赖/full oracle、离群帧与完整 route

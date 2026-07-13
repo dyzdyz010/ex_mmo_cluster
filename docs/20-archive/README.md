@@ -4,7 +4,7 @@
 
 **收录标准**：有 closure / 进度日志已收 / 里程碑已达，且结论未被后续推翻。若结论被反转，改归 `90-obsolete/`；若仍是长期查阅的规范类，改归 `30-reference/`。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **105** 篇（按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **111** 篇（按子系统分组）。
 
 ## 索引
 
@@ -36,6 +36,10 @@
 - [`2026-06-25-voxia-ue58-client-roadmap.md`](client/2026-06-25-voxia-ue58-client-roadmap.md)
 - [`2026-06-30-voxia-worldgen-preview-level-and-sliding-window.md`](client/2026-06-30-voxia-worldgen-preview-level-and-sliding-window.md)
 - [`phase-A1-playable-client-experience.md`](client/phase-A1-playable-client-experience.md)
+
+### client-visual-polish
+
+- [`phase-tsr-flicker-white-edge.md`](client-visual-polish/phase-tsr-flicker-white-edge.md)
 
 ### combat-npc
 
@@ -126,13 +130,18 @@
 
 ### voxel-far-field
 
+- [`2026-06-28-体素世界与远景渲染-当前真相-整合.md`](voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md)
 - [`2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md`](voxel-far-field/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md)
 - [`2026-06-30-voxia-svo-preview-design.md`](voxel-far-field/2026-06-30-voxia-svo-preview-design.md)
 - [`2026-06-30-voxia-svo-preview-implementation.md`](voxel-far-field/2026-06-30-voxia-svo-preview-implementation.md)
 - [`2026-07-01-voxia-svo-3d-farfield.md`](voxel-far-field/2026-07-01-voxia-svo-3d-farfield.md)
 - [`2026-07-06-gpt55-lod23-proposal-review.md`](voxel-far-field/2026-07-06-gpt55-lod23-proposal-review.md)
 - [`2026-07-07-voxia-render-pipeline-camera-lod.md`](voxel-far-field/2026-07-07-voxia-render-pipeline-camera-lod.md)
+- [`2026-07-11-near-far-presentation-handoff.md`](voxel-far-field/2026-07-11-near-far-presentation-handoff.md)
+- [`phase-far-temporal-stability-and-seamless-streaming.md`](voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)
+- [`phase-terrain-only-tilepop-material-unify.md`](voxel-far-field/phase-terrain-only-tilepop-material-unify.md)
 - [`phase-vlod-a1-explicit-tiering.md`](voxel-far-field/phase-vlod-a1-explicit-tiering.md)
 - [`phase-vlod-a2-partitioned-staticdraw.md`](voxel-far-field/phase-vlod-a2-partitioned-staticdraw.md)
 - [`phase-vlod-a3-per-cell-greedy-merge.md`](voxel-far-field/phase-vlod-a3-per-cell-greedy-merge.md)
 - [`phase-vlod-a3b-per-cell-greedy-merge.md`](voxel-far-field/phase-vlod-a3b-per-cell-greedy-merge.md)
+- [`phase-vlod-a4-seam-fade-collar.md`](voxel-far-field/phase-vlod-a4-seam-fade-collar.md)

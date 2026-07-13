@@ -4,7 +4,7 @@
 
 **收录标准**：核心结论 / 路线被更晚的决策明确取代或反转。判定与继任指向记录在各篇 frontmatter 的 `superseded_by`。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **9** 篇（按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **13** 篇（按子系统分组）。
 
 ## 索引
 
@@ -25,9 +25,16 @@
 
 - [`2026-04-12-移动同步架构设计.md`](movement-sync/2026-04-12-移动同步架构设计.md)
 
+### voxel-authority
+
+- [`2026-06-30-voxel-generation-streaming-client-plan.md`](voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md)
+- [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md)
+
 ### voxel-far-field
 
+- [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)
 - [`2026-06-30-voxia-vhi-experiment-plan.md`](voxel-far-field/2026-06-30-voxia-vhi-experiment-plan.md)
+- [`2026-07-11-3d-lod-sliding-window.md`](voxel-far-field/2026-07-11-3d-lod-sliding-window.md)
 - [`20260706ue58_voxel_lod2_lod3_architecture.md`](voxel-far-field/20260706ue58_voxel_lod2_lod3_architecture.md)
 - [`ue58_voxel_lod0_lod3_complete_plan.md`](voxel-far-field/ue58_voxel_lod0_lod3_complete_plan.md)
 - [`voxel_mmo_sliding_window_architecture.md`](voxel-far-field/voxel_mmo_sliding_window_architecture.md)

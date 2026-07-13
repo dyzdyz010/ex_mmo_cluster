@@ -1,7 +1,14 @@
+---
+status: obsolete
+superseded_by: docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md
+---
+
 # 历史设计输入：Voxia 三维 LOD 滑动窗口
 
+> ⚠️ **本文已失效**：其预算与 cube-shell 空间推演可作历史输入，但保留 2.5D WorldGen/全高度列的迁移前提已被推翻。现行路线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
+
 - **日期**：2026-07-11
-- **状态**：已被 [`2026-07-12-pure-3d-voxel-shell-migration.md`](2026-07-12-pure-3d-voxel-shell-migration.md) 取代；保留为预算与空间规划历史输入
+- **状态**：已被 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) 取代；保留为预算与空间规划历史输入
 - **取代说明**：新阶段不再接受 2.5D WorldGen、heightmap、全高度列作为内容前提或迁移终态，并把 canonical source、逐面材质和 GPU 原子 presentation 纳入同一阶段契约
 - **替代事实**：SVO 远景不再以 `CenterTile.Y=0` 的 2.5D 全高度列作为终态；该约束只保留为迁移期兼容路径
 - **边界**：改变客户端 far visual coverage、source-page/artifact 坐标与缓存版本，不改变 confirmed truth、编辑、碰撞或服务端 authority

@@ -1,4 +1,11 @@
-# 2026-06-30 WorldGen v1 确定性地形生成设计
+---
+status: obsolete
+superseded_by: docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md
+---
+
+# 2026-06-30 WorldGen v1 确定性地形生成设计（历史 2.5D 算法稿）
+
+> ⚠️ **本文已失效**：2.5D heightmap/column 不再是 WorldGen、streaming、LOD 或 cache 的公共契约；现行边界是 `chunk_xyz -> canonical 3D material volume/page`，列缓存只能留在生成器内部。现行计划见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 > 本文承接 [`2026-06-29-voxel-baseline-streaming-boundary.md`](../../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)、
 > [`2026-06-29-voxel-sync-window-and-render-design.md`](../../30-reference/protocol/2026-06-29-voxel-sync-window-and-render-design.md)

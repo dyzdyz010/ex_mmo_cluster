@@ -1,11 +1,11 @@
 ---
 status: obsolete
 subsystem: voxel-far-field
-superseded_by: 10-active/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md
+superseded_by: 10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md
 obsoleted_on: 2026-07-08
 ---
 
-> ⚠️ **本文已失效** — farfield-common-components文档2026-07-01记录D-10拍板“SVO转主力、VHI冻结当过渡基线”，2026-07-05生产路线稿再次确认“VHI冻结为2.5D过渡baseline，不再投入3D能力”，VHI P1/P2完善已取消，本实验计划的持续投入路线被正式冻结弃用。 现行事实见 [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../10-active/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md)。
+> ⚠️ **本文已失效** — VHI P1/P2 完善已取消；后续“VHI 作为 2.5D baseline”本身又被统一 XYZ cube-shell + canonical near/far 路线取代。现行事实见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 > 仅存历史 provenance，**勿作现行依据**。
 # Voxia Voxel Hierarchical Impostor 实验计划
 
