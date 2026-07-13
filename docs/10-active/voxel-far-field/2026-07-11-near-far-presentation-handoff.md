@@ -570,6 +570,26 @@ clip/precommit drop/discontinuity 均为 `0`。证据：
 - `.demo/observe/near_handoff_regression_presentation_20260712.log`
 - `.demo/observe/near_handoff_regression_retirement_20260712.log`
 
+### 12.3 2026-07-13 同块双显回归修复
+
+另一台机器实跑发现 near 数据刷新后，同一空间的旧 far 没有消失。排查确认是两个正交根因叠加：
+
+1. `TryQueuePendingSvoPresentation` 过去只有在新 SVO build 完成并推进 revision 后才调用 coordinator；慢机上 near chunk 已逐帧可见、replacement far 仍在后台构建的整段窗口没有 ownership mask。
+2. `M_VoxelFarDither` 直接对表面 `AbsoluteWorldPosition / 1600` 做 `floor`。实体的正 X/Y/Z 边界面恰位于下一个 chunk 起点，会被归到空气侧相邻 chunk，因此 CPU ledger 即使显示 masked，像素仍可能保留旧 far。
+
+修复保持职责正交：active near footprint 现在在新 far result 之前主动驱动同一个 coordinator/mask，candidate permit 与 live commit 仍只由完成后的 far result 驱动；Prepared/Pinned 候选若落后于 active center/radius，则把 desired 转向最新 footprint，Prepared 可提交前丢弃，Pinned 继续扩展 mask。材质查询改为 `WorldPosition - VertexNormalWS * 10cm` 后再转换到 server chunk XYZ。10cm 小于当前远景最小 1m 单元，又能在远景大坐标下保持可解析。列式 WorldGen/source-pages 的 extended affected-patch key 同步归一 Y=0，confirmed 3D source 保留真实 Y。
+
+同中心 near radius 收缩是独立的零 entering 分支：target hole 完全落在 live hole 内时不应等待不存在的进入 chunk。协调器现在把退出 near 环带先写入 fine ownership 并交给 retirement lease，零 entering 视为真空就绪，随后才签发 candidate permit；ownership atlas 的方形边长按 live/target footprint 并集计算，避免 radius 2→1 时漏掉旧 hole 外环。
+
+新增观测与验收：
+
+- `near_mesh.handoff`：active/target center + radius；ownership 含 `proactive`、`proactive_activations`、`surface_lookup=entity_side_normal_inset`、`surface_inset_cm=10`。
+- observe：`voxia_near_far_ownership_activated/updated/released`。
+- stdio：`until_near_far_exclusive [timeout_ms] [tile_x tile_y tile_z radius_tiles]` 只消费新 `near_mesh` serial，默认绑定最近一次 `snapshot.near_window`；过渡期要求完整 active/target footprint 一致、`entering_masked == submitted`、masked far component 非零、`premature_clip_count=0`；settled 时还要求 candidate=`none`、live 完整 footprint 匹配 active 且 ownership 已释放。
+- 红测旧实现稳定失败于正 X/server-up/server-Z 三个边界；修复后 `Voxia.Presentation` 3 项、`Voxia.Voxel.FarDitherMaterialContract`、`Voxia.Gameplay.WorldActor` 全部 Success。
+- radius 2→1 automation 覆盖零 entering、退出环 ownership、完整 35-chunk atlas 与 candidate permit；`Voxia.Presentation` 和 `Voxia.Voxel.TileWindow` 在补丁后再次 Success，日志为 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_radius_final2.log` 与 `tile_window_radius_final.log`。
+- 真实 RHI 半径 24 首轮相邻 smoke 在 far revision 1 尚 live 时观察到 proactive submitted/masked 同步推进并最终 revision 2 收敛。随后用 `until_svo_candidate_in_flight` 与 1-tile patch 做确定性 A→B(pinned)→C：B candidate 已 pinned 后 active near 转向 C，observe 记录 `in_flight_target_diverged`；ownership 同时覆盖 live A、pinned B 与 active C。B 提交为 revision 2 时未释放 mask，而是立即以 live B / active C 重基，`submitted/entering_masked=214/214`；只有 revision 3/C live 后才以 `live_commit_matches_active` 释放。最终 `cache_hit_rate=0.946`、`seam_status=pass`、`premature_clip_count=0`、进程退出 0。证据位于 `.demo/observe/near_far_abc_pinned_final3.log` 与 `.demo/observe/near_far_abc_pinned_events_final3.jsonl`；automation 日志位于 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_final2.log`、`tile_window_footprint_final.log`、`far_dither_contract_final2.log`、`worldactor_near_ownership_final2.log`。
+
 ## 13. 残余风险
 
 - Masked collar 在交接期仍有像素成本，必须用完整场景 GPU profile 验证。

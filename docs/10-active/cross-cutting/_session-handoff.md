@@ -88,6 +88,15 @@
 - 最终 1600×900 完整 8km 相邻移动：10 秒 `136.982 FPS`、最低 `132.499`；20 秒 p50/p95/p99/max=`7.250/8.148/8.644/16.569ms`，`>16.67ms=0`。三次 250ms 间隔移动为 `136.213 FPS`、最低 `129.108`，near/SVO revision 自行收敛；快速折返恢复 3 batches / 266 chunks，10 秒 `146.548 FPS`。
 - 最终自动化合计 17 个：Presentation 3、NearRetirementRegistry 1、Voxel.Far 12、WorldActor 1，全部 Success。黑窗诊断见 `clients/Voxia/docs/engineering-notes/2026-07-11-runtime-cli-python-black-window.md`；游戏态 CLI 固定 `-DisablePython -NoDDCCleanup`，不需要为该症状清空全部缓存。
 
+### 2026-07-13 近远景同块双显修复
+
+- 用户在另一台机器观察到 near 刷新后同块 far 持续保留。已确认两条真实缺陷：进入侧 mask 等到新 SVO result 才启动；材质用裸 world-position floor，把正向边界面错分到空气侧 chunk。
+- 现由 active near window 在 replacement far build 完成前主动维护 ownership；Prepared/Pinned 候选若落后于 active center/radius，会把 desired 转向最新 footprint、扩展保护，Prepared 可在提交前丢弃。表面查询统一为稳定 `VertexNormalWS` 向实体侧内缩 10cm；`M_VoxelFarDither.uasset` 已重生成。
+- 同中心半径收缩不再因 entering 集合为空而永久阻塞：退出 near 环带先进入 ownership/retirement 保护，candidate 可在零 entering 的真空就绪条件下提交；mask 边长按 live/target footprint 并集计算。radius 2→1 已加入 Presentation 与 TileWindow automation。
+- 可观测面新增 active/target radius、`proactive(_activations)`、`surface_lookup/surface_inset_cm`、完整 ownership observe 生命周期和只消费新 serial/绑定 active footprint 的 `until_near_far_exclusive`。
+- 验证：Development build 成功；`Voxia.Presentation` 3 项、`Voxia.Voxel.TileWindow`、`Voxia.Voxel.FarDitherMaterialContract`、`Voxia.Gameplay.WorldActor` 全 Success。半径收缩补测日志为 `near_ownership_presentation_radius_final2.log` 与 `tile_window_radius_final.log`。真实 RHI 半径 24 的确定性 A→B(pinned)→C 覆盖了最危险路径：B candidate 已进入 pinned 后 active near 转向 C，ownership 继续保护 live A、pinned B 与 active C；B 提交为 revision 2 时没有错误释放，而是立即重基到 B→C，只有 revision 3/C live 后才释放。期间 `submitted=entering_masked`，最终 `cache_hit_rate=0.946`、`seam_status=pass`、`premature_clip=0`、进程退出 0。证据为 `.demo/observe/near_far_abc_pinned_final3.log`、`.demo/observe/near_far_abc_pinned_events_final3.jsonl` 与 `clients/Voxia/Saved/Logs/.demo/observe/*_final2.log`。
+- 边界：这关闭已知持续双显根因与状态契约回归，不把纯 3D P3 generation 双缓冲/render fence 写成已完成；另一台机器仍应复跑可见窗口做跨硬件像素/主观确认。
+
 ### 下一步
 
 1. 留出可见完整窗口给用户继续观察近远交接和主观闪烁；若仍能定位闪烁，只调整 RevisionFade pattern/时长，不改 OwnershipClip、retirement 时序或 LOD 粒度。
