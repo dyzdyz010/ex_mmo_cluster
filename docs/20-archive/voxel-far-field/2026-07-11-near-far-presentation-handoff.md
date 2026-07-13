@@ -7,7 +7,7 @@ status: archived
 > ✅ **本文已归档**：Phase A-E、XYZ ownership、near retirement lease、快速折返与完整场景性能验收均已完成。其状态机成果已成为扩展里程碑 A 的输入，当前主线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 - **日期**：2026-07-11
-- **状态**：Phase A-E 已实施并完成完整场景验收；主观闪烁继续由用户窗口实跑观察
+- **状态**：Phase A-E 基线已实施；12.4 的 9 tile 修复已通过定向 automation 与本机完整 near+far Real-RHI，待用户窗口/异机主观确认
 - **范围**：Voxia 近景 mesh 流水线、派生远景 SVO、渲染 patch 与二者之间的呈现所有权
 - **非范围**：confirmed voxel truth、服务端 authority、near window 数据订阅、SVO 数据算法、三维滑动窗口本体
 
@@ -576,6 +576,82 @@ clip/precommit drop/discontinuity 均为 `0`。证据：
 - `.demo/observe/near_handoff_regression_presentation_20260712.log`
 - `.demo/observe/near_handoff_regression_retirement_20260712.log`
 
+### 12.3 2026-07-13 同块双显回归修复
+
+另一台机器实跑发现 near 数据刷新后，同一空间的旧 far 没有消失。排查确认是两个正交根因叠加：
+
+1. `TryQueuePendingSvoPresentation` 过去只有在新 SVO build 完成并推进 revision 后才调用 coordinator；慢机上 near chunk 已逐帧可见、replacement far 仍在后台构建的整段窗口没有 ownership mask。
+2. `M_VoxelFarDither` 直接对表面 `AbsoluteWorldPosition / 1600` 做 `floor`。实体的正 X/Y/Z 边界面恰位于下一个 chunk 起点，会被归到空气侧相邻 chunk，因此 CPU ledger 即使显示 masked，像素仍可能保留旧 far。
+
+修复保持职责正交：active near footprint 现在在新 far result 之前主动驱动同一个 coordinator/mask，candidate permit 与 live commit 仍只由完成后的 far result 驱动；Prepared/Pinned 候选若落后于 active center/radius，则把 desired 转向最新 footprint，Prepared 可提交前丢弃，Pinned 继续扩展 mask。材质查询改为 `WorldPosition - VertexNormalWS * 10cm` 后再转换到 server chunk XYZ。10cm 小于当前远景最小 1m 单元，又能在远景大坐标下保持可解析。列式 WorldGen/source-pages 的 extended affected-patch key 同步归一 Y=0，confirmed 3D source 保留真实 Y。
+
+同中心 near radius 收缩是独立的零 entering 分支：target hole 完全落在 live hole 内时不应等待不存在的进入 chunk。协调器现在把退出 near 环带先写入 fine ownership 并交给 retirement lease，零 entering 视为真空就绪，随后才签发 candidate permit；ownership atlas 的方形边长按 live/target footprint 并集计算，避免 radius 2→1 时漏掉旧 hole 外环。
+
+新增观测与验收：
+
+- `near_mesh.handoff`：active/target center + radius；ownership 含 `proactive`、`proactive_activations`、`surface_lookup=entity_side_normal_inset`、`surface_inset_cm=10`。
+- observe：`voxia_near_far_ownership_activated/updated/released`。
+- stdio：`until_near_far_exclusive [timeout_ms] [tile_x tile_y tile_z radius_tiles]` 只消费新 `near_mesh` serial，默认绑定最近一次 `snapshot.near_window`；过渡期要求完整 active/target footprint 一致、`entering_masked == submitted`、masked far component 非零、`premature_clip_count=0`；settled 时还要求 candidate=`none`、live 完整 footprint 匹配 active 且 ownership 已释放。
+- 红测旧实现稳定失败于正 X/server-up/server-Z 三个边界；修复后 `Voxia.Presentation` 3 项、`Voxia.Voxel.FarDitherMaterialContract`、`Voxia.Gameplay.WorldActor` 全部 Success。
+- radius 2→1 automation 覆盖零 entering、退出环 ownership、完整 35-chunk atlas 与 candidate permit；`Voxia.Presentation` 和 `Voxia.Voxel.TileWindow` 在补丁后再次 Success，日志为 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_radius_final2.log` 与 `tile_window_radius_final.log`。
+- 真实 RHI 半径 24 首轮相邻 smoke 在 far revision 1 尚 live 时观察到 proactive submitted/masked 同步推进并最终 revision 2 收敛。随后用 `until_svo_candidate_in_flight` 与 1-tile patch 做确定性 A→B(pinned)→C：B candidate 已 pinned 后 active near 转向 C，observe 记录 `in_flight_target_diverged`；ownership 同时覆盖 live A、pinned B 与 active C。B 提交为 revision 2 时未释放 mask，而是立即以 live B / active C 重基，`submitted/entering_masked=214/214`；只有 revision 3/C live 后才以 `live_commit_matches_active` 释放。最终 `cache_hit_rate=0.946`、`seam_status=pass`、`premature_clip_count=0`、进程退出 0。证据位于 `.demo/observe/near_far_abc_pinned_final3.log` 与 `.demo/observe/near_far_abc_pinned_events_final3.jsonl`；automation 日志位于 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_final2.log`、`tile_window_footprint_final.log`、`far_dither_contract_final2.log`、`worldactor_near_ownership_final2.log`。
+
+### 12.4 2026-07-13 9 tile 整体替换回归与修复检查点
+
+用户在可见完整场景确认 12.3 的同块双显已解决，但指出此前逐块替换的视觉效果又退化为 9 个水平 tiles 共同变化。现场与代码交叉排查后，结论是：**不是 near/far 细分单元不同导致 handoff 无法套用，而是 settled 重校验重置/重判呈现状态、逐 chunk 预算只覆盖首次创建、全局 revision 污染内容身份，且退出释放仍绕过该契约。**
+
+两套几何本来就不要求拓扑一致。near renderer 以 16m server chunk 维护组件；far collar 使用 3.5m leaf、8×8 tile patch 等不同粒度。ownership material 在片元阶段把实体侧 world-position 映射回 server chunk，再查 R8 atlas。因此一个 far quad 可以跨多个 near chunks 并在像素级被分别裁剪，强制网格对齐或 per-chunk far component 都会破坏本方案的成本边界。
+
+本次 `clients/Voxia/Saved/Logs/Voxia.log` 提供了同一进程内的对照：
+
+| 时刻 | 激活类型 | near build 排队 | 含义 |
+| --- | --- | ---: | --- |
+| `03:06:44` | 相邻 active window | `1029 = 3×7³` chunks | 正常进入条带，3 个水平 tiles |
+| `03:09:53` | `ready_reused` | `1029 = 3×7³` chunks | 已复用窗口仍只补进入条带 |
+| `03:17:02` | `ready_reused` | `3087 = 9×7³` chunks | 异常完整 3×3 水平 footprint 重校验 |
+| `03:18:32` | `ready_reused` | `1029 = 3×7³` chunks | 后续移动又回到正常进入条带 |
+
+同一进程的退出日志依次为 `released=296/293/266/168 mode=binary_after_far_visible`。因此玩家若观察进入方向，异常轮次会看到完整 footprint 的已有 component 快速重写；若观察退出方向，则会看到 retained near 在 far live 后整批二值消失。
+
+当前隐藏耦合如下：
+
+```mermaid
+flowchart LR
+  A[active window 激活] --> B{streaming catch-up?}
+  B -->|否| C[清空 published ledger]
+  C --> D[完整 3087 chunks 重校验]
+  K[全局 voxel/field revision] --> D
+  D --> E{此前有 renderable component?}
+  E -->|是| F[替换或清空不计 visible budget]
+  E -->|否| G[首次可见计入每帧上限]
+  F --> H[多个 tiles 在短窗口共同变化]
+  I[matching far live] --> J[整批 binary retirement release]
+  J --> H
+```
+
+修复必须保持 data validation、presentation ownership 和 far LOD 三者正交：
+
+1. retained chunk 的 published ledger 跨 settled/reused revalidation 保留；完整数据校验仍可排队全部 chunks，但不能借此把已呈现状态重置成“从未发布”。
+2. presentation fingerprint 复用 confirmed render content identity，只在本 chunk 或实际几何邻接依赖改变时失效；全局 voxel/field revision 只驱动调度，不能充当整窗内容身份。相同 snapshot 重放不得制造伪 replacement。
+3. 用统一 `visible mutation` 预算替代只统计 `new renderable`：首次创建、已有 mesh replacement、renderable→empty/occluded 清空都属于可见变化；纯账本/空 chunk 且无现存组件的处理不占该预算。
+4. 进入与退出使用对称的逐 chunk N/N+1 提交：进入侧 N 提交 near、N+1 mask far；退出侧 N unmask 对应 far、N+1 才释放 lease 并清 near。不得在 progressive drain 开始前整窗清 ownership，也不得退回 per-chunk far rebuild。
+5. release queue 必须携带 lease token/generation fencing。折返、重新收养、candidate rebase 或新 generation 产生后，旧 token 只能被记为 stale，不能释放当前 lease 或清理新 near 呈现。
+6. `near_mesh.publish_budget` 暴露 `build_kind`、last/max/total visible mutations 与 full-window ledger reset；retirement 暴露逐 chunk drain、N/N+1 pending 和 stale-token 计数。cold start 单独标记和验收，不能用其例外绕过移动路径测试。
+7. 该预算必须覆盖 WorldGen、正式服务器 voxel delta 与 field-only settled build；重复相同 field snapshot 不推进 revision。退休块重入只在冻结时完整 presentation fingerprint（自身、六邻居、field）仍匹配时复用，否则保留 lease 并走 replacement。
+
+上述结构修复、相关定向 automation 与本机完整 near+far Real-RHI A→B→A→B 已通过。三次移动只启动 `1029/1029/964` chunks 的 streaming catch-up；`max_paced_visible_mutations=1`、违例 `0`，`full_window_ledger_resets_total=1` 始终只代表 cold start。折返时旧 release 由 `live_active_diverged` 取消，revision 4 最终 pending=`0`、累计逐 chunk 完成 `776`。随后用 `near_prefetch B → staged ready → move B` 强制命中 1 次 `terrain_baseline_worldgen_tile_window_ready_reused`；该原回归分支修复后只启动 `1029` chunks 的 streaming catch-up，不再排 `3087`，mutation/reset 指标保持 `1/0/1`。两轮均 backend=`partitioned_dynamic_mesh`、raymarch=`none`，无 CLI 失败、断言、崩溃或 publish failure。这里关闭本机实现与可见 RHI 契约，用户窗口及另一台硬件的主观像素复核仍保留。
+
+修复测试矩阵：
+
+| 场景 | 结构化断言 | 可见验收 |
+| --- | --- | --- |
+| 正常进入 E | `1029` 进入 chunks；ownership submitted/masked 单调推进；每帧 visible mutation 不超预算 | near 逐 chunk 接管，旧 far 同像素被裁剪，无双显/空洞 |
+| `ready_reused` 完整重校验 | 允许校验 `3087`，但 retained ledger reset=`0`；已有 replacement 也计入预算 | 9 tiles 不再共同突变 |
+| renderable→empty/occluded | 清空现有 component 计入 visible mutation | 不同块按预算退场，不出现一帧整片消失 |
+| 退出 X | N 帧逐 chunk unmask、N+1 release；progress 单调，禁止整集同 epoch | near→far 无 trailing blank、持续双显或整片 pop |
+| A→B→A / A→B(pinned)→C | stale token 被 fencing；继续满足 12.3 的 ownership continuity 与 `premature_clip=0` | 折返或重基不能让旧 release 清掉新 near |
+| cold start | `build_kind=cold_start`，无伪造 previous-live handoff | 首窗行为可解释，移动后仍走上述契约 |
+
 ## 13. 残余风险
 
 - Masked collar 在交接期仍有像素成本，必须用完整场景 GPU profile 验证。
@@ -584,6 +660,7 @@ clip/precommit drop/discontinuity 均为 `0`。证据：
 - retained snapshot 在离开订阅后可能不是最新 truth，因此租约必须短期、有界且只用于视觉覆盖。
 - 当前 uploader 是增量原地提交，不是完整 revision 双缓冲；pinned drain 会在极端快速移动时多完成一个中间中心，但避免了双份全远景内存和不可靠回滚。
 - 未来三维滑动窗口会扩大 E/X 的面，但不改变本设计；真正推进三维窗口前仍需单独决策稿与容量验证。
+- 9 tile 修复已具备自动化与本机完整 near+far Real-RHI 的 E/X/折返证据；另一台硬件及用户窗口主观像素确认仍保留，不能把本机日志等同于跨硬件最终观感。
 
 ## 14. 最终判定
 
