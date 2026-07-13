@@ -97,9 +97,20 @@
 - 验证：Development build 成功；`Voxia.Presentation` 3 项、`Voxia.Voxel.TileWindow`、`Voxia.Voxel.FarDitherMaterialContract`、`Voxia.Gameplay.WorldActor` 全 Success。半径收缩补测日志为 `near_ownership_presentation_radius_final2.log` 与 `tile_window_radius_final.log`。真实 RHI 半径 24 的确定性 A→B(pinned)→C 覆盖了最危险路径：B candidate 已进入 pinned 后 active near 转向 C，ownership 继续保护 live A、pinned B 与 active C；B 提交为 revision 2 时没有错误释放，而是立即重基到 B→C，只有 revision 3/C live 后才释放。期间 `submitted=entering_masked`，最终 `cache_hit_rate=0.946`、`seam_status=pass`、`premature_clip=0`、进程退出 0。证据为 `.demo/observe/near_far_abc_pinned_final3.log`、`.demo/observe/near_far_abc_pinned_events_final3.jsonl` 与 `clients/Voxia/Saved/Logs/.demo/observe/*_final2.log`。
 - 边界：这关闭已知持续双显根因与状态契约回归，不把纯 3D P3 generation 双缓冲/render fence 写成已完成；另一台机器仍应复跑可见窗口做跨硬件像素/主观确认。
 
+### 2026-07-13 9 tile 整体替换回归现场
+
+- 用户在同一可见完整场景确认“near 与旧 far 同块双显”已经解决，但观察到此前逐块替换的效果退化为 9 个水平 tiles 共同变化。
+- 这不是 near/far 细分不一致。near 以 16m server chunk 呈现，far collar/patch 可以使用不同几何粒度；`M_VoxelFarDither` 仍按每个片元的 world-position 查询 chunk ownership，所以 handoff 不依赖拓扑一一对应。
+- `clients/Voxia/Saved/Logs/Voxia.log` 的对照证据：正常相邻进入在 `03:06/03:09/03:18` 启动 `1029 = 3×7³` chunks；`03:17:02` 的 `terrain_baseline_worldgen_tile_window_ready_reused` 随后却启动 `3087 = 9×7³` chunks。该轮完整重校验耗时约 `6246.4ms`，并非只排进入条带。
+- 代码根因一：`StartNearMeshBuild` 对非 `bStreamingCatchupOnly` 的 settled/reused 激活清空 `LastNearMeshPublishedChunks/Epochs`，把完整 active footprint 重新当作未发布集合；数据重校验与可见所有权账本发生了隐藏耦合。
+- 代码根因二：`ContinueNearMeshBuild` 的逐帧限制只统计 `!bHadRenderableComponent` 的首次可见几何；已有 component 的 mesh replacement、变空/清理不会消耗预算，所以完整 3×3 footprint 可在同一小段时间内共同变化。
+- 代码根因三：退出侧仍在 matching far live 后执行 `binary_after_far_visible`，本次可见实跑依次同帧释放 `296/293/266/168` 个 retained chunks。若玩家观察身后 near→far，会直接看到整片退场。
+- 进入侧 ownership 并未消失：`entering=1029` 时 submitted/masked 仍逐步递增。修复边界是统一“可见变化”契约，而不是强制 near/far 网格对齐、复制 LOD 或按 chunk 重建 far mesh。
+- 下一步先保留 retained published ledger，把 full validation 与 visible replacement 分开排队；预算统计首次创建、已有 mesh 替换和清空三类可见变化；退出侧增加渐进 release 或短时互补 fade，并在 `near_mesh` 暴露 build kind、visible mutations、ledger reset 与 retirement release 进度。
+
 ### 下一步
 
-1. 留出可见完整窗口给用户继续观察近远交接和主观闪烁；若仍能定位闪烁，只调整 RevisionFade pattern/时长，不改 OwnershipClip、retirement 时序或 LOD 粒度。
+1. 先修复上节 9 tile 回归：settled/reused revalidation 不得清空 retained published ledger；所有真实可见 component mutation 服从逐帧预算；退出侧不得再把整个 retained 集合以一个二值 epoch 释放。OwnershipClip 和 LOD 粒度保持不变。
 2. 用同一 `frame_perf` 口径补对角、上下层和低端硬件矩阵；当前桌面机已经满足完整场景 120+，但 p95 仍高于 8.33ms，不能描述为每帧锁 120。
 3. near/collar center 继续精确跟随玩家，outer coverage center 可独立评估 hysteresis，减少更长巡航的 ring reassignment；必须保持当前 latest-desired/extended 保护契约。
 4. 统一三维 LOD 滑动窗口仍只停留在设计稿，用户已要求暂停；不得把本轮 XYZ ownership/三维 retirement batch 误写成 SVO coverage 已三维化。
@@ -107,7 +118,7 @@
 
 阶段全文见 [`phase-far-temporal-stability-and-seamless-streaming.md`](../voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)，客户端根因记录见 `clients/Voxia/docs/engineering-notes/2026-07-10-svo-mesh-path-hidden-full-rebuilds.md`。
 
-**Last updated**：2026-07-11（双向近远景呈现交接 Phase A-E、长距离活性与完整场景 120+ 收口；3D LOD 仍仅设计暂停）。
+**Last updated**：2026-07-13（同块双显已关闭；9 tile 整体替换定位为整窗重校验/退出批量释放绕过 visible-mutation 契约，修复进行中；3D LOD 仍仅设计暂停）。
 > ⚠️ 以上 2026-07-11 小节是当前接力入口；下方历史正文停在 2026-07-06。2026-07-07/08 的 VLOD-A1~A4 远景渲染里程碑进展（含 A3.0 device-removal 归因反转、A3b merge 收官、A4 收尾）见 [`voxel-server-authority-phase-overview.md`](voxel-server-authority-phase-overview.md) 与 `../voxel-far-field/phase-vlod-*.md`；当前事实见 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。
 
 旧 A4-bis 接力记录保留在下方；接手 Voxia 近场窗口、SVO 远景路线或客户端 near/far/focus 架构时，先看上述最新稿与 [`00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)。

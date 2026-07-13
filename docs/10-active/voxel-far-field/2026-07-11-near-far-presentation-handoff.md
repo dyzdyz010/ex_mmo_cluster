@@ -590,6 +590,57 @@ clip/precommit drop/discontinuity 均为 `0`。证据：
 - radius 2→1 automation 覆盖零 entering、退出环 ownership、完整 35-chunk atlas 与 candidate permit；`Voxia.Presentation` 和 `Voxia.Voxel.TileWindow` 在补丁后再次 Success，日志为 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_radius_final2.log` 与 `tile_window_radius_final.log`。
 - 真实 RHI 半径 24 首轮相邻 smoke 在 far revision 1 尚 live 时观察到 proactive submitted/masked 同步推进并最终 revision 2 收敛。随后用 `until_svo_candidate_in_flight` 与 1-tile patch 做确定性 A→B(pinned)→C：B candidate 已 pinned 后 active near 转向 C，observe 记录 `in_flight_target_diverged`；ownership 同时覆盖 live A、pinned B 与 active C。B 提交为 revision 2 时未释放 mask，而是立即以 live B / active C 重基，`submitted/entering_masked=214/214`；只有 revision 3/C live 后才以 `live_commit_matches_active` 释放。最终 `cache_hit_rate=0.946`、`seam_status=pass`、`premature_clip_count=0`、进程退出 0。证据位于 `.demo/observe/near_far_abc_pinned_final3.log` 与 `.demo/observe/near_far_abc_pinned_events_final3.jsonl`；automation 日志位于 `clients/Voxia/Saved/Logs/.demo/observe/near_ownership_presentation_final2.log`、`tile_window_footprint_final.log`、`far_dither_contract_final2.log`、`worldactor_near_ownership_final2.log`。
 
+### 12.4 2026-07-13 9 tile 整体替换回归与修复决策
+
+用户在可见完整场景确认 12.3 的同块双显已解决，但指出此前逐块替换的视觉效果又退化为 9 个水平 tiles 共同变化。现场与代码交叉排查后，结论是：**不是 near/far 细分单元不同导致 handoff 无法套用，而是逐 chunk 预算只覆盖了首次创建，完整重校验与退出释放仍绕过该契约。**
+
+两套几何本来就不要求拓扑一致。near renderer 以 16m server chunk 维护组件；far collar 使用 3.5m leaf、8×8 tile patch 等不同粒度。ownership material 在片元阶段把实体侧 world-position 映射回 server chunk，再查 R8 atlas。因此一个 far quad 可以跨多个 near chunks 并在像素级被分别裁剪，强制网格对齐或 per-chunk far component 都会破坏本方案的成本边界。
+
+本次 `clients/Voxia/Saved/Logs/Voxia.log` 提供了同一进程内的对照：
+
+| 时刻 | 激活类型 | near build 排队 | 含义 |
+| --- | --- | ---: | --- |
+| `03:06:44` | 相邻 active window | `1029 = 3×7³` chunks | 正常进入条带，3 个水平 tiles |
+| `03:09:53` | `ready_reused` | `1029 = 3×7³` chunks | 已复用窗口仍只补进入条带 |
+| `03:17:02` | `ready_reused` | `3087 = 9×7³` chunks | 异常完整 3×3 水平 footprint 重校验 |
+| `03:18:32` | `ready_reused` | `1029 = 3×7³` chunks | 后续移动又回到正常进入条带 |
+
+同一进程的退出日志依次为 `released=296/293/266/168 mode=binary_after_far_visible`。因此玩家若观察进入方向，异常轮次会看到完整 footprint 的已有 component 快速重写；若观察退出方向，则会看到 retained near 在 far live 后整批二值消失。
+
+当前隐藏耦合如下：
+
+```mermaid
+flowchart LR
+  A[active window 激活] --> B{streaming catch-up?}
+  B -->|否| C[清空 published ledger]
+  C --> D[完整 3087 chunks 重校验]
+  D --> E{此前有 renderable component?}
+  E -->|是| F[替换或清空不计 visible budget]
+  E -->|否| G[首次可见计入每帧上限]
+  F --> H[多个 tiles 在短窗口共同变化]
+  I[matching far live] --> J[整批 binary retirement release]
+  J --> H
+```
+
+修复必须保持 data validation、presentation ownership 和 far LOD 三者正交：
+
+1. retained chunk 的 published ledger 跨 settled/reused revalidation 保留；完整数据校验仍可排队全部 chunks，但不能借此把已呈现状态重置成“从未发布”。
+2. 用统一 `visible mutation` 预算替代只统计 `new renderable`：首次创建、已有 mesh replacement、renderable→empty/occluded 清空都属于可见变化；纯账本/空 chunk 且无现存组件的处理不占该预算。
+3. `near_mesh.publish_budget` 增加 `build_kind`、last/max/total visible mutations 与 full-window ledger reset 计数，日志明确区分 entering catch-up、settled revalidation 和 cold start。
+4. 退出侧不得继续以单 epoch 对整个 retained 集合执行二值释放。若 frozen tile batch 无法无重建地逐 chunk 删除，则使用有界的互补 fade；不得为追求粒度改成 per-chunk far component 或高频 CPU far rebuild。
+5. cold start 没有 previous live far，必须单独标记和验收，不能把首窗 3×3 建立误报成移动 handoff regression，也不能用 cold-start 例外绕过移动路径测试。
+
+修复测试矩阵：
+
+| 场景 | 结构化断言 | 可见验收 |
+| --- | --- | --- |
+| 正常进入 E | `1029` 进入 chunks；ownership submitted/masked 单调推进；每帧 visible mutation 不超预算 | near 逐 chunk 接管，旧 far 同像素被裁剪，无双显/空洞 |
+| `ready_reused` 完整重校验 | 允许校验 `3087`，但 retained ledger reset=`0`；已有 replacement 也计入预算 | 9 tiles 不再共同突变 |
+| renderable→empty/occluded | 清空现有 component 计入 visible mutation | 不同块按预算退场，不出现一帧整片消失 |
+| 退出 X | release progress 单调，禁止 `binary_after_far_visible` 整集同 epoch | near→far 无 trailing blank、双显或整片 pop |
+| A→B(pinned)→C | 继续满足 12.3 的 ownership continuity 与 `premature_clip=0` | 新节奏不能破坏已修复的同块互斥 |
+| cold start | `build_kind=cold_start`，无伪造 previous-live handoff | 首窗行为可解释，移动后仍走上述契约 |
+
 ## 13. 残余风险
 
 - Masked collar 在交接期仍有像素成本，必须用完整场景 GPU profile 验证。
