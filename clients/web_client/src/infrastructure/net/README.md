@@ -18,6 +18,7 @@
 - `clients/web_client` 默认使用 `server-ws`；可通过 `VITE_MOVEMENT_TRANSPORT=simulated` 强制使用 simulated-local。
 - movement 协议当前会解码 `MovementAck` / `PlayerMove` 的 `movement_mode`，并把服务端坐标 `(x,y,z)` 转成浏览器坐标 `(x,z,y)`；跳跃的竖直轴在浏览器中是 `Vector3.y`。`PlayerState(0x8C)` 会进入 observe/CLI 快照；其他已知但浏览器暂未消费的下行帧会记录为 `known_downlink_unhandled`，不应被记为 `message_ignored`。
 - 体素协议 `0x60..0x75` 已接入 S1：`ChunkSubscribe -> ChunkSnapshot/ChunkDelta`、`VoxelImpactIntent -> VoxelIntentResult`、break sentinel、`PrefabPlaceIntent` v1、`VoxelDebugProbe` 和 `FieldConductIntent(0x75)`。
+  production 自动订阅固定为完整 XYZ tile cube：tile size=7/radius=1 映射到规范 tile-center chunk + `radius_l_inf=10`（9261 chunks），跨任一轴 tile 边界换窗并低频续约。`VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW=1` 仅供专项自动化，不能成为 production coverage。
   放电类 field action 默认走已连接的 WebSocket intent 通道；客户端提交后只登记待表现请求，必须收到服务端 `FieldRegionSnapshot(0x73)` 后才渲染闪电。
   当前 canonical 设计见 `docs/2026-04-29-server-authoritative-voxel-data-protocol-design.md`：
   `SceneServer.Voxel.*` 持有 hot chunk truth，voxel payload 统一 big-endian，

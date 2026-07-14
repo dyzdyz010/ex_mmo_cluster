@@ -2,32 +2,27 @@
 
 本目录拥有 Scene 侧热体素执行状态。热体素状态指当前租约内、需要被快速读写的区块内存状态。
 
-## 2026-06-28 LOD projection rebuild
+## 2026-07-13 canonical XYZ 与旧 XZ projection 归档
 
 `SceneServer.Voxel.WorldGenMaterializer` is the explicit bridge from
 deterministic WorldGen output to canonical chunk snapshots. It generates one
 chunk and encodes the normal snapshot payload under the caller's World-issued
-lease fence. Inline LOD projection remains enabled by default for small/import
-calls, but bulk world-pack materialization may pass `lod_projection?: false` to
-write only canonical snapshots and then run an explicit
-`SceneServer.Voxel.LodProjection.Rebuilder` pass. This is a pre-scene
-import/materialization tool only: ChunkProcess, heightmap reads, and runtime
-repair paths must still fail visibly when canonical data is missing.
+lease fence. It always writes only canonical XYZ chunk truth; historical
+`lod_projection?` / `lod_projection_opts` arguments no longer alter the write
+and no `lod_projection_cells` enter `ChunkSnapshotStore`.
 
 The formal production caller is `WorldServer.Voxel.WorldPackMaterializer`,
 which runs during deployment-time world-pack construction. Scene owns the chunk
-encoding and optional inline LOD projection write, while World owns routing,
-lease fences, and bulk materializer options.
+encoding, while World owns routing, lease fences, and bulk materializer options.
 
-`SceneServer.Voxel.LodProjection.Rebuilder` 从 canonical chunk snapshots 回填
-`LodHeightmapStore` 时，以 X/Z column 为单位聚合垂直 chunk：
+`SceneServer.Voxel.LodProjection`、`AuthoritativeHeightmap`、
+`LodProjection.Rebuilder` 与 `DataService.Voxel.LodHeightmapStore` 全部属于旧 XZ
+heightmap 的离线迁移/审计工具，不是在线运行时，也不能作为完整 3D 远景壳基础。
+`0x6A/0x6B` 仅保留 append-only codec 兼容，TCP 对合法 `0x6A` 请求固定返回
+`unsupported_legacy_contract`。
 
-- 同一 X/Z column 中优先选择最高的非空 storage 作为 projection 来源；整列为空时仍写出空
-  row，保持 0x6A 请求可以区分“权威为空”和“权威数据缺失”。
-- dev bootstrap 的 343 个 baseline chunk 会 coalesce 成 `7x7 = 49` 个 projection
-  cells/columns，不再把 `7x7x7` baseline 误投影成竖向面片墙。
-- `LodProjection` 在扫描单列时预先把 macro headers 规范化成 tuple，避免对每个
-  `(mx,mz,my)` 重复 `Storage.index_macro_headers/normalize!`。
+如历史迁移确实需要生成旧表，必须由操作者显式运行 `LodProjection.Rebuilder`；
+生成失败只影响该离线产物，绝不能回滚 canonical snapshot。
 
 `SceneServer.Voxel.RegionRuntime` 是第一层区域运行时。它记录本地租约，缓存邻区租约元数据，
 并在接受跨边界规则传播之前校验 `BoundaryVoxelEvent` 字段。跨边界事件如果带着旧租约，
@@ -52,8 +47,8 @@ chunk version 对该 intent 重试一次。显式 `expected_chunk_version` /
 `ChunkProcess.apply_intents/2` / `commit_transaction/2` 是 prefab 和跨 chunk 事务的热路径。
 它们先更新本进程内的权威 storage，再向订阅者 fan-out 一条按最终 macro 合并后的
 `ChunkDelta`，而不是完整 chunk snapshot。完整 snapshot 持久化当前同步通过
-`DataService.Voxel.ChunkSnapshotStore.put_snapshot/1` 完成；projection cells 会在同一事务内
-upsert，projection 失败会使 snapshot 写入失败。`ChunkProcess.flush_persistence/2` 仍保留为
+`DataService.Voxel.ChunkSnapshotStore.put_snapshot/1` 完成；canonical 事务不生成、不写入
+也不读取旧 XZ projection。`ChunkProcess.flush_persistence/2` 仍保留为
 CLI / 测试同步点，但 D-4 后没有异步 persist 队列需要 drain。
 
 `ChunkProcess.subscribe/3` 是订阅接口。订阅者会立即拿到当前完整 `ChunkSnapshot`，用于

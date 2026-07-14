@@ -639,7 +639,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
     assert {:ok, %{storage: stored_storage}} = Codec.decode_chunk_snapshot_payload(snapshot.data)
     assert stored_storage.chunk_version == 2
 
-    assert {:ok, %{heights: <<17::unsigned-big-integer-size(16)>>}} =
+    assert {:error, {:missing_lod_heightmap_cells, _meta}} =
              LodHeightmapStore.heightmap_region(1, 16, 16, 16, 1, 1)
 
     debug = ChunkProcess.debug_state(chunk)

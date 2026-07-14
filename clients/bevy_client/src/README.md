@@ -90,7 +90,8 @@ into those domain resources in 架构重整阶段 1–2.)
 - Remote actors consume server snapshots plus `ActorIdentity` metadata.
 - NPCs are represented as remote actors with explicit
   `RemoteActorKind::Npc`, not by inferring from CID ranges.
-- Voxel is offline-local — see `docs/2026-04-25-bevy-client-web-parity-voxel-migration.md`.
+- 在线 voxel confirmed truth 由服务端 snapshot/delta 驱动；离线 voxel 编辑器是独立能力。
+- 生产近场按完整 XYZ tile cube 订阅：tile 边长 7 chunks，窗口为 `3x3x3 tiles = 9261 chunks`，只在跨 tile 时换窗，并每 60 秒续约同一窗口。
 
 ## Restructure design
 

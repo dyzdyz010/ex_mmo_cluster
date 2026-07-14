@@ -8,13 +8,14 @@ defmodule WorldPackMaterializeShardsProbe do
       mix run --no-start scripts/world_pack_materialize_shards.exs --index full32km --shard-coords "64,0,64"
       mix run --no-start scripts/world_pack_materialize_shards.exs --index full32km --all-shards
 
-  By default this uses deferred LOD projection (`lod_projection?: false`) so
-  full-pack import writes canonical chunks first. Re-run the same command with
+  This command writes canonical XYZ chunks only; archived XZ projection is not
+  generated and is not a release-readiness condition. Re-run the same command with
   `--max-shards N`: already-ready shards are skipped and do not consume the
   materialization limit.
   """
 
   alias DataService.Repo
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.SceneNodeRegistry
@@ -52,8 +53,7 @@ defmodule WorldPackMaterializeShardsProbe do
       [
         materializer: materializer,
         batch_size: opts.batch_size,
-        seed: opts.seed,
-        materializer_opts: materializer_opts(opts)
+        seed: opts.seed
       ]
       |> maybe_put(:max_shards, opts.max_shards)
       |> maybe_put(:shard_coords, opts.shard_coords)
@@ -72,7 +72,6 @@ defmodule WorldPackMaterializeShardsProbe do
       requested_all_shards: opts.all_shards,
       requested_shard_coords: Enum.map(opts.shard_coords || [], &Tuple.to_list/1),
       batch_size: opts.batch_size,
-      lod_projection_mode: if(opts.inline_lod_projection, do: "inline", else: "deferred"),
       duration_ms: duration_ms,
       result: result_report(result)
     }
@@ -108,8 +107,7 @@ defmodule WorldPackMaterializeShardsProbe do
           all_shards: :boolean,
           batch_size: :integer,
           seed: :integer,
-          migrate: :boolean,
-          inline_lod_projection: :boolean
+          migrate: :boolean
         ]
       )
 
@@ -125,8 +123,7 @@ defmodule WorldPackMaterializeShardsProbe do
       all_shards: Keyword.get(opts, :all_shards, false),
       batch_size: Keyword.get(opts, :batch_size, 64),
       seed: Keyword.get(opts, :seed, 1337),
-      migrate: Keyword.get(opts, :migrate, true),
-      inline_lod_projection: Keyword.get(opts, :inline_lod_projection, false)
+      migrate: Keyword.get(opts, :migrate, true)
     }
   end
 
@@ -138,9 +135,6 @@ defmodule WorldPackMaterializeShardsProbe do
     raise ArgumentError,
           "refusing to materialize without --max-shards, --shard-coords, or --all-shards"
   end
-
-  defp materializer_opts(%{inline_lod_projection: true}), do: []
-  defp materializer_opts(_opts), do: [lod_projection?: false]
 
   defp ensure_apps!(opts) do
     Enum.each([:postgrex, :ecto_sql, :data_service, :scene_server], fn app ->
@@ -185,14 +179,14 @@ defmodule WorldPackMaterializeShardsProbe do
   defp index!("full32km") do
     WorldPackIndex.new!(
       logical_scene_id: 91_015,
-      content_version: "worldgen-32km-index-pack@1",
-      chunk_min: {-1024, -3, -1024},
-      chunk_max: {1023, 102, 1023},
+      content_version: "worldgen-32km-xyz-window@2",
+      chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+      chunk_max: VoxelSpatialContract.full32km_chunk_max(),
       payload_layout: %{
         layout: "regular_shard_grid_v1",
         chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
-        shard_chunk_shape: {16, 106, 16},
-        shard_origin: {-1024, -3, -1024},
+        shard_chunk_shape: VoxelSpatialContract.full32km_shard_chunk_shape(),
+        shard_origin: VoxelSpatialContract.full32km_chunk_min(),
         file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
         footer_format: "chunk_offset_table_v1",
         compression: "none"
@@ -200,10 +194,10 @@ defmodule WorldPackMaterializeShardsProbe do
       regions: [
         %{
           id: "full-32km",
-          chunk_min: {-1024, -3, -1024},
-          chunk_max: {1023, 102, 1023},
+          chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+          chunk_max: VoxelSpatialContract.full32km_chunk_max(),
           chunk_count: 444_596_224,
-          hash: "sha256:full-32km"
+          hash: "sha256:full-32km-xyz-window-v2"
         }
       ]
     )

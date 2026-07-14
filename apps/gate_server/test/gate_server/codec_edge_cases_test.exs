@@ -71,10 +71,10 @@ defmodule GateServer.CodecEdgeCasesTest do
     end
 
     test "voxel_chunk_subscribe over the known-chunks cap is rejected" do
-      # known_count 上限 512;声明 513 应被拒(即便 body 不足也先被 guard 拦下)。
+      # known_count 上限 9261；声明 9262 应被拒（即便 body 不足也先被 guard 拦下）。
       msg =
         <<0x60, 1::64-big, 1::64-big, 0::32-big-signed, 0::32-big-signed, 0::32-big-signed, 1::8,
-          1::8, 513::16-big>>
+          1::8, 9_262::16-big>>
 
       assert {:error, :invalid_message} == Codec.decode(msg)
     end

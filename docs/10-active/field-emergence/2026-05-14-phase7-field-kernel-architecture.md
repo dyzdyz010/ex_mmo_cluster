@@ -1,5 +1,7 @@
 # Phase 7: 局部场传播 Kernel 架构目标
 
+> **2026-07-14 客户端归档覆盖**：本文中的 `web_client` / `bevy_client` 内容只保留为历史实现与证据，不再是默认后续任务或验收门禁。客户端新增工作只进入 Voxia；除非用户显式点名归档客户端。服务端结论是否仍有效需按当前 truth 单独核对。
+
 状态：设计目标稿；Phase 7.A kernel-first 迁移已落地；Phase 7.D 温度异常入口已落地；Phase 7.E 第一批与 Phase 7.B core/runtime/web 入口已落地
 日期：2026-05-14
 归属：goal `voxel-authoritative-and-field-minimum` Phase 7

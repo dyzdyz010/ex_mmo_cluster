@@ -12,11 +12,12 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
 
   alias WorldServer.CliObserve
   alias WorldServer.Voxel.DevSeed
+  alias MmoContracts.VoxelSpatialContract
 
   @default_retry_ms 1_000
   @default_refresh_ms :timer.minutes(30)
-  @default_baseline_center_chunk {0, 0, 0}
-  @default_baseline_radius 3
+  @default_baseline_center_chunk VoxelSpatialContract.default_near_center_chunk()
+  @default_baseline_radius VoxelSpatialContract.near_chunk_radius()
 
   @doc "Starts the default region bootstrapper."
   def start_link(opts \\ []) do
@@ -51,16 +52,12 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
       logical_scene_id: Keyword.get(opts, :logical_scene_id, 1),
       retry_ms: Keyword.get(opts, :retry_ms, @default_retry_ms),
       refresh_ms: Keyword.get(opts, :refresh_ms, @default_refresh_ms),
-      # Runtime ChunkProcess no longer generates missing chunks. The bootstrapper
-      # is therefore an explicit dev/demo materialization step: route regions,
-      # write authoritative starter snapshots, then optionally rebuild LOD
-      # projection rows so near voxel truth and far LOD start from the same store.
+      # Runtime ChunkProcess 不再生成缺失 chunk。bootstrapper 只负责显式的
+      # dev/demo XYZ baseline 与出生点地形物化，不生成任何旧 XZ projection。
       seed_terrain?: Keyword.get(opts, :seed_terrain?, true),
       baseline_center_chunk: baseline_center_chunk,
       baseline_radius: baseline_radius,
       baseline_footprint_chunks: baseline_footprint_chunks,
-      rebuild_lod_projection?: Keyword.get(opts, :rebuild_lod_projection?, true),
-      lod_projection_rebuild_opts: Keyword.get(opts, :lod_projection_rebuild_opts, []),
       seed_fun: Keyword.get(opts, :seed_fun, &DevSeed.ensure_default_region/1),
       attempts: 0,
       last_error: nil,
@@ -97,9 +94,7 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
     opts = [
       logical_scene_id: state.logical_scene_id,
       seed_terrain?: state.seed_terrain?,
-      baseline_footprint_chunks: state.baseline_footprint_chunks,
-      rebuild_lod_projection?: state.rebuild_lod_projection?,
-      lod_projection_rebuild_opts: state.lod_projection_rebuild_opts
+      baseline_footprint_chunks: state.baseline_footprint_chunks
     ]
 
     case call_seed(state.seed_fun, opts) do
@@ -152,8 +147,7 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
       seed_terrain?: state.seed_terrain?,
       baseline_chunk_count: length(state.baseline_footprint_chunks),
       baseline_center_chunk: Tuple.to_list(state.baseline_center_chunk),
-      baseline_radius: state.baseline_radius,
-      rebuild_lod_projection?: state.rebuild_lod_projection?
+      baseline_radius: state.baseline_radius
     })
   end
 
@@ -165,7 +159,6 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapper do
       baseline_chunk_count: length(state.baseline_footprint_chunks),
       baseline_center_chunk: Tuple.to_list(state.baseline_center_chunk),
       baseline_radius: state.baseline_radius,
-      rebuild_lod_projection?: state.rebuild_lod_projection?,
       reason: inspect(reason)
     })
   end

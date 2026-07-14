@@ -14,6 +14,7 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
 
   use GenServer
 
+  alias MmoContracts.VoxelSpatialContract
   alias WorldServer.CliObserve
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.WorldPackMaterializer
@@ -21,8 +22,12 @@ defmodule WorldServer.Voxel.WorldPackBootstrapper do
   @default_retry_ms 1_000
   @default_batch_size 64
   @default_max_chunks 10_000
-  @default_chunk_min {-3, -3, -3}
-  @default_chunk_max {3, 3, 3}
+  @default_near_bounds VoxelSpatialContract.default_near_center_chunk()
+                       |> VoxelSpatialContract.near_window_bounds()
+
+  @default_chunk_min elem(@default_near_bounds, 0)
+  @default_chunk_max elem(@default_near_bounds, 1)
+
   @default_world_macro_extent 32_768
 
   @type chunk_coord :: {integer(), integer(), integer()}

@@ -1,16 +1,17 @@
 defmodule MmoContracts.WorldPackIndexTest do
   use ExUnit.Case, async: true
 
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
 
-  @full_min {-1024, -3, -1024}
-  @full_max {1023, 102, 1023}
+  @full_min VoxelSpatialContract.full32km_chunk_min()
+  @full_max VoxelSpatialContract.full32km_chunk_max()
 
   test "describes the 32km full-authority chunk space without enumerating chunks" do
     index =
       WorldPackIndex.new!(
         logical_scene_id: 1,
-        content_version: "worldgen-32km@1",
+        content_version: "worldgen-32km-xyz-window@2",
         chunk_min: @full_min,
         chunk_max: @full_max,
         regions: [
@@ -46,7 +47,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           %{
             id: "missing-x-max",
             chunk_min: @full_min,
-            chunk_max: {1022, 102, 1023},
+            chunk_max: {1022, 98, 1023},
             chunk_count: 444_379_136,
             hash: "sha256:missing"
           }
@@ -80,34 +81,41 @@ defmodule MmoContracts.WorldPackIndexTest do
     assert summary.overlap_count == 1
   end
 
-  test "sliding windows stay radius 3 while movement only changes entering and leaving chunks" do
-    assert window0 = WorldPackIndex.sliding_window({0, 0, 0}, 3)
-    assert window1 = WorldPackIndex.sliding_window({1, 0, 0}, 3)
-    assert window2 = WorldPackIndex.sliding_window({2, 0, 0}, 3)
+  test "radius 10 sliding windows replace one seven-chunk tile slab at a time" do
+    assert window0 = WorldPackIndex.sliding_window({3, 3, 3}, 10)
+    assert window_one_chunk = WorldPackIndex.sliding_window({4, 3, 3}, 10)
+    assert window1 = WorldPackIndex.sliding_window({10, 3, 3}, 10)
+    assert window2 = WorldPackIndex.sliding_window({17, 3, 3}, 10)
 
-    assert window0.chunk_count == 343
-    assert window1.chunk_count == 343
-    assert window2.chunk_count == 343
+    assert window0.chunk_count == 9_261
+    assert window_one_chunk.chunk_count == 9_261
+    assert window1.chunk_count == 9_261
+    assert window2.chunk_count == 9_261
+
+    assert one_chunk_transition = WorldPackIndex.window_transition(window0, window_one_chunk)
+    assert one_chunk_transition.kept_chunks == 8_820
+    assert one_chunk_transition.entering_chunks == 441
+    assert one_chunk_transition.leaving_chunks == 441
 
     assert transition01 = WorldPackIndex.window_transition(window0, window1)
-    assert transition01.kept_chunks == 294
-    assert transition01.entering_chunks == 49
-    assert transition01.leaving_chunks == 49
+    assert transition01.kept_chunks == 6_174
+    assert transition01.entering_chunks == 3_087
+    assert transition01.leaving_chunks == 3_087
 
     assert transition12 = WorldPackIndex.window_transition(window1, window2)
-    assert transition12.kept_chunks == 294
-    assert transition12.entering_chunks == 49
-    assert transition12.leaving_chunks == 49
+    assert transition12.kept_chunks == 6_174
+    assert transition12.entering_chunks == 3_087
+    assert transition12.leaving_chunks == 3_087
 
-    assert WorldPackIndex.window_bounds(window0).chunk_min == {-3, -3, -3}
-    assert WorldPackIndex.window_bounds(window2).chunk_max == {5, 3, 3}
+    assert WorldPackIndex.window_bounds(window0).chunk_min == {-7, -7, -7}
+    assert WorldPackIndex.window_bounds(window2).chunk_max == {27, 13, 13}
   end
 
   test "validates sampled sliding windows against the full 32km authority bounds" do
     index =
       WorldPackIndex.new!(
         logical_scene_id: 1,
-        content_version: "worldgen-32km@1",
+        content_version: "worldgen-32km-xyz-window@2",
         chunk_min: @full_min,
         chunk_max: @full_max,
         regions: [
@@ -122,18 +130,18 @@ defmodule MmoContracts.WorldPackIndexTest do
       )
 
     for center <- [
-          {0, 0, 0},
-          {1, 0, 0},
-          {2, 0, 0},
-          {1020, 0, 0},
-          {1020, 0, 1020},
-          {-1021, 0, -1021}
+          {3, 3, 3},
+          {10, 3, 3},
+          {17, 3, 3},
+          {1011, 3, 3},
+          {1011, 3, 1011},
+          {-1012, 3, -1012}
         ] do
-      assert :ok = WorldPackIndex.validate_window(index, center, 3)
+      assert :ok = WorldPackIndex.validate_window(index, center, 10)
     end
 
     assert {:error, %{reason: :window_out_of_bounds}} =
-             WorldPackIndex.validate_window(index, {1021, 0, 0}, 3)
+             WorldPackIndex.validate_window(index, {1018, 3, 3}, 10)
   end
 
   test "plans payload shard reads for a sliding window without enumerating the full pack" do
@@ -147,7 +155,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -163,11 +171,11 @@ defmodule MmoContracts.WorldPackIndexTest do
         ]
       )
 
-    assert {:ok, plan} = WorldPackIndex.window_payload_plan(index, {0, 0, 0}, 3)
+    assert {:ok, plan} = WorldPackIndex.window_payload_plan(index, {3, 3, 3}, 10)
 
-    assert plan.window.center == {0, 0, 0}
-    assert plan.window.chunk_count == 343
-    assert plan.chunk_count == 343
+    assert plan.window.center == {3, 3, 3}
+    assert plan.window.chunk_count == 9_261
+    assert plan.chunk_count == 9_261
     assert Enum.count(plan.shards) == 4
 
     shard_counts =
@@ -176,23 +184,23 @@ defmodule MmoContracts.WorldPackIndexTest do
       |> Enum.sort()
 
     assert shard_counts == [
-             {{63, 0, 63}, "packs/tile_63_0_63.vxpack", 63},
-             {{63, 0, 64}, "packs/tile_63_0_64.vxpack", 84},
-             {{64, 0, 63}, "packs/tile_64_0_63.vxpack", 84},
-             {{64, 0, 64}, "packs/tile_64_0_64.vxpack", 112}
+             {{63, 0, 63}, "packs/tile_63_0_63.vxpack", 1_029},
+             {{63, 0, 64}, "packs/tile_63_0_64.vxpack", 2_058},
+             {{64, 0, 63}, "packs/tile_64_0_63.vxpack", 2_058},
+             {{64, 0, 64}, "packs/tile_64_0_64.vxpack", 4_116}
            ]
 
     all_refs = Enum.flat_map(plan.shards, & &1.chunks)
-    assert length(all_refs) == 343
+    assert length(all_refs) == 9_261
     assert Enum.uniq_by(all_refs, & &1.chunk_coord) == all_refs
 
-    assert Enum.find(all_refs, &(&1.chunk_coord == {-3, -3, -3})).local_coord ==
-             {13, 0, 13}
+    assert Enum.find(all_refs, &(&1.chunk_coord == {-7, -7, -7})).local_coord ==
+             {9, 0, 9}
 
-    assert Enum.find(all_refs, &(&1.chunk_coord == {0, 0, 0})).shard_coord == {64, 0, 64}
+    assert Enum.find(all_refs, &(&1.chunk_coord == {3, 3, 3})).shard_coord == {64, 0, 64}
 
-    assert {:ok, moved} = WorldPackIndex.window_payload_plan(index, {1, 0, 0}, 3)
-    assert moved.chunk_count == 343
+    assert {:ok, moved} = WorldPackIndex.window_payload_plan(index, {10, 3, 3}, 10)
+    assert moved.chunk_count == 9_261
     assert Enum.count(moved.shards) == 4
   end
 
@@ -207,7 +215,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -242,7 +250,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -261,14 +269,14 @@ defmodule MmoContracts.WorldPackIndexTest do
     assert {:ok, shard} = WorldPackIndex.payload_shard_plan(index, {64, 0, 64})
     assert shard.shard_coord == {64, 0, 64}
     assert shard.path == "packs/tile_64_0_64.vxpack"
-    assert shard.chunk_min == {0, -3, 0}
-    assert shard.chunk_max == {15, 102, 15}
+    assert shard.chunk_min == {0, -7, 0}
+    assert shard.chunk_max == {15, 98, 15}
     assert shard.chunk_count == 27_136
     assert length(shard.chunks) == 27_136
 
-    assert hd(shard.chunks).chunk_coord == {0, -3, 0}
+    assert hd(shard.chunks).chunk_coord == {0, -7, 0}
     assert hd(shard.chunks).local_coord == {0, 0, 0}
-    assert List.last(shard.chunks).chunk_coord == {15, 102, 15}
+    assert List.last(shard.chunks).chunk_coord == {15, 98, 15}
     assert List.last(shard.chunks).local_coord == {15, 105, 15}
   end
 
@@ -283,7 +291,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -302,8 +310,8 @@ defmodule MmoContracts.WorldPackIndexTest do
     assert {:ok, shard} = WorldPackIndex.payload_shard_summary(index, {64, 0, 64})
     assert shard.shard_coord == {64, 0, 64}
     assert shard.path == "packs/tile_64_0_64.vxpack"
-    assert shard.chunk_min == {0, -3, 0}
-    assert shard.chunk_max == {15, 102, 15}
+    assert shard.chunk_min == {0, -7, 0}
+    assert shard.chunk_max == {15, 98, 15}
     assert shard.chunk_count == 27_136
     refute Map.has_key?(shard, :chunks)
   end
@@ -319,7 +327,7 @@ defmodule MmoContracts.WorldPackIndexTest do
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"

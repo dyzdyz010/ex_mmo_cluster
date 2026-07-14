@@ -1,8 +1,8 @@
 //! 地形噪声 NIF（阶段3 step3.1 重写为 Rust）。
 //!
 //! 把 `SceneServer.Voxel.WorldGen` 里逐列高度的重计算从 Elixir 移到 Rust——
-//! 架构纪律:重计算必须落在 Rust。chunk 生成与 LOD heightmap 都走同一个
-//! `column_height`,保证地形(实体方块)与远景高度图一致。
+//! 架构纪律:重计算必须落在 Rust。chunk 生成与已归档 heightmap 离线迁移工具
+//! 共用 `column_height`，保证历史产物的确定性；在线运行时不读取 heightmap。
 //!
 //! 移植自 Elixir 的分层 value-noise 模型(常量/公式逐字对齐):
 //!   lowland 基底(平缓滚动,凹陷成盆地) + 稀疏高山(低频 mask 选区 + ridged 分形)。

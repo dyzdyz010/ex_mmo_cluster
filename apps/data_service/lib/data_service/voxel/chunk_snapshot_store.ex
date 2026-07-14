@@ -34,6 +34,9 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   Reads (`get_snapshot/2`) return the canonical persisted row. `snapshot/0`
   is a CLI/debug helper that returns the entire table keyed by
   `{logical_scene_id, chunk_coord}`.
+
+  canonical 写入不会更新已归档的 XZ heightmap projection。该投影只属于可重建的
+  离线迁移产物；缺失或写入失败都不得拒绝、回滚 voxel truth。
   """
 
   import Ecto.Query, only: [from: 2]
@@ -41,7 +44,6 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.CommandLog
-  alias DataService.Voxel.LodHeightmapStore
   alias DataService.Voxel.WriteTokenStore
 
   @type chunk_coord :: {integer(), integer(), integer()}
@@ -58,8 +60,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
           required(:chunk_version) => non_neg_integer(),
           required(:chunk_hash) => binary(),
           required(:data) => binary(),
-          optional(:command_id) => String.t() | nil,
-          optional(:lod_projection_cells) => [map()]
+          optional(:command_id) => String.t() | nil
         }
   @type put_result :: {:ok, :inserted | :updated | :unchanged} | {:error, term()}
   @type get_result :: {:ok, snapshot()} | {:error, atom()}
@@ -341,32 +342,18 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
 
     case result do
       {:ok, _} ->
-        case maybe_upsert_lod_projection(repo, snapshot) do
-          :ok ->
-            # AUTH-4(梯队1 step1.5b-1):仅在 chunk 写入成功(insert/update/unchanged)后,
-            # 于**同一事务**内登记客户端命令幂等键。失败(stale/conflict)不登记,故合法重试不被堵塞
-            # (exactly-once,而非 at-most-once)。单方块体素 truth 由 chunk_version CAS 天然幂等,
-            # record_once 在此提供 durable replay-protection 审计记录;`command_id` 为 nil(内部/事务
-            # 逐 chunk 写、手动 :persist 等无客户端命令的写)时跳过。
-            maybe_record_command(repo, snapshot, result)
-            result
-
-          {:error, reason} ->
-            repo.rollback({:lod_projection_failed, reason})
-        end
+        # AUTH-4(梯队1 step1.5b-1):仅在 chunk 写入成功(insert/update/unchanged)后,
+        # 于**同一事务**内登记客户端命令幂等键。失败(stale/conflict)不登记,故合法重试不被堵塞
+        # (exactly-once,而非 at-most-once)。单方块体素 truth 由 chunk_version CAS 天然幂等,
+        # record_once 在此提供 durable replay-protection 审计记录;`command_id` 为 nil(内部/事务
+        # 逐 chunk 写、手动 :persist 等无客户端命令的写)时跳过。
+        maybe_record_command(repo, snapshot, result)
+        result
 
       {:error, _reason} ->
         result
     end
   end
-
-  defp maybe_upsert_lod_projection(_repo, %{lod_projection_cells: []}), do: :ok
-
-  defp maybe_upsert_lod_projection(repo, %{lod_projection_cells: cells}) when is_list(cells) do
-    LodHeightmapStore.upsert_cells_in_repo(repo, cells)
-  end
-
-  defp maybe_upsert_lod_projection(_repo, _snapshot), do: :ok
 
   defp maybe_record_command(repo, %{command_id: command_id, logical_scene_id: scene_id}, {:ok, _})
        when is_binary(command_id) do
@@ -654,8 +641,7 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          {:ok, owner_epoch} <- fetch_non_neg_integer(attrs, :owner_epoch),
          {:ok, chunk_version} <- fetch_non_neg_integer(attrs, :chunk_version),
          {:ok, chunk_hash} <- fetch_chunk_hash(attrs),
-         {:ok, data} <- fetch_binary(attrs, :data),
-         {:ok, lod_projection_cells} <- fetch_lod_projection_cells(attrs) do
+         {:ok, data} <- fetch_binary(attrs, :data) do
       {:ok,
        %{
          logical_scene_id: logical_scene_id,
@@ -672,7 +658,6 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
          sim_time_ms: Map.get(attrs, :sim_time_ms, 0),
          chunk_hash: chunk_hash,
          data: data,
-         lod_projection_cells: lod_projection_cells,
          # AUTH-4(step1.5b-1):客户端命令幂等键,仅单方块编辑路径透传;nil 时跳过登记。
          command_id: normalize_command_id(Map.get(attrs, :command_id))
        }}
@@ -681,15 +666,6 @@ defmodule DataService.Voxel.ChunkSnapshotStore do
 
   defp normalize_command_id(value) when is_binary(value) and byte_size(value) > 0, do: value
   defp normalize_command_id(_value), do: nil
-
-  defp fetch_lod_projection_cells(attrs) do
-    case fetch_optional(attrs, :lod_projection_cells) do
-      :missing -> {:ok, []}
-      {:ok, nil} -> {:ok, []}
-      {:ok, cells} when is_list(cells) -> {:ok, cells}
-      {:ok, _other} -> {:error, :invalid_lod_projection_cells}
-    end
-  end
 
   defp fetch_chunk_hash(attrs) do
     with {:ok, value} <- fetch_required(attrs, :chunk_hash),

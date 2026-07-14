@@ -1,5 +1,8 @@
 # Bevy Debug Client
 
+> [!WARNING]
+> **归档客户端。** 本目录保留历史实现与可复现工具，但不再参与默认架构、开发、协议 parity、测试、CI、发布或进度判断。仅在用户显式点名本客户端时，才读取、运行或修改这里的内容；当前唯一现役客户端是 [`clients/Voxia`](../Voxia/README.md)。
+
 一个面向当前 `ex_mmo_cluster` 服务端状态的 **Bevy 3D 联调客户端**。
 
 ## 当前支持
@@ -12,6 +15,7 @@
 - 移动同步（attach 成功后 movement uplink / `PlayerMove` downlink 优先走 UDP）
 - Space 跳跃输入会进入 movement frame flag `0x04`，并通过 stdio / observe 可见
 - 本地离线 voxel 世界：宏格放置 / 破坏、`8x8x8` refined microgrid、hotbar、内置 prefab、boundary snap、snapshot save/load
+- 在线 confirmed voxel truth 消费服务端 snapshot/delta；生产近场订阅按完整 XYZ `3x3x3 tiles = 21x21x21 chunks = 9261 chunks` 建窗
 - Bevy 3D 视图会渲染完整 voxel 宏格和 refined `8x8x8` micro occupancy
 - 中心射线选择 voxel 面；命中面高亮，材质放置到相邻 macro，prefab 优先走 boundary snap
 - prefab hotbar 项会显示 boundary snap micro-wire 预览，无法精确吸附时按网页端规则退回 macro 预览/放置
@@ -218,7 +222,8 @@ cargo run
 - 当前实现已经接入 **TCP control plane + UDP fast-lane movement path**。
 - auth / enter-scene / chat / skill / heartbeat / time-sync 仍走 TCP。
 - movement uplink 与 `PlayerMove` AOI downlink 在 fast-lane attach 成功后优先走 UDP。
-- voxel 与网页端当前一致，仍是 **offline-local**；本地 CLI / GUI 操作不走服务端同步。
+- 在线 voxel confirmed truth 只由服务端 snapshot/delta 驱动；离线编辑器仍作为独立本地能力存在，不能写入在线确认态。
+- 生产近场以 `7x7x7 chunks` 的完整 XYZ tile 为 identity，窗口中心是 tile 中心 chunk、L∞ 半径为 10；玩家只在跨 tile 时换窗，并每 60 秒续约同一窗口。`va-follow [scene_id] [radius]` 仅是可覆盖半径的手工调试入口，默认半径为 10。
 - Bevy 端 microgrid 使用 `MicroPerMacro=8`，与网页端当前实现一致；接入服务端 refined 同步前仍需协议协商。
 - 聊天和技能是本次实现补入的最小 server-backed slice，不代表完整 MMO 玩法系统已经成熟。
 - 登录面板当前是 dev-only 流程；生产环境里 `/ingame/auto_login` 会被 `DEV_AUTO_LOGIN` 开关拦截。

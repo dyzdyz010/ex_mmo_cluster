@@ -1,25 +1,24 @@
-defmodule WorldPackSvoSourceMaterializeProbe do
+defmodule LegacyXzSvoSourceMaterializeProbe do
   @moduledoc """
-  CLI probe for SVO confirmed-source canonical coverage/materialization.
+  已归档 XZ SVO source 的显式离线 coverage/materialization probe。
 
   Usage:
 
-      mix run --no-start scripts/world_pack_svo_source_materialize.exs --dry-run
-      mix run --no-start scripts/world_pack_svo_source_materialize.exs --radius-tiles 72 --near-skip-radius-tiles 1 --max-chunks 3000 --dry-run
-      mix run --no-start scripts/world_pack_svo_source_materialize.exs --radius-tiles 0 --near-skip-radius-tiles -1 --max-chunks 400
+      mix run --no-start scripts/legacy/legacy_xz_svo_source_materialize.exs --allow-legacy-xz --dry-run
+      mix run --no-start scripts/legacy/legacy_xz_svo_source_materialize.exs --allow-legacy-xz --radius-tiles 0 --near-skip-radius-tiles -1 --max-chunks 400
 
-  This is a deployment/tooling path. It never serves missing baseline data from
-  a client request and never marks incomplete coverage as ready.
+  该入口不是现役部署链；缺少 `--allow-legacy-xz` 时拒绝运行。
   """
 
   alias DataService.Repo
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.SceneNodeRegistry
   alias WorldServer.Voxel.WorldPackBootstrapper
-  alias WorldServer.Voxel.WorldPackSvoSourceMaterializer
+  alias WorldServer.Voxel.Legacy.XzSvoSourceMaterializer
 
   def main(argv) do
     opts = parse_opts(argv)
+    require_legacy_offline!(opts)
     Logger.configure(level: :warning)
     ensure_apps!(opts)
 
@@ -35,7 +34,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
       generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       mode: if(opts.dry_run, do: "dry_run", else: "materialize"),
       note:
-        "SVO confirmed-source canonical coverage/materialization only; runtime client loading still uses verified baseline plus online authority diff.",
+        "LEGACY/OFFLINE XZ SVO source audit only; not a current launcher or runtime contract.",
       request: request_summary(opts),
       duration_ms: duration_ms,
       result: result_report(result)
@@ -44,7 +43,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
     output_path =
       Path.join(
         observe_dir,
-        "world_pack_svo_source_#{if(opts.dry_run, do: "coverage", else: "materialize")}_#{timestamp_for_path()}.json"
+        "legacy_xz_svo_source_#{if(opts.dry_run, do: "coverage", else: "materialize")}_#{timestamp_for_path()}.json"
       )
 
     File.write!(output_path, Jason.encode!(json_safe(report), pretty: true))
@@ -78,7 +77,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
           observe_dir: :string,
           dry_run: :boolean,
           migrate: :boolean,
-          inline_lod_projection: :boolean
+          allow_legacy_xz: :boolean
         ]
       )
 
@@ -95,18 +94,18 @@ defmodule WorldPackSvoSourceMaterializeProbe do
       max_chunks: Keyword.get(opts, :max_chunks, 100_000),
       batch_size: Keyword.get(opts, :batch_size, 64),
       seed: Keyword.get(opts, :seed, 1337),
-      content_version: Keyword.get(opts, :content_version, "svo-confirmed-source@1"),
-      observe_dir: Keyword.get(opts, :observe_dir, ".demo/observe/world-pack-svo-source"),
+      content_version: Keyword.get(opts, :content_version, "legacy-xz-svo-source@1"),
+      observe_dir: Keyword.get(opts, :observe_dir, ".demo/observe/legacy-xz-svo-source"),
       dry_run: Keyword.get(opts, :dry_run, false),
       migrate: Keyword.get(opts, :migrate, true),
-      inline_lod_projection: Keyword.get(opts, :inline_lod_projection, false)
+      allow_legacy_xz: Keyword.get(opts, :allow_legacy_xz, false)
     }
   end
 
   defp run_probe(%{dry_run: true} = opts) do
     opts
     |> materializer_opts()
-    |> WorldPackSvoSourceMaterializer.coverage()
+    |> XzSvoSourceMaterializer.coverage()
   rescue
     exception ->
       {:error,
@@ -139,7 +138,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
     opts
     |> materializer_opts()
     |> Keyword.put(:materializer, materializer)
-    |> WorldPackSvoSourceMaterializer.materialize()
+    |> XzSvoSourceMaterializer.materialize()
   rescue
     exception ->
       {:error,
@@ -162,8 +161,15 @@ defmodule WorldPackSvoSourceMaterializeProbe do
       batch_size: opts.batch_size,
       seed: opts.seed,
       content_version: opts.content_version,
-      materializer_opts: if(opts.inline_lod_projection, do: [], else: [lod_projection?: false])
+      legacy_offline?: true
     ]
+  end
+
+  defp require_legacy_offline!(%{allow_legacy_xz: true}), do: :ok
+
+  defp require_legacy_offline!(_opts) do
+    raise ArgumentError,
+          "legacy XZ SVO source tooling is archived; pass --allow-legacy-xz for an explicit offline audit"
   end
 
   defp ensure_apps!(opts) do
@@ -182,7 +188,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
     end)
 
     if opts.migrate do
-      migrations_path = Path.expand("../apps/data_service/priv/repo/migrations", __DIR__)
+      migrations_path = Path.expand("../../apps/data_service/priv/repo/migrations", __DIR__)
 
       {:ok, _repo, migrated} =
         Ecto.Migrator.with_repo(Repo, fn repo ->
@@ -203,7 +209,7 @@ defmodule WorldPackSvoSourceMaterializeProbe do
       max_chunks: opts.max_chunks,
       batch_size: opts.batch_size,
       content_version: opts.content_version,
-      lod_projection_mode: if(opts.inline_lod_projection, do: "inline", else: "deferred")
+      contract: "legacy_xz_svo_source"
     }
   end
 
@@ -251,4 +257,4 @@ defmodule WorldPackSvoSourceMaterializeProbe do
   defp json_safe_key(key), do: key
 end
 
-WorldPackSvoSourceMaterializeProbe.main(System.argv())
+LegacyXzSvoSourceMaterializeProbe.main(System.argv())

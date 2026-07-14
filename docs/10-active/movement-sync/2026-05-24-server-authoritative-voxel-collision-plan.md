@@ -44,8 +44,10 @@ avatar shape is an AABB around that center:
 - radius: 30 cm
 - height: 170 cm
 
-This matches browser spawn/render semantics: `{750, 750, 185}` stands on the
-DevSeed platform whose top is at movement `z = 100` for a 170 cm avatar.
+This is a historical server/browser fixture anchor: `{750, 750, 185}` stands on
+the DevSeed platform whose top is at movement `z = 100` for a 170 cm avatar. It
+is not yet a Voxia prediction/render acceptance target; Voxia must establish its
+own verified scene coordinate through its current baseline and CLI flow.
 
 ## Runtime observability
 
@@ -57,17 +59,17 @@ Every movement tick can emit `player_movement_collision` with:
 - blocked axes and correction flags
 - unavailable/error reasons when voxel authority cannot be queried
 
-The event is structured CLI observe output, so browser screenshots are not the
+The event is structured CLI observe output, so Voxia screenshots are not the
 only verification surface.
 
 ## Next slices
 
 1. Server collision MVP: block horizontal penetration into solid/refined voxel
    occupancy and snap falling actors to terrain tops.
-2. Browser prediction collision: run the same center-anchor AABB check against
+2. Voxia prediction collision: run the same center-anchor AABB check against
    the client voxel cache before sending predicted poses.
 3. Reconciliation tuning: expose collision counters and hard/soft correction
-   rates in the web client CLI debug surface.
+   rates in the Voxia stdio CLI / structured debug surface.
 4. Physics convergence: only after voxel colliders are chunk-streamed into the
    physics scene, decide whether Rapier replaces or supplements the read-only
    resolver.

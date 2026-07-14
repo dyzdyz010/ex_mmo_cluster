@@ -327,7 +327,7 @@ export class DevToolsCli implements CliCommandHandler {
       return { ok: false, command, text: "usage: voxel_subscribe <cx> <cy> <cz> [radius]" };
     }
     const radius = Number.parseInt(args[3] ?? "0", 10);
-    const safeRadius = Number.isFinite(radius) ? Math.max(0, Math.min(radius, 4)) : 0;
+    const safeRadius = Number.isFinite(radius) ? Math.max(0, Math.min(radius, 10)) : 0;
     const requestId = world.subscribeVoxelChunk(coord, safeRadius);
     return this.ok(
       command,

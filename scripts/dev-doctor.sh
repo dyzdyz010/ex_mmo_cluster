@@ -9,6 +9,13 @@
 
 set -u
 
+cat >&2 <<'EOF'
+archived_client_default_disabled: this generic doctor targets the archived browser client and is disabled by default.
+Active Voxia entry: node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."
+Explicit archived-client work must use its own README.
+EOF
+exit 64
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 

@@ -99,9 +99,8 @@ pub enum ClientStdioCommand {
         target_macro: [i32; 3],
         material_id: u16,
     },
-    /// AOI follow: subscribe around the player's CURRENT position's chunk,
-    /// computed via the real `voxel_chunk_of` (sim→voxel axis map). Lets the
-    /// terrain-streams-as-you-move path be self-verified after a `move`.
+    /// 手工 AOI 调试入口：以玩家当前位置所在 chunk 为中心，允许显式指定任意半径。
+    /// 该命令不改变生产态“tile 中心 + 半径 10”的 authority 窗口契约。
     VoxelFollow {
         logical_scene_id: u64,
         radius: u8,
@@ -173,7 +172,7 @@ impl ClientStdioInterface {
                 "ready",
                 &[(
                     "commands",
-                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|voxel_snapshot|place|break|micro_cell|prefab_place|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
+                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|va-follow [scene_id] [radius=10]|voxel_snapshot|place|break|micro_cell|prefab_place|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
                         .to_string(),
                 )],
             );
@@ -191,7 +190,7 @@ impl ClientStdioInterface {
                                 "help",
                                 &[(
                                     "commands",
-                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|reconcile_stats|diag_render|voxel_snapshot|place|break|hotbar|hotbar_select|micro_cell|prefabs|prefab_place|prefab_snap_preview|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
+                                    "help|snapshot|position|transport|players|npcs|target <cid>|clear_target|target_point <x> <y> [z]|clear_target_point|chat <text>|skill <id> [target_cid]|move <dir> <ms>|stop|reconcile_stats|diag_render|va-follow [scene_id] [radius=10]|voxel_snapshot|place|break|hotbar|hotbar_select|micro_cell|prefabs|prefab_place|prefab_snap_preview|prefab_place_snap|world_export|world_import|world_save|world_load|quit"
                                         .to_string(),
                                 )],
                             );
@@ -886,7 +885,7 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
 
     if let Some(rest) = line.strip_prefix("va-follow") {
         let parts = rest.split_whitespace().collect::<Vec<_>>();
-        // va-follow [scene_id] [radius]
+        // 手工调试命令：va-follow [scene_id] [radius]，默认使用现役半径 10。
         let logical_scene_id = if parts.is_empty() {
             1
         } else {
@@ -895,7 +894,7 @@ fn parse_command(line: &str) -> Result<ClientStdioCommand, String> {
         let radius = if parts.len() >= 2 {
             parse_field(parts[1], "radius")?
         } else {
-            2u8
+            10u8
         };
         return Ok(ClientStdioCommand::VoxelFollow {
             logical_scene_id,
@@ -1035,12 +1034,12 @@ mod tests {
         assert!(parse_command("va-edit nuke 1 7 0 7").is_err());
         assert!(parse_command("va-edit place 1 7 0").is_err());
 
-        // va-follow with/without args (defaults scene 1, radius 2).
+        // va-follow 默认 scene 1、半径 10；显式半径仍可覆盖。
         assert_eq!(
             parse_command("va-follow").unwrap(),
             ClientStdioCommand::VoxelFollow {
                 logical_scene_id: 1,
-                radius: 2,
+                radius: 10,
             }
         );
         assert_eq!(

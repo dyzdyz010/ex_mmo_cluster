@@ -959,6 +959,45 @@ defmodule GateServer.TcpConnectionProtocolTest do
     :gen_udp.close(udp_client)
   end
 
+  test "archived 0x6A heightmap request is explicitly rejected without live projection access", %{
+    client: client,
+    pid: pid
+  } do
+    observe_path =
+      Path.join(
+        System.tmp_dir!(),
+        "gate-heightmap-rejected-#{System.unique_integer([:positive, :monotonic])}.log"
+      )
+
+    old_observe_log = Application.get_env(:gate_server, :cli_observe_log)
+    Application.put_env(:gate_server, :cli_observe_log, observe_path)
+
+    on_exit(fn ->
+      if is_nil(old_observe_log) do
+        Application.delete_env(:gate_server, :cli_observe_log)
+      else
+        Application.put_env(:gate_server, :cli_observe_log, old_observe_log)
+      end
+
+      File.rm(observe_path)
+    end)
+
+    put_connection_in_scene(pid)
+
+    assert :ok =
+             :gen_tcp.send(client, encode_heightmap_request(191, 881, {-32, 48}, 16, {4, 3}))
+
+    assert {:ok, <<0x80, 191::64-big, 0x01>>} = :gen_tcp.recv(client, 0, 500)
+
+    GateServer.CliObserve.flush()
+    observe = File.read!(observe_path)
+
+    assert observe =~ ~s(event="voxel_heightmap_request_rejected")
+    assert observe =~ "contract: :archived_xz_heightmap"
+    assert observe =~ "reason: :unsupported_legacy_contract"
+    refute observe =~ ~s(event="voxel_heightmap_region_sent")
+  end
+
   test "voxel subscription over tcp forwards initial snapshot then ChunkDelta on impact", %{
     client: client,
     pid: pid
@@ -1061,6 +1100,17 @@ defmodule GateServer.TcpConnectionProtocolTest do
   defp encode_chunk_subscribe(request_id, logical_scene_id, {cx, cy, cz}) do
     <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,
       cz::32-big-signed, 0::8, 1::8, 0::16-big>>
+  end
+
+  defp encode_heightmap_request(
+         request_id,
+         logical_scene_id,
+         {origin_x, origin_z},
+         stride,
+         {count_x, count_z}
+       ) do
+    <<0x6A, request_id::64-big, logical_scene_id::64-big, origin_x::32-big-signed,
+      origin_z::32-big-signed, stride::16-big, count_x::16-big, count_z::16-big>>
   end
 
   defp encode_voxel_impact(request_id, client_intent_seq, logical_scene_id, {x, y, z}) do

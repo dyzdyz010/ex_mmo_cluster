@@ -14,9 +14,11 @@
 
 ## Voxia 当前实现
 
-- 当前 UE Voxia 近场订阅半径是 `SubscribeRadius = 3` chunks，即 `7×7×7 = 343` chunks，约 ±48m。
+- 当前 UE Voxia 只使用完整 XYZ tile cube：tile size=`7 chunks`、tile radius=`1`。
+- 协议仍发送 chunk center + `radius_l_inf`，但生产映射固定为 tile 中心 chunk + `radius_l_inf=10`，即 `21×21×21 = 9261 chunks = 27 tiles`，每轴覆盖 336m。
+- streaming center 只在玩家跨过 tile 边界时更新；单轴跨一 tile 时进入/退出面各为 `9 tiles = 3087 chunks`，保留 `18 tiles = 6174 chunks`。负坐标必须使用 floor division，不能截断到零。
 - `AVoxiaPawn::GetStreamingWorldPosition()` 是 streaming/debug/editability 的统一玩家位置源。
-- movement 后再计算 streaming center，避免角色移动后真实网格和 LOD 不跟随。
+- movement 后再计算玩家所在 tile 与规范 tile center，避免角色移动后真实网格不跟随。
 - Gate 订阅展开 center-first，避免当前编辑/碰撞 chunk 被外圈 shell 饿住。
 - current center chunk 未确认时，客户端重试会重新发送完整 active window；自动路径禁止用 `radius=0` center-only 订阅，因为服务端会把它当作最新完整可操作窗口并裁掉其他 chunk。
 - real mouse click 会在点击时刷新 build raycast，拒绝 stale hit 或 outside-current-window hit。
@@ -28,8 +30,8 @@ flowchart TD
   Cyan["cyan<br/>current stream center"]
   Green["green<br/>confirmed/editable near chunks"]
   Red["red<br/>missing near chunks"]
-  Blue["blue<br/>far LOD visual-only footprint"]
-  Purple["purple<br/>LOD hole owned by near chunks"]
+  Blue["blue<br/>pure-3D far shell footprint（尚未 live）"]
+  Purple["purple<br/>far cells masked by complete near handoff"]
   Yellow["yellow<br/>current edit target"]
 
   Cyan --> Green
@@ -54,10 +56,10 @@ flowchart TD
 
 ## 当前剩余风险
 
-- 近场 fill 期间可能有短暂“既无近场、又被 LOD skip”的真空环。
-- 远景 LOD 拼接 skirt / seam 已有 AutomationTest 断言，且 `Voxia.Voxel` 自动化通过、真实 RHI 截图 smoke 已复核单视角边界（见 [`streaming-lod.md`](../client/streaming-lod.md)）；2026-07-08 VLOD-A4 Step1 进一步加了跨 depth 覆盖性 seam 断言（uncovered≈13.5% 为 T-junction 质量度量、非穿透洞）。收官级 8km 长巡航目视验收留 A4 Step6。
+- 纯 3D far shell 还未接入 production materializer/uploader；旧 heightmap、VHI、XZ SVO 与 v1 column source-pages live 路径已归档，不能用它们填洞。因此当前完整组合验收仍是明确缺口，不得把 near-only 结果写成 near+far 完成。
+- near/far 替换的最小可见单位是一个完整 chunk handoff transaction（near component、far ownership/mask、readiness fence 同批提交）；不能把 9 个新 tile 的集合误当作同一帧必须一起显示。
 - 当前 runtime 仍存在 snapshot 洪峰和低优先级 bulk 数据压住交互路径的风险；已通过 worker/latest-wins/center-first 缓解，但长期需要 channel/priority/budget 设计。
-- 客户端 baseline / launcher /入场校验还未实现；当前文档记录的是设计硬约束。
+- baseline H gate 已存在；旧 radius=3 release manifest 与 Y 下界不覆盖新窗口时必须拒绝入场并重产 pack，不能靠运行时 snapshot 自愈。
 
 ## 被取代的旧结论
 

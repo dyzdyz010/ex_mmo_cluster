@@ -36,10 +36,12 @@ docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
 数据库连接预算按 `app + scene_count` 估算，必要时降低 `MMO_DB_POOL_SIZE` 或提高 Postgres 限制。
 
 业务镜像由 `.github/workflows/docker-publish.yml` 推送到 Aliyun ACR，`IMAGE_TAG` 应填该 workflow
-发布的完整镜像地址。网页客户端由 `.github/workflows/web-client-publish.yml` 单独发布为
-`ex_mmo_web_client` 静态资源镜像；如果 `.env` 配置了 `WEB_CLIENT_IMAGE_TAG`，`upgrade.sh`
-会从该镜像复制 `/usr/share/nginx/html` 到 `WEB_CLIENT_DIST_DIR`，供宿主机 nginx 的 `/client/`
-alias 直接服务。
+发布的完整镜像地址。`web_client` 已逻辑归档，不属于日常发布；默认
+`ALLOW_ARCHIVED_WEB_CLIENT_DEPLOY=false` 且 `WEB_CLIENT_IMAGE_TAG` 为空，`upgrade.sh` 只升级服务端。
+只有用户显式要求部署归档 Web 客户端时，才手动触发
+`.github/workflows/web-client-publish.yml`，并同时设置
+`ALLOW_ARCHIVED_WEB_CLIENT_DEPLOY=true` 与非空 `WEB_CLIENT_IMAGE_TAG`。此时 `upgrade.sh` 才会从
+镜像复制 `/usr/share/nginx/html` 到 `WEB_CLIENT_DIST_DIR`，供宿主机 nginx 的 `/client/` alias 服务。
 
 日常升级优先使用：
 

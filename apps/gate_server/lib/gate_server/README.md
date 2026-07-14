@@ -37,6 +37,9 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
 
 - `codec.ex` 负责二进制帧和结构化元组之间的转换。
 - `tcp_connection.ex` 和 `ws_connection.ex` 负责连接内分发与会话状态机。
+- 旧 XZ heightmap 的 `0x6A/0x6B` 仅保留 append-only codec 兼容。TCP 收到合法
+  `0x6A` 后会 emit `voxel_heightmap_request_rejected`，并以
+  `unsupported_legacy_contract` 明确拒绝；不会调用 Scene 的旧 projection reader。
 - 体素区块订阅必须先请求 `WorldServer.Voxel.MapLedger` 路由。World 返回当前区域租约
   后，Gate 才能向 `SceneServer.Voxel.ChunkDirectory` 建立真实订阅；初始快照和后续快照
   回退推送都由 Scene 区块进程发给 Gate，再由 Gate 转发给客户端。

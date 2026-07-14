@@ -5,6 +5,8 @@
 适用范围：`ex_mmo_cluster` 的 voxel truth、prefab/object provenance、FieldRuntime、FieldKernel、FieldEffect。
 首条验证路径：电场。电场只是测试点，不是本设计的专用目标。
 
+> **2026-07-14 客户端口径全文覆盖（覆盖本文所有相反表述）**：本文所有浏览器、Web、overlay、smoke 条目只作归档客户端的历史实现与当时验收证据，不是当前客户端职责、默认验证入口或 active 后续任务；服务端 projection / field / effect 设计继续有效。若仍需客户端入口，只能沿唯一现役客户端 `clients/Voxia` 另行排期，不自动并入 Voxia Milestone A10。
+
 关联文档：
 
 - `docs/docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md`

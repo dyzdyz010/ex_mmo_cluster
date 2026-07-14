@@ -12,7 +12,11 @@ import type {
   VoxelIntentResultMessage,
   VoxelObjectStateDeltaMessage,
 } from "../infrastructure/net/voxelProtocol";
-import { OnlineVoxelWorldAdapter, type ServerVoxelTransportPort } from "./onlineVoxelWorldAdapter";
+import {
+  canonicalNearWindowCenterFromWorldCm,
+  OnlineVoxelWorldAdapter,
+  type ServerVoxelTransportPort,
+} from "./onlineVoxelWorldAdapter";
 import { OnlinePrefabBlueprintVersion } from "./onlinePrefabCatalog";
 import { VoxelConstants } from "./core/constants";
 import { EVoxelRotation } from "./core/types";
@@ -273,6 +277,55 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("完整 XYZ near window", () => {
+  it("按三轴 tile 与负坐标 floor division 计算规范中心", () => {
+    expect(canonicalNearWindowCenterFromWorldCm({ x: 0, y: 0, z: 0 })).toEqual({
+      x: 3,
+      y: 3,
+      z: 3,
+    });
+    expect(canonicalNearWindowCenterFromWorldCm({ x: -1, y: 11_200, z: -11_201 })).toEqual({
+      x: -4,
+      y: 10,
+      z: -11,
+    });
+  });
+
+  it("只在任一 tile 轴换窗或 keepalive 到期时发送 radius10", () => {
+    const { adapter, transport } = createAdapter();
+    const position = { x: 0, y: 0, z: 0 };
+    adapter.setNearWindowWorldPositionResolver(() => position);
+
+    adapter.onFrame(0);
+    position.x = 11_199;
+    adapter.onFrame(16);
+    position.y = 11_200;
+    adapter.onFrame(32);
+    adapter.onFrame(60_032);
+
+    expect(transport.subscribeCalls).toEqual([
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 3, y: 3, z: 3 },
+        radiusLInf: 10,
+        wantSnapshot: true,
+      },
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 3, y: 10, z: 3 },
+        radiusLInf: 10,
+        wantSnapshot: true,
+      },
+      {
+        logicalSceneId: 7,
+        centerChunk: { x: 3, y: 10, z: 3 },
+        radiusLInf: 10,
+        wantSnapshot: true,
+      },
+    ]);
+  });
 });
 
 describe("OnlineVoxelWorldAdapter#placePrefab", () => {

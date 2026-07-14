@@ -1,13 +1,19 @@
-defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializerTest do
+defmodule WorldServer.Voxel.Legacy.XzSvoSourceMaterializerTest do
   use ExUnit.Case, async: true
 
-  alias WorldServer.Voxel.WorldPackSvoSourceMaterializer
+  alias WorldServer.Voxel.Legacy.XzSvoSourceMaterializer
+
+  test "is disabled unless the caller explicitly enters legacy offline mode" do
+    assert {:error, :legacy_xz_svo_source_materializer_disabled} =
+             XzSvoSourceMaterializer.coverage(logical_scene_id: 91_015)
+  end
 
   test "refuses 8km SVO source materialization before writing above the chunk budget" do
     test_pid = self()
 
     assert {:error, {:svo_source_materialization_exceeds_budget, summary}} =
-             WorldPackSvoSourceMaterializer.materialize(
+             XzSvoSourceMaterializer.materialize(
+               legacy_offline?: true,
                logical_scene_id: 91_015,
                center_tile: {0, 0, 0},
                radius_tiles: 72,
@@ -39,7 +45,8 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializerTest do
 
   test "fails visibly when the post-materialization coverage is still incomplete" do
     assert {:error, {:svo_source_materialization_incomplete, summary}} =
-             WorldPackSvoSourceMaterializer.materialize(
+             XzSvoSourceMaterializer.materialize(
+               legacy_offline?: true,
                logical_scene_id: 91_015,
                center_tile: {0, 0, 0},
                radius_tiles: 0,
@@ -65,7 +72,8 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializerTest do
     present = tile_chunks({0, 0, 0})
 
     assert {:ok, summary} =
-             WorldPackSvoSourceMaterializer.coverage(
+             XzSvoSourceMaterializer.coverage(
+               legacy_offline?: true,
                logical_scene_id: 91_015,
                center_tile: {0, 0, 0},
                radius_tiles: 1,

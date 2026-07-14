@@ -24,16 +24,22 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapperTest do
     assert_receive {:seed_called, opts}, 500
     assert Keyword.fetch!(opts, :logical_scene_id) == 77
     assert Keyword.fetch!(opts, :seed_terrain?) == true
-    assert Keyword.fetch!(opts, :rebuild_lod_projection?) == true
-    assert Keyword.fetch!(opts, :lod_projection_rebuild_opts) == []
+    refute Keyword.has_key?(opts, :rebuild_lod_projection?)
+    refute Keyword.has_key?(opts, :lod_projection_rebuild_opts)
 
     baseline = Keyword.fetch!(opts, :baseline_footprint_chunks)
-    assert length(baseline) == 343
-    assert {0, 0, 0} in baseline
-    assert {-3, -3, -3} in baseline
+    assert length(baseline) == 9_261
     assert {3, 3, 3} in baseline
+    assert {-7, -7, -7} in baseline
+    assert {13, 13, 13} in baseline
 
-    assert %{status: :ready, attempts: 1, baseline_chunk_count: 343} =
+    assert %{
+             status: :ready,
+             attempts: 1,
+             baseline_center_chunk: {3, 3, 3},
+             baseline_radius: 10,
+             baseline_chunk_count: 9_261
+           } =
              DefaultRegionBootstrapper.snapshot(bootstrapper)
   end
 
@@ -64,7 +70,7 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapperTest do
     assert {3, 2, 0} in baseline
   end
 
-  test "can explicitly disable terrain seed and LOD rebuild" do
+  test "can explicitly disable terrain seed without exposing an XZ projection switch" do
     parent = self()
 
     seed_fun = fn opts ->
@@ -78,7 +84,6 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapperTest do
        logical_scene_id: 78,
        seed_fun: seed_fun,
        seed_terrain?: false,
-       rebuild_lod_projection?: false,
        retry_ms: 10,
        refresh_ms: :timer.hours(1)}
     )
@@ -86,7 +91,7 @@ defmodule WorldServer.Voxel.DefaultRegionBootstrapperTest do
     assert_receive {:seed_called, opts}, 500
     assert Keyword.fetch!(opts, :logical_scene_id) == 78
     assert Keyword.fetch!(opts, :seed_terrain?) == false
-    assert Keyword.fetch!(opts, :rebuild_lod_projection?) == false
+    refute Keyword.has_key?(opts, :rebuild_lod_projection?)
   end
 
   test "retries until scene ownership is ready" do

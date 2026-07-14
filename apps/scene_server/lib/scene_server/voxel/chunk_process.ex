@@ -25,7 +25,6 @@ defmodule SceneServer.Voxel.ChunkProcess do
   alias SceneServer.Voxel.Field.Provisioners.Emergence
   alias SceneServer.Voxel.Field.Provisioners.StructuralStress
   alias SceneServer.Voxel.Hash
-  alias SceneServer.Voxel.LodProjection
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.Voxel.MaterialCatalog
   alias SceneServer.Voxel.NormalBlockData
@@ -3882,10 +3881,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
   end
 
   defp persist_snapshot(lease, chunk_coord, storage, payload, command_id) do
-    case build_snapshot_attrs(lease, chunk_coord, storage, payload, command_id) do
-      {:ok, attrs} -> DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
-      {:error, reason} -> {:error, reason}
-    end
+    attrs = build_snapshot_attrs(lease, chunk_coord, storage, payload, command_id)
+    DataService.Voxel.ChunkSnapshotStore.put_snapshot(attrs)
   end
 
   defp enqueue_snapshot_persist(_state, nil, _chunk_coord, _storage, _payload) do
@@ -3907,29 +3904,25 @@ defmodule SceneServer.Voxel.ChunkProcess do
       payload = payload || encode_snapshot_payload(storage, 0)
       snapshot_bytes = byte_size(payload)
 
-      case build_snapshot_attrs(lease, chunk_coord, storage, payload) do
+      attrs = build_snapshot_attrs(lease, chunk_coord, storage, payload)
+
+      case safe_persist_snapshot_with_retry(attrs, 3) do
+        {:ok, persist_result} ->
+          CliObserve.emit("voxel_chunk_persist_committed", fn ->
+            %{
+              logical_scene_id: state.logical_scene_id,
+              chunk_coord: state.chunk_coord,
+              chunk_version: storage.chunk_version,
+              persist_ref: ref,
+              persist_result: persist_result,
+              snapshot_bytes: snapshot_bytes
+            }
+          end)
+
+          {:ok, persist_result, ref, state}
+
         {:error, reason} ->
           {:error, reason}
-
-        {:ok, attrs} ->
-          case safe_persist_snapshot_with_retry(attrs, 3) do
-            {:ok, persist_result} ->
-              CliObserve.emit("voxel_chunk_persist_committed", fn ->
-                %{
-                  logical_scene_id: state.logical_scene_id,
-                  chunk_coord: state.chunk_coord,
-                  chunk_version: storage.chunk_version,
-                  persist_ref: ref,
-                  persist_result: persist_result,
-                  snapshot_bytes: snapshot_bytes
-                }
-              end)
-
-              {:ok, persist_result, ref, state}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
       end
     end
   end
@@ -4179,23 +4172,17 @@ defmodule SceneServer.Voxel.ChunkProcess do
         data: payload
       })
 
-    with {:ok, lod_projection_cells} <- LodProjection.cells_for_storage(storage) do
-      attrs = Map.put(base_attrs, :lod_projection_cells, lod_projection_cells)
+    # AUTH-4(step1.5b-1):仅单方块编辑路径携带 command_id;事务逐 chunk 写传 nil(prefab 幂等
+    # 在 gate 边界单独处理,见 step1.5b-2),内部写也为 nil。ChunkSnapshotStore.do_put 仅在
+    # command_id 非 nil 时同事务 record_once。
+    attrs =
+      if is_binary(command_id) do
+        Map.put(base_attrs, :command_id, command_id)
+      else
+        base_attrs
+      end
 
-      # AUTH-4(step1.5b-1):仅单方块编辑路径携带 command_id;事务逐 chunk 写传 nil(prefab 幂等
-      # 在 gate 边界单独处理,见 step1.5b-2),内部写也为 nil。ChunkSnapshotStore.do_put 仅在
-      # command_id 非 nil 时同事务 record_once。
-      attrs =
-        if is_binary(command_id) do
-          Map.put(attrs, :command_id, command_id)
-        else
-          attrs
-        end
-
-      {:ok, attrs}
-    else
-      {:error, reason} -> {:error, {:lod_projection_failed, reason}}
-    end
+    attrs
   end
 
   defp chunk_in_lease_bounds?({cx, cy, cz}, lease) do

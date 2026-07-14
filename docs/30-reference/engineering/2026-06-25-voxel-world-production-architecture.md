@@ -82,7 +82,7 @@
 | P3 | 订阅永不发 delta | `subscribe` 只判 known==当前:相等不发,否则全量 snapshot;从不算 N→M | 重连/AOI 重入即使差一格也全量;known 节省仅在"完全无变化"时生效 |
 | P4 | 无连接级协议版本协商 | 无 protocol_version 握手;schema_version 仅在 snapshot 内写死 1 | 无法灰度/滚动升级;任何 wire 改动须 client 全量同步发布 |
 | P5 | 无压缩/无批量合帧 | payload 明文;空 chunk 恒 4096 header 全量;125 chunk 进场 125 独立帧 | 稀疏 chunk ~78KB 基线浪费;进场风暴 |
-| P6 | known[] 依赖 512 硬上限隐式约束 | known 全量上行无截断;gate 超 512 整帧 `:invalid_message` 拒绝 | 驱逐漏掉/加大半径→超 512→订阅帧被整体拒,玩家拿不到地形无降级 |
+| P6（历史，2026-07-13 已收口） | known[] 曾依赖 512 硬上限 | 完整 XYZ near 需要 9261 known refs；Gate codec cap、WS/TCP radius cap、客户端编码与 auth sliding contract 已同步升级 | 旧 release/客户端仍会被 H gate 显式拒绝，必须重产而非截断 |
 | P7 | 0x73/0x74 payload 自带 opcode | FieldRegion 消息 payload 含 opcode 字节绕过 codec;其它 voxel 消息不含 | 协议内两套约定,中间层(代理/录制/审计)须特判 |
 | P8 | 0x72 EnvironmentUpdated 客户端无 decoder | 服务端已 fanout;bevy `decode_voxel_server_message` 无 arm,落 unsupported | 温湿度环境增量收不到/报错;涌现表现链客户端不完整 |
 
@@ -114,8 +114,8 @@
 
 #### 3.2.0 生产 tile 口径与阶段边界(2026-06-28 决策记录)
 
-本节冻结后续讨论"tile / 窗口 / diff 数据量"时使用的口径,避免把当前
-`SubscribeRadius=3` chunk 的临时实现与最终生产流式单位混用。
+本节冻结后续讨论"tile / 窗口 / diff 数据量"时使用的口径。2026-07-13 起，旧
+`SubscribeRadius=3` chunk 与 XZ column 已归档；完整 XYZ tile cube 是唯一生产事实。
 
 - **chunk**:当前实现保持 `16×16×16` macro cell,macro cell 边长 `1m`,所以单
   chunk 边长 `16m`,包含 `4096` 个 cell。
@@ -123,10 +123,15 @@
   chunks,边长 `112m`,包含 `1,404,928` 个 cell。
 - **近场窗口**:`27 tiles` 指 `3×3×3` tile 窗口,不是 27 chunks。该窗口合计
   `9,261` chunks / `37,933,056` cells。
+- **wire 映射**:tile size=7/radius=1 映射为规范 tile center chunk +
+  `radius_l_inf=10`，即 `21×21×21=9,261` chunks；tile `(0,0,0)` 对应 center
+  `(3,3,3)`、bounds `[-7..13]^3`。
 - **移动时间**:按 A2 后服务端跑速 `6m/s`,玩家从一个 tile 一边走到另一边约
   `112m / 6m/s = 18.67s`。
 - **滑动窗口新增面**:玩家跨过一个 tile 边界时,若旧窗口仍保留并只补新增区域,新增的是
   `3×3 = 9 tiles`,不是整个 27-tile 窗口。
+- **presentation 单元**:`9 tiles` 只是 entered set；用户可见逐块替换按完整 chunk
+  handoff transaction 分帧提交，不能把 entered set 错当作整帧原子单元。
 
 本轮拍板:先按上述口径继续推进 streaming / editability 根因排查与架构设计。数据量大的问题后期实际碰到再量化、再设计;当前只登记为后续可观测风险,不再作为"可操作区域不刷新 / 编辑无效"的默认解释,也不作为当前修复的阻塞项。
 

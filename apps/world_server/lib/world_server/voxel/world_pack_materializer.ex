@@ -5,7 +5,7 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
   This module is the production-named entry point for a new server bootstrap:
   route the target chunk range through `MapLedger`, obtain the normal World
   lease fence for each chunk, and ask Scene's WorldGen materializer to write
-  canonical chunk snapshots and derived LOD rows. It is not called from Scene
+  canonical XYZ chunk snapshots. It is not called from Scene
   runtime, Gate subscription, or client repair paths.
   """
 
@@ -32,8 +32,8 @@ defmodule WorldServer.Voxel.WorldPackMaterializer do
       Supplying options to an arity-three materializer fails visibly.
 
   Full-world deployment tooling should call this in bounded batches and publish
-  a world-pack `content_version` only after every planned chunk and LOD
-  projection row has been materialized and verified.
+  a world-pack `content_version` only after every planned XYZ chunk has been
+  materialized and verified. 旧 XZ projection 不是 world-pack ready 条件。
   """
   @spec materialize_chunks(keyword()) :: {:ok, map()} | {:error, term()}
   def materialize_chunks(opts) when is_list(opts) do

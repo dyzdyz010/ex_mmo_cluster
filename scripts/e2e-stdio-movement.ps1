@@ -5,6 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+throw 'archived_client_default_disabled: this generic E2E script drives archived bevy_client and is disabled by default. Active Voxia entry: node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "...". Explicit archived-client work must use its own README.'
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $clientDir = Join-Path $repoRoot "clients\bevy_client"
 $observeDir = Join-Path $repoRoot $ObserveDir

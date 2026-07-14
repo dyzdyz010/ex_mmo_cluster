@@ -3,8 +3,8 @@ defmodule SceneServer.Native.WorldGenNoise do
   Rustler binding for deterministic terrain-noise math.
 
   把 `SceneServer.Voxel.WorldGen` 里逐列高度的重计算移到 Rust(架构纪律:重计算
-  必须落在 Rust)。chunk 生成与 LOD heightmap 都走同一个 `column_height/5`,保证
-  地形(实体方块)与远景高度图一致。
+  必须落在 Rust)。chunk 生成与已归档 heightmap 离线迁移工具都走同一个
+  `column_height/5`，以保持历史产物确定性；在线运行时不读取 heightmap。
 
   这个模块刻意保持极薄:只暴露 NIF surface,Rust 实现细节不渗到上层 WorldGen。
   """
@@ -19,8 +19,8 @@ defmodule SceneServer.Native.WorldGenNoise do
   def column_height(_wx, _wz, _seed, _sea_level, _max_height), do: error()
 
   @doc """
-  `count_x × count_z` 网格的服务端权威高度图:扁平 **big-endian u16**,X 优先
-  (index = i + j*count_x),从列 `(origin_x, origin_z)` 起每 `stride` macros 采样。
+  `count_x × count_z` 网格的历史 heightmap 离线迁移输出：扁平 **big-endian u16**，
+  X 优先 (index = i + j*count_x)，从列 `(origin_x, origin_z)` 起每 `stride` macros 采样。
   """
   @spec heightmap_region(
           integer(),

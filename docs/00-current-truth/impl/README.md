@@ -17,7 +17,7 @@
 | Chunk directory | `apps/scene_server/lib/scene_server/voxel/chunk_directory.ex` | chunk process route/start/lookup/subscribe |
 | Chunk process | `apps/scene_server/lib/scene_server/voxel/chunk_process.ex` | chunk hot truth / edit / field / fan-out |
 | Voxel codec | `apps/scene_server/lib/scene_server/voxel/codec.ex` | chunk snapshot/delta/object/field payload codec |
-| LOD projection | `apps/scene_server/lib/scene_server/voxel/lod_projection.ex` + `apps/scene_server/lib/scene_server/voxel/lod_projection/rebuilder.ex` + `apps/data_service/lib/data_service/voxel/lod_heightmap_store.ex` | authoritative chunk truth 派生 / rebuild heightmap projection；runtime 投影先一次读取 16x16 fine heightmap，再本地聚合各 stride cell |
+| Legacy LOD projection | `apps/scene_server/lib/scene_server/voxel/lod_projection.ex` + `apps/data_service/lib/data_service/voxel/lod_heightmap_store.ex` | 0x6A/0x6B 历史 decoder/offline regression；不得作为新 runtime/default/production LOD |
 | Field runtime | `apps/scene_server/lib/scene_server/voxel/field/` | field region/layer/kernel/runtime |
 | Data chunk store | `apps/data_service/lib/data_service/voxel/chunk_snapshot_store.ex` | canonical chunk snapshot CAS |
 | Data region dir | `apps/data_service/lib/data_service/voxel/region_directory_store.ex` | durable region directory |
@@ -27,11 +27,13 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Web | `clients/web_client/README.md` | 默认端到端验证/parity 主线 |
-| Bevy | `clients/bevy_client/README.md` | 参考实现 / stdio / Rust parity |
-| Voxia UE | `clients/Voxia/README.md` | UE5.8 native/product client |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；Milestone A / A10 本地完善中 |
+| Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
+| Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
 | Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 扩展后的里程碑 A 进行中；B/C 未开始 |
-| Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；不读取 WorldGen 或 renderer |
+| Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
+| Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarHandoffCoordinator.*` | 成熟 near 的 XYZ ownership atlas、逐 chunk transaction、lease/generation/epoch barrier；A10 根级共享 transaction 尚未完成 |
+| Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；已由 A10 开发根消费，不读取 WorldGen 或 renderer |
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
 | Voxia canonical pages v2 | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPages.*` | XYZ brick + span + LOD、X-fastest dense material `u16` codec；`LoadExpectedBatch` 以外部 manifest SHA-256 + expected identity/set 原子加载，失败 batch 为空 |
 | Voxia canonical page providers | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPageProvider.*` | WorldGen、scripted memory 与 H-gated `local_disk` 共用 request/result 契约；本地 provider 冻结经外部 H+identity 验证的 manifest entry table，只读请求子集，逐页校验且整批原子发布 |
@@ -55,18 +57,17 @@
 
 - 根常规：`mix compile`、`mix test`
 - Phoenix app：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`
-- Web client：`cd clients/web_client && npm test`，必要时 `npm run build`
-- WS smoke：`node scripts/run_ws_dual_smoke_supervised.js`
+- 归档 Web / Bevy：不进入默认验证；显式点名后按各自 README 选择历史测试入口
 - Voxia client CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`
-  - LOD client dirty/refresh：`--cmd "break;wait 1500;lod"`，查看 `lod_dirty_revision` 与 observe 的 `voxel_lod_dirty` / `voxel_lod_refresh_requested`
   - 唯一联合根：传 `-VoxiaWorldGenPreview`（可再显式传 `-VoxiaUnifiedVoxelWorld`），`--cmd "until_voxel_world_root_ready 300000; voxel_world_composition_state; voxel_world_root_state"`
   - Pure3D 增量状态：`--cmd "until_pure3d_stream_settled 300000 1; pure3d_stream_state"`；隔离 probe 另传 `-VoxiaPure3DProbe -VoxiaWorldGenPreview`
+  - Near XYZ：`--cmd "until_near_full;near_mesh;snapshot"`，检查 `footprint_contract=xyz_cube`、9261 与 handoff tile/chunk 统计
+  - Cube shell probes：`--cmd "voxel_shell_plan;voxel_pages_v2_probe;voxel_shell_stage_probe"`；这些只证明组件，不能替代联合根 readiness，更不能替代在线 authority cutover
 - Voxia 定向 automation：`Automation RunTests Voxia.Voxel`、`Automation RunTests Voxia.Gameplay`、`Automation RunTests Voxia.Presentation`
 - Voxia server CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`
-  - LOD projection coverage：`--cmd "lod_status 1"`
-  - Runtime heightmap read sample：`--cmd "lod_sample 1 0 0 16 4 4"`
-  - Explicit materialization/backfill：`--cmd "lod_rebuild 1 2,4,8,16 5000"`
+  - Legacy heightmap/projection 命令只用于 archived/offline regression，不是 full-3D 验收入口
 
 ## 注意
 
 当前工作树中存在多处未提交 Voxia 代码与文档变更。现有日志证明对应工作树时点的自动化/Real-RHI 结果；交付前仍需在最终工作树重跑受影响测试，不能把“文档已治理”等同于“代码已提交”。
+完整 3D 总任务只有在 production near subscription、v2 canonical materialization、共享 near/far transaction、在线 authority provider 与 combined near+far Real-RHI 全部通过后才能完成；A10 开发根、hidden probe 或 near-only 只算 checkpoint。

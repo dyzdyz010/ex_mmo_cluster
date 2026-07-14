@@ -1,11 +1,10 @@
-defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
+defmodule WorldServer.Voxel.Legacy.XzSvoSourceMaterializer do
   @moduledoc """
-  SVO confirmed-source 的服务端权威源物化入口。
+  已归档 XZ SVO coverage 的显式离线审计/迁移入口。
 
-  Voxia 远景 SVO 使用 tile 空间 coverage：水平 L∞ 半径、可选 near-skip，
-  以及 `macro_cell_tiles` 步长。这里用同一套规则把客户端请求映射到
-  canonical chunk snapshot store 的 coverage/materialization 计划。它只用于
-  部署或显式工具链，不是客户端 runtime 缺包兜底。
+  该算法按水平 L∞ 半径、固定中心 tile Y 和可选 near-skip 规划旧 SVO source，
+  不符合现役完整 XYZ 远景壳契约。调用者必须显式传
+  `legacy_offline?: true`；模块不得被 launcher、在线 runtime 或当前验收引用。
   """
 
   alias DataService.Voxel.ChunkSnapshotStore
@@ -17,14 +16,15 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
   @type chunk_coord :: {integer(), integer(), integer()}
 
   @doc """
-  只读统计 SVO confirmed-source 的 canonical coverage。
+  只读统计旧 XZ SVO confirmed-source 的 canonical coverage。
 
   返回的计数与 `materialize/1` preflight 使用同一套规划规则，可直接用于
   CLI/observe 判断本次请求是否会超出预算。
   """
   @spec coverage(keyword()) :: {:ok, map()} | {:error, term()}
   def coverage(opts) when is_list(opts) do
-    with {:ok, context} <- build_context(opts),
+    with :ok <- require_legacy_offline(opts),
+         {:ok, context} <- build_context(opts),
          {:ok, coverage} <- analyze_coverage(context) do
       status = if(coverage.missing_source_chunk_count == 0, do: :ready, else: :incomplete)
       {:ok, coverage_summary(context, coverage, status)}
@@ -34,7 +34,7 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
   def coverage(_opts), do: {:error, :invalid_svo_source_materialization_options}
 
   @doc """
-  按 SVO confirmed-source coverage 需求补 canonical snapshots。
+  按旧 XZ SVO confirmed-source coverage 需求补 canonical snapshots。
 
   必填 option：
 
@@ -55,7 +55,8 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
   """
   @spec materialize(keyword()) :: {:ok, map()} | {:error, term()}
   def materialize(opts) when is_list(opts) do
-    with {:ok, context} <- build_context(opts),
+    with :ok <- require_legacy_offline(opts),
+         {:ok, context} <- build_context(opts),
          {:ok, coverage} <- analyze_coverage(context) do
       cond do
         coverage.planned_materialization_chunk_count > context.max_chunks ->
@@ -100,7 +101,7 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
          materializer_opts: materializer_opts,
          seed: Keyword.get(opts, :seed),
          version: Keyword.get(opts, :version, "worldgen-v1"),
-         content_version: Keyword.get(opts, :content_version, "svo-confirmed-source@1")
+         content_version: Keyword.get(opts, :content_version, "legacy-xz-svo-source@1")
        }}
     end
   end
@@ -409,9 +410,17 @@ defmodule WorldServer.Voxel.WorldPackSvoSourceMaterializer do
   defp call_materializer(_materializer, _opts), do: {:error, :invalid_materializer}
 
   defp materializer_opts(opts) do
-    case Keyword.get(opts, :materializer_opts, lod_projection?: false) do
+    case Keyword.get(opts, :materializer_opts, []) do
       materializer_opts when is_list(materializer_opts) -> {:ok, materializer_opts}
       _other -> {:error, :invalid_materializer_opts}
+    end
+  end
+
+  defp require_legacy_offline(opts) do
+    if Keyword.get(opts, :legacy_offline?, false) do
+      :ok
+    else
+      {:error, :legacy_xz_svo_source_materializer_disabled}
     end
   end
 

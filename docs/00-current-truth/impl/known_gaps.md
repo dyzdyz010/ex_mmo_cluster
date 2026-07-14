@@ -10,7 +10,7 @@
 
 ## 体素 baseline、launcher 与生产 pages
 
-- **8km 生产权威 pages**：缺服务端纯 3D canonical page writer、bounded materialization、delta dirty 聚合、mip 基准与 `source_revision/diff_chain_hash` 真值。客户端 fixture 不能替代服务端 source。
+- **3D cube-shell 生产权威 pages**：缺服务端按 XYZ brick/cube-shell expected set 生成的 canonical page writer、bounded materialization、六面 halo、delta dirty 聚合、mip 基准与 `source_revision/diff_chain_hash` 真值。客户端 fixture 不能替代服务端 source；旧 XZ `macro_cell_count=21016` 只属归档性能证据。
 - **生产持久化 artifact**：缺 source pages / mesh artifact 的持久化、版本、容量淘汰和重拉策略；旧 SVDAG/raymarch artifact 不再是当前必需交付物。
 - **launcher/update 完整流程**：缺包下载、安装、release manifest/index、diff-chain、required-set 差集下载、传送前补拉与可诊断 UI。
 - **runtime diff budget**：缺远景 page 失效的通道、优先级、合并频率、背压和最终一致性上界。
@@ -18,6 +18,8 @@
 - **服务端 material 派生**：现有 NIF 仍暴露 `column_height/heightmap_region`；缺 `chunk_xyz -> canonical 3D material page` 及与 1m truth 的一致性验证。
 
 ## Voxia 里程碑 A（当前进行中）
+
+> **唯一主线是完整 XYZ，开发根 live 不等于在线完成**：默认 near 为 `27 tiles / 9261 chunks`，任一单轴换窗的进入/退出各为 `9 tiles / 3087 chunks`、保留为 `18 tiles / 6174 chunks`。A10 唯一开发根与 Pure3D far 增量链已真实运行；在线 authority provider、共享 near/far transaction 和完整三轴验收仍是本节门禁。
 
 原 A1-A5 已收口：显式 7/14/28/56m tiers、3.5m collar、分组件 DynamicMesh StaticDraw、per-cell greedy merge、seam/fade、紧凑顶点、cache 卫生和原始 8km 长巡航均已有证据。A 已扩展为完整 3D near/far LOD 与客户端数据流送生产化，因此不能再写成“A 完成、开始 B”。
 
@@ -30,6 +32,7 @@
 - `LoadExpectedBatch` 的 H-gated 原子磁盘 batch：外部 manifest SHA-256、expected identity/set、page hash/size/decode/空间身份全部通过才发布。
 - H-gated 本地磁盘 request provider：`OpenExpectedManifest` 冻结外部 H+expected identity 校验后的 manifest 超集，`FVoxiaLocalDiskCanonicalVoxelPageProvider` 每代只读 `enter/dirty` 请求页并逐页复核，候选批全成功后才发布；唯一根已以 default 包完成冷启动和相邻 +X 实跑，错误 H 根级硬失败且无 WorldGen fallback。
 - 唯一 `production_all_features` WorldGen 组合根：GameMode 只生成 `AVoxiaUnifiedVoxelWorldActor` 顶层 root，成熟 near 滑窗/数据泵与 Pure3D far 同场运行；legacy/Pure3D standalone 降为显式 probe/compatibility。根级 CLI 要求 near settled、far live 与 XYZ center 一致；地面与高空 Real-RHI 均已通过。
+- S1b-1 根级唯一 source identity：root 只解析一次 `FVoxiaVoxelWorldSourceIdentity` 并下发给 far，far 停止自解析 provider；root 诚实报告 near 仍为 `independent_worldgen_pending_migration`。该行为已编译和实跑验证，但 worldgen/local_disk 两路及错误 H 的 automation 尚未补齐。
 - Pure3D far 的 A10 S2-S5 首轮增量链：request-oriented WorldGen/scripted provider、required/keep/enter/exit diff、immutable page residency/lease/LRU、cooperative cancellation、material/surface dependency cache、绝对 XYZ `32³` stable patch registry 与 retained/rebuilt/removed real-fence transaction。相邻 default 实跑只请求 `1517/33752` 页，复用 `32199` material、`29533` surface 和 `175/216` far patch；统一根不再创建隐藏 Pure3D near mesh/component。
 - S4 性能收敛首轮：resolved surface 按 page 使用后台优先级并行构建；material/surface cache 改为 source-bound immutable shared refs，stage 映射直接转交；`TFuture::Consume()` 消除完整 generation 复制；coverage diff 在 worker 运行，旧 coverage 在 worker 析构，page lease 以每 tick `1024` 页预算回收。相邻 Real-RHI worker 约 `0.91-0.95s`，far GameThread prepare/finalize/publish 分段约 `4.5-7.5ms`。
 
@@ -74,5 +77,5 @@
 ## 验证与文档治理
 
 - Voxia 当前代码有未提交改动；交付前需重跑受影响的 `Voxia.Voxel`、`Voxia.Gameplay`、`Voxia.Presentation` 与纯 3D Real-RHI 三轴 smoke。
-- 协议改动仍须区分 Web parity oracle、Voxia 实跑焦点和 Bevy 参考实现，不能把单客户端结果当 wire 唯一真值。
+- wire codec 唯一真值仍是 `apps/gate_server/lib/gate_server/codec.ex`；默认协议门禁由服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑共同承担。`clients/web_client` 与 `clients/bevy_client` 仅保留为逻辑归档历史证据，不再承担 current-truth parity oracle、参考实现或默认验收职责。
 - `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

@@ -785,7 +785,7 @@ async function main() {
           VITE_GAME_WS_URL: `ws://127.0.0.1:${authPort}/ingame/ws`,
           VITE_RENDER_BACKEND: "webgl",
           VITE_VOXEL_DEV_SEED: "1",
-          VITE_VOXEL_SUBSCRIBE_RADIUS: "0",
+          VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW: "1",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

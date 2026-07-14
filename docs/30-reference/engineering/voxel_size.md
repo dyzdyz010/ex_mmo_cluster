@@ -124,7 +124,7 @@ macro_index = x + y * 16 + z * 16 * 16
 
 `tile` 是生产流式预算口径, 不是当前 chunk storage、World lease、DataService persistence 或
 FieldRuntime 的新 authority 层。它用于讨论客户端近场窗口、diff 数据量、带宽预算和大范围基线更新。
-当前排查与设计先按 `1 tile = 7x7x7 chunks`、`27 tiles = 3x3x3 tiles` 这个口径推进;数据量大的问题后期实际碰到吞吐瓶颈再用 observe/CLI 量化,不作为当前 streaming / editability bug 的默认解释。
+当前唯一生产口径是 `1 tile = 7x7x7 chunks`、`27 tiles = 3x3x3 tiles` 的完整 XYZ cube；XZ column、有限 Y band 或把 tile 当成单 chunk 的算法均已归档。
 
 当前冻结口径:
 
@@ -138,15 +138,17 @@ FieldRuntime 的新 authority 层。它用于讨论客户端近场窗口、diff 
 - `27 tiles = 3 * 3 * 3 tiles`。
 - 每轴 `3 tiles * 112m = 336m`。
 - 合计 `27 tiles = 9,261 chunks = 37,933,056 macro cells`。
+- wire 映射固定为规范 tile 中心 chunk + `radius_l_inf=10`，所以 chunk 立方体为 `21x21x21=9,261`；tile `(0,0,0)` 的中心 chunk 是 `(3,3,3)`，窗口 bounds 是 `[-7..13]^3`。
 - 玩家按 A2 后服务端跑速 `6m/s` 穿过一个 tile 边长约 `112m / 6m/s = 18.67s`。
 - 跨过一个 tile 边界时, 若旧窗口保留并只补新增区域, 新增面是 `3 * 3 = 9 tiles`, 不是整个 `27 tiles`。
+- UI 逐块替换按完整 chunk handoff transaction 分帧提交；`9 tiles` 是单轴移动后的 entered set，不是同一帧原子 presentation 单元。
 
 阶段边界:
 
 - 大体素包、广域重写、全量 tile 更新不进入 scene runtime 热路径。
 - 这类数据属于启动器/更新阶段或入场前 baseline 校验阶段。
 - 进入场景后只流送已验证基线之上的 runtime diff、semantic diff、prefab/object/event diff。
-- 当前 Voxia debug/interactive 近场 `SubscribeRadius = 3 chunks` 正好是 `7^3 = 343 chunks`, 数量等于 `1 tile`, 但它仍是当前实现的 chunk 订阅窗口, 不能直接等同于生产 `27 tiles` 近场目标。
+- Voxia production/debug 自动订阅共用上述完整 XYZ tile-window 契约。任意手工 chunk/radius 命令只能作为协议诊断入口，不能改变 production coverage。
 
 ## 世界 micro 坐标
 
@@ -304,4 +306,4 @@ Prefab 可以跨 macro、跨 chunk、跨 World region。跨边界时由 Gate + W
 - `docs/2026-04-10-线协议规范.md`: voxel v1 canonical 参数和 field wire layout。
 - `docs/2026-06-25-voxel-world-production-architecture.md`: 生产 tile 口径、近场窗口和阶段边界。
 - `docs/00-current-truth/design/voxel/README.md`: 当前事实文档中的 tile 预算口径。
-- `docs/00-current-truth/design/client/streaming-lod.md`: Voxia 当前 `SubscribeRadius=3 chunks` 近场事实。
+- `docs/00-current-truth/design/client/streaming-lod.md`: Voxia 当前完整 XYZ tile cube 与 `radius_l_inf=10` wire 映射事实。

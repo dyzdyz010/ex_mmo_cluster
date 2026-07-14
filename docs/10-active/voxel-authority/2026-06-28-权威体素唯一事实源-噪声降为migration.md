@@ -1,9 +1,9 @@
 # 权威体素 = 唯一事实源；WorldGen 噪声降为一次性 migration（2026-06-28）
 
 > 性质：**地基级架构决策稿**。仅决策，未动代码。
-> 适用：scene_server 世界生成/存储/LOD 派生，及所有客户端（Voxia 主线 / bevy / web）的远景渲染取数口径。
+> 适用：scene_server 世界生成/存储/LOD 派生，以及唯一现役客户端 `clients/Voxia` 的远景渲染取数口径。`clients/bevy_client` 与 `clients/web_client` 仅作逻辑归档历史证据，不是默认取数或验收对象。
 > 纪律：先读 [`docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md`](../../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md) 并过其「开工前自查清单」。
-> 当前整合状态见：[`docs/00-current-truth/design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)。2026-06-28 旧整合稿已归档。
+> 当前整合状态见：[`docs/00-current-truth/README.md`](../../00-current-truth/README.md) 与 [`design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)；完整 XYZ 窗口 / 远景壳现役作战主线见 [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。旧整合稿已移入 `docs/20-archive/`，不得覆盖当前口径。
 
 ---
 
@@ -102,7 +102,10 @@
 
 ## 7. 与其他文档关系
 
-- 整合当前状态（入口）：[`docs/00-current-truth/design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)
+- 当前事实入口：[`docs/00-current-truth/README.md`](../../00-current-truth/README.md)
+- 体素设计入口：[`docs/00-current-truth/design/voxel/README.md`](../../00-current-truth/design/voxel/README.md)
+- 完整 XYZ 现役作战主线：[`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)
+- 旧整合稿（仅历史证据）：[`docs/20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md`](../../20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md)
 - 远景 LOD + 缝隙根因（原始）：[`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
 - 流式窗口跟随（原始）：[`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
 - 体素生产架构（原始）：[`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)
@@ -110,4 +113,4 @@
 
 ## 8. 状态
 
-**决策稿，未拍板动手。** 建议落地顺序见整合文档"路线"。
+**唯一事实源地基决策已采纳。** 当前实现状态与完整 XYZ 落地顺序以 `docs/00-current-truth/` 和纯 3D 现役作战主线为准；本文件不再承担窗口形状或远景切流状态。

@@ -26,22 +26,17 @@ use crate::voxel::wire::{
 /// scene for now). Shared with the live build path (construction system).
 pub(crate) const VOXEL_LOGICAL_SCENE_ID: u64 = 1;
 
-/// Voxel AOI subscription geometry — which chunk the subscription box is centered
-/// on and which chunk it's anchored to (架构重整阶段2:从 `WorldState` god-resource
-/// 收口到 voxel 域)。Drives the AOI follow re-subscribe / unsubscribe diff in
-/// `net::plugin`. Conceptually voxel-domain state even though only the net layer's
-/// subscription bookkeeping mutates it.
+/// 体素 AOI 的完整 XYZ 窗口状态。
+///
+/// 生产态以 `7x7x7` chunk 的 tile 为 identity；窗口中心始终是 tile 的中心
+/// chunk，玩家只有跨越 tile 边界才会切换窗口。该状态属于 voxel 域，但当前由
+/// `net::plugin` 维护订阅与退订事务。
 #[derive(Resource, Default)]
 pub struct VoxelAoiState {
-    /// The chunk coord the voxel subscription box is currently centered on. May
-    /// be **led** ahead of the player along their velocity (阶段4 step4.5 预取),
-    /// so it is not necessarily the player's own chunk. Drives the unsubscribe
-    /// diff for chunks leaving the AOI.
+    /// 当前 `21x21x21` chunk 窗口的中心 chunk。
     pub subscribed_center: Option<[i32; 3]>,
-    /// The chunk the AOI is **anchored** to — the player's own chunk at the last
-    /// re-subscribe. Hysteresis (阶段4 step4.5) is measured against this anchor so
-    /// hovering on a chunk boundary does not thrash subscribe/unsubscribe.
-    pub aoi_anchor: Option<[i32; 3]>,
+    /// 当前窗口的中心 tile；三个轴都参与 identity，不允许压成 XZ column。
+    pub subscribed_tile: Option<[i32; 3]>,
 }
 
 /// Ordering anchor for the inbox drain. `ingest_voxel_messages` (which surfaces

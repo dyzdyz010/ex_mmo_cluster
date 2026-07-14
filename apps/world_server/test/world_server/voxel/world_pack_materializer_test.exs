@@ -135,13 +135,13 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
                chunk_coords: [{0, 0, 0}],
                ledger: ledger,
                materializer: materializer,
-               materializer_opts: [lod_projection?: false]
+               materializer_opts: [test_option: :value]
              )
 
     assert summary.inserted == 1
     assert summary.errors == 0
 
-    assert_receive {:materializer_opts, ^scene_id, {0, 0, 0}, lease, [lod_projection?: false]}
+    assert_receive {:materializer_opts, ^scene_id, {0, 0, 0}, lease, [test_option: :value]}
 
     assert lease.logical_scene_id == scene_id
   end
@@ -155,7 +155,7 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
                chunk_coords: [{0, 0, 0}],
                ledger: ledger,
                materializer: fn _scene_id, _coord, _lease -> {:ok, :inserted} end,
-               materializer_opts: [lod_projection?: false]
+               materializer_opts: [test_option: :value]
              )
 
     assert summary.inserted == 0
@@ -267,14 +267,31 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
              )
   end
 
+  test "world-pack bootstrapper defaults to the canonical complete XYZ near bounds" do
+    test_pid = self()
+
+    assert {:error, {:world_pack_chunk_count_exceeds_limit, 9_261, 1}} =
+             WorldPackBootstrapper.materialize_once(
+               logical_scene_id: unique_scene_id(),
+               max_chunks: 1,
+               publish_auth_pack?: false,
+               materializer: fn _logical_scene_id, chunk_coord, _lease ->
+                 send(test_pid, {:unexpected_default_materialization, chunk_coord})
+                 {:ok, :inserted}
+               end
+             )
+
+    refute_received {:unexpected_default_materialization, _chunk_coord}
+  end
+
   test "world-pack bootstrapper refuses a 32km full authority range before materialization" do
     test_pid = self()
 
     assert {:error, {:world_pack_chunk_count_exceeds_limit, 444_596_224, 10_000}} =
              WorldPackBootstrapper.materialize_once(
                logical_scene_id: unique_scene_id(),
-               chunk_min: {-1024, -3, -1024},
-               chunk_max: {1023, 102, 1023},
+               chunk_min: {-1024, -7, -1024},
+               chunk_max: {1023, 98, 1023},
                max_chunks: 10_000,
                publish_auth_pack?: false,
                materializer: fn _logical_scene_id, chunk_coord, _lease ->
@@ -312,7 +329,7 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
     assert byte_size(snapshot.chunk_hash) == 8
   end
 
-  test "world-pack bootstrapper forwards default materializer options" do
+  test "world-pack bootstrapper writes canonical snapshots without XZ projection options" do
     {ledger, _registry} = start_ledger_with_registry()
     scene_id = unique_scene_id()
 
@@ -324,7 +341,6 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
                batch_size: 1,
                max_chunks: 1,
                ledger: ledger,
-               materializer_opts: [lod_projection?: false],
                publish_auth_pack?: false
              )
 

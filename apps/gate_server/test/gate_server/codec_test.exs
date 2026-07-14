@@ -100,7 +100,7 @@ defmodule GateServer.CodecTest do
     test "decodes chunk subscribe with known chunk refs" do
       msg =
         <<0x60, 99::64-big, 1::64-big, -2::32-big-signed, 3::32-big-signed, 4::32-big-signed,
-          5::8, 1::8, 2::16-big, -2::32-big-signed, 3::32-big-signed, 4::32-big-signed,
+          10::8, 1::8, 2::16-big, -2::32-big-signed, 3::32-big-signed, 4::32-big-signed,
           10::64-big, -1::32-big-signed, 3::32-big-signed, 4::32-big-signed, 11::64-big>>
 
       assert {:ok,
@@ -109,13 +109,33 @@ defmodule GateServer.CodecTest do
                  request_id: 99,
                  logical_scene_id: 1,
                  center_chunk: {-2, 3, 4},
-                 radius_l_inf: 5,
+                 radius_l_inf: 10,
                  want_snapshot: true,
                  known: [
                    %{chunk_coord: {-2, 3, 4}, chunk_version: 10},
                    %{chunk_coord: {-1, 3, 4}, chunk_version: 11}
                  ]
                }}} == Codec.decode(msg)
+    end
+
+    test "accepts all 9261 known refs for a radius 10 chunk window" do
+      known_payload =
+        for index <- 0..9_260, into: <<>> do
+          cx = rem(index, 21) - 10
+          cy = rem(div(index, 21), 21) - 10
+          cz = div(index, 441) - 10
+          <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, index::64-big>>
+        end
+
+      msg =
+        <<0x60, 100::64-big, 1::64-big, 0::32-big-signed, 0::32-big-signed, 0::32-big-signed,
+          10::8, 1::8, 9_261::16-big, known_payload::binary>>
+
+      assert {:ok, {:voxel_chunk_subscribe, request}} = Codec.decode(msg)
+      assert request.radius_l_inf == 10
+      assert length(request.known) == 9_261
+      assert hd(request.known) == %{chunk_coord: {-10, -10, -10}, chunk_version: 0}
+      assert List.last(request.known) == %{chunk_coord: {10, 10, 10}, chunk_version: 9_260}
     end
 
     test "decodes chunk unsubscribe" do
@@ -129,6 +149,24 @@ defmodule GateServer.CodecTest do
                  request_id: 100,
                  logical_scene_id: 1,
                  chunks: [{0, 0, 0}, {1, 0, 0}]
+               }}} == Codec.decode(msg)
+    end
+
+    test "keeps the archived 0x6A heightmap request decoder wire-compatible" do
+      msg =
+        <<0x6A, 101::64-big, 77::64-big, -32::32-big-signed, 48::32-big-signed, 16::16-big,
+          4::16-big, 3::16-big>>
+
+      assert {:ok,
+              {:voxel_heightmap_request,
+               %{
+                 request_id: 101,
+                 logical_scene_id: 77,
+                 origin_x: -32,
+                 origin_z: 48,
+                 stride: 16,
+                 count_x: 4,
+                 count_z: 3
                }}} == Codec.decode(msg)
     end
 

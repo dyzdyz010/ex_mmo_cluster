@@ -6,13 +6,14 @@ defmodule WorldPackReleaseVerifyProbe do
 
       mix run --no-start scripts/world_pack_release_verify.exs --pack-root output/world-pack/full32km
       mix run --no-start scripts/world_pack_release_verify.exs --index small-release-test --build-small-fixture
-      mix run --no-start scripts/world_pack_release_verify.exs --pack-root output/world-pack/full32km --window-centers "0,0,0;1,0,0;2,0,0"
+      mix run --no-start scripts/world_pack_release_verify.exs --pack-root output/world-pack/full32km --window-centers "3,3,3;10,3,3;17,3,3"
 
   The full32km path validates every expected payload shard on disk before it
   samples runtime-style sliding windows. Missing shards return a non-zero exit
   code and a structured JSON report under `.demo/observe/world-pack-release/`.
   """
 
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
   alias WorldServer.Voxel.WorldPackArtifactBuilder
   alias WorldServer.Voxel.WorldPackReleaseVerifier
@@ -114,14 +115,14 @@ defmodule WorldPackReleaseVerifyProbe do
   defp index!("full32km") do
     WorldPackIndex.new!(
       logical_scene_id: 91_015,
-      content_version: "worldgen-32km-index-pack@1",
-      chunk_min: {-1024, -3, -1024},
-      chunk_max: {1023, 102, 1023},
+      content_version: "worldgen-32km-xyz-window@2",
+      chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+      chunk_max: VoxelSpatialContract.full32km_chunk_max(),
       payload_layout: %{
         layout: "regular_shard_grid_v1",
         chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
-        shard_chunk_shape: {16, 106, 16},
-        shard_origin: {-1024, -3, -1024},
+        shard_chunk_shape: VoxelSpatialContract.full32km_shard_chunk_shape(),
+        shard_origin: VoxelSpatialContract.full32km_chunk_min(),
         file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
         footer_format: "chunk_offset_table_v1",
         compression: "none"
@@ -129,10 +130,10 @@ defmodule WorldPackReleaseVerifyProbe do
       regions: [
         %{
           id: "full-32km",
-          chunk_min: {-1024, -3, -1024},
-          chunk_max: {1023, 102, 1023},
+          chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+          chunk_max: VoxelSpatialContract.full32km_chunk_max(),
           chunk_count: 444_596_224,
-          hash: "sha256:full-32km"
+          hash: "sha256:full-32km-xyz-window-v2"
         }
       ]
     )
@@ -221,10 +222,17 @@ defmodule WorldPackReleaseVerifyProbe do
   end
 
   defp default_window_centers("small-release-test"), do: [{0, 0, 0}, {1, 0, 0}]
-  defp default_window_centers(_index_name), do: [{0, 0, 0}, {1, 0, 0}, {2, 0, 0}]
+
+  defp default_window_centers(_index_name) do
+    [
+      VoxelSpatialContract.tile_center_chunk({0, 0, 0}),
+      VoxelSpatialContract.tile_center_chunk({1, 0, 0}),
+      VoxelSpatialContract.tile_center_chunk({2, 0, 0})
+    ]
+  end
 
   defp default_radius("small-release-test"), do: 1
-  defp default_radius(_index_name), do: 3
+  defp default_radius(_index_name), do: VoxelSpatialContract.near_chunk_radius()
 
   defp parse_window_centers(nil), do: nil
 

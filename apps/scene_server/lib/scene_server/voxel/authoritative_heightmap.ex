@@ -1,16 +1,10 @@
 defmodule SceneServer.Voxel.AuthoritativeHeightmap do
   @moduledoc """
-  Reads far/LOD heightmaps derived from persisted authoritative voxel truth.
+  已归档 XZ heightmap 的离线读取与迁移适配器。
 
-  This module is the runtime replacement for using procedural WorldGen noise as
-  a heightmap source. The default runtime path reads the persistent
-  `DataService.Voxel.LodHeightmapStore` projection. Missing projection cells
-  are explicit errors: runtime heightmap requests must not silently regenerate
-  terrain from noise or rescan snapshots as a fallback.
-
-  The direct chunk snapshot scanner remains available only through explicit
-  opts (`:snapshot_index`, `:snapshot_store`, or `source: :snapshot_store`) so
-  projection rebuilds and tests can derive rows from canonical chunk snapshots.
+  TCP 在线 `0x6A` 链路已明确返回 `:unsupported_legacy_contract`，不得调用本模块。
+  默认读取 `DataService.Voxel.LodHeightmapStore`；显式 snapshot 选项仅供历史投影
+  rebuild、数据审计和测试从 canonical chunks 派生旧格式行。
   """
 
   alias DataService.Voxel.LodHeightmapStore
@@ -33,7 +27,7 @@ defmodule SceneServer.Voxel.AuthoritativeHeightmap do
         }
 
   @doc """
-  Computes a big-endian u16 heightmap from the persistent LOD projection.
+  为离线迁移/对照读取 big-endian u16 历史 heightmap projection。
 
   `origin_x` / `origin_z` are world macro coordinates. `stride` is measured in
   macro cells. The returned binary is X-fastest and compatible with the existing

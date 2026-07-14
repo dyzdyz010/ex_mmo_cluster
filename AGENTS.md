@@ -13,23 +13,23 @@
 
 **客户端口径（统一到 `docs/00-current-truth/`，覆盖任何旧文档的相反表述）**：
 
-- `clients/Voxia`（UE5.8）是**当前真实联调焦点**——新功能、近场交互、远景 LOD、debug overlay、stdio CLI 的最新实跑证据在此。
-- `clients/web_client` 是**仓库级默认 parity / oracle 参考**——协议字节序、decoder parity 默认以它验收。
-- `clients/bevy_client` 是 **Rust 参考实现**。
+- `clients/Voxia`（UE5.8）是**唯一现役客户端与真实联调焦点**——新功能、模块设计、渲染效果、近场交互、远景 LOD、debug overlay、stdio CLI 和客户端实跑验收均在此推进。
+- `clients/web_client` 与 `clients/bevy_client` 是**逻辑归档客户端**——代码和历史证据保留原位，默认不读取、不开发、不验证、不进入 CI / 发布 / 进度判断；只有用户显式点名时才临时纳入任务。
 - 不要把任一客户端误当协议唯一真值源：wire codec 真值以 `apps/gate_server/lib/gate_server/codec.ex` 为准。
 
 ## 2. 架构铁律
 
 1. **服务端权威优先**：移动、AOI、战斗、体素、object state、field truth 等核心运行时状态以服务端 authority 为准。客户端可以预测、预览和呈现，但不能成为 confirmed truth 来源。
-2. **confirmed voxel truth 只吃服务端**：在线客户端（Voxia / web / bevy）只能通过服务端 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot` 更新确认态；本地编辑只允许作为 preview、pending UI 或离线模式能力。体素编辑全程服务端权威、不做客户端乐观预测（点击只发 intent，等服务端广播 delta/快照才渲染）；乐观预测仅用于移动和技能特效。
+2. **confirmed voxel truth 只吃服务端**：现役 Voxia 只能通过服务端 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot` 更新确认态；归档 Web / Bevy 若被用户显式临时纳入，也必须遵守同一规则。本地编辑只允许作为 preview、pending UI 或离线模式能力。体素编辑全程服务端权威、不做客户端乐观预测（点击只发 intent，等服务端广播 delta/快照才渲染）；乐观预测仅用于移动和技能特效。
 3. **体素基线校验硬失败**：进入场景前必须校验客户端本地 world pack / region manifest / chunk baseline / diff chain 的完整性与版本；缺包、hash 不匹配、manifest 不一致、diff chain 断裂等都视为客户端数据不可被信任，必须拒绝进入场景并返回可诊断错误，禁止用运行时 `ChunkSnapshot`、resync、自愈逻辑或静默兜底绕过校验。
 4. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；World 负责事务、region / scene 路由和跨 app 编排；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 负责 canonical persistence；客户端只消费权威结果。
 5. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；voxel / object / combat truth 写回必须经过 ChunkProcess 或明确的 authority dispatcher。
 6. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
-7. **协议层只追加不破坏**：新增 wire 字段必须保持旧字段字节序和含义稳定；涉及客户端 decoder 的改动，默认以 `clients/web_client` parity / 字节序验收为准，并在 Voxia 侧补实跑验证。
+7. **协议层只追加不破坏**：新增 wire 字段必须保持旧字段字节序和含义稳定；wire codec 真值以 `apps/gate_server/lib/gate_server/codec.ex` 为准，默认通过服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑验证。归档 Web / Bevy parity 不再是默认门禁。
 8. **显式失败，不静默降级**：连接、鉴权、movement reconcile、voxel intent、field source、kernel effect、消息编解码、NIF 调用、持久化写入失败时，要返回可诊断错误并打结构化日志；禁止吞错后伪装成功。
 9. **迁移期兼容要可见**：PostgreSQL 主路径与 Mnesia 遗留路径并存时，代码和文档必须标明当前来源、兼容原因、退出条件。
 10. **唯一生产组合根**：每个客户端/可执行系统必须只有一个包含全部已批准成果的正式组合根，作为联合调试、效果测试和里程碑验收的唯一运行事实。参数、专用地图和 probe 可以隔离验证子系统，但必须显式标为 `probe/compatibility`，不得成为第二条“正式路径”，也不得用单模块通过冒充全系统完成。新成果只有接入唯一生产根、由根级 readiness/CLI 联合验证后，才可写成已进入正式客户端流程；迁移期子模块可以被根组合，但 GameMode/入口不得并列生成多个生产 world root。
+11. **体素空间契约只认完整 XYZ**：近场窗口、远景壳、page/cell identity、coverage、LOD、cache、prefetch、handoff 和预算必须按完整三维坐标定义。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时 `entered/exited = 9 tiles = 3087 chunks`、`retained = 18 tiles = 6174 chunks`。XZ tile column、有限 Y 带和把 Y 固定为零的设计仅允许作为 `docs/20-archive/` 历史证据，不得作为当前设计、兼容运行时或新功能基础。
 
 ### 2.1 架构设计指导思想（系统正交，最高纲领）
 
@@ -45,7 +45,7 @@
 
 1. **CLI + 结构化日志优先**：客户端 / 服务端联调与验收优先使用 CLI 可观测接口和结构化日志，不把截图或视觉检查作为唯一判断依据。
 2. **先定义可观测面再实现**：新增或修改交互式运行时逻辑前，先明确调试时需要从 CLI / 日志直接读到哪些状态、输入、输出、错误原因，再实现功能本身。
-3. **非 GUI 调试面必须等价**：浏览器客户端也要提供等价的非 GUI 调试面，例如 `window` 暴露的命令入口、结构化 observe 日志、可导出的运行时快照。
+3. **非 GUI 调试面必须等价**：现役 Voxia 必须提供等价的 CLI / 日志调试面；若用户显式临时纳入归档浏览器客户端，它也必须提供 `window` 命令入口、结构化 observe 日志和可导出的运行时快照。
 4. **观察产物可复现、易清理**：默认写入 `.demo/observe/` 或显式配置的 observe 目录，便于自动化调试与回归。
 5. **功能必须可验证、可测试、可操作**：不能只实现底层核心而让用户无法触发、无法观察、无法判断是否正确。
 6. **用户交互必须三入口覆盖**：涉及用户交互的功能必须提供真实用户操作入口、自动化测试入口、CLI / 日志验证入口，并在最终验收中覆盖这些入口。
@@ -74,10 +74,10 @@
 - 根级常规验证：`mix compile`、`mix test`。根 `mix.exs` 当前没有 `precommit` alias，不要假设 `mix precommit` 在 umbrella 根可用。
 - Phoenix app 验证：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`。
 - 单 app 测试：`cd apps/<app> && mix test --no-start`，按影响范围选择。
-- Web client 验证：`cd clients/web_client && npm test`；涉及构建 / 类型边界时补 `npm run build`。
 - WebSocket 双客户端 smoke：`node scripts/run_ws_dual_smoke_supervised.js`，结构化产物写入 `.demo/observe/`。
 - Voxia 客户端 CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`；服务端 CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`。
 - 完整命令清单见 [`docs/30-reference/engineering/project-engineering-guide.md`](docs/30-reference/engineering/project-engineering-guide.md) 与 [`docs/00-current-truth/impl/README.md`](docs/00-current-truth/impl/README.md)。
+- 归档客户端：Web / Bevy 不进入默认验证；只有用户显式点名时才按各自 README 运行历史测试或工具。
 
 ## 6. 关键路径（索引）
 
@@ -88,7 +88,9 @@
 - 线协议：[`docs/30-reference/protocol/2026-04-10-线协议规范.md`](docs/30-reference/protocol/2026-04-10-线协议规范.md)（真值以 `apps/gate_server/lib/gate_server/codec.ex` 为准）
 - 体素权威主索引：[`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)
 - 体素 baseline 边界决策：[`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
-- 体素同步 / 窗口 / 渲染设计：[`docs/30-reference/protocol/2026-06-29-voxel-sync-window-and-render-design.md`](docs/30-reference/protocol/2026-06-29-voxel-sync-window-and-render-design.md)
+- 纯 3D 体素窗口 / 远景壳现役作战主线：[`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)
+- 旧体素同步 / 窗口 / 渲染设计（仅历史证据）：[`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md)
 - Phase 7 局部场路线图：[`docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)
 - 当前会话 / 后续接力：[`docs/10-active/cross-cutting/_session-handoff.md`](docs/10-active/cross-cutting/_session-handoff.md)
-- 客户端：[`clients/Voxia/README.md`](clients/Voxia/README.md)、[`clients/web_client/README.md`](clients/web_client/README.md)、[`clients/bevy_client/README.md`](clients/bevy_client/README.md)
+- 现役客户端：[`clients/Voxia/README.md`](clients/Voxia/README.md)
+- 归档客户端策略：[`docs/10-active/cross-cutting/2026-07-14-web-bevy-client-archive-policy.md`](docs/10-active/cross-cutting/2026-07-14-web-bevy-client-archive-policy.md)

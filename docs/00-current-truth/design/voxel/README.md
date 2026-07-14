@@ -121,7 +121,7 @@ flowchart LR
 
 - [`AGENTS.md`](../../../../AGENTS.md)
 - [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../../../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)
-- [`docs/20-archive/voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md`](../../../20-archive/voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md)
+- [`docs/20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md`](../../../20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md)（历史整合证据）
 - [`docs/00-current-truth/impl/2026-06-29-world-pack-streaming-handoff.md`](../../impl/2026-06-29-world-pack-streaming-handoff.md)
 - [`docs/30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)
 - [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)
@@ -129,4 +129,5 @@ flowchart LR
 - [`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](../../../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
 - [`docs/30-reference/protocol/glossary.md`](../../../30-reference/protocol/glossary.md)
 - [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)
-- [`docs/30-reference/overview/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../30-reference/overview/2026-07-06-voxia-lod-layering-and-technology-design.md)
+- [`docs/20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md)（历史 LOD 分层证据）
+- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（完整 XYZ 唯一现役作战主线；远景纯 3D 壳尚未生产接线）

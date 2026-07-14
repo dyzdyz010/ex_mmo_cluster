@@ -5,12 +5,6 @@ name: Web Client Publish
 # into the host-side nginx alias directory.
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - "clients/web_client/**"
-      - ".github/workflows/web-client-publish.yml"
-      - "deploy/upgrade.sh"
   workflow_dispatch:
     inputs:
       tag_override:
@@ -65,7 +59,7 @@ jobs:
           context: clients/web_client
           file: clients/web_client/Dockerfile
           platforms: linux/amd64
-          push: true
+          "push": true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=web-client

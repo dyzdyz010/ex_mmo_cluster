@@ -12,6 +12,9 @@ defmodule VoxiaServerStdioCli do
   One-shot mode:
 
       elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "connections; chunk 1 -12 8 -10"
+
+  旧 `lod_status` / `lod_sample` / `lod_rebuild` XZ 命令只返回
+  `unsupported_legacy_contract`，不会再对在线节点读取或写入 projection。
   """
 
   @commands [
@@ -21,9 +24,6 @@ defmodule VoxiaServerStdioCli do
     "connections",
     "voxel",
     "chunk <scene_id> <cx> <cy> <cz>",
-    "lod_status <scene_id> [stride]",
-    "lod_sample <scene_id> <origin_x> <origin_z> <stride> <count_x> <count_z>",
-    "lod_rebuild <scene_id> [stride_csv] [batch_size]",
     "observe [dir]",
     "logs [gate|scene|world] [pattern] [n]",
     "flush",
@@ -189,102 +189,9 @@ defmodule VoxiaServerStdioCli do
     end
   end
 
-  defp handle(node, "lod_status " <> rest) do
-    case split_args(rest) do
-      [scene] ->
-        with {:ok, logical_scene_id} <- parse_int(scene) do
-          emit("lod_status", %{
-            logical_scene_id: logical_scene_id,
-            result:
-              safe_rpc(node, DataService.Voxel.LodHeightmapStore, :summary, [logical_scene_id])
-          })
-        else
-          _ -> emit("error", %{reason: "invalid logical scene id", command: "lod_status #{rest}"})
-        end
-
-      [scene, stride_text] ->
-        with {:ok, logical_scene_id} <- parse_int(scene),
-             {:ok, stride} <- parse_positive_int(stride_text) do
-          emit("lod_status", %{
-            logical_scene_id: logical_scene_id,
-            stride: stride,
-            result:
-              safe_rpc(node, DataService.Voxel.LodHeightmapStore, :summary, [
-                logical_scene_id,
-                [stride: stride]
-              ])
-          })
-        else
-          _ ->
-            emit("error", %{reason: "invalid lod_status arguments", command: "lod_status #{rest}"})
-        end
-
-      _ ->
-        emit("error", %{reason: "usage: lod_status <scene_id> [stride]"})
-    end
-  end
-
-  defp handle(node, "lod_sample " <> rest) do
-    case split_args(rest) do
-      [scene, origin_x, origin_z, stride_text, count_x, count_z] ->
-        with {:ok, logical_scene_id} <- parse_int(scene),
-             {:ok, ox} <- parse_int(origin_x),
-             {:ok, oz} <- parse_int(origin_z),
-             {:ok, stride} <- parse_positive_int(stride_text),
-             {:ok, cx} <- parse_positive_int(count_x),
-             {:ok, cz} <- parse_positive_int(count_z) do
-          result =
-            safe_rpc(node, SceneServer.Voxel.AuthoritativeHeightmap, :heightmap_region, [
-              logical_scene_id,
-              ox,
-              oz,
-              stride,
-              cx,
-              cz
-            ])
-
-          emit("lod_sample", %{
-            logical_scene_id: logical_scene_id,
-            origin: {ox, oz},
-            stride: stride,
-            count: {cx, cz},
-            result: summarize_heightmap_result(result)
-          })
-        else
-          _ ->
-            emit("error", %{reason: "invalid lod_sample arguments", command: "lod_sample #{rest}"})
-        end
-
-      _ ->
-        emit("error", %{
-          reason:
-            "usage: lod_sample <scene_id> <origin_x> <origin_z> <stride> <count_x> <count_z>"
-        })
-    end
-  end
-
-  defp handle(node, "lod_rebuild " <> rest) do
-    case parse_lod_rebuild_args(split_args(rest)) do
-      {:ok, logical_scene_id, opts} ->
-        result =
-          safe_rpc(
-            node,
-            SceneServer.Voxel.LodProjection.Rebuilder,
-            :rebuild_scene,
-            [logical_scene_id, opts],
-            300_000
-          )
-
-        emit("lod_rebuild", %{
-          logical_scene_id: logical_scene_id,
-          opts: opts,
-          result: result
-        })
-
-      {:error, reason} ->
-        emit("error", %{reason: reason, command: "lod_rebuild #{rest}"})
-    end
-  end
+  defp handle(_node, "lod_status" <> _rest), do: reject_legacy_xz_command("lod_status")
+  defp handle(_node, "lod_sample" <> _rest), do: reject_legacy_xz_command("lod_sample")
+  defp handle(_node, "lod_rebuild" <> _rest), do: reject_legacy_xz_command("lod_rebuild")
 
   defp handle(_node, "quit") do
     emit("quit", %{})
@@ -293,6 +200,14 @@ defmodule VoxiaServerStdioCli do
 
   defp handle(_node, other) do
     emit("error", %{reason: "unknown command", command: other, commands: @commands})
+  end
+
+  defp reject_legacy_xz_command(command) do
+    emit("error", %{
+      command: command,
+      reason: "unsupported_legacy_contract",
+      replacement: "scripts/legacy/ requires explicit --allow-legacy-xz offline mode"
+    })
   end
 
   defp chunk_probe(node, logical_scene_id, coord) do
@@ -567,92 +482,6 @@ defmodule VoxiaServerStdioCli do
       {value, ""} -> {:ok, value}
       _ -> :error
     end
-  end
-
-  defp parse_positive_int(text) do
-    case parse_int(text) do
-      {:ok, value} when value > 0 -> {:ok, value}
-      _ -> :error
-    end
-  end
-
-  defp parse_lod_rebuild_args([]),
-    do: {:error, "usage: lod_rebuild <scene_id> [stride_csv] [batch_size]"}
-
-  defp parse_lod_rebuild_args([scene | rest]) do
-    with {:ok, logical_scene_id} <- parse_int(scene),
-         {:ok, opts} <- parse_lod_rebuild_opts(rest) do
-      {:ok, logical_scene_id, opts}
-    else
-      {:error, reason} -> {:error, reason}
-      :error -> {:error, "invalid lod_rebuild arguments"}
-    end
-  end
-
-  defp parse_lod_rebuild_opts([]), do: {:ok, []}
-
-  defp parse_lod_rebuild_opts([stride_csv]) do
-    with {:ok, strides} <- parse_stride_csv(stride_csv) do
-      {:ok, lod_stride_opts(strides)}
-    end
-  end
-
-  defp parse_lod_rebuild_opts([stride_csv, batch_size_text]) do
-    with {:ok, strides} <- parse_stride_csv(stride_csv),
-         {:ok, batch_size} <- parse_positive_int(batch_size_text) do
-      {:ok, Keyword.put(lod_stride_opts(strides), :batch_size, batch_size)}
-    else
-      :error -> {:error, "invalid lod_rebuild batch_size"}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp parse_lod_rebuild_opts(_),
-    do: {:error, "usage: lod_rebuild <scene_id> [stride_csv] [batch_size]"}
-
-  defp parse_stride_csv(value) when value in ["default", "*"], do: {:ok, nil}
-
-  defp parse_stride_csv(value) do
-    strides =
-      value
-      |> String.split(",", trim: true)
-      |> Enum.map(&parse_positive_int/1)
-
-    cond do
-      strides == [] ->
-        {:error, "invalid lod_rebuild strides"}
-
-      Enum.all?(strides, &match?({:ok, _}, &1)) ->
-        {:ok, Enum.map(strides, fn {:ok, stride} -> stride end)}
-
-      true ->
-        {:error, "invalid lod_rebuild strides"}
-    end
-  end
-
-  defp lod_stride_opts(nil), do: []
-  defp lod_stride_opts(strides), do: [strides: strides]
-
-  defp summarize_heightmap_result({:ok, %{heights: heights, meta: meta}})
-       when is_binary(heights) do
-    %{
-      status: :ok,
-      meta: meta,
-      height_bytes: byte_size(heights),
-      height_count: div(byte_size(heights), 2),
-      height_sample: decode_u16_sample(heights, 32)
-    }
-  end
-
-  defp summarize_heightmap_result({:error, reason}), do: %{status: :error, reason: reason}
-  defp summarize_heightmap_result(other), do: %{status: :unknown, result: other}
-
-  defp decode_u16_sample(binary, limit), do: decode_u16_sample(binary, limit, [])
-  defp decode_u16_sample(_binary, 0, acc), do: Enum.reverse(acc)
-  defp decode_u16_sample(<<>>, _limit, acc), do: Enum.reverse(acc)
-
-  defp decode_u16_sample(<<height::unsigned-big-integer-size(16), rest::binary>>, limit, acc) do
-    decode_u16_sample(rest, limit - 1, [height | acc])
   end
 
   defp log_args(node, []), do: {log_path(node, "gate"), nil, 80}

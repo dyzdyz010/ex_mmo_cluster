@@ -3,10 +3,10 @@ defmodule SceneServer.Voxel.WorldGen do
   Deterministic development world-seed terrain helper.
 
   WorldGen noise is no longer a runtime truth source. Production runtime paths
-  must read authoritative voxel storage, and far/LOD heightmaps must use
-  `SceneServer.Voxel.AuthoritativeHeightmap`. The functions in this module remain
+  must read authoritative voxel storage. The functions in this module remain
   available for dev migrations / local materialization tools that write their
-  output into the authoritative store exactly once.
+  output into the authoritative store exactly once. XZ heightmap helpers仅供离线
+  历史数据迁移；TCP `0x6A` 在线链路不会调用它们。
 
   Terrain shape (two summed layers): a rolling **lowland** base (fractal value noise
   centred on sea level, so it dips below into basins/valleys and rises into low
@@ -39,7 +39,7 @@ defmodule SceneServer.Voxel.WorldGen do
   #             basins/valleys (depressions) and rises into low hills; and
   #   mountains — rare, very TALL ridged peaks (>1 km) gated to a few regions.
   # @max_height is the air_chunk? upper bound + final clamp; it now exceeds 1 km, so
-  # the LOD heightmap wire (0x6B) carries u16 heights (the old u8 capped at 255 m).
+  # 历史 LOD heightmap wire (0x6B) 使用 u16 高度，旧 u8 上限为 255 m。
   #
   # 重计算(分层 value-noise:lowland 基底 + 稀疏 ridged 高山)落在 Rust NIF
   # `SceneServer.Native.WorldGenNoise`(架构纪律:重计算必须在 Rust)。所有噪声常量
@@ -66,16 +66,15 @@ defmodule SceneServer.Voxel.WorldGen do
     sea_level = Keyword.get(opts, :sea_level, @sea_level)
     max_height = Keyword.get(opts, :max_height, @max_height)
 
-    # 分层 value-noise 重计算落在 Rust NIF;chunk 与 LOD heightmap 走同一条路径。
+    # 分层 value-noise 重计算落在 Rust NIF；旧 heightmap 离线工具与 chunk 共用算法。
     WorldGenNoise.column_height(wx, wz, seed, sea_level, max_height)
   end
 
   @doc """
-  Development-only noise heightmap helper. Runtime `0x6A` handling must call
-  `SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region/7` instead, because
-  far LOD has to be derived from persisted voxel truth and include edits.
+  仅供历史数据迁移的 noise heightmap helper。在线 `0x6A` 已归档并明确拒绝，
+  不得调用本函数或 `SceneServer.Voxel.AuthoritativeHeightmap`。
   """
-  @deprecated "runtime LOD must use SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region/7"
+  @deprecated "archived XZ heightmap offline migration helper only"
   @spec heightmap_region(
           integer(),
           integer(),
@@ -91,7 +90,7 @@ defmodule SceneServer.Voxel.WorldGen do
     max_height = Keyword.get(opts, :max_height, @max_height)
 
     # 整个 1M-cell 网格的逐列高度在 Rust 里循环填充 big-endian u16,X 优先;
-    # 与 column_height 同源,远景高度图与实体 chunk 一致。
+    # 与 column_height 同源，供旧格式离线迁移保持确定性。
     WorldGenNoise.heightmap_region(
       origin_x,
       origin_z,

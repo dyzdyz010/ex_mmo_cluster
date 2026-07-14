@@ -4,7 +4,7 @@
 
 ## 体素权威基线
 
-- Phase 1-6 已收口：refined truth、typed edit intent、canonical persistence、prefab v2 transaction、fence/resume、object provenance、ObjectStateDelta、属性目录、温湿度基础、FieldLayer / FieldRegion / FieldDebugOverlay。
+- Phase 1-6 已收口：refined truth、typed edit intent、canonical persistence、prefab v2 transaction、fence/resume、object provenance、ObjectStateDelta、属性目录、温湿度基础、FieldLayer / FieldRegion；`FieldDebugOverlay` 是归档 `web_client` 的历史实现证据，不是现役客户端能力。
 - 在线客户端 confirmed truth 只能来自服务端 `ChunkSnapshot`、`ChunkDelta`、`VoxelIntentResult`、`ObjectStateDelta`、`FieldRegionSnapshot`。
 
 ## Field Runtime 当前模型
@@ -17,10 +17,14 @@ flowchart TD
   Kernel["FieldKernel<br/>传播/演化"]
   Effect["FieldEffect<br/>结构化副作用"]
   Dispatcher["ChunkProcess / dispatcher<br/>权威写回"]
-  Client["0x73/0x74 + overlay"]
+  Wire["服务端 0x73/0x74 下发"]
+  ArchivedWeb["归档 web_client overlay<br/>历史证据"]
+  Voxia["Voxia 等价入口<br/>尚未落地"]
 
   Truth --> Source --> Region --> Kernel --> Effect --> Dispatcher --> Truth
-  Region --> Client
+  Region --> Wire
+  Wire -. 历史消费 .-> ArchivedWeb
+  Wire -. 待另行排期 .-> Voxia
 ```
 
 - `FieldRegion` 管生命周期、AABB、layers、kernels、source 关系。
@@ -46,11 +50,14 @@ Field kernel 不直接改世界：
 | --- | --- |
 | 温度 | signed delta field，set-temperature/cool 入口，回到环境阈值可销毁 region |
 | 材料物性 | thermal / electric / ignition / melting / freezing / boiling 等属性可由 catalog/effective attribute 读取 |
-| 电导 | `ConductionPathKernel`、`FieldRuntime.ensure_conduction_path/1`、HTTP/Web CLI 入口 |
+| 电导服务端运行时 | `ConductionPathKernel`、`FieldRuntime.ensure_conduction_path/1` 已落地 |
+| 电导 HTTP 入口 | 现役服务端入口已落地；这是服务端事实，不代表现役客户端入口已完成 |
+| 电导 Web CLI | 仅为归档 `web_client` 的历史实现和当时验证证据，不是默认验收门禁 |
+| 电导 Voxia 入口 | 等价入口尚未落地，不能写成客户端完成；如仍需要，须按 Voxia 当前路线另行排期，且不得自动纳入当前 A10 |
 | 电源 | `material_id=6` 的 power block 是默认物理电源，普通 iron 只做导线 |
 | 电热 | conduction path 可估算 Joule heat，写回 voxel temperature truth |
-| 热烟 | GUI field overlay 可基于 power draw 产生 smoke visual；不是 voxel truth |
-| 闭合电路 | `CircuitComponentAnalysis` 闭合 source-load 谓词作为 current overlay 准入 |
+| 热烟 | 归档 `web_client` 的 GUI field overlay 曾可基于 power draw 产生 smoke visual；仅为历史可视化证据，不是现役客户端能力，也不是 voxel truth；Voxia 等价表现尚未落地 |
+| 闭合电路 | 服务端 `CircuitComponentAnalysis` 闭合 source-load 谓词已作为 current field 准入；关联的归档 `web_client` overlay 仅为历史证据，Voxia 等价表现尚未落地 |
 | 相邻双 chunk | 已支持直接相邻、边界接触的双 shard conduction 最小切片 |
 | 介质击穿 | `ElectricDischargeKernel` / `conduction_mode: :discharge` 已形成瞬时 ionized channel |
 | 光 | 已从客户端白炽派生升级为服务端权威光场，含 light layer / light_color / LightPropagationKernel 等 |
@@ -80,7 +87,7 @@ Field kernel 不直接改世界：
 
 | 旧结论 | 当前事实 |
 | --- | --- |
-| Phase 7 只是温度按钮 demo | 已形成温度、电导、电热、热烟、闭合电路、击穿等可操作 runtime 起点 |
+| Phase 7 只是温度按钮 demo | 服务端已形成温度、电导、电热、闭合电路、击穿等可操作 runtime 起点；归档 Web 热烟可视化仅作历史表现证据，不是当前可操作 runtime 或现役客户端能力 |
 | 光只是客户端白炽派生 | 当前已有服务端权威光场 as-built |
 | `state_flags` 承载 burning/frozen/wet/charred 外观 | 已被 material/tag/field 纯函数渲染方向取代 |
 | iron 锈蚀需要专门“锈了断电”规则 | iron → rust 通过 truth/material 属性自然退出导电 |

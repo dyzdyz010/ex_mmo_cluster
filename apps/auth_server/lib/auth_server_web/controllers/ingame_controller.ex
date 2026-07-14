@@ -19,6 +19,7 @@ defmodule AuthServerWeb.IngameController do
   use AuthServerWeb, :controller
   require Logger
 
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
 
   @doc "Render the in-game login form."
@@ -989,9 +990,15 @@ defmodule AuthServerWeb.IngameController do
       regions: Enum.map(index.regions, &world_pack_index_region/1),
       integrity: pack_integrity,
       sliding_window_contract: %{
-        radius: 3,
-        chunk_shape: [7, 7, 7],
-        chunk_count: WorldPackIndex.sliding_window({0, 0, 0}, 3).chunk_count
+        spatial_contract: "complete_xyz_tile_window_v1",
+        tile_size_chunks: VoxelSpatialContract.tile_size_chunks(),
+        tile_radius: VoxelSpatialContract.near_tile_radius(),
+        center_chunk: Tuple.to_list(VoxelSpatialContract.default_near_center_chunk()),
+        radius: VoxelSpatialContract.near_chunk_radius(),
+        chunk_shape: Tuple.to_list(VoxelSpatialContract.near_chunk_shape()),
+        chunk_count: VoxelSpatialContract.near_chunk_count(),
+        chunk_min: required_near_chunk_min(),
+        chunk_max: required_near_chunk_max()
       },
       index_hash: world_pack_index_hash(index)
     }
@@ -1072,6 +1079,7 @@ defmodule AuthServerWeb.IngameController do
         max: Tuple.to_list(index.chunk_max)
       })
       |> Map.put(:persisted_chunk_count, map_value(snapshot_summary, :chunk_count))
+      |> enforce_complete_xyz_near_coverage()
     else
       {:error, %{status: status} = summary} ->
         summary
@@ -1157,7 +1165,62 @@ defmodule AuthServerWeb.IngameController do
           generated_bounds: %{min: expected_min, max: expected_max},
           persisted_bounds: %{min: persisted_min, max: persisted_max}
         }
+        |> enforce_complete_xyz_near_coverage()
     end
+  end
+
+  defp enforce_complete_xyz_near_coverage(%{status: :ready} = integrity) do
+    generated_bounds = Map.get(integrity, :generated_bounds, %{})
+    generated_min = Map.get(generated_bounds, :min)
+    generated_max = Map.get(generated_bounds, :max)
+    required_min = required_near_chunk_min()
+    required_max = required_near_chunk_max()
+
+    integrity =
+      Map.put(integrity, :required_near_window, %{
+        spatial_contract: "complete_xyz_tile_window_v1",
+        center_chunk: Tuple.to_list(VoxelSpatialContract.default_near_center_chunk()),
+        radius: VoxelSpatialContract.near_chunk_radius(),
+        chunk_min: required_min,
+        chunk_max: required_max,
+        chunk_count: VoxelSpatialContract.near_chunk_count()
+      })
+
+    if bounds_cover?(generated_min, generated_max, required_min, required_max) do
+      integrity
+    else
+      integrity
+      |> Map.put(:status, :incomplete)
+      |> Map.put(:reason, "active_window_bounds_mismatch")
+    end
+  end
+
+  defp bounds_cover?(
+         [min_x, min_y, min_z],
+         [max_x, max_y, max_z],
+         [required_min_x, required_min_y, required_min_z],
+         [required_max_x, required_max_y, required_max_z]
+       ) do
+    min_x <= required_min_x and min_y <= required_min_y and min_z <= required_min_z and
+      max_x >= required_max_x and max_y >= required_max_y and max_z >= required_max_z
+  end
+
+  defp bounds_cover?(_generated_min, _generated_max, _required_min, _required_max), do: false
+
+  defp required_near_chunk_min do
+    {chunk_min, _chunk_max} =
+      VoxelSpatialContract.default_near_center_chunk()
+      |> VoxelSpatialContract.near_window_bounds()
+
+    Tuple.to_list(chunk_min)
+  end
+
+  defp required_near_chunk_max do
+    {_chunk_min, chunk_max} =
+      VoxelSpatialContract.default_near_center_chunk()
+      |> VoxelSpatialContract.near_window_bounds()
+
+    Tuple.to_list(chunk_max)
   end
 
   defp pack_index_matches_generated(_index, nil, _expected_min, _expected_max),

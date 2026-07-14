@@ -32,6 +32,29 @@ import { ClearedSlotCache } from "./clearedSlotCache";
 import { DebrisSimulation, type DebrisSpawnPoint } from "./debrisEffect";
 import { MacroWorldSize } from "./core/constants";
 
+export const CanonicalNearTileSizeChunks = 7;
+export const CanonicalNearTileRadius = 1;
+export const CanonicalNearChunkRadius = 10;
+const CanonicalNearKeepAliveMs = 60_000;
+
+export function canonicalNearWindowCenterFromWorldCm(position: {
+  x: number;
+  y: number;
+  z: number;
+}): FChunkCoord {
+  const chunkWorldSizeCm = MacroWorldSize * VoxelConstants.ChunkSizeInMacros;
+  const centerForAxis = (worldCm: number): number => {
+    const chunk = Math.floor(worldCm / chunkWorldSizeCm);
+    const tile = Math.floor(chunk / CanonicalNearTileSizeChunks);
+    return tile * CanonicalNearTileSizeChunks + Math.floor(CanonicalNearTileSizeChunks / 2);
+  };
+  return {
+    x: centerForAxis(position.x),
+    y: centerForAxis(position.y),
+    z: centerForAxis(position.z),
+  };
+}
+
 // Phase 4-bis Step 4-bis-10 timing / sampling constants.
 const OBJECT_STATE_DELTA_RETRY_DELAY_MS = 100;
 
@@ -220,6 +243,10 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   private lastDebugProbe: string | null = null;
   private lastError: string | null = null;
   private initialSubscriptionsSent = false;
+  private nearWindowWorldPositionResolver: (() => { x: number; y: number; z: number }) | null =
+    null;
+  private automaticNearCenterChunk: FChunkCoord | null = null;
+  private lastAutomaticNearSubscribeMs = Number.NEGATIVE_INFINITY;
   private primeSent = false;
   // Phase 4-bis 0x6C ObjectStateDelta processing.
   private readonly objectStateDeltaConsumer: ObjectStateDeltaConsumer;
@@ -244,8 +271,8 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
   ) {
     super();
     this.logicalSceneId = options.logicalSceneId ?? 1;
-    this.defaultCenterChunk = options.defaultCenterChunk ?? { x: 0, y: 0, z: 0 };
-    this.defaultRadiusLInf = options.defaultRadiusLInf ?? 0;
+    this.defaultCenterChunk = options.defaultCenterChunk ?? { x: 3, y: 3, z: 3 };
+    this.defaultRadiusLInf = options.defaultRadiusLInf ?? CanonicalNearChunkRadius;
     this.initialSubscriptions = normalizeInitialSubscriptions(
       options.initialSubscriptions ?? [
         { centerChunk: this.defaultCenterChunk, radiusLInf: this.defaultRadiusLInf },
@@ -304,7 +331,9 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     if (this.seedState === "idle" || this.shouldRetrySeed(nowMs)) {
       this.ensureDevSeed(nowMs);
     }
-    if (this.subscriptionState === "idle") {
+    if (this.nearWindowWorldPositionResolver) {
+      this.followCanonicalNearWindow(nowMs);
+    } else if (this.subscriptionState === "idle") {
       this.subscribeInitialChunks();
     }
   }
@@ -323,6 +352,16 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
       seedState: this.seedState,
       subscriptionState: this.subscriptionState,
       subscriptionRequestId: this.subscriptionRequestId,
+      automaticNearWindow: {
+        coverageContract: "xyz_tile_cube",
+        centerChunk: this.automaticNearCenterChunk
+          ? chunkCoordKey(this.automaticNearCenterChunk)
+          : null,
+        tileRadius: CanonicalNearTileRadius,
+        chunkRadius: CanonicalNearChunkRadius,
+        tileCount: 27,
+        chunkCount: 9261,
+      },
       pendingIntentCount: this.pendingIntentCount,
       pendingPrefabIntentCount: this.pendingPrefabIntents.size,
       clientIntentSeqNext: this.clientIntentSeq,
@@ -573,6 +612,14 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
 
   requestVoxelDebugProbe(command: string = "voxel_transport"): number | null {
     return this.transport.sendVoxelDebugProbe(command);
+  }
+
+  setNearWindowWorldPositionResolver(
+    resolver: (() => { x: number; y: number; z: number }) | null,
+  ): void {
+    this.nearWindowWorldPositionResolver = resolver;
+    this.automaticNearCenterChunk = null;
+    this.lastAutomaticNearSubscribeMs = Number.NEGATIVE_INFINITY;
   }
 
   subscribeVoxelChunk(centerChunk: FChunkCoord, radiusLInf: number = 0): number | null {
@@ -1340,6 +1387,24 @@ export class OnlineVoxelWorldAdapter extends LocalVoxelWorldAdapter {
     if (lastRequestId !== null) {
       this.transport.sendVoxelDebugProbe("voxel_transport");
     }
+  }
+
+  private followCanonicalNearWindow(nowMs: number): void {
+    const resolver = this.nearWindowWorldPositionResolver;
+    if (!resolver) return;
+
+    const centerChunk = canonicalNearWindowCenterFromWorldCm(resolver());
+    const centerChanged =
+      !this.automaticNearCenterChunk ||
+      chunkCoordKey(this.automaticNearCenterChunk) !== chunkCoordKey(centerChunk);
+    const keepAliveDue = nowMs - this.lastAutomaticNearSubscribeMs >= CanonicalNearKeepAliveMs;
+    if (!centerChanged && this.subscriptionState !== "idle" && !keepAliveDue) return;
+
+    const requestId = this.subscribeVoxelChunk(centerChunk, CanonicalNearChunkRadius);
+    if (requestId === null) return;
+
+    this.automaticNearCenterChunk = { ...centerChunk };
+    this.lastAutomaticNearSubscribeMs = nowMs;
   }
 
   private knownChunkVersions(): VoxelKnownChunk[] {

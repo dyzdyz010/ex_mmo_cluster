@@ -89,6 +89,12 @@ export async function bootstrap({
   const detachInput = input.attach(window);
 
   const localPlayer = new LocalPlayerController(eventBus, input, transportPump, initialSpawn);
+  if (
+    world instanceof OnlineVoxelWorldAdapter &&
+    import.meta.env.VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW !== "1"
+  ) {
+    world.setNearWindowWorldPositionResolver(() => localPlayer.getRenderedPosition());
+  }
   localPlayer.setMovementCollisionResolver(createWorldStoreMovementCollisionResolver(world.store));
   const remotePlayer = new RemotePlayerController(eventBus);
 
@@ -310,13 +316,18 @@ function createVoxelWorldAdapter(
   }
 
   if (isServerVoxelTransportPort(transport)) {
+    const diagnosticPartialWindow =
+      import.meta.env.VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW === "1";
     return new OnlineVoxelWorldAdapter(transport, eventBus, logger, {
       logicalSceneId: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_LOGICAL_SCENE_ID, 1),
-      defaultRadiusLInf: parsePositiveIntEnv(import.meta.env.VITE_VOXEL_SUBSCRIBE_RADIUS, 0),
-      initialSubscriptions: [
-        { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
-        { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
-      ],
+      ...(diagnosticPartialWindow
+        ? {
+            initialSubscriptions: [
+              { centerChunk: { x: 0, y: 0, z: 0 }, radiusLInf: 0 },
+              { centerChunk: { x: 1, y: 0, z: 0 }, radiusLInf: 0 },
+            ],
+          }
+        : {}),
       devSeed: import.meta.env.VITE_VOXEL_DEV_SEED === "1",
       primeDemoBlock: import.meta.env.VITE_VOXEL_PRIME_DEMO_BLOCK === "1",
     });

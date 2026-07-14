@@ -1,28 +1,27 @@
-defmodule WorldPackPressureProbe do
+defmodule LegacyXzLodProjectionPressureProbe do
   @moduledoc """
-  Reproducible pressure probe for the authoritative voxel world-pack path.
+  已归档 XZ heightmap projection 的可复现离线压力探针。
 
-  This script materializes fresh logical scenes through the real
-  `WorldPackBootstrapper` + `WorldGenMaterializer` path, records DB payload and
-  LOD projection write amplification, and writes a JSON report under
-  `.demo/observe/`.
+  该脚本先写 canonical XYZ snapshots，再显式调用旧
+  `LodProjection.Rebuilder` 测量历史 projection 放大。它不是现役 world-pack、
+  launcher 或 runtime 验收入口；缺少 `--allow-legacy-xz` 时拒绝运行。
 
   Usage:
 
-      mix run scripts/world_pack_pressure_probe.exs
-      mix run scripts/world_pack_pressure_probe.exs --cases single,cube64,plane256,vertical100,tile343
-      mix run scripts/world_pack_pressure_probe.exs --scene-base 970000 --cleanup-after
-      mix run scripts/world_pack_pressure_probe.exs --cases vertical100 --defer-lod-projection --cleanup-after
+      mix run scripts/legacy/legacy_xz_lod_projection_pressure_probe.exs --allow-legacy-xz
+      mix run scripts/legacy/legacy_xz_lod_projection_pressure_probe.exs --allow-legacy-xz --cases single,tile343_canonical --cleanup-after
   """
 
   alias DataService.Repo
+  alias MmoContracts.VoxelSpatialContract
+  alias SceneServer.Voxel.LodProjection.Rebuilder
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.SceneNodeRegistry
   alias WorldServer.Voxel.WorldPackBootstrapper
 
   @full_32km %{
-    chunk_min: {-1024, -3, -1024},
-    chunk_max: {1023, 102, 1023},
+    chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+    chunk_max: VoxelSpatialContract.full32km_chunk_max(),
     chunk_count: 444_596_224,
     horizontal_chunk_count: 4_194_304,
     vertical_chunk_layers: 106,
@@ -30,10 +29,11 @@ defmodule WorldPackPressureProbe do
   }
 
   @lod_cells_per_horizontal_chunk 85
-  @radius 3
+  @radius VoxelSpatialContract.near_chunk_radius()
 
   def main(argv) do
     opts = parse_opts(argv)
+    require_legacy_offline!(opts)
     Logger.configure(level: :warning)
     ensure_apps!(opts)
 
@@ -54,7 +54,7 @@ defmodule WorldPackPressureProbe do
       schema_version: 1,
       generated_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       note:
-        "Authority data is measured through canonical DB materialization; runtime streaming remains sliding-window.",
+        "LEGACY/OFFLINE XZ heightmap projection pressure audit; not a current world-pack acceptance result.",
       full_32km: full_world_summary(),
       sliding_window: sliding_window_summary(),
       cases: cases,
@@ -62,7 +62,7 @@ defmodule WorldPackPressureProbe do
     }
 
     output_path =
-      Path.join(output_dir, "world_pack_pressure_#{timestamp_for_path()}.json")
+      Path.join(output_dir, "legacy_xz_lod_projection_pressure_#{timestamp_for_path()}.json")
 
     File.write!(output_path, Jason.encode!(report, pretty: true))
 
@@ -81,7 +81,7 @@ defmodule WorldPackPressureProbe do
           cleanup_after: :boolean,
           migrate: :boolean,
           seed: :integer,
-          defer_lod_projection: :boolean
+          allow_legacy_xz: :boolean
         ]
       )
 
@@ -96,11 +96,11 @@ defmodule WorldPackPressureProbe do
         |> String.split(",", trim: true)
         |> Enum.map(&String.trim/1),
       scene_base: Keyword.get(opts, :scene_base, default_scene_base()),
-      output_dir: Keyword.get(opts, :output_dir, ".demo/observe/world-pack-pressure"),
+      output_dir: Keyword.get(opts, :output_dir, ".demo/observe/legacy-xz-lod-pressure"),
       cleanup_after: Keyword.get(opts, :cleanup_after, false),
       migrate: Keyword.get(opts, :migrate, true),
       seed: Keyword.get(opts, :seed, 1337),
-      defer_lod_projection: Keyword.get(opts, :defer_lod_projection, false)
+      allow_legacy_xz: Keyword.get(opts, :allow_legacy_xz, false)
     }
   end
 
@@ -117,7 +117,7 @@ defmodule WorldPackPressureProbe do
     end)
 
     if opts.migrate do
-      migrations_path = Path.expand("../apps/data_service/priv/repo/migrations", __DIR__)
+      migrations_path = Path.expand("../../apps/data_service/priv/repo/migrations", __DIR__)
 
       {:ok, _repo, migrated} =
         Ecto.Migrator.with_repo(Repo, fn repo ->
@@ -141,16 +141,16 @@ defmodule WorldPackPressureProbe do
   end
 
   defp case_spec!("vertical100") do
-    %{name: "vertical100", chunk_min: {0, -3, 0}, chunk_max: {0, 96, 0}}
+    %{name: "vertical100", chunk_min: {0, -7, 0}, chunk_max: {0, 92, 0}}
   end
 
-  defp case_spec!("tile343") do
-    %{name: "tile343", chunk_min: {-3, -3, -3}, chunk_max: {3, 3, 3}}
+  defp case_spec!("tile343_canonical") do
+    %{name: "tile343_canonical", chunk_min: {0, 0, 0}, chunk_max: {6, 6, 6}}
   end
 
   defp case_spec!(other) do
     raise ArgumentError,
-          "unknown pressure case #{inspect(other)}; expected single,cube64,plane256,vertical100,tile343"
+          "unknown pressure case #{inspect(other)}; expected single,cube64,plane256,vertical100,tile343_canonical"
   end
 
   defp run_case(spec, scene_id, opts) do
@@ -174,7 +174,7 @@ defmodule WorldPackPressureProbe do
 
     started = System.monotonic_time(:millisecond)
 
-    result =
+    canonical_result =
       WorldPackBootstrapper.materialize_once(
         logical_scene_id: scene_id,
         chunk_min: spec.chunk_min,
@@ -183,11 +183,12 @@ defmodule WorldPackPressureProbe do
         batch_size: 64,
         ledger: ledger,
         seed: opts.seed,
-        materializer_opts: materializer_opts(opts),
         version: "pressure-#{spec.name}",
         content_version: "pressure-#{spec.name}-scene-#{scene_id}",
         publish_auth_pack?: false
       )
+
+    result = rebuild_legacy_projection(scene_id, canonical_result)
 
     duration_ms = System.monotonic_time(:millisecond) - started
     after_metrics = db_metrics(scene_id)
@@ -201,7 +202,7 @@ defmodule WorldPackPressureProbe do
             chunk_min: Tuple.to_list(spec.chunk_min),
             chunk_max: Tuple.to_list(spec.chunk_max),
             planned_chunk_count: chunk_count,
-            lod_projection_mode: lod_projection_mode(opts),
+            legacy_projection_mode: "explicit_offline_rebuild",
             duration_ms: duration_ms,
             chunks_per_second: per_second(chunk_count, duration_ms),
             summary: json_safe(summary),
@@ -224,7 +225,7 @@ defmodule WorldPackPressureProbe do
           chunk_min: Tuple.to_list(spec.chunk_min),
           chunk_max: Tuple.to_list(spec.chunk_max),
           planned_chunk_count: chunk_count,
-          lod_projection_mode: lod_projection_mode(opts),
+          legacy_projection_mode: "explicit_offline_rebuild",
           duration_ms: duration_ms,
           error: inspect(reason),
           before: before_metrics,
@@ -238,11 +239,28 @@ defmodule WorldPackPressureProbe do
     :"#{prefix}_#{System.unique_integer([:positive])}"
   end
 
-  defp materializer_opts(%{defer_lod_projection: true}), do: [lod_projection?: false]
-  defp materializer_opts(_opts), do: []
+  defp rebuild_legacy_projection(scene_id, {:ok, canonical_summary}) do
+    case Rebuilder.rebuild_scene(scene_id) do
+      {:ok, projection_summary} ->
+        {:ok,
+         %{
+           canonical: canonical_summary,
+           legacy_xz_projection: projection_summary
+         }}
 
-  defp lod_projection_mode(%{defer_lod_projection: true}), do: "deferred"
-  defp lod_projection_mode(_opts), do: "inline"
+      {:error, reason} ->
+        {:error, {:legacy_xz_lod_projection_rebuild_failed, reason}}
+    end
+  end
+
+  defp rebuild_legacy_projection(_scene_id, {:error, reason}), do: {:error, reason}
+
+  defp require_legacy_offline!(%{allow_legacy_xz: true}), do: :ok
+
+  defp require_legacy_offline!(_opts) do
+    raise ArgumentError,
+          "XZ LOD projection is archived; pass --allow-legacy-xz for an explicit offline audit"
+  end
 
   defp cleanup_scene!(scene_id) do
     Enum.each(cleanup_tables(), fn table ->
@@ -348,24 +366,24 @@ defmodule WorldPackPressureProbe do
       chunk_min: Tuple.to_list(@full_32km.chunk_min),
       chunk_max: Tuple.to_list(@full_32km.chunk_max),
       final_lod_cell_count: @full_32km.horizontal_chunk_count * @lod_cells_per_horizontal_chunk,
-      current_inline_lod_upsert_attempts:
+      archived_inline_lod_upsert_attempts:
         @full_32km.chunk_count * @lod_cells_per_horizontal_chunk,
-      deferred_lod_rebuild_upsert_attempts:
+      archived_rebuild_lod_upsert_attempts:
         @full_32km.horizontal_chunk_count * @lod_cells_per_horizontal_chunk,
       current_per_chunk_file_count: @full_32km.chunk_count,
       note:
-        "Counts describe the current 3D chunk authority model. A final full pack should avoid one file per chunk."
+        "XYZ chunk counts are current; all LOD cell estimates in this legacy report describe the archived XZ projection only."
     })
   end
 
   defp sliding_window_summary do
     centers = [
-      {0, 0, 0},
-      {1, 0, 0},
-      {2, 0, 0},
-      {1020, 0, 0},
-      {1020, 0, 1020},
-      {-1021, 0, -1021}
+      {3, 3, 3},
+      {10, 3, 3},
+      {17, 3, 3},
+      {1011, 3, 3},
+      {1011, 3, 1011},
+      {-1012, 3, -1012}
     ]
 
     windows =
@@ -400,8 +418,10 @@ defmodule WorldPackPressureProbe do
     %{
       radius: @radius,
       per_window_chunk_count: cube(@radius * 2 + 1),
-      expected_one_axis_slab_chunks: (@radius * 2 + 1) * (@radius * 2 + 1),
-      two_x_moves_required_x_bounds: [-3, 5],
+      expected_one_tile_slab_chunks:
+        (@radius * 2 + 1) * (@radius * 2 + 1) *
+          VoxelSpatialContract.tile_size_chunks(),
+      two_x_tile_moves_required_x_bounds: [-7, 27],
       windows: windows,
       transitions: transitions
     }
@@ -440,9 +460,9 @@ defmodule WorldPackPressureProbe do
       projected_local_vcsnap_payload_bytes: (payload_per_chunk + 1) * @full_32km.chunk_count,
       projected_final_lod_cell_count:
         @full_32km.horizontal_chunk_count * @lod_cells_per_horizontal_chunk,
-      projected_current_inline_lod_upsert_attempts:
+      projected_archived_inline_lod_upsert_attempts:
         @full_32km.chunk_count * @lod_cells_per_horizontal_chunk,
-      projected_deferred_lod_rebuild_upsert_attempts:
+      projected_archived_rebuild_lod_upsert_attempts:
         @full_32km.horizontal_chunk_count * @lod_cells_per_horizontal_chunk,
       projected_per_chunk_file_count: @full_32km.chunk_count
     }
@@ -490,4 +510,4 @@ defmodule WorldPackPressureProbe do
   defp json_safe_key(key), do: key
 end
 
-WorldPackPressureProbe.main(System.argv())
+LegacyXzLodProjectionPressureProbe.main(System.argv())

@@ -12,7 +12,7 @@
 > - **M2** `SurfaceElement` struct + `Storage` 面槽旁路(put/get/clear/list,**零 occupancy 不变量**)。commit 64107dd。
 > - **M3** `ChunkProcess` 权威 ops(put/clear/surface_element_at + bump 版本 + 重快照;活进程级零 occupancy)。commit e2a71b9。
 > - **M4** wire `0x08 SurfaceElements`(append-only 可选段,仅非空发射,空 chunk 字节/hash 全等向后兼容;codec round-trip)。commit beb34aa。
-> - scene 全量 1071/0(golden 不破)。**留作下游**:M5 物理参与(ParticipantProjection 面级)、客户端 bevy/web 渲染+解码器(Phase 3 专注服务器故 defer)、golden fixture、ChunkDelta 专用 op、S4 皮相化(本轮不动 S4)。
+> - scene 全量 1071/0(golden 不破)。**留作下游**:M5 物理参与(ParticipantProjection 面级)、golden fixture、ChunkDelta 专用 op、S4 皮相化(本轮不动 S4)。当时列出的 Bevy/Web 渲染+解码器计划只作归档历史；现役客户端落地必须在 Voxia 另行设计和验收。
 
 ## 1. 形态分类法:两条正交轴 + 两个叠加层
 
@@ -49,10 +49,10 @@
 | 微格 micro cell | ✅ | refined 内 8³=512,bitmask + MicroLayer;`refined_cell_data.ex`/`micro_layer.ex` |
 | 微格 prefab | ✅ | Blueprint(v2 occupied_slots)→ PrefabRaster → 微格 + owner provenance,world-micro 锚 + 4 旋转;`blueprint_catalog.ex`/`prefab_raster.ex` |
 | Object/Part 层 | ✅ | ObjectRegistry 持逻辑态(health/flags/covered_chunks),几何靠微格 owner 反指;wire `0x6C ObjectStateDelta`;`object_registry.ex`/`part_state.ex` |
-| 面元/贴面/decal | ⚠️ **只设计未实现** | 仅 web_client `surfaceAttachment.ts` 数据模型(`anchorMacro+anchorMicro+face+faceMask+visibilityPolicy`),不变量 `occupancyMask→0n`、`hide_when_neighbor_occupied`。服务端零 struct/存储/wire;bevy 无渲染。设计稿 `2026-05-21-auto-circuit-and-surface-prefab-plan.md`/`2026-05-19-prefab-field-participant-projection.md`("surface prefab 是独立 participant,不是假的 microOccupancyMask") |
+| 面元/贴面/decal | ⚠️ **只设计未实现** | 归档实现证据：`web_client` 曾有 `surfaceAttachment.ts` 数据模型(`anchorMacro+anchorMicro+face+faceMask+visibilityPolicy`),不变量 `occupancyMask→0n`、`hide_when_neighbor_occupied`；`bevy_client` 当时无渲染。以上不作为当前客户端状态。服务端零 struct/存储/wire。设计稿 `2026-05-21-auto-circuit-and-surface-prefab-plan.md`/`2026-05-19-prefab-field-participant-projection.md`("surface prefab 是独立 participant,不是假的 microOccupancyMask") |
 | 宏格面附着物(火炬) | ❌ 无 | 最接近就是上面那个预留 |
 | debris/自由实体 | ❌ 无 | 仅 ObjectRegistry 破坏链留 observe 钩子 |
-| wire | — | ChunkSnapshot `0x62` TLV section `0x01–0x07`,无表面 section;bevy mesher 暴露面剔除,无 decal 路径 |
+| wire | — | ChunkSnapshot `0x62` TLV section `0x01–0x07`,无表面 section；归档 `bevy_client` 当时的 mesher 只有暴露面剔除、无 decal 路径，这只作为历史实现证据，不代表当前客户端状态 |
 
 ## 3. 拍板锁定的决策(2026-06-17)
 
@@ -99,7 +99,7 @@
    面级 op;catalog snapshot 同步。
 4. **ParticipantProjection 面级扩展**:它**已经是面级的**(`face`+`face_contacts`)——表面元件的属性向量
    作为该面的额外 participant 注入(如贴面线缆在两面间架电连接、火炬 emit_heat 写宿主格温度 truth)。
-5. **客户端渲染旁路**(bevy 主线 + web oracle):**仅暴露面 + 视锥内**渲染表面元件,按 surface_type 批渲;
+5. **客户端渲染旁路（归档历史决策）**：当时规划由 Bevy 主线 + Web oracle 对**仅暴露面 + 视锥内**的表面元件按 surface_type 批渲；这只作历史设计证据，不代表当前客户端职责。唯一现役客户端仍是 `clients/Voxia`，如需落地必须按 Voxia 当前路线另行设计与验收；
    被邻接覆盖即隐(truth 留存)。接"大规模渲染"主目标的 LOD/剔除纪律。
 
 ## 6. 与涌现层的 synergy(皮相级现象的归宿)

@@ -43,10 +43,9 @@ config :world_server, :default_voxel_region_bootstrap,
   logical_scene_id: String.to_integer(System.get_env("VOXEL_DEV_REGION_LOGICAL_SCENE_ID", "1")),
   retry_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_RETRY_MS", "1000")),
   refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000")),
-  seed_terrain?: System.get_env("VOXEL_DEV_REGION_SEED_TERRAIN", "1") != "0",
-  rebuild_lod_projection?: System.get_env("VOXEL_DEV_REGION_REBUILD_LOD", "1") != "0"
+  seed_terrain?: System.get_env("VOXEL_DEV_REGION_SEED_TERRAIN", "1") != "0"
 
-world_pack_version = System.get_env("VOXEL_WORLD_PACK_VERSION", "worldgen-v1")
+world_pack_version = System.get_env("VOXEL_WORLD_PACK_VERSION", "worldgen-v1-xyz-window-v2")
 
 world_pack_status =
   System.get_env(
@@ -75,8 +74,8 @@ config :auth_server, :voxel_world_pack,
 config :world_server, :world_pack_bootstrapper,
   enabled?: world_pack_generate?,
   logical_scene_id: String.to_integer(System.get_env("VOXEL_WORLD_PACK_LOGICAL_SCENE_ID", "1")),
-  chunk_min: System.get_env("VOXEL_WORLD_PACK_CHUNK_MIN", "-3,-3,-3"),
-  chunk_max: System.get_env("VOXEL_WORLD_PACK_CHUNK_MAX", "3,3,3"),
+  chunk_min: System.get_env("VOXEL_WORLD_PACK_CHUNK_MIN", "-7,-7,-7"),
+  chunk_max: System.get_env("VOXEL_WORLD_PACK_CHUNK_MAX", "13,13,13"),
   batch_size: String.to_integer(System.get_env("VOXEL_WORLD_PACK_BATCH_SIZE", "64")),
   max_chunks: System.get_env("VOXEL_WORLD_PACK_MAX_CHUNKS", "10000"),
   retry_ms: String.to_integer(System.get_env("VOXEL_WORLD_PACK_RETRY_MS", "1000")),

@@ -55,9 +55,14 @@ needs_sudo_for() {
 }
 
 upgrade_web_client() {
-  if [ -z "${WEB_CLIENT_IMAGE_TAG:-}" ]; then
-    echo "==> Skipping web client: WEB_CLIENT_IMAGE_TAG is not set"
+  if [ "${ALLOW_ARCHIVED_WEB_CLIENT_DEPLOY:-false}" != "true" ]; then
+    echo "==> Skipping archived web client: explicit opt-in is not enabled"
     return 0
+  fi
+
+  if [ -z "${WEB_CLIENT_IMAGE_TAG:-}" ]; then
+    echo "ERROR: archived web client deploy was enabled but WEB_CLIENT_IMAGE_TAG is empty" >&2
+    exit 1
   fi
 
   WEB_CLIENT_DIST_DIR="${WEB_CLIENT_DIST_DIR:-$DEPLOY_DIR/web_client/dist}"

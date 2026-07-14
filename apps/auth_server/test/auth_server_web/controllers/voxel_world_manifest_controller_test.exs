@@ -52,7 +52,7 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     assert body["dev_materialization"]["lod_projection"]["status"] == "empty"
   end
 
-  test "GET /ingame/voxel/world_manifest allows scene entry only for a ready world pack",
+  test "GET /ingame/voxel/world_manifest rejects a ready pack below the complete XYZ near contract",
        %{conn: conn} do
     logical_scene_id = 91_002
     token = token(logical_scene_id)
@@ -84,17 +84,22 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
 
     body = json_response(conn, 200)
 
-    assert body["scene_entry_allowed"] == true
-    assert body["reject_reason"] == nil
+    assert body["scene_entry_allowed"] == false
+    assert body["reject_reason"] == "world_pack_incomplete"
     assert body["world_pack"]["status"] == "ready"
     assert body["world_pack"]["version"] == "worldgen-test-pack"
     assert body["world_pack"]["content_version"] == "worldgen-test-pack@42"
-    assert body["world_pack"]["scene_entry_allowed"] == true
+    assert body["world_pack"]["scene_entry_allowed"] == false
     assert body["world_pack"]["generated"]["chunk_count"] == 343
     assert body["world_pack"]["generated"]["chunk_min"] == [-3, -3, -3]
-    assert body["world_pack"]["integrity"]["status"] == "ready"
+    assert body["world_pack"]["integrity"]["status"] == "incomplete"
+    assert body["world_pack"]["integrity"]["reason"] == "active_window_bounds_mismatch"
     assert body["world_pack"]["integrity"]["expected_chunk_count"] == 343
     assert body["world_pack"]["integrity"]["persisted_chunk_count"] == 343
+    assert body["world_pack"]["integrity"]["required_near_window"]["center_chunk"] == [3, 3, 3]
+    assert body["world_pack"]["integrity"]["required_near_window"]["chunk_min"] == [-7, -7, -7]
+    assert body["world_pack"]["integrity"]["required_near_window"]["chunk_max"] == [13, 13, 13]
+    assert body["world_pack"]["integrity"]["required_near_window"]["chunk_count"] == 9_261
     assert body["startup_sync"]["target_content_version"] == "worldgen-test-pack@42"
   end
 
@@ -110,12 +115,12 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-32km-test-pack",
-      content_version: "worldgen-32km-test-pack@1",
+      content_version: "worldgen-32km-xyz-window@2",
       world_macro_extent: 32_768,
       generated: %{
         logical_scene_id: logical_scene_id,
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         chunk_count: 444_596_224
       }
     )
@@ -141,24 +146,24 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-32km-index-pack",
-      content_version: "worldgen-32km-index-pack@1",
+      content_version: "worldgen-32km-xyz-window@2",
       world_macro_extent: 32_768,
       generated: %{
         logical_scene_id: logical_scene_id,
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         chunk_count: 444_596_224
       },
       pack_index: %{
         logical_scene_id: logical_scene_id,
-        content_version: "worldgen-32km-index-pack@1",
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        content_version: "worldgen-32km-xyz-window@2",
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         payload_layout: %{
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -166,10 +171,10 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
         regions: [
           %{
             id: "full-32km",
-            chunk_min: [-1024, -3, -1024],
-            chunk_max: [1023, 102, 1023],
+            chunk_min: [-1024, -7, -1024],
+            chunk_max: [1023, 98, 1023],
             chunk_count: 444_596_224,
-            hash: "sha256:full-32km"
+            hash: "sha256:full-32km-xyz-window-v2"
           }
         ]
       }
@@ -218,23 +223,23 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-32km-index-pack",
-      content_version: "worldgen-32km-index-pack@1",
+      content_version: "worldgen-32km-xyz-window@2",
       generated: %{
         logical_scene_id: logical_scene_id,
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         chunk_count: 444_596_224
       },
       pack_index: %{
         logical_scene_id: logical_scene_id,
-        content_version: "worldgen-32km-index-pack@1",
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        content_version: "worldgen-32km-xyz-window@2",
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         payload_layout: %{
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -242,10 +247,10 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
         regions: [
           %{
             id: "full-32km",
-            chunk_min: [-1024, -3, -1024],
-            chunk_max: [1023, 102, 1023],
+            chunk_min: [-1024, -7, -1024],
+            chunk_max: [1023, 98, 1023],
             chunk_count: 444_596_224,
-            hash: "sha256:full-32km"
+            hash: "sha256:full-32km-xyz-window-v2"
           }
         ]
       }
@@ -273,23 +278,23 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
       version: "worldgen-32km-index-pack",
-      content_version: "worldgen-32km-index-pack@1",
+      content_version: "worldgen-32km-xyz-window@2",
       generated: %{
         logical_scene_id: logical_scene_id,
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         chunk_count: 444_596_224
       },
       pack_index: %{
         logical_scene_id: logical_scene_id,
-        content_version: "worldgen-32km-index-pack@1",
-        chunk_min: [-1024, -3, -1024],
-        chunk_max: [1023, 102, 1023],
+        content_version: "worldgen-32km-xyz-window@2",
+        chunk_min: [-1024, -7, -1024],
+        chunk_max: [1023, 98, 1023],
         payload_layout: %{
           layout: "regular_shard_grid_v1",
           chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
           shard_chunk_shape: [16, 106, 16],
-          shard_origin: [-1024, -3, -1024],
+          shard_origin: [-1024, -7, -1024],
           file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
           footer_format: "chunk_offset_table_v1",
           compression: "none"
@@ -297,10 +302,10 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
         regions: [
           %{
             id: "full-32km",
-            chunk_min: [-1024, -3, -1024],
-            chunk_max: [1023, 102, 1023],
+            chunk_min: [-1024, -7, -1024],
+            chunk_max: [1023, 98, 1023],
             chunk_count: 444_596_224,
-            hash: "sha256:full-32km"
+            hash: "sha256:full-32km-xyz-window-v2"
           }
         ]
       }
@@ -315,28 +320,35 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
 
     assert body["format"] == "world_pack_index_v1"
     assert body["logical_scene_id"] == logical_scene_id
-    assert body["content_version"] == "worldgen-32km-index-pack@1"
-    assert body["chunk_min"] == [-1024, -3, -1024]
-    assert body["chunk_max"] == [1023, 102, 1023]
+    assert body["content_version"] == "worldgen-32km-xyz-window@2"
+    assert body["chunk_min"] == [-1024, -7, -1024]
+    assert body["chunk_max"] == [1023, 98, 1023]
     assert body["chunk_count"] == 444_596_224
     assert body["world_diff_baseline_fallback_allowed"] == false
     assert body["integrity"]["status"] == "ready"
     assert body["integrity"]["source"] == "pack_index"
-    assert body["sliding_window_contract"]["radius"] == 3
-    assert body["sliding_window_contract"]["chunk_count"] == 343
+    assert body["sliding_window_contract"]["radius"] == 10
+    assert body["sliding_window_contract"]["spatial_contract"] == "complete_xyz_tile_window_v1"
+    assert body["sliding_window_contract"]["tile_size_chunks"] == 7
+    assert body["sliding_window_contract"]["tile_radius"] == 1
+    assert body["sliding_window_contract"]["center_chunk"] == [3, 3, 3]
+    assert body["sliding_window_contract"]["chunk_shape"] == [21, 21, 21]
+    assert body["sliding_window_contract"]["chunk_count"] == 9_261
+    assert body["sliding_window_contract"]["chunk_min"] == [-7, -7, -7]
+    assert body["sliding_window_contract"]["chunk_max"] == [13, 13, 13]
     assert body["payload_layout"]["layout"] == "regular_shard_grid_v1"
     assert body["payload_layout"]["chunk_payload_format"] == "chunk_snapshot_frame_0x62_v1"
     assert body["payload_layout"]["shard_chunk_shape"] == [16, 106, 16]
-    assert body["payload_layout"]["shard_origin"] == [-1024, -3, -1024]
+    assert body["payload_layout"]["shard_origin"] == [-1024, -7, -1024]
     assert body["payload_layout"]["file_template"] == "packs/tile_{sx}_{sy}_{sz}.vxpack"
 
     assert [
              %{
                "id" => "full-32km",
-               "chunk_min" => [-1024, -3, -1024],
-               "chunk_max" => [1023, 102, 1023],
+               "chunk_min" => [-1024, -7, -1024],
+               "chunk_max" => [1023, 98, 1023],
                "chunk_count" => 444_596_224,
-               "hash" => "sha256:full-32km"
+               "hash" => "sha256:full-32km-xyz-window-v2"
              }
            ] = body["regions"]
 

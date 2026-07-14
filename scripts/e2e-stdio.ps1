@@ -12,6 +12,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+throw 'archived_client_default_disabled: this generic E2E wrapper includes archived bevy_client modes and is disabled by default. Active Voxia entry: node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "...". Explicit archived-client work must use its own README.'
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 function Warn-IfCustom {
@@ -23,7 +25,7 @@ function Warn-IfCustom {
   )
 
   if ($Value -ne $DefaultValue) {
-    Write-Warning "Parameter -$Name is ignored in Mode=$Mode: $Reason"
+    Write-Warning "Parameter -$Name is ignored in Mode=${Mode}: $Reason"
   }
 }
 

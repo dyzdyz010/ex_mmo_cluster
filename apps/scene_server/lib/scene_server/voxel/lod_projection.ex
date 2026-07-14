@@ -1,10 +1,10 @@
 defmodule SceneServer.Voxel.LodProjection do
   @moduledoc """
-  Builds heightmap LOD projection rows from authoritative chunk truth.
+  从 canonical chunk truth 构建已归档的 XZ heightmap projection rows。
 
   The rows produced here are persisted by
   `DataService.Voxel.LodHeightmapStore`. They are a derived cache, not a new
-  source of truth. Rebuild uses the changed storage plus authoritative
+  source of truth，也不属于在线运行时。离线 rebuild uses the changed storage plus authoritative
   persisted snapshots for the same X/Z chunk column so vertical neighbors can
   participate in column-top selection. Each row carries both the aggregate
   height and the top-surface material id derived from the same authoritative

@@ -5,9 +5,9 @@
 
 ## 方向
 
-把现有几个项目(`ex_mmo_cluster` 服务端 + `clients/Voxia` UE5 客户端 +
-`clients/web_client` 参考)统一到一个创世级品牌 **The Genesis Initiative** 下,
-作为旗舰开源/展示项目对外吸引关注。
+把 `ex_mmo_cluster` 服务端与 `clients/Voxia` UE5 现役客户端统一到一个创世级品牌
+**The Genesis Initiative** 下，作为旗舰开源/展示项目对外吸引关注。`clients/web_client`
+只保留为归档历史参考，不属于当前品牌客户端组成。
 
 ## 已落地
 

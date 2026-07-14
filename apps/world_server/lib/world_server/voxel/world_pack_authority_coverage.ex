@@ -9,6 +9,7 @@ defmodule WorldServer.Voxel.WorldPackAuthorityCoverage do
   """
 
   alias DataService.Voxel.ChunkSnapshotStore
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
 
   @type chunk_coord :: {integer(), integer(), integer()}
@@ -20,8 +21,8 @@ defmodule WorldServer.Voxel.WorldPackAuthorityCoverage do
 
     * `:coverage_store` - module with `coverage/3` or function arity 3
     * `:snapshot_store` - module with `get_snapshot/2` or function arity 2
-    * `:radius` - sliding-window radius, default `3`
-    * `:window_centers` - centers to sample, default `{0,0,0}`, `{1,0,0}`, `{2,0,0}`
+    * `:radius` - 完整 XYZ 近场 chunk 半径，默认 `10`
+    * `:window_centers` - tile-center chunk 样本，默认 `{3,3,3}`、`{10,3,3}`、`{17,3,3}`
     * `:shard_coords` - payload shards to sample; defaults to edge/center shards
   """
   @spec verify(WorldPackIndex.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -159,8 +160,14 @@ defmodule WorldServer.Voxel.WorldPackAuthorityCoverage do
   end
 
   defp sample_windows(index, snapshot_store, opts) do
-    radius = Keyword.get(opts, :radius, 3)
-    centers = Keyword.get(opts, :window_centers, [{0, 0, 0}, {1, 0, 0}, {2, 0, 0}])
+    radius = Keyword.get(opts, :radius, VoxelSpatialContract.near_chunk_radius())
+
+    centers =
+      Keyword.get(opts, :window_centers, [
+        VoxelSpatialContract.tile_center_chunk({0, 0, 0}),
+        VoxelSpatialContract.tile_center_chunk({1, 0, 0}),
+        VoxelSpatialContract.tile_center_chunk({2, 0, 0})
+      ])
 
     centers
     |> Enum.reduce_while({:ok, []}, fn center, {:ok, acc} ->

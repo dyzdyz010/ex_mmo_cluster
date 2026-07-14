@@ -2,6 +2,7 @@ defmodule WorldServer.Voxel.WorldPackAuthorityCoverageTest do
   use ExUnit.Case, async: true
 
   alias MmoContracts.WorldPackIndex
+  alias MmoContracts.VoxelSpatialContract
   alias WorldServer.Voxel.WorldPackAuthorityCoverage
 
   test "reports incomplete canonical coverage without enumerating the full index" do
@@ -61,6 +62,72 @@ defmodule WorldServer.Voxel.WorldPackAuthorityCoverageTest do
     assert report.coverage.missing_in_bounds_chunk_count == 0
     assert Enum.all?(report.sampled_shards, &(&1.status == :ready))
     assert Enum.all?(report.sampled_windows, &(&1.status == :ready))
+  end
+
+  test "default samples follow canonical tile centers and the complete XYZ radius" do
+    chunk_min = VoxelSpatialContract.full32km_chunk_min()
+    chunk_max = VoxelSpatialContract.full32km_chunk_max()
+    expected_count = WorldPackIndex.chunk_count({chunk_min, chunk_max})
+
+    index =
+      WorldPackIndex.new!(
+        logical_scene_id: 43,
+        content_version: "worldgen-32km-xyz-window@2",
+        chunk_min: chunk_min,
+        chunk_max: chunk_max,
+        payload_layout: %{
+          layout: "regular_shard_grid_v1",
+          chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
+          shard_chunk_shape: VoxelSpatialContract.full32km_shard_chunk_shape(),
+          shard_origin: chunk_min,
+          file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
+          footer_format: "chunk_offset_table_v1",
+          compression: "none"
+        },
+        regions: [
+          %{
+            id: "full",
+            chunk_min: chunk_min,
+            chunk_max: chunk_max,
+            chunk_count: expected_count,
+            hash: "sha256:full-32km-xyz-window-v2"
+          }
+        ]
+      )
+
+    coverage_store = fn logical_scene_id, requested_min, requested_max ->
+      {:ok,
+       %{
+         logical_scene_id: logical_scene_id,
+         requested_chunk_min: requested_min,
+         requested_chunk_max: requested_max,
+         total_scene_chunk_count: expected_count,
+         in_bounds_chunk_count: expected_count,
+         out_of_bounds_chunk_count: 0,
+         scene_min_chunk: chunk_min,
+         scene_max_chunk: chunk_max,
+         in_bounds_min_chunk: chunk_min,
+         in_bounds_max_chunk: chunk_max
+       }}
+    end
+
+    snapshot_store = fn 43, _chunk_coord -> {:ok, %{data: <<0x62, 1>>}} end
+
+    assert {:ok, report} =
+             WorldPackAuthorityCoverage.verify(index,
+               coverage_store: coverage_store,
+               snapshot_store: snapshot_store,
+               shard_coords: []
+             )
+
+    assert report.status == :ready
+
+    assert Enum.map(report.sampled_windows, &{&1.center, &1.radius, &1.expected_chunk_count}) ==
+             [
+               {{3, 3, 3}, 10, 9_261},
+               {{10, 3, 3}, 10, 9_261},
+               {{17, 3, 3}, 10, 9_261}
+             ]
   end
 
   defp small_index do

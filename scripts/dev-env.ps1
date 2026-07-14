@@ -37,13 +37,15 @@ $env:ERL_EPMD_PORT = "43690"
 # are explicitly needed; start-server.ps1 will switch to --name.
 $env:NODE_NAME     = "cluster"
 
-# ---- 5. 客户端指向服务端 (从上面端口派生, 一般不用改) ------------------------
+# ---- 5. 归档客户端兼容变量 ---------------------------------------------------
+# 以下 BEVY / GAME / VITE 变量只供用户显式运行归档客户端专用工具时兼容读取；
+# 它们不是默认客户端配置面，也不会把 Web / Bevy 恢复为现役客户端。
 $env:BEVY_CLIENT_GATE_ADDR = "127.0.0.1:$($env:GATE_TCP_PORT)"
 $env:BEVY_CLIENT_AUTH_ADDR = "http://127.0.0.1:$($env:AUTH_PORT)"
 $env:GAME_AUTH_BASE_URL = "http://127.0.0.1:$($env:AUTH_PORT)"
 $env:GAME_WS_URL        = "ws://127.0.0.1:$($env:AUTH_PORT)/ingame/ws"
 
-# ---- 6. 客户端默认用户名 (基础名, 自动生成会拼成 <name>_<4hex>) --------------
+# ---- 6. 归档客户端兼容用户名 -------------------------------------------------
 # 显式 -Username bob    → 直接用 "bob"
 # 不带 -Username         → 自动生成 "alice_4f2a" 之类, 多开零碰撞
 $env:BEVY_CLIENT_USERNAME = "alice"
@@ -53,7 +55,7 @@ $env:GAME_CLIENT_USERNAME = "alice"
 $env:HEX_HTTP_CONCURRENCY = "1"
 $env:HEX_HTTP_TIMEOUT     = "120"
 
-# ---- 8. web_client 默认运行模式 (demo 用; vite 直接读 import.meta.env) -------
+# ---- 8. 归档 web_client 兼容运行模式（仅显式专用工具） ----------------------
 # 名字与 web_client/src/app/bootstrap.ts 对齐, 不要随便改.
 # 想退回到纯本地演示, 把 VITE_MOVEMENT_TRANSPORT 改成 "simulated"
 # 或 VITE_VOXEL_SYNC 改成 "offline".
@@ -63,7 +65,7 @@ $env:VITE_GAME_WS_URL             = $env:GAME_WS_URL
 $env:VITE_GAME_CLIENT_USERNAME    = $env:GAME_CLIENT_USERNAME
 $env:VITE_VOXEL_SYNC              = "online"     # online | offline
 $env:VITE_VOXEL_LOGICAL_SCENE_ID  = "1"          # 与 DevSeed 创建的场景一致
-$env:VITE_VOXEL_SUBSCRIBE_RADIUS  = "1"          # ChunkSubscribe 半径 (L_inf)
+$env:VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW = "0"  # 仅自动化专项可设 1；生产固定完整 XYZ 窗口
 $env:VITE_VOXEL_DEV_SEED          = "0"          # 1 = 旧调试模式: 浏览器启动时主动请求准备默认区域
 $env:VITE_VOXEL_PRIME_DEMO_BLOCK  = "0"          # 1 = 首份空 chunk 到达后自动放一颗 demo 方块 (默认 0: 服务端 DevSeed 已经种好平台)
 
@@ -90,7 +92,7 @@ Write-Host "  VITE_GAME_WS_URL             = $env:VITE_GAME_WS_URL"
 Write-Host "  VITE_GAME_CLIENT_USERNAME    = $env:VITE_GAME_CLIENT_USERNAME"
 Write-Host "  VITE_VOXEL_SYNC              = $env:VITE_VOXEL_SYNC"
 Write-Host "  VITE_VOXEL_LOGICAL_SCENE_ID  = $env:VITE_VOXEL_LOGICAL_SCENE_ID"
-Write-Host "  VITE_VOXEL_SUBSCRIBE_RADIUS  = $env:VITE_VOXEL_SUBSCRIBE_RADIUS"
+Write-Host "  VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW = $env:VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW"
 Write-Host "  VITE_VOXEL_DEV_SEED          = $env:VITE_VOXEL_DEV_SEED"
 Write-Host "  VITE_VOXEL_PRIME_DEMO_BLOCK  = $env:VITE_VOXEL_PRIME_DEMO_BLOCK"
 Write-Host ""

@@ -1,11 +1,9 @@
 defmodule SceneServer.Voxel.LodProjection.Rebuilder do
   @moduledoc """
-  Rebuilds persistent heightmap LOD projection rows from canonical snapshots.
+  从 canonical snapshots 重建已归档的 XZ heightmap projection rows。
 
-  This is an explicit materialization/backfill tool. Runtime heightmap reads do
-  not call it as a fallback; callers run it after world-pack import, migration,
-  or controlled repair so `DataService.Voxel.LodHeightmapStore` is populated
-  before clients request far LOD.
+  这是显式离线迁移/backfill 工具，不属于 world-pack canonical 写入、在线近场窗口或
+  远景壳链路；运行时不得把它当 fallback。产物只供历史数据审计、迁移与清理。
   """
 
   alias DataService.Voxel.ChunkSnapshotStore

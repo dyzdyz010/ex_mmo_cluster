@@ -15,7 +15,7 @@ defmodule SceneServer.Voxel.WorldGenMaterializerTest do
     :ok
   end
 
-  test "can persist authoritative WorldGen chunks without inline LOD projection" do
+  test "persists canonical WorldGen chunks independently of the legacy projection option" do
     scene_id = unique_scene_id()
     lease = lease(scene_id)
     assert {:ok, _} = WriteTokenStore.upsert_token(lease)
@@ -31,7 +31,7 @@ defmodule SceneServer.Voxel.WorldGenMaterializerTest do
              LodHeightmapStore.summary(scene_id, stride: 16)
   end
 
-  test "keeps inline LOD projection enabled by default for single-chunk materialization" do
+  test "does not inline the archived XZ projection by default" do
     scene_id = unique_scene_id()
     lease = lease(scene_id)
     assert {:ok, _} = WriteTokenStore.upsert_token(lease)
@@ -39,7 +39,7 @@ defmodule SceneServer.Voxel.WorldGenMaterializerTest do
     assert {:ok, :inserted} =
              WorldGenMaterializer.put_snapshot(scene_id, {0, 0, 0}, lease)
 
-    assert {:ok, %{status: :ready, total_cell_count: 1}} =
+    assert {:ok, %{status: :empty, total_cell_count: 0}} =
              LodHeightmapStore.summary(scene_id, stride: 16)
   end
 

@@ -13,6 +13,7 @@ defmodule WorldPackReleaseBuildProbe do
   `--pack-root` to prove full release readiness and sliding-window loading.
   """
 
+  alias MmoContracts.VoxelSpatialContract
   alias MmoContracts.WorldPackIndex
   alias WorldServer.Voxel.WorldPackArtifactBuilder
 
@@ -99,14 +100,14 @@ defmodule WorldPackReleaseBuildProbe do
   defp index!("full32km") do
     WorldPackIndex.new!(
       logical_scene_id: 91_015,
-      content_version: "worldgen-32km-index-pack@1",
-      chunk_min: {-1024, -3, -1024},
-      chunk_max: {1023, 102, 1023},
+      content_version: "worldgen-32km-xyz-window@2",
+      chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+      chunk_max: VoxelSpatialContract.full32km_chunk_max(),
       payload_layout: %{
         layout: "regular_shard_grid_v1",
         chunk_payload_format: "chunk_snapshot_frame_0x62_v1",
-        shard_chunk_shape: {16, 106, 16},
-        shard_origin: {-1024, -3, -1024},
+        shard_chunk_shape: VoxelSpatialContract.full32km_shard_chunk_shape(),
+        shard_origin: VoxelSpatialContract.full32km_chunk_min(),
         file_template: "packs/tile_{sx}_{sy}_{sz}.vxpack",
         footer_format: "chunk_offset_table_v1",
         compression: "none"
@@ -114,10 +115,10 @@ defmodule WorldPackReleaseBuildProbe do
       regions: [
         %{
           id: "full-32km",
-          chunk_min: {-1024, -3, -1024},
-          chunk_max: {1023, 102, 1023},
+          chunk_min: VoxelSpatialContract.full32km_chunk_min(),
+          chunk_max: VoxelSpatialContract.full32km_chunk_max(),
           chunk_count: 444_596_224,
-          hash: "sha256:full-32km"
+          hash: "sha256:full-32km-xyz-window-v2"
         }
       ]
     )

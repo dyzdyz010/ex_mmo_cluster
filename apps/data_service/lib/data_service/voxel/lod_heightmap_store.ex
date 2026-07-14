@@ -1,12 +1,10 @@
 defmodule DataService.Voxel.LodHeightmapStore do
   @moduledoc """
-  Persistent derived heightmap LOD projection for authoritative voxel truth.
+  已归档的 XZ heightmap LOD projection store。
 
-  This store is intentionally classified as `:derived`: rows are persisted so
-  runtime heightmap requests do not rescan full chunk snapshots, but every row
-  must be rebuildable from canonical voxel chunks. Missing rows are diagnostic
-  errors; this module never falls back to procedural noise or raw snapshots on
-  read.
+  本模块只服务历史数据迁移、离线对照和清理，不属于在线体素窗口或远景壳链路。
+  它仍归类为 `:derived`，每一行都必须能从 canonical XYZ chunks 重建；
+  `DataService.Voxel.ChunkSnapshotStore` 不依赖也不会调用本模块。
   """
 
   use MmoContracts.StateClassed, class: :derived
@@ -40,7 +38,7 @@ defmodule DataService.Voxel.LodHeightmapStore do
         }
 
   @doc """
-  Upserts projection cells in a transaction owned by this function.
+  离线写入历史 projection cells，由本函数自行持有事务。
   """
   @spec upsert_cells([cell()] | cell(), keyword()) :: :ok | {:error, term()}
   def upsert_cells(cells, opts \\ []) do
@@ -56,7 +54,7 @@ defmodule DataService.Voxel.LodHeightmapStore do
   end
 
   @doc """
-  Upserts projection cells using the caller's open transaction.
+  离线写入历史 projection cells，复用调用方显式提供的事务。
   """
   @spec upsert_cells_in_repo(Ecto.Repo.t(), [cell()] | cell()) :: :ok | {:error, term()}
   def upsert_cells_in_repo(repo, cells) do
@@ -66,7 +64,7 @@ defmodule DataService.Voxel.LodHeightmapStore do
   end
 
   @doc """
-  Reads a big-endian u16 heightmap from the persistent LOD projection.
+  从历史 projection 读取 big-endian u16 heightmap，供离线迁移与对照。
 
   `origin_x` and `origin_z` are world macro coordinates and must align to
   `stride`; returned bytes are X-fastest and match the existing `0x6B` wire

@@ -10,6 +10,13 @@
 # measure.
 set -euo pipefail
 
+cat >&2 <<'EOF'
+archived_client_default_disabled: this generic E2E script drives archived bevy_client and is disabled by default.
+Active Voxia entry: node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."
+Explicit archived-client work must use its own README.
+EOF
+exit 64
+
 DRIFT_TOLERANCE="${DRIFT_TOLERANCE:-2.0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

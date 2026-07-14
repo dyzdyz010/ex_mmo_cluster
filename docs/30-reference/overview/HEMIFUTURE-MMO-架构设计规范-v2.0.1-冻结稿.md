@@ -6,6 +6,7 @@
 > 一句话纲领:**算得少而非算得快;世界空间与服务器解耦;到处是缝,但每条缝都被藏住;客户端只发意图;`durable_authoritative` 只在可恢复提交后确认;`runtime_authoritative` 以服务端裁决与 checkpoint/input log 定义恢复边界;物理是有效层规律的离散实现,玩法从受约束的规则组合中涌现。**
 > 版本说明:v2.0.1 是冻结前一致性补丁:不新增架构方向,仅将四分类权威口径、涌现分级口径、冻结信封范围、boundary event 语义、DET-2 验收边界、冷迁移 runtime checkpoint 与条款格式统一传导到主规范。旧版本史见 附录 C,旧 ID→新 ID 见 附录 B。
 > **v2.0.2 修订(2026-06-14):** 据现有 voxel-authority 实现的工程证据,经变更流程放宽/澄清 7 条(`CELL-2/3`、`CELL-19`/`AUTH-3`、`MOD-1`、`MOD-4`、`RULE-5`、`REPL-2`、`DET`/反作弊),**架构方向不变**;受影响条款内联标 `[v2.0.2]`,集中记录见 附录 C 与 `docs/docs/20-archive/voxel-authority/2026-06-14-architecture-triage-and-alignment.md` §4。
+> **v2.0.3 修订(2026-07-13):** 经用户架构决策，完整 XYZ 是空间 identity、ownership、AOI 与流式窗口的唯一现役事实；XZ column/有限 Y 只保留历史归档。`CELL-1~5`、`FROZEN-1` 与术语表已同步到当前 `RegionGrid` 三维 AABB 契约，旧 wire decoder 可兼容但不得恢复旧 runtime。
 
 ---
 
@@ -278,11 +279,11 @@ graph TB
 
 ### 8.1 Cell 定义与几何
 
-- `CELL-1`(必须):世界为统一全局坐标系,切成 **cell**(基准尺寸 16×16 chunk)。cell 是所有权、迁移、兴趣管理的最小单位,粒度大于 chunk。
-- `CELL-2`(必须):`cell_id = (level, morton)` 四叉树路径。该编码上线即支持静态异构尺寸,并为表示层保留再分能力(动态再分受 `LOAD-7` 约束)。 **[v2.0.2 修订]** `(level, morton)` 降为**可选编码之一**;允许以 `region_id`(连续 chunk 矩形 bounds)作等价所有权单位,但**必须**提供 `region_id ↔ morton` 等价/迁移说明(见 §附录 C v2.0.2、D-2)。
-- `CELL-3`(必须):四叉树 `cell_id` 表示 **XZ 平面上的 column ownership**,**Y 轴不参与 Cell ownership**。地下、天空、高层建筑均归属其 XZ 所在 Cell;Y 轴作为 Cell 内局部 chunk index。若未来需要 3D 归属,必须改用 3D Morton/Octree 并提供迁移路径。 **[v2.0.2 修订]** 允许 **3D 归属**:region 可含 Y bounds(垂直分片,将地下/地表/天空/高层分给不同 owner),此时 Y 参与所有权**不视为违背**;XZ-column 降为**推荐默认**而非强制(见 D-2)。
-- `CELL-4`(必须):16×16 chunk 为 **base cell(level 0)**。`level` 上升表示更大 cell(冷区/无人区合并),`level` 下降的动态分裂被 `LOAD-7` 禁止。异构尺寸**仅用于静态分配**(启动/扩容)。
-- `CELL-5`(应当):异构相邻时,halo 交换以**较细一侧粒度**对齐;AOI 的 N×N 按 base cell 当量计算,大 cell 视作其覆盖的多个 base 当量。静态异构尺寸**可以**在停服维护窗口变更,**不应**在线变更。
+- `CELL-1`(必须):世界为统一 canonical XYZ 全局坐标系,切成三维 chunk AABB **cell/region**。cell 是所有权、迁移、兴趣管理的最小单位,粒度大于 chunk；任一轴都不得从 identity 中省略。
+- `CELL-2`(必须):现役寻址是可逆的三维 `region_id = f(logical_scene_id, rx, ry, rz)`；`region_index = floor_div(chunk_coord, {Sx,Sy,Sz})`，负坐标也必须向下取整。3D Morton/Octree 可以作为迁移或静态异构编码，但不能把 Y 压成附属字段。
+- `CELL-3`(必须):**X/Y/Z 全部参与 ownership、routing、lease、epoch、AOI 与 boundary identity。** `XZ column ownership`、四邻 XZ 假设和有限 Y band 自 v2.0.3 起归档；decoder/历史回归可以保留，live runtime 不得启动或 fallback。
+- `CELL-4`(必须):base region 使用显式正整数 stride `{Sx,Sy,Sz}`；当前 `RegionGrid` 默认 `{8,64,8}` chunks。三轴 stride 可以不同以控制空域成本，但 anisotropic size 不等于丢弃 Y identity。动态在线分裂仍受 `LOAD-7` 禁止，尺寸变更只允许静态迁移。
+- `CELL-5`(应当):异构相邻时,halo 交换以**较细一侧粒度**对齐；AOI 的 N×N×N 按三维 base-region 当量计算，大 region 视作其覆盖的多个三维当量。静态异构尺寸**可以**在停服维护窗口变更,**不应**在线变更。
 
 ### 8.2 三条寻址契约(冻结项,见 §18)
 
@@ -550,7 +551,7 @@ graph TB
 
 > "第一天冻结"**不应**理解为字段永不可扩展,否则会成为维护负担。**冻结 envelope 与兼容规则,payload 走版本化演进。**
 
-- `FROZEN-1`(必须):**Cell 寻址**——`(level, morton)` `cell_id`(XZ column,见 `CELL-3`);`cell_id → owner` 目录 + 租约 + `owner_epoch`;命令按 cell 寻址。
+- `FROZEN-1`(必须):**Cell 寻址**——可逆的 canonical XYZ `region_id/cell_id`（含 `rx,ry,rz`，见 `CELL-2/3`）；`cell_id → owner` 目录 + 租约 + `owner_epoch`；命令按完整三维 cell 寻址。XZ column 编码只允许历史迁移读取。
 - `FROZEN-2`(必须):**事件信封**——`EVENT-2` 的**最小字段与兼容性规则冻结**;payload schema 通过 **versioned registry** 演进。
 - `FROZEN-3`(必须):**NIF facade**——**envelope 与 ABI 兼容策略冻结**;具体 command set 可按版本扩展,**禁止破坏已发布命令语义**。
 - `FROZEN-4`(必须):所有冻结接口**必须支持 `schema_version` 或 capability negotiation**;破坏性变更**必须提供迁移计划**。
@@ -655,7 +656,7 @@ graph TB
 | 术语 | 含义 |
 |------|------|
 | **Chunk** | 体素存储/网格化单位(如 32³),物理微观层计算块。 |
-| **Cell** | 所有权/迁移/AOI 的**逻辑单位**(base 16×16 chunk,XZ column)。 |
+| **Cell** | 所有权/迁移/AOI 的三维逻辑单位；canonical identity 是完整 XYZ chunk AABB，当前默认 region stride 为 `{8,64,8}` chunks。 |
 | **CellOwner** | 持有某 Cell 权威的**角色/behaviour**。 |
 | **CellServer** | 实现 CellOwner 的 **OTP 进程**,可拥有 ≥1 个 Cell(**MVP 规定:恰好 1 个**)。 |
 | **CellSim** | 某 CellServer 内部的 **Rust 模拟 Resource**。 |
@@ -837,6 +838,7 @@ graph TB
 | v2.0 | 结构性整理:扁平化章节为 §1–§24、连续重编号消除字母后缀(EMG/CELL/AUTH)、RULE 按号顺排、归并文件头与变更史、新增条款索引(附录 A)与 ID 映射(附录 B)。规范内容与 v1.6 等价,无功能性增删。 |
 | **v2.0.1** | **冻结前一致性补丁:修正一句话纲领与 `PRIN-7` 的 durable/runtime 权威口径;`PRIN-11` 与 EMG 分级口径对齐;`FROZEN-5` 显式纳入 `boundary_event` 与 `candidate_effect`;澄清 `EVENT-2` 与 boundary event source/target cell 关系;统一 `CAP-1`/`ROADMAP-*` 条款格式;补充 `DET-2 semantic_digest` 验收归属;补充冷迁移涉及 `runtime_authoritative` 的 checkpoint/snapshot 或冻结/结算/降级要求。架构方向不变,本版作为冻结稿。** |
 | **v2.0.2** | **代码对齐反哺补丁(2026-06-14):据现有 voxel-authority 实现的工程证据,经变更流程放宽/澄清 7 条——`CELL-2/3` 纳入 region + 垂直分片(morton 改可选、允许 Y 参与所有权);`CELL-19`/`AUTH-3` 承认 `chunk_id`/`chunk_version` 作 `cell_id`/`cell_seq` 聚合等价;`MOD-1` 放宽为逻辑层职责清单(仅强制 `LOAD-5` 接口);`MOD-4` 允许 stage 调度在 Elixir;`RULE-5` 区分同字段多写 vs 分字段单写;`REPL-2` 出口预算分级(高频强制 / 低频可豁免);`DET`/反作弊纳入纯函数核 replay 基准 + runtime 高频态最小恢复声明。受影响条款内联标 `[v2.0.2]`;架构方向不变。详见 `docs/docs/20-archive/voxel-authority/2026-06-14-architecture-triage-and-alignment.md` §4。** |
+| **v2.0.3** | **完整 XYZ 空间契约修订(2026-07-13):按用户架构决策彻底归档 XZ column/有限 Y；`CELL-1~5`、`FROZEN-1` 与术语表改为三维 `RegionGrid` AABB、三轴 floor division、ownership/routing/lease/AOI 全轴 identity。保留旧 decoder 只为兼容与历史取证，禁止恢复 live runtime。** |
 
 ### 变更流程
 

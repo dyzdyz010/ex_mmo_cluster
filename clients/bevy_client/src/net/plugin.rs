@@ -29,6 +29,7 @@ impl Plugin for NetworkPlugin {
         app.init_resource::<VoxelSubscribeRetry>().add_systems(
             Update,
             (poll_network_events, voxel_subscribe_retry)
+                .chain()
                 .in_set(ClientSet::Network)
                 .run_if(in_state(AppState::Game)),
         );
@@ -43,14 +44,33 @@ impl Plugin for NetworkPlugin {
 struct VoxelSubscribeRetry {
     timer: Timer,
     attempts: u32,
+    keepalive_timer: Timer,
+    keepalive_tile: Option<[i32; 3]>,
 }
+
+/// 订阅 lease 的自维护续约周期；不得依赖玩家继续移动来维持窗口活性。
+const VOXEL_WINDOW_KEEPALIVE_SECS: f32 = 60.0;
 
 impl Default for VoxelSubscribeRetry {
     fn default() -> Self {
         Self {
             timer: Timer::from_seconds(1.0, TimerMode::Repeating),
             attempts: 0,
+            keepalive_timer: Timer::from_seconds(VOXEL_WINDOW_KEEPALIVE_SECS, TimerMode::Repeating),
+            keepalive_tile: None,
         }
+    }
+}
+
+impl VoxelSubscribeRetry {
+    /// 推进 keepalive 时钟；tile 改变时先重置，避免重心后立即重复续约。
+    fn tick_keepalive(&mut self, delta: std::time::Duration, tile: [i32; 3]) -> bool {
+        if self.keepalive_tile != Some(tile) {
+            self.keepalive_tile = Some(tile);
+            self.keepalive_timer.reset();
+            return false;
+        }
+        self.keepalive_timer.tick(delta).just_finished()
     }
 }
 
@@ -70,20 +90,54 @@ const SUBSCRIBE_RETRY_MAX_INTERVAL_SECS: f32 = 3.0;
 fn voxel_subscribe_retry(
     time: Res<Time>,
     bridge: Res<NetworkBridge>,
+    stdio: Res<ClientStdioInterface>,
     mut logs: ResMut<GameLogs>,
     connection: Res<ConnectionState>,
     mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
     mut retry: ResMut<VoxelSubscribeRetry>,
 ) {
-    if !retry.timer.tick(time.delta()).just_finished() {
-        return;
-    }
+    let retry_due = retry.timer.tick(time.delta()).just_finished();
     // Only meaningful once joined with a subscription center recorded.
-    let Some(center) = voxel_aoi.subscribed_center else {
+    let (Some(tile), Some(center)) = (voxel_aoi.subscribed_tile, voxel_aoi.subscribed_center)
+    else {
+        retry.keepalive_tile = None;
+        retry.keepalive_timer.reset();
         return;
     };
     if !connection.scene_joined() {
+        return;
+    }
+    let keepalive_due = retry.tick_keepalive(time.delta(), tile);
+    let keepalive_sent = if keepalive_due {
+        let known_count = send_voxel_window_subscription(&bridge, &voxel_authority, center);
+        push_line(
+            &mut logs.general,
+            format!(
+                "voxel xyz tile window reason=keepalive tile={tile:?} center={center:?} chunks={} known={known_count}",
+                VOXEL_NEAR_WINDOW_CHUNK_COUNT
+            ),
+        );
+        if stdio.is_enabled() {
+            emit_stdio(
+                "voxel_window_renewed",
+                &[
+                    ("reason", "keepalive".to_string()),
+                    ("tile", format!("{},{},{}", tile[0], tile[1], tile[2])),
+                    (
+                        "center_chunk",
+                        format!("{},{},{}", center[0], center[1], center[2]),
+                    ),
+                    ("chunk_count", VOXEL_NEAR_WINDOW_CHUNK_COUNT.to_string()),
+                    ("known_count", known_count.to_string()),
+                ],
+            );
+        }
+        true
+    } else {
+        false
+    };
+    if !retry_due {
         return;
     }
     // Terrain arrived → reset (interval + attempts) so a future genuine
@@ -93,6 +147,9 @@ fn voxel_subscribe_retry(
         retry
             .timer
             .set_duration(std::time::Duration::from_secs_f32(1.0));
+        return;
+    }
+    if keepalive_sent {
         return;
     }
     if retry.attempts >= MAX_SUBSCRIBE_RETRIES {
@@ -111,6 +168,7 @@ fn voxel_subscribe_retry(
         &mut logs,
         &mut voxel_aoi,
         &mut voxel_authority,
+        tile,
         center,
     );
     // Gentle backoff: ramp the interval from 1s toward a 3s cap so 40 attempts
@@ -129,12 +187,24 @@ fn voxel_subscribe_retry(
     }
 }
 
-/// One voxel chunk spans 16 macro × 100cm = 1600 server world units.
+/// 一个 voxel chunk 跨 16 个 macro，每个 macro 为 100cm。
 const VOXEL_CHUNK_WORLD_SIZE: f64 = 1600.0;
 
-/// L∞ radius of the voxel subscription around the player's chunk. 2 covers the
-/// default 5×5-chunk dev platform from spawn; the server caps radius at 4.
-const VOXEL_SUBSCRIBE_RADIUS: u8 = 2;
+/// 每个 tile 在 X/Y/Z 三轴都含 7 个 chunk。
+const VOXEL_TILE_SIZE_CHUNKS: i32 = 7;
+
+/// 近场以中心 tile 为核心，保留相邻一层 tile，即 `3x3x3 = 27 tiles`。
+const VOXEL_NEAR_TILE_RADIUS: i32 = 1;
+
+/// tile 中心到三 tile 窗口外沿的 chunk L∞ 半径：`7 + 3 = 10`。
+const VOXEL_SUBSCRIBE_RADIUS: u8 = 10;
+
+/// 完整 XYZ 近场窗口边长：`2 * 10 + 1 = 21 chunks`。
+const VOXEL_NEAR_WINDOW_EDGE_CHUNKS: usize = 21;
+
+/// 完整 XYZ 近场窗口体积：`21^3 = 9261 chunks`。
+const VOXEL_NEAR_WINDOW_CHUNK_COUNT: usize =
+    VOXEL_NEAR_WINDOW_EDGE_CHUNKS * VOXEL_NEAR_WINDOW_EDGE_CHUNKS * VOXEL_NEAR_WINDOW_EDGE_CHUNKS;
 
 /// Maps a server sim-space position (`[server_x, server_y, server_z]`) to its
 /// containing voxel chunk coord.
@@ -160,122 +230,120 @@ pub(crate) fn voxel_chunk_of(location: [f64; 3]) -> [i32; 3] {
     ]
 }
 
-/// Chunks in the L∞ box of `radius` around `from` that are NOT in the box around
-/// `to` — i.e. the chunks that fall out of the AOI as the center moves.
-fn chunks_falling_out(from: [i32; 3], to: [i32; 3], radius: i32) -> Vec<[i32; 3]> {
-    let mut dropped = Vec::new();
-    for cx in (from[0] - radius)..=(from[0] + radius) {
-        for cy in (from[1] - radius)..=(from[1] + radius) {
-            for cz in (from[2] - radius)..=(from[2] + radius) {
-                let in_new = (cx - to[0]).abs() <= radius
-                    && (cy - to[1]).abs() <= radius
-                    && (cz - to[2]).abs() <= radius;
-                if !in_new {
-                    dropped.push([cx, cy, cz]);
-                }
-            }
-        }
-    }
-    dropped
-}
-
-/// Hysteresis margin (chunk units) past the anchor chunk's far boundary before the
-/// AOI re-anchors (阶段4 step4.5). A boundary sits 0.5 chunks from the anchor
-/// centre, so the player must travel 0.5 + this into the next chunk to re-centre —
-/// small jitter on a boundary no longer thrashes subscribe/unsubscribe.
-const VOXEL_AOI_HYSTERESIS: f64 = 0.35;
-
-/// Minimum per-axis speed (server units/sec) to lead the subscription box one chunk
-/// ahead along that axis (阶段4 step4.5 沿速度方向预取下一 slab). Below it the box
-/// stays centred on the player.
-const VOXEL_PREFETCH_SPEED: f64 = 200.0;
-
-/// Player position in continuous voxel-chunk space (render-axis convention: chunk
-/// axis 1 = up = server Z). `voxel_chunk_of` is exactly its component-wise floor.
-fn voxel_chunk_pos(location: [f64; 3]) -> [f64; 3] {
+/// 由 chunk identity 计算完整 XYZ tile identity。
+///
+/// 必须使用 Euclidean 除法：chunk `-1` 属于 tile `-1`，而不是 tile `0`。
+fn tile_of_chunk(chunk: [i32; 3]) -> [i32; 3] {
     [
-        location[0] / VOXEL_CHUNK_WORLD_SIZE,
-        location[2] / VOXEL_CHUNK_WORLD_SIZE,
-        location[1] / VOXEL_CHUNK_WORLD_SIZE,
+        chunk[0].div_euclid(VOXEL_TILE_SIZE_CHUNKS),
+        chunk[1].div_euclid(VOXEL_TILE_SIZE_CHUNKS),
+        chunk[2].div_euclid(VOXEL_TILE_SIZE_CHUNKS),
     ]
 }
 
-/// One chunk lead along an axis once its speed clears `VOXEL_PREFETCH_SPEED`.
-fn prefetch_lead(axis_velocity: f64) -> i32 {
-    if axis_velocity > VOXEL_PREFETCH_SPEED {
-        1
-    } else if axis_velocity < -VOXEL_PREFETCH_SPEED {
-        -1
-    } else {
-        0
-    }
+/// 返回 tile 的中心 chunk；边长 7 为奇数，因此中心偏移恒为 3。
+fn tile_center_chunk(tile: [i32; 3]) -> [i32; 3] {
+    let half = VOXEL_TILE_SIZE_CHUNKS / 2;
+    [
+        tile[0] * VOXEL_TILE_SIZE_CHUNKS + half,
+        tile[1] * VOXEL_TILE_SIZE_CHUNKS + half,
+        tile[2] * VOXEL_TILE_SIZE_CHUNKS + half,
+    ]
 }
 
-/// Decides the AOI subscription for a position update with hysteresis + directional
-/// prefetch. Returns `Some((anchor, center))` to re-subscribe — `anchor` is the
-/// player's own chunk (the hysteresis reference for next time) and `center` is the
-/// possibly velocity-led box centre — or `None` to keep the current subscription.
+/// 判断 chunk 是否属于以 `center` 为中心的现役 `21x21x21` 窗口。
+fn chunk_is_in_near_window(chunk: [i32; 3], center: [i32; 3]) -> bool {
+    let radius = VOXEL_SUBSCRIBE_RADIUS as i32;
+    (chunk[0] - center[0]).abs() <= radius
+        && (chunk[1] - center[1]).abs() <= radius
+        && (chunk[2] - center[2]).abs() <= radius
+}
+
+/// 枚举一个完整 XYZ 近场窗口；冷启动窗口必须精确包含 9261 个 chunk。
+fn near_window_chunks(center: [i32; 3]) -> Vec<[i32; 3]> {
+    let radius = VOXEL_SUBSCRIBE_RADIUS as i32;
+    let mut chunks = Vec::with_capacity(VOXEL_NEAR_WINDOW_CHUNK_COUNT);
+    for cx in (center[0] - radius)..=(center[0] + radius) {
+        for cy in (center[1] - radius)..=(center[1] + radius) {
+            for cz in (center[2] - radius)..=(center[2] + radius) {
+                chunks.push([cx, cy, cz]);
+            }
+        }
+    }
+    chunks
+}
+
+/// 返回旧窗口中不再属于新窗口的完整 XYZ 差集。
+fn chunks_falling_out(from: [i32; 3], to: [i32; 3]) -> Vec<[i32; 3]> {
+    near_window_chunks(from)
+        .into_iter()
+        .filter(|chunk| !chunk_is_in_near_window(*chunk, to))
+        .collect()
+}
+
+/// 计算位置对应的现役 tile 与窗口中心。
 ///
-/// `location` / `velocity` are raw server sim-space (same space `voxel_chunk_of`
-/// consumes); the Y↔Z swap to chunk axes happens inside.
+/// 同一 tile 内移动不会重订；速度不再改变 authority 窗口 identity，预取应由
+/// 独立的候选加载层实现，不能偏移 confirmed truth 窗口。
 fn aoi_target_center(
     location: [f64; 3],
-    velocity: [f64; 3],
-    anchor: Option<[i32; 3]>,
+    subscribed_tile: Option<[i32; 3]>,
 ) -> Option<([i32; 3], [i32; 3])> {
-    let pos = voxel_chunk_pos(location);
-    let player_chunk = [
-        pos[0].floor() as i32,
-        pos[1].floor() as i32,
-        pos[2].floor() as i32,
-    ];
-
-    let recenter = match anchor {
-        None => true,
-        Some(a) => {
-            (0..3).any(|i| (pos[i] - (a[i] as f64 + 0.5)).abs() > 0.5 + VOXEL_AOI_HYSTERESIS)
-        }
-    };
-
-    if !recenter {
+    let tile = tile_of_chunk(voxel_chunk_of(location));
+    if subscribed_tile == Some(tile) {
         return None;
     }
-
-    // Velocity in the same swapped chunk-axis convention as `voxel_chunk_pos`.
-    let center = [
-        player_chunk[0] + prefetch_lead(velocity[0]),
-        player_chunk[1] + prefetch_lead(velocity[2]),
-        player_chunk[2] + prefetch_lead(velocity[1]),
-    ];
-    Some((player_chunk, center))
+    Some((tile, tile_center_chunk(tile)))
 }
 
-/// Subscribes to the voxel chunks around `center_chunk`, records it as the
-/// current subscription center, and — as the center moves — UNSUBSCRIBES + evicts
-/// the chunks that fell out of the box. Without the unsubscribe the server keeps
-/// fanning out deltas/field snapshots for every chunk the player ever entered and
-/// the client store grows unbounded for the whole session.
+/// 只选择新窗口内的已知版本，并钉死协议上限为 9261 条。
+fn known_versions_in_near_window(
+    authority: &crate::voxel::VoxelAuthority,
+    center: [i32; 3],
+) -> Vec<([i32; 3], u64)> {
+    let mut known: Vec<_> = authority
+        .store
+        .known_versions()
+        .into_iter()
+        .filter(|(chunk, _)| chunk_is_in_near_window(*chunk, center))
+        .collect();
+    known.sort_unstable_by_key(|(chunk, _)| *chunk);
+    known.truncate(VOXEL_NEAR_WINDOW_CHUNK_COUNT);
+    known
+}
+
+/// 发送同一个完整 XYZ 窗口；供重心、冷启动重试和 keepalive 共用。
+fn send_voxel_window_subscription(
+    bridge: &NetworkBridge,
+    authority: &crate::voxel::VoxelAuthority,
+    center_chunk: [i32; 3],
+) -> usize {
+    let known = known_versions_in_near_window(authority, center_chunk);
+    let known_count = known.len();
+    bridge.send(NetworkCommand::SubscribeChunks {
+        logical_scene_id: 1,
+        center_chunk,
+        radius: VOXEL_SUBSCRIBE_RADIUS,
+        known,
+    });
+    known_count
+}
+
+/// 切换完整 XYZ 近场窗口，并退订、驱逐旧窗口差集。
 fn subscribe_voxel_around(
     bridge: &NetworkBridge,
     logs: &mut GameLogs,
     voxel_aoi: &mut crate::voxel::VoxelAoiState,
     authority: &mut crate::voxel::VoxelAuthority,
+    tile: [i32; 3],
     center_chunk: [i32; 3],
 ) {
-    bridge.send(NetworkCommand::SubscribeChunks {
-        logical_scene_id: 1,
-        center_chunk,
-        radius: VOXEL_SUBSCRIBE_RADIUS,
-        // Advertise every chunk we already hold (from the on-disk cache or this
-        // session) so the server diffs against our versions and skips unchanged
-        // chunks. The server matches per-coord, ignoring entries outside the box.
-        known: authority.store.known_versions(),
-    });
+    let known_count = send_voxel_window_subscription(bridge, authority, center_chunk);
 
     if let Some(old_center) = voxel_aoi.subscribed_center
         && old_center != center_chunk
     {
-        let dropped = chunks_falling_out(old_center, center_chunk, VOXEL_SUBSCRIBE_RADIUS as i32);
+        let dropped = chunks_falling_out(old_center, center_chunk);
         if !dropped.is_empty() {
             for coord in &dropped {
                 authority.store.evict(*coord);
@@ -286,15 +354,28 @@ fn subscribe_voxel_around(
             });
             push_line(
                 &mut logs.general,
-                format!("voxel unsubscribe {} chunks leaving AOI", dropped.len()),
+                format!(
+                    "voxel xyz window diff entered={} exited={} retained={}",
+                    dropped.len(),
+                    dropped.len(),
+                    VOXEL_NEAR_WINDOW_CHUNK_COUNT - dropped.len()
+                ),
             );
         }
     }
 
     voxel_aoi.subscribed_center = Some(center_chunk);
+    voxel_aoi.subscribed_tile = Some(tile);
     push_line(
         &mut logs.general,
-        format!("voxel subscribe center={center_chunk:?} radius={VOXEL_SUBSCRIBE_RADIUS}"),
+        format!(
+            "voxel xyz tile window tile={tile:?} center={center_chunk:?} tile_size={} tile_radius={} chunk_radius={} tiles=27 chunks={} known={}",
+            VOXEL_TILE_SIZE_CHUNKS,
+            VOXEL_NEAR_TILE_RADIUS,
+            VOXEL_SUBSCRIBE_RADIUS,
+            VOXEL_NEAR_WINDOW_CHUNK_COUNT,
+            known_count
+        ),
     );
 }
 
@@ -310,6 +391,7 @@ fn poll_network_events(
     mut movement_dispatch: ResMut<MovementDispatchState>,
     mut voxel_aoi: ResMut<crate::voxel::VoxelAoiState>,
     mut voxel_authority: ResMut<crate::voxel::VoxelAuthority>,
+    mut voxel_subscribe_retry: ResMut<VoxelSubscribeRetry>,
     mut target: ResMut<TargetSelection>,
     mut logs: ResMut<GameLogs>,
     mut telemetry: ResMut<NetTelemetry>,
@@ -364,19 +446,20 @@ fn poll_network_events(
                 movement_dispatch.stop_sent = true;
                 push_line(&mut logs.general, format!("entered scene cid={cid}"));
 
-                // Auto-subscribe to the voxel chunks around the spawn so the
-                // server-authoritative renderer (VoxelChunkRenderPlugin) gets data
-                // without manual CLI. logical_scene_id defaults to 1 (no protocol
-                // field carries it yet — see M1.8d note). The follow-up in
-                // `LocalPosition` re-subscribes as the player crosses chunks (AOI).
+                // 进入场景时建立完整 XYZ tile 窗口；后续只在跨 tile 时换窗。
                 voxel_aoi.subscribed_center = None;
-                voxel_aoi.aoi_anchor = Some(voxel_chunk_of(location));
+                voxel_aoi.subscribed_tile = None;
+                voxel_subscribe_retry.keepalive_tile = None;
+                voxel_subscribe_retry.keepalive_timer.reset();
+                let (tile, center) =
+                    aoi_target_center(location, None).expect("首次进入场景必须建立近场窗口");
                 subscribe_voxel_around(
                     &bridge,
                     &mut logs,
                     &mut voxel_aoi,
                     &mut voxel_authority,
-                    voxel_chunk_of(location),
+                    tile,
+                    center,
                 );
             }
             NetworkEvent::LocalPosition {
@@ -400,20 +483,15 @@ fn poll_network_events(
                 );
                 telemetry.last_local_update_transport = Some(transport);
 
-                // AOI follow (阶段4 step4.5): re-subscribe as the player moves, but
-                // with a hysteresis deadzone (no thrash hovering on a chunk boundary)
-                // and a velocity-led center (prefetch the slab ahead). Multiple
-                // LocalPosition updates in one frame naturally merge — each re-anchor
-                // updates `voxel_aoi_anchor`, so only a genuine deadzone exit triggers.
-                if let Some((anchor, center)) =
-                    aoi_target_center(location, velocity, voxel_aoi.aoi_anchor)
+                // confirmed truth 窗口按完整 XYZ tile identity 跟随；tile 内移动不重订。
+                if let Some((tile, center)) = aoi_target_center(location, voxel_aoi.subscribed_tile)
                 {
-                    voxel_aoi.aoi_anchor = Some(anchor);
                     subscribe_voxel_around(
                         &bridge,
                         &mut logs,
                         &mut voxel_aoi,
                         &mut voxel_authority,
+                        tile,
                         center,
                     );
                 }
@@ -783,70 +861,113 @@ mod tests {
     }
 
     #[test]
-    fn chunks_falling_out_is_the_trailing_slab_on_a_one_step_move() {
-        // Move center [0,0,0]→[0,0,1], radius 2: old box cz∈[-2,2], new box
-        // cz∈[-1,3]. The chunks that fall out are exactly the cz=-2 slab (5×5×1).
-        let dropped = chunks_falling_out([0, 0, 0], [0, 0, 1], 2);
-        assert_eq!(dropped.len(), 25, "one-step move drops a 5×5 trailing slab");
+    fn negative_chunk_maps_to_negative_tile_center() {
+        // tile -1 覆盖 chunk -7..=-1，中心必须是 -4；不能用向零截断除法。
+        assert_eq!(tile_of_chunk([-1, -7, -8]), [-1, -1, -2]);
+        assert_eq!(tile_center_chunk([-1, -1, -2]), [-4, -4, -11]);
+
+        let (tile, center) = aoi_target_center([-100.0, -100.0, -100.0], None).unwrap();
+        assert_eq!(tile, [-1, -1, -1]);
+        assert_eq!(center, [-4, -4, -4]);
+    }
+
+    #[test]
+    fn cold_xyz_window_contains_exactly_9261_chunks() {
+        let chunks = near_window_chunks([3, 3, 3]);
+        assert_eq!(chunks.len(), 9261);
+        assert_eq!(chunks.len(), VOXEL_NEAR_WINDOW_CHUNK_COUNT);
         assert!(
-            dropped.iter().all(|c| c[2] == -2),
-            "all dropped chunks are on the trailing cz=-2 plane"
-        );
-
-        // No move → nothing falls out.
-        assert!(chunks_falling_out([3, 0, -1], [3, 0, -1], 2).is_empty());
-
-        // A jump farther than the box diameter drops the entire old box (5³=125).
-        assert_eq!(chunks_falling_out([0, 0, 0], [100, 0, 0], 2).len(), 125);
-    }
-
-    const CHUNK: f64 = VOXEL_CHUNK_WORLD_SIZE;
-
-    #[test]
-    fn aoi_no_anchor_centers_on_player_chunk() {
-        // Cold start (anchor None): subscribe centred on the player's chunk, anchor
-        // becomes that chunk. Standing still → zero velocity → no prefetch lead.
-        let (anchor, center) = aoi_target_center([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], None).unwrap();
-        assert_eq!(anchor, [0, 0, 0]);
-        assert_eq!(center, [0, 0, 0]);
-    }
-
-    #[test]
-    fn aoi_hysteresis_suppresses_boundary_jitter() {
-        // Anchored on chunk 0. Crossing just past the boundary (chunk-x 1.05, i.e.
-        // 0.55 past the anchor centre) is INSIDE the 0.5+0.35 deadzone → no re-sub,
-        // even though voxel_chunk_of already reads chunk 1.
-        let loc = [CHUNK * 1.05, 0.0, 0.0];
-        assert_eq!(voxel_chunk_of(loc), [1, 0, 0]);
-        assert!(aoi_target_center(loc, [0.0, 0.0, 0.0], Some([0, 0, 0])).is_none());
-
-        // Moving deep into chunk 1 (1.9 → 1.4 past anchor centre, clears 0.85) → re-sub.
-        let deep = [CHUNK * 1.9, 0.0, 0.0];
-        let (anchor, _center) =
-            aoi_target_center(deep, [0.0, 0.0, 0.0], Some([0, 0, 0])).unwrap();
-        assert_eq!(anchor, [1, 0, 0]);
-    }
-
-    #[test]
-    fn aoi_prefetch_leads_center_along_velocity() {
-        // Re-anchoring while moving fast on server_x leads the box +1 on chunk axis 0;
-        // server_y travel (fast) leads chunk axis 2 (the Y↔Z swap); slow axes don't.
-        let loc = [CHUNK * 5.5, CHUNK * 5.5, 0.0];
-        let vel = [VOXEL_PREFETCH_SPEED + 50.0, -(VOXEL_PREFETCH_SPEED + 50.0), 10.0];
-        let (anchor, center) = aoi_target_center(loc, vel, None).unwrap();
-        assert_eq!(anchor, [5, 0, 5]);
-        assert_eq!(
-            center,
-            [6, 0, 4],
-            "x leads +1, vertical axis 1 unled (slow server_z), axis 2 leads -1 (server_y back)"
+            chunks
+                .iter()
+                .all(|chunk| chunk_is_in_near_window(*chunk, [3, 3, 3]))
         );
     }
 
     #[test]
-    fn prefetch_lead_threshold() {
-        assert_eq!(prefetch_lead(VOXEL_PREFETCH_SPEED + 1.0), 1);
-        assert_eq!(prefetch_lead(-(VOXEL_PREFETCH_SPEED + 1.0)), -1);
-        assert_eq!(prefetch_lead(VOXEL_PREFETCH_SPEED - 1.0), 0);
-        assert_eq!(prefetch_lead(0.0), 0);
+    fn one_axis_tile_cross_has_3087_exited_and_6174_retained() {
+        let old_center = tile_center_chunk([0, 0, 0]);
+        let new_center = tile_center_chunk([1, 0, 0]);
+        let dropped = chunks_falling_out(old_center, new_center);
+        assert_eq!(dropped.len(), 3087);
+        assert_eq!(VOXEL_NEAR_WINDOW_CHUNK_COUNT - dropped.len(), 6174);
+        assert!(
+            dropped.iter().all(|chunk| chunk[0] < new_center[0] - 10),
+            "单轴跨 tile 的退出集合必须是 7x21x21 的尾部 slab"
+        );
+    }
+
+    #[test]
+    fn movement_inside_same_tile_does_not_resubscribe() {
+        let tile = [0, 0, 0];
+        assert!(aoi_target_center([0.0, 0.0, 0.0], Some(tile)).is_none());
+        assert!(
+            aoi_target_center(
+                [
+                    VOXEL_CHUNK_WORLD_SIZE * 6.99,
+                    VOXEL_CHUNK_WORLD_SIZE * 6.99,
+                    VOXEL_CHUNK_WORLD_SIZE * 6.99,
+                ],
+                Some(tile),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn keepalive_is_due_at_60_seconds_and_resets_after_tile_recenter() {
+        let mut retry = VoxelSubscribeRetry::default();
+
+        // 首次锚定只建立计时基准，即使传入 60 秒也不能立刻续约。
+        assert!(!retry.tick_keepalive(
+            std::time::Duration::from_secs(60),
+            [0, 0, 0]
+        ));
+        assert!(!retry.tick_keepalive(
+            std::time::Duration::from_secs(59),
+            [0, 0, 0]
+        ));
+        assert!(retry.tick_keepalive(std::time::Duration::from_secs(1), [0, 0, 0]));
+
+        // 跨 tile 重心必须重置时钟，防止新窗口建立后紧接着重复发送。
+        assert!(!retry.tick_keepalive(
+            std::time::Duration::from_secs(60),
+            [1, 0, 0]
+        ));
+        assert!(!retry.tick_keepalive(
+            std::time::Duration::from_secs(59),
+            [1, 0, 0]
+        ));
+        assert!(retry.tick_keepalive(std::time::Duration::from_secs(1), [1, 0, 0]));
+    }
+
+    #[test]
+    fn known_versions_are_limited_to_the_new_xyz_window() {
+        let center = tile_center_chunk([0, 0, 0]);
+        let mut authority = crate::voxel::VoxelAuthority::default();
+        for (index, coord) in near_window_chunks(center).into_iter().enumerate() {
+            authority.store.seed_chunk(
+                coord,
+                crate::voxel::authority::AuthorityChunk {
+                    chunk_version: index as u64 + 1,
+                    ..Default::default()
+                },
+            );
+        }
+        authority.store.seed_chunk(
+            [100, 100, 100],
+            crate::voxel::authority::AuthorityChunk {
+                chunk_version: 99_999,
+                ..Default::default()
+            },
+        );
+
+        let known = known_versions_in_near_window(&authority, center);
+        assert_eq!(known.len(), 9261);
+        assert!(
+            known
+                .iter()
+                .all(|(coord, _)| chunk_is_in_near_window(*coord, center))
+        );
+        assert!(!known.iter().any(|(coord, _)| *coord == [100, 100, 100]));
     }
 }

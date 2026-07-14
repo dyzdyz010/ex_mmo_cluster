@@ -6,7 +6,7 @@
 > - 架构铁律（服务端权威、confirmed truth 只吃服务端、基线校验硬失败、边界清晰、显式失败…）— AGENTS.md §2
 > - 系统正交设计纲领（系统正交 / 自维护不变量含时间性 / 显式契约）— AGENTS.md §2.1，**设计前必读并过自查清单**
 > - 工程方法约束（CLI 优先、三入口覆盖、禁补丁式修复、阶段改动先有决策稿、中文注释、活用 mermaid…）— AGENTS.md §3
-> - 客户端口径（Voxia 焦点 / web parity / bevy 参考）— AGENTS.md §1
+> - 客户端口径（Voxia 唯一现役 / Web 与 Bevy 逻辑归档）— AGENTS.md §1
 
 ## 本仓工作纪律（Claude Code 专属补充，AGENTS.md 未覆盖的执行细节）
 

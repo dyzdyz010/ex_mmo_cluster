@@ -1,13 +1,14 @@
 # =============================================================================
-# Start browser dual-scene-owner prefab demo.
+# 启动浏览器 dual-scene-owner prefab demo。
 # =============================================================================
-# Usage:
-#   .\scripts\start-dual-scene-demo.ps1
-#   .\scripts\start-dual-scene-demo.ps1 -OpenBrowser
-#   .\scripts\start-dual-scene-demo.ps1 -ReuseServer -ReuseWeb
+# 用法：
+#   .\scripts\start-dual-scene-demo.ps1 -AllowArchivedWebClient
+#   .\scripts\start-dual-scene-demo.ps1 -AllowArchivedWebClient -OpenBrowser
+#   .\scripts\start-dual-scene-demo.ps1 -AllowArchivedWebClient -ReuseServer -ReuseWeb
 # =============================================================================
 
 param(
+    [switch]$AllowArchivedWebClient,
     [switch]$OpenBrowser,
     [switch]$ReuseServer,
     [switch]$ReuseWeb,
@@ -15,6 +16,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $AllowArchivedWebClient) {
+    throw 'archived_web_client_explicit_opt_in_required: 本脚本驱动已归档 web_client；只有用户显式要求时才可传 -AllowArchivedWebClient 运行。当前 Voxia 入口：node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."'
+}
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "dev-env.ps1")
@@ -102,7 +107,8 @@ try {
         $viteBin = Join-Path $clientDir "node_modules\vite\bin\vite.js"
         if (-not (Test-Path -LiteralPath $viteBin)) { throw "vite binary not found: $viteBin; run npm install in clients/web_client" }
         $env:VITE_VOXEL_DEV_SEED = "0"
-        Write-Host "[dual-scene-demo] Starting web client with VITE_VOXEL_DEV_SEED=0; logs: $viteOut / $viteErr" -ForegroundColor Green
+        $env:VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW = "1"
+        Write-Host "[dual-scene-demo] Starting explicit partial-window diagnostic; logs: $viteOut / $viteErr" -ForegroundColor Green
         Start-Process -FilePath "node.exe" -ArgumentList @($viteBin, "--host", "127.0.0.1", "--port", "5173") -WorkingDirectory $clientDir -RedirectStandardOutput $viteOut -RedirectStandardError $viteErr -WindowStyle Hidden | Out-Null
         Wait-HttpReady -Uri $webUrl -TimeoutSeconds 60
     }

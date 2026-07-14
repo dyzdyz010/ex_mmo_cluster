@@ -32,15 +32,17 @@ export VOXEL_DEV_REGION_BOOTSTRAP="${VOXEL_DEV_REGION_BOOTSTRAP:-true}" # 服务
 export ERLANG_COOKIE="${ERLANG_COOKIE:-mmo}"
 export NODE_NAME="${NODE_NAME:-cluster@127.0.0.1}"
 
-# ---- 5. 客户端指向服务端（从上面端口派生，一般不用改） ----------------------
+# ---- 5. 归档客户端兼容变量 ---------------------------------------------------
+# 以下 GAME / VITE 变量只供用户显式运行归档客户端专用工具时兼容读取；
+# 它们不是默认客户端配置面，也不会把 Web / Bevy 恢复为现役客户端。
 export GAME_AUTH_BASE_URL="${GAME_AUTH_BASE_URL:-http://127.0.0.1:${AUTH_PORT}}"
 export GAME_WS_URL="${GAME_WS_URL:-ws://127.0.0.1:${AUTH_PORT}/ingame/ws}"
 
-# ---- 6. 客户端默认用户名 ----------------------------------------------------
+# ---- 6. 归档客户端兼容用户名 ------------------------------------------------
 # web_client 进游戏时用这个名字走 /ingame/auto_login；不显式覆盖 = "alice"。
 export GAME_CLIENT_USERNAME="${GAME_CLIENT_USERNAME:-alice}"
 
-# ---- 7. web_client 默认运行模式（demo 用，跑 vite 时直接被 import.meta.env 读）
+# ---- 7. 归档 web_client 兼容运行模式（仅显式专用工具） ----------------------
 # 这些 VITE_* 名字是 web_client/src/app/bootstrap.ts 直接读的，不要随便改。
 # 想退回到纯本地（不连服务器）演示，覆盖 VITE_MOVEMENT_TRANSPORT=simulated
 # 或 VITE_VOXEL_SYNC=offline 即可。
@@ -50,7 +52,7 @@ export VITE_GAME_WS_URL="${VITE_GAME_WS_URL:-${GAME_WS_URL}}"
 export VITE_GAME_CLIENT_USERNAME="${VITE_GAME_CLIENT_USERNAME:-${GAME_CLIENT_USERNAME}}"
 export VITE_VOXEL_SYNC="${VITE_VOXEL_SYNC:-online}"                            # online | offline
 export VITE_VOXEL_LOGICAL_SCENE_ID="${VITE_VOXEL_LOGICAL_SCENE_ID:-1}"         # 与 DevSeed 创建的场景一致
-export VITE_VOXEL_SUBSCRIBE_RADIUS="${VITE_VOXEL_SUBSCRIBE_RADIUS:-1}"         # ChunkSubscribe 半径（L_inf）
+export VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW="${VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW:-0}" # 仅自动化专项可设 1
 export VITE_VOXEL_DEV_SEED="${VITE_VOXEL_DEV_SEED:-0}"                         # 1 = 旧调试模式：浏览器启动时主动请求准备默认区域
 export VITE_VOXEL_PRIME_DEMO_BLOCK="${VITE_VOXEL_PRIME_DEMO_BLOCK:-0}"         # 1 = 首份空 chunk 到达后自动放一颗 demo 方块（默认 0：服务端 DevSeed 已经种好平台）
 
@@ -79,7 +81,7 @@ echo "  VITE_GAME_WS_URL              = ${VITE_GAME_WS_URL}"
 echo "  VITE_GAME_CLIENT_USERNAME     = ${VITE_GAME_CLIENT_USERNAME}"
 echo "  VITE_VOXEL_SYNC               = ${VITE_VOXEL_SYNC}"
 echo "  VITE_VOXEL_LOGICAL_SCENE_ID   = ${VITE_VOXEL_LOGICAL_SCENE_ID}"
-echo "  VITE_VOXEL_SUBSCRIBE_RADIUS   = ${VITE_VOXEL_SUBSCRIBE_RADIUS}"
+echo "  VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW = ${VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW}"
 echo "  VITE_VOXEL_DEV_SEED           = ${VITE_VOXEL_DEV_SEED}"
 echo "  VITE_VOXEL_PRIME_DEMO_BLOCK   = ${VITE_VOXEL_PRIME_DEMO_BLOCK}"
 echo ""

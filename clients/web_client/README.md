@@ -1,5 +1,8 @@
 # ex_mmo Voxel Web Client
 
+> [!WARNING]
+> **归档客户端。** 本目录保留历史实现与可复现工具，但不再参与默认架构、开发、协议 parity、测试、CI、发布或进度判断。仅在用户显式点名本客户端时，才读取、运行或修改这里的内容；当前唯一现役客户端是 [`clients/Voxia`](../Voxia/README.md)。
+
 一个浏览器端客户端验证面，与 `clients/bevy_client/` 并列。当前阶段的主目标是把
 movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 
@@ -14,7 +17,7 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 当前仓库里的 `web_client` 已不再只是 W-A 占位：
 
 1. 已有多 Chunk 浏览器内置演示世界，使用真正的 `ChunkStorage -> chunk mesher -> BufferGeometry` 路径。
-2. voxel 默认进入 **server-authoritative**：启动后会调用 dev seed 准备 World lease 和 starter terrain，订阅中心 chunk，把服务端 `ChunkSnapshot/ChunkDelta` 应用到本地 truth；左键 / 右键 / CLI 会提交服务端 intent，不直接改本地真相。`VITE_VOXEL_SYNC=offline` 才使用纯本地编辑。
+2. voxel 默认进入 **server-authoritative**：自动订阅只使用完整 XYZ tile cube（tile size=7、radius=1，wire center 为规范 tile-center chunk、`radius_l_inf=10`，共 27 tiles/9261 chunks），并在玩家跨 X/Y/Z 任一 tile 边界时换窗、每 60 秒续约。服务端 `ChunkSnapshot/ChunkDelta` 才能更新本地 truth；左键 / 右键 / CLI 只提交 intent。`VITE_VOXEL_SYNC=offline` 才使用纯本地编辑。
 3. 已有浏览器版可观测调试面：
    - HUD 持续显示关键状态
    - 右上角 `Server Voxel` 面板可直接触发 `voxel_sync` / `voxel_probe` / `chunk_versions` /
@@ -41,7 +44,7 @@ movement 与服务器权威 voxel 放到同一个可观测网页运行时里：
 仍未完成：
 
 1. 当前真实 browser bridge 覆盖的是 auth / enter-scene / movement，这正是当前阶段的主验证目标。
-2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和带旋转的 `PrefabPlaceIntent` v2；多 chunk 自适应订阅与 prefab 跨 chunk 原子事务仍未完成。
+2. voxel 已接 `ChunkSubscribe / ChunkSnapshot / ChunkDelta / VoxelIntentResult / VoxelDebugProbe`、break sentinel 和带旋转的 `PrefabPlaceIntent` v2；完整 XYZ near 自动换窗已接通，prefab 跨 chunk 原子事务仍未完成。
 3. Prefab 已有浏览器本地 Definition/Instance 首版：内置 `builtin_sphere`、
    `builtin_cylinder`、`builtin_stairs`，以及导电测试用的
    `builtin_conductor_wire_x`、`builtin_conductor_junction_xz`、
@@ -217,8 +220,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dual-scene-d
 chunk `{1,0,0}`。脚本会在两个小地块内各铺完整 `16×16` 格可交互服务端地面，
 面积接近 100 平方，便于在默认视野附近测试跨 scene 放置。
 浏览器世界中会显示蓝色 scene1、橙色 scene2 和白色边界柱，用于真实界面测试跨边界
-prefab 摆放。在线 voxel 启动时会自动分别订阅 `{0,0,0}` 与 `{1,0,0}`，半径均为 `0`，
-避免默认半径把未分配邻居 chunk 带入订阅后被 Gate 以 `:unassigned_chunk` 整批拒绝。
+prefab 摆放。该脚本会显式设置 `VITE_VOXEL_DIAGNOSTIC_PARTIAL_WINDOW=1`，分别订阅
+`{0,0,0}` 与 `{1,0,0}`、半径 `0`；这是跨 owner 专项自动化入口，不是 production near
+coverage，也不能用其结果证明完整 XYZ 窗口通过。普通启动不读取旧的可调 radius 环境变量。
 Console 中可用：
 
 ```js
@@ -270,7 +274,7 @@ npm run preview # 预览 dist
 - HUD / `snapshot` / `transport` 明确显示 `voxel_sync=server-authoritative`，并能看到 `seedState`、`subscriptionState`、`lastSnapshot` 或 `lastError`
 - 世界中可见多个真正的 voxel chunk，而不是单个占位立方体
 - `window.__voxelCli.run("snapshot")` 能返回结构化快照
-- `window.__voxelCli.run("voxel_subscribe 0 0 0 0")` 能主动订阅 chunk，`voxel_probe` 能读取服务端 voxel transport 调试串，`voxel_probe voxel_rebind 1 all` 能触发 Gate 订阅重绑定
+- `window.__voxelCli.run("voxel_subscribe 0 0 0 0")` 能发起手工协议诊断（不改变 production 自动窗口契约），`voxel_probe` 能读取服务端 voxel transport 调试串，`voxel_probe voxel_rebind 1 all` 能触发 Gate 订阅重绑定
 - 右键或 `F` 对准星邻接格提交 `VoxelImpactIntent`；选中在线 prefab 时提交 `PrefabPlaceIntent`。服务端 snapshot/delta 回推后，`cell` / `chunks` / HUD 能读到权威变化。
 - 底部 hotbar dock 可见且可点击；滚轮可切换 hotbar，`1..9` 可直接选常用材质和导电 prefab。
 - `WASD` 能驱动 avatar；默认应看到真实 transport ready，或看到自动回退后的 `simulated-local` 状态与 fallback reason

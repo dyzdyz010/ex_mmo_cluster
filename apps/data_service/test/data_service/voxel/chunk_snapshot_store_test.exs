@@ -270,37 +270,7 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
     assert command_log_total() == 0
   end
 
-  test "writes LOD projection cells in the same transaction as a chunk snapshot", %{
-    token_store: token_store
-  } do
-    token = upsert_token(token_store, token())
-
-    attrs =
-      snapshot_attrs(token,
-        chunk_version: 1,
-        chunk_hash: hash(<<1>>),
-        data: <<1>>,
-        lod_projection_cells: [
-          %{
-            logical_scene_id: 1,
-            stride: 16,
-            cell_x: 1,
-            cell_z: 1,
-            height: 123,
-            material_id: 0,
-            source_chunk_coord: {1, 1, 1},
-            source_chunk_version: 1
-          }
-        ]
-      )
-
-    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(attrs)
-
-    assert {:ok, %{heights: <<123::unsigned-big-integer-size(16)>>}} =
-             LodHeightmapStore.heightmap_region(1, 16, 16, 16, 1, 1)
-  end
-
-  test "rolls back the chunk snapshot when LOD projection upsert fails", %{
+  test "legacy LOD projection attrs cannot affect or roll back canonical truth", %{
     token_store: token_store
   } do
     token = upsert_token(token_store, token())
@@ -322,10 +292,13 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
         ]
       )
 
-    assert {:error, {:lod_projection_failed, :invalid_stride}} =
-             ChunkSnapshotStore.put_snapshot(attrs)
+    assert {:ok, :inserted} = ChunkSnapshotStore.put_snapshot(attrs)
+    assert {:ok, snapshot} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert snapshot.chunk_version == 1
+    assert snapshot.data == <<1>>
 
-    assert {:error, :snapshot_not_found} = ChunkSnapshotStore.get_snapshot(1, {1, 1, 1})
+    assert {:error, {:missing_lod_heightmap_cells, _meta}} =
+             LodHeightmapStore.heightmap_region(1, 16, 16, 16, 1, 1)
   end
 
   test "reports snapshot coverage for an explicit inclusive chunk range", %{

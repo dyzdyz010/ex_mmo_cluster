@@ -40,7 +40,7 @@ defmodule WorldServer.Voxel.WorldPackShardMaterializerTest do
       assert Keyword.fetch!(opts, :chunk_min) == {1, -1, -1}
       assert Keyword.fetch!(opts, :chunk_max) == {2, 1, 1}
       assert Keyword.fetch!(opts, :max_chunks) == 18
-      assert Keyword.fetch!(opts, :materializer_opts) == [lod_projection?: false]
+      assert Keyword.fetch!(opts, :materializer_opts) == []
       Agent.update(covered, &MapSet.union(&1, shard_chunks({1, 0, 0})))
       {:ok, %{chunk_count: 18, inserted: 18, updated: 0, unchanged: 0, errors: 0}}
     end
@@ -49,8 +49,7 @@ defmodule WorldServer.Voxel.WorldPackShardMaterializerTest do
              WorldPackShardMaterializer.materialize(small_index(),
                coverage_store: coverage_store,
                materializer: materializer,
-               max_shards: 1,
-               materializer_opts: [lod_projection?: false]
+               max_shards: 1
              )
 
     assert summary.status == :ready

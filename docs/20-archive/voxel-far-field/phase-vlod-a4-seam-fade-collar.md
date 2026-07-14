@@ -2,9 +2,9 @@
 status: archived
 ---
 
-# Phase VLOD-A4：里程碑 A 原始范围收尾 —— 跨 depth 覆盖性 seam + 换环 fade + L1 collar（并行 A5 顶点瘦身）
+# Phase VLOD-A4：里程碑 A（原始范围）收尾 —— 跨 depth 覆盖性 seam + 换环 fade + L1 collar（并行 A5 顶点瘦身）
 
-> ✅ **本文已归档**：A1-A5 与原始 8km 验收已经收口。2026-07-12 起，里程碑 A 扩展为完整 3D 近/远 LOD 与客户端流送数据流优化；当前实施与退出门槛见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
+> ✅ **本文已归档**：A1-A5 与原始 8km 验收已经收口，但不等于扩展后的里程碑 A、在线 authority cutover 或后续 B/C 已完成。2026-07-12 起，里程碑 A 扩展为完整 XYZ 近/远 LOD 与客户端流送数据流优化；现役实现状态以 A10 / S1b-1 为准，在线 authority cutover 与 B/C 仍未完成。当前实施与退出门槛见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 > 承接**里程碑 A（客户端渲染正确，零服务端依赖）**：A1 tier 契约 ✅ / A2 分组件+剔除 ✅ / A3 per-cell greedy merge ✅（quad −57%）＋ Lit-default（额外，远景消色差）。本 phase = **A4（承重）+ A5（可并行）+ A 验收**，收口里程碑 A；过 A 验收后才进里程碑 B（接口冻结）。
 > 真值源：架构主稿 [`2026-07-06-voxia-lod-layering-and-technology-design.md`](../../30-reference/overview/2026-07-06-voxia-lod-layering-and-technology-design.md) §3.2/§5/§6/§8/§9；数据源终态=[投影路线](../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。渲染管线实证：[`2026-07-07-voxia-render-pipeline-camera-lod.md`](../../20-archive/voxel-far-field/2026-07-07-voxia-render-pipeline-camera-lod.md)。

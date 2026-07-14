@@ -362,7 +362,7 @@ thermal_expansion_coefficient
 - `temperature < freezing_point` + moisture 触发 freezing；
 - 写回 frozen / ice state；
 - 结构膨胀压力作为 effect 暂存或写入 structural stress；
-- web overlay 能看到 cold field + frozen state。
+- Voxia debug overlay / CLI observe 能看到 cold field + frozen state。
 
 ### Phase 8.D：Structural integrity
 
@@ -409,6 +409,9 @@ Phase 8 第一版不做：
 2. Phase 7.D3：`FieldEffect` dispatcher + truth 写回（温度写回最小闭环已完成，candidate phenomenon / object effect 留后续）；
 3. Phase 7.E：材料与环境模型最小扩展；
 4. CLI / observe / overlay 对 field source、field effect、voxel state writeback 可见；
-5. browser smoke 能从用户入口触发 hot / cold 并看到 field 与 truth 的变化。
+5. Voxia smoke 必须覆盖三种等价入口；三者都能触发 hot / cold，并观察 field 与服务端权威 truth 的变化：
+   - 真实用户入口：在 Voxia 游戏内操作中触发并看到对应 field / truth 反馈；
+   - 自动化入口：由 Voxia automation 重放同一 hot / cold 流程并断言 field / truth；
+   - CLI / observe 入口：通过 Voxia stdio CLI 触发流程，并从结构化 observe 读取 field source、field effect 与 voxel state writeback。
 
 满足这些后再开始 Phase 8.A。

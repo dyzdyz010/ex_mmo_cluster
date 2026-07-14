@@ -25,11 +25,8 @@ runtime, or client repair paths. Deployment tooling passes the planned chunk
 range in bounded batches; the materializer routes those chunks through
 `MapLedger`, obtains normal World lease fences, and calls
 `SceneServer.Voxel.WorldGenMaterializer.put_snapshot/4` to write canonical
-chunk snapshots. Derived LOD projection rows are still written inline by
-default, but full-pack import tooling can pass
-`materializer_opts: [lod_projection?: false]` and rebuild the derived
-heightmap projection explicitly after the authoritative snapshot range is
-complete.
+XYZ chunk snapshots。现役 world-pack 写入不生成旧 XZ heightmap projection，
+projection row 也不是 pack ready、coverage 或 release verification 条件。
 
 `WorldServer.Voxel.WorldPackBootstrapper` is the supervised server-side
 orchestrator for that path. It is disabled by default and enabled explicitly by
@@ -40,6 +37,13 @@ orchestrator for that path. It is disabled by default and enabled explicitly by
 `:auth_server, :voxel_world_pack` as `:ready` only after the canonical store has
 been written. While it runs, the manifest stays `materializing`; failures publish
 `failed` and keep scene entry blocked.
+
+完整 XYZ 近场的共享空间真值位于 `MmoContracts.VoxelSpatialContract`。默认
+materialization bounds 是 `[-7..13]^3`；full32km pack 的水平边界保持
+`-1024..1023`，Y 轴从旧 `-3..102` 平移为 `-7..98`，仍为 106 层。这样出生
+tile 的完整下半窗口有 baseline 覆盖，同时保持 `444,596,224` chunk 总数和
+`16x106x16` shard 形状不变。旧 pack 的 Y local coord、index hash 与新契约不兼容，
+必须使用新的 content version 重产，不能在运行时补洞。
 
 `WorldServer.Voxel.WorldPackArtifactBuilder` owns the offline `.vxpack` artifact
 write step after canonical snapshots exist. It verifies the complete
@@ -88,7 +92,7 @@ CLI probes:
 
 - `mix run --no-start scripts/world_pack_authority_coverage.exs`
   reports current canonical snapshot coverage for the default full32km index and
-  samples normal radius=3 windows. Incomplete authority data returns a non-zero
+  samples canonical tile-center `radius=10` complete XYZ windows. Incomplete authority data returns a non-zero
   exit code and writes JSON under `.demo/observe/world-pack-authority-coverage/`.
 - `mix run --no-start scripts/world_pack_release_build.exs --pack-root <pack_root>`
   writes `.vxpack` release payloads. Add `--max-shards N` or
@@ -97,6 +101,14 @@ CLI probes:
 - `mix run --no-start scripts/world_pack_release_verify.exs --pack-root <pack_root>`
   validates the complete expected payload set and samples normal sliding-window
   loads. Missing full-pack payloads return a non-zero exit code.
+
+旧 XZ 工具只保留在 `scripts/legacy/` 与
+`WorldServer.Voxel.Legacy` 命名空间中，且必须显式传
+`--allow-legacy-xz` / `legacy_offline?: true` 才运行。它们只供历史数据审计、
+迁移与清理，不能被 launcher、在线 runtime 或当前验收引用：
+
+- `scripts/legacy/legacy_xz_svo_source_materialize.exs`
+- `scripts/legacy/legacy_xz_lod_projection_pressure_probe.exs`
 
 The world-pack `content_version` must be published only after the entire planned
 world range has been materialized and verified. Runtime missing-snapshot,
@@ -121,16 +133,16 @@ the production launcher/world-pack materialization route; production uses
 
 `DefaultRegionBootstrapper` 现在把“可订阅近场基线”和“开发地形种子”分开：
 
-- 默认 baseline footprint 是以 `{0,0,0}` 为中心、半径 3 chunk 的 `7x7x7 = 343`
+- 默认 baseline footprint 是以 tile `(0,0,0)` 的中心 chunk `{3,3,3}` 为中心、
+  `radius_l_inf=10` 的 `21x21x21 = 9261`
   个 chunk。每个 chunk 必须有权威 snapshot；缺失时由 dev bootstrap 用租约围栏显式写入
   empty version-0 snapshot。
 - 默认 terrain footprint 仍只写出生点附近 `5x5`、`y=0` 的开发地形。baseline 扩大不会把
-  地形写成竖向 `7x7x7` 墙。
+  地形写成竖向实体墙。
 - 这条路径只属于本地开发/demo materialization。生产 launcher/world-pack 缺包、hash
   不匹配、diff chain 断裂时不能用 runtime snapshot 兜底，必须在入场前校验失败。
-- bootstrap summary 暴露 `baseline.chunk_count`、`terrain.chunk_count` 和
-  `lod_projection`，便于 stdio CLI/observe 直接判断是 baseline、terrain 还是 LOD
-  projection 问题。
+- bootstrap summary 暴露 `baseline.chunk_count` 与 `terrain.chunk_count`；不再携带或
+  触发任何 XZ projection 状态。
 
 本目录拥有 World 侧体素控制面。控制面指决定“谁拥有区域、谁能写、请求要路由到哪里”的
 低频权威逻辑，不保存完整区块内容，也不执行逐帧体素规则。
@@ -206,7 +218,8 @@ the production launcher/world-pack materialization route; production uses
 - `BoundaryVoxelEvent` 记录 Scene 到 Scene 规则传播必须携带的租约字段。
 - `DefaultRegionBootstrapper` 是 World 监督树里的默认区域准备工人。开发 / demo 配置启用时，
   它在服务端启动后通过 `DevSeed` 路由出生点 footprint、续发租约、经 Scene 写 starter
-  chunk snapshots，并默认触发 LOD projection rebuild；Scene 还没注册时会重试。这样浏览器打开页面后
+  XYZ chunk snapshots；Scene 还没注册时会重试。它不再接受或触发旧 XZ projection rebuild。
+  这样浏览器打开页面后
   只负责登录、入场、订阅读取格子状态，不再负责创建或修复世界。
 - `AuthorityObserve` 是 `mix world_server.voxel_observe` 使用的非 GUI 验收运行器。它启动或复用真实
   ledger / token-store 进程，发布租约、路由区块、开始分阶段迁移、规划预热切片、读取交接载荷、
@@ -218,8 +231,8 @@ the production launcher/world-pack materialization route; production uses
 - `DevSeed` 是本地网页 / CLI 冒烟使用的幂等 materialization 函数。它通过
   `MapLedger.route_chunks_with_leases_ensuring/3` 物化 footprint 所在 region、续发开发租约和
   DataService 写入令牌，然后逐 chunk 走 Scene 的批量 intent 路径写 canonical snapshots。
-  `ChunkSnapshotStore.put_snapshot` 会在同一事务维护 LOD projection；需要回填旧快照时可显式打开
-  LOD projection rebuild。它不绕过 Scene，也不是生产 runtime 的缺块兜底。
+  它显式拒绝旧 projection options，也不是生产 runtime 的缺块兜底。历史 projection 回填只能
+  走 `SceneServer.Voxel.LodProjection.Rebuilder` 的显式离线入口。
 
 `route_chunk_with_lease/3` 是 Gate 向 Scene 请求区块快照前使用的控制面交接函数。它让客户端路径
 先对齐 World 权威，同时仍然把完整区块真相留在 Scene。

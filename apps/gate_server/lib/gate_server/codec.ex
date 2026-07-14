@@ -31,6 +31,7 @@ defmodule GateServer.Codec do
   - `0x65` VoxelBuildReservationIntent
   - `0x66` VoxelSurfaceElementIntent
   - `0x67` VoxelPrefabPlaceIntent
+  - `0x6A` VoxelHeightmapRequest（仅保留旧线协议解码兼容，在线分发拒绝）
   - `0x6F` VoxelDebugProbe
   - `0x75` FieldConductIntent
 
@@ -52,7 +53,7 @@ defmodule GateServer.Codec do
   - `0x8F` EffectEvent
   - `0x62` Voxel ChunkSnapshot
   - `0x68` VoxelIntentResult
-  - `0x6B` VoxelHeightmapRegion
+  - `0x6B` VoxelHeightmapRegion（仅保留旧线协议编码兼容）
   - `0x6F` VoxelDebugProbe
 
   ## Round trip example
@@ -89,9 +90,7 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_object_state_delta 0x6C
   @msg_voxel_debug_probe 0x6F
-  # Far/LOD terrain: client requests a coarse surface heightmap region; server
-  # derives it from authoritative voxel snapshots / LOD mip truth and streams it
-  # back (no client-side generation). See protocol §13.7.
+  # 旧 XZ heightmap 线协议编号只做 append-only codec 兼容；在线链路不再生产该数据。
   @msg_voxel_heightmap_request 0x6A
   @msg_voxel_heightmap_region 0x6B
   @heightmap_section_materials_u16 0x01
@@ -130,7 +129,7 @@ defmodule GateServer.Codec do
   @max_auth_code_bytes 4096
   @max_ticket_bytes 4096
   @max_chat_text_bytes 2048
-  @max_known_chunks 512
+  @max_known_chunks 9_261
 
   # ═══════════════════════════════════════════════════════════
   # Decode: binary → structured tuple
@@ -296,7 +295,7 @@ defmodule GateServer.Codec do
 
   def decode(<<@msg_voxel_chunk_unsubscribe, _rest::binary>>), do: {:error, :invalid_message}
 
-  # VoxelHeightmapRequest (0x6A):
+  # 旧 VoxelHeightmapRequest (0x6A)，仅保留解码兼容：
   # 1 + request_id:u64 + logical_scene_id:u64 + origin_macro_x:i32 +
   # origin_macro_z:i32 + stride:u16 + count_x:u16 + count_z:u16
   def decode(

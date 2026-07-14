@@ -20,7 +20,7 @@ defmodule GateServer.WsConnection do
   alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
 
   @scene_call_timeout 15_000
-  @max_voxel_subscribe_radius 4
+  @max_voxel_subscribe_radius 10
   @prefab_owner_part_id 1
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 

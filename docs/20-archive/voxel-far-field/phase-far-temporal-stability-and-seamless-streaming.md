@@ -4,10 +4,10 @@ status: archived
 
 # 决策稿：Voxia 远景时序稳定与无缝流送
 
-> ✅ **本文已归档**：patch-native 增量、near 热路径、预测预取、后台 mesh prepare 与联合 near/far 性能证据已经收口。尚未完成的可取消构建、重叠 page/artifact 复用和三轴长巡航已纳入扩展后的里程碑 A，见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
+> ✅ **本文已归档**：patch-native 增量、near 热路径、预测预取、后台 mesh prepare 与联合 near/far 性能证据已经收口。stash 中“推进中”是本文形成时的历史截面；当时尚未完成的可取消构建、重叠 page/artifact 复用和三轴长巡航后来并入 A10，现役实现状态以 A10 / S1b-1 与完整 XYZ 契约为准。在线 authority cutover 仍未完成，当前主线见 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)。
 
 - **日期**：2026-07-10
-- **状态**：已完成并归档（Phase 0/1、Phase 2 前三切片、Phase 3 预测 near slab、近景冷加载热路径与完整 near+far 综合实跑已收口；未完成的增量构建项迁入 A10；严格不用 raymarch）
+- **状态**：已完成并归档（正文保留 2026-07-10 推进期记录；Phase 0/1、Phase 2 前三切片、Phase 3 预测 near slab、近景冷加载热路径与完整 near+far 综合实跑已收口；未完成的增量构建项迁入 A10；严格不用 raymarch）
 - **触发**：第一人称零参数入口实跑暴露两项生产阻塞：远景体素明显闪烁；冷启动与跨 tile 更新无法支撑无缝游戏体验。
 - **边界**：本阶段只改客户端派生远景与本地 WorldGen preview 的加载/呈现编排，不改变 confirmed voxel truth、H gate、服务端 authority 或 wire codec。
 

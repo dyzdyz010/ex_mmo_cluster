@@ -28,9 +28,9 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
 
 ```
                         ┌──────────────────────────────────────────┐
-   Native clients ─────▶│  Connection   auth_server · gate_server  │  custom binary protocol
-   (Voxia / UE5,        │               (TCP, packet:4 framing)    │  over TCP
-    web, …)             └──────────────────────────────────────────┘
+   Active client ──────▶│  Connection   auth_server · gate_server  │  custom binary protocol
+   (Voxia / UE5)        │               (TCP, packet:4 framing)    │  over TCP
+                        └──────────────────────────────────────────┘
                                           │
                         ┌──────────────────────────────────────────┐
                         │  Game logic   scene_server · world_server │  ← Rust NIFs:
@@ -91,8 +91,9 @@ mix test
 
 | Client | Engine | Role |
 |--------|--------|------|
-| **[Voxia](clients/Voxia)** | Unreal Engine 5.8 | The flagship native window into the world — 8 km voxel view distance at 120+ FPS |
-| `clients/web_client` | TypeScript · Three.js | Reference oracle for protocol & feature parity |
+| **[Voxia](clients/Voxia)** | Unreal Engine 5.8 | 唯一现役产品客户端；当前在 Milestone A / A10 完善本地模块与渲染 |
+| [`clients/web_client`](clients/web_client) | TypeScript · Three.js | 归档；仅显式点名时使用 |
+| [`clients/bevy_client`](clients/bevy_client) | Rust · Bevy | 归档；仅显式点名时使用 |
 
 ---
 

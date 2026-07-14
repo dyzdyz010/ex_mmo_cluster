@@ -83,8 +83,7 @@ defmodule WorldServer.Voxel.DevSeed do
 
   Options: `:ledger`, `:logical_scene_id`, `:footprint_chunks` (legacy alias for
   both footprints), `:baseline_footprint_chunks`, `:terrain_footprint_chunks`,
-  `:chunk_directory`, `:seed_terrain?`, `:rebuild_lod_projection?`,
-  `:baseline_materializer`. Baseline
+  `:chunk_directory`, `:seed_terrain?`, `:baseline_materializer`. Baseline
   materialization creates empty authoritative snapshots only; terrain seeding is
   limited to `:terrain_footprint_chunks`. `baseline_materializer: :worldgen`
   explicitly writes SceneServer.WorldGen snapshots instead of empty baseline
@@ -95,11 +94,20 @@ defmodule WorldServer.Voxel.DevSeed do
   ledger/materialization path.
   """
   def ensure_default_region(opts \\ []) when is_list(opts) do
+    if Keyword.has_key?(opts, :rebuild_lod_projection?) or
+         Keyword.has_key?(opts, :lod_projection_rebuilder) or
+         Keyword.has_key?(opts, :lod_projection_rebuild_opts) do
+      {:error, :legacy_xz_lod_projection_not_supported}
+    else
+      do_ensure_default_region(opts)
+    end
+  end
+
+  defp do_ensure_default_region(opts) do
     ledger = Keyword.get(opts, :ledger, MapLedger)
     logical_scene_id = Keyword.get(opts, :logical_scene_id, @default_logical_scene_id)
     chunk_directory = Keyword.get(opts, :chunk_directory, @default_chunk_directory)
     seed_terrain? = Keyword.get(opts, :seed_terrain?, true)
-    rebuild_lod_projection? = Keyword.get(opts, :rebuild_lod_projection?, false)
 
     terrain_footprint =
       opts
@@ -123,11 +131,7 @@ defmodule WorldServer.Voxel.DevSeed do
       Keyword.get(
         opts,
         :materialize_baseline?,
-        default_materialize_baseline?(
-          chunk_directory,
-          seed_terrain?,
-          rebuild_lod_projection?
-        )
+        default_materialize_baseline?(chunk_directory, seed_terrain?)
       )
 
     maybe_register_explicit_scene_node(opts)
@@ -151,18 +155,11 @@ defmodule WorldServer.Voxel.DevSeed do
                  terrain_routes,
                  seed_terrain?
                ) do
-          case maybe_rebuild_lod_projection(logical_scene_id, rebuild_lod_projection?, opts) do
-            {:ok, lod_projection} ->
-              summary = build_summary(logical_scene_id, routes, baseline, terrain, lod_projection)
-              emit_seed(summary)
-              emit_baseline(summary, baseline)
-              emit_terrain(summary, terrain)
-              emit_lod_projection(summary, lod_projection)
-              {:ok, summary}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
+          summary = build_summary(logical_scene_id, routes, baseline, terrain)
+          emit_seed(summary)
+          emit_baseline(summary, baseline)
+          emit_terrain(summary, terrain)
+          {:ok, summary}
         else
           {:error, reason} -> {:error, reason}
         end
@@ -187,7 +184,7 @@ defmodule WorldServer.Voxel.DevSeed do
 
   # JSON-safe summary. Includes one entry per distinct materialized region so the
   # dev HTTP endpoint / CLI observer can see what was prepared. No tuples.
-  defp build_summary(logical_scene_id, routes, baseline, terrain, lod_projection) do
+  defp build_summary(logical_scene_id, routes, baseline, terrain) do
     regions =
       routes
       |> Map.values()
@@ -212,8 +209,7 @@ defmodule WorldServer.Voxel.DevSeed do
       chunk_count: map_size(routes),
       regions: regions,
       baseline: baseline,
-      terrain: terrain,
-      lod_projection: lod_projection
+      terrain: terrain
     }
   end
 
@@ -310,89 +306,11 @@ defmodule WorldServer.Voxel.DevSeed do
     })
   end
 
-  defp emit_lod_projection(_summary, nil), do: :ok
-
-  defp emit_lod_projection(summary, lod_projection) do
-    CliObserve.emit("voxel_dev_seed_lod_projection_ready", %{
-      logical_scene_id: summary.logical_scene_id,
-      status: Map.get(lod_projection, :status),
-      chunk_count: Map.get(lod_projection, :chunk_count),
-      cell_count: Map.get(lod_projection, :cell_count),
-      batch_count: Map.get(lod_projection, :batch_count)
-    })
+  defp default_materialize_baseline?(@default_chunk_directory, seed_terrain?) do
+    seed_terrain?
   end
 
-  defp maybe_rebuild_lod_projection(_logical_scene_id, false, _opts), do: {:ok, nil}
-
-  defp maybe_rebuild_lod_projection(logical_scene_id, true, opts) do
-    rebuilder =
-      Keyword.get(
-        opts,
-        :lod_projection_rebuilder,
-        {Module.concat([SceneServer, Voxel, LodProjection, Rebuilder]), :rebuild_scene}
-      )
-
-    rebuild_opts = Keyword.get(opts, :lod_projection_rebuild_opts, [])
-
-    case call_lod_projection_rebuilder(rebuilder, logical_scene_id, rebuild_opts) do
-      {:ok, summary} ->
-        {:ok, Map.merge(%{status: :ready}, json_safe_lod_summary(summary))}
-
-      {:error, reason} ->
-        {:error, {:lod_projection_rebuild_failed, reason}}
-    end
-  end
-
-  defp call_lod_projection_rebuilder({module, function}, logical_scene_id, rebuild_opts)
-       when is_atom(module) and is_atom(function) do
-    apply(module, function, [logical_scene_id, rebuild_opts])
-  rescue
-    exception -> {:error, Exception.message(exception)}
-  catch
-    :exit, reason -> {:error, {:exit, reason}}
-    kind, reason -> {:error, {kind, reason}}
-  end
-
-  defp call_lod_projection_rebuilder(fun, logical_scene_id, rebuild_opts)
-       when is_function(fun, 2) do
-    fun.(logical_scene_id, rebuild_opts)
-  rescue
-    exception -> {:error, Exception.message(exception)}
-  catch
-    :exit, reason -> {:error, {:exit, reason}}
-    kind, reason -> {:error, {kind, reason}}
-  end
-
-  defp call_lod_projection_rebuilder(_other, _logical_scene_id, _rebuild_opts) do
-    {:error, :invalid_lod_projection_rebuilder}
-  end
-
-  defp json_safe_lod_summary(summary) when is_map(summary) do
-    %{
-      logical_scene_id: Map.get(summary, :logical_scene_id),
-      chunk_count: Map.get(summary, :chunk_count, 0),
-      cell_count: Map.get(summary, :cell_count, 0),
-      batch_count: Map.get(summary, :batch_count, 0)
-    }
-  end
-
-  defp json_safe_lod_summary(_summary) do
-    %{logical_scene_id: nil, chunk_count: 0, cell_count: 0, batch_count: 0}
-  end
-
-  defp default_materialize_baseline?(
-         @default_chunk_directory,
-         seed_terrain?,
-         rebuild_lod_projection?
-       ) do
-    seed_terrain? or rebuild_lod_projection?
-  end
-
-  defp default_materialize_baseline?(
-         _chunk_directory,
-         _seed_terrain?,
-         _rebuild_lod_projection?
-       ) do
+  defp default_materialize_baseline?(_chunk_directory, _seed_terrain?) do
     false
   end
 

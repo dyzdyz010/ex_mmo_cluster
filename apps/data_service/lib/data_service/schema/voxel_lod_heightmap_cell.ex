@@ -1,11 +1,11 @@
 defmodule DataService.Schema.VoxelLodHeightmapCell do
   @moduledoc """
-  Persistent derived heightmap LOD cell.
+  已归档 XZ heightmap 的持久化 derived cell，仅供离线迁移与对照。
 
   Rows are keyed by `{logical_scene_id, stride, cell_x, cell_z}` where
   `cell_x/cell_z` are grid coordinates in the stride-specific LOD grid. The
   table is a rebuildable projection of authoritative voxel chunk truth, not an
-  independent source of world truth.
+  independent source of world truth，也不属于当前在线运行时。
   """
 
   use Ecto.Schema

@@ -47,11 +47,7 @@ defmodule GateServer.TcpConnection do
   alias SceneServer.Voxel.Field.FieldRuntime
 
   @scene_call_timeout 15_000
-  @max_voxel_subscribe_radius 4
-  # Heightmap region cap: ≤ 1M cells (1 MB at u8) per request, stride ≤ 4096 macros.
-  # 8 km at stride 16 = 512² ≈ 262k cells fits comfortably.
-  @max_heightmap_cells 1_048_576
-  @max_heightmap_stride 4096
+  @max_voxel_subscribe_radius 10
   @prefab_owner_part_id 1
   @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
 
@@ -797,120 +793,22 @@ defmodule GateServer.TcpConnection do
     {:ok, state}
   end
 
-  # Far/LOD terrain: stream the persistent heightmap projection derived from
-  # authoritative voxel chunks. Missing projection cells are explicit errors;
-  # the runtime path must not call WorldGen noise or snapshot scans as fallback.
-  defp dispatch({:voxel_heightmap_request, request}, %{status: :in_scene, socket: socket} = state) do
-    %{
-      request_id: request_id,
-      logical_scene_id: logical_scene_id,
-      origin_x: origin_x,
-      origin_z: origin_z,
-      stride: stride,
-      count_x: count_x,
-      count_z: count_z
-    } = request
+  # 0x6A/0x6B 仅保留线协议追加兼容；XZ heightmap 已归档，在线链路必须明确拒绝。
+  defp dispatch({:voxel_heightmap_request, request}, %{socket: socket} = state) do
+    GateServer.CliObserve.emit("voxel_heightmap_request_rejected", %{
+      connection_pid: self(),
+      cid: state.cid,
+      status: state.status,
+      request_id: request.request_id,
+      logical_scene_id: request.logical_scene_id,
+      origin: {request.origin_x, request.origin_z},
+      stride: request.stride,
+      count: {request.count_x, request.count_z},
+      contract: :archived_xz_heightmap,
+      reason: :unsupported_legacy_contract
+    })
 
-    cells = count_x * count_z
-
-    cond do
-      stride <= 0 or stride > @max_heightmap_stride or count_x <= 0 or count_z <= 0 or
-          cells > @max_heightmap_cells ->
-        send_result_error(socket, :invalid_heightmap_request, request_id)
-
-      true ->
-        case SceneServer.Voxel.AuthoritativeHeightmap.heightmap_region(
-               logical_scene_id,
-               origin_x,
-               origin_z,
-               stride,
-               count_x,
-               count_z
-             ) do
-          {:ok, %{heights: heights, meta: meta} = result} ->
-            materials = Map.get(result, :materials, <<>>)
-            expected_bytes = cells * 2
-
-            if is_binary(heights) and is_binary(materials) and
-                 byte_size(heights) == expected_bytes and
-                 byte_size(materials) in [0, expected_bytes] do
-              send_encoded(
-                socket,
-                {:voxel_heightmap_region,
-                 %{
-                   request_id: request_id,
-                   origin_x: origin_x,
-                   origin_z: origin_z,
-                   stride: stride,
-                   count_x: count_x,
-                   count_z: count_z,
-                   heights: heights,
-                   materials: materials
-                 }}
-              )
-
-              GateServer.CliObserve.emit("voxel_heightmap_region_sent", %{
-                connection_pid: self(),
-                cid: state.cid,
-                request_id: request_id,
-                logical_scene_id: logical_scene_id,
-                origin: {origin_x, origin_z},
-                stride: stride,
-                count: {count_x, count_z},
-                height_bytes: byte_size(heights),
-                material_bytes: byte_size(materials),
-                bytes: byte_size(heights) + byte_size(materials),
-                source: Map.get(meta, :source),
-                decoded_chunk_count: Map.get(meta, :decoded_chunk_count),
-                decoded_column_count: Map.get(meta, :decoded_column_count),
-                decoded_cell_count: Map.get(meta, :decoded_cell_count)
-              })
-            else
-              GateServer.CliObserve.emit("voxel_heightmap_region_failed", %{
-                connection_pid: self(),
-                cid: state.cid,
-                request_id: request_id,
-                logical_scene_id: logical_scene_id,
-                origin: {origin_x, origin_z},
-                stride: stride,
-                count: {count_x, count_z},
-                reason:
-                  inspect(
-                    {:invalid_heightmap_region_bytes,
-                     %{
-                       expected_bytes: expected_bytes,
-                       height_bytes:
-                         if(is_binary(heights), do: byte_size(heights), else: :invalid),
-                       material_bytes:
-                         if(is_binary(materials), do: byte_size(materials), else: :invalid)
-                     }}
-                  )
-              })
-
-              send_result_error(socket, :heightmap_authoritative_data_missing, request_id)
-            end
-
-          {:error, reason} ->
-            GateServer.CliObserve.emit("voxel_heightmap_region_failed", %{
-              connection_pid: self(),
-              cid: state.cid,
-              request_id: request_id,
-              logical_scene_id: logical_scene_id,
-              origin: {origin_x, origin_z},
-              stride: stride,
-              count: {count_x, count_z},
-              reason: inspect(reason)
-            })
-
-            send_result_error(socket, :heightmap_authoritative_data_missing, request_id)
-        end
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_heightmap_request, request}, state) do
-    send_result_error(state.socket, :invalid_state, request.request_id)
+    send_result_error(socket, :unsupported_legacy_contract, request.request_id)
     {:ok, state}
   end
 

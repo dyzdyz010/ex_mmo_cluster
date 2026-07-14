@@ -48,22 +48,6 @@ defmodule WorldServer.Voxel.DevSeedTest do
     def handle_call(:calls, _from, state), do: {:reply, Enum.reverse(state.calls), state}
   end
 
-  defmodule FakeLodProjectionRebuilder do
-    @moduledoc false
-
-    def rebuild_scene(logical_scene_id, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:lod_projection_rebuild, logical_scene_id, opts})
-
-      {:ok,
-       %{
-         logical_scene_id: logical_scene_id,
-         chunk_count: 2,
-         cell_count: 32,
-         batch_count: 1
-       }}
-    end
-  end
-
   # Starts a SceneNodeRegistry (with this node registered) + a MapLedger wired to
   # it, so the ensuring route can materialize grid regions.
   defp start_ledger_with_registry do
@@ -393,42 +377,9 @@ defmodule WorldServer.Voxel.DevSeedTest do
     assert FakeChunkDirectory.calls(fake_dir) == []
   end
 
-  test "explicitly rebuilds LOD projection after dev materialization when requested" do
-    {ledger, _registry} = start_ledger_with_registry()
-
-    assert {:ok, created} =
-             DevSeed.ensure_default_region(
-               ledger: ledger,
-               logical_scene_id: 93,
-               seed_terrain?: false,
-               rebuild_lod_projection?: true,
-               lod_projection_rebuilder: {FakeLodProjectionRebuilder, :rebuild_scene},
-               lod_projection_rebuild_opts: [test_pid: self(), strides: [16]]
-             )
-
-    assert_receive {:lod_projection_rebuild, 93, opts}
-    assert opts[:strides] == [16]
-
-    assert created.lod_projection == %{
-             status: :ready,
-             logical_scene_id: 93,
-             chunk_count: 2,
-             cell_count: 32,
-             batch_count: 1
-           }
-  end
-
-  test "explicit LOD projection rebuild failure is visible" do
-    {ledger, _registry} = start_ledger_with_registry()
-
-    assert {:error, {:lod_projection_rebuild_failed, :boom}} =
-             DevSeed.ensure_default_region(
-               ledger: ledger,
-               logical_scene_id: 94,
-               seed_terrain?: false,
-               rebuild_lod_projection?: true,
-               lod_projection_rebuilder: fn _scene_id, _opts -> {:error, :boom} end
-             )
+  test "rejects archived XZ projection options instead of treating them as compatibility input" do
+    assert {:error, :legacy_xz_lod_projection_not_supported} =
+             DevSeed.ensure_default_region(rebuild_lod_projection?: true)
   end
 
   test "fails with a JSON-safe terrain error when the scene chunk directory is unavailable" do
