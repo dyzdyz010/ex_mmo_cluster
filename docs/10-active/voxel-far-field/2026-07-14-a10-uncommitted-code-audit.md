@@ -72,9 +72,22 @@ status: active
 | 仓库 | 远程 | 分支 | 本会话提交 |
 | --- | --- | --- | --- |
 | 外层 `ex_mmo_cluster` | `github.com/dyzdyz010/ex_mmo_cluster` | `agent/voxia-a10-s1b-near-far-unify` | `60bdfe6` 合并 master(保留 12.3/12.4 回归记录)、`aad1c0b` S1b 子分片决策稿、`2acff32` capture-window-shot skill、本审计文档 |
-| 嵌套 `Voxia`（`clients/Voxia`，被外层 `.gitignore` 忽略）| `github.com/dyzdyz010/Voxia` | `master` | `67e25c9` 可跑脚本、本次「A10 整树快照」提交（S1a→S5/S2L/S4 + S1b-1）|
+| 嵌套 `Voxia`（`clients/Voxia`，被外层 `.gitignore` 忽略）| `github.com/dyzdyz010/Voxia` | **分支 `agent/voxia-a10-s1b-near-far-unify`**（`7b11f8c`）| `67e25c9` 可跑脚本、`7b11f8c`「A10 整树快照」（S1a→S5/S2L/S4 + S1b-1）——**推到分支，非 master** |
 
 > master（外层）此前已快进到 `60bdfe6` 并 push；PR #9 已 MERGED。
+
+### ⚠️ 嵌套 Voxia 仓库跨机分叉（换机第一件事要处理）
+
+嵌套 `Voxia` 仓库 **master 双机分叉**，共同基点 `a4b2d16`：
+
+- **远程 master（`39fd6cf`，另一台机器推的）**：两个近远景 handoff **回归修复**——`770f322 preserve near-far presentation ownership`、`39fd6cf restore granular near-far handoff`（即外层 docs 12.3/12.4 的**代码**）。它**新增了一整套近场呈现新类**：`VoxiaNearFarHandoffCoordinator`、`VoxiaNearOwnershipMask`、`VoxiaNearMeshStreamingPolicy`、`VoxiaNearRetirementRegistry`、`VoxiaFieldStore`、`VoxiaVoxelStore`、`VoxiaNearFarPresentationPolicy`，并改了 `VoxiaWorldActor.{cpp,h}`。
+- **本机 A10 快照（分支 `agent/voxia-a10-s1b-near-far-unify`，`7b11f8c`）**：A10 S1a→S5/S2L/S4 + S1b-1，**也重改了 `VoxiaWorldActor.{cpp,h}`** 的近场那条。
+
+**为什么没直接合 master**：两边都合法但方向不同，直接盲目 merge 很可能冲突解错或产出编译不过/语义错误的 master，一 pull 就污染另一台机器。故 A10 快照推到**独立分支**，master 保留另一台机器的修复不动，等在带 build 验证的机器上审慎合并。
+
+**重叠（需人工合并）文件**：`Source/Voxia/Gameplay/VoxiaWorldActor.{cpp,h}`、`scripts/voxia_stdio_cli.js`、各层 `README.md`。远程新增的那批近场类本机快照没有（merge 时会作为新增引入，但要确认本机 `VoxiaWorldActor` 改动与它们不打架）。
+
+**换机建议合并步骤**：在有 UE build 的机器上 `git fetch` → 从 master 切合并分支 → `git merge origin/agent/voxia-a10-s1b-near-far-unify` → 重点解 `VoxiaWorldActor.{cpp,h}` 冲突（A10 far streaming vs near-far handoff 重构要都保留）→ `Build.bat VoxiaEditor` 编译过 → 跑相关 automation + `run_voxia_3d_world.bat -Measure` 冒烟 → 再合回 master。
 
 ### 本会话做了什么
 
