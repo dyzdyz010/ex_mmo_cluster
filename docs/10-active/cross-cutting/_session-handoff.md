@@ -1,6 +1,6 @@
 # 当前会话接力：Voxia 客户端网络无关功能分阶段收口
 
-> 当前产品总纲：[`2026-07-14-voxia-client-offline-mock-closure-design.md`](2026-07-14-voxia-client-offline-mock-closure-design.md)；当前唯一展开范围：[`阶段 1 · 世界渲染与场景生命周期 PRD`](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md)，状态为 `review`。渲染实现事实继续以 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)、[`纯 3D 立方壳上位阶段`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)和 [`A10 WorldGen 完整客户端滑动世界`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)为准。
+> 当前产品总纲：[`2026-07-14-voxia-client-offline-mock-closure-design.md`](2026-07-14-voxia-client-offline-mock-closure-design.md)；当前唯一展开范围：[`阶段 1 · 世界渲染与场景生命周期 PRD`](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md)，状态为 `approved / implementation_in_progress`。渲染实现事实继续以 [`streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)、[`纯 3D 立方壳上位阶段`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)和 [`A10 WorldGen 完整客户端滑动世界`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)为准。
 
 ## 2026-07-14 换机检查点
 
@@ -134,8 +134,8 @@
 
 ## 下一步：只展开阶段 1
 
-1. 用户最终审阅并确认阶段 1 PRD；当前不写代码。
-2. 书面规格确认后调用 `writing-plans`，把 P1-A 至 P1-F 展开为精确文件、测试、验证命令与 commit 边界。
+1. 按 [`阶段 1 implementation plan`](../../superpowers/plans/2026-07-15-voxia-phase1-world-lifecycle.md) 执行 P1-A 至 P1-F；当前已获实现授权。
+2. 严格执行 TDD、独立 commit 与根级联合门禁；验证完成后先记录 current-truth / closeout，再启动程序供用户手动确认。
 3. 保持阶段边界：阶段 1 snapshot 只读且 revision 为 `0`；编辑 / overlay 属于阶段 2，prefab 属于阶段 3。
 4. 实现后的门禁必须同时包含真实玩家操作、automation、CLI / 结构化日志，以及完整 near+far Real-RHI；`-VoxiaNearWindowOnly` 仍只能诊断，不能作为最终证据。
 

@@ -3,7 +3,7 @@
 > 状态：`跨阶段总纲 / 六阶段路线已批准`
 > 日期：2026-07-14
 > 范围：唯一现役客户端 `clients/Voxia`
-> 当前阶段：`阶段 1 · 世界渲染与场景生命周期` 已形成[独立 PRD](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md)，等待书面规格最终审阅；尚未批准任何阶段的实现计划，不得据此宣称客户端功能已完成。
+> 当前阶段：`阶段 1 · 世界渲染与场景生命周期` 的[独立 PRD](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 已获最终确认，implementation plan 正在执行；阶段 1 全部门禁通过前不得宣称客户端功能已完成。
 
 ## 1. 本稿用途
 
