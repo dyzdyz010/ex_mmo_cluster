@@ -64,6 +64,7 @@ clients/bevy_client/target/
 clients/voxel-world-explorer/
 clients/voxel-world-explorer.zip
 .demo/
+/.worktrees/
 
 # Deployment secrets — never commit real .env, but keep .env.example tracked.
 deploy/.env
