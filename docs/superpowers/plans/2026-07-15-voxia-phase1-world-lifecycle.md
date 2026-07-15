@@ -34,7 +34,7 @@
 - Produces: `FVoxiaClientWorldSnapshot`, `FVoxiaClientWorldSessionState`, `EVoxiaClientFlowPhase`, `FVoxiaClientFlowMachine`。
 - Snapshot fields: `SessionId`, `RuntimeProfile`, `SourceIdentity`, `WorldSnapshotId`, `ConfirmedRevision=0`, `AuthorityKind`。
 
-- [ ] **Step 1: Write the failing session automation**
+- [x] **Step 1: Write the failing session automation**
 
 ```cpp
 FVoxiaClientFlowMachine Flow;
@@ -47,7 +47,7 @@ TestFalse(TEXT("parallel retry is rejected"), Flow.BeginRetry(2.1, Error));
 TestEqual(TEXT("editing is deferred"), Flow.FeatureGate(TEXT("voxel_edit")), FString(TEXT("feature_not_available_phase2")));
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run from `clients/Voxia`:
 
@@ -57,7 +57,7 @@ Run from `clients/Voxia`:
 
 Expected: compile/test failure because `VoxiaClientWorldSession` does not exist.
 
-- [ ] **Step 3: Implement the pure model**
+- [x] **Step 3: Implement the pure model**
 
 ```cpp
 enum class EVoxiaClientFlowPhase : uint8
@@ -96,11 +96,11 @@ public:
 
 WorldGen identity includes frozen algorithm/version/seed/config fingerprint; local disk keeps expected identity and H. `Validate` rejects unresolved identity and revision other than zero.
 
-- [ ] **Step 4: Run GREEN and focused regression**
+- [x] **Step 4: Run GREEN and focused regression**
 
-Run the Task 1 command, then run `Voxia.Gameplay.VoxelWorldComposition` and `Voxia.Voxel.CanonicalVoxelPageProvider` separately. Expected: all selected tests succeed.
+Run the Task 1 command, then run `Voxia.Gameplay.VoxelWorldComposition` and `Voxia.Voxel.CanonicalPageProvider` separately. Expected: all selected tests succeed.
 
-- [ ] **Step 5: Commit nested repo**
+- [x] **Step 5: Commit nested repo**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaClientWorldSession* Source/Voxia/Gameplay/VoxiaVoxelWorldSourceIdentity.*
@@ -117,12 +117,13 @@ git commit -m 'feat(flow): add immutable mock world session state'
 - Modify: `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.h/.cpp`
 - Modify: `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldActor.h/.cpp`
 - Modify: `clients/Voxia/Source/Voxia/Gameplay/VoxiaPure3DVoxelWorldActor.h/.cpp`
+- Modify: `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.h/.cpp`
 
 **Interfaces:**
 - Consumes: Task 1 `FVoxiaClientWorldSnapshot` and `FVoxiaClientFlowMachine`。
 - Produces: `StartNewGame`, `Retry`, `ReturnToMenu`, `RegisterRoot`, `SnapshotJson` and root `BindWorldSnapshot`。
 
-- [ ] **Step 1: Write failing binding tests**
+- [x] **Step 1: Write failing binding tests**
 
 ```cpp
 TestTrue(TEXT("flow creates exactly one active session"), Harness.StartNewGame(Error));
@@ -134,11 +135,11 @@ TestEqual(TEXT("rejection is diagnostic"), Error, FString(TEXT("world_snapshot_s
 
 The UObject harness uses a transient `UGameInstance`/`UWorld` only where unavoidable; source binding rules remain in a pure helper so the test does not mock renderer behavior.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `Automation RunTests Voxia.Gameplay.ClientFlowSubsystem`. Expected: missing subsystem/binding symbols.
 
-- [ ] **Step 3: Implement flow ownership and deferred child spawn**
+- [x] **Step 3: Implement flow ownership and deferred child spawn**
 
 ```cpp
 UCLASS()
@@ -158,7 +159,7 @@ public:
 
 `VoxiaClientGameMode` calls `StartNewGame` only for `UnifiedProduction`; probe/online compatibility keep their explicit old routes. Root uses `SpawnActorDeferred` for near/far, calls `BindWorldSnapshot` before `FinishSpawning`, and rejects any child whose snapshot/source fingerprint differs. For WorldGen, near verifies the frozen seed/config fingerprint before transport prepare; for local disk, Stage 1 refuses playable until the same verified source identity is reported by both adapters. No fallback is allowed.
 
-- [ ] **Step 4: Run GREEN, build, and smoke root JSON**
+- [x] **Step 4: Run GREEN, build, and smoke root JSON**
 
 Run the focused automation, build `VoxiaEditor Win64 Development -NoLiveCoding`, then launch Null-RHI CLI and assert:
 
@@ -166,7 +167,7 @@ Run the focused automation, build `VoxiaEditor Win64 Development -NoLiveCoding`,
 {"contract":"voxia_unified_voxel_world_root_v4","session_id":"...","world_snapshot_id":"...","confirmed_revision":0,"source_consumption":{"near":"root_world_snapshot","far":"root_world_snapshot"}}
 ```
 
-- [ ] **Step 5: Commit nested repo**
+- [x] **Step 5: Commit nested repo**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaClientFlowSubsystem* Source/Voxia/Gameplay/VoxiaClientGameMode.cpp Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.* Source/Voxia/Gameplay/VoxiaWorldActor.* Source/Voxia/Gameplay/VoxiaPure3DVoxelWorldActor.*
@@ -190,7 +191,7 @@ git commit -m 'feat(flow): bind the unified root to one world snapshot'
 - Root proof exposes `IsCommittedForTile`, `GapCount`, `OverlapCount`, `StaleCommitCount`, `ProgressEpoch`。
 - Safe-view returns `Safe`, `Hold`, `SoftNotify`, `HardFail`, or `Recovered`。
 
-- [ ] **Step 1: Write three failing pure automations**
+- [x] **Step 1: Write three failing pure automations**
 
 ```cpp
 TestEqual(TEXT("single X tile retains 18 near tiles"), Plan.Near.RetainedTiles, 18);
@@ -202,25 +203,25 @@ TestEqual(TEXT("250ms emits soft notify"), Guard.Evaluate(false, 0.250).Action, 
 TestEqual(TEXT("2s becomes hard recovery"), Guard.Evaluate(false, 2.000).Action, EVoxiaSafeViewAction::HardFail);
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run the three new automation names separately. Expected: missing pure units.
 
-- [ ] **Step 3: Implement planner/profile and proof**
+- [x] **Step 3: Implement planner/profile and proof**
 
 Freeze bands as near radius 1/0ms, far L0 4/0ms, L1 8/50ms, L2 24/150ms, L3 40/300ms, L4 72/600ms. Ordinary movement requires 3 stable frames; initial, teleport, retry, and source change are immediate. Each band holds one in-flight plus one latest pending.
 
 Root commits a generation only when snapshot/revision/center match, near settled, far live, ownership ready and fence observed. Every visible proof enforces `gap=0`, `overlap=0`, `stale=0`; violations fail explicitly and retain the previous committed proof.
 
-- [ ] **Step 4: Integrate final camera publication**
+- [x] **Step 4: Integrate final camera publication**
 
 Override `AVoxiaCameraManager::DoUpdateCamera(float DeltaTime)`: call `Super`, read `GetCameraCacheView()` as the candidate, ask the unified root to evaluate it, then either `SetCameraCachePOV(LastSafeView)` or replace `LastSafeView` with the candidate. Candidate location uses the scheduler's canonical XYZ tile quantization. The guard never changes pawn transform, velocity, control rotation, or world geometry.
 
-- [ ] **Step 5: Run GREEN and regression**
+- [x] **Step 5: Run GREEN and regression**
 
 Run the three focused tests plus `Voxia.Voxel.NearVoxelWindow`, `Voxia.Gameplay.VoxelPresentationResourceSet`, and root-ready CLI smoke. Expected: all pass and root snapshot reports committed proof counters at zero.
 
-- [ ] **Step 6: Commit nested repo**
+- [x] **Step 6: Commit nested repo**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaWorldCoverageScheduler* Source/Voxia/Gameplay/VoxiaWorldPresentationProof* Source/Voxia/Gameplay/VoxiaSafeViewGuard* Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.* Source/Voxia/Gameplay/VoxiaCameraManager.*
@@ -241,7 +242,7 @@ git commit -m 'feat(streaming): add root coverage proof and safe view'
 - Overlay consumes an immutable `FVoxiaClientFlowViewModel` and emits only `OnRetry`, `OnReturnToMenu`, `OnStartNewGame`, `OnExit` delegates。
 - CLI commands: `client_flow_state`, `client_flow_retry`, `client_flow_return_to_menu`, `client_flow_start_new_game`, `until_client_playable`, `safe_view_state`, `voxel_streaming_profile`。
 
-- [ ] **Step 1: Write failing view-model/command tests**
+- [x] **Step 1: Write failing view-model/command tests**
 
 ```cpp
 TestEqual(TEXT("loading is UI-only"), Loading.InputMode, EVoxiaClientInputMode::UiOnly);
@@ -251,25 +252,25 @@ TestFalse(TEXT("retrying disables retry"), Retrying.bRetryEnabled);
 TestFalse(TEXT("stage one hides edit affordance"), Playable.bShowVoxelEdit);
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `Automation RunTests Voxia.Gameplay.ClientFlowViewModel`. Expected: missing view model.
 
-- [ ] **Step 3: Implement overlay and input projection**
+- [x] **Step 3: Implement overlay and input projection**
 
 Create one `SWeakWidget` wrapper through `UGameViewportClient::AddViewportWidgetContent`; update visibility/text/button state from the pure view model. Remove the widget during subsystem deinitialization. Use `SetInputMode(FInputModeUIOnly)` for loading/recovery/menu and `SetInputMode(FInputModeGameOnly)` only for playable/streaming.
 
 Initial loading shows phase/progress/error; soft safe-view shows a non-blocking sync label; hard recovery shows Retry/Return; menu shows New Game/Exit. `VoxiaPawn` edit actions consult `FeatureGate` and emit `feature_not_available_phase2` without changing voxel data.
 
-- [ ] **Step 4: Wire CLI and stdio waiter**
+- [x] **Step 4: Wire CLI and stdio waiter**
 
 `client_flow_state` returns session/snapshot/root phase/progress/error/retry/safe-view. Actions return `ok=false` with `retry_in_flight`, `no_active_session`, or the exact hard error. JS caches `client_flow_state` and resolves `until_client_playable` only when phase is `playable|streaming`, root proof is committed, centers align, and error is empty.
 
-- [ ] **Step 5: Run GREEN and action smoke**
+- [x] **Step 5: Run GREEN and action smoke**
 
 Run the focused automation; then CLI sequence: `until_client_playable 300000; client_flow_state; client_flow_return_to_menu; client_flow_state; client_flow_start_new_game; until_client_playable 300000`. Expected phases: playable, menu_idle, playable; exactly one root after new game.
 
-- [ ] **Step 6: Commit nested repo**
+- [x] **Step 6: Commit nested repo**
 
 ```powershell
 git add Source/Voxia/Gameplay/SVoxiaClientFlowOverlay.* Source/Voxia/Gameplay/VoxiaClientFlowSubsystem.* Source/Voxia/Gameplay/VoxiaClientFlowViewModelAutomationTest.cpp Source/Voxia/Gameplay/VoxiaPawn.cpp Source/Voxia/Debug/VoxiaDebugCliSubsystem.cpp scripts/voxia_stdio_cli.js
@@ -293,7 +294,7 @@ git commit -m 'feat(ui): add phase one loading recovery and menu flow'
 - DynamicMesh triangle material slots are 0 opaque, 1 translucent, 2 emissive。
 - Scene host accepts three `UMaterialInterface*` values and reports material histograms plus budget decisions。
 
-- [ ] **Step 1: Write failing family, mesh, and budget tests**
+- [x] **Step 1: Write failing family, mesh, and budget tests**
 
 ```cpp
 TestEqual(TEXT("water is translucent"), VoxelMaterialFamily(8), EVoxiaVoxelMaterialFamily::Translucent);
@@ -303,23 +304,23 @@ TestTrue(TEXT("dynamic mesh enables material IDs"), Mesh.Attributes()->HasMateri
 TestFalse(TEXT("over-budget patch is rejected before stage"), Host.ValidatePatchBudget(TooLarge, Error));
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run `Voxia.Voxel.VoxelMaterialFamily`, the canonical scene-builder test, and resource-set test. Expected failures identify missing family slots and budget rejection.
 
-- [ ] **Step 3: Implement three material slots**
+- [x] **Step 3: Implement three material slots**
 
 `FVoxiaFarFieldDynamicMeshBuilder` enables `MaterialID` and assigns each two-triangle quad from `QuadMaterial`. Pure3D loads `M_VoxelWorldAligned`, `M_VoxelTranslucent`, and `M_VoxelEmissive`; scene host sets all three on every component. Patch fingerprint and stage JSON include material histogram, family policy version, and algorithm version so retained components cannot cross an incompatible material policy.
 
-- [ ] **Step 4: Add frozen budgets and exact oracle**
+- [x] **Step 4: Add frozen budgets and exact oracle**
 
 Expose patch component/quad/vertex/bytes ceilings, live/hidden/retiring counts, queue depth, cancellation quantum, GT stage/commit/retire timings. Reject before hidden publish. The automation full oracle compares coverage owner, surface fingerprint, quad/vertex counts, material histogram, patch keys, gap and overlap for clean-full versus incremental output.
 
-- [ ] **Step 5: Run GREEN and Real-RHI material audit**
+- [x] **Step 5: Run GREEN and Real-RHI material audit**
 
 Run focused automations, capture 1280×720 and 1600×900 screenshots from the production root, and query root JSON. Expected: all three family counts are present in the generated fixture, `gap=overlap=stale=0`, and no budget rejection in the default profile.
 
-- [ ] **Step 6: Commit nested repo**
+- [x] **Step 6: Commit nested repo**
 
 ```powershell
 git add Source/Voxia/Voxel/VoxiaVoxelMaterialFamily* Source/Voxia/FarField/VoxiaFarFieldDynamicMesh.cpp Source/Voxia/Gameplay/VoxiaPure3DVoxelWorldActor.* Source/Voxia/Gameplay/VoxiaVoxelPresentationSceneHost.* Source/Voxia/Gameplay/VoxiaCanonicalVoxelShellSceneBuilder* Source/Voxia/Gameplay/VoxiaVoxelPresentationResourceSetAutomationTest.cpp
@@ -338,7 +339,7 @@ git commit -m 'feat(rendering): preserve voxel material families in far LOD'
 - Harness writes `.demo/observe/voxia_phase1_<timestamp>/index.json`, engine log, event JSONL, screenshots, frame summaries and resource-soak samples。
 - Routes: birth, positive/negative X/Y/Z, diagonal, multi-tile, A-B-A, ground-high-ground, teleport, retry, return-menu-new-game。
 
-- [ ] **Step 1: Write the failing harness assertions**
+- [x] **Step 1: Write the failing harness assertions**
 
 ```javascript
 assert.equal(root.single_composition_root, true);
@@ -350,15 +351,15 @@ assert.equal(frame.over_16_67ms, 0);
 assert.ok(!soak.monotonic_growth_detected);
 ```
 
-- [ ] **Step 2: Run RED against the current executable**
+- [x] **Step 2: Run RED against the current executable**
 
 Run `node scripts/run_phase1_world_lifecycle_smoke.js --null-rhi --short`. Expected: missing flow/root proof/material/budget fields or waiter commands.
 
-- [ ] **Step 3: Implement route driver and machine summary**
+- [x] **Step 3: Implement route driver and machine summary**
 
 Use stdio commands only; do not infer success from screenshots. For each route step, wait for `until_client_playable`, record desired/live centers, generation, queue, lease, retiring, safe-view and frame data. A-B-A must compare snapshot/source/material fingerprints. The 30-minute mode samples resource counters every 10 seconds and rejects monotonic growth.
 
-- [ ] **Step 4: Run full automation and build**
+- [x] **Step 4: Run full automation and build**
 
 ```powershell
 & 'D:\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat' VoxiaEditor Win64 Development .\Voxia.uproject -WaitMutex -FromMsBuild -NoLiveCoding
@@ -367,7 +368,7 @@ Use stdio commands only; do not infer success from screenshots. For each route s
 
 Expected: build exit 0; active Voxia suite has zero failures. Archived test namespaces must not contain `Voxia`.
 
-- [ ] **Step 5: Run CLI/Null-RHI and Real-RHI matrices**
+- [x] **Step 5: Run CLI/Null-RHI and Real-RHI matrices**
 
 ```powershell
 node scripts/run_phase1_world_lifecycle_smoke.js --null-rhi
@@ -377,7 +378,7 @@ node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --res 1600x900 --soa
 
 Expected: all route assertions pass; p95 at or below 8.33ms; no streaming-caused frame above 16.67ms; per-band queue at most 1; no monotonic resource leak. If performance misses, use `superpowers:systematic-debugging`, fix the cause with a failing regression, and repeat.
 
-- [ ] **Step 6: Commit nested repo**
+- [x] **Step 6: Commit nested repo**
 
 ```powershell
 git add scripts/run_phase1_world_lifecycle_smoke.js scripts/voxia_stdio_cli.js Source/Voxia/Debug/README.md Source/Voxia/Gameplay/README.md
@@ -388,25 +389,25 @@ git commit -m 'test(voxia): add phase one production-root acceptance'
 
 **Files:**
 - Modify: `docs/00-current-truth/design/client/streaming-lod.md`
-- Modify: `docs/10-active/cross-cutting/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md`
+- Archive: `docs/20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md`
 - Modify: `docs/10-active/cross-cutting/_session-handoff.md`
 - Create: `docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md`
 - Modify: `clients/Voxia/scripts/launch_worldgen_preview.js` only if the verified production launch arguments changed。
 
-- [ ] **Step 1: Record exact evidence**
+- [x] **Step 1: Record exact evidence**
 
 Write commit IDs, build/automation counts, CLI route results, Real-RHI resolutions, p50/p95/p99/max, safe-view/retry/menu outcomes, artifact paths and residual risks. Do not promote Stage 2 editing or Stage 3 prefab.
 
-- [ ] **Step 2: Update PRD status and current truth**
+- [x] **Step 2: Update PRD status and current truth**
 
-Change PRD from `review` to `complete` only after every Task 6 gate passes. Current-truth must describe user-visible capability first, then implementation evidence. Move the closed phase log to archive while keeping current-truth links.
+Change PRD from `approved` to `complete` only after every Task 6 gate passes. Current-truth must describe user-visible capability first, then implementation evidence. Move the closed phase log to archive while keeping current-truth links.
 
 - [ ] **Step 3: Verify both repositories and commit outer docs**
 
 ```powershell
 git -C clients/Voxia status --short --branch
 git diff --check
-git add docs/00-current-truth/design/client/streaming-lod.md docs/10-active/cross-cutting/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md docs/10-active/cross-cutting/_session-handoff.md docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md
+git add docs/00-current-truth/design/client/streaming-lod.md docs/20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md docs/10-active/cross-cutting/_session-handoff.md docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md
 git commit -m 'docs(voxia): close phase one world lifecycle'
 ```
 

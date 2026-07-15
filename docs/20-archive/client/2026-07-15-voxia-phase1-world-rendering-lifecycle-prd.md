@@ -1,8 +1,9 @@
 ---
-status: approved
+status: complete
 phase: 1
 client: Voxia
 date: 2026-07-15
+completed: 2026-07-16
 ---
 
 # Voxia 阶段 1 PRD：世界渲染与场景生命周期
@@ -361,8 +362,18 @@ near / far 专用命令继续存在，但只标为 probe，不构成生产完成
 - 阶段 3 prefab 未混入阶段 1 验收。
 - 没有修改服务端、wire 或归档客户端边界。
 - 完整 XYZ、唯一组合根、服务端权威兼容方向和显式失败均得到保持。
-- 方案状态为 `approved`：书面规格已由用户最终确认，阶段 1 实现获准开始；在全部门禁通过前仍不得报告阶段完成。
+- 方案状态为 `complete`：书面规格已由用户最终确认，阶段 1 的实现、三入口验证、Real-RHI 长稳态与文档收口均已完成。
 
 ## 17. 审批记录
 
 用户已于 2026-07-15 确认阶段 1 的推荐方向、范围与默认参数，并在审阅本文后授权自行编写计划和执行，目标为阶段 1 实施与验证完成。当前只展开阶段 1；阶段 2–6 保持冻结。
+
+## 18. 完成记录
+
+阶段 1 于 2026-07-16 完成。最终代码保持唯一 `AVoxiaUnifiedVoxelWorldActor` 生产根；near/far
+绑定同一只读 world snapshot，完成完整 XYZ coverage、safe-view、加载/恢复/菜单流程、三材质族
+派生槽、有界后台构建和分帧 GameThread 发布。阶段 2 编辑入口继续隐藏并返回
+`feature_not_available_phase2`，未修改服务端、wire、Web 或 Bevy。
+
+最终证据和残余边界见
+[`2026-07-15-voxia-phase1-world-lifecycle-closeout.md`](2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。

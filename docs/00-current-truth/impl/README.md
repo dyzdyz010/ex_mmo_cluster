@@ -27,12 +27,12 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；Milestone A / A10 本地完善中 |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；离线 Mock 阶段 1 已完成，阶段 2 / Online 后置 |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
 | Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 扩展后的里程碑 A 进行中；B/C 未开始 |
 | Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
-| Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarHandoffCoordinator.*` | 成熟 near 的 XYZ ownership atlas、逐 chunk transaction、lease/generation/epoch barrier；A10 根级共享 transaction 尚未完成 |
+| Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarHandoffCoordinator.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | near 逐 chunk ownership/fence 与 far 整代 generation 各自维护原子性；唯一根用同一 snapshot、center、generation readiness 与 presentation proof 协调，无第二生产 truth |
 | Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；已由 A10 开发根消费，不读取 WorldGen 或 renderer |
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
 | Voxia canonical pages v2 | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPages.*` | XYZ brick + span + LOD、X-fastest dense material `u16` codec；`LoadExpectedBatch` 以外部 manifest SHA-256 + expected identity/set 原子加载，失败 batch 为空 |
@@ -48,7 +48,7 @@
 | Voxia presentation resource host | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelPresentationResourceSet.*` + `VoxiaVoxelPresentationSceneHost.*` | 真实 render fence；hidden/live/retiring near/far DynamicMesh 生命周期与原子晋升 |
 | Voxia world composition selection | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldComposition.*` | 唯一正式根 / legacy probe / Pure3D probe / online compatibility 的纯选择契约；冲突 selector 与缺 provider 硬失败 |
 | Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合成熟 near-only 流送与 Pure3D far-only，维护 near settled + far live + XYZ center aligned 的根级 readiness |
-| Voxia pure-3D far module / standalone probe | `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.*` + `VoxiaPure3DVoxelWorldActor.*` | 统一根中只显示 far；`-VoxiaPure3DProbe`/旧 `-VoxiaPure3DWorld` 可独立验证。WorldGen/本地磁盘 provider 共用 request Build 路径，已接 page diff/residency、cooperative cancellation、source-bound shared artifact cache、并行 resolved surface、worker coverage plan、预算化 lease 回收与绝对 XYZ stable patch transaction；相邻 Real-RHI worker 约 `0.91-0.95s`。仍缺 near/far 共享 transaction、反向依赖索引/full oracle和完整 route。服务器/HTTP/在线 authority provider 后置 |
+| Voxia pure-3D far module / standalone probe | `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.*` + `VoxiaPure3DVoxelWorldActor.*` | 正式统一根中的 far adapter；WorldGen/本地磁盘 provider 共用 request Build 路径，具备 diff/residency/cancellation/shared artifact/parallel surface/stable patch、材质族、预算与分帧 scene host。standalone 只作 probe；完整 route/full oracle/Real-RHI 已由阶段 1 根级验收覆盖，Online provider 后置 |
 | Voxia gameplay | `clients/Voxia/Source/Voxia/Gameplay/README.md` | pawn、streaming、HUD、LOD debug |
 | Voxia net | `clients/Voxia/Source/Voxia/Net/README.md` | transport、protocol decode、authority update |
 | Voxia debug | `clients/Voxia/Source/Voxia/Debug/README.md` | stdio CLI |
@@ -69,5 +69,5 @@
 
 ## 注意
 
-当前工作树中存在多处未提交 Voxia 代码与文档变更。现有日志证明对应工作树时点的自动化/Real-RHI 结果；交付前仍需在最终工作树重跑受影响测试，不能把“文档已治理”等同于“代码已提交”。
-完整 3D 总任务只有在 production near subscription、v2 canonical materialization、共享 near/far transaction、在线 authority provider 与 combined near+far Real-RHI 全部通过后才能完成；A10 开发根、hidden probe 或 near-only 只算 checkpoint。
+阶段 1 最终工作树已经重新运行 Development build、`Voxia` 68/68 automation、Null-RHI 全路线、1280×720 Real-RHI 全路线与 1600×900/30 分钟 Real-RHI 长稳态。证据见 `docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md`；near-only/far-only 仍只能作为 probe。
+完整 3D 的“离线 Mock 客户端阶段 1”与“在线 production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen 成果冒充。

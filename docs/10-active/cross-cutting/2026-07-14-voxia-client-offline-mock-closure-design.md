@@ -3,7 +3,7 @@
 > 状态：`跨阶段总纲 / 六阶段路线已批准`
 > 日期：2026-07-14
 > 范围：唯一现役客户端 `clients/Voxia`
-> 当前阶段：`阶段 1 · 世界渲染与场景生命周期` 的[独立 PRD](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 已获最终确认，implementation plan 正在执行；阶段 1 全部门禁通过前不得宣称客户端功能已完成。
+> 当前阶段：`阶段 1 · 世界渲染与场景生命周期` 已实施、验证并归档；规格见[独立 PRD](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md)，证据见[阶段 1 closeout](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。阶段 2–6 继续冻结，未经新的范围确认不得自动展开。
 
 ## 1. 本稿用途
 
@@ -328,7 +328,7 @@ sequenceDiagram
 
 ### 8.1 第一层：可游玩的体素世界渲染
 
-> **阶段化裁决（2026-07-15）**：本节形成于六阶段拆分之前，其中“Mock 编辑后可见”与 prefab 条目已经分别路由到阶段 2 和阶段 3，不再是阶段 1 门禁。阶段 1 的唯一规格与完成口径以 [`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 为准；本节继续保留跨阶段最终渲染目标，但不得据此越界实施后续阶段。
+> **阶段化裁决（2026-07-15）**：本节形成于六阶段拆分之前，其中“Mock 编辑后可见”与 prefab 条目已经分别路由到阶段 2 和阶段 3，不再是阶段 1 门禁。阶段 1 的唯一规格与完成口径以归档的 [`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 为准；本节继续保留跨阶段最终渲染目标，但不得据此越界实施后续阶段。
 
 只有同时满足以下条件，第一层才允许写成“体素世界渲染已收口”：
 
@@ -583,7 +583,7 @@ voxel / prefab 世界渲染与交互收口后，再分别定义并完成：
 
 以下问题已经路由到对应阶段，只有当前阶段的问题可以继续展开：
 
-- **阶段 1 已形成独立书面规格，待最终审阅**：[`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 已覆盖精确功能清单、现有代码与缺口映射、方案裁决、加载 / 超时状态、完整 XYZ LOD 调度和独立测试矩阵。
+- **阶段 1 已完成并归档**：[`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 与 [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md) 已记录精确功能、实现边界、完整 XYZ、生命周期、三入口和 Real-RHI 证据。
 - **阶段 2 暂停**：Mock authority 具名场景、延迟、CLI 配置，以及体素操作的完整验收细节。
 - **阶段 3 暂停**：prefab 世界运行时的 catalog、放置、选择、移除与替换细节。
 - **阶段 4 暂停**：“创建 prefab”的 sync pin / 取消 / 成功去向、family lineage 与 dirty close guard 精确按钮；D-029 至 D-060 作为后续输入保留，不再在当前总稿追问。
@@ -604,4 +604,4 @@ voxel / prefab 世界渲染与交互收口后，再分别定义并完成：
 
 - 已完成：完整阅读现役 Voxia current-truth、代码与既有 WorldGen / near / far / prefab 路径；通过 `$grill-me` 确认 D-001 至 D-062；批准六阶段路线；阶段 1 已完成方案裁决并形成独立 PRD。
 - 尚未完成：阶段 1 书面规格的用户最终审阅、implementation plan 或代码实现。本文中的 Prefab Designer 细节是阶段 4 的输入，不代表阶段 4 可以越过阶段 1 提前开工。
-- 下一步：用户审阅并确认阶段 1 独立 PRD；随后调用 `writing-plans` 把 P1-A 至 P1-F 展开为精确文件、测试、验证命令和 commit 边界。不得继续询问或实施阶段 2–6 的产品细节。
+- 下一步：启动阶段 1 程序供用户手动确认。阶段 2–6 继续冻结；只有用户显式授权新阶段后，才从对应 PRD/调查问卷开始收敛范围。
