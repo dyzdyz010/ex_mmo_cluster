@@ -1,14 +1,84 @@
-# 当前会话接力：Voxia 阶段 1 已完成
+# 当前会话接力：Voxia 阶段 1 已完成，审查硬化待续
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
 > 阶段 1 规格与结果已归档：[`PRD`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) ·
 > [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。
 
+## 2026-07-17 跨机器检查点
+
+### 本次停点
+
+- 用户要求在代码审查硬化尚未全部收口时立即记录、提交并推送，供另一台电脑继续。因此，
+  `clients/Voxia` 的本次提交是**明确的 WIP checkpoint**，不是新的阶段 1 最终验收点。
+- `6de74ec merge: complete phase one world lifecycle` 仍是上一轮完整阶段 1 实现基线；本次检查点
+  在其上追加性能屏障、near-first 调度、far worker、canonical page 复用、分帧 residency 与
+  scene publication 硬化。
+- 客户端检查点提交：`5e9f6b1 checkpoint(voxia): preserve phase one hardening progress`。外层仓库提交记录本页及既有 PRD、计划、
+  current-truth 与 closeout 文档。
+- 阶段 2–6 继续冻结；Web / Bevy、服务端、wire 与 Online authority 不在本次改动范围内。
+
+### 已实现且在审查前通过实跑的硬化
+
+1. `performance_runtime_barrier` 在 Real-RHI 采样前等待 shader/asset compilation、DDC 与 rendering
+   command quiescence；smoke harness 在性能门禁前强制执行。
+2. far 构建在 near baseline/presentation 稳定前显式 defer，恢复时发出结构化事件；far 使用一条
+   `TPri_Lowest`、512 KiB 栈的专用线程，并在大批 page 组装中协作式让权。
+3. canonical batch 跨 generation 复用，按 source/required/dirty 集合修剪；page residency 改为
+   每 tick 最多 1024 页的显式事务，CLI 暴露游标、剩余量与最大 tick 耗时。
+4. far scene 的注册粒度从 12000 quad 收紧到 1024 quad；成功 publish 后的大 build result 在 far
+   worker 上释放，避免正常成功路径集中在 GameThread 析构。
+5. 最近一次已完成验证（发生在下述“审查后未验证补丁”之前）：Development build 成功、
+   `Automation RunTests Voxia` 为 `68/68`；1280×720 Real-RHI 全路线和 1600×900 默认 GC 30 分钟
+   soak 均通过，Null-RHI 全路线通过。
+
+| 证据 | 产物 / 关键结果 |
+|---|---|
+| 全量 automation | `.demo/observe/voxia_phase1_final3_automation_2026-07-16T02-32-36/`，68/68 |
+| 1280×720 Real-RHI | `.demo/observe/voxia_phase1_2026-07-15T18-33-26-725Z_real_rhi_1280x720/`，25 routes；GT p95 4.212/4.296ms，`>16.67ms=0/0` |
+| 1600×900 Real-RHI soak | `.demo/observe/voxia_phase1_2026-07-15T18-46-09-481Z_real_rhi_1600x900/`，30 分钟；73 route completion、48 资源样本、无单调增长；第二窗口 GT max 11.843ms；第一窗口有一次 25.575ms 离群帧 |
+| Null-RHI | `.demo/observe/voxia_phase1_2026-07-15T19-30-34-803Z_null_rhi_1280x720/`，pass |
+
+> 上表是本地 `.demo/observe/` 证据路径，不提交到 Git。旧 closeout 中较早的 96 routes / 93
+> samples 数字仍是历史验收记录；继续工作时应先以本检查点列出的最新运行作为性能调查入口，
+> 最终收口后再统一 current-truth 与 closeout 的“最终证据”表。
+
+### 审查后已写入并完成最小验证的补丁
+
+- reusable canonical batch 只有在当前 generation 的 `ResidentPages` lease 同时背书时才可复用；
+  取消/失败 generation 遗留候选页会强制重新经过 provider。新增“provider 完成后取消，下一代
+  重试必须重新 provider resolve 全部未提交页”的回归用例。
+- batch 修剪改用 incremental plan 的 `RequiredPageIds` set，消除逐页 `TArray::Contains` 的 O(N²)。
+- budgeted residency transaction 增加有序 page-id 指纹，拒绝“长度相同但 ID/顺序已变”的续批；
+  新增失败后 lease 回滚测试。
+- far DynamicMesh shard 新增按 quad 边界切分单个 oversized surface 的硬上限实现与 1024+17 quad
+  回归用例，避免“只在 surface 之间切分”导致实际 shard 越过 1024。
+- 上述四项已在本检查点完成 Development 增量编译，并分别通过
+  `Voxia.Gameplay.WorldGenVoxelShellBuilder`、`Voxia.Gameplay.CanonicalVoxelShellSceneBuilder`、
+  `Voxia.Voxel.CanonicalPageProvider` 三项定向 automation，三项均为 `Result={Success}`。
+- 尚未对当前补丁重跑全量 68 项、Real-RHI 或 30 分钟 soak；接手者仍须把当前提交当成 WIP，
+  不能引用前一轮 68/68 证明新补丁已完成最终验收。
+
+### 下一台电脑的收敛顺序
+
+1. 拉取外层仓库与 `clients/Voxia` 独立仓库，确认两个 `master...origin/master` 均为 `0 0`，并先读
+   本节与 `AGENTS.md`。
+2. 可先用 no-op build 和三项定向测试复核跨机环境；本机检查点已通过 Development build 及
+   `Voxia.Gameplay.WorldGenVoxelShellBuilder`、`Voxia.Gameplay.CanonicalVoxelShellSceneBuilder`、
+   `Voxia.Voxel.CanonicalPageProvider`。如跨机失败，按根因修复，不回退 residency-backed contract。
+3. 完成审查尚未实现的最后一项：stale plan、residency cancel/fail、build cancel/fail、publish fail 与
+   EndPlay 的大纯数据都走 far worker 后台释放；成功/失败分支均须保留已提交 reusable batch/cache。
+4. 清理本轮新增的英文参数注解，并把 `VoxiaUnifiedVoxelWorldActor.cpp` 中“后台四线程”旧注释改为
+   “单条最低优先级专用线程”。
+5. 重跑 Development build、全量 `Voxia` automation、连续两次 Real-RHI performance-only、
+   1280×720 全路线、1600×900 默认 GC 30 分钟 soak 和 Null-RHI；将新证据统一回写 closeout、
+   current-truth、plan 与本 handoff。
+6. 只有全部新验证通过后，才勾选计划 Task 7 Step 3–5，并可见启动正式组合根交给用户手动确认。
+
 ## 当前状态
 
 - **阶段 1“世界渲染与场景生命周期”已实施并通过自动化、CLI/日志和 Real-RHI 门禁。**
-- 独立 Voxia 仓库：`clients/Voxia master@6de74ec`，合并提交为
-  `merge: complete phase one world lifecycle`；本地相对 `origin/master` 为 ahead 10，未推送。
+- 独立 Voxia 仓库：上一轮完整阶段 1 基线为 `6de74ec`；本次跨机器 WIP checkpoint 为
+  `5e9f6b1 checkpoint(voxia): preserve phase one hardening progress`。
 - 最终实现提交：`271e612 feat(voxia): complete phase one world lifecycle`。
 - 外层仓库只收口 PRD/current-truth/known-gaps/closeout/plan/handoff 文档；不修改 `apps/**`、wire、
   Web 或 Bevy。
