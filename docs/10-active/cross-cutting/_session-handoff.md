@@ -1,8 +1,112 @@
-# 当前会话接力：Voxia 阶段 1 已完成，审查硬化待续
+# 当前会话接力：Voxia 硬化实现已完成，性能门禁未闭合
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
 > 阶段 1 规格与结果已归档：[`PRD`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) ·
 > [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。
+
+## 2026-07-17 最终审查与复验
+
+### 当前代码点
+
+- 独立 Voxia worktree/branch：`.worktrees/voxia-phase1-hardening-closeout` /
+  `codex/voxia-phase1-hardening-closeout`，基于 `5e9f6b1`。
+- 候选由两个提交组成：
+  `500248e fix(streaming): harden far pure-data ownership` 与
+  `97d5002 fix(streaming): close far release ownership gaps`。
+- 最终只读审查已经三轮收口；Critical / Important / Minor 均为 0。主仓与
+  `clients/Voxia` master 均未合并或推送，worktree 当前干净。
+
+### 实现边界
+
+- reusable canonical batch 在 stale plan、residency cancel/fail、build cancel/fail/stale 路径均
+  归还 actor owner；不同 owner 冲突显式拒绝，不允许旧 generation 覆盖新 owner。
+- launch/build result、retired coverage、失败/替换的 artifact cache 和 EndPlay 遗留纯数据统一进入
+  单条 `TPri_Lowest` far worker。EndPlay 等待在途工作、drain release queue 后才销毁 UE 线程池。
+- observe 新增 `voxel_pure3d_far_release_drained` / `voxel_pure3d_far_release_drain_failed` 与
+  `world_snapshot_id`。runner 只接受本次 quit 后、输入序号更新、同一 snapshot、stdout/stderr
+  close、进程退出码 0 的成功终态，并显式拒绝失败终态。
+- release automation 用阻塞动作占住唯一 worker，将两项析构排在其后；`DrainStarted/DrainReturned`
+  证明 drain 真正进入且不能在 worker 放行前伪完成。
+
+### 最终证据矩阵
+
+| 门禁 | 结果 | 产物 |
+|---|---|---|
+| Development build | pass，UE 5.8 UBT exit 0 | worktree `97d5002` 对应二进制 |
+| `Automation RunTests Voxia` | `69/69` pass，0 failed | `.demo/observe/voxia_phase1_review_fixes_20260718_0052/automation_all_voxia_final.log` |
+| Null-RHI 全路线 | 25/25 pass，clean exit，release=`11/11/0` | `.demo/observe/voxia_phase1_2026-07-17T17-58-12-947Z_null_rhi_1280x720/` |
+| 1600×900 Real-RHI soak | 30 分钟，120 routes、95 资源样本，`growing_keys=[]`；queued/completed=`14→390`、pending=`0`；最终 `391/391/0` | `.demo/observe/voxia_phase1_2026-07-17T17-20-55-320Z_real_rhi_1600x900/` |
+| 1280×720 performance-only | 一红一绿；失败轮回程 GT max=`424.536ms`、`>16.67ms=3`；通过轮 GT `>16.67ms=0/0` | `.demo/observe/voxia_phase1_2026-07-17T17-17-41-539Z_real_rhi_1280x720/`、`.demo/observe/voxia_phase1_2026-07-17T17-19-10-704Z_real_rhi_1280x720/` |
+| 1280×720 Real-RHI 全路线 | 24 条功能路线后首个性能窗出现一个 `16.98ms` GT 帧，严格失败 | `.demo/observe/voxia_phase1_2026-07-17T17-10-09-719Z_real_rhi_1280x720/` |
+
+长稳态中 95 个 release 样本的 `pending` 最大值为 0；未命中 owner conflict、GameThread fallback、
+drain failure 或 `LogVoxia: Error`。两段 soak GT p95=`1.490/1.503ms`、max=`5.119/6.012ms`、
+`>16.67ms=0/0`。
+
+### 仍未关闭的门禁
+
+- 当前不能勾选 Task 7 Step 3–5，也不启动可见人工验收。最新两轮 strict performance-only
+  没有连续通过；完整 Real-RHI 复验也有一个轻微越线窗。
+- 失败 performance-only 仍复现 RHI 初始化约 58–60 秒后的周期性长帧。先前定向 hitch 树将
+  `423.086ms` 归因于 D3D12 `STAT_D3DUpdateVideoMemoryStats` 内 DXGI
+  `QueryVideoMemoryInfo`；本轮一红一绿说明同一 raw 400ms 尖峰会在不同运行中落到 GT 或
+  render/RHI。runner 不做豁免。
+- 下一步应在没有该外部 D3D12 stall 的环境直接跑连续两次 performance-only；两次都通过后，
+  再 fresh build、focused/full automation、short Null/Real 路线并勾选 Task 7 Step 3–5，最后启动
+  可见 `production_all_features` 交给用户手动确认。
+
+## 2026-07-17 本机硬化候选初轮复验（由上节最终复验取代）
+
+### 本次实施结果
+
+- 独立 Voxia worktree/branch：`.worktrees/voxia-phase1-hardening-closeout` /
+  `codex/voxia-phase1-hardening-closeout`。候选提交：
+  `500248e fix(streaming): harden far pure-data ownership`，基于 WIP checkpoint `5e9f6b1`。
+- reusable canonical batch 在 stale plan、residency cancel/fail、build cancel/fail/stale 路径均归还
+  actor owner；owner 已持有不同 batch 时拒绝覆盖，并发出
+  `voxel_pure3d_reusable_batch_restore_rejected`。
+- launch plan、build result、publish success/fail 与 EndPlay 遗留的
+  residency/artifact/cache/coverage/provider/snapshot 大纯数据统一在单条
+  `TPri_Lowest` far worker 释放。UE 5.8 `FQueuedThreadPool::Destroy()` 会 abandon 队列中
+  未开始任务，因此 EndPlay 先条件式 drain，再销毁 worker。
+- `pure3d_world_state.far_release` 与 observe 暴露 `queued/completed/pending`；smoke/soak 断言
+  `completed <= queued`、`pending = queued - completed` 与 `pending <= 1`。英文参数注解与
+  “后台四线程”旧注释已清理。
+
+### 新鲜验证证据
+
+| 门禁 | 结果 | 产物 |
+|---|---|---|
+| Development build | pass，exit 0 | UE 5.8 UBT，本机 AutoSDK MSVC 14.44 |
+| `Automation RunTests Voxia` | `69/69` pass | `.demo/observe/voxia_phase1_hardening_closeout_20260717_2324/automation_all_voxia.log` |
+| Null-RHI 全路线 | 25/25 pass | `.demo/observe/voxia_phase1_2026-07-17T15-49-41-681Z_null_rhi_1280x720/` |
+| 1280×720 Real-RHI 全路线 | 25/25 pass；GT p95=`1.505/1.506ms`；max=`9.408/4.879ms`；`>16.67ms=0/0`；release=`6/6/0` | `.demo/observe/voxia_phase1_2026-07-17T15-52-34-671Z_real_rhi_1280x720/` |
+| 1600×900 Real-RHI soak | 30 分钟；104 route completion；101 资源样本；无单调增长；release `8→208/8→208/0` | `.demo/observe/voxia_phase1_2026-07-17T15-59-31-501Z_real_rhi_1600x900/` |
+
+上述全路线、soak 和 Null-RHI 均未命中 owner 冲突、GameThread 释放回退、release drain
+失败或 `LogVoxia: Error`。
+
+### 唯一剩余门禁与根因证据
+
+- 两次独立 `--real-rhi --performance-only --res 1280x720` 都在 RHI 初始化约
+  58–60 秒后出现 `422–425ms` GameThread/RHI 长帧，因此不符合“连续两次
+  performance-only pass”。复现产物：
+  `.demo/observe/voxia_phase1_2026-07-17T15-24-51-877Z_real_rhi_1280x720/` 与
+  `.demo/observe/voxia_phase1_2026-07-17T15-29-47-230Z_real_rhi_1280x720/`。
+- 定向 hitch 产物
+  `.demo/observe/voxia_phase1_2026-07-17T15-36-15-707Z_real_rhi_1280x720/engine.log`
+  在 Frame 6386 报告 RHIThread=`427.198ms`、
+  `STAT_D3DUpdateVideoMemoryStats=423.086ms`，内部两次 DXGI `QueryVideoMemoryInfo`；同帧
+  Voxia world tick 约 `1.4ms`，far build 尚未恢复，release=`4/4/0`。
+- UE 5.8 本地引擎源码确认 D3D12 Development 在每个 `RHIEndFrame` 同步收集显存统计，
+  没有可禁用或降频的 CVar。本机环境为 RTX 4080 SUPER / NVIDIA 591.86，并存
+  向日葵虚拟显示/远控栈。不允许为了门禁自行停用用户远控服务，也不允许
+  在 runner 中过滤该帧。
+
+因此计划 Task 7 Step 3–5 保持未勾选，不把候选提交写成新的最终验收点，不启动
+可见窗口。下次应在无该 DXGI 阻塞的 D3D12 环境直接重跑连续两次
+performance-only；通过后再做最终 fresh build/focused suite/short route，勾选 Task 7 Step 3–5，
+并启动可见 `production_all_features` 交给用户手动确认。
 
 ## 2026-07-17 跨机器检查点
 

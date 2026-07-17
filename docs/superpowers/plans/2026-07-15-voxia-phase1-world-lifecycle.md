@@ -402,6 +402,8 @@ Write commit IDs, build/automation counts, CLI route results, Real-RHI resolutio
 
 Change PRD from `approved` to `complete` only after every Task 6 gate passes. Current-truth must describe user-visible capability first, then implementation evidence. Move the closed phase log to archive while keeping current-truth links.
 
+> **2026-07-17 hardening revalidation:** `clients/Voxia@500248e + 97d5002` completed reusable-batch restoration, coverage/artifact release ownership, EndPlay drain terminal events, and quit-bound clean-close acceptance. Development build, `Voxia` 69/69, Null-RHI 25 routes, and a 1600×900/30-minute soak pass; the soak completed 120 routes and 95 resource samples with no monotonic growth and `far_release=391/391/0`. Task 7 Step 3–5 remain unchecked: the latest two isolated D3D12 performance-only runs are one fail and one pass, with the failed return window reporting GameThread max=424.536ms; a full Real-RHI revalidation also fails one window at 16.98ms. Earlier UE hitch stats attribute the periodic 423.086ms stall to `STAT_D3DUpdateVideoMemoryStats`/DXGI `QueryVideoMemoryInfo`, while the Voxia world tick is about 1.4ms, but the strict runner has no exemption. Repeat two consecutive performance-only runs on a D3D12 environment without the stall before checking the steps below.
+
 - [ ] **Step 3: Verify both repositories and commit outer docs**
 
 ```powershell

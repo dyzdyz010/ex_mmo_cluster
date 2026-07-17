@@ -70,4 +70,12 @@
 ## 注意
 
 阶段 1 最终工作树已经重新运行 Development build、`Voxia` 68/68 automation、Null-RHI 全路线、1280×720 Real-RHI 全路线与 1600×900/30 分钟 Real-RHI 长稳态。证据见 `docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md`；near-only/far-only 仍只能作为 probe。
+
+2026-07-17 的完成后审查硬化候选 `clients/Voxia@500248e + 97d5002` 已通过 Development build、
+`Voxia` 69/69、Null-RHI 25 routes 和 1600×900/30 分钟 soak；95 个 soak 样本无单调增长，
+release 最终=`391/391/0`，quit 后成功终态与 clean close 已进入 runner 硬门禁。该候选尚未
+取代上述最终验收点：最新两次独立 D3D12 performance-only 为一红一绿，失败轮回程
+GameThread max=`424.536ms`；另一次完整 Real-RHI 路线在首个性能窗出现 `16.98ms` GT 帧。
+正式 runner 保持严格报错，没有 ignore/exemption。
+
 完整 3D 的“离线 Mock 客户端阶段 1”与“在线 production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen 成果冒充。

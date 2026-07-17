@@ -94,3 +94,45 @@ GameThread 性能证据：
 自动化与文档收口完成后，以可见 `UnrealEditor.exe -game` 启动同一 `Lvl_NearWindow` +
 `VoxiaClientGameMode` + `-VoxiaWorldGenPreview` 正式组合根，保持程序运行，等待用户手动确认画面与
 交互效果。
+
+## 2026-07-17 完成后审查硬化附记
+
+> 本节不改写 2026-07-16 阶段 1 已完成的历史结论；它记录后续硬化候选
+> `clients/Voxia@500248e` 的实施、新鲜复验与尚未解决的外部环境门禁。
+
+本轮将 reusable canonical batch 的唯一 owner 义务补齐到 plan/residency/build 的
+stale/cancel/fail 分支，并将 publish 成功/失败与 EndPlay 遗留的大纯数据统一移交到
+单条 `TPri_Lowest` far worker。由于 UE 5.8 线程池 `Destroy()` 会 abandon 未开始任务，
+EndPlay 显式 drain 后才销毁线程池。观测面新增 `far_release.queued/completed/pending`，
+owner 冲突与无 worker 回退均显式记录错误。
+
+| 硬化复验 | 结果 | 产物 |
+|---|---|---|
+| Development build | pass，exit 0 | UE 5.8 UBT |
+| 全量 automation | `69/69` pass | `.demo/observe/voxia_phase1_hardening_closeout_20260717_2324/automation_all_voxia.log` |
+| Null-RHI 全路线 | 25/25 pass | `.demo/observe/voxia_phase1_2026-07-17T15-49-41-681Z_null_rhi_1280x720/` |
+| 1280×720 Real-RHI 全路线 | 25/25 pass；GT p95=`1.505/1.506ms`；`>16.67ms=0/0`；release=`6/6/0` | `.demo/observe/voxia_phase1_2026-07-17T15-52-34-671Z_real_rhi_1280x720/` |
+| 1600×900 Real-RHI soak | 30 分钟；104 route completion；101 样本；无单调增长；release 最终=`208/208/0` | `.demo/observe/voxia_phase1_2026-07-17T15-59-31-501Z_real_rhi_1600x900/` |
+
+两次独立 1280×720 D3D12 performance-only 均在 RHI 初始化约 58–60 秒后捕获同一
+`423–425ms` 尖峰，因此不能写为连续两次通过。定向 `stat dumphitches` 显示 RHI
+关键路径为 `RHITaskPipe -> STAT_D3DUpdateVideoMemoryStats -> QueryVideoMemoryInfo`，其中
+显存统计更新占 `423.086ms`；同帧 Voxia world tick 约 `1.4ms`。该归因只说明本轮
+客户端流送实现不是尖峰的执行者，不等于门禁通过。正式 runner 保持原始严格
+断言，没有新增 ignore/exemption；当前不执行 Task 7 Step 3–5，不启动可见人工
+确认窗口。
+
+## 2026-07-17 最终审查补充
+
+> 本节继续保留阶段 1 历史完成结论，只更新完成后 hardening 候选的最终审查与复验状态。
+
+候选追加 `97d5002` 后，coverage retirement、失败/替换 artifact cache、EndPlay drain 终态和
+runner clean-close 关联也纳入唯一 far worker 所有权。最终审查 Critical / Important / Minor
+均为 0；Development build、Voxia `69/69`、Null-RHI 25 routes 和 1600×900/30 分钟 soak 通过。
+soak 完成 120 条路线、95 个资源样本，`growing_keys=[]`，release 样本 queued/completed 从
+`14/14` 到 `390/390`、pending 全程为 0，quit 后最终=`391/391/0` 且 clean exit。
+
+当前候选仍不能成为新的最终验收点：最新两次 1280×720 performance-only 一红一绿，失败轮
+回程 GameThread max=`424.536ms`；另一次完整 Real-RHI 复验在首个性能窗捕获一个
+`16.98ms` GT 帧。正式 runner 保持严格断言，不新增 ignore/exemption；Task 7 Step 3–5 和
+可见人工确认继续保持未执行。
