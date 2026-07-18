@@ -385,3 +385,14 @@ Transport/WorldActor/Pawn 的核心生命周期。
   `.demo/observe/voxia_phase1_2026-07-18T16-02-35-576Z_null_rhi_1280x720/`。
 - R2 客户端提交为 `c98f67d`（`refactor(governance): route CLI through domain handlers`）；
   提交前最终全量证据 `.demo/observe/voxia_governance_r2_final_20260718/` 仍为 74/74。
+- R3 已建立 `Core/FVoxiaJson`，并完成 Debug、root presenter 与 Interest 的第一批逐域迁移；
+  既有转义、schema、字段和 CLI 顶层语义由 R0～R2 合同测试继续锁定。
+- `FVoxiaClientRuntimeConfig` 现在冻结进程命令行，13 个现役源文件不再直接读取全局
+  `FCommandLine`；GameMode 在启动 gate 前输出无凭据 `client_runtime_config_frozen` observe。
+  自动化追加命令行夹具只能通过 `WITH_DEV_AUTOMATION_TESTS` 显式刷新边界生效。
+- R3 Development 编译成功，全量 Automation 为 `76/76 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r3_full_retry_20260718/`；Null-RHI 25 路通过，证据在
+  `.demo/observe/voxia_phase1_2026-07-18T16-22-17-750Z_null_rhi_1280x720/`，独立 CLI smoke clean exit。
+- unity 冲突库存仍有 33 个局部 JSON helper 声明/定义和 7 个 `WriteU8` 定义；R3 不翻转
+  `bUseUnity=false`，后续只能在逐域 schema 门禁与同名家族清零后单独决策。
+- R3 客户端提交为 `c89eadd`（`refactor(governance): freeze runtime config and unify JSON`）。
