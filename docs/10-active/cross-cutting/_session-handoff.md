@@ -8,11 +8,14 @@
 
 ### 远端与审查状态
 
-- 外层 `master` 已推送到 `origin/master@6a9b5b50`。
+- 外层 `master` 已推送；审查前状态基线为 `origin/master@9134368c`，本轮审查设计与状态更新
+  位于本节所在提交。
 - Voxia 候选分支已推送到
   `origin/codex/voxia-phase1-hardening-closeout@a37dfeb`，尚未合并客户端 `master`。
-- 当前进入大型工业生产标准代码审查；审查结论、修复计划、验证证据和剩余风险继续追加到本节，
-  不使用历史阶段 1 通过记录替代审查后 fresh 验证。
+- 第一轮只读审查已经完成，结论与分阶段治理边界见
+  [`Voxia 工业级代码审查与无行为变化治理设计`](2026-07-18-voxia-industrial-code-review-and-remediation-design.md)。
+  已确认的高优先级问题是 production near/legacy far 共享 Actor、Transport 跨领域汇合和 CLI
+  路由缺少稳定目录合同；设计批准前不改代码。后续不使用历史阶段 1 通过记录替代修复后的 fresh 验证。
 
 ### 当前代码点
 
