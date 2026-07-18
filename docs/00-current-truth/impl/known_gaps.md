@@ -23,6 +23,11 @@
 > snapshot、完整 XYZ、near/Pure3D far、safe-view、加载/恢复/菜单、材质族、full oracle、完整
 > 三轴路线和 Real-RHI 长稳态已经通过。不得把下列 Online/内容/发布缺口倒写成阶段 1 未完成。
 
+2026-07-18 已关闭“刚进入相邻 tile 就全屏重建世界”的功能缺口：相邻 tile 只启动后台 staging，
+旧 committed coverage 继续可玩；全屏恢复只在旧 XYZ cube 外 L∞ depth `>=3` 且 staging pending 时出现。
+本机严格 Real-RHI 发布性能门禁仍未闭合，最新第二 streaming 窗有 2 个 `>16.67ms` GT 帧；该风险只属于
+性能门禁，不得倒写为功能仍会在 tile 边界误触发全屏恢复。
+
 1. **阶段 2 体素交互**：挖掘/放置 intent、pending UI、confirmed overlay、会话 HUD 与错误恢复尚未
    实施；阶段 1 仍应隐藏编辑入口并返回 `feature_not_available_phase2`。
 2. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
@@ -71,6 +76,9 @@ L4/raymarch A/B 重新列为 B 的任务。
 
 ## 验证与文档治理
 
+- 2026-07-18 权威窗口交接改动已 fresh 通过 Development build、`Voxia` `70/70` automation 与
+  Null-RHI 25 路线；Real-RHI 25 条功能路线完成并证明相邻换窗 staging=true/recovery=false，但严格
+  性能门禁因第二窗 2 个超预算 GT 帧保持未关闭。证据见 current-truth 的 streaming/LOD 文档。
 - Voxia 阶段 1 已在最终代码状态重跑 Development build、`Voxia` 68/68 automation、Null-RHI
   全路线、1280×720 Real-RHI 全路线与 1600×900/30 分钟 Real-RHI 长稳态；后续任何代码变化
   都必须按影响范围重新建立证据，不能沿用本次产物。

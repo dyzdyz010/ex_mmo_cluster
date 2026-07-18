@@ -1,8 +1,50 @@
-# 当前会话接力：Voxia 硬化实现已完成，性能门禁未闭合
+# 当前会话接力：Voxia 权威窗口非阻塞交接已实现，性能门禁未闭合
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
 > 阶段 1 规格与结果已归档：[`PRD`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) ·
 > [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。
+
+## 2026-07-18 权威窗口后台流送与 3-chunk 超期恢复
+
+### 当前代码点
+
+- 独立 Voxia worktree/branch：`.worktrees/voxia-phase1-hardening-closeout` /
+  `codex/voxia-phase1-hardening-closeout`。
+- 本轮客户端提交：
+  `454267b feat(streaming): define committed authority coverage bounds`、
+  `b9f329b feat(streaming): commit authority coverage with presentation proof`、
+  `68e4689 fix(streaming): gate safe-view recovery by coverage depth`、
+  `881980c fix(streaming): separate playable flow from coverage recovery`、
+  `ee99655 fix(streaming): keep root playable across authority handoff`、
+  `f2898c9 test(streaming): cover nonblocking authority handoff`、
+  `a37dfeb docs(streaming): document authority coverage handoff`。
+- 外层设计/计划基线：`0dc86335` 与 `10b69b8a`；本节及 current-truth 记录实际结果。
+
+### 已实现行为
+
+- 首次 presentation proof 后 session readiness 单调；near/far 正常 desired/live 分离不再让唯一根回退
+  InitialLoading。
+- 玩家进入新 tile 时立即跟踪 staging target，旧 committed `3×3×3` XYZ coverage 与输入继续有效；
+  普通 `streaming` overlay 隐藏。
+- presentation proof 原子提交 committed bounds；safe-view 以 canonical player chunk 对旧 bounds 计算
+  XYZ/L∞ depth。depth `1..2` 为非阻塞 hold，depth `>=3` 且 pending 才全屏恢复。
+- 确定性 snapshot/revision/H/source/provider/ownership/fence/proof 错误仍立即 hard fail；没有本地 fallback。
+- root/flow JSON 与 observe 暴露 committed/staging、bounds、玩家 chunk、分轴深度、L∞ 深度、固定阈值
+  与 `voxel_authority_stream_*` / `voxel_authority_safe_view_held` 事件。
+
+### 新鲜验证证据
+
+| 门禁 | 结果 | 产物 |
+|---|---|---|
+| Development build | pass，UBT exit 0 | 2026-07-18 fresh build |
+| 全量 automation | `70/70` Success，0 non-success / Voxia automation error / warning | `.demo/observe/voxia_authority_streaming_final_20260718_122257/` |
+| Null-RHI 全路线 | 25 routes pass；相邻 `+X` staging=true/recovery=false；clean exit；release=`11/11/0` | `.demo/observe/voxia_phase1_2026-07-18T04-24-07-621Z_null_rhi_1280x720/` |
+| 1280×720 Real-RHI | 25 条功能路线完成；相邻 `+X` staging=true/recovery=false；0 `LogVoxia: Error` | `.demo/observe/voxia_phase1_2026-07-18T04-26-34-025Z_real_rhi_1280x720/` |
+| Real-RHI 严格性能 | 未闭合：第二窗 GT p95=`1.480ms`、max=`52.351ms`、`>16.67ms=2` | 同上 |
+
+Real-RHI runner 的最终 `passed=false` 仅来自既有严格帧预算断言；功能路线、相邻换窗观察与性能窗口
+均保留在同一 index 中，必须继续分层解读。下一步发布硬化仍是在没有外部 D3D12/DXGI stall 的环境
+复跑连续性能门禁；不得过滤尖峰或回退本次权威窗口语义。
 
 ## 2026-07-17 最终审查与复验
 

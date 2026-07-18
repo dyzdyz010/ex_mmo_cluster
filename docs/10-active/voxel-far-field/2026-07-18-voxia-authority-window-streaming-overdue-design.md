@@ -1,11 +1,11 @@
 ---
-status: approved-design-pending-implementation
+status: implemented
 ---
 
 # Voxia 权威窗口后台流送与 3-chunk 超期恢复设计
 
 - **日期**：2026-07-18
-- **状态**：用户已批准设计，待实现
+- **状态**：已实现并完成自动化、Null-RHI 与 Real-RHI 功能验证；既有严格 Real-RHI 性能门禁仍未闭合
 - **归属**：Voxia 阶段 1 后续硬化 / A10 完整 XYZ 滑动世界
 - **影响范围**：Voxia 唯一 `production_all_features` 根、客户端 flow、safe-view、near/far handoff、CLI / observe、自动化与 Real-RHI 验收
 - **不改变**：服务端 authority、confirmed truth 来源、baseline H gate、wire opcode、Web / Bevy 归档策略
@@ -270,3 +270,32 @@ flowchart LR
 4. full-screen 恢复只在 `outside_depth_chunks >= 3` 且 staging 未提交时出现；确定性错误保持立即硬失败。
 5. 真实用户操作、自动化、CLI / 日志三个入口均验证同一行为。
 6. 唯一生产组合根及 confirmed truth、H gate、协议和归档客户端边界未被破坏。
+
+## 12. 2026-07-18 实施结果
+
+本设计已经落入 Voxia 唯一 `production_all_features` 根。实现要点：
+
+- presentation proof 原子携带 committed 完整 XYZ chunk bounds；stale / failed staging 不得改写旧 bounds；
+- 首次 proof 后 `session_ready` 保持单调，near/far 正常追赶只投影为 `streaming`；
+- safe-view 直接使用玩家 canonical chunk 与 committed bounds 计算 XYZ/L∞ 外部深度；depth `1..2`
+  为非阻塞 `safe_view_hold`，depth `>=3` 且 staging pending 才进入全屏恢复；
+- UI 在普通 `streaming` 时隐藏，在超期时显示“权威覆盖流送超时，正在补齐…”；确定性错误仍立即
+  进入 `failed`；
+- `voxel_world_root_state` / `client_flow_probe` 输出 committed/staging、bounds、玩家 chunk、分轴深度、
+  L∞ 深度和固定阈值，并发出 `voxel_authority_stream_*` / `voxel_authority_safe_view_held` 事件；
+- lifecycle runner 将首个相邻 `+X` 换窗作为非阻塞回归，要求观察到后台 staging、session 保持 ready、
+  overlay 不阻塞且从未进入 recovery。
+
+新鲜证据：
+
+| 门禁 | 结果 | 产物 |
+|---|---|---|
+| Development build | pass，UBT exit 0 | 2026-07-18 fresh build |
+| `Automation RunTests Voxia` | `70/70` Success，0 non-success / Voxia automation error / warning | `.demo/observe/voxia_authority_streaming_final_20260718_122257/` |
+| Null-RHI 全路线 | 25 routes pass；相邻 `+X` staging=true、recovery=false；clean exit；release=`11/11/0` | `.demo/observe/voxia_phase1_2026-07-18T04-24-07-621Z_null_rhi_1280x720/` |
+| 1280×720 Real-RHI 全路线 | 25 条功能路线完成；相邻 `+X` staging=true、recovery=false；0 `LogVoxia: Error` | `.demo/observe/voxia_phase1_2026-07-18T04-26-34-025Z_real_rhi_1280x720/` |
+| Real-RHI 严格性能 | 未闭合：第二 streaming 窗 GT p95=`1.480ms`、max=`52.351ms`、`>16.67ms=2` | 同上 |
+
+Real-RHI 的功能语义与严格性能门禁分开判定：本设计修复的“进入新 tile 误触发全屏恢复”已经由
+自动化、Null-RHI 和 Real-RHI 功能路线共同证明；既有 D3D12 环境长帧风险没有被过滤、豁免或写成
+通过，仍留在发布性能门禁中。
