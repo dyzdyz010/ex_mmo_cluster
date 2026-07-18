@@ -406,3 +406,18 @@ Transport/WorldActor/Pawn 的核心生命周期。
   exit，far release=`11/11/0`。production 与显式 legacy probe CLI 均完成结构化实跑，后者保持
   `near_mesh.present=true` 与原 readiness schema。
 - R4 客户端提交为 `95ed783`（`refactor(governance): separate production near from legacy actor`）。
+
+### 2026-07-19
+
+- R5 已把 Transport 的五类跨域可变状态按批准顺序迁入 `FVoxiaBaselineRepository`、
+  `FVoxiaNearWindowCoordinator`、`FVoxiaConfirmedWorldStores`、`FVoxiaInterestActionGateway` 与
+  `FVoxiaLegacyFarBuildRuntime`；Transport 继续独占 GameInstance 生命周期、TCP pump、HTTP 回调和原
+  public façade。
+- 五个组件分别维护 reset、identity/generation、revision/cadence 与纯 snapshot；near coordinator 在
+  reset 后仍保留在途物理 worker 身份并隔离迟到结果，confirmed stores 继续按单事务发布 session reset
+  revision，legacy far runtime 仍只服务显式 probe/compatibility。
+- 新增 `Voxia.Net.TransportFacadeOwnership` 门禁，禁止 baseline、near、confirmed、gateway 和旧 far
+  owner 字段重新散回 Transport 头文件；wire、CLI schema、observe 字段、错误文本与唯一生产根未改。
+- R5 Development build 成功，全量 Automation `83/83 Success`；唯一根 Null-RHI 25 路通过并 clean
+  exit，far release=`11/11/0`；production 与显式 legacy probe CLI 均通过。
+- R5 客户端提交为 `5f9e741`（`refactor(governance): componentize transport facade`）。

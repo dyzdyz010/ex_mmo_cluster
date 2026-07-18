@@ -1,4 +1,28 @@
-# 当前会话接力：Voxia 权威窗口非阻塞交接已实现，性能门禁未闭合
+# 当前会话接力：Voxia R5 已完成，下一阶段 R6
+
+## 2026-07-19 R5 Transport façade 组件化完成
+
+- 当前继续在 client 与 outer 的 `codex/voxia-r0-r6-governance` 分支推进；R5 client 提交为
+  `5f9e741 refactor(governance): componentize transport facade`。
+- Transport 仍独占 GameInstance 生命周期、TCP pump、HTTP callback 与原公共 API；baseline、near-window、
+  confirmed stores、Interest/action、legacy far build 的可变状态已迁入五个独立 owner。
+- 每个 owner 都有稳定 contract label、reset/reducer 与纯 snapshot；near coordinator 还自行维护 timeout、
+  worker ownership、迟到结果隔离和 lease 计数。
+- `Voxia.Net.TransportFacadeOwnership` 防止 owner 字段重新散回 Transport；wire codec、CLI token/envelope/schema、
+  observe 字段、GameMode、统一生产根和 production actor 均未改。
+- Development build 成功；全量 Automation `83/83 Success`；唯一生产根 Null-RHI 25 路通过、clean exit、
+  far release=`11/11/0`；production CLI 的 root/session ready 与 single root 成立；legacy probe CLI 的 near
+  present/rendered 成立。
+- 最终证据：
+  - `.demo/observe/voxia_governance_r5_timeout_owner_full_final_20260719/`
+  - `.demo/observe/voxia_phase1_2026-07-18T17-43-53-305Z_null_rhi_1280x720/`
+  - `.demo/observe/voxia_governance_r5_timeout_owner_production_cli_20260719.log`
+  - `.demo/observe/voxia_governance_r5_timeout_owner_legacy_probe_cli_20260719.log`
+
+下一步直接进入 R6：按批准设计拆分 subscription/session、build/focus/remote interaction 与
+demo/stress/edit-shot controller，Pawn 只保留输入、移动表现和 controller 编排；继续保持 lease 独立活性、wire
+不变、行为与可见效果不变、唯一生产根不变，并按阶段测试后分别提交 client 与 outer。
+
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
 > 阶段 1 规格与结果已归档：[`PRD`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) ·
