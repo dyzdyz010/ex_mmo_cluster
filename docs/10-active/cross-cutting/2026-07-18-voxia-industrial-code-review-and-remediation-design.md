@@ -378,3 +378,10 @@ Transport/WorldActor/Pawn 的核心生命周期。
   `.demo/observe/voxia_governance_r1_automation_20260718/`；Null-RHI 生命周期 25 条路线通过，
   证据在 `.demo/observe/voxia_phase1_2026-07-18T15-43-14-725Z_null_rhi_1280x720/`。
 - R1 客户端提交为 `1875183`（`refactor(governance): project root state from one snapshot`）。
+- R2 已让 live stdio CLI 只认 R0 catalog/router，并把 96 个 production 业务块拆入五个显式
+  context handler；重复 help、legacy list 与 unknown JSON 拼接已删除，入口不再含业务 token 比较。
+- R2 Development 编译成功，全量 Automation 为 `74/74 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r2_automation_20260718/`；Null-RHI 25 路通过，证据在
+  `.demo/observe/voxia_phase1_2026-07-18T16-02-35-576Z_null_rhi_1280x720/`。
+- R2 客户端提交为 `c98f67d`（`refactor(governance): route CLI through domain handlers`）；
+  提交前最终全量证据 `.demo/observe/voxia_governance_r2_final_20260718/` 仍为 74/74。
