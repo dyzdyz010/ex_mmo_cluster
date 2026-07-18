@@ -1,11 +1,11 @@
 ---
-status: implemented
+status: implemented-published-review-in-progress
 ---
 
 # Voxia 权威窗口后台流送与 3-chunk 超期恢复设计
 
 - **日期**：2026-07-18
-- **状态**：已实现并完成自动化、Null-RHI 与 Real-RHI 功能验证；既有严格 Real-RHI 性能门禁仍未闭合
+- **状态**：已实现、验证并发布候选分支；大型工业生产标准代码审查进行中；既有严格 Real-RHI 性能门禁仍未闭合
 - **归属**：Voxia 阶段 1 后续硬化 / A10 完整 XYZ 滑动世界
 - **影响范围**：Voxia 唯一 `production_all_features` 根、客户端 flow、safe-view、near/far handoff、CLI / observe、自动化与 Real-RHI 验收
 - **不改变**：服务端 authority、confirmed truth 来源、baseline H gate、wire opcode、Web / Bevy 归档策略
@@ -299,3 +299,13 @@ flowchart LR
 Real-RHI 的功能语义与严格性能门禁分开判定：本设计修复的“进入新 tile 误触发全屏恢复”已经由
 自动化、Null-RHI 和 Real-RHI 功能路线共同证明；既有 D3D12 环境长帧风险没有被过滤、豁免或写成
 通过，仍留在发布性能门禁中。
+
+## 13. 远端发布与生产级审查状态
+
+- 外层仓库 `master` 已推送至 `origin/master@6a9b5b50`。
+- Voxia 候选已推送至
+  `origin/codex/voxia-phase1-hardening-closeout@a37dfeb`，未合并至客户端 `master`。
+- 下一门禁是对 Voxia 唯一生产组合根及其直接依赖进行大型工业生产标准审查，重点检查可读性、
+  可维护性、职责边界、文件拆分、生命周期不变量、错误语义、测试与可观测性。
+- 审查期间不得为了整理代码改变 authority、完整 XYZ、单调 readiness、3-chunk 超期恢复、CLI 契约
+  或现有用户可见行为；发现问题后先记录根因、设计修复边界和回归测试，再实施最小风险修复。

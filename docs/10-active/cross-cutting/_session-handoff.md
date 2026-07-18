@@ -6,6 +6,14 @@
 
 ## 2026-07-18 权威窗口后台流送与 3-chunk 超期恢复
 
+### 远端与审查状态
+
+- 外层 `master` 已推送到 `origin/master@6a9b5b50`。
+- Voxia 候选分支已推送到
+  `origin/codex/voxia-phase1-hardening-closeout@a37dfeb`，尚未合并客户端 `master`。
+- 当前进入大型工业生产标准代码审查；审查结论、修复计划、验证证据和剩余风险继续追加到本节，
+  不使用历史阶段 1 通过记录替代审查后 fresh 验证。
+
 ### 当前代码点
 
 - 独立 Voxia worktree/branch：`.worktrees/voxia-phase1-hardening-closeout` /
