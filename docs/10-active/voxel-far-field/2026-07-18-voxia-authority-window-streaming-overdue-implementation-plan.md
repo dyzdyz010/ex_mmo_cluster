@@ -573,7 +573,7 @@ git add docs/00-current-truth docs/10-active
 git commit -m "docs(voxia): record authority streaming handoff results"
 ```
 
-- [ ] **Step 8: 完成前验证工作区与提交账本**
+- [x] **Step 8: 完成前验证工作区与提交账本**
 
 ```powershell
 git status --short --branch
