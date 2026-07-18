@@ -371,3 +371,10 @@ Transport/WorldActor/Pawn 的核心生命周期。
   0 test warning/error，最终证据位于 `.demo/observe/voxia_governance_r0_final_20260718/`。
 - R0 没有修改 `AVoxiaUnifiedVoxelWorldActor` 或 `UVoxiaDebugCliSubsystem` live 调用点；R1/R2
   才允许在同一特征门禁下切换 presenter 与 router。
+- R1 已引入 `FVoxiaUnifiedWorldRuntimeSnapshot` 与纯 presenter；唯一生产根的 probe、full
+  snapshot、root observe 和 authority observe 现在都从一次冻结采样投影，Actor 继续独占
+  spawn、bind、Tick、commit、safe-view 与 flow notification。
+- R1 Development 编译成功，全量 Automation 为 `73/73 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r1_automation_20260718/`；Null-RHI 生命周期 25 条路线通过，
+  证据在 `.demo/observe/voxia_phase1_2026-07-18T15-43-14-725Z_null_rhi_1280x720/`。
+- R1 客户端提交为 `1875183`（`refactor(governance): project root state from one snapshot`）。

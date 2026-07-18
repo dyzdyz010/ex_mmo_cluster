@@ -133,8 +133,10 @@
 
   对照 baseline fixture 检查 CLI token、root schema、authority observe fields 和 owner slot；确认没有 Actor/Subsystem 生产调用点变化。
 
-- [ ] **Step 4: 分仓提交**
+- [x] **Step 4: 分仓提交**
 
   Client commit: `test(governance): freeze Voxia runtime contracts`
 
   Outer docs commit: `docs(voxia): start approved R0 governance`
+
+  Actual: client `38d1545`；outer docs `570d03d3`。
