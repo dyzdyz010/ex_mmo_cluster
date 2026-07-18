@@ -1,7 +1,7 @@
 ---
 title: Voxia 工业级代码审查与无行为变化治理设计
 status: active
-review_state: design-pending-approval
+review_state: approved-implementation-in-progress
 date: 2026-07-18
 owners:
   - Voxia
@@ -358,8 +358,16 @@ Transport/WorldActor/Pawn 的核心生命周期。
 
 ### 2026-07-18
 
+- 用户已批准 R0～R6 总体治理方案；按阶段独立实施、验证和提交，只有突破协议、功能行为、
+  可见效果或唯一生产根边界时才重新申请批准。
 - 已提交并推送 authority streaming 候选实现与总仓状态文档。
 - 已完成生产根及直接依赖的第一轮只读审查和静态指标采集。
 - 已确认高风险集中在 actor 角色推断、Transport 职责汇合、CLI 路由合同和配置/观察重复。
 - 已核对主要 async 路径，暂未发现裸 UObject 跨 worker 生命周期使用的证据。
-- 本设计等待批准；批准前不进行代码结构变更。
+- R0 开工基线：Voxia Development 编译成功，`Automation RunTests Voxia` 为 `70/70 Success`，
+  证据位于 `.demo/observe/voxia_governance_baseline_20260718/`。
+- R0 已建立纯值 root phase contract、CLI command contract、可解析 schema fixture 与唯一
+  near/far owner 反射门禁；Development 编译成功，全量 Automation 为 `72/72 Success`、
+  0 test warning/error，最终证据位于 `.demo/observe/voxia_governance_r0_final_20260718/`。
+- R0 没有修改 `AVoxiaUnifiedVoxelWorldActor` 或 `UVoxiaDebugCliSubsystem` live 调用点；R1/R2
+  才允许在同一特征门禁下切换 presenter 与 router。
