@@ -396,3 +396,13 @@ Transport/WorldActor/Pawn 的核心生命周期。
 - unity 冲突库存仍有 33 个局部 JSON helper 声明/定义和 7 个 `WriteU8` 定义；R3 不翻转
   `bUseUnity=false`，后续只能在逐域 schema 门禁与同名家族清零后单独决策。
 - R3 客户端提交为 `c89eadd`（`refactor(governance): freeze runtime config and unify JSON`）。
+- R4 已用一次性显式角色绑定替换 production near 的 owner cast 推断；统一根与 online
+  compatibility 均在 deferred spawn 中绑定，未绑定、重复绑定与 BeginPlay 后绑定硬失败。
+- dormant SVO/VHI/heightmap renderer 已迁入独立 `AVoxiaLegacyVoxelWorldProbeActor`；该类不继承
+  production actor、不提供 production snapshot bind，唯一根反射结构也没有 legacy owner 槽。
+- `AVoxiaWorldActor` 已收缩为完整 XYZ production near、active batch、chunk transaction、retirement 与
+  renderer-neutral ownership façade；旧 renderer token 静态审计为空，兼容 telemetry schema 保持。
+- R4 Development 编译成功，全量 Automation `77/77 Success`；唯一根 Null-RHI 25 路通过并 clean
+  exit，far release=`11/11/0`。production 与显式 legacy probe CLI 均完成结构化实跑，后者保持
+  `near_mesh.present=true` 与原 readiness schema。
+- R4 客户端提交为 `95ed783`（`refactor(governance): separate production near from legacy actor`）。
