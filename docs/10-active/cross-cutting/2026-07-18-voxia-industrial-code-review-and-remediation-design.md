@@ -421,3 +421,18 @@ Transport/WorldActor/Pawn 的核心生命周期。
 - R5 Development build 成功，全量 Automation `83/83 Success`；唯一根 Null-RHI 25 路通过并 clean
   exit，far release=`11/11/0`；production 与显式 legacy probe CLI 均通过。
 - R5 客户端提交为 `5f9e741`（`refactor(governance): componentize transport facade`）。
+- R6 已将 Pawn 的 session/subscription/prefetch/lease 迁入 `FVoxiaPlayerSessionController`，
+  hotbar/raycast/edit/focus/remote action 迁入 `FVoxiaBuildInteractionController`，demo/stress/edit-shot/
+  截图/FPS 迁入 `FVoxiaPawnDebugScenarioDriver`；Pawn 只保留输入、移动呈现、相机与顺序组合。
+- session `MaintainRuntime` 每个 runtime Tick 独立执行 prefetch 与 lease refresh，不读取输入轴或
+  `bWasMoving`。build controller 的 Interest/Flow 依赖由 Pawn 显式传入；新静态门禁禁止
+  controller 反向调用 `GetGameInstance` / `GetSubsystem`。
+- `Voxia.Gameplay.PawnControllerOwnership` 冻结三个 owner、13 槽快捷栏、reset/snapshot、状态不回流、
+  session→build→debug 顺序与显式依赖。触达代码注释已统一为中文。
+- Gameplay README 已收缩为现役完整 XYZ/唯一根/controller 真值；353 行旧 XZ/VHI/SVO/raymarch
+  与历史性能证据已迁入 `docs/20-archive/client/2026-07-19-voxia-gameplay-legacy-renderer-and-performance-evidence.md`。
+- R6 最终 Development build 成功，全量 Automation `84/84 Success`；唯一生产根 Null-RHI
+  25/25 routes 通过。交互 CLI 实跑 raycast/focus/remote/place/break，显式 legacy probe 仍为
+  `production_root=false`。
+- R6 客户端提交为 `6d6d22f`（`refactor(governance): extract pawn controllers`）与
+  `f1c0b4d`（`refactor(governance): pass pawn controller dependencies`）。R0～R6 批准治理主线已按阶段完成。

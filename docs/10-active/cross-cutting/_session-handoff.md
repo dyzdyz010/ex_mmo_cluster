@@ -1,27 +1,33 @@
-# 当前会话接力：Voxia R5 已完成，下一阶段 R6
+# 当前会话接力：Voxia R0～R6 总体治理已完成
 
-## 2026-07-19 R5 Transport façade 组件化完成
+## 2026-07-19 R6 Pawn controller 与文档收口完成
 
-- 当前继续在 client 与 outer 的 `codex/voxia-r0-r6-governance` 分支推进；R5 client 提交为
-  `5f9e741 refactor(governance): componentize transport facade`。
-- Transport 仍独占 GameInstance 生命周期、TCP pump、HTTP callback 与原公共 API；baseline、near-window、
-  confirmed stores、Interest/action、legacy far build 的可变状态已迁入五个独立 owner。
-- 每个 owner 都有稳定 contract label、reset/reducer 与纯 snapshot；near coordinator 还自行维护 timeout、
-  worker ownership、迟到结果隔离和 lease 计数。
-- `Voxia.Net.TransportFacadeOwnership` 防止 owner 字段重新散回 Transport；wire codec、CLI token/envelope/schema、
-  observe 字段、GameMode、统一生产根和 production actor 均未改。
-- Development build 成功；全量 Automation `83/83 Success`；唯一生产根 Null-RHI 25 路通过、clean exit、
-  far release=`11/11/0`；production CLI 的 root/session ready 与 single root 成立；legacy probe CLI 的 near
-  present/rendered 成立。
+- client 与 outer 继续使用 `codex/voxia-r0-r6-governance` 分支。R6 client 提交为
+  `6d6d22f refactor(governance): extract pawn controllers` 与
+  `f1c0b4d refactor(governance): pass pawn controller dependencies`。
+- `FVoxiaPlayerSessionController` 独占 bootstrap、完整 XYZ subscription、prepare/prefetch、lease 与
+  readiness clock；续租每 Tick 自维护，不依赖移动输入或 `bWasMoving`。
+- `FVoxiaBuildInteractionController` 独占 hotbar、raycast/edit gate、focus/remote action 和 overlay；
+  Interest/Flow 由 Pawn 显式传入，静态门禁禁止 controller 内反向 service locator。
+- `FVoxiaPawnDebugScenarioDriver` 独占 AutoEdit/Demo/Glow/Stress/EditShot/截图/FPS 状态，并复用
+  Pawn 真实点击 façade。`AVoxiaPawn` 只保留输入、移动呈现、相机、视觉调参与顺序组合。
+- wire codec/opcode/body、CLI token/envelope/schema、observe/error 语义、用户键位、可见效果、GameMode 和
+  `production_all_features` 唯一根均未改。
+- Gameplay README 现只保留当前完整 XYZ/唯一根/controller 口径；旧 XZ/VHI/SVO/raymarch 与
+  迁移前性能证据已迁入
+  `docs/20-archive/client/2026-07-19-voxia-gameplay-legacy-renderer-and-performance-evidence.md`。
+- 最终验证：Development build 成功；Automation `84/84 Success`；唯一生产根 Null-RHI
+  25/25 routes；production 交互 CLI 覆盖 land/look/raycast/select/focus/remote/place/break；legacy probe
+  显式报告 `production_root=false`。
 - 最终证据：
-  - `.demo/observe/voxia_governance_r5_timeout_owner_full_final_20260719/`
-  - `.demo/observe/voxia_phase1_2026-07-18T17-43-53-305Z_null_rhi_1280x720/`
-  - `.demo/observe/voxia_governance_r5_timeout_owner_production_cli_20260719.log`
-  - `.demo/observe/voxia_governance_r5_timeout_owner_legacy_probe_cli_20260719.log`
+  - `.demo/observe/voxia_governance_r6_explicit_dependency_green_final_20260719/`
+  - `.demo/observe/voxia_governance_r6_full_final_20260719/`
+  - `.demo/observe/voxia_phase1_2026-07-18T18-30-20-151Z_null_rhi_1280x720/`
+  - `.demo/observe/voxia_governance_r6_interaction_cli_final_20260719.log`
+  - `.demo/observe/voxia_governance_r6_legacy_probe_cli_final_20260719.log`
 
-下一步直接进入 R6：按批准设计拆分 subscription/session、build/focus/remote interaction 与
-demo/stress/edit-shot controller，Pawn 只保留输入、移动表现和 controller 编排；继续保持 lease 独立活性、wire
-不变、行为与可见效果不变、唯一生产根不变，并按阶段测试后分别提交 client 与 outer。
+R0～R6 批准范围内已无未完成项。后续若要改变协议、功能行为、可见效果或唯一生产根，
+必须作为新设计与新批准处理，不得借本治理主线扩展。
 
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
