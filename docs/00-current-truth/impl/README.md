@@ -49,6 +49,7 @@
 | Voxia world composition selection | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldComposition.*` | 唯一正式根 / legacy probe / Pure3D probe / online compatibility 的纯选择契约；冲突 selector 与缺 provider 硬失败 |
 | Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合成熟 near-only 流送与 Pure3D far-only，维护 near settled + far live + XYZ center aligned 的根级 readiness |
 | Voxia pure-3D far module / standalone probe | `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.*` + `VoxiaPure3DVoxelWorldActor.*` | 正式统一根中的 far adapter；WorldGen/本地磁盘 provider 共用 request Build 路径，具备 diff/residency/cancellation/shared artifact/parallel surface/stable patch、材质族、预算与分帧 scene host。standalone 只作 probe；完整 route/full oracle/Real-RHI 已由阶段 1 根级验收覆盖，Online provider 后置 |
+| Voxia far rendering | `clients/Voxia/Source/Voxia/Rendering/` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | RG0–RG6 已完成：原子 generation 可见提交、source UV、不可变 AO/sky、唯一环境光、自然材质、冻结质量档与 Real-RHI/30 分钟时序门禁 |
 | Voxia gameplay | `clients/Voxia/Source/Voxia/Gameplay/README.md` | pawn、streaming、HUD、LOD debug |
 | Voxia net | `clients/Voxia/Source/Voxia/Net/README.md` | transport、protocol decode、authority update |
 | Voxia debug | `clients/Voxia/Source/Voxia/Debug/README.md` | stdio CLI |
@@ -69,13 +70,10 @@
 
 ## 注意
 
-阶段 1 最终工作树已经重新运行 Development build、`Voxia` 68/68 automation、Null-RHI 全路线、1280×720 Real-RHI 全路线与 1600×900/30 分钟 Real-RHI 长稳态。证据见 `docs/20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md`；near-only/far-only 仍只能作为 probe。
-
-2026-07-17 的完成后审查硬化候选 `clients/Voxia@500248e + 97d5002` 已通过 Development build、
-`Voxia` 69/69、Null-RHI 25 routes 和 1600×900/30 分钟 soak；95 个 soak 样本无单调增长，
-release 最终=`391/391/0`，quit 后成功终态与 clean close 已进入 runner 硬门禁。该候选尚未
-取代上述最终验收点：最新两次独立 D3D12 performance-only 为一红一绿，失败轮回程
-GameThread max=`424.536ms`；另一次完整 Real-RHI 路线在首个性能窗出现 `16.98ms` GT 帧。
-正式 runner 保持严格报错，没有 ignore/exemption。
+2026-07-21 最终工作树已重新运行 Development build、`Voxia` 92/92 automation、Node 37/37、
+1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和两项 30 分钟长稳。生命周期长稳完成
+113 条路线、110 个资源样本且无单调增长；RG6 长稳固定地形可见闪烁比最大 `0.000027`，最坏
+frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。near-only/far-only 仍只能
+作为 probe，质量档仍只属于同一生产根策略。
 
 完整 3D 的“离线 Mock 客户端阶段 1”与“在线 production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen 成果冒充。

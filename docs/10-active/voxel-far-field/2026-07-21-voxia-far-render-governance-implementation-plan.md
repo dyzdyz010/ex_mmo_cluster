@@ -942,13 +942,13 @@ git commit -m "feat(rendering): enforce high-refresh far quality policy"
 - Modify: `docs/00-current-truth/impl/known_gaps.md`
 - Modify: `docs/00-current-truth/source_index.md`
 - Modify: `docs/10-active/cross-cutting/_session-handoff.md`
-- Modify: outer repository `clients/Voxia` submodule pointer
+- Note: `clients/Voxia` 是被外层 `.gitignore` 忽略的独立 Git 仓库，不存在 outer submodule pointer
 
 **Interfaces:**
 - Consumes: RG0–RG5 fresh commits and observe artifacts。
-- Produces: one client closeout commit、one outer docs/submodule commit、pushed branches、GitHub CI status。
+- Produces: one client closeout commit、one outer docs commit、pushed branches、GitHub CI status。
 
-- [ ] **Step 1: fresh Development build 与全量 Automation**
+- [x] **Step 1: fresh Development build 与全量 Automation**
 
 ```powershell
 $ue58 = 'C:\Program Files\Epic Games\UE_5.8'
@@ -963,7 +963,7 @@ node --test scripts/voxia_far_render_metrics.test.js
 
 Expected: UBT exit 0；全部 Voxia tests Success，0 failed/not-run；Node pass。
 
-- [ ] **Step 2: Null-RHI、短 Real-RHI、RG 全矩阵**
+- [x] **Step 2: Null-RHI、短 Real-RHI、RG 全矩阵**
 
 ```powershell
 node scripts/run_phase1_world_lifecycle_smoke.js --null-rhi --res 1920x1080
@@ -973,7 +973,7 @@ node scripts/run_far_render_governance.js --real-rhi --phase rg6 --quality perfo
 
 Expected: 所有 production routes pass；`wire_fixture_changed=false`、`production_root_count=1`、完整 XYZ；静止/移动/跨 tile/三锚点/太阳 sweep 全通过；无 `LogVoxia: Error`。
 
-- [ ] **Step 3: 30 分钟默认 GC soak**
+- [x] **Step 3: 30 分钟默认 GC soak**
 
 ```powershell
 node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --performance-only --res 1920x1080 --soak-minutes 30
@@ -982,11 +982,11 @@ node scripts/run_far_render_governance.js --real-rhi --phase rg6 --quality perfo
 
 Expected: 无 renderer-owned `growing_keys`；pending release 最终归零；raw/GT/RT/RHI/GPU 指标完整；性能门槛不因默认 GC 被关闭。
 
-- [ ] **Step 4: 更新代码旁 README 与 current truth**
+- [x] **Step 4: 更新代码旁 README 与 current truth**
 
 只把 fresh 证据写成当前事实；历史补光、三轴世界采样、跨帧 visibility swap 与旧数值移入 archive 或标成被取代。Mermaid 图显示：canonical→surface→lighting→mesh→atomic host→unique root。`known_gaps` 只保留天气、在线 provider 和低端硬件分档，不把已关闭闪烁继续列为缺口。
 
-- [ ] **Step 5: 客户端最终提交**
+- [x] **Step 5: 客户端最终提交**
 
 ```powershell
 git status --short
@@ -998,10 +998,10 @@ git commit -m "docs(rendering): close far render governance"
 
 Expected: client worktree clean；`git log` 显示 RG0、RG1、RG2、RG3a、RG3b、RG4、RG5、RG6 顺序提交。
 
-- [ ] **Step 6: 外层文档、submodule pointer 与最终提交**
+- [x] **Step 6: 外层文档与最终提交**
 
 ```powershell
-git add clients/Voxia docs/10-active/voxel-far-field `
+git add docs/10-active/voxel-far-field `
   docs/00-current-truth/design/client/streaming-lod.md `
   docs/00-current-truth/impl/README.md `
   docs/00-current-truth/impl/known_gaps.md `
@@ -1045,4 +1045,21 @@ gh run list --branch codex/voxia-render-governance --limit 20
 - RG4 `e46cbf4 feat(rendering): add natural far material depth`：确定性材质图用 UV1.R / UV1.G 的最小值驱动 DefaultLit Ambient Occlusion，保持单次 UV0 主纹理采样、无时序 dither，并新增空间亮度可读性指标。91/91 UE Automation、23/23 Node 测试通过，材质脚本二次运行 `changed=false`。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T19-09-55-861Z/` 为 complete：三锚点最坏静态变化率 `0.000096`，frame p95 `4.801–4.866ms`，GT p95 `1.635–1.718ms`，GPU p95 `4.110–4.151ms`，相对 RG3b 最坏增量 `-0.542ms`；夜间 mean luma `12.279216`、可读像素覆盖 `0.717534`、压黑像素 `0.073914`，gap/overlap/stale 为零。
 - RG5 `b3d40d4 feat(rendering): enforce high-refresh far quality policy`：冻结 `performance_natural|quality_natural`，未知值在唯一根生成前以 `unsupported_far_render_quality` 失败；GI/反射、77% TSR、shadow ring、micro fade 与 TSR 时域稳定参数由同一 policy 应用并可回读。旧散落的云、Lumen、VSM 与 TSR CVar 已从 `DefaultEngine.ini` 清除。首轮无 TSR policy 的诊断证据 `.demo/observe/voxia_far_render_2026-07-20T19-24-13-854Z/` 因静止变化率 `0.003780` 被正确拒绝；最小 TSR 合同进入 policy 后，性能档证据 `.demo/observe/voxia_far_render_2026-07-20T19-29-07-592Z/` 为 complete：静止变化率 `0.000134`，最坏 frame p95/p99 `4.768/6.250ms`、GT p95 `1.800ms`、GPU p95 `4.002ms`，70/818 远景组件投影。质量档报告 `.demo/observe/voxia_far_render_2026-07-20T19-30-40-927Z/` 为 complete：静止变化率 `0.000084`，最坏 frame p95/p99 `5.152/6.584ms`、GT p95 `1.862ms`、GPU p95 `4.316ms`，105/818 组件投影。92/92 UE Automation、25/25 Node 测试通过；两档 generation crossing 均为 generation 2，gap/overlap/stale 为零，全程只使用客户端本地 WorldGen。
 
-当前下一项是 RG6：执行唯一生产根联合验收、更新 current truth 与 handoff、提交并推送客户端/外层文档分支，随后只检查这两条分支对应的 CI；继续不启动、修改或验证服务端。
+- RG6 联合验收已完成：Development build 成功；92/92 UE Automation、37/37 Node 测试、Null-RHI
+  短烟测、1920×1080 Real-RHI 完整生命周期与 RG6 七路线均通过。
+- 完整生命周期证据 `.demo/observe/voxia_phase1_2026-07-20T20-35-39-702Z_real_rhi_1920x1080/`
+  在 25 条路线后仍保持 frame p99 `7.693/7.692ms`，GPU p95 `3.172/3.197ms`，最大帧低于
+  `27.34ms`。Editor-only runtime barrier 在计数重置前显式回收旧根 PendingKill，回收耗时
+  `183.152ms` 不再污染新根窗口。
+- 生命周期 30 分钟证据 `.demo/observe/voxia_phase1_2026-07-20T20-52-19-830Z_real_rhi_1920x1080/`
+  完成 113 条路线、110 个资源样本，无单调增长，最大帧 `26.902ms`。
+- RG6 短证据 `.demo/observe/voxia_far_render_2026-07-20T20-47-48-957Z/` 与修正时序定义后的
+  30 分钟证据 `.demo/observe/voxia_far_render_2026-07-20T21-56-29-664Z/` 均为 complete。
+  后者将七路线各驻留 `257142ms`、相邻画面保持 `125ms`；固定地形 `luma>6` 比率最大
+  `0.000027`，最坏 frame p95/p99 `5.035/6.495ms`、GT p95 `1.591ms`、GPU p95 `4.387ms`。
+- 错误的 51 秒相邻截图长稳被保留为失败证据
+  `.demo/observe/voxia_far_render_2026-07-20T21-23-36-148Z/`；它测到分钟级 UDS 云层变化，未通过
+  放宽阈值处理。runner 已改成“长驻留 + 125ms 短突发”。
+
+客户端最终提交为 `a960f1e feat(rendering): close far render governance`。外层不跟踪 Voxia 指针；
+当前下一项是提交本轮 outer current-truth、推送两个独立仓库分支并检查对应 CI；继续不启动、修改或验证服务端。

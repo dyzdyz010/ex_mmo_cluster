@@ -199,15 +199,28 @@ render/RHI、GT max=`12.464ms`。先前定向 UE hitch 树将 `423.086ms` 完整
 计划 Task 7 Step 3–5 保持未勾选，需在无该外部阻塞的 D3D12 环境补足连续两次
 performance-only，然后才能做最终提交与可见手动确认。
 
+## 2026-07-21 远景 RG0–RG6 与性能门禁收口
+
+远景现役数据流为 canonical XYZ → coverage-resolved surface → immutable AO/sky lighting → stable patch
+mesh → atomic scene host → 唯一 `production_all_features` 根。固定质量策略只存在
+`performance_natural` 与同根的 `quality_natural`，不创建第二世界入口。
+
+1920×1080 Real-RHI 完整生命周期 25 条路线通过；两段 streaming 窗 frame p99=`7.693/7.692ms`、
+GPU p95=`3.172/3.197ms`，最大帧 `27.338/26.182ms`。30 分钟生命周期完成 113 条路线、110 个
+资源样本，无单调增长。RG6 30 分钟把七路线各驻留 `257142ms`，相邻时序仍以 `125ms` 短突发采集；
+固定地形可见闪烁比最大 `0.000027`，最坏 frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、
+GPU p95=`4.387ms`，gap/overlap/stale 均为零。
+
+Editor-only `performance_runtime_barrier` 在 frame reset 前等待 compilation/DDC/render quiescence 并回收
+旧世界 PendingKill；一次性回收耗时被报告但不进入新根稳定态窗口。旧的 2026-07-17/18 红色性能记录
+继续作为历史调查证据，不再代表当前门禁状态。
+
 ## 当前缺口
 
-1. 阶段 2：服务端权威编辑 intent、pending UI、confirmed overlay 与会话 HUD。
-2. Online：服务端 bootstrap、production H-gated page provider、snapshot/delta、source revision 失效、
-   续租、重连与默认在线切流。
-3. 内容/美术：默认 WorldGen 仍以浅色 opaque terrain 为主；需要在不破坏 material-family 与
-   snapshot 契约的前提下丰富 translucent/emissive 内容与最终视觉层次。
-4. 发布性能：当前门禁只代表本验收机；低配置硬件分档、发布包、驱动矩阵与长时玩家输入仍属
-   后续产品化工作。
+1. 阶段 2：权威编辑 intent、pending UI、confirmed overlay 与会话 HUD。
+2. Online authority provider 与本地 production 包/launcher。
+3. 正式天气策略和更丰富的透明/发光内容。
+4. 低配置硬件、发布包与更多驱动的发布性能分档。
 
 ## 被取代结论
 

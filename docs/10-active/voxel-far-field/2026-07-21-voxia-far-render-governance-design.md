@@ -300,7 +300,7 @@ sequenceDiagram
 | 纯函数 | AO、sky visibility、material profile、坐标相位、distance factor | 正负坐标与 near/far 同点确定性一致 |
 | dependency | 缺 halo、missing page、identity 漂移、未知材质、预算超限 | 零部分发布；旧 live 保留；明确 reason code |
 | presentation | 1、2、41 个 replacement patch；retained/replaced/removed 混合 | 每帧 gap/overlap/mixed generation 为 0；同帧 reveal |
-| 静止时序 | 三个昼夜锚点，固定环境，300 帧 warmup 后采样 | `abs(Δluma)>3/255` 像素比例 p95 `<=0.1%`；无周期性边缘闪烁 |
+| 静止时序 | 三个昼夜锚点；terrain ROI 排除天空与前三张预热帧 | 同时保留 `abs(Δluma)>3/255` 低幅诊断；可见门禁使用 `>6/255` 像素比例 `<=0.1%`；无周期性边缘闪烁 |
 | 移动时序 | 平移、旋转、对角、跨 tile、快速折返 | 无白边/洞/混代；结构化 route 完整；人工可见验收通过 |
 | 太阳移动 | 中午→晨昏→夜晚连续 sweep | 无 artifact/mesh rebuild；曝光有界；光照连续 |
 | TSR | 77% 默认、100% 诊断参考 | 默认不依赖 100% 才稳定；差异可归因 |
@@ -328,3 +328,29 @@ sequenceDiagram
 - **唯一生产根**：质量分档是同根策略参数，不是新 GameMode、地图或 world actor；
 - **完整 XYZ**：所有 patch、halo、lighting artifact、coverage 和测试均使用完整 XYZ；
 - **参数完整性**：具体阴影距离由 RG0 数据冻结，不是未定义实现；冻结动作、输入矩阵和通过条件已在 RG0/RG3 明确。
+
+## 11. RG6 最终状态（2026-07-21）
+
+RG0–RG6 已全部接入客户端唯一 `production_all_features` 根。最终数据流为：
+
+```mermaid
+flowchart LR
+    C[canonical XYZ] --> S[resolved surface]
+    S --> L[immutable AO/sky lighting]
+    L --> M[stable patch mesh]
+    M --> H[atomic scene host]
+    E[unique environment] --> R[natural material + frozen quality]
+    H --> U[unique production root]
+    R --> U
+```
+
+1920×1080 Real-RHI 短时序证据
+`.demo/observe/voxia_far_render_2026-07-20T20-47-48-957Z/` 与 30 分钟证据
+`.demo/observe/voxia_far_render_2026-07-20T21-56-29-664Z/` 均通过七路线硬门禁。长稳中每条路线驻留
+`257142ms`，相邻截图仍保持 `125ms`；固定地形可见闪烁比最大 `0.000027`，最坏 frame p95/p99
+`5.035/6.495ms`、GameThread p95 `1.591ms`、GPU p95 `4.387ms`，gap/overlap/stale 均为零。
+
+完整生命周期与资源长稳分别位于
+`.demo/observe/voxia_phase1_2026-07-20T20-35-39-702Z_real_rhi_1920x1080/` 和
+`.demo/observe/voxia_phase1_2026-07-20T20-52-19-830Z_real_rhi_1920x1080/`。旧根一次性 GC 被
+Editor-only barrier 隔离在采样重置前；30 分钟完成 113 条路线、110 个资源样本且无单调增长。

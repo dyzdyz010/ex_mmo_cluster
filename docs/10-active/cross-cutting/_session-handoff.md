@@ -1,4 +1,23 @@
-# 当前会话接力：Voxia R0～R6 总体治理已完成
+# 当前会话接力：Voxia 远景 RG0～RG6 已完成，待推送与 CI
+
+## 2026-07-21 远景渲染专题治理收口
+
+- 客户端/外层分支均为 `codex/voxia-render-governance`；全程只使用 Voxia 本地 WorldGen，未启动、
+  修改或验证服务端，协议、功能行为与唯一 `production_all_features` 根未改变。
+- RG0–RG5 已按顺序提交；RG6 客户端最终提交为
+  `a960f1e feat(rendering): close far render governance`。Voxia 是外层忽略的独立 Git 仓库，不存在
+  submodule pointer；待外层 current-truth 提交、两个仓库推送和 CI 检查。
+- 最终实现：far generation 原子可见切换、source UV、coverage-resolved AO/sky、唯一环境光与单主投影、
+  natural material、`performance_natural|quality_natural` 冻结策略、terrain 双阈值时序诊断。
+- fresh 验证：Development build；UE Automation `92/92`；Node `37/37`；Null-RHI 短烟测；
+  1920×1080 Real-RHI 完整生命周期与 RG6 七路线；生命周期/视觉各 30 分钟长稳。
+- 关键证据：
+  - `.demo/observe/voxia_phase1_2026-07-20T20-35-39-702Z_real_rhi_1920x1080/`
+  - `.demo/observe/voxia_phase1_2026-07-20T20-52-19-830Z_real_rhi_1920x1080/`
+  - `.demo/observe/voxia_far_render_2026-07-20T20-47-48-957Z/`
+  - `.demo/observe/voxia_far_render_2026-07-20T21-56-29-664Z/`
+- 后续只剩：提交外层 current-truth、推送两仓并确认 CI。若 CI 失败，按日志
+  根因修复；不得放宽时序或性能门禁。
 
 ## 2026-07-19 R6 Pawn controller 与文档收口完成
 
