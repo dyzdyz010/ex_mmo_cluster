@@ -1030,3 +1030,16 @@ gh run list --branch codex/voxia-render-governance --limit 20
 - Boundary consistency：新增渲染状态均为 derived snapshot；没有服务端、wire、confirmed store、XZ/高度图或第二 root 修改。
 - Evidence discipline：移动路线不以相邻帧像素差直接判错；严格像素门槛只用于固定环境静止序列；外部 D3D stall 始终保留。
 - Execution choice：用户已要求后续自主决定且不要再提问；协作规则也不允许未获请求时派生 subagent，因此执行时固定使用 `superpowers:executing-plans` 内联推进。
+
+---
+
+## Execution Progress
+
+截至 2026-07-21，客户端分支 `codex/voxia-render-governance` 已按顺序完成并独立提交：
+
+- RG0 `7534507 feat(rendering): establish far render diagnostics`：五组单变量、四路线、120 张截图；证据 `.demo/observe/voxia_far_render_2026-07-20T17-32-17-827Z/`。
+- RG1 `c527526 fix(rendering): commit far visibility atomically`：generation 2 原子切换 `0.122ms`，gap/overlap/stale 为零；证据 `.demo/observe/voxia_far_render_2026-07-20T17-49-56-763Z/`。
+- RG2 `959a45a fix(rendering): stabilize far material sampling`：Source UV v3、单次 UV0 采样、77% 与 100% 对照均过静止门槛；证据 `.demo/observe/voxia_far_render_2026-07-20T18-08-29-383Z/`。
+- RG3a `9987d83 feat(rendering): derive stable voxel ambient lighting`：surface 与 AO/sky lighting 同批发布、复用并写入 compact UV1，SVO cache v6；89/89 UE Automation、18/18 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-36-06-609Z/` 为 complete：33752/33752 lighting，静止闪烁比 `0.000092`，worker 相对 RG2 最坏 `1.030095×`，稳态 GT/GPU p50 最大增量 `0.018ms` / `0.011ms`，frame p95 `5.569–6.205ms`，gap/overlap/stale 为零。
+
+当前下一项是 RG3b：先让材质受控消费 AO/sky，再替换旧补光为单太阳环境策略，并独立冻结阴影分层；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
