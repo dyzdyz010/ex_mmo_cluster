@@ -663,7 +663,7 @@ git commit -m "feat(rendering): derive stable voxel ambient lighting"
 - Consumes: UDS actor directional/sky components、cube-shell `RingIndex`、RG0 VSM invalidation evidence。
 - Produces: `FVoxiaEnvironmentLightingPolicy::ForAnchor`、`UVoxiaEnvironmentLightingComponent` 自维护 CLI anchor/sweep、patch `NearestRingIndex`、`FVoxiaFarShadowPolicy::ShouldCastShadow`。
 
-- [ ] **Step 1: 写环境锚点与阴影 tier 红测试**
+- [x] **Step 1: 写环境锚点与阴影 tier 红测试**
 
 ```cpp
 const FVoxiaEnvironmentLightingState Noon = FVoxiaEnvironmentLightingPolicy::ForAnchor(EVoxiaLightingAnchor::Noon);
@@ -677,7 +677,7 @@ TestTrue(TEXT("性能档 ring0 投影"), FVoxiaFarShadowPolicy::ShouldCastShadow
 TestFalse(TEXT("性能档 ring1 不投影"), FVoxiaFarShadowPolicy::ShouldCastShadow(1, 0));
 ```
 
-- [ ] **Step 2: 实现纯策略值与连续插值**
+- [x] **Step 2: 实现纯策略值与连续插值**
 
 ```cpp
 enum class EVoxiaLightingAnchor : uint8 { Noon, Dusk, Night };
@@ -701,7 +701,7 @@ struct FVoxiaEnvironmentLightingState
 
 `FVoxiaFarShadowPolicy::ShouldCastShadow(NearestRingIndex, MaxShadowCastingRing)` 在 max ring 小于零时恒 false，否则仅对 `0 <= ring <= max` 返回 true；RG3b 的冻结默认值为 0，RG5 再由统一 quality policy 提供该值。
 
-- [ ] **Step 3: GameMode 删除 fill rig 并只组合一套环境**
+- [x] **Step 3: GameMode 删除 fill rig 并只组合一套环境**
 
 新增 `UVoxiaEnvironmentLightingComponent : UActorComponent`，由 `AVoxiaClientGameMode` constructor 创建默认子对象。它持有 primary directional、SkyLight、fog 的弱引用，拥有 current anchor、sweep active、normalized time、last recapture frame，并在自身 `TickComponent` 中维持连续太阳运动；公开 `BindEnvironment(...)`、`ApplyAnchor(...)`、`StartSweep()`、`StopSweep()`、`SnapshotJson()`。`SetupEnvironment` 只负责发现/生成 UE 组件并绑定，不能自己保存另一份时间状态。
 
@@ -709,7 +709,7 @@ struct FVoxiaEnvironmentLightingState
 
 所有本次触及的英文环境注释改为中文；不修改未触及文件的历史注释。
 
-- [ ] **Step 4: 传播 patch ring 并应用 shadow policy**
+- [x] **Step 4: 传播 patch ring 并应用 shadow policy**
 
 `FVoxiaVoxelPresentationFarPatchStage` 新增 `int32 NearestRingIndex = MAX_int32`；scene builder 从 plan cell 建立 page ID→ring map，group 取最小 ring。`FPendingComponentCreation` 携带 `bCastShadow`，创建前设置：
 
@@ -721,7 +721,7 @@ Desc.ApplyTo(Component);
 
 `FVoxiaCanonicalVoxelShellSceneBuildConfig` 新增 `MaxShadowCastingRing=0`；scene builder 和 host 只消费该冻结字段。RG3b 不增加临时命令行散读；shadow-off A/B 继续使用 RG0 的 VSM/CastShadow 诊断注入，RG5 再把质量档解析结果写入同一 build config。
 
-- [ ] **Step 5: 追加 anchor/sweep CLI 与结构化状态**
+- [x] **Step 5: 追加 anchor/sweep CLI 与结构化状态**
 
 ```cpp
 { TEXT("far_lighting_anchor"), TEXT("far_lighting_anchor noon|dusk|night"), EnginePerf, Production, {}, true },
@@ -730,7 +730,7 @@ Desc.ApplyTo(Component);
 
 `far_render_state.environment` 输出 anchor、sun rotation、active shadow caster count、sky intensity、last recapture frame、sweep active；设置失败返回 `expected_noon_dusk_or_night`，不静默保留旧值并报成功。
 
-- [ ] **Step 6: RG3b Real-RHI 验证**
+- [x] **Step 6: RG3b Real-RHI 验证**
 
 Run focused automation 与：
 
@@ -740,7 +740,7 @@ node scripts/run_far_render_governance.js --real-rhi --phase rg3b --res 1920x108
 
 Expected: 三锚点 `shadow_casting_directional_lights=1`；无 fill actors；连续 sweep 中 generation、source/artifact/mesh fingerprint 不变；static VSM-on 与 VSM-off A/B 能归因 H2；default shadow caster patch 只来自 nearest ring 0；GPU p95 不高于 RG2。
 
-- [ ] **Step 7: 提交 RG3b**
+- [x] **Step 7: 提交 RG3b**
 
 ```powershell
 git add Source/Voxia/Rendering/VoxiaEnvironmentLighting* `
@@ -1041,5 +1041,6 @@ gh run list --branch codex/voxia-render-governance --limit 20
 - RG1 `c527526 fix(rendering): commit far visibility atomically`：generation 2 原子切换 `0.122ms`，gap/overlap/stale 为零；证据 `.demo/observe/voxia_far_render_2026-07-20T17-49-56-763Z/`。
 - RG2 `959a45a fix(rendering): stabilize far material sampling`：Source UV v3、单次 UV0 采样、77% 与 100% 对照均过静止门槛；证据 `.demo/observe/voxia_far_render_2026-07-20T18-08-29-383Z/`。
 - RG3a `9987d83 feat(rendering): derive stable voxel ambient lighting`：surface 与 AO/sky lighting 同批发布、复用并写入 compact UV1，SVO cache v6；89/89 UE Automation、18/18 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-36-06-609Z/` 为 complete：33752/33752 lighting，静止闪烁比 `0.000092`，worker 相对 RG2 最坏 `1.030095×`，稳态 GT/GPU p50 最大增量 `0.018ms` / `0.011ms`，frame p95 `5.569–6.205ms`，gap/overlap/stale 为零。
+- RG3b `fb58c4c feat(rendering): unify environment lighting and shadow tiers`：唯一环境组件持续维护 noon/dusk/night 与连续太阳、单主投影和天空/雾状态；旧四盏 fill rig 已删除；far patch 只让最近 ring 0 投影。91/91 UE Automation、20/20 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-57-11-372Z/` 为 complete：UDS 两盏方向光仅一盏投影、独立方向光 actor 为 0，818 个 far component 中 70 个投影；六组固定锚点最坏静态变化率 `0.000082`，frame p95 `5.322–5.713ms`，默认 GPU p95 `4.652–5.178ms`，VSM GPU p95 均值增量 `0.280333ms`，gap/overlap/stale 为零。
 
-当前下一项是 RG3b：先让材质受控消费 AO/sky，再替换旧补光为单太阳环境策略，并独立冻结阴影分层；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
+当前下一项是 RG4：让材质受控消费 RG3a 已冻结的 AO/sky 通道，形成克制的间接遮蔽与夜间可读性；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
