@@ -770,7 +770,7 @@ git commit -m "feat(rendering): apply natural environment and shadow tiers"
 - Consumes: UV0 stable face coordinate；UV1.X AO；UV1.Y local sky visibility；vertex RGB material tint。
 - Produces: `M_VoxelWorldAligned` contract `voxia_far_natural_material_v1`；roughness `0.88`；AO=min(UV1.X, UV1.Y)。
 
-- [ ] **Step 1: 写材质输入合同红测试**
+- [x] **Step 1: 写材质输入合同红测试**
 
 ```cpp
 TestTrue(TEXT("读取 UV1 lighting"), TextureCoordinateIndices.Contains(1));
@@ -780,11 +780,11 @@ TestEqual(TEXT("材质合同"), ContractParameter, FString(TEXT("voxia_far_natur
 TestFalse(TEXT("不含 dither temporal AA"), bHasDitherTemporalAa);
 ```
 
-- [ ] **Step 2: 运行红测试**
+- [x] **Step 2: 运行红测试**
 
 Expected: current asset 未读取 UV1，AO property 未连接。
 
-- [ ] **Step 3: 更新 material graph**
+- [x] **Step 3: 更新 material graph**
 
 ```python
 uv1 = lib.create_material_expression(material, unreal.MaterialExpressionTextureCoordinate, -180, 320)
@@ -803,11 +803,11 @@ contract = _scalar_parameter(lib, material, "VoxiaFarNaturalMaterialV1", 1.0, 58
 
 BaseColor 只乘 vertex RGB 与 RG2 的单采样/距离 fade；不再用四盏 fill 抬亮暗面。AO 只进入 indirect occlusion，不乘死太阳直射；emissive/translucent 继续使用既有 slot，不回退 opaque。
 
-- [ ] **Step 4: 重建 asset 并运行三锚点视觉/指标门槛**
+- [x] **Step 4: 重建 asset 并运行三锚点视觉/指标门槛**
 
 Run material script、material automation、RG4 runner。Expected：中午暗面可读但保持方向性；晨昏长明暗层次连续；夜晚不黑屏；静止像素门槛通过；没有 gap/overlap；GPU p95 增量相对 RG3b `<=0.2ms`。
 
-- [ ] **Step 5: 提交 RG4**
+- [x] **Step 5: 提交 RG4**
 
 ```powershell
 git add scripts/create_voxel_world_aligned_material.py `
@@ -1042,5 +1042,6 @@ gh run list --branch codex/voxia-render-governance --limit 20
 - RG2 `959a45a fix(rendering): stabilize far material sampling`：Source UV v3、单次 UV0 采样、77% 与 100% 对照均过静止门槛；证据 `.demo/observe/voxia_far_render_2026-07-20T18-08-29-383Z/`。
 - RG3a `9987d83 feat(rendering): derive stable voxel ambient lighting`：surface 与 AO/sky lighting 同批发布、复用并写入 compact UV1，SVO cache v6；89/89 UE Automation、18/18 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-36-06-609Z/` 为 complete：33752/33752 lighting，静止闪烁比 `0.000092`，worker 相对 RG2 最坏 `1.030095×`，稳态 GT/GPU p50 最大增量 `0.018ms` / `0.011ms`，frame p95 `5.569–6.205ms`，gap/overlap/stale 为零。
 - RG3b `fb58c4c feat(rendering): unify environment lighting and shadow tiers`：唯一环境组件持续维护 noon/dusk/night 与连续太阳、单主投影和天空/雾状态；旧四盏 fill rig 已删除；far patch 只让最近 ring 0 投影。91/91 UE Automation、20/20 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-57-11-372Z/` 为 complete：UDS 两盏方向光仅一盏投影、独立方向光 actor 为 0，818 个 far component 中 70 个投影；六组固定锚点最坏静态变化率 `0.000082`，frame p95 `5.322–5.713ms`，默认 GPU p95 `4.652–5.178ms`，VSM GPU p95 均值增量 `0.280333ms`，gap/overlap/stale 为零。
+- RG4 `e46cbf4 feat(rendering): add natural far material depth`：确定性材质图用 UV1.R / UV1.G 的最小值驱动 DefaultLit Ambient Occlusion，保持单次 UV0 主纹理采样、无时序 dither，并新增空间亮度可读性指标。91/91 UE Automation、23/23 Node 测试通过，材质脚本二次运行 `changed=false`。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T19-09-55-861Z/` 为 complete：三锚点最坏静态变化率 `0.000096`，frame p95 `4.801–4.866ms`，GT p95 `1.635–1.718ms`，GPU p95 `4.110–4.151ms`，相对 RG3b 最坏增量 `-0.542ms`；夜间 mean luma `12.279216`、可读像素覆盖 `0.717534`、压黑像素 `0.073914`，gap/overlap/stale 为零。
 
-当前下一项是 RG4：让材质受控消费 RG3a 已冻结的 AO/sky 通道，形成克制的间接遮蔽与夜间可读性；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
+当前下一项是 RG5：冻结同根质量策略与 120 FPS 预算门禁，把 RG3b 的 shadow ring 与当前 screen percentage 等参数收敛到一个不可变质量档；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
