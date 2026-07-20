@@ -840,7 +840,7 @@ git commit -m "feat(rendering): add natural far material depth"
 - Consumes: frozen runtime config、RG0–RG4 metrics、environment/shadow/material parameters。
 - Produces: `EVoxiaFarRenderQuality::PerformanceNatural|QualityNatural`、唯一默认 `performance_natural`、硬性能结论。
 
-- [ ] **Step 1: 写默认档与无效值红测试**
+- [x] **Step 1: 写默认档与无效值红测试**
 
 ```cpp
 const FVoxiaClientRuntimeConfig Default = FVoxiaClientRuntimeConfig::Parse(TEXT(""));
@@ -851,7 +851,7 @@ TestFalse(TEXT("未知档显式失败"), Invalid.Far.bRenderQualityValid);
 TestEqual(TEXT("失败原因稳定"), Invalid.Far.RenderQualityError, FString(TEXT("unsupported_far_render_quality")));
 ```
 
-- [ ] **Step 2: 实现冻结 quality policy**
+- [x] **Step 2: 实现冻结 quality policy**
 
 ```cpp
 enum class EVoxiaFarRenderQuality : uint8
@@ -875,7 +875,7 @@ struct FVoxiaFarRenderQualityPolicy
 
 `quality_natural` 只把 shadow ring 提到 1、GI/reflection quality 提到 2、micro fade 调为 250000/900000；presentation、truth、root、artifact 算法不变。
 
-- [ ] **Step 3: 由 RuntimeConfig 唯一解析并应用**
+- [x] **Step 3: 由 RuntimeConfig 唯一解析并应用**
 
 `FVoxiaClientFarRuntimeConfig` 增加 enum、valid/error；GameMode `InitGame` 在 invalid 时设置 `bStartupRejected=true` 与稳定 reason。GameMode 通过 policy façade 设置 `sg.GlobalIlluminationQuality`、`sg.ReflectionQuality`、`r.ScreenPercentage`；Pure3D actor 从同一 frozen policy 构造 `FVoxiaCanonicalVoxelShellSceneBuildConfig.MaxShadowCastingRing`，scene builder/host 不再读取任何原始文本。
 
@@ -889,7 +889,7 @@ t.MaxFPS=130
 
 RG0 中被证实无收益或导致闪烁的实验 CVar 从默认段删除，只允许 runner 以 `-ExecCmds` 单次 A/B。
 
-- [ ] **Step 4: 将 runner 门槛写成不可放宽断言**
+- [x] **Step 4: 将 runner 门槛写成不可放宽断言**
 
 ```javascript
 assert.ok(frame.frame_ms.p95 <= 8.33, `frame p95 ${frame.frame_ms.p95}ms exceeds 8.33ms`);
@@ -902,18 +902,18 @@ assert.ok(temporal.flicker_pixel_ratio_over_3 <= 0.001, "static flicker ratio ex
 
 raw DXGI/D3D12 stalls与 attributed metrics 同时写入 index；不得删除 raw frame、截短采样或把外部 stall 改写成 pass。
 
-- [ ] **Step 5: RG5 完整默认档与 quality 对照**
+- [x] **Step 5: RG5 完整默认档与 quality 对照**
 
 Run：
 
 ```powershell
 node scripts/run_far_render_governance.js --real-rhi --phase rg5 --quality performance_natural --res 1920x1080
-node scripts/run_far_render_governance.js --real-rhi --phase rg5 --quality quality_natural --res 1920x1080 --report-only
+node scripts/run_far_render_governance.js --real-rhi --phase rg5 --quality quality_natural --res 1920x1080
 ```
 
 Expected: performance 全门槛通过；quality 只报告、不约束 120 FPS；两者 root contract 都是 `production_all_features`，snapshot/source/generation 语义一致。
 
-- [ ] **Step 6: 提交 RG5**
+- [x] **Step 6: 提交 RG5**
 
 ```powershell
 git add Source/Voxia/Rendering/VoxiaFarRenderQualityPolicy* `
@@ -1043,5 +1043,6 @@ gh run list --branch codex/voxia-render-governance --limit 20
 - RG3a `9987d83 feat(rendering): derive stable voxel ambient lighting`：surface 与 AO/sky lighting 同批发布、复用并写入 compact UV1，SVO cache v6；89/89 UE Automation、18/18 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-36-06-609Z/` 为 complete：33752/33752 lighting，静止闪烁比 `0.000092`，worker 相对 RG2 最坏 `1.030095×`，稳态 GT/GPU p50 最大增量 `0.018ms` / `0.011ms`，frame p95 `5.569–6.205ms`，gap/overlap/stale 为零。
 - RG3b `fb58c4c feat(rendering): unify environment lighting and shadow tiers`：唯一环境组件持续维护 noon/dusk/night 与连续太阳、单主投影和天空/雾状态；旧四盏 fill rig 已删除；far patch 只让最近 ring 0 投影。91/91 UE Automation、20/20 Node 测试通过。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T18-57-11-372Z/` 为 complete：UDS 两盏方向光仅一盏投影、独立方向光 actor 为 0，818 个 far component 中 70 个投影；六组固定锚点最坏静态变化率 `0.000082`，frame p95 `5.322–5.713ms`，默认 GPU p95 `4.652–5.178ms`，VSM GPU p95 均值增量 `0.280333ms`，gap/overlap/stale 为零。
 - RG4 `e46cbf4 feat(rendering): add natural far material depth`：确定性材质图用 UV1.R / UV1.G 的最小值驱动 DefaultLit Ambient Occlusion，保持单次 UV0 主纹理采样、无时序 dither，并新增空间亮度可读性指标。91/91 UE Automation、23/23 Node 测试通过，材质脚本二次运行 `changed=false`。最终 Real-RHI 证据 `.demo/observe/voxia_far_render_2026-07-20T19-09-55-861Z/` 为 complete：三锚点最坏静态变化率 `0.000096`，frame p95 `4.801–4.866ms`，GT p95 `1.635–1.718ms`，GPU p95 `4.110–4.151ms`，相对 RG3b 最坏增量 `-0.542ms`；夜间 mean luma `12.279216`、可读像素覆盖 `0.717534`、压黑像素 `0.073914`，gap/overlap/stale 为零。
+- RG5 `b3d40d4 feat(rendering): enforce high-refresh far quality policy`：冻结 `performance_natural|quality_natural`，未知值在唯一根生成前以 `unsupported_far_render_quality` 失败；GI/反射、77% TSR、shadow ring、micro fade 与 TSR 时域稳定参数由同一 policy 应用并可回读。旧散落的云、Lumen、VSM 与 TSR CVar 已从 `DefaultEngine.ini` 清除。首轮无 TSR policy 的诊断证据 `.demo/observe/voxia_far_render_2026-07-20T19-24-13-854Z/` 因静止变化率 `0.003780` 被正确拒绝；最小 TSR 合同进入 policy 后，性能档证据 `.demo/observe/voxia_far_render_2026-07-20T19-29-07-592Z/` 为 complete：静止变化率 `0.000134`，最坏 frame p95/p99 `4.768/6.250ms`、GT p95 `1.800ms`、GPU p95 `4.002ms`，70/818 远景组件投影。质量档报告 `.demo/observe/voxia_far_render_2026-07-20T19-30-40-927Z/` 为 complete：静止变化率 `0.000084`，最坏 frame p95/p99 `5.152/6.584ms`、GT p95 `1.862ms`、GPU p95 `4.316ms`，105/818 组件投影。92/92 UE Automation、25/25 Node 测试通过；两档 generation crossing 均为 generation 2，gap/overlap/stale 为零，全程只使用客户端本地 WorldGen。
 
-当前下一项是 RG5：冻结同根质量策略与 120 FPS 预算门禁，把 RG3b 的 shadow ring 与当前 screen percentage 等参数收敛到一个不可变质量档；继续只使用客户端本地 WorldGen 唯一生产根，不启动或验证服务端。
+当前下一项是 RG6：执行唯一生产根联合验收、更新 current truth 与 handoff、提交并推送客户端/外层文档分支，随后只检查这两条分支对应的 CI；继续不启动、修改或验证服务端。
