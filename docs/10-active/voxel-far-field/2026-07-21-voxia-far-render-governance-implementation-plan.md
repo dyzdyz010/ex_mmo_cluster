@@ -1011,7 +1011,7 @@ git diff --cached --check
 git commit -m "docs(voxia): close far render governance"
 ```
 
-- [ ] **Step 7: 推送两个仓库并检查 CI**
+- [x] **Step 7: 推送两个仓库并检查 CI**
 
 ```powershell
 git -C clients/Voxia push -u origin codex/voxia-render-governance
@@ -1020,6 +1020,15 @@ gh run list --branch codex/voxia-render-governance --limit 20
 ```
 
 对两个仓库分别用 `gh pr view --head codex/voxia-render-governance --json number` 查 PR；不存在时创建 draft PR，再以具体 PR 号执行 `gh pr checks <number> --watch --fail-fast`。仓库 owner/name 必须先从各自 `git remote get-url origin` 解析，不能硬编码。如果 workflow 只在 `main/master` 或 PR 触发，创建 draft PR 后观察 checks；没有 workflow 时明确报告“未触发/未配置”，不能写成 CI 通过。
+
+- [x] **Step 8: 可见人工验收与主线批准**
+
+2026-07-21 从本次 Voxia 工作树启动 1600×900、UDS、WorldGen 和唯一
+`production_all_features` 根。`voxel_world_root_ready` 返回
+`ready/session_ready/centers_aligned=true`；用户确认“效果不错”并批准合入。Voxia PR
+[`#1`](https://github.com/dyzdyz010/Voxia/pull/1) 没有配置远端 CI；外层文档 PR
+[`#10`](https://github.com/dyzdyz010/ex_mmo_cluster/pull/10) 的自动 CI run `214` 为 7/11 通过、
+4/11 失败。后者不作为客户端渲染证据，依照用户边界不下钻或改动服务端。
 
 ---
 
@@ -1061,5 +1070,6 @@ gh run list --branch codex/voxia-render-governance --limit 20
   `.demo/observe/voxia_far_render_2026-07-20T21-23-36-148Z/`；它测到分钟级 UDS 云层变化，未通过
   放宽阈值处理。runner 已改成“长驻留 + 125ms 短突发”。
 
-客户端最终提交为 `a960f1e feat(rendering): close far render governance`。外层不跟踪 Voxia 指针；
-当前下一项是提交本轮 outer current-truth、推送两个独立仓库分支并检查对应 CI；继续不启动、修改或验证服务端。
+客户端 RG6 收口提交为 `a960f1e feat(rendering): close far render governance`。外层不跟踪 Voxia 指针；
+两个独立仓库分支已经推送并建立 PR。可见人工验收通过后，用户已批准将两边合入各自默认
+`master` 主线；发布完成以 PR 状态和远端 SHA 复核为准。全过程继续不启动、修改或验证服务端。

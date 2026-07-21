@@ -354,3 +354,8 @@ flowchart LR
 `.demo/observe/voxia_phase1_2026-07-20T20-35-39-702Z_real_rhi_1920x1080/` 和
 `.demo/observe/voxia_phase1_2026-07-20T20-52-19-830Z_real_rhi_1920x1080/`。旧根一次性 GC 被
 Editor-only barrier 隔离在采样重置前；30 分钟完成 113 条路线、110 个资源样本且无单调增长。
+
+2026-07-21 的最终人工入口直接从本次 Voxia 工作树启动 1600×900 可见游戏窗口，保留 UDS，使用
+WorldGen 和唯一 `production_all_features` 根。根级 observe 确认
+`ready/session_ready/centers_aligned=true`；用户在真实窗口检查后确认“效果不错”并批准合入默认
+生产主线。这条结论只评价客户端渲染，不依赖服务端运行或状态。
