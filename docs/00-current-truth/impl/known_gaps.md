@@ -29,19 +29,23 @@
 约 `3.2ms`，最大帧低于 `27.34ms`；30 分钟资源长稳无单调增长。旧根 PendingKill 的一次性回收在
 Editor-only barrier 中完成并位于计数重置前，不再污染新根稳定态窗口。
 
-1. **阶段 2 体素交互**：挖掘/放置 intent、pending UI、confirmed overlay、会话 HUD 与错误恢复尚未
-   实施；阶段 1 仍应隐藏编辑入口并返回 `feature_not_available_phase2`。
-2. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
+1. **阶段 2 普通宏格交互**：领域设计与实施计划已经批准，但 macro place/break intent、Mock authority、
+   pending ledger、confirmed overlay、near/far presentation、会话 HUD 与错误恢复尚未实施；当前仍应隐藏
+   编辑入口并返回 `feature_not_available_phase2`。
+2. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
+   PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace 尚未实施；
+   必须等待阶段 2 closeout。
+3. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
    source revision 失效、subscription lease、重连与默认在线切流。WorldGen/local pack 不能冒充
    confirmed truth，也不能在在线失败时 fallback。
-3. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
+4. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
    route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉与传送前
    coverage 检查。
-4. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
+5. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
    内容策略，并在不破坏 material-family、world snapshot 与原子提交契约的前提下丰富透明/发光内容。
-5. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与两项 30 分钟长稳均通过；低配置硬件、发布包、
+6. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与两项 30 分钟长稳均通过；低配置硬件、发布包、
    更多驱动与长时真实玩家输入仍未形成发布分档。
-6. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
+7. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
    代码级移除应与 Online provider/协议迁移一起进行，不能在当前客户端主线恢复使用。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史

@@ -1,4 +1,31 @@
-# 当前会话接力：Voxia 远景 RG0～RG6 已验收并合入主线
+# 当前会话接力：Voxia 阶段 2/3 世界占用与 Prefab runtime 已完成设计/计划
+
+## 2026-07-21 阶段 2/3 设计、专家审计与实施计划
+
+- 用户确认普通世界地形支持完整宏格挖放；微格只作为 prefab footprint、材质、命中、碰撞和渲染的
+  最小单位，不存在普通微格编辑。普通 SolidMacro 占满整个宏格并与任意 prefab 微格互斥；多个 prefab
+  可以在同一宏格范围内占据互不重叠的任意微格。
+- 用户批准“实体 mirror → MacroSpace confirmed projection → derived index → presentation”的方案 A，并确认
+  当前先在客户端用 Mock authority 完成本地数据/渲染闭环，未来 Online 只替换 authority adapter；生产世界
+  truth 始终由服务端拥有。
+- 已完成三路并行只读专家审计：Voxia 客户端数据/渲染、Elixir/OTP 服务端权威/协议、跨端领域模型/一致性。
+  结论是方案 A 可行，但现有单 owner/`AnyOwner()`、resident scan、逐宏格 prefab 删除、Gate 领域越界、
+  服务端 participant 假终局和 identity best-effort 均不能直接延伸为正式实现。
+- 正式设计：
+  [`Voxia 阶段 2/3：世界占用与 Prefab 运行时设计`](2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)。
+- 独立计划：
+  [`阶段 2 普通宏格交互实施计划`](2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md)；
+  [`阶段 3 Prefab 世界运行时实施计划`](2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md)。
+- 执行顺序是阶段 2 → fresh closeout → 阶段 3；不得并行越过阶段 2 玩家可见闭环。两阶段当前均未改代码、
+  未产生新的 Automation/CLI/Real-RHI 证据。
+- 根仓本地 `master` 已安全 fast-forward 到 `origin/master@6559a212`；根工作树原有未跟踪
+  `.superpowers/` 保留不动。`clients/Voxia` 本地 checkout 仍在 `5e9f6b1`，落后远端 28 个提交；实施前
+  必须基于 `origin/master@d5a27f7` 使用独立 worktree，不能在旧 checkout 上执行计划。
+- 两份旧协议参考中的 `0x66=BlueprintCreate` 已按 codec/golden 真值修正为
+  `0x66=VoxelSurfaceElementIntent`；未来 prefab definition 发布必须另分配 append-only opcode/versioned envelope。
+
+下一步：选择阶段 2 计划的执行方式；推荐使用 subagent-driven development，按 task 做 RED/GREEN、规格审查、
+代码质量审查和 fresh 验证。阶段 2 closeout 前不得启动阶段 3 实施。
 
 ## 2026-07-21 远景渲染专题治理收口
 

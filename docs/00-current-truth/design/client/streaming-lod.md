@@ -77,7 +77,7 @@ flowchart TD
   当前 generation 后续提交时可自动恢复，也可主动 retry 或返回菜单。
 - retry 为 single-flight，复用同一 snapshot、创建新 presentation generation；stale completion
   只能被拒绝。新游戏结束旧 session 后创建新 snapshot/root。
-- 阶段 2 编辑入口保持隐藏；CLI/测试误触返回 `feature_not_available_phase2`。
+- 阶段 2/3 的[世界占用与 Prefab runtime 设计](../../../10-active/cross-cutting/2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)及独立实施计划已经批准，但代码尚未实施；编辑入口继续保持隐藏，CLI/测试误触仍返回 `feature_not_available_phase2`。
 
 ## 流送与表现实现
 
@@ -199,10 +199,11 @@ Editor-only `performance_runtime_barrier` 在 frame reset 前等待 compilation/
 
 ## 当前缺口
 
-1. 阶段 2：权威编辑 intent、pending UI、confirmed overlay 与会话 HUD。
-2. Online authority provider 与本地 production 包/launcher。
-3. 正式天气策略和更丰富的透明/发光内容。
-4. 低配置硬件、发布包与更多驱动的发布性能分档。
+1. 阶段 2：普通宏格 intent、Mock authority、pending UI、confirmed overlay、near/far presentation 与会话 HUD；设计/计划已完成，代码与 fresh 证据尚未开始。
+2. 阶段 3：prefab catalog、24 orientation、instance directory、精确微格投影/命中、原子放置/移除/替换与 refined near/far；设计/计划已完成，必须等待阶段 2 closeout。
+3. Online authority provider 与本地 production 包/launcher。
+4. 正式天气策略和更丰富的透明/发光内容。
+5. 低配置硬件、发布包与更多驱动的发布性能分档。
 
 ## 被取代结论
 

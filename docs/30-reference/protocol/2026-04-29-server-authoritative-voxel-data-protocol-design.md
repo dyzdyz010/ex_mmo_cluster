@@ -1485,7 +1485,7 @@ section_data bytes[section_len]
 | `0x63` | S->C | `ChunkDelta` | 下发区块增量（只含变化） |
 | `0x64` | C->S | `VoxelImpactIntent` | 可选：技能/工具请求地形影响，通常由技能系统内部触发 |
 | `0x65` | C->S | `BuildReservationIntent` | 请求地块/区域内施工保留 |
-| `0x66` | C->S | `BlueprintCreate` | 创建 prefab/blueprint 定义 |
+| `0x66` | C->S | `VoxelSurfaceElementIntent` | 表面元件放置/清除；现役 codec/golden 已冻结该语义 |
 | `0x67` | C->S | `PrefabPlaceIntent` | 提交 blueprint_id + anchor 意图 |
 | `0x68` | S->C | `VoxelIntentResult` | 返回接受/延迟/拒绝/过期结果 |
 | `0x69` | S->C | `ChunkInvalidate` | 服务端要求客户端丢弃/重订阅 |
@@ -1496,6 +1496,9 @@ section_data bytes[section_len]
 | `0x6E` | S->C | `AttributeCatalogSnapshot` | 属性目录下发 |
 | `0x6F` | 双向 | `VoxelDebugProbe` | 本地/开发调试保留 |
 | `0x70` | C->S | `VoxelEditIntent` | 客户端编辑意图(macro / micro / object-part 通用入口) |
+
+> 当前实现真值已经将 `0x66` 固定为 `VoxelSurfaceElementIntent`，本表旧有的 `BlueprintCreate`
+> 占用声明被现役 codec 取代。未来 blueprint/prefab definition 创建协议必须使用新的 append-only 分配。
 
 ## 13. 关键消息
 
