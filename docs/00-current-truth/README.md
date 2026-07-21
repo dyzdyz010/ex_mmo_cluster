@@ -31,7 +31,7 @@ flowchart LR
 | 服务端控制面 | [design/server/world-region-routing.md](design/server/world-region-routing.md) | World / Region / Scene / Chunk 关系、路由、租约、迁移、stale owner repair |
 | 体素真值与基线 | [design/voxel/README.md](design/voxel/README.md) | 权威体素唯一事实源、WorldGen migration、launcher/入场校验、runtime diff 边界 |
 | 客户端可操作区域 | [design/voxel/client_active_region.md](design/voxel/client_active_region.md) | 近场可编辑窗口、订阅跟随、debug overlay、点击生效条件 |
-| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 阶段 1 已完成的唯一 Mock 根、完整 XYZ near/Pure3D far、生命周期、safe-view、原子 presentation 与后续边界 |
+| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 阶段 1/2 已完成的唯一 Mock 根、完整 XYZ near/Pure3D far、宏格挖放、生命周期与原子 presentation |
 | 局部场与涌现 | [design/field/runtime.md](design/field/runtime.md) | FieldLayer / FieldRegion / FieldKernel / FieldRuntime / FieldSource / FieldEffect 状态 |
 | 正交涌现系统 | [design/emergence/orthogonal-systems.md](design/emergence/orthogonal-systems.md) | 材料属性向量、光、化学、结构、客户端外观边界 |
 | 建设 / Prefab / Surface | [design/voxel/building-prefab-surface.md](design/voxel/building-prefab-surface.md) | 建设原语、Prefab transaction、Object provenance、SurfaceElement |
@@ -45,11 +45,11 @@ flowchart LR
 3. **体素基线校验必须硬失败**：进入场景前必须校验本地 world pack、region manifest、chunk baseline 和 diff chain；缺包或 hash 不匹配不能靠运行时 snapshot/resync 兜底进入场景。
 4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
 5. **完整 3D 是体素流式与 LOD 的唯一现行空间契约**：公共契约是 `chunk_xyz -> canonical 3D chunk/page`，near 为 XYZ cube，far 为稀疏 cube shell；不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia 的 near XYZ 与 Pure3D far 已在唯一开发根 live；Online authority production cutover 仍未开始，隔离 probe 不等于第二生产路径。
-6. **Voxia 阶段 1与远景 RG0–RG6 已完成**：`-VoxiaWorldGenPreview` 启动唯一 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features` 根；near/far 绑定同一只读 world snapshot。最终 `Voxia` automation 为 `92/92`，Node 为 `37/37`；1920×1080 完整 Real-RHI 生命周期、RG6 七路线和生命周期/视觉各 30 分钟长稳均通过。资源长稳 110 个样本无单调增长；RG6 长稳固定地形可见闪烁比最大 `0.000027`，最坏 frame p95/p99=`5.035/6.495ms`、GPU p95=`4.387ms`。2026-07-21 又以 1600×900、UDS、WorldGen 和唯一生产根完成可见人工验收，根级 readiness 与 near/far 中心对齐通过，用户确认效果；Voxia PR #1 与主仓文档 PR #10 已分别以 merge commit `e0d7c94` / `3cdcf3f` 合入各自默认 `master`。阶段 2/3 的共同领域设计和独立实施计划已于 2026-07-21 批准并完成三路专家审计，但客户端代码、fresh 证据与 Online authority provider 均尚未开始；本轮设计未修改服务器、HTTP 或 wire，**里程碑 B/C 仍未开始。**
-7. **Voxia 是唯一现役客户端，Web / Bevy 已逻辑归档**：默认客户端设计、实现、协议消费验证、联调、CI 与进度判断只看 Voxia；归档目录只保留历史证据，只有用户显式点名时才临时纳入。当前下一阶段是阶段 2 普通宏格交互；阶段 3 prefab runtime 已规划但必须等待阶段 2 closeout，B/C 在线生产化仍未开始。
+6. **Voxia 阶段 1/2 与远景 RG0–RG6 已完成**：`-VoxiaWorldGenPreview` 启动唯一 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features` 根；near/far、普通宏格 place/break 与 confirmed presentation 绑定同一 world/session identity。阶段 2 fresh 证据为 Development build、`141/141` UE Automation、`75/75` Node、真实 Null-RHI 联合闭环，以及 1920×1080 D3D12 Real-RHI 30 分钟长稳：49 个完成样本、105 次 far commit、release pending 始终归零、artifact cache 有界、0 fatal/authority/GPU error，最终 break/parity/menu 通过。最终实现 SHA 为 `15ab99476930f485460552914cb1744040dd2f72`，双代码专家复审 `Critical/Important/Minor=0/0/0`。Online authority provider、服务端/wire 与阶段 3 prefab 尚未实施，**里程碑 B/C 仍未开始。**
+7. **Voxia 是唯一现役客户端，Web / Bevy 已逻辑归档**：默认客户端设计、实现、协议消费验证、联调、CI 与进度判断只看 Voxia；归档目录只保留历史证据，只有用户显式点名时才临时纳入。阶段 2 普通宏格交互已经 closeout；当前后续客户端阶段是阶段 3 prefab runtime，Online 生产化仍需独立服务端设计与实施。
 8. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 9. **被取代的 XZ column 设计统一进入 `docs/20-archive/**`**：它们可以保留历史证据和 append-only decoder 测试，但不能继续留在 current/default/launcher/CLI acceptance 路由。
-10. **客户端仍是 snapshot-only 消费者，但 projection 的空间形态已升级为纯 3D**：近窗消费 `0x62/0x63` canonical chunks，远区消费 XYZ source pages/cube shell；配方不跨 wire。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。术语仍以 [`glossary.md`](../30-reference/protocol/glossary.md) 为准，当前实施裁决以 [`pure-3D 作战任务`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) 为准。
+10. **Online 客户端仍是 snapshot/delta-only 消费者，离线 Mock 也保持 adapter 边界**：近窗消费 canonical chunks，远区消费 XYZ source pages/cube shell；Phase 2 点击只发 intent，Mock authority 私有裁决后以类型化事件驱动唯一 confirmed mirror，presentation 不能回写 truth。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。
 11. **运行时根事实与文档根事实同样唯一**：参数可单独验证子系统，但只有一个包含全部已批准成果的组合根可以承担联合调试和效果验收。任何新成果未接入该根、未通过根级 readiness/CLI 前，只能写成 probe/地基；开发根通过也不能冒充在线 authority cutover。
 
 ## 维护规则

@@ -11,8 +11,8 @@
 - 真实地图导入未来应作为同层 migration，灌入同一个权威 store。
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
-- **客户端是 snapshot-only 消费者（2026-07-06 投影路线终态）**：配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。术语口径见 [`glossary.md`](../../../30-reference/protocol/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
-- Voxia 在扩展里程碑 A 中已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell、`voxia_voxel_source_pages_v2`、六向 material mip、coverage-resolved exact surface、source-neutral scene builder、dev 原子 presentation、唯一 `production_all_features` 组合根，以及 WorldGen/scripted/H-gated `local_disk` 三种 request provider。downstream 必须区分 source unavailable、missing、resolved air 与 solid；内容身份只含 scene/content/source/diff/material，不含 WorldGen、磁盘或 renderer kind。`LoadExpectedBatch` 保持 exact-set 原子 batch 语义；live 本地 provider 则用外部 manifest SHA-256 + expected identity 打开不可变 entry table，只读请求子集并原子发布。当前根把成熟 near 数据泵与 Pure3D far 联合起来，但本地 provider 只接 far，两侧尚未共享 provider/residency/generation；在线 authority provider 仍未实现。
+- **Online 客户端是 snapshot/delta-only 消费者（2026-07-06 投影路线终态）**：生产配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。离线 Phase 2 的 session-local Mock adapter/reducer/overlay 是显式测试与可玩闭环，不代表 Online 服务端 truth，也不得成为 Online fallback。术语口径见 [`glossary.md`](../../../30-reference/protocol/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
+- Voxia 在扩展里程碑 A 中已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell、`voxia_voxel_source_pages_v2`、六向 material mip、coverage-resolved exact surface、source-neutral scene builder、dev 原子 presentation、唯一 `production_all_features` 组合根，以及 WorldGen/scripted/H-gated `local_disk` 三种 request provider。downstream 必须区分 source unavailable、missing、resolved air 与 solid；内容身份只含 scene/content/source/diff/material，不含 WorldGen、磁盘或 renderer kind。`LoadExpectedBatch` 保持 exact-set 原子 batch 语义；live 本地 provider 则用外部 manifest SHA-256 + expected identity 打开不可变 entry table，只读请求子集并原子发布。当前根冻结统一 source/world/session identity，near/far 各自维护派生 residency/cache，并由 confirmed presentation transaction 原子组合；开发用本地 provider 只接 far、near 仍用 WorldGen，这是显式 provider 可用性边界。Online authority provider 仍未实现。
 
 ## 当前世界事实模型
 
@@ -96,10 +96,10 @@ flowchart LR
 | 主题 | 当前实现/状态 | 目标事实 |
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
-| 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收；相邻 Real-RHI worker 约 `0.91-0.95s`。成熟 near 尚未共享该 provider/residency/coverage transaction，所以本地根报告 mixed source mode | A10 继续统一 near/far source identity、residency、coverage generation 与 scene transaction，并补反向依赖/full oracle、离群帧和三轴路线；后续生产 XYZ source pages 只新增服务器 provider，缺 page/chunk/hash/schema 硬失败且不回退 WorldGen |
+| 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收。near/far 各自维护派生 residency/cache，并通过 confirmed presentation transaction 原子组合；客户端 A10、full oracle 与三轴路线均已完成。开发用 `local_disk` 当前只提供 far pages，near 仍用 WorldGen，因此本地根显式报告 mixed source mode；这是 provider 可用性边界，不是客户端 transaction 未完成 | 后续只接 Online XYZ provider，并可补开发用 local-disk near provider；根冻结统一 source identity，各子系统继续自行维护可变 residency/cache，不引入共享可变状态。缺 page/chunk/hash/schema 必须硬失败且不回退 WorldGen |
 | WorldGen | 服务端与客户端 dev 副本仍暴露 column/heightmap；客户端只允许 preview/fixture，生产不以它重算 baseline | 服务端迁移/离线生成器只公开 `chunk_xyz -> canonical 3D chunk`；当前地表实现只是内部 `density(x,y,z)` 算子。更换算法只改变 content version，不改变 streaming/LOD/render 路径 |
 | chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in 旧 WorldGen | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
-| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **客户端 snapshot-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
+| 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **Online 客户端 snapshot/delta-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
 | **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 3D WorldGen + 设计师 delta D + hash 凭证 H**；WorldGen 只在 materialization 边界出现，storage ∝ 修改量 |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
 | 当前世界恢复模型 | 当前已有 canonical chunk snapshot、runtime delta 和持久化 projection 的局部能力，但 checkpoint + committed event log 尚未形成统一恢复链 | `world_current = latest checkpoint + committed voxel events after checkpoint`；运行时布局是物化视图，可重建但 ACK 前必须 durable |
@@ -115,7 +115,7 @@ flowchart LR
 | baseline 缺失可 snapshot/resync 自愈 | 必须拒绝入场，不允许兜底 |
 | 运行时布局就是唯一不可删事实 | 运行时布局应是 `checkpoint + committed voxel events` 的物化结果；只有 checkpoint/event log 等 durable truth 完整时才允许删除并重建运行时布局 |
 | 只靠初始压缩母包即可恢复当前世界 | 只能恢复初始世界；玩家造成的当前世界变化必须来自 committed event log 或后续 checkpoint |
-| 客户端长期应 seed+maps+D+H 本地重算 baseline（同构路线，6-29/6-30 原计划） | 2026-07-06 投影路线终态：客户端 snapshot-only（近窗 1m + 远区 7m 双分辨率投影）；配方留服务端（懒物化仍是服务端存储目标）；同构路线降格为"处女地基底本地生成"定向加法，五条件 + 负载画像全命中才评估 |
+| 客户端长期应 seed+maps+D+H 本地重算 Online baseline（同构路线，6-29/6-30 原计划） | 2026-07-06 投影路线终态：Online 客户端 snapshot/delta-only（近窗 1m + 远区 7m 双分辨率投影）；配方留服务端（懒物化仍是服务端存储目标）；离线 Mock 不改变该生产边界 |
 
 ## 证据源
 
@@ -130,4 +130,4 @@ flowchart LR
 - [`docs/30-reference/protocol/glossary.md`](../../../30-reference/protocol/glossary.md)
 - [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)
 - [`docs/20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md)（历史 LOD 分层证据）
-- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（完整 XYZ 唯一现役作战主线；远景纯 3D 壳尚未生产接线）
+- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（完整 XYZ 唯一现役作战主线；Pure3D far 已进入唯一客户端生产组合根，Online confirmed provider 尚未接线）

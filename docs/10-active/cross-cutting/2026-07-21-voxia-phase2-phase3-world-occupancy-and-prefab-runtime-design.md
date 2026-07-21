@@ -1,7 +1,7 @@
 # Voxia 阶段 2/3：世界占用与 Prefab 运行时设计
 
 - **日期**：2026-07-21
-- **状态**：用户批准，三路专家审计完成；实施尚未开始
+- **状态**：阶段 2 已实现并完成 fresh 双审；阶段 3 与 Online authority 尚未开始
 - **现役客户端**：`clients/Voxia`（UE 5.8）
 - **客户端审计基线**：`origin/master@d5a27f7`
 - **主仓审计基线**：`master@6559a212`
@@ -807,3 +807,8 @@ public confirmed owner。`FVoxiaRefinedMicro` 收敛为 wire DTO，`AnyOwner()` 
 - 本设计已经吸收全部 P0/P1 裁决；没有遗留会改变阶段 2/3 产品结果的未决项。
 - 未来 Online wire、DB schema、分片、opcode 和 durable transaction 物理实现仍是独立后续设计，不由当前
   客户端计划猜测。
+- 阶段 2 已在独立 Voxia worktree 完成：最终实现固定 SHA
+  `15ab99476930f485460552914cb1744040dd2f72`，Development build、`141/141` UE Automation、
+  `75/75` Node、唯一生产根 Null-RHI 联合闭环与 1920×1080 D3D12 Real-RHI 30 分钟长稳通过；
+  Real-RHI 记录 49 个完成样本、105 次 far commit、0 fatal/authority/GPU error。双代码专家最终复审
+  `Critical/Important/Minor=0/0/0`。阶段 3 的前置门禁因此满足，但代码仍未开始。

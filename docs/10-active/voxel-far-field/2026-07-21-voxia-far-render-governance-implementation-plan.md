@@ -8,6 +8,8 @@
 
 **Tech Stack:** Unreal Engine 5.8、C++20、`UDynamicMeshComponent` / GeometryFramework、DefaultLit UE Material、VSM、TSR、Node.js 内置模块、UE Automation、Voxia stdio CLI / `.demo/observe/`。
 
+**Status:** RG0–RG6 已全部实现、验证、审查并合入主线。前部任务正文中保留的 unchecked checkbox 是实施时的原始计划快照，不代表当前进度；当前完成事实与证据只认文末 `Execution Progress`。
+
 ## Global Constraints
 
 - 只开发 `clients/Voxia`；`clients/web_client` 与 `clients/bevy_client` 不读取、不修改、不验证。

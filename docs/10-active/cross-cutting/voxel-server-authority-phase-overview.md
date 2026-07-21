@@ -2,7 +2,7 @@
 
 本目录用于跟踪"体素全面服务器权威化"长期工作的计划与执行进度。每个阶段(Phase)对应一份独立的计划文件,文件内含进度日志,完成后归档。
 
-> **2026-07-13 空间契约裁决**：完整 XYZ 是体素窗口、远景壳、page/cell identity、coverage、LOD、cache、prefetch、handoff 与预算的唯一权威事实。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。XZ tile column、有限 Y 呈现带和固定 `Tile.Y=0` 只保留在归档证据中，不得恢复为兼容运行时或新设计。现役作战主线是 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)；远景纯 3D 壳尚未接入生产 live，hidden staging / preview 不等于完成切流。
+> **2026-07-13 空间契约裁决，2026-07-21 状态更新**：完整 XYZ 是体素窗口、远景壳、page/cell identity、coverage、LOD、cache、prefetch、handoff 与预算的唯一权威事实。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。XZ tile column、有限 Y 呈现带和固定 `Tile.Y=0` 只保留在归档证据中，不得恢复为兼容运行时或新设计。现役作战主线是 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)；Pure3D far 已进入唯一客户端生产组合根并完成 A10/阶段 1/2 验收，Online confirmed provider 尚未接入。
 
 ## 起点参考
 
@@ -10,7 +10,7 @@
 - **旧体素同步 · 版本 · 滑动窗口 · 渲染设计（2026-06-29，已归档)**:[`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md) —— 历史 HOW 证据；版本正交、content_version 与动态层边界仍可参考，但 XZ column、有限 Y 和旧窗口预算已经失效。
 - **旧体素生成 / 流送 / Voxia 加载渲染实施计划（2026-06-30，已归档)**:[`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) —— 历史 Phase 0-8 执行证据；H、H gate、canonical 等术语仍可查证，空间契约以纯 3D 主线为准。
 - **WorldGen v1 确定性地形生成设计（2026-06-30，已归档)**:[`docs/20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../../20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) —— 旧 2.5D 算法稿只保留为迁移证据，不再是目标契约；当前目标是 `chunk_xyz -> canonical 3D chunk`，地表只是三维密度算子的一种内容结果。
-- **里程碑 A 扩展：完整 3D 体素立方壳与客户端流送（2026-07-12，唯一现役上位主线)**:[`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) —— A10 已有唯一 `production_all_features` 开发根、S1b-1 root-owned source identity、H-gated local provider 与 Pure3D far 的 diff/residency/cancel/shared-artifact/parallel-surface/stable-patch 首轮链路；S1b-1 automation、共享 near/far transaction、反向依赖/full oracle、离群帧、三轴 route 和在线 authority provider 未完成。当前执行稿见 [`A10 WorldGen 完整客户端 3D 滑动世界`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)；B/C 均未开始。
+- **里程碑 A 扩展：完整 3D 体素立方壳与客户端流送（2026-07-12，唯一现役上位主线)**:[`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) —— 客户端 A10 与阶段 1/2 已完成：唯一 `production_all_features` 根、S1b-1 root-owned source identity、H-gated local provider、Pure3D far 增量链、full oracle、三轴 route、材质族与 confirmed near/far presentation transaction 均已自动化和实跑验证。Online authority/provider 尚未接入；near/far 各自维护派生 residency/cache，不以共享可变状态作为后续门禁。执行证据见 [`A10 WorldGen 完整客户端 3D 滑动世界`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)；B/C 均未开始。
 - **Voxia SVO 远景预览设计（2026-06-30，已归档)**:[`docs/20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md) —— 历史 occupancy preview 与性能目标证据；不定义当前 shell/page/live 契约。
 - **Voxia 远景公共组件抽取 + VHI 2.5D baseline 定位（2026-06-30，已归档)**:[`docs/20-archive/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) —— 历史组件抽取与 2.5D baseline 证据；不得作为当前 coverage 或内容模型。
 - **Voxia 体素管理管线历史生产路线（2026-07-05，已归档)**:[`docs/20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md`](../../20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md) —— 历史 L0-L4 路线与预算证据；其中 XZ/column 与 raymarch 候选口径已被当前纯 3D、mesh-only 作战主线取代。
@@ -46,10 +46,10 @@
 | A4-bis-cluster | A4 子阶段:真正的多 scene_node 分布式部署(BeaconServer term key 升级 + RegionRouting + lease 按 scene_node 分配 + 双 BEAM e2e) | 决策稿就位 | [`phase-A4-cross-region-prefab.md`](../../20-archive/voxel-authority/phase-A4-cross-region-prefab.md)(文末专段) |
 | 5 | 属性目录 + 温湿度基础模拟 | 已完成 | [`2026-05-13-phase5-backlog-and-subphase-decomposition.md`](../../20-archive/field-emergence/2026-05-13-phase5-backlog-and-subphase-decomposition.md) |
 | 6 | 局部场最小目标(FieldLayer + 电场 + 温度场 + FieldDebugOverlay) | 服务端 `FieldLayer`、电场与温度场已完成；归档 Web `FieldDebugOverlay` slice 当时已完成，仅作历史证据，不代表 Voxia 完成 | [`2026-05-13-体素局部场最小目标-索引.md`](../../90-obsolete/field-emergence/2026-05-13-体素局部场最小目标-索引.md) |
-| 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；7.D3 温度 FieldEffect 写回最小闭环已完成；7.E 第一批材料物性已完成；7.B ConductionPathKernel core/runtime 已完成；归档 Web 入口曾完成，只作历史实现证据，Voxia 等价交互未落地时仍是 Milestone A 客户端缺口；prefab 接入所有局部场的 projection 设计已就位；后续推进以 2026-05-16 roadmap 与 2026-05-19 prefab projection 设计为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../field-emergence/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md) / [`2026-05-19-prefab-field-participant-projection.md`](../field-emergence/2026-05-19-prefab-field-participant-projection.md) |
+| 7 | 局部场传播 Kernel 架构目标(FieldKernel + FieldRuntime) | 进行中（7.A 已完成；7.D1 SetTemperature/Cool 已完成；7.D2 温度 source 最小闭环已完成；7.D3 温度 FieldEffect 写回最小闭环已完成；7.E 第一批材料物性已完成；7.B ConductionPathKernel core/runtime 已完成；归档 Web 入口曾完成，只作历史实现证据，Voxia 等价交互未落地项属于后续客户端阶段 5，不重新打开已完成的扩展 A/A10；prefab 接入所有局部场的 projection 设计已就位；后续推进以 2026-05-16 roadmap 与 2026-05-19 prefab projection 设计为准） | [`2026-05-14-phase7-field-kernel-architecture.md`](../field-emergence/2026-05-14-phase7-field-kernel-architecture.md) / [`2026-05-16-phase7-local-field-runtime-roadmap.md`](../field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md) / [`2026-05-19-prefab-field-participant-projection.md`](../field-emergence/2026-05-19-prefab-field-participant-projection.md) |
 | 8 | 物理现象系统(燃烧 / 结冰 / 结构完整度 / 碳化 / 腐蚀 / 相变) | 设计目标稿 | [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](../field-emergence/2026-05-16-phase8-physical-phenomenon-system-architecture.md) |
 | Baseline/streaming delta migration（历史） | 体素生成、流送、Voxia 加载渲染从全量物化过渡到确定性 WorldGen + D/P + H gate | 已归档；术语和 H gate 证据保留，旧窗口形状失效 | [`2026-06-30-voxel-generation-streaming-client-plan.md`](../../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) |
-| Voxia 扩展里程碑 A | 客户端完整 XYZ near/far LOD、provider-neutral 数据流、原子 presentation 与流送性能 | **A10 实施中**：近场权威窗口固定为 27 tiles / 9261 chunks，单轴换窗进入/退出各 9 tiles / 3087 chunks、保留 18 tiles / 6174 chunks；唯一根、S1b-1 source identity、Pure3D far 的 request/residency/cancel/shared-artifact/parallel-surface/stable-patch 首轮已实跑。S1b-1 automation、共享 near/far transaction、反向依赖/full oracle、离群帧、三轴长巡航与完整材质族未完成；在线 authority provider 后置，B/C 未开始 | [`上位计划`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) / [`A10 执行稿`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) |
+| Voxia 扩展里程碑 A | 客户端完整 XYZ near/far LOD、provider-neutral 数据流、原子 presentation 与流送性能 | **客户端 A10 与阶段 1/2 已完成**：近场权威窗口固定为 27 tiles / 9261 chunks，单轴换窗进入/退出各 9 tiles / 3087 chunks、保留 18 tiles / 6174 chunks；唯一根、S1b-1 source identity、Pure3D far 的 request/residency/cancel/shared-artifact/parallel-surface/stable-patch、full oracle、三轴长巡航、完整材质族与 confirmed near/far presentation transaction 均已通过。Online authority/provider 后置，B/C 未开始 | [`上位计划`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) / [`A10 执行稿`](../voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) |
 | WorldGen v1 旧稿（历史） | 旧 2.5D 高度场算法输入 | **已被纯 3D canonical chunk 契约取代；仅保留历史输入** | [`2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../../20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) |
 | Voxia SVO preview（历史） | 旧 Sparse Voxel Octree macro-cell mesh proxy 与性能探索 | 已归档；仅保留证据，不定义当前 shell/page/live 契约 | [`2026-06-30-voxia-svo-preview-design.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md) |
 | Voxia FarField 公共组件 + VHI baseline（历史） | 旧 coverage / 2.5D VHI / SVO 管线的组件与性能证据 | 已归档；可以复用正交组件和证据，但不得复活 XZ column、有限 Y 或 VHI 内容模型 | [`2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) |
@@ -67,34 +67,34 @@
 Phase 6 已落地；Phase 7.A `FieldKernel` kernel-first 迁移已完成；Phase 7.D1 已把
 `F` / `Heat` / `Cool` / `voxel_temp` 动作接到服务端：先写 voxel `temperature` 属性，再由
 `FieldRuntime` 从 voxel truth 检测异常并创建/复用局部场；归档 `web_client` 曾在 set-temperature
-成功后自动打开 Field overlay，这只作为历史实现证据。Voxia 等价入口未落地时，必须继续记为
-Milestone A 客户端缺口，不得以 Web 完成替代。Phase 7.D2 已为温度路径补上 `FieldSource` runtime 事实、
+成功后自动打开 Field overlay，这只作为历史实现证据。Voxia 等价入口未落地项属于后续客户端阶段 5，
+不得以 Web 完成替代，也不重新打开扩展 A/A10。Phase 7.D2 已为温度路径补上 `FieldSource` runtime 事实、
 source lifecycle observability，以及回到环境阈值内时的 0x74 region cleanup。Phase 7.D3
 已补上温度 `FieldEffect` 最小写回边界：worker 交付 non-observe effects，`ChunkProcess`
 作为 chunk authority 应用 `write_voxel_attribute(:temperature)` 或明确 reject unsupported effect。
 Phase 7.E 第一批材料物性（电导/击穿强度等）已落地；Phase 7.B 已把
 `ConductionPathKernel` 接入 `FieldRuntime.ensure_conduction_path/1` 和 HTTP
 `/ingame/voxel/conduct`。归档 Web CLI `voxel_conduct` 曾在成功请求后自动打开 Field overlay，
-这只作为历史实现证据；Voxia 等价导电交互与 overlay 未落地时，必须继续记为 Milestone A
-客户端缺口，不得以 Web 完成替代。Phase 7.F 前置第一片已让
+这只作为历史实现证据；Voxia 等价导电交互与 overlay 未落地项属于后续客户端阶段 5，
+不得以 Web 完成替代，也不重新打开扩展 A/A10。Phase 7.F 前置第一片已让
 electric conduction 也走 owner-aware `FieldSource`，HTTP/runtime 可携带 `source_mode`、
 `ttl_ticks` 和 `energy_budget_joules`，其中 ttl 会约束当前 conduction region lifetime；
 ttl 到期会释放 source 并通过既有 0x74 destroy payload 让客户端看到 field 消失；导电预检失败
 会写 `voxel_conduction_path_rejected` observe，保留预算耗尽等更细失败原因和 source/target
 定位字段；`PowerSource` v1 已让导电请求可声明 DC / AC / pulse、voltage、current limit 和
 frequency；HTTP 透传与 summary 回显仍是服务端事实。归档 Web CLI 曾消费同一入口，只作历史
-实现证据；Voxia 等价 PowerSource 参数交互未落地时，必须继续记为 Milestone A 客户端缺口。
+实现证据；Voxia 等价 PowerSource 参数交互未落地项属于后续客户端阶段 5，不重新打开扩展 A/A10。
 默认物理来源已收敛到
 `material_id=6` 的 `power_block`：普通 iron 只做导线，未显式传 owner/power 参数时不能凭空供电。
 electric-to-thermal 第一片已接入：导电路径会把 source voltage 和 load current 估算成焦耳热
 FieldEffect，由 `ChunkProcess` 写回 voxel 温度 truth；HTTP 可透传 `load_current_amps`
 和 `energy_budget_joules`，过载负载会以 `current_limit_exceeded` 拒绝。归档 Web CLI 曾透传这两个
-参数，只作历史实现证据；Voxia 等价参数交互未落地时，必须继续记为 Milestone A 客户端缺口。
+参数，只作历史实现证据；Voxia 等价参数交互未落地项属于后续客户端阶段 5，不重新打开扩展 A/A10。
 当前仍不做完整电路仿真、持续能量扣减或材料熔断破坏。归档浏览器 GUI 曾有第一版热烟可视化：导电 accepted 后，
 `power_draw.estimated_tick_energy_joules` 会注册为 Field Overlay 热烟源，后续 electric field
 snapshot 按热量比例生成灰色上升烟粒子，方块本体不因这条电热链路染色；归档 Web CLI
 `field_overlay` 曾返回每个 region 的 `smoke` 粒子数。以上只作为历史客户端实现证据；Voxia 等价
-热烟表现与 overlay CLI 未落地时，必须继续记为 Milestone A 客户端缺口，不得以 Web 完成替代。
+热烟表现与 overlay CLI 未落地项属于后续客户端阶段 5，不得以 Web 完成替代，也不重新打开扩展 A/A10。
 自动电路 current overlay 以 `CircuitComponentAnalysis` 的闭合 source-load 谓词作为 runtime
 准入条件：只有 graph 2-core 中同时包含 power source 与 load 时才创建/保留 current field；
 开路 source-load 会返回 `no_closed_circuit`，断环会释放对应 region/source，而不是保留空

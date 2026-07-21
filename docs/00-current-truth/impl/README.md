@@ -27,12 +27,16 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；离线 Mock 阶段 1 已完成，阶段 2/3 设计与实施计划已批准但尚未实施，Online 后置 |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；离线 Mock 阶段 1/2 已完成，阶段 3 prefab 与 Online 后置 |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
-| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 扩展后的里程碑 A 进行中；B/C 未开始 |
+| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 客户端扩展里程碑 A/A10 已完成；Online provider 与 B/C 未开始 |
 | Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
 | Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarHandoffCoordinator.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | near 逐 chunk ownership/fence 与 far 整代 generation 各自维护原子性；唯一根用同一 snapshot、center、generation readiness 与 presentation proof 协调，无第二生产 truth |
+| Voxia confirmed world model | `clients/Voxia/Source/Voxia/Voxel/WorldModel/` | 唯一 confirmed aggregate、candidate-then-publish reducer、三态 sparse overlay、完整 XYZ conflict algebra 与只读 query |
+| Voxia authority boundary | `clients/Voxia/Source/Voxia/Authority/` | intent ledger、确定性 Mock adapter、类型化事件 correlation、presentation work/ack history 与 session reset |
+| Voxia 宏格交互 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaBuildInteractionController.*` | 真实鼠标/Automation/CLI 共用 signed64 XYZ selection/gateway；只支持完整宏格 place/break，拒绝普通微格编辑 |
+| Voxia confirmed presentation | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | freeze frame、exact near/far owner reservation、fence、receipt ack、finalize/recovery 的单一有序事务 |
 | Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；已由 A10 开发根消费，不读取 WorldGen 或 renderer |
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
 | Voxia canonical pages v2 | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPages.*` | XYZ brick + span + LOD、X-fastest dense material `u16` codec；`LoadExpectedBatch` 以外部 manifest SHA-256 + expected identity/set 原子加载，失败 batch 为空 |
@@ -64,16 +68,21 @@
   - Pure3D 增量状态：`--cmd "until_pure3d_stream_settled 300000 1; pure3d_stream_state"`；隔离 probe 另传 `-VoxiaPure3DProbe -VoxiaWorldGenPreview`
   - Near XYZ：`--cmd "until_near_full;near_mesh;snapshot"`，检查 `footprint_contract=xyz_cube`、9261 与 handoff tile/chunk 统计
   - Cube shell probes：`--cmd "voxel_shell_plan;voxel_pages_v2_probe;voxel_shell_stage_probe"`；这些只证明组件，不能替代联合根 readiness，更不能替代在线 authority cutover
+- Voxia 阶段 2 联合 smoke：`node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --nullrhi --resolution 1280x720`
+- Voxia 世界只读诊断：`world intent-status <id>`、`world macro-inspect <x> <y> <z>`、`world transaction-inspect <revision>`、`world parity-check`
 - Voxia 定向 automation：`Automation RunTests Voxia.Voxel`、`Automation RunTests Voxia.Gameplay`、`Automation RunTests Voxia.Presentation`
 - Voxia server CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`
   - Legacy heightmap/projection 命令只用于 archived/offline regression，不是 full-3D 验收入口
 
 ## 注意
 
-2026-07-21 最终工作树已重新运行 Development build、`Voxia` 92/92 automation、Node 37/37、
-1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和两项 30 分钟长稳。生命周期长稳完成
+阶段 2 最终工作树已重新运行 Development build、`Voxia` 141/141 automation、Node 75/75、
+1280×720 Null-RHI 联合闭环与 1920×1080 D3D12 Real-RHI 30 分钟长稳；长稳完成 49 个样本、
+105 次 far commit，release pending 始终归零且 artifact cache 有界。固定 SHA `15ab99476930f485460552914cb1744040dd2f72`
+经双专家零问题复审。阶段 1 仍保留其 1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和
+两项 30 分钟长稳证据。生命周期长稳完成
 113 条路线、110 个资源样本且无单调增长；RG6 长稳固定地形可见闪烁比最大 `0.000027`，最坏
 frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。near-only/far-only 仍只能
 作为 probe，质量档仍只属于同一生产根策略。
 
-完整 3D 的“离线 Mock 客户端阶段 1”与“在线 production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen 成果冒充。
+完整 3D 的“离线 Mock 客户端阶段 1/2”与“Online production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen/Mock 成果冒充。

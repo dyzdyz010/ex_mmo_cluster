@@ -1,21 +1,23 @@
 ---
-status: active
+status: client-complete-online-deferred
 ---
 
 # 里程碑 A10 作战任务：WorldGen 驱动的完整客户端 3D 滑动世界
 
 - **日期**：2026-07-12
-- **状态**：实施中（S2/S3/S2L 已完成首轮实跑；S4 的 shared-artifact/parallel-surface/async-plan 性能切片与 S5 稳定 XYZ far-patch 已落地；统一 near/far transaction、反向依赖/full oracle、连续 route、离群帧与收口仍待完成）
+- **状态**：客户端 A10 已完成并通过自动化、Null-RHI、Real-RHI 与专家终审；Online authority/provider 不在本任务范围
 - **归属**：扩展后的里程碑 A / A10
 - **上位计划**：[`2026-07-12-pure-3d-voxel-shell-migration.md`](2026-07-12-pure-3d-voxel-shell-migration.md)
 - **影响范围**：Voxia 场景进入与 pure-3D composition root、WorldGen/本地磁盘 page provider、三轴滑动窗口、page/artifact residency、resolved surface DAG、patch scene host、CLI/observe/automation
 - **不改变**：服务端 authority、confirmed truth 来源、H gate、wire opcode、生产 1m/7m 投影契约与 `apps/*`
 
+> **2026-07-21 closeout 阅读规则**：第 0–12 节保留 2026-07-12 至 2026-07-17 的原始执行设计、任务拆分和当时退出门槛，只作为历史实施证据，不再定义当前架构。其间所有要求 near/far “共享 provider/residency/generation”、进入同一 coverage generation、或把两个 actor 收敛为共享可变服务的表述，均已被最终正交契约取代：唯一根冻结 source/world/session identity；near/far 各自持续维护派生 generation/residency/cache；根级 confirmed presentation transaction 只组合 immutable proof/receipt，不共享可变状态。当前规范以 `docs/00-current-truth/`、本文件第 13 节最后一条 closeout 与 Voxia 根 README 为准。
+
 ## 0. 作战决策
 
 A8/A9 已证明完整 3D 外壳的空间、数据、表面与 Real-RHI 内核能够工作。A10 的第一片现已建立唯一 `production_all_features` 运行根：普通 `-VoxiaWorldGenPreview` 由 `AVoxiaUnifiedVoxelWorldActor` 同时持有成熟 near 滑窗/数据泵与 Pure3D far，GameMode 不再让旧 2.5D 与 Pure3D 两个顶层世界二选一。根级门槛要求 active near window 已结算、far 已 live、XYZ center 一致；高空 near 全空气也能以 zero geometry 正确 ready。
 
-这解决了“所有成果没有一个共同运行事实”的问题，但没有把两个实现模块误称为同一流送事务。A10 当前已进一步把 Pure3D far 改为可替换的 WorldGen/H-gated `local_disk` request provider、immutable page residency、合作取消、依赖指纹 artifact 复用与绝对 XYZ stable-patch transaction；统一根不再创建被隐藏的 Pure3D near mesh/component。相邻一 tile 实跑只请求 `1517 / 33752` pages，复用 `32199` 个 material artifact、`29533` 个 surface artifact和 `175 / 216` 个 far patch。S4 又落地 source-bound immutable shared artifact cache、后台优先级 parallel resolved surface、`TFuture::Consume()`、worker coverage plan、worker coverage retirement 与预算化 lease release；最新 Real-RHI 相邻 worker 约 `0.91-0.95s`，far GameThread prepare/finalize/publish 分段约 `4.5-7.5ms`。成熟 near 与 Pure3D far 仍分别维护 generation/source，本地 provider 也只接 far，因此 A10 尚未收口。
+这解决了“所有成果没有一个共同运行事实”的问题，同时保持两个子系统的正交所有权：near 与 Pure3D far 分别维护自己的派生 generation/residency/cache，由根冻结 source identity 并以 confirmed presentation transaction 原子组合。A10 已把 Pure3D far 改为可替换的 WorldGen/H-gated `local_disk` request provider、immutable page residency、合作取消、依赖指纹 artifact 复用与绝对 XYZ stable-patch transaction；统一根不再创建被隐藏的 Pure3D near mesh/component。相邻一 tile 实跑只请求 `1517 / 33752` pages，复用 `32199` 个 material artifact、`29533` 个 surface artifact和 `175 / 216` 个 far patch。后续阶段又完成 full oracle、完整三轴 route、HUD、材质族、资源释放门禁与长稳验收。开发用 `local_disk` 仍只接 far；补 Online provider 或 local-disk near provider 是独立 adapter 工作，不表示 A10 未收口。
 
 本任务先以客户端 WorldGen 建立增量主干，再以 H-gated 本地磁盘 pack 验证真实可替换数据源，把 pure-3D 路径升级为：
 
@@ -76,7 +78,7 @@ flowchart LR
     Host --> Commit["atomic visibility commit"]
 ```
 
-当前仍有五个结构性缺口：
+以下是 2026-07-14 checkpoint 当时的五个结构性缺口，现均已被 2026-07-21 客户端 closeout 取代：
 
 1. GameMode 与根级 ready 已统一，但成熟 near 与 Pure3D far 子模块仍各自维护 revision/generation；尚未共享 source identity、coverage transaction 与 page residency。
 2. Pure3D far 已有 Bootstrapping/InitialLoading/Playable/Streaming/Cancelling/Leaving、latest-only cancel 和 EndPlay；根级 HUD、prefetch/hysteresis、路线驱动与完整失败重试仍未收口。
@@ -84,7 +86,7 @@ flowchart LR
 4. far patch 已稳定分块且 retained component 不重传，但 near 仍走成熟 `AVoxiaWorldActor` 自己的 chunk transaction；near/far 尚不是同一 coverage generation/fence。
 5. 六方向、垂直、对角、折返、传送和长巡航尚未形成同轮报告；当前只批准相邻 +X 和既有高空证据。
 
-因此，当前已从“全量静态外壳”进入**可取消、页级差集、artifact 复用和 far-patch 差分提交**阶段，但尚不能把一次相邻移动外推为连续三轴巡航完成，也不能把 far 自己的 transaction 外推为 near/far 统一 transaction。
+因此，该 checkpoint 当时只批准从“全量静态外壳”进入**可取消、页级差集、artifact 复用和 far-patch 差分提交**阶段；它没有外推一次相邻移动。后续 closeout 已用 full oracle、完整三轴 route 与根级 confirmed presentation transaction 补齐证明。
 
 ### 1.3 基线证据
 
@@ -639,6 +641,8 @@ incremental surface/quad/material histogram == clean full-build histogram
 
 ## 13. 进度日志
 
+本节按时间保留各 checkpoint 当时的判断；较早条目中的“尚未完成”均由后续条目覆盖，不代表当前状态。
+
 - **2026-07-12 / 作战任务建立**：确认完整 3D 外壳 A8/A9 内核已实现，但 pure-3D actor 仍是整代全量重建。用户拍板 tile 变化必须分块替换，共同 page/artifact/component 必须复用；先将 cooperative cancellation、差集 residency、依赖感知 DAG、稳定 patch scene transaction 与 provider 接线列为 A10 独立作战任务。最初把 H-gated fixture 接线也放在关键路径，随后由下一条用户实机结论取代。
 - **2026-07-12 / 执行口径重排**：用户实机进入 pure-3D 入口后确认当前只是一套静态式 WorldGen 外壳，既有客户端 near/far、滑动窗口和数据泵并未迁入新组合根。A10 因此改为先用客户端 WorldGen 跑通完整场景系统：正常入场即有 near+far，真实 pawn 自动驱动 XYZ 滑窗，page 按请求进入 residency，共同内容复用，变化 patch 原子替换。现有 H-gated 原子磁盘 batch loader 继续作为地基，但尚未实现的磁盘 request/live provider 与服务器流送退出 A10 关键路径；以后接服务器只能替换 provider，不能再补客户端流程。
 - **2026-07-12 / 唯一根事实 S1a**：新增 `FVoxiaVoxelWorldComposition`、`AVoxiaUnifiedVoxelWorldActor` 与根级 CLI/stdio gate。`-VoxiaWorldGenPreview` 默认选择唯一 `production_all_features` root；旧 WorldActor 在根内只承担成熟 near 滑窗/数据泵，Pure3D 只显示 far，legacy/Pure3D standalone 降为显式 probe/compatibility。Development build 与 `Voxia.Gameplay.VoxelWorldComposition` automation 通过；Null-RHI 小窗根 ready。默认 Real-RHI 地面根为 near `855 components / 78451 quads`、far `33725 pages / 359397 quads`，稳定帧 p95=`6.705ms`；真实 pawn 飞到 `[8,13,-54]` 后 near=`3087 ready chunks / 0 geometry`、far=`288445 quads`，中心一致且根再次 ready，截图无旧二维柱洞。该切片当时的高空 far full build 仍耗 `12682.556ms`，Pure3D hidden near 也仍重复构建，因此当时只批准 S1a 联合基线；后续 S2-S5 的现状见本日志下方新增条目。
@@ -654,3 +658,4 @@ incremental surface/quad/material histogram == clean full-build histogram
 - **2026-07-14 / 未提交代码审计 + 会话现场**：7 子代理对抗审计整批未提交 A10 代码（S1a→S5/S2L/S4 + S1b-1）是否与本决策稿对齐。结论：功能行为忠实于计划、零禁止越界、零谎报统一；差距集中在退出门槛/契约形式化/测试证明力未收口。明确契约偏离 3 处（S3 取消粒度硬编码违反 §5.3、S3 `ProviderInvalidated` 死枚举、S5 per-patch 预算缺失违反 §5.6 前置条件）；退出门槛未强制 2 处（S5 提交帧 gap/overlap=0 仅 CLI 探针、S2 provider==enter+dirty 是涌现非断言）；测试缺口若干（S1b-1 无 automation、S2 planner 仅一维、residency 淘汰/越界无测试）；S4 两处字面偏离（mip algo version 未入键、surface 依赖指纹用镜像枚举非 sampler 记录）。S2L 与禁止越界/near/CLI 完全对齐。详见 [`2026-07-14-a10-uncommitted-code-audit.md`](2026-07-14-a10-uncommitted-code-audit.md)（含提交账本、233s 破案、可跑脚本/截图 skill、换机注意）。用户决定全体提交并推送以换机继续。
 - **2026-07-13 / S1b 启动与子分片分解**：A10 治理文档分支已合并回 master（合并提交 `60bdfe6`，DRAFT PR #9 因 head 停在合并前显示 CONFLICTING，push 分支后消解并快进 master，PR=MERGED；纯文档 PR，CI `Test bevy_client` 失败与本 PR 无关）。已删除该分支，从 master 新开 `agent/voxia-a10-s1b-near-far-unify` 承接 S1b。读清当前 source identity 流向：组合根无 source 概念，`bAuthorized` 只是 composition 级，source 授权只来自 far（`Pure3DFarWorld->IsSourceAuthorized()`），`source_mode` 硬编码 `mixed_near_worldgen_far_local_disk`/`dev_worldgen`；far 的身份三件套=`ProviderKind` + local manifest（路径/SHA256）+ `ExpectedIdentity` 五元组，near 身份隐式。据此把 S1b 拆为 S1b-1..S1b-5（见 §8 A10-S1 子分片），首刀 S1b-1=根拥有唯一 `FVoxiaVoxelWorldSourceIdentity`、far 从根消费停止自解析、根按唯一身份诚实汇报各模块消费状态。
 - **2026-07-17 / 阶段 1 审查硬化候选**：`clients/Voxia@500248e + 97d5002` 补齐 stale plan、residency cancel/fail、build cancel/fail/stale、coverage retire、artifact cache 替换/失败与 EndPlay 的大纯数据所有权。reusable canonical batch 在所有失败路径归还唯一 owner，不同新 owner 不得被旧 generation 覆盖；大纯数据在单条最低优先级 far worker 释放，EndPlay 先 drain 再销毁会 abandon queued work 的 UE 线程池。`far_release.queued/completed/pending`、成功/失败终态、quit 后 `world_snapshot_id` 关联和 clean close 已进入 snapshot/observe/smoke。Development build、Voxia `69/69`、Null-RHI 25 routes 与 1600×900/30 分钟 soak（120 routes、95 样本、无单调增长、release 最终 `391/391/0`）通过；最终代码审查 Critical/Important/Minor 均为 0。最新两次独立 D3D12 performance-only 一红一绿，失败轮 GT max=`424.536ms`；另一次完整 Real-RHI 路线出现 `16.98ms` GT 帧。正式 runner 保持严格失败，因此该候选尚不是新最终验收点，Task 7 Step 3–5 未勾选。
+- **2026-07-21 / 客户端 A10 与阶段 1 closeout**：唯一 `production_all_features` 根已完成 S1b-1 automation、full oracle、完整 XYZ/三轴 route、confirmed near/far presentation transaction、HUD、材质族、资源释放与 Real-RHI 长稳门禁。near/far 各自维护派生 residency/cache，不引入共享可变状态。精确验收数量、产物与后续阶段 2 证据统一索引在 `docs/00-current-truth/README.md`；Online authority/provider 与可选 local-disk near provider 后置，不重新打开 A10。

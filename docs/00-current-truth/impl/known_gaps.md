@@ -17,11 +17,11 @@
 - **32km/稀疏世界/真实地图导入**：缺大世界生成预算、稀疏 chunk 策略、地图 migration 与完整 dirty/rebuild scheduler。
 - **服务端 material 派生**：现有 NIF 仍暴露 `column_height/heightmap_region`；缺 `chunk_xyz -> canonical 3D material page` 及与 1m truth 的一致性验证。
 
-## Voxia 阶段 1 之后的缺口
+## Voxia 阶段 1/2 之后的缺口
 
-> **离线 Mock 阶段 1 已完成，Online production 仍未开始。** 唯一生产根、同一只读 world
-> snapshot、完整 XYZ、near/Pure3D far、safe-view、加载/恢复/菜单、材质族、full oracle、完整
-> 三轴路线和 Real-RHI 长稳态已经通过。不得把下列 Online/内容/发布缺口倒写成阶段 1 未完成。
+> **离线 Mock 阶段 1/2 已完成，Online production 仍未开始。** 唯一生产根、同一 world/session
+> identity、完整 XYZ、near/Pure3D far、普通宏格挖放、confirmed presentation、safe-view、加载/恢复/
+> 菜单、材质族和三入口已经通过。不得把下列 Online/prefab/内容/发布缺口倒写成阶段 1/2 未完成。
 
 2026-07-18 已关闭“刚进入相邻 tile 就全屏重建世界”的功能缺口：相邻 tile 只启动后台 staging，
 旧 committed coverage 继续可玩；全屏恢复只在旧 XYZ cube 外 L∞ depth `>=3` 且 staging pending 时出现。
@@ -29,23 +29,24 @@
 约 `3.2ms`，最大帧低于 `27.34ms`；30 分钟资源长稳无单调增长。旧根 PendingKill 的一次性回收在
 Editor-only barrier 中完成并位于计数重置前，不再污染新根稳定态窗口。
 
-1. **阶段 2 普通宏格交互**：领域设计与实施计划已经批准，但 macro place/break intent、Mock authority、
-   pending ledger、confirmed overlay、near/far presentation、会话 HUD 与错误恢复尚未实施；当前仍应隐藏
-   编辑入口并返回 `feature_not_available_phase2`。
-2. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
+阶段 2 普通宏格交互已经 closeout：macro place/break intent、Mock authority、pending ledger、confirmed
+overlay、near/far exact presentation、HUD/CLI 与 X/Y/Z unload/reload 均已实现并通过 fresh 验证。普通世界没有
+微格编辑，`micro_edit_not_supported` 是稳定产品边界，不是缺口。
+
+1. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
    PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace 尚未实施；
-   必须等待阶段 2 closeout。
-3. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
+   阶段 2 前置门禁已经满足。
+2. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
    source revision 失效、subscription lease、重连与默认在线切流。WorldGen/local pack 不能冒充
    confirmed truth，也不能在在线失败时 fallback。
-4. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
+3. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
    route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉与传送前
    coverage 检查。
-5. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
+4. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
    内容策略，并在不破坏 material-family、world snapshot 与原子提交契约的前提下丰富透明/发光内容。
-6. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与两项 30 分钟长稳均通过；低配置硬件、发布包、
+5. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与阶段 1 两项 30 分钟长稳均通过；低配置硬件、发布包、
    更多驱动与长时真实玩家输入仍未形成发布分档。
-7. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
+6. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
    代码级移除应与 Online provider/协议迁移一起进行，不能在当前客户端主线恢复使用。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
@@ -80,8 +81,8 @@ L4/raymarch A/B 重新列为 B 的任务。
 
 ## 验证与文档治理
 
-- 2026-07-21 Voxia 已 fresh 通过 Development build、`92/92` automation、Node `37/37`、Null-RHI、
-  1920×1080 Real-RHI 完整生命周期、RG6 七路线以及生命周期/视觉各 30 分钟长稳。后续任何代码变化
+- Voxia 阶段 2 已 fresh 通过 Development build、`141/141` automation、Node `75/75`、Null-RHI
+  联合闭环与 1920×1080 Real-RHI 30 分钟长稳；阶段 1 的 Real-RHI 生命周期、RG6 七路线及两项长稳仍有效。后续任何代码变化
   都必须按影响范围重新建立证据，不能沿用本次产物。
 - wire codec 唯一真值仍是 `apps/gate_server/lib/gate_server/codec.ex`；默认协议门禁由服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑共同承担。`clients/web_client` 与 `clients/bevy_client` 仅保留为逻辑归档历史证据，不再承担 current-truth parity oracle、参考实现或默认验收职责。
 - `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

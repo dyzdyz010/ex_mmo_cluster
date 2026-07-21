@@ -4,9 +4,14 @@
 
 **收录标准**：工作未收口（进行中 / 计划中 / 暂停待恢复），且未被推翻。收口后移入 `20-archive/`；被推翻则移入 `90-obsolete/`。
 
+> **迁移期例外（2026-07-21）**：本层暂留少量 `completed` / `completed-history` / `historical-superseded`
+> 执行稿，作为仍在推进的 Voxia 六阶段与 Online/B/C 上位主线的直接证据。它们不表示任务仍在实施；
+> 当前状态以每篇 header、`docs/00-current-truth/` 与本索引说明为准，待上位主线归档清扫时一并迁入
+> `20-archive/`。
+
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **28** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **43** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -18,9 +23,20 @@
 - [`2026-04-15-游戏内容主流程框架化方案.md`](cross-cutting/2026-04-15-游戏内容主流程框架化方案.md)
 - [`2026-06-23-loop-and-zone-scale.md`](cross-cutting/2026-06-23-loop-and-zone-scale.md)
 - [`2026-06-26-genesis-initiative-direction.md`](cross-cutting/2026-06-26-genesis-initiative-direction.md)
-- [`2026-07-14-voxia-client-offline-mock-closure-design.md`](cross-cutting/2026-07-14-voxia-client-offline-mock-closure-design.md) — Voxia 网络无关客户端功能六阶段总纲；当前只展开阶段 1“世界渲染与场景生命周期”
+- [`2026-07-14-voxia-client-offline-mock-closure-design.md`](cross-cutting/2026-07-14-voxia-client-offline-mock-closure-design.md) — Voxia 网络无关客户端功能六阶段总纲；阶段 1/2 已完成，阶段 3 Prefab runtime 是下一客户端阶段
 - [`2026-07-14-web-bevy-client-archive-policy.md`](cross-cutting/2026-07-14-web-bevy-client-archive-policy.md) — Web / Bevy 逻辑归档策略
 - [`2026-07-14-web-bevy-client-archive-implementation-plan.md`](cross-cutting/2026-07-14-web-bevy-client-archive-implementation-plan.md) — 归档客户端默认路径关闭计划
+- [`2026-07-18-voxia-industrial-code-review-and-remediation-design.md`](cross-cutting/2026-07-18-voxia-industrial-code-review-and-remediation-design.md) — Voxia R0–R6 无行为变化工业治理总纲
+- [`2026-07-18-voxia-r0-contract-gates-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r0-contract-gates-implementation-plan.md) — R0 合同与结构门禁执行稿
+- [`2026-07-18-voxia-r1-runtime-snapshot-presenter-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r1-runtime-snapshot-presenter-implementation-plan.md) — R1 统一根 snapshot/presenter 执行稿
+- [`2026-07-18-voxia-r2-cli-router-handlers-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r2-cli-router-handlers-implementation-plan.md) — R2 CLI 目录路由与领域 handler 执行稿
+- [`2026-07-18-voxia-r3-json-runtime-config-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r3-json-runtime-config-implementation-plan.md) — R3 JSON 与冻结运行时配置执行稿
+- [`2026-07-18-voxia-r4-world-actor-role-separation-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r4-world-actor-role-separation-implementation-plan.md) — R4 WorldActor 角色与 legacy probe 分离执行稿
+- [`2026-07-18-voxia-r5-transport-facade-componentization-implementation-plan.md`](cross-cutting/2026-07-18-voxia-r5-transport-facade-componentization-implementation-plan.md) — R5 Transport façade 组件化执行稿
+- [`2026-07-19-voxia-r6-pawn-controller-and-doc-closeout-implementation-plan.md`](cross-cutting/2026-07-19-voxia-r6-pawn-controller-and-doc-closeout-implementation-plan.md) — R6 Pawn controller 与文档收口执行稿
+- [`2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md`](cross-cutting/2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md) — 阶段 2/3 世界占用总设计；阶段 2 已完成、阶段 3 后续
+- [`2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md) — 已完成并终审的阶段 2 普通宏格交互执行稿
+- [`2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md) — 下一阶段 Prefab 世界 runtime 实施计划
 - [`voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)
 
 ### field-emergence
@@ -53,8 +69,12 @@
 
 ### voxel-far-field
 
-- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；扩展后的里程碑 A 进行中，B/C 未开始
-- [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 当前主攻；唯一根、S1b-1 根级 source identity、本地 request provider 与 Pure3D far 的 diff/residency/cancel/shared-artifact/parallel-surface/stable-patch 链已落地，继续统一 near/far transaction、补 S1b-1 automation、反向依赖/full oracle、离群帧与完整 route
+- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；客户端扩展里程碑 A（含 A10）已收口，Online provider 与 B/C 未开始
+- [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — 已完成的 A10 客户端执行稿；唯一根、S1b-1 根级 source identity、本地 request provider、Pure3D far 增量链、full oracle、三轴 route 与 confirmed near/far presentation transaction 均已自动化和实跑验证
 - [`2026-07-14-a10-uncommitted-code-audit.md`](voxel-far-field/2026-07-14-a10-uncommitted-code-audit.md) — 跨机合并前的 A10 代码审计与 S1b-1 边界证据
+- [`2026-07-18-voxia-authority-window-streaming-overdue-design.md`](voxel-far-field/2026-07-18-voxia-authority-window-streaming-overdue-design.md) — 阶段 1 权威窗口后台流送与超期恢复设计
+- [`2026-07-18-voxia-authority-window-streaming-overdue-implementation-plan.md`](voxel-far-field/2026-07-18-voxia-authority-window-streaming-overdue-implementation-plan.md) — 权威窗口后台流送执行稿
+- [`2026-07-21-voxia-far-render-governance-design.md`](voxel-far-field/2026-07-21-voxia-far-render-governance-design.md) — 已完成的 RG0–RG6 远景渲染治理设计与 closeout
+- [`2026-07-21-voxia-far-render-governance-implementation-plan.md`](voxel-far-field/2026-07-21-voxia-far-render-governance-implementation-plan.md) — RG0–RG6 远景渲染治理执行证据
 
 旧 XZ tile column、VHI/heightmap、finite-Y、近远交接与 VLOD 阶段稿已移入 [`../20-archive/voxel-far-field/`](../20-archive/voxel-far-field/)；只保留历史证据，不得作为当前设计。

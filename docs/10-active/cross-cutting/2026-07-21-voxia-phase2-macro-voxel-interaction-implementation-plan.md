@@ -1,12 +1,17 @@
 # Voxia 阶段 2 普通宏格交互实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在唯一 `production_all_features` Mock 根中完成普通宏格选择、挖除、放置、异步确认、会话 overlay、near/far 呈现和三入口闭环，同时建立阶段 3 可直接扩展的唯一 confirmed aggregate 与 authority adapter 骨架。
 
 **Architecture:** 新增 profile-neutral `WorldModel` 与 `Authority` 子系统。`UVoxiaConfirmedWorldSubsystem` 是客户端 confirmed mirror 的唯一 owner，只有 `FVoxiaConfirmedWorldReducer` 可以写入；`UVoxiaWorldIntentSubsystem` 拥有 intent ledger 和 `IWorldAuthorityAdapter`，Mock adapter 私有持有 authority state 并只产生类型化事件。现有 root、renderer、Build controller 只消费 query/gateway/snapshot，不直接读取 Mock、Transport 或写 store。
 
 **Tech Stack:** Unreal Engine 5.8、C++20/UE Core、GameInstanceSubsystem、UE Automation、DynamicMesh/Pure3D presentation、Node.js stdio CLI smoke。
+
+**Status:** `implemented_and_reviewed`。最终实现固定 SHA 为
+`15ab99476930f485460552914cb1744040dd2f72`；fresh Development build、`141/141` UE Automation、
+`75/75` Node、Null-RHI 联合闭环与 1920×1080 D3D12 Real-RHI 30 分钟长稳已通过，
+双代码专家复审 `Critical/Important/Minor=0/0/0`。
 
 ## Global Constraints
 
@@ -98,7 +103,7 @@ README.md
 - Consumes: R0 的 `FVoxiaUnifiedWorldRuntimeContract` 与生产根反射门禁。
 - Produces: `voxia_phase2_world_authority_v1` 合同 label、WorldModel/Authority 允许依赖与禁止依赖文档。
 
-- [ ] **Step 1: 写 ownership contract RED 测试**
+- [x] **Step 1: 写 ownership contract RED 测试**
 
 在 `VoxiaPhase2InteractionAutomationTest.cpp` 要求 R0 contract 暴露阶段 2 authority label：
 
@@ -118,7 +123,7 @@ bool FVoxiaPhase2ProductionBoundaryTest::RunTest(const FString& Parameters)
 }
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run:
 
@@ -131,7 +136,7 @@ Run:
 
 Expected: FAIL，`Phase2WorldAuthorityContract` 尚未定义。
 
-- [ ] **Step 3: 写目录职责与合同 label**
+- [x] **Step 3: 写目录职责与合同 label**
 
 `WorldModel/README.md` 固定依赖方向：Authority event → reducer → snapshot → query/presentation；
 `Authority/README.md` 固定 Input → ledger → adapter，adapter 不写 client store。合同增加：
@@ -145,13 +150,13 @@ static constexpr const TCHAR* Phase2WorldAuthorityContract()
 
 README 同时写明：production Gameplay 最终只能依赖 confirmed query 与 interaction gateway；禁止直接依赖 Mock、codec 或 confirmed mutator。旧直连路径由 Task 6 的 cutover 测试冻结并在同一 task 转绿。
 
-- [ ] **Step 4: 运行原 R0 ownership 测试**
+- [x] **Step 4: 运行原 R0 ownership 测试**
 
 Run: `Automation RunTests Voxia.Gameplay.UnifiedWorldRuntimeContract`
 
 Expected: PASS；新 label 与既有 R0 合同同时通过。
 
-- [ ] **Step 5: 提交合同基线**
+- [x] **Step 5: 提交合同基线**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/WorldModel/README.md Source/Voxia/Authority/README.md Source/Voxia/Gameplay/VoxiaPhase2InteractionAutomationTest.cpp Source/Voxia/Gameplay/VoxiaUnifiedWorldRuntimeContract.cpp Source/Voxia/Gameplay/VoxiaUnifiedWorldRuntimeContractAutomationTest.cpp
@@ -172,7 +177,7 @@ git -C clients/Voxia commit -m "test(world): freeze phase2 authority boundaries"
 - Consumes: `Voxia::FloorDiv`/`FloorMod` 与 `FInt64Vector` 坐标合同。
 - Produces: `FVoxiaWorldMacroKey`、`FVoxiaMacroSpaceRecord`、`FVoxiaMacroIntent`、`FVoxiaWorldConflictSet::Overlaps`。
 
-- [ ] **Step 1: 写坐标、三态和冲突 RED 测试**
+- [x] **Step 1: 写坐标、三态和冲突 RED 测试**
 
 ```cpp
 TestEqual(TEXT("-1 macro"), FVoxiaWorldMacroKey::FromWorldMicro({-1, -1, -1}).X, -1LL);
@@ -186,13 +191,13 @@ TestTrue(TEXT("普通宏格与任意微格冲突"), MacroClaim.Overlaps(PrefabCl
 TestFalse(TEXT("同宏格不重叠微格可并存"), PrefabClaim.Overlaps(OtherMicroMaskClaim));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.WorldModel.Domain`
 
 Expected: FAIL，类型和 `Overlaps` 尚不存在。
 
-- [ ] **Step 3: 实现最小纯类型**
+- [x] **Step 3: 实现最小纯类型**
 
 ```cpp
 enum class EVoxiaResolvedMacroSpaceKind : uint8
@@ -246,13 +251,13 @@ bool FVoxiaWorldConflictSet::Overlaps(const FVoxiaWorldConflictSet& Other) const
 
 `FVoxiaMacroIntent` 只允许 `Place`/`Break` 和 macro key；不定义 micro action。
 
-- [ ] **Step 4: 运行 focused test**
+- [x] **Step 4: 运行 focused test**
 
 Run: `Automation RunTests Voxia.WorldModel.Domain`
 
 Expected: PASS，覆盖 X/Y/Z 的 `-1/-8/-9`、All512、同宏格不相交与 entity claim。
 
-- [ ] **Step 5: 提交纯合同**
+- [x] **Step 5: 提交纯合同**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/WorldModel Source/Voxia/Voxia.Build.cs
@@ -273,7 +278,7 @@ git -C clients/Voxia commit -m "feat(world): add macro occupancy contracts"
 - Consumes: Task 2 domain types。
 - Produces: `FVoxiaConfirmedWorldTransaction`、`FVoxiaConfirmedWorldSnapshot`、`FVoxiaConfirmedWorldReducer::Apply`、`UVoxiaConfirmedWorldSubsystem::Snapshot/QueryMacro`。
 
-- [ ] **Step 1: 写 reducer RED 测试**
+- [x] **Step 1: 写 reducer RED 测试**
 
 测试 Empty→Solid→Empty、revision、duplicate、out-of-order、invalid atomicity：
 
@@ -292,13 +297,13 @@ const FVoxiaApplyResult Rejected = Reducer.Apply(Applied.Snapshot, Invalid);
 TestEqual(TEXT("旧 revision 保持"), Rejected.Snapshot.ConfirmedWorldRevision, 1ULL);
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.WorldModel.Reducer`
 
 Expected: FAIL，reducer/subsystem 未定义。
 
-- [ ] **Step 3: 实现 candidate-then-publish reducer**
+- [x] **Step 3: 实现 candidate-then-publish reducer**
 
 ```cpp
 FVoxiaApplyResult FVoxiaConfirmedWorldReducer::Apply(
@@ -336,13 +341,13 @@ FVoxiaApplyResult FVoxiaConfirmedWorldReducer::Apply(
 
 Subsystem 只公开 const snapshot/query 和 `ApplyAuthorityEvent`；不公开 macro mutator。
 
-- [ ] **Step 4: 运行 reducer 与 ownership test**
+- [x] **Step 4: 运行 reducer 与 ownership test**
 
 Run: `Automation RunTests Voxia.WorldModel.Reducer`
 
 Expected: PASS；invalid transaction 不改变 state/revision/dirty set。
 
-- [ ] **Step 5: 提交 reducer**
+- [x] **Step 5: 提交 reducer**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/WorldModel
@@ -364,7 +369,7 @@ git -C clients/Voxia commit -m "feat(world): add atomic confirmed reducer"
 - Consumes: Stage 1 frozen world snapshot/source identity、Task 3 reducer。
 - Produces: `IVoxiaFrozenWorldBaseQuery`、`FVoxiaSessionSparseOverlay::Resolve`、session start/end reset。
 
-- [ ] **Step 1: 写 overlay RED 测试**
+- [x] **Step 1: 写 overlay RED 测试**
 
 覆盖 base solid→explicit empty、base empty→solid、unload/reload、retry/menu：
 
@@ -383,13 +388,13 @@ Overlay.EndSession();
 TestEqual(TEXT("结束会话清理"), Overlay.EntryCount(), 0);
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.WorldModel.SessionOverlay`
 
 Expected: FAIL，overlay 与 base query 尚未定义。
 
-- [ ] **Step 3: 实现三种存储态**
+- [x] **Step 3: 实现三种存储态**
 
 ```cpp
 enum class EVoxiaMacroOverlayKind : uint8
@@ -413,13 +418,13 @@ FVoxiaMacroSpaceLookup FVoxiaSessionSparseOverlay::Resolve(
 
 WorldGen materializer 只实现 immutable base query；不能回读 overlay。Session flow 的 retry 只新建 presentation generation，`ReturnToMainMenu/StartNewGame` 才销毁/新建 overlay。
 
-- [ ] **Step 4: 运行 overlay 与 session tests**
+- [x] **Step 4: 运行 overlay 与 session tests**
 
 Run: `Automation RunTests Voxia.WorldModel.SessionOverlay; Automation RunTests Voxia.Gameplay.ClientWorldSession`
 
 Expected: PASS；`FeatureGate("voxel_edit")` 尚保持旧拒绝，直到 Task 6。
 
-- [ ] **Step 5: 提交 overlay**
+- [x] **Step 5: 提交 overlay**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/WorldModel Source/Voxia/Voxel/VoxiaWorldGenCanonicalPageMaterializer.* Source/Voxia/Gameplay/VoxiaClientWorldSession.*
@@ -445,7 +450,7 @@ git -C clients/Voxia commit -m "feat(world): add session sparse overlay"
 - Consumes: Task 2 intents/conflicts、Task 3 confirmed query、Task 4 base/overlay。
 - Produces: `IVoxiaWorldAuthorityAdapter::Submit/Pump`、`IVoxiaWorldInteractionGateway`、`FVoxiaIntentLedger`、Mock scenarios。
 
-- [ ] **Step 1: 写 ledger/Mock RED 测试**
+- [x] **Step 1: 写 ledger/Mock RED 测试**
 
 ```cpp
 const uint64 First = Ledger.Enqueue(MakePlace(MacroA, 5, 1));
@@ -462,13 +467,13 @@ Mock.AdvanceBy(0.050);
 TestEqual(TEXT("confirmed 后 revision 前进"), Confirmed.Snapshot().ConfirmedWorldRevision, 1ULL);
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Authority.IntentLedger; Automation RunTests Voxia.Authority.Mock`
 
 Expected: FAIL，端口与调度器尚不存在。
 
-- [ ] **Step 3: 实现稳定端口和固定延迟场景**
+- [x] **Step 3: 实现稳定端口和固定延迟场景**
 
 ```cpp
 class IVoxiaWorldAuthorityAdapter
@@ -490,13 +495,13 @@ public:
 
 默认 Mock 延迟固定为 accepted 50ms、confirmed 100ms；scenario/seed/bootstrap 一次冻结。实现 `accept`、`reject_occupied`、`duplicate_event`、`disjoint_reordered`、`stale_event`，禁止随机延迟。
 
-- [ ] **Step 4: 运行 ledger/Mock tests**
+- [x] **Step 4: 运行 ledger/Mock tests**
 
 Run: `Automation RunTests Voxia.Authority`
 
 Expected: PASS；accepted 不改 mirror，前序 rejected 取消重叠后续，不相交 intent 可乱序。
 
-- [ ] **Step 5: 提交 authority runtime**
+- [x] **Step 5: 提交 authority runtime**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Authority Source/Voxia/Gameplay/VoxiaClientRuntimeConfig.*
@@ -519,7 +524,7 @@ git -C clients/Voxia commit -m "feat(authority): add deterministic mock intent r
 - Consumes: `IVoxiaConfirmedWorldQuery` 与 `IVoxiaWorldInteractionGateway`。
 - Produces: 真实鼠标/Automation/CLI 共用的 macro selection/place/break；阶段 2 热栏只启用 material。
 
-- [ ] **Step 1: 扩展真实交互 RED 测试**
+- [x] **Step 1: 扩展真实交互 RED 测试**
 
 ```cpp
 Controller.Initialize();
@@ -546,13 +551,13 @@ TestFalse(TEXT("阶段 2 不得发送 micro edit"), ControllerSource.Contains(TE
 TestTrue(TEXT("生产交互必须使用 gateway"), ControllerSource.Contains(TEXT("IVoxiaWorldInteractionGateway")));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Phase2.Contract; Automation RunTests Voxia.Phase2.Interaction`
 
 Expected: FAIL，controller 仍直连 Transport，阶段 2 gate 仍拒绝。
 
-- [ ] **Step 3: 改为显式依赖并启用 macro feature**
+- [x] **Step 3: 改为显式依赖并启用 macro feature**
 
 将签名改为：
 
@@ -571,13 +576,13 @@ void Break(
 
 Pawn 在组合根初始化时显式解析两个 subsystem 并传入；controller 内不调用 `GetSubsystem`。阶段 2 material slots 解锁，prefab slots 保持 `feature_not_available_phase3`。`FeatureGate("voxel_edit")` 在 active Mock session 返回空，`FeatureGate("prefab")` 返回 phase3 拒绝。
 
-- [ ] **Step 4: 运行 contract/interaction tests**
+- [x] **Step 4: 运行 contract/interaction tests**
 
 Run: `Automation RunTests Voxia.Phase2`
 
 Expected: PASS；Task 1 的 `SendBlockEdit` 禁止门禁转绿，真实点击只产生 intent。
 
-- [ ] **Step 5: 提交 controller cutover**
+- [x] **Step 5: 提交 controller cutover**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Gameplay Source/Voxia/Voxel/VoxiaVoxelRaycast.*
@@ -606,7 +611,7 @@ git -C clients/Voxia commit -m "feat(gameplay): route macro edits through author
 - Consumes: reducer `FVoxiaWorldChangeSet` 与 confirmed snapshot。
 - Produces: `FVoxiaWorldPresentationReceipt`、affected-set obligation、near/far consumed/presented revision。
 
-- [ ] **Step 1: 写 presentation RED 测试**
+- [x] **Step 1: 写 presentation RED 测试**
 
 ```cpp
 const auto Confirmed = Harness.PlaceMacro(Macro, 8);
@@ -622,13 +627,13 @@ TestEqual(TEXT("完整 obligation 后 presented"), Ledger.State(Confirmed.Intent
 
 另测 affected set 非驻留时 `deferred_nonresident_count` 不阻塞 presented，后续 reload 从最新 snapshot 构建。
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Phase2.Presentation`
 
 Expected: FAIL，root 尚未消费 change set/receipt。
 
-- [ ] **Step 3: 接入 revisioned snapshot 与 receipt**
+- [x] **Step 3: 接入 revisioned snapshot 与 receipt**
 
 ```cpp
 struct FVoxiaWorldPresentationReceipt
@@ -649,13 +654,13 @@ struct FVoxiaWorldPresentationReceipt
 
 root 在一帧开头冻结 `FVoxiaConfirmedWorldSnapshot`，near/far 对 changed coverage hidden-stage；旧 owner 保留至对应 fence。只对当前 committed live ownership 计算 obligation。受影响范围在 presented 前 `InteractiveCoverageQuery` 返回 `presentation_pending`。
 
-- [ ] **Step 4: 运行 presentation/streaming tests**
+- [x] **Step 4: 运行 presentation/streaming tests**
 
 Run: `Automation RunTests Voxia.Phase2.Presentation; Automation RunTests Voxia.Presentation`
 
 Expected: PASS；无半更新、accepted 成功提示或 residency revision 冒充 world revision。
 
-- [ ] **Step 5: 提交 presentation 集成**
+- [x] **Step 5: 提交 presentation 集成**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Gameplay Source/Voxia/Authority
@@ -678,7 +683,7 @@ git -C clients/Voxia commit -m "feat(presentation): present confirmed macro tran
 - Consumes: confirmed/query、ledger、presentation snapshot。
 - Produces: additive CLI handlers、JSONL observe 和 deterministic stage 2 smoke。
 
-- [ ] **Step 1: 写 Node RED 测试**
+- [x] **Step 1: 写 Node RED 测试**
 
 ```javascript
 test('phase2 smoke requires pending, confirmed, presented and reload proof', () => {
@@ -690,13 +695,13 @@ test('phase2 smoke requires pending, confirmed, presented and reload proof', () 
 });
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `node --test clients/Voxia/scripts/run_phase2_macro_interaction_smoke.test.js`
 
 Expected: FAIL，runner/validator 尚不存在。
 
-- [ ] **Step 3: 增加稳定命令和 snapshot 字段**
+- [x] **Step 3: 增加稳定命令和 snapshot 字段**
 
 命令：
 
@@ -709,18 +714,18 @@ world parity-check
 
 runner 通过现有 `voxia_stdio_cli.js` 依次执行：等待 root ready、选中宏格、place、读取 pending、等待 confirmed、等待 presented、跨 X/Y/Z tile 卸载/返回、break、查询 `micro_edit` feature gate 得到明确拒绝、返回主菜单。JSON 必须断言 authority/session/intent/conflict/revision/overlay/near/far/fence/reason 字段。
 
-- [ ] **Step 4: 运行 Node 与 focused UE tests**
+- [x] **Step 4: 运行 Node 与 focused UE tests**
 
 Run:
 
 ```powershell
 node --test clients/Voxia/scripts/run_phase2_macro_interaction_smoke.test.js
-node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --null-rhi
+node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --nullrhi --resolution 1280x720
 ```
 
 Expected: 单元 validator PASS；Null-RHI runner `passed=true`，产物写入 `.demo/observe/voxia_phase2_<run-id>/`。
 
-- [ ] **Step 5: 提交可观测面**
+- [x] **Step 5: 提交可观测面**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Debug Source/Voxia/Gameplay scripts/run_phase2_macro_interaction_smoke.js scripts/run_phase2_macro_interaction_smoke.test.js
@@ -745,7 +750,7 @@ git -C clients/Voxia commit -m "feat(debug): expose phase2 macro interaction evi
 - Consumes: Tasks 1–8 全部成果。
 - Produces: 阶段 2 closeout 证据、current-truth、阶段 3 解锁门禁。
 
-- [ ] **Step 1: fresh Development build**
+- [x] **Step 1: fresh Development build**
 
 Run:
 
@@ -757,7 +762,7 @@ Run:
 
 Expected: UnrealBuildTool exit 0，无新增 warning/error。
 
-- [ ] **Step 2: focused 与全量 Automation**
+- [x] **Step 2: focused 与全量 Automation**
 
 Run:
 
@@ -770,25 +775,25 @@ Run:
 
 Expected: focused 全 PASS。随后 fresh 运行 `Automation RunTests Voxia`，通过数不少于基线 92 且 0 failed/not-run。
 
-- [ ] **Step 3: 三入口与完整 XYZ smoke**
+- [x] **Step 3: 三入口与完整 XYZ smoke**
 
 Run:
 
 ```powershell
 node --test clients/Voxia/scripts/*.test.js
-node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --null-rhi
+node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --nullrhi --resolution 1280x720
 node clients/Voxia/scripts/run_xyz_near_window_smoke.js
 ```
 
 Expected: Node 不少于基线 37 tests 且新增测试全 PASS；阶段 2 runner 覆盖鼠标等价输入、CLI、Automation、X/Y/Z unload/reload，`passed=true`。
 
-- [ ] **Step 4: Real-RHI 与资源/呈现预算**
+- [x] **Step 4: Real-RHI 与资源/呈现预算**
 
 Run: 使用阶段 2 runner 的 `--visible-rhi --resolution 1920x1080 --soak-minutes 30`。
 
 Expected: 唯一根 ready；宏格 place/break/pending/confirmed/presented 路线通过；无 gap/overlap、overlay 回退、资源单调增长或 `LogVoxia: Error`。性能与阶段 1 RG6 基线并列报告，不过滤 D3D12/DXGI raw stall。
 
-- [ ] **Step 5: 更新事实并分别提交两个仓库**
+- [x] **Step 5: 更新事实并分别提交两个仓库**
 
 客户端提交：
 
@@ -808,8 +813,8 @@ git commit -m "docs(voxia): record phase2 macro interaction closeout"
 
 ## Self-Review
 
-- [ ] 逐节对照设计稿 §2、§4–§9、§11–§12、§15–§16，确认每个阶段 2 不变量至少有一个 task/test。
-- [ ] 扫描本计划和实现 diff，消除空白步骤、模糊错误处理、未定义类型和“参照前文”式省略。
-- [ ] 核对 `FVoxiaWorldMacroKey`、`FVoxiaConfirmedWorldTransaction`、`FVoxiaConfirmedWorldSnapshot`、`IVoxiaWorldAuthorityAdapter`、`IVoxiaWorldInteractionGateway`、`FVoxiaWorldPresentationReceipt` 在所有 task 中签名一致。
-- [ ] 静态确认 production controller/root 不含 `SendBlockEdit`、micro intent 或 Mock store direct mutation。
-- [ ] 确认 Stage 2 完成前 prefab 热栏仍锁定，Stage 3 没有被隐式实现。
+- [x] 逐节对照设计稿 §2、§4–§9、§11–§12、§15–§16，确认每个阶段 2 不变量至少有一个 task/test。
+- [x] 扫描本计划和实现 diff，消除空白步骤、模糊错误处理、未定义类型和“参照前文”式省略。
+- [x] 核对 `FVoxiaWorldMacroKey`、`FVoxiaConfirmedWorldTransaction`、`FVoxiaConfirmedWorldSnapshot`、`IVoxiaWorldAuthorityAdapter`、`IVoxiaWorldInteractionGateway`、`FVoxiaWorldPresentationReceipt` 在所有 task 中签名一致。
+- [x] 静态确认 production controller/root 不含 `SendBlockEdit`、micro intent 或 Mock store direct mutation。
+- [x] 确认 Stage 2 完成前 prefab 热栏仍锁定，Stage 3 没有被隐式实现。

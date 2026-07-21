@@ -8,7 +8,7 @@
 
 **Tech Stack:** Unreal Engine 5.8、C++20、UE Automation Framework、Slate、Voxia stdio CLI/JSON observe、PowerShell、Node.js。
 
-**Status:** 2026-07-18 已实现；功能/自动化/Null-RHI 已闭环，Real-RHI 功能路线完成但既有严格性能门禁仍未闭合。
+**Status:** 已完成；2026-07-18 功能/自动化/Null-RHI 已闭环，随后由阶段 1/A10 最终 Real-RHI 与专家审查 closeout 覆盖。本稿保留历史执行证据，不重新打开旧性能门禁。
 
 ## Global Constraints
 

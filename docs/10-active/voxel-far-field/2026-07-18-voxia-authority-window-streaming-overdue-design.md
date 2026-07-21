@@ -1,11 +1,11 @@
 ---
-status: implemented-published-review-in-progress
+status: completed-history
 ---
 
 # Voxia 权威窗口后台流送与 3-chunk 超期恢复设计
 
 - **日期**：2026-07-18
-- **状态**：已实现、验证并发布候选分支；大型工业生产标准代码审查进行中；既有严格 Real-RHI 性能门禁仍未闭合
+- **状态**：已实现并由阶段 1/A10 最终审查与 Real-RHI closeout 覆盖；本稿保留为权威窗口硬化历史证据
 - **归属**：Voxia 阶段 1 后续硬化 / A10 完整 XYZ 滑动世界
 - **影响范围**：Voxia 唯一 `production_all_features` 根、客户端 flow、safe-view、near/far handoff、CLI / observe、自动化与 Real-RHI 验收
 - **不改变**：服务端 authority、confirmed truth 来源、baseline H gate、wire opcode、Web / Bevy 归档策略

@@ -1,7 +1,7 @@
 ---
 title: Voxia 工业级代码审查与无行为变化治理设计
-status: active
-review_state: approved-implementation-in-progress
+status: completed
+review_state: implemented-and-reviewed
 date: 2026-07-18
 owners:
   - Voxia

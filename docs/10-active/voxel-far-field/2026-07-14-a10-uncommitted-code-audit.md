@@ -1,5 +1,5 @@
 ---
-status: active
+status: historical-superseded
 ---
 
 # A10 未提交代码审计 + 会话现场（2026-07-14）
