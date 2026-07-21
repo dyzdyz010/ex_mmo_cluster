@@ -1,4 +1,60 @@
-# 当前会话接力：Voxia 权威窗口非阻塞交接已实现，性能门禁未闭合
+# 当前会话接力：Voxia 远景 RG0～RG6 已验收并批准合入主线
+
+## 2026-07-21 远景渲染专题治理收口
+
+- 客户端/外层分支均为 `codex/voxia-render-governance`；全程只使用 Voxia 本地 WorldGen，未启动、
+  修改或验证服务端，协议、功能行为与唯一 `production_all_features` 根未改变。
+- RG0–RG5 已按顺序提交；RG6 客户端收口提交为
+  `a960f1e feat(rendering): close far render governance`。Voxia 是外层忽略的独立 Git 仓库，不存在
+  submodule pointer。两个特性分支均已推送，Voxia PR 为
+  [`#1`](https://github.com/dyzdyz010/Voxia/pull/1)，外层文档 PR 为
+  [`#10`](https://github.com/dyzdyz010/ex_mmo_cluster/pull/10)。
+- 最终实现：far generation 原子可见切换、source UV、coverage-resolved AO/sky、唯一环境光与单主投影、
+  natural material、`performance_natural|quality_natural` 冻结策略、terrain 双阈值时序诊断。
+- fresh 验证：Development build；UE Automation `92/92`；Node `37/37`；Null-RHI 短烟测；
+  1920×1080 Real-RHI 完整生命周期与 RG6 七路线；生命周期/视觉各 30 分钟长稳。
+- 2026-07-21 可见人工验收从本次 Voxia 工作树启动 1600×900、UDS、WorldGen 与唯一
+  `production_all_features` 根；日志确认 `ready/session_ready/centers_aligned=true`。用户确认
+  “效果不错”，并明确批准合入生产主线。
+- 关键证据：
+  - `.demo/observe/voxia_phase1_2026-07-20T20-35-39-702Z_real_rhi_1920x1080/`
+  - `.demo/observe/voxia_phase1_2026-07-20T20-52-19-830Z_real_rhi_1920x1080/`
+  - `.demo/observe/voxia_far_render_2026-07-20T20-47-48-957Z/`
+  - `.demo/observe/voxia_far_render_2026-07-20T21-56-29-664Z/`
+- CI 事实：Voxia 仓库当前未配置远端 workflow/status check；外层文档 PR 自动 CI run `214`
+  最终为 7/11 通过、4/11 失败。该矩阵不属于客户端渲染验收，本轮依照用户边界不下钻、不修改或
+  验证服务端。两个 PR 的目标均为各仓库默认生产主线 `master`，用户已经批准合入；最终发布状态以
+  PR 页面与远端 `master` SHA 为准。
+
+## 2026-07-19 R6 Pawn controller 与文档收口完成
+
+- client 与 outer 继续使用 `codex/voxia-r0-r6-governance` 分支。R6 client 提交为
+  `6d6d22f refactor(governance): extract pawn controllers` 与
+  `f1c0b4d refactor(governance): pass pawn controller dependencies`。
+- `FVoxiaPlayerSessionController` 独占 bootstrap、完整 XYZ subscription、prepare/prefetch、lease 与
+  readiness clock；续租每 Tick 自维护，不依赖移动输入或 `bWasMoving`。
+- `FVoxiaBuildInteractionController` 独占 hotbar、raycast/edit gate、focus/remote action 和 overlay；
+  Interest/Flow 由 Pawn 显式传入，静态门禁禁止 controller 内反向 service locator。
+- `FVoxiaPawnDebugScenarioDriver` 独占 AutoEdit/Demo/Glow/Stress/EditShot/截图/FPS 状态，并复用
+  Pawn 真实点击 façade。`AVoxiaPawn` 只保留输入、移动呈现、相机、视觉调参与顺序组合。
+- wire codec/opcode/body、CLI token/envelope/schema、observe/error 语义、用户键位、可见效果、GameMode 和
+  `production_all_features` 唯一根均未改。
+- Gameplay README 现只保留当前完整 XYZ/唯一根/controller 口径；旧 XZ/VHI/SVO/raymarch 与
+  迁移前性能证据已迁入
+  `docs/20-archive/client/2026-07-19-voxia-gameplay-legacy-renderer-and-performance-evidence.md`。
+- 最终验证：Development build 成功；Automation `84/84 Success`；唯一生产根 Null-RHI
+  25/25 routes；production 交互 CLI 覆盖 land/look/raycast/select/focus/remote/place/break；legacy probe
+  显式报告 `production_root=false`。
+- 最终证据：
+  - `.demo/observe/voxia_governance_r6_explicit_dependency_green_final_20260719/`
+  - `.demo/observe/voxia_governance_r6_full_final_20260719/`
+  - `.demo/observe/voxia_phase1_2026-07-18T18-30-20-151Z_null_rhi_1280x720/`
+  - `.demo/observe/voxia_governance_r6_interaction_cli_final_20260719.log`
+  - `.demo/observe/voxia_governance_r6_legacy_probe_cli_final_20260719.log`
+
+R0～R6 批准范围内已无未完成项。后续若要改变协议、功能行为、可见效果或唯一生产根，
+必须作为新设计与新批准处理，不得借本治理主线扩展。
+
 
 > 当前产品总纲：[`Voxia 客户端网络无关功能分阶段收口`](2026-07-14-voxia-client-offline-mock-closure-design.md)。
 > 阶段 1 规格与结果已归档：[`PRD`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) ·

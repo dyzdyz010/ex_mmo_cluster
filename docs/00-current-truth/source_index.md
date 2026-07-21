@@ -2,7 +2,7 @@
 
 > 本文件把原始文档归类为证据源。它不是当前状态本身；当前状态见 [README.md](README.md) 和各模块文档。
 
-> **体素空间当前口径（2026-07-13）**：完整 XYZ 是唯一权威设计。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。所有 XZ tile column、有限 Y 呈现带、固定 `Tile.Y=0` 的文档均已降为历史证据。现役作战主线只有 [`2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)；远景纯 3D 壳尚未接入生产 live，不得把隐藏 staging / preview 写成完成切流。
+> **体素空间当前口径（2026-07-21）**：完整 XYZ 是唯一权威设计。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。所有 XZ tile column、有限 Y 呈现带、固定 `Tile.Y=0` 的文档均已降为历史证据。Pure3D far 已接入唯一 `production_all_features` 开发根并完成 RG0–RG6 渲染治理；Online authority cutover 仍未开始，开发 WorldGen 根不得冒充在线生产事实源。
 
 ## 分类规则
 
@@ -48,6 +48,7 @@ flowchart TD
 | 旧同步 / 窗口 / 渲染设计 | [`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md) | 历史 HOW 证据；其中 XZ column、有限 Y 与旧窗口预算不再有效 |
 | 里程碑 A 扩展：完整 3D 与客户端流送 | [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) | **唯一现役上位主线**；完整 XYZ、canonical source、Pure3D far、原子 presentation 与遗留退役；A10 进行中，B/C 未开始 |
 | A10 WorldGen 完整客户端 3D 滑动世界 | [`docs/10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) | 当前执行稿；唯一根、S1b-1 root-owned source identity、H-gated local provider 与 far diff/residency/cancel/shared-artifact/parallel-surface/stable-patch 链已实跑；S1b-1 automation、共享 near/far transaction、反向依赖/full oracle、离群帧和三轴 route 未完成 |
+| Voxia 远景渲染 RG0–RG6 | [`docs/10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md`](../10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md) · [`implementation plan`](../10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-implementation-plan.md) | 当前客户端渲染真相：原子提交、稳定 UV、AO/sky、唯一环境、自然材质、冻结质量档与 RG6 Real-RHI/30 分钟证据 |
 | Voxia SVO 预览设计（历史） | [`docs/20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md`](../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md) | 历史 3D occupancy preview 与性能目标证据；不定义当前 shell/page/live 契约 |
 | Voxia 近场窗口内核与 SVO 路线 | [`docs/20-archive/voxel-far-field/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md`](../20-archive/voxel-far-field/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md) | 按系统正交剥离 `3x3x3 tile` 近场窗口契约，并记录后续 subsystem / renderer / SVO page 化升级目标 |
 | 体素 LOD 历史生产路线 | [`docs/20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md`](../20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md) | 历史 L0-L4 路线；其中 XZ/column 运行时和 raymarch 候选口径已被当前纯 3D 作战主线取代 |
@@ -130,6 +131,7 @@ flowchart TD
 - [`docs/20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md`](../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md)（历史过渡设计）
 - [`docs/20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md`](../20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md)（历史交接实现证据）
 - [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（唯一现役作战主线）
+- [`docs/10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md`](../10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md)（现役渲染治理真相）
 - **VLOD A1-A5（历史实现证据）**：[`phase-vlod-a1-explicit-tiering.md`](../20-archive/voxel-far-field/phase-vlod-a1-explicit-tiering.md) · [`phase-vlod-a2-partitioned-staticdraw.md`](../20-archive/voxel-far-field/phase-vlod-a2-partitioned-staticdraw.md) · [`phase-vlod-a3-per-cell-greedy-merge.md`](../20-archive/voxel-far-field/phase-vlod-a3-per-cell-greedy-merge.md) · [`phase-vlod-a3b-per-cell-greedy-merge.md`](../20-archive/voxel-far-field/phase-vlod-a3b-per-cell-greedy-merge.md) · [`phase-vlod-a4-seam-fade-collar.md`](../20-archive/voxel-far-field/phase-vlod-a4-seam-fade-collar.md) · [`phase-terrain-only-tilepop-material-unify.md`](../20-archive/voxel-far-field/phase-terrain-only-tilepop-material-unify.md)。它们完成不代表扩展后的 A10 已完成。
 - **Voxia A6-A7（历史实现证据）**：[`phase-far-temporal-stability-and-seamless-streaming.md`](../20-archive/voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md) · [`2026-07-11-near-far-presentation-handoff.md`](../20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md)。A8-A9 为 pure-3D 单 generation 基础；A10 当前执行见 [`WorldGen 完整客户端滑动世界作战任务`](../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)。
 

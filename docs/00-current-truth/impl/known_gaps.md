@@ -25,8 +25,9 @@
 
 2026-07-18 已关闭“刚进入相邻 tile 就全屏重建世界”的功能缺口：相邻 tile 只启动后台 staging，
 旧 committed coverage 继续可玩；全屏恢复只在旧 XYZ cube 外 L∞ depth `>=3` 且 staging pending 时出现。
-本机严格 Real-RHI 发布性能门禁仍未闭合，最新第二 streaming 窗有 2 个 `>16.67ms` GT 帧；该风险只属于
-性能门禁，不得倒写为功能仍会在 tile 边界误触发全屏恢复。
+2026-07-21 已关闭本机 Real-RHI 流式性能门禁：完整生命周期两窗 frame p99 均约 `7.69ms`，GPU p95
+约 `3.2ms`，最大帧低于 `27.34ms`；30 分钟资源长稳无单调增长。旧根 PendingKill 的一次性回收在
+Editor-only barrier 中完成并位于计数重置前，不再污染新根稳定态窗口。
 
 1. **阶段 2 体素交互**：挖掘/放置 intent、pending UI、confirmed overlay、会话 HUD 与错误恢复尚未
    实施；阶段 1 仍应隐藏编辑入口并返回 `feature_not_available_phase2`。
@@ -36,11 +37,10 @@
 3. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
    route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉与传送前
    coverage 检查。
-4. **内容与美术丰富化**：opaque/translucent/emissive 三类 runtime slot 已完成，默认 WorldGen 内容
-   仍以浅色 opaque terrain 为主。需要在不破坏 material-family、world snapshot 与原子提交契约的
-   前提下丰富透明/发光内容和最终视觉层次。
-5. **发布硬件矩阵**：本验收机 1280×720 与 1600×900 GameThread p95 均通过，30 分钟默认 GC
-   长稳态无资源单调增长；低配置硬件、发布包、更多驱动与长时真实玩家输入仍未形成发布分档。
+4. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
+   内容策略，并在不破坏 material-family、world snapshot 与原子提交契约的前提下丰富透明/发光内容。
+5. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与两项 30 分钟长稳均通过；低配置硬件、发布包、
+   更多驱动与长时真实玩家输入仍未形成发布分档。
 6. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
    代码级移除应与 Online provider/协议迁移一起进行，不能在当前客户端主线恢复使用。
 
@@ -76,11 +76,8 @@ L4/raymarch A/B 重新列为 B 的任务。
 
 ## 验证与文档治理
 
-- 2026-07-18 权威窗口交接改动已 fresh 通过 Development build、`Voxia` `70/70` automation 与
-  Null-RHI 25 路线；Real-RHI 25 条功能路线完成并证明相邻换窗 staging=true/recovery=false，但严格
-  性能门禁因第二窗 2 个超预算 GT 帧保持未关闭。证据见 current-truth 的 streaming/LOD 文档。
-- Voxia 阶段 1 已在最终代码状态重跑 Development build、`Voxia` 68/68 automation、Null-RHI
-  全路线、1280×720 Real-RHI 全路线与 1600×900/30 分钟 Real-RHI 长稳态；后续任何代码变化
+- 2026-07-21 Voxia 已 fresh 通过 Development build、`92/92` automation、Node `37/37`、Null-RHI、
+  1920×1080 Real-RHI 完整生命周期、RG6 七路线以及生命周期/视觉各 30 分钟长稳。后续任何代码变化
   都必须按影响范围重新建立证据，不能沿用本次产物。
 - wire codec 唯一真值仍是 `apps/gate_server/lib/gate_server/codec.ex`；默认协议门禁由服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑共同承担。`clients/web_client` 与 `clients/bevy_client` 仅保留为逻辑归档历史证据，不再承担 current-truth parity oracle、参考实现或默认验收职责。
 - `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

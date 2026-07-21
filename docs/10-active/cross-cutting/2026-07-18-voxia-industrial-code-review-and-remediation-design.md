@@ -1,7 +1,7 @@
 ---
 title: Voxia 工业级代码审查与无行为变化治理设计
 status: active
-review_state: design-pending-approval
+review_state: approved-implementation-in-progress
 date: 2026-07-18
 owners:
   - Voxia
@@ -358,8 +358,81 @@ Transport/WorldActor/Pawn 的核心生命周期。
 
 ### 2026-07-18
 
+- 用户已批准 R0～R6 总体治理方案；按阶段独立实施、验证和提交，只有突破协议、功能行为、
+  可见效果或唯一生产根边界时才重新申请批准。
 - 已提交并推送 authority streaming 候选实现与总仓状态文档。
 - 已完成生产根及直接依赖的第一轮只读审查和静态指标采集。
 - 已确认高风险集中在 actor 角色推断、Transport 职责汇合、CLI 路由合同和配置/观察重复。
 - 已核对主要 async 路径，暂未发现裸 UObject 跨 worker 生命周期使用的证据。
-- 本设计等待批准；批准前不进行代码结构变更。
+- R0 开工基线：Voxia Development 编译成功，`Automation RunTests Voxia` 为 `70/70 Success`，
+  证据位于 `.demo/observe/voxia_governance_baseline_20260718/`。
+- R0 已建立纯值 root phase contract、CLI command contract、可解析 schema fixture 与唯一
+  near/far owner 反射门禁；Development 编译成功，全量 Automation 为 `72/72 Success`、
+  0 test warning/error，最终证据位于 `.demo/observe/voxia_governance_r0_final_20260718/`。
+- R0 没有修改 `AVoxiaUnifiedVoxelWorldActor` 或 `UVoxiaDebugCliSubsystem` live 调用点；R1/R2
+  才允许在同一特征门禁下切换 presenter 与 router。
+- R1 已引入 `FVoxiaUnifiedWorldRuntimeSnapshot` 与纯 presenter；唯一生产根的 probe、full
+  snapshot、root observe 和 authority observe 现在都从一次冻结采样投影，Actor 继续独占
+  spawn、bind、Tick、commit、safe-view 与 flow notification。
+- R1 Development 编译成功，全量 Automation 为 `73/73 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r1_automation_20260718/`；Null-RHI 生命周期 25 条路线通过，
+  证据在 `.demo/observe/voxia_phase1_2026-07-18T15-43-14-725Z_null_rhi_1280x720/`。
+- R1 客户端提交为 `1875183`（`refactor(governance): project root state from one snapshot`）。
+- R2 已让 live stdio CLI 只认 R0 catalog/router，并把 96 个 production 业务块拆入五个显式
+  context handler；重复 help、legacy list 与 unknown JSON 拼接已删除，入口不再含业务 token 比较。
+- R2 Development 编译成功，全量 Automation 为 `74/74 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r2_automation_20260718/`；Null-RHI 25 路通过，证据在
+  `.demo/observe/voxia_phase1_2026-07-18T16-02-35-576Z_null_rhi_1280x720/`。
+- R2 客户端提交为 `c98f67d`（`refactor(governance): route CLI through domain handlers`）；
+  提交前最终全量证据 `.demo/observe/voxia_governance_r2_final_20260718/` 仍为 74/74。
+- R3 已建立 `Core/FVoxiaJson`，并完成 Debug、root presenter 与 Interest 的第一批逐域迁移；
+  既有转义、schema、字段和 CLI 顶层语义由 R0～R2 合同测试继续锁定。
+- `FVoxiaClientRuntimeConfig` 现在冻结进程命令行，13 个现役源文件不再直接读取全局
+  `FCommandLine`；GameMode 在启动 gate 前输出无凭据 `client_runtime_config_frozen` observe。
+  自动化追加命令行夹具只能通过 `WITH_DEV_AUTOMATION_TESTS` 显式刷新边界生效。
+- R3 Development 编译成功，全量 Automation 为 `76/76 Success`、0 failure、0 warning，证据在
+  `.demo/observe/voxia_governance_r3_full_retry_20260718/`；Null-RHI 25 路通过，证据在
+  `.demo/observe/voxia_phase1_2026-07-18T16-22-17-750Z_null_rhi_1280x720/`，独立 CLI smoke clean exit。
+- unity 冲突库存仍有 33 个局部 JSON helper 声明/定义和 7 个 `WriteU8` 定义；R3 不翻转
+  `bUseUnity=false`，后续只能在逐域 schema 门禁与同名家族清零后单独决策。
+- R3 客户端提交为 `c89eadd`（`refactor(governance): freeze runtime config and unify JSON`）。
+- R4 已用一次性显式角色绑定替换 production near 的 owner cast 推断；统一根与 online
+  compatibility 均在 deferred spawn 中绑定，未绑定、重复绑定与 BeginPlay 后绑定硬失败。
+- dormant SVO/VHI/heightmap renderer 已迁入独立 `AVoxiaLegacyVoxelWorldProbeActor`；该类不继承
+  production actor、不提供 production snapshot bind，唯一根反射结构也没有 legacy owner 槽。
+- `AVoxiaWorldActor` 已收缩为完整 XYZ production near、active batch、chunk transaction、retirement 与
+  renderer-neutral ownership façade；旧 renderer token 静态审计为空，兼容 telemetry schema 保持。
+- R4 Development 编译成功，全量 Automation `77/77 Success`；唯一根 Null-RHI 25 路通过并 clean
+  exit，far release=`11/11/0`。production 与显式 legacy probe CLI 均完成结构化实跑，后者保持
+  `near_mesh.present=true` 与原 readiness schema。
+- R4 客户端提交为 `95ed783`（`refactor(governance): separate production near from legacy actor`）。
+
+### 2026-07-19
+
+- R5 已把 Transport 的五类跨域可变状态按批准顺序迁入 `FVoxiaBaselineRepository`、
+  `FVoxiaNearWindowCoordinator`、`FVoxiaConfirmedWorldStores`、`FVoxiaInterestActionGateway` 与
+  `FVoxiaLegacyFarBuildRuntime`；Transport 继续独占 GameInstance 生命周期、TCP pump、HTTP 回调和原
+  public façade。
+- 五个组件分别维护 reset、identity/generation、revision/cadence 与纯 snapshot；near coordinator 在
+  reset 后仍保留在途物理 worker 身份并隔离迟到结果，confirmed stores 继续按单事务发布 session reset
+  revision，legacy far runtime 仍只服务显式 probe/compatibility。
+- 新增 `Voxia.Net.TransportFacadeOwnership` 门禁，禁止 baseline、near、confirmed、gateway 和旧 far
+  owner 字段重新散回 Transport 头文件；wire、CLI schema、observe 字段、错误文本与唯一生产根未改。
+- R5 Development build 成功，全量 Automation `83/83 Success`；唯一根 Null-RHI 25 路通过并 clean
+  exit，far release=`11/11/0`；production 与显式 legacy probe CLI 均通过。
+- R5 客户端提交为 `5f9e741`（`refactor(governance): componentize transport facade`）。
+- R6 已将 Pawn 的 session/subscription/prefetch/lease 迁入 `FVoxiaPlayerSessionController`，
+  hotbar/raycast/edit/focus/remote action 迁入 `FVoxiaBuildInteractionController`，demo/stress/edit-shot/
+  截图/FPS 迁入 `FVoxiaPawnDebugScenarioDriver`；Pawn 只保留输入、移动呈现、相机与顺序组合。
+- session `MaintainRuntime` 每个 runtime Tick 独立执行 prefetch 与 lease refresh，不读取输入轴或
+  `bWasMoving`。build controller 的 Interest/Flow 依赖由 Pawn 显式传入；新静态门禁禁止
+  controller 反向调用 `GetGameInstance` / `GetSubsystem`。
+- `Voxia.Gameplay.PawnControllerOwnership` 冻结三个 owner、13 槽快捷栏、reset/snapshot、状态不回流、
+  session→build→debug 顺序与显式依赖。触达代码注释已统一为中文。
+- Gameplay README 已收缩为现役完整 XYZ/唯一根/controller 真值；353 行旧 XZ/VHI/SVO/raymarch
+  与历史性能证据已迁入 `docs/20-archive/client/2026-07-19-voxia-gameplay-legacy-renderer-and-performance-evidence.md`。
+- R6 最终 Development build 成功，全量 Automation `84/84 Success`；唯一生产根 Null-RHI
+  25/25 routes 通过。交互 CLI 实跑 raycast/focus/remote/place/break，显式 legacy probe 仍为
+  `production_root=false`。
+- R6 客户端提交为 `6d6d22f`（`refactor(governance): extract pawn controllers`）与
+  `f1c0b4d`（`refactor(governance): pass pawn controller dependencies`）。R0～R6 批准治理主线已按阶段完成。
