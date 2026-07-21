@@ -1030,6 +1030,12 @@ gh run list --branch codex/voxia-render-governance --limit 20
 [`#10`](https://github.com/dyzdyz010/ex_mmo_cluster/pull/10) 的自动 CI run `214` 为 7/11 通过、
 4/11 失败。后者不作为客户端渲染证据，依照用户边界不下钻或改动服务端。
 
+- [x] **Step 9: 合入默认生产主线并记录发布状态**
+
+Voxia PR #1 以普通 merge 合入客户端 `master`，merge commit 为 `e0d7c94`；外层文档 PR #10
+以普通 merge 合入主仓 `master`，merge commit 为 `3cdcf3f`。两次合并都使用精确 head SHA
+门禁，未强推、未 squash，RG0–RG6 阶段提交历史完整保留。
+
 ---
 
 ## Plan Self-Review
@@ -1071,5 +1077,6 @@ gh run list --branch codex/voxia-render-governance --limit 20
   放宽阈值处理。runner 已改成“长驻留 + 125ms 短突发”。
 
 客户端 RG6 收口提交为 `a960f1e feat(rendering): close far render governance`。外层不跟踪 Voxia 指针；
-两个独立仓库分支已经推送并建立 PR。可见人工验收通过后，用户已批准将两边合入各自默认
-`master` 主线；发布完成以 PR 状态和远端 SHA 复核为准。全过程继续不启动、修改或验证服务端。
+两个独立仓库分支已经推送并建立 PR。可见人工验收通过后，Voxia PR #1 与外层文档 PR #10
+已经分别以 merge commit `e0d7c94` / `3cdcf3f` 合入各自默认 `master` 主线。全过程继续不启动、
+修改或验证服务端。

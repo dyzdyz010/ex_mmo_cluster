@@ -1,4 +1,4 @@
-# 当前会话接力：Voxia 远景 RG0～RG6 已验收并批准合入主线
+# 当前会话接力：Voxia 远景 RG0～RG6 已验收并合入主线
 
 ## 2026-07-21 远景渲染专题治理收口
 
@@ -9,6 +9,8 @@
   submodule pointer。两个特性分支均已推送，Voxia PR 为
   [`#1`](https://github.com/dyzdyz010/Voxia/pull/1)，外层文档 PR 为
   [`#10`](https://github.com/dyzdyz010/ex_mmo_cluster/pull/10)。
+- 发布结果：Voxia PR #1 已以 merge commit `e0d7c94` 合入客户端默认 `master`；外层文档 PR #10
+  已以 merge commit `3cdcf3f` 合入主仓默认 `master`。RG0–RG6 的阶段提交历史均保留。
 - 最终实现：far generation 原子可见切换、source UV、coverage-resolved AO/sky、唯一环境光与单主投影、
   natural material、`performance_natural|quality_natural` 冻结策略、terrain 双阈值时序诊断。
 - fresh 验证：Development build；UE Automation `92/92`；Node `37/37`；Null-RHI 短烟测；
@@ -23,8 +25,8 @@
   - `.demo/observe/voxia_far_render_2026-07-20T21-56-29-664Z/`
 - CI 事实：Voxia 仓库当前未配置远端 workflow/status check；外层文档 PR 自动 CI run `214`
   最终为 7/11 通过、4/11 失败。该矩阵不属于客户端渲染验收，本轮依照用户边界不下钻、不修改或
-  验证服务端。两个 PR 的目标均为各仓库默认生产主线 `master`，用户已经批准合入；最终发布状态以
-  PR 页面与远端 `master` SHA 为准。
+  验证服务端。两个 PR 均已按用户批准合入各自默认 `master`；最终发布状态以 PR 页面与远端
+  `master` SHA 为准。
 
 ## 2026-07-19 R6 Pawn controller 与文档收口完成
 
