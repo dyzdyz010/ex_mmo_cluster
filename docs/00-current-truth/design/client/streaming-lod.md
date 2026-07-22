@@ -1,13 +1,13 @@
 # Voxia 客户端流送与完整 3D LOD 当前事实
 
 > 本文是 Voxia 近场流送、Pure3D far、完整 XYZ coverage、presentation 与场景生命周期的合并态
-> 真值，并包含阶段 2 普通宏格交互与 confirmed presentation 的当前边界。阶段 1 规格与完成证据已归档到
+> 真值，并包含阶段 2 普通宏格交互与 confirmed presentation 的当前边界。阶段 1 原规格与旧 closeout 证据已归档到
 > [`阶段 1 PRD`](../../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md)和
 > [`阶段 1 closeout`](../../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md)。
 
 ## 当前结论
 
-- **离线 Mock 阶段 1 已完成。** Voxia 从唯一正式入口创建只读 Mock session，进入唯一
+- **离线 Mock 阶段 1 lifecycle 主体存在，但 near/far handoff closeout 已重开。** Voxia 从唯一正式入口创建只读 Mock session，进入唯一
   `AVoxiaUnifiedVoxelWorldActor` 生产根；首次加载、连续流送、safe-view、恢复加载、retry、返回
   菜单和新游戏均已接线并通过三入口验收。
 - **离线 Mock 阶段 2 已完成。** 同一正式根已接入 profile-neutral intent ledger、Mock authority、
@@ -16,10 +16,11 @@
 - **唯一空间口径是完整 XYZ。** 一个 tile 为 `7×7×7=343 chunks`；near radius 1 为
   `3×3×3=27 tiles=9261 chunks`。任一单轴跨 tile 时，entered/exited=`9 tiles=3087 chunks`，
   retained=`18 tiles=6174 chunks`。
-- **相邻 tile 权威交接是后台流送，不是全世界重建。** 首次 presentation proof 后 session readiness
+- **相邻 tile 的 authority coverage 调度是后台流送；renderer tile handoff 正在重开修复。** 首次 presentation proof 后 session readiness
   保持单调；进入新 tile 立即准备 staging，旧 committed `3×3×3` XYZ coverage 继续可玩且不显示
   全屏 overlay。只有玩家越出旧 coverage 的 XYZ/L∞ depth 达到 `3`、staging 仍未提交时才进入
-  “权威覆盖流送超时”全屏恢复；确定性 authority/H/source/proof 错误仍立即失败。
+  “权威覆盖流送超时”全屏恢复；确定性 authority/H/source/proof 错误仍立即失败。当前 active-near
+  可见路径仍构建完整 27-tile candidate，不能把 authority 差集规划误写成 renderer 已完成分块替换。
 - **near/far 共享世界事实，不共享可变隐式状态。** 会话冻结一个 world snapshot/source identity；
   两个 renderer 都消费 `root_world_snapshot`。near 的 active CPU store/tile batch 与 far 的 page
   residency/artifact cache 仍由各自系统自维护，根只通过 generation、center、readiness 与
@@ -117,8 +118,9 @@ flowchart TD
 
 ### 根级正确性
 
-每个已提交 proof 必须满足：snapshot/revision/generation/center 一致，near/far center 对齐，
-`gap_count=0`、`overlap_count=0`、`stale_commit_count=0`。queue depth 最大为 1；旧 live 在新代真实
+每个已提交 proof 的目标契约是：snapshot/revision/generation/settled center 一致，并由 renderer observer 证明
+`gap_count=0`、`overlap_count=0`、`stale_commit_count=0`。2026-07-22 审计发现当前实现仍由调用方自填
+ownership/fence 与零计数，不能作为完成证据；修复见 [tile 级交接决策](../../../10-active/voxel-far-field/2026-07-22-near-far-tile-handoff-repair.md)。queue depth 最大为 1；旧 live 在新代真实
 fence 与可见切换完成前保持可见。
 
 ## 性能口径与结果
@@ -218,10 +220,11 @@ Editor-only `performance_runtime_barrier` 在 frame reset 前等待 compilation/
 
 ## 当前缺口
 
-1. 阶段 3：prefab catalog、24 orientation、instance directory、精确微格投影/命中、原子放置/移除/替换与 refined near/far；设计/计划已完成，阶段 2 前置门禁已满足，但尚未实施。
-2. Online authority provider 与本地 production 包/launcher。
-3. 正式天气策略和更丰富的透明/发光内容。
-4. 低配置硬件、发布包与更多驱动的发布性能分档。
+1. 阶段 1 near/far tile handoff 修复：真实 renderer sink、chunk ownership atlas、tile 渐进提交与 renderer-observed proof。
+2. 阶段 3：prefab catalog、24 orientation、instance directory、精确微格投影/命中、原子放置/移除/替换与 refined near/far；设计/计划已完成，阶段 2 前置门禁已满足，但在阶段 1 handoff 重新收口后继续。
+3. Online authority provider 与本地 production 包/launcher。
+4. 正式天气策略和更丰富的透明/发光内容。
+5. 低配置硬件、发布包与更多驱动的发布性能分档。
 
 ## 被取代结论
 
