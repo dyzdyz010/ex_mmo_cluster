@@ -27,10 +27,10 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；离线 Mock 阶段 1/2 已完成，阶段 3 prefab 与 Online 后置 |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；阶段 1 lifecycle/ownership 与阶段 2 已完成，Far LOD 外露材质归约待修，阶段 3 prefab 与 Online 后置 |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
-| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 客户端扩展里程碑 A/A10 已完成；Online provider 与 B/C 未开始 |
+| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | A8/A10 的跨 LOD 表面材质语义重新打开；其他客户端 lifecycle/ownership 门禁与阶段 2 已完成，Online provider 与 B/C 未开始 |
 | Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
 | Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarTileHandoff.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | target latch 固定共同 identity；normal handoff 逐 Tile 提交 canonical chunk atlas、seam、near visibility 与真实 staging/post fence；far generation 仍整代原子；无第二生产 truth |
 | Voxia near mesh queue | `clients/Voxia/Source/Voxia/Gameplay/VoxiaNearActiveChunkMeshWorkQueue.*` + `VoxiaNearActivePresentation.*` | 最低优先级有界并行、serial 有序发布、pending chunk 去重、generation/stale 隔离与确定性失败身份门禁 |
@@ -43,7 +43,7 @@
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
 | Voxia canonical pages v2 | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPages.*` | XYZ brick + span + LOD、X-fastest dense material `u16` codec；`LoadExpectedBatch` 以外部 manifest SHA-256 + expected identity/set 原子加载，失败 batch 为空 |
 | Voxia canonical page providers | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelPageProvider.*` | WorldGen、scripted memory 与 H-gated `local_disk` 共用 request/result 契约；本地 provider 冻结经外部 H+identity 验证的 manifest entry table，只读请求子集，逐页校验且整批原子发布 |
-| Voxia dev WorldGen materializer | `clients/Voxia/Source/Voxia/Voxel/VoxiaWorldGenCanonicalPageMaterializer.*` | 只消费 WorldGen 的 XYZ material volume 并适配为 identity-bound canonical page batch；column cache 留在生成器内部 |
+| Voxia dev WorldGen materializer | `clients/Voxia/Source/Voxia/Voxel/VoxiaWorldGenCanonicalPageMaterializer.*` | 只消费 WorldGen 的 XYZ material volume 并适配为 identity-bound canonical page batch；当前中心点降采样会漏掉薄表层，surface-aware material reduction 待修 |
 | Voxia 3D material mip | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelMaterialMip.*` | 六向 empty/uniform/mixed face material 归约；mixed 不提供 fallback material |
 | Voxia exact material surface | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelSurfaceArtifact.*` | 从 canonical XYZ page 精确提取实体/空气边界；greedy 只合并同朝向同材质面，coverage 外可显式 unresolved |
 | Voxia shell artifact staging | `clients/Voxia/Source/Voxia/FarField/VoxiaVoxelShellArtifactStager.*` + `VoxiaVoxelShellResolvedSurfaceStager.*` | plan + page gate + material mip + generation-wide owner 邻域解析的全有或全无 staging；不创建 renderer/UObject |
@@ -84,10 +84,14 @@
 经双专家零问题复审。阶段 1 仍保留其 1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和
 两项 30 分钟长稳证据。生命周期长稳完成
 113 条路线、110 个资源样本且无单调增长；RG6 长稳固定地形可见闪烁比最大 `0.000027`，最坏
-frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。2026-07-23 handoff/加载/外观
-修复又以 Development build、`Voxia` 148/148、Node 82/82 和 Phase 1 23-route/21-generation Null-RHI
+frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。2026-07-23 handoff/加载/renderer
+合同修复又以 Development build、`Voxia` 148/148、Node 82/82 和 Phase 1 23-route/21-generation Null-RHI
 联合 smoke 通过；最终 Tile=`27/0/0/27`，gap/overlap/seam/orphan 与 near queue failure 均为 0。
+后续固定相机、全关闭 Lighting/Fog/PostProcessing 的证据重新打开了 live LOD material id 门禁；
+上述自动化只证明 shared asset/fixture/AO 合同，不能冒充该项已修复。
 near-only/far-only 仍只能
 作为 probe，质量档仍只属于同一生产根策略。
 
-完整 3D 的“离线 Mock 客户端阶段 1/2”与“Online production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen/Mock 成果冒充。
+完整 3D 的“离线 Mock 客户端 lifecycle/ownership 与阶段 2”及“Online production authority”必须
+分开表述：前者除已明确重新打开的跨 LOD 表面材质语义外已经完成；后者仍需要服务端 H-gated
+pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen/Mock 成果冒充。

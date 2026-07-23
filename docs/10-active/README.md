@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **43** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **46** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -23,7 +23,7 @@
 - [`2026-04-15-游戏内容主流程框架化方案.md`](cross-cutting/2026-04-15-游戏内容主流程框架化方案.md)
 - [`2026-06-23-loop-and-zone-scale.md`](cross-cutting/2026-06-23-loop-and-zone-scale.md)
 - [`2026-06-26-genesis-initiative-direction.md`](cross-cutting/2026-06-26-genesis-initiative-direction.md)
-- [`2026-07-14-voxia-client-offline-mock-closure-design.md`](cross-cutting/2026-07-14-voxia-client-offline-mock-closure-design.md) — Voxia 网络无关客户端功能六阶段总纲；阶段 1/2 已完成，阶段 3 Prefab runtime 是下一客户端阶段
+- [`2026-07-14-voxia-client-offline-mock-closure-design.md`](cross-cutting/2026-07-14-voxia-client-offline-mock-closure-design.md) — Voxia 网络无关客户端功能六阶段总纲；阶段 2 已完成，阶段 3 设计就绪但先等待 Far LOD 材质语义修复
 - [`2026-07-14-web-bevy-client-archive-policy.md`](cross-cutting/2026-07-14-web-bevy-client-archive-policy.md) — Web / Bevy 逻辑归档策略
 - [`2026-07-14-web-bevy-client-archive-implementation-plan.md`](cross-cutting/2026-07-14-web-bevy-client-archive-implementation-plan.md) — 归档客户端默认路径关闭计划
 - [`2026-07-18-voxia-industrial-code-review-and-remediation-design.md`](cross-cutting/2026-07-18-voxia-industrial-code-review-and-remediation-design.md) — Voxia R0–R6 无行为变化工业治理总纲
@@ -69,8 +69,9 @@
 
 ### voxel-far-field
 
-- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；客户端扩展里程碑 A（含 A10）已收口，Online provider 与 B/C 未开始
-- [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — 已完成的 A10 客户端执行稿；唯一根、S1b-1 根级 source identity、本地 request provider、Pure3D far 增量链、full oracle、三轴 route 与 confirmed near/far presentation transaction 均已自动化和实跑验证
+- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义重新打开，Online provider 与 B/C 未开始
+- [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 客户端执行证据；唯一根、source identity、本地 request provider、增量链、full oracle、三轴 route 与 presentation transaction 已通过，不代表 live LOD material id 已通过
+- [`2026-07-23-far-lod-surface-material-semantic-repair.md`](voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md) — 当前客户端阻断项；记录粗 LOD 中心采样漏掉薄表层的证据、canonical reducer 边界、观察面、测试矩阵与下一会话顺序
 - [`2026-07-14-a10-uncommitted-code-audit.md`](voxel-far-field/2026-07-14-a10-uncommitted-code-audit.md) — 跨机合并前的 A10 代码审计与 S1b-1 边界证据
 - [`2026-07-18-voxia-authority-window-streaming-overdue-design.md`](voxel-far-field/2026-07-18-voxia-authority-window-streaming-overdue-design.md) — 阶段 1 权威窗口后台流送与超期恢复设计
 - [`2026-07-18-voxia-authority-window-streaming-overdue-implementation-plan.md`](voxel-far-field/2026-07-18-voxia-authority-window-streaming-overdue-implementation-plan.md) — 权威窗口后台流送执行稿

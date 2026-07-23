@@ -1,29 +1,34 @@
 ---
-status: client-complete-online-deferred
+status: client-material-semantic-repair-pending-online-deferred
 ---
 
 # 里程碑 A10 作战任务：WorldGen 驱动的完整客户端 3D 滑动世界
 
 - **日期**：2026-07-12
-- **状态**：客户端 A10 已完成；2026-07-23 near/far Tile handoff、活性、near mesh 与外观重新 closeout；Online authority/provider 不在本任务范围
+- **状态**：A10 lifecycle/ownership/流送已完成；跨 LOD 外露表面材质语义重新打开并待实现；
+  Online authority/provider 不在本任务范围
 - **归属**：扩展后的里程碑 A / A10
 - **上位计划**：[`2026-07-12-pure-3d-voxel-shell-migration.md`](2026-07-12-pure-3d-voxel-shell-migration.md)
 - **影响范围**：Voxia 场景进入与 pure-3D composition root、WorldGen/本地磁盘 page provider、三轴滑动窗口、page/artifact residency、resolved surface DAG、patch scene host、CLI/observe/automation
 - **不改变**：服务端 authority、confirmed truth 来源、H gate、wire opcode、生产 1m/7m 投影契约与 `apps/*`
 
-> **当前 closeout 阅读规则**：第 0–12 节保留 2026-07-12 至 2026-07-17 的原始执行设计、任务拆分和当时退出门槛，只作为历史实施证据，不再定义当前架构。其间所有要求 near/far “共享 provider/residency/generation”、进入同一 coverage generation、或把两个 actor 收敛为共享可变服务的表述，均已被最终正交契约取代：唯一根冻结 source/world/session identity 与共同 handoff target；near/far 各自持续维护派生 generation/residency/cache；根级 confirmed presentation transaction 只组合 immutable identity/proof/receipt，不共享可变状态。2026-07-22 的 presentation 重开及 2026-07-23 重新 closeout 见第 13 节末尾；当前规范以 `docs/00-current-truth/`、该最新条目与 Voxia 根 README 为准。
+> **当前 closeout 阅读规则**：第 0–12 节保留 2026-07-12 至 2026-07-17 的原始执行设计、任务拆分和当时退出门槛，只作为历史实施证据，不再定义当前架构。其间所有要求 near/far “共享 provider/residency/generation”、进入同一 coverage generation、或把两个 actor 收敛为共享可变服务的表述，均已被最终正交契约取代：唯一根冻结 source/world/session identity 与共同 handoff target；near/far 各自持续维护派生 generation/residency/cache；根级 confirmed presentation transaction 只组合 immutable identity/proof/receipt，不共享可变状态。第 13 节末尾记录了 presentation 重新 closeout 及随后 Far LOD 材质语义再次重开；当前规范以 `docs/00-current-truth/`、[`专项修复稿`](2026-07-23-far-lod-surface-material-semantic-repair.md) 与 Voxia 根 README 为准。
 
 ## 0. 作战决策
 
 A8/A9 已证明完整 3D 外壳的空间、数据、表面与 Real-RHI 内核能够工作。A10 的第一片现已建立唯一 `production_all_features` 运行根：普通 `-VoxiaWorldGenPreview` 由 `AVoxiaUnifiedVoxelWorldActor` 同时持有成熟 near 滑窗/数据泵与 Pure3D far，GameMode 不再让旧 2.5D 与 Pure3D 两个顶层世界二选一。根级门槛要求 active near window 已结算、far 已 live、XYZ center 一致；高空 near 全空气也能以 zero geometry 正确 ready。
 
-这解决了“所有成果没有一个共同运行事实”的问题，同时保持两个子系统的正交所有权：near 与 Pure3D far 分别维护自己的派生 generation/residency/cache，由根冻结 source identity 并以 confirmed presentation transaction 原子组合。A10 已把 Pure3D far 改为可替换的 WorldGen/H-gated `local_disk` request provider、immutable page residency、合作取消、依赖指纹 artifact 复用与绝对 XYZ stable-patch transaction；统一根不再创建被隐藏的 Pure3D near mesh/component。相邻一 tile 实跑只请求 `1517 / 33752` pages，复用 `32199` 个 material artifact、`29533` 个 surface artifact和 `175 / 216` 个 far patch。后续阶段又完成 full oracle、完整三轴 route、HUD、材质族、资源释放门禁与长稳验收。开发用 `local_disk` 仍只接 far；补 Online provider 或 local-disk near provider 是独立 adapter 工作，不表示 A10 未收口。
+这解决了“所有成果没有一个共同运行事实”的问题，同时保持两个子系统的正交所有权：near 与 Pure3D far 分别维护自己的派生 generation/residency/cache，由根冻结 source identity 并以 confirmed presentation transaction 原子组合。A10 已把 Pure3D far 改为可替换的 WorldGen/H-gated `local_disk` request provider、immutable page residency、合作取消、依赖指纹 artifact 复用与绝对 XYZ stable-patch transaction；统一根不再创建被隐藏的 Pure3D near mesh/component。相邻一 tile 实跑只请求 `1517 / 33752` pages，复用 `32199` 个 material artifact、`29533` 个 surface artifact和 `175 / 216` 个 far patch。后续阶段又完成 full oracle、完整三轴 route、HUD、材质族载体、资源释放门禁与长稳验收。开发用 `local_disk` 仍只接 far；补 Online provider 或 local-disk near provider 是独立 adapter 工作，不属于当前重新打开的材质语义修复。
 
 2026-07-23 重新 closeout 后，跨 renderer transaction 的现役形式是：唯一根用 target latch 固定已经发生
 可见 mutation 的共同 near/far 目标；normal handoff 按实际 Tile 集合逐个提交，canonical chunk atlas、
 seam、near visibility 与真实 staging/post fence 共同证明唯一 visible owner。near CPU mesh 使用有界并行
 和有序发布，near/far opaque 共享 world-aligned 材质与 canonical AO/sky。这些都是客户端派生/呈现
 能力；Online authority 仍只能通过后续 provider/bootstrap 接入，不能把本地 WorldGen 变成 confirmed truth。
+
+该 closeout 只覆盖 renderer asset/UV/AO 与 presentation contract。后续全关闭 Lighting/Fog/
+PostProcessing 的同相机证据证明 live LOD material id 仍不一致：中心点降采样会漏掉默认 4m 表层。
+这项修复属于 canonical material reducer，关闭前 A10 不能再整体标记 client-complete。
 
 本任务先以客户端 WorldGen 建立增量主干，再以 H-gated 本地磁盘 pack 验证真实可替换数据源，把 pure-3D 路径升级为：
 
@@ -676,3 +681,9 @@ incremental surface/quad/material histogram == clean full-build histogram
   UV0 与 canonical AO/sky。Development build、UE `148/148`、Node `82/82`、23-route/21-generation
   Null-RHI smoke 全绿；最终 Tile=`27/0/0/27`、gap/overlap/seam/orphan=0、mesh failure=0，Real-RHI
   ROI p95/p99 channel delta=`1/2`。Online provider/服务端边界不变。
+- **2026-07-23 / A10 material semantic parity 重新打开**：固定相机关闭 Lighting/Fog/
+  PostProcessing 后暖灰色带仍在，同 asset 的事实排除了第二套 UE material。WorldGen canonical
+  materializer 的 LOD1+ 中心采样会漏掉 4m 表层，使 surface material 1→2。presentation/ownership
+  closeout 继续有效；需先补 live owner/ring/LOD/material histogram、thin-stratum RED 测试和
+  surface-aware canonical reducer，并升级 schema/fingerprint/cache gate。阶段 3 在此之前暂停，
+  详见 [`专项修复稿`](2026-07-23-far-lod-surface-material-semantic-repair.md)。

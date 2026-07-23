@@ -3,7 +3,11 @@
 > 状态：`跨阶段总纲 / 六阶段路线已批准`
 > 日期：2026-07-14
 > 范围：唯一现役客户端 `clients/Voxia`
-> 当前阶段：`阶段 1 · 世界渲染与场景生命周期` 与 `阶段 2 · 普通宏格交互` 均已实施、验证并完成专家终审；阶段 2/3 的共同领域模型、阶段边界与权威契约见[阶段 2/3 世界占用与 Prefab 运行时设计](2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)。阶段 3 prefab 尚未实施，阶段 4–6 继续冻结；Online authority/provider 仍是后续工作。
+> 当前阶段：阶段 1 lifecycle/ownership 与阶段 2 普通宏格交互已经实施和终审；阶段 1/A8-A10 的
+> Far LOD 外露表面材质语义因 2026-07-23 新实跑证据重新打开，需先完成
+> [专项修复](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)。阶段 2/3
+> 共同领域模型与权威契约见[阶段 2/3 世界占用与 Prefab 运行时设计](2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)。
+> 阶段 3 设计就绪但暂不实施，阶段 4–6 继续冻结；Online authority/provider 仍是后续工作。
 
 ## 1. 本稿用途
 
@@ -58,7 +62,10 @@ flowchart LR
 | 5 · Field 与世界现象表现 | 网络无关的局部场可视化，以及场对材质、环境和现象表现的输入 | 玩家能理解关键场状态和现象结果；表现只消费同一 Mock confirmed state，错误与缺数据显式可见 |
 | 6 · 客户端整体收口 | 统一 HUD、菜单、错误反馈、性能门禁、唯一生产根和全客户端联合验收 | 阶段 1–5 在同一正式入口联合运行；无第二生产路径；完整测试矩阵、预算和三入口证据通过 |
 
-阶段 1 与阶段 2 已完成。阶段 3 已按用户 2026-07-21 的显式授权形成独立设计和实施计划，现可在阶段 2 已验收骨架上推进；阶段 4–6 继续冻结。真实服务器接入不属于六阶段中的任何一段，只有阶段 6 收口后才另开主线。
+阶段 1 lifecycle/ownership 与阶段 2 已完成；阶段 1 的跨 LOD 外露表面材质语义由新证据重新打开。
+阶段 3 已按用户 2026-07-21 的显式授权形成独立设计和实施计划，但须等待该材质语义门禁关闭后，
+再在阶段 2 已验收骨架上推进；阶段 4–6 继续冻结。真实服务器接入不属于六阶段中的任何一段，
+只有阶段 6 收口后才另开主线。
 
 ## 3. 代码与产品现状审计
 
@@ -147,7 +154,7 @@ flowchart LR
 | D-059 | 当前 draft 发布成功后关闭编辑目标，失败则保留完整现场 | “创建 prefab”作为把当前 draft 发布为 confirmed prefab 的动作，绑定一个精确、已落盘并 pin 的 draft revision。Mock / Online authority 确认成功并返回新的 immutable `prefab_id` 后，该 prefab 进入 catalog，当前 active editing target 随即关闭，不继续在原 draft 上编辑下一版本；若发布被拒绝、失败或取消，则不得关闭或清空当前目标，保留 expression、selection、undo / redo、camera 与诊断现场，并显示可操作原因。发布成功与否都不能静默切换到另一个 prefab；后续新建或打开仍走 D-058 的单 active 关闭 / 激活边界。 |
 | D-060 | prefab-create 等待期间保留只读编辑现场 | 当前 draft 完成本地落盘并开始 prefab-create 流程后，Designer 进入只读等待状态：继续显示当前模型、视角、selection 与诊断，但禁止任何 expression 修改、新建、打开或切换编辑目标。authority 成功后按 D-059 关闭当前目标；拒绝、失败或取消后在同一现场解除只读并恢复编辑。等待期间不能通过打开另一个 prefab 绕过单 active 约束，也不能把后续输入偷偷累积成未显示修改。 |
 | D-061 | 客户端收口改为阶段化推进，总稿只保留跨阶段总纲 | “所有网络无关客户端功能收口”不再作为一份规格一次问完或一次实施。先确定若干有依赖顺序、用户可见结果和独立验收门禁的阶段；随后每次只对当前阶段完成设计、书面确认、实施计划、实现与验收，当前阶段未收口前不展开后续阶段细节。本稿保留服务端权威、Mock 边界、阶段依赖和已经确认的跨阶段决策，不能继续膨胀成所有阶段的单体实施规格。 |
-| D-062 | 六阶段纵向功能闭环已批准，先从世界渲染开始 | 依次推进：`1 世界渲染与场景生命周期 → 2 体素交互闭环 → 3 Prefab 世界运行时 → 4 Prefab Designer → 5 Field 与世界现象表现 → 6 客户端整体收口`。每个阶段必须交付玩家可见闭环并独立通过真实操作、automation、CLI / 日志门禁；不能按底层数据、渲染、UI 横向铺开后长期没有可玩的结果。阶段 1/2 已完成；阶段 3 已获用户授权并完成设计与计划，现为下一客户端阶段；阶段 4–6 暂停，真实服务端连接在六阶段之后另行立项。 |
+| D-062 | 六阶段纵向功能闭环已批准，先从世界渲染开始 | 依次推进：`1 世界渲染与场景生命周期 → 2 体素交互闭环 → 3 Prefab 世界运行时 → 4 Prefab Designer → 5 Field 与世界现象表现 → 6 客户端整体收口`。每个阶段必须交付玩家可见闭环并独立通过真实操作、automation、CLI / 日志门禁；不能按底层数据、渲染、UI 横向铺开后长期没有可玩的结果。阶段 1 lifecycle/ownership 与阶段 2 已完成；阶段 1 Far LOD 材质语义需先补修。阶段 3 已获用户授权并完成设计与计划，修复后执行；阶段 4–6 暂停，真实服务端连接在六阶段之后另行立项。 |
 | D-063 | 微格只服务 prefab | 普通世界地形只允许完整宏格挖放；微格仅是 prefab footprint、材质、命中、碰撞和渲染单位，不存在普通微格编辑。命中微格后必须解析为明确 prefab instance 层级操作。 |
 | D-064 | 普通宏格与 prefab 的精确空间关系 | 普通实心宏格占据完整 `8³` 微格体积并与任意 prefab 微格互斥；同一宏格范围可以容纳多个 prefab，只要实际 world-micro footprint 不重叠。 |
 | D-065 | 唯一 confirmed aggregate | 客户端 confirmed entity mirror、MacroSpace projection 与 coverage/path 索引只能由同一 reducer 在同一 revision 原子更新；MacroSpace 与 PrefabInstanceDirectory 不得成为两个平级可写真值源。 |
@@ -588,9 +595,9 @@ voxel / prefab 世界渲染与交互收口后，再分别定义并完成：
 
 以下问题已经路由到对应阶段，只有当前阶段的问题可以继续展开：
 
-- **阶段 1 已完成并归档**：[`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 与 [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md) 已记录精确功能、实现边界、完整 XYZ、生命周期、三入口和 Real-RHI 证据。
+- **阶段 1 lifecycle/ownership 已完成，LOD 材质语义重新打开**：[`Voxia 阶段 1 PRD：世界渲染与场景生命周期`](../../20-archive/client/2026-07-15-voxia-phase1-world-rendering-lifecycle-prd.md) 与 [`closeout`](../../20-archive/client/2026-07-15-voxia-phase1-world-lifecycle-closeout.md) 保留完整 XYZ、生命周期、三入口和 Real-RHI 历史证据；当前阻断项以 [Far LOD 专项修复](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md) 为准。
 - **阶段 2 已完成并终审**：普通宏格交互、Mock authority、session overlay、intent ledger、single reducer、near/far presentation 与三入口门禁见[阶段 2/3 设计](2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)及其阶段 2 实施计划。
-- **阶段 3 已设计、现为下一客户端阶段**：prefab catalog、24 orientation、跨宏格放置、instance directory、精确微格命中、层级选择、原子移除/替换与 refined near/far 同见上述设计；实现必须接入唯一生产根并复用阶段 2 骨架。
+- **阶段 3 已设计、等待阶段 1 材质语义门禁**：prefab catalog、24 orientation、跨宏格放置、instance directory、精确微格命中、层级选择、原子移除/替换与 refined near/far 同见上述设计；实现必须接入唯一生产根、复用阶段 2 骨架，并在 Far LOD 专项修复关闭后开始。
 - **阶段 4 暂停**：“创建 prefab”的 sync pin / 取消 / 成功去向、family lineage 与 dirty close guard 精确按钮；D-029 至 D-060 作为后续输入保留，不再在当前总稿追问。
 - **阶段 5 暂停**：Field 与世界现象的具体可视化和表现清单。
 - **阶段 6 暂停**：统一 HUD、全客户端性能预算和最终联合验收矩阵。
@@ -607,6 +614,9 @@ voxel / prefab 世界渲染与交互收口后，再分别定义并完成：
 
 ## 11. 当前进度与换机续接点
 
-- 已完成：阶段 1 实施、自动化/CLI/Real-RHI/人工可见验收与归档；R0–R6 和远景 RG0–RG6 治理合入主线；阶段 2 普通宏格 Mock intent→confirmed→presented 闭环、三入口、完整 XYZ 回载、资源长稳与专家终审均已完成。
-- 尚未完成：阶段 3 prefab 客户端 runtime；未来 Online durable transaction、PrefabInstance AOI/wire、DataService schema 与 Gate 边界重构。
-- 下一步：按已批准的阶段 3 设计与计划实现 prefab catalog、微格 footprint、24 orientation、instance directory 与原子 place/remove/replace。Prefab Designer 仍是阶段 4 输入，不得提前开工。
+- 已完成：阶段 1 lifecycle/ownership、R0–R6 和远景 RG0–RG6 renderer 治理；阶段 2 普通宏格 Mock intent→confirmed→presented 闭环、三入口、完整 XYZ 回载、资源长稳与专家终审。
+- 尚未完成：阶段 1 Far LOD 外露表面材质归约；阶段 3 prefab 客户端 runtime；未来 Online durable transaction、PrefabInstance AOI/wire、DataService schema 与 Gate 边界重构。
+- 下一步：先按 [Far LOD 专项修复](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)
+  补观察面、RED 测试与 canonical reducer；关闭后再执行已批准的阶段 3 catalog、微格 footprint、
+  24 orientation、instance directory 与原子 place/remove/replace。Prefab Designer 仍是阶段 4 输入，
+  不得提前开工。

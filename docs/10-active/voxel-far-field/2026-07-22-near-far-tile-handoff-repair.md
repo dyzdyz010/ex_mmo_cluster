@@ -5,6 +5,12 @@
 - **影响范围**：唯一生产组合根、active near tile presentation、Pure3D far ownership renderer、根级 proof、CLI/smoke
 - **不改变**：服务端权威、confirmed truth 来源、完整 XYZ、far generation 内部原子性、阶段 2 intent/receipt 语义
 
+> **完成范围修正（2026-07-23）：** 本稿的 Tile ownership、活性、renderer asset/UV/AO 合同继续完成。
+> 后续固定相机证据重新打开了独立的 canonical LOD surface material 语义：粗中心采样会漏掉 4m
+> 表层。下文“外观/颜色 closeout”只证明同材质 asset 与 fixture contract，不代表 live LOD material id
+> 一致；详见
+> [`Far LOD 外露表面材质语义修复`](2026-07-23-far-lod-surface-material-semantic-repair.md)。
+
 ## 1. 为什么重开阶段 1 / A10 presentation closeout
 
 用户在可见客户端中复现：远景进入近景时同一区域双显数秒，近景退出到远景时朝向近景的一侧暂时缺少
@@ -152,3 +158,10 @@ generation、pending ticket、每 tile commit 时延、真实 gap/overlap、fall
 
 因此第 6 节门禁已关闭，阶段 1/A10 presentation 可重新写为客户端完成；Online authority/provider、
 服务端/wire 与阶段 3 prefab 仍是后续正交工作。
+
+## 8. 后续材质语义证据的边界
+
+本稿最后一段只对 presentation transaction 完成有效。关闭 Lighting/Fog/PostProcessing 后仍存在的
+暖灰色带证明，现有 `voxel_material_parity` 没有覆盖真实 owner/ring/LOD 的 surface material id。
+阶段 3 因此先暂停；先在 A8/A10 内实现 surface-aware canonical material reduction。不得修改本稿已经
+通过的 Tile owner/fence 流程，也不得在 renderer 中增加 tint workaround。
