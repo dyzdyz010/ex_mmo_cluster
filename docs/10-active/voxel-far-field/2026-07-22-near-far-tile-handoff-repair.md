@@ -159,9 +159,12 @@ generation、pending ticket、每 tile commit 时延、真实 gap/overlap、fall
 因此第 6 节门禁已关闭，阶段 1/A10 presentation 可重新写为客户端完成；Online authority/provider、
 服务端/wire 与阶段 3 prefab 仍是后续正交工作。
 
-## 8. 后续材质语义证据的边界
+## 8. 后续材质语义证据与最终结论
 
 本稿最后一段只对 presentation transaction 完成有效。关闭 Lighting/Fog/PostProcessing 后仍存在的
 暖灰色带证明，现有 `voxel_material_parity` 没有覆盖真实 owner/ring/LOD 的 surface material id。
-阶段 3 因此先暂停；先在 A8/A10 内实现 surface-aware canonical material reduction。不得修改本稿已经
-通过的 Tile owner/fence 流程，也不得在 renderer 中增加 tint workaround。
+阶段 3 因此在修复期间保持暂停；A8/A10 随后以 VXP5 精确 source surface coverage reducer 完成根修复，
+没有修改本稿已经通过的 Tile owner/fence 流程，也没有在 renderer 中增加 tint workaround。最终
+Development、UE `152/152`、Node `82/82`、Phase 1/2 Null-RHI 与同相机 Real-RHI 均通过，详见
+[Far LOD 外露表面材质语义修复](2026-07-23-far-lod-surface-material-semantic-repair.md)。本项已关闭，
+但阶段 3 本轮仍未启动。

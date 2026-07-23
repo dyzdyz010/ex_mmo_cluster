@@ -12,7 +12,18 @@
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
 - **Online 客户端是 snapshot/delta-only 消费者（2026-07-06 投影路线终态）**：生产配方（`base ⊕ overlay`）只在服务端内部使用，跨 wire 的一律是投影（近窗 1m `0x62/0x63` + 远区 7m source pages）；客户端 WorldGen 永久定位 dev preview / fixture 源。离线 Phase 2 的 session-local Mock adapter/reducer/overlay 是显式测试与可玩闭环，不代表 Online 服务端 truth，也不得成为 Online fallback。术语口径见 [`glossary.md`](../../../30-reference/protocol/glossary.md)，裁决见 [`2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)。
-- Voxia 在扩展里程碑 A 中已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell、`voxia_voxel_source_pages_v2`、六向 material mip、coverage-resolved exact surface、source-neutral scene builder、dev 原子 presentation、唯一 `production_all_features` 组合根，以及 WorldGen/scripted/H-gated `local_disk` 三种 request provider。downstream 必须区分 source unavailable、missing、resolved air 与 solid；内容身份只含 scene/content/source/diff/material，不含 WorldGen、磁盘或 renderer kind。`LoadExpectedBatch` 保持 exact-set 原子 batch 语义；live 本地 provider 则用外部 manifest SHA-256 + expected identity 打开不可变 entry table，只读请求子集并原子发布。当前根冻结统一 source/world/session identity，near/far 各自维护派生 residency/cache，并由 confirmed presentation transaction 原子组合；开发用本地 provider 只接 far、near 仍用 WorldGen，这是显式 provider 可用性边界。Online authority provider 仍未实现。
+- Voxia 在扩展里程碑 A 中已完成 `IVoxiaCanonicalVoxelSource`、XYZ cube-shell、VXP5
+  `voxia_voxel_source_pages_v5`、六向 material mip、exact-source surface-coverage v4、
+  coverage-resolved exact surface、source-neutral scene builder、dev 原子 presentation、唯一
+  `production_all_features` 组合根，以及 WorldGen/scripted/H-gated `local_disk` 三种 request
+  provider。粗 occupancy 可以降采样，但最终外露面 material 只从精确 source coverage 归约；
+  VXP2/VXP3/VXP4、旧 material schema 与 cache 明确拒绝。downstream 必须区分 source
+  unavailable、missing、resolved air 与 solid；内容身份只含 scene/content/source/diff/material，
+  不含 WorldGen、磁盘或 renderer kind。`LoadExpectedBatch` 保持 exact-set 原子 batch 语义；live
+  本地 provider 则用外部 manifest SHA-256 + expected identity 打开不可变 entry table，只读请求子集
+  并原子发布。当前根冻结统一 source/world/session identity，near/far 各自维护派生 residency/cache，
+  并由 confirmed presentation transaction 原子组合；开发用本地 provider 只接 far、near 仍用
+  WorldGen，这是显式 provider 可用性边界。Online authority provider 仍未实现。
 
 ## 当前世界事实模型
 
@@ -96,7 +107,7 @@ flowchart LR
 | 主题 | 当前实现/状态 | 目标事实 |
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
-| 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收。near/far 各自维护派生 residency/cache，并通过 confirmed presentation transaction 原子组合；A10 lifecycle/ownership、full oracle 与三轴路线已完成。当前 WorldGen dev materializer 的粗 LOD 中心采样会漏掉薄表层，外露 surface material 语义待修。开发用 `local_disk` 当前只提供 far pages，near 仍用 WorldGen，因此本地根显式报告 mixed source mode | 先实现 source-neutral surface-aware material reducer，并升级 schema/fingerprint/cache gate；随后只接 Online XYZ provider，并可补开发用 local-disk near provider。根冻结统一 source identity，各子系统继续自行维护可变 residency/cache，不引入共享可变状态；缺 page/chunk/hash/schema 必须硬失败且不回退 WorldGen |
+| 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收。near/far 各自维护派生 residency/cache，并通过 confirmed presentation transaction 原子组合；A10 lifecycle/ownership、full oracle、三轴路线与跨 LOD exact-surface material 已完成。WorldGen dev adapter 仍可中心降采样 coarse occupancy，但 VXP5 surface-coverage v4 从精确 source 归约最终外露材质；旧 page/schema/cache 明确拒绝。开发用 `local_disk` 当前只提供 far pages，near 仍用 WorldGen，因此本地根显式报告 mixed source mode | 只接 Online XYZ provider，并可补开发用 local-disk near provider。根冻结统一 source identity，各子系统继续自行维护可变 residency/cache，不引入共享可变状态；服务端/pack writer 必须产出相同 VXP5 surface semantics，缺 page/chunk/hash/schema 必须硬失败且不回退 WorldGen |
 | WorldGen | 服务端与客户端 dev 副本仍暴露 column/heightmap；客户端只允许 preview/fixture，生产不以它重算 baseline | 服务端迁移/离线生成器只公开 `chunk_xyz -> canonical 3D chunk`；当前地表实现只是内部 `density(x,y,z)` 算子。更换算法只改变 content version，不改变 streaming/LOD/render 路径 |
 | chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in 旧 WorldGen | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
 | 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **Online 客户端 snapshot/delta-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
@@ -131,3 +142,4 @@ flowchart LR
 - [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)
 - [`docs/20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md)（历史 LOD 分层证据）
 - [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（完整 XYZ 唯一现役作战主线；Pure3D far 已进入唯一客户端生产组合根，Online confirmed provider 尚未接线）
+- [`docs/10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md`](../../../10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)（VXP5 exact-surface coverage、旧产物拒绝与 actual material-id/Real-RHI closeout）

@@ -1,7 +1,8 @@
 # Voxia Far LOD 外露表面材质语义修复
 
 - **日期**：2026-07-23
-- **状态**：根因与边界已锁定，尚未实现；阻断阶段 3 Prefab runtime 开工
+- **状态**：已按根因修复并完成全量/Null-RHI/可见 Real-RHI/代码审查；本项不再阻断阶段 3，
+  但阶段 3 尚未启动
 - **影响范围**：canonical page/LOD material reducer、artifact schema/fingerprint、live CLI/observe、
   自动化与 Real-RHI 验收
 - **不改变**：服务端权威边界、完整 XYZ coverage、near/far 唯一 owner、Tile handoff、粗 occupancy、
@@ -56,8 +57,9 @@ flowchart TD
     Renderer --> Band["暖棕 → 中性灰色带"]
 ```
 
-画面中的主色带很可能是 far LOD0→LOD1 的语义切换，中央暖区可能同时包含 near 与 far LOD0；
-这是基于采样间距与色相的推断。实现前必须用 owner/ring/LOD/material 观察面确认，不能把整条色带
+修复前画面中的主色带很可能是 far LOD0→LOD1 的语义切换，中央暖区可能同时包含 near 与 far
+LOD0；这是基于采样间距与色相的推断。最终 live receipt 已用真实
+owner/ring/LOD/material histogram 与 exact→LOD→final witness 关闭观察盲区，不能把整条历史色带
 直接等同于 near/far ownership seam。
 
 ## 3. 边界裁决
@@ -82,7 +84,7 @@ flowchart TD
 
 ## 4. 先定义可观测面
 
-实现前扩展 `voxel_material_parity` 或增加同域只读命令，至少输出：
+现已增加同域只读命令 `voxel_surface_material_state`，输出：
 
 ```text
 world_snapshot_id
@@ -113,17 +115,17 @@ owner/ring/LOD 与 artifact fingerprint。命令只读 confirmed/frozen snapshot
 | 用户入口 | 固定相机正常 Lit 与关闭 Lighting/Fog/PostProcessing 两组；near/far owner seam 和 far ring seam 都无语义色带 |
 | 长稳 | XYZ 移动、A-B-A、teleport、阶段 2 place/break 后无 stale material artifact 或资源单调增长 |
 
-## 6. 下一会话执行顺序
+## 6. 执行顺序与结果
 
-1. 为真实 live surface material 身份与 histogram 写 RED automation/CLI contract。
-2. 为 thin-stratum 跨 LOD 语义写 RED 纯函数和 canonical page 测试。
-3. 设计并实现 surface-aware material reducer，同时升级 schema/fingerprint/cache gate。
-4. 接入 WorldGen dev materializer，不改变 renderer/presentation 边界。
-5. 跑 Development build、全量 Voxia Automation、Node、Phase 1/2 Null-RHI、固定相机 Real-RHI，
-   再做代码审查与文档 closeout。
+1. 先为真实 live surface material 身份与 histogram 写 RED automation/CLI contract；
+2. 再为 thin-stratum 跨 LOD 语义写 RED 纯函数和 canonical page 测试；
+3. 实现 source-neutral surface-aware material reducer，同时升级 schema/fingerprint/cache gate；
+4. 接入 WorldGen dev adapter，不改变 renderer/presentation 边界；
+5. 运行 Development build、全量 Voxia Automation、Node、Phase 1/2 Null-RHI、固定相机
+   Real-RHI，并完成严格代码审查和文档 closeout。
 
-阶段 3 Prefab 依赖同一 canonical material/surface 契约。在本门禁关闭前启动阶段 3，会把错误的 LOD
-语义扩散到 prefab refined surface，因此当前明确暂停阶段 3，而不是转去服务器接入或 shader 调色。
+以上步骤已按顺序完成。阶段 3 Prefab 依赖的 canonical material/surface 前置合同现已通过，
+但本次没有开始阶段 3。
 
 ## 7. 诊断中的无效路径
 
@@ -134,4 +136,43 @@ owner/ring/LOD 与 artifact fingerprint。命令只读 confirmed/frozen snapshot
   `near_worldgen_snapshot_fingerprint_mismatch` 正确拒绝；这证明唯一根 source identity
   fail-closed，不构成视觉结果，也不得为实验绕过。
 
-截至本稿，仅记录状态和锁定修复边界，没有实现代码或新的通过结论。
+## 8. 实现裁决
+
+- `FVoxiaCanonicalVoxelSurfaceMaterialReducer` 只依赖 exact material/coverage port；粗 occupancy
+  保持不变，真正外露面的材质只从精确 source coverage 归约。
+- VXP5 page 保存 coarse cell 默认 surface semantic、direct-face override 与受限 regional
+  fallback；manifest/payload/material schema 分别为
+  `voxia_voxel_source_pages_v5`、`dense_material_u16_be_surface_coverage_v4`、
+  `voxia_surface_material_coverage_v4`。
+- VXP2/VXP3/VXP4、旧 manifest/payload/material schema 明确拒绝；page SHA、artifact
+  fingerprint、surface dependency、stage 与 near/far boundary fingerprint 全部绑定新语义。
+- WorldGen provider 最多 8 个后台 worker，各 page 独立计算、按稳定 index 串行合并，最终发布前
+  再次复核 cancellation。默认宏场景 provider 从串行约 `33.27s` 降至 `4.80s`，输出不变。
+- `local_disk` 开发 provider 没有 exact overlay sampler；unchanged page 保留已验证 base surface
+  semantics，changed page 无法证明 exact coverage 时硬失败，不构造第二 truth。
+
+## 9. 最终证据
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| Development build | success，exit 0；最终 no-op 证明 binary 与全部源码同步 | `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/build_surface_semantic_review_closeout_20260723.stdout.log` |
+| Voxia Automation | `152/152` Success，0 failed | `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceSemanticReviewFinal3_20260723/index.json` |
+| Node | 6 files，`82/82` pass，0 fail，stderr 为空 | `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/node_surface_semantic_closeout2_20260723.stdout.log` |
+| Phase 1 Null-RHI | `passed=true`；25 条完整 XYZ/teleport/retry/new game 路线，clean exit，far release `11/11/0` | `.demo/observe/voxia_phase1_2026-07-23T12-52-18-563Z_null_rhi_1280x720/` |
+| Phase 2 Null-RHI | `passed=true`；place/break、X/Y/Z reload、parity/menu，Phase 3 显式不可用 | `.demo/observe/voxia_phase2_2026-07-23T12-59-15-678Z_null_rhi_1280x720/` |
+| 可见 Real-RHI | D3D12 Development `PCD3D_SM6`，1600×900，同相机 Lit/控制图，clean exit 0 | `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_surface_semantic_final3_2026-07-23/` |
+
+现场 receipt 在初始 generation 同时记录 near 与 far LOD0–4 的 material 1 histogram；固定相机
+LOD0–4 共 25 个代表样本全部为 `exact source=canonical LOD=final artifact=1`，
+unresolved/exact→LOD/LOD→final mismatch=`0/0/0`。同相机关闭
+Lighting/Fog/PostProcessing 后，近/远 terrain-mask RGB 最大均值差仅 `0.094966/255`，两侧暖色
+像素比例均为 0；root gap/overlap/seam-gap/orphan 与 far release pending 均为 0。
+
+最终审查额外以 RED 锁定并修复 mixed histogram 冒充 directional uniform proof、反向 corridor、
+极端 resolution 乘法/分配、deterministic merge 后取消发布、跨 page 归约统计超过 `int32`
+以及 `INT64_MIN/MAX` cell-volume 邻格偏移等问题。最后两项由
+`.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceOverflow_RED_20260723/`
+的 `0/1` 推进到
+`.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceOverflow_GREEN_20260723/`
+的 `1/1`。修复未引入第二套 far 材质、ring tint、shader 补色、`SoilDepthMacro` 增厚、
+等待型生产修复或第二组合根。

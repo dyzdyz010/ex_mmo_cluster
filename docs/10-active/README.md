@@ -69,7 +69,7 @@
 
 ### voxel-far-field
 
-- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义重新打开，Online provider 与 B/C 未开始
+- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义已根修复并完成验收，阶段 3、Online provider 与 B/C 未开始
 - [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 客户端执行证据；唯一根、source identity、本地 request provider、增量链、full oracle、三轴 route 与 presentation transaction 已通过，不代表 live LOD material id 已通过
 - [`2026-07-23-far-lod-surface-material-semantic-repair.md`](voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md) — 当前客户端阻断项；记录粗 LOD 中心采样漏掉薄表层的证据、canonical reducer 边界、观察面、测试矩阵与下一会话顺序
 - [`2026-07-14-a10-uncommitted-code-audit.md`](voxel-far-field/2026-07-14-a10-uncommitted-code-audit.md) — 跨机合并前的 A10 代码审计与 S1b-1 边界证据

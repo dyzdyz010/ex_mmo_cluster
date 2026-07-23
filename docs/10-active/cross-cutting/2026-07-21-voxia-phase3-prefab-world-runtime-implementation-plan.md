@@ -8,10 +8,10 @@
 
 **Tech Stack:** Unreal Engine 5.8、C++20/UE Core、UE Automation、DynamicMesh/Pure3D presentation、Node.js stdio CLI smoke。
 
-> **当前执行门禁（2026-07-23）：** 本计划设计不变，但暂不开始。阶段 1/A8-A10 的 Far LOD
-> 外露表面材质语义被新实跑证据重新打开；需先完成
-> [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)，
-> 再以修复后的 canonical material/surface contract 作为阶段 3 基线。
+> **当前执行门禁（2026-07-23）：** 阶段 1/A8-A10 的
+> [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)
+> 已通过完整自动化、Null-RHI 与 Real-RHI closeout，修复后的 VXP5 canonical material/surface
+> contract 可作为阶段 3 基线。本计划设计不变，本轮没有开始阶段 3。
 
 ## Global Constraints
 

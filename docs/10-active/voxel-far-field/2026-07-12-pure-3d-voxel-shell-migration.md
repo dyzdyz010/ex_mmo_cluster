@@ -1,9 +1,8 @@
 # 里程碑 A 扩展：完整 3D 体素立方壳与客户端流送
 
 - **日期**：2026-07-12
-- **状态**：阶段 1 lifecycle/ownership、阶段 2 与 A10 流送骨架已完成；A8/A10 跨 LOD
-  外露表面材质语义于 2026-07-23 重新打开，根因已锁定但尚未修复；Online authority/provider
-  与里程碑 B/C 尚未开始
+- **状态**：阶段 1 lifecycle/ownership、阶段 2、A8/A10 流送与跨 LOD 外露表面材质语义均已完成；
+  Online authority/provider、阶段 3 Prefab 与里程碑 B/C 尚未开始
 - **取代范围**：取代 [`2026-07-11-3d-lod-sliding-window.md`](../../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 中“保留 2.5D WorldGen 内容前提再扩展远景窗口”的迁移口径
 - **影响范围**：WorldGen 生成边界、canonical chunk/source page、Voxia near/far coverage、LOD 材质、presentation ownership、调试与验收
 - **不改变**：服务端权威、H gate、confirmed truth 来源、编辑事务、ChunkProcess 所有权
@@ -17,17 +16,18 @@
 | A1-A5 | tier、分组件 StaticDraw、greedy merge、seam/fade/collar、紧凑顶点与 cache 卫生 | 已完成，阶段稿已归档 |
 | A6 | near 连续 generate/apply、compact store、per-chunk renderer、bounded observe/pump | 已完成 |
 | A7 | near/far 双向 ownership、retirement lease、快速折返与联合性能；旧垂直呈现带仅作迁移证据 | **已完成**；真实 renderer sink、canonical chunk atlas、逐 Tile 提交、target latch、renderer-observed seam/proof 已接入，见 [2026-07-22 修复决策与完成记录](2026-07-22-near-far-tile-handoff-repair.md) |
-| A8 | XYZ cube-shell、canonical pages、六向 material mip、coverage-resolved exact surface | **部分重新打开**；几何/owner/surface pipeline 已进入唯一根，但粗 LOD 中心采样会漏掉薄表层 material id，surface-aware reduction 待实现 |
+| A8 | XYZ cube-shell、canonical pages、六向 material mip、coverage-resolved exact surface | **已完成**；VXP5 保留粗 occupancy，并从精确 source surface coverage 归约外露面材质，LOD0–4/负坐标/六向/跨 page、ring、LOD 回归通过 |
 | A9 | source-neutral scene stage、generation barrier、真实 fence/scene host、dev Real-RHI 单次三维切代 | 已完成并由连续滑窗/长稳复验覆盖 |
-| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、请求式 page residency、可取消增量 DAG、稳定 patch 分块呈现、本地 H-gated provider、三轴长巡航 | lifecycle/ownership/流送已完成；受 A8 live material semantic parity 门禁阻断，修复后才能重新完整 closeout，Online provider 后置 |
+| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、请求式 page residency、可取消增量 DAG、稳定 patch 分块呈现、本地 H-gated provider、三轴长巡航 | **客户端本地闭环已完成**；live material semantic parity 已通过同根 Null/Real-RHI 门禁，Online provider 后置 |
 
 客户端 A10 已跑通 WorldGen/H-gated provider、自动滑窗、请求式 residency、增量 DAG 与 stable far patch。
-2026-07-23 的 UE `148/148`、Node `82/82`、23-route/21-generation Null-RHI smoke 继续证明真实
-renderer sink、逐 Tile 交接、target latch、strict readiness、near 有界并行和共享 renderer 外观合同。
-后续固定相机、全关闭 Lighting/Fog/PostProcessing 的证据证明这些门禁没有覆盖 live LOD material id：
-默认 4m 表层会被 LOD1+ 中心采样漏掉。当前按
+2026-07-23 的最终 UE `152/152`、Node `82/82`、Phase 1/2 Null-RHI 与可见 Real-RHI 继续证明真实
+renderer sink、逐 Tile 交接、target latch、strict readiness、near 有界并行和共享 renderer 外观合同；
+同时以 live owner/ring/LOD histogram 和 25 个同点 witness 覆盖 material id。此前默认 4m 表层被
+LOD1+ 中心采样漏掉的问题已按
 [`Far LOD 外露表面材质语义修复`](2026-07-23-far-lod-surface-material-semantic-repair.md)
-重新打开 A8/A10 的内容语义项；仍属于客户端 A，不进入 B/C，也不改变以后服务器只替换 provider 的边界。
+在 source-neutral canonical reducer 根修复。该项仍属于客户端 A，不进入 B/C，也不改变以后服务器
+只替换 provider 的边界；阶段 3 本轮没有启动。
 
 ## 1. 目标与非目标
 
@@ -224,8 +224,9 @@ flowchart LR
 - `near_mesh.active_cpu_async`：near worker/容量/in-flight/ready/pending chunk、serial/high-water、
   stale/failure/out-of-order、snapshot/worker/publish tick 与锁存错误；
 - `voxel_material_parity`：near/far opaque asset、外观/算法指纹、UV0、UV1 AO/sky、基础色、实际
-  lighting range 与 invalid vertex；下一修复必须加入 live owner/ring/LOD/exposed-material histogram
-  与同世界点 exact→LOD mismatch，固定 fixture 通过不能代替该项；
+  lighting range 与 invalid vertex；固定 fixture 通过不能代替 live material identity；
+- `voxel_surface_material_state`：live owner/ring/LOD/exposed-material histogram、六向单位面与
+  同世界点 `exact source → canonical LOD → final artifact` witness；
 - `voxel_material_audit`：精确面、归约面、mixed/split 数、缺失 material 数；
 - `.demo/observe/` 连续帧产物：固定相机下 X/Y/Z 单轴跨界、快速折返、传送。
 
@@ -244,19 +245,20 @@ flowchart LR
 - 定义 canonical chunk/source reader，区分 missing 与 air；
 - 加入负坐标、三轴移动、量化中心、预算与溢出测试。
 
-### P2 / A8：通用 3D occupancy/material artifact（外露材质归约重新打开）
+### P2 / A8：通用 3D occupancy/material artifact（已完成）
 
 - source page 升级为 XYZ brick + span + LOD；
 - 构建六方向 occupancy/material mip；
 - 使用洞穴、悬挑、浮空体和混合材质 fixture；
 - 把 plan + page gate + material mip 组成全有或全无的 hidden staging batch；
-- 从同一 v2 page 构建精确逐材质 surface artifact；greedy 只合并同朝向同材质面；
+- 从同一 canonical page 构建精确逐材质 surface artifact；greedy 只合并同朝向同材质面；
 - 显式适配 canonical `X/Y(up)/Z` 到 UE `X/Z/Y`，大世界位置只放 Actor transform；
 - 用材质侧世界坐标三轴投影移除调试链的绝对顶点 UV 依赖，并完成 ±8km Real-RHI；
 - 新路径不读取 WorldGen `SurfaceMaterialId`；旧 live 特判的物理删除留到 authority 切流后的兼容层整体退役。
 - 2026-07-23 新证据：WorldGen dev materializer 每 tile 32 个中心样本并随 LOD 减半，
   `3.5/7/14/28/56m` 间距会让 LOD1+ 漏掉默认 4m 表层。occupancy 可继续粗化，但外露 surface
-  material 必须由精确 source coverage 归约；实现、schema/fingerprint 与测试尚未完成。
+  material 必须由精确 source coverage 归约；现已由 source-neutral reducer、VXP5
+  schema/fingerprint/cache gate、LOD0–4/负坐标/六向/跨 page-ring-LOD 回归与 live receipt 完成。
 
 ### P3 / A9：generation 原子资源与生产 Tile handoff 已完成
 
@@ -293,8 +295,8 @@ flowchart LR
 ### A10 退出门槛
 
 流送、DAG、far patch、source identity、长期资源、near/far 唯一 visible owner、真实 ownership
-fence、target-latch 活性、逐 Tile 提交和过渡期 gap/overlap/seam 门禁均有新鲜通过证据；但完整
-客户端退出门槛因 live LOD 外露材质语义重新打开。最新状态由 `docs/00-current-truth/README.md`、
+fence、target-latch 活性、逐 Tile 提交、过渡期 gap/overlap/seam 与 live LOD 外露材质语义门禁
+均有新鲜通过证据，客户端 A10 退出门槛已关闭。最新状态由 `docs/00-current-truth/README.md`、
 [tile handoff 修复稿](2026-07-22-near-far-tile-handoff-repair.md) 与
 [材质语义修复稿](2026-07-23-far-lod-surface-material-semantic-repair.md) 统一索引；
 Online authority/provider 仍是后续独立阶段。
@@ -319,7 +321,7 @@ Online authority/provider 仍是后续独立阶段。
 | Authority capacity | `MmoContracts.VoxelSpatialContract`、Gate/Auth/Scene/DataService、三客户端 | radius=`10`、known=`9261`、manifest=`21³`；旧 `343` 与不完整 H 硬失败 |
 | Source contract | missing/air/solid/mixed、旧格式、缺页、hash mismatch | 全部显式结果，无 silent air/fallback |
 | Metamorphic | 平地与洞穴/悬挑两种生成器走同一管线 | 下游测试和代码路径不变 |
-| Material | 每面 material、同材质 merge、异材质 split、负坐标世界投影 | near/far 同点采样一致 |
+| Material | 4m 薄表层 LOD0–4、六向、跨 page/ring/LOD、同材质 merge、异材质 split、负坐标世界投影 | live exact→LOD→final 同点一致；旧 schema/cache 硬拒绝 |
 | Presentation | 冷启动、相邻跨界、X/Y/Z、快速折返、传送 | 每帧 overlap/gap 均为 0 |
 | Real-RHI | ±8km UV、连续帧 ROI、完整 near+far 性能 | 无拉伸；无中间态闪烁；性能预算单独报告 |
 | Provider boundary | WorldGen 与 scripted canonical provider 同序列 | 下游无 WorldGen 分支；未来服务器只需 provider adapter |
@@ -368,10 +370,12 @@ Online authority/provider 仍是后续独立阶段。
   build、UE `148/148`、Node `82/82` 与 Phase 1 23-route/21-generation Null-RHI smoke 全绿；最终
   Tile=`27/0/0/27`、gap/overlap/seam/orphan=0、queue failure=0，Real-RHI ROI p95/p99 channel delta=`1/2`。
   该条取代 2026-07-22 的“正在修复”状态，不改变 Online provider/服务端后置边界。
-- **2026-07-23 / Far LOD 表面材质语义再次重开**：固定同相机关闭 Lighting/Fog/PostProcessing 后，
+- **2026-07-23 / Far LOD 表面材质语义诊断与根修复**：固定同相机关闭 Lighting/Fog/PostProcessing 后，
   暖灰色带仍存在；near/far 确认绑定同一个 UE material asset。代码与采样间距证明 WorldGen
   materializer 的中心点降采样从 LOD1 起可漏掉默认 4m 表层，让 resolved surface 从 material 1
-  走样为 material 2。上一条继续代表 handoff/活性/renderer contract closeout，但不再代表 live
-  material semantic parity。根修复必须进入 source-neutral canonical LOD reducer，先补实际
-  owner/ring/LOD/material 观察和 thin-stratum RED 测试；阶段 3 在该项关闭前暂停，详见
+  走样为 material 2。修复先补实际 owner/ring/LOD/material 观察和 thin-stratum RED 测试，再在
+  source-neutral canonical LOD reducer 从精确 source surface coverage 归约外露面材质；VXP5 与
+  schema/fingerprint/cache gate 显式拒绝旧产物。最终 Development、UE `152/152`、Node `82/82`、
+  Phase 1/2 Null-RHI 与可见 Real-RHI 均通过，LOD0–4 的 25 个同点 witness 全部为 `1→1→1`。
+  阶段 3 在本项关闭前始终暂停，本轮仍未启动；详见
   [专项修复稿](2026-07-23-far-lod-surface-material-semantic-repair.md)。

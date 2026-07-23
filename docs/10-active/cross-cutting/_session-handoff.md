@@ -1,42 +1,60 @@
-# 当前会话接力：阶段 1 Far LOD 材质语义待修，阶段 2 已完成，阶段 3 暂停
+# 当前会话接力：Far LOD 外露材质语义已修复，阶段 2 已完成，阶段 3 尚未启动
 
-## 2026-07-23 Far LOD 暖灰色带诊断与下一会话入口
+## 2026-07-23 Far LOD surface material semantic repair closeout
 
-- 用户在最新可见实跑中确认 near/far 仍有暖色/灰色色差，并要求由代理操纵程序、截图比较。诊断已完成，
-  **代码修复尚未开始**；下一会话先修此项，不进入阶段 3 Prefab。
-- Voxia 工作树仍为 `.worktrees/voxia-phase2-macro-interaction`，分支
-  `codex/voxia-phase2-macro-interaction`。本次客户端状态提交为 `284cefd`，只包含诊断/状态文档；
-  受控截图与日志位于 ignored `Saved/`，未提交二进制观察产物。
-- `voxel_material_parity` 已证实 near/far 都绑定
-  `/Game/Voxia/Materials/M_VoxelWorldAligned.M_VoxelWorldAligned`，fixture material 2 的 base color
-  与 canonical AO/sky 一致。因此问题不是两套 UE base material。
-- 固定同一相机关闭 Lighting/Fog/PostProcessing 后色带不变：近区 ROI 平均
-  RGB=`[168.05,147.04,121.41]`、`R-B=46.64`，远区平均
-  RGB=`[91.71,92.12,93.03]`、`R-B=-1.31`。只开关雾的 121,000 像素 ROI 三通道绝对差之和
-  平均仅 `2.2382`；雾、光照和后处理均已排除。
-- 根因是 canonical 粗 LOD 的 **material semantic aliasing**：WorldGen 默认表土仅 4 宏格厚，
-  materializer 以 cell center 采样；每 tile 32 samples 随 LOD 减半，对应间距
-  `3.5/7/14/28/56m`。LOD1 起可完全漏掉材质 1 表层，resolved surface 因而继承材质 2 地下层。
-  材质 1 调色板是暖棕 `(0.55,0.40,0.25)`，材质 2 是中性灰 `(0.50,0.50,0.50)`，与截图一致。
-- 画面主色带很可能是 far LOD0→LOD1，而不一定全部是 near/far ownership seam；这是待 CLI
-  owner/ring/LOD/material histogram 证实的推断。交接活性、逐 Tile 唯一 owner、真实 fence、
-  shared material asset 和 AO/sky 轴映射仍保持已收口。
-- 修复边界已经锁定在 source-neutral canonical page/LOD reducer：occupancy 可粗化，外露表面 material
-  必须由精确 source surface coverage 归约；schema/fingerprint/cache gate 同步升级。禁止第二套 far
-  材质、ring tint、shader 补色或增厚 `SoilDepthMacro`。
-- 下一会话严格按以下顺序继续：
-  1. 增加 live owner/ring/LOD/exposed-material histogram 和同世界点 exact→LOD 对照的只读 CLI/observe；
-  2. 先写 4m thin-stratum 跨 LOD、负坐标、六向面与跨 page/ring 的 RED 测试；
-  3. 实现 surface-aware material reducer 并升级 schema/fingerprint/cache gate；
-  4. 跑 build、全量 Automation、Node、Phase 1/2 Null-RHI、固定相机正常 Lit/全关闭环境项 Real-RHI；
-  5. 审查无误后再恢复阶段 3。
-- 正式决策与矩阵见
+- Voxia 工作树为 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`；本轮从 `284cefd` 继续，最终客户端提交为
+  `334ff7799aa97561749caa612285c00302e96cd5`，工作树 clean、未合并、未推送。外层文档基线为
+  `fb6f1d8c`。
+- 根因已在 source-neutral canonical page/LOD reducer 修复：粗 occupancy 保持中心降采样，
+  外露面 material 只从精确 source surface coverage 归约。VXP5 page 携带 cell semantic、
+  direct-face override 与受限 regional fallback；最终 schema 为
+  `voxia_voxel_source_pages_v5` /
+  `dense_material_u16_be_surface_coverage_v4` /
+  `voxia_surface_material_coverage_v4`。
+- VXP2/VXP3/VXP4、旧 manifest/payload/material schema 显式拒绝；page SHA、artifact
+  fingerprint、surface dependency、stage/cache 与 near/far boundary fingerprint 都绑定新语义。
+  没有新增第二套 far 材质、ring tint、shader 补色、增厚 `SoilDepthMacro`、等待型生产修复或
+  第二组合根。
+- `voxel_surface_material_state` 只读 live generation receipt，输出 near/far owner、ring、LOD、
+  六向单位面、actual material histogram 与
+  `exact source → canonical LOD → final artifact` 同点 witness。初始 generation 的 near 与
+  far LOD0–4 histogram 均只含 material 1；固定相机 LOD0–4 共 25 个 witness 全部
+  `exact=LOD=final=1`，unresolved/exact→LOD/LOD→final mismatch=`0/0/0`。
+- 最终验证：
+  - Development build：success，exit 0；
+  - 完整 `Automation RunTests Voxia`：`152/152` Success，0 failed；
+  - Node：`82/82` pass，0 fail；
+  - Phase 1 Null-RHI：`passed=true`，完整 XYZ/teleport/retry/new game，clean exit；
+  - Phase 2 Null-RHI：`passed=true`，place/break、X/Y/Z reload、parity/menu；
+  - 可见 D3D12 Development `PCD3D_SM6`：1600×900 固定同相机 Lit 与关闭
+    Lighting/Fog/PostProcessing 两图，clean exit 0。
+- Real-RHI 控制画面 near/far terrain-mask 平均 RGB 最大通道差仅 `0.094966/255`，两侧暖色
+  像素比例均为 0；退出前 root center aligned，gap/overlap/seam-gap/orphan 与
+  far release pending 均为 0。证据位于
+  `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_surface_semantic_final3_2026-07-23/`。
+- Phase 1/2 Null-RHI 产物分别位于
+  `.demo/observe/voxia_phase1_2026-07-23T12-52-18-563Z_null_rhi_1280x720/` 与
+  `.demo/observe/voxia_phase2_2026-07-23T12-59-15-678Z_null_rhi_1280x720/`；最终 build、全量
+  Automation 与 Node 证据分别为
+  `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/build_surface_semantic_review_closeout_20260723.stdout.log`、
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceSemanticReviewFinal3_20260723/`
+  与
+  `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/node_surface_semantic_closeout2_20260723.stdout.log`。
+- 严格审查额外先红后绿修复 mixed histogram 冒充 directional uniform proof、反向 corridor、
+  极端 resolution 安全乘法/预算、deterministic merge 后取消发布、跨 page 统计的 64 位序列化与
+  `INT64_MIN/MAX` cell-volume 邻格越界。最后两项的 RED/GREEN 为
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceOverflow_RED_20260723/`
+  与
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_SurfaceOverflow_GREEN_20260723/`。
+  最终 `git diff --check`、禁用方案新增行扫描与 staged scope 审计全部通过，未留下
+  Critical/Important/Minor 发现项。
+- 正式决策与完整矩阵见
   [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)；
-  客户端详细证据见
+  客户端实现/证据见
   `.worktrees/voxia-phase2-macro-interaction/docs/engineering-notes/2026-07-23-far-lod-surface-material-aliasing.md`。
-- 无效路径已记录：`ToggleDebugCamera`/`viewmode unlit` 未执行；改变相机或 handoff 未 settled 的截图
-  排除；`-VoxiaWorldGenSoilDepth=64` 被 `near_worldgen_snapshot_fingerprint_mismatch` 正确
-  fail-closed，不构成视觉 A/B，也不得绕过 source identity。
+- 本项不再阻断阶段 3 Prefab，但本次没有启动阶段 3。后续仍需独立实施阶段 3，或继续 Online
+  authority/provider、服务端 bootstrap/delta/续租/重连；不得把开发 WorldGen/Mock 当在线 truth。
 
 ## 2026-07-23 near/far Tile 交接、加载活性与渲染合同 closeout（材质语义结论已被上节修正）
 
