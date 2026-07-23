@@ -1,7 +1,7 @@
 # Voxia 近远景 tile 级渐进交接修复
 
 - **日期**：2026-07-22
-- **状态**：设计锁定，待 TDD 实施与重新验收
+- **状态**：已按 TDD 实施并于 2026-07-23 重新验收完成
 - **影响范围**：唯一生产组合根、active near tile presentation、Pure3D far ownership renderer、根级 proof、CLI/smoke
 - **不改变**：服务端权威、confirmed truth 来源、完整 XYZ、far generation 内部原子性、阶段 2 intent/receipt 语义
 
@@ -127,3 +127,28 @@ generation、pending ticket、每 tile commit 时延、真实 gap/overlap、fall
 
 上述门禁全部通过前，不得重新宣称阶段 1/A10 near/far transaction closeout，也不得开始用服务器接入填补该
 客户端 presentation 缺口。
+
+## 7. 2026-07-23 实施与重新 closeout
+
+- 唯一根已经安装真实 Pure3D renderer sink；normal handoff 从实际 absolute `LiveTiles` 求差集，逐 Tile
+  stage/activate/retire，18 个 retained Tile 的 registry/component identity 不变。空间断开的 teleport 或
+  union 超预算才允许整窗 fallback。
+- scene host 拥有双缓冲 ownership atlas、三材质族 MID、真实 staging/post fence 与 seam component；
+  根级 proof 读取实际 live/staged/retiring/renderer Tile、atlas generation、ticket 与 seam component
+  identity，不再接受调用方自填 `ready/0`。
+- 新增 `FVoxiaNearFarHandoffTargetLatch`：首个可见 mutation 后固定当前 near/far 共同 target，移动抖动
+  只覆盖一个 latest-wins queued target；当前收口后两侧才共同追赶。near build、far build/live 与 source
+  revision 的实际 fingerprint 推进自维护 watchdog，连续 60 秒无进展才显式失败。
+- active-near CPU mesh 使用 4-worker/16-cap 有界并行、有序发布与 chunk 去重；确定性 worker/投影/
+  边界 source 失败锁存 voxel/field/activation 身份，同一事实不再热重试。这关闭了实跑中“后来卡死”的
+  第二条独立根因。
+- near/far opaque 共同使用 `M_VoxelWorldAligned`、稳定世界格 UV0 与共享 canonical AO/sky；near 对
+  UE Z-up/canonical Y-up 执行显式轴与角点映射，非对称 blocker 自动化防止竖墙光照旋转或镜像。
+- fresh 验收：Development build；UE Automation `148/148`；Node `82/82`；Phase 1 Null-RHI
+  23 routes / 21 generations，覆盖 X/Y/Z、对角、A-B-A、纵向往返、teleport、失败重试、新会话和性能
+  往返，clean exit、far release pending=0。最终 root `ready=true`、target phase=`idle`，
+  live/staged/retiring/renderer=`27/0/0/27`，gap/overlap/seam/orphan=`0/0/0/0`，near queue failure=0。
+  Real-RHI 固定 ROI 的交接帧与稳定帧 channel delta p95/p99 均为 `1/2`。
+
+因此第 6 节门禁已关闭，阶段 1/A10 presentation 可重新写为客户端完成；Online authority/provider、
+服务端/wire 与阶段 3 prefab 仍是后续正交工作。

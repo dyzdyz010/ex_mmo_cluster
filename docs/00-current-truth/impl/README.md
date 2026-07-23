@@ -32,7 +32,9 @@
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
 | Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | 客户端扩展里程碑 A/A10 已完成；Online provider 与 B/C 未开始 |
 | Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
-| Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarHandoffCoordinator.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | near 逐 chunk ownership/fence 与 far 整代 generation 各自维护原子性；唯一根用同一 snapshot、center、generation readiness 与 presentation proof 协调，无第二生产 truth |
+| Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarTileHandoff.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | target latch 固定共同 identity；normal handoff 逐 Tile 提交 canonical chunk atlas、seam、near visibility 与真实 staging/post fence；far generation 仍整代原子；无第二生产 truth |
+| Voxia near mesh queue | `clients/Voxia/Source/Voxia/Gameplay/VoxiaNearActiveChunkMeshWorkQueue.*` + `VoxiaNearActivePresentation.*` | 最低优先级有界并行、serial 有序发布、pending chunk 去重、generation/stale 隔离与确定性失败身份门禁 |
+| Voxia shared appearance | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelAmbientLighting.*` + `VoxiaVoxelMaterialFamily.h` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | near/far opaque 共用 `M_VoxelWorldAligned`、稳定 UV0 与 canonical `UV1=(AO,sky)`；UE/canonical 轴角点显式映射 |
 | Voxia confirmed world model | `clients/Voxia/Source/Voxia/Voxel/WorldModel/` | 唯一 confirmed aggregate、candidate-then-publish reducer、三态 sparse overlay、完整 XYZ conflict algebra 与只读 query |
 | Voxia authority boundary | `clients/Voxia/Source/Voxia/Authority/` | intent ledger、确定性 Mock adapter、类型化事件 correlation、presentation work/ack history 与 session reset |
 | Voxia 宏格交互 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaBuildInteractionController.*` | 真实鼠标/Automation/CLI 共用 signed64 XYZ selection/gateway；只支持完整宏格 place/break，拒绝普通微格编辑 |
@@ -51,7 +53,7 @@
 | Voxia presentation generation | `clients/Voxia/Source/Voxia/Presentation/VoxiaVoxelPresentationGeneration.*` + `VoxiaVoxelCoverageOwnership.*` | renderer/source 无关的 generation readiness、stale 拒绝与 XYZ 唯一 owner 契约 |
 | Voxia presentation resource host | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelPresentationResourceSet.*` + `VoxiaVoxelPresentationSceneHost.*` | 真实 render fence；hidden/live/retiring near/far DynamicMesh 生命周期与原子晋升 |
 | Voxia world composition selection | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldComposition.*` | 唯一正式根 / legacy probe / Pure3D probe / online compatibility 的纯选择契约；冲突 selector 与缺 provider 硬失败 |
-| Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合成熟 near-only 流送与 Pure3D far-only，维护 near settled + far live + XYZ center aligned 的根级 readiness |
+| Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合 near/Pure3D far，维护 target-latch 活性、完整 27 Tile renderer proof、near settled + far live + XYZ center aligned 的严格 readiness |
 | Voxia pure-3D far module / standalone probe | `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.*` + `VoxiaPure3DVoxelWorldActor.*` | 正式统一根中的 far adapter；WorldGen/本地磁盘 provider 共用 request Build 路径，具备 diff/residency/cancellation/shared artifact/parallel surface/stable patch、材质族、预算与分帧 scene host。standalone 只作 probe；完整 route/full oracle/Real-RHI 已由阶段 1 根级验收覆盖，Online provider 后置 |
 | Voxia far rendering | `clients/Voxia/Source/Voxia/Rendering/` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | RG0–RG6 已完成：原子 generation 可见提交、source UV、不可变 AO/sky、唯一环境光、自然材质、冻结质量档与 Real-RHI/30 分钟时序门禁 |
 | Voxia gameplay | `clients/Voxia/Source/Voxia/Gameplay/README.md` | pawn、streaming、HUD、LOD debug |
@@ -82,7 +84,10 @@
 经双专家零问题复审。阶段 1 仍保留其 1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和
 两项 30 分钟长稳证据。生命周期长稳完成
 113 条路线、110 个资源样本且无单调增长；RG6 长稳固定地形可见闪烁比最大 `0.000027`，最坏
-frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。near-only/far-only 仍只能
+frame p95/p99=`5.035/6.495ms`、GT p95=`1.591ms`、GPU p95=`4.387ms`。2026-07-23 handoff/加载/外观
+修复又以 Development build、`Voxia` 148/148、Node 82/82 和 Phase 1 23-route/21-generation Null-RHI
+联合 smoke 通过；最终 Tile=`27/0/0/27`，gap/overlap/seam/orphan 与 near queue failure 均为 0。
+near-only/far-only 仍只能
 作为 probe，质量档仍只属于同一生产根策略。
 
 完整 3D 的“离线 Mock 客户端阶段 1/2”与“Online production authority”必须分开表述：前者已完成，后者仍需要服务端 H-gated pages、subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen/Mock 成果冒充。

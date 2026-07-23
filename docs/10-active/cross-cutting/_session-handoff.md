@@ -1,4 +1,34 @@
-# 当前会话接力：Voxia 阶段 2 已完成，阶段 3 Prefab runtime 待实施
+# 当前会话接力：Voxia 阶段 1/2 已完成，阶段 3 Prefab runtime 待实施
+
+## 2026-07-23 near/far Tile 交接、加载活性与外观重新 closeout
+
+- 用户可见问题包括：远→近阶段同一区域双显、进入/离开接缝缺竖墙、加载不流畅后卡死，以及 near/far
+  颜色不一致。2026-07-22 的重开设计正确，但随后实跑又暴露 target supersede 活性、单 future near
+  mesh 吞吐、重复 chunk 调度、确定性失败热重试和 UE/canonical 环境光轴映射等独立根因。
+- Voxia 工作树仍为 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`。唯一 `production_all_features` 根现已安装真实 Pure3D renderer
+  sink，以实际 Tile registry、canonical chunk atlas、seam component 与 staging/post fence 逐 Tile 交接；
+  normal 单轴移动保留 18 Tile、逐个进入/退出 9 Tile，整窗只用于显式 teleport/预算 fallback。
+- Voxia 本轮收口提交为 `92764d2`（实现、测试与门禁）和 `1cf7eac`（README、计划与工程笔记）；客户端
+  工作树当前 clean，未合并、未推送。
+- 根级 `FVoxiaNearFarHandoffTargetLatch` 在首次可见 mutation 后固定共同 near/far target，只保留一个
+  latest-wins 后继目标；near/far/source 实际 fingerprint 维护 60 秒 watchdog。稳定 root ready 要求 latch
+  idle、27 live/renderer、0 staged/retiring/ticket/queue，以及 gap/overlap/seam/orphan/error 全零。
+- active-near 改为 4-worker/16-cap 最低优先级有界队列、serial 有序发布、pending chunk 去重与
+  generation/version/revision/fingerprint stale gate；确定性失败锁存 voxel/field/activation，同一输入不再
+  热重试；worker generation/chunk 身份异常会转换为同 serial 的显式失败，不能留下 ordered publish serial
+  空洞。WorldGen activation 另发布最终 settled revision，renderer 不读取 loader 私有状态。
+- near/far opaque 共同使用 `M_VoxelWorldAligned`、稳定世界格 UV0 与共享 canonical AO/sky。near 已修复
+  UE Z-up 到 canonical Y-up 的轴/角点映射；`voxel_material_parity` 校验 asset、base color、ambient、
+  range 与 invalid vertex。
+- fresh 证据：Development build；Voxia Automation `148/148`；Node `82/82`；Phase 1 Null-RHI
+  23 routes / 21 generations 全绿，clean exit、far release pending=0。最终 Tile
+  `27/0/0/27`、gap/overlap/seam/orphan=0、near queue failure=0；Real-RHI ROI 的交接帧与稳定帧
+  channel delta p95/p99 都为 `1/2`。主要产物：
+  `.demo/observe/voxia_phase1_2026-07-23T01-44-43-737Z_null_rhi_1280x720/` 与
+  `.worktrees/voxia-phase2-macro-interaction/.demo/observe/near_far_real_rhi_axis_fixed.log`。
+- 服务端 authority、wire、Online provider、普通宏格 place/break 与 prefab 边界均未改变。下一步仍是阶段 3
+  prefab runtime；不得新增普通微格编辑或第二生产根。
 
 ## 2026-07-21 阶段 2 实现与 closeout
 
