@@ -1,11 +1,54 @@
-# 当前会话接力：Far LOD 材质语义与最终绑定均已修复，阶段 3 尚未启动
+# 当前会话接力：Far LOD 材质与近景边缘 transition 均已修复，阶段 3 尚未启动
+
+## 2026-07-23 near/far transition boundary envelope closeout
+
+- Voxia 工作树仍为 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`。精确 boundary miss 可观测面为 `d12f307`，核心修复为
+  `509c91d365a8fca1c0773a5daaac9fe1c5c6001b`，最终文档收口为
+  `802817d83753d6aa9b986df1d40294e012a11233`；本地与
+  `origin/codex/voxia-phase2-macro-interaction` 已用 `git ls-remote` 核对一致，工作树 clean。
+- 颜色修复后暴露的“走到边缘仍不加载近景”不是加载距离或构建耗时问题。confirmed revision
+  改变后，玩家从旧中心 `[11,0,-51]` 快速跨多个 Tile 时，旧 near owner 仍可能持有 X=12；
+  它的 +X seam 需要当前 source revision 的 far `[13,*,*]/NegX`。旧 far 请求只覆盖最终目标窗口
+  与固定 slab，缺少这条边界，逐 Tile ownership 因
+  `renderer_tile_ownership_far_boundary_missing` fail-closed，故画面一直保留旧 far。
+- Unified Root 现在按 handoff generation 冻结真实 `RendererNearOwnedTiles`；source-neutral
+  canonical builder 为“真实 live ∪ 最终 target”的完整 XYZ Tile 集合生成六面边界。center、
+  transition count/fingerprint、coverage 与 source identity 共同进入 prepare、incremental plan、
+  residency、worker build、hidden stage、root permit 与 live identity。相同 center 但包络变化会
+  supersede 旧 hidden generation，并释放对应 residency/coverage；同一 handoff generation 的逐 Tile
+  mutation 不会反复重启 far build。
+- stdio/CLI 新增 requested/desired/in-flight/live transition count/fingerprint 与精确
+  `last_far_boundary_miss`。fingerprint 作为十进制字符串输出，避免 JavaScript 把大于 `2^53`
+  的 `uint64` 舍入。Phase 1 稳定根只接受一致的 cold bootstrap `0/"0"` 或生产
+  `27/非零字符串`，并要求四个 fingerprint 完全相等、boundary miss 不存在。
+- fresh 验证：Development build 成功；完整 Voxia Automation `151/151`、Node `83/83`；
+  Phase 1 Null-RHI 25 条完整 XYZ 路线通过，`handoff_failed=0` 且 boundary miss true 为 0；
+  Phase 2 Null-RHI 的 material 6 place/break、revision 1/2、X/Y/Z reload、最终 empty 与 Phase 3
+  拒绝合同均通过。产物为
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_TransitionFinal_20260723/`、
+  `.demo/observe/voxia_phase1_2026-07-23T16-48-33-789Z_null_rhi_1280x720/` 与
+  `.demo/observe/voxia_phase2_2026-07-23T16-55-15-847Z_null_rhi_1280x720/`。
+- 最新可见 D3D12 Development 唯一生产根仍保持运行。它从 `[11,0,-51]` 连续跨越多个 Tile，
+  最终 near/far 对齐于 `[8,0,-52]`；live/staged/retiring/renderer=`27/0/0/27`，
+  gap/overlap/seam-gap/orphan=`0/0/0/0`，requested/desired/in-flight/live fingerprint 均为
+  `"9416127099811288665"`，`last_far_boundary_miss.present=false`。near 与 far LOD0–4
+  histogram 只含 material 1，30 个 witness 的 unresolved、exact→LOD、LOD→final 均为 0。
+  同机位 Lit/关闭 Lighting·Fog·PostProcessing/恢复 Lit 证据在
+  `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_transition_final_real_rhi_2026-07-23/`。
+- 严格终审覆盖 identity 冻结、异步 stale gate、permit、整数边界、集合预算、失败清理、CLI JSON、
+  逐 Tile ownership/fence 与阶段 2 回归；终审发现的 JS 精度缺口已先 RED 后修复，最终
+  Critical/Important/Minor 均为 0。未引入第二套 far 材质、ring tint、shader 补色、表土增厚、
+  固定等待或第二生产根；完整 XYZ、服务端权威和阶段 2 宏格交互保持不变。
+- 阶段 3 的材质与 near/far transition 前置阻断均已关闭，但本次仍未开始阶段 3。Online
+  authority/provider 也未开始，不得把 WorldGen/Mock 当在线 truth。
 
 ## 2026-07-23 Far LOD surface semantic + ownership binding closeout
 
 - Voxia 工作树为 `.worktrees/voxia-phase2-macro-interaction`，分支
   `codex/voxia-phase2-macro-interaction`；本轮从 `284cefd` 继续，canonical surface 修复为
   `334ff7799aa97561749caa612285c00302e96cd5`，最终绑定 RED/修复为 `c09a9d0` / `1158d6b`，
-  文档收口为 `88f4efa`。工作树 clean、未合并、未推送；外层文档从 `cdf3ba8b` 继续。
+  文档收口为 `88f4efa`。这是本节当时的提交状态；当前远端与最终工作树状态以上一节为准。
 - 这是两个串联根因：
   1. WorldGen canonical page 的中心点降采样从 LOD1 起可能漏掉默认 4m 表层，使外露面
      material 1 走样为 material 2；

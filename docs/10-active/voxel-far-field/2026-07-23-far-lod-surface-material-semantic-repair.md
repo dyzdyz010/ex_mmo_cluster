@@ -215,3 +215,35 @@ owner/ring/LOD 与 artifact fingerprint。命令只读 confirmed/frozen snapshot
 最终独立审查覆盖 `334ff779..1158d6b`，对 UE5.8 parent 规则、参数覆盖顺序、三材质族、
 fail-closed、UObject 生命周期、真实 SceneHost 反例与架构边界复核，Critical/Important/Minor
 均为 0。本问题至此关闭；阶段 3 已解除本项前置阻断，但本次没有开始阶段 3。
+
+## 10. 颜色收口后暴露的近景边缘 transition 修复
+
+颜色与 actual material-id 已一致后，用户继续走到边缘时暴露了一个独立活性问题：confirmed
+revision 改变且快速跨多个 Tile 时，旧 renderer near owner 所需的外侧 far 边界不在最终目标的
+固定 slab 内，逐 Tile ownership 因精确 boundary miss 停止提交，所以视觉上仍是旧 far。
+
+本修复没有改变材质、加载距离或表土厚度。Unified Root 按 handoff generation 冻结真实
+`RendererNearOwnedTiles`；canonical builder 为真实 live 与最终 target 的并集生成完整六面
+far boundary，并把 transition fingerprint 贯穿所有异步 stale gate、hidden stage 与 root commit
+permit。CLI 同时输出精确 boundary miss receipt 及 requested/desired/in-flight/live identity；
+64 位 fingerprint 使用十进制字符串，Node 门禁做无损相等比较。
+
+最新验证在 Voxia 核心提交
+`509c91d365a8fca1c0773a5daaac9fe1c5c6001b`、文档提交
+`802817d83753d6aa9b986df1d40294e012a11233` 上完成并已推送：
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| Development build | success，exit 0 | 最终 Development binary |
+| Voxia Automation | `151/151`，0 failed，2 项仅含预期 warning | `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_TransitionFinal_20260723/` |
+| Node | `83/83` pass，0 fail | transition identity/cold bootstrap/boundary miss 门禁 |
+| Phase 1 Null-RHI | `passed=true`，25 条完整 XYZ 路线；`handoff_failed=0`、boundary miss true=0 | `.demo/observe/voxia_phase1_2026-07-23T16-48-33-789Z_null_rhi_1280x720/` |
+| Phase 2 Null-RHI | `passed=true`；material 6 place/break、revision 1/2、X/Y/Z reload、最终 empty | `.demo/observe/voxia_phase2_2026-07-23T16-55-15-847Z_null_rhi_1280x720/` |
+| 可见 Real-RHI | D3D12 Development 唯一根；跨多个 Tile 后 `[8,0,-52]` ready，27/0/0/27，所有 gap/seam/miss 为 0 | `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_transition_final_real_rhi_2026-07-23/` |
+
+Real-RHI 的四处 transition fingerprint 精确一致为
+`"9416127099811288665"`；near 与 far LOD0–4 histogram 仍只含 material 1，30 个 witness 的
+unresolved、exact→LOD、LOD→final 均为 0。同机位 Lit、关闭 Lighting/Fog/PostProcessing 与恢复
+Lit 均已保存，恢复前后全图 PSNR 为 `49.255125 dB`。严格终审没有剩余
+Critical/Important/Minor。至此材质语义、最终绑定与近景边缘 transition 三层问题全部关闭；
+阶段 3 仍未在本轮启动。

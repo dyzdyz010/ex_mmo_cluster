@@ -91,7 +91,7 @@ mix test
 
 | Client | Engine | Role |
 |--------|--------|------|
-| **[Voxia](clients/Voxia)** | Unreal Engine 5.8 | 唯一现役产品客户端；Milestone A / A10 客户端 lifecycle、流送、阶段 2 与跨 LOD 表面材质语义已收口，阶段 3 尚未启动 |
+| **[Voxia](clients/Voxia)** | Unreal Engine 5.8 | 唯一现役产品客户端；Milestone A / A10 lifecycle、完整 XYZ near/far 流送与 transition、阶段 2、跨 LOD 表面材质语义及最终绑定已收口，阶段 3 尚未启动 |
 | [`clients/web_client`](clients/web_client) | TypeScript · Three.js | 归档；仅显式点名时使用 |
 | [`clients/bevy_client`](clients/bevy_client) | Rust · Bevy | 归档；仅显式点名时使用 |
 
