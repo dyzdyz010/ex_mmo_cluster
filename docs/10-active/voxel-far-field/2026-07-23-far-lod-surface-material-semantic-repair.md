@@ -1,10 +1,11 @@
 # Voxia Far LOD 外露表面材质语义修复
 
 - **日期**：2026-07-23
-- **状态**：canonical 外露材质语义与最终 ownership MID 绑定两个串联根因均已修复，并完成
-  全量/Null-RHI/可见 Real-RHI/代码审查；本项不再阻断阶段 3，但阶段 3 尚未启动
+- **状态**：canonical 外露材质语义、最终 ownership MID 绑定及其后暴露的 near transition /
+  completed-successor 活性回归均已修复，并完成全量/Null-RHI/可见 Real-RHI/代码审查；
+  本项不再阻断阶段 3，但阶段 3 尚未启动
 - **影响范围**：canonical page/LOD material reducer、artifact schema/fingerprint、live CLI/observe、
-  SceneHost 材质组合、自动化与 Real-RHI 验收
+  SceneHost 材质组合、near settled-source policy、自动化与 Real-RHI 验收
 - **不改变**：服务端权威边界、完整 XYZ coverage、near/far 唯一 owner、Tile handoff、粗 occupancy、
   阶段 2 宏格交互、普通世界无微格编辑
 
@@ -247,3 +248,39 @@ unresolved、exact→LOD、LOD→final 均为 0。同机位 Lit、关闭 Lightin
 Lit 均已保存，恢复前后全图 PSNR 为 `49.255125 dB`。严格终审没有剩余
 Critical/Important/Minor。至此材质语义、最终绑定与近景边缘 transition 三层问题全部关闭；
 阶段 3 仍未在本轮启动。
+
+## 11. 已完成后继预取不再反向阻塞 active-near
+
+transition boundary envelope 修复后，CLI 捕获到第二个独立活性回归：active near center
+`[8,0,-53]` 的 9261 chunks 已完整，下一 speculative window `[8,0,-54]` 也已全部生成并处于
+`ready_to_activate=true`，但当前 active presentation batch 仍停在旧 center `[8,0,-52]`。
+root 因此停在 `near_background_progress` / `near_active_batch_pending`，far dispatch 持续
+deferred。coverage、boundary miss 与 renderer proof 均无错误。
+
+旧 `CanStartSettledPresentationCandidate()` 把 `ready_to_activate` 与 `load_in_flight` 一样
+解释为 source 仍不稳定。实际上，前者表示后继窗口已经完整停止变化，但尚未改变当前 active
+coverage identity；它不应阻塞当前窗口冻结 candidate。现策略保持以下 fail-closed 边界：
+
+- revision 0；
+- 后继仍 `load_in_flight`；
+- 没有完整 successor 时，candidate 仍是最后一个 streaming revision 且生产者尚未发布 settled
+  revision。
+
+仅 `ready_to_activate=true && load_in_flight=false` 的完整 successor 不再反向阻塞当前
+active-near。真正激活 successor 时仍会推进 settled revision 与 activation serial，触发下一轮
+coverage candidate；既有 voxel/field/overlay/activation identity、逐 Tile ownership/fence 和
+transaction idle 门禁均未放宽。
+
+最终提交 `882831fdae50a14814637e09303002bbe5383fde` 已推送。验证结果：
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| RED / GREEN | `0/1 → 1/1`；审查补充矛盾 flag 与 revision 0 防回归断言后仍 `1/1` | `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_NearPrefetchActivePresentation_RED_20260724/`、`.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_NearPrefetchActivePresentation_GREEN_20260724/`、`.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_NearPrefetchReviewFinal_20260724/` |
+| Development build | 327 actions，success，stderr 为空 | `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/build_near_prefetch_liveness_final_20260724.stdout.log` |
+| Voxia Automation | `151/151`，0 failed，0 not-run | `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_NearPrefetchLivenessFinal_20260724/` |
+| Node | `83/83` pass，0 fail | `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/node_near_prefetch_liveness_final_20260724.log` |
+| Phase 1 / 2 Null-RHI | 两者 `passed=true`；25 routes 与阶段 2 authority/reload/拒绝合同通过 | `.demo/observe/voxia_phase1_2026-07-24T01-19-51-514Z_null_rhi_1280x720/`、`.demo/observe/voxia_phase2_2026-07-24T01-26-23-418Z_null_rhi_1280x720/` |
+| 可见 Real-RHI | 单轴 transition=`3087/3087/6174`；最终 near/far generation=`3/3`，9261 near ready，far 不再 deferred，所有 gap/seam/orphan 为 0 | `.worktrees/voxia-phase2-macro-interaction/Saved/near_prefetch_liveness_fix_real_rhi_2026-07-24/` |
+
+严格审查没有剩余 Critical/Important/Minor。本修复不改变材质、加载距离、完整 XYZ、服务端权威、
+逐 Tile ownership/fence 或阶段 2 宏格交互，也没有引入硬编码等待或第二生产路径。

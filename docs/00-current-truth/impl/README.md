@@ -27,13 +27,13 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；阶段 1 lifecycle/ownership、阶段 2 与 Far LOD 外露材质归约已完成；阶段 3 prefab 尚未启动，Online 后置 |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；阶段 1 lifecycle/ownership/active-near 活性、阶段 2 与 Far LOD 外露材质归约已完成；阶段 3 prefab 尚未启动，Online 后置 |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
 | Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | A8/A10 跨 LOD 表面材质语义已由 2026-07-23 专项关闭；阶段 3、Online provider 与 B/C 未开始 |
-| Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness |
+| Voxia near XYZ cube | `clients/Voxia/Source/Voxia/Voxel/VoxiaNearVoxelWindow.*` + `VoxiaNearFarPresentationPolicy.*` + `VoxiaNearMeshStreamingPolicy.*` | 27 tiles/9261 chunks；任一单轴换窗进出9 tiles/3087 chunks；完整 XYZ readiness；仍在加载的 successor fail-closed，完整 ready successor 不反向阻塞当前 active candidate |
 | Voxia near/far transaction | `clients/Voxia/Source/Voxia/Presentation/VoxiaNearFarTileHandoff.*` + `Gameplay/VoxiaUnifiedVoxelWorldActor.*` | target latch 固定共同 identity；normal handoff 逐 Tile 提交 canonical chunk atlas、seam、near visibility 与真实 staging/post fence；far generation 仍整代原子；无第二生产 truth |
-| Voxia near mesh queue | `clients/Voxia/Source/Voxia/Gameplay/VoxiaNearActiveChunkMeshWorkQueue.*` + `VoxiaNearActivePresentation.*` | 最低优先级有界并行、serial 有序发布、pending chunk 去重、generation/stale 隔离与确定性失败身份门禁 |
+| Voxia near mesh queue | `clients/Voxia/Source/Voxia/Gameplay/VoxiaNearActiveChunkMeshWorkQueue.*` + `VoxiaNearActivePresentation.*` | 最低优先级有界并行、serial 有序发布、pending chunk 去重、generation/stale 隔离、settled-source 活性与确定性失败身份门禁 |
 | Voxia shared appearance | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelAmbientLighting.*` + `VoxiaVoxelMaterialFamily.h` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | near/far opaque 共用 `M_VoxelWorldAligned`、稳定 UV0 与 canonical `UV1=(AO,sky)`；UE/canonical 轴角点显式映射 |
 | Voxia confirmed world model | `clients/Voxia/Source/Voxia/Voxel/WorldModel/` | 唯一 confirmed aggregate、candidate-then-publish reducer、三态 sparse overlay、完整 XYZ conflict algebra 与只读 query |
 | Voxia authority boundary | `clients/Voxia/Source/Voxia/Authority/` | intent ledger、确定性 Mock adapter、类型化事件 correlation、presentation work/ack history 与 session reset |
@@ -54,7 +54,7 @@
 | Voxia presentation generation | `clients/Voxia/Source/Voxia/Presentation/VoxiaVoxelPresentationGeneration.*` + `VoxiaVoxelCoverageOwnership.*` | renderer/source 无关的 generation readiness、stale 拒绝与 XYZ 唯一 owner 契约 |
 | Voxia presentation resource host | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelPresentationResourceSet.*` + `VoxiaVoxelPresentationSceneHost.*` | 真实 render fence；hidden/live/retiring near/far DynamicMesh 生命周期与原子晋升 |
 | Voxia world composition selection | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldComposition.*` | 唯一正式根 / legacy probe / Pure3D probe / online compatibility 的纯选择契约；冲突 selector 与缺 provider 硬失败 |
-| Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合 near/Pure3D far，维护 target-latch 活性、完整 27 Tile renderer proof、near settled + far live + XYZ center aligned 的严格 readiness |
+| Voxia 唯一联合根 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | `-VoxiaWorldGenPreview` 默认启动 `production_all_features`；一个顶层 root 组合 near/Pure3D far，维护 target-latch/后继预取活性、完整 27 Tile renderer proof、near settled + far live + XYZ center aligned 的严格 readiness |
 | Voxia pure-3D far module / standalone probe | `clients/Voxia/Source/Voxia/Gameplay/VoxiaWorldGenVoxelShellBuilder.*` + `VoxiaPure3DVoxelWorldActor.*` | 正式统一根中的 far adapter；WorldGen/本地磁盘 provider 共用 request Build 路径，具备 diff/residency/cancellation/shared artifact/parallel surface/stable patch、材质族、预算与分帧 scene host。standalone 只作 probe；完整 route/full oracle/Real-RHI 已由阶段 1 根级验收覆盖，Online provider 后置 |
 | Voxia far rendering | `clients/Voxia/Source/Voxia/Rendering/` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | RG0–RG6 已完成：原子 generation 可见提交、source UV、不可变 AO/sky、唯一环境光、自然材质、冻结质量档与 Real-RHI/30 分钟时序门禁 |
 | Voxia gameplay | `clients/Voxia/Source/Voxia/Gameplay/README.md` | pawn、streaming、HUD、LOD debug |

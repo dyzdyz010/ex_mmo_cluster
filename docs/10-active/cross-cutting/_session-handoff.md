@@ -1,4 +1,43 @@
-# 当前会话接力：Far LOD 材质与近景边缘 transition 均已修复，阶段 3 尚未启动
+# 当前会话接力：Far LOD 材质、近景边界与后继预取活性均已修复，阶段 3 尚未启动
+
+## 2026-07-24 completed-successor active-near liveness closeout
+
+- Voxia 工作树仍为 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`。本轮根修复与文档提交为
+  `882831fdae50a14814637e09303002bbe5383fde`；本地与
+  `origin/codex/voxia-phase2-macro-interaction` 已用 `git ls-remote` 核对一致，工作树 clean。
+- 用户当前窗口“走到边缘仍不加载近景”经 stdio/CLI 定位为独立活性回归，不是材质、加载距离、
+  authority coverage 缺失或 transition boundary miss。现场 active near center=`[8,0,-53]`、
+  9261 chunks 完整，后继 `[8,0,-54]` 已 `ready_to_activate=true`，但 active presentation batch
+  仍停在旧 center `[8,0,-52]`；root 卡在 `near_background_progress` /
+  `near_active_batch_pending`，far dispatch 持续 deferred。
+- 根因是 settled-source policy 同时拒绝 `load_in_flight` 与 `ready_to_activate`。前者表示后继
+  source 仍在变化，必须 fail-closed；后者表示后继已完整停止变化但尚未改变 active coverage
+  identity。旧判定反向阻塞当前 active-near candidate，far 又等待当前 near readiness，形成循环等待。
+- `CanStartSettledPresentationCandidate()` 现仍拒绝 revision 0、仍在加载的后继，以及没有完整
+  successor 时尚未发布 settled revision 的最后一个流式批次；仅允许
+  `ready_to_activate=true && load_in_flight=false` 的完整后继不再阻塞当前窗口。调用点既有
+  voxel/field/overlay/activation identity、mesh/transaction idle、逐 Tile ownership/fence 门禁均未放宽。
+- RED `0/1` 精确锁定完整 successor 被旧策略拒绝；GREEN `1/1`。严格审查又补齐
+  “load 与 ready flag 矛盾仍拒绝”和“revision 0 仍拒绝”两项防回归断言，最终没有剩余
+  Critical/Important/Minor。
+- fresh 验证：完整 327-action Development build 成功；Voxia Automation `151/151`、
+  Node `83/83`；Phase 1 Null-RHI 25 routes 与 Phase 2 material 6 place/break、revision 1/2、
+  X/Y/Z reload、最终 empty、Phase 3 拒绝合同均通过。产物为
+  `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/build_near_prefetch_liveness_final_20260724.stdout.log`、
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_NearPrefetchLivenessFinal_20260724/`、
+  `.worktrees/voxia-phase2-macro-interaction/Saved/Logs/node_near_prefetch_liveness_final_20260724.log`、
+  `.demo/observe/voxia_phase1_2026-07-24T01-19-51-514Z_null_rhi_1280x720/` 与
+  `.demo/observe/voxia_phase2_2026-07-24T01-26-23-418Z_null_rhi_1280x720/`。
+- 可见 D3D12 Development 唯一根由 CLI 从 `[11,0,-51]` 跨两个 Tile 到 `[13,0,-51]`，
+  再精确反向跨一个 Tile 到 `[12,0,-51]`。单轴 transition 为
+  entered/exited/retained=`3087/3087/6174`；最终 near/far generation=`3/3`，near
+  presentation-ready=`9261`、retiring/stale=`0/0`，far queue/cancel/stale=`0/0/0` 且不再
+  deferred，gap/overlap/seam-gap/orphan=`0/0/0/0`。stdio 证据位于
+  `.worktrees/voxia-phase2-macro-interaction/Saved/near_prefetch_liveness_fix_real_rhi_2026-07-24/`。
+- 本轮没有引入第二材质、ring tint、shader 补色、表土增厚、硬编码等待、第二生产根或整窗
+  fallback；完整 XYZ、服务端权威、逐 Tile ownership/fence 与阶段 2 宏格交互保持不变。
+  阶段 3 仍未启动。
 
 ## 2026-07-23 near/far transition boundary envelope closeout
 
