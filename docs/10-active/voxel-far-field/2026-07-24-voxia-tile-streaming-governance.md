@@ -1,7 +1,7 @@
 # Voxia 按 Tile 渐进流送治理决策
 
 - **日期**：2026-07-24
-- **状态**：方案已口头确认，等待书面复核
+- **状态**：已实施并通过自动化、Null-RHI 与 Real-RHI 验证
 - **范围**：唯一生产组合根的 near/far 流送、优先级、可见交接、安全限行与可观测面
 - **不改变**：服务端权威、confirmed truth 来源、完整 XYZ、`3×3×3` near 窗口、单 Tile
   `7×7×7 = 343 chunks`、唯一生产根
@@ -28,7 +28,7 @@
 
 ## 2. 与既有文档和实现的差异
 
-| 维度 | 之前文档 | 当前实现 | 本轮决策 |
+| 维度 | 之前文档 | 实施前实现（本轮诊断基线） | 本轮决策 |
 | --- | --- | --- | --- |
 | 触发时机 | 进入新 Tile 后开始 staging | `MaybeRefreshSubscription` 已按 Tile 变化触发 | 保留；不再依赖固定 12 秒预取才能及时 |
 | 调度粒度 | Tile 是可见提交原子 | Chunk worker 已并行，但 Tile 聚合 future 一次只处理一个 | Chunk 并行准备，Tile 原子可见提交 |
@@ -183,3 +183,35 @@ recovery，不能回流成普通移动的默认门槛。
 
 在新门禁通过前，历史 correctness 证据仍可证明 ownership/seam 语义，但不得继续用它宣称当前
 流送已经顺畅或满足性能目标。
+
+## 9. 实施结果与验证证据
+
+本轮没有新增队列层级或第二套流送根，实际修改集中在四个既有 owner：
+
+| Owner | 已实施变化 |
+| --- | --- |
+| Near prepare / mesh | Required 可使用全部物理容量；Speculative 最多使用 `worker_limit - 1`，只在 Required 无待派发 Chunk 时运行。WorldGen/pack 按最多 32 Chunk 批次处理，mesh 仍以 Chunk 为后台粒度。 |
+| Tile registry / root | 每个 Tile 独立记录 343 Chunk、六面边界和 staged/ready/live/retiring；每帧最多提交一个 ready Tile，进入侧不等待整窗 far。 |
+| Scene host / ownership | atlas、seam 与 near/far 可见性同帧原子切换；post-visibility fence 独立排队退役，不阻塞下一 Tile；live far 自维护当前 near 外扩一层的六向边界。 |
+| Coverage / safe view | 中间态报告实际 live Tile 并集；单轴交接可暂时为 28 Chunk 跨度，final proof 恢复精确 21。只有玩家在实际 coverage 外 depth `>=3` 且 Required pending 才阻塞。 |
+
+可游玩期间的 far 整代重算仍是低优先级后台工作，不改为逐 Tile far generation。为避免其
+surface 扫描与 GameThread 争用，Pure3D far 使用专用最低优先级单 worker；组合根在每个 frame end
+持续授予 `0.30ms` 协作时间片，sample 循环与 page 边界都检查预算，取消与 EndPlay 主动唤醒。
+这不是逐页固定 sleep，也不改变 Required near 的容量或可见提交顺序。
+
+验证结果：
+
+- Development build：成功；
+- `Automation RunTests Voxia`：`155/155` Success；
+- Node 合约：`85/85` 通过；
+- 完整 Null-RHI 生命周期：`passed=true`，证据
+  `.demo/observe/voxia_phase1_2026-07-24T16-41-33-553Z_null_rhi_1280x720/`；
+- Real-RHI 相邻往返：`passed=true`，两个最终收敛窗口为 `34.670s / 33.104s`，
+  GameThread p95=`3.106ms / 3.015ms`、p99=`5.759ms / 7.824ms`，证据
+  `.demo/observe/voxia_phase1_2026-07-24T16-35-35-576Z_real_rhi_1280x720/`。
+
+Real-RHI 事件顺序证明进入侧不是等最终 far：目标 center `[12,0,-51]` 的 9 个 X+ Tile 在
+near ready 后逐帧完成 `FarOwns → NearOwns`；随后 far generation 3 回填，9 个 X- Tile 再逐帧
+执行 `NearOwns → FarOwns`，最后才提交 `voxel_authority_stream_committed`。全过程
+`gap/overlap/seam/orphan=0/0/0/0`，`future_far_boundary_wait=false`，没有触发 depth 3 recovery。

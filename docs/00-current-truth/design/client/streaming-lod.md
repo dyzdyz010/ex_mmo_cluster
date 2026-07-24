@@ -20,11 +20,12 @@
   `3×3×3=27 tiles=9261 chunks`。任一单轴跨 tile 时，entered/exited=`9 tiles=3087 chunks`，
   retained=`18 tiles=6174 chunks`。
 - **authority coverage 后台流送与 renderer Tile 交接已经分层闭合。** 首次 presentation proof 后 session readiness
-  保持单调；进入新 tile 立即准备 staging，旧 committed `3×3×3` XYZ coverage 继续可玩且不显示
-  全屏 overlay。renderer 以实际 live Tile 集合求 retained/entering/exiting，正常单轴移动只新增/移除
-  `9/9` Tile、原样保留 18 Tile；每次完整 Tile 经过 candidate atlas、真实 staging fence、同一 GameThread
-  的 atlas/seam/near 可见提交与 post fence。只有玩家越出旧 coverage 的 XYZ/L∞ depth 达到 `3`、
-  staging 仍未提交时才进入“权威覆盖流送超时”全屏恢复；确定性 authority/H/source/proof 错误仍立即失败。
+  保持单调；进入新 tile 立即准备 required staging。renderer 以实际 live Tile 集合求
+  retained/entering/exiting，正常单轴移动只新增/移除 `9/9` Tile、原样保留 18 Tile。单个 Tile 的
+  343 个 confirmed Chunk 与六面边界齐备后即可经过 candidate atlas、真实 staging fence，在同一
+  GameThread frame 完成 atlas/seam/near 可见提交；不等待其余 26 Tile，post fence 也不阻塞下一 Tile。
+  `27/27` 只负责最终 settled proof。玩家越出实际 live coverage 的 XYZ/L∞ depth `1..2` 仍静默可玩；
+  depth 达到 `3` 且 required 未完成时才阻塞输入并进入加载，确定性 authority/H/source/proof 错误仍立即失败。
   speculative successor 仍在分批加载时会 fail-closed；其内容完整并进入
   `ready_to_activate` 后已经停止变化且尚未改变 active coverage identity，因此不再反向阻塞当前
   active-near presentation candidate。同一逻辑窗口在 `Preparing` 期间重建 candidate 时，latch
@@ -107,12 +108,12 @@ flowchart TD
 
 - 初始会话先绑定 snapshot，再 deferred spawn 唯一根；near/far/snapshot/ownership/fence 一致并提交
   首个 proof 后才进入 playable，此后正常 staging 不撤销 session readiness。
-- 玩家进入新 tile 立即开始后台 staging；只要玩家仍在旧 committed bounds 内，flow 保持可玩、overlay
-  隐藏，相机正常跟随。`session_ready` 保持 true，但严格根级 `ready` 在 target latch、队列、Tile registry、
-  far/atlas/seam/fence 尚未全部闭合时为 false；candidate coverage 未提交时不得改写 committed bounds。
-- 玩家离开旧 bounds 后，safe-view guard 按完整 XYZ/L∞ 深度工作且不修改 pawn、control rotation、
-  velocity 或几何。depth `1..2` 只显示非阻塞提示；depth `>=3` 且 staging pending 才进入恢复加载。
-  当前 generation 后续提交时可自动恢复，也可主动 retry 或返回菜单。
+- 玩家进入新 tile 立即开始 required staging；每个 ready Tile 会立刻扩展实际 live coverage。
+  `session_ready` 保持 true，但严格根级 `ready` 在 target latch、队列、Tile registry、
+  far/atlas/seam/fence 尚未全部闭合时为 false。
+- safe-view guard 按实际 live Tile 并集计算完整 XYZ/L∞ 深度且不改写 confirmed position。
+  depth `1..2` 完全可玩且不提示；depth `>=3` 且 required pending 才进入恢复加载、停止用户输入。
+  当前 generation 后续覆盖玩家位置时自动恢复，也可主动 retry 或返回菜单。
 - retry 为 single-flight，复用同一 snapshot、创建新 presentation generation；stale completion
   只能被拒绝。新游戏结束旧 session 后创建新 snapshot/root。
 - 阶段 2 已按[世界占用与 Prefab runtime 设计](../../../10-active/cross-cutting/2026-07-21-voxia-phase2-phase3-world-occupancy-and-prefab-runtime-design.md)完成。宏格编辑只在 active、Playable、confirmed coverage 内开放；`micro_edit` 固定返回 `micro_edit_not_supported`，prefab 固定返回 `feature_not_available_phase3`。
@@ -125,7 +126,8 @@ flowchart TD
 - authority/update 粒度仍是 chunk；live 绘制按完整 XYZ tile × material family 合批，默认上限
   `27×3=81` 个 active-near component。
 - worker 只读冻结的 CPU mesh 输入，不接触 UObject；source epoch 变化会拒绝 stale result。
-- active-near 默认由 4 个最低优先级 worker、最多 16 个 in-flight/ready 结果并行构建；GameThread
+- active-near 使用一条最低优先级 worker 与最多 8 个 in-flight/ready 结果；调度粒度为 Chunk，
+  required 可使用完整 worker 容量，speculative 只能使用 required 未占用的保留外容量。GameThread
   按 request serial、generation/version/revision/fingerprint 有序限预算发布。pending chunk 去重；确定性
   worker/投影/边界 source 失败锁存输入身份，同一事实不热重试，事实变化后才解锁。
 - settled-source policy 对 revision 0、`load_in_flight` 与尚未发布 settled revision 的最后一个
@@ -152,6 +154,10 @@ flowchart TD
   64 位 fingerprint；该检查由 Pure3D actor、Unified Root 与 Node CLI 共用，fingerprint 保持规范
   十进制字符串，XYZ/count 必须是 safe integer。
 - material/surface cache 与 source identity 绑定；far worker 使用后台低优先级队列。
+- 可游玩期间 far surface 重算使用单 worker 帧末时间片：far 系统每帧自行授予下一片额度，
+  取消与 EndPlay 主动唤醒。该策略不读取 near 内部状态，却保证 required near、输入与可见提交先执行；
+  当前生产预算为 `0.30ms/frame`，sample 循环和 page 边界都会检查；不使用逐页固定 sleep。
+  `surface_parallel.foreground_rest_ms` 直接报告实际等待成本。
 - far surface lighting 与 near matte greedy mesh 消费同一个 canonical AO/sky kernel；far 已验收的
   AO/sky 数值是共享基准，不以固定亮度或删除 AO 消除接缝。
 - far 质量策略仍由动态 `VoxiaFarQualityMaterial` 保存冻结参数；SceneHost 组合 ownership
@@ -162,9 +168,10 @@ flowchart TD
 
 ### 根级正确性
 
-每个已提交 proof 的目标契约是：snapshot/revision/generation/settled center 一致，target latch 已回到
+每个 Tile 的可见事务先独立证明 343 Chunk、六面边界、atlas、seam 与 near/far owner 原子切换；
+整窗已提交 proof 再要求 snapshot/revision/generation/settled center 一致，target latch 已回到
 `Idle` 且无 queued target，near/renderer Tile 都为完整目标立方体，staged/retiring/ticket/mesh queue
-全部为空，并由 renderer observer 证明 `gap_count=0`、`overlap_count=0`、`seam_gap_faces=0`、
+与 pending post fences 全部为空，并由 renderer observer 证明 `gap_count=0`、`overlap_count=0`、`seam_gap_faces=0`、
 `orphan_seam_faces=0`、`stale_commit_count=0`。生产根已经安装真实 renderer sink；atlas staging/post
 fence 与实际 seam component 身份参与 proof，不再接受调用方自填 ready/zero。far desired queue 最大为 1，
 且 live scene 必须精确匹配 desired center/count/fingerprint。
@@ -326,6 +333,21 @@ GPU p95=`4.387ms`，gap/overlap/stale 均为零。
 
 Editor-only `performance_runtime_barrier` 在 frame reset 前等待 compilation/DDC/render quiescence 并回收
 旧世界 PendingKill；一次性回收耗时被报告但不进入新根稳定态窗口。
+
+## 2026-07-24 按 Tile 渐进流送治理收口
+
+- Required near 与 Speculative prefetch 已在物理容量上分离：Required 可用全部槽，
+  Speculative 最多使用 `worker_limit - 1`，且 Required 有待派发 Chunk 时不启动新预测任务。
+- 单轴交接的 entering 9 Tile 使用 live far 预留的外扩一层六向边界逐帧提前换入；
+  exiting 9 Tile 等新 far 回填后逐帧归还。中间态 authority coverage 是无洞 live 并集，
+  单轴可暂时覆盖 28 chunks；最终 proof 才要求精确 21。
+- post-visibility fence 只保护旧资源退役，不串行阻塞下一 Tile；最终 settled proof 仍要求
+  pending post fence 清零以及 gap/overlap/seam/orphan 全为零。
+- 完整 Voxia Automation `155/155`、Node `85/85`、Null-RHI 生命周期均通过。
+  Real-RHI 往返收敛窗口 `34.670s / 33.104s`，GameThread p95
+  `3.106ms / 3.015ms`，没有进入 depth 3 recovery。证据见
+  `.demo/observe/voxia_phase1_2026-07-24T16-35-35-576Z_real_rhi_1280x720/`
+  与 `.demo/observe/voxia_phase1_2026-07-24T16-41-33-553Z_null_rhi_1280x720/`。
 
 ## 当前缺口
 
