@@ -1,4 +1,45 @@
-# 当前会话接力：Far LOD 材质、近景边界与后继预取活性均已修复，阶段 3 尚未启动
+# 当前会话接力：Far LOD 材质与 near/far 精确流送身份均已修复，阶段 3 尚未启动
+
+## 2026-07-24 same-window candidate refresh 与 exact far live identity closeout
+
+- Voxia 工作树为 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`。最终修复提交
+  `f02305e4dfa8af92bd83427236ad8857d1717a58` 已推送；本地 HEAD 与
+  `origin/codex/voxia-phase2-macro-interaction` 已用 `git ls-remote` 核对一致，工作树 clean。
+- CLI 继续追踪用户窗口后，锁定最后两个串联的流送身份缺口。第一，同一逻辑 near 窗口可在
+  `Preparing` 期间由 candidate generation 6 重建为 7，旧 latch 只处理 `0→非零`，继续固定 generation
+  6，后续逐 Tile 提交永远等不到已经被替代的 candidate。第二，far host 只要同 center 有任意 live
+  scene，root/CLI 就可能把旧 transition count/fingerprint 误报为 settled；这会让 stale far receipt
+  冒充当前请求已经可玩。
+- `EvaluatePreparingCandidateRefresh()` 现在只在 `Preparing` 阶段把最新非零且不同的 candidate
+  generation 刷入 latch；首次 candidate 不伪造进展，真正从旧非零 generation 换到新 generation
+  才推进 watchdog progress，已经计划过的相同 generation 与 `CommittedToFinish` 均不重复刷新。
+  逐 Tile ownership、staging/post fence、latest-wins target 和完整 XYZ 契约不变。
+- `UVoxiaVoxelPresentationSceneHost::MatchesTransitionRequest()` 与
+  `AVoxiaPure3DVoxelWorldActor::IsDesiredPresentationLive()` 把 far live 身份收紧为
+  `center + transition_near_tile_count + transition_near_tile_fingerprint` 精确一致。root readiness、
+  `scene_playable`、bootstrap/commit permit 和 stdio 的
+  `until_pure3d_world_ready` / `until_pure3d_stream_settled` 都消费同一合同；JavaScript 端拒绝非
+  safe-integer XYZ/count 与非十进制字符串 fingerprint，不再靠隐式类型转换给出 false green。
+- RED/GREEN 覆盖同窗口旧→新 candidate、首次 candidate、重复 candidate、提交后禁止刷新，以及
+  far center 相同但 count/fingerprint stale 的反例。严格审查补齐 CLI false-green 与 JS coercion
+  两项缺口后，最终没有剩余 Critical/Important/Minor。
+- fresh 验证：Development build 成功；完整 Voxia Automation `155/155` 无失败
+  （153 Success + 2 项现有 expected warnings）；Node `84/84`；Phase 1/2 Null-RHI 均
+  `passed=true`。产物为
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_Full_ReviewFinal_20260724/`、
+  `.demo/observe/voxia_phase1_2026-07-24T04-59-51-166Z_null_rhi_1280x720/` 与
+  `.demo/observe/voxia_phase2_2026-07-24T05-06-28-643Z_null_rhi_1280x720/`。
+- 可见 D3D12 Development 唯一根通过 CLI 主动跨 X、第三轴并快速反向，实际触发同窗口 candidate
+  `6→7`。最终 near/far center=`[12,0,-51]`、generation=`7/6`，
+  live/staged/retiring/renderer=`27/0/0/27`；desired/in-flight/live count 均为 `27`，fingerprint
+  均为 `"1679649817100860358"`；gap/seam-gap/orphan=`0/0/0`，far release=`22/22/0`。
+  30 个 live surface witness 的 unresolved、exact→LOD、LOD→final 均为 0，near 与 far LOD0–4
+  histogram 只含 material 1，且共同使用 `M_VoxelWorldAligned`。同机位 Lit 与关闭
+  Lighting/Fog/PostProcessing 的截图、CLI 与 stderr 证据位于
+  `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_candidate_refresh_final_real_rhi_2026-07-24/`。
+- 本轮没有引入第二材质、ring tint、shader 补色、表土增厚、硬编码等待、整窗 fallback 或第二生产根；
+  完整 XYZ、服务端权威、逐 Tile ownership/fence 与阶段 2 宏格交互均保持不变。阶段 3 仍未启动。
 
 ## 2026-07-24 completed-successor active-near liveness closeout
 

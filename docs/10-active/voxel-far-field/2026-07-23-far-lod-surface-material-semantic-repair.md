@@ -284,3 +284,71 @@ transaction idle 门禁均未放宽。
 
 严格审查没有剩余 Critical/Important/Minor。本修复不改变材质、加载距离、完整 XYZ、服务端权威、
 逐 Tile ownership/fence 或阶段 2 宏格交互，也没有引入硬编码等待或第二生产路径。
+
+## 12. 同窗口 candidate 重建与 exact far live identity
+
+完成后继活性修复后，用户窗口仍能在快速反向移动时出现旧远景继续可见、近景不前进。stdio/CLI
+把问题进一步缩小到两个显式身份合同，而不是材质、加载距离、雾、光照或 surface reducer：
+
+1. near active batch 可为同一逻辑窗口重建 candidate，例如 generation `6→7`。handoff latch
+   处于 `Preparing` 时仍固定旧 generation 6，因为旧逻辑只在 planned generation 为 0 时刷新；
+2. far SceneHost 已有同 center 的 live scene 时，旧逻辑没有同时比较 transition Tile count 与
+   fingerprint，root 和 CLI 可以把旧请求的 live scene 当作当前请求已经 settled。
+
+修复后的身份流如下：
+
+```mermaid
+sequenceDiagram
+    participant N as Near active presentation
+    participant H as Near/Far handoff latch
+    participant F as Pure3D far
+    participant S as SceneHost live receipt
+    participant R as Unified root / CLI
+
+    N->>H: candidate generation 6
+    H->>H: Preparing / pinned 6
+    N->>H: same-window rebuilt candidate 7
+    H->>H: refresh pinned 7 + real progress
+    H->>F: desired center + Tile count + fingerprint
+    F->>S: hidden stage / fence / atomic live
+    S-->>R: live center + Tile count + fingerprint
+    R->>R: exact request identity match 才 ready
+```
+
+`FVoxiaNearFarPreparingCandidateRefresh` 是不依赖 UObject 的纯策略：仅 `Preparing` 接受最新非零且
+不同的 candidate；首次从 0 获得 candidate 只刷新身份，不虚构 watchdog progress；旧非零
+generation 被新非零 generation 替代时才记录真实进展；相同 generation 或
+`CommittedToFinish` 均不重复动作。它不改变 target latch 的 latest-wins、逐 Tile mutation 或
+renderer fence。
+
+`UVoxiaVoxelPresentationSceneHost::MatchesTransitionRequest()` 和
+`AVoxiaPure3DVoxelWorldActor::IsDesiredPresentationLive()` 统一要求 live
+`center/count/fingerprint` 与 desired request 精确一致。该合同同时进入 root readiness、
+`scene_playable`、bootstrap/far commit permit 与 stdio wait gate。Node helper 只接受 safe-integer
+XYZ/count 和规范十进制字符串 fingerprint，拒绝 `"27"`、字符串坐标或数值 fingerprint 等隐式
+coercion；targetless far commit 也不再在没有 latch target 时伪造 progress。
+
+最终 Voxia 提交
+`f02305e4dfa8af92bd83427236ad8857d1717a58` 已推送。fresh 验证如下：
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| RED / GREEN | live identity 与 candidate refresh 均先 RED；最终覆盖旧→新、首次、重复、提交后拒绝、stale count/fingerprint/center 与 JS 类型反例 | `Voxia.Gameplay.FarConfirmedPresentation.LiveRequestIdentity`、`Voxia.Presentation.NearFarPreparingCandidateRefresh`、`scripts/run_phase1_world_lifecycle_smoke.test.js` |
+| Development build | success，最终二进制与源码同步 | `VoxiaEditor Win64 Development` |
+| 完整 Voxia Automation | `155/155` 无失败；153 Success + 2 项现有 expected warnings | `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_Full_ReviewFinal_20260724/index.json` |
+| Node | `84/84` pass，0 fail | `node --test scripts/*.test.js` |
+| Phase 1 Null-RHI | `passed=true`，25 条完整 XYZ route，clean exit，far release `11/11/0` | `.demo/observe/voxia_phase1_2026-07-24T04-59-51-166Z_null_rhi_1280x720/index.json` |
+| Phase 2 Null-RHI | `passed=true`；material 6 place/break、revision 1/2、X/Y/Z reload、最终 empty，Phase 3 拒绝合同通过 | `.demo/observe/voxia_phase2_2026-07-24T05-06-28-643Z_null_rhi_1280x720/summary.json` |
+| 可见 Real-RHI | D3D12 Development 唯一根；主动跨轴并快速反向实际触发 near candidate `6→7`，最终 exact far identity settled | `.worktrees/voxia-phase2-macro-interaction/Saved/near_far_candidate_refresh_final_real_rhi_2026-07-24/` |
+
+最终 Real-RHI 为 near/far center=`[12,0,-51]`、generation=`7/6`，
+live/staged/retiring/renderer=`27/0/0/27`；desired/in-flight/live transition count 均为 `27`，
+fingerprint 均为 `"1679649817100860358"`；gap/seam-gap/orphan=`0/0/0`，far release
+`22/22/0`。live receipt 的 30 个 exact surface 样本 unresolved、exact→LOD、LOD→final 均为 0；
+near 与 far LOD0–4 histogram 只含 material 1，且两侧材质路径都是 `M_VoxelWorldAligned`。同机位
+Lit 与关闭 Lighting/Fog/PostProcessing 的截图均已保存，stderr 为空并 clean CLI quit。
+
+严格终审发现并修复了测试矩阵、CLI false-green 与 JavaScript coercion 三类缺口，最终
+Critical/Important/Minor 均为 0。没有引入第二材质、ring tint、shader 补色、表土增厚、硬编码等待、
+整窗 fallback 或第二生产根；完整 XYZ、服务端权威、逐 Tile ownership/fence 与阶段 2 宏格交互不变。
+阶段 3 仍未启动。
