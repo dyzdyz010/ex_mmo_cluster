@@ -1,4 +1,33 @@
-# 当前会话接力：Far LOD 材质与 near/far 精确流送身份均已修复，阶段 3 尚未启动
+# 当前会话接力：Near/Far Patch-diff 已落地并通过 Null-RHI，Real-RHI closeout 待刷新
+
+## 2026-07-25 Near/Far Patch-diff 架构实施
+
+- 当前唯一设计：
+  [`Voxia Near/Far Patch Diff 流送设计`](../voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md)。
+- Voxia 分支 `codex/voxia-phase2-macro-interaction` 的实施提交为
+  `bb474ede3aff81cced5afb2662289619df93a720`，已推送且与远端分支 HEAD 精确一致。
+- Voxia 已落地唯一 TargetKey、Near `4³ chunks` Patch、Far `8³ tiles` Patch、
+  SceneHost 单一 commit ledger、固定 27-source Near stencil、Far canonical 26-slot boundary shell。
+- `FVoxiaFarPatchBuildStream` 已移除完整 BuildFuture 发布门槛：后台先发布完整目标版本表，
+  再按离中心最近、坐标稳定排序逐 Patch 交给 GameThread；每个 ready Patch 立即与对应 boundary
+  slots 原子提交。
+- SceneHost 先推进唯一 Target ledger，Near/Far BuildIndex 再读取同一推进后 snapshot；
+  Relocate 不再从旧 ledger 把 216 个 Near Patch 误判为 retained。
+- 当前 Target 的 Required provider/surface 工作恢复正常并行容量；已删除把所有
+  `LiveGeneration != 0` 工作强制归入单 worker + frame pacer 的错误策略。pacer 只允许未来
+  Speculative 使用。
+- 相邻 `AdjacentStep` 不根据 outside depth、等待时长或队列长度阻塞动作；只有显式
+  `Relocate` loading 阻塞。
+- 已删除 production Tile handoff/chunk transaction、target latch、dynamic atlas 扩容、
+  no-far/ownership sink、legacy far runtime/probe、root live mirror 与旧 runtime gate。
+- fresh 证据：UE 5.8 Development build 成功；完整 Voxia Automation `155/155`
+  （153 Success + 2 expected warnings）；Node `84/84`；Phase 1 Null-RHI
+  `.demo/observe/voxia_phase1_2026-07-25T06-12-49-412Z_null_rhi_1280x720/`
+  与 Phase 2 Null-RHI
+  `.demo/observe/voxia_phase2_2026-07-25T06-26-04-367Z_null_rhi_1280x720/`
+  均 `passed=true`。
+- 下一步仅剩 Real-RHI 连续移动/Relocate/first-Patch 时序、资源平台与长稳；刷新前不得写成
+  完整跨 RHI closeout。
 
 ## 2026-07-24 same-window candidate refresh 与 exact far live identity closeout
 

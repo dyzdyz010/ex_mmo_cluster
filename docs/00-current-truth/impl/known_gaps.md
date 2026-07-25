@@ -19,13 +19,11 @@
 
 ## Voxia 当前客户端缺口
 
-> **阶段 1 lifecycle/ownership、阶段 2 与 Far LOD 表面材质语义修复均已完成；Online production
-> 仍未开始。** 唯一生产根、同一 world/session
-> identity、完整 XYZ、near/Pure3D far、普通宏格挖放、confirmed presentation、safe-view、加载/恢复/
-> 菜单、材质载体、VXP5 exact-surface coverage 和三入口已经通过。
+> 阶段 1 lifecycle、阶段 2 与 Far LOD 表面材质语义修复的既有事实保持完成；Online production
+> 仍未开始。Near/Far Patch-diff 核心代码已经落地，但完整新鲜 Real-RHI/长稳 closeout 尚未刷新。
 
-2026-07-18 已关闭“刚进入相邻 tile 就全屏重建世界”的功能缺口：相邻 tile 只启动后台 staging，
-旧 committed coverage 继续可玩；全屏恢复只在旧 XYZ cube 外 L∞ depth `>=3` 且 staging pending 时出现。
+相邻移动现在只启动 Required Patch 流送并继续可玩，不根据 committed coverage 的 outside depth、
+等待秒数或队列长度阻塞；只有显式 Relocate loading 阻塞动作。
 2026-07-21 已关闭本机 Real-RHI 流式性能门禁：完整生命周期两窗 frame p99 均约 `7.69ms`，GPU p95
 约 `3.2ms`，最大帧低于 `27.34ms`；30 分钟资源长稳无单调增长。旧根 PendingKill 的一次性回收在
 Editor-only barrier 中完成并位于计数重置前，不再污染新根稳定态窗口。
@@ -39,21 +37,24 @@ overlay、near/far exact presentation、HUD/CLI 与 X/Y/Z unload/reload 均已�
 负坐标/六向/page-ring seam 测试、完整 Automation/Node/Null-RHI 与固定相机 D3D12 actual
 material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround 的边界继续有效。
 
-1. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
+1. **Patch-diff 完整 closeout**：核心 Development build 与定向自动化已通过；仍需刷新完整
+   `Automation RunTests Voxia`、Node、Phase 1/2 Null-RHI、Real-RHI 连续至少 10 Tile、快速折返、
+   Relocate、first Near/Far Patch 时序、固定资源平台和长稳证据。
+2. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
    PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace 尚未实施；
    阶段 2 与 Far LOD surface semantic 前置门禁已经满足，本轮没有启动阶段 3。
-2. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
+3. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
    source revision 失效、subscription lease、重连与默认在线切流。WorldGen/local pack 不能冒充
    confirmed truth，也不能在在线失败时 fallback。
-3. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
+4. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
    route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉与传送前
    coverage 检查。
-4. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
+5. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
    内容策略，并在不破坏 material-family、world snapshot 与原子提交契约的前提下丰富透明/发光内容。
-5. **发布硬件矩阵**：本验收机 1920×1080 Real-RHI 与阶段 1 两项 30 分钟长稳均通过；低配置硬件、发布包、
+6. **发布硬件矩阵**：历史验收机 1920×1080 Real-RHI 与阶段 1 长稳通过；Patch-diff 后仍需刷新同级证据。低配置硬件、发布包、
    更多驱动与长时真实玩家输入仍未形成发布分档。
-6. **兼容代码退役**：旧 heightmap/VHI/SVO/v1 column/raymarch 入口在正式根中已禁用或显式拒绝，
-   代码级移除应与 Online provider/协议迁移一起进行，不能在当前客户端主线恢复使用。
+7. **归档 decoder 清理**：production legacy far runtime/probe/identity/uploader 已删除；append-only
+   wire decoder 与 golden fixture 继续只作协议历史证据，不能恢复为 presentation owner。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。

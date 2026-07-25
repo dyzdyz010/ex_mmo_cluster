@@ -1,7 +1,7 @@
 # Voxia Near/Far Patch Diff 流送设计
 
 - **日期**：2026-07-25
-- **状态**：专家审查后修订，等待书面复核与实施计划
+- **状态**：实施中；核心 Patch 架构与 Far ready-stream 已落地，完整 Real-RHI/长稳门禁待刷新
 - **范围**：唯一生产组合根中的 near/far 准备、可见提交、ownership、边界封口、退役、
   移动流送与 confirmed 体素编辑呈现
 - **前置决策**：
@@ -106,7 +106,8 @@ Root 负责：
 - 在移动、bootstrap、relocate 或会话 source identity 改变时发布最新 `TargetKey`；
 - 派发 Required/Speculative 工作；
 - 从 near/far build index 与 SceneHost 读取同一 `TargetKey` 的不可变 receipt；
-- 从 SceneHost 的 committed near mask 计算 actual coverage 与 depth-3 guard；
+- 从 SceneHost 的 committed near mask 计算 actual coverage 观察值；
+- 只从显式 `Relocate` transition 读取动作阻塞，不从 coverage 距离推导策略；
 - 计算派生的 `settled(TargetKey)`。
 
 Root 不保存 live Patch 集合、renderer ownership 镜像、component、mesh、atlas、seam 或 fence。
@@ -458,7 +459,7 @@ production near radius 固定为 1。运行时 radius change 是配置错误，�
 
 Speculative 结果只可进入同一个 build cache。它没有 ownership ticket，也不能直接 visible。
 
-## 10. Actual coverage、限行与 settled
+## 10. Actual coverage、动作策略与 settled
 
 ### 10.1 Actual live coverage
 
@@ -470,12 +471,16 @@ authority coverage 只等于 SceneHost committed near Patch 的 `exact_owned_chu
 - 不使用 target 或 staged mask；
 - SceneHost 在一次 immutable snapshot 中同时返回 Patch map、ownership mask、seam 与 commit serial。
 
-depth-3 guard 保持：
+outside depth 只作为观察数据，不参与动作策略：
 
-- outside depth `0..2`：继续移动，不提示；
-- outside depth `>=3` 且 Required pending：停止发送非零移动意图并显示加载；
-- coverage 恢复后自动解锁；
+- `AdjacentStep`：无论暂时越出旧 committed coverage 多少，都继续移动并让 Required 加载追赶；
+- 原因是 target 在玩家进入新 tile 时已经提前发布，而一个 tile 单轴有 7 chunks 的行程；
+- `Relocate`：由 transition plan 显式阻塞动作并显示加载，目标收敛后解锁；
 - Fatal 不进入无限加载，直接显示可诊断失败。
+
+禁止重新引入 depth-3、等待秒数、队列长度或“超过第几个窗口”阻塞阈值。这些数字没有
+动作语义；相邻加载赶不上下一 TargetKey 是可观测的活性合同失败，应修复 Required 吞吐，
+不能在本地改成距离兜底。
 
 ### 10.2 Settled 是派生谓词
 
@@ -801,7 +806,8 @@ CLI/JSON 只暴露真实 owner 的状态：
 - 连续直线至少 10 Tile；
 - 快速折返与 180° 转向；
 - Relocate、retry、新游戏、返回菜单、EndPlay；
-- 最大生产速度下不进入 depth-3；
+- AdjacentStep 暂时越出 actual coverage 时仍不阻塞动作；
+- Relocate 未收敛时阻塞动作，收敛后显式恢复；
 - 玩家走完 7 Chunk 前完成前方 Required near coverage；
 - 退出侧 far Patch 在旧 near 资源预算耗尽前 ready；
 - first far Patch visible 不等待完整 far target；
@@ -833,6 +839,48 @@ CLI/JSON 只暴露真实 owner 的状态：
 
 实施分支中不保留 Tile/whole-generation compatibility adapter。测试可以在单个提交之间暂时红，
 但 production build 在任何可运行提交上只能有一个 presentation owner。
+
+### 16.1 2026-07-25 实施进度
+
+已落地：
+
+- `VoxiaPatchStreamingContract`：TargetKey、ConfirmedEditKey、Near/Far PatchId/Version、
+  固定空间容量与 typed work result；
+- `VoxiaNearMesherStencil`：唯一 27-source stencil、125-source closure 与最多 8 Patch fanout；
+- `VoxiaPresentationCommitLedger` + `SceneHost`：唯一 live ledger、Near move/edit 与 Far
+  Patch/26-slot 原子提交；
+- `VoxiaNearPatchBuildIndex`、`VoxiaNearPatchAssembler` 与 WorldActor Patch CPU mesh/cache；
+- `VoxiaFarPatchBuildIndex`、canonical boundary profile/shell 与 fixed SlotId；
+- `VoxiaFarPatchBuildStream`：完整目标计划先发布，随后每个 Patch ready 即交接；actor 不再等待
+  完整 `FVoxiaWorldGenVoxelShellBuildResult` 才开始 Far 可见提交；
+- 当前 Target 的 Required provider/surface work 使用正常并行容量；删除
+  `LiveGeneration != 0` 即强制单 worker + frame pacer 的错误归类，pacer 只属于未来
+  Speculative 队列；
+- `Bootstrap / AdjacentStep / Relocate`，且只有 Relocate 阻塞用户动作；
+- SceneHost 先推进唯一 Target ledger，Near/Far BuildIndex 再从推进后的 immutable snapshot
+  建立任务；Relocate 不再从旧 ledger 误判 retained Patch；
+- Near assembler 的 frozen-source proof 与可移动 mesh payload 分离验证；SceneHost 的组件
+  retirement fence pacer 即使队列刚清空也会消费最终已完成 fence；
+- Root `patch_streaming` readiness、Near/Far BuildIndex receipt、SceneHost ledger 与
+  `pure3d_world_state.far_patch_stream` 可观测面；
+- 删除 production Tile handoff/chunk transaction、dynamic ownership coordinator、
+  no-far/ownership sink、legacy far runtime/probe、root live mirror与旧 runtime gate。
+
+当前 fresh 证据：
+
+- UE 5.8 Development build 成功；
+- 完整 `Voxia` Automation `155/155`（153 Success + 2 项预期 warning，0 failed）；
+- Node `84/84`；
+- Phase 1 Null-RHI `passed=true`：Bootstrap、连续 AdjacentStep、Relocate、retry/new game，
+  最终 Near `216/216`、exact ownership `9261`、Far `6859/6859`、资源静默；
+- Phase 2 Null-RHI `passed=true`：material 6 place/break、revision `1/2`、X/Y/Z 80-tile
+  unload/reload、最终 empty 与 Phase 3 拒绝合同通过；
+- Phase 2 的同类 80-tile Relocate 在 Required 并行修复前于 90 秒证据门槛边缘收敛，修复后
+  X/Y/Z 往返均在门槛内完成，证明当前工作不再被误排为 Speculative。
+
+仍需在写成完整跨 RHI closeout 前刷新：
+
+- Real-RHI 连续移动、Relocate、首 Patch 时序、资源平台与长稳。
 
 ## 17. 完成定义
 
