@@ -1,5 +1,9 @@
 # Voxia 按 Tile 渐进流送实施计划
 
+> **状态：已废止。** 本计划已被
+> [`2026-07-25-voxia-patch-diff-streaming.md`](2026-07-25-voxia-patch-diff-streaming.md)
+> 完整取代，不得继续执行。历史任务仅保留为决策演进证据。
+
 > **执行要求：** 在 `.worktrees/voxia-phase2-macro-interaction` 的
 > `codex/voxia-phase2-macro-interaction` 分支实施；每项先写失败测试，再写最小实现。
 
@@ -192,4 +196,3 @@ Tile ownership atlas、SceneHost 与客户端 flow。27 Tile barrier 只表示�
 7. 更新决策稿状态、测试矩阵、证据路径和残余风险。
 8. 运行 `git diff --check`、检查中文注释、确认唯一生产根未变化。
 9. 提交客户端与外层文档；推送 Voxia 分支和外层 master。
-
