@@ -22,7 +22,7 @@
   no-far/ownership sink、legacy far runtime/probe、root live mirror 与旧 runtime gate。
 - fresh 证据：UE 5.8 Development build 成功；完整 Voxia Automation `155/155`
   （153 Success + 2 expected warnings）；Node `84/84`；Phase 1 Null-RHI
-  `.demo/observe/voxia_phase1_2026-07-25T06-12-49-412Z_null_rhi_1280x720/`
+  `.demo/observe/voxia_phase1_2026-07-25T06-31-06-911Z_null_rhi_1280x720/`
   与 Phase 2 Null-RHI
   `.demo/observe/voxia_phase2_2026-07-25T06-26-04-367Z_null_rhi_1280x720/`
   均 `passed=true`。
