@@ -327,6 +327,15 @@ GeometryReady
 Fatal
 ```
 
+这四种状态属于同一条正式流送与呈现管线，不是四条分支系统。`VerifiedEmpty` 与
+`GeometryReady` 使用完全相同的 TargetKey、PatchVersion、BuildIndex、commit plan、
+ownership、boundary、staging fence、visible commit、coverage proof 与 retirement 流程；
+唯一差别是不可变内容 payload 中有没有需要提交的三角形。
+
+- 禁止为空气 Near/Far 创建专用 actor、专用入口、第二套 scheduler 或 fallback；
+- 禁止跳过正常版本校验、ownership 提交、boundary after-image 或 fence；
+- 禁止用“组件数量为 0”决定走另一条路径。
+
 - `Waiting` 与 `Fatal` 属于构建/候选状态，不能写入 live；
 - `VerifiedEmpty` 与 `GeometryReady` 都可形成合法 committed Near/Far after-image；
 - `VerifiedEmpty` 仍携带 PatchVersion 与 source/content/dependency identity；
@@ -602,6 +611,8 @@ observe 产物继续写入 `.demo/observe/`。
 - Relocate 与高空出生。
 
 ### 11.4 垂直全空气路线
+
+本节只是同一生产管线的专项测试路线，不允许对应任何空气专用运行时路径。
 
 1. 从地面持续上升，直到完整 `3×3×3` Near 窗口全部为 `VerifiedEmpty`；
 2. Near 全空气时，下方不属于 Near 精确 XYZ chunks 的 Far 地面仍必须可见，禁止按 XZ column
