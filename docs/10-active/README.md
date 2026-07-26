@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **48** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **49** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -69,6 +69,7 @@
 
 ### voxel-far-field
 
+- [`2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md) — 已确认设计的 TDD 执行稿；按共同 Patch 管线补全真实 boundary、精确版本交接、renderer transaction、完整 XYZ 移动安全门与三维实跑
 - [`2026-07-26-voxia-hole-free-near-far-presentation-design.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-design.md) — 当前 Near/Far 无空洞修复决策；补全真实 boundary 几何、精确版本交接、renderer fence、全空气 Near 与完整 XYZ 3-chunk 移动安全门
 - [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义已根修复并完成验收，阶段 3、Online provider 与 B/C 未开始
 - [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 客户端执行证据；唯一根、source identity、本地 request provider、增量链、full oracle、三轴 route 与 presentation transaction 已通过，不代表 live LOD material id 已通过
