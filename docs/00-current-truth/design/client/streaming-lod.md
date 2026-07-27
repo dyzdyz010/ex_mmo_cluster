@@ -113,11 +113,13 @@ Speculative 队列使用，不能套在当前必需加载上。
 
 因此 first Far Patch 不等待完整 Far target 或整次 BuildFuture。
 
-Far/Far 边界由全局 canonical SlotId 唯一拥有。一个 Far transaction 只提交一个 Patch 与固定
-`6 face + 12 edge + 8 corner=26` slot after-images。目标内尚未 live 的邻居使用临时闭合 wall，
-目标外侧使用永久 outer wall；邻 Patch 后续替换同一个 SlotId。邻 profile 只读，不加入事务，
-不存在依赖闭包或运行时扩散。边界状态同时携带本次构建批次身份：新旧批次在同一接口相遇时
-允许临时封口；同一批次、同一 LOD 的自然表面缺失仍是 Fatal，不能用临时墙掩盖构建错误。
+2026-07-27 深入排查确认：固定 Far Patch 的
+`6 face + 12 edge + 8 corner=26` after-images 只能表达 `8³ tiles` 装载盒外框，不能代表
+Near/Far 与不同 Far LOD 的真实壳层交界。现役修复方向改为从逐 Tile owner/LOD 相邻关系
+推导统一 canonical interface；Patch 只保留构建、缓存、预算和 physical batch 职责。
+目标内尚未 live 的邻居、目标永久外侧、Near/Far 和 Far/Far LOD 都先进入同一个 boundary
+resolver，同一空间 slot 只能有一个 after-image，禁止临时封口与真实接缝重叠。完整决策见
+[真实壳层交界与目标原子发布设计](../../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)。
 
 当前实现尚有一项已确认的可见性缺口：Near/Far 朝内竖墙在用户实跑中仍不可见。现有
 canonical slot、boundary batch、已注册组件与覆盖计数只证明提交关系存在，尚未证明该 slot
@@ -311,6 +313,7 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 - [Patch diff 流送设计](../../../10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md)
 - [无空洞 Near/Far 呈现设计](../../../10-active/voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-design.md)
+- [真实壳层交界与目标原子发布设计](../../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
 - [纯 3D 体素壳主线](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)
 - [Far LOD 材质语义修复](../../../10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)
 - [系统正交](../../../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md)

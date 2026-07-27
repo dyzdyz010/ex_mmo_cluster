@@ -48,11 +48,18 @@ material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround �
 ### 2026-07-27 用户可见验收失败：Near/Far 朝内竖墙仍缺失
 
 - 用户实跑确认纵向移动与流送交接已经正常，但 Near/Far 接缝朝远景内部的竖墙仍不可见。
-- 当前自动化和结构化观察证明 canonical boundary slot、boundary batch、组件注册、fence 与
-  `gap=0`，却没有证明对应 slot 具有非零三角形、canonical→UE 朝向正确、材质有效并最终可见。
-- 因此“真实边界几何已经完成”的旧表述撤回。该问题须沿 boundary profile → shell after-image
-  → immutable geometry payload → SceneHost physical batch → renderer component 逐层取证，
-  在根因确认前不得添加裙边、双面材质、默认墙或额外遮洞层。
+- 根因已确认：现役边界生产只枚举固定 Far Patch 的 26 个外框槽；真实 Near/Far 与 Far LOD
+  分界大多位于同一个 `8³ tiles` Patch 内，因此根本没有进入补墙调用点。逐 Tile
+  `FarBoundaryFaces` 已生成并保存，但 Patch-diff 可见提交没有消费它们。
+- 当前 `gap=0` 还存在自证问题：expected boundary 来自 ledger 已登记 artifact；未登记的真实
+  接口不会被期待，因而肉眼有缝仍可假绿。
+- 移动时的短暂缺口是同一轮架构审计确认的独立时序错误：candidate TargetKey 过早成为 live
+  审计基准，典型缺口 `2187=3×27×27 chunks` 正好是一块三 chunk 厚的 XYZ 保护 slab。
+- 修复按
+  [真实壳层交界与目标原子发布设计](../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
+  执行：Patch 装载边界与真实 layer interface 分责，Near/Far 与 Far/Far LOD 统一按实际
+  owner/LOD 相邻关系生成；live/candidate target 分离，候选保护范围完整后才原子替换旧画面。
+  禁止裙边、双面材质、默认墙、扩大固定半径或额外等待。
 
 ### 2026-07-27 已确认缺口：跨 LOD 所有权边界会产生无材质的新增外露面
 

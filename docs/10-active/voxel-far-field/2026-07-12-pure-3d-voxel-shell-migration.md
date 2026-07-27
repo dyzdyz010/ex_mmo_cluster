@@ -4,7 +4,10 @@
 - **状态**：完整 XYZ、canonical source 与跨 LOD 材质事实保持完成；客户端流送正按
   [2026-07-25 Patch-diff 设计](2026-07-25-voxia-patch-diff-streaming-design.md)
   与 [2026-07-26 无空洞呈现设计](2026-07-26-voxia-hole-free-near-far-presentation-design.md)
-  从历史 Tile/整代提交收敛到 Near/Far Patch；共享 Patch 新旧范围并集、精确 Far 接管后收窄、
+  从历史 Tile/整代提交收敛到 Near/Far Patch；其中接缝应用点和目标发布时间序已由
+  [2026-07-27 真实壳层交界与目标原子发布设计](2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
+  更正：Patch 只负责分批装载，真实 Near/Far 与 Far/Far LOD 接缝按逐 Tile owner/LOD
+  相邻关系统一推导，候选保护范围完整前不得推进 live target；共享 Patch 新旧范围并集、精确 Far 接管后收窄、
   boundary slot/renderer receipt 与完整 XYZ 移动安全门的核心代码已落地，Development build、完整 Automation、
   水平 Null-RHI、三维移动安全门与竖直 Null/Real-RHI 针对性路线已通过；发布级全方向/
   性能/长稳 closeout 待刷新；2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，
