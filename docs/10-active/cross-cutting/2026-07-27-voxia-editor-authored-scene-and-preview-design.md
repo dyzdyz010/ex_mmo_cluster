@@ -1,7 +1,7 @@
 ---
 title: Voxia 编辑器可创作场景、环境绑定与体素 LOD 预览设计
 status: active
-review_state: route-b-approved-spec-review-pending
+review_state: route-b-foundation-implemented
 date: 2026-07-27
 owners:
   - Voxia
@@ -34,8 +34,13 @@ Actor。world-scoped 场景表现 Subsystem 在进入场景时负责**显式解�
 
 ## 2. 状态、基线与用途
 
-- **路线状态**：路线 B 已由用户确认；本文等待书面复核。
-- **实现状态**：尚未据本文修改 Voxia C++、Blueprint 或 `.umap/.uasset`。
+- **路线状态**：路线 B 已由用户确认并进入实现。
+- **首期基础实现状态**：C++ 启动策略、场景组合/活性 Subsystem、可编辑补光 Rig、
+  editor-only LOD preview、新 production `.umap`、默认入口、CLI 与自动化均已落地并完成
+  联合验证。
+- **目标架构状态**：vendor adapter/interface、Environment/Voxel Data Asset、服务端动态天气
+  source 与更完整的 profile/fingerprint 管线仍是后续阶段，因此本文保持 `active`，不能把整条
+  路线写成已经全部完成。
 - **总仓审计基线**：`71a6b3f3fd44ce8f1b5487f5b0eaa22d0f622ccf`。
 - **Voxia 子仓审计基线**：`5e9f6b12871c9f56dee4d18bbe8d51e9121c6bba`。
 - **适用范围**：现役 `clients/Voxia` 唯一生产入口、正式近远景地图、环境表现、体素呈现参数与
@@ -45,14 +50,55 @@ Actor。world-scoped 场景表现 Subsystem 在进入场景时负责**显式解�
 - **不适用范围**：归档 Web/Bevy 客户端、服务端协议扩展、confirmed voxel truth 变更、
   Prefab Designer 功能实现。
 
-本文是阶段决策稿，不是完成证明，也不是可直接执行的任务清单。书面复核通过后再拆分实施计划和
-逐阶段验收门禁。
+本文保留架构决策；逐步实现和验收门禁见同目录
+[`2026-07-27-voxia-editor-authored-scene-and-preview-implementation-plan.md`](2026-07-27-voxia-editor-authored-scene-and-preview-implementation-plan.md)。
 
-## 3. 已确认现状与问题
+### 2.1 已落地的实现切片
+
+| Voxia 提交 | 结果 |
+| --- | --- |
+| `c1cfd3f` | 新正式地图启动策略；旧 NearWindow 无显式 probe 时硬拒绝 |
+| `63ff312` | 有界完整 XYZ editor preview；Near + Far LOD0–4 六个代表样本 |
+| `b179fa7` | 显式 scene composition、四灯 Rig 与 world-scoped 活性 Subsystem |
+| `b732e21` | GameMode/Flow readiness 门禁、移除运行时环境搭建、三个只读 CLI |
+| `a8b866b` | `L_VoxiaProductionWorld.umap`、默认地图、确定性 creator/validator |
+| `f33c511` | 精确 package 身份、cook 剔除 preview 引用、StartPlay 前置门禁与编辑器可见性验证 |
+| `1fc7d48` | 旧地图 launcher 全部改为显式 probe；默认 GUI runner 使用正式地图 |
+| `8d3fc68` | 客户端、Gameplay 与 Debug 作者态工作流和所有权文档 |
+
+联合验证已经确认：
+
+- Editor Development 与 Win64 Shipping 均构建成功；
+- `Voxia.Gameplay` Automation 共 23 项通过、零失败；
+- 地图中 UDS/UDW/fog/PPV/fill/preview/player start 各恰好一个、引用有效、无预放 runtime
+  root；
+- Real-RHI 正式入口得到 `authored_production`、有效 composition、唯一 ready runtime root；
+- runtime 的 preview 命令明确返回 `unsupported_in_runtime`，编辑器地图验证器则确认六样本
+  LOD 为 `0,0,1,2,3,4`；
+- UE 编辑器中可直接选择 UDW 组件和 preview Actor，`ClearPreview`/`RebuildPreview`
+  实际清除并重建可视网格。
+
+Development Game target 仍被任务前已存在的两个 editor-only 材质 Automation 用例调用
+`UMaterial::GetExpressions()` 所阻断；本次新增代码已通过 Shipping 构建，因此该已知问题不作为
+路线 B 首期边界的静默失败或完成证据。
+
+### 2.2 首期明确未实现的后续边界
+
+- 当前 composition 以显式同 world `AActor` 引用绑定 UDS/UDW，地图 creator/validator
+  再校验确切 vendor 类型；稳定的 `IVoxiaEnvironmentDriver` /
+  `BP_VoxiaUDSEnvironmentAdapter` 尚未实现。
+- Environment/Voxel Data Asset、control mask、批准 profile fingerprint 与在线动态天气
+  source 尚未实现。
+- 正式地图在显式 `-VoxiaWorldGenPreview` 的开发验收中仍使用现有
+  `online_compatibility` provider；在线统一 provider cutover 不属于本任务。
+- 运行时绑定失活会使 scene readiness 明确失败，但首期不会主动拆除已经创建的 root；
+  root teardown/recovery 应在后续生命周期阶段按 session owner 契约实现。
+
+## 3. 实施前审计基线（下列问题已由本方案修复）
 
 ### 3.1 编辑器中的正式关卡本身接近空壳
 
-[`DefaultEngine.ini`](../../../clients/Voxia/Config/DefaultEngine.ini) 将
+实施前，[`DefaultEngine.ini`](../../../clients/Voxia/Config/DefaultEngine.ini) 将
 `/Game/Voxia/Maps/Lvl_NearWindow` 同时设为游戏默认地图与编辑器启动地图。该地图由
 [`create_near_window_level.py`](../../../clients/Voxia/scripts/create_near_window_level.py)
 创建时只配置了 `AVoxiaClientGameMode`，没有建立一套可在编辑状态下直接观察和调整的环境 Actor
@@ -64,8 +110,8 @@ Actor。world-scoped 场景表现 Subsystem 在进入场景时负责**显式解�
 
 ### 3.2 GameMode 在运行时清场并重建环境
 
-[`VoxiaClientGameMode.cpp`](../../../clients/Voxia/Source/Voxia/Gameplay/VoxiaClientGameMode.cpp)
-的 `BeginPlay` 调用 `SetupEnvironment()`。该函数当前会：
+实施前，[`VoxiaClientGameMode.cpp`](../../../clients/Voxia/Source/Voxia/Gameplay/VoxiaClientGameMode.cpp)
+的 `BeginPlay` 调用 `SetupEnvironment()`。该函数会：
 
 1. 遍历世界中的 Actor；
 2. 依据类名字符串包含 `DirectionalLight`、`SkyLight`、`SkyAtmosphere`、
@@ -193,6 +239,10 @@ Blueprint 变量又会复制核心算法和校验规则。本设计要建立的�
 - Blueprint 只负责组合、vendor 适配和表现逻辑，不执行大规模体素遍历。
 
 ## 6. 总体架构
+
+下图描述路线 B 的**目标架构**。其中正式关卡、composition、Scene Subsystem、动态 runtime
+root 与 editor-only preview 已在首期落地；adapter、Data Asset/profile 和在线环境状态源是
+后续阶段，不应从图中反推为当前已实现事实。
 
 ```mermaid
 flowchart LR

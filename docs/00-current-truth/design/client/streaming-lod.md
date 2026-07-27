@@ -5,7 +5,9 @@
 
 ## 当前结论
 
-- 唯一正式入口创建一个 `AVoxiaUnifiedVoxelWorldActor`；
+- 唯一正式 scene-composition 入口是
+  `/Game/Voxia/Maps/L_VoxiaProductionWorld`；只有场景绑定 ready 后才由 Flow 动态创建一个
+  `AVoxiaUnifiedVoxelWorldActor`；
 - 唯一空间是 canonical XYZ；
 - 一个 tile=`7³=343 chunks`；
 - 默认 Near=`3³=27 tiles=21³=9261 chunks`；
@@ -15,6 +17,40 @@
 - Online confirmed truth 只来自服务端，离线 Phase 2 truth 只来自 session-local Mock authority；
 - baseline/H/manifest/hash/diff chain 不可信时拒绝入场，不使用运行时快照自愈；
 - Web/Bevy 归档，不进入现役完成度或验证。
+
+## 作者态场景与运行时世界边界
+
+`L_VoxiaProductionWorld` 直接保存并显式引用 UDS、UDW、雾、后处理、四灯补光 Rig 和
+editor-only 体素 LOD 预览。美术可以在 Outliner、Components 与 Details 中选择和调整这些
+对象；`AVoxiaClientGameMode` 不再扫描、销毁或用代码生成环境。
+
+```mermaid
+flowchart LR
+    Map["L_VoxiaProductionWorld\n唯一 scene-composition 资产"]
+    Composition["SceneComposition\n显式 Actor 引用"]
+    Scene["ScenePresentationSubsystem\n解析 + 活性维护"]
+    Flow["ClientFlowSubsystem\nsession/root owner"]
+    Root["UnifiedVoxelWorldActor\n唯一运行时根"]
+    Preview["Editor-only LOD Preview"]
+    Core["共享 C++ Planner / Materializer / Surface"]
+    Host["SceneHost Ledger\n唯一 live presentation truth"]
+
+    Map --> Composition --> Scene --> Flow --> Root --> Host
+    Preview -.只读复用.-> Core
+    Root --> Core
+```
+
+三种“真值”不得混淆：
+
+- scene-composition truth 是新关卡及其显式绑定，只决定作者环境与 root 是否允许启动；
+- confirmed world truth 仍只来自服务端（离线开发仅允许显式 Mock/WorldGen adapter）；
+- editor preview 是可丢弃表现，不进入 confirmed store、cook、root readiness 或 SceneHost
+  ledger。
+
+旧 `Lvl_NearWindow` 已降为显式 `-VoxiaHeadlessEnvironment` /
+`-VoxiaSceneProbe` 的 probe/compatibility 资产；无显式诊断参数会以
+`legacy_production_map_retired` 拒绝。正式 runtime root 不保存进地图，仍由
+`UVoxiaClientFlowSubsystem` 按 session 生命周期唯一生成和销毁。
 
 当前 Patch-diff 无空洞改造已经完成核心代码、Development build、完整 Automation、原水平
 Null-RHI 复现往返和竖直 Null/Real-RHI 针对性路线；发布级全方向至少 10 Tile、Relocate、

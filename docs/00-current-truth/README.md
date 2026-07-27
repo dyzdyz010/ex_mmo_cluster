@@ -52,6 +52,7 @@ flowchart LR
 9. **被取代的 XZ column 设计统一进入 `docs/20-archive/**`**：它们可以保留历史证据和 append-only decoder 测试，但不能继续留在 current/default/launcher/CLI acceptance 路由。
 10. **Online 客户端仍是 snapshot/delta-only 消费者，离线 Mock 也保持 adapter 边界**：近窗消费 canonical chunks，远区消费 XYZ source pages/cube shell；Phase 2 点击只发 intent，Mock authority 私有裁决后以类型化事件驱动唯一 confirmed mirror，presentation 不能回写 truth。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。
 11. **运行时根事实与文档根事实同样唯一**：参数可单独验证子系统，但只有一个包含全部已批准成果的组合根可以承担联合调试和效果验收。任何新成果未接入该根、未通过根级 readiness/CLI 前，只能写成 probe/地基；开发根通过也不能冒充在线 authority cutover。
+12. **Voxia 的唯一正式场景组合资产是 `L_VoxiaProductionWorld`**：UDS、UDW、雾、后处理、补光和有界完整 XYZ LOD 预览直接保存在关卡并可由 UE 编辑器调整；`ScenePresentationSubsystem` 校验并维护显式引用，校验通过后 Flow 才动态创建唯一运行时根。editor preview 不进入 confirmed truth、cook、root readiness 或 SceneHost ledger；旧 `Lvl_NearWindow` 只允许显式 headless/probe。
 
 ## 维护规则
 

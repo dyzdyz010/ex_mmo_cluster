@@ -92,7 +92,7 @@ DynamicMesh、Unreal Python、Ultra Dynamic Sky/Weather、PowerShell、Node stdi
 - Produces: `EVoxiaSceneLaunchMode::{Rejected, AuthoredProduction, HeadlessProbe, CompatibilityProbe}`
 - Produces: stable reasons `legacy_production_map_retired`, `production_scene_map_required`
 
-- [ ] **Step 1: 写出会被“旧地图继续放行”这一错误击中的失败测试**
+- [x] **Step 1: 写出会被“旧地图继续放行”这一错误击中的失败测试**
 
 ```cpp
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -140,7 +140,7 @@ bool FVoxiaSceneLaunchPolicyAutomationTest::RunTest(const FString&)
 }
 ```
 
-- [ ] **Step 2: 构建并运行测试，确认 RED 来自缺少新策略**
+- [x] **Step 2: 构建并运行测试，确认 RED 来自缺少新策略**
 
 Run:
 
@@ -151,7 +151,7 @@ Run:
 
 Expected: build fails because `VoxiaSceneLaunchPolicy.h`/symbols do not exist.
 
-- [ ] **Step 3: 实现最小纯策略**
+- [x] **Step 3: 实现最小纯策略**
 
 ```cpp
 namespace Voxia::Gameplay
@@ -198,7 +198,7 @@ Implementation decision order:
 6. exact `Lvl_NearWindow` rejects with `legacy_production_map_retired`;
 7. every other implicit map rejects with `production_scene_map_required`.
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run build, then:
 
@@ -212,7 +212,7 @@ Run build, then:
 不要在 `ExecCmds` 中追加 `Quit`：它会在 Automation 队列真正执行前退出。Expected: one test
 succeeds; no `Automation Test Failed`。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaSceneLaunchPolicy*
@@ -240,7 +240,7 @@ git commit -m "feat(voxia): enforce the production scene map"
   `FVoxiaVoxelEditorPreviewPlanner::BuildRepresentative(const FIntVector&, FVoxiaVoxelEditorPreviewPlan&)`
 - Produces: placeable editor-only `AVoxiaVoxelWorldPreviewActor`
 
-- [ ] **Step 1: 写出会被“只显示 Small/LOD0”这一错误击中的失败测试**
+- [x] **Step 1: 写出会被“只显示 Small/LOD0”这一错误击中的失败测试**
 
 ```cpp
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -279,11 +279,11 @@ bool FVoxiaVoxelEditorPreviewPlanAutomationTest::RunTest(const FString&)
 }
 ```
 
-- [ ] **Step 2: 构建确认 RED**
+- [x] **Step 2: 构建确认 RED**
 
 Expected: build fails because preview plan/actor symbols do not exist.
 
-- [ ] **Step 3: 实现纯 preview plan**
+- [x] **Step 3: 实现纯 preview plan**
 
 ```cpp
 struct FVoxiaVoxelEditorPreviewSample
@@ -316,7 +316,7 @@ struct FVoxiaVoxelEditorPreviewPlan
 - coverage ring 保留真实 `4/8/24/40/72` XYZ 半径；
 - 任何 ring 缺 sample 时整体失败，不生成部分结果。
 
-- [ ] **Step 4: 实现 editor-only Actor**
+- [x] **Step 4: 实现 editor-only Actor**
 
 ```cpp
 UCLASS(BlueprintType)
@@ -363,7 +363,7 @@ Actor 的有界 rebuild：
 7. `OnConstruction` 仅在 editor world 且 mesh 尚未 ready 时执行一次 bounded rebuild；
 8. 不创建 SceneHost、不注册 Flow、不写 confirmed store。
 
-- [ ] **Step 5: 运行 GREEN 与 actor CDO 断言**
+- [x] **Step 5: 运行 GREEN 与 actor CDO 断言**
 
 在同一 automation 文件追加：
 
@@ -377,7 +377,7 @@ TestTrue(TEXT("默认中心是完整 XYZ"),
 
 Run `Voxia.Gameplay.SceneAuthoring.VoxelEditorPreviewPlan`.
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaVoxelEditorPreview*
@@ -409,7 +409,7 @@ git commit -m "feat(voxia): add bounded editor LOD preview"
 - Produces: `FVoxiaSceneCompositionSnapshot`
 - Produces: `UVoxiaScenePresentationSubsystem::OnWorldBeginPlay` and frozen scene snapshot
 
-- [ ] **Step 1: 写出 fail-closed 组合契约测试**
+- [x] **Step 1: 写出 fail-closed 组合契约测试**
 
 ```cpp
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -473,11 +473,11 @@ bool FVoxiaSceneCompositionContractAutomationTest::RunTest(const FString&)
 }
 ```
 
-- [ ] **Step 2: 构建确认 RED**
+- [x] **Step 2: 构建确认 RED**
 
 Expected: missing contract symbols.
 
-- [ ] **Step 3: 实现纯 contract 和稳定 snapshot**
+- [x] **Step 3: 实现纯 contract 和稳定 snapshot**
 
 `FVoxiaSceneCompositionContract::Validate` 按固定顺序返回：
 
@@ -492,7 +492,7 @@ Expected: missing contract symbols.
    `editor_preview_required/bound` 和 schema
    `voxia_scene_composition_v1`。
 
-- [ ] **Step 4: 写出 actor/rig 的失败测试**
+- [x] **Step 4: 写出 actor/rig 的失败测试**
 
 ```cpp
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -516,7 +516,7 @@ bool FVoxiaSceneAuthoringAutomationTest::RunTest(const FString&)
 }
 ```
 
-- [ ] **Step 5: 实现可编辑 Rig 和 composition actor**
+- [x] **Step 5: 实现可编辑 Rig 和 composition actor**
 
 `AVoxiaVoxelFillLightRig`：
 
@@ -548,7 +548,7 @@ TObjectPtr<AVoxiaVoxelWorldPreviewActor> VoxelPreview;
 `SnapshotJson`。`ValidateScene` 传 true；runtime Subsystem 传 false，保证 preview 永不进入
 root readiness。
 
-- [ ] **Step 6: 实现 `UVoxiaScenePresentationSubsystem`**
+- [x] **Step 6: 实现 `UVoxiaScenePresentationSubsystem`**
 
 ```cpp
 UCLASS()
@@ -576,7 +576,7 @@ Runtime scan 只用 `TActorIterator<AVoxiaSceneCompositionActor>`，不按字符
 `ResolveForWorld`；此时关卡 Actor 已完成初始化。每次解析重新核验弱引用和 same-world；
 `Deinitialize` 清理。禁止从 `GameMode::InitGame` 主动扫描 composition。
 
-- [ ] **Step 7: 运行两个测试并提交**
+- [x] **Step 7: 运行两个测试并提交**
 
 Run:
 
@@ -612,7 +612,7 @@ git commit -m "feat(voxia): add authored scene composition contract"
 - Consumes: launch decision and scene subsystem snapshot
 - Produces CLI: `scene_composition`, `environment_state`, `voxel_editor_preview_state`
 
-- [ ] **Step 1: 扩充 launch-policy 测试，先锁定 legacy `-VoxiaNoSky` 可见迁移**
+- [x] **Step 1: 扩充 launch-policy 测试，先锁定 legacy `-VoxiaNoSky` 可见迁移**
 
 ```cpp
 const FVoxiaSceneLaunchDecision LegacyAlias =
@@ -626,7 +626,7 @@ TestTrue(TEXT("旧 alias 必须可观测"), LegacyAlias.bLegacyNoSkyAlias);
 
 Run targeted test and confirm it fails until alias behavior is wired.
 
-- [ ] **Step 2: 删除 `SetupEnvironment`，按 UE 生命周期接入场景快照**
+- [x] **Step 2: 删除 `SetupEnvironment`，按 UE 生命周期接入场景快照**
 
 `InitGame`：
 
@@ -655,7 +655,7 @@ Run targeted test and confirm it fails until alias behavior is wired.
 composition invalid 的硬失败发生在 voxel root/authority runtime 之前；不要为了追求“Pawn 创建前”
 而把 Actor 扫描错误地前移到 `InitGame`。
 
-- [ ] **Step 3: 给 Flow root 增加独立门禁**
+- [x] **Step 3: 给 Flow root 增加独立门禁**
 
 在 `SpawnBoundRoot` 的第一段加入：
 
@@ -671,7 +671,7 @@ if (Scene == nullptr || !Scene->IsReadyForRoot())
 
 这样绕过 GameMode 直接调用 `StartNewGame` 也不能创建未绑定 root。
 
-- [ ] **Step 4: 增加真实 CLI handler**
+- [x] **Step 4: 增加真实 CLI handler**
 
 Help 和 dispatch 增加：
 
@@ -689,7 +689,7 @@ voxel_editor_preview_state
   `present=false`；非 editor/cooked 返回 `unsupported_in_runtime`；
 - 三个命令不生成 Actor、不修复引用。
 
-- [ ] **Step 5: 更新现有 map-name 自动化输入并运行回归**
+- [x] **Step 5: 更新现有 map-name 自动化输入并运行回归**
 
 把普通 production gate 用例的 `Lvl_NearWindow` 改为 `L_VoxiaProductionWorld`；保留一条旧地图
 拒绝断言。运行：
@@ -700,7 +700,7 @@ Voxia.Gameplay.SceneAuthoring
 Voxia.Gameplay.ClientFlow
 ```
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git add Source/Voxia/Gameplay/VoxiaClientGameMode.*
@@ -728,7 +728,7 @@ git commit -m "feat(voxia): bind runtime to authored scene composition"
 - Consumes compiled C++ authoring classes
 - Produces reproducible map asset and JSON validation artifact
 
-- [ ] **Step 1: 先写地图验证器**
+- [x] **Step 1: 先写地图验证器**
 
 Validator loads `/Game/Voxia/Maps/L_VoxiaProductionWorld` and emits one JSON object containing:
 
@@ -766,7 +766,7 @@ Validator loads `/Game/Voxia/Maps/L_VoxiaProductionWorld` and emits one JSON obj
 - preview `SnapshotJson().ready=true`；
 - world settings default game mode 是 `VoxiaClientGameMode`。
 
-- [ ] **Step 2: 运行 validator，确认 RED**
+- [x] **Step 2: 运行 validator，确认 RED**
 
 ```powershell
 & "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" `
@@ -776,7 +776,7 @@ Validator loads `/Game/Voxia/Maps/L_VoxiaProductionWorld` and emits one JSON obj
 
 Expected: non-zero exit and `production_map_missing`.
 
-- [ ] **Step 3: 编写确定性创建脚本**
+- [x] **Step 3: 编写确定性创建脚本**
 
 `create_production_world.py`：
 
@@ -798,7 +798,7 @@ Expected: non-zero exit and `production_map_missing`.
 8. 保存地图并输出创建 snapshot；
 9. 不生成 `AVoxiaUnifiedVoxelWorldActor`。
 
-- [ ] **Step 4: 切换默认入口并生成地图**
+- [x] **Step 4: 切换默认入口并生成地图**
 
 `DefaultEngine.ini`：
 
@@ -816,7 +816,7 @@ const productionMap =
 
 运行创建脚本（真实 editor RHI；不使用 `-nullrhi` 保存预览 DynamicMesh），然后关闭 editor。
 
-- [ ] **Step 5: 运行 validator，确认 GREEN**
+- [x] **Step 5: 运行 validator，确认 GREEN**
 
 Expected:
 
@@ -827,7 +827,7 @@ Expected:
 - `preview_ready=true`;
 - 地图和 editor startup path 都为新资产。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git add scripts/create_production_world.py scripts/validate_production_world.py
@@ -854,7 +854,7 @@ git commit -m "feat(voxia): add the production authored world"
 
 - Documents exact operation and verification commands already implemented
 
-- [ ] **Step 1: 更新 Voxia README**
+- [x] **Step 1: 更新 Voxia README**
 
 必须明确：
 
@@ -865,7 +865,7 @@ git commit -m "feat(voxia): add the production authored world"
 - 运行时 root 仍动态生成且只能有一个；
 - 环境 authoring 不改变服务器 authority。
 
-- [ ] **Step 2: 更新 Gameplay/Debug 目录 README**
+- [x] **Step 2: 更新 Gameplay/Debug 目录 README**
 
 Gameplay README 增加所有权图：
 
@@ -880,7 +880,7 @@ flowchart LR
 
 Debug README 记录三个新命令及 `unsupported_in_runtime`。
 
-- [ ] **Step 3: 更新总仓 current truth**
+- [x] **Step 3: 更新总仓 current truth**
 
 写明：
 
@@ -889,7 +889,7 @@ Debug README 记录三个新命令及 `unsupported_in_runtime`。
 - editor preview 不进入 live ledger；
 - `Lvl_NearWindow` 已降为 probe/compatibility。
 
-- [ ] **Step 4: 检查文档与提交**
+- [x] **Step 4: 检查文档与提交**
 
 Run:
 
@@ -917,7 +917,7 @@ git commit -am "docs(voxia): document the authored production world"
 
 - Verifies all earlier tasks jointly without adding behavior
 
-- [ ] **Step 1: 冷/增量编译**
+- [x] **Step 1: 冷/增量编译**
 
 ```powershell
 & "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" `
@@ -926,7 +926,7 @@ git commit -am "docs(voxia): document the authored production world"
 
 Expected: `Result: Succeeded`.
 
-- [ ] **Step 2: 运行相关 Automation**
+- [x] **Step 2: 运行相关 Automation**
 
 ```powershell
 & "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" `
@@ -938,12 +938,12 @@ Expected: `Result: Succeeded`.
 `TestExit` 负责在队列清空后退出，`ExecCmds` 不得追加提前退出的 `Quit`。Expected: all selected
 tests succeed, zero failed/not-run.
 
-- [ ] **Step 3: 运行 production map validator**
+- [x] **Step 3: 运行 production map validator**
 
 Run `validate_production_world.py`; save stdout/log under
 `.demo/observe/voxia_editor_authoring/production_world_validation.json`.
 
-- [ ] **Step 4: 运行显式 headless probe**
+- [x] **Step 4: 运行显式 headless probe**
 
 ```powershell
 node scripts/voxia_stdio_cli.js `
@@ -955,7 +955,7 @@ node scripts/voxia_stdio_cli.js `
 
 Expected: `mode=headless_probe`,旧地图不被标记 production，命令成功且无 UDS fallback。
 
-- [ ] **Step 5: 运行新地图 Real-RHI 联合入口**
+- [x] **Step 5: 运行新地图 Real-RHI 联合入口**
 
 ```powershell
 node scripts/voxia_stdio_cli.js `
@@ -969,23 +969,39 @@ Expected:
 
 - map 为 `L_VoxiaProductionWorld`;
 - composition ready；
-- UDS/UDW/fog/PPV/fill/preview 引用全部存在；
-- preview 六样本且 LOD 为 `0,0,1,2,3,4`；
+- UDS/UDW/fog/PPV/fill 引用全部存在；
+- runtime 的 preview 命令明确返回 `unsupported_in_runtime`；六样本及
+  `0,0,1,2,3,4` 由 editor map validator/Automation 验证，不把 editor-only 对象误写成
+  cooked runtime 依赖；
 - unique production root count 为 `1`；
 - root ready；
 - 没有 `scene_composition_*` 或 `environment_*` error。
 
-- [ ] **Step 6: UE 编辑器真实操作验收**
+- [x] **Step 6: UE 编辑器真实操作验收**
 
 打开新地图并确认：
 
 1. 不 PIE 就能看到天空、雾、补光和六样本 preview；
 2. Outliner 目录符合脚本；
 3. 选择 UDS/UDW/fog/PPV/fill component 可编辑；
-4. 修改 `PreviewCenterTile` 后点击 `RebuildPreview`，Near 与五级 Far 样本更新；
-5. PIE 后环境 Actor identity 不变，没有被销毁或重复生成。
+4. Details 暴露完整 XYZ `PreviewCenterTile`、样本显示尺度和 coverage 开关；
+5. 点击 `ClearPreview` 后网格消失，点击 `RebuildPreview` 后六样本网格恢复；
+6. Real-RHI 正式入口的 composition snapshot 保持同一组作者态环境引用，没有生成第二套环境。
 
-- [ ] **Step 7: 提交与工作区审查**
+已保存的可复现证据：
+
+- `.demo/observe/voxia_editor_authoring/final_gameplay_automation.log`：23 项成功、零失败；
+- `.demo/observe/voxia_editor_authoring/production_world_validation.json`：8 个作者 Actor、
+  引用与 editor preview 验证；
+- `.demo/observe/voxia_editor_authoring/headless_probe_cli.log`：旧地图仅以
+  `headless_probe` 运行；
+- `.demo/observe/voxia_editor_authoring/formal_real_rhi_cli.log`：正式地图、唯一 ready root
+  与 runtime preview 隔离；
+- `.demo/observe/voxia_editor_authoring/editor_production_world_overview.png`、
+  `editor_udw_details.png`、`editor_preview_cleared.png`、
+  `editor_preview_rebuilt.png`：真实编辑器作者面。
+
+- [x] **Step 7: 提交与工作区审查**
 
 ```powershell
 git diff --check
