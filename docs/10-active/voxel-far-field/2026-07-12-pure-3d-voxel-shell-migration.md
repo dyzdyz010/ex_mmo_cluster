@@ -7,11 +7,15 @@
   从历史 Tile/整代提交收敛到 Near/Far Patch；其中接缝应用点和目标发布时间序已由
   [2026-07-27 真实壳层交界与目标原子发布设计](2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
   更正：Patch 只负责分批装载，真实 Near/Far 与 Far/Far LOD 接缝按逐 Tile owner/LOD
-  相邻关系统一推导，候选保护范围完整前不得推进 live target；共享 Patch 新旧范围并集、精确 Far 接管后收窄、
-  boundary slot/renderer receipt 与完整 XYZ 移动安全门的核心代码已落地，Development build、完整 Automation、
-  水平 Null-RHI、三维移动安全门与竖直 Null/Real-RHI 针对性路线已通过；发布级全方向/
-  性能/长稳 closeout 待刷新；2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，
-  真实墙面几何保持未关闭；
+  相邻关系统一推导，候选保护范围完整前不得推进 live target；每个仍可见 Far 还会持有
+  自己的精确 coverage/层间墙凭证，不依赖最近两份目标历史；跨 Far Patch 的 Near/Far
+  固定由 Far 一侧发布，Far/Far LOD 固定由负方向一侧发布，退场旧 Near 不进入新目标
+  层间语义。共享 Patch 新旧范围并集、精确 Far 接管后收窄、boundary slot/renderer
+  receipt 与完整 XYZ 移动安全门的核心代码已落地，Development build、完整 Automation、
+  水平 Null-RHI、三维移动安全门与竖直 Null/Real-RHI 针对性路线已通过；最新连续目标
+  Null-RHI 也保持 gap/overlap/orphan 为零。
+  发布级全方向/性能/长稳 closeout 与 Real-RHI 用户可见竖墙复验待刷新；完成复验前，
+  真实墙面视觉项保持未关闭；
   Online authority/provider、阶段 3 Prefab 与里程碑 B/C 尚未开始
 - **取代范围**：取代 [`2026-07-11-3d-lod-sliding-window.md`](../../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 中“保留 2.5D WorldGen 内容前提再扩展远景窗口”的迁移口径
 - **影响范围**：WorldGen 生成边界、canonical chunk/source page、Voxia near/far coverage、LOD 材质、presentation ownership、调试与验收

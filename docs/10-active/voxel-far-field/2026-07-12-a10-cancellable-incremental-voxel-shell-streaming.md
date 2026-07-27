@@ -6,11 +6,12 @@ status: client-complete-online-deferred
 
 - **日期**：2026-07-12
 - **状态**：A10 provider/residency/DAG 与跨 LOD 外露表面材质语义保持完成；Patch
-  presentation 已按 2026-07-26 无空洞设计补齐共享 Near 范围交接、boundary slot/renderer
-  receipt 与完整 XYZ 移动安全门，Development build、完整 Automation、水平 Null-RHI 和竖直
-  Null/Real-RHI 针对性路线已通过；发布级全方向/性能/长稳证据待刷新。Online authority/provider
-  不在本任务范围，阶段 3 尚未启动。2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，
-  真实墙面几何不得写成已验收
+  presentation 已由 2026-07-27 后继架构补齐真实逐 Tile `LayerFace`、跨 Far Patch 稳定
+  发布者、退场旧 Near 与新目标层间语义分离、逐 live-Far 凭证、requested/live 目标分离、
+  boundary slot/renderer receipt 与完整 XYZ 移动安全门。Development build、完整
+  Automation、水平/连续目标 Null-RHI 和竖直 Null/Real-RHI 针对性路线已通过；修复后的
+  Real-RHI 用户可见竖墙复验及发布级全方向/性能/长稳证据待刷新。Online authority/provider
+  不在本任务范围，阶段 3 尚未启动；复验前仍不得把真实墙面视觉写成已验收
 - **归属**：扩展后的里程碑 A / A10
 - **上位计划**：[`2026-07-12-pure-3d-voxel-shell-migration.md`](2026-07-12-pure-3d-voxel-shell-migration.md)
 - **影响范围**：Voxia 场景进入与 pure-3D composition root、WorldGen/本地磁盘 page provider、三轴滑动窗口、page/artifact residency、resolved surface DAG、patch scene host、CLI/observe/automation

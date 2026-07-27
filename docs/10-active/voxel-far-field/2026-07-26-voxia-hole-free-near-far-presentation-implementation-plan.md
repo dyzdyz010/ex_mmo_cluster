@@ -1669,11 +1669,18 @@ Expected: 外层仓库 clean，文档只陈述实际取得的证据。
 
 ## 2026-07-27 实际执行记录
 
+> **后继更正**：本节保留的是第一次实施结束时的观测。随后
+> [真实壳层交界与目标原子发布设计](2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
+> 已实施，修复跨 Far Patch 分界跳过、退场旧 Near 污染新分界、候选目标提前发布与
+> 连续目标丢失 live Far 凭证。完整自动化和最新连续目标 Null-RHI 已通过；修复后的
+> Real-RHI 用户可见复验仍待完成。
+
 本轮已完成并取得新鲜证据：
 
 - boundary slot/batch、精确 Far 版本与 renderer receipt、隐藏准备/可见切换/切换后 fence、
-  同编号 Near 新旧范围并集、完整 XYZ 保护范围和三维移动安全门均已落地；但 2026-07-27
-  用户可见实跑仍看不到 Near/Far 朝内竖墙，完成定义第 1 项保持未完成；
+  同编号 Near 新旧范围并集、完整 XYZ 保护范围和三维移动安全门均已落地；当时
+  2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，后继架构已修复代码根因，
+  完成定义第 1 项只剩修复后的可见复验；
 - `VerifiedEmpty` 与 `GeometryReady` 复用同一构建、提交和逐帧核对管线，没有空气专用
   actor、队列或遮洞分支；
 - UE 5.8 Development build 成功；Node tests `98/98`；完整 Voxia Automation
@@ -1686,7 +1693,7 @@ Expected: 外层仓库 clean，文档只陈述实际取得的证据。
   通过全空气 Near、下降恢复地形、retry、新游戏、资源释放和 clean exit；`70` 个结构化
   样本中 gap/overlap/orphan 与受保护失败帧均为 `0`。
 
-尚未勾选完成定义第 1、7–10 项：朝内竖墙仍缺失；广路线后续 `diagonal_yz` 仍有独立 canonical
-外露材质覆盖失败，单 Tile Real-RHI 性能仍有 GameThread 尖峰，至少 10 Tile、Relocate、
-5 分钟以上固定资源长稳和更多硬件矩阵也未执行。2026-07-27 用户现已要求先提交再排查；
-提交只冻结当前可审查基线，不代表这些未完成项通过。
+尚未勾选完成定义第 1、7–10 项：第 1 项的代码根因已由后继架构修复，但修复后的 Real-RHI
+用户可见验收未执行；广路线后续 `diagonal_yz` 仍有独立 canonical 外露材质覆盖失败，
+单 Tile Real-RHI 性能仍有 GameThread 尖峰，至少 10 Tile、Relocate、5 分钟以上固定资源
+长稳和更多硬件矩阵也未执行。提交只冻结当前可审查基线，不代表这些未完成项通过。

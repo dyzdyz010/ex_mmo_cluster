@@ -1,8 +1,9 @@
 # Voxia 真实壳层交界与目标原子发布设计
 
 - **日期**：2026-07-27
-- **状态**：架构决策稿；取代 2026-07-26 设计中“Far Patch 固定 26 个边界槽即可代表
-  Near/Far 与 Far/Far 接缝”以及“先推进 live TargetKey、再等待新覆盖补齐”的部分
+- **状态**：已实施并通过自动化与 Null-RHI 结构化回归；取代 2026-07-26 设计中
+  “Far Patch 固定 26 个边界槽即可代表 Near/Far 与 Far/Far 接缝”以及“先推进 live
+  TargetKey、再等待新覆盖补齐”的部分；Real-RHI 用户可见复验仍待完成
 - **范围**：现役 Voxia 唯一生产组合根中的 Near/Far、不同 Far LOD、临时缺邻居封口、
   相邻窗口交接、完整 XYZ 移动安全与 renderer 覆盖证明
 - **不改变**：服务端权威、baseline 硬校验、Near `3×3×3 tiles`、Near Patch
@@ -64,7 +65,7 @@
 相邻移动的保护范围又通过 `NearRadius + 1 tile` 间接猜测，没有直接从候选 Near
 和三格 chunk 安全带推导。
 
-现场的典型缺口为 `2187 = 3×27×27 chunks`，正好是一块三 chunk 厚的完整 XYZ slab。
+现场的单轴典型缺口为 `1323 = 3×21×21 chunks`，正好是一块三 chunk 厚的完整 XYZ slab。
 这不是随机渲染闪烁，而是新目标已成为审计基准、对应保护 slab 尚未被新旧画面共同覆盖。
 
 ### 2.3 现有 `gap=0` 为什么会假绿
@@ -426,3 +427,89 @@ canonical slot 发布。
 7. Development build、完整 Voxia Automation、Node、Null-RHI、Real-RHI 与用户可见验收通过；
 8. current truth、Voxia README、Presentation/FarField/Gameplay README、阶段稿与 session handoff
    同步，旧的“26 个 Patch 外框槽代表全部壳层接缝”表述被明确撤回。
+
+## 16. 实施状态（2026-07-27）
+
+代码侧已经落地统一 `LayerFace`、manifest 独立审计、精确三维保护区与候选/live 目标分离。
+实现核对工程常量后确认：Near 每轴为 `3 tiles × 7 chunks = 21 chunks`，因此单轴旧侧三格
+薄层为 `3 × 21 × 21 = 1323 chunks`。所有测试计数均从
+`FVoxiaPatchStreamingSpatialContract` 推导，不保留手写尺寸。
+
+目标交接现在按以下顺序执行：
+
+```mermaid
+flowchart LR
+    Request["登记候选目标"] --> Build["后台构建并发布完整 manifest"]
+    Build --> Validate["校验旧 Near 冻结身份与三维保护区"]
+    Validate --> Publish["Root 同步推进 SceneHost / Far / Near"]
+    Publish --> NearReady["新 Near 完整可见"]
+    NearReady --> RequiredFar["提交保护区所需 Far"]
+    RequiredFar --> Retire["旧 Near 与旧 Far 才允许退出"]
+```
+
+调度 generation 已从层间内容身份中剥离；它仍用于拒绝旧任务提交，但内容未变时不会迫使
+同一层间墙和 Far Patch 全量重建。自动化与最终构建证据继续记录在本阶段进度和 session
+handoff 中；真实画面仍须完成 Real-RHI 人工验收后才能宣布缺墙问题闭环。
+
+## 17. 连续目标下的 live 凭证所有权（2026-07-27）
+
+相邻候选锁存修复后，Null-RHI 现场暴露了第二个独立根因：目标 `11→12→13` 连续推进时，
+`gap=0`，但目标 13 发布后出现 `4523` 个 orphan seam。旧 Far Patch 仍真实可见，而
+SceneHost 只保存 current/previous 两份完整目标 manifest；目标 11 被轮换掉后，它负责的
+精确 coverage 与 `LayerFace` 预期失去来源，审计和撤墙逻辑都把仍在画面的旧墙当成孤儿。
+
+因此禁止用“多保留几代 manifest”或“等全部 6859 个 Far 收敛后再移动”处理。正式所有权为：
+
+```mermaid
+flowchart LR
+    Candidate["候选 manifest entry"] --> Plan["Far commit plan"]
+    Plan --> Atomic["同一次可见提交"]
+    Atomic --> Patch["live Far Patch"]
+    Atomic --> Evidence["live coverage + LayerFace 凭证"]
+    Patch --> Remove["replace / remove"]
+    Evidence --> Remove
+```
+
+- 每个 live Far Patch 自带一份版本完全一致的 immutable manifest entry；
+- entry 与 Patch、层间墙在同一个可见事务中新增、替换或删除；
+- renderer coverage 和层间墙预期优先读取逐 live-Patch entry，不再依赖目标历史；
+- 容器只随实际 live Far Patch 数增长，不随移动次数增长；
+- 当前/上一份 manifest 只保留为候选输入与旧测试入口兼容，不能承担 live truth。
+
+回归用例固定“旧 Far 连续跨过两次目标轮换仍可见”的场景，要求精确 coverage 保留且
+orphan seam 为 `0`；提交计划另行拒绝 entry/version 或 layer artifact 不一致。
+
+## 18. Patch 网格不得截断层间墙（2026-07-27 最终审查补充）
+
+最终代码审查又确认了两个直接造成用户所见竖缝的实现错误：
+
+1. 旧构建器在分界两侧落入不同 `8³` Far Patch 时直接返回成功，实际含义却是“跳过这面墙”。
+   因而 Near/Far 或 Far/Far LOD 分界只要恰好跨 Patch 网格，就没有 receipt，也没有几何；
+2. 为防空洞暂时保留的旧 Near 被并入新目标的层级归属图。它本来只应保护退场覆盖，却被
+   当成新目标 Near，导致新目标真正的 Near/Far 分界向外错移或缺失。
+
+这两件事现在通过稳定发布规则和职责分离解决：
+
+```mermaid
+flowchart LR
+    Owners["新目标真实逐 Tile owner / LOD"] --> Face["唯一 LayerFace"]
+    Face --> Publisher{"哪一侧是 Far？"}
+    Publisher -->|Near / Far| FarSide["由真实 Far 一侧发布"]
+    Publisher -->|Far / Far| Negative["由负方向一侧稳定发布"]
+    OldNear["暂时保留的旧 Near"] --> Protection["只进入覆盖保护区"]
+    Protection -. 不进入 .-> Owners
+```
+
+- Patch 网格只是物理分批边界，不能成为是否生成 `LayerFace` 的条件；
+- Near/Far 永远由 Far 一侧的 Patch 发布，Far/Far LOD 永远由负方向一侧发布；
+- 物理 boundary batch 可以落在另一空间桶中，但语义发布者只有一个；
+- `TransitionNearTiles` 只参与新旧 Near 包围盒、三格安全带和临时保护外壳，不参与新目标
+  `LayerFace` owner 解析；
+- manifest 全局拒绝重复 slot，单 Patch entry 拒绝非本发布者、版本不符或几何集合不完整；
+- CLI 快照公开 `live_layer_interfaces`、`live_layer_interface_geometry`、
+  `live_cross_patch_layer_interfaces`、`live_near_far_interfaces` 和
+  `live_far_lod_interfaces`，可以直接判断真实分界是否进入 live 画面。
+
+对应测试把 Near 中心放到 Patch 网格边缘，分别制造跨 Patch 的 Near/Far 与 Far/Far LOD
+分界。修复前得到 `Near/Far=5` 而不是六面，且两类跨 Patch 分界都不存在；修复后六面完整，
+两类分界都具有唯一发布者。旧 Near 保护集的测试另行证明它不会再改变新目标的分界位置。

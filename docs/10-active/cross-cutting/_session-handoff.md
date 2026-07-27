@@ -1,26 +1,41 @@
-# 当前会话接力：Near/Far 无空洞交接已完成针对性闭环，发布级长路线与性能待收口
+# 当前会话接力：统一层间墙与连续目标无空洞架构已落地，Real-RHI 可见复验待收口
 
 ## 2026-07-27 Near/Far 无空洞呈现与三维移动安全门
 
 - 工作树仍是 `.worktrees/voxia-phase2-macro-interaction`，分支
-  `codex/voxia-phase2-macro-interaction`；本轮实现与文档均尚未提交或推送。
-- 根因有两层：同编号 Near Patch 在相邻窗口中对应不同边缘范围，整 Patch 替换会提前丢掉
-  `120` 个旧 chunks；Near 退出又只认旧 Far PatchId，没有验证目标 Far 精确版本、
-  renderer receipt 与真实边界几何。两者叠加形成了间歇空洞和缺失内侧竖墙。
+  `codex/voxia-phase2-macro-interaction`；Voxia 实现已提交为 `6a4493e`，
+  外层设计与当前真值文档随本轮单独提交，均未推送。
+- 根因最终分成六层：同编号 Near Patch 的旧边缘被提前撤掉；Near 退出没有验证精确 Far
+  与 renderer receipt；固定 Far Patch 的 26 个外框槽不等于真实 Near/Far、Far/Far LOD
+  分界；跨 Far Patch 的 `LayerFace` 又被构建器直接跳过；退场保护用旧 Near 污染了新目标
+  分界；SceneHost 还用 current/previous 两份目标 manifest 代表所有 live Far，连续移动时
+  会让仍在画面的更早 Far 失去 coverage/层间墙依据。
 - 2026-07-27 用户再次实跑确认：纵向移动交接已经正常，但 Near/Far 朝内竖墙仍不可见。
-  因此本轮只能确认旧边缘保留、精确 Far 接管与移动安全门生效，不能把 boundary slot、
-  已注册组件或 `gap=0` 写成竖墙几何验收通过。竖墙根因仍需沿生产几何链路排查。
+  此后代码已改为按实际逐 Tile owner/LOD 生成统一 `LayerFace`，并让每个 live Far 自带
+  coverage/层间墙凭证；Null-RHI 已证明连续目标下不再丢依据。Real-RHI 与用户可见复验
+  尚未执行，因此仍不能把竖墙视觉问题写成关闭。
 - 当前唯一提交路径先隐藏准备新组件并等待真实 fence，再同帧切换可见 owner；同编号 Near
   先持有新旧范围并集，目标 Far 精确版本接管后才收窄。旧 Near 移除也使用同一证明，
   不存在固定等待、遮洞层或第二条生产路径。
+- Root 分离 requested/live 目标，并锁存正在准备的相邻一步，避免 `11→12` 尚未发布时被
+  desired `13` 覆盖成 Relocate。Far commit 同时提交 Patch、外壳、真实层间墙与自己的
+  immutable manifest entry；entry 只在该 Patch replace/remove 时同步退出。
+- Patch 网格不再参与“是否补墙”的判断：跨 Patch 的 Near/Far 由实际 Far 一侧稳定发布，
+  Far/Far LOD 由负方向一侧稳定发布；暂留旧 Near 只进入覆盖保护，不进入新目标层间语义。
 - SceneHost 按完整 XYZ 核对所有权，并沿六个面各外扩 3 chunks：稳定保护范围 `27³`，
   相邻三轴切换最大 `34³`。最后完整 Near 与整个保护范围同时干净后才累计连续性。
 - 移动安全门允许玩家走到最后完整 Near 外 3 chunks；第 4 格先按距离拒绝，前三格内才
   检查真实已提交画面。返回和沿边界始终允许。高空全空气只是 `VerifiedEmpty` 数据，
   与有几何的 Near 共用同一管线。
-- fresh 验证：Development build；Node `98/98`；完整 Voxia Automation
-  `161 Success + 2 expected warnings = 163/163`，失败与未运行均为 `0`。报告位于
-  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_All_FINAL2_20260727/`。
+- fresh 验证：Development build；Node `98/98`；完整 Voxia Automation `165/165`，
+  失败与未运行均为 `0`。报告位于
+  `.worktrees/voxia-phase2-macro-interaction/.demo/observe/automation-full-cross-patch-20260727/`。
+- 最新 Null-RHI 移动安全门与连续目标证据位于
+  `.demo/observe/voxia_phase1_2026-07-27T09-42-41-034Z_null_rhi_1280x720/`：
+  `depth_three_boundary_and_return` 共 47 个主要交接采样，全部路线共 101 个采样，
+  目标连续推进 `11→12→13`，最多 `45082` 个受保护帧中 gap/overlap/orphan 与对应
+  失败计数均为 `0`；前三格放行、第四格阻止、沿边和返回放行，acceptance 最终
+  `passed=true`。
 - Null-RHI 移动安全门证据位于
   `.demo/observe/voxia_phase1_2026-07-26T23-26-47-082Z_null_rhi_1280x720/`：
   `29` 个覆盖采样证明前三格可进入、第四格阻止、沿边界和返回放行；保护帧

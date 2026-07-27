@@ -123,13 +123,14 @@
 **主要文件：**
 
 - `Source/Voxia/FarField/VoxiaFarTargetManifest.*`
-- `Source/Voxia/Gameplay/VoxiaPure3DVoxelStreamingSubsystem.*`
-- `Source/Voxia/World/VoxiaUnifiedVoxelWorldActor.*`
+- `Source/Voxia/Gameplay/VoxiaPure3DVoxelWorldActor.*`
+- `Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*`
 - 对应 Automation Test
 
 **步骤：**
 
-1. 先写失败测试，复现旧目标一侧恰好缺少 `3 × 27 × 27 = 2187` chunks 的保护薄片。
+1. 先写失败测试，复现旧目标一侧恰好缺少
+   `3 × NearWindowChunks² = 3 × 21 × 21 = 1323` chunks 的保护薄片。
 2. 保护范围按“目标 Near + 交接期仍可见 Near”的精确 XYZ 并集计算，再在六个方向各扩 3 chunks。
 3. 3 chunks 仅是玩家允许越出最后完整 Near 的移动余量，不能代替退出 Tile 的完整 Far 接管。
 4. Root 只登记候选目标；Far manifest 完整产生并安装后，SceneHost 才正式切换目标。
@@ -173,3 +174,30 @@
 - 审计能独立发现缺墙，不再出现“根本没登记所以检查通过”；
 - 高空全空气不走任何专用分支；
 - 既有正确的流送、编辑、材质、预算、取消和 render fence 行为不回退。
+
+---
+
+## 2026-07-27 实施进度
+
+- [x] canonical `LayerFace` 支持 Near/Far 与任意 Far/Far LOD 分界，六向统一。
+- [x] 层间面按实际所有权枚举，不依赖 `8³` Far Patch 外框对齐。
+- [x] 跨 `8³` Far Patch 的层间面不再被跳过；Near/Far 由实际 Far 一侧发布，
+  Far/Far LOD 由负方向一侧稳定发布。
+- [x] 退场旧 Near 只参与精确覆盖保护，不再进入新目标 owner/LOD 图或移动新目标接缝。
+- [x] 层间面收据、几何、构建流、提交账本和 renderer 批次使用同一身份。
+- [x] renderer auditor 从 manifest 独立推导应有层间面，可发现缺失与孤儿。
+- [x] 精确保护区按新旧 Near 包围盒六向外扩 3 chunks，并只排除新 Near；即将退出的
+  旧 Near 会作为新 Far 必需覆盖。
+- [x] 请求目标与 live 目标分离；完整候选 manifest 到达前 SceneHost 和 Near 均保持旧目标。
+- [x] 层间内容身份不再混入后台调度 generation；generation 只负责拒绝陈旧提交。
+- [x] 连续目标不会再轮换掉仍可见 Far 的 coverage/层间墙依据；每个 live Far Patch 自带
+  immutable manifest entry，并与 Patch/墙同事务替换或移除。
+- [x] CLI/observe 公开 live/候选目标、候选发布阶段、保护区边界/数量，以及 live
+  层间面总数、真实几何数、跨 Patch 数、Near/Far 数和 Far/Far LOD 数。
+- [x] Development build；完整 `Automation RunTests Voxia` 为 `165/165`；Node 为 `98/98`。
+- [x] 最新 Null-RHI `--movement-guard-only`
+  `.demo/observe/voxia_phase1_2026-07-27T09-42-41-034Z_null_rhi_1280x720/`
+  通过：目标连续推进 `11→12→13`，47 个主要交接采样、101 个全部路线采样和最多
+  `45082` 个受保护帧中，gap/overlap/orphan 及对应受保护失败计数均为 `0`；前三格放行、
+  第四格阻止、沿边和返回放行，最终 `acceptance_complete.passed=true`。
+- [ ] Real-RHI 唯一生产场景与用户可见竖墙重新验收；完成前不把视觉问题写成关闭。

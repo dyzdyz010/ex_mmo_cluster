@@ -121,9 +121,14 @@ Near/Far 与不同 Far LOD 的真实壳层交界。现役修复方向改为从�
 resolver，同一空间 slot 只能有一个 after-image，禁止临时封口与真实接缝重叠。完整决策见
 [真实壳层交界与目标原子发布设计](../../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)。
 
-当前实现尚有一项已确认的可见性缺口：Near/Far 朝内竖墙在用户实跑中仍不可见。现有
-canonical slot、boundary batch、已注册组件与覆盖计数只证明提交关系存在，尚未证明该 slot
-最终拥有非零、朝向正确、材质有效且实际可见的墙面三角形。
+用户此前实跑确认过 Near/Far 朝内竖墙不可见。现役实现已改为从实际逐 Tile owner/LOD
+关系生成 Near/Far 与 Far/Far LOD 的统一 `LayerFace`，并由候选 manifest 独立列出预期；
+每个可见 Far Patch 在同一提交中持有自己的精确 coverage/层间墙凭证，目标历史轮换不能
+提前撤销它。自动化与连续目标 Null-RHI 已通过，但修复后的 Real-RHI 用户可见复验尚未完成，
+因此仍不能只凭 canonical slot、boundary batch、已注册组件或覆盖计数宣布视觉关闭。
+层间面是否生成不受 `8³` Far Patch 网格限制；跨 Patch 的 Near/Far 面固定由实际 Far
+一侧发布，Far/Far LOD 面固定由负方向一侧发布。交接期保留的旧 Near 只进入覆盖保护区，
+不得进入新目标 owner/LOD 图并移动真实接缝位置。
 每个边界采样另外携带独立 `owned` 位：`material=0` 只表示已确认空气，`owned=false`
 才表示该采样已由 Near 或其他层接管。所有权切口允许从实体侧闭合；真实自然空气仍执行
 严格表面合同。
@@ -135,11 +140,16 @@ canonical slot、boundary batch、已注册组件与覆盖计数只证明提交�
 ```text
 NearMoveCommit = 1 NearPatchVersion + exact ownership + seam
 NearEditCommit = 1..8 NearPatchVersion + exact ownership + seam
-FarPatchCommit = 1 FarPatchVersion + 26 canonical boundary slots + seam
+FarPatchCommit = 1 FarPatchVersion + 26 outer boundary slots
+               + actual LayerFace after-images + per-live manifest entry
 ```
 
 SceneHost 在 commit 前验证完整 after-image；commit callback 开始后只做不可失败的同帧切换。
 旧资源进入 retirement，并在真实 render fence 后回收。
+`scene_host.patch_ownership` 同时公开 `live_layer_interfaces`、
+`live_layer_interface_geometry`、`live_cross_patch_layer_interfaces`、
+`live_near_far_interfaces` 与 `live_far_lod_interfaces`，用于直接核对真实层间面是否进入
+当前画面，而不是只看外壳槽或组件总数。
 
 固定 Near Patch 编号不等于固定窗口边缘范围。相邻窗口在同一个 Patch 内截取的 chunks
 可能不同，因此 Near 构建明确区分两种不可变范围：
@@ -176,12 +186,13 @@ Far 后台构建不因可见发布暂停而停止。Root 对外区分三个事�
 `FVoxiaPatchTransitionPlan` 只定义：
 
 1. `Bootstrap`：无旧 live，在加载界面中逐 Patch 首显；
-2. `AdjacentStep`：每轴差值 `-1/0/1`，立即发布 TargetKey；
+2. `AdjacentStep`：每轴差值 `-1/0/1`，先锁存候选；完整 manifest 校验后才发布 TargetKey；
 3. `Relocate`：teleport、服务端大幅纠正、新游戏或显式重载。
 
 动作策略：
 
-- AdjacentStep 立即启动 required 加载，并以最后一个完整可见 Near 窗口作为移动基准；
+- AdjacentStep 立即启动 required 加载但保持旧 live TargetKey，并以最后一个完整可见 Near
+  窗口作为移动基准；正在准备的一步不会被更远 desired center 覆盖成 Relocate；
 - 候选 chunk 在完整 XYZ 任一轴最多离开该窗口 3 chunks；继续向外进入第 4 个 chunk 时
   阻止该次位移；
 - 返回窗口或沿边界移动始终允许；判定不读取等待秒数、队列长度或水平面特例；
@@ -192,8 +203,9 @@ Far 后台构建不因可见发布暂停而停止。Root 对外区分三个事�
 安全门只读取 SceneHost 的真实 renderer coverage 与最后完整 Near；它不修改流送队列，也不通过
 wall clock 自动放行。新目标准备追不上移动时，玩家会停在安全带边缘，画面仍保持闭合。
 SceneHost 因此把相邻交接范围沿完整 XYZ 六个面各外扩 3 chunks 纳入核对：稳定窗口核对
-`27³`，三轴相邻切换最多核对 `34³`。外扩带必须由已验证 Far 版本与真实 renderer receipt
-证明，不能把“允许多走三格”实现成盲目放行。
+`27³`，三轴相邻切换最多核对 `34³`。外扩带必须由每个实际可见 Far 自带的精确 entry 与
+真实 renderer receipt 证明，不能把“允许多走三格”实现成盲目放行，也不能依赖只保留
+current/previous 两份目标 manifest 的历史假设。
 
 第 4 格先按距离上限拒绝；只有候选仍在前三格保护带内时才检查其可见覆盖。冷启动阻塞加载
 期间连续性计数尚未启动；最后完整 Near 与整个保护范围第一次同时干净后才开始逐帧累计，

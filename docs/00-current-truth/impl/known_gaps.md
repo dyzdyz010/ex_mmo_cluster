@@ -45,21 +45,36 @@ overlay、near/far exact presentation、HUD/CLI 与 X/Y/Z unload/reload 均已�
 负坐标/六向/page-ring seam 测试、完整 Automation/Node/Null-RHI 与固定相机 D3D12 actual
 material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround 的边界继续有效。
 
-### 2026-07-27 用户可见验收失败：Near/Far 朝内竖墙仍缺失
+### 2026-07-27 待复验：Near/Far 朝内竖墙架构修复已落地
 
 - 用户实跑确认纵向移动与流送交接已经正常，但 Near/Far 接缝朝远景内部的竖墙仍不可见。
 - 根因已确认：现役边界生产只枚举固定 Far Patch 的 26 个外框槽；真实 Near/Far 与 Far LOD
   分界大多位于同一个 `8³ tiles` Patch 内，因此根本没有进入补墙调用点。逐 Tile
   `FarBoundaryFaces` 已生成并保存，但 Patch-diff 可见提交没有消费它们。
+- 后续最终审查确认了更直接的漏墙点：统一 `LayerFace` 构建器曾在两侧落入不同 Far Patch
+  时直接跳过该面；测试中 Near/Far 六面因此只剩五面，跨 Patch 的 Far/Far LOD 分界也为零。
+- 退场保护与新目标语义还曾混在一起：为防空洞暂留的旧 Near 被算作新目标 Near，导致真正
+  的新 Near/Far 分界错移。旧 Near 现在只参与覆盖保护，不参与新目标 owner/LOD 解析。
 - 当前 `gap=0` 还存在自证问题：expected boundary 来自 ledger 已登记 artifact；未登记的真实
   接口不会被期待，因而肉眼有缝仍可假绿。
-- 移动时的短暂缺口是同一轮架构审计确认的独立时序错误：candidate TargetKey 过早成为 live
-  审计基准，典型缺口 `2187=3×27×27 chunks` 正好是一块三 chunk 厚的 XYZ 保护 slab。
-- 修复按
+- 移动时的短暂缺口是独立时序错误：candidate TargetKey 过早成为 live 审计基准；单轴旧侧
+  缺失为 `3×21×21=1323 chunks`。相邻 `11→12` 尚在准备时被 desired `13` 替代还会把
+  本应相邻交接的构建误分类为 Relocate。
+- 首轮修复后的真实 smoke 又暴露第二个时序假设：SceneHost 只保存 current/previous 两份
+  manifest，但更早目标的 Far Patch 仍可能可见。目标 13 发布后曾出现 `4523` 个 orphan
+  seam；不是墙几何消失，而是目标 11 的 live coverage/墙凭证被历史轮换提前丢弃。
+- 架构修复已按
   [真实壳层交界与目标原子发布设计](../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
   执行：Patch 装载边界与真实 layer interface 分责，Near/Far 与 Far/Far LOD 统一按实际
-  owner/LOD 相邻关系生成；live/candidate target 分离，候选保护范围完整后才原子替换旧画面。
+  owner/LOD 相邻关系生成；跨 Patch 时 Near/Far 稳定归实际 Far 一侧发布，Far/Far 稳定归
+  负方向一侧发布；live/candidate target 分离并锁存正在准备的相邻一步；每个 live Far
+  Patch 自带精确 coverage/层间墙凭证，只随该 Patch replace/remove。
   禁止裙边、双面材质、默认墙、扩大固定半径或额外等待。
+- CLI 已公开 live 层间面总数、真实几何数、跨 Patch 数、Near/Far 数与 Far/Far LOD 数。
+  Development build、Automation `165/165`、Node `98/98` 与最新连续目标 Null-RHI
+  `--movement-guard-only` 均通过；目标 `11→12→13` 的 47 个主要采样、101 个全部路线采样
+  及最多 `45082` 个受保护帧保持 gap/overlap/orphan 为 `0`。修复后的 Real-RHI 唯一生产
+  场景和用户可见检查尚未执行，所以本项仍列在 known gaps，而不是写成视觉关闭。
 
 ### 2026-07-27 已确认缺口：跨 LOD 所有权边界会产生无材质的新增外露面
 
