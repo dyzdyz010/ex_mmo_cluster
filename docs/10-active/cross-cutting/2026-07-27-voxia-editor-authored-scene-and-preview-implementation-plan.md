@@ -427,6 +427,7 @@ bool FVoxiaSceneCompositionContractAutomationTest::RunTest(const FString&)
 	Valid.bFogBound = true;
 	Valid.bPostProcessBound = true;
 	Valid.bFillRigBound = true;
+	Valid.bRequireEditorPreview = true;
 	Valid.bPreviewBound = true;
 	Valid.bAllActorsInSameWorld = true;
 
@@ -449,6 +450,21 @@ bool FVoxiaSceneCompositionContractAutomationTest::RunTest(const FString&)
 	TestEqual(TEXT("重复组合硬失败"),
 		DuplicateResult.ReasonCode, FString(TEXT("scene_composition_duplicate")));
 
+	FVoxiaSceneCompositionBindingView MissingAuthorPreview = Valid;
+	MissingAuthorPreview.bPreviewBound = false;
+	const auto MissingAuthorPreviewResult = FVoxiaSceneCompositionContract::Validate(
+		EVoxiaSceneLaunchMode::AuthoredProduction, MissingAuthorPreview);
+	TestEqual(TEXT("作者态缺 preview 硬失败"),
+		MissingAuthorPreviewResult.ReasonCode,
+		FString(TEXT("voxel_editor_preview_missing")));
+
+	FVoxiaSceneCompositionBindingView CookedRuntime = Valid;
+	CookedRuntime.bRequireEditorPreview = false;
+	CookedRuntime.bPreviewBound = false;
+	const auto CookedRuntimeResult = FVoxiaSceneCompositionContract::Validate(
+		EVoxiaSceneLaunchMode::AuthoredProduction, CookedRuntime);
+	TestTrue(TEXT("runtime 不依赖 cook 已剔除的 preview"), CookedRuntimeResult.bReady);
+
 	const auto Headless = FVoxiaSceneCompositionContract::Validate(
 		EVoxiaSceneLaunchMode::HeadlessProbe, {});
 	TestTrue(TEXT("显式 headless 不要求渲染 Actor"), Headless.bReady);
@@ -467,10 +483,13 @@ Expected: missing contract symbols.
 
 1. production count 0 → `scene_composition_missing`;
 2. count > 1 → `scene_composition_duplicate`;
-3. sky/weather/fog/post-process/fill/preview 各自 missing reason；
-4. 跨 world → `scene_composition_cross_world_reference`;
-5. headless/probe 返回 ready，但 snapshot 分类不允许成为 production；
-6. ready snapshot 包含全部对象 path、class、map、mode 和 schema
+3. sky/weather/fog/post-process/fill 各自 missing reason；
+4. 只有 `bRequireEditorPreview=true` 时，preview missing →
+   `voxel_editor_preview_missing`；Subsystem 永远传 false，`Validate Scene` 与地图验证器传 true；
+5. 跨 world → `scene_composition_cross_world_reference`;
+6. headless/probe 返回 ready，但 snapshot 分类不允许成为 production；
+7. ready snapshot 包含全部对象 path、class、map、mode、
+   `editor_preview_required/bound` 和 schema
    `voxia_scene_composition_v1`。
 
 - [ ] **Step 4: 写出 actor/rig 的失败测试**
@@ -525,7 +544,9 @@ UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category="Voxia|Preview")
 TObjectPtr<AVoxiaVoxelWorldPreviewActor> VoxelPreview;
 ```
 
-并提供 `ValidateScene` (`CallInEditor`)、`BuildBindingView` 和 `SnapshotJson`。
+并提供 `ValidateScene` (`CallInEditor`)、`BuildBindingView(bool bRequireEditorPreview)` 和
+`SnapshotJson`。`ValidateScene` 传 true；runtime Subsystem 传 false，保证 preview 永不进入
+root readiness。
 
 - [ ] **Step 6: 实现 `UVoxiaScenePresentationSubsystem`**
 

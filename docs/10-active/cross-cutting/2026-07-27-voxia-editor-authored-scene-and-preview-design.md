@@ -293,12 +293,20 @@ presentation 和后续场景内容。它不得被原地扩建或重命名后继�
 正式生产地图必须恰好存在一个 composition actor。解析使用明确 C++ 类型，结果为零或多于一个都在
 root 生成前硬失败。
 
+composition 可以保存对 `AVoxiaVoxelWorldPreviewActor` 的 editor-only 引用，供
+`Validate Scene`、地图验证器和编辑器操作使用；但该引用**不得进入 runtime root readiness**。
+Cook 会剔除 preview actor，因此 runtime snapshot 必须明确记录
+`editor_preview_required=false`，并允许该引用为空。作者态验证则显式传入
+`editor_preview_required=true`，缺失时以 `voxel_editor_preview_missing` 失败。这样地图资产仍被
+强制具备完整作者面，打包运行时又不会依赖一个按设计不存在的对象。
+
 ### 7.3 `UVoxiaScenePresentationSubsystem`
 
 该 `UWorldSubsystem` 是 runtime 场景表现契约的持续维护者：
 
 - 在所有关卡 Actor 可解析的 world-begin-play 阶段按强类型查找 composition；
-- 校验恰好一个 composition、全部 profile、adapter 和显式 Actor 引用；
+- 校验恰好一个 composition、全部 runtime profile、adapter 和环境 Actor 引用；editor-only
+  preview 只由作者态 validation/map validator 强制，不进入 root readiness；
 - 冻结 `FVoxiaSceneCompositionSnapshot`，向 Flow Subsystem 发布 ready/failed 状态；
 - 订阅当前模式唯一的环境状态源，并通过 `IVoxiaEnvironmentDriver` 应用；
 - 维护 driver object identity、最近 revision、apply result 与错误状态；
@@ -772,13 +780,13 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 | --- | --- | --- |
 | 纯 C++ | DTO converter、core validation、fingerprint 测试 | preview/runtime 同输入得到同 core config 与 fingerprint |
 | Profile | Data Validation | 缺材质、非法 ring、非完整 XYZ、错误分类与失效资产全部失败 |
-| Composition | Automation map test | production map 恰好一个 composition，所有显式引用有效 |
+| Composition | Automation map test | production map 恰好一个 composition，作者态全部显式引用（含 preview）有效 |
 | 环境 | PIE functional test | 启动前后 UDS/UDW/fog/PPV/rig 对象 identity 不变，没有被销毁或重复生成 |
 | Root | Flow/组合根测试 | root 数始终为 1；preview/composition 不注册为 root |
 | Preview | Automation | Representative 含 Near、所有 Far LOD 与 seam；Coverage 含完整 XYZ bounds |
 | Preview | 取消/预算测试 | 旧 generation 不发布；超预算在构建前失败 |
 | Preview source | baseline 测试 | 缺包、hash 错误与 diff-chain 断裂全部拒绝 |
-| Cook | packaged asset audit | editor preview actor/components 不进入 cooked map |
+| Cook | packaged asset audit | editor preview actor/components 不进入 cooked map，runtime composition 不因该引用为空而失败 |
 | Headless | Null-RHI/commandlet | 只有显式 headless profile 能跳过环境渲染，仍输出 composition validation |
 | CLI | stdio CLI | 三个命令字段稳定，错误 reason 与日志一致 |
 | Real-RHI | 正式 map smoke | 环境可见、唯一 root ready、Near/Far/LOD/补光联合呈现 |
