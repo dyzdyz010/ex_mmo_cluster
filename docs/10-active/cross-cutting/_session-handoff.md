@@ -1,4 +1,44 @@
-# 当前会话接力：Near/Far Patch-diff 已落地并通过 Null-RHI，Real-RHI closeout 待刷新
+# 当前会话接力：Near/Far 无空洞交接已完成针对性闭环，发布级长路线与性能待收口
+
+## 2026-07-27 Near/Far 无空洞呈现与三维移动安全门
+
+- 工作树仍是 `.worktrees/voxia-phase2-macro-interaction`，分支
+  `codex/voxia-phase2-macro-interaction`；本轮实现与文档均尚未提交或推送。
+- 根因有两层：同编号 Near Patch 在相邻窗口中对应不同边缘范围，整 Patch 替换会提前丢掉
+  `120` 个旧 chunks；Near 退出又只认旧 Far PatchId，没有验证目标 Far 精确版本、
+  renderer receipt 与真实边界几何。两者叠加形成了间歇空洞和缺失内侧竖墙。
+- 2026-07-27 用户再次实跑确认：纵向移动交接已经正常，但 Near/Far 朝内竖墙仍不可见。
+  因此本轮只能确认旧边缘保留、精确 Far 接管与移动安全门生效，不能把 boundary slot、
+  已注册组件或 `gap=0` 写成竖墙几何验收通过。竖墙根因仍需沿生产几何链路排查。
+- 当前唯一提交路径先隐藏准备新组件并等待真实 fence，再同帧切换可见 owner；同编号 Near
+  先持有新旧范围并集，目标 Far 精确版本接管后才收窄。旧 Near 移除也使用同一证明，
+  不存在固定等待、遮洞层或第二条生产路径。
+- SceneHost 按完整 XYZ 核对所有权，并沿六个面各外扩 3 chunks：稳定保护范围 `27³`，
+  相邻三轴切换最大 `34³`。最后完整 Near 与整个保护范围同时干净后才累计连续性。
+- 移动安全门允许玩家走到最后完整 Near 外 3 chunks；第 4 格先按距离拒绝，前三格内才
+  检查真实已提交画面。返回和沿边界始终允许。高空全空气只是 `VerifiedEmpty` 数据，
+  与有几何的 Near 共用同一管线。
+- fresh 验证：Development build；Node `98/98`；完整 Voxia Automation
+  `161 Success + 2 expected warnings = 163/163`，失败与未运行均为 `0`。报告位于
+  `.worktrees/voxia-phase2-macro-interaction/Saved/AutomationReport_All_FINAL2_20260727/`。
+- Null-RHI 移动安全门证据位于
+  `.demo/observe/voxia_phase1_2026-07-26T23-26-47-082Z_null_rhi_1280x720/`：
+  `29` 个覆盖采样证明前三格可进入、第四格阻止、沿边界和返回放行；保护帧
+  `14117→40523`，失败计数全为 `0`。
+- 最终 Real-RHI 竖直证据位于
+  `.demo/observe/voxia_phase1_2026-07-26T23-39-35-197Z_real_rhi_1280x720/`：
+  高空 `216 VerifiedEmpty / 0 GeometryReady`，Far 仍有 `66` 个几何 Patch 和
+  `225` 个可见组件；下降后 Near 几何恢复。`70` 个结构化样本、累计 `8821`
+  个受保护帧均为 gap/overlap/orphan=`0`，retry、新游戏、Far release `3/3/0`
+  与 clean exit 均通过。
+- 不得误报的剩余项：广路线在后续 `diagonal_yz` 仍暴露独立 canonical 外露材质覆盖失败。
+  已确认不是交接时序：LOD1 页 `[9,-1,-54]` 的顶面在归约时按精确邻居被视为遮挡，最终拼壳时
+  外侧 LOD0 owner 的 coarse 代表采样却为空气；几何需要新增外露面，但 canonical 页没有该面
+  的材质事实。generation 12 因而硬失败并保留 generation 11，未制造已发布空洞，但使 Far
+  无法跟上 Near。完整根因、证据与禁止 workaround 的边界见
+  [`known_gaps.md`](../../00-current-truth/impl/known_gaps.md#2026-07-27-已确认缺口跨-lod-所有权边界会产生无材质的新增外露面)。
+  Real-RHI 单 Tile 连续性为零空洞，但 frame p95=`17.378ms`、GameThread p95=`11.088ms`，
+  严格性能门未过。连续至少 10 Tile、Relocate、5 分钟以上资源长稳和更多硬件仍待刷新。
 
 ## 2026-07-25 Near/Far Patch-diff 架构实施
 

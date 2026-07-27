@@ -1,7 +1,8 @@
 # Voxia 无空洞 Near/Far 呈现与三维移动安全门设计
 
 - **日期**：2026-07-26
-- **状态**：设计已确认，待书面复核与实施计划
+- **状态**：针对本设计的架构实现、完整自动化、水平复现、三维移动安全门及竖直跨 RHI
+  验收已完成；发布级全方向长路线、性能/资源长稳与更多硬件仍待刷新
 - **范围**：现役 Voxia 唯一生产组合根中的 Near/Far Patch 可见交接、真实边界几何、
   renderer fence、全空气 Near、完整 XYZ 移动安全门与逐帧验收
 - **前置决策**：
@@ -27,7 +28,9 @@
 6. 玩家可以离开最近一个完整渲染 Near 窗口最多 3 chunks；完整 XYZ 任一方向超过该安全带时，
    只阻止继续增大离开距离的移动，允许返回或沿边界移动；
 7. 无空洞证明来自真实 renderer handles、ownership、boundary 与 fence epoch，不再由同一
-   ledger 计数自证。
+   ledger 计数自证；
+8. Far 边界的每个采样点都显式区分“由 Far 拥有”与“已由 Near 接管”；材质 `0` 只表示
+   已确认空气，不能同时兼任“这个采样不属于 Far”。
 
 一句话原则：
 
@@ -37,18 +40,18 @@
 
 ### 2.1 接缝墙只有账本身份，没有渲染几何
 
-当前 `FVoxiaFarPatchBoundaryShell` 生成 face/edge/corner 的 after-image、artifact kind 与
+修复前，`FVoxiaFarPatchBoundaryShell` 只生成 face/edge/corner 的 after-image、artifact kind 与
 identity；`UVoxiaVoxelPresentationSceneHost::StageFarPatchCommit` 将它们写入
 `PresentationCommitLedger`，但只从 `Stage.MeshShards` 创建可见组件。已有
-`FVoxiaNearFarBoundarySeamBuilder` 能构造接缝 quad，却没有接入现役 Patch 生产提交路径。
+`FVoxiaNearFarBoundarySeamBuilder` 能构造接缝 quad，却没有接入当时的 Patch 生产提交路径。
 
-因此 `Wall`、`PermanentWall`、`ProvisionalWall`、`Stitch` 目前可以在 ledger 中存在，却没有
+因此 `Wall`、`PermanentWall`、`ProvisionalWall`、`Stitch` 当时可以在 ledger 中存在，却没有
 对应的 renderer artifact。近远景向内的 vertical wall 缺失是确定性实现缺口，不是数据偶发。
 
 ### 2.2 Near 退出只验证旧 Far PatchId 存在
 
-`AVoxiaWorldActor::ContinueNearPatchPresentation` 会等待全部待移动 Near Patch 完成后再开始移除，
-这一点保留。但移除前只调用 `SceneHost->IsLiveFarPatch(PatchId)`。该判断最终只是检查 live map
+修复前，`AVoxiaWorldActor::ContinueNearPatchPresentation` 会等待全部待移动 Near Patch 完成后再开始移除，
+这一点被保留；但移除前只调用 `SceneHost->IsLiveFarPatch(PatchId)`。该判断最终只是检查 live map
 中是否存在这个 PatchId。
 
 Far Patch 覆盖 `8³ tiles`。玩家移动一个 Tile 时，同一 FarPatchId 往往继续存在，但其旧版本
@@ -63,9 +66,32 @@ Real-RHI 证据中已经出现：
 05:41:06.747  新 Far generation 才整体提交
 ```
 
-代码允许 Near 在目标 Far 尚未被精确证明时退出，形成间歇性空洞窗口。
+修复前的代码允许 Near 在目标 Far 尚未被精确证明时退出，形成间歇性空洞窗口。
 
-### 2.3 Patch 路径没有完成 renderer fence 契约
+### 2.3 同一 Near PatchId 被误当成固定范围
+
+最终稳定复现的边缘闪洞并不是“新数据偶尔慢一点”，而是 live 数据模型丢失了过渡范围。
+Near PatchId 由固定 `4³ chunks` 空间格决定，但 `21³` 窗口边界可以从同一个固定 Patch 中
+截取不同子集。相邻折返时，新旧窗口因此会共享 PatchId，却拥有不同的 exact chunks。
+
+旧实现的 ledger 和 renderer map 只以 PatchId 为键。新版本一提交，就把同编号旧版本整体
+替换，而不是只替换两者共有的 chunks。实跑中旧版本在一个共享 Patch 内拥有 48 chunks，
+返回目标只拥有 24 chunks；前五个共享 Patch 各提前丢掉 24 chunks，恰好形成
+`5 × 24 = 120` 个 renderer gaps。此时新窗口其他数据仍在正常流送，所以随后又会“补全”。
+
+这也解释了为什么正前方有时看不出问题：某一移动方向和当时的 4-chunk 对齐会让退出边缘
+落在完全不同的 PatchId 上；反向移动或另一坐标余数则会形成“同编号、不同边缘子集”，
+故障看似随机，实质由空间对齐和新旧交替顺序确定。
+
+修复必须同时保存：
+
+- 精确组成新窗口的最终目标范围；
+- 同编号 Patch 当前 live 范围与最终范围的并集，作为过渡可见范围。
+
+并集先完成普通可见提交；精确 Far 接管旧边缘后，再用同一事务管线原子收窄。它们都是从
+冻结 ledger 派生的计划数据，不增加第二份 live truth。
+
+### 2.4 Patch 路径没有完成 renderer fence 契约
 
 ownership texture 的更新会进入 Render/RHI 队列；Patch 提交路径随后立即切换组件可见性。
 现有 post-visibility fence 主要服务旧 whole-generation visibility swap，Patch move/remove
@@ -73,11 +99,47 @@ ownership texture 的更新会进入 Render/RHI 队列；Patch 提交路径随�
 
 这不是多秒级空洞的首要根因，但若只修版本 gate，仍可能残留单帧时序风险。
 
-### 2.4 当前 proof 对实际渲染盲区
+### 2.5 修复前的 proof 对实际渲染盲区
 
 现有 root proof 将 `RequiredSeamFaces` 与 `LiveSeamFaces` 都赋为同一个 ledger slot 数量。
 这只能证明账本有 identity，不能证明组件存在、材质绑定正确、ownership 已上传或 GPU 已看到
 新版本。
+
+### 2.6 垂直交接把 Near 接管误读成自然空气
+
+竖直上升实跑复现了另一项独立缺口。Far 边界 profile 过去只有材质采样；采样值 `0` 同时被
+用于两种不同事实：
+
+- canonical source 已确认该点是空气；
+- 该点已落入 Near 过渡范围，Far 构建时故意不再拥有它。
+
+第一种情况下，同批次、同 LOD 的边界若缺少自然表面应当 `Fatal`；第二种情况下则必须允许
+在 Near/Far 所有权切口上生成临时闭合面。把两者混在一个值里，会让竖直
+`[11,0,-51] → [11,1,-51]` 交接把合法所有权切口误判为“确认空气却缺面”，从而在边界构建
+阶段失败。
+
+修复后每个 Far 边界采样同时携带 `material` 与 `owned`：
+
+- `owned=true, material=0`：真实自然空气，继续执行严格表面合同；
+- `owned=false`：该采样由 Near 或其他层接管，可以从实体侧构造临时闭合面；
+- `owned=true, material>0`：Far 的真实实体采样。
+
+该归属位进入 fingerprint、校验、face/edge/corner 组合和自动化 fixture。它不是空气专用
+路径，也不放宽真正缺失自然表面的 Fatal 规则。
+
+### 2.7 高空验收仍读取已退役渲染统计
+
+高空 Near 已全部进入 `VerifiedEmpty` 后，新 Patch renderer 实际仍持有并显示 Far 组件，
+但旧整代渲染路径的 `live.far_quads` / `far_patches.visible` 固定为零。若验收继续读取旧字段，
+会把正确画面误报为远景消失。
+
+正式观察面改为直接冻结 SceneHost 的 Patch renderer receipt，并公开：
+
+- 有至少一个已注册且可见组件的 Far 几何 Patch 数；
+- Far renderer 组件总数；
+- 已注册且可见的 Far renderer 组件数。
+
+高空断言使用这些真实组件事实；旧整代统计不再参与正确性判断。
 
 ## 3. 目标与非目标
 
@@ -278,6 +340,15 @@ live ownership texture 与 candidate ownership texture 必须是不同的 GPU �
 candidate texture 在隐藏侧完成上传和 staging fence 后，visible commit 只切换材质绑定；旧
 texture 在 post-visibility fence 后回池。
 
+SceneHost 的逐块核对范围必须覆盖玩家真正获准进入的区域，而不能只到 Near ownership
+边缘为止。它以当前相邻交接范围为基础，在 X、Y、Z 六个面各外扩 3 chunks：稳定窗口为
+`27³`，三轴相邻切换的最大保护范围为 `34³`。ownership 范围内按精确 Near/Far owner 核对；
+外扩带必须由当前或上一份已验证 Far manifest 中的精确版本与真实 renderer receipt 证明。
+
+冷启动阻塞加载期间允许 Near 先于 Far 到达，核对结果会如实报告保护带尚未完整，但不启动
+“可玩阶段连续无洞”历史。只有最后完整 Near 成立且整个保护范围首次干净后才开始逐帧累计；
+一旦开始，后续干净帧不能抹掉历史坏帧。
+
 ### 5.6 MovementCoverageGuard
 
 独立纯模块。`FVoxiaMovementCoverageGuardConfig` 固定声明
@@ -299,6 +370,11 @@ AllowBoundaryMotion
 ```
 
 它不启动流送、不访问 provider、不修改 SceneHost、不设置定时器。
+
+判定顺序固定为：无有效完整 Near 时拒绝；候选超过第 3 格时先按
+`BlockOutward` 拒绝；仍在前三格保护带内时再要求 renderer coverage，随后才区分普通放行、
+返回和沿边界移动。第 4 格本就不可进入，不要求为它预先准备画面，也不能把距离上限误报为
+“画面缺失”。
 
 ### 5.7 renderer-ready 的精确定义
 
@@ -393,15 +469,21 @@ stateDiagram-v2
 ### 7.3 Near → Far
 
 1. Far 继续逐 Patch 准备，不等待全部 6859 个 target Patch；
-2. Planner 将退出 Near Patch 的 exact chunks 映射到 `FVoxiaFarTargetManifest`；
-3. 对每个相关 PatchId，要求：
+2. Near BuildIndex 区分最终目标范围与过渡可见范围：
+   - 完全离开目标的旧 Patch 等待 remove；
+   - 与新目标共享 PatchId 但范围不同的 Patch，先提交新旧 chunks 并集，再等待 trim；
+3. Planner 将需要交给 Far 的 exact chunks 映射到 `FVoxiaFarTargetManifest`；
+4. 对每个相关 PatchId，要求：
    - SceneHost live FarPatchVersion 与 manifest 精确相等；
    - 对应 renderer handles 已 staging-ready/live；
    - 必需 boundary artifacts 已 ready；
-4. 任一条件未满足时保留旧 Near，返回 Waiting/Busy；
-5. 全部满足后规划 Near remove、ownership delta 与 seam after-images；
-6. staging fence 和最终校验通过后原子切 owner；
-7. 旧 Near 只在 post-visibility fence 后回收。
+5. 任一条件未满足时保留旧 Near，返回 Waiting/Busy；
+6. 全部满足后：
+   - 共享 Patch 原子收窄到最终目标范围；
+   - 完全离开的 Patch 执行 remove；
+   - 两者都同时提交 ownership delta 与 seam after-images；
+7. staging fence 和最终校验通过后原子切 owner；
+8. 旧 Near 资源只在 post-visibility fence 后回收。
 
 这里等待的是退出区域实际依赖的少量 Far 版本，不是完整 Far generation。
 
@@ -533,6 +615,9 @@ old_owner_retained_regions
 renderer_gap_count
 renderer_overlap_count
 renderer_orphan_seam_count
+renderer_full_rebuild_count
+renderer_delta_apply_count
+renderer_delta_fallback_count
 resources_quiescent
 ```
 
@@ -543,6 +628,12 @@ resources_quiescent
 - ownership texture identity；
 - canonical boundary handle；
 - 对应 fence epoch。
+
+覆盖证明本身按事务影响集增量维护：只重算本次改动的 Near/Far Patch、boundary slot 与
+ownership chunks。冷启动、目标/缓存身份切换或旧快照无法安全续接时才允许完整重建，并
+递增显式回退计数。只更新 Far/boundary 的事务会推进 renderer epoch，但不会改变 Near
+ownership；若现有完整 Near 与当前目标精确一致且增量审计为零缺口，只续签该完整 Near 的
+renderer epoch。ownership 发生变化时不得使用续签捷径，必须重新派生完整窗口。
 
 ### 10.2 Movement guard
 
@@ -690,14 +781,47 @@ SlotId 的局部替换能力。
 
 1. boundary/seam artifact 有真实 renderer geometry；
 2. Near remove 只接受精确目标 FarPatchVersion 与真实 renderer-ready；
-3. Patch 路径具备 staging 与 post-visibility fence；
-4. `VerifiedEmpty` 与 `GeometryReady` 均可形成完整 Near；
-5. 完整 XYZ 3-chunk safety guard 已接入唯一生产根；
-6. renderer coverage proof 不再自证；
-7. 自动化、Development build、Node、Null-RHI、Real-RHI 三维路线与长稳全部通过；
-8. 垂直纯空气→下降到地面的路线逐帧无空洞；
-9. 已实现的渐进流送、confirmed edit、材质和性能没有回退；
-10. 当前真值、Voxia README、相关目录 README 与 session handoff 同步更新。
+3. 同编号 Near Patch 的过渡范围先取新旧并集，精确 Far 接管后才收窄到最终范围；
+4. Patch 路径具备 staging 与 post-visibility fence；
+5. `VerifiedEmpty` 与 `GeometryReady` 均可形成完整 Near；
+6. 完整 XYZ 3-chunk safety guard 已接入唯一生产根；
+7. renderer coverage proof 不再自证；
+8. 自动化、Development build、Node、Null-RHI、Real-RHI 三维路线与长稳全部通过；
+9. 垂直纯空气→下降到地面的路线逐帧无空洞；
+10. 已实现的渐进流送、confirmed edit、材质和性能没有回退；
+11. 当前真值、Voxia README、相关目录 README 与 session handoff 同步更新。
 
-本设计通过书面复核后，再生成逐任务、TDD、带验证命令与提交边界的实施计划；此文档本身不
-授权跳过设计门禁直接修改代码。
+实施按
+[`2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md`](2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md)
+执行；最终完成状态只以本节门禁和新鲜验证证据为准。
+
+## 15. 2026-07-27 实施与验收状态
+
+已经用本设计关闭并取得新鲜证据的部分：
+
+- 边界采样已经把“确认空气”和“已由 Near 接管”分开表达，slot、batch、组件与 renderer
+  receipt 已进入唯一提交管线；但 2026-07-27 用户实跑仍看不到 Near/Far 朝内竖墙，
+  所以不能写成真实墙面几何已经通过可见验收；
+- 同编号 Near Patch 先显示新旧范围并集，精确 Far 与真实 renderer receipt 接管后才
+  收窄；完全离开的旧 Near 也使用同一证明后移除；
+- `playable`、`handoff_complete` 与 `settled` 分离，Far 可见发布按保留、必需项优先、
+  普通渐进三个阶段推进；
+- 最后完整 Near 与 3-chunk 安全门覆盖完整 XYZ；高空 `216` 个 Near Patch 全部
+  `VerifiedEmpty` 时没有空气专用 actor、队列或提交旁路；
+- 完整 Voxia Automation 为 `163/163`；水平 Null-RHI 原复现的 break/place 两个子路由
+  共 `40` 个采样，同次执行在后续路线停止前累计 `320` 个采样；Null-RHI 竖直路线有
+  `1010` 个样本，最终 Real-RHI 竖直路线有 `70` 个结构化样本、累计 `8821` 个受保护帧；
+  上述 gap/overlap/orphan 及受保护失败帧均为 `0`；
+- Real-RHI 高空完整 Near 全空气时，`216` 个 Near Patch 均为 `VerifiedEmpty`，
+  真实 Patch renderer 仍报告 `66` 个 Far 几何 Patch 和 `225` 个已注册可见组件；
+  下降后 Near 几何重新出现；
+- 独立移动安全门路线以 `29` 个覆盖采样证明前三格可进入、第四格被阻止、沿边界和返回
+  均放行，保护帧从 `14117` 增至 `40523` 且失败计数全为 `0`。
+
+因此本轮只能写成“旧边缘提前移除、精确 Far 接管、纵向交接与移动安全门已取得针对性
+证据”。完成定义第 1 项的真实朝内竖墙仍未通过用户可见验收，第 8、10 项的发布级全方向
+至少 10 Tile、Relocate、5 分钟以上资源平台、完整长稳及更多硬件矩阵也未刷新。上述剩余项
+不允许为本设计引入临时等待、遮洞层和第二生产路径。
+当前广路线还在后续 `diagonal_yz` 暴露一项独立 canonical 外露材质覆盖失败；Real-RHI
+单 Tile 路线的画面连续性通过，但 frame p95=`17.378ms`、GameThread p95=`11.088ms`，
+性能门仍需单独收口。

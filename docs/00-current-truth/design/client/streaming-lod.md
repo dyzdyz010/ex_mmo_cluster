@@ -16,8 +16,10 @@
 - baseline/H/manifest/hash/diff chain 不可信时拒绝入场，不使用运行时快照自愈；
 - Web/Bevy 归档，不进入现役完成度或验证。
 
-当前 Patch-diff 改造已经完成核心代码、Development build 与定向自动化；完整 Automation、
-Null-RHI、Real-RHI 连续移动和长稳证据正在刷新，因此本轮尚不写成最终 closeout。
+当前 Patch-diff 无空洞改造已经完成核心代码、Development build、完整 Automation、原水平
+Null-RHI 复现往返和竖直 Null/Real-RHI 针对性路线；发布级全方向至少 10 Tile、Relocate、
+5 分钟以上资源平台、长稳与更多硬件尚未刷新，因此本轮只写成针对性修复闭环，不写成全部
+发布门禁关闭。
 
 ## 唯一 Target 与 Owner
 
@@ -114,7 +116,15 @@ Speculative 队列使用，不能套在当前必需加载上。
 Far/Far 边界由全局 canonical SlotId 唯一拥有。一个 Far transaction 只提交一个 Patch 与固定
 `6 face + 12 edge + 8 corner=26` slot after-images。目标内尚未 live 的邻居使用临时闭合 wall，
 目标外侧使用永久 outer wall；邻 Patch 后续替换同一个 SlotId。邻 profile 只读，不加入事务，
-不存在依赖闭包或运行时扩散。
+不存在依赖闭包或运行时扩散。边界状态同时携带本次构建批次身份：新旧批次在同一接口相遇时
+允许临时封口；同一批次、同一 LOD 的自然表面缺失仍是 Fatal，不能用临时墙掩盖构建错误。
+
+当前实现尚有一项已确认的可见性缺口：Near/Far 朝内竖墙在用户实跑中仍不可见。现有
+canonical slot、boundary batch、已注册组件与覆盖计数只证明提交关系存在，尚未证明该 slot
+最终拥有非零、朝向正确、材质有效且实际可见的墙面三角形。
+每个边界采样另外携带独立 `owned` 位：`material=0` 只表示已确认空气，`owned=false`
+才表示该采样已由 Near 或其他层接管。所有权切口允许从实体侧闭合；真实自然空气仍执行
+严格表面合同。
 
 ## 固定可见事务
 
@@ -129,6 +139,36 @@ FarPatchCommit = 1 FarPatchVersion + 26 canonical boundary slots + seam
 SceneHost 在 commit 前验证完整 after-image；commit callback 开始后只做不可失败的同帧切换。
 旧资源进入 retirement，并在真实 render fence 后回收。
 
+固定 Near Patch 编号不等于固定窗口边缘范围。相邻窗口在同一个 Patch 内截取的 chunks
+可能不同，因此 Near 构建明确区分两种不可变范围：
+
+- 最终目标范围：精确组成新窗口的 `21³ = 9261 chunks`；
+- 过渡可见范围：最终目标范围与该 Patch 当前 live chunks 的并集。
+
+共享 Patch 先按过渡可见范围走完整隐藏准备、归属切换和 render fence。等目标 manifest
+中的精确 Far 版本及其真实 renderer receipt 已覆盖旧边缘后，同一条事务管线再把该 Patch
+原子收窄到最终目标范围。完全离开目标的旧 Patch 也只在相同 Far 证明成立后移除。
+因此新目标完整时允许 Near 暂时拥有多于 9261 个 chunks，但绝不允许少于已承诺的旧、新
+可见覆盖；`handoff_complete` 只有在收窄和移除都结束后才成立。
+
+相邻换区的可见发布顺序由 Root 明确维护：
+
+```mermaid
+flowchart LR
+    Keep["新 Near 未完整<br/>保留旧 Far"]
+    Required["新 Near 完整<br/>只补旧 Near 退场必需 Far"]
+    Retire["Far 让出共享提交入口<br/>旧 Near 安全退出"]
+    Normal["交接证明已推进<br/>恢复普通 Far 渐进发布"]
+
+    Keep --> Required --> Retire --> Normal
+```
+
+Far 后台构建不因可见发布暂停而停止。Root 对外区分三个事实：
+
+- `playable`：玩家可以在已证明覆盖和 3-chunk 安全带内继续移动；
+- `handoff_complete`：旧 Near 已退出，Near/Far/权威中心及根级画面证明都已推进到新目标；
+- `settled`：包括剩余 speculative Far 在内的全部资源完全静止。
+
 ## 移动与加载
 
 `FVoxiaPatchTransitionPlan` 只定义：
@@ -139,14 +179,23 @@ SceneHost 在 commit 前验证完整 after-image；commit callback 开始后只�
 
 动作策略：
 
-- AdjacentStep 永不因 outside depth、等待秒数或队列长度阻塞动作；
-- 一个 tile 单轴有 7 chunks，required 加载在进入新 tile 时已经提前启动；
+- AdjacentStep 立即启动 required 加载，并以最后一个完整可见 Near 窗口作为移动基准；
+- 候选 chunk 在完整 XYZ 任一轴最多离开该窗口 3 chunks；继续向外进入第 4 个 chunk 时
+  阻止该次位移；
+- 返回窗口或沿边界移动始终允许；判定不读取等待秒数、队列长度或水平面特例；
 - Relocate 在目标未收敛时显式阻塞动作并显示加载；
 - Fatal 显示可诊断失败，不进入无限 loading；
-- outside depth 保留为 CLI 观察数据，不能决定策略。
+- 旧 Near 尚未完全退出时不叠加第三个 AdjacentStep。
 
-若下一 AdjacentStep 到来时旧 live 已超出固定相邻 union，是 Required 吞吐/活性合同失败；
-应进入 Fatal 并修复根因，不扩大 atlas、不猜第三 previous center、不切 full-window fallback。
+安全门只读取 SceneHost 的真实 renderer coverage 与最后完整 Near；它不修改流送队列，也不通过
+wall clock 自动放行。新目标准备追不上移动时，玩家会停在安全带边缘，画面仍保持闭合。
+SceneHost 因此把相邻交接范围沿完整 XYZ 六个面各外扩 3 chunks 纳入核对：稳定窗口核对
+`27³`，三轴相邻切换最多核对 `34³`。外扩带必须由已验证 Far 版本与真实 renderer receipt
+证明，不能把“允许多走三格”实现成盲目放行。
+
+第 4 格先按距离上限拒绝；只有候选仍在前三格保护带内时才检查其可见覆盖。冷启动阻塞加载
+期间连续性计数尚未启动；最后完整 Near 与整个保护范围第一次同时干净后才开始逐帧累计，
+历史坏帧不能被后续干净帧清零。
 
 ## Required 与 Speculative
 
@@ -186,12 +235,16 @@ coarse fallback 或逐 Tick retry。
 
 ## 可观测面
 
-- Root：`target_key`、transition kind、required/speculative、derived readiness/failure；
+- Root：`target_key`、transition kind、required/speculative、`playable`、
+  `handoff_complete`、`settled`、Far 可见发布优先级与 failure；
 - Near/Far BuildIndex：target/retained/pending/in-flight/ready/fatal；
 - Far stream：plan published/consumed、mailbox pending、ready、terminal、consumer failure；
 - SceneHost：committed Patch maps、exact ownership、boundary slots、staged/retiring/free、
-  fence、gap/overlap/seam/orphan、commit serial；
-- Flow/Pawn：Relocate loading 与 movement blocked；
+  fence、gap/overlap/seam/orphan、commit serial，以及从真实 Patch renderer receipt 统计的
+  Far 几何可见 Patch 数、Far 组件总数和已注册可见组件数；覆盖证明只增量更新本次事务
+  影响的 Patch、接缝与 ownership chunks，并公开完整重建、增量应用和显式回退累计数；
+- Flow/Pawn：Relocate loading，以及候选/当前 chunk、完整 Near XYZ 范围、逐轴越界深度、
+  renderer epoch、放行/阻止理由与累计计数；
 - observe 输出 `.demo/observe/`，64 位身份使用十进制字符串。
 
 现役 CLI：
@@ -223,24 +276,41 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 ## 验证状态
 
-本轮最新已完成：
+2026-07-27 新鲜证据：
 
-- UE 5.8 Development build；
-- `Voxia.Gameplay.FarPatchBuildStream`；
-- Near required-target 与 streaming policy 定向自动化。
+- UE 5.8 Development build 成功；
+- 完整 `Automation RunTests Voxia` 为
+  `161 Success + 2 expected warnings = 163/163`，失败与未运行均为 `0`；
+- 原水平复现点的 Null-RHI 往返已经完成交接期 confirmed break/place 两个子路由；
+  这两个子路由的 `40` 个采样及同次执行在后续路线停止前累计的 `320` 个采样中，
+  gap/overlap/orphan 与受保护失败帧均为 `0`，过渡 Near 最多保留 `12348` chunks，
+  交接完成后精确回到 `9261`；
+- Null-RHI 地面→全空气 Near→下降路线有 `1010` 个逐帧样本，最多 `5560` 个受保护帧；
+  最终 Real-RHI 同路线有 `70` 个结构化采样，保护范围累计到 `8821` 帧；两者所有
+  gap/overlap/orphan 及受保护失败帧均为 `0`；
+- 高空完整 Near 为 `216 VerifiedEmpty / 0 GeometryReady`，仍有 `10` 个 Far 几何 Patch、
+  `84` 个已注册可见组件；最终 Real-RHI 复跑进一步记录为 `66` 个 Far 几何 Patch、
+  `225` 个已注册可见组件；下降后 Near 几何重新出现。两条路线的 retry、新游戏、clean exit
+  与 Far release `3/3/0` 均通过。
+- 独立移动安全门路线记录 `29` 个覆盖采样：前三格可进入、第四格被阻止、沿边界和返回
+  均放行；保护帧从 `14117` 增至 `40523`，失败计数仍全部为 `0`。
 
-最终 closeout 仍要求：
+发布级 closeout 仍要求：
 
-- 完整 `Automation RunTests Voxia`；
-- Node `scripts/*.test.js`；
-- Phase 1/2 Null-RHI；
-- Real-RHI ±XYZ、连续至少 10 Tile、快速折返、Relocate；
-- first Near/Far Patch 不等完整 Tile/target 的时序证据；
-- 固定资源平台、gap/overlap/seam/orphan=0 与长稳。
+- 完整全方向、连续至少 10 Tile、快速折返与 Relocate；
+- first Near/Far Patch 不等完整 Tile/target 的更广路线时序证据；
+- 5 分钟以上固定资源平台、发布硬件矩阵与长稳；
+- 广路线当前在后续 `diagonal_yz` 处暴露一项独立的 canonical 外露材质覆盖失败；已完成的
+  水平交接样本没有空洞，但整条广路线不能记为通过；
+- Real-RHI 单 Tile 性能路线的无空洞计数通过，但新 Patch 发布下 frame p95=`17.378ms`、
+  GameThread p95=`11.088ms`，尚未通过严格性能门。
+
+上述剩余项不改变当前无空洞提交合同，也不得用针对性水平/竖直路线冒充已执行。
 
 ## 相关文档
 
 - [Patch diff 流送设计](../../../10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md)
+- [无空洞 Near/Far 呈现设计](../../../10-active/voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-design.md)
 - [纯 3D 体素壳主线](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)
 - [Far LOD 材质语义修复](../../../10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)
 - [系统正交](../../../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md)

@@ -8,7 +8,49 @@
 
 **Tech Stack:** Unreal Engine 5.8、C++20、UE Automation Framework、DynamicMesh、Render/RHI fence、Voxia stdio CLI/JSON observe、Node.js smoke runner、PowerShell。
 
-**Status:** 已完成设计评审，待按本计划实施。对应决策稿见 [`2026-07-26-voxia-hole-free-near-far-presentation-design.md`](2026-07-26-voxia-hole-free-near-far-presentation-design.md)。
+**Status:** 核心实现与本轮针对性验收已经完成；水平相邻往返、Null-RHI/Real-RHI
+上升—全空气—下降与完整 Voxia Automation 均已通过。发布级全方向长路线、5 分钟以上
+资源平台和更多硬件仍待刷新，不能把本状态写成全部发布门禁已关闭。对应决策稿见
+[`2026-07-26-voxia-hole-free-near-far-presentation-design.md`](2026-07-26-voxia-hole-free-near-far-presentation-design.md)。
+
+## 2026-07-27 实施进展
+
+- 共享 Near Patch 已区分最终目标范围、过渡并集范围和待收窄范围；只有目标 Far 精确版本
+  及其真实 renderer receipt 接管旧边缘后，才原子收窄。
+- 完全离开目标的旧 Near Patch 使用同一 Far 证明后移除；Root 公开
+  `playable / handoff_complete / settled`，并维护 Far 的保留、必需项优先和普通发布模式。
+- Far 边界 profile 已增加逐采样 ownership；已确认空气与 Near 接管不再共用材质 `0`
+  表达，face/edge/corner 都进入相同 fingerprint 和严格校验。
+- SceneHost 已形成逐帧 renderer coverage 连续性记录；保护启动后任何 gap、overlap 或
+  orphan seam 都会进入累计失败计数并输出首个缺口的结构化上下文。
+- 覆盖证明已改为事务影响集增量维护；正常 Near/Far/boundary 提交只更新受影响范围，
+  冷启动或身份无法续接才完整重建。Far-only 提交会同步续签仍然有效的完整 Near epoch，
+  避免画面正确却因证明凭据过期而错误卡在未就绪。
+- Far 网格在构建流与 SceneHost 之间使用一次所有权转交，不再逐层深拷贝；增量路径与完整
+  重建/回退累计数已经进入 `presentation_coverage` 和 Node 验收契约。
+- 完整 XYZ 移动安全门已接入真实玩家与自动化连续移动入口；阈值为最后完整 Near 外
+  3 chunks，只阻止继续向外，返回和沿边界移动放行。
+- `VerifiedEmpty` 没有新增专用运行时；高空 Near 仍使用普通 Patch 构建、提交、fence、
+  ownership、完成窗口和移动安全门。
+- 水平实跑证据：
+  `.demo/observe/voxia_phase1_2026-07-26T18-16-08-838Z_null_rhi_1280x720`。
+  原复现点 `[10,0,-51] → [11,0,-51]` 在交接期临时拥有并集范围，随后收窄到
+  `9261` chunks；两条路线包含交接期 confirmed break/place，`686` 个逐帧样本的
+  gap/overlap/orphan 与受保护失败帧均为 `0`。
+- Null-RHI 竖直证据：
+  `.demo/observe/voxia_phase1_2026-07-26T19-32-56-870Z_null_rhi_1280x720`。
+  地面连续上升两次后得到 `216 VerifiedEmpty / 0 GeometryReady` 的完整 Near，下降一次后
+  几何重新出现；`1010` 个逐帧样本、最多 `5560` 个受保护帧均无 gap/overlap/orphan，
+  retry、新游戏、clean exit 与 Far release `3/3/0` 通过。
+- Real-RHI 竖直证据：
+  `.demo/observe/voxia_phase1_2026-07-26T20-01-57-660Z_real_rhi_1280x720`。
+  同一连续路线得到全空气 Near 后仍有 `10` 个 Far 几何 Patch、`84` 个已注册可见组件；
+  下降后地面几何恢复。`1080` 个逐帧样本、最多 `5683` 个受保护帧均无缺口，retry、
+  新游戏、运行时性能屏障、截图、clean exit 与 Far release `3/3/0` 通过。
+- UE 5.8 Development build 成功；完整 `Automation RunTests Voxia` 为
+  `161 Success + 2 expected warnings = 163/163`，失败和未运行均为 `0`。
+- 当前未关闭的是完整全方向/至少 10 Tile/Relocate/长稳与发布硬件矩阵，不得用上述
+  针对性路线冒充这些未执行门禁。
 
 ## Global Constraints
 
@@ -1624,3 +1666,27 @@ Expected: 外层仓库 clean，文档只陈述实际取得的证据。
 9. 渐进 Far first-patch、取消、材质、阴影、fixed budget 与唯一 production root
    没有回退。
 10. Voxia 代码仓与外层文档仓分别形成可审查提交且最终 clean。
+
+## 2026-07-27 实际执行记录
+
+本轮已完成并取得新鲜证据：
+
+- boundary slot/batch、精确 Far 版本与 renderer receipt、隐藏准备/可见切换/切换后 fence、
+  同编号 Near 新旧范围并集、完整 XYZ 保护范围和三维移动安全门均已落地；但 2026-07-27
+  用户可见实跑仍看不到 Near/Far 朝内竖墙，完成定义第 1 项保持未完成；
+- `VerifiedEmpty` 与 `GeometryReady` 复用同一构建、提交和逐帧核对管线，没有空气专用
+  actor、队列或遮洞分支；
+- UE 5.8 Development build 成功；Node tests `98/98`；完整 Voxia Automation
+  `161 Success + 2 expected warnings = 163/163`，失败与未运行均为 `0`；
+- Null-RHI 移动安全门路线
+  `.demo/observe/voxia_phase1_2026-07-26T23-26-47-082Z_null_rhi_1280x720/`
+  通过前三格、第四格、沿边界和返回四项判定；
+- 最终 Real-RHI 竖直路线
+  `.demo/observe/voxia_phase1_2026-07-26T23-39-35-197Z_real_rhi_1280x720/`
+  通过全空气 Near、下降恢复地形、retry、新游戏、资源释放和 clean exit；`70` 个结构化
+  样本中 gap/overlap/orphan 与受保护失败帧均为 `0`。
+
+尚未勾选完成定义第 1、7–10 项：朝内竖墙仍缺失；广路线后续 `diagonal_yz` 仍有独立 canonical
+外露材质覆盖失败，单 Tile Real-RHI 性能仍有 GameThread 尖峰，至少 10 Tile、Relocate、
+5 分钟以上固定资源长稳和更多硬件矩阵也未执行。2026-07-27 用户现已要求先提交再排查；
+提交只冻结当前可审查基线，不代表这些未完成项通过。

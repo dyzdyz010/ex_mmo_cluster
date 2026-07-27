@@ -3,7 +3,12 @@
 - **日期**：2026-07-12
 - **状态**：完整 XYZ、canonical source 与跨 LOD 材质事实保持完成；客户端流送正按
   [2026-07-25 Patch-diff 设计](2026-07-25-voxia-patch-diff-streaming-design.md)
-  从历史 Tile/整代提交收敛到 Near/Far Patch，核心代码已落地，完整 Real-RHI/长稳 closeout 待刷新；
+  与 [2026-07-26 无空洞呈现设计](2026-07-26-voxia-hole-free-near-far-presentation-design.md)
+  从历史 Tile/整代提交收敛到 Near/Far Patch；共享 Patch 新旧范围并集、精确 Far 接管后收窄、
+  boundary slot/renderer receipt 与完整 XYZ 移动安全门的核心代码已落地，Development build、完整 Automation、
+  水平 Null-RHI、三维移动安全门与竖直 Null/Real-RHI 针对性路线已通过；发布级全方向/
+  性能/长稳 closeout 待刷新；2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，
+  真实墙面几何保持未关闭；
   Online authority/provider、阶段 3 Prefab 与里程碑 B/C 尚未开始
 - **取代范围**：取代 [`2026-07-11-3d-lod-sliding-window.md`](../../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 中“保留 2.5D WorldGen 内容前提再扩展远景窗口”的迁移口径
 - **影响范围**：WorldGen 生成边界、canonical chunk/source page、Voxia near/far coverage、LOD 材质、presentation ownership、调试与验收
@@ -20,12 +25,13 @@
 | A7 | near/far 双向 ownership、快速折返与联合性能；旧垂直呈现带仅作迁移证据 | 历史 Tile/sink 实现已被 2026-07-25 Patch-diff 取代；当前为唯一 TargetKey、SceneHost ledger、Near `4³ chunks` 与 Far `8³ tiles` Patch |
 | A8 | XYZ cube-shell、canonical pages、六向 material mip、coverage-resolved exact surface | **已完成**；VXP5 保留粗 occupancy，并从精确 source surface coverage 归约外露面材质，LOD0–4/负坐标/六向/跨 page、ring、LOD 回归通过 |
 | A9 | source-neutral scene stage、真实 fence/SceneHost、dev Real-RHI 三维呈现 | generation 继续承载 coverage/observation/resource archive；Far mesh live truth 已收敛到 SceneHost Patch ledger |
-| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、page residency、可取消增量 DAG、Patch 呈现、本地 H-gated provider、三轴长巡航 | 原本地闭环证据保留；2026-07-25 Patch-diff 核心已落地，完整新鲜 Automation/Null/Real-RHI/长稳待刷新，Online provider 后置 |
+| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、page residency、可取消增量 DAG、Patch 呈现、本地 H-gated provider、三轴长巡航 | 原本地闭环证据保留；Patch-diff 无空洞交接已取得新鲜完整 Automation、水平 Null-RHI、三维移动安全门与竖直 Null/Real-RHI 证据；发布级全方向/性能/长稳仍待刷新，Online provider 后置 |
 
 客户端 A10 已跑通 WorldGen/H-gated provider、自动滑窗、请求式 residency、增量 DAG 与 stable far patch。
 2026-07-25 起，本文后续关于 renderer sink、target latch、逐 Tile transaction、depth-3 与
 whole-generation Far 可见提交的描述只保留为历史证据；当前唯一架构以
-[Patch-diff 流送设计](2026-07-25-voxia-patch-diff-streaming-design.md)及
+[Patch-diff 流送设计](2026-07-25-voxia-patch-diff-streaming-design.md)、
+[无空洞呈现设计](2026-07-26-voxia-hole-free-near-far-presentation-design.md)及
 [`docs/00-current-truth/design/client/streaming-lod.md`](../../00-current-truth/design/client/streaming-lod.md)
 为准。
 2026-07-23 的最终 UE `152/152`、Node `82/82`、Phase 1/2 Null-RHI 与可见 Real-RHI 继续证明真实

@@ -5,14 +5,18 @@ status: client-complete-online-deferred
 # 里程碑 A10 作战任务：WorldGen 驱动的完整客户端 3D 滑动世界
 
 - **日期**：2026-07-12
-- **状态**：A10 lifecycle/ownership/流送与跨 LOD 外露表面材质语义均已完成；
-  Online authority/provider 不在本任务范围，阶段 3 尚未启动
+- **状态**：A10 provider/residency/DAG 与跨 LOD 外露表面材质语义保持完成；Patch
+  presentation 已按 2026-07-26 无空洞设计补齐共享 Near 范围交接、boundary slot/renderer
+  receipt 与完整 XYZ 移动安全门，Development build、完整 Automation、水平 Null-RHI 和竖直
+  Null/Real-RHI 针对性路线已通过；发布级全方向/性能/长稳证据待刷新。Online authority/provider
+  不在本任务范围，阶段 3 尚未启动。2026-07-27 用户可见实跑仍看不到 Near/Far 朝内竖墙，
+  真实墙面几何不得写成已验收
 - **归属**：扩展后的里程碑 A / A10
 - **上位计划**：[`2026-07-12-pure-3d-voxel-shell-migration.md`](2026-07-12-pure-3d-voxel-shell-migration.md)
 - **影响范围**：Voxia 场景进入与 pure-3D composition root、WorldGen/本地磁盘 page provider、三轴滑动窗口、page/artifact residency、resolved surface DAG、patch scene host、CLI/observe/automation
 - **不改变**：服务端 authority、confirmed truth 来源、H gate、wire opcode、生产 1m/7m 投影契约与 `apps/*`
 
-> **当前 closeout 阅读规则**：第 0–12 节保留 2026-07-12 至 2026-07-17 的原始执行设计、任务拆分和当时退出门槛，只作为历史实施证据，不再定义当前架构。其间所有要求 near/far “共享 provider/residency/generation”、进入同一 coverage generation、或把两个 actor 收敛为共享可变服务的表述，均已被最终正交契约取代：唯一根冻结 source/world/session identity 与共同 handoff target；near/far 各自持续维护派生 generation/residency/cache；根级 confirmed presentation transaction 只组合 immutable identity/proof/receipt，不共享可变状态。第 13 节末尾记录了 presentation 与 Far LOD 材质语义的最终 closeout；当前规范以 `docs/00-current-truth/`、[`专项修复稿`](2026-07-23-far-lod-surface-material-semantic-repair.md) 与 Voxia 根 README 为准。
+> **当前 closeout 阅读规则**：第 0–12 节保留 2026-07-12 至 2026-07-17 的原始执行设计、任务拆分和当时退出门槛，只作为历史实施证据，不再定义当前架构。其间所有要求 near/far “共享 provider/residency/generation”、进入同一 coverage generation、或把两个 actor 收敛为共享可变服务的表述，均已被最终正交契约取代：唯一根冻结 source/world/session identity 与共同 handoff target；near/far 各自持续维护派生 generation/residency/cache；根级 confirmed presentation transaction 只组合 immutable identity/proof/receipt，不共享可变状态。第 13 节按时间保留 closeout 与被实跑推翻的过程；当前规范以 `docs/00-current-truth/`、[`无空洞呈现设计`](2026-07-26-voxia-hole-free-near-far-presentation-design.md)、[`Far LOD 专项修复稿`](2026-07-23-far-lod-surface-material-semantic-repair.md) 与 Voxia 根 README 为准。
 
 ## 0. 作战决策
 
