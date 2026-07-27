@@ -45,9 +45,11 @@ overlay、near/far exact presentation、HUD/CLI 与 X/Y/Z unload/reload 均已�
 负坐标/六向/page-ring seam 测试、完整 Automation/Node/Null-RHI 与固定相机 D3D12 actual
 material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround 的边界继续有效。
 
-### 2026-07-27 待复验：Near/Far 朝内竖墙架构修复已落地
+### 2026-07-27 已确认未关闭：Near/Far 与 Far/Far LOD 层间墙空间语义错误
 
-- 用户实跑确认纵向移动与流送交接已经正常，但 Near/Far 接缝朝远景内部的竖墙仍不可见。
+- 用户实跑确认纵向移动与流送交接已经正常。第一轮实跑中 Near/Far 接缝朝远景内部的
+  竖墙仍不可见；架构修改后的 Real-RHI 再次验收仍失败，表现为不该补墙的位置出现了墙，
+  应有墙的位置仍然缺失。
 - 根因已确认：现役边界生产只枚举固定 Far Patch 的 26 个外框槽；真实 Near/Far 与 Far LOD
   分界大多位于同一个 `8³ tiles` Patch 内，因此根本没有进入补墙调用点。逐 Tile
   `FarBoundaryFaces` 已生成并保存，但 Patch-diff 可见提交没有消费它们。
@@ -74,7 +76,8 @@ material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround �
   Development build、Automation `165/165`、Node `98/98` 与最新连续目标 Null-RHI
   `--movement-guard-only` 均通过；目标 `11→12→13` 的 47 个主要采样、101 个全部路线采样
   及最多 `45082` 个受保护帧保持 gap/overlap/orphan 为 `0`。修复后的 Real-RHI 唯一生产
-  场景和用户可见检查尚未执行，所以本项仍列在 known gaps，而不是写成视觉关闭。
+  场景和用户可见检查已经执行并失败，证明这些计数只覆盖已登记对象的一致性，尚未证明
+  owner/LOD 到真实层间面的空间语义正确；本项继续保持开放。
 
 ### 2026-07-27 已确认缺口：跨 LOD 所有权边界会产生无材质的新增外露面
 

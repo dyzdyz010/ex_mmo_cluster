@@ -1,10 +1,11 @@
-# 当前会话接力：统一层间墙与连续目标无空洞架构已落地，Real-RHI 可见复验待收口
+# 当前会话接力：连续目标无空洞架构已落地，层间墙 Real-RHI 用户验收失败
 
 ## 2026-07-27 Near/Far 无空洞呈现与三维移动安全门
 
 - 工作树仍是 `.worktrees/voxia-phase2-macro-interaction`，分支
   `codex/voxia-phase2-macro-interaction`；Voxia 实现已提交为 `6a4493e`，
-  外层设计与当前真值文档随本轮单独提交，均未推送。
+  Real-RHI 失败记录已提交为 `349f591`；外层设计与当前真值文档随本轮单独提交，
+  均未推送。
 - 根因最终分成六层：同编号 Near Patch 的旧边缘被提前撤掉；Near 退出没有验证精确 Far
   与 renderer receipt；固定 Far Patch 的 26 个外框槽不等于真实 Near/Far、Far/Far LOD
   分界；跨 Far Patch 的 `LayerFace` 又被构建器直接跳过；退场保护用旧 Near 污染了新目标
@@ -12,8 +13,10 @@
   会让仍在画面的更早 Far 失去 coverage/层间墙依据。
 - 2026-07-27 用户再次实跑确认：纵向移动交接已经正常，但 Near/Far 朝内竖墙仍不可见。
   此后代码已改为按实际逐 Tile owner/LOD 生成统一 `LayerFace`，并让每个 live Far 自带
-  coverage/层间墙凭证；Null-RHI 已证明连续目标下不再丢依据。Real-RHI 与用户可见复验
-  尚未执行，因此仍不能把竖墙视觉问题写成关闭。
+  coverage/层间墙凭证；Null-RHI 已证明连续目标下不再丢依据。
+- 同日修改后的 Real-RHI 用户可见复验仍失败：不该补墙的位置出现了墙，应有墙的位置仍然
+  缺失。这推翻了“现有实际 owner/LOD 相邻枚举已经等价于视觉所需层间面”的验收假设；
+  当前自动化只能证明已登记对象内部一致，不能把竖墙视觉问题写成关闭。
 - 当前唯一提交路径先隐藏准备新组件并等待真实 fence，再同帧切换可见 owner；同编号 Near
   先持有新旧范围并集，目标 Far 精确版本接管后才收窄。旧 Near 移除也使用同一证明，
   不存在固定等待、遮洞层或第二条生产路径。

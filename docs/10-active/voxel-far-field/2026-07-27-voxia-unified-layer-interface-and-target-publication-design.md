@@ -3,7 +3,7 @@
 - **日期**：2026-07-27
 - **状态**：已实施并通过自动化与 Null-RHI 结构化回归；取代 2026-07-26 设计中
   “Far Patch 固定 26 个边界槽即可代表 Near/Far 与 Far/Far 接缝”以及“先推进 live
-  TargetKey、再等待新覆盖补齐”的部分；Real-RHI 用户可见复验仍待完成
+  TargetKey、再等待新覆盖补齐”的部分；Real-RHI 用户可见复验已执行但失败，设计尚未验收
 - **范围**：现役 Voxia 唯一生产组合根中的 Near/Far、不同 Far LOD、临时缺邻居封口、
   相邻窗口交接、完整 XYZ 移动安全与 renderer 覆盖证明
 - **不改变**：服务端权威、baseline 硬校验、Near `3×3×3 tiles`、Near Patch
@@ -449,7 +449,8 @@ flowchart LR
 
 调度 generation 已从层间内容身份中剥离；它仍用于拒绝旧任务提交，但内容未变时不会迫使
 同一层间墙和 Far Patch 全量重建。自动化与最终构建证据继续记录在本阶段进度和 session
-handoff 中；真实画面仍须完成 Real-RHI 人工验收后才能宣布缺墙问题闭环。
+handoff 中。2026-07-27 Real-RHI 人工验收发现“不该补处有墙、该补处缺墙”，因此当前
+owner/LOD 相邻枚举不能视为真实视觉边界的已验证定义，缺墙问题仍未闭环。
 
 ## 17. 连续目标下的 live 凭证所有权（2026-07-27）
 
