@@ -5,21 +5,24 @@
 
 ## 当前结论
 
-- 唯一正式入口创建一个 `AVoxiaUnifiedVoxelWorldActor`；
+- 唯一正式地图为 `/Game/Voxia/Maps/L_VoxiaProductionWorld`，正式入口只创建一个
+  `AVoxiaUnifiedVoxelWorldActor`；
 - 唯一空间是 canonical XYZ；
 - 一个 tile=`7³=343 chunks`；
 - 默认 Near=`3³=27 tiles=21³=9261 chunks`；
 - Near Patch=`4³ chunks`；
 - Far Patch=`8³ tiles`；
 - `UVoxiaVoxelPresentationSceneHost` 的 `PresentationCommitLedger` 是唯一 live presentation truth；
-- Online confirmed truth 只来自服务端，离线 Phase 2 truth 只来自 session-local Mock authority；
+- 默认 profile 为 `RuntimeMock`；Online confirmed truth 只来自服务端，离线 Phase 2 truth 只来自
+  session-local Mock authority，Online provider 未实现时显式失败；
 - baseline/H/manifest/hash/diff chain 不可信时拒绝入场，不使用运行时快照自愈；
 - Web/Bevy 归档，不进入现役完成度或验证。
 
-当前 Patch-diff 无空洞改造已经完成核心代码、Development build、完整 Automation、原水平
-Null-RHI 复现往返和竖直 Null/Real-RHI 针对性路线；发布级全方向至少 10 Tile、Relocate、
-5 分钟以上资源平台、长稳与更多硬件尚未刷新，因此本轮只写成针对性修复闭环，不写成全部
-发布门禁关闭。
+当前 Patch-diff 无空洞改造已经进入 Voxia 独立仓库 `master`。2026-08-02 的合并树已完成
+Development build、完整 Automation、完整 XYZ/负坐标/长距离/快速折返 Phase 1、移动安全门、
+竖直路线、Phase 2 与严格 1280×720 Real-RHI 往返门禁；既有性能阈值没有放宽。当前仍未
+刷新的是这棵新树的 5 分钟以上资源长稳、更多硬件矩阵，以及曾由用户发现的层间墙问题的
+最新人工视觉复验；这些不能由旧长稳或结构化计数替代。
 
 ## 唯一 Target 与 Owner
 
@@ -124,8 +127,9 @@ resolver，同一空间 slot 只能有一个 after-image，禁止临时封口与
 用户此前实跑确认过 Near/Far 朝内竖墙不可见。现役实现已改为从实际逐 Tile owner/LOD
 关系生成 Near/Far 与 Far/Far LOD 的统一 `LayerFace`，并由候选 manifest 独立列出预期；
 每个可见 Far Patch 在同一提交中持有自己的精确 coverage/层间墙凭证，目标历史轮换不能
-提前撤销它。自动化与连续目标 Null-RHI 已通过，但修复后的 Real-RHI 用户可见复验尚未完成，
-因此仍不能只凭 canonical slot、boundary batch、已注册组件或覆盖计数宣布视觉关闭。
+提前撤销它。完整 Automation、连续目标 Null-RHI 与最新完整 Real-RHI 结构化路线均已通过；
+但用户尚未在 2026-08-02 合并树上重新进行可见判断，因此仍不能只凭 canonical slot、
+boundary batch、已注册组件或覆盖计数宣布层间墙视觉关闭。
 层间面是否生成不受 `8³` Far Patch 网格限制；跨 Patch 的 Near/Far 面固定由实际 Far
 一侧发布，Far/Far LOD 面固定由负方向一侧发布。交接期保留的旧 Near 只进入覆盖保护区，
 不得进入新目标 owner/LOD 图并移动真实接缝位置。
@@ -290,36 +294,32 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 ## 验证状态
 
-2026-07-27 新鲜证据：
+2026-08-02 合并树证据：
 
-- UE 5.8 Development build 成功；
-- 完整 `Automation RunTests Voxia` 为
-  `161 Success + 2 expected warnings = 163/163`，失败与未运行均为 `0`；
-- 原水平复现点的 Null-RHI 往返已经完成交接期 confirmed break/place 两个子路由；
-  这两个子路由的 `40` 个采样及同次执行在后续路线停止前累计的 `320` 个采样中，
-  gap/overlap/orphan 与受保护失败帧均为 `0`，过渡 Near 最多保留 `12348` chunks，
-  交接完成后精确回到 `9261`；
-- Null-RHI 地面→全空气 Near→下降路线有 `1010` 个逐帧样本，最多 `5560` 个受保护帧；
-  最终 Real-RHI 同路线有 `70` 个结构化采样，保护范围累计到 `8821` 帧；两者所有
-  gap/overlap/orphan 及受保护失败帧均为 `0`；
-- 高空完整 Near 为 `216 VerifiedEmpty / 0 GeometryReady`，仍有 `10` 个 Far 几何 Patch、
-  `84` 个已注册可见组件；最终 Real-RHI 复跑进一步记录为 `66` 个 Far 几何 Patch、
-  `225` 个已注册可见组件；下降后 Near 几何重新出现。两条路线的 retry、新游戏、clean exit
-  与 Far release `3/3/0` 均通过。
-- 独立移动安全门路线记录 `29` 个覆盖采样：前三格可进入、第四格被阻止、沿边界和返回
-  均放行；保护帧从 `14117` 增至 `40523`，失败计数仍全部为 `0`。
+- UE 5.8 Development build 成功；完整 `Automation RunTests Voxia` 为
+  `190 Success + 2 expected-warning Success = 192/192`，失败、未运行与进行中均为 `0`；
+- Node 合同测试 `102/102` 通过；生产地图验证为一个组合预览 Actor、Near + FarLOD0–4
+  六个独立预览 Actor、零 authored runtime root，七个 serial 同步，组合与 Gallery 均为
+  `9158` triangles；
+- 1280×720 Null-RHI 完整 Phase 1 共 `33` 条路线，覆盖 `120000cm` 长距离、负坐标、完整
+  XYZ 对角移动、快速反转、Near/Far/boundary/staging-fence 显式暂停、retry、返回菜单与
+  新游戏，主 session generation `1→41`、新 session `1→4`，受保护 gap 为 `0`；
+- 独立移动安全门证明 Near=`27 tiles/9261 chunks`，单轴 entered/exited=`3087`、
+  retained=`6174`，第 3 格允许、第 4 格阻断、沿边界与返回允许；独立竖直路线完成
+  地面→全空气 Near/Far 可见→下降恢复；
+- Phase 2 place/break 均达到 submitted/accepted/confirmed/presented，revision=`1/2`，
+  X/Y/Z 各移动 `80 tiles` 后卸载/重载保持真值，最终状态为空；
+- 1280×720 Real-RHI 往返两窗 frame p95=`7.693/7.693ms`、p99=`7.712/7.707ms`；
+  GameThread p95=`3.187/3.347ms`、p99=`4.098/4.271ms`；GPU p95=`3.897/3.901ms`。
+  原门槛分别为 frame p95≤`8.33ms`/p99≤`11.11ms`、GT p95≤`3.5ms`/p99≤`8.33ms`、
+  GPU p95≤`6ms`，全部通过；clean exit，Far release=`23/23/0`。
 
-发布级 closeout 仍要求：
+当前仍需刷新：
 
-- 完整全方向、连续至少 10 Tile、快速折返与 Relocate；
-- first Near/Far Patch 不等完整 Tile/target 的更广路线时序证据；
-- 5 分钟以上固定资源平台、发布硬件矩阵与长稳；
-- 广路线当前在后续 `diagonal_yz` 处暴露一项独立的 canonical 外露材质覆盖失败；已完成的
-  水平交接样本没有空洞，但整条广路线不能记为通过；
-- Real-RHI 单 Tile 性能路线的无空洞计数通过，但新 Patch 发布下 frame p95=`17.378ms`、
-  GameThread p95=`11.088ms`，尚未通过严格性能门。
-
-上述剩余项不改变当前无空洞提交合同，也不得用针对性水平/竖直路线冒充已执行。
+- 当前合并树的 5 分钟以上资源长稳、低配置/更多驱动的发布硬件矩阵；
+- Near/Far 与 Far/Far LOD 层间墙的用户可见复验。机器路线已经通过，但视觉判断不能由
+  gap/slot/component 计数代替；
+- Online authority/provider 与阶段 3 Prefab，二者不属于本轮客户端离线 Mock closeout。
 
 ## 相关文档
 

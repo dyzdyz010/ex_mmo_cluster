@@ -1,4 +1,38 @@
-# 当前会话接力：连续目标无空洞架构已落地，层间墙 Real-RHI 用户验收失败
+# 当前会话接力：Voxia 唯一生产根已合并，持续移动与严格性能门已通过
+
+## 2026-08-02 唯一生产根与持续流送合并收口
+
+- `clients/Voxia` 是由外层 `.gitignore` 隔离的独立 Git 仓库，不是 submodule/gitlink。集成分支
+  `codex/voxia-production-root-integration` 已以非快进方式合入其 `master`，合并提交为
+  `ada1065990111f0cdbdd8100c042405cd594e538`；合并树与已验收分支 `54e74c8` 的内容比对为空。
+- `/Game/Voxia/Maps/L_VoxiaProductionWorld` 现在是 Editor/Game 唯一正式地图；UDS、UDW、雾、
+  PostProcess、补光、组合预览与 Near + FarLOD0–4 六个独立预览 Actor 均为可编辑作者对象。
+  地图中 authored runtime root 为零，运行时仍只由 Flow 动态创建一个统一根。
+- 默认 `RuntimeMock`；Online provider 未实施时显式失败，不用 WorldGen、快照或旧路径静默兜底。
+- 持续移动关键帧中，Near 加载/清理和已完成预取优先；只暂停投机 Far 的可见发布，当前 Far
+  构建与 required handoff 继续。停止移动后自动恢复 `full`。SceneHost 用不可变 manifest/
+  boundary/plan 凭证、持续 Near 完整性索引和增量 coverage proof，每次 poll 至多在 GameThread
+  构建一个 boundary 物理批次；大对象退休和高频 observe 分别移到后台释放与异步 JSONL。
+- 全量 Phase 1 首轮暴露 `boundary_stage` 与 `boundary_mesh_build` 阶段标签颠倒：显式暂停实际
+  发生在 `PrepareBoundaryMeshes`，旧映射却将它标成 mesh build。该问题先由 source-contract
+  自动化红测锁定，再修正为 `PrepareBoundaryMeshes -> boundary_stage`、
+  `CreateBoundaryComponents -> boundary_mesh_build`，避免阶段活性门假绿。
+
+| 门禁 | 最终结果 | 产物 |
+|---|---|---|
+| Development build | UE 5.8 UBT success | Voxia `54e74c8` 对应二进制 |
+| 全量 UE Automation | `192/192`；190 success + 2 expected-warning success，0 failed/not-run | `clients/Voxia/Saved/AutomationReport_FullFinalPreMerge_20260802/index.json` |
+| Node | `102/102` | `node --test clients/Voxia/scripts/*.test.js` |
+| 生产地图验证 | 1 组合 + 6 分离 LOD，7 serial 同步，组合/Gallery 均 9158 triangles | `.worktrees/voxia-phase2-macro-interaction/.demo/observe/voxia_editor_lod_actor_gallery/production_world_validation.json` |
+| 完整 Null-RHI Phase 1 | 33 routes；长距离、负坐标、XYZ 对角、快速折返、四阶段暂停、guard、retry/菜单/新游戏通过 | `.demo/observe/voxia_phase1_2026-08-02T13-30-38-915Z_null_rhi_1280x720/` |
+| 移动守卫 | 27 tiles/9261 chunks；entered/exited 3087、retained 6174；第 3 格允许、第 4 格阻断 | `.demo/observe/voxia_phase1_2026-08-02T13-44-40-146Z_null_rhi_1280x720/` |
+| 竖直路线 | 地面→全空气 Near/Far 可见→下降恢复 | `.demo/observe/voxia_phase1_2026-08-02T13-47-31-366Z_null_rhi_1280x720/` |
+| Phase 2 | place/break 全链确认；X/Y/Z 各 80 tiles unload/reload；最终 empty | `.demo/observe/voxia_phase2_2026-08-02T13-42-02-383Z_null_rhi_1280x720/` |
+| 严格 Real-RHI | frame p95 7.693/7.693ms；GT p95 3.187/3.347ms；GPU p95 3.897/3.901ms；release 23/23/0 | `.demo/observe/voxia_phase1_2026-08-02T13-51-56-645Z_real_rhi_1280x720/` |
+
+当前只保留三个客户端后置边界：本次树的 5 分钟以上资源长稳/更多硬件、此前层间墙问题的
+用户可见复验、以及独立的 Online provider/阶段 3 Prefab。7 月 27 日的 `diagonal_yz`
+canonical 外露材质失败与严格性能未关闭状态已被本次完整路线和新鲜严格门禁取代。
 
 ## 2026-07-27 Near/Far 无空洞呈现与三维移动安全门
 

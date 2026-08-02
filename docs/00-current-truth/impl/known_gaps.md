@@ -19,105 +19,37 @@
 
 ## Voxia 当前客户端缺口
 
-> 阶段 1 lifecycle、阶段 2 与 Far LOD 表面材质语义修复的既有事实保持完成；Online production
-> 仍未开始。Near/Far Patch-diff 无空洞交接已经取得新鲜 Development、完整 Automation、
-> 水平 Null-RHI 与竖直 Null/Real-RHI 针对性证据；发布级全方向/长稳 closeout 尚未刷新。
+> 唯一 `L_VoxiaProductionWorld`、默认 RuntimeMock、阶段 1/2、Far LOD exact-surface、Near/Far
+> Patch-diff、完整 XYZ 移动安全门与编辑器作者态预览已经合入 Voxia 独立仓库 `master`。
+> 2026-08-02 的完整 Phase 1 已覆盖长距离、负坐标、XYZ 对角移动、快速折返和显式阶段暂停；
+> 1280×720 Real-RHI 严格门禁通过。此前 `diagonal_yz` 外露材质失败和 Patch GameThread
+> 性能门未关闭的表述已被本次新鲜证据取代，不再是当前缺口。
 
-相邻移动现在先启动 Required Patch 流送并继续可玩；独立 XYZ 安全门允许玩家离开最后完整
-Near 最多 3 chunks，只阻止继续向外进入第 4 个 chunk，返回和沿边界移动始终允许。该门只读
-真实 renderer coverage，不使用等待秒数或队列长度；SceneHost 把交接范围沿 XYZ 六面各外扩
-3 chunks 核对，保护带必须由已验证 Far 版本与真实 renderer receipt 证明。第 4 格先按距离
-上限拒绝，只有前三格内才检查画面覆盖。旧 Near 全退与根级画面证明推进前，
-`handoff_complete` 保持 false；后台 speculative Far 不阻塞 `playable`。相邻窗口共享同一
-Near Patch 编号但边缘范围不同时，先显示新旧范围并集；目标 Far 精确版本及其 renderer
-receipt 就绪后再收窄到最终范围，不能用直接替换整个 Patch 的方式提前丢掉旧边缘。
-2026-07-21 的旧架构基线曾关闭本机 Real-RHI 流式性能门禁：完整生命周期两窗 frame p99 均约
-`7.69ms`，GPU p95 约 `3.2ms`，最大帧低于 `27.34ms`；30 分钟资源长稳无单调增长。该证据不能
-替代 Patch-diff 无空洞交接后的重新验收。2026-07-27 新性能路线保持 gap/overlap/orphan 为 `0`，
-但 frame p95=`17.378ms`、GameThread p95=`11.088ms`，当前严格性能门仍未关闭。
+相邻移动仍只让 Near、required handoff 与当前 Far 构建推进；Near 加载/清理或玩家持续移动且
+下一窗口已预取完成时，只暂停投机 Far 的可见发布，停下后自动恢复。SceneHost 持续维护
+Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary 物理批次；这两个不变量
+都由所属系统自己维护，不依赖一次性外部唤醒。
 
-阶段 2 普通宏格交互已经 closeout：macro place/break intent、Mock authority、pending ledger、confirmed
-overlay、near/far exact presentation、HUD/CLI 与 X/Y/Z unload/reload 均已实现并通过 fresh 验证。普通世界没有
-微格编辑，`micro_edit_not_supported` 是稳定产品边界，不是缺口。
+当前剩余客户端缺口：
 
-2026-07-23 已关闭 Far LOD 外露表面材质缺口：VXP5 surface-coverage v4 解耦粗 occupancy 与精确
-外露材质，旧 page/schema/cache 显式拒绝；live owner/ring/LOD histogram、thin-stratum LOD0–4/
-负坐标/六向/page-ring seam 测试、完整 Automation/Node/Null-RHI 与固定相机 D3D12 actual
-material-id/像素对照均通过。禁止 shader/tint/增厚表土 workaround 的边界继续有效。
-
-### 2026-07-27 已确认未关闭：Near/Far 与 Far/Far LOD 层间墙空间语义错误
-
-- 用户实跑确认纵向移动与流送交接已经正常。第一轮实跑中 Near/Far 接缝朝远景内部的
-  竖墙仍不可见；架构修改后的 Real-RHI 再次验收仍失败，表现为不该补墙的位置出现了墙，
-  应有墙的位置仍然缺失。
-- 根因已确认：现役边界生产只枚举固定 Far Patch 的 26 个外框槽；真实 Near/Far 与 Far LOD
-  分界大多位于同一个 `8³ tiles` Patch 内，因此根本没有进入补墙调用点。逐 Tile
-  `FarBoundaryFaces` 已生成并保存，但 Patch-diff 可见提交没有消费它们。
-- 后续最终审查确认了更直接的漏墙点：统一 `LayerFace` 构建器曾在两侧落入不同 Far Patch
-  时直接跳过该面；测试中 Near/Far 六面因此只剩五面，跨 Patch 的 Far/Far LOD 分界也为零。
-- 退场保护与新目标语义还曾混在一起：为防空洞暂留的旧 Near 被算作新目标 Near，导致真正
-  的新 Near/Far 分界错移。旧 Near 现在只参与覆盖保护，不参与新目标 owner/LOD 解析。
-- 当前 `gap=0` 还存在自证问题：expected boundary 来自 ledger 已登记 artifact；未登记的真实
-  接口不会被期待，因而肉眼有缝仍可假绿。
-- 移动时的短暂缺口是独立时序错误：candidate TargetKey 过早成为 live 审计基准；单轴旧侧
-  缺失为 `3×21×21=1323 chunks`。相邻 `11→12` 尚在准备时被 desired `13` 替代还会把
-  本应相邻交接的构建误分类为 Relocate。
-- 首轮修复后的真实 smoke 又暴露第二个时序假设：SceneHost 只保存 current/previous 两份
-  manifest，但更早目标的 Far Patch 仍可能可见。目标 13 发布后曾出现 `4523` 个 orphan
-  seam；不是墙几何消失，而是目标 11 的 live coverage/墙凭证被历史轮换提前丢弃。
-- 架构修复已按
-  [真实壳层交界与目标原子发布设计](../../10-active/voxel-far-field/2026-07-27-voxia-unified-layer-interface-and-target-publication-design.md)
-  执行：Patch 装载边界与真实 layer interface 分责，Near/Far 与 Far/Far LOD 统一按实际
-  owner/LOD 相邻关系生成；跨 Patch 时 Near/Far 稳定归实际 Far 一侧发布，Far/Far 稳定归
-  负方向一侧发布；live/candidate target 分离并锁存正在准备的相邻一步；每个 live Far
-  Patch 自带精确 coverage/层间墙凭证，只随该 Patch replace/remove。
-  禁止裙边、双面材质、默认墙、扩大固定半径或额外等待。
-- CLI 已公开 live 层间面总数、真实几何数、跨 Patch 数、Near/Far 数与 Far/Far LOD 数。
-  Development build、Automation `165/165`、Node `98/98` 与最新连续目标 Null-RHI
-  `--movement-guard-only` 均通过；目标 `11→12→13` 的 47 个主要采样、101 个全部路线采样
-  及最多 `45082` 个受保护帧保持 gap/overlap/orphan 为 `0`。修复后的 Real-RHI 唯一生产
-  场景和用户可见检查已经执行并失败，证明这些计数只覆盖已登记对象的一致性，尚未证明
-  owner/LOD 到真实层间面的空间语义正确；本项继续保持开放。
-
-### 2026-07-27 已确认缺口：跨 LOD 所有权边界会产生无材质的新增外露面
-
-- 这不是贴图资产缺失，也不是 Near/Far 新旧代切换时序。广路线的 `diagonal_yz` 只是让目标
-  `[13,4,-50]` 纳入了可稳定复现该问题的远景页。
-- 第 12 代 Far 构建在 LOD1 页 `origin_tile=[9,-1,-54]`、`cell=[0,15,1]`、`face=pos_y`
-  硬失败。该页在 canonical 归约时是位于地表下方的 uniform solid；归约器按精确 WorldGen
-  邻居判断其顶面仍被实体遮挡，因此没有为该面记录外露材质。
-- 最终拼壳时，这个顶面外侧由更细的 LOD0 页拥有。resolved sampler 读取的是 LOD0 coarse
-  cell 自己的代表采样，而不是归约器曾读取的同一精确位置；代表点被判为空气，于是几何阶段
-  要求新增顶面，但 `surface-coverage v4` 中没有这个面的材质事实。当前 schema 的
-  `bComplete` 因而只对归约时的暴露判断完整，不对最终跨 LOD ownership cut 完整。
-- 系统按显式失败原则拒绝猜材质：generation 12 未发布，旧 generation 11 继续可见，所以已观察
-  帧的 gap/overlap/orphan 仍为 `0`；其外部表现是 Near 已推进而 Far 保持旧代，最终
-  `handoff_wait_stalled`。原始证据位于
-  `.demo/observe/voxia_phase1_2026-07-26T22-51-23-726Z_null_rhi_1280x720/engine.log:62863`。
-- 架构修复必须让“最终是否外露”和“该面使用什么材质”消费同一份 resolved 邻居/所有权事实，
-  或让 canonical 页携带所有可能因 ownership cut 外露的精确材质事实。禁止用默认材质、
-  shader 染色、静默 fallback 或重试掩盖该契约缺口。
-
-1. **Patch-diff 发布级完整 closeout**：Development build、完整 `Automation RunTests Voxia`
-   `163/163`、原水平复现往返、Null/Real-RHI 的地面→全空气 Near→下降回地面路线均已通过，
-   移动安全门的前三格/第四格/沿边界/返回也已通过，逐帧 gap/overlap/orphan 为 `0`；
-   仍需关闭广路线后续 `diagonal_yz` 的 canonical 外露材质覆盖失败，刷新完整全方向、连续
-   至少 10 Tile、Relocate，并压低 Patch 发布的 GameThread 尖峰后重跑 5 分钟以上固定资源
-   平台、长稳和更多发布硬件证据。针对性路线不得冒充这些未执行门禁。
-2. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
-   PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace 尚未实施；
-   阶段 2 与 Far LOD surface semantic 前置门禁已经满足，本轮没有启动阶段 3。
-3. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
-   source revision 失效、subscription lease、重连与默认在线切流。WorldGen/local pack 不能冒充
-   confirmed truth，也不能在在线失败时 fallback。
-4. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，但开发
-   route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉与传送前
-   coverage 检查。
-5. **天气与内容美术**：远景自然材质、AO/sky、单太阳与 noon/dusk/night/sweep 已完成；仍需正式天气
-   内容策略，并在不破坏 material-family、world snapshot 与原子提交契约的前提下丰富透明/发光内容。
-6. **发布硬件矩阵**：本机 Patch-diff 1280×720 Real-RHI 竖直针对性路线已通过；历史验收机
-   1920×1080 与阶段 1 长稳证据继续保留，但 Patch-diff 后仍需刷新同级长稳。低配置硬件、
-   发布包、更多驱动与长时真实玩家输入仍未形成发布分档。
+1. **层间墙人工视觉复验**：真实 `LayerFace`、跨 Patch 稳定发布者、逐 live-Far 凭证和最新
+   完整 Real-RHI 结构化路线已经通过，但用户尚未在 2026-08-02 合并树上重新判断此前的
+   “不该有墙/该有墙却缺失”现象。gap、slot、component 与 fence 计数不能替代该视觉验收；
+   禁止用裙边、双面材质、默认墙、扩大半径或固定等待冒充关闭。
+2. **当前树资源长稳与发布硬件矩阵**：历史 30 分钟长稳继续是证据，但尚未在本次合并树上
+   重跑 5 分钟以上资源平台；低配置硬件、更多驱动、发布包与长时真实玩家输入仍未形成分档。
+3. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
+   PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace
+   尚未实施。阶段 2 已完成，普通世界的 `micro_edit_not_supported` 是稳定边界而非缺口。
+4. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
+   source revision 失效、subscription lease、重连与默认在线切流。WorldGen/RuntimeMock/local pack
+   不能冒充 confirmed truth，也不能在在线失败时 fallback。
+5. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，
+   但开发 route fixture 不是任意世界的发行包；仍需 launcher/update、release manifest、差集补拉
+   与传送前 coverage 检查。
+6. **天气与内容美术**：UDS/UDW、雾、PostProcess 与补光已经进入唯一正式地图并可由编辑器调节；
+   仍需正式天气内容策略，以及不破坏 material-family、world snapshot 和原子提交契约的透明/
+   发光内容。
 7. **归档 decoder 清理**：production legacy far runtime/probe/identity/uploader 已删除；append-only
    wire decoder 与 golden fixture 继续只作协议历史证据，不能恢复为 presentation owner。
 
