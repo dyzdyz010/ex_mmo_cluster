@@ -11,10 +11,13 @@
   自己的精确 coverage/层间墙凭证，不依赖最近两份目标历史；跨 Far Patch 的 Near/Far
   固定由 Far 一侧发布，Far/Far LOD 固定由负方向一侧发布，退场旧 Near 不进入新目标
   层间语义。共享 Patch 新旧范围并集、精确 Far 接管后收窄、boundary slot/renderer
-  receipt 与完整 XYZ 移动安全门的核心代码已落地。2026-08-02 合并树通过 Development build、
-  Automation `192/192`、Node `102/102`、长距离/负坐标/完整 XYZ/快速折返 Phase 1、移动安全门、
-  竖直路线、Phase 2 与严格 1280×720 Real-RHI 往返门禁；此前广路线 canonical 外露材质失败
-  不再复现。当前树的 5 分钟以上资源长稳、更多硬件与 Real-RHI 用户可见竖墙复验待刷新；
+  receipt 与完整 XYZ 移动安全门的核心代码已落地。2026-08-03 又收口 Root 单槽 Near source
+  lease、普通 XYZ 相邻推进/显式 Relocate、Far demand-driven mailbox 与取件/呈现分帧：当前
+  handoff 未完整时后继 source 不得覆盖 prepared slot，metadata handoff 不再等待 speculative
+  mailbox 清空。合并树通过 Development build、Automation `192/192`、Node `106/106`、35 路
+  Phase 1、Phase 2 与连续两轮严格 1280×720 Real-RHI 门禁；58 次普通 source acquisition
+  最大单轴步长为 1，572 个 renderer transition sample 无 gap/overlap/orphan。当前树的 5 分钟
+  以上资源长稳、更多硬件与 Real-RHI 用户可见竖墙复验待刷新；
   完成人工复验前，真实墙面视觉项保持未关闭；
   Online authority/provider、阶段 3 Prefab 与里程碑 B/C 尚未开始
 - **取代范围**：取代 [`2026-07-11-3d-lod-sliding-window.md`](../../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 中“保留 2.5D WorldGen 内容前提再扩展远景窗口”的迁移口径
@@ -32,7 +35,7 @@
 | A7 | near/far 双向 ownership、快速折返与联合性能；旧垂直呈现带仅作迁移证据 | 历史 Tile/sink 实现已被 2026-07-25 Patch-diff 取代；当前为唯一 TargetKey、SceneHost ledger、Near `4³ chunks` 与 Far `8³ tiles` Patch |
 | A8 | XYZ cube-shell、canonical pages、六向 material mip、coverage-resolved exact surface | **已完成**；VXP5 保留粗 occupancy，并从精确 source surface coverage 归约外露面材质，LOD0–4/负坐标/六向/跨 page、ring、LOD 回归通过 |
 | A9 | source-neutral scene stage、真实 fence/SceneHost、dev Real-RHI 三维呈现 | generation 继续承载 coverage/observation/resource archive；Far mesh live truth 已收敛到 SceneHost Patch ledger |
-| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、page residency、可取消增量 DAG、Patch 呈现、本地 H-gated provider、三轴长巡航 | Patch-diff 完整全方向、负坐标、快速折返、移动守卫、竖直、阶段 2 与严格 Real-RHI 性能门已在 2026-08-02 合并树通过；当前树长稳/多硬件与层间墙人工视觉复验待刷新，Online provider 后置 |
+| A10 | 唯一生产组合根、根级 source identity、自动 XYZ 滑窗、page residency、可取消增量 DAG、Patch 呈现、本地 H-gated provider、三轴长巡航 | Patch-diff 完整全方向、Root source lease、显式 Relocate、Far 按需 mailbox/分帧呈现、阶段 2 与严格 Real-RHI 性能门已在 2026-08-03 合并树通过；当前树长稳/多硬件与层间墙人工视觉复验待刷新，Online provider 后置 |
 
 客户端 A10 已跑通 WorldGen/H-gated provider、自动滑窗、请求式 residency、增量 DAG 与 stable far patch。
 2026-07-25 起，本文后续关于 renderer sink、target latch、逐 Tile transaction、depth-3 与

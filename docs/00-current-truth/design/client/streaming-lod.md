@@ -109,9 +109,12 @@ Speculative 队列使用，不能套在当前必需加载上。
 1. builder 完成全部 target metadata、dependency fingerprint 与 boundary profile；
 2. 一次性发布完整 target plan；
 3. 按离目标中心最近、坐标稳定排序逐 Patch 构建 mesh；
-4. 每完成一个 Patch 立即发布 stream item；
-5. GameThread 收到后立即提交；
-6. 完整 `FVoxiaWorldGenVoxelShellBuildResult` 结束后只归档 residency、artifact cache、
+4. 每完成一个 Patch 放入以 PatchId 可寻址的 demand-driven mailbox；
+5. Scene metadata handoff 只等待 manifest consumed 与 producer terminal，不等待整个 mailbox
+   清空；当前事务只取自己的 PatchId，其余 ready stage 继续由 worker mailbox 持有；
+6. GameThread 在取件帧 yield，下一帧才启动 presentation transaction；被替换的 mailbox
+   通过 far release queue 异步释放；
+7. 完整 `FVoxiaWorldGenVoxelShellBuildResult` 结束后只归档 residency、artifact cache、
    coverage/observation generation。
 
 因此 first Far Patch 不等待完整 Far target 或整次 BuildFuture。
@@ -193,19 +196,27 @@ Far 后台构建不因可见发布暂停而停止。Root 对外区分三个事�
 2. `AdjacentStep`：每轴差值 `-1/0/1`，先锁存候选；完整 manifest 校验后才发布 TargetKey；
 3. `Relocate`：teleport、服务端大幅纠正、新游戏或显式重载。
 
+Root 另外拥有 `FVoxiaNearSourceActivationGate` 单槽激活租约。PlayerSession 必须先取得 Root
+实际授予中心，才能让 Transport 激活 required Near；Root 只在 Transport active/required Near
+与该中心一致后发布 TargetKey。普通连续移动每个 XYZ 轴最多推进一 tile；只有调用方显式声明
+的 `explicit_relocate` 可以直达完整 desired center，禁止用距离推断意图。当前 handoff proof
+未完整时，后继 source 必须 deferred，不能覆盖唯一 prepared slot。
+
 动作策略：
 
 - AdjacentStep 立即启动 required 加载但保持旧 live TargetKey，并以最后一个完整可见 Near
   窗口作为移动基准；正在准备的一步不会被更远 desired center 覆盖成 Relocate；
-- 候选 chunk 在完整 XYZ 任一轴最多离开该窗口 3 chunks；继续向外进入第 4 个 chunk 时
+- 候选 chunk 在完整 XYZ 任一轴最多离开该窗口 3 chunks；活动 Patch target 在 handoff 时只
+  约束仍滞后的轴，防止 desired center 再次跨格；继续向外进入第 4 个 chunk 时
   阻止该次位移；
 - 返回窗口或沿边界移动始终允许；判定不读取等待秒数、队列长度或水平面特例；
 - Relocate 在目标未收敛时显式阻塞动作并显示加载；
 - Fatal 显示可诊断失败，不进入无限 loading；
 - 旧 Near 尚未完全退出时不叠加第三个 AdjacentStep。
 
-安全门只读取 SceneHost 的真实 renderer coverage 与最后完整 Near；它不修改流送队列，也不通过
-wall clock 自动放行。新目标准备追不上移动时，玩家会停在安全带边缘，画面仍保持闭合。
+安全门只读取 SceneHost 的真实 renderer coverage、最后完整 Near 与活动 Patch target；它不修改
+流送队列，也不通过 wall clock 自动放行。新目标准备追不上移动时，玩家会停在安全带边缘，
+画面仍保持闭合。
 SceneHost 因此把相邻交接范围沿完整 XYZ 六个面各外扩 3 chunks 纳入核对：稳定窗口核对
 `27³`，三轴相邻切换最多核对 `34³`。外扩带必须由每个实际可见 Far 自带的精确 entry 与
 真实 renderer receipt 证明，不能把“允许多走三格”实现成盲目放行，也不能依赖只保留
@@ -254,14 +265,17 @@ coarse fallback 或逐 Tick retry。
 ## 可观测面
 
 - Root：`target_key`、transition kind、required/speculative、`playable`、
-  `handoff_complete`、`settled`、Far 可见发布优先级与 failure；
+  `handoff_complete`、`settled`、Far 可见发布优先级、failure，以及 `near_source_activation`
+  的 lease center/generation/intent/deferred total/reason；
 - Near/Far BuildIndex：target/retained/pending/in-flight/ready/fatal；
-- Far stream：plan published/consumed、mailbox pending、ready、terminal、consumer failure；
+- Far stream：`mailbox_mode=demand_driven_v1`、plan published/consumed、mailbox pending、
+  on-demand consumed、max deferred、terminal、consumer failure；
 - SceneHost：committed Patch maps、exact ownership、boundary slots、staged/retiring/free、
   fence、gap/overlap/seam/orphan、commit serial，以及从真实 Patch renderer receipt 统计的
   Far 几何可见 Patch 数、Far 组件总数和已注册可见组件数；覆盖证明只增量更新本次事务
   影响的 Patch、接缝与 ownership chunks，并公开完整重建、增量应用和显式回退累计数；
-- Flow/Pawn：Relocate loading，以及候选/当前 chunk、完整 Near XYZ 范围、逐轴越界深度、
+- Flow/Pawn：source acquired/deferred/blocked、explicit relocate requested/consumed、Relocate
+  loading，以及候选/当前 chunk、完整 Near 与活动 target XYZ 范围、逐轴越界深度、
   renderer epoch、放行/阻止理由与累计计数；
 - observe 输出 `.demo/observe/`，64 位身份使用十进制字符串。
 
@@ -294,25 +308,26 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 ## 验证状态
 
-2026-08-02 合并树证据：
+2026-08-03 合并树证据：
 
 - UE 5.8 Development build 成功；完整 `Automation RunTests Voxia` 为
   `190 Success + 2 expected-warning Success = 192/192`，失败、未运行与进行中均为 `0`；
-- Node 合同测试 `102/102` 通过；生产地图验证为一个组合预览 Actor、Near + FarLOD0–4
+- Node 合同测试 `106/106` 通过；生产地图验证为一个组合预览 Actor、Near + FarLOD0–4
   六个独立预览 Actor、零 authored runtime root，七个 serial 同步，组合与 Gallery 均为
   `9158` triangles；
-- 1280×720 Null-RHI 完整 Phase 1 共 `33` 条路线，覆盖 `120000cm` 长距离、负坐标、完整
-  XYZ 对角移动、快速反转、Near/Far/boundary/staging-fence 显式暂停、retry、返回菜单与
-  新游戏，主 session generation `1→41`、新 session `1→4`，受保护 gap 为 `0`；
+- 1280×720 Null-RHI 完整 Phase 1 共 `35` 条路线，覆盖长距离、负坐标、完整 XYZ 对角移动、
+  快速反转、Near/Far/boundary/staging-fence 显式暂停、retry、返回菜单与新游戏；58 次
+  source acquisition 的普通移动最大单轴步长为 `1`，572 个 renderer transition sample 的
+  gap/overlap/orphan 均为 `0`；
 - 独立移动安全门证明 Near=`27 tiles/9261 chunks`，单轴 entered/exited=`3087`、
   retained=`6174`，第 3 格允许、第 4 格阻断、沿边界与返回允许；独立竖直路线完成
   地面→全空气 Near/Far 可见→下降恢复；
 - Phase 2 place/break 均达到 submitted/accepted/confirmed/presented，revision=`1/2`，
   X/Y/Z 各移动 `80 tiles` 后卸载/重载保持真值，最终状态为空；
-- 1280×720 Real-RHI 往返两窗 frame p95=`7.693/7.693ms`、p99=`7.712/7.707ms`；
-  GameThread p95=`3.187/3.347ms`、p99=`4.098/4.271ms`；GPU p95=`3.897/3.901ms`。
-  原门槛分别为 frame p95≤`8.33ms`/p99≤`11.11ms`、GT p95≤`3.5ms`/p99≤`8.33ms`、
-  GPU p95≤`6ms`，全部通过；clean exit，Far release=`23/23/0`。
+- 1280×720 Real-RHI 连续两轮通过；末轮往返两窗 frame p95=`7.692/7.692ms`、
+  GameThread p95=`2.485/2.542ms`、GPU p95=`2.750/2.699ms`。原门槛仍为 frame
+  p95≤`8.33ms`/p99≤`11.11ms`、GT p95≤`3.5ms`/p99≤`8.33ms`、GPU p95≤`6ms`，
+  未放宽；clean exit，Far release=`29/29/0`。
 
 当前仍需刷新：
 

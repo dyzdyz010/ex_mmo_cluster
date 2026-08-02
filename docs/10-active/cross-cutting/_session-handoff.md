@@ -1,4 +1,38 @@
-# 当前会话接力：Voxia 唯一生产根已合并，持续移动与严格性能门已通过
+# 当前会话接力：Voxia 持续移动 source 租约与 Far 流送已收口
+
+## 2026-08-03 持续移动流送根修复
+
+- Voxia 独立仓库 `master` 的实现提交为 `09b1e53`（`fix: harden continuous voxel streaming
+  handoff`）。本轮没有增加第二个 world root、地图或运行时路径，仍只使用
+  `/Game/Voxia/Maps/L_VoxiaProductionWorld` 与 `AVoxiaUnifiedVoxelWorldActor`。
+- “持续移动卡在正在加载大世界”的根因是缺少跨 Root/PlayerSession/Transport 的自维护 source
+  时序：Transport 可推进 active Near，Root 仍持有旧 TargetKey；同时 Far metadata handoff
+  等待整个 speculative mailbox 被 GameThread 搬空，required publication 又受 Near 交接阶段约束。
+- Root 现在独占 `FVoxiaNearSourceActivationGate` 单槽 lease。普通连续移动按完整 XYZ 每轴最多
+  推进一步；只有 Pawn/调用方显式声明 `explicit_relocate` 才能直达目标，不能根据距离猜意图。
+  当前 Target handoff proof 未完整时，后继 source deferred；PlayerSession 只能激活 Root 实际
+  授予的中心，Root 又等待 Transport active/required Near 对齐后才发布 TargetKey。
+- 移动安全门同时读取最后完整 Near 和活动 Patch target：前者维持 3-chunk 可玩安全带，后者
+  只约束 handoff 中仍滞后的轴，从源头防止普通 desired center 再次跨格。
+- Far stream 改为 `demand_driven_v1`：metadata handoff 只等 manifest consumed + producer terminal，
+  当前事务按 PatchId 取出 stage，其余留在 worker mailbox；旧 mailbox 异步释放。Real-RHI 红测
+  证明同帧取件+呈现会把 GT p95 推到 `3.949ms`，因此调度契约固定为取件帧 yield、次帧呈现，
+  没有延长 timeout 或放宽性能阈值。
+- 详细根因、所有权图和 RED/GREEN 证据见
+  `clients/Voxia/docs/engineering-notes/2026-08-03-near-source-lease-and-continuous-streaming.md`。
+
+| 门禁 | 最终结果 | 产物 |
+|---|---|---|
+| Development build | UE 5.8 `VoxiaEditor Win64 Development` success | UBT exit 0 |
+| 全量 UE Automation | `192/192`；190 success + 2 expected-warning success，0 failed/not-run | `clients/Voxia/Saved/AutomationReport_FullStreamingFinal_20260803/index.json` |
+| Node | `106/106` | `node --test clients/Voxia/scripts/*.test.js` |
+| 生产地图验证 | 1 组合 + 6 分离 LOD、0 authored runtime root，serial/引用/同步/空间合同全通过 | `clients/Voxia/.demo/observe/voxia_editor_lod_actor_gallery/production_world_validation.json` |
+| 完整 Null-RHI Phase 1 | 35 routes；58 source acquisitions，普通移动最大单轴步长 1；572 renderer samples 的 gap/overlap/orphan 全 0 | `.demo/observe/voxia_phase1_2026-08-02T18-32-08-877Z_null_rhi_1280x720/` |
+| Phase 2 | place/break 全链；X/Y/Z 各 80 tiles unload/reload；最终 empty | `.demo/observe/voxia_phase2_2026-08-02T18-30-10-529Z_null_rhi_1280x720/` |
+| 严格 Real-RHI | 连续两轮通过；末轮 frame p95 7.692/7.692ms、GT p95 2.485/2.542ms、GPU p95 2.750/2.699ms、release 29/29/0 | `.demo/observe/voxia_phase1_2026-08-02T18-23-40-823Z_real_rhi_1280x720/` |
+
+仍保留三个明确后置边界：当前树 5 分钟以上资源长稳与更多硬件矩阵、Near/Far 层间墙的用户
+可见复验、Online authority/provider 与阶段 3 Prefab。结构化门禁通过不替代这三项。
 
 ## 2026-08-02 唯一生产根与持续流送合并收口
 

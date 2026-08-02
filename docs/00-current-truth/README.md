@@ -45,8 +45,30 @@ flowchart LR
 3. **体素基线校验必须硬失败**：进入场景前必须校验本地 world pack、region manifest、chunk baseline 和 diff chain；缺包或 hash 不匹配不能靠运行时 snapshot/resync 兜底进入场景。
 4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
 5. **完整 3D 是体素流式与 LOD 的唯一现行空间契约**：公共契约是 `chunk_xyz -> canonical 3D chunk/page`，near 为 XYZ cube，far 为稀疏 cube shell；不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia 的 near XYZ 与 Pure3D far 已在唯一开发根 live；Online authority production cutover 仍未开始，隔离 probe 不等于第二生产路径。
-6. **Voxia 已切到唯一 Near/Far Patch-diff 架构并合入独立仓库 `master`**：`-VoxiaWorldGenPreview` 只启动 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features` 根，正式编辑器/Game 默认地图唯一为 `/Game/Voxia/Maps/L_VoxiaProductionWorld`，默认 profile 为 `RuntimeMock`；Online 仍显式 fail-closed。Root 分开维护 requested/live `FVoxiaPatchTargetKey`、可见发布优先级与派生 readiness；Near 固定 `4³ chunks` Patch，Far 固定 `8³ tiles` Patch；`UVoxiaVoxelPresentationSceneHost` ledger 是 live Patch、exact ownership、canonical boundary slot、seam、component 与 fence 的唯一事实。一个 Near Patch ready 不等待完整 Tile，一个 Far Patch ready 不等待完整 BuildFuture；Far、固定 26-slot 外壳、按实际逐 Tile owner/LOD 推导的 Near/Far 与 Far/Far LOD `LayerFace`、以及该 live Far 自己的精确 coverage/层间墙凭证原子提交。SceneHost 持续维护 Near 完整性和 renderer coverage 索引，每帧最多构建一个 boundary 物理 batch；玩家持续移动时只暂停投机 Far 的可见发布，Near、当前 Far 构建与 required handoff 保持推进，停下后自动恢复完整发布。相邻换区先保留旧 live target 和旧 Far，完整候选 manifest 到达后才发布新目标；同编号 Near Patch 的窗口边缘范围不同时先发布新旧 chunks 并集，精确 Far 接管后再原子收窄到严格 9261 chunks。`playable`、`handoff_complete` 与全资源 `settled` 是三个独立事实；玩家可沿完整 XYZ 离开最后完整 Near 最多 3 chunks，只阻止继续向外进入第 4 个 chunk，返回和沿边界移动始终允许。2026-08-02 的最终树通过 Development build、Automation `192/192`（`190` success + `2` expected-warning success）、Node `102/102`、33 路完整 Phase 1、完整 XYZ 移动守卫、竖直路线与 Phase 2；此前广路线 `diagonal_yz` 的 canonical 外露材质失败不再复现。1280×720 Real-RHI 严格往返门禁为 frame p95=`7.693/7.693ms`、GT p95=`3.187/3.347ms`、GPU p95=`3.897/3.901ms`，未放宽既有阈值。当前树仍需刷新 5 分钟以上资源长稳与更多硬件；Online authority、阶段 3 prefab 与 B/C 尚未开始。
-   **当前可见性口径**：2026-07-27 用户实跑曾确认 Near/Far 层间墙空间语义错误。架构已改为真实 `LayerFace`，并修复跨 Far Patch 分界跳过、退场旧 Near 污染新目标分界，以及目标轮换提前丢失 live-Far 凭证；最新完整 Real-RHI 结构化路线通过。由于用户尚未在 2026-08-02 合并树上重新做可见判断，该视觉项仍标记为“待人工复验”，不能只凭 slot、组件、fence 或 `gap=0` 宣布视觉关闭。
+6. **Voxia 已切到唯一 Near/Far Patch-diff 架构并合入独立仓库 `master`**：
+   `-VoxiaWorldGenPreview` 只启动 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features` 根，
+   正式 Editor/Game 地图唯一为 `/Game/Voxia/Maps/L_VoxiaProductionWorld`，默认 `RuntimeMock`；
+   Online 仍显式 fail-closed。Root 分开维护 requested/live `FVoxiaPatchTargetKey`、可见发布优先级、
+   派生 readiness 与单槽 Near source 激活租约。普通连续移动每个 XYZ 轴只能推进一 tile，
+   当前 handoff 完整前后继 source 必须 deferred；只有调用方显式声明的 `explicit_relocate`
+   可以直达完整目标，禁止按距离猜意图。Transport 只有取得 Root 实际授予中心后才激活
+   required Near，Root 又只在 Transport active/required Near 与请求目标一致后发布 TargetKey。
+   Near 固定 `4³ chunks` Patch，Far 固定 `8³ tiles` Patch；SceneHost ledger 是 live Patch、exact
+   ownership、boundary、seam、component 与 fence 的唯一事实。Far metadata handoff 只等待
+   manifest 已消费与 producer terminal，不等待 speculative mailbox 清空；当前事务按 PatchId
+   取件，取件帧 yield、次帧才启动 presentation transaction。Far、26-slot 外壳、真实
+   `LayerFace` 及逐 live-Far 精确凭证原子提交。相邻换区保留旧 live target/Far；共享 Near
+   Patch 先发布新旧 chunks 并集，精确 Far 接管后再收窄到严格 9261 chunks。SceneHost 持续
+   维护 Near 完整性和 renderer coverage，`playable`、`handoff_complete`、`settled` 分离。
+   移动安全门同时读取最后完整 Near 与活动 Patch target：完整 Near 外最多 3 chunks，活动
+   target 只约束 handoff 滞后轴，第 4 格阻断，返回/沿边放行。2026-08-03 最终树通过
+   Development build、Automation `192/192`、Node `106/106`、35 路完整 Phase 1 与 Phase 2；
+   58 次 source acquisition 的普通移动最大单轴步长为 `1`，572 个 renderer transition sample
+   的 gap/overlap/orphan 均为 `0`。1280×720 Real-RHI 连续两轮通过，末轮 frame p95=
+   `7.692/7.692ms`、GT p95=`2.485/2.542ms`、GPU p95=`2.750/2.699ms`、Far release=`29/29/0`，
+   未放宽门槛。当前树仍需刷新 5 分钟以上资源长稳与更多硬件；Online authority、阶段 3
+   prefab 与 B/C 尚未开始。
+   **当前可见性口径**：2026-07-27 用户实跑曾确认 Near/Far 层间墙空间语义错误。架构已改为真实 `LayerFace`，并修复跨 Far Patch 分界跳过、退场旧 Near 污染新目标分界，以及目标轮换提前丢失 live-Far 凭证；最新完整 Real-RHI 结构化路线通过。由于用户尚未在 2026-08-03 合并树上重新做可见判断，该视觉项仍标记为“待人工复验”，不能只凭 slot、组件、fence 或 `gap=0` 宣布视觉关闭。
 7. **Voxia 是唯一现役客户端，Web / Bevy 已逻辑归档**：默认客户端设计、实现、协议消费验证、联调、CI 与进度判断只看 Voxia；归档目录只保留历史证据，只有用户显式点名时才临时纳入。阶段 2 普通宏格交互与 Far LOD 外露材质归约/最终 ownership 绑定已经 closeout；下一客户端阶段可按已批准计划实施阶段 3 prefab runtime，但本轮没有开始。Online 生产化仍需独立服务端设计与实施。
 8. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 9. **被取代的 XZ column 设计统一进入 `docs/20-archive/**`**：它们可以保留历史证据和 append-only decoder 测试，但不能继续留在 current/default/launcher/CLI acceptance 路由。
