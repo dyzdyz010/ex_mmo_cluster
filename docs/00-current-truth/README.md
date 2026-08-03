@@ -31,7 +31,7 @@ flowchart LR
 | 服务端控制面 | [design/server/world-region-routing.md](design/server/world-region-routing.md) | World / Region / Scene / Chunk 关系、路由、租约、迁移、stale owner repair |
 | 体素真值与基线 | [design/voxel/README.md](design/voxel/README.md) | 权威体素唯一事实源、WorldGen migration、launcher/入场校验、runtime diff 边界 |
 | 客户端可操作区域 | [design/voxel/client_active_region.md](design/voxel/client_active_region.md) | 近场可编辑窗口、订阅跟随、debug overlay、点击生效条件 |
-| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 唯一根、完整 XYZ、Near/Far Patch-diff、唯一 SceneHost ledger、阶段 2 宏格挖放；Online provider 后置 |
+| 客户端流式与远景 | [design/client/streaming-lod.md](design/client/streaming-lod.md) | Voxia 唯一根、完整 XYZ、Near/Far Patch-diff、唯一 SceneHost ledger、阶段 2 宏格挖放与阶段 3 Prefab RuntimeMock；Online provider 后置 |
 | 局部场与涌现 | [design/field/runtime.md](design/field/runtime.md) | FieldLayer / FieldRegion / FieldKernel / FieldRuntime / FieldSource / FieldEffect 状态 |
 | 正交涌现系统 | [design/emergence/orthogonal-systems.md](design/emergence/orthogonal-systems.md) | 材料属性向量、光、化学、结构、客户端外观边界 |
 | 建设 / Prefab / Surface | [design/voxel/building-prefab-surface.md](design/voxel/building-prefab-surface.md) | 建设原语、Prefab transaction、Object provenance、SurfaceElement |
@@ -61,15 +61,20 @@ flowchart LR
    Patch 先发布新旧 chunks 并集，精确 Far 接管后再收窄到严格 9261 chunks。SceneHost 持续
    维护 Near 完整性和 renderer coverage，`playable`、`handoff_complete`、`settled` 分离。
    移动安全门同时读取最后完整 Near 与活动 Patch target：完整 Near 外最多 3 chunks，活动
-   target 只约束 handoff 滞后轴，第 4 格阻断，返回/沿边放行。2026-08-03 最终树通过
-   Development build、Automation `192/192`、Node `106/106`、35 路完整 Phase 1 与 Phase 2；
+   target 只约束 handoff 滞后轴，第 4 格阻断，返回/沿边放行。Far 后台复用只接受提交账本中的
+   完整 Patch version，且只允许 `AdjacentStep`；会清空 live ledger 的 Bootstrap/Relocate 必须重建。
+   2026-08-03 Phase 3 树通过 clean Development build、Automation `213/213`（`0` failed/not-run；
+   `1` 条 success-with-warning 仅为外部 `generate_204` HTTP 超时）、Node `124/124`、
+   35 路完整 Phase 1、Phase 2 与 Phase 3 `18/18`；
    58 次 source acquisition 的普通移动最大单轴步长为 `1`，572 个 renderer transition sample
    的 gap/overlap/orphan 均为 `0`。1280×720 Real-RHI 连续两轮通过，末轮 frame p95=
    `7.692/7.692ms`、GT p95=`2.485/2.542ms`、GPU p95=`2.750/2.699ms`、Far release=`29/29/0`，
-   未放宽门槛。当前树仍需刷新 5 分钟以上资源长稳与更多硬件；Online authority、阶段 3
-   prefab 与 B/C 尚未开始。
+   未放宽门槛。Phase 3 又完成 1920×1080 可见短路线与 30 分钟真实连续 XYZ 流送：34 个
+   往返样本的 confirmed prefab 资源 current 零漂移，coverage/seam/`LogVoxia Error` 均为 0，
+   exact micro raycast/collision 均值为 `39.676/10.578µs`。更多硬件、Online authority 与 B/C
+   尚未开始。
    **当前可见性口径**：2026-07-27 用户实跑曾确认 Near/Far 层间墙空间语义错误。架构已改为真实 `LayerFace`，并修复跨 Far Patch 分界跳过、退场旧 Near 污染新目标分界，以及目标轮换提前丢失 live-Far 凭证；最新完整 Real-RHI 结构化路线通过。由于用户尚未在 2026-08-03 合并树上重新做可见判断，该视觉项仍标记为“待人工复验”，不能只凭 slot、组件、fence 或 `gap=0` 宣布视觉关闭。
-7. **Voxia 是唯一现役客户端，Web / Bevy 已逻辑归档**：默认客户端设计、实现、协议消费验证、联调、CI 与进度判断只看 Voxia；归档目录只保留历史证据，只有用户显式点名时才临时纳入。阶段 2 普通宏格交互与 Far LOD 外露材质归约/最终 ownership 绑定已经 closeout；下一客户端阶段可按已批准计划实施阶段 3 prefab runtime，但本轮没有开始。Online 生产化仍需独立服务端设计与实施。
+7. **Voxia 是唯一现役客户端，Web / Bevy 已逻辑归档**：默认客户端设计、实现、协议消费验证、联调、CI 与进度判断只看 Voxia；归档目录只保留历史证据，只有用户显式点名时才临时纳入。阶段 2 普通宏格交互、Far LOD 外露材质归约/最终 ownership 与阶段 3 Prefab RuntimeMock 已 closeout；阶段 3 具备 immutable catalog/Orientation24、层级 instance/coverage、原子 place/remove/replace、Near/Far presented snapshot、CLI/observe、资源与 CPU 门禁。它不表示 Online wire/authority 或 Prefab Designer 已实施；Online 生产化仍需独立服务端设计与实施。
 8. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 9. **被取代的 XZ column 设计统一进入 `docs/20-archive/**`**：它们可以保留历史证据和 append-only decoder 测试，但不能继续留在 current/default/launcher/CLI acceptance 路由。
 10. **Online 客户端仍是 snapshot/delta-only 消费者，离线 Mock 也保持 adapter 边界**：近窗消费 canonical chunks，远区消费 XYZ source pages/cube shell；Phase 2 点击只发 intent，Mock authority 私有裁决后以类型化事件驱动唯一 confirmed mirror，presentation 不能回写 truth。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。

@@ -1,4 +1,49 @@
-# 当前会话接力：Voxia 持续移动 source 租约与 Far 流送已收口
+# 当前会话接力：Voxia Phase 3 Prefab RuntimeMock 已收口
+
+## 2026-08-03 Phase 3 最终闭环
+
+- Voxia 工作树为 `.worktrees/voxia-phase3-prefab-runtime`，分支
+  `codex/voxia-phase3-prefab-runtime`；阶段 1–9 最近已推送提交为 `dcdb0a9`，本节记录 Task 10
+  的最终实现、验证与待提交状态。
+- 唯一运行事实仍是 `/Game/Voxia/Maps/L_VoxiaProductionWorld` 与
+  `AVoxiaUnifiedVoxelWorldActor`。默认 `RuntimeMock`；没有修改 `apps/*`、wire、Online provider，
+  没有创建第二个 world root 或地图。
+- Phase 3 已完成 immutable catalog/Orientation24、层级 directory/coverage、exact footprint/query、
+  原子 place/remove/replace、selection/hold、Near 精确微格、Far 版本化粗投影、跨窗口重入、
+  单 mutation-group receipt、`prefab` CLI/observe、confirmed 资源 high-water 与 exact micro
+  raycast/collision CPU 指标。builtin id `8` 是三 child assembly 的 RuntimeMock 验收 fixture。
+- 持续移动发现并修复一项独立 Far 活性根因：旧 builder 只按内容 fingerprint 跳过 Patch；
+  `Relocate` 随后会清空 live ledger，导致被跳过的 Patch 无 mesh 可继承。现只逐字段比较完整
+  `FVoxiaFarPatchVersion`，且仅 `AdjacentStep` 允许复用；Bootstrap/Relocate 必须重建。
+- 提交前审查又补齐 ack-history 边界：prefab ledger 详情被 4096 条窗口淘汰后只恢复可证明的
+  change kind/presented 终态，并输出 `details_available:false`；entity-only parent remove 不再被
+  误报为普通 macro intent。
+
+```mermaid
+flowchart LR
+  Input["鼠标 / Automation / prefab CLI"] --> Intent["typed prefab intent"]
+  Intent --> Mock["session-local Mock authority"]
+  Mock --> Confirmed["唯一 confirmed aggregate"]
+  Confirmed --> Presented["唯一根 presented snapshot"]
+  Presented --> Near["Near exact micro"]
+  Presented --> Far["Far versioned coarse projection"]
+  Near --> Receipt["group fence / receipt"]
+  Far --> Receipt
+```
+
+| 门禁 | 最终结果 | 产物 |
+|---|---|---|
+| Clean Development build | 402 actions，success | UBT exit 0 |
+| 全量 UE Automation | `213/213` 已执行：212 success + 1 success-with-warning、0 failed/not-run；唯一 warning 为外部 `generate_204` HTTP 超时 | `.worktrees/voxia-phase3-prefab-runtime/Saved/Automation/Task10AllVoxiaFinal_20260803_225642/index.json` |
+| Node | `124/124` | `node --test clients/Voxia/scripts/*.test.js` |
+| Phase 3 Null-RHI | `18/18`，完整功能与持续 XYZ 路线 | `.demo/observe/voxia_phase3_2026-08-03T13-28-31-631Z_null_rhi_1280x720/` |
+| 1920×1080 可见短路线 | `18/18`；frame p95/p99 `5.464/6.095ms`，GPU p95 `4.594ms` | `.demo/observe/voxia_phase3_2026-08-03T13-46-18-891Z_visible_rhi_1920x1080/` |
+| 1920×1080 30 分钟持续流送 | 34 个 XYZ 往返样本，资源 current 零漂移，coverage/seam/Error 均 0；ray/collision 均值 `39.676/10.578µs` | `.demo/observe/voxia_phase3_2026-08-03T13-55-12-128Z_visible_rhi_1920x1080/` |
+
+当前后置边界只有：层间墙最新人工视觉复验、更多发布硬件、Online authority/wire 与 Prefab
+Designer/正式内容发布。Phase 3 RuntimeMock 完成不能冒充这些后置项。
+
+## 2026-08-03 持续移动流送根修复
 
 ## 2026-08-03 持续移动流送根修复
 

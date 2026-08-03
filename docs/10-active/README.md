@@ -71,7 +71,7 @@
 
 - [`2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md) — 已确认设计的 TDD 执行稿；按共同 Patch 管线补全真实 boundary、精确版本交接、renderer transaction、完整 XYZ 移动安全门与三维实跑
 - [`2026-07-26-voxia-hole-free-near-far-presentation-design.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-design.md) — 当前 Near/Far 无空洞修复决策；补全真实 boundary 几何、精确版本交接、renderer fence、全空气 Near 与完整 XYZ 3-chunk 移动安全门
-- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义已根修复并完成验收，阶段 3、Online provider 与 B/C 未开始
+- [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义与阶段 3 RuntimeMock 已完成，Online provider 与 B/C 未开始
 - [`2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) — A10 客户端执行证据；唯一根、source identity、本地 request provider、增量链、full oracle、三轴 route 与 presentation transaction 已通过，不代表 live LOD material id 已通过
 - [`2026-07-23-far-lod-surface-material-semantic-repair.md`](voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md) — 当前客户端阻断项；记录粗 LOD 中心采样漏掉薄表层的证据、canonical reducer 边界、观察面、测试矩阵与下一会话顺序
 - [`2026-07-14-a10-uncommitted-code-audit.md`](voxel-far-field/2026-07-14-a10-uncommitted-code-audit.md) — 跨机合并前的 A10 代码审计与 S1b-1 边界证据

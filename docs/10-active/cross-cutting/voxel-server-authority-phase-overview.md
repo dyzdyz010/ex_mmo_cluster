@@ -7,8 +7,8 @@
 > `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为
 > `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。XZ tile column、有限 Y
 > 呈现带和固定 `Tile.Y=0` 只保留在归档证据中。Pure3D far 已进入唯一生产根，阶段 1
-> lifecycle/ownership、阶段 2 与 A8/A10 跨 LOD 外露材质语义均已完成。Online confirmed
-> provider 与阶段 3 Prefab 尚未接入。
+> lifecycle/ownership、阶段 2、阶段 3 Prefab RuntimeMock 与 A8/A10 跨 LOD 外露材质语义均已完成。
+> Online confirmed provider、Prefab Designer 与正式 definition 发布尚未接入。
 
 ## 起点参考
 
@@ -16,7 +16,7 @@
 - **旧体素同步 · 版本 · 滑动窗口 · 渲染设计（2026-06-29，已归档)**:[`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md) —— 历史 HOW 证据；版本正交、content_version 与动态层边界仍可参考，但 XZ column、有限 Y 和旧窗口预算已经失效。
 - **旧体素生成 / 流送 / Voxia 加载渲染实施计划（2026-06-30，已归档)**:[`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) —— 历史 Phase 0-8 执行证据；H、H gate、canonical 等术语仍可查证，空间契约以纯 3D 主线为准。
 - **WorldGen v1 确定性地形生成设计（2026-06-30，已归档)**:[`docs/20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../../20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) —— 旧 2.5D 算法稿只保留为迁移证据，不再是目标契约；当前目标是 `chunk_xyz -> canonical 3D chunk`，地表只是三维密度算子的一种内容结果。
-- **里程碑 A 扩展：完整 3D 体素立方壳与客户端流送（2026-07-12，唯一现役上位主线)**:[`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) —— 唯一根、source identity、H-gated local provider、Pure3D far 增量链、full oracle、三轴 route、confirmed presentation transaction、shared renderer 材质合同与 live LOD material id 语义均已实跑收口；见 [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)。Online authority/provider、阶段 3 与 B/C 均未开始。
+- **里程碑 A 扩展：完整 3D 体素立方壳与客户端流送（2026-07-12，唯一现役上位主线)**:[`2026-07-12-pure-3d-voxel-shell-migration.md`](../voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) —— 唯一根、source identity、H-gated local provider、Pure3D far 增量链、full oracle、三轴 route、confirmed presentation transaction、shared renderer 材质合同、live LOD material id 语义与阶段 3 RuntimeMock 均已实跑收口；见 [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)。Online authority/provider 与 B/C 均未开始。
 - **Voxia SVO 远景预览设计（2026-06-30，已归档)**:[`docs/20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md) —— 历史 occupancy preview 与性能目标证据；不定义当前 shell/page/live 契约。
 - **Voxia 远景公共组件抽取 + VHI 2.5D baseline 定位（2026-06-30，已归档)**:[`docs/20-archive/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md`](../../20-archive/voxel-far-field/2026-06-30-voxia-farfield-common-components-and-vhi-baseline.md) —— 历史组件抽取与 2.5D baseline 证据；不得作为当前 coverage 或内容模型。
 - **Voxia 体素管理管线历史生产路线（2026-07-05，已归档)**:[`docs/20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md`](../../20-archive/voxel-far-field/2026-07-05-voxia-voxel-lod-production-route.md) —— 历史 L0-L4 路线与预算证据；其中 XZ/column 与 raymarch 候选口径已被当前纯 3D、mesh-only 作战主线取代。

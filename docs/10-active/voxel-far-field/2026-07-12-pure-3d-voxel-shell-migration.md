@@ -14,12 +14,13 @@
   receipt 与完整 XYZ 移动安全门的核心代码已落地。2026-08-03 又收口 Root 单槽 Near source
   lease、普通 XYZ 相邻推进/显式 Relocate、Far demand-driven mailbox 与取件/呈现分帧：当前
   handoff 未完整时后继 source 不得覆盖 prepared slot，metadata handoff 不再等待 speculative
-  mailbox 清空。合并树通过 Development build、Automation `192/192`、Node `106/106`、35 路
-  Phase 1、Phase 2 与连续两轮严格 1280×720 Real-RHI 门禁；58 次普通 source acquisition
-  最大单轴步长为 1，572 个 renderer transition sample 无 gap/overlap/orphan。当前树的 5 分钟
-  以上资源长稳、更多硬件与 Real-RHI 用户可见竖墙复验待刷新；
+  mailbox 清空。后继 Phase 3 树通过 clean Development build、Automation `213/213`（`0` failed/not-run；
+  唯一 warning 为外部 `generate_204` HTTP 超时）、Node `124/124`、35 路
+  Phase 1、Phase 2/3 与连续 Real-RHI 门禁；58 次普通 source acquisition
+  最大单轴步长为 1，572 个 renderer transition sample 无 gap/overlap/orphan；Phase 3 又完成
+  1920×1080 30 分钟持续 XYZ 流送。更多硬件与 Real-RHI 用户可见竖墙复验待刷新；
   完成人工复验前，真实墙面视觉项保持未关闭；
-  Online authority/provider、阶段 3 Prefab 与里程碑 B/C 尚未开始
+  Online authority/provider 与里程碑 B/C 尚未开始；阶段 3 RuntimeMock 已完成
 - **取代范围**：取代 [`2026-07-11-3d-lod-sliding-window.md`](../../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md) 中“保留 2.5D WorldGen 内容前提再扩展远景窗口”的迁移口径
 - **影响范围**：WorldGen 生成边界、canonical chunk/source page、Voxia near/far coverage、LOD 材质、presentation ownership、调试与验收
 - **不改变**：服务端权威、H gate、confirmed truth 来源、编辑事务、ChunkProcess 所有权

@@ -3,7 +3,7 @@
 - **日期**：2026-07-23
 - **状态**：canonical 外露材质语义、最终 ownership MID 绑定及其后暴露的 near transition /
   completed-successor 活性回归均已修复，并完成全量/Null-RHI/可见 Real-RHI/代码审查；
-  本项不再阻断阶段 3，但阶段 3 尚未启动
+  本项不再阻断阶段 3；后继阶段 3 RuntimeMock 已完成
 - **影响范围**：canonical page/LOD material reducer、artifact schema/fingerprint、live CLI/observe、
   SceneHost 材质组合、near settled-source policy、自动化与 Real-RHI 验收
 - **不改变**：服务端权威边界、完整 XYZ coverage、near/far 唯一 owner、Tile handoff、粗 occupancy、

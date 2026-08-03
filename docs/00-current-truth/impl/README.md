@@ -27,10 +27,10 @@
 
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；唯一 `L_VoxiaProductionWorld`、编辑器作者态环境/组合与六个分离 LOD 预览 Actor、默认 RuntimeMock、Patch-diff 无空洞交接、真实 renderer proof、完整 XYZ 移动安全门和阶段 2 已合入独立仓库 `master`；完整全方向与严格性能门已通过，当前树长稳/多硬件和层间墙人工视觉复验仍待刷新；阶段 3 prefab 尚未启动，Online 后置 |
+| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；唯一 `L_VoxiaProductionWorld`、编辑器作者态环境/组合与六个分离 LOD 预览 Actor、默认 RuntimeMock、Patch-diff 无空洞交接、真实 renderer proof、完整 XYZ 移动安全门、阶段 2 宏格交互和阶段 3 prefab 均已闭环；当前树 30 分钟长稳完成，多硬件与层间墙人工视觉复验仍后置；Online 未开始 |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
-| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | A8/A10 跨 LOD 表面材质语义保持与 Patch-diff 完整全方向/严格性能门完成；当前树长稳、多硬件与层间墙人工视觉复验待刷新；阶段 3、Online provider 与 B/C 未开始 |
+| Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | A8/A10 跨 LOD 表面材质语义保持与 Patch-diff 完整全方向/严格性能门完成；阶段 3 RuntimeMock 与当前树 30 分钟长稳完成；多硬件、层间墙人工视觉复验、Online provider 与 B/C 后置 |
 | Voxia Near Patch stream | `clients/Voxia/Source/Voxia/Gameplay/VoxiaNearPatchBuildIndex.*` + `VoxiaNearPatchAssembler.*` + `VoxiaWorldActor.*` | 27 tiles/9261 chunks；固定 `4³ chunks` Patch 与 `3³=27` source stencil；相邻窗口共享编号但边缘范围不同时先提交新旧 chunks 并集，精确 Far 接管后再原子收窄；confirmed 单 Chunk edit 固定原子提交 1–8 Patch，不等待完整 Tile |
 | Voxia Patch target / transition | `clients/Voxia/Source/Voxia/Presentation/VoxiaPatchStreamingContract.*` + `VoxiaPatchTransitionPlan.*` + `Gameplay/VoxiaNearSourceActivationGate.*` + `VoxiaUnifiedVoxelWorldActor.*` | 唯一 TargetKey 与 Root 单槽 source lease；普通连续移动每轴最多一 tile，当前 handoff 未完整时后继 source deferred；仅调用方显式 `explicit_relocate` 可直达；Adjacent 保留旧 Far，新 Near 完整后只发布退场所需 Far，再收窄/移除旧 Near；`playable`、`handoff_complete`、`settled` 分离 |
 | Voxia presentation ledger | `clients/Voxia/Source/Voxia/Presentation/VoxiaPresentationCommitLedger.*` + `VoxiaRendererCoverage.*` + `VoxiaBoundaryBatchMeshBuilder.*` + `Gameplay/VoxiaVoxelPresentationSceneHost.*` | 唯一 live Near/Far Patch、exact ownership、canonical boundary slots、真实 renderer component receipt 与 staging/post-visibility fence truth；Far commit 同事务携带逐 live-Patch 精确 coverage/层间墙凭证；SceneHost 持续维护 Near 完整性与 renderer coverage 索引，每帧至多构建一个 boundary 物理 batch；真实 `LayerFace` 已通过完整 Null/Real-RHI 结构化路线，人工视觉复验仍待完成 |
@@ -39,6 +39,7 @@
 | Voxia confirmed world model | `clients/Voxia/Source/Voxia/Voxel/WorldModel/` | 唯一 confirmed aggregate、candidate-then-publish reducer、三态 sparse overlay、完整 XYZ conflict algebra 与只读 query |
 | Voxia authority boundary | `clients/Voxia/Source/Voxia/Authority/` | intent ledger、确定性 Mock adapter、类型化事件 correlation、presentation work/ack history 与 session reset |
 | Voxia 宏格交互 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaBuildInteractionController.*` | 真实鼠标/Automation/CLI 共用 signed64 XYZ selection/gateway；只支持完整宏格 place/break，拒绝普通微格编辑 |
+| Voxia Prefab RuntimeMock | `clients/Voxia/Source/Voxia/Voxel/PrefabRuntime/` + `Gameplay/VoxiaBuildInteractionController.*` + `Debug/VoxiaPrefabDebugDiagnostics.*` | immutable definition/Orientation24、层级 directory/coverage、exact footprint/query、原子 place/remove/replace、Near/Far presented session snapshot 与 CLI/CPU/资源门禁；不扩展 Online wire/authority |
 | Voxia confirmed presentation | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | freeze frame、exact near/far owner reservation、fence、receipt ack、finalize/recovery 的单一有序事务 |
 | Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；已由 A10 开发根消费，不读取 WorldGen 或 renderer |
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
@@ -77,6 +78,9 @@
 - Voxia 竖直同管线 smoke：`node clients/Voxia/scripts/run_phase1_world_lifecycle_smoke.js --nullrhi --vertical-only --short`
 - Voxia 三格移动门 smoke：`node clients/Voxia/scripts/run_phase1_world_lifecycle_smoke.js --movement-guard-only`
 - Voxia 阶段 2 联合 smoke：`node clients/Voxia/scripts/run_phase2_macro_interaction_smoke.js --nullrhi --resolution 1280x720`
+- Voxia 阶段 3 联合 smoke：`node clients/Voxia/scripts/run_phase3_prefab_runtime_smoke.js --null-rhi --resolution 1280x720`
+- Voxia 阶段 3 可见长稳：`node clients/Voxia/scripts/run_phase3_prefab_runtime_smoke.js --real-rhi --resolution 1920x1080 --soak-minutes 30`
+- Voxia Prefab CLI：`prefab instance-inspect|micro-trace|coverage-inspect|select-parent|select-child|remove-selected|replace-selected|runtime-metrics`
 - Voxia 世界只读诊断：`world intent-status <id>`、`world macro-inspect <x> <y> <z>`、`world transaction-inspect <revision>`、`world parity-check`
 - Voxia 定向 automation：`Automation RunTests Voxia.Voxel`、`Automation RunTests Voxia.Gameplay`、`Automation RunTests Voxia.Presentation`
 - Voxia server CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`
@@ -84,15 +88,13 @@
 
 ## 注意
 
-阶段 1 仍保留其 1920×1080 Null-RHI、Real-RHI 完整生命周期、RG6 七路线和两项 30 分钟
-长稳证据；阶段 2 保留 1920×1080 D3D12 30 分钟长稳、49 个样本、105 次 far commit 与有界
-artifact cache。当前源码的 Far LOD surface material、最终 ownership parent、边界包络、
-completed-successor 活性、同窗口 candidate refresh 与 exact far live identity 已共同收口：
-Development build success，完整 Voxia Automation `192/192`（`190` success + `2` expected-warning
-success）、Node `106/106`，35 路 Phase 1、Phase 2 与 1280×720 Real-RHI 严格往返门禁均
-`passed=true`。Phase 1 记录 58 次 source acquisition，普通移动最大单轴步长为 1；572 个
-renderer transition sample 的 gap/overlap/orphan 均为 0。最新树的 5 分钟以上资源长稳与更多
-硬件仍需刷新。
+阶段 1/2 仍保留其完整生命周期、RG6 与历史长稳证据；当前 Phase 3 树又通过 clean
+Development build、Voxia Automation `213/213`（`0` failed/not-run；唯一 warning 为外部
+`generate_204` HTTP 超时）、Node `124/124`、Null-RHI `18/18`、
+1920×1080 可见短路线和 30 分钟持续 XYZ 流送。34 个长稳样本的 confirmed prefab 资源
+current 零漂移，coverage/seam/`LogVoxia Error` 均为 0。Phase 1 的 58 次 source acquisition
+普通移动最大单轴步长仍为 1，572 个 renderer transition sample 的 gap/overlap/orphan 均为 0；
+更多硬件仍需刷新。
 
 最终 D3D12 严格路线连续两轮使用唯一生产根完成相邻往返并 clean exit。末轮 Far release=
 `29/29/0`，两窗 frame p95=`7.692/7.692ms`、GT p95=`2.485/2.542ms`、GPU
@@ -100,6 +102,6 @@ p95=`2.750/2.699ms`，全部低于原有严格门槛。Null-RHI 完整路线覆�
 完整 XYZ 对角移动、快速反向、显式 Relocate 与四种阶段暂停；near-only/far-only 仍只能作为
 probe，质量档仍只属于同一生产根策略。
 
-完整 3D 的“离线 Mock 客户端 lifecycle/ownership、阶段 2 与 surface semantic repair”及
+完整 3D 的“离线 Mock 客户端 lifecycle/ownership、阶段 2/3 与 surface semantic repair”及
 “Online production authority”必须分开表述：前者已经完成；后者仍需要服务端 H-gated pages、
 subscription/delta、续租、重连和默认在线切流，不能用本地 WorldGen/Mock 成果冒充。

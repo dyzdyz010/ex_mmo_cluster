@@ -13,16 +13,16 @@
 - Near Patch=`4³ chunks`；
 - Far Patch=`8³ tiles`；
 - `UVoxiaVoxelPresentationSceneHost` 的 `PresentationCommitLedger` 是唯一 live presentation truth；
-- 默认 profile 为 `RuntimeMock`；Online confirmed truth 只来自服务端，离线 Phase 2 truth 只来自
+- 默认 profile 为 `RuntimeMock`；Online confirmed truth 只来自服务端，离线 Phase 2/3 truth 只来自
   session-local Mock authority，Online provider 未实现时显式失败；
 - baseline/H/manifest/hash/diff chain 不可信时拒绝入场，不使用运行时快照自愈；
 - Web/Bevy 归档，不进入现役完成度或验证。
 
-当前 Patch-diff 无空洞改造已经进入 Voxia 独立仓库 `master`。2026-08-02 的合并树已完成
-Development build、完整 Automation、完整 XYZ/负坐标/长距离/快速折返 Phase 1、移动安全门、
-竖直路线、Phase 2 与严格 1280×720 Real-RHI 往返门禁；既有性能阈值没有放宽。当前仍未
-刷新的是这棵新树的 5 分钟以上资源长稳、更多硬件矩阵，以及曾由用户发现的层间墙问题的
-最新人工视觉复验；这些不能由旧长稳或结构化计数替代。
+当前 Patch-diff 无空洞改造已经进入 Voxia 独立仓库 `master`；Phase 3 分支在其上完成
+Development clean build、完整 Automation、完整 XYZ/负坐标/长距离/快速折返 Phase 1、移动安全门、
+竖直路线、Phase 2/3 与严格 Real-RHI 门禁，既有性能阈值没有放宽。当前树已刷新 30 分钟
+1920×1080 持续 XYZ 流送与资源零漂移；仍未完成的是更多硬件矩阵，以及曾由用户发现的
+层间墙问题的最新人工视觉复验，这两项不能由结构化计数替代。
 
 ## 唯一 Target 与 Owner
 
@@ -116,6 +116,11 @@ Speculative 队列使用，不能套在当前必需加载上。
    通过 far release queue 异步释放；
 7. 完整 `FVoxiaWorldGenVoxelShellBuildResult` 结束后只归档 residency、artifact cache、
    coverage/observation generation。
+
+后台跳过 Far mesh 重建必须逐字段匹配提交账本中的完整 `FVoxiaFarPatchVersion`：page owner、
+source、content、dependency、boundary profile 与 content state 缺一不可。只有不会清空 live
+ledger 的 `AdjacentStep` 可提供复用集合；Bootstrap/Relocate 必须传空集合并重建。否则 manifest
+会声明目标 Patch 存在，而旧 ledger/组件已在 relocate 时清空，最终形成永久缺块。
 
 因此 first Far Patch 不等待完整 Far target 或整次 BuildFuture。
 
@@ -310,9 +315,10 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 2026-08-03 合并树证据：
 
-- UE 5.8 Development build 成功；完整 `Automation RunTests Voxia` 为
-  `190 Success + 2 expected-warning Success = 192/192`，失败、未运行与进行中均为 `0`；
-- Node 合同测试 `106/106` 通过；生产地图验证为一个组合预览 Actor、Near + FarLOD0–4
+- UE 5.8 clean Development build 成功；完整 `Automation RunTests Voxia` 执行 `213/213`，
+  `212` success、`1` success-with-warning，失败、未运行与进行中均为 `0`；唯一 warning
+  是 UE 启动期外部 `generate_204` HTTP 超时，不是 Voxia 测试断言或运行时错误；
+- Node 合同测试 `124/124` 通过；生产地图验证为一个组合预览 Actor、Near + FarLOD0–4
   六个独立预览 Actor、零 authored runtime root，七个 serial 同步，组合与 Gallery 均为
   `9158` triangles；
 - 1280×720 Null-RHI 完整 Phase 1 共 `35` 条路线，覆盖长距离、负坐标、完整 XYZ 对角移动、
@@ -324,6 +330,9 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
   地面→全空气 Near/Far 可见→下降恢复；
 - Phase 2 place/break 均达到 submitted/accepted/confirmed/presented，revision=`1/2`，
   X/Y/Z 各移动 `80 tiles` 后卸载/重载保持真值，最终状态为空；
+- Phase 3 Null-RHI `18/18` 覆盖同宏格非重叠、Solid/Prefab 双向冲突、24 向、层级
+  remove/replace、XYZ 重载与真实持续移动；1920×1080 可见短路线通过，随后 30 分钟完成 34 个
+  XYZ 往返样本，confirmed prefab 资源 current 零漂移，coverage/seam/Error 均为 0；
 - 1280×720 Real-RHI 连续两轮通过；末轮往返两窗 frame p95=`7.692/7.692ms`、
   GameThread p95=`2.485/2.542ms`、GPU p95=`2.750/2.699ms`。原门槛仍为 frame
   p95≤`8.33ms`/p99≤`11.11ms`、GT p95≤`3.5ms`/p99≤`8.33ms`、GPU p95≤`6ms`，
@@ -331,10 +340,11 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 
 当前仍需刷新：
 
-- 当前合并树的 5 分钟以上资源长稳、低配置/更多驱动的发布硬件矩阵；
+- 低配置/更多驱动的发布硬件矩阵；
 - Near/Far 与 Far/Far LOD 层间墙的用户可见复验。机器路线已经通过，但视觉判断不能由
   gap/slot/component 计数代替；
-- Online authority/provider 与阶段 3 Prefab，二者不属于本轮客户端离线 Mock closeout。
+- Online authority/provider 与 Prefab Designer/正式内容发布；阶段 3 RuntimeMock 已完成，但不属于
+  Online authority 或 wire cutover。
 
 ## 相关文档
 

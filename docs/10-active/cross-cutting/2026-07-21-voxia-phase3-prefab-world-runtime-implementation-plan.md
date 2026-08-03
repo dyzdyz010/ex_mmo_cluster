@@ -1,6 +1,9 @@
 # Voxia 阶段 3 Prefab 世界运行时实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **完成状态（2026-08-03）：** Task 1–10 已实现并通过 clean build、UE Automation `213/213`
+>（`0` failed/not-run；唯一 warning 为外部 `generate_204` HTTP 超时）、Node `124/124`、
+> Null-RHI `18/18`、1920×1080 可见短路线与 30 分钟持续 XYZ 流送。
+> 当前仍后置 Online authority/wire、Prefab Designer、更多硬件与层间墙人工视觉复验。
 
 **Goal:** 在已验收的阶段 2 authority/reducer/presentation 骨架上，实现 immutable prefab catalog、24 向变换、跨宏格精确 footprint、instance directory、微格级命中/碰撞、层级选择、原子放置/移除/替换和 near/far 一致呈现。
 
@@ -8,10 +11,10 @@
 
 **Tech Stack:** Unreal Engine 5.8、C++20/UE Core、UE Automation、DynamicMesh/Pure3D presentation、Node.js stdio CLI smoke。
 
-> **当前执行门禁（2026-07-23）：** 阶段 1/A8-A10 的
+> **执行基线：** 阶段 1/A8-A10 的
 > [`Far LOD 外露表面材质语义修复`](../voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)
 > 已通过完整自动化、Null-RHI 与 Real-RHI closeout，修复后的 VXP5 canonical material/surface
-> contract 可作为阶段 3 基线。本计划设计不变，本轮没有开始阶段 3。
+> contract 已作为阶段 3 基线；实现没有修改服务端、wire 或 Online provider。
 
 ## Global Constraints
 
@@ -107,7 +110,7 @@ Source/Voxia/Debug/VoxiaDebugCommandHandlers.h/.cpp
 - Consumes: stage 2 world-micro/macro types、existing 7 builtin fixtures。
 - Produces: `FVoxiaPrefabDefinition`、`FVoxiaPrefabDefinitionIdentity`、`FVoxiaPrefabOrientation24`、immutable fixture catalog。
 
-- [ ] **Step 1: 写 Orientation/definition RED 测试**
+- [x] **Step 1: 写 Orientation/definition RED 测试**
 
 ```cpp
 const TArray<FVoxiaPrefabOrientation24> All = FVoxiaPrefabOrientation24::All();
@@ -128,13 +131,13 @@ const auto B = MakeFixtureDefinition(1, TEXT("hash-b"));
 TestFalse(TEXT("同 id 不同内容非法"), FVoxiaPrefabDefinition::CanCoexist(A, B));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.Orientation`
 
 Expected: FAIL，orientation/definition 类型尚不存在。
 
-- [ ] **Step 3: 实现整数 basis 与 immutable fixture catalog**
+- [x] **Step 3: 实现整数 basis 与 immutable fixture catalog**
 
 ```cpp
 struct FVoxiaPrefabOrientation24
@@ -164,13 +167,13 @@ struct FVoxiaPrefabDefinitionIdentity
 
 将七个 builtin 转换为 immutable compiled fixtures；不再称作“与归档 Web 公式同步”。每个 fixture 明确 allowed orientation set 和 content hash。
 
-- [ ] **Step 4: 运行 orientation/catalog tests**
+- [x] **Step 4: 运行 orientation/catalog tests**
 
 Run: `Automation RunTests Voxia.Prefab.Orientation; Automation RunTests Voxia.Voxel.PrefabCatalog`
 
 Expected: PASS；24 个方向唯一、组合/逆正确，旧 0..3 yaw fixture 映射保持显式 compatibility 测试但不成为新 runtime 限制。
 
-- [ ] **Step 5: 提交 definition/orientation**
+- [x] **Step 5: 提交 definition/orientation**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/VoxiaPrefabCatalog.*
@@ -191,7 +194,7 @@ git -C clients/Voxia commit -m "feat(prefab): add immutable definitions and orie
 - Consumes: immutable definitions、stage 2 snapshot/revision。
 - Produces: `FVoxiaPrefabInstanceRecord`、`FVoxiaPrefabInstanceDirectory`、`FVoxiaPrefabCoverageIndex::Rebuild/QueryInclusive`。
 
-- [ ] **Step 1: 写 directory/index RED 测试**
+- [x] **Step 1: 写 directory/index RED 测试**
 
 ```cpp
 Directory.Add(MakeRoot(100, PrefabHouse));
@@ -207,13 +210,13 @@ TestEqual(TEXT("root inclusive mask"), Coverage.QueryInclusive(100), UnionMasks(
 TestEqual(TEXT("leaf direct mask"), Coverage.QueryInclusive(102), DirectMask(102));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.InstanceDirectory`
 
 Expected: FAIL，directory/index 尚不存在。
 
-- [ ] **Step 3: 实现 occurrence tree 和压缩 coverage**
+- [x] **Step 3: 实现 occurrence tree 和压缩 coverage**
 
 ```cpp
 struct FVoxiaPrefabInstanceRecord
@@ -234,13 +237,13 @@ using FVoxiaCoverageSlice = TPair<FVoxiaWorldMacroKey, TVoxiaMicroMask512>;
 
 index 物理表示为 sorted `{macro, mask}`，不保存 512 个 world coordinate。directory/index 无 public mutator；只有 reducer candidate builder 可写。
 
-- [ ] **Step 4: 运行 directory/index tests**
+- [x] **Step 4: 运行 directory/index tests**
 
 Run: `Automation RunTests Voxia.Prefab.InstanceDirectory`
 
 Expected: PASS，覆盖重复 PrefabRef、空 direct parent、cycle、missing parent、不同 root、index rebuild parity。
 
-- [ ] **Step 5: 提交 identity/index**
+- [x] **Step 5: 提交 identity/index**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/WorldModel/VoxiaConfirmedWorldState.h
@@ -263,7 +266,7 @@ git -C clients/Voxia commit -m "feat(prefab): add instance directory and coverag
 - Consumes: definition catalog、Orientation24、confirmed query。
 - Produces: `FVoxiaCompiledPrefabFootprint`、`FVoxiaPrefabPlacementPlan`、place/remove/replace conflict claims。
 
-- [ ] **Step 1: 写跨边界与冲突 RED 测试**
+- [x] **Step 1: 写跨边界与冲突 RED 测试**
 
 ```cpp
 const auto Plan = Planner.PlanPlace(Definition, {-1, -8, -9}, Orientation17, Snapshot);
@@ -279,13 +282,13 @@ Snapshot.PutSolidMacro(Macro, 7);
 TestEqual(TEXT("Solid 拒绝 prefab"), Planner.PlanPlace(Definition, Anchor, O0, Snapshot).Reason, TEXT("occupied_by_solid_macro"));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.PlacementPlanner`
 
 Expected: FAIL，planner/footprint 尚不存在。
 
-- [ ] **Step 3: 实现纯整数展开和 limits**
+- [x] **Step 3: 实现纯整数展开和 limits**
 
 ```cpp
 FVoxiaPrefabPlacementPlan FVoxiaPrefabPlacementPlanner::PlanPlace(
@@ -307,13 +310,13 @@ FVoxiaPrefabPlacementPlan FVoxiaPrefabPlacementPlanner::PlanPlace(
 
 用 checked integer addition；overflow、cycle、invalid orientation、empty footprint、owner/material mismatch 全部显式拒绝。no-floating 邻域进入 validation-read claim，不建立持续支撑依赖。
 
-- [ ] **Step 4: 运行 planner tests**
+- [x] **Step 4: 运行 planner tests**
 
 Run: `Automation RunTests Voxia.Prefab.PlacementPlanner`
 
 Expected: PASS，覆盖 24 orientation、三轴负坐标、跨 macro/chunk、limit、Solid/prefab、prefab/prefab、validation read。
 
-- [ ] **Step 5: 提交 footprint/planner**
+- [x] **Step 5: 提交 footprint/planner**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/WorldModel
@@ -336,7 +339,7 @@ git -C clients/Voxia commit -m "feat(prefab): plan exact cross-macro footprints"
 - Consumes: placement plan、instance directory/index。
 - Produces: `RefinedProjection` material+leaf slots、prefab instance mutations、provisional→confirmed mapping。
 
-- [ ] **Step 1: 写原子 place RED 测试**
+- [x] **Step 1: 写原子 place RED 测试**
 
 ```cpp
 const auto Handle = Gateway.SubmitPrefabPlace(MakePlaceRequest(PrefabId, Anchor, Orientation));
@@ -355,13 +358,13 @@ Mock.Drain(Failed);
 TestEqual(TEXT("故障不发布半个 prefab"), Confirmed.Snapshot().ConfirmedWorldRevision, 1ULL);
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Authority.MockPrefab`
 
 Expected: FAIL，reducer 尚未支持 prefab mutations。
 
-- [ ] **Step 3: 扩展 candidate builder**
+- [x] **Step 3: 扩展 candidate builder**
 
 ```cpp
 struct FVoxiaProjectedMicro
@@ -391,13 +394,13 @@ bool FVoxiaConfirmedWorldReducer::ApplyPrefabAdds(
 
 Mock authority 独立分配 confirmed ids，client provisional ids 只存在 ledger/preview。一次事件携带全部 instance adds、macro patches、mapping 和 exact affected set。
 
-- [ ] **Step 4: 运行 Mock/reducer tests**
+- [x] **Step 4: 运行 Mock/reducer tests**
 
 Run: `Automation RunTests Voxia.Authority.MockPrefab; Automation RunTests Voxia.WorldModel.Reducer`
 
 Expected: PASS；同宏格两个不重叠 prefab 保留各自 material/leaf；fault injection 不发布 candidate。
 
-- [ ] **Step 5: 提交原子 place**
+- [x] **Step 5: 提交原子 place**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/WorldModel Source/Voxia/Authority
@@ -421,7 +424,7 @@ git -C clients/Voxia commit -m "feat(prefab): confirm atomic prefab placement"
 - Consumes: presented world query、MacroSpace tri-state。
 - Produces: exact `FVoxiaWorldHit`、`FVoxiaPrefabSurfaceQuery::IsOccupied`、micro-accurate collision/surface。
 
-- [ ] **Step 1: 写空隙/边界 RED 测试**
+- [x] **Step 1: 写空隙/边界 RED 测试**
 
 ```cpp
 World.PutPrefabMicro(Macro0, SlotFarCorner, 100, 4);
@@ -436,13 +439,13 @@ TestTrue(TEXT("occupied micro 阻挡"), Collision.Overlaps(PlayerBoxAtOccupiedSl
 TestFalse(TEXT("solid-refined 接缝无内面"), Surface.EmitsInteriorFace(SolidSide, RefinedFilledBoundary));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.SurfaceQuery`
 
 Expected: FAIL，旧 raycast/collision 仍把 refined macro 当整块。
 
-- [ ] **Step 3: 实现统一三态 surface query**
+- [x] **Step 3: 实现统一三态 surface query**
 
 ```cpp
 enum class EVoxiaOccupancyQueryResult : uint8
@@ -464,13 +467,13 @@ FVoxiaWorldHit RaycastVoxels(
 
 宏格 DDA 进入 Refined 后执行 12.5cm micro DDA；未命中继续外层 DDA。surface query 跨 macro/chunk 查询六邻；Solid 查询时等价全 512 occupied，不持久展开。Unavailable 返回不可编辑/等待依赖，禁止当 air。
 
-- [ ] **Step 4: 运行 ray/collision/surface tests**
+- [x] **Step 4: 运行 ray/collision/surface tests**
 
 Run: `Automation RunTests Voxia.Prefab.SurfaceQuery; Automation RunTests Voxia.Gameplay.CharacterMovement`
 
 Expected: PASS，覆盖 solid↔refined、refined↔refined、不同 prefab 同宏格、chunk seam、Unavailable。
 
-- [ ] **Step 5: 提交精确空间查询**
+- [x] **Step 5: 提交精确空间查询**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/VoxiaVoxelRaycast.* Source/Voxia/Gameplay/VoxiaCharacterMovement.cpp Source/Voxia/Gameplay/VoxiaWorldActor.* Source/Voxia/Gameplay/VoxiaNearActivePresentation.cpp
@@ -490,7 +493,7 @@ git -C clients/Voxia commit -m "feat(prefab): add exact micro spatial queries"
 - Consumes: placement planner、exact hit、interaction gateway。
 - Produces: face-aligned preview、contextual `R` orientation cycle、single prefab place intent。
 
-- [ ] **Step 1: 写 preview/input RED 测试**
+- [x] **Step 1: 写 preview/input RED 测试**
 
 ```cpp
 Controller.SelectPrefab(PrefabId);
@@ -504,13 +507,13 @@ TestEqual(TEXT("只提交一个 prefab intent"), Gateway.PrefabPlaces.Num(), 1);
 TestEqual(TEXT("preview 不写 confirmed"), Confirmed.PrefabDirectory.Num(), 0);
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Phase3.PrefabInteraction`
 
 Expected: FAIL，prefab feature 仍锁定且 controller 使用旧 preview。
 
-- [ ] **Step 3: 接入 planner 与 context priority**
+- [x] **Step 3: 接入 planner 与 context priority**
 
 controller 保存：
 
@@ -529,13 +532,13 @@ struct FVoxiaPrefabPreviewState
 
 有效 preview context 中 `R` 旋转，其他上下文继续 remote action；Alt+滚轮由 Task 7 selection 消费，普通滚轮仍切热栏。`FeatureGate("prefab")` 在阶段 3 Mock session 解锁。
 
-- [ ] **Step 4: 运行 interaction tests**
+- [x] **Step 4: 运行 interaction tests**
 
 Run: `Automation RunTests Voxia.Phase3.PrefabInteraction; Automation RunTests Voxia.Gameplay.PawnControllerOwnership`
 
 Expected: PASS；controller 只调用 planner/query/gateway，不读取 Mock/codec/Transport。
 
-- [ ] **Step 5: 提交 place 交互**
+- [x] **Step 5: 提交 place 交互**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Gameplay
@@ -557,7 +560,7 @@ git -C clients/Voxia commit -m "feat(gameplay): add prefab preview and placement
 - Consumes: exact hit path、directory、coverage index。
 - Produces: `FVoxiaPrefabSelectionModel`、Alt+wheel layer change、`PrefabRemoveIntent`、hold/feedback states。
 
-- [ ] **Step 1: 写 selection/remove RED 测试**
+- [x] **Step 1: 写 selection/remove RED 测试**
 
 ```cpp
 Selection.UpdateHit(Path100_104, Revision7);
@@ -576,13 +579,13 @@ TestFalse(TEXT("A subtree 已删除"), Confirmed.Directory.Contains(200));
 TestTrue(TEXT("同宏格 B 保留"), Confirmed.Directory.Contains(300));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.Selection`
 
 Expected: FAIL，selection model/remove intent 尚不存在。
 
-- [ ] **Step 3: 实现 path 选择、hold 与一次性 remove**
+- [x] **Step 3: 实现 path 选择、hold 与一次性 remove**
 
 ```cpp
 struct FVoxiaPrefabRemoveRequest
@@ -596,13 +599,13 @@ struct FVoxiaPrefabRemoveRequest
 
 leaf 直接提交；non-leaf 使用设计稿冻结的 0.6s hold token，绑定 selected id、selection fingerprint 和 revision。authority 从 directory 重算 subtree/inclusive coverage；reducer 同 transaction 删除 records、projection、index。parent 在 child 删除后保留为部分 realization并递增 instance version。
 
-- [ ] **Step 4: 运行 selection/remove tests**
+- [x] **Step 4: 运行 selection/remove tests**
 
 Run: `Automation RunTests Voxia.Prefab.Selection; Automation RunTests Voxia.Authority.MockPrefab`
 
 Expected: PASS，覆盖 leaf/parent/root、同宏格 B 保留、跨 chunk 非 resident coverage、hold cancel/reject/presented feedback。
 
-- [ ] **Step 5: 提交 selection/remove**
+- [x] **Step 5: 提交 selection/remove**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/WorldModel/VoxiaWorldIntent.h Source/Voxia/Authority/VoxiaMockWorldAuthorityAdapter.cpp Source/Voxia/Gameplay/VoxiaBuildInteractionController.*
@@ -624,7 +627,7 @@ git -C clients/Voxia commit -m "feat(prefab): select and remove prefab subtrees 
 - Consumes: selected subtree、target definition、old/new planner。
 - Produces: retained/added/removed preview、`PrefabReplaceIntent`、old→new selection mapping。
 
-- [ ] **Step 1: 写 replace RED 测试**
+- [x] **Step 1: 写 replace RED 测试**
 
 ```cpp
 const auto Preview = Planner.PlanReplace(SourceChildId, TargetPrefabId, Snapshot);
@@ -639,13 +642,13 @@ TestTrue(TEXT("新 root 挂同 slot"), Confirmed.Directory.Get(NewChildId).Compo
 TestTrue(TEXT("无半状态"), Confirmed.ValidateEntityProjectionIndexParity());
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Prefab.Replace`
 
 Expected: FAIL，replace intent/plan 尚不存在。
 
-- [ ] **Step 3: 实现 state-old+new candidate**
+- [x] **Step 3: 实现 state-old+new candidate**
 
 ```cpp
 FVoxiaPrefabReplacePlan FVoxiaPrefabPlacementPlanner::PlanReplace(
@@ -662,13 +665,13 @@ FVoxiaPrefabReplacePlan FVoxiaPrefabPlacementPlanner::PlanReplace(
 
 不自动平移/换向/缩放。old ids 永不复用；target root/new descendants 全部由 authority 分配。child replace 保留外层 parent 和 attachment slot；root replace 产生新 root id。reducer 一次 swap。
 
-- [ ] **Step 4: 运行 replace/fault tests**
+- [x] **Step 4: 运行 replace/fault tests**
 
 Run: `Automation RunTests Voxia.Prefab.Replace; Automation RunTests Voxia.WorldModel.Reducer`
 
 Expected: PASS，覆盖 child/root、invalid orientation、target conflict、same-macro unrelated prefab、candidate 中点故障与 duplicate request。
 
-- [ ] **Step 5: 提交 replace**
+- [x] **Step 5: 提交 replace**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Voxel/PrefabRuntime Source/Voxia/Voxel/WorldModel/VoxiaWorldIntent.h Source/Voxia/Authority/VoxiaMockWorldAuthorityAdapter.cpp Source/Voxia/Gameplay/VoxiaBuildInteractionController.*
@@ -692,7 +695,7 @@ git -C clients/Voxia commit -m "feat(prefab): replace prefab subtrees atomically
 - Consumes: refined surface query、mutation group、confirmed snapshot。
 - Produces: exact near micro surface、versioned far histogram/footprint identity、atomic group receipt。
 
-- [ ] **Step 1: 写 near/far RED 测试**
+- [x] **Step 1: 写 near/far RED 测试**
 
 ```cpp
 const auto Transaction = Harness.PlaceCrossChunkPrefab(PrefabId);
@@ -707,13 +710,13 @@ TestTrue(TEXT("far 保留 mixed identity"), Far.MaterialHistogram.Num() > 1);
 TestFalse(TEXT("不使用首材质实心退化"), Far.PolicyId == TEXT("first_non_zero_material"));
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `Automation RunTests Voxia.Phase3.PrefabPresentation`
 
 Expected: FAIL，far 仍可能把 refined 归约为首材质实心，group receipt 尚未覆盖 prefab。
 
-- [ ] **Step 3: 实现版本化 refined LOD 与原子 group**
+- [x] **Step 3: 实现版本化 refined LOD 与原子 group**
 
 ```cpp
 struct FVoxiaRefinedFarIdentity
@@ -727,13 +730,13 @@ struct FVoxiaRefinedFarIdentity
 
 near 使用 Task 5 surface query；far 从同一 snapshot 构建 histogram/footprint hash，进入 artifact key。place/remove/replace 的当前 live affected representations 作为一个 mutation group hidden-stage/reveal；非 resident 计数延后加载但不阻塞当前 obligation。
 
-- [ ] **Step 4: 运行 presentation tests**
+- [x] **Step 4: 运行 presentation tests**
 
 Run: `Automation RunTests Voxia.Phase3.PrefabPresentation; Automation RunTests Voxia.Presentation; Automation RunTests Voxia.Rendering`
 
 Expected: PASS，跨 chunk prefab 不半显、solid/refined seam 无裂缝、far 不膨胀为首材质宏格、旧 owner 在 fence 前保留。
 
-- [ ] **Step 5: 提交 refined presentation**
+- [x] **Step 5: 提交 refined presentation**
 
 ```powershell
 git -C clients/Voxia add Source/Voxia/Gameplay Source/Voxia/FarField
@@ -764,7 +767,7 @@ git -C clients/Voxia commit -m "feat(rendering): present refined prefab transact
 - Consumes: Tasks 1–9。
 - Produces: instance/micro/coverage CLI、parity observe、compatibility isolation、阶段 3 closeout。
 
-- [ ] **Step 1: 写 CLI runner RED 测试**
+- [x] **Step 1: 写 CLI runner RED 测试**
 
 ```javascript
 test('phase3 trace proves shared macro, ancestry, atomic remove and replace', () => {
@@ -777,13 +780,13 @@ test('phase3 trace proves shared macro, ancestry, atomic remove and replace', ()
 });
 ```
 
-- [ ] **Step 2: 运行测试证明 RED**
+- [x] **Step 2: 运行测试证明 RED**
 
 Run: `node --test clients/Voxia/scripts/run_phase3_prefab_runtime_smoke.test.js`
 
 Expected: FAIL，runner/commands 尚不存在。
 
-- [ ] **Step 3: 增加命令并隔离旧 compatibility**
+- [x] **Step 3: 增加命令并隔离旧 compatibility**
 
 命令：
 
@@ -802,7 +805,7 @@ world parity-check
 
 runner 覆盖：两个 prefab 同宏格不重叠、overlap rejection、Solid 双向冲突、24 orientation、负坐标跨 chunk、完整 path、parent selection、leaf/root remove、child/root replace、unload/reload、near/far group presented、parity check、micro edit rejection。
 
-- [ ] **Step 4: fresh build 与全矩阵验证**
+- [x] **Step 4: fresh build 与全矩阵验证**
 
 Run:
 
@@ -824,7 +827,7 @@ Expected: build exit 0；focused、全量 `Automation RunTests Voxia`、Node 与
 
 随后运行 1920×1080 Real-RHI 短路线和 30 分钟 soak。必须报告 exact micro ray/collision CPU、directory/coverage/overlay high-water、near/far artifact/presentation、frame/GT/GPU 分位数；在完整 9,261 chunk XYZ 窗口下无资源单调增长、半 prefab、seam、旧 WorldGen 回退或 `LogVoxia: Error`。
 
-- [ ] **Step 5: 更新事实并分别提交**
+- [x] **Step 5: 更新事实并分别提交**
 
 客户端：
 
@@ -845,8 +848,8 @@ Prefab Designer 或 Online authority 已开始。
 
 ## Self-Review
 
-- [ ] 对照设计稿 §2、§4–§8、§10–§16，确认每个阶段 3 不变量都有具体 task/test。
-- [ ] 清除所有占位式步骤，保证每个代码动作都有精确文件、签名、测试命令和 expected result。
-- [ ] 核对 `FVoxiaPrefabDefinition`、`FVoxiaPrefabOrientation24`、`FVoxiaPrefabInstanceRecord`、`FVoxiaPrefabPlacementPlan`、`FVoxiaProjectedMicro`、remove/replace request 在各 task 中名称一致。
-- [ ] 静态确认 production root/controller 不调用 `AnyOwner()`、`GatherPrefabInstanceCells()`、`SendPrefabPlace()` 或 N 次 block break。
-- [ ] 确认 Online wire、服务端事务和 Designer 均未被隐式实现或宣称完成。
+- [x] 对照设计稿 §2、§4–§8、§10–§16，确认每个阶段 3 不变量都有具体 task/test。
+- [x] 清除所有占位式步骤，保证每个代码动作都有精确文件、签名、测试命令和 expected result。
+- [x] 核对 `FVoxiaPrefabDefinition`、`FVoxiaPrefabOrientation24`、`FVoxiaPrefabInstanceRecord`、`FVoxiaPrefabPlacementPlan`、`FVoxiaProjectedMicro`、remove/replace request 在各 task 中名称一致。
+- [x] 静态确认 production root/controller 不调用 `AnyOwner()`、`GatherPrefabInstanceCells()`、`SendPrefabPlace()` 或 N 次 block break。
+- [x] 确认 Online wire、服务端事务和 Designer 均未被隐式实现或宣称完成。

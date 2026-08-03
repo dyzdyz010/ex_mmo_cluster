@@ -19,7 +19,7 @@
 
 ## Voxia 当前客户端缺口
 
-> 唯一 `L_VoxiaProductionWorld`、默认 RuntimeMock、阶段 1/2、Far LOD exact-surface、Near/Far
+> 唯一 `L_VoxiaProductionWorld`、默认 RuntimeMock、阶段 1/2/3、Far LOD exact-surface、Near/Far
 > Patch-diff、完整 XYZ 移动安全门与编辑器作者态预览已经合入 Voxia 独立仓库 `master`。
 > 2026-08-02 的完整 Phase 1 已覆盖长距离、负坐标、XYZ 对角移动、快速折返和显式阶段暂停；
 > 1280×720 Real-RHI 严格门禁通过。此前 `diagonal_yz` 外露材质失败和 Patch GameThread
@@ -36,12 +36,13 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    完整 Real-RHI 结构化路线已经通过，但用户尚未在 2026-08-02 合并树上重新判断此前的
    “不该有墙/该有墙却缺失”现象。gap、slot、component 与 fence 计数不能替代该视觉验收；
    禁止用裙边、双面材质、默认墙、扩大半径或固定等待冒充关闭。
-2. **当前树资源长稳与发布硬件矩阵**：历史 30 分钟长稳继续是证据，但尚未在本次合并树上
-   重跑 5 分钟以上资源平台；低配置硬件、更多驱动、发布包与长时真实玩家输入仍未形成分档。
-3. **阶段 3 Prefab 世界运行时**：设计与实施计划已经批准，但 immutable catalog、24 orientation、
-   PrefabInstanceDirectory、精确 refined projection/raycast/collision、原子 place/remove/replace
-   尚未实施。阶段 2 已完成，普通世界的 `micro_edit_not_supported` 是稳定边界而非缺口。
-4. **Online authority provider**：缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
+2. **发布硬件矩阵**：当前 Phase 3 树已经完成 1920×1080 30 分钟持续 XYZ 流送与资源零漂移门禁；
+   低配置硬件、更多驱动、发布包与长时真实玩家输入仍未形成分档。
+3. **Prefab Designer 与正式内容管线**：Phase 3 RuntimeMock 已完成 immutable catalog、24 orientation、
+   PrefabInstanceDirectory、exact refined projection/raycast/collision、原子 place/remove/replace、CLI 与
+   长稳；可视化 definition authoring、资产发布/版本迁移仍未开始。普通世界的
+   `micro_edit_not_supported` 是稳定边界而非缺口。
+4. **Online authority provider**：客户端 Phase 3 没有扩展 wire；仍缺服务端 bootstrap、production H-gated XYZ pages、snapshot/delta、
    source revision 失效、subscription lease、重连与默认在线切流。WorldGen/RuntimeMock/local pack
    不能冒充 confirmed truth，也不能在在线失败时 fallback。
 5. **本地 production 包与 launcher**：现有 H-gated local request provider 可验证客户端边界，
@@ -85,8 +86,9 @@ L4/raymarch A/B 重新列为 B 的任务。
 
 ## 验证与文档治理
 
-- Voxia 阶段 2 已 fresh 通过 Development build、`141/141` automation、Node `75/75`、Null-RHI
-  联合闭环与 1920×1080 Real-RHI 30 分钟长稳；阶段 1 的 Real-RHI 生命周期、RG6 七路线及两项长稳仍有效。后续任何代码变化
+- Voxia 阶段 3 已 fresh 通过 clean Development build、`213/213` automation（`0` failed/not-run；
+  唯一 warning 为外部 `generate_204` HTTP 超时）、Node `124/124`、
+  Null-RHI `18/18`、1920×1080 可见短路线与 30 分钟持续 XYZ 流送；阶段 1/2 与 RG6 证据仍有效。后续任何代码变化
   都必须按影响范围重新建立证据，不能沿用本次产物。
 - wire codec 唯一真值仍是 `apps/gate_server/lib/gate_server/codec.ex`；默认协议门禁由服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑共同承担。`clients/web_client` 与 `clients/bevy_client` 仅保留为逻辑归档历史证据，不再承担 current-truth parity oracle、参考实现或默认验收职责。
 - `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

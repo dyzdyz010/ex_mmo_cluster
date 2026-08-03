@@ -1,12 +1,12 @@
 # Voxia 阶段 2/3：世界占用与 Prefab 运行时设计
 
 - **日期**：2026-07-21
-- **状态**：阶段 2 已实现并完成 fresh 双审；阶段 3 与 Online authority 尚未开始
+- **状态**：阶段 2 与阶段 3 RuntimeMock 均已实现并完成 fresh 三入口/长稳验收；Online authority 尚未开始
 - **现役客户端**：`clients/Voxia`（UE 5.8）
 - **客户端审计基线**：`origin/master@d5a27f7`
 - **主仓审计基线**：`master@6559a212`
 - **唯一正式入口**：`production_all_features` / `AVoxiaUnifiedVoxelWorldActor`
-- **阶段顺序**：阶段 2 普通宏格交互 → 阶段 3 Prefab 世界运行时 → 后续真实 Online authority
+- **阶段顺序**：阶段 2 普通宏格交互（完成）→ 阶段 3 Prefab RuntimeMock（完成）→ 后续真实 Online authority
 
 ## 1. 结论
 
@@ -811,4 +811,5 @@ public confirmed owner。`FVoxiaRefinedMicro` 收敛为 wire DTO，`AnyOwner()` 
   `15ab99476930f485460552914cb1744040dd2f72`，Development build、`141/141` UE Automation、
   `75/75` Node、唯一生产根 Null-RHI 联合闭环与 1920×1080 D3D12 Real-RHI 30 分钟长稳通过；
   Real-RHI 记录 49 个完成样本、105 次 far commit、0 fatal/authority/GPU error。双代码专家最终复审
-  `Critical/Important/Minor=0/0/0`。阶段 3 的前置门禁因此满足，但代码仍未开始。
+  `Critical/Important/Minor=0/0/0`。阶段 3 随后已经按本设计完成唯一根、三入口与长稳 closeout；
+  当前后置项仅为 Online adapter/wire 与 Prefab Designer。

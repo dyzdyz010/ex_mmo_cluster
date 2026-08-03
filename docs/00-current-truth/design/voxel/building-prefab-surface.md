@@ -28,11 +28,18 @@ flowchart TD
 - 跨 region prefab 多 participant transaction 主体已落地。
 - Cross-region damage / `0x6C` owner-driven fan-out 主体已落地。
 
+Voxia 客户端另有一条明确隔离的 Phase 3 RuntimeMock 闭环：immutable definition/Orientation24、
+层级 instance directory/coverage、exact footprint 与 refined query、原子 place/remove/replace、
+Near/Far presented session snapshot、CLI/observe、资源/CPU 门禁及 30 分钟持续流送均已完成。
+它用于现役客户端离线真实操作与渲染验收，不是上述服务端 Prefab v2 wire 的实现或真值替代；
+Online adapter 只能在后续 append-only 协议计划中接入。
+
 当前边界：
 
 - object 只应承载跨多 cell / 多 chunk、多 part、生命周期、owner 逻辑实体。
 - 单宏格面级装饰/功能层不应被塞成 object；应走 SurfaceElement / terrain-bypass。
 - `covered_chunks_by_region` 是运行时 inflate/cache 信息，不应误读为持久列。
+- Prefab Designer、definition 资产发布与版本迁移尚未开始；RuntimeMock builtin catalog 不是正式内容包。
 
 ## 建设系统当前事实
 
