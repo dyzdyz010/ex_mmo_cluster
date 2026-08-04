@@ -181,6 +181,7 @@ Prefab 精确线框使用最终 plan 的已旋转 world-micro cell 集合：
 style = Simplified
 simplified = true
 reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
+validation_reason = 原始放置校验结果
 ```
 
 ## 8. 生命周期与失败行为
@@ -188,7 +189,7 @@ reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
 | 条件 | 可见结果 | 结构化结果 |
 | --- | --- | --- |
 | 场景 ready 且命中可靠 | 显示对应模式 | `visible=true`、`reason=ready` |
-| 候选可计算但 placement 无效 | 红色候选仍可见 | `visible=true`、`valid=false`、保留具体拒绝原因 |
+| 候选可计算但 placement 无效 | 红色候选仍可见 | `visible=true`、`valid=false`；精确帧由 `reason`、简化帧由 `validation_reason` 保留具体拒绝原因 |
 | confirmed source/命中不可用 | 不显示旧候选 | `visible=false`、`reason=source_unavailable` 或 `no_confirmed_hit` |
 | 切换热栏、旋转或命中目标 | 同一次状态更新后替换完整帧 | anchor/orientation/line_count 同步变化 |
 | 离开场景、切 snapshot 或 EndPlay | 立即清空 | `mode=none`、`visible=false` |
@@ -210,6 +211,18 @@ reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
     "line_count": 84,
     "simplified": false,
     "reason": "ready",
+    "validation_reason": "ready",
+    "prefab_id": "8",
+    "selected_instance_id": null,
+    "role_counts": {
+      "editable": 0,
+      "invalid": 0,
+      "preview_added": 84,
+      "preview_retained": 0,
+      "preview_removed": 0,
+      "selected_leaf": 0,
+      "selected_parent": 0
+    },
     "anchor_world_micro": [128, -9, 24],
     "orientation_id": 7,
     "observed_world_revision": "42"
@@ -222,9 +235,11 @@ reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
 - `mode` 只能是 `none|macro_face|prefab_place|prefab_replace|prefab_selection`；
 - `style` 只能是 `none|exact|simplified`；
 - `line_count` 是反馈帧中的世界线段数，不是当帧成功投影数；
-- `anchor_world_micro` 与 `orientation_id` 必须和现有 `prefab_preview` 中提交 intent 的 plan 一致；
+- `role_counts` 固定包含七种线段角色，各值为 `0..8192`，总和必须等于 `line_count`；
+- place/replace 的 `prefab_id`、`anchor_world_micro` 与 `orientation_id` 必须和现有 `prefab_preview` 中提交 intent 的 plan 一致；
+- replace/selection 的 `selected_instance_id` 必须和当前 confirmed selection 一致；
 - `observed_world_revision` 必须和当前缓存 plan 及提交 intent 的 revision 一致；
-- `reason` 使用稳定机器可读枚举，不拼接自然语言；
+- `reason` 使用稳定机器可读枚举，不拼接自然语言；简化帧必须写入具体预算原因，`validation_reason` 独立保留候选有效性原因；
 - `visible=false` 时不得残留上一候选的线段。
 
 如需观察实际 Canvas 投影，可在已有 HUD snapshot 中补充 `projected_line_count` 和 `projection_skipped_count`，但它们只属于 presentation 诊断，不影响 `build_interaction` 的 plan 真值。
@@ -314,7 +329,9 @@ reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
 - `3eebf91`：controller 单一发布与生命周期失效、Phase 2/3 请求同身份断言；
 - `003ea99`：HUD 投影/颜色/Canvas renderer，并从 stream/focus debug 生命周期移除；
 - `aff7180`：stdio validator、Phase 3 trace 与最近 README；
-- `94a0b65`：修复合法初始 revision `0` 被 JSON 丢成 `null`，保持为精确字符串 `"0"`。
+- `94a0b65`：修复合法初始 revision `0` 被 JSON 丢成 `null`，保持为精确字符串 `"0"`；
+- `195add6`：关闭独立审阅发现的三项缺口：预算原因可诊断、无效 replace 保留 removed/retained 语义，以及 stdio 对全部反馈模式、角色计数和 prefab/selection identity 的硬校验；
+- `740c1c0`：关闭最终复核发现的诊断缺口；内部损坏 footprint 在没有上游校验原因时，同时发布明确的 geometry `reason` 与 `validation_reason`，且不覆盖已有 placement validation reason。
 
 ```mermaid
 flowchart LR
@@ -331,13 +348,15 @@ flowchart LR
 | 门禁 | 结果 | 产物 |
 | --- | --- | --- |
 | Development build | 当前工作树 UBT success | `VoxiaEditor Win64 Development`，exit 0 |
-| 全量 UE Automation | `215/215`：214 success + 1 外部 HTTP timeout warning，0 failed/not-run | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-build-feedback/final-automation-after-revision-fix/index.json` |
-| 全部 Node tests | `129/129` | `node --test clients/Voxia/scripts/*.test.js` |
-| Phase 3 Null-RHI | `20/20`；27 条反馈、6 次 mutation、XYZ reload/continuous streaming 全部闭合 | `.demo/observe/voxia_phase3_2026-08-04T00-55-35-953Z_null_rhi_1280x720/` |
-| Phase 3 Real-RHI | `20/20`；1920×1080 viewport；frame p95/p99 `5.901/6.773ms`，GPU p95 `3.767ms` | `.demo/observe/voxia_phase3_2026-08-04T01-03-51-761Z_visible_rhi_1920x1080/` |
+| 定向 RED/GREEN | RED 精确失败于 `validation_reason=not_updated`；修复后 `2/2` | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-build-feedback/minor-diagnostic-red-20260804/`、`minor-diagnostic-green-20260804/` |
+| 全量 UE Automation | `215/215`：214 success + 1 外部 HTTP timeout warning，0 failed/not-run | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-build-feedback/final-all-20260804/index.json` |
+| 全部 Node tests | `130/130` | `node --test clients/Voxia/scripts/*.test.js` |
+| Phase 3 Null-RHI | `20/20`；35 条反馈覆盖六类语义、6 次 mutation、XYZ reload/continuous streaming 全部闭合 | `.demo/observe/voxia_phase3_2026-08-04T01-58-00-659Z_null_rhi_1280x720/` |
+| Phase 3 Real-RHI | `20/20`；35 条反馈；1920×1080 viewport；frame p95/p99 `6.350/6.864ms`，GT/GPU p95 `6.416/3.596ms` | `.demo/observe/voxia_phase3_2026-08-04T02-07-26-751Z_visible_rhi_1920x1080/` |
 
 Real-RHI 首次冷启动在约 42 秒才发出 CLI ready，超过 smoke 的 30 秒启动门并正常退出；日志中
 scene composition、launch contract 和唯一根均正常。缓存预热后的同参数重跑进入完整路线并通过，
+独立最终复核为 Critical/Important/Minor 全部 `0`、`Ready: Yes`。
 未修改 timeout 或加入固定等待。该现象作为本机冷启动证据保留，不冒充功能失败或已解决的发布级
 启动性能结论。
 
