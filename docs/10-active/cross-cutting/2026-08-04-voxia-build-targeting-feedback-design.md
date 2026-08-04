@@ -1,5 +1,7 @@
 # Voxia 建造命中与 Prefab 放置预览反馈设计
 
+> 后续增量：[`2026-08-04-voxia-prefab-nearest-valid-snap-design.md`](2026-08-04-voxia-prefab-nearest-valid-snap-design.md) 已获批准但尚未实施。当前代码仍按本文显示 invalid prefab 红色线框；增量完成三入口与唯一生产根验收后，才会覆盖本文对应的 invalid place/replace 可见行为。宏格反馈、合法 replace 差分与 selection 行为不受该增量影响。
+
 - **日期**：2026-08-04
 - **状态**：已实现，自动门禁通过；用户可见复核待确认
 - **现役客户端**：`clients/Voxia`（UE 5.8）

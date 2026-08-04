@@ -1,5 +1,13 @@
 # 当前会话接力：Voxia 建造反馈自动门禁已通过
 
+## 2026-08-04 Prefab 最近合法位置吸附（设计已批准，待实施）
+
+- 用户已确认：普通 prefab place 不再显示 invalid 红框；原 anchor 不可放时，只沿原命中面搜索最近合法位置并显示绿色最终 footprint；范围内无确定解则隐藏。
+- replace 保留 selected anchor、Orientation24、parent/component slot，不做位置吸附；invalid replace 隐藏。合法 replace 的 removed/retained/added 差分颜色不变。
+- 已批准的有界规则为完整 XYZ 面内圆形候选域，半径由旋转后 U/V footprint 最大跨度决定并 clamp 到 `1..16` 微格，最多 `1024` 候选；排序固定为 `(distance_squared, du, dv)`。
+- `PlacementSnapResolver` 只枚举候选，现有 `PrefabPlacementPlanner` 是唯一合法性来源；最终 immutable preview plan 是 HUD、CLI 和右键提交的唯一客户端事实，authority 仍独立复算 confirmed truth。
+- 设计文档：[`2026-08-04-voxia-prefab-nearest-valid-snap-design.md`](2026-08-04-voxia-prefab-nearest-valid-snap-design.md)。当前尚未修改客户端代码，不能把目标行为写成已完成。
+
 ## 2026-08-04 正式命中框与 Prefab 预览线框
 
 - 客户端工作树仍为 `.worktrees/voxia-phase3-prefab-runtime`，分支
