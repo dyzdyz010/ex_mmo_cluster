@@ -1,7 +1,7 @@
 # Voxia 建造命中与 Prefab 放置预览反馈设计
 
 - **日期**：2026-08-04
-- **状态**：方案方向已确认，书面规格待复核，尚未实现
+- **状态**：已实现，自动门禁通过；用户可见复核待确认
 - **现役客户端**：`clients/Voxia`（UE 5.8）
 - **唯一生产组合根**：`production_all_features` / `AVoxiaUnifiedVoxelWorldActor`
 - **适用阶段**：Phase 2 宏格交互与 Phase 3 Prefab RuntimeMock
@@ -305,3 +305,44 @@ reason = "exact_cell_budget" | "exact_line_budget" | "macro_line_budget"
 | 自定义 `UPrimitiveComponent` / scene proxy | 暂不采用 | 可做深度遮挡和复杂材质，但当前反馈规模不需要新增渲染组件、actor 生命周期和 scene proxy 维护成本 |
 
 若后续产品明确需要深度遮挡、虚线材质、半透明实体 ghost 或编辑器可摆放的预览组件，再基于同一 `FVoxiaBuildVisualFeedbackFrame` 替换 renderer；不得改写命中与 placement plan 所有权。
+
+## 14. 实施与验证结果（2026-08-04）
+
+客户端分支 `codex/voxia-phase3-prefab-runtime` 已完成以下提交：
+
+- `01230f8`：纯值 frame、宏格/微格/coverage 几何、稳定去重与 exact/macro/AABB 预算；
+- `3eebf91`：controller 单一发布与生命周期失效、Phase 2/3 请求同身份断言；
+- `003ea99`：HUD 投影/颜色/Canvas renderer，并从 stream/focus debug 生命周期移除；
+- `aff7180`：stdio validator、Phase 3 trace 与最近 README；
+- `94a0b65`：修复合法初始 revision `0` 被 JSON 丢成 `null`，保持为精确字符串 `"0"`。
+
+```mermaid
+flowchart LR
+    Hit["confirmed hit / readonly plan"] --> Controller["BuildInteractionController"]
+    Controller --> Frame["immutable feedback frame\nmax 8192 lines"]
+    Frame --> HUD["Canvas HUD projector"]
+    Frame --> CLI["build_interaction.visual_feedback"]
+    CLI --> Smoke["Phase 3 identity + streaming trace"]
+    Controller --> Intent["authority intent"]
+```
+
+最终新鲜证据：
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| Development build | 当前工作树 UBT success | `VoxiaEditor Win64 Development`，exit 0 |
+| 全量 UE Automation | `215/215`：214 success + 1 外部 HTTP timeout warning，0 failed/not-run | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-build-feedback/final-automation-after-revision-fix/index.json` |
+| 全部 Node tests | `129/129` | `node --test clients/Voxia/scripts/*.test.js` |
+| Phase 3 Null-RHI | `20/20`；27 条反馈、6 次 mutation、XYZ reload/continuous streaming 全部闭合 | `.demo/observe/voxia_phase3_2026-08-04T00-55-35-953Z_null_rhi_1280x720/` |
+| Phase 3 Real-RHI | `20/20`；1920×1080 viewport；frame p95/p99 `5.901/6.773ms`，GPU p95 `3.767ms` | `.demo/observe/voxia_phase3_2026-08-04T01-03-51-761Z_visible_rhi_1920x1080/` |
+
+Real-RHI 首次冷启动在约 42 秒才发出 CLI ready，超过 smoke 的 30 秒启动门并正常退出；日志中
+scene composition、launch contract 和唯一根均正常。缓存预热后的同参数重跑进入完整路线并通过，
+未修改 timeout 或加入固定等待。该现象作为本机冷启动证据保留，不冒充功能失败或已解决的发布级
+启动性能结论。
+
+自动化已经证明颜色角色映射、绘制顺序、debug 解耦、预算上限、stale 清理和 plan 身份；Real-RHI
+结构化路线也在无 `-VoxiaDebugCanvasHUD` / `-VoxiaStreamDebug` 参数下通过。但黄色/红色宏格面、
+绿色 place、replace 红黄绿、leaf 青/parent 橙及准星/hotbar 层叠仍需用户在可见窗口中最终确认，
+因此本文状态明确保留为“用户可见复核待确认”。Online authority/wire、Prefab Designer、正式内容
+发布与 confirmed world truth 边界均未改变。

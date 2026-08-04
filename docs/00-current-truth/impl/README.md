@@ -38,8 +38,8 @@
 | Voxia shared appearance | `clients/Voxia/Source/Voxia/Voxel/VoxiaVoxelAmbientLighting.*` + `VoxiaVoxelMaterialFamily.h` + `FarField/VoxiaVoxelSurfaceLightingArtifact.*` | near/far opaque 共用 `M_VoxelWorldAligned`、稳定 UV0 与 canonical `UV1=(AO,sky)`；UE/canonical 轴角点显式映射 |
 | Voxia confirmed world model | `clients/Voxia/Source/Voxia/Voxel/WorldModel/` | 唯一 confirmed aggregate、candidate-then-publish reducer、三态 sparse overlay、完整 XYZ conflict algebra 与只读 query |
 | Voxia authority boundary | `clients/Voxia/Source/Voxia/Authority/` | intent ledger、确定性 Mock adapter、类型化事件 correlation、presentation work/ack history 与 session reset |
-| Voxia 宏格交互 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaBuildInteractionController.*` | 真实鼠标/Automation/CLI 共用 signed64 XYZ selection/gateway；只支持完整宏格 place/break，拒绝普通微格编辑 |
-| Voxia Prefab RuntimeMock | `clients/Voxia/Source/Voxia/Voxel/PrefabRuntime/` + `Gameplay/VoxiaBuildInteractionController.*` + `Debug/VoxiaPrefabDebugDiagnostics.*` | immutable definition/Orientation24、层级 directory/coverage、exact footprint/query、原子 place/remove/replace、Near/Far presented session snapshot 与 CLI/CPU/资源门禁；不扩展 Online wire/authority |
+| Voxia 宏格交互 | `clients/Voxia/Source/Voxia/Gameplay/VoxiaBuildInteractionController.*` + `VoxiaBuildVisualFeedback.*` + `VoxiaHUD.*` | 真实鼠标/Automation/CLI 共用 signed64 XYZ selection/gateway；默认 HUD 把命中面绘制为正式二维方框，不受 stream debug 开关控制；只支持完整宏格 place/break，拒绝普通微格编辑 |
+| Voxia Prefab RuntimeMock | `clients/Voxia/Source/Voxia/Voxel/PrefabRuntime/` + `Gameplay/VoxiaBuildInteractionController.*` + `VoxiaBuildVisualFeedback.*` + `Debug/VoxiaPrefabDebugDiagnostics.*` | immutable definition/Orientation24、层级 directory/coverage、exact footprint/query、原子 place/remove/replace、Near/Far presented snapshot；正式 HUD 以 exact/macro/AABB 三档有界线框呈现 place/replace/selection，`build_interaction.visual_feedback` 保持 anchor/orientation/revision 与只读 plan 同身份；不扩展 Online wire/authority |
 | Voxia confirmed presentation | `clients/Voxia/Source/Voxia/Gameplay/VoxiaUnifiedVoxelWorldActor.*` | freeze frame、exact near/far owner reservation、fence、receipt ack、finalize/recovery 的单一有序事务 |
 | Voxia 3D shell planner | `clients/Voxia/Source/Voxia/FarField/VoxiaFarFieldCubeShellPlanner.*` | 纯 XYZ cell/span/LOD 规划、量化、唯一 owner 与预算；已由 A10 开发根消费，不读取 WorldGen 或 renderer |
 | Voxia canonical voxel source | `clients/Voxia/Source/Voxia/Voxel/VoxiaCanonicalVoxelSource.*` | WorldGen 无关只读源；SVO confirmed-store 采样已接入，missing 不等于 air |
@@ -81,6 +81,7 @@
 - Voxia 阶段 3 联合 smoke：`node clients/Voxia/scripts/run_phase3_prefab_runtime_smoke.js --null-rhi --resolution 1280x720`
 - Voxia 阶段 3 可见长稳：`node clients/Voxia/scripts/run_phase3_prefab_runtime_smoke.js --real-rhi --resolution 1920x1080 --soak-minutes 30`
 - Voxia Prefab CLI：`prefab instance-inspect|micro-trace|coverage-inspect|select-parent|select-child|remove-selected|replace-selected|runtime-metrics`
+- Voxia 构建反馈：`build_interaction`，检查 `visual_feedback.mode/visible/valid/style/line_count/simplified/reason` 与完整 XYZ anchor、Orientation24、observed revision；Phase 3 smoke 会在 place 前和 `prefab_preview` 硬校验
 - Voxia 世界只读诊断：`world intent-status <id>`、`world macro-inspect <x> <y> <z>`、`world transaction-inspect <revision>`、`world parity-check`
 - Voxia 定向 automation：`Automation RunTests Voxia.Voxel`、`Automation RunTests Voxia.Gameplay`、`Automation RunTests Voxia.Presentation`
 - Voxia server CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`
@@ -88,10 +89,14 @@
 
 ## 注意
 
-阶段 1/2 仍保留其完整生命周期、RG6 与历史长稳证据；当前 Phase 3 树又通过 clean
-Development build、Voxia Automation `213/213`（`0` failed/not-run；唯一 warning 为外部
-`generate_204` HTTP 超时）、Node `124/124`、Null-RHI `18/18`、
-1920×1080 可见短路线和 30 分钟持续 XYZ 流送。34 个长稳样本的 confirmed prefab 资源
+阶段 1/2 仍保留其完整生命周期、RG6 与历史长稳证据；当前建造反馈树通过 clean
+Development build、Voxia Automation `215/215`（214 success + 1 success-with-warning，`0`
+failed/not-run；唯一 warning 为外部 `generate_204` HTTP 超时）、Node `129/129`、
+Null-RHI 与 1920×1080 可见 Real-RHI Phase 3 `20/20`。两条新路线各记录 27 条
+`build_visual_feedback`，并闭合 24 向、6 次 mutation、XYZ unload/reload 与 continuous
+streaming。可见路线 frame p95/p99=`5.901/6.773ms`、GT p95=`5.927ms`、GPU
+p95=`3.767ms`。颜色和层叠的用户可见复核仍待确认，不能由结构化门禁冒充。
+既有 30 分钟持续 XYZ 流送的 34 个长稳样本中 confirmed prefab 资源
 current 零漂移，coverage/seam/`LogVoxia Error` 均为 0。Phase 1 的 58 次 source acquisition
 普通移动最大单轴步长仍为 1，572 个 renderer transition sample 的 gap/overlap/orphan 均为 0；
 更多硬件仍需刷新。

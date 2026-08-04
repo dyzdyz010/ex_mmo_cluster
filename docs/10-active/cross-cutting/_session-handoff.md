@@ -1,4 +1,41 @@
-# 当前会话接力：Voxia Phase 3 Prefab RuntimeMock 已收口
+# 当前会话接力：Voxia 建造反馈自动门禁已通过
+
+## 2026-08-04 正式命中框与 Prefab 预览线框
+
+- 客户端工作树仍为 `.worktrees/voxia-phase3-prefab-runtime`，分支
+  `codex/voxia-phase3-prefab-runtime`；本轮五个功能提交为 `01230f8`、`3eebf91`、
+  `003ea99`、`aff7180`、`94a0b65`，工作树 clean。
+- `FVoxiaBuildInteractionController` 现在发布 immutable
+  `FVoxiaBuildVisualFeedbackFrame`；`AVoxiaHUD` 是唯一正式 renderer，先画世界线框、再画
+  crosshair/hotbar。stream/focus debug controller 不再调用建造 renderer，正常启动无需 debug flag。
+- 宏格命中为黄色/无效红色二维面框；prefab place 为绿色、无效红色；replace 用红/黄/绿表示
+  removed/retained/added；selection leaf/parent 为青/橙。exact/macro/AABB 三档均原子有界，
+  最大 `8192` 条线，不发布半截几何。
+- `build_interaction.visual_feedback` 与 HUD 消费同一 frame；Phase 3 smoke 在 place 前硬校验
+  anchor、Orientation24 与 observed revision。Null-RHI 首轮由此发现 revision `0` 被序列化为
+  `null`，现保持为精确 `"0"`，未放宽 validator 或丢失身份。
+
+```mermaid
+flowchart LR
+  Confirmed["confirmed hit / prefab plan"] --> Frame["immutable bounded frame"]
+  Frame --> HUD["formal Canvas HUD"]
+  Frame --> CLI["visual_feedback"]
+  CLI --> Trace["identity + XYZ streaming proof"]
+  Confirmed --> Intent["authority intent"]
+```
+
+| 门禁 | 最终结果 | 产物 |
+| --- | --- | --- |
+| Development build | 当前工作树 success | UBT exit 0 |
+| 全量 UE Automation | `215/215`：214 success + 1 外部 `generate_204` warning，0 failed/not-run | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-build-feedback/final-automation-after-revision-fix/index.json` |
+| Node | `129/129` | `node --test clients/Voxia/scripts/*.test.js` |
+| Null-RHI Phase 3 | `20/20`；27 feedback、6 mutation、XYZ reload/continuous 全闭合 | `.demo/observe/voxia_phase3_2026-08-04T00-55-35-953Z_null_rhi_1280x720/` |
+| 1920×1080 Real-RHI | `20/20`；frame p95/p99 `5.901/6.773ms`、GPU p95 `3.767ms` | `.demo/observe/voxia_phase3_2026-08-04T01-03-51-761Z_visible_rhi_1920x1080/` |
+
+当前只剩用户可见复核：黄色/红色宏格框、place/replace/selection 颜色与 crosshair/hotbar
+层叠尚未由用户确认，不能用结构化门禁冒充。Real-RHI 冷启动一次约 42 秒、超过 smoke 30 秒
+ready 门；热缓存同参数完整通过，未用 timeout 补丁掩盖。Online authority/wire、Prefab Designer、
+正式内容发布与 confirmed world truth 边界仍后置且未改变。
 
 ## 2026-08-03 Phase 3 最终闭环
 
