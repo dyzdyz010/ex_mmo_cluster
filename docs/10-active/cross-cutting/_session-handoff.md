@@ -1,6 +1,6 @@
-# 当前会话接力：Voxia Prefab 最近合法位置吸附自动门禁已通过
+# 当前会话接力：Voxia Prefab 最近合法位置吸附已完成
 
-## 2026-08-06 Prefab 最近合法位置吸附（已实施，待用户可见复核）
+## 2026-08-06 Prefab 最近合法位置吸附（已完成，用户已确认手感）
 
 - 客户端工作树仍为 `.worktrees/voxia-phase3-prefab-runtime`，分支 `codex/voxia-phase3-prefab-runtime`；本轮提交为 `cfd4ece`、`fb96946`、`ceb9ace`、`6d2e5ef`、`1a64b45`，工作树 clean，未推送。
 - 普通 prefab place 不再显示无效红框：原 anchor 合法时零偏移直出；不合法时由新增纯客户端 `FVoxiaPrefabPlacementSnapResolver` 沿同一命中面按 `(distance_squared, du, dv)` 有界搜索最近合法 anchor；候选域内无确定解则整体隐藏。无效 replace 同样隐藏，且不移动被选实例。
@@ -26,11 +26,14 @@ flowchart LR
 | Phase 3 Null-RHI | `20/20`，全部 20 项合同检查通过 | `.demo/observe/voxia_phase3_2026-08-06T14-01-48-543Z_null_rhi_1280x720/` |
 | 1920×1080 Real-RHI | `20/20`；frame p95/p99=`5.958/7.044ms`、GT p95=`5.852ms`、GPU p95=`3.680ms` | `.demo/observe/voxia_phase3_2026-08-06T14-08-08-594Z_visible_rhi_1920x1080/` |
 
-仍未闭合的三项，不得由结构化门禁冒充：
+2026-08-06 用户在 1920×1080 可见生产根窗口（`run_voxia_3d_world.ps1`）实际试玩并确认
+"手感目前看起来不错"，§10 完成条件第 7 项闭合，本增量完成。客户端分支与外层 master 均已推送。
 
-1. **用户可见复核**：吸附手感（跟随、抖动、隐藏时机）尚未由用户在可见窗口确认。
-2. **吸附搜索 CPU 成本**：`placement_snap` 均值 `1.92ms`、峰值 `5.60ms`（builtin assembly `radius=16` 的 797 候选最坏悬停）。当前在既有帧门禁内，但每次 30Hz hover refresh 都会重算；设计允许在为 `IVoxiaInteractiveCoverageQuery` 增加只读 coverage 身份后加缓存，本轮未做。
-3. **独立运行时缺口（非本增量引入）**：把 prefab 放进「刚挖开且四周被岩层完全封闭」的地下口袋时，intent 停在 `accepted`、`receipt.acknowledged=false`、`obligated=0`，presentation 不再推进。证据见 `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。客户端提交的 plan/锚点/revision 均正确且被 authority 接受，该路径不经过吸附代码，需要独立定位。
+**下一会话候选任务**（按建议优先级）：
+
+1. **封闭地下口袋 presentation 停滞（独立运行时缺口，建议优先）**：把 prefab 放进「刚挖开且四周被岩层完全封闭」的地下口袋时，intent 停在 `accepted`、`receipt.acknowledged=false`、`obligated=0`，presentation 不再推进。证据见 `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。客户端提交的 plan/锚点/revision 均正确且被 authority 接受，该路径不经过吸附代码；吸附会让用户更容易撞上它（吸附本来就会把 prefab 挪进附近刚挖出的空位）。已同步记入 [`known_gaps.md`](../../00-current-truth/impl/known_gaps.md)。
+2. **吸附搜索 CPU 缓存（可选优化）**：`placement_snap` 均值 `1.92ms`、峰值 `5.60ms`（builtin assembly `radius=16` 的 797 候选最坏悬停），当前在既有帧门禁内，但每次 30Hz hover refresh 都会重算。设计 §7 允许在为 `IVoxiaInteractiveCoverageQuery` 增加只读 coverage 身份后按 snap source identity 跨 refresh 缓存。
+3. **既有后置边界**：Online authority/wire、Prefab Designer、正式内容发布与 confirmed world truth 边界，均未开始。
 
 - 设计与实施结果：[`2026-08-04-voxia-prefab-nearest-valid-snap-design.md`](2026-08-04-voxia-prefab-nearest-valid-snap-design.md) §11；实施计划：[`2026-08-05-voxia-prefab-nearest-valid-snap.md`](../../superpowers/plans/2026-08-05-voxia-prefab-nearest-valid-snap.md)。
 

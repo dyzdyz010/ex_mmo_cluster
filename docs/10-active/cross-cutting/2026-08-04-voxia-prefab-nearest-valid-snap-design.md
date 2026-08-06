@@ -1,6 +1,6 @@
 # Voxia Prefab 最近合法位置吸附设计
 
-> 状态：已实施，自动门禁全部通过；吸附手感的用户可见复核待确认。实施结果见 §11。
+> 状态：已完成。自动门禁全部通过，用户已于 2026-08-06 在 1920×1080 可见生产根窗口确认吸附手感（"手感目前看起来不错"）。实施结果见 §11。
 >
 > 关系：本文是 [`2026-08-04-voxia-build-targeting-feedback-design.md`](2026-08-04-voxia-build-targeting-feedback-design.md) 的交互增量。它只替换“无效 prefab place/replace 显示红框”的目标行为，不改变宏格二维命中面、合法 replace 差分颜色、selection 颜色或 confirmed authority 边界。
 
@@ -305,8 +305,15 @@ frame p95 与 GT p95 改善，p99 上升约 `0.18ms`，`>8.33ms` 帧 1/437。
 - **live place-hidden 覆盖**：竖井路线已确定性产出 `prefab_place_hidden`；`no_valid_anchor_within_snap_budget`
   之外的隐藏原因（`snap_search_indeterminate`、结构错误）仅由 Automation 冻结，未在实跑路线中构造。
 
-### 11.4 尚未闭合
+### 11.4 用户可见复核（已确认）
 
-用户尚未在可见窗口确认吸附手感（跟随、抖动、隐藏时机）。在用户确认前，本文状态保持
-「自动门禁通过，用户可见复核待确认」，不得写成完成。Online authority/wire、Prefab Designer
-与 confirmed world truth 边界均未改变。
+2026-08-06 用户在 1920×1080 可见窗口（`run_voxia_3d_world.ps1`，唯一生产根
+`production_all_features`，`voxel_world_root_ready` / `centers_aligned=true`）实际试玩吸附行为，
+确认"手感目前看起来不错"。§10 完成条件第 7 项闭合，本设计状态改为完成。
+
+后续独立事项（非本增量阻塞项）：
+
+- §11.3 的吸附搜索 CPU 缓存优化（需先为 `IVoxiaInteractiveCoverageQuery` 增加只读 coverage 身份）；
+- §11.3 的封闭地下口袋 presentation 停滞缺口，需作为独立议题定位（吸附会让用户更容易撞上它）。
+
+Online authority/wire、Prefab Designer 与 confirmed world truth 边界均未改变。

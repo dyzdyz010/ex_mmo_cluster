@@ -53,6 +53,14 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    发光内容。
 7. **归档 decoder 清理**：production legacy far runtime/probe/identity/uploader 已删除；append-only
    wire decoder 与 golden fixture 继续只作协议历史证据，不能恢复为 presentation owner。
+8. **封闭地下口袋的 prefab 放置 presentation 停滞（2026-08-06 确认）**：把 prefab 放进「刚挖开且
+   四周被岩层完全封闭」的地下口袋时，intent 停在 `accepted`，`receipt.acknowledged=false`、
+   `obligated=0`，`confirmed_revision` 保持 `0`，presentation 不再推进。客户端提交的 plan、锚点与
+   observed revision 均正确且被 Mock authority 接受；该路径不经过 2026-08-06 的吸附增量代码
+   （吸附只会让用户更容易走到这里）。证据：
+   `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。
+   需要独立定位 authority→confirmed→presentation 链路中该场景的推进条件；禁止用固定等待、
+   放宽 receipt 门槛或跳过 presentation 证明冒充修复。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。

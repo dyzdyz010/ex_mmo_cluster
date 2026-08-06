@@ -97,7 +97,9 @@ snapped place、隐藏 place、replace 差分、隐藏 replace 与 leaf/parent s
 6 次 mutation、XYZ unload/reload 与 continuous streaming。最新可见路线 frame
 p95/p99=`5.958/7.044ms`、GT p95=`5.852ms`、GPU p95=`3.680ms`；吸附搜索
 `placement_snap` 均值 `1.92ms`、峰值 `5.60ms`（builtin assembly 在 `radius=16` 下的 797
-候选最坏悬停）。颜色、层叠与吸附手感的用户可见复核仍待确认，不能由结构化门禁冒充。
+候选最坏悬停）。建造反馈颜色/层叠（2026-08-04）与吸附手感（2026-08-06）均已由用户在
+可见生产根窗口确认。封闭地下口袋的 prefab 放置 presentation 停滞是独立缺口，见
+[`known_gaps.md`](known_gaps.md#voxia-当前客户端缺口)。
 既有 30 分钟持续 XYZ 流送的 34 个长稳样本中 confirmed prefab 资源
 current 零漂移，coverage/seam/`LogVoxia Error` 均为 0。Phase 1 的 58 次 source acquisition
 普通移动最大单轴步长仍为 1，572 个 renderer transition sample 的 gap/overlap/orphan 均为 0；
