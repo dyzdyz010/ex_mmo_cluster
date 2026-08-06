@@ -280,3 +280,8 @@ git commit -m "feat(debug): observe prefab snap resolution"
 ## 进度日志
 
 - 2026-08-05：计划创建，等待逐 Task 执行。
+- 2026-08-06：Task 1–4 全部完成。客户端提交 `cfd4ece`（resolver + Automation）、`fb96946`（controller 单一 immutable plan 与隐藏语义）、`ceb9ace`（`prefab_preview.snap` 与 `placement_snap` 指标 + Node validator）、`6d2e5ef`（Phase 3 封闭竖井确定性路线）、`1a64b45`（客户端文档）。
+  - 门禁：Development build success；UE Automation `216/216`（1 项外部 `generate_204` warning）；Node `134/134`；Phase 3 Null-RHI `20/20`；1920×1080 Real-RHI `20/20`，frame p95/p99=`5.958/7.044ms`。
+  - mutation 自审：把 planner 未知原因从 fail-closed 改成跳过，`Voxia.Gameplay.PrefabPlacementSnap` 精确失败于 terminal detail 与候选计数两条断言；已回滚。
+  - 与设计的两处偏差（`prefab_preview.snap.*` 命名空间、隐藏帧锚点归零）已写入设计文档 §11.1。
+  - 三项未闭合项（用户可见复核、吸附搜索 CPU 峰值 `5.60ms`、封闭地下口袋放置的 presentation 停滞）已写入设计文档 §11.3/§11.4 与 session handoff。

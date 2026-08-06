@@ -1,6 +1,6 @@
 # Voxia Prefab 最近合法位置吸附设计
 
-> 状态：设计已由用户批准，尚未实施。当前客户端仍可能显示无效 prefab 红色线框；只有代码、三入口验证和唯一生产根实跑全部闭合后，本文目标行为才可写入 `docs/00-current-truth/`。
+> 状态：已实施，自动门禁全部通过；吸附手感的用户可见复核待确认。实施结果见 §11。
 >
 > 关系：本文是 [`2026-08-04-voxia-build-targeting-feedback-design.md`](2026-08-04-voxia-build-targeting-feedback-design.md) 的交互增量。它只替换“无效 prefab place/replace 显示红框”的目标行为，不改变宏格二维命中面、合法 replace 差分颜色、selection 颜色或 confirmed authority 边界。
 
@@ -242,3 +242,71 @@ invalid place/replace 不再生成 `Invalid` 角色线段。宏格二维命中�
 5. 全量 Automation、Node、Phase 3 Null-RHI/Real-RHI 与持续流送门禁通过；
 6. 唯一 production root 与 server-authoritative confirmed truth 边界未改变；
 7. 用户在最新可见窗口确认吸附手感后，才把状态从“待可见复核”改为完成。
+
+## 11. 实施与验证结果（2026-08-06）
+
+客户端分支 `codex/voxia-phase3-prefab-runtime` 的实施提交：
+
+- `cfd4ece`：纯值 `FVoxiaPrefabPlacementSnapResult`、固定切向基、有界候选枚举、共享 face-alignment 与失败分类；
+- `fb96946`：`FVoxiaPrefabPreviewState` 改为 place/replace 互斥单一事实，隐藏不可提交 place 与无效 replace，右键只提交 resolved plan；
+- `ceb9ace`：`prefab_preview.snap` 可观测面、`placement_snap` CPU 计时与 Node validator；
+- `6d2e5ef`：Phase 3 smoke 的封闭竖井确定性 snapped/hidden 路线；
+- `1a64b45`：客户端 README 与目录文档同步。
+
+```mermaid
+flowchart LR
+  Hit["confirmed hit + face normal"] --> Resolver["SnapResolver\n(distance², du, dv) 有界候选"]
+  Resolver --> Planner["PrefabPlacementPlanner\n唯一合法性来源"]
+  Planner --> Result["单一 immutable snap result"]
+  Result --> HUD["只发布绿色线框或隐藏"]
+  Result --> CLI["prefab_preview.snap"]
+  Result --> Intent["右键提交同一 resolved anchor"]
+```
+
+### 11.1 与设计的两处显式偏差
+
+1. **CLI 键名命名空间**：§8 示例把 snap 字段平铺进 `prefab_preview`，其中 `reason` 与既有
+   `prefab_preview.reason`（placement 校验原因）冲突。实施改为嵌套
+   `prefab_preview.snap.{state,source_anchor_world_micro,resolved_anchor_world_micro,offset_world_micro,face_normal_world_micro,search_radius_micro,tested_candidate_count,reason,terminal_detail}`；
+   字段集合与语义与设计一致，只消除键名歧义。
+2. **隐藏帧不携带锚点**：§8 要求 `visual_feedback.anchor_world_micro` 等于
+   `resolved_anchor_world_micro`。该约束仅对可见帧成立；隐藏帧统一输出 `[0,0,0]`，以满足
+   §4「Hidden 不得残留 resolved anchor」。`prefab_preview.anchor_world_micro` 仍保留分支锚点，
+   因此无效 replace 不移动被选实例仍可直接观察。validator 按 `visible` 分别硬校验这两条规则。
+
+### 11.2 门禁
+
+| 门禁 | 结果 | 产物 |
+| --- | --- | --- |
+| Development build | UBT success，exit 0 | `VoxiaEditor Win64 Development` |
+| 定向 mutation 自审 | 把 planner 未知原因从 fail-closed 改成跳过后，`Voxia.Gameplay.PrefabPlacementSnap` 精确失败于 terminal detail 与候选计数两条断言 | 已回滚，最终 `1/1` |
+| 全量 UE Automation | `216/216`：215 success + 1 外部 `generate_204` HTTP timeout warning，0 failed/not-run | `.demo/observe/voxia-prefab-snap/all-20260805/index.json` |
+| Node | `134/134` | `node --test clients/Voxia/scripts/*.test.js` |
+| Phase 3 Null-RHI | `20/20`；封闭竖井 797 候选全拒 → 隐藏且零 intent；球体 25 候选吸附到唯一合法锚点，偏移 `[2,0,2]` | `.demo/observe/voxia_phase3_2026-08-06T14-01-48-543Z_null_rhi_1280x720/` |
+| 1920×1080 Real-RHI | `20/20`；frame p95/p99=`5.958/7.044ms`、GT p95=`5.852ms`、GPU p95=`3.680ms` | `.demo/observe/voxia_phase3_2026-08-06T14-08-08-594Z_visible_rhi_1920x1080/` |
+
+对比实施前的同路线基线（frame p95/p99=`6.350/6.864ms`、GT p95=`6.416ms`、GPU p95=`3.596ms`）：
+frame p95 与 GT p95 改善，p99 上升约 `0.18ms`，`>8.33ms` 帧 1/437。
+
+### 11.3 已知成本与后续项
+
+- **吸附搜索 CPU**：`prefab runtime-metrics.placement_snap` 在 Real-RHI 路线上为 2315 个样本、
+  均值 `1.92ms`、峰值 `5.60ms`。峰值来自 builtin assembly 在 `radius=16` 下的 797 个候选，
+  其中约 64 个进入完整 `PlanPlace`。当前仍在既有帧门禁内，但这是一次 30Hz 悬停刷新的实际
+  代价。设计 §7 允许在为 `IVoxiaInteractiveCoverageQuery` 增加只读 coverage 身份后按 snap
+  source identity 跨 refresh 缓存；本轮没有实施该缓存，因此每次 hover refresh 都会重算。
+- **独立于本增量的运行时缺口**：把 prefab 放进「刚挖开且四周被岩层完全封闭」的地下口袋时，
+  intent 会停在 `accepted`，`receipt.acknowledged=false`、`obligated=0`，`confirmed_revision`
+  始终为 `0`，presentation 不再推进。证据见
+  `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。
+  该路径不经过吸附代码：客户端提交的 plan、锚点与 observed revision 都正确且被 authority 接受。
+  本轮因此把竖井路线限定为「只验证预览与不提交」，把已提交的 snapped 证明放在地表
+  `unrelated_b` 放置上（`committed_snap_state=snapped`）。该缺口需要独立定位，不得由本增量冒充解决。
+- **live place-hidden 覆盖**：竖井路线已确定性产出 `prefab_place_hidden`；`no_valid_anchor_within_snap_budget`
+  之外的隐藏原因（`snap_search_indeterminate`、结构错误）仅由 Automation 冻结，未在实跑路线中构造。
+
+### 11.4 尚未闭合
+
+用户尚未在可见窗口确认吸附手感（跟随、抖动、隐藏时机）。在用户确认前，本文状态保持
+「自动门禁通过，用户可见复核待确认」，不得写成完成。Online authority/wire、Prefab Designer
+与 confirmed world truth 边界均未改变。

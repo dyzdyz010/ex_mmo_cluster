@@ -1,12 +1,38 @@
-# 当前会话接力：Voxia 建造反馈自动门禁已通过
+# 当前会话接力：Voxia Prefab 最近合法位置吸附自动门禁已通过
 
-## 2026-08-04 Prefab 最近合法位置吸附（设计已批准，待实施）
+## 2026-08-06 Prefab 最近合法位置吸附（已实施，待用户可见复核）
 
-- 用户已确认：普通 prefab place 不再显示 invalid 红框；原 anchor 不可放时，只沿原命中面搜索最近合法位置并显示绿色最终 footprint；范围内无确定解则隐藏。
-- replace 保留 selected anchor、Orientation24、parent/component slot，不做位置吸附；invalid replace 隐藏。合法 replace 的 removed/retained/added 差分颜色不变。
-- 已批准的有界规则为完整 XYZ 面内圆形候选域，半径由旋转后 U/V footprint 最大跨度决定并 clamp 到 `1..16` 微格，最多 `1024` 候选；排序固定为 `(distance_squared, du, dv)`。
-- `PlacementSnapResolver` 只枚举候选，现有 `PrefabPlacementPlanner` 是唯一合法性来源；最终 immutable preview plan 是 HUD、CLI 和右键提交的唯一客户端事实，authority 仍独立复算 confirmed truth。
-- 设计文档：[`2026-08-04-voxia-prefab-nearest-valid-snap-design.md`](2026-08-04-voxia-prefab-nearest-valid-snap-design.md)。当前尚未修改客户端代码，不能把目标行为写成已完成。
+- 客户端工作树仍为 `.worktrees/voxia-phase3-prefab-runtime`，分支 `codex/voxia-phase3-prefab-runtime`；本轮提交为 `cfd4ece`、`fb96946`、`ceb9ace`、`6d2e5ef`、`1a64b45`，工作树 clean，未推送。
+- 普通 prefab place 不再显示无效红框：原 anchor 合法时零偏移直出；不合法时由新增纯客户端 `FVoxiaPrefabPlacementSnapResolver` 沿同一命中面按 `(distance_squared, du, dv)` 有界搜索最近合法 anchor；候选域内无确定解则整体隐藏。无效 replace 同样隐藏，且不移动被选实例。
+- `FVoxiaPrefabPlacementPlanner` 仍是唯一合法性来源，`FVoxiaPrefabSurfaceQuery` 仍是唯一 surface 解释器；face-alignment 公式迁出为共享 helper，不存在第二份实现。`FVoxiaPrefabPreviewState` 的 place/replace 分支显式互斥，HUD、CLI 与右键 intent 只读同一份 resolved plan。
+- 可观测面：`build_interaction.prefab_preview.snap`（`state=direct|snapped|hidden`、source/resolved/offset 完整 XYZ、命中面法向、半径、候选数、原因、terminal detail；replace 与材质工具为 `null`）；`prefab runtime-metrics.placement_snap` 公开搜索 CPU 样本。
+- Phase 3 smoke 新增确定性路线：向下挖竖井直到坑底平面被岩层完全封闭，再用超宽 assembly 证明 `hidden`（797 候选全拒、零 intent），用球体证明 `snapped`（吸附到唯一合法锚点，偏移 `[2,0,2]`）。
+
+```mermaid
+flowchart LR
+  Hit["confirmed hit + face normal"] --> Snap["SnapResolver 有界候选"]
+  Snap --> Planner["PlacementPlanner 唯一合法性"]
+  Planner --> Plan["单一 immutable resolved plan"]
+  Plan --> HUD["绿色线框或隐藏"]
+  Plan --> CLI["prefab_preview.snap"]
+  Plan --> Intent["同锚点 authority intent"]
+```
+
+| 门禁 | 最终结果 | 产物 |
+| --- | --- | --- |
+| Development build | UBT success，exit 0 | `VoxiaEditor Win64 Development` |
+| 全量 UE Automation | `216/216`：215 success + 1 外部 `generate_204` warning，0 failed/not-run | `.worktrees/voxia-phase3-prefab-runtime/.demo/observe/voxia-prefab-snap/all-20260805/index.json` |
+| Node | `134/134` | `node --test clients/Voxia/scripts/*.test.js` |
+| Phase 3 Null-RHI | `20/20`，全部 20 项合同检查通过 | `.demo/observe/voxia_phase3_2026-08-06T14-01-48-543Z_null_rhi_1280x720/` |
+| 1920×1080 Real-RHI | `20/20`；frame p95/p99=`5.958/7.044ms`、GT p95=`5.852ms`、GPU p95=`3.680ms` | `.demo/observe/voxia_phase3_2026-08-06T14-08-08-594Z_visible_rhi_1920x1080/` |
+
+仍未闭合的三项，不得由结构化门禁冒充：
+
+1. **用户可见复核**：吸附手感（跟随、抖动、隐藏时机）尚未由用户在可见窗口确认。
+2. **吸附搜索 CPU 成本**：`placement_snap` 均值 `1.92ms`、峰值 `5.60ms`（builtin assembly `radius=16` 的 797 候选最坏悬停）。当前在既有帧门禁内，但每次 30Hz hover refresh 都会重算；设计允许在为 `IVoxiaInteractiveCoverageQuery` 增加只读 coverage 身份后加缓存，本轮未做。
+3. **独立运行时缺口（非本增量引入）**：把 prefab 放进「刚挖开且四周被岩层完全封闭」的地下口袋时，intent 停在 `accepted`、`receipt.acknowledged=false`、`obligated=0`，presentation 不再推进。证据见 `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。客户端提交的 plan/锚点/revision 均正确且被 authority 接受，该路径不经过吸附代码，需要独立定位。
+
+- 设计与实施结果：[`2026-08-04-voxia-prefab-nearest-valid-snap-design.md`](2026-08-04-voxia-prefab-nearest-valid-snap-design.md) §11；实施计划：[`2026-08-05-voxia-prefab-nearest-valid-snap.md`](../../superpowers/plans/2026-08-05-voxia-prefab-nearest-valid-snap.md)。
 
 ## 2026-08-04 正式命中框与 Prefab 预览线框
 
