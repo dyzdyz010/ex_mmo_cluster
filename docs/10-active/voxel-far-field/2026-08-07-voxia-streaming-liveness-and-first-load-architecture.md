@@ -1,7 +1,8 @@
 # Voxia 流送活性(liveness)与首载性能架构修复
 
 - **日期**:2026-08-07
-- **状态**:决策稿(取证已完成、根因已实锤,实施未开始)
+- **状态**:S0-S4 已实施并通过 build + 全量 automation + Node;Null/Real-RHI
+  smoke 与用户实跑复验待刷新(见进度日志)
 - **范围**:唯一生产组合根内的呈现义务合同、root readiness、恢复(retry)语义、
   活性可观测面、覆盖证明增量路径、Bootstrap 首载分层与 worker 并发
 - **前置文档**:
@@ -281,8 +282,43 @@ flowchart LR
 
 ## 10. 进度日志
 
-- 2026-08-07:完成取证(三世界时间线、四层缺陷、六事故同类归因、覆盖回退量化、
-  首载分解),形成 D1–D7 决策与迁移顺序;实施未开始。证据锚点:
+- 2026-08-07(晚):S0-S4 已在 Voxia 分支 `codex/voxia-streaming-liveness`
+  (基于 `codex/voxia-phase3-prefab-runtime`)实施完毕,提交为
+  `c478008`(S3/S4/S0/S1)、`19bb965`(S2a)、`bd7883c`(S2c):
+  1. **S3**:覆盖增量从 post-fence 移到可见提交同帧(fence 等待帧内读取者
+     重建会令基线校验必然失败——这是 1018/1018 全量回退的真正机制,比决策稿
+     猜测的"流水线提交"更准确);回退原因拆分为 cache_invalid / audit_dirty /
+     serial_gap / epoch_gap / manifest_gap 五条;
+  2. **S4**:near 网格化 worker 实测生产默认只有 **1 worker/8 in-flight**
+     (07-23 文档口径的 4-worker 在 Patch-diff 重写中回归,且无脚本传参),
+     现改为 `clamp(cores-2, 2, 8)` 硬件派生 + `4×worker` in-flight,命令行覆盖保留;
+  3. **S0**:`CheckInitialLoadingDeadline` 补覆盖 `StreamingRecoveryLoading`
+     (错误码 `recovery_loading_deadline_exceeded`);root readiness 合取逐项
+     命名,签名变化时发射 `voxel_world_root_waiting`;
+  4. **S1**:驱动 per-mutation 失败重分类为 parked(intent
+     `presentation_blocked`,Tick 不失败),Prepare/Reserve 按 work 推迟自愈,
+     快照不一致按瞬态推迟(义务不再被错误冻结);修复推迟 work 未取得
+     reservation 即 stage 的次生缺口(Acquire 计划收口守卫);新增
+     `voxel_mutation_presentation_parked` 观测;
+  5. **S2a(D1)**:`FVoxiaConfirmedEditKey` 单 Chunk → 严格升序 Chunks 集合;
+     `near_confirmed_edit_spans_multiple_chunks` 拒绝删除;静态合同
+     `MaxConfirmedEditChunkSpan=4 / MaxConfirmedEditChunks=64 /
+     MaxNearEditCommitPatches=27` 取代散落的硬编码 8;提交形状=逐 chunk
+     stencil 并集;
+  6. **S2c(D2)**:journal 新增 `InvalidateObligation`(保留 work/freeze
+     frame/队列顺序),restore 失败→作废→按当前 committed owner 重推导→
+     重注册→重呈现,`ObligationRederivedTotal` 可观测;session retry 对
+     呈现毒状态真正可恢复。
+  验证:UE 5.8 Development build 成功;**全量 `Automation RunTests Voxia`
+  217/217 Success、0 失败**(含新增多 chunk 合同/重推导用例与按新合同更新的
+  驱动/账本测试);Node `134/134`。日志:
+  `Saved/Logs/streaming_full_suite.log`、`streaming_s2a_targeted.log` 等。
+  **尚未刷新,写成完成前必须补**:Phase 1/2/3 Null-RHI runner、严格 Real-RHI
+  门禁、以及用户实跑复现原事故路线(跨 chunk prefab 放置应正常呈现且世界不
+  回 loading;人为卡 recovery 应在 300s 死线显式失败)。D4 完整活性哨兵
+  (统一唤醒键注册表)与 D7 的 Bootstrap playable 分层证明属于后续切片。
+- 2026-08-07(早):完成取证(三世界时间线、四层缺陷、六事故同类归因、覆盖回退量化、
+  首载分解),形成 D1–D7 决策与迁移顺序。证据锚点:
   `run_voxia_3d_world.log`(路径见 §1)、`UnifiedVoxelWorldActor.cpp:2144/3756-3773`、
   `WorldActor.cpp:1662-1668/2052-2056`、`ClientWorldSession.cpp:329-355`、
   `VoxiaVoxelPresentationSceneHost.cpp:4025-4034`、

@@ -1,6 +1,36 @@
-# 当前会话接力：流送卡死根因实锤 + 活性/首载架构决策稿就位
+# 当前会话接力：流送活性/首载修复 S0-S4 已实施,全量门禁绿
 
-## 2026-08-07 流送活性与首载架构审查（取证完成，决策稿就位，实施未开始）
+## 2026-08-07(晚)流送活性与首载修复实施(S0-S4 完成,RHI smoke 与实跑复验待刷新)
+
+- 同日决策稿的迁移顺序已实施到 S2c。Voxia 工作树 `.worktrees/voxia-phase3-prefab-runtime`
+  新分支 **`codex/voxia-streaming-liveness`**(基于 phase3 分支),提交:
+  `c478008`(S3 覆盖增量提交当帧 + S4 worker 硬件派生 + S0 recovery 死线/就绪原因 +
+  S1 parked 正交化)、`19bb965`(S2a 多 chunk mutation 一等公民)、`bd7883c`
+  (S2c restore 失败重推导);未推送、未合并。
+- 关键实施事实:
+  - 覆盖增量的 100% 回退真正机制是 **post-fence 结算时 fence 等待帧内的读取者已重建缓存**,
+    搬到可见提交同帧后基线链式衔接由构造成立;回退原因拆五条可诊断;
+  - 生产 near 网格化实测一直只跑 **1 worker/8 in-flight**(结构体默认,无脚本传参,07-23
+    的 4-worker 口径在 Patch-diff 重写中回归)——现按 `clamp(cores-2,2,8)` 派生;
+  - `near_confirmed_edit_spans_multiple_chunks` 已删除:EditKey 升级为严格升序 Chunks 集合,
+    静态合同 span≤4/chunks≤64/patches≤27(取代散落硬编码 8),跨 chunk prefab 不再毒化呈现;
+  - restore 失败(`near_owner_reservation_restore_asset_missing`)→ journal
+    `InvalidateObligation`(保留 work/freeze frame/顺序)→ 按当前 committed owner 重推导,
+    retry 真正可恢复;
+  - per-mutation 失败 parked(intent `presentation_blocked`)不再令驱动 Tick/root readiness
+    失败;Prepare/Reserve 按 work 推迟自愈;修复了推迟 work 未预约即 stage 的次生缺口;
+  - `StreamingRecoveryLoading` 补 300s 死线(`recovery_loading_deadline_exceeded`);
+    root 未就绪合取逐项命名(`voxel_world_root_waiting`)、parked 诊断
+    (`voxel_mutation_presentation_parked`)。
+- 门禁:clean Development build;**全量 `Automation RunTests Voxia` 217/217 Success、0 失败**
+  (`Saved/Logs/streaming_full_suite.log`);Node `134/134`。测试已按新合同更新并新增
+  多 chunk/重推导用例。
+- **下一会话必做(写成关闭前)**:Phase 1/2/3 Null-RHI runner、严格 Real-RHI 门禁、
+  用户实跑复现原事故路线(放跨 chunk prefab → 应正常呈现且世界不回 loading;
+  known_gaps #8 封闭口袋场景属 authority→confirmed 泵,仍开放);D4 完整活性哨兵
+  (唤醒键注册表 + `voxel_liveness_state` CLI)与 D7 Bootstrap playable 分层证明为后续切片。
+
+## 2026-08-07(早)流送活性与首载架构审查(取证完成,决策稿就位)
 
 - 用户报告「流送不顺畅、莫名其妙卡住世界、首载慢」。本轮未改任何代码，完成了
   真实现场取证与架构归因，产出决策稿：

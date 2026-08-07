@@ -60,10 +60,11 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    （吸附只会让用户更容易走到这里）。证据：
    `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。
    需要独立定位 authority→confirmed→presentation 链路中该场景的推进条件；禁止用固定等待、
-   放宽 receipt 门槛或跳过 presentation 证明冒充修复。2026-08-07 归因补充：机制位于
-   `VoxiaWorldTransactionPresentation.cpp:113-126`——非 Near/Far-resident 宏格计入
-   `DeferredNonResident` 但无唤醒键、无 owner 重扫，属于第 9 条的同一「呈现义务非全射」类，
-   由其 D1/D4 统一关闭。
+   放宽 receipt 门槛或跳过 presentation 证明冒充修复。2026-08-07 归因修正：现场
+   `confirmed_revision=0` 说明 mutation 从未进入 confirmed store——停滞点在
+   authority→confirmed 泵，不在呈现驱动；本条仍开放。2026-08-07 落地的 S1
+   （快照不一致按瞬态推迟、义务不再被错误冻结）关闭了同链路的呈现侧变体；
+   泵侧推进条件仍需独立定位，`voxel_liveness_state`（D4）负责让它下次可见。
 9. **跨 chunk confirmed mutation 呈现中毒 + retry 恢复结构性无效（2026-08-07 实锤，最高优先）**：
    放置 footprint 跨 chunk 边界的 prefab 后，confirmed mutation 被
    `near_confirmed_edit_spans_multiple_chunks`（`VoxiaUnifiedVoxelWorldActor.cpp:2144`，
@@ -81,6 +82,12 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    首载分层）与迁移顺序见
    [`2026-08-07 流送活性与首载架构修复决策稿`](../../10-active/voxel-far-field/2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)；
    禁止以放宽单 chunk 校验、清空整个 confirmed store 或加自动放行超时冒充修复。
+   **2026-08-07 状态更新**：S0-S4 已在 Voxia 分支 `codex/voxia-streaming-liveness`
+   实施（多 chunk mutation 一等公民、restore 失败重推导、parked 与 readiness 正交、
+   recovery 死线、覆盖增量提交当帧结算、worker 硬件派生——实测生产此前只跑
+   1 worker），clean build + 全量 automation `217/217` + Node `134/134` 通过。
+   写成关闭前仍需：Phase 1/2/3 Null-RHI、严格 Real-RHI、用户实跑复现原事故路线
+   （跨 chunk prefab 正常呈现、recovery 300s 死线显式失败）。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。
