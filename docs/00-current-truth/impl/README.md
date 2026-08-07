@@ -28,6 +28,8 @@
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
 | Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；唯一 `L_VoxiaProductionWorld`、编辑器作者态环境/组合与六个分离 LOD 预览 Actor、默认 RuntimeMock、Patch-diff 无空洞交接、真实 renderer proof、完整 XYZ 移动安全门、阶段 2 宏格交互和阶段 3 prefab 均已闭环；当前树 30 分钟长稳完成，多硬件与层间墙人工视觉复验仍后置；Online 未开始 |
+| Voxia 正式场景组合 | `clients/Voxia/Content/Voxia/Maps/L_VoxiaProductionWorld.umap` + `Source/Voxia/Gameplay/VoxiaSceneComposition*` + `VoxiaScenePresentationSubsystem.*` | 唯一 production scene-composition 资产；显式绑定并持续维护 UDS/UDW/fog/PPV/fill-light，失效时阻断 runtime root；旧 NearWindow 只作显式 probe |
+| Voxia editor LOD preview | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldPreviewActor.*` + `VoxiaVoxelEditorPreviewPlan.*` | editor-only、有界、完整 XYZ 的 Near + Far LOD0–4 代表预览；复用正式 C++ 规划/表面链，不进入 confirmed store、cook、root readiness 或 SceneHost ledger |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
 | Bevy | `clients/bevy_client/README.md` | 归档；仅显式点名时使用 |
 | Voxia milestone status | `docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md` | A8/A10 跨 LOD 表面材质语义保持与 Patch-diff 完整全方向/严格性能门完成；阶段 3 RuntimeMock 与当前树 30 分钟长稳完成；多硬件、层间墙人工视觉复验、Online provider 与 B/C 后置 |
@@ -70,6 +72,7 @@
 - Phoenix app：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`
 - 归档 Web / Bevy：不进入默认验证；显式点名后按各自 README 选择历史测试入口
 - Voxia client CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`
+  - 场景作者态：`--cmd "scene_composition; environment_state; voxel_editor_preview_state"`；runtime 中 preview 命令固定返回 `unsupported_in_runtime`
   - 唯一联合根：传 `-VoxiaWorldGenPreview`（可再显式传 `-VoxiaUnifiedVoxelWorld`），`--cmd "until_voxel_world_root_ready 300000; voxel_world_composition_state; voxel_world_root_state"`
   - Pure3D 增量状态：`--cmd "until_pure3d_stream_settled 300000 1; pure3d_stream_state"`；隔离 probe 另传 `-VoxiaPure3DProbe -VoxiaWorldGenPreview`
   - Near XYZ：`--cmd "until_near_patch_idle;near_mesh;snapshot"`，检查 `footprint_contract=xyz_cube`、9261、Near Patch target/ready/fatal 与 exact ownership

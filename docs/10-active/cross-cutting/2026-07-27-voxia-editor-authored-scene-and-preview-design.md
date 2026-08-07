@@ -1,7 +1,7 @@
 ---
 title: Voxia 编辑器可创作场景、环境绑定与体素 LOD 预览设计
 status: active
-review_state: route-b-approved-spec-review-pending
+review_state: route-b-foundation-implemented
 date: 2026-07-27
 owners:
   - Voxia
@@ -34,23 +34,71 @@ Actor。world-scoped 场景表现 Subsystem 在进入场景时负责**显式解�
 
 ## 2. 状态、基线与用途
 
-- **路线状态**：路线 B 已由用户确认；本文等待书面复核。
-- **实现状态**：尚未据本文修改 Voxia C++、Blueprint 或 `.umap/.uasset`。
+- **路线状态**：路线 B 已由用户确认并进入实现。
+- **首期基础实现状态**：C++ 启动策略、场景组合/活性 Subsystem、可编辑补光 Rig、
+  editor-only LOD preview、新 production `.umap`、默认入口、CLI 与自动化均已落地并完成
+  联合验证。
+- **目标架构状态**：vendor adapter/interface、Environment/Voxel Data Asset、服务端动态天气
+  source 与更完整的 profile/fingerprint 管线仍是后续阶段，因此本文保持 `active`，不能把整条
+  路线写成已经全部完成。
 - **总仓审计基线**：`71a6b3f3fd44ce8f1b5487f5b0eaa22d0f622ccf`。
 - **Voxia 子仓审计基线**：`5e9f6b12871c9f56dee4d18bbe8d51e9121c6bba`。
 - **适用范围**：现役 `clients/Voxia` 唯一生产入口、正式近远景地图、环境表现、体素呈现参数与
   编辑器预览。
+- **唯一 production 关卡**：新建 `/Game/Voxia/Maps/L_VoxiaProductionWorld`；
+  `Lvl_NearWindow` 不再复用为正式关卡，只保留为显式 `probe/compatibility` 历史资产。
 - **不适用范围**：归档 Web/Bevy 客户端、服务端协议扩展、confirmed voxel truth 变更、
   Prefab Designer 功能实现。
 
-本文是阶段决策稿，不是完成证明，也不是可直接执行的任务清单。书面复核通过后再拆分实施计划和
-逐阶段验收门禁。
+本文保留架构决策；逐步实现和验收门禁见同目录
+[`2026-07-27-voxia-editor-authored-scene-and-preview-implementation-plan.md`](2026-07-27-voxia-editor-authored-scene-and-preview-implementation-plan.md)。
 
-## 3. 已确认现状与问题
+### 2.1 已落地的实现切片
+
+| Voxia 提交 | 结果 |
+| --- | --- |
+| `c1cfd3f` | 新正式地图启动策略；旧 NearWindow 无显式 probe 时硬拒绝 |
+| `63ff312` | 有界完整 XYZ editor preview；Near + Far LOD0–4 六个代表样本 |
+| `b179fa7` | 显式 scene composition、四灯 Rig 与 world-scoped 活性 Subsystem |
+| `b732e21` | GameMode/Flow readiness 门禁、移除运行时环境搭建、三个只读 CLI |
+| `a8b866b` | `L_VoxiaProductionWorld.umap`、默认地图、确定性 creator/validator |
+| `f33c511` | 精确 package 身份、cook 剔除 preview 引用、StartPlay 前置门禁与编辑器可见性验证 |
+| `1fc7d48` | 旧地图 launcher 全部改为显式 probe；默认 GUI runner 使用正式地图 |
+| `8d3fc68` | 客户端、Gameplay 与 Debug 作者态工作流和所有权文档 |
+
+联合验证已经确认：
+
+- Editor Development 与 Win64 Shipping 均构建成功；
+- `Voxia.Gameplay` Automation 共 23 项通过、零失败；
+- 地图中 UDS/UDW/fog/PPV/fill/preview/player start 各恰好一个、引用有效、无预放 runtime
+  root；
+- Real-RHI 正式入口得到 `authored_production`、有效 composition、唯一 ready runtime root；
+- runtime 的 preview 命令明确返回 `unsupported_in_runtime`，编辑器地图验证器则确认六样本
+  LOD 为 `0,0,1,2,3,4`；
+- UE 编辑器中可直接选择 UDW 组件和 preview Actor，`ClearPreview`/`RebuildPreview`
+  实际清除并重建可视网格。
+
+Development Game target 仍被任务前已存在的两个 editor-only 材质 Automation 用例调用
+`UMaterial::GetExpressions()` 所阻断；本次新增代码已通过 Shipping 构建，因此该已知问题不作为
+路线 B 首期边界的静默失败或完成证据。
+
+### 2.2 首期明确未实现的后续边界
+
+- 当前 composition 以显式同 world `AActor` 引用绑定 UDS/UDW，地图 creator/validator
+  再校验确切 vendor 类型；稳定的 `IVoxiaEnvironmentDriver` /
+  `BP_VoxiaUDSEnvironmentAdapter` 尚未实现。
+- Environment/Voxel Data Asset、control mask、批准 profile fingerprint 与在线动态天气
+  source 尚未实现。
+- 正式地图在显式 `-VoxiaWorldGenPreview` 的开发验收中仍使用现有
+  `online_compatibility` provider；在线统一 provider cutover 不属于本任务。
+- 运行时绑定失活会使 scene readiness 明确失败，但首期不会主动拆除已经创建的 root；
+  root teardown/recovery 应在后续生命周期阶段按 session owner 契约实现。
+
+## 3. 实施前审计基线（下列问题已由本方案修复）
 
 ### 3.1 编辑器中的正式关卡本身接近空壳
 
-[`DefaultEngine.ini`](../../../clients/Voxia/Config/DefaultEngine.ini) 将
+实施前，[`DefaultEngine.ini`](../../../clients/Voxia/Config/DefaultEngine.ini) 将
 `/Game/Voxia/Maps/Lvl_NearWindow` 同时设为游戏默认地图与编辑器启动地图。该地图由
 [`create_near_window_level.py`](../../../clients/Voxia/scripts/create_near_window_level.py)
 创建时只配置了 `AVoxiaClientGameMode`，没有建立一套可在编辑状态下直接观察和调整的环境 Actor
@@ -62,8 +110,8 @@ Actor。world-scoped 场景表现 Subsystem 在进入场景时负责**显式解�
 
 ### 3.2 GameMode 在运行时清场并重建环境
 
-[`VoxiaClientGameMode.cpp`](../../../clients/Voxia/Source/Voxia/Gameplay/VoxiaClientGameMode.cpp)
-的 `BeginPlay` 调用 `SetupEnvironment()`。该函数当前会：
+实施前，[`VoxiaClientGameMode.cpp`](../../../clients/Voxia/Source/Voxia/Gameplay/VoxiaClientGameMode.cpp)
+的 `BeginPlay` 调用 `SetupEnvironment()`。该函数会：
 
 1. 遍历世界中的 Actor；
 2. 依据类名字符串包含 `DirectionalLight`、`SkyLight`、`SkyAtmosphere`、
@@ -137,7 +185,8 @@ Blueprint 变量又会复制核心算法和校验规则。本设计要建立的�
 
 ### 4.1 目标
 
-1. 打开 `Lvl_NearWindow` 时无需 PIE，就能看到并选择天空、天气、灯光、雾、后处理与体素示意；
+1. 打开 `L_VoxiaProductionWorld` 时无需 PIE，就能看到并选择天空、天气、灯光、雾、后处理与
+   体素示意；
 2. 美术可以用 UE 原生 Outliner、Details、Blueprint 组件和 vendor preset 调整表现；
 3. PIE 不销毁或静默覆盖美术放置的环境对象；
 4. 运行时只通过明确类型、对象引用和接口绑定环境，不使用类名子串和硬编码资源路径猜测；
@@ -191,9 +240,13 @@ Blueprint 变量又会复制核心算法和校验规则。本设计要建立的�
 
 ## 6. 总体架构
 
+下图描述路线 B 的**目标架构**。其中正式关卡、composition、Scene Subsystem、动态 runtime
+root 与 editor-only preview 已在首期落地；adapter、Data Asset/profile 和在线环境状态源是
+后续阶段，不应从图中反推为当前已实现事实。
+
 ```mermaid
 flowchart LR
-    Artist["美术 / 关卡设计"] --> Level["Lvl_NearWindow<br/>正式作者态关卡"]
+    Artist["美术 / 关卡设计"] --> Level["L_VoxiaProductionWorld<br/>唯一 production 作者态关卡"]
     Level --> Composition["AVoxiaSceneCompositionActor<br/>唯一作者配置锚点"]
     Level --> UDS["Ultra Dynamic Sky"]
     Level --> UDW["Ultra Dynamic Weather"]
@@ -237,9 +290,10 @@ flowchart LR
 
 ## 7. 正式关卡的作者态组成
 
-### 7.1 `Lvl_NearWindow` 从空壳变为正式场景壳
+### 7.1 新建 `L_VoxiaProductionWorld`，不复用 `Lvl_NearWindow`
 
-正式地图至少保存以下 Actor：
+正式场景组合根使用新资产 `/Game/Voxia/Maps/L_VoxiaProductionWorld`。它同时成为
+`GameDefaultMap` 与 `EditorStartupMap`，并至少保存以下 Actor：
 
 | Outliner 建议目录 | 对象 | 作者职责 |
 | --- | --- | --- |
@@ -255,6 +309,15 @@ flowchart LR
 
 美术可以直接拖入 UDS/UDW vendor Actor 并使用其原生 Details 与 preset。项目代码不复制 vendor
 的全部参数，也不要求美术回到 C++ 修改太阳高度、云量、曝光或补光强度。
+
+`Lvl_NearWindow` 的名称只描述旧近场窗口阶段，无法表达现役 Near/Far、环境、authority
+presentation 和后续场景内容。它不得被原地扩建或重命名后继续承担 production：
+
+- 资产原样保留，供历史证据或显式 headless/probe 使用；
+- 默认配置、README、CLI runner 与 Real-RHI 验收全部切到 `L_VoxiaProductionWorld`；
+- 无显式 probe/headless 分类时从旧地图启动，返回 `legacy_production_map_retired`；
+- 新关卡是唯一 **production scene-composition truth**，但不是 confirmed voxel/world truth；
+  后者仍只来自服务端。
 
 ### 7.2 `AVoxiaSceneCompositionActor`
 
@@ -280,12 +343,20 @@ flowchart LR
 正式生产地图必须恰好存在一个 composition actor。解析使用明确 C++ 类型，结果为零或多于一个都在
 root 生成前硬失败。
 
+composition 可以保存对 `AVoxiaVoxelWorldPreviewActor` 的 editor-only 引用，供
+`Validate Scene`、地图验证器和编辑器操作使用；但该引用**不得进入 runtime root readiness**。
+Cook 会剔除 preview actor，因此 runtime snapshot 必须明确记录
+`editor_preview_required=false`，并允许该引用为空。作者态验证则显式传入
+`editor_preview_required=true`，缺失时以 `voxel_editor_preview_missing` 失败。这样地图资产仍被
+强制具备完整作者面，打包运行时又不会依赖一个按设计不存在的对象。
+
 ### 7.3 `UVoxiaScenePresentationSubsystem`
 
 该 `UWorldSubsystem` 是 runtime 场景表现契约的持续维护者：
 
 - 在所有关卡 Actor 可解析的 world-begin-play 阶段按强类型查找 composition；
-- 校验恰好一个 composition、全部 profile、adapter 和显式 Actor 引用；
+- 校验恰好一个 composition、全部 runtime profile、adapter 和环境 Actor 引用；editor-only
+  preview 只由作者态 validation/map validator 强制，不进入 root readiness；
 - 冻结 `FVoxiaSceneCompositionSnapshot`，向 Flow Subsystem 发布 ready/failed 状态；
 - 订阅当前模式唯一的环境状态源，并通过 `IVoxiaEnvironmentDriver` 应用；
 - 维护 driver object identity、最近 revision、apply result 与错误状态；
@@ -296,6 +367,20 @@ root 生成前硬失败。
 它不生成或销毁 voxel root，也不拥有 confirmed environment truth。Flow Subsystem 在生成 root 前
 调用 `RequireValidatedSnapshot`；snapshot 未 ready 或已 failed 时立即返回结构化错误，不使用 Tick
 轮询或固定等待。GameMode 只选择明确的 world mode 并启动这条协调链，不继续保存长期环境状态。
+
+这里必须服从 UE 的实际启动顺序，而不能在 `InitGame` 中提前扫描关卡 Actor：
+
+1. `AVoxiaClientGameMode::InitGame` 只运行纯地图/启动模式准入；旧地图、未知地图或非法参数在这里
+   拒绝，但不解析 composition；
+2. `UVoxiaScenePresentationSubsystem::OnWorldBeginPlay` 在关卡 Actor 已完成初始化后按强类型解析并
+   冻结 composition snapshot；
+3. `AVoxiaClientGameMode::StartPlay` 消费该 snapshot；只有 ready 才启动现有 voxel 会话组合与
+   authority presentation；
+4. `UVoxiaClientFlowSubsystem::SpawnBoundRoot` 再做一次独立门禁，防止绕过 GameMode 创建 root。
+
+这条顺序不依赖不同 Actor 之间未承诺的 `BeginPlay` 先后关系。composition 失败可能发生在 Pawn
+已经由 UE 创建之后，但必须发生在 voxel root 和 authority runtime 创建之前；失败后明确禁用交互并
+输出结构化原因，而不是继续进入一个半初始化世界。
 
 ### 7.4 环境 vendor adapter
 
@@ -434,7 +519,7 @@ fingerprint 继续工作。不得让 preview 和 runtime 分别解释作者 DTO�
 
 `AVoxiaVoxelWorldPreviewActor` 是 editor-only façade：
 
-- 可以被拖入 `Lvl_NearWindow`；
+- 可以被拖入 `L_VoxiaProductionWorld`；
 - Details 展示 profile、中心、预览模式、source 与预算；
 - 调用正式 converter、validator、planner、builder；
 - 将结果发布到自己拥有的 transient editor-only DynamicMesh/Gizmo components；
@@ -531,8 +616,8 @@ Editor Utility Widget，但不能改变首版的核心边界。
 
 ### 11.1 从 `SetupEnvironment` 迁移到场景表现 Subsystem
 
-`AVoxiaClientGameMode` 的职责从“创建整个环境”变为只确定显式 world mode，并启动
-`UVoxiaScenePresentationSubsystem`。后者负责：
+`AVoxiaClientGameMode` 的职责从“创建整个环境”变为只确定显式 world mode，并在 `StartPlay`
+消费 `UVoxiaScenePresentationSubsystem` 已冻结的结果。后者负责：
 
 1. 识别当前启动模式：production authored、explicit headless 或 explicit probe；
 2. production authored 模式按强类型解析恰好一个 composition actor；
@@ -542,6 +627,15 @@ Editor Utility Widget，但不能改变首版的核心边界。
 6. 持续维护环境状态订阅、driver identity、revision 和 apply result；
 7. 将 voxel presentation snapshot 传给 Flow Subsystem；
 8. validation 全部成功后，才允许创建唯一 production root。
+
+具体生命周期固定为：
+
+- `InitGame`：只执行无 Actor 依赖的 launch policy 与 legacy gate；
+- `UWorldSubsystem::OnWorldBeginPlay`：解析并校验 composition；
+- `GameMode::StartPlay`：读取 snapshot，拒绝或启动原有 voxel 会话流程；
+- `SpawnBoundRoot`：以同一 snapshot 做最终防绕过门禁。
+
+不再用 `GameMode::BeginPlay` 承担 Voxia 启动，也不在 `InitGame` 扫描关卡 Actor。
 
 明确删除：
 
@@ -621,7 +715,7 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 - SceneHost live ledger；
 - authority object state。
 
-如果未来 `Lvl_NearWindow` 转为 World Partition：
+如果未来 `L_VoxiaProductionWorld` 转为 World Partition：
 
 - composition、UDS/UDW、adapter、fog、PPV 与补光 Rig 必须放在 Always Loaded 层；
 - editor preview 放在 Editor-only Data Layer；
@@ -736,13 +830,13 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 | --- | --- | --- |
 | 纯 C++ | DTO converter、core validation、fingerprint 测试 | preview/runtime 同输入得到同 core config 与 fingerprint |
 | Profile | Data Validation | 缺材质、非法 ring、非完整 XYZ、错误分类与失效资产全部失败 |
-| Composition | Automation map test | production map 恰好一个 composition，所有显式引用有效 |
+| Composition | Automation map test | production map 恰好一个 composition，作者态全部显式引用（含 preview）有效 |
 | 环境 | PIE functional test | 启动前后 UDS/UDW/fog/PPV/rig 对象 identity 不变，没有被销毁或重复生成 |
 | Root | Flow/组合根测试 | root 数始终为 1；preview/composition 不注册为 root |
 | Preview | Automation | Representative 含 Near、所有 Far LOD 与 seam；Coverage 含完整 XYZ bounds |
 | Preview | 取消/预算测试 | 旧 generation 不发布；超预算在构建前失败 |
 | Preview source | baseline 测试 | 缺包、hash 错误与 diff-chain 断裂全部拒绝 |
-| Cook | packaged asset audit | editor preview actor/components 不进入 cooked map |
+| Cook | packaged asset audit | editor preview actor/components 不进入 cooked map，runtime composition 不因该引用为空而失败 |
 | Headless | Null-RHI/commandlet | 只有显式 headless profile 能跳过环境渲染，仍输出 composition validation |
 | CLI | stdio CLI | 三个命令字段稳定，错误 reason 与日志一致 |
 | Real-RHI | 正式 map smoke | 环境可见、唯一 root ready、Near/Far/LOD/补光联合呈现 |
@@ -750,7 +844,7 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 
 真实编辑器验收必须覆盖：
 
-1. 打开 `Lvl_NearWindow`，不 PIE 即能看到天空和预览；
+1. 打开 `L_VoxiaProductionWorld`，不 PIE 即能看到天空和预览；
 2. 在 UDS/UDW、Fog、PPV、Fill Rig 上修改一个可见参数；
 3. 调整 preview center/LOD/profile 并点击 `Rebuild Preview`；
 4. 查看近景、各级远景与 coverage；
@@ -775,8 +869,10 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 
 ### 阶段 E2：正式地图作者化
 
-- 在 UE 编辑器中把 UDS、UDW、adapter、fog、PPV、Fill Rig、composition 与 preview 放入
-  `Lvl_NearWindow`；
+- 新建 `L_VoxiaProductionWorld`，并在 UE 编辑器中把 UDS、UDW、adapter、fog、PPV、
+  Fill Rig、composition 与 preview 放入其中；
+- 将 `GameDefaultMap`、`EditorStartupMap` 和正式 runner 切到新关卡，把 `Lvl_NearWindow`
+  降为显式 probe/compatibility；
 - 设置清晰 Outliner 目录；
 - 用 Data Validation 验证资产引用；
 - 将 `SetupEnvironment` 替换为 `ResolveAndBindEnvironment`；
@@ -812,18 +908,20 @@ UE 的 World Partition/HLOD 适合管理**作者放置的静态 POI、建筑、�
 
 路线 B 完成必须同时满足：
 
-1. `Lvl_NearWindow` 在编辑状态下不是黑色空壳，关键环境对象全部出现在 Outliner；
-2. UDS、UDW、雾、后处理、补光可以通过 UE 原生面板调整；
-3. PIE 不销毁、重复生成或按字符串覆盖这些对象；
-4. production 地图的 composition 缺失/重复/失效会在 root 生成前硬失败；
-5. Null-RHI 只通过显式 headless profile 跳过环境；
-6. `AVoxiaUnifiedVoxelWorldActor` 仍只有一个，SceneHost ledger 仍只有一份；
-7. preview actor 被 cook 剔除，不进入 readiness，不写 confirmed store；
-8. preview 一次可看 Near、所有 Far LOD 代表效果、seam 与完整 XYZ coverage；
-9. preview/runtime 对同 profile 得到相同 core config/fingerprint；
-10. 非法 LOD、预算超限、baseline 失效和资源缺失均有稳定 reason code；
-11. 用户操作、Automation、CLI/日志三入口全部通过；
-12. 运行时黑面问题若仍存在，按独立 Lumen/程序化网格主线记录，不用补光“看起来改善”冒充根修复。
+1. `L_VoxiaProductionWorld` 是唯一 production 默认关卡，在编辑状态下不是黑色空壳，关键环境
+   对象全部出现在 Outliner；
+2. `Lvl_NearWindow` 无显式 probe/headless 分类时不能启动 production；
+3. UDS、UDW、雾、后处理、补光可以通过 UE 原生面板调整；
+4. PIE 不销毁、重复生成或按字符串覆盖这些对象；
+5. production 地图的 composition 缺失/重复/失效会在 root 生成前硬失败；
+6. Null-RHI 只通过显式 headless profile 跳过环境；
+7. `AVoxiaUnifiedVoxelWorldActor` 仍只有一个，SceneHost ledger 仍只有一份；
+8. preview actor 被 cook 剔除，不进入 readiness，不写 confirmed store；
+9. preview 一次可看 Near、所有 Far LOD 代表效果、seam 与完整 XYZ coverage；
+10. preview/runtime 对同 profile 得到相同 core config/fingerprint；
+11. 非法 LOD、预算超限、baseline 失效和资源缺失均有稳定 reason code；
+12. 用户操作、Automation、CLI/日志三入口全部通过；
+13. 运行时黑面问题若仍存在，按独立 Lumen/程序化网格主线记录，不用补光“看起来改善”冒充根修复。
 
 ## 19. 风险与控制
 
