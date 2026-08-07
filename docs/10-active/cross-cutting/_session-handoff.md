@@ -1,4 +1,25 @@
-# 当前会话接力：流送活性/首载修复 S0-S4 已实施,全量门禁绿
+# 当前会话接力：分支已收敛到唯一 master,流送修复随之落地
+
+## 2026-08-07(夜)分支拓扑收敛到只剩 master
+
+- 按用户指示"先合并至只剩 master 再考虑本次修复",两仓分支面已全部收敛:
+  - **Voxia 仓库**:`8b5ca43` 合并 phase3 prefab runtime → master,`85cae92` 合并
+    流送活性/首载修复 → master(**合并后 master 树内容与已通过全量 automation
+    217/217 + Node 134/134 的 bd7883c 树逐字节一致,门禁严格适用**);随后删除
+    全部 6 个已并入本地分支,现在**只剩 `master`**。
+  - **外层仓库**:`e4f3407d` 合并 7 月末遗留的 `codex/voxia-editor-authoring`
+    文档欠账(streaming-lod.md 冲突按"新真值优先 + 保留作者态章节"解决;
+    impl/README 保留新版 Voxia 行 + 新增两行;00-current-truth README 增第 12
+    原则),删除 3 个已并入分支,**只剩 `master`**。
+- **worktree 处置**:5 棵 worktree 全部转为 detached HEAD(不再持有任何分支),
+  目录保留——phase1(2.0G)/phase2(820M)的 `.demo/observe` 与 AutomationReport
+  是大量 handoff/验收文档引用的证据,未经用户显式指示不物理删除;
+  `voxia-phase3-prefab-runtime` detached 在 master 尖端 `85cae92`,二进制最新,
+  仍可直接 `run_voxia_3d_world.ps1` 游玩。`clients/Voxia` 主 checkout(master)
+  正在重建二进制,建成后主 checkout 自足可玩。
+- 远端分支未动(未 push、未删远端引用);何时推送 master 与清理远端分支由用户拍板。
+
+
 
 ## 2026-08-07(晚)流送活性与首载修复实施(S0-S4 完成,RHI smoke 与实跑复验待刷新)
 
