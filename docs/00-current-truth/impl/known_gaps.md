@@ -60,7 +60,27 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    （吸附只会让用户更容易走到这里）。证据：
    `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。
    需要独立定位 authority→confirmed→presentation 链路中该场景的推进条件；禁止用固定等待、
-   放宽 receipt 门槛或跳过 presentation 证明冒充修复。
+   放宽 receipt 门槛或跳过 presentation 证明冒充修复。2026-08-07 归因补充：机制位于
+   `VoxiaWorldTransactionPresentation.cpp:113-126`——非 Near/Far-resident 宏格计入
+   `DeferredNonResident` 但无唤醒键、无 owner 重扫，属于第 9 条的同一「呈现义务非全射」类，
+   由其 D1/D4 统一关闭。
+9. **跨 chunk confirmed mutation 呈现中毒 + retry 恢复结构性无效（2026-08-07 实锤，最高优先）**：
+   放置 footprint 跨 chunk 边界的 prefab 后，confirmed mutation 被
+   `near_confirmed_edit_spans_multiple_chunks`（`VoxiaUnifiedVoxelWorldActor.cpp:2144`，
+   Phase 2 单 chunk 呈现合同）永久拒绝且无终结语义：队头阻塞后续 mutation、
+   `bTransactionPresentationReady=false` 把整个 root readiness 拉下水；retry 保留 session、
+   带毒 pending 跨重启存活并叠加 `near_owner_reservation_restore_asset_missing`
+   （`VoxiaWorldActor.cpp:1662-1668/2052-2056`），而 `CheckInitialLoadingDeadline`
+   （`VoxiaClientWorldSession.cpp:343`）不覆盖 `StreamingRecoveryLoading`——结果为零日志的
+   无限加载，仅「新游戏」换 session 可解。真实现场证据：
+   `.worktrees/voxia-phase3-prefab-runtime/Saved/Logs/run_voxia_3d_world.log`
+   （2026-08-06 15:46:11 blocked → World #2 卡 17m41s → 16:04 新游戏 34s ready）。
+   另实测覆盖证明增量路径从未生效（`renderer_coverage_delta_baseline_not_clean`
+   全会话 1018/1018 回退全量重建，单次 p50 5.65ms/p95 10.7ms 落在 GameThread）。
+   根因分层、架构决策（义务全射 / readiness 正交 / 活性哨兵 / recovery 死线 / 覆盖增量修复 /
+   首载分层）与迁移顺序见
+   [`2026-08-07 流送活性与首载架构修复决策稿`](../../10-active/voxel-far-field/2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)；
+   禁止以放宽单 chunk 校验、清空整个 confirmed store 或加自动放行超时冒充修复。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。

@@ -1,4 +1,31 @@
-# 当前会话接力：Voxia Prefab 最近合法位置吸附已完成
+# 当前会话接力：流送卡死根因实锤 + 活性/首载架构决策稿就位
+
+## 2026-08-07 流送活性与首载架构审查（取证完成，决策稿就位，实施未开始）
+
+- 用户报告「流送不顺畅、莫名其妙卡住世界、首载慢」。本轮未改任何代码，完成了
+  真实现场取证与架构归因，产出决策稿：
+  [`2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md`](../voxel-far-field/2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)；
+  known_gaps 新增第 9 条（最高优先），第 8 条归并为同类。
+- **卡死现场已在 `run_voxia_3d_world.log`（phase3 worktree，2026-08-06 通宵会话）完整抓到**：
+  prefab_place intent 14 跨 chunk → `near_confirmed_edit_spans_multiple_chunks`
+  永久拒绝（`UnifiedVoxelWorldActor.cpp:2144`）→ 编辑错误耦合进 root readiness →
+  retry 不清毒 + restore 必然 `near_owner_reservation_restore_asset_missing`
+  （`WorldActor.cpp:1662-1668`）+ `StreamingRecoveryLoading` 无死线
+  （`ClientWorldSession.cpp:343`）→ **零日志无限加载 17m41s**，仅新游戏换 session 解毒
+  （World #3 34s ready）。
+- 归类结论：07-23 以来 6 起活性事故同构——「管线总是前进或显式失败」不是任何系统的
+  自维护不变量（违反 AGENTS.md §2.1 时间性不变量条款）。决策 D1–D7：呈现义务全射
+  （Present/Deferred(唤醒键)/DeadLetter 三态，多 chunk mutation-group 一等公民）、
+  retry 前义务重推导、readiness 与编辑呈现正交、活性哨兵 `voxel_liveness_state`、
+  recovery 死线补洞、覆盖证明增量修复（实测 1018/1018 全量回退，单次 5.7–13.4ms GT）、
+  首载分层与 worker 按核数缩放。
+- 首载分解：9261 chunks WorldGen 数据仅 2.5s，慢在固定 4-worker 网格化、3.3 万远景页
+  artifact、GT 分帧提交与覆盖全量重建；实测冷启动 root_ready 29–42s。
+- **下一会话按决策稿 §8 迁移顺序实施**：S0 观测先行（liveness state + recovery 死线）→
+  S1 readiness 正交化 → S2 义务全射与恢复语义（核心，顺带关闭 known_gaps #8/#9）→
+  S3 覆盖增量 → S4 首载 → S5 全门禁刷新 + 用户复现原事故路线验收。实施在 Voxia 客户端
+  （现役环路 `network_allowed=false`，服务端不在环内）；Online provider 后续按 D4 同一
+  活性合同接入。
 
 ## 2026-08-06 Prefab 最近合法位置吸附（已完成，用户已确认手感）
 
