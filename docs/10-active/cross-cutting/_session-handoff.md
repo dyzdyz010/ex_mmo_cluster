@@ -16,7 +16,8 @@
   是大量 handoff/验收文档引用的证据,未经用户显式指示不物理删除;
   `voxia-phase3-prefab-runtime` detached 在 master 尖端 `85cae92`,二进制最新,
   仍可直接 `run_voxia_3d_world.ps1` 游玩。`clients/Voxia` 主 checkout(master)
-  正在重建二进制,建成后主 checkout 自足可玩。
+  二进制已重建成功(首次因七月陈旧 Intermediate 瞬时失败,重跑即绿),
+  主 checkout 与 phase3 worktree 均自足可玩、内容同一提交。
 - 远端分支未动(未 push、未删远端引用);何时推送 master 与清理远端分支由用户拍板。
 
 
