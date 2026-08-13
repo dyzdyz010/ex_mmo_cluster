@@ -138,6 +138,8 @@
 - [`2026-07-06-gpt55-lod23-proposal-review.md`](voxel-far-field/2026-07-06-gpt55-lod23-proposal-review.md)
 - [`2026-07-07-voxia-render-pipeline-camera-lod.md`](voxel-far-field/2026-07-07-voxia-render-pipeline-camera-lod.md)
 - [`2026-07-11-near-far-presentation-handoff.md`](voxel-far-field/2026-07-11-near-far-presentation-handoff.md)
+- [`2026-08-10-voxia-client-mock-streaming-smoothness.md`](voxel-far-field/2026-08-10-voxia-client-mock-streaming-smoothness.md)
+- [`2026-08-10-voxia-client-mock-streaming-implementation-plan.md`](voxel-far-field/2026-08-10-voxia-client-mock-streaming-implementation-plan.md)
 - [`phase-far-temporal-stability-and-seamless-streaming.md`](voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md)
 - [`phase-terrain-only-tilepop-material-unify.md`](voxel-far-field/phase-terrain-only-tilepop-material-unify.md)
 - [`phase-vlod-a1-explicit-tiering.md`](voxel-far-field/phase-vlod-a1-explicit-tiering.md)

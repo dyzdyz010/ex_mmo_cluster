@@ -1,5 +1,28 @@
 # 当前会话接力：分支已收敛到唯一 master,流送修复随之落地
 
+## 2026-08-13 客户端 Mock 流送顺畅度专项完成
+
+- 范围只包含 `clients/Voxia` 的 RuntimeMock/WorldGen 唯一生产根；服务器、wire、Online
+  provider、Web/Bevy 未修改。
+- `Playable` 现在硬要求完整 Near `27 tiles / 216 patches / 9261 chunks`、Near post-visibility
+  fence、Required Far 与 coverage/parity；完整 Near 之前 Far visible=`0`。Near/Far 均以冻结
+  玩家完整 XYZ 由近及远调度。
+- Full Far 与开场可操作门解耦，按后台帧预算收敛。同 TargetKey 的 Far generation 推进不再
+  撤销既有 root presentation proof；被取消但未发布的 Far candidate 会显式重排，完整 retained
+  后的精确重复 mailbox 尾项只在 manifest/live ledger 全字段一致时释放。
+- 1280×720 Real-RHI 静止 Full Far：startup playable=`18.502s`，Full=`33725 pages`、
+  `6859/6859 patches`，最终 mailbox/pending/ready/in-flight/fatal=`0`、settled/quiescent/clean
+  全为 true；证据：
+  `.demo/observe/voxia_phase1_2026-08-13T09-12-01-900Z_real_rhi_1280x720/`。
+- 10 次独立 Real-RHI 冷启动全部通过，p95=max=`18.410s`、failed=`0`；证据：
+  `.demo/observe/voxia_mock_cold_start_gate_2026-08-13T09-28-29-997Z_1280x720/`。
+- Development build 成功；Unreal Automation `223/223`、Node `163/163`。Null-RHI 与 Real-RHI
+  Phase 1/2/3 全绿；Real-RHI Phase 3 frame/GT/GPU p95=`4.124/3.995/2.346ms`，>8.33ms
+  帧为 `0`。Phase 2/3 的正式 runner 已统一支持 `--real-rhi`，旧 `--visible-rhi` 保留兼容。
+- 原 known gaps #8（密闭口袋）与 #9（跨 chunk mutation 中毒/retry）已关闭；层间墙人工视觉
+  复验、更多硬件矩阵、Online authority、生产 pages/launcher 和服务端 subscription liveness
+  仍开放。
+
 ## 2026-08-07(夜)分支拓扑收敛到只剩 master
 
 - 按用户指示"先合并至只剩 master 再考虑本次修复",两仓分支面已全部收敛:

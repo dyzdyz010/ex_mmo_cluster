@@ -1,5 +1,5 @@
 ---
-status: active
+status: completed
 date: 2026-08-10
 scope: Voxia 唯一生产组合根的客户端 Mock 流送
 ---
@@ -27,7 +27,7 @@ scope: Voxia 唯一生产组合根的客户端 Mock 流送
    禁止静默等待和无诊断全量兜底。
 
 本设计延续
-[2026-08-07 流送活性与首载性能架构修复](2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)，
+[2026-08-07 流送活性与首载性能架构修复](../../10-active/voxel-far-field/2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)，
 但明确否决其中“缩小初始可玩窗口、其余 Near 后台补齐”的可选方向：
 本项目的 `Playable` 只认完整 27-tile Near。
 
@@ -387,3 +387,45 @@ Root 持有统一 liveness registry，Near、Far、SceneHost、transport、inten
 
 在此之前，必须明确报告“核心机制已改善但专项尚未收口”，不得用单次 smoke 或单模块
 automation 冒充完整客户端流程完成。
+
+## 14. 2026-08-13 完成证据
+
+本专项 S0-S6 已完成，范围严格保持在 Voxia 客户端 Mock 流程；没有修改服务器、wire、
+Online provider、Web 或 Bevy。最终事实如下：
+
+- 玩家可操作门只在 Near `27 tiles / 216 patches / 9261 chunks`、11 个 publication shell、
+  Required Far 与最终 coverage/parity 全部闭合后打开；完整 Near 前 Far visible 始终为 `0`；
+- Near/Far 的 dispatch 与 publication 共用冻结玩家完整 XYZ 优先级；Full Far 是可操作后的
+  平滑后台收敛，不属于开场等待；
+- Real-RHI 静止 Full Far 专项在 startup=`18502ms` 后开放操作，后台 `912637ms` 完成
+  `33725` pages、`6859/6859` retained patch，最终
+  mailbox/pending/ready/in-flight/fatal 均为 `0`，`settled=true`、
+  `resources_quiescent=true`、`coverage_clean=true`；一次与 live ledger 完全相同的 mailbox
+  尾项被显式核对并释放；
+- 连续 10 次独立 1280×720 Real-RHI 冷启动全部通过，耗时为
+  `18362/18393/18349/18391/18387/18386/18348/18410/18364/18361ms`，nearest-rank
+  p95=`18410ms`、max=`18410ms`、failed=`0`；
+- VoxiaEditor Development build 成功；完整 Unreal Automation `223/223` success、
+  warning/failure=`0`；完整 Node `163/163` 通过；
+- Null-RHI Phase 1/2/3 与 Real-RHI Phase 1/2/3 全部通过。Phase 2 的 place/break 均闭合
+  `submitted→accepted→confirmed→presented` 并完成 XYZ reload；Phase 3 同时证明密闭坑位
+  place、真实跨 chunk obligation、XYZ 连续流送与 Near/Far presented；
+- Real-RHI Phase 3 终态 frame p95=`4.124ms`、GameThread p95=`3.995ms`、GPU
+  p95=`2.346ms`，超过 `8.33ms` 的帧为 `0`；本轮 Null/Real 联合 smoke 的
+  `LogVoxia Error` 均为 `0`。
+
+可复现产物：
+
+- Full Far：`.demo/observe/voxia_phase1_2026-08-13T09-12-01-900Z_real_rhi_1280x720/`；
+- 10-run：`.demo/observe/voxia_mock_cold_start_gate_2026-08-13T09-28-29-997Z_1280x720/`；
+- Null-RHI Phase 1/2/3：
+  `.demo/observe/voxia_phase1_2026-08-13T08-29-07-819Z_null_rhi_1280x720/`、
+  `.demo/observe/voxia_phase2_2026-08-13T08-29-35-971Z_null_rhi_1280x720/`、
+  `.demo/observe/voxia_phase3_2026-08-13T08-30-48-879Z_null_rhi_1280x720/`；
+- Real-RHI Phase 2/3：
+  `.demo/observe/voxia_phase2_2026-08-13T08-36-46-072Z_real_rhi_1280x720/`、
+  `.demo/observe/voxia_phase3_2026-08-13T08-39-17-849Z_real_rhi_1280x720/`。
+
+因此，可以关闭原 known gaps #8（密闭地下口袋 presentation 停滞）与 #9（跨 chunk
+mutation 中毒及 retry 结构性无效）。服务器订阅活性、Online authority、生产 pages、launcher、
+更多硬件矩阵和层间墙人工视觉复验仍是独立开放项，不能由本专项的 Mock 证据冒充完成。

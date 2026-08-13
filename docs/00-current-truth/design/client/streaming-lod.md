@@ -25,6 +25,15 @@ Development clean build、完整 Automation、完整 XYZ/负坐标/长距离/快
 1920×1080 持续 XYZ 流送与资源零漂移；仍未完成的是更多硬件矩阵，以及曾由用户发现的
 层间墙问题的最新人工视觉复验，这两项不能由结构化计数替代。
 
+2026-08-13 的 RuntimeMock 硬门进一步冻结：玩家输入只在完整 Near
+`27 tiles / 216 patches / 9261 chunks`、11 个近到远 publication shell、Required Far 与最终
+coverage/parity 全部闭合后开放；完整 Near 前 Far visible=`0`。同一 TargetKey 后续 Full Far
+提交只推进背景表现 generation，不撤销已经成立的 root presentation proof。静止 Full Far
+专项完成 `33725 pages / 6859 patches`，最终 mailbox、ready、in-flight、fatal 全为 `0`，
+settled/quiescent/coverage clean；连续 10 次 1280×720 Real-RHI 冷启动 failed=`0`、
+p95=max=`18.410s`。这证明当前 Mock 客户端开场和后台收敛门禁，不代表 Online provider、
+服务端 pages 或 launcher 已完成。
+
 ## 作者态场景与运行时世界边界
 
 `L_VoxiaProductionWorld` 直接保存并显式引用 UDS、UDW、雾、后处理、四灯补光 Rig 和
@@ -151,6 +160,14 @@ Speculative 队列使用，不能套在当前必需加载上。
    通过 far release queue 异步释放；
 7. 完整 `FVoxiaWorldGenVoxelShellBuildResult` 结束后只归档 residency、artifact cache、
    coverage/observation generation。
+
+Bootstrap 先构建 `StartupRequired` scope（当前固定 `6571` Far pages），只服务开场边界闭合；
+进入 Playable 后，同一 TargetKey 显式提升到 `Full` scope（当前固定 `33725` Far pages）。Full
+provider/surface 和逐 Patch 可见提交受后台帧预算约束；Near 新工作或玩家移动优先，静止后 Root
+自行恢复推进。被可见事务取消但未发布的精确版本必须重排回 BuildIndex；Full target 全部
+retained 后，mailbox 的同版本尾项只允许在 manifest 与 live ledger 全字段相同时释放，并公开
+`mailbox_redundant_released`。因此 `settled` 可晚于 Playable，但不能永久留下 ready/mailbox
+尾项或把用户重新送回加载态。
 
 后台跳过 Far mesh 重建必须逐字段匹配提交账本中的完整 `FVoxiaFarPatchVersion`：page owner、
 source、content、dependency、boundary profile 与 content state 缺一不可。只有不会清空 live

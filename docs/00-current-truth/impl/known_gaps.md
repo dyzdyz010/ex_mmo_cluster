@@ -21,9 +21,11 @@
 
 > 唯一 `L_VoxiaProductionWorld`、默认 RuntimeMock、阶段 1/2/3、Far LOD exact-surface、Near/Far
 > Patch-diff、完整 XYZ 移动安全门与编辑器作者态预览已经合入 Voxia 独立仓库 `master`。
-> 2026-08-02 的完整 Phase 1 已覆盖长距离、负坐标、XYZ 对角移动、快速折返和显式阶段暂停；
-> 1280×720 Real-RHI 严格门禁通过。此前 `diagonal_yz` 外露材质失败和 Patch GameThread
-> 性能门未关闭的表述已被本次新鲜证据取代，不再是当前缺口。
+> 2026-08-13 的新鲜证据覆盖完整 Near 冷启动、静止 Full Far 收敛、长距离/负坐标/完整
+> XYZ、Phase 2/3 confirmed presentation 与 Null/Real-RHI 联合路径。连续 10 次 1280×720
+> Real-RHI 冷启动 failed=`0`、p95=max=`18.410s`；完整客户端 automation `223/223`、
+> Node `163/163`。此前 `diagonal_yz`、完整 Near、Mock 首载长尾、密闭口袋和跨 chunk
+> presentation 中毒的缺口表述均已被本次证据取代。
 
 相邻移动仍只让 Near、required handoff 与当前 Far 构建推进；Near 加载/清理或玩家持续移动且
 下一窗口已预取完成时，只暂停投机 Far 的可见发布，停下后自动恢复。SceneHost 持续维护
@@ -53,41 +55,16 @@ Near 完整性与 renderer coverage 索引，每帧最多构建一个 boundary �
    发光内容。
 7. **归档 decoder 清理**：production legacy far runtime/probe/identity/uploader 已删除；append-only
    wire decoder 与 golden fixture 继续只作协议历史证据，不能恢复为 presentation owner。
-8. **封闭地下口袋的 prefab 放置 presentation 停滞（2026-08-06 确认）**：把 prefab 放进「刚挖开且
-   四周被岩层完全封闭」的地下口袋时，intent 停在 `accepted`，`receipt.acknowledged=false`、
-   `obligated=0`，`confirmed_revision` 保持 `0`，presentation 不再推进。客户端提交的 plan、锚点与
-   observed revision 均正确且被 Mock authority 接受；该路径不经过 2026-08-06 的吸附增量代码
-   （吸附只会让用户更容易走到这里）。证据：
-   `.demo/observe/voxia_phase3_2026-08-06T13-53-30-895Z_null_rhi_1280x720/`（intent `10`）。
-   需要独立定位 authority→confirmed→presentation 链路中该场景的推进条件；禁止用固定等待、
-   放宽 receipt 门槛或跳过 presentation 证明冒充修复。2026-08-07 归因修正：现场
-   `confirmed_revision=0` 说明 mutation 从未进入 confirmed store——停滞点在
-   authority→confirmed 泵，不在呈现驱动；本条仍开放。2026-08-07 落地的 S1
-   （快照不一致按瞬态推迟、义务不再被错误冻结）关闭了同链路的呈现侧变体；
-   泵侧推进条件仍需独立定位，`voxel_liveness_state`（D4）负责让它下次可见。
-9. **跨 chunk confirmed mutation 呈现中毒 + retry 恢复结构性无效（2026-08-07 实锤，最高优先）**：
-   放置 footprint 跨 chunk 边界的 prefab 后，confirmed mutation 被
-   `near_confirmed_edit_spans_multiple_chunks`（`VoxiaUnifiedVoxelWorldActor.cpp:2144`，
-   Phase 2 单 chunk 呈现合同）永久拒绝且无终结语义：队头阻塞后续 mutation、
-   `bTransactionPresentationReady=false` 把整个 root readiness 拉下水；retry 保留 session、
-   带毒 pending 跨重启存活并叠加 `near_owner_reservation_restore_asset_missing`
-   （`VoxiaWorldActor.cpp:1662-1668/2052-2056`），而 `CheckInitialLoadingDeadline`
-   （`VoxiaClientWorldSession.cpp:343`）不覆盖 `StreamingRecoveryLoading`——结果为零日志的
-   无限加载，仅「新游戏」换 session 可解。真实现场证据：
-   `.worktrees/voxia-phase3-prefab-runtime/Saved/Logs/run_voxia_3d_world.log`
-   （2026-08-06 15:46:11 blocked → World #2 卡 17m41s → 16:04 新游戏 34s ready）。
-   另实测覆盖证明增量路径从未生效（`renderer_coverage_delta_baseline_not_clean`
-   全会话 1018/1018 回退全量重建，单次 p50 5.65ms/p95 10.7ms 落在 GameThread）。
-   根因分层、架构决策（义务全射 / readiness 正交 / 活性哨兵 / recovery 死线 / 覆盖增量修复 /
-   首载分层）与迁移顺序见
-   [`2026-08-07 流送活性与首载架构修复决策稿`](../../10-active/voxel-far-field/2026-08-07-voxia-streaming-liveness-and-first-load-architecture.md)；
-   禁止以放宽单 chunk 校验、清空整个 confirmed store 或加自动放行超时冒充修复。
-   **2026-08-07 状态更新**：S0-S4 已在 Voxia 分支 `codex/voxia-streaming-liveness`
-   实施（多 chunk mutation 一等公民、restore 失败重推导、parked 与 readiness 正交、
-   recovery 死线、覆盖增量提交当帧结算、worker 硬件派生——实测生产此前只跑
-   1 worker），clean build + 全量 automation `217/217` + Node `134/134` 通过。
-   写成关闭前仍需：Phase 1/2/3 Null-RHI、严格 Real-RHI、用户实跑复现原事故路线
-   （跨 chunk prefab 正常呈现、recovery 300s 死线显式失败）。
+
+2026-08-13 已关闭原 #8/#9：Mock confirmed 采用原子 prepare/commit，presentation obligation
+按完整 affected chunk 集合求并并携带 owner/wake key，root readiness 与单 intent 失败正交；密闭
+地下口袋和真实跨 chunk prefab 均已在 Null-RHI 与 Real-RHI Phase 3 中形成完整
+`submitted→accepted→confirmed→presented` lifecycle。完整客户端回归为 Unreal Automation
+`223/223`、Node `163/163`；10 次 1280×720 Real-RHI 冷启动 failed=`0`、
+p95=max=`18.410s`。证据与命令见
+[`Voxia 客户端 Mock 流送顺畅度专项设计`](../../20-archive/voxel-far-field/2026-08-10-voxia-client-mock-streaming-smoothness.md#14-2026-08-13-完成证据)。
+这项关闭只覆盖客户端 RuntimeMock，不改变 Online authority、服务端订阅活性或生产 pages 的
+开放状态。
 
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。

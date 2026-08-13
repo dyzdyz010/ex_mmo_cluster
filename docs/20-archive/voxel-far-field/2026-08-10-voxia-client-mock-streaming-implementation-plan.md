@@ -521,11 +521,11 @@ git commit -m "fix(authority): commit confirmed intent state atomically"
 - Consumes: Task 6 atomic confirmed batches、Near target masks 与 resident coverage。
 - Produces: `EVoxiaPresentationObligationState::{Present,Deferred,DeadLetter}` 与 `WakeKey`。
 
-- [ ] **Step 1: 写 RED，resident confirmed mutation 不得 obligated=0**
+- [x] **Step 1: 写 RED，resident confirmed mutation 不得 obligated=0**
 
 构造完整 Near 内、无可见表面但 chunk confirmed/resident 的 prefab footprint；断言 obligation state 为 Present、patch 集非空。另构造 footprint 跨 `chunk_x=77/78` 边界，断言 patch 并集和统一 receipt。
 
-- [ ] **Step 2: 跑 presentation tests 确认 RED**
+- [x] **Step 2: 跑 presentation tests 确认 RED**
 
 Run:
 
@@ -534,7 +534,7 @@ Run:
 & 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' '.\Voxia.uproject' -unattended -nop4 -nosplash -nullrhi -ExecCmds='Automation RunTests Voxia.Authority.ApplicationBoundary; Quit'
 ```
 
-- [ ] **Step 3: 实现义务三态与 wake key**
+- [x] **Step 3: 实现义务三态与 wake key**
 
 ```cpp
 enum class EVoxiaPresentationObligationState : uint8
@@ -554,15 +554,15 @@ struct FVoxiaPresentationWakeKey
 
 resident 判定基于 confirmed affected chunk 与当前完整 target ownership，不依赖 ray、表面可见性或几何是否为空。non-resident Deferred 必须携带 `chunk_residency:<x>,<y>,<z>`；无 key 的零义务直接 Fatal。
 
-- [ ] **Step 4: residency owner 主动重扫 Deferred**
+- [x] **Step 4: residency owner 主动重扫 Deferred**
 
 在 target/residency generation 前进时按 wake key 通知 journal，只重算命中的 Deferred；成功后注册固定 patch obligation，失败转 DeadLetter 并终结 intent，不能阻塞后继 mutation。
 
-- [ ] **Step 5: 将 Phase 3 smoke 从 preview 升级为真实 place**
+- [x] **Step 5: 将 Phase 3 smoke 从 preview 升级为真实 place**
 
 runner 先用 `world macro-inspect` 选取密闭坑位 anchor，再实际 `place` 并等待 accepted→confirmed→presented。跨 chunk case 必须验证 footprint 的 `affected_chunks` 至少含两个不同 chunk identity，不能用相邻 macro 冒充。
 
-- [ ] **Step 6: 跑 C++ 与 Node 单测并提交**
+- [x] **Step 6: 跑 C++ 与 Node 单测并提交**
 
 Run:
 
@@ -596,7 +596,7 @@ git commit -m "fix(streaming): make confirmed presentation obligations total"
 - Consumes: Tasks 2-7 各 subsystem 的稳定 snapshot/progress epoch。
 - Produces: `FVoxiaStreamingLivenessRegistry`、`voxel_liveness_state` JSON、5/15/60 秒分层诊断。
 
-- [ ] **Step 1: 写 RED，所有等待必须有 owner/wake key**
+- [x] **Step 1: 写 RED，所有等待必须有 owner/wake key**
 
 ```cpp
 FVoxiaStreamingLivenessRegistry Registry;
@@ -607,7 +607,7 @@ TestEqual(TEXT("错误可诊断"), Error, FString(TEXT("streaming_wait_owner_mis
 
 测试 5 秒 report、15 秒无在途工作 Fatal、持续 progress 不 stall、owner remove 清理 waiter、60 秒 initial/recovery deadline。
 
-- [ ] **Step 2: 跑 liveness test 确认 RED**
+- [x] **Step 2: 跑 liveness test 确认 RED**
 
 Run:
 
@@ -615,7 +615,7 @@ Run:
 & 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' '.\Voxia.uproject' -unattended -nop4 -nosplash -nullrhi -ExecCmds='Automation RunTests Voxia.Gameplay.StreamingLiveness; Quit'
 ```
 
-- [ ] **Step 3: 实现纯值 registry**
+- [x] **Step 3: 实现纯值 registry**
 
 ```cpp
 struct FVoxiaStreamingWaitState
@@ -632,11 +632,11 @@ struct FVoxiaStreamingWaitState
 
 Registry 只存值，不持有 Actor/PID；Root 每帧从 subsystem snapshot 更新，owner subsystem 负责 progress epoch。JSON 按 waiter id 排序，确保测试稳定。
 
-- [ ] **Step 4: 集成 Root 与 debug CLI**
+- [x] **Step 4: 集成 Root 与 debug CLI**
 
 `client_flow_probe` 嵌入有界摘要；`voxel_liveness_state` 输出完整 waiter 数组、最老 waiter、Near/Far shell、coverage ratio、阶段时间。5 秒只 emit 一次 stall report；15 秒满足 Fatal 条件时进入有期限 recovery。
 
-- [ ] **Step 5: 跑 liveness/runtime/CLI tests 并提交**
+- [x] **Step 5: 跑 liveness/runtime/CLI tests 并提交**
 
 Run:
 
@@ -671,7 +671,7 @@ git commit -m "feat(streaming): expose owned liveness waits"
 - Consumes: `client_flow_probe`、`voxel_liveness_state`、Phase runner summary。
 - Produces: `--startup-only`、`cold_start_gate_summary.json`、性能/顺序/ratio 硬门禁。
 
-- [ ] **Step 1: 写 Node RED**
+- [x] **Step 1: 写 Node RED**
 
 加入 fixtures：Near `215/216`、Far 在 Near complete 前 visible、shell 倒退、delta ratio 89.9%、25,001ms、pending intent。逐项断言 runner 以稳定 code 失败：
 
@@ -681,7 +681,7 @@ assert.equal(validateDeltaRatio(ratioFixture).code, "coverage_delta_ratio_below_
 assert.equal(validateTiming(slowFixture).code, "mock_cold_start_max_exceeded");
 ```
 
-- [ ] **Step 2: 跑 Node tests 确认 RED**
+- [x] **Step 2: 跑 Node tests 确认 RED**
 
 Run:
 
@@ -689,11 +689,11 @@ Run:
 node --test scripts/run_phase1_world_lifecycle_smoke.test.js scripts/run_mock_streaming_cold_start_gate.test.js scripts/run_phase2_macro_interaction_smoke.test.js scripts/run_phase3_prefab_runtime_smoke.test.js
 ```
 
-- [ ] **Step 3: 扩展 Phase 1 startup proof**
+- [x] **Step 3: 扩展 Phase 1 startup proof**
 
 新增 `--startup-only`：Root ready 后采集一次 final proof 即退出。断言 `near tiles=27`、`patches=216`、`chunks=9261`、shell 单调、Far pre-Near visible=0、Required Far complete、coverage clean、delta ratio>=0.9、无 waiter/pending intent。
 
-- [ ] **Step 4: 实现 10-run 聚合器**
+- [x] **Step 4: 实现 10-run 聚合器**
 
 ```js
 export function percentileNearestRank(values, percentile) {
@@ -704,7 +704,7 @@ export function percentileNearestRank(values, percentile) {
 
 聚合器顺序启动 10 次 Phase 1 `--real-rhi --startup-only`，每次独立 observe dir；任何子运行失败立即保留产物但继续收集剩余次数，最终以 p95<=20000、max<=25000、failed=0 判定。
 
-- [ ] **Step 5: 跑 Node tests 并提交**
+- [x] **Step 5: 跑 Node tests 并提交**
 
 Run: 与 Step 2 相同，Expected PASS。
 
@@ -732,7 +732,7 @@ git commit -m "test(streaming): gate complete mock cold starts"
 - Consumes: Tasks 1-9 全部实现和 `.demo/observe/` 证据。
 - Produces: 可复现的最终验收记录；只有证据通过才关闭 known gaps。
 
-- [ ] **Step 1: 重新构建 VoxiaEditor**
+- [x] **Step 1: 重新构建 VoxiaEditor**
 
 Run:
 
@@ -742,7 +742,7 @@ Run:
 
 Expected: exit 0；记录 DLL timestamp 晚于全部修改源码。
 
-- [ ] **Step 2: 跑全量 Unreal Automation**
+- [x] **Step 2: 跑全量 Unreal Automation**
 
 Run:
 
@@ -752,7 +752,7 @@ Run:
 
 Expected: started=completed=success、failed=0、进程 exit 0。
 
-- [ ] **Step 3: 跑全量 Node tests**
+- [x] **Step 3: 跑全量 Node tests**
 
 Run:
 
@@ -762,7 +762,7 @@ node --test scripts/*.test.js
 
 Expected: fail=0。
 
-- [ ] **Step 4: 跑 Null-RHI Phase 1/2/3**
+- [x] **Step 4: 跑 Null-RHI Phase 1/2/3**
 
 ```powershell
 node scripts/run_phase1_world_lifecycle_smoke.js --null-rhi --startup-only --resolution 1280x720
@@ -772,7 +772,7 @@ node scripts/run_phase3_prefab_runtime_smoke.js --null-rhi --resolution 1280x720
 
 Expected: 三个 summary `passed=true`，Phase 3 密闭坑位和跨 chunk intent 为 presented。
 
-- [ ] **Step 5: 跑 Real-RHI Phase 1/2/3**
+- [x] **Step 5: 跑 Real-RHI Phase 1/2/3**
 
 ```powershell
 node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --startup-only --resolution 1280x720
@@ -782,7 +782,7 @@ node scripts/run_phase3_prefab_runtime_smoke.js --real-rhi --resolution 1280x720
 
 Expected: 三个 summary `passed=true`，无 `LogVoxia Error`。
 
-- [ ] **Step 6: 跑连续 10 次 Real-RHI 冷启动硬门禁**
+- [x] **Step 6: 跑连续 10 次 Real-RHI 冷启动硬门禁**
 
 ```powershell
 node scripts/run_mock_streaming_cold_start_gate.js --runs 10 --p95-ms 20000 --max-ms 25000 --resolution 1280x720
@@ -790,11 +790,11 @@ node scripts/run_mock_streaming_cold_start_gate.js --runs 10 --p95-ms 20000 --ma
 
 Expected: `failed_runs=0`、`p95_ms<=20000`、`max_ms<=25000`、`passed=true`。
 
-- [ ] **Step 7: 更新文档，只写实际证据**
+- [x] **Step 7: 更新文档，只写实际证据**
 
 将 build/automation/Node/Null/Real/10-run 命令、计数、时长和 observe 路径写入设计进度日志及 current truth。只有 Phase 3 两条 intent lifecycle 与 10-run 全绿后才关闭 known gaps #8/#9；否则保留 OPEN 并记录精确阻塞。
 
-- [ ] **Step 8: 检查 diff 与工作区边界**
+- [x] **Step 8: 检查 diff 与工作区边界**
 
 ```powershell
 git -C clients/Voxia diff --check
@@ -805,7 +805,7 @@ git status --short
 
 Expected: 无 whitespace error；原有用户修改仍在，未被覆盖或意外 stage。
 
-- [ ] **Step 9: 提交客户端文档与外层真相文档**
+- [x] **Step 9: 提交客户端文档与外层真相文档**
 
 在 `clients/Voxia` 只 stage 本专项相关文件并提交；回到外层仓库只 stage current truth、known gaps、active design/handoff，禁止把无关 dirty 文件混入。
 
