@@ -401,6 +401,12 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
   每轮都是 `33725 pages / 6859 patches / 34 groups`、`validation_code=ok`，终态所有工作队列与
   fatal 为 `0`，coverage clean、resources quiescent、settled；汇总为
   `.demo/observe/voxia_rebaseline_2026-08-19/near_far_rebaseline_summary.json`。
+  **口径注**（2026-08-19 晚，Voxia `2ed2c91` 起）：`deadlines.far.elapsed_ms` 的完成时刻
+  由"全量 settled（含全部 speculative）"改为"required + coverage 完成"（与
+  `far_reason=="complete"` 同源）——本条基线的 Far 数字按旧口径测得，等价于全量收敛
+  耗时；新口径下同场景 far elapsed ≈ `977ms`（required 层），全量收敛耗时仍由冒烟脚本的
+  计数与 trace 独立度量，验收强度不变。speculative 渐进发布不再受 12s deadline 约束
+  （大 diff 换区代实测 1236 patch 需 11+s，旧绑定必然贴爆死线）。
   该组数据取代 2026-08-18 记录的十次验收（当时 Far min/p50/p95=max/avg=
   `8630/8750/9373/8805.4ms`、`28 groups`）：Near 基本持平，Far 因把入场后单组渲染变更上限由
   `32` 改回 `128`（组数 120 → 34，按组固定的 fence/投影/轮询开销不再被多付）下降约 `40%`；
