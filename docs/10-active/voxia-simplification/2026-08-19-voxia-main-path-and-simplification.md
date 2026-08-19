@@ -183,7 +183,53 @@ flowchart LR
   整个 `else` 分支（含 `EVoxiaPresentationHostComposition::StandalonePure3DProbe`）不可达。
 - **Debug CLI**：132 个命令中 89 个未被任何脚本引用（`VoxiaDebugCliSubsystem.cpp` 6,113 行）。
 
-## 8. 进度日志
+## 8. 第二轮：内容资产、测试脆断言、Far actor 归一
+
+### 已完成
+
+| 项 | 结果 |
+| --- | --- |
+| Content 模板资产 | 删 `Variant_*` / `ThirdPerson` / `Characters`（Manny/Quinn）/ `Input` / `LevelPrototyping` 及其 `__ExternalActors__`、`__ExternalObjects__`，共 752 文件。用**资产注册表**核实（不是 grep 压缩 uasset）：生产地图与全部预览地图零模板引用，`/Game/Characters` 128 个包、`/Game/Input` 9 个包均无外部引用者 |
+| HUD 关卡 | 两个 HUD 关卡各有一处 `BP_ThirdPersonGameMode` 默认值，已改为 `AVoxiaClientGameMode`（`capture_hud.ps1` 本来就在 URL 上传这个）。`create_hud_test_level.py` / `create_uidesign_level.py` 是一次性 bootstrap，关卡存在后恒为 no-op，已删 |
+| 源码文本断言 | 10 个测试用 `FFileHelper` 读生产 `.cpp/.h` 并匹配精确子串，删除全部此类断言（−1,731 行），保留同函数内的行为断言与对**测试产物**的读取（observe JSONL、manifest fixture、prefix meta）。`VoxiaTransportFacadeOwnershipAutomationTest` 全文即此类断言，整文件删除 |
+| Far actor 归一 | `AVoxiaPure3DVoxelWorldActor` 的 standalone probe 路径（22 处 `bUnifiedRootChild` 分支）删除；BeginPlay 改为**硬要求**统一根 owner，否则 `far_world_requires_unified_root_owner` 显式失败。连带删 `EVoxiaPresentationHostComposition::StandalonePure3DProbe` 与忽略参数恒返回 `Full` 的 `FVoxiaWorldGenVoxelShellBuildScopePolicy` |
+
+### 结论修正：Debug CLI **不删**
+
+初稿写"132 个命令中 89 个未被脚本引用"。这个口径错了——其中 76 个在
+`Source/Voxia/Debug/README.md` 有文档，属**有意维护的调试面**。脚本与文档都未提及的只有 13 个
+（`uds_*` 天空系统内省、`tune_*` 调参、`safe_view_state` 等），各只有一个分发点，合计约 200 行，
+且 `uds_*` 服务于仍在使用的 UltraDynamicSky。
+
+按 `AGENTS.md` 第 7 条"确需保留的放到测试、调试等专有路径中"，CLI 正是该路径本身。
+CLI 中也不存在指向已删功能的悬空命令。**建议保留。**
+
+## 9. 总计
+
+| | 前 | 后 |
+| --- | ---: | ---: |
+| 源文件 | 653 | 546 |
+| 源码行 | ~223,560 | 211,044 |
+| 其中测试行 | 55,653 | 52,744 |
+| Content 文件 | — | −752 |
+
+累计 `890 files changed, 87 insertions(+), 12717 deletions(-)`。
+
+验证（每一轮均执行）：
+
+- `Build.bat VoxiaEditor Win64 Development` → `Result: Succeeded`
+- `Automation RunTests Voxia` → **221 通过 / 0 失败**（改动前为 221 通过 / 1 失败，
+  那个失败正是被删掉的源码文本断言）
+- `run_phase1_world_lifecycle_smoke --real-rhi --full-far-only` → **3/3 通过**，
+  near 7665/7998ms、far 4986/5335ms、total 12651/13333ms，落在 2026-08-19 基线区间内
+  （near 7619–8192、far 4962–5889、total 12615–13723）
+
+首次冒烟曾在退出阶段超时，原因是删内容 + 重建导致 DDC 冷启动
+（`Waited 25s for Derived Data Cache to finish 379 tasks`），引擎本身 `LogExit: Exiting`、
+`child exit code=0`；DDC 转热后连续三次通过。
+
+## 10. 进度日志
 
 - 2026-08-19：完成主路径梳理与全量可达性分析，产出本稿。
-- 2026-08-19：执行 Tier 1 + Tier 2，编译通过，源文件 653 → 547，行数 −10,678。
+- 2026-08-19：执行 Tier 1 + Tier 2，编译通过，源文件 653 → 547。
+- 2026-08-19：第二轮完成 Content 资产、源码文本断言、Far actor 归一；Debug CLI 经复核后保留。
