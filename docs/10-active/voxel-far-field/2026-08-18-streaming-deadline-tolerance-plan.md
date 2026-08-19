@@ -100,10 +100,27 @@ flowchart LR
 
   Run: `Build.bat VoxiaEditor Win64 Development Voxia.uproject -WaitMutex -NoHotReloadFromIDE`
 
-- [ ] **Step 2: Run the minimal vertical cross-tile route**
+- [x] **Step 2: Run the minimal vertical cross-tile route**
 
   Run: `node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --vertical-only --res 1280x720`
 
-- [ ] **Step 3: Decide from evidence**
+  首跑失败：先在跨 Tile 后触发 `far_deadline_exceeded`（发布活锁），修复后又在静止 Full Far
+  收敛门禁 `12007ms` 超限。两项根因与修复见
+  `2026-08-18-far-publication-liveness-deadlock.md`。最终该路线通过，六代目标 Far 分别为
+  `5364/4423/5560/4814/3748/4664ms`。
 
-  若 Far 在 `12000ms` 内 settled，继续长时耐久；若仍失败，保留失败产物并进入发布吞吐根因分析，不放宽到 12 秒以上。
+- [x] **Step 3: Decide from evidence**
+
+  未放宽到 12 秒以上。两项根因都定位并修复：
+  1. `LiveLayerFaceArtifactCount` 增量计数在 `AddCanonicalArtifact` 缺失维护，导致读集校验
+     恒失败、候选无限重排；
+  2. 入场后单组渲染变更上限 `32` 使组数由 `34` 涨到 `120`，按组固定开销被多付近四倍。改回
+     `128` 后 Full Far 由 `9844ms` 降到约 `5.2s`。
+
+  2026-08-19 重采基线：1280×720 Real-RHI 连续 5 次冷启动 `5/5`，Near
+  min/p50/max=`7619/7718/8192ms`，入场后 Far min/p50/max=`4962/5176/5889ms`，
+  每轮 `33725/6859/34 groups`。产物
+  `.demo/observe/voxia_rebaseline_2026-08-19/near_far_rebaseline_summary.json`。
+
+  仍开放：`--performance-only` 的帧门禁只剩 hitch ratio 一项超标（由个位数离群帧主导），
+  作为独立项跟踪，不阻塞本计划收口。

@@ -33,8 +33,8 @@ deadline 的唯一起点。Near/Far 均以 `10000ms` 为性能目标、`12000ms`
 超过目标但未超过硬限时继续流送并保留 elapsed 证据。Full Far 从启动起只建立一份
 `33725 pages / 6859 patches`
 目标：Near 阶段允许空闲容量预构建，入场后继续消费同一代结果，不再生成第二份 Full 计划。
-连续 10 次 1280×720 Real-RHI 冷启动全部低于 10 秒性能目标：Near 最大 `8240ms`，入场后 Far 最大
-`9373ms`，总计最大 `17319ms`；终态 mailbox、ready、in-flight、fatal、producer queue 全为
+连续 5 次 1280×720 Real-RHI 冷启动全部低于 10 秒性能目标：Near 最大 `8192ms`，入场后 Far 最大
+`5889ms`，总计最大 `13723ms`；终态 mailbox、ready、in-flight、fatal、producer queue 全为
 `0`，settled/quiescent/coverage clean。这证明当前 Mock 客户端开场和后台收敛门禁，不代表
 Online provider、服务端 pages 或 launcher 已完成。
 
@@ -218,6 +218,8 @@ FarPatchCommit = 1 FarPatchVersion + 26 outer boundary slots
                + actual LayerFace after-images + per-live manifest entry
 FarPatchGroup  = 1..256 ordered FarPatchCommit + 1 shared staging fence
                + 1 shared post-visibility fence
+               (玩家入场后每组真实渲染变更另受 128 上限约束；
+                无渲染变更的 command-free child 不占用该预算)
 ```
 
 SceneHost 在 group 可见前以当前 live ledger 建立有序投影；第 N 个 child 只能读取 live 或组内更早
@@ -389,16 +391,19 @@ archive decoder/golden fixture 可以保留，但不得进入 production present
 2026-08-18 当前树证据：
 
 - Development build 成功；完整 `Automation RunTests Voxia` 为 `224/224` success，失败、未运行、
-  进行中均为 `0`；Node 全量脚本测试 `184/184`；
+  进行中均为 `0`；Node 全量脚本测试 `187/187`；
 - 2026-08-17 Null-RHI Full Far 性能基线：Near=`1194ms`、Far=`8793ms`、总计=`9987ms`，精确
   `33725 pages / 6859 patches`，产物
   `.demo/observe/voxia_phase1_2026-08-17T14-22-09-352Z_null_rhi_1280x720/`；
-- 1280×720 Real-RHI 连续 10 次独立冷启动 `10/10`：Near min/p50/p95=max/avg=
-  `7487/7871.5/8240/7846.1ms`，入场后 Far min/p50/p95=max/avg=
-  `8630/8750/9373/8805.4ms`，总计 min/p50/p95=max/avg=
-  `16219/16560/17319/16651.5ms`；每轮都是 `33725/6859/28 groups`，终态所有工作队列与
+- 1280×720 Real-RHI 连续 5 次独立冷启动 `5/5`（2026-08-19，入场后单组渲染变更上限为 `128`）：
+  Near min/p50/max/avg=`7619/7718/8192/7803.2ms`，入场后 Far min/p50/max/avg=
+  `4962/5176/5889/5253ms`，总计 min/p50/max/avg=`12615/12795/13723/13056.2ms`；
+  每轮都是 `33725 pages / 6859 patches / 34 groups`、`validation_code=ok`，终态所有工作队列与
   fatal 为 `0`，coverage clean、resources quiescent、settled；汇总为
-  `.demo/observe/voxia_near_far_10run_2026-08-18_final/near_far_acceptance_summary.json`；
+  `.demo/observe/voxia_rebaseline_2026-08-19/near_far_rebaseline_summary.json`。
+  该组数据取代 2026-08-18 记录的十次验收（当时 Far min/p50/p95=max/avg=
+  `8630/8750/9373/8805.4ms`、`28 groups`）：Near 基本持平，Far 因把入场后单组渲染变更上限由
+  `32` 改回 `128`（组数 120 → 34，按组固定的 fence/投影/轮询开销不再被多付）下降约 `40%`；
 - 相邻 +Y 的 1280×720 Real-RHI 生产根实跑通过：Near
   `entered/exited/retained=3087/3087/6174`、耗时 `2962ms`；Far
   `retained/entered/exited=6618/241/241`、耗时 `7648ms`，中心从 `[11,0,-51]` 推进到
