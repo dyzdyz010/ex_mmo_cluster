@@ -25,14 +25,18 @@ Development clean build、完整 Automation、完整 XYZ/负坐标/长距离/快
 1920×1080 持续 XYZ 流送与资源零漂移；仍未完成的是更多硬件矩阵，以及曾由用户发现的
 层间墙问题的最新人工视觉复验，这两项不能由结构化计数替代。
 
-2026-08-13 的 RuntimeMock 硬门进一步冻结：玩家输入只在完整 Near
-`27 tiles / 216 patches / 9261 chunks`、11 个近到远 publication shell、Required Far 与最终
-coverage/parity 全部闭合后开放；完整 Near 前 Far visible=`0`。同一 TargetKey 后续 Full Far
-提交只推进背景表现 generation，不撤销已经成立的 root presentation proof。静止 Full Far
-专项完成 `33725 pages / 6859 patches`，最终 mailbox、ready、in-flight、fatal 全为 `0`，
-settled/quiescent/coverage clean；连续 10 次 1280×720 Real-RHI 冷启动 failed=`0`、
-p95=max=`18.410s`。这证明当前 Mock 客户端开场和后台收敛门禁，不代表 Online provider、
-服务端 pages 或 launcher 已完成。
+2026-08-17 的 RuntimeMock 双阶段硬门进一步冻结：玩家输入只在完整 Near
+`27 tiles / 216 patches / 9261 chunks`、11 个近到远 publication shell、真实 renderer coverage、
+CPU mesh 异步队列与 settled revalidation 全部闭合后开放；完整 Near 前 Far visible=`0`。
+Root 对该 TargetKey 单调锁存 `near_entry_gate_satisfied`，锁存时刻既是 Playable，也是独立 Far
+deadline 的唯一起点。Near/Far 均以 `10000ms` 为性能目标、`12000ms` 为运行时硬失败上限；
+超过目标但未超过硬限时继续流送并保留 elapsed 证据。Full Far 从启动起只建立一份
+`33725 pages / 6859 patches`
+目标：Near 阶段允许空闲容量预构建，入场后继续消费同一代结果，不再生成第二份 Full 计划。
+连续 10 次 1280×720 Real-RHI 冷启动全部低于 10 秒性能目标：Near 最大 `8240ms`，入场后 Far 最大
+`9373ms`，总计最大 `17319ms`；终态 mailbox、ready、in-flight、fatal、producer queue 全为
+`0`，settled/quiescent/coverage clean。这证明当前 Mock 客户端开场和后台收敛门禁，不代表
+Online provider、服务端 pages 或 launcher 已完成。
 
 ## 作者态场景与运行时世界边界
 
@@ -152,7 +156,8 @@ Speculative 队列使用，不能套在当前必需加载上。
 
 1. builder 完成全部 target metadata、dependency fingerprint 与 boundary profile；
 2. 一次性发布完整 target plan；
-3. 按离目标中心最近、坐标稳定排序逐 Patch 构建 mesh；
+3. 按距离绝对优先、相机夹角次优先、XYZ 稳定兜底逐 Patch 构建 mesh；相机变化只重排
+   pending，不取消 in-flight/ready/presentation，也不重置 deadline；
 4. 每完成一个 Patch 放入以 PatchId 可寻址的 demand-driven mailbox；
 5. Scene metadata handoff 只等待 manifest consumed 与 producer terminal，不等待整个 mailbox
    清空；当前事务只取自己的 PatchId，其余 ready stage 继续由 worker mailbox 持有；
@@ -161,13 +166,18 @@ Speculative 队列使用，不能套在当前必需加载上。
 7. 完整 `FVoxiaWorldGenVoxelShellBuildResult` 结束后只归档 residency、artifact cache、
    coverage/observation generation。
 
-Bootstrap 先构建 `StartupRequired` scope（当前固定 `6571` Far pages），只服务开场边界闭合；
-进入 Playable 后，同一 TargetKey 显式提升到 `Full` scope（当前固定 `33725` Far pages）。Full
-provider/surface 和逐 Patch 可见提交受后台帧预算约束；Near 新工作或玩家移动优先，静止后 Root
-自行恢复推进。被可见事务取消但未发布的精确版本必须重排回 BuildIndex；Full target 全部
-retained 后，mailbox 的同版本尾项只允许在 manifest 与 live ledger 全字段相同时释放，并公开
-`mailbox_redundant_released`。因此 `settled` 可晚于 Playable，但不能永久留下 ready/mailbox
-尾项或把用户重新送回加载态。
+Bootstrap 从一开始就建立唯一 `Full` scope（固定 `33725` Far pages），并在同一 manifest 中标记
+开场 coverage 所需的 Required 保护子集。Near 完整前 provider/surface 可以按实时许可借用空闲
+容量，但 Far 不得可见发布；入场后恢复冻结硬件策略的正常并发并继续同一 TargetKey、同一 plan、
+同一 artifact cache，不发生 `StartupRequired → Full` 的重复构建。被可见事务取消但未发布的精确
+版本必须重排回 BuildIndex；Full target 全部 retained 后，mailbox 的同版本尾项只允许在 manifest
+与 live ledger 全字段相同时释放，并公开 `mailbox_redundant_released`。因此 `settled` 可晚于
+Playable，但不能永久留下 ready/mailbox 尾项或把用户重新送回加载态。
+
+五层默认 ring 的 page 数固定为 `702/4184/15113/7677/6049`。规划器使用上一层实际对齐后的
+coverage bounds，并在后两层分别冻结 `144/190` 个 coarse overlap guard；guard 只保护 seam/切换，
+最细 owner 仍由同一个逐 tile 解析器决定。这样中心在任意正负 XYZ 与全局 span 相位间移动时，
+Full Far 仍严格保持 `33725` pages，不会再因坐标相位变成 `33938` 等漂移值。
 
 后台跳过 Far mesh 重建必须逐字段匹配提交账本中的完整 `FVoxiaFarPatchVersion`：page owner、
 source、content、dependency、boundary profile 与 content state 缺一不可。只有不会清空 live
@@ -206,10 +216,14 @@ NearMoveCommit = 1 NearPatchVersion + exact ownership + seam
 NearEditCommit = 1..8 NearPatchVersion + exact ownership + seam
 FarPatchCommit = 1 FarPatchVersion + 26 outer boundary slots
                + actual LayerFace after-images + per-live manifest entry
+FarPatchGroup  = 1..256 ordered FarPatchCommit + 1 shared staging fence
+               + 1 shared post-visibility fence
 ```
 
-SceneHost 在 commit 前验证完整 after-image；commit callback 开始后只做不可失败的同帧切换。
-旧资源进入 retirement，并在真实 render fence 后回收。
+SceneHost 在 group 可见前以当前 live ledger 建立有序投影；第 N 个 child 只能读取 live 或组内更早
+child 的 after-image，同一 boundary batch 最终物理态合并一次。每个 child 的 TargetKey、版本、
+read-set、commit serial 与 receipt 仍独立。全部隐藏资源准备后共用一次 staging fence，所有 child
+按序完成不可失败的可见切换后共用一次 post-visibility fence；旧资源随后进入 retirement。
 `scene_host.patch_ownership` 同时公开 `live_layer_interfaces`、
 `live_layer_interface_geometry`、`live_cross_patch_layer_interfaces`、
 `live_near_far_interfaces` 与 `live_far_lod_interfaces`，用于直接核对真实层间面是否进入
@@ -283,6 +297,11 @@ current/previous 两份目标 manifest 的历史假设。
 期间连续性计数尚未启动；最后完整 Near 与整个保护范围第一次同时干净后才开始逐帧累计，
 历史坏帧不能被后续干净帧清零。
 
+移动覆盖与碰撞真值是正交合同。coverage guard 负责证明候选位置已有真实可见画面；角色碰撞
+从同一冻结查询快照读取 `IsConfirmedReadable()` 的权威占用事实，因此 confirmed-only 空气可
+通行、confirmed-only 实体仍阻挡，真正 Unavailable 才 fail-closed。build raycast、选取和编辑
+继续要求 `IsInteractiveReadable()` / Presented，呈现回执延迟不得反向冻结物理移动。
+
 ## Required 与 Speculative
 
 - Required 有待派发时不启动新 Speculative；
@@ -322,9 +341,11 @@ coarse fallback 或逐 Tick retry。
 ## 可观测面
 
 - Root：`target_key`、transition kind、required/speculative、`playable`、
+  `near_entry_gate_satisfied`、Near/Far deadline 的 state/elapsed/remaining/target generation、
   `handoff_complete`、`settled`、Far 可见发布优先级、failure，以及 `near_source_activation`
   的 lease center/generation/intent/deferred total/reason；
-- Near/Far BuildIndex：target/retained/pending/in-flight/ready/fatal；
+- Near/Far BuildIndex：target/retained/pending/in-flight/ready/fatal、camera priority revision 与
+  pending reprioritized count；
 - Far stream：`mailbox_mode=demand_driven_v1`、plan published/consumed、mailbox pending、
   on-demand consumed、max deferred、terminal、consumer failure；
 - SceneHost：committed Patch maps、exact ownership、boundary slots、staged/retiring/free、
@@ -364,6 +385,27 @@ coarse fallback 或逐 Tick retry。
 archive decoder/golden fixture 可以保留，但不得进入 production presentation owner。
 
 ## 验证状态
+
+2026-08-18 当前树证据：
+
+- Development build 成功；完整 `Automation RunTests Voxia` 为 `224/224` success，失败、未运行、
+  进行中均为 `0`；Node 全量脚本测试 `184/184`；
+- 2026-08-17 Null-RHI Full Far 性能基线：Near=`1194ms`、Far=`8793ms`、总计=`9987ms`，精确
+  `33725 pages / 6859 patches`，产物
+  `.demo/observe/voxia_phase1_2026-08-17T14-22-09-352Z_null_rhi_1280x720/`；
+- 1280×720 Real-RHI 连续 10 次独立冷启动 `10/10`：Near min/p50/p95=max/avg=
+  `7487/7871.5/8240/7846.1ms`，入场后 Far min/p50/p95=max/avg=
+  `8630/8750/9373/8805.4ms`，总计 min/p50/p95=max/avg=
+  `16219/16560/17319/16651.5ms`；每轮都是 `33725/6859/28 groups`，终态所有工作队列与
+  fatal 为 `0`，coverage clean、resources quiescent、settled；汇总为
+  `.demo/observe/voxia_near_far_10run_2026-08-18_final/near_far_acceptance_summary.json`；
+- 相邻 +Y 的 1280×720 Real-RHI 生产根实跑通过：Near
+  `entered/exited/retained=3087/3087/6174`、耗时 `2962ms`；Far
+  `retained/entered/exited=6618/241/241`、耗时 `7648ms`，中心从 `[11,0,-51]` 推进到
+  `[11,1,-51]` 后仍为 `33725/6859`。产物为
+  `.demo/observe/voxia_phase1_2026-08-17T16-44-12-884Z_real_rhi_1280x720/`。
+
+上述 RuntimeMock 证据不外推为 Online authority/provider 或更多硬件矩阵完成。
 
 2026-08-03 合并树证据：
 

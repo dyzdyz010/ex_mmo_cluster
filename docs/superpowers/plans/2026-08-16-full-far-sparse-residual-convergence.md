@@ -26,6 +26,20 @@
 5. 更新 `IsValidInternal`：重算期望残差并拒绝伪造的稀疏写集。
 6. 重跑 focused automation，确认 RED 变 GREEN。
 
+### Task 1b：语义身份与物理 mesh effect 残差解耦
+
+实跑若证明 renderer mutation 仍被临时边界语义放大，则继续在同一 planner / SceneHost 事务中
+完成第二层精确化，不另建旁路：
+
+1. 先增加 RED：相同 mesh 仅改变 provisional/final kind 或 incident/version 时，artifact
+   version 必须变化，但 geometry identity 与物理 batch identity 必须稳定。
+2. 给计划同时维护完整语义 boundary write-set 与物理 renderer write-set；后者只在几何
+   出现、消失或 geometry identity 改变时写入。
+3. SceneHost 对仅语义变化的 slot 原位更新 payload/binding/coverage receipt，复用原组件与
+   handle，不创建、隐藏、退役组件，也不 arm fence。
+4. 增加 planner、batch builder、SceneHost transaction 回归，再重新实跑 Full Far；所有
+   ledger、manifest、coverage、顺序与无洞门禁保持不变。
+
 ## Task 2：无渲染命令的 SceneHost 原子提交
 
 文件：
@@ -62,8 +76,8 @@
 
 步骤：
 
-1. 先写失败测试：无命令 commit 可在 `1.0ms` / `32` 条双预算内继续；渲染事务完成后必须
-   让帧；只有携带几何 shard 的 mailbox 移交才强制让帧。
+1. 先写失败测试：无命令 commit 可在 `1.0ms` / `32` 条双预算内继续；渲染事务只有在
+   post fence 完成后才可衔接下一有序事务；只有携带几何 shard 的 mailbox 移交才强制让帧。
 2. 将 begin 成功后的第一次 poll 合并到同一次推进，允许无命令事务同步完成。
 3. 只批处理现有 BuildIndex 有序队列的连续队首；保留 Held、RequiredOnly、Speculative、
    Near priority 和 supersede 判断位置。
@@ -88,6 +102,27 @@
 3. 保持目标变化 cancellation；验证 Near 重新进入关键期时可暂停或显式取消旧 Full，不允许
    无维护地继续占用。
 4. 验证 provider/surface 在 unpaced 下恢复配置 worker 数，paced 下仍为单 worker。
+
+### Task 4b：物理 boundary batch 的有界同帧排空
+
+第一轮 Full 证据若显示渲染事务的真实工作很轻、但被逐 batch 分帧放大，则在 SceneHost 内部
+优化同一个事务，不改变 patch 粒度和 fence：
+
+1. 先增加失败测试，锁定 `2.0ms` 软时间预算与 `8 batch/poll` 硬数量上限；无效计数必须
+   保守让出。
+2. `CompleteCandidateBoundaryBatches` 在一次 poll 中连续消费有序物理 batch 前缀，任一预算
+   到达即返回 Busy；全部隐藏组件完成后才进入 staging fence。
+3. timing 日志增加 `polls`、`yields`、`max_batches_per_poll`、预算与硬上限；不得把多个 patch
+   合成新事务，也不得弱化 staging/post-visibility fence。
+4. 重跑 ResourceSet、SceneHostLedger、Transaction automation，再进行 Real-RHI Full 对比。
+
+### Task 4c：消除 post-fence 完成后的事务间空泡
+
+1. 先把“renderer mutation 完成后无条件让帧”改成失败的新期望：只有完整 post fence 已确认的
+   事务才会进入该策略，此时允许在本 Tick 预算内领取下一有序队首。
+2. 保留 `1.0ms` 软预算、`32 commits/tick` 硬上限、几何 mailbox 让帧和每个新事务自己的两道
+   fence；不允许在 fence pending 时提前发布 receipt。
+3. 重跑 WorldCoverageScheduler 与 FarConfirmedPresentation，再跑 Real-RHI Full 对比。
 
 ## Task 5：文档、CLI 与 smoke 门禁
 

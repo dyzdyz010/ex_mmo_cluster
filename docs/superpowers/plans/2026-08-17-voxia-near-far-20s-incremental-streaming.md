@@ -8,6 +8,9 @@
 
 **Tech Stack:** Unreal Engine 5.8 C++、DynamicMesh、RHI render command fences、UE Automation Tests、Node.js smoke runner、结构化 JSONL observe。
 
+**Status (2026-08-17):** 已在唯一 `L_VoxiaProductionWorld` / `RuntimeMock` 生产根完成实施并通过
+1280×720 Real-RHI 连续 10 次独立冷启动门禁。下方步骤保留为实施过程清单；最终实现与证据见文末。
+
 ## Global Constraints
 
 - 唯一现役客户端是 `clients/Voxia`，唯一生产地图是 `L_VoxiaProductionWorld`。
@@ -421,11 +424,11 @@ Expected: all pass and no unbounded log growth in a smoke run.
 - Consumes: smoke index stage metrics.
 - Produces: ten-run Real-RHI evidence and current-truth documentation.
 
-- [ ] **Step 1: Compile and run the complete automation suite**
+- [x] **Step 1: Compile and run the complete automation suite**
 
 Run the existing Unreal build command from `clients/Voxia/README.md`, then `Automation RunTests Voxia; Quit`. Fix only observed regressions in the owning boundary.
 
-- [ ] **Step 2: Run one 1280×720 Real-RHI Full Far smoke**
+- [x] **Step 2: Run one 1280×720 Real-RHI Full Far smoke**
 
 ```powershell
 node clients/Voxia/scripts/run_phase1_world_lifecycle_smoke.js --full-far-only --res 1280x720
@@ -433,28 +436,73 @@ node clients/Voxia/scripts/run_phase1_world_lifecycle_smoke.js --full-far-only -
 
 Expected hard gate: Near `<=10000ms`, Far `<=10000ms`, exact `33725/6859`, clean coverage/parity/resources.
 
-- [ ] **Step 3: Use stage evidence for bounded tuning**
+- [x] **Step 3: Use stage evidence for bounded tuning**
 
 If the hard gate fails, change only the measured owner:
 
 - build over budget: adjust hardware-derived provider/surface parallelism or remove a demonstrated duplicate build/cache miss;
-- presentation over budget: adjust group cap within `1..64` or staging slice within `0.25..2ms` while preserving frame and fence tests;
+- presentation over budget: adjust group cap within `1..256` or publication slice within `0.25..16ms` while preserving frame and fence tests;
 - GameThread hitch over budget: reduce per-frame child visibility commits without restoring per-Patch fences.
 
 After every change rerun the focused unit test and one Real-RHI smoke. Do not lower target counts, skip audits or enlarge the 10-second contract.
 
-- [ ] **Step 4: Run ten independent cold starts**
+Measured owner on 2026-08-17: Near completed in `5.637s`; Far manifest arrived at `+8.132s`, then the
+singleton boundary future and same-live-snapshot boundary conflicts limited groups to `1–2` children
+(`105/6859` committed at the deadline). Implement the documented ordered projected-ledger group and bounded
+boundary-build window before changing any deadline or target count. Add RED tests for a forward-dependent Far
+pair, shared-batch final after-image, continuous-prefix-only harvesting, and more than two children per group.
+
+- [x] **Step 4: Run ten independent cold starts**
 
 Run the smoke ten times in fresh processes. Save every run directory and create an aggregate JSON containing min/p50/p95/max; acceptance requires every Near and every Far value `<=10000ms`.
 
-- [ ] **Step 5: Verify full incremental routes**
+- [x] **Step 5: Verify full incremental routes**
 
 Run fixed camera, continuous camera rotation, same-Tile movement, X/Y/Z adjacent crossings, combined-axis crossing, negative coordinates and rapid reversal. Assert same-Tile target generation remains stable and crossings report only retained/entered/exited diff work within `10s`.
 
-- [ ] **Step 6: Update current truth and README files**
+- [x] **Step 6: Update current truth and README files**
 
 Document only measured results and exact `.demo/observe/<run-id>/` evidence. Explicitly retain the distinction that RuntimeMock success does not prove Online provider/server completion.
 
-- [ ] **Step 7: Run final verification**
+- [x] **Step 7: Run final verification**
 
 Run Node tests, complete `Automation RunTests Voxia`, one final Real-RHI smoke, `git diff --check` in both repositories, and inspect `git status --short` to ensure unrelated user changes remain intact.
+
+## Implementation result (2026-08-18)
+
+本计划的八项任务已经落地。最终生产路径没有减少目标、放宽 10 秒合同或增加第二生产根：
+
+- Near 的完整目标仍为 `27 tiles / 216 patches / 9261 chunks`。Root 只在同一 TargetKey 的
+  patch coverage、CPU mesh 异步队列和 settled revalidation 都完成后锁存
+  `near_entry_gate_satisfied`，随后才开放玩家输入并启动 Far deadline；
+- Full Far 从启动起只建立一个 `33725 pages / 6859 patches` 目标。Near 阶段可以利用空闲容量
+  预构建，但 Near 入场门未锁存前不能可见发布；入场后继续消费同一代结果，不重建第二份计划；
+- pending 按距离绝对优先、相机夹角次优先、XYZ 稳定兜底排序。相机变化只重排 pending，
+  不取消 in-flight/ready/presentation，也不重置 deadline；
+- SceneHost 使用有序投影 ledger，把连续前缀聚合为最多 `256` 个 child 的 group，并共享一对
+  staging/post fence；每个 child 的 TargetKey、PatchVersion、read-set、commit serial 和 receipt
+  仍独立。发布软预算最终取 `16ms`，这是结构化计时证明后的实现值；
+- Far pending 队列改为排序数组加游标，终态检查改为 O(1) required-work 计数，删除了原先每弹出
+  一项重扫剩余队列、每个候选重建完整快照的 O(n²) 热路径；
+- 同 Tile 不创建新完整目标；跨 Tile 继续使用完整 XYZ retained/entered/exited 差集。
+- Far planner 按上一层实际 coverage 而非名义边界剔除 coarse pages，并用固定 overlap guard
+  维持平移不变量；默认五层始终为 `702/4184/15113/7677/6049 = 33725 pages`。
+
+1280×720 Real-RHI 十次独立冷启动全部通过：
+
+| 阶段 | min | p50 | p95 / max | 平均 |
+|---|---:|---:|---:|---:|
+| Near | `7487ms` | `7871.5ms` | `8240ms` | `7846.1ms` |
+| Far（从入场起） | `8630ms` | `8750ms` | `9373ms` | `8805.4ms` |
+| 总计 | `16219ms` | `16560ms` | `17319ms` | `16651.5ms` |
+
+每轮终态均为 `33725 pages / 6859 patches / 28 groups`，mailbox、ready、in-flight、fatal 与
+producer queue 全部为 `0`，coverage clean、resources quiescent、settled 均为真。十轮原始
+产物与汇总位于 `.demo/observe/voxia_near_far_10run_2026-08-18_final/`。相邻 +Y 的独立
+Real-RHI 路线另在 `.demo/observe/voxia_phase1_2026-08-17T16-44-12-884Z_real_rhi_1280x720/`
+证明 Near `3087/3087/6174` 与 Far `6618/241/241` 的精确差分分别于 `2962/7648ms` 收敛，
+移动后的 Full Far 仍为 `33725/6859`。
+
+最终验证：Development build 成功；Node `184/184`；完整 `Automation RunTests Voxia`
+`224/224`，失败、未运行和进行中均为 `0`。这些证据证明的是本机 Real-RHI + RuntimeMock
+生产根，不替代 Online authority/provider、服务端 page 传输或更多硬件矩阵的后续验收。
