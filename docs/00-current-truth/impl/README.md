@@ -74,7 +74,7 @@
 - Voxia client CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`
   - 场景作者态：`--cmd "scene_composition; environment_state; voxel_editor_preview_state"`；runtime 中 preview 命令固定返回 `unsupported_in_runtime`
   - 唯一联合根：传 `-VoxiaWorldGenPreview`（可再显式传 `-VoxiaUnifiedVoxelWorld`），`--cmd "until_voxel_world_root_ready 300000; voxel_world_composition_state; voxel_world_root_state"`
-  - Pure3D 增量状态：`--cmd "until_pure3d_stream_settled 300000 1; pure3d_stream_state"`；隔离 probe 另传 `-VoxiaPure3DProbe -VoxiaWorldGenPreview`
+  - Pure3D 增量状态：`--cmd "until_pure3d_stream_settled 300000 1; pure3d_stream_state"`（2026-08-19 起唯一生产根之外不再有隔离 probe 路径，`-VoxiaPure3DProbe` / `-VoxiaPure3DWorld` 命中即硬失败）
   - Near XYZ：`--cmd "until_near_patch_idle;near_mesh;snapshot"`，检查 `footprint_contract=xyz_cube`、9261、Near Patch target/ready/fatal 与 exact ownership
   - 无空洞逐帧证明：`--cmd "presentation_coverage;movement_coverage_guard"`，检查最后完整 Near、完整 XYZ 安全门、真实 Far 组件数与累计 gap/overlap/orphan
   - Cube shell probes：`--cmd "voxel_shell_plan;voxel_pages_v2_probe;voxel_shell_stage_probe"`；这些只证明组件，不能替代联合根 readiness，更不能替代在线 authority cutover
