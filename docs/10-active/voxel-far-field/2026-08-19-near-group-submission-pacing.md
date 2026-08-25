@@ -140,3 +140,81 @@ Begin 内的 read-set 校验从未超过 2ms 阈值——凭证机制（`bLedger
 ## 9. 进度日志（续）
 
 - 2026-08-19：实现提交 `7737bb8`;12-tile 终验完成,收口。
+
+## 10. 2026-08-25 ready-prefix 后续修正与证据
+
+- 提交：Voxia `43f0a5b`（`fix(streaming): publish ready near patch prefixes promptly`）。
+- 关系：本节修正的是本稿收口后**仍然存在的另一条等待路径**,不推翻 §5–§8 的死投影归因;
+  §1/§5/§8 中一切"64 child/组"的量化都是**当时的历史画像**,描述的是修复前凑批语义下的
+  组大小分布,不再代表 `43f0a5b` 之后的运行时组大小。历史数字原样保留,不回改。
+
+### 10.1 根因
+
+`StageNextReadyNearPatchMove` 在 `CollectReadyMovePrefix` 返回 Ready 之后,还额外要求
+`Candidates.Num() >= MaxNearPatchGroupChildren`（64）**或**前缀已覆盖全部剩余
+`PendingMovePatchCount`,否则返回
+`Waiting("near_patch_group_collecting_continuous_prefix")`。于是已经连续 ready 的队首前缀
+被扣住,只为继续凑批。现场同口径样本：一次 window activation → 首组 submitted 约
+**1616ms**,而 submitted → visible commit 只有约 **30ms**——等待发生在**提交之前**,
+不在渲染提交内部,因而表现为旧 Far 与新 Near 并存的可见窗口。
+
+### 10.2 最小机制
+
+删掉那一个凑批分支：**非空、有序、连续**的 ready prefix 即刻提交,
+`MaxNearPatchGroupChildren = 64` 退回它的原义——**单次提交的条数上限**,不是最小成组门槛。
+空前缀 / 尚未 ready / 非连续 / 错误 / 取消 / 代次淘汰语义不变;patch 级事务原子性、
+ownership rebase、两道真实 fence、Far clip、完整 XYZ Near 窗口、worker 与 backpressure 均
+未改动;`voxia_near_patch_group_submitted`（含 `child_count`）可观测面原样保留。
+代码改动面：`VoxiaWorldActor.cpp` 删 8 行、加 2 行注释,`VoxiaWorldActor.h` 加一个
+`WITH_DEV_AUTOMATION_TESTS` 测试 friend。
+
+```mermaid
+flowchart LR
+  A[producer mailbox<br/>ready near patches] --> B{绝对队首<br/>连续 ready prefix}
+  B -- 空/未 ready --> W[Waiting<br/>继续构建]
+  B -- 非空 1..64 --> C[SceneHost 单个原子 group 事务]
+  C --> D[Near visible commit]
+  C --> E[Far clip 同一提交生效]
+```
+
+### 10.3 自动化证据
+
+- RED→GREEN：新增 `Voxia.Gameplay.NearPatchGroupPromptSubmission`——ready prefix = 3
+  （< 64）且窗口内仍有 pending patch 时必须进入提交路径;修复前红,修复后绿。
+- Development build 成功;Unreal Automation `223/223`、Node `198/198` 全绿。
+
+### 10.4 真实 D3D12 长程复测
+
+唯一生产组合根,命令：
+
+```
+node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --long-haul-only \
+  --long-haul-tiles 12 --resolution 1280x720
+```
+
+产物：`.demo/observe/voxia_phase1_2026-08-25T09-30-53-415Z_real_rhi_1280x720/`
+
+| 维度 | 实测 |
+| --- | --- |
+| 规模 | 24 段 / 37992 帧 / 约 457s,最终 Near/Far/coverage 均 ready |
+| 正确性 | 25/25 renderer parity verified;gap/overlap/orphan/fatal 全为 0 |
+| 日志 | 0 条 `LogVoxia Error`,clean exit |
+| 组大小 | 1247 组 / 2579 children;`child_count` min=1、p50=2、max=58,**=64 出现 0 次** |
+| 入场首组 | 27/27 window activation 的首组 `child_count` = 1 |
+| activation → 首组 submitted | p50=213ms、max=514ms（修复前同口径样本 1616ms） |
+| submitted → 首次 visible commit | 1247/1247 可关联,p50=23ms、max=28ms（修复前样本约 30ms） |
+| Near 组提交计时 | 0/1247 达到 `8ms` 慢路径阈值 |
+| 帧时 | GT p95 各段 2.58–4.24ms,平均 129.18 FPS |
+
+组大小分布本身即证据：p50=2、64 次数为 0,说明"凑满 64 才提交"的等待门槛已不存在,
+组大小回到由 ready 节律自然决定。
+
+### 10.5 残余风险与边界
+
+- **smoke 整体仍是 `exit=1` / `passed=false`,不得写成性能门禁通过。** 长程 hitch 门禁
+  24/24 段各有 1–2 个 GT 33–39ms 的帧（`back_12` 另有更高尾部）,现有 Voxia GT 阶段插桩
+  **未关联到**这些尖峰。它既不能归因给本修复,也不能据此排除本修复,属于**尚待独立归因**
+  的残余风险。
+- Far dispatch 出现 22 次 blocked 区间,全部恢复;required Far 约 1775–1820ms,未见活性
+  故障。本轮**没有修复前的同 run 基线**,因此不对 Far 时延做优劣结论。
+- 结构化证据支持"等待门槛消失",但本轮**没有肉眼视觉验收**,不能写成"视觉问题已完全消失"。
