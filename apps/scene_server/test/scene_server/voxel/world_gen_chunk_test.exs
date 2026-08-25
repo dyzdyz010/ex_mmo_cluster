@@ -1,5 +1,5 @@
 defmodule SceneServer.Voxel.WorldGenChunkTest do
-  # First-touch WorldGen generation in ChunkProcess (阶段3 step3.1 integration).
+  # ChunkProcess 显式 dev/test WorldGen policy 集成。
   use ExUnit.Case, async: false
 
   alias SceneServer.Voxel.ChunkProcess
@@ -17,12 +17,12 @@ defmodule SceneServer.Voxel.WorldGenChunkTest do
       start_supervised!(
         {ChunkProcess,
          logical_scene_id: 777_001,
-         chunk_coord: {0, -10, 0},
+         chunk_coord: {0, -25, 0},
          worldgen: [enabled?: true, seed: 1337]}
       )
 
     storage = storage_of(pid)
-    # Deep underground chunk → fully solid stone, and pristine (version 0).
+    # 洞穴垂直带以下的深层 chunk 必须保持全 stone 且版本为零。
     assert solid_count(storage) == 4096
     assert storage.chunk_version == 0
 
@@ -47,7 +47,7 @@ defmodule SceneServer.Voxel.WorldGenChunkTest do
 
   test "a first-touched chunk is empty only under the explicit test empty policy" do
     pid =
-      start_supervised!({ChunkProcess, logical_scene_id: 777_002, chunk_coord: {0, -10, 0}})
+      start_supervised!({ChunkProcess, logical_scene_id: 777_002, chunk_coord: {0, -25, 0}})
 
     assert solid_count(storage_of(pid)) == 0
 
@@ -75,7 +75,7 @@ defmodule SceneServer.Voxel.WorldGenChunkTest do
     assert {:error, reason} =
              start_supervised(
                {ChunkProcess,
-                logical_scene_id: scene_id, chunk_coord: {0, -10, 0}, missing_chunk_policy: :error}
+                logical_scene_id: scene_id, chunk_coord: {0, -25, 0}, missing_chunk_policy: :error}
              )
 
     assert inspect(reason) =~ "missing_authoritative_chunk_snapshot"

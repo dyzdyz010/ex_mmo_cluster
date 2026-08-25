@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **49** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **50** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -62,6 +62,7 @@
 
 ### voxel-authority
 
+- [`2026-08-24-worldgen-v2-3d-density-materialization.md`](voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md) — 服务端 migration WorldGen 与 Voxia 本地 Mock 的独立 canonical XYZ 材质体、首个三维 cheese-cave 切片及验收边界
 - [`2026-06-17-unit-morphology-and-surface-element-layer.md`](voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md)
 - [`2026-06-27-订阅活性根因-连接驱动正交修复设计.md`](voxel-authority/2026-06-27-订阅活性根因-连接驱动正交修复设计.md)
 - [`2026-06-28-权威体素唯一事实源-噪声降为migration.md`](voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)

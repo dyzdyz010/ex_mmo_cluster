@@ -63,3 +63,32 @@
 ## 7. 进度日志（续）
 
 - 2026-08-20：实现提交 `be3c734`,双冒烟终验通过,收口。手玩复现路径留待用户重跑确认。
+- 2026-08-20（补）：§2「真死锁不靠 deadline 兜底,liveness 独立存在」在 phase2 relocate
+  停滞取证中暴露缺口——owner-idle 只覆盖空闲死锁,忙等 livelock（owner 持续在途、
+  progress 不推进）无人击杀。已按同一原则补 `streaming_wait_stalled_timeout`
+  （60s 无进展即 fatal,按进展计时）。见
+  [`2026-08-20-phase2-relocate-stall-regression.md`](2026-08-20-phase2-relocate-stall-regression.md)。
+
+## 8. 2026-08-25 回归修正：exceeded 不能撤销收敛活性
+
+唯一生产根手玩再次暴露两个同源活性缺口：
+
+1. Far deadline 进入 `exceeded` 后，Near 优先级判断不再保护同一 target generation 的未完成
+   required Far；普通移动随即用 `near_priority` 取消并重启同一 Far，导致它永远无法收敛。
+2. WorldGen 订阅把玩家实际 desired tile 覆写为旧 root pending/lease tile，再把旧 active target
+   每帧送入激活入口，现场约 205 次/秒无效 Near activation；desired identity 与 granted identity
+   被隐式耦合。
+
+修正后的不变量：
+
+- 只要 deadline target generation 等于当前 generation 且 required Far 未完成，`active` 与
+  `exceeded` 都维持 Far 收敛保护；`completed`、旧 generation 或 required 已完成才释放。deadline
+  继续只负责观测与验收，不能反向改变流水线活性。
+- controller 独立保存 `last_desired_tile`。旧 root target 仍可作为本轮 granted activation 消费，
+  但不能覆盖 desired，也不能对相同 active target重复 commit；下一次请求由统一
+  `FVoxiaNearWindowRefreshPolicy` 的 tile change、prepared 和 retry cooldown 决定。
+- CLI/session 快照公开 `last_desired_tile`，root deadline/target generation 继续公开，便于直接区分
+  “玩家想去哪里”“当前被授予哪里”和“哪个 generation 正在收敛”。
+
+自动化分别冻结 `ShouldProtectFarConvergence` 的 active/exceeded/completed/旧代矩阵，以及
+`VoxiaNearWindowLifecycle::NeedsCommit` 与同 desired、未 prepared、冷却未到时不得请求/提交。

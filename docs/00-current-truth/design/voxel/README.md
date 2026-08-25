@@ -6,8 +6,10 @@
 
 **权威体素数据是服务器生命周期里的唯一事实源。**
 
-- WorldGen 噪声只应作为一次性 world-seed migration，开发期用于灌入权威 store。
-- WorldGen 的公共边界是 `chunk_xyz -> canonical 3D chunk`；当前内容即使主要呈现地表，也不得向流送、LOD 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0` 语义。
+- WorldGen 噪声只应作为一次性 world-seed migration，开发期用于灌入权威 store。服务端当前
+  `worldgen_density_v2@1` 已直接生成 canonical 16³ XYZ 材质体，并加入世界坐标连续的
+  cheese-cave；只有 `WorldGenMaterializer` 可在 World lease fence 下写入权威 store。
+- WorldGen 的公共边界是 `chunk_xyz -> canonical 3D chunk`；当前内容即使主要呈现地表，也不得向流送、LOD 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0` 语义。服务端旧 column/heightmap API 仅为历史离线迁移 helper，Voxia 本地 WorldGen 仍只是独立 dev fixture，二者都不是 Online truth。
 - 真实地图导入未来应作为同层 migration，灌入同一个权威 store。
 - chunk 服务、远景 LOD、raycast、碰撞、远程交互都应只读或派生自权威体素。
 - 派生物必须显式维护一致性，例如编辑后 dirty LOD mip，而不是依赖“源不会变”的隐式假设。
@@ -108,8 +110,8 @@ flowchart LR
 | --- | --- | --- |
 | 近场 chunk truth | Scene / ChunkProcess 持热 truth，server snapshot/delta authoritative | 保持 |
 | 远景 LOD 数据源 | `0x6A` 默认在线兼容路径仍读取 `LodHeightmapStore`，默认 source-pages 仍是旧列 identity。唯一联合根的 Pure3D far 已真消费 WorldGen 或 H-gated `local_disk` XYZ pages；两者共用 required/keep/enter/exit diff、immutable residency/lease、cooperative cancellation、source-bound shared artifact cache、parallel resolved surface 与 absolute XYZ stable patch transaction，不再按 center 全量请求/聚合。coverage diff 在 worker 运行，旧 lease 按页预算回收。near/far 各自维护派生 residency/cache，并通过 confirmed presentation transaction 原子组合；A10 lifecycle/ownership、full oracle、三轴路线与跨 LOD exact-surface material 已完成。WorldGen dev adapter 仍可中心降采样 coarse occupancy，但 VXP5 surface-coverage v4 从精确 source 归约最终外露材质；旧 page/schema/cache 明确拒绝。开发用 `local_disk` 当前只提供 far pages，near 仍用 WorldGen，因此本地根显式报告 mixed source mode | 只接 Online XYZ provider，并可补开发用 local-disk near provider。根冻结统一 source identity，各子系统继续自行维护可变 residency/cache，不引入共享可变状态；服务端/pack writer 必须产出相同 VXP5 surface semantics，缺 page/chunk/hash/schema 必须硬失败且不回退 WorldGen |
-| WorldGen | 服务端与客户端 dev 副本仍暴露 column/heightmap；客户端只允许 preview/fixture，生产不以它重算 baseline | 服务端迁移/离线生成器只公开 `chunk_xyz -> canonical 3D chunk`；当前地表实现只是内部 `density(x,y,z)` 算子。更换算法只改变 content version，不改变 streaming/LOD/render 路径 |
-| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in 旧 WorldGen | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
+| WorldGen | 服务端 `worldgen_density_v2@1` 已由 DirtyCpu NIF 直接产出 16³ XYZ dirt/stone/air 材质体与 cheese-cave，并返回同源计数 observation；`WorldGenMaterializer` 支持写前算法版本门禁，只读 CLI 可固定 XYZ/seed/hash。Voxia 默认本地 `MockWorldGen` 使用独立身份 `voxia_mock_density_v2@2`：保留世界坐标连续 XYZ cheese-cave，并正交组合 seed 网格化、从地表下降到盖层以下的自然洞口；near snapshot、far canonical page、surface exact coverage 与 frozen base 共用同一分类 owner。`worldgen_inspect_chunk` 观察 chunk，`worldgen_nearest_entrance` 给出可探索的 mouth/inner world XYZ。两端算法/身份互不冒充，Voxia Mock 不写 Online confirmed truth，显式 Online 失败也不回退 Mock。旧 column/heightmap 仅为迁移 helper 或归档兼容 | 后续生成层继续保持正交且每次改变输出都 bump 各自算法/content version；world-pack fixture、H-gated 客户端可见验收和 Online provider 仍是独立后续，不改变 streaming/LOD/render 路径 |
+| chunk runtime materialization | `ChunkProcess` 生产默认只接受持久化 snapshot / provided storage；缺失、损坏或 store 不可用会启动失败并 emit `voxel_chunk_materialization_failed`；`DefaultRegionBootstrapper` 开发/demo 默认通过 `DevSeed` 写 starter chunk snapshots；测试/dev 可显式 opt-in WorldGen policy | 懒物化只调用 3D canonical materializer；未修改 chunk 可由 generator+H 恢复，但 materializer 之后所有系统只读 canonical store |
 | 客户端 baseline | 入场前强校验 + 服务端 ready manifest + UE 本地随机访问 pack 加载已接入；`-VoxiaWorldGenPreview` 可跳过 pack 只生成本地预览世界 | **Online 客户端 snapshot/delta-only（2026-07-06 终态）**：launcher/update 传已验证投影包（近窗 world pack + 远区 source pages）+ H 凭证，运行时增量走 0x62/0x63（近窗）与 pages HTTP 拉取（远区）；"seed+maps+D+H 本地重算"目标已关闭，同构路线仅存为定向优化选项（五条件 + 负载画像） |
 | **baseline 形态与流送边界** | **当前处于全量物化过渡**（WorldPackBootstrapper/shard 装 chunk payload）；新边界决策已定待迁移 | **确定性 3D WorldGen + 设计师 delta D + hash 凭证 H**；WorldGen 只在 materialization 边界出现，storage ∝ 修改量 |
 | runtime snapshot | 当前订阅路径仍会发 snapshot | 长期只作为已验证基线上的正常权威同步之一，不允许当 baseline 兜底 |
@@ -132,6 +134,7 @@ flowchart LR
 
 - [`AGENTS.md`](../../../../AGENTS.md)
 - [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../../../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)
+- [`docs/10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md`](../../../10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md)
 - [`docs/20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md`](../../../20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md)（历史整合证据）
 - [`docs/00-current-truth/impl/2026-06-29-world-pack-streaming-handoff.md`](../../impl/2026-06-29-world-pack-streaming-handoff.md)
 - [`docs/30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)

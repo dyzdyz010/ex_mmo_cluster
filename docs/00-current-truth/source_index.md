@@ -39,6 +39,7 @@ flowchart TD
 | 生产级体素世界 | [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md) | region/world/streaming 目标架构与 tile 口径 |
 | 正交设计原则 | [`docs/30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md`](../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md) | 系统正交、自维护不变量、bug 诊断判据 |
 | 体素唯一事实源 | [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md) | WorldGen 噪声降级为 migration 的地基决策 |
+| WorldGen v2 三维材质体 | [`docs/10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md`](../10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md) | 当前服务端 `worldgen_density_v2@1` 与 Voxia 本地 `voxia_mock_density_v2@2` 的独立算法身份、XYZ cheese-cave、Voxia 自然洞口、物化所有权、CLI/observe 与测试证据；不代表 Online cutover |
 | 体素/远景历史整合 | [`docs/20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md`](../20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md) | 历史近场/远景/LOD/skirt/远程交互整合稿；不再提供当前空间契约 |
 | Voxia streaming 历史证据 | [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md) | 旧近场窗口跟随、debug overlay、stdio CLI 与 route repair 证据；不定义当前 XYZ 窗口 |
 | 远景 LOD 历史根因 | [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md) | heightmap LOD 和拼接缝隙历史根因；取数源、空间与生产路线均已被后续决策取代 |
@@ -83,6 +84,7 @@ flowchart TD
 - [`docs/20-archive/voxel-authority/phase-1c-refined-mutation.md`](../20-archive/voxel-authority/phase-1c-refined-mutation.md)
 - [`docs/20-archive/voxel-authority/phase-1d-canonical-persistence.md`](../20-archive/voxel-authority/phase-1d-canonical-persistence.md)
 - [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md)
+- [`docs/10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md`](../10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md)
 - [`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
 - [`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md)（历史）
 - [`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md)（历史）

@@ -2,6 +2,33 @@
 
 本目录拥有 Scene 侧热体素执行状态。热体素状态指当前租约内、需要被快速读写的区块内存状态。
 
+## 2026-08-24 WorldGen v2 canonical XYZ 物化
+
+服务端 migration WorldGen 当前算法身份为 `worldgen_density_v2@1`。`WorldGenNoise` DirtyCpu
+NIF 直接按完整 world XYZ 生成 `16×16×16`、`x + y*16 + z*256` 顺序的材质体；首个三维内容
+切片是在既有地表体内加入世界坐标连续的 cheese-cave 空腔，并保留固定地表保护层、有限洞穴
+深度/垂直带和 dirt/stone 分层。旧 `column_height` / `heightmap_region` 只保留为历史离线迁移
+helper，新的 chunk 生成不调用它们。
+
+`SceneServer.Voxel.WorldGen.generate_chunk/3` 是 NIF 信任边界：它一次校验 scene/chunk/config、
+材质 binary、计数守恒和 material id，返回 pristine canonical `Storage` 及同次遍历产生的
+observation。算法身份、XYZ、seed、solid/natural-air/cave-air/surface/subsurface 计数和耗时均可
+直接观察。只读检查入口为：
+
+```powershell
+mix scene_server.worldgen.inspect '--chunk=-2,-3,-8' --seed 1337
+```
+
+固定 `v2@1` fixture 输出 `solid_cells=4072`、`cave_air_cells=24`、
+`chunk_hash=c3074cd53f9d98f1`。该 CLI 不申请 lease、不启动 Scene runtime、也不写 store。
+
+只有 `WorldGenMaterializer` 可以把结果写进 `ChunkSnapshotStore`，且必须经过调用方提供的
+World-issued lease fence。world-pack 构建可传 `expected_algorithm_version`；不匹配时在 snapshot
+写入前硬失败。成功/失败分别 emit `voxel_worldgen_materialized` /
+`voxel_worldgen_materialization_failed`。`ChunkProcess` 的 WorldGen 入口仍只允许显式 dev/test
+opt-in；生产默认缺 canonical snapshot 即失败，runtime、streaming、LOD、renderer 和客户端均不得
+调用或复算本算法。
+
 ## 2026-07-13 canonical XYZ 与旧 XZ projection 归档
 
 `SceneServer.Voxel.WorldGenMaterializer` is the explicit bridge from

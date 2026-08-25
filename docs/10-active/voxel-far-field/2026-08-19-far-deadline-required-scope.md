@@ -88,3 +88,27 @@ traversal 门限,同源(后台发布抬稳态)。
 ## 8. 进度日志（续）
 
 - 2026-08-19：实现提交 `2ed2c91`;12-tile 与 full-far 终验完成,收口。
+
+## 9. 2026-08-25 同目标分阶段范围与流送回归补充
+
+本次 MockWorldGen 洞口可玩验收暴露的流送故障不改变本稿“deadline 只约束 required”的决策，
+而是修复其 owner 边界与可观测面：
+
+1. 默认新 TargetKey 先构建 `StartupRequired = 6598 pages`；该范围发布并收敛后，Far owner 才把
+   **同一 TargetKey** 单调提升为 `Full = 33725 pages`。统一根只替换同目标 manifest，不重新激活
+   Near，也不创建第二生产根。Full 后台扩展由独立 observer 观察，不能反向撤销 playable proof。
+2. Near 调度围栏只读取 Near owner 自己的 dispatch、ready publication、critical transaction 与 worker
+   状态；Far 使用共享 SceneHost 的事务不再让 `IsNearPresentationReady()` 变假并取消自己的构建。
+3. `requested required Far pending` 与 active/exceeded deadline 下同 generation 的 required convergence
+   都有调度保护；玩家移动只可暂停 speculative Far，不能饿死或反复 cancel required 工作。
+4. `near_window.active_settled` 是当前窗口的规范完成证明；全局 `idle=false` 可能仅表示存在 speculative
+   successor，脚本不得再把它误判成活动 Near 未收敛。
+5. 跨窗口 Far retained/entered/exited 由 `FVoxiaFarTargetVersionDiff` 比较前后两份已验证 Full manifest
+   一次冻结。`StartupRequired → Full` 的阶段内 build index 不是目标级移动差分。
+
+终验：Null-RHI 唯一生产根从 `[11,0,-51]` 跨到 `[11,1,-51]`，Near
+`entered/exited/retained=3087/3087/6174`；目标级 Far
+`retained/entered/exited=6618/241/241`；Near/required Far 分别 `295/1739ms`，cancel count 为 `0`，
+clean exit。证据：`.demo/observe/voxia_phase1_2026-08-25T01-21-18-032Z_null_rhi_1280x720/`；
+策略与生命周期分层证据位于
+`.demo/observe/voxia_worldgen_streaming_fix_20260825/{runtime_scope_lifecycle_green,near_owner_scheduling_fence_green,required_far_dispatch_protection_green,active_near_settled_green,far_target_version_diff_green}/`。

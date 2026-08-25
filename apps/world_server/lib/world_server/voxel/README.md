@@ -28,6 +28,11 @@ range in bounded batches; the materializer routes those chunks through
 XYZ chunk snapshots。现役 world-pack 写入不生成旧 XZ heightmap projection，
 projection row 也不是 pack ready、coverage 或 release verification 条件。
 
+当前 Scene materializer 生成 `worldgen_density_v2@1` canonical XYZ 材质体。受控 world-pack
+构建可通过 `materializer_opts: [expected_algorithm_version: "worldgen_density_v2@1"]` 钉住算法
+身份；不匹配会在 canonical snapshot 写入前硬失败。该门禁不会自动替代 pack
+`content_version`、完整 coverage 或 release verification，发布工具仍必须显式提供并校验这些身份。
+
 `WorldServer.Voxel.WorldPackBootstrapper` is the supervised server-side
 orchestrator for that path. It is disabled by default and enabled explicitly by
 `VOXEL_WORLD_PACK_GENERATE=1`. On startup it reads

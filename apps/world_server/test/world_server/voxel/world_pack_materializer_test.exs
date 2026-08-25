@@ -315,6 +315,7 @@ defmodule WorldServer.Voxel.WorldPackMaterializerTest do
                batch_size: 1,
                max_chunks: 1,
                ledger: ledger,
+               materializer_opts: [expected_algorithm_version: "worldgen_density_v2@1"],
                publish_auth_pack?: false
              )
 

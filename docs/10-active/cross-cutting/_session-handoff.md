@@ -1,4 +1,144 @@
-# 当前会话接力：分支已收敛到唯一 master,流送修复随之落地
+# 当前会话接力：8/25 Voxia MockWorldGen 自然洞口与流送活性修复
+
+## 2026-08-25 自然洞口与唯一根流送回归修复
+
+- **用户现场**：唯一 `production_all_features` 根中流送不再收敛，且已有 cheese 空腔全部被 12 格
+  表层盖层封闭，真实探索看不到地下洞穴。
+- **流送根因**：Far deadline 进入 `exceeded` 后，同 generation 未完成 required Far 失去收敛保护，
+  移动触发 `near_priority` 反复 cancel/restart；同时 WorldGen 订阅把玩家 desired tile 覆写为旧
+  granted/lease tile，产生约 205 次/秒相同 Near no-op activation。
+- **流送修复**：`active|exceeded + same generation + required unfinished` 统一保护 Far 收敛；controller
+  独立保存 `last_desired_tile`，相同 active target 不再 commit，下一请求只由统一 lifecycle policy
+  的 tile change/prepared/cooldown 判定。策略 focused automation 已转绿。
+- **洞口修复**：Voxia mock identity 升为 `voxia_mock_density_v2@2`，按 128×128 seed 网格正交组合
+  “浅层 mouth → 盖层以下 inner”的下降胶囊与末端 chamber；cheese 密度公式和固定 fixture 不变。
+  near/far/exact surface/frozen base 仍共用唯一 `ClassifyCell`，洞口包围盒会退出 cheese-only 快证明。
+- **观察入口**：`worldgen_inspect_chunk` 增加 `entrance_air_cells` 与首入口 world XYZ；新增
+  `worldgen_nearest_entrance world_x world_z [seed]` 返回可直接探索的 mouth/inner world XYZ。
+- **当前验证**：Development 编译、WorldGen/CLI/shape cache/流送策略 focused automation 已通过；
+  Null-RHI 跨 +Y tile 的唯一生产根通过，Near `3087/3087/6174`、目标级 Far `6618/241/241`、
+  Near/required Far=`295/1739ms`、cancel=`0`。Real-RHI 正式地图在 mouth
+  `[1271,54,-5711]` 完成 9261-chunk Near 并拍到连续下降洞道；最终 `-ExploreCave` 可见启动以
+  `10530ms` 达到 `ready/session_ready=true`，required Far 再用 `74ms` 闭合，同目标 Full 后台扩展
+  最终完成 `33725 pages` 并提交，且无 liveness fatal。证据分别位于
+  `.demo/observe/voxia_phase1_2026-08-25T01-21-18-032Z_null_rhi_1280x720/`、
+  `.demo/observe/voxia_worldgen_streaming_fix_20260825/` 与
+  `clients/Voxia/Saved/cave_entrance_inside_production.png`。最终 Development build、Voxia
+  Automation `221/221`（`208` clean + `13` warning、`0` failed/not-run）与 Node `198/198` 已通过；
+  报告为 `.demo/observe/voxia_worldgen_streaming_fix_20260825/final_all_voxia_green/index.json`。
+  同一正式入口的可见根已启动并留给用户探索。
+- **边界**：本地 mock 仍不写 Online confirmed truth，Online 失败不回退 mock；不得 reset/clean 两个
+  脏工作树，也不要替用户提交。
+
+## 2026-08-24 Voxia MockWorldGen XYZ 与 exact surface 收口
+
+- **范围与边界**：本轮只完善 Voxia `RuntimeMock/dev_worldgen`。`voxia_mock_density_v2@1` 仍是
+  mock 独立身份，近景 snapshot 与远景 canonical page 共用同一 XYZ material source，并只组合进
+  `AVoxiaUnifiedVoxelWorldActor` 唯一生产根；没有把本地生成结果提升为 confirmed truth，也没有给
+  `OnlineAuthority` 增加失败回退。
+
+```mermaid
+flowchart LR
+  Mock["Mock launch profile"] --> Gen["voxia_mock_density_v2@1"]
+  Gen --> Exact["exact XYZ material / surface"]
+  Exact --> Near["Near canonical snapshots"]
+  Exact --> Far["Far canonical pages"]
+  Near --> Root["唯一 UnifiedVoxelWorld root"]
+  Far --> Root
+  Root --> Observe["readiness + CLI + structured observe"]
+  Online["OnlineAuthority"] -. "禁止 fallback" .-> Mock
+```
+
+- **实现**：surface reducer 新增五段 sampling timing；WorldGen source 以全局高度带、保守 cave-density
+  区间证明、精确列边、最近正 Y surface 列索引和 solid block witness 证明大范围查询，小 cell 与小
+  directed corridor 则一次生成完整 material volume 并逐相邻格扫描 exact solid→air。证明失败只返回
+  `unknown` 并落回原 exact sampler；试验后无收益的 lattice/cache/batched-line 路径均已删除。
+- **输出冻结**：固定 fixture `chunk=[0,30,0], seed=1337` 仍为 `solid=194`、`cave_air=3902`、
+  `first_cave=[0,480,0]`、`fingerprint=8418e5e9fcb0e2e3`；LOD0–4 page/surface fingerprints 与几何
+  计数均未变化，故算法身份不 bump。
+- **性能与真实入口**：默认 Full shell 同配置冷构建由 `182.570s` 降到 `109.007s`（约 40%）；默认
+  stdio `mock` 启动在唯一 `production_all_features` 根用 16 workers 以 `77.420s` 完成 Full build，
+  `ready/session_ready/single_composition_root/centers.aligned/far.ready=true`，Full=`6859 patches`。
+  CLI `worldgen_inspect_chunk 0 30 0 1337` 返回上述同一 fixture。
+- **门禁**：Development build 成功；WorldGen focused Automation `2/2`；最终 Voxia 全量 `221/221`
+  （`208` clean + `13` success-with-warning，`0` failed/not-run）；Node `196/196`。13 个 warning 用例中
+  12 个是既有负路径，另 1 个是外部 `generate_204` 超时。机器可读汇总在外层仓
+  `.demo/observe/voxia_mock_worldgen_surface_fastpath_20260824/final_verification_summary.json`。
+- **残余风险**：首次全量进程曾记录一次 background worker access violation；相同重负载序列、macro
+  单测与后续两次全量均未复现。minidump 的 fault RIP 指令是无内存写入的 `mov r9d,eax`，却记录
+  write `0x35d`，证据内部不自洽；没有据此加入猜测性修补，也不声称已找到根因。
+- **下一阶段**：生成 world-pack fixture，并通过 Voxia H-gated local provider 做真实可见验收；
+  launcher/content-version 自动绑定、Online provider、自然洞口、biome/material strata、aquifer 仍未完成。
+  两个仓库当前都含大量用户/既有未提交改动，继续工作时禁止 reset/clean，也不要替用户提交。
+
+## 2026-08-20 深夜批次：手玩移动冻结三层根因全落修，Phase 2 转绿
+
+- **第 3 层根因（同时是 relocate 停滞与 GUI liveness fatal 的根）**：`LastRendererCoverageAudit`
+  只被「重建路径 + 验收 CLI parity」刷新，而增量提交把缓存序列推平使重建永不再触发——
+  启动期两次早跑的全量审计（所有权为空 → 19683 全 gap）被冻结成永久事实；移动 guard、
+  Observation→`coverage_complete` waiter、settled 三条运行时链全部消费它。修复：SceneHost
+  `MaintainRendererCoverageAuditCurrency()`——审计不干净 && 提交序列推进 && 资源静止时
+  用增量维护快照补跑全量（稳态零成本，流送中保守，验收面不动）。
+- **终验合集**：bootstrap 无 teleport `move_continuous` 400cm 走满（guard `allow`）、
+  `gap_count 19683→0`（5 次 `voxia_renderer_coverage_audit_refreshed` 收敛）、
+  Automation 221/221、Node 196/196、**Phase 2 冒烟 8/13 后首次全绿**（2m43s 三轴通过）。
+- **排障教训（永久）**：构建管道接 `tail` 会吞退出码——链接被残留 UnrealEditor-Cmd 锁死
+  （LNK1104）时 exit 仍 0，第一轮验证跑在旧 DLL 上产生假阴性。**构建后必须核对
+  `Result: Succeeded` 与 DLL mtime。**
+- `Voxia.Voxel.CoverageAuditDump` 转常驻观测面。详情：本目录外
+  `voxel-far-field/2026-08-20-phase2-relocate-stall-regression.md` §7/§8、Voxia 仓一致性稿进度日志。
+- 待办：用户手玩确认（WASD 移动 + 挖/放光照收敛视觉检查）→ 回归稿归档；改动仍未提交。
+
+
+## 2026-08-20 遗留项自评批次：光照收敛落地 + 发现既有 relocate 停滞回归
+
+- **13 项遗留全部自评处置**（详表见 Voxia
+  `docs/10-active/guideline-conformance/2026-08-20-新准则一致性检查与修正.md` §三）：
+  已修 4（光照收敛、EmitQuad 平价测试锁契约、CLI 边界文档、retry-stall 死架删除）、
+  部分删 1（SVO/VHI 死地图与死冒烟脚本）、翻译 1、有据保留 7。
+- **光照（按用户要求实测调研，不靠猜）**：顶点角点 AO+天空项是体素世界行业标准且
+  UE5.8 下引擎 GI 路线仍不可用（5.5 的 DynamicMesh Lumen 支持已被移除，本仓 6 月
+  Lumen 结论复核维持）；据此把确认态编辑路径收敛到流送
+  `FVoxiaNearActiveChunkMeshBuilder`（共用冻结器+Build），删除双实现，编辑产物自此
+  携带与流送一致的 AO/sky UV1；新增 matte AO 场景断言 + near/far EmitQuad 平价测试。
+  独立决策稿：Voxia `docs/10-active/guideline-conformance/2026-08-20-近景编辑路径光照收敛决策.md`。
+- **发现并定位既有回归**：Phase 2 冒烟（8/13 后未再跑）在第二轴 relocate 上确定性
+  停滞；隔离 worktree bisect 定位 first bad = `4cb3e5e`（与不可独立编译的前置
+  `18c89e8` 同批，8/19 far manifest/publication 重构，~1.1 万行）；A/B 证实 HEAD 同败、
+  与一致性批次无关。护栏已落：liveness 忙等 livelock 击杀
+  `streaming_wait_stalled_timeout`（60s 无进展、按进展计时）。**根因未修，Phase 2
+  在修复前保持红**（编辑闭环段通过）。详情：
+  `docs/10-active/voxel-far-field/2026-08-20-phase2-relocate-stall-regression.md`。
+- 终验：build exit 0、Automation 全量（含新增 2 测试场景）、Node 196/196——数字见
+  一致性主稿 §四。改动仍未提交。
+
+## 2026-08-20 Voxia 新版 AGENTS.md 一致性检查与修正（收口）
+
+- 依据 Voxia 仓重写后的 AGENTS.md（未提交版）与 deadline-observe-not-kill 决策，对
+  `clients/Voxia` 做四路审计（DRY/唯一根、极简正常路径、显式失败、注释与文档），逐项修正。
+- 代码：显式失败 10 项（基线水化读 apply 结果、Authority FailSession 落日志/observe、
+  Pawn 碰撞真值不可用可见化、意图反馈悬挂终态化、材质/代理资产缺失日志、decode 失败补
+  LastError、控制台命令失败输出、VoxelIntentResult 尾部 reason 解码透出、无契约 fallback
+  可见化、移动发送假成功修正）；极简正常路径 5 项（60s 会话死线与 liveness 60s WaitDeadline
+  转 observe-only——真死锁仍由 owner-idle 击杀，CLI parity 失败与生产 readiness 隔离，
+  worker 超时 30→120s，worker 线程 checkf 竞态改丢弃+日志）；DRY 6 项（删约 1200 行死
+  代码/归档 XZ 残留/README 称已删的第二实现，float 坐标换算收敛 double 规范实现，GameMode
+  probe 证据显式标记 + spawn 块去重）。
+- 文档：抢救 AGENTS 重写丢失的 clangd/MCP-inspector 工具链知识入 README「工具链」节；
+  Voxia docs 顶层 10 篇孤岛散稿归档 `docs/20-archive/`；Tests/、VoxiaShaders README 新建；
+  Gameplay/Debug README 反向漂移（已删除的 legacy probe 入口）改写为现状。
+- 注释治理：约 760 行英文散文注释译中文 + 约 72 处反射声明补注（7 路代理，逐 hunk 核验
+  只动注释）；全库英文散文句清零，残余 ~102 行为规则内 token 标注。
+- 验证：Development build exit 0；Unreal Automation **220/220**（221 − 删除的 1 个死测试）；
+  Node **196/196**。教训入 Voxia
+  `docs/engineering-notes/2026-08-20-automation-error-log-convention.md`（Error 日志会挂
+  负路径 Automation）。
+- 遗留待决 13 项清单见 Voxia
+  `docs/10-active/guideline-conformance/2026-08-20-新准则一致性检查与修正.md` §三（近景
+  meshing 双实现光照不一致、EmitQuad 逐字复制、proof 瞬态拒绝杀会话、双 readiness、双 CLI
+  面、checkf 批量降级等，均需单独决策稿）。
+- **两仓改动均未提交**：Voxia 工作树含用户此前的 AGENTS.md/README.md 重写（本次修正建立
+  在其上），外层仓含 handoff 本条目，留用户审阅后处置。
 
 ## 2026-08-13 客户端 Mock 流送顺畅度专项完成
 

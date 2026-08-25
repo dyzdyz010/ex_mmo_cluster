@@ -1,16 +1,16 @@
-//! 地形噪声 NIF（阶段3 step3.1 重写为 Rust）。
+//! 服务端 canonical XYZ 地形噪声 NIF。
 //!
-//! 把 `SceneServer.Voxel.WorldGen` 里逐列高度的重计算从 Elixir 移到 Rust——
-//! 架构纪律:重计算必须落在 Rust。chunk 生成与已归档 heightmap 离线迁移工具
-//! 共用 `column_height`，保证历史产物的确定性；在线运行时不读取 heightmap。
+//! `worldgen_density_v2@1` 在 DirtyCpu NIF 中生成固定 16³ 材质体：历史二维高度模型
+//! 只提供地表基底，世界坐标连续的三维 value noise 负责 cheese-cave。已归档 heightmap
+//! 离线迁移工具继续共用同一地表公式；在线运行时不读取 heightmap。
 //!
-//! 移植自 Elixir 的分层 value-noise 模型(常量/公式逐字对齐):
-//!   lowland 基底(平缓滚动,凹陷成盆地) + 稀疏高山(低频 mask 选区 + ridged 分形)。
+//! 地表沿用从 Elixir 移植的分层 value-noise 模型（常量/公式逐字对齐）：
+//! lowland 基底（平缓滚动、凹陷成盆地）+ 稀疏高山（低频 mask 选区 + ridged 分形）。
 //!
-//! SquirrelNoise(Squirrel Eiserloh)整数哈希全程 u32 wrapping,与 Elixir 里
-//! `band(_, 0xFFFFFFFF)` 行为一致;Rust native u32 天然环绕,无需显式掩码。
+//! SquirrelNoise（Squirrel Eiserloh）整数哈希全程使用 u32 wrapping，与 Elixir 的
+//! `band(_, 0xFFFFFFFF)` 行为一致；Rust 原生 u32 环绕无需显式掩码。
 
-use rustler::{Binary, Env, OwnedBinary};
+use rustler::{Binary, Env, Error, NifResult, OwnedBinary};
 
 rustler::init!("Elixir.SceneServer.Native.WorldGenNoise");
 
@@ -19,6 +19,11 @@ const NOISE1: u32 = 0x68E3_1DA4;
 const NOISE2: u32 = 0xB529_7A4D;
 const NOISE3: u32 = 0x1B56_C4E9;
 const LATTICE_PRIME: i64 = 198_491_317;
+
+/// canonical XYZ material-volume 算法身份。任何改变材质输出的公式或常量都必须换版本。
+const WORLDGEN_ALGORITHM_VERSION: &str = "worldgen_density_v2@1";
+const CHUNK_EDGE: usize = 16;
+const CHUNK_CELL_COUNT: usize = CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE;
 
 // ── 地形带(macro 单位 ≈ 米)────────────────────────────────────────────────
 const LOWLAND_AMPLITUDE: f64 = 150.0;
@@ -40,6 +45,15 @@ const OCTAVES: [(f64, f64); 5] = [
 
 // 高山 ridged 分形 octave(仅宽 octave,保证山脊宽阔而非逐格尖刺)。
 const MOUNTAIN_OCTAVES: [(f64, f64); 3] = [(4096.0, 1.0), (2048.0, 0.55), (1024.0, 0.28)];
+
+// v2@1 只加入 cheese-cave 密度层。有限垂直带保留深层 uniform-solid 快路径，
+// 固定地表盖层避免第一版连续噪声形成密集针孔；自然入口由后续独立 carver 负责。
+const CAVE_MIN_WORLD_Y: i64 = -384;
+const CAVE_MAX_DEPTH: i64 = 320;
+const CAVE_SURFACE_COVER: i64 = 12;
+const CAVE_THRESHOLD: f64 = 0.69;
+const CAVE_SEED_SALT: u32 = 0x4341_5645;
+const CAVE_OCTAVES: [(f64, f64); 3] = [(96.0, 1.0), (48.0, 0.55), (24.0, 0.28)];
 
 // ── SquirrelNoise 整数哈希 ─────────────────────────────────────────────────
 
@@ -101,6 +115,62 @@ fn value_noise(x: f64, z: f64, seed: u32) -> f64 {
     lerp(lerp(v00, v10, sx), lerp(v01, v11, sx), sz)
 }
 
+/// 三维晶格值。逐轴 hash 避免新增一组坐标合成素数，并让负坐标显式取各轴低 32 位。
+#[inline]
+fn lattice_3d(ix: i64, iy: i64, iz: i64, seed: u32) -> f64 {
+    let x = squirrel(ix as u32, seed ^ 0xA511_E9B3);
+    let y = squirrel(iy as u32, x ^ 0x63D8_35D9);
+    let z = squirrel(iz as u32, y ^ 0xB529_7A4D);
+    f64::from(z) / 4_294_967_296.0
+}
+
+/// Perlin improved-noise 参考使用的五次 fade；端点一、二阶导数为零，跨晶格更平滑。
+#[inline]
+fn improved_fade(t: f64) -> f64 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// 世界坐标三维 value noise：采样单位立方体八角并逐轴插值。
+fn value_noise_3d(x: f64, y: f64, z: f64, seed: u32) -> f64 {
+    let ix = floor_int(x);
+    let iy = floor_int(y);
+    let iz = floor_int(z);
+    let fx = x - ix as f64;
+    let fy = y - iy as f64;
+    let fz = z - iz as f64;
+    let sx = improved_fade(fx);
+    let sy = improved_fade(fy);
+    let sz = improved_fade(fz);
+
+    let z0 = lerp(
+        lerp(
+            lattice_3d(ix, iy, iz, seed),
+            lattice_3d(ix + 1, iy, iz, seed),
+            sx,
+        ),
+        lerp(
+            lattice_3d(ix, iy + 1, iz, seed),
+            lattice_3d(ix + 1, iy + 1, iz, seed),
+            sx,
+        ),
+        sy,
+    );
+    let z1 = lerp(
+        lerp(
+            lattice_3d(ix, iy, iz + 1, seed),
+            lattice_3d(ix + 1, iy, iz + 1, seed),
+            sx,
+        ),
+        lerp(
+            lattice_3d(ix, iy + 1, iz + 1, seed),
+            lattice_3d(ix + 1, iy + 1, iz + 1, seed),
+            sx,
+        ),
+        sy,
+    );
+    lerp(z0, z1, sz)
+}
+
 // ── 分形 ────────────────────────────────────────────────────────────────────
 
 /// value-noise octave 分形和,归一化到 ~[0, 1]。
@@ -108,7 +178,7 @@ fn fbm(wx: f64, wz: f64, seed: i64) -> f64 {
     let mut sum = 0.0;
     let mut norm = 0.0;
     for (octave, &(wavelength, amplitude)) in OCTAVES.iter().enumerate() {
-        let s = (seed + octave as i64) as u32;
+        let s = seed.wrapping_add(octave as i64) as u32;
         let v = value_noise(wx / wavelength, wz / wavelength, s) * amplitude;
         sum += v;
         norm += amplitude;
@@ -121,10 +191,28 @@ fn ridged_fbm(wx: f64, wz: f64, seed: i64) -> f64 {
     let mut sum = 0.0;
     let mut norm = 0.0;
     for (octave, &(wavelength, amplitude)) in MOUNTAIN_OCTAVES.iter().enumerate() {
-        let s = (seed + octave as i64) as u32;
+        let s = seed.wrapping_add(octave as i64) as u32;
         let v = value_noise(wx / wavelength, wz / wavelength, s);
         let ridge = 1.0 - (2.0 * v - 1.0).abs();
         sum += ridge * ridge * amplitude;
+        norm += amplitude;
+    }
+    (sum / norm).max(0.0).min(1.0)
+}
+
+/// v2 cheese-cave 连续密度场。所有 octave 只读取绝对 world XYZ，chunk 边界没有局部相位。
+fn cave_fbm(wx: f64, wy: f64, wz: f64, seed: i64) -> f64 {
+    let mut sum = 0.0;
+    let mut norm = 0.0;
+    let base_seed = (seed as u32) ^ CAVE_SEED_SALT;
+    for (octave, &(wavelength, amplitude)) in CAVE_OCTAVES.iter().enumerate() {
+        let octave_seed = base_seed.wrapping_add((octave as u32).wrapping_mul(0x9E37_79B9));
+        sum += value_noise_3d(
+            wx / wavelength,
+            wy / wavelength,
+            wz / wavelength,
+            octave_seed,
+        ) * amplitude;
         norm += amplitude;
     }
     (sum / norm).max(0.0).min(1.0)
@@ -152,10 +240,10 @@ fn column_height_impl(wx: i64, wz: i64, seed: i64, sea_level: i64, max_height: i
     let mask = value_noise(
         wxf / MOUNTAIN_WAVELENGTH,
         wzf / MOUNTAIN_WAVELENGTH,
-        (seed + 100) as u32,
+        seed.wrapping_add(100) as u32,
     );
     let gate = smoothstep_range(mask, MOUNTAIN_MASK_LO, MOUNTAIN_MASK_HI);
-    let ridge = ridged_fbm(wxf, wzf, seed + 200);
+    let ridge = ridged_fbm(wxf, wzf, seed.wrapping_add(200));
     let mountain = MOUNTAIN_AMPLITUDE * gate * ridge.powf(RIDGE_POWER);
 
     // Elixir round/1 是 half away from zero;f64::round 同。
@@ -163,7 +251,119 @@ fn column_height_impl(wx: i64, wz: i64, seed: i64, sea_level: i64, max_height: i
     h.max(0).min(max_height)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CellKind {
+    NaturalAir,
+    CaveAir,
+    Surface,
+    Subsurface,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ChunkMaterialStats {
+    solid_cells: u64,
+    cave_air_cells: u64,
+    surface_cells: u64,
+    subsurface_cells: u64,
+}
+
+#[inline]
+fn cell_kind(
+    wx: i64,
+    wy: i64,
+    wz: i64,
+    column_height: i64,
+    seed: i64,
+    soil_depth: i64,
+) -> CellKind {
+    if wy >= column_height {
+        return CellKind::NaturalAir;
+    }
+
+    let depth = column_height - wy;
+    if wy >= CAVE_MIN_WORLD_Y
+        && depth > CAVE_SURFACE_COVER
+        && depth <= CAVE_MAX_DEPTH
+        && cave_fbm(wx as f64, wy as f64, wz as f64, seed) > CAVE_THRESHOLD
+    {
+        return CellKind::CaveAir;
+    }
+
+    if depth <= soil_depth {
+        CellKind::Surface
+    } else {
+        CellKind::Subsurface
+    }
+}
+
+/// 生成 canonical `x + y*16 + z*256` 顺序的 u16 material id。
+fn chunk_materials_impl(
+    origin_x: i64,
+    origin_y: i64,
+    origin_z: i64,
+    seed: i64,
+    sea_level: i64,
+    max_height: i64,
+    soil_depth: i64,
+    surface_material_id: u16,
+    subsurface_material_id: u16,
+) -> (Vec<u16>, ChunkMaterialStats) {
+    let mut heights = [0i64; CHUNK_EDGE * CHUNK_EDGE];
+    for z in 0..CHUNK_EDGE {
+        for x in 0..CHUNK_EDGE {
+            heights[x + z * CHUNK_EDGE] = column_height_impl(
+                origin_x + x as i64,
+                origin_z + z as i64,
+                seed,
+                sea_level,
+                max_height,
+            );
+        }
+    }
+
+    let mut materials = vec![0u16; CHUNK_CELL_COUNT];
+    let mut stats = ChunkMaterialStats::default();
+    for z in 0..CHUNK_EDGE {
+        for y in 0..CHUNK_EDGE {
+            for x in 0..CHUNK_EDGE {
+                let kind = cell_kind(
+                    origin_x + x as i64,
+                    origin_y + y as i64,
+                    origin_z + z as i64,
+                    heights[x + z * CHUNK_EDGE],
+                    seed,
+                    soil_depth,
+                );
+                let index = x + y * CHUNK_EDGE + z * CHUNK_EDGE * CHUNK_EDGE;
+                materials[index] = match kind {
+                    CellKind::NaturalAir => 0,
+                    CellKind::CaveAir => {
+                        stats.cave_air_cells += 1;
+                        0
+                    }
+                    CellKind::Surface => {
+                        stats.solid_cells += 1;
+                        stats.surface_cells += 1;
+                        surface_material_id
+                    }
+                    CellKind::Subsurface => {
+                        stats.solid_cells += 1;
+                        stats.subsurface_cells += 1;
+                        subsurface_material_id
+                    }
+                };
+            }
+        }
+    }
+    (materials, stats)
+}
+
 // ── NIF surface ─────────────────────────────────────────────────────────────
+
+#[rustler::nif]
+fn algorithm_version() -> &'static str {
+    WORLDGEN_ALGORITHM_VERSION
+}
 
 #[rustler::nif]
 fn column_height(wx: i64, wz: i64, seed: i64, sea_level: i64, max_height: i64) -> i64 {
@@ -206,6 +406,62 @@ fn heightmap_region<'a>(
     bin.release(env)
 }
 
+/// 生成一个固定 16³ canonical XYZ 材质体。返回 big-endian u16 material binary，随后是
+/// solid/cave-air/surface/subsurface 计数；调用方可由总格数推导 natural-air。
+#[rustler::nif(schedule = "DirtyCpu")]
+fn chunk_materials<'a>(
+    env: Env<'a>,
+    origin_x: i64,
+    origin_y: i64,
+    origin_z: i64,
+    seed: i64,
+    sea_level: i64,
+    max_height: i64,
+    soil_depth: i64,
+    surface_material_id: u16,
+    subsurface_material_id: u16,
+) -> NifResult<(Binary<'a>, u64, u64, u64, u64)> {
+    if max_height < 0
+        || sea_level < 0
+        || sea_level > max_height
+        || soil_depth <= 0
+        || surface_material_id == 0
+        || subsurface_material_id == 0
+        || origin_x.checked_add((CHUNK_EDGE - 1) as i64).is_none()
+        || origin_y.checked_add((CHUNK_EDGE - 1) as i64).is_none()
+        || origin_z.checked_add((CHUNK_EDGE - 1) as i64).is_none()
+    {
+        return Err(Error::BadArg);
+    }
+
+    let (materials, stats) = chunk_materials_impl(
+        origin_x,
+        origin_y,
+        origin_z,
+        seed,
+        sea_level,
+        max_height,
+        soil_depth,
+        surface_material_id,
+        subsurface_material_id,
+    );
+    let mut binary =
+        OwnedBinary::new(CHUNK_CELL_COUNT * 2).expect("alloc worldgen material volume");
+    for (index, material_id) in materials.into_iter().enumerate() {
+        let offset = index * 2;
+        binary.as_mut_slice()[offset] = (material_id >> 8) as u8;
+        binary.as_mut_slice()[offset + 1] = (material_id & 0xFF) as u8;
+    }
+
+    Ok((
+        binary.release(env),
+        stats.solid_cells,
+        stats.cave_air_cells,
+        stats.surface_cells,
+        stats.subsurface_cells,
+    ))
+}
+
 // ── 测试:在 NIF 集成前先验证数学落在合理区间 ──────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -231,7 +487,13 @@ mod tests {
             let mut wz = 0;
             while wz <= 32_000 {
                 let h = ch(wx, wz);
-                assert!((0..=1600).contains(&h), "h={} out of band at ({},{})", h, wx, wz);
+                assert!(
+                    (0..=1600).contains(&h),
+                    "h={} out of band at ({},{})",
+                    h,
+                    wx,
+                    wz
+                );
                 wz += 331;
             }
             wx += 337;
@@ -257,7 +519,11 @@ mod tests {
 
         heights.sort();
         let median = heights[heights.len() / 2];
-        assert!(median < 256, "expected lowland-biased median, got {}", median);
+        assert!(
+            median < 256,
+            "expected lowland-biased median, got {}",
+            median
+        );
     }
 
     #[test]
@@ -266,6 +532,112 @@ mod tests {
         for &(wx, wz) in &[(-1, -1), (-12345, 6789), (-9000, -9000)] {
             let h = ch(wx, wz);
             assert!((0..=1600).contains(&h));
+        }
+    }
+
+    #[test]
+    fn v2_material_volume_is_deterministic_and_seeded() {
+        let args = (0, 0, 0, SEED, SEA_LEVEL, MAX_HEIGHT, 4, 1, 2);
+        let first = chunk_materials_impl(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+        );
+        let second = chunk_materials_impl(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+        );
+        assert_eq!(first, second);
+
+        let changed_seed = chunk_materials_impl(0, 0, 0, SEED + 1, SEA_LEVEL, MAX_HEIGHT, 4, 1, 2);
+        assert_ne!(first.0, changed_seed.0);
+    }
+
+    #[test]
+    fn v2_seed_derivation_is_defined_at_i64_endpoints() {
+        for seed in [i64::MIN, i64::MAX] {
+            let (materials, stats) =
+                chunk_materials_impl(0, 1760, 0, seed, SEA_LEVEL, MAX_HEIGHT, 4, 1, 2);
+            assert!(materials.iter().all(|&material| material == 0));
+            assert_eq!(stats, ChunkMaterialStats::default());
+        }
+    }
+
+    #[test]
+    fn v2_caves_exist_but_preserve_the_surface_cover() {
+        let (_, cave_stats) = chunk_materials_impl(
+            -2 * CHUNK_EDGE as i64,
+            -3 * CHUNK_EDGE as i64,
+            -8 * CHUNK_EDGE as i64,
+            SEED,
+            SEA_LEVEL,
+            MAX_HEIGHT,
+            4,
+            1,
+            2,
+        );
+        assert_eq!(cave_stats.cave_air_cells, 24);
+
+        for z in -32..=32 {
+            for x in -32..=32 {
+                let height = column_height_impl(x, z, SEED, SEA_LEVEL, MAX_HEIGHT);
+                for depth in 1..=CAVE_SURFACE_COVER {
+                    assert_ne!(
+                        cell_kind(x, height - depth, z, height, SEED, 4),
+                        CellKind::CaveAir,
+                        "surface cover was carved at ({},{},{})",
+                        x,
+                        height - depth,
+                        z
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v2_deep_chunk_stays_uniform_subsurface() {
+        let (materials, stats) = chunk_materials_impl(
+            -16,
+            CAVE_MIN_WORLD_Y - CHUNK_EDGE as i64,
+            -16,
+            SEED,
+            SEA_LEVEL,
+            MAX_HEIGHT,
+            4,
+            1,
+            2,
+        );
+        assert!(materials.iter().all(|&material| material == 2));
+        assert_eq!(stats.solid_cells, CHUNK_CELL_COUNT as u64);
+        assert_eq!(stats.cave_air_cells, 0);
+        assert_eq!(stats.surface_cells, 0);
+        assert_eq!(stats.subsurface_cells, CHUNK_CELL_COUNT as u64);
+    }
+
+    #[test]
+    fn v2_canonical_index_reads_absolute_world_coordinates_across_boundaries() {
+        let (left, _) = chunk_materials_impl(-16, -32, -16, SEED, SEA_LEVEL, MAX_HEIGHT, 4, 1, 2);
+        let (right, _) = chunk_materials_impl(0, -32, -16, SEED, SEA_LEVEL, MAX_HEIGHT, 4, 1, 2);
+
+        for z in 0..CHUNK_EDGE {
+            for y in 0..CHUNK_EDGE {
+                let left_index = 15 + y * CHUNK_EDGE + z * CHUNK_EDGE * CHUNK_EDGE;
+                let right_index = y * CHUNK_EDGE + z * CHUNK_EDGE * CHUNK_EDGE;
+                let world_y = -32 + y as i64;
+                let world_z = -16 + z as i64;
+                let left_height = column_height_impl(-1, world_z, SEED, SEA_LEVEL, MAX_HEIGHT);
+                let right_height = column_height_impl(0, world_z, SEED, SEA_LEVEL, MAX_HEIGHT);
+                let expected_left = match cell_kind(-1, world_y, world_z, left_height, SEED, 4) {
+                    CellKind::NaturalAir | CellKind::CaveAir => 0,
+                    CellKind::Surface => 1,
+                    CellKind::Subsurface => 2,
+                };
+                let expected_right = match cell_kind(0, world_y, world_z, right_height, SEED, 4) {
+                    CellKind::NaturalAir | CellKind::CaveAir => 0,
+                    CellKind::Surface => 1,
+                    CellKind::Subsurface => 2,
+                };
+                assert_eq!(left[left_index], expected_left);
+                assert_eq!(right[right_index], expected_right);
+            }
         }
     }
 }
