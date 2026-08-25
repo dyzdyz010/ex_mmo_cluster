@@ -1,4 +1,42 @@
-# 当前会话接力：8/25 Voxia MockWorldGen 自然洞口与流送活性修复
+# 当前会话接力：8/25 Voxia Near/Far 流送与可见 ownership 修复
+
+## 2026-08-25 Near/Far 同区块可见后像修复
+
+- **根因**：SceneHost 已在 Near 提交帧原子切换精确 ownership atlas，但生产 Far 仍绑定不消费 atlas
+  的普通外观材质；所以账本已经交权，旧 Far 像素却要等组件退休 1–2 秒才消失。
+- **修复边界**：ownership/atlas/fence/退休流程不改。只为 Far 三材质族注入由现役外观事实源
+  确定性派生的 `*FarOwned` 父材质；opaque/emissive 用 Masked 二值裁剪，translucent 乘进原
+  Opacity。Near 材质、confirmed truth、网格与 patch identity 均不变。
+- **契约与观察面**：`VoxiaFarOwnershipClipV1=1` fail-closed；
+  `pure3d_world_state.patch_ownership.ownership_clip_capable` 直接回读；生成脚本为
+  `clients/Voxia/scripts/create_far_ownership_materials.py`。
+- **验证**：Development build 成功；资产/绑定 focused `2/2` 与 SceneHost transaction 成功；
+  全量 Voxia Automation `222/222`（209 clean + 13 success-with-warning，0 failed/not-run）。
+  1280×720 D3D12 offscreen 唯一生产根 `ready=true`，atlas=`21³`、exact owned=`9261`、三个
+  ownership MID capability/installed=true，shader/material/Voxia Error=`0`，clean exit。证据：
+  `.demo/observe/voxia_far_ownership_full_20260825/index.json`、
+  `.demo/observe/voxia_far_ownership_real_rhi_20260825/stdio.log`。
+- **剩余验收**：机器证据已闭合；仍应由用户在可见窗口跨 tile 主观确认旧 Far 不再留下 1–2 秒后像。
+
+## 2026-08-25 跨 tile 不流送与空气墙根因修复
+
+- **现场签名**：唯一生产根跨 tile 后新 Near 已到 `9261`，ledger 却停在
+  `12348 = 9261 + 3087`；Far 保留旧中心，liveness 随后 fatal，移动 guard 到窗口外后正确
+  fail-closed，表现为空气墙。
+- **根因**：Near 工作快照把入场 mesh/move/edit 与依赖新 Far manifest 的 trim/removal 聚合为同一个
+  Far 前置门禁；Far 等退场清空，退场又等 Far manifest，形成循环等待。
+- **修复**：Near owner 将工作显式分类为 `EntryReady/EntryInFlight` 与
+  `FarDependentRetirementPending/InFlight`。Far 调度只等待入场类；liveness 仍观察两类；精确 Far
+  manifest 与服务端权威边界均未改变，没有 retry、降级或第二真值源。
+- **终验**：Development build 成功；focused Automation `2/2`；Voxia 全量 `221/221`
+  （208 clean + 13 warning，0 failed/not-run）。唯一生产根连续移动跨 tile 后中心
+  `[11,0,-51] → [11,1,-51]`，新 Far 正常构建/提交，Near ledger 回收至 `9261`，
+  pending trim/move/edit=`0`，coverage gap/overlap/orphan=`0/0/0`，无 liveness fatal。
+  证据位于 `.demo/observe/voxia_near_far_handoff_final_focused_20260825/`、
+  `.demo/observe/voxia_near_far_handoff_final_full_20260825/`、
+  `.demo/observe/voxia_near_far_handoff_final_runtime_20260825/runtime.log`。
+- **接力边界**：最终仍需用户在可见窗口以 WASD 做主观视觉确认；不要把 Near-playable proof 的
+  `far=false` 当失败，它是既有 Near-first 语义，最终 readiness/coverage 才要求 Far 闭合。
 
 ## 2026-08-25 自然洞口与唯一根流送回归修复
 

@@ -1,7 +1,7 @@
-# Phase 2 relocate 停滞回归（bisect 已定位，待修复）
+# Phase 2 relocate 停滞回归（已修复；含 8/25 handoff 回归收口）
 
 - 日期：2026-08-20
-- 状态：**未修复**——已定位引入提交、已建立复现与观测面，根因修复待专项
+- 状态：**已修复**——8/20 陈旧 coverage audit 与 8/25 Near/Far handoff 循环等待均已收口
 - 发现途径：新准则一致性批次对光照收敛改动做 Phase 2 端到端验证时暴露
 
 ## 1. 现象
@@ -148,3 +148,113 @@ x/y/z 三轴 80-tile 远行卸载回载全部通过——此前在第二轴 relo
 审计跟上提交序列后停滞消失。**8/19 回归家族（移动冻结 / liveness fatal / relocate
 停滞）全部由 §7 单点修复解决**。终验合集：Automation 221/221、Node 196/196、
 Phase 2 绿、bootstrap 无 teleport 移动 400cm 实证。待用户手玩确认后本稿可归档。
+
+## 9. 8/25 新回归：Near 退场反向阻塞 Far manifest
+
+### 9.1 现场与根因
+
+用户在唯一 `production_all_features` 根中真实移动跨 tile 后观察到三件事：远处 LOD 不转为
+Near、流送中心不再推进、继续走会被 coverage guard 挡成“空气墙”。活体 CLI 与结构化日志把
+故障冻结在同一状态：新 Near 目标已达到精确 `9261` chunks，但 ledger 为 `12348 = 9261 +
+3087`，恰好多出单轴换窗时应退场的 `9 tiles = 3087 chunks`；Far 仍提交在旧中心，最终触发
+streaming liveness fatal，之后移动 guard 在 `outside_depth=4` 时正确 fail-closed。
+
+根因位于 Near owner 暴露给统一组合根的工作快照：`bReadyPublication` 同时聚合了 Near 入场所需的
+mesh/move/edit 与依赖新 `FarTargetManifest` 的 trim/removal。Far 调度门禁要求该聚合值清空，
+trim/removal 又必须等待新 Far manifest 才能安全退场，因此形成循环等待：
+
+```mermaid
+flowchart LR
+  Old["旧实现：Near ready 聚合"] --> Retire["trim / removal 待处理"]
+  Retire --> Block["阻塞新 Far 构建"]
+  Block --> NoManifest["新 Far manifest 不产生"]
+  NoManifest --> Retire
+
+  Entry["新实现：Near 入场工作"] --> Gate["Far 调度门禁"]
+  Gate --> Far["构建并提交新 Far manifest"]
+  Far --> Retirement["安全执行旧 Near 退场"]
+  Retirement --> Exact["Near ledger 收敛到 9261"]
+```
+
+### 9.2 边界修复
+
+`FVoxiaNearStreamingCriticalWorkSnapshot` 现在由 Near owner 一次性分类两类语义：
+
+- `bEntryReadyPublication` / `bEntryCriticalWorkInFlight`：Near mesh、move、edit 等新窗口入场关键工作；
+- `bFarDependentRetirementPending` / `bFarDependentRetirementInFlight`：依赖精确 Far manifest 的
+  trim/removal 退场工作。
+
+统一根的 Far 调度门禁只消费第一类；streaming liveness 继续观察两类，故没有隐藏未完成工作，
+也没有引入重试、超时绕过、第二份 manifest 或客户端猜测。精确 Far manifest 仍是退场判定的唯一
+事实源，只是依赖顺序恢复为 `Near entry → Far manifest → Near retirement`。
+
+决策依据：经典 deadlock 条件把 circular wait 列为死锁必要条件；SEI CERT
+[CON53-CPP](https://cmu-sei.github.io/secure-coding-standards/sei-cert-cpp-coding-standard/rules/concurrency-con/con53-cpp/)
+建议以预定义顺序阻止循环等待。本项目映射为显式的 handoff 依赖序，而非增加 retry。原始理论来源为
+Coffman 等人的
+[System Deadlocks](https://doi.org/10.1145/356586.356588)。回归入口采用 Epic 官方
+[Automation Test Framework](https://dev.epicgames.com/documentation/unreal-engine/automation-test-framework-in-unreal-engine?lang=en-US)
+与[命令行运行方式](https://dev.epicgames.com/documentation/unreal-engine/run-automation-tests-in-unreal-engine)，
+再用唯一生产根 CLI 验证真实时序。
+
+### 9.3 验证证据
+
+- TDD 回归先在旧接口上编译失败，再由语义分类实现转绿；focused Automation `2/2`：
+  `Voxia.Gameplay.WorldActor`、`Voxia.Gameplay.WorldCoverageScheduler`。报告：
+  `.demo/observe/voxia_near_far_handoff_final_focused_20260825/index.json`。
+- `VoxiaEditor Win64 Development` 最终编译 `Result: Succeeded`；Voxia 全量 Automation
+  `221/221`（208 clean + 13 success-with-warning，0 failed/not-run）。报告：
+  `.demo/observe/voxia_near_far_handoff_final_full_20260825/index.json`。
+- 唯一生产根 Null-RHI 真实连续移动跨一整个 tile：中心从 `[11,0,-51]` 提交到
+  `[11,1,-51]`。日志命中原死锁过渡态（Near entry 已闭合、ledger 暂为 `12348`），但新目标 Far
+  plan/build 随即启动并提交；最终 Near target/ledger 均为 `9261`，Far target/committed 均为
+  `64` patches，required published=`2`，Near/Far 中心对齐，pending move/trim/edit=`0`。
+- 最终 coverage：gap/overlap/orphan seam=`0/0/0`，old owner retained=`0`，资源静止，
+  protected bad frame=`0`，`voxia_voxel_stream_liveness_fatal` 零次。运行证据：
+  `.demo/observe/voxia_near_far_handoff_final_runtime_20260825/runtime.log`。
+- 运行中唯一一次 `voxel_pure3d_build_dispatch_deferred` 属于被替换的旧中心 Full 后台扩展
+  （center `[11,0,-51]`、generation 2）；新目标 required Far 在目标流送开始后未被该门禁延迟。
+
+## 10. 8/25 可见后像：逻辑 ownership 已切换但 Far shader 未消费
+
+### 10.1 根因
+
+§9 修复后流送流程与账本已正确收敛，但用户继续观察到同一区块约 1–2 秒同时存在 Near/Far 网格。
+这不是第二个 handoff 时序 bug：SceneHost 已在 Near 提交帧原子切换精确 ownership atlas；生产 Far
+却仍绑定不读取 atlas 的 opaque `M_VoxelWorldAligned` 等外观材质。因此 renderer-neutral 账本已把
+chunk 交给 Near，GPU 仍会绘制旧 Far，直到该组件沿 post-visibility fence 与有界退休队列被物理移除。
+肉眼看到的 1–2 秒正是“逻辑可见权已切换”和“旧组件资源回收完成”被错误绑定在一起的后像窗口。
+
+### 10.2 最小边界修复
+
+SceneHost 的 ownership、atlas、fence 与退休算法均不改；只给 Far 三材质族注入从现役外观事实源
+确定性派生的 ownership-aware 父材质：
+
+- opaque/emissive 以 Masked 模式消费同一 R8 atlas，Near-owned chunk 的像素在 ownership 提交帧
+  二值裁掉；translucent 把同一结果乘进既有 Opacity；
+- atlas 映射继续使用完整 server XYZ（UE `X,Z,Y`）与现有 anchor/dimensions，Near 不增加采样；
+- 旧 Far 组件仍按原 fence 安全退休，但资源生命周期不再决定可见 ownership；
+- `VoxiaFarOwnershipClipV1` 是唯一材质能力契约，缺失时正式根显式拒绝；CLI 通过
+  `patch_ownership.ownership_clip_capable` 直接回读，不引入第二份真值或静默回退；
+- 不复用 Archive 的 `M_VoxelFarDither`，避免恢复屏幕噪声、时域 dither 与已淘汰外观。
+
+Epic 官方把 Masked 定义为基于 Opacity Mask Clip Value 的二值像素丢弃，正适合将精确 chunk
+ownership 变成同帧可见门；Translucent 则保留连续 Opacity 语义。因此方案只改变 Far 的可见派生，
+不改变确认态、网格身份或组件安全回收：
+[Material Blend Modes](https://dev.epicgames.com/documentation/en-us/unreal-engine/material-blend-modes-in-unreal-engine)、
+[Material Inputs](https://dev.epicgames.com/documentation/en-us/unreal-engine/material-inputs-in-unreal-engine)。
+
+### 10.3 验证记录
+
+- TDD 资产合同先因三个 `*FarOwned` 资产不存在而失败，生成后转绿；绑定测试先因 SceneHost 没有
+  ownership 父材质入口而编译失败，实现后转绿。
+- `Voxia.Rendering.FarOwnershipMaterialContract` 与
+  `Voxia.Gameplay.VoxelPresentation.MaterialBinding` focused Automation `2/2` 成功；真实事务夹具
+  初次因缺生产 ownership 依赖而失败，补齐同一注入入口后
+  `Voxia.Gameplay.VoxelPresentation.Transaction` 成功。
+- Development build `Result: Succeeded`；全量 Automation `222/222`（209 clean + 13
+  success-with-warning，0 failed/not-run）。1280×720 D3D12 offscreen 正式根 `ready=true`、
+  atlas=`21³`、exact owned=`9261`、三个 ownership MID 全部 capability/installed=true，
+  shader/material/Voxia Error=`0`，clean exit。证据：
+  `.demo/observe/voxia_far_ownership_full_20260825/index.json` 与
+  `.demo/observe/voxia_far_ownership_real_rhi_20260825/stdio.log`。
