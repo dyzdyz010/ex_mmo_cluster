@@ -192,18 +192,30 @@ node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --long-haul-only \
   --long-haul-tiles 12 --resolution 1280x720
 ```
 
-产物：`.demo/observe/voxia_phase1_2026-08-25T09-30-53-415Z_real_rhi_1280x720/`
+产物分两条路径,复算下表数字时必须分别取用：
+
+- **run 目录**（本次 run 专属产物）：
+  `.demo/observe/voxia_phase1_2026-08-25T09-30-53-415Z_real_rhi_1280x720/`,内含
+  `index.json`、`frame_summaries.json`、`events.jsonl`、`engine.log`、`runner.log` 等。
+  规模、parity、gap/overlap/orphan/fatal、段级 hitch 门禁、帧时,以及 27 条
+  `voxia_near_patch_target_activated`,都在这里复算。
+- **共享滚动文件**（组级事件的唯一落点）：`.demo/observe/voxia-transport.jsonl`。
+  `voxia_near_patch_group_submitted` 与 `voxia_near_patch_committed` 走
+  `FVoxiaObserve::EmitFileOnly`,只写 observe 根下这一份文件,**不进 run 目录**;它跨 run
+  混写,并按 `ObserveRotationMaxBytes = 256MB` / 4 份 previous 轮转。复算组级数字必须先按
+  本次 run 的时间窗 `2026-08-25T09:30:53.426Z` – `2026-08-25T09:38:30.707Z`（或等价字节
+  窗口）切片,否则会混入其他运行;该证据不受 run 目录保管,会随轮转被覆盖。
 
 | 维度 | 实测 |
 | --- | --- |
-| 规模 | 24 段 / 37992 帧 / 约 457s,最终 Near/Far/coverage 均 ready |
+| 规模 | 24 段 / 37992 帧 / 457.281s wall-clock（`finished_at - started_at`;24 段采样窗口合计 294.08s）,最终 Near/Far/coverage 均 ready |
 | 正确性 | 25/25 renderer parity verified;gap/overlap/orphan/fatal 全为 0 |
 | 日志 | 0 条 `LogVoxia Error`,clean exit |
 | 组大小 | 1247 组 / 2579 children;`child_count` min=1、p50=2、max=58,**=64 出现 0 次** |
 | 入场首组 | 27/27 window activation 的首组 `child_count` = 1 |
 | activation → 首组 submitted | p50=213ms、max=514ms（修复前同口径样本 1616ms） |
-| submitted → 首次 visible commit | 1247/1247 可关联,p50=23ms、max=28ms（修复前样本约 30ms） |
-| Near 组提交计时 | 0/1247 达到 `8ms` 慢路径阈值 |
+| submitted → 首次可见提交 | 1247/1247 可关联,p50=23ms、max=28ms（修复前样本约 30ms）;来源是无门控的 `voxia_near_patch_committed`（2579 条）按组配对,**不是** `voxia_near_patch_group_visible_commit` |
+| Near 组提交计时 | `voxia_near_patch_group_submit_timing` 与 `voxia_near_patch_group_visible_commit` 都受 `>=8ms` 慢路径门控,本轮各 0 条,即 0/1247 触达阈值 |
 | 帧时 | GT p95 各段 2.58–4.24ms,平均 129.18 FPS |
 
 组大小分布本身即证据：p50=2、64 次数为 0,说明"凑满 64 才提交"的等待门槛已不存在,
@@ -212,9 +224,15 @@ node scripts/run_phase1_world_lifecycle_smoke.js --real-rhi --long-haul-only \
 ### 10.5 残余风险与边界
 
 - **smoke 整体仍是 `exit=1` / `passed=false`,不得写成性能门禁通过。** 长程 hitch 门禁
-  24/24 段各有 1–2 个 GT 33–39ms 的帧（`back_12` 另有更高尾部）,现有 Voxia GT 阶段插桩
-  **未关联到**这些尖峰。它既不能归因给本修复,也不能据此排除本修复,属于**尚待独立归因**
-  的残余风险。
-- Far dispatch 出现 22 次 blocked 区间,全部恢复;required Far 约 1775–1820ms,未见活性
-  故障。本轮**没有修复前的同 run 基线**,因此不对 Far 时延做优劣结论。
+  24/24 段失败,但失败项必须分开看：24/24 段都命中**整帧**口径的
+  `frame hitch count over 33.33ms`（每段 1–2 帧,`back_12` 4 帧）;其中 19 段**另外**命中
+  `GameThread max exceeds 33.33ms`——18 段 GT max 落在 34.0–39.0ms,`back_12` 为
+  43.128ms。剩下 5 段（`out_12`、`back_01`、`back_04`、`back_05`、`back_11`）GT max 仅
+  9.130 / 9.068 / 8.221 / 8.743 / 32.864ms,根本没到门限,超阈**只出现在整帧时间上**;其中
+  4 段 GT max < 10ms,可确定尖峰不在 GameThread 上。现有 Voxia GT 阶段插桩**未关联到**这些
+  尖峰。它既不能归因给本修复,也不能据此排除本修复,属于**尚待独立归因**的残余风险。
+- Far dispatch 出现 22 次 blocked 区间,全部恢复;required Far 1775–1820ms **仅指排除启动
+  异常样本后的 25 次普通移动段**——窗口内 27 个非零 `required_far_complete_elapsed_ms` 还
+  包含冷启动首次 19596ms（09:31:26）与首次 recenter 2662ms（09:32:49）。未见活性故障。
+  本轮**没有修复前的同 run 基线**,因此不对 Far 时延做优劣结论。
 - 结构化证据支持"等待门槛消失",但本轮**没有肉眼视觉验收**,不能写成"视觉问题已完全消失"。
