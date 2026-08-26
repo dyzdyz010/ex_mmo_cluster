@@ -153,3 +153,23 @@ InitialScope = (Default && !bSameTargetAlreadyFull && !bLiveFullShellRetained)
 - 2026-08-26：门槛 5（`2.5 s`）与门槛 6（`6 s`）在新语义下的实测值由 Task 5A + Task 5B 收口后的
   **一次合并 D3D12 复跑**判定，本稿不预先声称通过；根因报告 §10-1 指出的「门槛 5 是否仍然可达 /
   仍然合理」在拿到该实测前保持未决。
+- 2026-08-26（**更正**，Task 5B 审查 M-3）：上一条把 `FVoxiaFarBuildParallelism::Resolve` 的
+  `OneSpareWorker → {1,1}` 折叠列进 13.757 s 的因果链并不准确。真正下发给 build 的宽度是
+  `BeginPlay` 时以 **`Normal`** 解析并冻结的 `FrozenFarBuildParallelism`，与许可无关；那次
+  1128 页单线程**只**由 provider 与 resolved-surface 两处阶段入口快照造成。`Resolve` 的折叠是
+  **第三处同义的宽度耦合**，影响的是可派工校验与 `far_launch_effective_*` 观测口径，
+  删除它仍然正确，但它不是那次单线程的原因。
+- 2026-08-26：Task 5B 修复 1（nested `f38ce98`）收口审查的 Important/Minor。最实质的一条：
+  宽度恢复后两处 drain 走的是 `ParallelFor`，而 UE 的 `ParallelFor` 使用全局 `LowLevelTasks`
+  调度器而不是调用方的 `FQueuedThreadPool`——让权阻塞因此落在**共享 TaskGraph 后台 worker**
+  上（违反引擎「不要用长时间运行或会阻塞的任务堵塞 task graph」的显式契约），
+  16 线程专用 far 池仍然空转，上一条里「叠加 `BackgroundPriority` 表达 near 优先」的说法
+  也随之失真。现改为：两处 drain 都在既有 `FarBuildThreadPool` 上执行——调用方（build 任务
+  本身就是该池线程）认领第一份份额，其余份额以 `EQueuedWorkPriority::Lowest` 投回同一个池，
+  投递数以 `GetNumThreads() - 1` 为上界保证不自锁。未新增池、队列、调度抽象或第二条路径。
+  同轮还把 provider 让权点移到「认领到下一个自然页单元」之后（最后一页之后不再多等一次授予），
+  并在既有 `provider.parallel` 对象内增加 `pacing_wait_ms`，使复跑能把让权等待从
+  `work_ms` 的墙钟里拆出来对账。
+- 2026-08-26：**用户裁定**：本轮不新增、不运行自动化测试，也不把测试当门禁；唯一验收是
+  实际连续跨多个 tile 流送顺畅、Near/Far 无重叠/空洞/空气墙、无明显卡顿或挂起，
+  由协调器统一安排的**唯一一次真实 D3D12 长流程**判定。
