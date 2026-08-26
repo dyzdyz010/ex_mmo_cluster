@@ -27,16 +27,20 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
 - `worker/tcp_acceptor.ex`
   - 接收 TCP 套接字并交给连接进程
 - `worker/tcp_connection.ex`
-  - 每个 TCP 客户端的协议和会话进程
+  - 每个 TCP 客户端的传输进程（socket + UDP 快车道），会话语义交给 `session/`
 - `worker/udp_acceptor.ex`
   - 移动快速通道的共享 UDP 收发进程
 - `worker/fast_lane_registry.ex`
   - 票据签发、客户端地址绑定和空闲清理
+- `session/`
+  - 传输无关的会话层：`Dispatch`（会话状态机）、`Sink`（出站契约）、`Auth`、`Scene`、
+    `Call`、`Observe`、`DebugProbe`。TCP 与 WebSocket 共用同一份实现，详见该目录 README。
 
 ## 协议分层
 
 - `codec.ex` 负责二进制帧和结构化元组之间的转换。
-- `tcp_connection.ex` 和 `ws_connection.ex` 负责连接内分发与会话状态机。
+- `session/dispatch.ex` 是**唯一**的会话状态机；`tcp_connection.ex` 与 `ws_connection.ex`
+  只保留各自的传输差异（socket 语义 / UDP 快车道 vs owner 进程 / 出口预算）。
 - 旧 XZ heightmap 的 `0x6A/0x6B` 仅保留 append-only codec 兼容。TCP 收到合法
   `0x6A` 后会 emit `voxel_heightmap_request_rejected`，并以
   `unsupported_legacy_contract` 明确拒绝；不会调用 Scene 的旧 projection reader。
@@ -44,7 +48,7 @@ UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
   后，Gate 才能向 `SceneServer.Voxel.ChunkDirectory` 建立真实订阅；初始快照和后续快照
   回退推送都由 Scene 区块进程发给 Gate，再由 Gate 转发给客户端。
 - Gate 保存的体素订阅会记录 `region_id`、`lease_id`、`owner_scene_instance_ref`、
-  `owner_epoch` 和实际 Scene 节点。迁移 cutover 后，WebSocket 连接可以通过
+  `owner_epoch` 和实际 Scene 节点。迁移 cutover 后，任一链路（TCP / WebSocket）都可以通过
   `voxel_rebind <logical_scene_id> <region_id|all>` 调试探针重查 World 路由，并把已有订阅
   重绑到新租约；结构化日志会记录 requested / routed / skipped / subscribed_new / error。
 - 体素区块退订 `ChunkUnsubscribe` 会移除 Gate 保存的订阅状态，并向 Scene 做幂等退订。

@@ -8,8 +8,9 @@ defmodule GateServer.TcpConnection do
 
       waiting_auth -> authenticated -> in_scene
 
-  Incoming frames are decoded with `GateServer.Codec.decode/1`, dispatched by
-  phase, and then encoded back to the same socket with `GateServer.Codec.encode/1`.
+  Incoming frames are decoded with `GateServer.Codec.decode/1` and handed to the
+  shared session state machine `GateServer.Session.Dispatch`; outbound frames go
+  through `GateServer.Session.Sink`, which owns the socket write.
 
   ## Message flow
 
@@ -17,13 +18,15 @@ defmodule GateServer.TcpConnection do
            ↓
       GateServer.Codec.decode/1
            ↓
-      dispatch/2
+      GateServer.Session.Dispatch.handle/2   ← 与 WebSocket 链路共用
            ↓
       auth / scene RPCs
            ↓
-      GateServer.Codec.encode/1
-           ↓
-      :gen_tcp.send/2
+      GateServer.Session.Sink（编码 + :gen_tcp.send/2）
+
+  本模块只保留 TCP 特有的部分：socket 接管、`{:tcp, ...}` / `{:tcp_closed, ...}` 语义、
+  UDP 快车道（peer 解析、ticket 生命周期）以及 Scene 回推帧的转发。会话语义（鉴权、
+  进场、移动、聊天、技能、体素意图）一律不在这里实现。
 
   ## State notes
 
@@ -31,6 +34,7 @@ defmodule GateServer.TcpConnection do
   - `status: :authenticated` can answer time sync and enter-scene requests
   - `status: :in_scene` also relays movement updates to the scene process
   - `cid` stays at `-1` until the client successfully enters a scene
+  - `fast_lane: :enabled` —— 原生客户端支持 UDP 快车道（浏览器 WS 侧为 `:unsupported`）
   """
 
   use GenServer, restart: :temporary
@@ -39,17 +43,9 @@ defmodule GateServer.TcpConnection do
   @topic {:gate, __MODULE__}
   @scope :connection
 
-  alias GateServer.Voxel.{PrefabLocalTransaction, Routing, SubscriptionWorker}
-  alias SceneServer.Combat.CastRequest
-  alias SceneServer.Combat.{EffectEvent, Skill}
-  alias SceneServer.Movement.{InputFrame, RemoteSnapshot}
-  alias SceneServer.Voxel.{NormalBlockData, PrefabRaster, Types}
-  alias SceneServer.Voxel.Field.FieldRuntime
-
-  @scene_call_timeout 15_000
-  @max_voxel_subscribe_radius 10
-  @prefab_owner_part_id 1
-  @max_prefab_owner_object_id 0x7FFF_FFFF_FFFF_FFFF
+  alias GateServer.Session.{Dispatch, Observe, Scene, Sink}
+  alias GateServer.Voxel.{ResultFrame, SubscribeIntent, SubscriptionWorker}
+  alias SceneServer.Combat.EffectEvent
 
   @doc """
   Start the per-socket connection process.
@@ -78,6 +74,9 @@ defmodule GateServer.TcpConnection do
     {:ok,
      %{
        socket: socket,
+       # 出站唯一出口：共享会话层只认 sink，不认 socket。
+       sink: Sink.tcp(socket),
+       fast_lane: :enabled,
        cid: -1,
        agent: nil,
        auth_claims: nil,
@@ -108,34 +107,34 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_cast({:player_enter, cid, location}, %{socket: socket} = state) do
+  def handle_cast({:player_enter, cid, location}, state) do
     GateServer.CliObserve.emit("tcp_player_enter_push", %{cid: cid, location: location})
-    send_encoded(socket, {:player_enter, cid, location})
+    Sink.send_encoded(state.sink, {:player_enter, cid, location})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:actor_identity, cid, actor_kind, actor_name}, %{socket: socket} = state) do
+  def handle_cast({:actor_identity, cid, actor_kind, actor_name}, state) do
     GateServer.CliObserve.emit("actor_identity_push", %{
       cid: cid,
       actor_kind: actor_kind,
       actor_name: actor_name
     })
 
-    send_encoded(socket, {:actor_identity, cid, actor_kind, actor_name})
+    Sink.send_encoded(state.sink, {:actor_identity, cid, actor_kind, actor_name})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:player_leave, cid}, %{socket: socket} = state) do
+  def handle_cast({:player_leave, cid}, state) do
     GateServer.CliObserve.emit("tcp_player_leave_push", %{cid: cid})
-    send_encoded(socket, {:player_leave, cid})
+    Sink.send_encoded(state.sink, {:player_leave, cid})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:player_move, snapshot}, %{socket: socket} = state) do
-    snapshot = normalize_remote_snapshot(snapshot)
+  def handle_cast({:player_move, snapshot}, state) do
+    snapshot = Scene.normalize_remote_snapshot(snapshot)
     {udp_peer, state} = resolve_udp_peer(state)
 
     if udp_peer do
@@ -152,7 +151,7 @@ defmodule GateServer.TcpConnection do
         }
       end)
 
-      GateServer.UdpAcceptor.send_to_peer(udp_peer, player_move_message(snapshot))
+      GateServer.UdpAcceptor.send_to_peer(udp_peer, Scene.player_move_message(snapshot))
     else
       GateServer.CliObserve.emit("player_move_push_tcp", fn ->
         %{
@@ -166,14 +165,14 @@ defmodule GateServer.TcpConnection do
         }
       end)
 
-      send_encoded(socket, player_move_message(snapshot))
+      Sink.send_encoded(state.sink, Scene.player_move_message(snapshot))
     end
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:movement_ack, ack}, %{socket: socket} = state) do
+  def handle_cast({:movement_ack, ack}, state) do
     {udp_peer, state} = resolve_udp_peer(state)
 
     GateServer.CliObserve.emit("movement_ack_push", fn ->
@@ -192,29 +191,29 @@ defmodule GateServer.TcpConnection do
     if udp_peer do
       GateServer.UdpAcceptor.send_to_peer(udp_peer, message)
     else
-      send_encoded(socket, message)
+      Sink.send_encoded(state.sink, message)
     end
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:chat_message, cid, username, text}, %{socket: socket} = state) do
+  def handle_cast({:chat_message, cid, username, text}, state) do
     GateServer.CliObserve.emit("chat_push", %{cid: cid, username: username, text: text})
-    send_encoded(socket, {:chat_message, cid, username, text})
+    Sink.send_encoded(state.sink, {:chat_message, cid, username, text})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:skill_event, cid, skill_id, location}, %{socket: socket} = state) do
+  def handle_cast({:skill_event, cid, skill_id, location}, state) do
     GateServer.CliObserve.emit("skill_push", %{cid: cid, skill_id: skill_id, location: location})
 
-    send_encoded(socket, {:skill_event, cid, skill_id, location})
+    Sink.send_encoded(state.sink, {:skill_event, cid, skill_id, location})
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:effect_event, %EffectEvent{} = effect_event}, %{socket: socket} = state) do
+  def handle_cast({:effect_event, %EffectEvent{} = effect_event}, state) do
     GateServer.CliObserve.emit("effect_event_push", %{
       source_cid: effect_event.source_cid,
       skill_id: effect_event.skill_id,
@@ -222,8 +221,8 @@ defmodule GateServer.TcpConnection do
       target_cid: effect_event.target_cid
     })
 
-    send_encoded(
-      socket,
+    Sink.send_encoded(
+      state.sink,
       {:effect_event, effect_event.source_cid, effect_event.skill_id, effect_event.cue_kind,
        effect_event.origin, effect_event.target_cid, effect_event.target_position,
        effect_event.radius, effect_event.duration_ms}
@@ -233,7 +232,7 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_cast({:player_state, cid, hp, max_hp, alive}, %{socket: socket} = state) do
+  def handle_cast({:player_state, cid, hp, max_hp, alive}, state) do
     GateServer.CliObserve.emit("player_state_push", %{
       cid: cid,
       hp: hp,
@@ -241,14 +240,14 @@ defmodule GateServer.TcpConnection do
       alive: alive
     })
 
-    send_encoded(socket, {:player_state, cid, hp, max_hp, alive})
+    Sink.send_encoded(state.sink, {:player_state, cid, hp, max_hp, alive})
     {:noreply, state}
   end
 
   @impl true
   def handle_cast(
         {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location},
-        %{socket: socket} = state
+        state
       ) do
     GateServer.CliObserve.emit("combat_hit_push", %{
       source_cid: source_cid,
@@ -259,8 +258,8 @@ defmodule GateServer.TcpConnection do
       location: location
     })
 
-    send_encoded(
-      socket,
+    Sink.send_encoded(
+      state.sink,
       {:combat_hit, source_cid, target_cid, skill_id, damage, hp_after, location}
     )
 
@@ -294,7 +293,7 @@ defmodule GateServer.TcpConnection do
   end
 
   @impl true
-  def handle_info({:voxel_chunk_snapshot_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_chunk_snapshot_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit(
       "voxel_chunk_snapshot_forwarded",
@@ -304,15 +303,15 @@ defmodule GateServer.TcpConnection do
           cid: state.cid,
           bytes: byte_size(payload)
         },
-        voxel_snapshot_observe_fields(payload)
+        Observe.chunk_snapshot_fields(payload)
       )
     )
 
-    send_encoded(socket, {:voxel_chunk_snapshot_payload, payload})
+    Sink.send_encoded(state.sink, {:voxel_chunk_snapshot_payload, payload})
     {:noreply, state}
   end
 
-  def handle_info({:voxel_chunk_delta_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_chunk_delta_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit(
       "voxel_chunk_delta_forwarded",
@@ -322,15 +321,15 @@ defmodule GateServer.TcpConnection do
           cid: state.cid,
           bytes: byte_size(payload)
         },
-        voxel_delta_observe_fields(payload)
+        Observe.chunk_delta_fields(payload)
       )
     )
 
-    send_encoded(socket, {:voxel_chunk_delta_payload, payload})
+    Sink.send_encoded(state.sink, {:voxel_chunk_delta_payload, payload})
     {:noreply, state}
   end
 
-  def handle_info({:voxel_chunk_invalidate_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_chunk_invalidate_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit("voxel_chunk_invalidate_forwarded", %{
       connection_pid: self(),
@@ -338,14 +337,14 @@ defmodule GateServer.TcpConnection do
       bytes: byte_size(payload)
     })
 
-    send_encoded(socket, {:voxel_chunk_invalidate_payload, payload})
-    invalidate_voxel_subscription(state.voxel_worker, payload)
+    Sink.send_encoded(state.sink, {:voxel_chunk_invalidate_payload, payload})
+    SubscribeIntent.invalidate(state.voxel_worker, payload)
     {:noreply, state}
   end
 
   # 阶段4 step4.3:订阅 worker 路由/订阅失败回报(首失败一帧 0x68)。成功路径无回报——快照即 ACK,
   # 由 worker 订阅触发经 fan-out 直达本连接 socket;订阅集只存在于 worker(单一所有者)。
-  def handle_info({:voxel_subscribe_failed, ctx, reason}, %{socket: socket} = state) do
+  def handle_info({:voxel_subscribe_failed, ctx, reason}, state) do
     GateServer.CliObserve.emit("voxel_chunk_subscribe_error", %{
       connection_pid: self(),
       cid: state.cid,
@@ -354,7 +353,7 @@ defmodule GateServer.TcpConnection do
       reason: reason
     })
 
-    send_encoded(socket, voxel_result_error(ctx, reason))
+    Sink.send_encoded(state.sink, ResultFrame.error(ctx, reason))
     {:noreply, state}
   end
 
@@ -362,7 +361,7 @@ defmodule GateServer.TcpConnection do
   # to the TCP socket. ObjectRegistry encoded the binary once;ChunkProcess
   # cast it into our mailbox via `send/2`;we just prefix the opcode and
   # write to the socket.
-  def handle_info({:voxel_object_state_delta_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_object_state_delta_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{
       connection_pid: self(),
@@ -370,7 +369,7 @@ defmodule GateServer.TcpConnection do
       bytes: byte_size(payload)
     })
 
-    send_encoded(socket, {:voxel_object_state_delta_payload, payload})
+    Sink.send_encoded(state.sink, {:voxel_object_state_delta_payload, payload})
     {:noreply, state}
   end
 
@@ -378,7 +377,7 @@ defmodule GateServer.TcpConnection do
   # to the TCP socket. FieldTickWorker encoded the binary (already including
   # the opcode byte) and ChunkProcess cast it into our mailbox via send/2.
   # The `{packet, 4}` setting on the socket adds the 4-byte length prefix.
-  def handle_info({:voxel_field_region_snapshot_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_field_region_snapshot_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit("tcp_voxel_field_region_snapshot_forwarded", %{
       connection_pid: self(),
@@ -386,12 +385,12 @@ defmodule GateServer.TcpConnection do
       bytes: byte_size(payload)
     })
 
-    send_frame(socket, payload)
+    Sink.send_raw(state.sink, payload)
     {:noreply, state}
   end
 
   # Phase 6: forward 0x74 FieldRegionDestroyed from ChunkProcess fan-out.
-  def handle_info({:voxel_field_region_destroyed_payload, payload}, %{socket: socket} = state)
+  def handle_info({:voxel_field_region_destroyed_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit("tcp_voxel_field_region_destroyed_forwarded", %{
       connection_pid: self(),
@@ -399,12 +398,12 @@ defmodule GateServer.TcpConnection do
       bytes: byte_size(payload)
     })
 
-    send_frame(socket, payload)
+    Sink.send_raw(state.sink, payload)
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:tcp, _socket, data}, %{socket: socket} = state) do
+  def handle_info({:tcp, _socket, data}, state) do
     GateServer.CliObserve.emit("tcp_receive", fn ->
       %{connection_pid: self(), bytes: byte_size(data), status: state.status}
     end)
@@ -412,15 +411,15 @@ defmodule GateServer.TcpConnection do
     case GateServer.Codec.decode(data) do
       {:ok, msg} ->
         GateServer.CliObserve.emit("tcp_decoded", fn ->
-          %{connection_pid: self(), message: observe_message_summary(msg)}
+          %{connection_pid: self(), message: Observe.message_summary(msg)}
         end)
 
-        {:ok, new_state} = dispatch(msg, state)
+        {:ok, new_state} = Dispatch.handle(msg, state)
         {:noreply, new_state}
 
       {:error, reason} ->
         Logger.debug("TCP codec decode rejected payload: #{inspect(reason)}")
-        send_result_error(socket, reason, 0)
+        Dispatch.result_error(state, reason, 0)
         {:noreply, state}
     end
   end
@@ -437,7 +436,7 @@ defmodule GateServer.TcpConnection do
 
     # 阶段4:voxel 订阅集在 worker(随本连接退出而停;Scene 侧 subscriber=本连接 pid,
     # ChunkProcess monitor 本连接 down 即自动摘除)——无需在此显式退订。
-    cleanup_scene(state.scene_ref)
+    Scene.cleanup(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
   end
@@ -450,7 +449,7 @@ defmodule GateServer.TcpConnection do
 
     GateServer.CliObserve.emit("tcp_error", %{connection_pid: self(), cid: state.cid, reason: err})
 
-    cleanup_scene(state.scene_ref)
+    Scene.cleanup(state.scene_ref)
     cleanup_fast_lane(self())
     {:stop, :normal, state}
   end
@@ -461,7 +460,7 @@ defmodule GateServer.TcpConnection do
         _from,
         %{status: :in_scene, scene_ref: spid, cid: active_cid} = state
       ) do
-    frame = build_input_frame(frame_params)
+    frame = Scene.build_input_frame(frame_params)
 
     GateServer.CliObserve.emit("udp_movement_received", fn ->
       %{
@@ -478,7 +477,7 @@ defmodule GateServer.TcpConnection do
           {:error, :cid_mismatch}
 
         true ->
-          accept_movement_input(spid, frame)
+          Scene.accept_movement_input(spid, frame)
       end
 
     {:reply, reply, state}
@@ -493,786 +492,6 @@ defmodule GateServer.TcpConnection do
     {:reply, {:error, :invalid_state}, state}
   end
 
-  defp dispatch(
-         {:movement_input, frame_params},
-         %{status: :in_scene, scene_ref: spid, socket: socket} = state
-       ) do
-    frame = build_input_frame(frame_params)
-
-    GateServer.CliObserve.emit("tcp_movement_received", fn ->
-      %{
-        connection_pid: self(),
-        seq: frame.seq,
-        client_tick: frame.client_tick,
-        input_dir: frame.input_dir
-      }
-    end)
-
-    case accept_movement_input(spid, frame) do
-      {:ok, ack} ->
-        GenServer.cast(self(), {:movement_ack, ack})
-
-      :accepted ->
-        GateServer.CliObserve.emit("tcp_movement_accepted", fn ->
-          %{connection_pid: self(), seq: frame.seq, client_tick: frame.client_tick}
-        end)
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("tcp_movement_error", fn ->
-          %{connection_pid: self(), seq: frame.seq, reason: reason}
-        end)
-
-        send_result_error(socket, reason, frame.seq)
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:movement_input, frame_params}, state) do
-    frame = build_input_frame(frame_params)
-    send_result_error(state.socket, :invalid_state, frame.seq)
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:chat_say, text, request_id},
-         %{status: :in_scene, scene_ref: spid, cid: cid, auth_username: username, socket: socket} =
-           state
-       ) do
-    GateServer.CliObserve.emit("chat_received", %{
-      connection_pid: self(),
-      cid: cid,
-      username: username,
-      request_id: request_id,
-      text: text
-    })
-
-    case safe_call(spid, {:chat_say, cid, username || "anonymous", text}, @scene_call_timeout) do
-      {:ok, {:ok, _}} -> send_encoded(socket, {:result, :ok, request_id})
-      {:ok, _} -> send_result_error(socket, :server_error, request_id)
-      {:error, reason} -> send_result_error(socket, reason, request_id)
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:chat_say, _text, request_id}, state) do
-    send_result_error(state.socket, :invalid_state, request_id)
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:skill_cast,
-          %{
-            skill_id: skill_id,
-            request_id: request_id,
-            target_kind: target_kind,
-            target_cid: target_cid,
-            target_position: target_position
-          }},
-         %{status: :in_scene, scene_ref: spid, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("skill_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request_id,
-      skill_id: skill_id
-    })
-
-    cast_request =
-      case target_kind do
-        :actor when is_integer(target_cid) -> CastRequest.actor(skill_id, target_cid)
-        :point -> CastRequest.point(skill_id, target_position)
-        _ -> CastRequest.auto(skill_id)
-      end
-
-    case safe_call(spid, {:cast_skill, cast_request}, @scene_call_timeout) do
-      {:ok, {:ok, _location}} -> send_encoded(socket, {:result, :ok, request_id})
-      {:ok, {:error, reason}} -> send_result_error(socket, reason, request_id)
-      {:ok, _} -> send_result_error(socket, :server_error, request_id)
-      {:error, reason} -> send_result_error(socket, reason, request_id)
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:skill_cast, %{request_id: request_id}}, state) do
-    send_result_error(state.socket, :invalid_state, request_id)
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:enter_scene, cid, request_id},
-         %{status: :authenticated, auth_claims: claims, socket: socket} = state
-       ) do
-    timestamp = :os.system_time(:millisecond)
-
-    GateServer.CliObserve.emit("enter_scene_received", %{
-      connection_pid: self(),
-      cid: cid,
-      request_id: request_id
-    })
-
-    with :ok <- authorize_cid(claims, cid),
-         {:ok, character} <- fetch_authorized_character(claims, cid),
-         {:ok, scene_node} <- fetch_scene_node(),
-         {:ok, ppid} <-
-           add_player(scene_node, cid, timestamp, build_character_profile(character)),
-         {:ok, {x, y, z}} <- fetch_player_location(ppid),
-         {:ok, expected_seq} <- fetch_next_input_seq(ppid) do
-      GateServer.CliObserve.emit("enter_scene_ok", %{
-        connection_pid: self(),
-        cid: cid,
-        request_id: request_id,
-        scene_ref: ppid,
-        location: {x, y, z},
-        expected_seq: expected_seq
-      })
-
-      send_encoded(socket, {:enter_scene_result, :ok, request_id, {x, y, z}, expected_seq})
-
-      {:ok,
-       %{
-         state
-         | scene_ref: ppid,
-           cid: cid,
-           status: :in_scene,
-           agent: with_active_cid(state.agent, cid)
-       }}
-    else
-      {:error, reason} ->
-        GateServer.CliObserve.emit("enter_scene_error", %{
-          connection_pid: self(),
-          cid: cid,
-          request_id: request_id,
-          reason: reason
-        })
-
-        send_enter_scene_error(socket, reason, request_id)
-        {:ok, state}
-    end
-  end
-
-  defp dispatch({:enter_scene, _cid, request_id}, state) do
-    send_enter_scene_error(state.socket, :invalid_state, request_id)
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:time_sync, request_id, client_send_ts},
-         %{status: status, socket: socket} = state
-       )
-       when status in [:authenticated, :in_scene] do
-    server_recv_ts = :os.system_time(:millisecond)
-    server_send_ts = :os.system_time(:millisecond)
-
-    send_encoded(
-      socket,
-      {:time_sync_reply, request_id, client_send_ts, server_recv_ts, server_send_ts}
-    )
-
-    {:ok, state}
-  end
-
-  defp dispatch({:time_sync, request_id, _client_send_ts}, state) do
-    send_result_error(state.socket, :invalid_state, request_id)
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:fast_lane_request, request_id},
-         %{status: status, socket: socket} = state
-       )
-       when status in [:authenticated, :in_scene] do
-    GateServer.CliObserve.emit("fast_lane_request_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request_id,
-      status: status
-    })
-
-    session_context = %{
-      auth_claims: state.auth_claims,
-      auth_username: state.auth_username,
-      auth_session_id: state.auth_session_id,
-      cid: state.cid,
-      status: status
-    }
-
-    case GateServer.FastLaneRegistry.issue_ticket(self(), session_context) do
-      {:ok, ticket} ->
-        GateServer.CliObserve.emit("fast_lane_ticket_sent", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request_id
-        })
-
-        send_encoded(
-          socket,
-          {:fast_lane_result, :ok, request_id, GateServer.UdpAcceptor.port(), ticket}
-        )
-
-        {:ok, %{state | udp_ticket: ticket}}
-
-      {:error, reason} ->
-        Logger.warning("Fast-lane ticket issuance failed: #{inspect(reason)}")
-
-        GateServer.CliObserve.emit("fast_lane_ticket_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request_id,
-          reason: reason
-        })
-
-        send_encoded(socket, {:fast_lane_result, :error, request_id})
-        {:ok, state}
-    end
-  end
-
-  defp dispatch({:fast_lane_request, request_id}, state) do
-    send_encoded(state.socket, {:fast_lane_result, :error, request_id})
-    {:ok, state}
-  end
-
-  defp dispatch({:heartbeat, _timestamp}, %{socket: socket} = state) do
-    send_encoded(socket, {:heartbeat_reply, :os.system_time(:millisecond)})
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_chunk_subscribe, request}, %{status: :in_scene, socket: socket} = state) do
-    GateServer.CliObserve.emit("voxel_chunk_subscribe_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk,
-      radius: request.radius_l_inf,
-      known_count: request |> Map.get(:known, []) |> length(),
-      known_sample: voxel_known_sample(request)
-    })
-
-    case validate_voxel_subscribe_radius(request.radius_l_inf) do
-      :ok ->
-        {:ok, dispatch_voxel_subscribe(request, state)}
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("voxel_chunk_subscribe_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          reason: reason
-        })
-
-        send_encoded(socket, voxel_result_error(request, reason))
-        {:ok, state}
-    end
-  end
-
-  defp dispatch({:voxel_chunk_subscribe, request}, state) do
-    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_chunk_unsubscribe, request}, %{status: :in_scene, socket: socket} = state) do
-    SubscriptionWorker.unsubscribe(state.voxel_worker, request.logical_scene_id, request.chunks)
-
-    GateServer.CliObserve.emit("voxel_chunk_unsubscribe_ok", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      requested_count: length(request.chunks)
-    })
-
-    send_encoded(socket, {:result, :ok, request.request_id})
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_chunk_unsubscribe, request}, state) do
-    send_result_error(state.socket, :invalid_state, request.request_id)
-    {:ok, state}
-  end
-
-  # 0x6A/0x6B 仅保留线协议追加兼容；XZ heightmap 已归档，在线链路必须明确拒绝。
-  defp dispatch({:voxel_heightmap_request, request}, %{socket: socket} = state) do
-    GateServer.CliObserve.emit("voxel_heightmap_request_rejected", %{
-      connection_pid: self(),
-      cid: state.cid,
-      status: state.status,
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      origin: {request.origin_x, request.origin_z},
-      stride: request.stride,
-      count: {request.count_x, request.count_z},
-      contract: :archived_xz_heightmap,
-      reason: :unsupported_legacy_contract
-    })
-
-    send_result_error(socket, :unsupported_legacy_contract, request.request_id)
-    {:ok, state}
-  end
-
-  # DEPRECATED for client-side direct edit; protocol §13.6 / §13.6.1.
-  # Use VoxelEditIntent (0x70) for typed client edits. Kept for the
-  # skill/tool-system flow until 1c removes it.
-  defp dispatch({:voxel_impact_intent, request}, %{status: :in_scene, socket: socket} = state) do
-    GateServer.CliObserve.emit("voxel_impact_intent_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      client_intent_seq: request.client_intent_seq,
-      logical_scene_id: request.logical_scene_id,
-      source_skill_id: request.source_skill_id,
-      target_world_micro: request.target_world_micro,
-      impact_kind: request.impact_kind
-    })
-
-    case apply_voxel_impact_intent(request, state) do
-      {:ok, result} ->
-        GateServer.CliObserve.emit("voxel_impact_intent_applied", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          chunk_coord: result.chunk_coord,
-          chunk_version: result.chunk_version,
-          macro: result.macro
-        })
-
-        send_encoded(socket, voxel_result_ok(request, result))
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("voxel_impact_intent_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          reason: reason
-        })
-
-        send_encoded(socket, voxel_result_error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_impact_intent, request}, state) do
-    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  # VoxelEditIntent (0x70) — typed client edit channel; protocol §13.6.1.
-  # Phase 1c routing: dispatch the typed request to ChunkDirectory.apply_intent
-  # via the standard World map-ledger lease path, then reply with the
-  # `VoxelIntentResult` (0x68) frame.
-  defp dispatch(
-         {:voxel_edit_intent, request},
-         %{status: :in_scene, socket: socket} = state
-       ) do
-    emit_voxel_edit_intent_received(request, state)
-
-    case apply_voxel_edit_intent(request, state) do
-      {:ok, result} ->
-        GateServer.CliObserve.emit("voxel_edit_intent_applied", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          chunk_coord: result.chunk_coord,
-          chunk_version: result.chunk_version,
-          macro: result.macro,
-          operation: result.operation
-        })
-
-        send_encoded(socket, voxel_edit_intent_result_ok(request, result))
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("voxel_edit_intent_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          reason: reason
-        })
-
-        send_encoded(socket, voxel_edit_intent_result_error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_edit_intent, request}, state) do
-    GateServer.CliObserve.emit("voxel_edit_intent_dropped_invalid_state", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      status: state.status
-    })
-
-    send_encoded(state.socket, voxel_edit_intent_result_error(request, :invalid_state))
-
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:voxel_build_reservation_intent, request},
-         %{status: :in_scene, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("voxel_build_reservation_intent_received", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        client_intent_seq: request.client_intent_seq,
-        logical_scene_id: request.logical_scene_id,
-        parcel_id: request.parcel_id,
-        ttl_ms: request.ttl_ms
-      }
-    end)
-
-    send_encoded(socket, voxel_intent_stub_accepted(request))
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_build_reservation_intent, request}, state) do
-    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  # Real `0x67 PrefabPlaceIntent` dispatch.
-  #
-  # See `GateServer.WsConnection` for the canonical doc. Briefly: resolve
-  # blueprint geometry through `SceneServer.Voxel.PrefabRaster`, then loop the
-  # macro-cell list through `route_chunk_with_lease` + `apply_intent`, the
-  # same pipeline `0x64 VoxelImpactIntent` uses.
-  #
-  # v1 has no cross-chunk atomicity. Partial writes that occur before a
-  # later cell fails are NOT rolled back; the dispatch logs the partial-write
-  # summary and returns `:rejected` to the client.
-  defp dispatch(
-         {:voxel_prefab_place_intent, request},
-         %{status: :in_scene, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("voxel_prefab_place_intent_received", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        client_intent_seq: request.client_intent_seq,
-        logical_scene_id: request.logical_scene_id,
-        parcel_id: request.parcel_id,
-        blueprint_id: request.blueprint_id,
-        blueprint_version: request.blueprint_version,
-        rotation: request.rotation
-      }
-    end)
-
-    case apply_voxel_prefab_place_intent(request, state) do
-      {:ok, summary} ->
-        GateServer.CliObserve.emit("voxel_prefab_place_intent_applied", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          blueprint_id: request.blueprint_id,
-          cell_count: summary.cell_count,
-          chunk_count: summary.chunk_count,
-          max_chunk_version: summary.max_chunk_version
-        })
-
-        send_encoded(socket, voxel_prefab_result_ok(request, summary))
-
-      {:error, %{reason: reason} = failure} ->
-        GateServer.CliObserve.emit("voxel_prefab_place_intent_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          blueprint_id: request.blueprint_id,
-          reason: reason,
-          applied_cell_count: failure.applied_cell_count,
-          total_cell_count: failure.total_cell_count
-        })
-
-        send_encoded(socket, voxel_result_error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_prefab_place_intent, request}, state) do
-    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  # 形态轨 C5.2:VoxelSurfaceElementIntent (0x66) — 表面元件(火炬/拉杆)放置/清除。
-  # 路由与 0x70 edit intent 同(route_chunk_with_lease + ChunkDirectory),复用
-  # VoxelIntentResult (0x68) 回执。
-  defp dispatch(
-         {:voxel_surface_element_intent, request},
-         %{status: :in_scene, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("voxel_surface_element_intent_received", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        client_intent_seq: request.client_intent_seq,
-        logical_scene_id: request.logical_scene_id,
-        action: request.action,
-        face: request.face,
-        surface_type_id: request.surface_type_id
-      }
-    end)
-
-    case apply_voxel_surface_element_intent(request, state) do
-      {:ok, result} ->
-        GateServer.CliObserve.emit("voxel_surface_element_intent_applied", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          chunk_coord: result.chunk_coord,
-          chunk_version: result.chunk_version,
-          macro: result.macro
-        })
-
-        send_encoded(socket, voxel_edit_intent_result_ok(request, result))
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("voxel_surface_element_intent_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          reason: reason
-        })
-
-        send_encoded(socket, voxel_edit_intent_result_error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_surface_element_intent, request}, state) do
-    send_encoded(state.socket, voxel_edit_intent_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  # 场域导通轨:VoxelFieldConductIntent (0x75) — 电/热导通路径建立。镜像
-  # ws_connection 同名 dispatch(此前 TCP 缺该 clause,导通请求误落 catch-all 回
-  # `:unknown_message`/request_id 0,客户端拿不到对应回执)。
-  defp dispatch(
-         {:voxel_field_conduct_intent, request},
-         %{status: :in_scene, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("voxel_field_conduct_intent_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      client_intent_seq: request.client_intent_seq,
-      logical_scene_id: request.logical_scene_id,
-      source_world_macro: request.source_world_macro,
-      target_world_macro: request.target_world_macro,
-      conduction_mode: request.conduction_mode
-    })
-
-    case apply_voxel_field_conduct_intent(request, state) do
-      {:ok, summary} ->
-        GateServer.CliObserve.emit("voxel_field_conduct_intent_applied", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          region_id: Map.get(summary, :region_id),
-          field_region_created: Map.get(summary, :field_region_created),
-          conduction_mode: Map.get(summary, :conduction_mode, request.conduction_mode)
-        })
-
-        send_encoded(socket, voxel_field_conduct_result_ok(request, summary))
-
-      {:error, reason} ->
-        GateServer.CliObserve.emit("voxel_field_conduct_intent_error", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          reason: inspect(reason)
-        })
-
-        send_encoded(socket, voxel_result_error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_field_conduct_intent, request}, state) do
-    send_encoded(state.socket, voxel_result_error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  defp dispatch({:voxel_debug_probe, %{request_id: request_id, command: command}}, state) do
-    GateServer.CliObserve.emit("voxel_debug_probe_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request_id,
-      command: command,
-      status: state.status
-    })
-
-    send_encoded(
-      state.socket,
-      {:voxel_debug_probe, %{request_id: request_id, result: voxel_debug_result(command, state)}}
-    )
-
-    {:ok, state}
-  end
-
-  defp dispatch(
-         {:auth_request, username, code, request_id},
-         %{status: :waiting_auth, socket: socket} = state
-       ) do
-    GateServer.CliObserve.emit("auth_received", %{
-      connection_pid: self(),
-      username: username,
-      request_id: request_id
-    })
-
-    with {:ok, claims} <- verify_token(code),
-         :ok <- validate_username_claim(claims, username) do
-      auth_context = build_auth_context(username, code, claims)
-
-      GateServer.CliObserve.emit("auth_ok", %{
-        connection_pid: self(),
-        username: username,
-        request_id: request_id
-      })
-
-      send_encoded(socket, {:result, :ok, request_id})
-
-      {:ok,
-       %{
-         state
-         | agent: auth_context,
-           auth_claims: claims,
-           auth_username: username,
-           auth_session_id: Map.get(auth_context, "session_id"),
-           token: code,
-           status: :authenticated
-       }}
-    else
-      {:error, reason} ->
-        GateServer.CliObserve.emit("auth_error", %{
-          connection_pid: self(),
-          username: username,
-          request_id: request_id,
-          reason: reason
-        })
-
-        send_result_error(socket, reason, request_id)
-        {:ok, state}
-    end
-  end
-
-  defp dispatch({:auth_request, _username, _code, request_id}, state) do
-    send_result_error(state.socket, :invalid_state, request_id)
-    {:ok, state}
-  end
-
-  defp dispatch(msg, state) do
-    Logger.warning("Unhandled message: #{inspect(msg)}")
-    send_result_error(state.socket, :unknown_message, 0)
-    {:ok, state}
-  end
-
-  @spec verify_token(any()) :: any
-  defp verify_token(token) do
-    case fetch_auth_node() do
-      {:error, _reason} = error ->
-        error
-
-      {:ok, auth_node} ->
-        case :rpc.call(auth_node, AuthServer.AuthWorker, :verify_token, [token]) do
-          {:ok, claims} when is_map(claims) -> {:ok, claims}
-          {:error, :mismatch} -> {:error, :mismatch}
-          {:badrpc, _reason} -> {:error, :auth_unavailable}
-          _ -> {:error, :server_error}
-        end
-    end
-  end
-
-  defp fetch_auth_node do
-    case safe_call(GateServer.Interface, :auth_server) do
-      {:ok, nil} -> {:error, :auth_unavailable}
-      {:ok, auth_node} -> {:ok, auth_node}
-      {:error, _reason} -> {:error, :auth_unavailable}
-    end
-  end
-
-  defp fetch_scene_node do
-    case safe_call(GateServer.Interface, :scene_server) do
-      {:ok, nil} -> {:error, :scene_unavailable}
-      {:ok, scene_node} -> {:ok, scene_node}
-      {:error, _reason} -> {:error, :scene_unavailable}
-    end
-  end
-
-  defp fetch_world_node do
-    case safe_call(GateServer.Interface, :world_server) do
-      {:ok, nil} -> {:error, :world_unavailable}
-      {:ok, world_node} -> {:ok, world_node}
-      {:error, _reason} -> {:error, :world_unavailable}
-    end
-  end
-
-  defp add_player(scene_node, cid, timestamp, character_profile) do
-    case safe_call(
-           {SceneServer.PlayerManager, scene_node},
-           {:add_player, cid, self(), timestamp, character_profile},
-           @scene_call_timeout
-         ) do
-      {:ok, {:ok, ppid}} -> {:ok, ppid}
-      {:ok, _other} -> {:error, :scene_unavailable}
-      {:error, _reason} -> {:error, :scene_unavailable}
-    end
-  end
-
-  defp fetch_player_location(player_pid) do
-    case safe_call(player_pid, :get_location, @scene_call_timeout) do
-      {:ok, {:ok, location}} -> {:ok, location}
-      {:ok, _other} -> {:error, :scene_unavailable}
-      {:error, _reason} -> {:error, :scene_unavailable}
-    end
-  end
-
-  # Audit B-S1 / B-SRV1: fetch the next-expected movement input seq from
-  # the freshly-spawned PlayerCharacter so we can plumb it through
-  # EnterSceneResult to the client. See codec.ex for layout.
-  defp fetch_next_input_seq(player_pid) do
-    case safe_call(player_pid, :get_next_input_seq, @scene_call_timeout) do
-      {:ok, {:ok, seq}} -> {:ok, seq}
-      {:ok, _other} -> {:error, :scene_unavailable}
-      {:error, _reason} -> {:error, :scene_unavailable}
-    end
-  end
-
-  defp cleanup_scene(nil), do: :ok
-
-  defp cleanup_scene(scene_ref) do
-    _ = safe_call(scene_ref, :exit)
-    :ok
-  end
-
   defp cleanup_fast_lane(connection_pid) do
     if Process.whereis(GateServer.FastLaneRegistry) do
       _ = GateServer.FastLaneRegistry.detach_connection(connection_pid, :tcp_closed)
@@ -1280,1700 +499,6 @@ defmodule GateServer.TcpConnection do
 
     :ok
   end
-
-  defp authorize_cid(nil, _cid), do: {:error, :invalid_state}
-
-  defp authorize_cid(claims, cid) do
-    case apply(AuthServer.AuthWorker, :validate_cid, [claims, cid]) do
-      :ok -> :ok
-      {:error, :cid_mismatch} -> {:error, :cid_mismatch}
-      {:error, _reason} -> {:error, :server_error}
-    end
-  end
-
-  defp fetch_authorized_character(claims, cid) do
-    with {:ok, auth_node} <- fetch_auth_node() do
-      case :rpc.call(auth_node, AuthServer.AuthWorker, :fetch_authorized_character, [claims, cid]) do
-        {:ok, character} when is_map(character) -> {:ok, character}
-        {:error, :account_not_found} -> {:error, :cid_mismatch}
-        {:error, :cid_mismatch} -> {:error, :cid_mismatch}
-        {:error, :data_service_unavailable} -> {:error, :auth_unavailable}
-        {:badrpc, _reason} -> {:error, :auth_unavailable}
-        _ -> {:error, :server_error}
-      end
-    end
-  end
-
-  defp build_character_profile(character) when is_map(character) do
-    %{
-      cid: Map.get(character, :id) || Map.get(character, "id"),
-      name:
-        Map.get(character, :name) || Map.get(character, "name") ||
-          "character-#{Map.get(character, :id) || Map.get(character, "id")}",
-      position:
-        normalize_position(Map.get(character, :position) || Map.get(character, "position"))
-    }
-  end
-
-  defp build_character_profile(_character),
-    do: %{name: "unknown", position: {750.0, 750.0, 185.0}}
-
-  # Default spawn over the DevSeed 16×16 stone platform on chunk (0,0,0).
-  # See `ws_connection.ex` for the browser-axis derivation; kept duplicated here so
-  # the legacy TCP path stays in lock-step with the WebSocket path without
-  # introducing a new shared module.
-  defp normalize_position(%{} = position) do
-    x = map_float(position, ["x", :x], 750.0)
-    y = map_float(position, ["y", :y], 750.0)
-    z = map_float(position, ["z", :z], 185.0)
-    {x, y, z}
-  end
-
-  defp normalize_position(_position), do: {750.0, 750.0, 185.0}
-
-  defp map_float(map, keys, default) do
-    keys
-    |> Enum.find_value(fn key -> Map.get(map, key) end)
-    |> case do
-      value when is_integer(value) ->
-        value * 1.0
-
-      value when is_float(value) ->
-        value
-
-      value when is_binary(value) ->
-        case Float.parse(value) do
-          {parsed, ""} -> parsed
-          _ -> default
-        end
-
-      _ ->
-        default
-    end
-  end
-
-  defp validate_username_claim(claims, username) do
-    apply(AuthServer.AuthWorker, :validate_username, [claims, username])
-  end
-
-  defp safe_call(server, message, timeout \\ @scene_call_timeout)
-  defp safe_call(nil, _message, _timeout), do: {:error, :unavailable}
-
-  defp safe_call(server, message, timeout) do
-    try do
-      {:ok, GenServer.call(server, message, timeout)}
-    catch
-      :exit, reason -> {:error, reason}
-    end
-  end
-
-  defp send_result_error(socket, reason, request_id) do
-    Logger.debug("Sending generic result error: #{inspect(reason)}")
-
-    GateServer.CliObserve.emit("send_result_error", %{
-      socket: socket,
-      request_id: request_id,
-      reason: reason
-    })
-
-    send_encoded(socket, {:result, :error, request_id})
-  end
-
-  defp send_enter_scene_error(socket, reason, request_id) do
-    Logger.debug("Sending enter-scene error: #{inspect(reason)}")
-
-    GateServer.CliObserve.emit("send_enter_scene_error", %{
-      socket: socket,
-      request_id: request_id,
-      reason: reason
-    })
-
-    send_encoded(socket, {:enter_scene_result, :error, request_id})
-  end
-
-  defp build_auth_context(username, token, claims) do
-    %{
-      "username" => username,
-      "token" => token,
-      "session_id" => Map.get(claims, "session_id") || Map.get(claims, :session_id),
-      "source" => Map.get(claims, "source") || Map.get(claims, :source),
-      "claims" => claims
-    }
-  end
-
-  defp with_active_cid(auth_context, cid) when is_map(auth_context) do
-    Map.put(auth_context, "active_cid", cid)
-  end
-
-  defp with_active_cid(auth_context, _cid), do: auth_context
-
-  defp accept_movement_input(spid, frame) do
-    case safe_call(spid, {:movement_input, frame}) do
-      {:ok, {:ok, :accepted}} -> :accepted
-      {:ok, {:ok, ack}} -> {:ok, ack}
-      {:ok, {:error, reason}} -> {:error, reason}
-      {:error, reason} -> {:error, reason}
-      {:ok, _other} -> {:error, :scene_unavailable}
-    end
-  end
-
-  # 阶段1:用 *_ensuring 路由——route miss 时 World 在隐式 grid 上懒物化 region(分配
-  # owner/epoch/lease)后返回,而非 :unassigned_chunk 拒绝。世界因此无界:玩家订阅/编辑
-  # 任意可达 chunk 都能拿到可写 region。物化真失败(无 Scene 节点等)仍按错误回传。
-  # 阶段4 step4.1:实现移入共享 `GateServer.Voxel.Routing`(tcp/ws 去镜像)。订阅路径走 worker
-  # 的 cache-first 路由;此处保留给编辑 / 撞击 / 表面元件 / 场 / rebind 等非订阅热路径(总是拉新鲜路由)。
-  defp route_voxel_chunk(logical_scene_id, chunk_coord),
-    do: Routing.route_chunk(logical_scene_id, chunk_coord)
-
-  defp route_voxel_chunks(logical_scene_id, chunk_coords),
-    do: Routing.route_chunks(logical_scene_id, chunk_coords)
-
-  defp apply_voxel_impact_intent(request, state) do
-    with :ok <- authorize_voxel_impact_intent(request, state),
-         {:ok, target} <- voxel_impact_target(request),
-         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      lease = Map.fetch!(route, :lease)
-
-      GateServer.CliObserve.emit("voxel_impact_intent_routed", %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: target.chunk_coord,
-        region_id: lease.region_id,
-        lease_id: lease.lease_id,
-        owner_scene_instance_ref: lease.owner_scene_instance_ref,
-        owner_epoch: lease.owner_epoch,
-        scene_node: scene_node
-      })
-
-      attrs =
-        %{
-          request_id: request.request_id,
-          logical_scene_id: request.logical_scene_id,
-          chunk_coord: target.chunk_coord,
-          lease: lease,
-          macro: target.local_macro
-        }
-        |> Map.merge(voxel_impact_op_attrs(request))
-
-      case safe_call(
-             {SceneServer.Voxel.ChunkDirectory, scene_node},
-             {:apply_intent, attrs},
-             @scene_call_timeout
-           ) do
-        {:ok, {:ok, reply}} ->
-          {:ok, Map.merge(reply, %{macro: target.local_macro})}
-
-        {:ok, {:error, reason}} ->
-          {:error, reason}
-
-        {:ok, _other} ->
-          {:error, :scene_unavailable}
-
-        {:error, _reason} ->
-          {:error, :scene_unavailable}
-      end
-    end
-  end
-
-  defp fetch_scene_node_for_route(route), do: Routing.scene_node_for_route(route)
-
-  defp authorize_voxel_impact_intent(request, state) do
-    cond do
-      not is_integer(state.cid) or state.cid <= 0 ->
-        {:error, :cid_mismatch}
-
-      true ->
-        case Skill.fetch(request.source_skill_id) do
-          {:ok, _skill} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-    end
-  end
-
-  defp voxel_impact_target(%{target_world_micro: {wx, wy, wz}}) do
-    micro_resolution = Types.micro_resolution()
-
-    world_macro = {
-      Types.floor_div(wx, micro_resolution),
-      Types.floor_div(wy, micro_resolution),
-      Types.floor_div(wz, micro_resolution)
-    }
-
-    {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
-    {:ok, %{chunk_coord: chunk_coord, local_macro: local_macro}}
-  rescue
-    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_target_world_micro}
-  end
-
-  defp voxel_impact_block(request) do
-    NormalBlockData.new(request.impact_kind,
-      health: 100,
-      state_flags: request.source_skill_id
-    )
-  end
-
-  # Wire convention: `impact_kind == 0` is the break sentinel — the cell
-  # gets cleared back to empty mode (delta_kind 0 CellEmpty on the wire).
-  defp voxel_impact_op_attrs(%{impact_kind: 0}), do: %{operation: :break_block}
-
-  defp voxel_impact_op_attrs(request) do
-    %{operation: :put_solid_block, block: voxel_impact_block(request)}
-  end
-
-  defp emit_voxel_edit_intent_received(request, state) do
-    GateServer.CliObserve.emit("voxel_edit_intent_received", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      client_intent_seq: request.client_intent_seq,
-      logical_scene_id: request.logical_scene_id,
-      action: request.action,
-      target_granularity: request.target_granularity,
-      target_world_micro: request.target_world_micro,
-      face_normal: request.face_normal,
-      material_id: request.material_id,
-      blueprint_ref: request.blueprint_ref,
-      object_ref: request.object_ref,
-      part_ref: request.part_ref,
-      attribute_patch_ref: request.attribute_patch_ref,
-      expected_chunk_version: request.expected_chunk_version,
-      expected_cell_hash: request.expected_cell_hash,
-      client_hint_hash: request.client_hint_hash
-    })
-  end
-
-  defp apply_voxel_edit_intent(request, state) do
-    with :ok <- authorize_voxel_edit_intent(state),
-         {:ok, op} <- voxel_edit_intent_op(request),
-         {:ok, target} <- voxel_edit_intent_target(request, op),
-         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      lease = Map.fetch!(route, :lease)
-
-      GateServer.CliObserve.emit("voxel_edit_intent_routed", %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        action: request.action,
-        target_granularity: request.target_granularity,
-        operation: op.operation,
-        chunk_coord: target.chunk_coord,
-        local_macro: target.local_macro,
-        adjusted_world_micro: target.adjusted_world_micro,
-        region_id: lease.region_id,
-        lease_id: lease.lease_id,
-        owner_scene_instance_ref: lease.owner_scene_instance_ref,
-        owner_epoch: lease.owner_epoch,
-        scene_node: scene_node
-      })
-
-      command_id =
-        GateServer.VoxelCommandId.edit(
-          request.logical_scene_id,
-          state.cid,
-          request.client_intent_seq
-        )
-
-      attrs = build_voxel_edit_intent_attrs(request, op, target, lease, command_id)
-
-      case safe_call(
-             {SceneServer.Voxel.ChunkDirectory, scene_node},
-             {:apply_intent, attrs},
-             @scene_call_timeout
-           ) do
-        {:ok, {:ok, reply}} ->
-          {:ok, Map.merge(reply, %{macro: target.local_macro, operation: op.operation})}
-
-        {:ok, {:error, reason}} ->
-          {:error, reason}
-
-        {:ok, _other} ->
-          {:error, :scene_unavailable}
-
-        {:error, _reason} ->
-          {:error, :scene_unavailable}
-      end
-    end
-  end
-
-  defp authorize_voxel_edit_intent(state) do
-    if is_integer(state.cid) and state.cid > 0 do
-      :ok
-    else
-      {:error, :cid_mismatch}
-    end
-  end
-
-  # Decision 3 / Phase 1c: action × target_granularity → Scene operation.
-  # ObjectPart granularity is rejected for the supported actions; Damage /
-  # Replace / AttributePatch are rejected wholesale until the Phase 5 attribute
-  # catalog work lands.
-  defp voxel_edit_intent_op(%{action: action}) when action in [2, 3, 4] do
-    {:error, :action_not_implemented}
-  end
-
-  defp voxel_edit_intent_op(%{action: action, target_granularity: 2}) when action in [0, 1] do
-    {:error, :granularity_object_part_not_implemented}
-  end
-
-  defp voxel_edit_intent_op(%{action: 0, target_granularity: 0} = request) do
-    {:ok, %{operation: :put_solid_block, block: voxel_edit_intent_block(request)}}
-  end
-
-  defp voxel_edit_intent_op(%{action: 0, target_granularity: 1} = request) do
-    case voxel_edit_intent_micro_layer(request) do
-      {:ok, micro_layer} ->
-        {:ok, %{operation: :put_micro_block, micro_layer: micro_layer}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp voxel_edit_intent_op(%{action: 1, target_granularity: 0}) do
-    {:ok, %{operation: :break_block}}
-  end
-
-  defp voxel_edit_intent_op(%{action: 1, target_granularity: 1}) do
-    {:ok, %{operation: :clear_micro_block}}
-  end
-
-  defp voxel_edit_intent_op(_request), do: {:error, :invalid_voxel_edit_intent}
-
-  defp voxel_edit_intent_block(request) do
-    NormalBlockData.new(request.material_id,
-      attribute_set_ref: request.attribute_patch_ref,
-      state_flags: voxel_orientation_state_flags(request.material_id, request.face_normal)
-    )
-  end
-
-  # C4b:二极管/三极管放置时由玩家瞄准的 face_normal 推出 per-cell 导通轴写进 state_flags
-  # bits[0..2](二极管=anode→cathode 轴;三极管=collector-emitter 主轴,base 面默认取首个非主轴面)。
-  # 其它材料 → 0(无朝向)。MVP:无 0x70 wire 变体,服务端由 face_normal 推断(决策 ④)。
-  defp voxel_orientation_state_flags(material_id, face_normal) do
-    if SceneServer.Voxel.MaterialCatalog.diode_material?(material_id) or
-         SceneServer.Voxel.MaterialCatalog.transistor_material?(material_id) do
-      axis_code_from_face_normal(face_normal)
-    else
-      0
-    end
-  end
-
-  defp axis_code_from_face_normal({fnx, fny, fnz}) do
-    cond do
-      fnx > 0 -> 1
-      fnx < 0 -> 2
-      fny > 0 -> 3
-      fny < 0 -> 4
-      fnz > 0 -> 5
-      fnz < 0 -> 6
-      # 退化法向 → +x 默认(惰性安全)。
-      true -> 1
-    end
-  end
-
-  defp voxel_edit_intent_micro_layer(request) do
-    with {:ok, owner_object_id} <- voxel_edit_owner_object_id(request.object_ref) do
-      {:ok,
-       %{
-         material_id: request.material_id,
-         attribute_set_ref: request.attribute_patch_ref,
-         owner_object_id: owner_object_id,
-         owner_part_id: request.part_ref
-       }}
-    end
-  end
-
-  # owner_object_id is a u63 (`MicroLayer.@type`); the wire field is u64. The
-  # high bit is reserved for future use, so reject values that don't fit.
-  defp voxel_edit_owner_object_id(value)
-       when is_integer(value) and value >= 0 and value <= 0x7FFF_FFFF_FFFF_FFFF,
-       do: {:ok, value}
-
-  defp voxel_edit_owner_object_id(_value), do: {:error, :invalid_object_ref}
-
-  # Decision 6 / Phase 1c: Place actions consume `face_normal` here at the Gate
-  # by offsetting `target_world_micro` by one micro slot in the direction of
-  # the hit face. Break actions ignore `face_normal` — the resolved cell is
-  # the one the client clicked.
-  defp voxel_edit_intent_target(request, %{operation: operation}) do
-    {wx, wy, wz} = request.target_world_micro
-    {fnx, fny, fnz} = request.face_normal
-
-    {ax, ay, az} =
-      case operation do
-        :put_solid_block -> {wx + fnx, wy + fny, wz + fnz}
-        :put_micro_block -> {wx + fnx, wy + fny, wz + fnz}
-        _other -> {wx, wy, wz}
-      end
-
-    micro_resolution = Types.micro_resolution()
-
-    world_macro = {
-      Types.floor_div(ax, micro_resolution),
-      Types.floor_div(ay, micro_resolution),
-      Types.floor_div(az, micro_resolution)
-    }
-
-    {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
-
-    local_micro = {
-      Types.floor_mod(ax, micro_resolution),
-      Types.floor_mod(ay, micro_resolution),
-      Types.floor_mod(az, micro_resolution)
-    }
-
-    {:ok,
-     %{
-       chunk_coord: chunk_coord,
-       local_macro: local_macro,
-       local_micro: local_micro,
-       adjusted_world_micro: {ax, ay, az}
-     }}
-  rescue
-    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_target_world_micro}
-  end
-
-  defp build_voxel_edit_intent_attrs(request, op, target, lease, command_id) do
-    base = %{
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      chunk_coord: target.chunk_coord,
-      lease: lease,
-      operation: op.operation,
-      macro: target.local_macro,
-      expected_chunk_version: request.expected_chunk_version,
-      expected_cell_hash: request.expected_cell_hash,
-      # AUTH-4(step1.5b-1):客户端命令幂等键,scene/store 同事务 record_once。
-      command_id: command_id
-    }
-
-    base
-    |> maybe_put_voxel_edit(:block, Map.get(op, :block))
-    |> maybe_put_voxel_edit(:micro_layer, Map.get(op, :micro_layer))
-    |> maybe_put_voxel_edit_micro_slot(op, target)
-  end
-
-  defp maybe_put_voxel_edit(map, _key, nil), do: map
-  defp maybe_put_voxel_edit(map, key, value), do: Map.put(map, key, value)
-
-  defp maybe_put_voxel_edit_micro_slot(map, %{operation: op}, target)
-       when op in [:put_micro_block, :clear_micro_block] do
-    Map.put(map, :micro_slot, Types.micro_index!(target.local_micro))
-  end
-
-  defp maybe_put_voxel_edit_micro_slot(map, _op, _target), do: map
-
-  # `:stale_chunk_version` and `:stale_cell_hash` come back from
-  # `ChunkProcess.validate_intent_preconditions/2` and map to the protocol
-  # `Stale` (3) `VoxelIntentResult` code. Everything else is a generic
-  # `Rejected` (2). Successful applies use `:accepted` (0).
-  defp voxel_edit_intent_result_code(:stale_chunk_version), do: :stale
-  defp voxel_edit_intent_result_code(:stale_cell_hash), do: :stale
-  defp voxel_edit_intent_result_code(_reason), do: :rejected
-
-  defp voxel_edit_intent_result_error(request, reason) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: Map.get(request, :client_intent_seq, 0),
-       logical_scene_id: request.logical_scene_id,
-       result_code: voxel_edit_intent_result_code(reason),
-       result_ref: 0,
-       authoritative: [],
-       reason: inspect(reason)
-     }}
-  end
-
-  defp voxel_edit_intent_result_ok(request, result) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: request.client_intent_seq,
-       logical_scene_id: request.logical_scene_id,
-       result_code: :accepted,
-       result_ref: result.chunk_version,
-       # 显式契约(2026-06-27 幽灵块根因修复):透传 ChunkProcess 返回的被编辑 macro 当前权威态。
-       # no-op 编辑也带(authoritative=empty),让客户端点修清掉本地幽灵。错误路径仍 [](拒绝不携带格态)。
-       authoritative: Map.get(result, :authoritative, []),
-       reason: "ok"
-     }}
-  end
-
-  # 形态轨 C5.2:表面元件放置/清除 apply。与 edit intent 同路由(lease + ChunkDirectory),
-  # 但走专用 `:apply_surface_element` 路径(ChunkProcess.put/clear_surface_element,零 occupancy,
-  # 全快照下行)。face ordinal / surface_type 在 gate 校验后才下发,owner_actor_id 用 cid 注入。
-  defp apply_voxel_surface_element_intent(request, state) do
-    with :ok <- authorize_voxel_edit_intent(state),
-         {:ok, action} <- voxel_surface_element_action(request.action),
-         {:ok, face} <- voxel_surface_element_face(request.face),
-         :ok <- voxel_surface_element_known_type(request.surface_type_id),
-         {:ok, target} <- voxel_surface_element_target(request),
-         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, target.chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      lease = Map.fetch!(route, :lease)
-
-      GateServer.CliObserve.emit("voxel_surface_element_intent_routed", %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        action: action,
-        chunk_coord: target.chunk_coord,
-        local_macro: target.local_macro,
-        face: face,
-        surface_type_id: request.surface_type_id,
-        region_id: lease.region_id,
-        lease_id: lease.lease_id,
-        owner_epoch: lease.owner_epoch,
-        scene_node: scene_node
-      })
-
-      attrs = %{
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: target.chunk_coord,
-        lease: lease,
-        action: action,
-        macro_index: target.macro_index,
-        face: face,
-        surface_type_id: request.surface_type_id,
-        attribute_set_ref: request.attribute_set_ref,
-        tag_set_ref: request.tag_set_ref,
-        owner_actor_id: state.cid
-      }
-
-      case safe_call(
-             {SceneServer.Voxel.ChunkDirectory, scene_node},
-             {:apply_surface_element, attrs},
-             @scene_call_timeout
-           ) do
-        {:ok, {:ok, reply}} ->
-          {:ok, Map.merge(reply, %{macro: target.local_macro})}
-
-        {:ok, {:error, reason}} ->
-          {:error, reason}
-
-        {:ok, _other} ->
-          {:error, :scene_unavailable}
-
-        {:error, _reason} ->
-          {:error, :scene_unavailable}
-      end
-    end
-  end
-
-  defp voxel_surface_element_action(0), do: {:ok, :place}
-  defp voxel_surface_element_action(1), do: {:ok, :clear}
-  defp voxel_surface_element_action(_other), do: {:error, :invalid_surface_element_action}
-
-  defp voxel_surface_element_face(ordinal) when is_integer(ordinal) do
-    case SceneServer.Voxel.SurfaceCatalog.face_from_ordinal(ordinal) do
-      nil -> {:error, :invalid_surface_element_face}
-      face -> {:ok, face}
-    end
-  end
-
-  defp voxel_surface_element_face(_other), do: {:error, :invalid_surface_element_face}
-
-  defp voxel_surface_element_known_type(surface_type_id) do
-    if SceneServer.Voxel.SurfaceCatalog.known_surface_type?(surface_type_id) do
-      :ok
-    else
-      {:error, :unknown_surface_type}
-    end
-  end
-
-  # 表面元件绑到 world_micro 落入的宿主宏格那一面 —— 无 face_normal 偏移(放火炬选的是
-  # 实心块本身 + 它的某个面)。解析出 chunk_coord + local_macro + macro_index(0..4095)。
-  defp voxel_surface_element_target(request) do
-    {wx, wy, wz} = request.target_world_micro
-    micro_resolution = Types.micro_resolution()
-
-    world_macro = {
-      Types.floor_div(wx, micro_resolution),
-      Types.floor_div(wy, micro_resolution),
-      Types.floor_div(wz, micro_resolution)
-    }
-
-    {chunk_coord, local_macro} = Types.chunk_and_local_macro!(world_macro)
-
-    {:ok,
-     %{
-       chunk_coord: chunk_coord,
-       local_macro: local_macro,
-       macro_index: Types.macro_index!(local_macro)
-     }}
-  rescue
-    _exception in [ArgumentError, FunctionClauseError] ->
-      {:error, :invalid_target_world_micro}
-  end
-
-  # 场域导通 apply:解析 source 宏格 → 路由 → scene 节点,RPC 至 FieldRuntime
-  # ensure_conduction_path。与 ws_connection 同名 helper 等价。
-  defp apply_voxel_field_conduct_intent(request, state) do
-    with :ok <- authorize_voxel_edit_intent(state),
-         {:ok, source_chunk_coord} <- field_conduct_source_chunk(request),
-         {:ok, route} <- route_voxel_chunk(request.logical_scene_id, source_chunk_coord),
-         {:ok, scene_node} <- fetch_scene_node_for_route(route) do
-      attrs =
-        request
-        |> Map.take([
-          :logical_scene_id,
-          :source_world_macro,
-          :target_world_macro,
-          :source_potential,
-          :max_ticks,
-          :conduction_mode,
-          :output_mode,
-          :voltage,
-          :current_limit_amps,
-          :frequency_hz,
-          :load_current_amps,
-          :energy_budget_joules
-        ])
-        |> Map.put(:owner_ref, {:tcp_field_conduct, state.cid, request.client_intent_seq})
-
-      case :rpc.call(
-             scene_node,
-             FieldRuntime,
-             :ensure_conduction_path,
-             [attrs],
-             @scene_call_timeout
-           ) do
-        {:ok, summary} -> {:ok, summary}
-        {:error, reason} -> {:error, reason}
-        {:badrpc, reason} -> {:error, {:scene_unavailable, reason}}
-        other -> {:error, {:unexpected_field_conduct_result, other}}
-      end
-    end
-  end
-
-  defp field_conduct_source_chunk(%{source_world_macro: world_macro}) do
-    {chunk_coord, _local_macro} = Types.chunk_and_local_macro!(world_macro)
-    {:ok, chunk_coord}
-  rescue
-    _exception in [ArgumentError, FunctionClauseError] -> {:error, :invalid_source_world_macro}
-  end
-
-  defp voxel_field_conduct_result_ok(request, summary) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: request.client_intent_seq,
-       logical_scene_id: request.logical_scene_id,
-       result_code: :accepted,
-       result_ref: Map.get(summary, :region_id) || 0,
-       authoritative: [],
-       reason: "field_conduct_ok"
-     }}
-  end
-
-  # AUTH-4(step1.5b-2):prefab idempotency-key,见 ws_connection 同名函数说明。
-  defp apply_voxel_prefab_place_intent(request, state) do
-    case authorize_voxel_prefab_place_intent(state) do
-      :ok ->
-        command_id =
-          GateServer.VoxelCommandId.prefab(
-            request.logical_scene_id,
-            state.cid,
-            request.client_intent_seq
-          )
-
-        apply_prefab_with_idempotency(command_id, request, state)
-
-      {:error, reason} ->
-        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
-    end
-  end
-
-  defp apply_prefab_with_idempotency(command_id, request, state) do
-    case DataService.Voxel.CommandLog.claim(command_id, request.logical_scene_id) do
-      :fresh ->
-        case do_apply_voxel_prefab_place_intent(request, state) do
-          {:ok, summary} ->
-            DataService.Voxel.CommandLog.confirm(
-              command_id,
-              GateServer.VoxelCommandId.encode_prefab_summary(summary)
-            )
-
-            {:ok, summary}
-
-          {:error, _reason} = error ->
-            DataService.Voxel.CommandLog.release(command_id)
-            error
-        end
-
-      {:duplicate, result} ->
-        GateServer.CliObserve.emit("tcp_voxel_prefab_place_intent_duplicate", %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id,
-          command_id: command_id
-        })
-
-        {:ok, GateServer.VoxelCommandId.decode_prefab_summary(result)}
-
-      :in_flight ->
-        {:error, %{reason: :command_in_flight, applied_cell_count: 0, total_cell_count: 0}}
-    end
-  end
-
-  defp do_apply_voxel_prefab_place_intent(request, state) do
-    with {:ok, owner_object_id} <- allocate_prefab_owner_object_id(),
-         {:ok, cells} <-
-           PrefabRaster.rasterize(
-             request.blueprint_id,
-             request.blueprint_version,
-             request.anchor_world_micro,
-             request.rotation,
-             owner_object_id: owner_object_id,
-             owner_part_id: @prefab_owner_part_id
-           ) do
-      run_prefab_transaction(cells, request, state, owner_object_id)
-    else
-      {:error, reason} ->
-        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: 0}}
-    end
-  end
-
-  defp authorize_voxel_prefab_place_intent(state) do
-    if is_integer(state.cid) and state.cid > 0 do
-      :ok
-    else
-      {:error, :cid_mismatch}
-    end
-  end
-
-  defp allocate_prefab_owner_object_id do
-    case DataService.Voxel.SceneObjectStore.next_object_id() do
-      {:ok, object_id}
-      when is_integer(object_id) and object_id > 0 and object_id <= @max_prefab_owner_object_id ->
-        {:ok, object_id}
-
-      {:ok, _object_id} ->
-        {:error, :invalid_allocated_object_id}
-
-      {:error, _reason} ->
-        {:error, :object_id_unavailable}
-    end
-  rescue
-    _exception -> {:error, :object_id_unavailable}
-  catch
-    :exit, _reason -> {:error, :object_id_unavailable}
-  end
-
-  # Single-chunk prefabs stay on the Scene hot path and call
-  # ChunkDirectory.apply_intents/2 directly. Multi-chunk prefabs that still
-  # resolve to one concrete Scene chunk-directory owner use a local
-  # prepare/commit/abort runner. Split-owner prefabs still go through World's
-  # TransactionCoordinator + TransactionExecutor so the whole prefab commits
-  # atomically across every participant.
-  defp run_prefab_transaction([], _request, _state, _owner_object_id) do
-    {:ok, %{cell_count: 0, chunk_count: 0, max_chunk_version: 0}}
-  end
-
-  defp run_prefab_transaction(cells, request, state, owner_object_id) do
-    total = length(cells)
-
-    with {:ok, plan} <- build_prefab_plan(cells, request, state, owner_object_id) do
-      case single_chunk_prefab_plan(plan) do
-        {:ok, participant, chunk_coord, intents} ->
-          apply_single_chunk_prefab_fast_path(
-            participant,
-            plan,
-            chunk_coord,
-            intents,
-            request,
-            state,
-            total
-          )
-
-        :error ->
-          case same_owner_prefab_plan(plan) do
-            {:ok, participants} ->
-              apply_same_owner_prefab_fast_path(participants, plan, request, state, total)
-
-            :error ->
-              with {:ok, coordinator_ref} <- locate_voxel_transaction_coordinator(),
-                   {:ok, transaction} <-
-                     coordinator_begin_transaction(coordinator_ref, plan, request),
-                   {:ok, executor_result} <-
-                     executor_execute(coordinator_ref, transaction, plan) do
-                finalize_prefab_outcome(executor_result, plan, total)
-              end
-          end
-      end
-    else
-      {:error, reason} ->
-        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: total}}
-    end
-  end
-
-  # Bulk route chunks through World, then group by concrete Scene owner
-  # `{chunk_directory, assigned_scene_node}`. Each participant still carries
-  # `chunk_owners` so the real `{region_id, lease_id}` owner of every chunk is
-  # preserved for object-owner metadata.
-  defp build_prefab_plan(cells, request, state, owner_object_id) do
-    cells_by_chunk = Enum.group_by(cells, & &1.chunk_coord)
-    chunk_coords = Map.keys(cells_by_chunk)
-
-    case chunk_coords do
-      [] ->
-        {:error, :empty_prefab}
-
-      coords ->
-        with {:ok, routes_by_chunk} <- route_all_chunks(request.logical_scene_id, coords),
-             {:ok, participants} <-
-               build_prefab_participants(routes_by_chunk, cells_by_chunk, request),
-             {:ok, scene_object} <-
-               build_prefab_scene_object(
-                 request,
-                 state,
-                 owner_object_id,
-                 coords,
-                 cells,
-                 participants
-               ) do
-          emit_prefab_routed_observe(request, state, participants, length(cells))
-
-          {:ok,
-           %{
-             participants: participants,
-             chunk_coords: Enum.sort(coords),
-             scene_object: scene_object,
-             scene_objects: [scene_object]
-           }}
-        end
-    end
-  end
-
-  defp build_prefab_scene_object(
-         request,
-         state,
-         owner_object_id,
-         chunk_coords,
-         cells,
-         participants
-       ) do
-    covered_chunks = Enum.sort(chunk_coords)
-
-    with {:ok, owner} <- prefab_scene_object_owner(covered_chunks, participants),
-         {:ok, covered_by_region} <- prefab_covered_chunks_by_region(covered_chunks, participants) do
-      {:ok,
-       %{
-         object_id: owner_object_id,
-         logical_scene_id: request.logical_scene_id,
-         parcel_id: Map.get(request, :parcel_id, 0),
-         blueprint_id: request.blueprint_id,
-         blueprint_version: request.blueprint_version,
-         anchor_world_micro: request.anchor_world_micro,
-         rotation: request.rotation,
-         owner_actor_id: state.cid,
-         state_flags: 0,
-         object_attribute_ref: 0,
-         object_tag_set_ref: 0,
-         covered_chunks: covered_chunks,
-         covered_chunks_by_region: covered_by_region,
-         part_states: [
-           %{part_id: @prefab_owner_part_id, health: length(cells), state_flags: 0}
-         ],
-         object_version: 1,
-         owner_region_id: owner.region_id,
-         owner_lease_id: owner.lease_id
-       }}
-    end
-  end
-
-  defp prefab_scene_object_owner([], _participants), do: {:error, :invalid_covered_chunks}
-
-  defp prefab_scene_object_owner(covered_chunks, participants) do
-    first_chunk = covered_chunks |> Enum.sort() |> List.first()
-
-    case Enum.find(participants, fn participant -> first_chunk in participant.chunk_coords end) do
-      nil ->
-        {:error, :scene_object_owner_undeterminable}
-
-      participant ->
-        case Map.fetch(participant.chunk_owners, first_chunk) do
-          {:ok, {region_id, lease_id}} -> {:ok, %{region_id: region_id, lease_id: lease_id}}
-          :error -> {:error, {:missing_chunk_owner, first_chunk}}
-        end
-    end
-  end
-
-  defp prefab_covered_chunks_by_region(covered_chunks, participants) do
-    chunk_to_owner =
-      participants
-      |> Enum.flat_map(fn participant ->
-        Enum.map(participant.chunk_coords, fn coord ->
-          {coord, Map.fetch!(participant.chunk_owners, coord)}
-        end)
-      end)
-      |> Map.new()
-
-    covered_chunks
-    |> Enum.reduce_while({:ok, []}, fn coord, {:ok, acc} ->
-      case Map.fetch(chunk_to_owner, coord) do
-        {:ok, owner} -> {:cont, {:ok, [{coord, owner} | acc]}}
-        :error -> {:halt, {:error, {:missing_chunk_owner, coord}}}
-      end
-    end)
-    |> case do
-      {:ok, pairs} ->
-        {:ok,
-         pairs
-         |> Enum.reverse()
-         |> Enum.group_by(fn {_coord, owner} -> owner end, fn {coord, _owner} -> coord end)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp route_all_chunks(logical_scene_id, chunk_coords) do
-    route_voxel_chunks(logical_scene_id, chunk_coords)
-  end
-
-  defp build_prefab_participants(routes_by_chunk, cells_by_chunk, request) do
-    routed_chunks =
-      Enum.reduce_while(routes_by_chunk, {:ok, []}, fn {coord, route}, {:ok, acc} ->
-        case fetch_scene_node_for_route(route) do
-          {:ok, scene_node} ->
-            lease = Map.fetch!(route, :lease)
-            directory = voxel_chunk_directory_module_for({lease.region_id, lease.lease_id})
-            {:cont, {:ok, [{coord, route, scene_node, directory} | acc]}}
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end)
-
-    with {:ok, routed_chunks} <- routed_chunks do
-      chunks_by_owner =
-        Enum.group_by(
-          routed_chunks,
-          fn {_coord, _route, scene_node, directory} -> {directory, scene_node} end,
-          fn {coord, route, _scene_node, _directory} -> {coord, route} end
-        )
-
-      chunks_by_owner
-      |> Enum.reduce_while({:ok, []}, fn {{directory, scene_node}, entries}, {:ok, acc} ->
-        chunks = entries |> Enum.map(fn {coord, _route} -> coord end) |> Enum.sort()
-
-        first_route =
-          entries
-          |> Enum.sort_by(fn {coord, _route} -> coord end)
-          |> List.first()
-          |> elem(1)
-
-        case build_prefab_participant(
-               {directory, scene_node},
-               chunks,
-               first_route,
-               routes_by_chunk,
-               cells_by_chunk,
-               request
-             ) do
-          {:ok, participant} -> {:cont, {:ok, [participant | acc]}}
-        end
-      end)
-      |> case do
-        {:ok, participants} -> {:ok, Enum.reverse(participants)}
-        {:error, _} = err -> err
-      end
-    end
-  end
-
-  defp build_prefab_participant(
-         {directory, scene_node},
-         chunks,
-         first_route,
-         routes_by_chunk,
-         cells_by_chunk,
-         request
-       ) do
-    lease = Map.fetch!(first_route, :lease)
-    chunks_sorted = Enum.sort(chunks)
-
-    chunk_owners =
-      Map.new(chunks_sorted, fn chunk_coord ->
-        chunk_lease = routes_by_chunk |> Map.fetch!(chunk_coord) |> Map.fetch!(:lease)
-        {chunk_coord, {chunk_lease.region_id, chunk_lease.lease_id}}
-      end)
-
-    intents_by_chunk =
-      chunks_sorted
-      |> Enum.map(fn chunk_coord ->
-        cells_in_chunk = Map.fetch!(cells_by_chunk, chunk_coord)
-        chunk_lease = routes_by_chunk |> Map.fetch!(chunk_coord) |> Map.fetch!(:lease)
-
-        {chunk_coord, prefab_intents_for_chunk(cells_in_chunk, request, chunk_coord, chunk_lease)}
-      end)
-      |> Map.new()
-
-    participant = %{
-      participant_key: {:scene_owner, directory, scene_node},
-      lease: lease,
-      scene_node: scene_node,
-      assigned_scene_node: scene_node,
-      chunk_directory_module: directory,
-      chunk_coords: chunks_sorted,
-      chunk_owners: chunk_owners,
-      intents_by_chunk: intents_by_chunk
-    }
-
-    {:ok, participant}
-  end
-
-  defp prefab_intents_for_chunk(cells_in_chunk, request, chunk_coord, lease) do
-    Enum.map(cells_in_chunk, fn cell ->
-      %{
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        chunk_coord: chunk_coord,
-        lease: lease,
-        operation: :put_micro_block,
-        macro: cell.local_macro,
-        micro_slot: cell.micro_slot,
-        micro_layer: cell.layer_attrs,
-        opts: [reject_occupied: true, return_snapshot_payload: false]
-      }
-    end)
-  end
-
-  defp single_chunk_prefab_plan(%{participants: [participant], chunk_coords: [chunk_coord]}) do
-    case Map.fetch(participant.intents_by_chunk, chunk_coord) do
-      {:ok, intents} -> {:ok, participant, chunk_coord, intents}
-      :error -> :error
-    end
-  end
-
-  defp single_chunk_prefab_plan(_plan), do: :error
-
-  defp same_owner_prefab_plan(%{participants: [_ | _] = participants, chunk_coords: chunk_coords})
-       when length(chunk_coords) > 1 do
-    case participants |> Enum.map(&prefab_chunk_directory_ref/1) |> Enum.uniq() do
-      [_single_owner] -> {:ok, participants}
-      _multiple_owners -> :error
-    end
-  end
-
-  defp same_owner_prefab_plan(_plan), do: :error
-
-  defp apply_single_chunk_prefab_fast_path(
-         participant,
-         plan,
-         chunk_coord,
-         intents,
-         request,
-         state,
-         total
-       ) do
-    started_at = System.monotonic_time(:millisecond)
-    chunk_directory = single_chunk_prefab_directory(participant)
-
-    GateServer.CliObserve.emit("voxel_prefab_single_chunk_fast_path_started", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        blueprint_id: request.blueprint_id,
-        chunk_coord: chunk_coord,
-        cell_count: total,
-        region_id: participant.lease.region_id,
-        lease_id: participant.lease.lease_id,
-        scene_node: participant.scene_node
-      }
-    end)
-
-    # 服务端权威反悬空兜底:放置前只读邻接校验(客户端已 snap+校验,这是兜底)。
-    # 仅覆盖单 chunk fast path —— builtins 都是单 macro、宏格对齐时落单 chunk。
-    # TODO(多 chunk):same-owner fast path / 跨 region transaction 路径暂不接此校验;
-    # 跨 chunk 邻居本就放行(宽松),但多 chunk prefab 的整体悬空判定要在那些路径单独补。
-    if prefab_intents_floating?(chunk_directory, intents) do
-      GateServer.CliObserve.emit("voxel_prefab_floating_rejected", fn ->
-        %{
-          connection_pid: self(),
-          cid: state.cid,
-          request_id: request.request_id,
-          logical_scene_id: request.logical_scene_id,
-          blueprint_id: request.blueprint_id,
-          chunk_coord: chunk_coord,
-          cell_count: total,
-          region_id: participant.lease.region_id,
-          lease_id: participant.lease.lease_id
-        }
-      end)
-
-      {:error, %{reason: :prefab_floating, applied_cell_count: 0, total_cell_count: total}}
-    else
-      apply_single_chunk_prefab_after_check(
-        participant,
-        plan,
-        chunk_coord,
-        intents,
-        request,
-        state,
-        total,
-        chunk_directory,
-        started_at
-      )
-    end
-  end
-
-  # 邻接校验失败(chunk 解析失败 / intents 非法)按"非悬空"放行 —— 不让校验本身的
-  # 错误阻断合法放置;真正的下游错误仍由后续 apply_intents 返回。返回 true 仅当
-  # ChunkDirectory 明确判定悬空。
-  defp prefab_intents_floating?(chunk_directory, intents) do
-    case SceneServer.Voxel.ChunkDirectory.prefab_floating?(chunk_directory, intents) do
-      {:ok, floating?} -> floating?
-      {:error, _reason} -> false
-    end
-  rescue
-    _exception -> false
-  catch
-    :exit, _reason -> false
-  end
-
-  defp apply_single_chunk_prefab_after_check(
-         participant,
-         plan,
-         chunk_coord,
-         intents,
-         request,
-         state,
-         total,
-         chunk_directory,
-         started_at
-       ) do
-    case SceneServer.Voxel.ChunkDirectory.apply_intents(chunk_directory, intents) do
-      {:ok, summary} ->
-        register_prefab_scene_object(plan, participant)
-
-        elapsed_ms = System.monotonic_time(:millisecond) - started_at
-
-        GateServer.CliObserve.emit("voxel_prefab_single_chunk_fast_path_applied", fn ->
-          %{
-            connection_pid: self(),
-            cid: state.cid,
-            request_id: request.request_id,
-            logical_scene_id: request.logical_scene_id,
-            blueprint_id: request.blueprint_id,
-            chunk_coord: chunk_coord,
-            cell_count: total,
-            changed_count: Map.get(summary, :changed_count, 0),
-            skipped_count: Map.get(summary, :skipped_count, 0),
-            chunk_version: Map.get(summary, :chunk_version, 0),
-            persist_result: Map.get(summary, :persist_result),
-            elapsed_ms: elapsed_ms
-          }
-        end)
-
-        {:ok,
-         %{
-           cell_count: total,
-           chunk_count: 1,
-           max_chunk_version: Map.get(summary, :chunk_version, 0)
-         }}
-
-      {:error, reason} ->
-        elapsed_ms = System.monotonic_time(:millisecond) - started_at
-
-        GateServer.CliObserve.emit("voxel_prefab_single_chunk_fast_path_failed", fn ->
-          %{
-            connection_pid: self(),
-            cid: state.cid,
-            request_id: request.request_id,
-            logical_scene_id: request.logical_scene_id,
-            blueprint_id: request.blueprint_id,
-            chunk_coord: chunk_coord,
-            cell_count: total,
-            reason: inspect(reason),
-            elapsed_ms: elapsed_ms
-          }
-        end)
-
-        {:error, %{reason: reason, applied_cell_count: 0, total_cell_count: total}}
-    end
-  end
-
-  defp single_chunk_prefab_directory(participant) do
-    prefab_chunk_directory_ref(participant)
-  end
-
-  defp apply_same_owner_prefab_fast_path(participants, plan, request, state, total) do
-    started_at = System.monotonic_time(:millisecond)
-    transaction_id = unique_prefab_transaction_id(request)
-    chunk_directory = prefab_chunk_directory_ref(List.first(participants))
-
-    GateServer.CliObserve.emit("voxel_prefab_same_owner_fast_path_started", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        blueprint_id: request.blueprint_id,
-        chunk_count: length(plan.chunk_coords),
-        participant_count: length(participants),
-        cell_count: total,
-        chunk_directory: inspect(chunk_directory)
-      }
-    end)
-
-    case PrefabLocalTransaction.execute(
-           participants,
-           transaction_id,
-           request.logical_scene_id,
-           &prefab_chunk_directory_ref/1
-         ) do
-      {:ok, %{participant_results: participant_results}} ->
-        register_prefab_scene_object(plan, List.first(participants))
-
-        elapsed_ms = System.monotonic_time(:millisecond) - started_at
-        max_version = max_chunk_version_from_results(participant_results)
-
-        GateServer.CliObserve.emit("voxel_prefab_same_owner_fast_path_applied", fn ->
-          %{
-            connection_pid: self(),
-            cid: state.cid,
-            request_id: request.request_id,
-            logical_scene_id: request.logical_scene_id,
-            blueprint_id: request.blueprint_id,
-            chunk_count: length(plan.chunk_coords),
-            participant_count: length(participants),
-            cell_count: total,
-            max_chunk_version: max_version,
-            elapsed_ms: elapsed_ms
-          }
-        end)
-
-        {:ok,
-         %{
-           cell_count: total,
-           chunk_count: length(plan.chunk_coords),
-           max_chunk_version: max_version
-         }}
-
-      {:error, %{reason: raw_reason} = error} ->
-        elapsed_ms = System.monotonic_time(:millisecond) - started_at
-        reason = unwrap_prepare_reason(raw_reason)
-
-        GateServer.CliObserve.emit("voxel_prefab_same_owner_fast_path_failed", fn ->
-          %{
-            connection_pid: self(),
-            cid: state.cid,
-            request_id: request.request_id,
-            logical_scene_id: request.logical_scene_id,
-            blueprint_id: request.blueprint_id,
-            chunk_count: length(plan.chunk_coords),
-            participant_count: length(participants),
-            cell_count: total,
-            reason: inspect(reason),
-            elapsed_ms: elapsed_ms
-          }
-        end)
-
-        {:error,
-         %{
-           reason: reason || Map.get(error, :reason, :prefab_same_owner_fast_path_failed),
-           applied_cell_count: 0,
-           total_cell_count: total
-         }}
-    end
-  end
-
-  defp register_prefab_scene_object(%{scene_object: scene_object}, %{scene_node: scene_node}) do
-    case :rpc.call(
-           scene_node,
-           SceneServer.Voxel.BuildTransactionApplier,
-           :register_scene_objects,
-           [[scene_object], []],
-           5_000
-         ) do
-      :ok ->
-        :ok
-
-      other ->
-        GateServer.CliObserve.emit("voxel_prefab_scene_object_register_failed", fn ->
-          %{
-            object_id: Map.get(scene_object, :object_id),
-            logical_scene_id: Map.get(scene_object, :logical_scene_id),
-            reason: inspect(other)
-          }
-        end)
-
-        :ok
-    end
-  end
-
-  defp register_prefab_scene_object(_plan, _participant), do: :ok
-
-  defp prefab_chunk_directory_ref(%{chunk_directory_module: module, scene_node: scene_node}) do
-    {module, scene_node}
-  end
-
-  defp prefab_chunk_directory_ref(%{participant_key: participant_key, scene_node: scene_node}) do
-    module = voxel_chunk_directory_module_for(participant_key)
-    {module, scene_node}
-  end
-
-  defp emit_prefab_routed_observe(request, state, participants, cell_count) do
-    GateServer.CliObserve.emit("voxel_prefab_routed", fn ->
-      %{
-        connection_pid: self(),
-        cid: state.cid,
-        request_id: request.request_id,
-        logical_scene_id: request.logical_scene_id,
-        blueprint_id: request.blueprint_id,
-        chunk_count: Enum.reduce(participants, 0, fn p, acc -> acc + length(p.chunk_coords) end),
-        cell_count: cell_count,
-        participant_count: length(participants),
-        participants:
-          Enum.map(participants, fn p ->
-            %{
-              participant_key: inspect(p.participant_key),
-              region_id: p.lease.region_id,
-              lease_id: p.lease.lease_id,
-              owner_scene_instance_ref: p.lease.owner_scene_instance_ref,
-              owner_epoch: p.lease.owner_epoch,
-              scene_node: p.scene_node,
-              chunk_owner_count: map_size(p.chunk_owners),
-              chunk_count: length(p.chunk_coords)
-            }
-          end)
-      }
-    end)
-  end
-
-  # See ws_connection's matching helper for the rationale on going through
-  # `fetch_world_node/0` instead of calling `BeaconServer.Client.lookup/1`
-  # directly.
-  defp locate_voxel_transaction_coordinator do
-    case fetch_world_node() do
-      {:ok, world_node} ->
-        {:ok, {WorldServer.Voxel.TransactionCoordinator, world_node}}
-
-      {:error, _reason} ->
-        {:error, :voxel_transaction_coordinator_unavailable}
-    end
-  end
-
-  defp coordinator_begin_transaction(coordinator_ref, plan, request) do
-    transaction_id = unique_prefab_transaction_id(request)
-
-    attrs = %{
-      logical_scene_id: request.logical_scene_id,
-      parcel_id: Map.get(request, :parcel_id, 0),
-      reservation_id: prefab_reservation_id(request),
-      decision_version: 1,
-      participants:
-        Enum.map(plan.participants, fn p ->
-          %{
-            participant_key: p.participant_key,
-            region_id: p.lease.region_id,
-            lease_id: p.lease.lease_id,
-            owner_scene_instance_ref: p.lease.owner_scene_instance_ref,
-            owner_epoch: p.lease.owner_epoch,
-            assigned_scene_node: p.assigned_scene_node,
-            chunk_owners: p.chunk_owners,
-            affected_chunks: p.chunk_coords
-          }
-        end),
-      scene_objects: Map.get(plan, :scene_objects, [])
-    }
-
-    try do
-      case WorldServer.Voxel.TransactionCoordinator.begin_transaction(
-             coordinator_ref,
-             transaction_id,
-             attrs
-           ) do
-        {:ok, transaction} -> {:ok, transaction}
-        {:error, reason} -> {:error, {:coordinator_begin_failed, reason}}
-      end
-    catch
-      :exit, _reason -> {:error, :coordinator_unavailable}
-    end
-  end
-
-  # plan.participants 已经按 Scene owner 分组,这里直接把每个 participant 的
-  # intents_by_chunk + scene_node 摊成 by-participant 两份 map 喂给 executor。
-  # 单 Scene-owner participant 可以包含多个 region/lease;chunk_owners 保留
-  # 真实 owner。
-  defp executor_execute(coordinator_ref, transaction, plan) do
-    intents_by_participant =
-      plan.participants
-      |> Enum.map(fn p -> {p.participant_key, p.intents_by_chunk} end)
-      |> Map.new()
-
-    scene_opts_by_participant =
-      plan.participants
-      |> Enum.map(fn p ->
-        {p.participant_key, [chunk_directory: prefab_chunk_directory_ref(p)]}
-      end)
-      |> Map.new()
-
-    try do
-      WorldServer.Voxel.TransactionExecutor.execute(
-        coordinator_ref,
-        transaction,
-        intents_by_participant,
-        scene_opts_by_participant: scene_opts_by_participant
-      )
-    catch
-      :exit, _reason -> {:error, :executor_crashed}
-    end
-  end
-
-  # Phase A4-5:per-participant chunk_directory module 解析。生产 default
-  # `SceneServer.Voxel.ChunkDirectory`;test 注入 `:voxel_chunk_directory_resolver`
-  # env fn 让不同 participant 路由到不同 named instance(单 BEAM 模拟多 scene_node)。
-  # A4-bis-cluster 落地后 default 改为走 `RegionRouting.resolve_chunk_directory/1`。
-  defp voxel_chunk_directory_module_for(participant_key) do
-    case Application.get_env(:gate_server, :voxel_chunk_directory_resolver) do
-      nil -> SceneServer.Voxel.ChunkDirectory
-      fun when is_function(fun, 1) -> fun.(participant_key)
-    end
-  end
-
-  defp finalize_prefab_outcome(executor_result, plan, total) do
-    case executor_result do
-      %{decision: :commit, participant_results: results} ->
-        max_version = max_chunk_version_from_results(results)
-
-        {:ok,
-         %{
-           cell_count: total,
-           chunk_count: length(plan.chunk_coords),
-           max_chunk_version: max_version
-         }}
-
-      %{decision: :abort, prepare_results: prepare_results} ->
-        reason = first_prepare_failure_reason(prepare_results) || :prefab_transaction_aborted
-
-        {:error,
-         %{
-           reason: reason,
-           applied_cell_count: 0,
-           total_cell_count: total
-         }}
-    end
-  end
-
-  defp max_chunk_version_from_results(results) do
-    Enum.reduce(results, 0, fn
-      {_participant, {:ok, summary}}, acc ->
-        committed = Map.get(summary, :committed_chunks, [])
-
-        Enum.reduce(committed, acc, fn {_chunk, chunk_summary}, inner ->
-          max(inner, Map.get(chunk_summary, :chunk_version, 0))
-        end)
-
-      _, acc ->
-        acc
-    end)
-  end
-
-  defp first_prepare_failure_reason(prepare_results) do
-    prepare_results
-    |> Enum.find_value(fn
-      {_participant, {:error, reason}} -> reason
-      _ -> nil
-    end)
-    |> unwrap_prepare_reason()
-  end
-
-  # Phase A1-2:跟 ws_connection 同 unwrap 逻辑(见同名函数注释)。
-  defp unwrap_prepare_reason({:prepare_failed, _chunk_coord, inner_reason}), do: inner_reason
-  defp unwrap_prepare_reason(other), do: other
-
-  defp unique_prefab_transaction_id(request) do
-    unique = System.unique_integer([:positive, :monotonic])
-    "prefab-#{request.request_id}-#{unique}"
-  end
-
-  defp prefab_reservation_id(request) do
-    "prefab-reservation-#{request.request_id}"
-  end
-
-  defp voxel_result_error(request, reason) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: Map.get(request, :client_intent_seq, 0),
-       logical_scene_id: request.logical_scene_id,
-       result_code: :rejected,
-       result_ref: 0,
-       authoritative: [],
-       reason: inspect(reason)
-     }}
-  end
-
-  defp voxel_result_ok(request, result) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: request.client_intent_seq,
-       logical_scene_id: request.logical_scene_id,
-       result_code: :accepted,
-       result_ref: result.chunk_version,
-       authoritative: [],
-       reason: "ok"
-     }}
-  end
-
-  defp voxel_prefab_result_ok(request, summary) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: request.client_intent_seq,
-       logical_scene_id: request.logical_scene_id,
-       result_code: :accepted,
-       result_ref: summary.max_chunk_version,
-       authoritative: [],
-       reason: "ok"
-     }}
-  end
-
-  # Stub accept used by build-reservation / prefab-place intents until the
-  # real reservation and rasterisation pipeline lands. The wire shape matches
-  # the eventual spec so clients can round-trip the result frame today.
-  defp voxel_intent_stub_accepted(request) do
-    {:voxel_intent_result,
-     %{
-       request_id: request.request_id,
-       client_intent_seq: Map.get(request, :client_intent_seq, 0),
-       logical_scene_id: request.logical_scene_id,
-       result_code: :accepted,
-       result_ref: 0,
-       authoritative: [],
-       reason: ""
-     }}
-  end
-
-  # 阶段4 step4.2+4.3:把整框订阅意图投给订阅 worker(唯一所有者),由它在自身权威集上做差集、
-  # 异步 route+subscribe。成功路径**不发**结果帧(快照即 ACK,worker 用 subscriber=本连接订阅,
-  # 快照经 fan-out 直达 socket);路由/订阅失败由 worker 回 `{:voxel_subscribe_failed, ...}` 编 0x68。
-  defp dispatch_voxel_subscribe(request, state) do
-    known_versions = voxel_known_versions(Map.get(request, :known, []))
-
-    SubscriptionWorker.reconcile(state.voxel_worker, %{
-      request_id: request.request_id,
-      client_intent_seq: Map.get(request, :client_intent_seq, 0),
-      logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk,
-      radius: request.radius_l_inf,
-      want_snapshot: request.want_snapshot,
-      known: known_versions
-    })
-
-    GateServer.CliObserve.emit("voxel_chunk_subscribe_dispatched", %{
-      connection_pid: self(),
-      cid: state.cid,
-      request_id: request.request_id,
-      logical_scene_id: request.logical_scene_id,
-      center_chunk: request.center_chunk,
-      radius: request.radius_l_inf,
-      want_snapshot: request.want_snapshot,
-      known_count: map_size(known_versions),
-      known_sample:
-        known_versions
-        |> Enum.take(8)
-        |> Enum.map(fn {coord, version} ->
-          %{chunk_coord: coord, chunk_version: version}
-        end)
-    })
-
-    state
-  end
-
-  # 阶段4 评审 F5:ChunkInvalidate 后把受影响 chunk 从 worker 订阅集移除,使客户端重订能重建
-  # scene 侧订阅(否则差集会把它当「已订阅」吞掉)。无法解码的失效帧退化为清空整张 route 缓存。
-  defp invalidate_voxel_subscription(worker, payload) do
-    case SceneServer.Voxel.Codec.decode_chunk_invalidate_payload(payload) do
-      {:ok, %{logical_scene_id: logical_scene_id, chunk_coord: chunk_coord}} ->
-        SubscriptionWorker.invalidate_chunk(worker, logical_scene_id, chunk_coord)
-
-      _other ->
-        SubscriptionWorker.invalidate_route_cache(worker)
-    end
-  end
-
-  defp validate_voxel_subscribe_radius(radius)
-       when is_integer(radius) and radius >= 0 and radius <= @max_voxel_subscribe_radius,
-       do: :ok
-
-  defp validate_voxel_subscribe_radius(_radius), do: {:error, :voxel_subscribe_radius_too_large}
-
-  defp voxel_known_versions(known) do
-    Map.new(known, fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
-      {chunk_coord, chunk_version}
-    end)
-  end
-
-  defp voxel_known_sample(request) do
-    request
-    |> Map.get(:known, [])
-    |> Enum.take(8)
-    |> Enum.map(fn %{chunk_coord: chunk_coord, chunk_version: chunk_version} ->
-      %{chunk_coord: chunk_coord, chunk_version: chunk_version}
-    end)
-  end
-
-  defp voxel_snapshot_observe_fields(payload) do
-    case SceneServer.Voxel.Codec.decode_chunk_snapshot_payload(payload) do
-      {:ok, %{request_id: request_id, storage: storage}} ->
-        %{
-          request_id: request_id,
-          logical_scene_id: storage.logical_scene_id,
-          chunk_coord: storage.chunk_coord,
-          chunk_version: storage.chunk_version,
-          normal_blocks: length(storage.normal_blocks),
-          refined_cells: length(storage.refined_cells)
-        }
-
-      {:error, reason} ->
-        %{decode_error: reason}
-    end
-  end
-
-  defp voxel_delta_observe_fields(payload) do
-    case SceneServer.Voxel.Codec.decode_chunk_delta_payload(payload) do
-      {:ok, delta} ->
-        %{
-          logical_scene_id: delta.logical_scene_id,
-          chunk_coord: delta.chunk_coord,
-          base_chunk_version: delta.base_chunk_version,
-          new_chunk_version: delta.new_chunk_version,
-          op_count: length(delta.ops),
-          ops_sample: Enum.take(delta.ops, 4) |> Enum.map(&voxel_delta_op_summary/1)
-        }
-
-      {:error, reason} ->
-        %{decode_error: reason}
-    end
-  end
-
-  defp voxel_delta_op_summary(op) do
-    %{
-      delta_kind: Map.get(op, :delta_kind),
-      macro_index: Map.get(op, :macro_index),
-      cell_version: Map.get(op, :cell_version),
-      cell_hash: Map.get(op, :cell_hash),
-      payload_bytes: byte_size_or_zero(Map.get(op, :payload))
-    }
-  end
-
-  defp byte_size_or_zero(value) when is_binary(value), do: byte_size(value)
-  defp byte_size_or_zero(_value), do: 0
 
   defp resolve_udp_peer(%{udp_peer: nil} = state), do: {nil, state}
 
@@ -2992,145 +517,5 @@ defmodule GateServer.TcpConnection do
       nil -> {nil, %{state | udp_peer: nil, udp_ticket: nil}}
       peer -> {peer, state}
     end
-  end
-
-  defp send_encoded(socket, message) do
-    # 防 MatchError 崩连接进程:若 message 命中 Codec.encode 的 {:error, :unknown_message}
-    # catchall(新消息类型漏 encode 子句 / guard 失败),只记日志 + 丢弃,绝不 raise。
-    case GateServer.Codec.encode(message) do
-      {:ok, bin} ->
-        :gen_tcp.send(socket, bin)
-
-      {:error, reason} ->
-        Logger.warning("gate(tcp): dropped unencodable outbound message: #{inspect(reason)}")
-
-        GateServer.CliObserve.emit("gate_outbound_encode_failed", %{
-          transport: :tcp,
-          reason: reason
-        })
-
-        :ok
-    end
-  end
-
-  # Phase 6: forward a pre-encoded payload (opcode byte already prefixed by
-  # the producer) directly. The `{packet, 4}` socket option still adds the
-  # 4-byte big-endian length prefix at the gen_tcp layer.
-  defp send_frame(socket, payload) when is_binary(payload) do
-    :gen_tcp.send(socket, payload)
-  end
-
-  defp observe_message_summary({:auth_request, username, _token, request_id}) do
-    %{type: :auth_request, username: username, request_id: request_id, token_redacted?: true}
-  end
-
-  defp observe_message_summary({:movement_input, frame}) do
-    %{type: :movement_input, seq: frame.seq, client_tick: frame.client_tick}
-  end
-
-  defp observe_message_summary({:voxel_debug_probe, %{request_id: request_id, command: command}}) do
-    %{type: :voxel_debug_probe, request_id: request_id, command: command}
-  end
-
-  defp observe_message_summary({:voxel_impact_intent, request}) do
-    %{
-      type: :voxel_impact_intent,
-      request_id: request.request_id,
-      client_intent_seq: request.client_intent_seq,
-      logical_scene_id: request.logical_scene_id,
-      impact_kind: request.impact_kind
-    }
-  end
-
-  defp observe_message_summary(message), do: message
-
-  defp voxel_debug_result("voxel_transport", state) do
-    subscriptions = SubscriptionWorker.subscriptions(state.voxel_worker)
-
-    [
-      "voxel_sync=server-authoritative",
-      "voxel_truth_source=server",
-      "connection_status=#{state.status}",
-      "cid=#{state.cid}",
-      "scene_attached=#{not is_nil(state.scene_ref)}",
-      "voxel_subscription_count=#{map_size(subscriptions)}",
-      "voxel_subscriptions=#{inspect(subscriptions |> Map.keys() |> Enum.take(16))}",
-      "voxel_subscription_routes=#{inspect(voxel_subscription_debug(subscriptions))}",
-      "confirmed_chunk_versions={}",
-      "inflight_intent_count=0",
-      "voxel_codec_endian=big",
-      "micro_resolution=8"
-    ]
-    |> Enum.join("\n")
-  end
-
-  defp voxel_debug_result(command, state) do
-    [
-      "command=#{command}",
-      "connection_status=#{state.status}",
-      "voxel_debug=unknown_command"
-    ]
-    |> Enum.join("\n")
-  end
-
-  defp voxel_subscription_debug(subscriptions) do
-    subscriptions
-    |> Map.values()
-    |> Enum.take(16)
-    |> Enum.map(fn subscription ->
-      Map.take(subscription, [
-        :logical_scene_id,
-        :chunk_coord,
-        :region_id,
-        :lease_id,
-        :owner_scene_instance_ref,
-        :owner_epoch,
-        :scene_node
-      ])
-    end)
-  end
-
-  defp build_input_frame(%{} = frame) do
-    if Map.get(frame, :__struct__) == InputFrame do
-      frame
-    else
-      struct(
-        InputFrame,
-        %{
-          seq: Map.fetch!(frame, :seq),
-          client_tick: Map.fetch!(frame, :client_tick),
-          dt_ms: Map.fetch!(frame, :dt_ms),
-          input_dir: Map.fetch!(frame, :input_dir),
-          speed_scale: Map.fetch!(frame, :speed_scale),
-          movement_flags: Map.fetch!(frame, :movement_flags)
-        }
-      )
-    end
-  end
-
-  defp normalize_remote_snapshot(%{} = snapshot) do
-    if Map.get(snapshot, :__struct__) == RemoteSnapshot do
-      snapshot
-    else
-      raise ArgumentError, "expected remote snapshot map, got: #{inspect(snapshot)}"
-    end
-  end
-
-  defp player_move_message(
-         %RemoteSnapshot{
-           priority_band: nil,
-           priority_score: nil,
-           observer_distance: nil,
-           delivery_interval: nil
-         } = snapshot
-       ) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode}
-  end
-
-  defp player_move_message(%RemoteSnapshot{} = snapshot) do
-    {:player_move, snapshot.cid, snapshot.server_tick, snapshot.position, snapshot.velocity,
-     snapshot.acceleration, snapshot.movement_mode, snapshot.priority_band,
-     snapshot.priority_score, snapshot.observer_distance, snapshot.delivery_interval}
   end
 end

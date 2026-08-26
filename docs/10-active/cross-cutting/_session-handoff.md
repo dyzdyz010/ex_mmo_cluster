@@ -1,5 +1,42 @@
 # 当前会话接力：8/25 Voxia Near/Far 流送与可见 ownership 修复
 
+## 2026-08-26 Gate 连接进程去镜像：会话层从传输层剥离
+
+- **动机**：`tcp_connection.ex`(3137 行) 与 `ws_connection.ex`(2769 行) 是两份逐字镜像，
+  约 2000 行重复。这不是风格问题而是正确性问题——`VoxelIntentResult.authoritative`
+  透传（2026-06-27 幽灵块点修通道，commit `1069a1dc`）只打进 TCP 一侧，WS 一直回空列表，
+  是典型的「复制后各自演化」漂移。
+- **边界**：只做 Gate 内部的所有权重划，**不改 wire 协议、不改权威归属**。会话语义
+  （鉴权 / 进场 / 移动 / 聊天 / 技能 / 体素意图 / 调试探针）收敛为唯一实现，两个连接进程
+  只保留各自真实的传输差异。
+- **落地模块**（`apps/gate_server/lib/gate_server/`）：
+  - `session/sink.ex`：出站传输契约（socket vs owner 进程）+ observe 事件名前缀，
+    是两条链路**唯一**的真实差异。
+  - `session/dispatch.ex`：唯一会话状态机；`session/{auth,scene,call,observe,debug_probe}.ex`
+    分别拥有鉴权信任边界、Scene 接入契约、安全调用、观测字段、调试探针。
+  - `voxel/{intent_pipeline,result_frame,prefab_placement,subscribe_intent}.ex`：
+    四类体素意图执行、`0x68` 回执唯一构造、prefab 2PC、订阅意图适配。
+- **行为变化（有意为之）**：
+  1. WS 侧补上 `authoritative` 透传，与 TCP 一致（修复上述漂移）。
+  2. WS 获得 chat / skill / surface element / heightmap 拒绝等此前只有 TCP 有的 clause；
+     TCP 获得 `voxel_rebind` 调试探针（此前只有 WS 有）——现役 Voxia 走 TCP，属调试面补齐。
+  3. 传输能力差异改由 state 显式字段表达：`fast_lane: :enabled | :unsupported`
+     （浏览器无 UDP 快车道，共享 dispatch 显式回错误帧，不静默成功）。
+  4. observe 事件名保持不变：sink 按传输加前缀（TCP 无前缀 / WS `ws_`），移动三事件
+     走 `emit_transport_tagged` 得到 `tcp_movement_*` / `ws_movement_*`。
+- **结果**：`tcp_connection.ex` 3137 → 523 行，`ws_connection.ex` 2769 → 431 行；
+  两侧仅剩 `ensure_pg_scope_started/0` 一处（12 行）逐字相同，其余同名函数
+  （`init` / `handle_cast` / `handle_info`）差异均为真实传输差异。
+- **验证**：`cd apps/gate_server && mix test --no-start` → `239 passed`（与重构前基线一致）；
+  `mix compile` 无新增告警。根 `mix test` 中 scene_server 3 例、auth_server 1 例失败与本次
+  无关（scene_server 不依赖 gate_server；auth 失败在 world pack manifest 完整性），为既有状态。
+- **同期修掉的测试脚手架 bug**：`ws_connection_voxel_test.exs` 的 `on_exit` 无条件调用
+  `SceneNodeRegistry.unregister_scene_node/2`，而 `start_supervised!` 起的注册表在 `on_exit`
+  前已停，导致 40 例 teardown 崩溃。改为仅在注册表仍存活时摘除。
+- **后续可做**：`handle_cast` 的 Scene 回推帧转发两侧仍各写一遍（每 clause 一行 `Sink.send_encoded`），
+  差异是 TCP 的 UDP 分支与 WS 的出口预算；判断为真实差异，未强行合并。若之后 WS 也要 UDP
+  或 TCP 也要出口预算，应先统一「下行推送」这一层再动。
+
 ## 2026-08-25 Near/Far 同区块可见后像修复
 
 - **根因**：SceneHost 已在 Near 提交帧原子切换精确 ownership atlas，但生产 Far 仍绑定不消费 atlas

@@ -73,7 +73,9 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     on_exit(fn ->
       stop_named(GateServer.Interface)
-      :ok = SceneNodeRegistry.unregister_scene_node(SceneNodeRegistry, node())
+      # 注册表若由本测试 start_supervised 起,ExUnit 已在 on_exit 前关停它;此时无残留
+      # 共享状态需要清。只有注册表比测试活得久(全局起)时才必须摘除本节点。
+      unregister_scene_node_if_alive()
 
       if is_nil(old_observe_log) do
         Application.delete_env(:gate_server, :cli_observe_log)
@@ -2262,6 +2264,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert got_logical_scene_id == logical_scene_id
   end
 
+  # 编辑成功回执会带上被编辑 macro 的当前权威态(幽灵块点修通道),撞击等其它意图带空列表;
+  # 调用方按需用 :authoritative_count 断言条数。
   defp assert_voxel_intent_accepted(opts) do
     request_id = Keyword.fetch!(opts, :request_id)
     client_intent_seq = Keyword.fetch!(opts, :client_intent_seq)
@@ -2272,13 +2276,44 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_receive {:gate_ws_send, iodata}, timeout
 
     assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
-             got_logical_scene_id::64-big, 0::8, got_result_ref::64-big, 0::16-big, 2::16-big,
-             "ok">> = IO.iodata_to_binary(iodata)
+             got_logical_scene_id::64-big, 0::8, got_result_ref::64-big,
+             authoritative_count::16-big, rest::binary>> = IO.iodata_to_binary(iodata)
+
+    assert {authoritative, <<2::16-big, "ok">>} =
+             take_voxel_authoritative(rest, authoritative_count, [])
 
     assert got_request_id == request_id
     assert got_client_intent_seq == client_intent_seq
     assert got_logical_scene_id == logical_scene_id
     assert got_result_ref == result_ref
+
+    case Keyword.fetch(opts, :authoritative_count) do
+      {:ok, expected} -> assert length(authoritative) == expected
+      :error -> :ok
+    end
+
+    authoritative
+  end
+
+  defp take_voxel_authoritative(rest, 0, acc), do: {Enum.reverse(acc), rest}
+
+  defp take_voxel_authoritative(binary, count, acc) do
+    <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, chunk_version::64-big,
+      macro_index::16-big, cell_version::32-big, cell_hash::32-big, payload_kind::8,
+      payload_size::32-big, cell_payload::binary-size(payload_size),
+      rest::binary>> = binary
+
+    entry = %{
+      chunk_coord: {cx, cy, cz},
+      chunk_version: chunk_version,
+      macro_index: macro_index,
+      cell_version: cell_version,
+      cell_hash: cell_hash,
+      payload_kind: payload_kind,
+      cell_payload: cell_payload
+    }
+
+    take_voxel_authoritative(rest, count - 1, [entry | acc])
   end
 
   defp ensure_map_ledger_started(opts \\ []) do
@@ -2307,6 +2342,13 @@ defmodule GateServer.WsConnectionVoxelTest do
     case Process.whereis(SceneNodeRegistry) do
       nil -> start_supervised!({SceneNodeRegistry, name: SceneNodeRegistry})
       _pid -> :ok
+    end
+  end
+
+  defp unregister_scene_node_if_alive do
+    case Process.whereis(SceneNodeRegistry) do
+      nil -> :ok
+      _pid -> :ok = SceneNodeRegistry.unregister_scene_node(SceneNodeRegistry, node())
     end
   end
 

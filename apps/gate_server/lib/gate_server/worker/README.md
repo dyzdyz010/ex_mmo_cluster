@@ -9,13 +9,33 @@
 - `tcp_acceptor.ex`
   - 接收新的 TCP 套接字
 - `tcp_connection.ex`
-  - 每个 TCP 客户端的协议和会话进程
+  - 每个 TCP 客户端的**传输**进程：socket 接管、`{:tcp, ...}` 语义、UDP 快车道、Scene 回推转发
 - `ws_connection.ex`
-  - 每个浏览器 WebSocket 客户端的协议和会话进程
+  - 每个浏览器 WebSocket 客户端的**传输**进程：owner 进程收发、关闭语义归一、per-observer 出口预算
 - `udp_acceptor.ex`
   - UDP 快速通道的共享收发进程
 - `fast_lane_registry.ex`
   - UDP 绑定用的票据和会话注册表
+
+## 传输进程与会话层的边界
+
+`tcp_connection.ex` / `ws_connection.ex` **只拥有各自的传输差异**；会话状态机与业务语义
+在 `../session/`（见该目录 README）与 `../voxel/` 的共享模块里，两条链路共用同一份实现。
+
+```mermaid
+flowchart LR
+    TCP[tcp_connection<br/>socket / UDP 快车道] -->|Codec.decode| D[Session.Dispatch<br/>唯一会话状态机]
+    WS[ws_connection<br/>owner 进程 / 出口预算] -->|Codec.decode| D
+    D --> V[Voxel.IntentPipeline<br/>PrefabPlacement / SubscribeIntent]
+    D --> S[Session.Auth / Scene]
+    D --> K[Session.Sink<br/>唯一出站出口]
+    K --> TCP
+    K --> WS
+```
+
+新增上行消息处理一律加在 `Session.Dispatch`；只有当行为**真的**只属于某一条传输
+（如 UDP 快车道票据、WebSocket 出口预算）时，才允许留在连接进程里，并在 state 里用显式
+能力字段（如 `fast_lane: :enabled | :unsupported`）表达，而不是靠两份拷贝各自演化。
 
 ## 设计规则
 
