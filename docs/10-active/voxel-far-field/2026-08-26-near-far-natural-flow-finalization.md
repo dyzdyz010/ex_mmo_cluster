@@ -139,3 +139,17 @@ InitialScope = (Default && !bSameTargetAlreadyFull && !bLiveFullShellRetained)
 - 2026-08-26：Task 5 只读根因诊断完成，定位两项唯一根因。
 - 2026-08-26：Task 6 只读校核推翻「hard max 32 可达」，给出单游标 + 先判后加的最小状态机与结构化替代门槛。
 - 2026-08-26：用户批准本方案；本稿定稿。实现、测试与 D3D12 验收均未开始。
+- 2026-08-26：Task 1 / 2 / 3 已实现并审查通过；Task 4 单次 D3D12 实测门槛 3/4/7/8/9 过，1/2c/5/6 未过。
+- 2026-08-26：Task 5A（producer 侧 far patch 组件划分）已实现并收口，门槛 1 待复跑判定。
+- 2026-08-26：Task 5B 只读根因证实门槛 5/6 的 owner 是**供给侧的宽度冻结**，不是「far 被 near-first 挂起」：
+  `FVoxiaFarBuildParallelism::Resolve` 把 `OneSpareWorker` 折成宽度 1，provider 与 resolved-surface
+  又各自在阶段入口把逐帧门快照成宽度 1，`ReleaseUnpaced()` 之后无人恢复——一次真实 run 里
+  1128 页 provider 用单线程跑了 13.757 s，而 16 线程专用 far 池有 15 条空转。
+- 2026-08-26：用户裁定采用根因报告 §9.2（**固定配置宽度 + 既有逐单元让权**），不采用 §9.1 的
+  「入口快照后动态加宽」。Task 5B 据此实现：许可只决定能否派工，宽度恒为配置值；near 优先只由
+  `TPri_Lowest` / `EQueuedWorkPriority::Lowest` / `BackgroundPriority` 叠加 `FVoxiaVoxelShellBackgroundFramePacer`
+  在**每个自然页 / 表面单元边界**的让权表达；provider 通过一个微型稳定契约 `PaceWorkUnit(uint64&)`
+  取得同一让权语义，游标由各 drain worker 局部持有。未新增线程池、队列、调度抽象或产品埋点。
+- 2026-08-26：门槛 5（`2.5 s`）与门槛 6（`6 s`）在新语义下的实测值由 Task 5A + Task 5B 收口后的
+  **一次合并 D3D12 复跑**判定，本稿不预先声称通过；根因报告 §10-1 指出的「门槛 5 是否仍然可达 /
+  仍然合理」在拿到该实测前保持未决。
