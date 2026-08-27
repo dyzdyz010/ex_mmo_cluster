@@ -50,7 +50,8 @@ flowchart LR
    正式 Editor/Game 地图唯一为 `/Game/Voxia/Maps/L_VoxiaProductionWorld`，默认 `RuntimeMock`；
    Online 仍显式 fail-closed。Root 分开维护 requested/live `FVoxiaPatchTargetKey`、可见发布优先级、
    派生 readiness 与单槽 Near source 激活租约。普通连续移动每个 XYZ 轴只能推进一 tile，
-   当前 handoff 完整前后继 source 必须 deferred；只有调用方显式声明的 `explicit_relocate`
+   当前 handoff 完整前后继 Near source 必须 deferred（Far 对预测下一 tile 的投机预构建不等这把
+   租约，只构建不发布）；只有调用方显式声明的 `explicit_relocate`
    可以直达完整目标，禁止按距离猜意图。Transport 只有取得 Root 实际授予中心后才激活
    required Near，Root 又只在 Transport active/required Near 与请求目标一致后发布 TargetKey。
    Near 固定 `4³ chunks` Patch，Far 固定 `8³ tiles` Patch；SceneHost ledger 是 live Patch、exact

@@ -298,6 +298,13 @@ Root 另外拥有 `FVoxiaNearSourceActivationGate` 单槽激活租约。PlayerSe
 的 `explicit_relocate` 可以直达完整 desired center，禁止用距离推断意图。当前 handoff proof
 未完整时，后继 source 必须 deferred，不能覆盖唯一 prepared slot。
 
+这把租约只约束 Near 窗口的唯一性，**Far 不等租约**：预测器（`FVoxiaNearWindowPrefetchPolicy`，
+`LookaheadSeconds`）给出下一 tile 后，Root 立即向 Far 发出投机预构建——只构建并准备 manifest，
+不发布、不建立第二个 root target、不改 live TargetKey；可见发布仍只在该 Near 窗口激活并按
+publication mode 门控后进行。预测错误时投机构建被后继请求取代（`Superseded`），代价只是最低
+优先级的后台工作。此前 Far 请求与租约绑定，导致下一 tile 的 Far 只能在 pawn 已踩线时开工，
+预测器 12 s 的前瞻被整个吃掉。
+
 动作策略：
 
 - AdjacentStep 立即启动 required 加载但保持旧 live TargetKey，并以最后一个完整可见 Near
@@ -308,7 +315,7 @@ Root 另外拥有 `FVoxiaNearSourceActivationGate` 单槽激活租约。PlayerSe
 - 返回窗口或沿边界移动始终允许；判定不读取等待秒数、队列长度或水平面特例；
 - Relocate 在目标未收敛时显式阻塞动作并显示加载；
 - Fatal 显示可诊断失败，不进入无限 loading；
-- 旧 Near 尚未完全退出时不叠加第三个 AdjacentStep。
+- 旧 Near 尚未完全退出时不叠加第三个 AdjacentStep（Near 窗口）；Far 的投机预构建不受此限。
 
 安全门只读取 SceneHost 的真实 renderer coverage、最后完整 Near 与活动 Patch target；它不修改
 流送队列，也不通过 wall clock 自动放行。新目标准备追不上移动时，玩家会停在安全带边缘，
