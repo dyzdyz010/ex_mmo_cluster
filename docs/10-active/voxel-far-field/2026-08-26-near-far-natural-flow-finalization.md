@@ -173,3 +173,54 @@ InitialScope = (Default && !bSameTargetAlreadyFull && !bLiveFullShellRetained)
 - 2026-08-26：**用户裁定**：本轮不新增、不运行自动化测试，也不把测试当门禁；唯一验收是
   实际连续跨多个 tile 流送顺畅、Near/Far 无重叠/空洞/空气墙、无明显卡顿或挂起，
   由协调器统一安排的**唯一一次真实 D3D12 长流程**判定。
+- 2026-08-26（用户实跑反馈 → 第四轮根因）：`b25c068` / `f38ce98` / 同日三份 engineering note
+  收口后，跨 tile 仍有「新 Near 逐个上屏、旧 Far 再等 3–4 秒随大 Far 组整批消失」。
+  取证（`clients/Voxia/Saved/Logs/run_voxia_3d_world.log`，14:40 UTC 的 `8,0,-54` 换区）
+  指向**门槛 5/6 的最后一个串行点**：`ResolveFarDispatchPermission` 在 Near fence 未完成时
+  返回 `OneSpareWorker` → `GrantOneFrame` 逐帧门，far 吞吐退化为「worker 数 × 帧率」
+  （`far_background_frame_grants=4882`，16 条专用 far 线程大部分时间在等帧）；
+  Near 入场门又要等整窗 near mesh（`2824.7 ms`）才闭合，逐帧门解除后剩余 far 工作只需
+  `2.12 s`。manifest 发布前 publication mode 恒 `Held`，`required_far_patches=4` 的必需
+  补丁同样发不出去，因此新 Near 全可见（`34.0`）到旧 Far 首次被替换（`38.31`）共存 `4.3 s`。
+  修复：`ResolveFarDispatchPermission` 新增 `bFarTargetHandoffPending`（调用点供给
+  `RequestedPatchTargetKey.IsSet()`，其生命周期恰为「far manifest 已请求、尚未发布」），
+  与 `bSharedSourceBootstrapRequired` 同类返回 `Normal`；逐帧门保留其真正定义域
+  （无待交接目标的同目标后台扩展）。这不改 §3.5 的供给侧 scope 判据，也不改呈现侧切片器。
+  同轮修掉 ownership atlas 换对象时 `MarkLiveFarOwnershipRenderStateDirty` /
+  `BindRendererOwnershipMaterialsToAllFarComponents` 漏刷 `LiveBoundaryBatches` 的缺口。
+  细节与实跑判据见 [`clients/Voxia/docs/engineering-notes/2026-08-26-far-target-handoff-frame-gated.md`](../../../clients/Voxia/docs/engineering-notes/2026-08-26-far-target-handoff-frame-gated.md)。
+  门槛 5/6 与门槛 1（EOFU）仍由**同一次真实 D3D12 复跑**判定，本条不预先声称通过。
+- 2026-08-26（残余，未做）：相邻步实际只有 ~10 个 far patch 需要重建
+  （`voxia_layer_interface_build_timing … patches=10`），但 `voxia_far_patch_build_stage_timing`
+  仍是 `total_ms=1612 … patch_count=6859`。far target manifest 因此是一个成本与增量不成比例的
+  不可分割单元，按 AGENTS §2.2-9「修复点在上游划分」应单独立项取证，不在本稿范围内。
+- 2026-08-26（第四轮实施 + 实跑）：按上一条实施后**第一次复跑毫无变化**，日志证明修复被
+  自身抵消：判据窗口只覆盖到 `voxia_patch_target_published`，而 far 几何全在关窗之后产生；
+  关窗当帧许可掉档，`ShouldRestartUnpacedFarBuild` 在 3 ms 后把一个已跑到 `patch_mesh`
+  的 Full 构建整份作废重跑并重新挂门。最终收敛为三处修复（缺一不可）：
+  (1) 许可窗口扩为 `RequestedPatchTargetKey.IsSet() || 当前目标 handoff 未完成`；
+  (2) 删除 `ShouldRestartUnpacedFarBuild` 及其调用点——pacer 不可逆，降档只能靠丢弃工作；
+  (3) far 发布门由入场闩锁（含 `!bNearMeshBuilding`，换 tile 时要等整窗 9261 chunk 重过指纹）
+  改读 SceneHost 的完整 Near 覆盖证明 `GetLastCompleteNearWindow`。
+  实测：`pacing` 全程 `unpaced`、`restart=0`、`paused=0`、发布门贴着覆盖证明触发（`+14/15 ms`）、
+  玩家换区期间 `gap_count` 与 `boundary_orphan_count` 全 `0`、`LogVoxia: Error=0`。
+- 2026-08-26（用户裁定 + 实施）：删除 `bHasCompleteDependencyDirtyProof`。它是 planner
+  已精确表达的脏集合的第二份粗副本，且粗的覆盖精的（拿不到证明就把 33725 页全标脏）。
+  核实三点后确认冗余：`IsIncremental()` 只有这一个消费者；生产路径从不填 legacy 复用图，
+  唯一复用源 `ReusableArtifactCache` 已有 source fingerprint 硬校验（显式失败而非静默降级）；
+  planner 在 `cold_start` / `source_identity_changed` 两种全量情况下脏集合本身就是全量。
+  同轮补两条观测：`voxia_far_incremental_plan`（含 `full_rebuild_reason` 与六项 counts）、
+  `voxia_far_surface_reuse`（脏页规模与快/慢路命中）。实测页级增量健康：
+  `dirty_pages=1336 / planned=33725`，`fast_reused=31529`（`93 %`）。
+- 2026-08-26（**更正**）：一次量到的 `67–78 ms` 共存是 `StartupRequired` scope
+  （`required=6598`）下的非典型样本；Full 壳 live 后的相邻步走 `required=33752`，
+  manifest 落在 `+1.1 ~ +5.7 s`，玩家实测共存仍达 `4–5 s`。上述修复解决的是「far 被限速 /
+  被取消重跑 / 被 CPU mesher 挡住发布」，不触及 far 每步的**工作量**；稳定态下工作量是主导项。
+- 2026-08-26（下一步，已与用户对齐）：剩余根因是**整目标 after-image 屏障**——
+  `MergeOrderedProjectedFarPhysicalPlans` 之前那道「主线程必须先拥有全量 after-image」的
+  metadata 遍历（`ParallelFor` 全部 `6859` patch，`670–1393 ms`）与层间面 `candidate_scan`
+  （每步扫 `59610` candidates / `33752` owner_tiles，产出仅 `~920` patch）。它是屏障不是
+  并行度问题：已跑在 16 线程上，加线程只能除常数。修法为「上一代表 + 脏 delta = 这一代完整表」，
+  屏障、原子交权契约与 `gap=0` 不变量全部保持不变，构造成本由 `O(target)` 降为 `O(dirty)`。
+  明确不采用「先提交、不一致先露着」：省不下同样的几秒，只把重影换成破洞，且会拆掉
+  `gap_count=0` 这个唯一能证伪发布门改动的仪器。

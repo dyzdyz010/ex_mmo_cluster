@@ -148,9 +148,26 @@ confirmed edit 不做客户端乐观预测：
 ## Far 流
 
 Far 保留 canonical cube-shell、H-gated provider、page diff/residency、source-bound
-material/surface/lighting cache、cooperative cancellation 与唯一 build 调度线程。当前
-Target 的 Required provider/surface work 使用正常并行容量；单 worker/逐帧 pacer 只允许未来
-Speculative 队列使用，不能套在当前必需加载上。
+material/surface/lighting cache、cooperative cancellation 与唯一 build 调度线程。Far
+drain 跑在 world root 自己的最低优先级专用池上，宽度取配置并行度，不随派工许可折成
+单线程。逐帧门只对**投机后台扩展**成立。某个目标的 near→far 交接尚未完成时
+（`RequestedPatchTargetKey` 已请求未发布，或当前目标 handoff 未完成），far 构建是
+该次可见交接的前置条件，许可为 `Normal`，按配置宽度不限速；此时继续逐帧限速等于把
+far 串行排到 Near 网格化之后。只有没有待交接目标、纯同目标后台扩展时才用
+`OneSpareWorker` + 逐帧门在每个自然页 / 表面单元边界让权。不得把 Near 忙碌翻译成
+`Blocked`；`Blocked` 只留给没有可借用后台槽的情况。在飞构建**不得**为了补挂逐帧门
+被取消重启——pacer 只能在 launch 时安装且 `ReleaseUnpaced()` 不可逆，降档只能靠丢弃
+工作。投机 Far 的可见提交由 `Held` / `RequiredOnly` publication mode 挡住，
+不在派工许可里冒充。
+
+far 可见发布的 Near 前置条件读 SceneHost 的完整 Near 覆盖证明
+（`GetLastCompleteNearWindow`，目标切换时 rebase、带 TargetKey 与 renderer epoch），
+不读入场闩锁——闩锁含 `!bNearMeshBuilding`，换 tile 时要额外等整窗 `9261` chunk 重过
+一遍指纹。
+
+页级复用的判据只有一个：planner 冻结的脏页集合。它在 `cold_start` /
+`source_identity_changed` 下本身就是全量，因此不存在第二个「有没有证明」的布尔量，
+也没有「拿不到证明就当全脏」的降级路径。
 
 `FVoxiaFarPatchBuildStream` 移除完整 build-result 发布门槛：
 
@@ -254,6 +271,12 @@ flowchart LR
 
     Keep --> Required --> Retire --> Normal
 ```
+
+进入侧旧 Far 像素不走这条 Far 几何退休链。Near 累计提交帧切换 ownership atlas 后，
+FarOwned 材质必须立刻裁掉进入体积；不能等 Far Patch 重建或切片提交。静止时 Far 网格
+几何上已有 Near 洞，不能用来证明 GPU 裁剪有效。CPU 位图仍是 R8；SceneHost 上传扩成
+BGRA，以匹配 `*FarOwned` 沿用外观源的 Color 采样器。Far 组件在 `SetMesh` 之前绑定裁剪
+MID，禁止先绑外观材质再等 atlas。
 
 Far 后台构建不因可见发布暂停而停止。Root 对外区分三个事实：
 
