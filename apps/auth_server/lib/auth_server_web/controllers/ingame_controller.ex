@@ -14,6 +14,7 @@ defmodule AuthServerWeb.IngameController do
   - `GET /ingame/voxel/world_manifest` -> `voxel_world_manifest/2`
   - `GET /ingame/voxel/world_pack` -> `voxel_world_pack/2`
   - `GET /ingame/voxel/world_diff` -> `voxel_world_diff/2`
+  - `POST /ingame/voxel/regions` -> `voxel_regions/2`（Voxim R6，二进制批量 region 载荷）
   """
 
   use AuthServerWeb, :controller
@@ -108,6 +109,22 @@ defmodule AuthServerWeb.IngameController do
   def voxel_world_pack(conn, params) do
     if Application.get_env(:auth_server, :dev_auto_login, false) do
       do_voxel_world_pack(conn, params)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  @doc """
+  Voxim R6：批量 region 载荷拉取（`application/octet-stream` 进出；线格式见 `AuthServer.Voxel.RegionCodec`）。
+
+  S1 的后端是 `AuthServer.Voxel.RegionFileStore`（Voxim 烘焙目录原样转发，`VOXEL_REGION_ROOT`）；
+  与其它 `/voxel/*` 一样只在 `dev_auto_login` 下开放。
+  """
+  def voxel_regions(conn, _params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_regions(conn)
     else
       conn
       |> put_status(:forbidden)
@@ -290,6 +307,26 @@ defmodule AuthServerWeb.IngameController do
         conn
         |> put_status(:service_unavailable)
         |> json(%{error: "world_server_unavailable"})
+    end
+  end
+
+  defp do_voxel_regions(conn) do
+    root = Application.get_env(:auth_server, :voxel_region_root)
+    {:ok, body, conn} = Plug.Conn.read_body(conn, length: 16_000_000, read_length: 1_000_000)
+
+    case root && AuthServer.Voxel.RegionFileStore.serve(root, body) do
+      {:ok, reply} ->
+        conn
+        |> put_resp_content_type("application/octet-stream")
+        |> send_resp(200, reply)
+
+      {:error, :invalid_request} ->
+        send_resp(conn, 400, "invalid_request")
+
+      _ ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "voxel_region_root_unavailable"})
     end
   end
 

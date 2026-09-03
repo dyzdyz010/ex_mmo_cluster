@@ -30,6 +30,9 @@ world_pack_generate? = System.get_env("VOXEL_WORLD_PACK_GENERATE", "0") in ["tru
 
 config :auth_server, :dev_auto_login, dev_auto_login?
 
+# Voxim R6 S1: `POST /ingame/voxel/regions` 从这个目录（Voxim 的 WorldBake/）原样吐 region 载荷文件。
+config :auth_server, :voxel_region_root, System.get_env("VOXEL_REGION_ROOT")
+
 dev_region_bootstrap_env = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP")
 
 dev_region_bootstrap? =

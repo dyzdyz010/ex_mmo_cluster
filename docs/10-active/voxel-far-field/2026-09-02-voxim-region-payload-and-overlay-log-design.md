@@ -125,10 +125,11 @@ RegionPayload
   region           i32 × 3
   seq              u64        ← 一致到的日志序号
   content_version  u64
-  hash             u64        ← 对解压后 body（cells + skins）的 CityHash64（与 Voxim 快照指纹同一族）
+  hash             u64        ← 对解压后 body（cells + skins）的 MD5 前 8 字节（LE）；两端都内建（Erlang :crypto / UE FMD5），只做一致性核对
   encoding         u8         ← 0 = raw, 1 = zlib ; 枚举预留给 zstd / Oodle
+  raw_len          u32        ← 解压后 body 字节数（UE 的 zlib 解压要先知道）
   body_len         u32
-  body             bytes      ← Body 的序列化（下）
+  body             bytes      ← Body 的序列化（下）。头共 54 B，全部 little-endian（含 magic "VXR3" + 版本 u32 = 3 在最前）
 Body
   cells            u16 × 66³  （x 最快）
   skins            稀疏表皮场：Extent、MapExtent、RowStart[]、ColX[]、Records[]、FaceMapIndex[]、Maps[]   ← L0 为空场

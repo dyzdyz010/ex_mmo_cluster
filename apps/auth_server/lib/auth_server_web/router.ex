@@ -35,6 +35,7 @@ defmodule AuthServerWeb.Router do
     get "/voxel/world_manifest", IngameController, :voxel_world_manifest
     get "/voxel/world_pack", IngameController, :voxel_world_pack
     get "/voxel/world_diff", IngameController, :voxel_world_diff
+    post "/voxel/regions", IngameController, :voxel_regions
     post "/voxel/dev_seed", IngameController, :voxel_dev_seed
     post "/voxel/set_temperature", IngameController, :voxel_set_temperature
     post "/voxel/dev_heat_voxel", IngameController, :voxel_dev_heat_voxel
