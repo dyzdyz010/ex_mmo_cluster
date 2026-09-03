@@ -95,6 +95,9 @@ defmodule GateServer.Codec do
   @msg_voxel_heightmap_region 0x6B
   @heightmap_section_materials_u16 0x01
   @msg_voxel_edit_intent 0x70
+  # Voxim R6（决策稿 §5.4）：overlay 订阅（C→S）与日志条目（S→C）。
+  @msg_voxel_overlay_subscribe 0x76
+  @msg_voxel_log_entry 0x77
   @msg_voxel_field_conduct_intent 0x75
 
   # ── Server → Client message types ──
@@ -464,6 +467,16 @@ defmodule GateServer.Codec do
   def decode(<<@msg_voxel_field_conduct_intent, _rest::binary>>), do: {:error, :invalid_message}
 
   # Unknown message type
+  # VoxelOverlaySubscribe (0x76, Voxim R6): have_seq u64 + l0 box [min, max] i32×6 + coarse_min_level u8。
+  def decode(
+        <<@msg_voxel_overlay_subscribe, have_seq::64-big, x0::32-big-signed, y0::32-big-signed, z0::32-big-signed,
+          x1::32-big-signed, y1::32-big-signed, z1::32-big-signed, coarse_min_level::8>>
+      ) do
+    {:ok, {:voxel_overlay_subscribe, %{have_seq: have_seq, box: {{x0, y0, z0}, {x1, y1, z1}}, coarse_min_level: coarse_min_level}}}
+  end
+
+  def decode(<<@msg_voxel_overlay_subscribe, _rest::binary>>), do: {:error, :invalid_message}
+
   def decode(<<type::8, _rest::binary>>) do
     {:error, {:unknown_message_type, type}}
   end
@@ -683,6 +696,11 @@ defmodule GateServer.Codec do
 
   def encode({:voxel_chunk_invalidate_payload, payload}) when is_binary(payload) do
     {:ok, [<<@msg_voxel_chunk_invalidate>>, payload]}
+  end
+
+  # VoxelLogEntry (0x77, Voxim R6)：payload 是 VoxelRegion.Codec.encode_entry 的字节，原样下发。
+  def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
+    {:ok, [<<@msg_voxel_log_entry>>, payload]}
   end
 
   # VoxelHeightmapRegion (0x6B):

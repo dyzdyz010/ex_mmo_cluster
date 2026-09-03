@@ -69,6 +69,7 @@ defmodule AuthServer.MixProject do
       {:bcrypt_elixir, "~> 3.0"},
       {:libcluster, "~> 3.4"},
       {:mmo_contracts, in_umbrella: true},
+      {:voxel_region, in_umbrella: true},
       {:data_init, in_umbrella: true},
       {:data_service, in_umbrella: true},
       {:beacon_server, in_umbrella: true},

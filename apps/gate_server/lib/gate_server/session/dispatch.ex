@@ -477,6 +477,55 @@ defmodule GateServer.Session.Dispatch do
   end
 
   # VoxelEditIntent (0x70) —— 客户端定向编辑通道；协议 §13.6.1。
+  # ── Voxim R6：overlay 订阅与 Voxim 会话的编辑意图（VoxelRegion.World；决策稿 §5） ──
+  # 发过 0x76 的连接是 Voxim 会话：之后的 0x70 走 region 真值（文件 ⊕ 日志），不走 Scene 的 ChunkProcess；
+  # 回执 result_ref = 提交的日志 seq（D-12），authoritative 为空（只有日志条目改世界）。
+  def handle({:voxel_overlay_subscribe, sub}, %{status: :in_scene} = state) do
+    :ok = VoxelRegion.World.subscribe(self(), sub.have_seq, sub.box, sub.coarse_min_level)
+
+    emit(state, "voxel_overlay_subscribed", %{
+      connection_pid: self(),
+      cid: state.cid,
+      have_seq: sub.have_seq,
+      box: sub.box,
+      coarse_min_level: sub.coarse_min_level
+    })
+
+    {:ok, Map.put(state, :voxim_overlay, true)}
+  end
+
+  def handle({:voxel_overlay_subscribe, _sub}, state) do
+    result_error(state, :invalid_state, 0)
+    {:ok, state}
+  end
+
+  def handle({:voxel_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    {wx, wy, wz} = request.target_world_micro
+    coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
+
+    case VoxelRegion.World.apply_edit(coord, request.material_id) do
+      {:ok, seq} ->
+        send_encoded(
+          state,
+          {:voxel_intent_result,
+           %{
+             request_id: request.request_id,
+             client_intent_seq: request.client_intent_seq,
+             logical_scene_id: request.logical_scene_id,
+             result_code: :accepted,
+             result_ref: seq,
+             authoritative: [],
+             reason: "ok"
+           }}
+        )
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
   def handle({:voxel_edit_intent, request}, %{status: :in_scene} = state) do
     IntentPipeline.emit_edit_received(request, voxel_ctx(state))
 

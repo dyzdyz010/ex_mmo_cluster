@@ -361,6 +361,12 @@ defmodule GateServer.TcpConnection do
   # to the TCP socket. ObjectRegistry encoded the binary once;ChunkProcess
   # cast it into our mailbox via `send/2`;we just prefix the opcode and
   # write to the socket.
+  # Voxim R6：VoxelRegion.World 推来的日志条目（0x77），原样下发。
+  def handle_info({:voxel_log_entry_payload, payload}, state) when is_binary(payload) do
+    Sink.send_encoded(state.sink, {:voxel_log_entry_payload, payload})
+    {:noreply, state}
+  end
+
   def handle_info({:voxel_object_state_delta_payload, payload}, state)
       when is_binary(payload) do
     GateServer.CliObserve.emit("tcp_voxel_object_state_delta_forwarded", %{

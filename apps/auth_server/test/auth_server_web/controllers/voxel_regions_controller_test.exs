@@ -1,7 +1,7 @@
 defmodule AuthServerWeb.VoxelRegionsControllerTest do
   use AuthServerWeb.ConnCase, async: false
 
-  alias AuthServer.Voxel.RegionCodec
+  alias VoxelRegion.Codec, as: RegionCodec
 
   @content_version 0x5F84_4009_CA44_A605
 
@@ -9,7 +9,6 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
     {:ok, _auth_started} = Application.ensure_all_started(:auth_server)
 
     previous_auto_login = Application.get_env(:auth_server, :dev_auto_login, false)
-    previous_root = Application.get_env(:auth_server, :voxel_region_root)
 
     root = Path.join(System.tmp_dir!(), "voxim_regions_test_#{System.unique_integer([:positive])}")
     world = Path.join(root, Base.encode16(<<@content_version::64>>, case: :lower))
@@ -22,11 +21,10 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
     File.write!(Path.join([world, "L0", "r_5_5_5.vxr"]), RegionCodec.encode_payload(1, {0, 1, 0}, 0, @content_version, "x"))
 
     Application.put_env(:auth_server, :dev_auto_login, true)
-    Application.put_env(:auth_server, :voxel_region_root, root)
+    start_supervised!({VoxelRegion.World, root: root})
 
     on_exit(fn ->
       Application.put_env(:auth_server, :dev_auto_login, previous_auto_login)
-      Application.put_env(:auth_server, :voxel_region_root, previous_root)
       File.rm_rf!(root)
     end)
 
