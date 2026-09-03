@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **50** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **51** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -70,6 +70,7 @@
 
 ### voxel-far-field
 
+- [`2026-09-02-voxim-region-payload-and-overlay-log-design.md`](voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md) — Voxim R6 数据链路决策稿：2^L region 载荷（全 level 同形）+ 全局 seq overlay 日志 + 客户端 L4+ 远景资产 / L0–L3 LRU 缓存（2026-09-03 实测修订：表皮场占载荷 96%） + 世界级事件的 region 替换；修订 7 m page 与 ChunkSnapshot 近窗形状，不改投影路线
 - [`2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-implementation-plan.md) — 已确认设计的 TDD 执行稿；按共同 Patch 管线补全真实 boundary、精确版本交接、renderer transaction、完整 XYZ 移动安全门与三维实跑
 - [`2026-07-26-voxia-hole-free-near-far-presentation-design.md`](voxel-far-field/2026-07-26-voxia-hole-free-near-far-presentation-design.md) — 当前 Near/Far 无空洞修复决策；补全真实 boundary 几何、精确版本交接、renderer fence、全空气 Near 与完整 XYZ 3-chunk 移动安全门
 - [`2026-07-12-pure-3d-voxel-shell-migration.md`](voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) — 唯一现役体素窗口 / 远景壳上位主线；A8/A10 的跨 LOD 外露材质语义与阶段 3 RuntimeMock 已完成，Online provider 与 B/C 未开始

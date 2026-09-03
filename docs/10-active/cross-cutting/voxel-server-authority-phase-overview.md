@@ -12,6 +12,7 @@
 
 ## 起点参考
 
+- **Voxim 数据链路：Region 载荷 + Overlay 日志 + 客户端分层缓存（2026-09-02，决策稿）**:[`2026-09-02-voxim-region-payload-and-overlay-log-design.md`](../voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md) —— 面向第二代客户端 Voxim R6：服务端生成 L0..Lmax 的 `2^L` mip region（ReduceBlockV1），运行时只流全局 seq 的 overlay 日志；L4+ 全世界随客户端资产分发，L0–L3 现拉 + LRU；世界级事件按字节数切换 cell / region 条目。沿用投影路线终态，修订 7 m page 与近窗 ChunkSnapshot 形状。2026-09-03 实测修订并由用户拍板 D-1..D-13（服务端 WorldGen 换成 Voxim kernel）。未实施。
 - **体素 baseline 与流送边界决策（2026-06-29)**:[`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](../../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md) —— 确定性 WorldGen + 设计师 delta D + hash 凭证 H；存储/流送/计算三边界；从全量物化路线迁移到 delta 边界。当前最高层 baseline 形态决策。
 - **旧体素同步 · 版本 · 滑动窗口 · 渲染设计（2026-06-29，已归档)**:[`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md) —— 历史 HOW 证据；版本正交、content_version 与动态层边界仍可参考，但 XZ column、有限 Y 和旧窗口预算已经失效。
 - **旧体素生成 / 流送 / Voxia 加载渲染实施计划（2026-06-30，已归档)**:[`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) —— 历史 Phase 0-8 执行证据；H、H gate、canonical 等术语仍可查证，空间契约以纯 3D 主线为准。
