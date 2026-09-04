@@ -465,3 +465,4 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 - 2026-09-02：会话中对照评估 Voxim 与现有协议，用户拍板路线；本稿成文。未实施。
 - 2026-09-03：R6 前置研究。实测 4516 + 729 个烘焙 region 的载荷体积（§8），发现表皮场是体积主体、原稿全部体积估算作废；D-1 推荐改 4、D-2 改字节规则、D-4 改 0、D-5 改 zlib；新增 D-9..D-13；发现服务端 kernel 与 Voxim kernel 是两套世界（D-10 / D-11）。客户端契约草案与切片计划写在 `Voxim/Docs/R6-Eval.md`。未实施。
 - 2026-09-03（晚）：用户拍板 D-1..D-13 全部按推荐值；实施从 S1（`POST /voxel/regions` 文件后端 + Voxim 网络 provider）开始。
+- 2026-09-04：S1 落地（`dbae3285`：`POST /ingame/voxel/regions` 文件后端；Voxim `0c813f5`）。S2 落地（`4b760f4e`：umbrella app `voxel_region`——World = 文件 ⊕ `overlay.log`、Reducer 移植（golden = 烘焙文件逐格相等）、gate `0x76/0x77`、Voxim 会话的 `0x70` 走 World；Voxim `8a1d15d`）。与本稿的差异：日志暂在 `overlay.log` 文件而非 DataService（S4 迁）；HTTP 无 `entries` 应答（被碰过的 region 整份重发）；客户端磁盘副本不写回。实测与遗留见 `Voxim/Docs/R6.md`。
