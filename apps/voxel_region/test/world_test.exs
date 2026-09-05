@@ -13,8 +13,8 @@ defmodule VoxelRegion.WorldTest do
 
     for level <- 0..2, do: File.mkdir_p!(Path.join(world, "L#{level}"))
 
-    solid = :binary.copy(<<11::16-little>>, @cells)
-    air = :binary.copy(<<0::16-little>>, @cells)
+    solid = for _z <- 0..65, y <- 0..65, _x <- 0..65, into: <<>>, do: <<if(y < 65, do: 11, else: 0)::16-little>>
+    air = for _z <- 0..65, y <- 0..65, _x <- 0..65, into: <<>>, do: <<if(y == 0, do: 11, else: 0)::16-little>>
     empty_skins = <<@extent::32-little, @extent::32-little, @extent::32-little, 1::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>
 
     for x <- -1..1, z <- -1..1 do
@@ -97,6 +97,247 @@ defmodule VoxelRegion.WorldTest do
     assert World.seq(:w2) == 5
     {:ok, reply} = World.serve(:w2, request([%{level: 0, region: {0, 0, 0}, have_seq: h1.seq, have_hash: h1.hash}], @cv))
     assert {:ok, _, [{:unchanged, 0, {0, 0, 0}}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
+  end
+
+  test "batch is atomic, deduplicates parents, chooses exact bytes and compacts replay across rings and restart", %{root: root} do
+    {:ok, world} = World.start_link(root: root, name: :batch)
+    assert {:ok, 1} = World.apply_edit(:batch, {70, 63, 2}, 0)
+    before = fetch_payload(:batch, 0, {0, 0, 0})
+    assert {:error, :missing_region} = World.apply_edits(:batch, [{{3,63,3},0}, {{1000,0,0},0}])
+    assert World.seq(:batch) == 1
+    assert fetch_payload(:batch, 0, {0,0,0}) == before
+    :ok = World.subscribe(:batch, self(), 1, {{0,0,0},{0,0,0}}, 4)
+    edits = for x <- 0..10, y <- 55..63, z <- 0..10, do: {{x,y,z},0}
+    assert {:ok, 2} = World.apply_edits(:batch, edits ++ [{{5,60,5},11},{{5,60,5},0}])
+    assert_receive {:voxel_log_transaction_payload, wire}, 5_000
+    assert {:ok, txn} = Codec.decode_transaction(wire)
+    assert txn.seq == 2
+    assert IO.iodata_to_binary(Codec.encode_transaction(txn)) == wire
+    regions = Enum.filter(txn.entries, &Map.has_key?(&1, :payload))
+    assert regions != []
+    # near 订阅即使世界级门槛是 L4，也必须收到相交的 L1/L2。
+    assert [0,1,2] == Enum.map(regions,fn e -> {:ok,h}=Codec.decode_payload_header(e.payload);h.level end)
+    for e <- regions do
+      {:ok, h} = Codec.decode_payload_header(e.payload)
+      if h.level == 0, do: assert(13 + byte_size(e.payload) < length(edits) * 28)
+    end
+    assert length(txn.coarse) == length(Enum.uniq_by(txn.coarse, &{&1.level,&1.cell}))
+    for {{level,region},values} <- Enum.group_by(:sys.get_state(:batch).overlay,fn {{lv,{x,y,z}},_} ->
+      {lv,{Integer.floor_div(x,64),Integer.floor_div(y,64),Integer.floor_div(z,64)}}
+    end), region == {0,0,0} do
+      sparse_bytes=Enum.reduce(values,0,fn {{lv,cell},{m,skins}},n ->
+        n+if(lv==0,do: 28,else: IO.iodata_length(Codec.encode_coarse(%{level: lv,cell: cell,material: m,skins: skins})))
+      end)
+      bytes=fetch_payload(:batch,level,region)
+      selected=Enum.any?(regions,fn e -> {:ok,h}=Codec.decode_payload_header(e.payload); {h.level,h.region}=={level,region} end)
+      assert selected == (sparse_bytes > 13+byte_size(bytes))
+    end
+    expected = for level <- 0..2, region <- [{0,0,0}], into: %{}, do: {{level,region},fetch_payload(:batch,level,region)}
+    ring = fetch_payload(:batch,0,{0,1,0})
+    other = fetch_payload(:batch,0,{1,0,0})
+    {:ok, rp} = Payload.decode(ring)
+    assert Payload.material(rp,Payload.local({0,1,0},{5,63,5})) == 0
+    # 任意旧游标收到同一个完整检查点；同 seq 没有重复。
+    for have <- 0..1 do
+      [checkpoint] = World.entries_after(:batch,have)
+      assert checkpoint.seq == 2
+      assert Enum.any?(checkpoint.entries,&Map.has_key?(&1,:payload))
+      assert Enum.any?(checkpoint.entries, &match?(%{coord: {70,63,2},material: 0}, &1))
+      {:ok,base}=Payload.decode(before)
+      replayed=apply_client_transaction(base,checkpoint)
+      {:ok,expected_payload}=Payload.decode(Map.fetch!(expected,{0,{0,0,0}}))
+      assert replayed.cells == expected_payload.cells
+    end
+    assert [] == World.entries_after(:batch,2)
+    :ok=World.subscribe(:batch,self(),0,{{20,20,20},{20,20,20}},4)
+    refute_receive {:voxel_log_transaction_payload,_},100
+    GenServer.stop(world)
+    {:ok, world} = World.start_link(root: root,name: :batch)
+    for {{level,region},bytes} <- expected, do: assert(fetch_payload(:batch,level,region) == bytes)
+    assert fetch_payload(:batch,0,{0,1,0}) == ring
+    assert fetch_payload(:batch,0,{1,0,0}) == other
+    assert {:ok,3} = World.apply_edits(:batch,[{{5,63,5},11}])
+    [sparse] = World.entries_after(:batch,2)
+    assert [%{coord: {5,63,5},material: 11}] = sparse.entries
+    assert :ok = World.compact(:batch)
+    final = fetch_payload(:batch,0,{0,0,0})
+    final_ring = fetch_payload(:batch,0,{0,1,0})
+    GenServer.stop(world)
+    {:ok,_} = World.start_link(root: root,name: :batch)
+    assert fetch_payload(:batch,0,{0,0,0}) == final
+    assert fetch_payload(:batch,0,{0,1,0}) == final_ring
+    # 完整 L0 终态：全部 66³ 格，包括 owned 与 ring。
+    {:ok,p} = Payload.decode(final)
+    {:ok,base} = Payload.decode(before)
+    changed = Map.new(edits) |> Map.put({5,63,5},11)
+    for z <- -1..64,y <- -1..64,x <- -1..64 do
+      local = Payload.local({0,0,0},{x,y,z})
+      assert Payload.material(p,local) == Map.get(changed,{x,y,z},Payload.material(base,local))
+    end
+  end
+
+  defp fetch_payload(server,level,region) do
+    {:ok,reply}=World.serve(server,request([%{level: level,region: region,have_seq: 0,have_hash: 0}],0))
+    {:ok,_,[{:payload,^level,^region,bytes}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+    bytes
+  end
+
+  # 独立消费端模型：region 只复制 owned 64³ 的交集，稀疏值只写当前 66³。
+  defp apply_client_transaction(payload,txn) do
+    {ox,oy,oz}=Payload.origin(payload.region)
+    overrides=Enum.reduce(txn.entries,%{},fn
+      %{payload: bytes},acc ->
+        {:ok,source}=Payload.decode(bytes)
+        {rx,ry,rz}=source.region
+        if source.level==payload.level and rx*64 <= ox+65 and rx*64+63 >= ox and
+             ry*64 <= oy+65 and ry*64+63 >= oy and rz*64 <= oz+65 and rz*64+63 >= oz do
+          for z <- max(oz,rz*64)..min(oz+65,rz*64+63),
+              y <- max(oy,ry*64)..min(oy+65,ry*64+63),
+              x <- max(ox,rx*64)..min(ox+65,rx*64+63),
+              Payload.in_span?(Payload.local(source.region,{x,y,z})),reduce: acc do
+            a -> Map.put(a,Payload.local(payload.region,{x,y,z}),Payload.value(source,Payload.local(source.region,{x,y,z})))
+          end
+        else
+          acc
+        end
+      e,acc ->
+        local=Payload.local(payload.region,e.coord)
+        if payload.level==0 and Payload.in_span?(local),do: Map.put(acc,local,{e.material,Reducer.uniform(e.material)}),else: acc
+    end)
+    overrides=Enum.reduce(txn.coarse,overrides,fn e,acc ->
+      local=Payload.local(payload.region,e.cell)
+      if e.level==payload.level and Payload.in_span?(local),do: Map.put(acc,local,{e.material,e.skins}),else: acc
+    end)
+    {:ok,replayed}=Payload.decode(Payload.encode(payload,overrides,txn.seq,@cv))
+    replayed
+  end
+
+  test "HTTP sparse entries verify the served base and reconstruct cells and skins; old or replaced bases use payload", %{root: root} do
+    {:ok,_}=World.start_link(root: root,name: :http_entries)
+    assert {:ok,1}=World.apply_edit(:http_entries,{5,63,5},7)
+    bases=for level <- 0..2, into: %{} do
+      bytes=fetch_payload(:http_entries,level,{0,0,0})
+      {:ok,h}=Codec.decode_payload_header(bytes)
+      {level,{bytes,h}}
+    end
+    assert {:ok,2}=World.apply_edits(:http_entries,[{{4,63,4},7}])
+    for {level,{base,h}} <- bases do
+      item=%{level: level,region: {0,0,0},have_seq: h.seq,have_hash: h.hash}
+      {:ok,reply}=World.serve(:http_entries,request([item],@cv))
+      {:ok,_,decoded}=Codec.decode_reply(IO.iodata_to_binary(reply))
+      if match?([{:entries,_,_,_}],decoded) do
+        [{:entries,^level,{0,0,0},txns}]=decoded
+        {:ok,repeat}=World.serve(:http_entries,request([item],@cv))
+        assert IO.iodata_to_binary(repeat)==IO.iodata_to_binary(reply)
+        {:ok,p}=Payload.decode(base)
+        overrides=Enum.reduce(txns,%{},fn txn,acc ->
+          acc=Enum.reduce(txn.entries,acc,fn e,a -> Map.put(a,Payload.local({0,0,0},e.coord),{e.material,Reducer.uniform(e.material)}) end)
+          Enum.reduce(txn.coarse,acc,fn e,a -> Map.put(a,Payload.local({0,0,0},e.cell),{e.material,e.skins}) end)
+        end)
+        reconstructed=Payload.encode(p,overrides,List.last(txns).seq,@cv)
+        expected=fetch_payload(:http_entries,level,{0,0,0})
+        assert {:ok,_,raw}=Codec.decode_payload_body(reconstructed)
+        assert {:ok,_,^raw}=Codec.decode_payload_body(expected)
+      end
+      {:ok,forged}=World.serve(:http_entries,request([%{item | have_hash: h.hash+1}],@cv))
+      assert {:ok,_,[{:payload,_,_,_}]}=Codec.decode_reply(IO.iodata_to_binary(forged))
+    end
+    # 稀疏 L0 的已知版本应确实走 entries，不能让全载荷分支掩盖缺实现。
+    bytes=fetch_payload(:http_entries,0,{0,0,0})
+    {:ok,h}=Codec.decode_payload_header(bytes)
+    assert {:ok,3}=World.apply_edits(:http_entries,[{{8,63,8},0}])
+    req=request([%{level: 0,region: {0,0,0},have_seq: h.seq,have_hash: h.hash}],@cv)
+    {:ok,reply}=World.serve(:http_entries,req)
+    assert {:ok,_,[{:entries,0,{0,0,0},[_]}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+    assert :ok=World.compact(:http_entries)
+    # 检查点只含 cell 时仍可用；跨过 region 替换必须整载荷。
+    dense=for x <- 0..10,y <- 50..63,z <- 0..10,do: {{x,y,z},0}
+    assert {:ok,4}=World.apply_edits(:http_entries,dense)
+    {:ok,reply}=World.serve(:http_entries,req)
+    assert {:ok,_,[{:payload,0,{0,0,0},_}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+  end
+
+  test "compaction stamps reused region snapshots with the new checkpoint sequence", %{root: root} do
+    {:ok,world}=World.start_link(root: root,name: :stamp)
+    edits=for x <- 0..10,y <- 55..63,z <- 0..10,do: {{x,y,z},0}
+    assert {:ok,1}=World.apply_edits(:stamp,edits)
+    [first]=World.entries_after(:stamp,0)
+    first_headers=Map.new(Enum.filter(first.entries,&Map.has_key?(&1,:payload)),fn e ->
+      {:ok,h}=Codec.decode_payload_header(e.payload)
+      {{h.level,h.region},h}
+    end)
+    assert map_size(first_headers)>0
+    assert {:ok,2}=World.apply_edit(:stamp,{70,63,5},0)
+    assert :ok=World.compact(:stamp)
+    [checkpoint]=World.entries_after(:stamp,1)
+    assert checkpoint.seq==2
+    for entry <- checkpoint.entries, Map.has_key?(entry,:payload) do
+      {:ok,h}=Codec.decode_payload_header(entry.payload)
+      assert h.seq==checkpoint.seq and entry.seq==checkpoint.seq
+      if old=Map.get(first_headers,{h.level,h.region}), do: assert(h.hash==old.hash)
+    end
+    GenServer.stop(world)
+    {:ok,_}=World.start_link(root: root,name: :stamp)
+    assert [checkpoint]==World.entries_after(:stamp,0)
+  end
+
+  test "subscription box must include visible intermediate levels beyond the L0 window", %{root: root} do
+    # viewer=0：L0 active [-2,2]；L1 region x=2 仍驻留，其 canonical x=[256,384)。
+    for {level,region} <- [{0,{4,0,0}},{1,{2,0,0}},{2,{1,0,0}}] do
+      {:ok,bytes,_}=FileStore.read(root,@cv,level,{0,0,0})
+      {:ok,_,raw}=Codec.decode_payload_body(bytes)
+      File.write!(FileStore.path(root,@cv,level,region),Codec.encode_payload(level,region,0,@cv,raw))
+    end
+    {:ok,_}=World.start_link(root: root,name: :intermediate_subscription)
+    :ok=World.subscribe(:intermediate_subscription,self(),0,{{-2,-2,-2},{2,2,2}},4)
+    edits=for x <- 300..301,y <- 10..11,z <- 10..11,do: {{x,y,z},0}
+    assert {:ok,1}=World.apply_edits(:intermediate_subscription,edits)
+    refute_receive {:voxel_log_transaction_payload,_},100
+    [txn]=World.entries_after(:intermediate_subscription,0)
+    assert [%{level: 1,cell: {150,5,5},material: 0}]=txn.coarse
+    # 把 L1 active [-2,2] 投影成 L0 region 单位 [-4,5]，门槛仍是 L4。
+    :ok=World.subscribe(:intermediate_subscription,self(),0,{{-4,-4,-4},{5,5,5}},4)
+    assert_receive {:voxel_log_transaction_payload,wire},500
+    assert {:ok,^txn}=Codec.decode_transaction(wire)
+  end
+
+  test "no-op confirms the initiating subscriber beyond its filtered cursor without journaling or broadcasting", %{root: root} do
+    {:ok,_}=World.start_link(root: root,name: :noop_cursor)
+    parent=self()
+    observer=spawn_link(fn ->
+      :ok=World.subscribe(:noop_cursor,self(),0,{{0,0,0},{0,0,0}},4)
+      send(parent,:observer_ready)
+      receive do
+        :inspect ->
+          messages=Process.info(self(),:messages) |> elem(1)
+          send(parent,{:observer_messages,messages})
+      end
+    end)
+    assert_receive :observer_ready
+    # 发起方只订远处，故当前seq=1的普通编辑被过滤，账本游标仍是0。
+    :ok=World.subscribe(:noop_cursor,self(),0,{{20,20,20},{20,20,20}},4)
+    assert {:ok,1}=World.apply_edits(:noop_cursor,[{{5,63,5},0}])
+    refute_receive {:voxel_log_transaction_payload,_},100
+    log=File.read!(Path.join([root,FileStore.hex(@cv),"overlay.log"]))
+    assert {:ok,1}=World.apply_edits(:noop_cursor,[{{5,63,5},0}])
+    assert_receive {:voxel_log_transaction_payload,bytes},500
+    assert {:ok,%{seq: 1,entries: [],coarse: []}}=Codec.decode_transaction(bytes)
+    assert World.seq(:noop_cursor)==1
+    assert File.read!(Path.join([root,FileStore.hex(@cv),"overlay.log"]))==log
+    assert length(World.entries_after(:noop_cursor,0))==1
+    # 原单格入口同样能确认no-op。
+    assert {:ok,1}=World.apply_edit(:noop_cursor,{5,63,5},0)
+    assert_receive {:voxel_log_transaction_payload,^bytes},500
+    # 观察者只收到真实事务一次，不收到发起方两次no-op确认。
+    send(observer,:inspect)
+    assert_receive {:observer_messages,[{:voxel_log_transaction_payload,normal}]},500
+    assert {:ok,%{seq: 1,entries: [_],coarse: []}}=Codec.decode_transaction(normal)
+    refute_receive {:voxel_log_transaction_payload,_},100
+    # 同一发送者保证backlog在no-op确认之前，正常事务不被重复确认。
+    :ok=World.subscribe(:noop_cursor,self(),0,{{0,0,0},{0,0,0}},4)
+    assert {:ok,1}=World.apply_edits(:noop_cursor,[{{5,63,5},0}])
+    assert_receive {:voxel_log_transaction_payload,^normal},500
+    assert_receive {:voxel_log_transaction_payload,^bytes},500
   end
 
   test "subscribe replays the backlog after have_seq, filters by box (+1 ring) and coarse level, and fans out new entries", %{root: root} do

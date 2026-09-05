@@ -98,6 +98,8 @@ defmodule GateServer.Codec do
   # Voxim R6（决策稿 §5.4）：overlay 订阅（C→S）与日志条目（S→C）。
   @msg_voxel_overlay_subscribe 0x76
   @msg_voxel_log_entry 0x77
+  @msg_voxel_batch_edit_intent 0x78
+  @msg_voxel_log_transaction 0x79
   @msg_voxel_field_conduct_intent 0x75
 
   # ── Server → Client message types ──
@@ -125,7 +127,7 @@ defmodule GateServer.Codec do
   # ── DoS 护栏:可变长字段上限 ──
   # 每个 16-bit 长度字段本就 ≤65535,但仍可被滥用(64KB 聊天、1.3MB known-chunks 订阅帧、
   # 海量递归解析)。给主解码子句加 guard:超限的帧不匹配主子句 → 落到 fallthrough → {:error,_},
-  # 不进一步处理。配合 acceptor 的 packet_size 2MB 总帧上限,客户端→服务端不可逼爆内存。
+  # 不进一步处理。配合 acceptor 的 packet_size 8MB 总帧上限,客户端→服务端不可逼爆内存。
   # 上限取「远大于任何合法输入、远小于 64KB u16 上界」:auth code / ticket 可能承载 JWT
   # (常见 ~1-2KB,带 claims 更长),故给 4KB 余量,避免误拒真实凭据。
   @max_username_bytes 1024
@@ -477,6 +479,17 @@ defmodule GateServer.Codec do
 
   def decode(<<@msg_voxel_overlay_subscribe, _rest::binary>>), do: {:error, :invalid_message}
 
+  # Voxim 批次：沿用 intent 身份宽度，坐标直接是 canonical macro。
+  def decode(<<@msg_voxel_batch_edit_intent, rid::64-big, seq::32-big, scene::64-big, count::32-big, cells::binary>>) when byte_size(cells) == count * 14 do
+    edits = for <<x::32-big-signed, y::32-big-signed, z::32-big-signed, m::16-big <- cells>>, do: {{x,y,z},m}
+    if Enum.all?(edits, fn {_, m} -> m <= 255 end) do
+      {:ok, {:voxel_batch_edit_intent, %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, edits: edits}}}
+    else
+      {:error, :invalid_message}
+    end
+  end
+  def decode(<<@msg_voxel_batch_edit_intent, _::binary>>), do: {:error, :invalid_message}
+
   def decode(<<type::8, _rest::binary>>) do
     {:error, {:unknown_message_type, type}}
   end
@@ -701,6 +714,10 @@ defmodule GateServer.Codec do
   # VoxelLogEntry (0x77, Voxim R6)：payload 是 VoxelRegion.Codec.encode_entry 的字节，原样下发。
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
     {:ok, [<<@msg_voxel_log_entry>>, payload]}
+  end
+
+  def encode({:voxel_log_transaction_payload, payload}) when is_binary(payload) do
+    {:ok, [<<@msg_voxel_log_transaction>>, payload]}
   end
 
   # VoxelHeightmapRegion (0x6B):

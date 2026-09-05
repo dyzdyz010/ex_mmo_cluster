@@ -318,6 +318,11 @@ defmodule GateServer.WsConnection do
   # to the WebSocket frame stream. ObjectRegistry encoded the binary once;
   # ChunkProcess cast it into our mailbox via `send/2`;we just prefix the
   # opcode (Codec) and ship a binary frame.
+  def handle_info({:voxel_log_transaction_payload, payload}, state) when is_binary(payload) do
+    Sink.send_encoded(state.sink, {:voxel_log_transaction_payload, payload})
+    {:noreply, state}
+  end
+
   def handle_info({:voxel_log_entry_payload, payload}, state) when is_binary(payload) do
     Sink.send_encoded(state.sink, {:voxel_log_entry_payload, payload})
     {:noreply, state}

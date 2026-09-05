@@ -462,6 +462,24 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-05：S3 服务端事务、region 条目与压实
+
+沿用已批准 §4.2/§7：`World.apply_edits` 一次写完 canonical，再逐级去重父格，材质与表皮同时比较；单格与批量共用规约实现。追加 `0x78` 批量 intent（大端 `request_id u64, client_intent_seq u32, logical_scene_id u64, count u32, {canonical i32×3, material u16}`）与 `0x79` 事务（小端 `seq u64, entry_count u32, {len u32, LogEntry}, coarse_count u32, coarse[]`）。旧 `0x70/0x77 kind=0` 不变。新 `kind=1` 是 `seq u64, kind u8, 完整 VXR3`，批量 canonical 的 kind0 coarse 为空，粗格在事务层只出现一次。
+
+按 owned `(level,region)` 比较完整字节：L0 sparse 每项 `4+24 B`、coarse 按实际表皮编码长度，region 每项 `4+9+VXR3大小`；严格大于才替换。客户端必须把 owned 64³ 投入所有相交 resident ring。近场订阅获得与 L0 box 相交的各级影响，远处订阅只得指定 coarse 层。r50 列表 523305 格、约 7.33 MB，既有 TCP 帧上限从 2 MB 调到 8 MB；依据 Erlang [`inet` 的 packet_size 契约](https://www.erlang.org/doc/apps/kernel/inet.html)，该值限制接收长度帧。
+
+region 事务后自动压实完整前缀，也可显式 `World.compact`；检查点只存选出的 region 快照与剩余 sparse，不永久双写全量逐格日志。检查点带前缀末尾 seq，任意旧 `have_seq` 收到完整投影后再接 suffix；region 快照恢复 owned 内部与邻居 ring。参考 Kafka [log compaction 的最后值与 offset 语义](https://kafka.apache.org/40/design/design/)，这里只借鉴检查点必须保住追赶语义，不引入 Kafka；region 一键覆盖许多 cell 键，因此不能简单删除某格原条目连带的其他层数据。
+
+HTTP entries 经真实地形测量后决定实施：`kind=1` 为 `transaction_count u32 / {len u32, 无 opcode 的事务信封}`。World 只记每个 region 最近一次完整下发的 seq/hash；已知旧头完全相等、`have_seq>0`、期间没有影响本 region（含 ring）的 region 替换、精确字节更少时才给 sparse。否则给 payload。客户端在 worker 对磁盘副本的解码结果应用，不写回原文件；服务端回 entries 时保留原头支持重复读取。没有新增历史 payload 缓存或 LRU。真实 `(40,504,39)` 一格 air→11：TCP 593 B，六级 HTTP 原载荷 1,024,020 B，entries 824 B；重复请求仍 824 B。探针恢复原材质，seq 增加但终态未变。
+
+联合审查补充：压实时复用旧缓存 body，必须把载荷头 seq 重标为检查点 seq；仅改头，不改 hash/body。新增 dense seq1→无关编辑 seq2→compact 的回归，逐个断言 txn/entry/payload seq 相等、hash 不变、重启仍一致；World 定向 5/5（`s3_server_world_tests.txt`）。跨端 fixture `s3_server_checkpoint_seq2.bin` 是 2933 B 无 opcode 事务信封。
+
+后续跨端审查补充：L1–L3 驻留壳超出 L0 active box，客户端订阅应覆盖所有未全局订阅层的 active region 在 L0 region 单位的投影并集，coarse_min 保持 4；服务端用 viewer0、canonical `(300,10,10)` 的 2³ 编辑证明原 L0 box 漏发、扩大 box 后完整收到。另修复 no-op 账本：仅向发起且已订阅的连接回当前 seq 的空 `0x79`，与旧条目同发送者 FIFO，不新增 seq、不广播、不落盘。最终服务端全套 11/11、Gate codec 94/94，记录更新在 `s3_server_tests.txt`。
+
+稠密基准是完整实心、L0–L5 与 ring 一致的合成世界，不能冒充真实地表。r5：515 格、21.4 ms elapsed / 16 ms BEAM runtime CPU、2,934 B wire（逐格 19,256 B）、HTTP 2,952 B。r20：33401 格、408 ms / 46 ms、15,750 B（逐格 1,132,988 B）、HTTP 15,778 B。r50：523305 格、12.50 s / 2469 ms、129,330 B（逐格 17,183,824 B），42 个 region + 6 coarse，HTTP 141,246 B。大批次当前仍阻塞 World GenServer；本阶段记录此 CPU/延迟事实，不增加新调度架构。
+
+复现：umbrella 根 `mix run --no-start apps/voxel_region/bench/s3.exs`；真实 HTTP+gate 探针 `python apps/voxel_region/bench/http_probe.py`（需 `DEV_AUTO_LOGIN=true VOXEL_REGION_ROOT=<Voxim>/WorldBake MMO_DB_PORT=5433 mix phx.server`）。`apps/voxel_region` 下 `mix test --no-start`：8 通过，覆盖 reducer golden、原单格、批次原子性、逐字节选择、跨 region/ring 压实重启、任意旧游标、HTTP cell/skin 重建与非法旧头；`apps/gate_server` 下 `mix test --no-start test/gate_server/codec_test.exs`：94 通过，含新 wire golden。证据已复制到 `Voxim/Docs/R6/runtime/s3_server_bench.txt`、`s3_server_tests.txt`、`s3_server_http_before.txt`、`s3_server_http_entries.txt`。客户端联合验收另记 `Voxim/Docs/R6.md`。
+
 - 2026-09-02：会话中对照评估 Voxim 与现有协议，用户拍板路线；本稿成文。未实施。
 - 2026-09-03：R6 前置研究。实测 4516 + 729 个烘焙 region 的载荷体积（§8），发现表皮场是体积主体、原稿全部体积估算作废；D-1 推荐改 4、D-2 改字节规则、D-4 改 0、D-5 改 zlib；新增 D-9..D-13；发现服务端 kernel 与 Voxim kernel 是两套世界（D-10 / D-11）。客户端契约草案与切片计划写在 `Voxim/Docs/R6-Eval.md`。未实施。
 - 2026-09-03（晚）：用户拍板 D-1..D-13 全部按推荐值；实施从 S1（`POST /voxel/regions` 文件后端 + Voxim 网络 provider）开始。

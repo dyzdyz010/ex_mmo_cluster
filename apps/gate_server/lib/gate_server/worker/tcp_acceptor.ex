@@ -16,7 +16,8 @@ defmodule GateServer.TcpAcceptor do
   # DoS 护栏:{packet,4} 默认允许单帧最大 ~4GB,恶意客户端可发巨帧逼 gen_tcp 在解码前就把
   # 整帧读进内存压垮节点。客户端→服务端帧本就很小(movement 89B、subscribe 含 known chunks
   # 最多约 1.3MB),故设 2MB 上限——超限帧 gen_tcp 直接报错/关连接,远早于内存爆。
-  @max_inbound_frame_bytes 2_097_152
+  # r=50 的单次 canonical 编辑列表约 7.33 MB。
+  @max_inbound_frame_bytes 8_388_608
 
   @doc "Standard child spec for the TCP acceptor worker."
   def child_spec(opts) do

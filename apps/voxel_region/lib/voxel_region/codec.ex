@@ -6,11 +6,13 @@ defmodule VoxelRegion.Codec do
     items{level u8, region i32×3, have_seq u64, have_hash u64}（29 B / 项）
   - 应答：`"VXRS"` + version u32 + content_version u64（服务端的）+ count u32 +
     items{level u8, region i32×3, kind u8, [kind = payload: len u32 + RegionPayload bytes]}
+    kind=entries：事务数 u32 + 每项长度 u32 / 事务信封（无 0x79 opcode）。客户端对已核对的磁盘副本解码后应用，不改写原文件。
   - RegionPayload 头（54 B）：`"VXR3"` + version u32 + level u8 + region i32×3 + seq u64 + content_version u64 +
     hash u64（解压后 body 的 MD5 前 8 字节）+ encoding u8（1 = zlib）+ raw_bytes u32 + body_bytes u32；body 紧随其后。
   - 日志条目（`0x77 VoxelLogEntry` 的 payload，也是 HTTP `entries` 的元素）：
     seq u64 + kind u8 (0 = cell) + coord i32×3 + material u16 + levels u8 +
     coarse × levels { level u8, cell i32×3, material u16, map_extent u8, faces × 6 { id u16, texels u8 × map_extent²（map_extent > 1 时）} }
+  - kind=1：seq u64 + kind u8 + 完整 RegionPayload。0x79 的事务信封：seq u64、条目数 u32、每项长度 u32/条目、粗格数 u32/粗格。
 
   本模块只做编解码，不碰文件。
   """
@@ -76,6 +78,11 @@ defmodule VoxelRegion.Codec do
   defp encode_reply_item({:payload, level, {x, y, z}, payload}) when is_binary(payload),
     do: [<<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, @kind_payload::8, byte_size(payload)::32-little>>, payload]
 
+  defp encode_reply_item({:entries, level, {x,y,z}, transactions}) do
+    [<<level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,@kind_entries::8,length(transactions)::32-little>>,
+     Enum.map(transactions, fn txn -> b=IO.iodata_to_binary(encode_transaction(txn)); [<<byte_size(b)::32-little>>,b] end)]
+  end
+
   def decode_reply(<<@reply_magic, @wire_version::32-little, content_version::64-little, count::32-little, rest::binary>>) do
     decode_reply_items(rest, count, [], content_version)
   end
@@ -90,8 +97,11 @@ defmodule VoxelRegion.Codec do
   defp decode_reply_items(<<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, @kind_missing::8, rest::binary>>, count, acc, cv) when count > 0,
     do: decode_reply_items(rest, count - 1, [{:missing, level, {x, y, z}} | acc], cv)
 
-  defp decode_reply_items(<<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, @kind_entries::8, rest::binary>>, count, acc, cv) when count > 0,
-    do: decode_reply_items(rest, count - 1, [{:entries, level, {x, y, z}} | acc], cv)
+  defp decode_reply_items(<<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, @kind_entries::8, n::32-little, rest::binary>>, count, acc, cv) when count > 0 do
+    with {:ok,txns,rest} <- decode_transactions(rest,n,[]) do
+      decode_reply_items(rest,count-1,[{:entries,level,{x,y,z},txns}|acc],cv)
+    end
+  end
 
   defp decode_reply_items(
          <<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, @kind_payload::8, len::32-little, payload::binary-size(len), rest::binary>>,
@@ -104,6 +114,12 @@ defmodule VoxelRegion.Codec do
 
   defp decode_reply_items(_, _, _, _), do: {:error, :invalid_reply}
 
+  defp decode_transactions(rest,0,acc), do: {:ok,Enum.reverse(acc),rest}
+  defp decode_transactions(<<n::32-little,bytes::binary-size(n),rest::binary>>,count,acc) when count > 0 do
+    with {:ok,txn} <- decode_transaction(bytes), do: decode_transactions(rest,count-1,[txn|acc])
+  end
+  defp decode_transactions(_,_,_), do: {:error,:invalid_reply}
+
   # ---- RegionPayload 头
 
   def decode_payload_header(
@@ -114,6 +130,11 @@ defmodule VoxelRegion.Codec do
   end
 
   def decode_payload_header(_), do: {:error, :invalid_payload}
+
+  @doc "快照内容未变而检查点前缀推进：只更新时间头；body/hash 保持不变。"
+  def stamp_payload_seq(<<prefix::binary-size(21), _old_seq::64-little, rest::binary>>, seq) do
+    <<prefix::binary, seq::64-little, rest::binary>>
+  end
 
   @doc "头 + zlib body → 完整载荷字节。"
   def encode_payload(level, {x, y, z}, seq, content_version, raw_body) when is_binary(raw_body) do
@@ -142,20 +163,45 @@ defmodule VoxelRegion.Codec do
 
   # ---- 日志条目
 
+  @doc "事务信封：seq、带长度的条目数组、去重的粗格数组；全部小端。"
+  def encode_transaction(%{seq: seq, entries: entries, coarse: coarse}) do
+    [<<seq::64-little, length(entries)::32-little>>,
+     Enum.map(entries, fn e -> b = IO.iodata_to_binary(encode_entry(e)); [<<byte_size(b)::32-little>>, b] end),
+     <<length(coarse)::32-little>>, Enum.map(coarse, &encode_coarse/1)]
+  end
+
+  def decode_transaction(<<seq::64-little, count::32-little, rest::binary>>) do
+    with {:ok, entries, <<n::32-little, rest::binary>>} <- decode_transaction_entries(rest, count, []),
+         {:ok, coarse, <<>>} <- decode_coarse(rest, n, []) do
+      {:ok, %{seq: seq, entries: entries, coarse: coarse}}
+    else
+      _ -> {:error, :invalid_transaction}
+    end
+  end
+
+  defp decode_transaction_entries(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
+  defp decode_transaction_entries(<<n::32-little, b::binary-size(n), rest::binary>>, count, acc) when count > 0 do
+    with {:ok, e} <- decode_entry(b), do: decode_transaction_entries(rest, count - 1, [e | acc])
+  end
+  defp decode_transaction_entries(_, _, _), do: {:error, :invalid_transaction}
+
+  @doc "粗格记录的唯一编码，用于单格条目和事务。"
+  def encode_coarse(%{level: level, cell: {x, y, z}, material: m, skins: {ext, faces}}) do
+    [<<level::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, m::16-little, ext::8>>,
+     Enum.map(Tuple.to_list(faces), fn
+       {id, nil} when ext == 1 -> <<id::16-little>>
+       {id, nil} -> <<id::16-little, :binary.copy(<<id>>, ext * ext)::binary>>
+       {id, texels} -> <<id::16-little, texels::binary>>
+     end)]
+  end
+
+  def encode_entry(%{seq: seq, payload: payload}), do: [<<seq::64-little, 1>>, payload]
+
   @doc "entry = %{seq, coord: {x,y,z}, material, coarse: [%{level, cell, material, skins: {ext, faces}}]}"
   def encode_entry(%{seq: seq, coord: {x, y, z}, material: material, coarse: coarse}) do
     [
       <<seq::64-little, 0::8, x::32-little-signed, y::32-little-signed, z::32-little-signed, material::16-little, length(coarse)::8>>
-      | Enum.map(coarse, fn %{level: level, cell: {cx, cy, cz}, material: m, skins: {ext, faces}} ->
-          [
-            <<level::8, cx::32-little-signed, cy::32-little-signed, cz::32-little-signed, m::16-little, ext::8>>
-            | Enum.map(Tuple.to_list(faces), fn
-                {id, nil} when ext == 1 -> <<id::16-little>>
-                {id, nil} -> <<id::16-little, :binary.copy(<<id>>, ext * ext)::binary>>
-                {id, texels} -> <<id::16-little, texels::binary>>
-              end)
-          ]
-        end)
+      | Enum.map(coarse, &encode_coarse/1)
     ]
   end
 
@@ -167,6 +213,9 @@ defmodule VoxelRegion.Codec do
     end
   end
 
+  def decode_entry(<<seq::64-little, 1, payload::binary>>) do
+    with {:ok, _, _} <- decode_payload_body(payload), do: {:ok, %{seq: seq, payload: payload}}
+  end
   def decode_entry(_), do: {:error, :invalid_entry}
 
   defp decode_coarse(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
