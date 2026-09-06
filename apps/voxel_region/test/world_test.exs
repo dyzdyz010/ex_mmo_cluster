@@ -366,4 +366,48 @@ defmodule VoxelRegion.WorldTest do
     refute_receive {:voxel_log_entry_payload, _}, 100
   end
 
+  test "payload cache evicts L0-L3 by least recent use within the byte limit, keeps L4+ resident and invalidates edited regions", %{root: root} do
+    # 合成 L4 (0,0,0)：全实心；只用来证明常驻层不进 LRU。
+    l4 = for _ <- 1..@cells, into: <<>>, do: <<11::16-little>>
+    skins = <<@extent::32-little, @extent::32-little, @extent::32-little, 16::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>
+    File.mkdir_p!(Path.join([root, FileStore.hex(@cv), "L4"]))
+    File.write!(FileStore.path(root, @cv, 4, {0, 0, 0}), Codec.encode_payload(4, {0, 0, 0}, 0, @cv, <<@cells::32-little, l4::binary, skins::binary>>))
+
+    a = fetch_size(:lru_probe, root, 0, {0, 0, 0})
+    # 上限装得下两份 L0，装不下三份。
+    {:ok, _} = World.start_link(root: root, name: :lru, payload_cache_bytes: a * 2 + 16)
+    first = fetch_payload(:lru, 0, {0, 0, 0})
+    second = fetch_payload(:lru, 0, {1, 0, 0})
+    resident = fetch_payload(:lru, 4, {0, 0, 0})
+    assert %{entries: 3, evictions: 0, hits: 0, misses: 3, lru_bytes: lru_bytes, resident_bytes: resident_bytes} = World.stats(:lru)
+    assert lru_bytes == byte_size(first) + byte_size(second) and resident_bytes == byte_size(resident)
+
+    # 命中刷新最近使用：先摸 first，再放第三份 → 淘汰的是 second。
+    assert fetch_payload(:lru, 0, {0, 0, 0}) == first
+    third = fetch_payload(:lru, 0, {-1, 0, 0})
+    assert %{entries: 3, evictions: 1, hits: 1, misses: 4} = World.stats(:lru)
+    assert fetch_payload(:lru, 0, {1, 0, 0}) == second
+    assert %{entries: 3, evictions: 2, hits: 1, misses: 5} = World.stats(:lru)
+    # first 是最久未用的：被挤掉；常驻 L4 仍在缓存里、命中不读盘。
+    assert fetch_payload(:lru, 4, {0, 0, 0}) == resident
+    assert %{hits: 2} = World.stats(:lru)
+    assert fetch_payload(:lru, 0, {-1, 0, 0}) == third
+    assert %{entries: 3, evictions: 2, hits: 3, misses: 5} = World.stats(:lru)
+
+    # 编辑碰到的 region 立即失效：命中的物化载荷 seq=1，且再次命中不重编码。
+    assert {:ok, 1} = World.apply_edit(:lru, {5, 63, 5}, 0)
+    edited = fetch_payload(:lru, 0, {0, 0, 0})
+    {:ok, h} = Codec.decode_payload_header(edited)
+    assert h.seq == 1
+    assert fetch_payload(:lru, 0, {0, 0, 0}) == edited
+    %{hits: hits} = World.stats(:lru)
+    assert hits >= 4
+  end
+
+  defp fetch_size(name, root, level, region) do
+    {:ok, pid} = World.start_link(root: root, name: name)
+    size = byte_size(fetch_payload(name, level, region))
+    GenServer.stop(pid)
+    size
+  end
 end

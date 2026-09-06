@@ -6,8 +6,11 @@ defmodule VoxelRegion.World do
     从 L1 向上、某级材质与表皮都没变即停）。批次共享一个 seq，父格逐级去重，只规约一次。
     文件 `<root>/<cv>/overlay.log`（`<<len::32, term>>`）记录选出的 region 快照与稀疏值；region 事务后压实完整前缀，启动时重放。
   - **overlay**：`{level, cell} → {material, skins}`，就是日志的压扁；reduce 时 children 先查它，没有再读 baseline source。
-  - **载荷**：`serve/1` 对被条目碰过的 region 把 baseline 解码、套上 overlay、按当前 seq 重编码（缓存到下一条碰它的条目为止）；
-    没碰过的 region 原样吐 source 载荷。记住每个 region 最近一次下发的 seq/hash；旧副本与此完全吻合、后续只有稀疏条目且更省字节才回 entries。
+  - **载荷**：`serve/1` 对被条目碰过的 region 把 baseline 解码、套上 overlay、按当前 seq 重编码；
+    没碰过的 region 原样吐 source 载荷。两者都进同一个内存载荷缓存 `(level, region) → {bytes, header}`：
+    L0–L3 按最近使用淘汰（字节上限 `:payload_cache_bytes`），L4+ 常驻；条目碰到的 region 立即失效。
+    冷 miss 的 baseline 生成在调用方进程里并发预备（`prepare/2`），GenServer 只做缓存查找与编码，不被生成阻塞。
+    记住每个 region 最近一次下发的 seq/hash；旧副本与此完全吻合、后续只有稀疏条目且更省字节才回 entries。
     entries 不写回客户端磁盘，服务端保留这个旧头供重复请求校验；缺失此头、hash 不同、跨过 region 替换时回完整载荷。
   - **订阅**：`subscribe(pid, have_seq, l0_box, coarse_min_level)`：先补 have_seq 之后落在 box（外扩 1 个 region，让 ring 也跟上）
     或 level ≥ coarse_min_level 的条目，之后每条新条目按同一过滤推送 `{:voxel_log_entry_payload, bin}`。连接断了（monitor）就忘。
@@ -22,6 +25,8 @@ defmodule VoxelRegion.World do
   alias VoxelRegion.{Codec, FileStore, Payload, Reducer}
 
   @max_level 5
+  @resident_level 4
+  @default_cache_bytes 512 * 1024 * 1024
   @name __MODULE__
 
   # ---- API
@@ -31,11 +36,16 @@ defmodule VoxelRegion.World do
   def content_version(server \\ @name), do: GenServer.call(server, :content_version)
   def seq(server \\ @name), do: GenServer.call(server, :seq)
 
+  @doc "载荷缓存与生成统计：entries / lru_bytes / resident_bytes / hits / misses / evictions / generated。"
+  def stats(server \\ @name), do: GenServer.call(server, :stats)
+
   @doc "`POST /voxel/regions` 的整个请求 → 应答 iodata。"
   def serve(server \\ @name, request) when is_binary(request) do
     case Codec.decode_request(request) do
       {:ok, client_version, items} ->
         if Enum.all?(items, &valid_request_item?/1) do
+          prepare(server, Enum.map(items, &{&1.level, &1.region}))
+
           case GenServer.call(server, {:serve, client_version, items}, 60_000) do
             {:error, _reason} = error -> error
             reply -> {:ok, reply}
@@ -76,9 +86,31 @@ defmodule VoxelRegion.World do
 
   defp valid_edit_coord?(_), do: false
 
+  # 冷 miss 的 baseline 在调用方进程并发物化到磁盘缓存；结果不看——World 读时缺失就是 missing、损坏就是错误，语义不变。
+  defp prepare(server, keys) do
+    {source, source_state} = GenServer.call(server, :source)
+
+    keys
+    |> Enum.uniq()
+    |> Task.async_stream(fn {level, region} -> source.ensure(source_state, level, region) end,
+      max_concurrency: Application.get_env(:voxel_region, :generation_concurrency, 8),
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Stream.run()
+  end
+
+  defp edit_keys(coords) do
+    for {x, y, z} <- coords, level <- 0..@max_level do
+      step = 1 <<< level
+      {level, region_of({floor_div(x, step), floor_div(y, step), floor_div(z, step)})}
+    end
+  end
+
   @doc "一次 canonical 编辑：`{:ok, seq}`（seq = 提交的日志序号；no-op 时是当前 seq）/ `{:error, reason}`。"
   def apply_edit(server \\ @name, {_, _, _} = coord, material) when is_integer(material) and material >= 0 and material <= 255 do
     if valid_edit_coord?(coord) do
+      prepare(server, edit_keys([coord]))
       GenServer.call(server, {:apply_edit, coord, material}, 60_000)
     else
       {:error, :invalid_coordinate}
@@ -97,6 +129,7 @@ defmodule VoxelRegion.World do
          {{_, _, _} = coord, _material} -> valid_edit_coord?(coord)
          _ -> false
        end) do
+      prepare(server, edit_keys(Enum.map(edits, &elem(&1, 0))))
       GenServer.call(server, {:apply_edits, edits}, 300_000)
     else
       {:error, :invalid_coordinate}
@@ -122,7 +155,14 @@ defmodule VoxelRegion.World do
           cv: cv,
           decoded: %{},
           snapshots: MapSet.new(),
-          materialized: %{},
+          payloads: %{},
+          lru: :gb_trees.empty(),
+          lru_ticks: %{},
+          tick: 0,
+          lru_bytes: 0,
+          resident_bytes: 0,
+          cache_limit: Keyword.get(opts, :payload_cache_bytes, Application.get_env(:voxel_region, :payload_cache_bytes, @default_cache_bytes)),
+          cache_stats: %{hits: 0, misses: 0, evictions: 0},
           served_headers: %{},
           overlay: %{},
           overlay_regions: %{},
@@ -144,6 +184,20 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
+  def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
+
+  def handle_call(:stats, _from, state) do
+    stats =
+      Map.merge(state.cache_stats, %{
+        entries: map_size(state.payloads),
+        lru_bytes: state.lru_bytes,
+        resident_bytes: state.resident_bytes,
+        cache_limit: state.cache_limit,
+        generated: state.source.generated(state.source_state)
+      })
+
+    {:reply, stats, state}
+  end
 
   def handle_call({:serve, client_version, items}, _from, state) do
     case Enum.reduce_while(items, {[], state}, fn item, {replies, state} ->
@@ -233,20 +287,20 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # 被 overlay 碰过的 region 用物化载荷（缓存），否则原样是 source 载荷。
+  # 缓存命中直接返回；miss 时被 overlay 碰过的 region 物化、否则原样读 source 载荷，两者都进缓存。
   defp payload_bytes(state, level, region) do
     key = {level, region}
 
-    case Map.fetch(state.materialized, key) do
-      {:ok, {bytes, header}} ->
+    case cache_fetch(state, key) do
+      {:ok, bytes, header, state} ->
         {:ok, bytes, header, state}
 
-      :error ->
+      {:miss, state} ->
         cells = Map.get(state.overlay_regions, key, MapSet.new())
 
         if MapSet.size(cells) == 0 and not MapSet.member?(state.snapshots, key) do
           case state.source.read(state.source_state, level, region) do
-            {:ok, bytes, header} -> {:ok, bytes, header, state}
+            {:ok, bytes, header} -> {:ok, bytes, header, cache_put(state, key, bytes, header)}
             {:error, :missing} -> {:error, :missing, state}
             {:error, reason} -> {:error, reason, state}
           end
@@ -256,7 +310,7 @@ defmodule VoxelRegion.World do
               overrides = Map.new(cells, fn cell -> {Payload.local(region, cell), Map.fetch!(state.overlay, {level, cell})} end)
               bytes = Payload.encode(payload, overrides, state.seq, state.cv)
               {:ok, header} = Codec.decode_payload_header(bytes)
-              {:ok, bytes, header, %{state | materialized: Map.put(state.materialized, key, {bytes, header})}}
+              {:ok, bytes, header, cache_put(state, key, bytes, header)}
 
             {:error, :missing, state} ->
               {:error, :missing, state}
@@ -267,6 +321,67 @@ defmodule VoxelRegion.World do
         end
     end
   end
+
+  # ---- 载荷缓存：L0–L3 在 gb_tree {tick, key} 上按最近使用淘汰，L4+ 常驻不进树。
+
+  defp cache_fetch(state, key) do
+    case Map.fetch(state.payloads, key) do
+      {:ok, {bytes, header}} -> {:ok, bytes, header, count(cache_touch(state, key), :hits)}
+      :error -> {:miss, count(state, :misses)}
+    end
+  end
+
+  defp cache_touch(state, {level, _} = key) when level < @resident_level do
+    tick = state.tick + 1
+    old = Map.fetch!(state.lru_ticks, key)
+    lru = :gb_trees.insert({tick, key}, true, :gb_trees.delete({old, key}, state.lru))
+    %{state | lru: lru, lru_ticks: Map.put(state.lru_ticks, key, tick), tick: tick}
+  end
+
+  defp cache_touch(state, _key), do: state
+
+  defp cache_put(state, {level, _} = key, bytes, header) do
+    state = cache_delete(state, key)
+    state = %{state | payloads: Map.put(state.payloads, key, {bytes, header})}
+
+    if level < @resident_level do
+      tick = state.tick + 1
+
+      %{state | lru: :gb_trees.insert({tick, key}, true, state.lru), lru_ticks: Map.put(state.lru_ticks, key, tick), tick: tick,
+                lru_bytes: state.lru_bytes + byte_size(bytes)}
+      |> cache_evict()
+    else
+      %{state | resident_bytes: state.resident_bytes + byte_size(bytes)}
+    end
+  end
+
+  defp cache_delete(state, {level, _} = key) do
+    case Map.pop(state.payloads, key) do
+      {nil, _} ->
+        state
+
+      {{bytes, _header}, payloads} ->
+        if level < @resident_level do
+          {tick, ticks} = Map.pop(state.lru_ticks, key)
+          %{state | payloads: payloads, lru: :gb_trees.delete({tick, key}, state.lru), lru_ticks: ticks, lru_bytes: state.lru_bytes - byte_size(bytes)}
+        else
+          %{state | payloads: payloads, resident_bytes: state.resident_bytes - byte_size(bytes)}
+        end
+    end
+  end
+
+  defp cache_evict(state) do
+    if state.lru_bytes > state.cache_limit and :gb_trees.size(state.lru) > 0 do
+      {{_tick, key}, _value, _lru} = :gb_trees.take_smallest(state.lru)
+      cache_evict(count(cache_delete(state, key), :evictions))
+    else
+      state
+    end
+  end
+
+  defp cache_clear(state), do: %{state | payloads: %{}, lru: :gb_trees.empty(), lru_ticks: %{}, lru_bytes: 0, resident_bytes: 0}
+
+  defp count(state, field), do: %{state | cache_stats: Map.update!(state.cache_stats, field, &(&1 + 1))}
 
   defp decoded(state, level, region) do
     key = {level, region}
@@ -324,11 +439,7 @@ defmodule VoxelRegion.World do
     Enum.reduce(regions, %{state | overlay: Map.put(state.overlay, {level, cell}, value)}, fn region, state ->
       key = {level, region}
 
-      %{
-        state
-        | overlay_regions: Map.update(state.overlay_regions, key, MapSet.new([cell]), &MapSet.put(&1, cell)),
-          materialized: Map.delete(state.materialized, key)
-      }
+      %{cache_delete(state, key) | overlay_regions: Map.update(state.overlay_regions, key, MapSet.new([cell]), &MapSet.put(&1, cell))}
     end)
   end
 
@@ -429,8 +540,8 @@ defmodule VoxelRegion.World do
     key = {p.level, p.region}
     overlay = Map.reject(state.overlay, fn {{level, cell}, _} -> level == p.level and region_of(cell) == p.region end)
     regions = Map.new(state.overlay_regions, fn {k, cells} -> {k, MapSet.filter(cells, &Map.has_key?(overlay, {elem(k, 0), &1}))} end)
-    state = %{state | decoded: Map.put(state.decoded, key, p), snapshots: MapSet.put(state.snapshots, key), overlay: overlay,
-                       overlay_regions: regions, materialized: %{}}
+    state = %{cache_clear(state) | decoded: Map.put(state.decoded, key, p), snapshots: MapSet.put(state.snapshots, key), overlay: overlay,
+                       overlay_regions: regions}
     {rx, ry, rz} = p.region
     # 内部格直接从快照读取；边界格同时进入邻居 ring。
     for z <- 0..63, y <- 0..63, x <- 0..63, x in [0, 63] or y in [0, 63] or z in [0, 63], reduce: state do

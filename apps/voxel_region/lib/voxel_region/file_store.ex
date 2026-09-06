@@ -62,4 +62,11 @@ defmodule VoxelRegion.FileStore do
 
   def read(%{root: root, content_version: version}, level, region),
     do: read(root, version, level, region)
+
+  @doc "文件后端不生成：存在即 `:ok`，缺文件即 `:missing`（World 读到时按 missing 应答）。"
+  def ensure(%{root: root, content_version: version}, level, region) do
+    if File.exists?(path(root, version, level, region)), do: :ok, else: {:error, :missing}
+  end
+
+  def generated(_store), do: 0
 end

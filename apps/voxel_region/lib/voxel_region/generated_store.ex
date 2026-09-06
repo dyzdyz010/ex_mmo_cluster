@@ -6,6 +6,9 @@ defmodule VoxelRegion.GeneratedStore do
   `content_version`；与 payload body hash 一样，MD5 前 64 bit 按小端解释。
   `baseline/` 下的 VXR3 是可丢弃磁盘缓存。overlay 日志与它位于同一版本目录，
   不从旧烘焙目录推断，也不与旧世界共用。
+
+  同一 BEAM 内对同一 region 的并发生成只跑一次：生成者在 ETS 锁表登记，其余请求者轮询到锁释放后读已发布的文件；
+  跨 OS 进程（在线服务 ⊕ 独立预热）仍靠硬链接发布保证只发布一份完整文件。
   """
 
   alias VoxelRegion.{Codec, Native, Payload}
@@ -13,6 +16,7 @@ defmodule VoxelRegion.GeneratedStore do
   @schema "voxim-worldgen-v1"
   @identity_schema "voxim-content-version-md5-64-v1"
   @fields ~w(seed min_height sea_level max_height soil_depth lowland_amplitude mountain_amplitude cave_max_depth)
+  @lock_table :voxel_region_generation
 
   @spec open(keyword()) :: {:ok, map()}
   def open(opts) do
@@ -44,9 +48,20 @@ defmodule VoxelRegion.GeneratedStore do
     version = content_version(kernel, materials, config)
     world_dir = Path.join(root, hex(version))
     File.mkdir_p!(world_dir)
+    ensure_lock_table()
 
-    {:ok, %{root: root, content_version: version, world_dir: world_dir, config: config}}
+    {:ok,
+     %{
+       root: root,
+       content_version: version,
+       world_dir: world_dir,
+       config: config,
+       generations: :counters.new(1, [])
+     }}
   end
+
+  @doc "本 store 打开以来实际执行的 NIF 生成次数。"
+  def generated(store), do: :counters.get(store.generations, 1)
 
   def content_version(store), do: store.content_version
   def world_dir(store), do: store.world_dir
@@ -59,6 +74,17 @@ defmodule VoxelRegion.GeneratedStore do
       {:ok, bytes} -> read_cached(bytes, store.content_version, level, region)
       {:error, :enoent} -> generate(store, path, level, region)
       {:error, reason} -> {:error, {:cache_read_failed, reason}}
+    end
+  end
+
+  @doc "只保证磁盘缓存存在（缺则生成），不读回字节；World 之外的并发预备用它。"
+  def ensure(store, level, {_, _, _} = region) do
+    path = path(store, level, region)
+
+    if File.exists?(path) do
+      :ok
+    else
+      with {:ok, _bytes, _header} <- generate(store, path, level, region), do: :ok
     end
   end
 
@@ -91,7 +117,55 @@ defmodule VoxelRegion.GeneratedStore do
     version
   end
 
+  defp ensure_lock_table do
+    if :ets.whereis(@lock_table) == :undefined do
+      try do
+        :ets.new(@lock_table, [:named_table, :public, :set])
+      rescue
+        ArgumentError -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  # 同一 region 同时只有一个生成者；其余轮询锁释放后读取发布结果。生成者被外部杀死时锁随其 pid 失效，由下一个请求者接手。
   defp generate(store, path, level, region) do
+    key = {store.world_dir, level, region}
+
+    if :ets.insert_new(@lock_table, {key, self()}) do
+      try do
+        generate_locked(store, path, level, region)
+      after
+        :ets.delete(@lock_table, key)
+      end
+    else
+      await_generation(key)
+      read(store, level, region)
+    end
+  end
+
+  defp await_generation(key) do
+    case :ets.lookup(@lock_table, key) do
+      [] ->
+        :ok
+
+      [{_, pid}] ->
+        if Process.alive?(pid) do
+          receive do
+          after
+            25 -> :ok
+          end
+        else
+          :ets.delete_object(@lock_table, {key, pid})
+        end
+
+        await_generation(key)
+    end
+  end
+
+  defp generate_locked(store, path, level, region) do
+    :counters.add(store.generations, 1, 1)
     raw = Native.generate_region(level, region, store.config)
     {:ok, _payload} = Payload.decode_body(raw)
     bytes = Codec.encode_payload(level, region, 0, store.content_version, raw)

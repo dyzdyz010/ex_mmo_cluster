@@ -1,6 +1,6 @@
 # Voxim Region 真值
 
-`World` 拥有在线生成 baseline ⊕ 日志真值、订阅与派生载荷缓存；`GeneratedStore` 按显式 manifest 调用 DirtyCpu Rust NIF 并保存可丢弃的 baseline 磁盘缓存；`Reducer` 只规约材质和表皮；`Payload` 只处理 66³ cells / CSR；`Codec` 只处理线格式。gate 只解码、路由和回执，auth HTTP 只调用 `World.serve`。旧 `FileStore` 只保留给既有烘焙 fixture 测试，正式运行没有文件 fallback。
+`World` 拥有在线生成 baseline ⊕ 日志真值、订阅与内存载荷缓存；`GeneratedStore` 按显式 manifest 调用 DirtyCpu Rust NIF 并保存可丢弃的 baseline 磁盘缓存；`Reducer` 只规约材质和表皮；`Payload` 只处理 66³ cells / CSR；`Codec` 只处理线格式。gate 只解码、路由和回执，auth HTTP 只调用 `World.serve`。旧 `FileStore` 只保留给既有烘焙 fixture 测试，正式运行没有文件 fallback。
 
 `apply_edits([{coord, material}, ...])` 同一坐标最后一个值生效，先写完全部 canonical 值，再按级去重父格。某父格的材质与表皮均未变，不向上继续。一次有效批次一个 seq；全 no-op 不递增；canonical 源缺失整批不提交。原 `apply_edit` 共用此规约路径，但仍发旧 `0x77 kind=0`。
 
@@ -27,7 +27,17 @@ python apps/voxel_region/bench/http_probe.py
 
 跨实现 oracle 测试显式设置 `VOXIM_ORACLE_DIR=<Voxim>/Saved/S4Oracle`；如还设置 `VOXIM_SERVER_PAYLOAD_DIR=<Voxim>/Saved/S4ServerPayloads`，测试会把 NIF body 包成同名 VXR3，供 UE 的 `VoximOracle.S4.ImportServerPayloads` 再通过正式 codec 核对。
 
-oracle 默认由 ExUnit 排除，显式运行时加 `--include oracle --only oracle`。冷 L5 单块生成需要十秒量级，当前 `World` 仍串行处理一批请求，因此首切片不把冷 L5 批量服务视为达标。演示前可把请求列表写成 `[ {"level":5,"coord":[0,0,0]}, ... ]`，用独立工具预热：`mix run --no-start apps/voxel_region/bench/s4_prewarm.exs <manifest> <root> <regions.json> 4`。并发度默认 4，可按内存调整；这只是 baseline cache 预热，不改变 production 调度或真值。
+oracle 默认由 ExUnit 排除，显式运行时加 `--include oracle --only oracle`。
+
+冷 miss 不再在 `World` 里串行生成：`World.serve` / `apply_edit(s)` 先在调用方进程（HTTP 请求进程、gate 连接进程）用 `Task.async_stream` 并发调用 `GeneratedStore.ensure`
+把这一批缺失的 baseline 物化到磁盘（每请求并发上限 `VOXEL_REGION_GENERATION_CONCURRENCY`，默认 8），再进 GenServer。同一 BEAM 里对同一 region 的并发生成由 ETS 锁表去重，
+后到者轮询锁释放后读取胜者发布的文件；跨进程仍靠硬链接发布。编辑路径预备的是 coord 所在 L0–L5 六个 region。`World.stats/0` 返回 `generated`（NIF 实际调用次数）。
+
+`World` 内有一个内存载荷缓存 `(level, region) → {bytes, header}`：source 原样字节与 overlay 物化字节都进它；L0–L3 按最近使用淘汰，字节上限
+`VOXEL_REGION_PAYLOAD_CACHE_MB`（默认 512），L4+ 常驻不计入上限；条目碰到的 region（含 ring 邻居）立即失效，region 快照重放时整个清空。命中不读盘、不解压。
+`stats` 里有 `entries / lru_bytes / resident_bytes / hits / misses / evictions`；本机可用 `elixir --sname probe --cookie <cookie> -e ':rpc.call(node, VoxelRegion.World, :stats, [])'` 读取。
+
+独立预热工具仍在：`mix run --no-start apps/voxel_region/bench/s4_prewarm.exs <manifest> <root> <regions.json> 4`，只是 baseline cache 预热，不再是冷 L5 批量服务的前提。
 
 缓存生成先写入同目录、含 OS PID 与 BEAM 唯一值的临时文件，再用 [`File.ln/2`](https://www.erlang.org/doc/apps/kernel/file.html#make_link/2) 建立同文件系统 hardlink，完成拒绝覆盖的原子发布；目标已存在的生成者删除自己的临时文件并读取、校验胜者。文件系统不支持 hardlink 时明确返回 `cache_publish_failed`，没有 rename 或运行时生成 fallback。缓存命中会完整解压并复核 body 长度与 hash，避免截断或损坏的生成结果被永久复用；warm serve 的重复解压成本留给后续性能切片处理。
 

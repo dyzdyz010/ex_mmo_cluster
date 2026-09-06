@@ -462,6 +462,17 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-06：S4 第二切片——服务端载荷缓存收口
+
+冷 miss 的 baseline 生成移出 `World` 串行路径：`serve` / `apply_edit(s)` 在调用方进程并发 `GeneratedStore.ensure`（每请求并发 8），同一 BEAM 内同 region 的并发生成由 ETS 锁去重，
+`World` 只做缓存查找与编码，生成期间其它调用毫秒级返回（测试覆盖）。`World` 新增内存载荷缓存：source 原样字节与物化字节共用 `(level, region) → {bytes, header}`，
+L0–L3 按最近使用淘汰（默认 512 MB），L4+ 常驻，条目碰到的 region 立即失效（§9 第 3 项；`reduce` 用的解码缓存不变）。客户端磁盘缓存加 D-3 的 2 GB 预算：
+启动时 L0..(Lasset−1) 超预算按 mtime 淘汰，Lasset 及以上不动；HTTP 请求活动超时放宽到 120 s，避免冷批次触发重发。
+
+实测（`Voxim/Docs/R6/runtime/s4_cache_*`，L0–L5 607 region，无预热）：全冷三批 HTTP 4.8 / 40.7 / 73.4 s，全部载荷 78.9 s 到齐且无洞，NIF 生成恰好 607 次、无重复；
+服务端热、客户端冷：三批 1.7 / 2.2 / 0.4 s，607 命中内存缓存、无读盘；客户端热见 Voxim R6.md。仍未做：DataService 日志、材质 catalog / content_version 跨服务统一、
+D-9 精简格式、L4+ 全世界资产、客户端 dirty 写回 / 分服目录、随机 200 region 与全阶段 benchmark。
+
 ### 2026-09-06：S4 在线生成首切片
 
 正式 `VoxelRegion.Application` 改用显式 manifest 的 `GeneratedStore`，通过 Rustler DirtyCpu NIF 调用移植的 `worldgen_density_v3@1`，按需生成现有 VXR3。旧 `FileStore` 只用于既有 fixture 测试；`World` 继续拥有编辑、seq、订阅及日志重放。生成缓存和 `overlay.log` 位于同一新版本根，原开发世界日志不参与测试。客户端 Demo 使用资产配置的 canonical 出生点，运行时已不再调用本地 ColumnHeight。

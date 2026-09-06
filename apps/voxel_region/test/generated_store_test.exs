@@ -248,6 +248,44 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert {:ok, ^cv, [{:unchanged, 0, ^region}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
   end
 
+  test "cold generation runs outside World, is shared by concurrent requesters, and warm serves hit the memory cache", %{
+    root: root,
+    manifest_path: manifest_path
+  } do
+    {:ok, _world} =
+      World.start_link(source: GeneratedStore, root: root, manifest_path: manifest_path, name: :cold_world)
+
+    cv = World.content_version(:cold_world)
+    # L3 冷生成需要几百毫秒；两个请求者同时要同一块 + 各自一块。
+    shared = %{level: 3, region: {0, 0, 0}, have_seq: 0, have_hash: 0}
+    own = fn x -> %{level: 3, region: {x, 0, 0}, have_seq: 0, have_hash: 0} end
+
+    tasks =
+      for x <- [1, 2] do
+        Task.async(fn -> World.serve(:cold_world, request([shared, own.(x)], cv)) end)
+      end
+
+    # 生成期间 World 本身不被阻塞：seq 调用在毫秒级返回。
+    Process.sleep(50)
+    {seq_us, 0} = :timer.tc(fn -> World.seq(:cold_world) end)
+    assert seq_us < 100_000
+
+    [{:ok, reply1}, {:ok, reply2}] = Enum.map(tasks, &Task.await(&1, 120_000))
+    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, bytes1}, {:payload, 3, {1, 0, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply1))
+    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, bytes2}, {:payload, 3, {2, 0, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply2))
+    assert bytes1 == bytes2
+
+    # 共享的那块只生成一次：三块三次 NIF 调用；World 串行应答时第二份请求的共享块已在缓存里。
+    assert %{generated: 3, misses: 3, hits: 1, evictions: 0, entries: 3} = World.stats(:cold_world)
+
+    # 暖请求：不再读盘、不再生成。
+    {:ok, reply} = World.serve(:cold_world, request([shared, own.(1), own.(2)], cv))
+    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, ^bytes1}, {:payload, 3, {1, 0, 0}, _}, {:payload, 3, {2, 0, 0}, _}]} =
+      Codec.decode_reply(IO.iodata_to_binary(reply))
+
+    assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)
+  end
+
   @tag :oracle
   @tag timeout: 600_000
   test "native cells and logical skins match the independent UE oracle" do
