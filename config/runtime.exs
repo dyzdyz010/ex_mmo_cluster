@@ -30,8 +30,9 @@ world_pack_generate? = System.get_env("VOXEL_WORLD_PACK_GENERATE", "0") in ["tru
 
 config :auth_server, :dev_auto_login, dev_auto_login?
 
-# Voxim R6: region 真值（烘焙文件 ⊕ overlay 日志）的目录 = Voxim 的 WorldBake/。非空时 voxel_region 启动 VoxelRegion.World。
+# Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
+config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
 
 dev_region_bootstrap_env = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP")
 

@@ -8,6 +8,8 @@ defmodule VoxelRegion.FileStore do
   alias VoxelRegion.Codec
 
   @doc "root 下唯一的 16 hex 子目录 = content_version。"
+  def content_version(%{content_version: version}), do: version
+
   def content_version(root) do
     case File.ls(root) do
       {:ok, entries} ->
@@ -24,9 +26,20 @@ defmodule VoxelRegion.FileStore do
     end
   end
 
+  def open(opts) do
+    root = Keyword.fetch!(opts, :root)
+
+    with {:ok, version} <- content_version(root) do
+      {:ok, %{root: root, content_version: version, world_dir: Path.join(root, hex(version))}}
+    end
+  end
+
+  def world_dir(%{world_dir: world_dir}), do: world_dir
+
   def hex(version), do: Base.encode16(<<version::64>>, case: :lower)
 
-  def path(root, version, level, {x, y, z}), do: Path.join([root, hex(version), "L#{level}", "r_#{x}_#{y}_#{z}.vxr"])
+  def path(root, version, level, {x, y, z}),
+    do: Path.join([root, hex(version), "L#{level}", "r_#{x}_#{y}_#{z}.vxr"])
 
   @doc "读一个 region 文件并核对头与路径一致；`{:ok, bytes, header}` / `{:error, :missing}`。"
   def read(root, version, level, region) do
@@ -34,7 +47,8 @@ defmodule VoxelRegion.FileStore do
 
     with {:ok, bytes} <- File.read(p),
          {:ok, header} <- Codec.decode_payload_header(bytes),
-         true <- header.level == level and header.region == region and header.content_version == version do
+         true <-
+           header.level == level and header.region == region and header.content_version == version do
       {:ok, bytes, header}
     else
       {:error, :enoent} ->
@@ -45,4 +59,7 @@ defmodule VoxelRegion.FileStore do
         {:error, :missing}
     end
   end
+
+  def read(%{root: root, content_version: version}, level, region),
+    do: read(root, version, level, region)
 end

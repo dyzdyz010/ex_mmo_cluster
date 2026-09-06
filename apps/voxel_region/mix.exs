@@ -22,5 +22,10 @@ defmodule VoxelRegion.MixProject do
     ]
   end
 
-  defp deps, do: []
+  defp deps do
+    [
+      {:jason, "~> 1.4"},
+      {:rustler, "~> 0.37.3"}
+    ]
+  end
 end

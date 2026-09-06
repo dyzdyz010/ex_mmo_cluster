@@ -462,6 +462,18 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-06：S4 在线生成首切片
+
+正式 `VoxelRegion.Application` 改用显式 manifest 的 `GeneratedStore`，通过 Rustler DirtyCpu NIF 调用移植的 `worldgen_density_v3@1`，按需生成现有 VXR3。旧 `FileStore` 只用于既有 fixture 测试；`World` 继续拥有编辑、seq、订阅及日志重放。生成缓存和 `overlay.log` 位于同一新版本根，原开发世界日志不参与测试。客户端 Demo 使用资产配置的 canonical 出生点，运行时已不再调用本地 ColumnHeight。
+
+当前 Demo 的 `content_version=90316f7780959a9c`，输入包含完整生成配置、材质 identity 与带源码 digest 的 kernel identity；精确规范和启动命令见 `apps/voxel_region/README.md`。该版本仅冻结本首切片的生成身份，尚未完成全服务材质 catalog / content_version 统一。
+
+验证覆盖 3 份配置 × L0–L5 × 正负地表 region，共 36 份完整 66³ cells 和六向表皮：Rust 与独立 C++ oracle 一致，服务端生成 VXR3 后再次通过 UE 正式 codec 全量比对。服务端常规测试 18 项、客户端网络测试 20 项通过；完整 Demo 加载 607 个 region，无残留洞或重复覆盖，两笔放置/挖除完成 Accepted → Confirmed → Presented，重启恢复 seq=2 和已挖除的 Air。原始证据与命令在 `Voxim/Docs/R6.md`、`Voxim/Docs/R6/runtime/s4_*`。
+
+最终审查修复两项已复现边界：损坏粗层 cache 不再降为 missing 后提交部分编辑，而是整笔失败，seq、日志和广播均不推进；在线服务和独立预热使用进程标识临时名及同目录硬链接无覆盖发布，避免 Windows rename 覆盖现有目标的中间态。依据 [OTP 文件原子性说明](https://www.erlang.org/doc/apps/kernel/file.html)，本机 NTFS 的 `File.ln` 成功 / eexist 语义与两 writer 集成测试均已验证；其它文件系统须支持硬链接，不提供覆盖式 fallback。
+
+本次仅完成 S4 首切片。冷 L0–L2 343 份载荷平均 HTTP 20.821 s；完整 Demo 前预热 264 个 L3–L5 region（并发 4，147.36 s），随后平均 HTTP 870 ms。当前冷 miss 仍在 World 串行执行，批量冷 L5 会超过既有请求时限，预热不算性能验收。DataService 日志、全服务材质/版本统一、LRU、D-9 精简 codec、L4+ 全世界资产及随机 200 region / 全阶段 benchmark 继续保留为未完成项。
+
 ### 2026-09-05：S3 服务端事务、region 条目与压实
 
 沿用已批准 §4.2/§7：`World.apply_edits` 一次写完 canonical，再逐级去重父格，材质与表皮同时比较；单格与批量共用规约实现。追加 `0x78` 批量 intent（大端 `request_id u64, client_intent_seq u32, logical_scene_id u64, count u32, {canonical i32×3, material u16}`）与 `0x79` 事务（小端 `seq u64, entry_count u32, {len u32, LogEntry}, coarse_count u32, coarse[]`）。旧 `0x70/0x77 kind=0` 不变。新 `kind=1` 是 `seq u64, kind u8, 完整 VXR3`，批量 canonical 的 kind0 coarse 为空，粗格在事务层只出现一次。

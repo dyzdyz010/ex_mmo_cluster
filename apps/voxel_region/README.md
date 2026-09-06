@@ -1,6 +1,6 @@
 # Voxim Region 真值
 
-`World` 拥有烘焙文件 ⊕ 日志真值、订阅与派生载荷缓存；`Reducer` 只规约材质和表皮；`Payload` 只处理 66³ cells / CSR；`Codec` 只处理线格式。gate 只解码、路由和回执，auth HTTP 只调用 `World.serve`。
+`World` 拥有在线生成 baseline ⊕ 日志真值、订阅与派生载荷缓存；`GeneratedStore` 按显式 manifest 调用 DirtyCpu Rust NIF 并保存可丢弃的 baseline 磁盘缓存；`Reducer` 只规约材质和表皮；`Payload` 只处理 66³ cells / CSR；`Codec` 只处理线格式。gate 只解码、路由和回执，auth HTTP 只调用 `World.serve`。旧 `FileStore` 只保留给既有烘焙 fixture 测试，正式运行没有文件 fallback。
 
 `apply_edits([{coord, material}, ...])` 同一坐标最后一个值生效，先写完全部 canonical 值，再按级去重父格。某父格的材质与表皮均未变，不向上继续。一次有效批次一个 seq；全 no-op 不递增；canonical 源缺失整批不提交。原 `apply_edit` 共用此规约路径，但仍发旧 `0x77 kind=0`。
 
@@ -25,6 +25,18 @@ mix run --no-start apps/voxel_region/bench/s3.exs
 python apps/voxel_region/bench/http_probe.py
 ```
 
-最后一个命令需要本地服务，临时改变 `(40,504,39)` 一格后恢复原材质。服务启动：`DEV_AUTO_LOGIN=true`、`VOXEL_REGION_ROOT=<Voxim>/WorldBake`、`MMO_DB_PORT=5433`，umbrella 根 `mix phx.server`。不要禁用 dev reload；docker `mmo-pg` 监听 5433。
+跨实现 oracle 测试显式设置 `VOXIM_ORACLE_DIR=<Voxim>/Saved/S4Oracle`；如还设置 `VOXIM_SERVER_PAYLOAD_DIR=<Voxim>/Saved/S4ServerPayloads`，测试会把 NIF body 包成同名 VXR3，供 UE 的 `VoximOracle.S4.ImportServerPayloads` 再通过正式 codec 核对。
+
+oracle 默认由 ExUnit 排除，显式运行时加 `--include oracle --only oracle`。冷 L5 单块生成需要十秒量级，当前 `World` 仍串行处理一批请求，因此首切片不把冷 L5 批量服务视为达标。演示前可把请求列表写成 `[ {"level":5,"coord":[0,0,0]}, ... ]`，用独立工具预热：`mix run --no-start apps/voxel_region/bench/s4_prewarm.exs <manifest> <root> <regions.json> 4`。并发度默认 4，可按内存调整；这只是 baseline cache 预热，不改变 production 调度或真值。
+
+缓存生成先写入同目录、含 OS PID 与 BEAM 唯一值的临时文件，再用 [`File.ln/2`](https://www.erlang.org/doc/apps/kernel/file.html#make_link/2) 建立同文件系统 hardlink，完成拒绝覆盖的原子发布；目标已存在的生成者删除自己的临时文件并读取、校验胜者。文件系统不支持 hardlink 时明确返回 `cache_publish_failed`，没有 rename 或运行时生成 fallback。缓存命中会完整解压并复核 body 长度与 hash，避免截断或损坏的生成结果被永久复用；warm serve 的重复解压成本留给后续性能切片处理。
+
+最后一个命令需要本地服务，临时改变 `(40,504,39)` 一格后恢复原材质。S4 服务启动必须同时设置 `VOXEL_REGION_ROOT=<空的生成缓存根>` 和 `VOXEL_REGION_MANIFEST=<s4_worldgen_manifest.json>`；Demo manifest 的当前导出位于 `Voxim/Docs/R6/runtime/s4_worldgen_manifest.json`。另设 `DEV_AUTO_LOGIN=true`、隔离的 `AUTH_PORT` / `GATE_TCP_PORT` 与所需数据库配置后，在 umbrella 根运行 `mix phx.server`。不要把 `VOXEL_REGION_ROOT` 指向原 `WorldBake`，生成 cache 与 `overlay.log` 都按新 content version 写在这个根下。
+
+manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、`materials` 与八项 config：`seed/min_height/sea_level/max_height/soil_depth/lowland_amplitude/mountain_amplitude/cave_max_depth`。`content_version` 使用 MD5-64 v1：输入依次为版本规则、Rust NIF 提供的完整 kernel identity（算法名 + 构建时源码 digest）、material identity，三段以 NUL 分隔，再跟 seed i64 LE、四个高度/土层 i32 LE、两个 IEEE754 f64 LE、洞穴深度 i32 LE；MD5 首 8 字节按 little-endian u64 解释。该规则是 S4 新世界版本，刻意不与旧 bake CityHash 相等。
+
+当前 Demo manifest 配合 kernel identity `worldgen_density_v3@1+sha256:458c90dee61690c27ba0b1bfd4510414f65bf5bf8d7224bf2b4d12ba0961018e` 得到 `content_version = 90316f7780959a9c`。源码 digest 覆盖 `build.rs`、NIF 参数映射与全部生成源文件，因此 kernel 代码或形状常量变化会进入新的缓存目录。
 
 实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*`，设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
+
+当前 S4 首切片只把正式 baseline 来源替换为在线 kernel，锁住生成、编辑、重启和 unchanged 闭环。DataService 日志、全 catalog 统一、LRU、L4+ 资产与完整 S4 benchmark 仍属于后续收口，不能据此宣称整个 S4 完成。

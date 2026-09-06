@@ -1,19 +1,19 @@
 defmodule VoxelRegion.World do
   @moduledoc """
-  Voxim R6 的 region 真值：truth = 烘焙文件（`VoxelRegion.FileStore`）⊕ overlay 日志。
+  Voxim R6 的 region 真值：truth = 显式 baseline source ⊕ overlay 日志。
 
   - **日志**：全局单调 `seq`，每条 `cell` 条目 = canonical 格的新材质 + 服务端算好的各级 reduce 结果（材质 + 表皮，
     从 L1 向上、某级材质与表皮都没变即停）。批次共享一个 seq，父格逐级去重，只规约一次。
     文件 `<root>/<cv>/overlay.log`（`<<len::32, term>>`）记录选出的 region 快照与稀疏值；region 事务后压实完整前缀，启动时重放。
-  - **overlay**：`{level, cell} → {material, skins}`，就是日志的压扁；reduce 时 children 先查它，没有再读文件。
-  - **载荷**：`serve/1` 对被条目碰过的 region 把文件解码、套上 overlay、按当前 seq 重编码（缓存到下一条碰它的条目为止）；
-    没碰过的 region 原样吐文件。记住每个 region 最近一次下发的 seq/hash；旧副本与此完全吻合、后续只有稀疏条目且更省字节才回 entries。
+  - **overlay**：`{level, cell} → {material, skins}`，就是日志的压扁；reduce 时 children 先查它，没有再读 baseline source。
+  - **载荷**：`serve/1` 对被条目碰过的 region 把 baseline 解码、套上 overlay、按当前 seq 重编码（缓存到下一条碰它的条目为止）；
+    没碰过的 region 原样吐 source 载荷。记住每个 region 最近一次下发的 seq/hash；旧副本与此完全吻合、后续只有稀疏条目且更省字节才回 entries。
     entries 不写回客户端磁盘，服务端保留这个旧头供重复请求校验；缺失此头、hash 不同、跨过 region 替换时回完整载荷。
   - **订阅**：`subscribe(pid, have_seq, l0_box, coarse_min_level)`：先补 have_seq 之后落在 box（外扩 1 个 region，让 ring 也跟上）
     或 level ≥ coarse_min_level 的条目，之后每条新条目按同一过滤推送 `{:voxel_log_entry_payload, bin}`。连接断了（monitor）就忘。
 
-  S4 换 kernel / 持久化时接口不变。没有 fallback：region 文件缺 → intent 拒绝；
-  粗层文件缺（没烘到）→ 链在那一级停下并记 warning。
+  正式运行由 `VoxelRegion.GeneratedStore` 在线生成；`VoxelRegion.FileStore` 只供既有 fixture 测试显式使用。
+  source 失败不 fallback。
   """
 
   use GenServer
@@ -34,14 +34,55 @@ defmodule VoxelRegion.World do
   @doc "`POST /voxel/regions` 的整个请求 → 应答 iodata。"
   def serve(server \\ @name, request) when is_binary(request) do
     case Codec.decode_request(request) do
-      {:ok, client_version, items} -> {:ok, GenServer.call(server, {:serve, client_version, items}, 60_000)}
+      {:ok, client_version, items} ->
+        if Enum.all?(items, &valid_request_item?/1) do
+          case GenServer.call(server, {:serve, client_version, items}, 60_000) do
+            {:error, _reason} = error -> error
+            reply -> {:ok, reply}
+          end
+        else
+          {:error, :invalid_request}
+        end
+
       error -> error
     end
   end
 
+  defp valid_request_item?(%{level: level, region: region}) when level in 0..@max_level do
+    step = 1 <<< level
+
+    valid_region?(region, step)
+  end
+
+  defp valid_request_item?(_), do: false
+
+  defp valid_region?({x, y, z}, step) when is_integer(x) and is_integer(y) and is_integer(z) do
+    Enum.all?([x, y, z], fn value ->
+      min = (value * 64 - 1) * step - 4
+      max = (value * 64 + 65) * step - 1 + 4
+      min >= -2_147_483_648 and max <= 2_147_483_647
+    end)
+  end
+
+  defp valid_region?(_, _), do: false
+
+  defp valid_edit_coord?({x, y, z}) when is_integer(x) and is_integer(y) and is_integer(z) do
+    Enum.all?(0..@max_level, fn level ->
+      step = 1 <<< level
+      cell = {floor_div(x, step), floor_div(y, step), floor_div(z, step)}
+      valid_region?(region_of(cell), step)
+    end)
+  end
+
+  defp valid_edit_coord?(_), do: false
+
   @doc "一次 canonical 编辑：`{:ok, seq}`（seq = 提交的日志序号；no-op 时是当前 seq）/ `{:error, reason}`。"
   def apply_edit(server \\ @name, {_, _, _} = coord, material) when is_integer(material) and material >= 0 and material <= 255 do
-    GenServer.call(server, {:apply_edit, coord, material}, 60_000)
+    if valid_edit_coord?(coord) do
+      GenServer.call(server, {:apply_edit, coord, material}, 60_000)
+    else
+      {:error, :invalid_coordinate}
+    end
   end
 
   def subscribe(server \\ @name, pid, have_seq, {{_, _, _}, {_, _, _}} = box, coarse_min_level) do
@@ -51,7 +92,16 @@ defmodule VoxelRegion.World do
   def entries_after(server \\ @name, seq), do: GenServer.call(server, {:entries_after, seq})
 
   @doc "多格编辑原子提交；每级父格去重后规约。"
-  def apply_edits(server \\ @name, edits), do: GenServer.call(server, {:apply_edits, edits}, 300_000)
+  def apply_edits(server \\ @name, edits) do
+    if Enum.all?(edits, fn
+         {{_, _, _} = coord, _material} -> valid_edit_coord?(coord)
+         _ -> false
+       end) do
+      GenServer.call(server, {:apply_edits, edits}, 300_000)
+    else
+      {:error, :invalid_coordinate}
+    end
+  end
 
   @doc "压实完整前缀；任意旧 have_seq 都能从检查点补齐。"
   def compact(server \\ @name), do: GenServer.call(server, :compact, 300_000)
@@ -60,12 +110,15 @@ defmodule VoxelRegion.World do
 
   @impl true
   def init(opts) do
-    root = Keyword.fetch!(opts, :root)
+    source = Keyword.get(opts, :source, FileStore)
 
-    case FileStore.content_version(root) do
-      {:ok, cv} ->
+    case source.open(opts) do
+      {:ok, source_state} ->
+        cv = source.content_version(source_state)
+        world_dir = source.world_dir(source_state)
         state = %{
-          root: root,
+          source: source,
+          source_state: source_state,
           cv: cv,
           decoded: %{},
           snapshots: MapSet.new(),
@@ -76,15 +129,15 @@ defmodule VoxelRegion.World do
           seq: 0,
           entries: %{},
           subs: %{},
-          log_path: Path.join([root, FileStore.hex(cv), "overlay.log"])
+          log_path: Path.join(world_dir, "overlay.log")
         }
 
         state = replay_log(state)
-        Logger.info("voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{root}")
+        Logger.info("voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}")
         {:ok, state}
 
       {:error, :no_world} ->
-        {:stop, {:no_world, root}}
+        {:stop, {:no_world, Keyword.fetch!(opts, :root)}}
     end
   end
 
@@ -93,13 +146,15 @@ defmodule VoxelRegion.World do
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
 
   def handle_call({:serve, client_version, items}, _from, state) do
-    {replies, state} =
-      Enum.map_reduce(items, state, fn item, state ->
-        {reply, state} = serve_item(state, client_version, item)
-        {reply, state}
-      end)
-
-    {:reply, Codec.encode_reply(state.cv, replies), state}
+    case Enum.reduce_while(items, {[], state}, fn item, {replies, state} ->
+           case serve_item(state, client_version, item) do
+             {reply, state} -> {:cont, {[reply | replies], state}}
+             {:error, reason, _state} -> {:halt, {:error, reason}}
+           end
+         end) do
+      {:error, reason} -> {:reply, {:error, reason}, state}
+      {replies, state} -> {:reply, Codec.encode_reply(state.cv, Enum.reverse(replies)), state}
+    end
   end
 
   def handle_call({:apply_edit, coord, material}, from, state) do
@@ -172,10 +227,13 @@ defmodule VoxelRegion.World do
 
       {:error, :missing, state} ->
         {{:missing, level, region}, state}
+
+      {:error, reason, state} ->
+        {:error, reason, state}
     end
   end
 
-  # 被 overlay 碰过的 region 用物化载荷（缓存），否则原样是文件。
+  # 被 overlay 碰过的 region 用物化载荷（缓存），否则原样是 source 载荷。
   defp payload_bytes(state, level, region) do
     key = {level, region}
 
@@ -187,9 +245,10 @@ defmodule VoxelRegion.World do
         cells = Map.get(state.overlay_regions, key, MapSet.new())
 
         if MapSet.size(cells) == 0 and not MapSet.member?(state.snapshots, key) do
-          case FileStore.read(state.root, state.cv, level, region) do
+          case state.source.read(state.source_state, level, region) do
             {:ok, bytes, header} -> {:ok, bytes, header, state}
             {:error, :missing} -> {:error, :missing, state}
+            {:error, reason} -> {:error, reason, state}
           end
         else
           case decoded(state, level, region) do
@@ -201,6 +260,9 @@ defmodule VoxelRegion.World do
 
             {:error, :missing, state} ->
               {:error, :missing, state}
+
+            {:error, reason, state} ->
+              {:error, reason, state}
           end
         end
     end
@@ -214,11 +276,12 @@ defmodule VoxelRegion.World do
         {:ok, payload, state}
 
       :error ->
-        with {:ok, bytes, _header} <- FileStore.read(state.root, state.cv, level, region),
+        with {:ok, bytes, _header} <- state.source.read(state.source_state, level, region),
              {:ok, payload} <- Payload.decode(bytes) do
           {:ok, payload, %{state | decoded: Map.put(state.decoded, key, payload)}}
         else
-          _ -> {:error, :missing, state}
+          {:error, reason} -> {:error, reason, state}
+          other -> {:error, {:invalid_payload, other}, state}
         end
     end
   end
@@ -236,6 +299,7 @@ defmodule VoxelRegion.World do
         case decoded(state, level, region) do
           {:ok, payload, state} -> {:ok, Payload.value(payload, Payload.local(region, cell)), state}
           {:error, :missing, state} -> {:error, :missing, state}
+          {:error, reason, state} -> {:error, reason, state}
         end
     end
   end
@@ -386,57 +450,89 @@ defmodule VoxelRegion.World do
         {:ok, {old,_}, s} when old == m -> {:cont, {changed,s}}
         {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,Reducer.uniform(m)})}}
         {:error,:missing,_} -> {:halt, {:error,:missing_region}}
+        {:error,reason,_} -> {:halt, {:error,reason}}
       end
     end)
     case result do
       {:error, reason} -> {:error, reason}
       {[], state} -> {:ok,state}
       {changed,state} ->
-        {all,state,visits} = reduce_batch(state,changed,1,changed,0)
-        state = %{state | seq: state.seq+1}
-        {txn,state} = if legacy do
-          [{coord,material}]=edits
-          coarse=for {level,cell} <- Enum.sort(all), level > 0 do
-            {m,skins}=Map.fetch!(state.overlay,{level,cell})
-            %{level: level,cell: cell,material: m,skins: skins}
-          end
-          {%{seq: state.seq,coord: coord,material: material,coarse: coarse},state}
-        else
-          select_transaction(state,all)
+        case reduce_batch(state,changed,1,changed,0) do
+          {:error, reason} ->
+            {:error, reason}
+
+          {:ok,all,state,visits} ->
+            state = %{state | seq: state.seq+1}
+            {txn,state} = if legacy do
+              [{coord,material}]=edits
+              coarse=for {level,cell} <- Enum.sort(all), level > 0 do
+                {m,skins}=Map.fetch!(state.overlay,{level,cell})
+                %{level: level,cell: cell,material: m,skins: skins}
+              end
+              {%{seq: state.seq,coord: coord,material: material,coarse: coarse},state}
+            else
+              select_transaction(state,all)
+            end
+            append_log(state,txn)
+            state = %{state | entries: Map.put(state.entries,state.seq,txn)}
+            fanout(state,txn)
+            region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
+            state = if region_count > 0, do: compact_log(state), else: state
+            Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
+            {:ok,state}
         end
-        append_log(state,txn)
-        state = %{state | entries: Map.put(state.entries,state.seq,txn)}
-        fanout(state,txn)
-        region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
-        state = if region_count > 0, do: compact_log(state), else: state
-        Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
-        {:ok,state}
     end
   end
 
-  defp reduce_batch(state, [], _level, all, visits), do: {all,state,visits}
-  defp reduce_batch(state, _dirty, level, all, visits) when level > @max_level, do: {all,state,visits}
+  defp reduce_batch(state, [], _level, all, visits), do: {:ok,all,state,visits}
+  defp reduce_batch(state, _dirty, level, all, visits) when level > @max_level, do: {:ok,all,state,visits}
   defp reduce_batch(state, dirty, level, all, visits) do
     parents = dirty |> Enum.map(fn {_,c} -> parent_of(c) end) |> Enum.uniq()
-    {changed,state} = Enum.reduce(parents,{[],state},fn parent,{changed,s} ->
-      {px,py,pz}=parent
-      {children,s}=Enum.map_reduce(0..7,s,fn oct,s ->
-        c={px*2+(oct &&& 1),py*2+((oct >>> 1) &&& 1),pz*2+((oct >>> 2) &&& 1)}
-        case cell_value(s,level-1,c) do
-          {:ok,v,s}->{v,s}
-          {:error,:missing,s}->{:missing,s}
-        end
-      end)
-      with false <- :missing in children, {:ok,old,s} <- cell_value(s,level,parent) do
-        new=Reducer.reduce_cell(children,level)
-        if new==old, do: {changed,s}, else: {[{level,parent}|changed],put_overlay(s,level,parent,new)}
-      else
-        _ ->
+    result = Enum.reduce_while(parents,{[],state},fn parent,{changed,s} ->
+      case child_values(s,level,parent) do
+        {:ok,children,s} ->
+          case cell_value(s,level,parent) do
+            {:ok,old,s} ->
+              new=Reducer.reduce_cell(children,level)
+              next=if new==old, do: {changed,s}, else: {[{level,parent}|changed],put_overlay(s,level,parent,new)}
+              {:cont,next}
+
+            {:error,:missing,s} ->
+              Logger.warning("voxel_region: L#{level} around #{inspect(parent)} not baked; reduce chain stops here")
+              {:cont,{changed,s}}
+
+            {:error,reason,_s} ->
+              {:halt,{:error,reason}}
+          end
+
+        {:error,:missing,s} ->
           Logger.warning("voxel_region: L#{level} around #{inspect(parent)} not baked; reduce chain stops here")
-          {changed,s}
+          {:cont,{changed,s}}
+
+        {:error,reason,_s} ->
+          {:halt,{:error,reason}}
       end
     end)
-    reduce_batch(state,changed,level+1,changed++all,visits+length(parents))
+
+    case result do
+      {:error,reason} -> {:error,reason}
+      {changed,state} -> reduce_batch(state,changed,level+1,changed++all,visits+length(parents))
+    end
+  end
+
+  defp child_values(state,level,{px,py,pz}) do
+    result = Enum.reduce_while(0..7,{[],state},fn oct,{children,s} ->
+      cell={px*2+(oct &&& 1),py*2+((oct >>> 1) &&& 1),pz*2+((oct >>> 2) &&& 1)}
+      case cell_value(s,level-1,cell) do
+        {:ok,value,s} -> {:cont,{[value|children],s}}
+        {:error,reason,s} -> {:halt,{:error,reason,s}}
+      end
+    end)
+
+    case result do
+      {:error,reason,state} -> {:error,reason,state}
+      {children,state} -> {:ok,Enum.reverse(children),state}
+    end
   end
 
   defp select_transaction(state, changed) do
