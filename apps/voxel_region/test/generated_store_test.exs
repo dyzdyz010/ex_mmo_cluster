@@ -1,12 +1,14 @@
 defmodule VoxelRegion.GeneratedStoreTest do
   use ExUnit.Case, async: false
 
-  alias VoxelRegion.{Codec, GeneratedStore, Native, Payload, World}
+  alias VoxelRegion.{Bake, Codec, GeneratedStore, Native, Payload, World}
 
+  # 半边长 64 m：每级 2×2 列，L1–L5 烘一次（setup_all）后每个测试复制 baseline 目录。
   @manifest %{
     "schema" => "voxim-worldgen-v1",
     "kernel" => "worldgen_density_v3@1",
     "materials" => "voxim-palette-v1",
+    "world_half_extent_m" => 64,
     "seed" => 1337,
     "min_height" => -200,
     "sea_level" => 326,
@@ -17,20 +19,81 @@ defmodule VoxelRegion.GeneratedStoreTest do
     "cave_max_depth" => 96
   }
 
-  setup do
+  setup_all do
+    template = Path.join(System.tmp_dir!(), "voxel_region_baked_#{System.unique_integer([:positive])}")
+    manifest_path = Path.join(template, "worldgen.json")
+    File.mkdir_p!(template)
+    File.write!(manifest_path, Jason.encode!(@manifest))
+    {:ok, store} = GeneratedStore.open(root: template, manifest_path: manifest_path)
+    {:ok, store, stats} = Bake.run(store)
+    on_exit(fn -> File.rm_rf!(template) end)
+    {:ok, template: template, baked: store, bake_stats: stats}
+  end
+
+  setup %{template: template, baked: baked} do
     root =
       Path.join(System.tmp_dir!(), "voxel_region_generated_#{System.unique_integer([:positive])}")
 
     manifest_path = Path.join(root, "worldgen.json")
     File.mkdir_p!(root)
     File.write!(manifest_path, Jason.encode!(@manifest))
+    File.cp_r!(Path.join(template, GeneratedStore.hex(baked.content_version)), Path.join(root, GeneratedStore.hex(baked.content_version)))
     on_exit(fn -> File.rm_rf!(root) end)
     {:ok, root: root, manifest_path: manifest_path}
   end
 
+  test "bake enumerates the world's columns, generates only mixed L1+ regions once, and later boots only verify", %{
+    baked: baked,
+    bake_stats: stats,
+    root: root,
+    manifest_path: manifest_path
+  } do
+    # 2×2 列 × 5 级；每列至少含地表所在的 mixed 行；索引落盘。
+    assert stats.columns == 4 * 5
+    assert stats.mixed >= 20 and stats.generated == stats.mixed
+    assert File.exists?(baked.index_path)
+    mixed = for {{level, rx, rz}, bounds} <- baked.index.bounds, ry <- Native.mixed_rows(level, bounds, baked.config), do: {level, {rx, ry, rz}}
+    assert length(mixed) == stats.mixed
+    assert Enum.all?(mixed, fn {level, region} -> File.exists?(GeneratedStore.path(baked, level, region)) end)
+    refute Enum.any?(mixed, fn {level, _} -> level == 0 end)
+
+    # 复制出来的根：索引已在，第二次 run 只核对、不生成。
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
+    assert store.index.bounds == baked.index.bounds
+    {:ok, _store, again} = Bake.run(store)
+    assert again.generated == 0 and again.missing == 0 and again.mixed == stats.mixed and again.columns == 20
+  end
+
+  test "uniform regions are synthesized byte-for-byte like the kernel and never touch the disk", %{
+    baked: store
+  } do
+    # L2 列 (0,0)：地表之上为空气、最低地表 deep 之下为岩石；两者都不在 mixed_rows 里、也没有文件。
+    bounds = GeneratedStore.bounds(store, 2, {0, 0})
+    [lo | _] = rows = Native.mixed_rows(2, bounds, store.config)
+    hi = List.last(rows)
+
+    for {ry, kind} <- [{hi + 1, :air}, {lo - 1, :rock}] do
+      region = {0, ry, 0}
+      assert {:uniform, material} = GeneratedStore.classify(store, 2, region)
+      if kind == :air, do: assert(material == 0), else: assert(material in [12, 13])
+      refute File.exists?(GeneratedStore.path(store, 2, region))
+      assert {:ok, bytes, header} = GeneratedStore.read(store, 2, region)
+      assert header.level == 2 and header.region == region
+      {:ok, _header, raw} = Codec.decode_payload_body(bytes)
+      assert raw == Native.generate_region(2, region, store.config)
+    end
+
+    # mixed 的 L1+ 缺文件是硬错误，不在线生成。
+    File.rm!(GeneratedStore.path(store, 2, {0, lo, 0}))
+    assert {:error, :not_baked} = GeneratedStore.read(store, 2, {0, lo, 0})
+    assert {:error, :not_baked} = GeneratedStore.ensure(store, 2, {0, lo, 0})
+    assert :ok = GeneratedStore.bake_region(store, 2, {0, lo, 0})
+    assert {:ok, _bytes, _header} = GeneratedStore.read(store, 2, {0, lo, 0})
+  end
+
   test "native returns the existing raw payload body", _context do
     assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:458c90dee61690c27ba0b1bfd4510414f65bf5bf8d7224bf2b4d12ba0961018e"
+             "worldgen_density_v3@1+sha256:dae4f82299e8368d93e580776e7880e0a6653dc05cd51757b7d9a281b6698b54"
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 
@@ -44,7 +107,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 0x9031_6F77_8095_9A9C
+    assert GeneratedStore.content_version(store) == 0x7CA6_EB0A_2E4F_6586
 
     for field <- [
           "materials",
@@ -248,7 +311,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert {:ok, ^cv, [{:unchanged, 0, ^region}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
   end
 
-  test "cold generation runs outside World, is shared by concurrent requesters, and warm serves hit the memory cache", %{
+  test "cold L0 generation runs outside World, is shared by concurrent requesters, and warm serves hit the memory cache", %{
     root: root,
     manifest_path: manifest_path
   } do
@@ -256,9 +319,12 @@ defmodule VoxelRegion.GeneratedStoreTest do
       World.start_link(source: GeneratedStore, root: root, manifest_path: manifest_path, name: :cold_world)
 
     cv = World.content_version(:cold_world)
-    # L3 冷生成需要几百毫秒；两个请求者同时要同一块 + 各自一块。
-    shared = %{level: 3, region: {0, 0, 0}, have_seq: 0, have_hash: 0}
-    own = fn x -> %{level: 3, region: {x, 0, 0}, have_seq: 0, have_hash: 0} end
+    store = :sys.get_state(:cold_world).source_state
+    # 地表所在的 L0 行（mixed，需要在线生成）：两个请求者同时要同一块 + 各自一块。
+    [ry | _] = Native.mixed_rows(0, GeneratedStore.bounds(store, 0, {0, 0}), store.config)
+    shared = %{level: 0, region: {0, ry, 0}, have_seq: 0, have_hash: 0}
+    own = fn x -> %{level: 0, region: {x, ry, 0}, have_seq: 0, have_hash: 0} end
+    assert :mixed = GeneratedStore.classify(store, 0, {0, ry, 0})
 
     tasks =
       for x <- [1, 2] do
@@ -266,13 +332,13 @@ defmodule VoxelRegion.GeneratedStoreTest do
       end
 
     # 生成期间 World 本身不被阻塞：seq 调用在毫秒级返回。
-    Process.sleep(50)
+    Process.sleep(10)
     {seq_us, 0} = :timer.tc(fn -> World.seq(:cold_world) end)
     assert seq_us < 100_000
 
     [{:ok, reply1}, {:ok, reply2}] = Enum.map(tasks, &Task.await(&1, 120_000))
-    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, bytes1}, {:payload, 3, {1, 0, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply1))
-    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, bytes2}, {:payload, 3, {2, 0, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply2))
+    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes1}, {:payload, 0, {1, ^ry, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply1))
+    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes2}, {:payload, 0, {2, ^ry, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply2))
     assert bytes1 == bytes2
 
     # 共享的那块只生成一次：三块三次 NIF 调用；World 串行应答时第二份请求的共享块已在缓存里。
@@ -280,7 +346,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
     # 暖请求：不再读盘、不再生成。
     {:ok, reply} = World.serve(:cold_world, request([shared, own.(1), own.(2)], cv))
-    {:ok, ^cv, [{:payload, 3, {0, 0, 0}, ^bytes1}, {:payload, 3, {1, 0, 0}, _}, {:payload, 3, {2, 0, 0}, _}]} =
+    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, ^bytes1}, {:payload, 0, {1, ^ry, 0}, _}, {:payload, 0, {2, ^ry, 0}, _}]} =
       Codec.decode_reply(IO.iodata_to_binary(reply))
 
     assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)

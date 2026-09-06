@@ -410,23 +410,33 @@ struct Evaluator<'a> {
     entrances: Entrances,
     deep: i32,
 }
+/// 地表以下（已排除洞穴/矿脉/土层）的岩性：整块落在同一岩带才均匀，否则 0 = 继续细分。
+fn rock_band(c: &Config, min_y: i32, max_y: i32, node: Node) -> u16 {
+    let basalt = c.sea_level - BASALT_DEPTH;
+    let granite = c.sea_level - GRANITE_DEPTH;
+    if max_y < basalt {
+        13
+    } else if min_y < basalt {
+        0
+    } else if max_y < granite {
+        12
+    } else if min_y < granite {
+        0
+    } else if node.min[2] == node.max[2] {
+        node.min[2]
+    } else {
+        0
+    }
+}
+/// 剪枝用的"地表以下多深就一定是岩石"：洞穴、洞口腔室与土层的最大深度。
+fn deep(c: &Config) -> i32 {
+    c.cave_max_depth
+        .max(INNER_DEPTH + CHAMBER_RADIUS)
+        .max(c.soil_depth)
+}
 impl Evaluator<'_> {
     fn rock(&self, min: [i32; 3], max: [i32; 3], node: Node) -> u16 {
-        let basalt = self.c.sea_level - BASALT_DEPTH;
-        let granite = self.c.sea_level - GRANITE_DEPTH;
-        if max[1] < basalt {
-            13
-        } else if min[1] < basalt {
-            0
-        } else if max[1] < granite {
-            12
-        } else if min[1] < granite {
-            0
-        } else if node.min[2] == node.max[2] {
-            node.min[2]
-        } else {
-            0
-        }
+        rock_band(self.c, min[1], max[1], node)
     }
     fn evaluate(&self, l: i32, cell: [i32; 3], mut free: [bool; 3]) -> Value {
         let scale = 1 << l;
@@ -503,10 +513,7 @@ pub fn generate_body(level: i32, coord: [i32; 3], config: &Config) -> Vec<u8> {
         c: config,
         columns: Columns::new(canonical, span, level, config),
         entrances: Entrances::new(canonical, span as i32, config),
-        deep: config
-            .cave_max_depth
-            .max(INNER_DEPTH + CHAMBER_RADIUS)
-            .max(config.soil_depth),
+        deep: deep(config),
     };
     let mut cells = Vec::with_capacity(EXTENT.pow(3));
     let mut records = Vec::new();
@@ -527,4 +534,73 @@ pub fn generate_body(level: i32, coord: [i32; 3], config: &Config) -> Vec<u8> {
         }
     }
     skin::encode(&cells, &records, level)
+}
+
+/// 一个 (level, rx, rz) 列上整个 66-span 内列画像的折叠边界 `[hmin, hmax, province_min, province_max]`，
+/// 与 `Evaluator` 对同一 span 内任何块折叠出的 `Node` 上下界一致；与 y 无关，一列算一次可分类该列所有 ry。
+pub fn column_bounds(level: i32, coord: [i32; 2], config: &Config) -> [i32; 4] {
+    let scale = 1 << level;
+    let canonical = [
+        (coord[0] * OWNED - 1) * scale,
+        0,
+        (coord[1] * OWNED - 1) * scale,
+    ];
+    let columns = Columns::new(canonical, EXTENT << level, 0, config);
+    columns.profiles.iter().fold(
+        [i32::MAX, i32::MIN, i32::MAX, i32::MIN],
+        |[hmin, hmax, pmin, pmax], p| {
+            [
+                hmin.min(p.height),
+                hmax.max(p.height),
+                pmin.min(p.province as i32),
+                pmax.max(p.province as i32),
+            ]
+        },
+    )
+}
+
+fn region_y_span(level: i32, ry: i32) -> (i32, i32) {
+    let scale = 1 << level;
+    let min_y = (ry * OWNED - 1) * scale;
+    (min_y, min_y + (EXTENT as i32) * scale - 1)
+}
+
+/// 整个 66³ region 能由折叠边界证明均匀时返回其材质：完全在最高地表之上 = 空气，完全在最低地表的 `deep` 之下且落在同一岩带 = 该岩石。
+/// 这正是 `Evaluator::evaluate` 对每个 cell 先做的两项判断在整个 region 上的保守版本，所以 `Some(m)` 时 `generate_body` 的每格都是 m。
+pub fn classify_region(level: i32, ry: i32, bounds: [i32; 4], config: &Config) -> Option<u16> {
+    let (min_y, max_y) = region_y_span(level, ry);
+    let [hmin, hmax, pmin, pmax] = bounds;
+    if min_y >= hmax {
+        return Some(0);
+    }
+    if max_y < hmin - deep(config) {
+        let node = Node {
+            hmin,
+            hmax,
+            min: [0, 0, pmin as u16],
+            max: [0, 0, pmax as u16],
+        };
+        let rock = rock_band(config, min_y, max_y, node);
+        if rock != 0 {
+            return Some(rock);
+        }
+    }
+    None
+}
+
+/// 该列上所有不能证明均匀的 ry（升序）：在最低"一定是玄武岩"的高度之下与最高地表之上的 region 都均匀，只需扫中间。
+pub fn mixed_rows(level: i32, bounds: [i32; 4], config: &Config) -> Vec<i32> {
+    let scale = 1 << level;
+    let ry_of = |y: i32| y.div_euclid(scale).div_euclid(OWNED);
+    let lowest = (bounds[0] - deep(config)).min(config.sea_level - BASALT_DEPTH);
+    let lo = ry_of(lowest) - 2;
+    let hi = ry_of(bounds[1]) + 2;
+    (lo..=hi)
+        .filter(|&ry| classify_region(level, ry, bounds, config).is_none())
+        .collect()
+}
+
+/// 全部 66³ cells 都是 `material`、无表皮记录的 body，与 `generate_body` 对均匀 region 的输出逐字节相同。
+pub fn uniform_body(level: i32, material: u16) -> Vec<u8> {
+    skin::encode(&vec![material; EXTENT.pow(3)], &[], level)
 }

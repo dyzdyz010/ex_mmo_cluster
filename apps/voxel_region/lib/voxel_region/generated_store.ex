@@ -4,13 +4,15 @@ defmodule VoxelRegion.GeneratedStore do
 
   JSON manifest 指定 kernel、材质目录与完整八项生成配置。规范字节生成世界
   `content_version`；与 payload body hash 一样，MD5 前 64 bit 按小端解释。
-  `baseline/` 下的 VXR3 是可丢弃磁盘缓存。overlay 日志与它位于同一版本目录，
-  不从旧烘焙目录推断，也不与旧世界共用。
+  `baseline/` 下的 VXR3 是可丢弃磁盘缓存：L1–L5 由 `VoxelRegion.Bake` 在开放连接前烘齐（就绪门），
+  L0 按需在线生成。能由列边界证明均匀（纯空气 / 纯岩石）的 region 不落盘，读取时合成常量载荷；
+  列边界在 `baseline/index.etf`。overlay 日志与它位于同一版本目录，不从旧烘焙目录推断，也不与旧世界共用。
 
   同一 BEAM 内对同一 region 的并发生成只跑一次：生成者在 ETS 锁表登记，其余请求者轮询到锁释放后读已发布的文件；
   跨 OS 进程（在线服务 ⊕ 独立预热）仍靠硬链接发布保证只发布一份完整文件。
   """
 
+  import Bitwise
   alias VoxelRegion.{Codec, Native, Payload}
 
   @schema "voxim-worldgen-v1"
@@ -41,6 +43,8 @@ defmodule VoxelRegion.GeneratedStore do
         }
       end)
 
+    extent = Map.fetch!(manifest, "world_half_extent_m")
+    true = is_integer(extent) and extent > 0
     kernel_name = Map.fetch!(manifest, "kernel")
     kernel = Native.kernel_identity()
     true = String.starts_with?(kernel, kernel_name <> "+sha256:")
@@ -49,6 +53,7 @@ defmodule VoxelRegion.GeneratedStore do
     world_dir = Path.join(root, hex(version))
     File.mkdir_p!(world_dir)
     ensure_lock_table()
+    index_path = Path.join([world_dir, "baseline", "index.etf"])
 
     {:ok,
      %{
@@ -56,9 +61,53 @@ defmodule VoxelRegion.GeneratedStore do
        content_version: version,
        world_dir: world_dir,
        config: config,
+       extent: extent,
+       index_path: index_path,
+       index: load_index(index_path, extent),
        generations: :counters.new(1, [])
      }}
   end
+
+  defp load_index(path, extent) do
+    case File.read(path) do
+      {:ok, bytes} ->
+        case :erlang.binary_to_term(bytes, [:safe]) do
+          %{extent: ^extent, bounds: bounds} -> %{extent: extent, bounds: bounds}
+          _ -> nil
+        end
+
+      {:error, :enoent} ->
+        nil
+    end
+  end
+
+  @doc "列边界索引落盘（同目录临时文件 + rename；只有 Bake 一个 writer）。"
+  def write_index(store) do
+    File.mkdir_p!(Path.dirname(store.index_path))
+    temporary = store.index_path <> ".#{System.pid()}.tmp"
+    File.write!(temporary, :erlang.term_to_binary(store.index))
+    File.rename!(temporary, store.index_path)
+    store
+  end
+
+  @doc "level 上落在世界范围内的所有 XZ 列 `{rx, rz}`（世界 = 以原点为中心、半边长 extent 米）。"
+  def columns(store, level) do
+    size = 64 <<< level
+    lo = Integer.floor_div(-store.extent, size)
+    hi = Integer.floor_div(store.extent - 1, size)
+    for rx <- lo..hi, rz <- lo..hi, do: {rx, rz}
+  end
+
+  @doc "列的折叠边界：索引里有就用索引，否则现算（世界范围之外的列）。"
+  def bounds(store, level, {rx, rz}) do
+    case store.index && Map.fetch(store.index.bounds, {level, rx, rz}) do
+      {:ok, bounds} -> bounds
+      _ -> Native.column_bounds(level, {rx, rz}, store.config)
+    end
+  end
+
+  @doc "`{:uniform, material}` / `:mixed`。"
+  def classify(store, level, {rx, ry, rz}), do: Native.classify_region(level, ry, bounds(store, level, {rx, rz}), store.config)
 
   @doc "本 store 打开以来实际执行的 NIF 生成次数。"
   def generated(store), do: :counters.get(store.generations, 1)
@@ -66,30 +115,60 @@ defmodule VoxelRegion.GeneratedStore do
   def content_version(store), do: store.content_version
   def world_dir(store), do: store.world_dir
 
-  @doc "读取生成的 VXR3；首次访问时在线生成并写入缓存。"
+  @doc """
+  读取 region 的 VXR3：均匀 region 合成常量载荷；mixed 的 L0 缺文件时在线生成；mixed 的 L1+ 必须已由 Bake 落盘，
+  否则 `{:error, :not_baked}`——就绪门之后这不该发生。
+  """
   def read(store, level, {_, _, _} = region) do
-    path = path(store, level, region)
+    case classify(store, level, region) do
+      {:uniform, material} ->
+        bytes = Codec.encode_payload(level, region, 0, store.content_version, Native.uniform_body(level, material))
+        {:ok, header} = Codec.decode_payload_header(bytes)
+        {:ok, bytes, header}
 
-    case File.read(path) do
-      {:ok, bytes} -> read_cached(bytes, store.content_version, level, region)
-      {:error, :enoent} -> generate(store, path, level, region)
-      {:error, reason} -> {:error, {:cache_read_failed, reason}}
+      :mixed ->
+        path = path(store, level, region)
+
+        case File.read(path) do
+          {:ok, bytes} -> read_cached(bytes, store.content_version, level, region)
+          {:error, :enoent} when level == 0 -> generate(store, path, level, region)
+          {:error, :enoent} -> {:error, :not_baked}
+          {:error, reason} -> {:error, {:cache_read_failed, reason}}
+        end
     end
   end
 
-  @doc "只保证磁盘缓存存在（缺则生成），不读回字节；World 之外的并发预备用它。"
+  @doc "只保证能读（L0 缺则生成），不读回字节；World 之外的并发预备用它。"
   def ensure(store, level, {_, _, _} = region) do
-    path = path(store, level, region)
-
-    if File.exists?(path) do
-      :ok
-    else
-      with {:ok, _bytes, _header} <- generate(store, path, level, region), do: :ok
+    case classify(store, level, region) do
+      {:uniform, _} -> :ok
+      :mixed -> materialize(store, level, region, level == 0)
     end
   end
 
-  def path(store, level, {x, y, z}) do
-    Path.join([store.world_dir, "baseline", "L#{level}", "r_#{x}_#{y}_#{z}.vxr"])
+  @doc "Bake 用：mixed region 缺文件就生成，任何 level。"
+  def bake_region(store, level, {_, _, _} = region), do: materialize(store, level, region, true)
+
+  defp materialize(store, level, region, generate?) do
+    path = path(store, level, region)
+
+    cond do
+      File.exists?(path) -> :ok
+      generate? -> with {:ok, _bytes, _header} <- generate(store, path, level, region), do: :ok
+      true -> {:error, :not_baked}
+    end
+  end
+
+  def path(store, level, region), do: Path.join([store.world_dir, "baseline", "L#{level}", file_name(region)])
+
+  def file_name({x, y, z}), do: "r_#{x}_#{y}_#{z}.vxr"
+
+  @doc "level 目录里已发布的文件名集合（一次 ls；目录不存在 = 空）。"
+  def present(store, level) do
+    case File.ls(Path.join([store.world_dir, "baseline", "L#{level}"])) do
+      {:ok, names} -> names |> Enum.filter(&String.ends_with?(&1, ".vxr")) |> MapSet.new()
+      {:error, :enoent} -> MapSet.new()
+    end
   end
 
   def hex(version), do: Base.encode16(<<version::64>>, case: :lower)

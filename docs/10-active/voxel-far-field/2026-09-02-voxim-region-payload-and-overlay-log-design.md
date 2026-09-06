@@ -462,6 +462,17 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-06：S4 第三切片——就绪门：L1+ 全世界 baseline 先于开放连接
+
+用户裁定：服务端预热与客户端读取解耦，"预热完毕才算 ready、才开放连接；客户端能连上就一定 ready"，ready 覆盖到 L1+。实现：`VoxelRegion.Bake` 在 `Application.start` 里、
+`World` 之前运行，按 manifest 新增的 `world_half_extent_m` 枚举 L1–L5 每级世界内所有 XZ 列，用 kernel 折叠边界（`column_bounds` / `mixed_rows`）只生成不能证明均匀的 region；
+纯空气 / 纯岩石 region 不落盘，读取时按同一判断合成常量载荷（Rust 测试证明与 `generate_body` 逐字节相同）。列边界索引 `baseline/index.etf` 落盘后，重启只核对文件。
+L0 仍按玩家位置在线生成（几十毫秒一块，调用方进程并发预备）；mixed 的 L1+ 缺文件是硬错误 `:not_baked`。客户端撤回第二切片加的 120 s HTTP 活动超时——冷批次不再是客户端要理解的概念。
+
+baseline 在同一 content_version 下不可变：编辑只进 overlay 日志，被碰过的 region 在内存里物化后下发，磁盘 baseline 不改；kernel 或配置一变即换版本目录重烘。
+本次 kernel 源码 digest 变化（抽出 `rock_band` / `deep`、新增边界函数），Demo `content_version` 从 `90316f7780959a9c` 变为 `7ca6eb0a2e4f6586`。
+本机 Demo 世界首次烘焙：16 km × 16 km（`world_half_extent_m` 8192）21,824 列、78,536 个 mixed region，本次生成 48,578（复用 29,958）534 s，从零约 13 min；32 km 全量约 303k region、约 1 h；启动核对 78,536 个 region 每级列一次目录核对 225 ms（逐文件 stat 时 91 s）。运行数字见 `Voxim/Docs/R6.md` §S4 第三切片。
+
 ### 2026-09-06：S4 第二切片——服务端载荷缓存收口
 
 冷 miss 的 baseline 生成移出 `World` 串行路径：`serve` / `apply_edit(s)` 在调用方进程并发 `GeneratedStore.ensure`（每请求并发 8），同一 BEAM 内同 region 的并发生成由 ETS 锁去重，
