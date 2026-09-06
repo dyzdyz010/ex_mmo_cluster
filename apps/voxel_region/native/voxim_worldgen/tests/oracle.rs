@@ -1,4 +1,4 @@
-//! 读取 UE 独立导出的 VXR3，对完整 cells 和六向贴图逐 texel 比较。
+//! 读取 UE 独立导出的 VXR4，对完整 cells 和六向贴图逐 texel 比较。
 use serde::Deserialize;
 use std::{collections::BTreeMap, io::Read, path::PathBuf, time::Instant};
 use voxim_worldgen::{generate_body, Config};
@@ -51,19 +51,19 @@ fn body(raw: &[u8], level: i32) -> Body {
         .map(|v| u32::from_le_bytes(v.try_into().unwrap()) as usize)
         .collect();
     let cols = u16s(r.array(2));
-    let records = r.array(20);
+    let n = r.u32();
+    let faces = r.take(6 * n);
+    let masks = u16s(r.take(2 * n));
     let fmi = u16s(r.array(2));
     let maps = r.array(1);
-    r.array(8);
     assert!(r.0.is_empty());
     let mut skins = BTreeMap::new();
     let expected_extent = (1usize << level).min(4);
+    let mut base = 0usize;
     for row in 0..rows.len().saturating_sub(1) {
         for k in rows[row]..rows[row + 1] {
-            let record = &records[k * 20..(k + 1) * 20];
-            let ids: [u16; 6] = u16s(&record[..12]).try_into().unwrap();
-            let mask = u16::from_le_bytes(record[12..14].try_into().unwrap());
-            let mut base = u32::from_le_bytes(record[16..20].try_into().unwrap()) as usize;
+            let ids: [u16; 6] = std::array::from_fn(|face| faces[face * n + k] as u16);
+            let mask = masks[k];
             let mut texels = Vec::new();
             for face in 0..6 {
                 if mask & (1 << face) != 0 {
@@ -120,7 +120,7 @@ fn complete_ue_regions_match() {
     assert!(!manifest.fixtures.is_empty());
     for fixture in manifest.fixtures {
         let bytes = std::fs::read(path.parent().unwrap().join(&fixture.file)).unwrap();
-        assert_eq!(&bytes[..4], b"VXR3");
+        assert_eq!(&bytes[..4], b"VXR4");
         let mut raw = Vec::new();
         match bytes[45] {
             0 => raw.extend_from_slice(&bytes[54..]),

@@ -15,7 +15,7 @@ defmodule VoxelRegion.WorldTest do
 
     solid = for _z <- 0..65, y <- 0..65, _x <- 0..65, into: <<>>, do: <<if(y < 65, do: 11, else: 0)::16-little>>
     air = for _z <- 0..65, y <- 0..65, _x <- 0..65, into: <<>>, do: <<if(y == 0, do: 11, else: 0)::16-little>>
-    empty_skins = <<@extent::32-little, @extent::32-little, @extent::32-little, 1::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>
+    empty_skins = <<@extent::32-little, @extent::32-little, @extent::32-little, 1::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>
 
     for x <- -1..1, z <- -1..1 do
       File.write!(FileStore.path(root, @cv, 0, {x, 0, z}), Codec.encode_payload(0, {x, 0, z}, 0, @cv, <<@cells::32-little, solid::binary, empty_skins::binary>>))
@@ -24,9 +24,9 @@ defmodule VoxelRegion.WorldTest do
 
     # L1 (0,0,0)：y < 32 实心（children 在 L0 y-region 0）、y ≥ 32 空气；ring 也按同一规则（L1 cell y=-1 → 实心，y=64 → 空气）。
     l1 = for lz <- 0..(@extent - 1), ly <- 0..(@extent - 1), lx <- 0..(@extent - 1), into: <<>>, do: <<if(ly - 1 < 32, do: 11, else: 0)::16-little>>
-    File.write!(FileStore.path(root, @cv, 1, {0, 0, 0}), Codec.encode_payload(1, {0, 0, 0}, 0, @cv, <<@cells::32-little, l1::binary, @extent::32-little, @extent::32-little, @extent::32-little, 2::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>))
+    File.write!(FileStore.path(root, @cv, 1, {0, 0, 0}), Codec.encode_payload(1, {0, 0, 0}, 0, @cv, <<@cells::32-little, l1::binary, @extent::32-little, @extent::32-little, @extent::32-little, 2::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>))
     l2 = for lz <- 0..(@extent - 1), ly <- 0..(@extent - 1), lx <- 0..(@extent - 1), into: <<>>, do: <<if(ly - 1 < 16, do: 11, else: 0)::16-little>>
-    File.write!(FileStore.path(root, @cv, 2, {0, 0, 0}), Codec.encode_payload(2, {0, 0, 0}, 0, @cv, <<@cells::32-little, l2::binary, @extent::32-little, @extent::32-little, @extent::32-little, 4::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>))
+    File.write!(FileStore.path(root, @cv, 2, {0, 0, 0}), Codec.encode_payload(2, {0, 0, 0}, 0, @cv, <<@cells::32-little, l2::binary, @extent::32-little, @extent::32-little, @extent::32-little, 4::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>))
     world
   end
 
@@ -271,6 +271,8 @@ defmodule VoxelRegion.WorldTest do
     assert :ok=World.compact(:stamp)
     [checkpoint]=World.entries_after(:stamp,1)
     assert checkpoint.seq==2
+    # 跨端 fixture（Voxim `Docs/R6/runtime/s3_server_checkpoint_seq2.bin`，C++ `Voxim.Net.DenseTransactionAndBatchFramesRoundTrip` 解码）：线格式变了就带 VOXIM_CHECKPOINT_FIXTURE=<path> 重跑本测试重出。
+    if path=System.get_env("VOXIM_CHECKPOINT_FIXTURE"), do: File.write!(path,IO.iodata_to_binary(Codec.encode_transaction(checkpoint)))
     for entry <- checkpoint.entries, Map.has_key?(entry,:payload) do
       {:ok,h}=Codec.decode_payload_header(entry.payload)
       assert h.seq==checkpoint.seq and entry.seq==checkpoint.seq

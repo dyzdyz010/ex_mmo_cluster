@@ -7,8 +7,8 @@ defmodule VoxelRegion.Codec do
   - 应答：`"VXRS"` + version u32 + content_version u64（服务端的）+ count u32 +
     items{level u8, region i32×3, kind u8, [kind = payload: len u32 + RegionPayload bytes]}
     kind=entries：事务数 u32 + 每项长度 u32 / 事务信封（无 0x79 opcode）。客户端对已核对的磁盘副本解码后应用，不改写原文件。
-  - RegionPayload 头（54 B）：`"VXR3"` + version u32 + level u8 + region i32×3 + seq u64 + content_version u64 +
-    hash u64（解压后 body 的 MD5 前 8 字节）+ encoding u8（1 = zlib）+ raw_bytes u32 + body_bytes u32；body 紧随其后。
+  - RegionPayload 头（54 B）：`"VXR4"` + version u32 + level u8 + region i32×3 + seq u64 + content_version u64 +
+    hash u64（解压后 body 的 MD5 前 8 字节）+ encoding u8（1 = zlib）+ raw_bytes u32 + body_bytes u32；body 紧随其后（布局见 `VoxelRegion.Payload`）。
   - 日志条目（`0x77 VoxelLogEntry` 的 payload，也是 HTTP `entries` 的元素）：
     seq u64 + kind u8 (0 = cell) + coord i32×3 + material u16 + levels u8 +
     coarse × levels { level u8, cell i32×3, material u16, map_extent u8, faces × 6 { id u16, texels u8 × map_extent²（map_extent > 1 时）} }
@@ -19,9 +19,9 @@ defmodule VoxelRegion.Codec do
 
   @request_magic "VXRQ"
   @reply_magic "VXRS"
-  @payload_magic "VXR3"
+  @payload_magic "VXR4"
   @wire_version 1
-  @payload_version 3
+  @payload_version 4
   @payload_header_bytes 54
 
   @kind_unchanged 0

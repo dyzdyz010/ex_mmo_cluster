@@ -6,11 +6,11 @@
 
 no-op 只向发起且已订阅的连接回现有 `0x79` 空事务，seq 是当前全局游标；不广播、不落盘。该确认与 backlog/实时条目同由 World 发送，连接邮箱保持 FIFO，所以不会跳过本连接应先处理的事务，也不会因最后一个全局事件在订阅外而让账本永久 pending。
 
-事务 `0x79` 小端：`seq u64 / entry_count u32 / {length u32, LogEntry bytes} / coarse_count u32 / coarse[]`。`kind=1` 条目是 `seq u64 / kind u8 / 完整 VXR3`；`kind=0` 字节不变，批次的 canonical 条目 coarse 为空，粗格只在事务 coarse 数组出现一次。按 owned `(level, region)` 分组，精确比较 sparse 字节与 `13 + VXR3大小`，严格大于才用 region。客户端把 region 的 owned 64³ 投入所有相交 resident ring，不能只替换自己的 66³。
+事务 `0x79` 小端：`seq u64 / entry_count u32 / {length u32, LogEntry bytes} / coarse_count u32 / coarse[]`。`kind=1` 条目是 `seq u64 / kind u8 / 完整 VXR4`；`kind=0` 字节不变，批次的 canonical 条目 coarse 为空，粗格只在事务 coarse 数组出现一次。按 owned `(level, region)` 分组，精确比较 sparse 字节与 `13 + VXR4大小`，严格大于才用 region。客户端把 region 的 owned 64³ 投入所有相交 resident ring，不能只替换自己的 66³。
 
 日志磁盘只保留选定的 region 快照和剩余 sparse 值；region 事务后自动 `compact`，也可显式调用 `World.compact`。检查点是完整累积投影，seq 等于压实前缀末尾；任意 `have_seq < checkpoint.seq` 都收到完整检查点再接 suffix。region 恢复时 owned 内部直接读快照、边界值同时更新相邻 ring。没有另存一份全量 sparse 磁盘日志。
 
-复用旧物化快照时，只把 VXR3 头中的 seq 改成检查点 seq（不改 body/hash），使 `transaction.seq == entry.seq == payload.seq`。否则客户端会拒绝整个检查点；测试覆盖「dense seq1 → 无关编辑 seq2 → compact → 重启」。
+复用旧物化快照时，只把 VXR4 头中的 seq 改成检查点 seq（不改 body/hash），使 `transaction.seq == entry.seq == payload.seq`。否则客户端会拒绝整个检查点；测试覆盖「dense seq1 → 无关编辑 seq2 → compact → 重启」。
 
 HTTP `kind=entries`：`transaction_count u32 / {length u32, 无 opcode 的事务信封}`，均小端。每个 region 只记录最近一次完整下发的 `(seq,hash)`；请求 `have_seq > 0` 且头匹配、之后只有 sparse、精确编码更小时才回 entries。客户端把它应用在磁盘副本的解码结果上，不改原文件；服务端保留原头以支持重复读取。首次拉取、头不匹配、服务端重启丢失头、跨过影响本 region（含 ring）的 region 替换都回完整载荷。此处没有历史 payload 缓存或 LRU。
 
@@ -25,7 +25,7 @@ mix run --no-start apps/voxel_region/bench/s3.exs
 python apps/voxel_region/bench/http_probe.py
 ```
 
-跨实现 oracle 测试显式设置 `VOXIM_ORACLE_DIR=<Voxim>/Saved/S4Oracle`；如还设置 `VOXIM_SERVER_PAYLOAD_DIR=<Voxim>/Saved/S4ServerPayloads`，测试会把 NIF body 包成同名 VXR3，供 UE 的 `VoximOracle.S4.ImportServerPayloads` 再通过正式 codec 核对。
+跨实现 oracle 测试显式设置 `VOXIM_ORACLE_DIR=<Voxim>/Saved/S4Oracle`；如还设置 `VOXIM_SERVER_PAYLOAD_DIR=<Voxim>/Saved/S4ServerPayloads`，测试会把 NIF body 包成同名 VXR4，供 UE 的 `VoximOracle.S4.ImportServerPayloads` 再通过正式 codec 核对。
 
 oracle 默认由 ExUnit 排除，显式运行时加 `--include oracle --only oracle`。
 
@@ -49,8 +49,8 @@ L0 不在门内：它按玩家位置在线生成（单块几十毫秒）。`Worl
 
 manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、`materials`、`world_half_extent_m`（世界半边长，米；只决定就绪门枚举范围，不进 content_version）与八项 config：`seed/min_height/sea_level/max_height/soil_depth/lowland_amplitude/mountain_amplitude/cave_max_depth`。`content_version` 使用 MD5-64 v1：输入依次为版本规则、Rust NIF 提供的完整 kernel identity（算法名 + 构建时源码 digest）、material identity，三段以 NUL 分隔，再跟 seed i64 LE、四个高度/土层 i32 LE、两个 IEEE754 f64 LE、洞穴深度 i32 LE；MD5 首 8 字节按 little-endian u64 解释。该规则是 S4 新世界版本，刻意不与旧 bake CityHash 相等。
 
-当前 Demo manifest 配合 kernel identity `worldgen_density_v3@1+sha256:dae4f82299e8368d93e580776e7880e0a6653dc05cd51757b7d9a281b6698b54` 得到 `content_version = 7ca6eb0a2e4f6586`（就绪门切片把岩带判断抽成共用函数并新增边界 / 分类函数，源码 digest 随之改变；首切片的 `90316f7780959a9c` 目录作废）。源码 digest 覆盖 `build.rs`、NIF 参数映射与全部生成源文件，因此 kernel 代码或形状常量变化会进入新的缓存目录。
+当前 Demo manifest 配合 kernel identity `worldgen_density_v3@1+sha256:72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd` 得到 `content_version = 0e31fc80e3ff9e17`（D-9 精简线格式切片改了 `skin::encode` 的 body 序列化；此前就绪门切片的 `7ca6eb0a2e4f6586` 与首切片的 `90316f7780959a9c` 目录作废）。源码 digest 覆盖 `build.rs`、NIF 参数映射与全部生成源文件，因此 kernel 代码或形状常量变化会进入新的缓存目录。
 
-实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*`，设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
+实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*` 与 `s4_lean_*`（D-9 线格式），设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
 
 当前 S4 首切片只把正式 baseline 来源替换为在线 kernel，锁住生成、编辑、重启和 unchanged 闭环。DataService 日志、全 catalog 统一、LRU、L4+ 资产与完整 S4 benchmark 仍属于后续收口，不能据此宣称整个 S4 完成。

@@ -93,7 +93,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   test "native returns the existing raw payload body", _context do
     assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:dae4f82299e8368d93e580776e7880e0a6653dc05cd51757b7d9a281b6698b54"
+             "worldgen_density_v3@1+sha256:72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd"
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 
@@ -107,7 +107,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 0x7CA6_EB0A_2E4F_6586
+    assert GeneratedStore.content_version(store) == 0x0E31_FC80_E3FF_9E17
 
     for field <- [
           "materials",

@@ -129,14 +129,15 @@ RegionPayload
   encoding         u8         ← 0 = raw, 1 = zlib ; 枚举预留给 zstd / Oodle
   raw_len          u32        ← 解压后 body 字节数（UE 的 zlib 解压要先知道）
   body_len         u32
-  body             bytes      ← Body 的序列化（下）。头共 54 B，全部 little-endian（含 magic "VXR3" + 版本 u32 = 3 在最前）
-Body
-  cells            u16 × 66³  （x 最快）
-  skins            稀疏表皮场：Extent、MapExtent、RowStart[]、ColX[]、Records[]、FaceMapIndex[]、Maps[]   ← L0 为空场
+  body             bytes      ← Body 的序列化（下）。头共 54 B，全部 little-endian（含 magic "VXR4" + 版本 u32 = 4 在最前；2026-09-07 前是 "VXR3" / 3）
+Body（v4，D-9 已落地）
+  cells            n u32 + u16 × 66³  （x 最快）
+  skins            稀疏表皮场：Extent i32×3、MapExtent i32、RowStart[]、ColX[]、RecordCount u32 + 六个 face id 平面（各 u8×n）+ MapMask 平面（u16×n）、FaceMapIndex[]、Maps[]   ← L0 为空场
+                   （每个数组前置 n u32；记录的 FaceMapBase = 之前记录 mask popcount 之和、贴图 hash = CityHash64，都由读方重算）
 ```
 
 - `.vxr`（Voxim `WorldGen::Bake::SerializePayload`）的 body 就是这个 Body 的现有序列化（多一份可重算的 `MapHashes[]`）。垂直切片第一步直接用它当线上 body，`.vxr` 文件 = 一个 `RegionPayload`（身份在路径里，seq = 0）。
-- 精简线格式（D-9）：去掉 `MapHashes`（8 B / 张，可重算）与 `FaceMapBase`（记录内 mask popcount 的前缀和，可重算），Records 按平面排列（六个 face id 各一列、mask 一列），face id 用 u8。实测 zlib/zstd-3 后 L3 含地表 region 从 297 KB 到 161 KB（§8.1）。
+- 精简线格式（D-9，2026-09-07 落地为 v4）：去掉 `MapHashes`（8 B / 张，可重算）与 `FaceMapBase`（记录内 mask popcount 的前缀和，可重算），Records 按平面排列（六个 face id 各一列、mask 一列），face id 用 u8。实测 zlib/zstd-3 后 L3 含地表 region 从 297 KB 到 161 KB（§8.1）。落地时的事实修正：服务端从 S4 首切片起就把 `MapHashes` 写空，所以相对当时线上只再省 19.5%（607 region 30.92 → 24.88 MB），相对完整 `.vxr` v3 省 46.3%（见 §13 第四切片）。
 - 实测单 region 体积见 §8.1：**cells 压缩后任何 level 都只有 4–7 KB；含地表的 L1–L6 region 载荷 58–420 KB，96% 以上是表皮场**；纯空气 / 纯岩石 region 0.6 KB。
 
 ### 4.2 Overlay 日志条目（两种 kind）
@@ -436,7 +437,7 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 | D-6 | 多分服 overlay | 缓存目录按分服子目录；资产共享 | 与 §6.1 同格式，无新文件类型 | 单服则无此项 |
 | D-7 | `box` 批量条目 | 暂不做 | 字节规则已覆盖稠密改动（§7.2） | 首个参数化需求出现时加 |
 | D-8 | 薄结构远景可见性 | 本稿不解决 | 与表皮正交，是占用规则的语义 | 新版 reducer / 地标表示（另立稿） |
-| **D-9** | 表皮场线格式 | **精简格式**（去 MapHashes / FaceMapBase、平面排列、u8 face id）★ | 省 40–46%（§8.1）；只是序列化，不改语义 | 直接用 `.vxr` 序列化（切片第一步先用它） |
+| **D-9** | 表皮场线格式 | **精简格式**（去 MapHashes / FaceMapBase、平面排列、u8 face id）★ **已落地（v4，2026-09-07）** | 省 40–46%（§8.1）；只是序列化，不改语义 | 直接用 `.vxr` 序列化（切片第一步先用它） |
 | **D-10** | 粗层 kernel 归属 | **Voxim `GenerateLodRegion`（kernel + 剪枝 + 表皮）移植为服务端 Rust NIF，成为新的 `content_version` 世界**；`worldgen_density_v2` 退役或并存 | 服务端现役 kernel 没有列画像 / 岩带 / 矿脉 / 洞口 / 表皮，也没有粗层剪枝；粗层不能靠物化 L0 再 reduce（§2.3） | 反向：Voxim 换成服务端 kernel（丢掉 R5.11 的全部材质工作） |
 | **D-11** | 材质 id 表 | **服务端 catalog 采用 Voxim 24 项调色板**（id 稳定、≤ 255） | 表皮 texel 是 u8；Voxim 材质 / 贴图 / 颜色全按这套 id | 服务端保留自己的 id，线上加映射表 |
 | **D-12** | `0x68.result_ref` 语义 | = 提交事务的日志 seq | Confirmed 判定变成一次整数比较（§4.3） | 客户端按坐标 + 材质匹配条目 |
@@ -461,6 +462,14 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 ---
 
 ## 13. 进度日志
+
+### 2026-09-07：S4 第四切片——D-9 精简 body 线格式（v4）
+
+先量后改：同一 607 份 Demo 载荷按 v3 → v4 重排再 zlib，30.92 → 24.88 MB（−19.5%）；36 份客户端完整 `.vxr` v3（含 MapHashes）7.56 → 4.06 MB（−46.3%，= §8.1 口径）。
+事实修正：服务端 Rust `skin::encode` / Elixir `Payload.encode` 自首切片起就把 `MapHashes` 写空，所以 §8.1 里最大的一块在现线上早已不存在；本切片真正省的是记录 20 B → 8 B（六个 u8 face 平面 + u16 mask 平面，`FaceMapBase` 由 mask popcount 前缀和重算）。mask 平面改 u8 只再省 0.6%，不做。
+双端：Rust `skin::encode`（kernel identity 变，Demo `content_version` `7ca6eb0a2e4f6586` → `0e31fc80e3ff9e17`）、Elixir `Codec`（`VXR4` / 4）与 `Payload.decode_body / encode`、客户端 `VoxelRegionCodec::SerializeRegionBody`；无旧格式兼容分支，跨端 fixture `s3_server_checkpoint_seq2.bin` 由 `WorldTest` 带 `VOXIM_CHECKPOINT_FIXTURE` 重出。
+验收：UE 重导出 36 份 oracle（v4）→ Rust oracle 36/36（242 s）→ 服务端 oracle 重出 36 份 v4 载荷 → UE `ImportServerPayloads` 通过；UE `.vxr` 与服务端载荷解压后 body 36/36 逐字节相同。服务端 `mix test --no-start` 22 passed / 1 excluded（identity 与 content_version 钉值更新），Rust 5/5，Voxim.Net 21/21。
+16 km 世界从零重烘 78,536 region 965 s（32 线程，前 5 min 与 oracle 测试争 CPU；第三切片外推 ≈ 13 min），baseline 目录 2.71 → 1.95 GB；重启核对 112 ms。Demo 冷客户端 607 份 29.50 → 23.74 MiB（−19.5%，与测量一致），冷 / 热 / 编辑数字见 `Voxim/Docs/R6.md` §S4 第四切片。
 
 ### 2026-09-06：S4 第三切片——就绪门：L1+ 全世界 baseline 先于开放连接
 

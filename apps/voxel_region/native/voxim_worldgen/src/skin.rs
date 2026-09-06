@@ -161,23 +161,26 @@ pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
     Value { material, skins }
 }
 
+/// v4 body（Voxim `SerializeRegionBody`，全部 little-endian）：
+/// cells `n u32 + u16×n` · Extent i32×3 · MapExtent i32 · RowStart `n u32 + i32×n` · ColX `n u32 + u16×n` ·
+/// RecordCount u32 + 六个 face id 平面（各 u8×n）+ MapMask 平面（u16×n）· FaceMapIndex `n u32 + u16×n` · Maps `n u32 + u8×n`。
+/// 记录的 FaceMapBase = 之前所有记录 mask popcount 之和（读方重算）；贴图 hash 不传。
 pub(crate) fn encode(cells: &[u16], records: &[(usize, Skins)], level: i32) -> Vec<u8> {
     let extent = map_extent(level);
+    let n = records.len();
     let mut rows = vec![0u32; EXTENT * EXTENT + 1];
-    let mut cols = Vec::new();
-    let mut recs = Vec::new();
+    let mut cols = Vec::with_capacity(n);
+    let mut faces = vec![0u8; 6 * n];
+    let mut masks = Vec::with_capacity(2 * n);
     let mut indices = Vec::<u16>::new();
     let mut maps = Vec::<u8>::new();
     let mut pool = HashMap::<Vec<u8>, u16>::new();
-    for &(index, skins) in records {
+    for (k, &(index, skins)) in records.iter().enumerate() {
         rows[index / EXTENT + 1] += 1;
         cols.push((index % EXTENT) as u16);
-        for id in skins.ids {
-            recs.extend_from_slice(&id.to_le_bytes());
-        }
-        let base = indices.len() as u32;
         let mut mask = 0u16;
         for face in 0..6 {
+            faces[face * n + k] = skins.ids[face] as u8;
             if skins.face_uniform(face) {
                 continue;
             }
@@ -190,9 +193,7 @@ pub(crate) fn encode(cells: &[u16], records: &[(usize, Skins)], level: i32) -> V
             });
             indices.push(id);
         }
-        recs.extend_from_slice(&mask.to_le_bytes());
-        recs.extend_from_slice(&0u16.to_le_bytes());
-        recs.extend_from_slice(&base.to_le_bytes());
+        masks.extend_from_slice(&mask.to_le_bytes());
     }
     for row in 1..rows.len() {
         rows[row] += rows[row - 1];
@@ -200,7 +201,7 @@ pub(crate) fn encode(cells: &[u16], records: &[(usize, Skins)], level: i32) -> V
     if records.is_empty() {
         rows.clear();
     }
-    let mut out = Vec::with_capacity(cells.len() * 2 + recs.len() + maps.len());
+    let mut out = Vec::with_capacity(cells.len() * 2 + 8 * n + 2 * indices.len() + maps.len());
     fn count(out: &mut Vec<u8>, n: usize) {
         out.extend_from_slice(&(n as u32).to_le_bytes());
     }
@@ -221,15 +222,15 @@ pub(crate) fn encode(cells: &[u16], records: &[(usize, Skins)], level: i32) -> V
     for col in cols {
         out.extend_from_slice(&col.to_le_bytes());
     }
-    count(&mut out, records.len());
-    out.extend_from_slice(&recs);
+    count(&mut out, n);
+    out.extend_from_slice(&faces);
+    out.extend_from_slice(&masks);
     count(&mut out, indices.len());
     for index in indices {
         out.extend_from_slice(&index.to_le_bytes());
     }
     count(&mut out, maps.len());
     out.extend_from_slice(&maps);
-    count(&mut out, 0);
     out
 }
 

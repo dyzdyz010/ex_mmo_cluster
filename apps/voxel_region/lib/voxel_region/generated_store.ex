@@ -4,7 +4,7 @@ defmodule VoxelRegion.GeneratedStore do
 
   JSON manifest 指定 kernel、材质目录与完整八项生成配置。规范字节生成世界
   `content_version`；与 payload body hash 一样，MD5 前 64 bit 按小端解释。
-  `baseline/` 下的 VXR3 是可丢弃磁盘缓存：L1–L5 由 `VoxelRegion.Bake` 在开放连接前烘齐（就绪门），
+  `baseline/` 下的 VXR4 是可丢弃磁盘缓存：L1–L5 由 `VoxelRegion.Bake` 在开放连接前烘齐（就绪门），
   L0 按需在线生成。能由列边界证明均匀（纯空气 / 纯岩石）的 region 不落盘，读取时合成常量载荷；
   列边界在 `baseline/index.etf`。overlay 日志与它位于同一版本目录，不从旧烘焙目录推断，也不与旧世界共用。
 
@@ -116,7 +116,7 @@ defmodule VoxelRegion.GeneratedStore do
   def world_dir(store), do: store.world_dir
 
   @doc """
-  读取 region 的 VXR3：均匀 region 合成常量载荷；mixed 的 L0 缺文件时在线生成；mixed 的 L1+ 必须已由 Bake 落盘，
+  读取 region 的 VXR4：均匀 region 合成常量载荷；mixed 的 L0 缺文件时在线生成；mixed 的 L1+ 必须已由 Bake 落盘，
   否则 `{:error, :not_baked}`——就绪门之后这不该发生。
   """
   def read(store, level, {_, _, _} = region) do

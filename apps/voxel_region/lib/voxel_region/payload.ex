@@ -2,12 +2,11 @@ defmodule VoxelRegion.Payload do
   @moduledoc """
   一个已解码的 region 载荷：66³ cells（binary，u16 LE，x 最快，原点 region × 64 − 1）+ 稀疏表皮场（Voxim `FVoxelSkinField` 的 CSR）。
 
-  body 布局（Voxim `SerializeRegionBody`）：
+  body 布局 v4（Voxim `SerializeRegionBody`，决策稿 D-9；服务端 Rust `skin::encode` 与本模块 `encode/4` 输出同一布局）：
   cells `<<n::32, u16 × n>>` · Extent i32×3 · MapExtent i32 · RowStart `<<n::32, i32 × n>>` · ColX `<<n::32, u16 × n>>` ·
-  RecordCount i32 + Records × 20 B（Face[6] u16、MapMask u16、2 B 对齐填充、FaceMapBase u32）· FaceMapIndex `<<n::32, u16 × n>>` ·
-  Maps `<<n::32, u8 × n>>` · MapHashes `<<n::32, u64 × n>>`。
+  RecordCount u32 + 六个 face id 平面（各 u8 × n）+ MapMask 平面（u16 × n）· FaceMapIndex `<<n::32, u16 × n>>` · Maps `<<n::32, u8 × n>>`。
 
-  重编码时 MapHashes 写空（客户端加载后按 CityHash64 重算），其余逐字节按同一布局。
+  记录的 FaceMapBase（该记录非均匀面在 FaceMapIndex 里的起点）= 之前所有记录 mask popcount 之和，读方重算；贴图 hash 不传（客户端按 CityHash64 重算）。
   """
 
   import Bitwise
@@ -44,12 +43,11 @@ defmodule VoxelRegion.Payload do
       when n == @cell_count do
     with {:ok, row_start, rest} <- array(rest, 4),
          {:ok, col_x, rest} <- array(rest, 2),
-         <<record_count::32-little, records::binary-size(record_count * 20), rest::binary>> <- rest,
+         <<record_count::32-little, faces::binary-size(record_count * 6), masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
-         {:ok, maps, rest} <- array(rest, 1),
-         {:ok, _hashes, <<>>} <- array(rest, 8) do
+         {:ok, maps, <<>>} <- array(rest, 1) do
       map_extent = max(map_extent, 1)
-      {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: build_records(row_start, col_x, records), fmi: fmi, maps: maps}}
+      {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: build_records(row_start, col_x, faces, masks), fmi: fmi, maps: maps}}
     else
       _ -> {:error, :invalid_payload}
     end
@@ -64,12 +62,16 @@ defmodule VoxelRegion.Payload do
     end
   end
 
-  defp build_records(<<>>, _col_x, _records), do: %{}
+  defp build_records(<<>>, _col_x, _faces, _masks), do: %{}
 
-  defp build_records(row_start, col_x, records) do
+  defp build_records(row_start, col_x, faces, masks) do
+    n = div(byte_size(masks), 2)
     rows = for <<v::32-little <- row_start>>, do: v
-    xs = for <<v::16-little <- col_x>>, do: v
-    xs = List.to_tuple(xs)
+    xs = List.to_tuple(for <<v::16-little <- col_x>>, do: v)
+    mask_list = for <<v::16-little <- masks>>, do: v
+    {bases, _} = Enum.map_reduce(mask_list, 0, fn mask, base -> {base, base + popcount(mask)} end)
+    ms = List.to_tuple(mask_list)
+    bases = List.to_tuple(bases)
 
     rows
     |> Enum.chunk_every(2, 1, :discard)
@@ -82,8 +84,8 @@ defmodule VoxelRegion.Payload do
         z = div(row, @extent)
 
         Enum.reduce(first..(last - 1), acc, fn k, acc ->
-          <<_::binary-size(k * 20), f0::16-little, f1::16-little, f2::16-little, f3::16-little, f4::16-little, f5::16-little, mask::16-little, _pad::16, base::32-little, _::binary>> = records
-          Map.put(acc, {elem(xs, k), y, z}, {{f0, f1, f2, f3, f4, f5}, mask, base})
+          ids = List.to_tuple(for face <- 0..5, do: :binary.at(faces, face * n + k))
+          Map.put(acc, {elem(xs, k), y, z}, {ids, elem(ms, k), elem(bases, k)})
         end)
       end
     end)
@@ -133,7 +135,7 @@ defmodule VoxelRegion.Payload do
 
   @doc """
   按 overrides（local → {material, skins}）改写后重编码成完整载荷字节（seq 换成给定值）。
-  表皮记录 = 原记录（去掉被覆盖的格）∪ overrides 里非平凡的格，按 (z, y, x) 升序写 CSR；贴图池按内容去重；MapHashes 写空。
+  表皮记录 = 原记录（去掉被覆盖的格）∪ overrides 里非平凡的格，按 (z, y, x) 升序写 CSR；贴图池按内容去重。
   """
   def encode(%__MODULE__{} = p, overrides, seq, content_version) do
     cells = splice_cells(p.cells, overrides)
@@ -151,7 +153,7 @@ defmodule VoxelRegion.Payload do
       |> Map.new(fn {local, {_, s}} -> {local, s} end)
 
     records = Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
-    {row_start, col_x, recs, fmi, maps} = build_csr(records, ext)
+    {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, ext)
 
     raw =
       IO.iodata_to_binary([
@@ -162,13 +164,13 @@ defmodule VoxelRegion.Payload do
         Enum.map(row_start, &<<&1::32-little>>),
         <<length(col_x)::32-little>>,
         Enum.map(col_x, &<<&1::16-little>>),
-        <<length(recs)::32-little>>,
-        recs,
+        <<length(masks)::32-little>>,
+        faces,
+        Enum.map(masks, &<<&1::16-little>>),
         <<length(fmi)::32-little>>,
         Enum.map(fmi, &<<&1::16-little>>),
         <<byte_size(maps)::32-little>>,
-        maps,
-        <<0::32-little>>
+        maps
       ])
 
     VoxelRegion.Codec.encode_payload(p.level, p.region, seq, content_version, raw)
@@ -188,20 +190,18 @@ defmodule VoxelRegion.Payload do
     IO.iodata_to_binary(Enum.reverse([binary_part(cells, pos, byte_size(cells) - pos) | acc]))
   end
 
-  defp build_csr([], _ext), do: {[], [], [], [], <<>>}
+  defp build_csr([], _ext), do: {[], [], [], [], [], <<>>}
 
   defp build_csr(records, ext) do
     rows = @extent * @extent
 
-    {recs, col_x, fmi, fmi_count, maps, _pool, by_row} =
-      Enum.reduce(records, {[], [], [], 0, <<>>, %{}, %{}}, fn {{x, y, z}, {_sext, faces}}, {recs, col_x, fmi, fmi_count, maps, pool, by_row} ->
-        base = fmi_count
-
-        {ids, mask, fmi, fmi_count, maps, pool} =
-          Enum.reduce(0..5, {[], 0, fmi, fmi_count, maps, pool}, fn face, {ids, mask, fmi, fmi_count, maps, pool} ->
+    {ids_rev, masks_rev, col_x, fmi, maps, _pool, by_row} =
+      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, {_sext, faces}}, {ids_rev, masks_rev, col_x, fmi, maps, pool, by_row} ->
+        {ids, mask, fmi, maps, pool} =
+          Enum.reduce(0..5, {[], 0, fmi, maps, pool}, fn face, {ids, mask, fmi, maps, pool} ->
             case elem(faces, face) do
               {id, nil} ->
-                {[id | ids], mask, fmi, fmi_count, maps, pool}
+                {[id | ids], mask, fmi, maps, pool}
 
               {id, texels} ->
                 texels = if byte_size(texels) == ext * ext, do: texels, else: :binary.copy(<<id>>, ext * ext)
@@ -212,14 +212,16 @@ defmodule VoxelRegion.Payload do
                     :error -> {map_size(pool), maps <> texels, Map.put(pool, texels, map_size(pool))}
                   end
 
-                {[id | ids], mask ||| (1 <<< face), [index | fmi], fmi_count + 1, maps, pool}
+                {[id | ids], mask ||| (1 <<< face), [index | fmi], maps, pool}
             end
           end)
 
-        rec = IO.iodata_to_binary([Enum.map(Enum.reverse(ids), &<<&1::16-little>>), <<mask::16-little, 0::16, base::32-little>>])
         row = y + @extent * z
-        {[rec | recs], [x | col_x], fmi, fmi_count, maps, pool, Map.update(by_row, row, 1, &(&1 + 1))}
+        {[List.to_tuple(Enum.reverse(ids)) | ids_rev], [mask | masks_rev], [x | col_x], fmi, maps, pool, Map.update(by_row, row, 1, &(&1 + 1))}
       end)
+
+    ids = Enum.reverse(ids_rev)
+    faces = IO.iodata_to_binary(for face <- 0..5, do: Enum.map(ids, &<<elem(&1, face)>>))
 
     {row_start_rev, _total} =
       Enum.reduce(0..(rows - 1), {[0], 0}, fn row, {acc, count} ->
@@ -227,6 +229,6 @@ defmodule VoxelRegion.Payload do
         {[n | acc], n}
       end)
 
-    {Enum.reverse(row_start_rev), Enum.reverse(col_x), Enum.reverse(recs), Enum.reverse(fmi), maps}
+    {Enum.reverse(row_start_rev), Enum.reverse(col_x), faces, Enum.reverse(masks_rev), Enum.reverse(fmi), maps}
   end
 end
