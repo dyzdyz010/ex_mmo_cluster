@@ -25,6 +25,7 @@ defmodule VoxelRegion.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:mmo_contracts, in_umbrella: true},
       {:rustler, "~> 0.37.3"}
     ]
   end

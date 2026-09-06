@@ -51,6 +51,8 @@ manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、`materials`、
 
 当前 Demo manifest 配合 kernel identity `worldgen_density_v3@1+sha256:72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd` 得到 `content_version = 0e31fc80e3ff9e17`（D-9 精简线格式切片改了 `skin::encode` 的 body 序列化；此前就绪门切片的 `7ca6eb0a2e4f6586` 与首切片的 `90316f7780959a9c` 目录作废）。源码 digest 覆盖 `build.rs`、NIF 参数映射与全部生成源文件，因此 kernel 代码或形状常量变化会进入新的缓存目录。
 
-实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*` 与 `s4_lean_*`（D-9 线格式），设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
+远景资产包（决策稿 §6.2）：`mix run --no-start apps/voxel_region/bench/pack.exs <manifest> <root> <out_dir> [min_level]` 把 L ≥ min_level（默认 4）的全世界 region 按 level 打成 `<out_dir>/<content_version>/L<n>.vxpack`（`MmoContracts.WorldPackShard` footer-table，条目 = region 坐标 → 完整 VXR4；范围 = 世界列 × [mixed ry − 1, +1]，均匀 region 也在内），放进 Voxim `Content/VoxelWorld/`。16 km Demo 世界 L4 47.7 MB + L5 11.4 MB，3.9 s。
+
+实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*`、`s4_lean_*`（D-9 线格式）与 `s4_asset_*`（资产 + 写回），设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
 
 当前 S4 首切片只把正式 baseline 来源替换为在线 kernel，锁住生成、编辑、重启和 unchanged 闭环。DataService 日志、全 catalog 统一、LRU、L4+ 资产与完整 S4 benchmark 仍属于后续收口，不能据此宣称整个 S4 完成。

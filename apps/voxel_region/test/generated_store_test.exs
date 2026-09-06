@@ -1,7 +1,7 @@
 defmodule VoxelRegion.GeneratedStoreTest do
   use ExUnit.Case, async: false
 
-  alias VoxelRegion.{Bake, Codec, GeneratedStore, Native, Payload, World}
+  alias VoxelRegion.{AssetPack, Bake, Codec, GeneratedStore, Native, Payload, World}
 
   # 半边长 64 m：每级 2×2 列，L1–L5 烘一次（setup_all）后每个测试复制 baseline 目录。
   @manifest %{
@@ -350,6 +350,30 @@ defmodule VoxelRegion.GeneratedStoreTest do
       Codec.decode_reply(IO.iodata_to_binary(reply))
 
     assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)
+  end
+
+  test "asset pack holds every L4+ region of the world box as the bytes the store serves", %{baked: baked, root: root} do
+    out = Path.join(root, "assets")
+    [l4, l5] = AssetPack.build(baked, out, 4, 5)
+    assert l4.path == Path.join([out, GeneratedStore.hex(baked.content_version), "L4.vxpack"])
+    # 64 m 世界：L4 / L5 各 2×2 列；ry 盒 = mixed 行 ± 1，均匀行也在包里。
+    for pack <- [l4, l5] do
+      {lo, hi} = pack.ry_range
+      regions = AssetPack.regions(baked, pack.level)
+      assert pack.regions == 4 * (hi - lo + 1) and length(regions) == pack.regions
+      assert File.stat!(pack.path).size == pack.bytes
+
+      for region <- regions do
+        {:ok, from_pack} = MmoContracts.WorldPackShard.fetch_file(pack.path, region)
+        {:ok, from_store, header} = GeneratedStore.read(baked, pack.level, region)
+        assert from_pack == from_store, "L#{pack.level} #{inspect(region)}"
+        assert header.level == pack.level and header.region == region
+      end
+
+      assert {:error, _} = MmoContracts.WorldPackShard.fetch_file(pack.path, {99, 99, 99})
+      mixed = Enum.count(regions, &(GeneratedStore.classify(baked, pack.level, &1) == :mixed))
+      assert mixed > 0 and mixed < pack.regions
+    end
   end
 
   @tag :oracle

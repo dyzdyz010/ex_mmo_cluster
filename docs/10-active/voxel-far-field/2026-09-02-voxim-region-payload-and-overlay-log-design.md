@@ -281,7 +281,7 @@ opcode 号按 `docs/30-reference/protocol/2026-04-10-线协议规范.md` 的体�
 | 项 | 决定 |
 | --- | --- |
 | Lasset | **推荐 4**（16 m cell）。备选 3。理由见下 |
-| 内容 | `WorldGen ⊕ D` 在某个 seq 的 L4..Lmax 全世界 region 载荷，与 §6.1 同格式，放在客户端资产目录（`<Content>/VoxelWorld/<content_version>/L4/…`），随安装包与补丁分发 |
+| 内容 | `WorldGen ⊕ D` 在某个 seq 的 L4..Lmax 全世界 region 载荷，与 §6.1 同格式，放在客户端资产目录（`<Content>/VoxelWorld/<content_version>/L<n>.vxpack`，footer-table 包；2026-09-07 落地），随安装包与补丁分发 |
 | 运行时变化 | 登录后与运行时收到的 coarse 条目写进内存；region 卸载时 dirty 副本写进 §6.1 的缓存目录（缓存优先于资产），不改资产 |
 | 多分服 | WorldGen 相同、玩家改动不同 → 资产共享一份，缓存目录按分服 id 分子目录（D-6） |
 
@@ -462,6 +462,14 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 ---
 
 ## 13. 进度日志
+
+### 2026-09-07：S4 第五切片——L4+ 全世界资产 + 客户端缓存收口
+
+服务端 `VoxelRegion.AssetPack` / `bench/pack.exs`：L4 / L5 各一个 `.vxpack`（复用 `MmoContracts.WorldPackShard` footer-table，条目 = region 坐标 → 完整 VXR4），范围 = 世界列 × [mixed ry − 1, +1]；
+16 km Demo 世界 L4 768 region 47.7 MB、L5 192 region 11.4 MB，3.9 s。`Payload.encode` 的空表皮场改写 Extent 0（与 Rust / 客户端同字节，否则客户端写回的 L0 副本 hash 永远不等）。
+客户端：取用顺序 内存 → 缓存目录 → 资产 → 网络（资产给 have_seq / have_hash，仍经服务端核对）；传输失败时资产里有的直接发布；dirty region（seq 前进过）卸载 / 退出时写回缓存（表皮场按顺序重建再编码，hash 才与服务端物化载荷相等）；
+缓存目录 `<cv>/<分服>/L<n>/`（分服 id 暂 = 服务端地址）。Demo：冷客户端网络 23.74 → 14.31 MiB（148/176 个 L4+ 来自资产）；断网只靠资产画出 L4/L5 地平线；只 Place 后重启 607 unchanged / 0 payload / 0 entries。
+数字与证据见 `Voxim/Docs/R6.md` §S4 第五切片。仍未做：T-2 / benchmark、DataService 日志、材质 catalog 统一、资产接入安装流程。
 
 ### 2026-09-07：S4 第四切片——D-9 精简 body 线格式（v4）
 

@@ -154,12 +154,15 @@ defmodule VoxelRegion.Payload do
 
     records = Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
     {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, ext)
+    # 空场（L0，或编辑后没有非平凡格）与 Rust `skin::encode` / 客户端空 FVoxelSkinField 同字节：Extent 0、MapExtent 1。
+    # 客户端写回缓存的副本按同一规则编码，hash 才能与这里物化的载荷相等（否则重启后重发 payload 而不是 unchanged）。
+    {field_extent, field_map_extent} = if records == [], do: {0, 1}, else: {@extent, ext}
 
     raw =
       IO.iodata_to_binary([
         <<@cell_count::32-little>>,
         cells,
-        <<@extent::32-little, @extent::32-little, @extent::32-little, ext::32-little>>,
+        <<field_extent::32-little, field_extent::32-little, field_extent::32-little, field_map_extent::32-little>>,
         <<length(row_start)::32-little>>,
         Enum.map(row_start, &<<&1::32-little>>),
         <<length(col_x)::32-little>>,
