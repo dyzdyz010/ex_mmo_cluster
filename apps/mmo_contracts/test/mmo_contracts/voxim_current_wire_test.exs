@@ -15,6 +15,7 @@ defmodule MmoContracts.VoximCurrentWireVectors do
   @rid 0x0102030405060708
   @seq 0x1122334455667788
   @cv 0x8877665544332211
+  @stale_cv 0x7766554433221109
   def root,
     do:
       System.get_env("VOXIM_CURRENT_WIRE") ||
@@ -79,6 +80,21 @@ defmodule MmoContracts.VoximCurrentWireVectors do
       {:entries, 0, {-3, -2, -1}, [transaction()]}
     ]
 
+  def mismatch_requests,
+    do: [%{level: 1, region: {-2, 3, -4}, have_seq: @seq, have_hash: 0x3E9050FD6AD2607D}]
+
+  # World.serve_item 的两个增量分支都要求版本相等；旧非零版本即使 seq/hash 命中也返回完整载荷。
+  def mismatch do
+    %{
+      "region_request_stale_nonzero" =>
+        IO.iodata_to_binary(VoxelRegion.Codec.encode_request(@stale_cv, mismatch_requests())),
+      "region_reply_stale_full_payload" =>
+        IO.iodata_to_binary(
+          VoxelRegion.Codec.encode_reply(@cv, [{:payload, 1, {-2, 3, -4}, payload()}])
+        )
+    }
+  end
+
   def intent_result(code, rid \\ @rid),
     do:
       {:voxel_intent_result,
@@ -139,12 +155,18 @@ if capture = System.get_env("M1_CAPTURE_SERVER") do
       do: File.write!(Path.join(capture, name <> ".bin"), bytes, [:exclusive])
 end
 
+if capture = System.get_env("M1_CAPTURE_MISMATCH") do
+  for {name, bytes} <- MmoContracts.VoximCurrentWireVectors.mismatch(),
+      do: File.write!(Path.join(capture, name <> ".bin"), bytes, [:exclusive])
+end
+
 defmodule MmoContracts.VoximCurrentWireTest do
   use ExUnit.Case, async: true
   alias MmoContracts.VoximCurrentWireVectors, as: V
   @rid 0x0102030405060708
   @seq 0x1122334455667788
   @cv 0x8877665544332211
+  @stale_cv 0x7766554433221109
 
   test "pre-extraction server serializers equal frozen bytes" do
     for {name, bytes} <- V.server(), do: assert(bytes == V.fixture(name), name)
@@ -201,6 +223,24 @@ defmodule MmoContracts.VoximCurrentWireTest do
   end
 
   test "frozen little endian logs and HTTP preserve versions and skins" do
+    for {name, bytes} <- V.mismatch(), do: assert(bytes == V.fixture(name), name)
+
+    assert VoxelRegion.Codec.decode_request(V.fixture("region_request_stale_nonzero")) ==
+             {:ok, @stale_cv, V.mismatch_requests()}
+
+    {:ok, server_cv, [{:payload, 1, {-2, 3, -4}, full_payload}]} =
+      VoxelRegion.Codec.decode_reply(V.fixture("region_reply_stale_full_payload"))
+
+    assert server_cv == @cv
+    assert @stale_cv != 0 and server_cv != @stale_cv
+    assert full_payload == V.fixture("region_payload")
+    {:ok, header, body} = VoxelRegion.Codec.decode_payload_body(full_payload)
+
+    assert {header.content_version, header.seq, header.hash} ==
+             {@cv, @seq, hd(V.mismatch_requests()).have_hash}
+
+    assert body == V.fixture("region_body")
+
     assert VoxelRegion.Codec.decode_entry(V.fixture("log_cell")) == {:ok, V.cell()}
 
     assert VoxelRegion.Codec.decode_transaction(V.fixture("transaction")) ==
