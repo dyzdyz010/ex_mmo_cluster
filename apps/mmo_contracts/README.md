@@ -65,9 +65,29 @@ Gate 的既有 `Session.Dispatch.decode/1` 与 `Session.Sink.encode/1` 只按 gu
 其他消息交给仍有活调用方的 `GateServer.Codec`；TCP/WS 共用，旧 UDP fast-lane 保持原路径。
 旧 Gate codec 保留 movement/time-sync/fast-lane、玩家/NPC、聊天/战斗、Scene chunk/object/field/prefab 等协议，
 不保留当前 Session/Voxel 字节逻辑或 delegate。旧 `VoxelRegion.Codec`/`Payload` 已无调用方并删除。
-新 Movement、固定 60 Hz 权威联调、QUIC 集成、bootstrap runtime 均待后续阶段实施；不要求兼容旧移动协议。
+新 Movement 的纯类型与 codec 由下述 C1 提供；固定 60 Hz 权威联调、QUIC 集成、bootstrap runtime 仍待后续阶段实施，不要求兼容旧移动协议。
 
 G0 普通测试直接调用新 owner，期望仍为同级 Voxim 的原 31 个二进制文件；不再 require sibling 源码。
 历史 manifest 中的旧源路径/hash 只是捕获来源，不是现行所有权或测试前置条件。历史捕获由 Voxim 工具从固定 Git
 版本读原 serializers，写临时 corpus；不再用现行 owner 冒充抽取前来源。Windows scoped 验证：
 `mix test --no-start`（本 app）；跨 app 回归见 Voxim `Docs/M1/reports/G1.md`。
+
+## Voxim M1 C1：新领域消息与不可变值
+
+唯一规范为同级 Voxim `Docs/M1/plan.md` §2，实施证据见 `Docs/M1/reports/C1.md`。
+`session/types.ex`、`movement/types.ex`、`voxel/types.ex` 定义对应领域的必填 struct；
+`Voxel.ChunkOccupancy`、`CanonicalSnapshot`、`CanonicalDelta` 恰为 §2.3 的不可变跨 app 值，
+没有 Scene、订阅、槽推进、缓存或监督树。
+
+- `Session.Codec.encode/1` 的 struct 分支及 `decode/1` 的 `0xFF` 分支承接全部十种 M1 Session 消息，旧 tuple/opcode 分支保持原入口。
+- `Movement.Codec.encode/1`、`decode/1` 承接 InputBatch、OwnerAck、Snapshot；`axes/1` 从合法量化 InputFrame 还原单位圆轴。
+- `Voxel.Codec.encode_m1/1`、`decode_m1/1` 承接 CollisionApplied、CanonicalBootstrap、TimelineFence；旧 R6 编码与入口保留。
+- 每个领域拥有自己的 kind/字段顺序及网络检查，`Session.Wire` 只复用 envelope 和基本字段读写；decoder 返回 `{:ok, struct}` 或 `{:error, :invalid_m1_message}`，不交付半解析值。编码器消费内部合法值，返回 `{:ok, binary}`；无传输 stream framing。
+- `Session.Codec.encode_profile/1` 返回 122 字节，导出 −0 规范为 +0；`profile_id/2` 第二参为 raw32 blocking_hash。网络 profile 拒绝非规范 −0，state 的有限负数及 ±0 全部合法。
+- `Session.Codec.yaw_forward/1`、`yaw_delta/2` 实现 canonical Y-up yaw 与正向半圈规则；`pre_auth_close/1` 接受 reason 1..13，13 仅用于未分配 identity 的认证拒绝。鉴权、身份匹配和关闭连接仍属 T1。
+- 完整内嵌 R6 仍由原 `Voxel.Codec.decode_payload_body/1` 与 `Payload.decode_body/1` 解析。新触达的网络边界拒绝错误长度、范围外 CSR 引用、非法 extent 和未消费 body 尾部；`Payload.max_body_bytes/0` 是格式的格数/六面/u16 贴图库容量，不是运行时预算。所有旧合法 bytes 不变。
+
+从本 app 运行 `mix test --no-start test/mmo_contracts/voxim_m1_contract_test.exs`；全纯库回归为
+`mix test --no-start`，无需加载 sibling app 或原生 NIF。两端实际 encoder 各产 36 个 envelope 及 profile/hash，
+冻结于同级 Voxim `Docs/M1/fixtures/movement-wire/`；其中 `input-slot-scenarios.json` 仅定义供 S1 消费的事件/期望数据，
+C1 测试只检查其消息字节和值，不实现第二个槽运行时。

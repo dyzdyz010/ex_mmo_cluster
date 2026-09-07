@@ -14,6 +14,7 @@ defmodule MmoContracts.Voxel.Payload do
 
   @extent 66
   @cell_count @extent * @extent * @extent
+  @max_map_extent 4
 
   defstruct level: 0,
             region: {0, 0, 0},
@@ -27,6 +28,12 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
   def extent, do: @extent
+
+  @doc "v4 格/CSR 数量和 u16 贴图索引决定的最大编码容量；不是运行时预算。"
+  def max_body_bytes,
+    do:
+      4 + @cell_count * (2 + 2 + 8 + 12) + 16 + 5 * 4 + (@extent * @extent + 1) * 4 +
+        65536 * @max_map_extent * @max_map_extent
 
   @doc "region 的 66³ 原点（level 单位）。"
   def origin({x, y, z}), do: {x * 64 - 1, y * 64 - 1, z * 64 - 1}
@@ -61,23 +68,25 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "VXR4 解压后的 CSR body 解码为不可变载荷。"
   def decode_body(
-        <<n::32-little, cells::binary-size(n * 2), _ex::32-little, _ey::32-little, _ez::32-little,
+        <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
           map_extent::32-little, rest::binary>>
       )
-      when n == @cell_count do
+      when n == @cell_count and map_extent in [1, 2, @max_map_extent] and
+             ((ex == 0 and ey == 0 and ez == 0) or
+                (ex == @extent and ey == @extent and ez == @extent)) do
     with {:ok, row_start, rest} <- array(rest, 4),
          {:ok, col_x, rest} <- array(rest, 2),
          <<record_count::32-little, faces::binary-size(record_count * 6),
            masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
-         {:ok, maps, <<>>} <- array(rest, 1) do
-      map_extent = max(map_extent, 1)
-
+         {:ok, maps, <<>>} <- array(rest, 1),
+         {:ok, records} <-
+           decode_records({ex, ey, ez}, map_extent, row_start, col_x, faces, masks, fmi, maps) do
       {:ok,
        %__MODULE__{
          cells: cells,
          map_extent: map_extent,
-         records: build_records(row_start, col_x, faces, masks),
+         records: records,
          fmi: fmi,
          maps: maps
        }}
@@ -87,6 +96,45 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   def decode_body(_), do: {:error, :invalid_payload}
+
+  defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
+    rows = for <<v::32-little <- row_start>>, do: v
+    xs = List.to_tuple(for <<v::16-little <- col_x>>, do: v)
+    mask_values = for <<v::16-little <- masks>>, do: v
+    record_count = length(mask_values)
+    texels = map_extent * map_extent
+    map_count = div(byte_size(maps), texels)
+
+    shape_ok =
+      tuple_size(xs) == record_count and record_count <= @cell_count and
+        rem(byte_size(maps), texels) == 0 and map_count <= 65536 and
+        Enum.all?(mask_values, &(&1 <= 63)) and
+        byte_size(fmi) == Enum.sum(Enum.map(mask_values, &popcount/1)) * 2 and
+        Enum.all?(for(<<i::16-little <- fmi>>, do: i), &(&1 < map_count))
+
+    rows_ok =
+      if not shape_ok do
+        false
+      else
+        if record_count == 0 do
+          rows == [] and fmi == <<>> and maps == <<>>
+        else
+          extent == {@extent, @extent, @extent} and length(rows) == @extent * @extent + 1 and
+            hd(rows) == 0 and List.last(rows) == record_count and
+            Enum.all?(Enum.chunk_every(rows, 2, 1, :discard), fn [first, last] ->
+              first <= last and last <= record_count and
+                (first == last or
+                   Enum.all?(first..(last - 1), fn i ->
+                     elem(xs, i) < @extent and (i == first or elem(xs, i - 1) < elem(xs, i))
+                   end))
+            end)
+        end
+      end
+
+    if shape_ok and rows_ok,
+      do: {:ok, build_records(row_start, col_x, faces, masks)},
+      else: {:error, :invalid_payload}
+  end
 
   defp array(bin, size) do
     case bin do

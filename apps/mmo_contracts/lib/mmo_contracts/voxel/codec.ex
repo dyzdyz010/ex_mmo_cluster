@@ -1,4 +1,40 @@
 defmodule MmoContracts.Voxel.Codec do
+  alias MmoContracts.Voxel
+
+  @m1_messages %{
+    1 =>
+      {Voxel.CollisionApplied,
+       [
+         identity: :identity,
+         collision_revision: :u64,
+         transaction_seq: :u64,
+         apply_tick: :u64,
+         changed_chunks: {:array, :u32, :coord}
+       ]},
+    2 =>
+      {Voxel.CanonicalBootstrap,
+       [
+         identity: :identity,
+         content_version: :u64,
+         collision_revision: :u64,
+         transaction_seq: :u64,
+         l0_min: :coord,
+         l0_max_exclusive: :coord,
+         travel_min_m: :vec3,
+         travel_max_exclusive_m: :vec3,
+         regions: {:array, :u32, :region}
+       ]},
+    3 =>
+      {Voxel.TimelineFence,
+       [identity: :identity, server_tick: :u64, transaction_seq: :u64, collision_revision: :u64]}
+  }
+
+  @doc "新增 M1 Voxel envelope；既有 R6 入口和内嵌字节不变。"
+  def encode_m1(message), do: MmoContracts.Session.Wire.encode(3, @m1_messages, message)
+
+  @doc "在网络边界一次解析 M1 Voxel envelope。"
+  def decode_m1(bytes), do: MmoContracts.Session.Wire.decode(3, bytes, @m1_messages, &accept_m1/1)
+
   @moduledoc "现行体素编辑/订阅/结果帧与小端 region、日志字节的唯一 owner。"
 
   @msg_voxel_intent_result 0x68
@@ -396,13 +432,18 @@ defmodule MmoContracts.Voxel.Codec do
   @doc "解压 body（校验 hash）。"
   def decode_payload_body(bytes) do
     with {:ok, header} <- decode_payload_header(bytes),
+         true <-
+           header.encoding in [0, 1] and
+             header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
          raw <- if(header.encoding == 1, do: :zlib.uncompress(body), else: body),
-         true <- body_hash(raw) == header.hash do
+         true <- byte_size(raw) == header.raw_bytes and body_hash(raw) == header.hash do
       {:ok, header, raw}
     else
       _ -> {:error, :invalid_payload}
     end
+  rescue
+    ErlangError -> {:error, :invalid_payload}
   end
 
   @doc "raw body 的 MD5 前八字节按小端解释为内容 hash。"
@@ -518,4 +559,32 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_coarse(_, _, _), do: {:error, :invalid_entry}
+
+  defp accept_m1(%Voxel.CollisionApplied{changed_chunks: chunks}),
+    do: MmoContracts.Session.Wire.ordered!(chunks)
+
+  defp accept_m1(%Voxel.CanonicalBootstrap{} = value) do
+    {x0, y0, z0} = value.l0_min
+    {x1, y1, z1} = value.l0_max_exclusive
+    true = x0 < x1 and y0 < y1 and z0 < z1
+    true = length(value.regions) == (x1 - x0) * (y1 - y0) * (z1 - z0)
+    expected = for x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {x, y, z}
+    true = Enum.map(value.regions, &elem(&1, 0)) == expected
+
+    true =
+      Enum.zip(Tuple.to_list(value.travel_min_m), Tuple.to_list(value.travel_max_exclusive_m))
+      |> Enum.all?(fn {a, b} -> a < b end)
+
+    Enum.each(value.regions, fn {coord, bytes} ->
+      {:ok, header, raw} = Voxel.Codec.decode_payload_body(bytes)
+
+      true =
+        header.level == 0 and header.region == coord and header.seq == value.transaction_seq and
+          header.content_version == value.content_version
+
+      {:ok, _} = Voxel.Payload.decode_body(raw)
+    end)
+  end
+
+  defp accept_m1(_), do: :ok
 end
