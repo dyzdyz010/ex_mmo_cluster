@@ -3,7 +3,7 @@ defmodule SceneServer.Movement.Scene do
   use GenServer
   require Logger
   alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{InputSlots, CollisionUpdates}
+  alias SceneServer.Movement.{InputSlots, CollisionUpdates, AOI}
 
   defmodule Clock do
     @moduledoc false
@@ -110,6 +110,7 @@ defmodule SceneServer.Movement.Scene do
       failure: nil,
       content_version: nil,
       characters: %{},
+      aoi: AOI.new(),
       requests: %{},
       workers: %{},
       next_entity_epoch: 1,
@@ -207,6 +208,7 @@ defmodule SceneServer.Movement.Scene do
     info =
       Map.merge(info, %{
         character_count: map_size(state.characters),
+        aoi: AOI.observe(state.aoi),
         mailbox: mailbox,
         queue_length: :queue.len(state.updates.queue),
         collision_revision: state.updates.revision,
@@ -218,9 +220,10 @@ defmodule SceneServer.Movement.Scene do
             %{
               identity: identity,
               entity_id: c.id,
+              entity_epoch: c.epoch,
               state: c.state,
               origin_tick: c.origin,
-              active: c.origin != nil and state.tick >= c.origin,
+              active: active?(state, c),
               processed_input_seq: if(c.slots, do: c.slots.processed_input_seq, else: 0)
             }
           end)
@@ -431,20 +434,25 @@ defmodule SceneServer.Movement.Scene do
         end
       end)
 
-    if rem(state.tick, 3) == 0 do
-      for {_, c} <- state.characters, c.origin != nil and state.tick >= c.origin do
-        fence(state, c)
+    state =
+      if rem(state.tick, 3) == 0 do
+        for {_, c} <- state.characters, active?(state, c) do
+          fence(state, c)
 
-        state.sink.datagram(c.gate, c.identity, %Movement.OwnerAck{
-          identity: c.identity,
-          server_tick: state.tick,
-          processed_input_seq: c.slots.processed_input_seq,
-          collision_revision: state.updates.revision,
-          state: c.state,
-          substituted_through_seq: c.slots.substituted_through_seq
-        })
+          state.sink.datagram(c.gate, c.identity, %Movement.OwnerAck{
+            identity: c.identity,
+            server_tick: state.tick,
+            processed_input_seq: c.slots.processed_input_seq,
+            collision_revision: state.updates.revision,
+            state: c.state,
+            substituted_through_seq: c.slots.substituted_through_seq
+          })
+        end
+
+        publish_aoi(state)
+      else
+        state
       end
-    end
 
     Logger.debug(fn ->
       inspect(%{
@@ -485,7 +493,7 @@ defmodule SceneServer.Movement.Scene do
 
           true ->
             {slots, frame} =
-              if c.origin != nil and s.tick >= c.origin do
+              if active?(s, c) do
                 InputSlots.take(c.slots, s.tick)
               else
                 {c.slots, :waiting}
@@ -653,9 +661,41 @@ defmodule SceneServer.Movement.Scene do
       {c, characters} ->
         Process.demonitor(c.monitor, [:flush])
         close_sink(state, c.gate, identity, reason)
-        %{state | characters: characters}
+        {aoi, lifecycle} = AOI.remove(state.aoi, identity, c.id, c.epoch, state.tick)
+        state = %{state | characters: characters, aoi: aoi}
+        emit_lifecycle(state, lifecycle)
+        state
     end
   end
+
+  defp publish_aoi(state) do
+    entities =
+      for {_, c} <- state.characters,
+          active?(state, c),
+          do: %{identity: c.identity, entity_id: c.id, entity_epoch: c.epoch, state: c.state}
+
+    {aoi, lifecycle, snapshots} =
+      AOI.update(state.aoi, entities, state.tick, state.updates.revision)
+
+    emit_lifecycle(state, lifecycle)
+
+    for snapshot <- snapshots do
+      c = Map.fetch!(state.characters, snapshot.identity)
+      state.sink.datagram(c.gate, c.identity, snapshot)
+    end
+
+    %{state | aoi: aoi}
+  end
+
+  defp emit_lifecycle(state, lifecycle) do
+    for event <- lifecycle do
+      c = Map.fetch!(state.characters, event.identity)
+      reliable(state, c, :control, event)
+      Logger.debug(fn -> inspect(%{event: :voxim_aoi_lifecycle, message: event}) end)
+    end
+  end
+
+  defp active?(state, c), do: c.origin != nil and state.tick >= c.origin
 
   defp close_sink(state, gate, identity, reason), do: state.sink.close(gate, identity, reason)
 

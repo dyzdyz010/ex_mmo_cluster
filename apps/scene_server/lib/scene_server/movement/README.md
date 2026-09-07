@@ -65,7 +65,51 @@ BEAM paths, loads the existing P1/T1 native artifacts, and runs that exact
 ExUnit file without application boot or DB access. The S1 report records
 artifact provenance, commands, red/green results and acceptance limits.
 
-AOI lifecycle/snapshot fan-out is A1's next Scene integration; E1 takes over
+## M1 AOI lifecycle (A1-S)
+
+`AOI` is an immutable relation value owned only by Scene. Its `update/4`
+receives origin-active, step-after `{identity, entity_id, entity_epoch,
+state}` values, Scene tick and collision revision. It returns the new AOI,
+C1 lifecycle messages and C1 `Movement.Snapshot` messages; it owns no actor,
+clock, solver, connection or terrain. This implements the frozen
+`Voxim/Docs/M1/plan.md` sections 2.1/2.4 using S1's existing writer and C1
+types, without extending the wire contract.
+
+On every third Scene tick (20 Hz), 32 m XYZ cells supply enter candidates.
+Exact canonical 3D distance admits at <=30 m; existing relations retain
+through 34 m even across two cells, and leave at >34 m. Only origin-active
+characters observe or appear, and self never appears. Scene sends all
+reliable Enter/Leave messages through Sink's `:control` purpose before
+that tick's absolute snapshots. Stopped characters still receive/publish
+20 Hz snapshots, including empty record lists when alone. Records are
+sorted by entity ID and carry the same step-after state/revision as Scene.
+
+Generation allocation is local to each observer identity: a scalar
+counter increments for each new visible relation. A relation keeps its
+generation until Leave; a return has a larger generation with the same
+entity epoch. This needs no per-departed-entity tombstone cache. S1 still
+allocates a new entity epoch on reconnect. Scene's existing `drop` path
+immediately removes the departing observer and its visible edges, sending
+matching Leave to remaining observers, including on Gate DOWN and source
+failure. A stale identity cannot remove the new character.
+
+`Scene.observe/1` includes each character's `entity_epoch` and `aoi` rows
+with `identity`, `last_generation`, and sorted `visible` records containing
+entity ID/epoch/generation. Debug `voxim_aoi_lifecycle` logs the typed
+message. `AOI.observe/1` exposes immutable values only.
+
+The bounded command from Voxim is
+`python Docs/M1/runtime/A1-S/run.py <fresh-label>`. Six tests exercise pure
+XYZ/hysteresis/generation algebra and real Scene/P1/Sink origin, cadence,
+movement out/back, reconnect/DOWN and collision-revision publication.
+`Docs/M1/reports/A1-S.md` records raw semantic red/green evidence and the
+exact A1-U handoff. Tests use an explicit flat canonical fixture and
+manual monotonic clock; they do not claim real terrain, authentication,
+transport ordering on arrival, client rendering or capacity acceptance.
+A1-U owns remote admission/reordering, interpolation, resources and UE
+assets; reliable send order does not prevent DATAGRAM arriving first.
+
+E1 takes over
 the existing `CollisionUpdates` path for online edit admission and UE
 collision/render acceptance. Neither adds another player writer.
 
