@@ -473,6 +473,13 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-07：S4 第七切片——DataService 权威 overlay 日志持久化（§9 第 1 项）
+
+`overlay.log` 文件 → `voxel_overlay_log(content_version, seq, ordinal, kind, level, region_x/y/z, payload)`：一行一个条目（kind 0 cell / 1 region / 2 coarse，payload 用既有线格式 / 完整 VXR4），
+唯一索引 `(cv, seq, ordinal)`、索引 `(cv, level, region)`；`DataService.Voxel.OverlayLogStore`（append / read_all / replace）；`VoxelRegion.OverlayLog` behaviour，`Db` 正式、`File` 只留测试；
+World 的 seq 语义（内存计数、no-op 不消耗）、压实规则（region 事务后整表替换为检查点）、订阅 / entries 不变。验收：WorldTest 全部改表后端通过；dev 服务器 Place + 地下 Explode r12（7153 格）→ seq 2 稠密事务压实成单检查点（1 cell + 1 region + 1192 coarse），
+重启 `ready, seq=2`，客户端重连 572 unchanged + 35 payload、Gate 重放检查点、无错；记录在 `Voxim/Docs/R6.md` §S4 第七切片。未做：盒查询（索引尚无调用方）、TTL / trim。
+
 ### 2026-09-07：S4 第六切片——T-2 随机 200 region + benchmark，R6 验收表
 
 T-2（§12）：UE `VoximOracle.S4.ExportRandomSample` 固定种子 20260907 在 Demo 16 km 世界抽 200 个 (level, region)（L0 60 / L1 50 / L2 40 / L3 25 / L4 15 / L5 10，均匀 28、含负坐标 156），

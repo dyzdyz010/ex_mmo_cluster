@@ -22,6 +22,7 @@ defmodule VoxelRegion.World do
   use GenServer
   require Logger
   import Bitwise
+  alias VoxelRegion.OverlayLog
   alias VoxelRegion.{Codec, FileStore, Payload, Reducer}
 
   @max_level 5
@@ -149,6 +150,8 @@ defmodule VoxelRegion.World do
       {:ok, source_state} ->
         cv = source.content_version(source_state)
         world_dir = source.world_dir(source_state)
+        # 正式启动用 DataService 表（application.ex）；不起数据库的测试默认文件后端。
+        log = Keyword.get(opts, :log, OverlayLog.File)
         state = %{
           source: source,
           source_state: source_state,
@@ -169,7 +172,7 @@ defmodule VoxelRegion.World do
           seq: 0,
           entries: %{},
           subs: %{},
-          log_path: Path.join(world_dir, "overlay.log")
+          log: {log, log.open(world_dir, cv)}
         }
 
         state = replay_log(state)
@@ -445,25 +448,13 @@ defmodule VoxelRegion.World do
 
   # ---- 日志
 
-  defp append_log(state, entry) do
-    File.mkdir_p!(Path.dirname(state.log_path))
-    term = :erlang.term_to_binary(entry)
-    File.write!(state.log_path, <<byte_size(term)::32, term::binary>>, [:append])
-  end
+  defp append_log(%{log: {backend, handle}}, txn), do: backend.append(handle, txn)
 
-  defp replay_log(state) do
-    case File.read(state.log_path) do
-      {:ok, bytes} -> replay_entries(state, bytes)
-      {:error, :enoent} -> state
-    end
-  end
-
-  defp replay_entries(state, <<>>), do: state
-
-  defp replay_entries(state, <<len::32, term::binary-size(len), rest::binary>>) do
-    entry = :erlang.binary_to_term(term, [:safe])
-    state = replay_entry(state, entry)
-    replay_entries(%{state | seq: max(state.seq, entry.seq), entries: Map.put(state.entries, entry.seq, entry)}, rest)
+  defp replay_log(%{log: {backend, handle}} = state) do
+    Enum.reduce(backend.replay(handle), state, fn txn, s ->
+      s = replay_entry(s, txn)
+      %{s | seq: max(s.seq, txn.seq), entries: Map.put(s.entries, txn.seq, txn)}
+    end)
   end
 
   # ---- 订阅
@@ -676,9 +667,8 @@ defmodule VoxelRegion.World do
       {region_entry(s.seq,bytes),s}
     end)
     txn=%{txn | entries: txn.entries++extra}
-    term=:erlang.term_to_binary(txn)
-    File.write!(state.log_path<>".tmp",<<byte_size(term)::32,term::binary>>)
-    File.rename!(state.log_path<>".tmp",state.log_path)
+    {backend,handle}=state.log
+    backend.checkpoint(handle,txn)
     %{state | entries: %{state.seq=>txn}}
   end
 

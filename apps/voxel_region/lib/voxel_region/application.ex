@@ -25,7 +25,7 @@ defmodule VoxelRegion.Application do
             Application.get_env(:voxel_region, :manifest_path) ||
               raise "VOXEL_REGION_MANIFEST is required when VOXEL_REGION_ROOT is set"
 
-          opts = [source: VoxelRegion.GeneratedStore, root: root, manifest_path: manifest_path]
+          opts = [source: VoxelRegion.GeneratedStore, root: root, manifest_path: manifest_path, log: VoxelRegion.OverlayLog.Db]
           {:ok, store} = VoxelRegion.GeneratedStore.open(opts)
           {:ok, _store, _stats} = VoxelRegion.Bake.run(store)
           [{VoxelRegion.World, opts}]

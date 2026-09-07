@@ -80,6 +80,13 @@ defmodule MmoContracts.StateRegistry do
       note: "命令 replay-protection 幂等日志(梯队1 step1.5)"
     },
     %{
+      holder: DataService.Voxel.OverlayLogStore,
+      state_class: :durable_authoritative,
+      app: :data_service,
+      spec: "Voxim R6 决策稿 §9 第 1 项",
+      note: "Voxim region 世界的权威 overlay 日志（VoxelRegion.World 事务按条目落行，压实 = 替换为检查点）"
+    },
+    %{
       holder: DataService.Voxel.Outbox,
       state_class: :durable_authoritative,
       app: :data_service,

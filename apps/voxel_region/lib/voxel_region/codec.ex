@@ -218,6 +218,11 @@ defmodule VoxelRegion.Codec do
   end
   def decode_entry(_), do: {:error, :invalid_entry}
 
+  @doc "一个粗格条目（`encode_coarse/1` 的逆），必须恰好用完字节。"
+  def decode_coarse(bytes) do
+    with {:ok, [coarse], <<>>} <- decode_coarse(bytes, 1, []), do: {:ok, coarse}
+  end
+
   defp decode_coarse(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 
   defp decode_coarse(<<level::8, cx::32-little-signed, cy::32-little-signed, cz::32-little-signed, m::16-little, ext::8, rest::binary>>, n, acc) when n > 0 do

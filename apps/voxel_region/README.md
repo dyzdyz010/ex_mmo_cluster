@@ -20,7 +20,7 @@ HTTP `kind=entries`：`transaction_count u32 / {length u32, 无 opcode 的事务
 
 ```powershell
 mix compile
-mix cmd --app voxel_region mix test --no-start
+MMO_DB_PORT=5433 mix cmd --app voxel_region mix test --no-start   # WorldTest 走 DataService 表后端：需要 Postgres（test 配置 → mmo_test，test_helper 自动建库 + 迁移）
 mix run --no-start apps/voxel_region/bench/s3.exs
 python apps/voxel_region/bench/http_probe.py
 ```
@@ -55,6 +55,10 @@ L0 不在门内：它按玩家位置在线生成（单块几十毫秒）。`Worl
 manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、`materials`、`world_half_extent_m`（世界半边长，米；只决定就绪门枚举范围，不进 content_version）与八项 config：`seed/min_height/sea_level/max_height/soil_depth/lowland_amplitude/mountain_amplitude/cave_max_depth`。`content_version` 使用 MD5-64 v1：输入依次为版本规则、Rust NIF 提供的完整 kernel identity（算法名 + 构建时源码 digest）、material identity，三段以 NUL 分隔，再跟 seed i64 LE、四个高度/土层 i32 LE、两个 IEEE754 f64 LE、洞穴深度 i32 LE；MD5 首 8 字节按 little-endian u64 解释。该规则是 S4 新世界版本，刻意不与旧 bake CityHash 相等。
 
 当前 Demo manifest 配合 kernel identity `worldgen_density_v3@1+sha256:72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd` 得到 `content_version = 0e31fc80e3ff9e17`（D-9 精简线格式切片改了 `skin::encode` 的 body 序列化；此前就绪门切片的 `7ca6eb0a2e4f6586` 与首切片的 `90316f7780959a9c` 目录作废）。源码 digest 覆盖 `build.rs`、NIF 参数映射与全部生成源文件，因此 kernel 代码或形状常量变化会进入新的缓存目录。
+
+**权威 overlay 日志在 DataService 表里**（第七切片，决策稿 §9 第 1 项）：`voxel_overlay_log(content_version, seq, ordinal, kind, level, region_x/y/z, payload)`，一行一个条目（kind 0 = L0 cell 线格式、1 = 完整 VXR4 region、2 = 粗格线格式），
+`DataService.Voxel.OverlayLogStore` 读写；`VoxelRegion.World` 通过 `VoxelRegion.OverlayLog` behaviour 追加 / 重放 / 压实（压实 = 一个数据库事务里替换成检查点）。正式启动注入 `OverlayLog.Db`（dev 库先 `MMO_DB_PORT=5433 mix ecto.migrate -r DataService.Repo`）；
+`OverlayLog.File`（`<root>/<cv>/overlay.log` ETF 帧）只给不起数据库的测试。seq 仍由 World 内存计数分配（no-op 不消耗、重放取 max）。
 
 远景资产包（决策稿 §6.2）：`mix run --no-start apps/voxel_region/bench/pack.exs <manifest> <root> <out_dir> [min_level]` 把 L ≥ min_level（默认 4）的全世界 region 按 level 打成 `<out_dir>/<content_version>/L<n>.vxpack`（`MmoContracts.WorldPackShard` footer-table，条目 = region 坐标 → 完整 VXR4；范围 = 世界列 × [mixed ry − 1, +1]，均匀 region 也在内），放进 Voxim `Content/VoxelWorld/`。16 km Demo 世界 L4 47.7 MB + L5 11.4 MB，3.9 s。
 

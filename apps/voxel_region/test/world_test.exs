@@ -1,7 +1,8 @@
 defmodule VoxelRegion.WorldTest do
   use ExUnit.Case, async: false
 
-  alias VoxelRegion.{Codec, FileStore, Payload, Reducer, World}
+  alias DataService.Voxel.OverlayLogStore
+  alias VoxelRegion.{Codec, FileStore, OverlayLog, Payload, Reducer, World}
 
   @cv 0x1122_3344_5566_7788
   @extent 66
@@ -34,6 +35,7 @@ defmodule VoxelRegion.WorldTest do
     root = Path.join(System.tmp_dir!(), "voxel_region_world_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     write_world(root)
+    OverlayLogStore.reset()
     on_exit(fn -> File.rm_rf!(root) end)
     {:ok, root: root}
   end
@@ -41,7 +43,7 @@ defmodule VoxelRegion.WorldTest do
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
   test "edit at the surface flips L1 (material + skin) and stops where nothing changes; payloads are re-materialized", %{root: root} do
-    {:ok, world} = World.start_link(root: root, name: :w1)
+    {:ok, world} = World.start_link(root: root, log: OverlayLog.Db, name: :w1)
     assert World.content_version(:w1) == @cv
     assert World.seq(:w1) == 0
 
@@ -93,14 +95,14 @@ defmodule VoxelRegion.WorldTest do
 
     # 重启重放：seq、overlay、载荷都一样。
     GenServer.stop(world)
-    {:ok, _} = World.start_link(root: root, name: :w2)
+    {:ok, _} = World.start_link(root: root, log: OverlayLog.Db, name: :w2)
     assert World.seq(:w2) == 5
     {:ok, reply} = World.serve(:w2, request([%{level: 0, region: {0, 0, 0}, have_seq: h1.seq, have_hash: h1.hash}], @cv))
     assert {:ok, _, [{:unchanged, 0, {0, 0, 0}}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
   end
 
   test "batch is atomic, deduplicates parents, chooses exact bytes and compacts replay across rings and restart", %{root: root} do
-    {:ok, world} = World.start_link(root: root, name: :batch)
+    {:ok, world} = World.start_link(root: root, log: OverlayLog.Db, name: :batch)
     assert {:ok, 1} = World.apply_edit(:batch, {70, 63, 2}, 0)
     before = fetch_payload(:batch, 0, {0, 0, 0})
     assert {:error, :missing_region} = World.apply_edits(:batch, [{{3,63,3},0}, {{1000,0,0},0}])
@@ -152,7 +154,7 @@ defmodule VoxelRegion.WorldTest do
     :ok=World.subscribe(:batch,self(),0,{{20,20,20},{20,20,20}},4)
     refute_receive {:voxel_log_transaction_payload,_},100
     GenServer.stop(world)
-    {:ok, world} = World.start_link(root: root,name: :batch)
+    {:ok, world} = World.start_link(root: root, log: OverlayLog.Db, name: :batch)
     for {{level,region},bytes} <- expected, do: assert(fetch_payload(:batch,level,region) == bytes)
     assert fetch_payload(:batch,0,{0,1,0}) == ring
     assert fetch_payload(:batch,0,{1,0,0}) == other
@@ -163,7 +165,7 @@ defmodule VoxelRegion.WorldTest do
     final = fetch_payload(:batch,0,{0,0,0})
     final_ring = fetch_payload(:batch,0,{0,1,0})
     GenServer.stop(world)
-    {:ok,_} = World.start_link(root: root,name: :batch)
+    {:ok,_} = World.start_link(root: root, log: OverlayLog.Db, name: :batch)
     assert fetch_payload(:batch,0,{0,0,0}) == final
     assert fetch_payload(:batch,0,{0,1,0}) == final_ring
     # 完整 L0 终态：全部 66³ 格，包括 owned 与 ring。
@@ -213,7 +215,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   test "HTTP sparse entries verify the served base and reconstruct cells and skins; old or replaced bases use payload", %{root: root} do
-    {:ok,_}=World.start_link(root: root,name: :http_entries)
+    {:ok,_}=World.start_link(root: root, log: OverlayLog.Db, name: :http_entries)
     assert {:ok,1}=World.apply_edit(:http_entries,{5,63,5},7)
     bases=for level <- 0..2, into: %{} do
       bytes=fetch_payload(:http_entries,level,{0,0,0})
@@ -258,7 +260,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   test "compaction stamps reused region snapshots with the new checkpoint sequence", %{root: root} do
-    {:ok,world}=World.start_link(root: root,name: :stamp)
+    {:ok,world}=World.start_link(root: root, log: OverlayLog.Db, name: :stamp)
     edits=for x <- 0..10,y <- 55..63,z <- 0..10,do: {{x,y,z},0}
     assert {:ok,1}=World.apply_edits(:stamp,edits)
     [first]=World.entries_after(:stamp,0)
@@ -279,7 +281,7 @@ defmodule VoxelRegion.WorldTest do
       if old=Map.get(first_headers,{h.level,h.region}), do: assert(h.hash==old.hash)
     end
     GenServer.stop(world)
-    {:ok,_}=World.start_link(root: root,name: :stamp)
+    {:ok,_}=World.start_link(root: root, log: OverlayLog.Db, name: :stamp)
     assert [checkpoint]==World.entries_after(:stamp,0)
   end
 
@@ -290,7 +292,7 @@ defmodule VoxelRegion.WorldTest do
       {:ok,_,raw}=Codec.decode_payload_body(bytes)
       File.write!(FileStore.path(root,@cv,level,region),Codec.encode_payload(level,region,0,@cv,raw))
     end
-    {:ok,_}=World.start_link(root: root,name: :intermediate_subscription)
+    {:ok,_}=World.start_link(root: root, log: OverlayLog.Db, name: :intermediate_subscription)
     :ok=World.subscribe(:intermediate_subscription,self(),0,{{-2,-2,-2},{2,2,2}},4)
     edits=for x <- 300..301,y <- 10..11,z <- 10..11,do: {{x,y,z},0}
     assert {:ok,1}=World.apply_edits(:intermediate_subscription,edits)
@@ -304,7 +306,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   test "no-op confirms the initiating subscriber beyond its filtered cursor without journaling or broadcasting", %{root: root} do
-    {:ok,_}=World.start_link(root: root,name: :noop_cursor)
+    {:ok,_}=World.start_link(root: root, log: OverlayLog.Db, name: :noop_cursor)
     parent=self()
     observer=spawn_link(fn ->
       :ok=World.subscribe(:noop_cursor,self(),0,{{0,0,0},{0,0,0}},4)
@@ -320,12 +322,12 @@ defmodule VoxelRegion.WorldTest do
     :ok=World.subscribe(:noop_cursor,self(),0,{{20,20,20},{20,20,20}},4)
     assert {:ok,1}=World.apply_edits(:noop_cursor,[{{5,63,5},0}])
     refute_receive {:voxel_log_transaction_payload,_},100
-    log=File.read!(Path.join([root,FileStore.hex(@cv),"overlay.log"]))
+    log=OverlayLogStore.read_all(@cv)
     assert {:ok,1}=World.apply_edits(:noop_cursor,[{{5,63,5},0}])
     assert_receive {:voxel_log_transaction_payload,bytes},500
     assert {:ok,%{seq: 1,entries: [],coarse: []}}=Codec.decode_transaction(bytes)
     assert World.seq(:noop_cursor)==1
-    assert File.read!(Path.join([root,FileStore.hex(@cv),"overlay.log"]))==log
+    assert OverlayLogStore.read_all(@cv)==log
     assert length(World.entries_after(:noop_cursor,0))==1
     # 原单格入口同样能确认no-op。
     assert {:ok,1}=World.apply_edit(:noop_cursor,{5,63,5},0)
@@ -343,7 +345,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   test "subscribe replays the backlog after have_seq, filters by box (+1 ring) and coarse level, and fans out new entries", %{root: root} do
-    {:ok, _} = World.start_link(root: root, name: :w3)
+    {:ok, _} = World.start_link(root: root, log: OverlayLog.Db, name: :w3)
     assert {:ok, 1} = World.apply_edit(:w3, {5, 63, 5}, 0)
     assert {:ok, 2} = World.apply_edit(:w3, {70, 63, 5}, 0)
 
@@ -377,7 +379,7 @@ defmodule VoxelRegion.WorldTest do
 
     a = fetch_size(:lru_probe, root, 0, {0, 0, 0})
     # 上限装得下两份 L0，装不下三份。
-    {:ok, _} = World.start_link(root: root, name: :lru, payload_cache_bytes: a * 2 + 16)
+    {:ok, _} = World.start_link(root: root, log: OverlayLog.Db, name: :lru, payload_cache_bytes: a * 2 + 16)
     first = fetch_payload(:lru, 0, {0, 0, 0})
     second = fetch_payload(:lru, 0, {1, 0, 0})
     resident = fetch_payload(:lru, 4, {0, 0, 0})
@@ -407,7 +409,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   defp fetch_size(name, root, level, region) do
-    {:ok, pid} = World.start_link(root: root, name: name)
+    {:ok, pid} = World.start_link(root: root, log: OverlayLog.Db, name: name)
     size = byte_size(fetch_payload(name, level, region))
     GenServer.stop(pid)
     size
