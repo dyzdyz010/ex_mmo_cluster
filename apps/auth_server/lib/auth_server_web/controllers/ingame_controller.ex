@@ -117,7 +117,7 @@ defmodule AuthServerWeb.IngameController do
   end
 
   @doc """
-  Voxim R6：批量 region 载荷拉取（`application/octet-stream` 进出；线格式见 `VoxelRegion.Codec`）。
+  Voxim R6：批量 region 载荷拉取（`application/octet-stream` 进出；线格式见 `MmoContracts.Voxel.Codec`）。
 
   后端是 `VoxelRegion.World`（烘焙文件 ⊕ overlay 日志，`VOXEL_REGION_ROOT`）；与其它 `/voxel/*` 一样只在 `dev_auto_login` 下开放。
   """

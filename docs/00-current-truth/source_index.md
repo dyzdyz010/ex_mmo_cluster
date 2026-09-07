@@ -1,5 +1,9 @@
 # 原始文档归类索引
 
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+
+
+
 > 本文件把原始文档归类为证据源。它不是当前状态本身；当前状态见 [README.md](README.md) 和各模块文档。
 
 > **体素空间当前口径（2026-07-21）**：完整 XYZ 是唯一权威设计。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。所有 XZ tile column、有限 Y 呈现带、固定 `Tile.Y=0` 的文档均已降为历史证据。Pure3D far 已接入唯一 `production_all_features` 开发根并完成 RG0–RG6 渲染治理；Online authority cutover 仍未开始，开发 WorldGen 根不得冒充在线生产事实源。
@@ -47,9 +51,9 @@ flowchart TD
 | baseline / streaming 历史实施计划 | [`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) | 历史 Phase 0-8 执行序列；H、H gate、canonical 术语仍可查证，旧窗口形状不再是当前契约 |
 | WorldGen v1 旧算法稿 | [`docs/20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) | 历史 2.5D 算法输入；已被纯 3D canonical chunk 契约取代 |
 | 旧同步 / 窗口 / 渲染设计 | [`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](../20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md) | 历史 HOW 证据；其中 XZ column、有限 Y 与旧窗口预算不再有效 |
-| 里程碑 A 扩展：完整 3D 与客户端流送 | [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) | **唯一现役上位主线**；完整 XYZ、canonical source、Pure3D far、原子 presentation、跨 LOD exact-surface material 与遗留退役均已在客户端开发根收口；B/C 未开始 |
+| 里程碑 A 扩展：完整 3D 与客户端流送 | [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) | **Voxia 参考实现上位路线**；完整 XYZ、canonical source、Pure3D far、原子 presentation、跨 LOD exact-surface material 与遗留退役均已在客户端开发根收口；B/C 未开始 |
 | A10 WorldGen 完整客户端 3D 滑动世界 | [`docs/10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md`](../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md) | 历史执行证据：唯一根、source identity、H-gated provider、far diff/residency/artifact/cancel、full oracle 与三轴 route；其中 target-latch/逐 Tile/整代 Far 提交已被 2026-07-25 Patch-diff 设计取代 |
-| Voxia Near/Far Patch-diff 流送 | [`docs/10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md`](../10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md) | **当前流送唯一事实**；Near `4³ chunks`、Far `8³ tiles`、唯一 TargetKey/SceneHost ledger、Adjacent 不按距离阻塞、Relocate loading；完整全方向、严格 Real-RHI 与当前树 30 分钟长稳已通过，多硬件和层间墙人工视觉复验待刷新 |
+| Voxia Near/Far Patch-diff 流送 | [`docs/10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md`](../10-active/voxel-far-field/2026-07-25-voxia-patch-diff-streaming-design.md) | **Voxia 参考流送事实**；Near `4³ chunks`、Far `8³ tiles`、唯一 TargetKey/SceneHost ledger、Adjacent 不按距离阻塞、Relocate loading；完整全方向、严格 Real-RHI 与当前树 30 分钟长稳已通过，多硬件和层间墙人工视觉复验待刷新 |
 | Voxia 唯一生产根整合 | [`clients/Voxia/docs/10-active/voxia-production-root-integration/2026-07-29-unique-production-root-integration-design.md`](../../clients/Voxia/docs/10-active/voxia-production-root-integration/2026-07-29-unique-production-root-integration-design.md) | 唯一正式地图、编辑器作者态环境与组合/分离 LOD 预览、RuntimeMock 默认、Patch-diff 持续移动调度、完整验证矩阵与 Voxia `master` 合并证据 |
 | Voxia 近远景 Tile 交接修复（历史） | [`docs/10-active/voxel-far-field/2026-07-22-near-far-tile-handoff-repair.md`](../10-active/voxel-far-field/2026-07-22-near-far-tile-handoff-repair.md) | 2026-07-22 双显/缺墙与材质问题的历史证据；其中 renderer sink、target latch、逐 Tile transaction 和整窗 fallback 已被 2026-07-25 Patch-diff 架构删除 |
 | Voxia Far LOD 表面材质语义修复 | [`docs/10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md`](../10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md) | 已完成；VXP5 exact surface coverage reducer、live material receipt、旧产物拒绝、最终 ownership MID，以及 near boundary、completed-successor、same-window candidate refresh 与 exact far live identity 的全量、Null-RHI、Real-RHI 和严格审查证据 |

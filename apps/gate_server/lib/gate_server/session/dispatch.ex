@@ -45,6 +45,20 @@ defmodule GateServer.Session.Dispatch do
   alias GateServer.Voxel.SubscriptionWorker
   alias SceneServer.Combat.CastRequest
 
+  alias MmoContracts.Session.Codec, as: SessionCodec
+  alias MmoContracts.Voxel.Codec, as: VoxelCodec
+  require SessionCodec
+  require VoxelCodec
+
+  @doc "按现行领域选择纯 codec；其余交给有活调用方的旧 Gate codec。"
+  def decode(<<opcode, _::binary>> = bytes) when SessionCodec.is_opcode(opcode),
+    do: SessionCodec.decode(bytes)
+
+  def decode(<<opcode, _::binary>> = bytes) when VoxelCodec.is_opcode(opcode),
+    do: VoxelCodec.decode(bytes)
+
+  def decode(bytes), do: GateServer.Codec.decode(bytes)
+
   @type state :: map()
 
   @doc """

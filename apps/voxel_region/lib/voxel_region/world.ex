@@ -23,7 +23,8 @@ defmodule VoxelRegion.World do
   require Logger
   import Bitwise
   alias VoxelRegion.OverlayLog
-  alias VoxelRegion.{Codec, FileStore, Payload, Reducer}
+  alias VoxelRegion.{FileStore, Reducer}
+  alias MmoContracts.Voxel.{Codec, Payload}
 
   @max_level 5
   @resident_level 4
@@ -541,7 +542,7 @@ defmodule VoxelRegion.World do
   end
 
   defp replay_entry(state, entry) do
-    state = put_overlay(state, 0, entry.coord, {entry.material, Reducer.uniform(entry.material)})
+    state = put_overlay(state, 0, entry.coord, {entry.material, MmoContracts.Voxel.Skins.uniform(entry.material)})
     Enum.reduce(entry.coarse, state, fn e, s -> put_overlay(s, e.level, e.cell, {e.material, e.skins}) end)
   end
 
@@ -550,7 +551,7 @@ defmodule VoxelRegion.World do
     result = Enum.reduce_while(Map.new(edits), {[], state}, fn {cell,m}, {changed,s} ->
       case cell_value(s, 0, cell) do
         {:ok, {old,_}, s} when old == m -> {:cont, {changed,s}}
-        {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,Reducer.uniform(m)})}}
+        {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
         {:error,:missing,_} -> {:halt, {:error,:missing_region}}
         {:error,reason,_} -> {:halt, {:error,reason}}
       end

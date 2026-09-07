@@ -1,76 +1,11 @@
 defmodule GateServer.Codec do
-  @moduledoc """
-  Binary codec for the gate socket protocol.
-
-  `GateServer.Codec` is the translation layer between raw TCP frames and the
-  tuples consumed by `GateServer.TcpConnection`. The socket itself uses
-  `{packet, 4}`, so this module only handles the payload after the 4-byte
-  length prefix.
-
-  ## Wire shape
-
-  - message type is always 1 byte
-  - request IDs and entity IDs are unsigned 64-bit big-endian integers
-  - positions and velocities use 64-bit big-endian floats
-  - variable-length text fields are prefixed with 16-bit big-endian lengths
-
-  ## Message families
-
-  ### Client → server
-
-  - `0x01` MovementInput
-  - `0x02` EnterScene
-  - `0x03` TimeSync
-  - `0x04` Heartbeat
-  - `0x05` AuthRequest
-  - `0x08` ChatSay
-  - `0x09` SkillCast
-  - `0x60` Voxel ChunkSubscribe
-  - `0x61` Voxel ChunkUnsubscribe
-  - `0x64` VoxelImpactIntent
-  - `0x65` VoxelBuildReservationIntent
-  - `0x66` VoxelSurfaceElementIntent
-  - `0x67` VoxelPrefabPlaceIntent
-  - `0x6A` VoxelHeightmapRequest（仅保留旧线协议解码兼容，在线分发拒绝）
-  - `0x6F` VoxelDebugProbe
-  - `0x75` FieldConductIntent
-
-  ### Server → client
-
-  - `0x80` Result
-  - `0x81` PlayerEnter
-  - `0x82` PlayerLeave
-  - `0x83` PlayerMove
-  - `0x84` EnterSceneResult
-  - `0x85` TimeSync reply
-  - `0x86` Heartbeat reply
-  - `0x89` ChatMessage
-  - `0x8A` SkillEvent
-  - `0x8B` MovementAck
-  - `0x8C` PlayerState
-  - `0x8D` CombatHit
-  - `0x8E` ActorIdentity
-  - `0x8F` EffectEvent
-  - `0x62` Voxel ChunkSnapshot
-  - `0x68` VoxelIntentResult
-  - `0x6B` VoxelHeightmapRegion（仅保留旧线协议编码兼容）
-  - `0x6F` VoxelDebugProbe
-
-  ## Round trip example
-
-      iex> {:ok, bin} = GateServer.Codec.encode({:player_leave, 42})
-      iex> byte_size(bin)
-      9
-      iex> GateServer.Codec.decode(<<0x04, 123::64-big>>)
-      {:ok, {:heartbeat, 123}}
-  """
+  @moduledoc "仍有活调用方的旧移动、聊天、NPC/战斗与 Scene 体素 wire；现行 Session/Voxel 字节由 MmoContracts 拥有。"
 
   # ── Client → Server message types ──
+  import MmoContracts.Voxel.Fields
+
   @msg_movement 0x01
-  @msg_enter_scene 0x02
   @msg_time_sync 0x03
-  @msg_heartbeat 0x04
-  @msg_auth_request 0x05
   @msg_fast_lane_request 0x06
   @msg_fast_lane_attach 0x07
   @msg_chat_say 0x08
@@ -79,14 +14,13 @@ defmodule GateServer.Codec do
   @msg_voxel_chunk_unsubscribe 0x61
   @msg_voxel_chunk_snapshot 0x62
   @msg_voxel_chunk_delta 0x63
-  # DEPRECATED for client-side direct edit; use @msg_voxel_edit_intent (0x70).
+  # DEPRECATED for client-side direct edit; use MmoContracts.Voxel.Codec (0x70).
   # Kept for skill/tool-system flow per protocol §13.6.
   @msg_voxel_impact_intent 0x64
   @msg_voxel_build_reservation_intent 0x65
   # 形态轨 C5.2:表面元件(火炬/拉杆)放置/清除——绑宿主宏格一面,零 occupancy。
   @msg_voxel_surface_element_intent 0x66
   @msg_voxel_prefab_place_intent 0x67
-  @msg_voxel_intent_result 0x68
   @msg_voxel_chunk_invalidate 0x69
   @msg_voxel_object_state_delta 0x6C
   @msg_voxel_debug_probe 0x6F
@@ -94,22 +28,13 @@ defmodule GateServer.Codec do
   @msg_voxel_heightmap_request 0x6A
   @msg_voxel_heightmap_region 0x6B
   @heightmap_section_materials_u16 0x01
-  @msg_voxel_edit_intent 0x70
-  # Voxim R6（决策稿 §5.4）：overlay 订阅（C→S）与日志条目（S→C）。
-  @msg_voxel_overlay_subscribe 0x76
-  @msg_voxel_log_entry 0x77
-  @msg_voxel_batch_edit_intent 0x78
-  @msg_voxel_log_transaction 0x79
   @msg_voxel_field_conduct_intent 0x75
 
   # ── Server → Client message types ──
-  @msg_result 0x80
   @msg_player_enter 0x81
   @msg_player_leave 0x82
   @msg_player_move 0x83
-  @msg_enter_scene_result 0x84
   @msg_time_sync_reply 0x85
-  @msg_heartbeat_reply 0x86
   @msg_fast_lane_result 0x87
   @msg_fast_lane_attached 0x88
   @msg_chat_message 0x89
@@ -130,8 +55,6 @@ defmodule GateServer.Codec do
   # 不进一步处理。配合 acceptor 的 packet_size 8MB 总帧上限,客户端→服务端不可逼爆内存。
   # 上限取「远大于任何合法输入、远小于 64KB u16 上界」:auth code / ticket 可能承载 JWT
   # (常见 ~1-2KB,带 claims 更长),故给 4KB 余量,避免误拒真实凭据。
-  @max_username_bytes 1024
-  @max_auth_code_bytes 4096
   @max_ticket_bytes 4096
   @max_chat_text_bytes 2048
   @max_known_chunks 9_261
@@ -149,7 +72,7 @@ defmodule GateServer.Codec do
 
   ## Examples
 
-      iex> GateServer.Codec.decode(<<0x04, 123::64-big>>)
+      iex> MmoContracts.Session.Codec.decode(<<0x04, 123::64-big>>)
       {:ok, {:heartbeat, 123}}
 
       iex> GateServer.Codec.decode(<<0x7F, 1, 2, 3>>)
@@ -177,37 +100,12 @@ defmodule GateServer.Codec do
 
   def decode(<<@msg_movement, _rest::binary>>), do: {:error, :invalid_message}
 
-  # EnterScene: 1 + 8 + 8 = 17 bytes
-  def decode(<<@msg_enter_scene, request_id::64-big, cid::64-big>>) do
-    {:ok, {:enter_scene, cid, request_id}}
-  end
-
-  def decode(<<@msg_enter_scene, _rest::binary>>), do: {:error, :invalid_message}
-
   # TimeSync: 1 + 8 + 8 = 17 bytes
   def decode(<<@msg_time_sync, request_id::64-big, client_send_ts::64-big>>) do
     {:ok, {:time_sync, request_id, client_send_ts}}
   end
 
   def decode(<<@msg_time_sync, _rest::binary>>), do: {:error, :invalid_message}
-
-  # Heartbeat: 1 + 8 = 9 bytes
-  def decode(<<@msg_heartbeat, timestamp::64-big>>) do
-    {:ok, {:heartbeat, timestamp}}
-  end
-
-  def decode(<<@msg_heartbeat, _rest::binary>>), do: {:error, :invalid_message}
-
-  # AuthRequest: 1 + 8 + 2 + username + 2 + code
-  def decode(
-        <<@msg_auth_request, request_id::64-big, ulen::16-big, username::binary-size(ulen),
-          clen::16-big, code::binary-size(clen)>>
-      )
-      when ulen <= @max_username_bytes and clen <= @max_auth_code_bytes do
-    {:ok, {:auth_request, username, code, request_id}}
-  end
-
-  def decode(<<@msg_auth_request, _rest::binary>>), do: {:error, :invalid_message}
 
   # Fast-lane bootstrap request: 1 + 8
   def decode(<<@msg_fast_lane_request, request_id::64-big>>) do
@@ -404,40 +302,6 @@ defmodule GateServer.Codec do
 
   def decode(<<@msg_voxel_debug_probe, _rest::binary>>), do: {:error, :invalid_message}
 
-  # VoxelEditIntent (0x70) — typed client edit channel; see protocol §13.6.1.
-  # Fixed 91-byte payload. Phase 1b: Gate decodes and observes only; routing
-  # to Scene mutation API arrives in Phase 1c.
-  def decode(
-        <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,
-          logical_scene_id::64-big, action::8, target_granularity::8, wx::64-big-signed,
-          wy::64-big-signed, wz::64-big-signed, fnx::8-signed, fny::8-signed, fnz::8-signed,
-          material_id::16-big, blueprint_ref::32-big, object_ref::64-big, part_ref::32-big,
-          attribute_patch_ref::32-big, expected_chunk_version::64-big, expected_cell_hash::32-big,
-          client_hint_hash::64-big>>
-      ) do
-    {:ok,
-     {:voxel_edit_intent,
-      %{
-        request_id: request_id,
-        client_intent_seq: client_intent_seq,
-        logical_scene_id: logical_scene_id,
-        action: action,
-        target_granularity: target_granularity,
-        target_world_micro: {wx, wy, wz},
-        face_normal: {fnx, fny, fnz},
-        material_id: material_id,
-        blueprint_ref: blueprint_ref,
-        object_ref: object_ref,
-        part_ref: part_ref,
-        attribute_patch_ref: attribute_patch_ref,
-        expected_chunk_version: expected_chunk_version,
-        expected_cell_hash: expected_cell_hash,
-        client_hint_hash: client_hint_hash
-      }}}
-  end
-
-  def decode(<<@msg_voxel_edit_intent, _rest::binary>>), do: {:error, :invalid_message}
-
   def decode(
         <<@msg_voxel_field_conduct_intent, request_id::64-big, client_intent_seq::32-big,
           logical_scene_id::64-big, sx::64-big-signed, sy::64-big-signed, sz::64-big-signed,
@@ -467,41 +331,6 @@ defmodule GateServer.Codec do
   end
 
   def decode(<<@msg_voxel_field_conduct_intent, _rest::binary>>), do: {:error, :invalid_message}
-
-  # Unknown message type
-  # VoxelOverlaySubscribe (0x76, Voxim R6): have_seq u64 + l0 box [min, max] i32×6 + coarse_min_level u8。
-  def decode(
-        <<@msg_voxel_overlay_subscribe, have_seq::64-big, x0::32-big-signed, y0::32-big-signed,
-          z0::32-big-signed, x1::32-big-signed, y1::32-big-signed, z1::32-big-signed,
-          coarse_min_level::8>>
-      ) do
-    {:ok,
-     {:voxel_overlay_subscribe,
-      %{have_seq: have_seq, box: {{x0, y0, z0}, {x1, y1, z1}}, coarse_min_level: coarse_min_level}}}
-  end
-
-  def decode(<<@msg_voxel_overlay_subscribe, _rest::binary>>), do: {:error, :invalid_message}
-
-  # Voxim 批次：沿用 intent 身份宽度，坐标直接是 canonical macro。
-  def decode(
-        <<@msg_voxel_batch_edit_intent, rid::64-big, seq::32-big, scene::64-big, count::32-big,
-          cells::binary>>
-      )
-      when byte_size(cells) == count * 14 do
-    edits =
-      for <<x::32-big-signed, y::32-big-signed, z::32-big-signed, m::16-big <- cells>>,
-        do: {{x, y, z}, m}
-
-    if Enum.all?(edits, fn {_, m} -> MmoContracts.VoxelMaterialCatalog.valid_id?(m) end) do
-      {:ok,
-       {:voxel_batch_edit_intent,
-        %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, edits: edits}}}
-    else
-      {:error, :invalid_message}
-    end
-  end
-
-  def decode(<<@msg_voxel_batch_edit_intent, _::binary>>), do: {:error, :invalid_message}
 
   def decode(<<type::8, _rest::binary>>) do
     {:error, {:unknown_message_type, type}}
@@ -533,30 +362,11 @@ defmodule GateServer.Codec do
   @spec encode(tuple() | atom()) :: {:ok, iodata()} | {:error, atom()}
 
   # ── Generic result (ok/error with packet_id) ──
-  def encode({:result, :ok, packet_id}) do
-    {:ok, <<@msg_result, packet_id::64-big, @status_ok>>}
-  end
-
-  def encode({:result, :error, packet_id}) do
-    {:ok, <<@msg_result, packet_id::64-big, @status_error>>}
-  end
-
   # ── EnterScene result (success with location + expected next input seq) ──
   # Audit B-S1 / B-SRV2: success carries expected_seq so the client can
   # initialise its local input-frame counter to the value the server is
   # going to validate against. v1 layout — no fallback / compatibility
   # branch; client and server must ship together.
-  def encode({:enter_scene_result, :ok, packet_id, {x, y, z}, expected_seq})
-      when is_integer(expected_seq) and expected_seq >= 0 do
-    {:ok,
-     <<@msg_enter_scene_result, packet_id::64-big, @status_ok, x::float-64-big, y::float-64-big,
-       z::float-64-big, expected_seq::32-big>>}
-  end
-
-  def encode({:enter_scene_result, :error, packet_id}) do
-    {:ok, <<@msg_enter_scene_result, packet_id::64-big, @status_error>>}
-  end
-
   # ── Movement ack ──
   # Audit B-M2: trailing fixed_dt_ms (u16 BE) lets the client detect when
   # its own MovementProfile.fixed_dt_ms has drifted from the server's
@@ -616,10 +426,6 @@ defmodule GateServer.Codec do
   end
 
   # ── Heartbeat reply ──
-  def encode({:heartbeat_reply, timestamp}) do
-    {:ok, <<@msg_heartbeat_reply, timestamp::64-big>>}
-  end
-
   # ── Fast-lane bootstrap result (TCP) ──
   def encode({:fast_lane_result, :ok, packet_id, udp_port, ticket}) when is_binary(ticket) do
     {:ok,
@@ -724,23 +530,6 @@ defmodule GateServer.Codec do
     {:ok, [<<@msg_voxel_chunk_invalidate>>, payload]}
   end
 
-  # VoxelLogEntry (0x77, Voxim R6)：payload 是 VoxelRegion.Codec.encode_entry 的字节，原样下发。
-  def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
-    {:ok, [<<@msg_voxel_log_entry>>, payload]}
-  end
-
-  def encode({:voxel_log_transaction_payload, payload}) when is_binary(payload) do
-    {:ok, [<<@msg_voxel_log_transaction>>, payload]}
-  end
-
-  # VoxelHeightmapRegion (0x6B):
-  # 1 + request_id:u64 + origin_macro_x:i32 + origin_macro_z:i32 + stride:u16 +
-  # count_x:u16 + count_z:u16 + heights:u16-be[count_x*count_z] (X fastest). Heights
-  # are big-endian u16 (terrain peaks exceed 1 km, so the old u8 no longer fits).
-  #
-  # Optional trailing sections are appended after the fixed height array as
-  # section_type:u8 + section_len:u32 + section_payload. Section 0x01 carries
-  # top-surface material ids as u16-be[count_x*count_z], same X-fastest order.
   def encode(
         {:voxel_heightmap_region,
          %{
@@ -766,29 +555,6 @@ defmodule GateServer.Codec do
          material_section
        ]}
     end
-  end
-
-  def encode(
-        {:voxel_intent_result,
-         %{
-           request_id: request_id,
-           client_intent_seq: client_intent_seq,
-           logical_scene_id: logical_scene_id,
-           result_code: result_code,
-           result_ref: result_ref,
-           authoritative: authoritative,
-           reason: reason
-         }}
-      )
-      when is_list(authoritative) and is_binary(reason) do
-    {:ok,
-     [
-       <<@msg_voxel_intent_result, request_id::64-big, client_intent_seq::32-big,
-         logical_scene_id::64-big, encode_voxel_result_code(result_code)::8, result_ref::64-big,
-         length(authoritative)::16-big>>,
-       encode_voxel_authoritative(authoritative),
-       <<byte_size(reason)::16-big, reason::binary>>
-     ]}
   end
 
   def encode({:voxel_build_reservation_intent, %{} = intent}) do
@@ -823,13 +589,6 @@ defmodule GateServer.Codec do
       when is_binary(result) do
     {:ok,
      <<@msg_voxel_debug_probe, request_id::64-big, byte_size(result)::16-big, result::binary>>}
-  end
-
-  def encode({:voxel_edit_intent, %{} = intent}) do
-    case encode_voxel_edit_intent_payload(intent) do
-      {:ok, payload} -> {:ok, [<<@msg_voxel_edit_intent>>, payload]}
-      {:error, _} = err -> err
-    end
   end
 
   # Phase 4-bis (D2):0x6C ObjectStateDelta encoder 主战场已挪到
@@ -886,35 +645,6 @@ defmodule GateServer.Codec do
 
   defp decode_affected_chunks(_, _, _), do: {:error, :invalid_affected_chunks}
 
-  defp encode_voxel_edit_intent_payload(intent) do
-    with {:ok, request_id} <- u64!(intent[:request_id], :request_id),
-         {:ok, client_intent_seq} <- u32!(intent[:client_intent_seq], :client_intent_seq),
-         {:ok, logical_scene_id} <- u64!(intent[:logical_scene_id], :logical_scene_id),
-         {:ok, action} <- u8!(intent[:action], :action),
-         {:ok, granularity} <- u8!(intent[:target_granularity], :target_granularity),
-         {:ok, {wx, wy, wz}} <- world_micro!(intent[:target_world_micro]),
-         {:ok, {fnx, fny, fnz}} <- face_normal!(intent[:face_normal]),
-         {:ok, material_id} <- u16!(intent[:material_id], :material_id),
-         {:ok, blueprint_ref} <- u32!(intent[:blueprint_ref], :blueprint_ref),
-         {:ok, object_ref} <- u64!(intent[:object_ref], :object_ref),
-         {:ok, part_ref} <- u32!(intent[:part_ref], :part_ref),
-         {:ok, attribute_patch_ref} <- u32!(intent[:attribute_patch_ref], :attribute_patch_ref),
-         {:ok, expected_chunk_version} <-
-           u64!(intent[:expected_chunk_version], :expected_chunk_version),
-         {:ok, expected_cell_hash} <- u32!(intent[:expected_cell_hash], :expected_cell_hash),
-         {:ok, client_hint_hash} <- u64!(intent[:client_hint_hash], :client_hint_hash) do
-      {:ok,
-       <<request_id::64-big, client_intent_seq::32-big, logical_scene_id::64-big, action::8,
-         granularity::8, wx::64-big-signed, wy::64-big-signed, wz::64-big-signed, fnx::8-signed,
-         fny::8-signed, fnz::8-signed, material_id::16-big, blueprint_ref::32-big,
-         object_ref::64-big, part_ref::32-big, attribute_patch_ref::32-big,
-         expected_chunk_version::64-big, expected_cell_hash::32-big, client_hint_hash::64-big>>}
-    end
-  end
-
-  defp u8!(v, _f) when is_integer(v) and v in 0..0xFF, do: {:ok, v}
-  defp u8!(v, f), do: {:error, {:invalid_field, f, v}}
-
   defp decode_field_conduct_mode(1), do: :discharge
   defp decode_field_conduct_mode(_), do: :conductive
 
@@ -941,33 +671,6 @@ defmodule GateServer.Codec do
       intent
     end
   end
-
-  defp u16!(v, _f) when is_integer(v) and v in 0..0xFFFF, do: {:ok, v}
-  defp u16!(v, f), do: {:error, {:invalid_field, f, v}}
-
-  defp u32!(v, _f) when is_integer(v) and v in 0..0xFFFF_FFFF, do: {:ok, v}
-  defp u32!(v, f), do: {:error, {:invalid_field, f, v}}
-
-  defp u64!(v, _f) when is_integer(v) and v >= 0 and v <= 0xFFFF_FFFF_FFFF_FFFF, do: {:ok, v}
-  defp u64!(v, f), do: {:error, {:invalid_field, f, v}}
-
-  defp world_micro!({x, y, z})
-       when is_integer(x) and is_integer(y) and is_integer(z) and
-              x in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF and
-              y in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF and
-              z in -0x8000_0000_0000_0000..0x7FFF_FFFF_FFFF_FFFF do
-    {:ok, {x, y, z}}
-  end
-
-  defp world_micro!(other), do: {:error, {:invalid_field, :target_world_micro, other}}
-
-  defp face_normal!({nx, ny, nz})
-       when is_integer(nx) and is_integer(ny) and is_integer(nz) and nx in -128..127 and
-              ny in -128..127 and nz in -128..127 do
-    {:ok, {nx, ny, nz}}
-  end
-
-  defp face_normal!(other), do: {:error, {:invalid_field, :face_normal, other}}
 
   defp decode_voxel_known_chunks(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 
@@ -1026,23 +729,6 @@ defmodule GateServer.Codec do
   defp encode_heightmap_material_section(_materials, _cells),
     do: {:error, :invalid_heightmap_materials}
 
-  defp encode_voxel_authoritative(authoritative) do
-    Enum.map(authoritative, fn %{
-                                 chunk_coord: {cx, cy, cz},
-                                 chunk_version: chunk_version,
-                                 macro_index: macro_index,
-                                 cell_version: cell_version,
-                                 cell_hash: cell_hash,
-                                 payload_kind: payload_kind,
-                                 cell_payload: cell_payload
-                               }
-                               when is_binary(cell_payload) ->
-      <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, chunk_version::64-big,
-        macro_index::16-big, cell_version::32-big, cell_hash::32-big, payload_kind::8,
-        byte_size(cell_payload)::32-big, cell_payload::binary>>
-    end)
-  end
-
   defp encode_movement_mode(:grounded), do: 0
   defp encode_movement_mode(:airborne), do: 1
   defp encode_movement_mode(:disabled), do: 2
@@ -1082,13 +768,6 @@ defmodule GateServer.Codec do
   defp encode_cue_kind(:impact_pulse), do: 4
   defp encode_cue_kind(value) when is_integer(value), do: value
   defp encode_cue_kind(_value), do: 0
-
-  defp encode_voxel_result_code(:accepted), do: 0
-  defp encode_voxel_result_code(:deferred), do: 1
-  defp encode_voxel_result_code(:rejected), do: 2
-  defp encode_voxel_result_code(:stale), do: 3
-  defp encode_voxel_result_code(value) when is_integer(value), do: value
-  defp encode_voxel_result_code(_value), do: 2
 
   defp target_cid_or_zero(nil), do: -1
   defp target_cid_or_zero(value), do: value

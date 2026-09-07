@@ -1,14 +1,5 @@
-# G0 在抽取前直接加载原 codec；不为测试给纯合同 app 增加运行时依赖。
+# G0 固定历史捕获来源；普通测试只消费现行纯合同 owner。
 unless Process.whereis(ExUnit.Server), do: ExUnit.start()
-
-for {module, path} <- [
-      {VoxelRegion.Reducer, "../../../voxel_region/lib/voxel_region/reducer.ex"},
-      {VoxelRegion.Codec, "../../../voxel_region/lib/voxel_region/codec.ex"},
-      {VoxelRegion.Payload, "../../../voxel_region/lib/voxel_region/payload.ex"},
-      {GateServer.Codec, "../../../gate_server/lib/gate_server/codec.ex"}
-    ] do
-  unless Code.ensure_loaded?(module), do: Code.require_file(Path.expand(path, __DIR__))
-end
 
 defmodule MmoContracts.VoximCurrentWireVectors do
   @moduledoc false
@@ -49,14 +40,14 @@ defmodule MmoContracts.VoximCurrentWireVectors do
 
   def payload do
     p =
-      struct(VoxelRegion.Payload,
+      struct(MmoContracts.Voxel.Payload,
         level: 1,
         region: {-2, 3, -4},
         map_extent: 2,
         cells: :binary.copy(<<2::16-little>>, 66 * 66 * 66)
       )
 
-    VoxelRegion.Payload.encode(p, %{{1, 2, 3} => {3, skins(2)}}, @seq, @cv)
+    MmoContracts.Voxel.Payload.encode(p, %{{1, 2, 3} => {3, skins(2)}}, @seq, @cv)
   end
 
   def transaction,
@@ -87,10 +78,12 @@ defmodule MmoContracts.VoximCurrentWireVectors do
   def mismatch do
     %{
       "region_request_stale_nonzero" =>
-        IO.iodata_to_binary(VoxelRegion.Codec.encode_request(@stale_cv, mismatch_requests())),
+        IO.iodata_to_binary(
+          MmoContracts.Voxel.Codec.encode_request(@stale_cv, mismatch_requests())
+        ),
       "region_reply_stale_full_payload" =>
         IO.iodata_to_binary(
-          VoxelRegion.Codec.encode_reply(@cv, [{:payload, 1, {-2, 3, -4}, payload()}])
+          MmoContracts.Voxel.Codec.encode_reply(@cv, [{:payload, 1, {-2, 3, -4}, payload()}])
         )
     }
   end
@@ -109,7 +102,12 @@ defmodule MmoContracts.VoximCurrentWireVectors do
        }}
 
   def gate(message) do
-    {:ok, bytes} = GateServer.Codec.encode(message)
+    codec =
+      if elem(message, 0) in [:result, :enter_scene_result, :heartbeat_reply],
+        do: MmoContracts.Session.Codec,
+        else: MmoContracts.Voxel.Codec
+
+    {:ok, bytes} = codec.encode(message)
     IO.iodata_to_binary(bytes)
   end
 
@@ -121,18 +119,22 @@ defmodule MmoContracts.VoximCurrentWireVectors do
       "enter_error" => gate({:enter_scene_result, :error, @rid}),
       "heartbeat_reply" => gate({:heartbeat_reply, @seq}),
       "batch_result" => gate(intent_result(:accepted, @rid + 1)),
-      "log_cell" => IO.iodata_to_binary(VoxelRegion.Codec.encode_entry(cell())),
+      "log_cell" => IO.iodata_to_binary(MmoContracts.Voxel.Codec.encode_entry(cell())),
       "log_region" =>
-        IO.iodata_to_binary(VoxelRegion.Codec.encode_entry(%{seq: @seq, payload: payload()})),
-      "transaction" => IO.iodata_to_binary(VoxelRegion.Codec.encode_transaction(transaction())),
+        IO.iodata_to_binary(
+          MmoContracts.Voxel.Codec.encode_entry(%{seq: @seq, payload: payload()})
+        ),
+      "transaction" =>
+        IO.iodata_to_binary(MmoContracts.Voxel.Codec.encode_transaction(transaction())),
       "region_payload" => payload(),
-      "region_request" => IO.iodata_to_binary(VoxelRegion.Codec.encode_request(@cv, requests())),
+      "region_request" =>
+        IO.iodata_to_binary(MmoContracts.Voxel.Codec.encode_request(@cv, requests())),
       "region_request_unknown" =>
-        IO.iodata_to_binary(VoxelRegion.Codec.encode_request(0, requests())),
-      "region_reply" => IO.iodata_to_binary(VoxelRegion.Codec.encode_reply(@cv, replies()))
+        IO.iodata_to_binary(MmoContracts.Voxel.Codec.encode_request(0, requests())),
+      "region_reply" => IO.iodata_to_binary(MmoContracts.Voxel.Codec.encode_reply(@cv, replies()))
     }
 
-    {:ok, _, raw} = VoxelRegion.Codec.decode_payload_body(basic["region_payload"])
+    {:ok, _, raw} = MmoContracts.Voxel.Codec.decode_payload_body(basic["region_payload"])
 
     basic =
       Map.merge(basic, %{
@@ -173,18 +175,19 @@ defmodule MmoContracts.VoximCurrentWireTest do
   end
 
   test "UE session captures decode to independent values" do
-    assert GateServer.Codec.decode(V.fixture("auth_request")) ==
+    assert MmoContracts.Session.Codec.decode(V.fixture("auth_request")) ==
              {:ok, {:auth_request, "golden-体素", "token-\u00e9", @rid}}
 
-    assert GateServer.Codec.decode(V.fixture("enter_request")) ==
+    assert MmoContracts.Session.Codec.decode(V.fixture("enter_request")) ==
              {:ok, {:enter_scene, 0x1020304050607080, @rid}}
 
-    assert GateServer.Codec.decode(V.fixture("heartbeat_request")) == {:ok, {:heartbeat, @seq}}
+    assert MmoContracts.Session.Codec.decode(V.fixture("heartbeat_request")) ==
+             {:ok, {:heartbeat, @seq}}
   end
 
   test "UE edit captures preserve signed micro versus macro and every fixed field" do
     for {name, material, action} <- [{"edit_place", 3, 1}, {"edit_remove", 0, 0}] do
-      assert GateServer.Codec.decode(V.fixture(name)) ==
+      assert MmoContracts.Voxel.Codec.decode(V.fixture(name)) ==
                {:ok,
                 {:voxel_edit_intent,
                  %{
@@ -206,7 +209,7 @@ defmodule MmoContracts.VoximCurrentWireTest do
                  }}}
     end
 
-    assert GateServer.Codec.decode(V.fixture("batch_edit")) ==
+    assert MmoContracts.Voxel.Codec.decode(V.fixture("batch_edit")) ==
              {:ok,
               {:voxel_batch_edit_intent,
                %{
@@ -216,7 +219,7 @@ defmodule MmoContracts.VoximCurrentWireTest do
                  edits: [{{-129, -2, 65}, 3}, {{17, -33, -1}, 0}]
                }}}
 
-    assert GateServer.Codec.decode(V.fixture("subscribe")) ==
+    assert MmoContracts.Voxel.Codec.decode(V.fixture("subscribe")) ==
              {:ok,
               {:voxel_overlay_subscribe,
                %{have_seq: @seq, box: {{-130, -66, -2}, {64, 128, 192}}, coarse_min_level: 3}}}
@@ -225,42 +228,43 @@ defmodule MmoContracts.VoximCurrentWireTest do
   test "frozen little endian logs and HTTP preserve versions and skins" do
     for {name, bytes} <- V.mismatch(), do: assert(bytes == V.fixture(name), name)
 
-    assert VoxelRegion.Codec.decode_request(V.fixture("region_request_stale_nonzero")) ==
+    assert MmoContracts.Voxel.Codec.decode_request(V.fixture("region_request_stale_nonzero")) ==
              {:ok, @stale_cv, V.mismatch_requests()}
 
     {:ok, server_cv, [{:payload, 1, {-2, 3, -4}, full_payload}]} =
-      VoxelRegion.Codec.decode_reply(V.fixture("region_reply_stale_full_payload"))
+      MmoContracts.Voxel.Codec.decode_reply(V.fixture("region_reply_stale_full_payload"))
 
     assert server_cv == @cv
     assert @stale_cv != 0 and server_cv != @stale_cv
     assert full_payload == V.fixture("region_payload")
-    {:ok, header, body} = VoxelRegion.Codec.decode_payload_body(full_payload)
+    {:ok, header, body} = MmoContracts.Voxel.Codec.decode_payload_body(full_payload)
 
     assert {header.content_version, header.seq, header.hash} ==
              {@cv, @seq, hd(V.mismatch_requests()).have_hash}
 
     assert body == V.fixture("region_body")
 
-    assert VoxelRegion.Codec.decode_entry(V.fixture("log_cell")) == {:ok, V.cell()}
+    assert MmoContracts.Voxel.Codec.decode_entry(V.fixture("log_cell")) == {:ok, V.cell()}
 
-    assert VoxelRegion.Codec.decode_transaction(V.fixture("transaction")) ==
+    assert MmoContracts.Voxel.Codec.decode_transaction(V.fixture("transaction")) ==
              {:ok, V.transaction()}
 
-    assert VoxelRegion.Codec.decode_request(V.fixture("region_request")) ==
+    assert MmoContracts.Voxel.Codec.decode_request(V.fixture("region_request")) ==
              {:ok, @cv, V.requests()}
 
-    assert VoxelRegion.Codec.decode_request(V.fixture("region_request_unknown")) ==
+    assert MmoContracts.Voxel.Codec.decode_request(V.fixture("region_request_unknown")) ==
              {:ok, 0, V.requests()}
 
-    assert VoxelRegion.Codec.decode_reply(V.fixture("region_reply")) == {:ok, @cv, V.replies()}
+    assert MmoContracts.Voxel.Codec.decode_reply(V.fixture("region_reply")) ==
+             {:ok, @cv, V.replies()}
 
     for name <- ["region_payload", "ue_region_payload"] do
-      {:ok, _, raw} = VoxelRegion.Codec.decode_payload_body(V.fixture(name))
+      {:ok, _, raw} = MmoContracts.Voxel.Codec.decode_payload_body(V.fixture(name))
       assert raw == V.fixture("region_body")
-      {:ok, p} = VoxelRegion.Payload.decode(V.fixture(name))
+      {:ok, p} = MmoContracts.Voxel.Payload.decode(V.fixture(name))
       assert {p.level, p.region, p.seq, p.content_version} == {1, {-2, 3, -4}, @seq, @cv}
-      assert VoxelRegion.Payload.value(p, {1, 2, 3}) == {3, V.skins(2)}
-      assert VoxelRegion.Payload.material(p, {0, 0, 0}) == 2
+      assert MmoContracts.Voxel.Payload.value(p, {1, 2, 3}) == {3, V.skins(2)}
+      assert MmoContracts.Voxel.Payload.material(p, {0, 0, 0}) == 2
     end
   end
 end

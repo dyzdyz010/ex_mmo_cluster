@@ -5,7 +5,7 @@ defmodule GateServer.Replication.EgressWsIntegrationTest do
   alias GateServer.WsConnection
 
   defp encoded(tag, payload) do
-    {:ok, iodata} = GateServer.Codec.encode({tag, payload})
+    {:ok, iodata} = GateServer.Session.Sink.encode({tag, payload})
     IO.iodata_to_binary(iodata)
   end
 

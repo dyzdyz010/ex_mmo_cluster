@@ -6,7 +6,7 @@ defmodule GateServer.Session.Sink do
   会话状态机与同一套体素业务管线；它们只在三件事上不同：
 
   1. 编码后的字节往哪写（`:gen_tcp.send/2` vs 转交 WebSocket owner 进程）；
-  2. 已含 opcode 的裸帧往哪写（同上，但不过 `GateServer.Codec`）；
+  2. 已含 opcode 的裸帧往哪写（同上，但不过字节 codec）；
   3. 结构化 observe 事件名的传输前缀（TCP 无前缀，WS 用 `ws_`）。
 
   把这三点收进本结构后，业务侧只依赖 sink 契约，不再需要知道自己跑在哪条链路上，
@@ -33,6 +33,16 @@ defmodule GateServer.Session.Sink do
           event_prefix: String.t()
         }
 
+  alias MmoContracts.Session.Codec, as: SessionCodec
+  alias MmoContracts.Voxel.Codec, as: VoxelCodec
+  require SessionCodec
+  require VoxelCodec
+
+  @doc "只选择消息所属的字节 owner，不改变传输行为。"
+  def encode(message) when SessionCodec.is_message(message), do: SessionCodec.encode(message)
+  def encode(message) when VoxelCodec.is_message(message), do: VoxelCodec.encode(message)
+  def encode(message), do: GateServer.Codec.encode(message)
+
   @doc "为一条已接管的 TCP socket 构造 sink。"
   @spec tcp(port()) :: t()
   def tcp(socket), do: %__MODULE__{transport: :tcp, ref: socket, event_prefix: ""}
@@ -45,12 +55,12 @@ defmodule GateServer.Session.Sink do
   @doc """
   编码并下发一条协议消息。
 
-  编码失败（新消息类型漏 `GateServer.Codec.encode/1` 子句）只记结构化日志并丢弃，
+  编码失败（新消息类型漏所属领域 `encode/1` 子句）只记结构化日志并丢弃，
   不 raise —— 一条编不出来的下行消息不该带崩整条连接。
   """
   @spec send_encoded(t(), tuple()) :: :ok
   def send_encoded(%__MODULE__{} = sink, message) do
-    case GateServer.Codec.encode(message) do
+    case encode(message) do
       {:ok, encoded} ->
         send_raw(sink, IO.iodata_to_binary(encoded))
 

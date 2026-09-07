@@ -2,7 +2,8 @@ defmodule VoxelRegion.WorldTest do
   use ExUnit.Case, async: false
 
   alias DataService.Voxel.OverlayLogStore
-  alias VoxelRegion.{Codec, FileStore, OverlayLog, Payload, Reducer, World}
+  alias VoxelRegion.{FileStore, OverlayLog, Reducer, World}
+  alias MmoContracts.Voxel.{Codec, Payload}
 
   @cv 0x1122_3344_5566_7788
   @extent 66
@@ -204,7 +205,7 @@ defmodule VoxelRegion.WorldTest do
         end
       e,acc ->
         local=Payload.local(payload.region,e.coord)
-        if payload.level==0 and Payload.in_span?(local),do: Map.put(acc,local,{e.material,Reducer.uniform(e.material)}),else: acc
+        if payload.level==0 and Payload.in_span?(local),do: Map.put(acc,local,{e.material,MmoContracts.Voxel.Skins.uniform(e.material)}),else: acc
     end)
     overrides=Enum.reduce(txn.coarse,overrides,fn e,acc ->
       local=Payload.local(payload.region,e.cell)
@@ -233,7 +234,7 @@ defmodule VoxelRegion.WorldTest do
         assert IO.iodata_to_binary(repeat)==IO.iodata_to_binary(reply)
         {:ok,p}=Payload.decode(base)
         overrides=Enum.reduce(txns,%{},fn txn,acc ->
-          acc=Enum.reduce(txn.entries,acc,fn e,a -> Map.put(a,Payload.local({0,0,0},e.coord),{e.material,Reducer.uniform(e.material)}) end)
+          acc=Enum.reduce(txn.entries,acc,fn e,a -> Map.put(a,Payload.local({0,0,0},e.coord),{e.material,MmoContracts.Voxel.Skins.uniform(e.material)}) end)
           Enum.reduce(txn.coarse,acc,fn e,a -> Map.put(a,Payload.local({0,0,0},e.cell),{e.material,e.skins}) end)
         end)
         reconstructed=Payload.encode(p,overrides,List.last(txns).seq,@cv)

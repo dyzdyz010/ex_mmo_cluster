@@ -54,7 +54,7 @@ defmodule GateServer.Session.Scene do
   取刚拉起的玩家角色的下一个期望输入序号。
 
   Audit B-S1 / B-SRV1：该序号经 EnterSceneResult 下发给客户端，客户端据此对齐预测
-  序列，避免进场首帧就被判 stale（帧布局见 `GateServer.Codec`）。
+  序列，避免进场首帧就被判 stale（帧布局见 `MmoContracts.Session.Codec`）。
   """
   @spec next_input_seq(pid()) :: {:ok, non_neg_integer()} | {:error, :scene_unavailable}
   def next_input_seq(player_pid) do

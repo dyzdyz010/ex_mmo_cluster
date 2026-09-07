@@ -13,7 +13,8 @@ defmodule VoxelRegion.GeneratedStore do
   """
 
   import Bitwise
-  alias VoxelRegion.{Codec, Native, Payload}
+  alias VoxelRegion.{Native}
+  alias MmoContracts.Voxel.{Codec, Payload}
   alias MmoContracts.VoxelMaterialCatalog
 
   @schema "voxim-worldgen-v1"

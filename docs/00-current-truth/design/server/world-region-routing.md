@@ -1,5 +1,9 @@
 # 服务端控制面当前事实：World / Region / Scene / Chunk
 
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+
+
+
 > 当前唯一事实文档。原始阶段日志和实现记录见 [../../source_index.md](../../source_index.md)。
 
 ## 状态总览
@@ -13,7 +17,13 @@
 | Region | 当前为 `RegionGrid` 隐式 3D lattice，`region = f(chunk_coord)` | 已落地 |
 | Scene owner | `SceneNodeRegistry` 仍是 join-order round-robin + sticky assignment；已补 stale owner repair | 部分 HA |
 
-## 当前权威边界
+## Voxim 当前 region 路径
+
+Voxim 现行 region HTTP 请求、overlay 订阅与编辑由 Gate 会话层 / Auth HTTP 入口调用 `VoxelRegion.World`，
+其 FileStore/OverlayLog/GeneratedStore 与纯 `MmoContracts.Voxel.Codec`/`Payload` 单向协作；
+reduction、持久化与 World 状态仍在业务 app。下面 Scene/Chunk 路由仍服务旧业务，不能代替后续 M1 authority 接线。
+
+## 既有 Scene 业务权威边界
 
 ```mermaid
 flowchart LR

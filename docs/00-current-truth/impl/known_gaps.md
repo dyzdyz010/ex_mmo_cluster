@@ -1,5 +1,9 @@
 # 当前已知缺口
 
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+
+
+
 > 本文是缺口的合并态 snapshot。已完成能力见 [`impl/README.md`](README.md) 与各 current-truth 文档；历史过程见 [`source_index.md`](../source_index.md)。
 
 ## 服务端控制面
@@ -17,7 +21,7 @@
 - **32km/稀疏世界/真实地图导入**：缺大世界生成预算、稀疏 chunk 策略、地图 migration 与完整 dirty/rebuild scheduler。
 - **服务端 material 派生**：现有 NIF 仍暴露 `column_height/heightmap_region`；缺 `chunk_xyz -> canonical 3D material page` 及与 1m truth 的一致性验证。
 
-## Voxia 当前客户端缺口
+## Voxia 参考客户端缺口
 
 > 唯一 `L_VoxiaProductionWorld`、默认 RuntimeMock、阶段 1/2/3、Far LOD exact-surface、Near/Far
 > Patch-diff、完整 XYZ 移动安全门与编辑器作者态预览已经合入 Voxia 独立仓库 `master`。

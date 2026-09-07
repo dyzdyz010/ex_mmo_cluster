@@ -1,7 +1,7 @@
 defmodule GateServer.CodecTest do
   use ExUnit.Case, async: true
 
-  alias GateServer.Codec
+  alias GateServer.Session.{Dispatch, Sink}
 
   test "Voxim batch append preserves intent widths and transaction frame bytes" do
     wire =
@@ -16,21 +16,21 @@ defmodule GateServer.CodecTest do
                client_intent_seq: 8,
                logical_scene_id: 9,
                edits: [{{1, -2, 3}, 11}, {{4, 5, 6}, 0}]
-             }}} = Codec.decode(wire)
+             }}} = Dispatch.decode(wire)
 
-    assert {:error, :invalid_message} = Codec.decode(binary_part(wire, 0, byte_size(wire) - 1))
+    assert {:error, :invalid_message} = Dispatch.decode(binary_part(wire, 0, byte_size(wire) - 1))
     txn = %{seq: 7, entries: [%{seq: 7, coord: {1, -2, 3}, material: 11, coarse: []}], coarse: []}
-    bytes = VoxelRegion.Codec.encode_transaction(txn) |> IO.iodata_to_binary()
+    bytes = MmoContracts.Voxel.Codec.encode_transaction(txn) |> IO.iodata_to_binary()
 
     assert Base.encode16(bytes, case: :lower) ==
              "0700000000000000010000001800000007000000000000000001000000feffffff030000000b000000000000"
 
-    assert {:ok, encoded} = Codec.encode({:voxel_log_transaction_payload, bytes})
+    assert {:ok, encoded} = Sink.encode({:voxel_log_transaction_payload, bytes})
     assert IO.iodata_to_binary(encoded) == <<0x79, bytes::binary>>
 
     for material <- [2, 23] do
       assert {:ok, {:voxel_batch_edit_intent, %{edits: [{{1, 2, 3}, ^material}]}}} =
-               Codec.decode(
+               Dispatch.decode(
                  <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,
                    2::32-big-signed, 3::32-big-signed, material::16-big>>
                )
@@ -38,7 +38,7 @@ defmodule GateServer.CodecTest do
 
     for material <- [24, 255] do
       assert {:error, :invalid_message} =
-               Codec.decode(
+               Dispatch.decode(
                  <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,
                    2::32-big-signed, 3::32-big-signed, material::16-big>>
                )
@@ -60,7 +60,7 @@ defmodule GateServer.CodecTest do
                  input_dir: {1.0, 0.5},
                  speed_scale: 1.25,
                  movement_flags: 3
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "decodes movement input with zero direction" do
@@ -77,20 +77,20 @@ defmodule GateServer.CodecTest do
                  input_dir: {+0.0, +0.0},
                  speed_scale: 1.0,
                  movement_flags: 2
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
   end
 
   describe "decode enter_scene" do
     test "decodes enter_scene with request_id" do
       msg = <<0x02, 77::64-big, 12345::64-big>>
-      assert {:ok, {:enter_scene, 12345, 77}} == Codec.decode(msg)
+      assert {:ok, {:enter_scene, 12345, 77}} == Dispatch.decode(msg)
     end
   end
 
   describe "decode time_sync" do
     test "decodes redesigned time_sync" do
-      assert {:ok, {:time_sync, 88, 999}} == Codec.decode(<<0x03, 88::64-big, 999::64-big>>)
+      assert {:ok, {:time_sync, 88, 999}} == Dispatch.decode(<<0x03, 88::64-big, 999::64-big>>)
     end
   end
 
@@ -98,19 +98,19 @@ defmodule GateServer.CodecTest do
     test "decodes heartbeat with timestamp" do
       ts = :os.system_time(:millisecond)
       msg = <<0x04, ts::64-big>>
-      assert {:ok, {:heartbeat, ts}} == Codec.decode(msg)
+      assert {:ok, {:heartbeat, ts}} == Dispatch.decode(msg)
     end
   end
 
   describe "decode fast-lane bootstrap" do
     test "decodes fast-lane TCP request" do
-      assert {:ok, {:fast_lane_request, 7}} == Codec.decode(<<0x06, 7::64-big>>)
+      assert {:ok, {:fast_lane_request, 7}} == Dispatch.decode(<<0x06, 7::64-big>>)
     end
 
     test "decodes UDP attach request" do
       ticket = "attach-ticket"
       msg = <<0x07, 8::64-big, byte_size(ticket)::16-big, ticket::binary>>
-      assert {:ok, {:fast_lane_attach, 8, ^ticket}} = Codec.decode(msg)
+      assert {:ok, {:fast_lane_attach, 8, ^ticket}} = Dispatch.decode(msg)
     end
   end
 
@@ -118,7 +118,7 @@ defmodule GateServer.CodecTest do
     test "decodes chat_say with request_id and text" do
       text = "hello"
       msg = <<0x08, 42::64-big, byte_size(text)::16-big, text::binary>>
-      assert {:ok, {:chat_say, "hello", 42}} == Codec.decode(msg)
+      assert {:ok, {:chat_say, "hello", 42}} == Dispatch.decode(msg)
     end
 
     test "decodes skill_cast with request_id and skill id" do
@@ -131,7 +131,7 @@ defmodule GateServer.CodecTest do
                  target_cid: nil,
                  target_position: {0.0, 0.0, 0.0}
                }}} ==
-               Codec.decode(
+               Dispatch.decode(
                  <<0x09, 43::64-big, 1::16-big, 0::8, -1::64-big-signed, 0.0::float-64-big,
                    0.0::float-64-big, 0.0::float-64-big>>
                )
@@ -157,7 +157,7 @@ defmodule GateServer.CodecTest do
                    %{chunk_coord: {-2, 3, 4}, chunk_version: 10},
                    %{chunk_coord: {-1, 3, 4}, chunk_version: 11}
                  ]
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "accepts all 9261 known refs for a radius 10 chunk window" do
@@ -173,7 +173,7 @@ defmodule GateServer.CodecTest do
         <<0x60, 100::64-big, 1::64-big, 0::32-big-signed, 0::32-big-signed, 0::32-big-signed,
           10::8, 1::8, 9_261::16-big, known_payload::binary>>
 
-      assert {:ok, {:voxel_chunk_subscribe, request}} = Codec.decode(msg)
+      assert {:ok, {:voxel_chunk_subscribe, request}} = Dispatch.decode(msg)
       assert request.radius_l_inf == 10
       assert length(request.known) == 9_261
       assert hd(request.known) == %{chunk_coord: {-10, -10, -10}, chunk_version: 0}
@@ -191,7 +191,7 @@ defmodule GateServer.CodecTest do
                  request_id: 100,
                  logical_scene_id: 1,
                  chunks: [{0, 0, 0}, {1, 0, 0}]
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "keeps the archived 0x6A heightmap request decoder wire-compatible" do
@@ -209,7 +209,7 @@ defmodule GateServer.CodecTest do
                  stride: 16,
                  count_x: 4,
                  count_z: 3
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "decodes voxel impact intent" do
@@ -227,11 +227,11 @@ defmodule GateServer.CodecTest do
                  target_world_micro: {-8, 16, 24},
                  impact_kind: 3,
                  client_hint_hash: 0x0102030405060708
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "rejects malformed voxel impact intent" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x64, 101::64-big>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x64, 101::64-big>>)
     end
 
     test "decodes voxel edit intent (typed, fixed 91-byte payload)" do
@@ -261,29 +261,29 @@ defmodule GateServer.CodecTest do
                  expected_chunk_version: 0xFFFF_FFFF_FFFF_FFFF,
                  expected_cell_hash: 0xFFFF_FFFF,
                  client_hint_hash: 0xCAFE_BABE_DEAD_BEEF
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "rejects malformed voxel edit intent (short payload)" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x70, 1001::64-big>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x70, 1001::64-big>>)
     end
 
     test "rejects voxel edit intent with payload longer than 91 bytes (no trailing bytes allowed)" do
       base = build_edit_intent_wire(edit_intent_default_fields())
       assert byte_size(base) == 92
-      assert {:error, :invalid_message} == Codec.decode(base <> <<0xFF>>)
-      assert {:error, :invalid_message} == Codec.decode(base <> <<0, 0, 0, 0>>)
+      assert {:error, :invalid_message} == Dispatch.decode(base <> <<0xFF>>)
+      assert {:error, :invalid_message} == Dispatch.decode(base <> <<0, 0, 0, 0>>)
     end
 
     test "rejects voxel edit intent with empty payload (just the opcode byte)" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x70>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x70>>)
     end
 
     test "decode is forward-compatible: accepts unknown action values up to u8 max" do
       for unknown_action <- [5, 99, 200, 0xFF] do
         msg = build_edit_intent_wire(%{edit_intent_default_fields() | action: unknown_action})
 
-        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
         assert intent.action == unknown_action
       end
     end
@@ -296,7 +296,7 @@ defmodule GateServer.CodecTest do
             | target_granularity: unknown_granularity
           })
 
-        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
         assert intent.target_granularity == unknown_granularity
       end
     end
@@ -306,7 +306,7 @@ defmodule GateServer.CodecTest do
       # semantic rule but is a legal i8 triple. Business layer in Phase 1c
       # will reject; the decoder must not.
       msg = build_edit_intent_wire(%{edit_intent_default_fields() | face_normal: {5, 0, 0}})
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
       assert intent.face_normal == {5, 0, 0}
     end
 
@@ -314,7 +314,7 @@ defmodule GateServer.CodecTest do
       # We set the wire byte to 0xFF directly via -1 i8. Confirms that the
       # decoder uses `8-signed`, not unsigned.
       msg = build_edit_intent_wire(%{edit_intent_default_fields() | face_normal: {-1, -2, -3}})
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
       assert intent.face_normal == {-1, -2, -3}
     end
 
@@ -332,7 +332,7 @@ defmodule GateServer.CodecTest do
             target_granularity: 0xFF
         })
 
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
       assert intent.client_intent_seq == 0xFFFF_FFFF
       assert intent.material_id == 0xFFFF
       assert intent.blueprint_ref == 0xFFFF_FFFF
@@ -354,7 +354,7 @@ defmodule GateServer.CodecTest do
             client_hint_hash: 0xFFFF_FFFF_FFFF_FFFF
         })
 
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
       assert intent.request_id == 0xFFFF_FFFF_FFFF_FFFF
       assert intent.logical_scene_id == 0xFFFF_FFFF_FFFF_FFFF
       assert intent.object_ref == 0xFFFF_FFFF_FFFF_FFFF
@@ -369,7 +369,7 @@ defmodule GateServer.CodecTest do
             {0, 0, -0x8000_0000_0000_0000}
           ] do
         msg = build_edit_intent_wire(%{edit_intent_default_fields() | target_world_micro: tuple})
-        assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+        assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
         assert intent.target_world_micro == tuple
       end
     end
@@ -377,7 +377,7 @@ defmodule GateServer.CodecTest do
     test "decode round-trips zero values across all fields" do
       zero = edit_intent_default_fields()
       msg = build_edit_intent_wire(zero)
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
 
       # Only fields with sentinels diverge from zero by design; the rest
       # should equal exactly the zero defaults from `edit_intent_default_fields/0`.
@@ -393,7 +393,7 @@ defmodule GateServer.CodecTest do
           0::64-big, 0::32-big, 0::32-big, 0xFFFF_FFFF_FFFF_FFFF::64-big, 0xFFFF_FFFF::32-big,
           0::64-big>>
 
-      assert {:ok, {:voxel_edit_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_edit_intent, intent}} = Dispatch.decode(msg)
       assert intent.action == 1
       assert intent.target_granularity == 0
       assert intent.expected_chunk_version == 0xFFFF_FFFF_FFFF_FFFF
@@ -420,12 +420,12 @@ defmodule GateServer.CodecTest do
         client_hint_hash: 0xFFFF_FFFF_FFFF_FFFF
       }
 
-      assert {:ok, iodata} = Codec.encode({:voxel_edit_intent, intent})
+      assert {:ok, iodata} = Sink.encode({:voxel_edit_intent, intent})
       bytes = IO.iodata_to_binary(iodata)
       assert byte_size(bytes) == 92
       assert <<0x70, _payload::binary-size(91)>> = bytes
 
-      assert {:ok, {:voxel_edit_intent, decoded}} = Codec.decode(bytes)
+      assert {:ok, {:voxel_edit_intent, decoded}} = Dispatch.decode(bytes)
       assert decoded == intent
     end
 
@@ -443,11 +443,11 @@ defmodule GateServer.CodecTest do
         tag_set_ref: 0
       }
 
-      assert {:ok, bytes} = Codec.encode({:voxel_surface_element_intent, intent})
+      assert {:ok, bytes} = Sink.encode({:voxel_surface_element_intent, intent})
       assert byte_size(bytes) == 57
       assert <<0x66, _payload::binary-size(56)>> = bytes
 
-      assert {:ok, {:voxel_surface_element_intent, decoded}} = Codec.decode(bytes)
+      assert {:ok, {:voxel_surface_element_intent, decoded}} = Dispatch.decode(bytes)
       assert decoded == intent
     end
 
@@ -464,13 +464,13 @@ defmodule GateServer.CodecTest do
         tag_set_ref: 11
       }
 
-      assert {:ok, bytes} = Codec.encode({:voxel_surface_element_intent, intent})
-      assert {:ok, {:voxel_surface_element_intent, decoded}} = Codec.decode(bytes)
+      assert {:ok, bytes} = Sink.encode({:voxel_surface_element_intent, intent})
+      assert {:ok, {:voxel_surface_element_intent, decoded}} = Dispatch.decode(bytes)
       assert decoded == intent
     end
 
     test "rejects a truncated voxel_surface_element_intent (0x66)" do
-      assert {:error, :invalid_message} = Codec.decode(<<0x66, 0, 0, 0>>)
+      assert {:error, :invalid_message} = Dispatch.decode(<<0x66, 0, 0, 0>>)
     end
 
     test "decodes the shared fixture voxel_edit_intent_v1.bin and matches expected fields" do
@@ -481,7 +481,7 @@ defmodule GateServer.CodecTest do
       assert byte_size(bytes) == 184
       <<frame_a::binary-size(92), frame_b::binary-size(92)>> = bytes
 
-      assert {:ok, {:voxel_edit_intent, intent_a}} = Codec.decode(frame_a)
+      assert {:ok, {:voxel_edit_intent, intent_a}} = Dispatch.decode(frame_a)
       assert intent_a.request_id == 0x0000_0000_0000_00A1
       assert intent_a.action == 0
       assert intent_a.target_granularity == 0
@@ -491,7 +491,7 @@ defmodule GateServer.CodecTest do
       assert intent_a.expected_chunk_version == 0xFFFF_FFFF_FFFF_FFFF
       assert intent_a.expected_cell_hash == 0xFFFF_FFFF
 
-      assert {:ok, {:voxel_edit_intent, intent_b}} = Codec.decode(frame_b)
+      assert {:ok, {:voxel_edit_intent, intent_b}} = Dispatch.decode(frame_b)
       assert intent_b.request_id == 0x0000_0000_0000_00B2
       assert intent_b.action == 1
       assert intent_b.target_granularity == 2
@@ -546,8 +546,8 @@ defmodule GateServer.CodecTest do
         client_hint_hash: 0xFFFF_EEEE_DDDD_CCCC
       }
 
-      {:ok, ia} = Codec.encode({:voxel_edit_intent, intent_a})
-      {:ok, ib} = Codec.encode({:voxel_edit_intent, intent_b})
+      {:ok, ia} = Sink.encode({:voxel_edit_intent, intent_a})
+      {:ok, ib} = Sink.encode({:voxel_edit_intent, intent_b})
       regenerated = IO.iodata_to_binary([ia, ib])
       assert regenerated == bytes
     end
@@ -562,7 +562,7 @@ defmodule GateServer.CodecTest do
             {:target_granularity, -1}
           ] do
         assert {:error, {:invalid_field, ^field, ^bad}} =
-                 Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                 Sink.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
                "expected #{field}=#{bad} to be rejected"
       end
     end
@@ -572,7 +572,7 @@ defmodule GateServer.CodecTest do
 
       for bad <- [-1, 0x1_0000, 0xFFFF_FFFF_FFFF_FFFF] do
         assert {:error, {:invalid_field, :material_id, ^bad}} =
-                 Codec.encode({:voxel_edit_intent, %{base | material_id: bad}}),
+                 Sink.encode({:voxel_edit_intent, %{base | material_id: bad}}),
                "expected material_id=#{bad} to be rejected"
       end
     end
@@ -589,7 +589,7 @@ defmodule GateServer.CodecTest do
           ] do
         for bad <- [-1, 0x1_0000_0000] do
           assert {:error, {:invalid_field, ^field, ^bad}} =
-                   Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                   Sink.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
                  "expected #{field}=#{bad} to be rejected as u32"
         end
       end
@@ -607,7 +607,7 @@ defmodule GateServer.CodecTest do
           ] do
         for bad <- [-1, 0x1_0000_0000_0000_0000] do
           assert {:error, {:invalid_field, ^field, ^bad}} =
-                   Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                   Sink.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
                  "expected #{field}=#{bad} to be rejected as u64"
         end
       end
@@ -623,7 +623,7 @@ defmodule GateServer.CodecTest do
             {:expected_chunk_version, 0xFFFF_FFFF_FFFF_FFFF},
             {:client_hint_hash, 0xFFFF_FFFF_FFFF_FFFF}
           ] do
-        assert {:ok, _} = Codec.encode({:voxel_edit_intent, Map.put(base, field, bound)}),
+        assert {:ok, _} = Sink.encode({:voxel_edit_intent, Map.put(base, field, bound)}),
                "#{field}=#{bound} should be accepted"
       end
     end
@@ -638,7 +638,7 @@ defmodule GateServer.CodecTest do
             {-0x8000_0000_0000_0001, 0, 0}
           ] do
         assert {:error, {:invalid_field, :target_world_micro, ^bad_world}} =
-                 Codec.encode({:voxel_edit_intent, %{base | target_world_micro: bad_world}}),
+                 Sink.encode({:voxel_edit_intent, %{base | target_world_micro: bad_world}}),
                "expected target_world_micro=#{inspect(bad_world)} to be rejected"
       end
     end
@@ -654,7 +654,7 @@ defmodule GateServer.CodecTest do
 
       for tuple <- boundaries do
         assert {:ok, _} =
-                 Codec.encode({:voxel_edit_intent, %{base | target_world_micro: tuple}}),
+                 Sink.encode({:voxel_edit_intent, %{base | target_world_micro: tuple}}),
                "target_world_micro=#{inspect(tuple)} should be accepted at i64 boundary"
       end
     end
@@ -664,7 +664,7 @@ defmodule GateServer.CodecTest do
 
       for bad_normal <- [{128, 0, 0}, {-129, 0, 0}, {0, 128, 0}, {0, 0, 128}, {200, -200, 5}] do
         assert {:error, {:invalid_field, :face_normal, ^bad_normal}} =
-                 Codec.encode({:voxel_edit_intent, %{base | face_normal: bad_normal}}),
+                 Sink.encode({:voxel_edit_intent, %{base | face_normal: bad_normal}}),
                "expected face_normal=#{inspect(bad_normal)} to be rejected"
       end
     end
@@ -673,7 +673,7 @@ defmodule GateServer.CodecTest do
       base = edit_intent_zero_base()
 
       for tuple <- [{127, 0, 0}, {-128, 0, 0}, {0, 127, -128}] do
-        assert {:ok, _} = Codec.encode({:voxel_edit_intent, %{base | face_normal: tuple}}),
+        assert {:ok, _} = Sink.encode({:voxel_edit_intent, %{base | face_normal: tuple}}),
                "face_normal=#{inspect(tuple)} should be accepted at i8 boundary"
       end
     end
@@ -682,18 +682,18 @@ defmodule GateServer.CodecTest do
       base = edit_intent_zero_base()
 
       assert {:error, {:invalid_field, :request_id, :not_a_number}} =
-               Codec.encode({:voxel_edit_intent, %{base | request_id: :not_a_number}})
+               Sink.encode({:voxel_edit_intent, %{base | request_id: :not_a_number}})
 
       assert {:error, {:invalid_field, :material_id, "0"}} =
-               Codec.encode({:voxel_edit_intent, %{base | material_id: "0"}})
+               Sink.encode({:voxel_edit_intent, %{base | material_id: "0"}})
 
       # Nil falls through u64!/u32!/u8!/u16! since `nil` is not an integer; we
       # exercise both via :request_id (u64) and :action (u8).
       assert {:error, {:invalid_field, :request_id, nil}} =
-               Codec.encode({:voxel_edit_intent, %{base | request_id: nil}})
+               Sink.encode({:voxel_edit_intent, %{base | request_id: nil}})
 
       assert {:error, {:invalid_field, :action, nil}} =
-               Codec.encode({:voxel_edit_intent, %{base | action: nil}})
+               Sink.encode({:voxel_edit_intent, %{base | action: nil}})
     end
 
     test "encode rejects malformed target_world_micro / face_normal tuples" do
@@ -709,7 +709,7 @@ defmodule GateServer.CodecTest do
             {:face_normal, nil}
           ] do
         assert {:error, {:invalid_field, ^field, ^bad}} =
-                 Codec.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
+                 Sink.encode({:voxel_edit_intent, Map.put(base, field, bad)}),
                "expected #{field}=#{inspect(bad)} to be rejected"
       end
     end
@@ -717,7 +717,7 @@ defmodule GateServer.CodecTest do
     test "encode treats missing keys as nil and reports {:invalid_field, _, nil}" do
       # Minimal map with only one key — encoder reaches request_id first.
       assert {:error, {:invalid_field, :request_id, nil}} =
-               Codec.encode({:voxel_edit_intent, %{action: 0}})
+               Sink.encode({:voxel_edit_intent, %{action: 0}})
     end
 
     defp edit_intent_default_fields do
@@ -799,11 +799,11 @@ defmodule GateServer.CodecTest do
                  bounds_world_micro: {-100, -50, -25, 200, 75, 50},
                  intent_hash: 0xCAFE_BABE_DEAD_BEEF,
                  ttl_ms: 5_000
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "rejects malformed voxel build reservation intent" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x65, 1, 2, 3>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x65, 1, 2, 3>>)
     end
 
     test "decodes voxel prefab place intent with known refs and objects" do
@@ -870,11 +870,11 @@ defmodule GateServer.CodecTest do
                    }
                  ],
                  placement_flags: 0x0000_0001
-               }}} == Codec.decode(msg)
+               }}} == Dispatch.decode(msg)
     end
 
     test "rejects malformed voxel prefab place intent" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x67, 1, 2, 3>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x67, 1, 2, 3>>)
     end
 
     test "decodes voxel field conduct intents" do
@@ -884,7 +884,7 @@ defmodule GateServer.CodecTest do
           300.0::float-64, 5::32-big, 1::8, 3::8, 0x003F::16-big, 300.0::float-64, 30.0::float-64,
           0.0::float-64, 18.0::float-64, 900.0::float-64>>
 
-      assert {:ok, {:voxel_field_conduct_intent, intent}} = Codec.decode(msg)
+      assert {:ok, {:voxel_field_conduct_intent, intent}} = Dispatch.decode(msg)
       assert intent.request_id == 1001
       assert intent.client_intent_seq == 42
       assert intent.logical_scene_id == 7
@@ -902,7 +902,7 @@ defmodule GateServer.CodecTest do
     end
 
     test "rejects truncated voxel field conduct intents" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x75, 1001::64-big>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x75, 1001::64-big>>)
     end
 
     test "decodes voxel debug probe" do
@@ -910,7 +910,7 @@ defmodule GateServer.CodecTest do
       msg = <<0x6F, 7::64-big, byte_size(command)::16-big, command::binary>>
 
       assert {:ok, {:voxel_debug_probe, %{request_id: 7, command: "voxel_transport"}}} ==
-               Codec.decode(msg)
+               Dispatch.decode(msg)
     end
   end
 
@@ -923,7 +923,7 @@ defmodule GateServer.CodecTest do
 
       msg = <<0x05, 99::64-big, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
-      assert {:ok, {:auth_request, "player1", "abc123", 99}} == Codec.decode(msg)
+      assert {:ok, {:auth_request, "player1", "abc123", 99}} == Dispatch.decode(msg)
     end
 
     test "decodes auth_request with unicode username" do
@@ -934,7 +934,7 @@ defmodule GateServer.CodecTest do
 
       msg = <<0x05, 100::64-big, ulen::16-big, username::binary, clen::16-big, code::binary>>
 
-      assert {:ok, {:auth_request, ^username, "token", 100}} = Codec.decode(msg)
+      assert {:ok, {:auth_request, ^username, "token", 100}} = Dispatch.decode(msg)
     end
 
     test "decodes auth_request with empty code" do
@@ -942,47 +942,47 @@ defmodule GateServer.CodecTest do
       ulen = byte_size(username)
 
       msg = <<0x05, 101::64-big, ulen::16-big, username::binary, 0::16-big>>
-      assert {:ok, {:auth_request, "test", "", 101}} == Codec.decode(msg)
+      assert {:ok, {:auth_request, "test", "", 101}} == Dispatch.decode(msg)
     end
   end
 
   describe "decode errors" do
     test "returns error for unknown message type" do
-      assert {:error, {:unknown_message_type, 0xFF}} == Codec.decode(<<0xFF, 1, 2, 3>>)
+      assert {:error, {:unknown_message_type, 0xFF}} == Dispatch.decode(<<0xFF, 1, 2, 3>>)
     end
 
     test "returns error for empty binary" do
-      assert {:error, :invalid_message} == Codec.decode(<<>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<>>)
     end
 
     test "returns invalid_message for old movement layout" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x01, 42::64-big>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x01, 42::64-big>>)
     end
 
     test "returns invalid_message for old enter_scene layout" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x02, 42::64-big>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x02, 42::64-big>>)
     end
 
     test "returns invalid_message for old time_sync layout" do
-      assert {:error, :invalid_message} == Codec.decode(<<0x03>>)
+      assert {:error, :invalid_message} == Dispatch.decode(<<0x03>>)
     end
   end
 
   describe "encode result" do
     test "encodes ok result" do
-      {:ok, bin} = Codec.encode({:result, :ok, 1})
+      {:ok, bin} = Sink.encode({:result, :ok, 1})
       assert <<0x80, 1::64-big, 0x00>> == bin
     end
 
     test "encodes error result" do
-      {:ok, bin} = Codec.encode({:result, :error, 99})
+      {:ok, bin} = Sink.encode({:result, :error, 99})
       assert <<0x80, 99::64-big, 0x01>> == bin
     end
   end
 
   describe "encode enter_scene_result" do
     test "encodes success with location and expected next input seq" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :ok, 5, {1.0, 2.0, 3.0}, 1})
+      {:ok, bin} = Sink.encode({:enter_scene_result, :ok, 5, {1.0, 2.0, 3.0}, 1})
 
       # Audit B-SRV2 layout: msg + packet_id + ok + vec3 + expected_seq u32 BE.
       assert <<0x84, 5::64-big, 0x00, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
@@ -991,7 +991,7 @@ defmodule GateServer.CodecTest do
     end
 
     test "encodes error" do
-      {:ok, bin} = Codec.encode({:enter_scene_result, :error, 5})
+      {:ok, bin} = Sink.encode({:enter_scene_result, :error, 5})
       assert <<0x84, 5::64-big, 0x01>> == bin
     end
   end
@@ -1001,7 +1001,7 @@ defmodule GateServer.CodecTest do
       # Audit B-M2: trailing fixed_dt_ms u16 BE.
       # Phase A1-4: trailing ground_z f64 BE (jump arc 落地高度回传给 client)。
       {:ok, bin} =
-        Codec.encode(
+        Sink.encode(
           {:movement_ack, 10, 77, 42, {1.5, 2.5, 3.5}, {4.5, 5.5, 6.5}, {0.1, 0.2, 0.3},
            :grounded, 3, 100, 3.5}
         )
@@ -1016,20 +1016,20 @@ defmodule GateServer.CodecTest do
 
   describe "encode broadcast messages" do
     test "encodes player_enter" do
-      {:ok, bin} = Codec.encode({:player_enter, 100, {10.0, 20.0, 30.0}})
+      {:ok, bin} = Sink.encode({:player_enter, 100, {10.0, 20.0, 30.0}})
 
       assert <<0x81, 100::64-big, 10.0::float-64-big, 20.0::float-64-big, 30.0::float-64-big>> ==
                bin
     end
 
     test "encodes player_leave" do
-      {:ok, bin} = Codec.encode({:player_leave, 100})
+      {:ok, bin} = Sink.encode({:player_leave, 100})
       assert <<0x82, 100::64-big>> == bin
     end
 
     test "encodes player_move" do
       {:ok, bin} =
-        Codec.encode(
+        Sink.encode(
           {:player_move, 55, 9, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :airborne}
         )
 
@@ -1040,7 +1040,7 @@ defmodule GateServer.CodecTest do
 
     test "encodes player_move with AOI priority metadata" do
       {:ok, bin} =
-        Codec.encode(
+        Sink.encode(
           {:player_move, 55, 9, {1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}, {0.1, 0.2, 0.3}, :grounded,
            :medium, 0.75, 125.5, 2}
         )
@@ -1055,7 +1055,7 @@ defmodule GateServer.CodecTest do
   describe "encode voxel messages" do
     test "encodes chunk snapshot with sections" do
       {:ok, iodata} =
-        Codec.encode(
+        Sink.encode(
           {:voxel_chunk_snapshot,
            %{
              request_id: 9,
@@ -1078,23 +1078,23 @@ defmodule GateServer.CodecTest do
     end
 
     test "encodes raw chunk snapshot payload" do
-      {:ok, iodata} = Codec.encode({:voxel_chunk_snapshot_payload, <<1, 2, 3>>})
+      {:ok, iodata} = Sink.encode({:voxel_chunk_snapshot_payload, <<1, 2, 3>>})
       assert <<0x62, 1, 2, 3>> == IO.iodata_to_binary(iodata)
     end
 
     test "encodes raw chunk delta payload with the 0x63 opcode" do
-      {:ok, iodata} = Codec.encode({:voxel_chunk_delta_payload, <<9, 8, 7, 6>>})
+      {:ok, iodata} = Sink.encode({:voxel_chunk_delta_payload, <<9, 8, 7, 6>>})
       assert <<0x63, 9, 8, 7, 6>> == IO.iodata_to_binary(iodata)
     end
 
     test "encodes raw chunk invalidate payload with the 0x69 opcode" do
-      {:ok, iodata} = Codec.encode({:voxel_chunk_invalidate_payload, <<5, 4, 3>>})
+      {:ok, iodata} = Sink.encode({:voxel_chunk_invalidate_payload, <<5, 4, 3>>})
       assert <<0x69, 5, 4, 3>> == IO.iodata_to_binary(iodata)
     end
 
     test "encodes heightmap region with the legacy fixed height payload when materials are absent" do
       {:ok, iodata} =
-        Codec.encode(
+        Sink.encode(
           {:voxel_heightmap_region,
            %{
              request_id: 9,
@@ -1114,7 +1114,7 @@ defmodule GateServer.CodecTest do
 
     test "encodes heightmap region material ids as an appended typed section" do
       {:ok, iodata} =
-        Codec.encode(
+        Sink.encode(
           {:voxel_heightmap_region,
            %{
              request_id: 9,
@@ -1135,7 +1135,7 @@ defmodule GateServer.CodecTest do
 
     test "rejects heightmap region material sections with the wrong cell count" do
       assert {:error, :invalid_heightmap_materials} =
-               Codec.encode(
+               Sink.encode(
                  {:voxel_heightmap_region,
                   %{
                     request_id: 9,
@@ -1152,7 +1152,7 @@ defmodule GateServer.CodecTest do
 
     test "encodes voxel intent result" do
       {:ok, iodata} =
-        Codec.encode(
+        Sink.encode(
           {:voxel_intent_result,
            %{
              request_id: 9,
@@ -1183,7 +1183,7 @@ defmodule GateServer.CodecTest do
     end
 
     test "encodes voxel debug probe reply" do
-      {:ok, bin} = Codec.encode({:voxel_debug_probe, %{request_id: 7, result: "ok"}})
+      {:ok, bin} = Sink.encode({:voxel_debug_probe, %{request_id: 7, result: "ok"}})
       assert <<0x6F, 7::64-big, 2::16-big, "ok">> == bin
     end
 
@@ -1199,7 +1199,7 @@ defmodule GateServer.CodecTest do
         ttl_ms: 5_000
       }
 
-      {:ok, iodata} = Codec.encode({:voxel_build_reservation_intent, intent})
+      {:ok, iodata} = Sink.encode({:voxel_build_reservation_intent, intent})
       bin = IO.iodata_to_binary(iodata)
 
       assert <<0x65, 200::64-big, 5::32-big, 555::64-big, 9_001::64-big, 17::64-big,
@@ -1207,7 +1207,7 @@ defmodule GateServer.CodecTest do
                75::64-big-signed, 50::64-big-signed, 0xCAFE_BABE_DEAD_BEEF::64-big,
                5_000::32-big>> = bin
 
-      assert {:ok, {:voxel_build_reservation_intent, ^intent}} = Codec.decode(bin)
+      assert {:ok, {:voxel_build_reservation_intent, ^intent}} = Dispatch.decode(bin)
     end
 
     test "encodes a voxel prefab place intent that round-trips through decode" do
@@ -1234,67 +1234,67 @@ defmodule GateServer.CodecTest do
         placement_flags: 0x0000_0001
       }
 
-      {:ok, iodata} = Codec.encode({:voxel_prefab_place_intent, intent})
+      {:ok, iodata} = Sink.encode({:voxel_prefab_place_intent, intent})
       bin = IO.iodata_to_binary(iodata)
 
       assert <<0x67, 300::64-big, _rest::binary>> = bin
-      assert {:ok, {:voxel_prefab_place_intent, ^intent}} = Codec.decode(bin)
+      assert {:ok, {:voxel_prefab_place_intent, ^intent}} = Dispatch.decode(bin)
     end
   end
 
   describe "encode time_sync and heartbeat" do
     test "encodes redesigned time_sync_reply" do
-      {:ok, bin} = Codec.encode({:time_sync_reply, 321, 1000, 1100, 1200})
+      {:ok, bin} = Sink.encode({:time_sync_reply, 321, 1000, 1100, 1200})
       assert <<0x85, 321::64-big, 1000::64-big, 1100::64-big, 1200::64-big>> == bin
     end
 
     test "encodes heartbeat_reply" do
-      {:ok, bin} = Codec.encode({:heartbeat_reply, 999})
+      {:ok, bin} = Sink.encode({:heartbeat_reply, 999})
       assert <<0x86, 999::64-big>> == bin
     end
 
     test "encodes fast-lane bootstrap result" do
-      {:ok, bin} = Codec.encode({:fast_lane_result, :ok, 5, 20003, "ticket"})
+      {:ok, bin} = Sink.encode({:fast_lane_result, :ok, 5, 20003, "ticket"})
       assert <<0x87, 5::64-big, 0x00, 20003::16-big, 6::16-big, "ticket">> == bin
     end
 
     test "encodes fast-lane attached ack" do
-      {:ok, bin} = Codec.encode({:fast_lane_attached, :ok, 6})
+      {:ok, bin} = Sink.encode({:fast_lane_attached, :ok, 6})
       assert <<0x88, 6::64-big, 0x00>> == bin
     end
   end
 
   describe "encode chat and skill broadcasts" do
     test "encodes chat_message" do
-      {:ok, bin} = Codec.encode({:chat_message, 42, "tester", "hello"})
+      {:ok, bin} = Sink.encode({:chat_message, 42, "tester", "hello"})
       assert <<0x89, 42::64-big, 6::16-big, "tester", 5::16-big, "hello">> = bin
     end
 
     test "encodes skill_event" do
-      {:ok, bin} = Codec.encode({:skill_event, 42, 1, {1.0, 2.0, 3.0}})
+      {:ok, bin} = Sink.encode({:skill_event, 42, 1, {1.0, 2.0, 3.0}})
 
       assert <<0x8A, 42::64-big, 1::16-big, 1.0::float-64-big, 2.0::float-64-big,
                3.0::float-64-big>> = bin
     end
 
     test "encodes player_state and combat_hit" do
-      {:ok, state_bin} = Codec.encode({:player_state, 42, 75, 100, true})
+      {:ok, state_bin} = Sink.encode({:player_state, 42, 75, 100, true})
       assert <<0x8C, 42::64-big, 75::16-big, 100::16-big, 1::8>> = state_bin
 
-      {:ok, hit_bin} = Codec.encode({:combat_hit, 7, 42, 1, 25, 75, {1.0, 2.0, 3.0}})
+      {:ok, hit_bin} = Sink.encode({:combat_hit, 7, 42, 1, 25, 75, {1.0, 2.0, 3.0}})
 
       assert <<0x8D, 7::64-big, 42::64-big, 1::16-big, 25::16-big, 75::16-big, 1.0::float-64-big,
                2.0::float-64-big, 3.0::float-64-big>> = hit_bin
     end
 
     test "encodes actor_identity" do
-      {:ok, bin} = Codec.encode({:actor_identity, 90_001, :npc, "Training Slime"})
+      {:ok, bin} = Sink.encode({:actor_identity, 90_001, :npc, "Training Slime"})
       assert <<0x8E, 90_001::64-big, 1::8, 14::16-big, "Training Slime">> = bin
     end
 
     test "encodes effect_event" do
       {:ok, bin} =
-        Codec.encode(
+        Sink.encode(
           {:effect_event, 7, 4, :projectile, {1.0, 2.0, 3.0}, 42, {4.0, 5.0, 6.0}, 96.0, 350}
         )
 
@@ -1306,7 +1306,7 @@ defmodule GateServer.CodecTest do
 
   describe "encode errors" do
     test "returns error for unknown message" do
-      assert {:error, :unknown_message} == Codec.encode({:nonexistent, 1, 2})
+      assert {:error, :unknown_message} == Sink.encode({:nonexistent, 1, 2})
     end
   end
 
@@ -1325,18 +1325,18 @@ defmodule GateServer.CodecTest do
                  input_dir: {1.0, +0.0},
                  speed_scale: 1.0,
                  movement_flags: 2
-               }}} = Codec.decode(client_msg)
+               }}} = Dispatch.decode(client_msg)
     end
 
     test "broadcast messages encode to correct binary size" do
-      {:ok, enter} = Codec.encode({:player_enter, 1, {0.0, 0.0, 0.0}})
+      {:ok, enter} = Sink.encode({:player_enter, 1, {0.0, 0.0, 0.0}})
       assert byte_size(enter) == 33
 
-      {:ok, leave} = Codec.encode({:player_leave, 1})
+      {:ok, leave} = Sink.encode({:player_leave, 1})
       assert byte_size(leave) == 9
 
       {:ok, move} =
-        Codec.encode(
+        Sink.encode(
           {:player_move, 1, 1, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, :grounded}
         )
 

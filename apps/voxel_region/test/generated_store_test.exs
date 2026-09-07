@@ -1,7 +1,8 @@
 defmodule VoxelRegion.GeneratedStoreTest do
   use ExUnit.Case, async: false
 
-  alias VoxelRegion.{AssetPack, Bake, Codec, GeneratedStore, Native, Payload, World}
+  alias VoxelRegion.{AssetPack, Bake, GeneratedStore, Native, World}
+  alias MmoContracts.Voxel.{Codec, Payload}
   alias MmoContracts.VoxelMaterialCatalog
 
   # 半边长 64 m：每级 2×2 列，L1–L5 烘一次（setup_all）后每个测试复制 baseline 目录。

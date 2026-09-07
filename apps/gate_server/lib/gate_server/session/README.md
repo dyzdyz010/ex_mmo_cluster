@@ -44,3 +44,10 @@ UDP 快车道，就是 `fast_lane: :unsupported`，由共享 dispatch 显式回�
 2. 新的下行帧 → 经 `Sink.send_encoded/2`（需编码）或 `Sink.send_raw/2`（生产方已含 opcode）。
 3. 新的调试字段 → 加 `observe.ex`，不要在连接进程里就地拼 map。
 4. 只属于某条传输的行为 → 留在 `worker/` 对应连接进程，并在 state 里加显式能力字段。
+
+## G1 当前字节边界
+
+`Dispatch.decode/1` 与 `Sink.encode/1` 在现有组合边界直接调用 `MmoContracts.Session.Codec` / `MmoContracts.Voxel.Codec`；
+各领域 guard 唯一定义 opcode/tag 归属，selector 不实现字节规则。TCP/WS 使用同一上行 selector，`send_encoded/2` 使用同一下行 selector。
+`GateServer.Codec` 仅处理尚有活调用方的旧移动、fast-lane、NPC/战斗、Scene 等领域；UDP 仍用它处理旧 fast-lane。
+没有新传输行为，也没有 Gate→Scene 的新 Movement struct 依赖。Sink 完成纯 codec 接线后交 T1 继续传输实施。

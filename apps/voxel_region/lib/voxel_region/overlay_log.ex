@@ -9,7 +9,7 @@ defmodule VoxelRegion.OverlayLog do
   `ordinal` 保持事务内顺序；旧的单格入口 `apply_edit` 产出的裸条目 `%{seq, coord, material, coarse}` 入表时归一成事务。
   """
 
-  alias VoxelRegion.Codec
+  alias MmoContracts.Voxel.Codec
 
   @callback open(world_dir :: String.t(), content_version :: non_neg_integer()) :: term()
   @callback append(handle :: term(), transaction :: map()) :: :ok

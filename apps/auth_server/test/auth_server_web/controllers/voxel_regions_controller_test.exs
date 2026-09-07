@@ -1,7 +1,7 @@
 defmodule AuthServerWeb.VoxelRegionsControllerTest do
   use AuthServerWeb.ConnCase, async: false
 
-  alias VoxelRegion.Codec, as: RegionCodec
+  alias MmoContracts.Voxel.Codec, as: RegionCodec
 
   @content_version 0x5F84_4009_CA44_A605
 
