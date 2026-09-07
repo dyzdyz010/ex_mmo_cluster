@@ -3,6 +3,11 @@ defmodule GateServer.UdpAcceptorCodecOwnerTest do
 
   alias GateServer.{FastLaneRegistry, TcpConnection, UdpAcceptor}
 
+  setup_all do
+    _ = Application.stop(:gate_server)
+    :ok
+  end
+
   setup do
     start_supervised!({FastLaneRegistry, name: FastLaneRegistry})
     listener = start_supervised!({UdpAcceptor, port: 0}, restart: :temporary)
