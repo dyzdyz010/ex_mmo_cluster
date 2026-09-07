@@ -17,9 +17,9 @@
 - `SceneServer.AoiSup`
   - `SceneServer.AoiManager`
   - `SceneServer.AoiItemSup`
-- `SceneServer.PlayerSup`
-  - `SceneServer.PlayerCharacterSup`
-  - `SceneServer.PlayerManager`
+- `SceneServer.Movement.Scene`
+  - M1 玩家唯一固定 60Hz writer；共享 P1 world、输入槽和 W1 事务 FIFO
+  - 显式加载 D1 资产导出配置，完成 source/bootstrap 前不启动移动
 - `SceneServer.NpcSup`
   - `SceneServer.NpcActorSup`
   - `SceneServer.NpcManager`
@@ -28,7 +28,12 @@
 
 ### `movement/`
 
-共享权威移动模型：
+M1 玩家移动由 `Scene` / `InputSlots` / `CollisionUpdates` 组合：Gate 只传
+已鉴权 identity、角色 `id` 和已解码输入；Scene 持有唯一共享 P1 Resource，
+通过 W1 显式 World 引用接收 canonical snapshot/delta。详见本目录
+[`movement/README.md`](movement/README.md) 的 API、时间线和测试入口。
+
+以下旧共享移动模型继续服务 NPC 与既有 legacy 测试：
 
 - `Profile`：共享移动调参。
 - `InputFrame`：固定步长输入样本。
@@ -51,8 +56,8 @@
 
 长生命周期的权威角色和基础设施：
 
-- `PlayerCharacter`：一个在线玩家的聚合根。
-- `PlayerManager`：玩家生成和索引门面。
+- `PlayerCharacter` / `PlayerManager`：保留旧测试/参考调用，正式 Application
+  不再启动其监督树；M1 Gate 不得向它们接入玩家。
 - `AoiManager`：共享八叉树和索引。
 - `Aoi.AoiItem`：每个角色的 AOI 订阅和广播适配器。
 
