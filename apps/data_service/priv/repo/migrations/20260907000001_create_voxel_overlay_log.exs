@@ -8,7 +8,7 @@ defmodule DataService.Repo.Migrations.CreateVoxelOverlayLog do
   一行 = 一个条目：`kind` 0 = L0 `cell`（payload = 0x77 kind0 线格式，含 seq / coord / material）、
   1 = `region`（payload = 完整 VXR4 字节，seq 已盖到头里）、2 = `coarse`（payload = 粗格线格式）；
   `ordinal` 保持事务内顺序。`seq` 由 World 内存计数分配（no-op 不消耗），不是数据库序列。
-  压实 = 同一事务里删掉该 content_version 全部行、写入检查点事务。`(level, region)` 索引供盒查询。
+  压实 = 同一事务里删掉该 content_version 全部行、写入检查点事务。查询按世界与日志顺序读取，只保留唯一索引。
   """
 
   def change do
@@ -25,6 +25,5 @@ defmodule DataService.Repo.Migrations.CreateVoxelOverlayLog do
     end
 
     create(unique_index(:voxel_overlay_log, [:content_version, :seq, :ordinal]))
-    create(index(:voxel_overlay_log, [:content_version, :level, :region_x, :region_y, :region_z], name: :voxel_overlay_log_world_region_index))
   end
 end

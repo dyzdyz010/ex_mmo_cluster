@@ -407,7 +407,7 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 9. 服务端需要做的
 
-1. **overlay 日志**：append-only，全局 seq，DataService 持久化（新表 `voxel_overlay_log(seq, kind, level, region, payload)`；现有 `Outbox` 是 per-chunk `chunk_version` 口径，不复用）；按 `(level, region)` 建索引以支持盒查询；`region` 条目压实规则。
+1. **overlay 日志**：append-only，全局 seq，DataService 持久化（新表 `voxel_overlay_log(seq, kind, level, region, payload)`；现有 `Outbox` 是 per-chunk `chunk_version` 口径，不复用）；`region` 条目压实规则。2026-09-07 缺口收口：盒过滤现由 World 内存负责，删除无调用方的 `(level, region)` 索引，只保留 `(content_version, seq, ordinal)` 唯一索引。
 2. **粗层生成器**：处女地 = Voxim `GenerateLodRegion`（kernel + 带限剪枝 + `ReduceSkinsV1` 表皮）的 Rust NIF 移植（D-10；C++ 原文约 2.7 k 行：`VoxelWorldGen.cpp` 1057、`VoxelSkin.cpp` 499、`VoxelLodReduce.cpp` 215 及头文件）；编辑区 = 从 L0 起 `ReduceBlockV1 + ReduceSkinsV1` 增量维护 L1..Lmax（材质与表皮）。golden fixture 由 Voxim `EvaluateLodCell` 生成。
 3. **region 载荷缓存**：`(level, region) → cells + skins @ seq`，含 ring；L0–L3 按需 + LRU，L4+ 常驻（1.0–1.9 GB）；事务后刷新受影响项；每项带 hash。
 4. **HTTP `POST /voxel/regions`**：批量 `(level, region, have_seq, have_hash)`，三种应答；`have_seq = 0` 走静态路径可 CDN。放在 auth_server（现有 `/voxel/*` 端点旁），垂直切片第一步用文件目录当后端（`Voxim/Docs/R6-Eval.md` §5）。
@@ -472,6 +472,14 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 ---
 
 ## 13. 进度日志
+
+### 2026-09-07：R6 验收缺口收口
+
+T-1 `reducer_test.exs` 不再读取过期 `WorldBake`，改用 Demo 配置的 `Native.generate_region` 现场生成 L0→L1、L1→L2、L2→L3 每组一个父 region 与八个子 region，覆盖正负坐标；逐个比较父 region 的 64³ owned 格材质与表皮，并要求 fixture 含表皮记录与非均匀贴图。定向 4/4、18.8 s，三组生成 37.680 / 1537.738 / 2114.045 ms。按提示词默认方案 a 删除无调用方的 `(cv, level, region)` 索引，迁移只留 `(cv, seq, ordinal)` 唯一索引；dev/test 各备份后回滚重迁、恢复，全部列逐字节核对一致（dev 539 行/max seq=7，地下三个空洞保留）。服务端 23 passed / 2 excluded，DataService 14/14，auth 4/4，Rust 5/5（oracle 标签 1 ignored）。命令与原始证据见 `Voxim/Docs/R6.md` §R6 缺口收口及 `Docs/R6/runtime/s4_gaps_*`。
+
+客户端补 `Voxim.Net.IntentLedgerTracksAcceptedPresentedAndRejected`（T-9）：真实 loopback 鉴权/入场、0x68 Accepted/Rejected、0x77 事务；逻辑时刻 1.0/1.1/1.2/1.3 对应账本 100/200/300 ms，等待真实 live chunk 后才 Presented，拒绝前后整 tile cells/skins/表面不变、pending=0。`ReconnectSubscribesFromAppliedSeqAndReplaysExactlyOnce`（T-7）：socket 关闭后重建会话，wire have_seq=2 追赶断线期间 seq 3，每个 seq 各应用一次；另从 have_seq=0 重订阅到受控在飞载荷，候选检查 2 次但只成功重放 `seq > payload.seq` 的一笔（应用总数 3=接收 2+重放 1）。网络组 26/26；最后补强断言后 T-7 定向 1/1。只改客户端测试，无产品结构/getter 改动；明确测试显式重连行为，不冒充自动重连调度或 30 s 墙钟等待。
+
+提交前 Voxim 完整 Automation 226/226（1033 s，无复跑），独立审核通过；四项缺口分别记录于 `Voxim/Docs/R6.md`，缺口 2/3/6/7 关闭，未宣称 R6 全阶段通过。用户的 M 阶段排期文件不纳入本次提交。
 
 ### 2026-09-07：S4 第七切片——DataService 权威 overlay 日志持久化（§9 第 1 项）
 
