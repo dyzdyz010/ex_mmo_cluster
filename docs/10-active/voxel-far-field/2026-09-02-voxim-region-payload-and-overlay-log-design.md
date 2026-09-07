@@ -473,6 +473,20 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-07：R6 继续收口——准入热点与测量干扰修复
+
+起始 Voxim `9296cd9` / 服务端 `f1c2a3ef`，完整记录见 `Voxim/Docs/R6.md`「继续收口」及 `Docs/R6/runtime/s4_next_*`。服务端产品、kernel、材质与开发世界保持不变；新增独立 `mmo_r6_next_a/b`、`Saved/R6NextAuthorityA/B`，从同一活动 baseline、各自空日志开始编辑对照，不重用已有 seq3 的 `mmo_r6_closeout`。
+
+客户端在不变的显示刷新/行重算范围内复用 owner 查询，cold A/B 的 Promote 总量978→760 ms、Admit356→249 ms，排空8.21→7.94 s，backlog GT p95仍17.57 ms。另确认 MCP 写瞬态命令属性触发Actor组件重注册与大批距离场更新，限定该属性保留UObject通知而不重建组件；两项修复分开计量。
+
+L0–L5 请求RTT p50/p95/n已经补齐，区分unchanged/entries/payload与相关batch。当前生产本地provider已在S3删除，测试fake不能替代同预算Demo，因此严格本地/HTTP GT对照仍缺失；R5.14的13.5 ms只用于MaxLevel5冷加载backlog，8.33 ms另为未达目标。后续顺序仍为R6验收收口→M0/M1/M2a→R7-A。
+
+正常客户端构建全套227/227通过。`s4_next_reconnect_normal`在A上先完成seq4，再显式断开Gate **30.301秒**；第二客户端提交seq5/6，重连订阅have_seq4并各应用一次，恢复后再次编辑为seq7。客户端两格材质与HTTP载荷/seq7一致、账本2/2 Presented且pending0；离线30次覆盖采样无洞/重复、HTTP请求数恒607。通过原始30秒重放验收，范围是Gate显式重建、HTTP在断开前已排空、无服务进程重启；在飞专项沿用通过的Automation。
+
+A/B前三笔持久日志1775行、917548B完全相同（SHA-256 `a106cb68cdbfc2852ed839449a59e5194b615b24c8b2afbac5c1e3a4ffe0236f`）；r50均348条/13region/1421coarse。客户端应用29.624→14.394ms、Presented15.876→13.571秒；backlog GT p95 38.935→21.211ms（13→12帧），whole8.802ms不替代backlog；whole GT总量上升伴随实际帧1340→2375，完整成本见客户端正文。固定输入的同量级/无洞证据补齐，单格历史Presented只有聚合值，小样本不作稳定分位承诺。
+
+最终正常二进制冷/暖backlog GT p95 16.392/16.455ms，周期性MCP命令后停顿消失，其他启动/传送尖峰保留。**R6仍未结束，S1严格GT性能对照未签收，8.33ms仍未达。** 测试服务已停止，A最终seq7、B seq3数据保留；开发活动42行/seq7与停用539行/seq7及其完整导出哈希不变，旧baseline仍79218文件/1948221588B。服务端本轮仅同步此记录，未修改产品源码或重置开发数据库。
+
 ### 2026-09-07：R6 最终核对——实现完成，阶段验收仍保留缺口
 
 以 Voxim `b8b86e1` / 服务端 `55b9fd9f`、16 km / `world_half_extent_m=8192` / content_version `256b33610344964f` 前台 Editor 复测。完整记录与 T-1–T-9 / S1–S4 对照见 `Voxim/Docs/R6.md`「最终复测」及 `Docs/R6/runtime/s4_closeout_*`。本轮仅改验证工具与文档，沿用既有有效产品测试，不重复实现。
