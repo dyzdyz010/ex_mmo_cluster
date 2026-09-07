@@ -473,6 +473,16 @@ L3 含地表 region 的表皮场构成（原始 → zstd-3）：16.9 k 条记录
 
 ## 13. 进度日志
 
+### 2026-09-07：R6 最终核对——实现完成，阶段验收仍保留缺口
+
+以 Voxim `b8b86e1` / 服务端 `55b9fd9f`、16 km / `world_half_extent_m=8192` / content_version `256b33610344964f` 前台 Editor 复测。完整记录与 T-1–T-9 / S1–S4 对照见 `Voxim/Docs/R6.md`「最终复测」及 `Docs/R6/runtime/s4_closeout_*`。本轮仅改验证工具与文档，沿用既有有效产品测试，不重复实现。
+
+- 纠正旧测量：传送 `(40,511,40)→(3040,511,3040)` 实为 4.243 km；新目标 `(3040,511,40)` 才是 3 km。无洞与队列排空分开，传送排空只认新目标后的帧，CSV 用 RuntimeSeconds / EVENTS 定义窗口。
+- 新复测冷加载 GT p95 whole / backlog = 11.41 / 15.73 ms；3 km 传送 = 15.87 / 17.12 ms；6 m/s = 9.78 / 13.55 ms；24 m/s = 13.68 / 15.55 ms；r=50 = 10.76 / 22.06 ms。历史 S3 的 11.48 ms 是 whole；同次 backlog 仅 11 帧、p95 19.55 ms，不能与 R5.14 冷加载 backlog 13.5 ms 直接宣称通过。
+- 独立数据库 `mmo_r6_closeout`、节点 `voxim_r6_closeout`、HTTP 21000 / Gate 21002、authority `Saved/R6CloseoutAuthority` 从同一 baseline 的空日志开始：Place / Break / Explode 三笔全部 Accepted / Confirmed / Presented，pending=0，测试 seq=3。开发库活动与停用世界仍各 seq=7；旧世界 539 行日志完整导出 SHA-256 仍为 `dfdb11d1a4aa8f325b0e23a5647793bc3970205ab7af7b0df1c6482c383231fa`。旧种子保持停用。
+- T-2 200/200 保留 Demo 配置边界；D11 是 L1–L5 15 个样本。T-7 证明真实 loopback 明确重连重订阅，不扩称完整 30 s 漫游断线场景。完整场景及 S1/S3 同口径性能仍未验收，**R6 暂不能结束**。8.33 ms 为单列的 120 FPS 目标，未达；后续仍为 R6 → M0 / M1 / M2a → R7-A，本轮未启动移动同步。
+
+
 ### 2026-09-07：R6 验收缺口收口
 
 T-1 `reducer_test.exs` 不再读取过期 `WorldBake`，改用 Demo 配置的 `Native.generate_region` 现场生成 L0→L1、L1→L2、L2→L3 每组一个父 region 与八个子 region，覆盖正负坐标；逐个比较父 region 的 64³ owned 格材质与表皮，并要求 fixture 含表皮记录与非均匀贴图。定向 4/4、18.8 s，三组生成 37.680 / 1537.738 / 2114.045 ms。按提示词默认方案 a 删除无调用方的 `(cv, level, region)` 索引，迁移只留 `(cv, seq, ordinal)` 唯一索引；dev/test 各备份后回滚重迁、恢复，全部列逐字节核对一致（dev 539 行/max seq=7，地下三个空洞保留）。服务端 23 passed / 2 excluded，DataService 14/14，auth 4/4，Rust 5/5（oracle 标签 1 ignored）。命令与原始证据见 `Voxim/Docs/R6.md` §R6 缺口收口及 `Docs/R6/runtime/s4_gaps_*`。
