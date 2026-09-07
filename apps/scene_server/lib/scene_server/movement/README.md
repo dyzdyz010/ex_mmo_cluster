@@ -113,6 +113,27 @@ E1 takes over
 the existing `CollisionUpdates` path for online edit admission and UE
 collision/render acceptance. Neither adds another player writer.
 
+## Server collision timeline verification (E1-S)
+
+`voxim_collision_timeline_test.exs` composes real World, sealed R6 source
+artifacts (and GeneratedStore for outside-domain edits), Scene, Sink and
+the existing P1 NIF. Its native wrapper only observes calls and provides a
+test barrier; it delegates every install, spawn query and physics step to
+P1. Generic next-canonical and next-output receives assert order before
+checking exact sequence/revision/tick values.
+
+The bounded runner is `python Docs/M1/runtime/E1-S/run.py <fresh-label>`
+from Voxim. Every run creates a private Linux source/BEAM cache pinned to
+reviewed Git dependencies, without umbrella application boot, DB, ports,
+Docker or native compilation. The report at `Docs/M1/reports/E1-S.md`
+records the final T1 Scene source handoff, raw results and negative controls.
+Coverage includes two-core atomic installation, consecutive core versions,
+real World progress during a blocked install, empty-occupancy transactions,
+reversed join preparation, Ready/InputStart/fences, stale-epoch cleanup,
+both joining characters losing support and an edited wall blocking input.
+Gate edit bounds are consumed by source inspection; client prediction,
+arrival ordering, Presented and whole E1/M1 acceptance remain separate.
+
 ## Legacy and NPC responsibilities
 
 - `Profile` - shared movement tuning parameters
