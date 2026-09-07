@@ -125,6 +125,8 @@ defmodule VoxelRegion.CollisionSourceTest do
 
   test "preparation precedes one World barrier and repeated join preserves ordered subscription",
        %{world: world} do
+    unrelated = {:w1_unrelated, make_ref()}
+    send(self(), unrelated)
     assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, 11}])
     snapshot(world)
     Application.put_env(:voxel_region, :w1_prepare_barrier, {0, {-1, 7, -1}})
@@ -142,25 +144,34 @@ defmodule VoxelRegion.CollisionSourceTest do
     send(preparing, :continue)
     assert :ok = Task.await(task, 300_000)
     assert {:ok, 3} = World.apply_edits(world, [{{40, 558, 40}, 11}])
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 2}}, 10_000
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot], 10_000
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 2}} = message
 
-    assert_receive {:canonical_snapshot, ^request,
-                    %CanonicalSnapshot{transaction_seq: 2} = baseline}
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_snapshot, ^request, %CanonicalSnapshot{transaction_seq: 2} = baseline} =
+             message
 
     assert occupancy_at(baseline.chunks, {40, 558, 40}) == 0
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 3}}
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 3}} = message
     refute_receive {:canonical_delta, _}
+    assert_received ^unrelated
   end
 
   test "same-chunk N+1/N+2 and cross-chunk transactions keep full immutable intermediate cores",
        %{world: world} do
+    unrelated = {:w1_unrelated, make_ref()}
+    send(self(), unrelated)
     initial = snapshot(world)
     assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, 11}])
     assert {:ok, 2} = World.apply_edits(world, [{{40, 558, 40}, 0}])
     assert {:ok, 3} = World.apply_edits(world, [{{40, 558, 40}, 12}, {{-1, 558, -1}, 11}])
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 1, chunks: [first]} = d1}
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 2, chunks: [second]} = d2}
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 3, chunks: third} = d3}
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 1, chunks: [first]} = d1} = message
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 2, chunks: [second]} = d2} = message
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 3, chunks: third} = d3} = message
     assert first.coord == second.coord
     assert byte_size(first.cells) == 4096 and byte_size(second.cells) == 4096
     assert occupancy_at([first], {40, 558, 40}) == 1
@@ -169,6 +180,7 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert Enum.map(third, & &1.coord) == [{-1, 34, -1}, {2, 34, 2}]
     assert occupancy_at(third, {-1, 558, -1}) == 1
     assert Enum.map([d1, d2, d3], & &1.transaction) == World.entries_after(world, 0)
+    assert_received ^unrelated
   end
 
   test "no-op has no sequence, water/air and solid material swaps have no collision update", %{
