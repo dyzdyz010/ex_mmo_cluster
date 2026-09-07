@@ -481,6 +481,12 @@ T-1 `reducer_test.exs` 不再读取过期 `WorldBake`，改用 Demo 配置的 `N
 
 提交前 Voxim 完整 Automation 226/226（1033 s，无复跑），独立审核通过；四项缺口分别记录于 `Voxim/Docs/R6.md`，缺口 2/3/6/7 关闭，未宣称 R6 全阶段通过。用户的 M 阶段排期文件不纳入本次提交。
 
+### 2026-09-07：S4 第八切片——D-11 材质目录与内容身份
+
+当前 Voxim region 路径采用 `EVoxelMaterial` 的 24 项（0–23），共享 `MmoContracts.VoxelMaterialCatalog`，供 GeneratedStore 与 Gate 单格 / 批量编辑使用。服务端资源和 Demo manifest 是客户端枚举的派生契约，跨仓 verifier 逐项检查；manifest 不接受任意 materials 字符串或漂移的表。身份规则 `voxim-content-version-md5-64-v2` 使用 327 字节紧凑有序 pair JSON，Demo 新版本 `256b33610344964f`，kernel 的 SHA-256 仍为 `72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd`。
+
+用户明确批准停用旧开发种子。`VOXEL_DEV_REGION_BOOTSTRAP` 默认 false，不再由 auto-login 隐式开启；S4 脚本也明确关闭。旧 catalog / ChunkProcess / 持久化数据保留为旧世界语义，历史探针须显式启用；不对旧 `voxel_chunks` 重编号。新 baseline、资产包和 overlay 按新 content_version 隔离。服务端 region 24 passed / 2 excluded、Gate 240 passed、Contracts 65 passed、auth 4/4、DataService 14/14；客户端 C++ 不变，沿用缺口收口的 226/226。16 km 全新烘焙 78,536 region / 928.037 s，L4/L5 包合计 59,149,425 B；真实 Demo 暖加载 607 unchanged，seq 3/4 两笔意图均 Presented、pending=0。单格材质 2/23 接受，24 拒绝且不写日志；恢复空气到 seq 7，重启恢复同 seq。首次启动和重启的 voxel_chunks 查询均为 0；旧 539 行日志逐字节一致、79,218 个 baseline 文件元数据不变。首轮固定 10 s 编辑等待失败后，冒烟工具改按实际队列排空并多观察一帧，未放宽最终账本断言。详细记录见 `Voxim/Docs/R6.md` §S4 第八切片。
+
 ### 2026-09-07：S4 第七切片——DataService 权威 overlay 日志持久化（§9 第 1 项）
 
 `overlay.log` 文件 → `voxel_overlay_log(content_version, seq, ordinal, kind, level, region_x/y/z, payload)`：一行一个条目（kind 0 cell / 1 region / 2 coarse，payload 用既有线格式 / 完整 VXR4），

@@ -33,20 +33,18 @@ config :auth_server, :dev_auto_login, dev_auto_login?
 # Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
 config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
+
 # 冷 miss 生成在每个请求进程里的并发上限；内存载荷缓存 L0–L3 的 LRU 字节上限（L4+ 常驻不计）。
-config :voxel_region, :generation_concurrency,
-  String.to_integer(System.get_env("VOXEL_REGION_GENERATION_CONCURRENCY", "8"))
+config :voxel_region,
+       :generation_concurrency,
+       String.to_integer(System.get_env("VOXEL_REGION_GENERATION_CONCURRENCY", "8"))
 
-config :voxel_region, :payload_cache_bytes,
-  String.to_integer(System.get_env("VOXEL_REGION_PAYLOAD_CACHE_MB", "512")) * 1024 * 1024
+config :voxel_region,
+       :payload_cache_bytes,
+       String.to_integer(System.get_env("VOXEL_REGION_PAYLOAD_CACHE_MB", "512")) * 1024 * 1024
 
-dev_region_bootstrap_env = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP")
-
-dev_region_bootstrap? =
-  case dev_region_bootstrap_env do
-    nil -> dev_auto_login? and not world_pack_generate?
-    value -> value in ["true", "1"]
-  end
+# 旧 ChunkProcess 开发世界不再随 auto-login 隐式初始化；历史探针必须显式开启。
+dev_region_bootstrap? = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP", "false") in ["true", "1"]
 
 config :world_server, :default_voxel_region_bootstrap,
   enabled?: dev_region_bootstrap?,

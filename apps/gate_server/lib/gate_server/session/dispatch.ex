@@ -499,26 +499,11 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  def handle({:voxel_batch_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+  def handle(
+        {:voxel_batch_edit_intent, request},
+        %{status: :in_scene, voxim_overlay: true} = state
+      ) do
     case VoxelRegion.World.apply_edits(request.edits) do
-      {:ok, seq} ->
-        send_encoded(state, {:voxel_intent_result, %{request_id: request.request_id, client_intent_seq: request.client_intent_seq,
-          logical_scene_id: request.logical_scene_id, result_code: :accepted, result_ref: seq, authoritative: [], reason: "ok"}})
-      {:error, reason} -> send_encoded(state, ResultFrame.error(request, reason))
-    end
-    {:ok, state}
-  end
-
-  def handle({:voxel_batch_edit_intent, _request}, state) do
-    result_error(state, :invalid_state, 0)
-    {:ok, state}
-  end
-
-  def handle({:voxel_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    {wx, wy, wz} = request.target_world_micro
-    coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
-
-    case VoxelRegion.World.apply_edit(coord, request.material_id) do
       {:ok, seq} ->
         send_encoded(
           state,
@@ -536,6 +521,42 @@ defmodule GateServer.Session.Dispatch do
 
       {:error, reason} ->
         send_encoded(state, ResultFrame.error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  def handle({:voxel_batch_edit_intent, _request}, state) do
+    result_error(state, :invalid_state, 0)
+    {:ok, state}
+  end
+
+  def handle({:voxel_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    {wx, wy, wz} = request.target_world_micro
+    coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
+
+    case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
+           VoxelRegion.World.apply_edit(coord, request.material_id) do
+      {:ok, seq} ->
+        send_encoded(
+          state,
+          {:voxel_intent_result,
+           %{
+             request_id: request.request_id,
+             client_intent_seq: request.client_intent_seq,
+             logical_scene_id: request.logical_scene_id,
+             result_code: :accepted,
+             result_ref: seq,
+             authoritative: [],
+             reason: "ok"
+           }}
+        )
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+
+      false ->
+        send_encoded(state, ResultFrame.error(request, :invalid_material))
     end
 
     {:ok, state}

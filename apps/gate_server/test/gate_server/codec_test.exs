@@ -4,16 +4,45 @@ defmodule GateServer.CodecTest do
   alias GateServer.Codec
 
   test "Voxim batch append preserves intent widths and transaction frame bytes" do
-    wire = <<0x78,7::64-big,8::32-big,9::64-big,2::32-big,1::32-big-signed,-2::32-big-signed,3::32-big-signed,11::16-big,
-             4::32-big-signed,5::32-big-signed,6::32-big-signed,0::16-big>>
-    assert {:ok,{:voxel_batch_edit_intent,%{request_id: 7,client_intent_seq: 8,logical_scene_id: 9,
-      edits: [{{1,-2,3},11},{{4,5,6},0}]}}} = Codec.decode(wire)
-    assert {:error,:invalid_message} = Codec.decode(binary_part(wire,0,byte_size(wire)-1))
-    txn = %{seq: 7,entries: [%{seq: 7,coord: {1,-2,3},material: 11,coarse: []}],coarse: []}
+    wire =
+      <<0x78, 7::64-big, 8::32-big, 9::64-big, 2::32-big, 1::32-big-signed, -2::32-big-signed,
+        3::32-big-signed, 11::16-big, 4::32-big-signed, 5::32-big-signed, 6::32-big-signed,
+        0::16-big>>
+
+    assert {:ok,
+            {:voxel_batch_edit_intent,
+             %{
+               request_id: 7,
+               client_intent_seq: 8,
+               logical_scene_id: 9,
+               edits: [{{1, -2, 3}, 11}, {{4, 5, 6}, 0}]
+             }}} = Codec.decode(wire)
+
+    assert {:error, :invalid_message} = Codec.decode(binary_part(wire, 0, byte_size(wire) - 1))
+    txn = %{seq: 7, entries: [%{seq: 7, coord: {1, -2, 3}, material: 11, coarse: []}], coarse: []}
     bytes = VoxelRegion.Codec.encode_transaction(txn) |> IO.iodata_to_binary()
-    assert Base.encode16(bytes,case: :lower) == "0700000000000000010000001800000007000000000000000001000000feffffff030000000b000000000000"
-    assert {:ok,encoded}=Codec.encode({:voxel_log_transaction_payload,bytes})
-    assert IO.iodata_to_binary(encoded) == <<0x79,bytes::binary>>
+
+    assert Base.encode16(bytes, case: :lower) ==
+             "0700000000000000010000001800000007000000000000000001000000feffffff030000000b000000000000"
+
+    assert {:ok, encoded} = Codec.encode({:voxel_log_transaction_payload, bytes})
+    assert IO.iodata_to_binary(encoded) == <<0x79, bytes::binary>>
+
+    for material <- [2, 23] do
+      assert {:ok, {:voxel_batch_edit_intent, %{edits: [{{1, 2, 3}, ^material}]}}} =
+               Codec.decode(
+                 <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,
+                   2::32-big-signed, 3::32-big-signed, material::16-big>>
+               )
+    end
+
+    for material <- [24, 255] do
+      assert {:error, :invalid_message} =
+               Codec.decode(
+                 <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,
+                   2::32-big-signed, 3::32-big-signed, material::16-big>>
+               )
+    end
   end
 
   describe "decode movement input" do

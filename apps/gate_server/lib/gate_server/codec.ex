@@ -471,23 +471,36 @@ defmodule GateServer.Codec do
   # Unknown message type
   # VoxelOverlaySubscribe (0x76, Voxim R6): have_seq u64 + l0 box [min, max] i32×6 + coarse_min_level u8。
   def decode(
-        <<@msg_voxel_overlay_subscribe, have_seq::64-big, x0::32-big-signed, y0::32-big-signed, z0::32-big-signed,
-          x1::32-big-signed, y1::32-big-signed, z1::32-big-signed, coarse_min_level::8>>
+        <<@msg_voxel_overlay_subscribe, have_seq::64-big, x0::32-big-signed, y0::32-big-signed,
+          z0::32-big-signed, x1::32-big-signed, y1::32-big-signed, z1::32-big-signed,
+          coarse_min_level::8>>
       ) do
-    {:ok, {:voxel_overlay_subscribe, %{have_seq: have_seq, box: {{x0, y0, z0}, {x1, y1, z1}}, coarse_min_level: coarse_min_level}}}
+    {:ok,
+     {:voxel_overlay_subscribe,
+      %{have_seq: have_seq, box: {{x0, y0, z0}, {x1, y1, z1}}, coarse_min_level: coarse_min_level}}}
   end
 
   def decode(<<@msg_voxel_overlay_subscribe, _rest::binary>>), do: {:error, :invalid_message}
 
   # Voxim 批次：沿用 intent 身份宽度，坐标直接是 canonical macro。
-  def decode(<<@msg_voxel_batch_edit_intent, rid::64-big, seq::32-big, scene::64-big, count::32-big, cells::binary>>) when byte_size(cells) == count * 14 do
-    edits = for <<x::32-big-signed, y::32-big-signed, z::32-big-signed, m::16-big <- cells>>, do: {{x,y,z},m}
-    if Enum.all?(edits, fn {_, m} -> m <= 255 end) do
-      {:ok, {:voxel_batch_edit_intent, %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, edits: edits}}}
+  def decode(
+        <<@msg_voxel_batch_edit_intent, rid::64-big, seq::32-big, scene::64-big, count::32-big,
+          cells::binary>>
+      )
+      when byte_size(cells) == count * 14 do
+    edits =
+      for <<x::32-big-signed, y::32-big-signed, z::32-big-signed, m::16-big <- cells>>,
+        do: {{x, y, z}, m}
+
+    if Enum.all?(edits, fn {_, m} -> MmoContracts.VoxelMaterialCatalog.valid_id?(m) end) do
+      {:ok,
+       {:voxel_batch_edit_intent,
+        %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, edits: edits}}}
     else
       {:error, :invalid_message}
     end
   end
+
   def decode(<<@msg_voxel_batch_edit_intent, _::binary>>), do: {:error, :invalid_message}
 
   def decode(<<type::8, _rest::binary>>) do

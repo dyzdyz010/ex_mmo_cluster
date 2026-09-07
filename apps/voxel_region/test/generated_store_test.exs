@@ -2,12 +2,13 @@ defmodule VoxelRegion.GeneratedStoreTest do
   use ExUnit.Case, async: false
 
   alias VoxelRegion.{AssetPack, Bake, Codec, GeneratedStore, Native, Payload, World}
+  alias MmoContracts.VoxelMaterialCatalog
 
   # 半边长 64 m：每级 2×2 列，L1–L5 烘一次（setup_all）后每个测试复制 baseline 目录。
   @manifest %{
     "schema" => "voxim-worldgen-v1",
     "kernel" => "worldgen_density_v3@1",
-    "materials" => "voxim-palette-v1",
+    "materials" => VoxelMaterialCatalog.table(),
     "world_half_extent_m" => 64,
     "seed" => 1337,
     "min_height" => -200,
@@ -20,7 +21,9 @@ defmodule VoxelRegion.GeneratedStoreTest do
   }
 
   setup_all do
-    template = Path.join(System.tmp_dir!(), "voxel_region_baked_#{System.unique_integer([:positive])}")
+    template =
+      Path.join(System.tmp_dir!(), "voxel_region_baked_#{System.unique_integer([:positive])}")
+
     manifest_path = Path.join(template, "worldgen.json")
     File.mkdir_p!(template)
     File.write!(manifest_path, Jason.encode!(@manifest))
@@ -37,36 +40,54 @@ defmodule VoxelRegion.GeneratedStoreTest do
     manifest_path = Path.join(root, "worldgen.json")
     File.mkdir_p!(root)
     File.write!(manifest_path, Jason.encode!(@manifest))
-    File.cp_r!(Path.join(template, GeneratedStore.hex(baked.content_version)), Path.join(root, GeneratedStore.hex(baked.content_version)))
+
+    File.cp_r!(
+      Path.join(template, GeneratedStore.hex(baked.content_version)),
+      Path.join(root, GeneratedStore.hex(baked.content_version))
+    )
+
     on_exit(fn -> File.rm_rf!(root) end)
     {:ok, root: root, manifest_path: manifest_path}
   end
 
-  test "bake enumerates the world's columns, generates only mixed L1+ regions once, and later boots only verify", %{
-    baked: baked,
-    bake_stats: stats,
-    root: root,
-    manifest_path: manifest_path
-  } do
+  test "bake enumerates the world's columns, generates only mixed L1+ regions once, and later boots only verify",
+       %{
+         baked: baked,
+         bake_stats: stats,
+         root: root,
+         manifest_path: manifest_path
+       } do
     # 2×2 列 × 5 级；每列至少含地表所在的 mixed 行；索引落盘。
     assert stats.columns == 4 * 5
     assert stats.mixed >= 20 and stats.generated == stats.mixed
     assert File.exists?(baked.index_path)
-    mixed = for {{level, rx, rz}, bounds} <- baked.index.bounds, ry <- Native.mixed_rows(level, bounds, baked.config), do: {level, {rx, ry, rz}}
+
+    mixed =
+      for {{level, rx, rz}, bounds} <- baked.index.bounds,
+          ry <- Native.mixed_rows(level, bounds, baked.config),
+          do: {level, {rx, ry, rz}}
+
     assert length(mixed) == stats.mixed
-    assert Enum.all?(mixed, fn {level, region} -> File.exists?(GeneratedStore.path(baked, level, region)) end)
+
+    assert Enum.all?(mixed, fn {level, region} ->
+             File.exists?(GeneratedStore.path(baked, level, region))
+           end)
+
     refute Enum.any?(mixed, fn {level, _} -> level == 0 end)
 
     # 复制出来的根：索引已在，第二次 run 只核对、不生成。
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
     assert store.index.bounds == baked.index.bounds
     {:ok, _store, again} = Bake.run(store)
-    assert again.generated == 0 and again.missing == 0 and again.mixed == stats.mixed and again.columns == 20
+
+    assert again.generated == 0 and again.missing == 0 and again.mixed == stats.mixed and
+             again.columns == 20
   end
 
-  test "uniform regions are synthesized byte-for-byte like the kernel and never touch the disk", %{
-    baked: store
-  } do
+  test "uniform regions are synthesized byte-for-byte like the kernel and never touch the disk",
+       %{
+         baked: store
+       } do
     # L2 列 (0,0)：地表之上为空气、最低地表 deep 之下为岩石；两者都不在 mixed_rows 里、也没有文件。
     bounds = GeneratedStore.bounds(store, 2, {0, 0})
     [lo | _] = rows = Native.mixed_rows(2, bounds, store.config)
@@ -107,10 +128,9 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 0x0E31_FC80_E3FF_9E17
+    assert GeneratedStore.content_version(store) == 0x256B_3361_0344_964F
 
     for field <- [
-          "materials",
           "seed",
           "min_height",
           "sea_level",
@@ -129,12 +149,41 @@ defmodule VoxelRegion.GeneratedStoreTest do
                GeneratedStore.content_version(store)
     end
 
+    changed_materials = List.update_at(@manifest["materials"], 2, &Map.put(&1, "name", "stone"))
+
+    refute GeneratedStore.content_version(
+             Native.kernel_identity(),
+             Jason.encode!(Enum.map(changed_materials, &[&1["id"], &1["name"]])),
+             config()
+           ) == GeneratedStore.content_version(store)
+
     refute GeneratedStore.content_version(
              "worldgen_density_v3@1+sha256:" <> String.duplicate("0", 64),
-             @manifest["materials"],
+             VoxelMaterialCatalog.identity_bytes(),
              config()
            ) ==
              GeneratedStore.content_version(store)
+  end
+
+  test "manifest 材质表漂移会在创建版本目录前失败", %{root: parent_root} do
+    root = Path.join(parent_root, "invalid_manifest_root")
+    File.mkdir_p!(root)
+
+    variants = [
+      Map.delete(@manifest, "materials"),
+      Map.put(@manifest, "materials", Enum.reverse(@manifest["materials"])),
+      put_in(@manifest, ["materials", Access.at(2), "name"], "stone"),
+      put_in(@manifest, ["materials", Access.at(2), "id"], 24),
+      Map.update!(@manifest, "materials", &(&1 ++ [%{"id" => 24, "name" => "extra"}]))
+    ]
+
+    Enum.with_index(variants, fn manifest, index ->
+      path = Path.join(root, "invalid_materials_#{index}.json")
+      File.write!(path, Jason.encode!(manifest))
+      assert catch_error(GeneratedStore.open(root: root, manifest_path: path))
+    end)
+
+    refute Enum.any?(File.ls!(root), &Regex.match?(~r/^[0-9a-f]{16}$/, &1))
   end
 
   test "invalid generation levels and overflowing canonical coordinates do not kill World", %{
@@ -311,15 +360,22 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert {:ok, ^cv, [{:unchanged, 0, ^region}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
   end
 
-  test "cold L0 generation runs outside World, is shared by concurrent requesters, and warm serves hit the memory cache", %{
-    root: root,
-    manifest_path: manifest_path
-  } do
+  test "cold L0 generation runs outside World, is shared by concurrent requesters, and warm serves hit the memory cache",
+       %{
+         root: root,
+         manifest_path: manifest_path
+       } do
     {:ok, _world} =
-      World.start_link(source: GeneratedStore, root: root, manifest_path: manifest_path, name: :cold_world)
+      World.start_link(
+        source: GeneratedStore,
+        root: root,
+        manifest_path: manifest_path,
+        name: :cold_world
+      )
 
     cv = World.content_version(:cold_world)
     store = :sys.get_state(:cold_world).source_state
+
     # 地表所在的 L0 行（mixed，需要在线生成）：两个请求者同时要同一块 + 各自一块。
     [ry | _] = Native.mixed_rows(0, GeneratedStore.bounds(store, 0, {0, 0}), store.config)
     shared = %{level: 0, region: {0, ry, 0}, have_seq: 0, have_hash: 0}
@@ -337,22 +393,37 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert seq_us < 100_000
 
     [{:ok, reply1}, {:ok, reply2}] = Enum.map(tasks, &Task.await(&1, 120_000))
-    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes1}, {:payload, 0, {1, ^ry, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply1))
-    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes2}, {:payload, 0, {2, ^ry, 0}, _}]} = Codec.decode_reply(IO.iodata_to_binary(reply2))
+
+    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes1}, {:payload, 0, {1, ^ry, 0}, _}]} =
+      Codec.decode_reply(IO.iodata_to_binary(reply1))
+
+    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, bytes2}, {:payload, 0, {2, ^ry, 0}, _}]} =
+      Codec.decode_reply(IO.iodata_to_binary(reply2))
+
     assert bytes1 == bytes2
 
     # 共享的那块只生成一次：三块三次 NIF 调用；World 串行应答时第二份请求的共享块已在缓存里。
-    assert %{generated: 3, misses: 3, hits: 1, evictions: 0, entries: 3} = World.stats(:cold_world)
+    assert %{generated: 3, misses: 3, hits: 1, evictions: 0, entries: 3} =
+             World.stats(:cold_world)
 
     # 暖请求：不再读盘、不再生成。
     {:ok, reply} = World.serve(:cold_world, request([shared, own.(1), own.(2)], cv))
-    {:ok, ^cv, [{:payload, 0, {0, ^ry, 0}, ^bytes1}, {:payload, 0, {1, ^ry, 0}, _}, {:payload, 0, {2, ^ry, 0}, _}]} =
+
+    {:ok, ^cv,
+     [
+       {:payload, 0, {0, ^ry, 0}, ^bytes1},
+       {:payload, 0, {1, ^ry, 0}, _},
+       {:payload, 0, {2, ^ry, 0}, _}
+     ]} =
       Codec.decode_reply(IO.iodata_to_binary(reply))
 
     assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)
   end
 
-  test "asset pack holds every L4+ region of the world box as the bytes the store serves", %{baked: baked, root: root} do
+  test "asset pack holds every L4+ region of the world box as the bytes the store serves", %{
+    baked: baked,
+    root: root
+  } do
     out = Path.join(root, "assets")
     [l4, l5] = AssetPack.build(baked, out, 4, 5)
     assert l4.path == Path.join([out, GeneratedStore.hex(baked.content_version), "L4.vxpack"])
@@ -454,7 +525,10 @@ defmodule VoxelRegion.GeneratedStoreTest do
       if output_dir, do: File.write!(Path.join(output_dir, name), served)
 
       {:ok, _header, served_raw} = Codec.decode_payload_body(served)
-      {:ok, _header, oracle_raw} = oracle_dir |> Path.join(name) |> File.read!() |> Codec.decode_payload_body()
+
+      {:ok, _header, oracle_raw} =
+        oracle_dir |> Path.join(name) |> File.read!() |> Codec.decode_payload_body()
+
       assert byte_size(served_raw) == byte_size(oracle_raw), name
       assert served_raw == oracle_raw, name
 
@@ -462,13 +536,18 @@ defmodule VoxelRegion.GeneratedStoreTest do
       {:ok, oracle} = Payload.decode_body(oracle_raw)
       assert generated.cells == oracle.cells, name
 
-      for local <- Map.keys(generated.records) |> Enum.concat(Map.keys(oracle.records)) |> Enum.uniq() do
+      for local <-
+            Map.keys(generated.records) |> Enum.concat(Map.keys(oracle.records)) |> Enum.uniq() do
         material = Payload.material(generated, local)
-        assert Payload.skins(generated, local, material) == Payload.skins(oracle, local, material), "#{name} at #{inspect(local)}"
+
+        assert Payload.skins(generated, local, material) == Payload.skins(oracle, local, material),
+               "#{name} at #{inspect(local)}"
       end
     end
 
-    IO.puts("t2 sample=#{length(fixtures)} generated_l0=#{GeneratedStore.generated(store)} content_version=#{GeneratedStore.hex(store.content_version)}")
+    IO.puts(
+      "t2 sample=#{length(fixtures)} generated_l0=#{GeneratedStore.generated(store)} content_version=#{GeneratedStore.hex(store.content_version)}"
+    )
   end
 
   defp config do

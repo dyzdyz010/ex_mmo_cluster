@@ -14,9 +14,10 @@ defmodule VoxelRegion.GeneratedStore do
 
   import Bitwise
   alias VoxelRegion.{Codec, Native, Payload}
+  alias MmoContracts.VoxelMaterialCatalog
 
   @schema "voxim-worldgen-v1"
-  @identity_schema "voxim-content-version-md5-64-v1"
+  @identity_schema "voxim-content-version-md5-64-v2"
   @fields ~w(seed min_height sea_level max_height soil_depth lowland_amplitude mountain_amplitude cave_max_depth)
   @lock_table :voxel_region_generation
 
@@ -49,7 +50,8 @@ defmodule VoxelRegion.GeneratedStore do
     kernel = Native.kernel_identity()
     true = String.starts_with?(kernel, kernel_name <> "+sha256:")
     materials = Map.fetch!(manifest, "materials")
-    version = content_version(kernel, materials, config)
+    true = materials == VoxelMaterialCatalog.table()
+    version = content_version(kernel, VoxelMaterialCatalog.identity_bytes(), config)
     world_dir = Path.join(root, hex(version))
     File.mkdir_p!(world_dir)
     ensure_lock_table()
@@ -107,7 +109,8 @@ defmodule VoxelRegion.GeneratedStore do
   end
 
   @doc "`{:uniform, material}` / `:mixed`。"
-  def classify(store, level, {rx, ry, rz}), do: Native.classify_region(level, ry, bounds(store, level, {rx, rz}), store.config)
+  def classify(store, level, {rx, ry, rz}),
+    do: Native.classify_region(level, ry, bounds(store, level, {rx, rz}), store.config)
 
   @doc "本 store 打开以来实际执行的 NIF 生成次数。"
   def generated(store), do: :counters.get(store.generations, 1)
@@ -122,7 +125,15 @@ defmodule VoxelRegion.GeneratedStore do
   def read(store, level, {_, _, _} = region) do
     case classify(store, level, region) do
       {:uniform, material} ->
-        bytes = Codec.encode_payload(level, region, 0, store.content_version, Native.uniform_body(level, material))
+        bytes =
+          Codec.encode_payload(
+            level,
+            region,
+            0,
+            store.content_version,
+            Native.uniform_body(level, material)
+          )
+
         {:ok, header} = Codec.decode_payload_header(bytes)
         {:ok, bytes, header}
 
@@ -159,7 +170,8 @@ defmodule VoxelRegion.GeneratedStore do
     end
   end
 
-  def path(store, level, region), do: Path.join([store.world_dir, "baseline", "L#{level}", file_name(region)])
+  def path(store, level, region),
+    do: Path.join([store.world_dir, "baseline", "L#{level}", file_name(region)])
 
   def file_name({x, y, z}), do: "r_#{x}_#{y}_#{z}.vxr"
 
@@ -174,7 +186,7 @@ defmodule VoxelRegion.GeneratedStore do
   def hex(version), do: Base.encode16(<<version::64>>, case: :lower)
 
   @doc """
-  MD5-64 v1 输入是三段以 NUL 分隔的 identity 字符串，随后依次为：
+  MD5-64 v2 输入是规则名、kernel identity、材质有序 pair JSON 三段，以 NUL 分隔，随后依次为：
   seed i64 LE；min/sea/max/soil i32 LE；lowland/mountain IEEE754 f64 LE；
   cave depth i32 LE。
   """
