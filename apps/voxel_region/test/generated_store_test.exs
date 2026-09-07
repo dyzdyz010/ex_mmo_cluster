@@ -419,6 +419,58 @@ defmodule VoxelRegion.GeneratedStoreTest do
     end
   end
 
+  # T-2（决策稿 §12）：UE `VoximOracle.S4.ExportRandomSample` 抽出的 200 个 (level, region)，逐份用 `GeneratedStore.read`——
+  # 就绪门烘出的文件 / 合成的常量载荷 / 在线生成的 L0，即服务端实际会发的字节——与 UE fixture 比较：解压后 body 逐字节相同，
+  # 再按 Payload 语义逐格核对（cells 与六向 texel，含 ring）。写出的同名载荷交给 UE `VoximOracle.S4.ImportRandomSample`。
+  @tag :oracle
+  @tag :t2
+  @tag timeout: 1_800_000
+  test "served bytes for the random 200-region sample equal the UE oracle byte for byte" do
+    oracle_dir = System.fetch_env!("VOXIM_T2_ORACLE_DIR")
+    manifest = oracle_dir |> Path.join("manifest.json") |> File.read!() |> Jason.decode!()
+    fixtures = Map.fetch!(manifest, "fixtures")
+    assert length(fixtures) == 200
+
+    {:ok, store} =
+      GeneratedStore.open(
+        root: System.fetch_env!("VOXIM_STORE_ROOT"),
+        manifest_path: System.fetch_env!("VOXIM_STORE_MANIFEST")
+      )
+
+    store_config = store.config
+    output_dir = System.get_env("VOXIM_SERVER_PAYLOAD_DIR")
+    if output_dir, do: File.mkdir_p!(output_dir)
+
+    for fixture <- fixtures do
+      [seed, min, sea, max, soil, lowland, mountain, cave] = Map.fetch!(fixture, "config")
+      assert {seed, min, sea, max, soil, lowland * 1.0, mountain * 1.0, cave} == store_config
+      [x, y, z] = Map.fetch!(fixture, "coord")
+      level = Map.fetch!(fixture, "level")
+      name = Map.fetch!(fixture, "file")
+
+      {:ok, served, header} = GeneratedStore.read(store, level, {x, y, z})
+      assert header.level == level and header.region == {x, y, z}
+      assert header.content_version == store.content_version
+      if output_dir, do: File.write!(Path.join(output_dir, name), served)
+
+      {:ok, _header, served_raw} = Codec.decode_payload_body(served)
+      {:ok, _header, oracle_raw} = oracle_dir |> Path.join(name) |> File.read!() |> Codec.decode_payload_body()
+      assert byte_size(served_raw) == byte_size(oracle_raw), name
+      assert served_raw == oracle_raw, name
+
+      {:ok, generated} = Payload.decode_body(served_raw)
+      {:ok, oracle} = Payload.decode_body(oracle_raw)
+      assert generated.cells == oracle.cells, name
+
+      for local <- Map.keys(generated.records) |> Enum.concat(Map.keys(oracle.records)) |> Enum.uniq() do
+        material = Payload.material(generated, local)
+        assert Payload.skins(generated, local, material) == Payload.skins(oracle, local, material), "#{name} at #{inspect(local)}"
+      end
+    end
+
+    IO.puts("t2 sample=#{length(fixtures)} generated_l0=#{GeneratedStore.generated(store)} content_version=#{GeneratedStore.hex(store.content_version)}")
+  end
+
   defp config do
     {1337, -200, 326, 586, 4, 381.77066, 1223.743774, 96}
   end

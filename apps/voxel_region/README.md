@@ -29,6 +29,11 @@ python apps/voxel_region/bench/http_probe.py
 
 oracle 默认由 ExUnit 排除，显式运行时加 `--include oracle --only oracle`。
 
+T-2（决策稿 §12，随机 200 region）：UE 先跑 `VoximOracle.S4.ExportRandomSample`（固定种子，写 `<Voxim>/Saved/S4OracleT2/`），再
+`MIX_ENV=test VOXIM_T2_ORACLE_DIR=<Voxim>/Saved/S4OracleT2 VOXIM_STORE_ROOT=<Voxim>/Saved/S4CacheAuthority VOXIM_STORE_MANIFEST=<Voxim>/Docs/R6/runtime/s4_worldgen_manifest.json VOXIM_SERVER_PAYLOAD_DIR=<Voxim>/Saved/S4ServerPayloadsT2 mix cmd --app voxel_region mix test --no-start --only t2 test/generated_store_test.exs`——
+每份用 `GeneratedStore.read`（就绪门文件 / 合成常量 / 在线 L0，即实际会发的字节）与 UE fixture 解压后逐字节 + 逐格比较，并写出同名载荷；之后 Rust `VOXIM_ORACLE_MANIFEST=<Voxim>/Saved/S4OracleT2/manifest.json cargo test --release --test oracle -- --ignored`、
+`python Docs/R6/tools/t2_compare.py`、UE `VoximOracle.S4.ImportRandomSample`。2026-09-07 四方 200/200，记录在 `Voxim/Docs/R6.md` §S4 第六切片。
+
 **就绪门（`VoxelRegion.Bake`）**：世界是以原点为中心、半边长 `world_half_extent_m` 的正方形。启动时（`Application.start`，在 `World` 之前）对 L1–L5 每一级枚举世界内所有 XZ 列，
 用 kernel 的折叠边界 `Native.column_bounds`（列内最低 / 最高地表与岩性省份范围）配合 `Native.mixed_rows` 找出不能证明均匀的 ry，只有这些 region 需要生成并落盘；
 纯空气 / 纯岩石的 region 不落盘，读取时 `Native.classify_region` + `Native.uniform_body` 合成常量载荷（Rust 测试保证与 `generate_region` 逐字节相同）。列边界写在 `baseline/index.etf`，
