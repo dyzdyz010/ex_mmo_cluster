@@ -168,11 +168,18 @@ defmodule T1TransportTest do
       ack = %MmoContracts.Movement.OwnerAck{identity: identity, server_tick: seq, processed_input_seq: seq,
         collision_revision: 1, state: player, substituted_through_seq: 0}
       send(sink, {:mmo_datagram, identity, ack})
+      record = %MmoContracts.Movement.SnapshotRecord{entity_id: 202, entity_epoch: 1,
+        interest_generation: 1, collision_revision: 1, state: %{player | yaw: seq}}
+      snapshot = %MmoContracts.Movement.Snapshot{identity: identity, server_tick: seq, records: [record]}
+      send(sink, {:mmo_datagram, identity, snapshot})
     end
     :ok = :sys.resume(sink)
     assert_receive {:quic, ack_bytes, ^conn, _} when is_binary(ack_bytes), 5000
     assert {:ok, %MmoContracts.Movement.OwnerAck{processed_input_seq: 100}} = MmoContracts.Movement.Codec.decode(ack_bytes)
-    assert GenServer.call(sink, :stats).datagrams_replaced == 99
+    assert_receive {:quic, snapshot_bytes, ^conn, _} when is_binary(snapshot_bytes), 5000
+    assert {:ok, %MmoContracts.Movement.Snapshot{server_tick: 100, records: [%{entity_id: 202, state: %{yaw: 100}}]}} =
+      MmoContracts.Movement.Codec.decode(snapshot_bytes)
+    assert GenServer.call(sink, :stats).datagrams_replaced == 198
     :ok = :quicer.setopt(voxel, :active, true)
     expected = <<2, byte_size(large)::32, large::binary, 3::32, 0x71, 0x19, 0xE3>>
     assert receive_bytes(voxel, byte_size(expected), <<>>) == expected
