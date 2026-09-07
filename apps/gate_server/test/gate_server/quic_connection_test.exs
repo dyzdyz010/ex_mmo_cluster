@@ -21,7 +21,7 @@ defmodule T1Scene do
   def join(ref, identity, character, sink), do: GenServer.cast(ref, {:join, identity, character, sink})
   def ready(ref, identity, n, r), do: GenServer.cast(ref, {:ready, identity, n, r})
   def input(ref, identity, batch), do: GenServer.cast(ref, {:input, identity, batch})
-  def leave(ref, identity), do: GenServer.cast(ref, {:leave, identity})
+  def leave(ref, identity, _reason \\ 1), do: GenServer.cast(ref, {:leave, identity})
   def handle_cast(message, owner) do
     send(owner, message)
     {:noreply, owner}
@@ -106,6 +106,7 @@ defmodule T1TransportTest do
   test "duplicate cid closes old epoch reliably while new join remains isolated", %{conn: conn, hello: hello} do
     old_control = control(conn, hello)
     assert_receive {:join, old, _, old_sink}, 5000
+    old_monitor = Process.monitor(old_sink)
     {:ok, second} = :quicer.connect(~c"localhost", 25443,
       [alpn: [~c"voxim-m1"], verify: :verify_peer,
        cacertfile: ~c"/home/dyz/.cache/voxim-m1-t1/certs-v1/ca.pem", datagram_receive_enabled: 1], 5000)
@@ -120,6 +121,7 @@ defmodule T1TransportTest do
     expected = <<1, byte_size(hello_bytes)::32, hello_bytes::binary, byte_size(end_bytes)::32, end_bytes::binary>>
     assert receive_bytes(old_control, byte_size(expected), <<>>) == expected
     assert_receive {:leave, ^old}, 5000
+    assert_receive {:DOWN, ^old_monitor, :process, ^old_sink, _}, 5000
     assert Process.alive?(fresh_sink)
     refute Process.alive?(old_sink)
     send(fresh_sink, {:mmo_close, old, 1})
@@ -151,7 +153,7 @@ defmodule T1TransportTest do
   end
 
   test "paused receiver holds reliable data while snapshots replace before native send", %{conn: conn, hello: hello} do
-    control(conn, hello)
+    control_stream = control(conn, hello)
     assert_receive {:join, identity, _, sink}, 5000
     {:ok, voxel} = :quicer.start_stream(conn, [{:active, false}])
     {:ok, _} = :quicer.async_send(voxel, <<2>>, 0)
@@ -162,6 +164,16 @@ defmodule T1TransportTest do
     Process.sleep(500)
     stalled = GenServer.call(sink, :stats)
     assert stalled.reliable_queued >= 1
+    reply = %Session.TimeReply{request_id: 777, client_send_us: 1, server_receive_us: 2, server_send_us: 3, server_tick: 4}
+    send(sink, {:mmo_reliable, identity, 1, reply})
+    {:ok, hello_bytes} = Session.Codec.encode(hello)
+    {:ok, reply_bytes} = Session.Codec.encode(reply)
+    hello_bytes = IO.iodata_to_binary(hello_bytes)
+    reply_bytes = IO.iodata_to_binary(reply_bytes)
+    control_bytes = <<1, byte_size(hello_bytes)::32, hello_bytes::binary, byte_size(reply_bytes)::32, reply_bytes::binary>>
+    assert receive_bytes(control_stream, byte_size(control_bytes), <<>>) == control_bytes
+    assert GenServer.call(sink, :stats).reliable_queued >= 1
+    IO.puts("T1_CONTROL_PROGRESS reliable TimeReply received before paused voxel resumes")
     player = %Session.State{position: {0.0, 1.0, 0.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}
     :ok = :sys.suspend(sink)
     for seq <- 1..100 do
@@ -191,6 +203,21 @@ defmodule T1TransportTest do
   test "preauth datagram closes with the specified auth rejection", %{conn: conn} do
     assert {:ok, _} = :quicer.async_send_dgram(conn, <<1>>)
     assert_receive {:quic, :shutdown, ^conn, 0x1000D}, 5000
+  end
+
+  test "server rejects downlink-only TimeReply received from client", %{conn: conn, hello: hello} do
+    stream = control(conn, hello)
+    assert_receive {:join, identity, _, _}, 5000
+    wrong = %Session.TimeReply{request_id: 1, client_send_us: 1, server_receive_us: 2, server_send_us: 3, server_tick: 4}
+    {:ok, bytes} = Session.Codec.encode(wrong)
+    bytes = IO.iodata_to_binary(bytes)
+    {:ok, _} = :quicer.async_send(stream, <<byte_size(bytes)::32, bytes::binary>>, 0)
+    {:ok, echoed} = Session.Codec.encode(hello)
+    {:ok, ending} = Session.Codec.encode(%Session.SessionEnd{identity: identity, reason: 8})
+    echoed = IO.iodata_to_binary(echoed)
+    ending = IO.iodata_to_binary(ending)
+    expected = <<1, byte_size(echoed)::32, echoed::binary, byte_size(ending)::32, ending::binary>>
+    assert receive_bytes(stream, byte_size(expected), <<>>) == expected
   end
 
   test "split control purpose and length preserve Hello while wrong identity closes", %{conn: conn, hello: hello} do

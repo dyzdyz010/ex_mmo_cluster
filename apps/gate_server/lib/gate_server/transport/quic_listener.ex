@@ -46,13 +46,18 @@ defmodule GateServer.Transport.QuicListener do
   def handle_info({:quic, _, _, _}, state), do: {:noreply, state}
 
   @impl true
-  def handle_call({:claim, cid, scene_id, scene_epoch}, {pid, _}, state) do
+  def handle_call({:claim, scene, route, character}, {pid, _}, state) do
+    cid = character.id
     case state.characters[cid] do
       nil -> :ok
-      previous -> send(previous.pid, {:mmo_close, previous.identity, 2})
+      previous ->
+        :ok = previous.scene.leave(previous.scene_ref, previous.identity, 2)
+        send(previous.pid, {:mmo_close, previous.identity, 2})
     end
-    identity = %Identity{session_epoch: state.next_epoch, scene_id: scene_id, scene_epoch: scene_epoch}
-    owner = %{pid: pid, identity: identity, monitor: Process.monitor(pid)}
+    identity = %Identity{session_epoch: state.next_epoch, scene_id: route.scene_id, scene_epoch: route.scene_epoch}
+    # 同一 listener 先 leave 后 join，Scene 的邮箱顺序保证旧成员先退出；不等旧 QUIC 关闭。
+    :ok = scene.join(route.scene_ref, identity, character, pid)
+    owner = %{pid: pid, identity: identity, monitor: Process.monitor(pid), scene: scene, scene_ref: route.scene_ref}
     {:reply, identity, %{state | next_epoch: state.next_epoch + 1,
       characters: Map.put(state.characters, cid, owner)}}
   end

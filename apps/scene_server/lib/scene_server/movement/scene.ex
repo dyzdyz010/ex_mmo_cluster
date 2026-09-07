@@ -24,7 +24,7 @@ defmodule SceneServer.Movement.Scene do
   @doc "接收已解码 C1 batch，绝不因消息数量推进时间。"
   def input(scene, identity, batch), do: GenServer.cast(scene, {:input, identity, batch})
   @doc "结束此 identity；旧 epoch 不影响重连。"
-  def leave(scene, identity), do: GenServer.cast(scene, {:leave, identity})
+  def leave(scene, identity, reason \\ 1), do: GenServer.cast(scene, {:leave, identity, reason})
   @doc "Scene 单调时间映射与步后 tick；回复经同一控制流。"
   def time_probe(scene, identity, probe),
     do: GenServer.cast(scene, {:time_probe, identity, probe})
@@ -234,7 +234,7 @@ defmodule SceneServer.Movement.Scene do
   end
 
   @impl true
-  def handle_cast({:leave, identity}, state), do: {:noreply, drop(state, identity, 1)}
+  def handle_cast({:leave, identity, reason}, state), do: {:noreply, drop(state, identity, reason)}
 
   def handle_cast({:ready, identity, seq, revision}, state) do
     case Map.fetch(state.characters, identity) do

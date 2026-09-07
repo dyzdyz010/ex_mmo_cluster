@@ -245,8 +245,7 @@ defmodule GateServer.Session.QuicConnection do
          {:ok, character} <- state.auth.fetch_authorized_character(claims, join.cid) do
       case state.router.route(join.scene_id) do
         {:ok, route} ->
-          identity = GenServer.call(state.listener, {:claim, join.cid, join.scene_id, route.scene_epoch})
-          :ok = state.scene.join(route.scene_ref, identity, character, self())
+          identity = GenServer.call(state.listener, {:claim, state.scene, Map.put(route, :scene_id, join.scene_id), character})
           %{state | identity: identity, route: route}
         _ -> close(state, 11)
       end
