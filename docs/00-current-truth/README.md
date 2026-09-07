@@ -46,7 +46,7 @@ flowchart LR
 
 1. **服务端权威优先仍是全局铁律**：移动、AOI、战斗、体素、object state、field truth 均以服务端 authority 为准；客户端只能预览、呈现或发 intent。
 2. **体素确认态只来自服务端权威结果**：在线客户端确认态只能吃 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot`。
-3. **体素基线校验必须硬失败**：进入场景前必须校验本地 world pack、region manifest、chunk baseline 和 diff chain；缺包或 hash 不匹配不能靠运行时 snapshot/resync 兜底进入场景。
+3. **体素基线按当前客户端契约接纳**：本地 world pack、region manifest、chunk baseline、diff chain 的强制入场校验及缺包拒绝仅为 **legacy/reference（Voxia 旧客户端契约）**，不约束 Voxim 入场。Voxim 当前 R6 从服务端 region payload、日志/事务与意图结果建立 canonical 确认态；M1 计划将完整权威 R6 L0 payload 的 CanonicalBootstrap 装入既有 canonical 管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才 Ready。实际不完整或身份/版本不符的权威来源仍显式拒绝，禁止 missing-as-air 或本地包、snapshot/resync 静默兜底；bootstrap/Ready runtime **待实施**，规范见 [`Voxim/Docs/M1/plan.md §2`](../../../Voxim/Docs/M1/plan.md)，G1 不代表运行时接线完成。
 4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
 5. **完整 3D 是体素流式与 LOD 的唯一现行空间契约**：公共契约是 `chunk_xyz -> canonical 3D chunk/page`，near 为 XYZ cube，far 为稀疏 cube shell；不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia 的 near XYZ 与 Pure3D far 已在唯一开发根 live；Online authority production cutover 仍未开始，隔离 probe 不等于第二生产路径。
 6. **Voxia 参考实现已切到其唯一 Near/Far Patch-diff 架构并合入独立仓库 `master`**：

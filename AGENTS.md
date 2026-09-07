@@ -21,7 +21,7 @@
 
 1. **服务端权威优先**：移动、AOI、战斗、体素、object state、field truth 等核心运行时状态以服务端 authority 为准。客户端可以预测、预览和呈现，但不能成为 confirmed truth 来源。
 2. **confirmed voxel truth 只吃服务端**：Voxim 在线确认态只接受服务端 region payload、日志/事务与意图结果；Voxia 的旧 snapshot/delta/object/field 协议是参考实现；归档 Web / Bevy 若被用户显式临时纳入，也必须遵守同一规则。本地编辑只允许作为 preview、pending UI 或离线模式能力。体素编辑全程服务端权威、不做客户端乐观预测（点击只发 intent，等服务端广播 delta/快照才渲染）；乐观预测仅用于移动和技能特效。
-3. **体素基线校验硬失败**：进入场景前必须校验客户端本地 world pack / region manifest / chunk baseline / diff chain 的完整性与版本；缺包、hash 不匹配、manifest 不一致、diff chain 断裂等都视为客户端数据不可被信任，必须拒绝进入场景并返回可诊断错误，禁止用运行时 `ChunkSnapshot`、resync、自愈逻辑或静默兜底绕过校验。
+3. **体素基线的权威接纳边界**：客户端本地 world pack / region manifest / chunk baseline / diff chain 的强制入场校验及缺包拒绝规则仅属 **legacy/reference（Voxia 旧客户端契约）**，不作为 Voxim 入场前置条件。Voxim 当前 R6 消费服务端 region payload、日志/事务与意图结果，经既有 canonical 管线形成确认态；M1 计划由完整权威 R6 L0 payload 的 CanonicalBootstrap 接入同一管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才发 Ready（详见 [`../Voxim/Docs/M1/plan.md §2`](../Voxim/Docs/M1/plan.md)）。实际不完整或身份/版本不符的权威来源仍必须显式拒绝，不得把缺失当空气或用本地包、snapshot/resync 静默兜底；该 bootstrap/Ready runtime **待实施**，G1 仅完成字节 owner 抽取。
 4. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；World 负责事务、region / scene 路由和跨 app 编排；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 负责 canonical persistence；客户端只消费权威结果。
 5. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；voxel / object / combat truth 写回必须经过 ChunkProcess 或明确的 authority dispatcher。
 6. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
