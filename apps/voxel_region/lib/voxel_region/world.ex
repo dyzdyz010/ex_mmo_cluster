@@ -23,8 +23,8 @@ defmodule VoxelRegion.World do
   require Logger
   import Bitwise
   alias VoxelRegion.OverlayLog
-  alias VoxelRegion.{FileStore, Reducer}
-  alias MmoContracts.Voxel.{Codec, Payload}
+  alias VoxelRegion.{CollisionSource, FileStore, Reducer}
+  alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @max_level 5
   @resident_level 4
@@ -125,6 +125,12 @@ defmodule VoxelRegion.World do
 
   def entries_after(server \\ @name, seq), do: GenServer.call(server, {:entries_after, seq})
 
+  @doc "Prepare canonical L0 source, then atomically send its snapshot marker and subscribe to all subsequent transactions."
+  def canonical_snapshot_and_subscribe(world_ref, l0_box, subscriber_pid, request_ref) do
+    prepare(world_ref, Enum.map(CollisionSource.regions(l0_box), &{0, &1}))
+    GenServer.call(world_ref, {:canonical_snapshot, l0_box, subscriber_pid, request_ref}, 300_000)
+  end
+
   @doc "多格编辑原子提交；每级父格去重后规约。"
   def apply_edits(server \\ @name, edits) do
     if Enum.all?(edits, fn
@@ -173,6 +179,7 @@ defmodule VoxelRegion.World do
           seq: 0,
           entries: %{},
           subs: %{},
+          canonical_subs: %{},
           log: {log, log.open(world_dir, cv)}
         }
 
@@ -241,6 +248,24 @@ defmodule VoxelRegion.World do
     {:reply, state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)), state}
   end
 
+  def handle_call({:canonical_snapshot, {l0_min, l0_max} = box, pid, request}, _from, state) do
+    started = System.monotonic_time(:microsecond)
+    case canonical_regions(state, CollisionSource.regions(box)) do
+      {:ok, regions, payloads, state} ->
+        chunks = payloads |> Enum.flat_map(fn {coord, payload} ->
+          Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
+        end) |> Enum.sort_by(& &1.coord)
+        snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
+          l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
+        unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
+        send(pid, {:canonical_snapshot, request, snapshot})
+        Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
+        {:reply, :ok, %{state | canonical_subs: Map.put_new(state.canonical_subs, pid, box)}}
+      {:error, :canonical_incomplete} ->
+        {:reply, {:error, :canonical_incomplete}, state}
+    end
+  end
+
   def handle_call({:apply_edits, edits}, from, state) do
     case apply_batch(state, edits) do
       {:ok, next_state} ->
@@ -255,7 +280,7 @@ defmodule VoxelRegion.World do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid)}}
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid)}}
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ---- 应答
@@ -464,6 +489,57 @@ defmodule VoxelRegion.World do
     Enum.each(state.subs, fn {pid, filter} -> send_filtered(pid, entry, filter) end)
   end
 
+  # Same materialized bytes as serve; only the snapshot header is stamped to the barrier N.
+  defp canonical_regions(state, coords) do
+    Enum.reduce_while(coords, {:ok, [], [], state}, fn coord, {:ok, regions, payloads, state} ->
+      with {:ok, bytes, _, state} <- payload_bytes(state, 0, coord),
+           bytes = Codec.stamp_payload_seq(bytes, state.seq),
+           {:ok, payload} <- Payload.decode(bytes) do
+        {:cont, {:ok, regions ++ [{coord, bytes}], payloads ++ [{coord, payload}], state}}
+      else
+        _ -> {:halt, {:error, :canonical_incomplete}}
+      end
+    end)
+  end
+
+  defp canonical_chunks(state, coords) do
+    groups = Enum.group_by(coords, &CollisionSource.region_coord/1)
+    with {:ok, _, payloads, _} <- canonical_regions(state, groups |> Map.keys() |> Enum.sort()) do
+      chunks = Enum.flat_map(payloads, fn {region, payload} ->
+        Enum.map(Map.fetch!(groups, region), &CollisionSource.capture(payload, &1))
+      end)
+      {:ok, Enum.sort_by(chunks, & &1.coord)}
+    end
+  end
+
+  # Capture both versions while the pre-commit state still exists. Never sample after fanout.
+  defp canonical_changes(%{canonical_subs: subs}, _after, _changed) when map_size(subs) == 0, do: {:ok, []}
+  defp canonical_changes(before, after_state, changed) do
+    started = System.monotonic_time(:microsecond)
+    boxes = before.canonical_subs |> Map.values() |> Enum.uniq()
+    coords = changed |> Enum.map(fn {0, cell} -> CollisionSource.chunk_coord(cell) end)
+      |> Enum.uniq() |> Enum.filter(fn coord -> Enum.any?(boxes, &CollisionSource.in_box?(coord, &1)) end)
+      |> Enum.sort()
+    with {:ok, old} <- canonical_chunks(before, coords),
+         {:ok, new} <- canonical_chunks(after_state, coords) do
+      chunks = Enum.zip(old, new) |> Enum.flat_map(fn {a, b} -> if a.cells == b.cells, do: [], else: [b] end)
+      Logger.info("voxel_region canonical_delta seq=#{after_state.seq} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} capture_us=#{System.monotonic_time(:microsecond)-started}")
+      {:ok, chunks}
+    end
+  end
+
+  defp fanout_canonical(state, %{coord: _} = entry, chunks) do
+    fanout_canonical(state, %{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse}, chunks)
+  end
+
+  defp fanout_canonical(state, transaction, chunks) do
+    Enum.each(state.canonical_subs, fn {pid, box} ->
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+        chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
+      send(pid, {:canonical_delta, delta})
+    end)
+  end
+
   defp send_filtered(pid, %{entries: entries, coarse: coarse} = txn, filter) do
     entries = Enum.filter(entries, &matches?(&1, filter))
     coarse = Enum.filter(coarse, &matches_cell?(&1.level, &1.cell, filter))
@@ -547,6 +623,7 @@ defmodule VoxelRegion.World do
   end
 
   defp apply_batch(state, edits, legacy \\ false) do
+    before = state
     started = System.monotonic_time(:microsecond)
     result = Enum.reduce_while(Map.new(edits), {[], state}, fn {cell,m}, {changed,s} ->
       case cell_value(s, 0, cell) do
@@ -576,13 +653,16 @@ defmodule VoxelRegion.World do
             else
               select_transaction(state,all)
             end
+            with {:ok, collision_chunks} <- canonical_changes(before, state, changed) do
             append_log(state,txn)
             state = %{state | entries: Map.put(state.entries,state.seq,txn)}
             fanout(state,txn)
+            fanout_canonical(state,txn,collision_chunks)
             region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
             state = if region_count > 0, do: compact_log(state), else: state
             Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
             {:ok,state}
+            end
         end
     end
   end

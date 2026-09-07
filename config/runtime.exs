@@ -34,6 +34,18 @@ config :auth_server, :dev_auto_login, dev_auto_login?
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
 config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
 
+# One explicitly deployed Voxim scene. Gate caches its World route at subscription/join;
+# HTTP resolves this same route per request. Distributed deployments replace these refs.
+config :world_server, :movement_routes, %{
+  1 => %{
+    scene_ref: {SceneServer.Movement.Scene, node()},
+    world_ref: {VoxelRegion.World, node()},
+    scene_epoch: 1
+  }
+}
+config :gate_server, :voxel_scene_id, 1
+config :auth_server, :voxel_scene_id, 1
+
 # 冷 miss 生成在每个请求进程里的并发上限；内存载荷缓存 L0–L3 的 LRU 字节上限（L4+ 常驻不计）。
 config :voxel_region,
        :generation_concurrency,

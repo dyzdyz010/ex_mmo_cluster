@@ -26,4 +26,27 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
     assert VoxelMaterialCatalog.identity_bytes() == expected
     assert byte_size(expected) == 327
   end
+
+  test "blocking metadata has independent canonical bytes and never changes material identity" do
+    for %{"id" => id, "name" => name} <- @table do
+      assert VoxelMaterialCatalog.blocks_movement?(id) == name not in ["air", "water"]
+    end
+
+    records =
+      for %{"id" => id, "name" => name} <- @table, into: <<>> do
+        <<id::16-big, if(name in ["air", "water"], do: 0, else: 1)>>
+      end
+
+    expected = <<"voxim-blocking-v1\n", 24::16-big, records::binary>>
+    assert VoxelMaterialCatalog.blocking_bytes() == expected
+    assert VoxelMaterialCatalog.blocking_hash() == :crypto.hash(:sha256, expected)
+
+    IO.puts(
+      "W1_MATERIAL " <>
+        Jason.encode!(%{
+          blocking_bytes_hex: Base.encode16(expected, case: :lower),
+          blocking_hash: Base.encode16(VoxelMaterialCatalog.blocking_hash(), case: :lower)
+        })
+    )
+  end
 end

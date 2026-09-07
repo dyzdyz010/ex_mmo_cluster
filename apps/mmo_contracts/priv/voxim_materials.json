@@ -1,14 +1,122 @@
 [
-  {"id": 0, "name": "air"}, {"id": 1, "name": "grass"},
-  {"id": 2, "name": "dry_grass"}, {"id": 3, "name": "moss"},
-  {"id": 4, "name": "snow"}, {"id": 5, "name": "sand"},
-  {"id": 6, "name": "gravel"}, {"id": 7, "name": "dirt"},
-  {"id": 8, "name": "clay"}, {"id": 9, "name": "sandstone"},
-  {"id": 10, "name": "limestone"}, {"id": 11, "name": "stone"},
-  {"id": 12, "name": "granite"}, {"id": 13, "name": "basalt"},
-  {"id": 14, "name": "marble"}, {"id": 15, "name": "coal_ore"},
-  {"id": 16, "name": "copper_ore"}, {"id": 17, "name": "iron_ore"},
-  {"id": 18, "name": "gold_ore"}, {"id": 19, "name": "wood"},
-  {"id": 20, "name": "ice"}, {"id": 21, "name": "water"},
-  {"id": 22, "name": "lava"}, {"id": 23, "name": "glowstone"}
+  {
+    "id": 0,
+    "name": "air",
+    "blocks_movement": false
+  },
+  {
+    "id": 1,
+    "name": "grass",
+    "blocks_movement": true
+  },
+  {
+    "id": 2,
+    "name": "dry_grass",
+    "blocks_movement": true
+  },
+  {
+    "id": 3,
+    "name": "moss",
+    "blocks_movement": true
+  },
+  {
+    "id": 4,
+    "name": "snow",
+    "blocks_movement": true
+  },
+  {
+    "id": 5,
+    "name": "sand",
+    "blocks_movement": true
+  },
+  {
+    "id": 6,
+    "name": "gravel",
+    "blocks_movement": true
+  },
+  {
+    "id": 7,
+    "name": "dirt",
+    "blocks_movement": true
+  },
+  {
+    "id": 8,
+    "name": "clay",
+    "blocks_movement": true
+  },
+  {
+    "id": 9,
+    "name": "sandstone",
+    "blocks_movement": true
+  },
+  {
+    "id": 10,
+    "name": "limestone",
+    "blocks_movement": true
+  },
+  {
+    "id": 11,
+    "name": "stone",
+    "blocks_movement": true
+  },
+  {
+    "id": 12,
+    "name": "granite",
+    "blocks_movement": true
+  },
+  {
+    "id": 13,
+    "name": "basalt",
+    "blocks_movement": true
+  },
+  {
+    "id": 14,
+    "name": "marble",
+    "blocks_movement": true
+  },
+  {
+    "id": 15,
+    "name": "coal_ore",
+    "blocks_movement": true
+  },
+  {
+    "id": 16,
+    "name": "copper_ore",
+    "blocks_movement": true
+  },
+  {
+    "id": 17,
+    "name": "iron_ore",
+    "blocks_movement": true
+  },
+  {
+    "id": 18,
+    "name": "gold_ore",
+    "blocks_movement": true
+  },
+  {
+    "id": 19,
+    "name": "wood",
+    "blocks_movement": true
+  },
+  {
+    "id": 20,
+    "name": "ice",
+    "blocks_movement": true
+  },
+  {
+    "id": 21,
+    "name": "water",
+    "blocks_movement": false
+  },
+  {
+    "id": 22,
+    "name": "lava",
+    "blocks_movement": true
+  },
+  {
+    "id": 23,
+    "name": "glowstone",
+    "blocks_movement": true
+  }
 ]

@@ -495,7 +495,9 @@ defmodule GateServer.Session.Dispatch do
   # 发过 0x76 的连接是 Voxim 会话：之后的 0x70 走 region 真值（文件 ⊕ 日志），不走 Scene 的 ChunkProcess；
   # 回执 result_ref = 提交的日志 seq（D-12），authoritative 为空（只有日志条目改世界）。
   def handle({:voxel_overlay_subscribe, sub}, %{status: :in_scene} = state) do
-    :ok = VoxelRegion.World.subscribe(self(), sub.have_seq, sub.box, sub.coarse_min_level)
+    {:ok, %{world_ref: world_ref}} =
+      WorldServer.Movement.route(Application.fetch_env!(:gate_server, :voxel_scene_id))
+    :ok = VoxelRegion.World.subscribe(world_ref, self(), sub.have_seq, sub.box, sub.coarse_min_level)
 
     emit(state, "voxel_overlay_subscribed", %{
       connection_pid: self(),
@@ -505,7 +507,7 @@ defmodule GateServer.Session.Dispatch do
       coarse_min_level: sub.coarse_min_level
     })
 
-    {:ok, Map.put(state, :voxim_overlay, true)}
+    {:ok, state |> Map.put(:voxim_overlay, true) |> Map.put(:world_ref, world_ref)}
   end
 
   def handle({:voxel_overlay_subscribe, _sub}, state) do
@@ -517,7 +519,7 @@ defmodule GateServer.Session.Dispatch do
         {:voxel_batch_edit_intent, request},
         %{status: :in_scene, voxim_overlay: true} = state
       ) do
-    case VoxelRegion.World.apply_edits(request.edits) do
+    case VoxelRegion.World.apply_edits(state.world_ref, request.edits) do
       {:ok, seq} ->
         send_encoded(
           state,
@@ -550,7 +552,7 @@ defmodule GateServer.Session.Dispatch do
     coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
 
     case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
-           VoxelRegion.World.apply_edit(coord, request.material_id) do
+           VoxelRegion.World.apply_edit(state.world_ref, coord, request.material_id) do
       {:ok, seq} ->
         send_encoded(
           state,

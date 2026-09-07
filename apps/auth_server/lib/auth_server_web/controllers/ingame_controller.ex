@@ -312,7 +312,13 @@ defmodule AuthServerWeb.IngameController do
   defp do_voxel_regions(conn) do
     {:ok, body, conn} = Plug.Conn.read_body(conn, length: 16_000_000, read_length: 1_000_000)
 
-    case Process.whereis(VoxelRegion.World) && VoxelRegion.World.serve(body) do
+    result =
+      with {:ok, %{world_ref: world_ref}} <-
+             WorldServer.Movement.route(Application.fetch_env!(:auth_server, :voxel_scene_id)) do
+        VoxelRegion.World.serve(world_ref, body)
+      end
+
+    case result do
       {:ok, reply} ->
         conn
         |> put_resp_content_type("application/octet-stream")

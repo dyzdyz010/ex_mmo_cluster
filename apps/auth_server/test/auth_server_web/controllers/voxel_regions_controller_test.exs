@@ -9,6 +9,8 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
     {:ok, _auth_started} = Application.ensure_all_started(:auth_server)
 
     previous_auto_login = Application.get_env(:auth_server, :dev_auto_login, false)
+    previous_routes = Application.fetch_env(:world_server, :movement_routes)
+    previous_scene = Application.fetch_env(:auth_server, :voxel_scene_id)
 
     root = Path.join(System.tmp_dir!(), "voxim_regions_test_#{System.unique_integer([:positive])}")
     world = Path.join(root, Base.encode16(<<@content_version::64>>, case: :lower))
@@ -21,10 +23,20 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
     File.write!(Path.join([world, "L0", "r_5_5_5.vxr"]), RegionCodec.encode_payload(1, {0, 1, 0}, 0, @content_version, "x"))
 
     Application.put_env(:auth_server, :dev_auto_login, true)
-    start_supervised!({VoxelRegion.World, root: root})
+    start_supervised!({VoxelRegion.World, root: root, name: :voxim_http_regions_test})
+    Application.put_env(:auth_server, :voxel_scene_id, 7)
+    Application.put_env(:world_server, :movement_routes, %{
+      7 => %{scene_ref: {:voxim_http_scene, node()}, world_ref: {:voxim_http_regions_test, node()}, scene_epoch: 1}
+    })
 
     on_exit(fn ->
       Application.put_env(:auth_server, :dev_auto_login, previous_auto_login)
+      for {app, key, value} <- [{:world_server, :movement_routes, previous_routes}, {:auth_server, :voxel_scene_id, previous_scene}] do
+        case value do
+          {:ok, old} -> Application.put_env(app, key, old)
+          :error -> Application.delete_env(app, key)
+        end
+      end
       File.rm_rf!(root)
     end)
 
