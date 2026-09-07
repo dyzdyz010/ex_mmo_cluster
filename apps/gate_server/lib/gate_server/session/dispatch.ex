@@ -59,6 +59,13 @@ defmodule GateServer.Session.Dispatch do
 
   def decode(bytes), do: GateServer.Codec.decode(bytes)
 
+  @doc "Canonical macro targets used both by M1 admission and the existing R6 edit path."
+  def voxim_edit_coords({:voxel_edit_intent, request}) do
+    {x, y, z} = request.target_world_micro
+    [{Integer.floor_div(x, 8), Integer.floor_div(y, 8), Integer.floor_div(z, 8)}]
+  end
+  def voxim_edit_coords({:voxel_batch_edit_intent, request}), do: Enum.map(request.edits, &elem(&1, 0))
+
   @type state :: map()
 
   @doc """
@@ -548,8 +555,7 @@ defmodule GateServer.Session.Dispatch do
   end
 
   def handle({:voxel_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    {wx, wy, wz} = request.target_world_micro
-    coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
+    [coord] = voxim_edit_coords({:voxel_edit_intent, request})
 
     case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
            VoxelRegion.World.apply_edit(state.world_ref, coord, request.material_id) do

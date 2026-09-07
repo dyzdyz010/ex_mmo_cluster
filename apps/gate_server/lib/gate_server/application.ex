@@ -6,10 +6,9 @@ defmodule GateServer.Application do
 
   The gate owns:
 
-  - client-facing TCP accepts
-  - optional UDP fast-lane traffic
-  - per-connection worker supervision
-  - ticket/session tracking for UDP attachment
+  - the explicitly selected Voxim QUIC listener and per-connection supervision
+  - Gate-owned authenticated session identities
+  - explicitly selected legacy reference TCP/WS and fast-lane services
   - optional stdio inspection hooks for automation
 
   It does **not** own authoritative gameplay simulation; instead it forwards
@@ -34,19 +33,33 @@ defmodule GateServer.Application do
         # Starts a worker by calling: GateServer.Worker.start_link(arg)
         # {GateServer.Worker, arg}
         interface_child(),
-        {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
-        stdio_child(),
-        tcp_acceptor_child(),
-        {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
-        {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup}
+        stdio_child()
       ]
       |> Enum.reject(&is_nil/1)
-      |> Kernel.++(udp_children())
+      |> Kernel.++(transport_children())
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: GateServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp transport_children do
+    case Application.fetch_env!(:gate_server, :transport) do
+      :voxim_quic ->
+        if @is_test_build do
+          []
+        else
+          [{GateServer.Transport.QuicListener, Application.fetch_env!(:gate_server, :quic)}]
+        end
+      :legacy_reference ->
+        [
+          {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
+          {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
+          {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup},
+          tcp_acceptor_child()
+        ] |> Enum.reject(&is_nil/1) |> Kernel.++(udp_children())
+    end
   end
 
   defp interface_child do

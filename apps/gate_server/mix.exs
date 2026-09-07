@@ -34,6 +34,14 @@ defmodule GateServer.MixProject do
       {:world_server, in_umbrella: true, runtime: false},
       {:auth_server, in_umbrella: true, only: :test},
       {:data_service, in_umbrella: true, runtime: false}
-    ]
+    ] ++ quic_deps()
+  end
+
+  defp quic_deps do
+    case :os.type() do
+      {:unix, :linux} ->
+        [{:quicer, "== 0.4.3", compile: "bash #{Path.join(__DIR__, "tools/build_quicer.sh")}"}]
+      _ -> []
+    end
   end
 end
