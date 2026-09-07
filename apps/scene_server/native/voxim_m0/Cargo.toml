@@ -1,0 +1,11 @@
+[package]
+name = "voxim_m0"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+voxim_movement = { path = "../../../../../Voxim/Plugins/VoximMovement/Native" }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
