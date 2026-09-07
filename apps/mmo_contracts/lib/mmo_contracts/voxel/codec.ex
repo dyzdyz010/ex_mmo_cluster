@@ -436,7 +436,7 @@ defmodule MmoContracts.Voxel.Codec do
            header.encoding in [0, 1] and
              header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
-         raw <- if(header.encoding == 1, do: :zlib.uncompress(body), else: body),
+         {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes and body_hash(raw) == header.hash do
       {:ok, header, raw}
     else
@@ -444,6 +444,42 @@ defmodule MmoContracts.Voxel.Codec do
     end
   rescue
     ErlangError -> {:error, :invalid_payload}
+  end
+
+  defp decode_raw_body(body, 0, _raw_bytes), do: {:ok, body}
+
+  defp decode_raw_body(body, 1, raw_bytes) do
+    z = :zlib.open()
+
+    try do
+      :ok = :zlib.inflateInit(z)
+
+      with {:ok, chunks} <- inflate_chunks(z, body, raw_bytes, []) do
+        # finished 只表示输入队列耗尽；inflateEnd 确认流完整后才合并输出。
+        :ok = :zlib.inflateEnd(z)
+        {:ok, IO.iodata_to_binary(Enum.reverse(chunks))}
+      end
+    after
+      :zlib.close(z)
+    end
+  end
+
+  defp inflate_chunks(z, input, remaining, acc) do
+    case :zlib.safeInflate(z, input) do
+      {status, chunk} when status in [:continue, :finished] ->
+        remaining = remaining - IO.iodata_length(chunk)
+
+        cond do
+          # 超限块不进入累积列表，也不继续解压后续输出。
+          remaining < 0 -> {:error, :invalid_payload}
+          status == :continue -> inflate_chunks(z, [], remaining, [chunk | acc])
+          remaining == 0 -> {:ok, [chunk | acc]}
+          true -> {:error, :invalid_payload}
+        end
+
+      {:need_dictionary, _, _} ->
+        {:error, :invalid_payload}
+    end
   end
 
   @doc "raw body 的 MD5 前八字节按小端解释为内容 hash。"
