@@ -234,7 +234,8 @@ defmodule SceneServer.Movement.Scene do
   end
 
   @impl true
-  def handle_cast({:leave, identity, reason}, state), do: {:noreply, drop(state, identity, reason)}
+  def handle_cast({:leave, identity, reason}, state),
+    do: {:noreply, drop(state, identity, reason)}
 
   def handle_cast({:ready, identity, seq, revision}, state) do
     case Map.fetch(state.characters, identity) do
@@ -270,15 +271,24 @@ defmodule SceneServer.Movement.Scene do
   end
 
   def handle_cast({:input, identity, %Movement.InputBatch{identity: identity} = batch}, state) do
+    arrived = now(state)
+
     case Map.fetch(state.characters, identity) do
       :error ->
+        input_arrivals(state, identity, nil, batch.frames, :unknown_identity, arrived)
         {:noreply, stale(state)}
 
-      {:ok, %{slots: nil}} ->
+      {:ok, %{slots: nil} = c} ->
+        input_arrivals(state, identity, c, batch.frames, :not_started, arrived)
         {:noreply, %{state | rejected_inputs: state.rejected_inputs + 1}}
 
       {:ok, c} ->
-        {slots, result} = InputSlots.receive_batch(c.slots, batch)
+        {slots, result, decisions} = InputSlots.receive_batch_observed(c.slots, batch)
+
+        for {frame, disposition} <- decisions do
+          input_arrivals(state, identity, c, [frame], disposition, arrived)
+        end
+
         state = put_character(state, %{c | slots: slots})
 
         {:noreply,
@@ -302,6 +312,7 @@ defmodule SceneServer.Movement.Scene do
         {:canonical_snapshot, ref, snapshot},
         %{initial_ref: ref, initialized: false} = state
       ) do
+    received = now(state)
     updates = CollisionUpdates.initialize(state.updates, snapshot)
 
     state = %{
@@ -313,6 +324,20 @@ defmodule SceneServer.Movement.Scene do
     }
 
     state = Enum.reduce(Map.keys(state.requests), state, &request_snapshot(&2, &1))
+
+    runtime_event(state, :bootstrap_resident, %{
+      content_version: state.content_version,
+      prepare_start_us: state.time_mono_origin,
+      snapshot_received_us: received,
+      installed_us: state.mono_origin,
+      build_us: updates.build_us,
+      region_count: length(snapshot.regions),
+      core_count: length(snapshot.chunks),
+      region_payload_bytes:
+        Enum.reduce(snapshot.regions, 0, fn {_, bytes}, sum -> sum + byte_size(bytes) end),
+      occupancy_bytes: Enum.reduce(snapshot.chunks, 0, fn c, sum -> sum + byte_size(c.cells) end)
+    })
+
     schedule(state)
     {:noreply, state}
   end
@@ -352,11 +377,19 @@ defmodule SceneServer.Movement.Scene do
   end
 
   def handle_info(:tick, %{initialized: true, failure: nil} = state) do
-    due = div((now(state) - state.mono_origin) * 60, 1_000_000)
+    started = now(state)
+    due = div((started - state.mono_origin) * 60, 1_000_000)
 
     state =
       if due > state.tick do
         {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)
+        before = state
+
+        oldest_age =
+          case :queue.peek(state.updates.queue) do
+            :empty -> nil
+            {:value, {_, received}} -> started - received
+          end
 
         state = %{
           state
@@ -366,6 +399,24 @@ defmodule SceneServer.Movement.Scene do
         }
 
         {us, state} = :timer.tc(fn -> tick(state) end)
+        ended = now(state)
+
+        runtime_event(state, :region_tick, %{
+          due_us: deadline(state, state.tick),
+          start_us: started,
+          end_us: ended,
+          overdue_ticks: due - state.tick,
+          tick_us: us,
+          nif_us: state.step_us - before.step_us,
+          build_us: state.updates.build_us - before.updates.build_us,
+          elapsed_time_domain: :beam_monotonic_elapsed_us,
+          stepped_count: state.physics_steps - before.physics_steps,
+          mailbox_at_start: mailbox,
+          queue_before: :queue.len(before.updates.queue),
+          queue_after: :queue.len(state.updates.queue),
+          queue_oldest_age_us: oldest_age
+        })
+
         %{state | tick_us: state.tick_us + us, max_tick_us: max(state.max_tick_us, us)}
       else
         state
@@ -428,6 +479,12 @@ defmodule SceneServer.Movement.Scene do
           })
 
           fence(s, c)
+
+          character_event(s, c, :input_start, %{
+            origin_tick: origin,
+            content_version: s.content_version
+          })
+
           put_character(s, %{c | origin: origin, slots: InputSlots.new(c.identity, origin)})
         else
           s
@@ -492,11 +549,11 @@ defmodule SceneServer.Movement.Scene do
             {drop(s, identity, 4), list}
 
           true ->
-            {slots, frame} =
+            {slots, frame, selection} =
               if active?(s, c) do
-                InputSlots.take(c.slots, s.tick)
+                InputSlots.take_observed(c.slots, s.tick)
               else
-                {c.slots, :waiting}
+                {c.slots, :waiting, :joining_zero}
               end
 
             case frame do
@@ -515,6 +572,20 @@ defmodule SceneServer.Movement.Scene do
                 substituted =
                   slots != nil and slots != c.slots and
                     slots.substituted_through_seq == slots.processed_input_seq
+
+                {x, z, jump} = input
+
+                character_event(s, c, :input_selected, %{
+                  input_seq: if(frame == :waiting, do: nil, else: frame.input_seq),
+                  due_tick: if(frame == :waiting, do: nil, else: c.origin + frame.input_seq - 1),
+                  axis_x: if(frame == :waiting, do: 0, else: frame.axis_x),
+                  axis_z: if(frame == :waiting, do: 0, else: frame.axis_z),
+                  yaw: yaw,
+                  jump_pressed: jump,
+                  native_axis_x: x,
+                  native_axis_z: z,
+                  selection: selection
+                })
 
                 s = put_character(s, %{c | slots: slots, state: %{c.state | yaw: yaw}})
                 s = if substituted, do: %{s | substitutions: s.substitutions + 1}, else: s
@@ -609,6 +680,11 @@ defmodule SceneServer.Movement.Scene do
                 })
 
                 fence(state, c)
+
+                character_event(state, c, :session_start, %{
+                  content_version: state.content_version
+                })
+
                 put_character(state, c)
               else
                 drop(state, identity, 4)
@@ -659,6 +735,11 @@ defmodule SceneServer.Movement.Scene do
         state
 
       {c, characters} ->
+        character_event(state, c, :session_end, %{
+          reason: reason,
+          content_version: state.content_version
+        })
+
         Process.demonitor(c.monitor, [:flush])
         close_sink(state, c.gate, identity, reason)
         {aoi, lifecycle} = AOI.remove(state.aoi, identity, c.id, c.epoch, state.tick)
@@ -719,8 +800,7 @@ defmodule SceneServer.Movement.Scene do
   defp server_time(state), do: state.time_origin + now(state) - state.time_mono_origin
 
   defp schedule(state) do
-    deadline = state.mono_origin + div((state.tick + 1) * 1_000_000 + 59, 60)
-    delay = max(0, div(deadline - now(state) + 999, 1000))
+    delay = max(0, div(deadline(state, state.tick + 1) - now(state) + 999, 1000))
 
     if delay == 0 do
       send(self(), :tick)
@@ -728,6 +808,62 @@ defmodule SceneServer.Movement.Scene do
       {module, ref} = state.clock
       module.schedule(ref, self(), delay)
     end
+  end
+
+  defp deadline(state, tick), do: state.mono_origin + div(tick * 1_000_000 + 59, 60)
+
+  # 字段只投影当前 owner 的确定事实；日志不重新接纳输入或推进时间。
+  defp input_arrivals(state, identity, c, frames, disposition, arrived) do
+    for frame <- frames do
+      runtime_event(state, :input_arrival, %{
+        monotonic_us: arrived,
+        session_epoch: identity.session_epoch,
+        entity_id: if(c, do: c.id, else: nil),
+        entity_epoch: if(c, do: c.epoch, else: nil),
+        input_seq: frame.input_seq,
+        due_tick: if(c && c.origin, do: c.origin + frame.input_seq - 1, else: nil),
+        axis_x: frame.axis_x,
+        axis_z: frame.axis_z,
+        yaw: frame.yaw,
+        jump_pressed: frame.jump_pressed,
+        disposition: disposition
+      })
+    end
+  end
+
+  defp character_event(state, c, event, facts) do
+    runtime_event(
+      state,
+      event,
+      Map.merge(facts, %{
+        session_epoch: c.identity.session_epoch,
+        entity_id: c.id,
+        entity_epoch: c.epoch
+      })
+    )
+  end
+
+  defp runtime_event(state, event, facts) do
+    Logger.info(fn ->
+      Jason.encode!(
+        Map.merge(
+          %{
+            schema: "voxim-scene-v1",
+            event: event,
+            node: Atom.to_string(node()),
+            process: inspect(self()),
+            scene_id: state.scene_id,
+            scene_epoch: state.scene_epoch,
+            server_tick: state.tick,
+            monotonic_us: now(state),
+            time_domain: :scene_clock_monotonic_us,
+            transaction_seq: state.updates.transaction_seq,
+            collision_revision: state.updates.revision
+          },
+          facts
+        )
+      )
+    end)
   end
 
   defp query_allowed?(state, value) do

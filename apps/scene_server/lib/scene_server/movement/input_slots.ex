@@ -17,54 +17,79 @@ defmodule SceneServer.Movement.InputSlots do
   def new(identity, origin_tick), do: %__MODULE__{identity: identity, origin_tick: origin_tick}
 
   @doc "消费 C1 已解码的帧；在唯一序号/epoch 信任边界接纳整批。"
-  def receive_batch(%{identity: identity} = slots, %InputBatch{identity: other})
-      when identity != other,
-      do: {slots, :old_identity}
-
-  def receive_batch(slots, %InputBatch{frames: frames}) do
-    live = Enum.reject(frames, &(&1.input_seq <= slots.processed_input_seq))
-
-    cond do
-      live == [] ->
-        {slots, :late}
-
-      Enum.any?(live, &(&1.input_seq > slots.processed_input_seq + 32)) ->
-        {slots, :future}
-
-      Enum.any?(live, fn frame ->
-        case Map.fetch(slots.pending, frame.input_seq) do
-          {:ok, previous} -> previous != frame
-          :error -> false
-        end
-      end) ->
-        {slots, :conflict}
-
-      true ->
-        pending = Enum.reduce(live, slots.pending, &Map.put_new(&2, &1.input_seq, &1))
-        {%{slots | pending: pending}, :accepted}
-    end
+  def receive_batch(slots, batch) do
+    {next, result, _decisions} = receive_batch_observed(slots, batch)
+    {next, result}
   end
+
+  @doc "从原接纳分支返回逐帧处置，不在日志调用方重新分类。"
+  def receive_batch_observed(%{identity: identity} = slots, %InputBatch{
+        identity: other,
+        frames: frames
+      })
+      when identity != other,
+      do: {slots, :old_identity, decisions(frames, :old_identity)}
+
+  def receive_batch_observed(slots, %InputBatch{frames: frames}) do
+    {late, live} = Enum.split_with(frames, &(&1.input_seq <= slots.processed_input_seq))
+
+    {next, result} =
+      cond do
+        live == [] ->
+          {slots, :late}
+
+        Enum.any?(live, &(&1.input_seq > slots.processed_input_seq + 32)) ->
+          {slots, :future}
+
+        Enum.any?(live, fn frame ->
+          case Map.fetch(slots.pending, frame.input_seq) do
+            {:ok, previous} -> previous != frame
+            :error -> false
+          end
+        end) ->
+          {slots, :conflict}
+
+        true ->
+          pending = Enum.reduce(live, slots.pending, &Map.put_new(&2, &1.input_seq, &1))
+          {%{slots | pending: pending}, :accepted}
+      end
+
+    {next, result, decisions(late, :late) ++ decisions(live, result)}
+  end
+
+  defp decisions(frames, result), do: Enum.map(frames, &{&1, result})
 
   @doc "只消费下一个到期槽；缺帧延续轴六槽，jump 永不继承。"
   def take(slots, tick) do
+    {next, frame, _selection} = take_observed(slots, tick)
+    {next, frame}
+  end
+
+  @doc "处置原因与实际轴选择同源；不改变原连续前缀。"
+  def take_observed(slots, tick) do
     seq = slots.processed_input_seq + 1
 
     cond do
       tick < slots.origin_tick + seq - 1 ->
-        {slots, :waiting}
+        {slots, :waiting, :waiting}
 
       seq > 0xFFFFFFFF ->
-        {slots, :exhausted}
+        {slots, :exhausted, :exhausted}
 
       true ->
         case Map.pop(slots.pending, seq) do
           {nil, pending} ->
             missing = slots.missing + 1
 
+            {axis_x, axis_z, selection} =
+              if missing <= 6,
+                do: {slots.axis_x, slots.axis_z, :inherited_axes},
+                else: {0, 0, :zero_after_six_missing}
+
             frame = %InputFrame{
               input_seq: seq,
-              axis_x: if(missing <= 6, do: slots.axis_x, else: 0),
-              axis_z: if(missing <= 6, do: slots.axis_z, else: 0),
+              axis_x: axis_x,
+              axis_z: axis_z,
               yaw: slots.yaw,
               jump_pressed: 0
             }
@@ -75,7 +100,7 @@ defmodule SceneServer.Movement.InputSlots do
                  processed_input_seq: seq,
                  substituted_through_seq: seq,
                  missing: missing
-             }, frame}
+             }, frame, selection}
 
           {frame, pending} ->
             {%{
@@ -86,7 +111,7 @@ defmodule SceneServer.Movement.InputSlots do
                  axis_x: frame.axis_x,
                  axis_z: frame.axis_z,
                  yaw: frame.yaw
-             }, frame}
+             }, frame, :received}
         end
     end
   end

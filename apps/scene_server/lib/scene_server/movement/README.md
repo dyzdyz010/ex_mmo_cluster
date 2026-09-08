@@ -65,6 +65,101 @@ BEAM paths, loads the existing P1/T1 native artifacts, and runs that exact
 ExUnit file without application boot or DB access. The S1 report records
 artifact provenance, commands, red/green results and acceptance limits.
 
+## M1 ordinary runtime rows (I-S)
+
+Scene emits `Logger.info` messages containing one JSON object with
+`schema="voxim-scene-v1"`. Keep info logging enabled when collecting evidence;
+normal Logger prefixes/other application messages are outside the JSON object.
+The existing debug logs remain available. No new logger backend, switch,
+telemetry process, sampling loop or scheduler is introduced.
+
+Every row has `event`, `node`, `process`, `scene_id`, `scene_epoch`,
+`server_tick`, `transaction_seq`, `collision_revision`, `monotonic_us`, and
+`time_domain="scene_clock_monotonic_us"`. Character rows add `session_epoch`,
+`entity_id`, `entity_epoch`. The deployment manifest binds node/process and
+epochs to a VM/run lifetime; a PID alone is not a durable identity. Parse u64
+identifiers exactly, without floating-point rounding. Timestamps may be negative.
+
+- `bootstrap_resident`: `content_version`, `prepare_start_us`,
+  `snapshot_received_us`, `installed_us`, `build_us`, `region_count`,
+  `core_count`, `region_payload_bytes`, `occupancy_bytes`. The interval starts
+  at the existing Scene init clock sample after config parsing, before world
+  resource creation/source request, and ends after initial collider installation.
+  It includes source preparation and Scene mailbox residence; it is not an
+  isolated World preparation timer. Byte counts are exact received artifacts,
+  not complete canonical/BEAM/native resident memory or compound count.
+- `session_start`, `input_start`, `session_end`: complete admitted character
+  identities and content version at the actual anchor/origin/drop branch.
+  InputStart adds `origin_tick`; SessionEnd adds the existing numeric `reason`.
+  The common tick/N/R are the actual step-after anchor or current drop state.
+- `input_arrival`: one row per submitted frame, all stamped at the same Scene
+  cast handler entry. Fields are `input_seq`, `due_tick`, quantized `axis_x`,
+  `axis_z`, `yaw`, `jump_pressed`, `disposition`. Due tick is origin+seq-1;
+  it is null before InputStart. InputSlots returns the actual existing branch
+  metadata: resolved frames are `late`; live frames are `accepted`, `future`
+  or `conflict`. Identical pending redundancy remains `accepted` (first wins),
+  so accepted rows are not execution counts. Scene's existing missing-character
+  and pre-InputStart branches report `unknown_identity` (entity fields null)
+  and `not_started`. The unmatched API/batch identity clause retains its prior
+  stale counter; it supplies no decoded-frame row. This is Scene handling time,
+  not Gate/NIC receipt, and does not measure the preceding mailbox residence.
+- `input_selected`: one row for each character about to enter the actual P1
+  batch. `selection` is `received`, `inherited_axes`, `zero_after_six_missing`
+  from the actual InputSlots branch, or `joining_zero` before activation.
+  It includes quantized axes/yaw/jump, seq/due tick (null for joining), and
+  `native_axis_x/z` exactly as passed to P1. Missing jump is always zero.
+  Selection proves the submitted impulse, not a successful grounded jump;
+  correlate with a completed region tick. It precedes the synchronous NIF call.
+- `region_tick`: `due_us`, `start_us`, `end_us`, `overdue_ticks`, `tick_us`,
+  `nif_us`, `build_us`, `stepped_count`, `mailbox_at_start`, `queue_before`,
+  `queue_after`, `queue_oldest_age_us`, and
+  `elapsed_time_domain="beam_monotonic_elapsed_us"`. Each cost is that call's
+  existing timer value/delta, suitable for downstream distribution analysis.
+  Overdue is the tick debt observed at handler entry, not the historic maximum.
+  Queue age samples the oldest artifact at tick start, null when empty, and
+  starts at Scene enqueue; it is not per-transaction wait, World commit latency
+  or prior mailbox residence. Queue lengths cover the collision FIFO, while
+  mailbox counts cover all Scene messages at the observation point.
+
+`tick_us` brackets the existing `tick/1`: collision consume/build, log/control
+fanout, input selection and its logging, NIF, result commit, joins and AOI.
+`nif_us` brackets the complete synchronous `step_characters` wrapper call,
+including DirtyCpu scheduling/encoding/return; it is not kernel CPU time.
+`build_us` is the existing set_chunks elapsed delta (zero without an install).
+Full tick includes spawn/query calls not included in step NIF time. Handler
+bookkeeping, the region summary JSON encoding/Logger submission and subsequent
+scheduling lie outside `tick_us`; start/end also exclude that final summary.
+Logger destination I/O/backpressure and instrumentation overhead are not
+independently measured. Arrival rows add at most six JSON submissions per
+ordinary C1 batch, selection at most one per stepped character, and the region
+summary one per Scene tick. No occupancy serialization or logging state is
+added. Oldest age reads the queue head; the two queue length observations use
+`:queue.len/1`, which traverses the queue lists. These lengths are evaluated
+for the summary outside `tick_us`; their cost grows with queued artifacts.
+
+Production Clock uses BEAM monotonic microseconds, while a test-injected clock
+can be static during real work. Timer deltas always use BEAM elapsed time.
+Never subtract these stamps directly from UE, another host or another VM's
+clock; use the existing TimeProbe/TimeReply calibration and its uncertainty.
+No cumulative average/max is represented as p95/p99 and these rows alone do
+not constitute sustained performance, network, visible-frame or D1 acceptance.
+
+Read-only P1 inspection finds private `online::World.chunks` and query-world
+colliders, with all-air chunks removed. Neither the Elixir wrapper nor NIF
+exports compound/collider counts or memory statistics. That evidence remains
+unavailable; core count, occupancy bytes and rendered quads cannot replace it.
+No native source, ABI, generated header, binary or kernel identity was changed.
+
+Focused verification from Voxim:
+`python Docs/M1/runtime/I-S/run.py <fresh-label>` compiles copied source from
+server pin `411eaae184de7f7e5bca8f3b9be1ef8106475c0b` plus the owned Scene,
+InputSlots and instrumentation test into a private Linux cache, loading existing
+P1/worldgen binaries. Two ordinary tests capture real World/FileStore/Scene/P1
+and production Sink process messages under manual and actual Scene clocks.
+`Docs/M1/reports/I-S.md` records the missing-row red, green, exact unchanged
+normal behavior comparison, raw JSON messages, provenance and limitations.
+No full application, Gate process, DB, network or native build is started.
+
 ## M1 AOI lifecycle (A1-S)
 
 `AOI` is an immutable relation value owned only by Scene. Its `update/4`
