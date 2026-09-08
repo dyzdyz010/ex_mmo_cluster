@@ -47,6 +47,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   defmodule Native do
     alias SceneServer.Native.VoximMovement, as: P1
     defdelegate new_world(), to: P1
+    defdelegate world_stats(world), to: P1
     defdelegate query_bounds(profile, state), to: P1
     defdelegate find_spawn(world, profile, probe, min_y), to: P1
 

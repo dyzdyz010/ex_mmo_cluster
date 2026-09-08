@@ -144,11 +144,13 @@ clock; use the existing TimeProbe/TimeReply calibration and its uncertainty.
 No cumulative average/max is represented as p95/p99 and these rows alone do
 not constitute sustained performance, network, visible-frame or D1 acceptance.
 
-Read-only P1 inspection finds private `online::World.chunks` and query-world
-colliders, with all-air chunks removed. Neither the Elixir wrapper nor NIF
-exports compound/collider counts or memory statistics. That evidence remains
-unavailable; core count, occupancy bytes and rendered quads cannot replace it.
-No native source, ABI, generated header, binary or kernel identity was changed.
+`bootstrap_resident` also reads `native_colliders`, `native_compounds` and
+`native_compound_children` through the owning native API after installation.
+These count resident Rapier colliders, compound shapes and their child shapes;
+they do not infer counts from occupancy or run greedy again. All-air chunks have
+no native collider. Native allocator memory is not measured; occupancy and region
+payload bytes retain their separate meanings. Shared native source changes require
+publishing its generated kernel identity and rebuilding both DLL and NIF.
 
 Focused verification from Voxim:
 `python Docs/M1/runtime/I-S/run.py <fresh-label>` compiles copied source from

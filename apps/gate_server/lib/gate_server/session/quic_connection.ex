@@ -199,6 +199,14 @@ defmodule GateServer.Session.QuicConnection do
     end
   end
 
+  defp frame(%{identity: identity} = state, 1, <<255, 1::16, 2, _::binary>> = bytes) when identity != nil do
+    case Movement.Codec.decode(bytes) do
+      {:ok, %Movement.InputBatch{identity: ^identity} = message} ->
+        state.scene.input(state.route.scene_ref, identity, message)
+        state
+      _ -> close(state, 8)
+    end
+  end
   defp frame(state, 1, bytes) do
     case Session.Codec.decode(bytes) do
       {:ok, message} -> control(state, message)

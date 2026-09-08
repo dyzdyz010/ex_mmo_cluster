@@ -28,19 +28,31 @@ defmodule SceneServer.Application do
         # Starts a worker by calling: SceneServer.Worker.start_link(arg)
         # {SceneServer.Worker, arg}
         interface_child(),
-        {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
-        {SceneServer.VoxelSup, name: SceneServer.VoxelSup},
-        {SceneServer.AoiSup, name: SceneServer.AoiSup},
-        {SceneServer.Movement.Scene,
-         Application.fetch_env!(:scene_server, SceneServer.Movement.Scene)},
-        {SceneServer.NpcSup, name: SceneServer.NpcManagerSup}
+        interface_runtime()
       ]
+      |> List.flatten()
       |> Enum.reject(&is_nil/1)
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: SceneServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  # M1 只组合当前权威链路；旧物理、chunk 与 NPC 仍留给未配置 M1 的参考现场。
+  defp interface_runtime do
+    case Application.get_env(:scene_server, SceneServer.Movement.Scene) do
+      nil ->
+        [
+          {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
+          {SceneServer.VoxelSup, name: SceneServer.VoxelSup},
+          {SceneServer.AoiSup, name: SceneServer.AoiSup},
+          {SceneServer.NpcSup, name: SceneServer.NpcManagerSup}
+        ]
+
+      config ->
+        [{SceneServer.Movement.Scene, config}]
+    end
   end
 
   defp interface_child do

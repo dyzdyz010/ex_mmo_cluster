@@ -1,6 +1,6 @@
 defmodule SceneServer.Movement.InputSlots do
-  @moduledoc "固定 origin 的连续输入槽；接收只排队，Scene 到期 tick 才消费。"
-  alias MmoContracts.Movement.{InputBatch, InputFrame}
+  @moduledoc "真实固定步命令的有序前缀；origin 只映射模拟时间，缺帧不生成输入。"
+  alias MmoContracts.Movement.InputBatch
   @enforce_keys [:identity, :origin_tick]
   defstruct @enforce_keys ++
               [
@@ -36,10 +36,7 @@ defmodule SceneServer.Movement.InputSlots do
     {next, result} =
       cond do
         live == [] ->
-          {slots, :late}
-
-        Enum.any?(live, &(&1.input_seq > slots.processed_input_seq + 32)) ->
-          {slots, :future}
+          {slots, :duplicate}
 
         Enum.any?(live, fn frame ->
           case Map.fetch(slots.pending, frame.input_seq) do
@@ -54,12 +51,12 @@ defmodule SceneServer.Movement.InputSlots do
           {%{slots | pending: pending}, :accepted}
       end
 
-    {next, result, decisions(late, :late) ++ decisions(live, result)}
+    {next, result, decisions(late, :duplicate) ++ decisions(live, result)}
   end
 
   defp decisions(frames, result), do: Enum.map(frames, &{&1, result})
 
-  @doc "只消费下一个到期槽；缺帧延续轴六槽，jump 永不继承。"
+  @doc "只消费真实且已获得服务器时间的下一条；同一世界 tick 可追赶已过去的多个固定步。"
   def take(slots, tick) do
     {next, frame, _selection} = take_observed(slots, tick)
     {next, frame}
@@ -73,34 +70,10 @@ defmodule SceneServer.Movement.InputSlots do
       tick < slots.origin_tick + seq - 1 ->
         {slots, :waiting, :waiting}
 
-      seq > 0xFFFFFFFF ->
-        {slots, :exhausted, :exhausted}
-
       true ->
         case Map.pop(slots.pending, seq) do
-          {nil, pending} ->
-            missing = slots.missing + 1
-
-            {axis_x, axis_z, selection} =
-              if missing <= 6,
-                do: {slots.axis_x, slots.axis_z, :inherited_axes},
-                else: {0, 0, :zero_after_six_missing}
-
-            frame = %InputFrame{
-              input_seq: seq,
-              axis_x: axis_x,
-              axis_z: axis_z,
-              yaw: slots.yaw,
-              jump_pressed: 0
-            }
-
-            {%{
-               slots
-               | pending: pending,
-                 processed_input_seq: seq,
-                 substituted_through_seq: seq,
-                 missing: missing
-             }, frame, selection}
+          {nil, _pending} ->
+            {slots, :waiting, :waiting}
 
           {frame, pending} ->
             {%{

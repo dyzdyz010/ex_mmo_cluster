@@ -4,7 +4,10 @@
 
 ## 顶层监督树
 
-`SceneServer.Application` 启动：
+`SceneServer.Application` 有显式 M1 Scene 配置时只启动 `InterfaceSup` 和
+`Movement.Scene`，由部署入口先启动真实 `VoxelRegion.World`。旧 Physics/Voxel/Aoi/Npc
+监督树只在未配置 M1 的参考现场启动，避免让无关旧 NIF 成为 M1 的启动依赖。
+各子树职责：
 
 - `SceneServer.InterfaceSup`
   - 节点注册和服务发现入口，测试环境之外启用

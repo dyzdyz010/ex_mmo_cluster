@@ -20,7 +20,7 @@ defmodule MmoContracts.Movement.OwnerAck do
     :state,
     :substituted_through_seq
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [simulation_tick: 0]
 end
 
 defmodule MmoContracts.Movement.SnapshotRecord do

@@ -14,6 +14,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
   defmodule Native do
     alias SceneServer.Native.VoximMovement, as: P1
     defdelegate new_world(), to: P1
+    defdelegate world_stats(world), to: P1
     defdelegate set_chunks(world, operations), to: P1
     defdelegate query_bounds(profile, state), to: P1
     defdelegate find_spawn(world, profile, probe, min_y), to: P1
@@ -100,7 +101,9 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     :atomics.put(ctx.clock, 1, 7_000_000 + div(tick * 1_000_000 + 59, 60))
     send(ctx.scene, :tick)
     after_tick = await(ctx.scene, &(&1.tick == tick))
-    assert_receive {:p1_step, arguments, results}
+    steps = native_steps([])
+    arguments = Enum.flat_map(steps, &elem(&1, 0))
+    results = Enum.flat_map(steps, &elem(&1, 1))
     %{before: before, after: after_tick, arguments: arguments, results: results}
   end
 
@@ -149,6 +152,8 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
         rest =
           for tick <- 34..40 do
+            input(ctx, [frame(tick - 31, if(tick < 40, do: 16000, else: 0),
+              if(tick < 40, do: -10000, else: 0), 0)])
             if tick == 35 do
               assert {:ok, 1} = World.apply_edits(ctx.world, [{{40, 550, 40}, 1}])
               await(ctx.scene, &(&1.queue_length == 1))
@@ -247,10 +252,9 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
     assert Enum.map(arrivals, &{&1["input_seq"], &1["disposition"], &1["due_tick"]}) == [
              {1, "accepted", 32},
-             {1, "late", 32},
-             {2, "accepted", 33},
-             {10, "accepted", 41}
-           ]
+             {1, "duplicate", 32},
+             {2, "accepted", 33}
+           ] ++ Enum.map(3..10, &{&1, "accepted", &1 + 31})
 
     assert hd(arrivals)["server_tick"] == arrival.tick
     assert hd(arrivals)["monotonic_us"] == 7_516_667
@@ -258,8 +262,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     active = Enum.filter(selected, &(&1["input_seq"] != nil))
 
     assert Enum.map(active, & &1["selection"]) ==
-             ["received", "received"] ++
-               List.duplicate("inherited_axes", 6) ++ ["zero_after_six_missing", "received"]
+             List.duplicate("received", 10)
 
     assert Enum.map(active, & &1["jump_pressed"]) == [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
@@ -356,4 +359,74 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
   end
 
   defp events(rows, name), do: Enum.filter(rows, &(&1["event"] == name))
+
+  test "production wall clock bounds flood displacement and executes only the legal jump slot" do
+    ctx = start_scene(true)
+    current = identity(2)
+    stale = identity(1)
+    Scene.join(ctx.scene, current, %{id: 10}, self())
+    assert_receive {:mmo_reliable, ^current, 1, %Session.SessionStart{} = start}, 5000
+    Scene.time_probe(ctx.scene, current, %Session.TimeProbe{request_id: 1, client_send_us: 1})
+    Scene.ready(ctx.scene, current, start.baseline_transaction_seq, start.collision_revision)
+    assert_receive {:mmo_reliable, ^current, 1, %Session.InputStart{} = input_start}, 5000
+
+    batch = %Movement.InputBatch{identity: current, frames: [frame(1, 0, -32767, 1)]}
+    {:ok, wire} = Movement.Codec.encode(batch)
+    wire = IO.iodata_to_binary(wire)
+    <<header::binary-size(5), body_length::32, body::binary>> = wire
+    # Extra dt, speed and position bytes are rejected at the actual wire decoder.
+    for forged <- [<<10.0::float-64>>, <<10000.0::float-64>>, <<9999.0::float-64, 9999.0::float-64, 9999.0::float-64>>] do
+      injected = <<header::binary, body_length + byte_size(forged)::32, body::binary, forged::binary>>
+      assert {:error, :invalid_m1_message} = Movement.Codec.decode(injected)
+    end
+    {:ok, decoded} = Movement.Codec.decode(wire)
+    before_us = System.monotonic_time(:microsecond)
+    before = Scene.observe(ctx.scene)
+    for _ <- 1..1000, do: Scene.input(ctx.scene, current, decoded)
+    for _ <- 1..1000, do: Scene.input(ctx.scene, stale, %{decoded | identity: stale})
+    Scene.leave(ctx.scene, stale)
+    Scene.ready(ctx.scene, stale, 0, 1)
+    Scene.input(ctx.scene, current, %{decoded | frames: [frame(10000, 0, -32767, 1)]})
+    Scene.input(ctx.scene, current, %{decoded | frames: [frame(1, 32767, 0, 1)]})
+
+    after_run = await(ctx.scene, &(&1.tick >= input_start.origin_tick + 90))
+    after_us = System.monotonic_time(:microsecond)
+    stop_supervised!(Scene)
+    [character] = after_run.characters
+    assert character.identity == current
+    assert after_run.old_identity >= 1001
+    assert after_run.rejected_inputs == 1
+    assert character.processed_input_seq == 1
+    assert character.simulation_tick == input_start.origin_tick
+    assert character.pending_inputs == 1
+    assert after_run.physics_steps - before.physics_steps <= div((after_us - before_us) * 60, 1_000_000) + 1
+    {x0, _, z0} = hd(before.characters).state.position
+    {x1, _, z1} = character.state.position
+    distance = :math.sqrt((x1 - x0) ** 2 + (z1 - z0) ** 2)
+    assert distance > 0.0
+    assert distance <= start.profile.speed * ((after_us - before_us) / 1_000_000 + 1 / 60)
+
+    steps = native_steps([])
+    jumps = for {arguments, result} <- steps, {10, _, {_, _, 1}} <- arguments, do: result
+    assert length(jumps) == 1
+    assert [{10, {_, {_, jump_speed, _}, 0}}] = hd(jumps)
+    assert jump_speed > 0.0
+    IO.puts("M1_WALL_CLOCK_NEGATIVE " <> Jason.encode!(%{
+      elapsed_us: after_us - before_us, physics_steps: after_run.physics_steps - before.physics_steps,
+      horizontal_displacement_m: distance, speed_limit_mps: start.profile.speed,
+      duplicate_batches: 1000, stale_batches: 1000, malformed_authority_fields_rejected: 3,
+      old_identity: after_run.old_identity, rejected_inputs: after_run.rejected_inputs,
+      legal_jump_slots: 1, native_jump_calls: length(jumps), origin_tick: input_start.origin_tick,
+      final_tick: after_run.tick, final_processed_seq: character.processed_input_seq,
+      time_domain: "production_scene_beam_monotonic_us", boundary: "decoded_scene_input_not_authenticated_transport"
+    }))
+  end
+
+  defp native_steps(acc) do
+    receive do
+      {:p1_step, arguments, result} -> native_steps([{arguments, result} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 end

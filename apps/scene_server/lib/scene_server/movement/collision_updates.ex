@@ -5,6 +5,9 @@ defmodule SceneServer.Movement.CollisionUpdates do
   defstruct [
     :world,
     :native,
+    revisions: [],
+    native_revision: 0,
+    native_chunks: %{},
     queue: :queue.new(),
     revision: 0,
     transaction_seq: 0,
@@ -20,7 +23,9 @@ defmodule SceneServer.Movement.CollisionUpdates do
     {us, :ok} =
       :timer.tc(fn -> updates.native.set_chunks(updates.world, operations(snapshot.chunks)) end)
 
-    %{updates | revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us}
+    chunks = Map.new(snapshot.chunks, &{&1.coord, &1})
+    %{updates | revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us,
+      revisions: [{0, 1, chunks}], native_revision: 1, native_chunks: chunks}
   end
 
   @doc "以 World 的消息顺序接纳 immutable delta/marker。"
@@ -28,6 +33,38 @@ defmodule SceneServer.Movement.CollisionUpdates do
 
   @doc "每步至多安装一个非空事务；空事务可跟随，marker 后留到下步。"
   def consume(updates, now), do: consume(updates, now, false, [])
+
+  @doc "提交本世界 tick 的派生碰撞版本；不可变 binary 与旧版本共享。"
+  def record_tick(updates, tick, events) do
+    Enum.reduce(events, updates, fn
+      {:delta, %{chunks: [_ | _] = chunks}, revision, _}, u ->
+        {_, _, previous} = hd(u.revisions)
+        next = Enum.reduce(chunks, previous, &Map.put(&2, &1.coord, &1))
+        %{u | revisions: [{tick, revision, next} | u.revisions],
+          native_revision: revision, native_chunks: next}
+      _, u -> u
+    end)
+  end
+
+  @doc "按角色模拟 tick 选择精确的历史碰撞，不回滚 canonical 世界。"
+  def at_tick(updates, tick) do
+    {_, revision, chunks} = Enum.find(updates.revisions, fn {t, _, _} -> t <= tick end)
+    if revision == updates.native_revision do
+      {updates, revision}
+    else
+      changed = for {coord, chunk} <- chunks, Map.get(updates.native_chunks, coord) != chunk, do: chunk
+      {us, :ok} = :timer.tc(fn ->
+        updates.native.set_chunks(updates.world, operations(Enum.sort_by(changed, & &1.coord)))
+      end)
+      {%{updates | native_revision: revision, native_chunks: chunks, build_us: updates.build_us + us}, revision}
+    end
+  end
+
+  @doc "所有角色已执行的最早模拟 tick 之前只保留一份锚点版本。"
+  def retire_before(updates, tick) do
+    {newer, older} = Enum.split_while(updates.revisions, fn {t, _, _} -> t > tick end)
+    %{updates | revisions: newer ++ Enum.take(older, 1)}
+  end
 
   defp consume(updates, now, changed, events) do
     case :queue.peek(updates.queue) do

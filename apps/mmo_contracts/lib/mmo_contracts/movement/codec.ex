@@ -20,7 +20,8 @@ defmodule MmoContracts.Movement.Codec do
          processed_input_seq: :u32,
          collision_revision: :u64,
          state: :state,
-         substituted_through_seq: :u32
+         substituted_through_seq: :u32,
+         simulation_tick: :u64
        ]},
     3 =>
       {Movement.Snapshot,

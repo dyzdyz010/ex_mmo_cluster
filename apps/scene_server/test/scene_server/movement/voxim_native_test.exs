@@ -15,7 +15,9 @@ defmodule SceneServer.Movement.VoximNativeTest do
   test "actual NIF shares world, restores states, and removes all-air/BVH support" do
     p = profile()
     world = Native.new_world()
+    assert {0, 0, 0} = Native.world_stats(world)
     assert :ok = Native.set_chunks(world, [floor_op(0), floor_op(1)])
+    assert {2, 2, 2} = Native.world_stats(world)
     assert {:ok, a} = Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -2.0)
     assert {:ok, b} = Native.find_spawn(world, p, {2.5, 8.0, 0.5}, -2.0)
     chars = [{1, a, {0.0, 0.0, 1}}, {2, b, {0.0, 0.0, 0}}]
@@ -24,6 +26,7 @@ defmodule SceneServer.Movement.VoximNativeTest do
     assert result == Native.step_characters(world, p, chars)
     assert :ok = Native.set_chunks(world, [{:set, {0, 0, 0}, 2, 1.0, {0.0, 0.0, 0.0}, <<0::64>>}, {:remove, {1, 0, 0}}])
     assert :ok = Native.set_chunks(world, [{:remove, {1, 0, 0}}])
+    assert {0, 0, 0} = Native.world_stats(world)
     for start <- [a, b] do
       assert {{_, y, _}, {_, vy, _}, 0} = Enum.reduce(1..30, start, fn _, s -> step(world, p, s) end)
       assert y < 1.0 and vy < -4.0

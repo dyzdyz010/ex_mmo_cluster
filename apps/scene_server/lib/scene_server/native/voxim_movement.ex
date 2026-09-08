@@ -10,6 +10,8 @@ defmodule SceneServer.Native.VoximMovement do
 
   @doc "创建空的派生碰撞世界。"
   def new_world(), do: :erlang.nif_error(:nif_not_loaded)
+  @doc "Read resident native {collider_count, compound_count, compound_child_count}; no rebuild."
+  def world_stats(_world), do: :erlang.nif_error(:nif_not_loaded)
   @doc "按唯一 coord 升序安装完整事务，DirtyCpu 中仅刷新一次 BVH。"
   def set_chunks(_world, _operations), do: :erlang.nif_error(:nif_not_loaded)
   @doc "按 entity_id 升序以 1/60 秒各推进一次，返回同序完整状态。"

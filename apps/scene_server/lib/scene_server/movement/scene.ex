@@ -36,6 +36,8 @@ defmodule SceneServer.Movement.Scene do
   def load_config!(path), do: path |> File.read!() |> Jason.decode!() |> config!()
 
   defp config!(%{"schema" => "voxim-m1-demo-v1"} = raw) do
+    # 冷启动先加载字段 owner；JSON key 只转换为该模块已有 atom。
+    Code.ensure_loaded!(Session.Profile)
     profile =
       struct!(
         Session.Profile,
@@ -134,6 +136,19 @@ defmodule SceneServer.Movement.Scene do
   end
 
   @impl true
+  def code_change(_old, %{characters: characters} = state, {:input_contract, snapshot})
+      when map_size(characters) == 0 do
+    # 本次无客户端的在线升级保留 Scene、世界时钟、N/R 和既有 native world。
+    # snapshot 来自 World 的公开 canonical 接口，只补齐旧版本尚未持有的派生历史。
+    true = snapshot.transaction_seq == state.updates.transaction_seq
+    chunks = Map.new(snapshot.chunks, &{&1.coord, &1})
+    updates = struct(CollisionUpdates, Map.from_struct(state.updates))
+    {:ok, %{state | updates: %{updates |
+      revisions: [{state.tick, updates.revision, chunks}],
+      native_revision: updates.revision, native_chunks: chunks}}}
+  end
+
+  @impl true
   def handle_call({:join, identity, %{id: cid}, gate}, _, state) do
     cond do
       identity.scene_id != state.scene_id or identity.scene_epoch != state.scene_epoch ->
@@ -172,7 +187,9 @@ defmodule SceneServer.Movement.Scene do
           ready: false,
           clock_ready: false,
           slots: nil,
-          origin: nil
+          origin: nil,
+          simulation_tick: 0,
+          simulation_revision: 0
         }
 
         state = %{
@@ -223,6 +240,8 @@ defmodule SceneServer.Movement.Scene do
               entity_epoch: c.epoch,
               state: c.state,
               origin_tick: c.origin,
+              simulation_tick: c.simulation_tick,
+              pending_inputs: if(c.slots, do: map_size(c.slots.pending), else: 0),
               active: active?(state, c),
               processed_input_seq: if(c.slots, do: c.slots.processed_input_seq, else: 0)
             }
@@ -325,7 +344,13 @@ defmodule SceneServer.Movement.Scene do
 
     state = Enum.reduce(Map.keys(state.requests), state, &request_snapshot(&2, &1))
 
+    {native_colliders, native_compounds, native_compound_children} =
+      updates.native.world_stats(updates.world)
+
     runtime_event(state, :bootstrap_resident, %{
+      native_colliders: native_colliders,
+      native_compounds: native_compounds,
+      native_compound_children: native_compound_children,
       content_version: state.content_version,
       prepare_start_us: state.time_mono_origin,
       snapshot_received_us: received,
@@ -430,7 +455,7 @@ defmodule SceneServer.Movement.Scene do
 
   defp tick(state) do
     {updates, events} = CollisionUpdates.consume(state.updates, now(state))
-    state = %{state | updates: updates}
+    state = %{state | updates: CollisionUpdates.record_tick(updates, state.tick, events)}
 
     Enum.each(events, fn
       {:delta, delta, revision, _} ->
@@ -500,7 +525,8 @@ defmodule SceneServer.Movement.Scene do
             identity: c.identity,
             server_tick: state.tick,
             processed_input_seq: c.slots.processed_input_seq,
-            collision_revision: state.updates.revision,
+            collision_revision: c.simulation_revision,
+            simulation_tick: c.simulation_tick,
             state: c.state,
             substituted_through_seq: c.slots.substituted_through_seq
           })
@@ -537,88 +563,66 @@ defmodule SceneServer.Movement.Scene do
   end
 
   defp step_characters(state) do
-    {state, characters} =
-      state.characters
-      |> Enum.sort_by(fn {_, c} -> c.id end)
-      |> Enum.reduce({state, []}, fn {identity, c}, {s, list} ->
-        cond do
-          c.state == nil ->
-            {s, list}
-
-          not query_allowed?(s, c.state) ->
-            {drop(s, identity, 4), list}
-
-          true ->
-            {slots, frame, selection} =
-              if active?(s, c) do
-                InputSlots.take_observed(c.slots, s.tick)
-              else
-                {c.slots, :waiting, :joining_zero}
-              end
-
-            case frame do
-              :exhausted ->
-                {drop(s, identity, 12), list}
-
-              _ ->
-                {input, yaw} =
-                  if frame == :waiting do
-                    {{0.0, 0.0, 0}, c.state.yaw}
-                  else
-                    {x, z} = Movement.Codec.axes(frame)
-                    {{x, z, frame.jump_pressed}, frame.yaw}
-                  end
-
-                substituted =
-                  slots != nil and slots != c.slots and
-                    slots.substituted_through_seq == slots.processed_input_seq
-
-                {x, z, jump} = input
-
-                character_event(s, c, :input_selected, %{
-                  input_seq: if(frame == :waiting, do: nil, else: frame.input_seq),
-                  due_tick: if(frame == :waiting, do: nil, else: c.origin + frame.input_seq - 1),
-                  axis_x: if(frame == :waiting, do: 0, else: frame.axis_x),
-                  axis_z: if(frame == :waiting, do: 0, else: frame.axis_z),
-                  yaw: yaw,
-                  jump_pressed: jump,
-                  native_axis_x: x,
-                  native_axis_z: z,
-                  selection: selection
-                })
-
-                s = put_character(s, %{c | slots: slots, state: %{c.state | yaw: yaw}})
-                s = if substituted, do: %{s | substitutions: s.substitutions + 1}, else: s
-                {s, [{c.id, pod(c.state), input} | list]}
-            end
-        end
-      end)
-
-    characters = Enum.reverse(characters)
-
-    {us, results} =
-      :timer.tc(fn ->
-        state.updates.native.step_characters(
-          state.updates.world,
-          state.config.profile_tuple,
-          characters
-        )
-      end)
-
-    state = %{
-      state
-      | step_us: state.step_us + us,
-        physics_steps: state.physics_steps + length(characters)
-    }
-
-    Enum.reduce(results, state, fn {id, native_state}, s ->
-      {identity, c} = Enum.find(s.characters, fn {_, c} -> c.id == id end)
-      next = from_pod(native_state, c.state.yaw)
-
-      if inside?(next.position, s.config.travel),
-        do: put_character(s, %{c | state: next}),
-        else: drop(s, identity, 4)
+    state = state.characters |> Enum.sort_by(fn {_, c} -> c.id end)
+      |> Enum.reduce(state, fn {identity, _}, s -> advance_character(s, identity) end)
+    # Restore the current collider artifact after historical character replay.
+    {updates, _} = CollisionUpdates.at_tick(state.updates, state.tick)
+    earliest = Enum.reduce(state.characters, state.tick, fn {_, c}, t ->
+      if c.state, do: min(t, c.simulation_tick), else: t
     end)
+    %{state | updates: CollisionUpdates.retire_before(updates, earliest)}
+  end
+
+  defp advance_character(state, identity) do
+    c = Map.fetch!(state.characters, identity)
+    cond do
+      c.state == nil or c.simulation_tick >= state.tick -> state
+      not query_allowed?(state, c.state) -> drop(state, identity, 4)
+      true ->
+        tick = c.simulation_tick + 1
+        {slots, frame, selection} =
+          if c.origin != nil and tick >= c.origin do
+            InputSlots.take_observed(c.slots, state.tick)
+          else
+            {c.slots, :joining_zero, :joining_zero}
+          end
+        if frame == :waiting do
+          character_event(state, c, :input_wait, %{
+            simulation_tick: c.simulation_tick, processed_input_seq: c.slots.processed_input_seq,
+            pending_inputs: map_size(c.slots.pending), lag_ticks: state.tick - c.simulation_tick})
+          state
+        else
+          {input, yaw} = if frame == :joining_zero do
+            {{0.0, 0.0, 0}, c.state.yaw}
+          else
+            {x, z} = Movement.Codec.axes(frame)
+            {{x, z, frame.jump_pressed}, frame.yaw}
+          end
+          {updates, revision} = CollisionUpdates.at_tick(state.updates, tick)
+          state = %{state | updates: updates}
+          {x, z, jump} = input
+          character_event(state, c, :input_selected, %{
+            input_seq: if(frame == :joining_zero, do: nil, else: frame.input_seq),
+            due_tick: tick, simulation_tick: tick, collision_revision: revision,
+            axis_x: if(frame == :joining_zero, do: 0, else: frame.axis_x),
+            axis_z: if(frame == :joining_zero, do: 0, else: frame.axis_z),
+            yaw: yaw, jump_pressed: jump, native_axis_x: x, native_axis_z: z,
+            selection: selection, lag_ticks: state.tick - tick})
+          {us, [{_, native_state}]} = :timer.tc(fn ->
+            updates.native.step_characters(updates.world, state.config.profile_tuple,
+              [{c.id, pod(c.state), input}])
+          end)
+          next = from_pod(native_state, yaw)
+          state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1}
+          if inside?(next.position, state.config.travel) do
+            state = put_character(state, %{c | state: next, slots: slots,
+              simulation_tick: tick, simulation_revision: revision})
+            advance_character(state, identity)
+          else
+            drop(state, identity, 4)
+          end
+        end
+    end
   end
 
   defp anchor_join(state, ref, snapshot) do
@@ -651,6 +655,8 @@ defmodule SceneServer.Movement.Scene do
                 c = %{
                   c
                   | state: spawned,
+                    simulation_tick: state.tick,
+                    simulation_revision: state.updates.revision,
                     baseline: {snapshot.transaction_seq, state.updates.revision}
                 }
 

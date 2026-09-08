@@ -49,6 +49,12 @@ fn operation(term:Term<'_>)->NifResult<Operation<'_>> {
 fn new_world()->ResourceArc<WorldResource> { ResourceArc::new(WorldResource(Mutex::new(World::new()))) }
 
 #[rustler::nif(schedule = "DirtyCpu")]
+fn world_stats(resource:ResourceArc<WorldResource>)->(u64,u64,u64) {
+    let stats=resource.0.lock().unwrap().stats();
+    (stats.collider_count,stats.compound_count,stats.compound_child_count)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
 fn set_chunks(resource:ResourceArc<WorldResource>, operations:Vec<Term>)->NifResult<Atom> {
     let operations=operations.into_iter().map(operation).collect::<NifResult<Vec<_>>>()?;
     let mut previous=None;
