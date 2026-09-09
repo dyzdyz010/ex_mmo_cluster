@@ -1,4 +1,8 @@
-# 当前会话接力：8/25 Voxia Near/Far 流送与可见 ownership 修复
+# 当前会话接力：Voxim M3 规划（2026-09-09）
+
+当前主线 M1 / M2a 已验收。用户已确认下一会话实施每玩家 GenServer、只读碰撞版本、日志与 AOI／发送改造；本会话仅写规划，M3 尚未实现或验收。先读 [M3 服务端入口](../movement-sync/2026-09-09-voxim-m3.md) 与 [Voxim 下一会话说明](../../../../Voxim/Docs/M3/next-session.md)。完整计划和测试口径只有 Voxim `Docs/M3/plan.md` 一处。
+
+## 以下为历史会话记录（不作为当前 Voxim 的任务或阶段状态）
 
 ## 2026-08-26 Gate 连接进程去镜像：会话层从传输层剥离
 
