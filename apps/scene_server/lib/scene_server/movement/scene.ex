@@ -40,7 +40,7 @@ defmodule SceneServer.Movement.Scene do
        List.to_tuple(Map.fetch!(raw, "l0_max_exclusive"))}
 
     {lo, hi} = l0
-    true = Enum.all?(0..2, &(is_integer(elem(lo, &1)) and elem(hi, &1) - elem(lo, &1) == 2))
+    true = Enum.all?(0..2, &(is_integer(elem(lo, &1)) and is_integer(elem(hi, &1)) and elem(hi, &1) > elem(lo, &1)))
     extent = Voxel.Payload.extent() - 2
     bounds = {map_tuple(lo, &(&1 * extent / 1)), map_tuple(hi, &(&1 * extent / 1))}
 
@@ -420,6 +420,7 @@ defmodule SceneServer.Movement.Scene do
     world_api = state.world_api
     world_ref = state.world_ref
     l0 = state.config.l0
+    include_chunks = request == state.initial_ref
 
     {pid, monitor} =
       spawn_monitor(fn ->
@@ -428,7 +429,8 @@ defmodule SceneServer.Movement.Scene do
             world_ref,
             l0,
             scene,
-            request
+            request,
+            include_chunks
           )
 
         send(scene, {:snapshot_result, request, result})

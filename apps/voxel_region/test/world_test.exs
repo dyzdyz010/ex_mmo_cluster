@@ -43,6 +43,26 @@ defmodule VoxelRegion.WorldTest do
 
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
+  test "join barrier returns the same canonical regions without rebuilding scene collision", %{root: root} do
+    world = start_supervised!({World, [root: root, name: :join_marker_world]})
+    box = {{0, 0, 0}, {1, 2, 1}}
+    initial = make_ref()
+    assert :ok = World.canonical_snapshot_and_subscribe(world, box, self(), initial)
+    assert_receive {:canonical_snapshot, ^initial, baseline}
+    assert length(baseline.chunks) == 128
+
+    join = make_ref()
+    assert :ok = World.canonical_snapshot_and_subscribe(world, box, self(), join, false)
+    assert_receive {:canonical_snapshot, ^join, marker}
+    assert marker.chunks == []
+    assert marker.regions == baseline.regions
+    assert marker.transaction_seq == baseline.transaction_seq
+    assert {:ok, _} = World.apply_edit(world, {5, 63, 5}, 0)
+    assert_receive {:canonical_delta, delta}
+    assert delta.transaction_seq == marker.transaction_seq + 1
+    assert delta.chunks != []
+  end
+
   test "edit at the surface flips L1 (material + skin) and stops where nothing changes; payloads are re-materialized", %{root: root} do
     {:ok, world} = World.start_link(root: root, log: OverlayLog.Db, name: :w1)
     assert World.content_version(:w1) == @cv

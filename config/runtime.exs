@@ -234,3 +234,5 @@ if config_env() == :prod do
     config :libcluster, topologies: []
   end
 end
+
+config :voxel_region, :prefab_catalog_path, System.get_env("VOXIM_PREFAB_CATALOG_PATH")

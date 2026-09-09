@@ -51,7 +51,8 @@ defmodule MmoContracts.Voxel.Codec do
            when opcode in [
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
-                  @msg_voxel_batch_edit_intent
+                  @msg_voxel_batch_edit_intent,
+                  0x7A, 0x7B
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -65,6 +66,17 @@ defmodule MmoContracts.Voxel.Codec do
                   ]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
+  def decode(<<0x7A, rid::64, seq::32, scene::64, id::binary-size(32),
+               x::signed-64, y::signed-64, z::signed-64, orientation::8>>) when orientation < 24 do
+    {:ok, {:voxel_prefab_place_v1, %{request_id: rid, client_intent_seq: seq,
+      logical_scene_id: scene, definition_id: id, anchor: {x,y,z}, orientation: orientation}}}
+  end
+  def decode(<<0x7B, rid::64, seq::32, scene::64, birth::64, occurrence::32>>) do
+    {:ok, {:voxel_prefab_remove_v1, %{request_id: rid, client_intent_seq: seq,
+      logical_scene_id: scene, instance_id: {birth, occurrence}}}}
+  end
+  def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B], do: {:error, :invalid_message}
+
   def decode(
         <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,
           logical_scene_id::64-big, action::8, target_granularity::8, wx::64-big-signed,
@@ -226,7 +238,6 @@ defmodule MmoContracts.Voxel.Codec do
   @reply_magic "VXRS"
   @payload_magic "VXR4"
   @wire_version 1
-  @payload_version 4
   @payload_header_bytes 54
 
   @kind_unchanged 0
@@ -394,11 +405,11 @@ defmodule MmoContracts.Voxel.Codec do
 
   @doc "读取完整 RegionPayload 头，不解压 body。"
   def decode_payload_header(
-        <<@payload_magic, @payload_version::32-little, level::8, x::32-little-signed,
+        <<magic::binary-size(4), version::32-little, level::8, x::32-little-signed,
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) do
+      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) do
     {:ok,
      %{
        level: level,
@@ -420,10 +431,11 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   @doc "头 + zlib body → 完整载荷字节。"
-  def encode_payload(level, {x, y, z}, seq, content_version, raw_body) when is_binary(raw_body) do
+  def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4) when is_binary(raw_body) do
     body = :zlib.compress(raw_body)
 
-    <<@payload_magic, @payload_version::32-little, level::8, x::32-little-signed,
+    magic = if version == 5, do: "VXR5", else: @payload_magic
+    <<magic::binary, version::32-little, level::8, x::32-little-signed,
       y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
       body_hash(raw_body)::64-little, 1::8, byte_size(raw_body)::32-little,
       byte_size(body)::32-little, body::binary>>

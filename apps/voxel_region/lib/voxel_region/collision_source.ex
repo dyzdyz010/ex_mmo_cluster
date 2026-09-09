@@ -4,13 +4,8 @@ defmodule VoxelRegion.CollisionSource do
   alias MmoContracts.Voxel.{ChunkOccupancy, Payload}
   alias MmoContracts.VoxelMaterialCatalog
 
-  # Compile the existing spatial owner, instead of declaring another chunk or metre scale.
-  @spatial Path.expand("../../../../../Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h", __DIR__)
-  @external_resource @spatial
-  @spatial_text File.read!(@spatial)
-  @chunk_size Regex.run(~r/VoxelChunkSizeInMacro\s*=\s*(\d+)/, @spatial_text)
-              |> Enum.at(1)
-              |> String.to_integer()
+  @chunk_size VoxelRegion.Spatial.chunk_size()
+  @micro VoxelRegion.Spatial.micro_resolution()
   @region_size Payload.extent() - 2
 
   def regions({{x0, y0, z0}, {x1, y1, z1}}) do
@@ -44,21 +39,42 @@ defmodule VoxelRegion.CollisionSource do
   def capture(%Payload{level: 0} = payload, {cx, cy, cz} = coord) do
     {ox, oy, oz} = {cx * @chunk_size, cy * @chunk_size, cz * @chunk_size}
 
-    cells =
-      for z <- 0..(@chunk_size - 1),
-          y <- 0..(@chunk_size - 1),
-          x <- 0..(@chunk_size - 1),
-          into: <<>> do
-        material =
-          Payload.material(payload, Payload.local(payload.region, {ox + x, oy + y, oz + z}))
-
-        <<if(VoxelMaterialCatalog.blocks_movement?(material), do: 1, else: 0)>>
+    refined = for {index, slots} <- payload.refined,
+      local = {rem(index,66),rem(div(index,66),66),div(index,66*66)},
+      {px,py,pz} = Payload.origin(payload.region),
+      {x,y,z} = local,
+      wx = px+x, wy = py+y, wz = pz+z,
+      wx >= ox and wx < ox+@chunk_size and wy >= oy and wy < oy+@chunk_size and wz >= oz and wz < oz+@chunk_size,
+      into: %{}, do: {{wx-ox,wy-oy,wz-oz},slots}
+    n = if map_size(refined) == 0, do: @chunk_size, else: @chunk_size*@micro
+    sampling = if n == @chunk_size, do: 1, else: @micro
+    # Preserve the 16-grid path. Refined chunks expand the blocking rows once, then splice actual slots.
+    cells = for z <- 0..(@chunk_size-1), into: <<>> do
+      slab = for y <- 0..(@chunk_size-1), into: <<>> do
+        row = for x <- 0..(@chunk_size-1), into: <<>> do
+          material = Payload.material(payload,Payload.local(payload.region,{ox+x,oy+y,oz+z}))
+          blocked = if VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0
+          :binary.copy(<<blocked>>,sampling)
+        end
+        :binary.copy(row,sampling)
       end
+      :binary.copy(slab,sampling)
+    end
+    updates = for {{mx,my,mz},slots} <- refined, {slot,{material,_}} <- slots do
+      x = mx*@micro+rem(slot,@micro)
+      y = my*@micro+rem(div(slot,@micro),@micro)
+      z = mz*@micro+div(slot,@micro*@micro)
+      {x+n*(y+n*z),if(VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0)}
+    end
+    {parts,pos} = Enum.reduce(Enum.sort(updates),{[],0},fn {index,value},{parts,pos} ->
+      {[<<value>>,binary_part(cells,pos,index-pos)|parts],index+1}
+    end)
+    cells = IO.iodata_to_binary(Enum.reverse([binary_part(cells,pos,byte_size(cells)-pos)|parts]))
 
     %ChunkOccupancy{
       coord: coord,
-      n: @chunk_size,
-      scale_m: 1.0,
+      n: n,
+      scale_m: 1.0/sampling,
       origin_m: {ox * 1.0, oy * 1.0, oz * 1.0},
       cells: cells
     }

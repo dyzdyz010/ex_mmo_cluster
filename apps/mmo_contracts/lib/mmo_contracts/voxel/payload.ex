@@ -24,7 +24,10 @@ defmodule MmoContracts.Voxel.Payload do
             map_extent: 1,
             records: %{},
             fmi: <<>>,
-            maps: <<>>
+            maps: <<>>,
+            refined: %{},
+            instances: %{},
+            format_version: 4
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
   def extent, do: @extent
@@ -54,7 +57,9 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "完整载荷字节 → struct。"
   def decode(bytes) do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
-         {:ok, payload} <- decode_body(raw) do
+         {:ok, payload} <- decode_body(raw),
+         true <- binary_part(bytes,0,4) == if(payload.format_version == 5,do: "VXR5",else: "VXR4"),
+         true <- Enum.all?(payload.refined,fn {index,_} -> binary_part(payload.cells,index*2,2) == <<0,0>> end) do
       {:ok,
        %{
          payload
@@ -63,6 +68,9 @@ defmodule MmoContracts.Voxel.Payload do
            seq: header.seq,
            content_version: header.content_version
        }}
+    else
+      false -> {:error,:invalid_payload}
+      error -> error
     end
   end
 
@@ -79,7 +87,8 @@ defmodule MmoContracts.Voxel.Payload do
          <<record_count::32-little, faces::binary-size(record_count * 6),
            masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
-         {:ok, maps, <<>>} <- array(rest, 1),
+         {:ok, maps, tail} <- array(rest, 1),
+         {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail),
          {:ok, records} <-
            decode_records({ex, ey, ez}, map_extent, row_start, col_x, faces, masks, fmi, maps) do
       {:ok,
@@ -88,7 +97,7 @@ defmodule MmoContracts.Voxel.Payload do
          map_extent: map_extent,
          records: records,
          fmi: fmi,
-         maps: maps
+         maps: maps, refined: refined, instances: instances, format_version: version
        }}
     else
       _ -> {:error, :invalid_payload}
@@ -261,7 +270,9 @@ defmodule MmoContracts.Voxel.Payload do
         maps
       ])
 
-    MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw)
+    version = if map_size(p.refined) > 0 or map_size(p.instances) > 0, do: 5, else: 4
+    raw = if version == 5, do: raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances), else: raw
+    MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end
 
   defp splice_cells(cells, overrides) when map_size(overrides) == 0, do: cells

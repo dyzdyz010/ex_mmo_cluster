@@ -17,7 +17,7 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
 
-    def canonical_snapshot_and_subscribe(pid, _, subscriber, ref),
+    def canonical_snapshot_and_subscribe(pid, _, subscriber, ref, _include_chunks \\ true),
       do: GenServer.call(pid, {:snapshot, subscriber, ref})
 
     def handle_call({:snapshot, subscriber, ref}, _, state) do

@@ -151,7 +151,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
 
-    def canonical_snapshot_and_subscribe(pid, box, subscriber, ref),
+    def canonical_snapshot_and_subscribe(pid, box, subscriber, ref, _include_chunks \\ true),
       do: GenServer.call(pid, {:snapshot, box, subscriber, ref})
 
     def handle_call({:snapshot, _, _, _}, _, %{error: true} = state) do

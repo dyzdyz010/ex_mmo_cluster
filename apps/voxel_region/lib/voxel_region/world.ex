@@ -23,7 +23,7 @@ defmodule VoxelRegion.World do
   require Logger
   import Bitwise
   alias VoxelRegion.OverlayLog
-  alias VoxelRegion.{CollisionSource, FileStore, Reducer}
+  alias VoxelRegion.{CollisionSource, FileStore, Prefab, Reducer}
   alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @max_level 5
@@ -121,6 +121,24 @@ defmodule VoxelRegion.World do
     end
   end
 
+  def place_prefab(server \\ @name, definition_id, anchor, orientation) do
+    with {:ok, cells} <- prefab_cells(server,definition_id,anchor,orientation) do
+      prepare(server, prefab_keys(cells))
+      GenServer.call(server,{:place_prefab,definition_id,anchor,orientation,cells},300_000)
+    end
+  end
+  def remove_prefab(server \\ @name, instance_id), do: GenServer.call(server,{:remove_prefab,instance_id},300_000)
+  def prefab_cells(server,id,anchor,orientation), do: GenServer.call(server,{:prefab_cells,id,anchor,orientation})
+  def instance_cells(server,id), do: GenServer.call(server,{:instance_cells,id})
+
+  defp prefab_keys(cells) do
+    cells |> Enum.flat_map(fn {micro,_} ->
+      {{x,y,z},_} = Prefab.macro_slot(micro)
+      for rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
+          rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {0,{rx,ry,rz}}
+    end) |> Enum.uniq()
+  end
+
   def subscribe(server \\ @name, pid, have_seq, {{_, _, _}, {_, _, _}} = box, coarse_min_level) do
     GenServer.call(server, {:subscribe, pid, have_seq, box, coarse_min_level})
   end
@@ -128,9 +146,9 @@ defmodule VoxelRegion.World do
   def entries_after(server \\ @name, seq), do: GenServer.call(server, {:entries_after, seq})
 
   @doc "Prepare canonical L0 source, then atomically send its snapshot marker and subscribe to all subsequent transactions."
-  def canonical_snapshot_and_subscribe(world_ref, l0_box, subscriber_pid, request_ref) do
+  def canonical_snapshot_and_subscribe(world_ref, l0_box, subscriber_pid, request_ref, include_chunks \\ true) do
     prepare(world_ref, Enum.map(CollisionSource.regions(l0_box), &{0, &1}))
-    GenServer.call(world_ref, {:canonical_snapshot, l0_box, subscriber_pid, request_ref}, 300_000)
+    GenServer.call(world_ref, {:canonical_snapshot, l0_box, subscriber_pid, request_ref, include_chunks}, 300_000)
   end
 
   @doc "多格编辑原子提交；每级父格去重后规约。"
@@ -177,6 +195,9 @@ defmodule VoxelRegion.World do
           cache_stats: %{hits: 0, misses: 0, evictions: 0},
           served_headers: %{},
           overlay: %{},
+          refined: %{},
+          instances: %{},
+          prefabs: Prefab.load(Keyword.get(opts, :prefab_catalog_path, Application.get_env(:voxel_region, :prefab_catalog_path))),
           overlay_regions: %{},
           seq: 0,
           entries: %{},
@@ -198,6 +219,68 @@ defmodule VoxelRegion.World do
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
+
+  def handle_call({:prefab_cells,id,anchor,orientation}, _from,state) do
+    result = with {:ok,definition} <- Map.fetch(state.prefabs,id), true <- orientation in 0..23 do
+      cells = Prefab.footprint(definition,anchor,orientation)
+      macros = Enum.map(cells,fn {c,_} -> elem(Prefab.macro_slot(c),0) end)
+      cond do
+        not Enum.all?(macros,&valid_edit_coord?/1) -> {:error,:invalid_coordinate}
+        length(Enum.uniq(Enum.map(macros,&region_of/1))) != 1 -> {:error,:cross_region_prefab}
+        true -> {:ok,cells}
+      end
+    else
+      :error -> {:error,:definition_not_found}
+      false -> {:error,:invalid_orientation}
+    end
+    {:reply,result,state}
+  end
+
+  def handle_call({:instance_cells,id},_from,state) do
+    cells = owner_cells(state,id)
+    {:reply,if(cells == [],do: {:error,:instance_not_found},else: {:ok,cells}),state}
+  end
+
+  def handle_call({:place_prefab,id,anchor,orientation,cells},_from,state) do
+    before = state
+    owner = {state.seq+1,0}
+    result = Enum.reduce_while(cells,{:ok,state,[]},fn {micro,material},{:ok,s,changed} ->
+      {cell,slot} = Prefab.macro_slot(micro)
+      slots = Map.get(s.refined,cell,%{})
+      case cell_value(s,0,cell) do
+        {:ok,{0,_},s} ->
+          if Map.has_key?(slots,slot) do
+            {:halt,{:error,:occupied}}
+          else
+            s = %{s | refined: Map.put(s.refined,cell,Map.put(slots,slot,{material,owner}))}
+            s = put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
+            {:cont,{:ok,s,[cell|changed]}}
+          end
+        {:ok,_,_} -> {:halt,{:error,:occupied}}
+        {:error,reason,_} -> {:halt,{:error,reason}}
+      end
+    end)
+    case result do
+      {:error,reason} -> {:reply,{:error,reason},before}
+      {:ok,s,changed} ->
+        instance = %{definition_id: id,anchor: anchor,orientation: orientation}
+        s = %{s | instances: Map.put(s.instances,owner,instance)}
+        prefab_reply(before,s,Enum.uniq(changed))
+    end
+  end
+
+  def handle_call({:remove_prefab,id},_from,state) do
+    case owner_cells(state,id) do
+      [] -> {:reply,{:error,:instance_not_found},state}
+      cells ->
+        next = Enum.reduce(cells,state,fn cell,s ->
+          slots = Map.fetch!(s.refined,cell) |> Map.reject(fn {_,{_,owner}} -> owner == id end)
+          refined = if map_size(slots) == 0, do: Map.delete(s.refined,cell), else: Map.put(s.refined,cell,slots)
+          put_overlay(%{s | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
+        end)
+        prefab_reply(state,%{next | instances: Map.delete(next.instances,id)},cells)
+    end
+  end
 
   def handle_call(:stats, _from, state) do
     stats =
@@ -250,13 +333,13 @@ defmodule VoxelRegion.World do
     {:reply, state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)), state}
   end
 
-  def handle_call({:canonical_snapshot, {l0_min, l0_max} = box, pid, request}, _from, state) do
+  def handle_call({:canonical_snapshot, {l0_min, l0_max} = box, pid, request, include_chunks}, _from, state) do
     started = System.monotonic_time(:microsecond)
     case canonical_regions(state, CollisionSource.regions(box)) do
       {:ok, regions, payloads, state} ->
-        chunks = payloads |> Enum.flat_map(fn {coord, payload} ->
+        chunks = if include_chunks, do: (payloads |> Enum.flat_map(fn {coord, payload} ->
           Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
-        end) |> Enum.sort_by(& &1.coord)
+        end) |> Enum.sort_by(& &1.coord)), else: []
         snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
           l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
         unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
@@ -339,6 +422,7 @@ defmodule VoxelRegion.World do
           case decoded(state, level, region) do
             {:ok, payload, state} ->
               overrides = Map.new(cells, fn cell -> {Payload.local(region, cell), Map.fetch!(state.overlay, {level, cell})} end)
+              payload = with_refined(state, payload)
               bytes = Payload.encode(payload, overrides, state.seq, state.cv)
               {:ok, header} = Codec.decode_payload_header(bytes)
               {:ok, bytes, header, cache_put(state, key, bytes, header)}
@@ -354,6 +438,41 @@ defmodule VoxelRegion.World do
   end
 
   # ---- 载荷缓存：L0–L3 在 gb_tree {tick, key} 上按最近使用淘汰，L4+ 常驻不进树。
+
+  defp with_refined(state,%Payload{level: 0,region: region}=payload) do
+    refined = for {cell,slots} <- state.refined, local = Payload.local(region,cell), Payload.in_span?(local),
+      into: %{}, do: {Payload.cell_index(local),slots}
+    ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+    %{payload | refined: refined,instances: Map.take(state.instances,ids),
+      format_version: if(map_size(refined)>0 or payload.format_version == 5,do: 5,else: 4)}
+  end
+  defp with_refined(_state,payload), do: payload
+
+  defp owner_cells(state,id) do
+    for {cell,slots} <- state.refined, Enum.any?(slots,fn {_,{_,owner}} -> owner == id end), do: cell
+  end
+
+  defp prefab_reply(before,state,cells) do
+    state = %{state | seq: before.seq+1}
+    keys = for {x,y,z} <- cells,
+      rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
+      rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {0,{rx,ry,rz}}
+    {entries,state} = Enum.map_reduce(Enum.sort(Enum.uniq(keys)),state,fn {level,region}=key,s ->
+      s = %{s | snapshots: MapSet.put(s.snapshots,key)}
+      {:ok,bytes,_,s} = payload_bytes(s,level,region)
+      {region_entry(s.seq,bytes),s}
+    end)
+    txn = %{seq: state.seq,entries: entries,coarse: []}
+    with {:ok,chunks} <- canonical_changes(before,state,Enum.map(cells,&{0,&1})),
+         :ok <- append_log(state,txn) do
+      state = %{state | entries: Map.put(state.entries,state.seq,txn)}
+      fanout(state,txn)
+      fanout_canonical(state,txn,chunks)
+      {:reply,{:ok,state.seq},state}
+    else
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
+  end
 
   defp cache_fetch(state, key) do
     case Map.fetch(state.payloads, key) do
@@ -608,11 +727,29 @@ defmodule VoxelRegion.World do
   defp replay_entry(state, %{payload: bytes}) do
     {:ok, p} = Payload.decode(bytes)
     key = {p.level, p.region}
-    overlay = Map.reject(state.overlay, fn {{level, cell}, _} -> level == p.level and region_of(cell) == p.region end)
-    regions = Map.new(state.overlay_regions, fn {k, cells} -> {k, MapSet.filter(cells, &Map.has_key?(overlay, {elem(k, 0), &1}))} end)
+    state = if p.level == 0 do
+      {ox,oy,oz} = Payload.origin(p.region)
+      core = for {index,slots} <- p.refined,
+        x = rem(index,66), y = rem(div(index,66),66), z = div(index,66*66),
+        x in 1..64 and y in 1..64 and z in 1..64, into: %{}, do: {{ox+x,oy+y,oz+z},slots}
+      refined = state.refined |> Map.reject(fn {cell,_} -> region_of(cell)==p.region end) |> Map.merge(core)
+      ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+      %{state | refined: refined,instances: Map.take(Map.merge(state.instances,p.instances),ids)}
+    else
+      state
+    end
+    # The region index includes its core and the one-cell ring. Replacing this
+    # core can only invalidate overlay entries in this region and its neighbors;
+    # scanning every accumulated region for each checkpoint was quadratic.
+    core_cells = state.overlay_regions |> Map.get(key, MapSet.new()) |> Enum.filter(&(region_of(&1) == p.region))
+    overlay = Map.drop(state.overlay, Enum.map(core_cells, &{p.level, &1}))
+    {rx, ry, rz} = p.region
+    neighbors = for x <- (rx-1)..(rx+1), y <- (ry-1)..(ry+1), z <- (rz-1)..(rz+1), do: {p.level, {x,y,z}}
+    regions = Enum.reduce(Map.take(state.overlay_regions, neighbors), state.overlay_regions, fn {k,cells}, index ->
+      Map.put(index, k, MapSet.filter(cells, &(region_of(&1) != p.region)))
+    end)
     state = %{cache_clear(state) | decoded: Map.put(state.decoded, key, p), snapshots: MapSet.put(state.snapshots, key), overlay: overlay,
                        overlay_regions: regions}
-    {rx, ry, rz} = p.region
     # 内部格直接从快照读取；边界格同时进入邻居 ring。
     for z <- 0..63, y <- 0..63, x <- 0..63, x in [0, 63] or y in [0, 63] or z in [0, 63], reduce: state do
       s -> put_overlay(s, p.level, {rx*64+x, ry*64+y, rz*64+z}, Payload.value(p, {x+1,y+1,z+1}))
@@ -628,7 +765,7 @@ defmodule VoxelRegion.World do
     before = state
     started = System.monotonic_time(:microsecond)
     result = Enum.reduce_while(Map.new(edits), {[], state}, fn {cell,m}, {changed,s} ->
-      case cell_value(s, 0, cell) do
+      case if(Map.has_key?(s.refined,cell),do: {:error,:refined_cell,s},else: cell_value(s, 0, cell)) do
         {:ok, {old,_}, s} when old == m -> {:cont, {changed,s}}
         {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
         {:error,:missing,_} -> {:halt, {:error,:missing_region}}

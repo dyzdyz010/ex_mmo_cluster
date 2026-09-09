@@ -6,7 +6,7 @@ defmodule SceneServer.Movement.VoximApplicationTest do
   end
 
   defmodule World do
-    def canonical_snapshot_and_subscribe(owner, _, _, _) do
+    def canonical_snapshot_and_subscribe(owner, _, _, _, _include_chunks \\ true) do
       send(owner, {:m1_snapshot_requested, self()})
       receive do
         :finish -> :ok
