@@ -439,7 +439,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
       assert {:mmo_reliable, ^who, 2, %Voxel.TimelineFence{server_tick: 1, transaction_seq: 1}} =
                next_output()
 
-      assert [{:p1_install, ops1}, {:p1_step, [], [], [{:ok, _}, :not_found]}] = native_events()
+      # 首个角色在本 tick 的步进阶段之后才锚定；空角色列表不产生虚构物理步。
+      assert [{:p1_install, ops1}] = native_events()
       assert ops1 == CollisionUpdates.operations(d1.chunks)
       info = advance(ctx, 2)
       assert {info.transaction_seq, info.collision_revision, info.queue_length} == {2, 2, 1}
@@ -478,7 +479,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
       assert [
                {:p1_install, ops3},
-               {:p1_step, [{10, _, _}, {20, _, _}], _, [:not_found, :not_found]}
+               {:p1_step, [{10, _, _}], _, [:not_found, :not_found]},
+               {:p1_step, [{20, _, _}], _, [:not_found, :not_found]}
              ] = native_events()
 
       assert ops3 == CollisionUpdates.operations(d3.chunks)
@@ -555,6 +557,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     d3 = delta(ctx, [{@left, water}], 3)
     assert d3.chunks == []
     await(ctx.scene, &(&1.queue_length == 1))
+    # ACK1 必须来自真实输入，不能依赖旧版缺帧替代行为。
+    Scene.input(ctx.scene, start.identity, %Movement.InputBatch{identity: start.identity,
+      frames: [%Movement.InputFrame{input_seq: 1, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}]})
     advance(ctx, 33)
     own = outputs() |> Enum.filter(&(elem(&1, 1) == start.identity))
     assert [log_event, fence, ack, snapshot] = own
@@ -565,7 +570,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
              fence
 
     assert {:mmo_datagram, _,
-            %Movement.OwnerAck{server_tick: 33, collision_revision: 3, processed_input_seq: 1}} =
+            %Movement.OwnerAck{server_tick: 33, simulation_tick: 33, collision_revision: 3,
+              processed_input_seq: 1, substituted_through_seq: 0}} =
              ack
 
     assert {:mmo_datagram, _, %Movement.Snapshot{server_tick: 33, records: []}} = snapshot
@@ -627,7 +633,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     info = advance(ctx, 4)
     assert info.collision_revision == 2
 
-    assert [{:p1_install, operations}, {:p1_step, [{10, _, _}, {20, _, _}], _, _}] =
+    assert [{:p1_install, operations}, {:p1_step, [{10, _, _}], _, _}, {:p1_step, [{20, _, _}], _, _}] =
              native_events()
 
     assert operations == CollisionUpdates.operations(d1.chunks)
@@ -712,6 +718,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
            inspect(%{start: start.state, blocked: hd(blocked.characters).state, wall_z: wall_z})
 
     removed = delta(ctx, Enum.map(cells, &{&1, 0}), 2)
+    # 显式保留拆墙 tick 的连续输入号；缺少 seq51 时正确行为是等待。
+    send_walk_input(ctx, 82, 32)
     advance(ctx, 82)
     events = outputs()
 
@@ -742,18 +750,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
   defp walk(ctx, ticks, origin) do
     Enum.reduce(ticks, nil, fn tick, _ ->
-      frame = %Movement.InputFrame{
-        input_seq: tick - origin + 1,
-        axis_x: 0,
-        axis_z: 32767,
-        yaw: 0,
-        jump_pressed: 0
-      }
-
-      Scene.input(ctx.scene, identity(1), %Movement.InputBatch{
-        identity: identity(1),
-        frames: [frame]
-      })
+      send_walk_input(ctx, tick, origin)
 
       info = advance(ctx, tick)
       assert info.character_count == 1
@@ -773,5 +770,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
       info
     end)
+  end
+
+  defp send_walk_input(ctx, tick, origin) do
+    frame = %Movement.InputFrame{input_seq: tick - origin + 1, axis_x: 0,
+      axis_z: 32767, yaw: 0, jump_pressed: 0}
+    Scene.input(ctx.scene, identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]})
   end
 end

@@ -16,7 +16,8 @@ defmodule GateServer.Transport.QuicListener do
       certfile: opts |> Keyword.fetch!(:certfile) |> String.to_charlist(),
       keyfile: opts |> Keyword.fetch!(:keyfile) |> String.to_charlist(),
       alpn: [~c"voxim-m1"], peer_bidi_stream_count: 2, peer_unidi_stream_count: 0,
-      datagram_receive_enabled: 1, server_resumption_level: 0, send_buffering_enabled: 0, pacing_enabled: 1
+      # 单个未完成发送依赖 MsQuic 内部缓冲；关闭缓冲会变成每 RTT 仅发送一条时间线消息。
+      datagram_receive_enabled: 1, server_resumption_level: 0, send_buffering_enabled: 1, pacing_enabled: 1
     ])
     # quicer rejects NEW_CONNECTION immediately when its acceptor queue is empty.
     # The M1 simultaneous two-account probe requires two armed native accepts.

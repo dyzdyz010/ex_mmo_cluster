@@ -157,13 +157,18 @@ defmodule T1TransportTest do
     assert_receive {:join, identity, _, sink}, 5000
     {:ok, voxel} = :quicer.start_stream(conn, [{:active, false}])
     {:ok, _} = :quicer.async_send(voxel, <<2>>, 0)
-    # Force a real flow-control stall: 12 MiB exceeds the receiver stream window.
+    # 12 MiB 超出接收窗口；暂停期间字节由 MsQuic 持有，不能依赖 Gate 队列长度判断背压。
     large = :binary.copy(<<0xA5>>, 12 * 1024 * 1024)
     send(sink, {:mmo_voxel_bytes, identity, large})
     send(sink, {:mmo_voxel_bytes, identity, <<0x71, 0x19, 0xE3>>})
     Process.sleep(500)
     stalled = GenServer.call(sink, :stats)
-    assert stalled.reliable_queued >= 1
+    assert stalled.bytes_out >= byte_size(large)
+    # 已向 native 提交完整大包，但对端暂停使实际流发送尚未完成。
+    {:ok, stalled_quic} = stalled.quic
+    {_, stream_sent} = List.keyfind(stalled_quic, ~c"Send.TotalStreamBytes", 0)
+    assert stream_sent < byte_size(large)
+    IO.puts("T1_NATIVE_STALL submitted=#{stalled.bytes_out} stream_sent=#{stream_sent}")
     reply = %Session.TimeReply{request_id: 777, client_send_us: 1, server_receive_us: 2, server_send_us: 3, server_tick: 4}
     send(sink, {:mmo_reliable, identity, 1, reply})
     {:ok, hello_bytes} = Session.Codec.encode(hello)
@@ -172,7 +177,6 @@ defmodule T1TransportTest do
     reply_bytes = IO.iodata_to_binary(reply_bytes)
     control_bytes = <<1, byte_size(hello_bytes)::32, hello_bytes::binary, byte_size(reply_bytes)::32, reply_bytes::binary>>
     assert receive_bytes(control_stream, byte_size(control_bytes), <<>>) == control_bytes
-    assert GenServer.call(sink, :stats).reliable_queued >= 1
     IO.puts("T1_CONTROL_PROGRESS reliable TimeReply received before paused voxel resumes")
     player = %Session.State{position: {0.0, 1.0, 0.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}
     :ok = :sys.suspend(sink)
@@ -196,7 +200,7 @@ defmodule T1TransportTest do
     expected = <<2, byte_size(large)::32, large::binary, 3::32, 0x71, 0x19, 0xE3>>
     assert receive_bytes(voxel, byte_size(expected), <<>>) == expected
     stats = GenServer.call(sink, :stats)
-    assert stats.queue_age_us >= 450_000
+    assert stats.reliable_queued == 0
     IO.puts("T1_BACKPRESSURE " <> inspect(Map.drop(stats, [:identity]), limit: :infinity))
   end
 
