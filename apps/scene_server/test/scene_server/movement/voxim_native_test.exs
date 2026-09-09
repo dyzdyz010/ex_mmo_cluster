@@ -16,7 +16,7 @@ defmodule SceneServer.Movement.VoximNativeTest do
     p = profile()
     world = Native.new_world()
     assert {0, 0, 0} = Native.world_stats(world)
-    assert :ok = Native.set_chunks(world, [floor_op(0), floor_op(1)])
+    world = Native.set_chunks(world, [floor_op(0), floor_op(1)])
     assert {2, 2, 2} = Native.world_stats(world)
     assert {:ok, a} = Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -2.0)
     assert {:ok, b} = Native.find_spawn(world, p, {2.5, 8.0, 0.5}, -2.0)
@@ -24,15 +24,15 @@ defmodule SceneServer.Movement.VoximNativeTest do
     assert [{1, {_, {_, vy, _}, _}}, {2, {_, _, 1}}] = result = Native.step_characters(world, p, chars)
     assert vy > 0
     assert result == Native.step_characters(world, p, chars)
-    assert :ok = Native.set_chunks(world, [{:set, {0, 0, 0}, 2, 1.0, {0.0, 0.0, 0.0}, <<0::64>>}, {:remove, {1, 0, 0}}])
-    assert :ok = Native.set_chunks(world, [{:remove, {1, 0, 0}}])
+    world = Native.set_chunks(world, [{:set, {0, 0, 0}, 2, 1.0, {0.0, 0.0, 0.0}, <<0::64>>}, {:remove, {1, 0, 0}}])
+    world = Native.set_chunks(world, [{:remove, {1, 0, 0}}])
     assert {0, 0, 0} = Native.world_stats(world)
     for start <- [a, b] do
       assert {{_, y, _}, {_, vy, _}, 0} = Enum.reduce(1..30, start, fn _, s -> step(world, p, s) end)
       assert y < 1.0 and vy < -4.0
     end
     assert :not_found = Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -2.0)
-    assert :ok = Native.set_chunks(world, [floor_op(0)])
+    world = Native.set_chunks(world, [floor_op(0)])
     assert {:ok, _} = Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -2.0)
     assert :not_found = Native.find_spawn(world, p, {0.5, 0.5, 0.5}, -2.0)
   end
@@ -59,7 +59,7 @@ defmodule SceneServer.Movement.VoximNativeTest do
     cells = :binary.copy(:binary.copy(<<1>>, 16) <> :binary.copy(<<0>>, 240), 16)
     operations = for x <- 0..7, y <- 0..7, z <- 0..7, do:
       {:set, {x, y, z}, 16, 1.0, {x * 16.0, y * 16.0, z * 16.0}, cells}
-    {build_us, :ok} = :timer.tc(fn -> Native.set_chunks(world, operations) end)
+    {build_us, world} = :timer.tc(fn -> Native.set_chunks(world, operations) end)
     {:ok, a} = Native.find_spawn(world, p, {0.5, 120.0, 0.5}, -2.0)
     {:ok, b} = Native.find_spawn(world, p, {16.5, 120.0, 0.5}, -2.0)
     {us, states} = :timer.tc(fn -> Enum.reduce(1..600, [{1, a}, {2, b}], fn _, states ->
@@ -72,19 +72,19 @@ defmodule SceneServer.Movement.VoximNativeTest do
   test "online input and edit replay exports bit-exact two-character states" do
     p = profile()
     world = Native.new_world()
-    :ok = Native.set_chunks(world, [floor_op(0), floor_op(1)])
+    world = Native.set_chunks(world, [floor_op(0), floor_op(1)])
     {:ok, a} = Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -20.0)
     {:ok, b} = Native.find_spawn(world, p, {2.5, 8.0, 0.5}, -20.0)
-    {_, trace} = Enum.reduce(1..240, {[{1, a}, {2, b}], []}, fn tick, {states, trace} ->
-      if tick == 90, do: Native.set_chunks(world, [{:remove, {0, 0, 0}}, {:remove, {1, 0, 0}}])
-      if tick == 150, do: Native.set_chunks(world, [floor_op(0), floor_op(1)])
+    {_, _, trace} = Enum.reduce(1..240, {world, [{1, a}, {2, b}], []}, fn tick, {world, states, trace} ->
+      world = if tick == 90, do: Native.set_chunks(world, [{:remove, {0, 0, 0}}, {:remove, {1, 0, 0}}]), else: world
+      world = if tick == 150, do: Native.set_chunks(world, [floor_op(0), floor_op(1)]), else: world
       characters = Enum.map(states, fn {id, state} ->
         axis = if tick < 35, do: (if id == 1, do: -0.25, else: 0.25), else: 0.0
         {id, state, {axis, 0.0, if(tick == 20, do: 1, else: 0)}}
       end)
       next = Native.step_characters(world, p, characters)
       assert next == Native.step_characters(world, p, characters)
-      {next, [Enum.map(next, fn {id, {{x, y, z}, {vx, vy, vz}, grounded}} ->
+      {world, next, [Enum.map(next, fn {id, {{x, y, z}, {vx, vy, vz}, grounded}} ->
         <<tick::32, id::64, x::float-64, y::float-64, z::float-64, vx::float-64, vy::float-64, vz::float-64, grounded::32>>
       end) | trace]}
     end)

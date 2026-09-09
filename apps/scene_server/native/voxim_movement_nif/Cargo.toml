@@ -6,6 +6,9 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+concurrency-test = []
+
 [dependencies]
 rustler = "=0.37.3"
 voxim_movement = { path = "../../../../../Voxim/Plugins/VoximMovement/Native" }

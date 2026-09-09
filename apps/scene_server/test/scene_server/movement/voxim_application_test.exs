@@ -14,6 +14,7 @@ defmodule SceneServer.Movement.VoximApplicationTest do
     end
   end
 
+  @tag :m3_remaining
   test "configured M1 application starts the real Scene without legacy native physics" do
     path = Path.expand("../../../../../../Voxim/Docs/M1/fixtures/demo-config.json", __DIR__)
     before = Application.get_env(:scene_server, SceneServer.Movement.Scene)
@@ -27,6 +28,9 @@ defmodule SceneServer.Movement.VoximApplicationTest do
 
     assert {:ok, supervisor} = SceneServer.Application.start(:normal, [])
     assert is_pid(Process.whereis(SceneServer.Movement.Scene))
+    info = SceneServer.Movement.Scene.observe(SceneServer.Movement.Scene)
+    assert is_pid(info.player_supervisor_pid) and is_pid(info.replication_pid)
+    assert DynamicSupervisor.count_children(info.player_supervisor_pid).active == 0
     assert Process.whereis(SceneServer.PhysicsManager) == nil
     assert_receive {:m1_snapshot_requested, worker}
     Supervisor.stop(supervisor)

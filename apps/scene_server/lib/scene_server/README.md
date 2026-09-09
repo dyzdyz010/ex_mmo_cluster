@@ -21,7 +21,8 @@
   - `SceneServer.AoiManager`
   - `SceneServer.AoiItemSup`
 - `SceneServer.Movement.Scene`
-  - M1 玩家唯一固定 60Hz writer；共享 P1 world、输入槽和 W1 事务 FIFO
+  - M3 公共60Hz时钟与 W1 碰撞 FIFO，发布不可变 P1 world 版本
+  - 启动独立 Player DynamicSupervisor 与单个 Replication 派生 owner
   - 显式加载 D1 资产导出配置，完成 source/bootstrap 前不启动移动
 - `SceneServer.NpcSup`
   - `SceneServer.NpcActorSup`
@@ -31,9 +32,10 @@
 
 ### `movement/`
 
-M1 玩家移动由 `Scene` / `InputSlots` / `CollisionUpdates` 组合：Gate 只传
-已鉴权 identity、角色 `id` 和已解码输入；Scene 持有唯一共享 P1 Resource，
-通过 W1 显式 World 引用接收 canonical snapshot/delta。详见本目录
+M3 玩家移动由 `Scene` / `Player` / `InputSlots` / `CollisionUpdates` 组合：
+Gate 从 Scene 入场获得唯一 Player 路由，之后直接发送已鉴权输入、Ready 和 TimeProbe。
+Scene 通过 W1 显式 World 引用接收 canonical snapshot/delta；各 Player 独占输入、状态和 ACK，
+只消费已发布碰撞前缀；Replication 异步消费只读步后状态。详见本目录
 [`movement/README.md`](movement/README.md) 的 API、时间线和测试入口。
 
 以下旧共享移动模型继续服务 NPC 与既有 legacy 测试：

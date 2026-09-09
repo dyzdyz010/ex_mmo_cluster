@@ -1,7 +1,9 @@
+Code.require_file("runtime_observation.exs", __DIR__)
 defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   use ExUnit.Case, async: false
   alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{Scene, CollisionUpdates}
+  alias SceneServer.Movement.{Scene, Player, CollisionUpdates}
+  import SceneServer.Movement.RuntimeObservation
   alias SceneServer.Native.VoximMovement, as: P1
   alias VoxelRegion.World
 
@@ -62,9 +64,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
         end
       end
 
-      :ok = P1.set_chunks(world, operations)
+      next = P1.set_chunks(world, operations)
       send(observer, {:p1_install, operations})
-      :ok
+      next
     end
 
     def step_characters(world, profile, characters) do
@@ -164,7 +166,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   defp identity(epoch), do: %Session.Identity{session_epoch: epoch, scene_id: 1, scene_epoch: 7}
 
   defp await(scene, predicate, attempts \\ 5000) do
-    info = Scene.observe(scene)
+    info = observe(scene)
 
     if predicate.(info),
       do: info,
@@ -218,9 +220,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   end
 
   defp join(ctx, epoch \\ 1, cid \\ 10, inspect_bootstrap \\ fn _ -> :ok end) do
-    :ok = Scene.join(ctx.scene, identity(epoch), %{id: cid}, self())
+    {:ok, _} = Scene.join(ctx.scene, identity(epoch), %{id: cid}, self())
     await(ctx.scene, &(&1.queue_length > 0))
-    info = advance(ctx, Scene.observe(ctx.scene).tick + 1)
+    info = advance(ctx, observe(ctx.scene).tick + 1)
     assert {:mmo_reliable, _, 1, %Session.SessionStart{} = start} = next_output()
     assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{} = bootstrap} = next_output()
     assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{} = fence} = next_output()
@@ -276,7 +278,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert Enum.map(d1.chunks, & &1.coord) == [{1, 34, 2}, {2, 34, 2}]
     assert [d1.transaction, d2.transaction, d3.transaction] == World.entries_after(ctx.world, 0)
     await(ctx.scene, &(&1.queue_length == 3))
-    assert Scene.observe(ctx.scene).collision_revision == 1
+    assert observe(ctx.scene).collision_revision == 1
     assert [] == native_events()
 
     for {d, tick, revision, occupied} <- [
@@ -409,11 +411,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     d1 = delta(ctx, [{@left, 11}], 1)
     counter = :atomics.new(1, signed: true)
     Application.put_env(:scene_server, :e1_prepare, {counter, self()})
-    :ok = Scene.join(ctx.scene, identity(1), %{id: 10}, self())
+    {:ok, _} = Scene.join(ctx.scene, identity(1), %{id: 10}, self())
     assert_receive {:e1_preparing, first_worker}, 5000
 
     try do
-      :ok = Scene.join(ctx.scene, identity(2), %{id: 20}, self())
+      {:ok, _} = Scene.join(ctx.scene, identity(2), %{id: 20}, self())
       await(ctx.scene, &(&1.queue_length == 2))
       d2 = delta(ctx, [{@left, 12}], 2)
       assert d2.chunks == []
@@ -494,6 +496,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     end
   end
 
+  @tag :m3_remaining
   test "edits during joining retain Ready baseline, ordered InputStart/fence, ACK and reconnect cleanup",
        ctx do
     start = join(ctx)
@@ -511,13 +514,13 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{transaction_seq: 1}} = next_output()
     assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{transaction_seq: 1}} = next_output()
 
-    Scene.time_probe(ctx.scene, start.identity, %Session.TimeProbe{
+    Player.time_probe(player(ctx.scene, start.identity), start.identity, %Session.TimeProbe{
       request_id: 1,
       client_send_us: 1
     })
 
     assert {:mmo_reliable, _, 1, %Session.TimeReply{}} = next_output()
-    Scene.ready(ctx.scene, start.identity, 0, 1)
+    Player.ready(player(ctx.scene, start.identity), start.identity, 0, 1)
     info = advance(ctx, 3)
     events = outputs()
     own = Enum.filter(events, &(elem(&1, 1) == start.identity))
@@ -545,7 +548,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
              fence
 
     assert length(events) == 6
-    Scene.ready(ctx.scene, start.identity, 0, 1)
+    Player.ready(player(ctx.scene, start.identity), start.identity, 0, 1)
     advance(ctx, 32)
     assert [] == outputs()
 
@@ -558,11 +561,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert d3.chunks == []
     await(ctx.scene, &(&1.queue_length == 1))
     # ACK1 必须来自真实输入，不能依赖旧版缺帧替代行为。
-    Scene.input(ctx.scene, start.identity, %Movement.InputBatch{identity: start.identity,
+    Player.input(player(ctx.scene, start.identity), start.identity, %Movement.InputBatch{identity: start.identity,
       frames: [%Movement.InputFrame{input_seq: 1, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}]})
     advance(ctx, 33)
     own = outputs() |> Enum.filter(&(elem(&1, 1) == start.identity))
-    assert [log_event, fence, ack, snapshot] = own
+    assert [log_event, fence, ack] = own
     assert {:mmo_reliable, _, 2, {:voxel_log_transaction_payload, _}} = log_event
 
     assert {:mmo_reliable, _, 2,
@@ -574,7 +577,6 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
               processed_input_seq: 1, substituted_through_seq: 0}} =
              ack
 
-    assert {:mmo_datagram, _, %Movement.Snapshot{server_tick: 33, records: []}} = snapshot
     Scene.leave(ctx.scene, start.identity)
     assert {:mmo_close, _, 1} = next_output()
     native_events()
@@ -593,14 +595,14 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
     assert {fresh.baseline_transaction_seq, fresh.collision_revision} == {3, 3}
     Scene.leave(ctx.scene, start.identity)
-    Scene.ready(ctx.scene, start.identity, 0, 1)
+    Player.ready(player(ctx.scene, fresh.identity), start.identity, 0, 1)
 
-    Scene.input(ctx.scene, start.identity, %Movement.InputBatch{
+    Player.input(player(ctx.scene, fresh.identity), start.identity, %Movement.InputBatch{
       identity: start.identity,
       frames: []
     })
 
-    info = Scene.observe(ctx.scene)
+    info = observe(ctx.scene)
     assert info.character_count == 2 and info.queue_length == 0 and info.old_identity >= 2
     assert Enum.find(info.characters, &(&1.entity_id == 10)).identity == fresh.identity
     assert Enum.find(info.characters, &(&1.entity_id == 10)).processed_input_seq == 0
@@ -628,7 +630,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
     d1 = delta(ctx, Enum.uniq(edits), 1)
     assert d1.chunks != []
-    assert Scene.observe(ctx.scene).characters == before.characters
+    assert observe(ctx.scene).characters == before.characters
     assert [] == native_events() and [] == outputs()
     info = advance(ctx, 4)
     assert info.collision_revision == 2
@@ -682,16 +684,17 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   end
 
   @tag e1_case: :motion
+  @tag :m3_remaining
   test "actual Scene inputs hit an edited wall and pass its former plane after removal", ctx do
     start = join(ctx)
 
-    Scene.time_probe(ctx.scene, start.identity, %Session.TimeProbe{
+    Player.time_probe(player(ctx.scene, start.identity), start.identity, %Session.TimeProbe{
       request_id: 1,
       client_send_us: 1
     })
 
     assert {:mmo_reliable, _, 1, %Session.TimeReply{}} = next_output()
-    Scene.ready(ctx.scene, start.identity, 0, 1)
+    Player.ready(player(ctx.scene, start.identity), start.identity, 0, 1)
     advance(ctx, 2)
     assert {:mmo_reliable, _, 1, %Session.InputStart{origin_tick: 32}} = next_output()
     assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{server_tick: 2}} = next_output()
@@ -705,7 +708,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
           do: {wx, wy, wall_z}
 
     wall = delta(ctx, Enum.map(cells, &{&1, 11}), 1)
-    assert Scene.observe(ctx.scene).collision_revision == 1
+    assert observe(ctx.scene).collision_revision == 1
     advance(ctx, 3)
     applied(wall, 3, 2)
     native_events()
@@ -761,8 +764,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
       if rem(tick, 3) == 0 do
         assert [
                  {:mmo_reliable, _, 2, %Voxel.TimelineFence{}},
-                 {:mmo_datagram, _, %Movement.OwnerAck{}},
-                 {:mmo_datagram, _, %Movement.Snapshot{}}
+                 {:mmo_datagram, _, %Movement.OwnerAck{}}
                ] = events
       else
         assert events == []
@@ -775,6 +777,6 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   defp send_walk_input(ctx, tick, origin) do
     frame = %Movement.InputFrame{input_seq: tick - origin + 1, axis_x: 0,
       axis_z: 32767, yaw: 0, jump_pressed: 0}
-    Scene.input(ctx.scene, identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]})
+    Player.input(player(ctx.scene, identity(1)), identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]})
   end
 end

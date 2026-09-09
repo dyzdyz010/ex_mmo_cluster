@@ -1,8 +1,12 @@
+Code.require_file("runtime_observation.exs", __DIR__)
 defmodule SceneServer.Movement.VoximInstrumentationTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   alias MmoContracts.{Session, Movement}
-  alias SceneServer.Movement.Scene
+  alias SceneServer.Movement.{Scene, Player}
+
+  import SceneServer.Movement.RuntimeObservation
+
   alias VoxelRegion.World
 
   defmodule Clock do
@@ -80,7 +84,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
   end
 
   defp await(scene, predicate, attempts \\ 5000) do
-    info = Scene.observe(scene)
+    info = observe(scene)
 
     if predicate.(info) do
       info
@@ -97,7 +101,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
   end
 
   defp advance(ctx, tick) do
-    before = Scene.observe(ctx.scene)
+    before = observe(ctx.scene)
     :atomics.put(ctx.clock, 1, 7_000_000 + div(tick * 1_000_000 + 59, 60))
     send(ctx.scene, :tick)
     after_tick = await(ctx.scene, &(&1.tick == tick))
@@ -112,12 +116,28 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
   defp input(ctx, frames),
     do:
-      Scene.input(ctx.scene, identity(1), %Movement.InputBatch{
+      Player.input(player(ctx.scene, identity(1)), identity(1), %Movement.InputBatch{
         identity: identity(1),
         frames: frames
       })
 
   # 删除日志、错报原始轴/代际/到期槽、把累计成本当单步成本都会失败。
+  test "normal INFO retains lifecycle and one summary per second without per-input rows" do
+    log = capture_log([level: :info, format: "$message\n"], fn ->
+      ctx = start_scene()
+      Scene.join(ctx.scene, identity(1), %{id: 10}, self())
+      await(ctx.scene, &(&1.queue_length == 1))
+      for tick <- 1..60, do: advance(ctx, tick)
+    end)
+    rows = log |> String.split("\n", trim: true)
+      |> Enum.filter(&String.starts_with?(&1, "{")) |> Enum.map(&Jason.decode!/1)
+    assert length(events(rows, "session_start")) == 1
+    assert events(rows, "input_selected") == []
+    assert events(rows, "input_wait") == []
+    assert events(rows, "input_arrival") == []
+    assert Enum.map(events(rows, "region_tick"), & &1["server_tick"]) == [60]
+  end
+
   test "ordinary Scene P1 operation emits exact lifecycle input and per-tick facts" do
     log =
       capture_log([format: "$message\n"], fn ->
@@ -127,14 +147,14 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
         first = advance(ctx, 1)
         assert_receive {:mmo_reliable, _, 1, %Session.SessionStart{} = start}
 
-        Scene.ready(
-          ctx.scene,
+        Player.ready(
+          player(ctx.scene, identity(1)),
           identity(1),
           start.baseline_transaction_seq,
           start.collision_revision
         )
 
-        Scene.time_probe(ctx.scene, identity(1), %Session.TimeProbe{
+        Player.time_probe(player(ctx.scene, identity(1)), identity(1), %Session.TimeProbe{
           request_id: 1,
           client_send_us: 1
         })
@@ -144,7 +164,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
         warm = for tick <- 3..31, do: advance(ctx, tick)
         one = frame(1, 20000, 0, 1)
         input(ctx, [one])
-        arrival = Scene.observe(ctx.scene)
+        arrival = observe(ctx.scene)
         active = advance(ctx, 32)
         two = frame(2, 16000, -10000, 0)
         input(ctx, [one, two])
@@ -165,7 +185,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
         input(ctx, [frame(10, 0, 0, 0)])
         stop = advance(ctx, 41)
         Scene.leave(ctx.scene, identity(1))
-        assert Scene.observe(ctx.scene).character_count == 0
+        assert observe(ctx.scene).character_count == 0
         Scene.join(ctx.scene, identity(2), %{id: 10}, self())
         await(ctx.scene, &(&1.queue_length == 1))
         rejoin = advance(ctx, 42)
@@ -299,10 +319,10 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
     for {row, step} <- Enum.zip(costs, ticks) do
       assert row["server_tick"] == step.after.tick
-      assert row["nif_us"] == step.after.step_us - step.before.step_us
+      assert row["nif_us"] == 0
       assert row["tick_us"] == step.after.tick_us - step.before.tick_us
       assert row["build_us"] == step.after.build_us - step.before.build_us
-      assert row["stepped_count"] == length(step.arguments)
+      assert row["stepped_count"] == 0
       assert row["due_us"] == 7_000_000 + div(step.after.tick * 1_000_000 + 59, 60)
       assert row["start_us"] == row["due_us"] and row["end_us"] == row["start_us"]
       assert row["overdue_ticks"] == 0
@@ -342,7 +362,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
     costs = events(rows, "region_tick")
     assert length(costs) >= 4
-    assert Enum.count(costs, &(&1["stepped_count"] == 1)) >= 3
+    assert Enum.all?(costs, &(&1["stepped_count"] == 0))
     [bootstrap] = events(rows, "bootstrap_resident")
     assert bootstrap["prepare_start_us"] <= bootstrap["snapshot_received_us"]
     assert bootstrap["snapshot_received_us"] <= bootstrap["installed_us"]
@@ -366,8 +386,8 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     stale = identity(1)
     Scene.join(ctx.scene, current, %{id: 10}, self())
     assert_receive {:mmo_reliable, ^current, 1, %Session.SessionStart{} = start}, 5000
-    Scene.time_probe(ctx.scene, current, %Session.TimeProbe{request_id: 1, client_send_us: 1})
-    Scene.ready(ctx.scene, current, start.baseline_transaction_seq, start.collision_revision)
+    Player.time_probe(player(ctx.scene, current), current, %Session.TimeProbe{request_id: 1, client_send_us: 1})
+    Player.ready(player(ctx.scene, current), current, start.baseline_transaction_seq, start.collision_revision)
     assert_receive {:mmo_reliable, ^current, 1, %Session.InputStart{} = input_start}, 5000
 
     batch = %Movement.InputBatch{identity: current, frames: [frame(1, 0, -32767, 1)]}
@@ -381,13 +401,13 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     end
     {:ok, decoded} = Movement.Codec.decode(wire)
     before_us = System.monotonic_time(:microsecond)
-    before = Scene.observe(ctx.scene)
-    for _ <- 1..1000, do: Scene.input(ctx.scene, current, decoded)
-    for _ <- 1..1000, do: Scene.input(ctx.scene, stale, %{decoded | identity: stale})
+    before = observe(ctx.scene)
+    for _ <- 1..1000, do: Player.input(player(ctx.scene, current), current, decoded)
+    for _ <- 1..1000, do: Player.input(player(ctx.scene, current), stale, %{decoded | identity: stale})
     Scene.leave(ctx.scene, stale)
-    Scene.ready(ctx.scene, stale, 0, 1)
-    Scene.input(ctx.scene, current, %{decoded | frames: [frame(10000, 0, -32767, 1)]})
-    Scene.input(ctx.scene, current, %{decoded | frames: [frame(1, 32767, 0, 1)]})
+    Player.ready(player(ctx.scene, current), stale, 0, 1)
+    Player.input(player(ctx.scene, current), current, %{decoded | frames: [frame(10000, 0, -32767, 1)]})
+    Player.input(player(ctx.scene, current), current, %{decoded | frames: [frame(1, 32767, 0, 1)]})
 
     after_run = await(ctx.scene, &(&1.tick >= input_start.origin_tick + 90))
     after_us = System.monotonic_time(:microsecond)

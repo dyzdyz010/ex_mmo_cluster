@@ -10,7 +10,7 @@ defmodule SceneServer.Application do
   - physics/native scene integration (`SceneServer.PhysicsSup`)
   - voxel chunk authority and directory processes (`SceneServer.VoxelSup`)
   - AOI indexing and fan-out (`SceneServer.AoiSup`)
-  - M1 single-writer player authority (`SceneServer.Movement.Scene`)
+  - M3 public timeline (`SceneServer.Movement.Scene`), its Player DynamicSupervisor and Replication owner
   - authoritative NPC actors (`SceneServer.NpcSup`)
 
   See `apps/scene_server/lib/scene_server/README.md` for the current supervisor

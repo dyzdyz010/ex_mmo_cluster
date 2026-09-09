@@ -1,10 +1,13 @@
-//! Scene 独占在线 world 的 BEAM 边界；完整批次先解码，DirtyCpu 内一次安装/刷新。
-use std::sync::Mutex;
+//! 已发布碰撞版本的只读 BEAM 边界；事务在私有副本中构建完成后发布。
 use rustler::{Atom, Binary, Encoder, Env, Error, NifResult, ResourceArc, Term};
 use voxim_movement::{movement::{Input, Profile, State}, online::{self, ChunkCoord, Vec3, World}};
 
+#[cfg(feature = "concurrency-test")]
+#[path = "../test-support/concurrency.rs"]
+mod concurrency;
+
 mod atoms { rustler::atoms! { ok, not_found, set, remove } }
-struct WorldResource(Mutex<World>);
+struct WorldResource(World);
 #[rustler::resource_impl]
 impl rustler::Resource for WorldResource {}
 type Triple = (f64,f64,f64);
@@ -46,16 +49,16 @@ fn operation(term:Term<'_>)->NifResult<Operation<'_>> {
 }
 
 #[rustler::nif]
-fn new_world()->ResourceArc<WorldResource> { ResourceArc::new(WorldResource(Mutex::new(World::new()))) }
+fn new_world(env:Env<'_>)->Term<'_> { ResourceArc::new(WorldResource(World::new())).encode(env) }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 fn world_stats(resource:ResourceArc<WorldResource>)->(u64,u64,u64) {
-    let stats=resource.0.lock().unwrap().stats();
+    let stats=resource.0.stats();
     (stats.collider_count,stats.compound_count,stats.compound_child_count)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn set_chunks(resource:ResourceArc<WorldResource>, operations:Vec<Term>)->NifResult<Atom> {
+fn set_chunks<'a>(env:Env<'a>, resource:ResourceArc<WorldResource>, operations:Vec<Term<'a>>)->NifResult<Term<'a>> {
     let operations=operations.into_iter().map(operation).collect::<NifResult<Vec<_>>>()?;
     let mut previous=None;
     for operation in &operations {
@@ -63,7 +66,8 @@ fn set_chunks(resource:ResourceArc<WorldResource>, operations:Vec<Term>)->NifRes
         if previous.is_some_and(|p|p>=c) {return Err(Error::BadArg);}
         previous=Some(c);
     }
-    let mut world=resource.0.lock().unwrap();
+    // Rapier 克隆 collider/BVH 索引，SharedShape 继续引用未修改的几何。
+    let mut world=resource.0.clone();
     for operation in operations {
         match operation {
             Operation::Set(c,n,scale,origin,cells)=>world.set_chunk(c,cells.as_slice(),n,scale,origin),
@@ -71,11 +75,12 @@ fn set_chunks(resource:ResourceArc<WorldResource>, operations:Vec<Term>)->NifRes
         }
     }
     world.refresh();
-    Ok(atoms::ok())
+    Ok(ResourceArc::new(WorldResource(world)).encode(env))
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-fn step_characters(resource:ResourceArc<WorldResource>, p:Term, characters:Vec<(u64,StateTuple,(f64,f64,u32))>)->NifResult<Vec<(u64,StateTuple)>> {
+fn step_characters(env:Env<'_>, resource:ResourceArc<WorldResource>, p:Term, characters:Vec<(u64,StateTuple,(f64,f64,u32))>)->NifResult<Vec<(u64,StateTuple)>> {
+    let _ = env;
     let p=profile(p)?;
     let mut previous=None;
     let characters=characters.into_iter().map(|(id,s,(x,z,jump))| {
@@ -83,7 +88,9 @@ fn step_characters(resource:ResourceArc<WorldResource>, p:Term, characters:Vec<(
         previous=Some(id);
         Ok((id,state(s)?,Input{x:finite(x)?,z:finite(z)?,jump:bit(jump)?}))
     }).collect::<NifResult<Vec<_>>>()?;
-    let world=resource.0.lock().unwrap();
+    let world=&resource.0;
+    #[cfg(feature = "concurrency-test")]
+    concurrency::meet(env);
     Ok(characters.into_iter().map(|(id,s,i)|(id,tuple(world.step(&p,s,i)))).collect())
 }
 
@@ -96,8 +103,11 @@ fn query_bounds(p:Term,s:StateTuple)->NifResult<(Triple,Triple)> {
 #[rustler::nif(schedule = "DirtyCpu")]
 fn find_spawn<'a>(env:Env<'a>,resource:ResourceArc<WorldResource>,p:Term,probe:Triple,min_center_y:f64)->NifResult<Term<'a>> {
     let p=profile(p)?; let probe=vector(probe)?; let min_center_y=finite(min_center_y)?;
-    let found=resource.0.lock().unwrap().find_spawn(&p,probe,min_center_y);
+    let found=resource.0.find_spawn(&p,probe,min_center_y);
     Ok(if found.found==1 {(atoms::ok(),tuple(found.state)).encode(env)} else {atoms::not_found().encode(env)})
 }
 
+#[cfg(not(feature = "concurrency-test"))]
 rustler::init!("Elixir.SceneServer.Native.VoximMovement");
+#[cfg(feature = "concurrency-test")]
+rustler::init!("Elixir.VoximNifConcurrencyProbe");

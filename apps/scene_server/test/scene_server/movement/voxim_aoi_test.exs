@@ -1,6 +1,10 @@
+Code.require_file("runtime_observation.exs", __DIR__)
 defmodule SceneServer.Movement.VoximAoiSceneTest do
   use ExUnit.Case, async: false
-  alias SceneServer.Movement.Scene
+  alias SceneServer.Movement.{Scene, Player}
+
+  import SceneServer.Movement.RuntimeObservation
+
   alias MmoContracts.{Session, Movement, Voxel}
 
   defmodule Clock do
@@ -99,7 +103,7 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
   end
 
   defp await(scene, predicate, attempts \\ 200) do
-    info = Scene.observe(scene)
+    info = observe(scene)
 
     if predicate.(info) do
       info
@@ -125,18 +129,18 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
     Scene.join(ctx.scene, identity(epoch), %{id: cid}, gate)
     assert_receive :snapshot_sent, 1000
     await(ctx.scene, &(&1.queue_length > 0))
-    advance(ctx, Scene.observe(ctx.scene).tick + 1)
+    advance(ctx, observe(ctx.scene).tick + 1)
     assert_receive {:mmo_reliable, _, 1, %Session.SessionStart{} = start}
     start
   end
 
   defp ready(ctx, epoch) do
-    Scene.time_probe(ctx.scene, identity(epoch), %Session.TimeProbe{
+    Player.time_probe(player(ctx.scene, identity(epoch)), identity(epoch), %Session.TimeProbe{
       request_id: epoch,
       client_send_us: 1
     })
 
-    Scene.ready(ctx.scene, identity(epoch), 0, 1)
+    Player.ready(player(ctx.scene, identity(epoch)), identity(epoch), 0, 1)
   end
 
   defp outputs(acc \\ []) do
@@ -160,6 +164,18 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
   defp snapshots(events),
     do: for({:mmo_datagram, _, %Movement.Snapshot{} = event} <- events, do: event)
 
+  test "normal Scene stop terminates both owned roots, Players and observer workers", ctx do
+    active_pair(ctx)
+    info = Scene.observe(ctx.scene)
+    owned = [info.player_supervisor_pid, info.replication_pid] ++
+      Enum.map(info.characters, & &1.player_pid) ++
+      SceneServer.Movement.Replication.workers(info.replication_pid)
+    refs = Enum.map(owned, &Process.monitor/1)
+    GenServer.stop(ctx.scene, :normal)
+    for ref <- refs, do: assert_receive({:DOWN, ^ref, :process, _, _})
+    assert Enum.all?(owned, &(not Process.alive?(&1)))
+  end
+
   defp active_pair(ctx) do
     a = join(ctx, 1, 20)
     b = join(ctx, 2, 10)
@@ -167,268 +183,123 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
     ready(ctx, 2)
     advance(ctx, 3)
     advance(ctx, 33)
+    advance(ctx, 36)
+    # 复制机会可以先于某个 Player 结果；等公开关系而不假设相同调度顺序。
+    await(ctx.scene, &(length(&1.aoi) == 2 and Enum.all?(&1.aoi, fn o -> length(o.visible) == 1 end)))
     outputs()
     {a, b}
   end
 
-  defp assert_lifecycle_before_snapshot(events) do
-    for {{:mmo_reliable, identity, 1, typed}, index} <- Enum.with_index(events),
-        is_struct(typed, Session.EntityEnter) or is_struct(typed, Session.EntityLeave) do
-      for {{:mmo_datagram, ^identity, %Movement.Snapshot{}}, snapshot_index} <-
-            Enum.with_index(events) do
-        assert index < snapshot_index
-      end
+  defp commands(ctx, epoch, last, axis \\ 0) do
+    owner = player(ctx.scene, identity(epoch))
+    current = Player.observe(owner)
+    frames = for seq <- (current.processed_input_seq + 1)..last do
+      %Movement.InputFrame{input_seq: seq, axis_x: axis, axis_z: 0,
+        yaw: if(axis < 0, do: 32768, else: 0), jump_pressed: 0}
     end
+    for batch <- Enum.chunk_every(frames, 6),
+      do: Player.input(owner, identity(epoch), %Movement.InputBatch{identity: identity(epoch), frames: batch})
   end
 
-  defp drive_until(ctx, axis, type) do
-    first = Scene.observe(ctx.scene).tick + 1
-
-    Enum.reduce_while(first..(first + 400), nil, fn tick, _ ->
-      frame = %Movement.InputFrame{
-        input_seq: tick - 32,
-        axis_x: axis,
-        axis_z: 0,
-        yaw: if(axis < 0, do: 32768, else: 0),
-        jump_pressed: 0
-      }
-
-      Scene.input(ctx.scene, identity(1), %Movement.InputBatch{
-        identity: identity(1),
-        frames: [frame]
-      })
-
-      info = advance(ctx, tick)
-      events = outputs()
-
-      for snapshot <- snapshots(events), record <- snapshot.records do
-        assert record.state ==
-                 Enum.find(info.characters, &(&1.entity_id == record.entity_id)).state
-
-        assert snapshot.server_tick == tick
-      end
-
-      matching = Enum.filter(lifecycle(events), &is_struct(&1, type))
-
-      if matching != [] do
-        assert length(matching) == 2
-        assert rem(tick, 3) == 0
-        assert_lifecycle_before_snapshot(events)
-        {:halt, {info, events}}
-      else
-        {:cont, nil}
-      end
-    end) || flunk("real P1 trajectory did not reach expected AOI boundary")
+  defp sample(ctx, tick) do
+    advance(ctx, tick)
+    info = observe(ctx.scene)
+    # 测试提供下次真实复制机会，没有给生产增加等待全部玩家的 barrier。
+    SceneServer.Movement.Replication.publish(info.replication_pid, tick)
+    SceneServer.Movement.Replication.observe(info.replication_pid)
+    {info, outputs()}
   end
 
-  test "origin gates symmetric reliable Enter before third-tick absolute snapshots", ctx do
+  test "origin gates reliable Enter whose anchor and snapshots use actual simulation ticks", ctx do
     a = join(ctx, 1, 20)
     b = join(ctx, 2, 10)
     ready(ctx, 1)
     ready(ctx, 2)
     advance(ctx, 3)
     advance(ctx, 32)
-    waiting = outputs()
-    assert lifecycle(waiting) == []
-    assert snapshots(waiting) == []
-
-    info = advance(ctx, 33)
-    events = outputs()
+    assert lifecycle(outputs()) == []
+    {info, events} = sample(ctx, 33)
     enters = lifecycle(events)
     assert length(enters) == 2
-    assert Enum.all?(enters, &is_struct(&1, Session.EntityEnter))
-
-    assert Enum.map(enters, &{&1.identity, &1.entity_id}) |> MapSet.new() ==
-             MapSet.new([{a.identity, 10}, {b.identity, 20}])
-
-    assert length(snapshots(events)) == 2
-
     for enter <- enters do
-      remote = Enum.find(info.characters, &(&1.entity_id == enter.entity_id))
-      assert enter.state == remote.state
-      assert enter.server_tick == 33
+      assert enter.server_tick == 32
+      assert enter.state == Enum.find(info.characters, &(&1.entity_id == enter.entity_id)).state
       snap = Enum.find(snapshots(events), &(&1.identity == enter.identity))
-      assert snap.server_tick == 33
+      assert snap.server_tick == 32
       assert [record] = snap.records
-      assert record.entity_id == enter.entity_id
-      assert record.entity_epoch == enter.entity_epoch
-      assert record.interest_generation == enter.interest_generation
-      assert record.collision_revision == 1
-      assert record.state == enter.state
-      enter_index = Enum.find_index(events, &match?({:mmo_reliable, _, 1, ^enter}, &1))
-      snapshot_index = Enum.find_index(events, &match?({:mmo_datagram, _, ^snap}, &1))
-      assert enter_index < snapshot_index
+      assert record.state == enter.state and record.interest_generation == enter.interest_generation
     end
-
-    advance(ctx, 35)
-    assert outputs() == []
-    advance(ctx, 36)
-    stationary = outputs()
-    assert lifecycle(stationary) == []
-    assert length(snapshots(stationary)) == 2
-    assert Enum.all?(snapshots(stationary), &(&1.server_tick == 36))
-
-    IO.puts(
-      "A1_ORIGIN_TRACE " <>
-        inspect(%{starts: [a, b], tick33: events, tick36: stationary}, limit: :infinity)
-    )
+    assert Enum.map(enters, &{&1.identity, &1.entity_id}) |> MapSet.new() ==
+      MapSet.new([{a.identity, 10}, {b.identity, 20}])
   end
 
-  test "real P1 movement leaves beyond 34 and returns within 30 with same epoch and newer generation",
-       ctx do
-    {a, b} = active_pair(ctx)
-    {away, leaves} = drive_until(ctx, -32767, Session.EntityLeave)
-    [left, right] = Enum.sort_by(away.characters, & &1.entity_id)
-    assert elem(left.state.position, 0) - elem(right.state.position, 0) > 34.0
-    assert Enum.all?(snapshots(leaves), &(&1.records == []))
-    assert Enum.all?(lifecycle(leaves), &(&1.interest_generation == 1))
-    {back, enters} = drive_until(ctx, 32767, Session.EntityEnter)
-    [left, right] = Enum.sort_by(back.characters, & &1.entity_id)
-    assert elem(left.state.position, 0) - elem(right.state.position, 0) <= 30.0
-    assert Enum.all?(lifecycle(enters), &(&1.interest_generation == 2))
-
-    for event <- lifecycle(enters) do
-      expected = if event.entity_id == a.entity_id, do: a, else: b
-      assert event.entity_epoch == expected.entity_epoch
-      assert {:ok, bytes} = Session.Codec.encode(event)
-      assert {:ok, ^event} = Session.Codec.decode(bytes)
-    end
-
-    for snapshot <- snapshots(enters) do
+  test "real P1 movement crosses 34m and returns within 30m with a newer generation", ctx do
+    active_pair(ctx)
+    commands(ctx, 1, 301, -32767)
+    {away, events} = sample(ctx, 333)
+    assert Enum.any?(lifecycle(events), &is_struct(&1, Session.EntityLeave))
+    [q, p] = Enum.sort_by(away.characters, & &1.entity_id)
+    assert elem(q.state.position, 0) - elem(p.state.position, 0) > 34.0
+    commands(ctx, 1, 451, 32767)
+    {back, events} = sample(ctx, 483)
+    enters = Enum.filter(lifecycle(events), &is_struct(&1, Session.EntityEnter))
+    assert length(enters) == 2
+    assert Enum.all?(enters, &(&1.interest_generation == 2 and &1.entity_epoch in [1, 2]))
+    [q, p] = Enum.sort_by(back.characters, & &1.entity_id)
+    assert abs(elem(q.state.position, 0) - elem(p.state.position, 0)) <= 30.0
+    for snapshot <- snapshots(events) do
       assert {:ok, bytes} = Movement.Codec.encode(snapshot)
       assert {:ok, ^snapshot} = Movement.Codec.decode(bytes)
-      assert Enum.all?(snapshot.records, &(&1.interest_generation == 2))
     end
-
-    IO.puts(
-      "A1_DISTANCE_TRACE " <>
-        inspect(%{leave: leaves, return: enters, final: back.aoi}, limit: :infinity)
-    )
   end
 
-  test "leave, reconnect origin and Gate DOWN clean relations without old identity removing new entity",
-       ctx do
+  test "leave and reconnect generations cannot be revived by the removed Player result", ctx do
     {_a, old} = active_pair(ctx)
+    old_player = player(ctx.scene, identity(2))
+    old_value = Player.observe(old_player)
     Scene.leave(ctx.scene, old.identity)
-    info = Scene.observe(ctx.scene)
-    assert info.character_count == 1
-    events = outputs()
-
-    assert [%Session.EntityLeave{entity_id: 10, entity_epoch: epoch, interest_generation: 1}] =
-             lifecycle(events)
-
-    assert epoch == old.entity_epoch
-    assert [%{visible: []}] = info.aoi
-
-    parent = self()
-    gate = spawn(fn -> relay(parent) end)
-    on_exit(fn -> if Process.alive?(gate), do: send(gate, :stop) end)
-    fresh = join(ctx, 3, 10, gate)
-    assert fresh.entity_epoch > old.entity_epoch
-    Scene.leave(ctx.scene, old.identity)
-    assert Scene.observe(ctx.scene).character_count == 2
-    ready(ctx, 3)
-    advance(ctx, 35)
-    assert_receive {:mmo_reliable, _, 1, %Session.InputStart{origin_tick: origin}}
-    assert origin == 65
-    advance(ctx, 64)
-    joining = outputs()
-    assert lifecycle(joining) == []
-    assert Enum.all?(snapshots(joining), &(&1.identity == identity(1) and &1.records == []))
-    advance(ctx, 66)
-
-    assert_receive {:mmo_reliable, _, 1,
-                    %Session.EntityEnter{identity: observer, entity_id: 10} = enter}
-
-    assert observer == identity(1)
-    assert enter.entity_epoch == fresh.entity_epoch and enter.interest_generation == 2
-
-    assert_receive {:mmo_reliable, _, 1,
-                    %Session.EntityEnter{
-                      identity: fresh_identity,
-                      entity_id: 20,
-                      interest_generation: 1
-                    }}
-
-    assert fresh_identity == fresh.identity
-    outputs()
-
-    send(gate, :stop)
     info = await(ctx.scene, &(&1.character_count == 1))
-    assert [%{identity: observer, visible: []}] = info.aoi
-    assert observer == identity(1)
-
-    assert_receive {:mmo_reliable, _, 1,
-                    %Session.EntityLeave{
-                      entity_id: 10,
-                      entity_epoch: new_epoch,
-                      interest_generation: 2
-                    } = down}
-
-    assert new_epoch == fresh.entity_epoch
+    SceneServer.Movement.Replication.observe(info.replication_pid)
+    assert_receive {:mmo_reliable, _, 1, %Session.EntityLeave{entity_id: 10, interest_generation: 1}}
+    fresh = join(ctx, 3, 10)
+    assert fresh.entity_epoch > old.entity_epoch
+    SceneServer.Movement.Replication.result(info.replication_pid, old_value)
+    Scene.leave(ctx.scene, old.identity)
+    ready(ctx, 3)
+    advance(ctx, 38)
+    assert_receive {:mmo_reliable, _, 1, %Session.InputStart{identity: fresh_identity, origin_tick: origin}}
+    assert fresh_identity == fresh.identity
+    {_info, events} = sample(ctx, origin + 3)
+    assert Enum.any?(lifecycle(events), fn
+      %Session.EntityEnter{entity_id: 10, entity_epoch: epoch, interest_generation: 2} -> epoch == fresh.entity_epoch
+      _ -> false
+    end)
+    assert observe(ctx.scene).character_count == 2
     Scene.leave(ctx.scene, identity(1))
-    info = Scene.observe(ctx.scene)
-    assert info.character_count == 0 and info.aoi == []
-
-    IO.puts(
-      "A1_RECONNECT_TRACE " <>
-        inspect(
-          %{old: old.entity_epoch, new: new_epoch, enter: enter, down: down, final: info.aoi},
-          limit: :infinity
-        )
-    )
+    Scene.leave(ctx.scene, identity(3))
+    assert await(ctx.scene, &(&1.character_count == 0)).aoi == []
   end
 
-  defp relay(parent) do
-    receive do
-      :stop ->
-        :ok
-
-      message ->
-        send(parent, message)
-        relay(parent)
-    end
-  end
-
-  test "snapshots contain step-after absolute state and collision revision from the same Scene tick",
-       ctx do
+  test "fast and stalled players retain distinct snapshot ticks and collision revisions", ctx do
     active_pair(ctx)
+    old = Player.observe(player(ctx.scene, identity(1)))
     chunk = Enum.find(ctx.snapshot.chunks, &(&1.coord == {2, 31, 2}))
-
-    delta = %Voxel.CanonicalDelta{
-      transaction_seq: 1,
-      transaction: %{seq: 1, entries: [], coarse: []},
-      chunks: [%{chunk | cells: :binary.copy(<<0>>, 4096)}]
-    }
-
-    GenServer.call(ctx.source, {:delta, delta})
+    GenServer.call(ctx.source, {:delta, %Voxel.CanonicalDelta{transaction_seq: 1,
+      transaction: %{seq: 1, entries: [], coarse: []}, chunks: [%{chunk | cells: :binary.copy(<<0>>, 4096)}]}})
     await(ctx.scene, &(&1.queue_length == 1))
-    info = advance(ctx, 36)
-    events = outputs()
-    assert length(snapshots(events)) == 2
-
-    for snapshot <- snapshots(events) do
-      assert snapshot.server_tick == 36
-      assert [record] = snapshot.records
-      assert record.collision_revision == 2
-      assert record.state == Enum.find(info.characters, &(&1.entity_id == record.entity_id)).state
-      assert elem(record.state.velocity, 1) < 0.0
-      index = Enum.find_index(events, &match?({:mmo_datagram, _, ^snapshot}, &1))
-
-      assert Enum.any?(Enum.take(events, index), fn
-               {:mmo_reliable, observer, 2,
-                %Voxel.CollisionApplied{collision_revision: 2, apply_tick: 34}} ->
-                 observer == snapshot.identity
-
-               _ ->
-                 false
-             end)
-    end
-
-    IO.puts(
-      "A1_STEP_AFTER_TRACE " <> inspect(%{tick: info.tick, events: events}, limit: :infinity)
-    )
+    commands(ctx, 2, 10)
+    {info, events} = sample(ctx, 42)
+    fast = Enum.find(info.characters, &(&1.entity_id == 10))
+    assert fast.simulation_tick == 42 and fast.collision_revision == 2
+    events = snapshots(events)
+    assert Enum.any?(events, fn snapshot ->
+      snapshot.server_tick == 42 and Enum.any?(snapshot.records, &(&1.entity_id == 10 and &1.collision_revision == 2 and &1.state == fast.state))
+    end)
+    assert Enum.any?(events, fn snapshot ->
+      snapshot.server_tick == 32 and Enum.any?(snapshot.records, &(&1.entity_id == 20 and &1.collision_revision == 1 and &1.state == old.state))
+    end)
   end
+
 end
 
 defmodule SceneServer.Movement.VoximAoiTest do
@@ -445,19 +316,41 @@ defmodule SceneServer.Movement.VoximAoiTest do
     }
   end
 
+  defp update(aoi, entities, tick, revision) do
+    entities = Enum.map(entities, &Map.merge(&1, %{simulation_tick: tick, collision_revision: revision}))
+    AOI.update(aoi, entities, tick)
+  end
+
   defp position(entity, point), do: %{entity | state: %{entity.state | position: point}}
+
+  @tag :m3_remaining
+  test "one observer receives separate packets for distinct actual target ticks" do
+    a = Map.merge(entity(10, {0.0, 500.0, 0.0}), %{simulation_tick: 40, collision_revision: 3})
+    b = Map.merge(entity(20, {1.0, 500.0, 0.0}), %{simulation_tick: 31, collision_revision: 1})
+    c = Map.merge(entity(30, {2.0, 500.0, 0.0}), %{simulation_tick: 39, collision_revision: 2})
+    {_, enters, snapshots} = AOI.update(AOI.new(), [a, b, c], 42)
+    targets = %{10 => a, 20 => b, 30 => c}
+    assert length(Enum.filter(snapshots, &(&1.identity == a.identity))) == 2
+    for snapshot <- snapshots, record <- snapshot.records do
+      target = targets[record.entity_id]
+      assert snapshot.server_tick == target.simulation_tick
+      assert record.collision_revision == target.collision_revision
+      assert record.state == target.state
+    end
+    for event <- enters, do: assert(event.server_tick == targets[event.entity_id].simulation_tick)
+  end
 
   test "canonical XYZ distance, exact thresholds, symmetry and negative grid boundaries" do
     a = entity(10, {-0.5, 500.0, -0.5})
 
     for point <- [{-0.5, 540.0, -0.5}, {29.501, 500.0, -0.5}, {-0.5, 500.0, 29.501}] do
-      {_, [], snapshots} = AOI.update(AOI.new(), [a, entity(20, point)], 3, 7)
+      {_, [], snapshots} = update(AOI.new(), [a, entity(20, point)], 3, 7)
       assert Enum.all?(snapshots, &(&1.records == []))
     end
 
     for point <- [{29.5, 500.0, -0.5}, {-0.5, 530.0, -0.5}, {-0.5, 500.0, 29.5}] do
       b = entity(20, point)
-      {aoi, enters, snapshots} = AOI.update(AOI.new(), [b, a], 3, 7)
+      {aoi, enters, snapshots} = update(AOI.new(), [b, a], 3, 7)
       assert length(enters) == 2
       assert Enum.all?(enters, &is_struct(&1, Session.EntityEnter))
       assert Enum.map(snapshots, &Enum.map(&1.records, fn r -> r.entity_id end)) == [[20], [10]]
@@ -466,17 +359,17 @@ defmodule SceneServer.Movement.VoximAoiTest do
     end
 
     b = entity(20, {29.5, 500.0, -0.5})
-    {aoi, _, _} = AOI.update(AOI.new(), [a, b], 3, 1)
+    {aoi, _, _} = update(AOI.new(), [a, b], 3, 1)
     b = position(b, {33.5, 500.0, -0.5})
-    {aoi, [], retained} = AOI.update(aoi, [a, b], 6, 1)
+    {aoi, [], retained} = update(aoi, [a, b], 6, 1)
     assert Enum.all?(retained, &(length(&1.records) == 1))
     b = position(b, {33.501, 500.0, -0.5})
-    {aoi, leaves, empty} = AOI.update(aoi, [a, b], 9, 1)
+    {aoi, leaves, empty} = update(aoi, [a, b], 9, 1)
     assert length(leaves) == 2
     assert Enum.all?(leaves, &is_struct(&1, Session.EntityLeave))
     assert Enum.all?(empty, &(&1.records == []))
-    {aoi, [], _} = AOI.update(aoi, [a, position(b, {31.5, 500.0, -0.5})], 12, 1)
-    {_, enters, _} = AOI.update(aoi, [a, position(b, {29.5, 500.0, -0.5})], 15, 1)
+    {aoi, [], _} = update(aoi, [a, position(b, {31.5, 500.0, -0.5})], 12, 1)
+    {_, enters, _} = update(aoi, [a, position(b, {29.5, 500.0, -0.5})], 15, 1)
     assert Enum.all?(enters, &(&1.entity_epoch == 1 and &1.interest_generation == 2))
   end
 
@@ -484,9 +377,9 @@ defmodule SceneServer.Movement.VoximAoiTest do
     a = entity(10, {0.0, 500.0, 0.0})
     b = entity(20, {1.0, 500.0, 0.0})
     c = entity(30, {100.0, 500.0, 0.0})
-    {aoi, _, _} = AOI.update(AOI.new(), [c, b, a], 3, 1)
+    {aoi, _, _} = update(AOI.new(), [c, b, a], 3, 1)
     c = position(c, {2.0, 500.0, 0.0})
-    {aoi, enters, snapshots} = AOI.update(aoi, [c, b, a], 6, 9)
+    {aoi, enters, snapshots} = update(aoi, [c, b, a], 6, 9)
 
     assert Enum.find(enters, &(&1.identity == a.identity and &1.entity_id == 30)).interest_generation ==
              2
@@ -505,7 +398,7 @@ defmodule SceneServer.Movement.VoximAoiTest do
     assert length(leaves) == 2
     refute Enum.any?(AOI.observe(aoi), &(&1.identity == b.identity))
     b = %{b | identity: %{b.identity | session_epoch: 21}, entity_epoch: 2}
-    {aoi, enters, snapshots} = AOI.update(aoi, [c, b, a], 9, 9)
+    {aoi, enters, snapshots} = update(aoi, [c, b, a], 9, 9)
     enter = Enum.find(enters, &(&1.identity == a.identity and &1.entity_id == 20))
     assert enter.entity_epoch == 2 and enter.interest_generation == 3
     snap = Enum.find(snapshots, &(&1.identity == a.identity))

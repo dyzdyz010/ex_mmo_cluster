@@ -10,7 +10,7 @@ defmodule GateServer.Session.QuicConnection do
   @impl true
   def init(opts) do
     {:ok, %{conn: Keyword.fetch!(opts, :conn), listener: Keyword.fetch!(opts, :listener),
-      hello: Keyword.fetch!(opts, :hello), hello_seen: false, identity: nil, route: nil,
+      hello: Keyword.fetch!(opts, :hello), hello_seen: false, identity: nil, route: nil, player: nil,
       bounds: Keyword.get(opts, :bounds), voxim_overlay: false,
       scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
       auth: Keyword.get(opts, :auth_module, Auth),
@@ -19,7 +19,9 @@ defmodule GateServer.Session.QuicConnection do
       stale_identity: 0, bytes_in: 0, bytes_out: 0,
       reliable: %{1 => :queue.new(), 2 => :queue.new()}, busy: MapSet.new(),
       queue_age_us: 0, reliable_completed: 0,
-      pending_datagrams: %{}, datagram_busy: false, datagrams_replaced: 0, datagrams_sent: 0}}
+      pending_datagrams: :gb_trees.empty(), snapshot_keys: %{}, snapshot_order: 0, datagram_busy: false,
+      datagrams_replaced: 0, datagrams_sent: 0, snapshot_records_sent: 0,
+      snapshot_datagrams_sent: 0, snapshot_bytes_sent: 0}}
   end
 
   @impl true
@@ -38,7 +40,8 @@ defmodule GateServer.Session.QuicConnection do
   @impl true
   def handle_call(:stats, _from, state) do
     stats = Map.take(state, [:identity, :max_datagram, :stale_identity, :bytes_in, :bytes_out,
-      :closing, :queue_age_us, :reliable_completed, :datagrams_replaced, :datagrams_sent])
+      :closing, :queue_age_us, :reliable_completed, :datagrams_replaced, :datagrams_sent,
+      :snapshot_records_sent, :snapshot_datagrams_sent, :snapshot_bytes_sent])
     stats = Map.put(stats, :reliable_queued, Enum.sum(Enum.map(state.reliable, fn {_, q} -> :queue.len(q) end)))
     {:reply, Map.put(stats, :quic, :quicer.getopt(state.conn, :statistics)), state}
   end
@@ -56,7 +59,7 @@ defmodule GateServer.Session.QuicConnection do
 
   def handle_info({:quic, :dgram_state_changed, conn, props}, %{conn: conn} = state) do
     if props.dgram_send_enabled do
-      {:noreply, %{state | max_datagram: min(1200, props.dgram_max_len)}}
+      {:noreply, %{state | max_datagram: props.dgram_max_len}}
     else
       {:noreply, close(state, 8)}
     end
@@ -71,7 +74,7 @@ defmodule GateServer.Session.QuicConnection do
         case Movement.Codec.decode(bytes) do
           {:ok, %Movement.InputBatch{identity: identity} = message} ->
             if identity == state.identity do
-              state.scene.input(state.route.scene_ref, identity, message)
+              SceneServer.Movement.Player.input(state.player, identity, message)
               {:noreply, state}
             else
               {:noreply, %{state | stale_identity: state.stale_identity + 1}}
@@ -117,30 +120,26 @@ defmodule GateServer.Session.QuicConnection do
 
   def handle_info({:mmo_datagram, identity, message}, %{identity: identity, closing: false} = state)
       when identity != nil do
-    updates = case message do
-      %Movement.OwnerAck{} -> [{:owner, message}]
-      %Movement.Snapshot{records: records} ->
-        Enum.map(records, fn record -> {{:entity, record.entity_id}, %{message | records: [record]}} end)
-    end
-    state = Enum.reduce(updates, state, fn {key, value}, acc ->
-      replaced = if Map.has_key?(acc.pending_datagrams, key), do: 1, else: 0
-      %{acc | pending_datagrams: Map.put(acc.pending_datagrams, key, {value, System.monotonic_time(:microsecond)}),
-        datagrams_replaced: acc.datagrams_replaced + replaced}
-    end)
+    state = queue_datagram(state, message, System.monotonic_time(:microsecond))
     send(self(), :flush_datagrams)
     {:noreply, state}
   end
 
   def handle_info(:flush_datagrams, %{datagram_busy: false, closing: false} = state) do
-    case Enum.min_by(state.pending_datagrams, fn {key, _} -> key end, fn -> nil end) do
-      nil -> {:noreply, state}
-      {key, {message, queued_at}} ->
-        {:ok, encoded} = Movement.Codec.encode(message)
-        bytes = IO.iodata_to_binary(encoded)
+    case :gb_trees.next(:gb_trees.iterator(state.pending_datagrams)) do
+      :none -> {:noreply, state}
+      {key, {message, queued_at}, iterator} ->
+        bytes = datagram_bytes(message)
         if byte_size(bytes) <= state.max_datagram do
+          state = delete_datagram(state, key)
+          {state, bytes, queued_at, records} =
+            pack_datagram(state, message, bytes, queued_at, iterator)
           {:ok, count} = :quicer.async_send_dgram(state.conn, bytes)
-          {:noreply, %{state | pending_datagrams: Map.delete(state.pending_datagrams, key), datagram_busy: true,
+          {:noreply, %{state | datagram_busy: true,
             datagrams_sent: state.datagrams_sent + 1, bytes_out: state.bytes_out + count,
+            snapshot_records_sent: state.snapshot_records_sent + records,
+            snapshot_datagrams_sent: state.snapshot_datagrams_sent + if(records > 0, do: 1, else: 0),
+            snapshot_bytes_sent: state.snapshot_bytes_sent + if(records > 0, do: count, else: 0),
             queue_age_us: max(state.queue_age_us, System.monotonic_time(:microsecond) - queued_at)}}
         else
           {:noreply, close(state, 8)}
@@ -178,6 +177,63 @@ defmodule GateServer.Session.QuicConnection do
     :quicer.async_shutdown_connection(state.conn, 0, 0)
   end
 
+  defp queue_datagram(state, %Movement.OwnerAck{} = message, queued_at) do
+    replaced = if :gb_trees.is_defined(:owner, state.pending_datagrams), do: 1, else: 0
+    %{state | pending_datagrams: :gb_trees.enter(:owner, {message, queued_at}, state.pending_datagrams),
+      datagrams_replaced: state.datagrams_replaced + replaced}
+  end
+
+  defp queue_datagram(state, %Movement.Snapshot{records: records} = message, queued_at) do
+    Enum.reduce(records, state, fn record, acc ->
+      # Replacing a payload must retain its waiting turn. Sorting by the new tick
+      # and ID lets the low IDs jump ahead again on every 20 Hz producer update.
+      {key, at, order, replaced} = case Map.fetch(acc.snapshot_keys, record.entity_id) do
+        {:ok, key} ->
+          {_, at} = :gb_trees.get(key, acc.pending_datagrams)
+          {key, at, acc.snapshot_order, 1}
+        :error -> {{acc.snapshot_order, record.entity_id}, queued_at, acc.snapshot_order + 1, 0}
+      end
+      value = {%{message | records: [record]}, at}
+      %{acc | pending_datagrams: :gb_trees.enter(key, value, acc.pending_datagrams),
+        snapshot_keys: Map.put(acc.snapshot_keys, record.entity_id, key), snapshot_order: order,
+        datagrams_replaced: acc.datagrams_replaced + replaced}
+    end)
+  end
+
+  defp delete_datagram(state, :owner) do
+    %{state | pending_datagrams: :gb_trees.delete(:owner, state.pending_datagrams)}
+  end
+
+  defp delete_datagram(state, {_, entity_id} = key) do
+    %{state | pending_datagrams: :gb_trees.delete(key, state.pending_datagrams),
+      snapshot_keys: Map.delete(state.snapshot_keys, entity_id)}
+  end
+
+  defp pack_datagram(state, %Movement.OwnerAck{}, bytes, queued_at, _iterator),
+    do: {state, bytes, queued_at, 0}
+
+  defp pack_datagram(state, %Movement.Snapshot{} = message, bytes, queued_at, iterator) do
+    case :gb_trees.next(iterator) do
+      {key, {%Movement.Snapshot{identity: identity, server_tick: tick, records: [record]}, at}, next}
+          when identity == message.identity and tick == message.server_tick ->
+        # Service order is FIFO; codec order applies only inside the bounded packet.
+        candidate = %{message | records: Enum.sort_by([record | message.records], & &1.entity_id)}
+        encoded = datagram_bytes(candidate)
+        # 上限按 codec 完整 envelope 字节计算；放不下的记录仍留在原队列，不改时间或代际。
+        if byte_size(encoded) <= state.max_datagram do
+          pack_datagram(delete_datagram(state, key), candidate, encoded, min(queued_at, at), next)
+        else
+          {state, bytes, queued_at, length(message.records)}
+        end
+      _ -> {state, bytes, queued_at, length(message.records)}
+    end
+  end
+
+  defp datagram_bytes(message) do
+    {:ok, bytes} = Movement.Codec.encode(message)
+    IO.iodata_to_binary(bytes)
+  end
+
   defp consume(%{closing: true} = state, _stream), do: state
   defp consume(state, stream) do
     case state.streams[stream] do
@@ -202,7 +258,7 @@ defmodule GateServer.Session.QuicConnection do
   defp frame(%{identity: identity} = state, 1, <<255, 1::16, 2, _::binary>> = bytes) when identity != nil do
     case Movement.Codec.decode(bytes) do
       {:ok, %Movement.InputBatch{identity: ^identity} = message} ->
-        state.scene.input(state.route.scene_ref, identity, message)
+        SceneServer.Movement.Player.input(state.player, identity, message)
         state
       _ -> close(state, 8)
     end
@@ -253,8 +309,12 @@ defmodule GateServer.Session.QuicConnection do
          {:ok, character} <- state.auth.fetch_authorized_character(claims, join.cid) do
       case state.router.route(join.scene_id) do
         {:ok, route} ->
-          identity = GenServer.call(state.listener, {:claim, state.scene, Map.put(route, :scene_id, join.scene_id), character})
-          %{state | identity: identity, route: route}
+          {identity, result} = GenServer.call(state.listener, {:claim, state.scene, Map.put(route, :scene_id, join.scene_id), character})
+          state = %{state | identity: identity, route: route}
+          case result do
+            {:ok, player} -> %{state | player: player}
+            {:error, :closed} -> state
+          end
         _ -> close(state, 11)
       end
     else
@@ -264,12 +324,12 @@ defmodule GateServer.Session.QuicConnection do
 
   defp control(%{identity: identity} = state, %Session.Ready{identity: identity} = ready)
       when identity != nil do
-    state.scene.ready(state.route.scene_ref, identity, ready.baseline_transaction_seq, ready.collision_revision)
+    SceneServer.Movement.Player.ready(state.player, identity, ready.baseline_transaction_seq, ready.collision_revision)
     state
   end
 
   defp control(%{identity: identity} = state, %Session.TimeProbe{} = probe) when identity != nil do
-    state.scene.time_probe(state.route.scene_ref, identity, probe)
+    SceneServer.Movement.Player.time_probe(state.player, identity, probe)
     state
   end
 

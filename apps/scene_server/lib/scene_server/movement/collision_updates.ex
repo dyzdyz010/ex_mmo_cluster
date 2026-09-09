@@ -6,8 +6,6 @@ defmodule SceneServer.Movement.CollisionUpdates do
     :world,
     :native,
     revisions: [],
-    native_revision: 0,
-    native_chunks: %{},
     queue: :queue.new(),
     revision: 0,
     transaction_seq: 0,
@@ -15,17 +13,16 @@ defmodule SceneServer.Movement.CollisionUpdates do
     queue_wait_us: 0
   ]
 
-  @doc "Scene 唯一持有此派生 world，不保留另一份 canonical cells。"
+  @doc "Scene 发布只读派生 world，不保留另一份 canonical cells。"
   def new(native), do: %__MODULE__{native: native, world: native.new_world()}
 
   @doc "仅在无角色的首次快照安装完整世界。"
   def initialize(updates, %CanonicalSnapshot{} = snapshot) do
-    {us, :ok} =
+    {us, world} =
       :timer.tc(fn -> updates.native.set_chunks(updates.world, operations(snapshot.chunks)) end)
 
-    chunks = Map.new(snapshot.chunks, &{&1.coord, &1})
-    %{updates | revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us,
-      revisions: [{0, 1, chunks}], native_revision: 1, native_chunks: chunks}
+    %{updates | world: world, revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us,
+      revisions: [{0, 1, world}]}
   end
 
   @doc "以 World 的消息顺序接纳 immutable delta/marker。"
@@ -37,27 +34,16 @@ defmodule SceneServer.Movement.CollisionUpdates do
   @doc "提交本世界 tick 的派生碰撞版本；不可变 binary 与旧版本共享。"
   def record_tick(updates, tick, events) do
     Enum.reduce(events, updates, fn
-      {:delta, %{chunks: [_ | _] = chunks}, revision, _}, u ->
-        {_, _, previous} = hd(u.revisions)
-        next = Enum.reduce(chunks, previous, &Map.put(&2, &1.coord, &1))
-        %{u | revisions: [{tick, revision, next} | u.revisions],
-          native_revision: revision, native_chunks: next}
+      {:delta, %{chunks: [_ | _]}, revision, _}, u ->
+        %{u | revisions: [{tick, revision, u.world} | u.revisions]}
       _, u -> u
     end)
   end
 
   @doc "按角色模拟 tick 选择精确的历史碰撞，不回滚 canonical 世界。"
   def at_tick(updates, tick) do
-    {_, revision, chunks} = Enum.find(updates.revisions, fn {t, _, _} -> t <= tick end)
-    if revision == updates.native_revision do
-      {updates, revision}
-    else
-      changed = for {coord, chunk} <- chunks, Map.get(updates.native_chunks, coord) != chunk, do: chunk
-      {us, :ok} = :timer.tc(fn ->
-        updates.native.set_chunks(updates.world, operations(Enum.sort_by(changed, & &1.coord)))
-      end)
-      {%{updates | native_revision: revision, native_chunks: chunks, build_us: updates.build_us + us}, revision}
-    end
+    {_, revision, world} = Enum.find(updates.revisions, fn {t, _, _} -> t <= tick end)
+    {world, revision}
   end
 
   @doc "所有角色已执行的最早模拟 tick 之前只保留一份锚点版本。"
@@ -82,21 +68,22 @@ defmodule SceneServer.Movement.CollisionUpdates do
         {{:value, _}, queue} = :queue.out(updates.queue)
         true = delta.transaction_seq == updates.transaction_seq + 1
 
-        {us, revision} =
+        {us, revision, world} =
           if delta.chunks == [] do
-            {0, updates.revision}
+            {0, updates.revision, updates.world}
           else
-            {us, :ok} =
+            {us, world} =
               :timer.tc(fn ->
                 updates.native.set_chunks(updates.world, operations(delta.chunks))
               end)
 
-            {us, updates.revision + 1}
+            {us, updates.revision + 1, world}
           end
 
         updates = %{
           updates
-          | queue: queue,
+          | world: world,
+            queue: queue,
             revision: revision,
             transaction_seq: delta.transaction_seq,
             build_us: updates.build_us + us,

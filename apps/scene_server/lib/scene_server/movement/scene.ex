@@ -1,15 +1,9 @@
 defmodule SceneServer.Movement.Scene do
-  @moduledoc "M1 单 Scene 60Hz writer；固定源、出生、连续 ACK 与碰撞时间线。"
+  @moduledoc "公共60Hz碰撞时间线与成员 owner；物理输入归属独立 Player。"
   use GenServer
   require Logger
-  alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{InputSlots, CollisionUpdates, AOI}
-
-  defmodule Clock do
-    @moduledoc false
-    def now(_), do: System.monotonic_time(:microsecond)
-    def schedule(_, pid, delay), do: Process.send_after(pid, :tick, delay)
-  end
+  alias MmoContracts.{Session, Voxel}
+  alias SceneServer.Movement.{Player, CollisionUpdates, Replication, Clock}
 
   @doc "从明确的 route 和资产导出启动唯一 writer。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
@@ -17,20 +11,12 @@ defmodule SceneServer.Movement.Scene do
   def join(scene, identity, authorized_character, gate_pid),
     do: GenServer.call(scene, {:join, identity, authorized_character, gate_pid})
 
-  @doc "只确认本 identity 的初始 N/R，不追最新编辑。"
-  def ready(scene, identity, seq, revision),
-    do: GenServer.cast(scene, {:ready, identity, seq, revision})
-
-  @doc "接收已解码 C1 batch，绝不因消息数量推进时间。"
-  def input(scene, identity, batch), do: GenServer.cast(scene, {:input, identity, batch})
   @doc "结束此 identity；旧 epoch 不影响重连。"
   def leave(scene, identity, reason \\ 1), do: GenServer.cast(scene, {:leave, identity, reason})
-  @doc "Scene 单调时间映射与步后 tick；回复经同一控制流。"
-  def time_probe(scene, identity, probe),
-    do: GenServer.cast(scene, {:time_probe, identity, probe})
-
   @doc "只读标量统计与角色状态，不暴露可变 NIF resource。"
   def observe(scene), do: GenServer.call(scene, :observe)
+  @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
+  def metrics(scene), do: observe(scene)
 
   @doc "读取 D1 的显式 JSON 导出；无生产默认 profile 或范围。"
   def load_config!(path), do: path |> File.read!() |> Jason.decode!() |> config!()
@@ -98,7 +84,11 @@ defmodule SceneServer.Movement.Scene do
     monotonic = clock_module.now(clock_ref)
     initial_ref = make_ref()
 
+    {:ok, players} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    {:ok, replication} = Replication.start_link(sink: Keyword.get(opts, :sink, GateServer.Session.Sink))
     state = %{
+      players: players,
+      replication: replication,
       scene_id: Keyword.fetch!(opts, :scene_id),
       scene_epoch: Keyword.fetch!(opts, :scene_epoch),
       world_ref: Keyword.fetch!(opts, :world_ref),
@@ -112,7 +102,6 @@ defmodule SceneServer.Movement.Scene do
       failure: nil,
       content_version: nil,
       characters: %{},
-      aoi: AOI.new(),
       requests: %{},
       workers: %{},
       next_entity_epoch: 1,
@@ -136,16 +125,10 @@ defmodule SceneServer.Movement.Scene do
   end
 
   @impl true
-  def code_change(_old, %{characters: characters} = state, {:input_contract, snapshot})
-      when map_size(characters) == 0 do
-    # 本次无客户端的在线升级保留 Scene、世界时钟、N/R 和既有 native world。
-    # snapshot 来自 World 的公开 canonical 接口，只补齐旧版本尚未持有的派生历史。
-    true = snapshot.transaction_seq == state.updates.transaction_seq
-    chunks = Map.new(snapshot.chunks, &{&1.coord, &1})
-    updates = struct(CollisionUpdates, Map.from_struct(state.updates))
-    {:ok, %{state | updates: %{updates |
-      revisions: [{state.tick, updates.revision, chunks}],
-      native_revision: updates.revision, native_chunks: chunks}}}
+  def terminate(_, state) do
+    if Process.alive?(state.players), do: Supervisor.stop(state.players)
+    if Process.alive?(state.replication), do: GenServer.stop(state.replication)
+    :ok
   end
 
   @impl true
@@ -153,44 +136,38 @@ defmodule SceneServer.Movement.Scene do
     cond do
       identity.scene_id != state.scene_id or identity.scene_epoch != state.scene_epoch ->
         close_sink(state, gate, identity, 11)
-        {:reply, :ok, state}
+        {:reply, {:error, :closed}, state}
 
       state.failure != nil ->
         close_sink(state, gate, identity, state.failure)
-        {:reply, :ok, state}
+        {:reply, {:error, :closed}, state}
 
       Map.has_key?(state.characters, identity) ->
-        {:reply, :ok, state}
+        {:reply, {:ok, state.characters[identity].player}, state}
 
       Enum.any?(state.characters, fn {_, c} -> c.id == cid end) ->
         close_sink(state, gate, identity, 2)
-        {:reply, :ok, state}
+        {:reply, {:error, :closed}, state}
 
       map_size(state.characters) == length(state.config.probes) ->
         close_sink(state, gate, identity, 10)
-        {:reply, :ok, state}
+        {:reply, {:error, :closed}, state}
 
       true ->
         occupied = Enum.map(state.characters, fn {_, c} -> c.slot end)
         slot = Enum.find(0..(length(state.config.probes) - 1), &(&1 not in occupied))
         request = make_ref()
 
-        character = %{
-          id: cid,
-          identity: identity,
-          epoch: state.next_entity_epoch,
-          slot: slot,
-          gate: gate,
-          monitor: Process.monitor(gate),
-          state: nil,
-          baseline: nil,
-          ready: false,
-          clock_ready: false,
-          slots: nil,
-          origin: nil,
-          simulation_tick: 0,
-          simulation_revision: 0
-        }
+        opts = [scene: self(), replication: state.replication, gate: gate,
+          identity: identity, id: cid, epoch: state.next_entity_epoch, slot: slot,
+          config: state.config, clock: state.clock, time_origin: state.time_origin,
+          time_mono_origin: state.time_mono_origin, mono_origin: if(state.initialized, do: state.mono_origin, else: nil), sink: state.sink,
+          updates: %{state.updates | queue: :queue.new()}, content_version: state.content_version,
+          scene_id: state.scene_id, scene_epoch: state.scene_epoch]
+        {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
+        character = %{id: cid, identity: identity, epoch: state.next_entity_epoch,
+          slot: slot, gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
+        Replication.join(state.replication, identity, cid, character.epoch, player, gate)
 
         state = %{
           state
@@ -199,7 +176,7 @@ defmodule SceneServer.Movement.Scene do
             next_entity_epoch: state.next_entity_epoch + 1
         }
 
-        {:reply, :ok, if(state.initialized, do: request_snapshot(state, request), else: state)}
+        {:reply, {:ok, player}, if(state.initialized, do: request_snapshot(state, request), else: state)}
     end
   end
 
@@ -225,7 +202,8 @@ defmodule SceneServer.Movement.Scene do
     info =
       Map.merge(info, %{
         character_count: map_size(state.characters),
-        aoi: AOI.observe(state.aoi),
+        replication_pid: state.replication,
+        player_supervisor_pid: state.players,
         mailbox: mailbox,
         queue_length: :queue.len(state.updates.queue),
         collision_revision: state.updates.revision,
@@ -234,17 +212,10 @@ defmodule SceneServer.Movement.Scene do
         queue_wait_us: state.updates.queue_wait_us,
         characters:
           Enum.map(state.characters, fn {identity, c} ->
-            %{
-              identity: identity,
-              entity_id: c.id,
-              entity_epoch: c.epoch,
-              state: c.state,
-              origin_tick: c.origin,
-              simulation_tick: c.simulation_tick,
-              pending_inputs: if(c.slots, do: map_size(c.slots.pending), else: 0),
-              active: active?(state, c),
-              processed_input_seq: if(c.slots, do: c.slots.processed_input_seq, else: 0)
-            }
+            c.observation || %{identity: identity, entity_id: c.id, entity_epoch: c.epoch,
+              player_pid: c.player, gate_pid: c.gate, state: nil, origin_tick: nil, simulation_tick: 0,
+              pending_inputs: 0, active: false, processed_input_seq: 0, collision_revision: 0,
+              physics_steps: 0, step_us: 0, published_tick: 0}
           end)
           |> Enum.sort_by(& &1.entity_id)
       })
@@ -255,70 +226,6 @@ defmodule SceneServer.Movement.Scene do
   @impl true
   def handle_cast({:leave, identity, reason}, state),
     do: {:noreply, drop(state, identity, reason)}
-
-  def handle_cast({:ready, identity, seq, revision}, state) do
-    case Map.fetch(state.characters, identity) do
-      :error ->
-        {:noreply, stale(state)}
-
-      {:ok, %{baseline: {^seq, ^revision}} = c} ->
-        {:noreply, put_character(state, %{c | ready: true})}
-
-      {:ok, _} ->
-        {:noreply, drop(state, identity, 8)}
-    end
-  end
-
-  def handle_cast({:time_probe, identity, %Session.TimeProbe{} = probe}, state) do
-    case Map.fetch(state.characters, identity) do
-      :error ->
-        {:noreply, stale(state)}
-
-      {:ok, c} ->
-        received = server_time(state)
-
-        reliable(state, c, :control, %Session.TimeReply{
-          request_id: probe.request_id,
-          client_send_us: probe.client_send_us,
-          server_receive_us: received,
-          server_send_us: server_time(state),
-          server_tick: state.tick
-        })
-
-        {:noreply, put_character(state, %{c | clock_ready: true})}
-    end
-  end
-
-  def handle_cast({:input, identity, %Movement.InputBatch{identity: identity} = batch}, state) do
-    arrived = now(state)
-
-    case Map.fetch(state.characters, identity) do
-      :error ->
-        input_arrivals(state, identity, nil, batch.frames, :unknown_identity, arrived)
-        {:noreply, stale(state)}
-
-      {:ok, %{slots: nil} = c} ->
-        input_arrivals(state, identity, c, batch.frames, :not_started, arrived)
-        {:noreply, %{state | rejected_inputs: state.rejected_inputs + 1}}
-
-      {:ok, c} ->
-        {slots, result, decisions} = InputSlots.receive_batch_observed(c.slots, batch)
-
-        for {frame, disposition} <- decisions do
-          input_arrivals(state, identity, c, [frame], disposition, arrived)
-        end
-
-        state = put_character(state, %{c | slots: slots})
-
-        {:noreply,
-         if(result == :accepted,
-           do: state,
-           else: %{state | rejected_inputs: state.rejected_inputs + 1}
-         )}
-    end
-  end
-
-  def handle_cast({:input, _, _}, state), do: {:noreply, stale(state)}
 
   @impl true
   def handle_info({:canonical_snapshot, _, _}, %{failure: reason} = state) when reason != nil,
@@ -342,6 +249,7 @@ defmodule SceneServer.Movement.Scene do
         mono_origin: now(state)
     }
 
+    for {_, c} <- state.characters, do: send(c.player, {:clock_origin, state.mono_origin})
     state = Enum.reduce(Map.keys(state.requests), state, &request_snapshot(&2, &1))
 
     {native_colliders, native_compounds, native_compound_children} =
@@ -384,6 +292,23 @@ defmodule SceneServer.Movement.Scene do
   def handle_info({:snapshot_result, _ref, {:error, :canonical_incomplete}}, state),
     do: {:noreply, fail_source(state)}
 
+  def handle_info({:player_observation, result}, state) do
+    case state.characters[result.identity] do
+      %{player: pid} = c when pid == result.player_pid ->
+        previous = c.observation
+        state = Enum.reduce([:physics_steps, :step_us, :rejected_inputs, :old_identity, :substitutions], state,
+          fn key, s -> Map.update!(s, key, &(&1 + result[key] - if(previous, do: previous[key], else: 0))) end)
+        {:noreply, %{state | characters: Map.put(state.characters, result.identity, %{c | observation: result})}}
+      _ -> {:noreply, state}
+    end
+  end
+  def handle_info({:player_failed, identity, pid, reason}, state) do
+    case state.characters[identity] do
+      %{player: ^pid} -> {:noreply, drop(state, identity, reason)}
+      _ -> {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, ref, :process, _, reason}, state) do
     cond do
       ref == state.world_monitor ->
@@ -403,7 +328,7 @@ defmodule SceneServer.Movement.Scene do
 
   def handle_info(:tick, %{initialized: true, failure: nil} = state) do
     started = now(state)
-    due = div((started - state.mono_origin) * 60, 1_000_000)
+    due = Clock.due_tick(state, started)
 
     state =
       if due > state.tick do
@@ -455,247 +380,37 @@ defmodule SceneServer.Movement.Scene do
 
   defp tick(state) do
     {updates, events} = CollisionUpdates.consume(state.updates, now(state))
-    state = %{state | updates: CollisionUpdates.record_tick(updates, state.tick, events)}
-
-    Enum.each(events, fn
-      {:delta, delta, revision, _} ->
-        payload = Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary()
-
-        for {_, c} <- state.characters, c.baseline != nil do
-          reliable(state, c, :voxel, {:voxel_log_transaction_payload, payload})
-
-          if delta.chunks != [] do
-            reliable(state, c, :voxel, %Voxel.CollisionApplied{
-              identity: c.identity,
-              collision_revision: revision,
-              transaction_seq: delta.transaction_seq,
-              apply_tick: state.tick,
-              changed_chunks: Enum.map(delta.chunks, & &1.coord)
-            })
-          end
-        end
-
-      {:marker, _, _} ->
-        :ok
-    end)
-
-    state = step_characters(state)
-
-    state =
-      Enum.reduce(events, state, fn
-        {:marker, ref, snapshot}, s -> anchor_join(s, ref, snapshot)
-        _, s -> s
-      end)
-
-    state =
-      Enum.reduce(state.characters, state, fn {_, c}, s ->
-        if c.state != nil and c.ready and c.clock_ready and c.origin == nil do
-          origin = s.tick + 30
-
-          reliable(s, c, :control, %Session.InputStart{
-            identity: c.identity,
-            anchor_tick: s.tick,
-            transaction_seq: s.updates.transaction_seq,
-            collision_revision: s.updates.revision,
-            state: c.state,
-            origin_tick: origin,
-            first_input_seq: 1,
-            prediction_lead_ticks: 8
-          })
-
-          fence(s, c)
-
-          character_event(s, c, :input_start, %{
-            origin_tick: origin,
-            content_version: s.content_version
-          })
-
-          put_character(s, %{c | origin: origin, slots: InputSlots.new(c.identity, origin)})
-        else
-          s
-        end
-      end)
-
-    state =
-      if rem(state.tick, 3) == 0 do
-        for {_, c} <- state.characters, active?(state, c) do
-          fence(state, c)
-
-          state.sink.datagram(c.gate, c.identity, %Movement.OwnerAck{
-            identity: c.identity,
-            server_tick: state.tick,
-            processed_input_seq: c.slots.processed_input_seq,
-            collision_revision: c.simulation_revision,
-            simulation_tick: c.simulation_tick,
-            state: c.state,
-            substituted_through_seq: c.slots.substituted_through_seq
-          })
-        end
-
-        publish_aoi(state)
-      else
-        state
-      end
-
-    Logger.debug(fn ->
-      inspect(%{
-        event: :voxim_scene_tick,
-        scene_id: state.scene_id,
-        tick: state.tick,
-        transaction_seq: state.updates.transaction_seq,
-        collision_revision: state.updates.revision,
-        characters:
-          Enum.map(state.characters, fn {_, c} ->
-            %{
-              entity_id: c.id,
-              state: c.state,
-              input_seq: if(c.slots, do: c.slots.processed_input_seq, else: 0),
-              substituted:
-                c.slots != nil and c.slots.processed_input_seq > 0 and
-                  c.slots.substituted_through_seq == c.slots.processed_input_seq
-            }
-          end)
-          |> Enum.sort_by(& &1.entity_id)
-      })
-    end)
-
-    state
-  end
-
-  defp step_characters(state) do
-    state = state.characters |> Enum.sort_by(fn {_, c} -> c.id end)
-      |> Enum.reduce(state, fn {identity, _}, s -> advance_character(s, identity) end)
-    # Restore the current collider artifact after historical character replay.
-    {updates, _} = CollisionUpdates.at_tick(state.updates, state.tick)
-    earliest = Enum.reduce(state.characters, state.tick, fn {_, c}, t ->
-      if c.state, do: min(t, c.simulation_tick), else: t
-    end)
-    %{state | updates: CollisionUpdates.retire_before(updates, earliest)}
-  end
-
-  defp advance_character(state, identity) do
-    c = Map.fetch!(state.characters, identity)
-    cond do
-      c.state == nil or c.simulation_tick >= state.tick -> state
-      not query_allowed?(state, c.state) -> drop(state, identity, 4)
-      true ->
-        tick = c.simulation_tick + 1
-        {slots, frame, selection} =
-          if c.origin != nil and tick >= c.origin do
-            InputSlots.take_observed(c.slots, state.tick)
-          else
-            {c.slots, :joining_zero, :joining_zero}
-          end
-        if frame == :waiting do
-          character_event(state, c, :input_wait, %{
-            simulation_tick: c.simulation_tick, processed_input_seq: c.slots.processed_input_seq,
-            pending_inputs: map_size(c.slots.pending), lag_ticks: state.tick - c.simulation_tick})
-          state
-        else
-          {input, yaw} = if frame == :joining_zero do
-            {{0.0, 0.0, 0}, c.state.yaw}
-          else
-            {x, z} = Movement.Codec.axes(frame)
-            {{x, z, frame.jump_pressed}, frame.yaw}
-          end
-          {updates, revision} = CollisionUpdates.at_tick(state.updates, tick)
-          state = %{state | updates: updates}
-          {x, z, jump} = input
-          character_event(state, c, :input_selected, %{
-            input_seq: if(frame == :joining_zero, do: nil, else: frame.input_seq),
-            due_tick: tick, simulation_tick: tick, collision_revision: revision,
-            axis_x: if(frame == :joining_zero, do: 0, else: frame.axis_x),
-            axis_z: if(frame == :joining_zero, do: 0, else: frame.axis_z),
-            yaw: yaw, jump_pressed: jump, native_axis_x: x, native_axis_z: z,
-            selection: selection, lag_ticks: state.tick - tick})
-          {us, [{_, native_state}]} = :timer.tc(fn ->
-            updates.native.step_characters(updates.world, state.config.profile_tuple,
-              [{c.id, pod(c.state), input}])
-          end)
-          next = from_pod(native_state, yaw)
-          state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1}
-          if inside?(next.position, state.config.travel) do
-            state = put_character(state, %{c | state: next, slots: slots,
-              simulation_tick: tick, simulation_revision: revision})
-            advance_character(state, identity)
-          else
-            drop(state, identity, 4)
-          end
-        end
+    updates = CollisionUpdates.record_tick(updates, state.tick, events)
+    versions = Enum.take_while(updates.revisions, fn {tick, _, _} -> tick == state.tick end)
+    transactions = for {:delta, delta, revision, _} <- events do
+      {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
+       delta.transaction_seq, revision, Enum.map(delta.chunks, & &1.coord)}
     end
+    for {_, c} <- state.characters do
+      send(c.player, {:timeline, state.tick, updates.transaction_seq, updates.revision, versions, transactions})
+    end
+    # 发布消息与各 Player 自有历史引用保留旧版本；Scene 无需等待最慢玩家退休。
+    state = %{state | updates: CollisionUpdates.retire_before(updates, state.tick)}
+    state = Enum.reduce(events, state, fn
+      {:marker, ref, snapshot}, s -> anchor_join(s, ref, snapshot)
+      _, s -> s
+    end)
+    if rem(state.tick, 3) == 0, do: Replication.publish(state.replication, state.tick)
+    state
   end
 
   defp anchor_join(state, ref, snapshot) do
     {identity, requests} = Map.pop(state.requests, ref)
     state = %{state | requests: requests}
-
-    case Map.fetch(state.characters, identity) do
-      :error ->
-        state
-
-      {:ok, c} ->
+    case state.characters[identity] do
+      nil -> state
+      c ->
         true = snapshot.transaction_seq == state.updates.transaction_seq
-
         if snapshot.content_version != state.content_version do
           drop(state, identity, 9)
         else
-          probe = Enum.at(state.config.probes, c.slot)
-
-          case find_spawn(state, probe) do
-            :outside ->
-              drop(state, identity, 4)
-
-            :not_found ->
-              drop(state, identity, 10)
-
-            {:ok, native_state} ->
-              spawned = from_pod(native_state, 0)
-
-              if query_allowed?(state, spawned) do
-                c = %{
-                  c
-                  | state: spawned,
-                    simulation_tick: state.tick,
-                    simulation_revision: state.updates.revision,
-                    baseline: {snapshot.transaction_seq, state.updates.revision}
-                }
-
-                reliable(state, c, :control, %Session.SessionStart{
-                  identity: identity,
-                  entity_id: c.id,
-                  entity_epoch: c.epoch,
-                  server_tick: state.tick,
-                  server_time_us: server_time(state),
-                  content_version: state.content_version,
-                  collision_revision: state.updates.revision,
-                  baseline_transaction_seq: snapshot.transaction_seq,
-                  state: spawned,
-                  profile: state.config.profile
-                })
-
-                reliable(state, c, :voxel, %Voxel.CanonicalBootstrap{
-                  identity: identity,
-                  content_version: snapshot.content_version,
-                  collision_revision: state.updates.revision,
-                  transaction_seq: snapshot.transaction_seq,
-                  l0_min: snapshot.l0_min,
-                  l0_max_exclusive: snapshot.l0_max_exclusive,
-                  travel_min_m: elem(state.config.travel, 0),
-                  travel_max_exclusive_m: elem(state.config.travel, 1),
-                  regions: snapshot.regions
-                })
-
-                fence(state, c)
-
-                character_event(state, c, :session_start, %{
-                  content_version: state.content_version
-                })
-
-                put_character(state, c)
-              else
-                drop(state, identity, 4)
-              end
-          end
+          send(c.player, {:anchor, state.tick, %{state.updates | queue: :queue.new()}, state.content_version, snapshot})
+          state
         end
     end
   end
@@ -741,69 +456,20 @@ defmodule SceneServer.Movement.Scene do
         state
 
       {c, characters} ->
-        character_event(state, c, :session_end, %{
-          reason: reason,
-          content_version: state.content_version
-        })
-
+        runtime_event(state, :session_end, %{session_epoch: identity.session_epoch,
+          entity_id: c.id, entity_epoch: c.epoch, reason: reason,
+          content_version: state.content_version})
         Process.demonitor(c.monitor, [:flush])
+        GenServer.cast(c.player, :stop)
         close_sink(state, c.gate, identity, reason)
-        {aoi, lifecycle} = AOI.remove(state.aoi, identity, c.id, c.epoch, state.tick)
-        state = %{state | characters: characters, aoi: aoi}
-        emit_lifecycle(state, lifecycle)
-        state
+        Replication.leave(state.replication, identity, c.id, c.epoch, state.tick)
+        %{state | characters: characters}
     end
   end
-
-  defp publish_aoi(state) do
-    entities =
-      for {_, c} <- state.characters,
-          active?(state, c),
-          do: %{identity: c.identity, entity_id: c.id, entity_epoch: c.epoch, state: c.state}
-
-    {aoi, lifecycle, snapshots} =
-      AOI.update(state.aoi, entities, state.tick, state.updates.revision)
-
-    emit_lifecycle(state, lifecycle)
-
-    for snapshot <- snapshots do
-      c = Map.fetch!(state.characters, snapshot.identity)
-      state.sink.datagram(c.gate, c.identity, snapshot)
-    end
-
-    %{state | aoi: aoi}
-  end
-
-  defp emit_lifecycle(state, lifecycle) do
-    for event <- lifecycle do
-      c = Map.fetch!(state.characters, event.identity)
-      reliable(state, c, :control, event)
-      Logger.debug(fn -> inspect(%{event: :voxim_aoi_lifecycle, message: event}) end)
-    end
-  end
-
-  defp active?(state, c), do: c.origin != nil and state.tick >= c.origin
 
   defp close_sink(state, gate, identity, reason), do: state.sink.close(gate, identity, reason)
 
-  defp reliable(state, c, purpose, event),
-    do: state.sink.reliable(c.gate, c.identity, purpose, event)
-
-  defp fence(state, c),
-    do:
-      reliable(state, c, :voxel, %Voxel.TimelineFence{
-        identity: c.identity,
-        server_tick: state.tick,
-        transaction_seq: state.updates.transaction_seq,
-        collision_revision: state.updates.revision
-      })
-
-  defp put_character(state, c),
-    do: %{state | characters: Map.put(state.characters, c.identity, c)}
-
-  defp stale(state), do: %{state | old_identity: state.old_identity + 1}
-  defp now(%{clock: {module, ref}}), do: module.now(ref)
-  defp server_time(state), do: state.time_origin + now(state) - state.time_mono_origin
+  defp now(state), do: Clock.monotonic(state)
 
   defp schedule(state) do
     delay = max(0, div(deadline(state, state.tick + 1) - now(state) + 999, 1000))
@@ -816,41 +482,12 @@ defmodule SceneServer.Movement.Scene do
     end
   end
 
-  defp deadline(state, tick), do: state.mono_origin + div(tick * 1_000_000 + 59, 60)
-
-  # 字段只投影当前 owner 的确定事实；日志不重新接纳输入或推进时间。
-  defp input_arrivals(state, identity, c, frames, disposition, arrived) do
-    for frame <- frames do
-      runtime_event(state, :input_arrival, %{
-        monotonic_us: arrived,
-        session_epoch: identity.session_epoch,
-        entity_id: if(c, do: c.id, else: nil),
-        entity_epoch: if(c, do: c.epoch, else: nil),
-        input_seq: frame.input_seq,
-        due_tick: if(c && c.origin, do: c.origin + frame.input_seq - 1, else: nil),
-        axis_x: frame.axis_x,
-        axis_z: frame.axis_z,
-        yaw: frame.yaw,
-        jump_pressed: frame.jump_pressed,
-        disposition: disposition
-      })
-    end
-  end
-
-  defp character_event(state, c, event, facts) do
-    runtime_event(
-      state,
-      event,
-      Map.merge(facts, %{
-        session_epoch: c.identity.session_epoch,
-        entity_id: c.id,
-        entity_epoch: c.epoch
-      })
-    )
-  end
+  defp deadline(state, tick), do: Clock.deadline(state, tick)
 
   defp runtime_event(state, event, facts) do
-    Logger.info(fn ->
+    level = if event in [:input_arrival, :input_selected, :input_wait] or
+      (event == :region_tick and rem(state.tick, 60) != 0), do: :debug, else: :info
+    Logger.log(level, fn ->
       Jason.encode!(
         Map.merge(
           %{
@@ -872,37 +509,8 @@ defmodule SceneServer.Movement.Scene do
     end)
   end
 
-  defp query_allowed?(state, value) do
-    {lo, hi} = state.updates.native.query_bounds(state.config.profile_tuple, pod(value))
-    {min, max} = state.config.bounds
-
-    inside?(value.position, state.config.travel) and
-      Enum.all?(0..2, &(elem(lo, &1) >= elem(min, &1) and elem(hi, &1) < elem(max, &1)))
-  end
-
-  defp find_spawn(state, probe) do
-    start = from_pod({probe, {0.0, 0.0, 0.0}, 0}, 0)
-    finish = %{start | position: put_elem(probe, 1, state.config.spawn_min_y)}
-
-    if query_allowed?(state, start) and query_allowed?(state, finish) do
-      state.updates.native.find_spawn(
-        state.updates.world,
-        state.config.profile_tuple,
-        probe,
-        state.config.spawn_min_y
-      )
-    else
-      :outside
-    end
-  end
-
   defp inside?(point, {min, max}),
     do: Enum.all?(0..2, &(elem(point, &1) >= elem(min, &1) and elem(point, &1) < elem(max, &1)))
-
-  defp pod(state), do: {state.position, state.velocity, state.grounded}
-
-  defp from_pod({position, velocity, grounded}, yaw),
-    do: %Session.State{position: position, velocity: velocity, grounded: grounded, yaw: yaw}
 
   defp float_tuple(values), do: values |> Enum.map(&(&1 / 1)) |> List.to_tuple()
   defp map_tuple(tuple, fun), do: tuple |> Tuple.to_list() |> Enum.map(fun) |> List.to_tuple()
