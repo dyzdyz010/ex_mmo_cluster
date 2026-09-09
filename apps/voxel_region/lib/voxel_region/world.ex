@@ -90,7 +90,9 @@ defmodule VoxelRegion.World do
 
   # 冷 miss 的 baseline 在调用方进程并发物化到磁盘缓存；结果不看——World 读时缺失就是 missing、损坏就是错误，语义不变。
   defp prepare(server, keys) do
-    {source, source_state} = GenServer.call(server, :source)
+    # 多人加入的快照共用此 mailbox；前置查询沿用后续快照的等待时限，
+    # 避免 20 人实验中正常排队被默认 5 秒超时截断。
+    {source, source_state} = GenServer.call(server, :source, 300_000)
 
     keys
     |> Enum.uniq()

@@ -70,7 +70,7 @@ defmodule SceneServer.Movement.Scene do
       end)
 
     probes = Enum.map(Map.fetch!(raw, "spawn_probes_m"), &float_tuple/1)
-    true = length(probes) == 2 and Enum.all?(probes, &inside?(&1, travel))
+    true = probes != [] and Enum.all?(probes, &inside?(&1, travel))
     min_y = Map.fetch!(raw, "spawn_min_y_m") / 1
     true = min_y >= elem(elem(travel, 0), 1) and Enum.all?(probes, &(min_y < elem(&1, 1)))
 
