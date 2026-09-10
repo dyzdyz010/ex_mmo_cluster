@@ -24,8 +24,14 @@ defmodule SceneServer.Movement.AOI do
 
   @doc "一次构造全部目标的不可变空间索引，供各观察者分组共用。"
   def frame(entities) do
-    entities = Enum.sort_by(entities, & &1.entity_id)
-    by_key = Map.new(entities, &{key(&1), &1})
+    # 同一 incarnation 的本地结果、邻区帧和移交桥接只能形成一个目标；新会话代际优先。
+    by_key = Enum.reduce(entities, %{}, fn entity, values ->
+      Map.update(values, key(entity), entity, fn previous ->
+        if {entity.identity.session_epoch, entity.simulation_tick} >
+             {previous.identity.session_epoch, previous.simulation_tick}, do: entity, else: previous
+      end)
+    end)
+    entities = by_key |> Map.values() |> Enum.sort_by(& &1.entity_id)
     grid = Enum.group_by(entities, &cell(&1.state.position))
     # 同格观察者复用排好序的候选集；关系顺序只在进入/离开时重建。
     candidates =
@@ -45,8 +51,11 @@ defmodule SceneServer.Movement.AOI do
       ) do
     entities = Enum.filter(entities, &Map.has_key?(observers, &1.identity))
 
+    # 目标 join 与首个 Player 结果之间可能有复制机会；已接管的观察者关系等待其值到达。
+    retained_observers = Map.take(aoi, Map.keys(observers))
+
     {next, lifecycle, snapshots} =
-      Enum.reduce(entities, {new(), [], []}, fn observer, {next, lifecycle, snapshots} ->
+      Enum.reduce(entities, {retained_observers, [], []}, fn observer, {next, lifecycle, snapshots} ->
         {generation, visible, ordered} = Map.get(aoi, observer.identity, {0, %{}, []})
 
         {retained, leaves} =

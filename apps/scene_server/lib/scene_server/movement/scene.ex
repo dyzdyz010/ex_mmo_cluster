@@ -18,6 +18,20 @@ defmodule SceneServer.Movement.Scene do
   @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
   def metrics(scene), do: observe(scene)
 
+  @doc "公开已初始化的邻区复制端点和时钟锚点；不公开碰撞资源或可写角色。"
+  def neighbour_endpoint(scene), do: GenServer.call(scene, :neighbour_endpoint)
+
+  @doc "World 通过显式路由连接邻区；偏移由两端已初始化的零点计算。"
+  def connect_neighbour(scene, peer, offset),
+    do: GenServer.call(scene, {:connect_neighbour, peer, offset})
+  def connect_neighbour(scene, peer, offset, endpoint),
+    do: GenServer.call(scene, {:connect_neighbour, peer, offset, endpoint})
+  def prepare_transfer(scene, identity, cut, gate),
+    do: GenServer.call(scene, {:prepare_transfer, identity, cut, gate})
+  def detach_transfer(scene, old, next), do: GenServer.call(scene, {:detach_transfer, old, next})
+  def activate_transfer(scene, identity, observer),
+    do: GenServer.call(scene, {:activate_transfer, identity, observer})
+
   @doc "读取 D1 的显式 JSON 导出；无生产默认 profile 或范围。"
   def load_config!(path), do: path |> File.read!() |> Jason.decode!() |> config!()
 
@@ -66,6 +80,8 @@ defmodule SceneServer.Movement.Scene do
       l0: l0,
       bounds: bounds,
       travel: travel,
+      authority: travel,
+      neighbours: [],
       probes: probes,
       spawn_min_y: min_y
     }
@@ -104,11 +120,11 @@ defmodule SceneServer.Movement.Scene do
       characters: %{},
       requests: %{},
       workers: %{},
-      next_entity_epoch: 1,
       tick: 0,
       mono_origin: monotonic,
       time_mono_origin: monotonic,
       time_origin: System.system_time(:microsecond),
+      timeline_origin_us: Keyword.get(opts, :timeline_origin_us),
       world_monitor: Process.monitor(Keyword.fetch!(opts, :world_ref)),
       physics_steps: 0,
       step_us: 0,
@@ -132,6 +148,94 @@ defmodule SceneServer.Movement.Scene do
   end
 
   @impl true
+  def handle_call(:neighbour_endpoint, _, %{initialized: true, failure: nil} = state) do
+    {:reply, {:ok, %{pid: state.replication, scene_id: state.scene_id,
+      scene_epoch: state.scene_epoch, origin_us: Clock.origin_us(state),
+      content_version: state.content_version, profile: state.config.profile,
+      l0: state.config.l0, authority: state.config.authority}}, state}
+  end
+  def handle_call(:neighbour_endpoint, _, state), do: {:reply, {:error, :scene_not_ready}, state}
+
+  def handle_call({:connect_neighbour, peer, offset}, _, state) do
+    :ok = Replication.neighbour(state.replication, peer, offset)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:connect_neighbour, peer, offset, endpoint}, _, state) do
+    :ok = Replication.neighbour(state.replication, peer, offset, endpoint.scene_id)
+    # 相同 resident L0 内提前允许跨分区预测，authority 分界仍独立保留。
+    config = if endpoint.l0 == state.config.l0 do
+      {lo, hi} = state.config.travel
+      {other_lo, other_hi} = endpoint.authority
+      travel = {List.to_tuple(for i <- 0..2, do: min(elem(lo, i), elem(other_lo, i))),
+        List.to_tuple(for i <- 0..2, do: max(elem(hi, i), elem(other_hi, i)))}
+      %{state.config | travel: travel, neighbours: [Map.take(endpoint, [:scene_id, :authority]) |
+        Enum.reject(state.config.neighbours, &(&1.scene_id == endpoint.scene_id))]}
+    else
+      state.config
+    end
+    {:reply, :ok, %{state | config: config}}
+  end
+
+  def handle_call({:prepare_transfer, identity, cut, gate}, _, state) do
+    compatible = state.initialized and state.failure == nil and
+      identity.scene_id == state.scene_id and identity.scene_epoch == state.scene_epoch and
+      cut.content_version == state.content_version and cut.config.profile == state.config.profile and
+      cut.config.l0 == state.config.l0 and
+      cut.collision_checkpoint.baseline_transaction_seq == state.updates.baseline_transaction_seq and
+      inside?(cut.state.position, state.config.authority) and
+      not Enum.any?(state.characters, fn {_, c} -> c.id == cut.id end)
+    if compatible do
+      {import_us, {:ok, updates}} = :timer.tc(fn ->
+        CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
+      end)
+      tail = state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
+      Logger.info(Jason.encode!(%{schema: "voxim-scene-v1", event: "transfer_prepared",
+        scene_id: state.scene_id, session_epoch: identity.session_epoch,
+        import_us: import_us, tail_count: length(tail),
+        checkpoint_bytes: :erlang.external_size(cut.collision_checkpoint)}))
+      opts = [scene: self(), replication: state.replication, gate: gate, identity: identity,
+        id: cut.id, epoch: cut.epoch, slot: nil, config: state.config, clock: state.clock,
+        time_origin: state.time_origin, time_mono_origin: state.time_mono_origin,
+        mono_origin: state.mono_origin, sink: state.sink,
+        updates: updates, content_version: state.content_version,
+        scene_id: state.scene_id, scene_epoch: state.scene_epoch, import: cut, tick: state.tick, tail: tail]
+      {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
+      character = %{id: cut.id, identity: identity, epoch: cut.epoch, slot: nil,
+        gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
+      {:reply, {:ok, player}, %{state | characters: Map.put(state.characters, identity, character)}}
+    else
+      {:reply, {:error, :incompatible_transfer}, state}
+    end
+  end
+
+  def handle_call({:detach_transfer, old, next}, _, state) do
+    case Map.pop(state.characters, old) do
+      {nil, _} -> {:reply, {:error, :stale_transfer}, state}
+      {c, characters} ->
+        observer = Replication.take_observer(state.replication, old)
+        :ok = Replication.handoff(state.replication, old, next, next.scene_id)
+        Process.demonitor(c.monitor, [:flush])
+        :ok = DynamicSupervisor.terminate_child(state.players, c.player)
+        {:reply, {:ok, observer}, %{state | characters: characters}}
+    end
+  end
+
+  def handle_call({:activate_transfer, identity, observer}, _, state) do
+    case state.characters[identity] do
+      nil -> {:reply, {:error, :stale_transfer}, state}
+      c ->
+        Replication.join(state.replication, identity, c.id, c.epoch, c.player, c.gate)
+        :ok = Replication.put_observer(state.replication, identity, c.gate, observer)
+        :ok = Player.activate(c.player, identity)
+        # Player 的异步 result 与本调用不同发送者，显式屏障保证首帧已安装。
+        result = Player.observe(c.player)
+        Replication.result(state.replication, result)
+        :ok = Replication.flush(state.replication)
+        {:reply, :ok, state}
+    end
+  end
+
   def handle_call({:join, identity, %{id: cid}, gate}, _, state) do
     cond do
       identity.scene_id != state.scene_id or identity.scene_epoch != state.scene_epoch ->
@@ -149,7 +253,7 @@ defmodule SceneServer.Movement.Scene do
         close_sink(state, gate, identity, 2)
         {:reply, {:error, :closed}, state}
 
-      map_size(state.characters) == length(state.config.probes) ->
+      Enum.count(state.characters, fn {_, c} -> c.slot != nil end) == length(state.config.probes) ->
         close_sink(state, gate, identity, 10)
         {:reply, {:error, :closed}, state}
 
@@ -159,21 +263,20 @@ defmodule SceneServer.Movement.Scene do
         request = make_ref()
 
         opts = [scene: self(), replication: state.replication, gate: gate,
-          identity: identity, id: cid, epoch: state.next_entity_epoch, slot: slot,
+          identity: identity, id: cid, epoch: identity.session_epoch, slot: slot,
           config: state.config, clock: state.clock, time_origin: state.time_origin,
           time_mono_origin: state.time_mono_origin, mono_origin: if(state.initialized, do: state.mono_origin, else: nil), sink: state.sink,
           updates: %{state.updates | queue: :queue.new()}, content_version: state.content_version,
           scene_id: state.scene_id, scene_epoch: state.scene_epoch]
         {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
-        character = %{id: cid, identity: identity, epoch: state.next_entity_epoch,
+        character = %{id: cid, identity: identity, epoch: identity.session_epoch,
           slot: slot, gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
         Replication.join(state.replication, identity, cid, character.epoch, player, gate)
 
         state = %{
           state
           | characters: Map.put(state.characters, identity, character),
-            requests: Map.put(state.requests, request, identity),
-            next_entity_epoch: state.next_entity_epoch + 1
+            requests: Map.put(state.requests, request, identity)
         }
 
         {:reply, {:ok, player}, if(state.initialized, do: request_snapshot(state, request), else: state)}
@@ -246,8 +349,10 @@ defmodule SceneServer.Movement.Scene do
       | updates: updates,
         initialized: true,
         content_version: snapshot.content_version,
-        mono_origin: now(state)
+        mono_origin: if(state.timeline_origin_us,
+          do: state.time_mono_origin + state.timeline_origin_us - state.time_origin, else: now(state))
     }
+    state = if state.timeline_origin_us, do: %{state | tick: Clock.due_tick(state, now(state))}, else: state
 
     for {_, c} <- state.characters, do: send(c.player, {:clock_origin, state.mono_origin})
     state = Enum.reduce(Map.keys(state.requests), state, &request_snapshot(&2, &1))
@@ -384,7 +489,7 @@ defmodule SceneServer.Movement.Scene do
     versions = Enum.take_while(updates.revisions, fn {tick, _, _} -> tick == state.tick end)
     transactions = for {:delta, delta, revision, _} <- events do
       {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
-       delta.transaction_seq, revision, Enum.map(delta.chunks, & &1.coord)}
+       delta.transaction_seq, revision, delta.chunks, delta}
     end
     for {_, c} <- state.characters do
       send(c.player, {:timeline, state.tick, updates.transaction_seq, updates.revision, versions, transactions})
@@ -421,9 +526,15 @@ defmodule SceneServer.Movement.Scene do
     world_ref = state.world_ref
     l0 = state.config.l0
     include_chunks = request == state.initial_ref
+    # 生成器含节点本地的 ETS / NIF 状态，冷快照在真值节点生成，只传不可变 artifact。
+    source_node = case world_ref do
+      {_, host} -> host
+      pid when is_pid(pid) -> node(pid)
+      name when is_atom(name) -> node()
+    end
 
     {pid, monitor} =
-      spawn_monitor(fn ->
+      Node.spawn_monitor(source_node, fn ->
         result =
           world_api.canonical_snapshot_and_subscribe(
             world_ref,
@@ -442,6 +553,7 @@ defmodule SceneServer.Movement.Scene do
   defp fail_source(state) do
     Logger.error("voxim_scene canonical_incomplete scene_id=#{state.scene_id} tick=#{state.tick}")
     state = Enum.reduce(Map.keys(state.characters), state, &drop(&2, &1, 5))
+    Replication.close_neighbours(state.replication)
 
     %{
       state

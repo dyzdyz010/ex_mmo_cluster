@@ -126,3 +126,153 @@ defmodule SceneServer.Movement.VoximReplicationTest do
     GenServer.stop(rep)
   end
 end
+
+defmodule SceneServer.Movement.M4aReplicationTransferTest do
+  use ExUnit.Case, async: true
+  @moduletag :m4a_transfer
+  alias SceneServer.Movement.{AOI, Replication}
+  alias MmoContracts.{Session, Movement}
+
+  defp value(id, session, scene, x) do
+    %{identity: %Session.Identity{session_epoch: session, scene_id: scene, scene_epoch: 7},
+      entity_id: id, entity_epoch: id, player_pid: self(), active: true,
+      simulation_tick: 60, collision_revision: 1,
+      state: %Session.State{position: {x, 500.0, 0.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}}
+  end
+
+  defp join(rep, value) do
+    Replication.join(rep, value.identity, value.entity_id, value.entity_epoch, self(), self())
+    Replication.result(rep, value)
+  end
+
+  defp sample(rep, tick) do
+    Replication.publish(rep, tick)
+    Replication.observe(rep)
+  end
+
+  defp discard_outputs do
+    receive do
+      {:mmo_reliable, _, _, _} -> discard_outputs()
+      {:mmo_datagram, _, _} -> discard_outputs()
+      {:neighbour_frame, _, _, _} -> discard_outputs()
+    after
+      0 -> :ok
+    end
+  end
+
+  test "AOI chooses one newest session per incarnation before spatial indexing" do
+    a = value(1, 1, 1, 0.0)
+    old = value(2, 2, 1, 100.0)
+    fresh = value(2, 3, 2, 1.0)
+    for entities <- [[a, old, fresh], [fresh, old, a]] do
+      frame = AOI.frame(entities)
+      assert frame.entities == [a, fresh]
+      assert frame.by_key[{2, 2}] == fresh
+      {_, [enter], [snapshot]} = AOI.update_frame(AOI.new(), frame, 60, %{a.identity => true})
+      assert enter.entity_id == 2 and enter.interest_generation == 1
+      assert [%{entity_id: 2, entity_epoch: 2, state: state}] = snapshot.records
+      assert state == fresh.state
+    end
+  end
+
+  test "moving an observer keeps generation and visibility without emitting lifecycle" do
+    source = start_supervised!({Replication, [sink: GateServer.Session.Sink]}, id: :source)
+    target = start_supervised!({Replication, [sink: GateServer.Session.Sink]}, id: :target)
+    a = value(1, 1, 1, 0.0)
+    b = value(2, 2, 1, 1.0)
+    join(source, a)
+    join(source, b)
+    sample(source, 60)
+    discard_outputs()
+    observer = Replication.take_observer(source, a.identity)
+    assert observer == {1, %{{2, 2} => 1}, [{2, 2}]}
+    assert Replication.take_observer(source, a.identity) == nil
+    assert [%{identity: identity}] = Replication.observe(source)
+    assert identity == b.identity
+    fresh = %{a | identity: %{a.identity | session_epoch: 3, scene_id: 2}}
+    fresh_identity = fresh.identity
+    Replication.join(target, fresh.identity, fresh.entity_id, fresh.entity_epoch, self(), self())
+    join(target, b)
+    assert :ok = Replication.put_observer(target, fresh.identity, self(), observer)
+    sample(target, 60)
+    assert Enum.find(Replication.observe(target), &(&1.identity == fresh.identity)).last_generation == 1
+    Replication.result(target, fresh)
+    sample(target, 60)
+    assert_receive {:mmo_datagram, ^fresh_identity, %Movement.Snapshot{records: [record]}}
+    assert record.entity_id == 2 and record.interest_generation == 1
+    refute_receive {:mmo_reliable, ^fresh_identity, _, %Session.EntityEnter{}}
+    refute_receive {:mmo_reliable, _, _, %Session.EntityLeave{}}
+    Replication.leave(target, b.identity, 2, 2, 61)
+    sample(target, 63)
+    discard_outputs()
+    join(target, b)
+    sample(target, 66)
+    assert_receive {:mmo_reliable, ^fresh_identity, _, %Session.EntityEnter{interest_generation: 2}}
+  end
+
+  test "source cut bridge is exported until same-tick target frame while neighbour ghosts never are" do
+    source = start_supervised!({Replication, [sink: GateServer.Session.Sink]})
+    a = value(1, 1, 1, 0.0)
+    b = value(2, 2, 1, 1.0)
+    fresh = %{a | identity: %{a.identity | session_epoch: 3, scene_id: 2},
+      state: %{a.state | position: {2.0, 500.0, 0.0}}}
+    spectator = b.identity
+    :ok = Replication.neighbour(source, self(), 0, 2)
+    join(source, a)
+    join(source, b)
+    sample(source, 60)
+    discard_outputs()
+    Replication.take_observer(source, a.identity)
+    assert :ok = Replication.handoff(source, a.identity, fresh.identity, 2)
+    Replication.result(source, %{a | simulation_tick: 99})
+    sample(source, 63)
+    assert_receive {:neighbour_frame, ^source, 63, exported}
+    assert Enum.map(exported, & &1.identity) |> Enum.sort() == Enum.sort([a.identity, b.identity])
+    cut = Enum.find(exported, &(&1.identity == a.identity))
+    assert cut.simulation_tick == 60 and cut.state == a.state
+    assert_receive {:mmo_datagram, ^spectator, %Movement.Snapshot{records: [record]}}
+    assert record.entity_epoch == 1 and record.interest_generation == 1
+    refute_receive {:mmo_reliable, _, _, %Session.EntityLeave{}}
+    send(source, {:neighbour_frame, self(), 63, []})
+    ghost = value(3, 4, 2, 1000.0)
+    send(source, {:neighbour_frame, self(), 63, [fresh, ghost]})
+    Replication.flush(source)
+    Replication.observe(source)
+    assert_receive {:neighbour_frame, ^source, 63, exported}
+    assert Enum.map(exported, & &1.identity) == [b.identity]
+    assert_receive {:mmo_datagram, ^spectator, %Movement.Snapshot{records: [record]}}
+    assert record.state == fresh.state and record.interest_generation == 1
+    refute_receive {:mmo_reliable, ^spectator, _, %Session.EntityEnter{}}
+    send(source, {:neighbour_frame, self(), 66, []})
+    sample(source, 66)
+    assert_receive {:mmo_reliable, ^spectator, _, %Session.EntityLeave{entity_id: 1}}
+  end
+
+  test "target peer loss removes a bridge even before its first populated frame" do
+    for event <- [:neighbour_closed, :down] do
+      {:ok, source} = Replication.start_link(sink: GateServer.Session.Sink)
+      a = value(1, 1, 1, 0.0)
+      b = value(2, 2, 1, 1.0)
+      spectator = b.identity
+      fresh = %{a.identity | session_epoch: 3, scene_id: 2}
+      peer = spawn(fn -> receive do :stop -> :ok end end)
+      :ok = Replication.neighbour(source, peer, 0, 2)
+      join(source, a)
+      join(source, b)
+      sample(source, 60)
+      discard_outputs()
+      Replication.take_observer(source, a.identity)
+      :ok = Replication.handoff(source, a.identity, fresh, 2)
+      case event do
+        :neighbour_closed -> send(source, {:neighbour_closed, peer})
+        :down ->
+          monitor = :sys.get_state(source).neighbours[peer].monitor
+          send(source, {:DOWN, monitor, :process, peer, :normal})
+      end
+      sample(source, 63)
+      assert_receive {:mmo_reliable, ^spectator, _, %Session.EntityLeave{entity_id: 1}}
+      send(peer, :stop)
+      GenServer.stop(source)
+    end
+  end
+end

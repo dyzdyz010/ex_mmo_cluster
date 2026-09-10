@@ -6,6 +6,8 @@ defmodule VoxelRegion.Application do
   之前本应用不完成启动、依赖它的 auth/gate 也不会开始监听），再启动一个 `VoxelRegion.World`：
   truth = 显式生成 manifest ⊕ overlay 日志。auth_server 的 `POST /ingame/voxel/regions` 与 gate_server 的
   `0x76 OverlaySubscribe` / `0x70 VoxelEditIntent`（Voxim 会话）/ `0x77 VoxelLogEntry` 都打到它。
+
+  显式配置 `:replica` 时改为启动本地只读区域服务，优先于 root；该节点不启动第二个 World。
   """
 
   use Application
@@ -13,24 +15,37 @@ defmodule VoxelRegion.Application do
   @impl true
   def start(_type, _args) do
     children =
-      case Application.get_env(:voxel_region, :root) do
-        nil ->
-          []
-
-        "" ->
-          []
-
-        root ->
-          manifest_path =
-            Application.get_env(:voxel_region, :manifest_path) ||
-              raise "VOXEL_REGION_MANIFEST is required when VOXEL_REGION_ROOT is set"
-
-          opts = [source: VoxelRegion.GeneratedStore, root: root, manifest_path: manifest_path, log: VoxelRegion.OverlayLog.Db]
-          {:ok, store} = VoxelRegion.GeneratedStore.open(opts)
-          {:ok, _store, _stats} = VoxelRegion.Bake.run(store)
-          [{VoxelRegion.World, opts}]
+      case Application.get_env(:voxel_region, :replica) do
+        nil -> authority_children()
+        opts -> [{VoxelRegion.Replica, opts}]
       end
 
     Supervisor.start_link(children, strategy: :one_for_one, name: VoxelRegion.Supervisor)
+  end
+
+  defp authority_children do
+    case Application.get_env(:voxel_region, :root) do
+      nil ->
+        []
+
+      "" ->
+        []
+
+      root ->
+        manifest_path =
+          Application.get_env(:voxel_region, :manifest_path) ||
+            raise "VOXEL_REGION_MANIFEST is required when VOXEL_REGION_ROOT is set"
+
+        opts = [
+          source: VoxelRegion.GeneratedStore,
+          root: root,
+          manifest_path: manifest_path,
+          log: VoxelRegion.OverlayLog.Db
+        ]
+
+        {:ok, store} = VoxelRegion.GeneratedStore.open(opts)
+        {:ok, _store, _stats} = VoxelRegion.Bake.run(store)
+        [{VoxelRegion.World, opts}]
+    end
   end
 end

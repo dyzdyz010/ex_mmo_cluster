@@ -477,3 +477,343 @@ defmodule T1TransportTest do
     assert_receive {:quic, :shutdown, ^conn, 0x10009}, 5000
   end
 end
+defmodule M4aGateTransferTest do
+  use ExUnit.Case, async: true
+  @moduletag :m4a_transfer
+  alias GateServer.Session.QuicConnection
+  alias GateServer.Transport.QuicListener
+  alias MmoContracts.{Session, Movement}
+
+  defmodule BlockingEditStore do
+    def ensure(owner, 0, _) do
+      send(owner, {:edit_preparing, self()})
+      receive do: (:continue -> :ok)
+    end
+    def ensure(_, _, _), do: :ok
+  end
+
+  defmodule EditWorld do
+    use GenServer
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def init(owner), do: {:ok, {owner, 0}}
+    def handle_call(:source, _, {owner, _} = state), do: {:reply, {BlockingEditStore, owner}, state}
+    def handle_call({:apply_edits, edits}, _, {owner, seq}) do
+      send(owner, {:world_edit, edits})
+      {:reply, {:ok, seq + 1}, {owner, seq + 1}}
+    end
+  end
+
+  # 只替代 QUIC 的传输资源；实际帧解码、Dispatch、World.prepare 和结果 Sink 原样执行。
+  defp edit_gate(state, owner) do
+    receive do
+      {:inspect_state, owner} -> send(owner, {:gate_state, state}); edit_gate(state, owner)
+      event ->
+        {:noreply, state} = QuicConnection.handle_info(event, state)
+        if match?({:mmo_edit_finished, _, _, _}, event), do: send(owner, {:gate_edit_completed, state.edit_completed, state})
+        edit_gate(state, owner)
+    end
+  end
+
+  defp batch_event(scene, request, x) do
+    bytes = <<0x78, request::64, request::32, scene::64, 1::32, x::signed-32, 1::signed-32, 1::signed-32, 11::16>>
+    {:quic, <<byte_size(bytes)::32, bytes::binary>>, :voxel_stream, %{}}
+  end
+
+  test "cold edits preserve Gate input and transfer progress, FIFO and connection result ownership" do
+    owner = self()
+    world = start_supervised!({EditWorld, owner})
+    listener = spawn_link(fn ->
+      receive do
+        {:"$gen_call", from, {:commit_transfer, _, _, 101}} -> GenServer.reply(from, :ok)
+      end
+    end)
+    initial = pending_state()
+    initial = %{initial | listener: listener, voxim_overlay: true,
+      bounds: {{0, 0, 0}, {16, 16, 16}}, route: %{scene_ref: :source_scene, world_ref: world},
+      streams: %{voxel_stream: %{purpose: 2, buffer: <<>>, started: true},
+        control_stream: %{purpose: 1, buffer: <<>>, started: true}}}
+    gate = spawn(fn -> edit_gate(initial, owner) end)
+    on_exit(fn -> Process.exit(gate, :kill) end)
+    send(gate, batch_event(1, 1, 1))
+    assert_receive {:edit_preparing, first}, 2_000
+    send(gate, batch_event(1, 2, 2))
+    send(gate, {:inspect_state, owner})
+    assert_receive {:gate_state, queued}, 500
+    assert queued.edit_pending == 2
+    refute_receive {:edit_preparing, _}, 20
+
+    fresh = initial.pending_transfer.identity
+    batch = %Movement.InputBatch{identity: initial.identity, frames: [%Movement.InputFrame{
+      input_seq: 31, axis_x: 1, axis_z: 0, yaw: 0, jump_pressed: 0}]}
+    {:ok, bytes} = Movement.Codec.encode(batch)
+    send(gate, {:quic, IO.iodata_to_binary(bytes), :connection, %{}})
+    assert_receive {:"$gen_cast", {:input, ^fresh, _}}, 500
+    {:ok, bytes} = Session.Codec.encode(%Session.Ready{identity: fresh,
+      baseline_transaction_seq: 20, collision_revision: 3})
+    bytes = IO.iodata_to_binary(bytes)
+    send(gate, {:quic, <<byte_size(bytes)::32, bytes::binary>>, :control_stream, %{}})
+    send(gate, {:inspect_state, owner})
+    assert_receive {:gate_state, transferred}, 500
+    assert transferred.identity == fresh
+    assert transferred.edit_ref == queued.edit_ref
+
+    send(first, :continue)
+    assert_receive {:world_edit, [{{1, 1, 1}, 11}]}, 2_000
+    assert_receive {:edit_preparing, second}, 2_000
+    send(second, :continue)
+    assert_receive {:world_edit, [{{2, 1, 1}, 11}]}, 2_000
+    # 来自worker的结果与完成事件保持同一发送者顺序，取到两次完成再观察队列。
+    assert_receive {:gate_edit_completed, 2, completed}, 2_000
+    assert completed.identity == fresh and completed.edit_pending == 0
+    assert completed.edit_worker_us > 0 and completed.edit_queue_wait_us > 0
+    results = for {bytes, _, _} <- :queue.to_list(completed.reliable[2]) do
+      <<0x68, request::64, _intent::32, 1::64, _result::8, seq::64, _::binary>> = bytes
+      {request, seq}
+    end
+    assert results == [{1, 1}, {2, 2}]
+    {:ok, other} = QuicConnection.init(conn: :connection, listener: owner, hello: nil)
+    {:noreply, ^other} = QuicConnection.handle_info({:mmo_voxel_bytes, completed.edit_ref, <<1>>}, other)
+    closing = %{completed | closing: true}
+    {:noreply, ^closing} = QuicConnection.handle_info({:mmo_voxel_bytes, completed.edit_ref, <<1>>}, closing)
+    {:noreply, ^completed} = QuicConnection.handle_info({:mmo_voxel_bytes, initial.identity, <<1>>}, completed)
+    monitor = Process.monitor(completed.edit_worker)
+    Process.exit(gate, :kill)
+    assert_receive {:DOWN, ^monitor, :process, _, :killed}, 1_000
+  end
+
+  test "voxel stream accepts pending and previous Scene tags while rejecting unrelated or out of bounds edits" do
+    initial = pending_state()
+    initial = %{initial | voxim_overlay: true, edit_worker: self(),
+      bounds: {{0, 0, 0}, {16, 16, 16}}, route: %{scene_ref: :source_scene, world_ref: :shared_world},
+      pending_transfer: %{initial.pending_transfer | route: %{scene_ref: :target_scene, world_ref: :shared_world}},
+      streams: %{voxel_stream: %{purpose: 2, buffer: <<>>, started: true}}}
+    {:noreply, state} = QuicConnection.handle_info(batch_event(2, 1, 1), initial)
+    refute state.closing
+    assert_receive {{:voxel_batch_edit_intent, %{logical_scene_id: 2}}, %{world_ref: :shared_world}, _}
+    listener = spawn_link(fn ->
+      receive do
+        {:"$gen_call", from, {:commit_transfer, _, _, 101}} -> GenServer.reply(from, :ok)
+      end
+    end)
+    fresh = state.pending_transfer.identity
+    committed = ready(%{state | listener: listener}, fresh)
+    assert committed.previous_scene_id == 1
+    {:noreply, late} = QuicConnection.handle_info(batch_event(1, 2, 2), committed)
+    refute late.closing
+    assert_receive {{:voxel_batch_edit_intent, %{logical_scene_id: 1}}, %{world_ref: :shared_world}, _}
+    for {scene, x} <- [{3, 1}, {1, 16}] do
+      {:noreply, rejected} = QuicConnection.handle_info(batch_event(scene, 3, x), committed)
+      assert rejected.closing and rejected.edit_pending == committed.edit_pending
+      refute_receive {{:voxel_batch_edit_intent, _}, _, _}
+    end
+    {:ok, reconnected} = QuicConnection.init(conn: :connection, listener: self(), hello: nil)
+    assert reconnected.previous_scene_id == nil
+    new = %{reconnected | identity: fresh, route: committed.route, bounds: committed.bounds,
+      voxim_overlay: true, streams: initial.streams}
+    {:noreply, rejected} = QuicConnection.handle_info(batch_event(1, 4, 1), new)
+    assert rejected.closing and rejected.edit_worker == nil
+  end
+
+  defmodule Router do
+    def route(2), do: {:ok, %{scene_ref: :target_scene, scene_epoch: 8, world_ref: :shared_world}}
+    def prepare_transfer(old, fresh, artifact, gate) do
+      send(gate, {:prepared, old, fresh, artifact})
+      {:ok, gate}
+    end
+    def commit_transfer(old, fresh) do
+      send(self(), {:committed, old, fresh})
+      :ok
+    end
+  end
+
+  defp identities do
+    old = %Session.Identity{session_epoch: 10, scene_id: 1, scene_epoch: 7}
+    {old, %{old | session_epoch: 11, scene_id: 2, scene_epoch: 8}}
+  end
+
+  defp pending_state do
+    {old, fresh} = identities()
+    {:ok, state} = QuicConnection.init(conn: :connection, listener: self(), hello: nil)
+    pending = %{identity: fresh, route: %{scene_ref: :target_scene}, player: self(), cid: 101,
+      transaction_seq: 20, collision_revision: 3, cut_tick: 60, processed_input_seq: 30,
+      started_us: System.monotonic_time(:microsecond), input_batches: 0}
+    %{state | identity: old, route: %{scene_ref: :source_scene}, player: :sealed_source,
+      pending_transfer: pending}
+  end
+
+  defp input(state, identity, transport) do
+    batch = %Movement.InputBatch{identity: identity, frames: [%Movement.InputFrame{
+      input_seq: 31, axis_x: 1, axis_z: 0, yaw: 0, jump_pressed: 0}]}
+    {:ok, bytes} = Movement.Codec.encode(batch)
+    bytes = IO.iodata_to_binary(bytes)
+    {event, state} = case transport do
+      :datagram -> {{:quic, bytes, state.conn, %{}}, state}
+      :control ->
+        stream = :control_stream
+        state = put_in(state.streams[stream], %{purpose: 1, buffer: <<>>, started: true})
+        {{:quic, <<byte_size(bytes)::32, bytes::binary>>, stream, %{}}, state}
+    end
+    {:noreply, state} = QuicConnection.handle_info(event, state)
+    {state, batch}
+  end
+
+  defp ready(state, identity, seq \\ 20, revision \\ 3) do
+    {:ok, bytes} = Session.Codec.encode(%Session.Ready{identity: identity,
+      baseline_transaction_seq: seq, collision_revision: revision})
+    bytes = IO.iodata_to_binary(bytes)
+    state = put_in(state.streams[:control_stream], %{purpose: 1, buffer: <<>>, started: true})
+    {:noreply, state} = QuicConnection.handle_info(
+      {:quic, <<byte_size(bytes)::32, bytes::binary>>, :control_stream, %{}}, state)
+    state
+  end
+
+  test "pending old and new inputs reach only passive target on both transports" do
+    initial = pending_state()
+    for transport <- [:datagram, :control], identity <- [initial.identity, initial.pending_transfer.identity] do
+      {state, batch} = input(initial, identity, transport)
+      fresh = initial.pending_transfer.identity
+      rebound = %{batch | identity: fresh}
+      assert_receive {:"$gen_cast", {:input, ^fresh, ^rebound}}
+      assert state.identity == initial.identity
+      assert state.pending_transfer.input_batches == 1
+      refute state.closing
+    end
+    refute_receive {:committed, _, _}
+  end
+
+  test "pending unrelated input is isolated without closing either transport" do
+    initial = pending_state()
+    for transport <- [:datagram, :control] do
+      {state, _} = input(initial, %{initial.identity | session_epoch: 9}, transport)
+      assert state.stale_identity == 1
+      refute state.closing
+      refute_receive {:"$gen_cast", {:input, _, _}}
+    end
+  end
+
+  test "Gate seals the source before preparing and keeps old fence output until Ready" do
+    {old, fresh} = identities()
+    owner = self()
+    value = %Session.State{position: {41.5, 1.0, 0.0}, velocity: {1.0, 0.0, 0.0}, grounded: 1, yaw: 0}
+    artifact = %{id: 101, state: value, transaction_seq: 20, simulation_revision: 3,
+      simulation_tick: 60, slots: %{processed_input_seq: 30}}
+    source = spawn_link(fn ->
+      receive do
+        {:"$gen_call", from, {:seal, ^old}} ->
+          send(owner, :source_sealed)
+          GenServer.reply(from, {:ok, artifact})
+      end
+    end)
+    listener = spawn_link(fn ->
+      receive do
+        {:"$gen_call", from, {:prepare_transfer, ^old, 2, ^artifact}} ->
+          send(owner, :target_prepared)
+          GenServer.reply(from, {:ok, fresh, %{scene_ref: :target_scene}, owner})
+      end
+    end)
+    {:ok, initial} = QuicConnection.init(conn: :connection, listener: listener, hello: nil)
+    initial = %{initial | identity: old, player: source, route: %{scene_ref: :source_scene}}
+    {:noreply, state} = QuicConnection.handle_info({:mmo_transfer_request, old, source, 2}, initial)
+    assert_receive :source_sealed
+    assert_receive :target_prepared
+    assert state.identity == old and state.player == source
+    assert state.pending_transfer.identity == fresh
+    assert state.transfer_prepared == 1 and state.transfer_committed == 0
+    [{bytes, _, _}] = :queue.to_list(state.reliable[1])
+    assert {:ok, %Session.Transfer{identity: ^old, next_identity: ^fresh, cut_tick: 60,
+      processed_input_seq: 30, transaction_seq: 20, collision_revision: 3, state: ^value}} =
+      Session.Codec.decode(bytes)
+    fence = %MmoContracts.Voxel.TimelineFence{identity: old, server_tick: 60,
+      transaction_seq: 20, collision_revision: 3}
+    {:noreply, state} = QuicConnection.handle_info({:mmo_reliable, old, 2, fence}, state)
+    assert :queue.len(state.reliable[2]) == 1
+    {:noreply, ^state} = QuicConnection.handle_info({:mmo_transfer_request, old, source, 2}, state)
+  end
+
+  test "old or incorrect Ready cannot commit a pending transfer" do
+    state = pending_state()
+    assert ready(state, state.identity).closing
+    assert ready(state, state.pending_transfer.identity, 21).closing
+    assert ready(state, state.pending_transfer.identity, 20, 4).closing
+    refute_receive {:"$gen_call", _, {:commit_transfer, _, _, _}}
+    refute_receive {:"$gen_cast", {:ready, _, _, _}}
+  end
+
+  test "matching Ready commits once and drops queued old datagrams without releasing native send" do
+    initial = pending_state()
+    owner = self()
+    listener = spawn_link(fn ->
+      receive do
+        {:"$gen_call", from, request} ->
+          send(owner, request)
+          GenServer.reply(from, :ok)
+      end
+    end)
+    state = %{initial | listener: listener, datagram_busy: true,
+      pending_datagrams: :gb_trees.enter(:owner, :old_packet, :gb_trees.empty()),
+      snapshot_keys: %{101 => {0, 101}}}
+    fresh = state.pending_transfer.identity
+    state = ready(state, fresh)
+    old = initial.identity
+    assert_receive {:commit_transfer, ^old, ^fresh, 101}
+    assert state.identity == fresh and state.player == self()
+    assert state.pending_transfer == nil
+    assert state.transfer_committed == 1
+    assert state.datagram_busy
+    assert :gb_trees.is_empty(state.pending_datagrams)
+    assert state.snapshot_keys == %{}
+    {:noreply, ^state} = QuicConnection.handle_info({:mmo_voxel_bytes, old, <<1>>}, state)
+    {:noreply, ^state} = QuicConnection.handle_info({:mmo_reliable, old, 1, :ignored}, state)
+    {:noreply, ^state} = QuicConnection.handle_info({:mmo_datagram, old, :ignored}, state)
+    assert ready(state, fresh).closing
+    assert ready(state, old).closing
+    refute_receive {:"$gen_cast", {:ready, _, _, _}}
+    {state, _} = input(state, old, :datagram)
+    assert state.stale_identity == 1
+  end
+
+  test "listener reserves epoch while old owner stays authoritative until commit" do
+    {old, fresh} = identities()
+    owner = %{identity: old, pid: self(), scene_ref: :source_scene}
+    state = %{characters: %{101 => owner}, next_epoch: 11, opts: [route_module: Router]}
+    artifact = %{id: 101}
+    assert {:reply, {:ok, ^fresh, route, target}, prepared} =
+      QuicListener.handle_call({:prepare_transfer, old, 2, artifact}, {self(), make_ref()}, state)
+    assert target == self() and route.scene_ref == :target_scene
+    assert prepared.next_epoch == 12
+    assert prepared.characters[101] == owner
+    assert_receive {:prepared, ^old, ^fresh, ^artifact}
+    refute_receive {:committed, _, _}
+    assert {:reply, :ok, committed} = QuicListener.handle_call(
+      {:commit_transfer, old, fresh, 101}, {self(), make_ref()}, prepared)
+    assert committed.characters[101].identity == fresh
+    assert committed.characters[101].scene_ref == :target_scene
+    assert_receive {:committed, ^old, ^fresh}
+  end
+
+  test "a duplicate claim makes old Gate prepare and commit fail the owner CAS" do
+    {old, fresh} = identities()
+    replacement = %{fresh | session_epoch: 12}
+    state = %{characters: %{101 => %{identity: replacement, pid: self(), scene_ref: :replacement}},
+      next_epoch: 13, opts: [route_module: Router]}
+    assert {:reply, {:error, :stale_owner}, ^state} = QuicListener.handle_call(
+      {:prepare_transfer, old, 2, %{id: 101}}, {self(), make_ref()}, state)
+    assert {:reply, {:error, :stale_owner}, ^state} = QuicListener.handle_call(
+      {:commit_transfer, old, fresh, 101}, {self(), make_ref()}, state)
+    refute_receive {:prepared, _, _, _}
+    refute_receive {:committed, _, _}
+  end
+
+  test "matching identity cannot prepare or commit from another Gate PID" do
+    {old, fresh} = identities()
+    state = %{characters: %{101 => %{identity: old, pid: self(), scene_ref: :source_scene}},
+      next_epoch: 11, opts: [route_module: Router]}
+    other = spawn(fn -> :ok end)
+    assert {:reply, {:error, :stale_owner}, ^state} = QuicListener.handle_call(
+      {:prepare_transfer, old, 2, %{id: 101}}, {other, make_ref()}, state)
+    assert {:reply, {:error, :stale_owner}, ^state} = QuicListener.handle_call(
+      {:commit_transfer, old, fresh, 101}, {other, make_ref()}, state)
+    refute_receive {:prepared, _, _, _}
+    refute_receive {:committed, _, _}
+  end
+end

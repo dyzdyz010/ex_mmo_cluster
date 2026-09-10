@@ -32,16 +32,74 @@ defmodule VoxelRegion.WorldTest do
     world
   end
 
-  setup do
+  setup context do
     root = Path.join(System.tmp_dir!(), "voxel_region_world_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     write_world(root)
-    OverlayLogStore.reset()
+    unless context[:replica], do: OverlayLogStore.reset()
     on_exit(fn -> File.rm_rf!(root) end)
     {:ok, root: root}
   end
 
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
+
+  @tag :replica
+  test "region replica serves local snapshots and ordered canonical updates without a writer", %{root: root} do
+    alias VoxelRegion.Replica
+    world = start_supervised!({World, root: root, name: :replica_authority})
+    box = {{0, 0, 0}, {1, 2, 1}}
+    replica = start_supervised!({Replica, authority_ref: world, l0_box: box, name: :region_replica})
+    assert Replica.authority_ref(replica) == World.authority_ref(world)
+    request = make_ref()
+    assert :ok = Replica.canonical_snapshot_and_subscribe(replica, box, self(), request)
+    assert_receive {:canonical_snapshot, ^request, snapshot}
+    assert snapshot.transaction_seq == 0
+    assert length(snapshot.regions) == 2
+    assert length(snapshot.chunks) == 128
+
+    assert {:ok, 1} = World.apply_edit(world, {5, 63, 5}, 0)
+    assert_receive {:canonical_delta, delta}, 5_000
+    assert delta.transaction_seq == 1
+    assert delta.chunks != []
+    assert {:ok, 2} = World.apply_edit(world, {6, 63, 5}, 12)
+    assert_receive {:canonical_delta, material_delta}, 5_000
+    assert material_delta.transaction_seq == 2
+    assert material_delta.chunks == []
+    assert Replica.canonical_deltas_after(replica, 0) == [delta, material_delta]
+    assert Replica.canonical_deltas_after(replica, 1) == [material_delta]
+    assert Replica.canonical_deltas_after(replica, 2) == []
+    later = start_supervised!(Supervisor.child_spec(
+      {Replica, authority_ref: world, l0_box: box, name: :later_replica}, id: :later_replica))
+    assert Replica.authority_ref(later) == world
+    assert Replica.canonical_deltas_after(later, 1) == {:error, :before_replica_snapshot}
+    assert Replica.canonical_deltas_after(later, 2) == []
+
+    # 暂停上游后仍可读取最新区域，证明这里确实提供本地数据服务。
+    :ok = :sys.suspend(world)
+    try do
+      marker = make_ref()
+      assert :ok = Replica.canonical_snapshot_and_subscribe(replica, box, self(), marker, false)
+      assert_receive {:canonical_snapshot, ^marker, current}
+      assert current.transaction_seq == 2
+      assert current.chunks == []
+      for {region, bytes} <- current.regions do
+        assert {:ok, payload} = Payload.decode(bytes)
+        assert payload.seq == 2
+        assert Payload.material(payload, Payload.local(region, {5, 63, 5})) == 0
+        assert Payload.material(payload, Payload.local(region, {6, 63, 5})) == 12
+      end
+      assert %{regions: 2, chunks: 128, transaction_seq: 2, authority_ref: ^world} = Replica.stats(replica)
+      assert {:error, :read_only_replica} = GenServer.call(replica, {:apply_edits, [{{5, 63, 5}, 11}]})
+      assert {:error, :outside_replica_region} =
+        Replica.canonical_snapshot_and_subscribe(replica, {{-1, 0, 0}, {1, 2, 1}}, self(), make_ref())
+    after
+      :sys.resume(world)
+    end
+
+    monitor = Process.monitor(replica)
+    :ok = stop_supervised(World)
+    assert_receive {:DOWN, ^monitor, :process, ^replica, {:authority_down, :shutdown}}, 5_000
+  end
 
   test "join barrier returns the same canonical regions without rebuilding scene collision", %{root: root} do
     world = start_supervised!({World, [root: root, name: :join_marker_world]})

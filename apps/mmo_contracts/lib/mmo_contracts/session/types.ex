@@ -107,6 +107,13 @@ defmodule MmoContracts.Session.EntityLeave do
   defstruct @enforce_keys
 end
 
+defmodule MmoContracts.Session.Transfer do
+  @moduledoc "同一角色在公共时间线上移交的不可变切点。"
+  @enforce_keys [:identity, :next_identity, :cut_tick, :processed_input_seq,
+    :transaction_seq, :collision_revision, :state]
+  defstruct @enforce_keys
+end
+
 defmodule MmoContracts.Session.SessionEnd do
   @moduledoc "M1 SessionEnd 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。"
   @enforce_keys [:identity, :reason]

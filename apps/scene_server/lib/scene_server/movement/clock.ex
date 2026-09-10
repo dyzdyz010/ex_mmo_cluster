@@ -16,4 +16,11 @@ defmodule SceneServer.Movement.Clock do
   def due_tick(state, mono), do: max(0, div((mono - state.mono_origin) * 60, 1_000_000))
   @doc "固定步整数微秒deadline，向上取整防止早调度。"
   def deadline(state, tick), do: state.mono_origin + div(tick * 1_000_000 + 59, 60)
+
+  @doc "将源 tick 映射到接收 Scene；偏移为源零点减接收零点的微秒差，保留历史年龄。"
+  def translate_tick(tick, origin_offset_us),
+    do: tick + Integer.floor_div(origin_offset_us * 60, 1_000_000)
+
+  @doc "已初始化 Scene 的 tick 零点，沿现有单调映射表达为服务器时间。"
+  def origin_us(state), do: state.time_origin + state.mono_origin - state.time_mono_origin
 end

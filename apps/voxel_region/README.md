@@ -1,5 +1,24 @@
 # Voxim Region 真值
 
+M4a 区域部署采用 `Replica` 只读物化视图：每个 Scene 节点在本地运行该服务，驻留显式 `l0_box` 的完整 payload 与碰撞 chunk。
+唯一 `World` 继续分配事务序号、规约、写日志；Replica 没有生成器、日志或编辑入口。Scene 的 `world_api` 为
+`VoxelRegion.Replica`、`world_ref` 为本地 Replica PID；比较世界身份时调用 `authority_ref/1`，两份区域服务返回同一个上游 World PID。
+配置 `Application.put_env(:voxel_region, :replica, authority_ref: world_pid, l0_box: box)` 后启动应用；该配置优先于 root，避免在 Scene 节点误启动第二个可写 World。
+
+启动从上游原子获取快照并订阅，之后同一个 World 发出连续的 `CanonicalDelta` 与受影响区域的完整压缩 payload。
+Replica 只替换不可变结果，并在自己的 mailbox 内原子提供 `canonical_snapshot_and_subscribe/5`；新订阅者的快照与后续 delta 同源有序。
+含 ring 的 payload 使用 World 既有事务投影判定受影响区域，材质改变但 occupancy 未变也会更新 payload。越出驻留 box 显式拒绝。
+上游 monitor 结束时 Replica 退出，使 Scene 已有 world monitor 立即失效；本轮不做故障接管或将旧缓存升格为 authority。
+`canonical_deltas_after(replica, N)` 返回启动快照以后、严格大于 N 的有序 `CanonicalDelta`；N 早于启动快照返回 `{:error, :before_replica_snapshot}`。
+该历史供跨区移交按切点前缀补齐已到达编辑，保留不可变 transaction/chunk，不保存 native physics world。
+`stats/1` 暴露 `authority_ref / transaction_seq / baseline_seq / retained_deltas / regions / chunks / payload_bytes / occupancy_bytes / update_payload_bytes`，可验证实际驻留与增量流量。
+
+决策依据（2026-09-11）：[Microsoft Materialized View](https://learn.microsoft.com/en-us/azure/architecture/patterns/materialized-view)
+将缓存定义为可丢弃、由唯一数据源更新的查询视图；这里按已批准 M4a 固定区域驻留，直接传源端完成物化的字节，避免复制 reduce/replay 算法。
+[OTP 进程信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html#signals)只保证同一发送者到同一接收者顺序，故快照边界与全部后续更新都在 World 内发布，Replica 的读取边界也由其自身 GenServer 串行维护。
+代价是每个 Scene 节点保存一份区域 payload/chunks，编辑额外传送受影响区域完整压缩 payload；其余区域保留原字节，只在读快照时将头序号标到当前前缀。
+真实跨节点测试与字节/排队测量由 Voxim `Docs/M4a` 的统一入口完成，单元测试不能代替该验收。
+
 `World` 拥有 baseline ⊕ 日志真值、订阅与内存载荷缓存；`GeneratedStore` 按显式 manifest 调用 DirtyCpu Rust NIF 并保存可丢弃的 baseline 磁盘缓存；`Bake` 是就绪门：L1–L5 全世界 baseline 齐全之前应用不完成启动、auth / gate 不开始监听；`Reducer` 只规约材质和表皮；`Payload` 只处理 66³ cells / CSR；`Codec` 只处理线格式。gate 只解码、路由和回执，auth HTTP 只调用 `World.serve`。旧 `FileStore` 只保留给既有烘焙 fixture 测试，正式运行没有文件 fallback。
 
 `apply_edits([{coord, material}, ...])` 同一坐标最后一个值生效，先写完全部 canonical 值，再按级去重父格。某父格的材质与表皮均未变，不向上继续。一次有效批次一个 seq；全 no-op 不递增；canonical 源缺失整批不提交。原 `apply_edit` 共用此规约路径，但仍发旧 `0x77 kind=0`。

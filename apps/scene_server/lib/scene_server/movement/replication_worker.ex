@@ -13,6 +13,12 @@ defmodule SceneServer.Movement.ReplicationWorker do
   def leave(pid, identity, id, epoch, tick),
     do: GenServer.cast(pid, {:leave, identity, id, epoch, tick})
 
+  @doc "交出观察者关系并撤销旧输出路由，不产生目标 Leave。"
+  def take_observer(pid, identity), do: GenServer.call(pid, {:take_observer, identity})
+  @doc "接入迁移后的观察者关系，保留 generation 与可见顺序。"
+  def put_observer(pid, identity, gate, observer),
+    do: GenServer.cast(pid, {:put_observer, identity, gate, observer})
+
   @doc "仅显式诊断读取本组完整关系。"
   def observe(pid), do: GenServer.call(pid, :observe)
 
@@ -21,9 +27,19 @@ defmodule SceneServer.Movement.ReplicationWorker do
   @impl true
   def handle_call(:observe, _, state), do: {:reply, AOI.observe(state.aoi), state}
 
+  def handle_call({:take_observer, identity}, _, state) do
+    {observer, aoi} = Map.pop(state.aoi, identity)
+    {:reply, observer, %{state | aoi: aoi, gates: Map.delete(state.gates, identity)}}
+  end
+
   @impl true
   def handle_cast({:join, identity, gate}, state),
     do: {:noreply, %{state | gates: Map.put(state.gates, identity, gate)}}
+
+  def handle_cast({:put_observer, identity, gate, observer}, state) do
+    aoi = if observer == nil, do: state.aoi, else: Map.put(state.aoi, identity, observer)
+    {:noreply, %{state | aoi: aoi, gates: Map.put(state.gates, identity, gate)}}
+  end
 
   def handle_cast({:publish, frame, tick}, state) do
     {aoi, lifecycle, snapshots} = AOI.update_frame(state.aoi, frame, tick, state.gates)

@@ -7,6 +7,56 @@ owns one authenticated identity's InputSlots, state, simulation tick and ACK.
 workers, each owning a disjoint set of observers' derived AOI relations.
 Legacy actor/NPC callers below remain separate from this production path.
 
+## M4a 邻区只读复制增量
+
+两个 Scene 可引用同一个远端 Canonical World。Scene 的快照 worker 用
+`Node.spawn_monitor/2` 在 World 所在节点调用公开快照 API；GeneratedStore 的
+ETS / 原生计数器留在源节点，Scene 只接收不可变 canonical artifact 并独立构建碰撞。
+冷 region 的双节点回归覆盖此边界；已生成的同机磁盘缓存不能证明跨节点生成正确。
+
+`WorldServer.Movement.connect_neighbours/2` 通过现有显式路由读取两个已初始化
+Scene 的 `neighbour_endpoint/1`，核对 Scene 身份、代际、内容版本与角色配置后连接。
+Scene 公开复制 PID 和 tick 零点的服务器时间；原始 monotonic 值不跨 VM 相减。
+`Clock.translate_tick/2` 将源的历史 simulation_tick 转到观察者时间线，向下取整，
+不以收到消息时的 tick 替代源状态年龄。
+
+Replication 在既有 20 Hz 机会发送完整的本地角色事实，接收方只将邻区快照加入
+AOI 候选。邻区记录不成为本地观察者、不被再次转发，也不进入 Player/碰撞路径。
+源的完整帧缺失实体时，本地 AOI 发出 Leave；旧帧被源 tick 水位拒绝；复制端点
+monitor 结束时清除其全部派生事实。canonical 源失败导致 Scene 停 Tick 时，
+Scene 显式关闭邻区通道；复制端点仍可观察，但迟到帧不能恢复已关闭的邻区。
+控制面连接操作不参与逐输入热路径。
+
+本增量已部署至在线 Demo，在同主机两个独立 BEAM VM、真实双 UE/QUIC/P1 上往返移交。
+相同 L0/profile/World 使用显式公共 tick 零点，连接后 prediction travel 取两区并集，
+authority 保留各自半开分区。Player 越界停步，Gate 按同发送者顺序 seal，目标使用本地
+共同基线加源 checkpoint 重建历史碰撞，并导入纯 InputSlots，Ready 前不积分。
+源切点之后已发布的碰撞版本保留其原 apply tick；目标的当前 N/R 可以领先或落后。
+迁入 Player 接续 Replica 的有序 canonical tail，后续版本在源已发布 fence 之后生效；
+普通 Player 继续共享 Scene 的碰撞发布。Replica 是节点本地只读物化视图，World 仍独占写入。
+源停止后释放，目标才激活，不传 NIF resource。Replication 搬移观察者缓存并保留
+generation，源最后本地产生的切点桥持续导出到目标首帧，远端 ghost 不再次导出。
+同机共享系统时钟只覆盖本轮实验，跨机器偏差与漂移未验收；进程发现不代表
+授予角色写权限。`transfer_cut` 到 `transfer_resumed` 的同机 system-time 锚点测量完整停步区间；
+`transfer_prepared` 记录导入耗时与 checkpoint 字节。实际验收结果见下面的运行记录入口。
+入口、依据与记录见同级 Voxim 的 `Docs/M4a/README.md` / `plan.md`。
+
+历史表示参考 [PostgreSQL snapshot + ordered transaction stream](https://www.postgresql.org/docs/16/logical-replication-architecture.html)
+和 [RocksDB immutable checkpoints](https://rocksdb.org/blog/2015/11/10/use-checkpoints-for-efficient-snapshots.html)：
+仅借用共同基线与不可变增量原则，跨节点不传原生句柄，也不重跑 canonical 规约。
+
+```mermaid
+flowchart LR
+  WorldRoute[World 显式路由] -->|仅连接时| SceneA
+  WorldRoute -->|仅连接时| SceneB
+  SceneA --> RepA[本地 Player 事实 / Replication A]
+  SceneB --> RepB[本地 Player 事实 / Replication B]
+  RepA -->|只读帧| RepB
+  RepB -->|只读帧| RepA
+  RepA --> AOIA[A 的观察者 AOI / Gate]
+  RepB --> AOIB[B 的观察者 AOI / Gate]
+```
+
 ## Production composition and routes
 
 `SceneServer.Application` starts the configured `Scene`. Scene starts its own

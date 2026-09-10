@@ -5,6 +5,9 @@ defmodule SceneServer.Movement.CollisionUpdates do
   defstruct [
     :world,
     :native,
+    :baseline_world,
+    :baseline_transaction_seq,
+    artifacts: %{},
     revisions: [],
     queue: :queue.new(),
     revision: 0,
@@ -13,7 +16,7 @@ defmodule SceneServer.Movement.CollisionUpdates do
     queue_wait_us: 0
   ]
 
-  @doc "Scene 发布只读派生 world，不保留另一份 canonical cells。"
+  @doc "Scene 发布只读派生 world；覆盖 artifact 只引用收到的不可变 chunk。"
   def new(native), do: %__MODULE__{native: native, world: native.new_world()}
 
   @doc "仅在无角色的首次快照安装完整世界。"
@@ -22,7 +25,8 @@ defmodule SceneServer.Movement.CollisionUpdates do
       :timer.tc(fn -> updates.native.set_chunks(updates.world, operations(snapshot.chunks)) end)
 
     %{updates | world: world, revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us,
-      revisions: [{0, 1, world}]}
+      baseline_world: world, baseline_transaction_seq: snapshot.transaction_seq,
+      revisions: [{0, 1, world}], artifacts: %{1 => %{}}}
   end
 
   @doc "以 World 的消息顺序接纳 immutable delta/marker。"
@@ -34,11 +38,68 @@ defmodule SceneServer.Movement.CollisionUpdates do
   @doc "提交本世界 tick 的派生碰撞版本；不可变 binary 与旧版本共享。"
   def record_tick(updates, tick, events) do
     Enum.reduce(events, updates, fn
-      {:delta, %{chunks: [_ | _]}, revision, _}, u ->
+      {:delta, %{chunks: [_ | _] = chunks}, revision, _}, u ->
+        u = record_artifact(u, revision, chunks)
         %{u | revisions: [{tick, revision, u.world} | u.revisions]}
       _, u -> u
     end)
   end
+
+  @doc "接收 Scene 同源发布的版本与 artifact；共享 Native 句柄，不重复构建。"
+  def ingest_publication(updates, _tick, seq, revision, versions, events) do
+    updates = Enum.reduce(events, updates, fn
+      {_, _, r, [_ | _] = chunks, _}, u -> record_artifact(u, r, chunks)
+      _, u -> u
+    end)
+
+    world = case versions do
+      [] -> updates.world
+      [{_, _, world} | _] -> world
+    end
+
+    %{updates | world: world, transaction_seq: seq, revision: revision,
+      revisions: versions ++ updates.revisions}
+  end
+
+  @doc "导出切点锚点及其后已发布历史；仅含 BEAM 数据，不携带 Native 或完整 L0。"
+  def export_checkpoint(updates, cut_tick) do
+    revisions = retained_revisions(updates.revisions, cut_tick)
+      |> Enum.map(fn {tick, revision, _} ->
+        {tick, revision, Map.fetch!(updates.artifacts, revision)}
+      end)
+
+    %{baseline_transaction_seq: updates.baseline_transaction_seq,
+      transaction_seq: updates.transaction_seq, revision: updates.revision,
+      revisions: revisions}
+  end
+
+  @doc "从共同初始基线恢复源历史；目标当前进度不改变源已发布的 tick/N/R。"
+  def import_checkpoint(updates, %{baseline_transaction_seq: baseline} = checkpoint)
+      when baseline == updates.baseline_transaction_seq do
+    {us, {revisions, _, _}} = :timer.tc(fn ->
+      checkpoint.revisions |> Enum.reverse() |> Enum.reduce(
+        {[], updates.baseline_world, %{}},
+        fn {tick, revision, overrides}, {revisions, previous_world, previous_overrides} ->
+          chunks = overrides
+            |> Enum.reject(fn {coord, chunk} -> Map.get(previous_overrides, coord) == chunk end)
+            |> Enum.sort_by(&elem(&1, 0))
+            |> Enum.map(&elem(&1, 1))
+
+          world = if chunks == [], do: previous_world,
+            else: updates.native.set_chunks(previous_world, operations(chunks))
+
+          {[{tick, revision, world} | revisions], world, overrides}
+        end)
+    end)
+
+    artifacts = Map.new(checkpoint.revisions, fn {_, revision, overrides} -> {revision, overrides} end)
+    {:ok, %{updates | world: elem(hd(revisions), 2), revisions: revisions,
+      artifacts: artifacts, transaction_seq: checkpoint.transaction_seq,
+      revision: checkpoint.revision, queue: :queue.new(),
+      build_us: updates.build_us + us, queue_wait_us: 0}}
+  end
+
+  def import_checkpoint(_updates, _checkpoint), do: {:error, :incompatible_collision_baseline}
 
   @doc "按角色模拟 tick 选择精确的历史碰撞，不回滚 canonical 世界。"
   def at_tick(updates, tick) do
@@ -48,8 +109,21 @@ defmodule SceneServer.Movement.CollisionUpdates do
 
   @doc "所有角色已执行的最早模拟 tick 之前只保留一份锚点版本。"
   def retire_before(updates, tick) do
-    {newer, older} = Enum.split_while(updates.revisions, fn {t, _, _} -> t > tick end)
-    %{updates | revisions: newer ++ Enum.take(older, 1)}
+    revisions = retained_revisions(updates.revisions, tick)
+    artifacts = Map.take(updates.artifacts, Enum.map(revisions, &elem(&1, 1)))
+    %{updates | revisions: revisions, artifacts: artifacts}
+  end
+
+  defp retained_revisions(revisions, tick) do
+    {newer, older} = Enum.split_while(revisions, fn {t, _, _} -> t > tick end)
+    newer ++ Enum.take(older, 1)
+  end
+
+  defp record_artifact(updates, revision, chunks) do
+    overrides = Enum.reduce(chunks, Map.fetch!(updates.artifacts, revision - 1), fn chunk, acc ->
+      Map.put(acc, chunk.coord, chunk)
+    end)
+    %{updates | artifacts: Map.put(updates.artifacts, revision, overrides)}
   end
 
   defp consume(updates, now, changed, events) do

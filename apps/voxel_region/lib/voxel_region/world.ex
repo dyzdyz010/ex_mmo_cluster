@@ -38,6 +38,15 @@ defmodule VoxelRegion.World do
   def content_version(server \\ @name), do: GenServer.call(server, :content_version)
   def seq(server \\ @name), do: GenServer.call(server, :seq)
 
+  @doc "唯一 canonical authority 的 PID，供区域视图共享世界身份。"
+  def authority_ref(server \\ @name), do: GenServer.call(server, :authority_ref)
+
+  @doc "区域物化服务启动入口：在本节点预备源，再原子返回快照并订阅完整区域更新。"
+  def replica_snapshot_and_subscribe(server, box, pid) do
+    prepare(server, Enum.map(CollisionSource.regions(box), &{0, &1}))
+    GenServer.call(server, {:replica_snapshot, box, pid}, 300_000)
+  end
+
   @doc "载荷缓存与生成统计：entries / lru_bytes / resident_bytes / hits / misses / evictions / generated。"
   def stats(server \\ @name), do: GenServer.call(server, :stats)
 
@@ -203,6 +212,7 @@ defmodule VoxelRegion.World do
           entries: %{},
           subs: %{},
           canonical_subs: %{},
+          replica_subs: %{},
           log: {log, log.open(world_dir, cv)}
         }
 
@@ -218,6 +228,7 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
+  def handle_call(:authority_ref, _from, state), do: {:reply, self(), state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
   def handle_call({:prefab_cells,id,anchor,orientation}, _from,state) do
@@ -333,21 +344,23 @@ defmodule VoxelRegion.World do
     {:reply, state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)), state}
   end
 
-  def handle_call({:canonical_snapshot, {l0_min, l0_max} = box, pid, request, include_chunks}, _from, state) do
-    started = System.monotonic_time(:microsecond)
-    case canonical_regions(state, CollisionSource.regions(box)) do
-      {:ok, regions, payloads, state} ->
-        chunks = if include_chunks, do: (payloads |> Enum.flat_map(fn {coord, payload} ->
-          Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
-        end) |> Enum.sort_by(& &1.coord)), else: []
-        snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
-          l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
+  def handle_call({:canonical_snapshot, box, pid, request, include_chunks}, _from, state) do
+    case capture_canonical_snapshot(state, box, include_chunks) do
+      {:ok, snapshot, state} ->
         unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
         send(pid, {:canonical_snapshot, request, snapshot})
-        Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
         {:reply, :ok, %{state | canonical_subs: Map.put_new(state.canonical_subs, pid, box)}}
       {:error, :canonical_incomplete} ->
         {:reply, {:error, :canonical_incomplete}, state}
+    end
+  end
+
+  def handle_call({:replica_snapshot, box, pid}, _from, state) do
+    case capture_canonical_snapshot(state, box, true) do
+      {:ok, snapshot, state} ->
+        unless Map.has_key?(state.replica_subs, pid), do: Process.monitor(pid)
+        {:reply, {:ok, snapshot}, %{state | replica_subs: Map.put(state.replica_subs, pid, box)}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -365,7 +378,7 @@ defmodule VoxelRegion.World do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid)}}
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid), replica_subs: Map.delete(state.replica_subs, pid)}}
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ---- 应答
@@ -633,11 +646,24 @@ defmodule VoxelRegion.World do
     end
   end
 
+  defp capture_canonical_snapshot(state, {l0_min, l0_max} = box, include_chunks) do
+    started = System.monotonic_time(:microsecond)
+    with {:ok, regions, payloads, state} <- canonical_regions(state, CollisionSource.regions(box)) do
+      chunks = if include_chunks, do: (payloads |> Enum.flat_map(fn {coord, payload} ->
+        Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
+      end) |> Enum.sort_by(& &1.coord)), else: []
+      snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
+        l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
+      Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
+      {:ok, snapshot, state}
+    end
+  end
+
   # Capture both versions while the pre-commit state still exists. Never sample after fanout.
-  defp canonical_changes(%{canonical_subs: subs}, _after, _changed) when map_size(subs) == 0, do: {:ok, []}
+  defp canonical_changes(%{canonical_subs: subs, replica_subs: replicas}, _after, _changed) when map_size(subs) == 0 and map_size(replicas) == 0, do: {:ok, []}
   defp canonical_changes(before, after_state, changed) do
     started = System.monotonic_time(:microsecond)
-    boxes = before.canonical_subs |> Map.values() |> Enum.uniq()
+    boxes = (Map.values(before.canonical_subs) ++ Map.values(before.replica_subs)) |> Enum.uniq()
     coords = changed |> Enum.map(fn {0, cell} -> CollisionSource.chunk_coord(cell) end)
       |> Enum.uniq() |> Enum.filter(fn coord -> Enum.any?(boxes, &CollisionSource.in_box?(coord, &1)) end)
       |> Enum.sort()
@@ -658,6 +684,22 @@ defmodule VoxelRegion.World do
       delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
         chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
       send(pid, {:canonical_delta, delta})
+    end)
+
+    # 同一事务受影响的区域只物化一次，再按各 Replica 的驻留范围分发。
+    coords = state.replica_subs |> Map.values() |> Enum.flat_map(&CollisionSource.regions/1) |> Enum.uniq()
+      |> Enum.filter(fn region ->
+        case project_transaction(transaction, 0, region) do
+          %{entries: [], coarse: []} -> false
+          _ -> true
+        end
+      end) |> Enum.sort()
+    {:ok, regions, _, _} = canonical_regions(state, coords)
+    Enum.each(state.replica_subs, fn {pid, box} ->
+      wanted = MapSet.new(CollisionSource.regions(box))
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+        chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
+      send(pid, {:canonical_replica_delta, delta, Enum.filter(regions, &MapSet.member?(wanted, elem(&1, 0)))})
     end)
   end
 

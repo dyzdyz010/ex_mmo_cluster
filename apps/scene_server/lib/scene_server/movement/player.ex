@@ -15,13 +15,26 @@ defmodule SceneServer.Movement.Player do
   def time_probe(player, identity, probe), do: GenServer.cast(player, {:time_probe, identity, probe})
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
+  def seal(player, identity), do: GenServer.call(player, {:seal, identity})
+  def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
   @impl true
   def init(opts) do
     state = Map.new(opts) |> Map.merge(%{state: nil, baseline: nil, ready: false,
       clock_ready: false, slots: nil, origin: nil, simulation_tick: 0,
       simulation_revision: 0, tick: 0, physics_steps: 0, step_us: 0,
-      rejected_inputs: 0, old_identity: 0, substitutions: 0, failure: nil})
+      rejected_inputs: 0, old_identity: 0, substitutions: 0, failure: nil,
+      transfer: nil, deferred: [], private_timeline: false, queued_seq: 0, resume_pending: false})
+    state = case Keyword.get(opts, :import) do
+      nil -> state
+      cut -> Map.merge(state, %{state: cut.state, baseline: {cut.transaction_seq, cut.simulation_revision},
+        ready: true, clock_ready: true, slots: %{cut.slots | identity: state.identity},
+        origin: cut.origin, simulation_tick: cut.simulation_tick,
+        simulation_revision: cut.simulation_revision, tick: cut.published_tick, transfer: :prepared,
+        private_timeline: true, queued_seq: cut.transaction_seq, resume_pending: true})
+        |> enqueue_tail(Keyword.fetch!(opts, :tail))
+        |> private_ticks(Keyword.fetch!(opts, :tick))
+    end
     Process.monitor(state.scene)
     Process.monitor(state.gate)
     {:ok, state}
@@ -29,8 +42,28 @@ defmodule SceneServer.Movement.Player do
 
   @impl true
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
+  def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
+    fence(state)
+    checkpoint = CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
+    cut = Map.take(state, [:id, :epoch, :identity, :state, :slots, :origin,
+      :simulation_tick, :simulation_revision, :config, :content_version])
+      |> Map.merge(%{transaction_seq: state.updates.transaction_seq,
+        published_tick: state.tick, collision_checkpoint: checkpoint})
+    character_event(state, state, :transfer_sealed, %{cut_tick: state.simulation_tick,
+      checkpoint_bytes: :erlang.external_size(checkpoint),
+      retained_versions: length(checkpoint.revisions)})
+    {:reply, {:ok, cut}, %{state | transfer: :sealed}}
+  end
+  def handle_call({:activate, identity}, _, %{identity: identity, transfer: :prepared} = state) do
+    for {tick, events} <- Enum.reverse(state.deferred), do: emit_transactions(state, tick, events)
+    state = %{state | transfer: nil, deferred: []} |> advance() |> publish()
+    fence(state)
+    {:reply, :ok, state}
+  end
 
   @impl true
+  def handle_cast({:input, _, _}, %{transfer: :sealed} = state),
+    do: {:noreply, %{state | old_identity: state.old_identity + 1}}
   def handle_cast({:ready, identity, seq, revision}, %{identity: identity} = state) do
     if state.baseline == {seq, revision}, do: {:noreply, %{state | ready: true}},
       else: finish(fail(state, 8))
@@ -93,25 +126,20 @@ defmodule SceneServer.Movement.Player do
     finish(state)
   end
 
+  def handle_info({:timeline, _, _, _, _, _}, %{transfer: :sealed} = state), do: {:noreply, state}
   def handle_info({:timeline, tick, seq, revision, versions, events}, state) do
-    updates = %{state.updates | transaction_seq: seq, revision: revision,
-      revisions: versions ++ state.updates.revisions}
-    updates = if versions == [], do: updates, else: %{updates | world: elem(hd(versions), 2)}
-    state = %{state | tick: tick, updates: updates}
-    if state.baseline != nil do
-      for {payload, n, r, chunks} <- events do
-        reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
-        if chunks != [], do: reliable(state, :voxel, %Voxel.CollisionApplied{
-          identity: state.identity, collision_revision: r, transaction_seq: n,
-          apply_tick: tick, changed_chunks: chunks})
-      end
+    state = if state.private_timeline do
+      state |> enqueue_tail(Enum.map(events, &elem(&1, 4))) |> private_ticks(tick)
+    else
+      updates = CollisionUpdates.ingest_publication(state.updates, tick, seq, revision, versions, events)
+      %{state | tick: tick, updates: updates} |> deliver_transactions(tick, events)
     end
     state = advance(state) |> input_start()
-    state = if rem(tick, 3) == 0 and state.failure == nil do
+    state = if tick == state.tick and rem(tick, 3) == 0 and state.failure == nil and state.transfer != :prepared do
       if active?(state) do
         fence(state)
         state.sink.datagram(state.gate, state.identity, %Movement.OwnerAck{
-          identity: state.identity, server_tick: tick, processed_input_seq: state.slots.processed_input_seq,
+          identity: state.identity, server_tick: state.tick, processed_input_seq: state.slots.processed_input_seq,
           collision_revision: state.simulation_revision, simulation_tick: state.simulation_tick,
           state: state.state, substituted_through_seq: state.slots.substituted_through_seq})
       end
@@ -136,6 +164,7 @@ defmodule SceneServer.Movement.Player do
   defp input_start(state), do: state
 
   defp advance(%{failure: reason} = state) when reason != nil, do: state
+  defp advance(%{transfer: transfer} = state) when transfer != nil, do: state
   defp advance(state) do
     cond do
       state.state == nil or state.simulation_tick >= state.tick -> state
@@ -165,11 +194,17 @@ defmodule SceneServer.Movement.Player do
             selection: selection, lag_ticks: state.tick - tick})
           {us, [{_, result}]} = :timer.tc(fn -> state.updates.native.step_characters(world,
             state.config.profile_tuple, [{state.id, pod(state.state), input}]) end)
+          if state.resume_pending do
+            character_event(state, state, :transfer_resumed, %{simulation_tick: tick,
+              processed_input_seq: slots.processed_input_seq, collision_revision: revision})
+          end
+          state = %{state | resume_pending: false}
           next = from_pod(result, yaw)
           state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1}
           if inside?(next.position, state.config.travel) do
             %{state | state: next, slots: slots, simulation_tick: tick,
               simulation_revision: revision, updates: CollisionUpdates.retire_before(state.updates, tick)}
+            |> boundary()
             |> advance()
           else
             fail(state, 4)
@@ -184,7 +219,63 @@ defmodule SceneServer.Movement.Player do
     send(state.scene, {:player_failed, state.identity, self(), state.failure})
     {:stop, :normal, state}
   end
-  defp active?(state), do: state.origin != nil and state.tick >= state.origin
+  defp active?(state), do: state.transfer != :prepared and state.origin != nil and state.tick >= state.origin
+  defp boundary(state) do
+    target = if state.origin != nil and not inside?(state.state.position, state.config.authority),
+      do: Enum.find(state.config.neighbours, &inside?(state.state.position, &1.authority))
+    if target do
+      send(state.gate, {:mmo_transfer_request, state.identity, self(), target.scene_id})
+      character_event(state, state, :transfer_cut, %{target_scene_id: target.scene_id,
+        cut_tick: state.simulation_tick, processed_input_seq: state.slots.processed_input_seq})
+      %{state | transfer: :requested} |> publish()
+    else
+      state
+    end
+  end
+  defp emit_transactions(state, tick, events) do
+    for {payload, n, r, chunks, _delta} <- events do
+      reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
+      if chunks != [], do: reliable(state, :voxel, %Voxel.CollisionApplied{
+        identity: state.identity, collision_revision: r, transaction_seq: n,
+        apply_tick: tick, changed_chunks: Enum.map(chunks, & &1.coord)})
+    end
+  end
+  defp enqueue_tail(state, deltas) do
+    Enum.reduce(deltas, state, fn delta, s ->
+      if delta.transaction_seq <= s.queued_seq do
+        s
+      else
+        true = delta.transaction_seq == s.queued_seq + 1
+        %{s | queued_seq: delta.transaction_seq,
+          updates: CollisionUpdates.enqueue(s.updates, delta, now(s))}
+      end
+    end)
+  end
+
+  defp private_ticks(state, tick) when tick <= state.tick, do: state
+  defp private_ticks(state, tick) do
+    next = state.tick + 1
+    {updates, events} = CollisionUpdates.consume(state.updates, now(state))
+    updates = CollisionUpdates.record_tick(updates, next, events)
+    transactions = for {:delta, delta, revision, _} <- events do
+      {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
+        delta.transaction_seq, revision, delta.chunks, delta}
+    end
+    %{state | tick: next, updates: updates}
+    |> deliver_transactions(next, transactions)
+    |> advance()
+    |> private_ticks(tick)
+  end
+
+  defp deliver_transactions(state, tick, events) do
+    if state.transfer == :prepared do
+      if events == [], do: state, else: %{state | deferred: [{tick, events} | state.deferred]}
+    else
+      if state.baseline != nil, do: emit_transactions(state, tick, events)
+      state
+    end
+  end
+
   defp observation(state) do
     {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)
     %{identity: state.identity, entity_id: state.id, entity_epoch: state.epoch,
@@ -256,6 +347,7 @@ defmodule SceneServer.Movement.Player do
             scene_epoch: state.scene_epoch,
             server_tick: state.tick,
             monotonic_us: now(state),
+            server_time_us: server_time(state),
             time_domain: :scene_clock_monotonic_us,
             transaction_seq: state.updates.transaction_seq,
             collision_revision: state.updates.revision

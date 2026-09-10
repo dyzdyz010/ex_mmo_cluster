@@ -63,6 +63,41 @@ defmodule GateServer.Transport.QuicListener do
       characters: Map.put(state.characters, cid, owner)}}
   end
 
+  def handle_call({:prepare_transfer, old, target_scene_id, artifact}, {pid, _}, state) do
+    case state.characters[artifact.id] do
+      %{pid: ^pid, identity: ^old} ->
+        router = Keyword.get(state.opts, :route_module, WorldServer.Movement)
+        with {:ok, route} <- router.route(target_scene_id) do
+          fresh = %Identity{session_epoch: state.next_epoch, scene_id: target_scene_id,
+            scene_epoch: route.scene_epoch}
+          # 分配只预留 epoch；角色 owner 在目标 Ready 提交前仍指向旧 Scene。
+          state = %{state | next_epoch: state.next_epoch + 1}
+          case router.prepare_transfer(old, fresh, artifact, pid) do
+            {:ok, player} -> {:reply, {:ok, fresh, route, player}, state}
+            {:error, reason} -> {:reply, {:error, reason}, state}
+          end
+        else
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      _ -> {:reply, {:error, :stale_owner}, state}
+    end
+  end
+
+  def handle_call({:commit_transfer, old, fresh, cid}, {pid, _}, state) do
+    case state.characters[cid] do
+      %{pid: ^pid, identity: ^old} = owner ->
+        router = Keyword.get(state.opts, :route_module, WorldServer.Movement)
+        with {:ok, route} <- router.route(fresh.scene_id),
+             :ok <- router.commit_transfer(old, fresh) do
+          owner = %{owner | identity: fresh, scene_ref: route.scene_ref}
+          {:reply, :ok, %{state | characters: Map.put(state.characters, cid, owner)}}
+        else
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      _ -> {:reply, {:error, :stale_owner}, state}
+    end
+  end
+
   @impl true
   def terminate(_reason, state) do
     :quicer.close_listener(state.listener)

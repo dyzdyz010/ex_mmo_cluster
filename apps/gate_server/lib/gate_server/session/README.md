@@ -81,3 +81,56 @@ OwnerAck 在树中单独置于快照之前，仍逐包获取 native 发送进展
 `python Docs/M3/tools/gate-run.py --out Docs/M3/runtime/gate-check`；加 `--batching` 只跑合包用例。
 该入口验证实际协商上限、恰好装满/差一字节、剩余单条、替换后的 tick / revision / generation、ACK 优先和可靠流。
 真实 20 / 200 人集成吞吐与 ACK 进展仍由 Voxim M3 运行验收记录。
+
+## Voxim M4a 受控移交
+
+`QuicConnection` 在收到当前 Player 的越界请求后同步 `Player.seal/2`，使先前输入与 seal
+来自同一 Gate 发送者。listener 经现有 `route_module` 调用 World prepare，先预留新 session epoch，
+角色表仍保持旧 identity。连接可靠发送 `Session.Transfer`，等待客户端按切点 Fence、N/R 完成重绑。
+等待期间旧、新 identity 的 InputBatch 都改绑到被动目标 Player，datagram 与 control stream 共用同一入口；
+不再向源发送输入，不重编号输入序列或 tick，其他身份只计入 stale_identity。
+
+匹配新 identity 与移交 N/R 的 Ready 才触发 listener commit。listener 以 Gate PID 与旧 identity
+比较当前角色 owner，World 完成源 detach / 目标 activate 后才更新 owner identity / scene_ref。
+重复登录改变 owner 会使旧 Gate prepare / commit 明确失败；连接结束显式清理源与待提交目标，
+Player 对 Gate 的 monitor 还负责连接退出后的生命周期清理。旧 Ready、错误 N/R 与提交后重复 Ready
+明确关闭连接，不能二次激活。目标输出在提交返回后按新身份接纳；旧输入和旧输出被隔离。
+
+提交清空旧待发 datagram 和 snapshot 索引，但保留 `datagram_busy`，由真实 native sent 事件释放发送槽。
+旧 Fence 在等待期间仍可正常下行，可靠 Control 与 Voxel 两条流不假设相互到达顺序。
+依据 [OTP Processes: Signals](https://www.erlang.org/doc/system/ref_man_processes.html#signals)
+的同发送者顺序语义，seal 必须由转发输入的 Gate 发起；listener 的单邮箱完成角色归属比较和提交，
+不新增第二份 authority 目录。World / Scene 拥有目标准备与碰撞一致性，Gate 不复制该校验。
+
+`:stats` 提供 `transfer_prepared`、`transfer_committed`、`transfer_pending_inputs`、`transfer_last_us`，
+以及 `pending_transfer` 的新 identity、切点 tick / seq、N/R、输入批次数与等待微秒数。
+`mmo_transfer_prepare` / `mmo_transfer_commit` 日志记录旧/新 Scene 与 epoch、切点、N/R、
+单调时间与等待输入样本数，不记录 Join token。时间是 Gate 本地 monotonic，不能拿跨 VM 原值相减。
+
+最小测试为现有 `test/gate_server/quic_connection_test.exs` 的 `M4aGateTransferTest`，
+纯 callback 测试不启动 QUIC / Scene 服务，覆盖 seal→prepare、等待输入、Ready、owner CAS 和旧输出隔离。
+真实 QUIC 与双 UE 移交仍由 Voxim M4a 集成入口验证，callback 通过不代表运行验收。
+
+M4a 并发编辑实跑发现：冷区域的 `World.prepare` 耗时曾占住 Gate 会话约 30 秒，连 Player 的移交请求都只能排在其后。
+现在普通单格、批次与 Prefab 的 `Dispatch.handle/2` 均由连接首次编辑时懒启动的一个 linked worker 串行执行；
+Gate 完成既有连接身份、Scene 标签与 bounds 接纳后，只投递已经接纳的请求与不可变 context。
+worker 共用原 Dispatch、World 和 Sink，不分配事务或复制写入逻辑；连接 `terminate` 会结束 worker，异常退出也由 link 结束该连接。
+Prefab 的 footprint / instance 坐标权限查询仍在 Gate，尚未改变该现有接纳边界。
+
+编辑回执的 `Sink.quic` 使用连接独有 `make_ref`，在正常 Scene 移交中保持不变；新连接重新生成，closing 状态拒收回执。
+Movement、Player 下行仍严格匹配 Session.Identity，编辑回执的连接归属不使旧运动身份重新有效。
+`stats` 增加 `edit_pending`、`edit_completed`、`edit_queue_wait_us`、`edit_worker_us`，后两项是连接内观测最大值；
+`mmo_edit_completed` 逐请求记录原 request_id / scene_id、排队及 worker 微秒数，排队与实际编辑耗时分别可见。
+
+依据 [RFC 9000 §2](https://www.rfc-editor.org/rfc/rfc9000.html#section-2)，QUIC 流内有序而流间没有全局到达顺序。
+Ready 在 control、编辑在 voxel，因此目标 Scene 编辑可能先到，旧 Scene 编辑也可能在 Ready 提交后才到。
+当前 M4a 明确只有两个共用 canonical World 与 L0/bounds 的 Scene：连接接纳 current、pending 目标及本次提交的
+`previous_scene_id` 标签，第三 Scene 与越界坐标照常拒绝；previous 只保留一个标量，重连清空。
+该标签只容纳同一已鉴权角色连接的迟到编辑，执行仍路由到已验证的唯一 World；不用于运动输入路由。
+未来扩展多 Scene 时须重新定义 voxel 标签语义，本轮不建立历史身份列表或标签退休状态机。
+
+单 worker 的 FIFO 与回执→完成事件顺序直接使用 [OTP 同发送者顺序](https://www.erlang.org/doc/system/ref_man_processes.html#signals)。
+`M4aGateTransferTest` 在真实 Dispatch / World.prepare 入口用测试 source 栅栏阻塞编辑，验证 Gate 在其间继续处理输入与 Ready、
+批次 FIFO、移交后回执、closing / 新连接隔离，并覆盖跨流新旧标签、第三 Scene 与 bounds 拒绝。
+复现：在 Voxim 运行 `python Docs/M4a/tools/test.py --gate --out Saved/M4a/edit-worker-repeat voxim_aoi`；
+改前 Gate 阻塞见 `Saved/M4a/edit-worker-red`，跨流标签改前失败见 `Saved/M4a/edit-scene-red`，最终定向回归 `edit-scene-green` 为 18/18。
