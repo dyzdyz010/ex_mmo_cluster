@@ -15,10 +15,10 @@
 #
 # This shape matches how a stream of edit intents would arrive over the wire.
 
-alias GateServer.Codec
+alias MmoContracts.Voxel.Codec
 
 defmodule FixtureGen do
-  alias GateServer.Codec
+  alias MmoContracts.Voxel.Codec
 
   def intents do
     [intent_a(), intent_b()]

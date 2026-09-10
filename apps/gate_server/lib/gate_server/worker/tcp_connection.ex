@@ -8,7 +8,7 @@ defmodule GateServer.TcpConnection do
 
       waiting_auth -> authenticated -> in_scene
 
-  Incoming frames are decoded with `GateServer.Codec.decode/1` and handed to the
+  Incoming frames are decoded with `GateServer.Session.Dispatch.decode/1` and handed to the
   shared session state machine `GateServer.Session.Dispatch`; outbound frames go
   through `GateServer.Session.Sink`, which owns the socket write.
 
@@ -16,7 +16,7 @@ defmodule GateServer.TcpConnection do
 
       :gen_tcp active message
            ↓
-      GateServer.Codec.decode/1
+      GateServer.Session.Dispatch.decode/1
            ↓
       GateServer.Session.Dispatch.handle/2   ← 与 WebSocket 链路共用
            ↓
@@ -419,7 +419,7 @@ defmodule GateServer.TcpConnection do
       %{connection_pid: self(), bytes: byte_size(data), status: state.status}
     end)
 
-    case GateServer.Codec.decode(data) do
+    case GateServer.Session.Dispatch.decode(data) do
       {:ok, msg} ->
         GateServer.CliObserve.emit("tcp_decoded", fn ->
           %{connection_pid: self(), message: Observe.message_summary(msg)}

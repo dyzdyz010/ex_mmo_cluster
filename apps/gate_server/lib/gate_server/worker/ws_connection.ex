@@ -117,7 +117,7 @@ defmodule GateServer.WsConnection do
       %{connection_pid: self(), bytes: byte_size(data), status: state.status}
     end)
 
-    case GateServer.Codec.decode(data) do
+    case GateServer.Session.Dispatch.decode(data) do
       {:ok, msg} ->
         GateServer.CliObserve.emit("ws_decoded", fn ->
           %{connection_pid: self(), message: Observe.message_summary(msg)}

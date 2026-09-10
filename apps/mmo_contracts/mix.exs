@@ -18,7 +18,7 @@ defmodule MmoContracts.MixProject do
   # 纯契约库:无监督树,只暴露类型与校验。
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :crypto]
     ]
   end
 

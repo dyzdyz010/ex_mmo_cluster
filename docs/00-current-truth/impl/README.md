@@ -1,14 +1,19 @@
 # 实现状态速查
 
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+
+
+
 > 本文件只做实现入口速查；设计解释见 `docs/00-current-truth/design/**`。
 
 ## 服务端
 
 | 领域 | 入口文件/目录 | 当前用途 |
 | --- | --- | --- |
-| Gate 协议 | `apps/gate_server/lib/gate_server/codec.ex` | 自定义 wire codec |
+| 现行 Session/Voxel | `apps/mmo_contracts/lib/mmo_contracts/{session,voxel}/codec.ex`、`voxel/payload.ex` | 纯字节唯一 owner，G0 bytes 不变 |
+| Gate 遗留协议 | `apps/gate_server/lib/gate_server/codec.ex` | 有活调用方的旧移动/NPC/战斗/Scene 等领域 |
 | Gate TCP | `apps/gate_server/lib/gate_server/worker/tcp_connection.ex` | TCP `{packet,4}` connection、dispatch、forward |
-| Gate WS | `apps/gate_server/lib/gate_server/worker/ws_connection.ex` | WebSocket connection 镜像路径 |
+| Gate WS | `apps/gate_server/lib/gate_server/worker/ws_connection.ex` | WebSocket transport；与 TCP 共用 Session.Dispatch/Sink |
 | Voxel routing | `apps/gate_server/lib/gate_server/voxel/routing.ex` | Gate → World route/lease helper |
 | Subscription worker | `apps/gate_server/lib/gate_server/voxel/subscription_worker.ex` | per-connection 订阅所有者 |
 | World region grid | `apps/world_server/lib/world_server/voxel/region_grid.ex` | `chunk_coord -> region_id` |

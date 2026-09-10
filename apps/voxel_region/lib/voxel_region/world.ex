@@ -23,7 +23,8 @@ defmodule VoxelRegion.World do
   require Logger
   import Bitwise
   alias VoxelRegion.OverlayLog
-  alias VoxelRegion.{Codec, FileStore, Payload, Reducer}
+  alias VoxelRegion.{CollisionSource, FileStore, Prefab, Reducer}
+  alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @max_level 5
   @resident_level 4
@@ -36,6 +37,15 @@ defmodule VoxelRegion.World do
 
   def content_version(server \\ @name), do: GenServer.call(server, :content_version)
   def seq(server \\ @name), do: GenServer.call(server, :seq)
+
+  @doc "唯一 canonical authority 的 PID，供区域视图共享世界身份。"
+  def authority_ref(server \\ @name), do: GenServer.call(server, :authority_ref)
+
+  @doc "区域物化服务启动入口：在本节点预备源，再原子返回快照并订阅完整区域更新。"
+  def replica_snapshot_and_subscribe(server, box, pid) do
+    prepare(server, Enum.map(CollisionSource.regions(box), &{0, &1}))
+    GenServer.call(server, {:replica_snapshot, box, pid}, 300_000)
+  end
 
   @doc "载荷缓存与生成统计：entries / lru_bytes / resident_bytes / hits / misses / evictions / generated。"
   def stats(server \\ @name), do: GenServer.call(server, :stats)
@@ -89,7 +99,9 @@ defmodule VoxelRegion.World do
 
   # 冷 miss 的 baseline 在调用方进程并发物化到磁盘缓存；结果不看——World 读时缺失就是 missing、损坏就是错误，语义不变。
   defp prepare(server, keys) do
-    {source, source_state} = GenServer.call(server, :source)
+    # 多人加入的快照共用此 mailbox；前置查询沿用后续快照的等待时限，
+    # 避免 20 人实验中正常排队被默认 5 秒超时截断。
+    {source, source_state} = GenServer.call(server, :source, 300_000)
 
     keys
     |> Enum.uniq()
@@ -118,11 +130,35 @@ defmodule VoxelRegion.World do
     end
   end
 
+  def place_prefab(server \\ @name, definition_id, anchor, orientation) do
+    with {:ok, cells} <- prefab_cells(server,definition_id,anchor,orientation) do
+      prepare(server, prefab_keys(cells))
+      GenServer.call(server,{:place_prefab,definition_id,anchor,orientation,cells},300_000)
+    end
+  end
+  def remove_prefab(server \\ @name, instance_id), do: GenServer.call(server,{:remove_prefab,instance_id},300_000)
+  def prefab_cells(server,id,anchor,orientation), do: GenServer.call(server,{:prefab_cells,id,anchor,orientation})
+  def instance_cells(server,id), do: GenServer.call(server,{:instance_cells,id})
+
+  defp prefab_keys(cells) do
+    cells |> Enum.flat_map(fn {micro,_} ->
+      {{x,y,z},_} = Prefab.macro_slot(micro)
+      for rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
+          rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {0,{rx,ry,rz}}
+    end) |> Enum.uniq()
+  end
+
   def subscribe(server \\ @name, pid, have_seq, {{_, _, _}, {_, _, _}} = box, coarse_min_level) do
     GenServer.call(server, {:subscribe, pid, have_seq, box, coarse_min_level})
   end
 
   def entries_after(server \\ @name, seq), do: GenServer.call(server, {:entries_after, seq})
+
+  @doc "Prepare canonical L0 source, then atomically send its snapshot marker and subscribe to all subsequent transactions."
+  def canonical_snapshot_and_subscribe(world_ref, l0_box, subscriber_pid, request_ref, include_chunks \\ true) do
+    prepare(world_ref, Enum.map(CollisionSource.regions(l0_box), &{0, &1}))
+    GenServer.call(world_ref, {:canonical_snapshot, l0_box, subscriber_pid, request_ref, include_chunks}, 300_000)
+  end
 
   @doc "多格编辑原子提交；每级父格去重后规约。"
   def apply_edits(server \\ @name, edits) do
@@ -168,10 +204,15 @@ defmodule VoxelRegion.World do
           cache_stats: %{hits: 0, misses: 0, evictions: 0},
           served_headers: %{},
           overlay: %{},
+          refined: %{},
+          instances: %{},
+          prefabs: Prefab.load(Keyword.get(opts, :prefab_catalog_path, Application.get_env(:voxel_region, :prefab_catalog_path))),
           overlay_regions: %{},
           seq: 0,
           entries: %{},
           subs: %{},
+          canonical_subs: %{},
+          replica_subs: %{},
           log: {log, log.open(world_dir, cv)}
         }
 
@@ -187,7 +228,70 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
+  def handle_call(:authority_ref, _from, state), do: {:reply, self(), state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
+
+  def handle_call({:prefab_cells,id,anchor,orientation}, _from,state) do
+    result = with {:ok,definition} <- Map.fetch(state.prefabs,id), true <- orientation in 0..23 do
+      cells = Prefab.footprint(definition,anchor,orientation)
+      macros = Enum.map(cells,fn {c,_} -> elem(Prefab.macro_slot(c),0) end)
+      cond do
+        not Enum.all?(macros,&valid_edit_coord?/1) -> {:error,:invalid_coordinate}
+        length(Enum.uniq(Enum.map(macros,&region_of/1))) != 1 -> {:error,:cross_region_prefab}
+        true -> {:ok,cells}
+      end
+    else
+      :error -> {:error,:definition_not_found}
+      false -> {:error,:invalid_orientation}
+    end
+    {:reply,result,state}
+  end
+
+  def handle_call({:instance_cells,id},_from,state) do
+    cells = owner_cells(state,id)
+    {:reply,if(cells == [],do: {:error,:instance_not_found},else: {:ok,cells}),state}
+  end
+
+  def handle_call({:place_prefab,id,anchor,orientation,cells},_from,state) do
+    before = state
+    owner = {state.seq+1,0}
+    result = Enum.reduce_while(cells,{:ok,state,[]},fn {micro,material},{:ok,s,changed} ->
+      {cell,slot} = Prefab.macro_slot(micro)
+      slots = Map.get(s.refined,cell,%{})
+      case cell_value(s,0,cell) do
+        {:ok,{0,_},s} ->
+          if Map.has_key?(slots,slot) do
+            {:halt,{:error,:occupied}}
+          else
+            s = %{s | refined: Map.put(s.refined,cell,Map.put(slots,slot,{material,owner}))}
+            s = put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
+            {:cont,{:ok,s,[cell|changed]}}
+          end
+        {:ok,_,_} -> {:halt,{:error,:occupied}}
+        {:error,reason,_} -> {:halt,{:error,reason}}
+      end
+    end)
+    case result do
+      {:error,reason} -> {:reply,{:error,reason},before}
+      {:ok,s,changed} ->
+        instance = %{definition_id: id,anchor: anchor,orientation: orientation}
+        s = %{s | instances: Map.put(s.instances,owner,instance)}
+        prefab_reply(before,s,Enum.uniq(changed))
+    end
+  end
+
+  def handle_call({:remove_prefab,id},_from,state) do
+    case owner_cells(state,id) do
+      [] -> {:reply,{:error,:instance_not_found},state}
+      cells ->
+        next = Enum.reduce(cells,state,fn cell,s ->
+          slots = Map.fetch!(s.refined,cell) |> Map.reject(fn {_,{_,owner}} -> owner == id end)
+          refined = if map_size(slots) == 0, do: Map.delete(s.refined,cell), else: Map.put(s.refined,cell,slots)
+          put_overlay(%{s | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
+        end)
+        prefab_reply(state,%{next | instances: Map.delete(next.instances,id)},cells)
+    end
+  end
 
   def handle_call(:stats, _from, state) do
     stats =
@@ -240,6 +344,26 @@ defmodule VoxelRegion.World do
     {:reply, state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1)), state}
   end
 
+  def handle_call({:canonical_snapshot, box, pid, request, include_chunks}, _from, state) do
+    case capture_canonical_snapshot(state, box, include_chunks) do
+      {:ok, snapshot, state} ->
+        unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
+        send(pid, {:canonical_snapshot, request, snapshot})
+        {:reply, :ok, %{state | canonical_subs: Map.put_new(state.canonical_subs, pid, box)}}
+      {:error, :canonical_incomplete} ->
+        {:reply, {:error, :canonical_incomplete}, state}
+    end
+  end
+
+  def handle_call({:replica_snapshot, box, pid}, _from, state) do
+    case capture_canonical_snapshot(state, box, true) do
+      {:ok, snapshot, state} ->
+        unless Map.has_key?(state.replica_subs, pid), do: Process.monitor(pid)
+        {:reply, {:ok, snapshot}, %{state | replica_subs: Map.put(state.replica_subs, pid, box)}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:apply_edits, edits}, from, state) do
     case apply_batch(state, edits) do
       {:ok, next_state} ->
@@ -254,7 +378,7 @@ defmodule VoxelRegion.World do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid)}}
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid), replica_subs: Map.delete(state.replica_subs, pid)}}
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ---- 应答
@@ -311,6 +435,7 @@ defmodule VoxelRegion.World do
           case decoded(state, level, region) do
             {:ok, payload, state} ->
               overrides = Map.new(cells, fn cell -> {Payload.local(region, cell), Map.fetch!(state.overlay, {level, cell})} end)
+              payload = with_refined(state, payload)
               bytes = Payload.encode(payload, overrides, state.seq, state.cv)
               {:ok, header} = Codec.decode_payload_header(bytes)
               {:ok, bytes, header, cache_put(state, key, bytes, header)}
@@ -326,6 +451,41 @@ defmodule VoxelRegion.World do
   end
 
   # ---- 载荷缓存：L0–L3 在 gb_tree {tick, key} 上按最近使用淘汰，L4+ 常驻不进树。
+
+  defp with_refined(state,%Payload{level: 0,region: region}=payload) do
+    refined = for {cell,slots} <- state.refined, local = Payload.local(region,cell), Payload.in_span?(local),
+      into: %{}, do: {Payload.cell_index(local),slots}
+    ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+    %{payload | refined: refined,instances: Map.take(state.instances,ids),
+      format_version: if(map_size(refined)>0 or payload.format_version == 5,do: 5,else: 4)}
+  end
+  defp with_refined(_state,payload), do: payload
+
+  defp owner_cells(state,id) do
+    for {cell,slots} <- state.refined, Enum.any?(slots,fn {_,{_,owner}} -> owner == id end), do: cell
+  end
+
+  defp prefab_reply(before,state,cells) do
+    state = %{state | seq: before.seq+1}
+    keys = for {x,y,z} <- cells,
+      rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
+      rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {0,{rx,ry,rz}}
+    {entries,state} = Enum.map_reduce(Enum.sort(Enum.uniq(keys)),state,fn {level,region}=key,s ->
+      s = %{s | snapshots: MapSet.put(s.snapshots,key)}
+      {:ok,bytes,_,s} = payload_bytes(s,level,region)
+      {region_entry(s.seq,bytes),s}
+    end)
+    txn = %{seq: state.seq,entries: entries,coarse: []}
+    with {:ok,chunks} <- canonical_changes(before,state,Enum.map(cells,&{0,&1})),
+         :ok <- append_log(state,txn) do
+      state = %{state | entries: Map.put(state.entries,state.seq,txn)}
+      fanout(state,txn)
+      fanout_canonical(state,txn,chunks)
+      {:reply,{:ok,state.seq},state}
+    else
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
+  end
 
   defp cache_fetch(state, key) do
     case Map.fetch(state.payloads, key) do
@@ -463,6 +623,86 @@ defmodule VoxelRegion.World do
     Enum.each(state.subs, fn {pid, filter} -> send_filtered(pid, entry, filter) end)
   end
 
+  # Same materialized bytes as serve; only the snapshot header is stamped to the barrier N.
+  defp canonical_regions(state, coords) do
+    Enum.reduce_while(coords, {:ok, [], [], state}, fn coord, {:ok, regions, payloads, state} ->
+      with {:ok, bytes, _, state} <- payload_bytes(state, 0, coord),
+           bytes = Codec.stamp_payload_seq(bytes, state.seq),
+           {:ok, payload} <- Payload.decode(bytes) do
+        {:cont, {:ok, regions ++ [{coord, bytes}], payloads ++ [{coord, payload}], state}}
+      else
+        _ -> {:halt, {:error, :canonical_incomplete}}
+      end
+    end)
+  end
+
+  defp canonical_chunks(state, coords) do
+    groups = Enum.group_by(coords, &CollisionSource.region_coord/1)
+    with {:ok, _, payloads, _} <- canonical_regions(state, groups |> Map.keys() |> Enum.sort()) do
+      chunks = Enum.flat_map(payloads, fn {region, payload} ->
+        Enum.map(Map.fetch!(groups, region), &CollisionSource.capture(payload, &1))
+      end)
+      {:ok, Enum.sort_by(chunks, & &1.coord)}
+    end
+  end
+
+  defp capture_canonical_snapshot(state, {l0_min, l0_max} = box, include_chunks) do
+    started = System.monotonic_time(:microsecond)
+    with {:ok, regions, payloads, state} <- canonical_regions(state, CollisionSource.regions(box)) do
+      chunks = if include_chunks, do: (payloads |> Enum.flat_map(fn {coord, payload} ->
+        Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
+      end) |> Enum.sort_by(& &1.coord)), else: []
+      snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
+        l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
+      Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
+      {:ok, snapshot, state}
+    end
+  end
+
+  # Capture both versions while the pre-commit state still exists. Never sample after fanout.
+  defp canonical_changes(%{canonical_subs: subs, replica_subs: replicas}, _after, _changed) when map_size(subs) == 0 and map_size(replicas) == 0, do: {:ok, []}
+  defp canonical_changes(before, after_state, changed) do
+    started = System.monotonic_time(:microsecond)
+    boxes = (Map.values(before.canonical_subs) ++ Map.values(before.replica_subs)) |> Enum.uniq()
+    coords = changed |> Enum.map(fn {0, cell} -> CollisionSource.chunk_coord(cell) end)
+      |> Enum.uniq() |> Enum.filter(fn coord -> Enum.any?(boxes, &CollisionSource.in_box?(coord, &1)) end)
+      |> Enum.sort()
+    with {:ok, old} <- canonical_chunks(before, coords),
+         {:ok, new} <- canonical_chunks(after_state, coords) do
+      chunks = Enum.zip(old, new) |> Enum.flat_map(fn {a, b} -> if a.cells == b.cells, do: [], else: [b] end)
+      Logger.info("voxel_region canonical_delta seq=#{after_state.seq} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} capture_us=#{System.monotonic_time(:microsecond)-started}")
+      {:ok, chunks}
+    end
+  end
+
+  defp fanout_canonical(state, %{coord: _} = entry, chunks) do
+    fanout_canonical(state, %{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse}, chunks)
+  end
+
+  defp fanout_canonical(state, transaction, chunks) do
+    Enum.each(state.canonical_subs, fn {pid, box} ->
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+        chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
+      send(pid, {:canonical_delta, delta})
+    end)
+
+    # 同一事务受影响的区域只物化一次，再按各 Replica 的驻留范围分发。
+    coords = state.replica_subs |> Map.values() |> Enum.flat_map(&CollisionSource.regions/1) |> Enum.uniq()
+      |> Enum.filter(fn region ->
+        case project_transaction(transaction, 0, region) do
+          %{entries: [], coarse: []} -> false
+          _ -> true
+        end
+      end) |> Enum.sort()
+    {:ok, regions, _, _} = canonical_regions(state, coords)
+    Enum.each(state.replica_subs, fn {pid, box} ->
+      wanted = MapSet.new(CollisionSource.regions(box))
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+        chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
+      send(pid, {:canonical_replica_delta, delta, Enum.filter(regions, &MapSet.member?(wanted, elem(&1, 0)))})
+    end)
+  end
+
   defp send_filtered(pid, %{entries: entries, coarse: coarse} = txn, filter) do
     entries = Enum.filter(entries, &matches?(&1, filter))
     coarse = Enum.filter(coarse, &matches_cell?(&1.level, &1.cell, filter))
@@ -529,11 +769,29 @@ defmodule VoxelRegion.World do
   defp replay_entry(state, %{payload: bytes}) do
     {:ok, p} = Payload.decode(bytes)
     key = {p.level, p.region}
-    overlay = Map.reject(state.overlay, fn {{level, cell}, _} -> level == p.level and region_of(cell) == p.region end)
-    regions = Map.new(state.overlay_regions, fn {k, cells} -> {k, MapSet.filter(cells, &Map.has_key?(overlay, {elem(k, 0), &1}))} end)
+    state = if p.level == 0 do
+      {ox,oy,oz} = Payload.origin(p.region)
+      core = for {index,slots} <- p.refined,
+        x = rem(index,66), y = rem(div(index,66),66), z = div(index,66*66),
+        x in 1..64 and y in 1..64 and z in 1..64, into: %{}, do: {{ox+x,oy+y,oz+z},slots}
+      refined = state.refined |> Map.reject(fn {cell,_} -> region_of(cell)==p.region end) |> Map.merge(core)
+      ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+      %{state | refined: refined,instances: Map.take(Map.merge(state.instances,p.instances),ids)}
+    else
+      state
+    end
+    # The region index includes its core and the one-cell ring. Replacing this
+    # core can only invalidate overlay entries in this region and its neighbors;
+    # scanning every accumulated region for each checkpoint was quadratic.
+    core_cells = state.overlay_regions |> Map.get(key, MapSet.new()) |> Enum.filter(&(region_of(&1) == p.region))
+    overlay = Map.drop(state.overlay, Enum.map(core_cells, &{p.level, &1}))
+    {rx, ry, rz} = p.region
+    neighbors = for x <- (rx-1)..(rx+1), y <- (ry-1)..(ry+1), z <- (rz-1)..(rz+1), do: {p.level, {x,y,z}}
+    regions = Enum.reduce(Map.take(state.overlay_regions, neighbors), state.overlay_regions, fn {k,cells}, index ->
+      Map.put(index, k, MapSet.filter(cells, &(region_of(&1) != p.region)))
+    end)
     state = %{cache_clear(state) | decoded: Map.put(state.decoded, key, p), snapshots: MapSet.put(state.snapshots, key), overlay: overlay,
                        overlay_regions: regions}
-    {rx, ry, rz} = p.region
     # 内部格直接从快照读取；边界格同时进入邻居 ring。
     for z <- 0..63, y <- 0..63, x <- 0..63, x in [0, 63] or y in [0, 63] or z in [0, 63], reduce: state do
       s -> put_overlay(s, p.level, {rx*64+x, ry*64+y, rz*64+z}, Payload.value(p, {x+1,y+1,z+1}))
@@ -541,16 +799,17 @@ defmodule VoxelRegion.World do
   end
 
   defp replay_entry(state, entry) do
-    state = put_overlay(state, 0, entry.coord, {entry.material, Reducer.uniform(entry.material)})
+    state = put_overlay(state, 0, entry.coord, {entry.material, MmoContracts.Voxel.Skins.uniform(entry.material)})
     Enum.reduce(entry.coarse, state, fn e, s -> put_overlay(s, e.level, e.cell, {e.material, e.skins}) end)
   end
 
   defp apply_batch(state, edits, legacy \\ false) do
+    before = state
     started = System.monotonic_time(:microsecond)
     result = Enum.reduce_while(Map.new(edits), {[], state}, fn {cell,m}, {changed,s} ->
-      case cell_value(s, 0, cell) do
+      case if(Map.has_key?(s.refined,cell),do: {:error,:refined_cell,s},else: cell_value(s, 0, cell)) do
         {:ok, {old,_}, s} when old == m -> {:cont, {changed,s}}
-        {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,Reducer.uniform(m)})}}
+        {:ok, _, s} -> {:cont, {[{0,cell}|changed],put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
         {:error,:missing,_} -> {:halt, {:error,:missing_region}}
         {:error,reason,_} -> {:halt, {:error,reason}}
       end
@@ -575,13 +834,16 @@ defmodule VoxelRegion.World do
             else
               select_transaction(state,all)
             end
+            with {:ok, collision_chunks} <- canonical_changes(before, state, changed) do
             append_log(state,txn)
             state = %{state | entries: Map.put(state.entries,state.seq,txn)}
             fanout(state,txn)
+            fanout_canonical(state,txn,collision_chunks)
             region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
             state = if region_count > 0, do: compact_log(state), else: state
             Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
             {:ok,state}
+            end
         end
     end
   end

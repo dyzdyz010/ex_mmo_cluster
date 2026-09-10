@@ -5,7 +5,7 @@ defmodule VoxelRegion.FileStore do
   """
 
   require Logger
-  alias VoxelRegion.Codec
+  alias MmoContracts.Voxel.Codec
 
   @doc "root 下唯一的 16 hex 子目录 = content_version。"
   def content_version(%{content_version: version}), do: version

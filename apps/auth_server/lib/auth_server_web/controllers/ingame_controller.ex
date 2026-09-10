@@ -117,7 +117,7 @@ defmodule AuthServerWeb.IngameController do
   end
 
   @doc """
-  Voxim R6：批量 region 载荷拉取（`application/octet-stream` 进出；线格式见 `VoxelRegion.Codec`）。
+  Voxim R6：批量 region 载荷拉取（`application/octet-stream` 进出；线格式见 `MmoContracts.Voxel.Codec`）。
 
   后端是 `VoxelRegion.World`（烘焙文件 ⊕ overlay 日志，`VOXEL_REGION_ROOT`）；与其它 `/voxel/*` 一样只在 `dev_auto_login` 下开放。
   """
@@ -312,7 +312,13 @@ defmodule AuthServerWeb.IngameController do
   defp do_voxel_regions(conn) do
     {:ok, body, conn} = Plug.Conn.read_body(conn, length: 16_000_000, read_length: 1_000_000)
 
-    case Process.whereis(VoxelRegion.World) && VoxelRegion.World.serve(body) do
+    result =
+      with {:ok, %{world_ref: world_ref}} <-
+             WorldServer.Movement.route(Application.fetch_env!(:auth_server, :voxel_scene_id)) do
+        VoxelRegion.World.serve(world_ref, body)
+      end
+
+    case result do
       {:ok, reply} ->
         conn
         |> put_resp_content_type("application/octet-stream")

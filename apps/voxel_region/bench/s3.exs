@@ -1,4 +1,5 @@
-alias VoxelRegion.{Codec, FileStore, World}
+alias VoxelRegion.{FileStore, World}
+alias MmoContracts.Voxel.{Codec}
 cv = 0x5333
 base = Path.expand(".demo/observe/voxim-s3-#{System.system_time(:millisecond)}")
 File.mkdir_p!(base)

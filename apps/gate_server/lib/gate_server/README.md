@@ -1,5 +1,21 @@
 # GateServer 运行时边界
 
+## Voxim M1 正式入口
+
+`VOXIM_TRANSPORT=voxim_quic` 是当前入口，启动 `QuicListener` 与每连接的
+`QuicConnection`。TLS/ALPN `voxim-m1`、两个固定双向可靠流（purpose 1 control / 2 voxel）
+与 DATAGRAM 共用一个 QUIC connection；没有 TCP/fast-lane 自动回退。
+部署必须提供证书、key、UDP 端口、kernel/profile identity；M1 编辑还需显式
+`VOXIM_M1_CONFIG`，范围从 `Scene.load_config!/1` 取得。UE CA 是连接私有的信任根，不导入系统证书库。
+
+Auth token、username、cid 同时验证后，由 Gate 唯一分配 session epoch 并调用 Scene.join。
+Scene 仅用 `Sink.reliable/4`、`datagram/3`、`close/3` 出站；close 先可靠发送 SessionEnd 并完成
+control send shutdown，再关闭连接。Scene 的 voxel 出口保持 transaction/marker 顺序；旧 R6
+subscribe 只接纳该客户端编辑资格，不创建第二份 World 订阅。R6 编辑继续复用 Dispatch 的实现。
+
+旧 `legacy_reference` 必须显式选择：现存 AuthServerWeb.GameWebSocket 和参考 Voxia TCP 客户端
+仍有调用方，以下原监督树和旧游戏业务描述仅适用于该模式，不属于 M1 支持承诺。
+
 `GateServer` 是面向客户端的传输层和控制入口。这里负责认证、会话、TCP / WebSocket /
 UDP 连接状态和结构化观测日志，不拥有权威玩法状态。
 

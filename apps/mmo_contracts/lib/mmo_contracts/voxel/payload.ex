@@ -1,4 +1,4 @@
-defmodule VoxelRegion.Payload do
+defmodule MmoContracts.Voxel.Payload do
   @moduledoc """
   一个已解码的 region 载荷：66³ cells（binary，u16 LE，x 最快，原点 region × 64 − 1）+ 稀疏表皮场（Voxim `FVoxelSkinField` 的 CSR）。
 
@@ -10,50 +10,140 @@ defmodule VoxelRegion.Payload do
   """
 
   import Bitwise
-  alias VoxelRegion.Reducer
+  alias MmoContracts.Voxel.Skins
 
   @extent 66
   @cell_count @extent * @extent * @extent
+  @max_map_extent 4
 
-  defstruct level: 0, region: {0, 0, 0}, seq: 0, content_version: 0, cells: <<>>, map_extent: 1, records: %{}, fmi: <<>>, maps: <<>>
+  defstruct level: 0,
+            region: {0, 0, 0},
+            seq: 0,
+            content_version: 0,
+            cells: <<>>,
+            map_extent: 1,
+            records: %{},
+            fmi: <<>>,
+            maps: <<>>,
+            refined: %{},
+            instances: %{},
+            format_version: 4
 
+  @doc "region 载荷每轴 cell 数（含边缘）。"
   def extent, do: @extent
+
+  @doc "v4 格/CSR 数量和 u16 贴图索引决定的最大编码容量；不是运行时预算。"
+  def max_body_bytes,
+    do:
+      4 + @cell_count * (2 + 2 + 8 + 12) + 16 + 5 * 4 + (@extent * @extent + 1) * 4 +
+        65536 * @max_map_extent * @max_map_extent
 
   @doc "region 的 66³ 原点（level 单位）。"
   def origin({x, y, z}), do: {x * 64 - 1, y * 64 - 1, z * 64 - 1}
 
+  @doc "local XYZ 转为 x 最快的 cell 下标。"
   def cell_index({lx, ly, lz}), do: lx + @extent * (ly + @extent * lz)
 
+  @doc "region 与 level 坐标转 local XYZ。"
   def local(region, {cx, cy, cz}) do
     {ox, oy, oz} = origin(region)
     {cx - ox, cy - oy, cz - oz}
   end
 
-  def in_span?({lx, ly, lz}), do: lx >= 0 and ly >= 0 and lz >= 0 and lx < @extent and ly < @extent and lz < @extent
+  @doc "local XYZ 是否位于载荷范围。"
+  def in_span?({lx, ly, lz}),
+    do: lx >= 0 and ly >= 0 and lz >= 0 and lx < @extent and ly < @extent and lz < @extent
 
   @doc "完整载荷字节 → struct。"
   def decode(bytes) do
-    with {:ok, header, raw} <- VoxelRegion.Codec.decode_payload_body(bytes),
-         {:ok, payload} <- decode_body(raw) do
-      {:ok, %{payload | level: header.level, region: header.region, seq: header.seq, content_version: header.content_version}}
+    with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
+         {:ok, payload} <- decode_body(raw),
+         true <- binary_part(bytes,0,4) == if(payload.format_version == 5,do: "VXR5",else: "VXR4"),
+         true <- Enum.all?(payload.refined,fn {index,_} -> binary_part(payload.cells,index*2,2) == <<0,0>> end) do
+      {:ok,
+       %{
+         payload
+         | level: header.level,
+           region: header.region,
+           seq: header.seq,
+           content_version: header.content_version
+       }}
+    else
+      false -> {:error,:invalid_payload}
+      error -> error
     end
   end
 
-  def decode_body(<<n::32-little, cells::binary-size(n * 2), _ex::32-little, _ey::32-little, _ez::32-little, map_extent::32-little, rest::binary>>)
-      when n == @cell_count do
+  @doc "VXR4 解压后的 CSR body 解码为不可变载荷。"
+  def decode_body(
+        <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
+          map_extent::32-little, rest::binary>>
+      )
+      when n == @cell_count and map_extent in [1, 2, @max_map_extent] and
+             ((ex == 0 and ey == 0 and ez == 0) or
+                (ex == @extent and ey == @extent and ez == @extent)) do
     with {:ok, row_start, rest} <- array(rest, 4),
          {:ok, col_x, rest} <- array(rest, 2),
-         <<record_count::32-little, faces::binary-size(record_count * 6), masks::binary-size(record_count * 2), rest::binary>> <- rest,
+         <<record_count::32-little, faces::binary-size(record_count * 6),
+           masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
-         {:ok, maps, <<>>} <- array(rest, 1) do
-      map_extent = max(map_extent, 1)
-      {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: build_records(row_start, col_x, faces, masks), fmi: fmi, maps: maps}}
+         {:ok, maps, tail} <- array(rest, 1),
+         {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail),
+         {:ok, records} <-
+           decode_records({ex, ey, ez}, map_extent, row_start, col_x, faces, masks, fmi, maps) do
+      {:ok,
+       %__MODULE__{
+         cells: cells,
+         map_extent: map_extent,
+         records: records,
+         fmi: fmi,
+         maps: maps, refined: refined, instances: instances, format_version: version
+       }}
     else
       _ -> {:error, :invalid_payload}
     end
   end
 
   def decode_body(_), do: {:error, :invalid_payload}
+
+  defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
+    rows = for <<v::32-little <- row_start>>, do: v
+    xs = List.to_tuple(for <<v::16-little <- col_x>>, do: v)
+    mask_values = for <<v::16-little <- masks>>, do: v
+    record_count = length(mask_values)
+    texels = map_extent * map_extent
+    map_count = div(byte_size(maps), texels)
+
+    shape_ok =
+      tuple_size(xs) == record_count and record_count <= @cell_count and
+        rem(byte_size(maps), texels) == 0 and map_count <= 65536 and
+        Enum.all?(mask_values, &(&1 <= 63)) and
+        byte_size(fmi) == Enum.sum(Enum.map(mask_values, &popcount/1)) * 2 and
+        Enum.all?(for(<<i::16-little <- fmi>>, do: i), &(&1 < map_count))
+
+    rows_ok =
+      if not shape_ok do
+        false
+      else
+        if record_count == 0 do
+          rows == [] and fmi == <<>> and maps == <<>>
+        else
+          extent == {@extent, @extent, @extent} and length(rows) == @extent * @extent + 1 and
+            hd(rows) == 0 and List.last(rows) == record_count and
+            Enum.all?(Enum.chunk_every(rows, 2, 1, :discard), fn [first, last] ->
+              first <= last and last <= record_count and
+                (first == last or
+                   Enum.all?(first..(last - 1), fn i ->
+                     elem(xs, i) < @extent and (i == first or elem(xs, i - 1) < elem(xs, i))
+                   end))
+            end)
+        end
+      end
+
+    if shape_ok and rows_ok,
+      do: {:ok, build_records(row_start, col_x, faces, masks)},
+      else: {:error, :invalid_payload}
+  end
 
   defp array(bin, size) do
     case bin do
@@ -101,7 +191,7 @@ defmodule VoxelRegion.Payload do
   def skins(%__MODULE__{} = p, local, material) do
     case Map.fetch(p.records, local) do
       :error ->
-        Reducer.uniform(material)
+        Skins.uniform(material)
 
       {:ok, {ids, mask, base}} ->
         ext = p.map_extent
@@ -112,7 +202,7 @@ defmodule VoxelRegion.Payload do
             bit = 1 <<< face
 
             if (mask &&& bit) != 0 do
-              slot = base + popcount(mask &&& (bit - 1))
+              slot = base + popcount(mask &&& bit - 1)
               <<index::16-little>> = binary_part(p.fmi, slot * 2, 2)
               {id, binary_part(p.maps, index * ext * ext, ext * ext)}
             else
@@ -120,7 +210,7 @@ defmodule VoxelRegion.Payload do
             end
           end
 
-        Reducer.canonical({ext, List.to_tuple(faces)})
+        Skins.canonical({ext, List.to_tuple(faces)})
     end
   end
 
@@ -149,11 +239,14 @@ defmodule VoxelRegion.Payload do
 
     override_records =
       overrides
-      |> Enum.reject(fn {_, {m, s}} -> Reducer.trivial?(s, m) end)
+      |> Enum.reject(fn {_, {m, s}} -> Skins.trivial?(s, m) end)
       |> Map.new(fn {local, {_, s}} -> {local, s} end)
 
-    records = Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
+    records =
+      Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
+
     {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, ext)
+
     # 空场（L0，或编辑后没有非平凡格）与 Rust `skin::encode` / 客户端空 FVoxelSkinField 同字节：Extent 0、MapExtent 1。
     # 客户端写回缓存的副本按同一规则编码，hash 才能与这里物化的载荷相等（否则重启后重发 payload 而不是 unchanged）。
     {field_extent, field_map_extent} = if records == [], do: {0, 1}, else: {@extent, ext}
@@ -162,7 +255,8 @@ defmodule VoxelRegion.Payload do
       IO.iodata_to_binary([
         <<@cell_count::32-little>>,
         cells,
-        <<field_extent::32-little, field_extent::32-little, field_extent::32-little, field_map_extent::32-little>>,
+        <<field_extent::32-little, field_extent::32-little, field_extent::32-little,
+          field_map_extent::32-little>>,
         <<length(row_start)::32-little>>,
         Enum.map(row_start, &<<&1::32-little>>),
         <<length(col_x)::32-little>>,
@@ -176,7 +270,9 @@ defmodule VoxelRegion.Payload do
         maps
       ])
 
-    VoxelRegion.Codec.encode_payload(p.level, p.region, seq, content_version, raw)
+    version = if map_size(p.refined) > 0 or map_size(p.instances) > 0, do: 5, else: 4
+    raw = if version == 5, do: raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances), else: raw
+    MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end
 
   defp splice_cells(cells, overrides) when map_size(overrides) == 0, do: cells
@@ -199,7 +295,9 @@ defmodule VoxelRegion.Payload do
     rows = @extent * @extent
 
     {ids_rev, masks_rev, col_x, fmi, maps, _pool, by_row} =
-      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, {_sext, faces}}, {ids_rev, masks_rev, col_x, fmi, maps, pool, by_row} ->
+      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, {_sext, faces}},
+                                                                {ids_rev, masks_rev, col_x, fmi,
+                                                                 maps, pool, by_row} ->
         {ids, mask, fmi, maps, pool} =
           Enum.reduce(0..5, {[], 0, fmi, maps, pool}, fn face, {ids, mask, fmi, maps, pool} ->
             case elem(faces, face) do
@@ -207,20 +305,28 @@ defmodule VoxelRegion.Payload do
                 {[id | ids], mask, fmi, maps, pool}
 
               {id, texels} ->
-                texels = if byte_size(texels) == ext * ext, do: texels, else: :binary.copy(<<id>>, ext * ext)
+                texels =
+                  if byte_size(texels) == ext * ext,
+                    do: texels,
+                    else: :binary.copy(<<id>>, ext * ext)
 
                 {index, maps, pool} =
                   case Map.fetch(pool, texels) do
-                    {:ok, i} -> {i, maps, pool}
-                    :error -> {map_size(pool), maps <> texels, Map.put(pool, texels, map_size(pool))}
+                    {:ok, i} ->
+                      {i, maps, pool}
+
+                    :error ->
+                      {map_size(pool), maps <> texels, Map.put(pool, texels, map_size(pool))}
                   end
 
-                {[id | ids], mask ||| (1 <<< face), [index | fmi], maps, pool}
+                {[id | ids], mask ||| 1 <<< face, [index | fmi], maps, pool}
             end
           end)
 
         row = y + @extent * z
-        {[List.to_tuple(Enum.reverse(ids)) | ids_rev], [mask | masks_rev], [x | col_x], fmi, maps, pool, Map.update(by_row, row, 1, &(&1 + 1))}
+
+        {[List.to_tuple(Enum.reverse(ids)) | ids_rev], [mask | masks_rev], [x | col_x], fmi, maps,
+         pool, Map.update(by_row, row, 1, &(&1 + 1))}
       end)
 
     ids = Enum.reverse(ids_rev)
@@ -232,6 +338,7 @@ defmodule VoxelRegion.Payload do
         {[n | acc], n}
       end)
 
-    {Enum.reverse(row_start_rev), Enum.reverse(col_x), faces, Enum.reverse(masks_rev), Enum.reverse(fmi), maps}
+    {Enum.reverse(row_start_rev), Enum.reverse(col_x), faces, Enum.reverse(masks_rev),
+     Enum.reverse(fmi), maps}
   end
 end

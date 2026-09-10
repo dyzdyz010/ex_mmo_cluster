@@ -179,7 +179,7 @@ defmodule GateServer.UdpAcceptor do
   end
 
   defp send_udp(socket, ip, port, message) do
-    {:ok, payload} = GateServer.Codec.encode(message)
+    {:ok, payload} = GateServer.Session.Sink.encode(message)
     :gen_udp.send(socket, ip, port, payload)
   end
 

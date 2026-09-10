@@ -5,7 +5,8 @@ defmodule VoxelRegion.ReducerTest do
   """
   use ExUnit.Case, async: false
 
-  alias VoxelRegion.{Native, Payload, Reducer}
+  alias VoxelRegion.{Native, Reducer}
+  alias MmoContracts.Voxel.{Payload}
 
   @config {1337, -200, 326, 586, 4, 381.77066, 1223.743774, 96}
 

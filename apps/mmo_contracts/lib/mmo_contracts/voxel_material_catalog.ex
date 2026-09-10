@@ -9,9 +9,22 @@ defmodule MmoContracts.VoxelMaterialCatalog do
   @resource Path.expand("../../priv/voxim_materials.json", __DIR__)
   @external_resource @resource
 
-  @pairs @resource
-         |> File.read!()
-         |> Jason.decode!()
+  @materials @resource |> File.read!() |> Jason.decode!()
+  @blocking Map.new(@materials, fn %{"id" => id, "blocks_movement" => blocks}
+                                   when is_boolean(blocks) ->
+              {id, blocks}
+            end)
+  @blocking_bytes IO.iodata_to_binary([
+                    "voxim-blocking-v1\n",
+                    <<map_size(@blocking)::16-big>>,
+                    for(
+                      {id, blocks} <- Enum.sort(@blocking),
+                      do: <<id::16-big, if(blocks, do: 1, else: 0)>>
+                    )
+                  ])
+  @blocking_hash :crypto.hash(:sha256, @blocking_bytes)
+
+  @pairs @materials
          |> Enum.map(fn %{"id" => id, "name" => name} -> {id, name} end)
 
   @table Enum.map(@pairs, fn {id, name} -> %{"id" => id, "name" => name} end)
@@ -26,4 +39,9 @@ defmodule MmoContracts.VoxelMaterialCatalog do
 
   @spec valid_id?(term()) :: boolean()
   def valid_id?(id), do: MapSet.member?(@valid_ids, id)
+
+  @doc "Movement blocking projected from the catalog metadata; unknown IDs are not terrain."
+  def blocks_movement?(id), do: Map.fetch!(@blocking, id)
+  def blocking_bytes, do: @blocking_bytes
+  def blocking_hash, do: @blocking_hash
 end

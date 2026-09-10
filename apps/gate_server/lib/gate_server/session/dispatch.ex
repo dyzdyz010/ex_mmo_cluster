@@ -45,6 +45,27 @@ defmodule GateServer.Session.Dispatch do
   alias GateServer.Voxel.SubscriptionWorker
   alias SceneServer.Combat.CastRequest
 
+  alias MmoContracts.Session.Codec, as: SessionCodec
+  alias MmoContracts.Voxel.Codec, as: VoxelCodec
+  require SessionCodec
+  require VoxelCodec
+
+  @doc "按现行领域选择纯 codec；其余交给有活调用方的旧 Gate codec。"
+  def decode(<<opcode, _::binary>> = bytes) when SessionCodec.is_opcode(opcode),
+    do: SessionCodec.decode(bytes)
+
+  def decode(<<opcode, _::binary>> = bytes) when VoxelCodec.is_opcode(opcode),
+    do: VoxelCodec.decode(bytes)
+
+  def decode(bytes), do: GateServer.Codec.decode(bytes)
+
+  @doc "Canonical macro targets used both by M1 admission and the existing R6 edit path."
+  def voxim_edit_coords({:voxel_edit_intent, request}) do
+    {x, y, z} = request.target_world_micro
+    [{Integer.floor_div(x, 8), Integer.floor_div(y, 8), Integer.floor_div(z, 8)}]
+  end
+  def voxim_edit_coords({:voxel_batch_edit_intent, request}), do: Enum.map(request.edits, &elem(&1, 0))
+
   @type state :: map()
 
   @doc """
@@ -481,7 +502,9 @@ defmodule GateServer.Session.Dispatch do
   # 发过 0x76 的连接是 Voxim 会话：之后的 0x70 走 region 真值（文件 ⊕ 日志），不走 Scene 的 ChunkProcess；
   # 回执 result_ref = 提交的日志 seq（D-12），authoritative 为空（只有日志条目改世界）。
   def handle({:voxel_overlay_subscribe, sub}, %{status: :in_scene} = state) do
-    :ok = VoxelRegion.World.subscribe(self(), sub.have_seq, sub.box, sub.coarse_min_level)
+    {:ok, %{world_ref: world_ref}} =
+      WorldServer.Movement.route(Application.fetch_env!(:gate_server, :voxel_scene_id))
+    :ok = VoxelRegion.World.subscribe(world_ref, self(), sub.have_seq, sub.box, sub.coarse_min_level)
 
     emit(state, "voxel_overlay_subscribed", %{
       connection_pid: self(),
@@ -491,7 +514,7 @@ defmodule GateServer.Session.Dispatch do
       coarse_min_level: sub.coarse_min_level
     })
 
-    {:ok, Map.put(state, :voxim_overlay, true)}
+    {:ok, state |> Map.put(:voxim_overlay, true) |> Map.put(:world_ref, world_ref)}
   end
 
   def handle({:voxel_overlay_subscribe, _sub}, state) do
@@ -499,11 +522,31 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state)
+      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1] do
+    result = case kind do
+      :voxel_prefab_place_v1 -> VoxelRegion.World.place_prefab(state.world_ref,request.definition_id,request.anchor,request.orientation)
+      :voxel_prefab_remove_v1 -> VoxelRegion.World.remove_prefab(state.world_ref,request.instance_id)
+    end
+    case result do
+      {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{
+        request_id: request.request_id,client_intent_seq: request.client_intent_seq,
+        logical_scene_id: request.logical_scene_id,result_code: :accepted,result_ref: seq,
+        authoritative: [],reason: "ok"}})
+      {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
+    end
+    {:ok,state}
+  end
+  def handle({kind,_},state) when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1] do
+    result_error(state,:invalid_state,0)
+    {:ok,state}
+  end
+
   def handle(
         {:voxel_batch_edit_intent, request},
         %{status: :in_scene, voxim_overlay: true} = state
       ) do
-    case VoxelRegion.World.apply_edits(request.edits) do
+    case VoxelRegion.World.apply_edits(state.world_ref, request.edits) do
       {:ok, seq} ->
         send_encoded(
           state,
@@ -532,11 +575,10 @@ defmodule GateServer.Session.Dispatch do
   end
 
   def handle({:voxel_edit_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    {wx, wy, wz} = request.target_world_micro
-    coord = {Integer.floor_div(wx, 8), Integer.floor_div(wy, 8), Integer.floor_div(wz, 8)}
+    [coord] = voxim_edit_coords({:voxel_edit_intent, request})
 
     case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
-           VoxelRegion.World.apply_edit(coord, request.material_id) do
+           VoxelRegion.World.apply_edit(state.world_ref, coord, request.material_id) do
       {:ok, seq} ->
         send_encoded(
           state,

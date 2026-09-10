@@ -19,9 +19,6 @@ defmodule VoxelRegion.Reducer do
   @doc "level-L 的表皮贴图边长 = min(2^L, 4)。"
   def skin_extent(level) when level >= 0, do: min(1 <<< level, @max_extent)
 
-  @doc "六面都是 material 的均匀表皮（L0 的值）。"
-  def uniform(material), do: {1, {{material, nil}, {material, nil}, {material, nil}, {material, nil}, {material, nil}, {material, nil}}}
-
   @doc "非零众数，平局最小 id，全零 → 0（`VoxelMaterialMode`）。"
   def mode(ids) when is_list(ids) do
     ids
@@ -57,23 +54,6 @@ defmodule VoxelRegion.Reducer do
       {id, texels} -> texels == :binary.copy(<<id>>, byte_size(texels))
     end
   end
-
-  @doc "规范形：均匀面的 texels 收成 nil；六面都均匀 → ext 1。同一个值只有一种表示，相等就是 `==`。"
-  def canonical({ext, faces}) do
-    faces =
-      faces
-      |> Tuple.to_list()
-      |> Enum.map(fn
-        {id, nil} -> {id, nil}
-        {id, texels} -> if texels == :binary.copy(<<id>>, byte_size(texels)), do: {id, nil}, else: {id, texels}
-      end)
-
-    if Enum.all?(faces, fn {_, t} -> t == nil end), do: {1, List.to_tuple(faces)}, else: {ext, List.to_tuple(faces)}
-  end
-
-  @doc "六面都等于 material 的均匀值（稀疏场里的「平凡」格，不存记录）。"
-  def trivial?({1, faces}, material), do: Enum.all?(Tuple.to_list(faces), fn {id, _} -> id == material end)
-  def trivial?(_, _), do: false
 
   @doc "`ReduceSkinsV1(children, level)`：8 个子格（level−1）的表皮 → 父格（level）的表皮，返回规范形。"
   def reduce_skins(children, level) when length(children) == 8 and level >= 1 do
@@ -142,7 +122,7 @@ defmodule VoxelRegion.Reducer do
         end
       end
 
-    canonical({out_ext, List.to_tuple(faces)})
+    MmoContracts.Voxel.Skins.canonical({out_ext, List.to_tuple(faces)})
   end
 
   @doc "`ReduceCellV1`：材质 + 表皮。"
