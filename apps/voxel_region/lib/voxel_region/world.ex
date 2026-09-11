@@ -205,6 +205,7 @@ defmodule VoxelRegion.World do
           served_headers: %{},
           overlay: %{},
           refined: %{},
+          structure: %{},
           instances: %{},
           prefabs: Prefab.load(Keyword.get(opts, :prefab_catalog_path, Application.get_env(:voxel_region, :prefab_catalog_path))),
           overlay_regions: %{},
@@ -217,6 +218,8 @@ defmodule VoxelRegion.World do
         }
 
         state = replay_log(state)
+        {state, _} = refresh_structure(state, Map.keys(state.refined))
+        state = if map_size(state.structure) > 0, do: compact_log(state), else: state
         Logger.info("voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}")
         {:ok, state}
 
@@ -237,7 +240,6 @@ defmodule VoxelRegion.World do
       macros = Enum.map(cells,fn {c,_} -> elem(Prefab.macro_slot(c),0) end)
       cond do
         not Enum.all?(macros,&valid_edit_coord?/1) -> {:error,:invalid_coordinate}
-        length(Enum.uniq(Enum.map(macros,&region_of/1))) != 1 -> {:error,:cross_region_prefab}
         true -> {:ok,cells}
       end
     else
@@ -459,7 +461,11 @@ defmodule VoxelRegion.World do
     %{payload | refined: refined,instances: Map.take(state.instances,ids),
       format_version: if(map_size(refined)>0 or payload.format_version == 5,do: 5,else: 4)}
   end
-  defp with_refined(_state,payload), do: payload
+  defp with_refined(state,%Payload{level: level,region: region}=payload) do
+    structure = for {{^level,cell},grid} <- state.structure, local = Payload.local(region,cell), Payload.in_span?(local),
+      into: %{}, do: {Payload.cell_index(local),grid}
+    %{payload | structure: structure}
+  end
 
   defp owner_cells(state,id) do
     for {cell,slots} <- state.refined, Enum.any?(slots,fn {_,{_,owner}} -> owner == id end), do: cell
@@ -467,14 +473,9 @@ defmodule VoxelRegion.World do
 
   defp prefab_reply(before,state,cells) do
     state = %{state | seq: before.seq+1}
-    keys = for {x,y,z} <- cells,
-      rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
-      rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {0,{rx,ry,rz}}
-    {entries,state} = Enum.map_reduce(Enum.sort(Enum.uniq(keys)),state,fn {level,region}=key,s ->
-      s = %{s | snapshots: MapSet.put(s.snapshots,key)}
-      {:ok,bytes,_,s} = payload_bytes(s,level,region)
-      {region_entry(s.seq,bytes),s}
-    end)
+    {state, structure_keys} = refresh_structure(state,cells)
+    keys = region_keys(Enum.map(cells,&{0,&1})) ++ structure_keys
+    {entries,state} = region_afterimages(state,keys)
     txn = %{seq: state.seq,entries: entries,coarse: []}
     with {:ok,chunks} <- canonical_changes(before,state,Enum.map(cells,&{0,&1})),
          :ok <- append_log(state,txn) do
@@ -485,6 +486,61 @@ defmodule VoxelRegion.World do
     else
       {:error,reason} -> {:reply,{:error,reason},before}
     end
+  end
+
+  defp region_keys(cells) do
+    for {level,{x,y,z}} <- cells,
+      rx <- floor_div(x-1,64)..floor_div(x+1,64), ry <- floor_div(y-1,64)..floor_div(y+1,64),
+      rz <- floor_div(z-1,64)..floor_div(z+1,64), do: {level,{rx,ry,rz}}
+  end
+
+  defp region_afterimages(state,keys) do
+    Enum.map_reduce(Enum.sort(Enum.uniq(keys)),state,fn {level,region}=key,s ->
+      :ok = s.source.ensure(s.source_state,level,region)
+      s = %{cache_delete(s,key) | snapshots: MapSet.put(s.snapshots,key)}
+      {:ok,bytes,_,s} = payload_bytes(s,level,region)
+      {region_entry(s.seq,bytes),s}
+    end)
+  end
+
+  # 结构与地形分别派生；地形 early-stop 不得截断仍会变化的局部细化。
+  defp refresh_structure(state,cells) do
+    {state,_,changed} = Enum.reduce(1..@max_level,{state,cells,[]},fn level,{s,dirty,changed} ->
+      parents = dirty |> Enum.map(&parent_of/1) |> Enum.uniq()
+      {s,changed} = Enum.reduce(parents,{s,changed},fn {px,py,pz}=parent,{s,changed} ->
+        children = for oct <- 0..7, do: {px*2+(oct &&& 1),py*2+((oct >>> 1) &&& 1),pz*2+((oct >>> 2) &&& 1)}
+        has_structure = Enum.any?(children,fn cell ->
+          if level == 1, do: Map.has_key?(s.refined,cell), else: Map.has_key?(s.structure,{level-1,cell})
+        end)
+        {grid,s} = if has_structure do
+          {values,s} = Enum.map_reduce(children,s,fn cell,s ->
+            case if(level == 1,do: Map.fetch(s.refined,cell),else: Map.fetch(s.structure,{level-1,cell})) do
+              {:ok,value} -> {value,s}
+              :error ->
+                :ok = s.source.ensure(s.source_state,level-1,region_of(cell))
+                {:ok,{m,_},s} = cell_value(s,level-1,cell)
+                {m,s}
+            end
+          end)
+          {if(level == 1,do: VoxelRegion.Structure.from_canonical(values),else: VoxelRegion.Structure.reduce(values)),s}
+        else
+          {nil,s}
+        end
+        key = {level,parent}
+        if grid == Map.get(s.structure,key) do
+          {s,changed}
+        else
+          structure = if grid == nil,do: Map.delete(s.structure,key),else: Map.put(s.structure,key,grid)
+          keys = region_keys([key])
+          s = Enum.reduce(keys,%{s | structure: structure},fn k,s ->
+            %{cache_delete(s,k) | snapshots: MapSet.put(s.snapshots,k)}
+          end)
+          {s,[key|changed]}
+        end
+      end)
+      {s,parents,changed}
+    end)
+    {state,region_keys(changed)}
   end
 
   defp cache_fetch(state, key) do
@@ -824,6 +880,8 @@ defmodule VoxelRegion.World do
 
           {:ok,all,state,visits} ->
             state = %{state | seq: state.seq+1}
+            {state,structure_keys} = refresh_structure(state,Enum.map(changed,&elem(&1,1)))
+            legacy = legacy and structure_keys == []
             {txn,state} = if legacy do
               [{coord,material}]=edits
               coarse=for {level,cell} <- Enum.sort(all), level > 0 do
@@ -833,6 +891,17 @@ defmodule VoxelRegion.World do
               {%{seq: state.seq,coord: coord,material: material,coarse: coarse},state}
             else
               select_transaction(state,all)
+            end
+            {txn,state} = if structure_keys == [] do
+              {txn,state}
+            else
+              {afterimages,state} = region_afterimages(state,structure_keys)
+              keys = MapSet.new(structure_keys)
+              entries = Enum.reject(txn.entries,fn
+                %{payload: bytes} -> {:ok,h}=Codec.decode_payload_header(bytes); MapSet.member?(keys,{h.level,h.region})
+                _ -> false
+              end)
+              {%{txn | entries: entries++afterimages},state}
             end
             with {:ok, collision_chunks} <- canonical_changes(before, state, changed) do
             append_log(state,txn)

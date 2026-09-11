@@ -409,9 +409,10 @@ defmodule MmoContracts.Voxel.Codec do
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) do
+      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) do
     {:ok,
      %{
+       version: version,
        level: level,
        region: {x, y, z},
        seq: seq,
@@ -434,7 +435,11 @@ defmodule MmoContracts.Voxel.Codec do
   def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4) when is_binary(raw_body) do
     body = :zlib.compress(raw_body)
 
-    magic = if version == 5, do: "VXR5", else: @payload_magic
+    magic = case version do
+      6 -> "VXR6"
+      5 -> "VXR5"
+      4 -> @payload_magic
+    end
     <<magic::binary, version::32-little, level::8, x::32-little-signed,
       y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
       body_hash(raw_body)::64-little, 1::8, byte_size(raw_body)::32-little,
@@ -446,7 +451,7 @@ defmodule MmoContracts.Voxel.Codec do
     with {:ok, header} <- decode_payload_header(bytes),
          true <-
            header.encoding in [0, 1] and
-             header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(),
+             header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes() + if(header.version == 6, do: MmoContracts.Voxel.Structure.max_bytes(), else: 0),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes and body_hash(raw) == header.hash do

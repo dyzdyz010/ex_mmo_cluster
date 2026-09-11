@@ -1,5 +1,15 @@
 # Voxim Region 真值
 
+R7 A3：`Structure` 从 L0 实际 prefab occupancy 派生局部完整 16³ 网格；L1 精确保留 canonical 微格，
+L2–L5 的 2³ 子样本有结构时按结构材质众数保留，否则复用 `Reducer.reduce_material/1`。
+没有结构的粗格仍用现有 terrain V1；普通地形编辑会刷新同一祖先格的完整结构网格。
+World 独占更新与序号，跨 region 放置/删除在同一事务发布 L0 VXR5 与粗层 VXR6 afterimages（含 ring）。
+VXR6 复用 VXR4 body，追加 algorithm=1、排序 cell index 与 u16[4096]；不带 owner，低八位材质、bit8 结构实体。
+最后结构删除后恢复 VXR4。启动从 L0 实际占用重建派生并刷新检查点，content_version 和原编辑保持不变。
+协议与质量合同见 [`Voxim/Docs/R7/A3-structure-contract.md`](../../../Voxim/Docs/R7/A3-structure-contract.md)。
+最小回归：`mix test --no-start apps/voxel_region/test/structure_test.exs apps/voxel_region/test/prefab_test.exs`；
+隔离已有依赖的执行命令：`python ../Voxim/Docs/R7/tools/test_a3_structure_server.py --out ../Voxim/Saved/R7/A3/server-structure`，输出目录保留日志及服务端 VXR6 golden。
+
 M4a 区域部署采用 `Replica` 只读物化视图：每个 Scene 节点在本地运行该服务，驻留显式 `l0_box` 的完整 payload 与碰撞 chunk。
 唯一 `World` 继续分配事务序号、规约、写日志；Replica 没有生成器、日志或编辑入口。Scene 的 `world_api` 为
 `VoxelRegion.Replica`、`world_ref` 为本地 Replica PID；比较世界身份时调用 `authority_ref/1`，两份区域服务返回同一个上游 World PID。

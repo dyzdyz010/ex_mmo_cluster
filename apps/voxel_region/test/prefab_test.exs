@@ -11,10 +11,10 @@ defmodule VoxelRegion.PrefabTest do
       1::signed-little-32, 0::signed-little-32, 0::signed-little-32, 19::16-little, 0::32-little>>
     File.write!(Path.join(catalog,"test.vxpd"),bytes)
     id = :crypto.hash(:sha256,bytes)
-    for x <- -1..1, z <- -1..1 do
-      path = FileStore.path(root,123,0,{x,0,z})
+    for level <- 0..5, x <- -1..1, y <- -1..1, z <- -1..1 do
+      path = FileStore.path(root,123,level,{x,y,z})
       File.mkdir_p!(Path.dirname(path))
-      p = %Payload{region: {x,0,z}, cells: :binary.copy(<<0,0>>,66*66*66)}
+      p = %Payload{level: level, region: {x,y,z}, cells: :binary.copy(<<0,0>>,66*66*66)}
       File.write!(path,Payload.encode(p,%{},0,123))
     end
     opts = [root: root, prefab_catalog_path: catalog, name: :r7_test_world]
@@ -65,6 +65,49 @@ defmodule VoxelRegion.PrefabTest do
     assert map_size(neighbor.refined) == 1
     assert {:ok,2} = World.remove_prefab(w,{1,0})
     assert payload(w,{-1,0,0}).refined == %{}
+    GenServer.stop(w)
+  end
+
+  @tag :r7a3
+  test "cross region object stays one transaction and deletes after checkpoint without client residency", %{id: id, opts: opts} do
+    {:ok, w} = World.start_link(opts)
+    assert {:ok, 1} = World.place_prefab(w, id, {511, 8, 8}, 0)
+    left = payload(w, {0, 0, 0})
+    right = payload(w, {1, 0, 0})
+    assert Map.keys(left.instances) == [{1, 0}]
+    assert right.instances == left.instances
+    assert {:ok, cells} = World.instance_cells(w, {1, 0})
+    assert Enum.sort(cells) == [{63, 1, 1}, {64, 1, 1}]
+    assert {:error, :occupied} = World.place_prefab(w, id, {512, 8, 8}, 0)
+    assert World.seq(w) == 1
+    assert :ok = World.compact(w)
+    GenServer.stop(w)
+    {:ok, w} = World.start_link(opts)
+    # Delete by authoritative identity before loading either client region.
+    assert {:ok, 2} = World.remove_prefab(w, {1, 0})
+    for region <- [{0, 0, 0}, {1, 0, 0}] do
+      p = payload(w, region)
+      assert p.refined == %{} and p.instances == %{}
+    end
+    GenServer.stop(w)
+    {:ok, w} = World.start_link(opts)
+    assert World.seq(w) == 2
+    assert {:error, :instance_not_found} = World.instance_cells(w, {1, 0})
+    assert payload(w, {1, 0, 0}).refined == %{}
+    GenServer.stop(w)
+  end
+
+  @tag :r7a3
+  test "negative region boundary retains both owners and exact micro contact", %{id: id, opts: opts} do
+    {:ok, w} = World.start_link(opts)
+    assert {:ok, 1} = World.place_prefab(w, id, {-1, 8, 8}, 0)
+    assert {:ok, 2} = World.place_prefab(w, id, {-1, 8, 9}, 0)
+    assert {:ok, 3} = World.remove_prefab(w, {1, 0})
+    for region <- [{-1, 0, 0}, {0, 0, 0}] do
+      p = payload(w, region)
+      assert Map.keys(p.instances) == [{2, 0}]
+      assert Enum.all?(p.refined, fn {_, slots} -> Enum.all?(slots, fn {_, {_, owner}} -> owner == {2, 0} end) end)
+    end
     GenServer.stop(w)
   end
 

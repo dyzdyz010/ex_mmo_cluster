@@ -27,6 +27,7 @@ defmodule MmoContracts.Voxel.Payload do
             maps: <<>>,
             refined: %{},
             instances: %{},
+            structure: %{},
             format_version: 4
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
@@ -57,8 +58,9 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "完整载荷字节 → struct。"
   def decode(bytes) do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
-         {:ok, payload} <- decode_body(raw),
-         true <- binary_part(bytes,0,4) == if(payload.format_version == 5,do: "VXR5",else: "VXR4"),
+         {:ok, payload} <- decode_body(raw, header.version),
+         true <- header.version != 6 or header.level >= 1,
+         true <- header.version == payload.format_version,
          true <- Enum.all?(payload.refined,fn {index,_} -> binary_part(payload.cells,index*2,2) == <<0,0>> end) do
       {:ok,
        %{
@@ -75,10 +77,10 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   @doc "VXR4 解压后的 CSR body 解码为不可变载荷。"
+  def decode_body(raw, version \\ 4)
   def decode_body(
         <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
-          map_extent::32-little, rest::binary>>
-      )
+          map_extent::32-little, rest::binary>>, version)
       when n == @cell_count and map_extent in [1, 2, @max_map_extent] and
              ((ex == 0 and ey == 0 and ez == 0) or
                 (ex == @extent and ey == @extent and ez == @extent)) do
@@ -88,7 +90,7 @@ defmodule MmoContracts.Voxel.Payload do
            masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
          {:ok, maps, tail} <- array(rest, 1),
-         {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail),
+         {:ok, refined, instances, structure, version} <- decode_tail(tail, version),
          {:ok, records} <-
            decode_records({ex, ey, ez}, map_extent, row_start, col_x, faces, masks, fmi, maps) do
       {:ok,
@@ -97,14 +99,21 @@ defmodule MmoContracts.Voxel.Payload do
          map_extent: map_extent,
          records: records,
          fmi: fmi,
-         maps: maps, refined: refined, instances: instances, format_version: version
+         maps: maps, refined: refined, instances: instances, structure: structure, format_version: version
        }}
     else
       _ -> {:error, :invalid_payload}
     end
   end
 
-  def decode_body(_), do: {:error, :invalid_payload}
+  def decode_body(_, _), do: {:error, :invalid_payload}
+
+  defp decode_tail(tail, 6) do
+    with {:ok, structure} <- MmoContracts.Voxel.Structure.decode(tail), do: {:ok, %{}, %{}, structure, 6}
+  end
+  defp decode_tail(tail, _) do
+    with {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail), do: {:ok, refined, instances, %{}, version}
+  end
 
   defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
     rows = for <<v::32-little <- row_start>>, do: v
@@ -270,8 +279,16 @@ defmodule MmoContracts.Voxel.Payload do
         maps
       ])
 
-    version = if map_size(p.refined) > 0 or map_size(p.instances) > 0, do: 5, else: 4
-    raw = if version == 5, do: raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances), else: raw
+    version = cond do
+      map_size(p.structure) > 0 -> 6
+      map_size(p.refined) > 0 or map_size(p.instances) > 0 -> 5
+      true -> 4
+    end
+    raw = case version do
+      6 -> raw <> MmoContracts.Voxel.Structure.encode(p.structure)
+      5 -> raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances)
+      4 -> raw
+    end
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end
 
