@@ -60,6 +60,7 @@ defmodule MmoContracts.Voxel.Payload do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
          {:ok, payload} <- decode_body(raw, header.version),
          true <- header.version != 6 or header.level >= 1,
+         true <- header.version != 7 or header.level == 0,
          true <- header.version == payload.format_version,
          true <- Enum.all?(payload.refined,fn {index,_} -> binary_part(payload.cells,index*2,2) == <<0,0>> end) do
       {:ok,
@@ -111,8 +112,8 @@ defmodule MmoContracts.Voxel.Payload do
   defp decode_tail(tail, 6) do
     with {:ok, structure} <- MmoContracts.Voxel.Structure.decode(tail), do: {:ok, %{}, %{}, structure, 6}
   end
-  defp decode_tail(tail, _) do
-    with {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail), do: {:ok, refined, instances, %{}, version}
+  defp decode_tail(tail, version) do
+    with {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail, if(version == 7,do: 7,else: 5)), do: {:ok, refined, instances, %{}, version}
   end
 
   defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
@@ -281,12 +282,13 @@ defmodule MmoContracts.Voxel.Payload do
 
     version = cond do
       map_size(p.structure) > 0 -> 6
+      Enum.any?(p.instances,fn {_,i} -> Map.get(i,:parent_id,{0,0}) != {0,0} end) -> 7
       map_size(p.refined) > 0 or map_size(p.instances) > 0 -> 5
       true -> 4
     end
     raw = case version do
       6 -> raw <> MmoContracts.Voxel.Structure.encode(p.structure)
-      5 -> raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances)
+      v when v in [5,7] -> raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances,v)
       4 -> raw
     end
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)

@@ -523,10 +523,11 @@ defmodule GateServer.Session.Dispatch do
   end
 
   def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state)
-      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1] do
+      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
     result = case kind do
       :voxel_prefab_place_v1 -> VoxelRegion.World.place_prefab(state.world_ref,request.definition_id,request.anchor,request.orientation)
       :voxel_prefab_remove_v1 -> VoxelRegion.World.remove_prefab(state.world_ref,request.instance_id)
+      :voxel_prefab_replace_v1 -> VoxelRegion.World.replace_prefab(state.world_ref,request.instance_id,request.definition_id)
     end
     case result do
       {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{
@@ -537,7 +538,7 @@ defmodule GateServer.Session.Dispatch do
     end
     {:ok,state}
   end
-  def handle({kind,_},state) when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1] do
+  def handle({kind,_},state) when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
     result_error(state,:invalid_state,0)
     {:ok,state}
   end

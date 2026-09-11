@@ -52,7 +52,7 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
-                  0x7A, 0x7B
+                  0x7A, 0x7B, 0x7C
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -75,7 +75,11 @@ defmodule MmoContracts.Voxel.Codec do
     {:ok, {:voxel_prefab_remove_v1, %{request_id: rid, client_intent_seq: seq,
       logical_scene_id: scene, instance_id: {birth, occurrence}}}}
   end
-  def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B], do: {:error, :invalid_message}
+  def decode(<<0x7C, rid::64, seq::32, scene::64, birth::64, occurrence::32, id::binary-size(32)>>) do
+    {:ok, {:voxel_prefab_replace_v1, %{request_id: rid, client_intent_seq: seq,
+      logical_scene_id: scene, instance_id: {birth, occurrence},definition_id: id}}}
+  end
+  def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B, 0x7C], do: {:error, :invalid_message}
 
   def decode(
         <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,
@@ -409,7 +413,7 @@ defmodule MmoContracts.Voxel.Codec do
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) do
+      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) do
     {:ok,
      %{
        version: version,
@@ -436,6 +440,7 @@ defmodule MmoContracts.Voxel.Codec do
     body = :zlib.compress(raw_body)
 
     magic = case version do
+      7 -> "VXR7"
       6 -> "VXR6"
       5 -> "VXR5"
       4 -> @payload_magic

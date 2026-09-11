@@ -137,6 +137,17 @@ defmodule VoxelRegion.World do
     end
   end
   def remove_prefab(server \\ @name, instance_id), do: GenServer.call(server,{:remove_prefab,instance_id},300_000)
+  def publish_prefabs(server \\ @name,path) do
+    catalog = Prefab.load(path)
+    GenServer.call(server,{:publish_prefabs,catalog},300_000)
+  end
+  def replace_prefab(server \\ @name,instance_id,definition_id) do
+    with {:ok,cells} <- replacement_cells(server,instance_id,definition_id) do
+      prepare(server,region_keys(Enum.map(cells,&{0,&1})))
+      GenServer.call(server,{:replace_prefab,instance_id,definition_id},300_000)
+    end
+  end
+  def replacement_cells(server,instance_id,definition_id), do: GenServer.call(server,{:replacement_cells,instance_id,definition_id},300_000)
   def prefab_cells(server,id,anchor,orientation), do: GenServer.call(server,{:prefab_cells,id,anchor,orientation})
   def instance_cells(server,id), do: GenServer.call(server,{:instance_cells,id})
 
@@ -234,18 +245,12 @@ defmodule VoxelRegion.World do
   def handle_call(:authority_ref, _from, state), do: {:reply, self(), state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
+  def handle_call({:publish_prefabs,catalog},_from,state) do
+    {:reply,:ok,%{state | prefabs: Map.merge(state.prefabs,catalog)}}
+  end
+
   def handle_call({:prefab_cells,id,anchor,orientation}, _from,state) do
-    result = with {:ok,definition} <- Map.fetch(state.prefabs,id), true <- orientation in 0..23 do
-      cells = Prefab.footprint(definition,anchor,orientation)
-      macros = Enum.map(cells,fn {c,_} -> elem(Prefab.macro_slot(c),0) end)
-      cond do
-        not Enum.all?(macros,&valid_edit_coord?/1) -> {:error,:invalid_coordinate}
-        true -> {:ok,cells}
-      end
-    else
-      :error -> {:error,:definition_not_found}
-      false -> {:error,:invalid_orientation}
-    end
+    result = definition_cells(state,id,anchor,orientation)
     {:reply,result,state}
   end
 
@@ -254,44 +259,33 @@ defmodule VoxelRegion.World do
     {:reply,if(cells == [],do: {:error,:instance_not_found},else: {:ok,cells}),state}
   end
 
-  def handle_call({:place_prefab,id,anchor,orientation,cells},_from,state) do
-    before = state
-    owner = {state.seq+1,0}
-    result = Enum.reduce_while(cells,{:ok,state,[]},fn {micro,material},{:ok,s,changed} ->
-      {cell,slot} = Prefab.macro_slot(micro)
-      slots = Map.get(s.refined,cell,%{})
-      case cell_value(s,0,cell) do
-        {:ok,{0,_},s} ->
-          if Map.has_key?(slots,slot) do
-            {:halt,{:error,:occupied}}
-          else
-            s = %{s | refined: Map.put(s.refined,cell,Map.put(slots,slot,{material,owner}))}
-            s = put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
-            {:cont,{:ok,s,[cell|changed]}}
-          end
-        {:ok,_,_} -> {:halt,{:error,:occupied}}
-        {:error,reason,_} -> {:halt,{:error,reason}}
-      end
-    end)
-    case result do
-      {:error,reason} -> {:reply,{:error,reason},before}
-      {:ok,s,changed} ->
-        instance = %{definition_id: id,anchor: anchor,orientation: orientation}
-        s = %{s | instances: Map.put(s.instances,owner,instance)}
-        prefab_reply(before,s,Enum.uniq(changed))
+  def handle_call({:replacement_cells,target,id},_from,state) do
+    result = with {:ok,instance} <- fetch_instance(state,target),
+      {:ok,cells} <- definition_cells(state,id,instance.anchor,instance.orientation) do
+      {:ok,Enum.uniq(owner_cells(state,target) ++ Enum.map(cells,fn {micro,_} -> elem(Prefab.macro_slot(micro),0) end))}
     end
+    {:reply,result,state}
+  end
+
+  def handle_call({:place_prefab,id,anchor,orientation,_cells},_from,state) do
+    place_tree(state,state,id,anchor,orientation,{0,0},0,[])
   end
 
   def handle_call({:remove_prefab,id},_from,state) do
     case owner_cells(state,id) do
       [] -> {:reply,{:error,:instance_not_found},state}
-      cells ->
-        next = Enum.reduce(cells,state,fn cell,s ->
-          slots = Map.fetch!(s.refined,cell) |> Map.reject(fn {_,{_,owner}} -> owner == id end)
-          refined = if map_size(slots) == 0, do: Map.delete(s.refined,cell), else: Map.put(s.refined,cell,slots)
-          put_overlay(%{s | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
-        end)
-        prefab_reply(state,%{next | instances: Map.delete(next.instances,id)},cells)
+      cells -> prefab_reply(state,clear_subtree(state,id,cells),cells)
+    end
+  end
+
+  def handle_call({:replace_prefab,target,id},_from,state) do
+    with {:ok,instance} <- fetch_instance(state,target),
+         {:ok,_} <- definition_cells(state,id,instance.anchor,instance.orientation) do
+      cells = owner_cells(state,target)
+      next = clear_subtree(state,target,cells)
+      place_tree(state,next,id,instance.anchor,instance.orientation,Map.get(instance,:parent_id,{0,0}),Map.get(instance,:component_slot,0),cells)
+    else
+      {:error,reason} -> {:reply,{:error,reason},state}
     end
   end
 
@@ -457,7 +451,7 @@ defmodule VoxelRegion.World do
   defp with_refined(state,%Payload{level: 0,region: region}=payload) do
     refined = for {cell,slots} <- state.refined, local = Payload.local(region,cell), Payload.in_span?(local),
       into: %{}, do: {Payload.cell_index(local),slots}
-    ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+    ids = live_instance_ids(refined,state.instances)
     %{payload | refined: refined,instances: Map.take(state.instances,ids),
       format_version: if(map_size(refined)>0 or payload.format_version == 5,do: 5,else: 4)}
   end
@@ -467,12 +461,82 @@ defmodule VoxelRegion.World do
     %{payload | structure: structure}
   end
 
+  defp definition_cells(state,id,anchor,orientation) do
+    with {:ok,definition} <- Map.fetch(state.prefabs,id), true <- orientation in 0..23 do
+      cells = Prefab.footprint(definition,anchor,orientation)
+      if Enum.all?(cells,fn {micro,_} -> valid_edit_coord?(elem(Prefab.macro_slot(micro),0)) end),
+        do: {:ok,cells}, else: {:error,:invalid_coordinate}
+    else
+      :error -> {:error,:definition_not_found}
+      false -> {:error,:invalid_orientation}
+    end
+  end
+
+  defp fetch_instance(state,id) do
+    case Map.fetch(state.instances,id) do
+      {:ok,instance} -> {:ok,instance}
+      :error -> {:error,:instance_not_found}
+    end
+  end
+
+  defp subtree_ids(state,id) do
+    children = Enum.group_by(state.instances,fn {_,i} -> Map.get(i,:parent_id,{0,0}) end, &elem(&1,0))
+    descendants(children,[id],MapSet.new())
+  end
+  defp descendants(_,[],ids), do: ids
+  defp descendants(children,[id|rest],ids), do: descendants(children,Map.get(children,id,[]) ++ rest,MapSet.put(ids,id))
+
   defp owner_cells(state,id) do
-    for {cell,slots} <- state.refined, Enum.any?(slots,fn {_,{_,owner}} -> owner == id end), do: cell
+    ids = subtree_ids(state,id)
+    for {cell,slots} <- state.refined, Enum.any?(slots,fn {_,{_,owner}} -> MapSet.member?(ids,owner) end), do: cell
+  end
+
+  defp clear_subtree(state,id,cells) do
+    ids = subtree_ids(state,id)
+    next = Enum.reduce(cells,state,fn cell,s ->
+      slots = Map.fetch!(s.refined,cell) |> Map.reject(fn {_,{_,owner}} -> MapSet.member?(ids,owner) end)
+      refined = if map_size(slots) == 0,do: Map.delete(s.refined,cell),else: Map.put(s.refined,cell,slots)
+      put_overlay(%{s | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
+    end)
+    %{next | instances: Map.drop(next.instances,MapSet.to_list(ids))}
+  end
+
+  defp place_tree(before,state,id,anchor,orientation,parent,slot,changed) do
+    nodes = Prefab.occurrences(Map.fetch!(state.prefabs,id),anchor,orientation,before.seq+1,parent,slot)
+    result = Enum.reduce_while(nodes,{:ok,state,changed},fn {owner,instance,cells},{:ok,s,changed} ->
+      result = Enum.reduce_while(cells,{:ok,s,changed},fn {micro,material},{:ok,s,changed} ->
+        {cell,slot} = Prefab.macro_slot(micro)
+        slots = Map.get(s.refined,cell,%{})
+        case cell_value(s,0,cell) do
+          {:ok,{0,_},s} ->
+            if Map.has_key?(slots,slot) do
+              {:halt,{:error,:occupied}}
+            else
+              s = %{s | refined: Map.put(s.refined,cell,Map.put(slots,slot,{material,owner}))}
+              {:cont,{:ok,put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)}),[cell|changed]}}
+            end
+          {:ok,_,_} -> {:halt,{:error,:occupied}}
+          {:error,reason,_} -> {:halt,{:error,reason}}
+        end
+      end)
+      case result do
+        {:ok,s,changed} -> {:cont,{:ok,%{s | instances: Map.put(s.instances,owner,instance)},changed}}
+        error -> {:halt,error}
+      end
+    end)
+    case result do
+      {:ok,next,changed} -> prefab_reply(before,next,Enum.uniq(changed))
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
+  end
+
+  defp live_instance_ids(refined,instances) do
+    owners = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
+    MmoContracts.Voxel.Refined.ancestors(instances,owners)
   end
 
   defp prefab_reply(before,state,cells) do
-    state = %{state | seq: before.seq+1}
+    state = %{state | seq: before.seq+1,instances: Map.take(state.instances,live_instance_ids(state.refined,state.instances))}
     {state, structure_keys} = refresh_structure(state,cells)
     keys = region_keys(Enum.map(cells,&{0,&1})) ++ structure_keys
     {entries,state} = region_afterimages(state,keys)
@@ -831,8 +895,9 @@ defmodule VoxelRegion.World do
         x = rem(index,66), y = rem(div(index,66),66), z = div(index,66*66),
         x in 1..64 and y in 1..64 and z in 1..64, into: %{}, do: {{ox+x,oy+y,oz+z},slots}
       refined = state.refined |> Map.reject(fn {cell,_} -> region_of(cell)==p.region end) |> Map.merge(core)
-      ids = refined |> Enum.flat_map(fn {_,slots} -> Enum.map(slots,fn {_,{_,id}} -> id end) end) |> Enum.uniq()
-      %{state | refined: refined,instances: Map.take(Map.merge(state.instances,p.instances),ids)}
+      instances = Map.merge(state.instances,p.instances)
+      ids = live_instance_ids(refined,instances)
+      %{state | refined: refined,instances: Map.take(instances,ids)}
     else
       state
     end

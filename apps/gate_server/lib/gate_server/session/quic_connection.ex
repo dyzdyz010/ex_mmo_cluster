@@ -322,7 +322,7 @@ defmodule GateServer.Session.QuicConnection do
         # Scene owns the single ordered world subscription, including reconnect
         # bootstrap. This admission never creates an independent Gate log sender.
         %{state | voxim_overlay: true}
-      {:ok,{kind,request}=message} when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1] and state.voxim_overlay ->
+      {:ok,{kind,request}=message} when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] and state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id) do
           coords = case kind do
             :voxel_prefab_place_v1 ->
@@ -331,6 +331,7 @@ defmodule GateServer.Session.QuicConnection do
                 error -> error
               end
             :voxel_prefab_remove_v1 -> VoxelRegion.World.instance_cells(state.route.world_ref,request.instance_id)
+            :voxel_prefab_replace_v1 -> VoxelRegion.World.replacement_cells(state.route.world_ref,request.instance_id,request.definition_id)
           end
           case coords do
             {:ok,cells} ->

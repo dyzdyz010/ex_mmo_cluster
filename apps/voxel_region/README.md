@@ -1,5 +1,44 @@
 # Voxim Region 真值
 
+R7 A4：VXPD 的稳定 child slot 按升序展开 preorder occurrence，定义目录在发布入口拒绝循环、缺失引用与实际占用重叠。
+点 anchor 与格体积旋转沿用 [A0 合同](../../../Voxim/Docs/R7/A0-contract.md)，目录缓存展开结果，内部查询不重复验证。
+`World.remove_prefab/2` 删除目标实际子树；`World.replace_prefab/3` 用当前确认态减去旧子树再加入新定义，一次提交完整 L0–L5 after-image。
+替换继承 anchor、orientation、外部 parent 与 component slot，新根身份为 `(新 seq,0)`；失败保留状态和 seq，兄弟及父级残余不会按模板恢复。
+L0 的 VXR7 在原 VXR5 instance 69 字节后追加 parent birth/occurrence 与 component slot 共 16 字节，快照保留实际 owner 的完整祖先链。
+普通根仍写 VXR5，空 refined 写 VXR4，粗层仍为 VXR6。Gate 新 0x7C 为 65 字节 BE 替换意图，鉴权、场景与完整受影响范围沿既有入口检查。
+格式不改变 content_version；日志追加、重放和 checkpoint 继续保存同一份完整区域字节。
+
+发布入口 `World.publish_prefabs(world,path)` 在调用方加载、验证目录，然后合并不可变内容身份；不会改变世界、seq 或旧实例的 DefinitionId。
+在线加载新模块后须先调用该入口，把旧平铺目录转换为已展开目录。旧实例根字段缺省为零，无其他状态迁移。
+需更新的模块为 `MmoContracts.Voxel.{Refined,Codec,Payload}`、`VoxelRegion.{Prefab,World}`、`GateServer.Session.{Dispatch,QuicConnection}`；
+Scene peer 同步纯 codec 模块后才能消费 VXR7。已有双 Scene、世界和庭院不得重建。
+
+最小离线验证：`elixir -pa "_build/test/lib/*/ebin" scripts/test_r7_a4.exs`（需已构建依赖与 native collision 模块）。
+2026-09-11 已实跑的隔离源码位于现有容器 `/tmp/voxim-a4-server`；使用其已构建依赖，不连接在线 Erlang 节点：
+
+```powershell
+docker exec -w /tmp/voxim-a4-server -e ERL_FLAGS=+S4:4 -e LANG=C.UTF-8 -e ERL_LIBS=/home/dyz/.cache/voxim-m1-demo/build/lib voxim-m1-demo-20260908 elixir scripts/test_r7_a4.exs
+docker exec -w /tmp/voxim-a4-server -e ERL_FLAGS=+S4:4 -e LANG=C.UTF-8 -e ERL_LIBS=/home/dyz/.cache/voxim-m1-demo/build/lib voxim-m1-demo-20260908 elixir scripts/test_r7_a4.exs --db
+```
+
+隔离目录须包含 runner 中列出的当前源码、三个测试文件及 overlay-log migration；同级 `/tmp/Voxim` 放置
+`Docs/R7/golden.json` 和 `Source/Voxim/Voxel/VoxelSpatialConstants.h`，供既有相对路径读取。该目录是可重建的测试 staging，不是在线部署路径。
+`--db` 仅运行 DB 用例，使用独立 `mmo_a4_test` 数据库；默认 Docker host/port 为 `host.docker.internal:5433`，可用 `MMO_DB_HOST/PORT` 指定测试数据库主机。
+测试包含跨 region 祖先快照、子树替换冲突、已删叶的兄弟替换、checkpoint/restart、原有跨 chunk/region 与历史碰撞回归。
+本轮非 DB 综合实跑 14 项通过（当时共 15 项，排除 1 个 DB 用例，76.5 秒；完整输出在执行会话中，未另存日志文件）；
+随后两项 DB 用例通过（共 16 项，排除 14 项，65.1 秒），原始日志为 [a4-database-test.log](../../.demo/a4-database-test.log)。
+原有 current-wire golden 与 A4 协议/数学共 11 项通过，原始日志为 [a4-golden.log](../../.demo/a4-golden.log)，本轮命令：
+
+```powershell
+$env:ERL_FLAGS='+S 4:4'
+elixir -pa '_build/test/lib/*/ebin' .demo/a4-golden-run.exs
+```
+
+早期仅嵌套文件日志/checkpoint 场景实跑记录为 [a4-world-test.log](../../.demo/a4-world-test.log)（1 项通过、7 项排除）；
+对应 runner 是 `.demo/a4-run-tests.exs`。这些临时 runner 与原始日志供复现本次执行，长期测试入口仍是 `scripts/test_r7_a4.exs` 和 app 内测试。
+`scripts/export_r7_a4_fixture.exs` 输出 [VXR7](../../../Voxim/Docs/R7/fixtures/server-a4-vxr7-fixture.vxr) 与 [替换意图](../../../Voxim/Docs/R7/fixtures/server-a4-replace-intent.bin) 跨语言 fixture。
+这些是实现与隔离验证；真实双客户端验收由 Voxim 的 A4 实施记录统一记录。
+
 R7 A3：`Structure` 从 L0 实际 prefab occupancy 派生局部完整 16³ 网格；L1 精确保留 canonical 微格，
 L2–L5 的 2³ 子样本有结构时按结构材质众数保留，否则复用 `Reducer.reduce_material/1`。
 没有结构的粗格仍用现有 terrain V1；普通地形编辑会刷新同一祖先格的完整结构网格。

@@ -138,6 +138,7 @@ defmodule VoxelRegion.PrefabTest do
     GenServer.stop(w)
   end
 
+  @tag :database
   test "database append and checkpoint restart retain occupancy and final deletion", %{id: id, opts: opts} do
     alias DataService.Voxel.OverlayLogStore
     :ok = OverlayLogStore.replace(123,[])
@@ -173,6 +174,61 @@ defmodule VoxelRegion.PrefabTest do
       cells = Prefab.footprint(definition,List.to_tuple(golden["stair"]["anchor"]),sample["id"])
       assert Enum.sort(Enum.map(cells,fn {{x,y,z},m} -> [x,y,z,m] end)) == sample["cells"]
     end
+  end
+
+  @tag :r7a4
+  test "nested preorder, ancestor snapshots, actual subtree replace and replay", %{opts: opts, id: leaf} do
+    nested_scenario(opts,leaf)
+  end
+
+  @tag :database
+  test "nested DB append and checkpoint preserve actual hierarchy", %{opts: opts,id: leaf} do
+    :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
+    nested_scenario(Keyword.put(opts,:log,VoxelRegion.OverlayLog.Db),leaf)
+    :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
+  end
+
+  defp nested_scenario(opts,leaf) do
+    catalog = Keyword.fetch!(opts, :prefab_catalog_path)
+    child = fn slot, id, x -> <<slot::32-little,id::binary, x::signed-little-32,0::signed-little-32,0::signed-little-32,0>> end
+    part_bytes = <<"VXPD",1::32-little,0::32-little,2::32-little>> <> child.(3,leaf,0) <> child.(8,leaf,16)
+    part = :crypto.hash(:sha256,part_bytes)
+    File.write!(Path.join(catalog,"part.vxpd"),part_bytes)
+    root_bytes = <<"VXPD",1::32-little,0::32-little,2::32-little>> <> child.(2,part,0) <> child.(7,part,32)
+    root_id = :crypto.hash(:sha256,root_bytes)
+    File.write!(Path.join(catalog,"root.vxpd"),root_bytes)
+    {:ok,w} = World.start_link(opts)
+    assert {:ok,1} = World.place_prefab(w,root_id,{503,8,8},0)
+    assert {:ok,2} = World.place_prefab(w,leaf,{503,8,9},0)
+    right = payload(w,{1,0,0})
+    assert right.format_version == 7
+    assert right.instances[{1,0}].definition_id == root_id
+    assert right.instances[{1,1}].parent_id == {1,0}
+    assert right.instances[{1,2}].parent_id == {1,1}
+    assert right.instances[{1,3}].component_slot == 8
+    assert {:ok,3} = World.remove_prefab(w,{1,2})
+    assert {:ok,4} = World.replace_prefab(w,{1,3},leaf)
+    assert {:error,:instance_not_found} = World.instance_cells(w,{1,2})
+    assert not Map.has_key?(payload(w,{0,0,0}).instances,{1,2})
+    assert {:ok,5} = World.replace_prefab(w,{1,1},leaf)
+    p = payload(w,{0,0,0})
+    assert p.instances[{5,0}].parent_id == {1,0}
+    assert p.instances[{5,0}].component_slot == 2
+    assert p.instances[{5,0}].anchor == {503,8,8}
+    assert p.instances[{1,0}].definition_id == root_id
+    assert {:error,:occupied} = World.replace_prefab(w,{5,0},root_id)
+    assert World.seq(w) == 5
+    assert payload(w,{0,0,0}).refined == p.refined
+    GenServer.stop(w)
+    {:ok,w} = World.start_link(opts)
+    assert payload(w,{0,0,0}).instances == p.instances
+    assert :ok = World.compact(w)
+    GenServer.stop(w)
+    {:ok,w} = World.start_link(opts)
+    assert {:ok,6} = World.remove_prefab(w,{1,0})
+    assert Map.keys(payload(w,{0,0,0}).instances) == [{2,0}]
+    assert Map.keys(payload(w,{1,0,0}).instances) == [{2,0}]
+    GenServer.stop(w)
   end
 
   defp payload(w,region) do
