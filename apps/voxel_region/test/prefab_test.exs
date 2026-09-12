@@ -3,6 +3,22 @@ defmodule VoxelRegion.PrefabTest do
   alias VoxelRegion.{World, FileStore, Prefab, CollisionSource}
   alias MmoContracts.Voxel.{Codec, Payload}
 
+  defmodule ObservedFileStore do
+    # 记录真实文件源的预备请求；读路径仍直接使用 FileStore。
+    def open(opts) do
+      {:ok,store} = FileStore.open(opts)
+      {:ok,Map.put(store,:observer,Keyword.fetch!(opts,:observer))}
+    end
+    defdelegate content_version(store), to: FileStore
+    defdelegate world_dir(store), to: FileStore
+    defdelegate read(store,level,region), to: FileStore
+    defdelegate generated(store), to: FileStore
+    def ensure(store,level,region) do
+      send(store.observer,{:source_ensure,self(),{level,region}})
+      FileStore.ensure(store,level,region)
+    end
+  end
+
   setup do
     root = Path.join(System.tmp_dir!(), "r7_prefab_#{System.unique_integer([:positive])}")
     catalog = Path.join(root, "catalog")
@@ -174,6 +190,72 @@ defmodule VoxelRegion.PrefabTest do
       cells = Prefab.footprint(definition,List.to_tuple(golden["stair"]["anchor"]),sample["id"])
       assert Enum.sort(Enum.map(cells,fn {{x,y,z},m} -> [x,y,z,m] end)) == sample["cells"]
     end
+  end
+
+  @tag :r7a4
+  @tag :prepare_regression
+  test "warm subtree replacement does not recheck source files for every structure sample", %{opts: opts,id: id} do
+    {:ok,w} = World.start_link(opts ++ [source: ObservedFileStore,observer: self()])
+    on_exit(fn -> if Process.alive?(w),do: GenServer.stop(w) end)
+    assert {:ok,1} = World.place_prefab(w,id,{15,8,8},0)
+    ensure_events([])
+    assert {:ok,2} = World.replace_prefab(w,{1,0},id)
+    requests = ensure_events([]) |> Enum.filter(fn {pid,_}->pid==w end) |> Enum.map(&elem(&1,1))
+    # 已驻留的源不能随着子采样数量反复做文件系统预备；输出 region 至多各一次。
+    assert Enum.all?(Enum.frequencies(requests),fn {_,count}->count<=1 end),inspect(Enum.frequencies(requests))
+    p = payload(w,{0,0,0})
+    assert Map.keys(p.instances)==[{2,0}]
+    assert map_size(p.refined)==2
+  end
+
+  defp ensure_events(events) do
+    receive do
+      {:source_ensure,pid,key} -> ensure_events([{pid,key}|events])
+    after
+      0 -> events
+    end
+  end
+
+  @tag :r7a4
+  @tag :replacement_regression
+  test "same definition replacement restores damaged geometry and preserves other owners", %{opts: opts,id: leaf} do
+    catalog = Keyword.fetch!(opts,:prefab_catalog_path)
+    child = fn slot,x -> <<slot::32-little,leaf::binary,x::signed-little-32,0::signed-little-32,0::signed-little-32,0>> end
+    bytes = <<"VXPD",1::32-little,0::32-little,2::32-little>> <> child.(1,0) <> child.(2,16)
+    root = :crypto.hash(:sha256,bytes)
+    File.write!(Path.join(catalog,"repair.vxpd"),bytes)
+    {:ok,w} = World.start_link(opts)
+    assert {:ok,1} = World.place_prefab(w,root,{15,8,8},0)
+    assert {:ok,2} = World.place_prefab(w,leaf,{15,8,9},0)
+    original = payload(w,{0,0,0})
+    assert {:ok,3} = World.remove_prefab(w,{1,1})
+    assert payload(w,{0,0,0}).refined != original.refined
+    assert {:ok,4} = World.replace_prefab(w,{1,0},root)
+    repaired = payload(w,{0,0,0})
+    materials = fn p -> Map.new(p.refined,fn {cell,slots}->{cell,Map.new(slots,fn {slot,{m,_}}->{slot,m} end)} end) end
+    assert materials.(repaired)==materials.(original)
+    assert repaired.instances[{2,0}]==original.instances[{2,0}]
+    assert Enum.sort(Map.keys(repaired.instances))==[{2,0},{4,0},{4,1},{4,2}]
+    [txn] = World.entries_after(w,3)
+    assert Enum.any?(txn.entries,fn e -> {:ok,h}=Codec.decode_payload_header(e.payload);h.level==1 end)
+    # 未改 slot 数量也必须识别材质变化。
+    recolored = <<"VXPD",1::32-little,2::32-little,0::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,
+      1::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,0::32-little>>
+    File.write!(Path.join(catalog,"recolored.vxpd"),recolored)
+    :ok = World.publish_prefabs(w,catalog)
+    assert {:ok,5} = World.replace_prefab(w,{4,1},:crypto.hash(:sha256,recolored))
+    p = payload(w,{0,0,0})
+    assert p.refined[Payload.cell_index({2,2,2})][7]=={19,{5,0}}
+    assert p.refined[Payload.cell_index({3,2,2})][0]=={11,{5,0}}
+    [recolor_txn] = World.entries_after(w,4)
+    entry = Enum.find(recolor_txn.entries,fn e ->
+      {:ok,h}=Codec.decode_payload_header(e.payload)
+      h.level==1 and h.region=={0,0,0}
+    end)
+    {:ok,coarse} = Payload.decode(entry.payload)
+    grid = coarse.structure[Payload.cell_index({1,1,1})]
+    assert binary_part(grid,2*(15+16*(8+16*8)),2)==<<275::16-little>>
+    GenServer.stop(w)
   end
 
   @tag :r7a4

@@ -1,5 +1,16 @@
 # Voxim Region 真值
 
+2026-09-12 园林大子树替换延迟修复：结构采样不再逐子格 `source.ensure`，直接复用 `cell_value` 的 decoded/read 路径；
+GeneratedStore.read 自己负责 L0 缺失物化，FileStore.read 保留显式错误。依据是现有源读取合同与
+[Elixir File.read](https://elixir.hexdocs.pm/1.18.1/File.html#read/1) 的成功/错误语义。
+按现有 apply_batch 的 canonical 格去重方式，prefab 微格先汇集到 macro，再一次写入世界索引；占用冲突仍原子拒绝。
+结构和碰撞只消费替换前后实际 slot/材质变化；身份更换照常发布新 occurrence 和完整 L0，受损同定义仍恢复。
+真实正厅替换原为 33.8 秒，修复后两次为 3.21/1.23 秒，缺损恢复为 2.64 秒；仍有秒级成本，不代表即时编辑。
+现有双 Scene/World 保留，客户端完整记录与命令见
+[`Garden-nested-performance.md`](../../../Voxim/Docs/R7/Garden-nested-performance.md)。
+本次最小新增回归是 prefab_test 的 warm source 检查与受损同定义恢复/材质变更；连同直接相关结构与 prefab 共 14 项，
+12 项通过，2 个未涉及的 DB 用例排除。计时记录使用公开替换 API 和限域 BEAM trace，不复制运行时算法。
+
 R7 A4：VXPD 的稳定 child slot 按升序展开 preorder occurrence，定义目录在发布入口拒绝循环、缺失引用与实际占用重叠。
 点 anchor 与格体积旋转沿用 [A0 合同](../../../Voxim/Docs/R7/A0-contract.md)，目录缓存展开结果，内部查询不重复验证。
 `World.remove_prefab/2` 删除目标实际子树；`World.replace_prefab/3` 用当前确认态减去旧子树再加入新定义，一次提交完整 L0–L5 after-image。

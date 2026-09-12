@@ -503,29 +503,30 @@ defmodule VoxelRegion.World do
 
   defp place_tree(before,state,id,anchor,orientation,parent,slot,changed) do
     nodes = Prefab.occurrences(Map.fetch!(state.prefabs,id),anchor,orientation,before.seq+1,parent,slot)
-    result = Enum.reduce_while(nodes,{:ok,state,changed},fn {owner,instance,cells},{:ok,s,changed} ->
-      result = Enum.reduce_while(cells,{:ok,s,changed},fn {micro,material},{:ok,s,changed} ->
-        {cell,slot} = Prefab.macro_slot(micro)
-        slots = Map.get(s.refined,cell,%{})
-        case cell_value(s,0,cell) do
-          {:ok,{0,_},s} ->
-            if Map.has_key?(slots,slot) do
-              {:halt,{:error,:occupied}}
-            else
-              s = %{s | refined: Map.put(s.refined,cell,Map.put(slots,slot,{material,owner}))}
-              {:cont,{:ok,put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)}),[cell|changed]}}
-            end
-          {:ok,_,_} -> {:halt,{:error,:occupied}}
-          {:error,reason,_} -> {:halt,{:error,reason}}
-        end
-      end)
-      case result do
-        {:ok,s,changed} -> {:cont,{:ok,%{s | instances: Map.put(s.instances,owner,instance)},changed}}
-        error -> {:halt,error}
+    # 已发布定义保证 slot 不重叠；按 canonical macro 汇集后，每格只更新一次世界索引和缓存。
+    additions = for {owner,_,cells} <- nodes, {micro,material} <- cells, reduce: %{} do
+      acc ->
+        {cell,micro_slot} = Prefab.macro_slot(micro)
+        Map.update(acc,cell,%{micro_slot=>{material,owner}},&Map.put(&1,micro_slot,{material,owner}))
+    end
+    result = Enum.reduce_while(additions,{:ok,state},fn {cell,added},{:ok,s} ->
+      slots = Map.get(s.refined,cell,%{})
+      case cell_value(s,0,cell) do
+        {:ok,{0,_},s} ->
+          if Enum.any?(added,fn {slot,_}->Map.has_key?(slots,slot) end) do
+            {:halt,{:error,:occupied}}
+          else
+            s = %{s | refined: Map.put(s.refined,cell,Map.merge(slots,added))}
+            {:cont,{:ok,put_overlay(s,0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})}}
+          end
+        {:ok,_,_} -> {:halt,{:error,:occupied}}
+        {:error,reason,_} -> {:halt,{:error,reason}}
       end
     end)
     case result do
-      {:ok,next,changed} -> prefab_reply(before,next,Enum.uniq(changed))
+      {:ok,next} ->
+        instances = Enum.reduce(nodes,next.instances,fn {owner,instance,_},acc->Map.put(acc,owner,instance) end)
+        prefab_reply(before,%{next | instances: instances},Enum.uniq(Map.keys(additions)++changed))
       {:error,reason} -> {:reply,{:error,reason},before}
     end
   end
@@ -537,11 +538,22 @@ defmodule VoxelRegion.World do
 
   defp prefab_reply(before,state,cells) do
     state = %{state | seq: before.seq+1,instances: Map.take(state.instances,live_instance_ids(state.refined,state.instances))}
-    {state, structure_keys} = refresh_structure(state,cells)
+    # owner 更换仍发布完整 L0；只有实际 slot/材质变化才重建结构和碰撞。
+    material_changes = Enum.filter(cells,fn cell ->
+      old = Map.get(before.refined,cell,%{})
+      new = Map.get(state.refined,cell,%{})
+      map_size(old) != map_size(new) or Enum.any?(old,fn {slot,{material,_}} ->
+        case Map.get(new,slot) do
+          {^material,_} -> false
+          _ -> true
+        end
+      end)
+    end)
+    {state, structure_keys} = refresh_structure(state,material_changes)
     keys = region_keys(Enum.map(cells,&{0,&1})) ++ structure_keys
     {entries,state} = region_afterimages(state,keys)
     txn = %{seq: state.seq,entries: entries,coarse: []}
-    with {:ok,chunks} <- canonical_changes(before,state,Enum.map(cells,&{0,&1})),
+    with {:ok,chunks} <- canonical_changes(before,state,Enum.map(material_changes,&{0,&1})),
          :ok <- append_log(state,txn) do
       state = %{state | entries: Map.put(state.entries,state.seq,txn)}
       fanout(state,txn)
@@ -581,7 +593,7 @@ defmodule VoxelRegion.World do
             case if(level == 1,do: Map.fetch(s.refined,cell),else: Map.fetch(s.structure,{level-1,cell})) do
               {:ok,value} -> {value,s}
               :error ->
-                :ok = s.source.ensure(s.source_state,level-1,region_of(cell))
+                # cell_value 优先读已解码真值；冷 miss 由源 read 自行物化，不逐采样预检文件。
                 {:ok,{m,_},s} = cell_value(s,level-1,cell)
                 {m,s}
             end
