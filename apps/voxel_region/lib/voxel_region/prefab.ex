@@ -31,7 +31,9 @@ defmodule VoxelRegion.Prefab do
            nodes = expand_definition(definitions,id,{0,0,0},0,nil,0,[]) |> elem(0),
            cells = Enum.flat_map(nodes,& &1.cells),
            true <- length(cells) == MapSet.size(MapSet.new(Enum.map(cells,&elem(&1,0)))) do
-        {:cont,{:ok,Map.put(catalog,id,%{nodes: nodes,cells: cells})}}
+        # 发布目录长期不变；节点体素保存为二进制，避免每次世界 GC 扫描展开坐标。
+        nodes = Enum.map(nodes,fn node -> %{node | cells: :erlang.term_to_binary(node.cells)} end)
+        {:cont,{:ok,Map.put(catalog,id,%{nodes: nodes})}}
       else
         false -> {:halt,{:error,:overlapping_definition}}
         error -> {:halt,error}
@@ -74,14 +76,20 @@ defmodule VoxelRegion.Prefab do
     end)
   end
 
+  def footprint(%{nodes: nodes},anchor,orientation), do: Enum.flat_map(nodes,&footprint(&1.cells,anchor,orientation))
+  def footprint(cells,anchor,orientation) when is_binary(cells), do: footprint(:erlang.binary_to_term(cells),anchor,orientation)
   def footprint(%{cells: cells},anchor,orientation), do: footprint(cells,anchor,orientation)
   def footprint(cells, anchor, orientation) when orientation in 0..23 do
-    rows = rotation(orientation)
+    # A0 旋转只交换轴并改变符号；体积反向轴的 -1 偏移在本次变换中只计算一次。
+    [{ix,sx,ox},{iy,sy,oy},{iz,sz,oz}] = rotation(orientation)
+      |> Enum.zip(Tuple.to_list(anchor))
+      |> Enum.map(fn {row,origin} ->
+        axis = Enum.find(0..2,&(elem(row,&1)!=0))
+        sign = elem(row,axis)
+        {axis,sign,origin+min(sign,0)}
+      end)
     Enum.map(cells,fn {cell,m} ->
-      cell = rows |> Enum.with_index() |> Enum.map(fn {{a,b,c},i} ->
-        elem(anchor,i)+a*elem(cell,0)+b*elem(cell,1)+c*elem(cell,2)+if(a == -1 or b == -1 or c == -1,do: -1,else: 0)
-      end) |> List.to_tuple()
-      {cell,m}
+      {{sx*elem(cell,ix)+ox,sy*elem(cell,iy)+oy,sz*elem(cell,iz)+oz},m}
     end)
   end
 

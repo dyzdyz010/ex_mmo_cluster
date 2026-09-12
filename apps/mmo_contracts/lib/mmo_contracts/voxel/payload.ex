@@ -79,9 +79,22 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "VXR4 解压后的 CSR body 解码为不可变载荷。"
   def decode_body(raw, version \\ 4)
-  def decode_body(
+  def decode_body(raw, version) do
+    with {:ok, {cells, extent, map_extent, row_start, col_x, faces, masks, fmi, maps}, tail} <- terrain_sections(raw),
+         {:ok, refined, instances, structure, version} <- decode_tail(tail, version),
+         {:ok, records} <- decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
+      {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: records,
+        fmi: fmi, maps: maps, refined: refined, instances: instances,
+        structure: structure, format_version: version}}
+    else
+      _ -> {:error, :invalid_payload}
+    end
+  end
+
+  # 地形段布局只有这一处；完整解码与细节重写共用分段，不重复展开 CSR。
+  defp terrain_sections(
         <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
-          map_extent::32-little, rest::binary>>, version)
+          map_extent::32-little, rest::binary>>)
       when n == @cell_count and map_extent in [1, 2, @max_map_extent] and
              ((ex == 0 and ey == 0 and ez == 0) or
                 (ex == @extent and ey == @extent and ez == @extent)) do
@@ -90,24 +103,13 @@ defmodule MmoContracts.Voxel.Payload do
          <<record_count::32-little, faces::binary-size(record_count * 6),
            masks::binary-size(record_count * 2), rest::binary>> <- rest,
          {:ok, fmi, rest} <- array(rest, 2),
-         {:ok, maps, tail} <- array(rest, 1),
-         {:ok, refined, instances, structure, version} <- decode_tail(tail, version),
-         {:ok, records} <-
-           decode_records({ex, ey, ez}, map_extent, row_start, col_x, faces, masks, fmi, maps) do
-      {:ok,
-       %__MODULE__{
-         cells: cells,
-         map_extent: map_extent,
-         records: records,
-         fmi: fmi,
-         maps: maps, refined: refined, instances: instances, structure: structure, format_version: version
-       }}
+         {:ok, maps, tail} <- array(rest, 1) do
+      {:ok, {cells, {ex,ey,ez}, map_extent, row_start, col_x, faces, masks, fmi, maps}, tail}
     else
       _ -> {:error, :invalid_payload}
     end
   end
-
-  def decode_body(_, _), do: {:error, :invalid_payload}
+  defp terrain_sections(_), do: {:error, :invalid_payload}
 
   defp decode_tail(tail, 6) do
     with {:ok, structure} <- MmoContracts.Voxel.Structure.decode(tail), do: {:ok, %{}, %{}, structure, 6}
@@ -184,7 +186,8 @@ defmodule MmoContracts.Voxel.Payload do
         z = div(row, @extent)
 
         Enum.reduce(first..(last - 1), acc, fn k, acc ->
-          ids = List.to_tuple(for face <- 0..5, do: :binary.at(faces, face * n + k))
+          # 六个 u8 面材质存于一个小整数，避免常驻表皮记录携带六元组。
+          ids = Enum.reduce(0..5,0,fn face,ids -> ids ||| (:binary.at(faces,face*n+k) <<< (face*8)) end)
           Map.put(acc, {elem(xs, k), y, z}, {ids, elem(ms, k), elem(bases, k)})
         end)
       end
@@ -208,7 +211,7 @@ defmodule MmoContracts.Voxel.Payload do
 
         faces =
           for face <- 0..5 do
-            id = elem(ids, face)
+            id = (ids >>> (face*8)) &&& 255
             bit = 1 <<< face
 
             if (mask &&& bit) != 0 do
@@ -280,6 +283,18 @@ defmodule MmoContracts.Voxel.Payload do
         maps
       ])
 
+    encode_with_details(raw, p, seq, content_version)
+  end
+
+  @doc "复用有效且地形仍为当前真值的载荷字节；p 提供新的 refined/structure，调用方负责地形缓存失效。"
+  def replace_details(bytes, %__MODULE__{} = p, seq, content_version) do
+    {:ok, _header, raw} = MmoContracts.Voxel.Codec.unpack_payload_body(bytes)
+    {:ok, _sections, tail} = terrain_sections(raw)
+    terrain = binary_part(raw, 0, byte_size(raw)-byte_size(tail))
+    encode_with_details(terrain, p, seq, content_version)
+  end
+
+  defp encode_with_details(terrain, p, seq, content_version) do
     version = cond do
       map_size(p.structure) > 0 -> 6
       Enum.any?(p.instances,fn {_,i} -> Map.get(i,:parent_id,{0,0}) != {0,0} end) -> 7
@@ -287,9 +302,9 @@ defmodule MmoContracts.Voxel.Payload do
       true -> 4
     end
     raw = case version do
-      6 -> raw <> MmoContracts.Voxel.Structure.encode(p.structure)
-      v when v in [5,7] -> raw <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances,v)
-      4 -> raw
+      6 -> terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
+      v when v in [5,7] -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances,v)
+      4 -> terrain
     end
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end

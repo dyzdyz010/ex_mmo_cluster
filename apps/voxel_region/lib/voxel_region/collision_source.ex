@@ -1,5 +1,5 @@
 defmodule VoxelRegion.CollisionSource do
-  @moduledoc "Pure core occupancy projection of the canonical R6 payload; no terrain state."
+  @moduledoc "canonical 格到完整 chunk 占用的纯投影；载荷与 World 读取共用同一算法，不持有地形状态。"
 
   alias MmoContracts.Voxel.{ChunkOccupancy, Payload}
   alias MmoContracts.VoxelMaterialCatalog
@@ -36,30 +36,38 @@ defmodule VoxelRegion.CollisionSource do
         do: {rx * n + x, ry * n + y, rz * n + z}
   end
 
-  def capture(%Payload{level: 0} = payload, {cx, cy, cz} = coord) do
-    {ox, oy, oz} = {cx * @chunk_size, cy * @chunk_size, cz * @chunk_size}
+  @doc "从完整 L0 载荷，或世界格读取器（coord → {terrain 材质, slot map}）投影相同 chunk 占用。"
+  def capture(%Payload{level: 0} = payload, coord) do
+    capture(coord,fn cell ->
+      local = Payload.local(payload.region,cell)
+      {Payload.material(payload,local),Map.get(payload.refined,Payload.cell_index(local),%{})}
+    end)
+  end
 
-    refined = for {index, slots} <- payload.refined,
-      local = {rem(index,66),rem(div(index,66),66),div(index,66*66)},
-      {px,py,pz} = Payload.origin(payload.region),
-      {x,y,z} = local,
-      wx = px+x, wy = py+y, wz = pz+z,
-      wx >= ox and wx < ox+@chunk_size and wy >= oy and wy < oy+@chunk_size and wz >= oz and wz < oz+@chunk_size,
-      into: %{}, do: {{wx-ox,wy-oy,wz-oz},slots}
+  def capture({cx, cy, cz} = coord, value_at) when is_function(value_at,1) do
+    {ox, oy, oz} = {cx * @chunk_size, cy * @chunk_size, cz * @chunk_size}
+    # 读取器只回答世界格的 {terrain 材质, 实际微格占用}；编辑不经过 wire 往返。
+    {blocks,refined} = for z <- 0..(@chunk_size-1),y <- 0..(@chunk_size-1),x <- 0..(@chunk_size-1),reduce: {[],%{}} do
+      {blocks,refined} ->
+        {material,slots} = value_at.({ox+x,oy+y,oz+z})
+        blocked = if VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0
+        refined = if map_size(slots) == 0,do: refined,else: Map.put(refined,{x,y,z},slots)
+        {[<<blocked>>|blocks],refined}
+    end
+    blocks = blocks |> Enum.reverse() |> IO.iodata_to_binary()
     n = if map_size(refined) == 0, do: @chunk_size, else: @chunk_size*@micro
     sampling = if n == @chunk_size, do: 1, else: @micro
-    # Preserve the 16-grid path. Refined chunks expand the blocking rows once, then splice actual slots.
-    cells = for z <- 0..(@chunk_size-1), into: <<>> do
+    # 普通格保留 16³；细化 chunk 先扩展阻挡行，再拼接实际微格。
+    cells = if sampling == 1,do: blocks,else: (for z <- 0..(@chunk_size-1), into: <<>> do
       slab = for y <- 0..(@chunk_size-1), into: <<>> do
         row = for x <- 0..(@chunk_size-1), into: <<>> do
-          material = Payload.material(payload,Payload.local(payload.region,{ox+x,oy+y,oz+z}))
-          blocked = if VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0
+          blocked = :binary.at(blocks,x+@chunk_size*(y+@chunk_size*z))
           :binary.copy(<<blocked>>,sampling)
         end
         :binary.copy(row,sampling)
       end
       :binary.copy(slab,sampling)
-    end
+    end)
     updates = for {{mx,my,mz},slots} <- refined, {slot,{material,_}} <- slots do
       x = mx*@micro+rem(slot,@micro)
       y = my*@micro+rem(div(slot,@micro),@micro)

@@ -6,7 +6,7 @@ defmodule MmoContracts.Voxel.Refined do
       <<map_size(refined)::32-little>>,
       for {index, slots} <- Enum.sort(refined) do
         [<<index::32-little, map_size(slots)::32-little>>,
-         for {slot, {material, {birth, occurrence}}} <- Enum.sort(slots) do
+         for {slot, {material, {birth, occurrence}}} <- Enum.sort(slots), into: <<>> do
            <<slot::16-little, material::16-little, birth::64-little, occurrence::32-little>>
          end]
       end,

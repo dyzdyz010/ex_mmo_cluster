@@ -2,6 +2,44 @@ defmodule MmoContracts.R7PrefabTest do
   use ExUnit.Case, async: true
   alias MmoContracts.Voxel.{Codec, Payload}
 
+  test "accepted payload unpacking shares raw and compressed decoding; boundary still checks hash" do
+    p = %Payload{cells: :binary.copy(<<0,0>>,66*66*66)}
+    bytes = Payload.encode(p,%{},9,123)
+    {:ok,header,raw} = Codec.decode_payload_body(bytes)
+    <<prefix::binary-size(45),_::binary>> = bytes
+    uncompressed = <<prefix::binary,0,byte_size(raw)::32-little,byte_size(raw)::32-little,raw::binary>>
+    for input <- [bytes,uncompressed] do
+      assert {:ok,h,^raw} = Codec.unpack_payload_body(input)
+      assert h.hash == header.hash
+      assert Codec.decode_payload_body(input) == {:ok,h,raw}
+      assert Payload.replace_details(input,p,10,123) == Payload.encode(p,%{},10,123)
+      <<before_hash::binary-size(37),_::64,tail::binary>> = input
+      corrupt = <<before_hash::binary,0::64,tail::binary>>
+      assert {:error,:invalid_payload} = Codec.decode_payload_body(corrupt)
+      assert {:error,:invalid_payload} = Payload.decode(corrupt)
+    end
+  end
+
+  test "detail replacement preserves exact terrain skin bytes through all payload versions" do
+    skin = {2, {{11, <<11,19,19,11>>}, {19,nil}, {0,nil}, {11,nil}, {19,nil}, {0,nil}}}
+    base = %Payload{cells: :binary.copy(<<0,0>>,66*66*66),map_extent: 2}
+    bytes = Payload.encode(base,%{{5,5,5} => {11,skin}},1,123)
+    {:ok,base} = Payload.decode(bytes)
+    root = %{definition_id: :binary.copy(<<42>>,32),anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}
+    child = %{root | parent_id: {9,0},component_slot: 17}
+    variants = [base,
+      %{base | refined: %{4430 => %{7 => {11,{9,0}}}},instances: %{{9,0} => root}},
+      %{base | refined: %{4430 => %{7 => {11,{10,0}}}},instances: %{{9,0} => root,{10,0} => child}},
+      %{base | level: 1,structure: %{4430 => :binary.copy(<<267::16-little>>,4096)}}]
+    for source <- variants, target <- variants do
+      prior = Payload.encode(source,%{},8,123)
+      rewritten = Payload.replace_details(prior,target,10,123)
+      assert rewritten == Payload.encode(target,%{},10,123)
+      assert {:ok,p} = Payload.decode(rewritten)
+      assert Payload.value(p,{5,5,5}) == Payload.value(base,{5,5,5})
+    end
+  end
+
   test "VXR5 preserves actual owner occupancy and complete identity" do
     p = struct(Payload, cells: :binary.copy(<<0, 0>>, 66*66*66))
     p = Map.put(p, :refined, %{4430 => %{7 => {11, {9, 0}}}})

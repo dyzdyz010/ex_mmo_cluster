@@ -1,15 +1,29 @@
 # Voxim Region 真值
 
+2026-09-13：用户决定本轮园林子树编辑修复收口并提交推送。保留实跑延迟与剩余整区域处理成本；进一步优化另行启动，R7-B 仍为规划。
+
 2026-09-12 园林大子树替换延迟修复：结构采样不再逐子格 `source.ensure`，直接复用 `cell_value` 的 decoded/read 路径；
 GeneratedStore.read 自己负责 L0 缺失物化，FileStore.read 保留显式错误。依据是现有源读取合同与
 [Elixir File.read](https://elixir.hexdocs.pm/1.18.1/File.html#read/1) 的成功/错误语义。
 按现有 apply_batch 的 canonical 格去重方式，prefab 微格先汇集到 macro，再一次写入世界索引；占用冲突仍原子拒绝。
 结构和碰撞只消费替换前后实际 slot/材质变化；身份更换照常发布新 occurrence 和完整 L0，受损同定义仍恢复。
-真实正厅替换原为 33.8 秒，修复后两次为 3.21/1.23 秒，缺损恢复为 2.64 秒；仍有秒级成本，不代表即时编辑。
-现有双 Scene/World 保留，客户端完整记录与命令见
+后续修正按唯一 macro 做范围检查，复用当前子树集合与已生成的区域载荷；副本分发只消费实际 changed 区域，
+不再二次外扩或解码后丢弃。地形未变时 `Payload.replace_details` 保留地形字节，仅重编 refined/结构后缀。
+碰撞直接采样 canonical 值；`CollisionSource.capture` 的 payload 和采样入口共用一个投影算法。
+后续 GC 实测促成两处生命周期收缩：发布目录只保留节点，节点体素以内部 ETF 二进制保存，删除重复汇总列表；
+`World.serve` 本批新增的 baseline 解码数据在返回时释放，最终载荷仍走原缓存，编辑链路保留其解码复用。
+`cache_clear` 同时清理两种派生缓存，已提交地形基底和 canonical 实例不受影响。
+此外，A0 轴/符号只在一次 footprint 变换前计算，refined 每 macro 直接汇集成二进制，减少逐微格临时对象。
+存活 owner 按 macro 直接汇总，避免先生成逐微格 owner 列表。`Payload` 的内部表皮记录用一个 48 位整数
+保留六个 u8 面材质，减少常驻堆；对外 skins、wire 和坐标键不变。在线旧表示经既有 compact 重建，最终源码不保留兼容分支。
+World 启动时按已有 payload_cache_bytes 预算设置二进制 GC 最小阈值，保留更高的 VM 默认值；
+这是回收触发阈值，不预分配内存，也不是所有二进制数据的容量上限。实际旧二进制阈值过小曾导致一次编辑反复全量回收。
+有效载荷的后缀重写复用 Codec.unpack_payload_body，删除旧 body 的重复 MD5；公开 decode_payload_body 继续完整校验。
+FileStore 在文件接纳时补齐 body/hash 校验，GeneratedStore 保留其既有校验；内部不增加可信标记、模式开关或第二套解析器。
+真实客户端结果、服务器退出恢复及测量限制见
 [`Garden-nested-performance.md`](../../../Voxim/Docs/R7/Garden-nested-performance.md)。
-本次最小新增回归是 prefab_test 的 warm source 检查与受损同定义恢复/材质变更；连同直接相关结构与 prefab 共 14 项，
-12 项通过，2 个未涉及的 DB 用例排除。计时记录使用公开替换 API 和限域 BEAM trace，不复制运行时算法。
+相关回归覆盖 warm source、受损同定义恢复、材质变更、dense/sparse 混合 ring、历史碰撞与 checkpoint/replay。
+线上 OTP 27.1 的函数 trace 曾在运行时断点代码中崩溃，当前在线工具仅计时公开 API，不安装函数断点。
 
 R7 A4：VXPD 的稳定 child slot 按升序展开 preorder occurrence，定义目录在发布入口拒绝循环、缺失引用与实际占用重叠。
 点 anchor 与格体积旋转沿用 [A0 合同](../../../Voxim/Docs/R7/A0-contract.md)，目录缓存展开结果，内部查询不重复验证。
@@ -67,7 +81,7 @@ M4a 区域部署采用 `Replica` 只读物化视图：每个 Scene 节点在本�
 
 启动从上游原子获取快照并订阅，之后同一个 World 发出连续的 `CanonicalDelta` 与受影响区域的完整压缩 payload。
 Replica 只替换不可变结果，并在自己的 mailbox 内原子提供 `canonical_snapshot_and_subscribe/5`；新订阅者的快照与后续 delta 同源有序。
-含 ring 的 payload 使用 World 既有事务投影判定受影响区域，材质改变但 occupancy 未变也会更新 payload。越出驻留 box 显式拒绝。
+含 ring 的 payload 按提交时实际 changed cells/区域同步，材质改变但 occupancy 未变也会更新 payload。越出驻留 box 显式拒绝。
 上游 monitor 结束时 Replica 退出，使 Scene 已有 world monitor 立即失效；本轮不做故障接管或将旧缓存升格为 authority。
 `canonical_deltas_after(replica, N)` 返回启动快照以后、严格大于 N 的有序 `CanonicalDelta`；N 早于启动快照返回 `{:error, :before_replica_snapshot}`。
 该历史供跨区移交按切点前缀补齐已到达编辑，保留不可变 transaction/chunk，不保存 native physics world。
@@ -87,7 +101,12 @@ no-op 只向发起且已订阅的连接回现有 `0x79` 空事务，seq 是当�
 
 事务 `0x79` 小端：`seq u64 / entry_count u32 / {length u32, LogEntry bytes} / coarse_count u32 / coarse[]`。`kind=1` 条目是 `seq u64 / kind u8 / 完整 VXR4`；`kind=0` 字节不变，批次的 canonical 条目 coarse 为空，粗格只在事务 coarse 数组出现一次。按 owned `(level, region)` 分组，精确比较 sparse 字节与 `13 + VXR4大小`，严格大于才用 region。客户端把 region 的 owned 64³ 投入所有相交 resident ring，不能只替换自己的 66³。
 
-日志磁盘只保留选定的 region 快照和剩余 sparse 值；region 事务后自动 `compact`，也可显式调用 `World.compact`。检查点是完整累积投影，seq 等于压实前缀末尾；任意 `have_seq < checkpoint.seq` 都收到完整检查点再接 suffix。region 恢复时 owned 内部直接读快照、边界值同时更新相邻 ring。没有另存一份全量 sparse 磁盘日志。
+日志磁盘只保留选定的 region 快照和剩余 sparse 值；region 事务后自动 `compact`，也可显式调用 `World.compact`。检查点是完整累积投影，seq 等于压实前缀末尾；任意 `have_seq < checkpoint.seq` 都收到完整检查点再接 suffix。
+已提交完整区域的地形保存在 World 的 `region_bases`，拥有自己的 core；`overlay` 只保留其后的逐格编辑。
+refined、instances 和 structure 仍由 World 原有字段唯一持有，基底不再保留不读取的旧后缀副本。
+载荷物化从相邻基底投影 ring，再覆盖真实稀疏编辑，不把快照边界展开为常驻逐格记录。
+检查点先物化并持久化全部内容，成功后才更新基底并移除已吸收增量。基底来自日志真值，`decoded` 和载荷缓存仍可丢弃。
+旧在线状态通过 `code_change(:region_bases,...)` 初始化空字段，再压实现有日志；正常启动直接重放，无需迁移开关。
 
 复用旧物化快照时，只把 VXR4 头中的 seq 改成检查点 seq（不改 body/hash），使 `transaction.seq == entry.seq == payload.seq`。否则客户端会拒绝整个检查点；测试覆盖「dense seq1 → 无关编辑 seq2 → compact → 重启」。
 

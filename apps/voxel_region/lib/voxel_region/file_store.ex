@@ -41,12 +41,12 @@ defmodule VoxelRegion.FileStore do
   def path(root, version, level, {x, y, z}),
     do: Path.join([root, hex(version), "L#{level}", "r_#{x}_#{y}_#{z}.vxr"])
 
-  @doc "读一个 region 文件并核对头与路径一致；`{:ok, bytes, header}` / `{:error, :missing}`。"
+  @doc "接纳 region 文件时校验 body/hash 与路径身份；`{:ok, bytes, header}` / `{:error, :missing}`。"
   def read(root, version, level, region) do
     p = path(root, version, level, region)
 
     with {:ok, bytes} <- File.read(p),
-         {:ok, header} <- Codec.decode_payload_header(bytes),
+         {:ok, header, _raw} <- Codec.decode_payload_body(bytes),
          true <-
            header.level == level and header.region == region and header.content_version == version do
       {:ok, bytes, header}

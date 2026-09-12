@@ -127,6 +127,7 @@ defmodule VoxelRegion.PrefabTest do
     GenServer.stop(w)
   end
 
+  @tag :collision_projection
   test "canonical delta installs micro collision atomically and retains historical revision", %{id: id, opts: opts} do
     alias MmoContracts.Voxel.{CanonicalSnapshot,CanonicalDelta}
     alias SceneServer.Movement.CollisionUpdates
@@ -142,7 +143,16 @@ defmodule VoxelRegion.PrefabTest do
     updates = CollisionUpdates.record_tick(updates,10,events)
     {placed_world,2} = CollisionUpdates.at_tick(updates,10)
     assert {2,_,_} = Native.world_stats(placed_world)
-    assert {:ok,2} = World.remove_prefab(w,{1,0})
+    session = :trace.session_create(:canonical_without_wire,self(),[])
+    try do
+      :trace.function(session,{Payload,:decode,1},true,[:call_time])
+      :trace.process(session,w,true,[:call])
+      assert {:ok,2} = World.remove_prefab(w,{1,0})
+      {:call_time,counters} = :trace.info(session,{Payload,:decode,1},:call_time)
+      assert Enum.sum(for {^w,n,_,_} <- counters,do: n) == 0
+    after
+      :trace.session_destroy(session)
+    end
     assert_receive {:canonical_delta,%CanonicalDelta{transaction_seq: 2}=removed}
     assert Enum.all?(removed.chunks,&(&1.n == 16))
     {updates,events} = updates |> CollisionUpdates.enqueue(removed,1) |> CollisionUpdates.consume(1)
@@ -214,6 +224,75 @@ defmodule VoxelRegion.PrefabTest do
     after
       0 -> events
     end
+  end
+
+  @tag :subtree_wait
+  test "same shape replica update reuses bytes and does not expand a region twice", %{opts: opts,id: id} do
+    {:ok,w} = World.start_link(opts)
+    on_exit(fn -> if Process.alive?(w),do: GenServer.stop(w) end)
+    assert {:ok,1} = World.place_prefab(w,id,{127,8,8},0)
+    assert {:ok,_} = World.replica_snapshot_and_subscribe(w,{{-1,0,0},{1,1,1}},self())
+    mfa = {Payload,:decode,1}
+    session = :trace.session_create(:prefab_replica_decode,self(),[])
+    try do
+      :trace.function(session,mfa,true,[:call_time])
+      :trace.function(session,{Payload,:encode,4},true,[:call_time])
+      :trace.process(session,w,true,[:call])
+      assert {:ok,2} = World.replace_prefab(w,{1,0},id)
+      assert_receive {:canonical_replica_delta,delta,regions}
+      assert delta.chunks == []
+      # 内部放置只改 region 0；region -1 的 ring 没有变化。
+      assert Enum.map(regions,&elem(&1,0)) == [{0,0,0}]
+      {:call_time,counters} = :trace.info(session,mfa,:call_time)
+      assert Enum.sum(for {^w,n,_,_} <- counters,do: n) == 0
+      {:call_time,encodes} = :trace.info(session,{Payload,:encode,4},:call_time)
+      assert Enum.sum(for {^w,n,_,_} <- encodes,do: n) == 0
+      [{_,bytes}] = regions
+      assert {:ok,p} = Payload.decode(bytes)
+      assert Map.keys(p.instances) == [{2,0}]
+    after
+      :trace.session_destroy(session)
+    end
+    # 稀疏宏格边界编辑仍必须更新左邻 ring。
+    assert {:ok,3} = World.apply_edit(w,{0,1,1},19)
+    assert_receive {:canonical_replica_delta,_,regions}
+    assert Enum.map(regions,&elem(&1,0)) == [{-1,0,0},{0,0,0}]
+    {:ok,left} = Payload.decode(regions |> List.first() |> elem(1))
+    assert Payload.material(left,{65,2,2}) == 19
+    assert {:ok,4} = World.replace_prefab(w,{2,0},id)
+    assert Payload.material(payload(w,{0,0,0}),{1,2,2}) == 19
+    assert {:ok,5} = World.remove_prefab(w,{4,0})
+    assert Payload.material(payload(w,{0,0,0}),{1,2,2}) == 19
+  end
+
+  @tag :subtree_wait
+  test "dense definition checks each macro coordinate once and still rejects invalid bounds", %{opts: opts} do
+    cells = for x <- 0..7,y <- 0..7,z <- 0..7,into: <<>>,
+      do: <<x::signed-little-32,y::signed-little-32,z::signed-little-32,11::16-little>>
+    bytes = <<"VXPD",1::32-little,512::32-little,cells::binary,0::32-little>>
+    id = :crypto.hash(:sha256,bytes)
+    File.write!(Path.join(Keyword.fetch!(opts,:prefab_catalog_path),"dense.vxpd"),bytes)
+    {:ok,w} = World.start_link(opts)
+    on_exit(fn -> if Process.alive?(w),do: GenServer.stop(w) end)
+    mfa = {World,:valid_edit_coord?,1}
+    session = :trace.session_create(:prefab_range_checks,self(),[])
+    try do
+      :trace.function(session,mfa,true,[:call_time])
+      :trace.process(session,w,true,[:call])
+      assert {:ok,footprint} = World.prefab_cells(w,id,{-8,8,8},0)
+      assert length(footprint) == 512
+      {:call_time,counters} = :trace.info(session,mfa,:call_time)
+      assert Enum.sum(for {^w,n,_,_} <- counters,do: n) == 1
+    after
+      :trace.session_destroy(session)
+    end
+    assert {:error,:invalid_coordinate} = World.prefab_cells(w,id,{17_179_869_184,8,8},0)
+    assert {:error,:invalid_orientation} = World.prefab_cells(w,id,{0,8,8},24)
+    assert {:ok,1} = World.place_prefab(w,id,{-8,8,8},0)
+    assert {:error,:definition_not_found} = World.replace_prefab(w,{1,0},<<0::256>>)
+    assert World.seq(w) == 1
+    assert {:ok,2} = World.replace_prefab(w,{1,0},id)
+    assert map_size(payload(w,{-1,0,0}).instances) == 1
   end
 
   @tag :r7a4

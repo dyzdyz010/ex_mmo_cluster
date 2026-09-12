@@ -44,6 +44,80 @@ defmodule VoxelRegion.WorldTest do
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
   @tag :replica
+  test "file source rejects corrupt body before it can enter the payload cache", %{root: root} do
+    region = {0,0,0}
+    assert {:ok,bytes,_} = FileStore.read(root,@cv,0,region)
+    <<prefix::binary-size(37),_::64,tail::binary>> = bytes
+    File.write!(FileStore.path(root,@cv,0,region),<<prefix::binary,0::64,tail::binary>>)
+    assert {:error,:missing} = FileStore.read(root,@cv,0,region)
+  end
+
+  @tag :replica
+  test "binary GC threshold accommodates the configured payload cache", %{root: root} do
+    budget = 16*1024*1024
+    world = start_supervised!({World,root: root,name: :binary_gc_budget,payload_cache_bytes: budget})
+    {:min_bin_vheap_size,words} = Process.info(world,:min_bin_vheap_size)
+    assert words >= div(World.stats(world).cache_limit,:erlang.system_info(:wordsize))
+    assert World.stats(world).cache_limit == budget
+  end
+
+  @tag :replica
+  test "checkpoint retains region bases without expanding core or ring into cell edits", %{root: root} do
+    opts = [root: root,name: :compact_memory,payload_cache_bytes: 1]
+    {:ok,w} = World.start_link(opts)
+    edits = for x <- 0..10,y <- 53..63,z <- 0..10,do: {{x,y,z},0}
+    assert {:ok,1} = World.apply_edits(w,edits)
+    assert :ok = World.compact(w)
+    assert World.stats(w).overlay_cells < length(edits)
+    assert World.stats(w).region_bases > 0
+    read = fn world,region ->
+      {:ok,b} = World.serve(world,request([%{level: 0,region: region,have_seq: 0,have_hash: 0}],0))
+      {:ok,_,[{:payload,0,^region,p}]} = Codec.decode_reply(IO.iodata_to_binary(b))
+      {:ok,p} = Payload.decode(p)
+      p
+    end
+    decoded_before_reads = World.stats(w).decoded_regions
+    assert Payload.material(read.(w,{0,0,0}),{6,61,6}) == 0
+    assert Payload.material(read.(w,{-1,0,0}),{65,61,6}) == 0
+    assert Payload.material(read.(w,{0,1,0}),{6,0,6}) == 0
+    # 邻区投影完成后释放解码中间数据，浏览区域不再积累另一份常驻展开缓存。
+    assert World.stats(w).decoded_regions <= decoded_before_reads
+    assert {:ok,2} = World.apply_edit(w,{0,63,5},19)
+    assert Payload.material(read.(w,{-1,0,0}),{65,64,6}) == 19
+    assert Payload.material(read.(w,{0,1,0}),{1,0,6}) == 19
+    GenServer.stop(w)
+    {:ok,w} = World.start_link(opts)
+    assert World.seq(w) == 2
+    assert World.stats(w).overlay_cells < length(edits)
+    assert Payload.material(read.(w,{0,1,0}),{1,0,6}) == 19
+    assert Payload.material(read.(w,{-1,0,0}),{65,61,6}) == 0
+    GenServer.stop(w)
+  end
+
+  @tag :replica
+  test "dense and sparse edits update adjacent replica rings in the same transaction", %{root: root} do
+    alias VoxelRegion.Replica
+    world = start_supervised!({World,root: root,name: :dense_replica_authority})
+    box = {{0,0,0},{2,2,1}}
+    replica = start_supervised!({Replica,authority_ref: world,l0_box: box,name: :dense_region_replica})
+    assert :ok = Replica.canonical_snapshot_and_subscribe(replica,box,self(),:before,false)
+    assert_receive {:canonical_snapshot,:before,_}
+    edits = for x <- 0..10,y <- 55..63,z <- 0..10,do: {{x,y,z},0}
+    assert {:ok,1} = World.apply_edits(world,[{{70,55,5},0}|edits])
+    assert_receive {:canonical_delta,delta},5_000
+    # 明确覆盖同一事务中的密集 region 条目和稀疏 cell 条目。
+    assert Enum.any?(delta.transaction.entries,&Map.has_key?(&1,:payload))
+    assert Enum.any?(delta.transaction.entries,&(Map.get(&1,:coord)=={70,55,5}))
+    assert :ok = Replica.canonical_snapshot_and_subscribe(replica,box,self(),:after,false)
+    assert_receive {:canonical_snapshot,:after,snapshot}
+    assert snapshot.transaction_seq == 1
+    {:ok,upper} = snapshot.regions |> Map.new() |> Map.fetch!({0,1,0}) |> Payload.decode()
+    assert Payload.material(upper,{6,0,6}) == 0
+    {:ok,right} = snapshot.regions |> Map.new() |> Map.fetch!({1,0,0}) |> Payload.decode()
+    assert Payload.material(right,{7,56,6}) == 0
+  end
+
+  @tag :replica
   test "region replica serves local snapshots and ordered canonical updates without a writer", %{root: root} do
     alias VoxelRegion.Replica
     world = start_supervised!({World, root: root, name: :replica_authority})

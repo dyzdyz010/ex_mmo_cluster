@@ -453,13 +453,23 @@ defmodule MmoContracts.Voxel.Codec do
 
   @doc "解压 body（校验 hash）。"
   def decode_payload_body(bytes) do
+    with {:ok,header,raw} <- unpack_payload_body(bytes),
+         true <- body_hash(raw) == header.hash do
+      {:ok,header,raw}
+    else
+      _ -> {:error,:invalid_payload}
+    end
+  end
+
+  @doc "解包已接纳的不可变载荷，供内部缓存重写使用；外部输入必须走 decode_payload_body 校验内容 hash。"
+  def unpack_payload_body(bytes) do
     with {:ok, header} <- decode_payload_header(bytes),
          true <-
            header.encoding in [0, 1] and
              header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes() + if(header.version == 6, do: MmoContracts.Voxel.Structure.max_bytes(), else: 0),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
-         true <- byte_size(raw) == header.raw_bytes and body_hash(raw) == header.hash do
+         true <- byte_size(raw) == header.raw_bytes do
       {:ok, header, raw}
     else
       _ -> {:error, :invalid_payload}
