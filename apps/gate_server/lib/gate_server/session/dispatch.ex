@@ -522,6 +522,43 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  # The same creator permission applies to all transports, separate from tool attacks.
+  def handle({kind,request}=message,%{status: :in_scene,voxim_overlay: true}=state)
+      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1,
+        :voxel_edit_intent,:voxel_batch_edit_intent] and not is_map_key(state,:b1_authorized) do
+    builder = Map.get(state,:builder,Map.get(state,:cid) in Application.get_env(:gate_server,:voxim_builder_cids,[]))
+    if builder do
+      {:ok,next}=handle(message,Map.put(state,:b1_authorized,true))
+      {:ok,Map.delete(next,:b1_authorized)}
+    else
+      send_encoded(state,ResultFrame.error(request,:builder_permission_required))
+      {:ok,state}
+    end
+  end
+
+  def handle({:voxel_tool_intent,request},%{status: :in_scene,voxim_overlay: true}=state) do
+    started = System.monotonic_time(:microsecond)
+    result = with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
+      context_done = System.monotonic_time(:microsecond)
+      actor = Map.merge(actor,Map.take(state,[:received_us,:clock_node]))
+      result = VoxelRegion.World.tool_intent(state.world_ref,actor,request)
+      Logger.info("voxel_tool_dispatch request_id=#{request.request_id} node=#{node()} context_us=#{context_done-started} world_us=#{System.monotonic_time(:microsecond)-context_done}")
+      result
+    end
+    case result do
+      {:ok,%{}=target} -> send_encoded(state,{:voxel_property_state,target})
+      {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{request_id: request.request_id,
+        client_intent_seq: request.client_intent_seq,logical_scene_id: request.logical_scene_id,
+        result_code: :accepted,result_ref: seq,authoritative: [],reason: "ok"}})
+      {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
+    end
+    {:ok,state}
+  end
+  def handle({:voxel_tool_intent,request},state) do
+    send_encoded(state,ResultFrame.error(request,:invalid_state))
+    {:ok,state}
+  end
+
   def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state)
       when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
     result = case kind do

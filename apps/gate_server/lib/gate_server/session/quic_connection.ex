@@ -11,7 +11,7 @@ defmodule GateServer.Session.QuicConnection do
   @impl true
   def init(opts) do
     {:ok, %{conn: Keyword.fetch!(opts, :conn), listener: Keyword.fetch!(opts, :listener),
-      hello: Keyword.fetch!(opts, :hello), hello_seen: false, identity: nil, route: nil, player: nil,
+      hello: Keyword.fetch!(opts, :hello), hello_seen: false, identity: nil, route: nil, player: nil, builder: false,
       pending_transfer: nil, transfer_prepared: 0, transfer_committed: 0,
       previous_scene_id: nil,
       transfer_pending_inputs: 0, transfer_last_us: 0,
@@ -322,8 +322,13 @@ defmodule GateServer.Session.QuicConnection do
         # Scene owns the single ordered world subscription, including reconnect
         # bootstrap. This admission never creates an independent Gate log sender.
         %{state | voxim_overlay: true}
+      {:ok,{:voxel_tool_intent,request}=message} when state.voxim_overlay ->
+        if edit_scene?(state,request.logical_scene_id),do: enqueue_edit(state,message),else: close(state,4)
+      {:ok,{kind,request}} when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,
+          :voxel_prefab_replace_v1,:voxel_edit_intent,:voxel_batch_edit_intent] and not state.builder ->
+        send_message(state,2,GateServer.Voxel.ResultFrame.error(request,:builder_permission_required))
       {:ok,{kind,request}=message} when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] and state.voxim_overlay ->
-        if edit_scene?(state, request.logical_scene_id) do
+        if state.builder and edit_scene?(state, request.logical_scene_id) do
           coords = case kind do
             :voxel_prefab_place_v1 ->
               case VoxelRegion.World.prefab_cells(state.route.world_ref,request.definition_id,request.anchor,request.orientation) do
@@ -349,7 +354,7 @@ defmodule GateServer.Session.QuicConnection do
       {:ok, {kind, request} = message}
           when kind in [:voxel_edit_intent, :voxel_batch_edit_intent] and state.voxim_overlay ->
         coords = GateServer.Session.Dispatch.voxim_edit_coords(message)
-        if edit_scene?(state, request.logical_scene_id) and Enum.all?(coords, &within?(&1, state.bounds)) do
+        if state.builder and edit_scene?(state, request.logical_scene_id) and Enum.all?(coords, &within?(&1, state.bounds)) do
           enqueue_edit(state, message)
         else
           close(state, 4)
@@ -372,9 +377,14 @@ defmodule GateServer.Session.QuicConnection do
     enqueue_edit(%{state | edit_worker: worker}, message)
   end
   defp enqueue_edit(state, message) do
+    queued_at = System.monotonic_time(:microsecond)
+    {kind,request} = message
+    Logger.info("mmo_edit_ingress kind=#{kind} request_id=#{request.request_id} client_seq=#{Map.get(request,:client_intent_seq,0)} node=#{node()} received_us=#{queued_at}")
     ctx = %{status: :in_scene, voxim_overlay: true, world_ref: state.route.world_ref,
+      player: state.player,identity: state.identity,builder: state.builder,
+      received_us: queued_at,clock_node: node(),
       sink: GateServer.Session.Sink.quic(self(), state.edit_ref)}
-    send(state.edit_worker, {message, ctx, System.monotonic_time(:microsecond)})
+    send(state.edit_worker, {message, ctx, queued_at})
     %{state | edit_pending: state.edit_pending + 1}
   end
 
@@ -410,7 +420,7 @@ defmodule GateServer.Session.QuicConnection do
       case state.router.route(join.scene_id) do
         {:ok, route} ->
           {identity, result} = GenServer.call(state.listener, {:claim, state.scene, Map.put(route, :scene_id, join.scene_id), character})
-          state = %{state | identity: identity, route: route}
+          state = %{state | identity: identity, route: route,builder: join.cid in Application.get_env(:gate_server,:voxim_builder_cids,[])}
           case result do
             {:ok, player} -> %{state | player: player}
             {:error, :closed} -> state

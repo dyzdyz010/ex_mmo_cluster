@@ -15,6 +15,7 @@ defmodule SceneServer.Movement.Player do
   def time_probe(player, identity, probe), do: GenServer.cast(player, {:time_probe, identity, probe})
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
+  def tool_context(player,identity), do: GenServer.call(player,{:tool_context,identity})
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
@@ -41,6 +42,11 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
+  def handle_call({:tool_context,identity},_,%{identity: identity,ready: true,transfer: nil,failure: nil,state: %{position: {x,y,z}}}=state) do
+    {:reply,{:ok,%{player: self(),identity: identity,eye: {x,y+0.6,z},
+      tick_us: Clock.deadline(state,1)-Clock.deadline(state,0),refresh: &__MODULE__.tool_context/2}},state}
+  end
+  def handle_call({:tool_context,_},_,state), do: {:reply,{:error,:invalid_state},state}
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
   def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
     fence(state)
@@ -116,6 +122,7 @@ defmodule SceneServer.Movement.Player do
             transaction_seq: snapshot.transaction_seq, l0_min: snapshot.l0_min,
             l0_max_exclusive: snapshot.l0_max_exclusive, travel_min_m: elem(state.config.travel, 0),
             travel_max_exclusive_m: elem(state.config.travel, 1), regions: snapshot.regions})
+          for t <- Map.get(snapshot,:property_states,[]), do: reliable(state,:voxel,{:voxel_property_state,t})
           fence(state)
           character_event(state, state, :session_start, %{content_version: content_version})
           publish(state)
@@ -233,8 +240,9 @@ defmodule SceneServer.Movement.Player do
     end
   end
   defp emit_transactions(state, tick, events) do
-    for {payload, n, r, chunks, _delta} <- events do
+    for {payload, n, r, chunks, delta} <- events do
       reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
+      for t <- Map.get(delta.transaction,:property_states,[]), do: reliable(state,:voxel,{:voxel_property_state,t})
       if chunks != [], do: reliable(state, :voxel, %Voxel.CollisionApplied{
         identity: state.identity, collision_revision: r, transaction_seq: n,
         apply_tick: tick, changed_chunks: Enum.map(chunks, & &1.coord)})

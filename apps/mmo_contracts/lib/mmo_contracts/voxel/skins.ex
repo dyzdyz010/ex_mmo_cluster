@@ -13,17 +13,17 @@ defmodule MmoContracts.Voxel.Skins do
     faces =
       faces
       |> Tuple.to_list()
-      |> Enum.map(fn
-        {id, nil} ->
-          {id, nil}
-
-        {id, texels} ->
-          if texels == :binary.copy(<<id>>, byte_size(texels)), do: {id, nil}, else: {id, texels}
-      end)
+      |> Enum.map(&canonical_face/1)
 
     if Enum.all?(faces, fn {_, t} -> t == nil end),
       do: {1, List.to_tuple(faces)},
       else: {ext, List.to_tuple(faces)}
+  end
+
+  @doc "Canonical form of one face, shared by value and packed-record encoding."
+  def canonical_face({id,nil}),do: {id,nil}
+  def canonical_face({id,texels}) do
+    if texels == :binary.copy(<<id>>,byte_size(texels)),do: {id,nil},else: {id,texels}
   end
 
   @doc "六面是否都等于 material，决定稀疏记录省略。"

@@ -292,7 +292,8 @@ defmodule VoxelRegion.WorldTest do
     other = fetch_payload(:batch,0,{1,0,0})
     {:ok, rp} = Payload.decode(ring)
     assert Payload.material(rp,Payload.local({0,1,0},{5,63,5})) == 0
-    # 任意旧游标收到同一个完整检查点；同 seq 没有重复。
+    # 显式压实后任意旧游标收到同一个完整检查点；交互事务不再同步压实。
+    assert :ok = World.compact(:batch)
     for have <- 0..1 do
       [checkpoint] = World.entries_after(:batch,have)
       assert checkpoint.seq == 2

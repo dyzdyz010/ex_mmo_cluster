@@ -33,6 +33,9 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "region 载荷每轴 cell 数（含边缘）。"
   def extent, do: @extent
 
+  @doc "固定cells和空CSR布局的最小解压字节数。"
+  def min_body_bytes, do: 4 + @cell_count * 2 + 16 + 5 * 4
+
   @doc "v4 格/CSR 数量和 u16 贴图索引决定的最大编码容量；不是运行时预算。"
   def max_body_bytes,
     do:
@@ -242,23 +245,24 @@ defmodule MmoContracts.Voxel.Payload do
   """
   def encode(%__MODULE__{} = p, overrides, seq, content_version) do
     cells = splice_cells(p.cells, overrides)
-    ext = p.map_extent
 
     base_records =
       p.records
-      |> Map.keys()
-      |> Enum.reject(&Map.has_key?(overrides, &1))
-      |> Map.new(fn local -> {local, skins(p, local, material(p, local))} end)
+      |> Map.drop(Map.keys(overrides))
 
     override_records =
       overrides
       |> Enum.reject(fn {_, {m, s}} -> Skins.trivial?(s, m) end)
       |> Map.new(fn {local, {_, s}} -> {local, s} end)
 
+    # 空CSR的贴图尺寸为1；首次加入非均匀表皮时，输出尺寸由新记录恢复。
+    # 旧压紧记录仍按原p.map_extent读取，不能把输出尺寸用于解析旧池。
+    ext = Enum.reduce(override_records,p.map_extent,fn {_,{extent,_}},current -> max(current,extent) end)
+
     records =
       Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
 
-    {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, ext)
+    {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, p)
 
     # 空场（L0，或编辑后没有非平凡格）与 Rust `skin::encode` / 客户端空 FVoxelSkinField 同字节：Extent 0、MapExtent 1。
     # 客户端写回缓存的副本按同一规则编码，hash 才能与这里物化的载荷相等（否则重启后重发 payload 而不是 unchanged）。
@@ -294,6 +298,32 @@ defmodule MmoContracts.Voxel.Payload do
     encode_with_details(terrain, p, seq, content_version)
   end
 
+  @doc "Rewrite admitted cached terrain and new details in one encoding pass."
+  def replace_cells_and_details(bytes, overrides, %__MODULE__{} = details, seq, content_version) do
+    {:ok, _header, raw} = MmoContracts.Voxel.Codec.unpack_payload_body(bytes)
+    {:ok, {cells, _extent, map_extent, rows, xs, faces, masks, fmi, maps}, _tail} = terrain_sections(raw)
+    payload = %{details | cells: cells, map_extent: map_extent,
+      records: build_records(rows,xs,faces,masks), fmi: fmi, maps: maps}
+    encode(payload,overrides,seq,content_version)
+  end
+
+  @doc "已接纳载荷的若干local格改为uniform材质；空CSR直接改cells并原样保留后缀，非空CSR按现有规则删除被覆盖记录。"
+  def replace_uniform_cells(bytes, materials, seq, content_version) do
+    {:ok, header, raw} = MmoContracts.Voxel.Codec.unpack_payload_body(bytes)
+    {:ok, sections, _tail} = terrain_sections(raw)
+    overrides = Map.new(materials,fn {local,m} -> {local,{m,Skins.uniform(m)}} end)
+    case sections do
+      {cells,{0,0,0},1,<<>>,<<>>,<<>>,<<>>,<<>>,<<>>} ->
+        size = byte_size(cells)
+        <<_count::32-little,_cells::binary-size(size),suffix::binary>> = raw
+        raw = IO.iodata_to_binary([<<@cell_count::32-little>>,splice_cells(cells,overrides),suffix])
+        MmoContracts.Voxel.Codec.encode_payload(header.level,header.region,seq,content_version,raw,header.version)
+      _ ->
+        {:ok,payload} = decode_body(raw,header.version)
+        encode(%{payload | level: header.level,region: header.region},overrides,seq,content_version)
+    end
+  end
+
   defp encode_with_details(terrain, p, seq, content_version) do
     version = cond do
       map_size(p.structure) > 0 -> 6
@@ -323,39 +353,16 @@ defmodule MmoContracts.Voxel.Payload do
     IO.iodata_to_binary(Enum.reverse([binary_part(cells, pos, byte_size(cells) - pos) | acc]))
   end
 
-  defp build_csr([], _ext), do: {[], [], [], [], [], <<>>}
+  defp build_csr([], _p), do: {[], [], [], [], [], <<>>}
 
-  defp build_csr(records, ext) do
+  defp build_csr(records, p) do
     rows = @extent * @extent
 
     {ids_rev, masks_rev, col_x, fmi, maps, _pool, by_row} =
-      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, {_sext, faces}},
+      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, record},
                                                                 {ids_rev, masks_rev, col_x, fmi,
                                                                  maps, pool, by_row} ->
-        {ids, mask, fmi, maps, pool} =
-          Enum.reduce(0..5, {[], 0, fmi, maps, pool}, fn face, {ids, mask, fmi, maps, pool} ->
-            case elem(faces, face) do
-              {id, nil} ->
-                {[id | ids], mask, fmi, maps, pool}
-
-              {id, texels} ->
-                texels =
-                  if byte_size(texels) == ext * ext,
-                    do: texels,
-                    else: :binary.copy(<<id>>, ext * ext)
-
-                {index, maps, pool} =
-                  case Map.fetch(pool, texels) do
-                    {:ok, i} ->
-                      {i, maps, pool}
-
-                    :error ->
-                      {map_size(pool), maps <> texels, Map.put(pool, texels, map_size(pool))}
-                  end
-
-                {[id | ids], mask ||| 1 <<< face, [index | fmi], maps, pool}
-            end
-          end)
+        {ids, mask, fmi, maps, pool} = csr_faces(record,p,0,{[],0,fmi,maps,pool})
 
         row = y + @extent * z
 
@@ -374,5 +381,33 @@ defmodule MmoContracts.Voxel.Payload do
 
     {Enum.reverse(row_start_rev), Enum.reverse(col_x), faces, Enum.reverse(masks_rev),
      Enum.reverse(fmi), maps}
+  end
+
+  defp csr_faces(_record,_p,6,acc),do: acc
+  defp csr_faces({ids,mask,base},p,face,acc) do
+    id = ids &&& 255
+    {texels,next} = if (mask &&& 1) == 0 do
+      {nil,base}
+    else
+      <<index::16-little>> = binary_part(p.fmi,base*2,2)
+      size = p.map_extent*p.map_extent
+      {binary_part(p.maps,index*size,size),base+1}
+    end
+    value = Skins.canonical_face({id,texels})
+    acc = csr_face(value,face,acc)
+    csr_faces({ids >>> 8,mask >>> 1,next},p,face+1,acc)
+  end
+  defp csr_faces({_ext,faces}=record,p,face,acc) do
+    acc = csr_face(elem(faces,face),face,acc)
+    csr_faces(record,p,face+1,acc)
+  end
+
+  defp csr_face({id,nil},_face,{ids,mask,fmi,maps,pool}),do: {[id|ids],mask,fmi,maps,pool}
+  defp csr_face({id,texels},face,{ids,mask,fmi,maps,pool}) do
+    {index,maps,pool} = case Map.fetch(pool,texels) do
+      {:ok,i} -> {i,maps,pool}
+      :error -> {map_size(pool),maps<>texels,Map.put(pool,texels,map_size(pool))}
+    end
+    {[id|ids],mask ||| (1 <<< face),[index|fmi],maps,pool}
   end
 end

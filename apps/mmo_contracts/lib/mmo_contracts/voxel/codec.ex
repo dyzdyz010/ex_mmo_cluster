@@ -52,7 +52,7 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
-                  0x7A, 0x7B, 0x7C
+                  0x7A, 0x7B, 0x7C, 0x7D
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -62,10 +62,26 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_edit_intent,
                     :voxel_intent_result,
                     :voxel_log_entry_payload,
-                    :voxel_log_transaction_payload
+                    :voxel_log_transaction_payload,
+                    :voxel_property_state
                   ]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
+  def decode(<<0x7D, rid::64, seq::32, scene::64, action::8,
+      dx::float-64, dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64,
+      incarnation::64, birth::64, occurrence::32, material::16, tool::16>>)
+      when action in [0,1] and tool > 0 do
+    norm = dx*dx+dy*dy+dz*dz
+    if norm > 0.99 and norm < 1.01 do
+      {:ok,{:voxel_tool_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
+        action: action,direction: {dx,dy,dz},micro: {x,y,z},incarnation: incarnation,
+        owner: {birth,occurrence},material: material,tool_id: tool}}}
+    else
+      {:error,:invalid_message}
+    end
+  end
+  def decode(<<0x7D,_::binary>>), do: {:error,:invalid_message}
+
   def decode(<<0x7A, rid::64, seq::32, scene::64, id::binary-size(32),
                x::signed-64, y::signed-64, z::signed-64, orientation::8>>) when orientation < 24 do
     {:ok, {:voxel_prefab_place_v1, %{request_id: rid, client_intent_seq: seq,
@@ -148,6 +164,14 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(_), do: {:error, :invalid_message}
 
   @doc "协议值编码为现行帧 iodata。"
+  def encode({:voxel_property_state,t}) do
+    {x,y,z}=t.micro
+    {birth,occurrence}=t.owner
+    {:ok,<<0x7E, t.request_id::64, t.seq::64, x::signed-64,y::signed-64,z::signed-64,
+      t.granularity::8,t.incarnation::64,birth::64,occurrence::32,t.material::16,
+      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8>>}
+  end
+
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
     {:ok, [<<@msg_voxel_log_entry>>, payload]}
   end
@@ -251,6 +275,17 @@ defmodule MmoContracts.Voxel.Codec do
 
   @doc "完整 RegionPayload 固定头的字节数。"
   def payload_header_bytes, do: @payload_header_bytes
+
+  @doc "当前raw/DEFLATE载荷的保守线格式下界，非经验压缩率。"
+  def payload_min_bytes do
+    # RFC 1951 sections 3.2.5/3.2.7: a literal/length code consumes at least
+    # one bit and emits at most 258 bytes. Ignoring distance/tree/framing bits
+    # only weakens the bound. Stored/raw encoding is larger still.
+    # https://www.rfc-editor.org/rfc/rfc1951
+    bytes_per_encoded_byte = 258 * 8
+    raw_min = MmoContracts.Voxel.Payload.min_body_bytes()
+    @payload_header_bytes + div(raw_min + bytes_per_encoded_byte - 1, bytes_per_encoded_byte)
+  end
 
   # ---- 请求 / 应答
 

@@ -1,5 +1,37 @@
 # Voxim Region 真值
 
+2026-09-13：R7-B1 已验收收口。权威局部损伤、正常攻击节奏、双客户端一致性、持久化恢复及四项代码审查修复均已完成；最终结论见 [B1修复与复验](../../../Voxim/Docs/R7/B1-fixes.md)。宏格输入到上屏最慢约496ms，满足500ms门槛但余量较小；R6稳定120FPS欠账保留，B2–B7未开始。
+
+2026-09-13 B1 代码审查删减：`Payload.encode` 在空CSR首次加入非均匀表皮时，由新记录恢复输出贴图尺寸；读取旧贴图池仍使用原尺寸。已删除尺寸不符时改成单色的兜底，L1的2×2与L2的4×4纹理、连续缓存编辑以及World编辑→HTTP→文件重放均有回归。这里遵循已有 `Reducer.skin_extent` / skins记录的尺寸合同，不新增层级尺寸规则或重采样。Replica内部直接消费初始化保证的 `state.damage`；旧外部几何事务仍可不携带损伤字段。阶段专用 `World.upgrade_b1` 已移除，部署和作者发布统一调用 `publish_properties`，已有损伤的属性版本约束保留。验证入口 `python tools/test_voxim_b1.py --out .demo/observe/b1-simplify-final`，28项通过；实际部署、客户端与重启证据统一见 [B1修复与复验](../../../Voxim/Docs/R7/B1-fixes.md)。下文为先前各轮定位记录。
+
+2026-09-13 R7-B1 交互阻塞修复（最终实跑状态以 [B1验收记录](../../../Voxim/Docs/R7/B1-acceptance.md) 为准）：
+工具频率仍由 World 持有 GCRA/TAT 与序号，输入时间改取 QuicConnection 已有 FIFO 入队时的服务器单调时间。
+同一 Gate 连接的时间经 Dispatch 传入，刷新 Player 只更新权威身份/位置，不覆盖该入口证据；不读取客户端时钟、
+不比较不同 VM 的单调时钟。依据 [ERTS time correction](https://www.erlang.org/doc/apps/erts/time_correction.html)
+的 VM 单调时间定义；时间刻度只在其自身来源序列中作差。实跑 req10→11 的 Gate 间隔500.072ms，
+prepare 从75.869降到60.497ms，旧 World 裁决间隔只有484.831ms，证明内部准备耗时改变了输入相位。
+工具周期与既有一个Tick容差均未放宽。Gate 迁移继续保留连接进程，新 Player 仍按原有PID边界创建工具会话；
+本片不声称跨 Player 迁移延续冷却。热加载须在旧连接退出、World工具会话已删除后进行。
+
+宏格提交先排除已确定由完整 afterimage 覆盖的 core，不先编码再丢弃其稀疏候选或发送重复 coarse。
+原有 afterimage 路径仍使用 canonical overlay/region_bases 物化，地形未变的缓存只替换结构后缀。
+同步数据库追加仍先于广播/回执。尝试基于提交前缓存只patch本笔 changed cells，完整事务字节相同，
+但因完整解码/CSR重建抵消了ring展开节省，隔离破坏355→364ms，没有收益，已撤回该候选。
+另用既有54字节头证明 tiny sparse 必然更小、跳过完整候选的尝试，在含Replica的A/B中只是把L0编码
+移到fanout：破坏344→348ms，广播后尾部0.127→18.391ms，事务字节相同；该候选同样撤回。
+
+后续L0最小增量经实际 Fable 5.1 High 协商（答复在 Voxim `Saved/R7/B1/fable-consult-compact.json`）：
+`Payload.replace_uniform_cells` 对已接纳的空CSR载荷直接splice固定cells数组，原样保留CSR和实例后缀；
+合法非空CSR走已有decode/encode，正确删除被覆盖格的旧表皮。World仅宏格入口更新已有热L0 core/ring缓存，
+宏格入口已拒绝refined cell，因此该入口不改实例后缀；Prefab/微格保持原来的细节重写。
+冷缓存继续从canonical真值物化，不新增持久缓存/状态。每个区域每笔只压缩一次，选择器与Replica共同复用结果。
+
+隔离入口 `python tools/test_voxim_b1.py --out .demo/observe/b1-l0-green`：21项通过，包含入口相位、
+超频/重放、HP与失败回滚、热缓存/冷物化跨ring字节一致、文件重启。
+宏格 profile 入口 `tools/profile_voxim_b1_regions.py` 只运行独立 VM 与文件日志；不连接在线节点或数据库。
+优化前单笔宏格破坏产生79,695个 ring override、重建36,135个CSR记录，937万次函数调用；
+profile 属于带函数采样开销的归因证据，不能当在线延迟。首次真实双端及后续性能复验由 Voxim 主任务记录。
+
 2026-09-13：用户决定本轮园林子树编辑修复收口并提交推送。保留实跑延迟与剩余整区域处理成本；进一步优化另行启动，R7-B 仍为规划。
 
 2026-09-12 园林大子树替换延迟修复：结构采样不再逐子格 `source.ensure`，直接复用 `cell_value` 的 decoded/read 路径；

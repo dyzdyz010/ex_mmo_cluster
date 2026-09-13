@@ -57,6 +57,7 @@ defmodule VoxelRegion.Replica do
           baseline_seq: snapshot.transaction_seq,
           regions: Map.new(snapshot.regions),
           chunks: Map.new(snapshot.chunks, &{&1.coord, &1}),
+          damage: Map.new(Map.get(snapshot,:property_states,[]),&{VoxelRegion.Damage.key(&1),&1}),
           subscribers: %{},
           deltas: [],
           update_payload_bytes: 0
@@ -132,6 +133,7 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
+      snapshot = Map.put(snapshot,:property_states,Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end))
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
       {:reply, :ok, %{state | subscribers: Map.put_new(state.subscribers, pid, box)}}
@@ -155,6 +157,10 @@ defmodule VoxelRegion.Replica do
           state.update_payload_bytes + Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))
     }
 
+    damage = Enum.reduce(Map.get(delta.transaction,:property_states,[]),state.damage,fn t,acc ->
+      if t.flags==1,do: Map.delete(acc,VoxelRegion.Damage.key(t)),else: Map.put(acc,VoxelRegion.Damage.key(t),t)
+    end)
+    state = %{state | damage: damage}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(
         pid,
