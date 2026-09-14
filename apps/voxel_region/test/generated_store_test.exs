@@ -115,7 +115,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   test "native returns the existing raw payload body", _context do
     assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:72f1d31c81c337daf54e5f700fc07d1efe4dacf9e6e0df6f7f8c377fa7ee22dd"
+             "worldgen_density_v3@1+sha256:0707836247ba65ae5d45b039a2e8f22c2a74370c81f4bcd9134c2eb4346f1a51"
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 
@@ -125,11 +125,11 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert raw == Native.generate_region(0, {0, 0, 0}, config())
   end
 
-  test "manifest identity is deterministic and includes kernel, materials, and generation config",
+  test "manifest identity is deterministic and includes kernel and generation config, not the material catalog",
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 0x256B_3361_0344_964F
+    assert GeneratedStore.content_version(store) == 0x3332_8556_9A8D_2709
 
     for field <- [
           "seed",
@@ -150,20 +150,43 @@ defmodule VoxelRegion.GeneratedStoreTest do
                GeneratedStore.content_version(store)
     end
 
-    changed_materials = List.update_at(@manifest["materials"], 2, &Map.put(&1, "name", "stone"))
-
-    refute GeneratedStore.content_version(
-             Native.kernel_identity(),
-             Jason.encode!(Enum.map(changed_materials, &[&1["id"], &1["name"]])),
-             config()
-           ) == GeneratedStore.content_version(store)
-
     refute GeneratedStore.content_version(
              "worldgen_density_v3@1+sha256:" <> String.duplicate("0", 64),
-             VoxelMaterialCatalog.identity_bytes(),
              config()
            ) ==
              GeneratedStore.content_version(store)
+
+    # 追加材质不换世界：manifest 只列目录前缀也打开同一个版本目录。
+    prefix_path = Path.join(root, "prefix.json")
+    File.write!(prefix_path, Jason.encode!(Map.put(@manifest, "materials", Enum.take(@manifest["materials"], 19))))
+    {:ok, prefix_store} = GeneratedStore.open(root: root, manifest_path: prefix_path)
+    assert GeneratedStore.content_version(prefix_store) == GeneratedStore.content_version(store)
+    assert prefix_store.world_dir == store.world_dir
+  end
+
+  test "v2 世界用 manifest 钉住原版本，kernel 或配置变了则拒绝", %{root: root} do
+    identity = GeneratedStore.hex(GeneratedStore.content_version(Native.kernel_identity(), config()))
+    pinned_path = Path.join(root, "pinned.json")
+
+    File.write!(
+      pinned_path,
+      Jason.encode!(Map.put(@manifest, "content_version", %{"identity" => identity, "pinned" => "1d08aa1ebbb050f3"}))
+    )
+
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: pinned_path)
+    assert GeneratedStore.content_version(store) == 0x1D08_AA1E_BBB0_50F3
+    assert store.world_dir == Path.join(root, "1d08aa1ebbb050f3")
+
+    stale_path = Path.join(root, "stale.json")
+
+    File.write!(
+      stale_path,
+      Jason.encode!(
+        Map.put(Map.update!(@manifest, "seed", &different/1), "content_version", %{"identity" => identity, "pinned" => "1d08aa1ebbb050f3"})
+      )
+    )
+
+    assert catch_error(GeneratedStore.open(root: root, manifest_path: stale_path))
   end
 
   test "manifest 材质表漂移会在创建版本目录前失败", %{root: parent_root} do
@@ -172,6 +195,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
     variants = [
       Map.delete(@manifest, "materials"),
+      Map.put(@manifest, "materials", []),
       Map.put(@manifest, "materials", Enum.reverse(@manifest["materials"])),
       put_in(@manifest, ["materials", Access.at(2), "name"], "stone"),
       put_in(@manifest, ["materials", Access.at(2), "id"], 24),

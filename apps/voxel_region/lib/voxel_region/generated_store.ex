@@ -2,8 +2,11 @@ defmodule VoxelRegion.GeneratedStore do
   @moduledoc """
   Voxim region 的显式在线 baseline 来源。
 
-  JSON manifest 指定 kernel、材质目录与完整八项生成配置。规范字节生成世界
-  `content_version`；与 payload body hash 一样，MD5 前 64 bit 按小端解释。
+  JSON manifest 指定 kernel、材质目录与完整八项生成配置。kernel identity 与八项配置的规范字节生成世界
+  `content_version`；与 payload body hash 一样，MD5 前 64 bit 按小端解释。材质目录不参与版本：id 只追加、
+  永不重编号，地形字节只由 kernel 决定，manifest 的 `materials` 只需是共享目录的非空前缀（Docs/R7.md §5.1）。
+  v2 规则时代创建的世界用 manifest 的 `content_version` 钉住原版本：`{"identity": <当前规则算出的 hex>,
+  "pinned": <原版本 hex>}`；identity 不等于当前算出的值（kernel 或配置变了）时拒绝启动，不把旧目录冒充新世界。
   `baseline/` 下的 VXR4 是可丢弃磁盘缓存：L1–L5 由 `VoxelRegion.Bake` 在开放连接前烘齐（就绪门），
   L0 按需在线生成。能由列边界证明均匀（纯空气 / 纯岩石）的 region 不落盘，读取时合成常量载荷；
   列边界在 `baseline/index.etf`。overlay 日志与它位于同一版本目录，不从旧烘焙目录推断，也不与旧世界共用。
@@ -18,7 +21,7 @@ defmodule VoxelRegion.GeneratedStore do
   alias MmoContracts.VoxelMaterialCatalog
 
   @schema "voxim-worldgen-v1"
-  @identity_schema "voxim-content-version-md5-64-v2"
+  @identity_schema "voxim-content-version-md5-64-v3"
   @fields ~w(seed min_height sea_level max_height soil_depth lowland_amplitude mountain_amplitude cave_max_depth)
   @lock_table :voxel_region_generation
 
@@ -51,8 +54,19 @@ defmodule VoxelRegion.GeneratedStore do
     kernel = Native.kernel_identity()
     true = String.starts_with?(kernel, kernel_name <> "+sha256:")
     materials = Map.fetch!(manifest, "materials")
-    true = materials == VoxelMaterialCatalog.table()
-    version = content_version(kernel, VoxelMaterialCatalog.identity_bytes(), config)
+    true = materials != [] and materials == Enum.take(VoxelMaterialCatalog.table(), length(materials))
+    identity = content_version(kernel, config)
+
+    version =
+      case Map.fetch(manifest, "content_version") do
+        :error ->
+          identity
+
+        {:ok, %{"identity" => expected, "pinned" => pinned}} ->
+          true = expected == hex(identity)
+          <<value::64>> = Base.decode16!(pinned, case: :lower)
+          value
+      end
     world_dir = Path.join(root, hex(version))
     File.mkdir_p!(world_dir)
     ensure_lock_table()
@@ -187,18 +201,16 @@ defmodule VoxelRegion.GeneratedStore do
   def hex(version), do: Base.encode16(<<version::64>>, case: :lower)
 
   @doc """
-  MD5-64 v2 输入是规则名、kernel identity、材质有序 pair JSON 三段，以 NUL 分隔，随后依次为：
+  MD5-64 v3 输入是规则名、kernel identity 两段，以 NUL 分隔，随后依次为：
   seed i64 LE；min/sea/max/soil i32 LE；lowland/mountain IEEE754 f64 LE；
-  cave depth i32 LE。
+  cave depth i32 LE。v2 曾把材质有序 pair JSON 作为第三段；追加材质不应换世界，故 v3 去掉它。
   """
-  def content_version(kernel, materials, {seed, min, sea, max, soil, lowland, mountain, cave}) do
+  def content_version(kernel, {seed, min, sea, max, soil, lowland, mountain, cave}) do
     bytes =
       IO.iodata_to_binary([
         @identity_schema,
         <<0>>,
         kernel,
-        <<0>>,
-        materials,
         <<0>>,
         <<seed::64-little-signed, min::32-little-signed, sea::32-little-signed,
           max::32-little-signed, soil::32-little-signed, lowland::float-64-little,
