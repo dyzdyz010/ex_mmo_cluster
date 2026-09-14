@@ -62,7 +62,7 @@ defmodule VoxelRegion.DamageWorldTest do
       0::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,
       1::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
-    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_material: 19]
+    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11]]
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
@@ -88,18 +88,18 @@ defmodule VoxelRegion.DamageWorldTest do
       request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
         |> Map.merge(%{action: 1,client_intent_seq: seq})
       assert {:ok,_}=World.tool_intent(c.w,actor,request)
-      assert World.material_balance(c.w,1001).balance == if(seq==4,do: 512,else: 0)
+      assert balance(c.w,1001).balance == if(seq==4,do: 512,else: 0)
     end
-    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1}
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 19}
     assert {:ok,6}=World.production_intent(c.w,c.actor,build)
-    assert World.material_balance(c.w,1001).balance == 0
+    assert balance(c.w,1001).balance == 0
     assert {:ok,6}=World.production_intent(c.w,c.actor,build)
     assert {:error,:insufficient_material}=World.production_intent(c.w,c.actor,%{build | request_id: 11,client_intent_seq: 11,coord: {2,1,2}})
     assert [%{material_balances: %{{1001,19}=>512}},%{material_balances: %{{1001,19}=>0}}]=World.entries_after(c.w,4)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert World.seq(w)==6
-    assert World.material_balance(w,1001).balance==0
+    assert balance(w,1001).balance==0
     assert {:ok,%{material: 19,hp: 100.0}}=World.tool_intent(w,c.actor,c.request)
   end
 
@@ -119,11 +119,76 @@ defmodule VoxelRegion.DamageWorldTest do
     end
   end
 
+  defp balance(w,cid,material \\ 19), do: Enum.find(World.material_balances(w,cid), &(&1.material==material))
+
   defp b2_hit(c,actor,target,seq) do
     actor=Map.merge(actor,%{received_us: seq*500_000,clock_node: node()})
     request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
       |> Map.merge(%{action: 1,client_intent_seq: seq})
     World.tool_intent(c.w,actor,request)
+  end
+
+  @tag :b2
+  test "B2 explicit dismantle removes only the hit occurrence and credits its remaining wood", c do
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    assert {:ok,2}=World.place_prefab(c.w,c.id,{8,8,24},0)
+    GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    assert {:ok,3}=b2_hit(c,c.actor,target,1)
+    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 2,client_intent_seq: 2})
+    actor=Map.merge(c.actor,%{received_us: 1_000_000,clock_node: node()})
+    assert {:ok,4}=World.tool_intent(c.w,actor,request)
+    state=:sys.get_state(c.w)
+    refute Map.has_key?(state.refined,{1,1,2})
+    assert map_size(state.refined[{1,1,3}])==2
+    assert balance(c.w,1001).balance==1
+    assert balance(c.w,1001,11).balance==1
+    assert {:error,:stale_target}=World.tool_intent(c.w,actor,request)
+    assert World.seq(c.w)==4
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert balance(w,1001).balance==1
+    assert balance(w,1001,11).balance==1
+    assert :sys.get_state(w).refined==state.refined
+  end
+
+  @tag :b2
+  test "B2 dismantle cannot recover a previously harvested micro or replace a forged owner", c do
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
+    assert {:ok,wood}=World.tool_intent(c.w,c.actor,c.request)
+    for seq<-1..4,do: assert({:ok,_}=b2_hit(c,c.actor,wood,seq))
+    assert balance(c.w,1001).balance==1
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,0.0625}})
+    assert {:ok,stone}=World.tool_intent(c.w,c.actor,c.request)
+    request=Map.merge(c.request,Map.take(stone,[:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 2,client_intent_seq: 5})
+    actor=Map.merge(c.actor,%{received_us: 2_500_000,clock_node: node()})
+    assert {:error,:stale_target}=World.tool_intent(c.w,actor,%{request | owner: {999,0}})
+    assert {:ok,6}=World.tool_intent(c.w,actor,request)
+    assert balance(c.w,1001).balance==1
+    assert :sys.get_state(c.w).refined==%{}
+  end
+
+  @tag :b2
+  test "B2 failed dismantle append rolls back materials, damage and occurrence", c do
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    assert {:ok,2}=b2_hit(c,c.actor,target,1)
+    before=:sys.get_state(c.w)
+    {_,path}=before.log
+    File.write!(path<>".reject","")
+    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 2,client_intent_seq: 2})
+    actor=Map.merge(c.actor,%{received_us: 1_000_000,clock_node: node()})
+    assert {:error,:test_disk_failure}=World.tool_intent(c.w,actor,request)
+    after_state=:sys.get_state(c.w)
+    assert Map.take(after_state,[:seq,:damage,:refined,:instances,:material_balances])==
+      Map.take(before,[:seq,:damage,:refined,:instances,:material_balances])
+    File.rm!(path<>".reject")
+    assert {:ok,3}=World.tool_intent(c.w,actor,request)
+    assert balance(c.w,1001).balance==1
   end
 
   defp b2_actor(c,cid) do
@@ -140,6 +205,45 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b2
+  test "B2 two players dismantling different cells of one component credit one winner", c do
+    other=b2_actor(c,1002)
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    GenServer.call(other.player,{:eye,{1.1875,1.0625,0.0625}})
+    assert {:ok,stone}=World.tool_intent(c.w,c.actor,c.request)
+    assert {:ok,wood}=World.tool_intent(c.w,other,c.request)
+    tasks=for {actor,target}<- [{c.actor,stone},{other,wood}],do: Task.async(fn ->
+      request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material])) |> Map.put(:action,2)
+      actor=Map.merge(actor,%{received_us: 500_000,clock_node: node()})
+      World.tool_intent(c.w,actor,request)
+    end)
+    results=Enum.map(tasks,&Task.await(&1,10_000))
+    assert Enum.count(results,&match?({:ok,2},&1))==1
+    assert Enum.count(results,&match?({:error,_},&1))==1
+    for material<-[19,11],do: assert(Enum.sort(for cid<-[1001,1002],do: balance(c.w,cid,material).balance)==[0,1])
+    assert balance(c.w,1001,19).balance==balance(c.w,1001,11).balance
+  end
+
+  @tag :b2
+  test "B2 stone harvest pays for stone without spending or creating wood", c do
+    stop_supervised(World)
+    opts=Keyword.put(c.opts,:production_materials,[19,11])
+    w=start_supervised!({World,opts})
+    c=%{c | w: w}
+    assert {:ok,1}=World.apply_edit(w,{1,1,2},11)
+    assert {:ok,target}=World.tool_intent(w,c.actor,c.request)
+    for seq<-1..4,do: assert({:ok,_}=b2_hit(c,c.actor,target,seq))
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 11}
+    assert {:ok,6}=World.production_intent(w,c.actor,build)
+    assert {:ok,%{material: 11}}=World.tool_intent(w,c.actor,c.request)
+    assert {:error,:insufficient_material}=World.production_intent(w,c.actor,%{build | request_id: 11,client_intent_seq: 11,material: 19,coord: {2,1,2}})
+    assert {:error,:unknown_resource}=World.production_intent(w,c.actor,%{build | request_id: 12,client_intent_seq: 12,material: 17,coord: {2,1,2}})
+    stop_supervised(World)
+    w=start_supervised!({World,opts})
+    assert Enum.all?(World.material_balances(w,1001),&(&1.balance==0))
+    assert {:ok,%{material: 11}}=World.tool_intent(w,c.actor,c.request)
+  end
+
+  @tag :b2
   test "B2 competing lethal hits credit only the winner and stale repeats cannot harvest again", c do
     other=b2_actor(c,1002)
     assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
@@ -149,7 +253,7 @@ defmodule VoxelRegion.DamageWorldTest do
     results=Enum.map(tasks,&Task.await(&1,10_000))
     assert Enum.count(results,&match?({:ok,5},&1))==1
     assert Enum.count(results,&match?({:error,_},&1))==1
-    assert Enum.sort(for cid <- [1001,1002],do: World.material_balance(c.w,cid).balance)==[0,512]
+    assert Enum.sort(for cid <- [1001,1002],do: balance(c.w,cid).balance)==[0,512]
     assert {:error,_}=b2_hit(c,c.actor,target,4)
     assert {:error,_}=b2_hit(c,other,target,1)
     assert World.seq(c.w)==5
@@ -163,7 +267,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert target.material==19 and target.granularity==1
     for seq <- 1..4 do
       assert {:ok,_}=b2_hit(c,c.actor,target,seq)
-      assert World.material_balance(c.w,1001).balance==if(seq==4,do: 1,else: 0)
+      assert balance(c.w,1001).balance==if(seq==4,do: 1,else: 0)
     end
     assert :sys.get_state(c.w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
     assert :ok=World.compact(c.w)
@@ -172,8 +276,8 @@ defmodule VoxelRegion.DamageWorldTest do
     assert restored.material_balances==%{{1001,19}=>1}
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
-    assert World.material_balance(w,1001).balance==1
-    assert World.material_balance(w,1002).balance==0
+    assert balance(w,1001).balance==1
+    assert balance(w,1002).balance==0
     assert :sys.get_state(w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
   end
 
@@ -182,19 +286,19 @@ defmodule VoxelRegion.DamageWorldTest do
     other=b2_actor(c,1002)
     b2_harvest(c,c.actor)
     b2_harvest(c,other)
-    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1}
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1,material: 19}
     {_,path}=:sys.get_state(c.w).log
     File.write!(path<>".reject","")
     assert {:error,:test_disk_failure}=World.production_intent(c.w,c.actor,build)
-    assert World.seq(c.w)==10 and World.material_balance(c.w,1001).balance==512
+    assert World.seq(c.w)==10 and balance(c.w,1001).balance==512
     File.rm!(path<>".reject")
     next=%{build | request_id: 11,client_intent_seq: 11}
     tasks=for actor <- [c.actor,other],do: Task.async(fn -> {actor,World.production_intent(c.w,actor,next)} end)
     results=Enum.map(tasks,&Task.await(&1,10_000))
     {winner,{:ok,11}}=Enum.find(results,fn {_,r}->match?({:ok,_},r) end)
     {loser,{:error,:occupied}}=Enum.find(results,fn {_,r}->match?({:error,_},r) end)
-    assert World.material_balance(c.w,winner.cid).balance==0
-    assert World.material_balance(c.w,loser.cid).balance==512
+    assert balance(c.w,winner.cid).balance==0
+    assert balance(c.w,loser.cid).balance==512
     assert {:ok,12}=World.apply_edit(c.w,build.coord,0)
     assert {:ok,11}=World.production_intent(c.w,winner,next)
     assert World.seq(c.w)==12
@@ -203,12 +307,12 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:error,:occupied}=World.production_intent(c.w,loser,%{next | client_intent_seq: 12})
     GenServer.call(loser.player,:seal)
     assert {:error,:invalid_state}=World.production_intent(c.w,loser,%{next | client_intent_seq: 13,coord: {3,1,2}})
-    assert World.material_balance(c.w,loser.cid).balance==512
+    assert balance(c.w,loser.cid).balance==512
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert World.seq(w)==13
-    assert World.material_balance(w,winner.cid).balance==0
-    assert World.material_balance(w,loser.cid).balance==512
+    assert balance(w,winner.cid).balance==0
+    assert balance(w,loser.cid).balance==512
   end
 
   @tag :b2
@@ -219,18 +323,18 @@ defmodule VoxelRegion.DamageWorldTest do
     {_,path}=:sys.get_state(c.w).log
     File.write!(path<>".reject","")
     assert {:error,:test_disk_failure}=b2_hit(c,c.actor,target,4)
-    assert World.material_balance(c.w,1001).balance==0
+    assert balance(c.w,1001).balance==0
     assert World.seq(c.w)==4
     assert {:ok,%{hp: 16.0,material: 19}}=World.tool_intent(c.w,c.actor,c.request)
     File.rm!(path<>".reject")
     assert {:ok,5}=b2_hit(c,c.actor,target,4)
-    assert World.material_balance(c.w,1001).balance==512
+    assert balance(c.w,1001).balance==512
   end
 
   @tag :b2
   test "B2 transfer keeps build dedup on the authenticated connection after old Player exits", c do
     b2_harvest(c,c.actor)
-    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1}
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1,material: 19}
     assert {:ok,6}=World.production_intent(c.w,c.actor,build)
     assert {:ok,7}=World.apply_edit(c.w,build.coord,0)
     transferred=%{c.actor | identity: :new_scene}
@@ -238,11 +342,11 @@ defmodule VoxelRegion.DamageWorldTest do
     transferred=%{transferred | player: player}
     stop_supervised(Actor)
     b2_harvest(c,transferred)
-    assert World.seq(c.w)==12 and World.material_balance(c.w,1001).balance==512
+    assert World.seq(c.w)==12 and balance(c.w,1001).balance==512
     assert {:ok,6}=World.production_intent(c.w,transferred,build)
-    assert World.seq(c.w)==12 and World.material_balance(c.w,1001).balance==512
+    assert World.seq(c.w)==12 and balance(c.w,1001).balance==512
     assert {:ok,13}=World.production_intent(c.w,transferred,%{build | request_id: 11,client_intent_seq: 11,logical_scene_id: 2,coord: {3,1,2}})
-    assert World.material_balance(c.w,1001).balance==0
+    assert balance(c.w,1001).balance==0
   end
 
   @tag :b2
@@ -253,13 +357,14 @@ defmodule VoxelRegion.DamageWorldTest do
     request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,coord: {0,0,0},tool_id: 1}
     assert {:ok,^state}=Dispatch.handle({:voxel_production_intent,request},state)
     assert_receive {:mmo_voxel_bytes,:session,<<0x81,1::64,0::64,19::16,0::64,512::32>>}
+    assert_receive {:mmo_voxel_bytes,:session,<<0x81,1::64,0::64,11::16,0::64,512::32>>}
     for kind <- [:voxel_edit_intent,:voxel_batch_edit_intent,:voxel_prefab_place_v1,
       :voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
       assert {:ok,^state}=Dispatch.handle({kind,request},state)
       assert_receive {:mmo_voxel_bytes,:session,bytes}
       assert :binary.match(bytes,"builder_permission_required") != :nomatch
     end
-    assert World.seq(c.w)==0 and World.material_balance(c.w,1001).balance==0
+    assert World.seq(c.w)==0 and balance(c.w,1001).balance==0
   end
 
   test "HTTP materialization preserves reduced textures after editing an empty coarse region", c do
@@ -515,7 +620,7 @@ defmodule VoxelRegion.DamageWorldTest do
     :ok=:sys.suspend(c.w)
     parent=self()
     worker=spawn_monitor(fn -> send(parent,{:tool_reply,World.tool_intent(c.w,c.actor,c.request)}) end)
-    balance_worker=spawn_monitor(fn -> send(parent,{:balance_reply,World.material_balance(c.w,1001)}) end)
+    balance_worker=spawn_monitor(fn -> send(parent,{:balance_reply,balance(c.w,1001)}) end)
     Process.sleep(5_100)
     :ok=:sys.resume(c.w)
     assert_receive {:tool_reply,{:ok,%{hp: 100.0}}},5_000

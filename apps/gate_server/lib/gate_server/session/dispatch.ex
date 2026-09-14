@@ -538,24 +538,19 @@ defmodule GateServer.Session.Dispatch do
 
   # 只读余额取已鉴权的角色身份，不依赖移动 Ready 握手。
   def handle({:voxel_production_intent,%{action: 0}=request},%{status: :in_scene,voxim_overlay: true,cid: cid}=state) do
-    balance = VoxelRegion.World.material_balance(state.world_ref,cid)
-    send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request.request_id)})
+    send_material_balances(state,cid,request.request_id)
     {:ok,state}
   end
   def handle({:voxel_production_intent,request},%{status: :in_scene,voxim_overlay: true}=state) do
     with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
       result = VoxelRegion.World.production_intent(state.world_ref,actor,request)
+      send_material_balances(state,actor.cid,request.request_id)
       case result do
-        {:ok,%{}=balance} -> send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request.request_id)})
         {:ok,seq} ->
           send_encoded(state,{:voxel_intent_result,%{request_id: request.request_id,
             client_intent_seq: request.client_intent_seq,logical_scene_id: request.logical_scene_id,
             result_code: :accepted,result_ref: seq,authoritative: [],reason: "ok"}})
         {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
-      end
-      if request.action == 1 do
-        balance = VoxelRegion.World.material_balance(state.world_ref,actor.cid)
-        send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request.request_id)})
       end
     else
       {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
@@ -573,10 +568,7 @@ defmodule GateServer.Session.Dispatch do
       context_done = System.monotonic_time(:microsecond)
       actor = Map.merge(actor,Map.take(state,[:received_us,:clock_node]))
       result = VoxelRegion.World.tool_intent(state.world_ref,actor,request)
-      if request.action == 1 do
-        balance = VoxelRegion.World.material_balance(state.world_ref,actor.cid)
-        send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request.request_id)})
-      end
+      if request.action in [1,2],do: send_material_balances(state,actor.cid,request.request_id)
       Logger.info("voxel_tool_dispatch request_id=#{request.request_id} node=#{node()} context_us=#{context_done-started} world_us=#{System.monotonic_time(:microsecond)-context_done}")
       result
     end
@@ -974,5 +966,11 @@ defmodule GateServer.Session.Dispatch do
     })
 
     send_encoded(state, {:enter_scene_result, :error, request_id})
+  end
+
+  defp send_material_balances(state,cid,request_id) do
+    for balance<-VoxelRegion.World.material_balances(state.world_ref,cid) do
+      send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request_id)})
+    end
   end
 end

@@ -143,7 +143,7 @@ defmodule VoxelRegion.World do
   def publish_properties(server,path), do: GenServer.call(server,{:publish_properties,Damage.load(path)})
 
   @doc "角色确认余额；单位为一个 canonical 微格体积。"
-  def material_balance(server,cid), do: GenServer.call(server,{:material_balance,cid},300_000)
+  def material_balances(server,cid), do: GenServer.call(server,{:material_balances,cid},300_000)
 
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server,actor,request) do
@@ -275,7 +275,7 @@ defmodule VoxelRegion.World do
           refined: %{},
           damage: %{}, epochs: %{}, tool_sessions: %{},
           material_balances: %{}, build_sessions: %{},
-          production_material: Keyword.get(opts,:production_material,Application.get_env(:voxel_region,:production_material)),
+          production_materials: Keyword.get(opts,:production_materials,Application.get_env(:voxel_region,:production_materials,[])),
           properties: load_properties(opts),
           structure: %{},
           instances: %{},
@@ -325,11 +325,10 @@ defmodule VoxelRegion.World do
       do: tool["range_macro"]
     {:reply,if(is_number(result),do: result,else: {:error,:invalid_tool}),state}
   end
-  def handle_call({:material_balance,cid},_,state), do: {:reply,balance_state(state,cid),state}
+  def handle_call({:material_balances,cid},_,state), do: {:reply,Enum.map(state.production_materials,&balance_state(state,cid,&1)),state}
   def handle_call({:production_intent,actor,request},_,state) do
-    with {:ok,actor} <- current_actor(actor), true <- state.production_material != nil do
-      if request.action == 0,do: {:reply,{:ok,balance_state(state,actor.cid)},state},
-        else: build_target(state,actor,request)
+    with {:ok,actor} <- current_actor(actor), true <- state.production_materials != [] do
+      build_target(state,actor,request)
     else
       false -> {:reply,{:error,:production_unavailable},state}
       {:error,reason} -> {:reply,{:error,reason},state}
@@ -1404,10 +1403,11 @@ defmodule VoxelRegion.World do
         target = %{target | hp: max(0.0,target.hp-amount),seq: state.seq+1}
         cond do
           amount == 0.0 -> {:reply,{:error,:ineffective_tool},state}
+          request.action == 2 -> dismantle_target(before,state,actor,target)
           target.hp == 0.0 ->
-          {state,settlement} = if target.material == state.production_material do
+          {state,settlement} = if target.material in state.production_materials do
             units = if target.granularity == 0,do: @micro*@micro*@micro,else: 1
-            settle_material(state,actor.cid,units)
+            settle_material(state,actor.cid,target.material,units)
           else
             {state,%{}}
           end
@@ -1425,6 +1425,29 @@ defmodule VoxelRegion.World do
             {:error,reason} -> {:reply,{:error,reason},before}
           end
         end
+    end
+  end
+
+  defp dismantle_target(before,_state,_actor,%{granularity: 0}) do
+    {:reply,{:error,:not_a_component},before}
+  end
+  defp dismantle_target(before,state,actor,target) do
+    # 拆卸只认权威射线命中的叶子 occurrence，不采用客户端选中的父级。
+    if Enum.any?(state.instances,fn {_,i}->Map.get(i,:parent_id,{0,0})==target.owner end) do
+      {:reply,{:error,:not_a_leaf_component},before}
+    else
+      ids=MapSet.new([target.owner])
+      cells=subtree_cells(state,ids)
+      amounts=for cell<-cells,{_,{material,owner}}<-Map.fetch!(state.refined,cell),
+        owner==target.owner and material in state.production_materials,reduce: %{} do
+          counts -> Map.update(counts,material,1,&(&1+1))
+        end
+      {state,balances}=Enum.reduce(amounts,{state,%{}},fn {material,units},{s,balances}->
+        {s,settlement}=settle_material(s,actor.cid,material,units)
+        {s,Map.merge(balances,settlement.material_balances)}
+      end)
+      settlement=%{material_balances: balances}
+      prefab_reply(before,clear_subtree(state,ids,cells),cells,settlement)
     end
   end
 
@@ -1471,13 +1494,13 @@ defmodule VoxelRegion.World do
       material_balances: Map.merge(state.material_balances,Map.get(txn,:material_balances,%{}))}
   end
 
-  defp balance_state(state,cid) do
-    %{seq: state.seq,material: state.production_material || 0,
-      balance: Map.get(state.material_balances,{cid,state.production_material},0),cost: @micro*@micro*@micro}
+  defp balance_state(state,cid,material) do
+    %{seq: state.seq,material: material,
+      balance: Map.get(state.material_balances,{cid,material},0),cost: @micro*@micro*@micro}
   end
 
-  defp settle_material(state,cid,delta) do
-    key = {cid,state.production_material}
+  defp settle_material(state,cid,material,delta) do
+    key = {cid,material}
     balance = Map.get(state.material_balances,key,0)+delta
     {%{state | material_balances: Map.put(state.material_balances,key,balance)},%{material_balances: %{key=>balance}}}
   end
@@ -1490,13 +1513,14 @@ defmodule VoxelRegion.World do
       previous != nil and request.client_intent_seq <= previous.request.client_intent_seq ->
         {:reply,{:error,:replayed_build},before}
       true ->
-        result = with {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
+        result = with :ok <- if(request.material in before.production_materials,do: :ok,else: {:error,:unknown_resource}),
+          {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
           :ok <- build_reach(actor.eye,request.coord,tool["range_macro"]),
-          :ok <- if(balance_state(before,actor.cid).balance >= @micro*@micro*@micro,do: :ok,else: {:error,:insufficient_material}),
+          :ok <- if(balance_state(before,actor.cid,request.material).balance >= @micro*@micro*@micro,do: :ok,else: {:error,:insufficient_material}),
           false <- Map.has_key?(before.refined,request.coord),
           {:ok,{0,_},state} <- cell_value(before,0,request.coord) do
-          {state,settlement} = settle_material(state,actor.cid,-@micro*@micro*@micro)
-          apply_batch(state,[{request.coord,state.production_material}],false,settlement)
+          {state,settlement} = settle_material(state,actor.cid,request.material,-@micro*@micro*@micro)
+          apply_batch(state,[{request.coord,request.material}],false,settlement)
         else
           :error -> {:error,:invalid_tool}
           true -> {:error,:occupied}
