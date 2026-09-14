@@ -1483,7 +1483,8 @@ defmodule VoxelRegion.World do
   end
 
   defp build_target(before,actor,request) do
-    previous = Map.get(before.build_sessions,actor.player)
+    # Scene 移交会换 Player 与 epoch，同一已鉴权连接的请求序号仍继续递增。
+    previous = Map.get(before.build_sessions,actor.gate)
     cond do
       previous != nil and previous.request == request -> {:reply,previous.result,before}
       previous != nil and request.client_intent_seq <= previous.request.client_intent_seq ->
@@ -1506,8 +1507,8 @@ defmodule VoxelRegion.World do
           {:ok,state} -> {{:ok,state.seq},state}
           {:error,_}=error -> {error,before}
         end
-        unless previous != nil,do: Process.monitor(actor.player)
-        state = %{state | build_sessions: Map.put(state.build_sessions,actor.player,%{request: request,result: reply})}
+        unless previous != nil,do: Process.monitor(actor.gate)
+        state = %{state | build_sessions: Map.put(state.build_sessions,actor.gate,%{request: request,result: reply})}
         {:reply,reply,state}
     end
   end

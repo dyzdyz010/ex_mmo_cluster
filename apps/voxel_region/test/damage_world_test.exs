@@ -64,7 +64,7 @@ defmodule VoxelRegion.DamageWorldTest do
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
     opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_material: 19]
     w=start_supervised!({World,opts})
-    actor=%{cid: 1001,identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
+    actor=%{cid: 1001,gate: self(),identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,
       direction: {0.0,0.0,1.0},micro: {0,0,0},incarnation: 0,owner: {0,0},material: 0,tool_id: 1}
@@ -127,7 +127,8 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   defp b2_actor(c,cid) do
-    actor=%{c.actor | cid: cid,identity: make_ref()}
+    gate=start_supervised!(Supervisor.child_spec({Task,fn -> Process.sleep(:infinity) end},id: {:gate,cid}))
+    actor=%{c.actor | cid: cid,gate: gate,identity: make_ref()}
     player=start_supervised!(Supervisor.child_spec({Actor,actor},id: {:actor,cid}))
     %{actor | player: player}
   end
@@ -224,6 +225,24 @@ defmodule VoxelRegion.DamageWorldTest do
     File.rm!(path<>".reject")
     assert {:ok,5}=b2_hit(c,c.actor,target,4)
     assert World.material_balance(c.w,1001).balance==512
+  end
+
+  @tag :b2
+  test "B2 transfer keeps build dedup on the authenticated connection after old Player exits", c do
+    b2_harvest(c,c.actor)
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1}
+    assert {:ok,6}=World.production_intent(c.w,c.actor,build)
+    assert {:ok,7}=World.apply_edit(c.w,build.coord,0)
+    transferred=%{c.actor | identity: :new_scene}
+    player=start_supervised!(Supervisor.child_spec({Actor,transferred},id: :transferred))
+    transferred=%{transferred | player: player}
+    stop_supervised(Actor)
+    b2_harvest(c,transferred)
+    assert World.seq(c.w)==12 and World.material_balance(c.w,1001).balance==512
+    assert {:ok,6}=World.production_intent(c.w,transferred,build)
+    assert World.seq(c.w)==12 and World.material_balance(c.w,1001).balance==512
+    assert {:ok,13}=World.production_intent(c.w,transferred,%{build | request_id: 11,client_intent_seq: 11,logical_scene_id: 2,coord: {3,1,2}})
+    assert World.material_balance(c.w,1001).balance==0
   end
 
   @tag :b2

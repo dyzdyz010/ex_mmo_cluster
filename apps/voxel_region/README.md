@@ -193,6 +193,7 @@ manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、完整且有�
 R7-B2 的材料余额随世界事务写入现有 kind 3 元数据：`{cid, material_id} → units`，追加、重放和检查点沿用同一条日志。
 材料由 Demo 资产的现有选择发布为 `production_material`。1 单位是 canonical 微格体积（1/512 m³），100% 回收被工具实际摧毁的匹配材料：宏格 512、refined 槽 1；部分伤害不入账。建造一个空宏格消耗 512。
 `production_intent/3` 刷新当前 Player 身份与位置，World 串行检查距离、余额和实际占用；最近一次相同请求返回原结果，旧序号拒绝。普通玩家的作者放置、删除、替换入口仍需 creator 权限。
+建造去重记录绑定已鉴权 Gate 连接，随连接退出清理；Scene 移交换 Player 和 epoch 不会使旧请求再次生效。
 读取余额走已鉴权 cid，不依赖移动 Ready；客户端收到 0x81 才显示确认余额。回归：`python tools/test_voxim_b1.py --out .demo/observe/b2-next`（含 B1、竞争、重复、失败写入、微格与恢复测试）。
 
 远景资产包（决策稿 §6.2）：`mix run --no-start apps/voxel_region/bench/pack.exs <manifest> <root> <out_dir> [min_level]` 把 L ≥ min_level（默认 4）的全世界 region 按 level 打成 `<out_dir>/<content_version>/L<n>.vxpack`（`MmoContracts.WorldPackShard` footer-table，条目 = region 坐标 → 完整 VXR4；范围 = 世界列 × [mixed ry − 1, +1]，均匀 region 也在内），放进 Voxim `Content/VoxelWorld/`。16 km Demo 世界 L4 47.7 MB + L5 11.4 MB，3.9 s。
