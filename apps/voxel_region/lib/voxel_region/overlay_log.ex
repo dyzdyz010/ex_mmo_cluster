@@ -6,6 +6,7 @@ defmodule VoxelRegion.OverlayLog do
   `VoxelRegion.OverlayLog.File`（`<world_dir>/overlay.log` ETF 帧）只给不起数据库的测试用。
 
   表里一行 = 一个条目：kind 0 `cell`（0x77 kind0 线格式）、1 `region`（完整 VXR4）、2 `coarse`（粗格线格式），
+  kind 3 为属性/余额元数据，kind 4 为结构格 afterimage（0x77 kind2）。
   `ordinal` 保持事务内顺序；旧的单格入口 `apply_edit` 产出的裸条目 `%{seq, coord, material, coarse}` 入表时归一成事务。
   """
 
@@ -22,6 +23,8 @@ defmodule VoxelRegion.OverlayLog do
   def rows(%{seq: seq, entries: entries, coarse: coarse}=txn) do
     entry_rows =
       Enum.map(entries, fn
+        %{structure: _,level: level,cell: cell}=entry ->
+          %{seq: seq,kind: 4,level: level,region: region_of(cell),payload: IO.iodata_to_binary(Codec.encode_entry(entry))}
         %{payload: bytes} ->
           {:ok, h} = Codec.decode_payload_header(bytes)
           %{seq: seq, kind: 1, level: h.level, region: h.region, payload: bytes}
@@ -48,7 +51,7 @@ defmodule VoxelRegion.OverlayLog do
     |> Enum.map(fn [%{seq: seq} | _] = chunk ->
       Enum.reduce(chunk, %{seq: seq, entries: [], coarse: []}, fn
         %{kind: 1, payload: bytes}, txn -> %{txn | entries: txn.entries ++ [%{seq: seq, payload: bytes}]}
-        %{kind: 0, payload: bytes}, txn -> {:ok, cell} = Codec.decode_entry(bytes); %{txn | entries: txn.entries ++ [cell]}
+        %{kind: kind, payload: bytes}, txn when kind in [0,4] -> {:ok, cell} = Codec.decode_entry(bytes); %{txn | entries: txn.entries ++ [cell]}
         %{kind: 3, payload: bytes}, txn -> Map.merge(txn,:erlang.binary_to_term(bytes,[:safe]))
         %{kind: 2, payload: bytes}, txn -> {:ok, c} = Codec.decode_coarse(bytes); %{txn | coarse: txn.coarse ++ [c]}
       end)

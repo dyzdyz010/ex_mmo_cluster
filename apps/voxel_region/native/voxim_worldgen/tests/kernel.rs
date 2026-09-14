@@ -20,6 +20,25 @@ fn cells_of(body: &[u8]) -> Vec<u16> {
         .collect()
 }
 
+/// 线上 Demo 曾将这一整列截成 586 米的平台；生成与分类都必须保留原始山峰。
+#[test]
+fn demo_peaks_survive_above_legacy_height_limit() {
+    let config = Config {
+        min_height: -200, sea_level: 326, max_height: 586,
+        lowland_amplitude: 381.77066, mountain_amplitude: 1223.743774,
+        ..Config::default()
+    };
+    let bounds = column_bounds(0, [7, -7], &config);
+    assert!(bounds[0] > 586 && bounds[1] > bounds[0], "{bounds:?}");
+    let cells = cells_of(&generate_body(0, [7, 9, -7], &config));
+    // 同一 600 米水平切片同时有空气和山体，排除仅把整个平台抬高。
+    let y = 600 - (9 * 64 - 1);
+    let slice: Vec<_> = (1..65).flat_map(|z| (1..65).map(move |x| x + 66 * (y + 66 * z)))
+        .map(|index| cells[index]).collect();
+    assert!(slice.iter().any(|&m| m == 0));
+    assert!(slice.iter().any(|&m| m != 0));
+}
+
 /// 列边界 + 分类必须与 generate_body 一致：说均匀的 region 逐字节等于 uniform_body，
 /// mixed_rows 之外的 ry 全部均匀，而 mixed_rows 里至少含地表所在的那一行（cells 不全相同）。
 #[test]

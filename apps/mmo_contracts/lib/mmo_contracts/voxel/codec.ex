@@ -616,6 +616,11 @@ defmodule MmoContracts.Voxel.Codec do
 
   def encode_entry(%{seq: seq, payload: payload}), do: [<<seq::64-little, 1>>, payload]
 
+  def encode_entry(%{seq: seq, level: level, cell: {x,y,z}, structure: grid}) do
+    [<<seq::64-little,2,level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,
+       div(byte_size(grid),2)::32-little>>,grid]
+  end
+
   @doc "entry = %{seq, coord: {x,y,z}, material, coarse: [%{level, cell, material, skins: {ext, faces}}]}"
   def encode_entry(%{seq: seq, coord: {x, y, z}, material: material, coarse: coarse}) do
     [
@@ -639,6 +644,17 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode_entry(<<seq::64-little, 1, payload::binary>>) do
     with {:ok, _, _} <- decode_payload_body(payload), do: {:ok, %{seq: seq, payload: payload}}
+  end
+
+  def decode_entry(<<seq::64-little,2,level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,
+                     count::32-little,grid::binary>>) when level in 1..5 do
+    samples=MmoContracts.Voxel.Structure.resolution() ** 3
+    if count==0 and grid==<<>> or count==samples and byte_size(grid)==samples*2 and
+       match?({:ok,_},MmoContracts.Voxel.Structure.decode(<<1::32-little,1::32-little,0::32-little,grid::binary>>)) do
+      {:ok,%{seq: seq,level: level,cell: {x,y,z},structure: grid}}
+    else
+      {:error,:invalid_entry}
+    end
   end
 
   def decode_entry(_), do: {:error, :invalid_entry}

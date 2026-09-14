@@ -701,6 +701,30 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :interaction_latency
+  test "prefab structure updates publish changed cells and survive replay", c do
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    [txn]=World.entries_after(c.w,0)
+    levels=for %{payload: b}<-txn.entries,do: ( {:ok,h}=Codec.decode_payload_header(b); h.level )
+    assert levels == [0]
+    structure=Enum.filter(txn.entries,&Map.has_key?(&1,:structure))
+    assert structure != []
+    assert {:ok,decoded}=Codec.decode_transaction(IO.iodata_to_binary(Codec.encode_transaction(txn)))
+    assert decoded.entries == txn.entries
+    assert hd(OverlayLog.transactions(OverlayLog.rows(txn))).entries == txn.entries
+    before=:sys.get_state(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).structure == before.structure
+    assert {:ok,2}=World.remove_prefab(w,{1,0})
+    [removed]=World.entries_after(w,1)
+    assert Enum.any?(removed.entries,fn e -> Map.get(e,:structure)==<<>> end)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).refined == %{}
+    assert :sys.get_state(w).structure == %{}
+  end
+
+  @tag :interaction_latency
   test "durable geometry append returns without a full-world checkpoint", c do
     assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
     assert {:ok,2}=World.apply_edit(c.w,{1,1,3},11)

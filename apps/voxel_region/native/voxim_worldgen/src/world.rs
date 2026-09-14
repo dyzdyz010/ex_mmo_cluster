@@ -62,13 +62,8 @@ fn column_height(x: i32, z: i32, c: &Config) -> i32 {
     let mountain = c.mountain_amplitude * gate * ridged(x, z, seed.wrapping_add(200)).powf(1.6);
     // UE RoundToInt：负半值也向正无穷取整。
     let height = (low + mountain + 0.5).floor() as i32;
-    if height < c.min_height {
-        c.min_height
-    } else if height < c.max_height {
-        height
-    } else {
-        c.max_height
-    }
+    // Preserve the full terrain signal so peaks and valleys remain visible.
+    height
 }
 #[derive(Clone, Copy)]
 struct Profile {

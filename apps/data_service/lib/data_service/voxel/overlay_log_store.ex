@@ -16,7 +16,7 @@ defmodule DataService.Voxel.OverlayLogStore do
   @type row :: %{
           seq: non_neg_integer(),
           ordinal: non_neg_integer(),
-          kind: 0..2,
+          kind: 0..4,
           level: non_neg_integer(),
           region: {integer(), integer(), integer()},
           payload: binary()

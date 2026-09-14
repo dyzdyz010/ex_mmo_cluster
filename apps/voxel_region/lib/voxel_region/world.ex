@@ -292,7 +292,7 @@ defmodule VoxelRegion.World do
         state = replay_log(state)
         validate_damage_catalog(state)
         state = migrate_component_damage(state)
-        {state, _} = refresh_structure(state, Map.keys(state.refined))
+        {state, _, _} = refresh_structure(state, Map.keys(state.refined))
         state = if map_size(state.structure) > 0, do: compact_log(state), else: state
         Logger.info("voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}")
         {:ok, state}
@@ -708,10 +708,15 @@ defmodule VoxelRegion.World do
       end)
     end)
     terrain_payloads = state.payloads
-    {state, structure_keys} = refresh_structure(state,material_changes)
+    {state, structure_keys, structure_cells} = refresh_structure(state,material_changes)
     structure_done = System.monotonic_time(:microsecond)
-    keys = region_keys(Enum.map(cells,&{0,&1})) ++ structure_keys
-    {entries,state} = region_afterimages(state,keys,terrain_payloads)
+    l0_keys = region_keys(Enum.map(cells,&{0,&1}))
+    keys = l0_keys ++ structure_keys
+    {entries,state} = region_afterimages(state,l0_keys,terrain_payloads)
+    region_count = length(entries)
+    entries = entries ++ Enum.map(Enum.sort(structure_cells),fn {level,cell}=key ->
+      %{seq: state.seq,level: level,cell: cell,structure: Map.get(state.structure,key,<<>>)}
+    end)
     regions_done = System.monotonic_time(:microsecond)
     {state,metadata} = damage_geometry(before,state,cells,false)
     txn = Map.merge(%{seq: state.seq,entries: entries,coarse: []},metadata) |> Map.merge(settlement)
@@ -722,7 +727,7 @@ defmodule VoxelRegion.World do
       state = %{state | entries: Map.put(state.entries,state.seq,txn)}
       fanout(state,txn)
       fanout_canonical(state,txn,chunks,keys)
-      Logger.info("voxel_prefab seq=#{state.seq} cells=#{length(cells)} regions=#{length(entries)} " <>
+      Logger.info("voxel_prefab seq=#{state.seq} cells=#{length(cells)} regions=#{region_count} structure_cells=#{length(structure_cells)} " <>
         "state_structure_us=#{structure_done-started} regions_us=#{regions_done-structure_done} " <>
         "collision_us=#{collision_done-regions_done} log_us=#{log_done-collision_done} " <>
         "fanout_us=#{System.monotonic_time(:microsecond)-log_done}")
@@ -801,7 +806,7 @@ defmodule VoxelRegion.World do
       end)
       {s,parents,changed}
     end)
-    {state,region_keys(changed)}
+    {state,region_keys(changed),changed}
   end
 
   defp cache_fetch(state, key) do
@@ -1035,6 +1040,7 @@ defmodule VoxelRegion.World do
         {:ok,h} = Codec.decode_payload_header(bytes)
         if h.level == 0,do: Map.put(ready,h.region,bytes),else: ready
       %{coord: _},ready -> ready
+      %{structure: _},ready -> ready
     end)
     coords = for {0,region} <- keys,MapSet.member?(wanted,region),do: region
     coords = coords |> Enum.uniq() |> Enum.sort()
@@ -1074,6 +1080,8 @@ defmodule VoxelRegion.World do
     matches_span?(h.level, {x*64, y*64, z*64}, {x*64+63, y*64+63, z*64+63}, filter)
   end
 
+  defp matches?(%{structure: _,level: level,cell: cell},filter), do: matches_cell?(level,cell,filter)
+
   defp matches?(entry, {{{x0, y0, z0}, {x1, y1, z1}}, min_level}) do
     {rx, ry, rz} = region_of(entry.coord)
 
@@ -1094,6 +1102,7 @@ defmodule VoxelRegion.World do
   defp project_transaction(%{entries: entries,coarse: coarse}=txn,level,region) do
     {ox,oy,oz}=Payload.origin(region)
     replacement = Enum.any?(entries,fn
+      %{structure: _,level: l,cell: cell} -> l==level and Payload.in_span?(Payload.local(region,cell))
       %{payload: bytes} ->
         {:ok,h}=Codec.decode_payload_header(bytes)
         {x,y,z}=h.region
@@ -1133,6 +1142,14 @@ defmodule VoxelRegion.World do
       state
     end
     rebase_region(state,p)
+  end
+
+  defp replay_entry(state, %{structure: grid,level: level,cell: cell}) do
+    key={level,cell}
+    structure=if grid==<<>>,do: Map.delete(state.structure,key),else: Map.put(state.structure,key,grid)
+    Enum.reduce(region_keys([key]),%{state | structure: structure},fn region,s ->
+      %{cache_delete(s,region) | snapshots: MapSet.put(s.snapshots,region)}
+    end)
   end
 
   defp replay_entry(state, entry) do
@@ -1181,7 +1198,7 @@ defmodule VoxelRegion.World do
             state = refresh_macro_payloads(before,state,changed)
             cached = System.monotonic_time(:microsecond)
             terrain_payloads = Map.merge(before.payloads,state.payloads)
-            {state,structure_keys} = refresh_structure(state,Enum.map(changed,&elem(&1,1)))
+            {state,structure_keys,_} = refresh_structure(state,Enum.map(changed,&elem(&1,1)))
             structured = System.monotonic_time(:microsecond)
             legacy = legacy and structure_keys == []
             {txn,state} = if legacy do
