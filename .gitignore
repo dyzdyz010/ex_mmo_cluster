@@ -83,3 +83,6 @@ deploy/*-stdout.log
 
 # Voxia UE5.8 client is its own independent git repo (clients/Voxia/.git)
 clients/Voxia/
+
+# Python 工具运行缓存。
+__pycache__/
