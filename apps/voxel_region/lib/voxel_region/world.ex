@@ -291,6 +291,7 @@ defmodule VoxelRegion.World do
 
         state = replay_log(state)
         validate_damage_catalog(state)
+        state = migrate_component_damage(state)
         {state, _} = refresh_structure(state, Map.keys(state.refined))
         state = if map_size(state.structure) > 0, do: compact_log(state), else: state
         Logger.info("voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}")
@@ -1360,7 +1361,7 @@ defmodule VoxelRegion.World do
     case Map.fetch(state.refined,cell) do
       {:ok,slots} ->
         case Map.fetch(slots,slot) do
-          {:ok,{material,{birth,_}=owner}} -> {%{micro: micro,granularity: 1,
+          {:ok,{material,{birth,_}=owner}} -> {%{micro: micro,granularity: 2,
             incarnation: birth,owner: owner,material: material},state}
           :error -> {nil,state}
         end
@@ -1373,14 +1374,32 @@ defmodule VoxelRegion.World do
   end
 
   defp property_state(state,target) do
+    m = Map.fetch!(state.properties.materials,target.material)
     case Map.fetch(state.damage,Damage.key(target)) do
-      {:ok,t} -> %{t | seq: state.seq,request_id: 0}
+      {:ok,t} -> Map.merge(t,target) |> Map.merge(%{seq: state.seq,request_id: 0,defense: m["defense"]*1.0})
       :error ->
-        m = Map.fetch!(state.properties.materials,target.material)
-        hp = Damage.max_hp(m,target.granularity)
+        hp = if target.granularity==2,do: component_max_hp(state,target.owner),else: Damage.max_hp(m,0)
         Map.merge(target,%{seq: state.seq,request_id: 0,hp: hp,max_hp: hp,
           defense: m["defense"]*1.0,digest: state.properties.digest,flags: 0})
     end
+  end
+
+  defp component_max_hp(state,owner) do
+    for cell<-subtree_cells(state,MapSet.new([owner])),{_,{material,id}}<-Map.fetch!(state.refined,cell),id==owner,reduce: 0.0 do
+      hp -> hp+Damage.max_hp(Map.fetch!(state.properties.materials,material),1)
+    end
+  end
+
+  # Saved micro damage becomes one leaf pool without restoring missing geometry or HP.
+  defp migrate_component_damage(state) do
+    legacy=state.damage |> Map.values() |> Enum.filter(&(&1.granularity==1)) |> Enum.group_by(& &1.owner)
+    Enum.reduce(legacy,state,fn {owner,rows},s ->
+      hp=component_max_hp(s,owner)
+      lost=Enum.reduce(rows,0.0,fn t,sum -> sum+t.max_hp-t.hp end)
+      target=%{hd(rows) | granularity: 2,max_hp: hp,hp: hp-lost,seq: s.seq,request_id: 0}
+      damage=Map.drop(s.damage,Enum.map(rows,&Damage.key/1)) |> Map.put(Damage.key(target),target)
+      %{s | damage: damage}
+    end)
   end
 
   defp same_target?(a,b), do: Enum.all?([:micro,:incarnation,:owner,:material],&(Map.fetch!(a,&1)==Map.fetch!(b,&1)))
@@ -1402,12 +1421,13 @@ defmodule VoxelRegion.World do
         amount = Damage.amount(material,tool,target.granularity)
         target = %{target | hp: max(0.0,target.hp-amount),seq: state.seq+1}
         cond do
+          target.granularity==2 and not leaf_component?(state,target.owner) -> {:reply,{:error,:not_a_leaf_component},before}
           amount == 0.0 -> {:reply,{:error,:ineffective_tool},state}
           request.action == 2 -> dismantle_target(before,state,actor,target)
+          target.hp == 0.0 and target.granularity==2 -> dismantle_target(before,state,actor,target)
           target.hp == 0.0 ->
           {state,settlement} = if target.material in state.production_materials do
-            units = if target.granularity == 0,do: @micro*@micro*@micro,else: 1
-            settle_material(state,actor.cid,target.material,units)
+            settle_material(state,actor.cid,target.material,@micro*@micro*@micro)
           else
             {state,%{}}
           end
@@ -1428,12 +1448,14 @@ defmodule VoxelRegion.World do
     end
   end
 
+  defp leaf_component?(state,owner),do: not Enum.any?(state.instances,fn {_,i}->Map.get(i,:parent_id,{0,0})==owner end)
+
   defp dismantle_target(before,_state,_actor,%{granularity: 0}) do
     {:reply,{:error,:not_a_component},before}
   end
   defp dismantle_target(before,state,actor,target) do
     # 拆卸只认权威射线命中的叶子 occurrence，不采用客户端选中的父级。
-    if Enum.any?(state.instances,fn {_,i}->Map.get(i,:parent_id,{0,0})==target.owner end) do
+    if not leaf_component?(state,target.owner) do
       {:reply,{:error,:not_a_leaf_component},before}
     else
       ids=MapSet.new([target.owner])
@@ -1447,7 +1469,12 @@ defmodule VoxelRegion.World do
         {s,Map.merge(balances,settlement.material_balances)}
       end)
       settlement=%{material_balances: balances}
-      prefab_reply(before,clear_subtree(state,ids,cells),cells,settlement)
+      # Include a tombstone even when a small leaf dies on its first hit.
+      damaged=%{before | damage: Map.put(before.damage,Damage.key(target),target)}
+      case prefab_reply(damaged,clear_subtree(state,ids,cells),cells,settlement) do
+        {:reply,{:error,reason},_} -> {:reply,{:error,reason},before}
+        result -> result
+      end
     end
   end
 
@@ -1455,16 +1482,6 @@ defmodule VoxelRegion.World do
     case apply_batch(state,[{Damage.macro(target),0}],false,settlement) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},before}
-    end
-  end
-  defp destroy_target(before,state,target,settlement) do
-    {cell,slot}=Prefab.macro_slot(target.micro)
-    slots = Map.fetch!(state.refined,cell) |> Map.delete(slot)
-    refined = if map_size(slots)==0,do: Map.delete(state.refined,cell),else: Map.put(state.refined,cell,slots)
-    next = put_overlay(%{state | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
-    case prefab_reply(%{before | damage: Map.put(before.damage,Damage.key(target),target)},next,[cell],settlement) do
-      {:reply,{:error,reason},_} -> {:reply,{:error,reason},before}
-      result -> result
     end
   end
 

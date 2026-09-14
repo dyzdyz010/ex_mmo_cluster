@@ -30,6 +30,7 @@ defmodule VoxelRegion.Damage do
 
   def volume(0), do: 1.0
   def volume(1), do: 1.0/(@micro*@micro*@micro)
+  def volume(2), do: 1.0
   def max_hp(material,granularity), do: material["max_hp_per_macro"] * volume(granularity)
   def amount(material,tool,granularity) do
     response = material["responses"]
@@ -49,6 +50,7 @@ defmodule VoxelRegion.Damage do
     end
   end
 
+  def key(%{granularity: 2,owner: owner}), do: {2,owner}
   def key(t), do: {t.granularity,t.micro,t.incarnation,t.owner,t.material}
   def macro(t), do: t.micro |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,@micro)) |> List.to_tuple()
 

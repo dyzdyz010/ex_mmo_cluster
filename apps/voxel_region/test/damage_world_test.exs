@@ -128,9 +128,40 @@ defmodule VoxelRegion.DamageWorldTest do
     World.tool_intent(c.w,actor,request)
   end
 
+  defp full_component(c,anchor) do
+    cells=for x<-0..7,y<-0..7,z<-0..7,into: <<>>,do:
+      <<x::signed-little-32,y::signed-little-32,z::signed-little-32,if(x<4,do: 11,else: 19)::16-little>>
+    bytes=<<"VXPD",1::32-little,512::32-little,cells::binary,0::32-little>>
+    path=Keyword.fetch!(c.opts,:prefab_catalog_path)
+    File.write!(Path.join(path,"full.vxpd"),bytes)
+    :ok=World.publish_prefabs(c.w,path)
+    World.place_prefab(c.w,:crypto.hash(:sha256,bytes),anchor,0)
+  end
+
+  test "component health follows the leaf across hit positions and lethal damage removes all its materials", c do
+    assert {:ok,1}=full_component(c,{8,8,16})
+    assert {:ok,2}=full_component(c,{8,8,24})
+    assert {:ok,stone}=World.tool_intent(c.w,c.actor,c.request)
+    assert stone.granularity==2 and stone.hp==100.0
+    for seq<-1..3 do
+      assert {:ok,_}=b2_hit(c,c.actor,stone,seq)
+      assert map_size(:sys.get_state(c.w).refined[{1,1,2}])==512
+      assert balance(c.w,1001,11).balance==0
+    end
+    GenServer.call(c.actor.player,{:eye,{1.8125,1.0625,0.0625}})
+    assert {:ok,wood}=World.tool_intent(c.w,c.actor,c.request)
+    assert wood.material==19 and wood.hp==16.0 and wood.owner==stone.owner
+    assert {:ok,6}=b2_hit(c,c.actor,wood,4)
+    state=:sys.get_state(c.w)
+    refute Map.has_key?(state.refined,{1,1,2})
+    assert map_size(state.refined[{1,1,3}])==512
+    assert balance(c.w,1001,11).balance==256 and balance(c.w,1001,19).balance==256
+    assert {:error,:stale_target}=b2_hit(c,c.actor,wood,5)
+  end
+
   @tag :b2
   test "B2 explicit dismantle removes only the hit occurrence and credits its remaining wood", c do
-    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,2}=World.place_prefab(c.w,c.id,{8,8,24},0)
     GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
@@ -142,38 +173,60 @@ defmodule VoxelRegion.DamageWorldTest do
     state=:sys.get_state(c.w)
     refute Map.has_key?(state.refined,{1,1,2})
     assert map_size(state.refined[{1,1,3}])==2
-    assert balance(c.w,1001).balance==1
-    assert balance(c.w,1001,11).balance==1
+    assert balance(c.w,1001).balance==256
+    assert balance(c.w,1001,11).balance==256
     assert {:error,:stale_target}=World.tool_intent(c.w,actor,request)
     assert World.seq(c.w)==4
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
-    assert balance(w,1001).balance==1
-    assert balance(w,1001,11).balance==1
+    assert balance(w,1001).balance==256
+    assert balance(w,1001,11).balance==256
     assert :sys.get_state(w).refined==state.refined
   end
 
   @tag :b2
-  test "B2 dismantle cannot recover a previously harvested micro or replace a forged owner", c do
-    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
-    GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
-    assert {:ok,wood}=World.tool_intent(c.w,c.actor,c.request)
-    for seq<-1..4,do: assert({:ok,_}=b2_hit(c,c.actor,wood,seq))
-    assert balance(c.w,1001).balance==1
-    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,0.0625}})
-    assert {:ok,stone}=World.tool_intent(c.w,c.actor,c.request)
-    request=Map.merge(c.request,Map.take(stone,[:micro,:incarnation,:owner,:material]))
-      |> Map.merge(%{action: 2,client_intent_seq: 5})
-    actor=Map.merge(c.actor,%{received_us: 2_500_000,clock_node: node()})
-    assert {:error,:stale_target}=World.tool_intent(c.w,actor,%{request | owner: {999,0}})
-    assert {:ok,6}=World.tool_intent(c.w,actor,request)
-    assert balance(c.w,1001).balance==1
-    assert :sys.get_state(c.w).refined==%{}
+  test "B2 legacy holes and micro damage migrate without healing or paying already harvested slots", c do
+    assert {:ok,1}=full_component(c,{8,8,16})
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    # Persist the former live format: one harvested slot and two partially damaged slots.
+    :sys.replace_state(c.w,fn s ->
+      a=%{target | granularity: 1,micro: {8,8,16},max_hp: 100.0/512,hp: 72.0/512}
+      b=%{a | micro: {9,8,16},hp: 44.0/512}
+      slots=Map.delete(s.refined[{1,1,2}],2)
+      %{s | refined: Map.put(s.refined,{1,1,2},slots),
+        payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},lru_bytes: 0,resident_bytes: 0,
+        damage: Map.new([a,b],&{VoxelRegion.Damage.key(&1),&1}),material_balances: %{{1001,11}=>1}}
+    end)
+    assert :ok=World.compact(c.w)
+    before=:sys.get_state(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    migrated=:sys.get_state(w)
+    assert migrated.refined==before.refined
+    assert Map.new(migrated.instances,fn {id,i}->{id,Map.take(i,[:definition_id,:anchor,:orientation])} end)==
+      Map.new(before.instances,fn {id,i}->{id,Map.take(i,[:definition_id,:anchor,:orientation])} end)
+    assert migrated.material_balances==before.material_balances and migrated.seq==before.seq
+    assert {:ok,leaf}=World.tool_intent(w,c.actor,c.request)
+    assert leaf.granularity==2 and leaf.max_hp==511*100.0/512 and leaf.hp==(511*100.0-84.0)/512
+    assert map_size(migrated.damage)==1
+    assert :ok=World.compact(w)
+    [checkpoint]=World.entries_after(w,0)
+    assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
+    assert restored.property_states==checkpoint.property_states
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert {:ok,^leaf}=World.tool_intent(w,c.actor,c.request)
+    request=Map.merge(c.request,Map.take(leaf,[:micro,:incarnation,:owner,:material])) |> Map.put(:action,2)
+    actor=Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
+    assert {:error,:stale_target}=World.tool_intent(w,actor,%{request | owner: {999,0}})
+    assert {:ok,2}=World.tool_intent(w,actor,request)
+    assert balance(w,1001,11).balance==256 and balance(w,1001,19).balance==256
+    assert :sys.get_state(w).refined==%{}
   end
 
   @tag :b2
   test "B2 failed dismantle append rolls back materials, damage and occurrence", c do
-    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
     assert {:ok,2}=b2_hit(c,c.actor,target,1)
     before=:sys.get_state(c.w)
@@ -188,7 +241,7 @@ defmodule VoxelRegion.DamageWorldTest do
       Map.take(before,[:seq,:damage,:refined,:instances,:material_balances])
     File.rm!(path<>".reject")
     assert {:ok,3}=World.tool_intent(c.w,actor,request)
-    assert balance(c.w,1001).balance==1
+    assert balance(c.w,1001).balance==256
   end
 
   defp b2_actor(c,cid) do
@@ -202,6 +255,26 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
     assert {:ok,target}=World.tool_intent(c.w,actor,c.request)
     for seq <- 1..4,do: assert({:ok,_}=b2_hit(c,actor,target,seq))
+  end
+
+  @tag :b2
+  test "B2 competing attacks on different positions share HP and settle the whole leaf once", c do
+    other=b2_actor(c,1002)
+    assert {:ok,1}=full_component(c,{8,8,16})
+    GenServer.call(other.player,{:eye,{1.8125,1.0625,0.0625}})
+    assert {:ok,stone}=World.tool_intent(c.w,c.actor,c.request)
+    assert {:ok,wood}=World.tool_intent(c.w,other,c.request)
+    for seq<-1..3,do: assert({:ok,_}=b2_hit(c,c.actor,stone,seq))
+    tasks=for {actor,target,seq}<-[{c.actor,stone,4},{other,wood,1}],do:
+      Task.async(fn -> b2_hit(c,actor,target,seq) end)
+    results=Enum.map(tasks,&Task.await(&1,10_000))
+    assert Enum.count(results,&match?({:ok,5},&1))==1
+    assert Enum.count(results,&match?({:error,_},&1))==1
+    for material<-[19,11],do: assert(Enum.sort(for cid<-[1001,1002],do: balance(c.w,cid,material).balance)==[0,256])
+    assert balance(c.w,1001,19).balance==balance(c.w,1001,11).balance
+    assert {:error,_}=b2_hit(c,c.actor,stone,4)
+    assert {:error,_}=b2_hit(c,other,wood,1)
+    assert :sys.get_state(c.w).refined==%{} and :sys.get_state(c.w).damage==%{}
   end
 
   @tag :b2
@@ -260,25 +333,23 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b2
-  test "B2 actual refined wood slot yields one unit with sibling and checkpoint preserved", c do
+  test "B2 one lethal hit recovers all materials of a small leaf and checkpoint preserves settlement", c do
     assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
     GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
-    assert target.material==19 and target.granularity==1
-    for seq <- 1..4 do
-      assert {:ok,_}=b2_hit(c,c.actor,target,seq)
-      assert balance(c.w,1001).balance==if(seq==4,do: 1,else: 0)
-    end
-    assert :sys.get_state(c.w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
+    assert target.material==19 and target.granularity==2
+    assert {:ok,2}=b2_hit(c,c.actor,target,1)
+    assert :sys.get_state(c.w).refined==%{}
+    assert [%{property_states: [%{granularity: 2,flags: 1,hp: +0.0}]}]=World.entries_after(c.w,1)
     assert :ok=World.compact(c.w)
     [checkpoint]=World.entries_after(c.w,0)
     assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
-    assert restored.material_balances==%{{1001,19}=>1}
+    assert restored.material_balances==%{{1001,19}=>1,{1001,11}=>1}
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert balance(w,1001).balance==1
     assert balance(w,1002).balance==0
-    assert :sys.get_state(w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
+    assert :sys.get_state(w).refined==%{}
   end
 
   @tag :b2
@@ -529,20 +600,17 @@ defmodule VoxelRegion.DamageWorldTest do
     end
   end
 
-  test "refined exact micro damage leaves sibling material and separate occurrence intact", c do
+  test "lethal leaf damage removes its sibling material but preserves a separate occurrence", c do
     assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
     assert {:ok,2}=World.place_prefab(c.w,c.id,{8,8,24},0)
     assert {:ok,t}=World.tool_intent(c.w,c.actor,c.request)
-    assert t.granularity==1 and t.hp==100.0/512 and t.owner=={1,0}
-    for seq <- 1..4 do
-      if seq>1,do: Process.sleep(510)
-      assert {:ok,_}=attack(c.w,c.actor,c.request,t,seq)
-    end
+    assert t.granularity==2 and t.hp==200.0/512 and t.owner=={1,0}
+    assert {:ok,3}=attack(c.w,c.actor,c.request,t,1)
     state=:sys.get_state(c.w)
-    assert state.refined[{1,1,2}]==%{1=>{19,{1,0}}}
+    refute Map.has_key?(state.refined,{1,1,2})
     assert map_size(state.refined[{1,1,3}])==2
     assert {:ok,next}=World.tool_intent(c.w,c.actor,c.request)
-    assert next.owner=={2,0} and next.hp==100.0/512
+    assert next.owner=={2,0} and next.hp==200.0/512
   end
 
   test "checkpoint and DB row replay preserve damage and incarnation with exact catalog version", c do
@@ -583,7 +651,7 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   test "failed refined lethal persistence leaves prior HP, occupancy and seq", c do
-    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,t}=World.tool_intent(c.w,c.actor,c.request)
     for seq <- 1..3 do
       if seq>1,do: Process.sleep(510)
@@ -595,8 +663,9 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:error,:test_disk_failure}=attack(c.w,c.actor,c.request,t,4)
     assert World.seq(c.w)==4
     assert {:ok,current}=World.tool_intent(c.w,c.actor,c.request)
-    assert current.hp==16.0/512
-    assert map_size(:sys.get_state(c.w).refined[{1,1,2}])==2
+    assert current.hp==16.0
+    assert map_size(:sys.get_state(c.w).refined[{1,1,2}])==512
+    assert balance(c.w,1001).balance==0 and balance(c.w,1001,11).balance==0
   end
 
   test "replica retains sparse live changes in the next join baseline", c do

@@ -191,10 +191,14 @@ manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、完整且有�
 `OverlayLog.File`（`<root>/<cv>/overlay.log` ETF 帧）只给不起数据库的测试。seq 仍由 World 内存计数分配（no-op 不消耗、重放取 max）。
 
 R7-B2 的材料余额随世界事务写入现有 kind 3 元数据：`{cid, material_id} → units`，追加、重放和检查点沿用同一条日志。
-材料由 Demo 资产发布为 `production_materials: [19, 11]`，复用木材与石材的既有 ID。1 单位是 canonical 微格体积（1/512 m³），100% 回收被工具实际摧毁的匹配材料：宏格 512、refined 槽 1；部分伤害不入账。建造一个空宏格消耗所选材料 512 单位，两种余额不能互相抵扣。
+
+2026-09-14 用户决定：Prefab 最小破坏单位为最低层 occurrence，普通攻击也不能删除单微格。构件共享 HP，最大值按实际剩余槽的材质 `max_hp_per_macro / 512` 求和；单次攻击使用命中材质的防御、响应和工具强度，不再按微格缩小伤害。归零复用拆卸事务，一次删除整个叶子并按各材质实际剩余量入账；选中父级不扩大攻击范围。既有宏格规则不变。
+现有 121 字节 property envelope 的 granularity=2 表示 occurrence 血量，键为 owner；0 仍为宏格，1 只用于旧存档迁移。启动重放后把同 owner 的旧微格损失 HP 求和，从剩余几何对应的最大 HP 扣除，原有洞、余额及世界序号不变，再由现有检查点持久化。查询返回当前射线命中的身份和材质，以及共享 HP。
+依据：[Epic 的分层破坏指南](https://dev.epicgames.com/documentation/en-us/unreal-engine/cluster-geometry-collections-user-guide-in-unreal-engine)以作者定义层级组织破坏单元；这里按用户要求固定最低层，不引入 Chaos。HP 密度来自既有资产，删除与结算沿用 `clear_subtree` / `prefab_reply` 的原子日志路径；不新增配方、修复或材料表。
+材料由 Demo 资产发布为 `production_materials: [19, 11]`，复用木材与石材的既有 ID。1 单位是 canonical 微格体积（1/512 m³），100% 回收被工具实际摧毁的匹配材料：宏格 512，Prefab 按整个叶子的实际剩余槽逐材质计数；部分伤害不入账。微格只是计量单位，不是 Prefab 破坏单位。建造一个空宏格消耗所选材料 512 单位，两种余额不能互相抵扣。
 `production_intent/3` 刷新当前 Player 身份与位置，World 串行检查距离、余额和实际占用；最近一次相同请求返回原结果，旧序号拒绝。普通玩家的作者放置、删除、替换入口仍需 creator 权限。
 建造去重记录绑定已鉴权 Gate 连接，随连接退出清理；Scene 移交换 Player 和 epoch 不会使旧请求再次生效。
-读取余额走已鉴权 cid，不依赖移动 Ready；每种材料各发一个 31 字节 `0x81`，客户端按材料分别确认。`0x7F` 建造意图现在为 38 字节，在 tool 后追加 material u16；客户端与服务器须一起更新。回归：`python tools/test_voxim_b1.py --out .demo/observe/b2-next`（含 B1、竞争、重复、失败写入、微格与恢复测试）。
+读取余额走已鉴权 cid，不依赖移动 Ready；每种材料各发一个 31 字节 `0x81`，客户端按材料分别确认。`0x7F` 建造意图现在为 38 字节，在 tool 后追加 material u16；客户端与服务器须一起更新。回归：`python tools/test_voxim_b1.py --out .demo/observe/b2-next`（含 B1、竞争、重复、失败写入、构件血量、旧微格损伤迁移与恢复测试）。
 
 B2 显式拆卸沿用工具请求 `0x7D` 的 action=2：服务器重新射线命中，检查工具、距离、目标身份与现有冷却，只拆命中的叶子 occurrence。客户端选择父级不能扩大删除范围，宏格仍走局部攻击。复用 `clear_subtree` / `prefab_reply` 的同一占用、实例、损伤与日志事务；回收只计实际剩余的匹配材料槽，已采走的微格不再计数。失败追加回滚占用和入账，旧目标重发拒绝；相关回归在 `damage_world_test.exs`。
 
