@@ -43,7 +43,7 @@ defmodule SceneServer.Movement.Player do
 
   @impl true
   def handle_call({:tool_context,identity},_,%{identity: identity,ready: true,transfer: nil,failure: nil,state: %{position: {x,y,z}}}=state) do
-    {:reply,{:ok,%{player: self(),identity: identity,eye: {x,y+0.6,z},
+    {:reply,{:ok,%{player: self(),cid: state.id,identity: identity,eye: {x,y+0.6,z},
       tick_us: Clock.deadline(state,1)-Clock.deadline(state,0),refresh: &__MODULE__.tool_context/2}},state}
   end
   def handle_call({:tool_context,_},_,state), do: {:reply,{:error,:invalid_state},state}

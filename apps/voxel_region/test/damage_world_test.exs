@@ -62,9 +62,9 @@ defmodule VoxelRegion.DamageWorldTest do
       0::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,
       1::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
-    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil]
+    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_material: 19]
     w=start_supervised!({World,opts})
-    actor=%{identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
+    actor=%{cid: 1001,identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,
       direction: {0.0,0.0,1.0},micro: {0,0,0},incarnation: 0,owner: {0,0},material: 0,tool_id: 1}
@@ -77,6 +77,30 @@ defmodule VoxelRegion.DamageWorldTest do
       |> Map.merge(%{action: 1,client_intent_seq: seq})
     actor=Map.merge(actor,%{received_us: System.monotonic_time(:microsecond),clock_node: node()})
     World.tool_intent(w,actor,request)
+  end
+
+  @tag :b2
+  test "B2 harvest and paid build preserve world and balance in the same log", c do
+    assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq <- 1..4 do
+      actor=Map.merge(c.actor,%{received_us: seq*500_000,clock_node: node()})
+      request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+        |> Map.merge(%{action: 1,client_intent_seq: seq})
+      assert {:ok,_}=World.tool_intent(c.w,actor,request)
+      assert World.material_balance(c.w,1001).balance == if(seq==4,do: 512,else: 0)
+    end
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1}
+    assert {:ok,6}=World.production_intent(c.w,c.actor,build)
+    assert World.material_balance(c.w,1001).balance == 0
+    assert {:ok,6}=World.production_intent(c.w,c.actor,build)
+    assert {:error,:insufficient_material}=World.production_intent(c.w,c.actor,%{build | request_id: 11,client_intent_seq: 11,coord: {2,1,2}})
+    assert [%{material_balances: %{{1001,19}=>512}},%{material_balances: %{{1001,19}=>0}}]=World.entries_after(c.w,4)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.seq(w)==6
+    assert World.material_balance(w,1001).balance==0
+    assert {:ok,%{material: 19,hp: 100.0}}=World.tool_intent(w,c.actor,c.request)
   end
 
   test "packed skins preserve every mask and canonicalize uniform maps" do
@@ -93,6 +117,130 @@ defmodule VoxelRegion.DamageWorldTest do
       assert Payload.skins(p,{1,2,3},19) == MmoContracts.Voxel.Skins.canonical({2,List.to_tuple(faces)})
       assert Payload.skins(p,{4,5,6},19) == MmoContracts.Voxel.Skins.uniform(19)
     end
+  end
+
+  defp b2_hit(c,actor,target,seq) do
+    actor=Map.merge(actor,%{received_us: seq*500_000,clock_node: node()})
+    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 1,client_intent_seq: seq})
+    World.tool_intent(c.w,actor,request)
+  end
+
+  defp b2_actor(c,cid) do
+    actor=%{c.actor | cid: cid,identity: make_ref()}
+    player=start_supervised!(Supervisor.child_spec({Actor,actor},id: {:actor,cid}))
+    %{actor | player: player}
+  end
+
+  defp b2_harvest(c,actor) do
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,target}=World.tool_intent(c.w,actor,c.request)
+    for seq <- 1..4,do: assert({:ok,_}=b2_hit(c,actor,target,seq))
+  end
+
+  @tag :b2
+  test "B2 competing lethal hits credit only the winner and stale repeats cannot harvest again", c do
+    other=b2_actor(c,1002)
+    assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq <- 1..3,do: assert({:ok,_}=b2_hit(c,c.actor,target,seq))
+    tasks=for {actor,seq} <- [{c.actor,4},{other,1}],do: Task.async(fn -> b2_hit(c,actor,target,seq) end)
+    results=Enum.map(tasks,&Task.await(&1,10_000))
+    assert Enum.count(results,&match?({:ok,5},&1))==1
+    assert Enum.count(results,&match?({:error,_},&1))==1
+    assert Enum.sort(for cid <- [1001,1002],do: World.material_balance(c.w,cid).balance)==[0,512]
+    assert {:error,_}=b2_hit(c,c.actor,target,4)
+    assert {:error,_}=b2_hit(c,other,target,1)
+    assert World.seq(c.w)==5
+  end
+
+  @tag :b2
+  test "B2 actual refined wood slot yields one unit with sibling and checkpoint preserved", c do
+    assert {:ok,1}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    GenServer.call(c.actor.player,{:eye,{1.1875,1.0625,0.0625}})
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    assert target.material==19 and target.granularity==1
+    for seq <- 1..4 do
+      assert {:ok,_}=b2_hit(c,c.actor,target,seq)
+      assert World.material_balance(c.w,1001).balance==if(seq==4,do: 1,else: 0)
+    end
+    assert :sys.get_state(c.w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
+    assert :ok=World.compact(c.w)
+    [checkpoint]=World.entries_after(c.w,0)
+    assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
+    assert restored.material_balances==%{{1001,19}=>1}
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.material_balance(w,1001).balance==1
+    assert World.material_balance(w,1002).balance==0
+    assert :sys.get_state(w).refined[{1,1,2}]==%{0=>{11,{1,0}}}
+  end
+
+  @tag :b2
+  test "B2 contested builds, occupancy, failed append and session fencing preserve balances", c do
+    other=b2_actor(c,1002)
+    b2_harvest(c,c.actor)
+    b2_harvest(c,other)
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {2,1,2},tool_id: 1}
+    {_,path}=:sys.get_state(c.w).log
+    File.write!(path<>".reject","")
+    assert {:error,:test_disk_failure}=World.production_intent(c.w,c.actor,build)
+    assert World.seq(c.w)==10 and World.material_balance(c.w,1001).balance==512
+    File.rm!(path<>".reject")
+    next=%{build | request_id: 11,client_intent_seq: 11}
+    tasks=for actor <- [c.actor,other],do: Task.async(fn -> {actor,World.production_intent(c.w,actor,next)} end)
+    results=Enum.map(tasks,&Task.await(&1,10_000))
+    {winner,{:ok,11}}=Enum.find(results,fn {_,r}->match?({:ok,_},r) end)
+    {loser,{:error,:occupied}}=Enum.find(results,fn {_,r}->match?({:error,_},r) end)
+    assert World.material_balance(c.w,winner.cid).balance==0
+    assert World.material_balance(c.w,loser.cid).balance==512
+    assert {:ok,12}=World.apply_edit(c.w,build.coord,0)
+    assert {:ok,11}=World.production_intent(c.w,winner,next)
+    assert World.seq(c.w)==12
+    assert {:error,:replayed_build}=World.production_intent(c.w,winner,build)
+    assert {:ok,13}=World.place_prefab(c.w,c.id,{16,8,16},0)
+    assert {:error,:occupied}=World.production_intent(c.w,loser,%{next | client_intent_seq: 12})
+    GenServer.call(loser.player,:seal)
+    assert {:error,:invalid_state}=World.production_intent(c.w,loser,%{next | client_intent_seq: 13,coord: {3,1,2}})
+    assert World.material_balance(c.w,loser.cid).balance==512
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.seq(w)==13
+    assert World.material_balance(w,winner.cid).balance==0
+    assert World.material_balance(w,loser.cid).balance==512
+  end
+
+  @tag :b2
+  test "B2 failed lethal append neither credits wood nor destroys its remaining HP", c do
+    assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq <- 1..3,do: assert({:ok,_}=b2_hit(c,c.actor,target,seq))
+    {_,path}=:sys.get_state(c.w).log
+    File.write!(path<>".reject","")
+    assert {:error,:test_disk_failure}=b2_hit(c,c.actor,target,4)
+    assert World.material_balance(c.w,1001).balance==0
+    assert World.seq(c.w)==4
+    assert {:ok,%{hp: 16.0,material: 19}}=World.tool_intent(c.w,c.actor,c.request)
+    File.rm!(path<>".reject")
+    assert {:ok,5}=b2_hit(c,c.actor,target,4)
+    assert World.material_balance(c.w,1001).balance==512
+  end
+
+  @tag :b2
+  test "B2 balance query uses authenticated cid before movement Ready; author bypasses stay closed", c do
+    alias GateServer.Session.{Dispatch,Sink}
+    state=%{status: :in_scene,voxim_overlay: true,cid: 1001,world_ref: c.w,
+      sink: Sink.quic(self(),:session),builder: false}
+    request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,coord: {0,0,0},tool_id: 1}
+    assert {:ok,^state}=Dispatch.handle({:voxel_production_intent,request},state)
+    assert_receive {:mmo_voxel_bytes,:session,<<0x81,1::64,0::64,19::16,0::64,512::32>>}
+    for kind <- [:voxel_edit_intent,:voxel_batch_edit_intent,:voxel_prefab_place_v1,
+      :voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
+      assert {:ok,^state}=Dispatch.handle({kind,request},state)
+      assert_receive {:mmo_voxel_bytes,:session,bytes}
+      assert :binary.match(bytes,"builder_permission_required") != :nomatch
+    end
+    assert World.seq(c.w)==0 and World.material_balance(c.w,1001).balance==0
   end
 
   test "HTTP materialization preserves reduced textures after editing an empty coarse region", c do
@@ -348,9 +496,13 @@ defmodule VoxelRegion.DamageWorldTest do
     :ok=:sys.suspend(c.w)
     parent=self()
     worker=spawn_monitor(fn -> send(parent,{:tool_reply,World.tool_intent(c.w,c.actor,c.request)}) end)
+    balance_worker=spawn_monitor(fn -> send(parent,{:balance_reply,World.material_balance(c.w,1001)}) end)
     Process.sleep(5_100)
     :ok=:sys.resume(c.w)
     assert_receive {:tool_reply,{:ok,%{hp: 100.0}}},5_000
+    assert_receive {:balance_reply,%{balance: 0}},5_000
+    {_,balance_monitor}=balance_worker
+    assert_receive {:DOWN,^balance_monitor,:process,_,:normal}
     {_,monitor}=worker
     assert_receive {:DOWN,^monitor,:process,_,:normal}
   end

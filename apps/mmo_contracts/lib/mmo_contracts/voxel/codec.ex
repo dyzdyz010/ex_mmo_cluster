@@ -52,7 +52,7 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
-                  0x7A, 0x7B, 0x7C, 0x7D
+                  0x7A, 0x7B, 0x7C, 0x7D, 0x7F
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -63,10 +63,17 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_intent_result,
                     :voxel_log_entry_payload,
                     :voxel_log_transaction_payload,
-                    :voxel_property_state
+                    :voxel_property_state, :voxel_material_balance
                   ]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
+  def decode(<<0x7F,rid::64,seq::32,scene::64,action::8,x::signed-32,y::signed-32,z::signed-32,tool::16>>)
+      when action in [0,1] and tool > 0 do
+    {:ok,{:voxel_production_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
+      action: action,coord: {x,y,z},tool_id: tool}}}
+  end
+  def decode(<<0x7F,_::binary>>),do: {:error,:invalid_message}
+
   def decode(<<0x7D, rid::64, seq::32, scene::64, action::8,
       dx::float-64, dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64,
       incarnation::64, birth::64, occurrence::32, material::16, tool::16>>)
@@ -164,6 +171,10 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(_), do: {:error, :invalid_message}
 
   @doc "协议值编码为现行帧 iodata。"
+  def encode({:voxel_material_balance,t}) do
+    {:ok,<<0x81,t.request_id::64,t.seq::64,t.material::16,t.balance::64,t.cost::32>>}
+  end
+
   def encode({:voxel_property_state,t}) do
     {x,y,z}=t.micro
     {birth,occurrence}=t.owner

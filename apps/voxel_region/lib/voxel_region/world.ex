@@ -142,6 +142,19 @@ defmodule VoxelRegion.World do
 
   def publish_properties(server,path), do: GenServer.call(server,{:publish_properties,Damage.load(path)})
 
+  @doc "角色确认余额；单位为一个 canonical 微格体积。"
+  def material_balance(server,cid), do: GenServer.call(server,{:material_balance,cid},300_000)
+
+  @doc "普通角色查询或付费建造，复用世界事务。"
+  def production_intent(server,actor,request) do
+    if valid_edit_coord?(request.coord) do
+      if request.action == 1, do: prepare(server,edit_keys([request.coord]))
+      GenServer.call(server,{:production_intent,actor,request},300_000)
+    else
+      {:error,:invalid_coordinate}
+    end
+  end
+
   def tool_intent(server, actor, request) do
     started = System.monotonic_time(:microsecond)
     # Cold generation remains outside the World mailbox; the authoritative ray is
@@ -261,6 +274,8 @@ defmodule VoxelRegion.World do
           overlay: %{},
           refined: %{},
           damage: %{}, epochs: %{}, tool_sessions: %{},
+          material_balances: %{}, build_sessions: %{},
+          production_material: Keyword.get(opts,:production_material,Application.get_env(:voxel_region,:production_material)),
           properties: load_properties(opts),
           structure: %{},
           instances: %{},
@@ -309,6 +324,16 @@ defmodule VoxelRegion.World do
     result = with %{tools: tools} <- state.properties, {:ok,tool} <- Map.fetch(tools,id),
       do: tool["range_macro"]
     {:reply,if(is_number(result),do: result,else: {:error,:invalid_tool}),state}
+  end
+  def handle_call({:material_balance,cid},_,state), do: {:reply,balance_state(state,cid),state}
+  def handle_call({:production_intent,actor,request},_,state) do
+    with {:ok,actor} <- current_actor(actor), true <- state.production_material != nil do
+      if request.action == 0,do: {:reply,{:ok,balance_state(state,actor.cid)},state},
+        else: build_target(state,actor,request)
+    else
+      false -> {:reply,{:error,:production_unavailable},state}
+      {:error,reason} -> {:reply,{:error,reason},state}
+    end
   end
   def handle_call({:tool_intent,actor,request},_,state) do
     started = System.monotonic_time(:microsecond)
@@ -471,7 +496,7 @@ defmodule VoxelRegion.World do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid), replica_subs: Map.delete(state.replica_subs, pid), tool_sessions: Map.delete(state.tool_sessions,pid)}}
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state), do: {:noreply, %{state | subs: Map.delete(state.subs, pid), canonical_subs: Map.delete(state.canonical_subs, pid), replica_subs: Map.delete(state.replica_subs, pid), tool_sessions: Map.delete(state.tool_sessions,pid), build_sessions: Map.delete(state.build_sessions,pid)}}
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
@@ -668,7 +693,7 @@ defmodule VoxelRegion.World do
     MmoContracts.Voxel.Refined.ancestors(instances,Map.keys(owners))
   end
 
-  defp prefab_reply(before,state,cells) do
+  defp prefab_reply(before,state,cells,settlement \\ %{}) do
     started = System.monotonic_time(:microsecond)
     state = %{state | seq: before.seq+1,instances: Map.take(state.instances,live_instance_ids(state.refined,state.instances))}
     # owner 更换仍发布完整 L0；只有实际 slot/材质变化才重建结构和碰撞。
@@ -689,7 +714,7 @@ defmodule VoxelRegion.World do
     {entries,state} = region_afterimages(state,keys,terrain_payloads)
     regions_done = System.monotonic_time(:microsecond)
     {state,metadata} = damage_geometry(before,state,cells,false)
-    txn = Map.merge(%{seq: state.seq,entries: entries,coarse: []},metadata)
+    txn = Map.merge(%{seq: state.seq,entries: entries,coarse: []},metadata) |> Map.merge(settlement)
     with {:ok,chunks} <- canonical_changes(before,state,Enum.map(material_changes,&{0,&1})),
          collision_done = System.monotonic_time(:microsecond),
          :ok <- append_log(state,txn) do
@@ -1131,7 +1156,7 @@ defmodule VoxelRegion.World do
       snapshots: MapSet.put(state.snapshots,key),overlay: overlay,overlay_regions: regions}
   end
 
-  defp apply_batch(state, edits, legacy \\ false) do
+  defp apply_batch(state, edits, legacy \\ false, settlement \\ %{}) do
     before = state
     started = System.monotonic_time(:microsecond)
     result = Enum.reduce_while(Map.new(edits), {[], state}, fn {cell,m}, {changed,s} ->
@@ -1180,7 +1205,7 @@ defmodule VoxelRegion.World do
             end
             {state,metadata} = damage_geometry(before,state,Enum.map(changed,&elem(&1,1)),true)
             imaged = System.monotonic_time(:microsecond)
-            txn = Map.merge(txn,metadata)
+            txn = Map.merge(txn,metadata) |> Map.merge(settlement)
             with {:ok, collision_chunks} <- canonical_changes(before, state, changed),
                  collided = System.monotonic_time(:microsecond),
                  :ok <- append_log(state,txn) do
@@ -1303,7 +1328,7 @@ defmodule VoxelRegion.World do
       {:ok,bytes,_,s}=payload_bytes(s,level,region)
       {region_entry(s.seq,bytes),s}
     end)
-    txn=Map.merge(%{txn | entries: txn.entries++extra},%{property_states: Map.values(state.damage),epochs: state.epochs})
+    txn=Map.merge(%{txn | entries: txn.entries++extra},%{property_states: Map.values(state.damage),epochs: state.epochs,material_balances: state.material_balances})
     {backend,handle}=state.log
     backend.checkpoint(handle,txn)
     state = Enum.reduce(txn.entries,state,fn
@@ -1380,7 +1405,13 @@ defmodule VoxelRegion.World do
         cond do
           amount == 0.0 -> {:reply,{:error,:ineffective_tool},state}
           target.hp == 0.0 ->
-          destroy_target(before,%{state | damage: Map.put(state.damage,Damage.key(target),target)},target)
+          {state,settlement} = if target.material == state.production_material do
+            units = if target.granularity == 0,do: @micro*@micro*@micro,else: 1
+            settle_material(state,actor.cid,units)
+          else
+            {state,%{}}
+          end
+          destroy_target(before,%{state | damage: Map.put(state.damage,Damage.key(target),target)},target,settlement)
           true ->
           state = %{state | seq: state.seq+1,damage: Map.put(state.damage,Damage.key(target),target)}
           txn = %{seq: state.seq,entries: [],coarse: [],property_states: [target],epochs: %{}}
@@ -1397,18 +1428,18 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp destroy_target(before,state,%{granularity: 0}=target) do
-    case apply_batch(state,[{Damage.macro(target),0}]) do
+  defp destroy_target(before,state,%{granularity: 0}=target,settlement) do
+    case apply_batch(state,[{Damage.macro(target),0}],false,settlement) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},before}
     end
   end
-  defp destroy_target(before,state,target) do
+  defp destroy_target(before,state,target,settlement) do
     {cell,slot}=Prefab.macro_slot(target.micro)
     slots = Map.fetch!(state.refined,cell) |> Map.delete(slot)
     refined = if map_size(slots)==0,do: Map.delete(state.refined,cell),else: Map.put(state.refined,cell,slots)
     next = put_overlay(%{state | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
-    case prefab_reply(%{before | damage: Map.put(before.damage,Damage.key(target),target)},next,[cell]) do
+    case prefab_reply(%{before | damage: Map.put(before.damage,Damage.key(target),target)},next,[cell],settlement) do
       {:reply,{:error,reason},_} -> {:reply,{:error,reason},before}
       result -> result
     end
@@ -1436,7 +1467,55 @@ defmodule VoxelRegion.World do
     damage = Enum.reduce(Map.get(txn,:property_states,[]),state.damage,fn t,acc ->
       if t.flags == 1,do: Map.delete(acc,Damage.key(t)),else: Map.put(acc,Damage.key(t),t)
     end)
-    %{state | damage: damage,epochs: Map.merge(state.epochs,Map.get(txn,:epochs,%{}))}
+    %{state | damage: damage,epochs: Map.merge(state.epochs,Map.get(txn,:epochs,%{})),
+      material_balances: Map.merge(state.material_balances,Map.get(txn,:material_balances,%{}))}
+  end
+
+  defp balance_state(state,cid) do
+    %{seq: state.seq,material: state.production_material || 0,
+      balance: Map.get(state.material_balances,{cid,state.production_material},0),cost: @micro*@micro*@micro}
+  end
+
+  defp settle_material(state,cid,delta) do
+    key = {cid,state.production_material}
+    balance = Map.get(state.material_balances,key,0)+delta
+    {%{state | material_balances: Map.put(state.material_balances,key,balance)},%{material_balances: %{key=>balance}}}
+  end
+
+  defp build_target(before,actor,request) do
+    previous = Map.get(before.build_sessions,actor.player)
+    cond do
+      previous != nil and previous.request == request -> {:reply,previous.result,before}
+      previous != nil and request.client_intent_seq <= previous.request.client_intent_seq ->
+        {:reply,{:error,:replayed_build},before}
+      true ->
+        result = with {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
+          :ok <- build_reach(actor.eye,request.coord,tool["range_macro"]),
+          :ok <- if(balance_state(before,actor.cid).balance >= @micro*@micro*@micro,do: :ok,else: {:error,:insufficient_material}),
+          false <- Map.has_key?(before.refined,request.coord),
+          {:ok,{0,_},state} <- cell_value(before,0,request.coord) do
+          {state,settlement} = settle_material(state,actor.cid,-@micro*@micro*@micro)
+          apply_batch(state,[{request.coord,state.production_material}],false,settlement)
+        else
+          :error -> {:error,:invalid_tool}
+          true -> {:error,:occupied}
+          {:ok,_,_} -> {:error,:occupied}
+          {:error,reason} -> {:error,reason}
+        end
+        {reply,state} = case result do
+          {:ok,state} -> {{:ok,state.seq},state}
+          {:error,_}=error -> {error,before}
+        end
+        unless previous != nil,do: Process.monitor(actor.player)
+        state = %{state | build_sessions: Map.put(state.build_sessions,actor.player,%{request: request,result: reply})}
+        {:reply,reply,state}
+    end
+  end
+
+  defp build_reach(eye,coord,range) do
+    squared = Enum.zip(Tuple.to_list(eye),Tuple.to_list(coord))
+      |> Enum.reduce(0.0,fn {a,b},sum -> sum+(a-b-0.5)*(a-b-0.5) end)
+    if squared <= range*range,do: :ok,else: {:error,:out_of_reach}
   end
 
   defp validate_damage_catalog(state) do
