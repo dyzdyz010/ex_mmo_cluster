@@ -115,6 +115,12 @@ defmodule VoxelRegion.Prefab do
   end
   defp cross({a,b,c},{d,e,f}), do: {b*f-c*e,c*d-a*f,a*e-b*d}
 
+  @doc "全局系统功能：宏格与 slot 转回 canonical 微格地址。"
+  def micro_coord({x,y,z}, slot) do
+    n = VoxelRegion.Spatial.micro_resolution()
+    {x*n+rem(slot,n),y*n+rem(div(slot,n),n),z*n+div(slot,n*n)}
+  end
+
   def macro_slot({x,y,z}) do
     n = VoxelRegion.Spatial.micro_resolution()
     macro = {Integer.floor_div(x,n),Integer.floor_div(y,n),Integer.floor_div(z,n)}

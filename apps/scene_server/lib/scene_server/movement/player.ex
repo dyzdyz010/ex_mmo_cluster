@@ -162,7 +162,7 @@ defmodule SceneServer.Movement.Player do
             transaction_seq: snapshot.transaction_seq, l0_min: snapshot.l0_min,
             l0_max_exclusive: snapshot.l0_max_exclusive, travel_min_m: elem(state.config.travel, 0),
             travel_max_exclusive_m: elem(state.config.travel, 1), regions: snapshot.regions})
-          for t <- Map.get(snapshot,:property_states,[]), do: reliable(state,:voxel,{:voxel_property_state,t})
+          property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
           fence(state)
           character_event(state, state, :session_start, %{content_version: content_version})
           publish(state)
@@ -288,16 +288,47 @@ defmodule SceneServer.Movement.Player do
           transaction_seq: snapshot.transaction_seq, l0_min: snapshot.l0_min,
           l0_max_exclusive: snapshot.l0_max_exclusive, travel_min_m: elem(domain.travel, 0),
           travel_max_exclusive_m: elem(domain.travel, 1), regions: snapshot.regions})
-        for t <- Map.get(snapshot, :property_states, []), do: reliable(state, :voxel, {:voxel_property_state, t})
+        property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
       {payload, n, r, chunks, delta} ->
       reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
-      for t <- Map.get(delta.transaction,:property_states,[]), do: reliable(state,:voxel,{:voxel_property_state,t})
+      property_batch(state, delta.transaction, false, property_box(state, tick))
       if chunks != [], do: reliable(state, :voxel, %Voxel.CollisionApplied{
         identity: state.identity, collision_revision: r, transaction_seq: n,
         apply_tick: tick, changed_chunks: Enum.map(chunks, & &1.coord)})
       end
     end
   end
+  # 全局系统功能：同一 Player 顺序发送窗口和属性；属性不改变碰撞。
+  defp property_box(state, tick) do
+    domain = domain_at(state, tick)
+    extent = Voxel.Payload.extent() - 2
+    {low, high} = domain.bounds
+    {low |> Tuple.to_list() |> Enum.map(&floor(&1/extent)) |> List.to_tuple(),
+     high |> Tuple.to_list() |> Enum.map(&floor(&1/extent)) |> List.to_tuple()}
+  end
+
+  defp property_batch(state, value, complete, {low, high}) do
+    case Map.fetch(value, :property_context) do
+      :error -> :ok
+      {:ok, context} ->
+        rows = Map.get(value, :property_states, [])
+        epochs = for {{x,y,z}, epoch} <- Enum.sort(Map.get(value, :epochs, %{})), into: <<>>,
+          do: <<x::signed-32,y::signed-32,z::signed-32,epoch::64>>
+        states = Enum.map(rows, fn row ->
+          {:ok, bytes} = Voxel.Codec.encode({:voxel_property_state, row})
+          IO.iodata_to_binary(bytes)
+        end)
+        message = %Voxel.PropertyBatch{identity: state.identity,
+          transaction_seq: Map.get(value, :transaction_seq, Map.get(value, :seq)),
+          l0_min: low, l0_max_exclusive: high, complete: if(complete, do: 1, else: 0),
+          hp_enabled: if(context.hp_enabled, do: 1, else: 0), digest: context.digest,
+          thermal_enabled: if(context.thermal_enabled, do: 1, else: 0),
+          ambient_kelvin: context.ambient_kelvin, epochs: epochs, states: states}
+        reliable(state, :voxel, message)
+        Logger.info("voxel_property_batch seq=#{message.transaction_seq} complete=#{complete} states=#{length(rows)} epochs=#{div(byte_size(epochs),20)} body_bytes=#{byte_size(epochs)+Enum.sum(Enum.map(states,&byte_size/1))} box=#{inspect({low,high})}")
+    end
+  end
+
   defp enqueue_tail(state, deltas) do
     Enum.reduce(deltas, state, fn delta, s ->
       if delta.transaction_seq <= s.queued_seq do

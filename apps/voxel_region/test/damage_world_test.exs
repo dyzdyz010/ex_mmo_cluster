@@ -128,6 +128,46 @@ defmodule VoxelRegion.DamageWorldTest do
     World.tool_intent(c.w,actor,request)
   end
 
+  @tag :observation
+  test "完整附近属性快照在同一提交点声明默认值并排除远处状态", c do
+    assert {:ok, _} = World.apply_edit(c.w, {1,1,2}, 19)
+    assert {:ok, target} = World.tool_intent(c.w,c.actor,c.request)
+    assert {:ok, _} = b2_hit(c,c.actor,target,1)
+    ref = make_ref()
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{1,1,1}},self(),ref,false)
+    assert_receive {:canonical_snapshot,^ref,snapshot}
+    assert snapshot.property_context.digest == target.digest
+    assert snapshot.property_context.hp_enabled
+    assert [%{hp: 72.0,seq: seq}] = snapshot.property_states
+    assert seq == snapshot.transaction_seq
+    assert snapshot.epochs[{1,1,2}] == target.incarnation
+    ref = make_ref()
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{2,0,0},{3,1,1}},self(),ref,false)
+    assert_receive {:canonical_snapshot,^ref,far}
+    assert far.property_states == []
+    assert far.epochs == %{}
+    assert {:ok,_} = b2_hit(c,c.actor,target,2)
+    assert_receive {:canonical_delta,delta}
+    assert delta.transaction.property_states == []
+    assert delta.transaction_seq == World.seq(c.w)
+  end
+
+  @tag :observation
+  test "跨区域叶子使用完整权威汇总，删除仍通知只看到另一半的观察者", c do
+    assert {:ok,1} = World.place_prefab(c.w,c.id,{511,8,16},0)
+    for {ref,box} <- [{:left,{{0,0,0},{1,1,1}}},{:right,{{1,0,0},{2,1,1}}}] do
+      assert :ok = World.canonical_snapshot_and_subscribe(c.w,box,self(),ref,false)
+      assert_receive {:canonical_snapshot,^ref,snapshot}
+      assert [%{owner: {1,0},hp: hp,max_hp: hp}] = snapshot.property_states
+      assert hp == 200.0/512
+    end
+    assert {:ok,2} = World.remove_prefab(c.w,{1,0})
+    assert_receive {:canonical_delta,delta}
+    assert [%{owner: {1,0},flags: 1,hp: 0.0}] = delta.transaction.property_states
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{1,0,0},{2,1,1}},self(),:empty,false)
+    assert_receive {:canonical_snapshot,:empty,%{property_states: []}}
+  end
+
   @tag :b3
   test "B3 authority contact heating persists temperature with the B1 target and HP", c do
     data=Jason.decode!(File.read!(c.catalog))
@@ -707,8 +747,8 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,t}=World.tool_intent(c.w,c.actor,c.request)
     parent=self()
     observer=spawn(fn -> relay(parent) end)
-    # Two existing canonical stream subscribers; empty chunk boxes avoid unrelated collision work.
-    :sys.replace_state(c.w,fn s -> %{s | canonical_subs: %{parent=>{{0,0,0},{0,0,0}},observer=>{{0,0,0},{0,0,0}}}} end)
+    # 只测试：两个真实非空窗口，属性范围与碰撞范围遵守同一合同。
+    :sys.replace_state(c.w,fn s -> %{s | canonical_subs: %{parent=>{{0,0,0},{1,1,1}},observer=>{{0,0,0},{1,1,1}}}} end)
     for seq <- 1..4 do
       if seq>1,do: Process.sleep(510)
       assert {:ok,n}=attack(c.w,c.actor,c.request,t,seq)

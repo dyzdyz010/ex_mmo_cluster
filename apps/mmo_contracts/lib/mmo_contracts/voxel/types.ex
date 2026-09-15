@@ -57,3 +57,10 @@ defmodule MmoContracts.Voxel.CollisionWindow do
     :l0_min, :l0_max_exclusive, :travel_min_m, :travel_max_exclusive_m, :regions]
   defstruct @enforce_keys
 end
+
+defmodule MmoContracts.Voxel.PropertyBatch do
+  @moduledoc "全局系统功能：同一窗口与提交点的完整属性快照或状态增量。"
+  @enforce_keys [:identity, :transaction_seq, :l0_min, :l0_max_exclusive, :complete,
+    :hp_enabled, :digest, :thermal_enabled, :ambient_kelvin, :epochs, :states]
+  defstruct @enforce_keys
+end

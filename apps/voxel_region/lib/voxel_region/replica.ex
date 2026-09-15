@@ -58,6 +58,8 @@ defmodule VoxelRegion.Replica do
           regions: Map.new(snapshot.regions),
           chunks: Map.new(snapshot.chunks, &{&1.coord, &1}),
           damage: Map.new(Map.get(snapshot,:property_states,[]),&{VoxelRegion.Damage.key(&1),&1}),
+          property_context: Map.get(snapshot, :property_context),
+          epochs: Map.get(snapshot, :epochs, %{}),
           subscribers: %{},
           deltas: [],
           update_payload_bytes: 0
@@ -133,10 +135,10 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
-      snapshot = Map.put(snapshot,:property_states,Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end))
+      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs}) |> VoxelRegion.PropertyObservation.project(box)
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
-      {:reply, :ok, %{state | subscribers: Map.put_new(state.subscribers, pid, box)}}
+      {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, box)}}
     else
       {:reply, {:error, :outside_replica_region}, state}
     end
@@ -160,12 +162,14 @@ defmodule VoxelRegion.Replica do
     damage = Enum.reduce(Map.get(delta.transaction,:property_states,[]),state.damage,fn t,acc ->
       if t.flags==1,do: Map.delete(acc,VoxelRegion.Damage.key(t)),else: Map.put(acc,VoxelRegion.Damage.key(t),t)
     end)
-    state = %{state | damage: damage}
+    state = %{state | damage: damage, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
+      property_context: Map.get(delta.transaction,:property_context,state.property_context)}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(
         pid,
         {:canonical_delta,
-         %{delta | chunks: Enum.filter(delta.chunks, &CollisionSource.in_box?(&1.coord, box))}}
+         %{delta | transaction: VoxelRegion.PropertyObservation.project(delta.transaction,box),
+           chunks: Enum.filter(delta.chunks, &CollisionSource.in_box?(&1.coord, box))}}
       )
     end)
 

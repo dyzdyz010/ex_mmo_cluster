@@ -31,7 +31,11 @@ defmodule MmoContracts.Voxel.Codec do
       [apply_tick: :u64, identity: :identity, content_version: :u64,
        collision_revision: :u64, transaction_seq: :u64, l0_min: :coord,
        l0_max_exclusive: :coord, travel_min_m: :vec3, travel_max_exclusive_m: :vec3,
-       regions: {:array, :u32, :region}]}
+       regions: {:array, :u32, :region}]},
+    5 => {Voxel.PropertyBatch,
+      [identity: :identity, transaction_seq: :u64, l0_min: :coord, l0_max_exclusive: :coord,
+       complete: :bool, hp_enabled: :bool, digest: :hash, thermal_enabled: :bool,
+       ambient_kelvin: :f64, epochs: :bytes, states: {:array, :u32, :bytes}]}
   }
 
   @doc "新增 M1 Voxel envelope；既有 R6 入口和内嵌字节不变。"

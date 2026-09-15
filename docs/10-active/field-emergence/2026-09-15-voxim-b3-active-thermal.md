@@ -2,6 +2,14 @@
 
 分类：Global system 设计与实现记录；规模实验和 Demo 属 Test-only。
 
+## 附近观察续接（2026-09-15，实施中）
+
+按 Voxim R7 §5.4.1，先完成冷入场 HP，再接直接攻击与已有温度。复用 World 原子快照/订阅和可靠 voxel 流：属性批次携带会话、窗口、提交点、定义摘要、已启用默认值、稀疏状态及宏格 epoch；完整帧结束才替换确认副本，随后消费有序增量。最低层 occurrence 继续由 World 的 property_state/component_max_hp 结算，相关性取实际占用区域；删除取提交前后区域并集。Replica 只投影这些不可变结果。无关事务仍传递进度。观察客户端移至现有世界复制 owner，HUD 只读。
+
+依据：[etcd API guarantees](https://etcd.io/docs/v3.5/learning/api_guarantees/) 的 revision 与有序完整 watch，适用于快照 N 加 N 之后变化的接缝；这里不引入 etcd、另一日志或新订阅框架。可观测面：批次范围/N/状态数/字节/接纳时间、就绪后 HP、查询数、缓存释放、输入及 HUD 时刻。验证覆盖冷默认与受损、跨区叶子、删除/替换、进出窗口、迟到与跨 Scene、双端及恢复；按可运行增量推进。
+
+性能评估覆盖 scene/world 的生成、模拟、事务与观察。现有两个 app 已依赖 Rustler 0.37.3，生成使用 DirtyCpu。依据 [ERTS NIF 官方文档](https://www.erlang.org/doc/apps/erts/erl_nif.html) 与 [Rustler nif](https://docs.rs/rustler/latest/rustler/attr.nif.html)：超过约 1 ms 的 CPU 内核应使用 DirtyCpu；它不会自动解除调用 World 的等待。先测数值 Map/编码拷贝、回调/排队、持久化及广播，再决定连续数组内核或有界计算任务；计算只输入不可变 canonical 数据并返回结果，World 仍校验身份/版本、持久化、确认。不迁移旧通用 FieldRuntime，不把未来天气需求当成先造框架的理由。
+
 目标：保持既有守恒导热、50 ms 步进、先持久后确认及旧世界恢复语义，让小热区计算不再随历史损伤记录数量增长。先在独立 B3 实例恢复已有玩家结构并加热，再补规模与编辑失效验证。
 
 依据：[OpenVDB 官方 Overview](https://www.openvdb.org/documentation/doxygen/overview.html) 的 Active and Inactive Voxels / active-only iterators：活动标志与保存的值分离，只遍历有兴趣的单元。这里仅采纳活动集合与数值分离的组织方法，不引入 OpenVDB、树网格或新的世界真值。几何摘要按实际编辑及相邻面失效，沿 World 现有几何提交接缝维护；热公式仍使用首片的守恒通量离散。
@@ -21,3 +29,11 @@
 完整说明和可复现工具在 Voxim 的 Docs/R7/B3-active-thermal.md、Docs/R7/tools/b3_active_scale.{py,exs}、b3_active_measure.py。原始证据在 Voxim Saved/R7/B3/active-* 及 Server/active-scale/results.json；最终编译及旧 beam 备份在 Server/active-build-final。客户端实际二进制为 5b86388，服务端为 28c92774 加本增量。仅部署 B3，未触碰青岚关卡、文件或容器。
 
 后续修正（2026-09-15）：上文唯一失败已修复。将 B2 的 Ready 前库存查询和作者权限拒绝用例移到 Gate 的 `voxim_production_dispatch_test.exs`，保留真实 Dispatch/Sink/World 与原始断言，仅以空世界启动夹具替代无关损伤夹具。不添加 voxel_region → gate_server 依赖。依据是现有两 app 的 mix.exs 依赖方向与 Gate 会话层 README 的职责归属，运行时未改。各自 app 下以 MMO_DB_PORT=5433、--no-start --seed 0 运行：Gate 迁移用例 1 通过，World 原损伤文件剩余 44 项全部通过。日志位于 Voxim Saved/R7/B3/b2-dispatch-fix-{gate,world}.log；无需重部署或重跑未受影响的双客户端热实验。
+
+## 附近属性增量与模拟内核评估（2026-09-15）
+
+分类：Global system实现与Test-only验证记录。World原子canonical快照/增量新增property_context与宏格epoch；PropertyObservation按完整XYZ窗口筛选宏格及完整叶子汇总，删除保留旧占用范围。Replica保留上下文、身份与按新窗口更新订阅；Player用新M1 kind5 PropertyBatch在同一可靠流发布，完整帧是完成边界。无订阅者不构造观察投影，热活动不受玩家观察控制。未改变持久化先于确认及停机不补算。
+
+独立voxim-b3-demo双端已冷入场直接读HP/温度、零自动查询直接攻击、271次热提交共1355条双端完全相同；最终两次攻击破坏、回收512、付费原位重建，重建epoch3354/HP100，平衡seq3355。服务端重启前后HP/温度、能量、库存、占用及epoch相同。World测试46通过，Player/transfer9通过，新协议261B跨语言golden通过；UE8项相关用例通过。详情与可复现工具/限制见Voxim `Docs/R7/B3-observation.md`。真实步行窗口退出/重进、远隔玩家及独占性能仍待验收；固定范围Demo不替代这些门槛。
+
+Rustler已存在，建议下一步做连续节点/边数组与批量十步内核实验，尚未部署热NIF。独立VM插桩：1万活动格批总耗时中位1114.943ms、Thermal.step中位573.871ms，其余逐批相减中位541.072ms，所有温度与原路径相同；假日志、无广播、共享机器，不作独占容量验收。只搬算术即使理想零耗时也难满足500ms。世界参数/场模拟仍归服务端scene/world；需一并测状态组织、拷贝、World接纳/落盘/广播及邮箱等待。DirtyCpu不解除调用World的等待；若用有界计算任务，输入不可变、结果按身份/版本接纳，唯一authority先持久后确认。不要引入第二世界真值或为未来场类型预建框架。

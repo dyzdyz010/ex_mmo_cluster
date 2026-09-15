@@ -758,7 +758,7 @@ defmodule VoxelRegion.World do
       log_done = System.monotonic_time(:microsecond)
       state = %{state | entries: Map.put(state.entries,state.seq,txn)}
       fanout(state,txn)
-      fanout_canonical(state,txn,chunks,keys)
+      fanout_canonical(state,txn,chunks,keys,before)
       Logger.info("voxel_prefab seq=#{state.seq} cells=#{length(cells)} regions=#{region_count} structure_cells=#{length(structure_cells)} " <>
         "state_structure_us=#{structure_done-started} regions_us=#{regions_done-structure_done} " <>
         "collision_us=#{collision_done-regions_done} log_us=#{log_done-collision_done} " <>
@@ -1032,10 +1032,63 @@ defmodule VoxelRegion.World do
       end) |> Enum.sort_by(& &1.coord)), else: []
       snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
         l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
-      snapshot = Map.put(snapshot,:property_states,Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end))
+      snapshot = Map.merge(snapshot, property_snapshot(state, box))
       Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
       {:ok, snapshot, state}
     end
+  end
+
+  # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
+  defp property_context(state) do
+    %{hp_enabled: state.properties != nil,
+      digest: if(state.properties, do: state.properties.digest, else: <<0::256>>),
+      thermal_enabled: state.thermal != nil,
+      ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)}
+  end
+
+  defp component_observations(%{properties: nil}, _box), do: []
+  defp component_observations(state, box) do
+    owners = for {cell, slots} <- state.refined,
+      box == nil or VoxelRegion.PropertyObservation.contains?(cell, box),
+      {slot, {material, {birth, _} = owner}} <- slots, into: %{} do
+      {owner, %{micro: Prefab.micro_coord(cell, slot), granularity: 2,
+        incarnation: birth, owner: owner, material: material}}
+    end
+    Enum.map(owners, fn {owner, target} ->
+      property_state(state, target)
+      |> Map.put(:observation_cells, subtree_cells(state, MapSet.new([owner])))
+    end)
+  end
+
+  defp property_snapshot(state, box) do
+    macros = for {_, t} <- state.damage, t.granularity == 0,
+      VoxelRegion.PropertyObservation.relevant?(t, box), do: %{t | seq: state.seq, request_id: 0}
+    %{property_states: macros ++ component_observations(state, box),
+      property_context: property_context(state), epochs: state.epochs}
+    |> VoxelRegion.PropertyObservation.project(box)
+  end
+
+  defp property_transaction(before, state, txn) do
+    # 几何变化发布统一叶子汇总；删除保留提交前实际占用范围。
+    changed_owners = if Map.get(txn, :entries, []) == [], do: MapSet.new(), else:
+      MapSet.new(for cell <- Enum.uniq(Map.keys(before.refined) ++ Map.keys(state.refined)),
+        Map.get(before.refined,cell) != Map.get(state.refined,cell),
+        {_,{_,owner}} <- Map.to_list(Map.get(before.refined,cell,%{})) ++ Map.to_list(Map.get(state.refined,cell,%{})),
+        do: owner)
+    fresh = if MapSet.size(changed_owners) == 0, do: [], else:
+      Enum.filter(component_observations(state, nil), &MapSet.member?(changed_owners, &1.owner))
+    removed = if MapSet.size(changed_owners) == 0, do: [], else:
+      component_observations(before, nil)
+      |> Enum.filter(&(MapSet.member?(changed_owners, &1.owner) and not Map.has_key?(state.instances, &1.owner)))
+      |> Enum.map(&%{&1 | seq: state.seq, hp: 0.0, flags: 1, request_id: 0})
+    rows = removed ++ Map.get(txn, :property_states, []) ++ fresh
+    rows = rows |> Map.new(&{Damage.key(&1), &1}) |> Map.values() |> Enum.map(fn
+      %{granularity: 2} = row ->
+        cells = subtree_cells(before, MapSet.new([row.owner])) ++ subtree_cells(state, MapSet.new([row.owner]))
+        Map.put(row, :observation_cells, Enum.uniq(cells))
+      row -> row
+    end)
+    Map.merge(txn, %{property_states: rows, property_context: property_context(state)})
   end
 
   # Capture both versions while the pre-commit state still exists. Never sample after fanout.
@@ -1054,13 +1107,17 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp fanout_canonical(state, %{coord: _} = entry, chunks, keys) do
-    fanout_canonical(state, Map.merge(%{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse},Map.take(entry,[:property_states,:epochs])), chunks, keys)
+  defp fanout_canonical(%{canonical_subs: subs, replica_subs: replicas}, _txn, _chunks, _keys, _before)
+       when map_size(subs) == 0 and map_size(replicas) == 0, do: :ok
+
+  defp fanout_canonical(state, %{coord: _} = entry, chunks, keys, before) do
+    fanout_canonical(state, Map.merge(%{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse},Map.take(entry,[:property_states,:epochs])), chunks, keys, before)
   end
 
-  defp fanout_canonical(state, transaction, chunks, keys) do
+  defp fanout_canonical(state, transaction, chunks, keys, before) do
+    transaction = property_transaction(before, state, transaction)
     Enum.each(state.canonical_subs, fn {pid, box} ->
-      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: VoxelRegion.PropertyObservation.project(transaction, box),
         chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
       send(pid, {:canonical_delta, delta})
     end)
@@ -1087,7 +1144,7 @@ defmodule VoxelRegion.World do
     end)
     Enum.each(state.replica_subs, fn {pid, box} ->
       wanted = MapSet.new(CollisionSource.regions(box))
-      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: transaction,
+      delta = %CanonicalDelta{transaction_seq: state.seq, transaction: VoxelRegion.PropertyObservation.project(transaction, box),
         chunks: Enum.filter(chunks, &CollisionSource.in_box?(&1.coord, box))}
       send(pid, {:canonical_replica_delta, delta, Enum.filter(regions, &MapSet.member?(wanted, elem(&1, 0)))})
     end)
@@ -1261,7 +1318,7 @@ defmodule VoxelRegion.World do
             appended = System.monotonic_time(:microsecond)
             state = %{state | entries: Map.put(state.entries,state.seq,txn)}
             fanout(state,txn)
-            fanout_canonical(state,txn,collision_chunks,region_keys(changed))
+            fanout_canonical(state,txn,collision_chunks,region_keys(changed),before)
             Logger.info("voxel_macro_stages seq=#{state.seq} reduce_us=#{reduced-started} l0_cache_us=#{cached-reduced} structure_us=#{structured-cached} regions_us=#{imaged-structured} collision_us=#{collided-imaged} log_us=#{appended-collided} fanout_us=#{System.monotonic_time(:microsecond)-appended}")
             region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
             Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
@@ -1535,7 +1592,7 @@ defmodule VoxelRegion.World do
     persisted=System.monotonic_time(:microsecond)
     state=%{state | entries: Map.put(state.entries,state.seq,txn)}
     fanout(state,txn)
-    fanout_canonical(state,txn,[],[])
+    fanout_canonical(state,txn,[],[],state)
     bytes=Enum.reduce(rows,0,fn t,n->{:ok,b}=Codec.encode({:voxel_property_state,t});n+IO.iodata_length(b) end)
     Logger.info("voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} state_bytes=#{bytes} persist_us=#{persisted-start} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}")
     state
@@ -1596,7 +1653,7 @@ defmodule VoxelRegion.World do
             :ok ->
               state = %{state | entries: Map.put(state.entries,state.seq,txn)}
               fanout(state,txn)
-              fanout_canonical(state,txn,[],[])
+              fanout_canonical(state,txn,[],[],state)
               Logger.info("voxel_damage seq=#{state.seq} target=#{inspect(target.micro)} material=#{target.material} hp=#{target.hp} max_hp=#{target.max_hp} geometry=false")
               {:reply,{:ok,state.seq},state}
             {:error,reason} -> {:reply,{:error,reason},before}
