@@ -228,6 +228,10 @@ defmodule T1TransportTest do
     assert {last, _} = receive_movement(conn)
     assert last == %{snapshot | records: Enum.drop(records, 2)}
     stats = GenServer.call(sink, :stats)
+    # 实际发送快照后，路径探测仍不得越过已复现分片串包的 IP 包长边界。
+    {:ok, native_stats} = stats.quic
+    {_, path_mtu} = List.keyfind(native_stats, ~c"Send.PathMtu", 0)
+    assert path_mtu <= 1252
     assert stats.datagrams_sent == 2
     assert stats.snapshot_records_sent == 3
     assert stats.snapshot_datagrams_sent == 2

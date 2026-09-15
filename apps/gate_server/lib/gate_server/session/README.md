@@ -59,6 +59,20 @@ UDP 快车道，就是 `fast_lane: :unsupported`，由共享 dispatch 显式回�
 
 ## Voxim M3 QUIC 快照合包
 
+### 公网 QUIC 包长约束（全局系统功能）
+
+`Transport.QuicListener` 在创建 MsQuic 配置时统一设置 `minimum_mtu=1248`、`maximum_mtu=1252`（IP 包长；IPv4 UDP 载荷最多 1224 B），
+并在 listener 启动日志记录端口与该值。新连接、重新连接和服务重启均从这一处取得限制，包含 PMTU 探测与正常数据发送。
+可靠 Control / Voxel 流由 QUIC 自动分包；下面的 DATAGRAM 队列仍使用 native 通知的 `dgram_max_len`，不复制一个应用层包长常量。
+
+依据 [RFC 9000 §14](https://www.rfc-editor.org/rfc/rfc9000.html#section-14) 的避免 IP 分片要求，以及
+[MsQuic Settings](https://github.com/microsoft/msquic/blob/main/docs/Settings.md) 对 `MaximumMtu`（含 IP / UDP 头）的定义。
+2026-09-15 公网实测大包 DF 被清除，重复 IPv4 ID 导致不同 UDP 包头尾错拼；1252 → 1500 → 1252 的真实 Mixed TUN
+入场对照分别收到 0 / 619 / 0 个校验错误包。详见 Voxim `Docs/Playtest/udp-path-investigation.md`。
+该约束以每份数据需要更多 UDP 包为代价，保证当前已复现路径上的可靠传输；不修改消息格式、世界语义、发布频率或重试策略。
+初始 MTU 显式使用 QUIC 1200 B 最小载荷加 IPv6 / UDP 头的 1248 B，避免仅限制探测上限时握手仍使用库的较大默认初始值。
+Voxim 的 `FMmoQuicConnection` 同时限制客户端初始 / 最大 MTU，覆盖双向握手与上行探测；只改服务端的版本曾捕获到 1260 B UDP 握手包，因此配套客户端必须一并使用新的传输配置。
+
 入场时 listener 调用 `Scene.join/4`，将返回的唯一 Player PID 随 identity 交给连接保存。
 此后 InputBatch、Ready 与 TimeProbe 直接走 `SceneServer.Movement.Player` 的公开 API；
 不会逐输入经过 Scene 邮箱。Scene.leave 仍负责撤销成员，listener 先旧 leave 后新 join，
