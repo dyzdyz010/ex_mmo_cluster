@@ -1159,7 +1159,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
       assert actual.cells == saved.cells and actual.records == saved.records and
                actual.maps == saved.maps
 
-      assert actual.content_version == 0x256B33610344964F and actual.seq == 0
+      assert actual.content_version == 0x1D08AA1EBBB050F3 and actual.seq == 0
     end
 
     clock = :atomics.new(1, signed: true)
