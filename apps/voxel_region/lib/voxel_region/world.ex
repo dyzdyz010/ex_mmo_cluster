@@ -1328,6 +1328,7 @@ defmodule VoxelRegion.World do
               {%{txn | entries: txn.entries++afterimages},state}
             end
             {state,metadata} = damage_geometry(before,state,Enum.map(changed,&elem(&1,1)),true)
+            {state,metadata} = install_material_sources(before,state,metadata,Enum.map(changed,&elem(&1,1)))
             imaged = System.monotonic_time(:microsecond)
             txn = Map.merge(txn,metadata) |> Map.merge(settlement)
             with {:ok, collision_chunks} <- canonical_changes(before, state, changed),
@@ -1348,6 +1349,27 @@ defmodule VoxelRegion.World do
 
   defp needs_source?(state,key),
     do: not Map.has_key?(state.region_bases,key) and not Map.has_key?(state.decoded,key)
+
+  # B3 player-built heaters are ordinary canonical materials whose published
+  # material properties declare finite power and stored energy.
+  defp install_material_sources(_before,state,metadata,_cells) when state.thermal == nil, do: {state,metadata}
+  defp install_material_sources(before,state,metadata,cells) do
+    sources = Enum.reduce(cells,state.thermal.sources,fn cell,all ->
+      micro=cell |> Tuple.to_list() |> Enum.map(&(&1*@micro)) |> List.to_tuple()
+      {target,state}=target_at(micro,state)
+      if target != nil and target.granularity==0 do
+        props=Map.fetch!(state.properties.materials,target.material)
+        power=Map.get(props,"heat_source_power_w",0.0)
+        energy=Map.get(props,"heat_source_energy_j",0.0)
+        old=Map.get(before.thermal.sources,cell)
+        if power>0.0 and energy>0.0 and old==nil, do: Map.put(all,cell,%{target: target,power_w: power,remaining_j: energy}), else: all
+      else
+        Map.delete(all,cell)
+      end
+    end)
+    thermal=%{state.thermal | sources: sources,active: map_size(sources)>0}
+    {%{state | thermal: thermal},Map.put(metadata,:thermal,thermal)}
+  end
 
   # 宏格编辑已排除refined cell，故L0细节后缀未变；仅更新已有热缓存，冷缺失仍由真值物化。
   defp refresh_macro_payloads(before,state,changed) do
