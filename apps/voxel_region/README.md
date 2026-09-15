@@ -1,5 +1,13 @@
 # Voxim Region 真值
 
+2026-09-15 R7-B3 热传递首片：`Thermal` 是全局系统功能，只消费 canonical 派生的普通宏格六面接触摘要；
+温度复用 World 的 B1 身份、稀疏属性状态、overlay 日志和确认流。50 ms 显式步进，500 ms 批量权威提交，
+同步持久化后广播；只有过热归零才在同一宏格事务中删除占用，不发放采掘奖励。
+`World.thermal_experiment/2` 是只测试的有限供能作者入口，不开放给玩家 Gate；Qinglan 不依赖它。
+独立双客户端、真实重启、节奏与成本测量、范围边界见 [B3 首片记录](../../../Voxim/Docs/R7/B3-first-slice.md)。
+数值方案沿用 [NIST FiPy 显式扩散示例](https://github.com/usnistgov/fipy/blob/master/examples/diffusion/mesh1D.py)
+的守恒离散与步长稳定性约束；这里仅采用普通宏格接触模型，不引入 FiPy 或通用场框架。
+
 2026-09-13：R7-B1 已验收收口。权威局部损伤、正常攻击节奏、双客户端一致性、持久化恢复及四项代码审查修复均已完成；最终结论见 [B1修复与复验](../../../Voxim/Docs/R7/B1-fixes.md)。宏格输入到上屏最慢约496ms，满足500ms门槛但余量较小；R6稳定120FPS欠账保留，B2–B7未开始。
 
 2026-09-13 B1 代码审查删减：`Payload.encode` 在空CSR首次加入非均匀表皮时，由新记录恢复输出贴图尺寸；读取旧贴图池仍使用原尺寸。已删除尺寸不符时改成单色的兜底，L1的2×2与L2的4×4纹理、连续缓存编辑以及World编辑→HTTP→文件重放均有回归。这里遵循已有 `Reducer.skin_extent` / skins记录的尺寸合同，不新增层级尺寸规则或重采样。Replica内部直接消费初始化保证的 `state.damage`；旧外部几何事务仍可不携带损伤字段。阶段专用 `World.upgrade_b1` 已移除，部署和作者发布统一调用 `publish_properties`，已有损伤的属性版本约束保留。验证入口 `python tools/test_voxim_b1.py --out .demo/observe/b1-simplify-final`，28项通过；实际部署、客户端与重启证据统一见 [B1修复与复验](../../../Voxim/Docs/R7/B1-fixes.md)。下文为先前各轮定位记录。

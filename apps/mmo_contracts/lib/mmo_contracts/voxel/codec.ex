@@ -183,9 +183,13 @@ defmodule MmoContracts.Voxel.Codec do
   def encode({:voxel_property_state,t}) do
     {x,y,z}=t.micro
     {birth,occurrence}=t.owner
+    temperature=case Map.fetch(t,:temperature_kelvin) do
+      {:ok,value} -> <<value::float-64>>
+      :error -> <<>>
+    end
     {:ok,<<0x7E, t.request_id::64, t.seq::64, x::signed-64,y::signed-64,z::signed-64,
       t.granularity::8,t.incarnation::64,birth::64,occurrence::32,t.material::16,
-      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8>>}
+      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do

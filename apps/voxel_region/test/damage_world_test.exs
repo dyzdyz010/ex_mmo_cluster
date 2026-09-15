@@ -128,6 +128,107 @@ defmodule VoxelRegion.DamageWorldTest do
     World.tool_intent(c.w,actor,request)
   end
 
+  @tag :b3
+  test "B3 authority contact heating persists temperature with the B1 target and HP", c do
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m ->
+      if m["material_id"]==19,do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>294.0}),else: m
+    end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
+    assert :ok=World.publish_properties(c.w,c.catalog)
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    assert {:ok,_}=World.apply_edit(c.w,{4,1,2},19)
+    experiment=Path.join(Keyword.fetch!(c.opts,:root),"thermal.json")
+    File.write!(experiment,Jason.encode!(%{classification: "Test-only",source_macro: [1,1,2],ambient_kelvin: 293.15,
+      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,power_w: 10000.0,energy_j: 10000.0}))
+    assert :ok=World.thermal_experiment(c.w,experiment)
+    Process.sleep(650)
+    assert {:ok,a}=World.tool_intent(c.w,c.actor,c.request)
+    assert a.temperature_kelvin>293.15 and a.hp<a.max_hp
+    rows=World.entries_after(c.w,3) |> Enum.flat_map(&Map.get(&1,:property_states,[]))
+    b=Enum.find(rows,&(&1.micro=={16,8,16}))
+    assert b.temperature_kelvin>293.15
+    refute Enum.any?(rows,&(&1.micro=={32,8,16}))
+    seq=World.seq(c.w)
+    thermal=:sys.get_state(c.w).thermal
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.seq(w)==seq
+    assert {:ok,recovered}=World.tool_intent(w,c.actor,c.request)
+    assert recovered.temperature_kelvin==a.temperature_kelvin
+    assert recovered.hp==a.hp
+    assert recovered.incarnation==a.incarnation
+    assert :sys.get_state(w).thermal==thermal
+  end
+
+  defp b3_experiment(c,energy,power,cell \\ {1,1,2}) do
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m ->
+      if m["material_id"]==19,do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>294.0}),else: m
+    end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
+    :ok=World.publish_properties(c.w,c.catalog)
+    {:ok,_}=World.apply_edit(c.w,cell,19)
+    path=Path.join(Keyword.fetch!(c.opts,:root),"thermal.json")
+    File.write!(path,Jason.encode!(%{classification: "Test-only",source_macro: Tuple.to_list(cell),ambient_kelvin: 293.15,
+      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,power_w: power,energy_j: energy}))
+    :ok=World.thermal_experiment(c.w,path)
+  end
+
+  defp b3_tick(w) do
+    send(w,:thermal_commit)
+    :sys.get_state(w)
+  end
+
+  @tag :b3
+  test "B3 canonical contact crosses region 63 to 64 with state-only transactions", c do
+    b3_experiment(c,10000.0,10000.0,{63,1,2})
+    {:ok,_}=World.apply_edit(c.w,{64,1,2},19)
+    seq=World.seq(c.w)
+    state=b3_tick(c.w)
+    assert Enum.any?(state.damage,fn {_,t}->t.micro=={512,8,16} and t.temperature_kelvin>293.15 end)
+    assert Enum.all?(World.entries_after(c.w,seq),&(&1.entries==[] and &1.coarse==[]))
+  end
+
+  @tag :b3
+  test "B3 equilibrium retains sparse temperature and contact edit reactivates it", c do
+    b3_experiment(c,1.0,100.0)
+    state=b3_tick(c.w)
+    refute state.thermal.active
+    assert map_size(state.damage)==1
+    assert hd(Map.values(state.damage)).temperature_kelvin>293.15
+    assert b3_tick(c.w).seq==state.seq
+    assert {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    assert :sys.get_state(c.w).thermal.active
+    assert map_size(:sys.get_state(c.w).damage)==1
+  end
+
+  @tag :b3
+  test "B3 replacement invalidates the finite source token and never inherits temperature", c do
+    b3_experiment(c,10000.0,10000.0)
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    state=b3_tick(c.w)
+    assert state.thermal.sources==%{} and state.thermal.supplied_j==0.0
+    assert state.damage==%{}
+  end
+
+  @tag :b3
+  test "B3 lethal temperature and canonical removal commit together without material rewards", c do
+    b3_experiment(c,1.0e7,1.0e7)
+    seq=World.seq(c.w)
+    state=b3_tick(c.w)
+    assert state.damage==%{} and state.material_balances==%{}
+    [txn]=World.entries_after(c.w,seq)
+    assert txn.entries != []
+    assert Enum.all?(txn.property_states,&(&1.hp==0.0 and &1.flags==1))
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).damage==%{}
+    assert {:error,:no_target}=World.tool_intent(w,c.actor,c.request)
+  end
+
   defp full_component(c,anchor) do
     cells=for x<-0..7,y<-0..7,z<-0..7,into: <<>>,do:
       <<x::signed-little-32,y::signed-little-32,z::signed-little-32,if(x<4,do: 11,else: 19)::16-little>>

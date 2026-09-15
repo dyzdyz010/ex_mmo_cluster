@@ -18,7 +18,7 @@ defmodule VoxelRegion.OverlayLog do
   @callback checkpoint(handle :: term(), transaction :: map()) :: :ok
 
   @doc "事务 → 行（legacy 裸条目先归一成事务）。"
-  def rows(%{seq: seq, coord: _} = legacy), do: rows(Map.merge(%{seq: seq, entries: [%{legacy | coarse: []}], coarse: legacy.coarse}, Map.take(legacy,[:property_states,:epochs,:material_balances])))
+  def rows(%{seq: seq, coord: _} = legacy), do: rows(Map.merge(%{seq: seq, entries: [%{legacy | coarse: []}], coarse: legacy.coarse}, Map.take(legacy,[:property_states,:epochs,:material_balances,:thermal])))
 
   def rows(%{seq: seq, entries: entries, coarse: coarse}=txn) do
     entry_rows =
@@ -38,7 +38,7 @@ defmodule VoxelRegion.OverlayLog do
         %{seq: seq, kind: 2, level: c.level, region: region_of(c.cell), payload: IO.iodata_to_binary(Codec.encode_coarse(c))}
       end)
 
-    metadata = Map.take(txn,[:property_states,:epochs,:material_balances])
+    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:thermal])
     state_rows = if map_size(metadata)>0, do: [%{seq: seq,kind: 3,level: 0,region: {0,0,0},
       payload: :erlang.term_to_binary(metadata)}],else: []
     (entry_rows ++ coarse_rows ++ state_rows) |> Enum.with_index() |> Enum.map(fn {row, ordinal} -> Map.put(row, :ordinal, ordinal) end)
