@@ -11,7 +11,11 @@ defmodule VoxelRegion.Thermal do
 
   @doc "单个显式步进：守恒传热、有限供能和环境交换，返回能量账及温度。量纲为 J、s、K。"
   def step(nodes, sources, config, dt) do
-    edges=contacts(nodes)
+    step(nodes,sources,config,dt,contacts(nodes))
+  end
+
+  @doc "复用占用未变时的派生接触对；数值与状态仍由本次输入决定。"
+  def step(nodes, sources, config, dt, edges) do
     flows=Enum.reduce(edges,%{},fn {a,b},sum ->
       na=Map.fetch!(nodes,a); nb=Map.fetch!(nodes,b)
       ka=na.material["thermal_conductivity"]; kb=nb.material["thermal_conductivity"]

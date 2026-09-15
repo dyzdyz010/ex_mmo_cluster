@@ -182,6 +182,58 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b3
+  test "B3 reuses geometry but reads current HP; deleting contact invalidates exposed faces", c do
+    b3_experiment(c,10000.0,1000.0)
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    first=b3_tick(c.w)
+    assert first.thermal_work.geometry[{1,1,2}].exposed_faces==5
+    second=b3_tick(c.w)
+    assert second.thermal_work.builds==0
+    assert second.thermal_work.edges==[{{1,1,2},{2,1,2}}]
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},0)
+    after_edit=b3_tick(c.w)
+    assert after_edit.thermal_work.builds>0
+    assert after_edit.thermal_work.geometry[{1,1,2}].exposed_faces==6
+    assert after_edit.thermal_work.edges==[]
+    assert Enum.all?(after_edit.damage,fn {_,t}->t.micro=={8,8,16} end)
+  end
+
+  defmodule ThermalProbeLog do
+    # 只测试：比较两条数值路径时，不向夹具日志写入相互竞争的历史。
+    def append(_,txn), do: (send(self(),{:thermal_probe_txn,txn}); :ok)
+  end
+
+  @tag :b3
+  test "B3 cached and rebuilt topology produce the same evolving front and damage", c do
+    b3_experiment(c,10000.0,10000.0,{63,1,2})
+    {:ok,_}=World.apply_edits(c.w,(for x<-64..68,do: {{x,1,2},19}))
+    state=b3_tick(c.w)
+    state=%{state | log: {ThermalProbeLog,nil},subs: %{},canonical_subs: %{},replica_subs: %{}}
+    Enum.reduce(1..8,state,fn _,s ->
+      {:noreply,warm}=World.handle_info(:thermal_commit,s)
+      cold=put_in(s.thermal_work.geometry,%{})
+      {:noreply,cold}=World.handle_info(:thermal_commit,cold)
+      assert warm.damage==cold.damage
+      assert warm.thermal==cold.thermal
+      warm
+    end)
+  end
+
+  @tag :b3
+  test "B3 replay rebuilds the active index and discards all geometry summaries", c do
+    b3_experiment(c,10000.0,1000.0)
+    before=b3_tick(c.w)
+    assert MapSet.size(before.thermal_work.hot)>0
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    recovered=:sys.get_state(w)
+    assert recovered.damage==before.damage
+    assert recovered.thermal_work.hot==before.thermal_work.hot
+    assert recovered.thermal_work.geometry==%{}
+    assert b3_tick(w).thermal_work.builds>0
+  end
+
+  @tag :b3
   test "B3 canonical contact crosses region 63 to 64 with state-only transactions", c do
     b3_experiment(c,10000.0,10000.0,{63,1,2})
     {:ok,_}=World.apply_edit(c.w,{64,1,2},19)
