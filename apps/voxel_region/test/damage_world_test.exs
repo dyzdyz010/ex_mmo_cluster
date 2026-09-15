@@ -573,24 +573,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert balance(c.w,1001).balance==0
   end
 
-  @tag :b2
-  test "B2 balance query uses authenticated cid before movement Ready; author bypasses stay closed", c do
-    alias GateServer.Session.{Dispatch,Sink}
-    state=%{status: :in_scene,voxim_overlay: true,cid: 1001,world_ref: c.w,
-      sink: Sink.quic(self(),:session),builder: false}
-    request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,coord: {0,0,0},tool_id: 1}
-    assert {:ok,^state}=Dispatch.handle({:voxel_production_intent,request},state)
-    assert_receive {:mmo_voxel_bytes,:session,<<0x81,1::64,0::64,19::16,0::64,512::32>>}
-    assert_receive {:mmo_voxel_bytes,:session,<<0x81,1::64,0::64,11::16,0::64,512::32>>}
-    for kind <- [:voxel_edit_intent,:voxel_batch_edit_intent,:voxel_prefab_place_v1,
-      :voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
-      assert {:ok,^state}=Dispatch.handle({kind,request},state)
-      assert_receive {:mmo_voxel_bytes,:session,bytes}
-      assert :binary.match(bytes,"builder_permission_required") != :nomatch
-    end
-    assert World.seq(c.w)==0 and balance(c.w,1001).balance==0
-  end
-
   test "HTTP materialization preserves reduced textures after editing an empty coarse region", c do
     assert {:ok,1}=World.apply_edits(c.w,[{{1,1,2},11},{{0,1,2},19}])
     expected=for {{level,cell},value} <- :sys.get_state(c.w).overlay,

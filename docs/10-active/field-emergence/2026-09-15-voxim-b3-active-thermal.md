@@ -19,3 +19,5 @@
 验证：在 apps/voxel_region，MMO_DB_PORT=5433，mix test test/damage_world_test.exs --only b3 --no-start --seed 0 为 8 通过；test/thermal_test.exs 为 3 通过；damage_world_test.exs 全文件 44/45，唯一失败为既有 B2 缺失 GateServer.Session.Sink.quic/2。新增测试覆盖局部失效、热前沿缓存/强制重建数值一致、热中恢复活动索引。
 
 完整说明和可复现工具在 Voxim 的 Docs/R7/B3-active-thermal.md、Docs/R7/tools/b3_active_scale.{py,exs}、b3_active_measure.py。原始证据在 Voxim Saved/R7/B3/active-* 及 Server/active-scale/results.json；最终编译及旧 beam 备份在 Server/active-build-final。客户端实际二进制为 5b86388，服务端为 28c92774 加本增量。仅部署 B3，未触碰青岚关卡、文件或容器。
+
+后续修正（2026-09-15）：上文唯一失败已修复。将 B2 的 Ready 前库存查询和作者权限拒绝用例移到 Gate 的 `voxim_production_dispatch_test.exs`，保留真实 Dispatch/Sink/World 与原始断言，仅以空世界启动夹具替代无关损伤夹具。不添加 voxel_region → gate_server 依赖。依据是现有两 app 的 mix.exs 依赖方向与 Gate 会话层 README 的职责归属，运行时未改。各自 app 下以 MMO_DB_PORT=5433、--no-start --seed 0 运行：Gate 迁移用例 1 通过，World 原损伤文件剩余 44 项全部通过。日志位于 Voxim Saved/R7/B3/b2-dispatch-fix-{gate,world}.log；无需重部署或重跑未受影响的双客户端热实验。

@@ -22,6 +22,11 @@
 体素意图的执行管线在 `../voxel/`（`intent_pipeline.ex` / `prefab_placement.ex` /
 `result_frame.ex` / `subscribe_intent.ex`），由 `dispatch.ex` 调用。
 
+B2 的 Ready 前材料库存查询与作者权限拒绝测试属于本会话边界，位于
+`test/gate_server/voxim_production_dispatch_test.exs`（只测试）。它调用真实 Dispatch、Sink 和 World，
+利用 Gate 已有的 `voxel_region` 依赖，不让 World 测试反向依赖 Gate。
+在 `apps/gate_server` 执行 `MMO_DB_PORT=5433 mix test test/gate_server/voxim_production_dispatch_test.exs --no-start --seed 0`。
+
 ## state 契约
 
 `Dispatch.handle/2` 只读写下列键，不碰传输私有字段（socket / owner_pid / egress / udp_peer）：
