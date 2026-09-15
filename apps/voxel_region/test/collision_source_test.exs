@@ -130,6 +130,10 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, 11}])
     snapshot(world)
     Application.put_env(:voxel_region, :w1_prepare_barrier, {0, {-1, 7, -1}})
+    # 只测试：制造真正的载荷 miss，才需要经过来源预备屏障。
+    :sys.replace_state(world, fn state ->
+      %{state | payloads: Map.delete(state.payloads, {0, {-1, 7, -1}})}
+    end)
     Application.put_env(:voxel_region, :w1_prepare_observer, self())
     subscriber = self()
     request = make_ref()
@@ -179,7 +183,9 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert occupancy_at(initial.chunks, {40, 558, 40}) == 0
     assert Enum.map(third, & &1.coord) == [{-1, 34, -1}, {2, 34, 2}]
     assert occupancy_at(third, {-1, 558, -1}) == 1
-    assert Enum.map([d1, d2, d3], & &1.transaction) == World.entries_after(world, 0)
+    # canonical 附带窗口属性上下文；几何事务仍与持久日志逐字节相同。
+    assert Enum.map([d1, d2, d3], &Codec.encode_transaction(&1.transaction)) ==
+             Enum.map(World.entries_after(world, 0), &Codec.encode_transaction/1)
     assert_received ^unrelated
   end
 
@@ -257,7 +263,7 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert_receive {:canonical_delta,
                     %CanonicalDelta{transaction_seq: 1, chunks: [], transaction: txn}}
 
-    assert [txn] == World.entries_after(world, 0)
+    assert [Codec.encode_transaction(txn)] == Enum.map(World.entries_after(world, 0), &Codec.encode_transaction/1)
   end
 
   test "skin-only payload differences do not change projected occupancy", %{world: world} do

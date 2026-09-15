@@ -137,6 +137,9 @@ defmodule SceneServer.Movement.Player do
             travel: domain.travel, spawn_min_y: max(state.config.spawn_min_y, elem(elem(domain.travel, 0), 1))}}
         handle_info({:anchor, state.tick, updates, snapshot.content_version, snapshot}, state)
       {:window, snapshot} ->
+        character_event(state, state, :collision_window_received, %{stream: inspect(stream), cursor: cursor,
+          l0_min: Tuple.to_list(snapshot.l0_min), l0_max: Tuple.to_list(snapshot.l0_max_exclusive),
+          at_us: System.system_time(:microsecond)})
         {:noreply, %{state | updates: CollisionUpdates.enqueue(state.updates, {:marker, :stream_window, snapshot}, now(state))}}
       %Voxel.CanonicalDelta{} = delta -> {:noreply, enqueue_tail(state, [delta])}
     end
@@ -351,11 +354,16 @@ defmodule SceneServer.Movement.Player do
         {s, output ++ [{Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
           delta.transaction_seq, revision, delta.chunks, delta}]}
       {:marker, :stream_window, snapshot}, {s, output} ->
+        started = System.monotonic_time(:microsecond)
+        at = System.system_time(:microsecond)
         updates = CollisionUpdates.replace_window(s.updates, snapshot, next)
+        installed = System.monotonic_time(:microsecond)
+        native_build_us = updates.build_us-s.updates.build_us
         s = %{s | updates: updates, window_pending: false,
           window_domains: [{next, window_domain(snapshot)} | s.window_domains]}
         character_event(s, s, :collision_window, %{apply_tick: next, l0_min: Tuple.to_list(snapshot.l0_min),
-          l0_max: Tuple.to_list(snapshot.l0_max_exclusive), regions: length(snapshot.regions), chunks: length(snapshot.chunks)})
+          l0_max: Tuple.to_list(snapshot.l0_max_exclusive), regions: length(snapshot.regions), chunks: length(snapshot.chunks),
+          install_start_us: at, install_us: installed-started, native_build_us: native_build_us})
         {s, output ++ [{:window, snapshot, updates.revision}]}
     end)
     %{state | tick: next}

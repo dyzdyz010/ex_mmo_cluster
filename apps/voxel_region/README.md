@@ -1,5 +1,22 @@
 # Voxim Region 真值
 
+2026-09-15 B3 窗口准备（Global system）：`prepare` 原先只看 decoded/region_bases，忽略已物化的
+payloads，完整窗口已缓存仍启动 24–27 个 `source.ensure`。独立 B3 `/demo/world` 在 Windows
+bind mount；相同输入单次 File.exists? 约 7–8 ms，27 项批次约 200 ms，真实路线准备中位约 303 ms。
+按现有 `payload_bytes` 命中语义跳过已物化载荷的重复预备；不修改 `needs_source?` 的 decoded 语义，
+不新增缓存或权威状态。缺失/失效仍从来源生成和读取。回归先证明重复预备，再验证丢弃缓存后的快照等价，
+以及冷/暖编辑、跨区 ring、热前沿、属性/攻击与 FIFO。
+
+依据：[OTP 进程效率指南](https://www.erlang.org/doc/system/eff_guide_processes.html#sending-messages)
+明确进程消息复制普通 term，refc binary 同节点共享；本次先对照完整/裁剪 source_state，发现约 2.2 MB
+索引复制不是主项，因而未实施索引切片。现有 payload cache 是可丢弃派生结果，复用其既定失效规则。
+保留 `voxel_window_prepare` 的 regions/collision/properties；新阶段日志用 request ref、PID、cursor
+关联 CollisionStream 调度、World 预备/排队/发送、Player 接收/FIFO/安装，wire 与 tick 顺序不变。
+GC 仅由 Test-only `b3_window_trace.py` 在独立 B3 有界采集；高频 scheduler trace 因积压已弃用。
+`b3_window_pipeline.py` 八组交替顺序、同一真实不可变窗口：完整调用 498.752→338.212 ms，全部
+27 regions/1728 chunks/属性/身份相同。真实双端及剩余约 200 ms 碰撞投影见
+[B3 observation](../../../Voxim/Docs/R7/B3-observation.md)。100/50 ms 只是工程预算讨论，非验收门槛。
+
 2026-09-15 B3 广播根因续查（全局系统功能）：隔离同输入插桩发现 1 万格批次 GC 中位约 27–36 ms，
 属性汇总与仅供日志的重复 wire 编码会触发额外分配。纯属性提交已由唯一目标集合产生，只有几何改变
 合并删除/原属性/新叶子三种来源时才按身份去重；叶子实际观察区域仍照常补齐。删除热提交日志中为

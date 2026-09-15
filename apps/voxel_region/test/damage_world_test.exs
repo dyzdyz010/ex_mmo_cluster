@@ -152,6 +152,26 @@ defmodule VoxelRegion.DamageWorldTest do
     assert delta.transaction_seq == World.seq(c.w)
   end
 
+  @tag :b3
+  test "完整载荷命中不重复预备源，丢弃缓存后仍从来源重建相同确认快照", %{w: world} do
+    box = {{0,0,0},{1,1,1}}
+    first = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(world,box,self(),first)
+    assert_receive {:prepared,0,{0,0,0}}
+    assert_receive {:canonical_snapshot,^first,snapshot}
+    second = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(world,box,self(),second)
+    assert_receive {:canonical_snapshot,^second,^snapshot}
+    refute_received {:prepared,_,_}
+
+    # 只测试：丢弃派生载荷，不改 baseline、overlay 或持久历史。
+    :sys.replace_state(world,fn state -> %{state | payloads: %{}} end)
+    third = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(world,box,self(),third)
+    assert_receive {:prepared,0,{0,0,0}}
+    assert_receive {:canonical_snapshot,^third,^snapshot}
+  end
+
   @tag :observation
   test "跨区域叶子使用完整权威汇总，删除仍通知只看到另一半的观察者", c do
     assert {:ok,1} = World.place_prefab(c.w,c.id,{511,8,16},0)

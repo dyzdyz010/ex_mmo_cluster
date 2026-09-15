@@ -113,6 +113,7 @@ defmodule VoxelRegion.World do
     # 多人加入的快照共用此 mailbox；前置查询沿用后续快照的等待时限，
     # 避免 20 人实验中正常排队被默认 5 秒超时截断。
     {source, source_state, missing} = GenServer.call(server, {:prepare, Enum.uniq(keys)}, 300_000)
+    Logger.info("voxel_source_return caller=#{inspect(self())} at_us=#{System.system_time(:microsecond)} missing=#{length(missing)}")
 
     missing
     |> Task.async_stream(fn {level, region} -> source.ensure(source_state, level, region) end,
@@ -222,7 +223,10 @@ defmodule VoxelRegion.World do
 
   @doc "Prepare canonical L0 source, then atomically send its snapshot marker and subscribe to all subsequent transactions."
   def canonical_snapshot_and_subscribe(world_ref, l0_box, subscriber_pid, request_ref, include_chunks \\ true) do
+    started = System.monotonic_time(:microsecond)
+    Logger.info("voxel_window_stage stage=prepare_start request=#{inspect(request_ref)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)}")
     prepare(world_ref, Enum.map(CollisionSource.regions(l0_box), &{0, &1}))
+    Logger.info("voxel_window_stage stage=prepare_done request=#{inspect(request_ref)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
     GenServer.call(world_ref, {:canonical_snapshot, l0_box, subscriber_pid, request_ref, include_chunks}, 300_000)
   end
 
@@ -315,9 +319,13 @@ defmodule VoxelRegion.World do
   def handle_call(:authority_ref, _from, state), do: {:reply, self(), state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
-  def handle_call({:prepare, keys}, _from, state) do
-    # decoded() can already read these regions without consulting the source.
-    missing = Enum.filter(keys, &needs_source?(state,&1))
+  def handle_call({:prepare, keys}, {caller, _}, state) do
+    started = System.monotonic_time(:microsecond)
+    at = System.system_time(:microsecond)
+    # 已物化载荷可直接供 payload_bytes 读取；预备不再重复触碰来源磁盘。
+    # decoded() 的来源需求仍独立判断，载荷缓存不升格为世界真值。
+    missing = Enum.filter(keys, &(needs_source?(state,&1) and not Map.has_key?(state.payloads,&1)))
+    Logger.info("voxel_source_prepare caller=#{inspect(caller)} at_us=#{at} elapsed_us=#{System.monotonic_time(:microsecond)-started} keys=#{length(keys)} missing=#{length(missing)}")
     {:reply, {state.source,state.source_state,missing}, state}
   end
 
@@ -488,10 +496,15 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call({:canonical_snapshot, box, pid, request, include_chunks}, _from, state) do
+    started = System.monotonic_time(:microsecond)
+    Logger.info("voxel_window_stage stage=world_start request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)}")
     case capture_canonical_snapshot(state, box, include_chunks) do
       {:ok, snapshot, state} ->
         unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
+        sending = System.monotonic_time(:microsecond)
+        Logger.info("voxel_window_stage stage=world_send request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)} elapsed_us=#{sending-started}")
         send(pid, {:canonical_snapshot, request, snapshot})
+        Logger.info("voxel_window_stage stage=world_sent request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)} elapsed_us=#{System.monotonic_time(:microsecond)-sending}")
         {:reply, :ok, %{state | canonical_subs: Map.put(state.canonical_subs, pid, box)}}
       {:error, :canonical_incomplete} ->
         {:reply, {:error, :canonical_incomplete}, state}

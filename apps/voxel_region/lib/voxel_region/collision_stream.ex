@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CollisionStream do
   @moduledoc "角色连接的有序 canonical 来源；跨 Scene 移交只切换接收者，不重建订阅。"
   use GenServer
+  require Logger
   alias VoxelRegion.World
 
   @doc "建立随 Gate 存活的 canonical 来源，异步准备首次窗口。"
@@ -45,8 +46,13 @@ defmodule VoxelRegion.CollisionStream do
   def handle_cast({:window, box}, state), do: {:noreply, request(state, box)}
 
   @impl true
-  def handle_info({:canonical_snapshot, ref, snapshot}, %{worker: {ref, _}} = state),
-    do: {:noreply, emit(%{state | worker: nil}, {:window, snapshot})}
+  def handle_info({:canonical_snapshot, ref, snapshot}, %{worker: {ref, _}} = state) do
+    started = System.monotonic_time(:microsecond)
+    Logger.info("voxel_window_stage stage=stream_receive request=#{inspect(ref)} pid=#{inspect(self())} owner=#{inspect(state.owner)} cursor=#{state.cursor+1} at_us=#{System.system_time(:microsecond)}")
+    state = emit(%{state | worker: nil}, {:window, snapshot})
+    Logger.info("voxel_window_stage stage=stream_sent request=#{inspect(ref)} pid=#{inspect(self())} cursor=#{state.cursor} at_us=#{System.system_time(:microsecond)} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
+    {:noreply, state}
+  end
   def handle_info({:canonical_delta, delta}, state), do: {:noreply, emit(state, delta)}
   def handle_info({:source_result, :ok}, state), do: {:noreply, state}
   def handle_info({:source_result, error}, state), do: {:stop, {:canonical_source, error}, state}
@@ -59,6 +65,7 @@ defmodule VoxelRegion.CollisionStream do
   defp request(state, box) do
     nil = state.worker
     ref = make_ref()
+    Logger.info("voxel_window_stage stage=stream_request request=#{inspect(ref)} pid=#{inspect(self())} owner=#{inspect(state.owner)} box=#{inspect(box)} at_us=#{System.system_time(:microsecond)}")
     receiver = self()
     authority = state.authority
     {_, monitor} = Node.spawn_monitor(node(authority), fn ->
