@@ -244,6 +244,24 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b3
+  test "B3 删除热种子后只求值一次旧邻域，不把低于阈值的邻格继续算十步", c do
+    b3_experiment(c,10000.0,1000.0)
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
+    state=:sys.get_state(c.w)
+    row=%{micro: {16,8,16},granularity: 0,owner: {0,0},material: 19,
+      incarnation: state.epochs[{2,1,2}],seq: state.seq,request_id: 0,hp: 100.0,max_hp: 100.0,
+      defense: 2.0,digest: state.properties.digest,flags: 0,temperature_kelvin: 293.155}
+    key=VoxelRegion.Damage.key(row)
+    state=%{state | damage: %{key=>row},log: {ThermalProbeLog,nil},subs: %{},canonical_subs: %{},replica_subs: %{}}
+    {:noreply,next}=World.handle_info(:thermal_commit,state)
+    # 邻格六面暴露，第一次求值后已低于活动阈值；之后九步不再触碰它。
+    assert_in_delta next.damage[key].temperature_kelvin,293.155+10.0*6*(293.15-293.155)*0.05/1000.0,1.0e-10
+    assert next.thermal.sources==%{}
+    assert not next.thermal.active
+  end
+
+  @tag :b3
   test "B3 cached and rebuilt topology produce the same evolving front and damage", c do
     b3_experiment(c,10000.0,10000.0,{63,1,2})
     {:ok,_}=World.apply_edits(c.w,(for x<-64..68,do: {{x,1,2},19}))

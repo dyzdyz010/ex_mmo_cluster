@@ -1494,7 +1494,7 @@ defmodule VoxelRegion.World do
 
   # 全局系统功能：温度和 HP 仍由同一个 World 的稀疏状态记录持有。
   # 首片每 500 ms 提交一次，内部执行十个 50 ms 模拟步；持久化先于观察广播。
-  # 派生工作集不写日志；缓存只含身份、材质与暴露面，温度和 HP 每步读取权威记录。
+  # 派生工作集不写日志；缓存只含身份、材质与暴露面，数值批次读取当前权威记录。
   defp empty_thermal_work, do: %{hot: MapSet.new(),cells: MapSet.new(),geometry: %{},edges: [],builds: 0}
 
   defp rebuild_thermal_work(%{thermal: nil}=state), do: %{state | thermal_work: empty_thermal_work()}
@@ -1509,10 +1509,7 @@ defmodule VoxelRegion.World do
     start=System.monotonic_time(:microsecond)
     before=state
     state=put_in(state.thermal_work.builds,0)
-    {state,visited}=Enum.reduce(1..10,{state,MapSet.new()},fn _,{s,keys} ->
-      {s,step_keys}=thermal_step(s,0.05)
-      {s,MapSet.union(keys,step_keys)}
-    end)
+    {state,visited}=thermal_steps(state,10,MapSet.new())
     work=state.thermal_work
     Logger.info("voxel_thermal_sim steps=10 step_ms=50 elapsed_us=#{System.monotonic_time(:microsecond)-start} hot=#{MapSet.size(work.hot)} candidates=#{map_size(work.geometry)} geometry_builds=#{work.builds}")
     rows=for key<-visited,t<-[Map.fetch!(state.damage,key)],Map.get(before.damage,key)!=t,
@@ -1530,7 +1527,14 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp thermal_step(state,dt) do
+  defp thermal_steps(state,0,visited), do: {state,visited}
+  defp thermal_steps(state,steps,visited) do
+    {state,changed,done}=thermal_step(state,0.05,steps)
+    thermal_steps(state,steps-done,MapSet.union(visited,changed))
+  end
+
+  defp thermal_step(state,dt,steps) do
+    started=System.monotonic_time(:microsecond)
     config=state.thermal.config
     seeds=MapSet.union(state.thermal_work.hot,MapSet.new(Map.keys(state.thermal.sources)))
     cells=seeds |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
@@ -1564,24 +1568,39 @@ defmodule VoxelRegion.World do
         :error->false
       end
     end)
-    {temperatures,sources,energy}=VoxelRegion.Thermal.step(nodes,sources,config,dt,edges)
-    sources=Map.filter(sources,fn {_,s}->s.remaining_j>0 end)
-    {damage,changed}=Enum.reduce(temperatures,{state.damage,MapSet.new()},fn {cell,temperature},{damage,changed} ->
-      n=Map.fetch!(nodes,cell)
-      hp=max(0.0,n.target.hp-n.target.max_hp*dt*max(0.0,temperature/n.material["heat_resistance_kelvin"]-1.0))
+    ordered=Map.to_list(nodes)
+    indices=ordered |> Enum.with_index() |> Map.new(fn {{cell,_},i}->{cell,i} end)
+    input=for {cell,n}<-ordered do
+      source=Map.get(sources,cell)
+      {n.temperature,n.target.hp,n.target.max_hp,n.material["heat_capacity_per_macro"]*1.0,
+        n.material["thermal_conductivity"]*1.0,n.material["heat_resistance_kelvin"]*1.0,n.exposed_faces*1.0,
+        if(source,do: source.power_w*1.0,else: 0.0),if(source,do: source.remaining_j*1.0,else: 0.0),
+        MapSet.member?(seeds,cell)}
+    end
+    indexed_edges=for {a,b}<-edges,do: {Map.fetch!(indices,a),Map.fetch!(indices,b)}
+    # 被删除的旧活动种子没有原生节点；先完成一次原步进，让 World 收缩它的邻域。
+    steps=if Enum.all?(seeds,&Map.has_key?(nodes,&1)),do: steps,else: 1
+    prepared=System.monotonic_time(:microsecond)
+    {done,result,supplied,environment}=VoxelRegion.ThermalNative.batch(input,indexed_edges,
+      config["ambient_kelvin"]*1.0,config["environment_w_per_m2_k"]*1.0,config["tolerance_kelvin"]*1.0,dt,steps)
+    calculated=System.monotonic_time(:microsecond)
+    {damage,changed,sources,hot}=Enum.zip(ordered,result) |> Enum.reduce({state.damage,MapSet.new(),%{},MapSet.new()},
+      fn {{cell,n},{temperature,hp,remaining}},{damage,changed,left,hot} ->
+      left=if remaining>0,do: Map.put(left,cell,%{Map.fetch!(sources,cell) | remaining_j: remaining}),else: left
+      hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: MapSet.put(hot,cell),else: hot
       if temperature==n.temperature and hp==n.target.hp do
-        {damage,changed}
+        {damage,changed,left,hot}
       else
         t=n.target |> Map.put(:temperature_kelvin,temperature) |> Map.put(:hp,hp)
-        {Map.put(damage,Damage.key(t),t),MapSet.put(changed,Damage.key(t))}
+        {Map.put(damage,Damage.key(t),t),MapSet.put(changed,Damage.key(t)),left,hot}
       end
     end)
-    hot=for {cell,t}<-temperatures,abs(t-config["ambient_kelvin"])>config["tolerance_kelvin"],into: MapSet.new(),do: cell
     active=map_size(sources)>0 or MapSet.size(hot)>0
-    thermal=%{state.thermal | sources: sources,elapsed_s: state.thermal.elapsed_s+dt,active: active,
-      supplied_j: state.thermal.supplied_j+energy.supplied_j,environment_j: state.thermal.environment_j+energy.environment_j}
+    thermal=%{state.thermal | sources: sources,elapsed_s: Enum.reduce(1..done,state.thermal.elapsed_s,fn _,t->t+dt end),active: active,
+      supplied_j: state.thermal.supplied_j+supplied,environment_j: state.thermal.environment_j+environment}
     work=if active,do: %{work | hot: hot},else: %{empty_thermal_work() | builds: work.builds}
-    {%{state | damage: damage,thermal: thermal,thermal_work: work},changed}
+    Logger.info("voxel_thermal_kernel steps=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} prepare_us=#{prepared-started} nif_us=#{calculated-prepared} accept_us=#{System.monotonic_time(:microsecond)-calculated}")
+    {%{state | damage: damage,thermal: thermal,thermal_work: work},changed,done}
   end
 
   defp thermal_commit(state,rows) do
@@ -1593,8 +1612,9 @@ defmodule VoxelRegion.World do
     state=%{state | entries: Map.put(state.entries,state.seq,txn)}
     fanout(state,txn)
     fanout_canonical(state,txn,[],[],state)
+    broadcast=System.monotonic_time(:microsecond)
     bytes=Enum.reduce(rows,0,fn t,n->{:ok,b}=Codec.encode({:voxel_property_state,t});n+IO.iodata_length(b) end)
-    Logger.info("voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} state_bytes=#{bytes} persist_us=#{persisted-start} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}")
+    Logger.info("voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} state_bytes=#{bytes} persist_us=#{persisted-start} broadcast_us=#{broadcast-persisted} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}")
     state
   end
 

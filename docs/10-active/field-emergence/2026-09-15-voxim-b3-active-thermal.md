@@ -37,3 +37,17 @@
 独立voxim-b3-demo双端已冷入场直接读HP/温度、零自动查询直接攻击、271次热提交共1355条双端完全相同；最终两次攻击破坏、回收512、付费原位重建，重建epoch3354/HP100，平衡seq3355。服务端重启前后HP/温度、能量、库存、占用及epoch相同。World测试46通过，Player/transfer9通过，新协议261B跨语言golden通过；UE8项相关用例通过。详情与可复现工具/限制见Voxim `Docs/R7/B3-observation.md`。真实步行窗口退出/重进、远隔玩家及独占性能仍待验收；固定范围Demo不替代这些门槛。
 
 Rustler已存在，建议下一步做连续节点/边数组与批量十步内核实验，尚未部署热NIF。独立VM插桩：1万活动格批总耗时中位1114.943ms、Thermal.step中位573.871ms，其余逐批相减中位541.072ms，所有温度与原路径相同；假日志、无广播、共享机器，不作独占容量验收。只搬算术即使理想零耗时也难满足500ms。世界参数/场模拟仍归服务端scene/world；需一并测状态组织、拷贝、World接纳/落盘/广播及邮箱等待。DirtyCpu不解除调用World的等待；若用有界计算任务，输入不可变、结果按身份/版本接纳，唯一authority先持久后确认。不要引入第二世界真值或为未来场类型预建框架。
+
+
+## 真实多人流送与 Rustler 批量模拟（2026-09-15）
+
+附近 HP／温度的真实步行退出／重进、远隔过滤、无人观察仍模拟、Scene 1→2→1 已通过真实 UE 双端验收，证据在 Voxim Saved/R7/B3/streaming-*。窗口和 HUD 延迟已测量；B3 整体物理范围、独占帧时间与容量仍未验收。
+
+保持显式 Euler 固定 50 ms 步进与逐步 HP 扣减，DirtyCpu NIF 接收不可变节点／边数组；活动种子变化立即交还 World 重建六邻域。World 是唯一提交者，先持久化再确认。独立 voxim_thermal crate 不持有 Rust 世界资源，不修改世界生成器或 content_version。
+
+依据 Erlang NIF 的 dirty scheduler 语义与 Rustler 0.37.3 的 schedule 属性：https://www.erlang.org/doc/apps/erts/erl_nif.html 和 https://docs.rs/rustler/0.37.3/rustler/attr.nif.html 。DirtyCpu 释放普通调度器，但调用 World 仍等待；现有 Thermal.step 保留为数值参考，未加入异步任务或通用场框架。
+
+
+实验完成：新 voxim_thermal/ThermalNative 与 World 数值批次已部署 B3，真实双端热变化/远隔过滤/1→2→1通过，旧世界保留至seq4152且再次重启一致。热源删除导致旧活动种子无原生节点时，先执行单步让 World 收缩邻域；源耗尽/热前沿变化也在正确步末返回。初始相关52项、补充后B3九项和原生四项通过。客户端/Player只补日志，未改协议。
+
+最终1万活动格同输入无数据库中位1232.835→116.285ms；独立voxim_b3_rustler_perf真实Db事务/回放、近远canonical观察者投影/编码、GenServer排队读取中位892.630→103.949ms，温度差0、HP身份一致。准备29.311ms、NIF含解码编码3.692ms、World接纳16.996ms、落盘35.178ms；排队读取中位103.796ms。后续性能重点为数据组织、持久元数据、观察投影，不能从本次共享机实验宣称大世界容量或1万状态真实UE吞吐验收。原始证据与命令归Voxim Docs/R7/B3-observation.md及Saved/R7/B3/Server/rustler-{experiment,pipeline}-final，部署记录rustler-build-clean。

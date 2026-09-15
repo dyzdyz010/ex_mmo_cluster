@@ -498,6 +498,9 @@ defmodule SceneServer.Movement.Player do
     state = %{state | window_domains: newer ++ Enum.take(older, 1)}
     box = CollisionStream.box(state.state.position, state.config.streaming_radius)
     if not state.window_pending and box != state.requested_window do
+      character_event(state, state, :collision_window_request, %{
+        l0_min: Tuple.to_list(elem(box, 0)), l0_max_exclusive: Tuple.to_list(elem(box, 1)),
+        server_time_us: System.system_time(:microsecond)})
       CollisionStream.window(state.stream, box)
       %{state | requested_window: box, window_pending: true}
     else
