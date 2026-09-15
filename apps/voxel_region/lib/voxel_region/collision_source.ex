@@ -37,6 +37,19 @@ defmodule VoxelRegion.CollisionSource do
   end
 
   @doc "从完整 L0 载荷，或世界格读取器（coord → {terrain 材质, slot map}）投影相同 chunk 占用。"
+  def capture(%Payload{level: 0, refined: refined} = payload, {cx,cy,cz}=coord) when map_size(refined)==0 do
+    # 普通载荷按连续行读取，避免每格重复坐标换算、函数调用和空微格表查询。
+    # 材质阻挡仍由同一个目录定义；细化载荷继续使用下面的微格投影。
+    {lx,ly,lz}=Payload.local(payload.region,{cx*@chunk_size,cy*@chunk_size,cz*@chunk_size})
+    cells=for z<-0..(@chunk_size-1),y<-0..(@chunk_size-1),into: <<>> do
+      row=binary_part(payload.cells,2*Payload.cell_index({lx,ly+y,lz+z}),2*@chunk_size)
+      for <<material::little-16 <- row>>,into: <<>>,
+        do: <<if(VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0)>>
+    end
+    %ChunkOccupancy{coord: coord,n: @chunk_size,scale_m: 1.0,
+      origin_m: {cx*@chunk_size*1.0,cy*@chunk_size*1.0,cz*@chunk_size*1.0},cells: cells}
+  end
+
   def capture(%Payload{level: 0} = payload, coord) do
     capture(coord,fn cell ->
       local = Payload.local(payload.region,cell)

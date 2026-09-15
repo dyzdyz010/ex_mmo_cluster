@@ -1027,12 +1027,15 @@ defmodule VoxelRegion.World do
   defp capture_canonical_snapshot(state, {l0_min, l0_max} = box, include_chunks) do
     started = System.monotonic_time(:microsecond)
     with {:ok, regions, payloads, state} <- canonical_regions(state, CollisionSource.regions(box)) do
+      regions_done = System.monotonic_time(:microsecond)
       chunks = if include_chunks, do: (payloads |> Enum.flat_map(fn {coord, payload} ->
         Enum.map(CollisionSource.chunk_coords(coord), &CollisionSource.capture(payload, &1))
       end) |> Enum.sort_by(& &1.coord)), else: []
       snapshot = %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq,
         l0_min: l0_min, l0_max_exclusive: l0_max, regions: regions, chunks: chunks}
+      chunks_done = System.monotonic_time(:microsecond)
       snapshot = Map.merge(snapshot, property_snapshot(state, box))
+      Logger.info("voxel_window_prepare seq=#{state.seq} box=#{inspect(box)} regions_us=#{regions_done-started} collision_us=#{chunks_done-regions_done} properties_us=#{System.monotonic_time(:microsecond)-chunks_done}")
       Logger.info("voxel_region canonical_snapshot seq=#{state.seq} regions=#{length(regions)} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} payload_bytes=#{Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
       {:ok, snapshot, state}
     end
@@ -1495,7 +1498,8 @@ defmodule VoxelRegion.World do
   # 全局系统功能：温度和 HP 仍由同一个 World 的稀疏状态记录持有。
   # 首片每 500 ms 提交一次，内部执行十个 50 ms 模拟步；持久化先于观察广播。
   # 派生工作集不写日志；缓存只含身份、材质与暴露面，数值批次读取当前权威记录。
-  defp empty_thermal_work, do: %{hot: MapSet.new(),cells: MapSet.new(),geometry: %{},edges: [],builds: 0}
+  defp empty_thermal_work, do: %{hot: MapSet.new(),cells: MapSet.new(),geometry: %{},edges: [],builds: 0,
+    seeds: nil,ordered: [],indexed_edges: []}
 
   defp rebuild_thermal_work(%{thermal: nil}=state), do: %{state | thermal_work: empty_thermal_work()}
   defp rebuild_thermal_work(state) do
@@ -1537,8 +1541,11 @@ defmodule VoxelRegion.World do
     started=System.monotonic_time(:microsecond)
     config=state.thermal.config
     seeds=MapSet.union(state.thermal_work.hot,MapSet.new(Map.keys(state.thermal.sources)))
-    cells=seeds |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
+    # 热种子不变时复用六邻域；编辑仍通过 geometry 删除使拓扑失效。
+    cells=if seeds==state.thermal_work.seeds,do: state.thermal_work.cells,
+      else: seeds |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
     missing=MapSet.difference(cells,MapSet.new(Map.keys(state.thermal_work.geometry)))
+    neighborhood_done=System.monotonic_time(:microsecond)
     {geometry,state}=Enum.reduce(missing,{Map.take(state.thermal_work.geometry,MapSet.to_list(cells)),state},fn cell,{geometry,s} ->
       micro=cell |> Tuple.to_list() |> Enum.map(&(&1*@micro)) |> List.to_tuple()
       {target,s}=target_at(micro,s)
@@ -1554,57 +1561,67 @@ defmodule VoxelRegion.World do
         {Map.put(geometry,cell,nil),s}
       end
     end)
-    nodes=for {cell,n}<-geometry,n != nil,into: %{} do
-      t=property_state(state,n.target)
-      {cell,Map.merge(n,%{target: t,temperature: Map.get(t,:temperature_kelvin,config["ambient_kelvin"])})}
+    geometry_done=System.monotonic_time(:microsecond)
+    {ordered,edges,indexed_edges}=if cells==state.thermal_work.cells and MapSet.size(missing)==0 do
+      {state.thermal_work.ordered,state.thermal_work.edges,state.thermal_work.indexed_edges}
+    else
+      nodes=Map.filter(geometry,fn {_,n}->n != nil end)
+      ordered=Map.to_list(nodes)
+      edges=VoxelRegion.Thermal.contacts(nodes)
+      indices=ordered |> Enum.with_index() |> Map.new(fn {{cell,_},i}->{cell,i} end)
+      {ordered,edges,for({a,b}<-edges,do: {Map.fetch!(indices,a),Map.fetch!(indices,b)})}
     end
-    edges=if cells==state.thermal_work.cells and MapSet.size(missing)==0,
-      do: state.thermal_work.edges,else: VoxelRegion.Thermal.contacts(nodes)
+    nodes_done=System.monotonic_time(:microsecond)
     work=%{state.thermal_work | geometry: geometry,cells: cells,edges: edges,
+      seeds: seeds,ordered: ordered,indexed_edges: indexed_edges,
       builds: state.thermal_work.builds+MapSet.size(missing)}
     sources=Map.filter(state.thermal.sources,fn {cell,source} ->
-      case Map.fetch(nodes,cell) do
-        {:ok,n}->same_target?(source.target,n.target) and source.remaining_j>0
-        :error->false
+      case Map.get(geometry,cell) do
+        nil->false
+        n->same_target?(source.target,n.target) and source.remaining_j>0
       end
     end)
-    ordered=Map.to_list(nodes)
-    indices=ordered |> Enum.with_index() |> Map.new(fn {{cell,_},i}->{cell,i} end)
-    input=for {cell,n}<-ordered do
+    # 拓扑只缓存身份与材料；温度和 HP 每批从唯一权威记录取值。
+    {targets,input}=Enum.map(ordered,fn {cell,n}->
+      t=property_state(state,n.target)
+      temperature=Map.get(t,:temperature_kelvin,config["ambient_kelvin"])
       source=Map.get(sources,cell)
-      {n.temperature,n.target.hp,n.target.max_hp,n.material["heat_capacity_per_macro"]*1.0,
+      {{cell,t,temperature},{temperature,t.hp,t.max_hp,n.material["heat_capacity_per_macro"]*1.0,
         n.material["thermal_conductivity"]*1.0,n.material["heat_resistance_kelvin"]*1.0,n.exposed_faces*1.0,
         if(source,do: source.power_w*1.0,else: 0.0),if(source,do: source.remaining_j*1.0,else: 0.0),
-        MapSet.member?(seeds,cell)}
-    end
-    indexed_edges=for {a,b}<-edges,do: {Map.fetch!(indices,a),Map.fetch!(indices,b)}
+        MapSet.member?(seeds,cell)}}
+    end) |> Enum.unzip()
     # 被删除的旧活动种子没有原生节点；先完成一次原步进，让 World 收缩它的邻域。
-    steps=if Enum.all?(seeds,&Map.has_key?(nodes,&1)),do: steps,else: 1
+    steps=if Enum.all?(seeds,&(Map.get(geometry,&1) != nil)),do: steps,else: 1
     prepared=System.monotonic_time(:microsecond)
     {done,result,supplied,environment}=VoxelRegion.ThermalNative.batch(input,indexed_edges,
       config["ambient_kelvin"]*1.0,config["environment_w_per_m2_k"]*1.0,config["tolerance_kelvin"]*1.0,dt,steps)
     calculated=System.monotonic_time(:microsecond)
-    {damage,changed,sources,hot}=Enum.zip(ordered,result) |> Enum.reduce({state.damage,MapSet.new(),%{},MapSet.new()},
-      fn {{cell,n},{temperature,hp,remaining}},{damage,changed,left,hot} ->
+    {changes,sources,hot}=Enum.zip(targets,result) |> Enum.reduce({[],%{},[]},
+      fn {{cell,t,old_temperature},{temperature,hp,remaining}},{changes,left,hot} ->
       left=if remaining>0,do: Map.put(left,cell,%{Map.fetch!(sources,cell) | remaining_j: remaining}),else: left
-      hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: MapSet.put(hot,cell),else: hot
-      if temperature==n.temperature and hp==n.target.hp do
-        {damage,changed,left,hot}
+      hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: [cell|hot],else: hot
+      if temperature==old_temperature and hp==t.hp do
+        {changes,left,hot}
       else
-        t=n.target |> Map.put(:temperature_kelvin,temperature) |> Map.put(:hp,hp)
-        {Map.put(damage,Damage.key(t),t),MapSet.put(changed,Damage.key(t)),left,hot}
+        t=t |> Map.put(:temperature_kelvin,temperature) |> Map.put(:hp,hp)
+        {[{Damage.key(t),t}|changes],left,hot}
       end
     end)
+    damage=Map.merge(state.damage,Map.new(changes))
+    changed=MapSet.new(changes,&elem(&1,0))
+    hot=MapSet.new(hot)
     active=map_size(sources)>0 or MapSet.size(hot)>0
     thermal=%{state.thermal | sources: sources,elapsed_s: Enum.reduce(1..done,state.thermal.elapsed_s,fn _,t->t+dt end),active: active,
       supplied_j: state.thermal.supplied_j+supplied,environment_j: state.thermal.environment_j+environment}
     work=if active,do: %{work | hot: hot},else: %{empty_thermal_work() | builds: work.builds}
     Logger.info("voxel_thermal_kernel steps=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} prepare_us=#{prepared-started} nif_us=#{calculated-prepared} accept_us=#{System.monotonic_time(:microsecond)-calculated}")
+    Logger.info("voxel_thermal_prepare neighborhood_us=#{neighborhood_done-started} geometry_us=#{geometry_done-neighborhood_done} nodes_us=#{nodes_done-geometry_done} input_us=#{prepared-nodes_done}")
     {%{state | damage: damage,thermal: thermal,thermal_work: work},changed,done}
   end
 
   defp thermal_commit(state,rows) do
-    state=%{state | seq: state.seq+1,damage: Enum.reduce(rows,state.damage,fn t,all->Map.put(all,Damage.key(t),t) end)}
+    state=%{state | seq: state.seq+1,damage: Map.merge(state.damage,Map.new(rows,&{Damage.key(&1),&1}))}
     txn=%{seq: state.seq,entries: [],coarse: [],property_states: rows,thermal: state.thermal}
     start=System.monotonic_time(:microsecond)
     :ok=append_log(state,txn)

@@ -40,7 +40,8 @@ defmodule VoxelRegion.OverlayLog do
 
     metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:thermal])
     state_rows = if map_size(metadata)>0, do: [%{seq: seq,kind: 3,level: 0,region: {0,0,0},
-      payload: :erlang.term_to_binary(metadata)}],else: []
+      # ETF 自带压缩标记，旧 binary_to_term 读方直接恢复同一元数据。
+      payload: :erlang.term_to_binary(metadata,[{:compressed,1}])}],else: []
     (entry_rows ++ coarse_rows ++ state_rows) |> Enum.with_index() |> Enum.map(fn {row, ordinal} -> Map.put(row, :ordinal, ordinal) end)
   end
 

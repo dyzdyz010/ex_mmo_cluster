@@ -1,5 +1,16 @@
 # Voxim Region 真值
 
+2026-09-15 B3 完整链路优化（全局系统功能）：World 复用有效热种子的六邻域和节点/边索引，
+每批从权威记录读取 HP/温度，批量构造变化 Map；编辑使几何摘要失效，仍在固定步边界更新热前沿。
+OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同步数据库事务完成后才确认。
+普通 L0 碰撞投影改为按连续行读取，材质阻挡目录与细化格语义共用原实现。
+依据是 [OTP Map 指南](https://www.erlang.org/doc/system/maps.html) 的批量构造/合并、
+[binary 指南](https://www.erlang.org/doc/system/binaryhandling.html) 的连续匹配，及
+[ETF 文档](https://www.erlang.org/doc/apps/erts/erlang.html#term_to_binary/2) 的向后可读压缩标记；
+选择最快压缩等级来减少实测数据库字节成本，不改持久化时序、wire 或生成器身份。
+同输入数据库/双观察者实验及独立 B3 真实双端结果见 [B3 observation](../../../Voxim/Docs/R7/B3-observation.md)。
+性能夹具仅用 `voxim_b3_rustler_perf`；这不是大规模真实客户端容量验收。
+
 2026-09-15 R7-B3 热传递首片：`Thermal` 是全局系统功能，只消费 canonical 派生的普通宏格六面接触摘要；
 温度复用 World 的 B1 身份、稀疏属性状态、overlay 日志和确认流。50 ms 显式步进，500 ms 批量权威提交，
 同步持久化后广播；只有过热归零才在同一宏格事务中删除占用，不发放采掘奖励。
