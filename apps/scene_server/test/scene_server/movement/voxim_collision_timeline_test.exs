@@ -51,6 +51,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     defdelegate new_world(), to: P1
     defdelegate world_stats(world), to: P1
     defdelegate query_bounds(profile, state), to: P1
+    defdelegate constrain_travel(previous, next, bounds), to: P1
     defdelegate find_spawn(world, profile, probe, min_y), to: P1
 
     def set_chunks(world, operations) do

@@ -62,7 +62,7 @@ defmodule SceneServer.Movement.Scene do
       {float_tuple(Map.fetch!(raw, "travel_min_m")),
        float_tuple(Map.fetch!(raw, "travel_max_exclusive_m"))}
 
-    true =
+    true = Map.get(raw, "collision_window_radius_tiles", 0) > 0 or
       Enum.all?(0..2, fn axis ->
         elem(elem(bounds, 0), axis) < elem(elem(travel, 0), axis) and
           elem(elem(travel, 0), axis) < elem(elem(travel, 1), axis) and
@@ -81,6 +81,7 @@ defmodule SceneServer.Movement.Scene do
       bounds: bounds,
       travel: travel,
       authority: travel,
+      streaming_radius: Map.get(raw, "collision_window_radius_tiles", 0),
       neighbours: [],
       probes: probes,
       spawn_min_y: min_y
@@ -174,6 +175,12 @@ defmodule SceneServer.Movement.Scene do
     else
       state.config
     end
+    config = if config.streaming_radius > 0 do
+      {own, peer} = SceneServer.Movement.Authority.partition(state.config.travel, endpoint.authority)
+      %{config | authority: own, neighbours: [%{scene_id: endpoint.scene_id, authority: peer}]}
+    else
+      config
+    end
     {:reply, :ok, %{state | config: config}}
   end
 
@@ -181,15 +188,17 @@ defmodule SceneServer.Movement.Scene do
     compatible = state.initialized and state.failure == nil and
       identity.scene_id == state.scene_id and identity.scene_epoch == state.scene_epoch and
       cut.content_version == state.content_version and cut.config.profile == state.config.profile and
-      cut.config.l0 == state.config.l0 and
-      cut.collision_checkpoint.baseline_transaction_seq == state.updates.baseline_transaction_seq and
+      (cut.stream != nil or (cut.config.l0 == state.config.l0 and
+      cut.collision_checkpoint.baseline_transaction_seq == state.updates.baseline_transaction_seq)) and
       inside?(cut.state.position, state.config.authority) and
       not Enum.any?(state.characters, fn {_, c} -> c.id == cut.id end)
     if compatible do
       {import_us, {:ok, updates}} = :timer.tc(fn ->
-        CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
+        if cut.stream,
+          do: {:ok, CollisionUpdates.import_stream_checkpoint(state.updates, cut.collision_checkpoint)},
+          else: CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
       end)
-      tail = state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
+      tail = if cut.stream, do: [], else: state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
       Logger.info(Jason.encode!(%{schema: "voxim-scene-v1", event: "transfer_prepared",
         scene_id: state.scene_id, session_epoch: identity.session_epoch,
         import_us: import_us, tail_count: length(tail),
@@ -267,7 +276,8 @@ defmodule SceneServer.Movement.Scene do
           config: state.config, clock: state.clock, time_origin: state.time_origin,
           time_mono_origin: state.time_mono_origin, mono_origin: if(state.initialized, do: state.mono_origin, else: nil), sink: state.sink,
           updates: %{state.updates | queue: :queue.new()}, content_version: state.content_version,
-          scene_id: state.scene_id, scene_epoch: state.scene_epoch]
+          scene_id: state.scene_id, scene_epoch: state.scene_epoch, initial_tick: state.tick,
+          authority_ref: if(state.config.streaming_radius > 0, do: state.world_api.authority_ref(state.world_ref))]
         {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
         character = %{id: cid, identity: identity, epoch: identity.session_epoch,
           slot: slot, gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
@@ -279,7 +289,11 @@ defmodule SceneServer.Movement.Scene do
             requests: Map.put(state.requests, request, identity)
         }
 
-        {:reply, {:ok, player}, if(state.initialized, do: request_snapshot(state, request), else: state)}
+        if state.config.streaming_radius > 0 do
+          {:reply, {:ok, player}, %{state | requests: Map.delete(state.requests, request)}}
+        else
+          {:reply, {:ok, player}, if(state.initialized, do: request_snapshot(state, request), else: state)}
+        end
     end
   end
 
@@ -623,8 +637,7 @@ defmodule SceneServer.Movement.Scene do
     end)
   end
 
-  defp inside?(point, {min, max}),
-    do: Enum.all?(0..2, &(elem(point, &1) >= elem(min, &1) and elem(point, &1) < elem(max, &1)))
+  defp inside?(point, domain), do: SceneServer.Movement.Authority.contains?(point, domain)
 
   defp float_tuple(values), do: values |> Enum.map(&(&1 / 1)) |> List.to_tuple()
   defp map_tuple(tuple, fun), do: tuple |> Tuple.to_list() |> Enum.map(fun) |> List.to_tuple()

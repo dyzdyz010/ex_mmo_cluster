@@ -14,6 +14,12 @@ defmodule AuthServerWeb.Router do
     plug :accepts, ["json"]
   end
 
+  scope "/playtest", AuthServerWeb do
+    pipe_through :api
+    post "/login", IngameController, :playtest_login
+    post "/regions", IngameController, :playtest_regions
+  end
+
   scope "/", AuthServerWeb do
     pipe_through :browser
 

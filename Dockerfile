@@ -13,7 +13,7 @@
 # ============================================================================
 # Stage 1 — Builder: Elixir + OTP + Node + Rust toolchain
 # ============================================================================
-FROM hexpm/elixir:1.18.4-erlang-28.3.1-debian-bookworm-20260406-slim AS builder
+FROM hexpm/elixir:1.18.5-erlang-27.2.4-debian-bookworm-20260824-slim AS builder
 
 ENV MIX_ENV=prod \
     LANG=C.UTF-8 \
@@ -50,6 +50,12 @@ WORKDIR /app
 COPY mix.exs mix.lock ./
 COPY config config
 COPY apps apps
+
+# voxel_region reads the client's spatial constants header at compile time
+# (apps/voxel_region/lib/voxel_region/spatial.ex resolves ../../../../../Voxim
+# relative to /app, i.e. /Voxim). Supply it from a named build context:
+#   docker build --build-context voxim=../Voxim/Source/Voxim/Voxel .
+COPY --from=voxim VoxelSpatialConstants.h /Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h
 
 # Fetch + compile deps. `--only prod` trims dev/test dependencies.
 RUN mix deps.get --only prod

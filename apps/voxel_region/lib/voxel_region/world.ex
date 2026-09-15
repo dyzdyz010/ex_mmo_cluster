@@ -467,7 +467,7 @@ defmodule VoxelRegion.World do
       {:ok, snapshot, state} ->
         unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
         send(pid, {:canonical_snapshot, request, snapshot})
-        {:reply, :ok, %{state | canonical_subs: Map.put_new(state.canonical_subs, pid, box)}}
+        {:reply, :ok, %{state | canonical_subs: Map.put(state.canonical_subs, pid, box)}}
       {:error, :canonical_incomplete} ->
         {:reply, {:error, :canonical_incomplete}, state}
     end

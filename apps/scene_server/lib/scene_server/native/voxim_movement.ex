@@ -18,6 +18,8 @@ defmodule SceneServer.Native.VoximMovement do
   def step_characters(_world, _profile, _characters), do: :erlang.nif_error(:nif_not_loaded)
   @doc "返回共享内核本步查询的保守米制 AABB。"
   def query_bounds(_profile, _state), do: :erlang.nif_error(:nif_not_loaded)
+  @doc "越界固定步停在上一合法状态，复用两端共享的活动范围接纳规则。"
+  def constrain_travel(_previous, _next, _bounds), do: :erlang.nif_error(:nif_not_loaded)
   @doc "沿 probe 下扫至 min_center_y，首个接触合法才返回出生状态。"
   def find_spawn(_world, _profile, _probe, _min_center_y), do: :erlang.nif_error(:nif_not_loaded)
 end

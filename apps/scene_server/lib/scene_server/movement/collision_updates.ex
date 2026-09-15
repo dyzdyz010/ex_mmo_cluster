@@ -29,6 +29,46 @@ defmodule SceneServer.Movement.CollisionUpdates do
       revisions: [{0, 1, world}], artifacts: %{1 => %{}}}
   end
 
+  @doc "流送使用完整驻留 artifact 作为版本；退休后不会保留已离开的窗口。"
+  def initialize_stream(updates, snapshot) do
+    updates = initialize(%{updates | world: updates.native.new_world()}, snapshot)
+    %{updates | artifacts: %{1 => Map.new(snapshot.chunks, &{&1.coord, &1})},
+      baseline_world: nil, baseline_transaction_seq: nil}
+  end
+
+  @doc "在 FIFO 快照切点替换完整占用，旧版本保留到历史锚点退休。"
+  def replace_window(updates, snapshot, tick) do
+    true = snapshot.transaction_seq == updates.transaction_seq
+    {us, world} = :timer.tc(fn ->
+      updates.native.set_chunks(updates.native.new_world(), operations(snapshot.chunks))
+    end)
+    revision = updates.revision + 1
+    %{updates | world: world, revision: revision, build_us: updates.build_us + us,
+      revisions: [{tick, revision, world} | updates.revisions],
+      artifacts: Map.put(updates.artifacts, revision, Map.new(snapshot.chunks, &{&1.coord, &1}))}
+  end
+
+  @doc "跨区导出仍需回放的窗口占用和尚未消费的 canonical 队列。"
+  def export_stream_checkpoint(updates, tick) do
+    revisions = retained_revisions(updates.revisions, tick)
+      |> Enum.map(fn {t, r, _} -> {t, r, Map.fetch!(updates.artifacts, r)} end)
+    %{transaction_seq: updates.transaction_seq, revision: updates.revision,
+      revisions: revisions, queue: updates.queue}
+  end
+
+  @doc "仅从交接的权威占用重建历史碰撞，不依赖目标 Scene 的初始窗口。"
+  def import_stream_checkpoint(updates, checkpoint) do
+    revisions = Enum.map(checkpoint.revisions, fn {tick, revision, chunks} ->
+      world = updates.native.set_chunks(updates.native.new_world(),
+        chunks |> Map.values() |> Enum.sort_by(& &1.coord) |> operations())
+      {tick, revision, world}
+    end)
+    %{updates | baseline_world: nil, baseline_transaction_seq: nil,
+      world: elem(hd(revisions), 2), revisions: revisions,
+      artifacts: Map.new(checkpoint.revisions, fn {_, r, chunks} -> {r, chunks} end),
+      transaction_seq: checkpoint.transaction_seq, revision: checkpoint.revision, queue: checkpoint.queue}
+  end
+
   @doc "以 World 的消息顺序接纳 immutable delta/marker。"
   def enqueue(updates, item, now), do: %{updates | queue: :queue.in({item, now}, updates.queue)}
 

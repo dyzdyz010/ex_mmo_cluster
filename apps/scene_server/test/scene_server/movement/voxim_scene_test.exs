@@ -139,6 +139,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     end
 
     def query_bounds(profile, state), do: Native.query_bounds(profile, state)
+    defdelegate constrain_travel(previous, next, bounds), to: Native
 
     def find_spawn({world, observer}, profile, probe, min_y) do
       send(observer, :spawn_called)
@@ -555,7 +556,8 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert join(ctx, 2).entity_id == 20
   end
 
-  test "joining exits finite travel domain explicitly without committing or clamping outside state",
+  @tag :travel_boundary
+  test "joining fall stops at finite travel boundary without ending the session",
        ctx do
     join(ctx)
     chunk = Enum.find(snapshot().chunks, &(&1.coord == {2, 31, 2}))
@@ -572,8 +574,10 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
     await(ctx.scene, &(&1.queue_length == 1))
     advance(ctx, 240)
-    assert_receive {:closed, _, 4}
-    assert observe(ctx.scene).character_count == 0
+    refute_receive {:closed, _, _}
+    info = observe(ctx.scene)
+    assert info.character_count == 1
+    assert hd(info.characters).state.position |> elem(1) >= 464.0
     refute_receive {:datagram, _, %Movement.OwnerAck{}}
   end
 
@@ -587,6 +591,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert observe(ctx.scene).physics_steps == info.physics_steps
   end
 
+  @tag :travel_boundary
   test "spawn query is authorized against B before entering the kernel", ctx do
     Application.put_env(:scene_server, :s1_native_observer, self())
     on_exit(fn -> Application.delete_env(:scene_server, :s1_native_observer) end)
@@ -695,7 +700,8 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
              next_reliable()
   end
 
-  test "all XYZ sides reject outside D candidates and B queries before another step", ctx do
+  @tag :travel_boundary
+  test "all XYZ sides stop outside travel candidates but reject unauthorized queries", ctx do
     Application.put_env(:scene_server, :s1_native_observer, self())
 
     on_exit(fn ->
@@ -753,10 +759,16 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         assert observe(scene).character_count == 1
         advance(%{ctx | scene: scene}, 3)
         refute_receive {:native_stepped, [20]}
+        assert_receive {:closed, _, 4}
+        assert observe(scene).character_count == 0
+      else
+        refute_receive {:closed, _, _}
+        assert observe(scene).character_count == 1
+        advance(%{ctx | scene: scene}, 3)
+        assert_receive {:native_stepped, [20]}
+        assert observe(scene).character_count == 1
       end
 
-      assert_receive {:closed, _, 4}
-      assert observe(scene).character_count == 0
       refute_receive {:datagram, _, %Movement.OwnerAck{}}
       stop_supervised!(:domain_scene)
     end

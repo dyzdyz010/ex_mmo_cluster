@@ -44,6 +44,57 @@ defmodule VoxelRegion.WorldTest do
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
   @tag :replica
+  @tag :streaming
+  test "collision stream moves its subscription and preserves buffered events across owner handoff", %{root: root} do
+    alias VoxelRegion.CollisionStream
+    world = start_supervised!({World, root: root, name: :streaming_world})
+    gate = spawn(fn -> receive do :done -> :ok end end)
+    {:ok, stream} = CollisionStream.start(world, gate, self(), {{0,0,0},{1,1,1}})
+    monitor = Process.monitor(stream)
+    assert_receive {:collision_stream, ^stream, 1, {:window, first}}, 10_000
+    assert first.transaction_seq == 0
+    CollisionStream.acknowledge(stream, 1)
+    assert {:ok, 1} = World.apply_edit(world, {4,4,4}, 0)
+    assert_receive {:collision_stream, ^stream, 2, old_delta}, 10_000
+    assert old_delta.chunks != []
+    parent = self()
+    owner = spawn(fn ->
+      loop = fn loop -> receive do
+        :done -> :ok
+        message -> send(parent, {:forwarded, message}); loop.(loop)
+      end end
+      loop.(loop)
+    end)
+    assert :ok = CollisionStream.attach(stream, owner, 1)
+    assert_receive {:forwarded, {:collision_stream, ^stream, 2, ^old_delta}}
+    CollisionStream.window(stream, {{1,0,0},{2,1,1}})
+    assert_receive {:forwarded, {:collision_stream, ^stream, 3, {:window, next}}}, 10_000
+    assert next.l0_min == {1,0,0} and next.transaction_seq == 1
+    CollisionStream.acknowledge(stream, 3)
+    assert {:ok, 2} = World.apply_edit(world, {68,4,4}, 0)
+    assert_receive {:forwarded, {:collision_stream, ^stream, 4, delta}}, 10_000
+    assert delta.transaction_seq == 2 and delta.chunks != []
+    assert {:ok, 3} = World.apply_edit(world, {5,4,4}, 0)
+    assert_receive {:forwarded, {:collision_stream, ^stream, 5, outside}}, 10_000
+    assert outside.transaction_seq == 3 and outside.chunks == []
+    send(gate, :done)
+    assert_receive {:DOWN, ^monitor, :process, ^stream, :normal}
+    send(owner, :done)
+  end
+
+  @tag :replica
+  @tag :streaming
+  test "streaming windows follow all three axes including negative coordinates" do
+    alias VoxelRegion.CollisionStream
+    assert CollisionStream.box({0.0, 512.0, 0.0}, 1) == {{-1,7,-1},{2,10,2}}
+    for axis <- 0..2, direction <- [-1,1] do
+      {min, max} = CollisionStream.box(put_elem({0.0,0.0,0.0},axis,direction*64.1), 1)
+      assert elem(min, axis) == floor(direction*64.1/64)-1
+      assert elem(max, axis)-elem(min, axis) == 3
+    end
+  end
+
+  @tag :replica
   test "file source rejects corrupt body before it can enter the payload cache", %{root: root} do
     region = {0,0,0}
     assert {:ok,bytes,_} = FileStore.read(root,@cv,0,region)

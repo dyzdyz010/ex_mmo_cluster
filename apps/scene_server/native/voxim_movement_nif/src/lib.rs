@@ -100,6 +100,12 @@ fn query_bounds(p:Term,s:StateTuple)->NifResult<(Triple,Triple)> {
     Ok(((b.min.x,b.min.y,b.min.z),(b.max.x,b.max.y,b.max.z)))
 }
 
+#[rustler::nif]
+fn constrain_travel(previous:StateTuple,next:StateTuple,bounds:(Triple,Triple))->NifResult<StateTuple> {
+    Ok(tuple(online::constrain_travel(state(previous)?,state(next)?,
+        online::Aabb{min:vector(bounds.0)?,max:vector(bounds.1)?})))
+}
+
 #[rustler::nif(schedule = "DirtyCpu")]
 fn find_spawn<'a>(env:Env<'a>,resource:ResourceArc<WorldResource>,p:Term,probe:Triple,min_center_y:f64)->NifResult<Term<'a>> {
     let p=profile(p)?; let probe=vector(probe)?; let min_center_y=finite(min_center_y)?;

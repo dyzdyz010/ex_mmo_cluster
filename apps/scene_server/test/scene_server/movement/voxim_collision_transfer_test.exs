@@ -110,6 +110,30 @@ defmodule SceneServer.Movement.VoximCollisionTransferTest do
              CollisionUpdates.import_checkpoint(initialized(39), checkpoint)
   end
 
+  @tag :streaming
+  test "streaming checkpoint carries current windows and pending edits, then retires exited chunks" do
+    snapshot = %CanonicalSnapshot{content_version: 7, transaction_seq: 40,
+      l0_min: {0, 0, 0}, l0_max_exclusive: {1, 1, 1}, regions: [], chunks: [chunk(0, :floor)]}
+    source = CollisionUpdates.new(Native) |> CollisionUpdates.initialize_stream(snapshot)
+    moved = %{snapshot | chunks: [chunk(2, :floor)]}
+    source = CollisionUpdates.replace_window(source, moved, 9)
+      |> CollisionUpdates.enqueue(delta(41, [chunk(2, :air)]), 10)
+    cut = CollisionUpdates.export_stream_checkpoint(source, 8)
+    assert pure_data?(cut)
+    imported = CollisionUpdates.import_stream_checkpoint(CollisionUpdates.new(Native), cut)
+    assert supported?(imported, 8, 0.5)
+    refute supported?(imported, 9, 0.5)
+    assert supported?(imported, 9, 4.5)
+    {imported, events} = CollisionUpdates.consume(imported, 10)
+    imported = CollisionUpdates.record_tick(imported, 10, events)
+    assert imported.transaction_seq == 41
+    refute supported?(imported, 10, 4.5)
+    retired = CollisionUpdates.retire_before(imported, 10)
+    assert map_size(retired.artifacts) == 1
+    assert Map.keys(retired.artifacts[3]) == [{2, 0, 0}]
+    assert retired.baseline_world == nil
+  end
+
   defp initialized(seq \\ 40) do
     CollisionUpdates.new(Native)
     |> CollisionUpdates.initialize(%CanonicalSnapshot{

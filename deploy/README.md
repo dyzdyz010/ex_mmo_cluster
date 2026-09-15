@@ -49,3 +49,10 @@ docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
 cd /data/ex_mmo_cluster
 ./upgrade.sh
 ```
+# Voxim 青岚驿受邀内测
+
+2026-09-14：公网内测采用同一个 Voxim 权威运行根与双 Scene 拓扑，增加专用的 `/playtest/login`、`/playtest/regions` HTTP 入口。配置 `VOXIM_PLAYTEST_ACCESS_FILE` 后，Auth Endpoint 仅接纳这两个入口；旧浏览器免密登录和开发写接口不对外开放，`DEV_AUTO_LOGIN=false`。邀请码对应服务端指定账号，客户端自报昵称不能改换身份。
+
+采用 [RFC 6750 §2.1、§5](https://www.rfc-editor.org/rfc/rfc6750) 的 `Authorization: Bearer` 传递方式及 TLS 证书校验。邀请码为系统随机源生成的 5 位大写字母数字（无 0/O/1/I，区分大小写），服务端文件仅保留 SHA-256 摘要与账号映射；该文件原子更新，每次 HTTP 接纳读取，删除条目即可拒绝后续邀请码登录和 region 请求。已签发会话 token 按现有契约有效 24 小时，已建立 QUIC 会话仍遵循现有生命周期；删除邀请码不是实时踢人或 token 撤销协议。部署必须使用独立 `SECRET_KEY_BASE`，避免接受旧开发服务器签发的凭证。HTTP 仅经 HTTPS 入口访问，PostgreSQL、BEAM 分布式端口和原始 HTTP 端口留在内部网络。
+
+本轮验证关注：无邀请码/错误码拒绝、邀请码不能冒用他人账号、停用后新请求拒绝、旧登录/开发写接口不能旁路，以及同一可分发 Windows 包完成公网双客户端移动、建造同步和跨区。部署工具与世界迁移说明见主客户端 `../Voxim/Docs/Playtest/`；不以单独认证测试代替实际入口实跑。

@@ -21,6 +21,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     defdelegate world_stats(world), to: P1
     defdelegate set_chunks(world, operations), to: P1
     defdelegate query_bounds(profile, state), to: P1
+    defdelegate constrain_travel(previous, next, bounds), to: P1
     defdelegate find_spawn(world, profile, probe, min_y), to: P1
 
     def step_characters(world, profile, characters) do

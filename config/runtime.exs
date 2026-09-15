@@ -29,6 +29,7 @@ dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
 world_pack_generate? = System.get_env("VOXEL_WORLD_PACK_GENERATE", "0") in ["true", "1"]
 
 config :auth_server, :dev_auto_login, dev_auto_login?
+config :auth_server, :playtest_access_file, System.get_env("VOXIM_PLAYTEST_ACCESS_FILE")
 
 # Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")

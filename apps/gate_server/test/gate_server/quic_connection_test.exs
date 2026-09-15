@@ -614,6 +614,24 @@ defmodule M4aGateTransferTest do
     assert rejected.closing and rejected.edit_worker == nil
   end
 
+  @tag :streaming
+  test "normal build beyond the initial collision box reaches authority without closing Gate" do
+    state = pending_state()
+    state = %{state | voxim_overlay: true, builder: false, edit_worker: self(),
+      bounds: {{0, 0, 0}, {16, 16, 16}},
+      pending_transfer: nil, player: self(),
+      route: %{scene_ref: :source_scene, world_ref: :shared_world},
+      streams: %{voxel_stream: %{purpose: 2, buffer: <<>>, started: true}}}
+    bytes = <<0x7F, 1::64, 1::32, 1::64, 1::8, 292::signed-32, 534::signed-32, 31::signed-32, 1::16, 19::16>>
+    {:noreply, next} = QuicConnection.handle_info(
+      {:quic, <<byte_size(bytes)::32, bytes::binary>>, :voxel_stream, %{}}, state)
+    refute next.closing
+    assert next.edit_pending == 1
+    assert_receive {{:voxel_production_intent, %{coord: {292, 534, 31}, action: 1}},
+      %{world_ref: :shared_world, player: player}, _}
+    assert player == self()
+  end
+
   defmodule Router do
     def route(2), do: {:ok, %{scene_ref: :target_scene, scene_epoch: 8, world_ref: :shared_world}}
     def prepare_transfer(old, fresh, artifact, gate) do

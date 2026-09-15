@@ -26,7 +26,12 @@ defmodule MmoContracts.Voxel.Codec do
        ]},
     3 =>
       {Voxel.TimelineFence,
-       [identity: :identity, server_tick: :u64, transaction_seq: :u64, collision_revision: :u64]}
+       [identity: :identity, server_tick: :u64, transaction_seq: :u64, collision_revision: :u64]},
+    4 => {Voxel.CollisionWindow,
+      [apply_tick: :u64, identity: :identity, content_version: :u64,
+       collision_revision: :u64, transaction_seq: :u64, l0_min: :coord,
+       l0_max_exclusive: :coord, travel_min_m: :vec3, travel_max_exclusive_m: :vec3,
+       regions: {:array, :u32, :region}]}
   }
 
   @doc "新增 M1 Voxel envelope；既有 R6 入口和内嵌字节不变。"
@@ -693,7 +698,7 @@ defmodule MmoContracts.Voxel.Codec do
   defp accept_m1(%Voxel.CollisionApplied{changed_chunks: chunks}),
     do: MmoContracts.Session.Wire.ordered!(chunks)
 
-  defp accept_m1(%Voxel.CanonicalBootstrap{} = value) do
+  defp accept_m1(%module{} = value) when module in [Voxel.CanonicalBootstrap, Voxel.CollisionWindow] do
     {x0, y0, z0} = value.l0_min
     {x1, y1, z1} = value.l0_max_exclusive
     true = x0 < x1 and y0 < y1 and z0 < z1

@@ -65,6 +65,14 @@ defmodule AuthServerWeb.IngameController do
     end
   end
 
+  @doc "使用接纳边界确认的邀请码身份登录，忽略请求中的自报昵称。"
+  def playtest_login(%{assigns: %{playtest_username: username}} = conn, _params),
+    do: do_auto_login(conn, %{"username" => username})
+
+  @doc "已确认的受邀客户端读取权威 region；不依赖开发免密入口开关。"
+  def playtest_regions(%{assigns: %{playtest_username: _}} = conn, _params),
+    do: do_voxel_regions(conn)
+
   @doc """
   Demo JSON hook that prepares the default server-authoritative voxel lease.
 

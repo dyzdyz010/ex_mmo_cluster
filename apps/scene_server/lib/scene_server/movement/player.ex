@@ -4,6 +4,7 @@ defmodule SceneServer.Movement.Player do
   require Logger
   alias MmoContracts.{Session, Movement, Voxel}
   alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock}
+  alias VoxelRegion.CollisionStream
 
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -25,7 +26,8 @@ defmodule SceneServer.Movement.Player do
       clock_ready: false, slots: nil, origin: nil, simulation_tick: 0,
       simulation_revision: 0, tick: 0, physics_steps: 0, step_us: 0,
       rejected_inputs: 0, old_identity: 0, substitutions: 0, failure: nil,
-      transfer: nil, deferred: [], private_timeline: false, queued_seq: 0, resume_pending: false})
+      transfer: nil, deferred: [], private_timeline: false, queued_seq: 0, resume_pending: false,
+      stream: nil, stream_cursor: 0, window_domains: [], requested_window: nil, window_pending: false})
     state = case Keyword.get(opts, :import) do
       nil -> state
       cut -> Map.merge(state, %{state: cut.state, baseline: {cut.transaction_seq, cut.simulation_revision},
@@ -34,7 +36,25 @@ defmodule SceneServer.Movement.Player do
         simulation_revision: cut.simulation_revision, tick: cut.published_tick, transfer: :prepared,
         private_timeline: true, queued_seq: cut.transaction_seq, resume_pending: true})
         |> enqueue_tail(Keyword.fetch!(opts, :tail))
-        |> private_ticks(Keyword.fetch!(opts, :tick))
+    end
+    state = case Keyword.get(opts, :import) do
+      %{stream: stream} = cut when stream != nil ->
+        state = Map.merge(state, Map.take(cut, [:stream, :stream_cursor, :window_domains,
+          :requested_window, :window_pending, :queued_seq]))
+        Process.monitor(stream)
+        :ok = CollisionStream.attach(stream, self(), cut.stream_cursor)
+        state
+      nil ->
+        if state.config.streaming_radius > 0 do
+          box = CollisionStream.box(Enum.at(state.config.probes, state.slot), state.config.streaming_radius)
+          {:ok, stream} = CollisionStream.start(Keyword.fetch!(opts, :authority_ref), state.gate, self(), box)
+          Process.monitor(stream)
+          %{state | stream: stream, private_timeline: true, requested_window: box, window_pending: true,
+            tick: Keyword.get(opts, :initial_tick, 0)}
+        else
+          state
+        end
+      _ -> state |> private_ticks(Keyword.fetch!(opts, :tick))
     end
     Process.monitor(state.scene)
     Process.monitor(state.gate)
@@ -50,9 +70,12 @@ defmodule SceneServer.Movement.Player do
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
   def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
     fence(state)
-    checkpoint = CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
+    checkpoint = if state.stream,
+      do: CollisionUpdates.export_stream_checkpoint(state.updates, state.simulation_tick),
+      else: CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
     cut = Map.take(state, [:id, :epoch, :identity, :state, :slots, :origin,
-      :simulation_tick, :simulation_revision, :config, :content_version])
+      :simulation_tick, :simulation_revision, :config, :content_version,
+      :stream, :stream_cursor, :window_domains, :requested_window, :window_pending, :queued_seq])
       |> Map.merge(%{transaction_seq: state.updates.transaction_seq,
         published_tick: state.tick, collision_checkpoint: checkpoint})
     character_event(state, state, :transfer_sealed, %{cut_tick: state.simulation_tick,
@@ -101,6 +124,23 @@ defmodule SceneServer.Movement.Player do
 
   @impl true
   def handle_info({:clock_origin, origin}, state), do: {:noreply, %{state | mono_origin: origin}}
+  def handle_info({:collision_stream, _, _, _}, %{transfer: :sealed} = state), do: {:noreply, state}
+  def handle_info({:collision_stream, stream, cursor, event}, %{stream: stream} = state) do
+    CollisionStream.acknowledge(stream, cursor)
+    state = %{state | stream_cursor: cursor}
+    case event do
+      {:window, snapshot} when state.baseline == nil ->
+        domain = window_domain(snapshot)
+        updates = CollisionUpdates.initialize_stream(state.updates, snapshot)
+        state = %{state | queued_seq: snapshot.transaction_seq, window_pending: false,
+          window_domains: [{0, domain}], config: %{state.config | bounds: domain.bounds,
+            travel: domain.travel, spawn_min_y: max(state.config.spawn_min_y, elem(elem(domain.travel, 0), 1))}}
+        handle_info({:anchor, state.tick, updates, snapshot.content_version, snapshot}, state)
+      {:window, snapshot} ->
+        {:noreply, %{state | updates: CollisionUpdates.enqueue(state.updates, {:marker, :stream_window, snapshot}, now(state))}}
+      %Voxel.CanonicalDelta{} = delta -> {:noreply, enqueue_tail(state, [delta])}
+    end
+  end
   def handle_info({:anchor, tick, updates, content_version, snapshot}, state) do
     state = %{state | tick: tick, updates: updates, content_version: content_version}
     probe = Enum.at(state.config.probes, state.slot)
@@ -135,9 +175,11 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:timeline, _, _, _, _, _}, %{transfer: :sealed} = state), do: {:noreply, state}
   def handle_info({:timeline, tick, seq, revision, versions, events}, state) do
-    state = if state.private_timeline do
-      state |> enqueue_tail(Enum.map(events, &elem(&1, 4))) |> private_ticks(tick)
-    else
+    state = cond do
+      state.stream != nil and state.baseline == nil -> %{state | tick: tick}
+      state.stream != nil -> private_ticks(state, tick)
+      state.private_timeline -> state |> enqueue_tail(Enum.map(events, &elem(&1, 4))) |> private_ticks(tick)
+      true ->
       updates = CollisionUpdates.ingest_publication(state.updates, tick, seq, revision, versions, events)
       %{state | tick: tick, updates: updates} |> deliver_transactions(tick, events)
     end
@@ -206,16 +248,13 @@ defmodule SceneServer.Movement.Player do
               processed_input_seq: slots.processed_input_seq, collision_revision: revision})
           end
           state = %{state | resume_pending: false}
-          next = from_pod(result, yaw)
+          next = from_pod(state.updates.native.constrain_travel(pod(state.state), result, domain_at(state, tick).travel), yaw)
           state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1}
-          if inside?(next.position, state.config.travel) do
-            %{state | state: next, slots: slots, simulation_tick: tick,
-              simulation_revision: revision, updates: CollisionUpdates.retire_before(state.updates, tick)}
-            |> boundary()
-            |> advance()
-          else
-            fail(state, 4)
-          end
+          %{state | state: next, slots: slots, simulation_tick: tick,
+            simulation_revision: revision, updates: CollisionUpdates.retire_before(state.updates, tick)}
+          |> stream_window()
+          |> boundary()
+          |> advance()
         end
     end
   end
@@ -240,12 +279,23 @@ defmodule SceneServer.Movement.Player do
     end
   end
   defp emit_transactions(state, tick, events) do
-    for {payload, n, r, chunks, delta} <- events do
+    for event <- events do
+      case event do
+      {:window, snapshot, revision} ->
+        domain = window_domain(snapshot)
+        reliable(state, :voxel, %Voxel.CollisionWindow{identity: state.identity, apply_tick: tick,
+          content_version: state.content_version, collision_revision: revision,
+          transaction_seq: snapshot.transaction_seq, l0_min: snapshot.l0_min,
+          l0_max_exclusive: snapshot.l0_max_exclusive, travel_min_m: elem(domain.travel, 0),
+          travel_max_exclusive_m: elem(domain.travel, 1), regions: snapshot.regions})
+        for t <- Map.get(snapshot, :property_states, []), do: reliable(state, :voxel, {:voxel_property_state, t})
+      {payload, n, r, chunks, delta} ->
       reliable(state, :voxel, {:voxel_log_transaction_payload, payload})
       for t <- Map.get(delta.transaction,:property_states,[]), do: reliable(state,:voxel,{:voxel_property_state,t})
       if chunks != [], do: reliable(state, :voxel, %Voxel.CollisionApplied{
         identity: state.identity, collision_revision: r, transaction_seq: n,
         apply_tick: tick, changed_chunks: Enum.map(chunks, & &1.coord)})
+      end
     end
   end
   defp enqueue_tail(state, deltas) do
@@ -265,11 +315,19 @@ defmodule SceneServer.Movement.Player do
     next = state.tick + 1
     {updates, events} = CollisionUpdates.consume(state.updates, now(state))
     updates = CollisionUpdates.record_tick(updates, next, events)
-    transactions = for {:delta, delta, revision, _} <- events do
-      {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
-        delta.transaction_seq, revision, delta.chunks, delta}
-    end
-    %{state | tick: next, updates: updates}
+    {state, transactions} = Enum.reduce(events, {%{state | updates: updates}, []}, fn
+      {:delta, delta, revision, _}, {s, output} ->
+        {s, output ++ [{Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
+          delta.transaction_seq, revision, delta.chunks, delta}]}
+      {:marker, :stream_window, snapshot}, {s, output} ->
+        updates = CollisionUpdates.replace_window(s.updates, snapshot, next)
+        s = %{s | updates: updates, window_pending: false,
+          window_domains: [{next, window_domain(snapshot)} | s.window_domains]}
+        character_event(s, s, :collision_window, %{apply_tick: next, l0_min: Tuple.to_list(snapshot.l0_min),
+          l0_max: Tuple.to_list(snapshot.l0_max_exclusive), regions: length(snapshot.regions), chunks: length(snapshot.chunks)})
+        {s, output ++ [{:window, snapshot, updates.revision}]}
+    end)
+    %{state | tick: next}
     |> deliver_transactions(next, transactions)
     |> advance()
     |> private_ticks(tick)
@@ -368,9 +426,10 @@ defmodule SceneServer.Movement.Player do
 
   defp query_allowed?(state, value) do
     {lo, hi} = state.updates.native.query_bounds(state.config.profile_tuple, pod(value))
-    {min, max} = state.config.bounds
+    domain = domain_at(state, state.simulation_tick + 1)
+    {min, max} = domain.bounds
 
-    inside?(value.position, state.config.travel) and
+    inside?(value.position, domain.travel) and
       Enum.all?(0..2, &(elem(lo, &1) >= elem(min, &1) and elem(hi, &1) < elem(max, &1)))
   end
 
@@ -390,8 +449,30 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
-  defp inside?(point, {min, max}),
-    do: Enum.all?(0..2, &(elem(point, &1) >= elem(min, &1) and elem(point, &1) < elem(max, &1)))
+  defp inside?(point, domain), do: SceneServer.Movement.Authority.contains?(point, domain)
+
+  defp domain_at(%{stream: nil} = state, _), do: state.config
+  defp domain_at(state, tick), do: state.window_domains |> Enum.find(fn {t, _} -> t <= tick end) |> elem(1)
+  defp window_domain(snapshot) do
+    extent = Voxel.Payload.extent() - 2
+    min = snapshot.l0_min |> Tuple.to_list() |> Enum.map(&(&1 * extent / 1)) |> List.to_tuple()
+    max = snapshot.l0_max_exclusive |> Tuple.to_list() |> Enum.map(&(&1 * extent / 1)) |> List.to_tuple()
+    %{bounds: {min, max}, travel: {
+      min |> Tuple.to_list() |> Enum.map(&(&1 + extent / 4)) |> List.to_tuple(),
+      max |> Tuple.to_list() |> Enum.map(&(&1 - extent / 4)) |> List.to_tuple()}}
+  end
+  defp stream_window(%{stream: nil} = state), do: state
+  defp stream_window(state) do
+    {newer, older} = Enum.split_while(state.window_domains, fn {tick, _} -> tick > state.simulation_tick end)
+    state = %{state | window_domains: newer ++ Enum.take(older, 1)}
+    box = CollisionStream.box(state.state.position, state.config.streaming_radius)
+    if not state.window_pending and box != state.requested_window do
+      CollisionStream.window(state.stream, box)
+      %{state | requested_window: box, window_pending: true}
+    else
+      state
+    end
+  end
 
   defp pod(state), do: {state.position, state.velocity, state.grounded}
 
