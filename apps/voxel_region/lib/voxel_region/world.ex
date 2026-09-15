@@ -1084,8 +1084,10 @@ defmodule VoxelRegion.World do
       component_observations(before, nil)
       |> Enum.filter(&(MapSet.member?(changed_owners, &1.owner) and not Map.has_key?(state.instances, &1.owner)))
       |> Enum.map(&%{&1 | seq: state.seq, hp: 0.0, flags: 1, request_id: 0})
-    rows = removed ++ Map.get(txn, :property_states, []) ++ fresh
-    rows = rows |> Map.new(&{Damage.key(&1), &1}) |> Map.values() |> Enum.map(fn
+    # 纯属性提交由唯一目标集合产生；只有几何变化合并三种来源时才需要按身份去重。
+    rows = if MapSet.size(changed_owners) == 0, do: Map.get(txn, :property_states, []), else:
+      (removed ++ Map.get(txn, :property_states, []) ++ fresh) |> Map.new(&{Damage.key(&1), &1}) |> Map.values()
+    rows = Enum.map(rows, fn
       %{granularity: 2} = row ->
         cells = subtree_cells(before, MapSet.new([row.owner])) ++ subtree_cells(state, MapSet.new([row.owner]))
         Map.put(row, :observation_cells, Enum.uniq(cells))
@@ -1544,9 +1546,12 @@ defmodule VoxelRegion.World do
     # 热种子不变时复用六邻域；编辑仍通过 geometry 删除使拓扑失效。
     cells=if seeds==state.thermal_work.seeds,do: state.thermal_work.cells,
       else: seeds |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
-    missing=MapSet.difference(cells,MapSet.new(Map.keys(state.thermal_work.geometry)))
+    # 上批 geometry 的键恰好是 cells；编辑只会删键。集合未变且未删键时直接复用。
+    reuse_geometry=cells==state.thermal_work.cells and map_size(state.thermal_work.geometry)==MapSet.size(cells)
+    missing=if reuse_geometry,do: MapSet.new(),else: MapSet.difference(cells,MapSet.new(Map.keys(state.thermal_work.geometry)))
     neighborhood_done=System.monotonic_time(:microsecond)
-    {geometry,state}=Enum.reduce(missing,{Map.take(state.thermal_work.geometry,MapSet.to_list(cells)),state},fn cell,{geometry,s} ->
+    geometry=if reuse_geometry,do: state.thermal_work.geometry,else: Map.take(state.thermal_work.geometry,MapSet.to_list(cells))
+    {geometry,state}=Enum.reduce(missing,{geometry,state},fn cell,{geometry,s} ->
       micro=cell |> Tuple.to_list() |> Enum.map(&(&1*@micro)) |> List.to_tuple()
       {target,s}=target_at(micro,s)
       material=if target,do: Map.fetch!(s.properties.materials,target.material)
@@ -1583,7 +1588,11 @@ defmodule VoxelRegion.World do
     end)
     # 拓扑只缓存身份与材料；温度和 HP 每批从唯一权威记录取值。
     {targets,input}=Enum.map(ordered,fn {cell,n}->
-      t=property_state(state,n.target)
+      # Damage.key 含完整目标身份；已有记录直接读取，最终提交统一盖 seq/request_id。
+      t=case Map.fetch(state.damage,Damage.key(n.target)) do
+        {:ok,t}->t
+        :error->property_state(state,n.target)
+      end
       temperature=Map.get(t,:temperature_kelvin,config["ambient_kelvin"])
       source=Map.get(sources,cell)
       {{cell,t,temperature},{temperature,t.hp,t.max_hp,n.material["heat_capacity_per_macro"]*1.0,
@@ -1597,8 +1606,8 @@ defmodule VoxelRegion.World do
     {done,result,supplied,environment}=VoxelRegion.ThermalNative.batch(input,indexed_edges,
       config["ambient_kelvin"]*1.0,config["environment_w_per_m2_k"]*1.0,config["tolerance_kelvin"]*1.0,dt,steps)
     calculated=System.monotonic_time(:microsecond)
-    {changes,sources,hot}=Enum.zip(targets,result) |> Enum.reduce({[],%{},[]},
-      fn {{cell,t,old_temperature},{temperature,hp,remaining}},{changes,left,hot} ->
+    {changes,sources,hot}=Enum.zip_reduce(targets,result,{[],%{},[]},
+      fn {cell,t,old_temperature},{temperature,hp,remaining},{changes,left,hot} ->
       left=if remaining>0,do: Map.put(left,cell,%{Map.fetch!(sources,cell) | remaining_j: remaining}),else: left
       hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: [cell|hot],else: hot
       if temperature==old_temperature and hp==t.hp do
@@ -1630,8 +1639,7 @@ defmodule VoxelRegion.World do
     fanout(state,txn)
     fanout_canonical(state,txn,[],[],state)
     broadcast=System.monotonic_time(:microsecond)
-    bytes=Enum.reduce(rows,0,fn t,n->{:ok,b}=Codec.encode({:voxel_property_state,t});n+IO.iodata_length(b) end)
-    Logger.info("voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} state_bytes=#{bytes} persist_us=#{persisted-start} broadcast_us=#{broadcast-persisted} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}")
+    Logger.info("voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} persist_us=#{persisted-start} broadcast_us=#{broadcast-persisted} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}")
     state
   end
 

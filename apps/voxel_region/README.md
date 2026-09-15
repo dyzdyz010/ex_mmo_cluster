@@ -1,5 +1,20 @@
 # Voxim Region 真值
 
+2026-09-15 B3 广播根因续查（全局系统功能）：隔离同输入插桩发现 1 万格批次 GC 中位约 27–36 ms，
+属性汇总与仅供日志的重复 wire 编码会触发额外分配。纯属性提交已由唯一目标集合产生，只有几何改变
+合并删除/原属性/新叶子三种来源时才按身份去重；叶子实际观察区域仍照常补齐。删除热提交日志中为
+`state_bytes` 完整编码所有状态的工作，真实观察者仍统计实际发送字节。依据
+[OTP 进程效率指南](https://www.erlang.org/doc/system/eff_guide_processes.html) 与
+[ERTS GC 说明](https://www.erlang.org/doc/apps/erts/garbagecollection.html) 的进程堆分配、复制和回收行为；
+这里先删除无业务用途的分配，不调整堆下限、GC 策略或权威边界。复现命令：Voxim 的
+`b3_pipeline_compare.py --baseline-ref 69a6ed58 --profile-fanout --out Saved/R7/B3/Server/<新目录>`，
+可加 `--optimized-first` 对调运行顺序。只在独立性能 VM 插桩 GC/投影/发送，线上不启用 tracing。
+同轮继续减少输入/回写分配：未改变的 geometry 直接复用（上批键集合等于 cells，编辑只会删键），
+已有完整目标身份的 Damage 记录直接取值，最终提交统一盖 seq/request_id；缺记录仍由原属性函数创建默认值。
+接纳改用 [Elixir 1.18 Enum.zip_reduce 源码](https://github.com/elixir-lang/elixir/blob/v1.18.2/lib/elixir/lib/enum.ex)
+的双列表直接递归，省去先 zip 的中间列表。上述更改不调整模拟次序或步长；减少分配不等于保证尾延迟，
+GC 落在哪个阶段随堆状态改变，仍需完整 callback 与真实窗口实测。
+
 2026-09-15 B3 完整链路优化（全局系统功能）：World 复用有效热种子的六邻域和节点/边索引，
 每批从权威记录读取 HP/温度，批量构造变化 Map；编辑使几何摘要失效，仍在固定步边界更新热前沿。
 OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同步数据库事务完成后才确认。
