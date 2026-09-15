@@ -1,5 +1,21 @@
 # Voxim Region 真值
 
+2026-09-15 B3 碰撞材质查询（Global system）：连续行投影仍逐格调用目录 Map 查询，同一实际窗口
+共 7,077,888 格。`CollisionSource` 现在从唯一 `VoxelMaterialCatalog` 在编译时派生密集 0/1 tuple，
+宏格行、直接世界读取器与 refined slot 共用内联 `blocked/1`。目录仍是唯一阻挡定义；没有新运行时
+缓存、世界状态、NIF 或协议。适用前提是现有 MaterialId 从 0 起连续，合法材质由既有载荷边界保证；
+追加目录时照常重编译依赖模块，不在运行时猜测未知材质。
+依据：[Elixir 1.18.2 Kernel.elem/2](https://hexdocs.pm/elixir/1.18.2/Kernel.html#elem/2)
+明确零基索引与编译器内联；[OTP binary 指南](https://www.erlang.org/doc/system/binaryhandling.html)
+说明顺序追加二进制可避免反复复制，故保留现有行构造，只消除实测查询成本。
+只测试探针 `b3_collision_profile.py` 先在相同真实 seq4627 快照上证实完整投影 190.853→123.921 ms，
+reductions 25,723,602→11,400,778；保存中间行的子实验有额外分配，不把它与完整调用相加。
+最终 `b3_collision_compare.py --baseline-ref 97a38dad` 八组逐字节相等；
+`b3_window_pipeline.py --collision-only --baseline-ref 97a38dad` 在相同 World 下只换碰撞实现，
+完整窗口中位 334.808→265.707 ms，27 regions/1728 chunks/7 属性/身份全部相等。
+回归覆盖完整材质目录、负坐标与行边界、细化占用，以及真实 canonical 编辑、订阅和恢复。
+双端路线证据与限制见 [B3 observation](../../../Voxim/Docs/R7/B3-observation.md)。
+
 2026-09-15 B3 窗口准备（Global system）：`prepare` 原先只看 decoded/region_bases，忽略已物化的
 payloads，完整窗口已缓存仍启动 24–27 个 `source.ensure`。独立 B3 `/demo/world` 在 Windows
 bind mount；相同输入单次 File.exists? 约 7–8 ms，27 项批次约 200 ms，真实路线准备中位约 303 ms。
@@ -43,7 +59,22 @@ OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同�
 同输入数据库/双观察者实验及独立 B3 真实双端结果见 [B3 observation](../../../Voxim/Docs/R7/B3-observation.md)。
 性能夹具仅用 `voxim_b3_rustler_perf`；这不是大规模真实客户端容量验收。
 
-2026-09-15 R7-B3 热传递首片：`Thermal` 是全局系统功能，只消费 canonical 派生的普通宏格六面接触摘要；
+2026-09-16 R7-B3 完整物理增量（Global system）：`ThermalGeometry` 从 canonical 实占用生成宏格／微格节点，
+微格容量为宏格的1/512、面面积1/64m²；宏格与 refined 的部分接触按64个面槽位采样。
+接触导热系数 `G=A/(da/ka+db/kb)`，d为半格长度；每条边只结算一次，空面按环境换热，非热实体视为绝热。
+`ThermalNative.advance` 使用有限体积显式更新，步长≤min(50ms,0.45*C/(ΣG+h*A))，活动前沿变化后立即重建下一步接触。
+每500ms提交0.5s模拟，与属性、热破坏占用同笔持久化。参考下述NIST FiPy离散与稳定条件；没有气流、辐射、电路或燃烧。
+
+正常鉴权工具 `action=heat` 必须命中带 `heat.receiver` 的宏格，消费目录指定燃料并添加有限J，余额与能源同笔保存。
+建造不生成能源；源绑定目标身份，拆除取消余能并记录 `discarded_source_j`，材料携带显热记入 `removed_j`。
+`thermal_environment_path` 读取资产发布的ambient/h/tolerance，无自动热源；Test-only `thermal_experiment` 保留为实验入口。
+已有热状态优先从同一overlay恢复，停机不补算；发布兼容扩展保留既有热材料定义、HP、身份和占用。
+granularity1保存独立微格温度、2保存叶子共享HP；微格过热伤害按叶子汇总，归零时整个叶子与同批宏格破坏原子提交。
+温度行不参与旧微格HP迁移，附近快照与窗口退出覆盖这些新行；未激活的热格使用已声明环境默认值。
+材料数值为加速测试资产，并非真实物性标定；真实双端、剩余付费能源Docker恢复、拆建无回能与能量收支见
+[B3物理验收](../../../Voxim/Docs/R7/B3-physical-acceptance.md)。32项相关服务端测试通过，120FPS／大规模容量仍延期。
+
+2026-09-15 R7-B3 热传递首片（历史实现，现已扩展如上）：`Thermal` 是全局系统功能，只消费 canonical 派生的普通宏格六面接触摘要；
 温度复用 World 的 B1 身份、稀疏属性状态、overlay 日志和确认流。50 ms 显式步进，500 ms 批量权威提交，
 同步持久化后广播；只有过热归零才在同一宏格事务中删除占用，不发放采掘奖励。
 `World.thermal_experiment/2` 是只测试的有限供能作者入口，不开放给玩家 Gate；Qinglan 不依赖它。
@@ -244,7 +275,7 @@ manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、完整且有�
 R7-B2 的材料余额随世界事务写入现有 kind 3 元数据：`{cid, material_id} → units`，追加、重放和检查点沿用同一条日志。
 
 2026-09-14 用户决定：Prefab 最小破坏单位为最低层 occurrence，普通攻击也不能删除单微格。构件共享 HP，最大值按实际剩余槽的材质 `max_hp_per_macro / 512` 求和；单次攻击使用命中材质的防御、响应和工具强度，不再按微格缩小伤害。归零复用拆卸事务，一次删除整个叶子并按各材质实际剩余量入账；选中父级不扩大攻击范围。既有宏格规则不变。
-现有 121 字节 property envelope 的 granularity=2 表示 occurrence 血量，键为 owner；0 仍为宏格，1 只用于旧存档迁移。启动重放后把同 owner 的旧微格损失 HP 求和，从剩余几何对应的最大 HP 扣除，原有洞、余额及世界序号不变，再由现有检查点持久化。查询返回当前射线命中的身份和材质，以及共享 HP。
+现有 property envelope 的 granularity=2 表示 occurrence 血量，键为 owner；0 为宏格，1 为精确微格温度（B3），也用于辨认历史微格 HP。启动重放后只迁移不带温度的旧微格 HP，把同 owner 的损失求和，从剩余几何对应的最大 HP 扣除；原有洞、余额及世界序号不变，再由既有检查点持久化。查询返回当前射线命中的身份和材质，以及共享 HP；附近温度推送保持独立微格粒度。
 依据：[Epic 的分层破坏指南](https://dev.epicgames.com/documentation/en-us/unreal-engine/cluster-geometry-collections-user-guide-in-unreal-engine)以作者定义层级组织破坏单元；这里按用户要求固定最低层，不引入 Chaos。HP 密度来自既有资产，删除与结算沿用 `clear_subtree` / `prefab_reply` 的原子日志路径；不新增配方、修复或材料表。
 材料由 Demo 资产发布为 `production_materials: [19, 11]`，复用木材与石材的既有 ID。1 单位是 canonical 微格体积（1/512 m³），100% 回收被工具实际摧毁的匹配材料：宏格 512，Prefab 按整个叶子的实际剩余槽逐材质计数；部分伤害不入账。微格只是计量单位，不是 Prefab 破坏单位。建造一个空宏格消耗所选材料 512 单位，两种余额不能互相抵扣。
 `production_intent/3` 刷新当前 Player 身份与位置，World 串行检查距离、余额和实际占用；最近一次相同请求返回原结果，旧序号拒绝。普通玩家的作者放置、删除、替换入口仍需 creator 权限。

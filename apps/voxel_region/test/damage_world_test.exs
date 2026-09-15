@@ -241,21 +241,144 @@ defmodule VoxelRegion.DamageWorldTest do
     :sys.get_state(w)
   end
 
+  @tag :b3_heater
+  test "global thermal environment starts without a test source or free energy", c do
+    path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01}))
+    stop_supervised!(World)
+    w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
+    state=:sys.get_state(w)
+    assert state.thermal.sources==%{} and state.thermal.supplied_j==0.0
+    refute state.thermal.active
+    assert state.seq==0
+    refute Map.has_key?(state.thermal.config,"source_macro")
+  end
+
+  @tag :b3_heater
+  test "paid heater fuel and energy commit together, reject duplicates and survive restart", c do
+    data=Jason.decode!(File.read!(c.catalog))
+    data=Map.update!(data,"tags",&(&1++[%{"id"=>"heat"},%{"id"=>"heat.receiver"}]))
+    data=Map.update!(data,"materials",fn rows -> Enum.map(rows,fn row ->
+      if row["material_id"]==19,do: Map.put(row,"tags",["heat.receiver"]),else: row
+    end) end)
+    tool=%{"id"=>"heater","tool_id"=>2,"action"=>"heat","power"=>1.0,"range_macro"=>6.0,
+      "interval_seconds"=>0.5,"fuel_material_id"=>19,"fuel_units"=>128,"heat_energy_j"=>1000.0,"heat_power_w"=>200.0}
+    File.write!(c.catalog,Jason.encode!(Map.update!(data,"tools",&(&1++[tool]))))
+    b3_experiment(c,1.0,1.0)
+    # 只测试：固定持有量检验扣料与失败回滚；真实采掘入账由B2用例和双端验收覆盖。
+    :sys.replace_state(c.w,&%{&1 | material_balances: %{{1001,19}=>256}})
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 1,tool_id: 2,client_intent_seq: 1})
+    actor=Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
+    before=:sys.get_state(c.w)
+    assert {:ok,seq}=World.tool_intent(c.w,actor,request)
+    after_feed=:sys.get_state(c.w)
+    assert after_feed.material_balances[{1001,19}]==128
+    assert after_feed.thermal.sources[{1,1,2}].remaining_j==before.thermal.sources[{1,1,2}].remaining_j+1000.0
+    [txn]=World.entries_after(c.w,before.seq)
+    assert txn.entries==[] and txn.material_balances==%{{1001,19}=>128}
+    assert txn.thermal==after_feed.thermal
+    assert {:error,:replayed_attack}=World.tool_intent(c.w,actor,request)
+    assert World.seq(c.w)==seq
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    restored=:sys.get_state(w)
+    assert restored.thermal==after_feed.thermal
+    assert restored.material_balances==after_feed.material_balances
+    {_,path}=restored.log
+    File.write!(path<>".reject","")
+    assert {:error,:test_disk_failure}=World.tool_intent(w,%{actor | received_us: 1_000_000},%{request | client_intent_seq: 2})
+    assert Map.take(:sys.get_state(w),[:thermal,:material_balances,:seq])==Map.take(restored,[:thermal,:material_balances,:seq])
+    File.rm!(path<>".reject")
+    assert {:ok,_}=World.tool_intent(w,%{actor | received_us: 1_000_000},%{request | client_intent_seq: 2})
+    assert {:error,:insufficient_material}=World.tool_intent(w,%{actor | received_us: 1_500_000},%{request | client_intent_seq: 3})
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},19)
+    assert b3_tick(w).thermal.sources==%{}
+    assert :sys.get_state(w).material_balances[{1001,19}]==0
+  end
+
+  @tag :b3_heater
+  test "adding unused thermal materials rebinds saved state without changing HP or temperature", c do
+    b3_experiment(c,1000.0,100.0)
+    before=b3_tick(c.w)
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m -> if m["material_id"]==16,
+      do: Map.merge(m,%{"heat_capacity_per_macro"=>500.0,"thermal_conductivity"=>1.0,"heat_resistance_kelvin"=>600.0}),else: m end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
+    assert :ok=World.publish_properties(c.w,c.catalog)
+    after_publish=:sys.get_state(c.w)
+    assert after_publish.seq==before.seq+1
+    assert after_publish.thermal==before.thermal
+    assert Map.new(after_publish.damage,fn {key,t}->{key,Map.drop(t,[:seq,:digest])} end)==
+      Map.new(before.damage,fn {key,t}->{key,Map.drop(t,[:seq,:digest])} end)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).damage==after_publish.damage
+    assert :sys.get_state(w).thermal==after_publish.thermal
+    changed=Enum.map(materials,fn m -> if m["material_id"]==19,do: Map.put(m,"heat_capacity_per_macro",2.0),else: m end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>changed}))
+    assert {:error,:property_version_in_use}=World.publish_properties(w,c.catalog)
+  end
+
   @tag :b3
   test "B3 reuses geometry but reads current HP; deleting contact invalidates exposed faces", c do
     b3_experiment(c,10000.0,1000.0)
     {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
     first=b3_tick(c.w)
-    assert first.thermal_work.geometry[{1,1,2}].exposed_faces==5
+    assert elem(hd(first.thermal_work.geometry[{1,1,2}]),1).exposed_faces==5
     second=b3_tick(c.w)
     assert second.thermal_work.builds==0
-    assert second.thermal_work.edges==[{{1,1,2},{2,1,2}}]
+    assert second.thermal_work.edges==[{{0,{8,8,16}},{0,{16,8,16}},1000.0}]
     {:ok,_}=World.apply_edit(c.w,{2,1,2},0)
     after_edit=b3_tick(c.w)
     assert after_edit.thermal_work.builds>0
-    assert after_edit.thermal_work.geometry[{1,1,2}].exposed_faces==6
+    assert elem(hd(after_edit.thermal_work.geometry[{1,1,2}]),1).exposed_faces==6
     assert after_edit.thermal_work.edges==[]
     assert Enum.all?(after_edit.damage,fn {_,t}->t.micro=={8,8,16} end)
+  end
+
+  @tag :b3
+  test "fine temperatures remain separate from shared leaf HP and survive replay and removal", c do
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m ->
+      if m["material_id"]==11,do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,
+        "thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>294.0}),else: m
+    end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
+    :ok=World.publish_properties(c.w,c.catalog)
+    b3_experiment(c,10000.0,10000.0)
+    {:ok,_}=World.place_prefab(c.w,c.id,{16,8,16},0)
+    before=b3_tick(c.w)
+    fine=for {_,t}<-before.damage,t.granularity==1,do: t
+    assert length(fine)==2
+    assert Enum.all?(fine,&(&1.temperature_kelvin>293.15 and &1.max_hp==100.0/512))
+    assert Enum.at(fine,0).temperature_kelvin != Enum.at(fine,1).temperature_kelvin
+    [leaf]=for {_,t}<-before.damage,t.granularity==2,do: t
+    assert leaf.max_hp==200.0/512 and leaf.hp<leaf.max_hp
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).damage==before.damage
+    assert :sys.get_state(w).thermal==before.thermal
+    # 只测试：提高热输入使同一正常结算路径到达叶子归零，不逐微格删占用。
+    :sys.replace_state(w,fn s->put_in(s.thermal.sources[{1,1,2}].power_w,1.0e8)
+      |> put_in([:thermal,:sources,{1,1,2},:remaining_j],1.0e8) end)
+    seq=World.seq(w)
+    :sys.suspend(w)
+    {:noreply,after_heat}=World.handle_info(:thermal_commit,:sys.get_state(w))
+    assert after_heat.refined==%{}
+    assert after_heat.material_balances==%{}
+    assert after_heat.thermal.removed_j>0
+    assert after_heat.thermal.discarded_source_j>0
+    assert not Enum.any?(after_heat.damage,fn {_,t}->t.owner==leaf.owner end)
+    txns=for {n,txn}<-after_heat.entries,n>seq,do: txn
+    assert length(txns)==1
+    assert Enum.any?(hd(txns).property_states,&(&1.owner==leaf.owner and &1.flags==1))
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).refined==%{}
+    assert :sys.get_state(w).damage==after_heat.damage
   end
 
   defmodule ThermalProbeLog do
@@ -264,7 +387,7 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b3
-  test "B3 删除热种子后只求值一次旧邻域，不把低于阈值的邻格继续算十步", c do
+  test "B3 删除源立即使能源失效，不再计算低于阈值的邻格", c do
     b3_experiment(c,10000.0,1000.0)
     {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
     {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
@@ -275,8 +398,8 @@ defmodule VoxelRegion.DamageWorldTest do
     key=VoxelRegion.Damage.key(row)
     state=%{state | damage: %{key=>row},log: {ThermalProbeLog,nil},subs: %{},canonical_subs: %{},replica_subs: %{}}
     {:noreply,next}=World.handle_info(:thermal_commit,state)
-    # 邻格六面暴露，第一次求值后已低于活动阈值；之后九步不再触碰它。
-    assert_in_delta next.damage[key].temperature_kelvin,293.155+10.0*6*(293.15-293.155)*0.05/1000.0,1.0e-10
+    # 已删除的源不会再提供活动种子；低于阈值的温度作为已保存状态保留。
+    assert next.damage[key].temperature_kelvin==293.155
     assert next.thermal.sources==%{}
     assert not next.thermal.active
   end

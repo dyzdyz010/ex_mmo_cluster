@@ -24,7 +24,12 @@ defmodule VoxelRegion.Damage do
     end)
     true = Enum.all?(tools, fn {id,t} -> id in 1..65535 and t["power"] > 0 and
       t["range_macro"] > 0 and t["interval_seconds"] > 0 and MapSet.member?(tags,t["action"]) and
-      (t["action"]=="damage" or String.starts_with?(t["action"],"damage.")) end)
+      (t["action"]=="heat" or t["action"]=="damage" or String.starts_with?(t["action"],"damage.")) end)
+    true = Enum.all?(tools,fn {_,t} -> t["action"]!="heat" or
+      (Map.has_key?(materials,t["fuel_material_id"]) and t["fuel_material_id"]!=0 and
+       is_integer(t["fuel_units"]) and t["fuel_units"]>0 and
+       is_number(t["heat_energy_j"]) and t["heat_energy_j"]>0 and
+       is_number(t["heat_power_w"]) and t["heat_power_w"]>0) end)
     # B1 已发布目录没有热字段；带热模型的材料必须完整提供有量纲参数。
     true = Enum.all?(materials,fn {_,m} ->
       fields = ~w(heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin)

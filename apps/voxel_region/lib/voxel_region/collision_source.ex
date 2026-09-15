@@ -8,6 +8,15 @@ defmodule VoxelRegion.CollisionSource do
   @micro VoxelRegion.Spatial.micro_resolution()
   @region_size Payload.extent() - 2
 
+  # 全局系统功能：由唯一材质目录编译密集阻挡投影，高频循环直接索引，无逐格远程查询。
+  @blocking VoxelMaterialCatalog.table()
+            |> Enum.map(fn %{"id" => id} ->
+              if VoxelMaterialCatalog.blocks_movement?(id), do: 1, else: 0
+            end)
+            |> List.to_tuple()
+  @compile {:inline, blocked: 1}
+  defp blocked(material), do: elem(@blocking, material)
+
   def regions({{x0, y0, z0}, {x1, y1, z1}}) do
     for x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {x, y, z}
   end
@@ -44,7 +53,7 @@ defmodule VoxelRegion.CollisionSource do
     cells=for z<-0..(@chunk_size-1),y<-0..(@chunk_size-1),into: <<>> do
       row=binary_part(payload.cells,2*Payload.cell_index({lx,ly+y,lz+z}),2*@chunk_size)
       for <<material::little-16 <- row>>,into: <<>>,
-        do: <<if(VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0)>>
+        do: <<blocked(material)>>
     end
     %ChunkOccupancy{coord: coord,n: @chunk_size,scale_m: 1.0,
       origin_m: {cx*@chunk_size*1.0,cy*@chunk_size*1.0,cz*@chunk_size*1.0},cells: cells}
@@ -63,7 +72,7 @@ defmodule VoxelRegion.CollisionSource do
     {blocks,refined} = for z <- 0..(@chunk_size-1),y <- 0..(@chunk_size-1),x <- 0..(@chunk_size-1),reduce: {[],%{}} do
       {blocks,refined} ->
         {material,slots} = value_at.({ox+x,oy+y,oz+z})
-        blocked = if VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0
+        blocked = blocked(material)
         refined = if map_size(slots) == 0,do: refined,else: Map.put(refined,{x,y,z},slots)
         {[<<blocked>>|blocks],refined}
     end
@@ -85,7 +94,7 @@ defmodule VoxelRegion.CollisionSource do
       x = mx*@micro+rem(slot,@micro)
       y = my*@micro+rem(div(slot,@micro),@micro)
       z = mz*@micro+div(slot,@micro*@micro)
-      {x+n*(y+n*z),if(VoxelMaterialCatalog.blocks_movement?(material),do: 1,else: 0)}
+      {x+n*(y+n*z),blocked(material)}
     end
     {parts,pos} = Enum.reduce(Enum.sort(updates),{[],0},fn {index,value},{parts,pos} ->
       {[<<value>>,binary_part(cells,pos,index-pos)|parts],index+1}

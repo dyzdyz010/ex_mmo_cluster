@@ -17,21 +17,42 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
         || edges.iter().any(|&(a,b)| a >= input.len() || b >= input.len() || a == b) {
         return Err(Error::BadArg);
     }
-    Ok(evolve(&input, &edges, ambient, exchange, tolerance, dt, steps))
-}
-
-fn evolve(input: &[Input], edges: &[(usize,usize)], ambient: f64, exchange: f64,
-          tolerance: f64, dt: f64, steps: u32) -> (u32, Vec<Output>, f64, f64) {
-    let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
     let contacts: Vec<_> = edges.iter().map(|&(a,b)| {
         let ka=input[a].4; let kb=input[b].4;
         (a,b,if ka+kb==0.0 {0.0} else {2.0*ka*kb/(ka+kb)})
     }).collect();
+    Ok(evolve(&input, &contacts, ambient, exchange, tolerance, dt, steps))
+}
+
+// 有限体积显式离散：dt <= C / (接触导热系数之和 + 环境换热系数)，保留正系数。
+#[rustler::nif(schedule = "DirtyCpu")]
+fn advance(input: Vec<Input>, contacts: Vec<(usize,usize,f64)>, ambient: f64, exchange: f64,
+           tolerance: f64, duration: f64) -> NifResult<(f64,Vec<Output>,f64,f64)> {
+    if !duration.is_finite() || duration <= 0.0 || !ambient.is_finite()
+        || !exchange.is_finite() || exchange < 0.0 || !tolerance.is_finite() || tolerance < 0.0
+        || input.iter().any(|n| [n.0,n.1,n.2,n.3,n.4,n.5,n.6,n.7,n.8].iter().any(|v| !v.is_finite())
+            || n.3<=0.0 || n.5<=0.0 || n.6<0.0 || n.7<0.0 || n.8<0.0)
+        || contacts.iter().any(|&(a,b,g)| a>=input.len() || b>=input.len() || a==b || !g.is_finite() || g<0.0) {
+        return Err(Error::BadArg);
+    }
+    let mut diagonal: Vec<f64> = input.iter().map(|n| exchange*n.6).collect();
+    for &(a,b,g) in &contacts { diagonal[a]+=g; diagonal[b]+=g; }
+    let stable = input.iter().zip(&diagonal).filter(|(_,g)| **g>0.0)
+        .map(|(n,g)| 0.45*n.3/g).fold(0.05_f64,f64::min);
+    let steps=(duration/stable).ceil() as u32;
+    let dt=duration/f64::from(steps);
+    let (done,result,supplied,environment)=evolve(&input,&contacts,ambient,exchange,tolerance,dt,steps);
+    Ok((f64::from(done)*dt,result,supplied,environment))
+}
+
+fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], ambient: f64, exchange: f64,
+          tolerance: f64, dt: f64, steps: u32) -> (u32, Vec<Output>, f64, f64) {
+    let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
     let mut flow=vec![0.0; input.len()];
     let (mut supplied,mut environment)=(0.0,0.0);
     for step in 1..=steps {
         flow.fill(0.0);
-        for &(a,b,k) in &contacts {
+        for &(a,b,k) in contacts {
             let q=k*(state[b].0-state[a].0)*dt;
             flow[a]+=q; flow[b]-=q;
         }
