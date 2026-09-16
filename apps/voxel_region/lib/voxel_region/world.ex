@@ -1564,6 +1564,7 @@ defmodule VoxelRegion.World do
   defp reduce_batch(state, _dirty, level, all, visits) when level > @max_level, do: {:ok,all,state,visits}
   defp reduce_batch(state, dirty, level, all, visits) do
     parents = dirty |> Enum.map(fn {_,c} -> parent_of(c) end) |> Enum.uniq()
+    faces = if level==1,do: Attachments.l1_faces(state.attachments,parents),else: %{}
     result = Enum.reduce_while(parents,{[],state},fn parent,{changed,s} ->
       case child_values(s,level,parent) do
         {:ok,children,s} ->
@@ -1571,7 +1572,7 @@ defmodule VoxelRegion.World do
             {:ok,old,s} ->
               {material,skins}=Reducer.reduce_cell(children,level)
               {skins,s}=if level==1 do
-                Attachments.project_l1(parent,skins,s.attachments,fn micro,world ->
+                Attachments.project_l1(parent,skins,Map.get(faces,parent,[]),fn micro,world ->
                   {target,world}=target_at(micro,world)
                   {if(target,do: target.material,else: 0),world}
                 end,s)

@@ -4,6 +4,31 @@ defmodule VoxelRegion.AttachmentsTest do
   @moduletag :b4
   alias MmoContracts.Voxel.{Attachments,Payload,Codec}
 
+  test "attachment encoder preserves signed tuple order independently of insertion and identity" do
+    entries=for kind<-[0,1],axis<-0..2,x<-[-9223372036854775808,-513,-1,0,512,9223372036854775807],
+      do: {{kind,axis,{x,-x-1,axis-1}},{100-kind*10-axis,19}}
+    slots=Map.new(Enum.reverse(entries))
+    expected=[<<length(entries)::32-little>>,(for {{k,a,{x,y,z}},{id,m}}<-entries,
+      do: <<k,a,x::signed-little-64,y::signed-little-64,z::signed-little-64,id::64-little,m::16-little>>)] |> IO.iodata_to_binary()
+    assert Attachments.encode(slots)==expected
+    assert {:ok,^slots}=Attachments.decode(expected)
+    assert Attachments.encode(%{})==<<0::32-little>>
+  end
+
+  test "grouped L1 projection equals full canonical traversal on every axis and signed parent boundary" do
+    alias VoxelRegion.Attachments,as: A
+    slots=for kind<-[0,1],axis<-0..2,x<-[-17,-16,-1,0,15,16],y<-[-1,0,16],z<-[-1,0,16],
+      into: %{},do: {{kind,axis,{x,y,z}},{1,19}}
+    parents=for x<- -2..1,y<- -1..1,z<- -1..1,do: {x,y,z}
+    groups=A.l1_faces(slots,parents)
+    sample=fn {x,y,z},s -> {if(rem(x+y+z,3)==0,do: 11,else: 0),s} end
+    base=MmoContracts.Voxel.Skins.uniform(11)
+    for parent<-parents do
+      assert A.project_l1(parent,base,Map.get(groups,parent,[]),sample,nil)==
+        A.project_l1(parent,base,slots,sample,nil)
+    end
+  end
+
   test "L1 face grouping keeps both sides of negative and positive boundaries without lines" do
     alias VoxelRegion.Attachments,as: A
     slots=%{{0,0,{0,-1,16}}=>{7,19},{0,1,{-16,0,16}}=>{8,19},{1,0,{0,-1,16}}=>{9,19}}

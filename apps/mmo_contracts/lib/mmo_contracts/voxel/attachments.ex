@@ -3,11 +3,12 @@ defmodule MmoContracts.Voxel.Attachments do
 
   @doc "按规范地址排序编码；每槽36字节。"
   def encode(slots) do
-    [<<map_size(slots)::little-32>>,
-     for {{kind, axis, {x,y,z}}, {id, material}} <- Enum.sort(slots) do
-       <<kind, axis, x::signed-little-64, y::signed-little-64, z::signed-little-64,
-         id::little-64, material::little-16>>
-     end] |> IO.iodata_to_binary()
+    # 槽键唯一，按键排序等于整条 tuple 排序；binary comprehension 避免逐槽的小 binary 列表。
+    body=for {{kind,axis,{x,y,z}},{id,material}} <- :lists.keysort(1,Map.to_list(slots)),into: <<>> do
+      <<kind,axis,x::signed-little-64,y::signed-little-64,z::signed-little-64,
+        id::little-64,material::little-16>>
+    end
+    <<map_size(slots)::little-32,body::binary>>
   end
 
   @doc "在载荷接纳边界检查排序、唯一占用及当前材料规格。"

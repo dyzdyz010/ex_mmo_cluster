@@ -46,13 +46,16 @@ defmodule VoxelRegion.Attachments do
   def l1_faces(slots,parents) do
     wanted=MapSet.new(parents)
     Enum.reduce(slots,%{},fn
-      {{0,_,_}=slot,_}=entry,groups ->
-        slot |> neighbors() |> Enum.map(&map(&1,fn x -> Integer.floor_div(x,2*@micro) end))
-        |> Enum.uniq() |> Enum.reduce(groups,fn parent,acc ->
-          if MapSet.member?(wanted,parent),do: Map.update(acc,parent,[entry],&[entry|&1]),else: acc
-        end)
+      {{0,axis,{x,y,z}=p},_}=entry,groups ->
+        parent={Integer.floor_div(x,2*@micro),Integer.floor_div(y,2*@micro),Integer.floor_div(z,2*@micro)}
+        other=put_elem(parent,axis,Integer.floor_div(elem(p,axis)-1,2*@micro))
+        groups=put_face(groups,wanted,parent,entry)
+        if other==parent,do: groups,else: put_face(groups,wanted,other,entry)
       _,groups -> groups
     end)
+  end
+  defp put_face(groups,wanted,parent,entry) do
+    if MapSet.member?(wanted,parent),do: Map.update(groups,parent,[entry],&[entry|&1]),else: groups
   end
   @doc "足迹实际涉及的宏格，包括支撑侧。"
   def macros(slots), do: slots |> Enum.flat_map(fn slot -> [elem(slot,2)|neighbors(slot)] end)

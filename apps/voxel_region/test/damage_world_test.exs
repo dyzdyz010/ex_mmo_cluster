@@ -1676,7 +1676,7 @@ defmodule VoxelRegion.DamageWorldTest do
     GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,0.0625}})
     assert {:ok,_}=World.apply_edit(w,{1,1,2},11)
     assert {:ok,new_id}=World.attachment_intent(w,c.actor,%{r | client_intent_seq: 30,request_id: 30})
-    assert new_id!=id
+    assert new_id != id
     assert {:error,:stale_target}=World.tool_intent(w,c.actor,%{request | action: 1,client_intent_seq: 31})
     assert World.stats(w).attachment_slots==64
   end

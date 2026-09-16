@@ -2,6 +2,8 @@
 
 2026-09-17 B5（Global system）功能验收收口：附件逐槽热状态与接触、单源直流串并联、有限投料、开关／灯／电热负载、断接／损伤／热破坏，同笔 World 状态与能量账；Hello8 的 PropertyState 设备扩展。独立 Demo 已完成真实双客户端、跨区、耗尽、过热删除及冷重启恢复。120 FPS与大规模容量仍延期，见 [B5 最终验收](../../../Voxim/Docs/R7/B5-acceptance.md)。
 
+2026-09-16 B4-P2（Global system）：`reduce_batch` 的地形 L1 投影复用已有 `l1_faces` 临时分组；此前只有结构投影使用分组，地形路径仍逐parent扫描附件全集。槽编码按唯一键排序并直接构建binary，保留完整区域事务、字节顺序、压缩和同步持久化。三轮32m初建中位4400→2570ms，64槽删除370→337ms但仍有444ms样本；52项回归通过，实际wire、完整持久化元数据、canonical及重启检查点逐字节相同。仅隔离VM编译实跑，未在线部署；依据、复现和限制见 [B4-P2记录](../../../Voxim/Docs/R7/B4-P2-transaction-hotspots.md)。
+
 2026-09-16 B4（Global system）：World 持有规范附件槽，通过现有 B2 有序请求、材料余额、同步日志及完整区域 after-image 提交；VXR8 承载 L0 附件，core 回放拥有事实，ring 仅副本。宿主宏格／Prefab 编辑同事务裁剪无支撑槽并结算回收。面元的 L1 面积投影沿既有粗层 reducer 传播，线元不改变粗层占用。Session Hello 升至 2，拒绝旧客户端。本轮仅独立 B4 Demo，不发布分发包。设计、实跑与剩余边界见 [B4 权威记录](../../../Voxim/Docs/R7/B4-authority.md)，协议见 [B4 wire](../../../Voxim/Docs/R7/wire.md)。
 
 2026-09-15 B3 碰撞材质查询（Global system）：连续行投影仍逐格调用目录 Map 查询，同一实际窗口
