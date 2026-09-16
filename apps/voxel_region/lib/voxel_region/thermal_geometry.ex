@@ -4,6 +4,7 @@ defmodule VoxelRegion.ThermalGeometry do
   @micro VoxelRegion.Spatial.micro_resolution()
 
   @doc "温度节点身份：宏格或精确微格；生命期身份保留在 target 中。"
+  def key(%{granularity: 4}=t),do: VoxelRegion.ThermalAttachments.key(VoxelRegion.Attachments.slot(t))
   def key(t), do: {t.granularity,t.micro}
 
   @doc "构造一个宏格内的热节点；at 只读取权威占用，返回目标及读取后的世界。"

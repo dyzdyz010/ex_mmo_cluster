@@ -38,7 +38,7 @@ defmodule VoxelRegion.AttachmentsTest do
 
   test "wire explicitly rejects old hello and malformed attachment requests" do
     alias MmoContracts.Session
-    h=%Session.Hello{protocol_version: 6,kernel_id: <<0::256>>,profile_id: <<0::256>>}
+    h=%Session.Hello{protocol_version: 8,kernel_id: <<0::256>>,profile_id: <<0::256>>}
     bytes=Session.Codec.encode(h) |> elem(1) |> IO.iodata_to_binary()
     assert {:ok,^h}=Session.Codec.decode(bytes)
     <<prefix::binary-size(9),_::16,rest::binary>>=bytes

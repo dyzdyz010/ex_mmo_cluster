@@ -2,6 +2,13 @@ defmodule VoxelRegion.Attachments do
   @moduledoc "全局系统功能：附件规范足迹、共享支撑与区域投影；World 唯一持有槽事实。"
   @micro VoxelRegion.Spatial.micro_resolution()
 
+  @doc "附件权威身份：整件 HP 与逐槽热状态共用 kind／axis 及出生 ID。"
+  def identity({kind,axis,anchor},{id,material}),do:
+    %{micro: anchor,granularity: 3,incarnation: id,owner: {id,kind*3+axis},material: material}
+
+  @doc "由属性身份恢复规范槽地址。"
+  def slot(%{owner: {_,type},micro: p}),do: {div(type,3),rem(type,3),p}
+
   @doc "宏规格与微规格展开到同一个占用索引。"
   def footprint(kind,axis,anchor,size) do
     other = Enum.reject(0..2,&(&1==axis))

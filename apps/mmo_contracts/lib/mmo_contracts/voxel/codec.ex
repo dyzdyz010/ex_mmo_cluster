@@ -199,9 +199,16 @@ defmodule MmoContracts.Voxel.Codec do
       {:ok,value} -> <<value::float-64>>
       :error -> <<>>
     end
+    circuit=case Map.fetch(t,:circuit) do
+      {:ok,c} ->
+        {a,b,d}=c.anchor
+        <<c.tool_id::16,c.kind::8,c.size::8,if(c.closed,do: 1,else: 0)::8,c.fault::8,
+          a::signed-64,b::signed-64,d::signed-64,c.remaining_j::float-64,c.voltage_v::float-64,c.current_a::float-64,c.power_w::float-64>>
+      :error -> <<>>
+    end
     {:ok,<<0x7E, t.request_id::64, t.seq::64, x::signed-64,y::signed-64,z::signed-64,
       t.granularity::8,t.incarnation::64,birth::64,occurrence::32,t.material::16,
-      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary>>}
+      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary,circuit::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do

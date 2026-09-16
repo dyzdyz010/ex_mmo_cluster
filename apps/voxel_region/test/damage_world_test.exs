@@ -1488,6 +1488,158 @@ defmodule VoxelRegion.DamageWorldTest do
     assert World.stats(w).attachment_slots==0
   end
 
+  @tag :b5
+  @tag :physical_units
+  test "电路安装投料开关与热结算同笔恢复，重新安装和旧身份不得补充能源",c do
+    r=b4_funded(c)
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m->if m["material_id"]==19,do: Map.merge(m,%{
+      "heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>1000.0,"electrical_conductivity"=>58.0e6}),else: m end)
+    devices=for {id,kind,resistance,voltage,light}<-[{3,1,1.0,12.0,0.0},{4,2,0.01,0.0,0.0},{5,3,12.0,0.0,0.2}],do:
+      %{"id"=>"device#{id}","tool_id"=>id,"action"=>"circuit.install","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5,
+        "circuit_kind"=>kind,"circuit_resistance_ohm"=>resistance,"circuit_voltage_v"=>voltage,"circuit_light_fraction"=>light}
+    toggle=%{"id"=>"toggle","tool_id"=>7,"action"=>"circuit.toggle","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5}
+    feed=Map.merge(toggle,%{"id"=>"feed","tool_id"=>8,"action"=>"circuit.feed","fuel_material_id"=>19,"fuel_units"=>16,"circuit_energy_j"=>60.0})
+    data=%{data | "materials"=>materials,"tools"=>data["tools"]++devices++[toggle,feed],
+      "tags"=>data["tags"]++Enum.map(~w(circuit.install circuit.toggle circuit.feed),&%{"id"=>&1})}
+    File.write!(c.catalog,Jason.encode!(data))
+    assert :ok=World.publish_properties(c.w,c.catalog)
+    config=%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>0.0,"tolerance_kelvin"=>0.01}
+    :sys.replace_state(c.w,fn s->%{s | thermal: %{config: config,sources: %{},elapsed_s: 0.0,supplied_j: 0.0,environment_j: 0.0,active: false}} end)
+    assert {:ok,_}=World.apply_edits(c.w,[{{2,1,2},11},{{3,1,2},11}])
+    ids=for x<-1..3 do
+      assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | anchor: {x*8,8,16},request_id: x+20,client_intent_seq: x+20})
+      id
+    end
+    for {{axis,p},i}<-Enum.with_index([{1,{8,8,16}},{1,{32,8,16}},{0,{8,16,16}},{0,{16,16,16}},{0,{24,16,16}}]) do
+      assert {:ok,_}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: axis,anchor: p,request_id: 30+i,client_intent_seq: 30+i})
+    end
+    use=fn w,index,tool,seq->
+      id=Enum.at(ids,index)
+      request=Map.merge(c.request,%{granularity: 3,micro: {(index+1)*8,8,16},owner: {id,2},incarnation: id,material: 19,
+        action: 1,tool_id: tool,request_id: seq,client_intent_seq: seq})
+      World.tool_intent(w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request)
+    end
+    for index<-0..2,do: assert({:ok,_}=use.(c.w,index,index+3,40+index))
+    assert {:error,:invalid_circuit_operation}=use.(c.w,0,3,44)
+    prior=balance(c.w,1001).balance
+    assert {:ok,_}=use.(c.w,0,8,45)
+    assert balance(c.w,1001).balance==prior-16*4096
+    warm=b3_tick(c.w)
+    assert warm.damage[{3,Enum.at(ids,2)}].circuit.power_w>1.0
+    assert warm.thermal.circuit_supplied_j>0
+    assert_in_delta warm.thermal.circuit_supplied_j,warm.thermal.supplied_j+warm.thermal.circuit_light_j,1.0e-7
+    assert Enum.any?(warm.damage,fn {_,t}->t.granularity==4 and t.temperature_kelvin>293.15 end)
+    assert {:ok,_}=use.(c.w,1,7,46)
+    off=b3_tick(c.w)
+    assert_in_delta off.damage[{3,Enum.at(ids,2)}].circuit.power_w,0.0,1.0e-9
+    assert_in_delta off.thermal.circuit_supplied_j,warm.thermal.circuit_supplied_j,1.0e-8
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    restored=:sys.get_state(w)
+    assert restored.damage==off.damage
+    assert restored.thermal==off.thermal
+    assert restored.material_balances==off.material_balances
+    # 已安装设备的参数不能借目录发布改变；扩充其他内容仍沿既有发布路径。
+    changed=update_in(data["tools"],&Enum.map(&1,fn t->if t["tool_id"]==3,do: Map.put(t,"circuit_voltage_v",24.0),else: t end))
+    File.write!(c.catalog,Jason.encode!(changed))
+    assert {:error,:property_version_in_use}=World.publish_properties(w,c.catalog)
+    File.write!(c.catalog,Jason.encode!(data))
+    assert {:ok,_}=use.(w,1,7,47)
+    for _<-1..20,do: b3_tick(w)
+    depleted=:sys.get_state(w)
+    assert depleted.damage[{3,hd(ids)}].circuit.remaining_j==0.0
+    assert depleted.damage[{3,Enum.at(ids,2)}].circuit.power_w==0.0
+    assert_in_delta depleted.thermal.circuit_supplied_j,60.0,1.0e-7
+    assert_in_delta depleted.thermal.circuit_supplied_j,depleted.thermal.supplied_j+depleted.thermal.circuit_light_j,1.0e-7
+    assert {:ok,_}=use.(w,0,8,48)
+    funded=balance(w,1001).balance
+    # 删除源的最后支撑会丢弃储能，既不返燃料，也不把储能转成热。
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
+    removed=:sys.get_state(w)
+    assert_in_delta removed.thermal.circuit_removed_j,60.0,1.0e-7
+    assert balance(w,1001).balance==funded
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},11)
+    assert {:ok,new_id}=World.attachment_intent(w,c.actor,%{r | request_id: 49,client_intent_seq: 49})
+    assert new_id>hd(ids)
+    request=Map.merge(c.request,%{granularity: 3,micro: {8,8,16},owner: {new_id,2},incarnation: new_id,material: 19,
+      action: 1,tool_id: 3,request_id: 50,client_intent_seq: 50})
+    assert {:ok,_}=World.tool_intent(w,Map.merge(c.actor,%{received_us: 50_000_000,clock_node: node()}),request)
+    assert :sys.get_state(w).damage[{3,new_id}].circuit.remaining_j==0.0
+  end
+
+  @tag :b5
+  @tag :physical_units
+  test "附件逐槽温度接入权威步进、附近观察、删除能量账和真实日志恢复",c do
+    r=b4_funded(c)
+    assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: 1})
+    b3_experiment(c,1000.0,1000.0)
+    warm=b3_tick(c.w)
+    temps=for {_,t}<-warm.damage,t.granularity==4,do: t
+    assert length(temps)==8
+    assert Enum.all?(temps,&(&1.incarnation==id and &1.temperature_kelvin>293.15))
+    ref=make_ref()
+    assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{1,1,1}},self(),ref,false)
+    assert_receive {:canonical_snapshot,^ref,snapshot}
+    assert Enum.count(snapshot.property_states,&(&1.granularity==4))==8
+    assert Enum.any?(snapshot.property_states,&(&1.granularity==3 and &1.incarnation==id))
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    restored=:sys.get_state(w)
+    assert restored.damage==warm.damage
+    assert restored.thermal==warm.thermal
+    assert restored.thermal_work.geometry==%{}
+    # 最后一份支撑消失，温度与附件同笔移除，旧槽显热计入移除账。
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
+    removed=:sys.get_state(w)
+    assert removed.attachments==%{}
+    refute Enum.any?(removed.damage,fn {_,t}->t.granularity==4 end)
+    slot_energy=Enum.reduce(temps,0.0,fn t,sum -> sum+1000.0/2097152*(t.temperature_kelvin-293.15) end)
+    host_energy=Enum.reduce(warm.damage,0.0,fn {_,t},sum -> sum+if(t.granularity==0,
+      do: 1000.0*(t.temperature_kelvin-293.15),else: 0.0) end)
+    assert_in_delta removed.thermal.removed_j,slot_energy+host_energy,1.0e-7
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).damage==removed.damage
+    assert :sys.get_state(w).thermal==removed.thermal
+  end
+
+  @tag :b5
+  @tag :physical_units
+  test "附件过热只归零自己的共享 HP，删除温度同笔保存且不发采矿奖励",c do
+    r=b4_funded(c)
+    assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: 1})
+    # 只测试：绝热支撑上的有限初始显热；不把温度夹具变成玩家能源入口。
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m -> if m["material_id"]==19,
+      do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>294.0}),else: m end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
+    assert :ok=World.publish_properties(c.w,c.catalog)
+    state=:sys.get_state(c.w)
+    config=%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>0.0,"tolerance_kelvin"=>0.01}
+    rows=for {slot,value}<-state.attachments do
+      t=VoxelRegion.Attachments.identity(slot,value) |> Map.put(:granularity,4)
+      Map.merge(t,%{temperature_kelvin: 3000.0,hp: 100/2097152,max_hp: 100/2097152,
+        seq: state.seq,request_id: 0,flags: 0,defense: 2.0,digest: state.properties.digest})
+    end
+    state=%{state | thermal: %{config: config,sources: %{},elapsed_s: 0.0,supplied_j: 0.0,environment_j: 0.0,active: true},
+      damage: Map.new(rows,&{VoxelRegion.Damage.key(&1),&1})}
+    state=put_in(state.thermal_work.hot,MapSet.new([{1,1,2}]))
+    {:noreply,removed}=World.handle_info(:thermal_commit,state)
+    assert removed.attachments==%{}
+    refute Enum.any?(removed.damage,fn {_,t}->t.granularity in [3,4] end)
+    assert removed.material_balances==state.material_balances
+    assert removed.thermal.removed_j>0
+    txn=removed.entries[removed.seq]
+    assert Enum.any?(txn.property_states,&(&1.granularity==3 and &1.incarnation==id and &1.flags==1))
+    assert Enum.count(txn.property_states,&(&1.granularity==4 and &1.flags==1))==8
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).attachments==%{}
+    refute Enum.any?(:sys.get_state(w).damage,fn {_,t}->t.granularity in [3,4] end)
+    assert :sys.get_state(w).material_balances==removed.material_balances
+  end
+
   @tag :b4
   test "B4 attachment damage stays independent, survives partial support and restart, rejects old identity",c do
     r=b4_funded(c)

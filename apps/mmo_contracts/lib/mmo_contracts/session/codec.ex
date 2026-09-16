@@ -1,10 +1,13 @@
 defmodule MmoContracts.Session.Codec do
+  @protocol_version 8
+  @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
+  def protocol_version,do: @protocol_version
   alias MmoContracts.Session
 
   @m1_messages %{
     1 =>
       {Session.Hello,
-       [protocol_version: {:constant, :u16, 6}, kernel_id: :hash, profile_id: :hash]},
+       [protocol_version: {:constant, :u16, @protocol_version}, kernel_id: :hash, profile_id: :hash]},
     2 =>
       {Session.Join, [request_id: :u64, username: :utf8, token: :utf8, cid: :u64, scene_id: :u64]},
     3 =>

@@ -360,12 +360,16 @@ defmodule VoxelRegion.World do
   def handle_call({:publish_properties,catalog},_,state) do
     compatible = Damage.material_units(catalog)==state.material_units_per_micro and
       (map_size(state.attachments)==0 or Map.get(state.properties,:attachments)==Map.get(catalog,:attachments)) and
+      Enum.all?(VoxelRegion.Circuit.devices(state.damage),fn {_,{_,c}}->
+        Map.fetch!(state.properties.tools,c.tool_id)==Map.get(catalog.tools,c.tool_id)
+      end) and
       Enum.all?(state.damage,fn {_,t}->
       old = Map.fetch!(state.properties.materials,t.material)
       new = Map.fetch!(catalog.materials,t.material)
       fields = if Map.has_key?(t,:temperature_kelvin),do: [],else:
         ~w(heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin)
-      Map.drop(old,fields)==Map.drop(new,fields)
+      Map.drop(old,["electrical_conductivity"|fields])==Map.drop(new,["electrical_conductivity"|fields]) and
+        (not Map.has_key?(old,"electrical_conductivity") or old["electrical_conductivity"]==new["electrical_conductivity"])
     end)
     if compatible do
       if map_size(state.damage)==0 or (state.properties != nil and state.properties.digest == catalog.digest) do
@@ -610,7 +614,7 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_info(:thermal_commit,state) do
     started=System.monotonic_time(:microsecond)
-    state=if state.thermal.active,do: advance_thermal(state),else: state
+    state=if state.thermal.active or map_size(VoxelRegion.Circuit.devices(state.damage))>0,do: advance_thermal(state),else: state
     Process.send_after(self(),:thermal_commit,500)
     if state.thermal.active,do: Logger.info("voxel_thermal_callback elapsed_us=#{System.monotonic_time(:microsecond)-started}")
     {:noreply,state}
@@ -1251,7 +1255,7 @@ defmodule VoxelRegion.World do
   end
 
   defp property_snapshot(state, box) do
-    macros = for {_, t} <- state.damage, t.granularity in [0,1],
+    macros = for {_, t} <- state.damage, t.granularity in [0,1,4],
       VoxelRegion.PropertyObservation.relevant?(t, box), do: %{t | seq: state.seq, request_id: 0}
     %{property_states: macros ++ component_observations(state, box) ++ attachment_observations(state, box),
       property_context: property_context(state), epochs: state.epochs}
@@ -1461,9 +1465,11 @@ defmodule VoxelRegion.World do
       snapshots: MapSet.put(state.snapshots,key),overlay: overlay,overlay_regions: regions}
   end
 
-  defp apply_batch(state, edits, legacy \\ false, settlement \\ %{}, removed_owners \\ MapSet.new()) do
+  defp apply_batch(state, edits, legacy \\ false, settlement \\ %{}, removed_owners \\ MapSet.new(), removed_attachments \\ MapSet.new()) do
     before = state
     started = System.monotonic_time(:microsecond)
+    removed_slots=for {slot,{id,_}}<-state.attachments,MapSet.member?(removed_attachments,id),do: slot
+    state=%{state | attachments: Map.drop(state.attachments,removed_slots)}
     removed_cells=if MapSet.size(removed_owners)==0,do: [],else: subtree_cells(state,removed_owners)
     state=if removed_cells==[],do: state,else:
       clear_subtree(state,removed_owners,removed_cells)
@@ -1478,9 +1484,10 @@ defmodule VoxelRegion.World do
     end)
     case result do
       {:error, reason} -> {:error, reason}
-      {[], state} -> {:ok,state}
+      {[], state} ->
+        if removed_slots==[],do: {:ok,state},else: commit_attachment(before,state,removed_slots,settlement)
       {changed,state} ->
-        case reduce_batch(state,attachment_dirty(state,Enum.map(changed,&elem(&1,1))),1,changed,0) do
+        case reduce_batch(state,attachment_dirty(state,Enum.map(changed,&elem(&1,1))++Attachments.macros(removed_slots)),1,changed,0) do
           {:error, reason} ->
             {:error, reason}
 
@@ -1491,7 +1498,7 @@ defmodule VoxelRegion.World do
             state = refresh_macro_payloads(before,state,changed)
             cached = System.monotonic_time(:microsecond)
             terrain_payloads = Map.merge(before.payloads,state.payloads)
-            {state,structure_keys,_} = refresh_structure(state,Enum.map(changed,&elem(&1,1)))
+            {state,structure_keys,_} = refresh_structure(state,Enum.uniq(Enum.map(changed,&elem(&1,1))++Attachments.macros(removed_slots)))
             structure_keys=Enum.uniq(attachment_keys++structure_keys++region_keys(Enum.map(removed_cells,&{0,&1})))
             structured = System.monotonic_time(:microsecond)
             legacy = legacy and structure_keys == []
@@ -1709,19 +1716,23 @@ defmodule VoxelRegion.World do
 
   defp property_state(state,target) do
     m = Map.fetch!(state.properties.materials,target.material)
-    case Map.fetch(state.damage,Damage.key(target)) do
+    row=case Map.fetch(state.damage,Damage.key(target)) do
       {:ok,t} -> Map.merge(t,target) |> Map.merge(%{seq: state.seq,request_id: 0,defense: m["defense"]*1.0})
       :error ->
         hp = case target.granularity do
           2 -> component_max_hp(state,target.owner)
           3 -> attachment_max_hp(state,target)
+          4 -> m["max_hp_per_macro"]*VoxelRegion.ThermalAttachments.volume(Attachments.slot(target),state.properties)
           g -> Damage.max_hp(m,g)
         end
         row=Map.merge(target,%{seq: state.seq,request_id: 0,hp: hp,max_hp: hp,
           defense: m["defense"]*1.0,digest: state.properties.digest,flags: 0})
-        if state.thermal && target.granularity==0 && Map.has_key?(m,"heat_capacity_per_macro"),
+        if state.thermal && target.granularity in [0,4] && Map.has_key?(m,"heat_capacity_per_macro"),
           do: Map.put(row,:temperature_kelvin,state.thermal.config["ambient_kelvin"]),else: row
     end
+    # 整件 HP 记录上的环境值仅声明附件默认温度；命中槽的确认温度由 granularity 4 覆盖。
+    if state.thermal && target.granularity==3 && Map.has_key?(m,"heat_capacity_per_macro"),
+      do: Map.put(row,:temperature_kelvin,state.thermal.config["ambient_kelvin"]),else: row
   end
 
   # 全局系统功能：温度和 HP 仍由同一个 World 的稀疏状态记录持有。
@@ -1734,15 +1745,18 @@ defmodule VoxelRegion.World do
   defp rebuild_thermal_work(state) do
     hot=for {_,t}<-state.damage,Map.has_key?(t,:temperature_kelvin),
       abs(t.temperature_kelvin-state.thermal.config["ambient_kelvin"])>state.thermal.config["tolerance_kelvin"],
-      into: MapSet.new(),do: Damage.macro(t)
+      cell<-thermal_cells(t),into: MapSet.new(),do: cell
     %{state | thermal_work: %{empty_thermal_work() | hot: hot}}
   end
+
+  defp thermal_cells(%{granularity: 4}=t),do: Attachments.macros([Attachments.slot(t)])
+  defp thermal_cells(t),do: [Damage.macro(t)]
 
   defp advance_thermal(state) do
     start=System.monotonic_time(:microsecond)
     before=state
     state=put_in(state.thermal_work.builds,0)
-    {state,visited}=thermal_steps(state,0.5,MapSet.new())
+    {state,visited}=circuit_steps(state,0.5,MapSet.new())
     work=state.thermal_work
     Logger.info("voxel_thermal_sim simulated_s=0.5 max_step_ms=50 elapsed_us=#{System.monotonic_time(:microsecond)-start} hot=#{MapSet.size(work.hot)} candidates=#{map_size(work.geometry)} geometry_builds=#{work.builds}")
     rows=for key<-visited,t<-[Map.fetch!(state.damage,key)],Map.get(before.damage,key)!=t,
@@ -1757,21 +1771,43 @@ defmodule VoxelRegion.World do
       state=%{state | damage: Enum.reduce(rows,state.damage,fn t,all->Map.put(all,Damage.key(t),t) end)}
       macros=for t<-dead,t.granularity==0,do: {Damage.macro(t),0}
       owners=MapSet.new(for t<-dead,t.granularity==2,do: t.owner)
-      {:ok,state}=apply_batch(state,macros,false,%{property_states: rows},owners)
+      attachments=MapSet.new(for t<-dead,t.granularity==3,do: t.incarnation)
+      {:ok,state}=apply_batch(state,macros,false,%{property_states: rows},owners,attachments)
       state
     end
   end
 
-  defp thermal_steps(state,remaining,visited) when remaining<1.0e-12, do: {state,visited}
-  defp thermal_steps(state,remaining,visited) do
-    {state,changed,done}=thermal_step(state,remaining)
-    thermal_steps(state,remaining-done,MapSet.union(visited,changed))
+  defp circuit_steps(state,remaining,visited) when remaining<1.0e-12,do: {state,visited}
+  defp circuit_steps(state,remaining,visited) do
+    if map_size(VoxelRegion.Circuit.devices(state.damage))==0 do
+      thermal_steps(state,remaining,visited,%{})
+    else
+      plan=VoxelRegion.Circuit.plan(state.attachments,state.damage,state.properties,state,&target_at/2,remaining)
+      {state,visited}=thermal_steps(plan.state,plan.duration,visited,plan.powers)
+      {damage,visited}=Enum.reduce(plan.outputs,{state.damage,visited},fn {id,c},{damage,visited}->
+        key={3,id}
+        {Map.update!(damage,key,&Map.put(&1,:circuit,c)),MapSet.put(visited,key)}
+      end)
+      thermal=state.thermal |> Map.update(:circuit_supplied_j,plan.supplied_j,&(&1+plan.supplied_j))
+        |> Map.update(:circuit_light_j,plan.light_j,&(&1+plan.light_j))
+      Logger.info("voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j}")
+      circuit_steps(%{state | damage: damage,thermal: thermal},remaining-plan.duration,visited)
+    end
+  end
+  defp thermal_steps(state,remaining,visited,_powers) when remaining<1.0e-12, do: {state,visited}
+  defp thermal_steps(state,remaining,visited,powers) do
+    {state,changed,done}=thermal_step(state,remaining,powers)
+    thermal_steps(state,remaining-done,MapSet.union(visited,changed),powers)
   end
 
-  defp thermal_step(state,duration) do
+  defp thermal_step(state,duration,powers) do
     started=System.monotonic_time(:microsecond)
     config=state.thermal.config
-    seeds=MapSet.union(state.thermal_work.hot,MapSet.new(Map.keys(state.thermal.sources)))
+    electric_cells=for {key,_}<-powers,cell<-(case key do
+      {4,{type,p}} -> Attachments.macros([{div(type,3),rem(type,3),p}])
+      {_,p} -> [Damage.macro(%{micro: p})]
+    end),into: MapSet.new(),do: cell
+    seeds=state.thermal_work.hot |> MapSet.union(MapSet.new(Map.keys(state.thermal.sources))) |> MapSet.union(electric_cells)
     # 热种子不变时复用六邻域；编辑仍通过 geometry 删除使拓扑失效。
     cells=if seeds==state.thermal_work.seeds,do: state.thermal_work.cells,
       else: seeds |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
@@ -1785,14 +1821,16 @@ defmodule VoxelRegion.World do
       {Map.put(geometry,cell,nodes),s}
     end)
     geometry_done=System.monotonic_time(:microsecond)
-    {ordered,edges,indexed_edges}=if cells==state.thermal_work.cells and MapSet.size(missing)==0 do
-      {state.thermal_work.ordered,state.thermal_work.edges,state.thermal_work.indexed_edges}
+    {ordered,edges,indexed_edges,state}=if cells==state.thermal_work.cells and MapSet.size(missing)==0 do
+      {state.thermal_work.ordered,state.thermal_work.edges,state.thermal_work.indexed_edges,state}
     else
       nodes=geometry |> Map.values() |> List.flatten() |> Map.new()
+      slots=Map.filter(state.attachments,fn {slot,_}->Enum.any?(Attachments.macros([slot]),&MapSet.member?(cells,&1)) end)
+      {nodes,state}=VoxelRegion.ThermalAttachments.add(nodes,slots,state.properties,state,&target_at/2)
       ordered=Map.to_list(nodes)
       edges=VoxelRegion.ThermalGeometry.contacts(nodes)
       indices=ordered |> Enum.with_index() |> Map.new(fn {{cell,_},i}->{cell,i} end)
-      {ordered,edges,for({a,b,g}<-edges,do: {Map.fetch!(indices,a),Map.fetch!(indices,b),g})}
+      {ordered,edges,for({a,b,g}<-edges,do: {Map.fetch!(indices,a),Map.fetch!(indices,b),g}),state}
     end
     nodes_done=System.monotonic_time(:microsecond)
     work=%{state.thermal_work | geometry: geometry,cells: cells,edges: edges,
@@ -1802,7 +1840,9 @@ defmodule VoxelRegion.World do
       Enum.any?(Map.get(geometry,cell,[]),fn {_,n}->same_target?(source.target,n.target) and source.remaining_j>0 end)
     end)
     # 拓扑只缓存身份与材料；温度和 HP 每批从唯一权威记录取值。
-    {targets,input}=Enum.map(ordered,fn {_,n}->
+    duration=Enum.reduce(sources,duration,fn {_,s},dt->min(dt,s.remaining_j/s.power_w) end)
+    duration=if Enum.any?(seeds,&(Map.get(geometry,&1,[])==[])),do: min(duration,0.05),else: duration
+    {targets,input}=Enum.map(ordered,fn {node_key,n}->
       # Damage.key 含完整目标身份；已有记录直接读取，最终提交统一盖 seq/request_id。
       t=case Map.fetch(state.damage,Damage.key(n.target)) do
         {:ok,t}->t
@@ -1811,22 +1851,25 @@ defmodule VoxelRegion.World do
       temperature=Map.get(t,:temperature_kelvin,config["ambient_kelvin"])
       cell=Damage.macro(t)
       source=if t.granularity==0,do: Map.get(sources,cell)
-      {{cell,t,temperature},{temperature,t.hp,t.max_hp,n.capacity*1.0,
+      electric=Map.get(powers,node_key,0.0)
+      {{cell,t,temperature,electric},{temperature,t.hp,t.max_hp,n.capacity*1.0,
         n.material["thermal_conductivity"]*1.0,n.material["heat_resistance_kelvin"]*1.0,n.exposed_faces*1.0,
-        if(source,do: source.power_w*1.0,else: 0.0),if(source,do: source.remaining_j*1.0,else: 0.0),
-        abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"] or source != nil}}
+        electric+if(source,do: source.power_w*1.0,else: 0.0),electric*duration+if(source,do: source.remaining_j*1.0,else: 0.0),
+        abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"] or source != nil or electric>0}}
     end) |> Enum.unzip()
-    duration=if Enum.any?(seeds,&(Map.get(geometry,&1,[])==[])),do: min(duration,0.05),else: duration
     prepared=System.monotonic_time(:microsecond)
     {done,result,supplied,environment}=VoxelRegion.ThermalNative.advance(input,indexed_edges,
       config["ambient_kelvin"]*1.0,config["environment_w_per_m2_k"]*1.0,config["tolerance_kelvin"]*1.0,duration)
     calculated=System.monotonic_time(:microsecond)
     {changes,sources,hot,losses}=Enum.zip_reduce(targets,result,{[],%{},[],%{}},
-      fn {cell,t,old_temperature},{temperature,hp,remaining},{changes,left,hot,losses} ->
-      left=if remaining>0,do: Map.put(left,cell,%{Map.fetch!(sources,cell) | remaining_j: remaining}),else: left
-      hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: [cell|hot],else: hot
-      losses=if t.granularity==1 and hp<t.hp,do: Map.update(losses,t.owner,{t,t.hp-hp},fn {row,loss}->{row,loss+t.hp-hp} end),else: losses
-      hp=if t.granularity==1,do: t.hp,else: hp
+      fn {cell,t,old_temperature,electric},{temperature,hp,remaining},{changes,left,hot,losses} ->
+      remaining=max(0.0,remaining-electric*(duration-done))
+      left=if t.granularity==0 and Map.has_key?(sources,cell) and remaining>1.0e-9,
+        do: Map.put(left,cell,%{Map.fetch!(sources,cell) | remaining_j: remaining}),else: left
+      hot=if abs(temperature-config["ambient_kelvin"])>config["tolerance_kelvin"],do: thermal_cells(t)++hot,else: hot
+      pool=if t.granularity==4,do: {3,t.incarnation},else: {2,t.owner}
+      losses=if t.granularity in [1,4] and hp<t.hp,do: Map.update(losses,pool,{t,t.hp-hp},fn {row,loss}->{row,loss+t.hp-hp} end),else: losses
+      hp=if t.granularity in [1,4],do: t.hp,else: hp
       if temperature==old_temperature and hp==t.hp do
         {changes,left,hot,losses}
       else
@@ -1834,8 +1877,8 @@ defmodule VoxelRegion.World do
         {[{Damage.key(t),t}|changes],left,hot,losses}
       end
     end)
-    changes=Enum.reduce(losses,changes,fn {_,{micro,loss}},changes->
-      target=property_state(state,%{Map.take(micro,[:micro,:granularity,:incarnation,:owner,:material]) | granularity: 2})
+    changes=Enum.reduce(losses,changes,fn {{granularity,_},{micro,loss}},changes->
+      target=property_state(state,%{Map.take(micro,[:micro,:granularity,:incarnation,:owner,:material]) | granularity: granularity})
       target=%{target | hp: max(0.0,target.hp-loss)}
       [{Damage.key(target),target}|changes]
     end)
@@ -1899,8 +1942,7 @@ defmodule VoxelRegion.World do
   defp tool_target(state,_actor,%{granularity: 3},_tool),do: {:error,:invalid_attachment,state}
   defp tool_target(state,actor,r,tool),do: Damage.raycast(actor.eye,r.direction,tool["range_macro"],state,&target_at/2)
 
-  defp attachment_identity({kind,axis,anchor},{id,material}),do:
-    %{micro: anchor,granularity: 3,incarnation: id,owner: {id,kind*3+axis},material: material}
+  defp attachment_identity(slot,value),do: Attachments.identity(slot,value)
   defp attachment_slots(state,id),do: (for {slot,{^id,_}}<-state.attachments,do: slot)
   defp attachment_max_hp(state,target),do:
     state.properties.materials[target.material]["max_hp_per_macro"]*Attachments.units(attachment_slots(state,target.incarnation),state.properties)/(@micro*@micro*@micro*state.material_units_per_micro)
@@ -1918,16 +1960,30 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  # ???????????????????????????
+  # 附件槽改变时，同笔更新整件 HP、逐槽显热和设备剩余能源。
   defp attachment_damage(before,state) do
     live=MapSet.new(state.attachments,fn {_,{id,_}} -> id end)
     state=%{state | attachment_owners: Map.take(state.attachment_owners,MapSet.to_list(live))}
     Enum.reduce(before.damage,{state,[]},fn
+      {key,%{granularity: 4}=t},{s,rows}->
+        if Map.get(s.attachments,Attachments.slot(t))=={t.incarnation,t.material} do
+          {s,rows}
+        else
+          energy=VoxelRegion.ThermalAttachments.volume(Attachments.slot(t),s.properties)*
+            s.properties.materials[t.material]["heat_capacity_per_macro"]*(t.temperature_kelvin-s.thermal.config["ambient_kelvin"])
+          thermal=Map.update(s.thermal,:removed_j,energy,&(&1+energy))
+          {%{s | damage: Map.delete(s.damage,key),thermal: thermal},[%{t | hp: 0.0,flags: 1,seq: s.seq,request_id: 0}|rows]}
+        end
       {key,%{granularity: 3}=t},{s,rows}->
         maximum=attachment_max_hp(s,t)
         cond do
           maximum==t.max_hp -> {s,rows}
-          maximum==0 -> {%{s | damage: Map.delete(s.damage,key)},[%{t | hp: 0.0,flags: 1,seq: s.seq,request_id: 0}|rows]}
+          maximum==0 ->
+            thermal=case Map.get(t,:circuit) do
+              %{remaining_j: joules} -> Map.update(s.thermal,:circuit_removed_j,joules,&(&1+joules))
+              nil -> s.thermal
+            end
+            {%{s | damage: Map.delete(s.damage,key),thermal: thermal},[%{t | hp: 0.0,flags: 1,seq: s.seq,request_id: 0}|rows]}
           true ->
             row=%{t | max_hp: maximum,hp: t.hp*maximum/t.max_hp,seq: s.seq,request_id: 0}
             {%{s | damage: Map.put(s.damage,key,row)},[row|rows]}
@@ -1951,9 +2007,12 @@ defmodule VoxelRegion.World do
         unless previous != nil,do: Process.monitor(actor.player)
         Logger.info("voxel_tool_rate request_id=#{request.request_id} client_seq=#{request.client_intent_seq} result=admitted clock_node=#{actor.clock_node} received_us=#{now} next_us=#{session.next_us} borrowed_us=#{max(0,session.next_us-interval-now)} tick_us=#{actor.tick_us}")
         state = %{state | tool_sessions: Map.put(state.tool_sessions,actor.player,session)}
-        if tool["action"]=="heat" do
+        cond do
+        String.starts_with?(tool["action"],"circuit.") ->
+          operate_circuit(before,state,actor,request,target,tool)
+        tool["action"]=="heat" ->
           feed_heater(before,state,actor,request,target,tool)
-        else
+        true ->
           material = Map.fetch!(state.properties.materials,target.material)
           amount = if target.granularity==3,do:
             Damage.amount(material,tool,0)*target.max_hp/material["max_hp_per_macro"],else: Damage.amount(material,tool,target.granularity)
@@ -1989,6 +2048,47 @@ defmodule VoxelRegion.World do
   end
 
   # 全局系统功能：投料与有限能源同笔保存；建造不产生能源，拆除不返还已经消费的燃料。
+  defp operate_circuit(before,state,actor,request,target,tool) do
+    with true <- request.action==1 and state.thermal != nil and target.granularity==3 and elem(target.owner,1)<3,
+         true <- Map.get(state.properties.materials[target.material],"electrical_conductivity",0)>0,
+         {:ok,anchor,size} <- VoxelRegion.Circuit.shape(attachment_slots(state,target.incarnation)),
+         {:ok,c,state,settlement} <- circuit_operation(state,actor,target,tool,anchor,size) do
+      target=target |> Map.put(:circuit,c) |> Map.put(:seq,state.seq+1)
+      next=%{state | seq: state.seq+1,damage: Map.put(state.damage,Damage.key(target),target)}
+      txn=Map.merge(%{seq: next.seq,entries: [],coarse: [],property_states: [target],thermal: next.thermal},settlement)
+      case append_log(next,txn) do
+        :ok ->
+          next=%{next | entries: Map.put(next.entries,next.seq,txn)}
+          fanout(next,txn); fanout_canonical(next,txn,[],[],before)
+          Logger.info("voxel_circuit_input seq=#{next.seq} cid=#{actor.cid} id=#{target.incarnation} action=#{tool["action"]} kind=#{c.kind} closed=#{c.closed} remaining_j=#{c.remaining_j}")
+          {:reply,{:ok,next.seq},next}
+        {:error,reason} -> {:reply,{:error,reason},before}
+      end
+    else
+      false -> {:reply,{:error,:not_a_circuit_face},state}
+      {:error,reason} -> {:reply,{:error,reason},state}
+    end
+  end
+  defp circuit_operation(state,actor,target,tool,anchor,size) do
+    c=Map.get(target,:circuit)
+    case tool["action"] do
+      "circuit.install" when c==nil ->
+        {:ok,%{tool_id: tool["tool_id"],kind: tool["circuit_kind"],anchor: anchor,size: size,
+          closed: true,fault: 0,remaining_j: 0.0,voltage_v: 0.0,current_a: 0.0,power_w: 0.0},state,%{}}
+      "circuit.toggle" when c != nil and c.kind==2 -> {:ok,%{c | closed: not c.closed},state,%{}}
+      "circuit.feed" when c != nil and c.kind==1 ->
+        fuel=tool["fuel_material_id"]; units=tool["fuel_units"]*state.material_units_per_micro
+        if Map.get(state.material_balances,{actor.cid,fuel},0)>=units do
+          {state,settlement}=settle_material(state,actor.cid,fuel,-units)
+          state=put_in(state.thermal,Map.update(state.thermal,:circuit_fed_j,tool["circuit_energy_j"],&(&1+tool["circuit_energy_j"])))
+          {:ok,%{c | remaining_j: c.remaining_j+tool["circuit_energy_j"]},state,settlement}
+        else
+          {:error,:insufficient_material}
+        end
+      _ -> {:error,:invalid_circuit_operation}
+    end
+  end
+
   defp feed_heater(before,state,actor,request,target,tool) do
     fuel=tool["fuel_material_id"]
     units=tool["fuel_units"]*state.material_units_per_micro
@@ -2060,7 +2160,7 @@ defmodule VoxelRegion.World do
     cells = MapSet.new(cells)
     epochs = if macro_edit,do: Map.new(cells,&{&1,state.seq}),else: %{}
     removed = before.damage |> Map.values() |> Enum.filter(fn t ->
-      if t.granularity != 3 and MapSet.member?(cells,Damage.macro(t)) do
+      if t.granularity not in [3,4] and MapSet.member?(cells,Damage.macro(t)) do
         {current,_}=target_at(t.micro,%{state | epochs: Map.merge(state.epochs,epochs)})
         current == nil or (if t.granularity==1,do: not same_target?(current,t),else: Damage.key(current) != Damage.key(t))
       else
@@ -2089,12 +2189,15 @@ defmodule VoxelRegion.World do
       |> Map.update(:removed_j,removed_j,&(&1+removed_j))
       |> Map.update(:discarded_source_j,discarded,&(&1+discarded))
     end
-    {state,attachment_states}=attachment_damage(before,%{state | damage: damage})
+    {state,attachment_states}=attachment_damage(before,%{state | damage: damage,thermal: thermal})
+    thermal=state.thermal
     metadata=%{property_states: states++attachment_states,epochs: epochs}
     metadata=if thermal,do: Map.put(metadata,:thermal,thermal),else: metadata
     affected=cells |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)])
     work=%{state.thermal_work | geometry: Map.drop(state.thermal_work.geometry,affected)}
-    {%{state | epochs: Map.merge(state.epochs,epochs),thermal: thermal,thermal_work: work},metadata}
+    state=%{state | epochs: Map.merge(state.epochs,epochs),thermal: thermal,thermal_work: work}
+    state=if before.attachments==state.attachments,do: state,else: rebuild_thermal_work(state)
+    {state,metadata}
   end
 
   defp replay_damage(state,txn) do
@@ -2216,6 +2319,8 @@ defmodule VoxelRegion.World do
     state=%{state | seq: before.seq+1}
     {state,rows}=attachment_damage(before,state)
     settlement=Map.update(settlement,:property_states,rows,&(&1++rows))
+    state=if state.thermal,do: rebuild_thermal_work(%{state | thermal: %{state.thermal | active: true}}),else: state
+    settlement=if state.thermal,do: Map.put(settlement,:thermal,state.thermal),else: settlement
     dirty=Enum.map(Attachments.macros(slots),&{0,&1})
     {:ok,coarse,state,_}=reduce_batch(state,dirty,1,[],0)
     {coarse_txn,state}=select_transaction(state,coarse)

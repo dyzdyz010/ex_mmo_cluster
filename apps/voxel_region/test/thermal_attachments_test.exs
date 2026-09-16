@@ -1,0 +1,59 @@
+defmodule VoxelRegion.ThermalAttachmentsTest do
+  @moduledoc "只测试：附件热容量、接触与能量守恒。"
+  use ExUnit.Case, async: true
+  alias VoxelRegion.{ThermalAttachments, ThermalGeometry, ThermalNative}
+  @catalog %{materials: %{19 => %{"heat_capacity_per_macro" => 1000.0,
+    "thermal_conductivity" => 10.0,"heat_resistance_kelvin" => 1000.0}},
+    attachments: %{"material_units_per_micro" => 4096,"face_units" => 64,"edge_units" => 1,
+      "face_thickness_m" => 1/512,"line_section_m2" => 1/(512*512)}}
+
+  defp geometry(slots, cells) do
+    at=fn p,s ->
+      cell=p |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,8)) |> List.to_tuple()
+      t=if cell in cells,do: %{micro: cell |> Tuple.to_list() |> Enum.map(&(&1*8)) |> List.to_tuple(),
+        granularity: 0,incarnation: 1,owner: {0,0},material: 19}
+      {t,s}
+    end
+    nodes=Enum.flat_map(cells,fn cell -> elem(ThermalGeometry.cell(cell,%{},@catalog.materials,nil,at),0) end) |> Map.new()
+    {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,nil,at)
+    nodes
+  end
+
+  test "每个槽保持实际体积；同地址面线与宿主独立，跨区连续线只接触一次" do
+    face={0,1,{511,8,0}}; a={1,0,{511,8,0}}; b={1,0,{512,8,0}}
+    slots=%{face=>{10,19},a=>{11,19},b=>{11,19}}
+    nodes=geometry(slots,[{63,0,0},{64,0,0}])
+    assert_in_delta nodes[ThermalAttachments.key(face)].capacity,1000/32768,1.0e-12
+    assert_in_delta nodes[ThermalAttachments.key(a)].capacity,1000/2097152,1.0e-12
+    assert nodes[ThermalAttachments.key(a)].target != nodes[ThermalAttachments.key(b)].target
+    edges=ThermalGeometry.contacts(nodes)
+    assert Enum.count(edges,fn {x,y,_}->MapSet.new([x,y])==MapSet.new([ThermalAttachments.key(a),ThermalAttachments.key(b)]) end)==1
+    assert Enum.any?(edges,fn {x,y,g}->x==ThermalAttachments.key(face) and y==ThermalAttachments.key(a) and g>0 end)
+  end
+
+  test "夹层替换对应宿主直接接触；不把涂层重复算成并联热路" do
+    face={0,0,{8,0,0}}
+    nodes=geometry(%{face=>{10,19}},[{0,0,0},{1,0,0}])
+    edges=ThermalGeometry.contacts(nodes)
+    assert [{_,_,g}]=Enum.filter(edges,fn {a,b,_}->elem(a,0)==0 and elem(b,0)==0 end)
+    assert_in_delta g,10*(1-1/64),1.0e-12
+    assert Enum.count(edges,fn {_,b,_}->b==ThermalAttachments.key(face) end)==2
+  end
+
+  test "缺口不连接；无环境交换的薄线与宿主守恒，温度不超调" do
+    a={1,0,{0,8,0}}; b={1,0,{2,8,0}}
+    nodes=geometry(%{a=>{10,19},b=>{10,19}},[{0,0,0}])
+    ordered=Enum.sort(nodes)
+    index=ordered |> Enum.with_index() |> Map.new(fn {{id,_},i}->{id,i} end)
+    edges=ThermalGeometry.contacts(nodes)
+    refute Enum.any?(edges,fn {x,y,_}->x==ThermalAttachments.key(a) and y==ThermalAttachments.key(b) end)
+    input=for {id,n}<-ordered,do: {if(id==ThermalAttachments.key(a),do: 400.0,else: 300.0),1.0,1.0,
+      n.capacity*1.0,10.0,1000.0,0.0,0.0,0.0,true}
+    contacts=for {a,b,g}<-edges,do: {index[a],index[b],g}
+    {_,out,0.0,0.0}=ThermalNative.advance(input,contacts,293.15,0.0,0.01,0.1)
+    before=Enum.sum(for n<-input,do: elem(n,0)*elem(n,3))
+    after_heat=Enum.zip_with(input,out,fn n,{t,_,_}->t*elem(n,3) end) |> Enum.sum()
+    assert_in_delta before,after_heat,1.0e-7
+    for {t,_,_}<-out,do: assert(t>=300.0-1.0e-9 and t<=400.0)
+  end
+end

@@ -34,13 +34,25 @@ defmodule VoxelRegion.Damage do
     end)
     true = Enum.all?(tools, fn {id,t} -> id in 1..65535 and t["power"] > 0 and
       t["range_macro"] > 0 and t["interval_seconds"] > 0 and MapSet.member?(tags,t["action"]) and
-      (t["action"]=="heat" or t["action"]=="damage" or String.starts_with?(t["action"],"damage.")) end)
+      (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage) or String.starts_with?(t["action"],"damage.")) end)
     true = Enum.all?(tools,fn {_,t} -> t["action"]!="heat" or
       (Map.has_key?(materials,t["fuel_material_id"]) and t["fuel_material_id"]!=0 and
        is_integer(t["fuel_units"]) and t["fuel_units"]>0 and
        is_number(t["heat_energy_j"]) and t["heat_energy_j"]>0 and
        is_number(t["heat_power_w"]) and t["heat_power_w"]>0) end)
     # B1 已发布目录没有热字段；带热模型的材料必须完整提供有量纲参数。
+    true=Enum.all?(materials,fn {_,m}->not Map.has_key?(m,"electrical_conductivity") or
+      (is_number(m["electrical_conductivity"]) and m["electrical_conductivity"]>=0 and
+        is_number(m["heat_capacity_per_macro"]) and m["heat_capacity_per_macro"]>0) end)
+    true=Enum.all?(tools,fn {_,t}->case t["action"] do
+      "circuit.install" -> t["circuit_kind"] in 1..4 and is_number(t["circuit_resistance_ohm"]) and t["circuit_resistance_ohm"]>0 and
+        is_number(t["circuit_voltage_v"]) and t["circuit_voltage_v"]>=0 and (t["circuit_kind"]!=1 or t["circuit_voltage_v"]>0) and
+        is_number(t["circuit_light_fraction"]) and t["circuit_light_fraction"]>=0 and t["circuit_light_fraction"]<=1 and
+        (t["circuit_kind"]==3 or t["circuit_light_fraction"]==0)
+      "circuit.feed" -> Map.has_key?(materials,t["fuel_material_id"]) and t["fuel_material_id"]!=0 and
+        is_integer(t["fuel_units"]) and t["fuel_units"]>0 and is_number(t["circuit_energy_j"]) and t["circuit_energy_j"]>0
+      _ -> true
+    end end)
     true = Enum.all?(materials,fn {_,m} ->
       fields = ~w(heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin)
       not Enum.any?(fields,&Map.has_key?(m,&1)) or
