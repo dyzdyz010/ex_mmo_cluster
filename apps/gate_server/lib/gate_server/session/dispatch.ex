@@ -541,9 +541,9 @@ defmodule GateServer.Session.Dispatch do
     send_material_balances(state,cid,request.request_id)
     {:ok,state}
   end
-  def handle({:voxel_production_intent,request},%{status: :in_scene,voxim_overlay: true}=state) do
+  def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state) when kind in [:voxel_production_intent,:voxel_attachment_intent] do
     with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
-      result = VoxelRegion.World.production_intent(state.world_ref,actor,request)
+      result = if kind==:voxel_attachment_intent,do: VoxelRegion.World.attachment_intent(state.world_ref,actor,request),else: VoxelRegion.World.production_intent(state.world_ref,actor,request)
       send_material_balances(state,actor.cid,request.request_id)
       case result do
         {:ok,seq} ->
@@ -557,7 +557,7 @@ defmodule GateServer.Session.Dispatch do
     end
     {:ok,state}
   end
-  def handle({:voxel_production_intent,request},state) do
+  def handle({kind,request},state) when kind in [:voxel_production_intent,:voxel_attachment_intent] do
     send_encoded(state,ResultFrame.error(request,:invalid_state))
     {:ok,state}
   end
@@ -588,10 +588,10 @@ defmodule GateServer.Session.Dispatch do
 
   def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state)
       when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
-    result = case kind do
-      :voxel_prefab_place_v1 -> VoxelRegion.World.place_prefab(state.world_ref,request.definition_id,request.anchor,request.orientation)
-      :voxel_prefab_remove_v1 -> VoxelRegion.World.remove_prefab(state.world_ref,request.instance_id)
-      :voxel_prefab_replace_v1 -> VoxelRegion.World.replace_prefab(state.world_ref,request.instance_id,request.definition_id)
+    result = with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
+      result=VoxelRegion.World.prefab_intent(state.world_ref,actor,kind,request)
+      send_material_balances(state,actor.cid,request.request_id)
+      result
     end
     case result do
       {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{

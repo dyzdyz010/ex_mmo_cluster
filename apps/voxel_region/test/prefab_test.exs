@@ -392,6 +392,60 @@ defmodule VoxelRegion.PrefabTest do
     GenServer.stop(w)
   end
 
+  @tag :b4
+  test "B4 published attachments follow rotated nested occurrences and canonical restart",%{opts: opts} do
+    # 只测试：两个微格自带两个面与一条棱，跨区域父定义复用同一不可变叶定义。
+    cell=fn x -> <<x::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little>> end
+    group=fn slot,kind,axis,x -> <<slot::32-little,kind,axis,x::signed-little-32,0::signed-little-32,0::signed-little-32,1,19::16-little>> end
+    leaf=<<"VXPD",2::32-little,2::32-little>><>cell.(0)<>cell.(1)<><<0::32-little,3::32-little>><>
+      group.(7,0,1,0)<>group.(8,0,1,1)<>group.(9,1,0,0)
+    leaf_id=:crypto.hash(:sha256,leaf)
+    {:ok,definition}=Prefab.decode(leaf)
+    {:ok,catalog}=Prefab.publish(%{leaf_id=>definition})
+    for orientation<-0..23 do
+      samples=Map.new(Prefab.footprint(catalog[leaf_id],{-5,7,11},orientation))
+      groups=Prefab.attachments(catalog[leaf_id],{-5,7,11},orientation,99)
+      assert Enum.all?(groups,&(&1.owner=={99,0}))
+      assert Enum.all?(Enum.flat_map(groups,& &1.slots),fn slot ->
+        Enum.any?(VoxelRegion.Attachments.neighbors(slot),&Map.has_key?(samples,&1))
+      end)
+    end
+    child=fn slot,x -> <<slot::32-little,leaf_id::binary,x::signed-little-32,0::signed-little-32,0::signed-little-32,0>> end
+    root=<<"VXPD",1::32-little,0::32-little,2::32-little>><>child.(1,0)<>child.(2,4)
+    root_id=:crypto.hash(:sha256,root)
+    File.write!(Path.join(opts[:prefab_catalog_path],"attached.vxpd"),leaf)
+    File.write!(Path.join(opts[:prefab_catalog_path],"attached-root.vxpd"),root)
+    {:ok,w}=World.start_link(opts)
+    assert {:ok,1}=World.place_prefab(w,root_id,{510,8,8},0)
+    assert World.stats(w).attachment_slots==6
+    first=:sys.get_state(w).attachment_owners
+    assert map_size(first)==6
+    assert Enum.sort(Map.values(first))==for(owner<-[{1,1},{1,2}],slot<-7..9,do: {owner,slot})
+    assert map_size(payload(w,{0,0,0}).attachments)==6
+    assert map_size(payload(w,{1,0,0}).attachments)==6
+    assert {:ok,2}=World.remove_prefab(w,{1,1})
+    assert World.stats(w).attachment_slots==3
+    surviving=payload(w,{1,0,0}).attachments
+    assert :ok=World.compact(w)
+    GenServer.stop(w)
+    {:ok,w}=World.start_link(opts)
+    assert payload(w,{1,0,0}).attachments==surviving
+    assert map_size(:sys.get_state(w).attachment_owners)==3
+    assert {:ok,3}=World.replace_prefab(w,{1,2},leaf_id)
+    latest=payload(w,{1,0,0}).attachments
+    assert map_size(latest)==3
+    assert Enum.all?(latest,fn {_,{id,_}} -> id>6 end)
+    assert {:ok,4}=World.remove_prefab(w,{1,0})
+    assert World.stats(w).attachment_slots==0
+    assert :sys.get_state(w).attachment_owners==%{}
+    assert :ok=World.compact(w)
+    GenServer.stop(w)
+    {:ok,w}=World.start_link(opts)
+    assert World.stats(w).attachment_slots==0
+    assert :sys.get_state(w).attachment_serial==9
+    GenServer.stop(w)
+  end
+
   defp payload(w,region) do
     req = Codec.encode_request(0,[%{level: 0,region: region,have_seq: 0,have_hash: 0}]) |> IO.iodata_to_binary()
     {:ok,reply} = World.serve(w,req)

@@ -28,6 +28,7 @@ defmodule MmoContracts.Voxel.Payload do
             refined: %{},
             instances: %{},
             structure: %{},
+            attachments: %{},
             format_version: 4
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
@@ -63,7 +64,9 @@ defmodule MmoContracts.Voxel.Payload do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
          {:ok, payload} <- decode_body(raw, header.version),
          true <- header.version != 6 or header.level >= 1,
-         true <- header.version != 7 or header.level == 0,
+         true <- header.version not in [7,8] or header.level == 0,
+         true <- Enum.all?(payload.attachments,fn {{_,_,anchor},_} ->
+           Enum.all?(0..2,fn i -> x=elem(anchor,i); o=elem(header.region,i)*512; x>=o-8 and x<o+520 end) end),
          true <- header.version == payload.format_version,
          true <- Enum.all?(payload.refined,fn {index,_} -> binary_part(payload.cells,index*2,2) == <<0,0>> end) do
       {:ok,
@@ -84,11 +87,11 @@ defmodule MmoContracts.Voxel.Payload do
   def decode_body(raw, version \\ 4)
   def decode_body(raw, version) do
     with {:ok, {cells, extent, map_extent, row_start, col_x, faces, masks, fmi, maps}, tail} <- terrain_sections(raw),
-         {:ok, refined, instances, structure, version} <- decode_tail(tail, version),
+         {:ok, refined, instances, structure, attachments, version} <- decode_tail(tail, version),
          {:ok, records} <- decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
       {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: records,
         fmi: fmi, maps: maps, refined: refined, instances: instances,
-        structure: structure, format_version: version}}
+        structure: structure, attachments: attachments, format_version: version}}
     else
       _ -> {:error, :invalid_payload}
     end
@@ -115,10 +118,16 @@ defmodule MmoContracts.Voxel.Payload do
   defp terrain_sections(_), do: {:error, :invalid_payload}
 
   defp decode_tail(tail, 6) do
-    with {:ok, structure} <- MmoContracts.Voxel.Structure.decode(tail), do: {:ok, %{}, %{}, structure, 6}
+    with {:ok, structure} <- MmoContracts.Voxel.Structure.decode(tail), do: {:ok, %{}, %{}, structure, %{}, 6}
+  end
+  defp decode_tail(tail, 8) do
+    with {:ok,refined,instances,tail} <- MmoContracts.Voxel.Refined.decode_prefix(tail,7),
+         {:ok,attachments} <- MmoContracts.Voxel.Attachments.decode(tail),
+         true <- map_size(attachments)>0,
+      do: {:ok,refined,instances,%{},attachments,8}
   end
   defp decode_tail(tail, version) do
-    with {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail, if(version == 7,do: 7,else: 5)), do: {:ok, refined, instances, %{}, version}
+    with {:ok, refined, instances, version} <- MmoContracts.Voxel.Refined.decode(tail, if(version == 7,do: 7,else: 5)), do: {:ok, refined, instances, %{}, %{}, version}
   end
 
   defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
@@ -326,12 +335,14 @@ defmodule MmoContracts.Voxel.Payload do
 
   defp encode_with_details(terrain, p, seq, content_version) do
     version = cond do
+      map_size(p.attachments) > 0 -> 8
       map_size(p.structure) > 0 -> 6
       Enum.any?(p.instances,fn {_,i} -> Map.get(i,:parent_id,{0,0}) != {0,0} end) -> 7
       map_size(p.refined) > 0 or map_size(p.instances) > 0 -> 5
       true -> 4
     end
     raw = case version do
+      8 -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined,p.instances,7) <> MmoContracts.Voxel.Attachments.encode(p.attachments)
       6 -> terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
       v when v in [5,7] -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances,v)
       4 -> terrain

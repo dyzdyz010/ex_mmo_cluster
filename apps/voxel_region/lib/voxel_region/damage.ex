@@ -6,7 +6,17 @@ defmodule VoxelRegion.Damage do
   def load(path) do
     bytes = File.read!(path)
     data = Jason.decode!(bytes)
-    1 = data["schema_version"]
+    true = data["schema_version"] in [1,2]
+    specification = if data["schema_version"]==2 do
+      a=Map.fetch!(data,"attachments")
+      units=Map.fetch!(a,"material_units_per_micro")
+      true=is_integer(units) and units>0 and units*@micro*@micro*@micro<=0xFFFFFFFF
+      true=Enum.all?(~w(face_thickness_m line_section_m2 line_display_width_m),&(is_number(a[&1]) and a[&1]>0))
+      face=units*a["face_thickness_m"]*@micro
+      edge=units*a["line_section_m2"]*@micro*@micro
+      true=Enum.all?([face,edge],&(&1>=1 and &1==round(&1) and &1*@micro*@micro<=0xFFFFFFFF))
+      Map.merge(a,%{"face_units"=>round(face),"edge_units"=>round(edge)})
+    end
     materials = Map.new(data["materials"], &{&1["material_id"], &1})
     tools = Map.new(data["tools"], &{&1["tool_id"], &1})
     tags = MapSet.new(data["tags"],& &1["id"])
@@ -37,8 +47,12 @@ defmodule VoxelRegion.Damage do
         (Enum.all?(fields,&is_number(m[&1])) and m["heat_capacity_per_macro"]>0 and
           m["thermal_conductivity"]>=0 and m["heat_resistance_kelvin"]>0)
     end)
-    %{digest: :crypto.hash(:sha256,bytes), materials: materials, tools: tools}
+    %{digest: :crypto.hash(:sha256,bytes), materials: materials, tools: tools, attachments: specification}
   end
+
+  @doc "既有库存的整数精度；旧 B1–B3 内容保持一单位一微格。"
+  def material_units(%{attachments: %{"material_units_per_micro"=>units}}),do: units
+  def material_units(_),do: 1
 
   def volume(0), do: 1.0
   def volume(1), do: 1.0/(@micro*@micro*@micro)
@@ -62,6 +76,7 @@ defmodule VoxelRegion.Damage do
     end
   end
 
+  def key(%{granularity: 3,owner: {id,_}}), do: {3,id}
   def key(%{granularity: 2,owner: owner}), do: {2,owner}
   def key(t), do: {t.granularity,t.micro,t.incarnation,t.owner,t.material}
   def macro(t), do: t.micro |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,@micro)) |> List.to_tuple()

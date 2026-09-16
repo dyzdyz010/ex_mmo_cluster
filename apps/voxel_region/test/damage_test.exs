@@ -91,7 +91,7 @@ defmodule VoxelRegion.DamageTest do
   test "network rejects invalid action, direction, tool and truncated frame" do
     alias MmoContracts.Voxel.Codec
     prefix = <<0x7D, 1::64, 1::32, 1::64>>
-    tail = <<0.0::float-64, 1.0::float-64, 0.0::float-64, 0::signed-64,0::signed-64,0::signed-64,0::64,0::64,0::32,11::16,1::16>>
+    tail = <<0.0::float-64, 1.0::float-64, 0.0::float-64, 0::signed-64,0::signed-64,0::signed-64,0::64,0::64,0::32,11::16,1::16,0::8>>
     assert {:ok,{:voxel_tool_intent,_}} = Codec.decode(prefix <> <<0>> <> tail)
     assert {:ok,{:voxel_tool_intent,%{action: 2}}} = Codec.decode(prefix <> <<2>> <> tail)
     assert {:error,:invalid_message} = Codec.decode(prefix <> <<3>> <> tail)

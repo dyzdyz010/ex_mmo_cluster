@@ -61,7 +61,7 @@ if cert = System.get_env("VOXIM_QUIC_CERT") do
     name: GateServer.Transport.QuicListener,
     port: String.to_integer(System.fetch_env!("VOXIM_QUIC_PORT")),
     certfile: cert, keyfile: System.fetch_env!("VOXIM_QUIC_KEY"),
-    hello: struct(MmoContracts.Session.Hello, protocol_version: 1, kernel_id: kernel_id, profile_id: profile_id)
+    hello: struct(MmoContracts.Session.Hello, protocol_version: 6, kernel_id: kernel_id, profile_id: profile_id)
 end
 
 if config_path = System.get_env("VOXIM_M1_CONFIG") do

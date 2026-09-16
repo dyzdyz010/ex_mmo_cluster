@@ -6,7 +6,7 @@ defmodule VoxelRegion.PropertyObservation do
   def contains?(cell, box), do: CollisionSource.in_box?(CollisionSource.chunk_coord(cell), box)
 
   @doc "普通格按位置、叶子按实际占用区域与删除前区域并集筛选。"
-  def relevant?(%{granularity: 2, observation_cells: cells}, box),
+  def relevant?(%{granularity: g, observation_cells: cells}, box) when g in [2,3],
     do: Enum.any?(cells, &contains?(&1, box))
   def relevant?(row, box), do: contains?(Damage.macro(row), box)
 

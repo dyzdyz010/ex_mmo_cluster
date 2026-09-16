@@ -61,7 +61,7 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
-                  0x7A, 0x7B, 0x7C, 0x7D, 0x7F
+                  0x7A, 0x7B, 0x7C, 0x7D, 0x7F, 0x81
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -76,6 +76,14 @@ defmodule MmoContracts.Voxel.Codec do
                   ]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
+  def decode(<<0x81,rid::64,seq::32,scene::64,action,kind,axis,size,
+      x::signed-64,y::signed-64,z::signed-64,id::64,material::16,tool::16>>)
+      when action in [0,1] and kind in [0,1] and axis in 0..2 and size in [1,8] and tool>0 do
+    {:ok,{:voxel_attachment_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
+      action: action,kind: kind,axis: axis,size: size,anchor: {x,y,z},id: id,material: material,tool_id: tool}}}
+  end
+  def decode(<<0x81,_::binary>>),do: {:error,:invalid_message}
+
   def decode(<<0x7F,rid::64,seq::32,scene::64,action::8,x::signed-32,y::signed-32,z::signed-32,tool::16,material::16>>)
       when action in [0,1] and tool > 0 do
     {:ok,{:voxel_production_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
@@ -85,13 +93,13 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode(<<0x7D, rid::64, seq::32, scene::64, action::8,
       dx::float-64, dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64,
-      incarnation::64, birth::64, occurrence::32, material::16, tool::16>>)
-      when action in [0,1,2] and tool > 0 do
+      incarnation::64, birth::64, occurrence::32, material::16, tool::16, granularity::8>>)
+      when action in [0,1,2] and tool > 0 and granularity in [0,1,2,3] do
     norm = dx*dx+dy*dy+dz*dz
     if norm > 0.99 and norm < 1.01 do
       {:ok,{:voxel_tool_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
         action: action,direction: {dx,dy,dz},micro: {x,y,z},incarnation: incarnation,
-        owner: {birth,occurrence},material: material,tool_id: tool}}}
+        owner: {birth,occurrence},material: material,tool_id: tool,granularity: granularity}}}
     else
       {:error,:invalid_message}
     end
@@ -472,7 +480,7 @@ defmodule MmoContracts.Voxel.Codec do
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) do
+      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or (magic == "VXR8" and version == 8) do
     {:ok,
      %{
        version: version,
@@ -499,6 +507,7 @@ defmodule MmoContracts.Voxel.Codec do
     body = :zlib.compress(raw_body)
 
     magic = case version do
+      8 -> "VXR8"
       7 -> "VXR7"
       6 -> "VXR6"
       5 -> "VXR5"
@@ -661,9 +670,7 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode_entry(<<seq::64-little,2,level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,
                      count::32-little,grid::binary>>) when level in 1..5 do
-    samples=MmoContracts.Voxel.Structure.resolution() ** 3
-    if count==0 and grid==<<>> or count==samples and byte_size(grid)==samples*2 and
-       match?({:ok,_},MmoContracts.Voxel.Structure.decode(<<1::32-little,1::32-little,0::32-little,grid::binary>>)) do
+    if count==0 and grid==<<>> or byte_size(grid)==count*2 and MmoContracts.Voxel.Structure.valid?(grid) do
       {:ok,%{seq: seq,level: level,cell: {x,y,z},structure: grid}}
     else
       {:error,:invalid_entry}
@@ -725,7 +732,7 @@ defmodule MmoContracts.Voxel.Codec do
         header.level == 0 and header.region == coord and header.seq == value.transaction_seq and
           header.content_version == value.content_version
 
-      {:ok, _} = Voxel.Payload.decode_body(raw)
+      {:ok, _} = Voxel.Payload.decode_body(raw,header.version)
     end)
   end
 

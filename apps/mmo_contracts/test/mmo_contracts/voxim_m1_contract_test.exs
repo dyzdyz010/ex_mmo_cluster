@@ -13,9 +13,14 @@ defmodule MmoContracts.VoximM1ContractTest do
 
   defp packet(name) do
     {_, domain, value} = Enum.find(VoximM1Vectors.vectors(), &(elem(&1, 0) == name))
+    value=current(value)
     {:ok, bytes} = VoximM1Vectors.encode(domain, value)
     {domain, value, bytes}
   end
+
+  # 历史黄金样本保持原字节；当前会话显式升级 Hello，其他消息仍逐字节相等。
+  defp current(%Session.Hello{}=value),do: %{value | protocol_version: 6}
+  defp current(value),do: value
 
   test "M1 rejects an unsupported envelope version at the network boundary" do
     assert Codec.decode(<<255, 0, 2, 1, 6, 0, 0, 0, 16, 0::128>>) ==
@@ -62,6 +67,13 @@ defmodule MmoContracts.VoximM1ContractTest do
   test "all domain messages consume actual both-endpoint golden bytes and encode identically" do
     for {name, domain, value} <- VoximM1Vectors.vectors(), producer <- ["elixir", "ue"] do
       golden = File.read!(Path.join(@fixtures, "#{producer}_#{name}.bin"))
+      golden=if name=="hello" do
+        assert {:error,:invalid_m1_message}=Codec.decode(golden)
+        replace(golden,9,<<6::16>>)
+      else
+        golden
+      end
+      value=current(value)
       assert {:ok, ^value} = VoximM1Vectors.decode(domain, golden)
       assert {:ok, ^golden} = VoximM1Vectors.encode(domain, value)
     end
@@ -69,6 +81,7 @@ defmodule MmoContracts.VoximM1ContractTest do
 
   test "every envelope rejects truncation extra bytes and wrong framing fields" do
     for {_name, domain, value} <- VoximM1Vectors.vectors() do
+      value=current(value)
       {:ok, bytes} = VoximM1Vectors.encode(domain, value)
 
       for invalid <- [
@@ -239,7 +252,9 @@ defmodule MmoContracts.VoximM1ContractTest do
         do: assert({:error, :invalid_m1_message} = Codec.decode(replace(bytes, 33, <<bad::16>>)))
 
     {1, _, hello} = packet("hello")
-    assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<2::16>>))
+    assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<1::16>>))
+    assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<7::16>>))
+    assert {:ok,%Session.Hello{protocol_version: 6}}=Codec.decode(hello)
     {1, _, join} = packet("join")
     assert {:error, :invalid_m1_message} = Codec.decode(replace(join, 19, <<255>>))
   end

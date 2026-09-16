@@ -47,7 +47,7 @@ defmodule VoxelRegion.DamageWorldTest do
     end
   end
 
-  setup do
+  setup context do
     root=Path.join(System.tmp_dir!(),"b1_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     catalog=Path.join(root,"properties.json")
@@ -55,6 +55,12 @@ defmodule VoxelRegion.DamageWorldTest do
       defense: 2.0,tags: [],responses: [%{action: "damage",multiplier: 1.0}]}
     data=%{schema_version: 1,tags: [%{id: "damage"}],materials: materials,
       tools: [%{id: "pickaxe",tool_id: 1,action: "damage",power: 30.0,range_macro: 6.0,interval_seconds: 0.5}],definitions: []}
+    data=if context[:physical_units] do
+      Map.merge(data,%{schema_version: 2,attachments: %{material_units_per_micro: 4096,
+        face_thickness_m: 1/512,line_section_m2: 1/(512*512),line_display_width_m: 0.0075}})
+    else
+      data
+    end
     File.write!(catalog,Jason.encode!(data))
     prefab=Path.join(root,"prefabs")
     File.mkdir_p!(prefab)
@@ -1201,6 +1207,326 @@ defmodule VoxelRegion.DamageWorldTest do
     # cv 是基线标识，不冒充批次快照序号；同一个 region 的 core/ring 不拆开。
     assert {:ok,empty}=World.serve(c.w,Codec.encode_request(123,[]) |> IO.iodata_to_binary())
     assert {:ok,123,[]}=Codec.decode_reply(IO.iodata_to_binary(empty))
+  end
+
+  @tag :b4
+  @tag :physical_units
+  test "B4 physical quantity survives damage partial support prefab settlement and restart",c do
+    r=b4_funded(c)
+    assert balance(c.w,1001).balance==2_097_152
+    assert balance(c.w,1001).cost==2_097_152
+    assert {:ok,id}=World.attachment_intent(c.w,c.actor,r)
+    assert balance(c.w,1001).balance==2_097_152-4096
+    request=Map.merge(c.request,%{granularity: 3,micro: r.anchor,owner: {id,2},incarnation: id,material: 19})
+    assert {:ok,full}=World.tool_intent(c.w,c.actor,request)
+    assert full.max_hp==100/512
+    actor=Map.merge(c.actor,%{received_us: 10_000_000,clock_node: node()})
+    assert {:ok,_}=World.tool_intent(c.w,actor,%{request | action: 1,client_intent_seq: 20})
+    assert {:ok,hurt}=World.tool_intent(c.w,c.actor,request)
+    assert_in_delta hurt.hp/full.max_hp,0.72,1.0e-9
+    assert {:ok,birth}=World.place_prefab(c.w,c.id,{8,8,15},0)
+    # 正常采掘宿主，剩余两个槽由另一侧实际 Prefab 支撑。
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,3.5}})
+    host_query=%{c.request | direction: {0.0,0.0,-1.0}}
+    assert {:ok,host}=World.tool_intent(c.w,c.actor,host_query)
+    for seq<-21..24 do
+      a=Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()})
+      hit=Map.merge(host_query,Map.take(host,[:micro,:incarnation,:owner,:material])) |> Map.merge(%{action: 1,client_intent_seq: seq})
+      assert {:ok,_}=World.tool_intent(c.w,a,hit)
+    end
+    assert World.stats(c.w).attachment_slots==2
+    assert balance(c.w,1001).balance==2_097_152-128
+    assert balance(c.w,1001,11).balance==2_097_152
+    assert {:ok,partial}=World.tool_intent(c.w,c.actor,request)
+    assert partial.incarnation==id
+    assert_in_delta partial.hp/partial.max_hp,0.72,1.0e-9
+    assert :ok=World.compact(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert {:ok,%{hp: hp}}=World.tool_intent(w,c.actor,request)
+    assert hp==partial.hp
+    delete=%{r | action: 1,id: id,request_id: 30,client_intent_seq: 30}
+    assert {:ok,removed}=World.attachment_intent(w,c.actor,delete)
+    assert {:ok,^removed}=World.attachment_intent(w,c.actor,delete)
+    assert balance(w,1001).balance==2_097_152
+    assert {:ok,_}=World.remove_prefab(w,{birth,0})
+    # 带面/线的同一微格 Prefab：只收一次实际体积，删除/替换按差額。
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,0.0625}})
+    cell=<<0::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little>>
+    group=fn slot,kind,axis -> <<slot::32-little,kind,axis,0::signed-little-32,0::signed-little-32,0::signed-little-32,1,19::16-little>> end
+    bytes=<<"VXPD",2::32-little,1::32-little>><>cell<><<0::32-little,2::32-little>><>group.(1,0,2)<>group.(2,1,0)
+    definition=:crypto.hash(:sha256,bytes)
+    File.write!(Path.join(c.opts[:prefab_catalog_path],"physical.vxpd"),bytes)
+    :ok=World.publish_prefabs(w,c.opts[:prefab_catalog_path])
+    place=%{request_id: 40,client_intent_seq: 40,logical_scene_id: 1,definition_id: definition,anchor: {8,8,12},orientation: 0}
+    assert {:ok,new_birth}=World.prefab_intent(w,c.actor,:voxel_prefab_place_v1,place)
+    assert balance(w,1001).balance==2_097_152-4096-64-1
+    remove=%{request_id: 41,client_intent_seq: 41,logical_scene_id: 1,instance_id: {new_birth,0}}
+    assert {:ok,_}=World.prefab_intent(w,c.actor,:voxel_prefab_remove_v1,remove)
+    assert balance(w,1001).balance==2_097_152
+  end
+
+  defp b4_funded(c) do
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq<-1..4 do
+      actor=Map.merge(c.actor,%{received_us: seq*500_000,clock_node: node()})
+      r=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+        |> Map.merge(%{action: 1,client_intent_seq: seq})
+      {:ok,_}=World.tool_intent(c.w,actor,r)
+    end
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},11)
+    %{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 0,
+      kind: 0,axis: 2,size: 8,anchor: {8,8,16},id: 0,material: 19,tool_id: 1}
+  end
+
+  @tag :b4
+  test "B4 authoritative placement, overlap, stale delete, balance and restart",c do
+    r=b4_funded(c)
+    assert {:ok,seq}=World.attachment_intent(c.w,c.actor,r)
+    assert balance(c.w,1001).balance==448
+    assert World.stats(c.w).attachment_slots==64
+    assert {:ok,^seq}=World.attachment_intent(c.w,c.actor,r)
+    assert {:error,:occupied}=World.attachment_intent(c.w,c.actor,%{r | client_intent_seq: 11,request_id: 11})
+    assert {:error,:replayed_build}=World.attachment_intent(c.w,c.actor,r)
+    [txn]=World.entries_after(c.w,seq-1)
+    projected=Enum.find(txn.coarse,&(&1.level==1 and &1.cell=={0,0,1}))
+    assert VoxelRegion.Reducer.texel(projected.skins,4,1,1)==19
+    assert projected.material==0
+    assert Enum.any?(txn.entries,fn %{payload: bytes}->
+      {:ok,p}=Payload.decode(bytes)
+      p.format_version==8 and map_size(p.attachments)==64
+    end)
+    World.compact(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.stats(w).attachment_slots==64
+    assert balance(w,1001).balance==448
+    remove=%{r | action: 1,id: seq,client_intent_seq: 12,request_id: 12}
+    assert {:ok,_}=World.attachment_intent(w,c.actor,remove)
+    assert World.stats(w).attachment_slots==0
+    assert balance(w,1001).balance==512
+    assert {:ok,_}=World.attachment_intent(w,c.actor,%{r | client_intent_seq: 13,request_id: 13})
+    assert {:error,:stale_target}=World.attachment_intent(w,c.actor,%{remove | client_intent_seq: 14,request_id: 14})
+    assert World.stats(w).attachment_slots==64
+  end
+
+  @tag :b4
+  test "B4 shared edge survives one support, last support removal is same transaction",c do
+    r=b4_funded(c)
+    {:ok,_}=World.apply_edit(c.w,{0,1,2},11)
+    r=%{r | kind: 1,axis: 1}
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,r)
+    assert World.stats(c.w).attachment_slots==8
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
+    assert World.stats(c.w).attachment_slots==8
+    {:ok,seq}=World.apply_edit(c.w,{0,1,2},21)
+    assert World.stats(c.w).attachment_slots==0
+    [txn]=World.entries_after(c.w,seq-1)
+    assert Enum.all?(txn.entries,fn %{payload: bytes}->
+      {:ok,p}=Payload.decode(bytes); map_size(p.attachments)==0
+    end)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.stats(w).attachment_slots==0
+  end
+
+  @tag :b4
+  test "B4 log failure rolls back slots and inventory",c do
+    r=b4_funded(c)
+    File.write!(Path.join(c.opts[:root],"overlay.log.reject"),"")
+    assert {:error,:test_disk_failure}=World.attachment_intent(c.w,c.actor,r)
+    assert World.stats(c.w).attachment_slots==0
+    assert balance(c.w,1001).balance==512
+  end
+
+  @tag :b4
+  test "B4 cannot select the back face through the same macro host",c do
+    r=b4_funded(c)
+    assert {:error,:occluded_attachment}=World.attachment_intent(c.w,c.actor,%{r | anchor: {8,8,24}})
+    assert World.stats(c.w).attachment_slots==0
+    assert balance(c.w,1001).balance==512
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,%{r | client_intent_seq: 11,request_id: 11})
+  end
+
+  @tag :b4
+  test "B4 neighbor in another coarse parent hides and reveals surviving coating",c do
+    r=b4_funded(c)
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,r)
+    assert {:ok,seq}=World.apply_edit(c.w,{1,1,1},11)
+    [txn]=World.entries_after(c.w,seq-1)
+    cell=Enum.find(txn.coarse,&(&1.level==1 and &1.cell=={0,0,1}))
+    assert VoxelRegion.Reducer.texel(cell.skins,4,1,1)==11
+    assert World.stats(c.w).attachment_slots==64
+    assert {:ok,seq}=World.apply_edit(c.w,{1,1,1},0)
+    [txn]=World.entries_after(c.w,seq-1)
+    cell=Enum.find(txn.coarse,&(&1.level==1 and &1.cell=={0,0,1}))
+    assert VoxelRegion.Reducer.texel(cell.skins,4,1,1)==19
+    assert World.stats(c.w).attachment_slots==64
+  end
+
+  @tag :b4
+  test "B4 oblique view of a shared boundary uses the attachment plane, not a support center",c do
+    r=b4_funded(c)
+    {:ok,_}=World.apply_edits(c.w,[{{63,1,2},11},{{64,1,2},11}])
+    GenServer.call(c.actor.player,{:eye,{60.0,1.51,0.5}})
+    r=%{r | anchor: {512,8,16}}
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,r)
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: 1,client_intent_seq: 11,request_id: 11})
+    assert World.stats(c.w).attachment_slots==72
+  end
+
+  @tag :b4
+  test "B4 partial macro coating keeps only the slots supported by a neighboring prefab",c do
+    r=b4_funded(c)
+    assert {:ok,id}=World.attachment_intent(c.w,c.actor,r)
+    assert {:ok,_}=World.place_prefab(c.w,c.id,{8,8,15},0)
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
+    assert World.stats(c.w).attachment_slots==2
+    World.compact(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.stats(w).attachment_slots==2
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,3.0}})
+    assert {:ok,_}=World.attachment_intent(w,c.actor,%{r | action: 1,id: id,client_intent_seq: 11,request_id: 11})
+    assert World.stats(w).attachment_slots==0
+    assert balance(w,1001).balance==450
+  end
+
+  @tag :b4
+  test "B4 boundary rings, concurrent slot ownership, stale session and host replacement",c do
+    r=b4_funded(c)
+    {:ok,_}=World.apply_edits(c.w,[{{63,1,2},11},{{64,1,2},11}])
+    GenServer.call(c.actor.player,{:eye,{63.9,1.5,0.5}})
+    r=%{r | kind: 1,axis: 1,anchor: {512,8,16}}
+    {:ok,p2}=Actor.start_link(%{c.actor | eye: {63.9,1.5,0.5},gate: c.actor.player})
+    actor2=%{c.actor | player: p2}
+    tasks=for a<-[c.actor,actor2],do: Task.async(fn -> World.attachment_intent(c.w,a,r) end)
+    results=Enum.map(tasks,&Task.await(&1,300_000))
+    assert Enum.count(results,&match?({:ok,_},&1))==1
+    assert Enum.count(results,&(&1=={:error,:occupied}))==1
+    assert World.stats(c.w).attachment_slots==8
+    assert balance(c.w,1001).balance==504
+    txn=World.entries_after(c.w,World.seq(c.w)-1) |> hd()
+    regions=for %{payload: bytes}<-txn.entries do
+      {:ok,p}=Payload.decode(bytes)
+      assert map_size(p.attachments)==8
+      p.region
+    end
+    assert {0,0,0} in regions and {1,0,0} in regions
+    {:ok,_}=World.apply_edit(c.w,{63,1,2},19)
+    assert World.stats(c.w).attachment_slots==8
+    {:ok,_}=World.apply_edit(c.w,{63,1,2},0)
+    assert World.stats(c.w).attachment_slots==8
+    GenServer.call(c.actor.player,:seal)
+    assert {:error,:invalid_state}=World.attachment_intent(c.w,c.actor,%{r | client_intent_seq: 99})
+    {:ok,_}=World.apply_edit(c.w,{64,1,2},0)
+    assert World.stats(c.w).attachment_slots==0
+    GenServer.stop(p2)
+  end
+
+  @tag :b4
+  test "B4 host harvest refunds lost attachment slots once in the host transaction",c do
+    r=b4_funded(c)
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,r)
+    {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq<-20..23 do
+      actor=Map.merge(c.actor,%{received_us: seq*500_000,clock_node: node()})
+      req=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+        |> Map.merge(%{action: 1,client_intent_seq: seq})
+      assert {:ok,_}=World.tool_intent(c.w,actor,req)
+    end
+    assert World.stats(c.w).attachment_slots==0
+    assert balance(c.w,1001).balance==512
+    last=World.entries_after(c.w,World.seq(c.w)-1) |> hd()
+    assert last.material_balances[{1001,19}]==512
+    assert last.material_balances[{1001,11}]==512
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.stats(w).attachment_slots==0
+    assert balance(w,1001).balance==512
+  end
+
+  @tag :b4
+  test "B4 prefab attachments settle actual slots once and never regrow after reload",c do
+    r=b4_funded(c)
+    cell=fn x -> <<x::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little>> end
+    group=fn slot,kind,axis -> <<slot::32-little,kind,axis,0::signed-little-32,0::signed-little-32,0::signed-little-32,1,19::16-little>> end
+    bytes=<<"VXPD",2::32-little,2::32-little>><>cell.(0)<>cell.(1)<><<0::32-little,2::32-little>><>group.(7,0,2)<>group.(8,1,0)
+    id=:crypto.hash(:sha256,bytes)
+    File.write!(Path.join(c.opts[:prefab_catalog_path],"attached.vxpd"),bytes)
+    :ok=World.publish_prefabs(c.w,c.opts[:prefab_catalog_path])
+    place=%{request_id: 20,client_intent_seq: 20,logical_scene_id: 1,definition_id: id,anchor: {8,8,12},orientation: 0}
+    assert {:ok,birth}=World.prefab_intent(c.w,c.actor,:voxel_prefab_place_v1,place)
+    assert balance(c.w,1001).balance==508
+    assert {:ok,^birth}=World.prefab_intent(c.w,c.actor,:voxel_prefab_place_v1,place)
+    assert balance(c.w,1001).balance==508
+    s=:sys.get_state(c.w)
+    {face_id,19}=Map.fetch!(s.attachments,{0,2,{8,8,12}})
+    assert byte_size(s.structure[{1,{0,0,0}}])==4096*14
+    delete=%{r | request_id: 21,client_intent_seq: 21,action: 1,id: face_id,anchor: {8,8,12},size: 1}
+    assert {:ok,_}=World.attachment_intent(c.w,c.actor,delete)
+    # 独立删除未改 refined 体素，也必须刷新粗层皮肤。
+    assert byte_size(:sys.get_state(c.w).structure[{1,{0,0,0}}])==4096*2
+    assert balance(c.w,1001).balance==509
+    assert :ok=World.compact(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.stats(w).attachment_slots==1
+    assert not Map.has_key?(:sys.get_state(w).attachments,{0,2,{8,8,12}})
+    replace=%{request_id: 22,client_intent_seq: 22,logical_scene_id: 1,instance_id: {birth,0},definition_id: id}
+    assert {:ok,new_birth}=World.prefab_intent(w,c.actor,:voxel_prefab_replace_v1,replace)
+    assert balance(w,1001).balance==508
+    assert World.stats(w).attachment_slots==2
+    {new_face_id,19}=:sys.get_state(w).attachments[{0,2,{8,8,12}}]
+    assert new_face_id>face_id
+    assert {:error,:stale_target}=World.attachment_intent(w,c.actor,%{delete | request_id: 23,client_intent_seq: 23})
+    remove=%{request_id: 24,client_intent_seq: 24,logical_scene_id: 1,instance_id: {new_birth,0}}
+    assert {:ok,removed}=World.prefab_intent(w,c.actor,:voxel_prefab_remove_v1,remove)
+    assert {:ok,^removed}=World.prefab_intent(w,c.actor,:voxel_prefab_remove_v1,remove)
+    assert balance(w,1001).balance==512
+    assert World.stats(w).attachment_slots==0
+  end
+
+  @tag :b4
+  test "B4 attachment damage stays independent, survives partial support and restart, rejects old identity",c do
+    r=b4_funded(c)
+    assert {:ok,id}=World.attachment_intent(c.w,c.actor,r)
+    request=Map.merge(c.request,%{granularity: 3,micro: r.anchor,owner: {id,2},incarnation: id,material: 19})
+    assert {:ok,full}=World.tool_intent(c.w,c.actor,request)
+    assert full.max_hp==12.5
+    actor=Map.merge(c.actor,%{received_us: 10_000_000,clock_node: node()})
+    assert {:ok,_}=World.tool_intent(c.w,actor,%{request | action: 1,client_intent_seq: 20})
+    assert {:ok,hurt}=World.tool_intent(c.w,c.actor,request)
+    assert_in_delta hurt.hp,9.0,1.0e-9
+    assert {:ok,%{material: 11,hp: 100.0}}=World.tool_intent(c.w,c.actor,c.request)
+    # 两个 refined 槽保留共享支撑；宿主删除后不得免费回血或重发整面材料。
+    assert {:ok,prefab_birth}=World.place_prefab(c.w,c.id,{8,8,15},0)
+    assert {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
+    assert World.stats(c.w).attachment_slots==2
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,3.0}})
+    assert {:ok,partial}=World.tool_intent(c.w,c.actor,request)
+    assert partial.incarnation==id
+    assert_in_delta partial.max_hp,12.5*2/64,1.0e-9
+    assert_in_delta partial.hp,9.0*2/64,1.0e-9
+    assert :ok=World.compact(c.w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert {:ok,restored}=World.tool_intent(w,c.actor,request)
+    assert restored.hp==partial.hp
+    for seq<-21..23 do
+      a=Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()})
+      assert {:ok,_}=World.tool_intent(w,a,%{request | action: 1,client_intent_seq: seq})
+    end
+    assert World.stats(w).attachment_slots==0
+    assert balance(w,1001).balance==450
+    assert {:ok,_}=World.remove_prefab(w,{prefab_birth,0})
+    GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,0.0625}})
+    assert {:ok,_}=World.apply_edit(w,{1,1,2},11)
+    assert {:ok,new_id}=World.attachment_intent(w,c.actor,%{r | client_intent_seq: 30,request_id: 30})
+    assert new_id!=id
+    assert {:error,:stale_target}=World.tool_intent(w,c.actor,%{request | action: 1,client_intent_seq: 31})
+    assert World.stats(w).attachment_slots==64
   end
 
 end

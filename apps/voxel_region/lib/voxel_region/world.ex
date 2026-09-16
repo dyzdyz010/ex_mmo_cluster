@@ -21,6 +21,7 @@ defmodule VoxelRegion.World do
   source 失败不 fallback。
   """
 
+  alias VoxelRegion.Attachments
   use GenServer
   require Logger
   import Bitwise
@@ -159,6 +160,22 @@ defmodule VoxelRegion.World do
     end
   end
 
+  @doc "全局系统功能：附件经已鉴权角色进入原子世界事务。"
+  def attachment_intent(server,actor,request) do
+    slots=Attachments.footprint(request.kind,request.axis,request.anchor,request.size)
+    cells=Attachments.macros(slots)
+    if Enum.all?(cells,&valid_edit_coord?/1) do
+      case GenServer.call(server,{:tool_range,request.tool_id},300_000) do
+        {:error,_}=error -> error
+        range ->
+          prepare(server,tool_regions(actor,range)++edit_keys(cells))
+          GenServer.call(server,{:attachment_intent,actor,request},300_000)
+      end
+    else
+      {:error,:invalid_coordinate}
+    end
+  end
+
   def tool_intent(server, actor, request) do
     started = System.monotonic_time(:microsecond)
     # Cold generation remains outside the World mailbox; the authoritative ray is
@@ -170,11 +187,7 @@ defmodule VoxelRegion.World do
         if not valid_edit_coord?(Damage.macro(request)) do
           {:error,:invalid_coordinate}
         else
-        {x,y,z}=actor.eye
-        regions = for rx <- floor((x-range)/64)..floor((x+range)/64),
-          ry <- floor((y-range)/64)..floor((y+range)/64),
-          rz <- floor((z-range)/64)..floor((z+range)/64),do: {0,{rx,ry,rz}}
-        prepare(server,regions)
+        prepare(server,tool_regions(actor,range))
         if request.action == 1, do: prepare(server,edit_keys([Damage.macro(request)]))
         prepared = System.monotonic_time(:microsecond)
         result = GenServer.call(server,{:tool_intent,actor,request},300_000)
@@ -189,6 +202,16 @@ defmodule VoxelRegion.World do
       prepare(server, prefab_keys(cells))
       GenServer.call(server,{:place_prefab,definition_id,anchor,orientation,cells},300_000)
     end
+  end
+  @doc "全局系统功能：玩家 Prefab 建造、替换、拆解复用 B2 余额与请求身份；旧管理入口仅供夹具。"
+  def prefab_intent(server,actor,kind,request) do
+    cells=case kind do
+      :voxel_prefab_place_v1 -> with {:ok,micro}<-prefab_cells(server,request.definition_id,request.anchor,request.orientation),do: {:ok,footprint_macros(micro)}
+      :voxel_prefab_remove_v1 -> instance_cells(server,request.instance_id)
+      :voxel_prefab_replace_v1 -> replacement_cells(server,request.instance_id,request.definition_id)
+    end
+    if match?({:ok,_},cells),do: prepare(server,region_keys(Enum.map(elem(cells,1),&{0,&1})))
+    GenServer.call(server,{:prefab_intent,actor,kind,request},300_000)
   end
   def remove_prefab(server \\ @name, instance_id), do: GenServer.call(server,{:remove_prefab,instance_id},300_000)
   def publish_prefabs(server \\ @name,path) do
@@ -280,10 +303,12 @@ defmodule VoxelRegion.World do
           served_headers: %{},
           overlay: %{},
           refined: %{},
+          attachments: %{},
+          attachment_serial: 0, attachment_owners: %{},
           damage: %{}, epochs: %{}, tool_sessions: %{},
           thermal: load_thermal_environment(opts),
           thermal_work: empty_thermal_work(),
-          material_balances: %{}, build_sessions: %{},
+          material_balances: %{}, material_units_per_micro: 1, build_sessions: %{},
           production_materials: Keyword.get(opts,:production_materials,Application.get_env(:voxel_region,:production_materials,[])),
           properties: load_properties(opts),
           structure: %{},
@@ -299,6 +324,9 @@ defmodule VoxelRegion.World do
         }
 
         state = replay_log(state)
+        state = if state.seq==0,do: %{state | material_units_per_micro: Damage.material_units(state.properties)},else: state
+        # 已有余额必须显式迁移，不能把旧整数静默解释成新量子。
+        true = state.material_units_per_micro==Damage.material_units(state.properties)
         validate_damage_catalog(state)
         state = migrate_component_damage(state)
         {state, _, _} = refresh_structure(state, Map.keys(state.refined))
@@ -330,7 +358,9 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call({:publish_properties,catalog},_,state) do
-    compatible = Enum.all?(state.damage,fn {_,t}->
+    compatible = Damage.material_units(catalog)==state.material_units_per_micro and
+      (map_size(state.attachments)==0 or Map.get(state.properties,:attachments)==Map.get(catalog,:attachments)) and
+      Enum.all?(state.damage,fn {_,t}->
       old = Map.fetch!(state.properties.materials,t.material)
       new = Map.fetch!(catalog.materials,t.material)
       fields = if Map.has_key?(t,:temperature_kelvin),do: [],else:
@@ -385,6 +415,14 @@ defmodule VoxelRegion.World do
       {:error,reason} -> {:reply,{:error,reason},state}
     end
   end
+  def handle_call({:attachment_intent,actor,request},_,state) do
+    with {:ok,actor} <- current_actor(actor),true <- state.properties != nil do
+      attachment_target(state,actor,request)
+    else
+      false -> {:reply,{:error,:production_unavailable},state}
+      {:error,reason} -> {:reply,{:error,reason},state}
+    end
+  end
   def handle_call({:tool_intent,actor,request},_,state) do
     started = System.monotonic_time(:microsecond)
     before = state
@@ -394,7 +432,7 @@ defmodule VoxelRegion.World do
       {:ok,actor} ->
       refreshed = System.monotonic_time(:microsecond)
       Logger.info("voxel_tool_owner request_id=#{request.request_id} node=#{node()} started_us=#{started} refresh_us=#{refreshed-started}")
-      case Damage.raycast(actor.eye,request.direction,tool["range_macro"],state,&target_at/2) do
+      case tool_target(state,actor,request,tool) do
       {:error,reason,_} -> {:reply,{:error,reason},before}
       {:ok,target,state} ->
         target = property_state(state,target)
@@ -435,6 +473,24 @@ defmodule VoxelRegion.World do
     place_tree(state,state,Map.fetch!(state.prefabs,id),anchor,orientation,{0,0},0,[])
   end
 
+  def handle_call({:prefab_intent,actor,kind,request},_,state) do
+    with {:ok,actor}<-current_actor(actor) do
+      request=Map.put(request,:prefab_operation,kind)
+      previous=Map.get(state.build_sessions,actor.gate)
+      cond do
+        previous != nil and previous.request==request -> {:reply,previous.result,state}
+        previous != nil and request.client_intent_seq<=previous.request.client_intent_seq -> {:reply,{:error,:replayed_build},state}
+        true ->
+          {:reply,reply,next}=player_prefab(state,actor,kind,request)
+          unless previous != nil,do: Process.monitor(actor.gate)
+          next=%{next | build_sessions: Map.put(next.build_sessions,actor.gate,%{request: request,result: reply})}
+          {:reply,reply,next}
+      end
+    else
+      {:error,reason}-> {:reply,{:error,reason},state}
+    end
+  end
+
   def handle_call({:remove_prefab,id},_from,state) do
     ids = subtree_ids(state,id)
     case subtree_cells(state,ids) do
@@ -469,6 +525,7 @@ defmodule VoxelRegion.World do
         decoded_regions: map_size(state.decoded),
         region_bases: map_size(state.region_bases),
         refined_macros: map_size(state.refined),
+        attachment_slots: map_size(state.attachments),attachment_bytes: :erlang.external_size(state.attachments),
         instances: map_size(state.instances),
         damaged_targets: map_size(state.damage),damage_state_bytes: :erlang.external_size(state.damage),
         property_digest: if(state.properties,do: Base.encode16(state.properties.digest,case: :lower)),
@@ -656,7 +713,7 @@ defmodule VoxelRegion.World do
     refined = for {cell,slots} <- state.refined, local = Payload.local(region,cell), Payload.in_span?(local),
       into: %{}, do: {Payload.cell_index(local),slots}
     ids = live_instance_ids(refined,state.instances)
-    %{payload | refined: refined,instances: Map.take(state.instances,ids),
+    %{payload | attachments: Attachments.extract(state.attachments,region),refined: refined,instances: Map.take(state.instances,ids),
       format_version: if(map_size(refined)>0 or payload.format_version == 5,do: 5,else: 4)}
   end
   defp with_refined(state,%Payload{level: level,region: region}=payload) do
@@ -709,10 +766,77 @@ defmodule VoxelRegion.World do
       refined = if map_size(slots) == 0,do: Map.delete(s.refined,cell),else: Map.put(s.refined,cell,slots)
       put_overlay(%{s | refined: refined},0,cell,{0,MmoContracts.Voxel.Skins.uniform(0)})
     end)
-    %{next | instances: Map.drop(next.instances,MapSet.to_list(ids))}
+    owned=Map.filter(next.attachment_owners,fn {_,{owner,_}} -> MapSet.member?(ids,owner) end) |> Map.keys() |> MapSet.new()
+    %{next | instances: Map.drop(next.instances,MapSet.to_list(ids)),
+      attachments: Map.reject(next.attachments,fn {_,{id,_}} -> MapSet.member?(owned,id) end),
+      attachment_owners: Map.drop(next.attachment_owners,MapSet.to_list(owned))}
   end
 
-  defp place_tree(before,state,definition,anchor,orientation,parent,slot,changed) do
+  defp player_prefab(state,actor,:voxel_prefab_place_v1,r) do
+    with {:ok,definition}<-Map.fetch(state.prefabs,r.definition_id) do
+      place_tree(state,state,definition,r.anchor,r.orientation,{0,0},0,[],actor)
+    else
+      :error -> {:reply,{:error,:definition_not_found},state}
+    end
+  end
+  defp player_prefab(state,actor,kind,r) do
+    with {:ok,instance}<-fetch_instance(state,r.instance_id) do
+      ids=subtree_ids(state,r.instance_id)
+      cells=subtree_cells(state,ids)
+      next=clear_subtree(state,ids,cells)
+      case kind do
+        :voxel_prefab_remove_v1 -> prefab_settle(state,next,cells,actor)
+        :voxel_prefab_replace_v1 ->
+          case Map.fetch(state.prefabs,r.definition_id) do
+            {:ok,definition}->place_tree(state,next,definition,instance.anchor,instance.orientation,instance.parent_id,instance.component_slot,cells,actor)
+            :error -> {:reply,{:error,:definition_not_found},state}
+          end
+      end
+    else
+      {:error,reason}-> {:reply,{:error,reason},state}
+    end
+  end
+
+  defp prefab_settle(before,state,cells,nil),do: prefab_reply(before,state,cells)
+  defp prefab_settle(before,state,cells,actor) do
+    case prefab_reach(state,actor,cells) do
+      :ok->prefab_reply(before,state,cells,%{prefab_actor: actor})
+      {:error,reason}-> {:reply,{:error,reason},before}
+    end
+  end
+
+  defp prefab_payment(before,state,cells,%{prefab_actor: actor}) do
+    # 支撑裁剪完成后，只按实际前后差额一次结算；可用本次回收支付替换，不从模板退款。
+    delta=Enum.reduce(cells,%{},fn cell,delta ->
+      n=state.material_units_per_micro
+      delta=Enum.reduce(Map.get(before.refined,cell,%{}),delta,fn {_,{m,_}},d->Map.update(d,m,n,&(&1+n)) end)
+      Enum.reduce(Map.get(state.refined,cell,%{}),delta,fn {_,{m,_}},d->Map.update(d,m,-n,&(&1-n)) end)
+    end)
+    delta=Enum.reduce(state.attachments,delta,fn {slot,{_,m}}=entry,d ->
+      n=Attachments.units([slot],state.properties)
+      if Map.get(before.attachments,slot)==elem(entry,1),do: d,else: Map.update(d,m,-n,&(&1-n))
+    end)
+    old_changed=Map.filter(before.attachments,fn {slot,value}->Map.get(state.attachments,slot)!=value end)
+    delta=Enum.reduce(old_changed,delta,fn {slot,{_,m}},d->
+      n=Attachments.units([slot],state.properties);Map.update(d,m,n,&(&1+n)) end)
+    delta=Map.reject(delta,fn {_,n}->n==0 end)
+    with :ok<-if(Enum.all?(delta,fn {m,_}->m in state.production_materials end),do: :ok,else: {:error,:unknown_resource}),
+      :ok<-if(Enum.all?(delta,fn {m,n}->balance_state(state,actor.cid,m).balance+n>=0 end),do: :ok,else: {:error,:insufficient_material}) do
+      {next,balances}=Enum.reduce(delta,{state,%{}},fn {m,n},{s,b}->
+        {s,paid}=settle_material(s,actor.cid,m,n);{s,Map.merge(b,paid.material_balances)}
+      end)
+      {:ok,next,%{material_balances: balances}}
+    else
+      {:error,_}=error -> error
+    end
+  end
+  defp prefab_payment(_before,state,_cells,settlement),do: {:ok,state,settlement}
+  defp prefab_reach(state,actor,cells) do
+    range=state.properties.tools[1]["range_macro"]
+    if Enum.any?(cells,&(build_reach(actor.eye,&1,range)==:ok)),do: :ok,else: {:error,:out_of_reach}
+  end
+
+  defp place_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor \\ nil) do
     nodes = Prefab.occurrences(definition,anchor,orientation,before.seq+1,parent,slot)
     # 已发布定义保证 slot 不重叠；按 canonical macro 汇集后，每格只更新一次世界索引和缓存。
     additions = for {owner,_,cells} <- nodes, {micro,material} <- cells, reduce: %{} do
@@ -742,7 +866,19 @@ defmodule VoxelRegion.World do
     case result do
       {:ok,next} ->
         instances = Enum.reduce(nodes,next.instances,fn {owner,instance,_},acc->Map.put(acc,owner,instance) end)
-        prefab_reply(before,%{next | instances: instances},Enum.uniq(Map.keys(additions)++changed))
+        groups=Prefab.attachments(definition,anchor,orientation,before.seq+1)
+        slots=Enum.flat_map(groups,& &1.slots)
+        if Enum.any?(slots,&Map.has_key?(next.attachments,&1)) do
+          {:reply,{:error,:occupied},before}
+        else
+          next=Enum.reduce(groups,%{next | instances: instances},fn g,s ->
+            id=max(s.attachment_serial,before.seq)+1
+            values=Map.new(g.slots,&{&1,{id,g.material}})
+            %{s | attachment_serial: id,attachments: Map.merge(s.attachments,values),
+              attachment_owners: Map.put(s.attachment_owners,id,{g.owner,g.slot})}
+          end)
+          prefab_settle(before,next,Enum.uniq(Map.keys(additions)++changed++Attachments.macros(slots)),actor)
+        end
       {:error,reason} -> {:reply,{:error,reason},before}
     end
   end
@@ -757,6 +893,8 @@ defmodule VoxelRegion.World do
 
   defp prefab_reply(before,state,cells,settlement \\ %{}) do
     started = System.monotonic_time(:microsecond)
+    removed=Map.keys(before.attachments)--Map.keys(state.attachments)
+    cells=Enum.uniq(cells++Attachments.macros(removed))
     state = %{state | seq: before.seq+1,instances: Map.take(state.instances,live_instance_ids(state.refined,state.instances))}
     # owner 更换仍发布完整 L0；只有实际 slot/材质变化才重建结构和碰撞。
     material_changes = Enum.filter(cells,fn cell ->
@@ -769,10 +907,14 @@ defmodule VoxelRegion.World do
         end
       end)
     end)
+    {state,attachment_keys,settlement}=prune_attachments(before,state,cells,settlement)
+    with {:ok,state,settlement} <- prefab_payment(before,state,cells,settlement) do
+    {:ok,coarse,state,_}=reduce_batch(state,attachment_dirty(state,cells),1,[],0)
+    {coarse_txn,state}=select_transaction(state,coarse)
     terrain_payloads = state.payloads
-    {state, structure_keys, structure_cells} = refresh_structure(state,material_changes)
+    {state, structure_keys, structure_cells} = refresh_structure(state,cells)
     structure_done = System.monotonic_time(:microsecond)
-    l0_keys = region_keys(Enum.map(cells,&{0,&1}))
+    l0_keys = Enum.uniq(region_keys(Enum.map(cells,&{0,&1}))++attachment_keys)
     keys = l0_keys ++ structure_keys
     {entries,state} = region_afterimages(state,l0_keys,terrain_payloads)
     region_count = length(entries)
@@ -781,7 +923,7 @@ defmodule VoxelRegion.World do
     end)
     regions_done = System.monotonic_time(:microsecond)
     {state,metadata} = damage_geometry(before,state,cells,false)
-    txn = Map.merge(%{seq: state.seq,entries: entries,coarse: []},metadata) |> Map.merge(settlement)
+    txn = Map.merge(%{coarse_txn | entries: entries++coarse_txn.entries},metadata) |> Map.merge(settlement)
     with {:ok,chunks} <- canonical_changes(before,state,Enum.map(material_changes,&{0,&1})),
          collision_done = System.monotonic_time(:microsecond),
          :ok <- append_log(state,txn) do
@@ -794,6 +936,9 @@ defmodule VoxelRegion.World do
         "collision_us=#{collision_done-regions_done} log_us=#{log_done-collision_done} " <>
         "fanout_us=#{System.monotonic_time(:microsecond)-log_done}")
       {:reply,{:ok,state.seq},state}
+    else
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
     else
       {:error,reason} -> {:reply,{:error,reason},before}
     end
@@ -833,6 +978,8 @@ defmodule VoxelRegion.World do
 
   # 结构与地形分别派生；地形 early-stop 不得截断仍会变化的局部细化。
   defp refresh_structure(state,cells) do
+    cells = attachment_dirty(state,cells) |> Enum.map(&elem(&1,1))
+    faces = Attachments.l1_faces(state.attachments,Enum.map(cells,&parent_of/1))
     {state,_,changed} = Enum.reduce(1..@max_level,{state,cells,[]},fn level,{s,dirty,changed} ->
       parents = dirty |> Enum.map(&parent_of/1) |> Enum.uniq()
       {s,changed} = Enum.reduce(parents,{s,changed},fn {px,py,pz}=parent,{s,changed} ->
@@ -850,7 +997,14 @@ defmodule VoxelRegion.World do
                 {m,s}
             end
           end)
-          {if(level == 1,do: VoxelRegion.Structure.from_canonical(values),else: VoxelRegion.Structure.reduce(values)),s}
+          if level == 1 do
+            VoxelRegion.Structure.project_attachments(VoxelRegion.Structure.from_canonical(values),parent,Map.get(faces,parent,[]),fn micro,world ->
+              {target,world}=target_at(micro,world)
+              {if(target,do: target.material,else: 0),world}
+            end,s)
+          else
+            {VoxelRegion.Structure.reduce(values),s}
+          end
         else
           {nil,s}
         end
@@ -999,7 +1153,10 @@ defmodule VoxelRegion.World do
 
   # ---- 日志
 
-  defp append_log(%{log: {backend, handle}}, txn), do: backend.append(handle, txn)
+  defp append_log(%{log: {backend, handle}}=state, txn), do: backend.append(handle, attachment_metadata(state,txn))
+
+  # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
+  defp attachment_metadata(state,txn),do: Map.merge(txn,%{attachment_serial: state.attachment_serial,attachment_owners: state.attachment_owners,material_units_per_micro: state.material_units_per_micro})
 
   defp replay_log(%{log: {backend, handle}} = state) do
     Enum.reduce(backend.replay(handle), state, fn txn, s ->
@@ -1094,9 +1251,9 @@ defmodule VoxelRegion.World do
   end
 
   defp property_snapshot(state, box) do
-    macros = for {_, t} <- state.damage, t.granularity != 2,
+    macros = for {_, t} <- state.damage, t.granularity in [0,1],
       VoxelRegion.PropertyObservation.relevant?(t, box), do: %{t | seq: state.seq, request_id: 0}
-    %{property_states: macros ++ component_observations(state, box),
+    %{property_states: macros ++ component_observations(state, box) ++ attachment_observations(state, box),
       property_context: property_context(state), epochs: state.epochs}
     |> VoxelRegion.PropertyObservation.project(box)
   end
@@ -1117,7 +1274,12 @@ defmodule VoxelRegion.World do
     # 纯属性提交由唯一目标集合产生；只有几何变化合并三种来源时才需要按身份去重。
     rows = if MapSet.size(changed_owners) == 0, do: Map.get(txn, :property_states, []), else:
       (removed ++ Map.get(txn, :property_states, []) ++ fresh) |> Map.new(&{Damage.key(&1), &1}) |> Map.values()
+    rows = if before.attachments==state.attachments,do: rows,else:
+      (rows++attachment_observations(state,nil)) |> Map.new(&{Damage.key(&1),&1}) |> Map.values()
     rows = Enum.map(rows, fn
+      %{granularity: 3}=row ->
+        cells=Attachments.macros(attachment_slots(before,row.incarnation)++attachment_slots(state,row.incarnation))
+        Map.put(row,:observation_cells,cells)
       %{granularity: 2} = row ->
         cells = subtree_cells(before, MapSet.new([row.owner])) ++ subtree_cells(state, MapSet.new([row.owner]))
         Map.put(row, :observation_cells, Enum.uniq(cells))
@@ -1261,7 +1423,9 @@ defmodule VoxelRegion.World do
       refined = state.refined |> Map.reject(fn {cell,_} -> region_of(cell)==p.region end) |> Map.merge(core)
       instances = Map.merge(state.instances,p.instances)
       ids = live_instance_ids(refined,instances)
-      %{state | refined: refined,instances: Map.take(instances,ids)}
+      attachments=state.attachments |> Map.reject(fn {slot,_}->Attachments.region(slot)==p.region end)
+        |> Map.merge(Map.filter(p.attachments,fn {slot,_}->Attachments.region(slot)==p.region end))
+      %{state | attachments: attachments,refined: refined,instances: Map.take(instances,ids)}
     else
       state
     end
@@ -1292,7 +1456,7 @@ defmodule VoxelRegion.World do
       Map.put(index, k, MapSet.filter(cells, &(region_of(&1) != p.region)))
     end)
     # 当前后缀由世界的 refined/instances/structure 唯一持有，基底只保留地形。
-    p = %{p | refined: %{},instances: %{},structure: %{}}
+    p = %{p | refined: %{},instances: %{},structure: %{},attachments: %{}}
     %{cache_clear(state) | region_bases: Map.put(state.region_bases,key,p),
       snapshots: MapSet.put(state.snapshots,key),overlay: overlay,overlay_regions: regions}
   end
@@ -1316,18 +1480,19 @@ defmodule VoxelRegion.World do
       {:error, reason} -> {:error, reason}
       {[], state} -> {:ok,state}
       {changed,state} ->
-        case reduce_batch(state,changed,1,changed,0) do
+        case reduce_batch(state,attachment_dirty(state,Enum.map(changed,&elem(&1,1))),1,changed,0) do
           {:error, reason} ->
             {:error, reason}
 
           {:ok,all,state,visits} ->
             reduced = System.monotonic_time(:microsecond)
+            {state,attachment_keys,settlement}=prune_attachments(before,state,Enum.map(changed,&elem(&1,1)),settlement)
             state = %{state | seq: state.seq+1}
             state = refresh_macro_payloads(before,state,changed)
             cached = System.monotonic_time(:microsecond)
             terrain_payloads = Map.merge(before.payloads,state.payloads)
             {state,structure_keys,_} = refresh_structure(state,Enum.map(changed,&elem(&1,1)))
-            structure_keys=Enum.uniq(structure_keys++region_keys(Enum.map(removed_cells,&{0,&1})))
+            structure_keys=Enum.uniq(attachment_keys++structure_keys++region_keys(Enum.map(removed_cells,&{0,&1})))
             structured = System.monotonic_time(:microsecond)
             legacy = legacy and structure_keys == []
             {txn,state} = if legacy do
@@ -1360,7 +1525,7 @@ defmodule VoxelRegion.World do
             appended = System.monotonic_time(:microsecond)
             state = %{state | entries: Map.put(state.entries,state.seq,txn)}
             fanout(state,txn)
-            fanout_canonical(state,txn,collision_chunks,region_keys(changed),before)
+            fanout_canonical(state,txn,collision_chunks,region_keys(changed)++attachment_keys,before)
             Logger.info("voxel_macro_stages seq=#{state.seq} reduce_us=#{reduced-started} l0_cache_us=#{cached-reduced} structure_us=#{structured-cached} regions_us=#{imaged-structured} collision_us=#{collided-imaged} log_us=#{appended-collided} fanout_us=#{System.monotonic_time(:microsecond)-appended}")
             region_count = Enum.count(Map.get(txn,:entries,[]),&Map.has_key?(&1,:payload))
             Logger.info("voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond)-started}")
@@ -1397,7 +1562,16 @@ defmodule VoxelRegion.World do
         {:ok,children,s} ->
           case cell_value(s,level,parent) do
             {:ok,old,s} ->
-              new=Reducer.reduce_cell(children,level)
+              {material,skins}=Reducer.reduce_cell(children,level)
+              {skins,s}=if level==1 do
+                Attachments.project_l1(parent,skins,s.attachments,fn micro,world ->
+                  {target,world}=target_at(micro,world)
+                  {if(target,do: target.material,else: 0),world}
+                end,s)
+              else
+                {skins,s}
+              end
+              new={material,skins}
               next=if new==old, do: {changed,s}, else: {[{level,parent}|changed],put_overlay(s,level,parent,new)}
               {:cont,next}
 
@@ -1478,7 +1652,7 @@ defmodule VoxelRegion.World do
     end)
     txn=Map.merge(%{txn | entries: txn.entries++extra},%{property_states: Map.values(state.damage),epochs: state.epochs,material_balances: state.material_balances,thermal: state.thermal})
     {backend,handle}=state.log
-    backend.checkpoint(handle,txn)
+    backend.checkpoint(handle,attachment_metadata(state,txn))
     state = Enum.reduce(txn.entries,state,fn
       %{payload: bytes},s ->
         {:ok,p} = Payload.decode(bytes)
@@ -1538,7 +1712,11 @@ defmodule VoxelRegion.World do
     case Map.fetch(state.damage,Damage.key(target)) do
       {:ok,t} -> Map.merge(t,target) |> Map.merge(%{seq: state.seq,request_id: 0,defense: m["defense"]*1.0})
       :error ->
-        hp = if target.granularity==2,do: component_max_hp(state,target.owner),else: Damage.max_hp(m,target.granularity)
+        hp = case target.granularity do
+          2 -> component_max_hp(state,target.owner)
+          3 -> attachment_max_hp(state,target)
+          g -> Damage.max_hp(m,g)
+        end
         row=Map.merge(target,%{seq: state.seq,request_id: 0,hp: hp,max_hp: hp,
           defense: m["defense"]*1.0,digest: state.properties.digest,flags: 0})
         if state.thermal && target.granularity==0 && Map.has_key?(m,"heat_capacity_per_macro"),
@@ -1705,6 +1883,59 @@ defmodule VoxelRegion.World do
     end)
   end
 
+  # ??????????????? B1 ????????
+  defp tool_target(state,actor,%{granularity: 3,owner: {id,address}}=r,tool) when address in 0..5 do
+    slot={div(address,3),rem(address,3),r.micro}
+    case Map.get(state.attachments,slot) do
+      {^id,material} when material==r.material and id==r.incarnation ->
+        reach=%{action: 1,size: 1,kind: elem(slot,0),axis: elem(slot,1),anchor: r.micro}
+        case attachment_reach(state,actor,reach,tool) do
+          :ok -> {:ok,attachment_identity(slot,{id,material}),state}
+          {:error,reason} -> {:error,reason,state}
+        end
+      _ -> {:error,:stale_target,state}
+    end
+  end
+  defp tool_target(state,_actor,%{granularity: 3},_tool),do: {:error,:invalid_attachment,state}
+  defp tool_target(state,actor,r,tool),do: Damage.raycast(actor.eye,r.direction,tool["range_macro"],state,&target_at/2)
+
+  defp attachment_identity({kind,axis,anchor},{id,material}),do:
+    %{micro: anchor,granularity: 3,incarnation: id,owner: {id,kind*3+axis},material: material}
+  defp attachment_slots(state,id),do: (for {slot,{^id,_}}<-state.attachments,do: slot)
+  defp attachment_max_hp(state,target),do:
+    state.properties.materials[target.material]["max_hp_per_macro"]*Attachments.units(attachment_slots(state,target.incarnation),state.properties)/(@micro*@micro*@micro*state.material_units_per_micro)
+
+  defp attachment_observations(%{properties: nil},_box),do: []
+  defp attachment_observations(state,box) do
+    state.attachments |> Enum.group_by(fn {_,{id,_}}->id end) |> Enum.flat_map(fn {_,entries}->
+      cells=Attachments.macros(Enum.map(entries,&elem(&1,0)))
+      if box==nil or Enum.any?(cells,&VoxelRegion.PropertyObservation.contains?(&1,box)) do
+        {slot,value}=Enum.min(entries)
+        [property_state(state,attachment_identity(slot,value)) |> Map.put(:observation_cells,cells)]
+      else
+        []
+      end
+    end)
+  end
+
+  # ???????????????????????????
+  defp attachment_damage(before,state) do
+    live=MapSet.new(state.attachments,fn {_,{id,_}} -> id end)
+    state=%{state | attachment_owners: Map.take(state.attachment_owners,MapSet.to_list(live))}
+    Enum.reduce(before.damage,{state,[]},fn
+      {key,%{granularity: 3}=t},{s,rows}->
+        maximum=attachment_max_hp(s,t)
+        cond do
+          maximum==t.max_hp -> {s,rows}
+          maximum==0 -> {%{s | damage: Map.delete(s.damage,key)},[%{t | hp: 0.0,flags: 1,seq: s.seq,request_id: 0}|rows]}
+          true ->
+            row=%{t | max_hp: maximum,hp: t.hp*maximum/t.max_hp,seq: s.seq,request_id: 0}
+            {%{s | damage: Map.put(s.damage,key,row)},[row|rows]}
+        end
+      _,acc -> acc
+    end)
+  end
+
   defp same_target?(a,b), do: Enum.all?([:micro,:incarnation,:owner,:material],&(Map.fetch!(a,&1)==Map.fetch!(b,&1)))
 
   defp attack_target(before,state,actor,request,target,tool) do
@@ -1724,20 +1955,22 @@ defmodule VoxelRegion.World do
           feed_heater(before,state,actor,request,target,tool)
         else
           material = Map.fetch!(state.properties.materials,target.material)
-          amount = Damage.amount(material,tool,target.granularity)
+          amount = if target.granularity==3,do:
+            Damage.amount(material,tool,0)*target.max_hp/material["max_hp_per_macro"],else: Damage.amount(material,tool,target.granularity)
           target = %{target | hp: max(0.0,target.hp-amount),seq: state.seq+1}
           cond do
             target.granularity==2 and not leaf_component?(state,target.owner) -> {:reply,{:error,:not_a_leaf_component},before}
             amount == 0.0 -> {:reply,{:error,:ineffective_tool},state}
+            target.granularity==3 and (request.action==2 or target.hp==0.0) -> destroy_attachment(before,state,actor,target)
             request.action == 2 -> dismantle_target(before,state,actor,target)
             target.hp == 0.0 and target.granularity==2 -> dismantle_target(before,state,actor,target)
             target.hp == 0.0 ->
             {state,settlement} = if target.material in state.production_materials do
-              settle_material(state,actor.cid,target.material,@micro*@micro*@micro)
+              settle_material(state,actor.cid,target.material,@micro*@micro*@micro*state.material_units_per_micro)
             else
               {state,%{}}
             end
-            destroy_target(before,%{state | damage: Map.put(state.damage,Damage.key(target),target)},target,settlement)
+            destroy_target(before,%{state | damage: Map.put(state.damage,Damage.key(target),target)},target,Map.put(settlement,:recovery_cid,actor.cid))
             true ->
             state = %{state | seq: state.seq+1,damage: Map.put(state.damage,Damage.key(target),target)}
             txn = %{seq: state.seq,entries: [],coarse: [],property_states: [target],epochs: %{}}
@@ -1758,7 +1991,7 @@ defmodule VoxelRegion.World do
   # 全局系统功能：投料与有限能源同笔保存；建造不产生能源，拆除不返还已经消费的燃料。
   defp feed_heater(before,state,actor,request,target,tool) do
     fuel=tool["fuel_material_id"]
-    units=tool["fuel_units"]
+    units=tool["fuel_units"]*state.material_units_per_micro
     cond do
       request.action != 1 or state.thermal==nil -> {:reply,{:error,:thermal_unavailable},state}
       target.granularity != 0 or "heat.receiver" not in state.properties.materials[target.material]["tags"] ->
@@ -1801,10 +2034,10 @@ defmodule VoxelRegion.World do
           counts -> Map.update(counts,material,1,&(&1+1))
         end
       {state,balances}=Enum.reduce(amounts,{state,%{}},fn {material,units},{s,balances}->
-        {s,settlement}=settle_material(s,actor.cid,material,units)
+        {s,settlement}=settle_material(s,actor.cid,material,units*s.material_units_per_micro)
         {s,Map.merge(balances,settlement.material_balances)}
       end)
-      settlement=%{material_balances: balances}
+      settlement=%{material_balances: balances,recovery_cid: actor.cid}
       # Include a tombstone even when a small leaf dies on its first hit.
       damaged=%{before | damage: Map.put(before.damage,Damage.key(target),target)}
       case prefab_reply(damaged,clear_subtree(state,ids,cells),cells,settlement) do
@@ -1827,7 +2060,7 @@ defmodule VoxelRegion.World do
     cells = MapSet.new(cells)
     epochs = if macro_edit,do: Map.new(cells,&{&1,state.seq}),else: %{}
     removed = before.damage |> Map.values() |> Enum.filter(fn t ->
-      if MapSet.member?(cells,Damage.macro(t)) do
+      if t.granularity != 3 and MapSet.member?(cells,Damage.macro(t)) do
         {current,_}=target_at(t.micro,%{state | epochs: Map.merge(state.epochs,epochs)})
         current == nil or (if t.granularity==1,do: not same_target?(current,t),else: Damage.key(current) != Damage.key(t))
       else
@@ -1856,11 +2089,12 @@ defmodule VoxelRegion.World do
       |> Map.update(:removed_j,removed_j,&(&1+removed_j))
       |> Map.update(:discarded_source_j,discarded,&(&1+discarded))
     end
-    metadata=%{property_states: states,epochs: epochs}
+    {state,attachment_states}=attachment_damage(before,%{state | damage: damage})
+    metadata=%{property_states: states++attachment_states,epochs: epochs}
     metadata=if thermal,do: Map.put(metadata,:thermal,thermal),else: metadata
     affected=cells |> Enum.flat_map(&[&1|VoxelRegion.Thermal.neighbors(&1)])
     work=%{state.thermal_work | geometry: Map.drop(state.thermal_work.geometry,affected)}
-    {%{state | damage: damage,epochs: Map.merge(state.epochs,epochs),thermal: thermal,thermal_work: work},metadata}
+    {%{state | epochs: Map.merge(state.epochs,epochs),thermal: thermal,thermal_work: work},metadata}
   end
 
   defp replay_damage(state,txn) do
@@ -1868,13 +2102,16 @@ defmodule VoxelRegion.World do
       if t.flags == 1,do: Map.delete(acc,Damage.key(t)),else: Map.put(acc,Damage.key(t),t)
     end)
     %{state | damage: damage,epochs: Map.merge(state.epochs,Map.get(txn,:epochs,%{})),
+      attachment_serial: Map.get(txn,:attachment_serial,max(state.attachment_serial,txn.seq)),
+      attachment_owners: Map.get(txn,:attachment_owners,state.attachment_owners),
+      material_units_per_micro: Map.get(txn,:material_units_per_micro,state.material_units_per_micro),
       thermal: Map.get(txn,:thermal,state.thermal),
       material_balances: Map.merge(state.material_balances,Map.get(txn,:material_balances,%{}))}
   end
 
   defp balance_state(state,cid,material) do
     %{seq: state.seq,material: material,
-      balance: Map.get(state.material_balances,{cid,material},0),cost: @micro*@micro*@micro}
+      balance: Map.get(state.material_balances,{cid,material},0),cost: @micro*@micro*@micro*state.material_units_per_micro}
   end
 
   defp settle_material(state,cid,material,delta) do
@@ -1894,10 +2131,10 @@ defmodule VoxelRegion.World do
         result = with :ok <- if(request.material in before.production_materials,do: :ok,else: {:error,:unknown_resource}),
           {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
           :ok <- build_reach(actor.eye,request.coord,tool["range_macro"]),
-          :ok <- if(balance_state(before,actor.cid,request.material).balance >= @micro*@micro*@micro,do: :ok,else: {:error,:insufficient_material}),
+          :ok <- if(balance_state(before,actor.cid,request.material).balance >= @micro*@micro*@micro*before.material_units_per_micro,do: :ok,else: {:error,:insufficient_material}),
           false <- Map.has_key?(before.refined,request.coord),
           {:ok,{0,_},state} <- cell_value(before,0,request.coord) do
-          {state,settlement} = settle_material(state,actor.cid,request.material,-@micro*@micro*@micro)
+          {state,settlement} = settle_material(state,actor.cid,request.material,-@micro*@micro*@micro*state.material_units_per_micro)
           apply_batch(state,[{request.coord,request.material}],false,settlement)
         else
           :error -> {:error,:invalid_tool}
@@ -1936,5 +2173,161 @@ defmodule VoxelRegion.World do
       :exit,_ -> {:error,:invalid_session}
     end
   end
+
+  # 全局系统功能：复用 B2 请求会话、余额和同步日志提交；只生成既有完整区域事务。
+  defp attachment_target(before,actor,request) do
+    previous=Map.get(before.build_sessions,actor.gate)
+    cond do
+      previous != nil and previous.request==request -> {:reply,previous.result,before}
+      previous != nil and request.client_intent_seq<=previous.request.client_intent_seq ->
+        {:reply,{:error,:replayed_build},before}
+      true ->
+        result=with {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
+          :ok <- attachment_reach(before,actor,request,tool),
+          {:ok,state,slots,settlement} <- attachment_change(before,actor,request) do
+          commit_attachment(before,state,slots,settlement)
+        else
+          :error -> {:error,:invalid_tool}
+          error -> error
+        end
+        {reply,state}=case result do
+          {:ok,state} -> {{:ok,state.seq},state}
+          {:error,_}=error -> {error,before}
+        end
+        unless previous != nil,do: Process.monitor(actor.gate)
+        state=%{state | build_sessions: Map.put(state.build_sessions,actor.gate,%{request: request,result: reply})}
+        {:reply,reply,state}
+    end
+  end
+
+  defp destroy_attachment(before,state,actor,target) do
+    slots=attachment_slots(state,target.incarnation)
+    {state,settlement}=settle_material(state,actor.cid,target.material,Attachments.units(slots,state.properties))
+    state=%{state | attachments: Map.drop(state.attachments,slots)}
+    tombstone=%{target | hp: 0.0,flags: 1,seq: before.seq+1,request_id: 0}
+    state=%{state | damage: Map.delete(state.damage,Damage.key(target))}
+    case commit_attachment(before,state,slots,Map.put(settlement,:property_states,[tombstone])) do
+      {:ok,next} -> {:reply,{:ok,next.seq},next}
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
+  end
+
+  defp commit_attachment(before,state,slots,settlement) do
+    state=%{state | seq: before.seq+1}
+    {state,rows}=attachment_damage(before,state)
+    settlement=Map.update(settlement,:property_states,rows,&(&1++rows))
+    dirty=Enum.map(Attachments.macros(slots),&{0,&1})
+    {:ok,coarse,state,_}=reduce_batch(state,dirty,1,[],0)
+    {coarse_txn,state}=select_transaction(state,coarse)
+    keys=region_keys(dirty)
+    {state,structure_keys,structure_cells}=refresh_structure(state,Enum.map(dirty,&elem(&1,1)))
+    {entries,state}=region_afterimages(state,keys,before.payloads)
+    entries=entries++Enum.map(Enum.sort(structure_cells),fn {level,cell}=key ->
+      %{seq: state.seq,level: level,cell: cell,structure: Map.get(state.structure,key,<<>>)}
+    end)
+    keys=Enum.uniq(keys++structure_keys)
+    txn=Map.merge(%{coarse_txn | entries: entries++coarse_txn.entries},settlement)
+    case append_log(state,txn) do
+      :ok ->
+        state=%{state | entries: Map.put(state.entries,state.seq,txn)}
+        fanout(state,txn); fanout_canonical(state,txn,[],keys,before)
+        Logger.info("voxel_attachment seq=#{state.seq} changed_slots=#{length(slots)} total=#{map_size(state.attachments)}")
+        {:ok,state}
+      error -> error
+    end
+  end
+
+  defp attachment_reach(state,actor,r,tool) do
+    # 检查到附件几何中心之前的遮挡；斜视共享棱时，向宿主内部偏移会误中邻格。
+    size=if r.action==0,do: r.size,else: 1
+    center=for i<-0..2 do
+      offset=if (r.kind==0 and i != r.axis) or (r.kind==1 and i==r.axis),
+        do: div(size-1,2)+0.5,else: 0.0
+      (elem(r.anchor,i)+offset)/@micro
+    end
+    delta=Enum.zip_with(center,Tuple.to_list(actor.eye),&(&1-&2))
+    distance=:math.sqrt(Enum.sum(Enum.map(delta,&(&1*&1))))
+    if distance>tool["range_macro"] or distance==0 do
+      {:error,:out_of_reach}
+    else
+      direction=delta |> Enum.map(&(&1/distance)) |> List.to_tuple()
+      case Damage.raycast(actor.eye,direction,max(0.0,distance-1.0e-7),state,&target_at/2) do
+        {:error,:no_target,_} -> :ok
+        {:ok,_,_} -> {:error,:occluded_attachment}
+      end
+    end
+  end
+
+  defp attachment_change(state,actor,%{action: 0}=r) do
+    slots=Attachments.footprint(r.kind,r.axis,r.anchor,r.size)
+    {samples,state}=attachment_samples(state,slots)
+    cost=Attachments.units(slots,state.properties)
+    cond do
+      r.id != 0 -> {:error,:invalid_attachment}
+      not MmoContracts.Voxel.Attachments.material?(r.material) or r.material not in state.production_materials -> {:error,:unknown_resource}
+      r.size==@micro and Enum.any?(Tuple.to_list(r.anchor),&(rem(&1,@micro)!=0)) -> {:error,:invalid_attachment}
+      Enum.any?(slots,&Map.has_key?(state.attachments,&1)) -> {:error,:occupied}
+      not Enum.all?(slots,&Attachments.supported?(&1,samples)) -> {:error,:unsupported_attachment}
+      balance_state(state,actor.cid,r.material).balance<cost -> {:error,:insufficient_material}
+      true ->
+        {state,settlement}=settle_material(state,actor.cid,r.material,-cost)
+        id=max(state.attachment_serial,state.seq)+1
+        slots_map=Map.new(slots,&{&1,{id,r.material}})
+        {:ok,%{state | attachment_serial: id,attachments: Map.merge(state.attachments,slots_map)},slots,settlement}
+    end
+  end
+  defp attachment_change(state,actor,%{action: 1}=r) do
+    case Map.get(state.attachments,{r.kind,r.axis,r.anchor}) do
+      {id,material} when id==r.id and material==r.material ->
+        slots=for {s,{^id,_}}<-state.attachments,do: s
+        {state,settlement}=settle_material(state,actor.cid,material,Attachments.units(slots,state.properties))
+        {:ok,%{state | attachments: Map.drop(state.attachments,slots)},slots,settlement}
+      _ -> {:error,:stale_target}
+    end
+  end
+
+  defp attachment_samples(state,slots) do
+    Enum.map_reduce(slots |> Enum.flat_map(&Attachments.neighbors/1) |> Enum.uniq(),state,fn p,s ->
+      {t,s}=target_at(p,s)
+      {{p,if(t,do: t.material,else: 0)},s}
+    end) |> then(fn {rows,s}->{Map.new(rows),s} end)
+  end
+
+  defp prune_attachments(before,state,cells,settlement) do
+    slots=affected_attachments(state,cells)
+    {samples,state}=attachment_samples(state,slots)
+    removed=(Map.keys(before.attachments)--Map.keys(state.attachments))++Enum.reject(slots,&Attachments.supported?(&1,samples))
+    cid=Map.get(settlement,:recovery_cid)
+    {state,balances}=Enum.reduce(removed,{state,Map.get(settlement,:material_balances,%{})},fn slot,{s,b} ->
+      {_,material}=Map.get(s.attachments,slot)||Map.fetch!(before.attachments,slot)
+      if cid && material in s.production_materials do
+        {s,paid}=settle_material(s,cid,material,Attachments.units([slot],s.properties))
+        {s,Map.merge(b,paid.material_balances)}
+      else
+        {s,b}
+      end
+    end)
+    settlement=Map.delete(settlement,:recovery_cid)
+    settlement=if map_size(balances)>0,do: Map.put(settlement,:material_balances,balances),else: settlement
+    {%{state | attachments: Map.drop(state.attachments,removed)},
+      region_keys(Enum.map(Attachments.macros(removed),&{0,&1})),settlement}
+  end
+
+  defp tool_regions(%{eye: {x,y,z}},range) do
+    for rx <- floor((x-range)/64)..floor((x+range)/64),
+      ry <- floor((y-range)/64)..floor((y+range)/64),
+      rz <- floor((z-range)/64)..floor((z+range)/64),do: {0,{rx,ry,rz}}
+  end
+
+  defp affected_attachments(state,cells) do
+    touched=MapSet.new(cells)
+    Enum.filter(Map.keys(state.attachments),fn slot ->
+      Enum.any?(Attachments.macros([slot]),&MapSet.member?(touched,&1))
+    end)
+  end
+
+  # 邻格遮挡／支撑改变可能跨父格；仍存活的附件也必须重算两侧表皮。
+  defp attachment_dirty(state,cells),do:
+    (cells++Attachments.macros(affected_attachments(state,cells))) |> Enum.uniq() |> Enum.map(&{0,&1})
 
 end

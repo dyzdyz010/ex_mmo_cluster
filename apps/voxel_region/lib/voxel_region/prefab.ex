@@ -1,5 +1,5 @@
 defmodule VoxelRegion.Prefab do
-  @moduledoc "VXPD v1 发布 DAG；冻结内容、preorder occurrence 与 A0 整数体积变换。"
+  @moduledoc "全局系统功能：VXPD 发布 DAG；v2 初始附件复用 preorder occurrence 与整数变换，实际状态归 World。"
   alias MmoContracts.VoxelMaterialCatalog
 
   def load(nil), do: %{}
@@ -13,24 +13,38 @@ defmodule VoxelRegion.Prefab do
     catalog
   end
 
-  def decode(<<"VXPD",1::32-little,n::32-little,body::binary-size(n*14),count::32-little,children::binary-size(count*49)>>) when n+count > 0 do
+  def decode(<<"VXPD",version::32-little,n::32-little,body::binary-size(n*14),count::32-little,children::binary-size(count*49),tail::binary>>) when version in [1,2] do
     cells = for <<x::signed-little-32,y::signed-little-32,z::signed-little-32,m::16-little <- body>>, do: {{x,y,z},m}
     refs = for <<slot::32-little,id::binary-size(32),x::signed-little-32,y::signed-little-32,z::signed-little-32,o::8 <- children>>,
       do: %{slot: slot,definition_id: id,anchor: {x,y,z},orientation: o}
     coords = Enum.map(cells,&elem(&1,0))
     slots = Enum.map(refs,& &1.slot)
-    if coords == Enum.sort(Enum.uniq(coords)) and slots == Enum.sort(Enum.uniq(slots)) and
+    with {:ok,attachments} <- decode_attachments(version,tail),
+       true <- n+count+length(attachments)>0 and coords == Enum.sort(Enum.uniq(coords)) and slots == Enum.sort(Enum.uniq(slots)) and
        Enum.all?(cells,fn {_,m} -> m != 0 and VoxelMaterialCatalog.valid_id?(m) end) and Enum.all?(refs,&(&1.orientation < 24)),
-      do: {:ok,%{cells: cells,children: refs}}, else: {:error,:invalid_definition}
+       do: {:ok,%{cells: cells,children: refs,attachments: attachments}}, else: (_ -> {:error,:invalid_definition})
   end
   def decode(_), do: {:error,:invalid_definition}
+
+  defp decode_attachments(1,<<>>),do: {:ok,[]}
+  defp decode_attachments(2,<<n::32-little,body::binary>>) when byte_size(body)==n*21 do
+    groups=for <<slot::32-little,kind,axis,x::signed-little-32,y::signed-little-32,z::signed-little-32,size,material::16-little <- body>>,
+      do: %{slot: slot,kind: kind,axis: axis,anchor: {x,y,z},size: size,material: material}
+    slots=Enum.map(groups,& &1.slot)
+    if slots==Enum.sort(Enum.uniq(slots)) and Enum.all?(groups,fn g ->
+      g.kind in [0,1] and g.axis in 0..2 and g.size in [1,VoxelRegion.Spatial.micro_resolution()] and
+        MmoContracts.Voxel.Attachments.material?(g.material)
+    end),do: {:ok,groups},else: {:error,:invalid_definition}
+  end
+  defp decode_attachments(_,_),do: {:error,:invalid_definition}
 
   def publish(definitions) do
     Enum.reduce_while(definitions,{:ok,%{}},fn {id,_},{:ok,catalog} ->
       with :ok <- references(definitions,id,MapSet.new()),
            nodes = expand_definition(definitions,id,{0,0,0},0,nil,0,[]) |> elem(0),
            cells = Enum.flat_map(nodes,& &1.cells),
-           true <- length(cells) == MapSet.size(MapSet.new(Enum.map(cells,&elem(&1,0)))) do
+           true <- length(cells) == MapSet.size(MapSet.new(Enum.map(cells,&elem(&1,0)))),
+           :ok <- attachment_definition(nodes,cells) do
         # 发布目录长期不变；节点体素保存为二进制，避免每次世界 GC 扫描展开坐标。
         nodes = Enum.map(nodes,fn node -> %{node | cells: :erlang.term_to_binary(node.cells)} end)
         {:cont,{:ok,Map.put(catalog,id,%{nodes: nodes})}}
@@ -58,12 +72,43 @@ defmodule VoxelRegion.Prefab do
     index = length(nodes)
     definition = Map.fetch!(definitions,id)
     node = %{definition_id: id,anchor: anchor,orientation: orientation,parent: parent,component_slot: slot,
-      cells: footprint(definition,anchor,orientation)}
+      cells: footprint(definition,anchor,orientation),
+      attachments: Enum.map(Map.get(definition,:attachments,[]),fn g ->
+        %{slot: g.slot,material: g.material,slots: VoxelRegion.Attachments.footprint(g.kind,g.axis,g.anchor,g.size)
+          |> Enum.map(&attachment_slot(&1,anchor,orientation))}
+      end)}
     Enum.reduce(definition.children,{nodes ++ [node],index},fn child,{nodes,_} ->
       {nodes,_} = expand_definition(definitions,child.definition_id,point(child.anchor,anchor,orientation),
         compose(orientation,child.orientation),index,child.slot,nodes)
       {nodes,index}
     end)
+  end
+
+  # 用几何端点的包围盒变换面／棱，负轴只偏移有长度的轴；不套用体积格的三轴 -1。
+  defp attachment_slot({kind,axis,p},anchor,orientation) do
+    endpoint=for d<-0..2,into: [],do: elem(p,d)+if((kind==0 and d != axis) or (kind==1 and d==axis),do: 1,else: 0)
+    a=point(p,anchor,orientation); b=point(List.to_tuple(endpoint),anchor,orientation)
+    vector=point(put_elem({0,0,0},axis,1),{0,0,0},orientation)
+    axis=Enum.find(0..2,&(elem(vector,&1)!=0))
+    {kind,axis,List.to_tuple(for d<-0..2,do: min(elem(a,d),elem(b,d)))}
+  end
+
+  defp attachment_definition(nodes,cells) do
+    slots=for node<-nodes,g<-node.attachments,s<-g.slots,do: s
+    samples=Map.new(cells)
+    cond do
+      length(slots)!=MapSet.size(MapSet.new(slots)) -> {:error,:overlapping_attachments}
+      not Enum.all?(slots,fn slot -> Enum.any?(VoxelRegion.Attachments.neighbors(slot),
+        &VoxelMaterialCatalog.blocks_movement?(Map.get(samples,&1,0))) end) -> {:error,:unsupported_attachment}
+      true -> :ok
+    end
+  end
+
+  @doc "定义仅在首次放置展开；绑定到同一 preorder occurrence，恢复不得调用它重建附件。"
+  def attachments(%{nodes: nodes},anchor,orientation,birth) do
+    for {node,index}<-Enum.with_index(nodes),g<-node.attachments,
+      do: %{owner: {birth,index},slot: g.slot,material: g.material,
+        slots: Enum.map(g.slots,&attachment_slot(&1,anchor,orientation))}
   end
 
   def occurrences(%{nodes: nodes},anchor,orientation,birth,parent_id \\ {0,0},slot \\ 0) do

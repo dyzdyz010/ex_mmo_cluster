@@ -38,7 +38,7 @@ defmodule VoxelRegion.OverlayLog do
         %{seq: seq, kind: 2, level: c.level, region: region_of(c.cell), payload: IO.iodata_to_binary(Codec.encode_coarse(c))}
       end)
 
-    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:thermal])
+    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:thermal,:attachment_serial,:attachment_owners,:material_units_per_micro])
     state_rows = if map_size(metadata)>0, do: [%{seq: seq,kind: 3,level: 0,region: {0,0,0},
       # ETF 自带压缩标记，旧 binary_to_term 读方直接恢复同一元数据。
       payload: :erlang.term_to_binary(metadata,[{:compressed,1}])}],else: []

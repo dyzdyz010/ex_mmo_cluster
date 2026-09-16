@@ -1,5 +1,7 @@
 # Voxim Region 真值
 
+2026-09-16 B4（Global system）：World 持有规范附件槽，通过现有 B2 有序请求、材料余额、同步日志及完整区域 after-image 提交；VXR8 承载 L0 附件，core 回放拥有事实，ring 仅副本。宿主宏格／Prefab 编辑同事务裁剪无支撑槽并结算回收。面元的 L1 面积投影沿既有粗层 reducer 传播，线元不改变粗层占用。Session Hello 升至 2，拒绝旧客户端。本轮仅独立 B4 Demo，不发布分发包。设计、实跑与剩余边界见 [B4 权威记录](../../../Voxim/Docs/R7/B4-authority.md)，协议见 [B4 wire](../../../Voxim/Docs/R7/wire.md)。
+
 2026-09-15 B3 碰撞材质查询（Global system）：连续行投影仍逐格调用目录 Map 查询，同一实际窗口
 共 7,077,888 格。`CollisionSource` 现在从唯一 `VoxelMaterialCatalog` 在编译时派生密集 0/1 tuple，
 宏格行、直接世界读取器与 refined slot 共用内联 `blocked/1`。目录仍是唯一阻挡定义；没有新运行时

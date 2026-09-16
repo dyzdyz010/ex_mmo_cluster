@@ -322,7 +322,7 @@ defmodule GateServer.Session.QuicConnection do
         # Scene owns the single ordered world subscription, including reconnect
         # bootstrap. This admission never creates an independent Gate log sender.
         %{state | voxim_overlay: true}
-      {:ok,{:voxel_production_intent,request}=message} when state.voxim_overlay ->
+      {:ok,{kind,request}=message} when kind in [:voxel_production_intent,:voxel_attachment_intent] and state.voxim_overlay ->
         # World 按当前权威角色位置校验建造距离、材料与占用；固定 probe 盒不限制正式建造。
         if edit_scene?(state,request.logical_scene_id),
           do: enqueue_edit(state,message),else: close(state,4)

@@ -26,16 +26,24 @@ defmodule MmoContracts.Voxel.Refined do
 
   def decode(bytes, version \\ 5)
   def decode(<<>>, _), do: {:ok, %{}, %{}, 4}
-  def decode(<<count::32-little, rest::binary>>, version) do
+  def decode(bytes, version) do
+    case decode_prefix(bytes,version) do
+      {:ok, refined, instances, <<>>} -> {:ok,refined,instances,version}
+      _ -> {:error,:invalid_refined}
+    end
+  end
+
+  @doc "解析 VXR7 后缀的前缀，供 VXR8 继续读取附件段。"
+  def decode_prefix(<<count::32-little, rest::binary>>, version) do
     with {:ok, refined, <<n::32-little, rest::binary>>} <- cells(rest, count, -1, %{}),
-         {:ok, instances, <<>>} <- instances(rest, n, {-1, -1}, %{}, version),
+         {:ok, instances, tail} <- instances(rest, n, {-1, -1}, %{}, version),
          true <- Enum.all?(refined, fn {_, slots} -> Enum.all?(slots, fn {_, {_, id}} -> Map.has_key?(instances, id) end) end) do
-      if version != 7 or valid_hierarchy?(instances), do: {:ok, refined, instances, version}, else: {:error,:invalid_refined}
+      if version != 7 or valid_hierarchy?(instances), do: {:ok, refined, instances, tail}, else: {:error,:invalid_refined}
     else
       _ -> {:error, :invalid_refined}
     end
   end
-  def decode(_, _), do: {:error, :invalid_refined}
+  def decode_prefix(_, _), do: {:error, :invalid_refined}
 
   defp cells(rest, 0, _, acc), do: {:ok, acc, rest}
   defp cells(<<index::32-little, n::32-little, rest::binary>>, count, previous, acc)

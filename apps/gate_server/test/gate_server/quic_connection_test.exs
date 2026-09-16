@@ -39,7 +39,7 @@ defmodule T1TransportTest do
 
   setup do
     {:ok, _} = Application.ensure_all_started(:quicer)
-    hello = %Session.Hello{protocol_version: 1, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    hello = %Session.Hello{protocol_version: 6, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     certs = "/home/dyz/.cache/voxim-m1-t1/certs-v1/"
     start_supervised!({T1Scene, self()})
     listener = start_supervised!({GateServer.Transport.QuicListener,
@@ -146,6 +146,18 @@ defmodule T1TransportTest do
     assert function_exported?(GateServer.Transport.QuicListener, :start_link, 1)
     assert Code.ensure_loaded?(GateServer.Session.QuicConnection)
     assert function_exported?(GateServer.Session.QuicConnection, :start_link, 1)
+  end
+
+  for old_version <- [1,2,3,4,5] do
+    @tag :b4
+    test "protocol #{old_version} Hello is closed before authentication on real QUIC",%{conn: conn,hello: hello} do
+      {:ok,stream}=:quicer.start_stream(conn,[{:active,true}])
+      {:ok,<<prefix::binary-size(9),6::16,rest::binary>>}=Session.Codec.encode(hello)
+      old=prefix<><<unquote(old_version)::16>><>rest
+      {:ok,_}=:quicer.async_send(stream,<<1,byte_size(old)::32,old::binary>>,0)
+      assert_receive {:quic,:shutdown,^conn,0x10008},5000
+      refute_receive {:join,_,_,_}
+    end
   end
 
   test "two simultaneous native handshakes have armed acceptors" do

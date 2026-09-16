@@ -4,7 +4,7 @@ defmodule MmoContracts.Session.Codec do
   @m1_messages %{
     1 =>
       {Session.Hello,
-       [protocol_version: {:constant, :u16, 1}, kernel_id: :hash, profile_id: :hash]},
+       [protocol_version: {:constant, :u16, 6}, kernel_id: :hash, profile_id: :hash]},
     2 =>
       {Session.Join, [request_id: :u64, username: :utf8, token: :utf8, cid: :u64, scene_id: :u64]},
     3 =>
