@@ -230,6 +230,48 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     assert DynamicSupervisor.count_children(Scene.observe(ctx.scene).player_supervisor_pid).active == 1
   end
 
+  # Test-only：冷 bootstrap 的 Ready 与首批真实输入分别迟到，仍只积分原编号对应的历史步。
+  test "slow bootstrap and delayed first records catch up without rebasing origin", ctx do
+    {player, _} = join(ctx, 1, 20, 1)
+    tick(ctx, 120)
+    wait(fn -> Player.observe(player).simulation_tick == 120 end)
+    refute_receive {:reliable, _, :control, %Session.InputStart{}}, 0
+    Player.time_probe(player, identity(1), %Session.TimeProbe{request_id: 1, client_send_us: 1})
+    Player.ready(player, identity(1), 0, 1)
+    Player.observe(player)
+    tick(ctx, 121)
+    assert_receive {:reliable, _, :control, %Session.InputStart{anchor_tick: 121, origin_tick: 151}}, 1000
+    tick(ctx, 240)
+    waiting = wait(fn ->
+      value = Player.observe(player)
+      if value.published_tick == 240, do: value
+    end)
+    assert waiting.simulation_tick == 150
+    assert waiting.processed_input_seq == 0
+    frames = for seq <- 1..91, do: %Movement.InputFrame{input_seq: seq,
+      axis_x: if(seq < 31, do: 32767, else: 0), axis_z: 0, yaw: 0, jump_pressed: 0}
+    Player.input(player, identity(1), %Movement.InputBatch{identity: identity(1), frames: frames})
+    recovered = wait(fn ->
+      value = Player.observe(player)
+      if value.processed_input_seq == 90, do: value
+    end)
+    assert recovered.simulation_tick == recovered.published_tick
+    assert recovered.origin_tick == 151
+    assert recovered.pending_inputs == 1
+    assert recovered.physics_steps - waiting.physics_steps == 90
+    assert recovered.substitutions == 0
+    assert elem(recovered.state.position, 0) > elem(waiting.state.position, 0)
+    Player.ready(player, identity(1), 0, 1)
+    Player.ready(player, identity(0), 0, 1)
+    Player.input(player, identity(0), %Movement.InputBatch{identity: identity(0), frames: frames})
+    assert Player.observe(player).origin_tick == 151
+    tick(ctx, 241)
+    assert wait(fn -> Player.observe(player).processed_input_seq == 91 end)
+    assert Player.observe(player).simulation_tick == 241
+    refute_receive {:reliable, _, :control, %Session.InputStart{}}, 0
+    IO.puts("M1_COLD_START origin=151 waited_through=240 prefix=90 caught_up=240 future_waited=1 stale_isolated=true")
+  end
+
   @tag :m3_remaining
   test "a queued TimeProbe pairs current server time with public clock tick despite a stalled owner", ctx do
     {p, _q, _} = activate(ctx)
