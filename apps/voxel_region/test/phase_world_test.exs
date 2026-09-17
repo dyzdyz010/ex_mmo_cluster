@@ -7,6 +7,18 @@ defmodule VoxelRegion.PhaseWorldTest do
   @capacity 2_097_152
   @quarter div(@capacity,4)
 
+  defmodule DatabaseMetadataLog do
+    @moduledoc "只测试：经过正式数据库行编码，再以独立文件模拟持久存储和冷恢复。"
+    defdelegate open(path,version),to: Log
+    defdelegate replay(path),to: Log
+    def append(path,txn),do: Log.append(path,roundtrip(txn))
+    def checkpoint(path,txn),do: Log.checkpoint(path,roundtrip(txn))
+    defp roundtrip(txn) do
+      [restored]=txn |> VoxelRegion.OverlayLog.rows() |> VoxelRegion.OverlayLog.transactions()
+      restored
+    end
+  end
+
   setup do
     root=Path.join(System.tmp_dir!(),"b7_phase_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -55,6 +67,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     query=%{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: 0,
       tool_id: tool,direction: direction,micro: {0,0,0},granularity: 0,incarnation: 0,owner: {0,0},material: 0}
     {:ok,t}=World.tool_intent(c.w,c.actor,query)
+    refute Map.has_key?(t,:pick_baseline_hp)
     request=Map.take(t,[:micro,:granularity,:incarnation,:owner,:material])
       |> Map.merge(%{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,tool_id: tool,direction: direction})
     World.tool_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request)
@@ -239,8 +252,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       do: assert(Map.fetch!(before,key)==Map.fetch!(after_failure,key))
   end
 
-  @tag :phase_coverage
-  test "新增雪和玄武岩由同一作者事务初始化，付费熔岩搬运与冷恢复不补焓",c do
+  defp expanded_phase_catalog(c) do
     data=Jason.decode!(File.read!(c.catalog))
     data=Map.update!(data,"materials",fn materials->Enum.map(materials,fn m->
       case m["material_id"] do
@@ -256,6 +268,143 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert :ok=World.publish_parameters(c.w,c.catalog,:sys.get_state(c.w).properties.digest)
     # 只测试的生产可用材料清单；不向库存注入新相族。
     :sys.replace_state(c.w,&%{&1 | production_materials: [4,13,15,20,21,22]})
+  end
+
+  for material <- [13,4,20], {action,hp} <- [{1,100.0},{1,50.0},{2,100.0},{2,50.0},{2,0.0}] do
+    @tag :phase_coverage
+    test "相族固体 #{material} 以动作 #{action} 采回前HP #{hp} 保留完整度和焓",c do
+      expanded_phase_catalog(c)
+      material=unquote(material); action=unquote(action); hp=unquote(hp)
+      cell={63,1,2}
+      deposits=Path.join(c.root,"harvest-deposit.json")
+      File.write!(deposits,Jason.encode!(%{deposits: [%{macro: Tuple.to_list(cell),material: material}]}))
+      assert {:ok,_}=World.liquid_experiment(c.w,deposits)
+      # 只测试：已受损夹具从相同权威载体开始；采掘和重建均经过普通工具入口。
+      :sys.replace_state(c.w,fn s ->
+        r=Enum.find(Map.values(s.damage),&(&1.granularity==0 and Damage.macro(&1)==cell))
+        %{s | damage: Map.put(s.damage,Damage.key(r),%{r | hp: hp})}
+      end)
+      initial=row(c.w,cell)
+      hits=if action==2,do: 1,else: ceil(hp/22)
+      for seq<-1..hits,do: assert({:ok,_}=operate(c,1,seq,cell,action))
+      mined=:sys.get_state(c.w)
+      assert mined.material_balances[{1001,material}]==@capacity
+      {energy,integrity}=Map.fetch!(mined.phase_inventory,{1001,material})
+      assert energy==initial.phase_energy_j
+      assert integrity==@capacity*hp/initial.max_hp
+      refute Map.has_key?(mined.liquid_units,cell)
+      refute Enum.any?(mined.damage,fn {_,r}->Map.has_key?(r,:pick_baseline_hp) end)
+      build=%{request_id: hits+1,client_intent_seq: hits+1,logical_scene_id: 1,
+        action: 1,material: material,tool_id: 1,coord: cell}
+      if hp==0.0 do
+        assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
+      else
+        assert {:ok,_}=World.production_intent(c.w,c.actor,build)
+        rebuilt=row(c.w,cell)
+        assert rebuilt.hp==hp
+        assert rebuilt.phase_energy_j==energy
+        refute Map.has_key?(rebuilt,:pick_baseline_hp)
+      end
+    end
+  end
+
+  @tag :phase_coverage
+  test "采掘基准只在服务端日志持久化，重启继续采回且不进入属性观察和wire",c do
+    expanded_phase_catalog(c)
+    cell={63,1,2}
+    deposits=Path.join(c.root,"harvest-deposit.json")
+    File.write!(deposits,Jason.encode!(%{deposits: [%{macro: [63,1,2],material: 13}]}))
+    assert {:ok,_}=World.liquid_experiment(c.w,deposits)
+    assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:pick,false)
+    assert_receive {:canonical_snapshot,:pick,_}
+    before=:sys.get_state(c.w)
+    reject=elem(before.log,1)<>".reject"
+    File.write!(reject,"")
+    assert {:error,:test_disk_failure}=operate(c,1,1)
+    assert :sys.get_state(c.w).damage==before.damage
+    File.rm!(reject)
+    assert {:ok,_}=operate(c,1,1)
+    assert_receive {:canonical_delta,%{transaction: %{property_states: rows}}}
+    refute Enum.any?(rows,&Map.has_key?(&1,:pick_baseline_hp))
+    picked=row(c.w,cell)
+    assert picked.pick_baseline_hp==100.0
+    assert picked.hp==78.0
+    assert MmoContracts.Voxel.Codec.encode({:voxel_property_state,picked})==
+      MmoContracts.Voxel.Codec.encode({:voxel_property_state,Map.delete(picked,:pick_baseline_hp)})
+    # 正式DB元数据与测试文件日志均承载原始内部属性，不依赖客户端或额外存储。
+    txn=%{seq: picked.seq,entries: [],coarse: [],property_states: [picked]}
+    assert [%{property_states: [^picked]}]=txn |> VoxelRegion.OverlayLog.rows() |> VoxelRegion.OverlayLog.transactions()
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    c=%{c | w: w}
+    assert row(w,cell).pick_baseline_hp==100.0
+    assert :ok=World.canonical_snapshot_and_subscribe(w,{{0,0,0},{2,1,1}},self(),:restored_pick,false)
+    assert_receive {:canonical_snapshot,:restored_pick,%{property_states: rows}}
+    refute Enum.any?(rows,&Map.has_key?(&1,:pick_baseline_hp))
+    for seq<-2..5,do: assert({:ok,_}=operate(c,1,seq))
+    assert elem(:sys.get_state(w).phase_inventory[{1001,13}],1)==@capacity
+  end
+
+  for checkpoint <- [false,true] do
+    @tag :basalt_persistence
+    test "相族库存经数据库元数据#{if checkpoint,do: "压实",else: "追加"}冷恢复逐字段相等",c do
+      expanded_phase_catalog(c)
+      inventory=Map.new([{4,17.25,0.5},{13,-31_102_505.653152462,0.25},
+        {20,-123.5,0.75},{21,104_400_000.0,0.625},{22,10_150_001.125,0.0}],
+        fn {m,e,ratio}->{{1001,m},{e,@capacity*ratio}} end)
+      balances=Map.new(inventory,fn {key,_}->{key,@capacity} end)
+      if unquote(checkpoint) do
+        :sys.replace_state(c.w,fn s->%{s | log: {DatabaseMetadataLog,elem(s.log,1)},
+          phase_inventory: inventory,material_balances: balances} end)
+        assert :ok=World.compact(c.w)
+      else
+        s=:sys.get_state(c.w)
+        txn=%{seq: s.seq+1,entries: [],coarse: [],phase_inventory: inventory,material_balances: balances,
+          material_units_per_micro: s.material_units_per_micro}
+        assert :ok=DatabaseMetadataLog.append(elem(s.log,1),txn)
+      end
+      stop_supervised!(World)
+      w=start_supervised!({World,Keyword.put(c.opts,:log,DatabaseMetadataLog)})
+      restored=:sys.get_state(w)
+      assert restored.material_balances==balances
+      assert restored.phase_inventory==inventory
+    end
+  end
+
+  @tag :phase_coverage
+  test "采掘途中真实热损伤和非Pick攻击扣减基准，零HP不能借基准修复",c do
+    expanded_phase_catalog(c)
+    deposits=Path.join(c.root,"harvest-deposit.json")
+    File.write!(deposits,Jason.encode!(%{deposits: [%{macro: [63,1,2],material: 13}]}))
+    assert {:ok,_}=World.liquid_experiment(c.w,deposits)
+    assert {:ok,_}=operate(c,1,1)
+    # 只测试：降低夹具耐热阈值，保留相族焓/温度一致并沿真实NIF路径产生HP损失。
+    :sys.replace_state(c.w,fn s->
+      materials=Map.update!(s.properties.materials,13,&Map.put(&1,"heat_resistance_kelvin",293.0))
+      %{s | properties: %{s.properties | materials: materials},
+        thermal_work: %{s.thermal_work | geometry: %{}}}
+    end)
+    send(c.w,:thermal_commit)
+    heated=row(c.w,{63,1,2})
+    assert heated.hp<78.0
+    assert heated.pick_baseline_hp==100.0-(78.0-heated.hp)
+    :sys.replace_state(c.w,fn s->
+      tool=s.properties.tools[1] |> Map.put("action","damage.impact")
+      %{s | properties: %{s.properties | tools: Map.put(s.properties.tools,1,tool)}}
+    end)
+    assert {:ok,_}=operate(c,1,2)
+    attacked=row(c.w,{63,1,2})
+    assert attacked.pick_baseline_hp==heated.pick_baseline_hp-(heated.hp-attacked.hp)
+    for seq<-3..5,do: assert({:ok,_}=operate(c,1,seq))
+    assert elem(:sys.get_state(c.w).phase_inventory[{1001,13}],1)==0.0
+    build=%{request_id: 6,client_intent_seq: 6,logical_scene_id: 1,action: 1,material: 13,tool_id: 1,coord: {63,1,2}}
+    assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
+  end
+
+  @tag :phase_coverage
+  test "新增雪和玄武岩由同一作者事务初始化，付费熔岩搬运与冷恢复不补焓",c do
+    expanded_phase_catalog(c)
     deposits=Path.join(c.root,"phase-deposits.json")
     File.write!(deposits,Jason.encode!(%{deposits: [%{macro: [63,1,2],material: 13},%{macro: [65,1,2],material: 4}]}))
     assert {:ok,_}=World.liquid_experiment(c.w,deposits)
@@ -299,6 +448,11 @@ defmodule VoxelRegion.PhaseWorldTest do
   test "fully broken Ice stays finite carried fragments and cannot build a zero-HP collider",c do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
     freeze(c,2)
+    # 非Pick攻击造成真实损伤；普通采掘保留其首次操作前的材料完整度。
+    :sys.replace_state(c.w,fn s->
+      tool=s.properties.tools[1] |> Map.put("action","damage.impact")
+      %{s | properties: %{s.properties | tools: Map.put(s.properties.tools,1,tool)}}
+    end)
     Enum.reduce_while(4..30,nil,fn seq,_ ->
       if row(c.w,{63,1,2})==nil,do: {:halt,nil},else: (assert {:ok,_}=operate(c,1,seq); {:cont,nil})
     end)

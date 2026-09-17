@@ -16,6 +16,8 @@ PyFLOWGO论文/作者参数见相邻Voxim `Docs/R7/material-coverage.md`，沿�
 异种液体互不覆盖。新作者Snow/Basalt各1m³的初始量/焓/完整度单列新增资源账；旧水冰4194304量子单独核对。
 可观察面沿普通I/H、U/O、材料选择与既有CLI，记录材质/量/焓/完整度、phase_paid/supplied/unused、
 冷源remaining与circuit冷热环境账，以及事务时延/网络/内存。Hello12自动冷热先实跑，Hello13再匹配部署。
+2026-09-17 采回修复沿 `Phase` 的广延量契约：Basalt/Snow/Ice 的 Pick 进度不耗完整度，首次 HP 基准仅在服务端属性日志持久化，真实攻击/热损伤同步扣减、采回清除；recover 按操作前 HP 比例携带原焓，取代 B7“Pick 击碎冰得到 broken 库存”的旧行为，对外属性/wire 不增加字段。
+数据库 `OverlayLog` 元数据补存 `phase_inventory`，追加与压实冷恢复保留量/焓/完整度；缺失过的旧库存焓不可从余额逆推恢复，本次不修正式状态，红绿证据见 Voxim `Saved/R7/MaterialExpansion/basalt-{red,green,recovery-red,recovery-green}-*`，完整隔离构建 `phase13-build-basalt-01`，未部署。
 
 2026-09-17 有限高度热几何（Global system，实现中）：宏格相变物料的数量比例决定 Y-up 底部柱高，
 同一个实占用盒派生容量、各法向半程、空面和接触重叠；World不再二次缩小容量。依据实际访问的

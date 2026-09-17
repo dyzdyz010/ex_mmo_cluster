@@ -664,7 +664,7 @@ defmodule VoxelRegion.World do
 
               cond do
                 request.action == 0 ->
-                  {:reply, {:ok, %{target | request_id: request.request_id}}, state}
+                  {:reply, {:ok, public_property(%{target | request_id: request.request_id})}, state}
 
                 Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
                   {:reply, {:error, :use_liquid_tool}, before}
@@ -1818,6 +1818,12 @@ defmodule VoxelRegion.World do
     Enum.each(state.subs, fn {pid, filter} -> send_filtered(pid, entry, filter) end)
   end
 
+  # 采掘基准只属于服务端持久状态，对外属性观察不携带该内部字段。
+  defp public_property(row), do: Map.delete(row, :pick_baseline_hp)
+  defp public_properties(%{property_states: rows} = value),
+    do: %{value | property_states: Enum.map(rows, &public_property/1)}
+  defp public_properties(value), do: value
+
   # serve 与副本共用物化字节；快照头只推进到当前事务前缀。
   defp canonical_region_bytes(state, coord) do
     with {:ok, bytes, _, state} <- payload_bytes(state, 0, coord) do
@@ -1953,6 +1959,7 @@ defmodule VoxelRegion.World do
       property_context: property_context(state),
       epochs: state.epochs
     }
+    |> public_properties()
     |> VoxelRegion.PropertyObservation.project(box)
   end
 
@@ -2031,6 +2038,7 @@ defmodule VoxelRegion.World do
       end)
 
     Map.merge(txn, %{property_states: rows, property_context: property_context(state)})
+    |> public_properties()
   end
 
   # Capture both versions while the pre-commit state still exists. Never sample after fanout.
@@ -3307,6 +3315,7 @@ defmodule VoxelRegion.World do
             else: {t, 0.0, 0.0}
 
         burned = if phase_energy == nil, do: burned, else: Map.put(burned, :phase_energy_j, phase_energy)
+        burned = damage_pick_baseline(burned, hp)
 
         hot =
           if abs(temperature - config["ambient_kelvin"]) > config["tolerance_kelvin"] or
@@ -4350,20 +4359,35 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # Breaking ice recovers its exact finite mass and its damaged integrity/energy,
-  # never a fresh full macro. Rebuilding that inventory keeps the same HP ratio.
+  # Pick 进度不消耗材料完整度；真实损伤仍扣减首次采掘时的基准，不能通过采回修复。
+  defp damage_pick_baseline(target, hp) do
+    case Map.fetch(target, :pick_baseline_hp) do
+      {:ok, baseline} -> Map.put(target, :pick_baseline_hp, max(0.0, baseline - (target.hp - hp)))
+      :error -> target
+    end
+  end
+
+  # 固体采回携带操作前焓；Pick 用持续维护的基准，recover 用当前 HP 比例。
   defp damage_phase_solid(before,state,actor,request,target,tool) do
     material=state.properties.materials[target.material]
-    q=Map.get(state.liquid_units,Damage.macro(target),liquid_capacity(state))
-    amount=Damage.amount(material,tool,0)*q/liquid_capacity(state)
-    target=%{target | hp: max(0.0,target.hp-amount),seq: state.seq+1,request_id: 0}
-    state=%{state | damage: Map.put(state.damage,Damage.key(target),target)}
     cell=Damage.macro(target)
+    q=Map.get(state.liquid_units,cell,liquid_capacity(state))
     {values,state}=phase_values(state,[cell])
+    pick=request.action==1 and tool["action"]=="damage.impact.pick"
+    target=if pick,do: Map.put_new(target,:pick_baseline_hp,target.hp),else: target
+    carried=if pick and target.hp>0.0,
+      do: {elem(values[cell],0),q*target.pick_baseline_hp/target.max_hp},else: values[cell]
+    amount=Damage.amount(material,tool,0)*q/liquid_capacity(state)
+    hp=max(0.0,target.hp-amount)
+    target=if pick or request.action==2,do: target,else: damage_pick_baseline(target,hp)
+    target=%{target | hp: hp,seq: state.seq+1,request_id: 0}
+    state=%{state | damage: Map.put(state.damage,Damage.key(target),target)}
+    values=Map.put(values,cell,{elem(values[cell],0),q*target.hp/target.max_hp})
     settlement=if request.action==2 or target.hp==0.0 do
+      carried=if pick or request.action==2,do: carried,else: values[cell]
       balance=Map.get(state.material_balances,{actor.cid,target.material},0)
-      carried=inventory_phase(state,actor.cid,target.material,balance)
-      inventory=Phase.add(%{{actor.cid,target.material}=>carried},{actor.cid,target.material},values[cell])
+      inventory=Phase.add(%{{actor.cid,target.material}=>inventory_phase(state,actor.cid,target.material,balance)},
+        {actor.cid,target.material},carried)
       state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
       {state,paid}=settle_material(state,actor.cid,target.material,q)
       {state,%{cell=>0},Map.merge(paid,%{phase_inventory: inventory,phase_values: %{cell=>{0.0,0.0}}})}
