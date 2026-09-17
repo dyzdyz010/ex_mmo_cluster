@@ -3240,7 +3240,7 @@ defmodule VoxelRegion.World do
 
         electric = Map.get(powers, node_key, 0.0)
 
-        # World 声明段末必须接受结果的事件；潜热区逐段回写，数值子步仍由 NIF 拥有。
+        # World 声明事件与相变数值输入；NIF 在批内维护焓和温度，材质替换仍由 World 提交。
         ignition =
           if Combustion.combustible?(n.material) and t.hp > 0 and
                not Map.get(t, :burning, false) and not fuel_exhausted?(t),
@@ -3248,9 +3248,13 @@ defmodule VoxelRegion.World do
             else: nil
 
         phase =
-          if phase_target?(state, t),
-            do: {n.material["phase_transition_kelvin"] * 1.0, Phase.liquid?(t.material)},
-            else: nil
+          if phase_target?(state, t) do
+            volume = phase_volume(state, t)
+            {Phase.energy(t, volume, n.material, config["ambient_kelvin"]), volume * 1.0,
+             n.material["phase_transition_kelvin"] * 1.0,
+             volume * n.material["latent_heat_per_macro_j"],
+             n.material["heat_capacity_per_macro"] * 1.0, Phase.liquid?(t.material)}
+          end
 
         {{cell, t, temperature, electric, combustion},
          {{temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
@@ -3280,9 +3284,14 @@ defmodule VoxelRegion.World do
     {changes, sources, hot, losses, combustion_used} =
       Enum.zip_reduce(targets, result, {[], %{}, [], %{}, 0.0}, fn {cell, t, old_temperature,
                                                                     _electric, combustion},
-                                                                   {temperature, hp, _remaining},
+                                                                   result,
                                                                    {changes, left, hot, losses,
                                                                     combustion_used} ->
+        {temperature, hp, phase_energy} =
+          case result do
+            {temperature, hp, _remaining} -> {temperature, hp, nil}
+            {temperature, hp, _remaining, energy} -> {temperature, hp, energy}
+          end
         source = if t.granularity == 0, do: Map.get(sources, cell)
         remaining = if source, do: max(0.0, source.remaining_j - source.power_w * done), else: 0.0
 
@@ -3296,15 +3305,7 @@ defmodule VoxelRegion.World do
             do: Combustion.step(t, done),
             else: {t, 0.0, 0.0}
 
-        {burned, temperature} = if phase_target?(state,t) do
-          m=state.properties.materials[t.material]
-          volume=phase_volume(state,t)
-          energy=Phase.energy(t,volume,m,config["ambient_kelvin"]) +
-            m["heat_capacity_per_macro"]*volume*(temperature-old_temperature)
-          {Map.put(burned,:phase_energy_j,energy), Phase.temperature(t.material,energy,volume,state.properties.materials)}
-        else
-          {burned,temperature}
-        end
+        burned = if phase_energy == nil, do: burned, else: Map.put(burned, :phase_energy_j, phase_energy)
 
         hot =
           if abs(temperature - config["ambient_kelvin"]) > config["tolerance_kelvin"] or

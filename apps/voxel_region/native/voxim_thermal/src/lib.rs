@@ -6,10 +6,20 @@ use rustler::{Error, NifResult};
 struct Input(f64, f64, f64, f64, f64, f64, f64, f64, f64, bool);
 type Output = (f64, f64, f64);
 
+// 焓、实际体积、相变温度、实际潜热总量、单位体积热容、是否液体；数值来自 World 的已发布目录。
+#[derive(rustler::NifTuple)]
+struct PhaseInput(f64, f64, f64, f64, f64, bool);
+
+#[derive(rustler::NifUntaggedEnum)]
+enum AdvanceOutput {
+    Numeric(Output),
+    Phase((f64, f64, f64, f64)),
+}
+
 // 纯数值调用保持原元组；World 额外声明点燃阈值、相变回写和共享完整度结算边界。
 #[derive(rustler::NifUntaggedEnum)]
 enum AdvanceInput {
-    Controlled((Input, (Option<f64>, Option<(f64, bool)>, bool))),
+    Controlled((Input, (Option<f64>, Option<PhaseInput>, bool))),
     Numeric(Input),
 }
 
@@ -34,7 +44,7 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
 // 有限体积显式离散：dt <= C / (接触导热系数之和 + 环境换热系数)，保留正系数。
 #[rustler::nif(schedule = "DirtyCpu")]
 fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: f64, exchange: f64,
-           tolerance: f64, duration: f64) -> NifResult<(f64,Vec<Output>,f64,f64)> {
+           tolerance: f64, duration: f64) -> NifResult<(f64,Vec<AdvanceOutput>,f64,f64)> {
     let (input, events): (Vec<_>, Vec<_>) = nodes.into_iter().map(|node| match node {
         AdvanceInput::Controlled((input, events)) => (input, events),
         AdvanceInput::Numeric(input) => (input, (None, None, false)),
@@ -46,7 +56,9 @@ fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: 
         || contacts.iter().any(|&(a,b,g)| a>=input.len() || b>=input.len() || a==b || !g.is_finite() || g<0.0)
         || events.iter().any(|(ignition,phase,_)|
             ignition.is_some_and(|t| !t.is_finite() || t<=0.0)
-                || phase.is_some_and(|(t,_)| !t.is_finite() || t<=0.0)) {
+                || phase.as_ref().is_some_and(|p|
+                    [p.0,p.1,p.2,p.3,p.4].iter().any(|v| !v.is_finite())
+                        || p.1<=0.0 || p.2<=0.0 || p.3<=0.0 || p.4<=0.0)) {
         return Err(Error::BadArg);
     }
     let mut diagonal: Vec<f64> = input.iter().map(|n| exchange*n.6).collect();
@@ -55,27 +67,46 @@ fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: 
         .map(|(n,g)| 0.45*n.3/g).fold(0.05_f64,f64::min);
     let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
     let mut flow=vec![0.0; input.len()];
+    let mut phases: Vec<_> = input.iter().zip(&events).map(|(n,(_,p,_))|
+        p.as_ref().map(|p| (p.0,n.0))).collect();
     let (mut remaining,mut done,mut supplied,mut environment)=(duration,0.0,0.0,0.0);
     loop {
         // 保留 World 原有的 50ms 分段及每段 ceil/dt 算术，不把整批重新均分。
         let segment=remaining.min(0.05);
         let steps=(segment/stable).ceil() as u32;
         let dt=segment/f64::from(steps);
-        let (count,q,air,frontier)=evolve_steps(&input,&contacts,ambient,exchange,tolerance,
+        let (count,q,air,mut frontier)=evolve_steps(&input,&contacts,ambient,exchange,tolerance,
             dt,steps,false,&mut state,&mut flow);
         let advanced=f64::from(count)*dt;
         done+=advanced; remaining-=advanced; supplied+=q; environment+=air;
-        let world_event=input.iter().zip(&state).zip(&events).any(|((n,s),(ignition,phase,shared))| {
-            // Phase.temperature 在线性显热区不钳位；潜热区及进入该区的段必须由 World 回写焓。
-            let phase_event=phase.is_some_and(|(t,liquid)|
-                if liquid { n.0<=t || s.0<=t } else { n.0>=t || s.0>=t });
-            phase_event || ignition.is_some_and(|t| s.0>=t) || (*shared && s.1<n.1)
+        let mut phase_complete=false;
+        for (((s,(_,params,_)),phase),n) in state.iter_mut().zip(&events).zip(&mut phases).zip(&input) {
+            if let (Some(p),Some((energy,temperature)))=(params.as_ref(),phase.as_mut()) {
+                let before=*energy;
+                // 与原 World 段末回写保留相同乘加次序；不能用累计通量替换这条既有数值契约。
+                *energy+=p.4*p.1*(s.0-*temperature);
+                let sensible=if p.5 { (*energy-p.3).max(0.0) } else { energy.min(0.0) };
+                s.0=p.2+sensible/(p.1*p.4);
+                *temperature=s.0;
+                // 原 World 在焓回写后也会激活新热格；首次初始化的相变几何不能延迟扩域。
+                frontier |= !n.9 && ((s.0-ambient).abs()>tolerance || s.2>0.0);
+                // 只在完成条件首次跨越时通知；材质替换仍由 World 的既有提交规则负责。
+                phase_complete |= if p.5 { before>0.0 && *energy<=0.0 }
+                    else { before<p.3 && *energy>=p.3 };
+            }
+        }
+        let world_event=input.iter().zip(&state).zip(&events).any(|((n,s),(ignition,_,shared))| {
+            ignition.is_some_and(|t| s.0>=t) || (*shared && s.1<n.1)
                 || (n.1>0.0 && s.1==0.0)
         });
         // 与 World 剩余时长终止条件相同；跨系统事件不在 NIF 写回 canonical 真值。
-        if frontier || world_event || remaining<1.0e-12 {
+        if frontier || phase_complete || world_event || remaining<1.0e-12 {
             let elapsed=if remaining<1.0e-12 { duration } else { done };
-            return Ok((elapsed,state,supplied,environment));
+            let output=state.into_iter().zip(phases).map(|(s,p)| match p {
+                Some((energy,_))=>AdvanceOutput::Phase((s.0,s.1,s.2,energy)),
+                None=>AdvanceOutput::Numeric(s),
+            }).collect();
+            return Ok((elapsed,output,supplied,environment));
         }
     }
 }
