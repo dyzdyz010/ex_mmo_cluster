@@ -153,6 +153,10 @@ defmodule VoxelRegion.World do
   def publish_properties(server, path),
     do: GenServer.call(server, {:publish_properties, Damage.load(path)})
 
+  @doc "全局系统作者入口：从明确的旧目录升级可玩参数，保留实例存量并记录热参考重标。"
+  def publish_parameters(server, path, expected_digest),
+    do: GenServer.call(server, {:publish_parameters, Damage.load(path), expected_digest}, 300_000)
+
   @doc "只测试作者入口：从资产导出的实验参数启动有限供能热源；不开放给 Gate 玩家意图。"
   def thermal_experiment(server, path),
     do: GenServer.call(server, {:thermal_experiment, Jason.decode!(File.read!(path))}, 300_000)
@@ -537,39 +541,22 @@ defmodule VoxelRegion.World do
         end)
 
     if compatible do
-      if map_size(state.damage) == 0 or
-           (state.properties != nil and state.properties.digest == catalog.digest) do
-        {:reply, :ok, enable_liquid(state, rebuild_thermal_work(%{state | properties: catalog}))}
-      else
-        # 作者发布只接纳既有状态语义不变的扩充；同笔日志更新摘要，原HP/温度/占用均保留。
-        rows =
-          for {_, t} <- state.damage,
-              do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0}
-
-        next =
-          %{
-            state
-            | properties: catalog,
-              seq: state.seq + 1,
-              damage: Map.new(rows, &{Damage.key(&1), &1})
-          }
-          |> rebuild_thermal_work()
-
-        txn = %{seq: next.seq, entries: [], coarse: [], property_states: rows}
-
-        case append_log(next, txn) do
-          :ok ->
-            next = %{next | entries: Map.put(next.entries, next.seq, txn)}
-            fanout(next, txn)
-            fanout_canonical(next, txn, [], [], state)
-            {:reply, :ok, enable_liquid(state, next)}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-      end
+      publish_property_catalog(state, catalog, state.thermal)
     else
       {:reply, {:error, :property_version_in_use}, state}
+    end
+  end
+
+  def handle_call({:publish_parameters, catalog, expected_digest}, _, state) do
+    cond do
+      state.properties.digest != expected_digest ->
+        {:reply, {:error, :property_version_mismatch}, state}
+
+      not compatible_parameters?(state.properties, catalog) ->
+        {:reply, {:error, :property_version_in_use}, state}
+
+      true ->
+        publish_property_catalog(state, catalog, parameter_thermal_reference(state, catalog))
     end
   end
 
@@ -606,9 +593,16 @@ defmodule VoxelRegion.World do
   def handle_call({:liquid_experiment, edits}, _, state) do
     true = liquid_enabled?(state)
     true = Enum.all?(edits, fn {cell,_} -> valid_edit_coord?(cell) and liquid_inside?(cell,state.liquid_bounds) end)
-    changes = for {cell,m} <- edits, m == 21 or Map.has_key?(state.liquid_units,cell),
-      into: %{}, do: {cell,if(m==21,do: liquid_capacity(state),else: 0)}
-    case apply_batch(state, edits, false, %{liquid_changes: changes}) do
+    changes = for {cell,m} <- edits, Phase.liquid?(m) or phase_material?(state,m) or Map.has_key?(state.liquid_units,cell),
+      into: %{}, do: {cell,if(Phase.liquid?(m) or phase_material?(state,m),do: liquid_capacity(state),else: 0)}
+    values = for {cell,m} <- edits, phase_material?(state,m), into: %{},
+      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],phase_ambient(state)),liquid_capacity(state)*1.0}}
+    # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
+    thermal=if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},t->
+      t |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
+        |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
+    end),else: nil
+    case apply_batch(%{state | thermal: thermal}, edits, false, %{liquid_changes: changes,phase_values: values}) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},state}
     end
@@ -672,7 +666,7 @@ defmodule VoxelRegion.World do
                 request.action == 0 ->
                   {:reply, {:ok, %{target | request_id: request.request_id}}, state}
 
-                target.material == 21 and tool["action"] not in ["phase.cool", "phase.heat"] ->
+                Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
                   {:reply, {:error, :use_liquid_tool}, before}
 
                 not same_target?(target, request) ->
@@ -2539,7 +2533,7 @@ defmodule VoxelRegion.World do
 
             with {:ok, collision_chunks} <- canonical_changes(before, state, Enum.uniq(geometry_changed ++
                    Enum.filter(liquid_dirty,fn {0,c}->
-                     {:ok,{m,_},_}=cell_value(state,0,c); m==20
+                     {:ok,{m,_},_}=cell_value(state,0,c); MmoContracts.VoxelMaterialCatalog.blocks_movement?(m)
                    end))),
                  collided = System.monotonic_time(:microsecond),
                  :ok <- append_log(state, txn) do
@@ -2865,7 +2859,7 @@ defmodule VoxelRegion.World do
         {:ok, {material, _}, state} = cell_value(state, 0, cell)
 
         target =
-          if material != 0 and not (phase_enabled?(state) and material in [20,21] and Map.has_key?(state.liquid_units,cell) and
+          if material != 0 and not (phase_material?(state,material) and Map.has_key?(state.liquid_units,cell) and
             rem(div(slot,@micro),@micro) >= div(state.liquid_units[cell]*@micro+liquid_capacity(state)-1,liquid_capacity(state))),
             do: %{
               micro: cell |> Tuple.to_list() |> Enum.map(&(&1 * @micro)) |> List.to_tuple(),
@@ -2953,7 +2947,13 @@ defmodule VoxelRegion.World do
     do: %{state | thermal_work: empty_thermal_work()}
 
   defp rebuild_thermal_work(state) do
-    hot =
+    hot = thermal_hot(state)
+
+    active = state.thermal.active or Enum.any?(state.damage, fn {_, t} -> fuel_exhausted?(t) end)
+    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{empty_thermal_work() | hot: hot}}
+  end
+
+  defp thermal_hot(state) do
       for {_, t} <- state.damage,
           Map.get(t, :burning, false) or
             (Map.has_key?(t, :temperature_kelvin) and
@@ -2962,9 +2962,6 @@ defmodule VoxelRegion.World do
           cell <- thermal_cells(t),
           into: MapSet.new(),
           do: cell
-
-    active = state.thermal.active or Enum.any?(state.damage, fn {_, t} -> fuel_exhausted?(t) end)
-    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{empty_thermal_work() | hot: hot}}
   end
 
   defp thermal_cells(%{granularity: 4} = t), do: Attachments.macros([Attachments.slot(t)])
@@ -2975,6 +2972,10 @@ defmodule VoxelRegion.World do
     before = state
     state = put_in(state.thermal_work.builds, 0)
     {state, visited} = circuit_steps(state, 0.5, MapSet.new())
+    # 同一提交内只扩张热域，避免容差边缘反复删添接触；批末按当前真值收缩。
+    hot = thermal_hot(state)
+    state = %{state | thermal_work: %{state.thermal_work | hot: hot},
+      thermal: %{state.thermal | active: map_size(state.thermal.sources) > 0 or MapSet.size(hot) > 0}}
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
     {state, visited} = Enum.reduce(state.damage, {state, visited}, fn {_, row}, {s, keys} ->
@@ -3069,9 +3070,11 @@ defmodule VoxelRegion.World do
         state.thermal
         |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))
         |> Map.update(:circuit_light_j, plan.light_j, &(&1 + plan.light_j))
+        |> Map.update(:circuit_cooling_j, plan.cooling_j, &(&1 + plan.cooling_j))
+        |> Map.update(:circuit_rejected_j, plan.rejected_j, &(&1 + plan.rejected_j))
 
       Logger.info(
-        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j}"
+        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} cooling_j=#{plan.cooling_j} rejected_j=#{plan.rejected_j}"
       )
 
       circuit_steps(
@@ -3148,7 +3151,8 @@ defmodule VoxelRegion.World do
             s.refined,
             s.properties.materials,
             s,
-            &target_at/2
+            &target_at/2,
+            &phase_volume/2
           )
 
         {Map.put(geometry, cell, nodes), s}
@@ -3169,7 +3173,7 @@ defmodule VoxelRegion.World do
           end)
 
         {nodes, state} =
-          VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2)
+          VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2)
 
         ordered = Map.to_list(nodes)
         edges = VoxelRegion.ThermalGeometry.contacts(nodes)
@@ -3237,13 +3241,12 @@ defmodule VoxelRegion.World do
         electric = Map.get(powers, node_key, 0.0)
 
         {{cell, t, temperature, electric, combustion},
-         {temperature, t.hp, t.max_hp, n.capacity * phase_volume(state,t), n.material["thermal_conductivity"] * 1.0,
+         {temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
           n.material["heat_resistance_kelvin"] * 1.0, n.exposed_faces * 1.0,
           electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0),
-          electric * duration + if(source, do: source.remaining_j * 1.0, else: 0.0) +
-            combustion * duration,
-          abs(temperature - config["ambient_kelvin"]) > config["tolerance_kelvin"] or
-            source != nil or combustion > 0 or electric > 0}}
+          abs(electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0)) * duration,
+          Enum.any?(thermal_cells(t), &MapSet.member?(state.thermal_work.hot, &1)) or
+            source != nil or combustion > 0 or electric != 0}}
       end)
       |> Enum.unzip()
 
@@ -3263,11 +3266,12 @@ defmodule VoxelRegion.World do
 
     {changes, sources, hot, losses, combustion_used} =
       Enum.zip_reduce(targets, result, {[], %{}, [], %{}, 0.0}, fn {cell, t, old_temperature,
-                                                                    electric, combustion},
-                                                                   {temperature, hp, remaining},
+                                                                    _electric, combustion},
+                                                                   {temperature, hp, _remaining},
                                                                    {changes, left, hot, losses,
                                                                     combustion_used} ->
-        remaining = max(0.0, remaining - (electric + combustion) * (duration - done))
+        source = if t.granularity == 0, do: Map.get(sources, cell)
+        remaining = if source, do: max(0.0, source.remaining_j - source.power_w * done), else: 0.0
 
         left =
           if t.granularity == 0 and Map.has_key?(sources, cell) and remaining > 1.0e-9,
@@ -3329,7 +3333,7 @@ defmodule VoxelRegion.World do
     {damage, propagated} = ignite_heated_materials(state, damage, ordered)
     changes = changes ++ propagated
     changed = MapSet.new(changes, &elem(&1, 0))
-    hot = MapSet.new(hot)
+    hot = MapSet.union(work.hot, MapSet.new(hot))
 
     active =
       map_size(sources) > 0 or MapSet.size(hot) > 0 or
@@ -3397,7 +3401,7 @@ defmodule VoxelRegion.World do
   # 点燃只消费实际温度；热源、电热和燃烧热共用接触导热，不另设火种邻接真值。
   defp ignite_heated_materials(state, damage, ordered) do
     Enum.reduce(ordered, {damage, []}, fn {_, node}, {rows, changed} ->
-      target = Map.get(rows, Damage.key(node.target), property_state(state, node.target))
+      target = Map.get_lazy(rows, Damage.key(node.target), fn -> property_state(state, node.target) end)
       material = node.material
       if Combustion.combustible?(material) and target.hp > 0 and
            not Map.get(target, :burning, false) and not fuel_exhausted?(target) and
@@ -3466,8 +3470,8 @@ defmodule VoxelRegion.World do
       {target,s}=target_at(micro,s)
       cond do
         target==nil -> {nil,s}
-        target.material==21 and r.material != 21 and tool["action"] not in ["phase.cool","phase.heat"] -> {nil,s}
-        target.granularity==0 and target.material in [20,21] and Map.has_key?(s.liquid_units,Damage.macro(target)) and
+        Phase.liquid?(target.material) and r.material != target.material and tool["action"] not in ["phase.cool","phase.heat"] -> {nil,s}
+        phase_target?(s,target) and Map.has_key?(s.liquid_units,Damage.macro(target)) and
             not finite_phase_ray?(actor.eye,r.direction,tool["range_macro"],Damage.macro(target),
               s.liquid_units[Damage.macro(target)]/liquid_capacity(s)) -> {nil,s}
         true -> {target,s}
@@ -3615,8 +3619,8 @@ defmodule VoxelRegion.World do
           tool["action"] in ["phase.cool", "phase.heat"] ->
             operate_phase(before, state, actor, request, target, tool)
 
-          target.granularity == 0 and target.material == 20 and phase_enabled?(state) ->
-            damage_ice(before, state, actor, request, target, tool)
+          phase_target?(state,target) and not Phase.liquid?(target.material) ->
+            damage_phase_solid(before, state, actor, request, target, tool)
 
           tool["action"] == "heat" ->
             feed_heater(before, state, actor, request, target, tool)
@@ -4224,8 +4228,9 @@ defmodule VoxelRegion.World do
 
   # Global system: phase energy/HP live in existing property rows. Inventory
   # carries only their extensive sums; material_balances remains quantity SSOT.
-  defp phase_enabled?(s), do: s.properties != nil and Phase.enabled?(s.properties.materials[21])
-  defp phase_target?(s,t), do: t.granularity == 0 and t.material in [20,21] and phase_enabled?(s)
+  defp phase_enabled?(s), do: s.properties != nil and Enum.any?(s.properties.materials,fn {_,m}->Phase.enabled?(m) end)
+  defp phase_material?(s,m), do: s.properties != nil and Phase.enabled?(s.properties.materials[m])
+  defp phase_target?(s,t), do: t.granularity == 0 and phase_material?(s,t.material)
   defp phase_volume(s,t), do: if(phase_target?(s,t),
     do: Map.get(s.liquid_units,Damage.macro(t),liquid_capacity(s))/liquid_capacity(s), else: 1.0)
   defp phase_ambient(s), do: s.thermal.config["ambient_kelvin"]
@@ -4257,16 +4262,16 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  defp transfer_phase_inventory(state,cid,cell,action,moved,balance) do
-    if phase_enabled?(state) do
+  defp transfer_phase_inventory(state,cid,cell,material,action,moved,balance) do
+    if phase_material?(state,material) do
       {values,state}=phase_values(state,[cell])
-      carried=inventory_phase(state,cid,21,balance)
+      carried=inventory_phase(state,cid,material,balance)
       source=if action==2,do: Map.fetch!(values,cell),else: carried
       q=if action==2,do: Map.fetch!(state.liquid_units,cell),else: balance
       portion=Phase.scale(source,moved/q)
       sign=if action==2,do: -1,else: 1
       values=Phase.add(values,cell,Phase.scale(portion,sign))
-      inventory=Phase.add(%{{cid,21}=>carried},{cid,21},Phase.scale(portion,-sign))
+      inventory=Phase.add(%{{cid,material}=>carried},{cid,material},Phase.scale(portion,-sign))
       state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
       {state,values,inventory}
     else
@@ -4298,8 +4303,8 @@ defmodule VoxelRegion.World do
 
   defp operate_phase(before,state,actor,request,target,tool) do
     with true <- request.action==1 and phase_target?(state,target) and state.thermal != nil,
-         true <- (tool["action"]=="phase.cool" and target.material==21) or
-           (tool["action"]=="phase.heat" and target.material==20),
+         true <- (tool["action"]=="phase.cool" and Phase.liquid?(target.material)) or
+           (tool["action"]=="phase.heat" and not Phase.liquid?(target.material)),
          fuel=tool["fuel_material_id"], units=tool["fuel_units"],
          true <- Map.get(state.material_balances,{actor.cid,fuel},0)>=units do
       cell=Damage.macro(target)
@@ -4308,14 +4313,17 @@ defmodule VoxelRegion.World do
       {energy,integrity}=Map.fetch!(values,cell)
       cool=tool["action"]=="phase.cool"
       budget=tool[if(cool,do: "cooling_energy_j",else: "heat_energy_j")]
-      goal=if cool,do: 0.0,else: q/liquid_capacity(state)*state.properties.materials[20]["latent_heat_per_macro_j"]
-      used=min(budget,max(0.0,if(cool,do: energy-goal,else: goal-energy)))
+      goal=if cool,do: 0.0,else: q/liquid_capacity(state)*state.properties.materials[target.material]["latent_heat_per_macro_j"]
+      needed=max(0.0,if(cool,do: energy-goal,else: goal-energy))
+      used=min(budget,needed)
       signed=if cool,do: -used,else: used
+      # 预算足够时工具已抵达精确终点；避免负初焓的减加抵消把结果留在阈值下方。
+      next_energy=if budget>=needed,do: goal,else: energy+signed
       thermal=state.thermal |> Map.update(:phase_supplied_j,signed,&(&1+signed))
         |> Map.update(:phase_paid_j,budget,&(&1+budget))
         |> Map.update(:phase_unused_j,budget-used,&(&1+budget-used))
       {state,settlement}=settle_material(%{state | thermal: thermal},actor.cid,fuel,-units)
-      settlement=Map.merge(settlement,%{phase_values: %{cell=>{energy+signed,integrity}}})
+      settlement=Map.merge(settlement,%{phase_values: %{cell=>{next_energy,integrity}}})
       case commit_liquid(state,%{cell=>q},settlement) do
         {:ok,next}->
           Logger.info("voxel_phase seq=#{next.seq} action=#{tool["action"]} cell=#{inspect(cell)} units=#{q} used_j=#{used} unused_j=#{budget-used}")
@@ -4329,8 +4337,8 @@ defmodule VoxelRegion.World do
 
   # Breaking ice recovers its exact finite mass and its damaged integrity/energy,
   # never a fresh full macro. Rebuilding that inventory keeps the same HP ratio.
-  defp damage_ice(before,state,actor,request,target,tool) do
-    material=state.properties.materials[20]
+  defp damage_phase_solid(before,state,actor,request,target,tool) do
+    material=state.properties.materials[target.material]
     q=Map.get(state.liquid_units,Damage.macro(target),liquid_capacity(state))
     amount=Damage.amount(material,tool,0)*q/liquid_capacity(state)
     target=%{target | hp: max(0.0,target.hp-amount),seq: state.seq+1,request_id: 0}
@@ -4338,11 +4346,11 @@ defmodule VoxelRegion.World do
     cell=Damage.macro(target)
     {values,state}=phase_values(state,[cell])
     settlement=if request.action==2 or target.hp==0.0 do
-      balance=Map.get(state.material_balances,{actor.cid,20},0)
-      carried=inventory_phase(state,actor.cid,20,balance)
-      inventory=Phase.add(%{{actor.cid,20}=>carried},{actor.cid,20},values[cell])
+      balance=Map.get(state.material_balances,{actor.cid,target.material},0)
+      carried=inventory_phase(state,actor.cid,target.material,balance)
+      inventory=Phase.add(%{{actor.cid,target.material}=>carried},{actor.cid,target.material},values[cell])
       state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
-      {state,paid}=settle_material(state,actor.cid,20,q)
+      {state,paid}=settle_material(state,actor.cid,target.material,q)
       {state,%{cell=>0},Map.merge(paid,%{phase_inventory: inventory,phase_values: %{cell=>{0.0,0.0}}})}
     else
       {state,%{cell=>q},%{phase_values: values}}
@@ -4385,21 +4393,21 @@ defmodule VoxelRegion.World do
     Enum.reduce_while(edits, :ok, fn {cell, material}, :ok ->
       case cell_value(state, 0, cell) do
         {:ok, {old,_}, _} ->
-          if old == 21 or material == 21 or (phase_enabled?(state) and (old == 20 or material == 20)),
+          if Phase.liquid?(old) or Phase.liquid?(material) or phase_material?(state,old) or phase_material?(state,material),
             do: {:halt, {:error,:use_liquid_tool}}, else: {:cont,:ok}
         _ -> {:cont, :ok}
       end
     end)
   end
 
-  defp liquid_cells(state, cells) do
-    Enum.reduce(Enum.uniq(cells), {%{},state.liquid_units,state}, fn cell,{open,water,s} ->
+  defp liquid_cells(state, cells, liquid_material \\ 21) do
+    Enum.reduce(Enum.uniq(cells), {%{},%{},state}, fn cell,{open,water,s} ->
       region=region_of(cell)
       if needs_source?(s,{0,region}), do: :ok=s.source.ensure(s.source_state,0,region)
       {:ok,{material,_},s}=cell_value(s,0,cell)
-      available=material in [0,21] and not Map.has_key?(s.refined,cell)
+      available=(material==0 or material==liquid_material) and not Map.has_key?(s.refined,cell)
       # Legacy Water21 without a suffix is a full macro, not an empty cell.
-      water=if material == 21, do: Map.put_new(water,cell,liquid_capacity(s)), else: Map.delete(water,cell)
+      water=if material == liquid_material, do: Map.put(water,cell,Map.get(s.liquid_units,cell,liquid_capacity(s))), else: water
       {Map.put(open,cell,available),water,s}
     end)
   end
@@ -4407,7 +4415,7 @@ defmodule VoxelRegion.World do
   defp transfer_liquid(before, actor, request) do
     expected=if request.action==2,do: "liquid.scoop",else: "liquid.pour"
     with true <- liquid_enabled?(before),
-         true <- request.material == 21 and 21 in before.production_materials,
+         true <- Phase.liquid?(request.material) and request.material in before.production_materials,
          true <- liquid_inside?(request.coord,before.liquid_bounds),
          {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
          true <- tool["action"] == expected,
@@ -4415,8 +4423,8 @@ defmodule VoxelRegion.World do
          :ok <- liquid_sight(before,actor.eye,request.coord),
          {:ok,session} <- Damage.admit_attack(Map.get(before.tool_sessions,actor.player),
            request.client_intent_seq,actor.received_us,ceil(tool["interval_seconds"]*1_000_000),actor.tick_us) do
-      {open,water,state}=liquid_cells(before,[request.coord])
-      balance=balance_state(state,actor.cid,21).balance
+      {open,water,state}=liquid_cells(before,[request.coord],request.material)
+      balance=balance_state(state,actor.cid,request.material).balance
       transfer=case request.action do
         2 -> Liquid.scoop(water,request.coord,balance,tool["liquid_transfer_units"])
         3 -> Liquid.pour(water,request.coord,balance,tool["liquid_transfer_units"],liquid_capacity(state),state.liquid_bounds,&Map.fetch!(open,&1))
@@ -4426,10 +4434,10 @@ defmodule VoxelRegion.World do
       else
         unless Map.has_key?(state.tool_sessions,actor.player), do: Process.monitor(actor.player)
         state=%{state | tool_sessions: Map.put(state.tool_sessions,actor.player,session)}
-        {state,carried,inventory}=transfer_phase_inventory(state,actor.cid,request.coord,
+        {state,carried,inventory}=transfer_phase_inventory(state,actor.cid,request.coord,request.material,
           request.action,transfer.transferred_units,balance)
-        {state,settlement}=settle_material(state,actor.cid,21,transfer.balance-balance)
-        settlement=Map.merge(settlement,%{phase_values: carried,phase_inventory: inventory})
+        {state,settlement}=settle_material(state,actor.cid,request.material,transfer.balance-balance)
+        settlement=Map.merge(settlement,%{phase_values: carried,phase_inventory: inventory,liquid_material: request.material})
         commit_liquid(state,transfer.changes,settlement)
       end
     else
@@ -4449,11 +4457,15 @@ defmodule VoxelRegion.World do
       # Water itself is transparent; canonical solid macro/refined cells occlude.
       at=fn micro,s ->
         case target_at(micro,s) do
-          {%{material: 21},s}->{nil,s}
-          {%{material: 20,granularity: 0}=target,s}->
-            cell=Damage.macro(target)
-            height=Map.get(s.liquid_units,cell,liquid_capacity(s))/liquid_capacity(s)
-            {if(finite_phase_ray?(eye,direction,distance,cell,height),do: target,else: nil),s}
+          {%{material: material},s} when material in [21,22]->{nil,s}
+          {%{granularity: 0}=target,s}->
+            if phase_target?(s,target) do
+              cell=Damage.macro(target)
+              height=Map.get(s.liquid_units,cell,liquid_capacity(s))/liquid_capacity(s)
+              {if(finite_phase_ray?(eye,direction,distance,cell,height),do: target,else: nil),s}
+            else
+              {target,s}
+            end
           other->other
         end
       end
@@ -4465,6 +4477,7 @@ defmodule VoxelRegion.World do
   end
 
   defp commit_liquid(state, changes, settlement, extra_edits \\ [], owners \\ MapSet.new(), attachments \\ MapSet.new()) do
+    liquid_material=Map.get(settlement,:liquid_material,21)
     for {level,region}=key <- Enum.uniq(edit_keys(Map.keys(changes))), needs_source?(state,key),
       do: :ok=state.source.ensure(state.source_state,level,region)
     {values,state}=phase_values(state,Map.keys(changes))
@@ -4475,7 +4488,7 @@ defmodule VoxelRegion.World do
       Enum.reduce(changes,values,fn {cell,q},v->
         {:ok,{old,_},_}=cell_value(state,0,cell)
         if q>0 and old==0 and not Map.has_key?(supplied_values,cell) do
-          e=Phase.energy(%{material: 21},q/liquid_capacity(state),state.properties.materials[21],phase_ambient(state))
+          e=Phase.energy(%{material: liquid_material},q/liquid_capacity(state),state.properties.materials[liquid_material],phase_ambient(state))
           Map.put(v,cell,{e,q*1.0})
         else
           v
@@ -4487,11 +4500,11 @@ defmodule VoxelRegion.World do
     values=Map.merge(values,supplied_values)
     edits=Enum.map(changes,fn {cell,q}->
       {:ok,{old,_},_}=cell_value(state,0,cell)
-      old=if old==20,do: 20,else: 21
+      old=if phase_material?(state,old),do: old,else: liquid_material
       material=cond do
         q==0 -> 0
-        phase_enabled?(state) -> Phase.material(old,elem(Map.fetch!(values,cell),0),q/liquid_capacity(state),state.properties.materials)
-        true -> 21
+        phase_material?(state,old) -> Phase.material(old,elem(Map.fetch!(values,cell),0),q/liquid_capacity(state),state.properties.materials)
+        true -> liquid_material
       end
       {cell,material}
     end)
@@ -4500,11 +4513,15 @@ defmodule VoxelRegion.World do
   end
 
   defp advance_liquid(state) do
+    Enum.reduce([21,22],state,&advance_liquid(&2,&1))
+  end
+
+  defp advance_liquid(state,material) do
     # Two stages need the downward cell and the horizontal neighbors of both levels.
     cells=for {x,y,z} <- Map.keys(state.liquid_units), dy <- [0,-1],
       {dx,dz} <- [{0,0},{-1,0},{1,0},{0,-1},{0,1}],
       cell={x+dx,y+dy,z+dz}, liquid_inside?(cell,state.liquid_bounds), do: cell
-    {open,water,state}=liquid_cells(state,cells)
+    {open,water,state}=liquid_cells(state,cells,material)
     config=state.properties.liquid
     {changes,stages}=Liquid.step_transfers(water,state.liquid_bounds,liquid_capacity(state),
       config["gravity_units_per_step"],config["side_units_per_step"],&Map.get(open,&1,false))
@@ -4513,7 +4530,7 @@ defmodule VoxelRegion.World do
     # Equal incoming/outgoing quantity can still transport heat and integrity.
     affected=if phase_enabled?(state),do: for({_q,flows}<-stages,{a,b,_}<-flows,c<-[a,b],do: c),else: []
     changes=Enum.reduce(affected,changes,fn c,m->Map.put_new(m,c,Map.get(water,c,0)) end)
-    case commit_liquid(state,changes,%{phase_values: Map.take(values,Map.keys(changes))}) do
+    case commit_liquid(state,changes,%{phase_values: Map.take(values,Map.keys(changes)),liquid_material: material}) do
       {:ok,next}->next
       {:error,reason}->Logger.error("voxel_liquid_commit failed=#{inspect(reason)}"); state
     end
@@ -4521,7 +4538,7 @@ defmodule VoxelRegion.World do
 
   defp build_material(before, actor, request) do
           with :ok <-
-                 if(request.action == 1 and request.material != 21 and request.material in before.production_materials,
+                 if(request.action == 1 and not Phase.liquid?(request.material) and request.material in before.production_materials,
                    do: :ok,
                    else: {:error, :unknown_resource}
                  ),
@@ -4534,8 +4551,8 @@ defmodule VoxelRegion.World do
                    do: :ok,
                    else: {:error, :insufficient_material}
                  ),
-               :ok <- if(request.material==20 and phase_enabled?(before) and
-                   elem(inventory_phase(before,actor.cid,20,balance_state(before,actor.cid,20).balance),1)<=0,
+               :ok <- if(phase_material?(before,request.material) and
+                   elem(inventory_phase(before,actor.cid,request.material,balance_state(before,actor.cid,request.material).balance),1)<=0,
                  do: {:error,:broken_material},else: :ok),
                false <- Map.has_key?(before.refined, request.coord),
                {:ok, {0, _}, state} <- cell_value(before, 0, request.coord) do
@@ -4547,15 +4564,15 @@ defmodule VoxelRegion.World do
                 -@micro * @micro * @micro * state.material_units_per_micro
               )
 
-            if request.material==20 and phase_enabled?(state) do
+            if phase_material?(state,request.material) do
               cost=liquid_capacity(state)
-              balance=balance_state(before,actor.cid,20).balance
-              carried=inventory_phase(before,actor.cid,20,balance)
+              balance=balance_state(before,actor.cid,request.material).balance
+              carried=inventory_phase(before,actor.cid,request.material,balance)
               portion=Phase.scale(carried,cost/balance)
-              inventory=Phase.add(%{{actor.cid,20}=>carried},{actor.cid,20},Phase.scale(portion,-1))
+              inventory=Phase.add(%{{actor.cid,request.material}=>carried},{actor.cid,request.material},Phase.scale(portion,-1))
               state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
               # Inventory Ice stays solid; any later thermal phase completion is ordinary simulation.
-              apply_batch(state,[{request.coord,20}],false,Map.merge(settlement,%{
+              apply_batch(state,[{request.coord,request.material}],false,Map.merge(settlement,%{
                 liquid_changes: %{request.coord=>cost},phase_values: %{request.coord=>portion},phase_inventory: inventory}))
             else
               apply_batch(state, [{request.coord, request.material}], false, settlement)
@@ -4574,6 +4591,73 @@ defmodule VoxelRegion.World do
       |> Enum.reduce(0.0, fn {a, b}, sum -> sum + (a - b - 0.5) * (a - b - 0.5) end)
 
     if squared <= range * range, do: :ok, else: {:error, :out_of_reach}
+  end
+
+  # 参数只改变下一次计算；实例温度、HP、余燃料、源预算与相变焓不改写。
+  defp compatible_parameters?(old, new) do
+    material_fields = ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j)
+    tool_fields = ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j)
+    phase_fields = ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
+
+    old.attachments == new.attachments and old.liquid == new.liquid and
+      Enum.all?(old.materials, fn {id, material} ->
+        case Map.fetch(new.materials, id) do
+          {:ok, next} ->
+            Map.drop(material, material_fields) == Map.drop(next, material_fields) and
+              (not Phase.enabled?(material) or Map.take(material, phase_fields) == Map.take(next, phase_fields))
+          :error -> false
+        end
+      end) and
+      Enum.all?(old.tools, fn {id, tool} ->
+        case Map.fetch(new.tools, id) do
+          {:ok, next} -> Map.drop(tool, tool_fields) == Map.drop(next, tool_fields)
+          :error -> false
+        end
+      end)
+  end
+
+  defp parameter_thermal_reference(%{thermal: nil}, _), do: nil
+  defp parameter_thermal_reference(state, catalog) do
+    ambient = state.thermal.config["ambient_kelvin"]
+    rebase = Enum.reduce(state.damage, 0.0, fn {_, row}, sum ->
+      old = state.properties.materials[row.material]
+      if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and not Phase.enabled?(old) do
+        volume = if row.granularity == 4,
+          do: VoxelRegion.ThermalAttachments.volume(Attachments.slot(row), state.properties),
+          else: Damage.volume(row.granularity)
+        next=catalog.materials[row.material]
+        previous=volume*Map.get(old,"heat_capacity_per_macro",0.0)*(row.temperature_kelvin-ambient)
+        current=if row.granularity==0 and Phase.enabled?(next),
+          do: Phase.energy(row,volume,next,ambient),
+          else: volume*next["heat_capacity_per_macro"]*(row.temperature_kelvin-ambient)
+        sum + current - previous
+      else
+        sum
+      end
+    end)
+    Map.update(state.thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
+  end
+
+  # 复用既有同步落盘后广播边界；失败时目录与所有实例状态一起保持旧值。
+  defp publish_property_catalog(state, catalog, thermal) do
+    if (map_size(state.damage) == 0 and thermal == state.thermal) or state.properties.digest == catalog.digest do
+      {:reply, :ok, enable_liquid(state, rebuild_thermal_work(%{state | properties: catalog}))}
+    else
+      rows = for {_, t} <- state.damage,
+        do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0}
+      next = %{state | properties: catalog, thermal: thermal, seq: state.seq + 1,
+        damage: Map.new(rows, &{Damage.key(&1), &1})} |> rebuild_thermal_work()
+      txn = %{seq: next.seq, entries: [], coarse: [], property_states: rows, thermal: thermal}
+      case append_log(next, txn) do
+        :ok ->
+          next = %{next | entries: Map.put(next.entries, next.seq, txn)}
+          fanout(next, txn)
+          fanout_canonical(next, txn, [], [], state)
+          Logger.info("voxel_parameter_publication seq=#{next.seq} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0}")
+          {:reply, :ok, enable_liquid(state, next)}
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
+    end
   end
 
   defp validate_damage_catalog(state) do

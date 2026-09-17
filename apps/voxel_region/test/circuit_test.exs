@@ -20,6 +20,25 @@ defmodule VoxelRegion.CircuitTest do
   end
   defp air(_p,s),do: {nil,s}
 
+  @tag :phase_coverage
+  test "矿石目录失导保留设备余能，普通加工铜替换返回线恢复" do
+    {slots,damage,catalog}=fixture()
+    catalog=put_in(catalog.materials[24],catalog.materials[16])
+    catalog=put_in(catalog.materials[16]["electrical_conductivity"],0.0)
+    stopped=Circuit.plan(slots,damage,catalog,nil,&air/2,0.5)
+    assert stopped.outputs[1].remaining_j==6.0
+    assert stopped.outputs[1].power_w==0.0
+    assert stopped.outputs[3].power_w==0.0
+    replaced=Map.new(slots,fn
+      {{1,_,_}=slot,{id,16}}->{slot,{id,24}}
+      item->item
+    end)
+    running=Circuit.plan(replaced,damage,catalog,nil,&air/2,0.1)
+    assert running.outputs[1].remaining_j<6.0
+    assert running.outputs[3].power_w>0.0
+    assert damage[{3,1}].material==16
+  end
+
   test "跨区线端点串联与光热电能同口径，有限能源截断步长" do
     {slots,damage,catalog}=fixture()
     result=Circuit.plan(slots,damage,catalog,nil,&air/2,1.0)
@@ -56,5 +75,36 @@ defmodule VoxelRegion.CircuitTest do
     r=Circuit.plan(slots,damage,catalog,nil,sample,0.1)
     assert r.outputs[3].power_w>1.0
     assert r.powers[{0,{0,0,512}}]>0
+  end
+
+  test "有限电源驱动冷板，吸热与热端排放闭合；最低温度与断电停止" do
+    {slots,damage,catalog}=fixture()
+    catalog=put_in(catalog.tools[5],%{"circuit_resistance_ohm"=>12.0,"circuit_voltage_v"=>0.0,
+      "circuit_light_fraction"=>0.0,"circuit_cooling_cop"=>2.0,"circuit_min_kelvin"=>250.0})
+    catalog=put_in(catalog.materials[16]["heat_capacity_per_macro"],3.45e6)
+    catalog=put_in(catalog.attachments["material_units_per_micro"],4096)
+    catalog=put_in(catalog.attachments["face_units"],64)
+    damage=put_in(damage[{3,3}].circuit.kind,5)
+    state=%{thermal: %{config: %{"ambient_kelvin"=>293.15}}}
+    r=Circuit.plan(slots,damage,catalog,state,&air/2,0.5)
+    assert r.duration==0.05
+    assert r.powers[{4,{1,{2,8,511}}}]<0
+    assert r.outputs[1].remaining_j<6.0
+    assert_in_delta r.cooling_j,2*r.outputs[3].power_w*r.duration,1.0e-9
+    assert_in_delta r.rejected_j,r.cooling_j+r.outputs[3].power_w*r.duration,1.0e-9
+    assert_in_delta Enum.sum(Map.values(r.powers))*r.duration+r.rejected_j,r.supplied_j,1.0e-8
+    t=Attachments.identity({0,1,{2,8,511}},{3,16}) |> Map.put(:granularity,4)
+    cold=Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:temperature_kelvin,250.0))
+    for d<-[cold,put_in(damage[{3,1}].circuit.remaining_j,0.0),put_in(damage[{3,2}].circuit.closed,false)] do
+      stopped=Circuit.plan(slots,d,catalog,state,&air/2,0.5)
+      assert stopped.cooling_j==0.0
+      assert stopped.supplied_j==0.0
+      assert stopped.duration==0.5
+    end
+    warm=Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:temperature_kelvin,250.001))
+    limited=Circuit.plan(slots,warm,catalog,state,&air/2,0.5)
+    capacity=catalog.materials[16]["heat_capacity_per_macro"]*VoxelRegion.ThermalAttachments.volume({0,1,{2,8,511}},catalog)
+    assert limited.cooling_j<=capacity*0.001+1.0e-9
+    assert_in_delta Enum.sum(Map.values(limited.powers))*limited.duration+limited.rejected_j,limited.supplied_j,1.0e-8
   end
 end

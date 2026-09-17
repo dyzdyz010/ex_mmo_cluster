@@ -15,13 +15,13 @@ defmodule MmoContracts.CombustionWireTest do
     IO.iodata_to_binary(packet)
   end
 
-  test "B7 Hello11 接纳，旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 11
-    hello = %Session.Hello{protocol_version: 11, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "B7 Hello13 接纳，旧 Hello 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 13
+    hello = %Session.Hello{protocol_version: 13, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 11::16, tail::binary>> = packet
-    for version <- 1..10 do
+    <<prefix::binary-size(9), 13::16, tail::binary>> = packet
+    for version <- 1..12 do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<version::16>> <> tail)
     end
   end

@@ -11,12 +11,12 @@ defmodule MmoContracts.LiquidWireTest do
     {%Payload{region: {-1,8,0},cells: head<><<21,0>><>tail,liquid_units: %{index=>quantity}},index}
   end
 
-  test "B7 Hello11 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version()==11
-    hello=%Session.Hello{protocol_version: 11,kernel_id: <<1::256>>,profile_id: <<2::256>>}
+  test "B7 Hello13 and explicit scoop/pour retain the production envelope" do
+    assert Session.Codec.protocol_version()==13
+    hello=%Session.Hello{protocol_version: 13,kernel_id: <<1::256>>,profile_id: <<2::256>>}
     {:ok,packet}=Session.Codec.encode(hello)
     assert {:ok,^hello}=Session.Codec.decode(packet)
-    <<prefix::binary-size(9),11::16,tail::binary>>=packet
+    <<prefix::binary-size(9),13::16,tail::binary>>=packet
     assert {:error,:invalid_m1_message}=Session.Codec.decode(prefix<><<10::16>><>tail)
     for action <- [2,3] do
       wire=<<0x7F,19::64,7::32,1::64,action,-1::signed-32,542::signed-32,3::signed-32,11::16,21::16>>
@@ -49,6 +49,18 @@ defmodule MmoContracts.LiquidWireTest do
     assert {:error,:invalid_payload}=Payload.decode(Voxel.Codec.encode_payload(0,p.region,48,9,raw,9))
   end
 
+  test "VXRB承载Snow Basalt Lava有限量，旧版本不能重解释其后缀" do
+    {p,index}=water(128)
+    <<head::binary-size(index*2),_::16,tail::binary>>=p.cells
+    for material <- [4,13,22] do
+      payload=%{p | cells: head<><<material::little-16>><>tail}
+      packet=Payload.encode(payload,%{},49,9)
+      assert {:ok,%{version: 11},raw}=Voxel.Codec.decode_payload_body(packet)
+      assert {:ok,%{liquid_units: %{^index=>128},format_version: 11}}=Payload.decode(packet)
+      assert {:error,:invalid_payload}=Payload.decode(Voxel.Codec.encode_payload(0,p.region,49,9,raw,10))
+    end
+  end
+
   test "legacy water retains implicit full occupancy and quantity records reject impossible shapes" do
     {payload,index}=water(128)
     assert {:ok,%{format_version: 4,liquid_units: %{}}}=Payload.decode(Payload.encode(%{payload|liquid_units: %{}},%{},47,9))
@@ -59,7 +71,7 @@ defmodule MmoContracts.LiquidWireTest do
     assert {:error,:invalid_payload}=Payload.decode(packet)
   end
 
-  test "Hello11 codec still carries B6 combustion after thermal state" do
+  test "Hello13 codec still carries B6 combustion after thermal state" do
     row=%{request_id: 0,seq: 7,micro: {336,4112,504},granularity: 0,incarnation: 2,owner: {0,0},
       material: 19,hp: 90.0,max_hp: 100.0,defense: 0.0,digest: <<0::256>>,flags: 0,
       temperature_kelvin: 307.0,burning: false,remaining_fuel_j: 11000.0,power_w: 0.0}

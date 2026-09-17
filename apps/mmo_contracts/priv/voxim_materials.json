@@ -118,5 +118,10 @@
     "id": 23,
     "name": "glowstone",
     "blocks_movement": true
+  },
+  {
+    "id": 24,
+    "name": "copper",
+    "blocks_movement": true
   }
 ]

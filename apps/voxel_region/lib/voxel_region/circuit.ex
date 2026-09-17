@@ -18,6 +18,7 @@ defmodule VoxelRegion.Circuit do
   def plan(slots,damage,catalog,state,at,duration) do
     started=System.monotonic_time(:microsecond)
     devices=devices(damage)
+    duration=if Enum.any?(devices,fn {_,{_,c}}->c.kind==5 end),do: min(duration,0.05),else: duration
     grouped=Enum.group_by(slots,fn {_,{id,_}}->id end,fn {slot,_}->slot end)
     {edges,faces}=Enum.reduce(devices,{[],MapSet.new()},fn {id,{target,c}},{edges,faces}->
       footprint=Attachments.footprint(0,rem(elem(target.owner,1),3),c.anchor,c.size)
@@ -27,8 +28,10 @@ defmodule VoxelRegion.Circuit do
       edge=%{a: {:point,c.anchor},b: {:point,offset(c.anchor,u,c.size)},r: tool["circuit_resistance_ohm"],
         emf: if(c.kind==1 and c.remaining_j>0,do: tool["circuit_voltage_v"],else: 0.0),
         device: id,heat: for(s<-footprint,do: {VoxelRegion.ThermalAttachments.key(s),1.0/length(footprint)}),
-        light: tool["circuit_light_fraction"]}
-      conducting=intact and c.closed and (c.kind != 1 or c.remaining_j>0)
+        light: tool["circuit_light_fraction"],
+        cooling: if(c.kind==5,do: cooling_limits(footprint,id,target.material,tool,damage,catalog,state,duration),else: %{})}
+      conducting=intact and c.closed and (c.kind != 1 or c.remaining_j>0) and
+        (c.kind != 5 or Enum.all?(edge.cooling,fn {_,{limit,_}}->limit>0 end))
       {if(conducting,do: [edge|edges],else: edges),Enum.reduce(footprint,faces,&MapSet.put(&2,&1))}
     end)
     section=catalog.attachments["line_section_m2"]
@@ -72,21 +75,29 @@ defmodule VoxelRegion.Circuit do
       intact=MapSet.new(Map.get(grouped,id,[]))==MapSet.new(Attachments.footprint(0,rem(elem(t.owner,1),3),c.anchor,c.size))
       {id,%{c | voltage_v: 0.0,current_a: 0.0,power_w: 0.0,fault: if(intact,do: 0,else: 1)}}
     end)
-    {outputs,powers,source_w,light_w}=Enum.zip(edges,result.currents) |> Enum.with_index() |> Enum.reduce({reset,%{},%{},0.0},fn {{e,i},index},{out,heat,sources,light}->
+    {outputs,powers,source_w,light_w,cooling_w,rejected_w}=Enum.zip(edges,result.currents) |> Enum.with_index() |> Enum.reduce({reset,%{},%{},0.0,0.0,0.0},fn {{e,i},index},{out,heat,sources,light,cooling,rejected}->
       # 实跑开路残差约 8e-11 A；低于 1e-10 A 的消元舍入不作为供能。
       i=if abs(i)<1.0e-10,do: 0.0,else: i
       watts=i*i*e.r
       light_power=watts*e.light
-      heat=Enum.reduce(e.heat,heat,fn {key,weight},h->Map.update(h,key,(watts-light_power)*weight,&(&1+(watts-light_power)*weight)) end)
+      {heat,extracted}=Enum.reduce(e.heat,{heat,0.0},fn {key,weight},{h,extracted}->
+        q=case Map.get(e.cooling,key) do
+          nil -> (watts-light_power)*weight
+          {limit,cop} -> -min(limit,watts*weight*cop)
+        end
+        {Map.update(h,key,q,&(&1+q)),extracted+if(map_size(e.cooling)>0,do: -q,else: 0.0)}
+      end)
+      rejected=rejected+if(map_size(e.cooling)>0,do: watts+extracted,else: 0.0)
+      cooling=cooling+extracted
       if e.device do
         c=Map.fetch!(out,e.device)
         v=result.volts[e.a]-result.volts[e.b]
         power=if c.kind==1,do: max(0.0,-e.emf*i),else: watts
         c=%{c | voltage_v: v,current_a: abs(i),power_w: power,fault: if(MapSet.member?(result.faults,index),do: 2,else: 0)}
         sources=if c.kind==1 and power>0,do: Map.put(sources,e.device,power),else: sources
-        {Map.put(out,e.device,c),heat,sources,light+light_power}
+        {Map.put(out,e.device,c),heat,sources,light+light_power,cooling,rejected}
       else
-        {out,heat,sources,light+light_power}
+        {out,heat,sources,light+light_power,cooling,rejected}
       end
     end)
     done=Enum.reduce(source_w,duration,fn {id,power},dt->min(dt,outputs[id].remaining_j/power) end)
@@ -94,8 +105,21 @@ defmodule VoxelRegion.Circuit do
       if done==energy/power,do: 0.0,else: max(0.0,energy-power*done)
     end) end)
     %{duration: done,outputs: outputs,powers: Map.reject(powers,fn {_,w}->w==0.0 end),
-      supplied_j: Enum.sum(Map.values(source_w))*done,light_j: light_w*done,state: state,
+      supplied_j: Enum.sum(Map.values(source_w))*done,light_j: light_w*done,
+      cooling_j: cooling_w*done,rejected_j: rejected_w*done,state: state,
       nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
+  end
+
+  # 冷板从自身槽吸热，目标通过既有接触冷却；下限来自同一目录。
+  defp cooling_limits(slots,id,material,tool,damage,catalog,state,duration) do
+    Map.new(slots,fn slot->
+      target=Attachments.identity(slot,{id,material}) |> Map.put(:granularity,4)
+      row=Map.get(damage,Damage.key(target),%{})
+      temperature=Map.get(row,:temperature_kelvin,state.thermal.config["ambient_kelvin"])
+      capacity=catalog.materials[material]["heat_capacity_per_macro"]*VoxelRegion.ThermalAttachments.volume(slot,catalog)
+      {VoxelRegion.ThermalAttachments.key(slot),
+        {capacity*max(0.0,temperature-tool["circuit_min_kelvin"])/duration,tool["circuit_cooling_cop"]}}
+    end)
   end
 
   defp solid_edges([],_,edges,solids,_catalog,state,_at),do: {edges,solids,state}
@@ -131,7 +155,7 @@ defmodule VoxelRegion.Circuit do
     end)
     solid_edges(queue,seen,edges,solids,catalog,state,at)
   end
-  defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,device: nil,heat: heat,light: 0.0}
+  defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,device: nil,heat: heat,light: 0.0,cooling: %{}}
   defp thermal_target(%{granularity: 2}=t),do: %{t | granularity: 1}
   defp thermal_target(t),do: t
   defp size(%{granularity: 0}),do: 1.0

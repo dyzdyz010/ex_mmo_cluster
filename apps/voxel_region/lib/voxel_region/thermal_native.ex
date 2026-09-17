@@ -6,7 +6,7 @@ defmodule VoxelRegion.ThermalNative do
   def batch(_nodes, _edges, _ambient, _exchange, _tolerance, _dt, _steps),
     do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc "按真实体积及接触导热系数选择稳定步长，返回已演进秒数；活动前沿变化即返回 World。"
+  @doc "按真实体积及接触选择稳定步长；新热前沿立即返回，已激活域由 World 在提交批末收缩。"
   def advance(_nodes, _contacts, _ambient, _exchange, _tolerance, _duration),
     do: :erlang.nif_error(:nif_not_loaded)
 end

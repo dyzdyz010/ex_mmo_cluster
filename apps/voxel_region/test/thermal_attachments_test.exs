@@ -7,16 +7,30 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     attachments: %{"material_units_per_micro" => 4096,"face_units" => 64,"edge_units" => 1,
       "face_thickness_m" => 1/512,"line_section_m2" => 1/(512*512)}}
 
-  defp geometry(slots, cells) do
+  defp geometry(slots, cells,volume \\ fn _,_ -> 1.0 end) do
     at=fn p,s ->
       cell=p |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,8)) |> List.to_tuple()
       t=if cell in cells,do: %{micro: cell |> Tuple.to_list() |> Enum.map(&(&1*8)) |> List.to_tuple(),
         granularity: 0,incarnation: 1,owner: {0,0},material: 19}
       {t,s}
     end
-    nodes=Enum.flat_map(cells,fn cell -> elem(ThermalGeometry.cell(cell,%{},@catalog.materials,nil,at),0) end) |> Map.new()
-    {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,nil,at)
+    nodes=Enum.flat_map(cells,fn cell -> elem(ThermalGeometry.cell(cell,%{},@catalog.materials,nil,at,volume),0) end) |> Map.new()
+    {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,nil,at,volume)
     nodes
+  end
+
+  test "薄水底板半程按高度，高侧板和顶部留空不传热，侧壁只算浸没面积" do
+    bottom={0,1,{0,0,0}}; top={0,1,{0,8,0}}
+    low_side={0,0,{0,0,0}}; high_side={0,0,{0,1,0}}
+    slots=Map.new(Enum.with_index([bottom,top,low_side,high_side],fn s,i->{s,{i+1,19}} end))
+    nodes=geometry(slots,[{0,0,0}],fn _,_->1/512 end)
+    host={0,{0,0,0}}
+    bottom_g=nodes[ThermalAttachments.key(bottom)].contacts |> List.keyfind(host,0) |> elem(1)
+    assert_in_delta bottom_g,(1/64)/(1/1024/10+1/1024/10),1.0e-9
+    side_g=nodes[ThermalAttachments.key(low_side)].contacts |> List.keyfind(host,0) |> elem(1)
+    assert_in_delta side_g,(1/8/512)/(1/1024/10+0.5/10),1.0e-9
+    for s<-[top,high_side],do: refute(List.keymember?(nodes[ThermalAttachments.key(s)].contacts,host,0))
+    assert_in_delta nodes[host].capacity,1000/512,1.0e-12
   end
 
   test "每个槽保持实际体积；同地址面线与宿主独立，跨区连续线只接触一次" do

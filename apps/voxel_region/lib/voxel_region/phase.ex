@@ -1,18 +1,21 @@
 defmodule VoxelRegion.Phase do
   @moduledoc """
-  Global system: finite Water/Ice enthalpy and integrity transport.
-  Energy zero is Ice at the published transition temperature. The latent interval
-  stores energy at that temperature; canonical material changes only when the
-  entire cell finishes changing phase. No quantity is inferred from geometry.
-  Integrity is an extensive quantity (inventory quanta times retained HP ratio),
-  so mixing, carrying, and refreezing cannot repair damaged ice for free.
+  全局系统功能：水/冰当量（含雪）与玄武岩/熔岩的有限焓和完整度搬运。
+  各相族以凝固相在目录转变温度处为零焓；潜热段恒温，整格完成后换材料。
+  完整度为数量乘HP比例的广延量，流动、携带与再凝固不会免费修复。
   """
 
   def enabled?(material), do: Map.has_key?(material, "phase_peer_material_id")
 
+  @doc "当前已实现的液态身份；相变能力仍由目录字段接纳。"
+  def liquid?(material), do: material in [21,22]
+
+  @doc "本轮明确支持的有向相变；雪融水后只重新凝固为冰。"
+  def valid_pair?(material, peer), do: {material,peer} in [{4,21},{20,21},{21,20},{13,22},{22,13}]
+
   def energy(row, volume, material, ambient) do
     Map.get_lazy(row, :phase_energy_j, fn ->
-      latent = if row.material == 21, do: material["latent_heat_per_macro_j"], else: 0.0
+      latent = if liquid?(row.material), do: material["latent_heat_per_macro_j"], else: 0.0
       volume * (latent + material["heat_capacity_per_macro"] *
         (Map.get(row, :temperature_kelvin, ambient) - material["phase_transition_kelvin"]))
     end)
@@ -20,7 +23,7 @@ defmodule VoxelRegion.Phase do
 
   def temperature(material, energy, volume, properties) do
     m = Map.fetch!(properties, material)
-    sensible = if material == 21,
+    sensible = if liquid?(material),
       do: max(0.0, energy - volume * m["latent_heat_per_macro_j"]),
       else: min(0.0, energy)
     m["phase_transition_kelvin"] + sensible / (volume * m["heat_capacity_per_macro"])
@@ -29,14 +32,13 @@ defmodule VoxelRegion.Phase do
   def material(material, energy, volume, properties) do
     latent = volume * properties[material]["latent_heat_per_macro_j"]
     cond do
-      material == 21 and energy <= 0.0 -> 20
-      material == 20 and energy >= latent -> 21
+      liquid?(material) and energy <= 0.0 -> properties[material]["phase_peer_material_id"]
+      not liquid?(material) and energy >= latent -> properties[material]["phase_peer_material_id"]
       true -> material
     end
   end
 
-  # Same synchronous transfers as the quantity kernel, with source values frozen
-  # at each stage. Moving through two stages must not move either field twice.
+  # 与数量内核共用同步通量，每阶段冻结来源，不能在两个阶段重复转移。
   def transport(values, quantities, transfers) do
     Enum.reduce(transfers, values, fn {from, to, units}, out ->
       {energy, integrity} = Map.fetch!(values, from)

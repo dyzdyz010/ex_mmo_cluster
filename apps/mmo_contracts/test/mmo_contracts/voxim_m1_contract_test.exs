@@ -19,7 +19,7 @@ defmodule MmoContracts.VoximM1ContractTest do
   end
 
   # 历史黄金样本保持原字节；当前会话显式升级 Hello，其他消息仍逐字节相等。
-  defp current(%Session.Hello{}=value),do: %{value | protocol_version: 11}
+  defp current(%Session.Hello{}=value),do: %{value | protocol_version: 12}
   defp current(value),do: value
 
   test "M1 rejects an unsupported envelope version at the network boundary" do
@@ -258,7 +258,8 @@ defmodule MmoContracts.VoximM1ContractTest do
     assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<8::16>>))
     assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<9::16>>))
     assert {:error,:invalid_m1_message}=Codec.decode(replace(hello,9,<<10::16>>))
-    assert {:ok,%Session.Hello{protocol_version: 11}}=Codec.decode(hello)
+    assert {:error,:invalid_m1_message}=Codec.decode(replace(hello,9,<<11::16>>))
+    assert {:ok,%Session.Hello{protocol_version: 12}}=Codec.decode(hello)
     {1, _, join} = packet("join")
     assert {:error, :invalid_m1_message} = Codec.decode(replace(join, 19, <<255>>))
   end

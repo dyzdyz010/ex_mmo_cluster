@@ -86,13 +86,16 @@ defmodule VoxelRegion.Damage do
       Enum.all?(tools, fn {_, t} ->
         case t["action"] do
           "circuit.install" ->
-            t["circuit_kind"] in 1..4 and is_number(t["circuit_resistance_ohm"]) and
+            t["circuit_kind"] in 1..5 and is_number(t["circuit_resistance_ohm"]) and
               t["circuit_resistance_ohm"] > 0 and
               is_number(t["circuit_voltage_v"]) and t["circuit_voltage_v"] >= 0 and
               (t["circuit_kind"] != 1 or t["circuit_voltage_v"] > 0) and
               is_number(t["circuit_light_fraction"]) and t["circuit_light_fraction"] >= 0 and
               t["circuit_light_fraction"] <= 1 and
-              (t["circuit_kind"] == 3 or t["circuit_light_fraction"] == 0)
+              (t["circuit_kind"] == 3 or t["circuit_light_fraction"] == 0) and
+              (t["circuit_kind"] != 5 or
+                (is_number(t["circuit_cooling_cop"]) and t["circuit_cooling_cop"] > 0 and
+                 is_number(t["circuit_min_kelvin"]) and t["circuit_min_kelvin"] > 0))
 
           "circuit.feed" ->
             Map.has_key?(materials, t["fuel_material_id"]) and t["fuel_material_id"] != 0 and
@@ -135,9 +138,9 @@ defmodule VoxelRegion.Damage do
       end)
 
     for {id, m} <- materials, Map.has_key?(m, "phase_peer_material_id") do
-      true = {id, m["phase_peer_material_id"]} in [{20,21},{21,20}]
+      true = VoxelRegion.Phase.valid_pair?(id, m["phase_peer_material_id"])
       peer = Map.fetch!(materials,m["phase_peer_material_id"])
-      true = peer["phase_peer_material_id"] == id
+      true = peer["phase_peer_material_id"] == if(id==4,do: 20,else: id)
       for key <- ~w(phase_transition_kelvin latent_heat_per_macro_j) do
         true = is_number(m[key]) and m[key] > 0 and m[key] == peer[key]
       end

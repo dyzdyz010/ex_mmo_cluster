@@ -1488,16 +1488,19 @@ defmodule VoxelRegion.DamageWorldTest do
     assert World.stats(w).attachment_slots==0
   end
 
+  for load_kind <- [3,5] do
+  @tag :cold_coverage
   @tag :b5
   @tag :physical_units
-  test "电路安装投料开关与热结算同笔恢复，重新安装和旧身份不得补充能源",c do
+  test "设备kind#{load_kind}安装投料开关与热结算同笔恢复，重新安装和旧身份不得补充能源",c do
+    load_kind=unquote(load_kind)
     r=b4_funded(c)
     data=Jason.decode!(File.read!(c.catalog))
     materials=Enum.map(data["materials"],fn m->if m["material_id"]==19,do: Map.merge(m,%{
-      "heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>1000.0,"electrical_conductivity"=>58.0e6}),else: m end)
-    devices=for {id,kind,resistance,voltage,light}<-[{3,1,1.0,12.0,0.0},{4,2,0.01,0.0,0.0},{5,3,12.0,0.0,0.2}],do:
+      "heat_capacity_per_macro"=>if(load_kind==5,do: 1.0e7,else: 1000.0),"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>1000.0,"electrical_conductivity"=>58.0e6}),else: m end)
+    devices=for {id,kind,resistance,voltage,light}<-[{3,1,1.0,12.0,0.0},{4,2,0.01,0.0,0.0},{5,load_kind,12.0,0.0,if(load_kind==3,do: 0.2,else: 0.0)}],do:
       %{"id"=>"device#{id}","tool_id"=>id,"action"=>"circuit.install","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5,
-        "circuit_kind"=>kind,"circuit_resistance_ohm"=>resistance,"circuit_voltage_v"=>voltage,"circuit_light_fraction"=>light}
+        "circuit_kind"=>kind,"circuit_resistance_ohm"=>resistance,"circuit_voltage_v"=>voltage,"circuit_light_fraction"=>light,"circuit_cooling_cop"=>2.0,"circuit_min_kelvin"=>250.0}
     toggle=%{"id"=>"toggle","tool_id"=>7,"action"=>"circuit.toggle","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5}
     feed=Map.merge(toggle,%{"id"=>"feed","tool_id"=>8,"action"=>"circuit.feed","fuel_material_id"=>19,"fuel_units"=>16,"circuit_energy_j"=>60.0})
     data=%{data | "materials"=>materials,"tools"=>data["tools"]++devices++[toggle,feed],
@@ -1528,8 +1531,13 @@ defmodule VoxelRegion.DamageWorldTest do
     warm=b3_tick(c.w)
     assert warm.damage[{3,Enum.at(ids,2)}].circuit.power_w>1.0
     assert warm.thermal.circuit_supplied_j>0
-    assert_in_delta warm.thermal.circuit_supplied_j,warm.thermal.supplied_j+warm.thermal.circuit_light_j,1.0e-7
+    assert_in_delta warm.thermal.circuit_supplied_j,warm.thermal.supplied_j+warm.thermal.circuit_light_j+warm.thermal.circuit_rejected_j,1.0e-7
     assert Enum.any?(warm.damage,fn {_,t}->t.granularity==4 and t.temperature_kelvin>293.15 end)
+    if load_kind==5 do
+      assert warm.thermal.circuit_cooling_j>0
+      assert warm.thermal.circuit_rejected_j>warm.thermal.circuit_cooling_j
+      assert Enum.any?(warm.damage,fn {_,t}->t.granularity==4 and t.temperature_kelvin<293.15 end)
+    end
     assert {:ok,_}=use.(c.w,1,7,46)
     off=b3_tick(c.w)
     assert_in_delta off.damage[{3,Enum.at(ids,2)}].circuit.power_w,0.0,1.0e-9
@@ -1551,7 +1559,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert depleted.damage[{3,hd(ids)}].circuit.remaining_j==0.0
     assert depleted.damage[{3,Enum.at(ids,2)}].circuit.power_w==0.0
     assert_in_delta depleted.thermal.circuit_supplied_j,60.0,1.0e-7
-    assert_in_delta depleted.thermal.circuit_supplied_j,depleted.thermal.supplied_j+depleted.thermal.circuit_light_j,1.0e-7
+    assert_in_delta depleted.thermal.circuit_supplied_j,depleted.thermal.supplied_j+depleted.thermal.circuit_light_j+depleted.thermal.circuit_rejected_j,1.0e-7
     assert {:ok,_}=use.(w,0,8,48)
     funded=balance(w,1001).balance
     # 删除源的最后支撑会丢弃储能，既不返燃料，也不把储能转成热。
@@ -1566,6 +1574,7 @@ defmodule VoxelRegion.DamageWorldTest do
       action: 1,tool_id: 3,request_id: 50,client_intent_seq: 50})
     assert {:ok,_}=World.tool_intent(w,Map.merge(c.actor,%{received_us: 50_000_000,clock_node: node()}),request)
     assert :sys.get_state(w).damage[{3,new_id}].circuit.remaining_j==0.0
+  end
   end
 
   @tag :b5

@@ -46,7 +46,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,material: 21,
         tool_id: if(action==2,do: 11,else: 12),coord: cell})
   end
-  defp row(w,cell),do: Enum.find(Map.values(:sys.get_state(w).damage),&(Damage.macro(&1)==cell))
+  defp row(w,cell),do: Enum.find(Map.values(:sys.get_state(w).damage),&(&1.granularity==0 and Damage.macro(&1)==cell))
   defp operate(c,tool,seq,cell \\ {63,1,2},action \\ 1) do
     eye=:sys.get_state(c.actor.player).eye
     delta=Enum.zip_with(Tuple.to_list(cell),Tuple.to_list(eye),&(&1+0.0625-&2))
@@ -239,6 +239,63 @@ defmodule VoxelRegion.PhaseWorldTest do
       do: assert(Map.fetch!(before,key)==Map.fetch!(after_failure,key))
   end
 
+  @tag :phase_coverage
+  test "新增雪和玄武岩由同一作者事务初始化，付费熔岩搬运与冷恢复不补焓",c do
+    data=Jason.decode!(File.read!(c.catalog))
+    data=Map.update!(data,"materials",fn materials->Enum.map(materials,fn m->
+      case m["material_id"] do
+        4 -> Map.merge(m,Map.take(Enum.find(materials,&(&1["material_id"]==20)),
+          ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin)))
+        id when id in [13,22] -> Map.merge(m,%{"phase_peer_material_id"=>if(id==13,do: 22,else: 13),
+          "phase_transition_kelvin"=>1268.15,"latent_heat_per_macro_j"=>10_150_000.0,
+          "heat_capacity_per_macro"=>31_900.0,"thermal_conductivity"=>23.88,"heat_resistance_kelvin"=>1_000_000.0})
+        _ -> m
+      end
+    end) end)
+    File.write!(c.catalog,Jason.encode!(data))
+    assert :ok=World.publish_parameters(c.w,c.catalog,:sys.get_state(c.w).properties.digest)
+    # 只测试的生产可用材料清单；不向库存注入新相族。
+    :sys.replace_state(c.w,&%{&1 | production_materials: [4,13,15,20,21,22]})
+    deposits=Path.join(c.root,"phase-deposits.json")
+    File.write!(deposits,Jason.encode!(%{deposits: [%{macro: [63,1,2],material: 13},%{macro: [65,1,2],material: 4}]}))
+    assert {:ok,_}=World.liquid_experiment(c.w,deposits)
+    initial=row(c.w,{63,1,2})
+    assert initial.material==13 and initial.hp==100.0
+    assert_in_delta initial.phase_energy_j,-31_102_500.0,1.0e-6
+    assert :sys.get_state(c.w).liquid_units[{65,1,2}]==@capacity
+    assert {:ok,_}=operate(c,14,1,{63,1,2})
+    lava=row(c.w,{63,1,2})
+    assert lava.material==22
+    actor=Map.merge(c.actor,%{received_us: 2_000_000,clock_node: node()})
+    assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 2,client_intent_seq: 2,
+      logical_scene_id: 1,action: 2,material: 22,tool_id: 11,coord: {63,1,2}})
+    saved=:sys.get_state(c.w)
+    assert saved.material_balances[{1001,22}]==@quarter
+    assert_in_delta elem(saved.phase_inventory[{1001,22}],0),lava.phase_energy_j/4,1.0e-6
+    assert {:ok,_}=operate(c,14,3,{65,1,2})
+    assert row(c.w,{65,1,2}).material==21
+    for seq<-4..9,do: assert({:ok,_}=operate(c,13,seq,{65,1,2}))
+    assert row(c.w,{65,1,2}).material==20
+    assert :sys.get_state(c.w).liquid_units[{65,1,2}]==@capacity
+    # 普通倒入另一格并凝固，量与携带焓沿同一库存SSOT结算。
+    actor=Map.merge(c.actor,%{received_us: 10_000_000,clock_node: node()})
+    assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 10,client_intent_seq: 10,
+      logical_scene_id: 1,action: 3,material: 22,tool_id: 12,coord: {64,1,2}})
+    assert row(c.w,{64,1,2}).material==22
+    assert_in_delta row(c.w,{64,1,2}).phase_energy_j,lava.phase_energy_j/4,1.0e-6
+    assert {:ok,_}=operate(c,13,11,{64,1,2})
+    assert row(c.w,{64,1,2}).material==13
+    assert :sys.get_state(c.w).liquid_units[{64,1,2}]==@quarter
+    saved=:sys.get_state(c.w)
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,Keyword.put(c.opts,:production_materials,[4,13,15,20,21,22])})
+    recovered=:sys.get_state(w)
+    assert recovered.phase_inventory==saved.phase_inventory
+    assert recovered.liquid_units==saved.liquid_units
+    assert recovered.thermal.phase_authored_units==2*@capacity
+  end
+
   test "fully broken Ice stays finite carried fragments and cannot build a zero-HP collider",c do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
     freeze(c,2)
@@ -305,5 +362,82 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert next.liquid_units==%{{63,1,2}=>@quarter}
     assert_in_delta water.phase_energy_j,83_500_000.0-1.0+next.thermal.environment_j,0.01
     assert total(c.w)==@capacity
+  end
+
+  @tag :cold_coverage
+  test "普通冷板投料通过真实接触冻结水，不调用相变工具或改写目标温度",c do
+    # 只测试：小样数量与有限电源由夹具给出；水的焓只由正常倒水/接触生成。
+    data=Jason.decode!(File.read!(c.catalog))
+    materials=Enum.map(data["materials"],fn m->
+      case m["material_id"] do
+        11 -> Map.merge(m,%{"heat_capacity_per_macro"=>21360.0,"thermal_conductivity"=>25.0,
+          "heat_resistance_kelvin"=>1000.0})
+        16 -> Map.merge(m,%{"heat_capacity_per_macro"=>34500.0,"thermal_conductivity"=>4000.0,
+          "heat_resistance_kelvin"=>1000.0,"electrical_conductivity"=>58.0e6})
+        _ -> m
+      end
+    end)
+    devices=for {id,kind,r,v}<-[{15,1,1.0,240.0},{16,2,0.01,0.0},{17,5,1.0,0.0}],do:
+      %{"tool_id"=>id,"id"=>"cold_test_#{id}","action"=>"circuit.install","power"=>1.0,
+        "range_macro"=>8.0,"interval_seconds"=>0.1,"circuit_kind"=>kind,
+        "circuit_resistance_ohm"=>r,"circuit_voltage_v"=>v,"circuit_light_fraction"=>0.0,
+        "circuit_cooling_cop"=>3.0,"circuit_min_kelvin"=>250.0}
+    tools=Enum.map(data["tools"],fn t->if t["tool_id"]==8,do: Map.merge(t,%{
+      "fuel_material_id"=>15,"fuel_units"=>4,"circuit_energy_j"=>6_250_000.0}),else: t end)
+    File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials,"tools"=>tools++devices}))
+    assert :ok=World.publish_properties(c.w,c.catalog)
+    :sys.replace_state(c.w,fn s->%{s | production_materials: [16|s.production_materials],
+      material_balances: Map.merge(s.material_balances,%{{1001,16}=>@capacity,{1001,15}=>32768,{1001,21}=>4096})} end)
+    assert {:ok,_}=World.apply_edits(c.w,for(x<-61..63,do: {{x,0,2},11}))
+    base=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,
+      kind: 0,axis: 1,size: 8,anchor: {488,8,16},id: 0,material: 16,tool_id: 1}
+    ids=for x<-61..63 do
+      assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{base | anchor: {x*8,8,16},request_id: x,client_intent_seq: x})
+      id
+    end
+    for {{axis,p},i}<-Enum.with_index([{2,{488,8,16}},{2,{512,8,16}},{0,{488,8,24}},{0,{496,8,24}},{0,{504,8,24}}]) do
+      assert {:ok,_}=World.attachment_intent(c.w,c.actor,%{base | kind: 1,axis: axis,anchor: p,request_id: 70+i,client_intent_seq: 70+i})
+    end
+    use=fn index,tool,seq->
+      id=Enum.at(ids,index)
+      request=%{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: 1,tool_id: tool,
+        direction: {0.0,-1.0,0.0},micro: {(61+index)*8,8,16},granularity: 3,
+        owner: {id,1},incarnation: id,material: 16}
+      World.tool_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request)
+    end
+    for index<-0..2,do: assert({:ok,_}=use.(index,15+index,80+index))
+    assert {:ok,_}=transfer(c,3,90,{63,1,2})
+    assert row(c.w,{63,1,2}).material==21
+    initial=row(c.w,{63,1,2}).phase_energy_j
+    assert_in_delta initial,815625.0,0.001
+    assert {:ok,_}=use.(0,8,91)
+    assert :sys.get_state(c.w).material_balances[{1001,15}]==16384
+    frozen=Enum.reduce_while(1..400,nil,fn tick,_->
+      # Let the real World timer advance. Manually injecting each commit also
+      # schedules another timer and creates an ever-growing test-only backlog.
+      receive do after 500 -> :ok end
+      state=:sys.get_state(c.w)
+      if tick<=10 or rem(tick,10)==0 do
+        source=Map.get(state.damage,{3,hd(ids)})
+        temperatures=for {_,r}<-state.damage,r.granularity==4 and r.incarnation==hd(ids),do: r.temperature_kelvin
+        IO.puts("COLD_PROGRESS #{inspect(%{tick: tick,water: Map.take(row(c.w,{63,1,2}),[:material,:temperature_kelvin,:phase_energy_j]),source: source && source.circuit,
+          source_max_kelvin: Enum.max(temperatures,fn->0 end),cooling_j: state.thermal.circuit_cooling_j})}")
+      end
+      if row(c.w,{63,1,2}).material==20,do: {:halt,state},else: {:cont,state}
+    end)
+    assert row(c.w,{63,1,2}).material==20
+    assert frozen.liquid_units==%{{63,1,2}=>4096}
+    assert row(c.w,{63,1,2}).hp==row(c.w,{63,1,2}).max_hp
+    assert frozen.thermal.circuit_cooling_j>initial
+    assert frozen.damage[{3,hd(ids)}].circuit.remaining_j<6_250_000.0
+    assert_in_delta frozen.thermal.supplied_j+frozen.thermal.circuit_rejected_j+
+      frozen.thermal.circuit_light_j,frozen.thermal.circuit_supplied_j,0.001
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    restored=:sys.get_state(w)
+    assert restored.damage==frozen.damage
+    assert restored.liquid_units==frozen.liquid_units
+    assert restored.thermal==frozen.thermal
   end
 end

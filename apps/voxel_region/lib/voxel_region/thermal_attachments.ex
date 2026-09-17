@@ -11,7 +11,7 @@ defmodule VoxelRegion.ThermalAttachments do
   def volume(slot,catalog),do: Attachments.units([slot],catalog)/(@micro*@micro*@micro*catalog.attachments["material_units_per_micro"])
 
   @doc "在当前权威固体摘要上加入面层／方截面线；at 只读取 canonical 占用。"
-  def add(nodes,slots,catalog,state,at) do
+  def add(nodes,slots,catalog,state,at,volume \\ fn _,_ -> 1.0 end) do
     thermal=Map.filter(slots,fn {_,{_,m}}->Map.has_key?(catalog.materials[m],"heat_capacity_per_macro") end)
     thickness=if map_size(thermal)>0,do: catalog.attachments["face_thickness_m"],else: 0.0
     width=if map_size(thermal)>0,do: :math.sqrt(catalog.attachments["line_section_m2"]),else: 0.0
@@ -31,7 +31,8 @@ defmodule VoxelRegion.ThermalAttachments do
         t=if t && t.granularity==2,do: %{t | granularity: 1},else: t
         {t,s}
       end)
-      all=host_contacts(all,slot,targets,thickness,width)
+      bounds=Enum.map(targets,fn target->if target,do: ThermalGeometry.bounds(target,volume.(s,target)) end)
+      all=host_contacts(all,slot,targets,bounds,thickness,width)
       {all,s}
     end)
     # 共边薄片／面线及共端点线段各生成一条热接触，和电连接语义无关。
@@ -50,23 +51,26 @@ defmodule VoxelRegion.ThermalAttachments do
     {nodes,state}
   end
 
-  defp host_contacts(nodes,slot,targets,t,w) do
+  defp host_contacts(nodes,slot,targets,bounds,t,w) do
     id=key(slot); kind=elem(slot,0)
-    area=if kind==0,do: @length*@length,else: w*@length
     distance=if kind==0,do: t/2,else: w/2
+    patches=Enum.map(bounds,fn box->if box,do: host_patches(slot,box,w),else: [] end)
     nodes=targets |> Enum.with_index() |> Enum.reduce(nodes,fn {target,index},all ->
       if target do
         other=ThermalGeometry.key(target)
+        contact=Enum.at(patches,index)
+        area=Enum.sum(for {a,_}<-contact,do: a)
         all=exposed(all,id,-area)
         if Map.has_key?(all,other) do
-          all=connect(all,id,other,area,distance,size(target)/2)
+          all=Enum.reduce(contact,all,fn {a,d},all->connect(all,id,other,a,distance,d) end)
           # 一侧为空气时，薄片替代该侧宿主暴露面；棱每象限覆盖两个半边。
           uncovered=if kind==0 do
-            if Enum.any?(targets,&is_nil/1),do: area,else: 0.0
+            other_area=Enum.at(patches,1-index) |> Enum.reduce(0.0,fn {a,_},sum->sum+a end)
+            max(0.0,area-other_area)
           else
             # 象限沿两个横轴的另一侧为空气时，对应半边才是原本暴露的宿主面。
             for peer<-[Bitwise.bxor(index,1),Bitwise.bxor(index,2)],reduce: 0.0 do
-              sum -> sum+if(Enum.at(targets,peer)==nil,do: area/2,else: 0.0)
+              sum -> sum+if(Enum.at(patches,peer)==[],do: area/2,else: 0.0)
             end
           end
           exposed(all,other,-uncovered)
@@ -80,7 +84,10 @@ defmodule VoxelRegion.ThermalAttachments do
     if kind==0 and Enum.all?(targets,&(&1!=nil)) do
       [a,b]=targets; ka=ThermalGeometry.key(a); kb=ThermalGeometry.key(b)
       if ka != kb and Map.has_key?(nodes,ka) and Map.has_key?(nodes,kb) do
-        g=conductance(nodes[ka],nodes[kb],area,size(a)/2,size(b)/2)
+        {area,da,db}=ThermalGeometry.contact(Enum.at(bounds,0),Enum.at(bounds,1),elem(slot,1))
+        # Only the slot-sized portion of the host/host face is replaced.
+        slot_area=patches |> Enum.map(fn ps->Enum.sum(for {a,_}<-ps,do: a) end) |> Enum.min()
+        g=conductance(nodes[ka],nodes[kb],min(area,slot_area),da,db)
         nodes |> subtract_contact(ka,kb,g) |> subtract_contact(kb,ka,g)
       else
         nodes
@@ -89,6 +96,29 @@ defmodule VoxelRegion.ThermalAttachments do
       nodes
     end
   end
+
+  defp host_patches({0,axis,p},bounds,_w) do
+    low=metres(p)
+    high=for a<-0..2,do: elem(low,a)+if(a==axis,do: 0.0,else: @length)
+    {area,d}=ThermalGeometry.surface_contact(bounds,axis,elem(low,axis),{low,List.to_tuple(high)})
+    if area>0,do: [{area,d}],else: []
+  end
+  defp host_patches({1,axis,p},{blo,bhi}=bounds,w) do
+    origin=metres(p)
+    # Each neighboring quadrant touches two half-width strips. Clip each strip
+    # against actual host bounds, including a finite Y-up liquid column.
+    for normal<-0..2,normal != axis,reduce: [] do
+      out->
+        tangent=3-axis-normal
+        sign=if elem(bhi,tangent)<=elem(origin,tangent),do: -1,else: 1
+        edge=elem(origin,tangent)+sign*w/2
+        low=origin |> put_elem(tangent,min(elem(origin,tangent),edge))
+        high=origin |> put_elem(tangent,max(elem(origin,tangent),edge)) |> put_elem(axis,elem(origin,axis)+@length)
+        {area,d}=ThermalGeometry.surface_contact({blo,bhi},normal,elem(origin,normal),{low,high})
+        if area>0,do: [{area,d}|out],else: out
+    end
+  end
+  defp metres(p),do: p |> Tuple.to_list() |> Enum.map(&(&1/@micro)) |> List.to_tuple()
 
   defp subtract_contact(nodes,a,b,g) do
     update_in(nodes[a].contacts,fn contacts ->
@@ -106,8 +136,6 @@ defmodule VoxelRegion.ThermalAttachments do
     ka=a.material["thermal_conductivity"]; kb=b.material["thermal_conductivity"]
     if ka==0 or kb==0,do: 0.0,else: area/(da/ka+db/kb)
   end
-  defp size(%{granularity: 0}),do: 1.0
-  defp size(_),do: @length
   defp offset(p,a,n),do: put_elem(p,a,elem(p,a)+n)
   defp ports({1,axis,p}),do: [{:edge,axis,p},{:point,p},{:point,offset(p,axis,1)}]
   defp ports({0,axis,p}) do

@@ -65,7 +65,7 @@ defmodule MmoContracts.Voxel.Payload do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
          {:ok, payload} <- decode_body(raw, header.version),
          true <- header.version != 6 or header.level >= 1,
-         true <- header.version not in [7,8,9,10] or header.level == 0,
+         true <- header.version not in [7,8,9,10,11] or header.level == 0,
          true <- Enum.all?(payload.attachments,fn {{_,_,anchor},_} ->
            Enum.all?(0..2,fn i -> x=elem(anchor,i); o=elem(header.region,i)*512; x>=o-8 and x<o+520 end) end),
          true <- header.version == payload.format_version,
@@ -89,7 +89,10 @@ defmodule MmoContracts.Voxel.Payload do
   def decode_body(raw, version) do
     with {:ok, {cells, extent, map_extent, row_start, col_x, faces, masks, fmi, maps}, tail} <- terrain_sections(raw),
          {:ok, refined, instances, structure, attachments, liquid_units, version} <- decode_tail(tail, version),
-         true <- Enum.all?(liquid_units, fn {index,_} -> (binary_part(cells,index*2,2) == <<21,0>> or (version == 10 and binary_part(cells,index*2,2) == <<20,0>>)) and not Map.has_key?(refined,index) end),
+         true <- Enum.all?(liquid_units, fn {index,_} ->
+           material=:binary.decode_unsigned(binary_part(cells,index*2,2),:little)
+           (material==21 or (version>=10 and material==20) or (version>=11 and material in [4,13,22])) and not Map.has_key?(refined,index)
+         end),
          {:ok, records} <- decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
       {:ok, %__MODULE__{cells: cells, map_extent: map_extent, records: records,
         fmi: fmi, maps: maps, refined: refined, instances: instances,
@@ -124,7 +127,7 @@ defmodule MmoContracts.Voxel.Payload do
   end
   # Global system: VXR9 carries finite L0 Water21 quantities with owned/ring occupancy.
   # VXR4-8 Water21 without a record means one full macro at the published inventory scale.
-  defp decode_tail(tail, version) when version in [9,10] do
+  defp decode_tail(tail, version) when version in [9,10,11] do
     with {:ok,refined,instances,tail} <- MmoContracts.Voxel.Refined.decode_prefix(tail,7),
          <<n::little-32, slots::binary-size(n*36), tail::binary>> <- tail,
          {:ok,attachments} <- MmoContracts.Voxel.Attachments.decode(<<n::little-32,slots::binary>>),
@@ -359,6 +362,7 @@ defmodule MmoContracts.Voxel.Payload do
 
   defp encode_with_details(terrain, p, seq, content_version) do
     version = cond do
+      Enum.any?(p.liquid_units,fn {i,_}->:binary.decode_unsigned(binary_part(terrain,4+i*2,2),:little) in [4,13,22] end) -> 11
       Enum.any?(p.liquid_units,fn {i,_}->binary_part(terrain,4+i*2,2)==<<20,0>> end) -> 10
       map_size(p.liquid_units) > 0 -> 9
       map_size(p.attachments) > 0 -> 8
@@ -368,7 +372,7 @@ defmodule MmoContracts.Voxel.Payload do
       true -> 4
     end
     raw = case version do
-      v when v in [9,10] -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined,p.instances,7) <> MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)
+      v when v in [9,10,11] -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined,p.instances,7) <> MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)
       8 -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined,p.instances,7) <> MmoContracts.Voxel.Attachments.encode(p.attachments)
       6 -> terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
       v when v in [5,7] -> terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances,v)

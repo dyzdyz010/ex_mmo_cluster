@@ -13,7 +13,7 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
     if steps == 0 || !dt.is_finite() || dt <= 0.0 || !ambient.is_finite()
         || !exchange.is_finite() || exchange < 0.0 || !tolerance.is_finite() || tolerance < 0.0
         || input.iter().any(|n| [n.0,n.1,n.2,n.3,n.4,n.5,n.6,n.7,n.8].iter().any(|x| !x.is_finite())
-            || n.3 <= 0.0 || n.5 <= 0.0 || n.4 < 0.0 || n.6 < 0.0 || n.7 < 0.0 || n.8 < 0.0)
+            || n.3 <= 0.0 || n.5 <= 0.0 || n.4 < 0.0 || n.6 < 0.0 || n.8 < 0.0)
         || edges.iter().any(|&(a,b)| a >= input.len() || b >= input.len() || a == b) {
         return Err(Error::BadArg);
     }
@@ -21,7 +21,7 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
         let ka=input[a].4; let kb=input[b].4;
         (a,b,if ka+kb==0.0 {0.0} else {2.0*ka*kb/(ka+kb)})
     }).collect();
-    Ok(evolve(&input, &contacts, ambient, exchange, tolerance, dt, steps))
+    Ok(evolve(&input, &contacts, ambient, exchange, tolerance, dt, steps, true))
 }
 
 // 有限体积显式离散：dt <= C / (接触导热系数之和 + 环境换热系数)，保留正系数。
@@ -31,7 +31,7 @@ fn advance(input: Vec<Input>, contacts: Vec<(usize,usize,f64)>, ambient: f64, ex
     if !duration.is_finite() || duration <= 0.0 || !ambient.is_finite()
         || !exchange.is_finite() || exchange < 0.0 || !tolerance.is_finite() || tolerance < 0.0
         || input.iter().any(|n| [n.0,n.1,n.2,n.3,n.4,n.5,n.6,n.7,n.8].iter().any(|v| !v.is_finite())
-            || n.3<=0.0 || n.5<=0.0 || n.6<0.0 || n.7<0.0 || n.8<0.0)
+            || n.3<=0.0 || n.5<=0.0 || n.6<0.0 || n.8<0.0)
         || contacts.iter().any(|&(a,b,g)| a>=input.len() || b>=input.len() || a==b || !g.is_finite() || g<0.0) {
         return Err(Error::BadArg);
     }
@@ -41,12 +41,12 @@ fn advance(input: Vec<Input>, contacts: Vec<(usize,usize,f64)>, ambient: f64, ex
         .map(|(n,g)| 0.45*n.3/g).fold(0.05_f64,f64::min);
     let steps=(duration/stable).ceil() as u32;
     let dt=duration/f64::from(steps);
-    let (done,result,supplied,environment)=evolve(&input,&contacts,ambient,exchange,tolerance,dt,steps);
+    let (done,result,supplied,environment)=evolve(&input,&contacts,ambient,exchange,tolerance,dt,steps,false);
     Ok((f64::from(done)*dt,result,supplied,environment))
 }
 
 fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], ambient: f64, exchange: f64,
-          tolerance: f64, dt: f64, steps: u32) -> (u32, Vec<Output>, f64, f64) {
+          tolerance: f64, dt: f64, steps: u32, return_on_cooling: bool) -> (u32, Vec<Output>, f64, f64) {
     let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
     let mut flow=vec![0.0; input.len()];
     let (mut supplied,mut environment)=(0.0,0.0);
@@ -59,16 +59,18 @@ fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], ambient: f64, exchang
         let mut changed_support=false;
         for (i,n) in input.iter().enumerate() {
             let (temperature,hp,remaining)=state[i];
-            let q=remaining.min(n.7*dt);
+            let used=remaining.min(n.7.abs()*dt);
+            let q=used*n.7.signum();
             let air=exchange*n.6*(ambient-temperature)*dt;
             let temperature=temperature+(flow[i]+q+air)/n.3;
             let hp=(hp-n.2*dt*(temperature/n.5-1.0).max(0.0)).max(0.0);
-            let remaining=remaining-q;
+            let remaining=remaining-used;
             state[i]=(temperature,hp,remaining);
             supplied+=q; environment+=air;
-            changed_support |= ((temperature-ambient).abs()>tolerance || remaining>0.0) != n.9;
+            let active=(temperature-ambient).abs()>tolerance || remaining>0.0;
+            changed_support |= if return_on_cooling { active != n.9 } else { active && !n.9 };
         }
-        // 活动前沿变化后交还 World：下一步必须重建真实六邻域，不能隔批才传播。
+        // 新热前沿立即交还 World 扩张六邻域；advance 的冷却域在提交批末统一收缩。
         if changed_support { return (step,state,supplied,environment); }
     }
     (steps,state,supplied,environment)

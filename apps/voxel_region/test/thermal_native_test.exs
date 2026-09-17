@@ -36,6 +36,13 @@ defmodule VoxelRegion.ThermalNativeTest do
     assert t>293.16
   end
 
+  test "有符号冷功率只消费有限吸热预算，不把负功率当无限源" do
+    node={293.15,100.0,100.0,100.0,1.0,1000.0,0.0,-200.0,5.0,true}
+    assert {_,[{t,100.0,0.0}],supplied,0.0}=ThermalNative.advance([node],[],293.15,0.0,0.01,0.1)
+    assert_in_delta t,293.10,1.0e-10
+    assert supplied == -5.0
+  end
+
   test "原生边界拒绝非法索引" do
     assert_raise ArgumentError,fn -> ThermalNative.batch([], [{0,1}],293.15,0.0,0.01,0.05,10) end
   end

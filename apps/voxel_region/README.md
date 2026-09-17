@@ -1,5 +1,57 @@
 # Voxim Region 真值
 
+2026-09-17 Hello13 接缝回归：Voxim `phase13-green-02` 的真实 World 普通付费熔化暴露负初焓
+减加抵消：Basalt 仍差约7e−9J未到相变终点。依照实际读取的
+[Goldberg 浮点说明（Oracle）](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html)
+关于舍入及消去的说明，工具预算足够时直接采用它原先定义的精确终点；不足时仍只加实际有限预算。
+未放宽相变比较、未给热模拟添加epsilon、未改作者参数。`phase13-green-03` 18项执行0失败，包含
+相族、World付费熔化/携带/日志恢复、16失导/24换线及新旧wire接缝；正式Hello13仍待构建部署和双端。
+
+2026-09-17 Hello13 材料相变扩展（Global system，实现中、未部署）：第二相族采用作者目录的
+Basalt13↔Lava22；Snow4融为Water21，再冻沿21→20，不产生Snow。依据与实际取得的USGS、
+PyFLOWGO论文/作者参数见相邻Voxim `Docs/R7/material-coverage.md`，沿其体积当量、单等效转变点
+及C/L缩放，不引入隐式密度。每相族以凝固相在T*处为零焓；有符号焓、量子和quantity×HP比例
+随真实通量和库存一起搬运。Lava只由普通付费加热Basalt形成，初始有限热量不会因搬运或恢复补满。
+现有phase_peer字段承载五个明确身份的转换，不扩成任意材料框架；两种液体各自沿同一有限通量算法推进，
+异种液体互不覆盖。新作者Snow/Basalt各1m³的初始量/焓/完整度单列新增资源账；旧水冰4194304量子单独核对。
+可观察面沿普通I/H、U/O、材料选择与既有CLI，记录材质/量/焓/完整度、phase_paid/supplied/unused、
+冷源remaining与circuit冷热环境账，以及事务时延/网络/内存。Hello12自动冷热先实跑，Hello13再匹配部署。
+
+2026-09-17 有限高度热几何（Global system，实现中）：宏格相变物料的数量比例决定 Y-up 底部柱高，
+同一个实占用盒派生容量、各法向半程、空面和接触重叠；World不再二次缩小容量。依据实际访问的
+[OpenStax University Physics Vol.2 §1.6](https://openstax.org/books/university-physics-volume-2/pages/1-6-mechanisms-of-heat-transfer)
+导热关系 `P=k*A*ΔT/d`，仍沿既有串联半程阻力求 `G=A/(da/ka+db/kb)`，不修改Water/Ice的k。
+薄水上方空隙和高侧壁不接触；附件底板/浸没侧面与微格接缝都按实际重叠裁剪，夹层仅替换其覆盖的宿主直接接触。
+4096/2097152宏格的水高1/512m，底部半程1/1024m；数量、焓、完整度仍只有既有World记录，几何可随数量改变丢弃重建。
+验证与实跑状态由材料路线维护，不以几何单测替代自动冻结或双端验收。
+
+隔离验证 `cold-geometry-red-01` 7项中2项预期失败；`cold-geometry-green-03` 38项实际执行、0失败，
+91.7秒内包括普通附件安装/有限投料、World自身定时推进4096量子Water自动凝固、数量/完整度/电冷热账和日志重启一致。
+用原Water/Ice导热率及当前发布CopperOre16/Stone11热参数，240V/1Ω有限源未先发生热破坏。
+`green-02` 的300秒超时为测试反复手动注入commit所叠加的定时链；新用例只读观察，不改运行时定时逻辑或延长超时。
+完整Hello12配套在Voxim `Saved/R7/MaterialExpansion/cold-build-01`，含25BEAM及同版NIF；目前仅编译，真实双端验收待完成。
+
+2026-09-17 材料覆盖增量（Global system，实现中、未实跑）：冷板复用普通附件设备安装、有限 DC 投料和开关，追加 kind5。
+依据 [OpenStax University Physics Vol.2 §4.3](https://openstax.org/books/university-physics-volume-2/pages/4-3-refrigerators-and-heat-pumps)
+的 COP=Qc/W、Qhot=Qc+W；冷端是实际附件槽，经既有接触向宿主传热，热端是已声明的简化环境库。
+目录工具作者 `circuit_cooling_cop` 与 `circuit_min_kelvin`，不在 C++ 写第二组数值。按最多50ms控制段重算，
+每槽吸热不超过本段开始时至最低温度的显热，临近下限时有效COP下降；到达下限整板断开，随后仅按实际接触/环境回暖。
+这不是完整制冷剂循环，也不模拟散热器几何；禁止把热端排放误记成目标供热。既有环境交换仍是进入世界为正，
+新增 `circuit_cooling_j`（冷端移热）、`circuit_rejected_j`（排向环境）和源 `remaining_j` 与同笔热事务恢复。
+热内核只增加带符号功率，余预算保持非负绝对量；World 的 `supplied_j` 是净节点供热，
+`circuit_supplied_j = 净节点电热 + 光 + rejected_j`，冷板设备 `power_w` 始终是消耗电功率。
+可观察入口仍为普通工具和 `Voxel.Circuit use/status`、附件温度查询、World thermal账、`voxel_circuit`日志；
+真实验收需源预算耗尽/断开停止、接触自动冻结、重连/冷恢复与双端状态一致，不以J/I或单位测试代替。
+
+冷板隔离验证：Voxim `Docs/R7/tools/phase_coverage_test.py` 在独立VM编译，不部署。
+旧代码 `cold-red-02` 9项中2项预期失败（负功率被拒、冷板变成加热）；新代码 `cold-green-01` 21项0失败，
+包括真实World普通安装/投料/开关/耗尽/日志恢复和原B7相变接缝。NIF以Rust1.91编译，World/Circuit/Damage与NIF需一起部署；
+源码Hello12与客户端kind5解码匹配。尚未完成普通冷板接触自动冻水的真实双端或图像/计量验收。
+
+2026-09-17 材料参数升级（Global system，正在集成）：`World.publish_parameters/3` 以调用方给定的旧 digest 接纳一次明确的参数发布，复用现有同步日志和广播。依据 [Ecto 的乐观版本检查](https://hexdocs.pm/ecto/Ecto.Changeset.html#optimistic_lock/3)，在唯一 World owner 接纳点比较版本，不新增数据库版本表或迁移框架。普通 `publish_properties/2` 仍拒绝改变既有状态语义。
+
+本次仅允许热／燃烧／电导数值、作者显示和工具成本／预算／速率变化；已有相变对的热容、潜热、转变温度和 MaxHP 不变，附件尺寸、液体量子规则及既有电路种类／电阻／电压不变。原温度、HP、身份、绝对余燃料、设备／热源余能、相变焓、数量和库存逐项保留。改变非相变热容造成的显热参考变化记入 `thermal.parameter_rebase_j`，与 `supplied_j` 分开；它是定义切换的账面差额，不是模拟供热。旧余燃料不会按新容量补满，回收为新目录材料时继续按剩余绝对能量限额。已有燃烧功率持续到本次燃烧结束，新点火读取新定义。完整测试命令与真实升级记录在 Voxim 的材料路线下，不能把隔离 VM 测试当作双端验收。
+
 2026-09-17 B6（Global system）已实现，真实双客户端验收进行中：供氧充足条件下，材料达到目录 `ignition_kelvin` 后按实际体积初始化有限 `fuel_energy_per_macro_j`，按 `burn_power_per_macro_w` 放热。World 仍持有唯一温度／燃料／HP；燃烧热进入既有热接触内核，B3 热源及 B5 电热达到同一阈值也可点燃。空气隔离和防火材料沿实际热接触起作用，不模拟缺氧、通风、烟气或辐射。工具9耗煤供热，工具10耗黏土冷却灭火；已耗燃料不因再次点燃或重载补满。
 
 燃料耗尽在同一权威事务移除占用，不保留可回收整木：宏格移除；精确微格沿既有最低层 occurrence 共享完整度规则归零整个叶子；附件槽沿整件附件规则删除。共享构件其余已初始化燃料记入 `discarded_fuel_j`，过热／燃尽不发采掘奖励。玩家采掘、拆卸及作者替换回收按每个实际槽剩余燃料比例向下取库存量子，不能以部分燃烧的完整几何套取全额原料再放置补满燃料。没有初始化过燃料的材料仍按原用量回收。
