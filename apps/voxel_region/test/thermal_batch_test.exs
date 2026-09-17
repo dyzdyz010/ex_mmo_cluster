@@ -60,6 +60,56 @@ defmodule VoxelRegion.ThermalBatchTest do
     end
   end
 
+  @tag :empty_geometry_batch
+  test "附件空气侧合法空几何不把半秒 World 批拆成十次 NIF 调用" do
+    {w, initial, row} = latent_world()
+    slot = {0, 0, {8, 0, 0}}
+    host = row |> Map.merge(%{material: 19, temperature_kelvin: 280.0}) |> Map.delete(:phase_energy_j)
+    face = host |> Map.merge(VoxelRegion.Attachments.identity(slot, {2, 19}))
+      |> Map.merge(%{granularity: 4, temperature_kelvin: 285.0})
+    specification = %{"material_units_per_micro" => 4096, "face_units" => 64, "edge_units" => 1,
+      "face_thickness_m" => 1 / 512, "line_section_m2" => 1 / (512 * 512)}
+    s = %{initial | properties: Map.put(initial.properties, :attachments, specification),
+      damage: Map.new([host, face], &{VoxelRegion.Damage.key(&1), &1}),
+      overlay: Map.put(initial.overlay, {0, {0, 0, 0}}, {19, 1}), attachments: %{slot => {2, 19}},
+      thermal_work: %{initial.thermal_work | hot: MapSet.new(VoxelRegion.Attachments.macros([slot]))}}
+    mfa = {ThermalNative, :advance, 6}
+    :erlang.trace_pattern(mfa, true, [:call_count])
+    try do
+      {:noreply, next} = VoxelRegion.World.handle_info(:thermal_commit, s)
+      {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
+      IO.puts("EMPTY_GEOMETRY_BATCH calls=#{calls}")
+      assert Map.fetch!(next.thermal_work.geometry, {1, 0, 0}) == []
+      assert Enum.any?(next.thermal_work.ordered, fn {key, _} -> key == VoxelRegion.ThermalAttachments.key(slot) end)
+      # 旧路径每次只传 50ms；直接复用真实派生的节点与接触，逐节点精确比较传热结果。
+      ordered = next.thermal_work.ordered
+      input = Enum.map(ordered, fn {_, n} ->
+        t = Map.fetch!(s.damage, VoxelRegion.Damage.key(n.target))
+        {t.temperature_kelvin, t.hp, t.max_hp, n.capacity, 1.0, 1000.0,
+          n.exposed_faces * 1.0, 0.0, 0.0, true}
+      end)
+      reference = Enum.reduce(1..10, input, fn _, nodes ->
+        {0.05, result, 0.0, 0.0} = ThermalNative.advance(nodes,
+          next.thermal_work.indexed_edges, 293.15, 0.0, 0.01, 0.05)
+        Enum.zip_with(nodes, result, fn n, {t, hp, left} ->
+          n |> put_elem(0, t) |> put_elem(1, hp) |> put_elem(8, left)
+        end)
+      end)
+      for {{_, n}, expected} <- Enum.zip(ordered, reference) do
+        actual = Map.fetch!(next.damage, VoxelRegion.Damage.key(n.target))
+        assert actual.temperature_kelvin == elem(expected, 0)
+        assert actual.hp == elem(expected, 1)
+      end
+      assert next.damage[VoxelRegion.Damage.key(host)].temperature_kelvin > 280.0
+      assert next.thermal.supplied_j == s.thermal.supplied_j
+      assert next.thermal.environment_j == s.thermal.environment_j
+      assert calls <= 2
+    after
+      :erlang.trace_pattern(mfa, false, [:call_count])
+      :sys.resume(w)
+    end
+  end
+
   test "潜热焓推进与邻接木材点燃在同一 World 批内结算" do
     {w, s, ice} = latent_world()
     wood = ice |> Map.merge(%{micro: {8, 0, 0}, incarnation: 2, material: 19, temperature_kelvin: 299.0})

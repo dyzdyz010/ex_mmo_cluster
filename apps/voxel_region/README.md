@@ -138,6 +138,9 @@ OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同�
 2026-09-17 潜热批内反馈：World 传入焓、体积、T*、总潜热、热容及液态标志，NIF 每个原 50ms 段按原 World 乘加次序更新焓，再按 `Phase.temperature/4` 的同一分段公式反馈温度。
 处于或进入潜热区不再返回；融化焓首次达到总潜热、冻结焓首次降到零时返回，点燃、共享 HP 损失/归零与新前沿事件保留，材质替换仍走 World 原提交规则，未改物性或添加 epsilon。
 相变结果追加最终焓，World 直接接纳；测试用 `Phase.temperature/4` 精确复算温度，并对原 World/NIF 逐节点比较温度、焓、HP 和热账（1e-12），证据为 Voxim `thermal-batch-{red,green,replay,native}-02`，隔离构建不代表部署或双端验收。
+空几何边界沿 `ThermalGeometry.cell/6` 的权威派生契约：`[]` 是已知无基础热节点，`Map.has_key?/2` 为假才是尚未派生；附件面空气侧的合法空格不再强制 50ms 往返。
+该修复只放宽 World 传给 NIF 的批时长，NIF 数值分段与全部事件保持不变；空气侧附件红测 10 次、绿测 1 次，非零导热结果与十次 50ms 调用逐节点精确相等。
+证据为 Voxim `thermal-batch-{red,green,replay,native}-03`：重放保留原种子，补空缓存键明确属于固定捕获域空节点假设，并保留无补键对照；正式 combined 性能仍待同负载复测。
 每500ms提交0.5s模拟，与属性、热破坏占用同笔持久化。参考下述NIST FiPy离散与稳定条件；没有气流、辐射、电路或燃烧。
 
 正常鉴权工具 `action=heat` 必须命中带 `heat.receiver` 的宏格，消费目录指定燃料并添加有限J，余额与能源同笔保存。

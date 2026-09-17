@@ -3219,7 +3219,8 @@ defmodule VoxelRegion.World do
       end)
 
     duration =
-      if Enum.any?(seeds, &(Map.get(geometry, &1, []) == [])),
+      # 空列表是已派生的合法空气格；只有缺键才表示几何尚未派生。
+      if Enum.any?(seeds, &(not Map.has_key?(geometry, &1))),
         do: min(duration, 0.05),
         else: duration
 
