@@ -46,7 +46,18 @@ defmodule VoxelRegion.CollisionSource do
   end
 
   @doc "从完整 L0 载荷，或世界格读取器（coord → {terrain 材质, slot map}）投影相同 chunk 占用。"
-  def capture(%Payload{level: 0, refined: refined} = payload, {cx,cy,cz}=coord) when map_size(refined)==0 do
+  # Global system: derived conservative 1/8m collision slab, never material truth.
+  # Exact display height is q/capacity; top overestimates by less than 1/8m.
+  def phase_slots(20, slots, quantity, capacity) when is_integer(quantity) and quantity < capacity do
+    layers=div(quantity*@micro+capacity-1,capacity)
+    Map.new(0..(@micro*@micro*@micro-1),fn slot ->
+      {slot,{if(rem(div(slot,@micro),@micro)<layers,do: 20,else: 0),{0,0}}}
+    end) |> Map.merge(slots)
+  end
+  def phase_slots(_material,slots,_quantity,_capacity),do: slots
+
+  def capture(payload, coord, capacity \\ 0)
+  def capture(%Payload{level: 0, refined: refined, liquid_units: quantities} = payload, {cx,cy,cz}=coord, _capacity) when map_size(refined)==0 and map_size(quantities)==0 do
     # 普通载荷按连续行读取，避免每格重复坐标换算、函数调用和空微格表查询。
     # 材质阻挡仍由同一个目录定义；细化载荷继续使用下面的微格投影。
     {lx,ly,lz}=Payload.local(payload.region,{cx*@chunk_size,cy*@chunk_size,cz*@chunk_size})
@@ -59,14 +70,16 @@ defmodule VoxelRegion.CollisionSource do
       origin_m: {cx*@chunk_size*1.0,cy*@chunk_size*1.0,cz*@chunk_size*1.0},cells: cells}
   end
 
-  def capture(%Payload{level: 0} = payload, coord) do
+  def capture(%Payload{level: 0} = payload, coord, capacity) do
     capture(coord,fn cell ->
       local = Payload.local(payload.region,cell)
-      {Payload.material(payload,local),Map.get(payload.refined,Payload.cell_index(local),%{})}
+      material=Payload.material(payload,local)
+      index=Payload.cell_index(local)
+      {material,phase_slots(material,Map.get(payload.refined,index,%{}),Map.get(payload.liquid_units,index),capacity)}
     end)
   end
 
-  def capture({cx, cy, cz} = coord, value_at) when is_function(value_at,1) do
+  def capture({cx, cy, cz} = coord, value_at, _capacity) when is_function(value_at,1) do
     {ox, oy, oz} = {cx * @chunk_size, cy * @chunk_size, cz * @chunk_size}
     # 读取器只回答世界格的 {terrain 材质, 实际微格占用}；编辑不经过 wire 往返。
     {blocks,refined} = for z <- 0..(@chunk_size-1),y <- 0..(@chunk_size-1),x <- 0..(@chunk_size-1),reduce: {[],%{}} do

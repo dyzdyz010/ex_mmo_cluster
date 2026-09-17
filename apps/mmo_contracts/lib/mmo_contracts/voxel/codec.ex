@@ -85,7 +85,7 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(<<0x81,_::binary>>),do: {:error,:invalid_message}
 
   def decode(<<0x7F,rid::64,seq::32,scene::64,action::8,x::signed-32,y::signed-32,z::signed-32,tool::16,material::16>>)
-      when action in [0,1] and tool > 0 do
+      when action in [0,1,2,3] and tool > 0 do
     {:ok,{:voxel_production_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
       action: action,coord: {x,y,z},tool_id: tool,material: material}}}
   end
@@ -206,9 +206,13 @@ defmodule MmoContracts.Voxel.Codec do
           a::signed-64,b::signed-64,d::signed-64,c.remaining_j::float-64,c.voltage_v::float-64,c.current_a::float-64,c.power_w::float-64>>
       :error -> <<>>
     end
+    combustion=case Map.fetch(t,:burning) do
+      {:ok,burning} -> <<if(burning,do: 1,else: 0)::8,t.remaining_fuel_j::float-64,t.power_w::float-64>>
+      :error -> <<>>
+    end
     {:ok,<<0x7E, t.request_id::64, t.seq::64, x::signed-64,y::signed-64,z::signed-64,
       t.granularity::8,t.incarnation::64,birth::64,occurrence::32,t.material::16,
-      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary,circuit::binary>>}
+      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary,circuit::binary,combustion::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
@@ -487,7 +491,7 @@ defmodule MmoContracts.Voxel.Codec do
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or (magic == "VXR8" and version == 8) do
+      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or (magic == "VXR8" and version == 8) or (magic == "VXR9" and version == 9) or (magic == "VXRA" and version == 10) do
     {:ok,
      %{
        version: version,
@@ -514,6 +518,8 @@ defmodule MmoContracts.Voxel.Codec do
     body = :zlib.compress(raw_body)
 
     magic = case version do
+      9 -> "VXR9"
+      10 -> "VXRA"
       8 -> "VXR8"
       7 -> "VXR7"
       6 -> "VXR6"

@@ -39,7 +39,7 @@ defmodule T1TransportTest do
 
   setup do
     {:ok, _} = Application.ensure_all_started(:quicer)
-    hello = %Session.Hello{protocol_version: 8, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    hello = %Session.Hello{protocol_version: Session.Codec.protocol_version(), kernel_id: <<1::256>>, profile_id: <<2::256>>}
     certs = "/home/dyz/.cache/voxim-m1-t1/certs-v1/"
     start_supervised!({T1Scene, self()})
     listener = start_supervised!({GateServer.Transport.QuicListener,

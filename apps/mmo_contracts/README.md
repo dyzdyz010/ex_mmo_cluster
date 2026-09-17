@@ -28,6 +28,11 @@ Hemifuture 体素 MMO 服务端**承重契约的单一来源**(纯库,无监督�
 
 ## 测试
 
+R7-B6（Global system）：当前 Hello 为 9，在线拒绝 1–8；`voxel_property_state` 在温度与可选电路后追加
+`burning u8 + remaining_fuel_j f64 + power_w f64`（大端，17 字节）。存在 `burning` 的合法权威行同时提供温度与两个数值，
+熄灭仍发送剩余燃料；纯燃烧帧为 146 字节，电路与燃烧共存为 208 字节，普通 HP/温度/电路前缀不变。
+`test/mmo_contracts/combustion_wire_test.exs`（Test-only）覆盖版本拒绝、能量量纲、熄灭、电路共存及属性批次传输。
+
 ```
 mix test apps/mmo_contracts/test
 ```

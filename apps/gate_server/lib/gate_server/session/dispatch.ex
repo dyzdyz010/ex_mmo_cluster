@@ -543,6 +543,7 @@ defmodule GateServer.Session.Dispatch do
   end
   def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state) when kind in [:voxel_production_intent,:voxel_attachment_intent] do
     with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
+      actor = Map.merge(actor,Map.take(state,[:received_us,:clock_node]))
       result = if kind==:voxel_attachment_intent,do: VoxelRegion.World.attachment_intent(state.world_ref,actor,request),else: VoxelRegion.World.production_intent(state.world_ref,actor,request)
       send_material_balances(state,actor.cid,request.request_id)
       case result do

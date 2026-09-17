@@ -19,7 +19,7 @@ defmodule MmoContracts.VoximM1ContractTest do
   end
 
   # 历史黄金样本保持原字节；当前会话显式升级 Hello，其他消息仍逐字节相等。
-  defp current(%Session.Hello{}=value),do: %{value | protocol_version: 8}
+  defp current(%Session.Hello{}=value),do: %{value | protocol_version: 11}
   defp current(value),do: value
 
   test "M1 rejects an unsupported envelope version at the network boundary" do
@@ -69,7 +69,7 @@ defmodule MmoContracts.VoximM1ContractTest do
       golden = File.read!(Path.join(@fixtures, "#{producer}_#{name}.bin"))
       golden=if name=="hello" do
         assert {:error,:invalid_m1_message}=Codec.decode(golden)
-        replace(golden,9,<<8::16>>)
+        replace(golden,9,<<11::16>>)
       else
         golden
       end
@@ -255,7 +255,10 @@ defmodule MmoContracts.VoximM1ContractTest do
     assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<1::16>>))
     assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<6::16>>))
     assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<7::16>>))
-    assert {:ok,%Session.Hello{protocol_version: 8}}=Codec.decode(hello)
+    assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<8::16>>))
+    assert {:error, :invalid_m1_message} = Codec.decode(replace(hello, 9, <<9::16>>))
+    assert {:error,:invalid_m1_message}=Codec.decode(replace(hello,9,<<10::16>>))
+    assert {:ok,%Session.Hello{protocol_version: 11}}=Codec.decode(hello)
     {1, _, join} = packet("join")
     assert {:error, :invalid_m1_message} = Codec.decode(replace(join, 19, <<255>>))
   end
