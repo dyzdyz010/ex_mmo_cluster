@@ -247,6 +247,28 @@ defmodule VoxelRegion.DamageWorldTest do
     :sys.get_state(w)
   end
 
+  @tag :thermal_batch
+  test "无新前沿或冷板的半秒提交至多两次进入热 NIF", c do
+    b3_experiment(c, 10000.0, 100.0)
+    :sys.suspend(c.w)
+    state = :sys.get_state(c.w)
+    assert VoxelRegion.Circuit.devices(state.damage) == %{}
+    # 只读计数，不启用会复制完整 World 实参的调用消息。
+    mfa = {VoxelRegion.ThermalNative, :advance, 6}
+    :erlang.trace_pattern(mfa, true, [:call_count])
+
+    try do
+      {:noreply, next} = World.handle_info(:thermal_commit, state)
+      {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
+      IO.puts("THERMAL_BATCH calls=#{calls} simulated_s=#{next.thermal.elapsed_s - state.thermal.elapsed_s}")
+      assert_in_delta next.thermal.elapsed_s - state.thermal.elapsed_s, 0.5, 1.0e-12
+      assert calls <= 2
+    after
+      :erlang.trace_pattern(mfa, false, [:call_count])
+      :sys.resume(c.w)
+    end
+  end
+
   @tag :b3_heater
   test "global thermal environment starts without a test source or free energy", c do
     path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
@@ -1320,7 +1342,8 @@ defmodule VoxelRegion.DamageWorldTest do
     assert World.stats(c.w).attachment_slots==8
     {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
     assert World.stats(c.w).attachment_slots==8
-    {:ok,seq}=World.apply_edit(c.w,{0,1,2},21)
+    # 移除最后支撑；Water 已要求液体工具，不能用普通编辑制造液体。
+    {:ok,seq}=World.apply_edit(c.w,{0,1,2},0)
     assert World.stats(c.w).attachment_slots==0
     [txn]=World.entries_after(c.w,seq-1)
     assert Enum.all?(txn.entries,fn %{payload: bytes}->

@@ -132,6 +132,9 @@ OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同�
 微格容量为宏格的1/512、面面积1/64m²；宏格与 refined 的部分接触按64个面槽位采样。
 接触导热系数 `G=A/(da/ka+db/kb)`，d为半格长度；每条边只结算一次，空面按环境换热，非热实体视为绝热。
 `ThermalNative.advance` 使用有限体积显式更新，步长≤min(50ms,0.45*C/(ΣG+h*A))，活动前沿变化后立即重建下一步接触。
+2026-09-17 批内推进：无事件的原 50ms 分段留在无状态 NIF 内，逐段保留 ceil/dt 算术与稳定子步，World 仍独占 canonical 接纳。
+新前沿立即返回；段末点燃、共享 HP 损伤或归零交还 World，相变潜热区及进入该区的段逐段回写；冷板 Circuit 控制段不变，不扩大物理步长。
+依据沿用本节有限体积条件与材料性能决策的 SciPy 定向事件；节点控制采用 Rustler 官方 NifUntaggedEnum（0.37.4 源码），纯数值元组与 batch 行为保留，旧 World 逐节点等价及离线成本见 Voxim `Saved/R7/MaterialExpansion/thermal-batch-*`，不代表双端性能验收。
 每500ms提交0.5s模拟，与属性、热破坏占用同笔持久化。参考下述NIST FiPy离散与稳定条件；没有气流、辐射、电路或燃烧。
 
 正常鉴权工具 `action=heat` 必须命中带 `heat.receiver` 的宏格，消费目录指定燃料并添加有限J，余额与能源同笔保存。

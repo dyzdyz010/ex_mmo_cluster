@@ -3208,7 +3208,7 @@ defmodule VoxelRegion.World do
       Enum.reduce(sources, duration, fn {_, s}, dt -> min(dt, s.remaining_j / s.power_w) end)
 
     duration =
-      Enum.reduce(ordered, min(duration, 0.05), fn {_, n}, dt ->
+      Enum.reduce(ordered, duration, fn {_, n}, dt ->
         row = Map.get(state.damage, Damage.key(n.target))
 
         if row && Map.get(row, :burning, false) do
@@ -3240,13 +3240,26 @@ defmodule VoxelRegion.World do
 
         electric = Map.get(powers, node_key, 0.0)
 
+        # World 声明段末必须接受结果的事件；潜热区逐段回写，数值子步仍由 NIF 拥有。
+        ignition =
+          if Combustion.combustible?(n.material) and t.hp > 0 and
+               not Map.get(t, :burning, false) and not fuel_exhausted?(t),
+            do: n.material["ignition_kelvin"] * 1.0,
+            else: nil
+
+        phase =
+          if phase_target?(state, t),
+            do: {n.material["phase_transition_kelvin"] * 1.0, Phase.liquid?(t.material)},
+            else: nil
+
         {{cell, t, temperature, electric, combustion},
-         {temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
+         {{temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
           n.material["heat_resistance_kelvin"] * 1.0, n.exposed_faces * 1.0,
           electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0),
           abs(electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0)) * duration,
           Enum.any?(thermal_cells(t), &MapSet.member?(state.thermal_work.hot, &1)) or
-            source != nil or combustion > 0 or electric != 0}}
+            source != nil or combustion > 0 or electric != 0},
+          {ignition, phase, t.granularity in [1, 4]}}}
       end)
       |> Enum.unzip()
 
