@@ -18,7 +18,7 @@ defmodule VoxelRegion.Circuit do
   def plan(slots,damage,catalog,state,at,duration) do
     started=System.monotonic_time(:microsecond)
     devices=devices(damage)
-    duration=if Enum.any?(devices,fn {_,{_,c}}->c.kind==5 end),do: min(duration,0.05),else: duration
+    cooling_duration=min(duration,0.05)
     grouped=Enum.group_by(slots,fn {_,{id,_}}->id end,fn {slot,_}->slot end)
     {edges,faces}=Enum.reduce(devices,{[],MapSet.new()},fn {id,{target,c}},{edges,faces}->
       footprint=Attachments.footprint(0,rem(elem(target.owner,1),3),c.anchor,c.size)
@@ -29,7 +29,7 @@ defmodule VoxelRegion.Circuit do
         emf: if(c.kind==1 and c.remaining_j>0,do: tool["circuit_voltage_v"],else: 0.0),
         device: id,heat: for(s<-footprint,do: {VoxelRegion.ThermalAttachments.key(s),1.0/length(footprint)}),
         light: tool["circuit_light_fraction"],
-        cooling: if(c.kind==5,do: cooling_limits(footprint,id,target.material,tool,damage,catalog,state,duration),else: %{})}
+        cooling: if(c.kind==5,do: cooling_limits(footprint,id,target.material,tool,damage,catalog,state,cooling_duration),else: %{})}
       conducting=intact and c.closed and (c.kind != 1 or c.remaining_j>0) and
         (c.kind != 5 or Enum.all?(edge.cooling,fn {_,{limit,_}}->limit>0 end))
       {if(conducting,do: [edge|edges],else: edges),Enum.reduce(footprint,faces,&MapSet.put(&2,&1))}
@@ -100,6 +100,8 @@ defmodule VoxelRegion.Circuit do
         {out,heat,sources,light+light_power,cooling,rejected}
       end
     end)
+    # 仅实际移热需要冷板控制段；停止移热时仍由真实源余量决定截断。
+    duration=if cooling_w>0.0,do: cooling_duration,else: duration
     done=Enum.reduce(source_w,duration,fn {id,power},dt->min(dt,outputs[id].remaining_j/power) end)
     outputs=Enum.reduce(source_w,outputs,fn {id,power},all->update_in(all[id].remaining_j,fn energy->
       if done==energy/power,do: 0.0,else: max(0.0,energy-power*done)

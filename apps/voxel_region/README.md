@@ -38,6 +38,9 @@ PyFLOWGO论文/作者参数见相邻Voxim `Docs/R7/material-coverage.md`，沿�
 每槽吸热不超过本段开始时至最低温度的显热，临近下限时有效COP下降；到达下限整板断开，随后仅按实际接触/环境回暖。
 这不是完整制冷剂循环，也不模拟散热器几何；禁止把热端排放误记成目标供热。既有环境交换仍是进入世界为正，
 新增 `circuit_cooling_j`（冷端移热）、`circuit_rejected_j`（排向环境）和源 `remaining_j` 与同笔热事务恢复。
+冷板移热限额仍按 `min(请求时长, 50ms)` 计算；仅本段求解确有非零移热时才截为该控制段。
+耗尽、开路或到最低温度时保留请求时长，再按所有真实电源余量截断；沿用上述 COP/热账契约，不改参数或 NIF。
+隔离回归证据：Voxim `Saved/R7/MaterialExpansion/circuit-red-01` 5项1失败、`circuit-green-01` 5项0失败、`phase13-next` 18项0失败；非双端同负载验收。
 热内核只增加带符号功率，余预算保持非负绝对量；World 的 `supplied_j` 是净节点供热，
 `circuit_supplied_j = 净节点电热 + 光 + rejected_j`，冷板设备 `power_w` 始终是消耗电功率。
 可观察入口仍为普通工具和 `Voxel.Circuit use/status`、附件温度查询、World thermal账、`voxel_circuit`日志；
