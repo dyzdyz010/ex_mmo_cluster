@@ -2947,6 +2947,7 @@ defmodule VoxelRegion.World do
       seeds: nil,
       ordered: [],
       attachment_cells: nil,
+      attachment_graph: nil,
       solid_nodes: %{},
       thermal_slots: %{},
       indexed_edges: []
@@ -3172,10 +3173,10 @@ defmodule VoxelRegion.World do
     attachment_cells = state.thermal_work.attachment_cells ||
       Enum.map(state.attachments, fn {slot, value} -> {slot, value, Attachments.macros([slot])} end)
 
-    {ordered, edges, indexed_edges, solid_nodes, thermal_slots, state} =
+    {ordered, edges, indexed_edges, solid_nodes, thermal_slots, attachment_graph, state} =
       if cells == state.thermal_work.cells and MapSet.size(missing) == 0 do
         {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
-         state.thermal_work.solid_nodes, state.thermal_work.thermal_slots, state}
+         state.thermal_work.solid_nodes, state.thermal_work.thermal_slots, state.thermal_work.attachment_graph, state}
       else
         nodes = geometry |> Map.values() |> List.flatten() |> Map.new()
 
@@ -3187,11 +3188,12 @@ defmodule VoxelRegion.World do
         if MapSet.disjoint?(missing, state.thermal_work.cells) and
              nodes == state.thermal_work.solid_nodes and slots == state.thermal_work.thermal_slots do
           {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
-           nodes, slots, state}
+           nodes, slots, state.thermal_work.attachment_graph, state}
         else
           solid_nodes = nodes
-          {nodes, state} =
-            VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2)
+          {nodes, state, attachment_graph} =
+            VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2,
+              state.thermal_work.attachment_graph)
 
           # 默认记录仅由目录、配置和几何派生；已有温度/HP/燃料仍只读 state.damage。
           defaults = %{state | damage: %{}}
@@ -3206,7 +3208,7 @@ defmodule VoxelRegion.World do
 
           {ordered, edges,
            for({a, b, g} <- edges, do: {Map.fetch!(indices, a), Map.fetch!(indices, b), g}),
-           solid_nodes, slots, state}
+           solid_nodes, slots, attachment_graph, state}
         end
       end
 
@@ -3220,6 +3222,7 @@ defmodule VoxelRegion.World do
         seeds: seeds,
         ordered: ordered,
         attachment_cells: attachment_cells,
+        attachment_graph: attachment_graph,
         solid_nodes: solid_nodes,
         thermal_slots: thermal_slots,
         indexed_edges: indexed_edges,

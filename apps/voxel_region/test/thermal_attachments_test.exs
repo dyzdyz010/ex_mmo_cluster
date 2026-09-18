@@ -7,6 +7,26 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     attachments: %{"material_units_per_micro" => 4096,"face_units" => 64,"edge_units" => 1,
       "face_thickness_m" => 1/512,"line_section_m2" => 1/(512*512)}}
 
+  test "同次重建只查询一次共用宿主点；下一次重建重新读取占用和相态体积" do
+    slots=%{{0,1,{0,0,0}}=>{1,19},{1,0,{0,0,0}}=>{2,19},
+      {0,0,{0,0,0}}=>{3,19}}
+    host=%{micro: {0,0,0},granularity: 0,incarnation: 1,owner: {0,0},material: 19}
+    at=fn p,s ->
+      {if(s.occupied,do: host),%{s | reads: [p|s.reads]}}
+    end
+    volume=fn s,_ -> s.volume end
+    state=%{occupied: true,volume: 1.0,reads: []}
+    {full,s}=ThermalAttachments.add(%{},slots,@catalog,state,at,volume)
+    assert length(s.reads)==MapSet.size(MapSet.new(s.reads))
+    points=Enum.flat_map(Map.keys(slots),&VoxelRegion.Attachments.neighbors/1) |> MapSet.new()
+    assert MapSet.new(s.reads)==points
+    {thin,_}=ThermalAttachments.add(%{},slots,@catalog,%{state | volume: 1/512},at,volume)
+    {air,s}=ThermalAttachments.add(%{},slots,@catalog,%{state | occupied: false},at,volume)
+    assert MapSet.new(s.reads)==points
+    refute full==thin
+    refute thin==air
+  end
+
   defp geometry(slots, cells,volume \\ fn _,_ -> 1.0 end) do
     at=fn p,s ->
       cell=p |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,8)) |> List.to_tuple()
@@ -17,6 +37,41 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     nodes=Enum.flat_map(cells,fn cell -> elem(ThermalGeometry.cell(cell,%{},@catalog.materials,nil,at,volume),0) end) |> Map.new()
     {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,nil,at,volume)
     nodes
+  end
+
+  test "附件子图复用不吞掉远处节点变化；宿主、目录、槽和液面变化与无缓存结果相等" do
+    slot={0,0,{8,0,0}}
+    slots=%{slot=>{10,19}}
+    nodes=geometry(%{},[{0,0,0},{1,0,0}])
+    host=nodes[{0,{0,0,0}}].target
+    at=fn p,s ->
+      t=cond do
+        elem(p,0)<8 -> host
+        s.occupied -> %{host | micro: {8,0,0},material: s.material}
+        true -> nil
+      end
+      {t,s}
+    end
+    volume=fn s,_ -> s.volume end
+    state=%{occupied: true,material: 19,volume: 1.0}
+    {_,_,cached}=ThermalAttachments.add(nodes,slots,@catalog,state,at,volume,nil)
+    far=Map.put(nodes,{0,{80,0,0}},%{nodes[{0,{0,0,0}}] | target: %{host | micro: {80,0,0}}})
+    {result,_,retained}=ThermalAttachments.add(far,slots,@catalog,state,at,volume,cached)
+    assert result[{0,{80,0,0}}]==far[{0,{80,0,0}}]
+    assert :erts_debug.same(elem(cached,1),elem(retained,1))
+    changed_catalog=put_in(@catalog.materials[19]["thermal_conductivity"],20.0)
+    for {ns,ss,catalog,world} <- [
+      {Map.delete(nodes,{0,{8,0,0}}),slots,@catalog,%{state | occupied: false}},
+      {Map.delete(nodes,{0,{8,0,0}}),slots,@catalog,%{state | material: 1}},
+      {nodes,slots,@catalog,%{state | volume: 1/512}},
+      {nodes,slots,changed_catalog,state},
+      {nodes,%{slot=>{11,19}},@catalog,state},
+      {nodes,%{},@catalog,state},
+      {put_in(nodes[{0,{0,0,0}}].exposed_faces,0.25),slots,@catalog,state}
+    ] do
+      {hot,s,_}=ThermalAttachments.add(ns,ss,catalog,world,at,volume,cached)
+      assert {hot,s}==ThermalAttachments.add(ns,ss,catalog,world,at,volume)
+    end
   end
 
   test "薄水底板半程按高度，高侧板和顶部留空不传热，侧壁只算浸没面积" do

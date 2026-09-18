@@ -64,7 +64,7 @@ defmodule VoxelRegion.ThermalBatchTest do
     {w, s, _row} = latent_world()
     {:noreply, warm} = VoxelRegion.World.handle_info(:thermal_commit, s)
     expanded = put_in(warm.thermal_work.hot, MapSet.put(warm.thermal_work.hot, {0, 0, 2}))
-    mfa = {VoxelRegion.ThermalAttachments, :add, 6}
+    mfa = {VoxelRegion.ThermalAttachments, :add, 7}
     :erlang.trace_pattern(mfa, true, [:call_count])
     try do
       {:noreply, next} = VoxelRegion.World.handle_info(:thermal_commit, expanded)

@@ -12,7 +12,46 @@ defmodule VoxelRegion.ThermalAttachments do
 
   @doc "在当前权威固体摘要上加入面层／方截面线；at 只读取 canonical 占用。"
   def add(nodes,slots,catalog,state,at,volume \\ fn _,_ -> 1.0 end) do
+    {nodes,state,_}=add(nodes,slots,catalog,state,at,volume,nil)
+    {nodes,state}
+  end
+
+  @doc "复用输入完全相同的附件及宿主派生图；返回缓存可随时丢弃，不保存温度或 HP。"
+  def add(nodes,slots,catalog,state,at,volume,cached) do
     thermal=Map.filter(slots,fn {_,{_,m}}->Map.has_key?(catalog.materials[m],"heat_capacity_per_macro") end)
+    # 单次派生内占用和相态体积不变；共用点只查询一次，共用宿主只算一次边界。
+    # 空气也缓存；每次调用重新读取，非热宿主和液面变化同样进入输入比对。
+    {hosts,state,_,boxes}=Enum.reduce(thermal,{%{},state,%{},%{}},fn {slot,_},{all,s,points,boxes}->
+      {hosts,{s,points,boxes}}=Enum.map_reduce(Attachments.neighbors(slot),{s,points,boxes},fn p,{s,points,boxes} ->
+        case Map.fetch(points,p) do
+          {:ok,host} -> {host,{s,points,boxes}}
+          :error ->
+            {t,s}=at.(p,s)
+            t=if t && t.granularity==2,do: %{t | granularity: 1},else: t
+            {box,boxes}=case Map.fetch(boxes,t) do
+              {:ok,box} -> {box,boxes}
+              :error ->
+                box=if t,do: ThermalGeometry.bounds(t,volume.(s,t))
+                {box,Map.put(boxes,t,box)}
+            end
+            host={t,box}
+            {host,{s,Map.put(points,p,host),boxes}}
+        end
+      end)
+      {targets,bounds}=Enum.unzip(hosts)
+      {Map.put(all,slot,{targets,bounds}),s,points,boxes}
+    end)
+    host_keys=for {t,_}<-boxes,t != nil,do: ThermalGeometry.key(t)
+    host_nodes=Map.take(nodes,host_keys)
+    input={thermal,catalog,hosts,host_nodes}
+    derived=case cached do
+      {^input,derived} -> derived
+      _ -> derive(host_nodes,thermal,catalog,hosts)
+    end
+    {Map.merge(nodes,derived),state,{input,derived}}
+  end
+
+  defp derive(nodes,thermal,catalog,hosts) do
     thickness=if map_size(thermal)>0,do: catalog.attachments["face_thickness_m"],else: 0.0
     width=if map_size(thermal)>0,do: :math.sqrt(catalog.attachments["line_section_m2"]),else: 0.0
     nodes=Enum.reduce(thermal,nodes,fn {slot,value},all ->
@@ -25,15 +64,9 @@ defmodule VoxelRegion.ThermalAttachments do
       Map.put(all,key(slot),%{target: target,material: material,capacity: material["heat_capacity_per_macro"]*volume(slot,catalog),
         exposed_faces: surface,contacts: []})
     end)
-    {nodes,state}=Enum.reduce(thermal,{nodes,state},fn {slot,_},{all,s}->
-      {targets,s}=Enum.map_reduce(Attachments.neighbors(slot),s,fn p,s ->
-        {t,s}=at.(p,s)
-        t=if t && t.granularity==2,do: %{t | granularity: 1},else: t
-        {t,s}
-      end)
-      bounds=Enum.map(targets,fn target->if target,do: ThermalGeometry.bounds(target,volume.(s,target)) end)
-      all=host_contacts(all,slot,targets,bounds,thickness,width)
-      {all,s}
+    nodes=Enum.reduce(thermal,nodes,fn {slot,_},all ->
+      {targets,bounds}=Map.fetch!(hosts,slot)
+      host_contacts(all,slot,targets,bounds,thickness,width)
     end)
     # 共边薄片／面线及共端点线段各生成一条热接触，和电连接语义无关。
     ports=Enum.reduce(thermal,%{},fn {slot,_},ports ->
@@ -48,7 +81,7 @@ defmodule VoxelRegion.ThermalAttachments do
             |> exposed(key(a),-area) |> exposed(key(b),-area)
       end
     end)
-    {nodes,state}
+    nodes
   end
 
   defp host_contacts(nodes,slot,targets,bounds,t,w) do
