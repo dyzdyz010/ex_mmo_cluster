@@ -587,11 +587,15 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert_in_delta frozen.thermal.supplied_j+frozen.thermal.circuit_rejected_j+
       frozen.thermal.circuit_light_j,frozen.thermal.circuit_supplied_j,0.001
     assert :ok=World.compact(c.w)
+    # ????????????????????????????????????
+    :ok=:sys.suspend(c.w)
+    persisted=:sys.get_state(c.w)
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
+    :ok=:sys.suspend(w)
     restored=:sys.get_state(w)
-    assert restored.damage==frozen.damage
-    assert restored.liquid_units==frozen.liquid_units
-    assert restored.thermal==frozen.thermal
+    assert restored.damage==persisted.damage
+    assert restored.liquid_units==persisted.liquid_units
+    assert restored.thermal==persisted.thermal
   end
 end
