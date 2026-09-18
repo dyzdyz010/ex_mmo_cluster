@@ -3443,18 +3443,20 @@ defmodule VoxelRegion.World do
 
   # 点燃只消费实际温度；热源、电热和燃烧热共用接触导热，不另设火种邻接真值。
   defp ignite_heated_materials(state, damage, ordered) do
-    Enum.reduce(ordered, {damage, []}, fn {_, node}, {rows, changed} ->
-      target = Map.get_lazy(rows, Damage.key(node.target), fn -> property_state(state, node.target) end)
-      material = node.material
-      if Combustion.combustible?(material) and target.hp > 0 and
-           not Map.get(target, :burning, false) and not fuel_exhausted?(target) and
-           Map.get(target, :temperature_kelvin, state.thermal.config["ambient_kelvin"]) >= material["ignition_kelvin"] do
-        row = Combustion.ignite(target, material, combustion_volume(state, target))
-        {Map.put(rows, Damage.key(row), row), [{Damage.key(row), row} | changed]}
-      else
-        {rows, changed}
-      end
-    end)
+    # 不可燃材质不需要读取或构造默认损伤记录。
+    for {_, node} <- ordered, Combustion.combustible?(node.material), reduce: {damage, []} do
+      {rows, changed} ->
+        material = node.material
+        target = Map.get_lazy(rows, Damage.key(node.target), fn -> property_state(state, node.target) end)
+        if target.hp > 0 and
+             not Map.get(target, :burning, false) and not fuel_exhausted?(target) and
+             Map.get(target, :temperature_kelvin, state.thermal.config["ambient_kelvin"]) >= material["ignition_kelvin"] do
+          row = Combustion.ignite(target, material, combustion_volume(state, target))
+          {Map.put(rows, Damage.key(row), row), [{Damage.key(row), row} | changed]}
+        else
+          {rows, changed}
+        end
+    end
   end
 
   defp component_max_hp(state, owner) do

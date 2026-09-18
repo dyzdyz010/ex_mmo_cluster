@@ -202,8 +202,8 @@ defmodule VoxelRegion.Damage do
   def key(%{granularity: 2, owner: owner}), do: {2, owner}
   def key(t), do: {t.granularity, t.micro, t.incarnation, t.owner, t.material}
 
-  def macro(t),
-    do: t.micro |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1, @micro)) |> List.to_tuple()
+  def macro(%{micro: {x, y, z}}),
+    do: {Integer.floor_div(x, @micro), Integer.floor_div(y, @micro), Integer.floor_div(z, @micro)}
 
   # Amanatides-Woo traversal at canonical 1/8 m, including the starting cell.
   def raycast(origin, direction, range, state, at) do
