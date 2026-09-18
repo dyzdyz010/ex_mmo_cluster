@@ -60,6 +60,29 @@ defmodule VoxelRegion.ThermalBatchTest do
     end
   end
 
+  test "热前沿只扩张空气时复用实体接触图，编辑后重新派生" do
+    {w, s, _row} = latent_world()
+    {:noreply, warm} = VoxelRegion.World.handle_info(:thermal_commit, s)
+    expanded = put_in(warm.thermal_work.hot, MapSet.put(warm.thermal_work.hot, {0, 0, 2}))
+    mfa = {VoxelRegion.ThermalAttachments, :add, 6}
+    :erlang.trace_pattern(mfa, true, [:call_count])
+    try do
+      {:noreply, next} = VoxelRegion.World.handle_info(:thermal_commit, expanded)
+      {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
+      assert calls == 0
+      assert next.thermal_work.ordered == warm.thermal_work.ordered
+      # 模拟既有编辑失效入口：占用变为空气，同时丢弃该格几何。
+      edited = %{expanded | overlay: Map.put(expanded.overlay, {0, {0, 0, 0}}, {0, 2}),
+        damage: %{}, thermal_work: %{expanded.thermal_work |
+          geometry: Map.delete(expanded.thermal_work.geometry, {0, 0, 0})}}
+      {:noreply, empty} = VoxelRegion.World.handle_info(:thermal_commit, edited)
+      assert empty.thermal_work.ordered == []
+    after
+      :erlang.trace_pattern(mfa, false, [:call_count])
+      :sys.resume(w)
+    end
+  end
+
   @tag :empty_geometry_batch
   test "附件空气侧合法空几何不把半秒 World 批拆成十次 NIF 调用" do
     {w, initial, row} = latent_world()

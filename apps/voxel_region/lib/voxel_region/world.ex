@@ -2948,6 +2948,9 @@ defmodule VoxelRegion.World do
       builds: 0,
       seeds: nil,
       ordered: [],
+      attachment_cells: nil,
+      solid_nodes: %{},
+      thermal_slots: %{},
       indexed_edges: []
     }
 
@@ -3168,27 +3171,40 @@ defmodule VoxelRegion.World do
 
     geometry_done = System.monotonic_time(:microsecond)
 
-    {ordered, edges, indexed_edges, state} =
+    attachment_cells = state.thermal_work.attachment_cells ||
+      Enum.map(state.attachments, fn {slot, value} -> {slot, value, Attachments.macros([slot])} end)
+
+    {ordered, edges, indexed_edges, solid_nodes, thermal_slots, state} =
       if cells == state.thermal_work.cells and MapSet.size(missing) == 0 do
         {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
-         state}
+         state.thermal_work.solid_nodes, state.thermal_work.thermal_slots, state}
       else
         nodes = geometry |> Map.values() |> List.flatten() |> Map.new()
 
         slots =
-          Map.filter(state.attachments, fn {slot, _} ->
-            Enum.any?(Attachments.macros([slot]), &MapSet.member?(cells, &1))
+          for {slot, value, footprint} <- attachment_cells,
+              Enum.any?(footprint, &MapSet.member?(cells, &1)), into: %{}, do: {slot, value}
+
+        # 热域只添删空气格时，实体节点和附件未变，不重复生成同一接触图。
+        if nodes == state.thermal_work.solid_nodes and slots == state.thermal_work.thermal_slots do
+          {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
+           nodes, slots, state}
+        else
+          solid_nodes = nodes
+          {nodes, state} =
+            VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2)
+
+          ordered = Enum.map(nodes, fn {key, n} ->
+            {key, Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
+                                cells: thermal_cells(n.target)})}
           end)
+          edges = VoxelRegion.ThermalGeometry.contacts(nodes)
+          indices = ordered |> Enum.with_index() |> Map.new(fn {{cell, _}, i} -> {cell, i} end)
 
-        {nodes, state} =
-          VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2)
-
-        ordered = Map.to_list(nodes)
-        edges = VoxelRegion.ThermalGeometry.contacts(nodes)
-        indices = ordered |> Enum.with_index() |> Map.new(fn {{cell, _}, i} -> {cell, i} end)
-
-        {ordered, edges,
-         for({a, b, g} <- edges, do: {Map.fetch!(indices, a), Map.fetch!(indices, b), g}), state}
+          {ordered, edges,
+           for({a, b, g} <- edges, do: {Map.fetch!(indices, a), Map.fetch!(indices, b), g}),
+           solid_nodes, slots, state}
+        end
       end
 
     nodes_done = System.monotonic_time(:microsecond)
@@ -3200,6 +3216,9 @@ defmodule VoxelRegion.World do
         edges: edges,
         seeds: seeds,
         ordered: ordered,
+        attachment_cells: attachment_cells,
+        solid_nodes: solid_nodes,
+        thermal_slots: thermal_slots,
         indexed_edges: indexed_edges,
         builds: state.thermal_work.builds + MapSet.size(missing)
     }
@@ -3217,7 +3236,7 @@ defmodule VoxelRegion.World do
 
     duration =
       Enum.reduce(ordered, duration, fn {_, n}, dt ->
-        row = Map.get(state.damage, Damage.key(n.target))
+        row = Map.get(state.damage, n.damage_key)
 
         if row && Map.get(row, :burning, false) do
           min(dt, row.remaining_fuel_j / row.power_w)
@@ -3236,13 +3255,13 @@ defmodule VoxelRegion.World do
       Enum.map(ordered, fn {node_key, n} ->
         # Damage.key 含完整目标身份；已有记录直接读取，最终提交统一盖 seq/request_id。
         t =
-          case Map.fetch(state.damage, Damage.key(n.target)) do
+          case Map.fetch(state.damage, n.damage_key) do
             {:ok, t} -> t
             :error -> property_state(state, n.target)
           end
 
         temperature = Map.get(t, :temperature_kelvin, config["ambient_kelvin"])
-        cell = Damage.macro(t)
+        cell = n.cell
         source = if t.granularity == 0, do: Map.get(sources, cell)
 
         combustion = if Map.get(t, :burning, false), do: t.power_w, else: 0.0
@@ -3265,12 +3284,12 @@ defmodule VoxelRegion.World do
              n.material["heat_capacity_per_macro"] * 1.0, Phase.liquid?(t.material)}
           end
 
-        {{cell, t, temperature, electric, combustion},
+        {{cell, n.cells, t, temperature, electric, combustion},
          {{temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
           n.material["heat_resistance_kelvin"] * 1.0, n.exposed_faces * 1.0,
           electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0),
           abs(electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0)) * duration,
-          Enum.any?(thermal_cells(t), &MapSet.member?(state.thermal_work.hot, &1)) or
+          Enum.any?(n.cells, &MapSet.member?(state.thermal_work.hot, &1)) or
             source != nil or combustion > 0 or electric != 0},
           {ignition, phase, t.granularity in [1, 4]}}}
       end)
@@ -3291,7 +3310,7 @@ defmodule VoxelRegion.World do
     calculated = System.monotonic_time(:microsecond)
 
     {changes, sources, hot, losses, combustion_used} =
-      Enum.zip_reduce(targets, result, {[], %{}, [], %{}, 0.0}, fn {cell, t, old_temperature,
+      Enum.zip_reduce(targets, result, {[], %{}, [], %{}, 0.0}, fn {cell, target_cells, t, old_temperature,
                                                                     _electric, combustion},
                                                                    result,
                                                                    {changes, left, hot, losses,
@@ -3319,7 +3338,7 @@ defmodule VoxelRegion.World do
 
         hot =
           if abs(temperature - config["ambient_kelvin"]) > config["tolerance_kelvin"] or
-               Map.get(burned, :burning, false), do: thermal_cells(t) ++ hot, else: hot
+               Map.get(burned, :burning, false), do: target_cells ++ hot, else: hot
 
         pool = if t.granularity == 4, do: {3, t.incarnation}, else: {2, t.owner}
 

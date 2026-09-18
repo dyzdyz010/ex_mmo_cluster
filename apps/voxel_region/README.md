@@ -1,5 +1,12 @@
 # Voxim Region 真值
 
+2026-09-18（Global system，combined性能优化）：沿已有`thermal_work`可丢弃几何缓存，
+缓存附件宏格足迹及节点的Damage键/宏格/足迹；热域只添删空气且实体摘要、参与附件相等时复用接触图。
+依据本模块既有几何失效实现和[Elixir不可变Map契约](https://hexdocs.pm/elixir/Map.html)，
+静态派生值随编辑、附件变化、目录发布及冷恢复重建；不缓存温度、HP、燃料或焓，不改变NIF事件边界。
+直接复用原节点顺序和接触，避免浮点累加次序变化。验证采用8b5568cf逐节点/完整热账相对1e-12对照，
+空气扩域复用与实体编辑失效定向红绿；真实combined与部署证据见Voxim `Docs/R7/material-performance.md`。
+
 2026-09-18（Global system）：真实combined投料暴露旧CopperOre16设备被
 `not_a_circuit_face`拒绝。沿既有`Circuit.plan/7`“设备按安装工具参数、裸线按当前材料电导”
 契约及Voxim材料升级的旧设备保留决定，材料电导仅作为新安装前提；已有设备投料/开关
