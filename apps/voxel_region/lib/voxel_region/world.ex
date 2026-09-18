@@ -669,7 +669,7 @@ defmodule VoxelRegion.World do
                 Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
                   {:reply, {:error, :use_liquid_tool}, before}
 
-                not same_target?(target, request) ->
+                not same_tool_target?(target, request) ->
                   {:reply, {:error, :stale_target}, state}
 
                 true ->
@@ -3602,6 +3602,11 @@ defmodule VoxelRegion.World do
         acc
     end)
   end
+
+  # 权威射线决定实际微格和材料；实例操作不能穿透遮挡或跨代。
+  defp same_tool_target?(%{granularity: g} = hit, %{granularity: g} = request) when g in [1, 2],
+    do: hit.owner == request.owner and hit.incarnation == request.incarnation
+  defp same_tool_target?(hit, request), do: same_target?(hit, request)
 
   defp same_target?(a, b),
     do:

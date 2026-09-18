@@ -520,6 +520,26 @@ defmodule VoxelRegion.DamageWorldTest do
     World.place_prefab(c.w,:crypto.hash(:sha256,bytes),anchor,0)
   end
 
+  @tag :anchor_hit
+  test "同一叶子从相反方向命中不同材料仍用权威命中，错误实例被拒", c do
+    assert {:ok,1}=full_component(c,{8,8,16})
+    assert {:ok,front}=World.tool_intent(c.w,c.actor,c.request)
+    assert front.granularity==2
+    request=Map.merge(c.request,Map.take(front,[:micro,:granularity,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 1,client_intent_seq: 1})
+    GenServer.call(c.actor.player,{:eye,{3.0,1.0625,2.0625}})
+    request=%{request | direction: {-1.0,0.0,0.0}}
+    actor=Map.merge(c.actor,%{received_us: 1_000_000,clock_node: node()})
+    assert {:ok,_}=World.tool_intent(c.w,actor,request)
+    assert {:ok,result}=World.tool_intent(c.w,actor,%{request | action: 0})
+    assert result.owner==front.owner
+    assert result.material==19
+    refute result.micro==front.micro
+    assert result.hp==72.0
+    assert {:error,:stale_target}=World.tool_intent(c.w,%{actor | received_us: 2_000_000},
+      %{request | client_intent_seq: 2,owner: {999,0}})
+  end
+
   test "component health follows the leaf across hit positions and lethal damage removes all its materials", c do
     assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,2}=full_component(c,{8,8,24})
