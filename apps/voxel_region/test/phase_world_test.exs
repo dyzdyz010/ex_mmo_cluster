@@ -587,7 +587,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert_in_delta frozen.thermal.supplied_j+frozen.thermal.circuit_rejected_j+
       frozen.thermal.circuit_light_j,frozen.thermal.circuit_supplied_j,0.001
     assert :ok=World.compact(c.w)
-    # ????????????????????????????????????
+    # 只测试：冻结采样与停止边界，比较最后实际持久化状态。
     :ok=:sys.suspend(c.w)
     persisted=:sys.get_state(c.w)
     stop_supervised!(World)
