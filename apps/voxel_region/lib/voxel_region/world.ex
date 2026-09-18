@@ -3185,8 +3185,9 @@ defmodule VoxelRegion.World do
           for {slot, value, footprint} <- attachment_cells,
               Enum.any?(footprint, &MapSet.member?(cells, &1)), into: %{}, do: {slot, value}
 
-        # 热域只添删空气格时，实体节点和附件未变，不重复生成同一接触图。
-        if nodes == state.thermal_work.solid_nodes and slots == state.thermal_work.thermal_slots do
+        # 只添删热域时复用；旧域内的编辑失效仍重建，因无热容量宿主也会改变附件暴露面。
+        if MapSet.disjoint?(missing, state.thermal_work.cells) and
+             nodes == state.thermal_work.solid_nodes and slots == state.thermal_work.thermal_slots do
           {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
            nodes, slots, state}
         else
@@ -3194,9 +3195,13 @@ defmodule VoxelRegion.World do
           {nodes, state} =
             VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2)
 
+          # 默认记录仅由目录、配置和几何派生；已有温度/HP/燃料仍只读 state.damage。
+          defaults = %{state | damage: %{}}
           ordered = Enum.map(nodes, fn {key, n} ->
             {key, Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
-                                cells: thermal_cells(n.target)})}
+                                cells: thermal_cells(n.target), default: property_state(defaults, n.target),
+                                ignition: if(Combustion.combustible?(n.material),
+                                  do: n.material["ignition_kelvin"] * 1.0, else: nil)})}
           end)
           edges = VoxelRegion.ThermalGeometry.contacts(nodes)
           indices = ordered |> Enum.with_index() |> Map.new(fn {{cell, _}, i} -> {cell, i} end)
@@ -3257,7 +3262,7 @@ defmodule VoxelRegion.World do
         t =
           case Map.fetch(state.damage, n.damage_key) do
             {:ok, t} -> t
-            :error -> property_state(state, n.target)
+            :error -> %{n.default | seq: state.seq}
           end
 
         temperature = Map.get(t, :temperature_kelvin, config["ambient_kelvin"])
@@ -3270,9 +3275,9 @@ defmodule VoxelRegion.World do
 
         # World 声明事件与相变数值输入；NIF 在批内维护焓和温度，材质替换仍由 World 提交。
         ignition =
-          if Combustion.combustible?(n.material) and t.hp > 0 and
+          if n.ignition != nil and t.hp > 0 and
                not Map.get(t, :burning, false) and not fuel_exhausted?(t),
-            do: n.material["ignition_kelvin"] * 1.0,
+            do: n.ignition,
             else: nil
 
         phase =
@@ -3444,10 +3449,10 @@ defmodule VoxelRegion.World do
   # 点燃只消费实际温度；热源、电热和燃烧热共用接触导热，不另设火种邻接真值。
   defp ignite_heated_materials(state, damage, ordered) do
     # 不可燃材质不需要读取或构造默认损伤记录。
-    for {_, node} <- ordered, Combustion.combustible?(node.material), reduce: {damage, []} do
+    for {_, node} <- ordered, node.ignition != nil, reduce: {damage, []} do
       {rows, changed} ->
         material = node.material
-        target = Map.get_lazy(rows, Damage.key(node.target), fn -> property_state(state, node.target) end)
+        target = Map.get_lazy(rows, node.damage_key, fn -> %{node.default | seq: state.seq} end)
         if target.hp > 0 and
              not Map.get(target, :burning, false) and not fuel_exhausted?(target) and
              Map.get(target, :temperature_kelvin, state.thermal.config["ambient_kelvin"]) >= material["ignition_kelvin"] do

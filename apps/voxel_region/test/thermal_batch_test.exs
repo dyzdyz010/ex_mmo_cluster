@@ -133,6 +133,30 @@ defmodule VoxelRegion.ThermalBatchTest do
     end
   end
 
+  test "无热容量宿主变化仍刷新保留附件的暴露面" do
+    {w, initial, row} = latent_world()
+    slot = {0, 0, {8, 0, 0}}
+    face = row |> Map.merge(VoxelRegion.Attachments.identity(slot, {2, 19}))
+      |> Map.merge(%{granularity: 4, temperature_kelvin: 285.0}) |> Map.delete(:phase_energy_j)
+    specification = %{"material_units_per_micro" => 4096, "face_units" => 64, "edge_units" => 1,
+      "face_thickness_m" => 1 / 512, "line_section_m2" => 1 / (512 * 512)}
+    s = %{initial | properties: Map.put(initial.properties, :attachments, specification),
+      damage: %{VoxelRegion.Damage.key(face) => face},
+      overlay: initial.overlay |> Map.put({0, {0, 0, 0}}, {1, 1}) |> Map.put({0, {1, 0, 0}}, {1, 2}),
+      attachments: %{slot => {2, 19}},
+      thermal_work: %{initial.thermal_work | hot: MapSet.new([{0, 0, 0}, {1, 0, 0}])}}
+    {:noreply, warm} = VoxelRegion.World.handle_info(:thermal_commit, s)
+    key = VoxelRegion.ThermalAttachments.key(slot)
+    before = Map.new(warm.thermal_work.ordered)[key].exposed_faces
+    # 一侧宿主移除，另一侧继续支撑；两格热节点均为空，仍须重新裁剪暴露面。
+    edited = %{warm | overlay: Map.put(warm.overlay, {0, {1, 0, 0}}, {0, 3}),
+      thermal_work: %{warm.thermal_work | geometry: Map.delete(warm.thermal_work.geometry, {1, 0, 0})}}
+    {:noreply, next} = VoxelRegion.World.handle_info(:thermal_commit, edited)
+    after_area = Map.new(next.thermal_work.ordered)[key].exposed_faces
+    assert_in_delta after_area - before, 1 / 64, 1.0e-12
+    :sys.resume(w)
+  end
+
   test "潜热焓推进与邻接木材点燃在同一 World 批内结算" do
     {w, s, ice} = latent_world()
     wood = ice |> Map.merge(%{micro: {8, 0, 0}, incarnation: 2, material: 19, temperature_kelvin: 299.0})
