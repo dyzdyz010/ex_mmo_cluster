@@ -204,16 +204,21 @@ defmodule SceneServer.Movement.Player do
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
 
   defp input_start(%{state: value, ready: true, clock_ready: true, origin: nil, failure: nil} = state) when value != nil do
-    # 起始期限属于公共时钟；碰撞消费水位可能因建窗滞后，不能据它签发过去的期限。
+    # Hello13 固定 origin=anchor+30；旧碰撞水位先正常追上，不能签发已过期的接纳窗口。
     {_, clock_tick} = Clock.sample(state)
-    origin = clock_tick + 30
-    reliable(state, :control, %Session.InputStart{identity: state.identity,
-      anchor_tick: state.simulation_tick, transaction_seq: state.updates.transaction_seq,
-      collision_revision: state.simulation_revision, state: state.state, origin_tick: origin,
-      first_input_seq: 1, prediction_lead_ticks: 8})
-    fence(state)
-    character_event(state, state, :input_start, %{origin_tick: origin, clock_tick: clock_tick, content_version: state.content_version})
-    publish(%{state | origin: origin, slots: InputSlots.new(state.identity, origin)})
+    origin = state.simulation_tick + 30
+    lead_ticks = 8
+    if origin > clock_tick + lead_ticks do
+      reliable(state, :control, %Session.InputStart{identity: state.identity,
+        anchor_tick: state.simulation_tick, transaction_seq: state.updates.transaction_seq,
+        collision_revision: state.simulation_revision, state: state.state, origin_tick: origin,
+        first_input_seq: 1, prediction_lead_ticks: lead_ticks})
+      fence(state)
+      character_event(state, state, :input_start, %{origin_tick: origin, clock_tick: clock_tick, content_version: state.content_version})
+      publish(%{state | origin: origin, slots: InputSlots.new(state.identity, origin)})
+    else
+      state
+    end
   end
   defp input_start(state), do: state
 

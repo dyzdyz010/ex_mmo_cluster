@@ -241,8 +241,15 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     :atomics.put(ctx.clock, 1, 2_000_000)
     :ok = :sys.resume(player)
     assert_receive {:reliable, _, :control, %Session.TimeReply{server_tick: 120}}, 1000
-    assert_receive {:reliable, _, :control, %Session.InputStart{anchor_tick: 2, origin_tick: 150,
-      collision_revision: 1, first_input_seq: 1}}, 1000
+    Player.observe(player)
+    refute_receive {:reliable, _, :control, %Session.InputStart{}}, 0
+    tick(ctx, 121)
+    assert_receive {:reliable, _, :control, %Session.InputStart{
+      collision_revision: 1, first_input_seq: 1} = start}, 1000
+    assert start.origin_tick == start.anchor_tick + 30
+    assert start.origin_tick > 121 + start.prediction_lead_ticks
+    assert {:ok, bytes} = Session.Codec.encode(start)
+    assert {:ok, ^start} = Session.Codec.decode(bytes)
     assert Player.observe(player).processed_input_seq == 0
   end
 
