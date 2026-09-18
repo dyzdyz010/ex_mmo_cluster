@@ -230,6 +230,22 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     assert DynamicSupervisor.count_children(Scene.observe(ctx.scene).player_supervisor_pid).active == 1
   end
 
+  @tag :clock_start
+  test "input start deadline uses public clock when collision publication is delayed", ctx do
+    {player, _} = join(ctx, 1, 20, 1)
+    :ok = :sys.suspend(player)
+    Player.time_probe(player, identity(1), %Session.TimeProbe{request_id: 1, client_send_us: 1})
+    Player.ready(player, identity(1), 0, 1)
+    tick(ctx, 2)
+    # 只测试：模拟排队中的旧碰撞发布；公共时间继续走，不改历史状态。
+    :atomics.put(ctx.clock, 1, 2_000_000)
+    :ok = :sys.resume(player)
+    assert_receive {:reliable, _, :control, %Session.TimeReply{server_tick: 120}}, 1000
+    assert_receive {:reliable, _, :control, %Session.InputStart{anchor_tick: 2, origin_tick: 150,
+      collision_revision: 1, first_input_seq: 1}}, 1000
+    assert Player.observe(player).processed_input_seq == 0
+  end
+
   # Test-only：冷 bootstrap 的 Ready 与首批真实输入分别迟到，仍只积分原编号对应的历史步。
   test "slow bootstrap and delayed first records catch up without rebasing origin", ctx do
     {player, _} = join(ctx, 1, 20, 1)

@@ -7,6 +7,14 @@ owns one authenticated identity's InputSlots, state, simulation tick and ACK.
 workers, each owning a disjoint set of observers' derived AOI relations.
 Legacy actor/NPC callers below remain separate from this production path.
 
+2026-09-18：InputStart 的 30 tick 接纳窗口以 `Clock.sample/1` 的公共时间为基准，
+不能以 Player 滞后的碰撞消费水位为基准。历史 `anchor_tick`、碰撞 revision 与状态仍取
+已消费的真实历史；不重写历史、不跳输入号。依据是本模块现有 Clock 的唯一公共时间契约
+（TimeReply 已使用相同入口），不是扩大期限或隐藏客户端 reason=7。
+Voxim `snow-03` 中 anchor=181541、origin=181571，而发送时公共时钟已约181572；
+`Saved/R7/Harness/astra-clock-red-20260918-01` 的受控排队复现旧版 origin=32 落后公共120，
+`astra-clock-green-20260918-01` 修复后 origin=150，5 项 Player 回归通过。
+
 ## M4a 邻区只读复制增量
 
 两个 Scene 可引用同一个远端 Canonical World。Scene 的快照 worker 用
