@@ -1117,7 +1117,9 @@ defmodule VoxelRegion.DamageWorldTest do
     # 最后一个 region 事务在回执前已追加，重启重放不依赖在线检查点。
     txns=OverlayLog.File.replay(path)
     assert List.last(txns).seq==2
-    assert Enum.any?(List.last(txns).entries,&Map.has_key?(&1,:payload))
+    assert Enum.any?(List.last(txns).entries,&(Map.get(&1,:coord)=={1,1,3} and Map.get(&1,:material)==11))
+    assert Enum.any?(List.last(txns).entries,&Map.has_key?(&1,:structure))
+    structure=:sys.get_state(c.w).structure
     # 完整 afterimage 已含相同 core 的地形和结构，不应再构造/发送重复的 coarse。
     covered = for %{payload: bytes} <- List.last(txns).entries,into: MapSet.new() do
       {:ok,h}=Codec.decode_payload_header(bytes)
@@ -1130,6 +1132,7 @@ defmodule VoxelRegion.DamageWorldTest do
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert World.seq(w)==2
+    assert :sys.get_state(w).structure==structure
     GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,2.9}})
     assert {:ok,t}=World.tool_intent(w,c.actor,c.request)
     assert t.material==11
@@ -1197,8 +1200,22 @@ defmodule VoxelRegion.DamageWorldTest do
       {:ok,h}=Codec.decode_payload_header(bytes)
       {{h.level,h.region},bytes}
     end
-    assert map_size(afterimages)>1
+    # 只测试：混合地形/结构改动使用各自增量，不再要求结构触发完整粗层区域。
+    assert map_size(afterimages)==0
+    assert Enum.any?(txn.entries,&Map.has_key?(&1,:structure))
+    assert Enum.any?(txn.entries,&(Map.get(&1,:coord)=={1,63,3} and Map.get(&1,:material)==0))
     expected=Map.merge(expected,afterimages)
+    # 对结构格覆盖的所有边环取最终快照，后续与冷日志重放逐字节对照。
+    keys=for %{structure: _,level: l,cell: {x,y,z}} <- txn.entries,
+      rx <- Integer.floor_div(x-1,64)..Integer.floor_div(x+1,64),
+      ry <- Integer.floor_div(y-1,64)..Integer.floor_div(y+1,64),
+      rz <- Integer.floor_div(z-1,64)..Integer.floor_div(z+1,64),do: {l,{rx,ry,rz}}
+    expected=Enum.reduce(Enum.uniq(keys),expected,fn {level,region}=key,acc ->
+      request=Codec.encode_request(0,[%{level: level,region: region,have_seq: 0,have_hash: 0}]) |> IO.iodata_to_binary()
+      assert {:ok,reply}=World.serve(c.w,request)
+      assert {:ok,_,[{:payload,^level,^region,bytes}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+      Map.put(acc,key,bytes)
+    end)
     # 可丢弃缓存不得改变世界；强制冷物化须与增量构造逐字节相同。
     :sys.replace_state(c.w,fn s -> %{s | payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},
       lru_bytes: 0,resident_bytes: 0} end)
@@ -1206,6 +1223,13 @@ defmodule VoxelRegion.DamageWorldTest do
       request=Codec.encode_request(0,[%{level: level,region: region,have_seq: 0,have_hash: 0}])
         |> IO.iodata_to_binary()
       assert {:ok,reply}=World.serve(c.w,request)
+      assert {:ok,_,[{:payload,^level,^region,^bytes}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+    end
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    for {{level,region},bytes} <- expected do
+      request=Codec.encode_request(0,[%{level: level,region: region,have_seq: 0,have_hash: 0}]) |> IO.iodata_to_binary()
+      assert {:ok,reply}=World.serve(w,request)
       assert {:ok,_,[{:payload,^level,^region,^bytes}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
     end
   end

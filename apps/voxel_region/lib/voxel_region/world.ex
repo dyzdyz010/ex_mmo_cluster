@@ -1451,16 +1451,7 @@ defmodule VoxelRegion.World do
       {entries, state} = region_afterimages(state, l0_keys, terrain_payloads)
       region_count = length(entries)
 
-      entries =
-        entries ++
-          Enum.map(Enum.sort(structure_cells), fn {level, cell} = key ->
-            %{
-              seq: state.seq,
-              level: level,
-              cell: cell,
-              structure: Map.get(state.structure, key, <<>>)
-            }
-          end)
+      entries = entries ++ structure_entries(state, structure_cells)
 
       regions_done = System.monotonic_time(:microsecond)
       {state, metadata} = damage_geometry(before, state, cells, false)
@@ -1499,6 +1490,13 @@ defmodule VoxelRegion.World do
         ry <- floor_div(y - 1, 64)..floor_div(y + 1, 64),
         rz <- floor_div(z - 1, 64)..floor_div(z + 1, 64),
         do: {level, {rx, ry, rz}}
+  end
+
+  # 全局系统功能：结构增量与地形独立；空字节删除该格，消费者同时更新 core/ring。
+  defp structure_entries(state, cells) do
+    Enum.map(Enum.sort(cells), fn {level, cell} = key ->
+      %{seq: state.seq, level: level, cell: cell, structure: Map.get(state.structure, key, <<>>)}
+    end)
   end
 
   defp region_afterimages(state, keys, terrain_payloads, terrain_changes \\ []) do
@@ -2466,20 +2464,20 @@ defmodule VoxelRegion.World do
             cached = System.monotonic_time(:microsecond)
             terrain_payloads = Map.merge(before.payloads, state.payloads)
 
-            {state, structure_keys, _} =
+            {state, _structure_keys, structure_cells} =
               refresh_structure(
                 state,
                 Enum.uniq(Enum.map(geometry_changed, &elem(&1, 1)) ++ Attachments.macros(removed_slots))
               )
 
-            structure_keys =
+            afterimage_keys =
               Enum.uniq(
                 attachment_keys ++
-                  structure_keys ++ region_keys(Enum.map(removed_cells, &{0, &1})) ++ region_keys(liquid_dirty)
+                  region_keys(Enum.map(removed_cells, &{0, &1})) ++ region_keys(liquid_dirty)
               )
 
             structured = System.monotonic_time(:microsecond)
-            legacy = legacy and structure_keys == []
+            legacy = legacy and afterimage_keys == [] and structure_cells == []
 
             {txn, state} =
               if legacy do
@@ -2494,7 +2492,7 @@ defmodule VoxelRegion.World do
                 {%{seq: state.seq, coord: coord, material: material, coarse: coarse}, state}
               else
                 # afterimage 已包含该 core 的地形与结构；选择前排除，避免完整编码两次。
-                covered = MapSet.new(structure_keys)
+                covered = MapSet.new(afterimage_keys)
 
                 sparse =
                   Enum.reject(all, fn {level, cell} ->
@@ -2505,13 +2503,13 @@ defmodule VoxelRegion.World do
               end
 
             {txn, state} =
-              if structure_keys == [] do
+              if legacy do
                 {txn, state}
               else
                 {afterimages, state} =
-                  region_afterimages(state, structure_keys, terrain_payloads, all)
+                  region_afterimages(state, afterimage_keys, terrain_payloads, all)
 
-                {%{txn | entries: txn.entries ++ afterimages}, state}
+                {%{txn | entries: txn.entries ++ afterimages ++ structure_entries(state, structure_cells)}, state}
               end
 
             {state, metadata} =
@@ -2564,7 +2562,7 @@ defmodule VoxelRegion.World do
               region_count = Enum.count(Map.get(txn, :entries, []), &Map.has_key?(&1, :payload))
 
               Logger.info(
-                "voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
+                "voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} structure_cells=#{length(structure_cells)} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
               )
 
               {:ok, state}
@@ -4838,16 +4836,7 @@ defmodule VoxelRegion.World do
 
     {entries, state} = region_afterimages(state, keys, before.payloads)
 
-    entries =
-      entries ++
-        Enum.map(Enum.sort(structure_cells), fn {level, cell} = key ->
-          %{
-            seq: state.seq,
-            level: level,
-            cell: cell,
-            structure: Map.get(state.structure, key, <<>>)
-          }
-        end)
+    entries = entries ++ structure_entries(state, structure_cells)
 
     keys = Enum.uniq(keys ++ structure_keys)
     txn = Map.merge(%{coarse_txn | entries: entries ++ coarse_txn.entries}, settlement)

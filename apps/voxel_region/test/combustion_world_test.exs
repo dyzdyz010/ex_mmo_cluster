@@ -94,21 +94,41 @@ defmodule VoxelRegion.CombustionWorldTest do
     assert {:error,:insufficient_material}=World.production_intent(c.w,c.actor,build)
   end
 
-  test "精确微格燃尽删除所属叶子且不产生材料奖励",c do
+  for x <- [8, 512, 1024] do
+  @tag :tail_structure
+  test "精确微格燃尽删除所属叶子且不产生材料奖励 x=#{x}",c do
+    x = unquote(x)
+    micro = {x,8,16}
+    GenServer.call(c.actor.player,{:eye,{x/8+0.0625,1.0625,0.0625}})
     short_fuel(c)
-    {:ok,birth}=World.place_prefab(c.w,c.id,{8,8,16},0)
+    {:ok,birth}=World.place_prefab(c.w,c.id,micro,0)
     assert {:ok,_}=operate(c,9,1)
     tick(c.w)
+    before=:sys.get_state(c.w)
     saved=tick(c.w)
     refute Map.has_key?(saved.instances,{birth,0})
     assert saved.refined==%{}
-    assert row(c.w,{8,8,16})==nil
+    assert row(c.w,micro)==nil
     assert wood_balance(c.w)==0
     assert_in_delta saved.thermal.combustion_j,900.0/512,1.0e-8
+    # 只测试：烧毁走 apply_batch，粗层只发布空结构；跨区 L0 owner/ring 仍完整。
+    txn=saved.entries[saved.seq]
+    alias MmoContracts.Voxel.{Codec,Payload}
+    payloads=for %{payload: bytes} <- txn.entries,do: ( {:ok,p}=Payload.decode(bytes); p )
+    assert payloads != []
+    assert Enum.all?(payloads,&(&1.level==0 and &1.refined==%{}))
+    if x==512,do: assert(Enum.sort(Enum.map(payloads,& &1.region))==[{0,0,0},{1,0,0}])
+    structures=for %{structure: grid,level: l,cell: cell} <- txn.entries,into: %{},do: {{l,cell},grid}
+    assert structures==Map.new(before.structure,fn {key,_}->{key,<<>>} end)
+    assert map_size(structures)==5
+    assert {:ok,decoded}=Codec.decode_transaction(IO.iodata_to_binary(Codec.encode_transaction(txn)))
+    assert decoded.entries==txn.entries
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     assert :sys.get_state(w).damage==saved.damage
     assert :sys.get_state(w).refined==%{}
+    assert :sys.get_state(w).structure==%{}
+  end
   end
 
   test "木面槽按实际体积点燃与耗尽，删除附件而不删除宿主",c do

@@ -1,5 +1,14 @@
 # Voxim Region 真值
 
+2026-09-18（Global system，R7结构长尾）：`apply_batch`复用`prefab_reply`和`commit_attachment`
+既有kind2结构格契约，删除不再把粗层结构变化扩成完整区域CSR/压缩。依据为本仓权威
+`Codec.encode_entry`、`World.replay_entry`及Voxim `VoxelLodLevel::WriteStructure`源码：空结构删除，
+格坐标同时覆盖core/ring；三条提交入口共用`structure_entries`。真实地形仍经原选择器，
+L0 owner、液体和附件仍发所需完整区域；碰撞、同步持久化后发布顺序不变，不扩协议。
+Test-only证据在Voxim `Saved/R7/Harness/tail-fix-red-01`（3项红）及`tail-fix-green-02`
+（42项通过）：自然燃尽删除、L0/L1边界、混合地形/结构逐字节冷重放、液体/附件接缝。
+真实combined部署与结果见Voxim `Docs/R7/material-performance.md`，不以单测替代性能验收。
+
 2026-09-18（Global system，combined性能优化）：沿已有`thermal_work`可丢弃几何缓存，
 缓存附件宏格足迹及节点的Damage键/宏格/足迹；热域只添删空气且实体摘要、参与附件相等时复用接触图。
 旧域内编辑仍强制重新派生：无热容量宿主虽不产生节点，仍影响附件暴露面积。
