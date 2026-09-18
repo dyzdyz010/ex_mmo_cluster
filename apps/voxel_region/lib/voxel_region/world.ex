@@ -3742,7 +3742,8 @@ defmodule VoxelRegion.World do
            request.action == 1 and state.thermal != nil and target.granularity == 3 and
              elem(target.owner, 1) < 3,
          true <-
-           Map.get(state.properties.materials[target.material], "electrical_conductivity", 0) > 0,
+           tool["action"] != "circuit.install" or
+             Map.get(state.properties.materials[target.material], "electrical_conductivity", 0) > 0,
          {:ok, anchor, size} <-
            VoxelRegion.Circuit.shape(attachment_slots(state, target.incarnation)),
          {:ok, c, state, settlement} <-

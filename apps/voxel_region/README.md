@@ -1,5 +1,10 @@
 # Voxim Region 真值
 
+2026-09-18（Global system）：真实combined投料暴露旧CopperOre16设备被
+`not_a_circuit_face`拒绝。沿既有`Circuit.plan/7`“设备按安装工具参数、裸线按当前材料电导”
+契约及Voxim材料升级的旧设备保留决定，材料电导仅作为新安装前提；已有设备投料/开关
+仍走原身份、完整足迹、操作种类及精确燃料借记检查。不会恢复矿石线电导或回填储能。
+
 2026-09-17 Hello13 接缝回归：Voxim `phase13-green-02` 的真实 World 普通付费熔化暴露负初焓
 减加抵消：Basalt 仍差约7e−9J未到相变终点。依照实际读取的
 [Goldberg 浮点说明（Oracle）](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html)

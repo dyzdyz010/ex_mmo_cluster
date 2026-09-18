@@ -1532,6 +1532,7 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   for load_kind <- [3,5] do
+  @tag :circuit_material_update
   @tag :cold_coverage
   @tag :b5
   @tag :physical_units
@@ -1603,7 +1604,14 @@ defmodule VoxelRegion.DamageWorldTest do
     assert depleted.damage[{3,Enum.at(ids,2)}].circuit.power_w==0.0
     assert_in_delta depleted.thermal.circuit_supplied_j,60.0,1.0e-7
     assert_in_delta depleted.thermal.circuit_supplied_j,depleted.thermal.supplied_j+depleted.thermal.circuit_light_j+depleted.thermal.circuit_rejected_j,1.0e-7
+    # 目录失导只影响原料导线和新安装；已有设备仍按安装参数工作并正常付费投料。
+    nonconductive=update_in(data["materials"],&Enum.map(&1,fn m->Map.delete(m,"electrical_conductivity") end))
+    File.write!(c.catalog,Jason.encode!(nonconductive))
+    assert :ok=World.publish_parameters(w,c.catalog,:sys.get_state(w).properties.digest)
+    before_feed=balance(w,1001).balance
     assert {:ok,_}=use.(w,0,8,48)
+    assert balance(w,1001).balance==before_feed-16*4096
+    assert :sys.get_state(w).damage[{3,hd(ids)}].circuit.remaining_j==60.0
     funded=balance(w,1001).balance
     # 删除源的最后支撑会丢弃储能，既不返燃料，也不把储能转成热。
     assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
@@ -1615,7 +1623,11 @@ defmodule VoxelRegion.DamageWorldTest do
     assert new_id>hd(ids)
     request=Map.merge(c.request,%{granularity: 3,micro: {8,8,16},owner: {new_id,2},incarnation: new_id,material: 19,
       action: 1,tool_id: 3,request_id: 50,client_intent_seq: 50})
-    assert {:ok,_}=World.tool_intent(w,Map.merge(c.actor,%{received_us: 50_000_000,clock_node: node()}),request)
+    assert {:error,:not_a_circuit_face}=World.tool_intent(w,Map.merge(c.actor,%{received_us: 50_000_000,clock_node: node()}),request)
+    File.write!(c.catalog,Jason.encode!(data))
+    assert :ok=World.publish_parameters(w,c.catalog,:sys.get_state(w).properties.digest)
+    request=%{request | request_id: 51,client_intent_seq: 51}
+    assert {:ok,_}=World.tool_intent(w,Map.merge(c.actor,%{received_us: 51_000_000,clock_node: node()}),request)
     assert :sys.get_state(w).damage[{3,new_id}].circuit.remaining_j==0.0
   end
   end
