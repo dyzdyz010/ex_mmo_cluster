@@ -34,7 +34,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     tools=for {id,action} <- [{11,"liquid.scoop"},{12,"liquid.pour"}],do:
       %{"tool_id"=>id,"id"=>action,"action"=>action,"power"=>1,"range_macro"=>8,"interval_seconds"=>0.1,"liquid_transfer_units"=>@transfer}
     data=data |> Map.update!("tools",&(&1++tools)) |> Map.update!("tags",&(&1++Enum.map(tools,fn t->%{"id"=>t["action"]} end)))
-      |> Map.put("liquid",%{"step_seconds"=>3600,"gravity_units_per_step"=>@transfer,"side_units_per_step"=>div(@capacity,16)})
+      |> Map.put("liquid",%{"step_seconds"=>context[:cadence] || 3600,"gravity_units_per_step"=>@transfer,"side_units_per_step"=>div(@capacity,16),"side_threshold_units"=>context[:head] || 0})
     File.write!(catalog,Jason.encode!(data))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
     opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),log: Log,root: root,observer: self(),property_catalog_path: catalog,
@@ -71,6 +71,54 @@ defmodule VoxelRegion.LiquidWorldTest do
   defp quantities(w),do: World.simulation_snapshot(w,[1001],{{0,0,0},{2,1,1}}).liquid_quantities
   defp total(w),do: Enum.sum(Map.values(quantities(w)))+balance(w)
   defp tick(w),do: (send(w,:liquid_commit); World.seq(w))
+
+  @tag :empty_inventory
+  @tag cadence: 0.01
+  test "an actual scheduled liquid tick retires and is not periodically requeued",c do
+    :erlang.trace(c.w,true,[:receive])
+    assert {:ok,_}=World.apply_edits(c.w,[{{63,0,2},19}])
+    pid=c.w
+    assert_receive {:trace,^pid,:receive,:liquid_commit},1000
+    assert World.liquid_activity(c.w)==%{active_cells: 0,scheduled: false}
+    refute_receive {:trace,^pid,:receive,:liquid_commit},100
+    :erlang.trace(c.w,false,[:receive])
+  end
+
+  @tag :empty_inventory
+  @tag :legacy_water
+  test "undisturbed canonical source water is admitted without starting simulation",c do
+    assert quantities(c.w)==%{{63,1,2}=>@capacity}
+    assert World.liquid_activity(c.w)==%{active_cells: 0,scheduled: false}
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert World.liquid_activity(w)==%{active_cells: 0,scheduled: false}
+  end
+
+  @tag :empty_inventory
+  test "idle world has no liquid timer; geometry and finite author input wake it and a settled basin sleeps", c do
+    assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
+    walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
+    assert {:ok,_}=World.apply_edits(c.w,walls)
+    tick(c.w)
+    assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
+    supply=Path.join(c.root,"sleep-source.json")
+    File.write!(supply,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,1,2],material: 21}]}))
+    assert {:ok,_}=World.liquid_experiment(c.w,supply)
+    assert World.liquid_activity(c.w).scheduled
+    for _<-1..100, do: tick(c.w)
+    assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
+    prior=quantities(c.w)
+    assert {:ok,_}=World.apply_edits(c.w,[{{63,0,2},0}])
+    assert World.liquid_activity(c.w).scheduled
+    tick(c.w)
+    assert quantities(c.w)[{63,0,2}] > 0
+    assert Enum.sum(Map.values(quantities(c.w))) == Enum.sum(Map.values(prior))
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert World.liquid_activity(w).scheduled
+  end
 
   test "pour and scoop preserve finite inventory, dedupe and quantity-only region/ring commits",c do
     assert {:ok,seq}=transfer(c,3,10,{63,1,2})

@@ -43,6 +43,7 @@ defmodule VoxelRegion.World do
 
   def content_version(server \\ @name), do: GenServer.call(server, :content_version)
   def seq(server \\ @name), do: GenServer.call(server, :seq)
+  def liquid_activity(server), do: GenServer.call(server, :liquid_activity)
 
   @doc "唯一 canonical authority 的 PID，供区域视图共享世界身份。"
   def authority_ref(server \\ @name) do
@@ -430,6 +431,8 @@ defmodule VoxelRegion.World do
           attachment_owners: %{},
           # Global system: finite quantity is canonical state, never reconstructed from rendering.
           liquid_units: %{},
+          liquid_active: MapSet.new(),
+          liquid_timer: nil,
           # Test-only first-slice domain; the demo supplies its closed experimental bounds.
           liquid_bounds: Keyword.get(opts, :liquid_bounds, Application.get_env(:voxel_region, :liquid_bounds)),
           damage: %{},
@@ -488,7 +491,7 @@ defmodule VoxelRegion.World do
           "voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}"
         )
 
-        if liquid_enabled?(state), do: schedule_liquid(state)
+        state = schedule_liquid(state)
         if state.thermal, do: Process.send_after(self(), :thermal_commit, 500)
         {:ok, state}
 
@@ -500,6 +503,8 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
+  def handle_call(:liquid_activity, _from, state), do:
+    {:reply, %{active_cells: MapSet.size(state.liquid_active), scheduled: state.liquid_timer != nil}, state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
   def handle_call({:prepare, keys}, {caller, _}, state) do
@@ -957,9 +962,10 @@ defmodule VoxelRegion.World do
 
   @impl true
   def handle_info(:liquid_commit, state) do
-    state = advance_liquid(state)
-    schedule_liquid(state)
-    {:noreply, state}
+    if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
+    active = state.liquid_active
+    state = advance_liquid(%{state | liquid_active: MapSet.new(), liquid_timer: nil}, active)
+    {:noreply, schedule_liquid(state)}
   end
 
   def handle_info(:thermal_commit, state) do
@@ -1483,6 +1489,7 @@ defmodule VoxelRegion.World do
           end)
       end)
 
+    state = wake_liquid(state, cells)
     {state, attachment_keys, settlement} = prune_attachments(before, state, cells, settlement)
 
     with {:ok, state, settlement} <- prefab_payment(before, state, cells, settlement) do
@@ -1520,7 +1527,7 @@ defmodule VoxelRegion.World do
             "fanout_us=#{System.monotonic_time(:microsecond) - log_done}"
         )
 
-        {:reply, {:ok, state.seq}, state}
+        {:reply, {:ok, state.seq}, schedule_liquid(state)}
       else
         {:error, reason} -> {:reply, {:error, reason}, before}
       end
@@ -1839,7 +1846,8 @@ defmodule VoxelRegion.World do
       Map.merge(txn, %{
         attachment_serial: state.attachment_serial,
         attachment_owners: state.attachment_owners,
-        material_units_per_micro: state.material_units_per_micro
+        material_units_per_micro: state.material_units_per_micro,
+        liquid_active: Enum.to_list(state.liquid_active)
       })
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
@@ -2350,6 +2358,7 @@ defmodule VoxelRegion.World do
     started = System.monotonic_time(:microsecond)
     {phase_values, settlement} = Map.pop(settlement, :phase_values, %{})
     {liquid_changes, settlement} = Map.pop(settlement, :liquid_changes, %{})
+    {liquid_wake, settlement} = Map.pop(settlement, :liquid_wake, true)
     liquid_dirty = Enum.map(Map.keys(liquid_changes), &{0,&1})
     state = %{state | liquid_units: Liquid.apply_changes(state.liquid_units, liquid_changes)}
 
@@ -2405,6 +2414,7 @@ defmodule VoxelRegion.World do
 
       {geometry_changed, state} ->
         changed = Enum.uniq(geometry_changed ++ liquid_dirty)
+        state = if liquid_wake, do: wake_liquid(state, Enum.map(changed, &elem(&1,1))), else: state
         # Quantity-only changes require a new seq and full owner/ring afterimages,
         # but never a fresh solid identity, HP invalidation or collision edit.
         case reduce_batch(
@@ -2532,7 +2542,7 @@ defmodule VoxelRegion.World do
                 "voxel_region transaction seq=#{state.seq} canonical=#{length(changed)} reduced=#{visits} changed=#{length(all)} regions=#{region_count} structure_cells=#{length(structure_cells)} bytes=#{IO.iodata_length(if legacy, do: Codec.encode_entry(txn), else: Codec.encode_transaction(txn))} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
               )
 
-              {:ok, state}
+              {:ok, schedule_liquid(state)}
             end
         end
     end
@@ -4013,6 +4023,7 @@ defmodule VoxelRegion.World do
         attachment_owners: Map.get(txn, :attachment_owners, state.attachment_owners),
         material_units_per_micro:
           Map.get(txn, :material_units_per_micro, state.material_units_per_micro),
+        liquid_active: MapSet.new(Map.get(txn, :liquid_active, Liquid.neighborhood(Map.keys(state.liquid_units)))),
         thermal: Map.get(txn, :thermal, state.thermal),
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_balances:
@@ -4207,14 +4218,29 @@ defmodule VoxelRegion.World do
   # Global system: material21 and its finite units share the existing World commit.
   defp liquid_enabled?(state), do: state.liquid_bounds != nil and state.properties != nil and Map.get(state.properties, :liquid) != nil
   defp liquid_capacity(state), do: state.material_units_per_micro * @micro * @micro * @micro
-  defp schedule_liquid(state), do: Process.send_after(self(), :liquid_commit, max(1, round(state.properties.liquid["step_seconds"] * 1000)))
+  defp schedule_liquid(state) do
+    if liquid_enabled?(state) and state.liquid_timer == nil and MapSet.size(state.liquid_active) > 0 do
+      %{state | liquid_timer: Process.send_after(self(), :liquid_commit,
+        max(1, round(state.properties.liquid["step_seconds"] * 1000)))}
+    else
+      state
+    end
+  end
+
+  defp wake_liquid(state, cells) do
+    if liquid_enabled?(state) do
+      active = cells |> Liquid.neighborhood() |> Enum.filter(&liquid_inside?(&1, state.liquid_bounds)) |> MapSet.new()
+      %{state | liquid_active: MapSet.union(state.liquid_active, active)}
+    else
+      state
+    end
+  end
   defp liquid_inside?({x,y,z}, {{lx,ly,lz},{hx,hy,hz}}), do: x>=lx and x<hx and y>=ly and y<hy and z>=lz and z<hz
 
   defp enable_liquid(before, state) do
     if not liquid_enabled?(before) and liquid_enabled?(state) do
       state=adopt_liquid_sources(state)
       schedule_liquid(state)
-      state
     else
       state
     end
@@ -4227,7 +4253,7 @@ defmodule VoxelRegion.World do
     cells=for x<-lx..(hx-1),y<-ly..(hy-1),z<-lz..(hz-1),do: {x,y,z}
     {_open,water,state}=liquid_cells(state,cells)
     changes=Map.drop(water,Map.keys(state.liquid_units))
-    {:ok,state}=commit_liquid(state,changes,%{})
+    {:ok,state}=commit_liquid(state,changes,%{liquid_wake: false})
     state
   end
 
@@ -4339,21 +4365,23 @@ defmodule VoxelRegion.World do
     apply_batch(state,edits++extra_edits,false,settlement,owners,attachments)
   end
 
-  defp advance_liquid(state) do
-    Enum.reduce([21,22],state,&advance_liquid(&2,&1))
+  defp advance_liquid(state, active) do
+    Enum.reduce([21,22],state,&advance_liquid(&2,&1,active))
   end
 
-  defp advance_liquid(state,material) do
+  defp advance_liquid(state,material,active) do
     # Two stages need the downward cell and the horizontal neighbors of both levels.
-    cells=for {x,y,z} <- Map.keys(state.liquid_units), dy <- [0,-1],
+    cells=for {x,y,z} <- active, dy <- [0,-1],
       {dx,dz} <- [{0,0},{-1,0},{1,0},{0,-1},{0,1}],
       cell={x+dx,y+dy,z+dz}, liquid_inside?(cell,state.liquid_bounds), do: cell
     {open,water,state}=liquid_cells(state,cells,material)
     config=state.properties.liquid
     {changes,stages}=Liquid.step_transfers(water,state.liquid_bounds,liquid_capacity(state),
-      config["gravity_units_per_step"],config["side_units_per_step"],&Map.get(open,&1,false))
+      config["gravity_units_per_step"],config["side_units_per_step"],&Map.get(open,&1,false),
+      Map.get(config,"side_threshold_units",0),active)
     {values,state}=phase_values(state,Map.keys(water))
     {changes,values}=if phase_enabled?(state),do: Phase.transport_stages(values,water,changes,stages),else: {changes,%{}}
+    state = %{state | liquid_active: MapSet.union(state.liquid_active, Liquid.next_active(stages))}
     case commit_liquid(state,changes,%{phase_values: values,liquid_material: material}) do
       {:ok,next}->next
       {:error,reason}->Logger.error("voxel_liquid_commit failed=#{inspect(reason)}"); state

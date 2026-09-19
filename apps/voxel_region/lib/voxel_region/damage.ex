@@ -151,6 +151,8 @@ defmodule VoxelRegion.Damage do
     if liquid do
       capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro
       true = is_number(liquid["step_seconds"]) and liquid["step_seconds"] > 0
+      threshold = Map.get(liquid,"side_threshold_units",0)
+      true = is_integer(threshold) and threshold >= 0 and threshold <= capacity
       true = Enum.all?(~w(gravity_units_per_step side_units_per_step),
         &(is_integer(liquid[&1]) and liquid[&1] > 0 and liquid[&1] <= capacity))
     end

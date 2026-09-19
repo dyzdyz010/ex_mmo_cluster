@@ -24,9 +24,10 @@ defmodule VoxelRegion.Liquid do
   end
 
   # Global system: expose the actual fluxes for thermal/integrity advection.
-  def step_transfers(water, bounds, capacity, gravity_limit, side_limit, open?) do
+  def step_transfers(water, bounds, capacity, gravity_limit, side_limit, open?, threshold \\ 0, active \\ nil) do
+    sources = if active == nil, do: water, else: Map.take(water, Enum.to_list(active))
     {gravity, down} =
-      Enum.reduce(water, {%{}, []}, fn {{x, y, z} = from, quantity}, {deltas, flows} ->
+      Enum.reduce(sources, {%{}, []}, fn {{x, y, z} = from, quantity}, {deltas, flows} ->
         to = {x, y - 1, z}
 
         if available?(to, bounds, open?) and open?.(from) do
@@ -39,9 +40,10 @@ defmodule VoxelRegion.Liquid do
 
     fallen = apply_changes(water, offsets(water, gravity))
 
+    side_cells = if active == nil, do: Map.keys(fallen),
+      else: Enum.uniq(Enum.to_list(active) ++ Map.keys(gravity))
     {sides, sideways} =
-      fallen
-      |> Map.keys()
+      side_cells
       |> Enum.flat_map(fn {x, y, z} = cell ->
         for neighbor <- [{x - 1, y, z}, {x + 1, y, z}, {x, y, z - 1}, {x, y, z + 1}] do
           if cell < neighbor, do: {cell, neighbor}, else: {neighbor, cell}
@@ -51,7 +53,7 @@ defmodule VoxelRegion.Liquid do
       |> Enum.reduce({%{}, []}, fn {a, b}, {deltas, flows} ->
         if available?(a, bounds, open?) and available?(b, bounds, open?) do
           difference = Map.get(fallen, a, 0) - Map.get(fallen, b, 0)
-          flow = min(div(abs(difference), 8), side_limit)
+          flow = min(div(max(abs(difference) - threshold, 0), 8), side_limit)
           {from,to} = if difference > 0, do: {a,b}, else: {b,a}
           {flux(deltas,from,to,flow), transfer(flows,from,to,flow)}
         else
@@ -64,6 +66,20 @@ defmodule VoxelRegion.Liquid do
     |> Map.new(fn {cell, _} -> {cell, Map.get(next, cell, 0)} end)
     |> Map.reject(fn {cell, quantity} -> Map.get(water, cell, 0) == quantity end)
     {changes, [{water, down}, {fallen, sideways}]}
+  end
+
+  @doc "Changed cells and their six neighbors are the only next-step candidates."
+  def neighborhood(cells) do
+    cells |> Enum.flat_map(fn {x,y,z}=p ->
+      [p,{x-1,y,z},{x+1,y,z},{x,y-1,z},{x,y+1,z},{x,y,z-1},{x,y,z+1}]
+    end) |> MapSet.new()
+  end
+
+  @doc "Actual flow endpoints also wake when opposing stage fluxes cancel the net quantity change."
+  def next_active(stages) do
+    stages |> Enum.flat_map(fn {_,flows} ->
+      Enum.flat_map(flows,fn {from,to,_} -> [from,to] end)
+    end) |> neighborhood()
   end
 
   @doc "盛水：从一个宏格转入既有材料余额；limit 是工具每次最多转移的库存量子。"
