@@ -345,6 +345,7 @@ defmodule VoxelRegion.WorldTest do
       if h.level == 0, do: assert(13 + byte_size(e.payload) < length(edits) * 28)
     end
     assert length(txn.coarse) == length(Enum.uniq_by(txn.coarse, &{&1.level,&1.cell}))
+    # 只测试白盒：压缩分支的字节成本选择算法，需比较内部稀疏候选与最终协议字节；不是材料行为观察。
     for {{level,region},values} <- Enum.group_by(:sys.get_state(:batch).overlay,fn {{lv,{x,y,z}},_} ->
       {lv,{Integer.floor_div(x,64),Integer.floor_div(y,64),Integer.floor_div(z,64)}}
     end), region == {0,0,0} do

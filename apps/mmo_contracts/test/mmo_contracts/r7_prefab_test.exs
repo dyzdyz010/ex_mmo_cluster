@@ -2,6 +2,38 @@ defmodule MmoContracts.R7PrefabTest do
   use ExUnit.Case, async: true
   alias MmoContracts.Voxel.{Codec, Payload}
 
+  # 只测试：纯 Payload/Skins 协议，不启动 World、角色、目录或 prefab。
+  test "packed CSR records and value overrides produce identical complete bytes" do
+    import Bitwise
+    alias MmoContracts.Voxel.Skins
+    ids = Enum.reduce(0..5,0,fn face,acc -> acc ||| ((face+1) <<< (face*8)) end)
+    bare = %Payload{level: 1,region: {0,0,0},map_extent: 2,cells: :binary.copy(<<19::16-little>>,66*66*66)}
+    for mask <- 0..63, uniform <- [false,true] do
+      maps = for face <- 0..5, into: <<>>, do: if(uniform,do: :binary.copy(<<face+1>>,4),else: <<1,2,3,4>>)
+      fmi = for face <- 0..5, (mask &&& (1 <<< face)) != 0, into: <<>>, do: <<face::16-little>>
+      p = %{bare | records: %{{2,3,4}=>{ids,mask,0},{4,3,4}=>{ids,mask,0}},fmi: fmi,maps: maps}
+      edits = %{{4,3,4}=>{19,Skins.uniform(19)},{1,3,4}=>{19,Payload.skins(p,{2,3,4},19)}}
+      expected = Map.put(edits,{2,3,4},{19,Payload.skins(p,{2,3,4},19)})
+      assert Payload.encode(p,edits,7,123) == Payload.encode(bare,expected,7,123)
+    end
+  end
+
+  test "packed skins preserve every mask and canonicalize uniform maps" do
+    import Bitwise
+    ids = Enum.reduce(0..5,0,fn face,acc -> acc ||| ((face+1) <<< (face*8)) end)
+    for mask <- 0..63, uniform <- [false,true] do
+      maps = for face <- 0..5, into: <<>>, do: if(uniform,do: :binary.copy(<<face+1>>,4),else: <<face+1,9,8,7>>)
+      indices = for face <- 0..5, (mask &&& (1 <<< face)) != 0, into: <<>>, do: <<face::16-little>>
+      p = %Payload{records: %{{1,2,3} => {ids,mask,1}},map_extent: 2,fmi: <<5::16-little,indices::binary>>,maps: maps}
+      faces = for face <- 0..5 do
+        texels = if (mask &&& (1 <<< face)) != 0,do: binary_part(maps,face*4,4),else: nil
+        {face+1,texels}
+      end
+      assert Payload.skins(p,{1,2,3},19) == MmoContracts.Voxel.Skins.canonical({2,List.to_tuple(faces)})
+      assert Payload.skins(p,{4,5,6},19) == MmoContracts.Voxel.Skins.uniform(19)
+    end
+  end
+
   test "accepted payload unpacking shares raw and compressed decoding; boundary still checks hash" do
     p = %Payload{cells: :binary.copy(<<0, 0>>, 66 * 66 * 66)}
     bytes = Payload.encode(p, %{}, 9, 123)

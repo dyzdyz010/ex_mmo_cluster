@@ -322,7 +322,8 @@ defmodule VoxelRegion.GeneratedStoreTest do
     old_material = Payload.material(payload, {33, surface_y, 33})
     new_material = if old_material == 23, do: 22, else: 23
     l1_region = {div(elem(coord, 0), 128), div(elem(coord, 1), 128), div(elem(coord, 2), 128)}
-    store = :sys.get_state(:corrupt_coarse_world).source_state
+    # 只测试缓存损坏：独立打开同一个夹具源，仅损坏可重建的磁盘缓存。
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
     assert {:ok, coarse, _header} = GeneratedStore.read(store, 1, l1_region)
     coarse_path = GeneratedStore.path(store, 1, l1_region)
     prefix_size = byte_size(coarse) - 1
@@ -351,7 +352,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert {:ok, payload0} = Payload.decode_body(raw0)
     assert header0.seq == 0
 
-    store = :sys.get_state(:generated_world).source_state
+    {:ok, store} = GeneratedStore.open(opts)
     cache_path = GeneratedStore.path(store, 0, region)
     File.rm!(cache_path)
     assert {:ok, ^bytes0, _header} = GeneratedStore.read(store, 0, region)
@@ -399,7 +400,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
       )
 
     cv = World.content_version(:cold_world)
-    store = :sys.get_state(:cold_world).source_state
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
     # 地表所在的 L0 行（mixed，需要在线生成）：两个请求者同时要同一块 + 各自一块。
     [ry | _] = Native.mixed_rows(0, GeneratedStore.bounds(store, 0, {0, 0}), store.config)

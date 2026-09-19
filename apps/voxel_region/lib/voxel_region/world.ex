@@ -21,7 +21,7 @@ defmodule VoxelRegion.World do
   source 失败不 fallback。
   """
 
-  alias VoxelRegion.{Attachments, ThermalWork}
+  alias VoxelRegion.{Attachments, ThermalWork, LogProjection}
   use GenServer
   require Logger
   import Bitwise
@@ -184,6 +184,14 @@ defmodule VoxelRegion.World do
     prepare(server, Enum.uniq(Enum.map(cells, &{0, region_of(&1)})))
     GenServer.call(server, {:material_snapshot, characters, cells}, 300_000)
   end
+
+  @doc """
+  全局系统功能：同一提交点的角色材料/相态库存、指定范围属性和有限液体数量。
+  box 沿既有 canonical 的 region 半开范围；不生成区域、不初始化模拟、不返回配置或缓存。
+  thermal_accounting 是整个世界累计结算账；做守恒比较的调用方必须独占该世界。
+  """
+  def simulation_snapshot(server, characters, box),
+    do: GenServer.call(server, {:simulation_snapshot, characters, box})
 
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server, actor, request) do
@@ -453,6 +461,7 @@ defmodule VoxelRegion.World do
           overlay_regions: %{},
           seq: 0,
           entries: %{},
+          entry_regions: %{},
           subs: %{},
           canonical_subs: %{},
           replica_subs: %{},
@@ -611,11 +620,23 @@ defmodule VoxelRegion.World do
         end)
       {%{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots}, s}
     end)
-    balances = for {{cid, material}, units} <- Enum.sort(state.material_balances), cid in characters,
-      do: %{character: cid, material: material, units: units}
+    balances = balance_projection(state.material_balances, characters)
     snapshot = %{seq: state.seq,
       catalog: if(state.properties, do: Base.encode16(state.properties.digest, case: :lower), else: nil),
       capacity_units: liquid_capacity(state), material_balances: balances, probe_occupancy: occupancy}
+    {:reply, snapshot, state}
+  end
+
+  def handle_call({:simulation_snapshot, characters, box}, _, state) do
+    in_box = &VoxelRegion.PropertyObservation.contains?(&1, box)
+    properties = property_snapshot(state, box)
+    snapshot = Map.merge(properties, %{
+      seq: state.seq,
+      material_balances: balance_projection(state.material_balances, characters),
+      liquid_quantities: Map.filter(state.liquid_units, fn {cell, _} -> in_box.(cell) end),
+      phase_inventory: Map.filter(state.phase_inventory, fn {{cid, _}, _} -> cid in characters end),
+      thermal_accounting: thermal_accounting(state.thermal, in_box)
+    })
     {:reply, snapshot, state}
   end
 
@@ -990,36 +1011,30 @@ defmodule VoxelRegion.World do
         key = {level, region}
         known = Map.get(state.served_headers, key) == {have_seq, have_hash}
 
-        previous =
-          state.entries
-          |> Enum.filter(fn {seq, _} -> seq > have_seq end)
-          |> Enum.sort_by(&elem(&1, 0))
-
-        transactions = Enum.map(previous, fn {_, e} -> VoxelRegion.LogProjection.region(e, level, region) end)
-        has_region = Enum.any?(transactions, &(&1 == :region))
-
-        transactions =
-          Enum.reject(transactions, &(&1 != :region and &1.entries == [] and &1.coarse == []))
-
         served = %{
           state
           | served_headers: Map.put(state.served_headers, key, {header.seq, header.hash})
         }
 
-        if client_version == state.cv and header.hash == have_hash and header.seq == have_seq do
-          {{:unchanged, level, region}, served}
-        else
-          entry_reply = {:entries, level, region, transactions}
-          payload_reply = {:payload, level, region, bytes}
+        cond do
+          client_version == state.cv and header.hash == have_hash and header.seq == have_seq ->
+            {{:unchanged, level, region}, served}
 
-          if client_version == state.cv and have_seq > 0 and known and not has_region and
-               transactions != [] and
-               IO.iodata_length(Codec.encode_reply(state.cv, [entry_reply])) <
-                 IO.iodata_length(Codec.encode_reply(state.cv, [payload_reply])) do
-            {entry_reply, state}
-          else
-            {payload_reply, served}
-          end
+          client_version != state.cv or have_seq == 0 or not known ->
+            {{:payload, level, region, bytes}, served}
+
+          true ->
+            transactions = LogProjection.since(state.entry_regions, state.entries, level, region, have_seq)
+            entry_reply = {:entries, level, region, transactions}
+            payload_reply = {:payload, level, region, bytes}
+
+            if transactions != :region and transactions != [] and
+                 IO.iodata_length(Codec.encode_reply(state.cv, [entry_reply])) <
+                   IO.iodata_length(Codec.encode_reply(state.cv, [payload_reply])) do
+              {entry_reply, state}
+            else
+              {payload_reply, served}
+            end
         end
 
       {:error, :missing, state} ->
@@ -1494,7 +1509,7 @@ defmodule VoxelRegion.World do
            collision_done = System.monotonic_time(:microsecond),
            :ok <- append_log(state, txn) do
         log_done = System.monotonic_time(:microsecond)
-        state = %{state | entries: Map.put(state.entries, state.seq, txn)}
+        state = remember_entry(state, txn)
         fanout(state, txn)
         fanout_canonical(state, txn, chunks, keys, before)
 
@@ -1514,13 +1529,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp region_keys(cells) do
-    for {level, {x, y, z}} <- cells,
-        rx <- floor_div(x - 1, 64)..floor_div(x + 1, 64),
-        ry <- floor_div(y - 1, 64)..floor_div(y + 1, 64),
-        rz <- floor_div(z - 1, 64)..floor_div(z + 1, 64),
-        do: {level, {rx, ry, rz}}
-  end
+  defp region_keys(cells), do: LogProjection.region_keys(cells)
 
   # 全局系统功能：结构增量与地形独立；空字节删除该格，消费者同时更新 core/ring。
   defp structure_entries(state, cells) do
@@ -1833,10 +1842,16 @@ defmodule VoxelRegion.World do
         material_units_per_micro: state.material_units_per_micro
       })
 
+  # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
+  defp remember_entry(state, txn) do
+    %{state | entries: Map.put(state.entries, txn.seq, txn),
+      entry_regions: LogProjection.index(state.entry_regions, txn)}
+  end
+
   defp replay_log(%{log: {backend, handle}} = state) do
     Enum.reduce(backend.replay(handle), state, fn txn, s ->
       s = replay_entry(s, txn) |> replay_damage(txn)
-      %{s | seq: max(s.seq, txn.seq), entries: Map.put(s.entries, txn.seq, txn)}
+      remember_entry(%{s | seq: max(s.seq, txn.seq)}, txn)
     end)
   end
 
@@ -1938,6 +1953,23 @@ defmodule VoxelRegion.World do
 
       {:ok, snapshot, state}
     end
+  end
+
+  defp balance_projection(balances, characters) do
+    for {{cid, material}, units} <- Enum.sort(balances), cid in characters,
+      do: %{character: cid, material: material, units: units}
+  end
+
+  defp thermal_accounting(nil, _in_box), do: nil
+  defp thermal_accounting(thermal, in_box) do
+    ledger = Map.take(thermal, [:active, :elapsed_s, :supplied_j, :environment_j,
+      :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,
+      :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_light_j,
+      :circuit_rejected_j, :circuit_cooling_j, :circuit_removed_j, :parameter_rebase_j,
+      :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units])
+    sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
+      do: {cell, Map.take(source, [:remaining_j, :power_w])}
+    Map.put(ledger, :sources, sources)
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
@@ -2479,7 +2511,7 @@ defmodule VoxelRegion.World do
                  collided = System.monotonic_time(:microsecond),
                  :ok <- append_log(state, txn) do
               appended = System.monotonic_time(:microsecond)
-              state = %{state | entries: Map.put(state.entries, state.seq, txn)}
+              state = remember_entry(state, txn)
               fanout(state, txn)
 
               fanout_canonical(
@@ -2714,7 +2746,7 @@ defmodule VoxelRegion.World do
           s
       end)
 
-    %{state | entries: %{state.seq => txn}}
+    remember_entry(%{state | entries: %{}, entry_regions: %{}}, txn)
   end
 
   # no-op 不追加日志；只向发起连接确认当前游标，排在此连接已有的 World 消息之后。
@@ -3195,7 +3227,7 @@ defmodule VoxelRegion.World do
     start = System.monotonic_time(:microsecond)
     :ok = append_log(state, txn)
     persisted = System.monotonic_time(:microsecond)
-    state = %{state | entries: Map.put(state.entries, state.seq, txn)}
+    state = remember_entry(state, txn)
     fanout(state, txn)
     fanout_canonical(state, txn, [], [], state)
     broadcast = System.monotonic_time(:microsecond)
@@ -3505,7 +3537,7 @@ defmodule VoxelRegion.World do
 
                 case append_log(state, txn) do
                   :ok ->
-                    state = %{state | entries: Map.put(state.entries, state.seq, txn)}
+                    state = remember_entry(state, txn)
                     fanout(state, txn)
                     fanout_canonical(state, txn, [], [], state)
 
@@ -3557,7 +3589,7 @@ defmodule VoxelRegion.World do
 
       case append_log(next, txn) do
         :ok ->
-          next = %{next | entries: Map.put(next.entries, next.seq, txn)}
+          next = remember_entry(next, txn)
           fanout(next, txn)
           fanout_canonical(next, txn, [], [], before)
 
@@ -3747,7 +3779,7 @@ defmodule VoxelRegion.World do
 
     case append_log(next, txn) do
       :ok ->
-        next = %{next | entries: Map.put(next.entries, next.seq, txn)}
+        next = remember_entry(next, txn)
         fanout(next, txn)
         fanout_canonical(next, txn, [], [], before)
 
@@ -3809,7 +3841,7 @@ defmodule VoxelRegion.World do
 
         case append_log(next, txn) do
           :ok ->
-            next = %{next | entries: Map.put(next.entries, next.seq, txn)}
+            next = remember_entry(next, txn)
             fanout(next, txn)
             fanout_canonical(next, txn, [], [], before)
 
@@ -4398,7 +4430,7 @@ defmodule VoxelRegion.World do
       txn = %{seq: next.seq, entries: [], coarse: [], property_states: rows, thermal: thermal}
       case append_log(next, txn) do
         :ok ->
-          next = %{next | entries: Map.put(next.entries, next.seq, txn)}
+          next = remember_entry(next, txn)
           fanout(next, txn)
           fanout_canonical(next, txn, [], [], state)
           Logger.info("voxel_parameter_publication seq=#{next.seq} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0}")
@@ -4522,7 +4554,7 @@ defmodule VoxelRegion.World do
 
     case append_log(state, txn) do
       :ok ->
-        state = %{state | entries: Map.put(state.entries, state.seq, txn)}
+        state = remember_entry(state, txn)
         fanout(state, txn)
         fanout_canonical(state, txn, [], keys, before)
 

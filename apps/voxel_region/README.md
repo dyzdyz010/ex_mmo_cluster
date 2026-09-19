@@ -1,5 +1,61 @@
 # Voxim Region 真值
 
+2026-09-20 区域读取阻塞修复（Global system；验证为 Test-only）：已实遇每次
+`serve_item` 在分支选择前扫描、排序、投影全历史，阻塞同一 authority mailbox。
+先让 unchanged、首次完整载荷、版本或已知基线不匹配直接返回；只有真正增量才查询区域序号索引。
+索引只存完整三维区域的事务序号，由正式提交、日志重放和压实同步派生；事务正文仍只存 `entries`，
+不删除历史、不另建权威进程、不并发提交。依据
+[OTP gb_trees](https://www.erlang.org/doc/apps/stdlib/gb_trees.html#iterator_from/2) 的有序游标和
+[GenServer](https://hexdocs.pm/elixir/GenServer.html) 的 owner 串行回调契约，增量从 have_seq 后定位，
+读取无需扫描其它区域或早期记录。公开回复与重放/压实语义保持原样。
+最小反例用独立 World、正式编辑和文件日志建立历史，计数公开空间投影调用：早退为零，
+一笔相关增量为一次；另检查 core/ring、负坐标、载荷替换以及冷恢复/压实。工作量断言只在测试侧，
+不把性能门槛或额外状态验证加到运行时；最终真实双客户端 100ms 验收由根场景独立执行。
+定向正常构建与运行（仓库根 PowerShell）：
+`$env:MMO_DB_PORT='5433'; python tools/run_voxel_tests.py --out .demo/observe/region-read-20260920-integration -- test/log_projection_test.exs test/damage_world_test.exs test/world_test.exs test/prefab_test.exs`。
+104 项全部通过、无排除；含真实文件/数据库日志的恢复与压实，纯算法三例不依赖 World/数据库。
+新增最小反例先红（2 失败：早退仍投影历史、增量扫描无关事务），修复后绿（2 通过）。
+最终扩展增长例经公共编辑先建立 6 笔远区历史，冷恢复后再增加 60 笔，相关增量仍只投影一次；
+早退协议分支同时检查实际 payload/unchanged 回复。
+`python tools/run_voxel_tests.py --out .demo/observe/region-read-20260920-growth -- test/damage_world_test.exs --only region_read_history`
+最终 2 通过、69 定向排除；这 2 项已包含在上述 104 个不同用例中。
+各轮原始 `run.log` / `result.json` 位于 `.demo/observe/region-read-20260920-{red,green,integration,growth}`，
+最终源码 SHA256 见 growth/source-identity.json。工作量计数是测试侧观测，不等同于真实场景的毫秒性能验收；
+未修改旧 Demo 存档。旧进程不做热替换，新 World 正常启动时从持久日志派生索引。
+
+
+2026-09-19 F4/F5 测试观察整改（Test-only；`simulation_snapshot` 为 Global system 只读接口）：
+纯 packed skins 与 CSR 编码用例移入既有 `mmo_contracts/test/mmo_contracts/r7_prefab_test.exs`，
+单文件 `mix test --no-start` 不启动 World、角色或磁盘夹具。没有新增测试模块。
+普通 combustion/liquid/phase/damage/parameter 行为观察使用 `material_balances`、`material_snapshot`、
+`stats`、payload/事务与 `simulation_snapshot(world, characters, region_box)`；最后一个接口复用
+既有 `property_snapshot` 和材料余额投影，在同一 owner 提交点返回限定角色、半开 region 窗口的
+属性、身份、数量、相态库存及热结算账。它不 prepare 区域、不初始化热/液体，也不返回配置、
+会话、完整 World 或派生缓存。依据本仓已有只读投影契约和上文 OTP owner 原则，不改写模拟路径。
+
+验证契约：每例独占新 World 与目录，作者样本/普通意图建立前提；比较目标身份的 HP、燃料、焓、
+余额、占用和同一日志提交的冷恢复。热账是世界累计量，守恒用例必须独占世界；角色和空间范围显式
+写在调用处。新增真实 World 回归检查空子系统不被初始化、查询不改变 seq、窗口外目标和其它角色
+被排除。TestSupport 的 Source/Actor/文件日志替身仍只证明 World owner 接缝，不证明鉴权/真实客户端。
+
+已逐一检查原有九个含 `get_state` 的文件。普通观察不再依赖完整私有 state；剩余读取仅服务具名
+缓存重建/压缩选择白盒、停止 owner 后构造旧格式存档的迁移白盒，以及 realtime 冷板挂起点取样。
+各位置标注目标，不修改权威真值；普通属性比较仍走公开投影。prefab 归属从该用例真实持久化日志
+读取，新放置的 ID 不复用验证序号延续；GeneratedStore 通过正常 `open` 获取同一夹具源。
+普通热批行为与工作集白盒使用分开的 tick helper，后者不作为通用 World 观察器。
+
+定向运行：`MMO_DB_PORT=5433 python tools/run_voxel_tests.py --out <新目录> --`
+后接 `test/{damage_world,thermal_batch,prefab,generated_store,world,combustion_world,liquid_world,phase_world,parameter_publication}_test.exs`
+九个展开后的文件名；数据库由测试支持入口按 VM 独占并清理。协议单文件在 `apps/mmo_contracts`
+执行 `mix test --no-start test/mmo_contracts/r7_prefab_test.exs`。原始日志与源码身份位于
+`.demo/observe/f4-f5-20260919-*`；首次窗口单位错误、事务投影断言错误以及默认 5432 准备失败均保留。
+本轮不修改现有 Demo 世界，不以这些测试代替实时冷板、客户端、视觉或性能验收。
+实跑结果：九文件批次 178/179 通过、3 既有排除（realtime 冷板、2 oracle）；
+唯一失败为 prefab 检查点仍误用网络元数据。修正后仅复跑 prefab/combustion，28/28 通过，
+覆盖该失败及结构删除键恢复；迁移后的纯协议文件在不可用数据库端口 1 下 9/9 通过。
+按最终源码对应各批次，179 个不同 World 用例均已有通过证据；没有重写全量批次的失败结论。
+
+
 F08 热输入接续（2026-09-19，全局系统功能）：`ThermalBatch` 按 owner 当次读取的节点/属性/相态体积，
 计算共同有限时长、功率和能量预算、点燃事件及潜热输入；不接收完整 World，不缓存属性。
 World 保留目标身份筛选、当前记录读取和最终提交。延续下述 GenServer 函数组织依据，

@@ -367,7 +367,10 @@ defmodule VoxelRegion.PrefabTest do
     {:ok,w}=World.start_link(opts)
     assert {:ok,1}=World.place_prefab(w,root_id,{510,8,8},0)
     assert World.stats(w).attachment_slots==6
-    first=:sys.get_state(w).attachment_owners
+    # 归属元数据属于持久化契约；网络事务只含槽 ID，直接读取本例文件日志。
+    log_path=VoxelRegion.OverlayLog.File.open(Path.join(opts[:root],FileStore.hex(123)),123)
+    [placed]=VoxelRegion.OverlayLog.File.replay(log_path)
+    first=placed.attachment_owners
     assert map_size(first)==6
     assert Enum.sort(Map.values(first))==for(owner<-[{1,1},{1,2}],slot<-7..9,do: {owner,slot})
     assert map_size(payload(w,{0,0,0}).attachments)==6
@@ -379,19 +382,25 @@ defmodule VoxelRegion.PrefabTest do
     GenServer.stop(w)
     {:ok,w}=World.start_link(opts)
     assert payload(w,{1,0,0}).attachments==surviving
-    assert map_size(:sys.get_state(w).attachment_owners)==3
+    [checkpoint]=VoxelRegion.OverlayLog.File.replay(log_path)
+    assert map_size(checkpoint.attachment_owners)==3
     assert {:ok,3}=World.replace_prefab(w,{1,2},leaf_id)
     latest=payload(w,{1,0,0}).attachments
     assert map_size(latest)==3
     assert Enum.all?(latest,fn {_,{id,_}} -> id>6 end)
     assert {:ok,4}=World.remove_prefab(w,{1,0})
     assert World.stats(w).attachment_slots==0
-    assert :sys.get_state(w).attachment_owners==%{}
+    removed=List.last(VoxelRegion.OverlayLog.File.replay(log_path))
+    assert removed.attachment_owners==%{}
     assert :ok=World.compact(w)
     GenServer.stop(w)
     {:ok,w}=World.start_link(opts)
     assert World.stats(w).attachment_slots==0
-    assert :sys.get_state(w).attachment_serial==9
+    # 已删除 ID 在冷恢复后不可复用，以新的真实放置结果证明序列延续。
+    assert {:ok,5}=World.place_prefab(w,leaf_id,{510,8,8},0)
+    allocated=payload(w,{1,0,0}).attachments
+    assert map_size(allocated)==3
+    assert Enum.all?(allocated,fn {_,{id,_}}->id>9 end)
     GenServer.stop(w)
   end
 

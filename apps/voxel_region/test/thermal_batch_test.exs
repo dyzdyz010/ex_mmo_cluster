@@ -1,5 +1,5 @@
 defmodule VoxelRegion.ThermalBatchTest do
-  @moduledoc "只测试：真实 World 热提交与纯 NIF 分段等价性，样本经作者及工具入口建立。"
+  @moduledoc "只测试：真实 World 热提交、纯 NIF 守恒与事件边界；World样本经作者及工具入口建立。"
   use ExUnit.Case, async: false
   alias VoxelRegion.{World, Damage, Phase, ThermalNative, ThermalAttachments}
   alias VoxelRegion.TestSupport.{Source, Log, Actor}
@@ -111,6 +111,12 @@ defmodule VoxelRegion.ThermalBatchTest do
 
   defp tick(w) do
     send(w, :thermal_commit)
+    VoxelRegion.TestSupport.observe(w,[1001],{{-1,-1,-1},{1,1,1}})
+  end
+
+  # 只测试白盒：下面具名缓存/NIF 接触图回归需要工作集，不用于普通燃料/属性行为观察。
+  defp cache_tick(w) do
+    send(w,:thermal_commit)
     :sys.get_state(w)
   end
 
@@ -210,7 +216,7 @@ defmodule VoxelRegion.ThermalBatchTest do
 
   test "热前沿只扩张空气时复用实体接触图，真实采回后重新派生" do
     {c, _, _} = latent_world()
-    warm = tick(c.w)
+    warm = cache_tick(c.w)
     # 只改变可重建的候选缓存，不改占用、温度、焓或热源。
     :sys.replace_state(c.w, fn s ->
       put_in(s.thermal_work.hot, MapSet.put(s.thermal_work.hot, {0, 0, 2}))
@@ -220,12 +226,12 @@ defmodule VoxelRegion.ThermalBatchTest do
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
-      next = tick(c.w)
+      next = cache_tick(c.w)
       {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
       assert calls == 0
       assert next.thermal_work.ordered == warm.thermal_work.ordered
       assert :ok = VoxelRegion.TestSupport.mine_authored(c.w, 1002, {0, 0, 0})
-      empty = tick(c.w)
+      empty = cache_tick(c.w)
       assert empty.damage == %{}
       assert Enum.all?(Map.values(empty.thermal_work.geometry), &(&1 == []))
     after
@@ -237,13 +243,13 @@ defmodule VoxelRegion.ThermalBatchTest do
   test "附件空气侧合法空几何不把半秒 World 批拆成十次 NIF 调用" do
     {c, slot} = attachment_world(19)
     heat(c, {0, 0, 0}, 100.0, 200.0)
-    before = tick(c.w)
+    before = cache_tick(c.w)
     assert before.thermal.sources == %{}
     mfa = {ThermalNative, :advance, 6}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
-      next = tick(c.w)
+      next = cache_tick(c.w)
       {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
       assert calls in 1..2
       assert Map.fetch!(next.thermal_work.geometry, {1, 0, 0}) == []
@@ -303,15 +309,15 @@ defmodule VoxelRegion.ThermalBatchTest do
     {c, slot} = attachment_world(1)
     assert {:ok, _} = World.apply_edit(c.w, {1, 0, 0}, 19)
     heat(c, {1, 0, 0}, 100.0, 200.0)
-    tick(c.w)
+    cache_tick(c.w)
     assert {:ok, _} = World.apply_edit(c.w, {1, 0, 0}, 1)
-    warm = tick(c.w)
+    warm = cache_tick(c.w)
     key = ThermalAttachments.key(slot)
     before = Map.new(warm.thermal_work.ordered)[key].exposed_faces
     assert Map.fetch!(warm.thermal_work.geometry, {0, 0, 0}) == []
     assert Map.fetch!(warm.thermal_work.geometry, {1, 0, 0}) == []
     assert {:ok, _} = World.apply_edit(c.w, {1, 0, 0}, 0)
-    next = tick(c.w)
+    next = cache_tick(c.w)
     after_area = Map.new(next.thermal_work.ordered)[key].exposed_faces
     assert_in_delta after_area - before, 1 / 64, 1.0e-12
   end
@@ -438,7 +444,7 @@ defmodule VoxelRegion.ThermalBatchTest do
              ThermalNative.advance([{node, {nil, phase, false}}], [], 293.15, 0.0, 0.01, 0.5)
   end
 
-  test "融冻显热 进入潜热 停留和完成均与 World 旧逐段焓回写等价" do
+  test "融冻显热、潜热与完成事件按有限源解析热量守恒" do
     for {liquid, energy, power} <- [
           {false, -500.0, 10.0},
           {false, -1.0, 10.0},
@@ -462,23 +468,23 @@ defmodule VoxelRegion.ThermalBatchTest do
       temperature = VoxelRegion.Phase.temperature(material, energy, 0.5, properties)
       node = {temperature, 100.0, 100.0, 5.0, 1.0, 1000.0, 0.0, power, 5.0, true}
 
-      {expected, expected_energy, expected_q, expected_air} =
-        Enum.reduce(1..10, {node, energy, 0.0, 0.0}, fn _, {n, e, q, air} ->
-          {_, [{raw, hp, left}], dq, da} = ThermalNative.advance([n], [], 293.15, 0.0, 0.01, 0.05)
-          e = e + 10.0 * 0.5 * (raw - elem(n, 0))
-          t = VoxelRegion.Phase.temperature(material, e, 0.5, properties)
-          {n |> put_elem(0, t) |> put_elem(1, hp) |> put_elem(8, left), e, q + dq, air + da}
-        end)
+      # 只测试：无接触/环境，半秒有限供热为P×t；固/液身份由World在事件后替换。
+      expected_q = power * 0.5
+      expected_energy = energy + expected_q
+      expected_temperature =
+        if liquid,
+          do: 273.15 + max(0.0, expected_energy - 100.0) / 5.0,
+          else: 273.15 + min(0.0, expected_energy) / 5.0
 
       {actual, actual_energy, q, air, calls} = phase_batch(node, energy, liquid, 0.5, 0.0, 0.0, 0)
 
       for {a, b} <- [
-            {elem(actual, 0), elem(expected, 0)},
-            {elem(actual, 1), elem(expected, 1)},
-            {elem(actual, 8), elem(expected, 8)},
+            {elem(actual, 0), expected_temperature},
+            {elem(actual, 1), 100.0},
+            {elem(actual, 8), 0.0},
             {actual_energy, expected_energy},
             {q, expected_q},
-            {air, expected_air}
+            {air, 0.0}
           ] do
         assert_in_delta a, b, max(abs(b), 1.0) * 1.0e-12
       end

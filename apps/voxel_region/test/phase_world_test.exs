@@ -19,6 +19,9 @@ defmodule VoxelRegion.PhaseWorldTest do
     end
   end
 
+  # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{-1,-1,-1},{5,2,2}})
+
   setup context do
     root=Path.join(System.tmp_dir!(),"b7_phase_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -88,9 +91,10 @@ defmodule VoxelRegion.PhaseWorldTest do
       %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,material: 21,
         tool_id: if(action==2,do: 11,else: 12),coord: cell})
   end
-  defp row(w,cell),do: Enum.find(Map.values(:sys.get_state(w).damage),&(&1.granularity==0 and Damage.macro(&1)==cell))
+  defp row(w,cell),do: Enum.find(Map.values(observe(w).damage),&(&1.granularity==0 and Damage.macro(&1)==cell))
   defp operate(c,tool,seq,cell \\ {63,1,2},action \\ 1) do
-    eye=:sys.get_state(c.actor.player).eye
+    {:ok,context}=Actor.tool_context(c.actor.player,c.actor.identity)
+    eye=context.eye
     delta=Enum.zip_with(Tuple.to_list(cell),Tuple.to_list(eye),&(&1+0.0625-&2))
     length=:math.sqrt(Enum.sum(Enum.map(delta,&(&1*&1))))
     direction=delta |> Enum.map(&(&1/length)) |> List.to_tuple()
@@ -102,7 +106,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       |> Map.merge(%{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,tool_id: tool,direction: direction})
     World.tool_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request)
   end
-  defp total(w),do: (s=:sys.get_state(w); Enum.sum(Map.values(s.liquid_units))+
+  defp total(w),do: (s=observe(w); Enum.sum(Map.values(s.liquid_units))+
     Map.get(s.material_balances,{1001,21},0)+Map.get(s.material_balances,{1001,20},0))
   defp freeze(c,seq,cell \\ {63,1,2}) do
     assert {:ok,_}=operate(c,13,seq,cell)
@@ -131,7 +135,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert_in_delta water.temperature_kelvin,273.15,0.00001
     assert_in_delta water.phase_energy_j,44_400_000.0,0.001
     assert {:ok,_}=operate(c,13,3)
-    frozen=:sys.get_state(c.w)
+    frozen=observe(c.w)
     ice=row(c.w,{63,1,2})
     assert ice.material==20 and ice.max_hp==25.0
     assert ice.phase_energy_j==0.0
@@ -150,7 +154,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert :ok=World.compact(c.w)
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
-    assert :sys.get_state(w).liquid_units==frozen.liquid_units
+    assert observe(w).liquid_units==frozen.liquid_units
     assert row(w,{63,1,2}).phase_energy_j==0.0
     assert row(w,{63,1,2}).hp==ice.hp
     assert total(w)==@capacity
@@ -169,7 +173,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok,_}=operate(c,14,5)
     assert_in_delta row(c.w,{63,1,2}).hp/25,ratio,1.0e-9
     assert {:ok,_}=transfer(c,2,6,{63,1,2})
-    saved=:sys.get_state(c.w)
+    saved=observe(c.w)
     assert saved.liquid_units==%{}
     assert total(c.w)==@capacity
     publication=File.read!(c.catalog)
@@ -183,7 +187,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     c=%{c | w: w}
-    assert :sys.get_state(w).phase_inventory==saved.phase_inventory
+    assert observe(w).phase_inventory==saved.phase_inventory
     # Carried original pristine water mixes by amount, with damage debt conserved.
     expected=(0.75+ratio*0.25)
     assert {:ok,_}=transfer(c,3,7,{64,1,2})
@@ -196,10 +200,10 @@ defmodule VoxelRegion.PhaseWorldTest do
   test "flow transports energy and integrity even when a cell has equal inflow/outflow",c do
     assert {:ok,_}=transfer(c,3,1,{63,2,2})
     assert {:ok,_}=transfer(c,3,2,{64,2,2})
-    before=:sys.get_state(c.w)
+    before=observe(c.w)
     energy=Enum.sum(for {_,r}<-before.damage,do: r.phase_energy_j)
     send(c.w,:liquid_commit)
-    after_step=:sys.get_state(c.w)
+    after_step=observe(c.w)
     assert after_step.liquid_units[{63,1,2}]>0 and after_step.liquid_units[{64,1,2}]>0
     assert_in_delta Enum.sum(for {_,r}<-after_step.damage,do: r.phase_energy_j),energy,0.001
     assert total(c.w)==@capacity
@@ -227,7 +231,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok,_}=operate(c,13,4,{63,2,2})
     mid=row(c.w,{63,2,2}); source=row(c.w,{63,3,2})
     send(c.w,:liquid_commit)
-    next=:sys.get_state(c.w)
+    next=observe(c.w)
     assert next.liquid_units[{63,2,2}]==@quarter
     current=row(c.w,{63,2,2})
     assert current.incarnation==mid.incarnation
@@ -249,14 +253,14 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok,_}=operate(c,1,1)
     old=row(c.w,{63,1,2})
     assert old.hp<old.max_hp
-    assert :sys.get_state(c.w).liquid_units==%{}
+    assert observe(c.w).liquid_units==%{}
     File.write!(c.catalog,phase_bytes)
     assert :ok=World.publish_properties(c.w,c.catalog)
     published=row(c.w,{63,1,2})
     assert published.hp==old.hp and published.temperature_kelvin==old.temperature_kelvin
     assert published.digest != old.digest
     assert {:ok,_}=operate(c,1,2,{63,1,2},2)
-    mined=:sys.get_state(c.w)
+    mined=observe(c.w)
     assert mined.material_balances[{1001,20}]==@capacity
     assert mined.liquid_units==%{}
     {energy,integrity}=mined.phase_inventory[{1001,20}]
@@ -268,8 +272,8 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert rebuilt.material==20 and rebuilt.max_hp==100.0
     assert_in_delta rebuilt.hp/100.0,integrity/@capacity,1.0e-9
     assert rebuilt.phase_energy_j==energy
-    assert :sys.get_state(c.w).material_balances[{1001,20}]==0
-    assert :sys.get_state(c.w).liquid_units==%{{64,1,2}=>@capacity}
+    assert observe(c.w).material_balances[{1001,20}]==0
+    assert observe(c.w).liquid_units==%{{64,1,2}=>@capacity}
     # Once used, published latent heat cannot silently reinterpret stored energy.
     changed=Jason.decode!(phase_bytes) |> Map.update!("materials",fn ms->
       Enum.map(ms,fn m->if m["material_id"] in [20,21],do: Map.put(m,"latent_heat_per_macro_j",1.0),else: m end)
@@ -280,11 +284,11 @@ defmodule VoxelRegion.PhaseWorldTest do
 
   test "failed paid phase append rolls back energy, fuel, quantity, identity and HP",c do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
-    before=:sys.get_state(c.w)
-    {_,path}=before.log
+    before=observe(c.w)
+    path=Log.open(c.root,World.content_version(c.w))
     File.write!(path<>".reject","")
     assert {:error,:test_disk_failure}=operate(c,13,2)
-    after_failure=:sys.get_state(c.w)
+    after_failure=observe(c.w)
     for key<-[:seq,:liquid_units,:damage,:thermal,:material_balances,:phase_inventory,:epochs],
       do: assert(Map.fetch!(before,key)==Map.fetch!(after_failure,key))
   end
@@ -302,7 +306,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       end
     end) end)
     File.write!(c.catalog,Jason.encode!(data))
-    assert :ok=World.publish_parameters(c.w,c.catalog,:sys.get_state(c.w).properties.digest)
+    assert :ok=World.publish_parameters(c.w,c.catalog,observe(c.w).property_digest)
   end
 
   for material <- [13,4,20], {action,attacks} <- [{1,0},{1,2},{2,0},{2,2},{2,5}] do
@@ -320,7 +324,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       hp=if initial,do: initial.hp,else: 0.0
       hits=if hp==0,do: 0,else: if(action==2,do: 1,else: ceil(hp/22))
       if hits>0,do: Enum.each(1..hits,fn seq -> assert {:ok,_}=operate(c,1,attacks+seq,cell,action) end)
-      mined=:sys.get_state(c.w)
+      mined=observe(c.w)
       assert mined.material_balances[{1001,material}]==@capacity
       {energy,integrity}=Map.fetch!(mined.phase_inventory,{1001,material})
       assert energy==authored.phase_energy_j
@@ -350,16 +354,18 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok,_}=World.liquid_experiment(c.w,deposits)
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:pick,false)
     assert_receive {:canonical_snapshot,:pick,_}
-    before=:sys.get_state(c.w)
-    reject=elem(before.log,1)<>".reject"
+    before=observe(c.w)
+    reject=Log.open(c.root,World.content_version(c.w))<>".reject"
     File.write!(reject,"")
     assert {:error,:test_disk_failure}=operate(c,1,1)
-    assert :sys.get_state(c.w).damage==before.damage
+    assert observe(c.w).damage==before.damage
     File.rm!(reject)
     assert {:ok,_}=operate(c,1,1)
     assert_receive {:canonical_delta,%{transaction: %{property_states: rows}}}
     refute Enum.any?(rows,&Map.has_key?(&1,:pick_baseline_hp))
     picked=row(c.w,cell)
+    [pick_txn]=World.entries_after(c.w,picked.seq-1)
+    [picked]=Enum.filter(pick_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
     assert picked.pick_baseline_hp==100.0
     assert picked.hp==78.0
     assert MmoContracts.Voxel.Codec.encode({:voxel_property_state,picked})==
@@ -371,12 +377,13 @@ defmodule VoxelRegion.PhaseWorldTest do
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     c=%{c | w: w}
-    assert row(w,cell).pick_baseline_hp==100.0
+    [checkpoint]=World.entries_after(w,0)
+    assert Enum.find(checkpoint.property_states,&(&1.micro=={504,8,16})).pick_baseline_hp==100.0
     assert :ok=World.canonical_snapshot_and_subscribe(w,{{0,0,0},{2,1,1}},self(),:restored_pick,false)
     assert_receive {:canonical_snapshot,:restored_pick,%{property_states: rows}}
     refute Enum.any?(rows,&Map.has_key?(&1,:pick_baseline_hp))
     for seq<-2..5,do: assert({:ok,_}=operate(c,1,seq))
-    assert elem(:sys.get_state(w).phase_inventory[{1001,13}],1)==@capacity
+    assert elem(observe(w).phase_inventory[{1001,13}],1)==@capacity
   end
 
   for checkpoint <- [false,true] do
@@ -389,11 +396,11 @@ defmodule VoxelRegion.PhaseWorldTest do
         fn {m,e,ratio}->{{1001,m},{e,@capacity*ratio}} end)
       balances=Map.new(inventory,fn {key,_}->{key,@capacity} end)
       # 只测试历史存档编码：停止 owner 后写夹具，重启后使用真实 compact 路径。
-      s=:sys.get_state(c.w)
+      s=observe(c.w)
       stop_supervised!(World)
       txn=%{seq: s.seq+1,entries: [],coarse: [],phase_inventory: inventory,material_balances: balances,
-        material_units_per_micro: s.material_units_per_micro}
-      assert :ok=DatabaseMetadataLog.append(elem(s.log,1),txn)
+        material_units_per_micro: Damage.material_units(Damage.load(c.catalog))}
+      assert :ok=DatabaseMetadataLog.append(Log.open(c.root,Source.content_version(nil)),txn)
       w=start_supervised!({World,Keyword.put(c.opts,:log,DatabaseMetadataLog)})
       w=if unquote(checkpoint) do
         assert :ok=World.compact(w)
@@ -402,7 +409,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       else
         w
       end
-      restored=:sys.get_state(w)
+      restored=observe(w)
       assert restored.material_balances==balances
       assert restored.phase_inventory==inventory
     end
@@ -420,20 +427,22 @@ defmodule VoxelRegion.PhaseWorldTest do
       Enum.map(materials,fn m -> if m["material_id"]==13,do: Map.put(m,"heat_resistance_kelvin",293.0),else: m end)
     end)
     File.write!(c.catalog,Jason.encode!(data))
-    assert :ok=World.publish_parameters(c.w,c.catalog,:sys.get_state(c.w).properties.digest)
+    assert :ok=World.publish_parameters(c.w,c.catalog,observe(c.w).property_digest)
     heat=Path.join(c.root,"pick-heat.json")
     File.write!(heat,Jason.encode!(%{classification: "Test-only",source_macro: [63,1,2],
       ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.00001,power_w: 1.0,energy_j: 1.0}))
     assert :ok=World.thermal_experiment(c.w,heat)
     send(c.w,:thermal_commit)
-    heated=row(c.w,{63,1,2})
+    [heat_txn]=World.entries_after(c.w,World.seq(c.w)-1)
+    heated=Enum.find(heat_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
     assert heated.hp<78.0
     assert heated.pick_baseline_hp==100.0-(78.0-heated.hp)
     assert {:ok,_}=operate(c,19,2)
-    attacked=row(c.w,{63,1,2})
+    [attack_txn]=World.entries_after(c.w,World.seq(c.w)-1)
+    attacked=Enum.find(attack_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
     assert attacked.pick_baseline_hp==heated.pick_baseline_hp-(heated.hp-attacked.hp)
     for seq<-3..5,do: assert({:ok,_}=operate(c,19,seq))
-    assert elem(:sys.get_state(c.w).phase_inventory[{1001,13}],1)==0.0
+    assert elem(observe(c.w).phase_inventory[{1001,13}],1)==0.0
     build=%{request_id: 6,client_intent_seq: 6,logical_scene_id: 1,action: 1,material: 13,tool_id: 1,coord: {63,1,2}}
     assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
   end
@@ -447,21 +456,21 @@ defmodule VoxelRegion.PhaseWorldTest do
     initial=row(c.w,{63,1,2})
     assert initial.material==13 and initial.hp==100.0
     assert_in_delta initial.phase_energy_j,-31_102_500.0,1.0e-6
-    assert :sys.get_state(c.w).liquid_units[{65,1,2}]==@capacity
+    assert observe(c.w).liquid_units[{65,1,2}]==@capacity
     assert {:ok,_}=operate(c,14,1,{63,1,2})
     lava=row(c.w,{63,1,2})
     assert lava.material==22
     actor=Map.merge(c.actor,%{received_us: 2_000_000,clock_node: node()})
     assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 2,client_intent_seq: 2,
       logical_scene_id: 1,action: 2,material: 22,tool_id: 11,coord: {63,1,2}})
-    saved=:sys.get_state(c.w)
+    saved=observe(c.w)
     assert saved.material_balances[{1001,22}]==@quarter
     assert_in_delta elem(saved.phase_inventory[{1001,22}],0),lava.phase_energy_j/4,1.0e-6
     assert {:ok,_}=operate(c,14,3,{65,1,2})
     assert row(c.w,{65,1,2}).material==21
     for seq<-4..9,do: assert({:ok,_}=operate(c,13,seq,{65,1,2}))
     assert row(c.w,{65,1,2}).material==20
-    assert :sys.get_state(c.w).liquid_units[{65,1,2}]==@capacity
+    assert observe(c.w).liquid_units[{65,1,2}]==@capacity
     # 普通倒入另一格并凝固，量与携带焓沿同一库存SSOT结算。
     actor=Map.merge(c.actor,%{received_us: 10_000_000,clock_node: node()})
     assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 10,client_intent_seq: 10,
@@ -470,12 +479,12 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert_in_delta row(c.w,{64,1,2}).phase_energy_j,lava.phase_energy_j/4,1.0e-6
     assert {:ok,_}=operate(c,13,11,{64,1,2})
     assert row(c.w,{64,1,2}).material==13
-    assert :sys.get_state(c.w).liquid_units[{64,1,2}]==@quarter
-    saved=:sys.get_state(c.w)
+    assert observe(c.w).liquid_units[{64,1,2}]==@quarter
+    saved=observe(c.w)
     assert :ok=World.compact(c.w)
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:production_materials,[4,13,15,20,21,22])})
-    recovered=:sys.get_state(w)
+    recovered=observe(w)
     assert recovered.phase_inventory==saved.phase_inventory
     assert recovered.liquid_units==saved.liquid_units
     assert recovered.thermal.phase_authored_units==3*@capacity
@@ -490,14 +499,14 @@ defmodule VoxelRegion.PhaseWorldTest do
         if row(c.w,{63,1,2})==nil,do: {:halt,nil},else: (assert {:ok,_}=operate(c,19,attack); {:cont,nil})
       end)
     end
-    s=:sys.get_state(c.w)
+    s=observe(c.w)
     assert s.liquid_units==%{}
     assert s.material_balances[{1001,20}]==@capacity
     assert elem(s.phase_inventory[{1001,20}],1)==0.0
-    before=:sys.get_state(c.w)
+    before=observe(c.w)
     build=%{request_id: 40,client_intent_seq: 40,logical_scene_id: 1,action: 1,material: 20,tool_id: 1,coord: {64,1,2}}
     assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
-    after_reject=:sys.get_state(c.w)
+    after_reject=observe(c.w)
     assert after_reject.material_balances==before.material_balances
     assert after_reject.phase_inventory==before.phase_inventory
     assert after_reject.liquid_units==%{}
@@ -533,11 +542,11 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
     freeze(c,2)
     assert {:ok,_}=operate(c,14,4)
-    before=:sys.get_state(c.w)
+    before=observe(c.w)
     energy=row(c.w,{63,1,2}).phase_energy_j
     assert row(c.w,{63,1,2}).material==20
     send(c.w,:thermal_commit)
-    next=:sys.get_state(c.w)
+    next=observe(c.w)
     water=row(c.w,{63,1,2})
     assert water.material==21 and water.phase_energy_j>=83_500_000.0
     assert next.liquid_units==%{{63,1,2}=>@quarter}
@@ -594,14 +603,14 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert row(c.w,{63,1,2}).material==21
     initial=row(c.w,{63,1,2}).phase_energy_j
     assert_in_delta initial,815625.0,0.001
-    coal_before=:sys.get_state(c.w).material_balances[{1001,15}]
+    coal_before=observe(c.w).material_balances[{1001,15}]
     assert {:ok,_}=use.(0,8,91)
-    assert :sys.get_state(c.w).material_balances[{1001,15}]==coal_before-16384
+    assert observe(c.w).material_balances[{1001,15}]==coal_before-16384
     frozen=Enum.reduce_while(1..400,nil,fn tick,_->
       # Let the real World timer advance. Manually injecting each commit also
       # schedules another timer and creates an ever-growing test-only backlog.
       receive do after 500 -> :ok end
-      state=:sys.get_state(c.w)
+      state=observe(c.w)
       if tick<=10 or rem(tick,10)==0 do
         source=Map.get(state.damage,{3,hd(ids)})
         temperatures=for {_,r}<-state.damage,r.granularity==4 and r.incarnation==hd(ids),do: r.temperature_kelvin
@@ -620,6 +629,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert :ok=World.compact(c.w)
     # 只测试：冻结采样与停止边界，比较最后实际持久化状态。
     :ok=:sys.suspend(c.w)
+    # 只测试白盒：挂起 owner 后读取最后持久化点，不注入真值。
     persisted=:sys.get_state(c.w)
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})

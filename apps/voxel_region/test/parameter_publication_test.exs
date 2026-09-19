@@ -5,6 +5,9 @@ defmodule VoxelRegion.ParameterPublicationTest do
   alias VoxelRegion.{World, Damage}
   alias VoxelRegion.TestSupport.{Source, Log}
 
+  # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{0,0,0},{1,1,1}})
+
   setup do
     root = Path.join(System.tmp_dir!(), "parameters_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -28,7 +31,7 @@ defmodule VoxelRegion.ParameterPublicationTest do
       material_units_per_micro: Damage.material_units(catalog)})
     w = start_supervised!({World, opts})
     :ok = World.compact(w)
-    before = :sys.get_state(w)
+    before = observe(w)
     data = Jason.decode!(File.read!(path))
     data = Map.update!(data, "materials", &Enum.map(&1, fn m ->
       if m["material_id"] == 19, do: m |> Map.update!("heat_capacity_per_macro", fn c -> c * 2 end)
@@ -37,28 +40,28 @@ defmodule VoxelRegion.ParameterPublicationTest do
     next_path = Path.join(root, "next.json")
     File.write!(next_path, Jason.encode!(data))
     on_exit(fn -> File.rm_rf!(root) end)
-    %{w: w, opts: opts, before: before, next_path: next_path, path: path, data: data}
+    %{w: w, opts: opts, before: before, old_catalog: catalog, occupancy: World.material_snapshot(w,[1001],[{1,1,2}]).probe_occupancy, next_path: next_path, path: path, data: data}
   end
 
   test "显式旧版本升级保留状态存量，重标不是供能，重启不补料", c do
     assert {:error, :property_version_in_use} = World.publish_properties(c.w, c.next_path)
-    assert :ok = World.publish_parameters(c.w, c.next_path, c.before.properties.digest)
-    after_state = :sys.get_state(c.w)
+    assert :ok = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
+    after_state = observe(c.w)
     [old] = Map.values(c.before.damage)
     [new] = Map.values(after_state.damage)
     assert Map.drop(new, [:seq, :digest]) == Map.drop(old, [:seq, :digest])
     assert after_state.material_balances == c.before.material_balances
-    assert after_state.overlay == c.before.overlay
+    assert World.material_snapshot(c.w,[1001],[{1,1,2}]).probe_occupancy == c.occupancy
     assert after_state.thermal.supplied_j == c.before.thermal.supplied_j
-    expected = c.before.properties.materials[19]["heat_capacity_per_macro"] * 40.0
+    expected = c.old_catalog.materials[19]["heat_capacity_per_macro"] * 40.0
     assert_in_delta after_state.thermal.parameter_rebase_j, expected, 1.0e-6
     [txn] = World.entries_after(c.w, c.before.seq)
-    assert txn.thermal == after_state.thermal
+    assert Map.take(txn.thermal,Map.keys(after_state.thermal)) == after_state.thermal
     assert txn.property_states == [new]
     stop_supervised!(World)
     File.cp!(c.next_path, c.path)
     w = start_supervised!({World, c.opts})
-    recovered = :sys.get_state(w)
+    recovered = observe(w)
     assert recovered.damage == after_state.damage
     assert recovered.material_balances == after_state.material_balances
     assert recovered.thermal.parameter_rebase_j == after_state.thermal.parameter_rebase_j
@@ -70,19 +73,19 @@ defmodule VoxelRegion.ParameterPublicationTest do
       if m["material_id"] in [20, 21], do: Map.put(m, "latent_heat_per_macro_j", 1.0), else: m
     end))
     File.write!(c.next_path, Jason.encode!(changed))
-    assert {:error, :property_version_in_use} = World.publish_parameters(c.w, c.next_path, c.before.properties.digest)
-    after_state = :sys.get_state(c.w)
+    assert {:error, :property_version_in_use} = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
+    after_state = observe(c.w)
     assert after_state.seq == c.before.seq
     assert after_state.damage == c.before.damage
-    assert after_state.properties == c.before.properties
+    assert after_state.property_digest == c.before.property_digest
   end
 
   test "落盘失败不切换目录、状态或重标账", c do
-    {_, handle} = c.before.log
+    handle = Log.open(c.opts[:root],World.content_version(c.w))
     File.write!(handle <> ".reject", "reject")
-    assert {:error, :test_disk_failure} = World.publish_parameters(c.w, c.next_path, c.before.properties.digest)
-    after_state = :sys.get_state(c.w)
-    assert after_state.properties == c.before.properties
+    assert {:error, :test_disk_failure} = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
+    after_state = observe(c.w)
+    assert after_state.property_digest == c.before.property_digest
     assert after_state.damage == c.before.damage
     assert after_state.thermal == c.before.thermal
     assert after_state.seq == c.before.seq

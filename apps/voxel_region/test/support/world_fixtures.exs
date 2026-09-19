@@ -47,6 +47,26 @@ defmodule VoxelRegion.TestSupport do
     end
   end
 
+  @doc "只测试：消费限定窗口/角色的只读契约；键表仅便于按目标身份断言，不读取进程 state。"
+  def observe(world, characters, box) do
+    snapshot = VoxelRegion.World.simulation_snapshot(world, characters, box)
+    %{seq: snapshot.seq, damage: Map.new(snapshot.property_states, &{VoxelRegion.Damage.key(&1), &1}),
+      thermal: snapshot.thermal_accounting, liquid_units: snapshot.liquid_quantities,
+      phase_inventory: snapshot.phase_inventory, epochs: snapshot.epochs,
+      property_digest: snapshot.property_context.digest,
+      material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units})}
+  end
+
+  @doc "只测试：通过正式 payload 服务观察一个区域，保留协议所有者/结构和附件表示。"
+  def payload(world, level, region) do
+    request = Codec.encode_request(0, [%{level: level, region: region, have_seq: 0, have_hash: 0}])
+      |> IO.iodata_to_binary()
+    {:ok, reply} = VoxelRegion.World.serve(world, request)
+    {:ok, _, [{:payload, ^level, ^region, bytes}]} = Codec.decode_reply(IO.iodata_to_binary(reply))
+    {:ok, payload} = Payload.decode(bytes)
+    payload
+  end
+
   @doc "固定发布样本的绝对路径，不依赖 Mix 的当前工作目录。"
   def catalog(version \\ "ade8e630274214b6d9abba77286d8a5d8625d485bd6018e92a9bf0a43d3231ba") do
     Path.expand("../../../../../Voxim/Content/Voxel/Properties/Published/#{version}.json", __DIR__)

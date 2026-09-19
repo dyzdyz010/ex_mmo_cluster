@@ -68,9 +68,9 @@ defmodule VoxelRegion.LiquidWorldTest do
   defp transfer(c,action,seq,coord),do: World.production_intent(c.w,
     Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request(action,seq,coord))
   defp balance(w),do: Enum.find(World.material_balances(w,1001),&(&1.material==21)).balance
-  defp quantities(w),do: :sys.get_state(w).liquid_units
+  defp quantities(w),do: World.simulation_snapshot(w,[1001],{{0,0,0},{2,1,1}}).liquid_quantities
   defp total(w),do: Enum.sum(Map.values(quantities(w)))+balance(w)
-  defp tick(w),do: (send(w,:liquid_commit); :sys.get_state(w))
+  defp tick(w),do: (send(w,:liquid_commit); World.seq(w))
 
   test "pour and scoop preserve finite inventory, dedupe and quantity-only region/ring commits",c do
     assert {:ok,seq}=transfer(c,3,10,{63,1,2})
@@ -82,12 +82,12 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert {:error,:replayed_build}=transfer(c,3,9,{64,1,2})
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:before,false)
     assert_receive {:canonical_snapshot,:before,_}
-    prior=:sys.get_state(c.w)
+    prior=World.simulation_snapshot(c.w,[1001],{{0,0,0},{2,1,1}})
     assert {:ok,next_seq}=transfer(c,3,11,{63,1,2})
     assert next_seq==seq+1
-    next=:sys.get_state(c.w)
+    next=World.simulation_snapshot(c.w,[1001],{{0,0,0},{2,1,1}})
     assert next.epochs==prior.epochs
-    assert next.damage==prior.damage
+    assert next.property_states==prior.property_states
     assert_receive {:canonical_delta,delta}
     assert delta.transaction_seq==next_seq
     assert delta.chunks==[]
@@ -120,6 +120,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert total(c.w)==2*@capacity
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{1,0,0},{2,1,1}},self(),:warm,false)
     assert_receive {:canonical_snapshot,:warm,warm}
+    # 只测试缓存失效：丢弃可重建载荷，不改变水量、身份或余额。
     :sys.replace_state(c.w,fn s->%{s | payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},lru_bytes: 0,resident_bytes: 0,decoded: %{}} end)
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{1,0,0},{2,1,1}},self(),:cold,false)
     assert_receive {:canonical_snapshot,:cold,cold}
@@ -192,11 +193,11 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   test "journal failure rolls back both quantities and balance; raw water edit/build cannot duplicate",c do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
-    before=:sys.get_state(c.w)
-    {_,path}=before.log
+    before={World.seq(c.w),quantities(c.w),balance(c.w)}
+    path=Log.open(c.root,World.content_version(c.w))
     File.write!(path<>".reject","")
     assert {:error,:test_disk_failure}=transfer(c,2,2,{63,1,2})
-    assert Map.take(:sys.get_state(c.w),[:seq,:liquid_units,:material_balances])==Map.take(before,[:seq,:liquid_units,:material_balances])
+    assert {World.seq(c.w),quantities(c.w),balance(c.w)}==before
     File.rm!(path<>".reject")
     assert {:error,:use_liquid_tool}=World.apply_edit(c.w,{63,1,2},0)
     assert {:error,:use_liquid_tool}=World.apply_edits(c.w,[{{64,1,2},21}])

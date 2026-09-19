@@ -3,6 +3,54 @@ defmodule VoxelRegion.LogProjection do
   import Bitwise
   alias MmoContracts.Voxel.{Codec, Payload}
 
+  @doc "格变化触及的完整三维 core/ring 区域；与 World 的预备和失效范围共用。"
+  def region_keys(cells) do
+    for {level, {x, y, z}} <- cells,
+        rx <- floor_div(x - 1, 64)..floor_div(x + 1, 64),
+        ry <- floor_div(y - 1, 64)..floor_div(y + 1, 64),
+        rz <- floor_div(z - 1, 64)..floor_div(z + 1, 64),
+        do: {level, {rx, ry, rz}}
+  end
+
+  @doc "从已提交事务派生区域序号索引；只存序号，不复制正文或形成世界真值。"
+  def index(index, %{entries: entries, coarse: coarse, seq: seq}) do
+    keys = Enum.flat_map(entries, fn
+      %{payload: bytes} ->
+        {:ok, h} = Codec.decode_payload_header(bytes)
+        {x, y, z} = h.region
+        for dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {h.level, {x+dx, y+dy, z+dz}}
+      %{structure: _, level: level, cell: cell} -> region_keys([{level, cell}])
+      %{coord: cell} -> region_keys([{0, cell}])
+    end) ++ region_keys(Enum.map(coarse, &{&1.level, &1.cell}))
+
+    Enum.reduce(Enum.uniq(keys), index, fn key, acc ->
+      Map.update(acc, key, :gb_trees.enter(seq, nil, :gb_trees.empty()),
+        &:gb_trees.enter(seq, nil, &1))
+    end)
+  end
+
+  def index(index, entry),
+    do: index(index, %{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse})
+
+  @doc "只定位指定区域在游标之后的序号，再读取原事务；遇到区域替换立即要求完整载荷。"
+  def since(index, entries, level, region, have_seq) do
+    index
+    |> Map.get({level, region}, :gb_trees.empty())
+    |> then(&:gb_trees.iterator_from(have_seq + 1, &1))
+    |> project_since(entries, level, region, [])
+  end
+
+  defp project_since(iterator, entries, level, region, acc) do
+    case :gb_trees.next(iterator) do
+      :none -> Enum.reverse(acc)
+      {seq, nil, rest} ->
+        case region(Map.fetch!(entries, seq), level, region) do
+          :region -> :region
+          txn -> project_since(rest, entries, level, region, [txn | acc])
+        end
+    end
+  end
+
   @doc "按订阅范围生成现有协议消息；范围内无变化时返回 nil，由 owner 负责发送。"
   def message(%{entries: entries, coarse: coarse} = txn, filter) do
     entries = Enum.filter(entries, &matches?(&1, filter))
