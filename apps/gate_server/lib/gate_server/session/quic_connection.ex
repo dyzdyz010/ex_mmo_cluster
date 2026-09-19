@@ -146,6 +146,7 @@ defmodule GateServer.Session.QuicConnection do
 
   def handle_info({:quic, :dgram_state_changed, conn, props}, %{conn: conn} = state) do
     if props.dgram_send_enabled do
+      send(self(), :flush_datagrams)
       {:noreply, %{state | max_datagram: props.dgram_max_len}}
     else
       {:noreply, close(state, 8)}
@@ -299,7 +300,11 @@ defmodule GateServer.Session.QuicConnection do
     {:noreply, state}
   end
 
-  def handle_info(:flush_datagrams, %{datagram_busy: false, closing: false} = state) do
+  def handle_info(
+        :flush_datagrams,
+        %{datagram_busy: false, closing: false, max_datagram: limit} = state
+      )
+      when limit > 0 do
     case :gb_trees.next(:gb_trees.iterator(state.pending_datagrams)) do
       :none ->
         {:noreply, state}

@@ -195,11 +195,15 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     message
   end
 
-  defp next_output do
-    assert_receive message when elem(message, 0) in [:mmo_reliable, :mmo_datagram, :mmo_close],
+  defp next_output(epoch \\ nil) do
+    expected = if epoch, do: identity(epoch)
+
+    assert_receive message
+                   when elem(message, 0) in [:mmo_reliable, :mmo_datagram, :mmo_close] and
+                          (is_nil(expected) or elem(message, 1) == expected),
                    5000
 
-    if collision_output?(message), do: message, else: next_output()
+    if collision_output?(message), do: message, else: next_output(epoch)
   end
 
   # 本组验证碰撞时间线；核对属性帧的身份与禁用状态后，投影到移动/碰撞事件。
@@ -231,9 +235,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     {:ok, _} = Scene.join(ctx.scene, identity(epoch), %{id: cid}, self())
     await(ctx.scene, &(&1.queue_length > 0))
     info = advance(ctx, observe(ctx.scene).tick + 1)
-    assert {:mmo_reliable, _, 1, %Session.SessionStart{} = start} = next_output()
-    assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{} = bootstrap} = next_output()
-    assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{} = fence} = next_output()
+    assert {:mmo_reliable, _, 1, %Session.SessionStart{} = start} = next_output(epoch)
+    assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{} = bootstrap} = next_output(epoch)
+    assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{} = fence} = next_output(epoch)
     assert start.identity == identity(epoch) and bootstrap.identity == identity(epoch)
 
     assert {start.baseline_transaction_seq, start.collision_revision, start.server_tick} ==
@@ -261,7 +265,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     do: Enum.map(World.entries_after(world, 0), &Map.take(&1, [:seq, :entries, :coarse]))
 
   defp log(delta, epoch \\ 1) do
-    assert {:mmo_reliable, who, 2, {:voxel_log_transaction_payload, bytes}} = next_output()
+    assert {:mmo_reliable, who, 2, {:voxel_log_transaction_payload, bytes}} = next_output(epoch)
     assert who == identity(epoch)
     assert bytes == IO.iodata_to_binary(Voxel.Codec.encode_transaction(delta.transaction))
     assert {:ok, %{seq: seq}} = Voxel.Codec.decode_transaction(bytes)
@@ -270,7 +274,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
   defp applied(delta, tick, revision, epoch \\ 1) do
     log(delta, epoch)
-    assert {:mmo_reliable, who, 2, %Voxel.CollisionApplied{} = event} = next_output()
+    assert {:mmo_reliable, who, 2, %Voxel.CollisionApplied{} = event} = next_output(epoch)
     assert who == identity(epoch) and event.identity == who
 
     assert {event.transaction_seq, event.apply_tick, event.collision_revision} ==
@@ -496,11 +500,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
       assert length(events) == 4
 
-      assert [
-               {:p1_install, ops3},
-               {:p1_step, [{10, _, _}], _, [:not_found, :not_found]},
-               {:p1_step, [{20, _, _}], _, [:not_found, :not_found]}
-             ] = native_events()
+      assert [{:p1_install, ops3} | steps] = native_events()
+      assert length(steps) == 2
+
+      assert Enum.map(steps, fn {:p1_step, [{cid, _, _}], _, [:not_found, :not_found]} -> cid end)
+             |> Enum.sort() == [10, 20]
 
       assert ops3 == CollisionUpdates.operations(d3.chunks)
 

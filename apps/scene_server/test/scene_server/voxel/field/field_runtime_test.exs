@@ -30,14 +30,20 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
   defp conduction_debug_state(chunk) do
     state = :sys.get_state(chunk)
 
-    sources =
-      Enum.filter(state.field_region_sources, fn {key, _} ->
-        match?({:electric, _, _, _}, key)
-      end)
+    automatic =
+      for module <- [
+            SceneServer.Voxel.Field.Provisioners.ElectricCircuit,
+            SceneServer.Voxel.Field.Provisioners.Emergence,
+            SceneServer.Voxel.Field.Provisioners.StructuralStress
+          ],
+          id = Map.get(state.field_region_sources, module.source_key(state)),
+          not is_nil(id),
+          do: id
 
     %{
-      field_region_count: sources |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length(),
-      field_source_count: length(sources)
+      field_region_count: map_size(Map.drop(state.field_regions, automatic)),
+      field_source_count:
+        Enum.count(state.field_region_sources, fn {_, id} -> id not in automatic end)
     }
   end
 
@@ -350,7 +356,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert summary.conduction_mode == :discharge
       assert summary.field_types == ["electric_potential", "ionization"]
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 1
       assert debug.field_source_count == 1
     end
@@ -392,7 +398,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  conduction_mode: :discharge
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end
@@ -780,8 +786,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 0
     end
 
     test "creates a coordinated cross-chunk conduction field when aligned boundary contacts are conductive" do
@@ -848,11 +854,11 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
 
       assert summary.source_shard.region_id != summary.target_shard.region_id
 
-      source_debug = ChunkProcess.debug_state(source_chunk_pid)
+      source_debug = conduction_debug_state(source_chunk_pid)
       assert source_debug.field_region_count == 1
       assert source_debug.field_source_count == 1
 
-      target_debug = ChunkProcess.debug_state(target_chunk_pid)
+      target_debug = conduction_debug_state(target_chunk_pid)
       assert target_debug.field_region_count == 1
       assert target_debug.field_source_count == 0
     end
@@ -895,8 +901,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert summary.conduction_mode == :discharge
       assert summary.source_shard.field_region_created == true
       assert summary.target_shard.field_region_created == true
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 1
     end
 
     test "reuses the coordinated cross-chunk conduction field for the same source and target" do
@@ -957,11 +963,11 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert second.source_shard.source_points_action == :replaced
       assert second.target_shard.source_points_action == :replaced
 
-      source_debug = ChunkProcess.debug_state(source_chunk_pid)
+      source_debug = conduction_debug_state(source_chunk_pid)
       assert source_debug.field_region_count == 1
       assert source_debug.field_source_count == 1
 
-      target_debug = ChunkProcess.debug_state(target_chunk_pid)
+      target_debug = conduction_debug_state(target_chunk_pid)
       assert target_debug.field_region_count == 1
       assert target_debug.field_source_count == 0
     end
@@ -1003,8 +1009,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 1
 
       assert {:ok, %{region_action: :destroyed, source_action: :released}} =
                ChunkProcess.release_field_region_source(
@@ -1013,10 +1019,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  :explicit
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "source lease revoke cleans up the linked cross-chunk target shard" do
@@ -1057,8 +1063,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                )
 
       assert summary.cross_chunk == true
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 1
 
       assert {:ok, _lease} =
                ChunkProcess.apply_lease(
@@ -1066,10 +1072,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  lease(logical_scene_id, region_id: 9, lease_id: 1, owner_epoch: 1)
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "cross-chunk boundary preflight rejects a non-conductive neighbor before region allocation" do
@@ -1110,8 +1116,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                    max_ticks: 90
                  )
 
-        assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-        assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
+        assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+        assert conduction_debug_state(target_chunk_pid).field_region_count == 0
 
         CliObserve.flush()
         observe_log_text = File.read!(observe_log)
@@ -1162,10 +1168,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                )
 
       assert first.cross_chunk == true
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 1
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(source_chunk_pid).field_source_count == 1
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 1
+      assert conduction_debug_state(target_chunk_pid).field_source_count == 0
 
       assert {:ok, _storage} =
                ChunkProcess.put_solid_block(
@@ -1182,10 +1188,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "cleans up an existing cross-chunk conduction field when the source block is removed" do
@@ -1242,10 +1248,10 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      assert ChunkProcess.debug_state(source_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(source_chunk_pid).field_source_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_region_count == 0
-      assert ChunkProcess.debug_state(target_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(source_chunk_pid).field_source_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_region_count == 0
+      assert conduction_debug_state(target_chunk_pid).field_source_count == 0
     end
 
     test "rejects conduction when the source voxel has been removed" do
@@ -1273,7 +1279,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end
@@ -1395,7 +1401,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end

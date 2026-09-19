@@ -579,6 +579,44 @@ defmodule T1TransportTest do
     assert GenServer.call(sink, :stats).max_datagram == 1380
   end
 
+  test "datagrams queued before negotiation wait for the transport limit", %{
+    conn: conn,
+    hello: hello
+  } do
+    control(conn, hello)
+    assert_receive {:join, identity, _, sink}, 5000
+
+    snapshot = %Movement.Snapshot{
+      identity: identity,
+      server_tick: 59,
+      records: [snapshot_record(201)]
+    }
+
+    # 固定重现 Join 先于原生协商通知的顺序；实际发送仍使用真实 QUIC 连接。
+    :sys.replace_state(sink, fn state ->
+      alias GateServer.Session.QuicConnection
+      limit = byte_size(movement_bytes(snapshot))
+
+      {:noreply, queued} =
+        QuicConnection.handle_info({:mmo_datagram, identity, snapshot}, %{state | max_datagram: 0})
+
+      assert {:noreply, ^queued} = QuicConnection.handle_info(:flush_datagrams, queued)
+      refute queued.closing
+      assert :gb_trees.size(queued.pending_datagrams) == 1
+
+      {:noreply, negotiated} =
+        QuicConnection.handle_info(
+          {:quic, :dgram_state_changed, state.conn,
+           %{dgram_send_enabled: true, dgram_max_len: limit}},
+          queued
+        )
+
+      negotiated
+    end)
+
+    assert {^snapshot, _} = receive_movement(conn)
+  end
+
   @tag :batching
   test "real negotiated datagrams carry all records and expose sent byte counters", %{
     conn: conn,
