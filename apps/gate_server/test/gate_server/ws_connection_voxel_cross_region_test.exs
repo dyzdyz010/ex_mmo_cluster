@@ -1,5 +1,6 @@
 defmodule GateServer.WsConnectionVoxelCrossRegionTest do
-  # Phase A4-5:跨 region prefab placement / damage cascade e2e。
+  @moduledoc "只测试：单 BEAM 的双区域体素事务；真实 Gate 鉴权，Scene 接纳使用显式替身。"
+  # Phase A4-5：跨 region prefab 放置 / 伤害级联组件集成。
   #
   # 单 BEAM 内启动两个 named ChunkDirectory(`ChunkDirectory.RegionA` /
   # `ChunkDirectory.RegionB`),通过 gate `:voxel_chunk_directory_resolver`
@@ -36,29 +37,11 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   alias SceneServer.Voxel.Types
   alias WorldServer.Voxel.MapLedger
 
-  defmodule FakeInterface do
-    use GenServer
-
-    def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, Map.new(opts), name: GateServer.Interface)
-    end
-
-    @impl true
-    def init(attrs) do
-      {:ok,
-       Map.merge(
-         %{auth_server: nil, scene_server: nil, world_server: nil},
-         attrs
-       )}
-    end
-
-    @impl true
-    def handle_call(:auth_server, _from, state), do: {:reply, state.auth_server, state}
-    def handle_call(:scene_server, _from, state), do: {:reply, state.scene_server, state}
-    def handle_call(:world_server, _from, state), do: {:reply, state.world_server, state}
-  end
+  alias GateServer.TestSupport.VoxelSession
+  alias GateServer.TestSupport.VoxelSession.Interface, as: FakeInterface
 
   setup do
+    VoxelSession.setup()
     Repo.delete_all(VoxelChunkSnapshot)
     DataService.Voxel.SceneObjectStore.reset()
     # 梯队1 step1.5b-2:prefab 走 CommandLog idempotency-key,清表避免跨测试 :duplicate。
@@ -193,7 +176,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     anchor = find_cross_chunk_anchor!()
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -262,7 +245,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     anchor = find_cross_chunk_anchor!()
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -367,11 +350,7 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     :ok
   end
 
-  defp put_connection_in_scene(pid) do
-    :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
-    _ = :sys.get_state(pid)
-    :ok
-  end
+
 
   defp prefab_place_intent_frame(
          request_id,

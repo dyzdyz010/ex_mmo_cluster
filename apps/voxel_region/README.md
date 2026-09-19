@@ -1,5 +1,35 @@
 # Voxim Region 真值
 
+F08 热输入接续（2026-09-19，全局系统功能）：`ThermalBatch` 按 owner 当次读取的节点/属性/相态体积，
+计算共同有限时长、功率和能量预算、点燃事件及潜热输入；不接收完整 World，不缓存属性。
+World 保留目标身份筛选、当前记录读取和最终提交。延续下述 GenServer 函数组织依据，
+复用 `Phase.energy` 与 `Combustion` 的耗尽规则，避免把同一燃料阈值复制到两个模块。
+工作集已经完整补齐本次候选几何，删除重复检查缺键后退回 50ms 的内部兜底；合法空气不会缩短批次。
+针对有限热源/燃料端点、冷功率、点燃与相变参数做纯值反例，再验证实际 World 热批/电路/恢复接缝。
+已实跑：热输入与燃烧纯模块 8 项，thermal_batch/combustion_world/phase_world/liquid_world
+64 项（1 项既有 realtime 排除），damage_world 的 b3/thermal_environment 13 项均通过。
+
+F11 运行器接续（只测试）：实遇 Mix 在“存在文件 + 不存在文件”或“文件内全部测试被 exclude”时
+返回 0，`tools/run_voxel_tests.py` 因而曾写出不完整的成功结果。入口现先检查显式文件存在性，
+拒绝仅有 seed 等调度参数的调用，完成后核对 ExUnit CLI 确实报告通过的测试。
+依据本机 `mix help test` 的文件/过滤器与 CLI 完成摘要契约；编译、标签、行号选择仍由 Mix 负责，
+不另建 BEAM 列表或测试执行器。结果同时保留 mix_exit_code 和校验后的 exit_code。
+解析覆盖本机 1.20 与 CI 1.18 的摘要形式；后者仅有解析样本回归，本轮没有执行 GitHub Actions。
+运行器 5 项单测通过，真实 CLI 的缺文件、空结果、正常单文件、仅选 seed 四种情况均符合预期。
+
+F08 接续决策（2026-09-19，全局系统功能）：将热种子/六邻域选择、派生接触图复用及
+索引构造收敛到 `ThermalWork` 纯模块。输入只含该职责的旧派生缓存、热源/功率键、属性行、
+几何摘要和附件槽；不传入完整 World state 或持有它的回调。World 继续读取 canonical 几何、
+构造缺省属性、调用内核和原子提交。依据已查阅的
+[Elixir 1.18 GenServer 适用边界](https://hexdocs.pm/elixir/1.18.4/GenServer.html#module-when-not-to-use-a-genserver)，
+用函数组织计算，保留同一权威进程；沿用本项目已有的可丢弃物化缓存策略。
+保持节点/边顺序和空气扩域复用；旧域编辑即便不产生热节点，也须刷新附件暴露面。
+验证以这些性质的纯模块反例及真实 World 热批、燃烧、液体/相变接缝为范围；不改协议或另建性能门槛。
+已实跑：`MMO_DB_PORT=1` 下纯工作集 5 项通过；thermal_batch、combustion_world、phase_world、
+liquid_world 共 64 项通过、1 项既有 realtime 排除；damage_world 选择 `b3` 和
+`thermal_environment` 共 13 项通过，覆盖缓存重建、冷恢复及实际电路热/冷功率。
+本轮只验证受影响接缝，没有部署在线服务；命令与日志见 Voxim 工程审计最新接续段。
+
 2026-09-19 工程整改（实现中）：测试按普通 Mix 单文件/标签运行，共享夹具从兄弟测试移到
 `test/support`；纯算法不启动 Repo，持久化测试显式调用 `MmoTest.Database.start!`。
 默认每个 VM 独占 `mmo_test_<pid>_<time>`，跨 VM 清表隔离已用交错写入探针验证。

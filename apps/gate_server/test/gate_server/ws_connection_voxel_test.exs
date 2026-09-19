@@ -1,4 +1,5 @@
 defmodule GateServer.WsConnectionVoxelTest do
+  @moduledoc "只测试：WS 体素入口、实际鉴权和持久化；Scene 接纳由显式测试替身提供。"
   use ExUnit.Case, async: false
 
   setup_all do
@@ -19,39 +20,11 @@ defmodule GateServer.WsConnectionVoxelTest do
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.SceneNodeRegistry
 
-  defmodule FakeInterface do
-    use GenServer
-
-    def start_link(opts \\ []) do
-      GenServer.start_link(__MODULE__, Map.new(opts), name: GateServer.Interface)
-    end
-
-    @impl true
-    def init(attrs) do
-      {:ok,
-       Map.merge(
-         %{auth_server: nil, scene_server: nil, world_server: nil},
-         attrs
-       )}
-    end
-
-    @impl true
-    def handle_call(:auth_server, _from, state) do
-      {:reply, state.auth_server, state}
-    end
-
-    @impl true
-    def handle_call(:scene_server, _from, state) do
-      {:reply, state.scene_server, state}
-    end
-
-    @impl true
-    def handle_call(:world_server, _from, state) do
-      {:reply, state.world_server, state}
-    end
-  end
+  alias GateServer.TestSupport.VoxelSession
+  alias GateServer.TestSupport.VoxelSession.Interface, as: FakeInterface
 
   setup do
+    VoxelSession.setup()
     old_observe_log = Application.get_env(:gate_server, :cli_observe_log)
     stop_named(GateServer.Interface)
 
@@ -142,7 +115,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "impact intent in scene rejects when world lookup is unavailable" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, voxel_impact_frame(13, 100, 101, {8, 16, 24}))
 
@@ -156,7 +129,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "impact intent rejects unknown skill before world routing" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -199,7 +172,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, voxel_impact_frame(14, 101, 555, {8, 16, 24}))
 
@@ -224,7 +197,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "chunk subscribe in scene rejects when world lookup is unavailable" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(9, 100, {0, 0, 0}))
 
@@ -244,7 +217,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(10, 98_765, {1234, 0, 0}))
 
@@ -286,7 +259,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(11, 321, {2, 3, 4}))
 
@@ -334,7 +307,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     # 首订阅:worker 异步 route+subscribe,推首帧快照,落 voxel_subscriptions。
     WsConnection.receive_frame(pid, chunk_subscribe_frame(61, 781, {0, 0, 0}))
@@ -385,7 +358,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(71, logical_scene_id, {0, 0, 0}, 0))
     assert_receive {:gate_ws_send, first_bin}
@@ -440,7 +413,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(41, 779, {0, 0, 0}))
 
@@ -503,7 +476,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(21, 777, {0, 0, 0}))
 
@@ -539,7 +512,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "build reservation intent in scene returns stub-accepted voxel intent result" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -588,7 +561,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     seed_solid_neighbor_below_sphere!(666)
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     # Subscribe first so we observe the post-commit snapshot push.
     WsConnection.receive_frame(pid, chunk_subscribe_frame(601, 666, {0, 0, 0}))
@@ -672,7 +645,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     seed_solid_neighbor_below_sphere!(scene_id)
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(610, scene_id, {0, 0, 0}))
     assert_receive {:gate_ws_send, initial_bin}
@@ -765,7 +738,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     anchor = find_cross_chunk_prefab_anchor!()
 
@@ -857,7 +830,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     seed_solid_neighbor_below_sphere!(logical_scene_id)
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     # Subscribe to chunk (0,0,0) so we get post-commit snapshot push.
     WsConnection.receive_frame(pid, chunk_subscribe_frame(701, logical_scene_id, {0, 0, 0}))
@@ -1027,7 +1000,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     seed_solid_neighbor_below_sphere!(logical_scene_id)
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     # Subscribe so we observe both snapshot pushes.
     WsConnection.receive_frame(pid, chunk_subscribe_frame(801, logical_scene_id, {0, 0, 0}))
@@ -1188,7 +1161,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     # Subscribe so we would observe any (illegitimate) ChunkDelta push.
     WsConnection.receive_frame(pid, chunk_subscribe_frame(901, logical_scene_id, {0, 0, 0}))
@@ -1261,7 +1234,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     seed_solid_neighbor_below_sphere!(logical_scene_id)
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(903, logical_scene_id, {0, 0, 0}))
     assert_receive {:gate_ws_send, initial_bin}, 5_000
@@ -1388,7 +1361,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "prefab place intent rejects unknown blueprint with v1 reason" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -1410,7 +1383,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
   test "prefab place intent rejects unsupported rotation in v1" do
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(
       pid,
@@ -1435,7 +1408,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     logical_scene_id = 987_650
 
@@ -1490,7 +1463,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
     {:ok, pid} = WsConnection.start_link(self())
-    put_connection_in_scene(pid)
+    VoxelSession.enter(pid)
 
     WsConnection.receive_frame(pid, chunk_subscribe_frame(31, 778, {0, 0, 0}))
     assert_receive {:gate_ws_send, initial_bin}
@@ -1521,7 +1494,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       Application.put_env(:gate_server, :cli_observe_log, observe_path)
 
       {:ok, pid} = WsConnection.start_link(self())
-      # Intentionally NOT calling put_connection_in_scene/1.
+      # 此反例保持未鉴权，不执行正常会话接纳。
 
       frame =
         voxel_edit_intent_frame(
@@ -1548,7 +1521,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     test "voxel_edit_intent in scene rejects when world lookup is unavailable" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1586,7 +1559,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1641,7 +1614,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # Empty target macro at world_micro (16, 16, 16) → world_macro {2, 2, 2}
       # → chunk {0, 0, 0}, local_macro {2, 2, 2}. With face_normal (0, 0, 0)
@@ -1689,7 +1662,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # target_world_micro (7, 0, 0) is in macro {0, 0, 0}; with face_normal
       # (1, 0, 0) the resolved target is (8, 0, 0) → macro {1, 0, 0}.
@@ -1730,7 +1703,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     test "voxel_edit_intent (Place + ObjectPart) is rejected with granularity_object_part_not_implemented" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1753,7 +1726,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     test "voxel_edit_intent (Damage) is rejected wholesale with action_not_implemented" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1787,7 +1760,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # First write succeeds — current chunk_version becomes 1.
       WsConnection.receive_frame(
@@ -1846,7 +1819,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # Place two micro slots in macro {0,0,0}, then break only one.
       WsConnection.receive_frame(
@@ -1915,7 +1888,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   describe "Phase 1c-6 — VoxelEditIntent (0x70) hardening" do
     test "voxel_edit_intent rejects unknown action codes" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1938,7 +1911,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     test "voxel_edit_intent rejects unknown granularity codes" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1961,7 +1934,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     test "voxel_edit_intent (Place + Micro) rejects object_ref outside u63 range" do
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       WsConnection.receive_frame(
         pid,
@@ -1996,7 +1969,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # Seed a solid macro at chunk-local {0, 0, 0} (world_micro {0..7, 0..7, 0..7}).
       WsConnection.receive_frame(
@@ -2070,7 +2043,7 @@ defmodule GateServer.WsConnectionVoxelTest do
       start_supervised!({FakeInterface, world_server: node(), scene_server: node()})
 
       {:ok, pid} = WsConnection.start_link(self())
-      put_connection_in_scene(pid)
+      VoxelSession.enter(pid)
 
       # Seed solid macro at world_macro {2, 2, 2} → world_micro {16, 16, 16}.
       WsConnection.receive_frame(
@@ -2118,11 +2091,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
   end
 
-  defp put_connection_in_scene(pid) do
-    :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
-    _ = :sys.get_state(pid)
-    :ok
-  end
+
 
   defp chunk_subscribe_frame(request_id, logical_scene_id, {cx, cy, cz}, radius \\ 0) do
     <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,

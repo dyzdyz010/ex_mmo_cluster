@@ -21,7 +21,7 @@ defmodule VoxelRegion.World do
   source 失败不 fallback。
   """
 
-  alias VoxelRegion.Attachments
+  alias VoxelRegion.{Attachments, ThermalWork}
   use GenServer
   require Logger
   import Bitwise
@@ -428,7 +428,7 @@ defmodule VoxelRegion.World do
           epochs: %{},
           tool_sessions: %{},
           thermal: load_thermal_environment(opts),
-          thermal_work: empty_thermal_work(),
+          thermal_work: ThermalWork.new(),
           material_balances: %{},
           phase_inventory: %{},
           material_units_per_micro: 1,
@@ -2872,45 +2872,15 @@ defmodule VoxelRegion.World do
   # 全局系统功能：温度和 HP 仍由同一个 World 的稀疏状态记录持有。
   # 每 500 ms 提交一次；原生核按容量/接触选择不超过 50 ms 的稳定步长。
   # 派生工作集不写日志；缓存只含身份、材质与暴露面，数值批次读取当前权威记录。
-  defp empty_thermal_work,
-    do: %{
-      hot: MapSet.new(),
-      cells: MapSet.new(),
-      geometry: %{},
-      edges: [],
-      builds: 0,
-      seeds: nil,
-      ordered: [],
-      attachment_cells: nil,
-      attachment_graph: nil,
-      solid_nodes: %{},
-      thermal_slots: %{},
-      indexed_edges: []
-    }
-
   defp rebuild_thermal_work(%{thermal: nil} = state),
-    do: %{state | thermal_work: empty_thermal_work()}
+    do: %{state | thermal_work: ThermalWork.new()}
 
   defp rebuild_thermal_work(state) do
-    hot = thermal_hot(state)
+    hot = ThermalWork.hot(state.damage, state.thermal.config)
 
-    active = state.thermal.active or Enum.any?(state.damage, fn {_, t} -> fuel_exhausted?(t) end)
-    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{empty_thermal_work() | hot: hot}}
+    active = state.thermal.active or Enum.any?(state.damage, fn {_, t} -> Combustion.exhausted?(t) end)
+    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{ThermalWork.new() | hot: hot}}
   end
-
-  defp thermal_hot(state) do
-      for {_, t} <- state.damage,
-          Map.get(t, :burning, false) or
-            (Map.has_key?(t, :temperature_kelvin) and
-               abs(t.temperature_kelvin - state.thermal.config["ambient_kelvin"]) >
-                 state.thermal.config["tolerance_kelvin"]),
-          cell <- thermal_cells(t),
-          into: MapSet.new(),
-          do: cell
-  end
-
-  defp thermal_cells(%{granularity: 4} = t), do: Attachments.macros([Attachments.slot(t)])
-  defp thermal_cells(t), do: [Damage.macro(t)]
 
   defp advance_thermal(state) do
     start = System.monotonic_time(:microsecond)
@@ -2918,13 +2888,13 @@ defmodule VoxelRegion.World do
     state = put_in(state.thermal_work.builds, 0)
     {state, visited} = circuit_steps(state, 0.5, MapSet.new())
     # 同一提交内只扩张热域，避免容差边缘反复删添接触；批末按当前真值收缩。
-    hot = thermal_hot(state)
+    hot = ThermalWork.hot(state.damage, state.thermal.config)
     state = %{state | thermal_work: %{state.thermal_work | hot: hot},
       thermal: %{state.thermal | active: map_size(state.thermal.sources) > 0 or MapSet.size(hot) > 0}}
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
     {state, visited} = Enum.reduce(state.damage, {state, visited}, fn {_, row}, {s, keys} ->
-      if fuel_exhausted?(row) do
+      if Combustion.exhausted?(row) do
         granularity = case row.granularity do
           1 -> 2
           4 -> 3
@@ -2985,8 +2955,6 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp fuel_exhausted?(row), do: Map.get(row, :remaining_fuel_j, 1.0) <= 1.0e-9
-
   defp circuit_steps(state, remaining, visited) when remaining < 1.0e-12, do: {state, visited}
 
   defp circuit_steps(state, remaining, visited) do
@@ -3042,54 +3010,11 @@ defmodule VoxelRegion.World do
     started = System.monotonic_time(:microsecond)
     config = state.thermal.config
 
-    electric_cells =
-      for {key, _} <- powers,
-          cell <-
-            (case key do
-               {4, {type, p}} -> Attachments.macros([{div(type, 3), rem(type, 3), p}])
-               {_, p} -> [Damage.macro(%{micro: p})]
-             end),
-          into: MapSet.new(),
-          do: cell
-
-    combustion_cells =
-      for {_, t} <- state.damage,
-          Map.get(t, :burning, false),
-          cell <- thermal_cells(t),
-          into: MapSet.new(),
-          do: cell
-
-    seeds =
-      state.thermal_work.hot
-      |> MapSet.union(MapSet.new(Map.keys(state.thermal.sources)))
-      |> MapSet.union(electric_cells)
-      |> MapSet.union(combustion_cells)
-
-    # 热种子不变时复用六邻域；编辑仍通过 geometry 删除使拓扑失效。
-    cells =
-      if seeds == state.thermal_work.seeds,
-        do: state.thermal_work.cells,
-        else: seeds |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)]) |> MapSet.new()
-
-    # 上批 geometry 的键恰好是 cells；编辑只会删键。集合未变且未删键时直接复用。
-    reuse_geometry =
-      cells == state.thermal_work.cells and
-        map_size(state.thermal_work.geometry) == MapSet.size(cells)
-
-    missing =
-      if reuse_geometry,
-        do: MapSet.new(),
-        else: MapSet.difference(cells, MapSet.new(Map.keys(state.thermal_work.geometry)))
-
+    plan = ThermalWork.plan(state.thermal_work, state.thermal.sources, powers, state.damage)
     neighborhood_done = System.monotonic_time(:microsecond)
 
-    geometry =
-      if reuse_geometry,
-        do: state.thermal_work.geometry,
-        else: Map.take(state.thermal_work.geometry, MapSet.to_list(cells))
-
     {geometry, state} =
-      Enum.reduce(missing, {geometry, state}, fn cell, {geometry, s} ->
+      Enum.reduce(plan.missing, {plan.geometry, state}, fn cell, {geometry, s} ->
         {nodes, s} =
           VoxelRegion.ThermalGeometry.cell(
             cell,
@@ -3105,64 +3030,33 @@ defmodule VoxelRegion.World do
 
     geometry_done = System.monotonic_time(:microsecond)
 
-    attachment_cells = state.thermal_work.attachment_cells ||
-      Enum.map(state.attachments, fn {slot, value} -> {slot, value, Attachments.macros([slot])} end)
+    {work, rebuild?} = ThermalWork.refresh(state.thermal_work, plan, geometry, state.attachments)
 
-    {ordered, edges, indexed_edges, solid_nodes, thermal_slots, attachment_graph, state} =
-      if cells == state.thermal_work.cells and MapSet.size(missing) == 0 do
-        {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
-         state.thermal_work.solid_nodes, state.thermal_work.thermal_slots, state.thermal_work.attachment_graph, state}
+    {work, state} =
+      if rebuild? do
+        {nodes, state, attachment_graph} =
+          VoxelRegion.ThermalAttachments.add(
+            work.solid_nodes, work.thermal_slots, state.properties, state,
+            &target_at/2, &phase_volume/2, work.attachment_graph
+          )
+
+        work = ThermalWork.index(work, nodes, attachment_graph)
+        # 默认记录只由目录、环境和实占用派生；已有属性仍在每个数值批次读取。
+        defaults = %{state | damage: %{}}
+        ordered = Enum.map(work.ordered, fn {key, n} ->
+          {key, Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
+                              cells: ThermalWork.cells(n.target), default: property_state(defaults, n.target),
+                              ignition: if(Combustion.combustible?(n.material),
+                                do: n.material["ignition_kelvin"] * 1.0, else: nil)})}
+        end)
+        {%{work | ordered: ordered}, state}
       else
-        nodes = geometry |> Map.values() |> List.flatten() |> Map.new()
-
-        slots =
-          for {slot, value, footprint} <- attachment_cells,
-              Enum.any?(footprint, &MapSet.member?(cells, &1)), into: %{}, do: {slot, value}
-
-        # 只添删热域时复用；旧域内的编辑失效仍重建，因无热容量宿主也会改变附件暴露面。
-        if MapSet.disjoint?(missing, state.thermal_work.cells) and
-             nodes == state.thermal_work.solid_nodes and slots == state.thermal_work.thermal_slots do
-          {state.thermal_work.ordered, state.thermal_work.edges, state.thermal_work.indexed_edges,
-           nodes, slots, state.thermal_work.attachment_graph, state}
-        else
-          solid_nodes = nodes
-          {nodes, state, attachment_graph} =
-            VoxelRegion.ThermalAttachments.add(nodes, slots, state.properties, state, &target_at/2, &phase_volume/2,
-              state.thermal_work.attachment_graph)
-
-          # 默认记录仅由目录、配置和几何派生；已有温度/HP/燃料仍只读 state.damage。
-          defaults = %{state | damage: %{}}
-          ordered = Enum.map(nodes, fn {key, n} ->
-            {key, Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
-                                cells: thermal_cells(n.target), default: property_state(defaults, n.target),
-                                ignition: if(Combustion.combustible?(n.material),
-                                  do: n.material["ignition_kelvin"] * 1.0, else: nil)})}
-          end)
-          edges = VoxelRegion.ThermalGeometry.contacts(nodes)
-          indices = ordered |> Enum.with_index() |> Map.new(fn {{cell, _}, i} -> {cell, i} end)
-
-          {ordered, edges,
-           for({a, b, g} <- edges, do: {Map.fetch!(indices, a), Map.fetch!(indices, b), g}),
-           solid_nodes, slots, attachment_graph, state}
-        end
+        {work, state}
       end
 
+    ordered = work.ordered
+    indexed_edges = work.indexed_edges
     nodes_done = System.monotonic_time(:microsecond)
-
-    work = %{
-      state.thermal_work
-      | geometry: geometry,
-        cells: cells,
-        edges: edges,
-        seeds: seeds,
-        ordered: ordered,
-        attachment_cells: attachment_cells,
-        attachment_graph: attachment_graph,
-        solid_nodes: solid_nodes,
-        thermal_slots: thermal_slots,
-        indexed_edges: indexed_edges,
-        builds: state.thermal_work.builds + MapSet.size(missing)
-    }
 
     sources =
       Map.filter(state.thermal.sources, fn {cell, source} ->
@@ -3171,70 +3065,16 @@ defmodule VoxelRegion.World do
         end)
       end)
 
-    # 拓扑只缓存身份与材料；温度和 HP 每批从唯一权威记录取值。
-    duration =
-      Enum.reduce(sources, duration, fn {_, s}, dt -> min(dt, s.remaining_j / s.power_w) end)
-
-    duration =
-      Enum.reduce(ordered, duration, fn {_, n}, dt ->
-        row = Map.get(state.damage, n.damage_key)
-
-        if row && Map.get(row, :burning, false) do
-          min(dt, row.remaining_fuel_j / row.power_w)
-        else
-          dt
-        end
+    samples =
+      Enum.map(ordered, fn {key, node} ->
+        row = Map.get_lazy(state.damage, node.damage_key, fn -> %{node.default | seq: state.seq} end)
+        volume = if phase_target?(state, row), do: phase_volume(state, row)
+        {key, node, row, volume}
       end)
 
-    duration =
-      # 空列表是已派生的合法空气格；只有缺键才表示几何尚未派生。
-      if Enum.any?(seeds, &(not Map.has_key?(geometry, &1))),
-        do: min(duration, 0.05),
-        else: duration
-
-    {targets, input} =
-      Enum.map(ordered, fn {node_key, n} ->
-        # Damage.key 含完整目标身份；已有记录直接读取，最终提交统一盖 seq/request_id。
-        t =
-          case Map.fetch(state.damage, n.damage_key) do
-            {:ok, t} -> t
-            :error -> %{n.default | seq: state.seq}
-          end
-
-        temperature = Map.get(t, :temperature_kelvin, config["ambient_kelvin"])
-        cell = n.cell
-        source = if t.granularity == 0, do: Map.get(sources, cell)
-
-        combustion = if Map.get(t, :burning, false), do: t.power_w, else: 0.0
-
-        electric = Map.get(powers, node_key, 0.0)
-
-        # World 声明事件与相变数值输入；NIF 在批内维护焓和温度，材质替换仍由 World 提交。
-        ignition =
-          if n.ignition != nil and t.hp > 0 and
-               not Map.get(t, :burning, false) and not fuel_exhausted?(t),
-            do: n.ignition,
-            else: nil
-
-        phase =
-          if phase_target?(state, t) do
-            volume = phase_volume(state, t)
-            {Phase.energy(t, volume, n.material, config["ambient_kelvin"]), volume * 1.0,
-             n.material["phase_transition_kelvin"] * 1.0,
-             volume * n.material["latent_heat_per_macro_j"],
-             n.material["heat_capacity_per_macro"] * 1.0, Phase.liquid?(t.material)}
-          end
-
-        {{cell, n.cells, t, temperature, electric, combustion},
-         {{temperature, t.hp, t.max_hp, n.capacity, n.material["thermal_conductivity"] * 1.0,
-          n.material["heat_resistance_kelvin"] * 1.0, n.exposed_faces * 1.0,
-          electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0),
-          abs(electric + combustion + if(source, do: source.power_w * 1.0, else: 0.0)) * duration,
-          Enum.any?(n.cells, &MapSet.member?(state.thermal_work.hot, &1)) or
-            source != nil or combustion > 0 or electric != 0},
-          {ignition, phase, t.granularity in [1, 4]}}}
-      end)
-      |> Enum.unzip()
+    batch = VoxelRegion.ThermalBatch.prepare(
+      samples, sources, powers, work.hot, config["ambient_kelvin"], duration)
+    input = batch.input
 
     prepared = System.monotonic_time(:microsecond)
 
@@ -3245,13 +3085,13 @@ defmodule VoxelRegion.World do
         config["ambient_kelvin"] * 1.0,
         config["environment_w_per_m2_k"] * 1.0,
         config["tolerance_kelvin"] * 1.0,
-        duration
+        batch.duration
       )
 
     calculated = System.monotonic_time(:microsecond)
 
     {changes, sources, hot, losses, combustion_used} =
-      VoxelRegion.ThermalSettlement.apply(targets, result, sources, config, done)
+      VoxelRegion.ThermalSettlement.apply(batch.targets, result, sources, config, done)
 
     changes =
       Enum.reduce(losses, changes, fn {{granularity, _}, {micro, loss}}, changes ->
@@ -3291,7 +3131,7 @@ defmodule VoxelRegion.World do
         combustion_j: thermal_base.combustion_j + combustion_used
     }
 
-    work = if active, do: %{work | hot: hot}, else: %{empty_thermal_work() | builds: work.builds}
+    work = if active, do: %{work | hot: hot}, else: %{ThermalWork.new() | builds: work.builds}
 
     Logger.info(
       "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
@@ -3342,7 +3182,7 @@ defmodule VoxelRegion.World do
         material = node.material
         target = Map.get_lazy(rows, node.damage_key, fn -> %{node.default | seq: state.seq} end)
         if target.hp > 0 and
-             not Map.get(target, :burning, false) and not fuel_exhausted?(target) and
+             not Map.get(target, :burning, false) and not Combustion.exhausted?(target) and
              Map.get(target, :temperature_kelvin, state.thermal.config["ambient_kelvin"]) >= material["ignition_kelvin"] do
           row = Combustion.ignite(target, material, combustion_volume(state, target))
           {Map.put(rows, Damage.key(row), row), [{Damage.key(row), row} | changed]}

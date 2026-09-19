@@ -1,4 +1,5 @@
 defmodule GateServer.TcpConnectionProtocolTest do
+  @moduledoc "只测试：真实 TCP 协议与鉴权/角色归属接纳；场景接纳使用本文件的 FakePlayerManager。"
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
@@ -281,29 +282,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
   test "valid auth transitions to authenticated and enter_scene success transitions to in_scene",
        %{client: client, pid: pid} do
-    insert_account_and_character("tester", 42)
-    FakeInterface.set(auth_server: node(), scene_server: node())
-    claims = AuthServer.AuthWorker.build_session_claims("tester", source: "test")
-    token = AuthServer.AuthWorker.issue_token(claims)
-
-    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 11))
-    assert {:ok, <<0x80, 11::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
-
-    assert %{status: :authenticated, token: ^token, auth_username: "tester"} = :sys.get_state(pid)
-
-    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 12))
-
-    assert {:ok,
-            <<0x84, 12::64-big, 0x00, x::float-64-big, y::float-64-big, z::float-64-big,
-              expected_seq::32-big>>} =
-             :gen_tcp.recv(client, 0, 500)
-
-    assert {x, y, z} == {10.0, 20.0, 30.0}
-    assert expected_seq == 1
-    assert %{status: :in_scene, cid: 42, agent: %{"active_cid" => 42}} = :sys.get_state(pid)
-
-    assert %{last_character_profile: %{name: "tester-character-42"}} =
-             :sys.get_state(SceneServer.PlayerManager)
+    authenticate_and_enter_scene(client, pid)
   end
 
   test "movement before scene join is rejected after auth", %{client: client, pid: pid} do
@@ -562,8 +541,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
 
     assert {:ok,
             <<0x8D, 7::64-big, 42::64-big, 1::16-big, 25::16-big, 75::16-big, 1.0::float-64-big,
-              2.0::float-64-big,
-              3.0::float-64-big>>} =
+              2.0::float-64-big, 3.0::float-64-big>>} =
              :gen_tcp.recv(client, 0, 500)
   end
 
@@ -677,8 +655,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok,
             {{127, 0, 0, 1}, _port,
              <<0x8B, 114::32-big, 200::32-big, 42::64-big, 17.0::float-64-big, 18.0::float-64-big,
-               19.0::float-64-big,
-               _::binary>>}} =
+               19.0::float-64-big, _::binary>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     :gen_udp.close(udp_client)
@@ -736,8 +713,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
             {{127, 0, 0, 1}, _port,
              <<0x83, 77::64-big, 9::32-big, 11.0::float-64-big, 12.0::float-64-big,
                13.0::float-64-big, 1.0::float-64-big, 2.0::float-64-big, 3.0::float-64-big,
-               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big,
-               0::8>>}} =
+               0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client, 0, 500)
 
     assert {:error, :timeout} = :gen_tcp.recv(client, 0, 100)
@@ -826,8 +802,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
             {{127, 0, 0, 1}, ^port2,
              <<0x83, 77::64-big, 10::32-big, 21.0::float-64-big, 22.0::float-64-big,
                23.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-               0::8>>}} =
+               +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>}} =
              :gen_udp.recv(udp_client2, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client1, 0, 100)
@@ -891,8 +866,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     assert {:ok,
             <<0x83, 88::64-big, 3::32-big, 31.0::float-64-big, 32.0::float-64-big,
               33.0::float-64-big, +0.0::float-64-big, 1.0::float-64-big, +0.0::float-64-big,
-              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big,
-              0::8>>} =
+              +0.0::float-64-big, +0.0::float-64-big, +0.0::float-64-big, 0::8>>} =
              :gen_tcp.recv(client, 0, 500)
 
     assert {:error, :timeout} = :gen_udp.recv(udp_client, 0, 100)
@@ -966,7 +940,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
       File.rm(observe_path)
     end)
 
-    put_connection_in_scene(pid)
+    authenticate_and_enter_scene(client, pid)
 
     assert :ok =
              :gen_tcp.send(client, encode_heightmap_request(191, 881, {-32, 48}, 16, {4, 3}))
@@ -991,7 +965,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
     put_voxel_region(881, region_id: System.unique_integer([:positive, :monotonic]))
 
     FakeInterface.set(scene_server: node(), world_server: node())
-    put_connection_in_scene(pid)
+    authenticate_and_enter_scene(client, pid)
 
     assert :ok = :gen_tcp.send(client, encode_chunk_subscribe(201, 881, {0, 0, 0}))
 
@@ -1102,9 +1076,32 @@ defmodule GateServer.TcpConnectionProtocolTest do
       x::64-big-signed, y::64-big-signed, z::64-big-signed, 2::16-big, 0::64-big>>
   end
 
-  defp put_connection_in_scene(pid) do
-    :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: 42} end)
-    _ = :sys.get_state(pid)
+  defp authenticate_and_enter_scene(client, pid) do
+    insert_account_and_character("tester", 42)
+    FakeInterface.set(auth_server: node(), scene_server: node())
+    claims = AuthServer.AuthWorker.build_session_claims("tester", source: "test")
+    token = AuthServer.AuthWorker.issue_token(claims)
+
+    assert :ok = :gen_tcp.send(client, encode_auth_request("tester", token, 11))
+    assert {:ok, <<0x80, 11::64-big, 0x00>>} = :gen_tcp.recv(client, 0, 500)
+
+    assert %{status: :authenticated, token: ^token, auth_username: "tester"} = :sys.get_state(pid)
+
+    assert :ok = :gen_tcp.send(client, encode_enter_scene(42, 12))
+
+    assert {:ok,
+            <<0x84, 12::64-big, 0x00, x::float-64-big, y::float-64-big, z::float-64-big,
+              expected_seq::32-big>>} =
+             :gen_tcp.recv(client, 0, 500)
+
+    assert {x, y, z} == {10.0, 20.0, 30.0}
+    assert expected_seq == 1
+    assert %{status: :in_scene, cid: 42, agent: %{"active_cid" => 42}} = :sys.get_state(pid)
+
+    assert %{last_character_profile: %{name: "tester-character-42"}} =
+             :sys.get_state(SceneServer.PlayerManager)
+
+    assert is_pid(:sys.get_state(pid).scene_ref)
     :ok
   end
 

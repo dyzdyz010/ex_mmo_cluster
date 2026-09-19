@@ -1,5 +1,10 @@
 defmodule VoxelRegion.Combustion do
   @moduledoc "全局系统功能：B6 充足氧气下的有限燃料燃烧规则。"
+  @fuel_epsilon_j 1.0e-9
+
+  @doc "已初始化燃料达到耗尽阈值；无记录表示尚未点燃，不虚构余量。"
+  def exhausted?(row),
+    do: is_map_key(row, :remaining_fuel_j) and row.remaining_fuel_j <= @fuel_epsilon_j
 
   @doc "读取已发布目录的 B6 三个材料字段；未发布完整字段的材料不可燃。"
   def properties(material) do
@@ -54,8 +59,8 @@ defmodule VoxelRegion.Combustion do
     next =
       row
       |> Map.put(:remaining_fuel_j, fuel - used)
-      |> Map.put(:power_w, if(fuel - used > 1.0e-9, do: power, else: 0.0))
-      |> Map.put(:burning, fuel - used > 1.0e-9)
+      |> Map.put(:power_w, if(fuel - used > @fuel_epsilon_j, do: power, else: 0.0))
+      |> Map.put(:burning, fuel - used > @fuel_epsilon_j)
 
     {next, used, used}
   end
