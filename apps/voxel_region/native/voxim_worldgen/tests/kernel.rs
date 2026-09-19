@@ -80,3 +80,19 @@ fn region_classification_matches_generate_body() {
         assert!(classify_region(level, hi + 5, bounds, &config).is_some());
     }
 }
+
+/// Cross-language oracle from the actual UE generator, including ring cells.
+#[test]
+#[ignore = "Export Voxim.Gameplay.WorldgenResources and set VOXIM_GAMEPLAY_ORACLE"]
+fn gameplay_client_tiles_match() {
+    let folder = std::env::var("VOXIM_GAMEPLAY_ORACLE").unwrap();
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let file = entry.unwrap().path();
+        if file.extension().unwrap() != "cells" { continue; }
+        let xyz: Vec<i32> = file.file_stem().unwrap().to_str().unwrap().split('_').map(|s| s.parse().unwrap()).collect();
+        let coord = [xyz[0],xyz[1],xyz[2]];
+        let expected = std::fs::read(file).unwrap();
+        let body = generate_body(0,coord,&Config::default());
+        assert_eq!(expected.as_slice(), &body[4..4+66*66*66*2], "{coord:?}");
+    }
+}

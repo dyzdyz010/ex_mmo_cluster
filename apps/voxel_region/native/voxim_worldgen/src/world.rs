@@ -51,6 +51,9 @@ const SLOPE_BASELINE: i32 = 4;
 const GRANITE_DEPTH: i32 = 96;
 const BASALT_DEPTH: i32 = 288;
 const ENTRANCE_SALT: u32 = 0x454e5452;
+// 全局系统：与客户端同一自然木材形状，粗层空气证明包含树冠。
+const TREE_GRID: i32 = 16;
+const TREE_HEIGHT: i32 = 6;
 
 fn column_height(x: i32, z: i32, c: &Config) -> i32 {
     let x = x as f64;
@@ -71,6 +74,7 @@ struct Profile {
     cover: u16,
     soil: u16,
     province: u16,
+    tree_distance: i32,
 }
 fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
     let seed = c.seed as u32;
@@ -112,11 +116,22 @@ fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
         cover = province;
         soil = province;
     }
+    let mut tree_distance = -1;
+    if slope < 2 && (cover == 1 || cover == 3) {
+        let gx = x.div_euclid(TREE_GRID);
+        let gz = z.div_euclid(TREE_GRID);
+        let hash = squirrel(gz as u32, squirrel(gx as u32, c.seed as u32 ^ 0x54524545));
+        let cx = gx * TREE_GRID + 4 + (hash % 8) as i32;
+        let cz = gz * TREE_GRID + 4 + ((hash >> 8) % 8) as i32;
+        let distance = (x - cx).abs() + (z - cz).abs();
+        if distance <= 2 { tree_distance = distance; }
+    }
     Profile {
         height,
         cover,
         soil,
         province,
+        tree_distance,
     }
 }
 #[derive(Clone, Copy)]
@@ -259,6 +274,13 @@ fn classify(
 ) -> u16 {
     let [x, y, z] = p;
     if y >= profile.height {
+        let above = y - profile.height;
+        if profile.tree_distance >= 0 && above < TREE_HEIGHT {
+            if profile.tree_distance == 0 && above < TREE_HEIGHT - 1 { return 19; }
+            if above >= TREE_HEIGHT - 3 && profile.tree_distance <= if above == TREE_HEIGHT - 1 { 1 } else { 2 } {
+                return profile.cover;
+            }
+        }
         return 0;
     }
     let depth = profile.height as i64 - y as i64;
@@ -285,12 +307,16 @@ fn classify(
     {
         return if depth <= 24 {
             15
-        } else if depth <= 52 {
+        } else if depth <= 44 {
             16
+        } else if depth <= 52 {
+            24
         } else if depth <= 80 {
             17
-        } else {
+        } else if depth <= 88 {
             18
+        } else {
+            23
         };
     }
     if y < c.sea_level - BASALT_DEPTH {
@@ -438,7 +464,7 @@ impl Evaluator<'_> {
         let min = cell.map(|v| v * scale);
         let max = min.map(|v| v + scale - 1);
         let node = self.columns.node(l, cell);
-        if min[1] >= node.hmax {
+        if min[1] >= node.hmax + TREE_HEIGHT {
             return Value::uniform(0);
         }
         if max[1] < node.hmin - self.deep {
@@ -565,7 +591,7 @@ fn region_y_span(level: i32, ry: i32) -> (i32, i32) {
 pub fn classify_region(level: i32, ry: i32, bounds: [i32; 4], config: &Config) -> Option<u16> {
     let (min_y, max_y) = region_y_span(level, ry);
     let [hmin, hmax, pmin, pmax] = bounds;
-    if min_y >= hmax {
+    if min_y >= hmax + TREE_HEIGHT {
         return Some(0);
     }
     if max_y < hmin - deep(config) {
