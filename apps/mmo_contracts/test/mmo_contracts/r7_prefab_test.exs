@@ -3,47 +3,71 @@ defmodule MmoContracts.R7PrefabTest do
   alias MmoContracts.Voxel.{Codec, Payload}
 
   test "accepted payload unpacking shares raw and compressed decoding; boundary still checks hash" do
-    p = %Payload{cells: :binary.copy(<<0,0>>,66*66*66)}
-    bytes = Payload.encode(p,%{},9,123)
-    {:ok,header,raw} = Codec.decode_payload_body(bytes)
-    <<prefix::binary-size(45),_::binary>> = bytes
-    uncompressed = <<prefix::binary,0,byte_size(raw)::32-little,byte_size(raw)::32-little,raw::binary>>
-    for input <- [bytes,uncompressed] do
-      assert {:ok,h,^raw} = Codec.unpack_payload_body(input)
+    p = %Payload{cells: :binary.copy(<<0, 0>>, 66 * 66 * 66)}
+    bytes = Payload.encode(p, %{}, 9, 123)
+    {:ok, header, raw} = Codec.decode_payload_body(bytes)
+    <<prefix::binary-size(45), _::binary>> = bytes
+
+    uncompressed =
+      <<prefix::binary, 0, byte_size(raw)::32-little, byte_size(raw)::32-little, raw::binary>>
+
+    for input <- [bytes, uncompressed] do
+      assert {:ok, h, ^raw} = Codec.unpack_payload_body(input)
       assert h.hash == header.hash
-      assert Codec.decode_payload_body(input) == {:ok,h,raw}
-      assert Payload.replace_details(input,p,10,123) == Payload.encode(p,%{},10,123)
-      <<before_hash::binary-size(37),_::64,tail::binary>> = input
-      corrupt = <<before_hash::binary,0::64,tail::binary>>
-      assert {:error,:invalid_payload} = Codec.decode_payload_body(corrupt)
-      assert {:error,:invalid_payload} = Payload.decode(corrupt)
+      assert Codec.decode_payload_body(input) == {:ok, h, raw}
+      assert Payload.replace_details(input, p, 10, 123) == Payload.encode(p, %{}, 10, 123)
+      <<before_hash::binary-size(37), _::64, tail::binary>> = input
+      corrupt = <<before_hash::binary, 0::64, tail::binary>>
+      assert {:error, :invalid_payload} = Codec.decode_payload_body(corrupt)
+      assert {:error, :invalid_payload} = Payload.decode(corrupt)
     end
   end
 
   test "detail replacement preserves exact terrain skin bytes through all payload versions" do
-    skin = {2, {{11, <<11,19,19,11>>}, {19,nil}, {0,nil}, {11,nil}, {19,nil}, {0,nil}}}
-    base = %Payload{cells: :binary.copy(<<0,0>>,66*66*66),map_extent: 2}
-    bytes = Payload.encode(base,%{{5,5,5} => {11,skin}},1,123)
-    {:ok,base} = Payload.decode(bytes)
-    root = %{definition_id: :binary.copy(<<42>>,32),anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}
-    child = %{root | parent_id: {9,0},component_slot: 17}
-    variants = [base,
-      %{base | refined: %{4430 => %{7 => {11,{9,0}}}},instances: %{{9,0} => root}},
-      %{base | refined: %{4430 => %{7 => {11,{10,0}}}},instances: %{{9,0} => root,{10,0} => child}},
-      %{base | level: 1,structure: %{4430 => :binary.copy(<<267::16-little>>,4096)}}]
+    skin = {2, {{11, <<11, 19, 19, 11>>}, {19, nil}, {0, nil}, {11, nil}, {19, nil}, {0, nil}}}
+    base = %Payload{cells: :binary.copy(<<0, 0>>, 66 * 66 * 66), map_extent: 2}
+    bytes = Payload.encode(base, %{{5, 5, 5} => {11, skin}}, 1, 123)
+    {:ok, base} = Payload.decode(bytes)
+
+    root = %{
+      definition_id: :binary.copy(<<42>>, 32),
+      anchor: {0, 0, 0},
+      orientation: 0,
+      parent_id: {0, 0},
+      component_slot: 0
+    }
+
+    child = %{root | parent_id: {9, 0}, component_slot: 17}
+
+    variants = [
+      base,
+      %{base | refined: %{4430 => %{7 => {11, {9, 0}}}}, instances: %{{9, 0} => root}},
+      %{
+        base
+        | refined: %{4430 => %{7 => {11, {10, 0}}}},
+          instances: %{{9, 0} => root, {10, 0} => child}
+      },
+      %{base | level: 1, structure: %{4430 => :binary.copy(<<267::16-little>>, 4096)}}
+    ]
+
     for source <- variants, target <- variants do
-      prior = Payload.encode(source,%{},8,123)
-      rewritten = Payload.replace_details(prior,target,10,123)
-      assert rewritten == Payload.encode(target,%{},10,123)
-      assert {:ok,p} = Payload.decode(rewritten)
-      assert Payload.value(p,{5,5,5}) == Payload.value(base,{5,5,5})
+      prior = Payload.encode(source, %{}, 8, 123)
+      rewritten = Payload.replace_details(prior, target, 10, 123)
+      assert rewritten == Payload.encode(target, %{}, 10, 123)
+      assert {:ok, p} = Payload.decode(rewritten)
+      assert Payload.value(p, {5, 5, 5}) == Payload.value(base, {5, 5, 5})
     end
   end
 
   test "VXR5 preserves actual owner occupancy and complete identity" do
-    p = struct(Payload, cells: :binary.copy(<<0, 0>>, 66*66*66))
+    p = struct(Payload, cells: :binary.copy(<<0, 0>>, 66 * 66 * 66))
     p = Map.put(p, :refined, %{4430 => %{7 => {11, {9, 0}}}})
-    p = Map.put(p, :instances, %{{9, 0} => %{definition_id: :binary.copy(<<42>>, 32), anchor: {-1, 8, 129}, orientation: 1}})
+
+    p =
+      Map.put(p, :instances, %{
+        {9, 0} => %{definition_id: :binary.copy(<<42>>, 32), anchor: {-1, 8, 129}, orientation: 1}
+      })
+
     bytes = Payload.encode(p, %{}, 9, 123)
     assert <<"VXR5", 5::32-little, _::binary>> = bytes
     assert {:ok, decoded} = Payload.decode(bytes)
@@ -54,42 +78,108 @@ defmodule MmoContracts.R7PrefabTest do
 
   test "placement and removal decode exact identity without client footprint" do
     id = :binary.copy(<<42>>, 32)
-    assert {:ok, {:voxel_prefab_place_v1, request}} = Codec.decode(<<0x7A, 1::64, 2::32, 3::64, id::binary, -1::signed-64, 8::signed-64, 129::signed-64, 1>>)
+
+    assert {:ok, {:voxel_prefab_place_v1, request}} =
+             Codec.decode(
+               <<0x7A, 1::64, 2::32, 3::64, id::binary, -1::signed-64, 8::signed-64,
+                 129::signed-64, 1>>
+             )
+
     assert request.definition_id == id
     assert request.anchor == {-1, 8, 129}
-    assert {:ok, {:voxel_prefab_remove_v1, %{instance_id: {9, 0}}}} = Codec.decode(<<0x7B, 1::64, 2::32, 3::64, 9::64, 0::32>>)
+
+    assert {:ok, {:voxel_prefab_remove_v1, %{instance_id: {9, 0}}}} =
+             Codec.decode(<<0x7B, 1::64, 2::32, 3::64, 9::64, 0::32>>)
   end
 
   test "payload format and body agree; refined macro storage is Air" do
-    p = struct(Payload,cells: :binary.copy(<<0,0>>,66*66*66))
-    <<_::binary-size(8),tail::binary>> = Payload.encode(p,%{},0,123)
-    assert {:error,:invalid_payload} = Payload.decode(<<"VXR5",5::32-little,tail::binary>>)
-    p = %{p | refined: %{4430 => %{7 => {11,{9,0}}}},
-      instances: %{{9,0} => %{definition_id: :binary.copy(<<42>>,32),anchor: {-1,8,129},orientation: 1}}}
-    <<_::binary-size(8),tail::binary>> = Payload.encode(p,%{},9,123)
-    assert {:error,:invalid_payload} = Payload.decode(<<"VXR4",4::32-little,tail::binary>>)
-    bytes = Payload.encode(p,%{{8,1,1} => {11,MmoContracts.Voxel.Skins.uniform(11)}},9,123)
-    assert {:error,:invalid_payload} = Payload.decode(bytes)
+    p = struct(Payload, cells: :binary.copy(<<0, 0>>, 66 * 66 * 66))
+    <<_::binary-size(8), tail::binary>> = Payload.encode(p, %{}, 0, 123)
+    assert {:error, :invalid_payload} = Payload.decode(<<"VXR5", 5::32-little, tail::binary>>)
+
+    p = %{
+      p
+      | refined: %{4430 => %{7 => {11, {9, 0}}}},
+        instances: %{
+          {9, 0} => %{
+            definition_id: :binary.copy(<<42>>, 32),
+            anchor: {-1, 8, 129},
+            orientation: 1
+          }
+        }
+    }
+
+    <<_::binary-size(8), tail::binary>> = Payload.encode(p, %{}, 9, 123)
+    assert {:error, :invalid_payload} = Payload.decode(<<"VXR4", 4::32-little, tail::binary>>)
+    bytes = Payload.encode(p, %{{8, 1, 1} => {11, MmoContracts.Voxel.Skins.uniform(11)}}, 9, 123)
+    assert {:error, :invalid_payload} = Payload.decode(bytes)
   end
+
   test "VXR7 ancestor identity and replacement frozen bytes" do
-    root = %{definition_id: :binary.copy(<<42>>,32),anchor: {-1,8,129},orientation: 1,parent_id: {0,0},component_slot: 0}
-    child = %{root | parent_id: {9,0}, component_slot: 17}
-    p = %Payload{cells: :binary.copy(<<0,0>>,66*66*66),refined: %{4430 => %{7 => {11,{10,0}}}},instances: %{{9,0} => root,{10,0} => child}}
-    bytes = Payload.encode(p,%{},10,123)
-    assert <<"VXR7",7::32-little,_::binary>> = bytes
-    assert {:ok,decoded} = Payload.decode(bytes)
+    root = %{
+      definition_id: :binary.copy(<<42>>, 32),
+      anchor: {-1, 8, 129},
+      orientation: 1,
+      parent_id: {0, 0},
+      component_slot: 0
+    }
+
+    child = %{root | parent_id: {9, 0}, component_slot: 17}
+
+    p = %Payload{
+      cells: :binary.copy(<<0, 0>>, 66 * 66 * 66),
+      refined: %{4430 => %{7 => {11, {10, 0}}}},
+      instances: %{{9, 0} => root, {10, 0} => child}
+    }
+
+    bytes = Payload.encode(p, %{}, 10, 123)
+    assert <<"VXR7", 7::32-little, _::binary>> = bytes
+    assert {:ok, decoded} = Payload.decode(bytes)
     assert decoded.instances == p.instances
-    assert {:error,:invalid_payload} = Payload.decode(Payload.encode(%{p | level: 1},%{},10,123))
-    assert {:ok,{:voxel_prefab_replace_v1,%{instance_id: {10,0},definition_id: id}}} = Codec.decode(<<0x7C,1::64,2::32,3::64,10::64,0::32,root.definition_id::binary>>)
+
+    assert {:error, :invalid_payload} =
+             Payload.decode(Payload.encode(%{p | level: 1}, %{}, 10, 123))
+
+    assert {:ok, {:voxel_prefab_replace_v1, %{instance_id: {10, 0}, definition_id: id}}} =
+             Codec.decode(
+               <<0x7C, 1::64, 2::32, 3::64, 10::64, 0::32, root.definition_id::binary>>
+             )
+
     assert id == root.definition_id
-    assert {:error,:invalid_message} = Codec.decode(<<0x7C,1>>)
+    assert {:error, :invalid_message} = Codec.decode(<<0x7C, 1>>)
   end
+
   test "VXR7 rejects invalid ancestry at the payload boundary" do
-    base = %{definition_id: :binary.copy(<<42>>,32),anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}
-    p = %Payload{cells: :binary.copy(<<0,0>>,66*66*66),refined: %{4430 => %{7 => {11,{10,0}}}}}
-    for parent <- [{10,0},{11,0},{8,0}] do
-      bytes = Payload.encode(%{p | instances: %{{9,0} => base,{10,0} => %{base | parent_id: parent,component_slot: 17}}},%{},10,123)
-      assert {:error,:invalid_payload} = Payload.decode(bytes)
+    base = %{
+      definition_id: :binary.copy(<<42>>, 32),
+      anchor: {0, 0, 0},
+      orientation: 0,
+      parent_id: {0, 0},
+      component_slot: 0
+    }
+
+    p = %Payload{
+      cells: :binary.copy(<<0, 0>>, 66 * 66 * 66),
+      refined: %{4430 => %{7 => {11, {10, 0}}}}
+    }
+
+    for parent <- [{10, 0}, {11, 0}, {8, 0}] do
+      bytes =
+        Payload.encode(
+          %{
+            p
+            | instances: %{
+                {9, 0} => base,
+                {10, 0} => %{base | parent_id: parent, component_slot: 17}
+              }
+          },
+          %{},
+          10,
+          123
+        )
+
+      assert {:error, :invalid_payload} = Payload.decode(bytes)
     end
   end
 end
+

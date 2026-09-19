@@ -24,11 +24,15 @@ defmodule SceneServer.Movement.Scene do
   @doc "World 通过显式路由连接邻区；偏移由两端已初始化的零点计算。"
   def connect_neighbour(scene, peer, offset),
     do: GenServer.call(scene, {:connect_neighbour, peer, offset})
+
   def connect_neighbour(scene, peer, offset, endpoint),
     do: GenServer.call(scene, {:connect_neighbour, peer, offset, endpoint})
+
   def prepare_transfer(scene, identity, cut, gate),
     do: GenServer.call(scene, {:prepare_transfer, identity, cut, gate})
+
   def detach_transfer(scene, old, next), do: GenServer.call(scene, {:detach_transfer, old, next})
+
   def activate_transfer(scene, identity, observer),
     do: GenServer.call(scene, {:activate_transfer, identity, observer})
 
@@ -38,6 +42,7 @@ defmodule SceneServer.Movement.Scene do
   defp config!(%{"schema" => "voxim-m1-demo-v1"} = raw) do
     # 冷启动先加载字段 owner；JSON key 只转换为该模块已有 atom。
     Code.ensure_loaded!(Session.Profile)
+
     profile =
       struct!(
         Session.Profile,
@@ -54,7 +59,13 @@ defmodule SceneServer.Movement.Scene do
        List.to_tuple(Map.fetch!(raw, "l0_max_exclusive"))}
 
     {lo, hi} = l0
-    true = Enum.all?(0..2, &(is_integer(elem(lo, &1)) and is_integer(elem(hi, &1)) and elem(hi, &1) > elem(lo, &1)))
+
+    true =
+      Enum.all?(
+        0..2,
+        &(is_integer(elem(lo, &1)) and is_integer(elem(hi, &1)) and elem(hi, &1) > elem(lo, &1))
+      )
+
     extent = Voxel.Payload.extent() - 2
     bounds = {map_tuple(lo, &(&1 * extent / 1)), map_tuple(hi, &(&1 * extent / 1))}
 
@@ -62,12 +73,13 @@ defmodule SceneServer.Movement.Scene do
       {float_tuple(Map.fetch!(raw, "travel_min_m")),
        float_tuple(Map.fetch!(raw, "travel_max_exclusive_m"))}
 
-    true = Map.get(raw, "collision_window_radius_tiles", 0) > 0 or
-      Enum.all?(0..2, fn axis ->
-        elem(elem(bounds, 0), axis) < elem(elem(travel, 0), axis) and
-          elem(elem(travel, 0), axis) < elem(elem(travel, 1), axis) and
-          elem(elem(travel, 1), axis) < elem(elem(bounds, 1), axis)
-      end)
+    true =
+      Map.get(raw, "collision_window_radius_tiles", 0) > 0 or
+        Enum.all?(0..2, fn axis ->
+          elem(elem(bounds, 0), axis) < elem(elem(travel, 0), axis) and
+            elem(elem(travel, 0), axis) < elem(elem(travel, 1), axis) and
+            elem(elem(travel, 1), axis) < elem(elem(bounds, 1), axis)
+        end)
 
     probes = Enum.map(Map.fetch!(raw, "spawn_probes_m"), &float_tuple/1)
     true = probes != [] and Enum.all?(probes, &inside?(&1, travel))
@@ -102,7 +114,10 @@ defmodule SceneServer.Movement.Scene do
     initial_ref = make_ref()
 
     {:ok, players} = DynamicSupervisor.start_link(strategy: :one_for_one)
-    {:ok, replication} = Replication.start_link(sink: Keyword.get(opts, :sink, GateServer.Session.Sink))
+
+    {:ok, replication} =
+      Replication.start_link(sink: Keyword.get(opts, :sink, GateServer.Session.Sink))
+
     state = %{
       players: players,
       replication: replication,
@@ -150,11 +165,20 @@ defmodule SceneServer.Movement.Scene do
 
   @impl true
   def handle_call(:neighbour_endpoint, _, %{initialized: true, failure: nil} = state) do
-    {:reply, {:ok, %{pid: state.replication, scene_id: state.scene_id,
-      scene_epoch: state.scene_epoch, origin_us: Clock.origin_us(state),
-      content_version: state.content_version, profile: state.config.profile,
-      l0: state.config.l0, authority: state.config.authority}}, state}
+    {:reply,
+     {:ok,
+      %{
+        pid: state.replication,
+        scene_id: state.scene_id,
+        scene_epoch: state.scene_epoch,
+        origin_us: Clock.origin_us(state),
+        content_version: state.content_version,
+        profile: state.config.profile,
+        l0: state.config.l0,
+        authority: state.config.authority
+      }}, state}
   end
+
   def handle_call(:neighbour_endpoint, _, state), do: {:reply, {:error, :scene_not_ready}, state}
 
   def handle_call({:connect_neighbour, peer, offset}, _, state) do
@@ -165,54 +189,118 @@ defmodule SceneServer.Movement.Scene do
   def handle_call({:connect_neighbour, peer, offset, endpoint}, _, state) do
     :ok = Replication.neighbour(state.replication, peer, offset, endpoint.scene_id)
     # 相同 resident L0 内提前允许跨分区预测，authority 分界仍独立保留。
-    config = if endpoint.l0 == state.config.l0 do
-      {lo, hi} = state.config.travel
-      {other_lo, other_hi} = endpoint.authority
-      travel = {List.to_tuple(for i <- 0..2, do: min(elem(lo, i), elem(other_lo, i))),
-        List.to_tuple(for i <- 0..2, do: max(elem(hi, i), elem(other_hi, i)))}
-      %{state.config | travel: travel, neighbours: [Map.take(endpoint, [:scene_id, :authority]) |
-        Enum.reject(state.config.neighbours, &(&1.scene_id == endpoint.scene_id))]}
-    else
-      state.config
-    end
-    config = if config.streaming_radius > 0 do
-      {own, peer} = SceneServer.Movement.Authority.partition(state.config.travel, endpoint.authority)
-      %{config | authority: own, neighbours: [%{scene_id: endpoint.scene_id, authority: peer}]}
-    else
-      config
-    end
+    config =
+      if endpoint.l0 == state.config.l0 do
+        {lo, hi} = state.config.travel
+        {other_lo, other_hi} = endpoint.authority
+
+        travel =
+          {List.to_tuple(for i <- 0..2, do: min(elem(lo, i), elem(other_lo, i))),
+           List.to_tuple(for i <- 0..2, do: max(elem(hi, i), elem(other_hi, i)))}
+
+        %{
+          state.config
+          | travel: travel,
+            neighbours: [
+              Map.take(endpoint, [:scene_id, :authority])
+              | Enum.reject(state.config.neighbours, &(&1.scene_id == endpoint.scene_id))
+            ]
+        }
+      else
+        state.config
+      end
+
+    config =
+      if config.streaming_radius > 0 do
+        {own, peer} =
+          SceneServer.Movement.Authority.partition(state.config.travel, endpoint.authority)
+
+        %{config | authority: own, neighbours: [%{scene_id: endpoint.scene_id, authority: peer}]}
+      else
+        config
+      end
+
     {:reply, :ok, %{state | config: config}}
   end
 
   def handle_call({:prepare_transfer, identity, cut, gate}, _, state) do
-    compatible = state.initialized and state.failure == nil and
-      identity.scene_id == state.scene_id and identity.scene_epoch == state.scene_epoch and
-      cut.content_version == state.content_version and cut.config.profile == state.config.profile and
-      (cut.stream != nil or (cut.config.l0 == state.config.l0 and
-      cut.collision_checkpoint.baseline_transaction_seq == state.updates.baseline_transaction_seq)) and
-      inside?(cut.state.position, state.config.authority) and
-      not Enum.any?(state.characters, fn {_, c} -> c.id == cut.id end)
+    compatible =
+      state.initialized and state.failure == nil and
+        identity.scene_id == state.scene_id and identity.scene_epoch == state.scene_epoch and
+        cut.content_version == state.content_version and
+        cut.config.profile == state.config.profile and
+        (cut.stream != nil or
+           (cut.config.l0 == state.config.l0 and
+              cut.collision_checkpoint.baseline_transaction_seq ==
+                state.updates.baseline_transaction_seq)) and
+        inside?(cut.state.position, state.config.authority) and
+        not Enum.any?(state.characters, fn {_, c} -> c.id == cut.id end)
+
     if compatible do
-      {import_us, {:ok, updates}} = :timer.tc(fn ->
+      {import_us, {:ok, updates}} =
+        :timer.tc(fn ->
+          if cut.stream,
+            do:
+              {:ok,
+               CollisionUpdates.import_stream_checkpoint(state.updates, cut.collision_checkpoint)},
+            else: CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
+        end)
+
+      tail =
         if cut.stream,
-          do: {:ok, CollisionUpdates.import_stream_checkpoint(state.updates, cut.collision_checkpoint)},
-          else: CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
-      end)
-      tail = if cut.stream, do: [], else: state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
-      Logger.info(Jason.encode!(%{schema: "voxim-scene-v1", event: "transfer_prepared",
-        scene_id: state.scene_id, session_epoch: identity.session_epoch,
-        import_us: import_us, tail_count: length(tail),
-        checkpoint_bytes: :erlang.external_size(cut.collision_checkpoint)}))
-      opts = [scene: self(), replication: state.replication, gate: gate, identity: identity,
-        id: cut.id, epoch: cut.epoch, slot: nil, config: state.config, clock: state.clock,
-        time_origin: state.time_origin, time_mono_origin: state.time_mono_origin,
-        mono_origin: state.mono_origin, sink: state.sink,
-        updates: updates, content_version: state.content_version,
-        scene_id: state.scene_id, scene_epoch: state.scene_epoch, import: cut, tick: state.tick, tail: tail]
+          do: [],
+          else: state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
+
+      Logger.info(
+        Jason.encode!(%{
+          schema: "voxim-scene-v1",
+          event: "transfer_prepared",
+          scene_id: state.scene_id,
+          session_epoch: identity.session_epoch,
+          import_us: import_us,
+          tail_count: length(tail),
+          checkpoint_bytes: :erlang.external_size(cut.collision_checkpoint)
+        })
+      )
+
+      opts = [
+        scene: self(),
+        replication: state.replication,
+        gate: gate,
+        identity: identity,
+        id: cut.id,
+        epoch: cut.epoch,
+        slot: nil,
+        config: state.config,
+        clock: state.clock,
+        time_origin: state.time_origin,
+        time_mono_origin: state.time_mono_origin,
+        mono_origin: state.mono_origin,
+        sink: state.sink,
+        updates: updates,
+        content_version: state.content_version,
+        scene_id: state.scene_id,
+        scene_epoch: state.scene_epoch,
+        import: cut,
+        tick: state.tick,
+        tail: tail
+      ]
+
       {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
-      character = %{id: cut.id, identity: identity, epoch: cut.epoch, slot: nil,
-        gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
-      {:reply, {:ok, player}, %{state | characters: Map.put(state.characters, identity, character)}}
+
+      character = %{
+        id: cut.id,
+        identity: identity,
+        epoch: cut.epoch,
+        slot: nil,
+        gate: gate,
+        player: player,
+        monitor: Process.monitor(player),
+        observation: nil
+      }
+
+      {:reply, {:ok, player},
+       %{state | characters: Map.put(state.characters, identity, character)}}
     else
       {:reply, {:error, :incompatible_transfer}, state}
     end
@@ -220,7 +308,9 @@ defmodule SceneServer.Movement.Scene do
 
   def handle_call({:detach_transfer, old, next}, _, state) do
     case Map.pop(state.characters, old) do
-      {nil, _} -> {:reply, {:error, :stale_transfer}, state}
+      {nil, _} ->
+        {:reply, {:error, :stale_transfer}, state}
+
       {c, characters} ->
         observer = Replication.take_observer(state.replication, old)
         :ok = Replication.handoff(state.replication, old, next, next.scene_id)
@@ -232,11 +322,14 @@ defmodule SceneServer.Movement.Scene do
 
   def handle_call({:activate_transfer, identity, observer}, _, state) do
     case state.characters[identity] do
-      nil -> {:reply, {:error, :stale_transfer}, state}
+      nil ->
+        {:reply, {:error, :stale_transfer}, state}
+
       c ->
         Replication.join(state.replication, identity, c.id, c.epoch, c.player, c.gate)
         :ok = Replication.put_observer(state.replication, identity, c.gate, observer)
         :ok = Player.activate(c.player, identity)
+
         # Player 的异步 result 与本调用不同发送者，显式屏障保证首帧已安装。
         result = Player.observe(c.player)
         Replication.result(state.replication, result)
@@ -271,16 +364,44 @@ defmodule SceneServer.Movement.Scene do
         slot = Enum.find(0..(length(state.config.probes) - 1), &(&1 not in occupied))
         request = make_ref()
 
-        opts = [scene: self(), replication: state.replication, gate: gate,
-          identity: identity, id: cid, epoch: identity.session_epoch, slot: slot,
-          config: state.config, clock: state.clock, time_origin: state.time_origin,
-          time_mono_origin: state.time_mono_origin, mono_origin: if(state.initialized, do: state.mono_origin, else: nil), sink: state.sink,
-          updates: %{state.updates | queue: :queue.new()}, content_version: state.content_version,
-          scene_id: state.scene_id, scene_epoch: state.scene_epoch, initial_tick: state.tick,
-          authority_ref: if(state.config.streaming_radius > 0, do: state.world_api.authority_ref(state.world_ref))]
+        opts = [
+          scene: self(),
+          replication: state.replication,
+          gate: gate,
+          identity: identity,
+          id: cid,
+          epoch: identity.session_epoch,
+          slot: slot,
+          config: state.config,
+          clock: state.clock,
+          time_origin: state.time_origin,
+          time_mono_origin: state.time_mono_origin,
+          mono_origin: if(state.initialized, do: state.mono_origin, else: nil),
+          sink: state.sink,
+          updates: %{state.updates | queue: :queue.new()},
+          content_version: state.content_version,
+          scene_id: state.scene_id,
+          scene_epoch: state.scene_epoch,
+          initial_tick: state.tick,
+          authority_ref:
+            if(state.config.streaming_radius > 0,
+              do: state.world_api.authority_ref(state.world_ref)
+            )
+        ]
+
         {:ok, player} = DynamicSupervisor.start_child(state.players, {Player, opts})
-        character = %{id: cid, identity: identity, epoch: identity.session_epoch,
-          slot: slot, gate: gate, player: player, monitor: Process.monitor(player), observation: nil}
+
+        character = %{
+          id: cid,
+          identity: identity,
+          epoch: identity.session_epoch,
+          slot: slot,
+          gate: gate,
+          player: player,
+          monitor: Process.monitor(player),
+          observation: nil
+        }
+
         Replication.join(state.replication, identity, cid, character.epoch, player, gate)
 
         state = %{
@@ -292,7 +413,8 @@ defmodule SceneServer.Movement.Scene do
         if state.config.streaming_radius > 0 do
           {:reply, {:ok, player}, %{state | requests: Map.delete(state.requests, request)}}
         else
-          {:reply, {:ok, player}, if(state.initialized, do: request_snapshot(state, request), else: state)}
+          {:reply, {:ok, player},
+           if(state.initialized, do: request_snapshot(state, request), else: state)}
         end
     end
   end
@@ -329,10 +451,24 @@ defmodule SceneServer.Movement.Scene do
         queue_wait_us: state.updates.queue_wait_us,
         characters:
           Enum.map(state.characters, fn {identity, c} ->
-            c.observation || %{identity: identity, entity_id: c.id, entity_epoch: c.epoch,
-              player_pid: c.player, gate_pid: c.gate, state: nil, origin_tick: nil, simulation_tick: 0,
-              pending_inputs: 0, active: false, processed_input_seq: 0, collision_revision: 0,
-              physics_steps: 0, step_us: 0, published_tick: 0}
+            c.observation ||
+              %{
+                identity: identity,
+                entity_id: c.id,
+                entity_epoch: c.epoch,
+                player_pid: c.player,
+                gate_pid: c.gate,
+                state: nil,
+                origin_tick: nil,
+                simulation_tick: 0,
+                pending_inputs: 0,
+                active: false,
+                processed_input_seq: 0,
+                collision_revision: 0,
+                physics_steps: 0,
+                step_us: 0,
+                published_tick: 0
+              }
           end)
           |> Enum.sort_by(& &1.entity_id)
       })
@@ -363,10 +499,17 @@ defmodule SceneServer.Movement.Scene do
       | updates: updates,
         initialized: true,
         content_version: snapshot.content_version,
-        mono_origin: if(state.timeline_origin_us,
-          do: state.time_mono_origin + state.timeline_origin_us - state.time_origin, else: now(state))
+        mono_origin:
+          if(state.timeline_origin_us,
+            do: state.time_mono_origin + state.timeline_origin_us - state.time_origin,
+            else: now(state)
+          )
     }
-    state = if state.timeline_origin_us, do: %{state | tick: Clock.due_tick(state, now(state))}, else: state
+
+    state =
+      if state.timeline_origin_us,
+        do: %{state | tick: Clock.due_tick(state, now(state))},
+        else: state
 
     for {_, c} <- state.characters, do: send(c.player, {:clock_origin, state.mono_origin})
     state = Enum.reduce(Map.keys(state.requests), state, &request_snapshot(&2, &1))
@@ -415,12 +558,27 @@ defmodule SceneServer.Movement.Scene do
     case state.characters[result.identity] do
       %{player: pid} = c when pid == result.player_pid ->
         previous = c.observation
-        state = Enum.reduce([:physics_steps, :step_us, :rejected_inputs, :old_identity, :substitutions], state,
-          fn key, s -> Map.update!(s, key, &(&1 + result[key] - if(previous, do: previous[key], else: 0))) end)
-        {:noreply, %{state | characters: Map.put(state.characters, result.identity, %{c | observation: result})}}
-      _ -> {:noreply, state}
+
+        state =
+          Enum.reduce(
+            [:physics_steps, :step_us, :rejected_inputs, :old_identity, :substitutions],
+            state,
+            fn key, s ->
+              Map.update!(s, key, &(&1 + result[key] - if(previous, do: previous[key], else: 0)))
+            end
+          )
+
+        {:noreply,
+         %{
+           state
+           | characters: Map.put(state.characters, result.identity, %{c | observation: result})
+         }}
+
+      _ ->
+        {:noreply, state}
     end
   end
+
   def handle_info({:player_failed, identity, pid, reason}, state) do
     case state.characters[identity] do
       %{player: ^pid} -> {:noreply, drop(state, identity, reason)}
@@ -501,19 +659,29 @@ defmodule SceneServer.Movement.Scene do
     {updates, events} = CollisionUpdates.consume(state.updates, now(state))
     updates = CollisionUpdates.record_tick(updates, state.tick, events)
     versions = Enum.take_while(updates.revisions, fn {tick, _, _} -> tick == state.tick end)
-    transactions = for {:delta, delta, revision, _} <- events do
-      {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
-       delta.transaction_seq, revision, delta.chunks, delta}
-    end
+
+    transactions =
+      for {:delta, delta, revision, _} <- events do
+        {Voxel.Codec.encode_transaction(delta.transaction) |> IO.iodata_to_binary(),
+         delta.transaction_seq, revision, delta.chunks, delta}
+      end
+
     for {_, c} <- state.characters do
-      send(c.player, {:timeline, state.tick, updates.transaction_seq, updates.revision, versions, transactions})
+      send(
+        c.player,
+        {:timeline, state.tick, updates.transaction_seq, updates.revision, versions, transactions}
+      )
     end
+
     # 发布消息与各 Player 自有历史引用保留旧版本；Scene 无需等待最慢玩家退休。
     state = %{state | updates: CollisionUpdates.retire_before(updates, state.tick)}
-    state = Enum.reduce(events, state, fn
-      {:marker, ref, snapshot}, s -> anchor_join(s, ref, snapshot)
-      _, s -> s
-    end)
+
+    state =
+      Enum.reduce(events, state, fn
+        {:marker, ref, snapshot}, s -> anchor_join(s, ref, snapshot)
+        _, s -> s
+      end)
+
     if rem(state.tick, 3) == 0, do: Replication.publish(state.replication, state.tick)
     state
   end
@@ -521,14 +689,23 @@ defmodule SceneServer.Movement.Scene do
   defp anchor_join(state, ref, snapshot) do
     {identity, requests} = Map.pop(state.requests, ref)
     state = %{state | requests: requests}
+
     case state.characters[identity] do
-      nil -> state
+      nil ->
+        state
+
       c ->
         true = snapshot.transaction_seq == state.updates.transaction_seq
+
         if snapshot.content_version != state.content_version do
           drop(state, identity, 9)
         else
-          send(c.player, {:anchor, state.tick, %{state.updates | queue: :queue.new()}, state.content_version, snapshot})
+          send(
+            c.player,
+            {:anchor, state.tick, %{state.updates | queue: :queue.new()}, state.content_version,
+             snapshot}
+          )
+
           state
         end
     end
@@ -540,12 +717,14 @@ defmodule SceneServer.Movement.Scene do
     world_ref = state.world_ref
     l0 = state.config.l0
     include_chunks = request == state.initial_ref
+
     # 生成器含节点本地的 ETS / NIF 状态，冷快照在真值节点生成，只传不可变 artifact。
-    source_node = case world_ref do
-      {_, host} -> host
-      pid when is_pid(pid) -> node(pid)
-      name when is_atom(name) -> node()
-    end
+    source_node =
+      case world_ref do
+        {_, host} -> host
+        pid when is_pid(pid) -> node(pid)
+        name when is_atom(name) -> node()
+      end
 
     {pid, monitor} =
       Node.spawn_monitor(source_node, fn ->
@@ -584,9 +763,14 @@ defmodule SceneServer.Movement.Scene do
         state
 
       {c, characters} ->
-        runtime_event(state, :session_end, %{session_epoch: identity.session_epoch,
-          entity_id: c.id, entity_epoch: c.epoch, reason: reason,
-          content_version: state.content_version})
+        runtime_event(state, :session_end, %{
+          session_epoch: identity.session_epoch,
+          entity_id: c.id,
+          entity_epoch: c.epoch,
+          reason: reason,
+          content_version: state.content_version
+        })
+
         Process.demonitor(c.monitor, [:flush])
         GenServer.cast(c.player, :stop)
         close_sink(state, c.gate, identity, reason)
@@ -613,8 +797,12 @@ defmodule SceneServer.Movement.Scene do
   defp deadline(state, tick), do: Clock.deadline(state, tick)
 
   defp runtime_event(state, event, facts) do
-    level = if event in [:input_arrival, :input_selected, :input_wait] or
-      (event == :region_tick and rem(state.tick, 60) != 0), do: :debug, else: :info
+    level =
+      if event in [:input_arrival, :input_selected, :input_wait] or
+           (event == :region_tick and rem(state.tick, 60) != 0),
+         do: :debug,
+         else: :info
+
     Logger.log(level, fn ->
       Jason.encode!(
         Map.merge(
@@ -642,3 +830,4 @@ defmodule SceneServer.Movement.Scene do
   defp float_tuple(values), do: values |> Enum.map(&(&1 / 1)) |> List.to_tuple()
   defp map_tuple(tuple, fun), do: tuple |> Tuple.to_list() |> Enum.map(fun) |> List.to_tuple()
 end
+

@@ -1,4 +1,5 @@
 Code.require_file("runtime_observation.exs", __DIR__)
+
 defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   use ExUnit.Case, async: false
   alias MmoContracts.{Session, Movement, Voxel}
@@ -562,8 +563,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert d3.chunks == []
     await(ctx.scene, &(&1.queue_length == 1))
     # ACK1 必须来自真实输入，不能依赖旧版缺帧替代行为。
-    Player.input(player(ctx.scene, start.identity), start.identity, %Movement.InputBatch{identity: start.identity,
-      frames: [%Movement.InputFrame{input_seq: 1, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}]})
+    Player.input(player(ctx.scene, start.identity), start.identity, %Movement.InputBatch{
+      identity: start.identity,
+      frames: [%Movement.InputFrame{input_seq: 1, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}]
+    })
+
     advance(ctx, 33)
     own = outputs() |> Enum.filter(&(elem(&1, 1) == start.identity))
     assert [log_event, fence, ack] = own
@@ -574,8 +578,13 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
              fence
 
     assert {:mmo_datagram, _,
-            %Movement.OwnerAck{server_tick: 33, simulation_tick: 33, collision_revision: 3,
-              processed_input_seq: 1, substituted_through_seq: 0}} =
+            %Movement.OwnerAck{
+              server_tick: 33,
+              simulation_tick: 33,
+              collision_revision: 3,
+              processed_input_seq: 1,
+              substituted_through_seq: 0
+            }} =
              ack
 
     Scene.leave(ctx.scene, start.identity)
@@ -636,7 +645,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     info = advance(ctx, 4)
     assert info.collision_revision == 2
 
-    assert [{:p1_install, operations}, {:p1_step, [{10, _, _}], _, _}, {:p1_step, [{20, _, _}], _, _}] =
+    assert [
+             {:p1_install, operations},
+             {:p1_step, [{10, _, _}], _, _},
+             {:p1_step, [{20, _, _}], _, _}
+           ] =
              native_events()
 
     assert operations == CollisionUpdates.operations(d1.chunks)
@@ -776,8 +789,18 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
   end
 
   defp send_walk_input(ctx, tick, origin) do
-    frame = %Movement.InputFrame{input_seq: tick - origin + 1, axis_x: 0,
-      axis_z: 32767, yaw: 0, jump_pressed: 0}
-    Player.input(player(ctx.scene, identity(1)), identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]})
+    frame = %Movement.InputFrame{
+      input_seq: tick - origin + 1,
+      axis_x: 0,
+      axis_z: 32767,
+      yaw: 0,
+      jump_pressed: 0
+    }
+
+    Player.input(player(ctx.scene, identity(1)), identity(1), %Movement.InputBatch{
+      identity: identity(1),
+      frames: [frame]
+    })
   end
 end
+

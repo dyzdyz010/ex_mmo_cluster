@@ -41,7 +41,10 @@ defmodule GateServer.MixProject do
     case :os.type() do
       {:unix, :linux} ->
         [{:quicer, "== 0.4.3", compile: "bash #{Path.join(__DIR__, "tools/build_quicer.sh")}"}]
-      _ -> []
+
+      _ ->
+        []
     end
   end
 end
+

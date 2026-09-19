@@ -11,6 +11,7 @@ defmodule SceneServer.Movement.Clock do
     mono = monotonic(state)
     {state.time_origin + mono - state.time_mono_origin, due_tick(state, mono)}
   end
+
   @doc "公共时钟尚未建立时保持tick零。"
   def due_tick(%{mono_origin: nil}, _), do: 0
   def due_tick(state, mono), do: max(0, div((mono - state.mono_origin) * 60, 1_000_000))
@@ -24,3 +25,4 @@ defmodule SceneServer.Movement.Clock do
   @doc "已初始化 Scene 的 tick 零点，沿现有单调映射表达为服务器时间。"
   def origin_us(state), do: state.time_origin + state.mono_origin - state.time_mono_origin
 end
+

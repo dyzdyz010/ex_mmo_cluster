@@ -54,8 +54,11 @@ COPY apps apps
 # voxel_region reads the client's spatial constants header at compile time
 # (apps/voxel_region/lib/voxel_region/spatial.ex resolves ../../../../../Voxim
 # relative to /app, i.e. /Voxim). Supply it from a named build context:
-#   docker build --build-context voxim=../Voxim/Source/Voxim/Voxel .
-COPY --from=voxim VoxelSpatialConstants.h /Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h
+#   docker build --build-context voxim=../Voxim .
+COPY --from=voxim Source/Voxim/Voxel/VoxelSpatialConstants.h /Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h
+# 服务端与客户端共用移动内核；cbindgen 同时需要原有头文件输出目录。
+COPY --from=voxim Plugins/VoximMovement/Native /Voxim/Plugins/VoximMovement/Native
+COPY --from=voxim Plugins/VoximMovement/Source /Voxim/Plugins/VoximMovement/Source
 
 # Fetch + compile deps. `--only prod` trims dev/test dependencies.
 RUN mix deps.get --only prod

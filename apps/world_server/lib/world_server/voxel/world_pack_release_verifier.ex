@@ -116,7 +116,8 @@ defmodule WorldServer.Voxel.WorldPackReleaseVerifier do
         {:ok, manifest}
 
       :error ->
-        with {:ok, shard_entries} <- read_expected_shards(index, pack_root, expected_shards, grid),
+        with {:ok, shard_entries} <-
+               read_expected_shards(index, pack_root, expected_shards, grid),
              {:ok, authority_summary} <- verify_authority_index(index) do
           {:ok,
            %{
@@ -561,3 +562,4 @@ defmodule WorldServer.Voxel.WorldPackReleaseVerifier do
     exception -> {:error, {:file_hash_failed, Exception.message(exception)}}
   end
 end
+

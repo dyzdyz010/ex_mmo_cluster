@@ -10,17 +10,22 @@ defmodule AuthServerWeb.PlaytestAccessTest do
     digest = :crypto.hash(:sha256, "test-invite") |> Base.encode16(case: :lower)
     File.write!(path, Jason.encode!(%{digest => "invited_player"}))
     Application.put_env(:auth_server, :playtest_access_file, path)
+
     on_exit(fn ->
       Application.put_env(:auth_server, :playtest_access_file, previous)
       File.rm!(path)
     end)
+
     %{path: path}
   end
 
   test "登录和地形请求都需要邀请码" do
     for route <- ["/playtest/login", "/playtest/regions"], code <- [nil, "wrong"] do
       request = conn(:post, route)
-      request = if code, do: put_req_header(request, "authorization", "Bearer " <> code), else: request
+
+      request =
+        if code, do: put_req_header(request, "authorization", "Bearer " <> code), else: request
+
       response = PlaytestAccess.call(request, [])
       assert response.status == 401
       assert response.halted
@@ -28,18 +33,28 @@ defmodule AuthServerWeb.PlaytestAccessTest do
   end
 
   test "身份来自服务器，停用后下一次请求立即拒绝", %{path: path} do
-    request = conn(:post, "/playtest/login", %{"username" => "someone_else"})
+    request =
+      conn(:post, "/playtest/login", %{"username" => "someone_else"})
       |> put_req_header("authorization", "Bearer test-invite")
+
     assert PlaytestAccess.call(request, []).assigns.playtest_username == "invited_player"
     File.write!(path, "{}")
     assert PlaytestAccess.call(request, []).status == 401
   end
 
   test "有效邀请码也不能旁路旧登录、写入接口与静态路径" do
-    for route <- ["/ingame/auto_login", "/ingame/login", "/ingame/voxel/set_temperature", "/", "/assets/app.js"] do
-      response = conn(:post, route)
+    for route <- [
+          "/ingame/auto_login",
+          "/ingame/login",
+          "/ingame/voxel/set_temperature",
+          "/",
+          "/assets/app.js"
+        ] do
+      response =
+        conn(:post, route)
         |> put_req_header("authorization", "Bearer test-invite")
         |> PlaytestAccess.call([])
+
       assert response.status == 404
       assert response.halted
     end
@@ -51,3 +66,4 @@ defmodule AuthServerWeb.PlaytestAccessTest do
     refute PlaytestAccess.call(conn(:post, "/ingame/auto_login"), []).halted
   end
 end
+

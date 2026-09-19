@@ -24,49 +24,90 @@ defmodule SceneServer.Movement.CollisionUpdates do
     {us, world} =
       :timer.tc(fn -> updates.native.set_chunks(updates.world, operations(snapshot.chunks)) end)
 
-    %{updates | world: world, revision: 1, transaction_seq: snapshot.transaction_seq, build_us: us,
-      baseline_world: world, baseline_transaction_seq: snapshot.transaction_seq,
-      revisions: [{0, 1, world}], artifacts: %{1 => %{}}}
+    %{
+      updates
+      | world: world,
+        revision: 1,
+        transaction_seq: snapshot.transaction_seq,
+        build_us: us,
+        baseline_world: world,
+        baseline_transaction_seq: snapshot.transaction_seq,
+        revisions: [{0, 1, world}],
+        artifacts: %{1 => %{}}
+    }
   end
 
   @doc "流送使用完整驻留 artifact 作为版本；退休后不会保留已离开的窗口。"
   def initialize_stream(updates, snapshot) do
     updates = initialize(%{updates | world: updates.native.new_world()}, snapshot)
-    %{updates | artifacts: %{1 => Map.new(snapshot.chunks, &{&1.coord, &1})},
-      baseline_world: nil, baseline_transaction_seq: nil}
+
+    %{
+      updates
+      | artifacts: %{1 => Map.new(snapshot.chunks, &{&1.coord, &1})},
+        baseline_world: nil,
+        baseline_transaction_seq: nil
+    }
   end
 
   @doc "在 FIFO 快照切点替换完整占用，旧版本保留到历史锚点退休。"
   def replace_window(updates, snapshot, tick) do
     true = snapshot.transaction_seq == updates.transaction_seq
-    {us, world} = :timer.tc(fn ->
-      updates.native.set_chunks(updates.native.new_world(), operations(snapshot.chunks))
-    end)
+
+    {us, world} =
+      :timer.tc(fn ->
+        updates.native.set_chunks(updates.native.new_world(), operations(snapshot.chunks))
+      end)
+
     revision = updates.revision + 1
-    %{updates | world: world, revision: revision, build_us: updates.build_us + us,
-      revisions: [{tick, revision, world} | updates.revisions],
-      artifacts: Map.put(updates.artifacts, revision, Map.new(snapshot.chunks, &{&1.coord, &1}))}
+
+    %{
+      updates
+      | world: world,
+        revision: revision,
+        build_us: updates.build_us + us,
+        revisions: [{tick, revision, world} | updates.revisions],
+        artifacts: Map.put(updates.artifacts, revision, Map.new(snapshot.chunks, &{&1.coord, &1}))
+    }
   end
 
   @doc "跨区导出仍需回放的窗口占用和尚未消费的 canonical 队列。"
   def export_stream_checkpoint(updates, tick) do
-    revisions = retained_revisions(updates.revisions, tick)
+    revisions =
+      retained_revisions(updates.revisions, tick)
       |> Enum.map(fn {t, r, _} -> {t, r, Map.fetch!(updates.artifacts, r)} end)
-    %{transaction_seq: updates.transaction_seq, revision: updates.revision,
-      revisions: revisions, queue: updates.queue}
+
+    %{
+      transaction_seq: updates.transaction_seq,
+      revision: updates.revision,
+      revisions: revisions,
+      queue: updates.queue
+    }
   end
 
   @doc "仅从交接的权威占用重建历史碰撞，不依赖目标 Scene 的初始窗口。"
   def import_stream_checkpoint(updates, checkpoint) do
-    revisions = Enum.map(checkpoint.revisions, fn {tick, revision, chunks} ->
-      world = updates.native.set_chunks(updates.native.new_world(),
-        chunks |> Map.values() |> Enum.sort_by(& &1.coord) |> operations())
-      {tick, revision, world}
-    end)
-    %{updates | baseline_world: nil, baseline_transaction_seq: nil,
-      world: elem(hd(revisions), 2), revisions: revisions,
-      artifacts: Map.new(checkpoint.revisions, fn {_, r, chunks} -> {r, chunks} end),
-      transaction_seq: checkpoint.transaction_seq, revision: checkpoint.revision, queue: checkpoint.queue}
+    revisions =
+      Enum.map(checkpoint.revisions, fn {tick, revision, chunks} ->
+        world =
+          updates.native.set_chunks(
+            updates.native.new_world(),
+            chunks |> Map.values() |> Enum.sort_by(& &1.coord) |> operations()
+          )
+
+        {tick, revision, world}
+      end)
+
+    %{
+      updates
+      | baseline_world: nil,
+        baseline_transaction_seq: nil,
+        world: elem(hd(revisions), 2),
+        revisions: revisions,
+        artifacts: Map.new(checkpoint.revisions, fn {_, r, chunks} -> {r, chunks} end),
+        transaction_seq: checkpoint.transaction_seq,
+        revision: checkpoint.revision,
+        queue: checkpoint.queue
+    }
   end
 
   @doc "以 World 的消息顺序接纳 immutable delta/marker。"
@@ -81,62 +122,92 @@ defmodule SceneServer.Movement.CollisionUpdates do
       {:delta, %{chunks: [_ | _] = chunks}, revision, _}, u ->
         u = record_artifact(u, revision, chunks)
         %{u | revisions: [{tick, revision, u.world} | u.revisions]}
-      _, u -> u
+
+      _, u ->
+        u
     end)
   end
 
   @doc "接收 Scene 同源发布的版本与 artifact；共享 Native 句柄，不重复构建。"
   def ingest_publication(updates, _tick, seq, revision, versions, events) do
-    updates = Enum.reduce(events, updates, fn
-      {_, _, r, [_ | _] = chunks, _}, u -> record_artifact(u, r, chunks)
-      _, u -> u
-    end)
+    updates =
+      Enum.reduce(events, updates, fn
+        {_, _, r, [_ | _] = chunks, _}, u -> record_artifact(u, r, chunks)
+        _, u -> u
+      end)
 
-    world = case versions do
-      [] -> updates.world
-      [{_, _, world} | _] -> world
-    end
+    world =
+      case versions do
+        [] -> updates.world
+        [{_, _, world} | _] -> world
+      end
 
-    %{updates | world: world, transaction_seq: seq, revision: revision,
-      revisions: versions ++ updates.revisions}
+    %{
+      updates
+      | world: world,
+        transaction_seq: seq,
+        revision: revision,
+        revisions: versions ++ updates.revisions
+    }
   end
 
   @doc "导出切点锚点及其后已发布历史；仅含 BEAM 数据，不携带 Native 或完整 L0。"
   def export_checkpoint(updates, cut_tick) do
-    revisions = retained_revisions(updates.revisions, cut_tick)
+    revisions =
+      retained_revisions(updates.revisions, cut_tick)
       |> Enum.map(fn {tick, revision, _} ->
         {tick, revision, Map.fetch!(updates.artifacts, revision)}
       end)
 
-    %{baseline_transaction_seq: updates.baseline_transaction_seq,
-      transaction_seq: updates.transaction_seq, revision: updates.revision,
-      revisions: revisions}
+    %{
+      baseline_transaction_seq: updates.baseline_transaction_seq,
+      transaction_seq: updates.transaction_seq,
+      revision: updates.revision,
+      revisions: revisions
+    }
   end
 
   @doc "从共同初始基线恢复源历史；目标当前进度不改变源已发布的 tick/N/R。"
   def import_checkpoint(updates, %{baseline_transaction_seq: baseline} = checkpoint)
       when baseline == updates.baseline_transaction_seq do
-    {us, {revisions, _, _}} = :timer.tc(fn ->
-      checkpoint.revisions |> Enum.reverse() |> Enum.reduce(
-        {[], updates.baseline_world, %{}},
-        fn {tick, revision, overrides}, {revisions, previous_world, previous_overrides} ->
-          chunks = overrides
-            |> Enum.reject(fn {coord, chunk} -> Map.get(previous_overrides, coord) == chunk end)
-            |> Enum.sort_by(&elem(&1, 0))
-            |> Enum.map(&elem(&1, 1))
+    {us, {revisions, _, _}} =
+      :timer.tc(fn ->
+        checkpoint.revisions
+        |> Enum.reverse()
+        |> Enum.reduce(
+          {[], updates.baseline_world, %{}},
+          fn {tick, revision, overrides}, {revisions, previous_world, previous_overrides} ->
+            chunks =
+              overrides
+              |> Enum.reject(fn {coord, chunk} -> Map.get(previous_overrides, coord) == chunk end)
+              |> Enum.sort_by(&elem(&1, 0))
+              |> Enum.map(&elem(&1, 1))
 
-          world = if chunks == [], do: previous_world,
-            else: updates.native.set_chunks(previous_world, operations(chunks))
+            world =
+              if chunks == [],
+                do: previous_world,
+                else: updates.native.set_chunks(previous_world, operations(chunks))
 
-          {[{tick, revision, world} | revisions], world, overrides}
-        end)
-    end)
+            {[{tick, revision, world} | revisions], world, overrides}
+          end
+        )
+      end)
 
-    artifacts = Map.new(checkpoint.revisions, fn {_, revision, overrides} -> {revision, overrides} end)
-    {:ok, %{updates | world: elem(hd(revisions), 2), revisions: revisions,
-      artifacts: artifacts, transaction_seq: checkpoint.transaction_seq,
-      revision: checkpoint.revision, queue: :queue.new(),
-      build_us: updates.build_us + us, queue_wait_us: 0}}
+    artifacts =
+      Map.new(checkpoint.revisions, fn {_, revision, overrides} -> {revision, overrides} end)
+
+    {:ok,
+     %{
+       updates
+       | world: elem(hd(revisions), 2),
+         revisions: revisions,
+         artifacts: artifacts,
+         transaction_seq: checkpoint.transaction_seq,
+         revision: checkpoint.revision,
+         queue: :queue.new(),
+         build_us: updates.build_us + us,
+         queue_wait_us: 0
+     }}
   end
 
   def import_checkpoint(_updates, _checkpoint), do: {:error, :incompatible_collision_baseline}
@@ -160,9 +231,11 @@ defmodule SceneServer.Movement.CollisionUpdates do
   end
 
   defp record_artifact(updates, revision, chunks) do
-    overrides = Enum.reduce(chunks, Map.fetch!(updates.artifacts, revision - 1), fn chunk, acc ->
-      Map.put(acc, chunk.coord, chunk)
-    end)
+    overrides =
+      Enum.reduce(chunks, Map.fetch!(updates.artifacts, revision - 1), fn chunk, acc ->
+        Map.put(acc, chunk.coord, chunk)
+      end)
+
     %{updates | artifacts: Map.put(updates.artifacts, revision, overrides)}
   end
 
@@ -215,3 +288,4 @@ defmodule SceneServer.Movement.CollisionUpdates do
     Enum.map(chunks, fn c -> {:set, c.coord, c.n, c.scale_m, c.origin_m, c.cells} end)
   end
 end
+

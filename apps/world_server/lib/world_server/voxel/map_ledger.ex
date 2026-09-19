@@ -666,7 +666,8 @@ defmodule WorldServer.Voxel.MapLedger do
         with {:ok, _planned_plan, state} <- plan_all_slices_for_migrate(state, plan.migration_id),
              {:ok, _acked_plan, state} <-
                mark_all_slices_prewarmed_for_migrate(state, plan.migration_id),
-             {:ok, _prewarmed_plan, state} <- mark_prewarmed_for_migrate(state, plan.migration_id),
+             {:ok, _prewarmed_plan, state} <-
+               mark_prewarmed_for_migrate(state, plan.migration_id),
              {:ok, _caught_up_plan, state} <-
                mark_all_slices_final_caught_up_for_migrate(state, plan.migration_id),
              {:ok, _cutover_plan, state} <- cutover_for_migrate(state, plan.migration_id),
@@ -1882,3 +1883,4 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 end
+

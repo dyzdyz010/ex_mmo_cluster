@@ -9,11 +9,13 @@ defmodule MmoContracts.PropertyBatchTest do
     assert {:ok, batch} = Codec.decode_m1(bytes)
     assert batch.transaction_seq == 10
     assert batch.complete == 1 and batch.hp_enabled == 1
-    assert batch.epochs == <<1::32,1::32,1::32,4::64>>
-    assert [<<0x7E,_::binary>>] = batch.states
-    assert {:ok,^bytes} = Codec.encode_m1(batch)
-    for size <- 0..(byte_size(bytes)-1) do
-      assert {:error,:invalid_m1_message} = Codec.decode_m1(binary_part(bytes,0,size))
+    assert batch.epochs == <<1::32, 1::32, 1::32, 4::64>>
+    assert [<<0x7E, _::binary>>] = batch.states
+    assert {:ok, ^bytes} = Codec.encode_m1(batch)
+
+    for size <- 0..(byte_size(bytes) - 1) do
+      assert {:error, :invalid_m1_message} = Codec.decode_m1(binary_part(bytes, 0, size))
     end
   end
 end
+

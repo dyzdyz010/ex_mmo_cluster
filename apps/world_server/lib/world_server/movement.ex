@@ -12,6 +12,7 @@ defmodule WorldServer.Movement do
   @doc "显式连接两个相邻 Scene 的只读复制；只在控制面执行，输入热路径不调用。"
   def connect_neighbours(a_id, b_id) when a_id != b_id do
     alias SceneServer.Movement.Scene
+
     with {:ok, a_route} <- route(a_id),
          {:ok, b_route} <- route(b_id),
          {:ok, a} <- Scene.neighbour_endpoint(a_route.scene_ref),
@@ -29,11 +30,14 @@ defmodule WorldServer.Movement do
 
   def prepare_transfer(old, next, cut, gate) do
     alias SceneServer.Movement.Scene
-    with {:ok, a} <- route(old.scene_id), {:ok, b} <- route(next.scene_id),
+
+    with {:ok, a} <- route(old.scene_id),
+         {:ok, b} <- route(next.scene_id),
          {:ok, ae} <- Scene.neighbour_endpoint(a.scene_ref),
          {:ok, be} <- Scene.neighbour_endpoint(b.scene_ref) do
       if a.world_ref == b.world_ref and ae.origin_us == be.origin_us and
-           ae.l0 == be.l0 and ae.profile == be.profile and ae.content_version == be.content_version and
+           ae.l0 == be.l0 and ae.profile == be.profile and
+           ae.content_version == be.content_version and
            cut.identity == old and next.session_epoch > old.session_epoch do
         Scene.prepare_transfer(b.scene_ref, next, cut, gate)
       else
@@ -44,9 +48,12 @@ defmodule WorldServer.Movement do
 
   def commit_transfer(old, next) do
     alias SceneServer.Movement.Scene
-    with {:ok, a} <- route(old.scene_id), {:ok, b} <- route(next.scene_id),
+
+    with {:ok, a} <- route(old.scene_id),
+         {:ok, b} <- route(next.scene_id),
          {:ok, observer} <- Scene.detach_transfer(a.scene_ref, old, next) do
       Scene.activate_transfer(b.scene_ref, next, observer)
     end
   end
 end
+

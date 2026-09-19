@@ -1,13 +1,17 @@
 defmodule MmoContracts.Session.Codec do
   @protocol_version 13
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
-  def protocol_version,do: @protocol_version
+  def protocol_version, do: @protocol_version
   alias MmoContracts.Session
 
   @m1_messages %{
     1 =>
       {Session.Hello,
-       [protocol_version: {:constant, :u16, @protocol_version}, kernel_id: :hash, profile_id: :hash]},
+       [
+         protocol_version: {:constant, :u16, @protocol_version},
+         kernel_id: :hash,
+         profile_id: :hash
+       ]},
     2 =>
       {Session.Join, [request_id: :u64, username: :utf8, token: :utf8, cid: :u64, scene_id: :u64]},
     3 =>
@@ -69,9 +73,17 @@ defmodule MmoContracts.Session.Codec do
          server_tick: :u64
        ]},
     10 => {Session.SessionEnd, [identity: :identity, reason: :reason]},
-    11 => {Session.Transfer, [identity: :identity, next_identity: :identity,
-      cut_tick: :u64, processed_input_seq: :u32, transaction_seq: :u64,
-      collision_revision: :u64, state: :state]}
+    11 =>
+      {Session.Transfer,
+       [
+         identity: :identity,
+         next_identity: :identity,
+         cut_tick: :u64,
+         processed_input_seq: :u32,
+         transaction_seq: :u64,
+         collision_revision: :u64,
+         state: :state
+       ]}
   }
 
   @moduledoc "现行认证、入场、心跳的纯字节契约；大端，入场位置仍为旧 UE/cm，不是 canonical 米。"
@@ -175,10 +187,19 @@ defmodule MmoContracts.Session.Codec do
   defp accept_m1(%Session.InputStart{anchor_tick: a, origin_tick: origin}),
     do: true = origin == a + 30
 
-  defp accept_m1(%Session.Transfer{identity: old, next_identity: next, cut_tick: tick, processed_input_seq: seq}) do
-    true = old.session_epoch > 0 and old.scene_id > 0 and old.scene_epoch > 0 and
-      next.session_epoch > old.session_epoch and next.scene_id > 0 and next.scene_id != old.scene_id and
-      next.scene_epoch > 0 and seq > 0 and tick >= seq
+  defp accept_m1(%Session.Transfer{
+         identity: old,
+         next_identity: next,
+         cut_tick: tick,
+         processed_input_seq: seq
+       }) do
+    true =
+      old.session_epoch > 0 and old.scene_id > 0 and old.scene_epoch > 0 and
+        next.session_epoch > old.session_epoch and next.scene_id > 0 and
+        next.scene_id != old.scene_id and
+        next.scene_epoch > 0 and seq > 0 and tick >= seq
   end
+
   defp accept_m1(_), do: :ok
 end
+

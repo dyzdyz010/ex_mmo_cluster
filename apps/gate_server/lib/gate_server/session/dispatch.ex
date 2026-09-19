@@ -64,7 +64,9 @@ defmodule GateServer.Session.Dispatch do
     {x, y, z} = request.target_world_micro
     [{Integer.floor_div(x, 8), Integer.floor_div(y, 8), Integer.floor_div(z, 8)}]
   end
-  def voxim_edit_coords({:voxel_batch_edit_intent, request}), do: Enum.map(request.edits, &elem(&1, 0))
+
+  def voxim_edit_coords({:voxel_batch_edit_intent, request}),
+    do: Enum.map(request.edits, &elem(&1, 0))
 
   @type state :: map()
 
@@ -504,7 +506,9 @@ defmodule GateServer.Session.Dispatch do
   def handle({:voxel_overlay_subscribe, sub}, %{status: :in_scene} = state) do
     {:ok, %{world_ref: world_ref}} =
       WorldServer.Movement.route(Application.fetch_env!(:gate_server, :voxel_scene_id))
-    :ok = VoxelRegion.World.subscribe(world_ref, self(), sub.have_seq, sub.box, sub.coarse_min_level)
+
+    :ok =
+      VoxelRegion.World.subscribe(world_ref, self(), sub.have_seq, sub.box, sub.coarse_min_level)
 
     emit(state, "voxel_overlay_subscribed", %{
       connection_pid: self(),
@@ -523,89 +527,169 @@ defmodule GateServer.Session.Dispatch do
   end
 
   # The same creator permission applies to all transports, separate from tool attacks.
-  def handle({kind,request}=message,%{status: :in_scene,voxim_overlay: true}=state)
-      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1,
-        :voxel_edit_intent,:voxel_batch_edit_intent] and not is_map_key(state,:b1_authorized) do
-    builder = Map.get(state,:builder,Map.get(state,:cid) in Application.get_env(:gate_server,:voxim_builder_cids,[]))
+  def handle({kind, request} = message, %{status: :in_scene, voxim_overlay: true} = state)
+      when kind in [
+             :voxel_prefab_place_v1,
+             :voxel_prefab_remove_v1,
+             :voxel_prefab_replace_v1,
+             :voxel_edit_intent,
+             :voxel_batch_edit_intent
+           ] and not is_map_key(state, :b1_authorized) do
+    builder =
+      Map.get(
+        state,
+        :builder,
+        Map.get(state, :cid) in Application.get_env(:gate_server, :voxim_builder_cids, [])
+      )
+
     if builder do
-      {:ok,next}=handle(message,Map.put(state,:b1_authorized,true))
-      {:ok,Map.delete(next,:b1_authorized)}
+      {:ok, next} = handle(message, Map.put(state, :b1_authorized, true))
+      {:ok, Map.delete(next, :b1_authorized)}
     else
-      send_encoded(state,ResultFrame.error(request,:builder_permission_required))
-      {:ok,state}
+      send_encoded(state, ResultFrame.error(request, :builder_permission_required))
+      {:ok, state}
     end
   end
 
   # 只读余额取已鉴权的角色身份，不依赖移动 Ready 握手。
-  def handle({:voxel_production_intent,%{action: 0}=request},%{status: :in_scene,voxim_overlay: true,cid: cid}=state) do
-    send_material_balances(state,cid,request.request_id)
-    {:ok,state}
+  def handle(
+        {:voxel_production_intent, %{action: 0} = request},
+        %{status: :in_scene, voxim_overlay: true, cid: cid} = state
+      ) do
+    send_material_balances(state, cid, request.request_id)
+    {:ok, state}
   end
-  def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state) when kind in [:voxel_production_intent,:voxel_attachment_intent] do
-    with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
-      actor = Map.merge(actor,Map.take(state,[:received_us,:clock_node]))
-      result = if kind==:voxel_attachment_intent,do: VoxelRegion.World.attachment_intent(state.world_ref,actor,request),else: VoxelRegion.World.production_intent(state.world_ref,actor,request)
-      send_material_balances(state,actor.cid,request.request_id)
+
+  def handle({kind, request}, %{status: :in_scene, voxim_overlay: true} = state)
+      when kind in [:voxel_production_intent, :voxel_attachment_intent] do
+    with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
+      actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
+
+      result =
+        if kind == :voxel_attachment_intent,
+          do: VoxelRegion.World.attachment_intent(state.world_ref, actor, request),
+          else: VoxelRegion.World.production_intent(state.world_ref, actor, request)
+
+      send_material_balances(state, actor.cid, request.request_id)
+
       case result do
-        {:ok,seq} ->
-          send_encoded(state,{:voxel_intent_result,%{request_id: request.request_id,
-            client_intent_seq: request.client_intent_seq,logical_scene_id: request.logical_scene_id,
-            result_code: :accepted,result_ref: seq,authoritative: [],reason: "ok"}})
-        {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
+        {:ok, seq} ->
+          send_encoded(
+            state,
+            {:voxel_intent_result,
+             %{
+               request_id: request.request_id,
+               client_intent_seq: request.client_intent_seq,
+               logical_scene_id: request.logical_scene_id,
+               result_code: :accepted,
+               result_ref: seq,
+               authoritative: [],
+               reason: "ok"
+             }}
+          )
+
+        {:error, reason} ->
+          send_encoded(state, ResultFrame.error(request, reason))
       end
     else
-      {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
+      {:error, reason} -> send_encoded(state, ResultFrame.error(request, reason))
     end
-    {:ok,state}
-  end
-  def handle({kind,request},state) when kind in [:voxel_production_intent,:voxel_attachment_intent] do
-    send_encoded(state,ResultFrame.error(request,:invalid_state))
-    {:ok,state}
+
+    {:ok, state}
   end
 
-  def handle({:voxel_tool_intent,request},%{status: :in_scene,voxim_overlay: true}=state) do
+  def handle({kind, request}, state)
+      when kind in [:voxel_production_intent, :voxel_attachment_intent] do
+    send_encoded(state, ResultFrame.error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  def handle({:voxel_tool_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
     started = System.monotonic_time(:microsecond)
-    result = with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
-      context_done = System.monotonic_time(:microsecond)
-      actor = Map.merge(actor,Map.take(state,[:received_us,:clock_node]))
-      result = VoxelRegion.World.tool_intent(state.world_ref,actor,request)
-      if request.action in [1,2],do: send_material_balances(state,actor.cid,request.request_id)
-      Logger.info("voxel_tool_dispatch request_id=#{request.request_id} node=#{node()} context_us=#{context_done-started} world_us=#{System.monotonic_time(:microsecond)-context_done}")
-      result
-    end
+
+    result =
+      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
+        context_done = System.monotonic_time(:microsecond)
+        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
+        result = VoxelRegion.World.tool_intent(state.world_ref, actor, request)
+
+        if request.action in [1, 2],
+          do: send_material_balances(state, actor.cid, request.request_id)
+
+        Logger.info(
+          "voxel_tool_dispatch request_id=#{request.request_id} node=#{node()} context_us=#{context_done - started} world_us=#{System.monotonic_time(:microsecond) - context_done}"
+        )
+
+        result
+      end
+
     case result do
-      {:ok,%{}=target} -> send_encoded(state,{:voxel_property_state,target})
-      {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{request_id: request.request_id,
-        client_intent_seq: request.client_intent_seq,logical_scene_id: request.logical_scene_id,
-        result_code: :accepted,result_ref: seq,authoritative: [],reason: "ok"}})
-      {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
+      {:ok, %{} = target} ->
+        send_encoded(state, {:voxel_property_state, target})
+
+      {:ok, seq} ->
+        send_encoded(
+          state,
+          {:voxel_intent_result,
+           %{
+             request_id: request.request_id,
+             client_intent_seq: request.client_intent_seq,
+             logical_scene_id: request.logical_scene_id,
+             result_code: :accepted,
+             result_ref: seq,
+             authoritative: [],
+             reason: "ok"
+           }}
+        )
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
     end
-    {:ok,state}
-  end
-  def handle({:voxel_tool_intent,request},state) do
-    send_encoded(state,ResultFrame.error(request,:invalid_state))
-    {:ok,state}
+
+    {:ok, state}
   end
 
-  def handle({kind,request},%{status: :in_scene,voxim_overlay: true}=state)
-      when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
-    result = with {:ok,actor} <- SceneServer.Movement.Player.tool_context(state.player,state.identity) do
-      result=VoxelRegion.World.prefab_intent(state.world_ref,actor,kind,request)
-      send_material_balances(state,actor.cid,request.request_id)
-      result
-    end
-    case result do
-      {:ok,seq} -> send_encoded(state,{:voxel_intent_result,%{
-        request_id: request.request_id,client_intent_seq: request.client_intent_seq,
-        logical_scene_id: request.logical_scene_id,result_code: :accepted,result_ref: seq,
-        authoritative: [],reason: "ok"}})
-      {:error,reason} -> send_encoded(state,ResultFrame.error(request,reason))
-    end
-    {:ok,state}
+  def handle({:voxel_tool_intent, request}, state) do
+    send_encoded(state, ResultFrame.error(request, :invalid_state))
+    {:ok, state}
   end
-  def handle({kind,_},state) when kind in [:voxel_prefab_place_v1,:voxel_prefab_remove_v1,:voxel_prefab_replace_v1] do
-    result_error(state,:invalid_state,0)
-    {:ok,state}
+
+  def handle({kind, request}, %{status: :in_scene, voxim_overlay: true} = state)
+      when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] do
+    result =
+      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
+        result = VoxelRegion.World.prefab_intent(state.world_ref, actor, kind, request)
+        send_material_balances(state, actor.cid, request.request_id)
+        result
+      end
+
+    case result do
+      {:ok, seq} ->
+        send_encoded(
+          state,
+          {:voxel_intent_result,
+           %{
+             request_id: request.request_id,
+             client_intent_seq: request.client_intent_seq,
+             logical_scene_id: request.logical_scene_id,
+             result_code: :accepted,
+             result_ref: seq,
+             authoritative: [],
+             reason: "ok"
+           }}
+        )
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  def handle({kind, _}, state)
+      when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] do
+    result_error(state, :invalid_state, 0)
+    {:ok, state}
   end
 
   def handle(
@@ -969,9 +1053,10 @@ defmodule GateServer.Session.Dispatch do
     send_encoded(state, {:enter_scene_result, :error, request_id})
   end
 
-  defp send_material_balances(state,cid,request_id) do
-    for balance<-VoxelRegion.World.material_balances(state.world_ref,cid) do
-      send_encoded(state,{:voxel_material_balance,Map.put(balance,:request_id,request_id)})
+  defp send_material_balances(state, cid, request_id) do
+    for balance <- VoxelRegion.World.material_balances(state.world_ref, cid) do
+      send_encoded(state, {:voxel_material_balance, Map.put(balance, :request_id, request_id)})
     end
   end
 end
+

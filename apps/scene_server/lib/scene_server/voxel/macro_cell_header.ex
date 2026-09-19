@@ -123,7 +123,8 @@ defmodule SceneServer.Voxel.MacroCellHeader do
   defp normalize_mode!(:refined), do: @cell_mode_refined
 
   defp normalize_mode!(mode)
-       when mode in [@cell_mode_empty, @cell_mode_solid_block, @cell_mode_refined], do: mode
+       when mode in [@cell_mode_empty, @cell_mode_solid_block, @cell_mode_refined],
+       do: mode
 
   defp normalize_mode!(mode) do
     raise ArgumentError, "invalid macro cell mode: #{inspect(mode)}"
@@ -151,3 +152,4 @@ defmodule SceneServer.Voxel.MacroCellHeader do
     raise ArgumentError, "expected #{label} u#{bits}, got: #{inspect(value)}"
   end
 end
+

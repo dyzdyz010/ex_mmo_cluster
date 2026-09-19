@@ -25,6 +25,7 @@ defmodule SceneServer.Movement.Replication do
   @doc "为已 join 的新成员恢复观察者缓存，保留实体关系 generation。"
   def put_observer(pid, identity, gate, observer),
     do: GenServer.call(pid, {:put_observer, identity, gate, observer})
+
   @doc "删除源成员，保留本地产生的旧身份切点只读显示，直到目标邻区确认新身份首帧。"
   def handoff(pid, old, fresh, target_scene_id),
     do: GenServer.call(pid, {:handoff, old, fresh, target_scene_id})
@@ -63,16 +64,25 @@ defmodule SceneServer.Movement.Replication do
         pid
       end
 
-    {:ok, %{members: %{}, workers: List.to_tuple(workers), neighbours: %{}, bridges: %{}, tick: 0}}
+    {:ok,
+     %{members: %{}, workers: List.to_tuple(workers), neighbours: %{}, bridges: %{}, tick: 0}}
   end
 
   @impl true
   def handle_call(:workers, _, state), do: {:reply, Tuple.to_list(state.workers), state}
 
   def handle_call({:neighbour, peer, offset, scene_id}, _, state) do
-    neighbours = Map.put_new_lazy(state.neighbours, peer, fn ->
-      %{monitor: Process.monitor(peer), offset: offset, tick: -1, entities: [], scene_id: scene_id}
-    end)
+    neighbours =
+      Map.put_new_lazy(state.neighbours, peer, fn ->
+        %{
+          monitor: Process.monitor(peer),
+          offset: offset,
+          tick: -1,
+          entities: [],
+          scene_id: scene_id
+        }
+      end)
+
     {:reply, :ok, %{state | neighbours: neighbours}}
   end
 
@@ -97,20 +107,29 @@ defmodule SceneServer.Movement.Replication do
     case state.neighbours[peer] do
       # 同一端点信号有序；同 tick 的目标激活补帧必须能替换此前空帧。
       %{tick: previous} = neighbour when tick >= previous ->
-        values = Enum.flat_map(entities, fn value ->
-          mapped = Clock.translate_tick(value.simulation_tick, neighbour.offset)
-          if mapped >= 0, do: [%{value | simulation_tick: mapped}], else: []
-        end)
+        values =
+          Enum.flat_map(entities, fn value ->
+            mapped = Clock.translate_tick(value.simulation_tick, neighbour.offset)
+            if mapped >= 0, do: [%{value | simulation_tick: mapped}], else: []
+          end)
+
         next = %{neighbour | tick: tick, entities: values}
-        bridges = Enum.reduce(values, state.bridges, fn value, bridges ->
-          case bridges[value.identity] do
-            %{target_scene_id: scene_id} when scene_id == neighbour.scene_id ->
-              Map.delete(bridges, value.identity)
-            _ -> bridges
-          end
-        end)
+
+        bridges =
+          Enum.reduce(values, state.bridges, fn value, bridges ->
+            case bridges[value.identity] do
+              %{target_scene_id: scene_id} when scene_id == neighbour.scene_id ->
+                Map.delete(bridges, value.identity)
+
+              _ ->
+                bridges
+            end
+          end)
+
         {:noreply, %{state | neighbours: Map.put(state.neighbours, peer, next), bridges: bridges}}
-      _ -> {:noreply, state}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
@@ -118,13 +137,17 @@ defmodule SceneServer.Movement.Replication do
     case state.neighbours[peer] do
       %{monitor: ^ref} = neighbour ->
         {:noreply, drop_neighbour(state, peer, neighbour.scene_id)}
-      _ -> {:noreply, state}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
   def handle_info({:neighbour_closed, peer}, state) do
     case state.neighbours[peer] do
-      nil -> {:noreply, state}
+      nil ->
+        {:noreply, state}
+
       neighbour ->
         Process.demonitor(neighbour.monitor, [:flush])
         {:noreply, drop_neighbour(state, peer, neighbour.scene_id)}
@@ -143,6 +166,7 @@ defmodule SceneServer.Movement.Replication do
       send(peer, {:neighbour_closed, self()})
       Process.demonitor(neighbour.monitor, [:flush])
     end
+
     {:noreply, %{state | neighbours: %{}, bridges: %{}}}
   end
 
@@ -190,12 +214,22 @@ defmodule SceneServer.Movement.Replication do
     tick = state.tick
     entities = for {_, %{value: value}} <- state.members, value != nil and value.active, do: value
     bridges = Enum.map(state.bridges, fn {_, bridge} -> bridge.value end)
+
     # 本地产生的切点桥继续导出到目标确认首帧，填补 detach/activate 间隙；邻区事实不再转发。
     if map_size(state.neighbours) > 0 do
-      exported = Enum.map(entities ++ bridges, &Map.take(&1,
-        [:identity, :entity_id, :entity_epoch, :state, :simulation_tick, :collision_revision]))
-      for {peer, _} <- state.neighbours, do: send(peer, {:neighbour_frame, self(), tick, exported})
+      exported =
+        Enum.map(
+          entities ++ bridges,
+          &Map.take(
+            &1,
+            [:identity, :entity_id, :entity_epoch, :state, :simulation_tick, :collision_revision]
+          )
+        )
+
+      for {peer, _} <- state.neighbours,
+          do: send(peer, {:neighbour_frame, self(), tick, exported})
     end
+
     remote = Enum.flat_map(state.neighbours, fn {_, neighbour} -> neighbour.entities end)
     frame = AOI.frame(entities ++ remote ++ bridges)
     for worker <- Tuple.to_list(state.workers), do: ReplicationWorker.publish(worker, frame, tick)
@@ -212,3 +246,4 @@ defmodule SceneServer.Movement.Replication do
     %{state | neighbours: Map.delete(state.neighbours, peer), bridges: bridges}
   end
 end
+

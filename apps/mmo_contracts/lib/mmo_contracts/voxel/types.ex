@@ -53,14 +53,36 @@ end
 
 defmodule MmoContracts.Voxel.CollisionWindow do
   @moduledoc "完整移动碰撞窗口在 apply_tick 原子替换；N 仍是 World 事务水位。"
-  @enforce_keys [:identity, :apply_tick, :content_version, :collision_revision, :transaction_seq,
-    :l0_min, :l0_max_exclusive, :travel_min_m, :travel_max_exclusive_m, :regions]
+  @enforce_keys [
+    :identity,
+    :apply_tick,
+    :content_version,
+    :collision_revision,
+    :transaction_seq,
+    :l0_min,
+    :l0_max_exclusive,
+    :travel_min_m,
+    :travel_max_exclusive_m,
+    :regions
+  ]
   defstruct @enforce_keys
 end
 
 defmodule MmoContracts.Voxel.PropertyBatch do
   @moduledoc "全局系统功能：同一窗口与提交点的完整属性快照或状态增量。"
-  @enforce_keys [:identity, :transaction_seq, :l0_min, :l0_max_exclusive, :complete,
-    :hp_enabled, :digest, :thermal_enabled, :ambient_kelvin, :epochs, :states]
+  @enforce_keys [
+    :identity,
+    :transaction_seq,
+    :l0_min,
+    :l0_max_exclusive,
+    :complete,
+    :hp_enabled,
+    :digest,
+    :thermal_enabled,
+    :ambient_kelvin,
+    :epochs,
+    :states
+  ]
   defstruct @enforce_keys
 end
+

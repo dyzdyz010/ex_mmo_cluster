@@ -16,6 +16,7 @@ runs:
         persist-credentials: false
         sparse-checkout: |
           Source/Voxim/Voxel
+          Plugins/VoximMovement
           Docs
           Content/Voxel/Properties/Published
           Content/Voxel/R7/Published

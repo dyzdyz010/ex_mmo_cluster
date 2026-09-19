@@ -1,4 +1,5 @@
 Code.require_file("runtime_observation.exs", __DIR__)
+
 defmodule SceneServer.Movement.VoximInstrumentationTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
@@ -124,14 +125,20 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
   # 删除日志、错报原始轴/代际/到期槽、把累计成本当单步成本都会失败。
   test "normal INFO retains lifecycle and one summary per second without per-input rows" do
-    log = capture_log([level: :info, format: "$message\n"], fn ->
-      ctx = start_scene()
-      Scene.join(ctx.scene, identity(1), %{id: 10}, self())
-      await(ctx.scene, &(&1.queue_length == 1))
-      for tick <- 1..60, do: advance(ctx, tick)
-    end)
-    rows = log |> String.split("\n", trim: true)
-      |> Enum.filter(&String.starts_with?(&1, "{")) |> Enum.map(&Jason.decode!/1)
+    log =
+      capture_log([level: :info, format: "$message\n"], fn ->
+        ctx = start_scene()
+        Scene.join(ctx.scene, identity(1), %{id: 10}, self())
+        await(ctx.scene, &(&1.queue_length == 1))
+        for tick <- 1..60, do: advance(ctx, tick)
+      end)
+
+    rows =
+      log
+      |> String.split("\n", trim: true)
+      |> Enum.filter(&String.starts_with?(&1, "{"))
+      |> Enum.map(&Jason.decode!/1)
+
     assert length(events(rows, "session_start")) == 1
     assert events(rows, "input_selected") == []
     assert events(rows, "input_wait") == []
@@ -173,8 +180,15 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
         rest =
           for tick <- 34..40 do
-            input(ctx, [frame(tick - 31, if(tick < 40, do: 16000, else: 0),
-              if(tick < 40, do: -10000, else: 0), 0)])
+            input(ctx, [
+              frame(
+                tick - 31,
+                if(tick < 40, do: 16000, else: 0),
+                if(tick < 40, do: -10000, else: 0),
+                0
+              )
+            ])
+
             if tick == 35 do
               assert {:ok, 1} = World.apply_edits(ctx.world, [{{40, 550, 40}, 1}])
               await(ctx.scene, &(&1.queue_length == 1))
@@ -271,11 +285,12 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
 
     arrivals = events(rows, "input_arrival")
 
-    assert Enum.map(arrivals, &{&1["input_seq"], &1["disposition"], &1["due_tick"]}) == [
-             {1, "accepted", 32},
-             {1, "duplicate", 32},
-             {2, "accepted", 33}
-           ] ++ Enum.map(3..10, &{&1, "accepted", &1 + 31})
+    assert Enum.map(arrivals, &{&1["input_seq"], &1["disposition"], &1["due_tick"]}) ==
+             [
+               {1, "accepted", 32},
+               {1, "duplicate", 32},
+               {2, "accepted", 33}
+             ] ++ Enum.map(3..10, &{&1, "accepted", &1 + 31})
 
     assert hd(arrivals)["server_tick"] == arrival.tick
     assert hd(arrivals)["monotonic_us"] == 7_516_667
@@ -387,8 +402,19 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     stale = identity(1)
     Scene.join(ctx.scene, current, %{id: 10}, self())
     assert_receive {:mmo_reliable, ^current, 1, %Session.SessionStart{} = start}, 5000
-    Player.time_probe(player(ctx.scene, current), current, %Session.TimeProbe{request_id: 1, client_send_us: 1})
-    Player.ready(player(ctx.scene, current), current, start.baseline_transaction_seq, start.collision_revision)
+
+    Player.time_probe(player(ctx.scene, current), current, %Session.TimeProbe{
+      request_id: 1,
+      client_send_us: 1
+    })
+
+    Player.ready(
+      player(ctx.scene, current),
+      current,
+      start.baseline_transaction_seq,
+      start.collision_revision
+    )
+
     assert_receive {:mmo_reliable, ^current, 1, %Session.InputStart{} = input_start}, 5000
 
     batch = %Movement.InputBatch{identity: current, frames: [frame(1, 0, -32767, 1)]}
@@ -396,18 +422,33 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     wire = IO.iodata_to_binary(wire)
     <<header::binary-size(5), body_length::32, body::binary>> = wire
     # Extra dt, speed and position bytes are rejected at the actual wire decoder.
-    for forged <- [<<10.0::float-64>>, <<10000.0::float-64>>, <<9999.0::float-64, 9999.0::float-64, 9999.0::float-64>>] do
-      injected = <<header::binary, body_length + byte_size(forged)::32, body::binary, forged::binary>>
+    for forged <- [
+          <<10.0::float-64>>,
+          <<10000.0::float-64>>,
+          <<9999.0::float-64, 9999.0::float-64, 9999.0::float-64>>
+        ] do
+      injected =
+        <<header::binary, body_length + byte_size(forged)::32, body::binary, forged::binary>>
+
       assert {:error, :invalid_m1_message} = Movement.Codec.decode(injected)
     end
+
     {:ok, decoded} = Movement.Codec.decode(wire)
     before_us = System.monotonic_time(:microsecond)
     before = observe(ctx.scene)
     for _ <- 1..1000, do: Player.input(player(ctx.scene, current), current, decoded)
-    for _ <- 1..1000, do: Player.input(player(ctx.scene, current), stale, %{decoded | identity: stale})
+
+    for _ <- 1..1000,
+        do: Player.input(player(ctx.scene, current), stale, %{decoded | identity: stale})
+
     Scene.leave(ctx.scene, stale)
     Player.ready(player(ctx.scene, current), stale, 0, 1)
-    Player.input(player(ctx.scene, current), current, %{decoded | frames: [frame(10000, 0, -32767, 1)]})
+
+    Player.input(player(ctx.scene, current), current, %{
+      decoded
+      | frames: [frame(10000, 0, -32767, 1)]
+    })
+
     Player.input(player(ctx.scene, current), current, %{decoded | frames: [frame(1, 32767, 0, 1)]})
 
     after_run = await(ctx.scene, &(&1.tick >= input_start.origin_tick + 90))
@@ -420,7 +461,10 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     assert character.processed_input_seq == 1
     assert character.simulation_tick == input_start.origin_tick
     assert character.pending_inputs == 1
-    assert after_run.physics_steps - before.physics_steps <= div((after_us - before_us) * 60, 1_000_000) + 1
+
+    assert after_run.physics_steps - before.physics_steps <=
+             div((after_us - before_us) * 60, 1_000_000) + 1
+
     {x0, _, z0} = hd(before.characters).state.position
     {x1, _, z1} = character.state.position
     distance = :math.sqrt((x1 - x0) ** 2 + (z1 - z0) ** 2)
@@ -432,15 +476,28 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     assert length(jumps) == 1
     assert [{10, {_, {_, jump_speed, _}, 0}}] = hd(jumps)
     assert jump_speed > 0.0
-    IO.puts("M1_WALL_CLOCK_NEGATIVE " <> Jason.encode!(%{
-      elapsed_us: after_us - before_us, physics_steps: after_run.physics_steps - before.physics_steps,
-      horizontal_displacement_m: distance, speed_limit_mps: start.profile.speed,
-      duplicate_batches: 1000, stale_batches: 1000, malformed_authority_fields_rejected: 3,
-      old_identity: after_run.old_identity, rejected_inputs: after_run.rejected_inputs,
-      legal_jump_slots: 1, native_jump_calls: length(jumps), origin_tick: input_start.origin_tick,
-      final_tick: after_run.tick, final_processed_seq: character.processed_input_seq,
-      time_domain: "production_scene_beam_monotonic_us", boundary: "decoded_scene_input_not_authenticated_transport"
-    }))
+
+    IO.puts(
+      "M1_WALL_CLOCK_NEGATIVE " <>
+        Jason.encode!(%{
+          elapsed_us: after_us - before_us,
+          physics_steps: after_run.physics_steps - before.physics_steps,
+          horizontal_displacement_m: distance,
+          speed_limit_mps: start.profile.speed,
+          duplicate_batches: 1000,
+          stale_batches: 1000,
+          malformed_authority_fields_rejected: 3,
+          old_identity: after_run.old_identity,
+          rejected_inputs: after_run.rejected_inputs,
+          legal_jump_slots: 1,
+          native_jump_calls: length(jumps),
+          origin_tick: input_start.origin_tick,
+          final_tick: after_run.tick,
+          final_processed_seq: character.processed_input_seq,
+          time_domain: "production_scene_beam_monotonic_us",
+          boundary: "decoded_scene_input_not_authenticated_transport"
+        })
+    )
   end
 
   defp native_steps(acc) do
@@ -451,3 +508,4 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     end
   end
 end
+

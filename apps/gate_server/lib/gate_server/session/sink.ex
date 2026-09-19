@@ -107,7 +107,8 @@ defmodule GateServer.Session.Sink do
   WebSocket 侧由 owner 进程按 binary frame 发出。
   """
   @spec send_raw(t(), binary()) :: :ok
-  def send_raw(%__MODULE__{transport: :quic, ref: {owner_pid, identity}}, payload) when is_binary(payload) do
+  def send_raw(%__MODULE__{transport: :quic, ref: {owner_pid, identity}}, payload)
+      when is_binary(payload) do
     send(owner_pid, {:mmo_voxel_bytes, identity, payload})
     :ok
   end
@@ -138,3 +139,4 @@ defmodule GateServer.Session.Sink do
     GateServer.CliObserve.emit("#{transport}_" <> event, fields)
   end
 end
+

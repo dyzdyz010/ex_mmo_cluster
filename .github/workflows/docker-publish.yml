@@ -81,7 +81,7 @@ jobs:
           context: .
           file: Dockerfile
           build-contexts: |
-            voxim=./.ci-voxim/Source/Voxim/Voxel
+            voxim=./.ci-voxim
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

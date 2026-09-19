@@ -78,7 +78,8 @@ defmodule SceneServer.Voxel.SimulationTick do
     {next_states, cells_updated, env_deltas, failures} =
       Enum.reduce(simulators, {state.simulator_states, 0, [], []}, fn module,
                                                                       {acc_states, acc_cells,
-                                                                       acc_deltas, acc_failures} ->
+                                                                       acc_deltas,
+                                                                       acc_failures} ->
         sim_id = simulator_id_or_module(module)
         prev_state = Map.get(acc_states, sim_id)
 
@@ -197,3 +198,4 @@ defmodule SceneServer.Voxel.SimulationTick do
   defp maybe_prepend_env_delta(acc, _sim_id, nil), do: acc
   defp maybe_prepend_env_delta(acc, sim_id, env_delta), do: [{sim_id, env_delta} | acc]
 end
+

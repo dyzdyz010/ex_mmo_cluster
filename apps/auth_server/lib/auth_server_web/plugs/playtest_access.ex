@@ -12,7 +12,9 @@ defmodule AuthServerWeb.Plugs.PlaytestAccess do
         if String.starts_with?(conn.request_path, "/playtest/"),
           do: conn |> send_resp(404, "") |> halt(),
           else: conn
-      path -> authorize(conn, path)
+
+      path ->
+        authorize(conn, path)
     end
   end
 
@@ -34,3 +36,4 @@ defmodule AuthServerWeb.Plugs.PlaytestAccess do
 
   defp authorize(conn, _path), do: conn |> send_resp(404, "") |> halt()
 end
+

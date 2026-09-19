@@ -134,10 +134,21 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
   alias MmoContracts.{Session, Movement}
 
   defp value(id, session, scene, x) do
-    %{identity: %Session.Identity{session_epoch: session, scene_id: scene, scene_epoch: 7},
-      entity_id: id, entity_epoch: id, player_pid: self(), active: true,
-      simulation_tick: 60, collision_revision: 1,
-      state: %Session.State{position: {x, 500.0, 0.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}}
+    %{
+      identity: %Session.Identity{session_epoch: session, scene_id: scene, scene_epoch: 7},
+      entity_id: id,
+      entity_epoch: id,
+      player_pid: self(),
+      active: true,
+      simulation_tick: 60,
+      collision_revision: 1,
+      state: %Session.State{
+        position: {x, 500.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        grounded: 1,
+        yaw: 0
+      }
+    }
   end
 
   defp join(rep, value) do
@@ -164,6 +175,7 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     a = value(1, 1, 1, 0.0)
     old = value(2, 2, 1, 100.0)
     fresh = value(2, 3, 2, 1.0)
+
     for entities <- [[a, old, fresh], [fresh, old, a]] do
       frame = AOI.frame(entities)
       assert frame.entities == [a, fresh]
@@ -195,7 +207,10 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     join(target, b)
     assert :ok = Replication.put_observer(target, fresh.identity, self(), observer)
     sample(target, 60)
-    assert Enum.find(Replication.observe(target), &(&1.identity == fresh.identity)).last_generation == 1
+
+    assert Enum.find(Replication.observe(target), &(&1.identity == fresh.identity)).last_generation ==
+             1
+
     Replication.result(target, fresh)
     sample(target, 60)
     assert_receive {:mmo_datagram, ^fresh_identity, %Movement.Snapshot{records: [record]}}
@@ -207,15 +222,22 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     discard_outputs()
     join(target, b)
     sample(target, 66)
-    assert_receive {:mmo_reliable, ^fresh_identity, _, %Session.EntityEnter{interest_generation: 2}}
+
+    assert_receive {:mmo_reliable, ^fresh_identity, _,
+                    %Session.EntityEnter{interest_generation: 2}}
   end
 
   test "source cut bridge is exported until same-tick target frame while neighbour ghosts never are" do
     source = start_supervised!({Replication, [sink: GateServer.Session.Sink]})
     a = value(1, 1, 1, 0.0)
     b = value(2, 2, 1, 1.0)
-    fresh = %{a | identity: %{a.identity | session_epoch: 3, scene_id: 2},
-      state: %{a.state | position: {2.0, 500.0, 0.0}}}
+
+    fresh = %{
+      a
+      | identity: %{a.identity | session_epoch: 3, scene_id: 2},
+        state: %{a.state | position: {2.0, 500.0, 0.0}}
+    }
+
     spectator = b.identity
     :ok = Replication.neighbour(source, self(), 0, 2)
     join(source, a)
@@ -255,7 +277,14 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
       b = value(2, 2, 1, 1.0)
       spectator = b.identity
       fresh = %{a.identity | session_epoch: 3, scene_id: 2}
-      peer = spawn(fn -> receive do :stop -> :ok end end)
+
+      peer =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
       :ok = Replication.neighbour(source, peer, 0, 2)
       join(source, a)
       join(source, b)
@@ -263,12 +292,16 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
       discard_outputs()
       Replication.take_observer(source, a.identity)
       :ok = Replication.handoff(source, a.identity, fresh, 2)
+
       case event do
-        :neighbour_closed -> send(source, {:neighbour_closed, peer})
+        :neighbour_closed ->
+          send(source, {:neighbour_closed, peer})
+
         :down ->
           monitor = :sys.get_state(source).neighbours[peer].monitor
           send(source, {:DOWN, monitor, :process, peer, :normal})
       end
+
       sample(source, 63)
       assert_receive {:mmo_reliable, ^spectator, _, %Session.EntityLeave{entity_id: 1}}
       send(peer, :stop)
@@ -276,3 +309,4 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     end
   end
 end
+

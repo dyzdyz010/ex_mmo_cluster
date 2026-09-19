@@ -9,7 +9,9 @@ defmodule GateServer.CodecEdgeCasesTest do
         <<0x01, 1::32-big, 0::32-big, 16::16-big, 1.0::float-32-big, -1.0::float-32-big,
           2.0::float-32-big, 3::16-big>>
 
-      {:ok, {:movement_input, %{input_dir: {x, y}, speed_scale: speed_scale}}} = Dispatch.decode(msg)
+      {:ok, {:movement_input, %{input_dir: {x, y}, speed_scale: speed_scale}}} =
+        Dispatch.decode(msg)
+
       assert x == 1.0
       assert y == -1.0
       assert speed_scale == 2.0
@@ -44,7 +46,9 @@ defmodule GateServer.CodecEdgeCasesTest do
     test "old request layouts are rejected as invalid_message" do
       assert {:error, :invalid_message} == Dispatch.decode(<<0x02, 0::64-big>>)
       assert {:error, :invalid_message} == Dispatch.decode(<<0x03>>)
-      assert {:error, :invalid_message} == Dispatch.decode(<<0x05, 1::16-big, "a", 1::16-big, "b">>)
+
+      assert {:error, :invalid_message} ==
+               Dispatch.decode(<<0x05, 1::16-big, "a", 1::16-big, "b">>)
     end
 
     # DoS 护栏(batch 5):超限可变长字段不匹配主子句 → 落 fallthrough → {:error, :invalid_message}。
@@ -154,3 +158,4 @@ defmodule GateServer.CodecEdgeCasesTest do
     end
   end
 end
+

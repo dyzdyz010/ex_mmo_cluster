@@ -40,7 +40,12 @@ defmodule DataService.Voxel.OverlayLogStore do
 
     {:ok, :ok} =
       repo.transaction(fn ->
-        Ecto.Adapters.SQL.query!(repo, "DELETE FROM voxel_overlay_log WHERE content_version = $1", [cv])
+        Ecto.Adapters.SQL.query!(
+          repo,
+          "DELETE FROM voxel_overlay_log WHERE content_version = $1",
+          [cv]
+        )
+
         insert_rows(repo, cv, rows)
       end)
 
@@ -81,13 +86,21 @@ defmodule DataService.Voxel.OverlayLogStore do
         end)
 
       params =
-        Enum.flat_map(chunk, fn %{seq: seq, ordinal: ordinal, kind: kind, level: level, region: {x, y, z}, payload: payload} ->
+        Enum.flat_map(chunk, fn %{
+                                  seq: seq,
+                                  ordinal: ordinal,
+                                  kind: kind,
+                                  level: level,
+                                  region: {x, y, z},
+                                  payload: payload
+                                } ->
           [cv, seq, ordinal, kind, level, x, y, z, payload]
         end)
 
       Ecto.Adapters.SQL.query!(
         repo,
-        "INSERT INTO voxel_overlay_log (content_version, seq, ordinal, kind, level, region_x, region_y, region_z, payload) VALUES " <> values,
+        "INSERT INTO voxel_overlay_log (content_version, seq, ordinal, kind, level, region_x, region_y, region_z, payload) VALUES " <>
+          values,
         params
       )
     end)
@@ -102,3 +115,4 @@ defmodule DataService.Voxel.OverlayLogStore do
 
   defp repo(opts), do: Keyword.get(opts, :repo, Repo)
 end
+

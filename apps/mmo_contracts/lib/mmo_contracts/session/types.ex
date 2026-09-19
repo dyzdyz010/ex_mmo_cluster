@@ -109,8 +109,15 @@ end
 
 defmodule MmoContracts.Session.Transfer do
   @moduledoc "同一角色在公共时间线上移交的不可变切点。"
-  @enforce_keys [:identity, :next_identity, :cut_tick, :processed_input_seq,
-    :transaction_seq, :collision_revision, :state]
+  @enforce_keys [
+    :identity,
+    :next_identity,
+    :cut_tick,
+    :processed_input_seq,
+    :transaction_seq,
+    :collision_revision,
+    :state
+  ]
   defstruct @enforce_keys
 end
 
@@ -119,3 +126,4 @@ defmodule MmoContracts.Session.SessionEnd do
   @enforce_keys [:identity, :reason]
   defstruct @enforce_keys
 end
+

@@ -1009,7 +1009,8 @@ defmodule GateServer.CodecTest do
       assert <<0x8B, 10::32-big, 77::32-big, 42::64-big, 1.5::float-64-big, 2.5::float-64-big,
                3.5::float-64-big, 4.5::float-64-big, 5.5::float-64-big, 6.5::float-64-big,
                0.1::float-64-big, 0.2::float-64-big, 0.3::float-64-big, 0::8, 3::32-big,
-               100::16-big, 3.5::float-64-big>> ==
+               100::16-big,
+               3.5::float-64-big>> ==
                bin
     end
   end
@@ -1108,7 +1109,8 @@ defmodule GateServer.CodecTest do
         )
 
       assert <<0x6B, 9::64-big, -16::32-big-signed, 32::32-big-signed, 16::16-big, 2::16-big,
-               1::16-big, 10::16-big, 20::16-big>> ==
+               1::16-big, 10::16-big,
+               20::16-big>> ==
                IO.iodata_to_binary(iodata)
     end
 
@@ -1129,7 +1131,8 @@ defmodule GateServer.CodecTest do
         )
 
       assert <<0x6B, 9::64-big, -16::32-big-signed, 32::32-big-signed, 16::16-big, 2::16-big,
-               1::16-big, 10::16-big, 20::16-big, 0x01::8, 4::32-big, 101::16-big, 102::16-big>> ==
+               1::16-big, 10::16-big, 20::16-big, 0x01::8, 4::32-big, 101::16-big,
+               102::16-big>> ==
                IO.iodata_to_binary(iodata)
     end
 
@@ -1344,3 +1347,4 @@ defmodule GateServer.CodecTest do
     end
   end
 end
+

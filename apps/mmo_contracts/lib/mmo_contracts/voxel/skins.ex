@@ -21,9 +21,10 @@ defmodule MmoContracts.Voxel.Skins do
   end
 
   @doc "Canonical form of one face, shared by value and packed-record encoding."
-  def canonical_face({id,nil}),do: {id,nil}
-  def canonical_face({id,texels}) do
-    if texels == :binary.copy(<<id>>,byte_size(texels)),do: {id,nil},else: {id,texels}
+  def canonical_face({id, nil}), do: {id, nil}
+
+  def canonical_face({id, texels}) do
+    if texels == :binary.copy(<<id>>, byte_size(texels)), do: {id, nil}, else: {id, texels}
   end
 
   @doc "六面是否都等于 material，决定稀疏记录省略。"
@@ -32,3 +33,4 @@ defmodule MmoContracts.Voxel.Skins do
 
   def trivial?(_, _), do: false
 end
+

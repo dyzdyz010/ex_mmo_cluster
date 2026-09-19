@@ -44,31 +44,48 @@ config :world_server, :movement_routes, %{
     scene_epoch: 1
   }
 }
+
 config :gate_server, :voxel_scene_id, 1
 config :auth_server, :voxel_scene_id, 1
 
 # Voxim 正式入口只走 QUIC；旧业务回归必须显式选择 reference，不做自动降级。
-transport = case System.get_env("VOXIM_TRANSPORT", "voxim_quic") do
-  "voxim_quic" -> :voxim_quic
-  "legacy_reference" -> :legacy_reference
-end
+transport =
+  case System.get_env("VOXIM_TRANSPORT", "voxim_quic") do
+    "voxim_quic" -> :voxim_quic
+    "legacy_reference" -> :legacy_reference
+  end
+
 config :gate_server, :transport, transport
 
 if cert = System.get_env("VOXIM_QUIC_CERT") do
-  <<kernel_id::binary-size(32)>> = System.fetch_env!("VOXIM_KERNEL_ID") |> Base.decode16!(case: :mixed)
-  <<profile_id::binary-size(32)>> = System.fetch_env!("VOXIM_PROFILE_ID") |> Base.decode16!(case: :mixed)
+  <<kernel_id::binary-size(32)>> =
+    System.fetch_env!("VOXIM_KERNEL_ID") |> Base.decode16!(case: :mixed)
+
+  <<profile_id::binary-size(32)>> =
+    System.fetch_env!("VOXIM_PROFILE_ID") |> Base.decode16!(case: :mixed)
+
   config :gate_server, :quic,
     name: GateServer.Transport.QuicListener,
     port: String.to_integer(System.fetch_env!("VOXIM_QUIC_PORT")),
-    certfile: cert, keyfile: System.fetch_env!("VOXIM_QUIC_KEY"),
-    hello: struct(MmoContracts.Session.Hello, protocol_version: MmoContracts.Session.Codec.protocol_version(), kernel_id: kernel_id, profile_id: profile_id)
+    certfile: cert,
+    keyfile: System.fetch_env!("VOXIM_QUIC_KEY"),
+    hello:
+      struct(MmoContracts.Session.Hello,
+        protocol_version: MmoContracts.Session.Codec.protocol_version(),
+        kernel_id: kernel_id,
+        profile_id: profile_id
+      )
 end
 
 if config_path = System.get_env("VOXIM_M1_CONFIG") do
   config :gate_server, :quic, bounds: SceneServer.Movement.Scene.load_config!(config_path).bounds
+
   config :scene_server, SceneServer.Movement.Scene,
-    name: SceneServer.Movement.Scene, scene_id: 1, scene_epoch: 1,
-    world_ref: {VoxelRegion.World, node()}, config_path: config_path
+    name: SceneServer.Movement.Scene,
+    scene_id: 1,
+    scene_epoch: 1,
+    world_ref: {VoxelRegion.World, node()},
+    config_path: config_path
 end
 
 # 冷 miss 生成在每个请求进程里的并发上限；内存载荷缓存 L0–L3 的 LRU 字节上限（L4+ 常驻不计）。
@@ -237,3 +254,4 @@ if config_env() == :prod do
 end
 
 config :voxel_region, :prefab_catalog_path, System.get_env("VOXIM_PREFAB_CATALOG_PATH")
+

@@ -8,6 +8,7 @@ defmodule SceneServer.Movement.VoximApplicationTest do
   defmodule World do
     def canonical_snapshot_and_subscribe(owner, _, _, _, _include_chunks \\ true) do
       send(owner, {:m1_snapshot_requested, self()})
+
       receive do
         :finish -> :ok
       end
@@ -18,11 +19,20 @@ defmodule SceneServer.Movement.VoximApplicationTest do
   test "configured M1 application starts the real Scene without legacy native physics" do
     path = Path.expand("../../../../../../Voxim/Docs/M1/fixtures/demo-config.json", __DIR__)
     before = Application.get_env(:scene_server, SceneServer.Movement.Scene)
+
     Application.put_env(:scene_server, SceneServer.Movement.Scene,
-      name: SceneServer.Movement.Scene, scene_id: 1, scene_epoch: 1,
-      world_ref: self(), world_api: World, native: Native, config_path: path)
+      name: SceneServer.Movement.Scene,
+      scene_id: 1,
+      scene_epoch: 1,
+      world_ref: self(),
+      world_api: World,
+      native: Native,
+      config_path: path
+    )
+
     on_exit(fn ->
-      if before, do: Application.put_env(:scene_server, SceneServer.Movement.Scene, before),
+      if before,
+        do: Application.put_env(:scene_server, SceneServer.Movement.Scene, before),
         else: Application.delete_env(:scene_server, SceneServer.Movement.Scene)
     end)
 
@@ -37,3 +47,4 @@ defmodule SceneServer.Movement.VoximApplicationTest do
     Process.exit(worker, :kill)
   end
 end
+

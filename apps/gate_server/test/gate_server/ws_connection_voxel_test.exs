@@ -73,6 +73,7 @@ defmodule GateServer.WsConnectionVoxelTest do
 
     on_exit(fn ->
       stop_named(GateServer.Interface)
+
       # 注册表若由本测试 start_supervised 起,ExUnit 已在 on_exit 前关停它;此时无残留
       # 共享状态需要清。只有注册表比测试活得久(全局起)时才必须摘除本节点。
       unregister_scene_node_if_alive()
@@ -2256,7 +2257,8 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert_receive {:gate_ws_send, iodata}
 
     assert <<0x68, got_request_id::64-big, got_client_intent_seq::32-big,
-             got_logical_scene_id::64-big, 0::8, 0::64-big, 0::16-big, 0::16-big>> =
+             got_logical_scene_id::64-big, 0::8, 0::64-big, 0::16-big,
+             0::16-big>> =
              IO.iodata_to_binary(iodata)
 
     assert got_request_id == request_id
@@ -2300,8 +2302,7 @@ defmodule GateServer.WsConnectionVoxelTest do
   defp take_voxel_authoritative(binary, count, acc) do
     <<cx::32-big-signed, cy::32-big-signed, cz::32-big-signed, chunk_version::64-big,
       macro_index::16-big, cell_version::32-big, cell_hash::32-big, payload_kind::8,
-      payload_size::32-big, cell_payload::binary-size(payload_size),
-      rest::binary>> = binary
+      payload_size::32-big, cell_payload::binary-size(payload_size), rest::binary>> = binary
 
     entry = %{
       chunk_coord: {cx, cy, cz},
@@ -2459,3 +2460,4 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
   end
 end
+

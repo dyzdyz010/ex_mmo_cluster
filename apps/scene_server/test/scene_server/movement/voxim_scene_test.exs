@@ -1,4 +1,5 @@
 Code.require_file("runtime_observation.exs", __DIR__)
+
 defmodule SceneServer.Movement.VoximSceneTest do
   use ExUnit.Case, async: false
   alias SceneServer.Movement.InputSlots
@@ -56,11 +57,19 @@ defmodule SceneServer.Movement.VoximSceneTest do
     assert first.jump_pressed == 1
     assert {^slots, :waiting} = InputSlots.take(slots, 100)
     {slots, :duplicate} = InputSlots.receive_batch(slots, batch)
+
     for tick <- 101..124 do
       assert {^slots, :waiting} = InputSlots.take(slots, tick)
     end
+
     assert slots.processed_input_seq == 1
-    {slots, :accepted} = InputSlots.receive_batch(slots, %{batch | frames: [%{one | input_seq: 2, jump_pressed: 0, axis_x: 0}]})
+
+    {slots, :accepted} =
+      InputSlots.receive_batch(slots, %{
+        batch
+        | frames: [%{one | input_seq: 2, jump_pressed: 0, axis_x: 0}]
+      })
+
     {slots, release} = InputSlots.take(slots, 124)
     assert release.input_seq == 2 and release.axis_x == 0 and release.jump_pressed == 0
     assert {^slots, :waiting} = InputSlots.take(slots, 124)
@@ -83,8 +92,6 @@ defmodule SceneServer.Movement.VoximSceneTest do
 
     assert final.processed_input_seq == 3
   end
-
-
 end
 
 defmodule SceneServer.Movement.VoximSceneRuntimeTest do
@@ -308,22 +315,51 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
   @tag :input_recovery
   test "late real commands catch up once using the collision at each simulation tick", ctx do
     start = join(ctx)
-    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{request_id: 7, client_send_us: 44})
+
+    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{
+      request_id: 7,
+      client_send_us: 44
+    })
+
     Player.ready(player(ctx.scene, identity()), identity(), 0, 1)
     advance(ctx, 2)
     assert_receive {:reliable, _, :control, %Session.InputStart{origin_tick: 32}}
     at31 = advance(ctx, 31)
     anchor = hd(at31.characters).state
-    commands = for seq <- 1..24 do
-      %Movement.InputFrame{input_seq: seq,
-        axis_x: cond do seq < 9 -> 32767; seq < 17 -> -32767; true -> 0 end,
-        axis_z: 0, yaw: 100, jump_pressed: if(seq == 12, do: 1, else: 0)}
-    end
+
+    commands =
+      for seq <- 1..24 do
+        %Movement.InputFrame{
+          input_seq: seq,
+          axis_x:
+            cond do
+              seq < 9 -> 32767
+              seq < 17 -> -32767
+              true -> 0
+            end,
+          axis_z: 0,
+          yaw: 100,
+          jump_pressed: if(seq == 12, do: 1, else: 0)
+        }
+      end
+
     advance(ctx, 43)
-    removed = snapshot().chunks |> Enum.filter(&(&1.coord == {2, 31, 2}))
+
+    removed =
+      snapshot().chunks
+      |> Enum.filter(&(&1.coord == {2, 31, 2}))
       |> Enum.map(&%{&1 | cells: :binary.copy(<<0>>, 4096)})
-    GenServer.call(ctx.source, {:delta, %Voxel.CanonicalDelta{transaction_seq: 1,
-      transaction: %{seq: 1, entries: [], coarse: []}, chunks: removed}})
+
+    GenServer.call(
+      ctx.source,
+      {:delta,
+       %Voxel.CanonicalDelta{
+         transaction_seq: 1,
+         transaction: %{seq: 1, entries: [], coarse: []},
+         chunks: removed
+       }}
+    )
+
     await(ctx.scene, &(&1.queue_length == 1))
     advance(ctx, 44)
     stalled = advance(ctx, 55)
@@ -331,9 +367,14 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert hd(stalled.characters).simulation_tick == 31
     assert hd(stalled.characters).state == anchor
     assert stalled.physics_steps == at31.physics_steps
+
     for frames <- commands |> Enum.chunk_every(6) |> Enum.reverse() do
-      Player.input(player(ctx.scene, identity()), identity(), %Movement.InputBatch{identity: identity(), frames: frames})
+      Player.input(player(ctx.scene, identity()), identity(), %Movement.InputBatch{
+        identity: identity(),
+        frames: frames
+      })
     end
+
     recovered = advance(ctx, 56)
     assert hd(recovered.characters).processed_input_seq == 24
     assert hd(recovered.characters).simulation_tick == 55
@@ -342,27 +383,60 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     # 独立按原时段推进真实 P1，R2 只在第13条命令开始生效。
     native = SceneServer.Native.VoximMovement
     world = native.new_world()
-    world = native.set_chunks(world, SceneServer.Movement.CollisionUpdates.operations(snapshot().chunks))
+
+    world =
+      native.set_chunks(
+        world,
+        SceneServer.Movement.CollisionUpdates.operations(snapshot().chunks)
+      )
+
     edited = native.set_chunks(world, SceneServer.Movement.CollisionUpdates.operations(removed))
     <<bytes::binary-size(120), 60::16>> = Session.Codec.encode_profile(start.profile)
     profile = for(<<v::float-64 <- bytes>>, do: v) |> List.to_tuple()
-    expected = Enum.reduce(commands, {anchor.position, anchor.velocity, anchor.grounded}, fn f, state ->
-      world = if f.input_seq >= 13, do: edited, else: world
-      {x, z} = Movement.Codec.axes(f)
-      [{20, next}] = native.step_characters(world, profile, [{20, state, {x, z, f.jump_pressed}}])
-      next
-    end)
+
+    expected =
+      Enum.reduce(commands, {anchor.position, anchor.velocity, anchor.grounded}, fn f, state ->
+        world = if f.input_seq >= 13, do: edited, else: world
+        {x, z} = Movement.Codec.axes(f)
+
+        [{20, next}] =
+          native.step_characters(world, profile, [{20, state, {x, z, f.jump_pressed}}])
+
+        next
+      end)
+
     actual = hd(recovered.characters).state
     assert {actual.position, actual.velocity, actual.grounded} == expected
+
     for frames <- Enum.chunk_every(commands, 6) do
-      Player.input(player(ctx.scene, identity()), identity(), %Movement.InputBatch{identity: identity(), frames: frames})
+      Player.input(player(ctx.scene, identity()), identity(), %Movement.InputBatch{
+        identity: identity(),
+        frames: frames
+      })
     end
+
     duplicate = advance(ctx, 57)
     assert duplicate.physics_steps == recovered.physics_steps
-    assert_receive {:datagram, _, %Movement.OwnerAck{server_tick: 57,
-      simulation_tick: 55, processed_input_seq: 24, collision_revision: 2}}
-    IO.puts("M1_SCENE_RECOVERY " <> inspect(%{delay_ms: 400, recovered: 24,
-      world_tick: recovered.tick, simulation_tick: 55, collision_revision: 2, duplicate_steps: 0}))
+
+    assert_receive {:datagram, _,
+                    %Movement.OwnerAck{
+                      server_tick: 57,
+                      simulation_tick: 55,
+                      processed_input_seq: 24,
+                      collision_revision: 2
+                    }}
+
+    IO.puts(
+      "M1_SCENE_RECOVERY " <>
+        inspect(%{
+          delay_ms: 400,
+          recovered: 24,
+          world_tick: recovered.tick,
+          simulation_tick: 55,
+          collision_revision: 2,
+          duplicate_steps: 0
+        })
+    )
   end
 
   test "joining falls after ordered edit; Ready anchors fresh state and origin gates ACK", ctx do
@@ -383,7 +457,10 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     advance(ctx, 10)
     refute_receive {:datagram, _, %Movement.OwnerAck{}}
 
-    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{request_id: 1, client_send_us: 100})
+    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{
+      request_id: 1,
+      client_send_us: 100
+    })
 
     Player.ready(player(ctx.scene, identity()), identity(), 0, 1)
     advance(ctx, 11)
@@ -396,7 +473,14 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     refute_receive {:reliable, _, :control, %Session.InputStart{}}
     refute_receive {:datagram, _, %Movement.OwnerAck{}}
     advance(ctx, 42)
-    assert_receive {:datagram, _, %Movement.OwnerAck{server_tick: 42, processed_input_seq: 0, simulation_tick: 40}}
+
+    assert_receive {:datagram, _,
+                    %Movement.OwnerAck{
+                      server_tick: 42,
+                      processed_input_seq: 0,
+                      simulation_tick: 40
+                    }}
+
     assert observe(ctx.scene).physics_steps == 39
   end
 
@@ -476,7 +560,12 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
   test "actual fake clock writer consumes C1 gapped frames and flood only on due slots", ctx do
     join(ctx)
-    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{request_id: 7, client_send_us: 44})
+
+    Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{
+      request_id: 7,
+      client_send_us: 44
+    })
+
     Player.ready(player(ctx.scene, identity()), identity(), 0, 1)
     advance(ctx, 2)
     assert_receive {:reliable, _, :control, %Session.InputStart{origin_tick: 32}}
@@ -491,7 +580,12 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     batch = %{batch | identity: identity()}
     for _ <- 1..1000, do: Player.input(player(ctx.scene, identity()), identity(), batch)
     Player.input(player(ctx.scene, identity()), identity(99), %{batch | identity: identity(99)})
-    Player.input(player(ctx.scene, identity()), identity(), %{batch | frames: [%{hd(batch.frames) | input_seq: 33}]})
+
+    Player.input(player(ctx.scene, identity()), identity(), %{
+      batch
+      | frames: [%{hd(batch.frames) | input_seq: 33}]
+    })
+
     info = observe(ctx.scene)
     assert info.tick == 2 and info.physics_steps == 1
     assert info.old_identity == 1 and info.rejected_inputs == 0
@@ -960,13 +1054,23 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     refute_receive {:snapshot_held, _}
     assert observe(scene).physics_steps == 0
     :atomics.put(clock, 1, 100_000)
-    Player.time_probe(player(scene, identity()), identity(), %Session.TimeProbe{request_id: 1, client_send_us: 10})
+
+    Player.time_probe(player(scene, identity()), identity(), %Session.TimeProbe{
+      request_id: 1,
+      client_send_us: 10
+    })
+
     assert_receive {:reliable, _, :control, %Session.TimeReply{} = before_start}
     GenServer.call(source, :release)
     assert_receive {:snapshot_sent, _}
     assert_receive {:snapshot_sent, _}
     await(scene, &(&1.initialized and &1.queue_length == 1))
-    Player.time_probe(player(scene, identity()), identity(), %Session.TimeProbe{request_id: 2, client_send_us: 11})
+
+    Player.time_probe(player(scene, identity()), identity(), %Session.TimeProbe{
+      request_id: 2,
+      client_send_us: 11
+    })
+
     assert_receive {:reliable, _, :control, %Session.TimeReply{} = after_start}
     assert after_start.server_send_us >= before_start.server_send_us
     :atomics.put(clock, 1, 116_667)
@@ -1056,12 +1160,26 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
     advance(%{scene: scene, clock: clock}, 32)
     assert Enum.all?(observe(scene).characters, &(&1.processed_input_seq == 0))
+
     for c <- observe(scene).characters do
-      frames = for seq <- 1..(600 - c.origin_tick + 1), do:
-        %Movement.InputFrame{input_seq: seq, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}
-      for batch <- Enum.chunk_every(frames, 6), do:
-        Player.input(player(scene, c.identity), c.identity, %Movement.InputBatch{identity: c.identity, frames: batch})
+      frames =
+        for seq <- 1..(600 - c.origin_tick + 1),
+            do: %Movement.InputFrame{
+              input_seq: seq,
+              axis_x: 0,
+              axis_z: 0,
+              yaw: 0,
+              jump_pressed: 0
+            }
+
+      for batch <- Enum.chunk_every(frames, 6),
+          do:
+            Player.input(player(scene, c.identity), c.identity, %Movement.InputBatch{
+              identity: c.identity,
+              frames: batch
+            })
     end
+
     advance(%{scene: scene, clock: clock}, 600)
     info = observe(scene)
     assert info.character_count == 2 and info.physics_steps == 1197
@@ -1208,3 +1326,4 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     )
   end
 end
+

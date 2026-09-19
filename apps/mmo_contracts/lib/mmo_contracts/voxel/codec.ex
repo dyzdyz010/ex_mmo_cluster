@@ -27,15 +27,35 @@ defmodule MmoContracts.Voxel.Codec do
     3 =>
       {Voxel.TimelineFence,
        [identity: :identity, server_tick: :u64, transaction_seq: :u64, collision_revision: :u64]},
-    4 => {Voxel.CollisionWindow,
-      [apply_tick: :u64, identity: :identity, content_version: :u64,
-       collision_revision: :u64, transaction_seq: :u64, l0_min: :coord,
-       l0_max_exclusive: :coord, travel_min_m: :vec3, travel_max_exclusive_m: :vec3,
-       regions: {:array, :u32, :region}]},
-    5 => {Voxel.PropertyBatch,
-      [identity: :identity, transaction_seq: :u64, l0_min: :coord, l0_max_exclusive: :coord,
-       complete: :bool, hp_enabled: :bool, digest: :hash, thermal_enabled: :bool,
-       ambient_kelvin: :f64, epochs: :bytes, states: {:array, :u32, :bytes}]}
+    4 =>
+      {Voxel.CollisionWindow,
+       [
+         apply_tick: :u64,
+         identity: :identity,
+         content_version: :u64,
+         collision_revision: :u64,
+         transaction_seq: :u64,
+         l0_min: :coord,
+         l0_max_exclusive: :coord,
+         travel_min_m: :vec3,
+         travel_max_exclusive_m: :vec3,
+         regions: {:array, :u32, :region}
+       ]},
+    5 =>
+      {Voxel.PropertyBatch,
+       [
+         identity: :identity,
+         transaction_seq: :u64,
+         l0_min: :coord,
+         l0_max_exclusive: :coord,
+         complete: :bool,
+         hp_enabled: :bool,
+         digest: :hash,
+         thermal_enabled: :bool,
+         ambient_kelvin: :f64,
+         epochs: :bytes,
+         states: {:array, :u32, :bytes}
+       ]}
   }
 
   @doc "新增 M1 Voxel envelope；既有 R6 入口和内嵌字节不变。"
@@ -61,7 +81,12 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
-                  0x7A, 0x7B, 0x7C, 0x7D, 0x7F, 0x81
+                  0x7A,
+                  0x7B,
+                  0x7C,
+                  0x7D,
+                  0x7F,
+                  0x81
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -72,54 +97,130 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_intent_result,
                     :voxel_log_entry_payload,
                     :voxel_log_transaction_payload,
-                    :voxel_property_state, :voxel_material_balance
+                    :voxel_property_state,
+                    :voxel_material_balance
                   ]
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
-  def decode(<<0x81,rid::64,seq::32,scene::64,action,kind,axis,size,
-      x::signed-64,y::signed-64,z::signed-64,id::64,material::16,tool::16>>)
-      when action in [0,1] and kind in [0,1] and axis in 0..2 and size in [1,8] and tool>0 do
-    {:ok,{:voxel_attachment_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
-      action: action,kind: kind,axis: axis,size: size,anchor: {x,y,z},id: id,material: material,tool_id: tool}}}
+  def decode(
+        <<0x81, rid::64, seq::32, scene::64, action, kind, axis, size, x::signed-64, y::signed-64,
+          z::signed-64, id::64, material::16, tool::16>>
+      )
+      when action in [0, 1] and kind in [0, 1] and axis in 0..2 and size in [1, 8] and tool > 0 do
+    {:ok,
+     {:voxel_attachment_intent,
+      %{
+        request_id: rid,
+        client_intent_seq: seq,
+        logical_scene_id: scene,
+        action: action,
+        kind: kind,
+        axis: axis,
+        size: size,
+        anchor: {x, y, z},
+        id: id,
+        material: material,
+        tool_id: tool
+      }}}
   end
-  def decode(<<0x81,_::binary>>),do: {:error,:invalid_message}
 
-  def decode(<<0x7F,rid::64,seq::32,scene::64,action::8,x::signed-32,y::signed-32,z::signed-32,tool::16,material::16>>)
-      when action in [0,1,2,3] and tool > 0 do
-    {:ok,{:voxel_production_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
-      action: action,coord: {x,y,z},tool_id: tool,material: material}}}
+  def decode(<<0x81, _::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
+          tool::16, material::16>>
+      )
+      when action in [0, 1, 2, 3] and tool > 0 do
+    {:ok,
+     {:voxel_production_intent,
+      %{
+        request_id: rid,
+        client_intent_seq: seq,
+        logical_scene_id: scene,
+        action: action,
+        coord: {x, y, z},
+        tool_id: tool,
+        material: material
+      }}}
   end
-  def decode(<<0x7F,_::binary>>),do: {:error,:invalid_message}
 
-  def decode(<<0x7D, rid::64, seq::32, scene::64, action::8,
-      dx::float-64, dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64,
-      incarnation::64, birth::64, occurrence::32, material::16, tool::16, granularity::8>>)
-      when action in [0,1,2] and tool > 0 and granularity in [0,1,2,3] do
-    norm = dx*dx+dy*dy+dz*dz
+  def decode(<<0x7F, _::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<0x7D, rid::64, seq::32, scene::64, action::8, dx::float-64, dy::float-64, dz::float-64,
+          x::signed-64, y::signed-64, z::signed-64, incarnation::64, birth::64, occurrence::32,
+          material::16, tool::16, granularity::8>>
+      )
+      when action in [0, 1, 2] and tool > 0 and granularity in [0, 1, 2, 3] do
+    norm = dx * dx + dy * dy + dz * dz
+
     if norm > 0.99 and norm < 1.01 do
-      {:ok,{:voxel_tool_intent,%{request_id: rid,client_intent_seq: seq,logical_scene_id: scene,
-        action: action,direction: {dx,dy,dz},micro: {x,y,z},incarnation: incarnation,
-        owner: {birth,occurrence},material: material,tool_id: tool,granularity: granularity}}}
+      {:ok,
+       {:voxel_tool_intent,
+        %{
+          request_id: rid,
+          client_intent_seq: seq,
+          logical_scene_id: scene,
+          action: action,
+          direction: {dx, dy, dz},
+          micro: {x, y, z},
+          incarnation: incarnation,
+          owner: {birth, occurrence},
+          material: material,
+          tool_id: tool,
+          granularity: granularity
+        }}}
     else
-      {:error,:invalid_message}
+      {:error, :invalid_message}
     end
   end
-  def decode(<<0x7D,_::binary>>), do: {:error,:invalid_message}
 
-  def decode(<<0x7A, rid::64, seq::32, scene::64, id::binary-size(32),
-               x::signed-64, y::signed-64, z::signed-64, orientation::8>>) when orientation < 24 do
-    {:ok, {:voxel_prefab_place_v1, %{request_id: rid, client_intent_seq: seq,
-      logical_scene_id: scene, definition_id: id, anchor: {x,y,z}, orientation: orientation}}}
+  def decode(<<0x7D, _::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<0x7A, rid::64, seq::32, scene::64, id::binary-size(32), x::signed-64, y::signed-64,
+          z::signed-64, orientation::8>>
+      )
+      when orientation < 24 do
+    {:ok,
+     {:voxel_prefab_place_v1,
+      %{
+        request_id: rid,
+        client_intent_seq: seq,
+        logical_scene_id: scene,
+        definition_id: id,
+        anchor: {x, y, z},
+        orientation: orientation
+      }}}
   end
+
   def decode(<<0x7B, rid::64, seq::32, scene::64, birth::64, occurrence::32>>) do
-    {:ok, {:voxel_prefab_remove_v1, %{request_id: rid, client_intent_seq: seq,
-      logical_scene_id: scene, instance_id: {birth, occurrence}}}}
+    {:ok,
+     {:voxel_prefab_remove_v1,
+      %{
+        request_id: rid,
+        client_intent_seq: seq,
+        logical_scene_id: scene,
+        instance_id: {birth, occurrence}
+      }}}
   end
-  def decode(<<0x7C, rid::64, seq::32, scene::64, birth::64, occurrence::32, id::binary-size(32)>>) do
-    {:ok, {:voxel_prefab_replace_v1, %{request_id: rid, client_intent_seq: seq,
-      logical_scene_id: scene, instance_id: {birth, occurrence},definition_id: id}}}
+
+  def decode(
+        <<0x7C, rid::64, seq::32, scene::64, birth::64, occurrence::32, id::binary-size(32)>>
+      ) do
+    {:ok,
+     {:voxel_prefab_replace_v1,
+      %{
+        request_id: rid,
+        client_intent_seq: seq,
+        logical_scene_id: scene,
+        instance_id: {birth, occurrence},
+        definition_id: id
+      }}}
   end
-  def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B, 0x7C], do: {:error, :invalid_message}
+
+  def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B, 0x7C],
+    do: {:error, :invalid_message}
 
   def decode(
         <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,
@@ -188,31 +289,47 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(_), do: {:error, :invalid_message}
 
   @doc "协议值编码为现行帧 iodata。"
-  def encode({:voxel_material_balance,t}) do
-    {:ok,<<0x81,t.request_id::64,t.seq::64,t.material::16,t.balance::64,t.cost::32>>}
+  def encode({:voxel_material_balance, t}) do
+    {:ok, <<0x81, t.request_id::64, t.seq::64, t.material::16, t.balance::64, t.cost::32>>}
   end
 
-  def encode({:voxel_property_state,t}) do
-    {x,y,z}=t.micro
-    {birth,occurrence}=t.owner
-    temperature=case Map.fetch(t,:temperature_kelvin) do
-      {:ok,value} -> <<value::float-64>>
-      :error -> <<>>
-    end
-    circuit=case Map.fetch(t,:circuit) do
-      {:ok,c} ->
-        {a,b,d}=c.anchor
-        <<c.tool_id::16,c.kind::8,c.size::8,if(c.closed,do: 1,else: 0)::8,c.fault::8,
-          a::signed-64,b::signed-64,d::signed-64,c.remaining_j::float-64,c.voltage_v::float-64,c.current_a::float-64,c.power_w::float-64>>
-      :error -> <<>>
-    end
-    combustion=case Map.fetch(t,:burning) do
-      {:ok,burning} -> <<if(burning,do: 1,else: 0)::8,t.remaining_fuel_j::float-64,t.power_w::float-64>>
-      :error -> <<>>
-    end
-    {:ok,<<0x7E, t.request_id::64, t.seq::64, x::signed-64,y::signed-64,z::signed-64,
-      t.granularity::8,t.incarnation::64,birth::64,occurrence::32,t.material::16,
-      t.hp::float-64,t.max_hp::float-64,t.defense::float-64,t.digest::binary-size(32),t.flags::8,temperature::binary,circuit::binary,combustion::binary>>}
+  def encode({:voxel_property_state, t}) do
+    {x, y, z} = t.micro
+    {birth, occurrence} = t.owner
+
+    temperature =
+      case Map.fetch(t, :temperature_kelvin) do
+        {:ok, value} -> <<value::float-64>>
+        :error -> <<>>
+      end
+
+    circuit =
+      case Map.fetch(t, :circuit) do
+        {:ok, c} ->
+          {a, b, d} = c.anchor
+
+          <<c.tool_id::16, c.kind::8, c.size::8, if(c.closed, do: 1, else: 0)::8, c.fault::8,
+            a::signed-64, b::signed-64, d::signed-64, c.remaining_j::float-64,
+            c.voltage_v::float-64, c.current_a::float-64, c.power_w::float-64>>
+
+        :error ->
+          <<>>
+      end
+
+    combustion =
+      case Map.fetch(t, :burning) do
+        {:ok, burning} ->
+          <<if(burning, do: 1, else: 0)::8, t.remaining_fuel_j::float-64, t.power_w::float-64>>
+
+        :error ->
+          <<>>
+      end
+
+    {:ok,
+     <<0x7E, t.request_id::64, t.seq::64, x::signed-64, y::signed-64, z::signed-64,
+       t.granularity::8, t.incarnation::64, birth::64, occurrence::32, t.material::16,
+       t.hp::float-64, t.max_hp::float-64, t.defense::float-64, t.digest::binary-size(32),
+       t.flags::8, temperature::binary, circuit::binary, combustion::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
@@ -491,7 +608,11 @@ defmodule MmoContracts.Voxel.Codec do
           y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
           hash::64-little, encoding::8, raw_bytes::32-little, body_bytes::32-little,
           _rest::binary>>
-      ) when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or (magic == "VXR8" and version == 8) or (magic == "VXR9" and version == 9) or (magic == "VXRA" and version == 10) or (magic == "VXRB" and version == 11) do
+      )
+      when (magic == "VXR4" and version == 4) or (magic == "VXR5" and version == 5) or
+             (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or
+             (magic == "VXR8" and version == 8) or (magic == "VXR9" and version == 9) or
+             (magic == "VXRA" and version == 10) or (magic == "VXRB" and version == 11) do
     {:ok,
      %{
        version: version,
@@ -514,32 +635,35 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   @doc "头 + zlib body → 完整载荷字节。"
-  def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4) when is_binary(raw_body) do
+  def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4)
+      when is_binary(raw_body) do
     body = :zlib.compress(raw_body)
 
-    magic = case version do
-      9 -> "VXR9"
-      11 -> "VXRB"
-      10 -> "VXRA"
-      8 -> "VXR8"
-      7 -> "VXR7"
-      6 -> "VXR6"
-      5 -> "VXR5"
-      4 -> @payload_magic
-    end
-    <<magic::binary, version::32-little, level::8, x::32-little-signed,
-      y::32-little-signed, z::32-little-signed, seq::64-little, content_version::64-little,
+    magic =
+      case version do
+        9 -> "VXR9"
+        11 -> "VXRB"
+        10 -> "VXRA"
+        8 -> "VXR8"
+        7 -> "VXR7"
+        6 -> "VXR6"
+        5 -> "VXR5"
+        4 -> @payload_magic
+      end
+
+    <<magic::binary, version::32-little, level::8, x::32-little-signed, y::32-little-signed,
+      z::32-little-signed, seq::64-little, content_version::64-little,
       body_hash(raw_body)::64-little, 1::8, byte_size(raw_body)::32-little,
       byte_size(body)::32-little, body::binary>>
   end
 
   @doc "解压 body（校验 hash）。"
   def decode_payload_body(bytes) do
-    with {:ok,header,raw} <- unpack_payload_body(bytes),
+    with {:ok, header, raw} <- unpack_payload_body(bytes),
          true <- body_hash(raw) == header.hash do
-      {:ok,header,raw}
+      {:ok, header, raw}
     else
-      _ -> {:error,:invalid_payload}
+      _ -> {:error, :invalid_payload}
     end
   end
 
@@ -548,7 +672,9 @@ defmodule MmoContracts.Voxel.Codec do
     with {:ok, header} <- decode_payload_header(bytes),
          true <-
            header.encoding in [0, 1] and
-             header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes() + if(header.version == 6, do: MmoContracts.Voxel.Structure.max_bytes(), else: 0),
+             header.raw_bytes <=
+               MmoContracts.Voxel.Payload.max_body_bytes() +
+                 if(header.version == 6, do: MmoContracts.Voxel.Structure.max_bytes(), else: 0),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes do
@@ -652,9 +778,12 @@ defmodule MmoContracts.Voxel.Codec do
 
   def encode_entry(%{seq: seq, payload: payload}), do: [<<seq::64-little, 1>>, payload]
 
-  def encode_entry(%{seq: seq, level: level, cell: {x,y,z}, structure: grid}) do
-    [<<seq::64-little,2,level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,
-       div(byte_size(grid),2)::32-little>>,grid]
+  def encode_entry(%{seq: seq, level: level, cell: {x, y, z}, structure: grid}) do
+    [
+      <<seq::64-little, 2, level::8, x::32-little-signed, y::32-little-signed,
+        z::32-little-signed, div(byte_size(grid), 2)::32-little>>,
+      grid
+    ]
   end
 
   @doc "entry = %{seq, coord: {x,y,z}, material, coarse: [%{level, cell, material, skins: {ext, faces}}]}"
@@ -682,12 +811,16 @@ defmodule MmoContracts.Voxel.Codec do
     with {:ok, _, _} <- decode_payload_body(payload), do: {:ok, %{seq: seq, payload: payload}}
   end
 
-  def decode_entry(<<seq::64-little,2,level::8,x::32-little-signed,y::32-little-signed,z::32-little-signed,
-                     count::32-little,grid::binary>>) when level in 1..5 do
-    if count==0 and grid==<<>> or byte_size(grid)==count*2 and MmoContracts.Voxel.Structure.valid?(grid) do
-      {:ok,%{seq: seq,level: level,cell: {x,y,z},structure: grid}}
+  def decode_entry(
+        <<seq::64-little, 2, level::8, x::32-little-signed, y::32-little-signed,
+          z::32-little-signed, count::32-little, grid::binary>>
+      )
+      when level in 1..5 do
+    if (count == 0 and grid == <<>>) or
+         (byte_size(grid) == count * 2 and MmoContracts.Voxel.Structure.valid?(grid)) do
+      {:ok, %{seq: seq, level: level, cell: {x, y, z}, structure: grid}}
     else
-      {:error,:invalid_entry}
+      {:error, :invalid_entry}
     end
   end
 
@@ -727,7 +860,8 @@ defmodule MmoContracts.Voxel.Codec do
   defp accept_m1(%Voxel.CollisionApplied{changed_chunks: chunks}),
     do: MmoContracts.Session.Wire.ordered!(chunks)
 
-  defp accept_m1(%module{} = value) when module in [Voxel.CanonicalBootstrap, Voxel.CollisionWindow] do
+  defp accept_m1(%module{} = value)
+       when module in [Voxel.CanonicalBootstrap, Voxel.CollisionWindow] do
     {x0, y0, z0} = value.l0_min
     {x1, y1, z1} = value.l0_max_exclusive
     true = x0 < x1 and y0 < y1 and z0 < z1
@@ -746,9 +880,10 @@ defmodule MmoContracts.Voxel.Codec do
         header.level == 0 and header.region == coord and header.seq == value.transaction_seq and
           header.content_version == value.content_version
 
-      {:ok, _} = Voxel.Payload.decode_body(raw,header.version)
+      {:ok, _} = Voxel.Payload.decode_body(raw, header.version)
     end)
   end
 
   defp accept_m1(_), do: :ok
 end
+

@@ -4,11 +4,21 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
   alias MmoContracts.{Session, Movement}
 
   defp value(id, scene, tick) do
-    %{identity: %Session.Identity{session_epoch: id, scene_id: scene, scene_epoch: 1},
-      entity_id: id, entity_epoch: 1, player_pid: self(), active: true,
-      simulation_tick: tick, collision_revision: 1,
-      state: %Session.State{position: {id * 1.0, 500.0, 0.0},
-        velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}}
+    %{
+      identity: %Session.Identity{session_epoch: id, scene_id: scene, scene_epoch: 1},
+      entity_id: id,
+      entity_epoch: 1,
+      player_pid: self(),
+      active: true,
+      simulation_tick: tick,
+      collision_revision: 1,
+      state: %Session.State{
+        position: {id * 1.0, 500.0, 0.0},
+        velocity: {0.0, 0.0, 0.0},
+        grounded: 1,
+        yaw: 0
+      }
+    }
   end
 
   defp join(rep, value) do
@@ -33,8 +43,14 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
     Replication.workers(a)
     Replication.publish(a, 600)
     ai = av.identity
-    assert_receive {:mmo_reliable, ^ai, 1, %Session.EntityEnter{entity_id: 2, server_tick: 600}}, 1000
-    assert_receive {:mmo_datagram, ^ai, %Movement.Snapshot{server_tick: 600, records: [%{entity_id: 2}]}}, 1000
+
+    assert_receive {:mmo_reliable, ^ai, 1, %Session.EntityEnter{entity_id: 2, server_tick: 600}},
+                   1000
+
+    assert_receive {:mmo_datagram, ^ai,
+                    %Movement.Snapshot{server_tick: 600, records: [%{entity_id: 2}]}},
+                   1000
+
     assert [%{identity: ^ai}] = Replication.observe(a)
 
     Replication.leave(b, bv.identity, 2, 1, 61)
@@ -61,7 +77,14 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
 
   test "endpoint death clears read-only neighbours without stopping local publication" do
     {:ok, a} = Replication.start_link(sink: GateServer.Session.Sink)
-    b = spawn(fn -> receive do :stop -> :ok end end)
+
+    b =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
     av = value(1, 1, 60)
     bv = value(2, 2, 60)
     join(a, av)
@@ -82,8 +105,11 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
 
   defp await_empty(rep, tick, attempts) do
     Replication.publish(rep, tick)
+
     case Replication.observe(rep) do
-      [%{visible: []}] -> :ok
+      [%{visible: []}] ->
+        :ok
+
       _ ->
         assert attempts > 0
         Process.sleep(1)
@@ -91,3 +117,4 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
     end
   end
 end
+

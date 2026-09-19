@@ -23,10 +23,10 @@ config :auth_server, AuthServerWeb.Endpoint,
       do: [
         web_console_logger: true,
         patterns: [
-          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-          ~r"priv/gettext/.*\.po$"E,
-          ~r"lib/auth_server_web/router\.ex$"E,
-          ~r"lib/auth_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
+          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)\z",
+          ~r"priv/gettext/.*\.po\z",
+          ~r"lib/auth_server_web/router\.ex\z",
+          ~r"lib/auth_server_web/(controllers|live|components)/.*\.(ex|heex)\z"
         ]
       ],
       else: []
@@ -53,10 +53,10 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
       do: [
         web_console_logger: true,
         patterns: [
-          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-          ~r"priv/gettext/.*\.po$"E,
-          ~r"lib/visualize_server_web/router\.ex$"E,
-          ~r"lib/visualize_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
+          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)\z",
+          ~r"priv/gettext/.*\.po\z",
+          ~r"lib/visualize_server_web/router\.ex\z",
+          ~r"lib/visualize_server_web/(controllers|live|components)/.*\.(ex|heex)\z"
         ]
       ],
       else: []

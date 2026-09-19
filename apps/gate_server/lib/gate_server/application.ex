@@ -52,13 +52,16 @@ defmodule GateServer.Application do
         else
           [{GateServer.Transport.QuicListener, Application.fetch_env!(:gate_server, :quic)}]
         end
+
       :legacy_reference ->
         [
           {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
           {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
           {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup},
           tcp_acceptor_child()
-        ] |> Enum.reject(&is_nil/1) |> Kernel.++(udp_children())
+        ]
+        |> Enum.reject(&is_nil/1)
+        |> Kernel.++(udp_children())
     end
   end
 
@@ -100,3 +103,4 @@ defmodule GateServer.Application do
     end
   end
 end
+
