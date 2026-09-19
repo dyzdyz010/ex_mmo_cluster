@@ -87,8 +87,18 @@ defmodule SceneServer.Voxel.Reaction.OrganicHeatDiffuseE2ETest do
            ),
            "相邻 stone 应被温度扩散有机加热 > 环境+1℃;实际 #{cell_temperature(chunk, neighbor)}℃"
 
-    # region 真起来了(含温度扩散的涌现 region)。
-    assert ChunkProcess.debug_state(chunk).field_region_count == 1
+    # 核对火炬对应的涌现场；其他自动场可同时存在，不属于本测试的数量约束。
+    state = :sys.get_state(chunk)
+    source_key = SceneServer.Voxel.Field.Provisioners.Emergence.source_key(state)
+    region_id = Map.fetch!(state.field_region_sources, source_key)
+    worker = Map.fetch!(state.field_regions, region_id)
+    region = :sys.get_state(worker).region
+
+    assert Enum.map(region.kernels, & &1.id) == [
+             :temperature_diffusion,
+             :light_propagation,
+             :reaction
+           ]
   end
 
   defp cell_temperature(chunk, macro_index) do
