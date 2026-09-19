@@ -162,4 +162,3 @@ defmodule SceneServer.Movement.VoximNativeTest do
     assert byte_size(bytes) == 240 * 2 * 64
   end
 end
-

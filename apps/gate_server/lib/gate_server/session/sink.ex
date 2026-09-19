@@ -139,4 +139,3 @@ defmodule GateServer.Session.Sink do
     GateServer.CliObserve.emit("#{transport}_" <> event, fields)
   end
 end
-

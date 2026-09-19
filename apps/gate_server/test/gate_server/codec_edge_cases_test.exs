@@ -158,4 +158,3 @@ defmodule GateServer.CodecEdgeCasesTest do
     end
   end
 end
-

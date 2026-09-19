@@ -144,4 +144,3 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
     assert byte_size(payload) == RegionCodec.payload_header_bytes() + header.body_bytes
   end
 end
-

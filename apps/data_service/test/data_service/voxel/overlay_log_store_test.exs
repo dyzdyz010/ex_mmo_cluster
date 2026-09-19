@@ -49,4 +49,3 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
     assert Enum.map(OverlayLogStore.read_all(@cv), &{&1.seq, &1.payload}) == [{2, "checkpoint"}]
   end
 end
-

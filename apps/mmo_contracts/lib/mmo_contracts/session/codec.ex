@@ -202,4 +202,3 @@ defmodule MmoContracts.Session.Codec do
 
   defp accept_m1(_), do: :ok
 end
-

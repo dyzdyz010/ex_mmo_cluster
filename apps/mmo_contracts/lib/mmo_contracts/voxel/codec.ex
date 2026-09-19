@@ -886,4 +886,3 @@ defmodule MmoContracts.Voxel.Codec do
 
   defp accept_m1(_), do: :ok
 end
-

@@ -1059,4 +1059,3 @@ defmodule GateServer.Session.Dispatch do
     end
   end
 end
-

@@ -374,9 +374,22 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
       content_version: "worldgen-test-pack@43",
       generated: %{
         logical_scene_id: logical_scene_id,
-        chunk_min: [0, 0, 0],
-        chunk_max: [1, 0, 0],
-        chunk_count: 2
+        chunk_min: [-7, -7, -7],
+        chunk_max: [13, 13, 13],
+        chunk_count: 9_261
+      },
+      pack_index: %{
+        chunk_min: [-7, -7, -7],
+        chunk_max: [13, 13, 13],
+        regions: [
+          %{
+            id: "test-window",
+            chunk_min: [-7, -7, -7],
+            chunk_max: [13, 13, 13],
+            chunk_count: 9_261,
+            hash: "sha256:test-window"
+          }
+        ]
       }
     )
 

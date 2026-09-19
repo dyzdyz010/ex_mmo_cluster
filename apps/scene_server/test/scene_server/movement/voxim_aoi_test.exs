@@ -469,4 +469,3 @@ defmodule SceneServer.Movement.VoximAoiTest do
     assert AOI.observe(aoi) == []
   end
 end
-

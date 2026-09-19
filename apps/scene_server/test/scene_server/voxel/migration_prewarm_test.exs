@@ -25,17 +25,38 @@ defmodule SceneServer.Voxel.MigrationPrewarmTest do
     chunk_sup = start_supervised!(VoxelChunkSup)
     directory = start_supervised!({ChunkDirectory, chunk_sup: chunk_sup})
 
+    old_lease = handoff().old_lease
+    assert {:ok, :inserted} = WriteTokenStore.upsert_token(Map.put(old_lease, :token_version, 1))
+
+    for x <- 0..3 do
+      storage = Storage.empty(1, {x, 0, 0})
+
+      assert {:ok, :inserted} =
+               DataService.Voxel.ChunkSnapshotStore.put_snapshot(%{
+                 logical_scene_id: 1,
+                 region_id: old_lease.region_id,
+                 chunk_coord: {x, 0, 0},
+                 lease_id: old_lease.lease_id,
+                 owner_scene_instance_ref: old_lease.owner_scene_instance_ref,
+                 owner_epoch: old_lease.owner_epoch,
+                 chunk_version: 0,
+                 chunk_hash: SceneServer.Voxel.Hash.encode64(Codec.chunk_hash(storage)),
+                 data: Codec.encode_chunk_snapshot_payload(%{request_id: 0, storage: storage})
+               })
+    end
+
     assert {:ok, %{acks: [ack_0, ack_1]}} =
              MigrationPrewarm.prewarm_slices(handoff(), chunk_directory: directory)
 
     assert ack_0.slice_id == "migration-10:slice:0"
     assert ack_0.scene_ref == 2_000
-    assert ack_0.loaded_count == 0
-    assert ack_0.empty_count == 2
+    assert ack_0.loaded_count == 2
+    assert ack_0.empty_count == 0
     assert ack_0.max_chunk_version == 0
 
     assert ack_1.slice_id == "migration-10:slice:1"
-    assert ack_1.empty_count == 2
+    assert ack_1.loaded_count == 2
+    assert ack_1.empty_count == 0
 
     snapshot = ChunkDirectory.snapshot(directory)
     assert snapshot.chunk_count == 4

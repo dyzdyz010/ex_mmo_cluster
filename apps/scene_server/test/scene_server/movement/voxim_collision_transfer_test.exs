@@ -244,4 +244,3 @@ defmodule SceneServer.Movement.VoximCollisionTransferTest do
   defp pure_data?(term) when is_list(term), do: Enum.all?(term, &pure_data?/1)
   defp pure_data?(term), do: is_atom(term) or is_number(term) or is_binary(term)
 end
-

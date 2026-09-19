@@ -880,4 +880,3 @@ defmodule GateServer.Session.QuicConnection do
     %{state | closing: true}
   end
 end
-

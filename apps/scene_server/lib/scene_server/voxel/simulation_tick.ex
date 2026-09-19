@@ -198,4 +198,3 @@ defmodule SceneServer.Voxel.SimulationTick do
   defp maybe_prepend_env_delta(acc, _sim_id, nil), do: acc
   defp maybe_prepend_env_delta(acc, sim_id, env_delta), do: [{sim_id, env_delta} | acc]
 end
-

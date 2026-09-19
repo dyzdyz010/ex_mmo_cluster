@@ -169,6 +169,19 @@ defmodule MmoContracts.Voxel.Payload do
          do: {:ok, refined, instances, %{}, attachments, units, version}
   end
 
+  defp decode_tail(tail, 8) do
+    with {:ok, refined, instances, tail} <- MmoContracts.Voxel.Refined.decode_prefix(tail, 7),
+         {:ok, attachments} <- MmoContracts.Voxel.Attachments.decode(tail),
+         true <- map_size(attachments) > 0,
+         do: {:ok, refined, instances, %{}, attachments, %{}, 8}
+  end
+
+  defp decode_tail(tail, version) do
+    with {:ok, refined, instances, version} <-
+           MmoContracts.Voxel.Refined.decode(tail, if(version == 7, do: 7, else: 5)),
+         do: {:ok, refined, instances, %{}, %{}, %{}, version}
+  end
+
   defp liquid_records(<<>>, _, units), do: {:ok, units}
 
   defp liquid_records(<<index::little-32, quantity::little-32, rest::binary>>, previous, units)
@@ -184,19 +197,6 @@ defmodule MmoContracts.Voxel.Payload do
           do: <<index::little-32, quantity::little-32>>
 
     <<map_size(units)::little-32, body::binary>>
-  end
-
-  defp decode_tail(tail, 8) do
-    with {:ok, refined, instances, tail} <- MmoContracts.Voxel.Refined.decode_prefix(tail, 7),
-         {:ok, attachments} <- MmoContracts.Voxel.Attachments.decode(tail),
-         true <- map_size(attachments) > 0,
-         do: {:ok, refined, instances, %{}, attachments, %{}, 8}
-  end
-
-  defp decode_tail(tail, version) do
-    with {:ok, refined, instances, version} <-
-           MmoContracts.Voxel.Refined.decode(tail, if(version == 7, do: 7, else: 5)),
-         do: {:ok, refined, instances, %{}, %{}, %{}, version}
   end
 
   defp decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
@@ -577,4 +577,3 @@ defmodule MmoContracts.Voxel.Payload do
     {[id | ids], mask ||| 1 <<< face, [index | fmi], maps, pool}
   end
 end
-

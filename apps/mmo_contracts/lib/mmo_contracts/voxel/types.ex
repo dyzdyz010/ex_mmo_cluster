@@ -85,4 +85,3 @@ defmodule MmoContracts.Voxel.PropertyBatch do
   ]
   defstruct @enforce_keys
 end
-

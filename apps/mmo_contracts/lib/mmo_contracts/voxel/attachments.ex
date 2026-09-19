@@ -41,4 +41,3 @@ defmodule MmoContracts.Voxel.Attachments do
   @doc "首片只允许目录中不透明实体材料（排除空气、水、冰）。"
   def material?(id), do: MmoContracts.VoxelMaterialCatalog.valid_id?(id) and id not in [0, 20, 21]
 end
-

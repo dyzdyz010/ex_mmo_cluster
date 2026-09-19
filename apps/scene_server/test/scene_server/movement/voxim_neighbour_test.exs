@@ -117,4 +117,3 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
     end
   end
 end
-

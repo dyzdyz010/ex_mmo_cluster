@@ -562,4 +562,3 @@ defmodule WorldServer.Voxel.WorldPackReleaseVerifier do
     exception -> {:error, {:file_hash_failed, Exception.message(exception)}}
   end
 end
-

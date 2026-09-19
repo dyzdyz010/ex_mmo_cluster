@@ -1262,4 +1262,3 @@ defmodule GateServer.TcpConnectionProtocolTest do
       })
   end
 end
-

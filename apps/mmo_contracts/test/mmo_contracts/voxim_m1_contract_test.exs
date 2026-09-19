@@ -329,4 +329,3 @@ defmodule MmoContracts.VoximM1ContractTest do
     end
   end
 end
-

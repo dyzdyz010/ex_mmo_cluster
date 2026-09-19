@@ -450,4 +450,3 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     assert Player.observe(p).simulation_tick == 32
   end
 end
-

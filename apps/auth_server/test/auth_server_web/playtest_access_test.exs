@@ -66,4 +66,3 @@ defmodule AuthServerWeb.PlaytestAccessTest do
     refute PlaytestAccess.call(conn(:post, "/ingame/auto_login"), []).halted
   end
 end
-

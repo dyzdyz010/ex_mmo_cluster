@@ -1883,4 +1883,3 @@ defmodule WorldServer.Voxel.MapLedger do
     end
   end
 end
-

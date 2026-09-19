@@ -56,4 +56,3 @@ defmodule SceneServer.Movement.VoximNeighbourNodesProbe do
     }
   end
 end
-

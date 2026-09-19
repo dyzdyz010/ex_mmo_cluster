@@ -2460,4 +2460,3 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
   end
 end
-

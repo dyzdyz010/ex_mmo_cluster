@@ -27,4 +27,3 @@ defmodule SceneServer.Movement.R7DemoConfigTest do
     assert_raise MatchError, fn -> Scene.load_config!(path) end
   end
 end
-

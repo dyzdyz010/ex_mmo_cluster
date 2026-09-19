@@ -246,4 +246,3 @@ defmodule SceneServer.Movement.Replication do
     %{state | neighbours: Map.delete(state.neighbours, peer), bridges: bridges}
   end
 end
-

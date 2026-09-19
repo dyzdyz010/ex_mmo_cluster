@@ -25,4 +25,3 @@ defmodule SceneServer.Movement.Clock do
   @doc "已初始化 Scene 的 tick 零点，沿现有单调映射表达为服务器时间。"
   def origin_us(state), do: state.time_origin + state.mono_origin - state.time_mono_origin
 end
-

@@ -288,4 +288,3 @@ defmodule SceneServer.Movement.CollisionUpdates do
     Enum.map(chunks, fn c -> {:set, c.coord, c.n, c.scale_m, c.origin_m, c.cells} end)
   end
 end
-

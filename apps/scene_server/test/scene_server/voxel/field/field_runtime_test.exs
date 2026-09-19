@@ -27,6 +27,20 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
     :ok
   end
 
+  defp conduction_debug_state(chunk) do
+    state = :sys.get_state(chunk)
+
+    sources =
+      Enum.filter(state.field_region_sources, fn {key, _} ->
+        match?({:electric, _, _, _}, key)
+      end)
+
+    %{
+      field_region_count: sources |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length(),
+      field_source_count: length(sources)
+    }
+  end
+
   @fixed32_scale 65_536
   @dirt_material_id 1
   @iron_material_id 5
@@ -458,7 +472,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
       assert summary.max_frontier == 64
       assert summary.source_points_action == :seeded
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 1
       assert debug.field_source_count == 1
     end
@@ -499,7 +513,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end
@@ -610,7 +624,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  owner_ref: %{kind: :device, id: "bench-supply"}
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end
@@ -661,7 +675,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  owner_ref: %{kind: :device, id: "small-cell"}
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end
@@ -1307,8 +1321,8 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                )
 
       assert first.field_region_created == true
-      assert ChunkProcess.debug_state(chunk_pid).field_region_count == 1
-      assert ChunkProcess.debug_state(chunk_pid).field_source_count == 1
+      assert conduction_debug_state(chunk_pid).field_region_count == 1
+      assert conduction_debug_state(chunk_pid).field_source_count == 1
 
       assert {:ok, _storage} =
                ChunkProcess.put_solid_block(
@@ -1326,7 +1340,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntimeTest do
                  max_ticks: 90
                )
 
-      debug = ChunkProcess.debug_state(chunk_pid)
+      debug = conduction_debug_state(chunk_pid)
       assert debug.field_region_count == 0
       assert debug.field_source_count == 0
     end

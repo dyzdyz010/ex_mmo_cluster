@@ -830,4 +830,3 @@ defmodule SceneServer.Movement.Scene do
   defp float_tuple(values), do: values |> Enum.map(&(&1 / 1)) |> List.to_tuple()
   defp map_tuple(tuple, fun), do: tuple |> Tuple.to_list() |> Enum.map(fun) |> List.to_tuple()
 end
-

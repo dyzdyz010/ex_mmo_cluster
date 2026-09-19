@@ -1347,4 +1347,3 @@ defmodule GateServer.CodecTest do
     end
   end
 end
-

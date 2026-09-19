@@ -19,4 +19,3 @@ defmodule SceneServer.Movement.Authority do
         {{:halfspace, axis, elem(lo, axis), :above}, {:halfspace, axis, elem(lo, axis), :below}}
   end
 end
-

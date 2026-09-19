@@ -47,4 +47,3 @@ defmodule GateServer.MixProject do
     end
   end
 end
-

@@ -45,4 +45,3 @@ defmodule GateServer.TcpConnectionPlayerMoveDownlinkTest do
              :gen_tcp.recv(client, 0, 500)
   end
 end
-

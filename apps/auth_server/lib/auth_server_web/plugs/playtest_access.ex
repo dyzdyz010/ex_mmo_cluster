@@ -36,4 +36,3 @@ defmodule AuthServerWeb.Plugs.PlaytestAccess do
 
   defp authorize(conn, _path), do: conn |> send_resp(404, "") |> halt()
 end
-

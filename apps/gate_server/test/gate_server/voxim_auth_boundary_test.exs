@@ -57,4 +57,3 @@ defmodule GateServer.VoximAuthBoundaryTest do
     )
   end
 end
-

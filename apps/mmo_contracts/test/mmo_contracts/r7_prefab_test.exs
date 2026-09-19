@@ -182,4 +182,3 @@ defmodule MmoContracts.R7PrefabTest do
     end
   end
 end
-

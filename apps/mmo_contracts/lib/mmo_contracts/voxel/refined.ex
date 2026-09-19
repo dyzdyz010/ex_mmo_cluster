@@ -151,4 +151,3 @@ defmodule MmoContracts.Voxel.Refined do
       |> then(&(length(&1) == MapSet.size(MapSet.new(&1))))
   end
 end
-

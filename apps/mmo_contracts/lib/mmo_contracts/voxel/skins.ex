@@ -33,4 +33,3 @@ defmodule MmoContracts.Voxel.Skins do
 
   def trivial?(_, _), do: false
 end
-

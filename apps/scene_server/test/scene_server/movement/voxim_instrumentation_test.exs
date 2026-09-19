@@ -508,4 +508,3 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     end
   end
 end
-

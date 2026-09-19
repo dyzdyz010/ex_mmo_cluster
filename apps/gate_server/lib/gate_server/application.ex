@@ -103,4 +103,3 @@ defmodule GateServer.Application do
     end
   end
 end
-

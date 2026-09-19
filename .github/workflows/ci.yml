@@ -32,6 +32,9 @@ jobs:
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
 
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -72,7 +75,7 @@ jobs:
 
           for app in "${strict_apps[@]}"; do
             echo "::group::Compiling ${app#apps/}"
-            (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
+            ERL_LIBS="$PWD/_build/test/lib" mix cmd --app "${app#apps/}" mix compile --warnings-as-errors --no-optional-deps
             echo "::endgroup::"
           done
 
@@ -86,6 +89,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -131,6 +137,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -178,6 +187,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -227,6 +239,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -281,6 +296,9 @@ jobs:
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
 
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -317,7 +335,7 @@ jobs:
         # heat kernels, surface elements). The voxel-authority suite writes through
         # DataService.Repo on PostgreSQL — test_helper.exs runs storage_up + migrations
         # itself against the postgres service, so no separate ecto step is needed here.
-        run: cd apps/scene_server && mix test --no-start
+        run: elixir --sname scene_ci -S mix test apps/scene_server/test --no-start
 
   test-native-rust:
     name: Test native Rust crates
@@ -376,6 +394,9 @@ jobs:
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
 
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -399,7 +420,7 @@ jobs:
       # agent_server / agent_manager were consolidated away during arch-align;
       # world_server is the remaining standalone (non-DB, non-Phoenix) app.
       - name: Run world_server tests
-        run: cd apps/world_server && mix test --no-start
+        run: mix test apps/world_server/test --no-start
 
   test-auth-server:
     name: Test auth_server
@@ -427,6 +448,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -494,6 +518,9 @@ jobs:
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
 
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -543,6 +570,9 @@ jobs:
         uses: ./.github/actions/voxim-fixtures
         with:
           ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1

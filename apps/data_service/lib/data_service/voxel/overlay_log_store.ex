@@ -115,4 +115,3 @@ defmodule DataService.Voxel.OverlayLogStore do
 
   defp repo(opts), do: Keyword.get(opts, :repo, Repo)
 end
-

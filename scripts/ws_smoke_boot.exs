@@ -30,6 +30,7 @@ Application.put_env(
 
 Application.put_env(:libcluster, :topologies, [])
 Application.put_env(:auth_server, :dev_auto_login, true)
+Application.put_env(:gate_server, :transport, :legacy_reference)
 Application.put_env(:gate_server, :tcp_port, gate_tcp_port)
 Application.put_env(:gate_server, :udp_port, gate_udp_port)
 

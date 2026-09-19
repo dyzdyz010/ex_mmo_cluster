@@ -152,4 +152,3 @@ defmodule SceneServer.Voxel.MacroCellHeader do
     raise ArgumentError, "expected #{label} u#{bits}, got: #{inspect(value)}"
   end
 end
-

@@ -1014,7 +1014,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
              parsed.profile,
              MmoContracts.VoxelMaterialCatalog.blocking_hash()
            ) ==
-             Base.decode16!("83DC05376B0D77AA8D985969E33872CD1ACC13C16B568460B76D0F29C05ADC71")
+             Base.decode16!("65C215D168535CCA82FA29ED1D5251F269AB57FAD138A8C04982B63E16DD0C42")
 
     assert parsed.l0 == {{-1, 7, -1}, {1, 9, 1}} and tuple_size(parsed.profile_tuple) == 15
     File.write!(path, Jason.encode!(Map.delete(config(), "profile")))
@@ -1326,4 +1326,3 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     )
   end
 end
-

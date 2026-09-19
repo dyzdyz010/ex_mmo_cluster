@@ -74,4 +74,3 @@ defmodule SceneServer.Movement.VoximImmutableNativeTest do
     assert Native.find_spawn(world, p, {0.5, 8.0, 0.5}, -20.0) == {:ok, start}
   end
 end
-

@@ -47,4 +47,3 @@ defmodule SceneServer.Movement.VoximApplicationTest do
     Process.exit(worker, :kill)
   end
 end
-

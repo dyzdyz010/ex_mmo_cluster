@@ -63,4 +63,3 @@ defmodule SceneServer.Movement.VoximInputRecoveryTest do
     assert same == slots
   end
 end
-

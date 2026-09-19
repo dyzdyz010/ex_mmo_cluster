@@ -18,4 +18,3 @@ defmodule MmoContracts.PropertyBatchTest do
     end
   end
 end
-

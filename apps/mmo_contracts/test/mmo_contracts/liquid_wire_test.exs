@@ -126,4 +126,3 @@ defmodule MmoContracts.LiquidWireTest do
     assert binary_part(bytes, 129, 17) == <<0, 11000.0::float-64, 0.0::float-64>>
   end
 end
-

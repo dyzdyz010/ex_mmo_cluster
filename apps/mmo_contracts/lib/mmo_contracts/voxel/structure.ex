@@ -69,4 +69,3 @@ defmodule MmoContracts.Voxel.Structure do
 
   defp records_v2(_, _, _, _), do: {:error, :invalid_structure}
 end
-

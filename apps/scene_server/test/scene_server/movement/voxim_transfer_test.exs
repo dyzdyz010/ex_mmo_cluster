@@ -255,4 +255,3 @@ defmodule SceneServer.Movement.VoximTransferTest do
     end
   end
 end
-

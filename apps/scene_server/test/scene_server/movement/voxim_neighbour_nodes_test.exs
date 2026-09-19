@@ -246,4 +246,3 @@ defmodule SceneServer.Movement.VoximNeighbourNodesTest do
     end
   end
 end
-

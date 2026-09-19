@@ -49,7 +49,7 @@ defmodule T1TransportTest do
       profile_id: <<2::256>>
     }
 
-    certs = "/home/dyz/.cache/voxim-m1-t1/certs-v1/"
+    certs = System.fetch_env!("VOXIM_TEST_CERTS") <> "/"
     start_supervised!({T1Scene, self()})
 
     listener =
@@ -208,7 +208,8 @@ defmodule T1TransportTest do
         [
           alpn: [~c"voxim-m1"],
           verify: :verify_peer,
-          cacertfile: ~c"/home/dyz/.cache/voxim-m1-t1/certs-v1/ca.pem",
+          cacertfile:
+            String.to_charlist(Path.join(System.fetch_env!("VOXIM_TEST_CERTS"), "ca.pem")),
           datagram_receive_enabled: 1
         ],
         5000
@@ -280,7 +281,8 @@ defmodule T1TransportTest do
             [
               alpn: [~c"voxim-m1"],
               verify: :verify_peer,
-              cacertfile: ~c"/home/dyz/.cache/voxim-m1-t1/certs-v1/ca.pem",
+              cacertfile:
+                String.to_charlist(Path.join(System.fetch_env!("VOXIM_TEST_CERTS"), "ca.pem")),
               datagram_receive_enabled: 1
             ],
             5000
@@ -1397,4 +1399,3 @@ defmodule M4aGateTransferTest do
     refute_receive {:committed, _, _}
   end
 end
-

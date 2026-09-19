@@ -205,4 +205,3 @@ defmodule SceneServer.Movement.AOI do
     dx * dx + dy * dy + dz * dz <= radius * radius
   end
 end
-

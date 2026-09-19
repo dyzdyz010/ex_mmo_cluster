@@ -222,6 +222,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
            logical_scene_id: 1,
            chunk_coord: {0, 0, 0},
            lease: valid_lease(),
+           auto_field_provisioning: false,
            simulators: [SuccessSimulator]}
         )
 
@@ -240,6 +241,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
            logical_scene_id: 1,
            chunk_coord: {0, 0, 0},
            lease: valid_lease(),
+           auto_field_provisioning: false,
            simulators: [SuccessSimulator]}
         )
 
@@ -291,6 +293,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
            logical_scene_id: 1,
            chunk_coord: {0, 0, 0},
            lease: expired_lease,
+           auto_field_provisioning: false,
            simulators: [SuccessSimulator]}
         )
 
@@ -345,6 +348,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
            logical_scene_id: 1,
            chunk_coord: {0, 0, 0},
            lease: valid_lease(),
+           auto_field_provisioning: false,
            simulators: [SuccessSimulator]},
           id: :chunk1
         )
@@ -355,6 +359,7 @@ defmodule SceneServer.Voxel.SimulationTickTest do
            logical_scene_id: 1,
            chunk_coord: {0, 0, 0},
            lease: valid_lease(),
+           auto_field_provisioning: false,
            simulators: [SuccessSimulator]},
           id: :chunk2
         )

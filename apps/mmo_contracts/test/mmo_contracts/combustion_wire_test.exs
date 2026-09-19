@@ -110,4 +110,3 @@ defmodule MmoContracts.CombustionWireTest do
     end
   end
 end
-

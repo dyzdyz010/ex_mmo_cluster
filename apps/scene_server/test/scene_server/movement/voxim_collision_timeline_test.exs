@@ -803,4 +803,3 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     })
   end
 end
-

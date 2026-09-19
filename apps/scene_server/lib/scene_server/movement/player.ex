@@ -956,4 +956,3 @@ defmodule SceneServer.Movement.Player do
   defp from_pod({position, velocity, grounded}, yaw),
     do: %Session.State{position: position, velocity: velocity, grounded: grounded, yaw: yaw}
 end
-

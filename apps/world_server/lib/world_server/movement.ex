@@ -56,4 +56,3 @@ defmodule WorldServer.Movement do
     end
   end
 end
-

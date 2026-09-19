@@ -126,4 +126,3 @@ defmodule MmoContracts.Session.SessionEnd do
   @enforce_keys [:identity, :reason]
   defstruct @enforce_keys
 end
-

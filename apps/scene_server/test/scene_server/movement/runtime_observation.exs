@@ -45,4 +45,3 @@ defmodule SceneServer.Movement.RuntimeObservation do
     end
   end
 end
-

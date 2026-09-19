@@ -71,4 +71,3 @@ defmodule GateServer.VoximProductionDispatchTest do
     assert Enum.all?(World.material_balances(c.w, 1001), &(&1.balance == 0))
   end
 end
-

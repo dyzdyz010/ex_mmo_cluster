@@ -170,4 +170,3 @@ defmodule GateServer.Transport.QuicListener do
     if Process.alive?(state.supervisor), do: Supervisor.stop(state.supervisor)
   end
 end
-

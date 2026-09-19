@@ -309,4 +309,3 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     end
   end
 end
-
