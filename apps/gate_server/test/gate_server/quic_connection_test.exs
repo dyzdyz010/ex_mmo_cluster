@@ -834,8 +834,8 @@ defmodule M4aGateTransferTest do
     def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
     def init(owner), do: {:ok, {owner, 0}}
 
-    def handle_call(:source, _, {owner, _} = state),
-      do: {:reply, {BlockingEditStore, owner}, state}
+    def handle_call({:prepare, keys}, _, {owner, _} = state),
+      do: {:reply, {BlockingEditStore, owner, keys}, state}
 
     def handle_call({:apply_edits, edits}, _, {owner, seq}) do
       send(owner, {:world_edit, edits})
@@ -1016,7 +1016,7 @@ defmodule M4aGateTransferTest do
       refute_receive {{:voxel_batch_edit_intent, _}, _, _}
     end
 
-    {:ok, reconnected} = QuicConnection.init(conn: :connection, listener: self(), hello: nil)
+    reconnected = authenticated_state(fresh)
     assert reconnected.previous_scene_id == nil
 
     new = %{
@@ -1086,9 +1086,7 @@ defmodule M4aGateTransferTest do
     {old, %{old | session_epoch: 11, scene_id: 2, scene_epoch: 8}}
   end
 
-  defp pending_state do
-    {old, fresh} = identities()
-
+  defp authenticated_state(old) do
     listener =
       spawn_link(fn ->
         receive do
@@ -1112,7 +1110,7 @@ defmodule M4aGateTransferTest do
       )
 
     state = %{state | streams: %{control: %{purpose: 1, buffer: <<>>, started: true}}}
-    join = %Session.Join{username: "one", token: "valid", cid: 101, scene_id: 1}
+    join = %Session.Join{request_id: 1, username: "one", token: "valid", cid: 101, scene_id: 1}
 
     state =
       Enum.reduce([hello, join], state, fn message, state ->
@@ -1128,6 +1126,13 @@ defmodule M4aGateTransferTest do
       end)
 
     assert state.builder
+
+    state
+  end
+
+  defp pending_state do
+    {old, fresh} = identities()
+    state = authenticated_state(old)
 
     pending = %{
       identity: fresh,

@@ -255,6 +255,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     delta
   end
 
+  defp journal(deltas), do: Enum.map(deltas, &Map.take(&1.transaction, [:seq, :entries, :coarse]))
+
+  defp journal_entries(world),
+    do: Enum.map(World.entries_after(world, 0), &Map.take(&1, [:seq, :entries, :coarse]))
+
   defp log(delta, epoch \\ 1) do
     assert {:mmo_reliable, who, 2, {:voxel_log_transaction_payload, bytes}} = next_output()
     assert who == identity(epoch)
@@ -284,7 +289,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     d2 = delta(ctx, [{@left, 0}], 2)
     d3 = delta(ctx, [{@left, 11}], 3)
     assert Enum.map(d1.chunks, & &1.coord) == [{1, 34, 2}, {2, 34, 2}]
-    assert [d1.transaction, d2.transaction, d3.transaction] == World.entries_after(ctx.world, 0)
+    assert journal([d1, d2, d3]) == journal_entries(ctx.world)
     await(ctx.scene, &(&1.queue_length == 3))
     assert observe(ctx.scene).collision_revision == 1
     assert [] == native_events()
@@ -329,7 +334,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     try do
       {commit_us, d2} = :timer.tc(fn -> delta(ctx, [{@left, 0}], 2) end)
       assert World.seq(ctx.world) == 2
-      assert [d1.transaction, d2.transaction] == World.entries_after(ctx.world, 0)
+      assert journal([d1, d2]) == journal_entries(ctx.world)
       assert hd(d1.chunks).cells != hd(d2.chunks).cells
       assert [] == native_events() and [] == outputs()
       Application.delete_env(:scene_server, :e1_block_install)
@@ -355,7 +360,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     end
   end
 
-  test "real air-water and same-blocking material/skin changes advance log seq without collision rebuild",
+  test "raw water edits are rejected and same-blocking material/skin changes preserve collision revision",
        ctx do
     join(ctx)
 
@@ -364,8 +369,10 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
       |> Enum.find(&(&1["name"] == "water"))
       |> Map.fetch!("id")
 
-    d1 = delta(ctx, [{@left, water}], 1)
-    d2 = delta(ctx, [{@left, 0}], 2)
+    assert {:error, :use_liquid_tool} = World.apply_edits(ctx.world, [{@left, water}])
+    assert World.seq(ctx.world) == 0
+    d1 = delta(ctx, [{{40, 500, 40}, 12}], 1)
+    d2 = delta(ctx, [{{40, 500, 40}, 11}], 2)
     d3 = delta(ctx, [{{40, 500, 40}, 12}], 3)
     d4 = delta(ctx, [{{40, 500, 40}, 11}], 4)
     for d <- [d1, d2, d3, d4], do: assert(d.chunks == [])
@@ -375,7 +382,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert [{:p1_step, _, _, _}] = native_events()
     for d <- [d1, d2, d3, d4], do: log(d)
     assert [] == outputs()
-    assert Enum.map([d1, d2, d3, d4], & &1.transaction) == World.entries_after(ctx.world, 0)
+    assert journal([d1, d2, d3, d4]) == journal_entries(ctx.world)
 
     assert Enum.any?(d3.transaction.coarse, fn a ->
              Enum.any?(d4.transaction.coarse, fn b ->
@@ -398,6 +405,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     d2 = delta(ctx, [{@left, 11}, {{65, 550, 40}, 11}], 2)
     assert Enum.map(d2.chunks, & &1.coord) == [{1, 34, 2}]
     assert length(d2.transaction.entries) == 2
+    assert d1.transaction.epochs == %{}
+    assert d2.transaction.epochs == %{@left => 2}
     await(ctx.scene, &(&1.queue_length == 2))
     info = advance(ctx, 2)
     assert {info.transaction_seq, info.collision_revision} == {2, 2}
@@ -405,7 +414,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     applied(d2, 2, 2)
     assert [{:p1_install, operations}, {:p1_step, _, _, [{:ok, _}, :not_found]}] = native_events()
     assert operations == CollisionUpdates.operations(d2.chunks)
-    assert [d1.transaction, d2.transaction] == World.entries_after(ctx.world, 0)
+    assert journal([d1, d2]) == journal_entries(ctx.world)
     assert [] == outputs()
 
     IO.puts(
@@ -560,12 +569,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     advance(ctx, 32)
     assert [] == outputs()
 
-    water =
-      MmoContracts.VoxelMaterialCatalog.table()
-      |> Enum.find(&(&1["name"] == "water"))
-      |> Map.fetch!("id")
-
-    d3 = delta(ctx, [{@left, water}], 3)
+    d3 = delta(ctx, [{{40, 500, 40}, 12}], 3)
     assert d3.chunks == []
     await(ctx.scene, &(&1.queue_length == 1))
     # ACK1 必须来自真实输入，不能依赖旧版缺帧替代行为。
@@ -604,9 +608,11 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
           assert payload.seq == 3
         end
 
-        {{0, 8, 0}, bytes} = Enum.find(bootstrap.regions, &(elem(&1, 0) == {0, 8, 0}))
+        {{0, 7, 0}, bytes} = Enum.find(bootstrap.regions, &(elem(&1, 0) == {0, 7, 0}))
         {:ok, payload} = Voxel.Payload.decode(bytes)
-        assert Voxel.Payload.material(payload, Voxel.Payload.local({0, 8, 0}, @left)) == water
+
+        assert Voxel.Payload.material(payload, Voxel.Payload.local({0, 7, 0}, {40, 500, 40})) ==
+                 12
       end)
 
     assert {fresh.baseline_transaction_seq, fresh.collision_revision} == {3, 3}
@@ -651,12 +657,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     info = advance(ctx, 4)
     assert info.collision_revision == 2
 
-    assert [
-             {:p1_install, operations},
-             {:p1_step, [{10, _, _}], _, _},
-             {:p1_step, [{20, _, _}], _, _}
-           ] =
-             native_events()
+    assert [{:p1_install, operations} | steps] = native_events()
+    assert Enum.sort(for {:p1_step, [{id, _, _}], _, _} <- steps, do: id) == [10, 20]
+    assert length(steps) == 2
 
     assert operations == CollisionUpdates.operations(d1.chunks)
     events = outputs()

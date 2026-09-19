@@ -77,7 +77,7 @@ defmodule AuthServer.MixProject do
       # in the release. Keep these compile-visible for controller tests without
       # making every test consumer of auth_server auto-start the scene runtime.
       {:world_server, in_umbrella: true, runtime: false},
-      {:scene_server, in_umbrella: true, only: :test, runtime: false}
+      {:scene_server, in_umbrella: true, runtime: false}
     ]
   end
 
