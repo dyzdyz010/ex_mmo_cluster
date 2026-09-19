@@ -359,9 +359,16 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert {:ok, first} = ChunkProcess.ensure_field_region(chunk, attrs)
     worker_pid = field_worker_pid!(chunk, first.region_id)
 
-    :sys.replace_state(worker_pid, fn state ->
-      %{state | region: %{state.region | tick_count: 9, max_ticks: 10}}
-    end)
+    # 等待订阅完成后退订自动时钟，通过真实 tick 推进寿命，避免临界拍与刷新竞争。
+    _ = :sys.get_state(worker_pid)
+    :ok = SceneServer.Voxel.Field.SimRuntime.unsubscribe(worker_pid)
+    tick_count = :sys.get_state(worker_pid).region.tick_count
+
+    for _ <- List.duplicate(:tick, 9 - tick_count) do
+      GenServer.call(worker_pid, :run_tick)
+    end
+
+    assert :sys.get_state(worker_pid).region.tick_count == 9
 
     refreshed_aabb = {{0, 0, 0}, {5, 5, 5}}
 
@@ -380,6 +387,12 @@ defmodule SceneServer.Voxel.Field.FieldTickWorkerKernelTest do
     assert refreshed_state.region.tick_count == 0
     assert refreshed_state.region.max_ticks == 25
     assert refreshed_state.region.aabb == refreshed_aabb
+
+    ref = Process.monitor(worker_pid)
+    for _ <- 1..24, do: GenServer.call(worker_pid, :run_tick)
+    assert :sys.get_state(worker_pid).region.tick_count == 24
+    GenServer.call(worker_pid, :run_tick)
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, :normal}
   end
 
   test "non-observe temperature effects are dispatched to chunk truth", %{
