@@ -1,14 +1,16 @@
-defmodule WorldServer.MovementRouteTest do
+Code.require_file("../../voxel_region/test/support/world_fixtures.exs", __DIR__)
+
+defmodule GateServer.MovementRouteTest do
   use ExUnit.Case, async: false
 
   alias GateServer.Session.{Dispatch, Sink}
   alias MmoContracts.Voxel.{Codec, Payload}
-  alias VoxelRegion.{GeneratedStore, World}
+  alias VoxelRegion.World
 
   setup do
     root = Path.join(System.tmp_dir!(), "voxim_w1_route_#{System.unique_integer([:positive])}")
-    manifest = Path.expand("../../../../Voxim/Docs/R6/runtime/s4_worldgen_manifest.json", __DIR__)
-    opts = [source: GeneratedStore, root: root, manifest_path: manifest]
+    # 只测试路由：显式空气数据源保留真实 World/HTTP/Gate 接缝，不依赖发布世界的烘焙版本。
+    opts = [source: VoxelRegion.TestSupport.Source, root: root, observer: self()]
 
     start_supervised!(
       Supervisor.child_spec({World, opts ++ [name: :w1_route_world]}, id: :routed)

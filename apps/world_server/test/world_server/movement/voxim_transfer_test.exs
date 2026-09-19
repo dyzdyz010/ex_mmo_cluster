@@ -1,14 +1,19 @@
-defmodule SceneServer.Movement.VoximTransferTest do
+Code.require_file("../../support/movement_fixture.exs", __DIR__)
+
+defmodule WorldServer.Movement.VoximTransferTest do
+  @moduledoc "只测试：World 路由的跨 Scene 移交与单一写入者。"
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Scene, Player}
   alias MmoContracts.{Session, Movement}
 
+  setup do
+    {:ok, base: WorldServer.MovementFixture.prepare()}
+  end
+
   for edit_during_transfer <- [false, true] do
     @tag timeout: 60_000, edit_during_transfer: edit_during_transfer
     test "a boundary cut transfers the unprocessed prefix and activates exactly one writer edits=#{edit_during_transfer}",
-         %{edit_during_transfer: edit_during_transfer} do
-      base = System.fetch_env!("M4A_BASE")
-
+         %{edit_during_transfer: edit_during_transfer, base: base} do
       world =
         start_supervised!(
           {VoxelRegion.World,

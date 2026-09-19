@@ -4,6 +4,11 @@ defmodule DataService.Voxel.ChunkPendingTransactionStoreTest do
   # execution + per-test cleanup.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Voxel.ChunkPendingTransactionStore

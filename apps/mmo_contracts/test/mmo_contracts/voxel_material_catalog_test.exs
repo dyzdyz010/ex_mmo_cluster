@@ -4,7 +4,7 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
   alias MmoContracts.VoxelMaterialCatalog
 
   @table Enum.with_index(
-           ~w(air grass dry_grass moss snow sand gravel dirt clay sandstone limestone stone granite basalt marble coal_ore copper_ore iron_ore gold_ore wood ice water lava glowstone)
+           ~w(air grass dry_grass moss snow sand gravel dirt clay sandstone limestone stone granite basalt marble coal_ore copper_ore iron_ore gold_ore wood ice water lava glowstone copper)
          )
          |> Enum.map(fn {name, id} -> %{"id" => id, "name" => name} end)
 
@@ -25,7 +25,7 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
       "[[0,\"air\"],[1,\"grass\"],[2,\"dry_grass\"],[3,\"moss\"],[4,\"snow\"],[5,\"sand\"],[6,\"gravel\"],[7,\"dirt\"],[8,\"clay\"],[9,\"sandstone\"],[10,\"limestone\"],[11,\"stone\"],[12,\"granite\"],[13,\"basalt\"],[14,\"marble\"],[15,\"coal_ore\"],[16,\"copper_ore\"],[17,\"iron_ore\"],[18,\"gold_ore\"],[19,\"wood\"],[20,\"ice\"],[21,\"water\"],[22,\"lava\"],[23,\"glowstone\"],[24,\"copper\"]]"
 
     assert VoxelMaterialCatalog.identity_bytes() == expected
-    assert byte_size(expected) == 327
+    assert byte_size(expected) == 341
   end
 
   test "blocking metadata has independent canonical bytes and never changes material identity" do

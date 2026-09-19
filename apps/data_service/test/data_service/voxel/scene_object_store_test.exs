@@ -4,6 +4,11 @@ defmodule DataService.Voxel.SceneObjectStoreTest do
   # force sync execution + per-test reset.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.SceneObjectStore
 
   setup do

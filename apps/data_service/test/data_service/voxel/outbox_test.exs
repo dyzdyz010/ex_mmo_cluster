@@ -2,6 +2,11 @@ defmodule DataService.Voxel.OutboxTest do
   # 梯队3 step3.9:durable replication outbox(AUTH-9/10)。共享 voxel_outbox 表,async:false + 清表。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.Outbox
 
   setup do

@@ -3,6 +3,11 @@ defmodule SceneServer.Voxel.ObjectLifecycleIntegrationTest do
   # object_destroyed across real ObjectRegistry + ChunkDirectory + ChunkProcess.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

@@ -3,52 +3,10 @@ defmodule VoxelRegion.DamageWorldTest do
   alias VoxelRegion.{World,OverlayLog}
   alias MmoContracts.Voxel.{Payload,Codec}
 
-  defmodule Source do
-    def open(opts), do: {:ok,%{root: Keyword.fetch!(opts,:root),observer: Keyword.fetch!(opts,:observer)}}
-    def content_version(_), do: 123
-    def world_dir(s), do: s.root
-    def generated(_), do: 0
-    def ensure(s,level,region) do
-      send(s.observer,{:prepared,level,region})
-      :ok
-    end
-    def read(s,level,region) do
-      if level==0 and region in [{10,0,0},{11,0,0}] do
-        send(s.observer,{:region_read_started,self(),region})
-        receive do :continue_region_read -> :ok after 1_000 -> :ok end
-      end
-      p=%Payload{level: level,region: region,cells: :binary.copy(<<0,0>>,66*66*66)}
-      bytes=Payload.encode(p,%{},0,123)
-      {:ok,h}=Codec.decode_payload_header(bytes)
-      {:ok,bytes,h}
-    end
-  end
-
-  defmodule Actor do
-    use GenServer
-    def start_link(state),do: GenServer.start_link(__MODULE__,state)
-    def init(state),do: {:ok,state}
-    def tool_context(player,id),do: GenServer.call(player,{:tool_context,id})
-    def handle_call({:tool_context,id},_,%{identity: id}=state),do: {:reply,{:ok,Map.put(state,:player,self())},state}
-    def handle_call({:tool_context,_},_,state),do: {:reply,{:error,:invalid_state},state}
-    def handle_call({:eye,eye},_,state),do: {:reply,:ok,%{state | eye: eye}}
-    def handle_call(:seal,_,state),do: {:reply,:ok,%{state | identity: :sealed}}
-  end
-
-  defmodule Log do
-    defdelegate open(path,cv),to: OverlayLog.File
-    defdelegate replay(path),to: OverlayLog.File
-    def checkpoint(path,txn) do
-      File.write!(path<>".checkpoint_calls","1",[:append])
-      OverlayLog.File.checkpoint(path,txn)
-    end
-    def append(path,txn) do
-      if File.exists?(path<>".reject"),do: {:error,:test_disk_failure},else: OverlayLog.File.append(path,txn)
-    end
-  end
+  alias VoxelRegion.TestSupport.{Source, Actor, Log}
 
   setup context do
-    root=Path.join(System.tmp_dir!(),"b1_#{System.unique_integer([:positive])}")
+    root=Path.join(System.tmp_dir!(),"b1_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     catalog=Path.join(root,"properties.json")
     materials=for id <- 0..23,do: %{material_id: id,max_hp_per_macro: if(id==0,do: 0.0,else: 100.0),
@@ -69,6 +27,13 @@ defmodule VoxelRegion.DamageWorldTest do
       1::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
     opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11]]
+    opts=if context[:thermal_environment] do
+      environment=Path.join(root,"environment.json")
+      File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01}))
+      Keyword.put(opts,:thermal_environment_path,environment)
+    else
+      opts
+    end
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
@@ -250,7 +215,6 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :thermal_batch
   test "无新前沿或冷板的半秒提交至多两次进入热 NIF", c do
     b3_experiment(c, 10000.0, 100.0)
-    :sys.suspend(c.w)
     state = :sys.get_state(c.w)
     assert VoxelRegion.Circuit.devices(state.damage) == %{}
     # 只读计数，不启用会复制完整 World 实参的调用消息。
@@ -258,14 +222,13 @@ defmodule VoxelRegion.DamageWorldTest do
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
-      {:noreply, next} = World.handle_info(:thermal_commit, state)
+      next = b3_tick(c.w)
       {:call_count, calls} = :erlang.trace_info(mfa, :call_count)
       IO.puts("THERMAL_BATCH calls=#{calls} simulated_s=#{next.thermal.elapsed_s - state.thermal.elapsed_s}")
       assert_in_delta next.thermal.elapsed_s - state.thermal.elapsed_s, 0.5, 1.0e-12
       assert calls <= 2
     after
       :erlang.trace_pattern(mfa, false, [:call_count])
-      :sys.resume(c.w)
     end
   end
 
@@ -290,11 +253,11 @@ defmodule VoxelRegion.DamageWorldTest do
       if row["material_id"]==19,do: Map.put(row,"tags",["heat.receiver"]),else: row
     end) end)
     tool=%{"id"=>"heater","tool_id"=>2,"action"=>"heat","power"=>1.0,"range_macro"=>6.0,
-      "interval_seconds"=>0.5,"fuel_material_id"=>19,"fuel_units"=>128,"heat_energy_j"=>1000.0,"heat_power_w"=>200.0}
+      "interval_seconds"=>0.5,"fuel_material_id"=>19,"fuel_units"=>256,"heat_energy_j"=>1000.0,"heat_power_w"=>200.0}
     File.write!(c.catalog,Jason.encode!(Map.update!(data,"tools",&(&1++[tool]))))
     b3_experiment(c,1.0,1.0)
-    # 只测试：固定持有量检验扣料与失败回滚；真实采掘入账由B2用例和双端验收覆盖。
-    :sys.replace_state(c.w,&%{&1 | material_balances: %{{1001,19}=>256}})
+    assert {:ok,_}=World.apply_edit(c.w,{-6,1,-4},19)
+    assert :ok=VoxelRegion.TestSupport.mine_authored(c.w,1001)
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
     request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
       |> Map.merge(%{action: 1,tool_id: 2,client_intent_seq: 1})
@@ -302,10 +265,10 @@ defmodule VoxelRegion.DamageWorldTest do
     before=:sys.get_state(c.w)
     assert {:ok,seq}=World.tool_intent(c.w,actor,request)
     after_feed=:sys.get_state(c.w)
-    assert after_feed.material_balances[{1001,19}]==128
+    assert after_feed.material_balances[{1001,19}]==256
     assert after_feed.thermal.sources[{1,1,2}].remaining_j==before.thermal.sources[{1,1,2}].remaining_j+1000.0
     [txn]=World.entries_after(c.w,before.seq)
-    assert txn.entries==[] and txn.material_balances==%{{1001,19}=>128}
+    assert txn.entries==[] and txn.material_balances==%{{1001,19}=>256}
     assert txn.thermal==after_feed.thermal
     assert {:error,:replayed_attack}=World.tool_intent(c.w,actor,request)
     assert World.seq(c.w)==seq
@@ -390,11 +353,12 @@ defmodule VoxelRegion.DamageWorldTest do
     assert :sys.get_state(w).damage==before.damage
     assert :sys.get_state(w).thermal==before.thermal
     # 只测试：提高热输入使同一正常结算路径到达叶子归零，不逐微格删占用。
-    :sys.replace_state(w,fn s->put_in(s.thermal.sources[{1,1,2}].power_w,1.0e8)
-      |> put_in([:thermal,:sources,{1,1,2},:remaining_j],1.0e8) end)
+    path=Path.join(c.opts[:root],"strong-heat.json")
+    config=:sys.get_state(w).thermal.config |> Map.merge(%{"power_w"=>1.0e8,"energy_j"=>1.0e8})
+    File.write!(path,Jason.encode!(config))
+    assert :ok=World.thermal_experiment(w,path)
     seq=World.seq(w)
-    :sys.suspend(w)
-    {:noreply,after_heat}=World.handle_info(:thermal_commit,:sys.get_state(w))
+    after_heat=b3_tick(w)
     assert after_heat.refined==%{}
     assert after_heat.material_balances==%{}
     assert after_heat.thermal.removed_j>0
@@ -409,25 +373,19 @@ defmodule VoxelRegion.DamageWorldTest do
     assert :sys.get_state(w).damage==after_heat.damage
   end
 
-  defmodule ThermalProbeLog do
-    # 只测试：比较两条数值路径时，不向夹具日志写入相互竞争的历史。
-    def append(_,txn), do: (send(self(),{:thermal_probe_txn,txn}); :ok)
-  end
 
   @tag :b3
   test "B3 删除源立即使能源失效，不再计算低于阈值的邻格", c do
-    b3_experiment(c,10000.0,1000.0)
+    b3_experiment(c,5.0,10.0)
     {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    warmed=b3_tick(c.w)
+    row=Enum.find(Map.values(warmed.damage),&(&1.micro=={16,8,16}))
+    assert row.temperature_kelvin>293.15 and row.temperature_kelvin<293.16
     {:ok,_}=World.apply_edit(c.w,{1,1,2},0)
-    state=:sys.get_state(c.w)
-    row=%{micro: {16,8,16},granularity: 0,owner: {0,0},material: 19,
-      incarnation: state.epochs[{2,1,2}],seq: state.seq,request_id: 0,hp: 100.0,max_hp: 100.0,
-      defense: 2.0,digest: state.properties.digest,flags: 0,temperature_kelvin: 293.155}
     key=VoxelRegion.Damage.key(row)
-    state=%{state | damage: %{key=>row},log: {ThermalProbeLog,nil},subs: %{},canonical_subs: %{},replica_subs: %{}}
-    {:noreply,next}=World.handle_info(:thermal_commit,state)
+    next=b3_tick(c.w)
     # 已删除的源不会再提供活动种子；低于阈值的温度作为已保存状态保留。
-    assert next.damage[key].temperature_kelvin==293.155
+    assert next.damage[key].temperature_kelvin==row.temperature_kelvin
     assert next.thermal.sources==%{}
     assert not next.thermal.active
   end
@@ -436,16 +394,22 @@ defmodule VoxelRegion.DamageWorldTest do
   test "B3 cached and rebuilt topology produce the same evolving front and damage", c do
     b3_experiment(c,10000.0,10000.0,{63,1,2})
     {:ok,_}=World.apply_edits(c.w,(for x<-64..68,do: {{x,1,2},19}))
-    state=b3_tick(c.w)
-    state=%{state | log: {ThermalProbeLog,nil},subs: %{},canonical_subs: %{},replica_subs: %{}}
-    Enum.reduce(1..8,state,fn _,s ->
-      {:noreply,warm}=World.handle_info(:thermal_commit,s)
-      cold=put_in(s.thermal_work.geometry,%{})
-      {:noreply,cold}=World.handle_info(:thermal_commit,cold)
+    b3_tick(c.w)
+    stop_supervised!(World)
+    # 两个隔离 owner 从同一份正常日志恢复；只丢弃对照侧的可重建几何缓存。
+    cold_root=Keyword.fetch!(c.opts,:root)<>"_cold"
+    File.cp_r!(Keyword.fetch!(c.opts,:root),cold_root)
+    on_exit(fn -> File.rm_rf!(cold_root) end)
+    warm_world=start_supervised!({World,c.opts})
+    cold_world=start_supervised!(Supervisor.child_spec(
+      {World,Keyword.put(c.opts,:root,cold_root)},id: :cold_world))
+    for _ <- 1..8 do
+      :sys.replace_state(cold_world,fn s -> put_in(s.thermal_work.geometry,%{}) end)
+      warm=b3_tick(warm_world)
+      cold=b3_tick(cold_world)
       assert warm.damage==cold.damage
       assert warm.thermal==cold.thermal
-      warm
-    end)
+    end
   end
 
   @tag :b3
@@ -590,18 +554,29 @@ defmodule VoxelRegion.DamageWorldTest do
   test "B2 legacy holes and micro damage migrate without healing or paying already harvested slots", c do
     assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
-    # Persist the former live format: one harvested slot and two partially damaged slots.
-    :sys.replace_state(c.w,fn s ->
-      a=%{target | granularity: 1,micro: {8,8,16},max_hp: 100.0/512,hp: 72.0/512}
-      b=%{a | micro: {9,8,16},hp: 44.0/512}
-      slots=Map.delete(s.refined[{1,1,2}],2)
-      %{s | refined: Map.put(s.refined,{1,1,2},slots),
-        payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},lru_bytes: 0,resident_bytes: 0,
-        damage: Map.new([a,b],&{VoxelRegion.Damage.key(&1),&1}),material_balances: %{{1001,11}=>1}}
-    end)
     assert :ok=World.compact(c.w)
     before=:sys.get_state(c.w)
     stop_supervised(World)
+    # 只测试旧微格存档：离线修改旧格式载荷，迁移必须由 World 启动重放完成。
+    {backend,path}=before.log
+    [checkpoint]=backend.replay(path)
+    a=%{target | granularity: 1,micro: {8,8,16},max_hp: 100.0/512,hp: 72.0/512}
+    b=%{a | micro: {9,8,16},hp: 44.0/512}
+    slots=Map.delete(before.refined[{1,1,2}],2)
+    entries=Enum.map(checkpoint.entries,fn
+      %{payload: bytes}=entry ->
+        {:ok,p}=Payload.decode(bytes)
+        index=Payload.cell_index(Payload.local(p.region,{1,1,2}))
+        if p.level==0 and Map.has_key?(p.refined,index) do
+          p=%{p | refined: Map.put(p.refined,index,slots)}
+          %{entry | payload: Payload.encode(p,%{},p.seq,p.content_version)}
+        else
+          entry
+        end
+      entry -> entry
+    end)
+    assert :ok=backend.checkpoint(path,%{checkpoint | entries: entries,property_states: [a,b],material_balances: %{{1001,11}=>1}})
+    before=%{before | refined: Map.put(before.refined,{1,1,2},slots),material_balances: %{{1001,11}=>1}}
     w=start_supervised!({World,c.opts})
     migrated=:sys.get_state(w)
     assert migrated.refined==before.refined
@@ -957,7 +932,10 @@ defmodule VoxelRegion.DamageWorldTest do
     parent=self()
     observer=spawn(fn -> relay(parent) end)
     # 只测试：两个真实非空窗口，属性范围与碰撞范围遵守同一合同。
-    :sys.replace_state(c.w,fn s -> %{s | canonical_subs: %{parent=>{{0,0,0},{1,1,1}},observer=>{{0,0,0},{1,1,1}}}} end)
+    assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{1,1,1}},parent,:owner,false)
+    assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{1,1,1}},observer,:observer,false)
+    assert_receive {:canonical_snapshot,:owner,_}
+    assert_receive {:observer,{:canonical_snapshot,:observer,_}}
     for seq <- 1..4 do
       if seq>1,do: Process.sleep(510)
       assert {:ok,n}=attack(c.w,c.actor,c.request,t,seq)
@@ -1238,14 +1216,14 @@ defmodule VoxelRegion.DamageWorldTest do
   test "one authoritative tick of early arrival borrows against the next interval", c do
     assert {:ok,1}=World.apply_edit(c.w,{1,1,2},11)
     assert {:ok,t}=World.tool_intent(c.w,c.actor,c.request)
-    assert {:ok,2}=attack(c.w,c.actor,c.request,t,1)
-    deadline=System.monotonic_time(:microsecond)+15_000
-    :sys.replace_state(c.w,fn state ->
-      update_in(state.tool_sessions[c.actor.player].next_us,fn _ -> deadline end)
-    end)
-    assert {:ok,3}=attack(c.w,c.actor,c.request,t,2)
+    request=Map.merge(c.request,Map.take(t,[:micro,:incarnation,:owner,:material])) |> Map.put(:action,1)
+    actor=Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
+    assert {:ok,2}=World.tool_intent(c.w,actor,request)
+    deadline=1_000_000
+    actor=%{actor | received_us: deadline-15_000}
+    assert {:ok,3}=World.tool_intent(c.w,actor,%{request | client_intent_seq: 2})
     assert :sys.get_state(c.w).tool_sessions[c.actor.player].next_us==deadline+500_000
-    assert {:error,:tool_cooldown}=attack(c.w,c.actor,c.request,t,3)
+    assert {:error,:tool_cooldown}=World.tool_intent(c.w,actor,%{request | client_intent_seq: 3})
   end
 
   @tag :interaction_latency
@@ -1560,6 +1538,7 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :cold_coverage
   @tag :b5
   @tag :physical_units
+  @tag :thermal_environment
   test "设备kind#{load_kind}安装投料开关与热结算同笔恢复，重新安装和旧身份不得补充能源",c do
     load_kind=unquote(load_kind)
     r=b4_funded(c)
@@ -1575,8 +1554,6 @@ defmodule VoxelRegion.DamageWorldTest do
       "tags"=>data["tags"]++Enum.map(~w(circuit.install circuit.toggle circuit.feed),&%{"id"=>&1})}
     File.write!(c.catalog,Jason.encode!(data))
     assert :ok=World.publish_properties(c.w,c.catalog)
-    config=%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>0.0,"tolerance_kelvin"=>0.01}
-    :sys.replace_state(c.w,fn s->%{s | thermal: %{config: config,sources: %{},elapsed_s: 0.0,supplied_j: 0.0,environment_j: 0.0,active: false}} end)
     assert {:ok,_}=World.apply_edits(c.w,[{{2,1,2},11},{{3,1,2},11}])
     ids=for x<-1..3 do
       assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | anchor: {x*8,8,16},request_id: x+20,client_intent_seq: x+20})
@@ -1697,23 +1674,22 @@ defmodule VoxelRegion.DamageWorldTest do
   test "附件过热只归零自己的共享 HP，删除温度同笔保存且不发采矿奖励",c do
     r=b4_funded(c)
     assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: 1})
-    # 只测试：绝热支撑上的有限初始显热；不把温度夹具变成玩家能源入口。
+    # 只测试：耐热石材支撑持有有限作者热源，附件经真实接触升温后归零。
     data=Jason.decode!(File.read!(c.catalog))
-    materials=Enum.map(data["materials"],fn m -> if m["material_id"]==19,
-      do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>294.0}),else: m end)
+    materials=Enum.map(data["materials"],fn m -> if m["material_id"] in [11,19],
+      do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,
+        "heat_resistance_kelvin"=>if(m["material_id"]==11,do: 1.0e9,else: 294.0)}),else: m end)
     File.write!(c.catalog,Jason.encode!(%{data | "materials"=>materials}))
     assert :ok=World.publish_properties(c.w,c.catalog)
+    path=Path.join(c.opts[:root],"attachment-heat.json")
+    File.write!(path,Jason.encode!(%{classification: "Test-only",source_macro: [1,1,2],
+      ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.01,power_w: 1.0e6,energy_j: 1.0e6}))
+    assert :ok=World.thermal_experiment(c.w,path)
     state=:sys.get_state(c.w)
-    config=%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>0.0,"tolerance_kelvin"=>0.01}
-    rows=for {slot,value}<-state.attachments do
-      t=VoxelRegion.Attachments.identity(slot,value) |> Map.put(:granularity,4)
-      Map.merge(t,%{temperature_kelvin: 3000.0,hp: 100/2097152,max_hp: 100/2097152,
-        seq: state.seq,request_id: 0,flags: 0,defense: 2.0,digest: state.properties.digest})
-    end
-    state=%{state | thermal: %{config: config,sources: %{},elapsed_s: 0.0,supplied_j: 0.0,environment_j: 0.0,active: true},
-      damage: Map.new(rows,&{VoxelRegion.Damage.key(&1),&1})}
-    state=put_in(state.thermal_work.hot,MapSet.new([{1,1,2}]))
-    {:noreply,removed}=World.handle_info(:thermal_commit,state)
+    removed=Enum.reduce_while(1..10,state,fn _,_ ->
+      next=b3_tick(c.w)
+      if next.attachments==%{},do: {:halt,next},else: {:cont,next}
+    end)
     assert removed.attachments==%{}
     refute Enum.any?(removed.damage,fn {_,t}->t.granularity in [3,4] end)
     assert removed.material_balances==state.material_balances

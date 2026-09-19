@@ -2,6 +2,11 @@ defmodule SceneServer.Voxel.Field.SystemActorTest do
   # 梯队3 step3.8:派生→权威 system_actor 桥(candidate_effect 阈值锁存 + 幂等,RULE-11/15/16)。
   use ExUnit.Case, async: true
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias SceneServer.Voxel.Field.SystemActor
 
   defmodule FakeChunk do

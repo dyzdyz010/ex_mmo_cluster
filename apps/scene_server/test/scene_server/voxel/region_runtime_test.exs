@@ -5,10 +5,12 @@ defmodule SceneServer.Voxel.RegionRuntimeTest do
   # touching the same registry.
   use ExUnit.Case, async: false
 
+  setup_all do
+    SceneServer.TestVoxelRuntime.start_registry!()
+  end
+
   alias SceneServer.Voxel.{RegionRouting, RegionRuntime}
 
-  # `BeaconServer.DistributedRegistry` is started in
-  # `apps/scene_server/test/test_helper.exs` for all scene_server tests.
   setup do
     on_exit(fn -> RegionRouting.__clear_stub__() end)
     :ok

@@ -45,7 +45,13 @@ defmodule VoxelRegion.World do
   def seq(server \\ @name), do: GenServer.call(server, :seq)
 
   @doc "唯一 canonical authority 的 PID，供区域视图共享世界身份。"
-  def authority_ref(server \\ @name), do: GenServer.call(server, :authority_ref)
+  def authority_ref(server \\ @name) do
+    # 进程身份来自 OTP 注册表，不读取世界真值；不能排在碰撞快照等重计算后面。
+    case GenServer.whereis(server) do
+      {name, remote} -> :erpc.call(remote, GenServer, :whereis, [name])
+      pid -> pid
+    end
+  end
 
   @doc "区域物化服务启动入口：在本节点预备源，再原子返回快照并订阅完整区域更新。"
   def replica_snapshot_and_subscribe(server, box, pid) do
@@ -172,6 +178,12 @@ defmodule VoxelRegion.World do
   @doc "角色确认余额；单位为一个 canonical 微格体积。"
   def material_balances(server, cid),
     do: GenServer.call(server, {:material_balances, cid}, 300_000)
+
+  @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影，不读取热/液体模拟状态。"
+  def material_snapshot(server, characters, cells) do
+    prepare(server, Enum.uniq(Enum.map(cells, &{0, region_of(&1)})))
+    GenServer.call(server, {:material_snapshot, characters, cells}, 300_000)
+  end
 
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server, actor, request) do
@@ -479,7 +491,6 @@ defmodule VoxelRegion.World do
   @impl true
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
-  def handle_call(:authority_ref, _from, state), do: {:reply, self(), state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
   def handle_call({:prepare, keys}, {caller, _}, state) do
@@ -552,11 +563,11 @@ defmodule VoxelRegion.World do
       state.properties.digest != expected_digest ->
         {:reply, {:error, :property_version_mismatch}, state}
 
-      not compatible_parameters?(state.properties, catalog) ->
+      not VoxelRegion.ParameterEvolution.compatible?(state.properties, catalog) ->
         {:reply, {:error, :property_version_in_use}, state}
 
       true ->
-        publish_property_catalog(state, catalog, parameter_thermal_reference(state, catalog))
+        publish_property_catalog(state, catalog, VoxelRegion.ParameterEvolution.thermal_reference(state.thermal, state.damage, state.properties, catalog))
     end
   end
 
@@ -589,7 +600,26 @@ defmodule VoxelRegion.World do
     {:reply, :ok, state}
   end
 
-  # Test-only authored initial supply, unavailable through Gate player messages.
+  # 一次 owner 调用提供一致投影；物化缓存仍可丢弃。
+  def handle_call({:material_snapshot, characters, cells}, _, state) do
+    {occupancy, state} = Enum.map_reduce(cells, state, fn cell, s ->
+      {:ok, {material, _}, s} = cell_value(s, 0, cell)
+      refined = Map.get(s.refined, cell, %{})
+      slots = refined |> Map.values() |> Enum.group_by(fn {m, owner} -> {m, owner} end)
+        |> Enum.map(fn {{m, {birth, occurrence}}, values} ->
+          %{material: m, instance: [birth, occurrence], count: length(values)}
+        end)
+      {%{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots}, s}
+    end)
+    balances = for {{cid, material}, units} <- Enum.sort(state.material_balances), cid in characters,
+      do: %{character: cid, material: material, units: units}
+    snapshot = %{seq: state.seq,
+      catalog: if(state.properties, do: Base.encode16(state.properties.digest, case: :lower), else: nil),
+      capacity_units: liquid_capacity(state), material_balances: balances, probe_occupancy: occupancy}
+    {:reply, snapshot, state}
+  end
+
+  # 只测试作者供给入口；不可由 Gate 玩家消息调用。
   def handle_call({:liquid_experiment, edits}, _, state) do
     true = liquid_enabled?(state)
     true = Enum.all?(edits, fn {cell,_} -> valid_edit_coord?(cell) and liquid_inside?(cell,state.liquid_bounds) end)
@@ -965,7 +995,7 @@ defmodule VoxelRegion.World do
           |> Enum.filter(fn {seq, _} -> seq > have_seq end)
           |> Enum.sort_by(&elem(&1, 0))
 
-        transactions = Enum.map(previous, fn {_, e} -> project_transaction(e, level, region) end)
+        transactions = Enum.map(previous, fn {_, e} -> VoxelRegion.LogProjection.region(e, level, region) end)
         has_region = Enum.any?(transactions, &(&1 == :region))
 
         transactions =
@@ -2155,103 +2185,8 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  defp send_filtered(pid, %{entries: entries, coarse: coarse} = txn, filter) do
-    entries = Enum.filter(entries, &matches?(&1, filter))
-    coarse = Enum.filter(coarse, &matches_cell?(&1.level, &1.cell, filter))
-
-    if entries != [] or coarse != [] do
-      bin =
-        Codec.encode_transaction(%{txn | entries: entries, coarse: coarse})
-        |> IO.iodata_to_binary()
-
-      send(pid, {:voxel_log_transaction_payload, bin})
-    end
-  end
-
   defp send_filtered(pid, entry, filter) do
-    if matches?(entry, filter),
-      do: send(pid, {:voxel_log_entry_payload, IO.iodata_to_binary(Codec.encode_entry(entry))})
-  end
-
-  defp matches?(%{payload: bytes}, filter) do
-    {:ok, h} = Codec.decode_payload_header(bytes)
-    {x, y, z} = h.region
-
-    matches_span?(
-      h.level,
-      {x * 64, y * 64, z * 64},
-      {x * 64 + 63, y * 64 + 63, z * 64 + 63},
-      filter
-    )
-  end
-
-  defp matches?(%{structure: _, level: level, cell: cell}, filter),
-    do: matches_cell?(level, cell, filter)
-
-  defp matches?(entry, {{{x0, y0, z0}, {x1, y1, z1}}, min_level}) do
-    {rx, ry, rz} = region_of(entry.coord)
-
-    in_box =
-      rx >= x0 - 1 and rx <= x1 + 1 and ry >= y0 - 1 and ry <= y1 + 1 and rz >= z0 - 1 and
-        rz <= z1 + 1
-
-    in_box or Enum.any?(entry.coarse, &(&1.level >= min_level))
-  end
-
-  defp matches_cell?(level, cell, filter), do: matches_span?(level, cell, cell, filter)
-
-  defp matches_span?(level, {ax, ay, az}, {bx, by, bz}, {{{x0, y0, z0}, {x1, y1, z1}}, min_level}) do
-    step = 1 <<< level
-
-    level >= min_level or
-      (floor_div(ax * step, 64) <= x1 + 1 and floor_div((bx + 1) * step - 1, 64) >= x0 - 1 and
-         floor_div(ay * step, 64) <= y1 + 1 and floor_div((by + 1) * step - 1, 64) >= y0 - 1 and
-         floor_div(az * step, 64) <= z1 + 1 and floor_div((bz + 1) * step - 1, 64) >= z0 - 1)
-  end
-
-  defp project_transaction(%{entries: entries, coarse: coarse} = txn, level, region) do
-    {ox, oy, oz} = Payload.origin(region)
-
-    replacement =
-      Enum.any?(entries, fn
-        %{structure: _, level: l, cell: cell} ->
-          l == level and Payload.in_span?(Payload.local(region, cell))
-
-        %{payload: bytes} ->
-          {:ok, h} = Codec.decode_payload_header(bytes)
-          {x, y, z} = h.region
-
-          h.level == level and x * 64 <= ox + 65 and x * 64 + 63 >= ox and y * 64 <= oy + 65 and
-            y * 64 + 63 >= oy and z * 64 <= oz + 65 and z * 64 + 63 >= oz
-
-        _ ->
-          false
-      end)
-
-    if replacement do
-      :region
-    else
-      cells =
-        Enum.filter(entries, fn e ->
-          level == 0 and Map.has_key?(e, :coord) and
-            Payload.in_span?(Payload.local(region, e.coord))
-        end)
-
-      coarse =
-        Enum.filter(coarse, fn e ->
-          e.level == level and Payload.in_span?(Payload.local(region, e.cell))
-        end)
-
-      %{txn | entries: cells, coarse: coarse}
-    end
-  end
-
-  defp project_transaction(entry, level, region) do
-    project_transaction(
-      %{seq: entry.seq, entries: [%{entry | coarse: []}], coarse: entry.coarse},
-      level,
-      region
-    )
+    if message = VoxelRegion.LogProjection.message(entry, filter), do: send(pid, message)
   end
 
   defp replay_entry(state, %{entries: entries, coarse: coarse}) do
@@ -3316,55 +3251,7 @@ defmodule VoxelRegion.World do
     calculated = System.monotonic_time(:microsecond)
 
     {changes, sources, hot, losses, combustion_used} =
-      Enum.zip_reduce(targets, result, {[], %{}, [], %{}, 0.0}, fn {cell, target_cells, t, old_temperature,
-                                                                    _electric, combustion},
-                                                                   result,
-                                                                   {changes, left, hot, losses,
-                                                                    combustion_used} ->
-        {temperature, hp, phase_energy} =
-          case result do
-            {temperature, hp, _remaining} -> {temperature, hp, nil}
-            {temperature, hp, _remaining, energy} -> {temperature, hp, energy}
-          end
-        source = if t.granularity == 0, do: Map.get(sources, cell)
-        remaining = if source, do: max(0.0, source.remaining_j - source.power_w * done), else: 0.0
-
-        left =
-          if t.granularity == 0 and Map.has_key?(sources, cell) and remaining > 1.0e-9,
-            do: Map.put(left, cell, %{Map.fetch!(sources, cell) | remaining_j: remaining}),
-            else: left
-
-        {burned, energy, _used} =
-          if combustion > 0 and Map.get(t, :burning, false),
-            do: Combustion.step(t, done),
-            else: {t, 0.0, 0.0}
-
-        burned = if phase_energy == nil, do: burned, else: Map.put(burned, :phase_energy_j, phase_energy)
-        burned = damage_pick_baseline(burned, hp)
-
-        hot =
-          if abs(temperature - config["ambient_kelvin"]) > config["tolerance_kelvin"] or
-               Map.get(burned, :burning, false), do: target_cells ++ hot, else: hot
-
-        pool = if t.granularity == 4, do: {3, t.incarnation}, else: {2, t.owner}
-
-        losses =
-          if t.granularity in [1, 4] and hp < t.hp,
-            do:
-              Map.update(losses, pool, {t, t.hp - hp}, fn {row, loss} ->
-                {row, loss + t.hp - hp}
-              end),
-            else: losses
-
-        hp = if t.granularity in [1, 4], do: t.hp, else: hp
-
-        if temperature == old_temperature and hp == t.hp and burned == t do
-          {changes, left, hot, losses, combustion_used + energy}
-        else
-          t = burned |> Map.put(:temperature_kelvin, temperature) |> Map.put(:hp, hp)
-          {[{Damage.key(t), t} | changes], left, hot, losses, combustion_used + energy}
-        end
-      end)
+      VoxelRegion.ThermalSettlement.apply(targets, result, sources, config, done)
 
     changes =
       Enum.reduce(losses, changes, fn {{granularity, _}, {micro, loss}}, changes ->
@@ -4393,13 +4280,6 @@ defmodule VoxelRegion.World do
   end
 
   # Pick 进度不消耗材料完整度；真实损伤仍扣减首次采掘时的基准，不能通过采回修复。
-  defp damage_pick_baseline(target, hp) do
-    case Map.fetch(target, :pick_baseline_hp) do
-      {:ok, baseline} -> Map.put(target, :pick_baseline_hp, max(0.0, baseline - (target.hp - hp)))
-      :error -> target
-    end
-  end
-
   # 固体采回携带操作前焓；Pick 用持续维护的基准，recover 用当前 HP 比例。
   defp damage_phase_solid(before,state,actor,request,target,tool) do
     material=state.properties.materials[target.material]
@@ -4412,7 +4292,7 @@ defmodule VoxelRegion.World do
       do: {elem(values[cell],0),q*target.pick_baseline_hp/target.max_hp},else: values[cell]
     amount=Damage.amount(material,tool,0)*q/liquid_capacity(state)
     hp=max(0.0,target.hp-amount)
-    target=if pick or request.action==2,do: target,else: damage_pick_baseline(target,hp)
+    target=if pick or request.action==2,do: target,else: Damage.pick_baseline(target,hp)
     target=%{target | hp: hp,seq: state.seq+1,request_id: 0}
     state=%{state | damage: Map.put(state.damage,Damage.key(target),target)}
     values=Map.put(values,cell,{elem(values[cell],0),q*target.hp/target.max_hp})
@@ -4666,50 +4546,6 @@ defmodule VoxelRegion.World do
   end
 
   # 参数只改变下一次计算；实例温度、HP、余燃料、源预算与相变焓不改写。
-  defp compatible_parameters?(old, new) do
-    material_fields = ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j)
-    tool_fields = ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j)
-    phase_fields = ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
-
-    old.attachments == new.attachments and old.liquid == new.liquid and
-      Enum.all?(old.materials, fn {id, material} ->
-        case Map.fetch(new.materials, id) do
-          {:ok, next} ->
-            Map.drop(material, material_fields) == Map.drop(next, material_fields) and
-              (not Phase.enabled?(material) or Map.take(material, phase_fields) == Map.take(next, phase_fields))
-          :error -> false
-        end
-      end) and
-      Enum.all?(old.tools, fn {id, tool} ->
-        case Map.fetch(new.tools, id) do
-          {:ok, next} -> Map.drop(tool, tool_fields) == Map.drop(next, tool_fields)
-          :error -> false
-        end
-      end)
-  end
-
-  defp parameter_thermal_reference(%{thermal: nil}, _), do: nil
-  defp parameter_thermal_reference(state, catalog) do
-    ambient = state.thermal.config["ambient_kelvin"]
-    rebase = Enum.reduce(state.damage, 0.0, fn {_, row}, sum ->
-      old = state.properties.materials[row.material]
-      if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and not Phase.enabled?(old) do
-        volume = if row.granularity == 4,
-          do: VoxelRegion.ThermalAttachments.volume(Attachments.slot(row), state.properties),
-          else: Damage.volume(row.granularity)
-        next=catalog.materials[row.material]
-        previous=volume*Map.get(old,"heat_capacity_per_macro",0.0)*(row.temperature_kelvin-ambient)
-        current=if row.granularity==0 and Phase.enabled?(next),
-          do: Phase.energy(row,volume,next,ambient),
-          else: volume*next["heat_capacity_per_macro"]*(row.temperature_kelvin-ambient)
-        sum + current - previous
-      else
-        sum
-      end
-    end)
-    Map.update(state.thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
-  end
-
   # 复用既有同步落盘后广播边界；失败时目录与所有实例状态一起保持旧值。
   defp publish_property_catalog(state, catalog, thermal) do
     if (map_size(state.damage) == 0 and thermal == state.thermal) or state.properties.digest == catalog.digest do

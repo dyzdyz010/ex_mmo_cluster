@@ -33,15 +33,32 @@ defmodule VoxelRegion.WorldTest do
   end
 
   setup context do
-    root = Path.join(System.tmp_dir!(), "voxel_region_world_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "voxel_region_world_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     write_world(root)
-    unless context[:replica], do: OverlayLogStore.reset()
+    unless context[:replica] do
+      MmoTest.Database.start!()
+      OverlayLogStore.reset()
+    end
     on_exit(fn -> File.rm_rf!(root) end)
     {:ok, root: root}
   end
 
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
+
+  @tag :replica
+  test "authority identity lookup does not wait behind canonical preparation", %{root: root} do
+    world = start_supervised!({World, root: root, name: :busy_authority})
+    :ok = :sys.suspend(world)
+    try do
+      task = Task.async(fn ->
+        for ref <- [world, :busy_authority, {:busy_authority, node()}], do: World.authority_ref(ref)
+      end)
+      assert Task.await(task, 500) == [world, world, world]
+    after
+      :sys.resume(world)
+    end
+  end
 
   @tag :replica
   @tag :streaming
@@ -487,7 +504,9 @@ defmodule VoxelRegion.WorldTest do
     end
     GenServer.stop(world)
     {:ok,_}=World.start_link(root: root, log: OverlayLog.Db, name: :stamp)
-    assert [checkpoint]==World.entries_after(:stamp,0)
+    [recovered] = World.entries_after(:stamp,0)
+    # 数据库检查点另带附件恢复元数据；这里核对全部原始检查点字段。
+    assert checkpoint == Map.take(recovered, Map.keys(checkpoint))
   end
 
   test "subscription box must include visible intermediate levels beyond the L0 window", %{root: root} do
@@ -507,7 +526,9 @@ defmodule VoxelRegion.WorldTest do
     # 把 L1 active [-2,2] 投影成 L0 region 单位 [-4,5]，门槛仍是 L4。
     :ok=World.subscribe(:intermediate_subscription,self(),0,{{-4,-4,-4},{5,5,5}},4)
     assert_receive {:voxel_log_transaction_payload,wire},500
-    assert {:ok,^txn}=Codec.decode_transaction(wire)
+    {:ok, decoded} = Codec.decode_transaction(wire)
+    # 区域日志 wire 只运输 seq/entries/coarse；属性元数据有独立的确认消息。
+    assert decoded == Map.take(txn, [:seq, :entries, :coarse])
   end
 
   test "no-op confirms the initiating subscriber beyond its filtered cursor without journaling or broadcasting", %{root: root} do

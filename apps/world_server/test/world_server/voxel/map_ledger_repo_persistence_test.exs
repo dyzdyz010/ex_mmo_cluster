@@ -18,28 +18,7 @@ defmodule WorldServer.Voxel.MapLedgerRepoPersistenceTest do
   alias WorldServer.Voxel.RegionAssignment
 
   setup_all do
-    Application.ensure_all_started(:jason)
-    Application.ensure_all_started(:postgrex)
-    Application.ensure_all_started(:ecto_sql)
-
-    case Ecto.Adapters.Postgres.storage_up(Repo.config()) do
-      :ok -> :ok
-      {:error, :already_up} -> :ok
-    end
-
-    case Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    migrations_path =
-      Application.app_dir(:data_service, "priv/repo/migrations")
-
-    {:ok, _, _} =
-      Ecto.Migrator.with_repo(Repo, fn repo ->
-        Ecto.Migrator.run(repo, migrations_path, :up, all: true)
-      end)
-
+    MmoTest.Database.start!()
     :ok
   end
 

@@ -2,6 +2,11 @@ defmodule WorldServer.Voxel.MapLedgerTest do
   # 梯队1 step1.2:WriteTokenStore DB 化后共享 voxel_write_tokens 表,改 async:false + 每测试清表。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.RegionDirectoryStore
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.MapLedger

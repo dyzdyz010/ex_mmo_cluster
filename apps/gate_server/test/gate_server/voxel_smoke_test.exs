@@ -1,6 +1,11 @@
 defmodule GateServer.VoxelSmokeTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   test "runs CLI-observable voxel E2E smoke and writes stdio logs" do
     logical_scene_id = 880_000 + System.unique_integer([:positive, :monotonic])
 

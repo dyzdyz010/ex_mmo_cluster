@@ -7,7 +7,7 @@ defmodule DataService.WorkerTest do
   alias DataService.Repo
 
   setup_all do
-    # Repo started in test_helper.exs
+    MmoTest.Database.start!()
     case DataService.UidGenerator.start_link(name: DataService.UidGenerator) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok

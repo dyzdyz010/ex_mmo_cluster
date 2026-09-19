@@ -19,23 +19,9 @@ defmodule VoxelRegion.PrefabTest do
     end
   end
 
-  setup do
-    root = Path.join(System.tmp_dir!(), "r7_prefab_#{System.unique_integer([:positive])}")
-    catalog = Path.join(root, "catalog")
-    File.mkdir_p!(catalog)
-    bytes = <<"VXPD", 1::32-little, 2::32-little, 0::signed-little-32, 0::signed-little-32, 0::signed-little-32, 11::16-little,
-      1::signed-little-32, 0::signed-little-32, 0::signed-little-32, 19::16-little, 0::32-little>>
-    File.write!(Path.join(catalog,"test.vxpd"),bytes)
-    id = :crypto.hash(:sha256,bytes)
-    for level <- 0..5, x <- -1..1, y <- -1..1, z <- -1..1 do
-      path = FileStore.path(root,123,level,{x,y,z})
-      File.mkdir_p!(Path.dirname(path))
-      p = %Payload{level: level, region: {x,y,z}, cells: :binary.copy(<<0,0>>,66*66*66)}
-      File.write!(path,Payload.encode(p,%{},0,123))
-    end
-    opts = [root: root, prefab_catalog_path: catalog, name: :r7_test_world]
-    on_exit(fn -> File.rm_rf!(root) end)
-    {:ok, root: root, id: id, opts: opts}
+  setup context do
+    if context[:database], do: MmoTest.Database.start!()
+    VoxelRegion.PrefabFixture.prepare()
   end
 
   test "cross chunk placement, same macro owners, removal, checkpoint and restart", %{id: id, opts: opts} do
@@ -124,43 +110,6 @@ defmodule VoxelRegion.PrefabTest do
       assert Map.keys(p.instances) == [{2, 0}]
       assert Enum.all?(p.refined, fn {_, slots} -> Enum.all?(slots, fn {_, {_, owner}} -> owner == {2, 0} end) end)
     end
-    GenServer.stop(w)
-  end
-
-  @tag :collision_projection
-  test "canonical delta installs micro collision atomically and retains historical revision", %{id: id, opts: opts} do
-    alias MmoContracts.Voxel.{CanonicalSnapshot,CanonicalDelta}
-    alias SceneServer.Movement.CollisionUpdates
-    alias SceneServer.Native.VoximMovement, as: Native
-    {:ok,w} = World.start_link(opts)
-    :ok = World.canonical_snapshot_and_subscribe(w,{{0,0,0},{1,1,1}},self(),:r7)
-    assert_receive {:canonical_snapshot,:r7,%CanonicalSnapshot{}=snapshot}
-    updates = CollisionUpdates.new(Native) |> CollisionUpdates.initialize(snapshot)
-    assert {:ok,1} = World.place_prefab(w,id,{127,8,8},0)
-    assert_receive {:canonical_delta,%CanonicalDelta{transaction_seq: 1,chunks: chunks}=placed}
-    assert Enum.map(chunks,&{&1.coord,&1.n,&1.scale_m}) == [{{0,0,0},128,0.125},{{1,0,0},128,0.125}]
-    {updates,events} = updates |> CollisionUpdates.enqueue(placed,0) |> CollisionUpdates.consume(0)
-    updates = CollisionUpdates.record_tick(updates,10,events)
-    {placed_world,2} = CollisionUpdates.at_tick(updates,10)
-    assert {2,_,_} = Native.world_stats(placed_world)
-    session = :trace.session_create(:canonical_without_wire,self(),[])
-    try do
-      :trace.function(session,{Payload,:decode,1},true,[:call_time])
-      :trace.process(session,w,true,[:call])
-      assert {:ok,2} = World.remove_prefab(w,{1,0})
-      {:call_time,counters} = :trace.info(session,{Payload,:decode,1},:call_time)
-      assert Enum.sum(for {^w,n,_,_} <- counters,do: n) == 0
-    after
-      :trace.session_destroy(session)
-    end
-    assert_receive {:canonical_delta,%CanonicalDelta{transaction_seq: 2}=removed}
-    assert Enum.all?(removed.chunks,&(&1.n == 16))
-    {updates,events} = updates |> CollisionUpdates.enqueue(removed,1) |> CollisionUpdates.consume(1)
-    updates = CollisionUpdates.record_tick(updates,20,events)
-    {empty_world,3} = CollisionUpdates.at_tick(updates,20)
-    assert {0,0,0} = Native.world_stats(empty_world)
-    assert {^placed_world,2} = CollisionUpdates.at_tick(updates,15)
-    assert {2,_,_} = Native.world_stats(placed_world)
     GenServer.stop(w)
   end
 
@@ -316,7 +265,10 @@ defmodule VoxelRegion.PrefabTest do
     assert repaired.instances[{2,0}]==original.instances[{2,0}]
     assert Enum.sort(Map.keys(repaired.instances))==[{2,0},{4,0},{4,1},{4,2}]
     [txn] = World.entries_after(w,3)
-    assert Enum.any?(txn.entries,fn e -> {:ok,h}=Codec.decode_payload_header(e.payload);h.level==1 end)
+    assert Enum.any?(txn.entries,fn
+      %{structure: _, level: level} -> level == 1
+      %{payload: bytes} -> {:ok,h}=Codec.decode_payload_header(bytes); h.level == 1
+    end)
     # 未改 slot 数量也必须识别材质变化。
     recolored = <<"VXPD",1::32-little,2::32-little,0::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,
       1::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,0::32-little>>
@@ -327,12 +279,9 @@ defmodule VoxelRegion.PrefabTest do
     assert p.refined[Payload.cell_index({2,2,2})][7]=={19,{5,0}}
     assert p.refined[Payload.cell_index({3,2,2})][0]=={11,{5,0}}
     [recolor_txn] = World.entries_after(w,4)
-    entry = Enum.find(recolor_txn.entries,fn e ->
-      {:ok,h}=Codec.decode_payload_header(e.payload)
-      h.level==1 and h.region=={0,0,0}
-    end)
-    {:ok,coarse} = Payload.decode(entry.payload)
-    grid = coarse.structure[Payload.cell_index({1,1,1})]
+    entry = Enum.find(recolor_txn.entries, &match?(%{level: 1, cell: {0,0,0}, structure: _}, &1))
+    assert {:ok, ^entry} = entry |> Codec.encode_entry() |> IO.iodata_to_binary() |> Codec.decode_entry()
+    grid = entry.structure
     assert binary_part(grid,2*(15+16*(8+16*8)),2)==<<275::16-little>>
     GenServer.stop(w)
   end

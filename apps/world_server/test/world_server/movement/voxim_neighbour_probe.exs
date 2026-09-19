@@ -1,7 +1,8 @@
 defmodule SceneServer.Movement.VoximNeighbourNodesProbe do
-  @moduledoc false
+  @moduledoc "只测试：在 peer 中启动真实 World 与 Scene，不注入运行时真值。"
   alias SceneServer.Movement.Scene
 
+  @doc "从独立夹具启动节点；传入 world 时共用该权威，Scene 仍在当前 peer 中运行。"
   def boot(base, id, world \\ nil) do
     # 独立实验 World：真实 GeneratedStore/P1，磁盘日志不使用在线 DB。
     config = File.read!(base <> "/Voxim/Docs/M1/fixtures/demo-config.json") |> Jason.decode!()

@@ -3,6 +3,11 @@ defmodule SceneServer.Voxel.ObjectRegistryBroadcastTest do
   # / emit_object_destroyed 之后 dispatch 0x6C ObjectStateDelta broadcast (D4)。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.SceneObjectStore
   alias SceneServer.Voxel.Codec
   alias SceneServer.Voxel.ObjectRegistry

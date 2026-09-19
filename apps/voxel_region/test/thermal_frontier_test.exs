@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ThermalFrontierTest do
   @moduledoc "只测试：提交内热域只扩张，冷却不能触发极小稳定步逐次回到 World。"
   use ExUnit.Case, async: true
+  @moduletag :perf
   alias VoxelRegion.ThermalNative
 
   test "薄层在容差下冷却仍完成数值批次且热账闭合" do

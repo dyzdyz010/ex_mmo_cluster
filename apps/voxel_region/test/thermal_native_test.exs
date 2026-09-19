@@ -1,5 +1,6 @@
 defmodule VoxelRegion.ThermalNativeTest do
   use ExUnit.Case, async: true
+  @moduletag :perf
   alias VoxelRegion.{Thermal, ThermalNative}
 
   test "批量与逐步导热、有限供能、过热损伤和能量账一致" do

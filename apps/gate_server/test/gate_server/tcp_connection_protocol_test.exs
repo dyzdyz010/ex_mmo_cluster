@@ -197,6 +197,7 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   setup_all do
+    MmoTest.Database.start!()
     _ = Application.stop(:gate_server)
     _ = Application.stop(:scene_server)
     ensure_name_available(GateServer.Interface)
@@ -204,25 +205,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     ensure_name_available(GateServer.FastLaneRegistry)
     ensure_name_available(GateServer.UdpAcceptor)
     {:ok, _} = Application.ensure_all_started(:auth_server)
-    Application.ensure_all_started(:jason)
-    Application.ensure_all_started(:postgrex)
-    Application.ensure_all_started(:ecto_sql)
-
-    repo_config = DataService.Repo.config()
-
-    case Ecto.Adapters.Postgres.storage_up(repo_config) do
-      :ok -> :ok
-      {:error, :already_up} -> :ok
-      {:error, _reason} -> :ok
-    end
-
-    migrations_path = Path.expand("../../../data_service/priv/repo/migrations", __DIR__)
-
-    {:ok, _, _} =
-      Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
-        Ecto.Migrator.run(repo, migrations_path, :up, all: true)
-      end)
-
     ensure_dispatcher_sup()
 
     _ =

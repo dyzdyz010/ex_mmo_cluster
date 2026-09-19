@@ -2,6 +2,11 @@ defmodule DataService.Voxel.CommandLogTest do
   # 共享 voxel_command_log 表,async:false + 每测试清表。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.CommandLog
 
   setup do

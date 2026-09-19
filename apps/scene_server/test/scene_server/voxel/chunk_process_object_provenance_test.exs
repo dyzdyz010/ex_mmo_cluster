@@ -5,6 +5,11 @@ defmodule SceneServer.Voxel.ChunkProcessObjectProvenanceTest do
   # ObjectRegistry。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

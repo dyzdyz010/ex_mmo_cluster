@@ -1,5 +1,14 @@
 # Movement module map
 
+2026-09-19 工程整改：Scene 的默认消息出口改用 `MmoContracts.Session.Outbound`。
+此前引用无 Mix 依赖的 `GateServer.Session.Sink`，使复制测试只能依靠 umbrella 的额外代码路径运行。
+依据 OTP 进程消息契约，原 `mmo_reliable/mmo_datagram/mmo_close` 元组和身份语义保持原样；
+公共契约只投递，Gate 继续拥有编码、传输和队列。既有 Sink 调用委托同一实现，不复制规则。
+测试 helper 不再默认建库或启动 Horde，只有数据库与路由用例显式准备对应资源。
+调用 World 编排的 `voxim_neighbour_nodes` / `voxim_transfer` 已迁至 World app；Scene 测试
+不通过 umbrella 附带代码路径加载反向依赖。冷生成测试复制参数到临时 manifest 并移除旧世界
+钉住版本，以当前 kernel 创建新世界，仍比较原有几何字节金样。
+
 M3 keeps the shared P1/Rapier kernel and the M1 wire contract. `Scene` owns
 canonical collision publication and the public 60 Hz clock. Each `Player`
 owns one authenticated identity's InputSlots, state, simulation tick and ACK.

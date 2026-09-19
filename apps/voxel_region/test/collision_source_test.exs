@@ -30,11 +30,11 @@ defmodule VoxelRegion.CollisionSourceTest do
   end
 
   setup_all do
-    template = Path.join(System.tmp_dir!(), "voxim_w1_#{System.unique_integer([:positive])}")
+    template = Path.join(System.tmp_dir!(), "voxim_w1_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(template)
     manifest = Path.expand("../../../../Voxim/Docs/R6/runtime/s4_worldgen_manifest.json", __DIR__)
     manifest_path = Path.join(template, "manifest.json")
-    data = manifest |> File.read!() |> Jason.decode!() |> Map.put("world_half_extent_m", 64)
+    data = manifest |> File.read!() |> Jason.decode!() |> Map.put("world_half_extent_m", 64) |> Map.delete("content_version")
     File.write!(manifest_path, Jason.encode!(data))
     {:ok, store} = GeneratedStore.open(root: template, manifest_path: manifest_path)
     {:ok, _, _} = Bake.run(store)
@@ -43,7 +43,7 @@ defmodule VoxelRegion.CollisionSourceTest do
   end
 
   setup %{template: template} do
-    root = template <> "_#{System.unique_integer([:positive])}"
+    root = template <> "_#{System.pid()}_#{System.unique_integer([:positive])}"
     File.cp_r!(template, root)
 
     world =
@@ -189,23 +189,22 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert_received ^unrelated
   end
 
-  test "no-op has no sequence, water/air and solid material swaps have no collision update", %{
+  test "no-op and raw liquid edits do not commit; solid material swaps have no collision update", %{
     world: world
   } do
     snapshot(world)
     assert {:ok, 0} = World.apply_edits(world, [{{40, 558, 40}, 0}])
     refute_receive {:canonical_delta, _}
     water = Catalog.table() |> Enum.find(&(&1["name"] == "water")) |> Map.fetch!("id")
-    assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, water}])
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 1, chunks: []}}
-    assert {:ok, 2} = World.apply_edits(world, [{{40, 558, 40}, 0}])
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 2, chunks: []}}
-    assert {:ok, 3} = World.apply_edit(world, {40, 558, 40}, 11)
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 3, chunks: [_], transaction: txn}}
-    assert {:ok, %{seq: 3, entries: [%{coord: {40, 558, 40}, material: 11}]}} =
+    assert {:error, :use_liquid_tool} = World.apply_edits(world, [{{40, 558, 40}, water}])
+    assert World.seq(world) == 0
+    refute_receive {:canonical_delta, _}
+    assert {:ok, 1} = World.apply_edit(world, {40, 558, 40}, 11)
+    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 1, chunks: [_], transaction: txn}}
+    assert {:ok, %{seq: 1, entries: [%{coord: {40, 558, 40}, material: 11}]}} =
              txn |> Codec.encode_transaction() |> IO.iodata_to_binary() |> Codec.decode_transaction()
-    assert {:ok, 4} = World.apply_edit(world, {40, 558, 40}, 12)
-    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 4, chunks: []}}
+    assert {:ok, 2} = World.apply_edit(world, {40, 558, 40}, 12)
+    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 2, chunks: []}}
   end
 
   test "a dense region replacement captures complete cores and survives compact/reload", %{

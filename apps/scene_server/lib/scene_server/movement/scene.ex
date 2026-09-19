@@ -116,7 +116,7 @@ defmodule SceneServer.Movement.Scene do
     {:ok, players} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
     {:ok, replication} =
-      Replication.start_link(sink: Keyword.get(opts, :sink, GateServer.Session.Sink))
+      Replication.start_link(sink: Keyword.get(opts, :sink, MmoContracts.Session.Outbound))
 
     state = %{
       players: players,
@@ -125,7 +125,7 @@ defmodule SceneServer.Movement.Scene do
       scene_epoch: Keyword.fetch!(opts, :scene_epoch),
       world_ref: Keyword.fetch!(opts, :world_ref),
       world_api: Keyword.get(opts, :world_api, VoxelRegion.World),
-      sink: Keyword.get(opts, :sink, GateServer.Session.Sink),
+      sink: Keyword.get(opts, :sink, MmoContracts.Session.Outbound),
       clock: clock,
       config: config,
       updates: CollisionUpdates.new(Keyword.get(opts, :native, SceneServer.Native.VoximMovement)),

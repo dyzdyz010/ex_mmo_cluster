@@ -1,15 +1,17 @@
-defmodule SceneServer.InterfaceAnnounceTest do
+defmodule WorldServer.SceneInterfaceAnnounceTest do
   # async: false — touches BeaconServer.DistributedRegistry singleton
   # and `WorldServer.Voxel.SceneNodeRegistry` global names; serialise.
   use ExUnit.Case, async: false
 
+  setup_all do
+    unless Process.whereis(BeaconServer.DistributedRegistry) do
+      start_supervised!({Horde.Registry, name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto})
+    end
+    :ok
+  end
+
   import ExUnit.CaptureLog
 
-  # `WorldServer.Voxel.SceneNodeRegistry` lives in world_server, but
-  # scene_server intentionally does NOT depend on world_server in its
-  # mix.exs. We reference it by atom literal here for the same reason
-  # `SceneServer.Interface` does — Elixir compiler doesn't check that
-  # the module exists when used as a bare atom.
   @scene_node_registry_module :"Elixir.WorldServer.Voxel.SceneNodeRegistry"
 
   setup ctx do

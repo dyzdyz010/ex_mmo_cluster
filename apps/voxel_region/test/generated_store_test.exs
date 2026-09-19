@@ -23,7 +23,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   setup_all do
     template =
-      Path.join(System.tmp_dir!(), "voxel_region_baked_#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "voxel_region_baked_#{System.pid()}_#{System.unique_integer([:positive])}")
 
     manifest_path = Path.join(template, "worldgen.json")
     File.mkdir_p!(template)
@@ -36,7 +36,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   setup %{template: template, baked: baked} do
     root =
-      Path.join(System.tmp_dir!(), "voxel_region_generated_#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "voxel_region_generated_#{System.pid()}_#{System.unique_integer([:positive])}")
 
     manifest_path = Path.join(root, "worldgen.json")
     File.mkdir_p!(root)
@@ -115,7 +115,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   test "native returns the existing raw payload body", _context do
     assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:0707836247ba65ae5d45b039a2e8f22c2a74370c81f4bcd9134c2eb4346f1a51"
+             "worldgen_density_v3@1+sha256:5e45e6797acdd6ba55bc61a0bb36fdf9c5b786eb31880eaae71350b8b55cb5e5"
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 
@@ -129,7 +129,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 0x3332_8556_9A8D_2709
+    assert GeneratedStore.content_version(store) == 923538418913376924
 
     for field <- [
           "seed",

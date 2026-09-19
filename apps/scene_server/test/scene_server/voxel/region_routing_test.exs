@@ -1,18 +1,16 @@
 defmodule SceneServer.Voxel.RegionRoutingTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    SceneServer.TestVoxelRuntime.start_registry!()
+  end
+
   alias SceneServer.Voxel.{ChunkDirectory, RegionRouting}
 
   # `RegionRouting` flips between two backends:
   # * production → BeaconServer.Client (Horde-backed)
   # * stub → static `:persistent_term` map keyed by region_id
   #
-  # The scene_server test_helper does not boot `BeaconServer.DistributedRegistry`,
-  # so production-path assertions start it ad-hoc here. Stub-path assertions
-  # don't need the registry.
-
-  # `BeaconServer.DistributedRegistry` is started in
-  # `apps/scene_server/test/test_helper.exs` for all scene_server tests.
   setup do
     on_exit(fn -> RegionRouting.__clear_stub__() end)
     :ok

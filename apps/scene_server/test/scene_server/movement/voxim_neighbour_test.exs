@@ -27,8 +27,8 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
   end
 
   test "neighbour state is visible only to local observers in their clock and cannot be relayed" do
-    {:ok, a} = Replication.start_link(sink: GateServer.Session.Sink)
-    {:ok, b} = Replication.start_link(sink: GateServer.Session.Sink)
+    {:ok, a} = Replication.start_link(sink: MmoContracts.Session.Outbound)
+    {:ok, b} = Replication.start_link(sink: MmoContracts.Session.Outbound)
     on_exit(fn -> for p <- [a, b], Process.alive?(p), do: GenServer.stop(p) end)
     av = value(1, 1, 600)
     bv = value(2, 2, 60)
@@ -76,7 +76,7 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
   end
 
   test "endpoint death clears read-only neighbours without stopping local publication" do
-    {:ok, a} = Replication.start_link(sink: GateServer.Session.Sink)
+    {:ok, a} = Replication.start_link(sink: MmoContracts.Session.Outbound)
 
     b =
       spawn(fn ->

@@ -13,6 +13,11 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   # 附近,让 prefab 自然跨两 chunks。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore

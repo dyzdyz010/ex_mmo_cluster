@@ -3,7 +3,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   use ExUnit.Case, async: false
   @moduletag :b7
   alias VoxelRegion.World
-  alias VoxelRegion.DamageWorldTest.{Source,Actor,Log}
+  alias VoxelRegion.TestSupport.{Source,Actor,Log}
   alias MmoContracts.Voxel.Payload
   @capacity 2_097_152
   @transfer div(@capacity,4)
@@ -26,10 +26,10 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   setup context do
-    root=Path.join(System.tmp_dir!(),"b7_world_#{System.unique_integer([:positive])}")
+    root=Path.join(System.tmp_dir!(),"b7_world_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     catalog=Path.join(root,"catalog.json")
-    data=Jason.decode!(File.read!("Content/Voxel/Properties/Published/ade8e630274214b6d9abba77286d8a5d8625d485bd6018e92a9bf0a43d3231ba.json"))
+    data=Jason.decode!(File.read!(VoxelRegion.TestSupport.catalog()))
     # Test-only deterministic clock: steps are manually delivered; production uses the published cadence.
     tools=for {id,action} <- [{11,"liquid.scoop"},{12,"liquid.pour"}],do:
       %{"tool_id"=>id,"id"=>action,"action"=>action,"power"=>1,"range_macro"=>8,"interval_seconds"=>0.1,"liquid_transfer_units"=>@transfer}
@@ -42,8 +42,23 @@ defmodule VoxelRegion.LiquidWorldTest do
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :b7,refresh: &Actor.tool_context/2,eye: {63.5,1.5,0.5},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
-    # Finite experimental inventory; the first real pour persists its debit in the normal journal.
-    :sys.replace_state(w,&%{&1 | material_balances: %{{1001,21}=>@capacity}})
+    unless context[:empty_inventory] do
+      # 只测试：作者放置一格有限水源，独立会话正常舀取；余额和后续冷恢复都走正式日志。
+      supply=Path.join(root,"inventory-source.json")
+      File.write!(supply,Jason.encode!(%{classification: "Test-only",
+        deposits: [%{macro: [65,1,3],material: 21}]}))
+      {:ok,_}=World.liquid_experiment(w,supply)
+      gate=spawn_link(fn -> receive do :stop -> :ok end end)
+      supplier=%{actor | gate: gate,identity: :supply,eye: {65.5,1.5,1.5}}
+      {:ok,player}=Actor.start_link(supplier)
+      supplier=%{supplier | player: player}
+      for seq<-1..4 do
+        {:ok,_}=World.production_intent(w,
+          Map.merge(supplier,%{received_us: seq*1_000_000,clock_node: node()}),request(2,seq,{65,1,3}))
+      end
+      GenServer.stop(player)
+      send(gate,:stop)
+    end
     on_exit(fn->File.rm_rf!(root) end)
     %{w: w,opts: opts,actor: actor,root: root}
   end
@@ -119,9 +134,9 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   @tag :legacy_water
+  @tag :empty_inventory
   test "admitted legacy source flows immediately and never refills emptied source after replay",c do
-    # This fixture supplies world water only, with no initial carried inventory.
-    :sys.replace_state(c.w,&%{&1 | material_balances: %{}})
+    # 只测试：仅由 legacy source 提供世界水，角色初始库存为空。
     assert quantities(c.w)==%{{63,1,2}=>@capacity}
     for n<-1..4, do: assert({:ok,_}=transfer(c,2,n,{63,1,2}))
     assert quantities(c.w)==%{}
@@ -157,8 +172,8 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert total(w)==@capacity
   end
 
+  @tag :empty_inventory
   test "MCP-authored Test-only two-cubic-metre supply installs atomically and flows without a player pour",c do
-    :sys.replace_state(c.w,&%{&1 | material_balances: %{}})
     fixture=Path.join(c.root,"basin.json")
     rows=for {coord,m} <- [{{63,2,2},21},{{64,2,2},21},{{63,0,2},11},{{64,0,2},11}],
       do: %{macro: Tuple.to_list(coord),material: m}

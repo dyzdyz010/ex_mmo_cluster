@@ -4,6 +4,11 @@ defmodule DataService.CharacterStoreTest do
   """
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.CharacterStore
   alias DataService.Repo
   alias DataService.Schema.Account

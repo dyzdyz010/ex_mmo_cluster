@@ -1,12 +1,19 @@
-defmodule SceneServer.Movement.VoximNeighbourNodesTest do
+Code.require_file("../../support/movement_fixture.exs", __DIR__)
+
+defmodule WorldServer.Movement.VoximNeighbourNodesTest do
+  @moduledoc "只测试：World 路由编排两个真实节点的 Scene 邻区与共享权威。"
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Scene, Player, Replication, Clock}
   alias MmoContracts.{Session, Movement}
 
-  @tag timeout: 120_000
-  test "remote Scene derives collision from the same canonical World without moving native source state" do
-    base = System.fetch_env!("M4A_BASE")
+  setup do
+    assert Node.alive?(), "跨节点测试需命名 VM：elixir --sname world_tests -S mix test --no-start"
+    {:ok, base: WorldServer.MovementFixture.prepare()}
+  end
 
+  @tag timeout: 120_000
+  test "remote Scene derives collision from the same canonical World without moving native source state",
+       %{base: base} do
     nodes =
       Enum.reduce(1..2, [], fn id, previous ->
         {:ok, peer, host} =
@@ -19,7 +26,6 @@ defmodule SceneServer.Movement.VoximNeighbourNodesTest do
         Process.unlink(peer)
         on_exit(fn -> if Process.alive?(peer), do: :peer.stop(peer) end)
         :ok = :peer.call(peer, :code, :add_paths, [:code.get_path()])
-        true = :peer.call(peer, :code, :add_patha, [String.to_charlist(base <> "/ebin")])
         {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:elixir])
         {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:logger])
         :ok = :peer.call(peer, Logger, :configure, [[level: :info]])
@@ -49,9 +55,8 @@ defmodule SceneServer.Movement.VoximNeighbourNodesTest do
   end
 
   @tag timeout: 120_000
-  test "two BEAM Scene/World nodes move through P1 and publish neighbouring authority to their own observers" do
-    base = System.fetch_env!("M4A_BASE")
-
+  test "two BEAM Scene/World nodes move through P1 and publish neighbouring authority to their own observers",
+       %{base: base} do
     peers =
       for id <- 1..2 do
         {:ok, peer, node} =
@@ -64,7 +69,6 @@ defmodule SceneServer.Movement.VoximNeighbourNodesTest do
         Process.unlink(peer)
         on_exit(fn -> if Process.alive?(peer), do: :peer.stop(peer) end)
         :ok = :peer.call(peer, :code, :add_paths, [:code.get_path()])
-        true = :peer.call(peer, :code, :add_patha, [String.to_charlist(base <> "/ebin")])
         {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:elixir])
         {:ok, _} = :peer.call(peer, :application, :ensure_all_started, [:logger])
         :ok = :peer.call(peer, Logger, :configure, [[level: :info]])

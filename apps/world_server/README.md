@@ -1,5 +1,13 @@
 # world_server
 
+2026-09-19 测试边界整改：`test/world_server/movement` 验证当前 Voxim 的 World 路由、
+跨 Scene 移交与双节点邻区编排；这些测试调用 World API，故从 Scene app 迁入。
+`test/support/movement_fixture.exs` 每个用例复制参数到独立临时目录，使用当前 kernel 创建
+新世界，不修改发布 manifest、不共享日志、不手工拼 BEAM 路径。
+单 app 运行用 `elixir --sname world_tests -S mix test --no-start`；需要命名节点的用例明确检查此条件。
+普通路由及纯值测试不启动数据库，持久化测试才调用共享 `MmoTest.Database.start!`。
+下方 MapLedger 等说明属于仍有活调用方的旧区域路径，不表示它们取代当前 `VoxelRegion.World` 权威。
+
 正式文档已迁移到 `docs/` 目录。
 
 - [2026-04-10-应用说明](docs/2026-04-10-应用说明.md)

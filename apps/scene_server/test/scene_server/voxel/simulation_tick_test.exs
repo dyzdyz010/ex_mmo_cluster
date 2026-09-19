@@ -46,6 +46,11 @@ defmodule SceneServer.Voxel.SimulationTickTest do
   # 与 chunk_process_test.exs 保持同等纪律：sync execution + 每测试清理。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

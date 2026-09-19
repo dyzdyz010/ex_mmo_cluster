@@ -1,6 +1,11 @@
 defmodule WorldServer.Voxel.AuthorityObserveTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.AuthorityObserve
   alias WorldServer.Voxel.MapLedger

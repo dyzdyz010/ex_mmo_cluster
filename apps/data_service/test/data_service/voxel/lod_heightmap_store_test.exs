@@ -1,6 +1,11 @@
 defmodule DataService.Voxel.LodHeightmapStoreTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Voxel.LodHeightmapStore, as: Store
 

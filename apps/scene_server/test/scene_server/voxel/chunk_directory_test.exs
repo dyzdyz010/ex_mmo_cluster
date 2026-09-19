@@ -2,6 +2,11 @@ defmodule SceneServer.Voxel.ChunkDirectoryTest do
   # Phase 1d: ChunkSnapshotStore is Repo-backed; tests share `voxel_chunks`.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

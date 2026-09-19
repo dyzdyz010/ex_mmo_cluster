@@ -8,8 +8,6 @@ root = Path(os.environ["GITHUB_WORKSPACE"])
 client = root / ".ci-voxim"
 base = Path(os.environ["RUNNER_TEMP"]) / "voxim-tests"
 base.mkdir()
-(base / "Voxim").symlink_to(client, target_is_directory=True)
-(base / "ebin").mkdir()
 
 # 只修改 CI 临时检出的实验清单；新世界使用当前 kernel，不冒充历史世界版本。
 manifest = client / "Docs/R6/runtime/s4_worldgen_manifest.json"
@@ -32,7 +30,6 @@ openssl("x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key"
 openssl("verify", "-CAfile", "ca.pem", "-verify_hostname", "localhost", "server.pem")
 
 values = {
-    "M4A_BASE": base,
     "E1_FIXTURE": client / "Docs/M1/runtime/S1/world-fixture",
     "IS_FIXTURE": client / "Docs/M1/runtime/S1/world-fixture",
     "E1_PROFILE": client / "Docs/M0/fixtures/suite.json",

@@ -3,6 +3,11 @@ defmodule SceneServer.Voxel.ObjectRegistryTest do
   # The shared `voxel_scene_objects` table forces sync execution.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.SceneObjectStore
   alias SceneServer.Voxel.ObjectRegistry
   alias SceneServer.Voxel.PartState

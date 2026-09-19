@@ -4,6 +4,11 @@ defmodule WorldServer.Voxel.DevSeedTest do
   # 故仍可 async。
   use ExUnit.Case, async: true
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.DevSeed
   alias WorldServer.Voxel.MapLedger

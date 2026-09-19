@@ -43,7 +43,7 @@ defmodule VoxelRegion.StructureTest do
   end
 
   test "cross region structure publishes all levels, refreshes neighboring terrain, and rebuilds after restart" do
-    root = Path.join(System.tmp_dir!(),"a3_structure_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(),"a3_structure_#{System.pid()}_#{System.unique_integer([:positive])}")
     catalog = Path.join(root,"catalog")
     File.mkdir_p!(catalog)
     bytes = <<"VXPD",1::32-little,2::32-little,0::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,
@@ -60,7 +60,10 @@ defmodule VoxelRegion.StructureTest do
     {:ok,w} = World.start_link(opts)
     assert {:ok,1} = World.place_prefab(w,:crypto.hash(:sha256,bytes),{511,8,8},0)
     [txn] = World.entries_after(w,0)
-    levels = Enum.map(txn.entries,fn e -> {:ok,h}=Codec.decode_payload_header(e.payload); h.level end)
+    levels = Enum.map(txn.entries,fn
+      %{structure: _, level: level} -> level
+      %{payload: bytes} -> {:ok,h}=Codec.decode_payload_header(bytes); h.level
+    end)
     assert Enum.sort(Enum.uniq(levels)) == Enum.to_list(0..5)
     for level <- 1..5 do
       p = payload(w,level,{0,0,0})

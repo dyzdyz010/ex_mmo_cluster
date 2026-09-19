@@ -2,6 +2,11 @@ defmodule SceneServer.Voxel.ChunkIdleEvictionTest do
   # 阶段3 step3.2: idle 驱逐(无订阅者 + 无活跃 field 连续 idle 超时则自停)。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias SceneServer.Voxel.ChunkProcess
 
   defp start_chunk(opts) do

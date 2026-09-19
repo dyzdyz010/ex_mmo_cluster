@@ -6,7 +6,7 @@ defmodule DataService.SchemaTest do
   alias DataService.Repo
 
   setup_all do
-    # Repo started in test_helper.exs
+    MmoTest.Database.start!()
     :ok
   end
 

@@ -3,27 +3,30 @@ defmodule VoxelRegion.ParameterPublicationTest do
   use ExUnit.Case, async: false
   @moduletag :parameter_publication
   alias VoxelRegion.{World, Damage}
-  alias VoxelRegion.DamageWorldTest.{Source, Log}
+  alias VoxelRegion.TestSupport.{Source, Log}
 
   setup do
-    root = Path.join(System.tmp_dir!(), "parameters_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "parameters_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     path = Path.join(root, "catalog.json")
-    File.cp!(System.fetch_env!("PARAMETER_CATALOG"), path)
+    File.cp!(VoxelRegion.TestSupport.catalog("ebefc6390e4b934951fd0ce4b1b7d5bd1f212dbc4b2f38f6a3ca42e68315b311"), path)
     env = Path.join(root, "environment.json")
     File.write!(env, Jason.encode!(%{ambient_kelvin: 293.15, environment_w_per_m2_k: 0.0, tolerance_kelvin: 0.01}))
     opts = [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: path, thermal_environment_path: env]
-    w = start_supervised!({World, opts})
-    {:ok, seq} = World.apply_edit(w, {1, 1, 2}, 19)
-    s = :sys.get_state(w)
-    # 只测试的旧存档夹具；在线验收不得通过此方式制造玩家资源或温度。
+    # 只测试旧存档升级：在 owner 启动前生成历史日志，所有状态均经正式 replay 接纳。
+    # 本用例只证明参数升级与持久化，不声称这些旧值来自玩家操作。
+    catalog = Damage.load(path)
+    seq = 1
     row = %{micro: {8, 8, 16}, granularity: 0, incarnation: seq, owner: {0, 0}, material: 19,
-      flags: 0, request_id: 0, seq: seq, digest: s.properties.digest, hp: 51.0, max_hp: 100.0,
+      flags: 0, request_id: 0, seq: seq, digest: catalog.digest, hp: 51.0, max_hp: 100.0,
       defense: 2.0, temperature_kelvin: 333.15, remaining_fuel_j: 1234.0, power_w: 0.0, burning: false}
-    :sys.replace_state(w, &%{&1 | damage: %{Damage.key(row) => row},
-      material_balances: %{{1001, 19} => 4096},
-      thermal: Map.put(&1.thermal, :active, false)})
+    handle = Log.open(root, Source.content_version(nil))
+    :ok = Log.append(handle, %{seq: seq,
+      entries: [%{seq: seq, coord: {1, 1, 2}, material: 19, coarse: []}], coarse: [],
+      epochs: %{{1, 1, 2} => seq}, property_states: [row], material_balances: %{{1001, 19} => 4096},
+      material_units_per_micro: Damage.material_units(catalog)})
+    w = start_supervised!({World, opts})
     :ok = World.compact(w)
     before = :sys.get_state(w)
     data = Jason.decode!(File.read!(path))

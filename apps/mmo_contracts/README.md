@@ -2,6 +2,9 @@
 
 Hemifuture 体素 MMO 服务端**承重契约的单一来源**(纯库,无监督树)。
 
+`MmoContracts.Session.Outbound` 定义 Scene 发给连接 owner 的三个 OTP 消息，
+不依赖 Gate，不拥有队列、网络或世界状态；Gate 的 Sink 复用该契约并持有传输实现。
+
 承载冻结架构规范(`docs/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md`,含 v2.0.2 反哺修订)中
 跨 app 共享的**信封与分类**,使 gate / world / scene / data 各层引用同一份定义。
 

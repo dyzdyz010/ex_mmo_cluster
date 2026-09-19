@@ -11,6 +11,11 @@ defmodule SceneServer.Voxel.ObjectStateDeltaE2ETest do
   # carrying the canonical 0x6C wire bytes for each event.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

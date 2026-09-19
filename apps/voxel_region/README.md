@@ -1,5 +1,41 @@
 # Voxim Region 真值
 
+2026-09-19 工程整改（实现中）：测试按普通 Mix 单文件/标签运行，共享夹具从兄弟测试移到
+`test/support`；纯算法不启动 Repo，持久化测试显式调用 `MmoTest.Database.start!`。
+默认每个 VM 独占 `mmo_test_<pid>_<time>`，跨 VM 清表隔离已用交错写入探针验证。
+依据 [Mix test 1.18](https://hexdocs.pm/mix/1.18.4/Mix.Tasks.Test.html) 的 helper 加载规则与
+[Ecto Sandbox](https://hexdocs.pm/ecto_sql/Ecto.Adapters.SQL.Sandbox.html) 的连接所有权边界：
+这里的冷恢复需要跨连接真实提交，采用独占库；不把事务 Sandbox 强套到恢复场景。
+`MMO_TEST_DB_NAME` 仅给显式共享测试运行使用，调用方负责生命周期；开发库环境变量不参与选择。
+
+首个职责增量提取热内核结果结算为纯 `ThermalSettlement`：输入目标摘要、内核结果、
+有限热源与环境参数，输出属性变更、余源、热种子、部件损伤与燃烧账。复用原结算算法，
+依据 [OTP GenServer](https://www.erlang.org/doc/system/gen_server_concepts.html) 保留单一状态 owner；
+World 继续负责身份接纳、原子日志和广播，不新增进程、不把完整 World state 传给纯模块。
+验证用纯结算反例和既有 thermal/combustion/phase World 接缝；这不等于新的性能或双端验收。
+
+继续整改沿同一 OTP owner 边界：日志空间投影独立为 `LogProjection`，只消费已提交条目、
+区域和订阅范围，返回载荷消息或区域替换标记；不接收 World state，不拥有订阅或发送消息。
+参数升级的兼容规则与热参考重标独立为 `ParameterEvolution`，只消费两版目录、属性行和热账。
+World 保留版本接纳、落盘、状态替换与广播。这两个变化轴不需要数据库或运行中的世界即可测试；
+仍以原有订阅、冷恢复及发布失败回滚测试验证 owner 接缝，不增加权威进程或第二套状态。
+
+独立世界实跑发现首次 canonical 窗口准备约 26 秒时，Scene 的同步身份查询会被 World 邮箱
+阻塞并触发默认 5 秒超时。`World.authority_ref` 改用 OTP 注册表解析本地/远端进程身份，
+不读取世界状态，不延长 Scene 或 Gate 的同步调用期限。依据本机 Elixir 1.18 的
+`GenServer.whereis/1`：本地名称解析为 PID，远端 `{name,node}` 由该节点的注册表解析。
+CollisionStream 继续 monitor 同一个实际 PID；暂停 World 后查询仍完成的回归覆盖这个接缝。
+`World.material_snapshot` 是角色/格范围的一致只读投影，不读取 thermal/liquid 私有演化状态。
+燃烧 owner 测试的初始材料改为作者样本经普通工具采回；液体库存改为有限作者水源经独立会话正常舀取，
+空库存用例从空状态开始，不再事后清空余额；两观察者测试改为真实订阅入口。
+后续 phase、damage、parameter_publication 与 thermal_batch 已按各自契约迁移：潜热、升温、
+点燃、损伤和库存由作者样本及正常工具/消息入口产生；旧存档升级只在停止 owner 后制作离线日志夹具，
+再正常启动重放，不冒充玩家操作。缓存等价性以两个隔离 owner 从同一正常日志恢复后比较。
+当前 voxel 测试已无直接调用 `World.handle_info`；保留的 `replace_state` 仅改变可重建缓存，
+不修改余额、HP、温度、焓、数量、燃料或订阅。删除不再需要的假热日志 `ThermalProbeLog`。
+纯融冻数值测试直接检验 NIF 返回焓、温度与 `Phase.material` 的契约；材质切换及冷恢复由
+phase owner 测试验证。只读观察内部状态不等于注入，也不替代真实双客户端验收。
+
 2026-09-18（Global system，R7结构长尾）：`apply_batch`复用`prefab_reply`和`commit_attachment`
 既有kind2结构格契约，删除不再把粗层结构变化扩成完整区域CSR/压缩。依据为本仓权威
 `Codec.encode_entry`、`World.replay_entry`及Voxim `VoxelLodLevel::WriteStructure`源码：空结构删除，

@@ -251,4 +251,12 @@ defmodule VoxelRegion.Damage do
         {:ok, target, state}
     end
   end
+  @doc "实际 HP 损失同步扣除采回完整度基准；采回操作本身不免费修复。"
+  def pick_baseline(target, hp) do
+    case Map.fetch(target, :pick_baseline_hp) do
+      {:ok, baseline} -> Map.put(target, :pick_baseline_hp, max(0.0, baseline - (target.hp - hp)))
+      :error -> target
+    end
+  end
+
 end

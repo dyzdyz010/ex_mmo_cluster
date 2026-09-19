@@ -3,6 +3,11 @@ defmodule SceneServer.Voxel.ChunkProcessObjectStateDeltaPushTest do
   # cast handler + fan_out_object_state_delta_payload/2 helper.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkPendingTransaction
   alias DataService.Schema.VoxelChunkSnapshot

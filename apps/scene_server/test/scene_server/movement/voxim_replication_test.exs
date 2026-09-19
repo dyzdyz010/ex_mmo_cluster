@@ -14,7 +14,7 @@ defmodule SceneServer.Movement.VoximReplicationTest do
   end
 
   test "paused observer worker does not block peers, leave cleanup or read-only metrics" do
-    {:ok, rep} = Replication.start_link(sink: GateServer.Session.Sink)
+    {:ok, rep} = Replication.start_link(sink: MmoContracts.Session.Outbound)
 
     values =
       for id <- 1..4 do
@@ -92,7 +92,7 @@ defmodule SceneServer.Movement.VoximReplicationTest do
       |> Map.fetch!("members")
 
     assert Enum.frequencies_by(members, &rem(&1["entity_id"], 4)) == %{1 => 101, 3 => 99}
-    {:ok, rep} = Replication.start_link(sink: GateServer.Session.Sink)
+    {:ok, rep} = Replication.start_link(sink: MmoContracts.Session.Outbound)
 
     for member <- members do
       epoch = member["entity_epoch"]
@@ -188,8 +188,8 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
   end
 
   test "moving an observer keeps generation and visibility without emitting lifecycle" do
-    source = start_supervised!({Replication, [sink: GateServer.Session.Sink]}, id: :source)
-    target = start_supervised!({Replication, [sink: GateServer.Session.Sink]}, id: :target)
+    source = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]}, id: :source)
+    target = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]}, id: :target)
     a = value(1, 1, 1, 0.0)
     b = value(2, 2, 1, 1.0)
     join(source, a)
@@ -228,7 +228,7 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
   end
 
   test "source cut bridge is exported until same-tick target frame while neighbour ghosts never are" do
-    source = start_supervised!({Replication, [sink: GateServer.Session.Sink]})
+    source = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]})
     a = value(1, 1, 1, 0.0)
     b = value(2, 2, 1, 1.0)
 
@@ -272,7 +272,7 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
 
   test "target peer loss removes a bridge even before its first populated frame" do
     for event <- [:neighbour_closed, :down] do
-      {:ok, source} = Replication.start_link(sink: GateServer.Session.Sink)
+      {:ok, source} = Replication.start_link(sink: MmoContracts.Session.Outbound)
       a = value(1, 1, 1, 0.0)
       b = value(2, 2, 1, 1.0)
       spectator = b.identity

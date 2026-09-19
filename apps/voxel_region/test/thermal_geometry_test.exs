@@ -1,5 +1,6 @@
 defmodule VoxelRegion.ThermalGeometryTest do
   use ExUnit.Case, async: true
+  @moduletag :perf
   alias VoxelRegion.{ThermalGeometry,Prefab,ThermalNative}
   @materials %{19=>%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>1000.0}}
 

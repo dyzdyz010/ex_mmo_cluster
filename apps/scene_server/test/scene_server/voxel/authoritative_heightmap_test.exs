@@ -1,6 +1,11 @@
 defmodule SceneServer.Voxel.AuthoritativeHeightmapTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.LodHeightmapStore
   alias SceneServer.Voxel.AuthoritativeHeightmap
   alias SceneServer.Voxel.Codec

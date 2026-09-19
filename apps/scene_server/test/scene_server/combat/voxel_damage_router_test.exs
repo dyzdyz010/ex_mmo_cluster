@@ -1,6 +1,11 @@
 defmodule SceneServer.Combat.VoxelDamageRouterTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias SceneServer.Combat.VoxelDamageRouter

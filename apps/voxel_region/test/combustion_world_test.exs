@@ -3,12 +3,12 @@ defmodule VoxelRegion.CombustionWorldTest do
   use ExUnit.Case, async: false
   @moduletag :b6
   alias VoxelRegion.{World, Damage}
-  alias VoxelRegion.DamageWorldTest.{Source, Actor, Log}
+  alias VoxelRegion.TestSupport.{Source, Actor, Log}
 
   setup do
-    root=Path.join(System.tmp_dir!(),"b6_#{System.unique_integer([:positive])}")
+    root=Path.join(System.tmp_dir!(),"b6_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
-    source=System.get_env("B6_CATALOG") || Path.expand("../../../../Voxim/Content/Voxel/Properties/Published/ade8e630274214b6d9abba77286d8a5d8625d485bd6018e92a9bf0a43d3231ba.json",__DIR__)
+    source=System.get_env("B6_CATALOG") || VoxelRegion.TestSupport.catalog()
     catalog=Path.join(root,"properties.json")
     File.cp!(source,catalog)
     env=Path.join(root,"environment.json")
@@ -24,8 +24,11 @@ defmodule VoxelRegion.CombustionWorldTest do
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,granularity: 0,
       direction: {0.0,0.0,1.0},micro: {0,0,0},incarnation: 0,owner: {0,0},material: 0,tool_id: 9}
-    # 只测试：库存夹具；扣料仍经已鉴权工具意图。
-    :sys.replace_state(w,&%{&1 | material_balances: %{{1001,15}=>4_000_000,{1001,8}=>4_000_000}})
+    # 只测试：一次作者样本，再正常挖采获取燃料与冷却材料；不写库存真值。
+    for material <- [15,8] do
+      {:ok,_}=World.apply_edit(w,{-6,1,-4},material)
+      :ok=VoxelRegion.TestSupport.mine_authored(w,1001)
+    end
     on_exit(fn->File.rm_rf!(root) end)
     %{w: w,actor: actor,request: request,opts: opts,catalog: catalog,id: :crypto.hash(:sha256,bytes)}
   end
@@ -134,7 +137,8 @@ defmodule VoxelRegion.CombustionWorldTest do
   test "木面槽按实际体积点燃与耗尽，删除附件而不删除宿主",c do
     short_fuel(c)
     {:ok,_}=World.apply_edit(c.w,{1,1,2},11)
-    :sys.replace_state(c.w,&%{&1 | material_balances: Map.put(&1.material_balances,{1001,19},4096)})
+    {:ok,_}=World.place_prefab(c.w,c.id,{-48,8,-32},0)
+    :ok=VoxelRegion.TestSupport.mine_authored(c.w,1001)
     r=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 0,
       kind: 0,axis: 2,size: 1,anchor: {8,8,16},id: 0,material: 19,tool_id: 1}
     assert {:ok,id}=World.attachment_intent(c.w,c.actor,r)
@@ -160,12 +164,14 @@ defmodule VoxelRegion.CombustionWorldTest do
   test "旧版已耗尽但保留占用的冷存档醒来结算，不虚构初始化燃料",c do
     {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
     assert {:ok,_}=operate(c,9,1)
-    :sys.replace_state(c.w,fn s ->
-      damage=Map.new(s.damage,fn {key,t}->{key,Map.merge(t,%{remaining_fuel_j: 0.0,burning: false,power_w: 0.0,temperature_kelvin: 293.15})} end)
-      %{s | damage: damage,thermal: s.thermal |> Map.put(:active,false) |> Map.put(:combustion_j,90_000.0) |> Map.delete(:fuel_initialized_j)}
-    end)
     assert :ok=World.compact(c.w)
+    {backend,path}=:sys.get_state(c.w).log
     stop_supervised!(World)
+    [checkpoint]=backend.replay(path)
+    # 只测试旧版本存档：离线制造旧格式，重启必须自行识别耗尽记录。
+    rows=Enum.map(checkpoint.property_states,&Map.merge(&1,%{remaining_fuel_j: 0.0,burning: false,power_w: 0.0,temperature_kelvin: 293.15}))
+    thermal=checkpoint.thermal |> Map.put(:active,false) |> Map.put(:combustion_j,90_000.0) |> Map.delete(:fuel_initialized_j)
+    assert :ok=backend.checkpoint(path,%{checkpoint | property_states: rows,thermal: thermal})
     w=start_supervised!({World,c.opts})
     assert :sys.get_state(w).thermal.active
     saved=tick(w)
@@ -203,7 +209,8 @@ defmodule VoxelRegion.CombustionWorldTest do
   test "熄灭附件后拆卸只回收槽余料且保留宿主",c do
     short_fuel(c)
     {:ok,_}=World.apply_edit(c.w,{1,1,2},11)
-    :sys.replace_state(c.w,&%{&1 | material_balances: Map.put(&1.material_balances,{1001,19},4096)})
+    {:ok,_}=World.place_prefab(c.w,c.id,{-48,8,-32},0)
+    :ok=VoxelRegion.TestSupport.mine_authored(c.w,1001)
     r=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 0,
       kind: 0,axis: 2,size: 1,anchor: {8,8,16},id: 0,material: 19,tool_id: 1}
     assert {:ok,id}=World.attachment_intent(c.w,c.actor,r)

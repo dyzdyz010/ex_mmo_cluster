@@ -2,6 +2,11 @@ defmodule SceneServer.Voxel.WorldGenChunkTest do
   # ChunkProcess 显式 dev/test WorldGen policy 集成。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias SceneServer.Voxel.ChunkProcess
   alias SceneServer.Voxel.MacroCellHeader
   alias SceneServer.CliObserve

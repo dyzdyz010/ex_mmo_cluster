@@ -1,6 +1,11 @@
 defmodule DataService.Voxel.OverlayLogStoreTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.OverlayLogStore
 
   @cv 0xF1E2_D3C4_B5A6_9788

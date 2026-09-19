@@ -1,6 +1,11 @@
 defmodule WorldServer.Voxel.MapLedgerPersistenceTest do
   use ExUnit.Case, async: true
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias WorldServer.Voxel.MapLedger
   alias WorldServer.Voxel.RegionAssignment
 

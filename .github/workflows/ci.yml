@@ -13,14 +13,33 @@ concurrency:
 
 env:
   MIX_ENV: test
+  MMO_TEST_DB_NAME: mmo_ci_${{ github.run_id }}_${{ github.run_attempt }}
   ELIXIR_ERL_OPTIONS: "+fnu"
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Select affected contracts
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.scope.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check scope selection contracts
+        run: python3 .github/test_test_scope.py
+      - id: scope
+        env:
+          SCOPE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/test-scope.py
+
   compile:
     name: Compile maintained apps
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'compile')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,17 +100,11 @@ jobs:
 
   format:
     name: Format
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'format')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Checkout shared Voxim source and fixtures
-        uses: ./.github/actions/voxim-fixtures
-        with:
-          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
-
-      - name: Prepare isolated test fixtures
-        run: python3 .github/prepare-test-fixtures.py
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
@@ -113,6 +126,8 @@ jobs:
 
   test-gate-server:
     name: Test gate_server
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-gate-server')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -179,6 +194,8 @@ jobs:
 
   test-beacon-server:
     name: Test beacon_server
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-beacon-server')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -217,6 +234,8 @@ jobs:
 
   test-data-service:
     name: Test data_service
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-data-service')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -271,6 +290,8 @@ jobs:
 
   test-scene-server:
     name: Test scene_server (Rust NIFs)
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-scene-server')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -335,10 +356,12 @@ jobs:
         # heat kernels, surface elements). The voxel-authority suite writes through
         # DataService.Repo on PostgreSQL — test_helper.exs runs storage_up + migrations
         # itself against the postgres service, so no separate ecto step is needed here.
-        run: elixir --sname scene_ci -S mix test apps/scene_server/test --no-start
+        run: cd apps/scene_server && mix test --no-start
 
   test-native-rust:
     name: Test native Rust crates
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-native-rust')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -371,6 +394,8 @@ jobs:
 
   test-standalone:
     name: Test standalone apps
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-standalone')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -420,10 +445,12 @@ jobs:
       # agent_server / agent_manager were consolidated away during arch-align;
       # world_server is the remaining standalone (non-DB, non-Phoenix) app.
       - name: Run world_server tests
-        run: mix test apps/world_server/test --no-start
+        run: cd apps/world_server && elixir --sname world_ci -S mix test --no-start
 
   test-auth-server:
     name: Test auth_server
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-auth-server')
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -491,6 +518,8 @@ jobs:
 
   smoke-ws-dual:
     name: Smoke WebSocket dual movement
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'smoke-ws-dual')
     runs-on: ubuntu-latest
     env:
       MIX_ENV: dev
@@ -562,6 +591,8 @@ jobs:
 
   test-visualize-server:
     name: Test visualize_server
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-visualize-server')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -597,3 +628,120 @@ jobs:
       - name: Run visualize_server tests
         # Phoenix 1.8 Endpoint uses persistent_term — needs the app started.
         run: cd apps/visualize_server && mix test
+  test-voxel-region:
+    name: Test voxel_region (normal Mix entry)
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-voxel-region')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mmo_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Prepare isolated test fixtures
+        run: python3 .github/prepare-test-fixtures.py
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache deps and cargo registry
+        # _build is intentionally NOT cached. Rustler copies *.so into
+        # _build/<env>/lib/scene_server/priv/native/, but the copy is not
+        # always reproduced from a warm cache; previous runs have hit
+        # {:load_failed, ...} when stale _build is restored without the
+        # .so files. Always rebuild the NIF from scratch; cargo registry
+        # cache keeps this under ~30s.
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (including Rust NIFs)
+        run: cd apps/voxel_region && mix compile
+
+      - name: Run voxel_region tests
+        run: cd apps/voxel_region && mix test --no-start
+
+  test-mmo-contracts:
+    name: Test mmo_contracts
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-mmo-contracts')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: cd apps/mmo_contracts && mix compile
+
+      - name: Run mmo_contracts tests
+        run: cd apps/mmo_contracts && mix test --no-start
+
+  required:
+    name: CI result
+    if: always()
+    needs: [changes, compile, format, test-gate-server, test-beacon-server, test-data-service, test-scene-server, test-native-rust, test-standalone, test-auth-server, smoke-ws-dual, test-visualize-server, test-voxel-region, test-mmo-contracts]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          assert results['changes']['result'] == 'success', results
+          selected = json.loads(results['changes']['outputs']['jobs'])
+          assert all(results[j]['result'] == 'success' for j in selected), results
+          PY

@@ -2,6 +2,11 @@ defmodule DataService.Voxel.RegionEpochStoreTest do
   # 共享 voxel_region_epochs 表,async:false + 每测试清表。
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.RegionEpochStore
 
   setup do

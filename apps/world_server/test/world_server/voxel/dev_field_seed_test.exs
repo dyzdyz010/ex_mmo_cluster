@@ -1,6 +1,11 @@
 defmodule WorldServer.Voxel.DevFieldSeedTest do
   use ExUnit.Case, async: true
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.WriteTokenStore
   alias WorldServer.Voxel.DevFieldSeed
   alias WorldServer.Voxel.MapLedger

@@ -1223,8 +1223,14 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     root =
       Path.join(System.tmp_dir!(), "voxim_s1_generated_#{System.unique_integer([:positive])}")
 
-    manifest =
+    published_manifest =
       Path.expand("../../../../../../Voxim/Docs/R6/runtime/s4_worldgen_manifest.json", __DIR__)
+
+    # 新建测试世界使用当前 kernel；发布清单的旧世界身份仍由正式入口严格校验。
+    File.mkdir_p!(root)
+    manifest = Path.join(root, "manifest.json")
+    data = published_manifest |> File.read!() |> Jason.decode!() |> Map.delete("content_version")
+    File.write!(manifest, Jason.encode!(data))
 
     on_exit(fn ->
       true =

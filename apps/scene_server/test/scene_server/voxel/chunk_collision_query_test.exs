@@ -1,6 +1,11 @@
 defmodule SceneServer.Voxel.ChunkCollisionQueryTest do
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias SceneServer.Voxel.{ChunkProcess, NormalBlockData, Storage}
 
   test "collision_query returns occupied solid samples only" do

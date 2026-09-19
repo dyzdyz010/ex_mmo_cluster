@@ -4,6 +4,11 @@ defmodule WorldServer.Voxel.MapLedgerSceneNodeAssignTest do
   # MapLedger ↔ SceneNodeRegistry hop).
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias WorldServer.Voxel.{MapLedger, SceneNodeRegistry}
 
   describe "scene_node_registry not configured" do

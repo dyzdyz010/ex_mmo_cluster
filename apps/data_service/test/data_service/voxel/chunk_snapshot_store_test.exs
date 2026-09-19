@@ -3,6 +3,11 @@ defmodule DataService.Voxel.ChunkSnapshotStoreTest do
   # The shared `voxel_chunks` table forces sync execution + per-test cleanup.
   use ExUnit.Case, async: false
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Repo
   alias DataService.Schema.VoxelChunkSnapshot
   alias DataService.Voxel.ChunkSnapshotStore

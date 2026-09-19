@@ -1,5 +1,6 @@
 defmodule VoxelRegion.CombustionTest do
   use ExUnit.Case, async: true
+  @moduletag :b6
 
   alias VoxelRegion.Combustion
 

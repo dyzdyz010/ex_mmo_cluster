@@ -39,23 +39,13 @@ defmodule GateServer.Session.Sink do
   require VoxelCodec
 
   @doc "M1 Scene 的唯一可靠出口；消息保留 identity 和流语义至连接 owner。"
-  def reliable(gate_pid, identity, stream, message) when stream in [:control, :voxel] do
-    purpose = if stream == :control, do: 1, else: 2
-    send(gate_pid, {:mmo_reliable, identity, purpose, message})
-    :ok
-  end
+  defdelegate reliable(gate_pid, identity, stream, message), to: MmoContracts.Session.Outbound
 
   @doc "M1 可替换移动输出；只在调用 async_send_dgram 之前替换旧样本。"
-  def datagram(gate_pid, identity, message) do
-    send(gate_pid, {:mmo_datagram, identity, message})
-    :ok
-  end
+  defdelegate datagram(gate_pid, identity, message), to: MmoContracts.Session.Outbound
 
   @doc "结束此 identity，不触碰之后重新登录的会话。"
-  def close(gate_pid, identity, reason) do
-    send(gate_pid, {:mmo_close, identity, reason})
-    :ok
-  end
+  defdelegate close(gate_pid, identity, reason), to: MmoContracts.Session.Outbound
 
   @doc "只选择消息所属的字节 owner，不改变传输行为。"
   def encode(message) when SessionCodec.is_message(message), do: SessionCodec.encode(message)

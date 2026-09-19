@@ -1,6 +1,11 @@
 defmodule WorldServer.Voxel.WorldPackMaterializerTest do
   use ExUnit.Case, async: true
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   alias DataService.Voxel.WriteTokenStore
   alias DataService.Voxel.ChunkSnapshotStore
   alias WorldServer.Voxel.MapLedger
