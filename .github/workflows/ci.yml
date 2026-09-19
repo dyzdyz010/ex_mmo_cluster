@@ -75,7 +75,7 @@ jobs:
 
           for app in "${strict_apps[@]}"; do
             echo "::group::Compiling ${app#apps/}"
-            ERL_LIBS="$PWD/_build/test/lib" mix cmd --app "${app#apps/}" mix compile --warnings-as-errors --no-optional-deps
+            (cd "$app" && mix compile --warnings-as-errors --no-optional-deps)
             echo "::endgroup::"
           done
 

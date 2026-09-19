@@ -27,6 +27,7 @@ defmodule WorldServer.MovementRouteTest do
     config = [
       {:world_server, :movement_routes, %{7 => route}},
       {:gate_server, :voxel_scene_id, 7},
+      {:gate_server, :voxim_builder_cids, [55]},
       {:auth_server, :voxel_scene_id, 7},
       {:auth_server, :dev_auto_login, true}
     ]

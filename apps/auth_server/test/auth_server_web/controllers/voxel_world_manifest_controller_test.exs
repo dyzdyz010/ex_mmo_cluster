@@ -356,17 +356,31 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     assert String.starts_with?(body["index_hash"], "sha256:")
   end
 
+  @tag timeout: 180_000
   test "GET /ingame/voxel/world_diff pages canonical snapshot payloads for a ready pack",
        %{conn: conn} do
     logical_scene_id = 91_004
-    token = token(logical_scene_id)
+
+    token = %{
+      token(logical_scene_id)
+      | bounds_chunk_min: {-7, -7, -7},
+        bounds_chunk_max: {14, 14, 14},
+        expires_at_ms: System.system_time(:millisecond) + 180_000
+    }
+
     assert {:ok, _} = WriteTokenStore.upsert_token(token)
 
-    assert {:ok, :inserted} =
-             ChunkSnapshotStore.put_snapshot(snapshot_attrs(token, {0, 0, 0}, 0, <<"zero">>))
+    for x <- -7..13, y <- -7..13, z <- -7..13 do
+      payload =
+        case {x, y, z} do
+          {-7, -7, -7} -> "zero"
+          {-7, -7, -6} -> "one"
+          _ -> "rest"
+        end
 
-    assert {:ok, :inserted} =
-             ChunkSnapshotStore.put_snapshot(snapshot_attrs(token, {1, 0, 0}, 1, <<"one">>))
+      assert {:ok, :inserted} =
+               ChunkSnapshotStore.put_snapshot(snapshot_attrs(token, {x, y, z}, 0, payload))
+    end
 
     Application.put_env(:auth_server, :voxel_world_pack,
       status: :ready,
@@ -377,19 +391,6 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
         chunk_min: [-7, -7, -7],
         chunk_max: [13, 13, 13],
         chunk_count: 9_261
-      },
-      pack_index: %{
-        chunk_min: [-7, -7, -7],
-        chunk_max: [13, 13, 13],
-        regions: [
-          %{
-            id: "test-window",
-            chunk_min: [-7, -7, -7],
-            chunk_max: [13, 13, 13],
-            chunk_count: 9_261,
-            hash: "sha256:test-window"
-          }
-        ]
       }
     )
 
@@ -406,7 +407,7 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
     assert body["complete"] == false
     assert body["next_cursor"] == 1
 
-    assert [%{"chunk_coord" => [0, 0, 0], "snapshot_payload_b64" => first_payload}] =
+    assert [%{"chunk_coord" => [-7, -7, -7], "snapshot_payload_b64" => first_payload}] =
              body["chunks"]
 
     assert Base.decode64!(first_payload) == <<"zero">>
@@ -425,7 +426,7 @@ defmodule AuthServerWeb.VoxelWorldManifestControllerTest do
 
     assert body["complete"] == false
 
-    assert [%{"chunk_coord" => [1, 0, 0], "snapshot_payload_b64" => second_payload}] =
+    assert [%{"chunk_coord" => [-7, -7, -6], "snapshot_payload_b64" => second_payload}] =
              body["chunks"]
 
     assert Base.decode64!(second_payload) == <<"one">>

@@ -1262,22 +1262,26 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert_receive {:canonical_snapshot, ^request, snapshot}, 5000
     assert length(snapshot.regions) == 8 and length(snapshot.chunks) == 512
 
-    fixture =
-      Path.expand(
-        "../../../../../../Voxim/Docs/M1/runtime/S1/world-fixture/256b33610344964f/L0",
-        __DIR__
-      )
+    # 当前自然资源 kernel 的完整 body 金样（含 cells、CSR、面贴图）；旧 S1 快照保留给历史 FileStore 测试。
+    # 源码 SHA256：5e45e6797acdd6ba55bc61a0bb36fdf9c5b786eb31880eaae71350b8b55cb5e5。
+    expected = %{
+      {-1, 7, -1} => "ba92aa087fe9d3f1866bcdb1458ad510463d7d11618810fa230a2a1e096b68e8",
+      {-1, 7, 0} => "3d1987152f0f4e4b855239e8693632f12356df120efcce6d0d4ada0ba01c5633",
+      {-1, 8, -1} => "f71edd2a9d168f97606d7fdd8d4858e1fbc2dad7a6cd1b5fbea652b78eccb6ac",
+      {-1, 8, 0} => "3cecd80328b84747b955623defd253e43798fc1a557dc8bf23724aec0a415b2b",
+      {0, 7, -1} => "e9d9b858d9523cc8ec206ffe90b8ace5f1a783c1d8e50956f1df2bfee266f7df",
+      {0, 7, 0} => "f016b45a4b0b7f46f08ba8476614d96f347d9344879cfc87ac81364cd3c3a94c",
+      {0, 8, -1} => "cc8a7f2968a5941cd13755e22e275003224e25865fdce4aece99cbc0400d7234",
+      {0, 8, 0} => "6f30b57ef578089bb8c01941bc956160da4137b9987164aad1ba1319daeab9bf"
+    }
 
-    for {{x, y, z}, bytes} <- snapshot.regions do
-      {:ok, actual} = Voxel.Payload.decode(bytes)
+    for {coord, bytes} <- snapshot.regions do
+      {:ok, header, body} = Voxel.Codec.decode_payload_body(bytes)
 
-      {:ok, saved} =
-        File.read!(Path.join(fixture, "r_#{x}_#{y}_#{z}.vxr")) |> Voxel.Payload.decode()
+      assert Base.encode16(:crypto.hash(:sha256, body), case: :lower) ==
+               Map.fetch!(expected, coord)
 
-      assert actual.cells == saved.cells and actual.records == saved.records and
-               actual.maps == saved.maps
-
-      assert actual.content_version == 0x1D08AA1EBBB050F3 and actual.seq == 0
+      assert header.content_version == 0x0CD1114C83C1FA9C and header.seq == 0
     end
 
     clock = :atomics.new(1, signed: true)

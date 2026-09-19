@@ -55,6 +55,12 @@ Enum.each(
   end
 )
 
+{:ok, _} =
+  Supervisor.start_child(
+    SceneServer.Supervisor,
+    {SceneServer.PlayerSup, name: SceneServer.PlayerSup}
+  )
+
 wait_until = fn predicate, timeout_ms ->
   deadline = System.monotonic_time(:millisecond) + timeout_ms
 

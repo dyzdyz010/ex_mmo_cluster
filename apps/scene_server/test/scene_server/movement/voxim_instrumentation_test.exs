@@ -260,7 +260,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     for row <- rows do
       assert row["scene_id"] == 1 and row["scene_epoch"] == 7
       assert row["time_domain"] == "scene_clock_monotonic_us"
-      assert is_binary(row["process"]) and row["node"] == "nonode@nohost"
+      assert is_binary(row["process"]) and row["node"] == Atom.to_string(node())
       assert is_integer(row["server_tick"]) and is_integer(row["monotonic_us"])
     end
 

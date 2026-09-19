@@ -255,14 +255,15 @@ defmodule T1TransportTest do
     assert function_exported?(GateServer.Session.QuicConnection, :start_link, 1)
   end
 
-  for old_version <- [1, 2, 3, 4, 5, 6, 7] do
+  for old_version <- 1..(Session.Codec.protocol_version() - 1) do
     @tag :b4
     test "protocol #{old_version} Hello is closed before authentication on real QUIC", %{
       conn: conn,
       hello: hello
     } do
       {:ok, stream} = :quicer.start_stream(conn, [{:active, true}])
-      {:ok, <<prefix::binary-size(9), 8::16, rest::binary>>} = Session.Codec.encode(hello)
+      {:ok, <<prefix::binary-size(9), current::16, rest::binary>>} = Session.Codec.encode(hello)
+      assert current == Session.Codec.protocol_version()
       old = prefix <> <<unquote(old_version)::16>> <> rest
       {:ok, _} = :quicer.async_send(stream, <<1, byte_size(old)::32, old::binary>>, 0)
       assert_receive {:quic, :shutdown, ^conn, 0x10008}, 5000
@@ -806,8 +807,15 @@ defmodule T1TransportTest do
 end
 
 defmodule M4aGateTransferTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   @moduletag :m4a_transfer
+  setup do
+    previous = Application.get_env(:gate_server, :voxim_builder_cids, [])
+    Application.put_env(:gate_server, :voxim_builder_cids, [101])
+    on_exit(fn -> Application.put_env(:gate_server, :voxim_builder_cids, previous) end)
+    :ok
+  end
+
   alias GateServer.Session.QuicConnection
   alias GateServer.Transport.QuicListener
   alias MmoContracts.{Session, Movement}
@@ -1080,7 +1088,46 @@ defmodule M4aGateTransferTest do
 
   defp pending_state do
     {old, fresh} = identities()
-    {:ok, state} = QuicConnection.init(conn: :connection, listener: self(), hello: nil)
+
+    listener =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:claim, _, _, _}} -> GenServer.reply(from, {old, {:ok, self()}})
+        end
+      end)
+
+    hello = %Session.Hello{
+      protocol_version: Session.Codec.protocol_version(),
+      kernel_id: <<1::256>>,
+      profile_id: <<2::256>>
+    }
+
+    {:ok, state} =
+      QuicConnection.init(
+        conn: :connection,
+        listener: listener,
+        hello: hello,
+        auth_module: T1Auth,
+        route_module: T1Route
+      )
+
+    state = %{state | streams: %{control: %{purpose: 1, buffer: <<>>, started: true}}}
+    join = %Session.Join{username: "one", token: "valid", cid: 101, scene_id: 1}
+
+    state =
+      Enum.reduce([hello, join], state, fn message, state ->
+        {:ok, bytes} = Session.Codec.encode(message)
+
+        {:noreply, next} =
+          QuicConnection.handle_info(
+            {:quic, <<byte_size(bytes)::32, bytes::binary>>, :control, %{}},
+            state
+          )
+
+        next
+      end)
+
+    assert state.builder
 
     pending = %{
       identity: fresh,

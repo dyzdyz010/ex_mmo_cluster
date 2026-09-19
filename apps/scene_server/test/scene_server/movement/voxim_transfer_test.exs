@@ -237,6 +237,10 @@ defmodule SceneServer.Movement.VoximTransferTest do
         {:ok, transaction} = MmoContracts.Voxel.Codec.decode_transaction(bytes)
         {transaction.seq, applied}
 
+      %MmoContracts.Voxel.PropertyBatch{transaction_seq: seq, complete: 0}, {logged, applied} ->
+        assert seq == logged
+        {logged, applied}
+
       %MmoContracts.Voxel.CollisionApplied{transaction_seq: seq}, {logged, _} ->
         assert logged == seq
         {logged, seq}

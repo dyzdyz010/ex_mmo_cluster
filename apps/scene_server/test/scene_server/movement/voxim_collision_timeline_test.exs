@@ -19,17 +19,14 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     def schedule(_, _, _), do: :ok
   end
 
-  # 仅让第一次真实 source.ensure 延后，World 仍唯一发送 marker/delta。
-  defmodule PreparingStore do
-    defdelegate open(opts), to: VoxelRegion.FileStore
-    defdelegate content_version(store), to: VoxelRegion.FileStore
-    defdelegate world_dir(store), to: VoxelRegion.FileStore
-    defdelegate read(store, level, region), to: VoxelRegion.FileStore
-    defdelegate generated(store), to: VoxelRegion.FileStore
+  # 延后真实快照调用；热缓存现在跳过 source.ensure，不能再用它控制快照到达顺序。
+  defmodule PreparingWorld do
+    defdelegate authority_ref(world), to: World
+    defdelegate canonical_deltas_after(world, seq), to: World
 
-    def ensure(store, level, region) do
+    def canonical_snapshot_and_subscribe(world, box, subscriber, request, chunks) do
       case Application.get_env(:scene_server, :e1_prepare) do
-        {counter, observer} when level == 0 and region == {-1, 7, -1} ->
+        {counter, observer} ->
           if :atomics.add_get(counter, 1, 1) == 1 do
             send(observer, {:e1_preparing, self()})
 
@@ -42,7 +39,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
           :ok
       end
 
-      VoxelRegion.FileStore.ensure(store, level, region)
+      World.canonical_snapshot_and_subscribe(world, box, subscriber, request, chunks)
     end
   end
 
@@ -99,7 +96,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     end)
 
     Application.put_env(:scene_server, :e1_observer, self())
-    source = if tags[:generated], do: VoxelRegion.GeneratedStore, else: PreparingStore
+    source = if tags[:generated], do: VoxelRegion.GeneratedStore, else: VoxelRegion.FileStore
 
     if tags[:generated] do
       {:ok, store} =
@@ -148,6 +145,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
          scene_id: 1,
          scene_epoch: 7,
          world_ref: world,
+         world_api: PreparingWorld,
          config: config,
          clock: {Clock, clock},
          native: Native}
@@ -201,13 +199,21 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert_receive message when elem(message, 0) in [:mmo_reliable, :mmo_datagram, :mmo_close],
                    5000
 
-    message
+    if collision_output?(message), do: message, else: next_output()
   end
+
+  # 本组验证碰撞时间线；核对属性帧的身份与禁用状态后，投影到移动/碰撞事件。
+  defp collision_output?({:mmo_reliable, who, 2, %Voxel.PropertyBatch{} = batch}) do
+    assert batch.identity == who and batch.hp_enabled == 0 and batch.thermal_enabled == 0
+    false
+  end
+
+  defp collision_output?(_), do: true
 
   defp outputs(acc \\ []) do
     receive do
       message when elem(message, 0) in [:mmo_reliable, :mmo_datagram, :mmo_close] ->
-        outputs([message | acc])
+        outputs(if(collision_output?(message), do: [message | acc], else: acc))
     after
       0 -> Enum.reverse(acc)
     end
