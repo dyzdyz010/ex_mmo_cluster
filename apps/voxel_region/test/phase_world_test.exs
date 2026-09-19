@@ -110,6 +110,15 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert row(c.w,cell).material==20
   end
 
+  @tag :empty_inventory
+  test "空相变域不依赖热环境初始化，也不生成材料真值",c do
+    stop_supervised!(World)
+    w=start_supervised!({World,Keyword.delete(c.opts,:thermal_environment_path)})
+    snapshot=World.material_snapshot(w,[1001],[{63,1,2}])
+    assert snapshot.material_balances==[]
+    assert [%{material: 0}]=snapshot.probe_occupancy
+  end
+
   test "paid partial latent interval, exact quantity, Ice collision and cold phase recovery",c do
     assert {:ok,_}=transfer(c,3,1,{63,1,2})
     initial=row(c.w,{63,1,2}).phase_energy_j
