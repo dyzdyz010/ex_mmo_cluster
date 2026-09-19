@@ -54,7 +54,6 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   end
 
   setup do
-    ensure_repo_started()
     Repo.delete_all(VoxelChunkSnapshot)
     DataService.Voxel.SceneObjectStore.reset()
     # 梯队1 step1.5b-2:prefab 走 CommandLog idempotency-key,清表避免跨测试 :duplicate。
@@ -422,13 +421,6 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
   defp assert_voxel_intent_accepted_drain(_skipped, opts, timeout) do
     # 0x6C / 0x62 等可能先到;继续等 0x68。
     assert_voxel_intent_accepted(Keyword.put(opts, :timeout, timeout))
-  end
-
-  defp ensure_repo_started do
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
   end
 
   defp stop_named(name) do

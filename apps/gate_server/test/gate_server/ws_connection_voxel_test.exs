@@ -49,7 +49,6 @@ defmodule GateServer.WsConnectionVoxelTest do
   setup do
     old_observe_log = Application.get_env(:gate_server, :cli_observe_log)
     stop_named(GateServer.Interface)
-    ensure_repo_started()
 
     # Phase 1d: clear the shared `voxel_chunks` table + WriteTokenStore state
     # so every test starts from a known baseline.
@@ -2450,13 +2449,6 @@ defmodule GateServer.WsConnectionVoxelTest do
         Process.exit(pid, :shutdown)
         assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
         :ok
-    end
-  end
-
-  defp ensure_repo_started do
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
     end
   end
 end

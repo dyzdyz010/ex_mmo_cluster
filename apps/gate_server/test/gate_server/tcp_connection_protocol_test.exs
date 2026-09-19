@@ -216,8 +216,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
       {:error, _reason} -> :ok
     end
 
-    ensure_repo_started()
-
     migrations_path = Path.expand("../../../data_service/priv/repo/migrations", __DIR__)
 
     {:ok, _, _} =
@@ -240,7 +238,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
   end
 
   setup do
-    ensure_repo_started()
     ensure_dispatcher_sup()
 
     Repo.delete_all(Character)
@@ -1188,15 +1185,6 @@ defmodule GateServer.TcpConnectionProtocolTest do
     # 梯队4:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在 `DataService.Repo`
     # (test_helper 已启 Repo);无进程可启。
     :ok
-  end
-
-  defp ensure_repo_started do
-    case DataService.Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
-
-    wait_until(fn -> is_pid(Process.whereis(DataService.Repo)) end, 100)
   end
 
   defp ensure_dispatcher_sup do

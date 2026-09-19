@@ -1,7 +1,5 @@
-# Phase 1d: voxel chunk persistence is real PostgreSQL via
-# `DataService.Voxel.ChunkSnapshotStore`. Prepare storage and migrations while
-# letting `DataService.Application` own `DataService.Repo` startup; gate tests
-# may start auth_server/data_service later and must not race a manual Repo boot.
+# 只测试：先建库迁移，再由 DataService.Application 在整套测试期间持有 Repo。
+# Repo 不能链接到单个测试进程，否则下一测试可能复用正在退出的 Repo。
 Application.ensure_all_started(:jason)
 Application.ensure_all_started(:postgrex)
 Application.ensure_all_started(:ecto_sql)
@@ -29,6 +27,9 @@ migrations_path =
       Ecto.Adapters.SQL.query!(repo, "TRUNCATE #{table}", [])
     end
   end)
+
+# 迁移用的临时 Repo 已退出；正式应用统一拥有后续测试共享的持久化进程。
+{:ok, _} = Application.ensure_all_started(:data_service)
 
 # Phase 1d: voxel chunk persistence is real PostgreSQL via Ecto, so apply
 # paths take O(10ms) per write instead of microseconds for the old in-memory
