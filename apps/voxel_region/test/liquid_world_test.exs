@@ -120,6 +120,41 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert World.liquid_activity(w).scheduled
   end
 
+  # 只测试：隔离水槽中的在线参数发布；真实 World 数量、休眠/唤醒与日志回放，
+  # 仅世界基底和玩家使用替身。
+  @tag head: @capacity
+  test "lowering the published side threshold wakes sleeping liquid and survives compact",c do
+    walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
+    assert {:ok,_}=World.apply_edits(c.w,walls)
+    :ok=GenServer.call(c.actor.player,{:eye,{63.5,2.5,2.5}})
+    assert {:ok,_}=transfer(c,3,1,{63,1,2})
+    for _<-1..3, do: tick(c.w)
+    assert World.liquid_activity(c.w)==%{active_cells: 0,scheduled: false}
+    assert quantities(c.w)==%{{63,1,2}=>@transfer}
+    catalog=c.opts[:property_catalog_path]
+    old=VoxelRegion.Damage.load(catalog)
+    data=Jason.decode!(File.read!(catalog))
+    next=Path.join(c.root,"next.json")
+    # 缺失字段代表原有零阈值，其余约束不变。
+    File.write!(next,Jason.encode!(Map.update!(data,"liquid",&Map.delete(&1,"side_threshold_units"))))
+    assert :ok=World.publish_parameters(c.w,next,old.digest)
+    assert World.liquid_activity(c.w).scheduled
+    assert :ok=World.compact(c.w)
+    stop_supervised!(World)
+    File.cp!(next,catalog)
+    w=start_supervised!({World,c.opts})
+    assert World.liquid_activity(w).scheduled
+    before=quantities(w)
+    tick(w)
+    assert quantities(w)[{64,1,2}]>0
+    assert Enum.sum(Map.values(quantities(w)))==Enum.sum(Map.values(before))
+    current=VoxelRegion.Damage.load(catalog)
+    bad=Map.update!(data,"liquid",&Map.update!(&1,"gravity_units_per_step",fn n->n-1 end))
+    File.write!(next,Jason.encode!(bad))
+    assert {:error,:property_version_in_use}=World.publish_parameters(w,next,current.digest)
+    assert World.simulation_snapshot(w,[],{{0,0,0},{2,1,1}}).property_context.digest==current.digest
+  end
+
   test "pour and scoop preserve finite inventory, dedupe and quantity-only region/ring commits",c do
     assert {:ok,seq}=transfer(c,3,10,{63,1,2})
     assert quantities(c.w)==%{{63,1,2}=>@transfer}

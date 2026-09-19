@@ -4,6 +4,10 @@
 
 ## 当前事实
 
+- `World.material_supply(server, cid, supply_id, %{material_id => integer_units})` 是 server-only 作者供给入口，未接 Gate。每角色/来源 ID 只授予一次，返回原 `{:ok, seq}` 的重试不会补料；来源、精确数量、相态焓与完整度和余额同笔持久化，日志重放与 compact 都保留收据。数量由作者资产/调用者指定；液相温度不低于转变点，固相不高于转变点，外部相态量/焓进入既有 `phase_authored_units` / `phase_authored_energy_j` 账。普通消费仍走原建造/工具事务。
+- `publish_parameters` 允许修改液体 `side_threshold_units`（缺省 0），其他液体参数约束保持不变；改变阈值会唤醒现存液体并持久化工作集。发布新目录仍须将该版本作为下次启动的 `property_catalog_path`，与既有属性目录升级契约相同。即使没有属性实例，实际目录变化也追加事务。
+- 上述局部集成验证使用独立 World、真实公开供给/交易入口及文件持久化；供给恢复还经过正式数据库元数据编解码，source/player 为显式替身。复跑：在 `apps/voxel_region` 执行 `MMO_DB_PORT=5433 mix test --no-start test/phase_world_test.exs test/liquid_world_test.exs test/parameter_publication_test.exs`。它证明精确增量、消费后幂等、重启/压实及阈值唤醒，不替代 Demo 双客户端验收。
+
 - `VoxelRegion.Application` 在配置 root/manifest 后先完成 Bake，再启动唯一 `VoxelRegion.World`。canonical 真值来自 GeneratedStore 的显式生成基底与 OverlayLog 持久化事务；World 拥有材料、库存、损伤、热、燃烧、相变与电路的读取和提交。只读 `Replica` 消费权威结果，缺失不能变为第二真值。
 - `WorldServer` 提供 Scene/World 路由与受控移交编排；`SceneServer.Movement.Scene`、`Player` 与 `Replication` 分别维护场景成员、每玩家移动/碰撞历史与 AOI。它们从 canonical World 或本地只读副本构建碰撞派生物，不拥有第二份可写体素世界。
 - `GateServer.Transport.QuicListener` 与 `Session.QuicConnection` 是当前正式网络入口。Hello/Join、鉴权、身份 epoch、Ready、可靠流与 DATAGRAM 都已有实现；`config/runtime.exs` 默认 `VOXIM_TRANSPORT=voxim_quic`，旧 TCP/WS 必须显式选择 `legacy_reference`，没有自动降级。

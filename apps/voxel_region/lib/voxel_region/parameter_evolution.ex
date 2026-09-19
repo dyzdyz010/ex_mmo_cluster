@@ -13,7 +13,7 @@ defmodule VoxelRegion.ParameterEvolution do
     phase_fields =
       ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
 
-    old.attachments == new.attachments and old.liquid == new.liquid and
+    old.attachments == new.attachments and liquid_compatible?(old.liquid, new.liquid) and
       Enum.all?(old.materials, fn {id, material} ->
         case Map.fetch(new.materials, id) do
           {:ok, next} ->
@@ -32,6 +32,13 @@ defmodule VoxelRegion.ParameterEvolution do
         end
       end)
   end
+
+  # 全局系统功能：液体只允许在线调整侧向水位差阈值。
+  # 缺失阈值沿用原有零阈值语义。
+  defp liquid_compatible?(nil, nil), do: true
+  defp liquid_compatible?(old, new) when is_map(old) and is_map(new),
+    do: Map.delete(old, "side_threshold_units") == Map.delete(new, "side_threshold_units")
+  defp liquid_compatible?(_, _), do: false
 
   @doc "按实际属性行重标热参考；不供能、不改变温度、燃料、HP 或库存。"
   def thermal_reference(nil, _rows, _old, _catalog), do: nil

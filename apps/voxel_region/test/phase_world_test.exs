@@ -34,6 +34,13 @@ defmodule VoxelRegion.PhaseWorldTest do
         "heat_capacity_per_macro"=>if(m["material_id"]==20,do: 1_930_000.0,else: 4_180_000.0),
         "thermal_conductivity"=>if(m["material_id"]==20,do: 2.2,else: 0.6),"heat_resistance_kelvin"=>1_000_000.0}),else: m
     end)
+    materials = if context[:database_metadata], do: Enum.map(materials, fn m ->
+      if m["material_id"] in [13,22], do: Map.merge(m,%{
+        "phase_peer_material_id" => if(m["material_id"]==13,do: 22,else: 13),
+        "phase_transition_kelvin" => 1273.15,"latent_heat_per_macro_j" => 400_000_000.0,
+        "heat_capacity_per_macro" => 3_000_000.0,
+        "thermal_conductivity" => 0.0,"heat_resistance_kelvin" => 1_000_000.0}), else: m
+    end), else: materials
     tools=for {id,action} <- [{11,"liquid.scoop"},{12,"liquid.pour"},{13,"phase.cool"},{14,"phase.heat"}],do:
       %{"tool_id"=>id,"id"=>action,"action"=>action,"power"=>1,"range_macro"=>8,"interval_seconds"=>0.1,
         "liquid_transfer_units"=>if(id==12,do: Map.get(context,:water_units,@quarter),else: @quarter),"fuel_material_id"=>15,"fuel_units"=>1,
@@ -50,7 +57,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,
       environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001}))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
-    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,
+    opts=[source: Source,log: if(context[:database_metadata], do: DatabaseMetadataLog, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,
       production_materials: [4,13,15,16,20,21,22],liquid_bounds: {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
@@ -84,6 +91,74 @@ defmodule VoxelRegion.PhaseWorldTest do
     end
     on_exit(fn->File.rm_rf!(root) end)
     %{w: w,opts: opts,actor: actor,root: root,catalog: catalog}
+  end
+
+  # 只测试契约：真实 World 供给、消费、日志与重启接缝；隔离空世界，
+  # 文件存储使用生产数据库元数据编码，仅基底/玩家使用替身。
+  # 不证明 Gate、UE 或数据库可用性。
+  @tag :empty_inventory
+  @tag :database_metadata
+  test "author supply is additive, phase-complete, and never refills after consumption or recovery", c do
+    q = %{15 => @capacity, 20 => @quarter, 21 => @capacity, 22 => @quarter}
+    before = observe(c.w)
+    assert {:ok, seq} = World.material_supply(c.w, 1001, "starter-v1", q)
+    supplied = observe(c.w)
+    for {m, units} <- q do
+      assert supplied.material_balances[{1001,m}] == Map.get(before.material_balances, {1001,m}, 0) + units
+    end
+    catalog = Damage.load(c.catalog)
+    for m <- [20,21,22] do
+      {energy, integrity} = supplied.phase_inventory[{1001,m}]
+      assert integrity == q[m]
+      transition = catalog.materials[m]["phase_transition_kelvin"]
+      temperature = if m in [21,22], do: max(293.15,transition), else: min(293.15,transition)
+      latent = if m in [21,22], do: catalog.materials[m]["latent_heat_per_macro_j"], else: 0
+      expected = q[m] / @capacity * (latent + catalog.materials[m]["heat_capacity_per_macro"] * (temperature-transition))
+      assert_in_delta energy, expected, 1.0e-6
+    end
+    authored_energy = supplied.phase_inventory |> Map.values() |> Enum.map(&elem(&1,0)) |> Enum.sum()
+    assert_in_delta supplied.thermal.phase_authored_energy_j, authored_energy, 1.0e-6
+    assert supplied.thermal.phase_authored_units == @capacity + 2*@quarter
+    [txn] = World.entries_after(c.w,before.seq)
+    assert txn.material_supplies[{1001,"starter-v1"}].quantities == q
+    assert {:ok,^seq} = World.material_supply(c.w,1001,"starter-v1",q)
+    assert World.seq(c.w) == supplied.seq
+    assert {:ok,_} = transfer(c,3,1,{63,1,2})
+    consumed = observe(c.w)
+    assert consumed.material_balances[{1001,21}] == @capacity - @quarter
+    assert {:ok,^seq} = World.material_supply(c.w,1001,"starter-v1",q)
+    assert observe(c.w).material_balances == consumed.material_balances
+    stop_supervised!(World)
+    w = start_supervised!({World,c.opts})
+    assert {:ok,^seq} = World.material_supply(w,1001,"starter-v1",q)
+    assert observe(w).material_balances == consumed.material_balances
+    assert observe(w).phase_inventory == consumed.phase_inventory
+    assert :ok = World.compact(w)
+    stop_supervised!(World)
+    w = start_supervised!({World,c.opts})
+    assert {:ok,^seq} = World.material_supply(w,1001,"starter-v1",q)
+    assert observe(w).material_balances == consumed.material_balances
+    assert observe(w).phase_inventory == consumed.phase_inventory
+    assert {:ok,_} = World.material_supply(w,1001,"extra-v1",%{15 => 17})
+    assert observe(w).material_balances[{1001,15}] == @capacity + 17
+    assert {:ok,_} = World.material_supply(w,1002,"starter-v1",%{15 => 23})
+    assert Enum.find(World.material_balances(w,1002), &(&1.material==15)).balance == 23
+  end
+
+  @tag :empty_inventory
+  test "invalid author quantities and rejected persistence do not grant or consume a supply ID", c do
+    before = observe(c.w)
+    for q <- [%{15 => -1}, %{15 => 1.5}, %{999 => 1}, %{}] do
+      assert {:error,:invalid_material_supply} = World.material_supply(c.w,1001,"starter",q)
+    end
+    handle = Log.open(c.root,World.content_version(c.w))
+    File.write!(handle<>".reject","reject")
+    assert {:error,:test_disk_failure} = World.material_supply(c.w,1001,"starter",%{21 => @quarter})
+    assert observe(c.w).material_balances == before.material_balances
+    assert World.seq(c.w) == before.seq
+    File.rm!(handle<>".reject")
+    assert {:ok,_} = World.material_supply(c.w,1001,"starter",%{21 => @quarter})
+    assert observe(c.w).material_balances[{1001,21}] == @quarter
   end
 
   defp transfer(c,action,seq,cell) do
