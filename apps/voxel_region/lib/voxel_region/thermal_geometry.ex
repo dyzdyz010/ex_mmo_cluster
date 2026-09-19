@@ -7,58 +7,77 @@ defmodule VoxelRegion.ThermalGeometry do
   def key(%{granularity: 4}=t),do: VoxelRegion.ThermalAttachments.key(VoxelRegion.Attachments.slot(t))
   def key(t), do: {t.granularity,t.micro}
 
-  @doc "构造一个宏格内的热节点；at 只读取权威占用，返回目标及读取后的世界。"
-  def cell(cell,refined,materials,state,at,volume \\ fn _,_ -> 1.0 end) do
-    {targets,state}=case Map.fetch(refined,cell) do
-      {:ok,slots} ->
-        {for({slot,{material,{birth,_}=owner}}<-slots,do:
-          %{micro: Prefab.micro_coord(cell,slot),granularity: 1,incarnation: birth,owner: owner,material: material}),state}
+  @doc "列出宏格或实际微格的面采样点；仅使用 refined 的占用索引，不读取世界。"
+  def faces(cell, refined) do
+    case Map.fetch(refined, cell) do
+      {:ok, slots} ->
+        Enum.map(slots, fn {slot, _} ->
+          micro = Prefab.micro_coord(cell, slot)
+          {micro, for(axis <- 0..2, sign <- [-1, 1],
+            do: {put_elem(micro, axis, elem(micro, axis) + sign), axis})}
+        end)
+
       :error ->
-        {target,s}=at.(scale(cell,@micro),state)
-        {if(target,do: [target],else: []),s}
-    end
-    Enum.map_reduce(Enum.filter(targets,&Map.has_key?(materials[&1.material],"heat_capacity_per_macro")),state,fn target,s ->
-      material=Map.fetch!(materials,target.material)
-      bounds=bounds(target,volume.(s,target))
-      lengths=lengths(bounds)
-      faces=if target.granularity==1 do
-        for axis<-0..2,sign<-[-1,1],do: {put_elem(target.micro,axis,elem(target.micro,axis)+sign),axis}
-      else
-        for axis<-0..2,sign<-[-1,1],reduce: [] do
+        micro = scale(cell, @micro)
+        faces = for axis <- 0..2, sign <- [-1, 1], reduce: [] do
           acc ->
-            neighbor=put_elem(cell,axis,elem(cell,axis)+sign)
-            if Map.has_key?(refined,neighbor) do
-              axes=Enum.reject(0..2,&(&1==axis))
-              samples=for a<-0..(@micro-1),b<-0..(@micro-1) do
-                micro=target.micro |> put_elem(axis,elem(target.micro,axis)+if(sign==1,do: @micro,else: -1))
-                  |> put_elem(Enum.at(axes,0),elem(target.micro,Enum.at(axes,0))+a)
-                  |> put_elem(Enum.at(axes,1),elem(target.micro,Enum.at(axes,1))+b)
-                {micro,axis}
+            neighbor = put_elem(cell, axis, elem(cell, axis) + sign)
+            if Map.has_key?(refined, neighbor) do
+              [u, v] = Enum.reject(0..2, &(&1 == axis))
+              samples = for a <- 0..(@micro-1), b <- 0..(@micro-1) do
+                point = micro
+                  |> put_elem(axis, elem(micro, axis) + if(sign == 1, do: @micro, else: -1))
+                  |> put_elem(u, elem(micro, u) + a)
+                  |> put_elem(v, elem(micro, v) + b)
+                {point, axis}
               end
-              samples++acc
+              samples ++ acc
             else
-              [{scale(neighbor,@micro),axis}|acc]
+              [{scale(neighbor, @micro), axis} | acc]
             end
         end
+        [{micro, faces}]
+    end
+  end
+
+  @doc "面摘要所需的唯一 canonical 采样点，保留首次出现次序。"
+  def points(faces) do
+    Enum.flat_map(faces, fn {micro, neighbors} ->
+      [micro | Enum.map(neighbors, &elem(&1, 0))]
+    end) |> Enum.uniq()
+  end
+
+  @doc "消费冻结的 point → nil 或 {target, volume} 值，生成热节点；缺失采样不是空气。"
+  def cell(faces, materials, samples) do
+    Enum.flat_map(faces, fn {micro, neighbors} ->
+      case Map.fetch!(samples, micro) do
+        nil -> []
+        {target, volume} ->
+          material = Map.fetch!(materials, target.material)
+          if Map.has_key?(material, "heat_capacity_per_macro") do
+            bounds = bounds(target, volume)
+            contacts = Enum.map(neighbors, fn {point, axis} ->
+              case Map.fetch!(samples, point) do
+                nil -> {nil, {0.0, 0.0, 0.0}}
+                {other, volume} -> {other, contact(bounds, bounds(other, volume), axis)}
+              end
+            end)
+            covered = Enum.reduce(contacts, 0.0, fn {_, {area, _, _}}, sum -> sum + area end)
+            contacts = for {other, {area, d, other_d}} <- contacts, other != nil, area > 0,
+                Map.has_key?(materials[other.material], "heat_capacity_per_macro") do
+              k = material["thermal_conductivity"]
+              ko = materials[other.material]["thermal_conductivity"]
+              g = if k == 0 or ko == 0, do: 0.0, else: area/(d/k + other_d/ko)
+              {key(other), g}
+            end
+            {x, y, z} = lengths(bounds)
+            [{key(target), %{target: target, material: material,
+              capacity: material["heat_capacity_per_macro"]*x*y*z,
+              exposed_faces: 2*(x*y+x*z+y*z)-covered, contacts: contacts}}]
+          else
+            []
+          end
       end
-      {{covered,contacts},s}=Enum.map_reduce(faces,s,fn {micro,axis},s ->
-        {other,s}=at.(micro,s)
-        other=if other && other.granularity==2,do: %{other | granularity: 1},else: other
-        geometry=if other,do: contact(bounds,bounds(other,volume.(s,other)),axis),else: {0.0,0.0,0.0}
-        {{other,geometry},s}
-      end) |> then(fn {faces,s}->
-        covered=Enum.reduce(faces,0.0,fn {_,{area,_,_}},sum->sum+area end)
-        contacts=for {other,{area,d,other_d}}<-faces,other != nil,area>0,
-          Map.has_key?(materials[other.material],"heat_capacity_per_macro") do
-          k=material["thermal_conductivity"]; ko=materials[other.material]["thermal_conductivity"]
-          g=if k==0 or ko==0,do: 0.0,else: area/(d/k+other_d/ko)
-          {key(other),g}
-        end
-        {{covered,contacts},s}
-      end)
-      {x,y,z}=lengths
-      {{key(target),%{target: target,material: material,capacity: material["heat_capacity_per_macro"]*x*y*z,
-          exposed_faces: 2*(x*y+x*z+y*z)-covered,contacts: contacts}},s}
     end)
   end
 

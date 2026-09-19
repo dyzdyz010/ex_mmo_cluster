@@ -98,7 +98,7 @@ Test-only证据在Voxim `Saved/R7/Harness/tail-fix-red-01`（3项红）及`tail-
 空气扩域复用与实体编辑失效定向红绿；真实combined与部署证据见Voxim `Docs/R7/material-performance.md`。
 
 2026-09-18（Global system）：真实combined投料暴露旧CopperOre16设备被
-`not_a_circuit_face`拒绝。沿既有`Circuit.plan/7`“设备按安装工具参数、裸线按当前材料电导”
+`not_a_circuit_face`拒绝。沿既有电路“设备按安装工具参数、裸线按当前材料电导”
 契约及Voxim材料升级的旧设备保留决定，材料电导仅作为新安装前提；已有设备投料/开关
 仍走原身份、完整足迹、操作种类及精确燃料借记检查。不会恢复矿石线电导或回填储能。
 
@@ -232,6 +232,17 @@ OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同�
 同输入数据库/双观察者实验及独立 B3 真实双端结果见 [B3 observation](../../../Voxim/Docs/R7/B3-observation.md)。
 性能夹具仅用 `voxim_b3_rustler_perf`；这不是大规模真实客户端容量验收。
 
+2026-09-19 F08 canonical 热几何读取收口（全局系统功能）：`ThermalGeometry.faces/2` 与 `points/1` 声明所需微格采样，
+World 独占 canonical 读取，并冻结成 `point → nil | {target, phase_volume}`；只对实际热节点读取邻面，不因空气或非热根扩张读取。
+`ThermalGeometry.cell/3` 与 `ThermalAttachments.add/5` 只计算这些不可变值，不再接收完整 World state、读取回调或捕获 owner 的闭包。
+附件采样按首次出现点去重；图缓存依旧只是可丢弃派生结果，当前温度、HP、余燃料和焓仍在 World 每批读取。
+电路同样由 `Circuit.prepare/5` 准备设备与附件边、`points/1` 声明端点，World 读取端点宿主并沿实际连通导体扩张；
+`Circuit.plan/3` 只消费冻结的宿主/接触面积摘要，不接收或返回 World。遍历与边的前插次序保持原样，避免改变浮点累加结果。
+`Combustion.recover_units/4` 统一剩余化学燃料对应的采回量；相族固体建造复用 `Phase.transfer/5` 的库存取出规则，
+权限、冷却、余额、身份接纳及持久化/广播次序仍留在唯一 World owner，不为缩短文件机械搬运事务。
+依据继续采用已查阅的 [Elixir 1.18 GenServer 官方适用边界](https://hexdocs.pm/elixir/1.18.4/GenServer.html#module-when-not-to-use-a-genserver)：
+用模块/函数组织值计算，进程只承载运行时状态和并发。此处不新增进程、世界副本或协议。
+
 2026-09-16 R7-B3 完整物理增量（Global system）：`ThermalGeometry` 从 canonical 实占用生成宏格／微格节点，
 微格容量为宏格的1/512、面面积1/64m²；宏格与 refined 的部分接触按64个面槽位采样。
 接触导热系数 `G=A/(da/ka+db/kb)`，d为半格长度；每条边只结算一次，空面按环境换热，非热实体视为绝热。
@@ -242,7 +253,7 @@ OverlayLog kind3 使用 ETF level1 压缩，旧/新元数据混合恢复，同�
 2026-09-17 潜热批内反馈：World 传入焓、体积、T*、总潜热、热容及液态标志，NIF 每个原 50ms 段按原 World 乘加次序更新焓，再按 `Phase.temperature/4` 的同一分段公式反馈温度。
 处于或进入潜热区不再返回；融化焓首次达到总潜热、冻结焓首次降到零时返回，点燃、共享 HP 损失/归零与新前沿事件保留，材质替换仍走 World 原提交规则，未改物性或添加 epsilon。
 相变结果追加最终焓，World 直接接纳；测试用 `Phase.temperature/4` 精确复算温度，并对原 World/NIF 逐节点比较温度、焓、HP 和热账（1e-12），证据为 Voxim `thermal-batch-{red,green,replay,native}-02`，隔离构建不代表部署或双端验收。
-空几何边界沿 `ThermalGeometry.cell/6` 的权威派生契约：`[]` 是已知无基础热节点，`Map.has_key?/2` 为假才是尚未派生；附件面空气侧的合法空格不再强制 50ms 往返。
+空几何边界沿 `ThermalGeometry.cell/3` 的权威派生契约：`[]` 是已知无基础热节点，`Map.has_key?/2` 为假才是尚未派生；附件面空气侧的合法空格不再强制 50ms 往返。
 该修复只放宽 World 传给 NIF 的批时长，NIF 数值分段与全部事件保持不变；空气侧附件红测 10 次、绿测 1 次，非零导热结果与十次 50ms 调用逐节点精确相等。
 证据为 Voxim `thermal-batch-{red,green,replay,native}-03`：重放保留原种子，补空缓存键明确属于固定捕获域空节点假设，并保留无补键对照；正式 combined 性能仍待同负载复测。
 每500ms提交0.5s模拟，与属性、热破坏占用同笔持久化。参考下述NIST FiPy离散与稳定条件；没有气流、辐射、电路或燃烧。

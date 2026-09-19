@@ -1,4 +1,5 @@
 defmodule SceneServer.PlayerManagerTest do
+  @moduledoc "只测试：通过真实 PlayerManager 接纳；坏 native 引用是明确的失效恢复故障模型，不写玩家真值。"
   use ExUnit.Case, async: false
 
   @moduletag timeout: 10_000
@@ -66,7 +67,6 @@ defmodule SceneServer.PlayerManagerTest do
     assert_receive {:DOWN, ^first_ref, :process, ^first_pid, :normal}, 2_000
 
     GenServer.cast(SceneServer.PlayerManager, {:remove_player_index, cid, first_pid})
-    _ = :sys.get_state(SceneServer.PlayerManager)
 
     assert {:ok, players} = GenServer.call(SceneServer.PlayerManager, :get_all_players)
     assert players[cid] == second_pid

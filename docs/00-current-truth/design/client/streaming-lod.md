@@ -1,7 +1,8 @@
 # Voxia 客户端流送与完整 3D LOD 当前事实
 
-> 本文是唯一现役 Voxia 的 Near/Far 流送、完整 XYZ coverage、presentation ownership、
-> 移动加载与 confirmed edit 呈现真值。历史 Tile handoff 证据不定义当前架构。
+> 适用范围：Voxia 参考实现的 Near/Far 流送、完整 XYZ coverage、presentation ownership、
+> 移动加载与 confirmed edit 呈现。当前主线 Voxim 的运行时与验收见 [Voxim runtime](../server/voxim-runtime.md)；
+> 本页不定义 Voxim 的生产入口或缺口。历史 Tile handoff 证据不定义 Voxia 当前参考架构。
 
 ## 当前结论
 

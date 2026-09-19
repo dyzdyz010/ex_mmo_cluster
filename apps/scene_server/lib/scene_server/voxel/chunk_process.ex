@@ -1,5 +1,8 @@
 defmodule SceneServer.Voxel.ChunkProcess do
   @moduledoc """
+  全局系统功能（legacy/reference）：仍由 ChunkDirectory、ObjectRegistry 和 FieldRuntime 调用。
+  当前 Voxim canonical truth 由 VoxelRegion.World 持有；此 owner 仅服务旧 lease/chunk 协议。
+
   Hot authoritative process for one leased voxel chunk.
 
   A chunk process owns scene-side chunk truth while its region lease is current.
@@ -576,6 +579,12 @@ defmodule SceneServer.Voxel.ChunkProcess do
   @spec push_field_region_destroyed_payload(GenServer.server(), binary()) :: :ok
   def push_field_region_destroyed_payload(server, payload) when is_binary(payload) do
     GenServer.cast(server, {:push_field_region_destroyed_payload, payload})
+  end
+
+  @doc "返回旧 chunk owner 当前不可变存储快照；场计算只读取此值，不依赖调试状态。"
+  @spec storage_snapshot(GenServer.server(), timeout()) :: Storage.t()
+  def storage_snapshot(server, timeout \\ 5_000) do
+    GenServer.call(server, :storage_snapshot, timeout)
   end
 
   @doc "Returns process state for CLI/debug inspection."
@@ -1415,6 +1424,8 @@ defmodule SceneServer.Voxel.ChunkProcess do
 
     {:reply, reply, state}
   end
+
+  def handle_call(:storage_snapshot, _from, state), do: {:reply, state.storage, state}
 
   def handle_call(:debug_state, _from, state) do
     {:reply,
@@ -4874,17 +4885,13 @@ defmodule SceneServer.Voxel.ChunkProcess do
     end)
   end
 
-  # Phase 6: closure factory captured by FieldTickWorker. Sends `:debug_state`
-  # to the chunk process to retrieve current storage at tick time.
+  # FieldTickWorker 每轮经具名只读契约获取快照；owner 超时/退出时仍沿用现有不可用语义。
   defp build_storage_fn do
     chunk_pid = self()
 
     fn ->
       try do
-        case GenServer.call(chunk_pid, :debug_state, 200) do
-          %{storage: %Storage{} = storage} -> storage
-          _ -> nil
-        end
+        storage_snapshot(chunk_pid, 200)
       catch
         :exit, _ -> nil
       end

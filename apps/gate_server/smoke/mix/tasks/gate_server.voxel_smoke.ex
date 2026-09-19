@@ -1,9 +1,10 @@
 defmodule Mix.Tasks.GateServer.VoxelSmoke do
   @moduledoc """
-  Runs the non-GUI voxel E2E smoke scenario through Gate's binary protocol path.
+  只测试：运行旧 voxel 协议 smoke，使用已有账户 token 和该账户拥有的角色。
 
-      mix gate_server.voxel_smoke
-      mix gate_server.voxel_smoke --logical-scene-id 99001 --observe-dir .demo/observe
+      mix gate_server.voxel_smoke --username tester --cid 42
+
+  会话 token 从环境变量 MMO_SMOKE_TOKEN 读取。未提供凭证会显式失败；不生成账户或绕过鉴权。
 
   The task writes Gate/Scene/World observe logs and `server_stdio`-formatted
   snapshots under `.demo/observe/` by default, then prints a compact CLI summary.
@@ -24,7 +25,8 @@ defmodule Mix.Tasks.GateServer.VoxelSmoke do
     world_observe_log: :string,
     stdio_log: :string,
     summary_path: :string,
-    cid: :integer
+    cid: :integer,
+    username: :string
   ]
   @aliases [h: :help, s: :logical_scene_id, o: :observe_dir]
 
@@ -46,6 +48,8 @@ defmodule Mix.Tasks.GateServer.VoxelSmoke do
   end
 
   defp run_smoke(opts) do
+    opts = Keyword.put(opts, :token, System.fetch_env!("MMO_SMOKE_TOKEN"))
+
     case GateServer.VoxelSmoke.run(opts) do
       {:ok, result} ->
         Mix.shell().info(summary(result))

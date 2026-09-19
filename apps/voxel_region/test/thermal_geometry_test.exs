@@ -4,6 +4,17 @@ defmodule VoxelRegion.ThermalGeometryTest do
   alias VoxelRegion.{ThermalGeometry,Prefab,ThermalNative}
   @materials %{19=>%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>1000.0}}
 
+  # 只测试：从显式占用夹具冻结采样，生产读取由 World 完成。
+  defp geometry(cell, refined, at, volume \\ fn _, _ -> 1.0 end) do
+    faces = ThermalGeometry.faces(cell, refined)
+    samples = Map.new(ThermalGeometry.points(faces), fn point ->
+      {target, _} = at.(point, nil)
+      target = if target && target.granularity == 2, do: %{target | granularity: 1}, else: target
+      {point, if(target, do: {target, volume.(nil, target)})}
+    end)
+    ThermalGeometry.cell(faces, @materials, samples)
+  end
+
   test "有限高度只接触实际底面和低侧壁；容量与法向半程由同一体积派生" do
     cells=[{0,0,0},{0,-1,0},{0,1,0},{1,0,0}]
     at=fn p,s ->
@@ -13,7 +24,7 @@ defmodule VoxelRegion.ThermalGeometryTest do
       {t,s}
     end
     volume=fn _,t -> if t.micro=={0,0,0},do: 1/512,else: 1.0 end
-    nodes=Map.new(Enum.flat_map(cells,fn c->elem(ThermalGeometry.cell(c,%{},@materials,nil,at,volume),0) end))
+    nodes=Map.new(Enum.flat_map(cells,fn c->geometry(c,%{},at,volume) end))
     water=nodes[{0,{0,0,0}}]
     assert_in_delta water.capacity,1000/512,1.0e-12
     assert_in_delta water.exposed_faces,1+3/512,1.0e-12
@@ -29,7 +40,7 @@ defmodule VoxelRegion.ThermalGeometryTest do
         _->at.(p,s)
       end
     end
-    {thin,_}=ThermalGeometry.cell({0,0,0},refined,@materials,nil,fine_at,volume)
+    thin=geometry({0,0,0},refined,fine_at,volume)
     refute Enum.any?(elem(hd(thin),1).contacts,fn {{g,_},_}->g==1 end)
   end
 
@@ -46,8 +57,8 @@ defmodule VoxelRegion.ThermalGeometryTest do
       end
       {t,s}
     end
-    {a,_}=ThermalGeometry.cell(macro,refined,@materials,nil,at)
-    {b,_}=ThermalGeometry.cell(fine,refined,@materials,nil,at)
+    a=geometry(macro,refined,at)
+    b=geometry(fine,refined,at)
     nodes=Map.new(a++b)
     assert nodes[{0,{504,0,0}}].capacity==1000.0
     assert nodes[{1,{512,0,0}}].capacity==1000.0/512

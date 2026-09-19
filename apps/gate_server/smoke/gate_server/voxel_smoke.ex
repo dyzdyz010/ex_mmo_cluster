@@ -1,19 +1,10 @@
 defmodule GateServer.VoxelSmoke do
   @moduledoc """
-  CLI-shaped E2E smoke runner for the server-authoritative voxel path.
+  只测试：旧 lease/chunk 协议的 CLI 组件 smoke，不是 Voxim 全局系统组合根。
 
-  The runner drives a real `GateServer.WsConnection` with binary protocol frames
-  and observes the resulting Gate -> World -> Scene -> DataService flow through
-  structured observe logs plus `server_stdio`-formatted state snapshots. It is
-  intentionally non-GUI so local automation can validate the runtime even when a
-  browser or visual client is unavailable.
-
-  The smoke owns its minimum runtime prerequisites: it starts `:data_service`
-  so `DataService.Repo` is available, then starts or reuses the local World,
-  Scene chunk directory, and Gate interface processes. After mutating a hot
-  chunk it calls `SceneServer.Voxel.ChunkProcess.flush_persistence/2` before
-  reading PostgreSQL, which keeps the CLI assertion aligned with the runtime's
-  async persistence cold path.
+  使用调用方提供的已有账户 token/角色，通过真实 WS 鉴权和进场报文驱动
+  Gate → World → Scene → DataService。默认建立独立场景，不清除其他场景或表。
+  CLI 使用本地真实 Scene 接纳；单测可显式提供 Scene 接纳替身，不冒充双客户端验收。
   """
 
   alias GateServer.WsConnection
@@ -43,17 +34,17 @@ defmodule GateServer.VoxelSmoke do
     * `:gate_observe_log`, `:scene_observe_log`, `:world_observe_log` - explicit observe logs.
     * `:stdio_log` - file receiving `server_stdio`-formatted snapshots.
     * `:summary_path` - file receiving the final inspected summary.
-    * `:cid` - connection character id, defaults to `42`.
+    * `:username`, `:token`, `:cid` - required existing account session and owned character.
   """
   def run(opts \\ []) when is_list(opts) do
     logical_scene_id =
       Keyword.get_lazy(opts, :logical_scene_id, fn ->
-        90_000 + System.unique_integer([:positive, :monotonic])
+        System.system_time(:microsecond)
       end)
 
     region_id =
       Keyword.get_lazy(opts, :region_id, fn ->
-        190_000 + System.unique_integer([:positive, :monotonic])
+        System.system_time(:microsecond)
       end)
 
     paths = resolve_paths(opts, logical_scene_id)
@@ -70,11 +61,14 @@ defmodule GateServer.VoxelSmoke do
           region_id: region_id
         })
 
+        username = Keyword.get(opts, :username) || raise("missing smoke username")
+        token = Keyword.get(opts, :token) || raise("missing smoke token")
+        cid = Keyword.get(opts, :cid) || raise("missing smoke cid")
         :ok = ensure_runtime()
-        {:ok, lease} = put_world_region(logical_scene_id, region_id)
         {:ok, ws_pid} = WsConnection.start_link(self())
         Process.put(@ws_pid_key, ws_pid)
-        put_connection_in_scene(ws_pid, Keyword.get(opts, :cid, 42))
+        enter_scene!(ws_pid, username, token, cid)
+        {:ok, lease} = put_world_region(logical_scene_id, region_id)
 
         summary =
           run_protocol!(
@@ -83,7 +77,7 @@ defmodule GateServer.VoxelSmoke do
             region_id,
             lease,
             paths,
-            Keyword.get(opts, :cid, 42)
+            cid
           )
 
         flush_observe_logs()
@@ -251,15 +245,13 @@ defmodule GateServer.VoxelSmoke do
     with :ok <- ensure_application_started(:data_service),
          :ok <- ensure_loaded(token_store, :data_write_token_store_unavailable),
          :ok <- ensure_loaded(snapshot_store, :data_chunk_snapshot_store_unavailable),
-         # 幂等性:smoke 复用 region_id/logical_scene_id(System.unique_integer per-VM 重置 →
-         # 跨 mix test 重用同一 id),而 voxel_chunks / write_tokens / region_epochs 跨运行持久化。
-         # 不清的话第二次运行:① 残留 write_token 卡 :stale_token;② 残留 chunk(version 2)使
-         # `initial_snapshot_version == 0` 断言失败。开跑前清这三处持久化态(test-only reset 钩子,
-         # 同 chunk_directory_test / map_ledger_test 的隔离做法),保证每次都是干净起点。
-         :ok <- clear_persisted_voxel_state(),
-         # 梯队4 + Phase 1d:WriteTokenStore 与 ChunkSnapshotStore 均为无状态模块,真相在
-         # `DataService.Repo`(由 `DataService.Application` 监督)。smoke 只需校验模块已加载,
-         # 无 GenServer 可启;`write_token_store: token_store` 仅作 MapLedger 的 enable 标记。
+         :ok <- ensure_application_started(:auth_server),
+         :ok <-
+           ensure_named(SceneServer.PhysicsManager, fn -> SceneServer.PhysicsSup.start_link() end),
+         :ok <-
+           ensure_named(SceneServer.AoiManager, fn -> SceneServer.AoiSup.start_link() end),
+         :ok <-
+           ensure_named(SceneServer.PlayerManager, fn -> SceneServer.PlayerSup.start_link() end),
          :ok <-
            ensure_named(MapLedger, fn ->
              MapLedger.start_link(name: MapLedger, write_token_store: token_store)
@@ -301,6 +293,7 @@ defmodule GateServer.VoxelSmoke do
            ensure_named(GateServer.Interface, fn ->
              GateServer.VoxelSmokeLocalInterface.start_link(
                name: GateServer.Interface,
+               auth_server: node(),
                scene_server: node(),
                world_server: node()
              )
@@ -349,22 +342,9 @@ defmodule GateServer.VoxelSmoke do
     :ok
   end
 
-  # 清空跨运行持久化的 voxel 态(chunk 快照 / write token / region epoch),保证 smoke 每次
-  # 都是干净起点。用各 store 的 test-only `reset/0` 钩子(经 data_module 解析,不在 gate 侧
-  # 硬编译依赖 Repo/Schema)。任一 store 不可用(如 DataService 未起)时 try/catch 退化为 :ok。
-  defp clear_persisted_voxel_state do
-    for store <- [:ChunkSnapshotStore, :WriteTokenStore, :RegionEpochStore] do
-      apply(data_module(store), :reset, [])
-    end
-
-    :ok
-  catch
-    :exit, _reason -> :ok
-  end
-
   defp put_world_region(logical_scene_id, region_id) do
     now_ms = System.system_time(:millisecond)
-    lease_id = 290_000 + System.unique_integer([:positive, :monotonic])
+    lease_id = System.system_time(:microsecond)
 
     with {:ok, _assignment} <-
            MapLedger.put_region(MapLedger, %{
@@ -376,12 +356,7 @@ defmodule GateServer.VoxelSmoke do
              owner_epoch: 0,
              assigned_scene_node: node()
            }),
-         # 幂等性:不 pin owner_epoch / token_version —— 让 MapLedger 走 DB 单调分配器
-         # (RegionEpochStore.allocate_next),token_version 默认取该 epoch。region_id 由
-         # System.unique_integer 派生(per-VM 重置 → 跨 mix test 重用同一 region_id),而
-         # voxel_write_tokens / voxel_region_epochs 跨运行持久化;若 pin 固定 token_version
-         # 则第二次运行就 <= DB 现值 → issue_lease :stale_token。单调分配保证每次 > 前值。
-         # (同 dev_seed 早先「不 pin owner_epoch」的修法。)
+         # owner epoch 沿用持久化单调分配器，不覆盖已有场景。
          {:ok, lease} <-
            MapLedger.issue_lease(MapLedger, region_id, @owner_scene_instance_ref,
              lease_id: lease_id,
@@ -391,10 +366,39 @@ defmodule GateServer.VoxelSmoke do
     end
   end
 
-  defp put_connection_in_scene(pid, cid) do
-    :sys.replace_state(pid, fn state -> %{state | status: :in_scene, cid: cid} end)
-    _state = :sys.get_state(pid)
-    :ok
+  defp enter_scene!(pid, username, token, cid) do
+    WsConnection.receive_frame(
+      pid,
+      <<0x05, 11::64-big, byte_size(username)::16-big, username::binary, byte_size(token)::16-big,
+        token::binary>>
+    )
+
+    receive do
+      {:gate_ws_send, frame} ->
+        assert_equal!(
+          IO.iodata_to_binary(frame),
+          <<0x80, 11::64-big, 0>>,
+          :authentication_rejected
+        )
+    after
+      2_000 -> raise "timed out waiting for authentication"
+    end
+
+    WsConnection.receive_frame(pid, <<0x02, 12::64-big, cid::64-big>>)
+
+    receive do
+      {:gate_ws_send, frame} ->
+        case IO.iodata_to_binary(frame) do
+          <<0x84, 12::64-big, 0, _x::float-64-big, _y::float-64-big, _z::float-64-big,
+            _next_seq::32-big>> ->
+            :ok
+
+          other ->
+            raise "scene admission rejected: #{inspect(other)}"
+        end
+    after
+      2_000 -> raise "timed out waiting for scene admission"
+    end
   end
 
   defp send_debug_probe!(pid, request_id, command) do
@@ -532,6 +536,9 @@ defmodule GateServer.VoxelSmoke do
   end
 
   defp refute_chunk_push!(timeout_ms) do
+    # 等待意图结果时也会收到推送，退订验收必须同时检查该阶段已暂存的帧。
+    assert_equal!(Process.get(@deferred_chunk_updates_key, []), [], :chunk_push_after_unsubscribe)
+
     receive do
       {:gate_ws_send, <<0x62, _payload::binary>>} ->
         raise "received voxel snapshot push after unsubscribe"

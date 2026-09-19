@@ -2961,17 +2961,17 @@ defmodule VoxelRegion.World do
     if map_size(VoxelRegion.Circuit.devices(state.damage)) == 0 do
       thermal_steps(state, remaining, visited, %{})
     else
-      plan =
-        VoxelRegion.Circuit.plan(
-          state.attachments,
-          state.damage,
-          state.properties,
-          state,
-          &target_at/2,
-          remaining
-        )
-
-      {state, visited} = thermal_steps(plan.state, plan.duration, visited, plan.powers)
+      input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties,
+        state.thermal.config["ambient_kelvin"], remaining)
+      {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
+        {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &target_at/2)
+        {{point, VoxelRegion.Circuit.conductors(targets, s.properties)}, s}
+      end)
+      solids = for {_point, targets} <- hosts, target <- targets, into: %{},
+        do: {VoxelRegion.ThermalGeometry.key(target), target}
+      {contacts, state} = circuit_contacts(Map.values(solids), MapSet.new(), [], state)
+      plan = VoxelRegion.Circuit.plan(input, Map.new(hosts), contacts)
+      {state, visited} = thermal_steps(state, plan.duration, visited, plan.powers)
 
       {damage, visited} =
         Enum.reduce(plan.outputs, {state.damage, visited}, fn {id, c}, {damage, visited} ->
@@ -2998,6 +2998,25 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 按实际连通导体扩张 canonical 读取；不预读全世界，也不把 owner 交给计算模块。
+  defp circuit_contacts([], _seen, contacts, state), do: {contacts, state}
+  defp circuit_contacts([target | queue], seen, contacts, state) do
+    key = VoxelRegion.ThermalGeometry.key(target)
+    if MapSet.member?(seen, key) do
+      circuit_contacts(queue, seen, contacts, state)
+    else
+      seen = MapSet.put(seen, key)
+      {targets, state} = Enum.map_reduce(VoxelRegion.Circuit.solid_points(target), state, &target_at/2)
+      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties),
+        {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
+          if MapSet.member?(seen, other_key),
+            do: {queue, contacts},
+            else: {[other | queue], [{target, other, area} | contacts]}
+        end)
+      circuit_contacts(queue, seen, contacts, state)
+    end
+  end
+
   defp thermal_steps(state, remaining, visited, _powers) when remaining < 1.0e-12,
     do: {state, visited}
 
@@ -3015,15 +3034,16 @@ defmodule VoxelRegion.World do
 
     {geometry, state} =
       Enum.reduce(plan.missing, {plan.geometry, state}, fn cell, {geometry, s} ->
-        {nodes, s} =
-          VoxelRegion.ThermalGeometry.cell(
-            cell,
-            s.refined,
-            s.properties.materials,
-            s,
-            &target_at/2,
-            &phase_volume/2
-          )
+        faces = VoxelRegion.ThermalGeometry.faces(cell, s.refined)
+        {samples, s} = thermal_samples(s, Enum.map(faces, &elem(&1, 0)), %{})
+        thermal_faces = Enum.filter(faces, fn {point, _} ->
+          case Map.fetch!(samples, point) do
+            nil -> false
+            {target, _} -> Map.has_key?(s.properties.materials[target.material], "heat_capacity_per_macro")
+          end
+        end)
+        {samples, s} = thermal_samples(s, VoxelRegion.ThermalGeometry.points(thermal_faces), samples)
+        nodes = VoxelRegion.ThermalGeometry.cell(thermal_faces, s.properties.materials, samples)
 
         {Map.put(geometry, cell, nodes), s}
       end)
@@ -3034,11 +3054,10 @@ defmodule VoxelRegion.World do
 
     {work, state} =
       if rebuild? do
-        {nodes, state, attachment_graph} =
-          VoxelRegion.ThermalAttachments.add(
-            work.solid_nodes, work.thermal_slots, state.properties, state,
-            &target_at/2, &phase_volume/2, work.attachment_graph
-          )
+        {samples, state} = thermal_samples(state,
+          VoxelRegion.ThermalAttachments.points(work.thermal_slots, state.properties), %{})
+        {nodes, attachment_graph} = VoxelRegion.ThermalAttachments.add(
+          work.solid_nodes, work.thermal_slots, state.properties, samples, work.attachment_graph)
 
         work = ThermalWork.index(work, nodes, attachment_graph)
         # 默认记录只由目录、环境和实占用派生；已有属性仍在每个数值批次读取。
@@ -3142,6 +3161,20 @@ defmodule VoxelRegion.World do
     )
 
     {%{state | damage: damage, thermal: thermal, thermal_work: work}, changed, done}
+  end
+
+  # canonical 读取留在 owner 内；计算模块仅接收当次不可变采样，不捕获 World state。
+  defp thermal_samples(state, points, samples) do
+    Enum.reduce(points, {samples, state}, fn point, {samples, s} ->
+      if Map.has_key?(samples, point) do
+        {samples, s}
+      else
+        {target, s} = target_at(point, s)
+        target = if target && target.granularity == 2, do: %{target | granularity: 1}, else: target
+        sample = if target, do: {target, phase_volume(s, target)}
+        {Map.put(samples, point, sample), s}
+      end
+    end)
   end
 
   defp thermal_commit(state, rows) do
@@ -3830,15 +3863,11 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # ??????????????????????????????????
+  # 只读取实际剩余燃料；回收比例和取整规则由燃烧模块统一定义。
   defp recover_units(state, target, units) do
-    row=Map.get(state.damage,Damage.key(target),target)
-    case Map.fetch(row,:remaining_fuel_j) do
-      :error -> units
-      {:ok,remaining} ->
-        capacity=Combustion.capacity_j(state.properties.materials[target.material],combustion_volume(state,target))
-        floor(units*remaining/capacity)
-    end
+    row = Map.get(state.damage, Damage.key(target), target)
+    volume = if Map.has_key?(row, :remaining_fuel_j), do: combustion_volume(state, target)
+    Combustion.recover_units(row, state.properties.materials[target.material], volume, units)
   end
 
   defp attachment_recovery(state, slots) do
@@ -4331,8 +4360,8 @@ defmodule VoxelRegion.World do
               cost=liquid_capacity(state)
               balance=balance_state(before,actor.cid,request.material).balance
               carried=inventory_phase(before,actor.cid,request.material,balance)
-              portion=Phase.scale(carried,cost/balance)
-              inventory=Phase.add(%{{actor.cid,request.material}=>carried},{actor.cid,request.material},Phase.scale(portion,-1))
+              {portion,remaining}=Phase.transfer({0.0,0.0},carried,balance,cost,:pour)
+              inventory=%{{actor.cid,request.material}=>remaining}
               state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
               # Inventory Ice stays solid; any later thermal phase completion is ordinary simulation.
               apply_batch(state,[{request.coord,request.material}],false,Map.merge(settlement,%{

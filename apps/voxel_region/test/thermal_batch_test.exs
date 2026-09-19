@@ -216,7 +216,7 @@ defmodule VoxelRegion.ThermalBatchTest do
       put_in(s.thermal_work.hot, MapSet.put(s.thermal_work.hot, {0, 0, 2}))
     end)
 
-    mfa = {ThermalAttachments, :add, 7}
+    mfa = {ThermalAttachments, :add, 5}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do

@@ -10,10 +10,15 @@ defmodule GateServer.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.15",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
   end
+
+  # 只测试的 CLI smoke 不进入生产编译或 release。
+  defp elixirc_paths(env) when env in [:dev, :test], do: ["lib", "smoke"]
+  defp elixirc_paths(_), do: ["lib"]
 
   # Run "mix help compile.app" to learn about applications.
   def application do
@@ -32,7 +37,7 @@ defmodule GateServer.MixProject do
       {:beacon_server, in_umbrella: true},
       {:scene_server, in_umbrella: true, runtime: false},
       {:world_server, in_umbrella: true, runtime: false},
-      {:auth_server, in_umbrella: true, only: :test},
+      {:auth_server, in_umbrella: true, only: [:dev, :test]},
       {:data_service, in_umbrella: true, runtime: false}
     ] ++ quic_deps()
   end

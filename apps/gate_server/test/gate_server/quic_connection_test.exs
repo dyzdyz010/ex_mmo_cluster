@@ -35,6 +35,7 @@ defmodule T1Scene do
 end
 
 defmodule T1TransportTest do
+  @moduledoc "只测试：真实 QUIC 传输配合显式 Auth/Scene 替身；协商上限和调度顺序注入属于传输故障模型，不修改会话身份或世界真值。"
   use ExUnit.Case, async: false
 
   alias MmoContracts.Session
@@ -50,13 +51,16 @@ defmodule T1TransportTest do
     }
 
     certs = System.fetch_env!("VOXIM_TEST_CERTS") <> "/"
+
+    # 只测试：允许避开同机在线 Demo 已占用的端口；监听与所有连接共用同一值。
+    port = System.get_env("VOXIM_TEST_QUIC_PORT", "25443") |> String.to_integer()
     start_supervised!({T1Scene, self()})
 
     listener =
       start_supervised!(
         {GateServer.Transport.QuicListener,
          [
-           port: 25443,
+           port: port,
            certfile: certs <> "server.pem",
            keyfile: certs <> "server.key",
            hello: hello,
@@ -69,7 +73,7 @@ defmodule T1TransportTest do
     {:ok, conn} =
       :quicer.connect(
         ~c"localhost",
-        25443,
+        port,
         [
           alpn: [~c"voxim-m1"],
           verify: :verify_peer,
@@ -81,7 +85,7 @@ defmodule T1TransportTest do
       )
 
     on_exit(fn -> :quicer.async_shutdown_connection(conn, 0, 0) end)
-    %{listener: listener, conn: conn, hello: hello}
+    %{listener: listener, conn: conn, hello: hello, port: port}
   end
 
   defp control(conn, hello, cid \\ 101) do
@@ -195,6 +199,7 @@ defmodule T1TransportTest do
 
   test "duplicate cid closes old epoch reliably while new join remains isolated", %{
     conn: conn,
+    port: port,
     hello: hello
   } do
     old_control = control(conn, hello)
@@ -204,7 +209,7 @@ defmodule T1TransportTest do
     {:ok, second} =
       :quicer.connect(
         ~c"localhost",
-        25443,
+        port,
         [
           alpn: [~c"voxim-m1"],
           verify: :verify_peer,
@@ -271,14 +276,14 @@ defmodule T1TransportTest do
     end
   end
 
-  test "two simultaneous native handshakes have armed acceptors" do
+  test "two simultaneous native handshakes have armed acceptors", %{port: port} do
     results =
       1..2
       |> Enum.map(fn _ ->
         Task.async(fn ->
           :quicer.connect(
             ~c"localhost",
-            25443,
+            port,
             [
               alpn: [~c"voxim-m1"],
               verify: :verify_peer,
@@ -845,6 +850,7 @@ defmodule T1TransportTest do
 end
 
 defmodule M4aGateTransferTest do
+  @moduledoc "只测试：迁移回调组件测试，局部会话值不注入运行中连接，不替代真实跨 Scene 验收。"
   use ExUnit.Case, async: false
   @moduletag :m4a_transfer
   setup do

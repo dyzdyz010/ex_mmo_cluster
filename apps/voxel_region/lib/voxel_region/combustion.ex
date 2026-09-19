@@ -29,6 +29,14 @@ defmodule VoxelRegion.Combustion do
   def power_w(material, volume),
     do: properties(material).burn_power_per_macro_w * volume
 
+  @doc "回收实际剩余化学燃料对应的整数材料量；未点燃的材料保持完整数量。"
+  def recover_units(row, material, volume, units) do
+    case Map.fetch(row, :remaining_fuel_j) do
+      :error -> units
+      {:ok, remaining} -> floor(units * remaining / capacity_j(material, volume))
+    end
+  end
+
   @doc "点燃只创建燃烧标记；首次燃料来自材料实际体积，已有余量绝不补满。"
   def ignite(row, material, volume) do
     if combustible?(material) and not Map.get(row, :burning, false) do

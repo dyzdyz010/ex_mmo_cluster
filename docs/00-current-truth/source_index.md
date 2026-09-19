@@ -1,12 +1,19 @@
 # 原始文档归类索引
 
-> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 
 > 本文件把原始文档归类为证据源。它不是当前状态本身；当前状态见 [README.md](README.md) 和各模块文档。
 
-> **体素空间当前口径（2026-07-21）**：完整 XYZ 是唯一权威设计。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。所有 XZ tile column、有限 Y 呈现带、固定 `Tile.Y=0` 的文档均已降为历史证据。Pure3D far 已接入唯一 `production_all_features` 开发根并完成 RG0–RG6 渲染治理；Online authority cutover 仍未开始，开发 WorldGen 根不得冒充在线生产事实源。
+> **Voxia 参考实现的体素空间口径（2026-07-21）**：完整 XYZ 是唯一权威设计。默认近场 `3×3×3 tiles = 27 tiles = 9261 chunks`；单轴跨越一整个 tile 时，进入/退出各为 `3×3×1 = 9 tiles = 3087 chunks`，保留为 `18 tiles = 6174 chunks`。所有 XZ tile column、有限 Y 呈现带、固定 `Tile.Y=0` 的文档均已降为历史证据。Pure3D far 已接入唯一 `production_all_features` 开发根并完成 RG0–RG6 渲染治理；Online authority cutover 仍未开始，开发 WorldGen 根不得冒充在线生产事实源。
+
+## Voxim 现行实现与验收源
+
+- [现行 runtime owner 与入口](design/server/voxim-runtime.md)。
+- [M1 plan](../../../Voxim/Docs/M1/plan.md)、[M4a 验收](../../../Voxim/Docs/M4a/acceptance.md)。
+- [R7 工程整改与环境验收](../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)。
+- `config/runtime.exs` 与各 app Application 是组合配置的源码入口；旧日期稿“待实施”不覆盖已运行源码和后续验收。
 
 ## 分类规则
 
@@ -141,7 +148,7 @@ flowchart TD
 - [`docs/20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md`](../20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md)（历史）
 - [`docs/20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md`](../20-archive/voxel-far-field/2026-07-11-3d-lod-sliding-window.md)（历史过渡设计）
 - [`docs/20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md`](../20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md)（历史交接实现证据）
-- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（唯一现役作战主线）
+- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（Voxia 参考实现的完整 XYZ 主线）
 - [`docs/10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md`](../10-active/voxel-far-field/2026-07-21-voxia-far-render-governance-design.md)（现役渲染治理真相）
 - **VLOD A1-A5（历史实现证据）**：[`phase-vlod-a1-explicit-tiering.md`](../20-archive/voxel-far-field/phase-vlod-a1-explicit-tiering.md) · [`phase-vlod-a2-partitioned-staticdraw.md`](../20-archive/voxel-far-field/phase-vlod-a2-partitioned-staticdraw.md) · [`phase-vlod-a3-per-cell-greedy-merge.md`](../20-archive/voxel-far-field/phase-vlod-a3-per-cell-greedy-merge.md) · [`phase-vlod-a3b-per-cell-greedy-merge.md`](../20-archive/voxel-far-field/phase-vlod-a3b-per-cell-greedy-merge.md) · [`phase-vlod-a4-seam-fade-collar.md`](../20-archive/voxel-far-field/phase-vlod-a4-seam-fade-collar.md) · [`phase-terrain-only-tilepop-material-unify.md`](../20-archive/voxel-far-field/phase-terrain-only-tilepop-material-unify.md)。它们完成不代表扩展后的 A10 已完成。
 - **Voxia A6-A7（历史实现证据）**：[`phase-far-temporal-stability-and-seamless-streaming.md`](../20-archive/voxel-far-field/phase-far-temporal-stability-and-seamless-streaming.md) · [`2026-07-11-near-far-presentation-handoff.md`](../20-archive/voxel-far-field/2026-07-11-near-far-presentation-handoff.md)。A8-A9 为 pure-3D 单 generation 基础；A10 当前执行见 [`WorldGen 完整客户端滑动世界作战任务`](../10-active/voxel-far-field/2026-07-12-a10-cancellable-incremental-voxel-shell-streaming.md)。

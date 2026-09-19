@@ -10,46 +10,45 @@ defmodule VoxelRegion.ThermalAttachments do
   @doc "每槽实际体积，单位 m³。"
   def volume(slot,catalog),do: Attachments.units([slot],catalog)/(@micro*@micro*@micro*catalog.attachments["material_units_per_micro"])
 
-  @doc "在当前权威固体摘要上加入面层／方截面线；at 只读取 canonical 占用。"
-  def add(nodes,slots,catalog,state,at,volume \\ fn _,_ -> 1.0 end) do
-    {nodes,state,_}=add(nodes,slots,catalog,state,at,volume,nil)
-    {nodes,state}
-  end
+  @doc "附件所需的唯一 canonical 宿主点；读取与采样值生命周期由 World 持有。"
+  def points(slots, catalog),
+    do: slots |> thermal_slots(catalog) |> Map.keys() |> Enum.flat_map(&Attachments.neighbors/1) |> Enum.uniq()
 
-  @doc "复用输入完全相同的附件及宿主派生图；返回缓存可随时丢弃，不保存温度或 HP。"
-  def add(nodes,slots,catalog,state,at,volume,cached) do
-    thermal=Map.filter(slots,fn {_,{_,m}}->Map.has_key?(catalog.materials[m],"heat_capacity_per_macro") end)
-    # 单次派生内占用和相态体积不变；共用点只查询一次，共用宿主只算一次边界。
-    # 空气也缓存；每次调用重新读取，非热宿主和液面变化同样进入输入比对。
-    {hosts,state,_,boxes}=Enum.reduce(thermal,{%{},state,%{},%{}},fn {slot,_},{all,s,points,boxes}->
-      {hosts,{s,points,boxes}}=Enum.map_reduce(Attachments.neighbors(slot),{s,points,boxes},fn p,{s,points,boxes} ->
-        case Map.fetch(points,p) do
-          {:ok,host} -> {host,{s,points,boxes}}
-          :error ->
-            {t,s}=at.(p,s)
-            t=if t && t.granularity==2,do: %{t | granularity: 1},else: t
-            {box,boxes}=case Map.fetch(boxes,t) do
+  @doc "消费冻结宿主采样值，复用输入相同的派生图；不接收世界或读取回调。"
+  def add(nodes, slots, catalog, samples, cached) do
+    thermal=thermal_slots(slots,catalog)
+    # 共用宿主只算一次边界；空气显式为 nil，缺失采样不转为空气。
+    {hosts, boxes}=Enum.reduce(thermal,{%{},%{}},fn {slot,_},{all,boxes}->
+      {hosts,boxes}=Enum.map_reduce(Attachments.neighbors(slot),boxes,fn p,boxes ->
+        case Map.fetch!(samples,p) do
+          nil -> {{nil,nil},boxes}
+          {target,volume} ->
+            {box,boxes}=case Map.fetch(boxes,target) do
               {:ok,box} -> {box,boxes}
               :error ->
-                box=if t,do: ThermalGeometry.bounds(t,volume.(s,t))
-                {box,Map.put(boxes,t,box)}
+                box=ThermalGeometry.bounds(target,volume)
+                {box,Map.put(boxes,target,box)}
             end
-            host={t,box}
-            {host,{s,Map.put(points,p,host),boxes}}
+            {{target,box},boxes}
         end
       end)
       {targets,bounds}=Enum.unzip(hosts)
-      {Map.put(all,slot,{targets,bounds}),s,points,boxes}
+      {Map.put(all,slot,{targets,bounds}),boxes}
     end)
-    host_keys=for {t,_}<-boxes,t != nil,do: ThermalGeometry.key(t)
+    host_keys=for {t,_}<-boxes,do: ThermalGeometry.key(t)
     host_nodes=Map.take(nodes,host_keys)
     input={thermal,catalog,hosts,host_nodes}
     derived=case cached do
       {^input,derived} -> derived
       _ -> derive(host_nodes,thermal,catalog,hosts)
     end
-    {Map.merge(nodes,derived),state,{input,derived}}
+    {Map.merge(nodes,derived),{input,derived}}
   end
+
+  defp thermal_slots(slots, catalog),
+    do: Map.filter(slots, fn {_, {_, material}} ->
+      Map.has_key?(catalog.materials[material], "heat_capacity_per_macro")
+    end)
 
   defp derive(nodes,thermal,catalog,hosts) do
     thickness=if map_size(thermal)>0,do: catalog.attachments["face_thickness_m"],else: 0.0

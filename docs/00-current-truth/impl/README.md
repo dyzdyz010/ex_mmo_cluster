@@ -1,12 +1,21 @@
 # 实现状态速查
 
-> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 
 > 本文件只做实现入口速查；设计解释见 `docs/00-current-truth/design/**`。
 
 ## 服务端
+
+当前主线边界见 [Voxim runtime](../design/server/voxim-runtime.md)。
+
+- `apps/voxel_region/lib/voxel_region/`：canonical World owner、GeneratedStore、OverlayLog 与只读 Replica。
+- `apps/scene_server/lib/scene_server/movement/`：Scene/Player、bootstrap/Ready、历史碰撞与 Replication/AOI。
+- `apps/gate_server/lib/gate_server/transport/quic_listener.ex`、`session/quic_connection.ex`：正式 QUIC 入口。
+- `apps/mmo_contracts/lib/mmo_contracts/{session,movement,voxel}/`：现行字节契约。
+
+下表 TCP/WS、ChunkProcess、FieldRuntime 与旧 region ledger 是仍有调用方的 reference/legacy 链路；不构成 Voxim canonical owner。
 
 | 领域 | 入口文件/目录 | 当前用途 |
 | --- | --- | --- |
@@ -30,9 +39,11 @@
 
 ## 客户端
 
+当前主线为同级 `../Voxim`，路线和可操作入口见其 `starter.md`、`Docs/M1/plan.md`、`Docs/M4a/acceptance.md`。下表仅保留 Voxia 参考实现索引。
+
 | 客户端 | 入口 | 当前用途 |
 | --- | --- | --- |
-| Voxia UE | `clients/Voxia/README.md` | 唯一现役 UE5.8 product client；唯一 `L_VoxiaProductionWorld`、编辑器作者态环境/组合与六个分离 LOD 预览 Actor、默认 RuntimeMock、Patch-diff 无空洞交接、真实 renderer proof、完整 XYZ 移动安全门、阶段 2 宏格交互和阶段 3 prefab 均已闭环；当前树 30 分钟长稳完成，多硬件与层间墙人工视觉复验仍后置；Online 未开始 |
+| Voxia UE | `clients/Voxia/README.md` | UE5.8 算法、行为与性能参考客户端；唯一 `L_VoxiaProductionWorld`、编辑器作者态环境/组合与六个分离 LOD 预览 Actor、默认 RuntimeMock、Patch-diff 无空洞交接、真实 renderer proof、完整 XYZ 移动安全门、阶段 2 宏格交互和阶段 3 prefab 均已闭环；当前树 30 分钟长稳完成，多硬件与层间墙人工视觉复验仍后置；Online 未开始 |
 | Voxia 正式场景组合 | `clients/Voxia/Content/Voxia/Maps/L_VoxiaProductionWorld.umap` + `Source/Voxia/Gameplay/VoxiaSceneComposition*` + `VoxiaScenePresentationSubsystem.*` | 唯一 production scene-composition 资产；显式绑定并持续维护 UDS/UDW/fog/PPV/fill-light，失效时阻断 runtime root；旧 NearWindow 只作显式 probe |
 | Voxia editor LOD preview | `clients/Voxia/Source/Voxia/Gameplay/VoxiaVoxelWorldPreviewActor.*` + `VoxiaVoxelEditorPreviewPlan.*` | editor-only、有界、完整 XYZ 的 Near + Far LOD0–4 代表预览；复用正式 C++ 规划/表面链，不进入 confirmed store、cook、root readiness 或 SceneHost ledger |
 | Web | `clients/web_client/README.md` | 归档；仅显式点名时使用 |
@@ -76,6 +87,8 @@
 - 根常规：`mix compile`、`mix test`
 - Phoenix app：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`
 - 归档 Web / Bevy：不进入默认验证；显式点名后按各自 README 选择历史测试入口
+- Voxim：在同级客户端运行 `python Docs/R5/tools/run_tests.py --help` 选择本地/服务环境范围；真实双端与分发按对应阶段入口验收。
+- 以下 Voxia 命令仅为参考实现入口，不进入 Voxim 默认验收。
 - Voxia client CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`
   - 场景作者态：`--cmd "scene_composition; environment_state; voxel_editor_preview_state"`；runtime 中 preview 命令固定返回 `unsupported_in_runtime`
   - 唯一联合根：传 `-VoxiaWorldGenPreview`（可再显式传 `-VoxiaUnifiedVoxelWorld`），`--cmd "until_voxel_world_root_ready 300000; voxel_world_composition_state; voxel_world_root_state"`

@@ -1,6 +1,6 @@
 # 当前唯一事实入口
 
-> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 
@@ -29,8 +29,11 @@ flowchart LR
 
 ## 功能模块入口
 
+当前 Voxim 服务端以 [Voxim runtime](design/server/voxim-runtime.md) 为现行 owner 与组合根入口；下列 SceneHost、旧 ChunkProcess/FieldRuntime、H-gated launcher/pages 专题保留为 reference/legacy，不能用于判断 Voxim 尚未联网。
+
 | 模块 | 当前事实文档 | 主要职责 |
 | --- | --- | --- |
+| Voxim 当前运行时 | [design/server/voxim-runtime.md](design/server/voxim-runtime.md) | canonical World、QUIC、移动/AOI、组合根与当前验收边界 |
 | 文档治理与证据索引 | [source_index.md](source_index.md) | 原始文档归类、被取代结论、当前事实入口关系 |
 | 服务端控制面 | [design/server/world-region-routing.md](design/server/world-region-routing.md) | World / Region / Scene / Chunk 关系、路由、租约、迁移、stale owner repair |
 | 体素真值与基线 | [design/voxel/README.md](design/voxel/README.md) | 权威体素唯一事实源、WorldGen migration、launcher/入场校验、runtime diff 边界 |
@@ -45,9 +48,9 @@ flowchart LR
 ## 当前最高层事实
 
 1. **服务端权威优先仍是全局铁律**：移动、AOI、战斗、体素、object state、field truth 均以服务端 authority 为准；客户端只能预览、呈现或发 intent。
-2. **体素确认态只来自服务端权威结果**：在线客户端确认态只能吃 `ChunkSnapshot` / `ChunkDelta` / `VoxelIntentResult` / `ObjectStateDelta` / `FieldRegionSnapshot`。
-3. **体素基线按当前客户端契约接纳**：本地 world pack、region manifest、chunk baseline、diff chain 的强制入场校验及缺包拒绝仅为 **legacy/reference（Voxia 旧客户端契约）**，不约束 Voxim 入场。Voxim 当前 R6 从服务端 region payload、日志/事务与意图结果建立 canonical 确认态；M1 计划将完整权威 R6 L0 payload 的 CanonicalBootstrap 装入既有 canonical 管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才 Ready。实际不完整或身份/版本不符的权威来源仍显式拒绝，禁止 missing-as-air 或本地包、snapshot/resync 静默兜底；bootstrap/Ready runtime **待实施**，规范见 [`Voxim/Docs/M1/plan.md §2`](../../../Voxim/Docs/M1/plan.md)，G1 不代表运行时接线完成。
-4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；World 负责 region/scene 路由、租约、事务和迁移控制面；Scene / ChunkProcess 拥有 chunk hot truth 与 field runtime；DataService 保存 canonical persistence。
+2. **体素确认态只来自服务端权威结果**：Voxim 从 region payload、CanonicalBootstrap、overlay 日志/事务与意图结果建立确认态；`ChunkSnapshot` / `ChunkDelta` / `ObjectStateDelta` / `FieldRegionSnapshot` 是旧 reference 协议边界。
+3. **体素基线按当前客户端契约接纳**：本地 world pack、region manifest、chunk baseline、diff chain 的强制入场校验及缺包拒绝仅为 **legacy/reference（Voxia 旧客户端契约）**，不约束 Voxim 入场。Voxim 当前 R6 从服务端 region payload、日志/事务与意图结果建立 canonical 确认态；M1 已将完整权威 R6 L0 payload 的 CanonicalBootstrap 装入既有 canonical 管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才 Ready。实际不完整或身份/版本不符的权威来源仍显式拒绝，禁止 missing-as-air 或本地包、snapshot/resync 静默兜底；bootstrap/Ready runtime 已接入 QUIC 并完成 M1 验收，规范见 [`Voxim/Docs/M1/plan.md §2`](../../../Voxim/Docs/M1/plan.md)，G1 不代表运行时接线完成。
+4. **World/Scene/Gate 边界清晰**：Gate 负责协议 decode、鉴权、连接状态和转发；VoxelRegion.World 拥有 Voxim canonical 体素与材料事务；WorldServer 路由/编排，SceneServer.Movement 拥有移动、碰撞历史与 AOI，DataService 保存持久化。ChunkProcess 只拥有仍在使用的 legacy/reference chunk 与 field 链路。
 5. **完整 3D 是体素流式与 LOD 的唯一现行空间契约**：公共契约是 `chunk_xyz -> canonical 3D chunk/page`，near 为 XYZ cube，far 为稀疏 cube shell；不得向 streaming、LOD、cache 或 renderer 暴露 heightmap、column、terrain-only 或 `Y=0`。Voxia 的 near XYZ 与 Pure3D far 已在唯一开发根 live；Online authority production cutover 仍未开始，隔离 probe 不等于第二生产路径。
 6. **Voxia 参考实现已切到其唯一 Near/Far Patch-diff 架构并合入独立仓库 `master`**：
    `-VoxiaWorldGenPreview` 只启动 `AVoxiaUnifiedVoxelWorldActor` / `production_all_features` 根，
@@ -80,9 +83,9 @@ flowchart LR
    尚未开始。
    **当前可见性口径**：2026-07-27 用户实跑曾确认 Near/Far 层间墙空间语义错误。架构已改为真实 `LayerFace`，并修复跨 Far Patch 分界跳过、退场旧 Near 污染新目标分界，以及目标轮换提前丢失 live-Far 凭证；最新完整 Real-RHI 结构化路线通过。由于用户尚未在 2026-08-03 合并树上重新做可见判断，该视觉项仍标记为“待人工复验”，不能只凭 slot、组件、fence 或 `gap=0` 宣布视觉关闭。
 7. **Voxim 是当前主线，Voxia 为参考，Web / Bevy 已逻辑归档**：默认客户端设计、实现、联调与进度判断以 Voxim 阶段证据为准；以下阶段 2/3 为 Voxia 参考结果；归档目录只保留历史证据，只有用户显式点名时才临时纳入。阶段 2 普通宏格交互、Far LOD 外露材质归约/最终 ownership 与阶段 3 Prefab RuntimeMock 已 closeout；阶段 3 具备 immutable catalog/Orientation24、层级 instance/coverage、原子 place/remove/replace、Near/Far presented snapshot、CLI/observe、资源与 CPU 门禁。它不表示 Online wire/authority 或 Prefab Designer 已实施；Online 生产化仍需独立服务端设计与实施。
-8. **局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
+8. **Voxia/reference 局部场 Phase 7 已进入运行时扩展阶段**：温度、电导、电热、热烟、闭合电路、电介质击穿等第一批能力已形成可操作入口；source owner 存活、预算消耗、batched effect、跨 chunk 大范围编排和 Phase 8 结算仍未完成。
 9. **被取代的 XZ column 设计统一进入 `docs/20-archive/**`**：它们可以保留历史证据和 append-only decoder 测试，但不能继续留在 current/default/launcher/CLI acceptance 路由。
-10. **Online 客户端仍是 snapshot/delta-only 消费者，离线 Mock 也保持 adapter 边界**：近窗消费 canonical chunks，远区消费 XYZ source pages/cube shell；Phase 2 点击只发 intent，Mock authority 私有裁决后以类型化事件驱动唯一 confirmed mirror，presentation 不能回写 truth。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。
+10. **Voxia/reference Online 客户端仍是 snapshot/delta-only 消费者，离线 Mock 也保持 adapter 边界**：近窗消费 canonical chunks，远区消费 XYZ source pages/cube shell；Phase 2 点击只发 intent，Mock authority 私有裁决后以类型化事件驱动唯一 confirmed mirror，presentation 不能回写 truth。旧 0x6A/0x6B heightmap、VHI 与 v1 column source 只保留协议历史兼容，不是生产终态。
 11. **运行时根事实与文档根事实同样唯一**：参数可单独验证子系统，但只有一个包含全部已批准成果的组合根可以承担联合调试和效果验收。任何新成果未接入该根、未通过根级 readiness/CLI 前，只能写成 probe/地基；开发根通过也不能冒充在线 authority cutover。
 12. **Voxia 的唯一正式场景组合资产是 `L_VoxiaProductionWorld`**：UDS、UDW、雾、后处理、补光和有界完整 XYZ LOD 预览直接保存在关卡并可由 UE 编辑器调整；`ScenePresentationSubsystem` 校验并维护显式引用，校验通过后 Flow 才动态创建唯一运行时根。editor preview 不进入 confirmed truth、cook、root readiness 或 SceneHost ledger；旧 `Lvl_NearWindow` 只允许显式 headless/probe。
 

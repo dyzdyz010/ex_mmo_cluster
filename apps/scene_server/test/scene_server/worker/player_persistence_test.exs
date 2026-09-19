@@ -1,7 +1,7 @@
 defmodule SceneServer.PlayerPersistenceTest do
   @moduledoc """
-  玩法 loop Phase 0:PlayerCharacter 运行态落库端到端(handle_info(:persist_checkpoint) /
-  terminate → DataService.CharacterStore → DB)。DB-backed。
+  只测试：checkpoint 回调到 CharacterStore/数据库的组件集成。
+  构造的局部位置/HP 只验证序列化与持久化，不注入运行中的玩家，也不作为玩法端到端验收。
   """
   use ExUnit.Case, async: false
 

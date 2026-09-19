@@ -1,4 +1,5 @@
 defmodule SceneServer.PlayerCharacterTest do
+  @moduledoc "只测试：直接回调的移动组件测试；局部状态不是运行中 actor，不作为登录/双客户端验收。"
   use ExUnit.Case, async: false
 
   alias SceneServer.Movement.{CorrectionFlags, InputFrame, Profile, RemoteSnapshot}

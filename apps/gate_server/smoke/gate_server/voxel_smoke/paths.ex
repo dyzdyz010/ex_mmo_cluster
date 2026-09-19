@@ -1,6 +1,6 @@
 defmodule GateServer.VoxelSmoke.Paths do
   @moduledoc """
-  File destinations produced by `GateServer.VoxelSmoke`.
+  只测试：`GateServer.VoxelSmoke` 的观测文件路径。
   """
 
   @enforce_keys [

@@ -1,6 +1,17 @@
 # SceneServer 体素运行时
 
-本目录拥有 Scene 侧热体素执行状态。热体素状态指当前租约内、需要被快速读写的区块内存状态。
+本目录是全局系统功能中的 **legacy/reference** chunk 与 field 运行时，拥有旧租约协议内需要快速读写的区块状态。
+当前 Voxim canonical 体素、材料与热/相变/电路提交由 [`VoxelRegion.World`](../../../../voxel_region/README.md) 持有。
+旧 `ChunkDirectory`、`ObjectRegistry`、`FieldRuntime` 仍有活调用方，因此本目录继续维护，不作为 Voxim 的第二个世界 owner。
+
+2026-09-19 F08：运行时读取统一走 `ChunkProcess.storage_snapshot/1,2`，返回当前不可变 `Storage`；
+FieldRuntime、FieldTickWorker 和 handoff 持久化摘要不再依赖 `debug_state` 的内部状态布局。
+`debug_state/1` 只保留 CLI/测试观察用途。租约校验、写入和 field effect 提交仍由原 owner 负责；
+worker 的 200ms 读取超时及 owner 退出语义保持原样。依据既有 GenServer 的请求/快照边界，仅缩小只读 API，未拆分进程或迁移旧 truth。
+本次冷 VM 定向验证（`apps/scene_server`，本地测试 PostgreSQL 端口 5433）：
+`$env:MMO_DB_PORT='5433'; mix test --no-start test/scene_server/voxel/chunk_process_test.exs:70:826 test/scene_server/voxel/field/field_runtime_test.exs:793`。
+结果为 3 passed / 83 excluded，覆盖不可变快照、自动电路首帧与跨 chunk field；
+日志在 Voxim `Saved/EngineeringAudit/20260919/f08-chunk-snapshot-green.log`。测试先启动本 VM 独占数据库再清理夹具。
 
 ## 2026-08-24 WorldGen v2 canonical XYZ 物化
 
@@ -1335,7 +1346,7 @@ API：`encode_snapshot_payload(region, logical_scene_id)`、
 - `init/1`：监控 ChunkProcess（`Process.monitor(chunk_pid)`）；立即投递第一个 tick，让一次性放电 /
   加热这类短寿命场域不额外等待 100ms 调度周期
 - `handle_info(:tick)`：
-  1. `GenServer.call(chunk_pid, :debug_state, 200)` 取 storage 快照，并在 `KernelContext`
+  1. `ChunkProcess.storage_snapshot(chunk_pid, 200)` 取 storage 快照，并在 `KernelContext`
      中规范化一次
   2. 按 `region.kernels` 逐个运行 FieldKernel，更新 region；kernel 热路径使用已规范化
      storage / context API，禁止在每个 cell 的属性读取里重复整块 `Storage.normalize!/1`

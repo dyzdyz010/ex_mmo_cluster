@@ -1082,7 +1082,7 @@ defmodule SceneServer.Voxel.ChunkDirectory do
   defp persist_live_source_chunk(chunk_pid, handoff, chunk_coord) do
     with {:ok, _lease} <- ChunkProcess.apply_lease(chunk_pid, handoff.old_lease),
          {:ok, persist_result} <- ChunkProcess.persist(chunk_pid),
-         %{chunk_version: chunk_version} <- ChunkProcess.debug_state(chunk_pid) do
+         %{chunk_version: chunk_version} <- ChunkProcess.storage_snapshot(chunk_pid) do
       %{
         chunk_coord: chunk_coord,
         status: :persisted,

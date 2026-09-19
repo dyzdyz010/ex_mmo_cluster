@@ -1,5 +1,7 @@
 # 局部场与涌现系统当前事实
 
+> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](../server/voxim-runtime.md)，本页不定义其生产真值或缺口。
+
 > 当前唯一事实文档。覆盖 Phase 7+ local field runtime、涌现系统、材料/光/结构/化学/表面元件的当前状态。
 
 ## 体素权威基线

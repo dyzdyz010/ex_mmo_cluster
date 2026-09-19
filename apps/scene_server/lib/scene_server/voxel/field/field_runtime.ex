@@ -156,7 +156,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
              chunk_coord: chunk_coord,
              lease: get_any(opts, [:lease, :lease_token], nil)
            }) do
-      %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+      %Storage{} = storage = ChunkProcess.storage_snapshot(chunk_pid)
       projection = ParticipantProjection.build(storage)
       source_points = auto_circuit_source_points(projection, aabb, opts)
       load_count = auto_circuit_role_count(projection, aabb, :load)
@@ -293,7 +293,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                chunk_coord: source_chunk_coord,
                lease: get_any(opts, [:lease, :lease_token], nil)
              }) do
-        %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+        %Storage{} = storage = ChunkProcess.storage_snapshot(chunk_pid)
 
         {opts, source_powered?} =
           attach_physical_power_source(
@@ -561,7 +561,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
                  chunk_coord: source_chunk_coord,
                  lease: get_any(opts, [:lease, :lease_token], nil)
                }) do
-          %{storage: %Storage{} = source_storage} = ChunkProcess.debug_state(source_chunk_pid)
+          %Storage{} = source_storage = ChunkProcess.storage_snapshot(source_chunk_pid)
 
           {opts, source_powered?} =
             attach_physical_power_source(
@@ -853,7 +853,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
        ) do
     case ChunkDirectory.lookup_chunk_pid(logical_scene_id, target_chunk_coord) do
       {:ok, target_chunk_pid} ->
-        %{storage: %Storage{} = target_storage} = ChunkProcess.debug_state(target_chunk_pid)
+        %Storage{} = target_storage = ChunkProcess.storage_snapshot(target_chunk_pid)
         target_projection = ParticipantProjection.build(target_storage)
 
         contacts =
@@ -1115,7 +1115,7 @@ defmodule SceneServer.Voxel.Field.FieldRuntime do
          field_source,
          observe_context
        ) do
-    %{storage: %Storage{} = storage} = ChunkProcess.debug_state(chunk_pid)
+    %Storage{} = storage = ChunkProcess.storage_snapshot(chunk_pid)
 
     case electric_channel_path(
            field_source,

@@ -23,6 +23,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
   alias SceneServer.Voxel.Types
 
   setup do
+    MmoTest.Database.start!()
     Repo.delete_all(VoxelChunkSnapshot)
     Repo.delete_all(VoxelChunkPendingTransaction)
     LodHeightmapStore.reset()
@@ -68,6 +69,7 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
 
   test "builds snapshot payloads from hot chunk truth" do
     chunk = start_supervised!({ChunkProcess, logical_scene_id: 1, chunk_coord: {0, 0, 0}})
+    before_edit = ChunkProcess.storage_snapshot(chunk)
 
     assert {:ok, storage} =
              ChunkProcess.put_solid_block(
@@ -78,6 +80,8 @@ defmodule SceneServer.Voxel.ChunkProcessTest do
              )
 
     assert storage.chunk_version == 1
+    assert ChunkProcess.storage_snapshot(chunk) == storage
+    assert before_edit.chunk_version == 0
 
     assert {:ok, payload} = ChunkProcess.snapshot_payload(chunk, 44)
 

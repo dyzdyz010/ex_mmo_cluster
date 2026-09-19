@@ -1,18 +1,22 @@
 # 当前已知缺口
 
-> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 
 > 本文是缺口的合并态 snapshot。已完成能力见 [`impl/README.md`](README.md) 与各 current-truth 文档；历史过程见 [`source_index.md`](../source_index.md)。
 
-## 服务端控制面
+## Voxim 当前验收边界
+
+M1 bootstrap/Ready 与 M4a 受控移交已完成；当前代码入口见 [Voxim runtime](../design/server/voxim-runtime.md)。工程整改与环境验收统一见 [工程审计](../../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)，不得把下面的旧 Voxia 生产化 backlog 当成 Voxim 尚未实现的功能。
+
+## Reference/legacy 服务端控制面
 
 - **SceneNodeRegistry HA**：缺容量感知 failover、自动迁移和多节点容量调度完整方案。
 - **Subscription liveness**：缺由服务端自维护的订阅续租、超时、重连和 stale lease 修复闭环；客户端静止时也不能依赖一次性建立的订阅。
 - **大范围 region/materialization 调度**：缺异步背压、预算、跨节点调度和队列可观测，不能让离线/大范围物化抢占在线 Scene 热路径。
 
-## 体素 baseline、launcher 与生产 pages
+## Voxia/reference 体素 baseline、launcher 与生产 pages
 
 - **3D cube-shell 生产权威 pages**：缺服务端按 XYZ brick/cube-shell expected set 生成的 canonical page writer、bounded materialization、六面 halo、delta dirty 聚合、mip 基准与 `source_revision/diff_chain_hash` 真值。客户端 fixture 不能替代服务端 source；旧 XZ `macro_cell_count=21016` 只属归档性能证据。
 - **生产持久化 artifact**：缺 source pages / mesh artifact 的持久化、版本、容量淘汰和重拉策略；旧 SVDAG/raymarch artifact 不再是当前必需交付物。
@@ -73,24 +77,24 @@ p95=max=`18.410s`。证据与命令见
 **raymarch 不再是 backlog**：D3D12 3D/Compute 队列超时已经复现，当前路线严格禁用；不得把历史
 L4/raymarch A/B 重新列为 B 的任务。
 
-## 里程碑 B/C（均未开始）
+## Voxia/reference 里程碑 B/C（均未开始）
 
 - **B**：冻结 T-4 固定 far page/整数规约、T-11 失效与 HTTP 分发语义、T-12 required-set/shard manifest，并让客户端分别消费 1m near 与 7m far fixture projection。当前通用 v2 page、H-gated batch、本地 request provider 和 source-neutral builder只是 A 的客户端开发基础，不等于 B 已开工。
 - **C**：实现服务端 pages writer、dirty/mip 聚合、失效 opcode、HTTP endpoint、launcher/update 真包与默认在线切流。当前任务不得修改 `apps/*` 来提前实现 C。
 
-## 客户端-服务端 wire 契约
+## Voxia/reference 客户端-服务端 wire 契约
 
 - **focus hydrate/promote**：缺正式 opcode、服务端租约/权限、长程命中和 authoritative payload。
 - **far page invalidation**：缺正式 opcode 分配、HTTP locator、revision/manifest 滚动与端到端更新策略；`0x6D/0x6E` 已占用，不能复用。
 - **remote action**：缺 action request/result、技能 authority、权限/租约和 authoritative result frame。
 
-## 远程实体与对象 AOI
+## Voxia/reference 远程实体与对象 AOI
 
 - **远程实体 AOI**：缺服务端兴趣规则、分发和真实服务器帧接入；客户端 loopback/proxy 不能证明在线 AOI。
 - **对象 AOI / ObjectStateDelta**：缺正式属性/tag patch body 与对象兴趣分发规则。
 - **正式表现资产与规模调参**：当前 static proxy/HISM 只验证 confirmed read model 和提交链路。
 
-## 局部场与涌现
+## Legacy FieldRuntime 局部场与涌现
 
 - **FieldSource 生命周期**：缺 persistent owner 存活、预算消耗、自动续租和跨 chunk lifecycle。
 - **FieldEffect batch dispatcher**：缺批量 mutation；多次 version bump/fan-out/persist 会放大写入。
@@ -106,5 +110,5 @@ L4/raymarch A/B 重新列为 B 的任务。
   唯一 warning 为外部 `generate_204` HTTP 超时）、Node `124/124`、
   Null-RHI `18/18`、1920×1080 可见短路线与 30 分钟持续 XYZ 流送；阶段 1/2 与 RG6 证据仍有效。后续任何代码变化
   都必须按影响范围重新建立证据，不能沿用本次产物。
-- wire codec 唯一真值仍是 `apps/gate_server/lib/gate_server/codec.ex`；默认协议门禁由服务端 codec / golden fixture 与 Voxia decoder 自动化、实跑共同承担。`clients/web_client` 与 `clients/bevy_client` 仅保留为逻辑归档历史证据，不再承担 current-truth parity oracle、参考实现或默认验收职责。
+- 当前 Session/Movement/Voxel wire 唯一真值是 `apps/mmo_contracts/lib/mmo_contracts/`；旧 `apps/gate_server/lib/gate_server/codec.ex` 只拥有仍有调用方的遗留领域。Voxim 协议门禁使用对应 codec/golden 与 Voxim decoder；Voxia 的旧 decoder 验收仅是参考证据。`clients/web_client` 与 `clients/bevy_client` 保持逻辑归档，不进入默认验收。
 - `docs/00-current-truth/**` 必须保持合并态；完成阶段归 `20-archive`，被推翻路线归 `90-obsolete`，不得把历史进度日志继续留在 active/current-truth 充当 resume。

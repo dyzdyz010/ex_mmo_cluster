@@ -1,6 +1,8 @@
 # 服务端控制面当前事实：World / Region / Scene / Chunk
 
-> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel byte SSOT 已抽到纯 mmo_contracts；31 个 G0 fixture 不变。新 Movement、authority、QUIC 与 bootstrap runtime **待实施**，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
+> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](voxim-runtime.md)，本页不定义其生产真值或缺口。
+
+> **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 

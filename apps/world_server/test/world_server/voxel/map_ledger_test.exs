@@ -824,6 +824,7 @@ defmodule WorldServer.Voxel.MapLedgerTest do
           assigned_scene_node: nil
         })
 
+      # 只测试：复现历史 nil owner 的损坏元数据；不伪造有效租约或越过正常路由接纳。
       :sys.replace_state(ledger, fn state ->
         put_in(state.assignments[region_id], nil_assignment)
       end)

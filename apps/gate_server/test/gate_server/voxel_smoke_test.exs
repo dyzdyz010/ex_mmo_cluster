@@ -1,4 +1,5 @@
 defmodule GateServer.VoxelSmokeTest do
+  @moduledoc "只测试：真实 Gate 鉴权/角色授权及旧 voxel 协议组件集成；Scene 接纳使用显式替身。"
   use ExUnit.Case, async: false
 
   setup_all do
@@ -6,7 +7,16 @@ defmodule GateServer.VoxelSmokeTest do
     :ok
   end
 
-  test "runs CLI-observable voxel E2E smoke and writes stdio logs" do
+  test "runs authenticated voxel smoke without resetting unrelated world state" do
+    GateServer.TestSupport.VoxelSession.setup()
+
+    token =
+      "tester"
+      |> AuthServer.AuthWorker.build_session_claims(source: "test")
+      |> AuthServer.AuthWorker.issue_token()
+
+    other_scene = 980_000 + System.unique_integer([:positive, :monotonic])
+    other_epoch = DataService.Voxel.RegionEpochStore.allocate_next(other_scene, other_scene)
     logical_scene_id = 880_000 + System.unique_integer([:positive, :monotonic])
 
     observe_dir =
@@ -17,10 +27,14 @@ defmodule GateServer.VoxelSmokeTest do
 
     assert {:ok, summary} =
              GateServer.VoxelSmoke.run(
+               username: "tester",
+               token: token,
+               cid: 42,
                logical_scene_id: logical_scene_id,
                observe_dir: observe_dir
              )
 
+    assert DataService.Voxel.RegionEpochStore.current(other_scene, other_scene) == other_epoch
     assert summary.status == :ok
     assert summary.protocol.initial_snapshot_version == 0
     assert summary.protocol.updated_frame_type == :delta
@@ -35,6 +49,7 @@ defmodule GateServer.VoxelSmokeTest do
     stdio_log = File.read!(summary.logs.stdio_log)
     summary_log = File.read!(summary.logs.summary_path)
 
+    assert gate_log =~ ~s(event="ws_enter_scene_ok")
     assert gate_log =~ ~s(event="ws_voxel_chunk_subscribe_received")
     assert gate_log =~ ~s(event="ws_voxel_impact_intent_applied")
     assert scene_log =~ ~s(event="voxel_chunk_snapshot_push")
@@ -46,5 +61,40 @@ defmodule GateServer.VoxelSmokeTest do
     assert summary_log =~ "unsubscribe_stopped_push?: true"
 
     :ok
+  end
+
+  test "rejects an invalid session before creating a world region" do
+    GateServer.TestSupport.VoxelSession.setup()
+
+    observe_dir =
+      Path.join(System.tmp_dir!(), "voxel-smoke-auth-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(observe_dir) end)
+
+    assert {:error, %{reason: reason}} =
+             GateServer.VoxelSmoke.run(
+               username: "tester",
+               token: "invalid",
+               cid: 42,
+               observe_dir: observe_dir,
+               logical_scene_id: 998_000,
+               region_id: 998_001
+             )
+
+    assert reason =~ "authentication_rejected"
+    assert DataService.Voxel.RegionEpochStore.current(998_000, 998_001) == 0
+  end
+
+  test "missing credentials fail without logging supplied tokens" do
+    observe_dir =
+      Path.join(System.tmp_dir!(), "voxel-smoke-missing-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(observe_dir) end)
+
+    assert {:error, failure} =
+             GateServer.VoxelSmoke.run(token: "private-test-token", observe_dir: observe_dir)
+
+    assert failure.reason == "missing smoke username"
+    refute inspect(failure) =~ "private-test-token"
   end
 end

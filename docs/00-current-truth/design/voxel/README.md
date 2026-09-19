@@ -1,5 +1,7 @@
 # 体素真值、基线与运行时 Diff 当前事实
 
+> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](../server/voxim-runtime.md)，本页不定义其生产真值或缺口。
+
 > 当前唯一事实文档。它覆盖“世界是什么”的事实源、客户端基线校验、启动器/入场/运行时三阶段边界。
 
 ## 当前最高层原则
@@ -144,5 +146,5 @@ flowchart LR
 - [`docs/30-reference/protocol/glossary.md`](../../../30-reference/protocol/glossary.md)
 - [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)
 - [`docs/20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md`](../../../20-archive/voxel-far-field/2026-07-06-voxia-lod-layering-and-technology-design.md)（历史 LOD 分层证据）
-- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（完整 XYZ 唯一现役作战主线；Pure3D far 已进入唯一客户端生产组合根，Online confirmed provider 尚未接线）
+- [`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](../../../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)（Voxia 参考实现的完整 XYZ 主线；其 Pure3D far 已进入唯一客户端组合根，Online confirmed provider 尚未接线；不描述 Voxim 当前状态）
 - [`docs/10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md`](../../../10-active/voxel-far-field/2026-07-23-far-lod-surface-material-semantic-repair.md)（VXP5 exact-surface coverage、旧产物拒绝与 actual material-id/Real-RHI closeout）

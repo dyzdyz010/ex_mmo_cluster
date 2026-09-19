@@ -7,24 +7,29 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     attachments: %{"material_units_per_micro" => 4096,"face_units" => 64,"edge_units" => 1,
       "face_thickness_m" => 1/512,"line_section_m2" => 1/(512*512)}}
 
-  test "同次重建只查询一次共用宿主点；下一次重建重新读取占用和相态体积" do
+  test "同次重建冻结唯一宿主点；下一次重建使用新的占用和相态体积" do
     slots=%{{0,1,{0,0,0}}=>{1,19},{1,0,{0,0,0}}=>{2,19},
       {0,0,{0,0,0}}=>{3,19}}
     host=%{micro: {0,0,0},granularity: 0,incarnation: 1,owner: {0,0},material: 19}
-    at=fn p,s ->
-      {if(s.occupied,do: host),%{s | reads: [p|s.reads]}}
-    end
-    volume=fn s,_ -> s.volume end
-    state=%{occupied: true,volume: 1.0,reads: []}
-    {full,s}=ThermalAttachments.add(%{},slots,@catalog,state,at,volume)
-    assert length(s.reads)==MapSet.size(MapSet.new(s.reads))
-    points=Enum.flat_map(Map.keys(slots),&VoxelRegion.Attachments.neighbors/1) |> MapSet.new()
-    assert MapSet.new(s.reads)==points
-    {thin,_}=ThermalAttachments.add(%{},slots,@catalog,%{state | volume: 1/512},at,volume)
-    {air,s}=ThermalAttachments.add(%{},slots,@catalog,%{state | occupied: false},at,volume)
-    assert MapSet.new(s.reads)==points
+    points=ThermalAttachments.points(slots,@catalog)
+    assert length(points)==MapSet.size(MapSet.new(points))
+    full_samples=Map.new(points,&{&1,{host,1.0}})
+    thin_samples=Map.new(points,&{&1,{host,1/512}})
+    air_samples=Map.new(points,&{&1,nil})
+    {full,_}=ThermalAttachments.add(%{},slots,@catalog,full_samples,nil)
+    {thin,_}=ThermalAttachments.add(%{},slots,@catalog,thin_samples,nil)
+    {air,_}=ThermalAttachments.add(%{},slots,@catalog,air_samples,nil)
     refute full==thin
     refute thin==air
+  end
+
+  # 只测试：把明确的几何夹具读成输入值，不给纯计算模块传递回调。
+  defp samples(points, state, at, volume) do
+    Map.new(points, fn point ->
+      {target, _} = at.(point, state)
+      target = if target && target.granularity == 2, do: %{target | granularity: 1}, else: target
+      {point, if(target, do: {target, volume.(state, target)})}
+    end)
   end
 
   defp geometry(slots, cells,volume \\ fn _,_ -> 1.0 end) do
@@ -34,8 +39,11 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
         granularity: 0,incarnation: 1,owner: {0,0},material: 19}
       {t,s}
     end
-    nodes=Enum.flat_map(cells,fn cell -> elem(ThermalGeometry.cell(cell,%{},@catalog.materials,nil,at,volume),0) end) |> Map.new()
-    {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,nil,at,volume)
+    nodes=Enum.flat_map(cells,fn cell ->
+      faces=ThermalGeometry.faces(cell,%{})
+      ThermalGeometry.cell(faces,@catalog.materials,samples(ThermalGeometry.points(faces),nil,at,volume))
+    end) |> Map.new()
+    {nodes,_}=ThermalAttachments.add(nodes,slots,@catalog,samples(ThermalAttachments.points(slots,@catalog),nil,at,volume),nil)
     nodes
   end
 
@@ -54,9 +62,9 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     end
     volume=fn s,_ -> s.volume end
     state=%{occupied: true,material: 19,volume: 1.0}
-    {_,_,cached}=ThermalAttachments.add(nodes,slots,@catalog,state,at,volume,nil)
+    {_,cached}=ThermalAttachments.add(nodes,slots,@catalog,samples(ThermalAttachments.points(slots,@catalog),state,at,volume),nil)
     far=Map.put(nodes,{0,{80,0,0}},%{nodes[{0,{0,0,0}}] | target: %{host | micro: {80,0,0}}})
-    {result,_,retained}=ThermalAttachments.add(far,slots,@catalog,state,at,volume,cached)
+    {result,retained}=ThermalAttachments.add(far,slots,@catalog,samples(ThermalAttachments.points(slots,@catalog),state,at,volume),cached)
     assert result[{0,{80,0,0}}]==far[{0,{80,0,0}}]
     assert :erts_debug.same(elem(cached,1),elem(retained,1))
     changed_catalog=put_in(@catalog.materials[19]["thermal_conductivity"],20.0)
@@ -69,8 +77,10 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
       {nodes,%{},@catalog,state},
       {put_in(nodes[{0,{0,0,0}}].exposed_faces,0.25),slots,@catalog,state}
     ] do
-      {hot,s,_}=ThermalAttachments.add(ns,ss,catalog,world,at,volume,cached)
-      assert {hot,s}==ThermalAttachments.add(ns,ss,catalog,world,at,volume)
+      values=samples(ThermalAttachments.points(ss,catalog),world,at,volume)
+      {hot,_}=ThermalAttachments.add(ns,ss,catalog,values,cached)
+      {uncached,_}=ThermalAttachments.add(ns,ss,catalog,values,nil)
+      assert hot==uncached
     end
   end
 
