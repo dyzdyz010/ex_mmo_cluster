@@ -1,0 +1,23 @@
+name: Voxim shared source and fixtures
+description: Checkout the pinned client spatial owner and authority test fixtures
+inputs:
+  ssh-key:
+    description: Read-only deploy key for the private Voxim repository
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: dyzdyz010/Voxim
+        ref: a3c3fe98919af2e086d44fb796e9f8977e056147
+        path: .ci-voxim
+        ssh-key: ${{ inputs.ssh-key }}
+        persist-credentials: false
+        sparse-checkout: |
+          Source/Voxim/Voxel
+          Docs
+          Content/Voxel/Properties/Published
+          Content/Voxel/R7/Published
+    - shell: bash
+      run: ln -s "$GITHUB_WORKSPACE/.ci-voxim" "$GITHUB_WORKSPACE/../Voxim"

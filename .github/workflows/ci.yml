@@ -27,11 +27,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -39,8 +44,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp27-mix-
 
       - name: Install dependencies
         run: mix deps.get
@@ -77,17 +82,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
         with:
           path: deps
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -117,11 +127,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -138,7 +153,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -159,11 +174,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -171,7 +191,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -203,11 +223,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -215,7 +240,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -251,11 +276,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -273,7 +303,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -319,6 +349,7 @@ jobs:
             (cd "apps/scene_server/native/${crate}" && cargo test)
             echo "::endgroup::"
           done
+          (cd apps/voxel_region/native/voxim_worldgen && cargo test)
 
   test-standalone:
     name: Test standalone apps
@@ -340,11 +371,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -352,7 +388,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -387,11 +423,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -407,7 +448,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -448,11 +489,16 @@ jobs:
         with:
           submodules: true
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -469,7 +515,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -493,11 +539,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout shared Voxim source and fixtures
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "28.3.1"
-          elixir-version: "1.19.5"
+          otp-version: "27.2.4"
+          elixir-version: "1.18.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -505,7 +556,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get

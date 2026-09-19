@@ -44,6 +44,11 @@ jobs:
           submodules: true
           fetch-depth: 0
 
+      - name: Checkout shared Voxim source
+        uses: ./.github/actions/voxim-fixtures
+        with:
+          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -75,6 +80,8 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          build-contexts: |
+            voxim=./.ci-voxim/Source/Voxim/Voxel
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
