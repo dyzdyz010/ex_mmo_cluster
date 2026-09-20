@@ -350,8 +350,6 @@ defmodule GateServer.WsConnectionVoxelCrossRegionTest do
     :ok
   end
 
-
-
   defp prefab_place_intent_frame(
          request_id,
          client_intent_seq,

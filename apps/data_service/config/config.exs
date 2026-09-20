@@ -2,7 +2,6 @@ import Config
 
 import_config("../../../config/config.exs")
 
-
 config :mnesia,
   dir: ~c"priv/.mnesia/#{Mix.env()}/#{node()}"
 

@@ -758,22 +758,30 @@ defmodule MmoContracts.Voxel.Codec do
 
   # 全局系统功能：实时展示整帧，不承载数量或物理状态。
   defp encode_liquid_falls(nil), do: []
+
   defp encode_liquid_falls(%{material: material, transfers: transfers}) do
-    [<<2, material::little-16, length(transfers)::little-32>>,
-     Enum.map(transfers, fn {{x, y, z}, units} ->
-       <<x::little-signed-32, y::little-signed-32, z::little-signed-32, units::little-32>>
-     end)]
+    [
+      <<2, material::little-16, length(transfers)::little-32>>,
+      Enum.map(transfers, fn {{x, y, z}, units} ->
+        <<x::little-signed-32, y::little-signed-32, z::little-signed-32, units::little-32>>
+      end)
+    ]
   end
 
   defp decode_liquid_falls(<<>>), do: {:ok, %{}}
+
   defp decode_liquid_falls(<<2, material::little-16, count::little-32, bytes::binary>>)
        when material in [21, 22] and byte_size(bytes) == count * 16 do
-    transfers = for <<x::little-signed-32, y::little-signed-32, z::little-signed-32, units::little-32 <- bytes>>,
-      do: {{x, y, z}, units}
+    transfers =
+      for <<x::little-signed-32, y::little-signed-32, z::little-signed-32,
+            units::little-32 <- bytes>>,
+          do: {{x, y, z}, units}
+
     if Enum.all?(transfers, fn {_, units} -> units > 0 end),
       do: {:ok, %{liquid_falls: %{material: material, transfers: transfers}}},
       else: {:error, :invalid_transaction}
   end
+
   defp decode_liquid_falls(_), do: {:error, :invalid_transaction}
 
   defp decode_transaction_entries(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}

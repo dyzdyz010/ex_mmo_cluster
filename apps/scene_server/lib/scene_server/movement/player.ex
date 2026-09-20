@@ -129,6 +129,18 @@ defmodule SceneServer.Movement.Player do
           state |> private_ticks(Keyword.fetch!(opts, :tick))
       end
 
+    # 只读验收证据：在真实创建/移交完成处绑定来源与已鉴权角色。
+    if state.stream do
+      Logger.info(
+        Jason.encode!(%{
+          event: "liquid_stream_identity",
+          stream_pid: inspect(state.stream),
+          character: state.id,
+          session_epoch: state.identity.session_epoch
+        })
+      )
+    end
+
     Process.monitor(state.scene)
     Process.monitor(state.gate)
     {:ok, state}

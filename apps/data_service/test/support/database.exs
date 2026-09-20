@@ -14,9 +14,12 @@ defmodule MmoTest.Database do
           {:error, :already_up} -> :ok
         end
 
-        {:ok, _, _} = Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
-          Ecto.Migrator.run(repo, Path.expand("../../priv/repo/migrations", __DIR__), :up, all: true)
-        end)
+        {:ok, _, _} =
+          Ecto.Migrator.with_repo(DataService.Repo, fn repo ->
+            Ecto.Migrator.run(repo, Path.expand("../../priv/repo/migrations", __DIR__), :up,
+              all: true
+            )
+          end)
 
         {:ok, _} = Application.ensure_all_started(:data_service)
         Application.put_env(:data_service, :test_database_started, true)

@@ -15,13 +15,16 @@ defmodule GateServer.VoximAuthBoundaryTest do
   test "Gate rejects an expired signed token and tampering while preserving exact cid ownership" do
     {:ok, _} = Application.ensure_all_started(:phoenix)
 
-    start_supervised!(
-      {AuthServerWeb.Endpoint,
-       server: false,
-       secret_key_base: Base.encode64(:crypto.strong_rand_bytes(64)),
-       cache_static_manifest: nil,
-       pubsub_server: AuthServer.PubSub}
-    )
+    # 只测试：整套运行可能已由真实 Auth 应用持有 Endpoint；独立运行才由本例启动。
+    unless Process.whereis(AuthServerWeb.Endpoint) do
+      start_supervised!(
+        {AuthServerWeb.Endpoint,
+         server: false,
+         secret_key_base: Base.encode64(:crypto.strong_rand_bytes(64)),
+         cache_static_manifest: nil,
+         pubsub_server: AuthServer.PubSub}
+      )
+    end
 
     start_supervised!(AuthNode)
 

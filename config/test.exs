@@ -16,7 +16,11 @@ config :visualize_server, VisualizeServerWeb.Endpoint,
 # 跨进程迁移/分布式测试通过 MMO_TEST_DB_NAME 显式传递同一测试库名并负责清理。
 # MMO_DB_NAME 只用于开发/运行环境，不作为测试库入口。
 config :data_service, DataService.Repo,
-  database: System.get_env("MMO_TEST_DB_NAME", "mmo_test_#{System.pid()}_#{System.system_time(:microsecond)}"),
+  database:
+    System.get_env(
+      "MMO_TEST_DB_NAME",
+      "mmo_test_#{System.pid()}_#{System.system_time(:microsecond)}"
+    ),
   username: System.get_env("MMO_DB_USER", "postgres"),
   password: System.get_env("MMO_DB_PASSWORD", "postgres"),
   hostname: System.get_env("MMO_DB_HOST", "127.0.0.1"),

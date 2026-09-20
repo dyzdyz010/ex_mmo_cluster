@@ -1,14 +1,17 @@
 ExUnit.start(exclude: [:smoke], assert_receive_timeout: 1_000)
 Code.require_file("../../data_service/test/support/database.exs", __DIR__)
+
 defmodule SceneServer.TestVoxelRuntime do
   @moduledoc false
 
   def start_registry! do
     # DataService 的应用依赖也可能已启动 Beacon；否则由当前测试模块持有监督树。
     unless Process.whereis(BeaconServer.DistributedRegistry) do
-      ExUnit.Callbacks.start_supervised!({Horde.Registry,
-        name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto})
+      ExUnit.Callbacks.start_supervised!(
+        {Horde.Registry, name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto}
+      )
     end
+
     :ok
   end
 

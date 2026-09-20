@@ -1,5 +1,24 @@
 # Voxim Region 真值
 
+2026-09-20 建造堵水（Global system，测试 Test-only）：正常建造先规划目标格的六面排液，
+canonical Y-up 固定顺序为下、X-/X+/Z-/Z+、上；仅域内空气或同种液体可接收，
+邻格容量不足仍返回 occupied，整次不扣料、不改变液量。可容纳时数量、焓、完整度
+与建造扣料一起走既有权威事务、复制及持久化。上排仅是实体置换，不新增压力水模拟。
+依据沿用 [Forsyth 六面格点模型](https://tomforsyth1000.github.io/papers/cellular_automata_for_physical_modelling.html)
+和 [有限体积面通量守恒](https://www.clawpack.org/riemann_book/html/Approximate_solvers.html)；
+固定排液优先序是本项目有限容量建造规则，热/完整度搬运直接复用 Phase.transport。
+验证契约：Liquid 纯输入覆盖容量分流、完整 XYZ 域边界与空间不足；真实 World 用独占空基底、
+一次作者样本与正常采掘/舀倒准备库存，检查单事务、扣料、守恒、拒绝无变化、后续流动及冷恢复。
+基底和角色用现有替身，文件日志经正式数据库行编解码，不证明 Gate/UE 或数据库服务可用性。
+正常入口：apps/voxel_region 下 `mix test --no-start test/liquid_test.exs test/phase_world_test.exs`。
+本轮命令/原始输出放 `.demo/observe/water-block-20260920/`；独立 Linux 构建放
+`/home/dyz/.cache/voxim-p0-water-block/build`，不覆盖 p0-ramp 构建。
+实测：World 原实现对有水格返回 occupied，定向用例先红后绿；Liquid/PhaseWorld/LogProjection
+48 项中 46 通过、2 个既有 realtime 未选；新增异种液体有余容仍拒绝用例单独通过。
+真实双客户端用户操作由 Voxim 同轮场景验收，本段不以模块绿灯替代。
+同轮只读 `liquid_projection` JSON 在实际发送处记录 connection_pid、seq、material、
+box_min/box_max、min_level 和原始 source=[x,y,z,units]，供身份绑定及近/远景投影判定；不二次投影。
+
 2026-09-20 区域读取阻塞修复（Global system；验证为 Test-only）：已实遇每次
 `serve_item` 在分支选择前扫描、排序、投影全历史，阻塞同一 authority mailbox。
 先让 unchanged、首次完整载荷、版本或已知基线不匹配直接返回；只有真正增量才查询区域序号索引。

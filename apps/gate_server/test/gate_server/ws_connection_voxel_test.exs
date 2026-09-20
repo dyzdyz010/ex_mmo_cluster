@@ -2091,8 +2091,6 @@ defmodule GateServer.WsConnectionVoxelTest do
     end
   end
 
-
-
   defp chunk_subscribe_frame(request_id, logical_scene_id, {cx, cy, cz}, radius \\ 0) do
     <<0x60, request_id::64-big, logical_scene_id::64-big, cx::32-big-signed, cy::32-big-signed,
       cz::32-big-signed, radius::8, 1::8, 0::16-big>>

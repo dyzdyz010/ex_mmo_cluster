@@ -215,6 +215,86 @@ defmodule VoxelRegion.PhaseWorldTest do
       %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,material: 21,
         tool_id: if(action==2,do: 11,else: 12),coord: cell})
   end
+
+  @tag :database_metadata
+  test "normal building displaces water atomically with energy, integrity, cost and replay", c do
+    assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
+    before = observe(c.w)
+    initial = row(c.w, {63,1,2})
+    build = fn seq, cell -> World.production_intent(c.w, c.actor,
+      %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
+        action: 1, material: 15, tool_id: 1, coord: cell}) end
+    assert {:ok, seq} = build.(2, {63,1,2})
+    assert seq == before.seq + 1
+    after_build = observe(c.w)
+    assert after_build.material_balances[{1001,15}] == before.material_balances[{1001,15}] - @capacity
+    assert after_build.liquid_units == %{{63,0,2} => @quarter}
+    moved = row(c.w, {63,0,2})
+    assert_in_delta moved.phase_energy_j, initial.phase_energy_j, 0.001
+    assert_in_delta moved.hp / moved.max_hp, initial.hp / initial.max_hp, 1.0e-9
+    assert {:ok, ^seq} = build.(2, {63,1,2})
+    assert :ok = World.compact(c.w)
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    assert observe(w).liquid_units == after_build.liquid_units
+    assert observe(w).material_balances == after_build.material_balances
+    assert_in_delta row(w, {63,0,2}).phase_energy_j, moved.phase_energy_j, 0.001
+    send(w, :liquid_commit)
+    World.seq(w)
+    flowing = observe(w).liquid_units
+    assert Enum.sum(Map.values(flowing)) == @quarter
+    refute Map.has_key?(flowing, {63,1,2})
+    assert map_size(flowing) > 1
+  end
+
+  test "blocked displacement and journal rejection leave quantity, properties and inventory unchanged", c do
+    assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
+    cell = {63,1,2}
+    walls = for p <- VoxelRegion.Liquid.neighborhood([cell]), p != cell, do: {p,15}
+    assert {:ok, _} = World.apply_edits(c.w, walls)
+    build = fn seq, at -> World.production_intent(c.w, c.actor,
+      %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
+        action: 1, material: 15, tool_id: 1, coord: at}) end
+    before = observe(c.w)
+    assert {:error, :occupied} = build.(2, cell)
+    assert observe(c.w) == before
+    assert {:error, :occupied} = build.(3, {63,0,2})
+    assert observe(c.w) == before
+    assert {:ok, _} = World.apply_edit(c.w, {64,1,2}, 0)
+    before = observe(c.w)
+    handle = Log.open(c.root, World.content_version(c.w))
+    File.write!(handle <> ".reject", "")
+    assert {:error, :test_disk_failure} = build.(4, cell)
+    assert observe(c.w) == before
+    File.rm!(handle <> ".reject")
+    assert {:ok, _} = build.(5, {64,1,2})
+    assert observe(c.w).liquid_units == before.liquid_units
+    assert observe(c.w).material_balances[{1001,15}] == before.material_balances[{1001,15}] - @capacity
+  end
+
+  @tag :database_metadata
+  test "different liquid cannot receive displaced water even with spare capacity", c do
+    assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
+    cell = {63,1,2}
+    receiver = {64,1,2}
+    walls = for p <- VoxelRegion.Liquid.neighborhood([cell]), p not in [cell,receiver], do: {p,15}
+    assert {:ok, _} = World.apply_edits(c.w, walls)
+    supply = Path.join(c.root, "lava-neighbor.json")
+    File.write!(supply, Jason.encode!(%{classification: "Test-only",
+      deposits: [%{macro: [64,1,2], material: 22}]}))
+    assert {:ok, _} = World.liquid_experiment(c.w, supply)
+    :ok = GenServer.call(c.actor.player, {:eye, {64.5,1.5,2.5}})
+    scoop = %{request_id: 2, client_intent_seq: 2, logical_scene_id: 1,
+      action: 2, material: 22, tool_id: 11, coord: receiver}
+    assert {:ok, _} = World.production_intent(c.w,
+      Map.merge(c.actor, %{received_us: 2_000_000, clock_node: node()}), scoop)
+    before = observe(c.w)
+    assert before.liquid_units[receiver] == @capacity - @quarter
+    assert {:error, :occupied} = World.production_intent(c.w, c.actor,
+      %{request_id: 3, client_intent_seq: 3, logical_scene_id: 1,
+        action: 1, material: 15, tool_id: 1, coord: cell})
+    assert observe(c.w) == before
+  end
   defp row(w,cell),do: Enum.find(Map.values(observe(w).damage),&(&1.granularity==0 and Damage.macro(&1)==cell))
   defp operate(c,tool,seq,cell \\ {63,1,2},action \\ 1) do
     {:ok,context}=Actor.tool_context(c.actor.player,c.actor.identity)

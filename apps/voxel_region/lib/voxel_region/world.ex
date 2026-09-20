@@ -2218,6 +2218,14 @@ defmodule VoxelRegion.World do
     transaction = property_transaction(before, state, transaction)
 
     Enum.each(state.canonical_subs, fn {pid, box} ->
+      # 只读验收证据：真实 canonical 订阅的投影前流动帧，保留排他上界。
+      if falls = Map.get(transaction, :liquid_falls) do
+        {lo, hi} = box
+        Logger.info(Jason.encode!(%{event: "liquid_projection", path: "canonical", stream_pid: inspect(pid),
+          seq: transaction.seq, material: falls.material, box_min: Tuple.to_list(lo),
+          box_max: Tuple.to_list(hi),
+          source: Enum.map(falls.transfers, fn {{x,y,z},units} -> [x,y,z,units] end)}))
+      end
       delta = %CanonicalDelta{
         transaction_seq: state.seq,
         transaction: VoxelRegion.PropertyObservation.project(transaction, box),
@@ -4518,7 +4526,8 @@ defmodule VoxelRegion.World do
                    elem(inventory_phase(before,actor.cid,request.material,balance_state(before,actor.cid,request.material).balance),1)<=0,
                  do: {:error,:broken_material},else: :ok),
                false <- Map.has_key?(before.refined, request.coord),
-               {:ok, {0, _}, state} <- cell_value(before, 0, request.coord) do
+               {:ok, {old, _}, state} <- cell_value(before, 0, request.coord),
+               {:ok, state, displaced, displacement} <- displace_for_build(state, request.coord, old) do
             {state, settlement} =
               settle_material(
                 state,
@@ -4535,10 +4544,11 @@ defmodule VoxelRegion.World do
               inventory=%{{actor.cid,request.material}=>remaining}
               state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
               # Inventory Ice stays solid; any later thermal phase completion is ordinary simulation.
-              apply_batch(state,[{request.coord,request.material}],false,Map.merge(settlement,%{
-                liquid_changes: %{request.coord=>cost},phase_values: %{request.coord=>portion},phase_inventory: inventory}))
+              apply_batch(state,displaced++[{request.coord,request.material}],false,Map.merge(settlement,%{
+                liquid_changes: Map.put(displacement.liquid_changes,request.coord,cost),
+                phase_values: Map.put(displacement.phase_values,request.coord,portion),phase_inventory: inventory}))
             else
-              apply_batch(state, [{request.coord, request.material}], false, settlement)
+              apply_batch(state, displaced++[{request.coord, request.material}], false, Map.merge(settlement,displacement))
             end
           else
             :error -> {:error, :invalid_tool}
@@ -4546,6 +4556,24 @@ defmodule VoxelRegion.World do
             {:ok, _, _} -> {:error, :occupied}
             {:error, reason} -> {:error, reason}
           end
+  end
+
+  # 先形成完整不可变计划，再与扣料及实体放置共同提交；拒绝时不留下部分排液。
+  defp displace_for_build(state, _cell, 0),
+    do: {:ok,state,[],%{liquid_changes: %{},phase_values: %{}}}
+  defp displace_for_build(state, cell, material) do
+    if Phase.liquid?(material) and liquid_enabled?(state) and liquid_inside?(cell,state.liquid_bounds) do
+      cells = cell |> then(&Liquid.neighborhood([&1])) |> Enum.filter(&liquid_inside?(&1,state.liquid_bounds))
+      {open,water,state} = liquid_cells(state,cells,material)
+      with {:ok,changes,flows} <- Liquid.displace(water,cell,liquid_capacity(state),state.liquid_bounds,&Map.fetch!(open,&1)) do
+        {values,state} = phase_values(state,Map.keys(changes))
+        values = if phase_enabled?(state),do: Phase.transport(values,water,flows),else: %{}
+        edits = for {to,_} <- changes,to != cell,do: {to,material}
+        {:ok,state,edits,%{liquid_changes: changes,phase_values: values}}
+      end
+    else
+      {:error,:occupied}
+    end
   end
 
   defp build_reach(eye, coord, range) do

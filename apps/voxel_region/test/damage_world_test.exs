@@ -1035,9 +1035,12 @@ defmodule VoxelRegion.DamageWorldTest do
     # A legal catalog switch must not reject tombstoned historical damage during replay.
     File.write!(c.catalog," ",[:append])
     assert :ok=World.publish_properties(c.w,c.catalog)
+    # 只测试：四次伤害后是 seq 5，目录发布本身再提交一笔无伤害状态的事务。
+    assert World.seq(c.w)==6
+    assert [%{seq: 6,property_states: []}]=World.entries_after(c.w,5)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
-    assert World.seq(w)==5
+    assert World.seq(w)==6
     assert observe(w).damage==%{}
   end
 

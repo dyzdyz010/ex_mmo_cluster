@@ -9,6 +9,7 @@ defmodule GateServer.MovementRouteTest do
 
   setup do
     root = Path.join(System.tmp_dir!(), "voxim_w1_route_#{System.unique_integer([:positive])}")
+
     # 只测试路由：显式空气数据源保留真实 World/HTTP/Gate 接缝，不依赖发布世界的烘焙版本。
     opts = [source: VoxelRegion.TestSupport.Source, root: root, observer: self()]
 

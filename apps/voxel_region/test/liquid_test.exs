@@ -6,6 +6,23 @@ defmodule VoxelRegion.LiquidTest do
   @capacity 4096 * 8 * 8 * 8
 
   defp total(water), do: water |> Map.values() |> Enum.sum()
+
+  test "建造排液按六面容量全量规划，封闭 XYZ 边界不足则不产生部分结果" do
+    cell = {63, 1, 2}
+    water = %{cell => 10, {63, 0, 2} => 7}
+    bounds = {{63, 0, 2}, {65, 3, 3}}
+    assert {:ok, changes, flows} = Liquid.displace(water, cell, 10, bounds, fn _ -> true end)
+    assert changes == %{cell => 0, {63, 0, 2} => 10, {64, 1, 2} => 7}
+    assert Enum.sum(Map.values(Liquid.apply_changes(water, changes))) == 17
+    assert Enum.sum(Enum.map(flows, &elem(&1, 2))) == 10
+    values = VoxelRegion.Phase.transport(%{cell => {70.0, 5.0}, {63,0,2} => {14.0, 7.0}}, water, flows)
+    assert values[cell] == {0.0, 0.0}
+    assert values[{63,0,2}] == {35.0, 8.5}
+    assert values[{64,1,2}] == {49.0, 3.5}
+    assert {:error, :occupied} = Liquid.displace(water, cell, 10, bounds, &(&1 == {63, 0, 2}))
+    assert {:ok, %{^cell => 0, {63, 2, 2} => 10}, _} =
+      Liquid.displace(%{cell => 10}, cell, 10, bounds, &(&1 == {63, 2, 2}))
+  end
   defp advance(water, bounds, open?, gravity \\ @capacity, side \\ @capacity) do
     Liquid.apply_changes(water, Liquid.step(water, bounds, @capacity, gravity, side, open?))
   end

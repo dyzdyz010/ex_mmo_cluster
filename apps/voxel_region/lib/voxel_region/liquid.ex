@@ -109,6 +109,22 @@ defmodule VoxelRegion.Liquid do
     end)
   end
 
+  @doc "建造排液：依次下、水平四面、上，全量可容纳才返回变化和守恒通量。"
+  def displace(water, {x,y,z}=cell, capacity, bounds, open?) do
+    neighbors = [{x,y-1,z},{x-1,y,z},{x+1,y,z},{x,y,z-1},{x,y,z+1},{x,y+1,z}]
+    {remaining, changes, flows} = Enum.reduce(neighbors,
+      {Map.fetch!(water,cell),%{cell=>0},[]}, fn to,{remaining,changes,flows} ->
+        moved = if available?(to,bounds,open?),
+          do: min(remaining,capacity-Map.get(water,to,0)), else: 0
+        if moved > 0 do
+          {remaining-moved,Map.put(changes,to,Map.get(water,to,0)+moved),[{cell,to,moved}|flows]}
+        else
+          {remaining,changes,flows}
+        end
+      end)
+    if remaining == 0, do: {:ok,changes,Enum.reverse(flows)}, else: {:error,:occupied}
+  end
+
   defp result(cell, quantity, balance, moved),
     do: %{changes: if(moved == 0, do: %{}, else: %{cell => quantity}), balance: balance, transferred_units: moved}
 

@@ -19,7 +19,9 @@ defmodule MmoContracts.VoximM1ContractTest do
   end
 
   # 历史黄金样本保持原字节；当前会话显式升级 Hello，其他消息仍逐字节相等。
-  defp current(%Session.Hello{} = value), do: %{value | protocol_version: Codec.protocol_version()}
+  defp current(%Session.Hello{} = value),
+    do: %{value | protocol_version: Codec.protocol_version()}
+
   defp current(value), do: value
 
   test "M1 rejects an unsupported envelope version at the network boundary" do

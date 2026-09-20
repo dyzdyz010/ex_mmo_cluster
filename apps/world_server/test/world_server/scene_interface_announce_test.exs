@@ -5,8 +5,11 @@ defmodule WorldServer.SceneInterfaceAnnounceTest do
 
   setup_all do
     unless Process.whereis(BeaconServer.DistributedRegistry) do
-      start_supervised!({Horde.Registry, name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto})
+      start_supervised!(
+        {Horde.Registry, name: BeaconServer.DistributedRegistry, keys: :unique, members: :auto}
+      )
     end
+
     :ok
   end
 
