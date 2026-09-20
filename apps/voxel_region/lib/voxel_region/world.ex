@@ -137,6 +137,8 @@ defmodule VoxelRegion.World do
       timeout: :infinity
     )
     |> Stream.run()
+
+    GenServer.call(server, {:adopt_liquid, Enum.uniq(for {0, region} <- keys, do: region)}, 300_000)
   end
 
   defp edit_keys(coords) do
@@ -493,7 +495,6 @@ defmodule VoxelRegion.World do
         {state, _, _} = refresh_structure(state, Map.keys(state.refined))
         state = if map_size(state.structure) > 0, do: compact_log(state), else: state
         state = rebuild_thermal_work(state)
-        state = if liquid_enabled?(state), do: adopt_liquid_sources(state), else: state
 
         Logger.info(
           "voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}"
@@ -528,6 +529,12 @@ defmodule VoxelRegion.World do
     )
 
     {:reply, {state.source, state.source_state, missing}, state}
+  end
+
+  def handle_call({:adopt_liquid, regions}, _, state) do
+    state = if liquid_enabled?(state),
+      do: Enum.reduce(regions, state, &adopt_liquid_sources(&2, &1)), else: state
+    {:reply, :ok, state}
   end
 
   def handle_call({:publish_properties, catalog}, _, state) do
@@ -4353,22 +4360,49 @@ defmodule VoxelRegion.World do
 
   defp enable_liquid(before, state) do
     if not liquid_enabled?(before) and liquid_enabled?(state) do
-      state=adopt_liquid_sources(state)
       schedule_liquid(state)
     else
       state
     end
   end
 
-  defp adopt_liquid_sources(state) do
-    # Test-only domain admission reads canonical source + replayed overlay, so an
-    # emptied source cell stays empty on restart. No perpetual emitter or refill.
+  defp adopt_liquid_sources(state, region) do
+    # 全局系统：只接纳本次加载区域（含 ring）的有限液体；地图边界不是启动扫描任务。
+    # 从当前 canonical 载荷筛选，再按 owner core 读取，已耗尽源的空气覆盖不会补水。
     {{lx,ly,lz},{hx,hy,hz}}=state.liquid_bounds
-    cells=for x<-lx..(hx-1),y<-ly..(hy-1),z<-lz..(hz-1),do: {x,y,z}
-    {_open,water,state}=liquid_cells(state,cells)
-    changes=Map.drop(water,Map.keys(state.liquid_units))
-    {:ok,state}=commit_liquid(state,changes,%{liquid_wake: false})
-    state
+    {ox,oy,oz}=Payload.origin(region)
+    extent=Payload.extent()
+    lo={max(lx,ox),max(ly,oy),max(lz,oz)}
+    hi={min(hx,ox+extent),min(hy,oy+extent),min(hz,oz+extent)}
+    {ax,ay,az}=lo
+    {bx,by,bz}=hi
+    if ax<bx and ay<by and az<bz do
+      with {:ok,bytes,_,state} <- payload_bytes(state,0,region),
+           {:ok,payload} <- Payload.decode(bytes) do
+        cells=if :binary.match(payload.cells,[<<21,0>>,<<22,0>>]) == :nomatch do
+          []
+        else
+          for x<-ax..(bx-1),y<-ay..(by-1),z<-az..(bz-1),
+            not Map.has_key?(state.liquid_units,{x,y,z}),
+            Phase.liquid?(Payload.material(payload,Payload.local(region,{x,y,z}))),do: {x,y,z}
+        end
+        Enum.reduce([21,22],state,fn material,s ->
+          {_open,water,s}=liquid_cells(s,cells,material)
+          if map_size(water)==0 do
+            s
+          else
+            {:ok,s}=commit_liquid(s,water,%{liquid_wake: false,liquid_material: material})
+            s
+          end
+        end)
+      else
+        # 保留实际请求入口的 missing/canonical_incomplete 错误，不把缺失源当空气。
+        {:error,_,state} -> state
+        {:error,_} -> state
+      end
+    else
+      state
+    end
   end
 
   defp raw_liquid_edit(state, edits) do

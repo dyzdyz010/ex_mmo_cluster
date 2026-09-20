@@ -9,11 +9,15 @@ defmodule VoxelRegion.LiquidWorldTest do
   @transfer div(@capacity,4)
 
   defmodule LegacySource do
-    defdelegate open(opts),to: Source
+    def open(opts) do
+      {:ok,s}=Source.open(opts)
+      {:ok,Map.put(s,:missing,Keyword.get(opts,:missing,false))}
+    end
     defdelegate content_version(s),to: Source
     defdelegate world_dir(s),to: Source
     defdelegate generated(s),to: Source
     defdelegate ensure(s,level,region),to: Source
+    def read(%{missing: true},0,{1,0,0}),do: {:error,:missing}
     def read(s,level,region) do
       {:ok,bytes,_}=Source.read(s,level,region)
       {:ok,p}=Payload.decode(bytes)
@@ -38,8 +42,8 @@ defmodule VoxelRegion.LiquidWorldTest do
       |> Map.put("liquid",%{"step_seconds"=>context[:cadence] || 3600,"gravity_units_per_step"=>@transfer,"side_units_per_step"=>div(@capacity,16),"side_threshold_units"=>context[:head] || 0})
     File.write!(catalog,Jason.encode!(data))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
-    opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),log: if(context[:database], do: VoxelRegion.OverlayLog.Db, else: Log),root: root,observer: self(),property_catalog_path: catalog,
-      prefab_catalog_path: prefab,name: nil,production_materials: [19,21],liquid_bounds: {{62,0,1},{66,4,4}}]
+    opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),missing: context[:missing] || false,log: if(context[:database], do: VoxelRegion.OverlayLog.Db, else: Log),root: root,observer: self(),property_catalog_path: catalog,
+      prefab_catalog_path: prefab,name: nil,production_materials: [19,21],liquid_bounds: context[:bounds] || {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :b7,refresh: &Actor.tool_context/2,eye: {63.5,1.5,0.5},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
@@ -132,7 +136,35 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   @tag :empty_inventory
   @tag :legacy_water
+  @tag :missing
+  test "liquid admission preserves the missing region response and the world owner",c do
+    alias MmoContracts.Voxel.Codec
+    request=Codec.encode_request(0,[%{level: 0,region: {1,0,0},have_seq: 0,have_hash: 0}]) |> IO.iodata_to_binary()
+    assert {:ok,reply}=World.serve(c.w,request)
+    assert {:ok,123,[{:missing,0,{1,0,0}}]}=Codec.decode_reply(IO.iodata_to_binary(reply))
+    assert World.seq(c.w)==0
+  end
+
+  @tag :empty_inventory
+  @tag :legacy_water
+  @tag bounds: {{-8192,-8192,-8192},{8192,8192,8192}}
+  test "full map starts idle, admits only loaded XYZ regions and supports first scoop",c do
+    refute_receive {:prepared, _, _}
+    VoxelRegion.TestSupport.payload(c.w,0,{-2,3,-4})
+    assert_receive {:prepared,0,{-2,3,-4}}
+    refute_receive {:prepared,_,_}
+    assert quantities(c.w)==%{}
+    assert {:ok,_}=transfer(c,2,1,{63,1,2})
+    assert quantities(c.w)==%{{63,1,2}=>@capacity-@transfer}
+    assert balance(c.w)==@transfer
+    assert total(c.w)==@capacity
+  end
+
+  @tag :empty_inventory
+  @tag :legacy_water
   test "undisturbed canonical source water is admitted without starting simulation",c do
+    refute_receive {:prepared, _, _}
+    VoxelRegion.TestSupport.payload(c.w,0,{1,0,0})
     assert quantities(c.w)==%{{63,1,2}=>@capacity}
     assert World.liquid_activity(c.w)==%{active_cells: 0,scheduled: false}
     assert :ok=World.compact(c.w)
@@ -243,6 +275,7 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   @tag :legacy_water
   test "legacy unsuffixed Water is a full finite macro, including a cold ring snapshot",c do
+    VoxelRegion.TestSupport.payload(c.w,0,{1,0,0})
     assert quantities(c.w)==%{{63,1,2}=>@capacity}
     assert {:ok,_}=transfer(c,2,1,{63,1,2})
     assert quantities(c.w)==%{{63,1,2}=>@capacity-@transfer}
@@ -267,12 +300,14 @@ defmodule VoxelRegion.LiquidWorldTest do
   @tag :empty_inventory
   test "admitted legacy source flows immediately and never refills emptied source after replay",c do
     # 只测试：仅由 legacy source 提供世界水，角色初始库存为空。
+    VoxelRegion.TestSupport.payload(c.w,0,{0,0,0})
     assert quantities(c.w)==%{{63,1,2}=>@capacity}
     for n<-1..4, do: assert({:ok,_}=transfer(c,2,n,{63,1,2}))
     assert quantities(c.w)==%{}
     assert balance(c.w)==@capacity
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
+    VoxelRegion.TestSupport.payload(w,0,{0,0,0})
     assert quantities(w)==%{}
     assert balance(w)==@capacity
     tick(w)

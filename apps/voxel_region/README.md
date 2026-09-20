@@ -1,5 +1,15 @@
 # Voxim Region 真值
 
+2026-09-20 青岚全图液体接入（Global system）：`liquid_bounds` 只规定合法模拟边界，
+World 启动不枚举地图。正式 `prepare` 完成源准备后，owner 只从本次 L0 区域及 ring 的
+canonical 载荷接纳有限水／熔岩；空气覆盖阻止旧水源补充，接纳本身不唤醒静水。
+缺失区域仍交由原请求返回 missing／canonical_incomplete，观察接口不隐式加载区域。
+设计依据是现有 canonical owner 和区域加载链路；对照
+[Luanti 的 loaded/active block 区分](https://api.luanti.org/map-terminology-and-coordinates/)，
+只沿用按加载区域处理的原则，不采用可再生水源规则。
+`liquid_world_test.exs` 覆盖全图范围启动、完整 XYZ 局部加载、首次盛取、冷 ring、
+耗尽源真实重启及 missing；相关 phase/liquid activity 回归保持有限资源守恒。
+
 2026-09-20 建造堵水（Global system，测试 Test-only）：正常建造先规划目标格的六面排液，
 canonical Y-up 固定顺序为下、X-/X+/Z-/Z+、上；仅域内空气或同种液体可接收，
 邻格容量不足仍返回 occupied，整次不扣料、不改变液量。可容纳时数量、焓、完整度
