@@ -56,3 +56,72 @@ Qinglan 本地 Development BuildCookRun 已成功，原 IoStore 清单包含唯�
 同版本镜像与打包客户端冒烟、最终分发版本清单和发布仍未完成；本地 cook 不代表已发布或通过分发验收。
 
 被取代的结论是“M1 authority/QUIC/bootstrap 尚未实施”和“Scene/ChunkProcess 是 Voxim 体素 owner”。旧日期档案保留其历史上下文；现行索引以本页和上述实现/验收源为准。
+
+## P0 下落展示事务（2026-09-20，实施中）
+
+Global system。依据当前 `Liquid.step_transfers` 的重力阶段通量、`World.apply_batch` 的同步追加后广播、
+`PropertyObservation` 窗口投影与 `LogProjection` 源码，复用既有单向不可变事务；物理模型依据仍是
+Liquid 模块引用的 Forsyth 格点水量模型，不增加速度或第二份数量真值。
+Hello14 的事务粗格数组后可追加 `tag:u8=1, material:u16 LE, count:u32 LE, count * {x,y,z:i32 LE}`。
+无尾段不更新展示；尾段是该材料本步所有实际重力目的格（排序去重），空数组清除旧帧。
+World 只保留上一帧以在停止时清除一次；非空帧每个活跃步都发送，新订阅者下一步即得到完整帧。
+净数量不变但展示有变化仍走正常 seq、日志提交和 canonical fanout，清除不产生几何／碰撞改动。
+该字段仅用于实时展示，在追加持久化及内存历史正文时删除，不进入 snapshot 或区域补流；
+客户端会话边界清空。部分观察者收到按其完整 XYZ 窗口过滤的整帧（包含空清除）。
+
+最小充分验证：纯 wire 固定小端负坐标／无尾段／空清除／拒绝畸形尾段；纯通量含净零中间格与纯侧流；
+独立 World 经有限 liquid_experiment 作者样本，公开 canonical 订阅验证四步下落、守恒、一次 metadata-only
+清除及 timer 休眠、历史／冷恢复不激活展示。世界基底和玩家使用现有显式替身，停止生命周期使用真实隔离数据库，其他既有用例使用真实文件日志；
+不以此代替真实双 UE 展示验收。命令及原始红绿证据：`.demo/observe/p0-liquid-falls/`，正常 Mix 构建图。
+
+
+## P0 正式历史维护（2026-09-20，实施中）
+
+Global system。复用已实测 Demo 止损方式：World 完整前缀 `compact_log`、原子 DB replace，
+及 Erlang 官方 [Garbage Collection](https://www.erlang.org/doc/apps/erts/garbagecollection.html)
+的 old heap/full-sweep 行为。历史多于单个检查点时安排一次 60 秒维护；成功压实取消计时器，
+没有新事务就不再排队。显式 compact 使用同一边界；full GC 放到下一 handle_continue，旧 callback state
+不再引用历史。日志记录 seq、压实前后保留笔数、同步暂停时间和 GC 后进程内存；World.stats
+增加 retained_transactions、checkpoint_scheduled、checkpoints。不改变 seq、会话去重、世界量或焓。
+
+同步检查点会暂停 World；此前真实 Demo 297ms 是明确性能限制，不声称无停顿或 MMO 验收。
+本增量不增异步框架、可调阈值、重试或第二份世界。测试经公开有限供给/舀倒，实等生产60秒事件，
+比较数量、库存焓、热学账、会话收据；验证休眠、再次改动唤醒、显式 compact 取消和冷恢复。
+原始日志 `.demo/observe/p0-checkpoint/`，真实双端在线与工作负载停顿测量由 P0 联调另行记录。
+
+
+P0 本轮局部验证结果：Hello14 固定字节与 Session／液体／燃烧协议回归 26 项通过；
+World／通量／空间投影 20 项通过（真实隔离数据库清除提交、Replica转发与历史排除）；
+现有 compact 的 region 基底、ring／seq、冷恢复与有限供给 4 个选中用例通过；
+60秒生产计时器生命周期 1 项通过（61.4秒，34项未选中），不将排除项计为通过。
+先红后绿证据与原始环境失败保留在上述目录。协议回归 `test-wire.sh`；流动回归 `test-world.sh`；
+维护 `test-realtime.sh`；现有压实回归 `test-regression.sh`。
+正常 Linux Mix prod 构建 gate_server/auth_server 完成，独立目录
+`/home/dyz/.cache/voxim-p0-falls/build-checkpoint`，字节检查 Hello=14；源码/产物对应记录为目录内
+`source-version.json`。此处仅“已实现／局部实跑”，真实双端展示与真实工作负载周期维护尚待联调。
+
+
+P0 泄流尾部诊断：真实隔离服 `voxim-r8-p0-fall-02` 在 seq650 仍有一量子下落，
+只读后续观察已到 seq664、active=0、scheduled=false。用该快照的数量、完整域内实体占用和发布参数
+运行现有纯 Liquid，10步后休眠，每步守恒8,388,608量子，最终逐格数量与实服完全相等。
+因此没有修改物理或增加等待来隐藏非终止；这是有限整数尾流。0.1秒参数对应1秒模拟时间，
+不能当作含同步提交成本的墙钟上界。复现 `.demo/observe/p0-liquid-tail/replay.sh`。
+新增合法前提的纯测试：先落入中间格，在仍为空的下游格新增支撑后水柱停止且16量子保留；
+LiquidActivity文件5项通过。它不代表玩家能在已被水占用的位置放实体，后者仍遵守原建造规则。
+
+
+P0 坡面修正（Hello15，替代上述 Hello14 展示格式）：用户要求水柱厚度反映实际流量，
+不能在一量子尾流仍显示满宏格水柱。复用已有重力阶段 `{from,to,units}`，不修改 Liquid 的任何
+数量计算或搬运；每个目的格只有正上方一个来源，按目的格排序输出
+`liquid_falls: %{material: 21|22, transfers: [{{x,y,z},units}, ...]}`。
+事务尾段改为 `tag:u8=2, material:u16LE, count:u32LE`，每项为 `x/y/z:i32LE, units:u32LE`，16字节。
+Hello15 不接纳旧 tag1；无尾段／空整帧／停止清除／历史排除／checkpoint 语义不变。
+空间投影成对过滤坐标和量子，不将其提升为世界数量真值。依据是上述已存在权威通量和单向事务源码。
+验证：冻结负坐标、1量子和524288量子的wire、零量/旧tag拒绝、成对窗口筛选、实际World/Replica
+四步通量及清除／隔离数据库冷恢复；只修改服务端，真实台阶坡和视觉厚度由配对客户端联调验证。
+原始红绿日志 `.demo/observe/p0-liquid-flux/`；构建与已运行Hello14目录隔离。
+
+Hello15 本轮结果：协议26项、通量/投影/真实隔离DB World/Replica22项通过；红例均在改动前证伪旧格式。
+正常Mix prod gate_server/auth_server构建完成，验证Hello=15；目录
+`/home/dyz/.cache/voxim-p0-ramp/build`，对应记录 `source-version.json`。
+此前60秒检查点代码保留不变；本轮不重复宣称或重跑无关性能验收。未触碰已有live世界。

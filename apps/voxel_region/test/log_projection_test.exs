@@ -4,6 +4,19 @@ defmodule VoxelRegion.LogProjectionTest do
   alias MmoContracts.Voxel.Codec
 
   # Test-only: pure committed-log projection. World commit/reload integration lives in damage_world_test.
+  test "live full frame is scoped including empty clear; historical regions never activate transient flow" do
+    txn = %{seq: 8, entries: [], coarse: [], liquid_falls: %{material: 21, transfers: [{{-1,2,3},1},{{200,2,3},524288}]}}
+    projected = VoxelRegion.PropertyObservation.project(txn, {{-1,0,0},{0,1,1}})
+    assert projected.liquid_falls.transfers == [{{-1,2,3},1}]
+    assert VoxelRegion.PropertyObservation.project(txn, {{0,0,0},{1,1,1}}).liquid_falls.transfers == []
+    assert {:voxel_log_transaction_payload, bytes} = LogProjection.message(txn, {{{-1,0,0},{-1,0,0}}, 5})
+    assert {:ok, %{liquid_falls: %{transfers: [{{-1,2,3},1}]}}} = Codec.decode_transaction(bytes)
+    clear = %{txn | liquid_falls: %{material: 21, transfers: []}}
+    assert {:voxel_log_transaction_payload, bytes} = LogProjection.message(clear, {{{0,0,0},{0,0,0}}, 5})
+    assert {:ok, %{liquid_falls: %{material: 21, transfers: []}}} = Codec.decode_transaction(bytes)
+    refute Map.has_key?(LogProjection.region(txn, 0, {-1,0,0}), :liquid_falls)
+  end
+
   test "negative corner edits reach every adjacent ring, in sequence order after the cursor" do
     older = %{seq: 2, entries: [%{coord: {-64, -64, -64}, material: 11}], coarse: []}
     newer = %{seq: 9, entries: [%{coord: {-64, -64, -64}, material: 19}], coarse: []}

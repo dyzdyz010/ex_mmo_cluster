@@ -26,6 +26,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   setup context do
+    if context[:database], do: MmoTest.Database.start!()
     root=Path.join(System.tmp_dir!(),"b7_world_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     catalog=Path.join(root,"catalog.json")
@@ -37,7 +38,7 @@ defmodule VoxelRegion.LiquidWorldTest do
       |> Map.put("liquid",%{"step_seconds"=>context[:cadence] || 3600,"gravity_units_per_step"=>@transfer,"side_units_per_step"=>div(@capacity,16),"side_threshold_units"=>context[:head] || 0})
     File.write!(catalog,Jason.encode!(data))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
-    opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),log: Log,root: root,observer: self(),property_catalog_path: catalog,
+    opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),log: if(context[:database], do: VoxelRegion.OverlayLog.Db, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       prefab_catalog_path: prefab,name: nil,production_materials: [19,21],liquid_bounds: {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :b7,refresh: &Actor.tool_context/2,eye: {63.5,1.5,0.5},tick_us: 16_667}
@@ -71,6 +72,51 @@ defmodule VoxelRegion.LiquidWorldTest do
   defp quantities(w),do: World.simulation_snapshot(w,[1001],{{0,0,0},{2,1,1}}).liquid_quantities
   defp total(w),do: Enum.sum(Map.values(quantities(w)))+balance(w)
   defp tick(w),do: (send(w,:liquid_commit); World.seq(w))
+
+  @tag :empty_inventory
+  @tag head: @capacity
+  @tag :database
+  test "committed falling frames clear exactly once, conserve quantity and never replay", c do
+    supply = Path.join(c.root, "fall-source.json")
+    File.write!(supply, Jason.encode!(%{classification: "Test-only", deposits: [%{macro: [63,1,2], material: 21}]}))
+    assert {:ok, _} = World.liquid_experiment(c.w, supply)
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{0,0,0},{2,1,1}}, self(), :fall, false)
+    assert_receive {:canonical_snapshot, :fall, snapshot}
+    replica = start_supervised!({VoxelRegion.Replica, authority_ref: c.w, l0_box: {{0,0,0},{2,1,1}}, name: nil})
+    assert :ok = VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica, {{0,0,0},{1,1,1}}, self(), :replica_fall, false)
+    assert_receive {:canonical_snapshot, :replica_fall, _}
+    for _ <- 1..4 do
+      tick(c.w)
+      assert_receive {:canonical_delta, delta}
+      assert delta.transaction.liquid_falls == %{material: 21, transfers: [{{63,0,2},@transfer}]}
+      assert_receive {:canonical_delta, replica_delta}
+      assert replica_delta.transaction_seq == delta.transaction_seq
+      assert replica_delta.transaction.liquid_falls == delta.transaction.liquid_falls
+      assert Enum.sum(Map.values(quantities(c.w))) == @capacity
+    end
+    before = World.seq(c.w)
+    tick(c.w)
+    assert_receive {:canonical_delta, clear}
+    assert clear.transaction_seq == before + 1
+    assert clear.transaction.entries == []
+    assert clear.chunks == []
+    assert clear.transaction.liquid_falls == %{material: 21, transfers: []}
+    assert_receive {:canonical_delta, replica_clear}
+    assert replica_clear.transaction.liquid_falls == clear.transaction.liquid_falls
+    assert Enum.all?(VoxelRegion.Replica.canonical_deltas_after(replica, snapshot.transaction_seq),
+      &(not Map.has_key?(&1.transaction, :liquid_falls)))
+    assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
+    tick(c.w)
+    assert World.seq(c.w) == before + 1
+    refute_receive {:canonical_delta, _}
+    assert Enum.all?(World.entries_after(c.w, 0), &(not Map.has_key?(&1, :liquid_falls)))
+    stop_supervised!(VoxelRegion.Replica)
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    assert World.seq(w) == before + 1
+    assert Enum.all?(World.entries_after(w, 0), &(not Map.has_key?(&1, :liquid_falls)))
+    assert World.liquid_activity(w) == %{active_cells: 0, scheduled: false}
+  end
 
   @tag :empty_inventory
   @tag cadence: 0.01

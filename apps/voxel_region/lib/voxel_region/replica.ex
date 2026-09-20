@@ -154,7 +154,7 @@ defmodule VoxelRegion.Replica do
       | seq: delta.transaction_seq,
         regions: Map.merge(state.regions, Map.new(regions)),
         chunks: Map.merge(state.chunks, Map.new(delta.chunks, &{&1.coord, &1})),
-        deltas: [delta | state.deltas],
+        deltas: [%{delta | transaction: Map.delete(delta.transaction, :liquid_falls)} | state.deltas],
         update_payload_bytes:
           state.update_payload_bytes + Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))
     }

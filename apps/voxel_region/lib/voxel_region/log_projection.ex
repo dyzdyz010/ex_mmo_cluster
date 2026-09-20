@@ -56,7 +56,9 @@ defmodule VoxelRegion.LogProjection do
     entries = Enum.filter(entries, &matches?(&1, filter))
     coarse = Enum.filter(coarse, &matches_cell?(&1.level, &1.cell, filter))
 
-    if entries != [] or coarse != [] do
+    txn = VoxelRegion.PropertyObservation.project_falls(txn, &matches_cell?(0, &1, filter))
+
+    if entries != [] or coarse != [] or Map.has_key?(txn, :liquid_falls) do
       bin =
         Codec.encode_transaction(%{txn | entries: entries, coarse: coarse})
         |> IO.iodata_to_binary()
@@ -140,7 +142,7 @@ defmodule VoxelRegion.LogProjection do
           e.level == level and Payload.in_span?(Payload.local(region, e.cell))
         end)
 
-      %{txn | entries: cells, coarse: coarse}
+      Map.delete(%{txn | entries: cells, coarse: coarse}, :liquid_falls)
     end
   end
 

@@ -14,6 +14,13 @@ defmodule VoxelRegion.PropertyObservation do
   def project(value, box) do
     value
     |> Map.update(:property_states, [], &Enum.filter(&1, fn row -> relevant?(row, box) end))
+    |> project_falls(fn cell -> contains?(cell, box) end)
     |> Map.update(:epochs, %{}, &Map.filter(&1, fn {cell, _} -> contains?(cell, box) end))
   end
+  @doc "实时整帧按接收方空间谓词投影；空帧仍表示清除。"
+  def project_falls(%{liquid_falls: frame} = value, contains?) do
+    %{value | liquid_falls: %{frame | transfers: Enum.filter(frame.transfers, fn {cell, _units} -> contains?.(cell) end)}}
+  end
+  def project_falls(value, _contains?), do: value
+
 end

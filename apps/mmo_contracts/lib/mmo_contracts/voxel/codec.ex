@@ -731,7 +731,7 @@ defmodule MmoContracts.Voxel.Codec do
   # ---- 日志条目
 
   @doc "事务信封：seq、带长度的条目数组、去重的粗格数组；全部小端。"
-  def encode_transaction(%{seq: seq, entries: entries, coarse: coarse}) do
+  def encode_transaction(%{seq: seq, entries: entries, coarse: coarse} = txn) do
     [
       <<seq::64-little, length(entries)::32-little>>,
       Enum.map(entries, fn e ->
@@ -739,7 +739,8 @@ defmodule MmoContracts.Voxel.Codec do
         [<<byte_size(b)::32-little>>, b]
       end),
       <<length(coarse)::32-little>>,
-      Enum.map(coarse, &encode_coarse/1)
+      Enum.map(coarse, &encode_coarse/1),
+      encode_liquid_falls(Map.get(txn, :liquid_falls))
     ]
   end
 
@@ -747,12 +748,33 @@ defmodule MmoContracts.Voxel.Codec do
   def decode_transaction(<<seq::64-little, count::32-little, rest::binary>>) do
     with {:ok, entries, <<n::32-little, rest::binary>>} <-
            decode_transaction_entries(rest, count, []),
-         {:ok, coarse, <<>>} <- decode_coarse(rest, n, []) do
-      {:ok, %{seq: seq, entries: entries, coarse: coarse}}
+         {:ok, coarse, rest} <- decode_coarse(rest, n, []),
+         {:ok, metadata} <- decode_liquid_falls(rest) do
+      {:ok, Map.merge(%{seq: seq, entries: entries, coarse: coarse}, metadata)}
     else
       _ -> {:error, :invalid_transaction}
     end
   end
+
+  # 全局系统功能：实时展示整帧，不承载数量或物理状态。
+  defp encode_liquid_falls(nil), do: []
+  defp encode_liquid_falls(%{material: material, transfers: transfers}) do
+    [<<2, material::little-16, length(transfers)::little-32>>,
+     Enum.map(transfers, fn {{x, y, z}, units} ->
+       <<x::little-signed-32, y::little-signed-32, z::little-signed-32, units::little-32>>
+     end)]
+  end
+
+  defp decode_liquid_falls(<<>>), do: {:ok, %{}}
+  defp decode_liquid_falls(<<2, material::little-16, count::little-32, bytes::binary>>)
+       when material in [21, 22] and byte_size(bytes) == count * 16 do
+    transfers = for <<x::little-signed-32, y::little-signed-32, z::little-signed-32, units::little-32 <- bytes>>,
+      do: {{x, y, z}, units}
+    if Enum.all?(transfers, fn {_, units} -> units > 0 end),
+      do: {:ok, %{liquid_falls: %{material: material, transfers: transfers}}},
+      else: {:error, :invalid_transaction}
+  end
+  defp decode_liquid_falls(_), do: {:error, :invalid_transaction}
 
   defp decode_transaction_entries(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 

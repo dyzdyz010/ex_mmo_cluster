@@ -436,6 +436,7 @@ defmodule VoxelRegion.World do
           # Global system: finite quantity is canonical state, never reconstructed from rendering.
           liquid_units: %{},
           liquid_active: MapSet.new(),
+          liquid_falls: %{},
           liquid_timer: nil,
           # Test-only first-slice domain; the demo supplies its closed experimental bounds.
           liquid_bounds: Keyword.get(opts, :liquid_bounds, Application.get_env(:voxel_region, :liquid_bounds)),
@@ -469,6 +470,8 @@ defmodule VoxelRegion.World do
           overlay_regions: %{},
           seq: 0,
           entries: %{},
+          checkpoint_timer: nil,
+          checkpoints: 0,
           entry_regions: %{},
           subs: %{},
           canonical_subs: %{},
@@ -862,6 +865,9 @@ defmodule VoxelRegion.World do
     stats =
       Map.merge(state.cache_stats, %{
         entries: map_size(state.payloads),
+        retained_transactions: map_size(state.entries),
+        checkpoint_scheduled: state.checkpoint_timer != nil,
+        checkpoints: state.checkpoints,
         lru_bytes: state.lru_bytes,
         resident_bytes: state.resident_bytes,
         cache_limit: state.cache_limit,
@@ -981,10 +987,29 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call(:compact, _from, state) do
-    {:reply, :ok, compact_log(state)}
+    {:reply, :ok, compact_log(state), {:continue, :checkpoint_gc}}
   end
 
   @impl true
+  def handle_continue(:checkpoint_gc, state) do
+    # 历史已释放，下一回调再 full GC，避免旧 state 在上一调用栈继续存活。
+    :erlang.garbage_collect(self())
+    {:memory, memory} = Process.info(self(), :memory)
+    Logger.info("voxel_checkpoint_gc seq=#{state.seq} memory_bytes=#{memory}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:timeout, ref, :checkpoint}, %{checkpoint_timer: ref} = state) do
+    started = System.monotonic_time(:microsecond)
+    retained = map_size(state.entries)
+    next = compact_log(state)
+    Logger.info("voxel_checkpoint seq=#{next.seq} retained_before=#{retained} retained_after=#{map_size(next.entries)} elapsed_us=#{System.monotonic_time(:microsecond) - started}")
+    {:noreply, next, {:continue, :checkpoint_gc}}
+  end
+
+  def handle_info({:timeout, _cancelled, :checkpoint}, state), do: {:noreply, state}
+
   def handle_info(:liquid_commit, state) do
     if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
     active = state.liquid_active
@@ -1862,7 +1887,7 @@ defmodule VoxelRegion.World do
   # ---- 日志
 
   defp append_log(%{log: {backend, handle}} = state, txn),
-    do: backend.append(handle, attachment_metadata(state, txn))
+    do: backend.append(handle, attachment_metadata(state, Map.delete(txn, :liquid_falls)))
 
   # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
   defp attachment_metadata(state, txn),
@@ -1876,8 +1901,13 @@ defmodule VoxelRegion.World do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   defp remember_entry(state, txn) do
-    %{state | entries: Map.put(state.entries, txn.seq, txn),
+    txn = Map.delete(txn, :liquid_falls)
+    state = %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
+    # 单个完整检查点不再生长；只有新历史出现时安排一次维护。
+    if map_size(state.entries) > 1 and state.checkpoint_timer == nil,
+      do: %{state | checkpoint_timer: :erlang.start_timer(60_000, self(), :checkpoint)},
+      else: state
   end
 
   defp replay_log(%{log: {backend, handle}} = state) do
@@ -2432,9 +2462,19 @@ defmodule VoxelRegion.World do
         {:error, reason}
 
       {[], state} when map_size(liquid_changes) == 0 ->
-        if removed_slots == [],
-          do: {:ok, state},
-          else: commit_attachment(before, state, removed_slots, settlement)
+        cond do
+          removed_slots != [] -> commit_attachment(before, state, removed_slots, settlement)
+          Map.has_key?(settlement, :liquid_falls) ->
+            next = %{state | seq: state.seq + 1}
+            txn = %{seq: next.seq, entries: [], coarse: [], liquid_falls: settlement.liquid_falls}
+            with :ok <- append_log(next, txn) do
+              next = remember_entry(next, txn)
+              fanout(next, txn)
+              fanout_canonical(next, txn, [], [], before)
+              {:ok, next}
+            end
+          true -> {:ok, state}
+        end
 
       {geometry_changed, state} ->
         changed = Enum.uniq(geometry_changed ++ liquid_dirty)
@@ -2781,7 +2821,9 @@ defmodule VoxelRegion.World do
           s
       end)
 
-    remember_entry(%{state | entries: %{}, entry_regions: %{}}, txn)
+    if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
+    remember_entry(%{state | entries: %{}, entry_regions: %{}, checkpoint_timer: nil,
+      checkpoints: state.checkpoints + 1}, txn)
   end
 
   # no-op 不追加日志；只向发起连接确认当前游标，排在此连接已有的 World 消息之后。
@@ -4446,8 +4488,13 @@ defmodule VoxelRegion.World do
     {values,state}=phase_values(state,Map.keys(water))
     {changes,values}=if phase_enabled?(state),do: Phase.transport_stages(values,water,changes,stages),else: {changes,%{}}
     state = %{state | liquid_active: MapSet.union(state.liquid_active, Liquid.next_active(stages))}
-    case commit_liquid(state,changes,%{phase_values: values,liquid_material: material}) do
-      {:ok,next}->next
+    falls = Liquid.fall_transfers(stages)
+    previous = Map.get(state.liquid_falls, material, [])
+    settlement = %{phase_values: values, liquid_material: material}
+    settlement = if falls != [] or previous != [],
+      do: Map.put(settlement, :liquid_falls, %{material: material, transfers: falls}), else: settlement
+    case commit_liquid(state,changes,settlement) do
+      {:ok,next}->%{next | liquid_falls: Map.put(next.liquid_falls, material, falls)}
       {:error,reason}->Logger.error("voxel_liquid_commit failed=#{inspect(reason)}"); state
     end
   end

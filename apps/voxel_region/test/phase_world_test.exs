@@ -96,6 +96,55 @@ defmodule VoxelRegion.PhaseWorldTest do
   # 只测试契约：真实 World 供给、消费、日志与重启接缝；隔离空世界，
   # 文件存储使用生产数据库元数据编码，仅基底/玩家使用替身。
   # 不证明 Gate、UE 或数据库可用性。
+  # 只测试：实际 60 秒维护计时器、公开供给/舀倒/观察；不注入 owner 状态。
+  @tag :empty_inventory
+  @tag :database_metadata
+  @tag :realtime
+  @tag :checkpoint_lifecycle
+  @tag timeout: 75_000
+  test "scheduled checkpoint retains phase truth and session receipt, sleeps, and cold recovers", c do
+    refute World.stats(c.w).checkpoint_scheduled
+    assert {:ok, supply_seq} = World.material_supply(c.w, 1001, "checkpoint-supply", %{21 => @capacity})
+    assert {:ok, pour_seq} = transfer(c, 3, 1, {63,1,2})
+    send(c.w, :thermal_commit)
+    World.seq(c.w)
+    before = observe(c.w)
+    assert World.stats(c.w).checkpoint_scheduled
+    assert World.stats(c.w).retained_transactions > 1
+    :erlang.trace(c.w, true, [:receive])
+    pid = c.w
+    assert_receive {:trace, ^pid, :receive, {:timeout, _, :checkpoint}}, 65_000
+    :erlang.trace(c.w, false, [:receive])
+    stats = World.stats(c.w)
+    assert stats.checkpoints == 1
+    assert stats.retained_transactions == 1
+    refute stats.checkpoint_scheduled
+    assert World.seq(c.w) == before.seq
+    after_checkpoint = observe(c.w)
+    assert after_checkpoint.liquid_units == before.liquid_units
+    assert after_checkpoint.phase_inventory == before.phase_inventory
+    assert after_checkpoint.material_balances == before.material_balances
+    assert after_checkpoint.thermal == before.thermal
+    assert {:ok, ^pour_seq} = transfer(c, 3, 1, {63,1,2})
+    assert {:ok, ^supply_seq} = World.material_supply(c.w, 1001, "checkpoint-supply", %{21 => @capacity})
+    refute World.stats(c.w).checkpoint_scheduled
+    assert {:ok, _} = transfer(c, 2, 2, {63,1,2})
+    assert World.stats(c.w).checkpoint_scheduled
+    saved = observe(c.w)
+    assert :ok = World.compact(c.w)
+    assert World.stats(c.w).checkpoints == 2
+    refute World.stats(c.w).checkpoint_scheduled
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    recovered = observe(w)
+    assert recovered.liquid_units == saved.liquid_units
+    assert recovered.phase_inventory == saved.phase_inventory
+    assert recovered.material_balances == saved.material_balances
+    assert recovered.thermal == saved.thermal
+    refute World.stats(w).checkpoint_scheduled
+    assert {:ok, ^supply_seq} = World.material_supply(w, 1001, "checkpoint-supply", %{21 => @capacity})
+  end
+
   @tag :empty_inventory
   @tag :database_metadata
   test "author supply is additive, phase-complete, and never refills after consumption or recovery", c do

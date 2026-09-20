@@ -68,6 +68,11 @@ defmodule VoxelRegion.Liquid do
     {changes, [{water, down}, {fallen, sideways}]}
   end
 
+  @doc "实际重力通量的目的格和量子整帧；净数量抵消不消除已经发生的下落。"
+  def fall_transfers([{_, gravity}, {_, _sideways}]) do
+    gravity |> Enum.map(fn {_from, to, units} -> {to, units} end) |> Enum.sort()
+  end
+
   @doc "Changed cells and their six neighbors are the only next-step candidates."
   def neighborhood(cells) do
     cells |> Enum.flat_map(fn {x,y,z}=p ->
