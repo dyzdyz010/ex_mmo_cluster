@@ -2054,25 +2054,26 @@ defmodule VoxelRegion.World do
   defp component_observations(%{properties: nil}, _box), do: []
 
   defp component_observations(state, box) do
-    owners =
-      for {cell, slots} <- state.refined,
-          box == nil or VoxelRegion.PropertyObservation.contains?(cell, box),
-          {slot, {material, {birth, _} = owner}} <- slots,
-          into: %{} do
-        {owner,
-         %{
-           micro: Prefab.micro_coord(cell, slot),
-           granularity: 2,
-           incarnation: birth,
-           owner: owner,
-           material: material
-         }}
-      end
-
-    Enum.map(owners, fn {owner, target} ->
-      property_state(state, target)
-      |> Map.put(:observation_cells, subtree_cells(state, MapSet.new([owner])))
+    # Request-local projection: each exact leaf's full geometry is scanned once.
+    # The window selects representatives, not which slots contribute to leaf HP.
+    owners = Enum.reduce(state.refined, %{}, fn {cell, slots}, owners ->
+      visible = box == nil or VoxelRegion.PropertyObservation.contains?(cell, box)
+      Enum.reduce(slots, owners, fn {slot, {material, {birth, _} = owner}}, acc ->
+        target = if visible, do: %{micro: Prefab.micro_coord(cell, slot), granularity: 2,
+          incarnation: birth, owner: owner, material: material}
+        hp = Damage.max_hp(Map.fetch!(state.properties.materials, material), 1)
+        case Map.fetch(acc, owner) do
+          :error -> Map.put(acc, owner, {target, MapSet.new([cell]), hp})
+          {:ok, {previous, cells, total}} ->
+            Map.put(acc, owner, {if(visible, do: target, else: previous), MapSet.put(cells, cell), total + hp})
+        end
+      end)
     end)
+
+    for {_, {target, cells, hp}} <- owners, target != nil do
+      property_state(state, target, hp)
+      |> Map.put(:observation_cells, MapSet.to_list(cells))
+    end
   end
 
   defp property_snapshot(state, box) do
@@ -2938,7 +2939,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp property_state(state, target) do
+  defp property_state(state, target, component_hp \\ nil) do
     m = Map.fetch!(state.properties.materials, target.material)
 
     row =
@@ -2951,7 +2952,7 @@ defmodule VoxelRegion.World do
           hp =
             case target.granularity do
               2 ->
-                component_max_hp(state, target.owner)
+                if is_nil(component_hp), do: component_max_hp(state, target.owner), else: component_hp
 
               3 ->
                 attachment_max_hp(state, target)
