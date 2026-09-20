@@ -296,6 +296,11 @@ defmodule GateServer.WsConnection do
 
   # 阶段4 step4.3:订阅 worker 路由/订阅失败回报(首失败一帧 0x68)。成功路径无回报——快照即 ACK,
   # 经 fan-out 直达本连接;订阅集只存在于 worker(单一所有者)。
+  def handle_info({:voxel_unsubscribed, request}, state) do
+    {:ok, next} = Dispatch.handle({:voxel_unsubscribed, request}, state)
+    {:noreply, next}
+  end
+
   def handle_info({:voxel_subscribe_failed, ctx, reason}, state) do
     GateServer.CliObserve.emit("ws_voxel_chunk_subscribe_error", %{
       connection_pid: self(),

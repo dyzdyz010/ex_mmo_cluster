@@ -98,6 +98,8 @@ World 拥有区域权威和租约，Scene 拥有热区块状态，DataService �
 
 该 smoke 会自己启动 `data_service`，确保 `DataService.Repo` 可用；初始订阅仍断言 `ChunkSnapshot`，后续热路径断言 `ChunkDelta`，并在读取 PostgreSQL 快照前通过 `ChunkProcess.flush_persistence/2` 等待异步持久化落盘。CLI summary 中的 `updated_frame_type=delta`、`stored_snapshot_version` 和 `unsubscribe_stopped_push` 是当前自动化验收的关键字段。
 
+全局系统功能：TCP / WS 退订仍由独占订阅状态的 worker 异步执行，完成 Scene 退订后才经连接返回成功；不能把请求入队当作退订完成。只测试：WS 回归暂停 worker，验证连接继续响应且不会提前确认，再恢复执行并确认后续编辑无快照／增量推送。
+
 Prefab 0x67 dispatch bulk-routes all touched chunks through World MapLedger and
 requires every route to carry `RegionAssignment.assigned_scene_node`:
 

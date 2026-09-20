@@ -64,10 +64,10 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     GenServer.cast(worker, {:reconcile, ctx})
   end
 
-  @doc "Asynchronously unsubscribe the given chunks of a logical scene."
-  @spec unsubscribe(pid(), integer(), [{integer(), integer(), integer()}]) :: :ok
-  def unsubscribe(worker, logical_scene_id, chunks) when is_pid(worker) and is_list(chunks) do
-    GenServer.cast(worker, {:unsubscribe, logical_scene_id, chunks})
+  @doc "异步执行退订请求，实际完成后通知连接确认该请求。"
+  @spec unsubscribe(pid(), map()) :: :ok
+  def unsubscribe(worker, request) when is_pid(worker) do
+    GenServer.cast(worker, {:unsubscribe, request})
   end
 
   @doc """
@@ -178,8 +178,10 @@ defmodule GateServer.Voxel.SubscriptionWorker do
     {:noreply, schedule_reconcile(%{state | pending_reconcile: ctx})}
   end
 
-  def handle_cast({:unsubscribe, logical_scene_id, chunks}, state) do
-    {:noreply, do_unsubscribe(logical_scene_id, chunks, state)}
+  def handle_cast({:unsubscribe, request}, state) do
+    next = do_unsubscribe(request.logical_scene_id, request.chunks, state)
+    send(state.connection_pid, {:voxel_unsubscribed, request})
+    {:noreply, next}
   end
 
   def handle_cast({:invalidate_chunk, logical_scene_id, chunk_coord}, state) do

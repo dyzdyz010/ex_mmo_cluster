@@ -409,8 +409,12 @@ defmodule GateServer.Session.Dispatch do
   end
 
   def handle({:voxel_chunk_unsubscribe, request}, %{status: :in_scene} = state) do
-    SubscriptionWorker.unsubscribe(state.voxel_worker, request.logical_scene_id, request.chunks)
+    SubscriptionWorker.unsubscribe(state.voxel_worker, request)
+    {:ok, state}
+  end
 
+  # worker 完成真实退订后才确认；排队成功不代表后续编辑已不会收到推送。
+  def handle({:voxel_unsubscribed, request}, state) do
     emit(state, "voxel_chunk_unsubscribe_ok", %{
       connection_pid: self(),
       cid: state.cid,

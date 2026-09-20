@@ -1470,7 +1470,18 @@ defmodule GateServer.WsConnectionVoxelTest do
     assert is_binary(initial_bin)
     assert <<0x62, _initial_payload::binary>> = initial_bin
 
-    WsConnection.receive_frame(pid, chunk_unsubscribe_frame(32, 778, [{0, 0, 0}]))
+    # 只测试：暂停异步订阅 worker，证明连接仍响应，但实际退订前不得确认成功。
+    worker = :sys.get_state(pid).voxel_worker
+    :ok = :sys.suspend(worker)
+
+    try do
+      WsConnection.receive_frame(pid, chunk_unsubscribe_frame(32, 778, [{0, 0, 0}]))
+      assert :sys.get_state(pid).voxel_worker == worker
+      refute_receive {:gate_ws_send, <<0x80, 32::64-big, 0x00>>}, 100
+    after
+      :ok = :sys.resume(worker)
+    end
+
     assert_receive {:gate_ws_send, <<0x80, 32::64-big, 0x00>>}
     subscriptions = voxel_subscriptions(pid)
     assert subscriptions == %{}
@@ -1485,6 +1496,7 @@ defmodule GateServer.WsConnectionVoxelTest do
     )
 
     refute_receive {:gate_ws_send, <<0x62, _payload::binary>>}, 100
+    refute_receive {:gate_ws_send, <<0x63, _payload::binary>>}, 100
   end
 
   describe "Phase 1c — VoxelEditIntent (0x70) routing" do
