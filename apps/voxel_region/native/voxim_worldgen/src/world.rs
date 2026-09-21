@@ -53,7 +53,15 @@ const GRANITE_DEPTH: i32 = 96;
 const BASALT_DEPTH: i32 = 288;
 const ENTRANCE_SALT: u32 = 0x454e5452;
 // 全局系统：与客户端同一自然木材形状，粗层空气证明包含树冠。
-const TREE_GRID: i32 = 16;
+const TREE_GRID: i32 = 6;
+/// 一列最多同时落在 3×3 个网格的树的 7×7 足迹里。
+const TREE_MAX: usize = 9;
+/// 森林密度：大尺度噪声决定每个 6 m 网格有树的概率，稀疏处约等于原来的 16 m 一棵，密林里几乎每格一棵、树冠交叠。
+const FOREST_WAVELENGTH: f64 = 384.0;
+const FOREST_SPARSE: f64 = 0.10;
+const FOREST_DENSE: f64 = 0.92;
+const FOREST_LO: f64 = 0.40;
+const FOREST_HI: f64 = 0.52;
 // 树冠相对树心列的地面定高（形状表 tree_shapes.rs），任一列地表之上 TREE_CLEAR 格以外必为空气。
 const TREE_CLEAR: i32 = 16;
 const TREE_WOOD: [u16; 4] = [19, 25, 26, 27];
@@ -80,11 +88,17 @@ struct Profile {
     cover: u16,
     soil: u16,
     province: u16,
-    /// 树种 0..3（橡 / 桦 / 枫 / 云杉），-1 = 这一列不在任何树的 7×7 足迹内。
-    tree: i32,
-    tree_dx: i32,
-    tree_dz: i32,
-    tree_base: i32,
+    /// 足迹盖到这一列的树，按 (gz, gx) 升序；classify 先判所有树干，再取第一棵在该格有叶的树。
+    trees: [Tree; TREE_MAX],
+    tree_count: usize,
+}
+/// 树种 0..3（橡 / 桦 / 枫 / 云杉）；dx / dz 相对树心，base 是树心列的地面高度。
+#[derive(Clone, Copy, Default)]
+struct Tree {
+    species: i32,
+    dx: i32,
+    dz: i32,
+    base: i32,
 }
 fn slope_at(x: i32, z: i32, height: i32, c: &Config) -> i32 {
     let d = SLOPE_BASELINE;
@@ -94,26 +108,37 @@ fn slope_at(x: i32, z: i32, height: i32, c: &Config) -> i32 {
         .max()
         .unwrap()
 }
-/// 每个 TREE_GRID² 网格至多一棵树；树心列平缓且覆盖层为草 / 苔才成立，整棵树按树心列的地面定高。
+/// 每个 TREE_GRID² 网格至多一棵树，有没有由森林密度噪声 + 网格哈希决定；树心列平缓且覆盖层为草 / 苔才成立，
+/// 整棵树按树心列的地面定高。相邻网格的树冠会伸进这一列，所以查周围 3×3 个网格。
 fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
     let mut p = ground(x, z, height, slope, c);
     let gx = x.div_euclid(TREE_GRID);
     let gz = z.div_euclid(TREE_GRID);
-    let hash = squirrel(gz as u32, squirrel(gx as u32, c.seed as u32 ^ 0x54524545));
-    let cx = gx * TREE_GRID + 4 + (hash % 8) as i32;
-    let cz = gz * TREE_GRID + 4 + ((hash >> 8) % 8) as i32;
-    if (x - cx).abs() <= TREE_RADIUS && (z - cz).abs() <= TREE_RADIUS {
-        let center = if x == cx && z == cz {
-            p
-        } else {
-            let h = column_height(cx, cz, c);
-            ground(cx, cz, h, slope_at(cx, cz, h, c), c)
-        };
-        if center.slope < 2 && (center.cover == 1 || center.cover == 3) {
-            p.tree = ((hash >> 16) % 4) as i32;
-            p.tree_dx = x - cx;
-            p.tree_dz = z - cz;
-            p.tree_base = center.height;
+    for nz in gz - 1..=gz + 1 {
+        for nx in gx - 1..=gx + 1 {
+            let hash = squirrel(nz as u32, squirrel(nx as u32, c.seed as u32 ^ 0x54524545));
+            let cx = nx * TREE_GRID + (hash % TREE_GRID as u32) as i32;
+            let cz = nz * TREE_GRID + ((hash >> 8) % TREE_GRID as u32) as i32;
+            if (x - cx).abs() > TREE_RADIUS || (z - cz).abs() > TREE_RADIUS {
+                continue;
+            }
+            let forest = climate(cx as f64, cz as f64, FOREST_WAVELENGTH, (c.seed as u32).wrapping_add(600));
+            let density = FOREST_SPARSE
+                + (FOREST_DENSE - FOREST_SPARSE) * smooth(((forest - FOREST_LO) / (FOREST_HI - FOREST_LO)).clamp(0.0, 1.0));
+            if ((hash >> 20) % 1000) as f64 >= density * 1000.0 {
+                continue;
+            }
+            let center = if x == cx && z == cz {
+                p
+            } else {
+                let h = column_height(cx, cz, c);
+                ground(cx, cz, h, slope_at(cx, cz, h, c), c)
+            };
+            // 覆盖层是草 / 苔已经意味着坡度 < 3（更陡是碎石 / 崖面）。
+            if center.cover == 1 || center.cover == 3 {
+                p.trees[p.tree_count] = Tree { species: ((hash >> 16) % 4) as i32, dx: x - cx, dz: z - cz, base: center.height };
+                p.tree_count += 1;
+            }
         }
     }
     p
@@ -164,10 +189,8 @@ fn ground(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
         cover,
         soil,
         province,
-        tree: -1,
-        tree_dx: 0,
-        tree_dz: 0,
-        tree_base: 0,
+        trees: [Tree::default(); TREE_MAX],
+        tree_count: 0,
     }
 }
 #[derive(Clone, Copy)]
@@ -311,15 +334,22 @@ fn classify(
     let [x, y, z] = p;
     if y >= profile.height {
         let above = y - profile.height;
-        let rel = y - profile.tree_base;
-        if profile.tree >= 0 && above < TREE_CLEAR && rel >= 0 && rel < TREE_LEVELS {
-            let t = profile.tree as usize;
-            if profile.tree_dx == 0 && profile.tree_dz == 0 && rel < TREE_TRUNK_HEIGHT[t] {
-                return TREE_WOOD[t];
+        if above < TREE_CLEAR {
+            let trees = &profile.trees[..profile.tree_count];
+            for t in trees {
+                let rel = y - t.base;
+                if t.dx == 0 && t.dz == 0 && rel >= 0 && rel < TREE_TRUNK_HEIGHT[t.species as usize] {
+                    return TREE_WOOD[t.species as usize];
+                }
             }
-            let row = TREE_CROWN[t][rel as usize][(profile.tree_dz + TREE_RADIUS) as usize];
-            if row >> (profile.tree_dx + TREE_RADIUS) & 1 == 1 {
-                return TREE_LEAVES + t as u16;
+            for t in trees {
+                let rel = y - t.base;
+                if rel >= 0 && rel < TREE_LEVELS {
+                    let row = TREE_CROWN[t.species as usize][rel as usize][(t.dz + TREE_RADIUS) as usize];
+                    if row >> (t.dx + TREE_RADIUS) & 1 == 1 {
+                        return TREE_LEAVES + t.species as u16;
+                    }
+                }
             }
         }
         // 地面花草：草 / 苔覆盖层的上一格。草类按列哈希，花按 8 m 网格同种聚簇。
