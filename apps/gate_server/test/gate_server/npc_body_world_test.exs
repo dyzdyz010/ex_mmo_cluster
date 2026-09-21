@@ -84,6 +84,7 @@ defmodule GateServer.NpcBodyWorldTest do
     {:ok, _} = World.apply_edits(world, [{{16, 64, 10}, @stone}, {@pillar, @stone}])
 
     # 有限样本：经服务端授权供给入口一次记账，之后只经正常玩法消费 / 退回。
+    if edits = context[:edits], do: {:ok, _} = World.apply_edits(world, edits)
     if supply = context[:supply], do: {:ok, _} = World.material_supply(world, @npc, "npc-test-supply", supply)
 
     profile =
@@ -145,6 +146,9 @@ defmodule GateServer.NpcBodyWorldTest do
        }
      }}
   end
+
+  # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
+  defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
 
   defp brain(%{inspector: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -335,6 +339,75 @@ defmodule GateServer.NpcBodyWorldTest do
     assert %{verb: :scoop, status: :rejected, reason: :invalid_liquid_operation} = scoop
     # 超出 512 格 / 32 m 的 look 不到 World。
     assert %{verb: :look, status: :rejected, reason: :invalid_command} = far
+  end
+
+  defp outcome(body, id, timeout) do
+    await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == id)) end, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  defp ready(body), do: await(fn -> Body.observe(body).position end, System.monotonic_time(:millisecond) + 10_000)
+
+  # 调用层（Body + 真实 World / Scene / 碰撞）：寻路经 World 的只读快照取地形，Body 沿路点送输入，权威照常裁决位置。
+  # 出生在 (4, 10)；x=8 处一堵两格高、z 7..13 的墙挡在去 (12.5, 10.5) 的直线上。
+  @tag :idle
+  @tag edits: for(z <- 7..13, y <- 64..65, do: {{8, y, z}, 11})
+  test "move_to walks around a wall the straight line runs into", %{body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {12.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true, position: {x, y, z}}} = outcome(body, 1, 30_000)
+    assert abs(x - 12.5) <= 0.5 and abs(z - 10.5) <= 0.5
+    # 仍站在地面上（顶面 y=64，胶囊半高 0.9）：没有翻墙。
+    assert_in_delta 64.9, y, 0.05
+  end
+
+  # 一格一级的台阶上到三格高的平台；平台另一侧同一列没有别的站立层。
+  @tag :idle
+  @tag edits: for(z <- 9..11, {x, top} <- [{8, 64}, {9, 65}, {10, 66}, {11, 66}, {12, 66}], y <- 64..top, do: {{x, y, z}, 11})
+  test "move_to climbs one-cell stairs onto a platform and reports the authoritative height", %{body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {11.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true, position: {_, y, _}}} = outcome(body, 1, 30_000)
+    assert_in_delta 67.9, y, 0.05
+  end
+
+  # 三格高的孤柱顶上不去（step_height 1 m、不起跳）；超出取盒范围的目标不去问 World。
+  @tag :idle
+  @tag edits: for(y <- 64..66, do: {{20, y, 10}, 11})
+  test "move_to is rejected with :no_path / :too_far instead of walking into the obstacle", %{body: body} do
+    {x0, _, z0} = ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {20.5, 10.5}, tolerance: 0.5})
+    assert %{status: :rejected, reason: :no_path} = outcome(body, 1, 10_000)
+    Body.command(body, %{id: 2, verb: :move_to, position: {104.5, 10.5}, tolerance: 0.5})
+    assert %{status: :rejected, reason: :too_far} = outcome(body, 2, 10_000)
+    {x, _, z} = Body.observe(body).position
+    assert abs(x - x0) < 0.5 and abs(z - z0) < 0.5
+  end
+
+  # 路是起步时那一刻的世界算的：走到一半前面被砌死，Body 不重试，回报 :stuck；Brain 再发一次 move_to 就按新世界重算。
+  @tag :idle
+  test "a wall raised across the planned path ends the move as :stuck; asking again plans around it", %{world: world, body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
+    await(fn -> if elem(Body.observe(body).position, 0) > 6.0, do: true end, System.monotonic_time(:millisecond) + 10_000)
+    {:ok, _} = World.apply_edits(world, for(z <- 7..13, y <- 64..65, do: {{22, y, z}, 11}))
+
+    assert %{status: :rejected, reason: :stuck} = outcome(body, 1, 20_000)
+    {x, _, _} = Body.observe(body).position
+    assert x < 22.0
+
+    Body.command(body, %{id: 2, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 2, 30_000)
+  end
+
+  # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。
+  @tag :idle
+  @tag edits: for(y <- 64..66, do: {{20, y, 10}, 11})
+  test "move_to with y only accepts that standing level", %{body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {19.5, 10.5}, y: 67, tolerance: 0.5})
+    assert %{status: :rejected, reason: :no_path} = outcome(body, 1, 10_000)
+    Body.command(body, %{id: 2, verb: :move_to, position: {19.5, 10.5}, y: 64, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 2, 30_000)
   end
 
   @tag :live_llm

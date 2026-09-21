@@ -61,7 +61,13 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    下次分发时服务端镜像与客户端包必须一起换。
 3. **已做** 聊天 stub：命令 `say` 恒被拒 `:chat_unavailable`，事件 `{:heard, %{entity_id:, text:}}` 只定了形状；
    等正式栈有玩家聊天后接同一条通道。
-4. 寻路、跨 Scene 移交、多 NPC 成本（§7）按遇到的真实需要再做。
+4. **寻路：已做（2026-09-21）**，放在 Body（系统机制，Brain 不参与）。算法是独立纯模块 `SceneServer.Movement.Path`
+   （不认识 NPC、不调 World），规则与冻结样例 `apps/scene_server/test/fixtures/movement_path_cases.json` 一起是契约——
+   玩家侧的自动寻路只能在客户端用 C++ 算，将来对同一份样例。地形经 `World.material_snapshot/3` 一次性取盒、用完即弃；
+   台阶高度 / 角色高度 / 半径取自权威随 SessionStart 下发的 profile。拒绝原因 `:too_far` / `:no_path` / `:stuck`，Body 不重试。
+   输入没有模拟量且送帧提前 8 帧，全速下会绕着路点打转（实测），所以 Body 按预计位置瞄准、并在拐点前夹零输入帧限速。
+   统一 Demo 的台面到池沿顶高差 4 m（step_height 1 m、不起跳）：要上去得先砌台阶。
+   跨 Scene 移交、多 NPC 成本（§7）仍按遇到的真实需要再做。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。

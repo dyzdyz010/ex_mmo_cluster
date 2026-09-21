@@ -19,7 +19,7 @@ defmodule GateServer.Npc.Brain do
 
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
-      %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 直线，无寻路；顶替在途的移动命令
+      %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
       %{id:, verb: :stop}                                       # 顶替在途的移动命令
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
@@ -42,6 +42,15 @@ defmodule GateServer.Npc.Brain do
   与玩家的线请求相同。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
+
+  ## 寻路（Body 内置的系统机制，Brain 不参与）
+
+  `move_to` 起步时 Body 经 `World.material_snapshot/3` 取一盒地形（起终点包围盒外扩 6 格），交给纯模块
+  `SceneServer.Movement.Path`：4 邻接、平走 / 上 `step_height` 以内的台阶 / 下落任意高度、不起跳、液体与细化格不可过；
+  同层净空的路段拉直。算完即弃，不留体素副本。单程水平超过 32 m → `:too_far`（不问 World）；盒内无路 → `:no_path`；
+  路是起步那一刻的世界算的，途中 3 秒挪不动 → `:stuck`。三者都是 `:rejected`，Body 不重试，由 Brain 决定（再发一次
+  `move_to` 就按当时的世界重算）。同一列有多层可站时用 `y`（脚所在的空气格）选层，不给则取最先到达的那层。
+  拐弯、换层和到达前 Body 会夹零输入帧限速，所以走楼梯比走平地慢。
 
   ## Outcome
 

@@ -12,13 +12,15 @@ defmodule GateServer.NpcBrainLlmTest do
       "output" => [
         %{"type" => "reasoning", "summary" => []},
         call("move_to", %{x: 14, z: 10.5}),
-        call("probe_toward", %{dx: 3, dy: 0, dz: 4, tool_id: 1})
+        call("probe_toward", %{dx: 3, dy: 0, dz: 4, tool_id: 1}),
+        call("move_to", %{x: 49.5, z: 64.5, y: 523})
       ]
     }
 
     assert [
              %{id: 7, verb: :move_to, position: {14, 10.5}, tolerance: 0.5},
-             %{id: 8, verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}}
+             %{id: 8, verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}},
+             %{id: 9, verb: :move_to, position: {49.5, 64.5}, y: 523, tolerance: 0.5}
            ] == Llm.commands(response, nil, %{}, 7)
   end
 

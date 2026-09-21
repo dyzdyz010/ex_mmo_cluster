@@ -27,10 +27,13 @@ defmodule GateServer.Npc.Brain.Llm do
       %{
         type: "function",
         name: "move_to",
-        description: "沿直线走到水平坐标 (x, z)，无寻路；到达后才会再次询问。",
+        description:
+          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、走上一格高的台阶、从高处落下，但不会跳，也不进液体；单程水平不超过 32 米。" <>
+            "同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数）。走不通会被拒绝：no_path = 现在没有路（高差超过一格就得先砌台阶），" <>
+            "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。到达后才会再次询问。",
         parameters: %{
           type: "object",
-          properties: %{x: %{type: "number"}, z: %{type: "number"}},
+          properties: %{x: %{type: "number"}, z: %{type: "number"}, y: %{type: "integer"}},
           required: ["x", "z"],
           additionalProperties: false
         }
@@ -245,7 +248,8 @@ defmodule GateServer.Npc.Brain.Llm do
 
       case call["name"] do
         "move_to" ->
-          %{id: id, verb: :move_to, position: {args["x"], args["z"]}, tolerance: 0.5}
+          move = %{id: id, verb: :move_to, position: {args["x"], args["z"]}, tolerance: 0.5}
+          if args["y"], do: Map.put(move, :y, args["y"]), else: move
 
         "stop" ->
           %{id: id, verb: :stop}

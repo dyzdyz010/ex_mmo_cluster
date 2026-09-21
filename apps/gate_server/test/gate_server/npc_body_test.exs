@@ -14,7 +14,7 @@ defmodule GateServer.NpcBodyTest do
 
   defmodule Source do
     use GenServer
-    def start_link(snapshot), do: GenServer.start_link(__MODULE__, snapshot)
+    def start_link(snapshot), do: GenServer.start_link(__MODULE__, snapshot, name: :npc_body_source)
     def init(snapshot), do: {:ok, snapshot}
 
     def canonical_snapshot_and_subscribe(pid, _box, subscriber, ref, _chunks \\ true),
@@ -24,10 +24,25 @@ defmodule GateServer.NpcBodyTest do
       send(subscriber, {:canonical_snapshot, ref, snapshot})
       {:reply, :ok, snapshot}
     end
+
+    # 同一片平地（y=500 一层实心）经 World 只读快照的调用形状给出：Body 的寻路从这里取地形。
+    def handle_call({:prepare, _keys}, _, snapshot), do: {:reply, {nil, nil, []}, snapshot}
+    def handle_call({:adopt_liquid, _regions}, _, snapshot), do: {:reply, :ok, snapshot}
+
+    def handle_call({:material_snapshot, _characters, cells}, _, snapshot) do
+      occupancy =
+        for {x, y, z} <- cells,
+            do: %{cell: [x, y, z], material: if(y == 500, do: 1, else: 0), refined: false, slots: []}
+
+      {:reply, %{probe_occupancy: occupancy}, snapshot}
+    end
   end
 
   defmodule Route do
-    def route(1), do: {:ok, %{scene_ref: Process.whereis(:npc_body_scene), scene_epoch: 7}}
+    def route(1),
+      do:
+        {:ok,
+         %{scene_ref: Process.whereis(:npc_body_scene), world_ref: Process.whereis(:npc_body_source), scene_epoch: 7}}
   end
 
   describe "pure input generation (hand-computed)" do
