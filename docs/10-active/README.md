@@ -38,7 +38,8 @@
 - [`2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md) — 已完成并终审的阶段 2 普通宏格交互执行稿
 - [`2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md) — 下一阶段 Prefab 世界 runtime 实施计划
 - [`voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)
-- [`2026-09-21-npc-unified-interface-design.md`](cross-cutting/2026-09-21-npc-unified-interface-design.md) — NPC 统一接口层决策稿（Body/Brain 分层、共用 World 裁决、OwnerAck 闭环送帧）；draft v2，未实施
+- [`2026-09-21-npc-unified-interface-design.md`](cross-cutting/2026-09-21-npc-unified-interface-design.md) — NPC 统一接口层（Body/Brain、全部动词、寻路、跨 Scene 移交、长期记忆、Jev 调度、放置溯源）；已实施，现状与后续见 §0
+- [`2026-09-21-prefab-macro-cells-design.md`](cross-cutting/2026-09-21-prefab-macro-cells-design.md) — Prefab 里的宏格（VXPD v3，宏格 = 隐式叶子、归属表、对齐、造价与溯源）与 Prefab Designer 内核；已定方向，未实施
 
 ### field-emergence
 

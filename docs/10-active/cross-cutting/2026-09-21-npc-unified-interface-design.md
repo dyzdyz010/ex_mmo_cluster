@@ -103,6 +103,7 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    D1 工作台 + 运行时发布入口 → D2 LLM 设计会话），玩家与 NPC 共用；同期把 NPC 调整成“一个通用大脑 + 可调用技能”
    （`Brain.Builder` 降成技能、Jev 的选项由数据给、记忆读写做成工具）。所有角色都可以放置 prefab：建造者名单 `voxim_builder_cids` 随之移除。
    延时建造（审核 → 虚影 + 完工时间 → 到期整体放下）、地块权限、出生点保护是后期的独立系统，不在这一步。
+   prefab 格式与编辑器内核的设计见 [`2026-09-21-prefab-macro-cells-design.md`](2026-09-21-prefab-macro-cells-design.md)。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
