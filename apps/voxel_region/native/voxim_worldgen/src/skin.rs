@@ -69,6 +69,9 @@ fn mode<T: Copy + Into<u16>>(values: &[T]) -> u16 {
     }
     best
 }
+fn is_trunk(material: u16) -> bool {
+    material == 19 || (25..=27).contains(&material)
+}
 /// 地面花草（32..=39）只存在于精确 L0：进 L1 的投票前当空气，材质与表皮都不带上去。
 pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
     let cleared;
@@ -79,11 +82,19 @@ pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
         children
     };
     let materials = children.clone().map(|child| child.material);
-    let material = if materials.iter().filter(|&&m| m != 0).count() >= 5 {
+    let mut material = if materials.iter().filter(|&&m| m != 0).count() >= 5 {
         mode(&materials)
     } else {
         0
     };
+    // 树干保留（仅 L0→L1）：1 m 粗的竖直树干在 2×2×2 里只占 2 格，按"≥5 格实体"会变成空气、树冠悬空。
+    // 实体不足 5 格但树干 ≥ 2 格 → 父格是树干（树干子格的众数，平局最小 id）。表皮照常，空 texel 回落到主体。
+    if level == 1 && material == 0 {
+        let trunks: Vec<u16> = materials.iter().copied().filter(|&m| is_trunk(m)).collect();
+        if trunks.len() >= 2 {
+            material = mode(&trunks);
+        }
+    }
     let child_extent = map_extent(level - 1);
     let extent = map_extent(level);
     let mut skins = Skins::uniform(0);
@@ -280,6 +291,21 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn a_one_metre_trunk_survives_l1_but_not_l2_and_never_overrides_a_solid_majority() {
+        let cell = |materials: [u16; 8]| materials.map(Value::uniform);
+        // 竖直树干：octant = x + 2y + 4z，(0,0,0) 与 (0,1,0) 是 0 和 2。
+        assert_eq!(reduce(&cell([25, 0, 25, 0, 0, 0, 0, 0]), 1).material, 25);
+        assert_eq!(reduce(&cell([25, 0, 25, 0, 0, 0, 0, 0]), 2).material, 0);
+        // 单独一格木头不够；树干与花草同格时花草先当空气。
+        assert_eq!(reduce(&cell([19, 0, 0, 0, 0, 0, 0, 0]), 1).material, 0);
+        assert_eq!(reduce(&cell([19, 35, 19, 32, 0, 0, 0, 0]), 1).material, 19);
+        // 实体够 5 格时仍是原来的众数：4 格草 + 2 格树干 = 草。
+        assert_eq!(reduce(&cell([1, 1, 1, 1, 26, 0, 26, 0]), 1).material, 1);
+        // 两种树干各两格：平局取最小 id。
+        assert_eq!(reduce(&cell([27, 19, 27, 19, 0, 0, 0, 0]), 1).material, 19);
+    }
+
     #[test]
     fn material_mode_ignores_air_and_breaks_ties_by_smallest_id() {
         assert_eq!(mode(&[0u16, 0, 0, 7, 3]), 3);

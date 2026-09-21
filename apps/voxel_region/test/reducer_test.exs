@@ -66,6 +66,15 @@ defmodule VoxelRegion.ReducerTest do
     assert check_level(1, {-1, 2, 0}) == 2
   end
 
+  test "a wooded L1 region keeps its trunks and still equals the reduction of its L0 children" do
+    # 原点西边约 330 m 的林地；这一块里必须真的有树干，否则证明不了保留规则跨端一致。
+    parent = {-3, 4, 0}
+    {coarse, _} = generate(1, parent)
+    trunks = for <<m::16-little <- coarse.cells>>, m == 19 or m in 25..27, do: m
+    assert length(trunks) > 0
+    assert check_level(1, parent) == 2
+  end
+
   test "L2 generated region equals reduction of its eight L1 child regions" do
     assert check_level(2, {0, 1, -1}) == 4
   end

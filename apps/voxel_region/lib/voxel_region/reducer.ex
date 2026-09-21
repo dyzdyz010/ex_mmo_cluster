@@ -134,6 +134,20 @@ defmodule VoxelRegion.Reducer do
 
   def reduce_cell(children, level), do: reduce_cell_any(children, level)
 
+  # 树干保留（仅 L0→L1，与 Rust `skin::reduce`、客户端 `ReduceCellV1` 同一条）：实体不足 5 格但树干 ≥ 2 格 → 父格是树干。
+  defp reduce_cell_any(children, 1) do
+    materials = Enum.map(children, fn {m, _s} -> m end)
+    trunks = Enum.filter(materials, &(&1 == 19 or &1 in 25..27))
+
+    material =
+      case reduce_material(materials) do
+        0 when length(trunks) >= 2 -> mode(trunks)
+        other -> other
+      end
+
+    {material, reduce_skins(Enum.map(children, fn {_m, s} -> s end), 1)}
+  end
+
   defp reduce_cell_any(children, level) do
     {reduce_material(Enum.map(children, fn {m, _s} -> m end)), reduce_skins(Enum.map(children, fn {_m, s} -> s end), level)}
   end
