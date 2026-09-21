@@ -21,3 +21,13 @@
 - state 上限在 1 万到 4 万 token 之间（4 万词返回 400 `max_tokens_exceeded`）；20 次连续请求未遇 429 / 529。
 - 文档说它不会计数、不会比数值；本集里“差 1 个单位的大数比较”“缺中间一格的 11 格计数”“220 行无关日志里找一行”都答对了。
   样本小，不把它当成可依赖的能力：能用代码算的仍由代码算，把结论写进 state。
+
+## 调度问法的两条实测结论（`fanout.py`，`apps/gate_server/lib/gate_server/npc/jev.ex` 采用的就是结论）
+
+- 一个五选一 `choice`，不拆成四个并行 `noul` + 代码优先级：state 没提到的事，`noul` 停在 0.3 上下（“没有玩家在说话”它没把握），
+  35 条调度情境里只有 14 条能自动通过；五选一是 31 / 35，两者自动通过的部分都零错。
+- 判据措辞要具体：`continue_building` / `replan` 写得含糊时，最平常的情况（刚放好一格、材料够、没人）置信度只有 0.6 上下；
+  改成 “Nothing is wrong: …” / “The world contradicts the blueprint, or the same step failed repeatedly, …” 后是 0.95。
+- 不另问“是否出乎计划”：着火也出乎计划，它会把十足把握的 `move_to_safety` 改成先问规划者。
+- 同一请求两次的置信度会差 0.1 左右（0.65 / 0.77），阈值附近的情境会时过时不过——升级给规划者是安全的那一侧。
+- 验收用例：`mix test test/gate_server/npc_jev_test.exs --include live_jev`，本模块原样问法过 35 条：33 条自动、零错。

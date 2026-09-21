@@ -1,0 +1,387 @@
+[
+ {
+  "id": "activity-01",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.03,
+   "addressed": 0.19,
+   "blocked": 0.06,
+   "shortage": 0.05
+  }
+ },
+ {
+  "id": "activity-02",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.03,
+   "addressed": 0.2,
+   "blocked": 0.06,
+   "shortage": 0.04
+  }
+ },
+ {
+  "id": "activity-03",
+  "expected": "continue_building",
+  "decision": "continue_building",
+  "nouls": {
+   "danger": 0.06,
+   "addressed": 0.07,
+   "blocked": 0.08,
+   "shortage": 0.03
+  }
+ },
+ {
+  "id": "activity-04",
+  "expected": "continue_building",
+  "decision": "continue_building",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.09,
+   "blocked": 0.07,
+   "shortage": 0.04
+  }
+ },
+ {
+  "id": "activity-05",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.24,
+   "blocked": 0.05,
+   "shortage": 0.06
+  }
+ },
+ {
+  "id": "activity-06",
+  "expected": "fetch_material",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.06,
+   "addressed": 0.31,
+   "blocked": 0.42,
+   "shortage": 0.99
+  }
+ },
+ {
+  "id": "activity-07",
+  "expected": "fetch_material",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.4,
+   "blocked": 0.32,
+   "shortage": 0.99
+  }
+ },
+ {
+  "id": "activity-08",
+  "expected": "fetch_material",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.06,
+   "addressed": 0.3,
+   "blocked": 0.32,
+   "shortage": 0.93
+  }
+ },
+ {
+  "id": "activity-09",
+  "expected": "fetch_material",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.06,
+   "addressed": 0.18,
+   "blocked": 0.4,
+   "shortage": 0.99
+  }
+ },
+ {
+  "id": "activity-10",
+  "expected": "fetch_material",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.21,
+   "blocked": 0.33,
+   "shortage": 0.97
+  }
+ },
+ {
+  "id": "activity-11",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.94,
+   "blocked": 0.12,
+   "shortage": 0.26
+  }
+ },
+ {
+  "id": "activity-12",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.92,
+   "blocked": 0.12,
+   "shortage": 0.31
+  }
+ },
+ {
+  "id": "activity-13",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.96,
+   "blocked": 0.15,
+   "shortage": 0.29
+  }
+ },
+ {
+  "id": "activity-14",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.87,
+   "blocked": 0.48,
+   "shortage": 0.04
+  }
+ },
+ {
+  "id": "activity-15",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.03,
+   "blocked": 0.13,
+   "shortage": 0.3
+  }
+ },
+ {
+  "id": "activity-16",
+  "expected": "move_to_safety",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.8,
+   "addressed": 0.27,
+   "blocked": 0.38,
+   "shortage": 0.25
+  }
+ },
+ {
+  "id": "activity-17",
+  "expected": "move_to_safety",
+  "decision": "move_to_safety",
+  "nouls": {
+   "danger": 0.86,
+   "addressed": 0.33,
+   "blocked": 0.3,
+   "shortage": 0.28
+  }
+ },
+ {
+  "id": "activity-18",
+  "expected": "move_to_safety",
+  "decision": "move_to_safety",
+  "nouls": {
+   "danger": 0.91,
+   "addressed": 0.28,
+   "blocked": 0.68,
+   "shortage": 0.22
+  }
+ },
+ {
+  "id": "activity-19",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.03,
+   "addressed": 0.3,
+   "blocked": 0.14,
+   "shortage": 0.31
+  }
+ },
+ {
+  "id": "activity-20",
+  "expected": "replan",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.08,
+   "addressed": 0.36,
+   "blocked": 0.9,
+   "shortage": 0.09
+  }
+ },
+ {
+  "id": "activity-21",
+  "expected": "replan",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.1,
+   "addressed": 0.35,
+   "blocked": 0.89,
+   "shortage": 0.21
+  }
+ },
+ {
+  "id": "activity-22",
+  "expected": "replan",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.11,
+   "addressed": 0.38,
+   "blocked": 0.93,
+   "shortage": 0.12
+  }
+ },
+ {
+  "id": "activity-23",
+  "expected": "replan",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.08,
+   "addressed": 0.32,
+   "blocked": 0.74,
+   "shortage": 0.23
+  }
+ },
+ {
+  "id": "activity-24",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.25,
+   "blocked": 0.11,
+   "shortage": 0.03
+  }
+ },
+ {
+  "id": "hard-01",
+  "expected": "move_to_safety",
+  "decision": "move_to_safety",
+  "nouls": {
+   "danger": 0.86,
+   "addressed": 0.88,
+   "blocked": 0.68,
+   "shortage": 0.98
+  }
+ },
+ {
+  "id": "hard-02",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.93,
+   "blocked": 0.24,
+   "shortage": 0.98
+  }
+ },
+ {
+  "id": "hard-03",
+  "expected": "replan",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.08,
+   "addressed": 0.35,
+   "blocked": 0.89,
+   "shortage": 0.93
+  }
+ },
+ {
+  "id": "hard-04",
+  "expected": "continue_building",
+  "decision": "continue_building",
+  "nouls": {
+   "danger": 0.03,
+   "addressed": 0.03,
+   "blocked": 0.05,
+   "shortage": 0.03
+  }
+ },
+ {
+  "id": "hard-05",
+  "expected": "respond_to_player",
+  "decision": "respond_to_player",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.93,
+   "blocked": 0.17,
+   "shortage": 0.34
+  }
+ },
+ {
+  "id": "hard-06",
+  "expected": "continue_building",
+  "decision": "continue_building",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.03,
+   "blocked": 0.05,
+   "shortage": 0.04
+  }
+ },
+ {
+  "id": "hard-07",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.05,
+   "addressed": 0.23,
+   "blocked": 0.14,
+   "shortage": 0.07
+  }
+ },
+ {
+  "id": "hard-08",
+  "expected": "continue_building",
+  "decision": "continue_building",
+  "nouls": {
+   "danger": 0.03,
+   "addressed": 0.03,
+   "blocked": 0.09,
+   "shortage": 0.03
+  }
+ },
+ {
+  "id": "hard-18",
+  "expected": "move_to_safety",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.67,
+   "addressed": 0.08,
+   "blocked": 0.63,
+   "shortage": 0.25
+  }
+ },
+ {
+  "id": "hard-19",
+  "expected": "continue_building",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.09,
+   "blocked": 0.2,
+   "shortage": 0.06
+  }
+ },
+ {
+  "id": "hard-20",
+  "expected": "respond_to_player",
+  "decision": "escalate",
+  "nouls": {
+   "danger": 0.04,
+   "addressed": 0.79,
+   "blocked": 0.48,
+   "shortage": 0.21
+  }
+ }
+]
