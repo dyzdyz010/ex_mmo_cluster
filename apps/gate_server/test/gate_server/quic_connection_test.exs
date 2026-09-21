@@ -861,7 +861,7 @@ defmodule M4aGateTransferTest do
   end
 
   alias GateServer.Session.QuicConnection
-  alias GateServer.Transport.QuicListener
+  alias GateServer.Session.Claims
   alias MmoContracts.{Session, Movement}
 
   defmodule BlockingEditStore do
@@ -1414,7 +1414,7 @@ defmodule M4aGateTransferTest do
     artifact = %{id: 101}
 
     assert {:reply, {:ok, ^fresh, route, target}, prepared} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:prepare_transfer, old, 2, artifact},
                {self(), make_ref()},
                state
@@ -1427,7 +1427,7 @@ defmodule M4aGateTransferTest do
     refute_receive {:committed, _, _}
 
     assert {:reply, :ok, committed} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:commit_transfer, old, fresh, 101},
                {self(), make_ref()},
                prepared
@@ -1449,14 +1449,14 @@ defmodule M4aGateTransferTest do
     }
 
     assert {:reply, {:error, :stale_owner}, ^state} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:prepare_transfer, old, 2, %{id: 101}},
                {self(), make_ref()},
                state
              )
 
     assert {:reply, {:error, :stale_owner}, ^state} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:commit_transfer, old, fresh, 101},
                {self(), make_ref()},
                state
@@ -1478,14 +1478,14 @@ defmodule M4aGateTransferTest do
     other = spawn(fn -> :ok end)
 
     assert {:reply, {:error, :stale_owner}, ^state} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:prepare_transfer, old, 2, %{id: 101}},
                {other, make_ref()},
                state
              )
 
     assert {:reply, {:error, :stale_owner}, ^state} =
-             QuicListener.handle_call(
+             Claims.handle_call(
                {:commit_transfer, old, fresh, 101},
                {other, make_ref()},
                state

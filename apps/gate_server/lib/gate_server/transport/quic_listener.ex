@@ -1,5 +1,5 @@
 defmodule GateServer.Transport.QuicListener do
-  @moduledoc "全局系统功能：Voxim 的单一 QUIC 接入点；连接进程接管后才握手，角色替换只撤销旧 identity。"
+  @moduledoc "全局系统功能：Voxim 的单一 QUIC 接入点；连接进程接管后才握手。会话占用登记在 `GateServer.Session.Claims`。"
   use GenServer
   require Logger
 
@@ -7,8 +7,7 @@ defmodule GateServer.Transport.QuicListener do
   # 可靠流由 QUIC 分包，DATAGRAM 队列继续服从协商得到的 dgram_max_len。
   @maximum_mtu 1252
 
-  alias GateServer.Session.QuicConnection
-  alias MmoContracts.Session.Identity
+  alias GateServer.Session.{Claims, QuicConnection}
 
   @doc "启动监听与其连接监督树。证书及 Hello 身份必须由部署显式提供。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
@@ -17,6 +16,13 @@ defmodule GateServer.Transport.QuicListener do
   def init(opts) do
     Process.flag(:trap_exit, true)
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    # 会话占用登记与传输无关；部署传入共享登记处（NPC Body 也用它），单独启动的 listener 自带一个。
+    claims =
+      Keyword.get_lazy(opts, :claims, fn ->
+        {:ok, pid} = Claims.start_link(Keyword.take(opts, [:route_module]))
+        pid
+      end)
 
     {:ok, listener} =
       :quicer.listen(Keyword.fetch!(opts, :port),
@@ -48,8 +54,7 @@ defmodule GateServer.Transport.QuicListener do
        listener: listener,
        supervisor: supervisor,
        opts: opts,
-       characters: %{},
-       next_epoch: System.system_time(:microsecond)
+       claims: claims
      }}
   end
 
@@ -60,7 +65,7 @@ defmodule GateServer.Transport.QuicListener do
     {:ok, pid} =
       DynamicSupervisor.start_child(
         state.supervisor,
-        {QuicConnection, [conn: conn, listener: self()] ++ state.opts}
+        {QuicConnection, [conn: conn, listener: state.claims] ++ state.opts}
       )
 
     :ok = :quicer.controlling_process(conn, pid)
@@ -68,101 +73,10 @@ defmodule GateServer.Transport.QuicListener do
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    characters =
-      Map.reject(state.characters, fn {_, owner} -> owner.pid == pid and owner.monitor == ref end)
-
-    {:noreply, %{state | characters: characters}}
-  end
-
   def handle_info({:EXIT, supervisor, reason}, %{supervisor: supervisor} = state),
     do: {:stop, reason, state}
 
   def handle_info({:quic, _, _, _}, state), do: {:noreply, state}
-
-  @impl true
-  def handle_call({:claim, scene, route, character}, {pid, _}, state) do
-    cid = character.id
-
-    case state.characters[cid] do
-      nil ->
-        :ok
-
-      previous ->
-        :ok = previous.scene.leave(previous.scene_ref, previous.identity, 2)
-        send(previous.pid, {:mmo_close, previous.identity, 2})
-    end
-
-    identity = %Identity{
-      session_epoch: state.next_epoch,
-      scene_id: route.scene_id,
-      scene_epoch: route.scene_epoch
-    }
-
-    # 同一 listener 先 leave 后 join，Scene 的邮箱顺序保证旧成员先退出；不等旧 QUIC 关闭。
-    result = scene.join(route.scene_ref, identity, character, pid)
-
-    owner = %{
-      pid: pid,
-      identity: identity,
-      monitor: Process.monitor(pid),
-      scene: scene,
-      scene_ref: route.scene_ref
-    }
-
-    {:reply, {identity, result},
-     %{
-       state
-       | next_epoch: state.next_epoch + 1,
-         characters: Map.put(state.characters, cid, owner)
-     }}
-  end
-
-  def handle_call({:prepare_transfer, old, target_scene_id, artifact}, {pid, _}, state) do
-    case state.characters[artifact.id] do
-      %{pid: ^pid, identity: ^old} ->
-        router = Keyword.get(state.opts, :route_module, WorldServer.Movement)
-
-        with {:ok, route} <- router.route(target_scene_id) do
-          fresh = %Identity{
-            session_epoch: state.next_epoch,
-            scene_id: target_scene_id,
-            scene_epoch: route.scene_epoch
-          }
-
-          # 分配只预留 epoch；角色 owner 在目标 Ready 提交前仍指向旧 Scene。
-          state = %{state | next_epoch: state.next_epoch + 1}
-
-          case router.prepare_transfer(old, fresh, artifact, pid) do
-            {:ok, player} -> {:reply, {:ok, fresh, route, player}, state}
-            {:error, reason} -> {:reply, {:error, reason}, state}
-          end
-        else
-          {:error, reason} -> {:reply, {:error, reason}, state}
-        end
-
-      _ ->
-        {:reply, {:error, :stale_owner}, state}
-    end
-  end
-
-  def handle_call({:commit_transfer, old, fresh, cid}, {pid, _}, state) do
-    case state.characters[cid] do
-      %{pid: ^pid, identity: ^old} = owner ->
-        router = Keyword.get(state.opts, :route_module, WorldServer.Movement)
-
-        with {:ok, route} <- router.route(fresh.scene_id),
-             :ok <- router.commit_transfer(old, fresh) do
-          owner = %{owner | identity: fresh, scene_ref: route.scene_ref}
-          {:reply, :ok, %{state | characters: Map.put(state.characters, cid, owner)}}
-        else
-          {:error, reason} -> {:reply, {:error, reason}, state}
-        end
-
-      _ ->
-        {:reply, {:error, :stale_owner}, state}
-    end
-  end
 
   @impl true
   def terminate(_reason, state) do

@@ -1,6 +1,6 @@
 defmodule GateServer.Npc.Body do
   @moduledoc """
-  全局系统功能：NPC 的无 socket 会话 owner。以 NPC cid 走 `QuicListener` 的完整 claim，自己充当 gate；
+  全局系统功能：NPC 的无 socket 会话 owner。以 NPC cid 走 `Session.Claims` 的完整 claim，自己充当 gate；
   权威状态只在 `Movement.Player`，本进程的位置是 OwnerAck 的派生缓存。
 
   输入由 OwnerAck 闭环驱动：`due_seq = server_tick - origin_tick + 1`，把已送序号连续补到 `due_seq + 8`；
@@ -67,7 +67,9 @@ defmodule GateServer.Npc.Body do
      %{
        cid: cid,
        route: route,
-       listener: Keyword.fetch!(opts, :listener),
+       # 显式出生点：不占玩家 probe 名额。
+       spawn: Keyword.fetch!(opts, :spawn),
+       claims: Keyword.get(opts, :claims, GateServer.Session.Claims),
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
        scene_id: Keyword.fetch!(opts, :scene_id),
@@ -85,8 +87,9 @@ defmodule GateServer.Npc.Body do
 
     {identity, {:ok, player}} =
       GenServer.call(
-        state.listener,
-        {:claim, state.scene, Map.put(route, :scene_id, state.scene_id), %{id: state.cid}}
+        state.claims,
+        {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
+         %{id: state.cid, spawn: state.spawn}}
       )
 
     Process.monitor(player)

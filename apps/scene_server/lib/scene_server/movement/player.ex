@@ -103,10 +103,7 @@ defmodule SceneServer.Movement.Player do
         nil ->
           if state.config.streaming_radius > 0 do
             box =
-              CollisionStream.box(
-                Enum.at(state.config.probes, state.slot),
-                state.config.streaming_radius
-              )
+              CollisionStream.box(state.probe, state.config.streaming_radius)
 
             {:ok, stream} =
               CollisionStream.start(Keyword.fetch!(opts, :authority_ref), state.gate, self(), box)
@@ -338,7 +335,7 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:anchor, tick, updates, content_version, snapshot}, state) do
     state = %{state | tick: tick, updates: updates, content_version: content_version}
-    probe = Enum.at(state.config.probes, state.slot)
+    probe = state.probe
 
     state =
       case find_spawn(state, probe) do

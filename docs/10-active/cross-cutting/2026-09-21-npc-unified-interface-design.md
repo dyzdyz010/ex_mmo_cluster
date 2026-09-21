@@ -3,10 +3,10 @@
 分类：全局系统功能，设计决策稿。状态：**v2；第一片已实现、已实跑（2026-09-21），未验收**；第二、三片未实施。已与 GPT-6 Astra 三轮对抗审查。
 
 第一片落点：`apps/gate_server/lib/gate_server/npc/body.ex`、`GateServer.NpcSup`（`gate_server/application.ex`）、
-`apps/gate_server/test/gate_server/npc_body_test.exs`（4 个手算单测本机可跑；真实 `QuicListener` 集成用例依赖 quicer，只能在 Linux
-服务端镜像内跑，需 `VOXIM_TEST_CERTS`）。真实客户端实跑：Voxim `Docs/Gameplay/npc.exs` + `server.py --start`，两个 NPC 在统一 Demo
+`apps/gate_server/test/gate_server/npc_body_test.exs`（6 项，本机可跑：会话登记已从 `QuicListener` 抽到不含传输的
+`GateServer.Session.Claims`，NPC 不再依赖 quicer）。真实客户端实跑：Voxim `Docs/Gameplay/npc.exs` + `server.py --start`，两个 NPC 在统一 Demo
 巡逻，截图 `Voxim/Saved/Gameplay/npc-slice1/watch-01/`。实跑中发现并已规避：路线贴近 64 m tile 边界时，冲过路点跨 tile 会让该 NPC
-每圈重申请两次碰撞窗口（§7.1 的热快照成本）。未验收项：人工观察平滑度与折返；§9 的积压超限用例未写。
+每圈重申请两次碰撞窗口（§7.1 的热快照成本）。用户已目视确认基本平滑；积压超限（严格 >120）用例已补。
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
 
@@ -149,9 +149,9 @@ done。第一片不做提前减速预测。
 
 | # | 缺口 | 处理 |
 |---|---|---|
-| G-1 | NPC 身份与会话占用 | 第一片由 **Body 进程本人**调用 `{:claim,…}`（listener 监视的是调用者；由 manager 代 claim 会把所有 NPC 绑到 manager 上）。NPC cid 区间 = bit 63 置 1（2^63 ≤ cid < 2^64），静态配置，**全集群唯一**（重复 cid 会踢旧会话而不是报配置冲突）；不进 `characters` 表，不走 CharacterStore |
-| G-2a | 名额 | NPC 占用 probe 名额。第一片：给 NPC 留出名额，规则写进 Scene 配置说明 |
-| G-2b | 出生点 | 取自 probe 槽，不能指定。第一片：接受 probe 出生点，巡逻路线从那里开始；需要指定出生点时再给 join 加参数 |
+| G-1 | NPC 身份与会话占用 | **已做**：claim/transfer 登记抽为 `GateServer.Session.Claims`（玩家侧 QUIC 测试抽取前后结果一致）。由 **Body 进程本人**调用 `{:claim,…}`（listener 监视的是调用者；由 manager 代 claim 会把所有 NPC 绑到 manager 上）。NPC cid 区间 = bit 63 置 1（2^63 ≤ cid < 2^64），静态配置，**全集群唯一**（重复 cid 会踢旧会话而不是报配置冲突）；不进 `characters` 表，不走 CharacterStore |
+| G-2a | 名额 | **已做**：`Scene.join` 的 character 带 `spawn: {x,y,z}` 时 `slot: nil`，不计入 probe 名额（与 transfer 导入成员同一规则） |
+| G-2b | 出生点 | **已做**：同上，显式出生点经 `probe:` 传给 Player，仍走 `find_spawn` 与 travel/authority 校验 |
 | G-3 | 内部 Ready 的含义 | 无头 Body 不建体素镜像；收到 `SessionStart` + `CanonicalBootstrap` 元数据后回 baseline 的 seq/revision。在文档里写明这是“内部会话就绪”，不代表已应用体素 |
 | G-4 | 缺内部共用的合法请求构造入口 | 只为当片用到的命令加构造函数（第二片：`tool_intent`） |
 | G-5 | 生命周期双向 | Body 必须消费 `mmo_close` 并结束会话，使 `CollisionStream` 随 gate 退出而清理；不做自动重连以外的恢复 |

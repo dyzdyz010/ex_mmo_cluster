@@ -338,7 +338,10 @@ defmodule SceneServer.Movement.Scene do
     end
   end
 
-  def handle_call({:join, identity, %{id: cid}, gate}, _, state) do
+  def handle_call({:join, identity, %{id: cid} = character, gate}, _, state) do
+    # 显式出生点（NPC）不占 probe 名额；普通角色按空闲 probe 槽出生。
+    spawn = Map.get(character, :spawn)
+
     cond do
       identity.scene_id != state.scene_id or identity.scene_epoch != state.scene_epoch ->
         close_sink(state, gate, identity, 11)
@@ -355,13 +358,18 @@ defmodule SceneServer.Movement.Scene do
         close_sink(state, gate, identity, 2)
         {:reply, {:error, :closed}, state}
 
-      Enum.count(state.characters, fn {_, c} -> c.slot != nil end) == length(state.config.probes) ->
+      spawn == nil and
+          Enum.count(state.characters, fn {_, c} -> c.slot != nil end) == length(state.config.probes) ->
         close_sink(state, gate, identity, 10)
         {:reply, {:error, :closed}, state}
 
       true ->
         occupied = Enum.map(state.characters, fn {_, c} -> c.slot end)
-        slot = Enum.find(0..(length(state.config.probes) - 1), &(&1 not in occupied))
+
+        slot =
+          if spawn == nil,
+            do: Enum.find(0..(length(state.config.probes) - 1), &(&1 not in occupied))
+
         request = make_ref()
 
         opts = [
@@ -372,6 +380,7 @@ defmodule SceneServer.Movement.Scene do
           id: cid,
           epoch: identity.session_epoch,
           slot: slot,
+          probe: spawn || Enum.at(state.config.probes, slot),
           config: state.config,
           clock: state.clock,
           time_origin: state.time_origin,

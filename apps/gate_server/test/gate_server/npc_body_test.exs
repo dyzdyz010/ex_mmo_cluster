@@ -1,6 +1,6 @@
 defmodule GateServer.NpcBodyTest do
   @moduledoc """
-  只测试：NPC Body 第一片。真实 QuicListener claim、真实 Movement.Scene / Player / P1 NIF、真实时钟；
+  只测试：NPC Body 第一片。真实 Session.Claims、真实 Movement.Scene / Player / P1 NIF、真实时钟；
   只有世界来源是平地替身（不属于本片被验证的责任主体）。观察者是测试进程，以普通玩家 cid 走同一 claim。
   """
   use ExUnit.Case, async: false
@@ -64,10 +64,6 @@ defmodule GateServer.NpcBodyTest do
 
   describe "two NPCs in a real Scene" do
     setup do
-      {:ok, _} = Application.ensure_all_started(:quicer)
-      certs = System.fetch_env!("VOXIM_TEST_CERTS") <> "/"
-      port = System.get_env("VOXIM_TEST_QUIC_PORT", "25443") |> String.to_integer()
-
       profile =
         Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
         |> File.read!()
@@ -81,7 +77,8 @@ defmodule GateServer.NpcBodyTest do
         "l0_max_exclusive" => [1, 9, 1],
         "travel_min_m" => [-48.0, 464.0, -48.0],
         "travel_max_exclusive_m" => [48.0, 560.0, 48.0],
-        "spawn_probes_m" => [[40.0, 503.0, 40.0], [42.0, 503.0, 40.0], [44.0, 503.0, 40.0]],
+        # 只有一个玩家 probe：两个 NPC 靠显式出生点入场，不占它。
+        "spawn_probes_m" => [[44.0, 503.0, 40.0]],
         "spawn_min_y_m" => 464.0,
         "profile" => profile
       }
@@ -125,36 +122,22 @@ defmodule GateServer.NpcBodyTest do
            ]}
         )
 
-      listener =
-        start_supervised!(
-          {GateServer.Transport.QuicListener,
-           [
-             port: port,
-             certfile: certs <> "server.pem",
-             keyfile: certs <> "server.key",
-             hello: %Session.Hello{
-               protocol_version: Session.Codec.protocol_version(),
-               kernel_id: <<1::256>>,
-               profile_id: <<2::256>>
-             },
-             route_module: Route
-           ]}
-        )
+      claims = start_supervised!({GateServer.Session.Claims, route_module: Route})
 
-      npc = fn id, cid, route ->
+      npc = fn id, cid, spawn, route ->
         start_supervised!(
-          {Body, listener: listener, route_module: Route, scene_id: 1, cid: cid, route: route},
+          {Body,
+           claims: claims, route_module: Route, scene_id: 1, cid: cid, spawn: spawn, route: route},
           id: id,
           restart: :temporary
         )
       end
 
-      # 先 claim 的占 probe 0（x=40）与 probe 1（x=42）。
-      a = npc.(:npc_a, @npc_a, [{30.0, 40.0}, {40.0, 40.0}])
-      b = npc.(:npc_b, @npc_b, [{42.0, 30.0}, {42.0, 40.0}])
+      a = npc.(:npc_a, @npc_a, {40.0, 503.0, 40.0}, [{30.0, 40.0}, {40.0, 40.0}])
+      b = npc.(:npc_b, @npc_b, {42.0, 503.0, 40.0}, [{42.0, 30.0}, {42.0, 40.0}])
 
       {:ok, route} = Route.route(1)
-      {identity, {:ok, player}} = GenServer.call(listener, {:claim, Scene, Map.put(route, :scene_id, 1), %{id: 20}})
+      {identity, {:ok, player}} = GenServer.call(claims, {:claim, Scene, Map.put(route, :scene_id, 1), %{id: 20}})
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
       assert_receive {:mmo_reliable, ^identity, 1, %Session.SessionStart{} = start}, 5_000
       Player.ready(player, identity, start.baseline_transaction_seq, start.collision_revision)
@@ -176,6 +159,30 @@ defmodule GateServer.NpcBodyTest do
       after
         max(0, deadline - System.monotonic_time(:millisecond)) -> acc
       end
+    end
+
+    test "input backlog: exactly 120 behind keeps feeding, 121 behind exits for a supervised re-claim",
+         %{scene: scene, a: a} do
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a}}, 8_000
+      c = Enum.find(Scene.observe(scene).characters, &(&1.entity_id == @npc_a))
+      monitor = Process.monitor(a)
+
+      # 只测试：伪造一条“权威只处理到 seq 10”的 OwnerAck，代表输入补给链路停摆；due = server_tick − origin + 1。
+      ack = fn server_tick ->
+        %Movement.OwnerAck{
+          identity: c.identity,
+          server_tick: server_tick,
+          processed_input_seq: 10,
+          collision_revision: c.collision_revision,
+          state: c.state,
+          substituted_through_seq: 0
+        }
+      end
+
+      send(a, {:mmo_datagram, c.identity, ack.(c.origin_tick + 129)})
+      refute_receive {:DOWN, ^monitor, _, _, _}, 300
+      send(a, {:mmo_datagram, c.identity, ack.(c.origin_tick + 130)})
+      assert_receive {:DOWN, ^monitor, :process, ^a, {:input_backlog, 131, 10}}, 1_000
     end
 
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",

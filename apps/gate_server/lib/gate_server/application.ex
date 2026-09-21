@@ -51,7 +51,9 @@ defmodule GateServer.Application do
           []
         else
           [
-            {GateServer.Transport.QuicListener, Application.fetch_env!(:gate_server, :quic)},
+            {GateServer.Session.Claims, name: GateServer.Session.Claims},
+            {GateServer.Transport.QuicListener,
+             [claims: GateServer.Session.Claims] ++ Application.fetch_env!(:gate_server, :quic)},
             # NPC Body 在 Scene 建好后由部署脚本加入；独立监督者隔离其重启强度。
             {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one}
           ]
