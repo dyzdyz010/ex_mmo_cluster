@@ -76,6 +76,11 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    **多 NPC 成本：已测**（`mix test --include npc_scale`，本机 32 调度器，真实 Scene / World / 碰撞，全部同时寻路行走）：
    1 / 8 / 24 个 NPC → Scene 每 tick 9 / 16 / 37 µs，最长 tick 1.1 ms，超期 tick 0，整机调度器忙碌 0.0 / 0.1 / 0.3 %，
    Body ≈ 110 KB、Player ≈ 50 KB 每个（不含 NIF 里的碰撞世界，见 §7.1）。几十个 NPC 内不需要优化。
+   **长目标：已实跑**。LLM 后端的请求是无状态的，模型看不到自己上一次调用了什么；给它看的 Outcome 只有 `{id, verb, status, seq}` 时，
+   真实模型砌了两格就原地反复 look（离线复现）。现在 adapter 把当初那次调用附在 Outcome 上（Body 的 Outcome 契约不变），另有 `note` 便签工具。
+   本机真实 World：一句目标盖 22 格带门洞的小屋墙，29 次决策通过。统一 Demo（镜像 `voxim-gameplay:npc-transfer-1b5a6a7`，记录
+   `Voxim/Saved/Gameplay/upgrade-20260921-npc-transfer/`）：跨 x=160 的 Scene 边界走过去再走回来（两次 `npc_transfer`）；LLM NPC 在台面东侧
+   (58..61, 519..520, 64..67) 盖同样的小屋，27 条命令零拒绝、22 / 22 格、材料守恒，真实客户端截图在 `hut-real/shots/`。小屋与池边台阶留在 Demo 世界里。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
