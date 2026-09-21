@@ -83,6 +83,9 @@ defmodule GateServer.NpcBodyWorldTest do
     # 作者入口一次写入：地面上两格高的石柱，上面那格在 NPC 视线高度。
     {:ok, _} = World.apply_edits(world, [{{16, 64, 10}, @stone}, {@pillar, @stone}])
 
+    # 有限样本：经服务端授权供给入口一次记账，之后只经正常玩法消费 / 退回。
+    if supply = context[:supply], do: {:ok, _} = World.material_supply(world, @npc, "npc-test-supply", supply)
+
     profile =
       Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
       |> File.read!()
@@ -135,6 +138,22 @@ defmodule GateServer.NpcBodyWorldTest do
          "你在 x=4, z=10 附近的平地上。x=16, z=10 处立着一根石柱。去把它整根挖下来，" <>
            "再用挖到的材料在 z=13 这一排、x=10 到 x=11 砌一段一格高的墙。砌完以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体，射程 6 米"},
+       endpoint: %{
+         url: System.fetch_env!("NPC_LLM_URL"),
+         key: System.fetch_env!("NPC_LLM_KEY"),
+         model: System.fetch_env!("NPC_LLM_MODEL")
+       }
+     }}
+  end
+
+  defp brain(%{inspector: true}) do
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal:
+         "你站在 x=4, z=10 附近的平地上，地面最上一层实心格是 y=63，背包里有一点石料（material 11）。" <>
+           "在格 (6, 63, 10) 的顶面贴一件最小的面片附件；然后用 inspect 找到它，用镐对这件附件敲一下，" <>
+           "再按它的 id 把它拆下来，拆完说一句“拆好了”。之后每次都调用 wait 等 300 秒。",
+       tools: %{1 => "镐：挖掘固体、贴 / 拆附件，射程 6 米"},
        endpoint: %{
          url: System.fetch_env!("NPC_LLM_URL"),
          key: System.fetch_env!("NPC_LLM_KEY"),
@@ -338,6 +357,49 @@ defmodule GateServer.NpcBodyWorldTest do
     # 墙的两格正好是石柱的两格：材料来自挖掘，背包清零，石柱不在了。
     assert [0, 0] == materials.([{16, 64, 10}, @pillar])
     assert 0 == balance(world)
+  end
+
+  @tag :live_llm
+  @tag :inspector
+  @tag supply: %{11 => 8}
+  @tag timeout: 600_000
+  test "a real LLM attaches a face, finds it with inspect and detaches it by id: world and balance checked through World",
+       %{world: world, body: body} do
+    attachments = fn ->
+      Enum.filter(World.simulation_snapshot(world, [@npc], {{-1, 0, -1}, {2, 2, 2}}).property_states, &(&1.granularity == 3))
+    end
+
+    assert [] == attachments.()
+    assert 8 == balance(world)
+
+    try do
+      # 贴上：世界里恰好一件附件，在格 (6,63,10) 的顶面（micro = macro × 8，顶面 y = 64 × 8），花 1 单位。
+      [thing] = await(fn -> if (rows = attachments.()) != [], do: rows end, System.monotonic_time(:millisecond) + 240_000)
+      assert %{micro: {x, 512, z}, material: @stone, owner: {_, 1}} = thing
+      assert x in 48..55 and z in 80..87
+      assert 7 == balance(world)
+
+      # 拆掉：附件不在了，材料全额退回。
+      await(fn -> if attachments.() == [], do: true end, System.monotonic_time(:millisecond) + 300_000)
+      assert 8 == balance(world)
+    after
+      IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
+        label: "llm_inspector_outcomes",
+        limit: :infinity
+      )
+    end
+
+    # 模型确实走了 inspect → 按 id 对附件用工具 → 按 id 拆：权威确认的 Outcome 里都有；say 在正式栈接入聊天前恒被拒。
+    outcomes =
+      await(
+        fn -> if Enum.any?(o = Body.observe(body).outcomes, &(&1.verb == :say)), do: o end,
+        System.monotonic_time(:millisecond) + 60_000
+      )
+
+    done = for %{status: :done, verb: verb} <- outcomes, do: verb
+    assert :inspect in done and :use_tool in done and :detach in done
+    assert %{status: :rejected, reason: :chat_unavailable} = Enum.find(outcomes, &(&1.verb == :say))
+    IO.inspect(Enum.reverse(for o <- outcomes, do: {o.id, o.verb, o.status, o.reason}), label: "llm_inspector_final")
   end
 
   @tag :live_llm
