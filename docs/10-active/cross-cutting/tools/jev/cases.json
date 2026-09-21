@@ -1,0 +1,1190 @@
+{
+ "about": "Frozen situations for judging Jev as the NPC scheduler. Expected values are hand-labelled by the rules in build_cases.py.",
+ "cases": [
+  {
+   "id": "activity-01",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The last block was placed successfully. You have plenty of stone. Nobody is around.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。上一格放置成功。你有充足的石料。周围没有人。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-02",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You just finished the north wall. Material is sufficient for the next wall. It is quiet.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。你刚砌完北墙。下一面墙的材料足够。四周很安静。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-03",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player is mining ore far away on the other side of the valley and has not noticed you. Material is sufficient.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。一名玩家在山谷另一头很远的地方挖矿，没有注意到你。材料足够。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-04",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Another NPC walks past on its patrol route without stopping. You have enough stone for the next step.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "activity-05",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. It started to rain. Rain has no effect on building. You have enough stone.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "activity-06",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Your backpack has no stone left. The next step of the plan is to place a stone block.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "fetch_material",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。你的背包里没有石料了。计划的下一步是放一块石头。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-07",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The plan needs glass for the window next, and you carry only stone. Material for the next step is missing.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "fetch_material",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。计划下一步要用玻璃装窗，而你只带着石料。下一步的材料缺失。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-08",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The placement was rejected by the world with the reason: insufficient material.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "fetch_material"
+  },
+  {
+   "id": "activity-09",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You are out of wood, and the roof step that comes next requires wood. Nobody is nearby.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "fetch_material"
+  },
+  {
+   "id": "activity-10",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Material check by the game code: not enough for the next step. Everything else is normal.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "fetch_material"
+  },
+  {
+   "id": "activity-11",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player walks up, stops right in front of you and says: 'Hey, what are you building?'",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。一名玩家走过来，停在你正前方，说：“嘿，你在盖什么？”",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-12",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player standing next to you says: 'Can you help me carry this?'",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。站在你旁边的一名玩家说：“能帮我搬一下这个吗？”",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-13",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player calls you by name from two meters away and is waiting for an answer.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player"
+  },
+  {
+   "id": "activity-14",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player says to you: 'Stop, you are building on my land.' You have plenty of material.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player"
+  },
+  {
+   "id": "activity-15",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Two players are chatting with each other nearby about their own farm. They are not talking to you.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。两名玩家在附近互相聊他们自己的农场。他们没有在跟你说话。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-16",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Lava is flowing toward the spot where you are standing and will reach it in a few seconds.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "move_to_safety",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。岩浆正朝你站的位置流过来，几秒钟后就会到。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-17",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The wooden scaffold you are standing on has caught fire.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "move_to_safety",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。你脚下站着的木架着火了。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-18",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The ground under your feet is being dug away by someone and you are about to fall into a deep pit.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "move_to_safety"
+  },
+  {
+   "id": "activity-19",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A fire is burning in a fireplace inside a finished stone house far away from you. You are safe.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "activity-20",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The same placement has been rejected three times in a row with the reason: occupied. The blueprint says that cell should be empty.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "replan",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。同一次放置已经连续三次被拒，原因是：已被占用。蓝图说那一格应该是空的。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-21",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You looked at the site: a large tree now stands in the middle of the footprint, which the blueprint did not account for.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "replan",
+   "zh": {
+    "state": "你是体素世界里的一个建设者 NPC，正在按蓝图盖一间小石屋。你查看了工地：占地范围中间现在长着一棵大树，蓝图没有考虑到它。",
+    "question": {
+     "type": "choice",
+     "instructions": "建设者 NPC 现在应该做什么？",
+     "criteria": {
+      "continue_building": "继续执行当前的建造计划。",
+      "fetch_material": "停止建造，去采集更多建筑材料。",
+      "respond_to_player": "暂停工作，回应正在对 NPC 说话的玩家。",
+      "move_to_safety": "离开眼前的人身危险。",
+      "replan": "当前计划无法按原样进行；向规划者要一份新计划。"
+     }
+    }
+   }
+  },
+  {
+   "id": "activity-22",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Movement to the building site failed with the reason: no path. The site is on a cliff you cannot reach.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "replan"
+  },
+  {
+   "id": "activity-23",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Someone removed half of the wall you built yesterday. The plan's list of finished steps no longer matches the world.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "replan"
+  },
+  {
+   "id": "activity-24",
+   "group": "activity",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Movement failed once with the reason: stuck, because another NPC was standing in the doorway; it has now moved away. Material is sufficient.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now?",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "wake-01",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: place stone at the next wall cell. Outcome: done.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "wake-02",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: move to the quarry. Outcome: done, arrived within tolerance.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "wake-03",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: query balances. Outcome: done, the stone count went down by one after the last placement.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "wake-04",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: look at the site. Outcome: the wall cells placed so far are all present, the rest is air, as planned.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "wake-05",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: wait. Outcome: nothing happened.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "wake-06",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: place stone at a wall cell. Outcome: rejected, the cell is already occupied by a block of gold that nobody in the plan placed.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "wake-07",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: look at the site. Outcome: the entire east wall that was finished earlier is gone.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "wake-08",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: move to the building site. Outcome: rejected, no path; the only bridge to the site has been removed.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "wake-09",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: mine the stone pillar. Outcome: rejected, the target belongs to a protected area and cannot be modified.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "wake-10",
+   "group": "wake",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Command: look at the site. Outcome: there is a pool of water filling the inside of the hut that the blueprint does not mention.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is this outcome unexpected enough that the planner must be consulted before continuing?",
+    "criteria": {
+     "true": "The outcome contradicts what the plan assumed.",
+     "false": "The outcome is what the plan expected, or a harmless routine event."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "guard-01",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: mine a block of natural granite in an untouched hillside to collect stone.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "guard-02",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: remove a stone block that this NPC placed by mistake a minute ago.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "guard-03",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: dig up natural dirt inside the hut's own footprint to level the floor.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "guard-04",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: cut down a wild tree in the forest for wood.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": false
+  },
+  {
+   "id": "guard-05",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: mine blocks out of the wall of a player's house next door because it is the nearest stone.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "guard-06",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: take apart a bridge that another player built, to reuse its planks for the roof.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "guard-07",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: remove a torch and a sign that a player placed at the edge of the site.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "guard-08",
+   "group": "guard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Planned action: dismantle the staircase that a different NPC built beside the pool.",
+   "question": {
+    "type": "noul",
+    "instructions": "Would carrying out this action damage or remove something that was built by someone other than this NPC?",
+    "criteria": {
+     "true": "The target was built or placed by another player or NPC.",
+     "false": "The target is natural terrain or the NPC's own work."
+    }
+   },
+   "expected": true
+  },
+  {
+   "id": "weak-01",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You carry 3 stone blocks. The next step needs 5 stone blocks.",
+   "question": {
+    "type": "noul",
+    "instructions": "Does the NPC have enough stone for the next step?"
+   },
+   "expected": false
+  },
+  {
+   "id": "weak-02",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You carry 17 stone blocks. The next step needs 9 stone blocks.",
+   "question": {
+    "type": "noul",
+    "instructions": "Does the NPC have enough stone for the next step?"
+   },
+   "expected": true
+  },
+  {
+   "id": "weak-03",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You carry 1024 units of stone. One block costs 512 units. The next step needs 3 blocks.",
+   "question": {
+    "type": "noul",
+    "instructions": "Does the NPC have enough stone for the next step?"
+   },
+   "expected": false
+  },
+  {
+   "id": "weak-04",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Wall cells placed so far: (8,14) (8,15) (8,16) (8,17) (9,17) (10,17) (11,17). The wall needs 11 cells in total.",
+   "question": {
+    "type": "noul",
+    "instructions": "Is the wall finished?"
+   },
+   "expected": false
+  },
+  {
+   "id": "weak-05",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You are at x=12.4. The quarry entrance is at x=12.9. Being within 1 meter counts as arrived.",
+   "question": {
+    "type": "noul",
+    "instructions": "Has the NPC arrived at the quarry entrance?"
+   },
+   "expected": true
+  },
+  {
+   "id": "weak-06",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. It is not the case that the player did not speak to you.",
+   "question": {
+    "type": "noul",
+    "instructions": "Did the player speak to the NPC?"
+   },
+   "expected": true
+  },
+  {
+   "id": "weak-07",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Material check by the game code: NOT enough stone for the next step (have 3, need 5).",
+   "question": {
+    "type": "noul",
+    "instructions": "Does the NPC have enough stone for the next step?"
+   },
+   "expected": false
+  },
+  {
+   "id": "weak-08",
+   "group": "weak",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Material check by the game code: enough stone for the next step (have 17, need 9).",
+   "question": {
+    "type": "noul",
+    "instructions": "Does the NPC have enough stone for the next step?"
+   },
+   "expected": true
+  },
+  {
+   "id": "hard-01",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Lava is about to reach your feet. At the same time a player next to you is asking you a question. You are also out of stone.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "move_to_safety"
+  },
+  {
+   "id": "hard-02",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You are out of stone for the next step. A player standing in front of you says: 'Do you have a minute?'",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player"
+  },
+  {
+   "id": "hard-03",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. You are out of stone. Also, the blueprint cell for the next step turns out to be occupied by bedrock that cannot be removed.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "replan"
+  },
+  {
+   "id": "hard-04",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player far away shouts to their friend: 'Run, there is lava over here on the east ridge!' You are building on the west plain and nothing is near you. Material is sufficient.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "hard-05",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. No player other than Bob is talking to you. Bob is asking you where the quarry is.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player"
+  },
+  {
+   "id": "hard-06",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Nobody is talking to you, not even Bob, who is busy fishing. The last placement succeeded and material is sufficient.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "hard-07",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. The fire that was burning next to you a minute ago has been put out completely. Material is sufficient and nobody is around.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "hard-08",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. A player says to another player, while pointing at you: 'Ignore the builder, it never answers.' Neither of them is speaking to you. Material is sufficient.",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "hard-09",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Observation: {\"self\": {\"position\": [60.5, 519.91, 62.5], \"grounded\": true}, \"entities\": [], \"pending\": [], \"balances\": [{\"material\": 19, \"balance\": 983040, \"cost\": 2097152}, {\"material\": 11, \"balance\": 2097152, \"cost\": 2097152}], \"next_step\": {\"verb\": \"place\", \"material\": 11, \"coord\": [58, 519, 64]}}",
+   "question": {
+    "type": "noul",
+    "instructions": "The next step places one block of the material named in next_step. One block costs cost units. Can the NPC afford the next step?"
+   },
+   "expected": true
+  },
+  {
+   "id": "hard-10",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Observation: {\"self\": {\"position\": [60.5, 519.91, 62.5], \"grounded\": true}, \"entities\": [], \"pending\": [], \"balances\": [{\"material\": 19, \"balance\": 983040, \"cost\": 2097152}, {\"material\": 11, \"balance\": 1048576, \"cost\": 2097152}], \"next_step\": {\"verb\": \"place\", \"material\": 11, \"coord\": [58, 519, 64]}}",
+   "question": {
+    "type": "noul",
+    "instructions": "The next step places one block of the material named in next_step. One block costs cost units. Can the NPC afford the next step?"
+   },
+   "expected": false
+  },
+  {
+   "id": "hard-11",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Observation: {\"self\": {\"position\": [60.5, 519.91, 62.5], \"grounded\": true}, \"entities\": [], \"pending\": [], \"balances\": [{\"material\": 19, \"balance\": 983040, \"cost\": 2097152}, {\"material\": 11, \"balance\": 2097151, \"cost\": 2097152}], \"next_step\": {\"verb\": \"place\", \"material\": 11, \"coord\": [58, 519, 64]}}",
+   "question": {
+    "type": "noul",
+    "instructions": "The next step places one block of the material named in next_step. One block costs cost units. Can the NPC afford the next step?"
+   },
+   "expected": false
+  },
+  {
+   "id": "hard-12",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Observation: {\"self\": {\"position\": [60.5, 519.91, 62.5], \"grounded\": true}, \"entities\": [], \"pending\": [], \"balances\": [{\"material\": 19, \"balance\": 983040, \"cost\": 2097152}, {\"material\": 11, \"balance\": 46137344, \"cost\": 2097152}], \"next_step\": {\"verb\": \"place\", \"material\": 11, \"coord\": [58, 519, 64]}}",
+   "question": {
+    "type": "noul",
+    "instructions": "The next step places one block of the material named in next_step. One block costs cost units. Can the NPC afford the next step?"
+   },
+   "expected": true
+  },
+  {
+   "id": "hard-13",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Required wall cells (11): [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 64), (60, 67), (61, 64), (61, 65), (61, 66), (61, 67)]. Placed so far: [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 64), (60, 67), (61, 64), (61, 65), (61, 66), (61, 67)].",
+   "question": {
+    "type": "noul",
+    "instructions": "Have all required wall cells been placed?"
+   },
+   "expected": true
+  },
+  {
+   "id": "hard-14",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Required wall cells (11): [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 64), (60, 67), (61, 64), (61, 65), (61, 66), (61, 67)]. Placed so far: [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 64), (60, 67), (61, 64), (61, 65)].",
+   "question": {
+    "type": "noul",
+    "instructions": "Have all required wall cells been placed?"
+   },
+   "expected": false
+  },
+  {
+   "id": "hard-15",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Required wall cells (11): [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 64), (60, 67), (61, 64), (61, 65), (61, 66), (61, 67)]. Placed so far: [(58, 64), (58, 65), (58, 66), (58, 67), (59, 67), (60, 67), (61, 64), (61, 65), (61, 66), (61, 67)].",
+   "question": {
+    "type": "noul",
+    "instructions": "Have all required wall cells been placed?"
+   },
+   "expected": false
+  },
+  {
+   "id": "hard-16",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. NPC at (x=12.4, z=7.0). Target at (x=15.0, z=9.0).",
+   "question": {
+    "type": "noul",
+    "instructions": "Is the NPC within 3 meters (straight-line, horizontal) of the target?"
+   },
+   "expected": false
+  },
+  {
+   "id": "hard-17",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. NPC at (x=12.4, z=7.0). Target at (x=14.0, z=9.0).",
+   "question": {
+    "type": "noul",
+    "instructions": "Is the NPC within 3 meters (straight-line, horizontal) of the target?"
+   },
+   "expected": true
+  },
+  {
+   "id": "hard-18",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 40: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 41: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 42: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 43: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 44: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 45: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 46: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 47: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 48: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 49: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 50: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 51: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 52: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 53: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 54: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 55: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 56: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 57: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 58: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 59: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 60: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 61: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 62: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 63: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 64: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 65: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 66: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 67: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 68: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 69: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 70: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 71: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 72: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 73: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 74: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 75: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 76: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 77: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 78: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 79: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 80: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 81: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 82: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 83: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 84: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 85: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 86: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 87: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 88: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 89: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 90: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 91: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 92: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 93: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 94: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 95: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 96: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 97: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 98: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 99: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 100: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 101: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 102: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 103: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 104: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 105: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 106: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 107: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 108: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 109: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 110: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 111: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 112: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 113: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 114: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 115: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 116: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 117: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 118: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 119: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 120: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 121: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 122: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 123: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 124: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 125: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 126: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 127: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 128: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 129: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 130: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 131: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 132: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 133: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 134: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 135: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 136: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 137: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 138: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 139: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 140: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 141: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 142: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 143: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 144: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 145: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 146: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 147: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 148: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 149: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 150: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 151: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 152: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 153: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 154: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 155: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 156: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 157: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 158: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 159: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 160: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 161: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 162: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 163: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 164: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 165: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 166: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 167: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 168: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 169: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 170: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 171: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 172: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 173: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 174: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 175: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 176: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 177: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 178: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 179: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 180: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 181: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 182: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 183: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 184: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 185: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 186: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 187: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 188: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 189: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 190: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 191: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 192: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 193: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 194: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 195: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 196: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 197: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 198: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 199: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 200: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 201: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 202: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 203: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 204: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 205: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 206: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 207: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 208: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 209: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 210: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 211: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 212: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 213: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 214: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 215: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 216: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 217: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 218: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 219: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 221: the scaffold under the builder NPC has caught fire. Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "move_to_safety"
+  },
+  {
+   "id": "hard-19",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 40: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 41: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 42: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 43: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 44: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 45: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 46: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 47: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 48: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 49: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 50: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 51: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 52: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 53: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 54: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 55: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 56: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 57: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 58: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 59: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 60: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 61: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 62: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 63: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 64: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 65: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 66: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 67: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 68: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 69: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 70: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 71: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 72: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 73: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 74: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 75: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 76: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 77: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 78: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 79: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 80: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 81: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 82: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 83: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 84: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 85: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 86: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 87: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 88: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 89: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 90: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 91: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 92: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 93: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 94: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 95: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 96: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 97: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 98: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 99: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 100: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 101: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 102: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 103: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 104: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 105: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 106: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 107: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 108: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 109: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 110: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 111: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 112: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 113: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 114: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 115: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 116: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 117: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 118: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 119: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 120: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 121: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 122: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 123: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 124: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 125: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 126: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 127: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 128: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 129: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 130: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 131: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 132: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 133: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 134: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 135: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 136: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 137: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 138: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 139: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 140: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 141: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 142: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 143: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 144: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 145: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 146: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 147: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 148: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 149: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 150: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 151: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 152: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 153: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 154: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 155: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 156: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 157: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 158: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 159: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 160: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 161: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 162: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 163: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 164: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 165: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 166: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 167: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 168: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 169: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 170: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 171: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 172: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 173: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 174: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 175: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 176: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 177: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 178: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 179: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 180: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 181: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 182: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 183: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 184: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 185: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 186: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 187: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 188: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 189: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 190: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 191: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 192: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 193: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 194: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 195: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 196: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 197: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 198: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 199: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 200: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 201: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 202: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 203: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 204: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 205: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 206: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 207: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 208: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 209: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 210: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 211: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 212: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 213: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 214: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 215: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 216: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 217: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 218: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 219: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 221: the builder placed a block successfully and has enough stone. Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "continue_building"
+  },
+  {
+   "id": "hard-20",
+   "group": "hard",
+   "state": "You are a builder NPC in a voxel world, building a small stone hut from a blueprint. Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 40: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 41: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 42: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 43: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 44: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 45: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 46: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 47: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 48: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 49: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 50: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 51: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 52: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 53: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 54: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 55: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 56: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 57: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 58: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 59: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 60: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 61: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 62: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 63: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 64: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 65: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 66: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 67: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 68: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 69: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 70: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 71: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 72: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 73: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 74: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 75: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 76: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 77: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 78: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 79: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 80: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 81: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 82: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 83: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 84: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 85: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 86: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 87: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 88: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 89: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 90: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 91: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 92: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 93: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 94: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 95: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 96: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 97: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 98: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 99: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 100: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 101: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 102: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 103: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 104: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 105: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 106: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 107: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 108: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 109: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 110: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 111: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 112: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 113: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 114: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 115: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 116: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 117: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 118: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 119: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 120: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 121: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 122: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 123: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 124: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 125: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 126: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 127: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 128: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 129: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 130: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 131: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 132: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 133: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 134: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 135: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 136: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 137: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 138: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 139: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 140: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 141: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 142: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 143: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 144: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 145: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 146: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 147: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 148: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 149: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 150: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 151: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 152: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 153: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 154: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 155: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 156: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 157: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 158: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 159: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 160: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 161: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 162: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 163: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 164: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 165: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 166: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 167: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 168: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 169: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 170: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 171: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 172: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 173: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 174: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 175: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 176: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 177: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 178: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 179: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 180: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 181: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 182: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 183: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 184: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 185: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 186: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 187: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 188: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 189: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 190: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 191: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 192: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 193: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 194: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 195: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 196: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 197: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 198: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 199: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 200: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 201: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 202: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 203: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 204: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 205: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 206: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 207: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 208: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 209: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 210: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 211: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 212: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 213: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 214: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 215: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 216: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 217: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 218: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 219: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 221: a player stopped in front of the builder and asked: 'What are you making?' Log 0: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 1: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 2: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 3: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 4: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 5: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 6: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 7: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 8: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 9: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 10: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 11: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 12: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 13: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 14: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 15: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 16: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 17: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 18: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 19: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 20: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 21: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 22: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 23: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 24: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 25: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 26: npc_patrol_a moved to (48.5, 73.5) and probed toward +X, no target. Log 27: npc_patrol_a moved to (49.5, 73.5) and probed toward +X, no target. Log 28: npc_patrol_a moved to (50.5, 73.5) and probed toward +X, no target. Log 29: npc_patrol_a moved to (51.5, 73.5) and probed toward +X, no target. Log 30: npc_patrol_a moved to (52.5, 73.5) and probed toward +X, no target. Log 31: npc_patrol_a moved to (53.5, 73.5) and probed toward +X, no target. Log 32: npc_patrol_a moved to (54.5, 73.5) and probed toward +X, no target. Log 33: npc_patrol_a moved to (55.5, 73.5) and probed toward +X, no target. Log 34: npc_patrol_a moved to (56.5, 73.5) and probed toward +X, no target. Log 35: npc_patrol_a moved to (57.5, 73.5) and probed toward +X, no target. Log 36: npc_patrol_a moved to (58.5, 73.5) and probed toward +X, no target. Log 37: npc_patrol_a moved to (59.5, 73.5) and probed toward +X, no target. Log 38: npc_patrol_a moved to (60.5, 73.5) and probed toward +X, no target. Log 39: npc_patrol_a moved to (48.5, 73.5) and",
+   "question": {
+    "type": "choice",
+    "instructions": "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+    "criteria": {
+     "continue_building": "Keep executing the current building plan.",
+     "fetch_material": "Stop building and go gather more building material.",
+     "respond_to_player": "Pause work and respond to a player who is addressing the NPC.",
+     "move_to_safety": "Get away from an immediate physical danger.",
+     "replan": "The current plan cannot proceed as written; ask the planner for a new plan."
+    }
+   },
+   "expected": "respond_to_player"
+  }
+ ]
+}
