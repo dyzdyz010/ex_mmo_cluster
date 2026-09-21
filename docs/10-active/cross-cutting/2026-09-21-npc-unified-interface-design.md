@@ -67,6 +67,9 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    台阶高度 / 角色高度 / 半径取自权威随 SessionStart 下发的 profile。拒绝原因 `:too_far` / `:no_path` / `:stuck`，Body 不重试。
    输入没有模拟量且送帧提前 8 帧，全速下会绕着路点打转（实测），所以 Body 按预计位置瞄准、并在拐点前夹零输入帧限速。
    统一 Demo 的台面到池沿顶高差 4 m（step_height 1 m、不起跳）：要上去得先砌台阶。
+   统一 Demo 实跑（镜像 `voxim-gameplay:npc-path-59575cd`，记录 `Voxim/Saved/Gameplay/upgrade-20260921-npc-path/path-real/`）：
+   npc_patrol_b 先被拒 `:no_path`，用 6 格石料在 (51, 519..521, 59..61) 砌三级台阶，`move_to y: 523` 走上池沿顶，盛 / 倒 4096 单位水，
+   石料 6 格全部进了世界、水池与背包守恒；台阶留在 Demo 世界里。真实双客户端 assembly 冒烟通过。
    跨 Scene 移交、多 NPC 成本（§7）仍按遇到的真实需要再做。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
