@@ -1,0 +1,9 @@
+{
+  "classification": "Test-only",
+  "source": "Voxim/Docs/R7/fixtures/a4-scene.json palette；几何由当前 World 发布目录提供",
+  "labels": {
+    "9c9302f389cbc80308f5efa26c915da879068d24feebd3f183d24eba3c32f94c": "Window",
+    "08b02c1b3007008ff7fbdefacd304bb1dd77684d3ffba0ba17ebcd5c846e1197": "DoorFrame",
+    "a50dc77b6eef3f3f712198873f5de5396ea6679ee9fba506f6ac1d047327f668": "Stairs"
+  }
+}

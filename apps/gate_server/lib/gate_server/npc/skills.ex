@@ -5,13 +5,15 @@ defmodule GateServer.Npc.Skills do
   可用技能和各自参数由 profile.skills 给出；取消与运行期间的 Jev 中断归父大脑。
   """
   alias GateServer.Npc.{Body, Brain.Llm}
-  @names %{"build" => :build, "wilderness" => :wilderness}
+  @names %{"design" => :design, "build" => :build, "wilderness" => :wilderness}
   @point %{type: "array", items: %{type: "integer"}, minItems: 3, maxItems: 3}
   @metrics %{request_count: 0, jev_request_count: 0}
 
   @doc "已配置的技能工具；所有原子动词仍由 Llm 独立提供。"
   def tools(profile) do
     definitions = [
+      {:design, "多轮设计一栋住宅：在无界面工作台组合目录部件、修改宏格、查看并检查，成功返回已发布定义 id。不会放到地图上。",
+       %{goal: %{type: "string"}, anchor_micro: @point, orientation: %{type: "integer", minimum: 0, maximum: 23}}, ["goal","anchor_micro","orientation"]},
       {:build, "将已发布的 definition 整体放到地图上，经现有 prefab_place 结算。锚点是 micro 坐标，1米=8micro；先走到工具射程内。",
        %{definition: %{type: "string"}, anchor_micro: @point, orientation: %{type: "integer", minimum: 0, maximum: 23}}, ["definition","anchor_micro","orientation"]},
       {:wilderness, "荒野逐格施工：给一句地形整理或铺路等目标，代码规划并逐格执行，最终报告世界实际还差什么。建筑优先用 design 和 build。",
@@ -67,6 +69,11 @@ defmodule GateServer.Npc.Skills do
     end
   end
 
+  defp execute(:design, context, config, args) do
+    GateServer.Npc.Skills.Design.run(Map.merge(context,%{endpoint: context.profile.endpoint,
+      labels: Map.get(config,:labels,%{}),budget: Map.fetch!(config,:budget)}),args)
+  end
+
   defp execute(:wilderness, context, config, args) do
     profile = Map.merge(config,%{cid: context.actor.cid,goal: args.goal,tool_id: args.tool_id,
       planner: context.profile.endpoint,scheduler: context.profile.scheduler,
@@ -78,6 +85,9 @@ defmodule GateServer.Npc.Skills do
     with {:ok, <<id::binary-size(32)>>} <- Base.decode16(text,case: :mixed),
          {:ok, anchor} <- anchor(anchor,o), do: {:ok,%{definition_id: id,anchor: anchor,orientation: o}},
          else: (_ -> {:error,:invalid_skill_arguments})
+  end
+  defp arguments(:design,%{"goal"=>goal,"anchor_micro"=>anchor,"orientation"=>o}) when is_binary(goal) and byte_size(goal)>0 do
+    with {:ok, anchor} <- anchor(anchor,o), do: {:ok,%{goal: goal,anchor: anchor,orientation: o}}
   end
   defp arguments(:wilderness,%{"goal"=>goal,"tool_id"=>tool}=args) when is_binary(goal) and byte_size(goal)>0 and is_integer(tool) do
     parsed = %{goal: goal,tool_id: tool}

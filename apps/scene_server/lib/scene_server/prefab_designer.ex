@@ -36,7 +36,7 @@ defmodule SceneServer.PrefabDesigner do
         balances = Map.new(snapshot.material_balances, &{&1.material, &1.units})
         balances = Map.new(report.materials.units, fn {m, _} -> {m, Map.get(balances, m, 0)} end)
         shortages = for {m, n} <- report.materials.units, n > balances[m], into: %{}, do: {m, n - balances[m]}
-        {:ok, Map.merge(report, %{definition_id: id, world_seq: snapshot.seq,
+        {:ok, Map.merge(report, %{definition_id: id, world_seq: snapshot.seq,geometry_bounds: compiled.summary.bounds,
           materials: Map.merge(report.materials, %{balances: balances, shortages: shortages, affordable: map_size(shortages) == 0}),
           placement: %{conflicts: conflicts, spawn_scope: :probe_column,
             spawn_probes: spawn_probes(compiled, context)}})}
@@ -74,7 +74,7 @@ defmodule SceneServer.PrefabDesigner do
     attachments = Enum.group_by(Prefab.attachments(compiled, anchor, orientation, 1), & &1.owner)
     nodes = for {id, _, cells} <- Prefab.occurrences(compiled, anchor, orientation, 1),
       do: %{cells: cells, macro_cells: macros[id], attachments: Map.get(attachments, id, [])}
-    %{compiled | nodes: nodes}
+    %{compiled | nodes: nodes,summary: %{compiled.summary | bounds: Prefab.bounds(compiled,anchor,orientation)}}
   end
 
   defp boxes(compiled) do

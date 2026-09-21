@@ -19,6 +19,18 @@ defmodule SceneServer.PrefabDesigner.Check do
   alias MmoContracts.VoxelMaterialCatalog, as: Materials
   @micro VoxelRegion.Spatial.micro_resolution()
 
+  @doc "独立查看已编译草稿的局部几何；不猜测房间、脚点或地面。"
+  def view(%{summary: %{bounds: nil}}), do: {:error, :empty_draft}
+  def view(%{summary: %{bounds: bounds}} = compiled) do
+    {:ok, views(Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0)),
+      Map.new(Prefab.macro_footprint(compiled, {0, 0, 0}, 0)), bounds)}
+  end
+
+  @doc "沿用正式材料单位和附件计价，供目录与完整检查共用。"
+  def materials(compiled, properties), do: materials(compiled,
+    Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0)),
+    Map.new(Prefab.macro_footprint(compiled, {0, 0, 0}, 0)), properties)
+
   def run(compiled, opts) do
     micros = Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0))
     macros = Map.new(Prefab.macro_footprint(compiled, {0, 0, 0}, 0))
@@ -36,30 +48,45 @@ defmodule SceneServer.PrefabDesigner.Check do
       sample = fn p -> sample(p, micros, macros, bounds, ground) end
       profile = Keyword.fetch!(opts, :profile)
       offsets = radius_offsets(profile.radius * @micro)
-      query = fn {x, y, z} ->
-        Enum.reduce_while(offsets, :open, fn {dx, dz}, state ->
-          case sample.({x + dx, y, z + dz}) do
-            :unknown -> {:halt, :unknown}
-            :solid -> {:cont, :solid}
-            :open -> {:cont, state}
-          end
-        end)
-      end
+      probe = fn p -> query_sample(p,sample,offsets) end
+      query = fn p -> probe.(p).kind end
+      height = ceil(2 * profile.half_height * @micro)
       {gx, gy, gz} = inside = Keyword.fetch!(opts, :inside)
       route = Walk.find(query, Keyword.fetch!(opts, :entry), {gx, gz}, gy,
-        floor(profile.step_height * @micro), ceil(2 * profile.half_height * @micro),
+        floor(profile.step_height * @micro), height,
         max_nodes: Keyword.fetch!(opts, :max_path_nodes))
       room_reports = Enum.map(rooms, &room(&1, sample, bounds))
 
       {:ok, %{
         scope: :draft, bounds: bounds, route: route,
+        endpoints: %{entry: endpoint(Keyword.fetch!(opts,:entry),query,probe,height),
+          inside: endpoint(inside,query,probe,height)},
         headroom: %{inside: clearance(inside, sample, bounds), interiors: Enum.map(room_reports, & &1.headroom)},
         roof: Enum.map(room_reports, & &1.roof),
         floating: floating(micros, macros, ground),
-        materials: materials(compiled, micros, macros, Keyword.fetch!(opts, :properties)),
+        materials: materials(compiled, Keyword.fetch!(opts, :properties)),
         views: views(micros, macros, bounds)
       }}
     end
+  end
+
+  # 同一半径查询同时供 Path 与诊断使用；保留既有未知优先于实心的语义。
+  defp query_sample({x,y,z},sample,offsets) do
+    Enum.reduce_while(offsets,%{kind: :open},fn {dx,dz},state ->
+      cell = {x+dx,y,z+dz}
+      case sample.(cell) do
+        :unknown -> {:halt,%{kind: :unknown,cell: cell}}
+        :solid when state.kind == :open -> {:cont,%{kind: :solid,cell: cell}}
+        _ -> {:cont,state}
+      end
+    end)
+  end
+  defp endpoint({x,y,z}=point,query,probe,height) do
+    body = Enum.find_value(0..(height-1),fn dy ->
+      hit = probe.({x,y+dy,z})
+      if hit.kind != :open,do: hit
+    end) || %{kind: :open}
+    %{requested: point,position: Walk.position(query,point,height),body: body,support: probe.({x,y-1,z})}
   end
 
   defp sample({_, y, _} = p, micros, macros, bounds, ground) do

@@ -256,7 +256,7 @@ defmodule GateServer.Npc.Brain.Llm do
       args = Jason.decode!(call["arguments"])
 
       case call["name"] do
-        name when name in ["build", "wilderness"] ->
+        name when name in ["design", "build", "wilderness"] ->
           Skills.command(name, args, id)
 
         "move_to" ->

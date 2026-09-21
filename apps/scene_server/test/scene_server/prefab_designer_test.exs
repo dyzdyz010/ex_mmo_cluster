@@ -111,11 +111,14 @@ defmodule SceneServer.PrefabDesignerTest do
   end
 
   @tag :prefab_designer
+  @tag :world_geometry_bounds
   test "placement rotation uses world XYZ and distant explicit rooms reject before sampling", c do
     assert {:ok,_} = World.apply_edit(c.world,{2,1,3},19)
     assert {:ok,report} = PrefabDesigner.check(c.world,c.scene,c.actor,draft([{{0,0,0},11}]),
       options(anchor: {24,8,24},orientation: 1))
     assert [%{cell: {2,1,3},reason: :occupied}] = report.placement.conflicts
+    # 旋转 1 将 [0,8)³ 变成 X[-8,0)、Y[0,8)、Z[0,8)，再加锚点。
+    assert report.geometry_bounds == {{16,8,24},{24,16,32}}
     before = World.seq(c.world)
     assert {:error,:check_budget} = PrefabDesigner.check(c.world,c.scene,c.actor,draft([{{0,0,0},11}]),
       options(inside: {100_000,8,8}))

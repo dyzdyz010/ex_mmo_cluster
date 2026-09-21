@@ -81,4 +81,28 @@ defmodule SceneServer.PrefabDesigner.CheckTest do
     assert {:ok, limited} = Check.run(compiled(frame(2..5)), opts(max_path_nodes: 1))
     assert limited.route == {:error, :search_limit}
   end
+
+  @tag :endpoint_diagnostic
+  test "endpoint facts distinguish radius obstruction from an open center and show landing" do
+    options = opts(profile: %{radius: 0.35,half_height: 0.9,step_height: 1.0},
+      bounds: {{-8,-1,-8},{8,24,8}},entry: {0,0,0},inside: {-4,0,0})
+    assert {:ok,blocked} = Check.run(compiled([{{3,0,0},11}]),options)
+    assert blocked.route == :no_path
+    assert blocked.endpoints.entry.position == %{standable: false,landed: nil}
+    assert blocked.endpoints.entry.body == %{kind: :solid,cell: {3,0,0}}
+    assert blocked.endpoints.entry.support.kind == :solid
+    assert blocked.endpoints.inside.position == %{standable: true,landed: {-4,0,0}}
+
+    assert {:ok,falling} = Check.run(compiled([]),Keyword.put(options,:entry,{0,2,0}))
+    assert falling.endpoints.entry.position == %{standable: false,landed: {0,0,0}}
+    assert falling.endpoints.entry.body.kind == :open
+    assert falling.endpoints.entry.support.kind == :open
+  end
+
+  test "standalone view uses compiled local bounds without inventing rooms or check points" do
+    definition = compiled([{{-1,0,0},19}], [{{0,0,0},11}]) |> Map.put(:summary,%{bounds: {{-1,0,0},{8,8,8}}})
+    assert {:ok,%{layers: [%{macro_y: 0,text: "+#"}],elevations: %{front: "+#"}}} = Check.view(definition)
+    assert {:error,:empty_draft} = Check.view(compiled([]) |> Map.put(:summary,%{bounds: nil}))
+    assert Check.materials(definition,@properties).units == %{11 => 5120,19 => 10}
+  end
 end

@@ -11,6 +11,9 @@ defmodule VoxelRegion.Prefab do
   def limits, do: Map.new(@runtime_limits,fn {key,{limit,_}} -> {key,limit} end)
     |> Map.merge(%{extent_micro: @runtime_extent,bytes: @runtime_bytes})
 
+  @doc "已编译完整几何包围盒转到目标坐标；含全部子件与附件，沿用正交旋转的八角点变换。"
+  def bounds(compiled,anchor,orientation), do: transform_bounds(compiled.summary.bounds,anchor,orientation)
+
   def load(path), do: load(path,nil)
   def load(path,runtime_path) do
     runtime = if runtime_path != nil and File.exists?(runtime_path),do: read_definitions(runtime_path),else: %{}

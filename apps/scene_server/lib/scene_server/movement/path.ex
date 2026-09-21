@@ -36,6 +36,9 @@ defmodule SceneServer.Movement.Path do
     end
   end
 
+  @doc "只读脚点诊断：复用寻路的站立与下落规则，不改变起点接纳。"
+  def position(grid, cell, height), do: %{standable: standable?(grid,cell,height),landed: land(grid,cell,height)}
+
   @doc """
   `cells` 是 `find/6` 的结果，`from` / `target` 是水平点 `{x, z}`（target 在最后一格内），`level` 是起步所站的层。
   返回依次要走到的点，最后一个恒为 `target`。
