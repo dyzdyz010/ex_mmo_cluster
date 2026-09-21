@@ -6,10 +6,11 @@ defmodule GateServer.Npc.Blueprint do
   蓝图是一串按顺序生效的操作（macro 格闭区间，纯数据，可以原样存进记忆）：
 
       %{"op" => "fill", "min" => [x, y, z], "max" => [x, y, z], "material" => id}                    # 实心盒
-      %{"op" => "fill", "min" => ..., "max" => ..., "material" => id, "hollow" => true}             # 只留六个面的壳
+      %{"op" => "walls", "min" => ..., "max" => ..., "material" => id}                              # 只有四面竖墙（盒子的水平外圈），不含地板和顶
       %{"op" => "clear", "min" => ..., "max" => ...}                                               # 挖空（门洞、窗洞、屋内）
 
-  后面的操作覆盖前面的：先 fill 一圈墙，再 clear 出门窗。世界才是真值：蓝图只说“应该是什么”，进度永远由
+  后面的操作覆盖前面的：先 walls 一圈墙、fill 一层屋顶，再 clear 出门窗。没有“空心盒”：实测规划者会拿它砌墙，
+  结果白得一层石地板和一层石天花板，屋内净高只剩一格。世界才是真值：蓝图只说“应该是什么”，进度永远由
   `remaining/2` 拿 `look` 的结果现算，不另记“做到第几格”。
   """
 
@@ -35,8 +36,9 @@ defmodule GateServer.Npc.Blueprint do
 
   defp apply_op(%{"op" => "clear"}, coords, cells), do: Map.drop(cells, coords)
 
-  defp apply_op(%{"op" => "fill", "material" => material} = op, coords, cells) when is_integer(material) and material > 0 do
-    coords = if op["hollow"] == true, do: shell(coords, op["min"], op["max"]), else: coords
+  defp apply_op(%{"op" => op, "material" => material} = box, coords, cells)
+       when op in ["fill", "walls"] and is_integer(material) and material > 0 do
+    coords = if op == "walls", do: ring(coords, box["min"], box["max"]), else: coords
     Enum.reduce(coords, cells, &Map.put(&2, &1, material))
   end
 
@@ -50,8 +52,7 @@ defmodule GateServer.Npc.Blueprint do
 
   defp box(_), do: nil
 
-  defp shell(coords, [x0, y0, z0], [x1, y1, z1]),
-    do: Enum.filter(coords, fn {x, y, z} -> x in [x0, x1] or y in [y0, y1] or z in [z0, z1] end)
+  defp ring(coords, [x0, _, z0], [x1, _, z1]), do: Enum.filter(coords, fn {x, _, z} -> x in [x0, x1] or z in [z0, z1] end)
 
   @doc "包围盒 `{min, max}`。"
   def bounds(cells) do

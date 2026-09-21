@@ -19,17 +19,17 @@ defmodule GateServer.NpcBlueprintTest do
     assert {{0, 0, 0}, {2, 1, 2}} == Blueprint.bounds(cells)
   end
 
-  test "hollow keeps the six faces only; a later fill overrides the material" do
+  test "walls are the four vertical sides only - no floor, no ceiling; a later fill adds the roof on top" do
     {:ok, cells} =
       Blueprint.cells([
-        %{"op" => "fill", "min" => [0, 0, 0], "max" => [3, 3, 3], "material" => 11, "hollow" => true},
+        %{"op" => "walls", "min" => [0, 0, 0], "max" => [3, 2, 3], "material" => 11},
         %{"op" => "fill", "min" => [0, 3, 0], "max" => [3, 3, 3], "material" => 19}
       ])
 
-    # 4³ = 64，内部 2³ = 8 → 壳 56；顶面 16 格换成木材。
-    assert 56 == map_size(cells)
-    assert 16 == Enum.count(cells, fn {_, m} -> m == 19 end)
-    assert 11 == cells[{0, 0, 0}] and 19 == cells[{0, 3, 0}]
+    # 4×4 的外圈 12 格 × 三层 = 36 石；屋顶 16 木；屋内 2×2×3 全空（没有石地板、没有石天花板）。
+    assert %{11 => 36, 19 => 16} == Enum.frequencies(Map.values(cells))
+    refute Enum.any?(for(x <- 1..2, y <- 0..2, z <- 1..2, do: {x, y, z}), &is_map_key(cells, &1))
+    assert 11 == cells[{0, 0, 0}] and 19 == cells[{1, 3, 1}]
   end
 
   test "malformed blueprints are rejected as a whole" do

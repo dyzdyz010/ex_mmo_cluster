@@ -191,7 +191,8 @@ defmodule GateServer.Npc.Brain.Builder do
       instructions:
         "You plan buildings for a builder NPC in a voxel world. Coordinates are integer cells, 1 cell = 1 meter, Y is up. " <>
           "Answer by calling submit_blueprint once. The blueprint is a list of operations applied in order, each on an inclusive box: " <>
-          "fill (solid box of one material; with hollow=true only the six faces of the box remain) and clear (remove cells: door, windows, interior). " <>
+          "walls (only the four vertical sides of the box: the outer ring on every layer, no floor and no ceiling), fill (solid box of one material, " <>
+          "e.g. a one-layer roof) and clear (remove cells: door and window openings). " <>
           "Later operations override earlier ones. Make a complete, good-looking small building: walls, a roof, a door opening the NPC can walk through " <>
           "(1 wide, 2 high, at floor level), and at least one window opening; use the materials the goal names. Never fill the cells of the ground itself. " <>
           "Keep it within the footprint the goal gives and under 400 cells.",
@@ -215,11 +216,10 @@ defmodule GateServer.Npc.Brain.Builder do
                 items: %{
                   type: "object",
                   properties: %{
-                    op: %{type: "string", enum: ["fill", "clear"]},
+                    op: %{type: "string", enum: ["walls", "fill", "clear"]},
                     min: %{type: "array", items: %{type: "integer"}, minItems: 3, maxItems: 3},
                     max: %{type: "array", items: %{type: "integer"}, minItems: 3, maxItems: 3},
-                    material: %{type: "integer"},
-                    hollow: %{type: "boolean"}
+                    material: %{type: "integer"}
                   },
                   required: ["op", "min", "max"],
                   additionalProperties: false
