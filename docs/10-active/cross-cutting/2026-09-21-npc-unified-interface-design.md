@@ -82,6 +82,18 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    `Voxim/Saved/Gameplay/upgrade-20260921-npc-transfer/`）：跨 x=160 的 Scene 边界走过去再走回来（两次 `npc_transfer`）；LLM NPC 在台面东侧
    (58..61, 519..520, 64..67) 盖同样的小屋，27 条命令零拒绝、22 / 22 格、材料守恒，真实客户端截图在 `hut-real/shots/`。小屋与池边台阶留在 Demo 世界里。
 
+5. **混合决策后端与长期记忆：已做（2026-09-21）**。`Brain.Builder`：规划归 LLM（只问一次，交一份结构化蓝图——`walls` / `fill` / `clear`
+   盒操作，见 `GateServer.Npc.Blueprint`）、施工归代码（站位、`look` 对账、自下而上逐格放）、异常归 Jev（`GateServer.Npc.Jev`：一个五选一
+   调度问题 + 破坏性动作的 harm 护栏，置信度 < 0.85 或判定计划走不下去才回头找 LLM；评测见 `tools/jev/`）。与 Jev 的交互一律用英文。
+   长期记忆 `DataService.NpcMemory`（表 `npc_memories`，按永久 cid）：工作记忆（当前蓝图，可覆盖）+ 经历（只追加的英文短句 + 地点）；
+   记忆不是第二真值——进度不存，永远拿 `look` 的结果现算还差哪些格。不复用 codex 一类的 agent 外壳：外壳就是 Body。
+   实跑：本机真实 World，真实 LLM（gpt-5.6-terra high）+ 真实 Jev，一句目标 → 80 格的屋（石墙、木屋顶、门、两窗），1 次 LLM 请求、61 秒
+   （此前逐格问：22 格 28 次）。统一 Demo（镜像 `voxim-gameplay:npc-builder-0dfa86a`，记录 `Voxim/Saved/Gameplay/upgrade-20260921-npc-builder2/`）：
+   (58..63, 519..522, 69..72) 68 格的屋，盖到 24 格时杀掉 Body、从记忆表续建，1 次 LLM 请求；材料守恒；截图在 `cottage-real/shots/`。
+   途中撞到并修掉的：蓝图的“空心盒”操作会让规划者白砌一层石地板和石天花板（改成 `walls`）；缺料 → Jev 判“去采料”→ 记一笔停工（采集尚未实现）。
+   教训：第一次把屋盖在了玩家出生探测点 (42,520,60) 上，第二个玩家一进来就被拒（reason 10）；NPC 把屋逐格挖回背包后恢复。
+   **选址要避开出生探测点**——这条现在只写在目标里，世界本身不拦（玩家在出生点上放方块同样会把别人挡在门外，是既有的产品缺口）。
+
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
 
