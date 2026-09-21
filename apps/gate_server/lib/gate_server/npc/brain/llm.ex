@@ -115,6 +115,63 @@ defmodule GateServer.Npc.Brain.Llm do
     },
     %{
       type: "function",
+      name: "attach",
+      description:
+        "花 material 在实心格表面贴一件附件。kind 0 = 面片（axis 是法线轴）、1 = 棱条（axis 是走向）；axis 0/1/2 = X/Y/Z；" <>
+          "size 1 或 8；(x,y,z) 是 micro 坐标（1 格 = 8 micro），size 8 时须是 8 的倍数。",
+      parameters: %{
+        type: "object",
+        properties:
+          Map.merge(@cell, %{
+            kind: %{type: "integer"},
+            axis: %{type: "integer"},
+            size: %{type: "integer"},
+            material: %{type: "integer"},
+            tool_id: @tool_id
+          }),
+        required: ["kind", "axis", "size", "x", "y", "z", "material"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "detach",
+      description: "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
+      parameters: %{
+        type: "object",
+        properties:
+          Map.merge(@cell, %{
+            kind: %{type: "integer"},
+            axis: %{type: "integer"},
+            material: %{type: "integer"},
+            attachment_id: %{type: "integer"},
+            tool_id: @tool_id
+          }),
+        required: ["kind", "axis", "x", "y", "z", "material", "attachment_id"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "prefab",
+      description:
+        "预制件（需要建造者权限）。op = place：在 macro 格 (x,y,z) 以 orientation 0–23 放置 definition；" <>
+          "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
+      parameters: %{
+        type: "object",
+        properties:
+          Map.merge(@cell, %{
+            op: %{type: "string", enum: ["place", "remove", "replace"]},
+            definition: %{type: "string"},
+            orientation: %{type: "integer"},
+            instance: %{type: "array", items: %{type: "integer"}}
+          }),
+        required: ["op"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
       name: "query_balances",
       description: "读取自己的背包余额（balances 为 null 时先调用它）。",
       parameters: %{type: "object", properties: %{}, additionalProperties: false}
@@ -182,6 +239,29 @@ defmodule GateServer.Npc.Brain.Llm do
         "query_balances" ->
           %{id: id, verb: :query_balances}
 
+        name when name in ["attach", "detach"] ->
+          %{
+            id: id,
+            verb: %{"attach" => :attach, "detach" => :detach}[name],
+            kind: args["kind"],
+            axis: args["axis"],
+            size: args["size"] || 1,
+            anchor: {args["x"], args["y"], args["z"]},
+            material: args["material"],
+            attachment_id: args["attachment_id"] || 0,
+            tool_id: args["tool_id"] || tool_id
+          }
+
+        "prefab" ->
+          %{
+            id: id,
+            verb: %{"place" => :prefab_place, "remove" => :prefab_remove, "replace" => :prefab_replace}[args["op"]],
+            definition_id: hex(args["definition"]),
+            anchor: {args["x"], args["y"], args["z"]},
+            orientation: args["orientation"],
+            instance_id: List.to_tuple(args["instance"] || [])
+          }
+
         # 只属于本 adapter：不发给 Body，挂起询问。
         "wait" ->
           %{id: id, verb: :wait, seconds: args["seconds"]}
@@ -204,6 +284,15 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   defp unit(_), do: nil
+
+  defp hex(text) when is_binary(text) do
+    case Base.decode16(text, case: :mixed) do
+      {:ok, id} -> id
+      :error -> nil
+    end
+  end
+
+  defp hex(_), do: nil
 
   defp start(profile, body) do
     {:ok, _} = Application.ensure_all_started(:inets)

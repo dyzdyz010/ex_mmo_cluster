@@ -54,6 +54,30 @@ defmodule GateServer.NpcBrainLlmTest do
            ] == Llm.commands(response, 1, nil, 1)
   end
 
+  test "attachment and prefab tools: hex definition ids become 32-byte binaries, a bad one is left for the Body to reject" do
+    id = String.duplicate("2a", 32)
+
+    response = %{
+      "output" => [
+        call("attach", %{kind: 0, axis: 1, size: 8, x: 120, y: 512, z: 80, material: 11}),
+        call("detach", %{kind: 0, axis: 1, x: 120, y: 512, z: 80, material: 11, attachment_id: 7, tool_id: 3}),
+        call("prefab", %{op: "place", definition: id, x: 15, y: 64, z: 12, orientation: 5}),
+        call("prefab", %{op: "remove", instance: [10, 0]}),
+        call("prefab", %{op: "replace", instance: [10, 0], definition: "zz"})
+      ]
+    }
+
+    assert [
+             %{verb: :attach, kind: 0, axis: 1, size: 8, anchor: {120, 512, 80}, material: 11, attachment_id: 0, tool_id: 1},
+             %{verb: :detach, size: 1, attachment_id: 7, tool_id: 3},
+             %{verb: :prefab_place, definition_id: definition, anchor: {15, 64, 12}, orientation: 5},
+             %{verb: :prefab_remove, instance_id: {10, 0}},
+             %{verb: :prefab_replace, instance_id: {10, 0}, definition_id: nil}
+           ] = Llm.commands(response, 1, nil, 1)
+
+    assert :binary.copy(<<42>>, 32) == definition
+  end
+
   test "a look outcome is kept as solid columns only, and only the latest look keeps its data" do
     cell = fn coord, material -> %{cell: coord, material: material, refined: false, slots: []} end
     look = fn id, cells -> %{id: id, verb: :look, status: :done, reason: nil, data: %{seq: 9, probe_occupancy: cells}} end
@@ -91,7 +115,7 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 2] == Enum.map(input["outcomes"], & &1["id"])
     assert ["stale", 1] == List.last(input["outcomes"])["reason"]
     assert {"required", false, "m"} == {body.tool_choice, body.parallel_tool_calls, body.model}
-    assert ~w(look move_to place pour probe_toward query_balances scoop stop use_tool wait) ==
+    assert ~w(attach detach look move_to place pour prefab probe_toward query_balances scoop stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
   end
 

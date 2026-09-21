@@ -688,7 +688,7 @@ defmodule GateServer.Session.QuicConnection do
             | identity: identity,
               cid: join.cid,
               route: route,
-              builder: join.cid in Application.get_env(:gate_server, :voxim_builder_cids, [])
+              builder: GateServer.Session.Dispatch.builder?(join.cid)
           }
 
           case result do

@@ -25,11 +25,17 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
       %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格
       %{id:, verb: :scoop | :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
+      %{id:, verb: :attach, kind:, axis:, size:, anchor: {x, y, z}, material:, tool_id:}   # anchor 是 micro 坐标
+      %{id:, verb: :detach, kind:, axis:, size:, anchor:, material:, tool_id:, attachment_id:}
+      %{id:, verb: :prefab_place, definition_id: <<32 字节>>, anchor: {x, y, z}, orientation: 0..23}
+      %{id:, verb: :prefab_remove, instance_id: {birth, occurrence}}
+      %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab 要求 cid 在建造者名单里，与玩家相同
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
 
-  工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路投料与开关都是
-  `probe_toward` + `use_tool` 换一个 `tool_id`，不是各自的动词。坐标是 canonical macro 格（1 格 = 1 m，Y 向上）。
+  工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路安装 / 投料 / 开关都是
+  `use_tool` 换一个 `tool_id`，不是各自的动词。电路工具的目标是附件：`target` 给
+  `%{granularity: 3, micro: anchor, incarnation: id, owner: {id, kind * 3 + axis}, material:}`，按身份寻址、不经射线。坐标是 canonical macro 格（1 格 = 1 m，Y 向上）。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 
@@ -39,7 +45,7 @@ defmodule GateServer.Npc.Brain do
 
   `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理，`data` 带同一份 ACK 的 `position` 与
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
-  世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` / `place` / `scoop` / `pour` 是 `%{seq:}`，
+  世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:}`，material 0 = 空气）。
   """

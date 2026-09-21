@@ -8,13 +8,15 @@ defmodule GateServer.Npc.Body do
   已过期未送的序号填零输入，移动命令只写未来槽。
 
   世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 Gate 为玩家调用的同一组 World 公共 API
-  （`tool_intent/3`、`production_intent/3`、`material_balances/2`；只读感知走 `material_snapshot/3`）。
+  （`tool_intent/3`、`production_intent/3`、`attachment_intent/3`、`prefab_intent/4`、`material_balances/2`；
+  只读感知走 `material_snapshot/3`）。Prefab 与玩家一样要求 cid 在建造者名单里。
   调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧。余额的真值在 World，
   这里只在每次自己的世界事务之后重取一份（与 Gate 给玩家补发余额的时机相同）。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
   """
   use GenServer
   alias MmoContracts.{Movement, Session}
+  alias GateServer.Session.Dispatch
   alias MmoContracts.Voxel.Codec
   alias SceneServer.Movement.Player
   alias VoxelRegion.World
@@ -24,6 +26,12 @@ defmodule GateServer.Npc.Body do
   @outcomes 32
   # production_intent 的 action；0（余额）与 Gate 一样直接读 material_balances，不进事务。
   @production %{place: 1, scoop: 2, pour: 3}
+  @attachment %{attach: 0, detach: 1}
+  @prefab %{
+    prefab_place: :voxel_prefab_place_v1,
+    prefab_remove: :voxel_prefab_remove_v1,
+    prefab_replace: :voxel_prefab_replace_v1
+  }
   # look 的上限：Brain 是外部输入，而快照在 World 进程内逐格求值、冷区域还会触发生成。
   @look_cells 512
   @look_reach 32
@@ -319,7 +327,9 @@ defmodule GateServer.Npc.Body do
     do: move(state, %{id: id, verb: :stop, target: nil, tolerance: nil, zero_from: nil})
 
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:probe_toward, :use_tool, :place, :scoop, :pour, :query_balances, :look] do
+       when verb in [:probe_toward, :use_tool, :query_balances, :look] or
+              is_map_key(@production, verb) or is_map_key(@attachment, verb) or
+              is_map_key(@prefab, verb) do
     case world_call(state, command) do
       nil ->
         invalid(state, command)
@@ -351,10 +361,53 @@ defmodule GateServer.Npc.Body do
         granularity: 0
       })
       |> Map.merge(
-        Map.take(Map.get(command, :target) || %{}, [:micro, :incarnation, :owner, :material])
+        # granularity 3 = 附件（电路工具的目标）：没有射线，按身份寻址。
+        Map.take(Map.get(command, :target) || %{}, [
+          :micro,
+          :incarnation,
+          :owner,
+          :material,
+          :granularity
+        ])
       )
 
     if Codec.tool_intent?(request), do: {:tool, request}
+  end
+
+  # anchor 是 micro 坐标；detach 要带上那件附件的 id（attachment_id）与材料，与玩家请求同形。
+  defp world_call(
+         state,
+         %{verb: verb, kind: _, axis: _, size: _, anchor: {x, y, z}, material: material, tool_id: tool} =
+           command
+       )
+       when is_map_key(@attachment, verb) and is_integer(x) and is_integer(y) and is_integer(z) and
+              is_integer(material) and is_integer(tool) do
+    id = Map.get(command, :attachment_id, 0)
+
+    request =
+      state
+      |> request(Map.take(command, [:kind, :axis, :size, :anchor, :material, :tool_id]))
+      |> Map.merge(%{action: @attachment[verb], id: id})
+
+    if is_integer(id) and Codec.attachment_intent?(request), do: {:attachment, request}
+  end
+
+  defp world_call(state, %{verb: :prefab_place, definition_id: id, anchor: {x, y, z}} = command)
+       when is_binary(id) and is_integer(x) and is_integer(y) and is_integer(z) do
+    request = request(state, Map.take(command, [:definition_id, :anchor, :orientation]))
+
+    if is_map_key(request, :orientation) and Codec.prefab_place?(request),
+      do: {:prefab, @prefab.prefab_place, request}
+  end
+
+  defp world_call(state, %{verb: verb, instance_id: {birth, occurrence}} = command)
+       when verb in [:prefab_remove, :prefab_replace] and is_integer(birth) and
+              is_integer(occurrence) do
+    fields = if verb == :prefab_remove, do: [:instance_id], else: [:instance_id, :definition_id]
+    request = request(state, Map.take(command, fields))
+
+    if verb == :prefab_remove or match?(%{definition_id: <<_::binary-size(32)>>}, request),
+      do: {:prefab, @prefab[verb], request}
   end
 
   defp world_call(state, %{verb: verb, coord: {x, y, z}, material: material, tool_id: tool})
@@ -444,17 +497,25 @@ defmodule GateServer.Npc.Body do
   defp execute(session, {:look, cells}),
     do: {:ok, World.material_snapshot(session.world_ref, [session.cid], cells)}
 
-  defp execute(session, {kind, request}) do
-    with {:ok, actor} <- Player.tool_context(session.player, session.identity) do
+  defp execute(session, call) do
+    # Gate 在进 World 之前对玩家 prefab 请求做的同一道门，同一个原因。
+    with :ok <-
+           if(match?({:prefab, _, _}, call) and not Dispatch.builder?(session.cid),
+             do: {:error, :builder_permission_required},
+             else: :ok
+           ),
+         {:ok, actor} <- Player.tool_context(session.player, session.identity) do
       actor =
         Map.merge(actor, %{
           received_us: System.monotonic_time(:microsecond),
           clock_node: node()
         })
 
-      case kind do
-        :tool -> World.tool_intent(session.world_ref, actor, request)
-        :production -> World.production_intent(session.world_ref, actor, request)
+      case call do
+        {:tool, request} -> World.tool_intent(session.world_ref, actor, request)
+        {:production, request} -> World.production_intent(session.world_ref, actor, request)
+        {:attachment, request} -> World.attachment_intent(session.world_ref, actor, request)
+        {:prefab, kind, request} -> World.prefab_intent(session.world_ref, actor, kind, request)
       end
     end
   end

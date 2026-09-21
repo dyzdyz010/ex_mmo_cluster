@@ -143,9 +143,14 @@ defmodule GateServer.NpcBodyWorldTest do
      }}
   end
 
-  # 决策树侧的动词调用方：作者写死的一串命令，覆盖余额、放置、探测 / 使用工具、看地形、液体动词。
+  # 决策树侧的动词调用方：作者写死的一串命令，覆盖余额、放置、探测 / 使用工具、看地形、附件、prefab、液体动词。
   defp brain(%{routine: true}) do
     hit = %{verb: :use_tool, direction: {1.0, 0.0, 0.0}, tool_id: 1, target: :probe}
+    # 眼睛在上格高度：压低一点的射线穿过挖空的上格，从顶面进入石柱下格。
+    down = {1 / :math.sqrt(1.09), -0.3 / :math.sqrt(1.09), 0.0}
+    low = %{hit | direction: down}
+    # 地面（y ≤ 63 实心）顶面上的一个 micro 面片：法线轴 Y，micro 坐标 = macro × 8。
+    face = %{kind: 0, axis: 1, size: 1, anchor: {120, 512, 80}, material: @stone, tool_id: 1}
 
     {GateServer.Npc.Brain.Routine,
      %{
@@ -158,7 +163,15 @@ defmodule GateServer.NpcBodyWorldTest do
          hit,
          hit,
          hit,
+         %{verb: :probe_toward, direction: down, tool_id: 1},
+         low,
+         low,
+         low,
+         low,
          %{verb: :look, min: {15, 63, 9}, max: {17, 66, 11}},
+         Map.put(face, :verb, :attach),
+         Map.merge(face, %{verb: :detach, attachment_id: 0}),
+         %{verb: :prefab_place, definition_id: :binary.copy(<<42>>, 32), anchor: {15, 64, 12}, orientation: 0},
          %{verb: :place, coord: @pillar, material: @stone, tool_id: 1},
          %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1},
          %{verb: :look, min: {0, 0, 0}, max: {100, 100, 100}}
@@ -222,12 +235,13 @@ defmodule GateServer.NpcBodyWorldTest do
       await(
         fn ->
           outcomes = Body.observe(body).outcomes
-          if length(outcomes) == 12, do: Enum.reverse(outcomes)
+          if length(outcomes) == 20, do: Enum.reverse(outcomes)
         end,
-        System.monotonic_time(:millisecond) + 40_000
+        System.monotonic_time(:millisecond) + 60_000
       )
 
-    assert [balances, broke, _move, _probe, _, _, _, last_hit, look, placed, scoop, far] = outcomes
+    assert [balances, broke, _move, _probe, _, _, _, _, lower, _, _, _, last_hit, look, attach, detach, prefab, placed, scoop, far] =
+             outcomes
 
     # 起步背包为空：余额读得到，放置被权威以余额不足拒绝，世界没变。
     assert %{verb: :query_balances, status: :done, data: %{balances: [%{material: @stone, balance: 0, cost: 512}]}} =
@@ -235,19 +249,26 @@ defmodule GateServer.NpcBodyWorldTest do
 
     assert %{verb: :place, status: :rejected, reason: :insufficient_material} = broke
 
-    # 4 击挖掉石柱上格 → 512 单位；look 看到的是挖掉之后的世界：上格空气、下格与地面仍是石头。
+    # 各 4 击挖掉石柱上、下两格 → 1024 单位；look 看到的是挖掉之后的世界：石柱没了，地面还在。
+    assert %{verb: :probe_toward, status: :done, data: %{micro: {128, _, 80}, material: @stone}} = lower
     assert %{verb: :use_tool, status: :done} = last_hit
     assert %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = look
     assert 36 == length(cells)
     at = fn coord -> Enum.find(cells, &(&1.cell == Tuple.to_list(coord))).material end
-    assert {0, @stone, @stone, 0} == {at.(@pillar), at.({16, 64, 10}), at.({15, 63, 10}), at.({15, 64, 10})}
+    assert {0, 0, @stone, @stone} == {at.(@pillar), at.({16, 64, 10}), at.({16, 63, 10}), at.({15, 63, 10})}
 
-    # 用挖到的材料把那一格放回去：世界格恢复、余额归零，Observation 里的余额随事务刷新。
+    # 附件：一个 micro 面片花 1 单位；拆除要带对那件附件的 id，错的被权威拒绝。
+    assert %{verb: :attach, status: :done} = attach
+    assert %{verb: :detach, status: :rejected, reason: :stale_target} = detach
+    # Prefab 与玩家同一道建造者门：这个 cid 不在名单里。
+    assert %{verb: :prefab_place, status: :rejected, reason: :builder_permission_required} = prefab
+
+    # 用挖到的材料把上格放回去：世界格恢复，余额 1024 − 1 − 512，Observation 里的余额随事务刷新。
     assert %{verb: :place, status: :done, data: %{seq: seq}} = placed
     assert is_integer(seq)
     assert @stone == cell(world)
-    assert 0 == balance(world)
-    assert [%{material: @stone, balance: 0}] = Body.observe(body).balances
+    assert 511 == balance(world)
+    assert [%{material: @stone, balance: 511}] = Body.observe(body).balances
 
     # 液体动词走同一个 production 入口；这个世界没有液体，权威原样拒绝。
     assert %{verb: :scoop, status: :rejected, reason: :invalid_liquid_operation} = scoop

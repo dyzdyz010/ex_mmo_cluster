@@ -530,6 +530,9 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  @doc "建造者权限（prefab 与直接编辑）：各传输的玩家会话与 NPC Body 查同一份名单。"
+  def builder?(cid), do: cid in Application.get_env(:gate_server, :voxim_builder_cids, [])
+
   # The same creator permission applies to all transports, separate from tool attacks.
   def handle({kind, request} = message, %{status: :in_scene, voxim_overlay: true} = state)
       when kind in [
@@ -539,12 +542,7 @@ defmodule GateServer.Session.Dispatch do
              :voxel_edit_intent,
              :voxel_batch_edit_intent
            ] and not is_map_key(state, :b1_authorized) do
-    builder =
-      Map.get(
-        state,
-        :builder,
-        Map.get(state, :cid) in Application.get_env(:gate_server, :voxim_builder_cids, [])
-      )
+    builder = Map.get(state, :builder, builder?(Map.get(state, :cid)))
 
     if builder do
       {:ok, next} = handle(message, Map.put(state, :b1_authorized, true))
