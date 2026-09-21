@@ -54,9 +54,11 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    统一 Demo 实跑（`Voxim/Saved/Gameplay/upgrade-20260921-npc-perception/verbs-real/`）：贴附件 → inspect → 对附件用工具 →
    按 id 拆除；站在池沿上盛取 / 倒回 4096 单位，水池与背包守恒（站在台面上被权威以 `:occluded_liquid` 拒绝）；
    临时进建造者名单后放置 / inspect / 拆除木柴叠架，盒外 `:out_of_bounds`、撤销后 `:builder_permission_required`。
-   **实体 kind：已实现、未合并**——两仓库的 `npc-entity-kind` 分支（`EntityEnter` 末尾 1 字节，Hello 15 → 16）。服务端已测；
-   客户端 C++ 尚未编译运行（当时 Voxim 编辑器被别的会话占用）。合并前：编译、跑 `Voxim.M1.*`、Demo 与公网青岚驿的
-   服务端 / 客户端同时换版。NPC 侧的 kind 由会话 owner 在 `Scene.join` 给出，客户端无法自报。
+   **实体 kind：已做**（`EntityEnter` 末尾 1 字节，0 = 玩家、1 = NPC，Hello 15 → 16）。词汇用 characters 表的 kind 列：玩家连接
+   传给 `Scene.join` 的就是鉴权得到的角色行（`"player"`），NPC Body 传 `"npc"`，Scene 一处映射成线上的 0 / 1，客户端无法自报；
+   Player 发布、移交切点与邻区导出都带着它，Observation 的每个实体有 `kind`。客户端读入并在远端显示结构里给出。
+   统一 Demo 已在协议 16 的镜像上由真实双客户端验证（互见 + 两个 NPC、assembly 冒烟）。**公网青岚驿仍是协议 15**：
+   下次分发时服务端镜像与客户端包必须一起换。
 3. **已做** 聊天 stub：命令 `say` 恒被拒 `:chat_unavailable`，事件 `{:heard, %{entity_id:, text:}}` 只定了形状；
    等正式栈有玩家聊天后接同一条通道。
 4. 寻路、跨 Scene 移交、多 NPC 成本（§7）按遇到的真实需要再做。
