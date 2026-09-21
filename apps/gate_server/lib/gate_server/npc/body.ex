@@ -4,7 +4,10 @@ defmodule GateServer.Npc.Body do
   权威状态只在 `Movement.Player`，本进程的位置是 OwnerAck 的派生缓存。
 
   输入由 OwnerAck 闭环驱动：`due_seq = server_tick - origin_tick + 1`，把已送序号连续补到 `due_seq + 8`；
-  已过期未送的序号填零输入，新动作只写未来槽。第一片的巡逻路线写在本进程，无 Brain 抽象。
+  已过期未送的序号填零输入，新动作只写未来槽。巡逻路线与到点挖掘写在本进程，无 Brain 抽象。
+
+  世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 `VoxelRegion.World.tool_intent/3`。
+  调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧；一次只在途一个事务。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
   """
   use GenServer
@@ -14,8 +17,14 @@ defmodule GateServer.Npc.Body do
   @lead 8
   @backlog 120
   @arrive_m 0.5
+  # 两次攻击之间的 tick 数；服务端按工具 interval 做速率裁决，这里只是不去撞它。
+  @attack_gap 36
+  @outcomes 32
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  @doc "派生缓存与最近的世界事务结果（新在前）；不是世界真值。"
+  def observe(body), do: GenServer.call(body, :observe)
 
   @doc "canonical X/Z 世界轴上的量化输入与朝向；yaw 不驱动移动，0 朝 +X、16384 朝 +Z。"
   def steer({x, _, z}, {tx, tz}) do
@@ -71,11 +80,20 @@ defmodule GateServer.Npc.Body do
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
        scene_id: Keyword.fetch!(opts, :scene_id),
+       # 到达路点后朝该方向探测并挖掉命中的目标：%{direction: {dx, dy, dz}, tool_id: id} | nil。
+       dig: Keyword.get(opts, :dig),
        identity: nil,
        player: nil,
+       world_ref: nil,
+       worker: nil,
        origin: nil,
        sent: 0,
-       yaw: 0
+       yaw: 0,
+       position: nil,
+       tick: 0,
+       work: nil,
+       request_seq: 0,
+       outcomes: []
      }, {:continue, :claim}}
   end
 
@@ -93,8 +111,19 @@ defmodule GateServer.Npc.Body do
     Process.monitor(player)
     # 只用于置 clock_ready；送帧不依赖本地时钟映射。
     Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
-    {:noreply, %{state | identity: identity, player: player}}
+    {:noreply,
+     %{
+       state
+       | identity: identity,
+         player: player,
+         world_ref: Map.get(route, :world_ref),
+         worker: spawn_link(&world_calls/0)
+     }}
   end
+
+  @impl true
+  def handle_call(:observe, _, state),
+    do: {:reply, Map.take(state, [:position, :tick, :work, :outcomes]), state}
 
   @impl true
   def handle_info(
@@ -130,6 +159,9 @@ defmodule GateServer.Npc.Body do
       else: {:noreply, feed(state, ack.state, ack.server_tick)}
   end
 
+  def handle_info({:npc_world_result, id, result}, %{work: {_, id, _}} = state),
+    do: {:noreply, world_result(state, result)}
+
   def handle_info({:mmo_close, identity, reason}, %{identity: identity} = state),
     do: {:stop, {:session_closed, reason}, state}
 
@@ -144,8 +176,17 @@ defmodule GateServer.Npc.Body do
 
   defp feed(state, %Session.State{position: position}, server_tick) do
     due = max(0, server_tick - state.origin + 1)
-    route = advance_route(position, state.route)
-    {_, _, yaw} = steering = steer(position, hd(route))
+    state = %{state | position: position, tick: server_tick} |> work()
+    route = if state.work, do: state.route, else: advance_route(position, state.route)
+    arrived = route != state.route
+
+    {_, _, yaw} =
+      steering =
+      cond do
+        state.work != nil or (arrived and state.dig != nil) -> {0, 0, dig_yaw(state)}
+        true -> steer(position, hd(route))
+      end
+
     frames = frames(state.sent, due, state.yaw, steering)
 
     # 与玩家解码器同一批约束：每批 1..6 帧、序号严格递增；相邻差 1 由 frames/4 保证。
@@ -156,9 +197,93 @@ defmodule GateServer.Npc.Body do
             frames: batch
           })
 
+    state = if arrived and state.dig != nil, do: request(state, 0, nil), else: state
+
     case frames do
       [] -> %{state | route: route}
       _ -> %{state | route: route, sent: List.last(frames).input_seq, yaw: yaw}
+    end
+  end
+
+  defp dig_yaw(%{dig: %{direction: {dx, _, dz}}}),
+    do: rem(round(:math.atan2(dz, dx) * 65536 / (2 * :math.pi())) + 65536, 65536)
+
+  # 冷却到期后重新探测：目标还是同一个才继续攻击。
+  defp work(%{work: {:cooldown, until, target}, tick: tick} = state) when tick >= until,
+    do: request(state, 0, target)
+
+  defp work(state), do: state
+
+  # action 0 = 沿方向探测实际命中；action 1 = 攻击探测返回的那个目标身份。
+  defp request(state, action, target) do
+    seq = state.request_seq + 1
+
+    request =
+      %{
+        request_id: seq,
+        client_intent_seq: seq,
+        logical_scene_id: state.scene_id,
+        action: action,
+        direction: state.dig.direction,
+        micro: {0, 0, 0},
+        incarnation: 0,
+        owner: {0, 0},
+        material: 0,
+        tool_id: state.dig.tool_id,
+        granularity: 0
+      }
+      |> Map.merge(if(action == 1, do: identity_of(target), else: %{}))
+
+    true = MmoContracts.Voxel.Codec.tool_intent?(request)
+    send(state.worker, {:call, self(), seq, state.player, state.identity, state.world_ref, request})
+    kind = if action == 0, do: :probing, else: :attacking
+    %{state | request_seq: seq, work: {kind, seq, target}}
+  end
+
+  defp identity_of(target), do: Map.take(target, [:micro, :incarnation, :owner, :material])
+
+  defp world_result(%{work: {:probing, _, previous}} = state, {:ok, %{} = target}) do
+    if previous == nil or identity_of(previous) == identity_of(target),
+      do: request(state, 1, target),
+      else: outcome(state, :probe, :done, :target_gone)
+  end
+
+  defp world_result(%{work: {:probing, _, nil}} = state, {:error, reason}),
+    do: outcome(state, :probe, :rejected, reason)
+
+  defp world_result(%{work: {:probing, _, _}} = state, {:error, _}),
+    do: outcome(state, :probe, :done, :target_gone)
+
+  defp world_result(%{work: {:attacking, _, target}} = state, {:ok, seq}) do
+    state = outcome(state, :use_tool, :done, seq)
+    %{state | work: {:cooldown, state.tick + @attack_gap, target}}
+  end
+
+  defp world_result(%{work: {:attacking, _, _}} = state, {:error, reason}),
+    do: outcome(state, :use_tool, :rejected, reason)
+
+  # 权威返回的 reason 原样记录，不翻译、不重试；记下后回到巡逻。
+  defp outcome(state, verb, status, detail) do
+    entry = %{verb: verb, status: status, detail: detail, tick: state.tick}
+    %{state | work: nil, outcomes: Enum.take([entry | state.outcomes], @outcomes)}
+  end
+
+  defp world_calls do
+    receive do
+      {:call, body, id, player, identity, world_ref, request} ->
+        result =
+          with {:ok, actor} <- Player.tool_context(player, identity) do
+            actor =
+              Map.merge(actor, %{
+                received_us: System.monotonic_time(:microsecond),
+                clock_node: node()
+              })
+
+            VoxelRegion.World.tool_intent(world_ref, actor, request)
+          end
+
+        send(body, {:npc_world_result, id, result})
+        world_calls()
     end
   end
 end

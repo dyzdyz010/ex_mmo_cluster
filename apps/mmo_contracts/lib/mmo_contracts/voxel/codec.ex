@@ -146,33 +146,36 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode(<<0x7F, _::binary>>), do: {:error, :invalid_message}
 
+  @doc "工具意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
+  def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
+    norm = dx * dx + dy * dy + dz * dz
+
+    action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3] and
+      norm > 0.99 and norm < 1.01
+  end
+
   def decode(
         <<0x7D, rid::64, seq::32, scene::64, action::8, dx::float-64, dy::float-64, dz::float-64,
           x::signed-64, y::signed-64, z::signed-64, incarnation::64, birth::64, occurrence::32,
           material::16, tool::16, granularity::8>>
-      )
-      when action in [0, 1, 2] and tool > 0 and granularity in [0, 1, 2, 3] do
-    norm = dx * dx + dy * dy + dz * dz
+      ) do
+    request = %{
+      request_id: rid,
+      client_intent_seq: seq,
+      logical_scene_id: scene,
+      action: action,
+      direction: {dx, dy, dz},
+      micro: {x, y, z},
+      incarnation: incarnation,
+      owner: {birth, occurrence},
+      material: material,
+      tool_id: tool,
+      granularity: granularity
+    }
 
-    if norm > 0.99 and norm < 1.01 do
-      {:ok,
-       {:voxel_tool_intent,
-        %{
-          request_id: rid,
-          client_intent_seq: seq,
-          logical_scene_id: scene,
-          action: action,
-          direction: {dx, dy, dz},
-          micro: {x, y, z},
-          incarnation: incarnation,
-          owner: {birth, occurrence},
-          material: material,
-          tool_id: tool,
-          granularity: granularity
-        }}}
-    else
-      {:error, :invalid_message}
-    end
+    if tool_intent?(request),
+      do: {:ok, {:voxel_tool_intent, request}},
+      else: {:error, :invalid_message}
   end
 
   def decode(<<0x7D, _::binary>>), do: {:error, :invalid_message}

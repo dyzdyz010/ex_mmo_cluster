@@ -1,6 +1,12 @@
 # NPC 统一接口层设计（决策稿）
 
-分类：全局系统功能，设计决策稿。状态：**v2；第一片已实现、已实跑（2026-09-21），未验收**；第二、三片未实施。已与 GPT-6 Astra 三轮对抗审查。
+分类：全局系统功能，设计决策稿。状态：**v2；第一、二片已实现、已实跑（2026-09-21）**；第三片（Brain 提取）未实施。已与 GPT-6 Astra 三轮对抗审查。
+
+第二片落点：`Body` 到路点后经旁路 FIFO 执行进程调 `Player.tool_context/2` + `World.tool_intent/3`（探测 action 0 → 攻击 action 1 →
+冷却后重新探测，目标身份不变才继续）；请求合法性与 0x7D 线解码共用 `Voxel.Codec.tool_intent?/1`；结果原样记入 `Body.observe/1`。
+测试 `apps/gate_server/test/gate_server/npc_body_world_test.exs`（真实 World/Scene/Player/NIF）：射程外 `:no_target` 被拒、射程内 4 击挖掉
+石柱、512 单位记入 NPC 余额、随后恢复巡逻。统一 Demo 实跑：`npc_patrol_a` 在 x=48.5 被拒、在 x≈60.5 挖掉 (63,520,73)，余额
+2 097 152 单位（该世界精度下 = 1 m³）。
 
 第一片落点：`apps/gate_server/lib/gate_server/npc/body.ex`、`GateServer.NpcSup`（`gate_server/application.ex`）、
 `apps/gate_server/test/gate_server/npc_body_test.exs`（6 项，本机可跑：会话登记已从 `QuicListener` 抽到不含传输的
