@@ -29,6 +29,22 @@ Brain 从 `probe_toward` 的 data 带回，Body 不记“上一次探测”；(3
 `GateServer.Session.Claims`，NPC 不再依赖 quicer）。真实客户端实跑：Voxim `Docs/Gameplay/npc.exs` + `server.py --start`，两个 NPC 在统一 Demo
 巡逻，截图 `Voxim/Saved/Gameplay/npc-slice1/watch-01/`。实跑中发现并已规避：路线贴近 64 m tile 边界时，冲过路点跨 tile 会让该 NPC
 每圈重申请两次碰撞窗口（§7.1 的热快照成本）。用户已目视确认基本平滑；积压超限（严格 >120）用例已补。
+## 0. 定位与后续（2026-09-21 用户确定）
+
+NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都应该能做，包括聊天（正式栈还没有聊天系统，先 stub）。与玩家逻辑一致：
+同一张角色表、同一套裁决、自己的背包，cid 永不复用。用户要的第一个具体 NPC 是“24 小时在游戏内搞建设”的那个——等系统差不多了再做，
+但它是扩展动词与感知时的验收方向（放置/建造、余额、地形感知、长期运行的稳定性与成本）。
+
+已收尾：统一 Demo 镜像按本层源码重建为 `voxim-gameplay:npc-d5ea674`，启动前热编译补丁已删除；LLM NPC 默认关闭。
+
+后续顺序：
+1. 动词补齐到玩家同等：`production_intent`（放置/建造、余额查询）、`attachment_intent`、prefab、液体盛取/倾倒、点火/灭火、电路。
+   每个都是 Body 里一条“语义命令 → World 公共 API”的映射，外加决策树/LLM 两侧各一个调用方来校验形状。
+2. 感知：自己的余额进 Observation；“看周围地形”的只读感知（走 World 公共只读入口，不读私有状态、不建体素副本）；
+   实体区分玩家 / NPC（协议 `EntityEnter` 加 kind，需要升 Hello）。
+3. 聊天 stub：命令 `say` 与事件 `heard` 先在接口里占位，等正式栈有玩家聊天后接同一条通道。
+4. 寻路、跨 Scene 移交、多 NPC 成本（§7）按遇到的真实需要再做。
+
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
 
