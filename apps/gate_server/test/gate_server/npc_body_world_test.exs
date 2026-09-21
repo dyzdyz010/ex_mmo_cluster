@@ -41,7 +41,7 @@ defmodule GateServer.NpcBodyWorldTest do
     end
   end
 
-  setup do
+  setup context do
     root = Path.join(System.tmp_dir!(), "npc_world_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "prefabs"))
     on_exit(fn -> File.rm_rf!(root) end)
@@ -121,14 +121,32 @@ defmodule GateServer.NpcBodyWorldTest do
          scene_id: 1,
          cid: @npc,
          spawn: {4.0, 66.0, 10.0},
-         brain:
-           {GateServer.Npc.Brain.Patrol,
-            %{route: [{4.0, 10.0}, {14.0, 10.0}], dig: %{direction: {1.0, 0.0, 0.0}, tool_id: 1}}}},
+         brain: brain(context)},
         restart: :temporary
       )
 
     %{world: world, scene: scene, body: body}
   end
+
+  defp brain(%{live_llm: true}) do
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal:
+         "你在 (4, 10) 附近。先走到 x=14, z=10。到了以后朝 +X 方向探测；如果探测到目标，就反复使用工具，" <>
+           "每次使用后重新探测，直到探测不到原来那个目标为止。然后走回 x=4, z=10 并停下，之后一直停着。",
+       tool_id: 1,
+       endpoint: %{
+         url: System.fetch_env!("NPC_LLM_URL"),
+         key: System.fetch_env!("NPC_LLM_KEY"),
+         model: System.fetch_env!("NPC_LLM_MODEL")
+       }
+     }}
+  end
+
+  defp brain(_),
+    do:
+      {GateServer.Npc.Brain.Patrol,
+       %{route: [{4.0, 10.0}, {14.0, 10.0}], dig: %{direction: {1.0, 0.0, 0.0}, tool_id: 1}}}
 
   defp await(fun, deadline) do
     case fun.() do
@@ -173,4 +191,23 @@ defmodule GateServer.NpcBodyWorldTest do
       System.monotonic_time(:millisecond) + 10_000
     )
   end
+
+  @tag :live_llm
+  @tag timeout: 600_000
+  test "the same world driven by a real LLM from one sentence of goal: it mines the pillar and walks back",
+       %{world: world, body: body} do
+    await(fn -> if cell(world) == 0, do: true end, System.monotonic_time(:millisecond) + 300_000)
+    assert 512 == balance(world)
+
+    await(
+      fn -> if elem(Body.observe(body).position, 0) < 5.0, do: true end,
+      System.monotonic_time(:millisecond) + 120_000
+    )
+
+    IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
+      label: "llm_outcomes",
+      limit: :infinity
+    )
+  end
+
 end

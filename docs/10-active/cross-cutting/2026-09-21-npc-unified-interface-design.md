@@ -1,6 +1,22 @@
 # NPC 统一接口层设计（决策稿）
 
-分类：全局系统功能，设计决策稿。状态：**v2；第一、二片已实现、已实跑（2026-09-21）**；第三片（Brain 提取）未实施。已与 GPT-6 Astra 三轮对抗审查。
+分类：全局系统功能，设计决策稿。状态：**v2；三片均已实现、已实跑（2026-09-21）**。已与 GPT-6 Astra 三轮对抗审查。接口的权威说明在
+`GateServer.Npc.Brain` 的 moduledoc；本稿 §5 是当时的草案，二者不一致时以代码为准。
+
+第三片落点：`GateServer.Npc.Brain`（behaviour）、`Brain.Patrol`（决策树，纯函数）、`Brain.Llm`（OpenAI Responses 线格式，自带进程，
+`:httpc` 出站）。`Body` 只执行 `move_to` / `stop` / `probe_toward` / `use_tool` 并回报 Outcome；不合法的命令回报 `:invalid_command`
+而不是崩溃（Brain 含 LLM，是外部输入）。测试：`npc_body_test.exs`（含决策树手排事件序列）、`npc_body_world_test.exs`、
+`npc_brain_llm_test.exs`（冻结应答样本替身）；`--include live_llm` 用真实接口在同一真实 World 场景里只给一句目标，模型完成
+“走过去 → 探测 → 攻击 ×4（每次后重新探测）→ 探测不到 → 走回”，512 单位入账。统一 Demo：`npc_patrol_a` 用决策树，`npc_patrol_b` 用 LLM。
+
+用两个后端校出来的接口事实：(1) 移动完成必须是事件（首个零输入帧被权威处理），决策树不再自己判到达；(2) `use_tool` 的目标身份由
+Brain 从 `probe_toward` 的 data 带回，Body 不记“上一次探测”；(3) LLM 需要一个只属于 adapter 的 `wait`——目标完成后否则会被
+无限询问，而每次询问都花钱（该代理每次注入约 4 千 token 指令）；(4) `System.monotonic_time` 可为负，adapter 计时不能用 0 作初值。
+
+外部分类模型 Jev（TypeSafe 的 System One 模型：输入一段 state + 若干类型化问题 noul / choice / score，返回带概率的决定，
+70–500 ms，不产生参数）与本接口的对应：adapter 把 Observation 写成 state，把**候选命令**（参数由 adapter 预先填好）列为一个 `choice`
+问题的选项，选中的那条作为命令返回；低置信度时不发命令（= 保持当前动作）。它不需要接口改动，但决定了“命令必须可被枚举为离散候选”
+这一约束落在 adapter 而不是 Body。未实现（没有 TypeSafe 的 key）。
 
 第二片落点：`Body` 到路点后经旁路 FIFO 执行进程调 `Player.tool_context/2` + `World.tool_intent/3`（探测 action 0 → 攻击 action 1 →
 冷却后重新探测，目标身份不变才继续）；请求合法性与 0x7D 线解码共用 `Voxel.Codec.tool_intent?/1`；结果原样记入 `Body.observe/1`。
