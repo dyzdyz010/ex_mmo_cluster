@@ -150,6 +150,22 @@ defmodule GateServer.NpcBodyWorldTest do
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
   defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
 
+  defp brain(%{climber: true}) do
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal:
+         "你站在 x=4, z=10 附近的平地上，地面最上一层实心格是 y=63（所以你站在 y=64 这一层）。" <>
+           "格 (20, 64, 10)、(20, 65, 10)、(20, 66, 10) 是一根三格高的石柱，背包里有石料（material 11）。" <>
+           "目标：站到石柱顶上，也就是 x=20.5, z=10.5、站立格 y=67。到了以后每次都调用 wait 等 300 秒。",
+       tools: %{1 => "镐：挖掘固体、放置方块，射程 6 米"},
+       endpoint: %{
+         url: System.fetch_env!("NPC_LLM_URL"),
+         key: System.fetch_env!("NPC_LLM_KEY"),
+         model: System.fetch_env!("NPC_LLM_MODEL")
+       }
+     }}
+  end
+
   defp brain(%{inspector: true}) do
     {GateServer.Npc.Brain.Llm,
      %{
@@ -430,6 +446,40 @@ defmodule GateServer.NpcBodyWorldTest do
     # 墙的两格正好是石柱的两格：材料来自挖掘，背包清零，石柱不在了。
     assert [0, 0] == materials.([{16, 64, 10}, @pillar])
     assert 0 == balance(world)
+  end
+
+  # 建设者的核心情形：高差超过一格，寻路回报 no_path，模型得自己想到砌台阶再走上去。
+  @tag :live_llm
+  @tag :climber
+  @tag edits: for(y <- 64..66, do: {{20, y, 10}, 11})
+  @tag supply: %{11 => 8 * 512}
+  @tag timeout: 900_000
+  test "a real LLM told only where to stand builds its own stairs and walks up them", %{world: world, body: body} do
+    try do
+      # 权威位置：胶囊中心 = 站立格底 67 + 半高 0.9，水平在柱顶那一格内。
+      await(
+        fn ->
+          case Body.observe(body).position do
+            {x, y, z} when x >= 20.0 and x < 21.0 and z >= 10.0 and z < 11.0 and abs(y - 67.9) < 0.05 -> true
+            _ -> nil
+          end
+        end,
+        System.monotonic_time(:millisecond) + 780_000
+      )
+    after
+      IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
+        label: "llm_climber_outcomes",
+        limit: :infinity
+      )
+    end
+
+    # 石柱还在（没有靠挖掉它来“到达”），花掉的石料就是世界里多出来的格数。
+    assert [11, 11, 11] ==
+             Enum.map(World.material_snapshot(world, [@npc], for(y <- 64..66, do: {20, y, 10})).probe_occupancy, & &1.material)
+
+    spent = div(8 * 512 - balance(world), 512)
+    assert spent >= 3
+    IO.inspect(spent, label: "llm_climber_cells_placed")
   end
 
   @tag :live_llm
