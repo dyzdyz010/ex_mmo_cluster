@@ -20,7 +20,6 @@ defmodule GateServer.Session.QuicConnection do
        cid: nil,
        route: nil,
        player: nil,
-       builder: false,
        pending_transfer: nil,
        transfer_prepared: 0,
        transfer_committed: 0,
@@ -523,24 +522,10 @@ defmodule GateServer.Session.QuicConnection do
           do: enqueue_edit(state, message),
           else: close(state, 4)
 
-      {:ok, {kind, request}}
-      when kind in [
-             :voxel_prefab_place_v1,
-             :voxel_prefab_remove_v1,
-             :voxel_prefab_replace_v1,
-             :voxel_edit_intent,
-             :voxel_batch_edit_intent
-           ] and not state.builder ->
-        send_message(
-          state,
-          2,
-          GateServer.Voxel.ResultFrame.error(request, :builder_permission_required)
-        )
-
       {:ok, {kind, request} = message}
       when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] and
              state.voxim_overlay ->
-        if state.builder and edit_scene?(state, request.logical_scene_id) and
+        if edit_scene?(state, request.logical_scene_id) and
              GateServer.Session.Dispatch.prefab_within?(
                state.route.world_ref,
                kind,
@@ -554,7 +539,7 @@ defmodule GateServer.Session.QuicConnection do
       when kind in [:voxel_edit_intent, :voxel_batch_edit_intent] and state.voxim_overlay ->
         coords = GateServer.Session.Dispatch.voxim_edit_coords(message)
 
-        if state.builder and edit_scene?(state, request.logical_scene_id) and
+        if edit_scene?(state, request.logical_scene_id) and
              Enum.all?(coords, &within?(&1, state.bounds)) do
           enqueue_edit(state, message)
         else
@@ -596,7 +581,6 @@ defmodule GateServer.Session.QuicConnection do
       player: state.player,
       identity: state.identity,
       cid: state.cid,
-      builder: state.builder,
       received_us: queued_at,
       clock_node: node(),
       sink: GateServer.Session.Sink.quic(self(), state.edit_ref)
@@ -651,8 +635,7 @@ defmodule GateServer.Session.QuicConnection do
             state
             | identity: identity,
               cid: join.cid,
-              route: route,
-              builder: GateServer.Session.Dispatch.builder?(join.cid)
+              route: route
           }
 
           case result do

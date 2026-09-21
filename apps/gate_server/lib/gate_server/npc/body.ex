@@ -9,7 +9,7 @@ defmodule GateServer.Npc.Body do
 
   世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 Gate 为玩家调用的同一组 World 公共 API
   （`tool_intent/3`、`production_intent/3`、`attachment_intent/3`、`prefab_intent/4`、`material_balances/2`；
-  只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`）。Prefab 与玩家过同一道门：cid 在建造者名单里、
+  只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`）。所有角色都可放置 prefab，与玩家过同一道门：
   涉及的格在部署的编辑盒（`:gate_server, :quic` 的 `bounds`）内。聊天在正式栈里还不存在：`say` 只占位。
   调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧。余额的真值在 World，
   这里只在每次自己的世界事务之后重取一份（与 Gate 给玩家补发余额的时机相同）。
@@ -717,11 +717,9 @@ defmodule GateServer.Npc.Body do
 
   # Gate 在进 World 之前对玩家 prefab 请求做的同一道门。
   defp prefab_gate(session, {:prefab, kind, request}) do
-    cond do
-      not Dispatch.builder?(session.cid) -> {:error, :builder_permission_required}
-      not Dispatch.prefab_within?(session.world_ref, kind, request, session.bounds) -> {:error, :out_of_bounds}
-      true -> :ok
-    end
+    if Dispatch.prefab_within?(session.world_ref, kind, request, session.bounds),
+      do: :ok,
+      else: {:error, :out_of_bounds}
   end
 
   defp prefab_gate(_session, _call), do: :ok

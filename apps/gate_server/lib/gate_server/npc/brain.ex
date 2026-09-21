@@ -29,7 +29,7 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :detach, kind:, axis:, size:, anchor:, material:, tool_id:, attachment_id:}
       %{id:, verb: :prefab_place, definition_id: <<32 字节>>, anchor: {x, y, z}, orientation: 0..23}   # anchor 是 micro 坐标
       %{id:, verb: :prefab_remove, instance_id: {birth, occurrence}}
-      %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab：cid 在建造者名单里、格在部署的编辑盒内，与玩家相同
+      %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab：所有角色可用，格在部署的编辑盒内，与玩家相同
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件

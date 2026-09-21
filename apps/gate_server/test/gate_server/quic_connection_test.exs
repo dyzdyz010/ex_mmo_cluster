@@ -674,6 +674,7 @@ defmodule T1TransportTest do
 
     enter = %Session.EntityEnter{
       identity: identity,
+      kind: 0,
       entity_id: old.entity_id,
       entity_epoch: old.entity_epoch,
       interest_generation: old.interest_generation,
@@ -853,12 +854,6 @@ defmodule M4aGateTransferTest do
   @moduledoc "只测试：迁移回调组件测试，局部会话值不注入运行中连接，不替代真实跨 Scene 验收。"
   use ExUnit.Case, async: false
   @moduletag :m4a_transfer
-  setup do
-    previous = Application.get_env(:gate_server, :voxim_builder_cids, [])
-    Application.put_env(:gate_server, :voxim_builder_cids, [101])
-    on_exit(fn -> Application.put_env(:gate_server, :voxim_builder_cids, previous) end)
-    :ok
-  end
 
   alias GateServer.Session.QuicConnection
   alias GateServer.Session.Claims
@@ -880,6 +875,9 @@ defmodule M4aGateTransferTest do
 
     def handle_call({:prepare, keys}, _, {owner, _} = state),
       do: {:reply, {BlockingEditStore, owner, keys}, state}
+
+    # 冷编辑准备的既有液体接纳边界；此传输夹具没有液体源。
+    def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
 
     def handle_call({:apply_edits, edits}, _, {owner, seq}) do
       send(owner, {:world_edit, edits})
@@ -1083,7 +1081,6 @@ defmodule M4aGateTransferTest do
     state = %{
       state
       | voxim_overlay: true,
-        builder: false,
         edit_worker: self(),
         bounds: {{0, 0, 0}, {16, 16, 16}},
         pending_transfer: nil,
@@ -1168,8 +1165,6 @@ defmodule M4aGateTransferTest do
 
         next
       end)
-
-    assert state.builder
 
     state
   end

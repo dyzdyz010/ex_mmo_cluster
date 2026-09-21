@@ -58,6 +58,21 @@ defmodule GateServer.NpcBodyWorldTest do
     on_exit(fn -> File.rm_rf!(root) end)
     write_world(root)
 
+    # Prefab 的结构 LOD 读取 L1–L5；同一 y<64 平地按各层尺度提供完整作者基线。
+    if context[:prefab_access] do
+      for level <- 1..5, y <- -1..1 do
+        scale = Integer.pow(2, level)
+        cells = for _ <- 0..65, ly <- 0..65, _ <- 0..65, into: <<>>,
+          do: <<if((y * 64 + ly - 1) * scale < 64, do: @stone, else: 0)::16-little>>
+        for x <- -1..1, z <- -1..1 do
+          path = FileStore.path(root, @cv, level, {x, y, z})
+          File.mkdir_p!(Path.dirname(path))
+          payload = %MmoContracts.Voxel.Payload{level: level, region: {x, y, z}, cells: cells}
+          File.write!(path, MmoContracts.Voxel.Payload.encode(payload, %{}, 0, @cv))
+        end
+      end
+    end
+
     materials =
       for id <- 0..23,
           do: %{
@@ -177,12 +192,13 @@ defmodule GateServer.NpcBodyWorldTest do
          route_module: router,
          scene_id: 1,
          cid: @npc,
+         bounds: {{-60, 40, -60}, {60, 120, 60}},
          spawn: {4.0, 66.0, 10.0},
          brain: brain(context)},
         restart: :temporary
       )
 
-    %{world: world, scene: scene, body: body, claims: claims, brain: brain(context)}
+    %{world: world, scene: scene, body: body, claims: claims, brain: brain(context), root: root}
   end
 
   # 真实模型接口：取自环境（仓库根目录 .env，见 .env.example）；思考强度可选。
@@ -199,6 +215,8 @@ defmodule GateServer.NpcBodyWorldTest do
     %{"op" => "clear", "min" => [9, 64, 14], "max" => [9, 65, 14]},
     %{"op" => "clear", "min" => [11, 65, 15], "max" => [11, 65, 16]}
   ]
+
+  defp brain(%{prefab_access: true}), do: {GateServer.Npc.Brain.Routine, %{steps: [%{verb: :query_balances}]}}
 
   defp brain(%{builder: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -365,6 +383,41 @@ defmodule GateServer.NpcBodyWorldTest do
   defp cell(world), do: hd(World.material_snapshot(world, [@npc], [@pillar]).probe_occupancy).material
   defp balance(world), do: Enum.find(World.material_balances(world, @npc), &(&1.material == @stone)).balance
 
+  @tag :prefab_access
+  @tag supply: %{11 => 1}
+  test "ordinary NPC places, replaces and removes a prefab with settlement; deployment bounds still reject",
+       %{world: world, body: body, root: root} do
+    # 一个石 micro 格，手算造价 1；第二份定义只改变节点局部位置。
+    ids = for x <- [0, 1] do
+      bytes = <<"VXPD", 1::32-little, 1::32-little, x::signed-little-32,
+                0::signed-little-32, 0::signed-little-32, @stone::16-little, 0::32-little>>
+      id = :crypto.hash(:sha256, bytes)
+      File.write!(Path.join([root, "prefabs", Base.encode16(id) <> ".vxpd"]), bytes)
+      id
+    end
+    :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+    [first, second] = ids
+    await(fn -> if Body.observe(body).balances != nil, do: true end, System.monotonic_time(:millisecond) + 10_000)
+    command = fn id, args ->
+      Body.command(body, Map.put(args, :id, id))
+      await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == id)) end,
+        System.monotonic_time(:millisecond) + 10_000)
+    end
+    place = %{verb: :prefab_place, definition_id: first, anchor: {48, 512, 80}, orientation: 0}
+    assert %{status: :rejected, reason: :out_of_bounds} = command.(100, %{place | anchor: {480, 512, 80}})
+    assert 1 == balance(world)
+    assert %{status: :done, data: %{seq: birth}} = command.(101, place)
+    assert 0 == balance(world)
+    assert [%{refined: true, slots: [%{material: @stone, instance: [^birth, 0], count: 1}]}] =
+      World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+    assert %{status: :done, data: %{seq: replacement}} =
+      command.(102, %{verb: :prefab_replace, instance_id: {birth, 0}, definition_id: second})
+    assert 0 == balance(world)
+    assert %{status: :done} = command.(103, %{verb: :prefab_remove, instance_id: {replacement, 0}})
+    assert 1 == balance(world)
+    assert [%{material: 0, refined: false, slots: []}] = World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
+
   test "NPC probes and mines through the player adjudication: out of range is rejected, in range harvests into its own balance",
        %{world: world, body: body} do
     assert @stone == cell(world)
@@ -432,8 +485,8 @@ defmodule GateServer.NpcBodyWorldTest do
     # inspect 给出那件附件的权威身份；拿它就能对附件用工具、再把它拆下来（材料退回）。
     assert %{verb: :inspect, status: :done, data: %{property_states: [thing]}} = inspect
     assert %{granularity: 3, micro: {120, 512, 80}, material: @stone, incarnation: id, owner: {id, 1}} = thing
-    # Prefab 与玩家同一道建造者门：这个 cid 不在名单里。
-    assert %{verb: :prefab_place, status: :rejected, reason: :builder_permission_required} = prefab
+    # 所有角色都能进入 prefab 裁决；未发布的定义由 World 拒绝。
+    assert %{verb: :prefab_place, status: :rejected, reason: :definition_not_found} = prefab
 
     # 用挖到的材料把上格放回去：世界格恢复，余额 1024 − 1 − 512，Observation 里的余额随事务刷新。
     assert %{verb: :place, status: :done, data: %{seq: seq}} = placed
