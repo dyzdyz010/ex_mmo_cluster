@@ -7,6 +7,7 @@ fn main() {
         "src/lib.rs",
         "src/noise.rs",
         "src/skin.rs",
+        "src/tree_shapes.rs",
         "src/world.rs",
     ] {
         println!("cargo:rerun-if-changed={file}");

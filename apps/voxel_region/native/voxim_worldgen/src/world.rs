@@ -2,6 +2,7 @@
 use crate::{
     noise::*,
     skin::{self, Value, EXTENT, OWNED},
+    tree_shapes::*,
 };
 
 /// 与 FVoxelWorldGenConfig 同序的八项世界配置。
@@ -53,7 +54,11 @@ const BASALT_DEPTH: i32 = 288;
 const ENTRANCE_SALT: u32 = 0x454e5452;
 // 全局系统：与客户端同一自然木材形状，粗层空气证明包含树冠。
 const TREE_GRID: i32 = 16;
-const TREE_HEIGHT: i32 = 6;
+// 树冠相对树心列的地面定高（形状表 tree_shapes.rs），任一列地表之上 TREE_CLEAR 格以外必为空气。
+const TREE_CLEAR: i32 = 16;
+const TREE_WOOD: [u16; 4] = [19, 25, 26, 27];
+const TREE_LEAVES: u16 = 28;
+const FLORA_SALT: u32 = 0x464c4f52;
 
 fn column_height(x: i32, z: i32, c: &Config) -> i32 {
     let x = x as f64;
@@ -71,12 +76,49 @@ fn column_height(x: i32, z: i32, c: &Config) -> i32 {
 #[derive(Clone, Copy)]
 struct Profile {
     height: i32,
+    slope: i32,
     cover: u16,
     soil: u16,
     province: u16,
-    tree_distance: i32,
+    /// 树种 0..3（橡 / 桦 / 枫 / 云杉），-1 = 这一列不在任何树的 7×7 足迹内。
+    tree: i32,
+    tree_dx: i32,
+    tree_dz: i32,
+    tree_base: i32,
 }
+fn slope_at(x: i32, z: i32, height: i32, c: &Config) -> i32 {
+    let d = SLOPE_BASELINE;
+    [(-d, 0), (d, 0), (0, -d), (0, d)]
+        .iter()
+        .map(|(dx, dz)| (column_height(x + dx, z + dz, c) - height).abs())
+        .max()
+        .unwrap()
+}
+/// 每个 TREE_GRID² 网格至多一棵树；树心列平缓且覆盖层为草 / 苔才成立，整棵树按树心列的地面定高。
 fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
+    let mut p = ground(x, z, height, slope, c);
+    let gx = x.div_euclid(TREE_GRID);
+    let gz = z.div_euclid(TREE_GRID);
+    let hash = squirrel(gz as u32, squirrel(gx as u32, c.seed as u32 ^ 0x54524545));
+    let cx = gx * TREE_GRID + 4 + (hash % 8) as i32;
+    let cz = gz * TREE_GRID + 4 + ((hash >> 8) % 8) as i32;
+    if (x - cx).abs() <= TREE_RADIUS && (z - cz).abs() <= TREE_RADIUS {
+        let center = if x == cx && z == cz {
+            p
+        } else {
+            let h = column_height(cx, cz, c);
+            ground(cx, cz, h, slope_at(cx, cz, h, c), c)
+        };
+        if center.slope < 2 && (center.cover == 1 || center.cover == 3) {
+            p.tree = ((hash >> 16) % 4) as i32;
+            p.tree_dx = x - cx;
+            p.tree_dz = z - cz;
+            p.tree_base = center.height;
+        }
+    }
+    p
+}
+fn ground(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
     let seed = c.seed as u32;
     let temperature = climate(x as f64, z as f64, 1536.0, seed.wrapping_add(300))
         - (height - c.sea_level) as f64 * 0.0008;
@@ -116,22 +158,16 @@ fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
         cover = province;
         soil = province;
     }
-    let mut tree_distance = -1;
-    if slope < 2 && (cover == 1 || cover == 3) {
-        let gx = x.div_euclid(TREE_GRID);
-        let gz = z.div_euclid(TREE_GRID);
-        let hash = squirrel(gz as u32, squirrel(gx as u32, c.seed as u32 ^ 0x54524545));
-        let cx = gx * TREE_GRID + 4 + (hash % 8) as i32;
-        let cz = gz * TREE_GRID + 4 + ((hash >> 8) % 8) as i32;
-        let distance = (x - cx).abs() + (z - cz).abs();
-        if distance <= 2 { tree_distance = distance; }
-    }
     Profile {
         height,
+        slope,
         cover,
         soil,
         province,
-        tree_distance,
+        tree: -1,
+        tree_dx: 0,
+        tree_dz: 0,
+        tree_base: 0,
     }
 }
 #[derive(Clone, Copy)]
@@ -275,10 +311,29 @@ fn classify(
     let [x, y, z] = p;
     if y >= profile.height {
         let above = y - profile.height;
-        if profile.tree_distance >= 0 && above < TREE_HEIGHT {
-            if profile.tree_distance == 0 && above < TREE_HEIGHT - 1 { return 19; }
-            if above >= TREE_HEIGHT - 3 && profile.tree_distance <= if above == TREE_HEIGHT - 1 { 1 } else { 2 } {
-                return profile.cover;
+        let rel = y - profile.tree_base;
+        if profile.tree >= 0 && above < TREE_CLEAR && rel >= 0 && rel < TREE_LEVELS {
+            let t = profile.tree as usize;
+            if profile.tree_dx == 0 && profile.tree_dz == 0 && rel < TREE_TRUNK_HEIGHT[t] {
+                return TREE_WOOD[t];
+            }
+            let row = TREE_CROWN[t][rel as usize][(profile.tree_dz + TREE_RADIUS) as usize];
+            if row >> (profile.tree_dx + TREE_RADIUS) & 1 == 1 {
+                return TREE_LEAVES + t as u16;
+            }
+        }
+        // 地面花草：草 / 苔覆盖层的上一格。草类按列哈希，花按 8 m 网格同种聚簇。
+        if above == 0 && (profile.cover == 1 || profile.cover == 3) {
+            let hash = squirrel(z as u32, squirrel(x as u32, c.seed as u32 ^ FLORA_SALT));
+            let roll = hash % 100;
+            let moss = profile.cover == 3;
+            let [short, tall, fern, flower] = if moss { [10, 14, 26, 27] } else { [22, 30, 33, 36] };
+            if roll < short { return 32; }
+            if roll < tall { return 33; }
+            if roll < fern { return 34; }
+            if roll < flower {
+                let patch = squirrel(z.div_euclid(8) as u32, squirrel(x.div_euclid(8) as u32, c.seed as u32 ^ FLORA_SALT ^ 1));
+                return 35 + (patch % 5) as u16;
             }
         }
         return 0;
@@ -464,7 +519,7 @@ impl Evaluator<'_> {
         let min = cell.map(|v| v * scale);
         let max = min.map(|v| v + scale - 1);
         let node = self.columns.node(l, cell);
-        if min[1] >= node.hmax + TREE_HEIGHT {
+        if min[1] >= node.hmax + TREE_CLEAR {
             return Value::uniform(0);
         }
         if max[1] < node.hmin - self.deep {
@@ -591,7 +646,7 @@ fn region_y_span(level: i32, ry: i32) -> (i32, i32) {
 pub fn classify_region(level: i32, ry: i32, bounds: [i32; 4], config: &Config) -> Option<u16> {
     let (min_y, max_y) = region_y_span(level, ry);
     let [hmin, hmax, pmin, pmax] = bounds;
-    if min_y >= hmax + TREE_HEIGHT {
+    if min_y >= hmax + TREE_CLEAR {
         return Some(0);
     }
     if max_y < hmin - deep(config) {

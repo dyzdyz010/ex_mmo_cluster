@@ -69,8 +69,16 @@ fn mode<T: Copy + Into<u16>>(values: &[T]) -> u16 {
     }
     best
 }
+/// 地面花草（32..=39）只存在于精确 L0：进 L1 的投票前当空气，材质与表皮都不带上去。
 pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
-    let materials = children.map(|child| child.material);
+    let cleared;
+    let children = if level == 1 && children.iter().any(|c| (32..=39).contains(&c.material)) {
+        cleared = children.clone().map(|c| if (32..=39).contains(&c.material) { Value::uniform(0) } else { c });
+        &cleared
+    } else {
+        children
+    };
+    let materials = children.clone().map(|child| child.material);
     let material = if materials.iter().filter(|&&m| m != 0).count() >= 5 {
         mode(&materials)
     } else {

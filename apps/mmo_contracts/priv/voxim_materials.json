@@ -123,5 +123,80 @@
     "id": 24,
     "name": "copper",
     "blocks_movement": true
+  },
+  {
+    "id": 25,
+    "name": "birch_wood",
+    "blocks_movement": true
+  },
+  {
+    "id": 26,
+    "name": "maple_wood",
+    "blocks_movement": true
+  },
+  {
+    "id": 27,
+    "name": "spruce_wood",
+    "blocks_movement": true
+  },
+  {
+    "id": 28,
+    "name": "oak_leaves",
+    "blocks_movement": false
+  },
+  {
+    "id": 29,
+    "name": "birch_leaves",
+    "blocks_movement": false
+  },
+  {
+    "id": 30,
+    "name": "maple_leaves",
+    "blocks_movement": false
+  },
+  {
+    "id": 31,
+    "name": "spruce_leaves",
+    "blocks_movement": false
+  },
+  {
+    "id": 32,
+    "name": "short_grass",
+    "blocks_movement": false
+  },
+  {
+    "id": 33,
+    "name": "tall_grass",
+    "blocks_movement": false
+  },
+  {
+    "id": 34,
+    "name": "fern",
+    "blocks_movement": false
+  },
+  {
+    "id": 35,
+    "name": "poppy",
+    "blocks_movement": false
+  },
+  {
+    "id": 36,
+    "name": "dandelion",
+    "blocks_movement": false
+  },
+  {
+    "id": 37,
+    "name": "cornflower",
+    "blocks_movement": false
+  },
+  {
+    "id": 38,
+    "name": "daisy",
+    "blocks_movement": false
+  },
+  {
+    "id": 39,
+    "name": "allium",
+    "blocks_movement": false
   }
 ]

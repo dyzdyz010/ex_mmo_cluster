@@ -2460,6 +2460,48 @@ defmodule VoxelRegion.World do
             %{s | instances: Map.take(s.instances, live_instance_ids(s.refined, s.instances))}
           end)
 
+    # 地面花草失去支撑即消失：下方格变成不挡移动的材质（挖空、液体、花草）时，同一事务里清掉上面的花草。
+    {unsupported, state} =
+      Enum.reduce(edits, {[], state}, fn {{x, y, z}, m}, {found, s} ->
+        above = {x, y + 1, z}
+
+        if MmoContracts.VoxelMaterialCatalog.blocks_movement?(m) or List.keymember?(edits, above, 0) or is_map_key(s.refined, above) do
+          {found, s}
+        else
+          {:ok, {top, _}, s} = cell_value(s, 0, above)
+          {if(MmoContracts.VoxelMaterialCatalog.flora?(top), do: [{above, 0} | found], else: found), s}
+        end
+      end)
+
+    edits = edits ++ unsupported
+    legacy = legacy and unsupported == []
+
+    # 概率掉落：这一笔里被销毁 / 替换 / 失去支撑的、带掉落表的格，按表发给造成它的人（攻击者或放置者）；
+    # 没有操作者（作者入口、液体、热）就直接消失。骰子由 (世界, 事务序号, 格, 表项) 决定，重放同一笔结果相同。
+    drop_cid = settlement[:recovery_cid] || (placed |> Map.values() |> List.first())
+
+    {state, settlement} =
+      if drop_cid == nil do
+        {state, settlement}
+      else
+        Enum.reduce(edits, {state, settlement}, fn {cell, m}, {s, paid} ->
+          with false <- is_map_key(s.refined, cell),
+               {:ok, {old, _}, s} when old != m <- cell_value(s, 0, cell),
+               [_ | _] = table <- drop_table(s, old) do
+            table
+            |> Enum.with_index()
+            |> Enum.filter(fn {d, i} -> drop_roll(s, cell, i) < d["probability"] end)
+            |> Enum.reduce({s, paid}, fn {d, _}, {s, paid} ->
+              {s, granted} = settle_material(s, drop_cid, d["material_id"], d["units"])
+              {s, Map.update(paid, :material_balances, granted.material_balances, &Map.merge(&1, granted.material_balances))}
+            end)
+          else
+            {:ok, _, s} -> {s, paid}
+            _ -> {s, paid}
+          end
+        end)
+      end
+
     result =
       Enum.reduce_while(Map.new(edits), {Enum.map(removed_cells, &{0, &1}), state}, fn {cell, m},
                                                                                        {changed,
@@ -3607,7 +3649,7 @@ defmodule VoxelRegion.World do
 
               target.hp == 0.0 ->
                 {state, settlement} =
-                  if target.material in state.production_materials do
+                  if target.material in state.production_materials and drop_table(state, target.material) == nil do
                     settle_material(
                       state,
                       actor.cid,
@@ -4139,9 +4181,23 @@ defmodule VoxelRegion.World do
       seq: state.seq,
       material: material,
       balance: Map.get(state.material_balances, {cid, material}, 0),
-      cost: @micro * @micro * @micro * state.material_units_per_micro
+      cost: build_cost(state, material)
     }
   end
+
+  defp drop_table(state, material), do: get_in(state, [Access.key(:properties), Access.key(:materials, %{}), material, "drops"])
+
+  # [0, 1) 的确定性骰子；seq + 1 是这一笔事务将要取得的序号。
+  defp drop_roll(state, {x, y, z}, index) do
+    <<n::32, _::binary>> =
+      :crypto.hash(:sha256, <<state.cv::64, state.seq + 1::64, x::64-signed, y::64-signed, z::64-signed, index::16>>)
+
+    n / 4_294_967_296
+  end
+
+  defp build_cost(state, material),
+    do: get_in(state, [Access.key(:properties), Access.key(:materials, %{}), material, "place_units"]) ||
+          @micro * @micro * @micro * state.material_units_per_micro
 
   defp settle_material(state, cid, material, delta) do
     key = {cid, material}
@@ -4441,7 +4497,8 @@ defmodule VoxelRegion.World do
       region=region_of(cell)
       if needs_source?(s,{0,region}), do: :ok=s.source.ensure(s.source_state,0,region)
       {:ok,{material,_},s}=cell_value(s,0,cell)
-      available=(material==0 or material==liquid_material) and not Map.has_key?(s.refined,cell)
+      # 地面花草可被替换：液体流入时视同空气，写入液体即覆盖它。
+      available=(material==0 or material==liquid_material or MmoContracts.VoxelMaterialCatalog.flora?(material)) and not Map.has_key?(s.refined,cell)
       # Legacy Water21 without a suffix is a full macro, not an empty cell.
       water=if material == liquid_material, do: Map.put(water,cell,Map.get(s.liquid_units,cell,liquid_capacity(s))), else: water
       {Map.put(open,cell,available),water,s}
@@ -4571,8 +4628,7 @@ defmodule VoxelRegion.World do
                :ok <- build_reach(actor.eye, request.coord, tool["range_macro"]),
                :ok <-
                  if(
-                   balance_state(before, actor.cid, request.material).balance >=
-                     @micro * @micro * @micro * before.material_units_per_micro,
+                   balance_state(before, actor.cid, request.material).balance >= build_cost(before, request.material),
                    do: :ok,
                    else: {:error, :insufficient_material}
                  ),
@@ -4581,13 +4637,14 @@ defmodule VoxelRegion.World do
                  do: {:error,:broken_material},else: :ok),
                false <- Map.has_key?(before.refined, request.coord),
                {:ok, {old, _}, state} <- cell_value(before, 0, request.coord),
+               {:ok, state} <- plant_support(state, request),
                {:ok, state, displaced, displacement} <- displace_for_build(state, request.coord, old) do
             {state, settlement} =
               settle_material(
                 state,
                 actor.cid,
                 request.material,
-                -@micro * @micro * @micro * state.material_units_per_micro
+                -build_cost(state, request.material)
               )
 
             # 溯源：这一格是 actor 花自己的材料放下的。
@@ -4615,8 +4672,22 @@ defmodule VoxelRegion.World do
           end
   end
 
+  # 地面花草只能种在草、苔或土上；其余材料不看下方。
+  defp plant_support(state, %{material: material, coord: {x, y, z}}) when material in 32..39 do
+    case cell_value(state, 0, {x, y - 1, z}) do
+      {:ok, {below, _}, state} when below in [1, 3, 7] -> if(is_map_key(state.refined, {x, y - 1, z}), do: {:error, :unsupported}, else: {:ok, state})
+      {:ok, _, _} -> {:error, :unsupported}
+      {:error, reason, _} -> {:error, reason}
+    end
+  end
+
+  defp plant_support(state, _request), do: {:ok, state}
+
   # 先形成完整不可变计划，再与扣料及实体放置共同提交；拒绝时不留下部分排液。
   defp displace_for_build(state, _cell, 0),
+    do: {:ok,state,[],%{liquid_changes: %{},phase_values: %{}}}
+  # 地面花草可被替换：建造直接覆盖，不产生排液。
+  defp displace_for_build(state, _cell, material) when material in 32..39,
     do: {:ok,state,[],%{liquid_changes: %{},phase_values: %{}}}
   defp displace_for_build(state, cell, material) do
     if Phase.liquid?(material) and liquid_enabled?(state) and liquid_inside?(cell,state.liquid_bounds) do

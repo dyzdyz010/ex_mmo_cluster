@@ -36,7 +36,7 @@ defmodule GateServer.CodecTest do
                )
     end
 
-    for material <- [25, 255] do
+    for material <- [40, 255] do
       assert {:error, :invalid_message} =
                Dispatch.decode(
                  <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,

@@ -21,6 +21,19 @@ defmodule VoxelRegion.DamageWorldTest do
     catalog=Path.join(root,"properties.json")
     materials=for id <- 0..23,do: %{material_id: id,max_hp_per_macro: if(id==0,do: 0.0,else: 100.0),
       defense: 2.0,tags: [],responses: [%{action: "damage",multiplier: 1.0}]}
+    # 只测试：花草样本——罂粟一击即碎，必掉自身 64、几乎不可能掉木头；矮草半概率掉自身 8。
+    materials=if context[:flora] do
+      materials ++ for id <- 24..39 do
+        extra=case id do
+          35 -> %{max_hp_per_macro: 10.0,place_units: 64,drops: [%{material_id: 35,units: 64,probability: 1.0},%{material_id: 19,units: 8,probability: 1.0e-12}]}
+          32 -> %{max_hp_per_macro: 10.0,place_units: 8,drops: [%{material_id: 32,units: 8,probability: 0.5}]}
+          _ -> %{}
+        end
+        Map.merge(%{material_id: id,max_hp_per_macro: 100.0,defense: 2.0,tags: [],responses: [%{action: "damage",multiplier: 1.0}]},extra)
+      end
+    else
+      materials
+    end
     data=%{schema_version: 1,tags: [%{id: "damage"}],materials: materials,
       tools: [%{id: "pickaxe",tool_id: 1,action: "damage",power: 30.0,range_macro: 6.0,interval_seconds: 0.5}],definitions: []}
     data=if context[:physical_units] do
@@ -36,7 +49,7 @@ defmodule VoxelRegion.DamageWorldTest do
       0::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,
       1::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
-    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11]]
+    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11] ++ if(context[:flora],do: [32,35],else: [])]
     opts=if context[:thermal_environment] do
       environment=Path.join(root,"environment.json")
       File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01}))
@@ -114,6 +127,70 @@ defmodule VoxelRegion.DamageWorldTest do
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert nil == placer.(w,{1,1,2})
+  end
+
+  defp strike(c,seq) do
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    actor=Map.merge(c.actor,%{received_us: seq*500_000,clock_node: node()})
+    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material])) |> Map.merge(%{action: 1,client_intent_seq: seq})
+    assert {:ok,_}=World.tool_intent(c.w,actor,request)
+    target
+  end
+
+  defp cell(w,coord), do: payload(w) |> Payload.material(Payload.local({0,0,0},coord))
+
+  @tag :flora
+  test "a destroyed flower pays its drop table to the attacker, and planting costs place_units on soil only", c do
+    assert {:ok,1}=World.apply_edits(c.w,[{{1,0,2},1},{{1,1,2},35}])
+    assert %{material: 35}=strike(c,1)
+    assert cell(c.w,{1,1,2}) == 0
+    # 必掉项入账，1e-12 项不入账；不是整格 512。
+    assert balance(c.w,1001,35).balance == 64 and balance(c.w,1001,35).cost == 64
+    assert balance(c.w,1001,19).balance == 0
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 35}
+    assert {:ok,_}=World.production_intent(c.w,c.actor,build)
+    assert balance(c.w,1001,35).balance == 0
+    assert cell(c.w,{1,1,2}) == 35
+    # 石头上不能种。
+    assert {:ok,_}=World.apply_edits(c.w,[{{2,0,2},11}])
+    assert {:ok,_}=World.material_supply(c.w,1001,"flora-test",%{35=>64})
+    assert {:error,:unsupported}=World.production_intent(c.w,c.actor,%{build | request_id: 11,client_intent_seq: 11,coord: {2,1,2}})
+  end
+
+  @tag :flora
+  test "digging the support pays the flower's drops to the digger in the same transaction", c do
+    assert {:ok,1}=World.apply_edits(c.w,[{{1,1,2},1},{{1,2,2},35}])
+    assert %{material: 1}=strike(c,1)
+    for seq <- 2..4, do: strike(c,seq)
+    assert cell(c.w,{1,1,2}) == 0 and cell(c.w,{1,2,2}) == 0
+    assert balance(c.w,1001,35).balance == 64
+    assert [%{material_balances: %{{1001,35}=>64}}]=World.entries_after(c.w,World.seq(c.w)-1)
+  end
+
+  @tag :flora
+  test "a half-probability drop lands near half, identically on every run", c do
+    cells=for x <- 0..19, z <- 3..12, do: {x,1,z}
+    assert {:ok,1}=World.apply_edits(c.w,Enum.flat_map(cells,fn {x,y,z} -> [{{x,y-1,z},1},{{x,y,z},32}] end))
+    # 作者入口没有操作者：销毁不发放。
+    assert {:ok,2}=World.apply_edits(c.w,[{hd(cells),0}])
+    assert balance(c.w,1001,32).balance == 0
+    hits=for {{x,_,z},i} <- Enum.with_index(tl(cells)), reduce: 0 do
+      n ->
+        before=balance(c.w,1001,32).balance
+        eye={x+0.5,3.5,z+0.5}
+        :ok=GenServer.call(c.actor.player,{:eye,eye})
+        actor=Map.merge(c.actor,%{eye: eye,received_us: (i+1)*500_000,clock_node: node()})
+        request=%{c.request | direction: {0.0,-1.0,0.0}}
+        assert {:ok,target}=World.tool_intent(c.w,actor,request)
+        assert target.material == 32
+        request=Map.merge(request,Map.take(target,[:micro,:incarnation,:owner,:material])) |> Map.merge(%{action: 1,client_intent_seq: i+1})
+        assert {:ok,_}=World.tool_intent(c.w,actor,request)
+        gained=balance(c.w,1001,32).balance-before
+        assert gained in [0,8]
+        n+div(gained,8)
+    end
+    # 199 次独立半概率：均值 99.5、σ≈7；±5σ 之外说明骰子有偏。
+    assert hits in 64..135
   end
 
   defp balance(w,cid,material \\ 19), do: Enum.find(World.material_balances(w,cid), &(&1.material==material))

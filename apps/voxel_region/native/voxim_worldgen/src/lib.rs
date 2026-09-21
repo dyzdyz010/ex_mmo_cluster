@@ -1,6 +1,7 @@
 //! Voxim 的纯世界生成器与 DirtyCpu NIF；坐标始终是 canonical Y-up。
 mod noise;
 mod skin;
+mod tree_shapes;
 mod world;
 
 use rustler::{Binary, Env, Error, NifResult, OwnedBinary, Term};

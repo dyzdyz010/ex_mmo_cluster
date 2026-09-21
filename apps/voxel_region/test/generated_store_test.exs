@@ -115,13 +115,13 @@ defmodule VoxelRegion.GeneratedStoreTest do
 
   test "native returns the existing raw payload body", _context do
     assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:5e45e6797acdd6ba55bc61a0bb36fdf9c5b786eb31880eaae71350b8b55cb5e5"
+             "worldgen_density_v3@1+sha256:d9a2b0ec330f4f31aa74acef7d959e795a867e3adde5e2c207ccba43b28c422f"
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 
     assert {:ok, payload} = Payload.decode_body(raw)
     assert byte_size(payload.cells) == 66 * 66 * 66 * 2
-    assert Enum.all?(for <<material::16-little <- payload.cells>>, do: material in 0..23)
+    assert Enum.all?(for <<material::16-little <- payload.cells>>, do: material in 0..39)
     assert raw == Native.generate_region(0, {0, 0, 0}, config())
   end
 
@@ -129,7 +129,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 923538418913376924
+    assert GeneratedStore.content_version(store) == 6900996491005426622
 
     for field <- [
           "seed",
@@ -336,6 +336,47 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert World.seq(:corrupt_coarse_world) == 0
     assert World.entries_after(:corrupt_coarse_world, 0) == []
     refute_receive {:voxel_log_entry_payload, _}, 100
+  end
+
+  test "ground flora sits on grass or moss and disappears in the same transaction as its support", %{
+    root: root,
+    manifest_path: manifest_path
+  } do
+    opts = [source: GeneratedStore, root: root, manifest_path: manifest_path]
+    {:ok, _world} = World.start_link(Keyword.put(opts, :name, :flora_world))
+    cv = World.content_version(:flora_world)
+    # 原点一带是雪线以上；这个 region 是草地（橡 / 桦 / 枫各一棵，约 800 格花草）。
+    region = {-32, 7, -32}
+    {:ok, payload} = Payload.decode(fetch_payload(:flora_world, cv, 0, region))
+
+    flora =
+      for x <- 2..63, z <- 2..63, y <- 2..63, Payload.material(payload, {x, y, z}) in 32..39, do: {x, y, z}
+
+    assert flora != []
+
+    for {x, y, z} <- flora do
+      assert Payload.material(payload, {x, y - 1, z}) in [1, 3]
+    end
+
+    # 支撑规则：在已烘焙范围内用正常编辑入口摆两列「草 + 花」，再分别挖掉 / 换掉支撑。
+    home = {0, 8, 0}
+    {:ok, base} = Payload.decode(fetch_payload(:flora_world, cv, 0, home))
+    {ox, oy, oz} = Payload.origin(home)
+    world = fn {x, y, z} -> {ox + x, oy + y, oz + z} end
+    [a, b] = [{33, 58, 33}, {40, 58, 40}]
+    for {x, y, z} <- [a, b], dy <- 0..1, do: assert(Payload.material(base, {x, y + dy, z}) == 0)
+    up = fn {x, y, z} -> {x, y + 1, z} end
+    assert {:ok, 1} = World.apply_edits(:flora_world, for(c <- [a, b], e <- [{world.(c), 1}, {world.(up.(c)), 35}], do: e))
+
+    # 挖掉支撑：一笔事务（seq 1 → 2）同时清掉草格与上面的花。
+    assert {:ok, 2} = World.apply_edit(:flora_world, world.(a), 0)
+    # 换成另一种实体支撑：花保留。
+    assert {:ok, 3} = World.apply_edit(:flora_world, world.(b), 11)
+    {:ok, after_edits} = Payload.decode(fetch_payload(:flora_world, cv, 0, home))
+    assert Payload.material(after_edits, a) == 0
+    assert Payload.material(after_edits, up.(a)) == 0
+    assert Payload.material(after_edits, b) == 11
+    assert Payload.material(after_edits, up.(b)) == 35
   end
 
   test "an empty generated root serves, edits, restarts, and confirms unchanged", %{

@@ -125,8 +125,16 @@ defmodule VoxelRegion.Reducer do
     MmoContracts.Voxel.Skins.canonical({out_ext, List.to_tuple(faces)})
   end
 
-  @doc "`ReduceCellV1`：材质 + 表皮。"
-  def reduce_cell(children, level) do
+  @air_skins {1, List.to_tuple(List.duplicate({0, nil}, 6))}
+
+  @doc "`ReduceCellV1`：材质 + 表皮。地面花草（32..39）只存在于精确 L0，进 L1 前当空气（与 Rust `skin::reduce` 同一条）。"
+  def reduce_cell(children, 1) do
+    reduce_cell_any(Enum.map(children, fn {m, s} -> if m in 32..39, do: {0, @air_skins}, else: {m, s} end), 1)
+  end
+
+  def reduce_cell(children, level), do: reduce_cell_any(children, level)
+
+  defp reduce_cell_any(children, level) do
     {reduce_material(Enum.map(children, fn {m, _s} -> m end)), reduce_skins(Enum.map(children, fn {_m, s} -> s end), level)}
   end
 end

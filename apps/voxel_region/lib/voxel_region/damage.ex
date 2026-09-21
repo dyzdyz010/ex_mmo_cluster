@@ -56,6 +56,17 @@ defmodule VoxelRegion.Damage do
           end)
       end)
 
+    # 可选：掉落表（销毁时按概率发放，取代整格回收）与放置用量（薄片类材料一格不足一整格量子）。
+    true =
+      Enum.all?(materials, fn {_, m} ->
+        (is_nil(m["place_units"]) or (is_integer(m["place_units"]) and m["place_units"] > 0)) and
+          Enum.all?(m["drops"] || [], fn d ->
+            Map.has_key?(materials, d["material_id"]) and d["material_id"] != 0 and
+              is_integer(d["units"]) and d["units"] > 0 and
+              is_number(d["probability"]) and d["probability"] > 0 and d["probability"] <= 1
+          end)
+      end)
+
     true =
       Enum.all?(tools, fn {id, t} ->
         id in 1..65535 and t["power"] > 0 and

@@ -40,6 +40,9 @@ defmodule MmoContracts.VoxelMaterialCatalog do
   @spec valid_id?(term()) :: boolean()
   def valid_id?(id), do: MapSet.member?(@valid_ids, id)
 
+  @doc "地面花草（32..39）：非实体格，可被建造 / 液体替换，失去下方支撑即消失，粗 LOD 上当空气。"
+  def flora?(id), do: id in 32..39
+
   @doc "Movement blocking projected from the catalog metadata; unknown IDs are not terrain."
   def blocks_movement?(id), do: Map.fetch!(@blocking, id)
   def blocking_bytes, do: @blocking_bytes
