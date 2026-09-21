@@ -48,11 +48,17 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    （作者写死的步骤序列），LLM 侧是 adapter 的工具表；工具带 `profile.tools` 是 `tool_id` 的唯一来源（schema 必填 + enum）。
 2. **已做** 感知：余额进 Observation（World 余额表的副本，`query_balances` 与自己每次世界事务之后重取，nil = 没取过）；
    `look`（macro 格闭区间，≤ 512 格、各边离自己 ≤ 32 m）走 `World.material_snapshot/3`，不建体素副本。
-   **未做、待定**：实体区分玩家 / NPC（协议 `EntityEnter` 加 kind，要升 Hello 15 → 16，客户端与已部署的服务端须同时换）。
-   已知缺口：(a) NPC 拿不到附件 id / prefab 实例 id（`attach` 只回 seq，`look` 不含附件），所以 `detach`、电路、
-   `prefab_remove` 目前只有在 Brain 被给定身份时可用——需要一个列出附件 / 实例的只读感知；
-   (b) QUIC listener 的 `bounds` 编辑盒只作用于玩家连接，NPC 的 prefab 不受它限制（Demo 的 NPC 不在建造者名单里）。
-3. 聊天 stub：命令 `say` 与事件 `heard` 先在接口里占位，等正式栈有玩家聊天后接同一条通道。
+   `inspect`（自己周围 3×3×3 个 tile，即玩家客户端收属性状态的窗口）走 `World.simulation_snapshot/3`：附件行原样可作
+   `use_tool` 的目标并给出 `detach` 的 id，构件行给出 `prefab_remove` / `replace` 的实例 id；LLM adapter 只给模型最近 24 件。
+   Prefab 的编辑盒检查从 QUIC 连接抽成 `Dispatch.prefab_within?/4`，NPC 与玩家过同一道门、同一份部署 `bounds`。
+   统一 Demo 实跑（`Voxim/Saved/Gameplay/upgrade-20260921-npc-perception/verbs-real/`）：贴附件 → inspect → 对附件用工具 →
+   按 id 拆除；站在池沿上盛取 / 倒回 4096 单位，水池与背包守恒（站在台面上被权威以 `:occluded_liquid` 拒绝）；
+   临时进建造者名单后放置 / inspect / 拆除木柴叠架，盒外 `:out_of_bounds`、撤销后 `:builder_permission_required`。
+   **实体 kind：已实现、未合并**——两仓库的 `npc-entity-kind` 分支（`EntityEnter` 末尾 1 字节，Hello 15 → 16）。服务端已测；
+   客户端 C++ 尚未编译运行（当时 Voxim 编辑器被别的会话占用）。合并前：编译、跑 `Voxim.M1.*`、Demo 与公网青岚驿的
+   服务端 / 客户端同时换版。NPC 侧的 kind 由会话 owner 在 `Scene.join` 给出，客户端无法自报。
+3. **已做** 聊天 stub：命令 `say` 恒被拒 `:chat_unavailable`，事件 `{:heard, %{entity_id:, text:}}` 只定了形状；
+   等正式栈有玩家聊天后接同一条通道。
 4. 寻路、跨 Scene 移交、多 NPC 成本（§7）按遇到的真实需要再做。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
