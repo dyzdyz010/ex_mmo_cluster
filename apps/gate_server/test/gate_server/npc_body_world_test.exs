@@ -15,6 +15,16 @@ defmodule GateServer.NpcBodyWorldTest do
   @stone 11
   @pillar {16, 65, 10}
 
+  # 长期记忆的替身：同一张接口（get/3、put/4、delete/3、journal/3），存在一个具名 Agent 里，活过 Body 的重启。
+  defmodule Memory do
+    def start, do: Agent.start_link(fn -> %{plans: %{}, journal: []} end, name: __MODULE__)
+    def get(cid, kind, key), do: Agent.get(__MODULE__, & &1.plans[{cid, kind, key}])
+    def put(cid, kind, key, body), do: Agent.update(__MODULE__, &put_in(&1.plans[{cid, kind, key}], body))
+    def delete(cid, kind, key), do: Agent.update(__MODULE__, &%{&1 | plans: Map.delete(&1.plans, {cid, kind, key})})
+    def journal(cid, text, place), do: Agent.update(__MODULE__, &%{&1 | journal: [{cid, text, place} | &1.journal]})
+    def entries, do: Agent.get(__MODULE__, &Enum.map(&1.journal, fn {_, text, _} -> text end))
+  end
+
   defmodule Route do
     def route(1),
       do:
@@ -78,7 +88,7 @@ defmodule GateServer.NpcBodyWorldTest do
          name: :npc_world,
          property_catalog_path: catalog,
          prefab_catalog_path: Path.join(root, "prefabs"),
-         production_materials: [@stone]}
+         production_materials: context[:materials] || [@stone]}
       )
 
     # 作者入口一次写入：地面上两格高的石柱，上面那格在 NPC 视线高度。
@@ -158,6 +168,7 @@ defmodule GateServer.NpcBodyWorldTest do
       end
 
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
+    if context[:builder_brain], do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
       start_supervised!(
@@ -171,8 +182,23 @@ defmodule GateServer.NpcBodyWorldTest do
         restart: :temporary
       )
 
-    %{world: world, scene: scene, body: body, claims: claims}
+    %{world: world, scene: scene, body: body, claims: claims, brain: brain(context)}
   end
+
+  # 真实模型接口：取自环境（仓库根目录 .env，见 .env.example）；思考强度可选。
+  defp endpoint do
+    %{url: System.fetch_env!("NPC_LLM_URL"), key: System.fetch_env!("NPC_LLM_KEY"), model: System.fetch_env!("NPC_LLM_MODEL")}
+    |> Map.merge(if effort = System.get_env("NPC_LLM_EFFORT"), do: %{effort: effort}, else: %{})
+  end
+
+  # 石墙（x 8..11、z 14..17、三格高）、木屋顶、朝 −Z 的门洞、东墙一扇两格宽的窗：32 石 + 16 木 = 48 格。
+  @hut_ops [
+    %{"op" => "fill", "min" => [8, 64, 14], "max" => [11, 66, 17], "material" => 11},
+    %{"op" => "clear", "min" => [9, 64, 15], "max" => [10, 66, 16]},
+    %{"op" => "fill", "min" => [8, 67, 14], "max" => [11, 67, 17], "material" => 19},
+    %{"op" => "clear", "min" => [9, 64, 14], "max" => [9, 65, 14]},
+    %{"op" => "clear", "min" => [11, 65, 15], "max" => [11, 65, 16]}
+  ]
 
   defp brain(%{builder: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -185,14 +211,27 @@ defmodule GateServer.NpcBodyWorldTest do
      }}
   end
 
+  # 混合后端，模型用冻结应答的替身：规划者交 @hut_ops，调度者一律“继续”；每次询问都报给测试进程。
+  defp brain(%{builder_brain: true}) do
+    test = self()
+
+    request = fn _endpoint, body ->
+      if is_map_key(body, :questions) do
+        send(test, {:asked, :scheduler, body.state})
+        {:ok, %{"answers" => %{"activity" => %{"type" => "choice", "choice" => "continue_building", "confidence" => 0.99}}}}
+      else
+        send(test, {:asked, :planner, Jason.decode!(body.input)})
+        {:ok, %{"output" => [%{"type" => "function_call", "name" => "submit_blueprint", "arguments" => Jason.encode!(%{ops: @hut_ops})}]}}
+      end
+    end
+
+    {GateServer.Npc.Brain.Builder,
+     %{cid: @npc, goal: "Build a small hut on cells x 8..11, z 14..17.", tool_id: 1, memory: Memory, request: request,
+       planner: %{model: "m"}, scheduler: %{model: "j"}}}
+  end
+
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
   defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
-
-  # 真实模型接口：取自环境（仓库根目录 .env，见 .env.example）；思考强度可选。
-  defp endpoint do
-    %{url: System.fetch_env!("NPC_LLM_URL"), key: System.fetch_env!("NPC_LLM_KEY"), model: System.fetch_env!("NPC_LLM_MODEL")}
-    |> Map.merge(if effort = System.get_env("NPC_LLM_EFFORT"), do: %{effort: effort}, else: %{})
-  end
 
   defp brain(%{hut: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -550,6 +589,55 @@ defmodule GateServer.NpcBodyWorldTest do
     measure.(more, "npc_scale")
     more = more ++ for(i <- 8..23, do: spawn_npc.(i))
     measure.(more, "npc_scale")
+  end
+
+  # 混合后端的调用层：规划一次、代码施工、世界逐格对得上蓝图、材料守恒、完工记一笔并忘掉蓝图；顺利时调度者一次都不问。
+  @tag :builder_brain
+  @tag materials: [11, 19]
+  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
+  @tag timeout: 300_000
+  test "the builder brain plans once and code builds the whole hut: walls, roof, door and window match the blueprint cell by cell",
+       %{world: world} do
+    {:ok, cells} = GateServer.Npc.Blueprint.cells(@hut_ops)
+    assert 48 == map_size(cells)
+    assert_receive {:asked, :planner, %{"goal" => "Build a small hut" <> _, "backpack_cells" => [%{"material" => 11, "cells" => 40}, %{"material" => 19, "cells" => 20}]}}, 20_000
+
+    await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building: 48 blocks")), do: true end, System.monotonic_time(:millisecond) + 240_000)
+
+    box = for x <- 8..11, y <- 64..67, z <- 14..17, do: {x, y, z}
+    found = for %{cell: [x, y, z], material: m} <- World.material_snapshot(world, [@npc], box).probe_occupancy, m != 0, into: %{}, do: {{x, y, z}, m}
+    assert cells == found
+    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
+    assert {(40 - 32) * 512, (20 - 16) * 512} == {balances[11], balances[19]}
+    assert nil == Memory.get(@npc, "plan", "current")
+    refute_received {:asked, _, _}
+  end
+
+  # 长期记忆：盖到一半 Body 死掉；同一个 cid 重新起来，不再问规划者，从世界现算还差哪些格，接着盖完。
+  @tag :builder_brain
+  @tag materials: [11, 19]
+  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
+  @tag timeout: 300_000
+  test "a Body restarted halfway resumes from the remembered blueprint without asking the planner again",
+       %{world: world, body: body, claims: claims, brain: brain} do
+    {:ok, cells} = GateServer.Npc.Blueprint.cells(@hut_ops)
+    placed = fn -> Enum.count(World.material_snapshot(world, [@npc], Map.keys(cells)).probe_occupancy, &(&1.material != 0)) end
+    assert_receive {:asked, :planner, _}, 20_000
+    await(fn -> if placed.() >= 10, do: true end, System.monotonic_time(:millisecond) + 120_000)
+
+    stop_supervised!(Body)
+    halfway = placed.()
+    assert halfway < 48
+    assert %{"ops" => @hut_ops} = Memory.get(@npc, "plan", "current")
+
+    {:ok, _} = start_supervised({Body, claims: claims, route_module: Route, scene_id: 1, cid: @npc, spawn: {4.0, 66.0, 10.0}, brain: brain}, restart: :temporary)
+    _ = body
+    await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building")), do: true end, System.monotonic_time(:millisecond) + 240_000)
+
+    assert 48 == placed.()
+    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
+    assert {(40 - 32) * 512, (20 - 16) * 512} == {balances[11], balances[19]}
+    refute_received {:asked, :planner, _}
   end
 
   # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。
