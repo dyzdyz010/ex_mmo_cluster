@@ -11,7 +11,11 @@ defmodule GateServer.Npc.Brain do
 
       %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:},
         entities: [%{entity_id:, entity_epoch:, tick:, position:}],   # 各自的 tick，不是同一时刻的快照
+        balances: [%{material:, balance:, cost:, seq:}] | nil,        # 自己的背包；nil = 还没取过
         pending: [%{id:, verb:}]}
+
+  `balances` 是 World 余额表的原样副本，在 `query_balances` 与自己的每次世界事务之后重取；`cost` = 放置一个 macro 格
+  要花的单位数。地形不进 Observation，要看就发 `look`。
 
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
@@ -19,6 +23,13 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :stop}                                       # 顶替在途的移动命令
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
+      %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格
+      %{id:, verb: :scoop | :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
+      %{id:, verb: :query_balances}
+      %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
+
+  工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路投料与开关都是
+  `probe_toward` + `use_tool` 换一个 `tool_id`，不是各自的动词。坐标是 canonical macro 格（1 格 = 1 m，Y 向上）。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 
@@ -28,6 +39,9 @@ defmodule GateServer.Npc.Brain do
 
   `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理，`data` 带同一份 ACK 的 `position` 与
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
+  世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` / `place` / `scoop` / `pour` 是 `%{seq:}`，
+  `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
+  `%{cell:, material:, refined:, slots:}`，material 0 = 空气）。
   """
 
   @callback init(profile :: map) :: state :: term

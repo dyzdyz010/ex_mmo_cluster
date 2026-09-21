@@ -143,6 +143,29 @@ defmodule GateServer.NpcBodyWorldTest do
      }}
   end
 
+  # 决策树侧的动词调用方：作者写死的一串命令，覆盖余额、放置、探测 / 使用工具、看地形、液体动词。
+  defp brain(%{routine: true}) do
+    hit = %{verb: :use_tool, direction: {1.0, 0.0, 0.0}, tool_id: 1, target: :probe}
+
+    {GateServer.Npc.Brain.Routine,
+     %{
+       steps: [
+         %{verb: :query_balances},
+         %{verb: :place, coord: {6, 64, 10}, material: @stone, tool_id: 1},
+         %{verb: :move_to, position: {14.0, 10.0}, tolerance: 0.5},
+         %{verb: :probe_toward, direction: {1.0, 0.0, 0.0}, tool_id: 1},
+         hit,
+         hit,
+         hit,
+         hit,
+         %{verb: :look, min: {15, 63, 9}, max: {17, 66, 11}},
+         %{verb: :place, coord: @pillar, material: @stone, tool_id: 1},
+         %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1},
+         %{verb: :look, min: {0, 0, 0}, max: {100, 100, 100}}
+       ]
+     }}
+  end
+
   defp brain(_),
     do:
       {GateServer.Npc.Brain.Patrol,
@@ -190,6 +213,46 @@ defmodule GateServer.NpcBodyWorldTest do
       fn -> if elem(Body.observe(body).position, 0) < 10.0, do: true end,
       System.monotonic_time(:millisecond) + 10_000
     )
+  end
+
+  @tag :routine
+  test "NPC builds with what it mined: balance, place, look and liquid verbs all go through the player World APIs",
+       %{world: world, body: body} do
+    outcomes =
+      await(
+        fn ->
+          outcomes = Body.observe(body).outcomes
+          if length(outcomes) == 12, do: Enum.reverse(outcomes)
+        end,
+        System.monotonic_time(:millisecond) + 40_000
+      )
+
+    assert [balances, broke, _move, _probe, _, _, _, last_hit, look, placed, scoop, far] = outcomes
+
+    # 起步背包为空：余额读得到，放置被权威以余额不足拒绝，世界没变。
+    assert %{verb: :query_balances, status: :done, data: %{balances: [%{material: @stone, balance: 0, cost: 512}]}} =
+             balances
+
+    assert %{verb: :place, status: :rejected, reason: :insufficient_material} = broke
+
+    # 4 击挖掉石柱上格 → 512 单位；look 看到的是挖掉之后的世界：上格空气、下格与地面仍是石头。
+    assert %{verb: :use_tool, status: :done} = last_hit
+    assert %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = look
+    assert 36 == length(cells)
+    at = fn coord -> Enum.find(cells, &(&1.cell == Tuple.to_list(coord))).material end
+    assert {0, @stone, @stone, 0} == {at.(@pillar), at.({16, 64, 10}), at.({15, 63, 10}), at.({15, 64, 10})}
+
+    # 用挖到的材料把那一格放回去：世界格恢复、余额归零，Observation 里的余额随事务刷新。
+    assert %{verb: :place, status: :done, data: %{seq: seq}} = placed
+    assert is_integer(seq)
+    assert @stone == cell(world)
+    assert 0 == balance(world)
+    assert [%{material: @stone, balance: 0}] = Body.observe(body).balances
+
+    # 液体动词走同一个 production 入口；这个世界没有液体，权威原样拒绝。
+    assert %{verb: :scoop, status: :rejected, reason: :invalid_liquid_operation} = scoop
+    # 超出 512 格 / 32 m 的 look 不到 World。
+    assert %{verb: :look, status: :rejected, reason: :invalid_command} = far
   end
 
   @tag :live_llm

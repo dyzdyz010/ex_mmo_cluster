@@ -219,6 +219,34 @@ defmodule MmoContracts.R7PrefabTest do
     assert {:error, :invalid_message} = Codec.decode(<<0x7C, 1>>)
   end
 
+  test "place and attachment wire constraints are the predicates in-process callers share" do
+    place = fn orientation ->
+      <<0x7A, 1::64, 2::32, 3::64, :binary.copy(<<42>>, 32)::binary, -1::signed-64, 8::signed-64,
+        129::signed-64, orientation>>
+    end
+
+    attach = fn size ->
+      <<0x81, 1::64, 2::32, 3::64, 0, 1, 2, size, 8::signed-64, 16::signed-64, -8::signed-64,
+        0::64, 11::16, 1::16>>
+    end
+
+    assert {:ok, {:voxel_prefab_place_v1, %{orientation: 23, anchor: {-1, 8, 129}} = request}} =
+             Codec.decode(place.(23))
+
+    assert Codec.prefab_place?(request)
+    assert {:error, :invalid_message} = Codec.decode(place.(24))
+    refute Codec.prefab_place?(%{request | orientation: 24})
+    refute Codec.prefab_place?(%{request | definition_id: <<1, 2, 3>>})
+
+    assert {:ok, {:voxel_attachment_intent, %{kind: 1, axis: 2, size: 8} = request}} =
+             Codec.decode(attach.(8))
+
+    assert Codec.attachment_intent?(request)
+    assert {:error, :invalid_message} = Codec.decode(attach.(2))
+    refute Codec.attachment_intent?(%{request | axis: 3})
+    refute Codec.attachment_intent?(%{request | tool_id: 0})
+  end
+
   test "VXR7 rejects invalid ancestry at the payload boundary" do
     base = %{
       definition_id: :binary.copy(<<42>>, 32),

@@ -101,51 +101,6 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_material_balance
                   ]
 
-  @doc "现行帧字节（不含传输长度前缀）解码。"
-  def decode(
-        <<0x81, rid::64, seq::32, scene::64, action, kind, axis, size, x::signed-64, y::signed-64,
-          z::signed-64, id::64, material::16, tool::16>>
-      )
-      when action in [0, 1] and kind in [0, 1] and axis in 0..2 and size in [1, 8] and tool > 0 do
-    {:ok,
-     {:voxel_attachment_intent,
-      %{
-        request_id: rid,
-        client_intent_seq: seq,
-        logical_scene_id: scene,
-        action: action,
-        kind: kind,
-        axis: axis,
-        size: size,
-        anchor: {x, y, z},
-        id: id,
-        material: material,
-        tool_id: tool
-      }}}
-  end
-
-  def decode(<<0x81, _::binary>>), do: {:error, :invalid_message}
-
-  def decode(
-        <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
-          tool::16, material::16>>
-      )
-      when action in [0, 1, 2, 3] and tool > 0 do
-    {:ok,
-     {:voxel_production_intent,
-      %{
-        request_id: rid,
-        client_intent_seq: seq,
-        logical_scene_id: scene,
-        action: action,
-        coord: {x, y, z},
-        tool_id: tool,
-        material: material
-      }}}
-  end
-
-  def decode(<<0x7F, _::binary>>), do: {:error, :invalid_message}
-
   @doc "工具意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
   def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
     norm = dx * dx + dy * dy + dz * dz
@@ -153,6 +108,64 @@ defmodule MmoContracts.Voxel.Codec do
     action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3] and
       norm > 0.99 and norm < 1.01
   end
+
+  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒）的合法性，线解码与进程内调用方（NPC Body）共用。"
+  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3] and tool > 0
+
+  @doc "附件意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
+  def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
+    do: action in [0, 1] and kind in [0, 1] and axis in 0..2 and size in [1, 8] and tool > 0
+
+  @doc "Prefab 放置的合法性，线解码与进程内调用方（NPC Body）共用。"
+  def prefab_place?(%{definition_id: id, orientation: orientation}),
+    do: byte_size(id) == 32 and orientation in 0..23
+
+  @doc "现行帧字节（不含传输长度前缀）解码。"
+  def decode(
+        <<0x81, rid::64, seq::32, scene::64, action, kind, axis, size, x::signed-64, y::signed-64,
+          z::signed-64, id::64, material::16, tool::16>>
+      ) do
+    request = %{
+      request_id: rid,
+      client_intent_seq: seq,
+      logical_scene_id: scene,
+      action: action,
+      kind: kind,
+      axis: axis,
+      size: size,
+      anchor: {x, y, z},
+      id: id,
+      material: material,
+      tool_id: tool
+    }
+
+    if attachment_intent?(request),
+      do: {:ok, {:voxel_attachment_intent, request}},
+      else: {:error, :invalid_message}
+  end
+
+  def decode(<<0x81, _::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
+          tool::16, material::16>>
+      ) do
+    request = %{
+      request_id: rid,
+      client_intent_seq: seq,
+      logical_scene_id: scene,
+      action: action,
+      coord: {x, y, z},
+      tool_id: tool,
+      material: material
+    }
+
+    if production_intent?(request),
+      do: {:ok, {:voxel_production_intent, request}},
+      else: {:error, :invalid_message}
+  end
+
+  def decode(<<0x7F, _::binary>>), do: {:error, :invalid_message}
 
   def decode(
         <<0x7D, rid::64, seq::32, scene::64, action::8, dx::float-64, dy::float-64, dz::float-64,
@@ -183,18 +196,19 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(
         <<0x7A, rid::64, seq::32, scene::64, id::binary-size(32), x::signed-64, y::signed-64,
           z::signed-64, orientation::8>>
-      )
-      when orientation < 24 do
-    {:ok,
-     {:voxel_prefab_place_v1,
-      %{
-        request_id: rid,
-        client_intent_seq: seq,
-        logical_scene_id: scene,
-        definition_id: id,
-        anchor: {x, y, z},
-        orientation: orientation
-      }}}
+      ) do
+    request = %{
+      request_id: rid,
+      client_intent_seq: seq,
+      logical_scene_id: scene,
+      definition_id: id,
+      anchor: {x, y, z},
+      orientation: orientation
+    }
+
+    if prefab_place?(request),
+      do: {:ok, {:voxel_prefab_place_v1, request}},
+      else: {:error, :invalid_message}
   end
 
   def decode(<<0x7B, rid::64, seq::32, scene::64, birth::64, occurrence::32>>) do

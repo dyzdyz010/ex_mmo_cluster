@@ -5,7 +5,7 @@ defmodule GateServer.Npc.Brain.Llm do
   每次请求无状态：目标 + 当前 Observation + 最近的 Outcome。模型的输出是外部输入，合法性由 Body 与权威裁决。
 
   profile:
-      %{goal: "自然语言目标", tool_id: 工具,
+      %{goal: "自然语言目标", tool_id: 默认工具, tools: %{tool_id => "用途"}（可选，模型可按 id 换工具）,
         endpoint: %{url:, key:, model:, cacertfile: 可选}}
   """
   @behaviour GateServer.Npc.Brain
@@ -14,6 +14,9 @@ defmodule GateServer.Npc.Brain.Llm do
   @history 8
   # 两次请求的最小间隔（毫秒）：连续被拒时不空转打接口。
   @min_gap_ms 1_000
+
+  @cell %{x: %{type: "integer"}, y: %{type: "integer"}, z: %{type: "integer"}}
+  @tool_id %{type: "integer", description: "可选：换用 tools 里的另一个工具；不填用默认工具。"}
 
   @tools [
     %{
@@ -39,7 +42,12 @@ defmodule GateServer.Npc.Brain.Llm do
       description: "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
       parameters: %{
         type: "object",
-        properties: %{dx: %{type: "number"}, dy: %{type: "number"}, dz: %{type: "number"}},
+        properties: %{
+          dx: %{type: "number"},
+          dy: %{type: "number"},
+          dz: %{type: "number"},
+          tool_id: @tool_id
+        },
         required: ["dx", "dy", "dz"],
         additionalProperties: false
       }
@@ -47,7 +55,68 @@ defmodule GateServer.Npc.Brain.Llm do
     %{
       type: "function",
       name: "use_tool",
-      description: "用工具攻击最近一次 probe_toward 命中的目标。攻击有约 0.5 秒的间隔限制；一个目标通常要多次攻击。",
+      description:
+        "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。",
+      parameters: %{type: "object", properties: %{tool_id: @tool_id}, additionalProperties: false}
+    },
+    %{
+      type: "function",
+      name: "look",
+      description:
+        "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
+          "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]），没列出的都是空气。",
+      parameters: %{
+        type: "object",
+        properties: %{
+          x0: %{type: "integer"},
+          y0: %{type: "integer"},
+          z0: %{type: "integer"},
+          x1: %{type: "integer"},
+          y1: %{type: "integer"},
+          z1: %{type: "integer"}
+        },
+        required: ["x0", "y0", "z0", "x1", "y1", "z1"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "place",
+      description:
+        "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
+      parameters: %{
+        type: "object",
+        properties: Map.put(@cell, :material, %{type: "integer"}),
+        required: ["x", "y", "z", "material"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "scoop",
+      description: "用液体盛取工具（tool_id 必填）从格 (x,y,z) 盛起 material 液体，进自己的 balances。",
+      parameters: %{
+        type: "object",
+        properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: %{type: "integer"}}),
+        required: ["x", "y", "z", "material", "tool_id"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "pour",
+      description: "用液体倾倒工具（tool_id 必填）把自己 balances 里的 material 液体倒进格 (x,y,z)。",
+      parameters: %{
+        type: "object",
+        properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: %{type: "integer"}}),
+        required: ["x", "y", "z", "material", "tool_id"],
+        additionalProperties: false
+      }
+    },
+    %{
+      type: "function",
+      name: "query_balances",
+      description: "读取自己的背包余额（balances 为 null 时先调用它）。",
       parameters: %{type: "object", properties: %{}, additionalProperties: false}
     },
     %{
@@ -91,7 +160,27 @@ defmodule GateServer.Npc.Brain.Llm do
           %{id: id, verb: :stop}
 
         "probe_toward" ->
-          %{id: id, verb: :probe_toward, tool_id: tool_id, direction: unit(args)}
+          %{id: id, verb: :probe_toward, tool_id: args["tool_id"] || tool_id, direction: unit(args)}
+
+        "look" ->
+          %{
+            id: id,
+            verb: :look,
+            min: {args["x0"], args["y0"], args["z0"]},
+            max: {args["x1"], args["y1"], args["z1"]}
+          }
+
+        name when name in ["place", "scoop", "pour"] ->
+          %{
+            id: id,
+            verb: %{"place" => :place, "scoop" => :scoop, "pour" => :pour}[name],
+            coord: {args["x"], args["y"], args["z"]},
+            material: args["material"],
+            tool_id: args["tool_id"] || tool_id
+          }
+
+        "query_balances" ->
+          %{id: id, verb: :query_balances}
 
         # 只属于本 adapter：不发给 Body，挂起询问。
         "wait" ->
@@ -101,7 +190,7 @@ defmodule GateServer.Npc.Brain.Llm do
           %{
             id: id,
             verb: :use_tool,
-            tool_id: tool_id,
+            tool_id: args["tool_id"] || tool_id,
             direction: probe && probe.direction,
             target: probe && probe.target
           }
@@ -145,7 +234,7 @@ defmodule GateServer.Npc.Brain.Llm do
 
         {:outcome, outcome} ->
           state = remember_probe(state, outcome)
-          %{state | dirty: true, outcomes: Enum.take([outcome | state.outcomes], @history)}
+          %{state | dirty: true, outcomes: Enum.take(remember(outcome, state.outcomes), @history)}
 
         {:answer, {:ok, response}} ->
           {waits, commands} =
@@ -190,6 +279,18 @@ defmodule GateServer.Npc.Brain.Llm do
 
   defp remember_probe(state, _), do: state
 
+  @doc "Outcome 进历史（新在前）。`look` 的原样快照太大：只留非空气格，按 \"x,z\" 列聚成 [y, material]；更早的 look 只留结论。"
+  def remember(%{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome, outcomes) do
+    columns =
+      for(%{cell: [x, y, z], material: material} <- cells, material != 0, do: {"#{x},#{z}", [y, material]})
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
+    [%{outcome | data: %{solid: columns}} | older]
+  end
+
+  def remember(outcome, outcomes), do: [outcome | outcomes]
+
   # 有新情况、没有在途命令、没有在途请求、且过了最小间隔，才问一次。
   defp ask(%{dirty: true, asking: false, observation: %{pending: []} = observation} = state) do
     now = System.monotonic_time(:millisecond)
@@ -212,11 +313,19 @@ defmodule GateServer.Npc.Brain.Llm do
       model: profile.endpoint.model,
       instructions:
         "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。" <>
-          "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。",
+          "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。" <>
+          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算；balances 是你的背包（每种 material 还能放几个整格）。",
       input:
         Jason.encode!(%{
           goal: profile.goal,
           self: plain(observation.self),
+          tools: Map.get(profile, :tools),
+          # 背包：每种材料还能放几个整格；null = 还没读过。
+          balances:
+            observation.balances &&
+              for(%{balance: balance} = b when balance > 0 <- observation.balances,
+                do: %{material: b.material, cells: balance / b.cost}
+              ),
           entities: Enum.map(observation.entities, &plain/1),
           outcomes: outcomes |> Enum.reverse() |> Enum.map(&plain/1)
         }),
