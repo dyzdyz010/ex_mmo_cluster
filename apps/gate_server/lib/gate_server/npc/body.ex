@@ -267,9 +267,20 @@ defmodule GateServer.Npc.Body do
   def handle_info({:mmo_close, identity, reason}, %{identity: identity} = state),
     do: {:stop, {:session_closed, reason}, state}
 
-  # 跨 Scene 移交未实现：路线必须留在当前 authority 内。
-  def handle_info({:mmo_transfer_request, identity, _, target}, %{identity: identity} = state),
-    do: {:stop, {:unexpected_transfer, target}, state}
+  # 跨 Scene 移交，与玩家连接同一条路：seal 源 → Claims 预留并在目标 Scene 准备 → 提交。玩家要等客户端换好世界再回
+  # Ready 才提交；无头 Body 没有要换的东西，准备好就提交。输入序号与 origin 随切点延续，在途的移动命令照常继续。
+  # 任一步失败就退出，由监督者重新 claim（玩家连接在同样情形下是断开重连）。
+  def handle_info({:mmo_transfer_request, identity, player, target}, %{identity: identity, player: player} = state) do
+    with {:ok, artifact} <- Player.seal(player, identity),
+         {:ok, fresh, route, next} <- GenServer.call(state.claims, {:prepare_transfer, identity, target, artifact}),
+         :ok <- GenServer.call(state.claims, {:commit_transfer, identity, fresh, state.cid}) do
+      Process.monitor(next)
+      Logger.info("npc_transfer cid=#{state.cid} old_scene=#{identity.scene_id} new_scene=#{target} cut=#{artifact.simulation_tick}")
+      {:noreply, %{state | identity: fresh, player: next, scene_id: target, world_ref: Map.get(route, :world_ref), entities: %{}}}
+    else
+      {:error, reason} -> {:stop, {:transfer_failed, target, reason}, state}
+    end
+  end
 
   def handle_info({:DOWN, _, :process, player, reason}, %{player: player} = state),
     do: {:stop, {:player_down, reason}, state}

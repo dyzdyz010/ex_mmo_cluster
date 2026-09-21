@@ -94,34 +94,75 @@ defmodule GateServer.NpcBodyWorldTest do
       |> Map.fetch!("profile")
       |> Map.put("fixed_hz", 60)
 
-    scene =
-      start_supervised!(
-        {Scene,
-         [
-           name: :npc_world_scene,
-           scene_id: 1,
-           scene_epoch: 7,
-           world_ref: world,
-           config: %{
-             "schema" => "voxim-m1-demo-v1",
-             "l0_min" => [-1, 0, -1],
-             "l0_max_exclusive" => [2, 2, 2],
-             "travel_min_m" => [-60.0, 40.0, -60.0],
-             "travel_max_exclusive_m" => [60.0, 120.0, 60.0],
-             "spawn_probes_m" => [[0.0, 66.0, 0.0]],
-             "spawn_min_y_m" => 60.0,
-             "profile" => profile
-           }
-         ]}
-      )
+    config = fn travel_min_x, travel_max_x ->
+      %{
+        "schema" => "voxim-m1-demo-v1",
+        "l0_min" => [-1, 0, -1],
+        "l0_max_exclusive" => [2, 2, 2],
+        "travel_min_m" => [travel_min_x, 40.0, -60.0],
+        "travel_max_exclusive_m" => [travel_max_x, 120.0, 60.0],
+        "spawn_probes_m" => [[(travel_min_x + travel_max_x) / 2, 66.0, 0.0]],
+        "spawn_min_y_m" => 60.0,
+        "profile" => profile
+      }
+    end
 
-    claims = start_supervised!({GateServer.Session.Claims, route_module: Route})
+    {router, scene} =
+      if context[:two_scenes] do
+        # 两个 authority 以 x=20 为界，同一个 World、同一条时间线；路由走正式的 WorldServer.Movement。
+        anchor = System.system_time(:microsecond)
+
+        scenes =
+          for {id, {min_x, max_x}} <- [{1, {-60.0, 20.0}}, {2, {20.0, 60.0}}] do
+            replica =
+              start_supervised!(
+                Supervisor.child_spec(
+                  {VoxelRegion.Replica, [authority_ref: world, l0_box: {{-1, 0, -1}, {2, 2, 2}}, name: nil]},
+                  id: {:replica, id}
+                )
+              )
+
+            start_supervised!(
+              Supervisor.child_spec(
+                {Scene,
+                 [scene_id: id, scene_epoch: 7, world_ref: replica, world_api: VoxelRegion.Replica,
+                  config: config.(min_x, max_x), timeline_origin_us: anchor]},
+                id: {:scene, id}
+              )
+            )
+          end
+
+        for scene <- scenes, do: await(fn -> Scene.observe(scene).initialized || nil end, System.monotonic_time(:millisecond) + 30_000)
+        previous = Application.get_env(:world_server, :movement_routes)
+
+        Application.put_env(
+          :world_server,
+          :movement_routes,
+          Map.new(Enum.with_index(scenes, 1), fn {scene, id} -> {id, %{scene_ref: scene, world_ref: world, scene_epoch: 7}} end)
+        )
+
+        on_exit(fn ->
+          if previous,
+            do: Application.put_env(:world_server, :movement_routes, previous),
+            else: Application.delete_env(:world_server, :movement_routes)
+        end)
+
+        :ok = WorldServer.Movement.connect_neighbours(1, 2)
+        {WorldServer.Movement, scenes}
+      else
+        {Route,
+         start_supervised!(
+           {Scene, [name: :npc_world_scene, scene_id: 1, scene_epoch: 7, world_ref: world, config: config.(-60.0, 60.0)]}
+         )}
+      end
+
+    claims = start_supervised!({GateServer.Session.Claims, route_module: router})
 
     body =
       start_supervised!(
         {Body,
          claims: claims,
-         route_module: Route,
+         route_module: router,
          scene_id: 1,
          cid: @npc,
          spawn: {4.0, 66.0, 10.0},
@@ -413,6 +454,34 @@ defmodule GateServer.NpcBodyWorldTest do
 
     Body.command(body, %{id: 2, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 2, 30_000)
+  end
+
+  # 跨 Scene：authority 以 x=20 为界。NPC 从 Scene 1 一路走进 Scene 2，移交走玩家连接同一条 seal → prepare → commit；
+  # 移动命令不中断，到了以后在新 authority 里照常做世界事务。
+  @tag :idle
+  @tag :two_scenes
+  @tag supply: %{11 => 512}
+  @tag timeout: 120_000
+  test "move_to carries the NPC across the Scene boundary; it keeps walking and can build on the other side",
+       %{world: world, body: body, scene: [a, b]} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true, position: {x, _, _}}} = outcome(body, 1, 40_000)
+    assert x > 29.9
+
+    # 单一写入者：角色只在目标 Scene 里。
+    ids = fn scene -> Enum.map(Scene.observe(scene).characters, & &1.entity_id) end
+    assert @npc in ids.(b) and @npc not in ids.(a)
+
+    Body.command(body, %{id: 2, verb: :place, coord: {33, 64, 10}, material: @stone, tool_id: 1})
+    assert %{status: :done} = outcome(body, 2, 10_000)
+    assert [@stone] == Enum.map(World.material_snapshot(world, [@npc], [{33, 64, 10}]).probe_occupancy, & &1.material)
+    assert 0 == balance(world)
+
+    # 再走回去：反方向同样移交。
+    Body.command(body, %{id: 3, verb: :move_to, position: {10.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 3, 40_000)
+    assert @npc in ids.(a) and @npc not in ids.(b)
   end
 
   # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。
