@@ -179,7 +179,7 @@ defmodule GateServer.NpcBodyTest do
       b = npc.(:npc_b, @npc_b, {42.0, 503.0, 40.0}, [{42.0, 30.0}, {42.0, 40.0}])
 
       {:ok, route} = Route.route(1)
-      {identity, {:ok, player}} = GenServer.call(claims, {:claim, Scene, Map.put(route, :scene_id, 1), %{id: 20}})
+      {identity, {:ok, player}} = GenServer.call(claims, {:claim, Scene, Map.put(route, :scene_id, 1), %{id: 20, name: "observer", kind: "player"}})
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
       assert_receive {:mmo_reliable, ^identity, 1, %Session.SessionStart{} = start}, 5_000
       Player.ready(player, identity, start.baseline_transaction_seq, start.collision_revision)
@@ -229,8 +229,10 @@ defmodule GateServer.NpcBodyTest do
 
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",
          %{scene: scene, a: a, b: b} do
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}}, 8_000
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b, kind: 1}}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1} = enter_a}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b, kind: 1} = enter_b}, 8_000
+      # 真实 Scene 产生的 EntityEnter 必须能上线编码（末尾 1 字节 kind）。
+      for enter <- [enter_a, enter_b], do: assert {:ok, <<_::binary>>} = MmoContracts.Session.Codec.encode(enter)
 
       seen = samples(System.monotonic_time(:millisecond) + 6_000, %{})
       xs = for {x, _, _} <- seen[@npc_a], do: x
@@ -250,6 +252,8 @@ defmodule GateServer.NpcBodyTest do
       by_id = Map.new(Scene.observe(scene).characters, &{&1.entity_id, &1})
       assert by_id[@npc_a].processed_input_seq > 200
       assert by_id[@npc_b].processed_input_seq > 200
+      # 玩家连接传入的是角色行（kind: "player"），NPC Body 传 "npc"；Scene 一处映射成线上的 0 / 1。
+      assert {0, 1, 1} == {by_id[20].kind, by_id[@npc_a].kind, by_id[@npc_b].kind}
 
       # Body 死：Player 随 gate 退出，观察者收到 Leave，名额释放。
       Process.exit(a, :kill)

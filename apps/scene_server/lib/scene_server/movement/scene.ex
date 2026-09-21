@@ -380,8 +380,9 @@ defmodule SceneServer.Movement.Scene do
           identity: identity,
           id: cid,
           epoch: identity.session_epoch,
-          # EntityEnter.kind：会话 owner 给出（玩家连接不给 = 0，NPC Body 给 1）；客户端无法自报。
-          kind: Map.get(character, :kind, 0),
+          # EntityEnter.kind：characters 表 kind 列的词汇（玩家连接传的就是鉴权得到的角色行，NPC Body 传 "npc"）
+          # 在这里一处映射成线上的 0 / 1；客户端无法自报。
+          kind: if(Map.get(character, :kind) == "npc", do: 1, else: 0),
           slot: slot,
           probe: spawn || Enum.at(state.config.probes, slot),
           config: state.config,

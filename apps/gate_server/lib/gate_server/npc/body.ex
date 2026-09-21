@@ -116,7 +116,7 @@ defmodule GateServer.Npc.Body do
       GenServer.call(
         state.claims,
         {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
-         %{id: state.cid, spawn: state.spawn, kind: 1}}
+         %{id: state.cid, spawn: state.spawn, kind: "npc"}}
       )
 
     Process.monitor(player)
