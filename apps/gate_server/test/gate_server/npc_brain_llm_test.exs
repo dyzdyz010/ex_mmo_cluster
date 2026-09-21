@@ -160,6 +160,9 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 2] == Enum.map(input["outcomes"], & &1["id"])
     assert ["stale", 1] == List.last(input["outcomes"])["reason"]
     assert {"required", false, "m"} == {body.tool_choice, body.parallel_tool_calls, body.model}
+    # 思考强度随 endpoint 配置，缺省 low。
+    assert %{effort: "low"} == body.reasoning
+    assert %{effort: "high"} == Llm.body(put_in(profile.endpoint[:effort], "high"), observation, outcomes).reasoning
 
     # 工具带是 tool_id 的唯一来源：输入里列出用途，schema 里必填且只能取带着的 id。
     assert %{"1" => "镐", "9" => "点火器"} == input["tools"]

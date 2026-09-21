@@ -181,16 +181,18 @@ defmodule GateServer.NpcBodyWorldTest do
          "你在 x=4, z=10 附近的平地上。x=16, z=10 处立着一根石柱。去把它整根挖下来，" <>
            "再用挖到的材料在 z=13 这一排、x=10 到 x=11 砌一段一格高的墙。砌完以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体，射程 6 米"},
-       endpoint: %{
-         url: System.fetch_env!("NPC_LLM_URL"),
-         key: System.fetch_env!("NPC_LLM_KEY"),
-         model: System.fetch_env!("NPC_LLM_MODEL")
-       }
+       endpoint: endpoint()
      }}
   end
 
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
   defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
+
+  # 真实模型接口：取自环境（仓库根目录 .env，见 .env.example）；思考强度可选。
+  defp endpoint do
+    %{url: System.fetch_env!("NPC_LLM_URL"), key: System.fetch_env!("NPC_LLM_KEY"), model: System.fetch_env!("NPC_LLM_MODEL")}
+    |> Map.merge(if effort = System.get_env("NPC_LLM_EFFORT"), do: %{effort: effort}, else: %{})
+  end
 
   defp brain(%{hut: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -201,11 +203,7 @@ defmodule GateServer.NpcBodyWorldTest do
            "格 (9, 64, 14) 和 (9, 65, 14) 是门洞，不要放。屋里（x=9..10、z=15..16）保持空着。" <>
            "全部砌完并用 look 核对无误后，每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体、放置方块，射程 6 米"},
-       endpoint: %{
-         url: System.fetch_env!("NPC_LLM_URL"),
-         key: System.fetch_env!("NPC_LLM_KEY"),
-         model: System.fetch_env!("NPC_LLM_MODEL")
-       }
+       endpoint: endpoint()
      }}
   end
 
@@ -217,11 +215,7 @@ defmodule GateServer.NpcBodyWorldTest do
            "格 (20, 64, 10)、(20, 65, 10)、(20, 66, 10) 是一根三格高的石柱，背包里有石料（material 11）。" <>
            "目标：站到石柱顶上，也就是 x=20.5, z=10.5、站立格 y=67。到了以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体、放置方块，射程 6 米"},
-       endpoint: %{
-         url: System.fetch_env!("NPC_LLM_URL"),
-         key: System.fetch_env!("NPC_LLM_KEY"),
-         model: System.fetch_env!("NPC_LLM_MODEL")
-       }
+       endpoint: endpoint()
      }}
   end
 
@@ -233,11 +227,7 @@ defmodule GateServer.NpcBodyWorldTest do
            "在格 (6, 63, 10) 的顶面贴一件最小的面片附件；然后用 inspect 找到它，用镐对这件附件敲一下，" <>
            "再按它的 id 把它拆下来，拆完说一句“拆好了”。之后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体、贴 / 拆附件，射程 6 米"},
-       endpoint: %{
-         url: System.fetch_env!("NPC_LLM_URL"),
-         key: System.fetch_env!("NPC_LLM_KEY"),
-         model: System.fetch_env!("NPC_LLM_MODEL")
-       }
+       endpoint: endpoint()
      }}
   end
 
@@ -248,11 +238,7 @@ defmodule GateServer.NpcBodyWorldTest do
          "你在 (4, 10) 附近。先走到 x=14, z=10。到了以后朝 +X 方向探测；如果探测到目标，就反复使用工具，" <>
            "每次使用后重新探测，直到探测不到原来那个目标为止。然后走回 x=4, z=10 并停下，之后一直停着。",
        tools: %{1 => "镐：挖掘固体，射程 6 米"},
-       endpoint: %{
-         url: System.fetch_env!("NPC_LLM_URL"),
-         key: System.fetch_env!("NPC_LLM_KEY"),
-         model: System.fetch_env!("NPC_LLM_MODEL")
-       }
+       endpoint: endpoint()
      }}
   end
 

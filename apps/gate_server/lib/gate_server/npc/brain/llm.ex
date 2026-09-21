@@ -9,7 +9,7 @@ defmodule GateServer.Npc.Brain.Llm do
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
-        endpoint: %{url:, key:, model:, cacertfile: 可选}}
+        endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选}}
   """
   @behaviour GateServer.Npc.Brain
   require Logger
@@ -563,7 +563,7 @@ defmodule GateServer.Npc.Brain.Llm do
       tools: tools(profile),
       tool_choice: "required",
       parallel_tool_calls: false,
-      reasoning: %{effort: "low"},
+      reasoning: %{effort: Map.get(profile.endpoint, :effort, "low")},
       store: false
     }
   end
