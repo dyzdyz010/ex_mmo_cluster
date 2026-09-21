@@ -128,13 +128,28 @@ defmodule GateServer.NpcBodyWorldTest do
     %{world: world, scene: scene, body: body}
   end
 
+  defp brain(%{builder: true}) do
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal:
+         "你在 x=4, z=10 附近的平地上。x=16, z=10 处立着一根石柱。去把它整根挖下来，" <>
+           "再用挖到的材料在 z=13 这一排、x=10 到 x=11 砌一段一格高的墙。砌完以后每次都调用 wait 等 300 秒。",
+       tools: %{1 => "镐：挖掘固体，射程 6 米"},
+       endpoint: %{
+         url: System.fetch_env!("NPC_LLM_URL"),
+         key: System.fetch_env!("NPC_LLM_KEY"),
+         model: System.fetch_env!("NPC_LLM_MODEL")
+       }
+     }}
+  end
+
   defp brain(%{live_llm: true}) do
     {GateServer.Npc.Brain.Llm,
      %{
        goal:
          "你在 (4, 10) 附近。先走到 x=14, z=10。到了以后朝 +X 方向探测；如果探测到目标，就反复使用工具，" <>
            "每次使用后重新探测，直到探测不到原来那个目标为止。然后走回 x=4, z=10 并停下，之后一直停着。",
-       tool_id: 1,
+       tools: %{1 => "镐：挖掘固体，射程 6 米"},
        endpoint: %{
          url: System.fetch_env!("NPC_LLM_URL"),
          key: System.fetch_env!("NPC_LLM_KEY"),
@@ -277,21 +292,45 @@ defmodule GateServer.NpcBodyWorldTest do
   end
 
   @tag :live_llm
+  @tag :builder
+  @tag timeout: 900_000
+  test "a real LLM, given only a goal with coordinates, mines the pillar and builds a wall from what it mined",
+       %{world: world, body: body} do
+    wall = [{10, 64, 13}, {11, 64, 13}]
+    materials = fn cells -> Enum.map(World.material_snapshot(world, [@npc], cells).probe_occupancy, & &1.material) end
+
+    try do
+      await(fn -> if materials.(wall) == [@stone, @stone], do: true end, System.monotonic_time(:millisecond) + 780_000)
+    after
+      IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
+        label: "llm_builder_outcomes",
+        limit: :infinity
+      )
+    end
+
+    # 墙的两格正好是石柱的两格：材料来自挖掘，背包清零，石柱不在了。
+    assert [0, 0] == materials.([{16, 64, 10}, @pillar])
+    assert 0 == balance(world)
+  end
+
+  @tag :live_llm
   @tag timeout: 600_000
   test "the same world driven by a real LLM from one sentence of goal: it mines the pillar and walks back",
        %{world: world, body: body} do
-    await(fn -> if cell(world) == 0, do: true end, System.monotonic_time(:millisecond) + 300_000)
-    assert 512 == balance(world)
+    try do
+      await(fn -> if cell(world) == 0, do: true end, System.monotonic_time(:millisecond) + 300_000)
+      assert 512 == balance(world)
 
-    await(
-      fn -> if elem(Body.observe(body).position, 0) < 5.0, do: true end,
-      System.monotonic_time(:millisecond) + 120_000
-    )
-
-    IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
-      label: "llm_outcomes",
-      limit: :infinity
-    )
+      await(
+        fn -> if elem(Body.observe(body).position, 0) < 5.0, do: true end,
+        System.monotonic_time(:millisecond) + 120_000
+      )
+    after
+      IO.inspect(Enum.reverse(for o <- Body.observe(body).outcomes, do: {o.id, o.verb, o.status, o.reason}),
+        label: "llm_outcomes",
+        limit: :infinity
+      )
+    end
   end
 
 end

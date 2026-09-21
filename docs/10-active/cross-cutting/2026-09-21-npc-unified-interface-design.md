@@ -3,6 +3,8 @@
 分类：全局系统功能，设计决策稿。状态：**v2；三片均已实现、已实跑（2026-09-21）**。已与 GPT-6 Astra 三轮对抗审查。接口的权威说明在
 `GateServer.Npc.Brain` 的 moduledoc；本稿 §5 是当时的草案，二者不一致时以代码为准。
 
+§0 的第 1、2 步（动词补齐、余额与地形感知）已实现并在真实 World 上实跑，见 §0。
+
 第三片落点：`GateServer.Npc.Brain`（behaviour）、`Brain.Patrol`（决策树，纯函数）、`Brain.Llm`（OpenAI Responses 线格式，自带进程，
 `:httpc` 出站）。`Body` 只执行 `move_to` / `stop` / `probe_toward` / `use_tool` 并回报 Outcome；不合法的命令回报 `:invalid_command`
 而不是崩溃（Brain 含 LLM，是外部输入）。测试：`npc_body_test.exs`（含决策树手排事件序列）、`npc_body_world_test.exs`、
@@ -38,10 +40,18 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
 已收尾：统一 Demo 镜像按本层源码重建为 `voxim-gameplay:npc-d5ea674`，启动前热编译补丁已删除；LLM NPC 默认关闭。
 
 后续顺序：
-1. 动词补齐到玩家同等：`production_intent`（放置/建造、余额查询）、`attachment_intent`、prefab、液体盛取/倾倒、点火/灭火、电路。
-   每个都是 Body 里一条“语义命令 → World 公共 API”的映射，外加决策树/LLM 两侧各一个调用方来校验形状。
-2. 感知：自己的余额进 Observation；“看周围地形”的只读感知（走 World 公共只读入口，不读私有状态、不建体素副本）；
-   实体区分玩家 / NPC（协议 `EntityEnter` 加 kind，需要升 Hello）。
+1. **已做（2026-09-21）** 动词补齐：`place` / `scoop` / `pour`（`production_intent` 1/2/3）、`query_balances`（与 Gate 一样直读
+   `material_balances`）、`attach` / `detach`（`attachment_intent`）、`prefab_place` / `remove` / `replace`（`prefab_intent`，
+   过与玩家同一份建造者名单 `Dispatch.builder?/1`）。点火 / 灭火、加热 / 冷却、电路不是新动词：它们是 `use_tool` 换
+   `tool_id`，电路的目标是附件（`target.granularity = 3`，按身份寻址）。取值约束是 Codec 里与线解码共用的谓词
+   （`tool_intent?` / `production_intent?` / `attachment_intent?` / `prefab_place?`）。决策树侧调用方是 `Brain.Routine`
+   （作者写死的步骤序列），LLM 侧是 adapter 的工具表；工具带 `profile.tools` 是 `tool_id` 的唯一来源（schema 必填 + enum）。
+2. **已做** 感知：余额进 Observation（World 余额表的副本，`query_balances` 与自己每次世界事务之后重取，nil = 没取过）；
+   `look`（macro 格闭区间，≤ 512 格、各边离自己 ≤ 32 m）走 `World.material_snapshot/3`，不建体素副本。
+   **未做、待定**：实体区分玩家 / NPC（协议 `EntityEnter` 加 kind，要升 Hello 15 → 16，客户端与已部署的服务端须同时换）。
+   已知缺口：(a) NPC 拿不到附件 id / prefab 实例 id（`attach` 只回 seq，`look` 不含附件），所以 `detach`、电路、
+   `prefab_remove` 目前只有在 Brain 被给定身份时可用——需要一个列出附件 / 实例的只读感知；
+   (b) QUIC listener 的 `bounds` 编辑盒只作用于玩家连接，NPC 的 prefab 不受它限制（Demo 的 NPC 不在建造者名单里）。
 3. 聊天 stub：命令 `say` 与事件 `heard` 先在接口里占位，等正式栈有玩家聊天后接同一条通道。
 4. 寻路、跨 Scene 移交、多 NPC 成本（§7）按遇到的真实需要再做。
 

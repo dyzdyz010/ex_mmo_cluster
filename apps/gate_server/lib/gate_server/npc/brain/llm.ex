@@ -5,7 +5,7 @@ defmodule GateServer.Npc.Brain.Llm do
   每次请求无状态：目标 + 当前 Observation + 最近的 Outcome。模型的输出是外部输入，合法性由 Body 与权威裁决。
 
   profile:
-      %{goal: "自然语言目标", tool_id: 默认工具, tools: %{tool_id => "用途"}（可选，模型可按 id 换工具）,
+      %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
         endpoint: %{url:, key:, model:, cacertfile: 可选}}
   """
   @behaviour GateServer.Npc.Brain
@@ -16,178 +16,187 @@ defmodule GateServer.Npc.Brain.Llm do
   @min_gap_ms 1_000
 
   @cell %{x: %{type: "integer"}, y: %{type: "integer"}, z: %{type: "integer"}}
-  @tool_id %{type: "integer", description: "可选：换用 tools 里的另一个工具；不填用默认工具。"}
 
-  @tools [
-    %{
-      type: "function",
-      name: "move_to",
-      description: "沿直线走到水平坐标 (x, z)，无寻路；到达后才会再次询问。",
-      parameters: %{
-        type: "object",
-        properties: %{x: %{type: "number"}, z: %{type: "number"}},
-        required: ["x", "z"],
-        additionalProperties: false
+  # 工具表随 profile 的工具带生成：tool_id 必填且只能取带着的 id，模型无从编造。
+  defp tools(%{tools: belt}) do
+    tool_id = %{type: "integer", enum: Map.keys(belt), description: "用哪个工具，见输入里的 tools。"}
+
+    [
+      %{
+        type: "function",
+        name: "move_to",
+        description: "沿直线走到水平坐标 (x, z)，无寻路；到达后才会再次询问。",
+        parameters: %{
+          type: "object",
+          properties: %{x: %{type: "number"}, z: %{type: "number"}},
+          required: ["x", "z"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "stop",
+        description: "停下。",
+        parameters: %{type: "object", properties: %{}, additionalProperties: false}
+      },
+      %{
+        type: "function",
+        name: "probe_toward",
+        description: "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
+        parameters: %{
+          type: "object",
+          properties: %{
+            dx: %{type: "number"},
+            dy: %{type: "number"},
+            dz: %{type: "number"},
+            tool_id: tool_id
+          },
+          required: ["dx", "dy", "dz", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "use_tool",
+        description:
+          "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。",
+        parameters: %{
+          type: "object",
+          properties: %{tool_id: tool_id},
+          required: ["tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "look",
+        description:
+          "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
+            "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]），没列出的都是空气。",
+        parameters: %{
+          type: "object",
+          properties: %{
+            x0: %{type: "integer"},
+            y0: %{type: "integer"},
+            z0: %{type: "integer"},
+            x1: %{type: "integer"},
+            y1: %{type: "integer"},
+            z1: %{type: "integer"}
+          },
+          required: ["x0", "y0", "z0", "x1", "y1", "z1"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "place",
+        description:
+          "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
+        parameters: %{
+          type: "object",
+          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
+          required: ["x", "y", "z", "material", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "scoop",
+        description: "用液体盛取工具从格 (x,y,z) 盛起 material 液体，进自己的 balances。",
+        parameters: %{
+          type: "object",
+          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
+          required: ["x", "y", "z", "material", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "pour",
+        description: "用液体倾倒工具把自己 balances 里的 material 液体倒进格 (x,y,z)。",
+        parameters: %{
+          type: "object",
+          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
+          required: ["x", "y", "z", "material", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "attach",
+        description:
+          "花 material 在实心格表面贴一件附件。kind 0 = 面片（axis 是法线轴）、1 = 棱条（axis 是走向）；axis 0/1/2 = X/Y/Z；" <>
+            "size 1 或 8；(x,y,z) 是 micro 坐标（1 格 = 8 micro），size 8 时须是 8 的倍数。",
+        parameters: %{
+          type: "object",
+          properties:
+            Map.merge(@cell, %{
+              kind: %{type: "integer"},
+              axis: %{type: "integer"},
+              size: %{type: "integer"},
+              material: %{type: "integer"},
+              tool_id: tool_id
+            }),
+          required: ["kind", "axis", "size", "x", "y", "z", "material", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "detach",
+        description: "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
+        parameters: %{
+          type: "object",
+          properties:
+            Map.merge(@cell, %{
+              kind: %{type: "integer"},
+              axis: %{type: "integer"},
+              material: %{type: "integer"},
+              attachment_id: %{type: "integer"},
+              tool_id: tool_id
+            }),
+          required: ["kind", "axis", "x", "y", "z", "material", "attachment_id", "tool_id"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "prefab",
+        description:
+          "预制件（需要建造者权限）。op = place：在 macro 格 (x,y,z) 以 orientation 0–23 放置 definition；" <>
+            "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
+        parameters: %{
+          type: "object",
+          properties:
+            Map.merge(@cell, %{
+              op: %{type: "string", enum: ["place", "remove", "replace"]},
+              definition: %{type: "string"},
+              orientation: %{type: "integer"},
+              instance: %{type: "array", items: %{type: "integer"}}
+            }),
+          required: ["op"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
+        name: "query_balances",
+        description: "读取自己的背包余额（balances 为 null 时先调用它）。",
+        parameters: %{type: "object", properties: %{}, additionalProperties: false}
+      },
+      %{
+        type: "function",
+        name: "wait",
+        description: "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。",
+        parameters: %{
+          type: "object",
+          properties: %{seconds: %{type: "number"}},
+          required: ["seconds"],
+          additionalProperties: false
+        }
       }
-    },
-    %{
-      type: "function",
-      name: "stop",
-      description: "停下。",
-      parameters: %{type: "object", properties: %{}, additionalProperties: false}
-    },
-    %{
-      type: "function",
-      name: "probe_toward",
-      description: "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
-      parameters: %{
-        type: "object",
-        properties: %{
-          dx: %{type: "number"},
-          dy: %{type: "number"},
-          dz: %{type: "number"},
-          tool_id: @tool_id
-        },
-        required: ["dx", "dy", "dz"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "use_tool",
-      description:
-        "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。",
-      parameters: %{type: "object", properties: %{tool_id: @tool_id}, additionalProperties: false}
-    },
-    %{
-      type: "function",
-      name: "look",
-      description:
-        "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
-          "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]），没列出的都是空气。",
-      parameters: %{
-        type: "object",
-        properties: %{
-          x0: %{type: "integer"},
-          y0: %{type: "integer"},
-          z0: %{type: "integer"},
-          x1: %{type: "integer"},
-          y1: %{type: "integer"},
-          z1: %{type: "integer"}
-        },
-        required: ["x0", "y0", "z0", "x1", "y1", "z1"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "place",
-      description:
-        "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
-      parameters: %{
-        type: "object",
-        properties: Map.put(@cell, :material, %{type: "integer"}),
-        required: ["x", "y", "z", "material"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "scoop",
-      description: "用液体盛取工具（tool_id 必填）从格 (x,y,z) 盛起 material 液体，进自己的 balances。",
-      parameters: %{
-        type: "object",
-        properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: %{type: "integer"}}),
-        required: ["x", "y", "z", "material", "tool_id"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "pour",
-      description: "用液体倾倒工具（tool_id 必填）把自己 balances 里的 material 液体倒进格 (x,y,z)。",
-      parameters: %{
-        type: "object",
-        properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: %{type: "integer"}}),
-        required: ["x", "y", "z", "material", "tool_id"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "attach",
-      description:
-        "花 material 在实心格表面贴一件附件。kind 0 = 面片（axis 是法线轴）、1 = 棱条（axis 是走向）；axis 0/1/2 = X/Y/Z；" <>
-          "size 1 或 8；(x,y,z) 是 micro 坐标（1 格 = 8 micro），size 8 时须是 8 的倍数。",
-      parameters: %{
-        type: "object",
-        properties:
-          Map.merge(@cell, %{
-            kind: %{type: "integer"},
-            axis: %{type: "integer"},
-            size: %{type: "integer"},
-            material: %{type: "integer"},
-            tool_id: @tool_id
-          }),
-        required: ["kind", "axis", "size", "x", "y", "z", "material"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "detach",
-      description: "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
-      parameters: %{
-        type: "object",
-        properties:
-          Map.merge(@cell, %{
-            kind: %{type: "integer"},
-            axis: %{type: "integer"},
-            material: %{type: "integer"},
-            attachment_id: %{type: "integer"},
-            tool_id: @tool_id
-          }),
-        required: ["kind", "axis", "x", "y", "z", "material", "attachment_id"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "prefab",
-      description:
-        "预制件（需要建造者权限）。op = place：在 macro 格 (x,y,z) 以 orientation 0–23 放置 definition；" <>
-          "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
-      parameters: %{
-        type: "object",
-        properties:
-          Map.merge(@cell, %{
-            op: %{type: "string", enum: ["place", "remove", "replace"]},
-            definition: %{type: "string"},
-            orientation: %{type: "integer"},
-            instance: %{type: "array", items: %{type: "integer"}}
-          }),
-        required: ["op"],
-        additionalProperties: false
-      }
-    },
-    %{
-      type: "function",
-      name: "query_balances",
-      description: "读取自己的背包余额（balances 为 null 时先调用它）。",
-      parameters: %{type: "object", properties: %{}, additionalProperties: false}
-    },
-    %{
-      type: "function",
-      name: "wait",
-      description: "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。",
-      parameters: %{
-        type: "object",
-        properties: %{seconds: %{type: "number"}},
-        required: ["seconds"],
-        additionalProperties: false
-      }
-    }
-  ]
+    ]
+  end
 
   @impl true
   def init(profile) do
@@ -202,7 +211,7 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   @doc "把一次 Responses 应答里的工具调用译成命令；`probe` 是最近一次成功探测 `%{direction:, target:}`。"
-  def commands(%{"output" => output}, tool_id, probe, next_id) do
+  def commands(%{"output" => output}, probe, next_id) do
     output
     |> Enum.filter(&(&1["type"] == "function_call"))
     |> Enum.with_index(next_id)
@@ -217,7 +226,7 @@ defmodule GateServer.Npc.Brain.Llm do
           %{id: id, verb: :stop}
 
         "probe_toward" ->
-          %{id: id, verb: :probe_toward, tool_id: args["tool_id"] || tool_id, direction: unit(args)}
+          %{id: id, verb: :probe_toward, tool_id: args["tool_id"], direction: unit(args)}
 
         "look" ->
           %{
@@ -233,7 +242,7 @@ defmodule GateServer.Npc.Brain.Llm do
             verb: %{"place" => :place, "scoop" => :scoop, "pour" => :pour}[name],
             coord: {args["x"], args["y"], args["z"]},
             material: args["material"],
-            tool_id: args["tool_id"] || tool_id
+            tool_id: args["tool_id"]
           }
 
         "query_balances" ->
@@ -249,7 +258,7 @@ defmodule GateServer.Npc.Brain.Llm do
             anchor: {args["x"], args["y"], args["z"]},
             material: args["material"],
             attachment_id: args["attachment_id"] || 0,
-            tool_id: args["tool_id"] || tool_id
+            tool_id: args["tool_id"]
           }
 
         "prefab" ->
@@ -270,7 +279,7 @@ defmodule GateServer.Npc.Brain.Llm do
           %{
             id: id,
             verb: :use_tool,
-            tool_id: args["tool_id"] || tool_id,
+            tool_id: args["tool_id"],
             direction: probe && probe.direction,
             target: probe && probe.target
           }
@@ -328,9 +337,10 @@ defmodule GateServer.Npc.Brain.Llm do
         {:answer, {:ok, response}} ->
           {waits, commands} =
             response
-            |> commands(state.profile.tool_id, state.probe, state.next_id)
+            |> commands(state.probe, state.next_id)
             |> Enum.split_with(&(&1.verb == :wait))
 
+          Logger.info("npc_llm_decision #{inspect(waits ++ commands, limit: :infinity)}")
           for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
 
           # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
@@ -408,7 +418,7 @@ defmodule GateServer.Npc.Brain.Llm do
         Jason.encode!(%{
           goal: profile.goal,
           self: plain(observation.self),
-          tools: Map.get(profile, :tools),
+          tools: profile.tools,
           # 背包：每种材料还能放几个整格；null = 还没读过。
           balances:
             observation.balances &&
@@ -418,7 +428,7 @@ defmodule GateServer.Npc.Brain.Llm do
           entities: Enum.map(observation.entities, &plain/1),
           outcomes: outcomes |> Enum.reverse() |> Enum.map(&plain/1)
         }),
-      tools: @tools,
+      tools: tools(profile),
       tool_choice: "required",
       parallel_tool_calls: false,
       reasoning: %{effort: "low"},

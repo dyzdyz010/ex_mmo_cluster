@@ -12,31 +12,31 @@ defmodule GateServer.NpcBrainLlmTest do
       "output" => [
         %{"type" => "reasoning", "summary" => []},
         call("move_to", %{x: 14, z: 10.5}),
-        call("probe_toward", %{dx: 3, dy: 0, dz: 4})
+        call("probe_toward", %{dx: 3, dy: 0, dz: 4, tool_id: 1})
       ]
     }
 
     assert [
              %{id: 7, verb: :move_to, position: {14, 10.5}, tolerance: 0.5},
              %{id: 8, verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}}
-           ] == Llm.commands(response, 1, nil, 7)
+           ] == Llm.commands(response, nil, 7)
   end
 
   test "use_tool carries the last successful probe; without one it is left for the Body to reject" do
     probe = %{direction: {1.0, 0.0, 0.0}, target: @target}
-    response = %{"output" => [call("use_tool", %{})]}
+    response = %{"output" => [call("use_tool", %{tool_id: 1})]}
 
     assert [%{verb: :use_tool, direction: {1.0, 0.0, 0.0}, target: @target, tool_id: 1}] =
-             Llm.commands(response, 1, probe, 1)
+             Llm.commands(response, probe, 1)
 
-    assert [%{verb: :use_tool, direction: nil, target: nil}] = Llm.commands(response, 1, nil, 1)
+    assert [%{verb: :use_tool, direction: nil, target: nil}] = Llm.commands(response, nil, 1)
   end
 
   test "building verbs: cells are integer macro coords, the default tool applies unless the model names another" do
     response = %{
       "output" => [
         call("look", %{x0: 15, y0: 63, z0: 9, x1: 17, y1: 66, z1: 11}),
-        call("place", %{x: 16, y: 65, z: 10, material: 11}),
+        call("place", %{x: 16, y: 65, z: 10, material: 11, tool_id: 1}),
         call("scoop", %{x: 50, y: 519, z: 64, material: 21, tool_id: 11}),
         call("pour", %{x: 50, y: 519, z: 64, material: 21, tool_id: 12}),
         call("query_balances", %{}),
@@ -51,7 +51,7 @@ defmodule GateServer.NpcBrainLlmTest do
              %{id: 4, verb: :pour, coord: {50, 519, 64}, material: 21, tool_id: 12},
              %{id: 5, verb: :query_balances},
              %{id: 6, verb: :probe_toward, tool_id: 9, direction: {1.0, 0.0, 0.0}}
-           ] == Llm.commands(response, 1, nil, 1)
+           ] == Llm.commands(response, nil, 1)
   end
 
   test "attachment and prefab tools: hex definition ids become 32-byte binaries, a bad one is left for the Body to reject" do
@@ -59,7 +59,7 @@ defmodule GateServer.NpcBrainLlmTest do
 
     response = %{
       "output" => [
-        call("attach", %{kind: 0, axis: 1, size: 8, x: 120, y: 512, z: 80, material: 11}),
+        call("attach", %{kind: 0, axis: 1, size: 8, x: 120, y: 512, z: 80, material: 11, tool_id: 1}),
         call("detach", %{kind: 0, axis: 1, x: 120, y: 512, z: 80, material: 11, attachment_id: 7, tool_id: 3}),
         call("prefab", %{op: "place", definition: id, x: 15, y: 64, z: 12, orientation: 5}),
         call("prefab", %{op: "remove", instance: [10, 0]}),
@@ -73,7 +73,7 @@ defmodule GateServer.NpcBrainLlmTest do
              %{verb: :prefab_place, definition_id: definition, anchor: {15, 64, 12}, orientation: 5},
              %{verb: :prefab_remove, instance_id: {10, 0}},
              %{verb: :prefab_replace, instance_id: {10, 0}, definition_id: nil}
-           ] = Llm.commands(response, 1, nil, 1)
+           ] = Llm.commands(response, nil, 1)
 
     assert :binary.copy(<<42>>, 32) == definition
   end
@@ -104,7 +104,7 @@ defmodule GateServer.NpcBrainLlmTest do
     }
 
     outcomes = [%{id: 2, reason: {:stale, 1}}, %{id: 1, reason: nil}]
-    profile = %{goal: "g", endpoint: %{model: "m"}}
+    profile = %{goal: "g", tools: %{1 => "镐", 9 => "点火器"}, endpoint: %{model: "m"}}
     body = Llm.body(profile, observation, outcomes)
     input = Jason.decode!(body.input)
 
@@ -115,6 +115,12 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 2] == Enum.map(input["outcomes"], & &1["id"])
     assert ["stale", 1] == List.last(input["outcomes"])["reason"]
     assert {"required", false, "m"} == {body.tool_choice, body.parallel_tool_calls, body.model}
+
+    # 工具带是 tool_id 的唯一来源：输入里列出用途，schema 里必填且只能取带着的 id。
+    assert %{"1" => "镐", "9" => "点火器"} == input["tools"]
+    probe = Enum.find(body.tools, &(&1.name == "probe_toward")).parameters
+    assert [1, 9] == probe.properties.tool_id.enum
+    assert "tool_id" in probe.required
     assert ~w(attach detach look move_to place pour prefab probe_toward query_balances scoop stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
   end
@@ -127,7 +133,7 @@ defmodule GateServer.NpcBrainLlmTest do
       {:ok, %{"output" => [call("move_to", %{x: 5, z: 6})]}}
     end
 
-    profile = %{goal: "g", tool_id: 1, endpoint: %{model: "m"}, request: request}
+    profile = %{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request}
     # init 在 Body 进程里调用：这里测试进程就是 Body，命令以 cast 投回。
     brain = Llm.init(profile)
     idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
@@ -157,7 +163,7 @@ defmodule GateServer.NpcBrainLlmTest do
       {:ok, %{"output" => [call("wait", %{seconds: 1})]}}
     end
 
-    brain = Llm.init(%{goal: "g", tool_id: 1, endpoint: %{model: "m"}, request: request})
+    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
     idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
     Llm.handle_event({:observation, idle}, brain)
     assert_receive {:asked, 1}
