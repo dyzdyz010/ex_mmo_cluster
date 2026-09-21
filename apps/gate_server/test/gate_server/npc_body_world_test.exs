@@ -121,8 +121,9 @@ defmodule GateServer.NpcBodyWorldTest do
          scene_id: 1,
          cid: @npc,
          spawn: {4.0, 66.0, 10.0},
-         route: [{4.0, 10.0}, {14.0, 10.0}],
-         dig: %{direction: {1.0, 0.0, 0.0}, tool_id: 1}},
+         brain:
+           {GateServer.Npc.Brain.Patrol,
+            %{route: [{4.0, 10.0}, {14.0, 10.0}], dig: %{direction: {1.0, 0.0, 0.0}, tool_id: 1}}}},
         restart: :temporary
       )
 
@@ -152,28 +153,19 @@ defmodule GateServer.NpcBodyWorldTest do
     # 出生点 x=4：石柱在 12 m 外，镐射程 6 m → 权威拒绝，原因原样回到 Body。
     first =
       await(
-        fn -> List.last(Body.observe(body).outcomes) end,
+        fn -> Enum.find(Enum.reverse(Body.observe(body).outcomes), &(&1.verb == :probe_toward)) end,
         System.monotonic_time(:millisecond) + 10_000
       )
 
-    assert %{verb: :probe, status: :rejected, detail: :no_target} = first
+    assert %{status: :rejected, reason: :no_target} = first
 
     # 走到 x≈14：同一方向探测命中石柱上格，攻击到它被挖掉。HP 100、每击 30−2=28 → 4 击。
     await(fn -> if cell(world) == 0, do: true end, System.monotonic_time(:millisecond) + 20_000)
     assert 512 == balance(world)
 
-    hits =
-      await(
-        fn ->
-          outcomes = Body.observe(body).outcomes
-          if Enum.any?(outcomes, &(&1.detail == :target_gone)), do: outcomes
-        end,
-        System.monotonic_time(:millisecond) + 5_000
-      )
-      |> Enum.filter(&(&1.verb == :use_tool))
-
+    hits = Enum.filter(Body.observe(body).outcomes, &(&1.verb == :use_tool))
     assert 4 == length(hits)
-    assert Enum.all?(hits, &(&1.status == :done and is_integer(&1.detail)))
+    assert Enum.all?(hits, &match?(%{status: :done, data: %{seq: seq}} when is_integer(seq), &1))
 
     # 挖完回到巡逻：位置离开 x≈14。
     await(

@@ -5,6 +5,7 @@ defmodule GateServer.NpcBodyTest do
   """
   use ExUnit.Case, async: false
   alias GateServer.Npc.Body
+  alias GateServer.Npc.Brain.Patrol
   alias MmoContracts.{Movement, Session, Voxel}
   alias SceneServer.Movement.{Player, Scene}
 
@@ -53,11 +54,48 @@ defmodule GateServer.NpcBodyTest do
       assert Enum.all?(expired, &({&1.axis_x, &1.axis_z, &1.yaw} == {0, 0, 777}))
       assert Enum.all?(future, &({&1.axis_x, &1.axis_z, &1.yaw} == {0, 32767, 16384}))
     end
+  end
 
-    test "route advances only inside the arrival radius and cycles" do
-      route = [{10.0, 0.0}, {20.0, 0.0}]
-      assert route == Body.advance_route({10.6, 0.0, 0.0}, route)
-      assert [{20.0, 0.0}, {10.0, 0.0}] == Body.advance_route({10.4, 0.0, 0.0}, route)
+  describe "patrol decision tree (pure, hand-sequenced events)" do
+    alias GateServer.Npc.Brain.Patrol
+    @target %{micro: {1, 2, 3}, incarnation: 7, owner: {0, 0}, material: 11, current_hp: 72.0}
+    defp obs(tick), do: {:observation, %{self: %{tick: tick}}}
+    defp done(id, data \\ nil), do: {:outcome, %{id: id, status: :done, data: data}}
+
+    test "without dig it walks the route in a cycle, one move_to per arrival" do
+      state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}]})
+      {[%{id: 1, verb: :move_to, position: {1.0, 0.0}}], state} = Patrol.handle_event(obs(5), state)
+      assert {[], state} = Patrol.handle_event(obs(6), state)
+      {[%{id: 2, verb: :move_to, position: {9.0, 0.0}}], state} = Patrol.handle_event(done(1), state)
+      # 不是自己在等的 id：忽略。
+      assert {[], state} = Patrol.handle_event(done(1), state)
+      {[%{id: 3, verb: :move_to, position: {1.0, 0.0}}], _} = Patrol.handle_event(done(2), state)
+    end
+
+    test "with dig: probe on arrival, attack the returned identity, cool down 36 ticks, re-probe, leave when it changed" do
+      dig = %{direction: {1.0, 0.0, 0.0}, tool_id: 1}
+      state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}], dig: dig})
+      {[%{id: 1}], state} = Patrol.handle_event(obs(100), state)
+      {[%{id: 2, verb: :probe_toward, direction: {1.0, 0.0, 0.0}, tool_id: 1}], state} = Patrol.handle_event(done(1), state)
+      {[%{id: 3, verb: :use_tool, target: @target}], state} = Patrol.handle_event(done(2, @target), state)
+      {[], state} = Patrol.handle_event(done(3, %{seq: 9}), state)
+      assert {[], state} = Patrol.handle_event(obs(135), state)
+      {[%{id: 4, verb: :probe_toward}], state} = Patrol.handle_event(obs(136), state)
+      # 同一身份（HP 变了不算身份变化）→ 继续攻击。
+      {[%{id: 5, verb: :use_tool}], state} = Patrol.handle_event(done(4, %{@target | current_hp: 44.0}), state)
+      {[], state} = Patrol.handle_event(done(5, %{seq: 10}), state)
+      {[%{id: 6, verb: :probe_toward}], state} = Patrol.handle_event(obs(200), state)
+      # 命中的是另一个身份 → 原目标没了，走向下一个路点。
+      {[%{id: 7, verb: :move_to, position: {9.0, 0.0}}], _} = Patrol.handle_event(done(6, %{@target | incarnation: 8}), state)
+    end
+
+    test "a rejected probe or attack is not retried: on to the next waypoint" do
+      dig = %{direction: {1.0, 0.0, 0.0}, tool_id: 1}
+      state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}], dig: dig})
+      {_, state} = Patrol.handle_event(obs(1), state)
+      {[%{id: 2}], state} = Patrol.handle_event(done(1), state)
+      rejected = {:outcome, %{id: 2, status: :rejected, reason: :no_target}}
+      {[%{id: 3, verb: :move_to, position: {9.0, 0.0}}], _} = Patrol.handle_event(rejected, state)
     end
   end
 
@@ -126,7 +164,12 @@ defmodule GateServer.NpcBodyTest do
       npc = fn id, cid, spawn, route ->
         start_supervised!(
           {Body,
-           claims: claims, route_module: Route, scene_id: 1, cid: cid, spawn: spawn, route: route},
+           claims: claims,
+           route_module: Route,
+           scene_id: 1,
+           cid: cid,
+           spawn: spawn,
+           brain: {Patrol, %{route: route}}},
           id: id,
           restart: :temporary
         )

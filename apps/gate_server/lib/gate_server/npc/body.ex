@@ -1,13 +1,14 @@
 defmodule GateServer.Npc.Body do
   @moduledoc """
   全局系统功能：NPC 的无 socket 会话 owner。以 NPC cid 走 `Session.Claims` 的完整 claim，自己充当 gate；
-  权威状态只在 `Movement.Player`，本进程的位置是 OwnerAck 的派生缓存。
+  权威状态只在 `Movement.Player`，本进程的位置与邻近实体是下行消息的派生缓存。决策在 `GateServer.Npc.Brain`，
+  本进程只执行它的语义命令并回报结果。
 
   输入由 OwnerAck 闭环驱动：`due_seq = server_tick - origin_tick + 1`，把已送序号连续补到 `due_seq + 8`；
-  已过期未送的序号填零输入，新动作只写未来槽。巡逻路线与到点挖掘写在本进程，无 Brain 抽象。
+  已过期未送的序号填零输入，移动命令只写未来槽。
 
   世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 `VoxelRegion.World.tool_intent/3`。
-  调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧；一次只在途一个事务。
+  调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
   """
   use GenServer
@@ -16,14 +17,14 @@ defmodule GateServer.Npc.Body do
 
   @lead 8
   @backlog 120
-  @arrive_m 0.5
-  # 两次攻击之间的 tick 数；服务端按工具 interval 做速率裁决，这里只是不去撞它。
-  @attack_gap 36
   @outcomes 32
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
-  @doc "派生缓存与最近的世界事务结果（新在前）；不是世界真值。"
+  @doc "进程外 / 慢 Brain 异步投回命令；形状见 `GateServer.Npc.Brain`。"
+  def command(body, command), do: GenServer.cast(body, {:command, command})
+
+  @doc "派生缓存、在途命令与最近的 Outcome（新在前）；不是世界真值。"
   def observe(body), do: GenServer.call(body, :observe)
 
   @doc "canonical X/Z 世界轴上的量化输入与朝向；yaw 不驱动移动，0 朝 +X、16384 朝 +Z。"
@@ -34,14 +35,7 @@ defmodule GateServer.Npc.Body do
     {round(dx / length * 32767), round(dz / length * 32767), yaw}
   end
 
-  @doc "已到达当前路点则换下一个（循环）。"
-  def advance_route({x, _, z} = position, [{tx, tz} | rest] = route) do
-    if :math.sqrt((tx - x) * (tx - x) + (tz - z) * (tz - z)) < @arrive_m,
-      do: advance_route(position, rest ++ [{tx, tz}]),
-      else: route
-  end
-
-  @doc "sent 之后到 due+lead 的连续帧：seq ≤ due 已过期填零输入，其余朝 target。"
+  @doc "sent 之后到 due+lead 的连续帧：seq ≤ due 已过期填零输入，其余用 steering。"
   def frames(sent, due, yaw, {axis_x, axis_z, target_yaw}) do
     for seq <- (sent + 1)..(due + @lead)//1 do
       if seq <= due,
@@ -58,30 +52,20 @@ defmodule GateServer.Npc.Body do
 
   @impl true
   def init(opts) do
-    # cid 来自 characters 表的 NPC 行（DataService.CharacterStore.ensure_npc/1），永久且不复用。
-    cid = Keyword.fetch!(opts, :cid)
-    [first, _ | _] = route = Keyword.fetch!(opts, :route)
-
-    # 相邻路点（含回环）间距大于到达半径的两倍，advance_route/2 才必然终止。
-    true =
-      route
-      |> Enum.zip(tl(route) ++ [first])
-      |> Enum.all?(fn {{ax, az}, {bx, bz}} ->
-        :math.sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az)) > 2 * @arrive_m
-      end)
+    {brain, profile} = Keyword.fetch!(opts, :brain)
 
     {:ok,
      %{
-       cid: cid,
-       route: route,
+       # cid 来自 characters 表的 NPC 行（DataService.CharacterStore.ensure_npc/1），永久且不复用。
+       cid: Keyword.fetch!(opts, :cid),
        # 显式出生点：不占玩家 probe 名额。
        spawn: Keyword.fetch!(opts, :spawn),
        claims: Keyword.get(opts, :claims, GateServer.Session.Claims),
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
        scene_id: Keyword.fetch!(opts, :scene_id),
-       # 到达路点后朝该方向探测并挖掉命中的目标：%{direction: {dx, dy, dz}, tool_id: id} | nil。
-       dig: Keyword.get(opts, :dig),
+       brain: brain,
+       mind: brain.init(profile),
        identity: nil,
        player: nil,
        world_ref: nil,
@@ -91,7 +75,12 @@ defmodule GateServer.Npc.Body do
        yaw: 0,
        position: nil,
        tick: 0,
-       work: nil,
+       processed: 0,
+       entities: %{},
+       # 在途移动命令：%{id, verb, target, tolerance, zero_from}；zero_from = 首个零输入帧的序号。
+       move: nil,
+       # 在途世界事务：id => verb。
+       world: %{},
        request_seq: 0,
        outcomes: []
      }, {:continue, :claim}}
@@ -111,6 +100,7 @@ defmodule GateServer.Npc.Body do
     Process.monitor(player)
     # 只用于置 clock_ready；送帧不依赖本地时钟映射。
     Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
+
     {:noreply,
      %{
        state
@@ -123,7 +113,10 @@ defmodule GateServer.Npc.Body do
 
   @impl true
   def handle_call(:observe, _, state),
-    do: {:reply, Map.take(state, [:position, :tick, :work, :outcomes]), state}
+    do: {:reply, Map.take(state, [:position, :tick, :move, :world, :entities, :outcomes]), state}
+
+  @impl true
+  def handle_cast({:command, command}, state), do: {:noreply, apply_commands(state, [command])}
 
   @impl true
   def handle_info(
@@ -145,7 +138,7 @@ defmodule GateServer.Npc.Body do
         {:mmo_reliable, identity, 1, %Session.InputStart{first_input_seq: 1} = start},
         %{identity: identity} = state
       ),
-      do: {:noreply, feed(%{state | origin: start.origin_tick}, start.state, start.anchor_tick)}
+      do: {:noreply, feed(%{state | origin: start.origin_tick}, start.state, start.anchor_tick, 0)}
 
   def handle_info(
         {:mmo_datagram, identity, %Movement.OwnerAck{} = ack},
@@ -156,16 +149,63 @@ defmodule GateServer.Npc.Body do
 
     if due - ack.processed_input_seq > @backlog,
       do: {:stop, {:input_backlog, due, ack.processed_input_seq}, state},
-      else: {:noreply, feed(state, ack.state, ack.server_tick)}
+      else: {:noreply, feed(state, ack.state, ack.server_tick, ack.processed_input_seq)}
   end
 
-  def handle_info({:npc_world_result, id, result}, %{work: {_, id, _}} = state),
-    do: {:noreply, world_result(state, result)}
+  def handle_info(
+        {:mmo_reliable, identity, 1, %Session.EntityEnter{} = e},
+        %{identity: identity} = state
+      ) do
+    entity = %{entity_epoch: e.entity_epoch, tick: e.server_tick, position: e.state.position}
+    {:noreply, %{state | entities: Map.put(state.entities, e.entity_id, entity)}}
+  end
+
+  def handle_info(
+        {:mmo_reliable, identity, 1, %Session.EntityLeave{} = e},
+        %{identity: identity} = state
+      ),
+      do: {:noreply, %{state | entities: Map.delete(state.entities, e.entity_id)}}
+
+  def handle_info(
+        {:mmo_datagram, identity, %Movement.Snapshot{} = snapshot},
+        %{identity: identity} = state
+      ) do
+    # 只更新仍是同一 entity_epoch 的已知实体；每个实体保留自己的 tick。
+    entities =
+      Enum.reduce(snapshot.records, state.entities, fn r, entities ->
+        case Map.get(entities, r.entity_id) do
+          %{entity_epoch: epoch} = known when epoch == r.entity_epoch ->
+            Map.put(entities, r.entity_id, %{
+              known
+              | tick: snapshot.server_tick,
+                position: r.state.position
+            })
+
+          _ ->
+            entities
+        end
+      end)
+
+    {:noreply, %{state | entities: entities}}
+  end
+
+  def handle_info({:npc_world_result, id, result}, state) when is_map_key(state.world, id) do
+    {verb, world} = Map.pop(state.world, id)
+
+    outcome =
+      case result do
+        {:ok, %{} = target} -> %{id: id, verb: verb, status: :done, reason: nil, data: target}
+        {:ok, seq} -> %{id: id, verb: verb, status: :done, reason: nil, data: %{seq: seq}}
+        {:error, reason} -> %{id: id, verb: verb, status: :rejected, reason: reason, data: nil}
+      end
+
+    {:noreply, emit(%{state | world: world}, outcome)}
+  end
 
   def handle_info({:mmo_close, identity, reason}, %{identity: identity} = state),
     do: {:stop, {:session_closed, reason}, state}
 
-  # 第一片路线必须留在当前 authority 内。
+  # 跨 Scene 移交未实现：路线必须留在当前 authority 内。
   def handle_info({:mmo_transfer_request, identity, _, target}, %{identity: identity} = state),
     do: {:stop, {:unexpected_transfer, target}, state}
 
@@ -174,19 +214,15 @@ defmodule GateServer.Npc.Body do
 
   def handle_info(_, state), do: {:noreply, state}
 
-  defp feed(state, %Session.State{position: position}, server_tick) do
+  defp feed(state, %Session.State{} = session, server_tick, processed) do
     due = max(0, server_tick - state.origin + 1)
-    state = %{state | position: position, tick: server_tick} |> work()
-    route = if state.work, do: state.route, else: advance_route(position, state.route)
-    arrived = route != state.route
 
-    {_, _, yaw} =
-      steering =
-      cond do
-        state.work != nil or (arrived and state.dig != nil) -> {0, 0, dig_yaw(state)}
-        true -> steer(position, hd(route))
-      end
+    state =
+      %{state | position: session.position, tick: server_tick, processed: processed}
+      |> finish_move()
 
+    state = think(state, {:observation, observation(state, session)})
+    {state, {_, _, yaw} = steering} = steering(state, due)
     frames = frames(state.sent, due, state.yaw, steering)
 
     # 与玩家解码器同一批约束：每批 1..6 帧、序号严格递增；相邻差 1 由 frames/4 保证。
@@ -197,75 +233,136 @@ defmodule GateServer.Npc.Body do
             frames: batch
           })
 
-    state = if arrived and state.dig != nil, do: request(state, 0, nil), else: state
-
     case frames do
-      [] -> %{state | route: route}
-      _ -> %{state | route: route, sent: List.last(frames).input_seq, yaw: yaw}
+      [] -> state
+      _ -> %{state | sent: List.last(frames).input_seq, yaw: yaw}
     end
   end
 
-  defp dig_yaw(%{dig: %{direction: {dx, _, dz}}}),
-    do: rem(round(:math.atan2(dz, dx) * 65536 / (2 * :math.pi())) + 65536, 65536)
+  defp observation(state, session) do
+    %{
+      self: %{
+        entity_id: state.cid,
+        tick: state.tick,
+        position: session.position,
+        yaw: session.yaw,
+        grounded: session.grounded,
+        processed_input_seq: state.processed
+      },
+      entities: for({id, e} <- state.entities, do: Map.put(e, :entity_id, id)),
+      pending:
+        if(state.move, do: [Map.take(state.move, [:id, :verb])], else: []) ++
+          for({id, verb} <- state.world, do: %{id: id, verb: verb})
+    }
+  end
 
-  # 冷却到期后重新探测：目标还是同一个才继续攻击。
-  defp work(%{work: {:cooldown, until, target}, tick: tick} = state) when tick >= until,
-    do: request(state, 0, target)
+  # 首个零输入帧已被权威处理 → 移动命令完成；position 与 within_tolerance 取自同一份 ACK。
+  defp finish_move(%{move: %{zero_from: zero} = move, processed: processed} = state)
+       when zero != nil and processed >= zero do
+    within = move.target == nil or distance(state.position, move.target) <= move.tolerance
 
-  defp work(state), do: state
+    emit(%{state | move: nil}, %{
+      id: move.id,
+      verb: move.verb,
+      status: :done,
+      reason: nil,
+      data: %{position: state.position, within_tolerance: within}
+    })
+  end
 
-  # action 0 = 沿方向探测实际命中；action 1 = 攻击探测返回的那个目标身份。
-  defp request(state, action, target) do
+  defp finish_move(state), do: state
+
+  # 移动命令只写未来槽：零输入从下一个未送且未过期的序号开始。
+  defp steering(%{move: %{zero_from: nil} = move} = state, due) do
+    if move.verb == :stop or distance(state.position, move.target) <= move.tolerance,
+      do: {%{state | move: %{move | zero_from: max(state.sent, due) + 1}}, {0, 0, state.yaw}},
+      else: {state, steer(state.position, move.target)}
+  end
+
+  defp steering(state, _due), do: {state, {0, 0, state.yaw}}
+
+  defp distance({x, _, z}, {tx, tz}), do: :math.sqrt((tx - x) * (tx - x) + (tz - z) * (tz - z))
+
+  defp think(state, event) do
+    {commands, mind} = state.brain.handle_event(event, state.mind)
+    apply_commands(%{state | mind: mind}, commands)
+  end
+
+  defp emit(state, outcome) do
+    state = %{state | outcomes: Enum.take([outcome | state.outcomes], @outcomes)}
+    think(state, {:outcome, outcome})
+  end
+
+  defp apply_commands(state, commands), do: Enum.reduce(commands, state, &apply_command(&2, &1))
+
+  defp apply_command(state, %{id: id, verb: :move_to, position: {x, z}, tolerance: tolerance})
+       when is_number(x) and is_number(z) and is_number(tolerance) and tolerance > 0,
+       do:
+         move(state, %{id: id, verb: :move_to, target: {x, z}, tolerance: tolerance, zero_from: nil})
+
+  defp apply_command(state, %{id: id, verb: :stop}),
+    do: move(state, %{id: id, verb: :stop, target: nil, tolerance: nil, zero_from: nil})
+
+  defp apply_command(state, %{id: id, verb: verb, direction: direction, tool_id: tool} = command)
+       when verb in [:probe_toward, :use_tool] do
     seq = state.request_seq + 1
 
+    # action 0 = 沿方向探测实际命中；action 1 = 攻击 probe_toward 返回的那个目标身份。
     request =
       %{
         request_id: seq,
         client_intent_seq: seq,
         logical_scene_id: state.scene_id,
-        action: action,
-        direction: state.dig.direction,
+        action: if(verb == :probe_toward, do: 0, else: 1),
+        direction: direction,
         micro: {0, 0, 0},
         incarnation: 0,
         owner: {0, 0},
         material: 0,
-        tool_id: state.dig.tool_id,
+        tool_id: tool,
         granularity: 0
       }
-      |> Map.merge(if(action == 1, do: identity_of(target), else: %{}))
+      |> Map.merge(
+        Map.take(Map.get(command, :target) || %{}, [:micro, :incarnation, :owner, :material])
+      )
 
-    true = MmoContracts.Voxel.Codec.tool_intent?(request)
-    send(state.worker, {:call, self(), seq, state.player, state.identity, state.world_ref, request})
-    kind = if action == 0, do: :probing, else: :attacking
-    %{state | request_seq: seq, work: {kind, seq, target}}
+    if valid_request?(request) do
+      send(state.worker, {:call, self(), id, state.player, state.identity, state.world_ref, request})
+      %{state | request_seq: seq, world: Map.put(state.world, id, verb)}
+    else
+      invalid(state, command)
+    end
   end
 
-  defp identity_of(target), do: Map.take(target, [:micro, :incarnation, :owner, :material])
+  # Brain 是可插拔的外部输入（含 LLM）：不合法的命令回报为拒绝，不让 Body 崩溃。
+  defp apply_command(state, command), do: invalid(state, command)
 
-  defp world_result(%{work: {:probing, _, previous}} = state, {:ok, %{} = target}) do
-    if previous == nil or identity_of(previous) == identity_of(target),
-      do: request(state, 1, target),
-      else: outcome(state, :probe, :done, :target_gone)
+  defp valid_request?(%{direction: {dx, dy, dz}, tool_id: tool} = request)
+       when is_number(dx) and is_number(dy) and is_number(dz) and is_integer(tool),
+       do: MmoContracts.Voxel.Codec.tool_intent?(request)
+
+  defp valid_request?(_), do: false
+
+  defp invalid(state, command) when is_map(command) do
+    emit(state, %{
+      id: Map.get(command, :id),
+      verb: Map.get(command, :verb),
+      status: :rejected,
+      reason: :invalid_command,
+      data: nil
+    })
   end
 
-  defp world_result(%{work: {:probing, _, nil}} = state, {:error, reason}),
-    do: outcome(state, :probe, :rejected, reason)
+  defp move(%{move: nil} = state, move), do: %{state | move: move}
 
-  defp world_result(%{work: {:probing, _, _}} = state, {:error, _}),
-    do: outcome(state, :probe, :done, :target_gone)
-
-  defp world_result(%{work: {:attacking, _, target}} = state, {:ok, seq}) do
-    state = outcome(state, :use_tool, :done, seq)
-    %{state | work: {:cooldown, state.tick + @attack_gap, target}}
-  end
-
-  defp world_result(%{work: {:attacking, _, _}} = state, {:error, reason}),
-    do: outcome(state, :use_tool, :rejected, reason)
-
-  # 权威返回的 reason 原样记录，不翻译、不重试；记下后回到巡逻。
-  defp outcome(state, verb, status, detail) do
-    entry = %{verb: verb, status: status, detail: detail, tick: state.tick}
-    %{state | work: nil, outcomes: Enum.take([entry | state.outcomes], @outcomes)}
+  defp move(%{move: old} = state, move) do
+    emit(%{state | move: move}, %{
+      id: old.id,
+      verb: old.verb,
+      status: :superseded,
+      reason: nil,
+      data: nil
+    })
   end
 
   defp world_calls do
