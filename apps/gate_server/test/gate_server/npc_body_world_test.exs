@@ -168,7 +168,7 @@ defmodule GateServer.NpcBodyWorldTest do
       end
 
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
-    if context[:builder_brain], do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
+    if context[:builder_brain] || context[:builder_live], do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
       start_supervised!(
@@ -208,6 +208,30 @@ defmodule GateServer.NpcBodyWorldTest do
            "再用挖到的材料在 z=13 这一排、x=10 到 x=11 砌一段一格高的墙。砌完以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体，射程 6 米"},
        endpoint: endpoint()
+     }}
+  end
+
+  # 混合后端，真实模型：规划者 = .env 里的 LLM，调度者 = 真实 Jev；发送函数只在外面包一层计数。
+  defp brain(%{builder_live: true}) do
+    test = self()
+
+    request = fn endpoint, body ->
+      send(test, {:asked, if(is_map_key(body, :questions), do: :scheduler, else: :planner)})
+      GateServer.Npc.Brain.Llm.request(endpoint, body)
+    end
+
+    {GateServer.Npc.Brain.Builder,
+     %{
+       cid: @npc,
+       goal:
+         "Build a small cottage. Footprint: cells x=8..13, z=14..18 (6 by 5). The ground surface is y=63, so the lowest wall cells are y=64. " <>
+           "Walls of stone (material 11), three cells high (y=64..66); a flat roof of wood (material 19) at y=67 covering the whole footprint; " <>
+           "a door opening in the wall that faces -Z; at least two window openings at y=65. The inside must stay empty.",
+       tool_id: 1,
+       memory: Memory,
+       request: request,
+       planner: endpoint(),
+       scheduler: %{url: System.fetch_env!("TYPESAFE_API_URL"), key: System.fetch_env!("TYPESAFE_API_KEY"), model: System.fetch_env!("TYPESAFE_MODEL")}
      }}
   end
 
@@ -706,6 +730,53 @@ defmodule GateServer.NpcBodyWorldTest do
 
     assert Enum.all?(materials.(empty), &(&1 == 0))
     assert 24 * 512 - 22 * 512 == balance(world)
+  end
+
+  # 混合后端 + 真实模型。验收只看世界与记忆，不看模型怎么说：完工记了一笔；屋在占地内、两种材料都用上、门能走进去、
+  # 至少两个窗洞、屋内是空的、屋顶盖满；花掉的材料 = 世界里多出来的格；规划者最多问 3 次。
+  @tag :live_llm
+  @tag :builder_live
+  @tag materials: [11, 19]
+  @tag supply: %{11 => 80 * 512, 19 => 40 * 512}
+  @tag timeout: 1_500_000
+  test "real planner and real scheduler: a cottage with roof, door and windows from one goal, in a handful of model requests", %{world: world} do
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: :warning) end)
+    box = for x <- 6..15, y <- 64..69, z <- 12..20, do: {x, y, z}
+    snapshot = fn -> for %{cell: [x, y, z], material: m} <- World.material_snapshot(world, [@npc], box).probe_occupancy, m != 0, into: %{}, do: {{x, y, z}, m} end
+
+    try do
+      await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building" or &1 =~ "Stopped")), do: true end, System.monotonic_time(:millisecond) + 1_200_000)
+    after
+      built = snapshot.()
+      for y <- 67..64//-1 do
+        IO.puts("y=#{y}")
+        for z <- 13..19, do: IO.puts("  " <> Enum.map_join(7..14, "", fn x -> %{11 => "#", 19 => "=", nil => "."}[built[{x, y, z}]] || "?" end))
+      end
+      IO.inspect(Memory.entries(), label: "builder_journal")
+    end
+
+    built = snapshot.()
+    assert Enum.any?(Memory.entries(), &(&1 =~ "Finished building"))
+    # 都在占地内；两种材料都用上。
+    assert Enum.all?(Map.keys(built), fn {x, y, z} -> x in 8..13 and z in 14..18 and y in 64..67 end)
+    assert Enum.any?(built, &match?({_, 11}, &1)) and Enum.any?(built, &match?({_, 19}, &1))
+    # 屋顶盖满；屋内（x 9..12、z 15..17、y 64..66）是空的。
+    assert Enum.all?(for(x <- 8..13, z <- 14..18, do: built[{x, 67, z}]), &(&1 != nil))
+    assert Enum.all?(for(x <- 9..12, y <- 64..66, z <- 15..17, do: built[{x, y, z}]), &is_nil/1)
+    # 朝 −Z 的墙（z=14）上有一格宽两格高的门；y=65 的外墙上至少两个窗洞（门那一列不算）。
+    doors = for x <- 9..12, built[{x, 64, 14}] == nil and built[{x, 65, 14}] == nil, do: x
+    assert doors != []
+    ring = for x <- 8..13, z <- 14..18, x in [8, 13] or z in [14, 18], do: {x, z}
+    windows = for {x, z} <- ring, built[{x, 65, z}] == nil, not (z == 14 and x in doors), do: {x, z}
+    assert length(windows) >= 2
+    # 材料守恒。
+    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
+    spent = fn material -> Enum.count(built, &match?({_, ^material}, &1)) * 512 end
+    assert {80 * 512 - spent.(11), 40 * 512 - spent.(19)} == {balances[11], balances[19]}
+
+    asked = fn who -> Stream.repeatedly(fn -> receive(do: ({:asked, ^who} -> true), after: (0 -> nil)) end) |> Enum.take_while(& &1) |> length() end
+    IO.inspect(%{planner: asked.(:planner), scheduler: asked.(:scheduler), cells: map_size(built)}, label: "builder_live_requests")
   end
 
   # 建设者的核心情形：高差超过一格，寻路回报 no_path，模型得自己想到砌台阶再走上去。
