@@ -11,7 +11,13 @@ Gate 路由无名单时改前事务序号不变，改后正常提交；NPC 真�
 当前源码本机 Gate/NPC 22 项通过（7 项真实模型/规模测试未运行）；Linux 正常 Mix 构建的 QUIC 文件 45 项通过。
 同时修正该文件沿用的旧测试夹具：协议 16 玩家 `kind: 0`、冷编辑准备的既有 `adopt_liquid` 回调；没有改动协议。
 命令与原始失败/通过日志位于 `Voxim/Saved/Gameplay/prefab-designer-20260922/`。
-Demo 实跑待记录；VXPD v3 与 D0–D2 尚未实施。
+独立旧 Demo 双客户端已验收：当前服务端镜像 `voxim-gameplay:build-access-cab7a9ae`，Hello 16，
+固定旧场景生成器，材质目录经现有 `publish_parameters` 升级至当前客户端资产版本。
+`smoke.py --mode assembly --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test`
+完成准星放置/替换/F 拆卸，事务 413807/413819/413828，两端逐笔属性一致、World 占用与双方余额恢复。
+证据 `assembly-final/acceptance.json`、原始两端日志及截图；共享森林 Demo 保留，公网未改动。
+旧 smoke 仅凭回放完成会假通过，现补操作/结果/副本/World 判定；`assembly-isolated` 的 occupied 原始失败仍保留。
+本轮 D0 数字与近似边界见 [测量记录](2026-09-22-prefab-d0-measurement.md)；VXPD v3 与 D1–D2 尚未实施。
 
 ## 0. 为什么
 
