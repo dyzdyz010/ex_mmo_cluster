@@ -50,7 +50,11 @@ defmodule GateServer.Application do
         if @is_test_build do
           []
         else
-          [{GateServer.Transport.QuicListener, Application.fetch_env!(:gate_server, :quic)}]
+          [
+            {GateServer.Transport.QuicListener, Application.fetch_env!(:gate_server, :quic)},
+            # NPC Body 在 Scene 建好后由部署脚本加入；独立监督者隔离其重启强度。
+            {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one}
+          ]
         end
 
       :legacy_reference ->

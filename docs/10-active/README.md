@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **51** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **52** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -38,6 +38,7 @@
 - [`2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase2-macro-voxel-interaction-implementation-plan.md) — 已完成并终审的阶段 2 普通宏格交互执行稿
 - [`2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md`](cross-cutting/2026-07-21-voxia-phase3-prefab-world-runtime-implementation-plan.md) — 下一阶段 Prefab 世界 runtime 实施计划
 - [`voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)
+- [`2026-09-21-npc-unified-interface-design.md`](cross-cutting/2026-09-21-npc-unified-interface-design.md) — NPC 统一接口层决策稿（Body/Brain 分层、共用 World 裁决、OwnerAck 闭环送帧）；draft v2，未实施
 
 ### field-emergence
 
