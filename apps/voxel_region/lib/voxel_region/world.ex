@@ -451,6 +451,7 @@ defmodule VoxelRegion.World do
           material_supplies: %{},
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
+          macro_owners: %{},
           phase_inventory: %{},
           material_units_per_micro: 1,
           build_sessions: %{},
@@ -1187,7 +1188,8 @@ defmodule VoxelRegion.World do
           into: %{},
           do: {Payload.cell_index(local), slots}
 
-    ids = live_instance_ids(refined, state.instances)
+    macro_owners = Map.filter(state.macro_owners, fn {cell, _} -> Payload.in_span?(Payload.local(region, cell)) end)
+    ids = live_instance_ids(refined, state.instances, macro_owners)
 
     %{
       payload
@@ -1197,7 +1199,7 @@ defmodule VoxelRegion.World do
         attachments: Attachments.extract(state.attachments, region),
         refined: refined,
         instances: Map.take(state.instances, ids),
-        format_version: if(map_size(refined) > 0 or payload.format_version == 5, do: 5, else: 4)
+        format_version: if(ids != [] or payload.format_version == 5, do: 5, else: 4)
     }
   end
 
@@ -1213,8 +1215,11 @@ defmodule VoxelRegion.World do
   end
 
   defp definition_cells(state, id, anchor, orientation) do
-    with {:ok, definition} <- Map.fetch(state.prefabs, id), true <- orientation in 0..23 do
-      cells = Prefab.footprint(definition, anchor, orientation)
+    with {:ok, definition} <- Map.fetch(state.prefabs, id), true <- orientation in 0..23,
+         :ok <- prefab_alignment(definition, anchor) do
+      # Callers use these samples to prepare/check macro bounds, never as micro volume.
+      cells = Prefab.footprint(definition, anchor, orientation) ++
+        Enum.map(Prefab.macro_footprint(definition, anchor, orientation), fn {cell,m} -> {Prefab.micro_coord(cell,0),m} end)
       macros = footprint_macros(cells)
 
       if Enum.all?(macros, &valid_edit_coord?/1),
@@ -1223,8 +1228,13 @@ defmodule VoxelRegion.World do
     else
       :error -> {:error, :definition_not_found}
       false -> {:error, :invalid_orientation}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp prefab_alignment(%{has_macro_cells: true}, {x,y,z}) when rem(x,@micro) != 0 or rem(y,@micro) != 0 or rem(z,@micro) != 0,
+    do: {:error, :misaligned}
+  defp prefab_alignment(_, _), do: :ok
 
   defp footprint_macros(cells) do
     cells |> Enum.map(fn {micro, _} -> elem(Prefab.macro_slot(micro), 0) end) |> Enum.uniq()
@@ -1258,16 +1268,20 @@ defmodule VoxelRegion.World do
   end
 
   defp subtree_cells(state, ids) do
-    for {cell, slots} <- state.refined,
-        Enum.any?(slots, fn {_, {_, owner}} -> MapSet.member?(ids, owner) end),
-        do: cell
+    macro = for {cell, owner} <- state.macro_owners, MapSet.member?(ids, owner), do: cell
+    Enum.uniq(micro_owner_cells(state,ids) ++ macro)
+  end
+
+  defp micro_owner_cells(state,ids) do
+    for {cell,slots} <- state.refined,
+      Enum.any?(slots,fn {_,{_,owner}} -> MapSet.member?(ids,owner) end),do: cell
   end
 
   defp clear_subtree(state, ids, cells) do
     next =
       Enum.reduce(cells, state, fn cell, s ->
         slots =
-          Map.fetch!(s.refined, cell)
+          Map.get(s.refined, cell, %{})
           |> Map.reject(fn {_, {_, owner}} -> MapSet.member?(ids, owner) end)
 
         refined =
@@ -1275,17 +1289,21 @@ defmodule VoxelRegion.World do
             do: Map.delete(s.refined, cell),
             else: Map.put(s.refined, cell, slots)
 
-        put_overlay(%{s | refined: refined}, 0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})
+        put_overlay(%{s | refined: refined, macro_owners: Map.delete(s.macro_owners,cell),
+          placed_by: Map.delete(s.placed_by,cell), liquid_units: Map.delete(s.liquid_units,cell)},
+          0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})
       end)
 
+    live = live_instance_ids(next.refined,next.instances,next.macro_owners) |> MapSet.new()
+    dead = MapSet.difference(ids,live)
     owned =
-      Map.filter(next.attachment_owners, fn {_, {owner, _}} -> MapSet.member?(ids, owner) end)
+      Map.filter(next.attachment_owners, fn {_, {owner, _}} -> MapSet.member?(dead, owner) end)
       |> Map.keys()
       |> MapSet.new()
 
     %{
       next
-      | instances: Map.drop(next.instances, MapSet.to_list(ids)),
+      | instances: Map.drop(next.instances, MapSet.to_list(dead)),
         attachments:
           Map.reject(next.attachments, fn {_, {id, _}} -> MapSet.member?(owned, id) end),
         attachment_owners: Map.drop(next.attachment_owners, MapSet.to_list(owned))
@@ -1345,8 +1363,22 @@ defmodule VoxelRegion.World do
 
   defp prefab_payment(before, state, cells, %{prefab_actor: actor}) do
     # 支撑裁剪完成后，只按实际前后差额一次结算；可用本次回收支付替换，不从模板退款。
+    removed_macros = changed_prefab_macros(before,state,cells)
+    added_macros = changed_prefab_macros(state,before,cells)
+    delta = Enum.reduce(removed_macros,%{},fn {cell,m},delta ->
+      units = if Phase.liquid?(m) or phase_material?(before,m) do
+        Map.get(before.liquid_units,cell,liquid_capacity(before))
+      else
+        {target,_} = target_at(Prefab.micro_coord(cell,0),before)
+        recover_units(before,target,liquid_capacity(before))
+      end
+      Map.update(delta,m,units,&(&1+units))
+    end)
+    delta = Enum.reduce(added_macros,delta,fn {_,m},delta ->
+      Map.update(delta,m,-liquid_capacity(state),&(&1-liquid_capacity(state)))
+    end)
     delta =
-      Enum.reduce(cells, %{}, fn cell, delta ->
+      Enum.reduce(cells, delta, fn cell, delta ->
         n = state.material_units_per_micro
 
         delta =
@@ -1397,20 +1429,124 @@ defmodule VoxelRegion.World do
              Enum.all?(delta, fn {m, n} -> balance_state(state, actor.cid, m).balance + n >= 0 end),
              do: :ok,
              else: {:error, :insufficient_material}
-           ) do
+           ),
+         {:ok,state,phase} <- prefab_phase_payment(before,state,removed_macros,added_macros,cells,actor.cid) do
       {next, balances} =
         Enum.reduce(delta, {state, %{}}, fn {m, n}, {s, b} ->
           {s, paid} = settle_material(s, actor.cid, m, n)
           {s, Map.merge(b, paid.material_balances)}
         end)
 
-      {:ok, next, %{material_balances: balances}}
+      {:ok, next, Map.put(phase,:material_balances,balances)}
     else
       {:error, _} = error -> error
     end
   end
 
-  defp prefab_payment(_before, state, _cells, settlement), do: {:ok, state, settlement}
+  defp prefab_payment(before, state, cells, settlement) do
+    # 作者入口与既有 liquid_experiment 一样，首次给宏格建立有限相态。
+    added = changed_prefab_macros(state,before,cells)
+    values = for {cell,m} <- added,phase_material?(state,m),into: %{},
+      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],phase_ambient(state)),liquid_capacity(state)*1.0}}
+    quantities = for {cell,m} <- added,Phase.liquid?(m) or phase_material?(state,m),into: %{},
+      do: {cell,liquid_capacity(state)}
+    thermal = if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},thermal ->
+      thermal |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
+        |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
+    end)
+    {:ok,%{state | liquid_units: Liquid.apply_changes(state.liquid_units,quantities),thermal: thermal},
+      Map.put(settlement,:prefab_phase_values,values)}
+  end
+
+  defp changed_prefab_macros(state, other, cells) do
+    for cell <- cells, Map.has_key?(state.macro_owners,cell),
+      Map.get(state.macro_owners,cell) != Map.get(other.macro_owners,cell) do
+      {:ok,{material,_},_} = cell_value(state,0,cell)
+      {cell,material}
+    end
+  end
+
+  # 余额继续由 prefab_payment 一次结算；micro 复用既有逐槽温度及整件 HP。
+  defp prefab_phase_payment(before,state,removed,added,cells,cid) do
+    quantities = for {cell,m} <- added,Phase.liquid?(m) or phase_material?(state,m),into: %{},
+      do: {cell,liquid_capacity(state)}
+    removed = Enum.filter(removed,fn {_,m} -> phase_material?(before,m) end)
+    added = Enum.filter(added,fn {_,m} -> phase_material?(state,m) end)
+    {old_values,_} = phase_values(before,Enum.map(removed,&elem(&1,0)))
+    removed_micro = changed_phase_micro(before,state,cells)
+    added_micro = changed_phase_micro(state,before,cells)
+    ratios = removed_micro |> Enum.uniq_by(& &1.owner) |> Map.new(fn target ->
+      component = property_state(before,%{target | granularity: 2})
+      {target.owner,component.hp/component.max_hp}
+    end)
+    removed = Enum.map(removed,fn {cell,m} ->
+      {m,Map.get(before.liquid_units,cell,liquid_capacity(before)),Map.fetch!(old_values,cell)}
+    end) ++ Enum.map(removed_micro,fn target ->
+      row = property_state(before,target)
+      energy = Phase.energy(row,Damage.volume(1),before.properties.materials[target.material],phase_ambient(before))
+      {target.material,before.material_units_per_micro,{energy,before.material_units_per_micro*ratios[target.owner]}}
+    end)
+    {inventory,balances} = Enum.reduce(removed,{%{},state.material_balances},fn {m,q,value},{inventory,balances} ->
+      key = {cid,m}
+      balance = Map.get(balances,key,0)
+      carried = Map.get_lazy(inventory,key,fn -> inventory_phase(state,cid,m,balance) end)
+      {_,carried} = Phase.transfer(value,carried,q,q,:scoop)
+      {Map.put(inventory,key,carried),Map.put(balances,key,balance+q)}
+    end)
+    added = Enum.map(added,fn {cell,m} -> {{:macro,cell},m,liquid_capacity(state)} end) ++
+      Enum.map(added_micro,fn target -> {{:micro,target},target.material,state.material_units_per_micro} end)
+    Enum.reduce_while(added,{:ok,inventory,balances,%{},[]},fn {address,m,q},{:ok,inventory,balances,values,micro_values} ->
+      key = {cid,m}
+      balance = Map.get(balances,key,0)
+      carried = Map.get_lazy(inventory,key,fn -> inventory_phase(state,cid,m,balance) end)
+      if not Phase.liquid?(m) and elem(carried,1) <= 0 do
+        {:halt,{:error,:broken_material}}
+      else
+        {value,carried} = Phase.transfer({0.0,0.0},carried,balance,q,:pour)
+        {values,micro_values} = case address do
+          {:macro,cell} -> {Map.put(values,cell,value),micro_values}
+          {:micro,target} -> {values,[{target,value} | micro_values]}
+        end
+        {:cont,{:ok,Map.put(inventory,key,carried),Map.put(balances,key,balance-q),values,micro_values}}
+      end
+    end)
+    |> case do
+      {:ok,inventory,_balances,values,micro_values} ->
+        {:ok,%{state | phase_inventory: Map.merge(state.phase_inventory,inventory),
+          liquid_units: Liquid.apply_changes(state.liquid_units,quantities)},
+          %{phase_inventory: inventory,prefab_phase_values: values,prefab_phase_micro: micro_values,
+            prefab_phase_preserved: MapSet.new(removed_micro,&Damage.key/1)}}
+      {:error,_}=error -> error
+    end
+  end
+
+  defp changed_phase_micro(state,other,cells) do
+    for cell <- cells,{slot,{material,{birth,_}=owner}=value} <- Map.get(state.refined,cell,%{}),
+      Map.get(Map.get(other.refined,cell,%{}),slot) != value,phase_material?(state,material),
+      do: %{micro: Prefab.micro_coord(cell,slot),granularity: 1,incarnation: birth,owner: owner,material: material}
+  end
+
+  defp put_prefab_phase_micro(state,values) do
+    {state,rows,pools} = Enum.reduce(values,{state,[],%{}},fn {target,{energy,integrity}},{s,rows,pools} ->
+      material = s.properties.materials[target.material]
+      volume = Damage.volume(1)
+      latent = if Phase.liquid?(target.material),do: material["latent_heat_per_macro_j"],else: 0.0
+      # Micro 仍是既有显热节点；平台内的焓转回等量显热，不能新增第二套微格相变模型。
+      temperature = material["phase_transition_kelvin"] + (energy/volume-latent)/material["heat_capacity_per_macro"]
+      row = property_state(s,target) |> Map.put(:temperature_kelvin,temperature)
+      loss = row.max_hp*(1.0-max(0.0,min(1.0,integrity/s.material_units_per_micro)))
+      pools = Map.update(pools,target.owner,{target,loss},fn {previous,total} -> {previous,total+loss} end)
+      s = %{s | damage: Map.put(s.damage,Damage.key(row),row)}
+      s = %{s | thermal: %{s.thermal | active: true},
+        thermal_work: %{s.thermal_work | hot: MapSet.put(s.thermal_work.hot,Damage.macro(target))}}
+      {s,[row | rows],pools}
+    end)
+    Enum.reduce(pools,{state,rows},fn {_owner,{target,loss}},{s,rows} ->
+      row = property_state(s,%{target | granularity: 2})
+      row = %{row | hp: row.max_hp-loss}
+      {%{s | damage: Map.put(s.damage,Damage.key(row),row)},[row | rows]}
+    end)
+  end
 
   defp prefab_reach(state, actor, cells) do
     range = state.properties.tools[1]["range_macro"]
@@ -1431,7 +1567,16 @@ defmodule VoxelRegion.World do
          changed,
          actor \\ nil
        ) do
+    case prefab_alignment(definition, anchor) do
+      :ok -> place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor)
+      {:error,reason} -> {:reply,{:error,reason},before}
+    end
+  end
+
+  defp place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor) do
     nodes = Prefab.occurrences(definition, anchor, orientation, before.seq + 1, parent, slot)
+    macro_nodes = Prefab.macro_occurrences(definition, anchor, orientation, before.seq + 1, parent, slot)
+    macro_additions = for {owner,_,cells} <- macro_nodes, {cell,m} <- cells, into: %{}, do: {cell,{m,owner}}
 
     # 已发布定义保证 slot 不重叠；按 canonical macro 汇集后，每格只更新一次世界索引和缓存。
     additions =
@@ -1449,8 +1594,20 @@ defmodule VoxelRegion.World do
 
     # 在当前权威提交中检查这次实际构造的占用，不另展开一份模板作预检。
     result =
-      if Enum.all?(Map.keys(additions), &valid_edit_coord?/1) do
-        Enum.reduce_while(additions, {:ok, state}, fn {cell, added}, {:ok, s} ->
+      if Enum.all?(Map.keys(additions) ++ Map.keys(macro_additions), &valid_edit_coord?/1) do
+        Enum.reduce_while(macro_additions, {:ok,state}, fn {cell,{m,owner}}, {:ok,s} ->
+          case cell_value(s,0,cell) do
+            {:ok,{0,_},s} when not is_map_key(s.refined,cell) ->
+              s = %{s | macro_owners: Map.put(s.macro_owners,cell,owner),
+                placed_by: if(actor,do: Map.put(s.placed_by,cell,actor.cid),else: Map.delete(s.placed_by,cell))}
+              {:cont,{:ok,put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
+            {:ok,_,_} -> {:halt,{:error,:occupied}}
+            {:error,reason,_} -> {:halt,{:error,reason}}
+          end
+        end)
+        |> then(fn result -> Enum.reduce_while(additions, result, fn
+          _, {:error,_}=error -> {:halt,error}
+          {cell, added}, {:ok, s} ->
           slots = Map.get(s.refined, cell, %{})
 
           case cell_value(s, 0, cell) do
@@ -1468,7 +1625,7 @@ defmodule VoxelRegion.World do
             {:error, reason, _} ->
               {:halt, {:error, reason}}
           end
-        end)
+        end) end)
       else
         {:error, :invalid_coordinate}
       end
@@ -1477,7 +1634,7 @@ defmodule VoxelRegion.World do
       {:ok, next} ->
         instances =
           Enum.reduce(nodes, next.instances, fn {owner, instance, _}, acc ->
-            Map.put(acc, owner, instance)
+            Map.put(acc, owner, Map.put(instance,:placed_by,if(actor,do: actor.cid)))
           end)
 
         groups = Prefab.attachments(definition, anchor, orientation, before.seq + 1)
@@ -1502,7 +1659,7 @@ defmodule VoxelRegion.World do
           prefab_settle(
             before,
             next,
-            Enum.uniq(Map.keys(additions) ++ changed ++ Attachments.macros(slots)),
+            Enum.uniq(Map.keys(additions) ++ Map.keys(macro_additions) ++ changed ++ Attachments.macros(slots)),
             actor
           )
         end
@@ -1512,14 +1669,14 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp live_instance_ids(refined, instances) do
+  defp live_instance_ids(refined, instances, macro_owners) do
     owners =
       Enum.reduce(refined, %{}, fn {_, slots}, acc ->
         local = Enum.reduce(slots, %{}, fn {_, {_, id}}, owners -> Map.put(owners, id, true) end)
         Map.merge(acc, local)
       end)
 
-    MmoContracts.Voxel.Refined.ancestors(instances, Map.keys(owners))
+    MmoContracts.Voxel.Refined.ancestors(instances, Enum.uniq(Map.keys(owners) ++ Map.values(macro_owners)))
   end
 
   defp prefab_reply(before, state, cells, settlement \\ %{}) do
@@ -1530,8 +1687,16 @@ defmodule VoxelRegion.World do
     state = %{
       state
       | seq: before.seq + 1,
-        instances: Map.take(state.instances, live_instance_ids(state.refined, state.instances))
+        instances: Map.take(state.instances, live_instance_ids(state.refined, state.instances, state.macro_owners))
     }
+
+    macro_changes = Enum.filter(cells, fn cell ->
+      {:ok,old,_} = cell_value(before,0,cell)
+      {:ok,new,_} = cell_value(state,0,cell)
+      old != new
+    end)
+    macro_identity_changes = Enum.uniq(macro_changes ++
+      Enum.filter(cells,&(Map.get(before.macro_owners,&1) != Map.get(state.macro_owners,&1))))
 
     # owner 更换仍发布完整 L0；只有实际 slot/材质变化才重建结构和碰撞。
     material_changes =
@@ -1539,7 +1704,7 @@ defmodule VoxelRegion.World do
         old = Map.get(before.refined, cell, %{})
         new = Map.get(state.refined, cell, %{})
 
-        map_size(old) != map_size(new) or
+        cell in macro_changes or map_size(old) != map_size(new) or
           Enum.any?(old, fn {slot, {material, _}} ->
             case Map.get(new, slot) do
               {^material, _} -> false
@@ -1552,24 +1717,38 @@ defmodule VoxelRegion.World do
     {state, attachment_keys, settlement} = prune_attachments(before, state, cells, settlement)
 
     with {:ok, state, settlement} <- prefab_payment(before, state, cells, settlement) do
+      {phase_values,settlement} = Map.pop(settlement,:prefab_phase_values,%{})
+      {phase_micro,settlement} = Map.pop(settlement,:prefab_phase_micro,[])
+      {phase_preserved,settlement} = Map.pop(settlement,:prefab_phase_preserved,MapSet.new())
+      # 同材质替换也可能把半格相态补满；碰撞必须消费最终有限数量。
+      material_changes = Enum.uniq(material_changes ++ Enum.filter(cells,fn cell ->
+        Map.get(before.liquid_units,cell) != Map.get(state.liquid_units,cell)
+      end))
       {:ok, coarse, state, _} = reduce_batch(state, attachment_dirty(state, cells), 1, [], 0)
       {coarse_txn, state} = select_transaction(state, coarse)
-      terrain_payloads = state.payloads
+      macro_dirty = Enum.map(macro_changes,&{0,&1})
+      state = refresh_macro_payloads(before,state,macro_dirty)
+      terrain_payloads = Map.merge(before.payloads,state.payloads)
       {state, structure_keys, structure_cells} = refresh_structure(state, cells)
       structure_done = System.monotonic_time(:microsecond)
       l0_keys = Enum.uniq(region_keys(Enum.map(cells, &{0, &1})) ++ attachment_keys)
       keys = l0_keys ++ structure_keys
-      {entries, state} = region_afterimages(state, l0_keys, terrain_payloads)
+      {entries, state} = region_afterimages(state, l0_keys, terrain_payloads,macro_dirty)
       region_count = length(entries)
 
       entries = entries ++ structure_entries(state, structure_cells)
 
       regions_done = System.monotonic_time(:microsecond)
-      {state, metadata} = damage_geometry(before, state, cells, false)
+      {state, metadata} = damage_geometry(before, state, cells, macro_identity_changes,phase_preserved)
+      {state,phase_rows} = put_phase_values(state,phase_values)
+      {state,micro_rows} = put_prefab_phase_micro(state,phase_micro)
+      metadata = Map.update!(metadata,:property_states,&(&1 ++ phase_rows ++ micro_rows))
+      metadata = if state.thermal,do: Map.put(metadata,:thermal,state.thermal),else: metadata
 
       txn =
         Map.merge(%{coarse_txn | entries: entries ++ coarse_txn.entries}, metadata)
         |> Map.merge(settlement)
+        |> ownership_metadata(before,state,cells)
 
       with {:ok, chunks} <- canonical_changes(before, state, Enum.map(material_changes, &{0, &1})),
            collision_done = System.monotonic_time(:microsecond),
@@ -1905,6 +2084,7 @@ defmodule VoxelRegion.World do
       Map.merge(txn, %{
         attachment_serial: state.attachment_serial,
         attachment_owners: state.attachment_owners,
+        prefab_instances: state.instances,
         material_units_per_micro: state.material_units_per_micro,
         liquid_active: Enum.to_list(state.liquid_active)
       })
@@ -2086,6 +2266,7 @@ defmodule VoxelRegion.World do
           VoxelRegion.PropertyObservation.relevant?(t, box),
           do: %{t | seq: state.seq, request_id: 0}
 
+    macros = (macros ++ owned_macro_observations(state,box)) |> Map.new(&{Damage.key(&1),&1}) |> Map.values()
     %{
       property_states:
         macros ++ component_observations(state, box) ++ attachment_observations(state, box),
@@ -2094,6 +2275,16 @@ defmodule VoxelRegion.World do
     }
     |> public_properties()
     |> VoxelRegion.PropertyObservation.project(box)
+  end
+
+  defp owned_macro_observations(%{properties: nil}, _box), do: []
+  defp owned_macro_observations(state, box) do
+    for {cell,_} <- state.macro_owners,
+        micro = Prefab.micro_coord(cell,0),
+        box == nil or VoxelRegion.PropertyObservation.relevant?(%{micro: micro,granularity: 0},box) do
+      {target,_} = target_at(micro,state)
+      property_state(state,target)
+    end
   end
 
   defp property_transaction(before, state, txn) do
@@ -2148,6 +2339,21 @@ defmodule VoxelRegion.World do
           |> Map.new(&{Damage.key(&1), &1})
           |> Map.values()
 
+    changed_macros = Enum.uniq(Map.keys(before.macro_owners) ++ Map.keys(state.macro_owners))
+      |> Enum.filter(fn cell -> Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or
+        Map.get(before.epochs,cell) != Map.get(state.epochs,cell) end)
+      |> MapSet.new()
+    rows = if MapSet.size(changed_macros) == 0 do
+      rows
+    else
+      removed = owned_macro_observations(before,nil)
+        |> Enum.filter(&MapSet.member?(changed_macros,Damage.macro(&1)))
+        |> Enum.map(&%{&1 | seq: state.seq,hp: 0.0,flags: 1,request_id: 0})
+      fresh = owned_macro_observations(state,nil)
+        |> Enum.filter(&MapSet.member?(changed_macros,Damage.macro(&1)))
+      (removed ++ rows ++ fresh) |> Map.new(&{Damage.key(&1),&1}) |> Map.values()
+    end
+
     rows =
       Enum.map(rows, fn
         %{granularity: 3} = row ->
@@ -2161,8 +2367,8 @@ defmodule VoxelRegion.World do
 
         %{granularity: 2} = row ->
           cells =
-            subtree_cells(before, MapSet.new([row.owner])) ++
-              subtree_cells(state, MapSet.new([row.owner]))
+            micro_owner_cells(before, MapSet.new([row.owner])) ++
+              micro_owner_cells(state, MapSet.new([row.owner]))
 
           Map.put(row, :observation_cells, Enum.uniq(cells))
 
@@ -2332,7 +2538,7 @@ defmodule VoxelRegion.World do
           |> Map.merge(core)
 
         instances = Map.merge(state.instances, p.instances)
-        ids = live_instance_ids(refined, instances)
+        ids = live_instance_ids(refined, instances, state.macro_owners)
 
         attachments =
           state.attachments
@@ -2434,12 +2640,6 @@ defmodule VoxelRegion.World do
     {liquid_wake, settlement} = Map.pop(settlement, :liquid_wake, true)
     {placed, settlement} = Map.pop(settlement, :placed, %{})
 
-    # 这一笔改到的每个 L0 格：是付费放置的就记放置者，否则清掉原来的记录（nil）；没有记录、也不是放置的格不进日志。
-    provenance =
-      for {cell, _} <- edits, is_map_key(placed, cell) or is_map_key(state.placed_by, cell), into: %{}, do: {cell, Map.get(placed, cell)}
-
-    state = %{state | placed_by: merge_placed(state.placed_by, provenance)}
-    settlement = if map_size(provenance) > 0, do: Map.put(settlement, :placed_by, provenance), else: settlement
     liquid_dirty = Enum.map(Map.keys(liquid_changes), &{0,&1})
     state = %{state | liquid_units: Liquid.apply_changes(state.liquid_units, liquid_changes)}
 
@@ -2449,7 +2649,7 @@ defmodule VoxelRegion.World do
     state = %{state | attachments: Map.drop(state.attachments, removed_slots)}
 
     removed_cells =
-      if MapSet.size(removed_owners) == 0, do: [], else: subtree_cells(state, removed_owners)
+      if MapSet.size(removed_owners) == 0, do: [], else: micro_owner_cells(state, removed_owners)
 
     state =
       if removed_cells == [],
@@ -2457,21 +2657,24 @@ defmodule VoxelRegion.World do
         else:
           clear_subtree(state, removed_owners, removed_cells)
           |> then(fn s ->
-            %{s | instances: Map.take(s.instances, live_instance_ids(s.refined, s.instances))}
+            %{s | instances: Map.take(s.instances, live_instance_ids(s.refined, s.instances, s.macro_owners))}
           end)
 
     # 地面花草失去支撑即消失：下方格变成不挡移动的材质（挖空、液体、花草）时，同一事务里清掉上面的花草。
-    {unsupported, state} =
-      Enum.reduce(edits, {[], state}, fn {{x, y, z}, m}, {found, s} ->
+    with {:ok,unsupported,state} <-
+      Enum.reduce_while(edits, {:ok,[],state}, fn {{x, y, z}, m}, {:ok,found,s} ->
         above = {x, y + 1, z}
 
         if MmoContracts.VoxelMaterialCatalog.blocks_movement?(m) or List.keymember?(edits, above, 0) or is_map_key(s.refined, above) do
-          {found, s}
+          {:cont,{:ok,found,s}}
         else
-          {:ok, {top, _}, s} = cell_value(s, 0, above)
-          {if(MmoContracts.VoxelMaterialCatalog.flora?(top), do: [{above, 0} | found], else: found), s}
+          case cell_value(s,0,above) do
+            {:ok,{top,_},s} ->
+              {:cont,{:ok,if(MmoContracts.VoxelMaterialCatalog.flora?(top),do: [{above,0}|found],else: found),s}}
+            {:error,:missing,_} -> {:halt,{:error,:missing_region}}
+          end
         end
-      end)
+      end) do
 
     edits = edits ++ unsupported
     legacy = legacy and unsupported == []
@@ -2514,6 +2717,8 @@ defmodule VoxelRegion.World do
             {:cont, {changed, s}}
 
           {:ok, _, s} ->
+            s = %{s | macro_owners: Map.delete(s.macro_owners,cell),
+              placed_by: merge_placed(s.placed_by,%{cell => Map.get(placed,cell)})}
             {:cont,
              {[{0, cell} | changed],
               put_overlay(s, 0, cell, {m, MmoContracts.Voxel.Skins.uniform(m)})}}
@@ -2546,6 +2751,7 @@ defmodule VoxelRegion.World do
         end
 
       {geometry_changed, state} ->
+        state = %{state | instances: Map.take(state.instances,live_instance_ids(state.refined,state.instances,state.macro_owners))}
         changed = Enum.uniq(geometry_changed ++ liquid_dirty)
         state = if liquid_wake, do: wake_liquid(state, Enum.map(changed, &elem(&1,1))), else: state
         # Quantity-only changes require a new seq and full owner/ring afterimages,
@@ -2623,7 +2829,7 @@ defmodule VoxelRegion.World do
               end
 
             {state, metadata} =
-              damage_geometry(before, state, Enum.map(geometry_changed, &elem(&1, 1)), true)
+              damage_geometry(before, state, Enum.map(geometry_changed, &elem(&1, 1)), Enum.map(geometry_changed, &elem(&1, 1)))
 
             {state, phase_rows} = put_phase_values(state, phase_values)
             metadata = Map.update!(metadata, :property_states, &(&1 ++ phase_rows))
@@ -2632,6 +2838,7 @@ defmodule VoxelRegion.World do
             metadata = if state.thermal, do: Map.put(metadata,:thermal,state.thermal), else: metadata
             imaged = System.monotonic_time(:microsecond)
             txn = Map.merge(txn, metadata) |> Map.merge(settlement)
+              |> ownership_metadata(before,state,Enum.map(geometry_changed,&elem(&1,1)))
 
             txn =
               if Map.has_key?(settlement, :property_states),
@@ -2678,6 +2885,7 @@ defmodule VoxelRegion.World do
               {:ok, schedule_liquid(state)}
             end
         end
+    end
     end
   end
 
@@ -2874,6 +3082,7 @@ defmodule VoxelRegion.World do
         material_balances: state.material_balances,
         material_supplies: state.material_supplies,
         placed_by: state.placed_by,
+        macro_owners: state.macro_owners,
         phase_inventory: state.phase_inventory,
         thermal: state.thermal
       })
@@ -2985,7 +3194,7 @@ defmodule VoxelRegion.World do
               micro: cell |> Tuple.to_list() |> Enum.map(&(&1 * @micro)) |> List.to_tuple(),
               granularity: 0,
               incarnation: Map.get(state.epochs, cell, 0),
-              owner: {0, 0},
+              owner: Map.get(state.macro_owners,cell,{0,0}),
               material: material
             }
 
@@ -3405,7 +3614,7 @@ defmodule VoxelRegion.World do
   end
 
   defp component_max_hp(state, owner) do
-    for cell <- subtree_cells(state, MapSet.new([owner])),
+    for cell <- micro_owner_cells(state, MapSet.new([owner])),
         {_, {material, id}} <- Map.fetch!(state.refined, cell),
         id == owner,
         reduce: 0.0 do
@@ -4007,8 +4216,14 @@ defmodule VoxelRegion.World do
   defp leaf_component?(state, owner),
     do: not Enum.any?(state.instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) == owner end)
 
-  defp dismantle_target(before, _state, _actor, %{granularity: 0}) do
+  defp dismantle_target(before, _state, _actor, %{granularity: 0, owner: {0,0}}) do
     {:reply, {:error, :not_a_component}, before}
+  end
+
+  defp dismantle_target(before, state, actor, %{granularity: 0} = target) do
+    units = recover_units(state,target,@micro*@micro*@micro*state.material_units_per_micro)
+    {state,settlement} = settle_material(state,actor.cid,target.material,units)
+    destroy_target(before,state,target,Map.put(settlement,:recovery_cid,actor.cid))
   end
 
   defp dismantle_target(before, state, actor, target) do
@@ -4017,7 +4232,7 @@ defmodule VoxelRegion.World do
       {:reply, {:error, :not_a_leaf_component}, before}
     else
       ids = MapSet.new([target.owner])
-      cells = subtree_cells(state, ids)
+      cells = micro_owner_cells(state, ids)
 
       amounts = for cell <- cells, {slot,{material,owner}} <- Map.fetch!(state.refined,cell),
         owner==target.owner and material in state.production_materials, reduce: %{} do
@@ -4065,9 +4280,9 @@ defmodule VoxelRegion.World do
 
   # Macro epochs track replacement even back to the same material. Refined identity
   # is its exact micro + occurrence birth; neighbouring damage survives local edits.
-  defp damage_geometry(before, state, cells, macro_edit) do
+  defp damage_geometry(before, state, cells, macro_cells, preserved_phase \\ MapSet.new()) do
     cells = MapSet.new(cells)
-    epochs = if macro_edit, do: Map.new(cells, &{&1, state.seq}), else: %{}
+    epochs = Map.new(macro_cells, &{&1, state.seq})
 
     removed =
       before.damage
@@ -4092,7 +4307,8 @@ defmodule VoxelRegion.World do
       if state.thermal do
         removed_j =
           Enum.reduce(removed, 0.0, fn t, sum ->
-            if Map.has_key?(t, :temperature_kelvin) and not phase_target?(before,t),
+            if Map.has_key?(t, :temperature_kelvin) and not phase_target?(before,t) and
+                 not MapSet.member?(preserved_phase,Damage.key(t)),
               do:
                 sum +
                   state.properties.materials[t.material]["heat_capacity_per_macro"] *
@@ -4165,6 +4381,8 @@ defmodule VoxelRegion.World do
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_supplies: Map.merge(state.material_supplies, Map.get(txn, :material_supplies, %{})),
         placed_by: merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
+        macro_owners: merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
+        instances: Map.get(txn,:prefab_instances,state.instances),
         material_balances:
           Map.merge(state.material_balances, Map.get(txn, :material_balances, %{}))
     }
@@ -4174,6 +4392,17 @@ defmodule VoxelRegion.World do
   defp merge_placed(placed_by, delta) do
     {cleared, set} = Enum.split_with(delta, fn {_, cid} -> cid == nil end)
     placed_by |> Map.drop(Enum.map(cleared, &elem(&1, 0))) |> Map.merge(Map.new(set))
+  end
+
+  # Canonical ownership deltas share the transaction with the actual geometry edit.
+  # No-op edits retain identity; nil removes a row on both replay backends.
+  defp ownership_metadata(txn,before,state,cells) do
+    Enum.reduce([:placed_by,:macro_owners],txn,fn key,txn ->
+      old = Map.fetch!(before,key)
+      new = Map.fetch!(state,key)
+      delta = for cell <- cells, Map.get(old,cell) != Map.get(new,cell), into: %{}, do: {cell,Map.get(new,cell)}
+      if map_size(delta) == 0, do: txn, else: Map.put(txn,key,delta)
+    end)
   end
 
   defp balance_state(state, cid, material) do

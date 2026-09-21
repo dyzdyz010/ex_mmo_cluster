@@ -16,13 +16,15 @@ defmodule MmoContracts.LiquidWireTest do
      }, index}
   end
 
-  test "B7 Hello15 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 15
-    hello = %Session.Hello{protocol_version: 15, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
+    assert Session.Codec.protocol_version() == 16
+    hello = %Session.Hello{protocol_version: 16, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 15::16, tail::binary>> = packet
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<10::16>> <> tail)
+    <<prefix::binary-size(9), 16::16, tail::binary>> = packet
+    for version <- [10,15] do
+      assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<version::16>> <> tail)
+    end
 
     for action <- [2, 3] do
       wire =
@@ -100,7 +102,7 @@ defmodule MmoContracts.LiquidWireTest do
     assert {:error, :invalid_payload} = Payload.decode(packet)
   end
 
-  test "Hello15 codec still carries B6 combustion after thermal state" do
+  test "Hello16 codec still carries B6 combustion after thermal state" do
     row = %{
       request_id: 0,
       seq: 7,

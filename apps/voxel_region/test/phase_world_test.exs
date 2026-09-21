@@ -318,6 +318,176 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert row(c.w,cell).material==20
   end
 
+  # Test-only: one published v3 macro, using the same author catalogue as the existing phase fixture.
+  defp macro_prefab(c, material, precision \\ :macro) do
+    micro = if precision == :micro,do: (for x<-0..7,y<-0..7,z<-0..7,into: <<>>,
+      do: <<x::signed-little-32,y::signed-little-32,z::signed-little-32,material::16-little>>),else: <<>>
+    macro = if precision == :macro,do: <<0::signed-little-32,0::signed-little-32,0::signed-little-32,material::16-little>>,else: <<>>
+    bytes = <<"VXPD",3::32-little,div(byte_size(micro),14)::32-little,micro::binary,
+      0::32-little,0::32-little,div(byte_size(macro),14)::32-little,macro::binary>>
+    id = :crypto.hash(:sha256,bytes)
+    path = Path.join(c.root,"prefabs")
+    File.write!(Path.join(path,Base.encode16(id)<>".vxpd"),bytes)
+    assert :ok = World.publish_prefabs(c.w,path)
+    id
+  end
+
+  defp place_macro_prefab(c,id,seq) do
+    World.prefab_intent(c.w,c.actor,:voxel_prefab_place_v1,
+      %{definition_id: id,anchor: {63*8,8,16},orientation: 0,client_intent_seq: seq})
+  end
+
+  @tag :prefab_phase
+  @tag :empty_inventory
+  @tag :database_metadata
+  test "prefab water scoop and whole removal conserve quantity and enthalpy with decodable payload", c do
+    id = macro_prefab(c,21)
+    assert {:ok,_} = World.material_supply(c.w,1001,"prefab-water",%{21=>@capacity})
+    # 1 m3 water at 293.15 K: latent 334 MJ plus 4.18 MJ/K * 20 K.
+    energy = 417_600_000.0
+    assert {:ok,birth} = place_macro_prefab(c,id,1)
+    assert observe(c.w).liquid_units == %{{63,1,2}=>@capacity}
+    assert {:ok,_} = transfer(c,2,2,{63,1,2})
+    scooped = observe(c.w)
+    assert scooped.liquid_units == %{{63,1,2}=>3*@quarter}
+    assert scooped.material_balances[{1001,21}] == @quarter
+    assert_in_delta elem(scooped.phase_inventory[{1001,21}],0), energy/4, 0.001
+    assert_in_delta row(c.w,{63,1,2}).phase_energy_j, 3*energy/4, 0.001
+    assert {:ok,_} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,
+      %{instance_id: {birth,0},client_intent_seq: 3})
+    removed = observe(c.w)
+    assert removed.liquid_units == %{}
+    assert removed.material_balances[{1001,21}] == @capacity
+    assert_in_delta elem(removed.phase_inventory[{1001,21}],0), energy, 0.001
+    assert elem(removed.phase_inventory[{1001,21}],1) == @capacity
+    payload = VoxelRegion.TestSupport.payload(c.w,0,{0,0,0})
+    assert payload.liquid_units == %{}
+    assert MmoContracts.Voxel.Payload.material(payload,MmoContracts.Voxel.Payload.local(payload.region,{63,1,2})) == 0
+  end
+
+  @tag :prefab_phase
+  @tag :empty_inventory
+  test "damaged phase inventory keeps enthalpy and integrity through prefab placement and replacement", c do
+    id = macro_prefab(c,20)
+    deposits = Path.join(c.root,"prefab-ice-source.json")
+    File.write!(deposits,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,1,2],material: 20}]}))
+    assert {:ok,_} = World.liquid_experiment(c.w,deposits)
+    assert {:ok,_} = operate(c,19,1)
+    assert row(c.w,{63,1,2}).hp == 78.0
+    assert {:ok,_} = operate(c,1,2,{63,1,2},2)
+    # Author ice starts with 1.93 MJ/K * 20 K; one impact removes 30-8 HP.
+    energy = 38_600_000.0
+    integrity = @capacity*0.78
+    carried = observe(c.w)
+    assert carried.material_balances[{1001,20}] == @capacity
+    assert_in_delta elem(carried.phase_inventory[{1001,20}],0), energy, 0.001
+    assert_in_delta elem(carried.phase_inventory[{1001,20}],1), integrity, 1.0e-6
+    assert {:ok,birth} = place_macro_prefab(c,id,10)
+    placed = row(c.w,{63,1,2})
+    assert placed.hp == 78.0 and placed.max_hp == 100.0
+    assert_in_delta placed.phase_energy_j, energy, 0.001
+    assert observe(c.w).liquid_units == %{{63,1,2}=>@capacity}
+    assert observe(c.w).material_balances[{1001,20}] == 0
+    assert {:ok,replaced_birth} = World.prefab_intent(c.w,c.actor,:voxel_prefab_replace_v1,
+      %{instance_id: {birth,0},definition_id: id,client_intent_seq: 11})
+    replaced = row(c.w,{63,1,2})
+    assert replaced.owner == {replaced_birth,0}
+    assert replaced.hp == 78.0 and replaced.max_hp == 100.0
+    assert_in_delta replaced.phase_energy_j, energy, 0.001
+    settled = observe(c.w)
+    assert settled.liquid_units == %{{63,1,2}=>@capacity}
+    assert settled.material_balances[{1001,20}] == 0
+    assert_in_delta elem(settled.phase_inventory[{1001,20}],0), 0.0, 0.001
+    assert_in_delta elem(settled.phase_inventory[{1001,20}],1), 0.0, 1.0e-6
+  end
+
+  @tag :prefab_phase
+  @tag :empty_inventory
+  test "zero-integrity phase fragments cannot acquire full HP through prefab placement", c do
+    id = macro_prefab(c,20)
+    deposits = Path.join(c.root,"prefab-broken-ice-source.json")
+    File.write!(deposits,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,1,2],material: 20}]}))
+    assert {:ok,_} = World.liquid_experiment(c.w,deposits)
+    for seq <- 1..5, do: assert({:ok,_} = operate(c,19,seq))
+    broken = observe(c.w)
+    assert broken.material_balances[{1001,20}] == @capacity
+    assert elem(broken.phase_inventory[{1001,20}],1) == 0.0
+    assert {:error,:broken_material} = place_macro_prefab(c,id,10)
+    rejected = observe(c.w)
+    assert rejected.seq == broken.seq
+    assert rejected.material_balances == broken.material_balances
+    assert rejected.phase_inventory == broken.phase_inventory
+    assert rejected.liquid_units == %{}
+    assert World.stats(c.w).instances == 0
+  end
+
+  @tag :prefab_phase
+  @tag :empty_inventory
+  @tag :database_metadata
+  test "owned phase action2 clears ownership and last instance across replay and compaction", c do
+    id = macro_prefab(c,20)
+    assert {:ok,_} = World.material_supply(c.w,1001,"prefab-recover-ice",%{20=>@capacity})
+    assert {:ok,birth} = place_macro_prefab(c,id,1)
+    assert row(c.w,{63,1,2}).owner == {birth,0}
+    assert [%{placed_by: 1001}] = World.material_snapshot(c.w,[1001],[{63,1,2}]).probe_occupancy
+    assert {:ok,_} = operate(c,1,2,{63,1,2},2)
+    Enum.reduce([:live,:replay,:checkpoint],c.w,fn mode,w ->
+      w = if mode == :live do
+        w
+      else
+        if mode == :checkpoint, do: assert(:ok == World.compact(w))
+        stop_supervised!(World)
+        start_supervised!({World,c.opts})
+      end
+      assert [%{material: 0,placed_by: nil,slots: []}] = World.material_snapshot(w,[1001],[{63,1,2}]).probe_occupancy
+      assert {:error,:instance_not_found} = World.instance_cells(w,{birth,0})
+      assert World.stats(w).instances == 0
+      recovered = observe(w)
+      assert recovered.liquid_units == %{}
+      refute Enum.any?(recovered.damage,fn {_,t} -> t.owner == {birth,0} end)
+      assert recovered.material_balances[{1001,20}] == @capacity
+      assert_in_delta elem(recovered.phase_inventory[{1001,20}],0), 0.0, 0.001
+      assert elem(recovered.phase_inventory[{1001,20}],1) == @capacity
+      assert VoxelRegion.TestSupport.payload(w,0,{0,0,0}).liquid_units == %{}
+      w
+    end)
+  end
+
+  @tag :prefab_phase
+  @tag :prefab_phase_precision
+  @tag :empty_inventory
+  test "512 phase micro cells replace into a macro and back without minting heat or repairing damage", c do
+    micro_id = macro_prefab(c,20,:micro)
+    macro_id = macro_prefab(c,20)
+    assert {:ok,birth} = World.place_prefab(c.w,micro_id,{63*8,8,16},0)
+    assert {:ok,_} = operate(c,19,1)
+    component = Enum.find(Map.values(observe(c.w).damage),&(&1.granularity==2 and &1.owner=={birth,0}))
+    assert component.hp == 78.0 and component.max_hp == 100.0
+    # Existing micro cells start at the fixture's 293.15 K; 512 * (1/512 m3) * C * dT.
+    expected_energy = 38_600_000.0
+    assert {:ok,macro_birth} = World.prefab_intent(c.w,c.actor,:voxel_prefab_replace_v1,
+      %{instance_id: {birth,0},definition_id: macro_id,client_intent_seq: 10})
+    macro = row(c.w,{63,1,2})
+    assert macro.owner == {macro_birth,0}
+    assert_in_delta macro.hp, component.hp, 1.0e-9
+    assert_in_delta macro.phase_energy_j, expected_energy, 0.001
+    assert Map.get(observe(c.w).material_balances,{1001,20},0) == 0
+    assert {:ok,micro_birth} = World.prefab_intent(c.w,c.actor,:voxel_prefab_replace_v1,
+      %{instance_id: {macro_birth,0},definition_id: micro_id,client_intent_seq: 11})
+    restored = observe(c.w)
+    component_after = Enum.find(Map.values(restored.damage),&(&1.granularity==2 and &1.owner=={micro_birth,0}))
+    assert_in_delta component_after.hp, component.hp, 1.0e-9
+    assert component_after.max_hp == component.max_hp
+    fine = Enum.filter(Map.values(restored.damage),&(&1.granularity==1 and &1.owner=={micro_birth,0}))
+    assert length(fine) == 512
+    energy = Enum.reduce(fine,0.0,fn t,e -> e + 1_930_000.0/512*(t.temperature_kelvin-273.15) end)
+    assert_in_delta energy, expected_energy, 0.001
+    assert restored.liquid_units == %{}
+    assert Map.get(restored.material_balances,{1001,20},0) == 0
+    assert_in_delta elem(restored.phase_inventory[{1001,20}],0), 0.0, 0.001
+    assert_in_delta elem(restored.phase_inventory[{1001,20}],1), 0.0, 1.0e-6
+  end
+
   @tag :empty_inventory
   test "空相变域不依赖热环境初始化，也不生成材料真值",c do
     stop_supervised!(World)

@@ -1,5 +1,5 @@
 defmodule MmoContracts.LiquidFallsWireTest do
-  @moduledoc "只测试：Hello15 下落展示尾段；纯字节协议，不启动网络或数据库。"
+  @moduledoc "只测试：Hello16 下落展示尾段；纯字节协议，不启动网络或数据库。"
   use ExUnit.Case, async: true
   alias MmoContracts.Voxel.Codec
 
@@ -30,6 +30,6 @@ defmodule MmoContracts.LiquidFallsWireTest do
       assert {:error, :invalid_transaction} = Codec.decode_transaction(old <> invalid)
     end
 
-    assert MmoContracts.Session.Codec.protocol_version() == 15
+    assert MmoContracts.Session.Codec.protocol_version() == 16
   end
 end
