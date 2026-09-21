@@ -12,6 +12,8 @@ defmodule GateServer.Npc.Brain.Llm do
   require Logger
 
   @history 8
+  # inspect 在建成区能有几百行：只把离自己最近的这么多件给模型，总数另报。
+  @nearest 24
   # 两次请求的最小间隔（毫秒）：连续被拒时不空转打接口。
   @min_gap_ms 1_000
 
@@ -184,7 +186,7 @@ defmodule GateServer.Npc.Brain.Llm do
         name: "inspect",
         description:
           "列出周围（自己所在 64 米 tile 及相邻 tile）的附件与预制件构件：附件给 attachment_id、kind、axis、micro 坐标、material、hp、电路状态；" <>
-            "构件给 instance [birth, occurrence] 与占的格。detach、prefab remove / replace、对附件 use_tool 都要用这里的身份。",
+            "构件给 instance [birth, occurrence] 与占的格。只列离自己最近的 24 件，total 是总数。detach、prefab remove / replace、对附件 use_tool 都要用这里的身份。",
         parameters: %{type: "object", properties: %{}, additionalProperties: false}
       },
       %{
@@ -373,7 +375,8 @@ defmodule GateServer.Npc.Brain.Llm do
 
         {:outcome, outcome} ->
           state = remember_probe(state, outcome)
-          %{state | dirty: true, outcomes: Enum.take(remember(outcome, state.outcomes), @history)}
+          position = state.observation && state.observation.self.position
+          %{state | dirty: true, outcomes: Enum.take(remember(outcome, state.outcomes, position), @history)}
 
         {:answer, {:ok, response}} ->
           {waits, commands} =
@@ -429,7 +432,7 @@ defmodule GateServer.Npc.Brain.Llm do
   defp remember_probe(state, _), do: state
 
   @doc "Outcome 进历史（新在前）。`look` 的原样快照太大：只留非空气格，按 \"x,z\" 列聚成 [y, material]；更早的 look 只留结论。"
-  def remember(%{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome, outcomes) do
+  def remember(%{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome, outcomes, _position) do
     columns =
       for(%{cell: [x, y, z], material: material} <- cells, material != 0, do: {"#{x},#{z}", [y, material]})
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
@@ -439,22 +442,36 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。
-  def remember(%{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome, outcomes) do
+  def remember(%{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome, outcomes, position) do
+    # micro 坐标 / 8 = 米；按到自己的距离取最近的 @nearest 件。
+    nearest = fn rows ->
+      rows |> Enum.sort_by(fn %{micro: {x, y, z}} -> distance({x / 8, y / 8, z / 8}, position) end) |> Enum.take(@nearest)
+    end
+
     attachments =
-      for %{granularity: 3, owner: {id, type}} = row <- rows do
+      for %{owner: {id, type}} = row <- nearest.(Enum.filter(rows, &(&1.granularity == 3))) do
         %{attachment_id: id, kind: div(type, 3), axis: rem(type, 3), micro: row.micro}
         |> Map.merge(Map.take(row, [:material, :hp, :max_hp, :circuit]))
       end
 
     components =
-      for %{granularity: 2, owner: {birth, occurrence}} = row <- rows,
+      for %{owner: {birth, occurrence}} = row <- nearest.(Enum.filter(rows, &(&1.granularity == 2))),
         do: %{instance: [birth, occurrence], material: row.material, cells: row.observation_cells}
 
+    data = %{
+      attachments: attachments,
+      components: components,
+      total: %{attachments: Enum.count(rows, &(&1.granularity == 3)), components: Enum.count(rows, &(&1.granularity == 2))}
+    }
+
     older = for o <- outcomes, do: if(o.verb == :inspect, do: %{o | data: nil}, else: o)
-    [%{outcome | data: %{attachments: attachments, components: components}} | older]
+    [%{outcome | data: data} | older]
   end
 
-  def remember(outcome, outcomes), do: [outcome | outcomes]
+  def remember(outcome, outcomes, _position), do: [outcome | outcomes]
+
+  defp distance({x, y, z}, {px, py, pz}),
+    do: :math.sqrt((x - px) * (x - px) + (y - py) * (y - py) + (z - pz) * (z - pz))
 
   # 有新情况、没有在途命令、没有在途请求、且过了最小间隔，才问一次。
   defp ask(%{dirty: true, asking: false, observation: %{pending: []} = observation} = state) do
