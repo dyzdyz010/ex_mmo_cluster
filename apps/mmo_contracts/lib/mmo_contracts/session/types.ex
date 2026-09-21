@@ -96,8 +96,19 @@ defmodule MmoContracts.Session.TimeReply do
 end
 
 defmodule MmoContracts.Session.EntityEnter do
-  @moduledoc "M1 EntityEnter 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。"
-  @enforce_keys [:identity, :entity_id, :entity_epoch, :interest_generation, :server_tick, :state]
+  @moduledoc """
+  M1 EntityEnter 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。
+  `kind`（协议 16 起，末尾 1 字节）：0 = 玩家，1 = NPC；真值是 characters 表的 kind 列。
+  """
+  @enforce_keys [
+    :identity,
+    :entity_id,
+    :entity_epoch,
+    :interest_generation,
+    :server_tick,
+    :state,
+    :kind
+  ]
   defstruct @enforce_keys
 end
 

@@ -10,7 +10,7 @@ defmodule GateServer.Npc.Brain do
   ## Observation（每个 OwnerAck 一次，20 Hz）
 
       %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:},
-        entities: [%{entity_id:, entity_epoch:, tick:, position:}],   # 各自的 tick，不是同一时刻的快照
+        entities: [%{entity_id:, entity_epoch:, kind:, tick:, position:}],   # kind 0 = 玩家、1 = NPC；各自的 tick
         balances: [%{material:, balance:, cost:, seq:}] | nil,        # 自己的背包；nil = 还没取过
         pending: [%{id:, verb:}]}
 

@@ -368,6 +368,7 @@ defmodule SceneServer.Movement.VoximAoiTest do
       identity: %Session.Identity{session_epoch: id, scene_id: 1, scene_epoch: 7},
       entity_id: id,
       entity_epoch: epoch,
+      kind: 0,
       state: %Session.State{position: position, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}
     }
   end

@@ -183,6 +183,7 @@ defmodule SceneServer.Movement.Player do
       Map.take(state, [
         :id,
         :epoch,
+        :kind,
         :identity,
         :state,
         :slots,
@@ -783,6 +784,7 @@ defmodule SceneServer.Movement.Player do
       identity: state.identity,
       entity_id: state.id,
       entity_epoch: state.epoch,
+      kind: state.kind,
       player_pid: self(),
       gate_pid: state.gate,
       state: state.state,

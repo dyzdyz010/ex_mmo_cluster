@@ -96,7 +96,8 @@ defmodule SceneServer.Movement.AOI do
                   entity_epoch: entity.entity_epoch,
                   interest_generation: gen,
                   server_tick: entity.simulation_tick,
-                  state: entity.state
+                  state: entity.state,
+                  kind: entity.kind
                 }
 
                 {gen, Map.put(seen, target, gen), [event | events]}

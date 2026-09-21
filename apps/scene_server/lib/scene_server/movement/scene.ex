@@ -270,6 +270,7 @@ defmodule SceneServer.Movement.Scene do
         identity: identity,
         id: cut.id,
         epoch: cut.epoch,
+        kind: cut.kind,
         slot: nil,
         config: state.config,
         clock: state.clock,
@@ -379,6 +380,8 @@ defmodule SceneServer.Movement.Scene do
           identity: identity,
           id: cid,
           epoch: identity.session_epoch,
+          # EntityEnter.kind：会话 owner 给出（玩家连接不给 = 0，NPC Body 给 1）；客户端无法自报。
+          kind: Map.get(character, :kind, 0),
           slot: slot,
           probe: spawn || Enum.at(state.config.probes, slot),
           config: state.config,

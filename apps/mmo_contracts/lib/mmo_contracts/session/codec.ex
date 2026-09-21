@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 15
+  @protocol_version 16
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -61,7 +61,8 @@ defmodule MmoContracts.Session.Codec do
          entity_epoch: :u64,
          interest_generation: :u64,
          server_tick: :u64,
-         state: :state
+         state: :state,
+         kind: :u8
        ]},
     9 =>
       {Session.EntityLeave,

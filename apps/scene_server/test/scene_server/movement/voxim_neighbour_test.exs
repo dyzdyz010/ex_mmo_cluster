@@ -8,6 +8,7 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
       identity: %Session.Identity{session_epoch: id, scene_id: scene, scene_epoch: 1},
       entity_id: id,
       entity_epoch: 1,
+      kind: 0,
       player_pid: self(),
       active: true,
       simulation_tick: tick,

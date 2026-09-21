@@ -116,7 +116,7 @@ defmodule GateServer.Npc.Body do
       GenServer.call(
         state.claims,
         {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
-         %{id: state.cid, spawn: state.spawn}}
+         %{id: state.cid, spawn: state.spawn, kind: 1}}
       )
 
     Process.monitor(player)
@@ -180,7 +180,13 @@ defmodule GateServer.Npc.Body do
         {:mmo_reliable, identity, 1, %Session.EntityEnter{} = e},
         %{identity: identity} = state
       ) do
-    entity = %{entity_epoch: e.entity_epoch, tick: e.server_tick, position: e.state.position}
+    entity = %{
+      entity_epoch: e.entity_epoch,
+      kind: e.kind,
+      tick: e.server_tick,
+      position: e.state.position
+    }
+
     {:noreply, %{state | entities: Map.put(state.entities, e.entity_id, entity)}}
   end
 

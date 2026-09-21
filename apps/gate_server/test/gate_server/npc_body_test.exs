@@ -205,7 +205,7 @@ defmodule GateServer.NpcBodyTest do
 
     test "input backlog: exactly 120 behind keeps feeding, 121 behind exits for a supervised re-claim",
          %{scene: scene, a: a} do
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a}}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}}, 8_000
       c = Enum.find(Scene.observe(scene).characters, &(&1.entity_id == @npc_a))
       monitor = Process.monitor(a)
 
@@ -229,8 +229,8 @@ defmodule GateServer.NpcBodyTest do
 
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",
          %{scene: scene, a: a, b: b} do
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a}}, 8_000
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b}}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b, kind: 1}}, 8_000
 
       seen = samples(System.monotonic_time(:millisecond) + 6_000, %{})
       xs = for {x, _, _} <- seen[@npc_a], do: x
