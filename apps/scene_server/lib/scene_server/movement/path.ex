@@ -6,6 +6,7 @@ defmodule SceneServer.Movement.Path do
 
   `grid` 是 `%{{x, y, z} => :open | :solid}`：`:open` = 可穿过的空气格，`:solid` = 能踩的实心格；
   不在表里的格（液体、快照之外的未知）既不能穿过也不能踩——缺失不冒充空气。
+  `grid` 也可为一元坐标查询函数，返回同样的格类型；草稿检查可直接查询稀疏宏格／micro，避免展开空气表。
 
   规则（`height` = 角色占的格数，`step` = 不起跳能迈上的格数，二者来自权威下发的移动 profile）：
     * 站立格：自身及其上共 `height` 格 `:open`，脚下一格 `:solid`。
@@ -20,8 +21,9 @@ defmodule SceneServer.Movement.Path do
   @doc """
   从 `start`（脚所在的格；悬空时先落到正下方第一个站立格）走到 `{gx, gz}` 列的站立格（给了 `goal_y` 就只认那一层）。
   返回 `{:ok, [cell]}`（不含起点、含终点；已在终点时为空表）或 `:no_path`。
+  可选 `max_nodes` 限制本次发现的节点数；耗尽返回 `{:error, :search_limit}`，不冒充没有路径。
   """
-  def find(grid, {sx, sy, sz}, {gx, gz}, goal_y, step, height) do
+  def find(grid, {sx, sy, sz}, {gx, gz}, goal_y, step, height, opts \\ []) do
     case land(grid, {sx, sy, sz}, height) do
       nil ->
         :no_path
@@ -30,7 +32,7 @@ defmodule SceneServer.Movement.Path do
         goal? = fn {x, y, z} -> x == gx and z == gz and (goal_y == nil or y == goal_y) end
         estimate = fn {x, _, z} -> abs(gx - x) + abs(gz - z) end
         queue = :gb_sets.singleton({estimate.(start), 0, start})
-        search(queue, %{start => nil}, goal?, estimate, {grid, step, height})
+        search(queue, %{start => nil}, goal?, estimate, {grid, step, height, Keyword.get(opts, :max_nodes, :infinity)})
     end
   end
 
@@ -81,6 +83,9 @@ defmodule SceneServer.Movement.Path do
     end)
   end
 
+  defp search(_queue, came, _goal?, _estimate, {_, _, _, limit}) when is_integer(limit) and map_size(came) > limit,
+    do: {:error, :search_limit}
+
   defp search(queue, came, goal?, estimate, rules) do
     if :gb_sets.is_empty(queue) do
       :no_path
@@ -108,7 +113,7 @@ defmodule SceneServer.Movement.Path do
     end
   end
 
-  defp moves({grid, step, height}, {x, y, z}) do
+  defp moves({grid, step, height, _limit}, {x, y, z}) do
     for {dx, dz} <- [{1, 0}, {-1, 0}, {0, 1}, {0, -1}],
         next = step_to(grid, {x, y, z}, {x + dx, z + dz}, step, height),
         next != nil,
@@ -119,7 +124,7 @@ defmodule SceneServer.Movement.Path do
     up =
       Enum.find(1..step//1, fn k ->
         standable?(grid, {nx, y + k, nz}, height) and
-          Enum.all?(1..k, &(grid[{x, y + height - 1 + &1, z}] == :open))
+          Enum.all?(1..k, &(sample(grid, {x, y + height - 1 + &1, z}) == :open))
       end)
 
     cond do
@@ -134,13 +139,16 @@ defmodule SceneServer.Movement.Path do
   defp land(grid, {x, y, z} = cell, height) do
     cond do
       standable?(grid, cell, height) -> cell
-      grid[cell] == :open -> land(grid, {x, y - 1, z}, height)
+      sample(grid, cell) == :open -> land(grid, {x, y - 1, z}, height)
       true -> nil
     end
   end
 
-  defp clear?(grid, {x, y, z}, height), do: Enum.all?(0..(height - 1), &(grid[{x, y + &1, z}] == :open))
+  defp clear?(grid, {x, y, z}, height), do: Enum.all?(0..(height - 1), &(sample(grid, {x, y + &1, z}) == :open))
 
   defp standable?(grid, {x, y, z} = cell, height),
-    do: clear?(grid, cell, height) and grid[{x, y - 1, z}] == :solid
+    do: clear?(grid, cell, height) and sample(grid, {x, y - 1, z}) == :solid
+
+  defp sample(query, cell) when is_function(query, 1), do: query.(cell)
+  defp sample(grid, cell), do: Map.get(grid, cell)
 end

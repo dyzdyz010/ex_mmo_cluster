@@ -306,6 +306,13 @@ defmodule VoxelRegion.World do
     GenServer.call(server, {:publish_prefabs, catalog}, 300_000)
   end
 
+  # 全局系统功能：运行时内容发布与工作台只读目录；不产生体素事务。
+  def publish_prefab(server, actor, bytes),
+    do: GenServer.call(server, {:publish_prefab, actor, bytes}, 300_000)
+
+  def prefab_catalog(server \\ @name), do: GenServer.call(server, :prefab_catalog)
+  def material_catalog(server \\ @name), do: GenServer.call(server, :material_catalog)
+
   def replace_prefab(server \\ @name, instance_id, definition_id) do
     started = System.monotonic_time(:microsecond)
 
@@ -464,13 +471,15 @@ defmodule VoxelRegion.World do
           properties: load_properties(opts),
           structure: %{},
           instances: %{},
+          prefab_dir: Path.join(world_dir, "prefabs"),
           prefabs:
             Prefab.load(
               Keyword.get(
                 opts,
                 :prefab_catalog_path,
                 Application.get_env(:voxel_region, :prefab_catalog_path)
-              )
+              ),
+              Path.join(world_dir, "prefabs")
             ),
           overlay_regions: %{},
           seq: 0,
@@ -781,6 +790,19 @@ defmodule VoxelRegion.World do
 
   def handle_call({:publish_prefabs, catalog}, _from, state) do
     {:reply, :ok, %{state | prefabs: Map.merge(state.prefabs, catalog)}}
+  end
+
+  def handle_call(:prefab_catalog, _, state), do: {:reply, state.prefabs, state}
+  def handle_call(:material_catalog, _, state), do: {:reply, state.properties, state}
+
+  def handle_call({:publish_prefab, actor, bytes}, _, state) do
+    with {:ok, _actor} <- current_actor(actor),
+         {:ok, id, compiled} <- Prefab.compile(bytes, state.prefabs),
+         :ok <- persist_prefab(state, id, bytes) do
+      {:reply, {:ok, id}, %{state | prefabs: Map.put(state.prefabs, id, compiled)}}
+    else
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:prefab_cells, id, anchor, orientation}, _from, state) do
@@ -4971,6 +4993,27 @@ defmodule VoxelRegion.World do
       true =
         state.properties != nil and
           Enum.all?(state.damage, fn {_, t} -> t.digest == state.properties.digest end)
+    end
+  end
+
+  # 世界串行接纳；完整文件原子改名成功后才暴露目录项，临时文件不参与恢复。
+  defp persist_prefab(state, id, bytes) do
+    target = Path.join(state.prefab_dir, Base.encode16(id, case: :lower) <> ".vxpd")
+
+    if File.exists?(target) do
+      :ok
+    else
+      temporary = target <> ".tmp"
+
+      with :ok <- File.mkdir_p(state.prefab_dir),
+           :ok <- File.write(temporary, bytes, [:binary, :sync]),
+           :ok <- File.rename(temporary, target) do
+        :ok
+      else
+        {:error, reason} ->
+          File.rm(temporary)
+          {:error, {:prefab_persist, reason}}
+      end
     end
   end
 

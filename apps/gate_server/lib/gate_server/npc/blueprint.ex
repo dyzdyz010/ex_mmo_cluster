@@ -14,45 +14,8 @@ defmodule GateServer.Npc.Blueprint do
   `remaining/2` 拿 `look` 的结果现算，不另记“做到第几格”。
   """
 
-  @max_cells 2_000
-
-  @doc "展开成 `%{{x, y, z} => material}`。不合法（形状不对、盒子颠倒、超过 #{@max_cells} 格）返回 `:error`。"
-  def cells(ops) when is_list(ops) do
-    Enum.reduce_while(ops, %{}, fn op, cells ->
-      with coords when coords != nil <- box(op),
-           %{} = cells <- apply_op(op, coords, cells) do
-        {:cont, cells}
-      else
-        _ -> {:halt, :error}
-      end
-    end)
-    |> case do
-      %{} = cells when map_size(cells) > 0 and map_size(cells) <= @max_cells -> {:ok, cells}
-      _ -> :error
-    end
-  end
-
-  def cells(_), do: :error
-
-  defp apply_op(%{"op" => "clear"}, coords, cells), do: Map.drop(cells, coords)
-
-  defp apply_op(%{"op" => op, "material" => material} = box, coords, cells)
-       when op in ["fill", "walls"] and is_integer(material) and material > 0 do
-    coords = if op == "walls", do: ring(coords, box["min"], box["max"]), else: coords
-    Enum.reduce(coords, cells, &Map.put(&2, &1, material))
-  end
-
-  defp apply_op(_, _, _), do: :error
-
-  defp box(%{"min" => [x0, y0, z0], "max" => [x1, y1, z1]})
-       when is_integer(x0) and is_integer(y0) and is_integer(z0) and is_integer(x1) and is_integer(y1) and
-              is_integer(z1) and x0 <= x1 and y0 <= y1 and z0 <= z1 and
-              (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) <= @max_cells,
-       do: for(x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z})
-
-  defp box(_), do: nil
-
-  defp ring(coords, [x0, _, z0], [x1, _, z1]), do: Enum.filter(coords, fn {x, _, z} -> x in [x0, x1] or z in [z0, z1] end)
+  @doc "由共享体素盒编译器展开有序宏格操作，保留荒野施工的 2000 格上限。"
+  defdelegate cells(ops), to: VoxelRegion.Blueprint
 
   @doc "包围盒 `{min, max}`。"
   def bounds(cells) do

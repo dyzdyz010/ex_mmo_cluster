@@ -15,6 +15,8 @@ defmodule SceneServer.Movement.Scene do
   def leave(scene, identity, reason \\ 1), do: GenServer.cast(scene, {:leave, identity, reason})
   @doc "只读标量统计与角色状态，不暴露可变 NIF resource。"
   def observe(scene), do: GenServer.call(scene, :observe)
+  @doc "从本场景的实际移动与出生配置提供只读设计上下文。"
+  def design_context(scene), do: GenServer.call(scene, :design_context)
   @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
   def metrics(scene), do: observe(scene)
 
@@ -431,6 +433,9 @@ defmodule SceneServer.Movement.Scene do
         end
     end
   end
+
+  def handle_call(:design_context, _, state),
+    do: {:reply, Map.take(state.config, [:profile, :probes, :spawn_min_y]), state}
 
   def handle_call(:observe, _, state) do
     {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)

@@ -71,4 +71,25 @@ defmodule SceneServer.Movement.PathTest do
     assert {:ok, [{1, 1, 0}, {2, 1, 0}]} == Walk.find(grid, {0, 1, 0}, {2, 0}, nil, 1, 2)
     assert :no_path == Walk.find(grid, {0, 1, 0}, {2, 0}, nil, 1, 3)
   end
+
+  test "coordinate query uses the same walking rules without materializing an air map" do
+    query = fn
+      {x, 0, 0} when x in 0..3 -> :solid
+      {x, y, 0} when x in 0..3 and y in 1..3 -> :open
+      _ -> :unknown
+    end
+
+    assert {:ok, [{1, 1, 0}, {2, 1, 0}, {3, 1, 0}]} == Walk.find(query, {0, 1, 0}, {3, 0}, 1, 0, 2)
+    assert :no_path == Walk.find(query, {0, 1, 0}, {4, 0}, 1, 0, 2)
+  end
+
+  test "an explicit search budget returns exhaustion rather than claiming no route" do
+    query = fn
+      {x, 0, 0} when x in 0..3 -> :solid
+      {x, y, 0} when x in 0..3 and y in 1..3 -> :open
+      _ -> :unknown
+    end
+
+    assert {:error, :search_limit} == Walk.find(query, {0, 1, 0}, {3, 0}, 1, 0, 2, max_nodes: 1)
+  end
 end
