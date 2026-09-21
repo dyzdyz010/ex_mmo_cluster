@@ -2,7 +2,10 @@ defmodule GateServer.Npc.Brain.Llm do
   @moduledoc """
   全局系统功能：LLM 决策后端（OpenAI Responses 线格式）。回调只把事件转给自己的进程，立刻返回；
   该进程在“没有在途命令且有新情况”时问一次模型，把模型的工具调用译成命令，用 `Body.command/2` 投回。
-  每次请求无状态：目标 + 当前 Observation + 最近的 Outcome。模型的输出是外部输入，合法性由 Body 与权威裁决。
+  每次请求无状态：目标 + 当前 Observation + 最近的 Outcome + 模型自己的便签。模型的输出是外部输入，合法性由 Body 与权威裁决。
+  请求之间模型看不到自己上一次调用了什么，所以给它看的每条 Outcome 都附上当初那次调用（`command`）：
+  只有 `{id, verb, status}` 时模型对不上“哪一格放好了”，实测会原地反复 look。
+  便签（`note` 工具）是长目标的记忆：Outcome 只留最近 8 条，计划与进度要靠模型自己写下来；它只属于本 adapter，不进世界。
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
@@ -211,6 +214,19 @@ defmodule GateServer.Npc.Brain.Llm do
       },
       %{
         type: "function",
+        name: "note",
+        description:
+          "改写你的便签（输入里的 notes，最多 1500 字，整段替换）。outcomes 只保留最近几条，更早的事你会忘：" <>
+            "长任务把计划、已完成的部分、踩过的坑写在这里。写完会立刻再次询问你。",
+        parameters: %{
+          type: "object",
+          properties: %{text: %{type: "string"}},
+          required: ["text"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
         name: "wait",
         description: "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。",
         parameters: %{
@@ -316,6 +332,10 @@ defmodule GateServer.Npc.Brain.Llm do
             instance_id: List.to_tuple(args["instance"] || [])
           }
 
+        # 只属于本 adapter：不发给 Body。
+        "note" ->
+          %{id: id, verb: :note, text: args["text"]}
+
         # 只属于本 adapter：不发给 Body，挂起询问。
         "wait" ->
           %{id: id, verb: :wait, seconds: args["seconds"]}
@@ -330,6 +350,13 @@ defmodule GateServer.Npc.Brain.Llm do
           }
       end
     end)
+  end
+
+  @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/4` 相同；Outcome 回来时附给模型看。"
+  def calls(%{"output" => output}, next_id) do
+    for {call, id} <- output |> Enum.filter(&(&1["type"] == "function_call")) |> Enum.with_index(next_id),
+        into: %{},
+        do: {id, %{tool: call["name"], args: Jason.decode!(call["arguments"])}}
   end
 
   defp unit(%{"dx" => dx, "dy" => dy, "dz" => dz}) when is_number(dx) and is_number(dy) and is_number(dz) do
@@ -363,6 +390,9 @@ defmodule GateServer.Npc.Brain.Llm do
       probe: nil,
       # 最近一次 inspect 的附件身份：attachment_id => 目标。
       things: %{},
+      # 发出去还没有 Outcome 的调用：id => %{tool:, args:}。
+      calls: %{},
+      notes: nil,
       dirty: true,
       asking: false,
       # monotonic_time 可以为负，不能用 0 当“很久以前”。
@@ -380,15 +410,20 @@ defmodule GateServer.Npc.Brain.Llm do
         {:outcome, outcome} ->
           state = remember_probe(state, outcome)
           position = state.observation && state.observation.self.position
+          {call, calls} = Map.pop(state.calls, outcome.id)
+          outcome = if call, do: Map.put(outcome, :command, call), else: outcome
+          state = %{state | calls: calls}
           %{state | dirty: true, outcomes: Enum.take(remember(outcome, state.outcomes, position), @history)}
 
         {:answer, {:ok, response}} ->
-          {waits, commands} =
+          {local, commands} =
             response
             |> commands(state.probe, state.things, state.next_id)
-            |> Enum.split_with(&(&1.verb == :wait))
+            |> Enum.split_with(&(&1.verb in [:wait, :note]))
 
-          Logger.info("npc_llm_decision #{inspect(waits ++ commands, limit: :infinity)}")
+          {notes, waits} = Enum.split_with(local, &(&1.verb == :note))
+
+          Logger.info("npc_llm_decision #{inspect(local ++ commands, limit: :infinity)}")
           for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
 
           # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
@@ -400,7 +435,15 @@ defmodule GateServer.Npc.Brain.Llm do
                 into: state.probes,
                 do: {id, direction}
 
-          %{state | asking: false, probes: probes, next_id: state.next_id + length(commands)}
+          # 便签没有 Outcome：写完直接标记有新情况，下一轮带着新便签再问。
+          state =
+            case notes do
+              [%{text: text} | _] when is_binary(text) -> %{state | notes: String.slice(text, 0, 1500), dirty: true}
+              _ -> state
+            end
+
+          sent = Map.take(calls(response, state.next_id), Enum.map(commands, & &1.id))
+          %{state | asking: false, probes: probes, calls: Map.merge(state.calls, sent), next_id: state.next_id + length(commands)}
 
         :wake ->
           %{state | dirty: true}
@@ -483,7 +526,7 @@ defmodule GateServer.Npc.Brain.Llm do
 
     if now - state.asked_ms >= @min_gap_ms do
       owner = self()
-      body = body(state.profile, observation, state.outcomes)
+      body = body(state.profile, observation, state.outcomes, state.notes)
       spawn_link(fn -> send(owner, {:answer, state.request.(state.profile.endpoint, body)}) end)
       %{state | dirty: false, asking: true, asked_ms: now}
     else
@@ -494,16 +537,18 @@ defmodule GateServer.Npc.Brain.Llm do
   defp ask(state), do: state
 
   @doc "一次请求体：目标、当前 Observation、最近 Outcome（旧在前），要求恰好一次工具调用。"
-  def body(profile, observation, outcomes) do
+  def body(profile, observation, outcomes, notes \\ nil) do
     %{
       model: profile.endpoint.model,
       instructions:
         "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。" <>
           "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。" <>
-          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算；balances 是你的背包（每种 material 还能放几个整格）。",
+          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算；balances 是你的背包（每种 material 还能放几个整格）。" <>
+          "notes 是你自己上次写的便签；outcomes 只有最近几条。",
       input:
         Jason.encode!(%{
           goal: profile.goal,
+          notes: notes,
           self: plain(observation.self),
           tools: profile.tools,
           # 背包：每种材料还能放几个整格；null = 还没读过。

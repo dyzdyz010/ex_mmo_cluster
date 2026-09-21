@@ -166,7 +166,7 @@ defmodule GateServer.NpcBrainLlmTest do
     probe = Enum.find(body.tools, &(&1.name == "probe_toward")).parameters
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
-    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances say scoop stop use_tool wait) ==
+    assert ~w(attach detach inspect look move_to note place pour prefab probe_toward query_balances say scoop stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
   end
 
@@ -196,6 +196,58 @@ defmodule GateServer.NpcBrainLlmTest do
     Llm.handle_event({:outcome, %{id: 1, verb: :move_to, status: :done, reason: nil, data: nil}}, brain)
     Llm.handle_event({:observation, idle}, brain)
     assert_receive {:asked, %{"outcomes" => [%{"id" => 1, "status" => "done"}]}}, 2_000
+  end
+
+  test "note is the adapter's own memory: nothing reaches the Body, the next request carries it, and it is asked again at once" do
+    test = self()
+    answers = :counters.new(1, [])
+
+    request = fn _endpoint, body ->
+      :counters.add(answers, 1, 1)
+      send(test, {:asked, :counters.get(answers, 1), Jason.decode!(body.input)["notes"]})
+
+      case :counters.get(answers, 1) do
+        1 -> {:ok, %{"output" => [call("note", %{text: "计划：先挖后砌。已完成：无。"})]}}
+        _ -> {:ok, %{"output" => [call("wait", %{seconds: 300})]}}
+      end
+    end
+
+    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
+    Llm.handle_event({:observation, idle}, brain)
+    assert_receive {:asked, 1, nil}
+    refute_receive {:"$gen_cast", {:command, _}}, 300
+
+    # 没有新的 Outcome，但便签本身就是新情况：过了最小间隔、来一个 Observation 就再问，输入里带着便签。
+    Process.sleep(1_000)
+    Llm.handle_event({:observation, idle}, brain)
+    assert_receive {:asked, 2, "计划：先挖后砌。已完成：无。"}, 1_000
+  end
+
+  # 回归：真实模型砌了两格就原地反复 look —— 它看不到自己上次调用了什么，Outcome 里又只有 seq。
+  test "the outcome shown to the model carries the call that caused it" do
+    test = self()
+    answers = :counters.new(1, [])
+
+    request = fn _endpoint, body ->
+      :counters.add(answers, 1, 1)
+      send(test, {:asked, :counters.get(answers, 1), Jason.decode!(body.input)["outcomes"]})
+      {:ok, %{"output" => [call("place", %{x: 8, y: 64, z: 14, material: 11, tool_id: 1})]}}
+    end
+
+    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
+    Llm.handle_event({:observation, idle}, brain)
+    assert_receive {:asked, 1, []}
+    assert_receive {:"$gen_cast", {:command, %{id: 1, verb: :place, coord: {8, 64, 14}}}}
+
+    Llm.handle_event({:outcome, %{id: 1, verb: :place, status: :done, reason: nil, data: %{seq: 5}}}, brain)
+    Process.sleep(1_000)
+    Llm.handle_event({:observation, idle}, brain)
+
+    assert_receive {:asked, 2,
+                    [%{"id" => 1, "status" => "done", "command" => %{"tool" => "place", "args" => %{"x" => 8, "y" => 64, "z" => 14, "material" => 11, "tool_id" => 1}}}]},
+                   1_000
   end
 
   test "wait is not a Body command: nothing is sent, and the model is asked again only after the wait" do

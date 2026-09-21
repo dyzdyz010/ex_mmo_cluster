@@ -4,6 +4,7 @@ defmodule GateServer.NpcBodyWorldTest do
   世界是作者写入的平地（y ≤ 63 实心）加一根两格高的石柱；NPC 的余额与世界格只经 World 的公共只读入口观察。
   """
   use ExUnit.Case, async: false
+  require Logger
   alias GateServer.Npc.Body
   alias MmoContracts.Voxel.Codec
   alias SceneServer.Movement.Scene
@@ -190,6 +191,23 @@ defmodule GateServer.NpcBodyWorldTest do
 
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
   defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
+
+  defp brain(%{hut: true}) do
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal:
+         "你站在 x=4, z=10 附近的平地上，地面最上一层实心格是 y=63（你站在 y=64 这一层），背包里有石料（material 11）。" <>
+           "盖一间小屋的墙：占地是格 x=8..11、z=14..17 这个 4×4 的方形，只砌最外一圈，墙高两格（y=64 和 y=65）；" <>
+           "格 (9, 64, 14) 和 (9, 65, 14) 是门洞，不要放。屋里（x=9..10、z=15..16）保持空着。" <>
+           "全部砌完并用 look 核对无误后，每次都调用 wait 等 300 秒。",
+       tools: %{1 => "镐：挖掘固体、放置方块，射程 6 米"},
+       endpoint: %{
+         url: System.fetch_env!("NPC_LLM_URL"),
+         key: System.fetch_env!("NPC_LLM_KEY"),
+         model: System.fetch_env!("NPC_LLM_MODEL")
+       }
+     }}
+  end
 
   defp brain(%{climber: true}) do
     {GateServer.Npc.Brain.Llm,
@@ -579,6 +597,41 @@ defmodule GateServer.NpcBodyWorldTest do
     # 墙的两格正好是石柱的两格：材料来自挖掘，背包清零，石柱不在了。
     assert [0, 0] == materials.([{16, 64, 10}, @pillar])
     assert 0 == balance(world)
+  end
+
+  # 长目标：22 格的小屋墙，远超 Outcome 历史（8 条）。通过标准只看世界：墙齐、门洞与屋内是空的、花掉的材料等于墙的格数。
+  @tag :live_llm
+  @tag :hut
+  @tag supply: %{11 => 24 * 512}
+  @tag timeout: 2_400_000
+  test "a real LLM builds the walls of a small hut with a door from one goal sentence", %{world: world, body: body} do
+    ring = for x <- 8..11, z <- 14..17, x in [8, 11] or z in [14, 17], do: {x, z}
+    walls = for {x, z} <- ring, {x, z} != {9, 14}, y <- 64..65, do: {x, y, z}
+    empty = [{9, 64, 14}, {9, 65, 14}] ++ for(x <- 9..10, z <- 15..16, y <- 64..65, do: {x, y, z})
+    22 = length(walls)
+    # 长跑要看得见：放开 info 级日志，模型的每次决策（npc_llm_decision）都进测试输出。
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: :warning) end)
+    materials = fn cells -> Enum.map(World.material_snapshot(world, [@npc], cells).probe_occupancy, & &1.material) end
+
+    try do
+      await(
+        fn ->
+          # 空转保险：每次询问都花额度，连续 8 条结果全是 look 就是卡住了，立即失败。
+          recent = Body.observe(body).outcomes |> Enum.take(8) |> Enum.map(& &1.verb)
+          refute recent == List.duplicate(:look, 8), "model is looping on look"
+          if Enum.all?(materials.(walls), &(&1 == @stone)), do: true
+        end,
+        System.monotonic_time(:millisecond) + 2_100_000
+      )
+    after
+      outcomes = Body.observe(body).outcomes
+      IO.inspect(Enum.count(materials.(walls), &(&1 == @stone)), label: "llm_hut_wall_cells_of_22")
+      IO.inspect(Enum.reverse(for o <- outcomes, do: {o.id, o.verb, o.status, o.reason}), label: "llm_hut_last_outcomes", limit: :infinity)
+    end
+
+    assert Enum.all?(materials.(empty), &(&1 == 0))
+    assert 24 * 512 - 22 * 512 == balance(world)
   end
 
   # 建设者的核心情形：高差超过一格，寻路回报 no_path，模型得自己想到砌台阶再走上去。
