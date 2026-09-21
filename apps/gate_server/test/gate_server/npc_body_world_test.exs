@@ -23,6 +23,10 @@ defmodule GateServer.NpcBodyWorldTest do
     def delete(cid, kind, key), do: Agent.update(__MODULE__, &%{&1 | plans: Map.delete(&1.plans, {cid, kind, key})})
     def journal(cid, text, place), do: Agent.update(__MODULE__, &%{&1 | journal: [{cid, text, place} | &1.journal]})
     def entries, do: Agent.get(__MODULE__, &Enum.map(&1.journal, fn {_, text, _} -> text end))
+    def recent(cid, limit), do: Agent.get(__MODULE__, fn state ->
+      for {^cid, text, place} <- Enum.take(state.journal, limit),
+        do: %{text: text, place: place, at: DateTime.from_unix!(0)}
+    end)
   end
 
   defmodule Route do
@@ -183,7 +187,7 @@ defmodule GateServer.NpcBodyWorldTest do
       end
 
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
-    if context[:builder_brain] || context[:builder_live], do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
+    if context[:builder_brain] || context[:builder_live] || context[:wilderness_skill], do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
       start_supervised!(
@@ -229,6 +233,39 @@ defmodule GateServer.NpcBodyWorldTest do
      }}
   end
 
+  # 同一通用大脑只调用一次荒野技能；技能内部仍用原规划者与施工状态机。
+  defp brain(%{wilderness_skill: true}) do
+    test = self()
+    request = fn _endpoint, body ->
+      cond do
+        is_map_key(body, :questions) ->
+          choice = if Map.has_key?(body.questions.activity.criteria, "continue_task"), do: "continue_task", else: "continue_building"
+          {:ok, %{"answers" => %{"activity" => %{"choice" => choice, "confidence" => 0.99}}}}
+        Enum.any?(body.tools, &(&1.name == "submit_blueprint")) ->
+          send(test, {:asked, :planner, Jason.decode!(body.input)})
+          send(test, {:wilderness_worker, self()})
+          {:ok, %{"output" => [%{"type" => "function_call", "name" => "submit_blueprint", "arguments" => Jason.encode!(%{ops: @hut_ops})}]}}
+        true ->
+          outcomes = Jason.decode!(body.input)["outcomes"]
+          {name, args} =
+            case Enum.find(outcomes, &(&1["verb"] == "wilderness")) do
+              nil ->
+                send(test, :wilderness_invocation)
+                {"wilderness", %{goal: "Build the specified hut.", tool_id: 1}}
+              outcome ->
+                send(test, {:wilderness_outcome, outcome})
+                {"stop", %{}}
+            end
+          {:ok, %{"output" => [%{"type" => "function_call", "name" => name, "arguments" => Jason.encode!(args)}]}}
+      end
+    end
+    {GateServer.Npc.Brain.Llm, %{cid: @npc, goal: "Build the specified hut.", tools: %{1 => "pickaxe"},
+      endpoint: %{model: "m"}, scheduler: %{model: "j"}, request: request, memory: Memory,
+      activities: %{instructions: "Continue the task unless immediate danger requires stopping.",
+        activities: %{"continue_task" => "The current task can continue.", "stop_task" => "Immediate danger requires stopping."}},
+      continue_activity: "continue_task", skills: %{wilderness: %{activities: GateServer.Npc.Brain.Builder.activity_profile()}}}}
+  end
+
   # 混合后端，真实模型：规划者 = .env 里的 LLM，调度者 = 真实 Jev；发送函数只在外面包一层计数。
   defp brain(%{builder_live: true}) do
     test = self()
@@ -249,6 +286,7 @@ defmodule GateServer.NpcBodyWorldTest do
        memory: Memory,
        request: request,
        planner: endpoint(),
+       activities: GateServer.Npc.Brain.Builder.activity_profile(),
        scheduler: %{url: System.fetch_env!("TYPESAFE_API_URL"), key: System.fetch_env!("TYPESAFE_API_KEY"), model: System.fetch_env!("TYPESAFE_MODEL")}
      }}
   end
@@ -269,7 +307,7 @@ defmodule GateServer.NpcBodyWorldTest do
 
     {GateServer.Npc.Brain.Builder,
      %{cid: @npc, goal: "Build a small hut on cells x 8..11, z 14..17.", tool_id: 1, memory: Memory, request: request,
-       planner: %{model: "m"}, scheduler: %{model: "j"}}}
+       activities: GateServer.Npc.Brain.Builder.activity_profile(), planner: %{model: "m"}, scheduler: %{model: "j"}}}
   end
 
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
@@ -717,6 +755,59 @@ defmodule GateServer.NpcBodyWorldTest do
     assert 48 == placed.()
     balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
     assert {(40 - 32) * 512, (20 - 16) * 512} == {balances[11], balances[19]}
+    refute_received {:asked, :planner, _}
+  end
+
+  @tag :wilderness_skill
+  @tag materials: [11, 19]
+  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
+  @tag timeout: 300_000
+  test "the general brain calls wilderness once and the real World contains the paid-for hut", %{world: world} do
+    assert_receive :wilderness_invocation, 20_000
+    assert_receive {:asked, :planner, _}, 20_000
+    await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building: 48 blocks")), do: true end,
+      System.monotonic_time(:millisecond) + 240_000)
+    assert_receive {:wilderness_outcome, %{"status" => "done"}}, 20_000
+    {:ok, expected} = GateServer.Npc.Blueprint.cells(@hut_ops)
+    found = for %{cell: [x,y,z], material: m} <- World.material_snapshot(world, [@npc], Map.keys(expected)).probe_occupancy,
+      m != 0, into: %{}, do: {{x,y,z},m}
+    assert found == expected
+    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
+    assert {8 * 512, 4 * 512} == {balances[11], balances[19]}
+    assert nil == Memory.get(@npc, "plan", "current")
+    refute_received :wilderness_invocation
+    refute_received {:asked, :planner, _}
+  end
+
+  @tag :wilderness_skill
+  @tag materials: [11, 19]
+  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
+  @tag timeout: 300_000
+  test "the general brain resumes its wilderness skill after Body restart by rereading the World",
+       %{world: world, claims: claims, brain: brain} do
+    {:ok, expected} = GateServer.Npc.Blueprint.cells(@hut_ops)
+    placed = fn -> Enum.count(World.material_snapshot(world, [@npc], Map.keys(expected)).probe_occupancy, &(&1.material != 0)) end
+    assert_receive :wilderness_invocation, 20_000
+    assert_receive {:asked, :planner, _}, 20_000
+    await(fn -> if placed.() >= 10, do: true end, System.monotonic_time(:millisecond) + 120_000)
+    assert_receive {:wilderness_worker, old_worker}
+    old_monitor = Process.monitor(old_worker)
+    stop_supervised!(Body)
+    assert_receive {:DOWN, ^old_monitor, :process, ^old_worker, :shutdown}, 2_000
+    assert placed.() < 48
+    assert %{"ops" => @hut_ops, "goal" => "Build the specified hut."} = Memory.get(@npc, "plan", "current")
+    {:ok, _} = start_supervised({Body, claims: claims, route_module: Route, scene_id: 1, cid: @npc,
+      spawn: {4.0, 66.0, 10.0}, brain: brain}, restart: :temporary)
+    assert_receive :wilderness_invocation, 20_000
+    await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building: 48 blocks")), do: true end,
+      System.monotonic_time(:millisecond) + 240_000)
+    assert_receive {:wilderness_outcome, %{"status" => "done"}}, 20_000
+    assert placed.() == 48
+    found = for %{cell: [x,y,z], material: material} <- World.material_snapshot(world, [@npc], Map.keys(expected)).probe_occupancy,
+      into: %{}, do: {{x,y,z}, material}
+    assert found == expected
+    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
+    assert {8 * 512, 4 * 512} == {balances[11], balances[19]}
     refute_received {:asked, :planner, _}
   end
 

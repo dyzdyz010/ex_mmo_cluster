@@ -3,6 +3,48 @@ defmodule GateServer.NpcBrainLlmTest do
   use ExUnit.Case, async: false
   alias GateServer.Npc.Brain.Llm
 
+  # 只测试：与正式 NpcMemory 同接口，生命周期独立于 Brain；真实表读写在 npc_memory_test 验证。
+  defmodule Store do
+    use Agent
+    def start_link(observer),do: Agent.start_link(fn -> %{notes: %{},events: [],observer: observer} end,name: __MODULE__)
+    def put(cid,kind,key,body) do
+      Agent.update(__MODULE__,fn s ->
+        send(s.observer,{:memory_written,cid,key,body})
+        put_in(s.notes[{cid,kind,key}],body)
+      end)
+    end
+    def get(cid,kind,key),do: Agent.get(__MODULE__,& &1.notes[{cid,kind,key}])
+    def recent(cid,limit),do: Agent.get(__MODULE__,fn s ->
+      send(s.observer,{:recent_read,cid,limit})
+      Enum.take(s.events,limit)
+    end)
+    def events(events),do: Agent.update(__MODULE__,&%{&1 | events: events})
+  end
+
+  defmodule UnavailableStore do
+    def recent(_,_),do: raise DBConnection.ConnectionError,message: "private connection details"
+  end
+
+  setup do
+    start_supervised!({Store,self()})
+    :ok
+  end
+
+  defp brain(profile) do
+    pid=Llm.init(Map.put_new(profile,:memory,Store))
+    on_exit(fn -> stop_brain(pid) end)
+    pid
+  end
+  defp stop_brain(pid) do
+    Process.unlink(pid)
+    Process.exit(pid,:kill)
+  end
+  defp observations(pid,idle) do
+    Llm.handle_event({:observation,idle},pid)
+    {:ok,timer}=:timer.send_interval(50,pid,{:observation,idle})
+    on_exit(fn -> :timer.cancel(timer) end)
+  end
+
   @target %{micro: {128, 520, 80}, incarnation: 3, owner: {0, 0}, material: 11, current_hp: 100.0}
   defp call(name, args),
     do: %{"type" => "function_call", "name" => name, "arguments" => Jason.encode!(args), "call_id" => "c"}
@@ -141,9 +183,24 @@ defmodule GateServer.NpcBrainLlmTest do
     assert 2 == map_size(solid)
   end
 
+  test "look never reports a refined occupied macro as air" do
+    row = %{cell: [2,3,4], material: 0, refined: true,
+      slots: [%{material: 19, instance: [41,0], count: 1}], placed_by: nil}
+    outcome = %{id: 1, verb: :look, status: :done, reason: nil, data: %{probe_occupancy: [row]}}
+    assert [%{data: %{solid: %{}, refined: [^row]}}] = Llm.remember(outcome, [], nil)
+  end
+
+  test "published definition IDs remain hexadecimal even when the digest bytes are valid text" do
+    observation = %{self: %{entity_id: 7, position: {1,2,3}}, balances: nil, entities: []}
+    profile = %{goal: "g", tools: %{}, endpoint: %{model: "m"}}
+    outcomes = [%{id: 1, verb: :design, status: :done, data: %{definition_id: :binary.copy(<<42>>,32)}}]
+    input = Llm.body(profile, observation, outcomes).input |> Jason.decode!()
+    assert hd(input["outcomes"])["data"]["definition_id"] == String.duplicate("2a",32)
+  end
+
   test "request body is plain JSON: tuples become lists, outcomes oldest first, one required tool call" do
     observation = %{
-      self: %{position: {1.0, 2.0, 3.0}, tick: 9},
+      self: %{entity_id: 77,position: {1.0, 2.0, 3.0}, tick: 9},
       entities: [],
       pending: [],
       balances: [%{material: 11, balance: 768, cost: 512, seq: 4}, %{material: 3, balance: 0, cost: 512, seq: 4}]
@@ -170,8 +227,19 @@ defmodule GateServer.NpcBrainLlmTest do
     probe = Enum.find(body.tools, &(&1.name == "probe_toward")).parameters
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
-    assert ~w(attach detach inspect look move_to note place pour prefab probe_toward query_balances say scoop stop use_tool wait) ==
+    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances recall remember say scoop stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
+    refute Map.has_key?(input,"notes")
+    assert input["experiences"]==[]
+    assert body.instructions =~ "记忆不是世界真值"
+    assert body.instructions =~ "look/inspect"
+    refute Enum.find(body.tools,&(&1.name=="prefab")).description =~ "建造者权限"
+    experiences=[%{text: "Finished the west wall",position: [-1,2,3],at: "2026-09-22T00:00:00Z"}]
+    assert [%{"text"=>"Finished the west wall","position"=>[-1,2,3],"at"=>"2026-09-22T00:00:00Z"}]==
+      Jason.decode!(Llm.body(profile,observation,[],experiences).input)["experiences"]
+    failed=Jason.decode!(Llm.body(profile,observation,[],%{memory_error: :database_down}).input)
+    assert failed["memory_error"]=="database_down"
+    refute Map.has_key?(failed,"experiences")
   end
 
   test "asks only when idle with news: not while a command is pending, not again until a new outcome" do
@@ -184,8 +252,8 @@ defmodule GateServer.NpcBrainLlmTest do
 
     profile = %{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request}
     # init 在 Body 进程里调用：这里测试进程就是 Body，命令以 cast 投回。
-    brain = Llm.init(profile)
-    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
+    brain = brain(profile)
+    idle = %{self: %{entity_id: 77,tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
 
     {[], ^brain} = Llm.handle_event({:observation, %{idle | pending: [%{id: 9, verb: :move_to}]}}, brain)
     refute_receive {:asked, _}, 200
@@ -202,30 +270,100 @@ defmodule GateServer.NpcBrainLlmTest do
     assert_receive {:asked, %{"outcomes" => [%{"id" => 1, "status" => "done"}]}}, 2_000
   end
 
-  test "note is the adapter's own memory: nothing reaches the Body, the next request carries it, and it is asked again at once" do
+  test "remember and recall enter normal outcome history with original calls and refresh recent every round" do
     test = self()
     answers = :counters.new(1, [])
 
     request = fn _endpoint, body ->
       :counters.add(answers, 1, 1)
-      send(test, {:asked, :counters.get(answers, 1), Jason.decode!(body.input)["notes"]})
+      send(test, {:asked, :counters.get(answers, 1), Jason.decode!(body.input)})
 
       case :counters.get(answers, 1) do
-        1 -> {:ok, %{"output" => [call("note", %{text: "计划：先挖后砌。已完成：无。"})]}}
+        1 -> {:ok, %{"output" => [call("remember", %{key: "plan",text: "先挖后砌"})]}}
+        2 -> {:ok, %{"output" => [call("recall", %{key: "plan"})]}}
         _ -> {:ok, %{"output" => [call("wait", %{seconds: 300})]}}
       end
     end
 
-    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
-    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
-    Llm.handle_event({:observation, idle}, brain)
-    assert_receive {:asked, 1, nil}
-    refute_receive {:"$gen_cast", {:command, _}}, 300
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    idle = %{self: %{entity_id: 77,tick: 1, position: {-1,2,3}}, entities: [], pending: [], balances: nil}
+    observations(brain,idle)
+    assert_receive {:recent_read,77,5}
+    assert_receive {:asked,1,%{"experiences"=>[]}}
+    assert_receive {:memory_written,77,"plan",%{"text"=>"先挖后砌","position"=>[-1,2,3]}}
+    :ok=Store.events([%{text: "new event",place: {4,5,6},at: ~U[2026-09-22 00:00:00Z]}])
+    assert_receive {:asked,2,input},2_000
+    assert_receive {:recent_read,77,5}
+    assert [%{"text"=>"new event","position"=>[4,5,6]}]=input["experiences"]
+    assert [%{"id"=>1,"verb"=>"remember","status"=>"done","command"=>%{"tool"=>"remember","args"=>%{"key"=>"plan","text"=>"先挖后砌"}}}]=input["outcomes"]
+    assert_receive {:asked,3,input},2_000
+    assert_receive {:recent_read,77,5}
+    assert [1,2]==Enum.map(input["outcomes"],& &1["id"])
+    assert %{"verb"=>"recall","command"=>%{"tool"=>"recall","args"=>%{"key"=>"plan"}},
+      "data"=>%{"body"=>%{"text"=>"先挖后砌"}}}=List.last(input["outcomes"])
+    refute_receive {:"$gen_cast", {:command, _}},100
+  end
 
-    # 没有新的 Outcome，但便签本身就是新情况：过了最小间隔、来一个 Observation 就再问，输入里带着便签。
-    Process.sleep(1_000)
-    Llm.handle_event({:observation, idle}, brain)
-    assert_receive {:asked, 2, "计划：先挖后砌。已完成：无。"}, 1_000
+  test "a restarted Brain recalls the same cid's stored memory" do
+    test=self()
+    idle=%{self: %{entity_id: 77,tick: 1,position: {1,2,3}},entities: [],pending: [],balances: nil}
+    first=brain(%{goal: "g",tools: %{1=>"镐"},endpoint: %{model: "m"},request: fn _,_ ->
+      {:ok,%{"output"=>[call("remember",%{key: "plan",text: "Restart survives"})]}}
+    end})
+    Llm.handle_event({:observation,idle},first)
+    assert_receive {:memory_written,77,"plan",_}
+    stop_brain(first)
+    answers=:counters.new(1,[])
+    request=fn _,body ->
+      :counters.add(answers,1,1)
+      send(test,{:restarted_input,Jason.decode!(body.input)})
+      name=if :counters.get(answers,1)==1,do: "recall",else: "wait"
+      {:ok,%{"output"=>[call(name,if(name=="recall",do: %{key: "plan"},else: %{seconds: 300}))]}}
+    end
+    second=brain(%{goal: "g",tools: %{1=>"镐"},endpoint: %{model: "m"},request: request})
+    observations(second,idle)
+    assert_receive {:restarted_input,%{"outcomes"=>[]}}
+    assert_receive {:restarted_input,%{"outcomes"=>[%{"verb"=>"recall","data"=>%{"body"=>%{"text"=>"Restart survives"}}}]}},2_000
+  end
+
+  test "local calls including wait consume ids and Body outcomes keep their own original command" do
+    test=self()
+    answers=:counters.new(1,[])
+    request=fn _,body ->
+      :counters.add(answers,1,1)
+      send(test,{:mixed_input,:counters.get(answers,1),Jason.decode!(body.input)})
+      output=case :counters.get(answers,1) do
+        1 -> [call("remember",%{key: "plan",text: "Keep this"}),call("move_to",%{x: 5,z: 6}),call("recall",%{key: "plan"})]
+        2 -> [call("wait",%{seconds: 1})]
+        3 -> [call("stop",%{})]
+        _ -> [call("wait",%{seconds: 300})]
+      end
+      {:ok,%{"output"=>output}}
+    end
+    pid=brain(%{goal: "g",tools: %{1=>"镐"},endpoint: %{model: "m"},request: request})
+    idle=%{self: %{entity_id: 77,tick: 1,position: {1,2,3}},entities: [],pending: [],balances: nil}
+    observations(pid,idle)
+    assert_receive {:mixed_input,1,_}
+    assert_receive {:"$gen_cast",{:command,%{id: 2,verb: :move_to}}}
+    Llm.handle_event({:outcome,%{id: 2,verb: :move_to,status: :done,reason: nil,data: nil}},pid)
+    assert_receive {:mixed_input,2,input},2_000
+    assert [1,2,3]==input["outcomes"] |> Enum.map(& &1["id"]) |> Enum.sort()
+    assert %{"command"=>%{"tool"=>"move_to","args"=>%{"x"=>5,"z"=>6}}}=Enum.find(input["outcomes"],&(&1["id"]==2))
+    assert_receive {:mixed_input,3,_},2_000
+    assert_receive {:"$gen_cast",{:command,%{id: 5,verb: :stop}}}
+  end
+
+  test "recent database failure appears explicitly in model input and is never empty history" do
+    test=self()
+    pid=brain(%{goal: "g",tools: %{1=>"镐"},memory: UnavailableStore,endpoint: %{model: "m"},request: fn _,body ->
+      send(test,{:memory_failed,Jason.decode!(body.input)})
+      {:ok,%{"output"=>[call("wait",%{seconds: 300})]}}
+    end})
+    Llm.handle_event({:observation,%{self: %{entity_id: 77,tick: 1,position: {1,2,3}},entities: [],pending: [],balances: nil}},pid)
+    assert_receive {:memory_failed,input}
+    assert ["memory_unavailable","Elixir.DBConnection.ConnectionError"]==input["memory_error"]
+    refute Map.has_key?(input,"experiences")
+    refute Jason.encode!(input) =~ "private connection"
   end
 
   # 回归：真实模型砌了两格就原地反复 look —— 它看不到自己上次调用了什么，Outcome 里又只有 seq。
@@ -239,8 +377,8 @@ defmodule GateServer.NpcBrainLlmTest do
       {:ok, %{"output" => [call("place", %{x: 8, y: 64, z: 14, material: 11, tool_id: 1})]}}
     end
 
-    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
-    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    idle = %{self: %{entity_id: 77,tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
     Llm.handle_event({:observation, idle}, brain)
     assert_receive {:asked, 1, []}
     assert_receive {:"$gen_cast", {:command, %{id: 1, verb: :place, coord: {8, 64, 14}}}}
@@ -264,8 +402,8 @@ defmodule GateServer.NpcBrainLlmTest do
       {:ok, %{"output" => [call("wait", %{seconds: 1})]}}
     end
 
-    brain = Llm.init(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
-    idle = %{self: %{tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    idle = %{self: %{entity_id: 77,tick: 1, position: {0.0, 0.0, 0.0}}, entities: [], pending: [], balances: nil}
     Llm.handle_event({:observation, idle}, brain)
     assert_receive {:asked, 1}
     refute_receive {:"$gen_cast", {:command, _}}, 300

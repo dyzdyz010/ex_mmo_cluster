@@ -2,6 +2,11 @@ defmodule GateServer.Npc.Brain do
   @moduledoc """
   全局系统功能：NPC 决策后端的可插拔边界。Body 固定，Brain 可换（决策树、LLM、外部分类模型）。
 
+  通用角色使用一个 `Brain.Llm`，拥有全部原子动词；长任务是 `profile.skills` 提供的工具，
+  在独立 worker 中运行并只回一个最终 Outcome。荒野施工复用 Builder 的纯状态机，
+  不启动第二个决策大脑。运行期间由父大脑调用 Jev；活动、判据、优先级均来自 profile。
+  记忆工具直接读写 NpcMemory，最近经历每次现读；进度与动手依据始终由 World 现查。
+
   回调在 Body 进程内同步调用，必须立刻返回：慢后端在 `init/1` 里起自己的进程，事件转发过去，算好后用
   `GateServer.Npc.Body.command/2` 异步投回。返回空命令表 = 保持当前动作；停止必须显式 `:stop`。
 
@@ -60,7 +65,7 @@ defmodule GateServer.Npc.Brain do
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
   世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
-  `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 = 空气；`placed_by` = 花材料放下这一格的角色 cid，
+  `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
   天然地形、作者写入的格、被别的编辑改过的格是 nil）；`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。

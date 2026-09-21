@@ -3,12 +3,18 @@ defmodule GateServer.NpcBrainBuilderTest do
   use ExUnit.Case, async: true
   alias GateServer.Npc.Brain.Builder
 
+  defmodule Memory do
+    def get(_, _, _), do: nil
+    def put(_, _, _, _), do: :ok
+    def journal(_, _, _), do: :ok
+  end
+
   # 一根两格高的柱子 + 旁边一格：3 格，两层。包围盒 x 0..1、y 0..1、z 0..0。
   @ops [
     %{"op" => "fill", "min" => [0, 0, 0], "max" => [0, 1, 0], "material" => 11},
     %{"op" => "fill", "min" => [1, 0, 0], "max" => [1, 0, 0], "material" => 19}
   ]
-  @profile %{goal: "a pillar", tool_id: 1}
+  @profile %{goal: "a pillar", tool_id: 1, activities: Builder.activity_profile()}
   @observation {:observation, %{self: %{position: {5.0, 0.9, 5.0}}, balances: nil}}
 
   defp done(id, verb, data \\ nil), do: {:outcome, %{id: id, verb: verb, status: :done, reason: nil, data: data}}
@@ -22,6 +28,44 @@ defmodule GateServer.NpcBrainBuilderTest do
   # 把事件依次喂进去，返回最终状态和每一步的效果。
   defp run(state, events), do: Enum.map_reduce(events, state, fn event, state -> {effects, state} = swap(Builder.step(state, event)); {effects, state} end)
   defp swap({state, effects}), do: {effects, state}
+
+  test "the scheduler receives explicit activity data and English facts even when the goal is Chinese" do
+    test = self()
+    activities = %{instructions: "Choose the next activity.",
+      activities: %{"fetch_material" => "Gather material when the next step cannot be paid for."}}
+    request = fn _endpoint, body ->
+      if is_map_key(body, :questions) do
+        send(test, {:scheduler_request, body})
+        {:ok, %{"answers" => %{"activity" => %{"choice" => "fetch_material", "confidence" => 0.99}}}}
+      else
+        {:ok, %{"output" => [%{"type" => "function_call", "name" => "submit_blueprint", "arguments" => Jason.encode!(%{ops: @ops})}]}}
+      end
+    end
+    pid = Builder.init(%{goal: "修一根柱子", tool_id: 1, cid: 91, memory: Memory,
+      planner: %{model: "m"}, scheduler: %{model: "j"}, activities: activities, request: request})
+    try do
+      send(pid, @observation)
+      assert_receive {:"$gen_cast", {:command, %{id: 1, verb: :query_balances}}}
+      send(pid, done(1, :query_balances))
+      assert_receive {:"$gen_cast", {:command, %{id: 2, verb: :move_to}}}
+      send(pid, done(2, :move_to))
+      assert_receive {:"$gen_cast", {:command, %{id: 3, verb: :look}}}
+      send(pid, done(3, :look, layer(0, [0, 0])))
+      assert_receive {:"$gen_cast", {:command, %{id: 4, verb: :look}}}
+      send(pid, done(4, :look, layer(1, [0, 0])))
+      assert_receive {:"$gen_cast", {:command, %{id: 5, verb: :place}}}
+      send(pid, rejected(5, :place, :insufficient_material))
+      assert_receive {:scheduler_request, body}
+      assert body.questions.activity.criteria == activities.activities
+      assert body.questions.activity.instructions == activities.instructions
+      assert body.state =~ "not enough material"
+      refute body.state =~ "修一根柱子"
+      assert String.match?(body.state, ~r/^[\x00-\x7f]+$/)
+    after
+      Process.unlink(pid)
+      Process.exit(pid, :kill)
+    end
+  end
 
   test "fresh start: balances, one plan request, remember the blueprint, approach, survey per layer, build bottom-up, verify, journal and forget" do
     {effects, state} =
@@ -130,6 +174,11 @@ defmodule GateServer.NpcBrainBuilderTest do
 
     assert {"m", "required", %{effort: "high"}} == {body.model, body.tool_choice, body.reasoning}
     assert ["submit_blueprint"] == Enum.map(body.tools, & &1.name)
+    assert body.instructions =~ "no floor and no ceiling"
+    assert body.instructions =~ "The external goal defines"
+    refute body.instructions =~ "good-looking small building"
+    refute body.instructions =~ "1 wide, 2 high"
+    refute body.instructions =~ "at least one window"
     assert %{"goal" => "g", "npc_position" => [1.0, 2.0, 3.0], "backpack_cells" => [%{"material" => 11, "cells" => 3}, %{"material" => 19, "cells" => 0}]} =
              Jason.decode!(body.input)
 

@@ -62,6 +62,9 @@ defmodule GateServer.Npc.Body do
   @doc "派生缓存、在途命令与最近的 Outcome（新在前）；不是世界真值。"
   def observe(body), do: GenServer.call(body, :observe)
 
+  @doc "慢技能取得当前正式会话上下文；不暴露 Body 或 World 的可变状态。"
+  def skill_context(body), do: GenServer.call(body, :skill_context)
+
   @doc "canonical X/Z 世界轴上的量化输入与朝向；yaw 不驱动移动，0 朝 +X、16384 朝 +Z。"
   def steer({x, _, z}, {tx, tz}) do
     {dx, dz} = {tx - x, tz - z}
@@ -162,6 +165,15 @@ defmodule GateServer.Npc.Body do
     do:
       {:reply,
        Map.take(state, [:position, :tick, :move, :world, :entities, :balances, :outcomes]), state}
+
+  def handle_call(:skill_context, _, %{player: player,identity: identity,profile: profile} = state)
+      when player != nil and profile != nil do
+    result = with {:ok, actor} <- Player.tool_context(player,identity),
+                  {:ok, route} <- state.router.route(state.scene_id),
+      do: {:ok,%{actor: actor,world: state.world_ref,scene: route.scene_ref,movement_profile: profile}}
+    {:reply,result,state}
+  end
+  def handle_call(:skill_context, _, state), do: {:reply,{:error,:invalid_session},state}
 
   @impl true
   def handle_cast({:command, command}, state), do: {:noreply, apply_commands(state, [command])}

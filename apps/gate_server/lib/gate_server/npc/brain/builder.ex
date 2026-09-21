@@ -13,12 +13,29 @@ defmodule GateServer.Npc.Brain.Builder do
 
   profile:
       %{cid:, goal: "自然语言目标（含坐标与材料 id）", tool_id: 放置用的工具,
-        planner: LLM endpoint, scheduler: Jev endpoint, memory: 模块（get/3、put/4、delete/3、journal/3）}
+        planner: LLM endpoint, scheduler: Jev endpoint, activities: 显式 Jev 活动 profile,
+        memory: 模块（get/3、put/4、delete/3、journal/3）}
   """
   @behaviour GateServer.Npc.Brain
   require Logger
   alias GateServer.Npc.{Blueprint, Jev}
   alias GateServer.Npc.Brain.Llm
+
+  @doc "荒野逐格施工的活动数据；调用方显式放进 profile.activities，Jev 不持有默认活动。"
+  def activity_profile do
+    %{
+      instructions:
+        "What should the builder NPC do right now? If several apply, the priority is: move_to_safety first, then " <>
+          "respond_to_player, then replan, then fetch_material, and continue_building only if none of the others apply.",
+      activities: %{
+        "continue_building" => "Nothing is wrong: keep executing the current building plan.",
+        "fetch_material" => "Stop building and go gather more building material.",
+        "respond_to_player" => "Pause work and respond to a player who is addressing the NPC.",
+        "move_to_safety" => "Get away from an immediate physical danger.",
+        "replan" => "The world contradicts the blueprint, or the same step failed repeatedly, so the plan cannot proceed as written."
+      }
+    }
+  end
 
   # 蓝图被退回重画、异常后重新规划，合计最多这么多次；再不行就停工记一笔，不无限花钱。
   @plans 3
@@ -189,13 +206,11 @@ defmodule GateServer.Npc.Brain.Builder do
     %{
       model: endpoint.model,
       instructions:
-        "You plan buildings for a builder NPC in a voxel world. Coordinates are integer cells, 1 cell = 1 meter, Y is up. " <>
+        "You plan voxel edits. Coordinates are integer cells, 1 cell = 1 meter, Y is up. " <>
           "Answer by calling submit_blueprint once. The blueprint is a list of operations applied in order, each on an inclusive box: " <>
-          "walls (only the four vertical sides of the box: the outer ring on every layer, no floor and no ceiling), fill (solid box of one material, " <>
-          "e.g. a one-layer roof) and clear (remove cells: door and window openings). " <>
-          "Later operations override earlier ones. Make a complete, good-looking small building: walls, a roof, a door opening the NPC can walk through " <>
-          "(1 wide, 2 high, at floor level), and at least one window opening; use the materials the goal names. Never fill the cells of the ground itself. " <>
-          "Keep it within the footprint the goal gives and under 400 cells.",
+          "walls (only the four vertical sides of the box: the outer ring on every layer, no floor and no ceiling), " <>
+          "fill (solid box of one material) and clear (remove cells). Later operations override earlier ones. " <>
+          "The external goal defines the shape, features, materials and site. Keep the plan within its stated footprint and under 400 cells.",
       input:
         Jason.encode!(%{
           goal: goal,
@@ -280,6 +295,27 @@ defmodule GateServer.Npc.Brain.Builder do
     loop(state, profile, body)
   end
 
+  @doc "用调用方活动数据调度荒野施工异常，返回原状态机认识的决定；不启动进程。"
+  def triage_verdict(profile, problem) do
+    send = Map.get(profile, :request, &Llm.request/2)
+    situation = "You are a builder NPC in a voxel world, executing a blueprint. " <> problem
+    Logger.info("npc_builder_triage cid=#{profile.cid} problem=#{problem}")
+
+    verdict =
+      case Jev.ask(profile.scheduler, profile.activities, situation, nil, send) do
+        {:ok, {:act, "continue_building"}, _} -> {:act, :continue_building}
+        {:ok, {:act, "fetch_material"}, _} -> {:act, :fetch_material}
+        {:ok, {:act, "replan"}, _} -> {:escalate, :unexpected}
+        {:ok, verdict, _} -> verdict
+        # 调度模型问不到：交给规划者，不硬猜。
+        {:error, _} -> {:escalate, :scheduler_unavailable}
+      end
+
+    Logger.info("npc_builder_verdict cid=#{profile.cid} verdict=#{inspect(verdict)}")
+    verdict
+  end
+
+
   defp perform({:command, command}, _state, _profile, body), do: GateServer.Npc.Body.command(body, command)
 
   defp perform({:plan, request}, _state, profile, _body) do
@@ -300,23 +336,10 @@ defmodule GateServer.Npc.Brain.Builder do
     end)
   end
 
-  defp perform({:triage, problem}, state, profile, _body) do
+
+  defp perform({:triage, problem}, _state, profile, _body) do
     owner = self()
-    send = Map.get(profile, :request, &Llm.request/2)
-    situation = "You are a builder NPC in a voxel world, building from a blueprint. Goal: #{state.goal} " <> problem
-    Logger.info("npc_builder_triage cid=#{profile.cid} problem=#{problem}")
-
-    spawn_link(fn ->
-      verdict =
-        case Jev.ask(profile.scheduler, situation, nil, send) do
-          {:ok, verdict, _} -> verdict
-          # 调度模型问不到：交给规划者，不硬猜。
-          {:error, _} -> {:escalate, :scheduler_unavailable}
-        end
-
-      Logger.info("npc_builder_verdict cid=#{profile.cid} verdict=#{inspect(verdict)}")
-      send(owner, {:verdict, verdict})
-    end)
+    spawn_link(fn -> send(owner, {:verdict, triage_verdict(profile, problem)}) end)
   end
 
   defp perform({:remember, ops}, state, profile, _body),
