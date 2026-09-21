@@ -70,7 +70,12 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    统一 Demo 实跑（镜像 `voxim-gameplay:npc-path-59575cd`，记录 `Voxim/Saved/Gameplay/upgrade-20260921-npc-path/path-real/`）：
    npc_patrol_b 先被拒 `:no_path`，用 6 格石料在 (51, 519..521, 59..61) 砌三级台阶，`move_to y: 523` 走上池沿顶，盛 / 倒 4096 单位水，
    石料 6 格全部进了世界、水池与背包守恒；台阶留在 Demo 世界里。真实双客户端 assembly 冒烟通过。
-   跨 Scene 移交、多 NPC 成本（§7）仍按遇到的真实需要再做。
+   **跨 Scene 移交：已做**。Body 收到移交请求走玩家连接同一条 seal → `Claims` prepare → commit；无头 owner 没有要换的世界，
+   目标准备好就提交；输入序号与 origin 随切点延续，在途 `move_to` 不中断；失败则退出由监督者重新 claim。
+   真实双 Scene（同一 World、x=20 为界）用例：走过去、在对面放格、再走回来，角色始终只在一个 Scene 里。
+   **多 NPC 成本：已测**（`mix test --include npc_scale`，本机 32 调度器，真实 Scene / World / 碰撞，全部同时寻路行走）：
+   1 / 8 / 24 个 NPC → Scene 每 tick 9 / 16 / 37 µs，最长 tick 1.1 ms，超期 tick 0，整机调度器忙碌 0.0 / 0.1 / 0.3 %，
+   Body ≈ 110 KB、Player ≈ 50 KB 每个（不含 NIF 里的碰撞世界，见 §7.1）。几十个 NPC 内不需要优化。
 
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。

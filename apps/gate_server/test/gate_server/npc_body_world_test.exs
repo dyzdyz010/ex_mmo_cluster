@@ -170,7 +170,7 @@ defmodule GateServer.NpcBodyWorldTest do
         restart: :temporary
       )
 
-    %{world: world, scene: scene, body: body}
+    %{world: world, scene: scene, body: body, claims: claims}
   end
 
   defp brain(%{builder: true}) do
@@ -482,6 +482,70 @@ defmodule GateServer.NpcBodyWorldTest do
     Body.command(body, %{id: 3, verb: :move_to, position: {10.5, 10.5}, tolerance: 0.5})
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 3, 40_000)
     assert @npc in ids.(a) and @npc not in ids.(b)
+  end
+
+  # 多 NPC 成本测量（不是门槛测试）：同一个真实 Scene / World 里 1 → 8 → 24 个 NPC 同时沿各自的路线来回走（每次 move_to 都取盒寻路），
+  # 记录 Scene 的 tick 耗时 / 超期 tick、World 邮箱、Body 与 Player 进程内存。断言只保证测量本身有效：所有 NPC 都在走、没有进程退出。
+  @tag :npc_scale
+  @tag :idle
+  @tag timeout: 300_000
+  test "cost of 1, 8 and 24 NPCs walking at once", %{world: world, scene: scene, body: first, claims: claims} do
+    ready(first)
+
+    spawn_npc = fn i ->
+      z = -40.0 + i * 3.0
+      {:ok, pid} =
+        Body.start_link(
+          claims: claims, route_module: Route, scene_id: 1, cid: 9200 + i, spawn: {-30.0, 66.0, z},
+          brain: {GateServer.Npc.Brain.Patrol, %{route: [{-30.5, z + 0.5}, {-10.5, z + 0.5}]}}
+        )
+      pid
+    end
+
+    measure = fn bodies, label ->
+      Process.sleep(5_000)
+      before = Scene.observe(scene)
+      :erlang.system_flag(:scheduler_wall_time, true)
+      busy0 = :erlang.statistics(:scheduler_wall_time) |> Enum.sort()
+      t0 = for b <- bodies, do: Body.observe(b).position
+      Process.sleep(15_000)
+      after_ = Scene.observe(scene)
+      moved = Enum.zip(t0, for(b <- bodies, do: Body.observe(b).position)) |> Enum.count(fn {a, b} -> a != b end)
+      assert Enum.all?(bodies, &Process.alive?/1)
+      assert moved == length(bodies)
+      busy1 = :erlang.statistics(:scheduler_wall_time) |> Enum.sort()
+      {active, total} =
+        Enum.zip(busy0, busy1)
+        |> Enum.take(System.schedulers_online())
+        |> Enum.reduce({0, 0}, fn {{_, a0, t0}, {_, a1, t1}}, {a, t} -> {a + a1 - a0, t + t1 - t0} end)
+      busy = active / total
+      memory = fn pids -> div(Enum.sum(for p <- pids, {:memory, m} = Process.info(p, :memory), do: m), max(1, length(pids)) * 1024) end
+      players = for c <- after_.characters, do: c.player_pid
+
+      IO.inspect(
+        %{
+          npcs: length(bodies) + 1,
+          # 15 秒 = 900 个 tick；Scene 自己每 tick 的平均耗时，以及整台 VM 的调度器忙碌比例（含 Player 物理、Body、World）。
+          scene_us_per_tick: div(after_.tick_us - before.tick_us, 900),
+          vm_busy_percent: Float.round(100 * busy, 1),
+          schedulers: System.schedulers_online(),
+          scene_max_tick_us: after_.max_tick_us,
+          overdue_ticks_in_15s: after_.overdue_ticks - before.overdue_ticks,
+          scene_mailbox_peak: after_.mailbox_peak,
+          world_mailbox: Process.info(world, :message_queue_len) |> elem(1),
+          body_kb_each: memory.(bodies),
+          player_kb_each: memory.(players)
+        },
+        label: label
+      )
+    end
+
+    Body.command(first, %{id: 1, verb: :move_to, position: {30.5, 10.5}, tolerance: 0.5})
+    measure.([], "npc_scale")
+    more = for i <- 1..7, do: spawn_npc.(i)
+    measure.(more, "npc_scale")
+    more = more ++ for(i <- 8..23, do: spawn_npc.(i))
+    measure.(more, "npc_scale")
   end
 
   # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。
