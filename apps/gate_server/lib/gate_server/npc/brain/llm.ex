@@ -81,7 +81,8 @@ defmodule GateServer.Npc.Brain.Llm do
         name: "look",
         description:
           "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
-            "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]），没列出的都是空气。",
+            "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]；有人放下的格是 [y, material, 放置者的 entity_id]，" <>
+            "没有第三项的是天然地形），没列出的都是空气。",
         parameters: %{
           type: "object",
           properties: %{
@@ -481,7 +482,10 @@ defmodule GateServer.Npc.Brain.Llm do
   @doc "Outcome 进历史（新在前）。`look` 的原样快照太大：只留非空气格，按 \"x,z\" 列聚成 [y, material]；更早的 look 只留结论。"
   def remember(%{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome, outcomes, _position) do
     columns =
-      for(%{cell: [x, y, z], material: material} <- cells, material != 0, do: {"#{x},#{z}", [y, material]})
+      for(%{cell: [x, y, z], material: material} = cell <- cells, material != 0,
+        # 有人花材料放下的格带上放置者的 entity_id（第三项）；天然地形与作者写入的格只有 [y, material]。
+        do: {"#{x},#{z}", [y, material] ++ List.wrap(cell[:placed_by])}
+      )
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
     older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)

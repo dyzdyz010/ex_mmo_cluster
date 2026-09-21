@@ -60,7 +60,8 @@ defmodule GateServer.Npc.Brain do
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
   世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
-  `%{cell:, material:, refined:, slots:}`，material 0 = 空气）；`inspect` 是 `%{seq:, property_states:}`，取自
+  `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 = 空气；`placed_by` = 花材料放下这一格的角色 cid，
+  天然地形、作者写入的格、被别的编辑改过的格是 nil）；`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。
 

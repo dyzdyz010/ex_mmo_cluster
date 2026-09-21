@@ -449,6 +449,8 @@ defmodule VoxelRegion.World do
           thermal_work: ThermalWork.new(),
           material_balances: %{},
           material_supplies: %{},
+          # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
+          placed_by: %{},
           phase_inventory: %{},
           material_units_per_micro: 1,
           build_sessions: %{},
@@ -638,7 +640,8 @@ defmodule VoxelRegion.World do
         |> Enum.map(fn {{m, {birth, occurrence}}, values} ->
           %{material: m, instance: [birth, occurrence], count: length(values)}
         end)
-      {%{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots}, s}
+      {%{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots,
+         placed_by: Map.get(s.placed_by, cell)}, s}
     end)
     balances = balance_projection(state.material_balances, characters)
     snapshot = %{seq: state.seq,
@@ -2429,6 +2432,14 @@ defmodule VoxelRegion.World do
     {phase_values, settlement} = Map.pop(settlement, :phase_values, %{})
     {liquid_changes, settlement} = Map.pop(settlement, :liquid_changes, %{})
     {liquid_wake, settlement} = Map.pop(settlement, :liquid_wake, true)
+    {placed, settlement} = Map.pop(settlement, :placed, %{})
+
+    # 这一笔改到的每个 L0 格：是付费放置的就记放置者，否则清掉原来的记录（nil）；没有记录、也不是放置的格不进日志。
+    provenance =
+      for {cell, _} <- edits, is_map_key(placed, cell) or is_map_key(state.placed_by, cell), into: %{}, do: {cell, Map.get(placed, cell)}
+
+    state = %{state | placed_by: merge_placed(state.placed_by, provenance)}
+    settlement = if map_size(provenance) > 0, do: Map.put(settlement, :placed_by, provenance), else: settlement
     liquid_dirty = Enum.map(Map.keys(liquid_changes), &{0,&1})
     state = %{state | liquid_units: Liquid.apply_changes(state.liquid_units, liquid_changes)}
 
@@ -2820,6 +2831,7 @@ defmodule VoxelRegion.World do
         epochs: state.epochs,
         material_balances: state.material_balances,
         material_supplies: state.material_supplies,
+        placed_by: state.placed_by,
         phase_inventory: state.phase_inventory,
         thermal: state.thermal
       })
@@ -4110,9 +4122,16 @@ defmodule VoxelRegion.World do
         thermal: Map.get(txn, :thermal, state.thermal),
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_supplies: Map.merge(state.material_supplies, Map.get(txn, :material_supplies, %{})),
+        placed_by: merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
         material_balances:
           Map.merge(state.material_balances, Map.get(txn, :material_balances, %{}))
     }
+  end
+
+  # nil = 这一格的放置记录被清掉。
+  defp merge_placed(placed_by, delta) do
+    {cleared, set} = Enum.split_with(delta, fn {_, cid} -> cid == nil end)
+    placed_by |> Map.drop(Enum.map(cleared, &elem(&1, 0))) |> Map.merge(Map.new(set))
   end
 
   defp balance_state(state, cid, material) do
@@ -4570,6 +4589,9 @@ defmodule VoxelRegion.World do
                 request.material,
                 -@micro * @micro * @micro * state.material_units_per_micro
               )
+
+            # 溯源：这一格是 actor 花自己的材料放下的。
+            settlement = Map.put(settlement, :placed, %{request.coord => actor.cid})
 
             if phase_material?(state,request.material) do
               cost=liquid_capacity(state)

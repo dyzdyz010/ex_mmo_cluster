@@ -542,7 +542,10 @@ defmodule GateServer.NpcBodyWorldTest do
 
     Body.command(body, %{id: 2, verb: :place, coord: {33, 64, 10}, material: @stone, tool_id: 1})
     assert %{status: :done} = outcome(body, 2, 10_000)
-    assert [@stone] == Enum.map(World.material_snapshot(world, [@npc], [{33, 64, 10}]).probe_occupancy, & &1.material)
+    # 溯源：NPC 放下的格记着它的 cid；旁边的天然地面无主。
+    assert [%{material: @stone, placed_by: @npc}, %{material: @stone, placed_by: nil}] =
+             World.material_snapshot(world, [@npc], [{33, 64, 10}, {33, 63, 10}]).probe_occupancy
+
     assert 0 == balance(world)
 
     # 再走回去：反方向同样移交。

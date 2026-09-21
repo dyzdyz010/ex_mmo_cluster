@@ -12,7 +12,7 @@ defmodule VoxelRegion.MaterialSnapshotTest do
     snapshot = World.material_snapshot(world, [1001], [{1, 1, 1}])
     assert snapshot.seq == 1
     assert snapshot.material_balances == []
-    assert snapshot.probe_occupancy == [%{cell: [1, 1, 1], material: 11, refined: false, slots: []}]
+    assert snapshot.probe_occupancy == [%{cell: [1, 1, 1], material: 11, refined: false, slots: [], placed_by: nil}]
     assert World.seq(world) == 1
   end
 end

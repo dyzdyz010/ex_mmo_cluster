@@ -130,10 +130,11 @@ defmodule GateServer.NpcBrainLlmTest do
     first = Llm.remember(look.(1, [cell.([16, 64, 10], 11)]), [], nil)
     assert [%{data: %{solid: %{"16,10" => [[64, 11]]}}}] = first
 
-    cells = [cell.([16, 63, 10], 11), cell.([16, 64, 10], 11), cell.([16, 65, 10], 0), cell.([15, 63, 10], 11)]
+    # (16,64,10) 是 9101 号角色花材料放下的：模型看到的那一项多一个放置者；其余是天然地形。
+    cells = [cell.([16, 63, 10], 11), Map.put(cell.([16, 64, 10], 11), :placed_by, 9101), cell.([16, 65, 10], 0), cell.([15, 63, 10], 11)]
 
     assert [
-             %{id: 2, data: %{solid: %{"16,10" => [[63, 11], [64, 11]], "15,10" => [[63, 11]]} = solid}},
+             %{id: 2, data: %{solid: %{"16,10" => [[63, 11], [64, 11, 9101]], "15,10" => [[63, 11]]} = solid}},
              %{id: 1, verb: :look, data: nil}
            ] = Llm.remember(look.(2, cells), first, nil)
 

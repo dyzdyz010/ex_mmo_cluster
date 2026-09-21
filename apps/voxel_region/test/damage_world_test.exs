@@ -84,6 +84,38 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,%{material: 19,hp: 100.0}}=World.tool_intent(w,c.actor,c.request)
   end
 
+  # 溯源：花材料放下的格记着是谁放的；作者入口写的格、天然地形无主；被挖掉就清掉；重启与压实检查点之后仍在。
+  @tag :b2
+  test "a paid build records who placed the cell; authoring and removal leave none; it survives restart and compaction", c do
+    placer = fn w, cell -> hd(World.material_snapshot(w, [], [cell]).probe_occupancy).placed_by end
+    assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
+    assert nil == placer.(c.w,{1,1,2})
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq <- 1..4, do: assert {:ok,_}=b2_hit(c,c.actor,target,seq)
+    assert nil == placer.(c.w,{1,1,2})
+
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 19}
+    assert {:ok,6}=World.production_intent(c.w,c.actor,build)
+    assert 1001 == placer.(c.w,{1,1,2})
+    assert nil == placer.(c.w,{2,1,2})
+
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert 1001 == placer.(w,{1,1,2})
+    assert :ok == World.compact(w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert 1001 == placer.(w,{1,1,2})
+
+    # 再挖掉：那一格不再属于任何人；重启后也不会“复活”。
+    assert {:ok,target}=World.tool_intent(w,c.actor,Map.merge(c.request,%{request_id: 20,client_intent_seq: 20}))
+    for seq <- 21..24, do: assert {:ok,_}=b2_hit(%{c | w: w},c.actor,target,seq)
+    assert nil == placer.(w,{1,1,2})
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert nil == placer.(w,{1,1,2})
+  end
+
   defp balance(w,cid,material \\ 19), do: Enum.find(World.material_balances(w,cid), &(&1.material==material))
 
   defp b2_hit(c,actor,target,seq) do
