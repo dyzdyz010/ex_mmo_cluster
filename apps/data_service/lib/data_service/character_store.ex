@@ -39,6 +39,25 @@ defmodule DataService.CharacterStore do
 
   def save_runtime_state(_character_id, _attrs), do: {:error, :invalid_args}
 
+  @doc """
+  按名字取或建 NPC 角色行。名字是 NPC 的永久身份：同名永远得到同一个 cid，cid 不复用；
+  该名字已属于玩家角色时不匹配（崩溃，不返回玩家的 cid）。
+  """
+  @spec ensure_npc(String.t()) :: {:ok, Character.t()}
+  def ensure_npc(name) when is_binary(name) do
+    case Repo.get_by(Character, name: name) do
+      %Character{kind: "npc"} = character ->
+        {:ok, character}
+
+      nil ->
+        <<cid::64>> = DataService.UidGenerator.generate()
+
+        %Character{}
+        |> Character.changeset(%{id: cid, kind: "npc", name: name, base_attrs: %{}, battle_attrs: %{}})
+        |> Repo.insert()
+    end
+  end
+
   @doc "读回角色(供测试/恢复路径直接取 DB 运行态);不存在 → nil。"
   @spec get_character(integer()) :: Character.t() | nil
   def get_character(character_id) when is_integer(character_id) do

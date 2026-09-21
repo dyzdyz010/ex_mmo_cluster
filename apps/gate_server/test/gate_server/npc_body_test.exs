@@ -4,13 +4,12 @@ defmodule GateServer.NpcBodyTest do
   只有世界来源是平地替身（不属于本片被验证的责任主体）。观察者是测试进程，以普通玩家 cid 走同一 claim。
   """
   use ExUnit.Case, async: false
-  import Bitwise
   alias GateServer.Npc.Body
   alias MmoContracts.{Movement, Session, Voxel}
   alias SceneServer.Movement.{Player, Scene}
 
-  @npc_a (1 <<< 63) + 1
-  @npc_b (1 <<< 63) + 2
+  @npc_a 9001
+  @npc_b 9002
 
   defmodule Source do
     use GenServer

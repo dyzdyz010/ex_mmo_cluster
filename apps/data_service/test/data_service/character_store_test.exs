@@ -76,4 +76,31 @@ defmodule DataService.CharacterStoreTest do
     assert CharacterStore.persisted_position(7003) == {5.0, 6.0, 7.0}
     assert CharacterStore.persisted_position(424_242) == nil
   end
+
+  describe "ensure_npc/1" do
+    test "same name always yields the same accountless npc row; different names get different cids" do
+      {:ok, a} = CharacterStore.ensure_npc("npc-a")
+      {:ok, again} = CharacterStore.ensure_npc("npc-a")
+      {:ok, b} = CharacterStore.ensure_npc("npc-b")
+
+      assert {a.kind, a.account} == {"npc", nil}
+      assert again.id == a.id
+      assert b.id != a.id
+      assert 2 == Repo.aggregate(Character, :count)
+    end
+
+    test "a player's name is never handed out as an npc" do
+      insert_character(7, nil)
+      assert_raise CaseClauseError, fn -> CharacterStore.ensure_npc("char-7") end
+    end
+
+    test "the database rejects an npc with an account and a player without one" do
+      npc = Character.changeset(%Character{}, %{id: 8, kind: "npc", account: 1, name: "bad-npc"})
+      assert {:error, %{errors: [account: _]}} = Repo.insert(npc)
+
+      assert {:error, %{errors: [account: {_, [validation: :required]}]}} =
+               Repo.insert(Character.changeset(%Character{}, %{id: 9, name: "no-account"}))
+    end
+  end
+
 end

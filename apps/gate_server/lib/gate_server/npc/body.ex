@@ -8,7 +8,6 @@ defmodule GateServer.Npc.Body do
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
   """
   use GenServer
-  import Bitwise
   alias MmoContracts.{Movement, Session}
   alias SceneServer.Movement.Player
 
@@ -50,9 +49,8 @@ defmodule GateServer.Npc.Body do
 
   @impl true
   def init(opts) do
+    # cid 来自 characters 表的 NPC 行（DataService.CharacterStore.ensure_npc/1），永久且不复用。
     cid = Keyword.fetch!(opts, :cid)
-    # NPC cid 区间：bit 63 置 1，全集群唯一，不进 characters 表。
-    true = (cid >>> 63) == 1
     [first, _ | _] = route = Keyword.fetch!(opts, :route)
 
     # 相邻路点（含回环）间距大于到达半径的两倍，advance_route/2 才必然终止。

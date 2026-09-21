@@ -8,6 +8,8 @@ defmodule DataService.Schema.Character do
 
   @primary_key {:id, :id, autogenerate: false}
   schema "characters" do
+    # "player" | "npc"。NPC 没有账号，鉴权按账号匹配角色，所以玩家无法以 NPC 的 cid 登录。
+    field(:kind, :string, default: "player")
     field(:account, :integer)
     field(:name, :string)
     field(:title, :string)
@@ -25,6 +27,7 @@ defmodule DataService.Schema.Character do
     character
     |> cast(attrs, [
       :id,
+      :kind,
       :account,
       :name,
       :title,
@@ -35,7 +38,10 @@ defmodule DataService.Schema.Character do
       :sp,
       :mp
     ])
-    |> validate_required([:id, :account, :name])
+    |> validate_required([:id, :name])
+    |> validate_inclusion(:kind, ["player", "npc"])
+    |> then(&if(get_field(&1, :kind) == "player", do: validate_required(&1, [:account]), else: &1))
+    |> check_constraint(:account, name: :npc_has_no_account)
     |> unique_constraint(:name)
   end
 end

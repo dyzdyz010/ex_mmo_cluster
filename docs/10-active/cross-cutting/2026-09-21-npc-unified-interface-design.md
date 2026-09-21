@@ -149,14 +149,14 @@ done。第一片不做提前减速预测。
 
 | # | 缺口 | 处理 |
 |---|---|---|
-| G-1 | NPC 身份与会话占用 | **已做**：claim/transfer 登记抽为 `GateServer.Session.Claims`（玩家侧 QUIC 测试抽取前后结果一致）。由 **Body 进程本人**调用 `{:claim,…}`（listener 监视的是调用者；由 manager 代 claim 会把所有 NPC 绑到 manager 上）。NPC cid 区间 = bit 63 置 1（2^63 ≤ cid < 2^64），静态配置，**全集群唯一**（重复 cid 会踢旧会话而不是报配置冲突）；不进 `characters` 表，不走 CharacterStore |
+| G-1 | NPC 身份与会话占用 | **已做**：claim/transfer 登记抽为 `GateServer.Session.Claims`（玩家侧 QUIC 测试抽取前后结果一致）。由 **Body 进程本人**调用 `{:claim,…}`（listener 监视的是调用者；由 manager 代 claim 会把所有 NPC 绑到 manager 上）。**NPC 进 `characters` 表**（2026-09-21 用户决定，取代审查时的 bit 63 区间方案）：`kind = "npc"`、`account` 为空，DB 约束 `(kind = 'npc') = (account IS NULL)`；cid 由 `DataService.CharacterStore.ensure_npc(name)` 按名字取或建，名字是永久身份，cid 由主键保证唯一且不复用；鉴权按账号匹配角色，玩家无法以 NPC cid 登录 |
 | G-2a | 名额 | **已做**：`Scene.join` 的 character 带 `spawn: {x,y,z}` 时 `slot: nil`，不计入 probe 名额（与 transfer 导入成员同一规则） |
 | G-2b | 出生点 | **已做**：同上，显式出生点经 `probe:` 传给 Player，仍走 `find_spawn` 与 travel/authority 校验 |
 | G-3 | 内部 Ready 的含义 | 无头 Body 不建体素镜像；收到 `SessionStart` + `CanonicalBootstrap` 元数据后回 baseline 的 seq/revision。在文档里写明这是“内部会话就绪”，不代表已应用体素 |
 | G-4 | 缺内部共用的合法请求构造入口 | 只为当片用到的命令加构造函数（第二片：`tool_intent`） |
 | G-5 | 生命周期双向 | Body 必须消费 `mmo_close` 并结束会话，使 `CollisionStream` 随 gate 退出而清理；不做自动重连以外的恢复 |
 | G-6 | 部署位置 | 第一片 Body 放 Gate/World 主节点。远端节点直调 World 会碰到 `prepare/2` 在调用者侧执行 `source.ensure`（本地 ETS / 文件）的节点边界问题，未验证，不在第一片解决 |
-| G-7 | 余额 | 复用 World 结算即持久化；固定 cid 重用会继承该世界既有余额。是否需要临时余额到第二片再定 |
+| G-7 | 余额 | **已定**：NPC 与玩家一致，有自己的背包，按 `{cid, material}` 持久化；cid 永不复用，所以不存在继承旧背包。起步为空、挖走的材料暂无出口，属测试期情况，接入正式玩家流程后解决 |
 | — | `EntityEnter` 无 kind / name | 产品需求项，不阻塞第一片；客户端按 entity_id 建同一种 RemoteCharacter |
 
 ## 7. 开放问题
