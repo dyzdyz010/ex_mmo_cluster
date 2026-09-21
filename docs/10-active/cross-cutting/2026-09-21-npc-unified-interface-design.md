@@ -99,6 +99,11 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    不动客户端线格式与 content_version。只覆盖付费放置的 macro 格；prefab 构件与附件的放置者还没记。升级前放下的格没有记录（nil）。
    权限（能不能动别人的东西、出生点保护）不在这一步。
 
+7. **下一步（2026-09-21 用户确定，排期写在 `Voxim/starter.md` 的“排期与进入条件”）**：先做 Prefab Designer 的服务端内核（D0 量建筑尺度 prefab →
+   D1 工作台 + 运行时发布入口 → D2 LLM 设计会话），玩家与 NPC 共用；同期把 NPC 调整成“一个通用大脑 + 可调用技能”
+   （`Brain.Builder` 降成技能、Jev 的选项由数据给、记忆读写做成工具）。所有角色都可以放置 prefab：建造者名单 `voxim_builder_cids` 随之移除。
+   延时建造（审核 → 虚影 + 完工时间 → 到期整体放下）、地块权限、出生点保护是后期的独立系统，不在这一步。
+
 范围：Voxim 正式栈（QUIC + `SceneServer.Movement.Scene` + `VoxelRegion.World`）。legacy 栈的
 `SceneServer.Npc.*` 只作形状参考，不搬。
 
