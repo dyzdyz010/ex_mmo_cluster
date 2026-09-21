@@ -27,9 +27,9 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :scoop | :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
       %{id:, verb: :attach, kind:, axis:, size:, anchor: {x, y, z}, material:, tool_id:}   # anchor 是 micro 坐标
       %{id:, verb: :detach, kind:, axis:, size:, anchor:, material:, tool_id:, attachment_id:}
-      %{id:, verb: :prefab_place, definition_id: <<32 字节>>, anchor: {x, y, z}, orientation: 0..23}
+      %{id:, verb: :prefab_place, definition_id: <<32 字节>>, anchor: {x, y, z}, orientation: 0..23}   # anchor 是 micro 坐标
       %{id:, verb: :prefab_remove, instance_id: {birth, occurrence}}
-      %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab 要求 cid 在建造者名单里，与玩家相同
+      %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab：cid 在建造者名单里、格在部署的编辑盒内，与玩家相同
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
@@ -37,7 +37,9 @@ defmodule GateServer.Npc.Brain do
 
   工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路安装 / 投料 / 开关都是
   `use_tool` 换一个 `tool_id`，不是各自的动词。电路工具的目标是附件：`target` 给
-  `%{granularity: 3, micro: anchor, incarnation: id, owner: {id, kind * 3 + axis}, material:}`，按身份寻址、不经射线。坐标是 canonical macro 格（1 格 = 1 m，Y 向上）。
+  `%{granularity: 3, micro: anchor, incarnation: id, owner: {id, kind * 3 + axis}, material:}`，按身份寻址、不经射线。
+  `coord` / `look` 是 canonical macro 格（1 格 = 1 m，Y 向上）；附件与 prefab 的 `anchor` 是 micro 坐标（1 格 = 8 micro），
+  与玩家的线请求相同。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 

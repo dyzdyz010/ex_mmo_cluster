@@ -166,7 +166,7 @@ defmodule GateServer.Npc.Brain.Llm do
         type: "function",
         name: "prefab",
         description:
-          "预制件（需要建造者权限）。op = place：在 macro 格 (x,y,z) 以 orientation 0–23 放置 definition；" <>
+          "预制件（需要建造者权限）。op = place：以 micro 坐标 (x,y,z)（1 格 = 8 micro）为锚点、orientation 0–23 放置 definition；" <>
             "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
         parameters: %{
           type: "object",
