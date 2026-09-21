@@ -32,6 +32,8 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab 要求 cid 在建造者名单里，与玩家相同
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
+      %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
+      %{id:, verb: :say, text:}                                  # 聊天占位：正式栈还没有聊天，恒被拒 :chat_unavailable
 
   工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路安装 / 投料 / 开关都是
   `use_tool` 换一个 `tool_id`，不是各自的动词。电路工具的目标是附件：`target` 给
@@ -47,10 +49,16 @@ defmodule GateServer.Npc.Brain do
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
   世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
-  `%{cell:, material:, refined:, slots:}`，material 0 = 空气）。
+  `%{cell:, material:, refined:, slots:}`，material 0 = 空气）；`inspect` 是 `%{seq:, property_states:}`，取自
+  `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
+  `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。
+
+  ## 聊天（占位）
+
+  事件 `{:heard, %{entity_id:, text:}}` 与命令 `say` 是为玩家聊天预留的形状；正式栈接入聊天之前不会有 `:heard` 事件。
   """
 
   @callback init(profile :: map) :: state :: term
-  @callback handle_event({:observation, map} | {:outcome, map}, state :: term) ::
+  @callback handle_event({:observation, map} | {:outcome, map} | {:heard, map}, state :: term) ::
               {[map], state :: term}
 end

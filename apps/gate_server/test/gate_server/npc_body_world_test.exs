@@ -164,8 +164,7 @@ defmodule GateServer.NpcBodyWorldTest do
     # 眼睛在上格高度：压低一点的射线穿过挖空的上格，从顶面进入石柱下格。
     down = {1 / :math.sqrt(1.09), -0.3 / :math.sqrt(1.09), 0.0}
     low = %{hit | direction: down}
-    # 地面（y ≤ 63 实心）顶面上的一个 micro 面片：法线轴 Y，micro 坐标 = macro × 8。
-    face = %{kind: 0, axis: 1, size: 1, anchor: {120, 512, 80}, material: @stone, tool_id: 1}
+    face = face()
 
     {GateServer.Npc.Brain.Routine,
      %{
@@ -185,7 +184,9 @@ defmodule GateServer.NpcBodyWorldTest do
          low,
          %{verb: :look, min: {15, 63, 9}, max: {17, 66, 11}},
          Map.put(face, :verb, :attach),
+         %{verb: :inspect},
          Map.merge(face, %{verb: :detach, attachment_id: 0}),
+         %{verb: :say, text: "墙砌好了"},
          %{verb: :prefab_place, definition_id: :binary.copy(<<42>>, 32), anchor: {15, 64, 12}, orientation: 0},
          %{verb: :place, coord: @pillar, material: @stone, tool_id: 1},
          %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1},
@@ -198,6 +199,9 @@ defmodule GateServer.NpcBodyWorldTest do
     do:
       {GateServer.Npc.Brain.Patrol,
        %{route: [{4.0, 10.0}, {14.0, 10.0}], dig: %{direction: {1.0, 0.0, 0.0}, tool_id: 1}}}
+
+  # 地面（y ≤ 63 实心）顶面上的一个 micro 面片：法线轴 Y，micro 坐标 = macro × 8。
+  defp face, do: %{kind: 0, axis: 1, size: 1, anchor: {120, 512, 80}, material: @stone, tool_id: 1}
 
   defp await(fun, deadline) do
     case fun.() do
@@ -250,12 +254,12 @@ defmodule GateServer.NpcBodyWorldTest do
       await(
         fn ->
           outcomes = Body.observe(body).outcomes
-          if length(outcomes) == 20, do: Enum.reverse(outcomes)
+          if length(outcomes) == 22, do: Enum.reverse(outcomes)
         end,
         System.monotonic_time(:millisecond) + 60_000
       )
 
-    assert [balances, broke, _move, _probe, _, _, _, _, lower, _, _, _, last_hit, look, attach, detach, prefab, placed, scoop, far] =
+    assert [balances, broke, _move, _probe, _, _, _, _, lower, _, _, _, last_hit, look, attach, inspect, detach, say, prefab, placed, scoop, far] =
              outcomes
 
     # 起步背包为空：余额读得到，放置被权威以余额不足拒绝，世界没变。
@@ -275,6 +279,12 @@ defmodule GateServer.NpcBodyWorldTest do
     # 附件：一个 micro 面片花 1 单位；拆除要带对那件附件的 id，错的被权威拒绝。
     assert %{verb: :attach, status: :done} = attach
     assert %{verb: :detach, status: :rejected, reason: :stale_target} = detach
+    # 正式栈还没有聊天：say 只占位。
+    assert %{verb: :say, status: :rejected, reason: :chat_unavailable} = say
+
+    # inspect 给出那件附件的权威身份；拿它就能对附件用工具、再把它拆下来（材料退回）。
+    assert %{verb: :inspect, status: :done, data: %{property_states: [thing]}} = inspect
+    assert %{granularity: 3, micro: {120, 512, 80}, material: @stone, incarnation: id, owner: {id, 1}} = thing
     # Prefab 与玩家同一道建造者门：这个 cid 不在名单里。
     assert %{verb: :prefab_place, status: :rejected, reason: :builder_permission_required} = prefab
 
@@ -284,6 +294,23 @@ defmodule GateServer.NpcBodyWorldTest do
     assert @stone == cell(world)
     assert 511 == balance(world)
     assert [%{material: @stone, balance: 511}] = Body.observe(body).balances
+
+    # 测试进程充当进程外 Brain：用 inspect 到的身份打附件一下，再带对的 id 拆掉。
+    Body.command(body, %{id: 101, verb: :use_tool, direction: {1.0, 0.0, 0.0}, tool_id: 1, target: thing})
+    Body.command(body, Map.merge(face(), %{id: 102, verb: :detach, attachment_id: id}))
+
+    [hit, detached] =
+      await(
+        fn ->
+          found = Enum.filter(Body.observe(body).outcomes, &(&1.id in [101, 102]))
+          if length(found) == 2, do: Enum.sort_by(found, & &1.id)
+        end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+
+    assert %{verb: :use_tool, status: :done} = hit
+    assert %{verb: :detach, status: :done} = detached
+    assert 512 == balance(world)
 
     # 液体动词走同一个 production 入口；这个世界没有液体，权威原样拒绝。
     assert %{verb: :scoop, status: :rejected, reason: :invalid_liquid_operation} = scoop

@@ -59,10 +59,11 @@ defmodule GateServer.Npc.Brain.Llm do
         type: "function",
         name: "use_tool",
         description:
-          "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。",
+          "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。" <>
+            "给了 attachment_id 就改为对最近一次 inspect 列出的那件附件使用（电路安装 / 投料 / 开关的目标都是附件）。",
         parameters: %{
           type: "object",
-          properties: %{tool_id: tool_id},
+          properties: %{tool_id: tool_id, attachment_id: %{type: "integer"}},
           required: ["tool_id"],
           additionalProperties: false
         }
@@ -180,6 +181,25 @@ defmodule GateServer.Npc.Brain.Llm do
       },
       %{
         type: "function",
+        name: "inspect",
+        description:
+          "列出周围（自己所在 64 米 tile 及相邻 tile）的附件与预制件构件：附件给 attachment_id、kind、axis、micro 坐标、material、hp、电路状态；" <>
+            "构件给 instance [birth, occurrence] 与占的格。detach、prefab remove / replace、对附件 use_tool 都要用这里的身份。",
+        parameters: %{type: "object", properties: %{}, additionalProperties: false}
+      },
+      %{
+        type: "function",
+        name: "say",
+        description: "对周围说一句话。",
+        parameters: %{
+          type: "object",
+          properties: %{text: %{type: "string"}},
+          required: ["text"],
+          additionalProperties: false
+        }
+      },
+      %{
+        type: "function",
         name: "query_balances",
         description: "读取自己的背包余额（balances 为 null 时先调用它）。",
         parameters: %{type: "object", properties: %{}, additionalProperties: false}
@@ -210,8 +230,11 @@ defmodule GateServer.Npc.Brain.Llm do
     {[], pid}
   end
 
-  @doc "把一次 Responses 应答里的工具调用译成命令；`probe` 是最近一次成功探测 `%{direction:, target:}`。"
-  def commands(%{"output" => output}, probe, next_id) do
+  @doc """
+  把一次 Responses 应答里的工具调用译成命令；`probe` 是最近一次成功探测 `%{direction:, target:}`，
+  `things` 是最近一次 inspect 的附件身份（attachment_id => 目标）。
+  """
+  def commands(%{"output" => output}, probe, things, next_id) do
     output
     |> Enum.filter(&(&1["type"] == "function_call"))
     |> Enum.with_index(next_id)
@@ -247,6 +270,22 @@ defmodule GateServer.Npc.Brain.Llm do
 
         "query_balances" ->
           %{id: id, verb: :query_balances}
+
+        "inspect" ->
+          %{id: id, verb: :inspect}
+
+        "say" ->
+          %{id: id, verb: :say, text: args["text"]}
+
+        # 附件按身份寻址、不经射线；direction 只需是单位向量。
+        "use_tool" when is_map_key(args, "attachment_id") ->
+          %{
+            id: id,
+            verb: :use_tool,
+            tool_id: args["tool_id"],
+            direction: {1.0, 0.0, 0.0},
+            target: things[args["attachment_id"]]
+          }
 
         name when name in ["attach", "detach"] ->
           %{
@@ -316,6 +355,8 @@ defmodule GateServer.Npc.Brain.Llm do
       # 发出过但还没有 Outcome 的探测方向：id => direction。
       probes: %{},
       probe: nil,
+      # 最近一次 inspect 的附件身份：attachment_id => 目标。
+      things: %{},
       dirty: true,
       asking: false,
       # monotonic_time 可以为负，不能用 0 当“很久以前”。
@@ -337,7 +378,7 @@ defmodule GateServer.Npc.Brain.Llm do
         {:answer, {:ok, response}} ->
           {waits, commands} =
             response
-            |> commands(state.probe, state.next_id)
+            |> commands(state.probe, state.things, state.next_id)
             |> Enum.split_with(&(&1.verb == :wait))
 
           Logger.info("npc_llm_decision #{inspect(waits ++ commands, limit: :infinity)}")
@@ -376,6 +417,15 @@ defmodule GateServer.Npc.Brain.Llm do
     %{state | probes: probes, probe: probe}
   end
 
+  defp remember_probe(state, %{verb: :inspect, status: :done, data: %{property_states: rows}}) do
+    things =
+      for %{granularity: 3, incarnation: id} = row <- rows, into: %{} do
+        {id, Map.take(row, [:granularity, :micro, :incarnation, :owner, :material])}
+      end
+
+    %{state | things: things}
+  end
+
   defp remember_probe(state, _), do: state
 
   @doc "Outcome 进历史（新在前）。`look` 的原样快照太大：只留非空气格，按 \"x,z\" 列聚成 [y, material]；更早的 look 只留结论。"
@@ -386,6 +436,22 @@ defmodule GateServer.Npc.Brain.Llm do
 
     older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
     [%{outcome | data: %{solid: columns}} | older]
+  end
+
+  # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。
+  def remember(%{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome, outcomes) do
+    attachments =
+      for %{granularity: 3, owner: {id, type}} = row <- rows do
+        %{attachment_id: id, kind: div(type, 3), axis: rem(type, 3), micro: row.micro}
+        |> Map.merge(Map.take(row, [:material, :hp, :max_hp, :circuit]))
+      end
+
+    components =
+      for %{granularity: 2, owner: {birth, occurrence}} = row <- rows,
+        do: %{instance: [birth, occurrence], material: row.material, cells: row.observation_cells}
+
+    older = for o <- outcomes, do: if(o.verb == :inspect, do: %{o | data: nil}, else: o)
+    [%{outcome | data: %{attachments: attachments, components: components}} | older]
   end
 
   def remember(outcome, outcomes), do: [outcome | outcomes]

@@ -19,7 +19,7 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [
              %{id: 7, verb: :move_to, position: {14, 10.5}, tolerance: 0.5},
              %{id: 8, verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}}
-           ] == Llm.commands(response, nil, 7)
+           ] == Llm.commands(response, nil, %{}, 7)
   end
 
   test "use_tool carries the last successful probe; without one it is left for the Body to reject" do
@@ -27,9 +27,9 @@ defmodule GateServer.NpcBrainLlmTest do
     response = %{"output" => [call("use_tool", %{tool_id: 1})]}
 
     assert [%{verb: :use_tool, direction: {1.0, 0.0, 0.0}, target: @target, tool_id: 1}] =
-             Llm.commands(response, probe, 1)
+             Llm.commands(response, probe, %{}, 1)
 
-    assert [%{verb: :use_tool, direction: nil, target: nil}] = Llm.commands(response, nil, 1)
+    assert [%{verb: :use_tool, direction: nil, target: nil}] = Llm.commands(response, nil, %{}, 1)
   end
 
   test "building verbs: cells are integer macro coords, the default tool applies unless the model names another" do
@@ -51,7 +51,7 @@ defmodule GateServer.NpcBrainLlmTest do
              %{id: 4, verb: :pour, coord: {50, 519, 64}, material: 21, tool_id: 12},
              %{id: 5, verb: :query_balances},
              %{id: 6, verb: :probe_toward, tool_id: 9, direction: {1.0, 0.0, 0.0}}
-           ] == Llm.commands(response, nil, 1)
+           ] == Llm.commands(response, nil, %{}, 1)
   end
 
   test "attachment and prefab tools: hex definition ids become 32-byte binaries, a bad one is left for the Body to reject" do
@@ -73,9 +73,44 @@ defmodule GateServer.NpcBrainLlmTest do
              %{verb: :prefab_place, definition_id: definition, anchor: {15, 64, 12}, orientation: 5},
              %{verb: :prefab_remove, instance_id: {10, 0}},
              %{verb: :prefab_replace, instance_id: {10, 0}, definition_id: nil}
-           ] = Llm.commands(response, nil, 1)
+           ] = Llm.commands(response, nil, %{}, 1)
 
     assert :binary.copy(<<42>>, 32) == definition
+  end
+
+  test "inspect: attachments become addressable targets for use_tool, and the model sees ids, not raw rows" do
+    row = %{
+      granularity: 3, micro: {120, 512, 80}, incarnation: 41, owner: {41, 1}, material: 11,
+      hp: 0.19, max_hp: 0.19, digest: <<1, 2>>, observation_cells: [{15, 63, 10}, {15, 64, 10}]
+    }
+
+    part = %{granularity: 2, micro: {8, 8, 8}, incarnation: 10, owner: {10, 0}, material: 3, observation_cells: [{1, 1, 1}]}
+    outcome = %{id: 4, verb: :inspect, status: :done, reason: nil, data: %{seq: 9, property_states: [row, part]}}
+
+    assert [
+             %{
+               data: %{
+                 attachments: [%{attachment_id: 41, kind: 0, axis: 1, micro: {120, 512, 80}, material: 11, hp: 0.19}],
+                 components: [%{instance: [10, 0], material: 3, cells: [{1, 1, 1}]}]
+               }
+             }
+           ] = Llm.remember(outcome, [])
+
+    things = %{41 => Map.take(row, [:granularity, :micro, :incarnation, :owner, :material])}
+
+    response = %{
+      "output" => [
+        call("use_tool", %{tool_id: 7, attachment_id: 41}),
+        call("inspect", %{}),
+        call("say", %{text: "墙砌好了"})
+      ]
+    }
+
+    assert [
+             %{verb: :use_tool, tool_id: 7, direction: {1.0, 0.0, 0.0}, target: %{granularity: 3, incarnation: 41, owner: {41, 1}}},
+             %{id: 2, verb: :inspect},
+             %{id: 3, verb: :say, text: "墙砌好了"}
+           ] = Llm.commands(response, nil, things, 1)
   end
 
   test "a look outcome is kept as solid columns only, and only the latest look keeps its data" do
@@ -121,7 +156,7 @@ defmodule GateServer.NpcBrainLlmTest do
     probe = Enum.find(body.tools, &(&1.name == "probe_toward")).parameters
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
-    assert ~w(attach detach look move_to place pour prefab probe_toward query_balances scoop stop use_tool wait) ==
+    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances say scoop stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
   end
 

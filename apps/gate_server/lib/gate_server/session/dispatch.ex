@@ -68,6 +68,42 @@ defmodule GateServer.Session.Dispatch do
   def voxim_edit_coords({:voxel_batch_edit_intent, request}),
     do: Enum.map(request.edits, &elem(&1, 0))
 
+  @doc "建造者权限（prefab 与直接编辑）：各传输的玩家会话与 NPC Body 查同一份名单。"
+  def builder?(cid), do: cid in Application.get_env(:gate_server, :voxim_builder_cids, [])
+
+  @doc """
+  Prefab 请求涉及的 macro 格是否都在部署的编辑盒内；玩家连接与 NPC Body 共用。
+  算不出格（未知定义 / 实例）时放行，由 World 给出原因。
+  """
+  def prefab_within?(world_ref, kind, request, {{a, b, c}, {d, e, f}}) do
+    cells =
+      case kind do
+        :voxel_prefab_place_v1 ->
+          with {:ok, cells} <-
+                 VoxelRegion.World.prefab_cells(
+                   world_ref,
+                   request.definition_id,
+                   request.anchor,
+                   request.orientation
+                 ),
+               do: {:ok, Enum.map(cells, fn {micro, _} -> elem(VoxelRegion.Prefab.macro_slot(micro), 0) end)}
+
+        :voxel_prefab_remove_v1 ->
+          VoxelRegion.World.instance_cells(world_ref, request.instance_id)
+
+        :voxel_prefab_replace_v1 ->
+          VoxelRegion.World.replacement_cells(world_ref, request.instance_id, request.definition_id)
+      end
+
+    case cells do
+      {:ok, cells} ->
+        Enum.all?(cells, fn {x, y, z} -> x >= a and y >= b and z >= c and x < d and y < e and z < f end)
+
+      {:error, _} ->
+        true
+    end
+  end
+
   @type state :: map()
 
   @doc """
@@ -529,9 +565,6 @@ defmodule GateServer.Session.Dispatch do
     result_error(state, :invalid_state, 0)
     {:ok, state}
   end
-
-  @doc "建造者权限（prefab 与直接编辑）：各传输的玩家会话与 NPC Body 查同一份名单。"
-  def builder?(cid), do: cid in Application.get_env(:gate_server, :voxim_builder_cids, [])
 
   # The same creator permission applies to all transports, separate from tool attacks.
   def handle({kind, request} = message, %{status: :in_scene, voxim_overlay: true} = state)

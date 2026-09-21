@@ -9,7 +9,8 @@ defmodule GateServer.Npc.Body do
 
   世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 Gate 为玩家调用的同一组 World 公共 API
   （`tool_intent/3`、`production_intent/3`、`attachment_intent/3`、`prefab_intent/4`、`material_balances/2`；
-  只读感知走 `material_snapshot/3`）。Prefab 与玩家一样要求 cid 在建造者名单里。
+  只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`）。Prefab 与玩家过同一道门：cid 在建造者名单里、
+  涉及的格在部署的编辑盒（`:gate_server, :quic` 的 `bounds`）内。聊天在正式栈里还不存在：`say` 只占位。
   调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧。余额的真值在 World，
   这里只在每次自己的世界事务之后重取一份（与 Gate 给玩家补发余额的时机相同）。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
@@ -81,6 +82,8 @@ defmodule GateServer.Npc.Body do
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
        scene_id: Keyword.fetch!(opts, :scene_id),
+       # 与玩家 QUIC 连接同一份部署编辑盒。
+       bounds: Keyword.get(opts, :bounds, Application.get_env(:gate_server, :quic, [])[:bounds]),
        brain: brain,
        mind: brain.init(profile),
        identity: nil,
@@ -327,7 +330,7 @@ defmodule GateServer.Npc.Body do
     do: move(state, %{id: id, verb: :stop, target: nil, tolerance: nil, zero_from: nil})
 
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:probe_toward, :use_tool, :query_balances, :look] or
+       when verb in [:probe_toward, :use_tool, :query_balances, :look, :inspect] or
               is_map_key(@production, verb) or is_map_key(@attachment, verb) or
               is_map_key(@prefab, verb) do
     case world_call(state, command) do
@@ -339,6 +342,11 @@ defmodule GateServer.Npc.Body do
         %{state | request_seq: state.request_seq + 1, world: Map.put(state.world, id, verb)}
     end
   end
+
+  # 聊天占位：正式栈有玩家聊天后接同一条通道，届时收到的话以 `{:heard, ...}` 事件给 Brain。
+  defp apply_command(state, %{id: id, verb: :say, text: text}) when is_binary(text),
+    do:
+      emit(state, %{id: id, verb: :say, status: :rejected, reason: :chat_unavailable, data: nil})
 
   # Brain 是可插拔的外部输入（含 LLM）：不合法的命令回报为拒绝，不让 Body 崩溃。
   defp apply_command(state, command), do: invalid(state, command)
@@ -435,6 +443,12 @@ defmodule GateServer.Npc.Body do
               y1 <= py + @look_reach and z0 >= pz - @look_reach and z1 <= pz + @look_reach,
        do: {:look, for(x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z})}
 
+  # 自己所在 tile 周围 3×3×3 个 tile：与玩家客户端收到属性状态的窗口相同。
+  defp world_call(%{position: {x, y, z}}, %{verb: :inspect}) do
+    {rx, ry, rz} = {floor(x / 64), floor(y / 64), floor(z / 64)}
+    {:inspect, {{rx - 1, ry - 1, rz - 1}, {rx + 2, ry + 2, rz + 2}}}
+  end
+
   defp world_call(_state, _command), do: nil
 
   # 与玩家请求同形的公共字段；client_intent_seq 在本会话内跨所有事务严格递增。
@@ -452,7 +466,7 @@ defmodule GateServer.Npc.Body do
     do:
       send(
         state.worker,
-        {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid]), call}
+        {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]), call}
       )
 
   defp invalid(state, command) when is_map(command) do
@@ -484,7 +498,7 @@ defmodule GateServer.Npc.Body do
 
         # 与 Gate 给玩家补发余额的时机相同：探测与只读感知之外的每次调用之后。
         balances =
-          unless match?({:tool, %{action: 0}}, call) or match?({:look, _}, call),
+          unless match?({:tool, %{action: 0}}, call) or match?({kind, _} when kind in [:look, :inspect], call),
             do: World.material_balances(session.world_ref, session.cid)
 
         send(body, {:npc_world_result, id, result || {:ok, %{balances: balances}}, balances})
@@ -497,13 +511,16 @@ defmodule GateServer.Npc.Body do
   defp execute(session, {:look, cells}),
     do: {:ok, World.material_snapshot(session.world_ref, [session.cid], cells)}
 
+  # 附件（granularity 3）与 prefab 构件（granularity 2）的身份和状态；热账、液体量等不属于角色感知。
+  defp execute(session, {:inspect, box}),
+    do:
+      {:ok,
+       session.world_ref
+       |> World.simulation_snapshot([session.cid], box)
+       |> Map.take([:seq, :property_states])}
+
   defp execute(session, call) do
-    # Gate 在进 World 之前对玩家 prefab 请求做的同一道门，同一个原因。
-    with :ok <-
-           if(match?({:prefab, _, _}, call) and not Dispatch.builder?(session.cid),
-             do: {:error, :builder_permission_required},
-             else: :ok
-           ),
+    with :ok <- prefab_gate(session, call),
          {:ok, actor} <- Player.tool_context(session.player, session.identity) do
       actor =
         Map.merge(actor, %{
@@ -519,4 +536,15 @@ defmodule GateServer.Npc.Body do
       end
     end
   end
+
+  # Gate 在进 World 之前对玩家 prefab 请求做的同一道门。
+  defp prefab_gate(session, {:prefab, kind, request}) do
+    cond do
+      not Dispatch.builder?(session.cid) -> {:error, :builder_permission_required}
+      not Dispatch.prefab_within?(session.world_ref, kind, request, session.bounds) -> {:error, :out_of_bounds}
+      true -> :ok
+    end
+  end
+
+  defp prefab_gate(_session, _call), do: :ok
 end

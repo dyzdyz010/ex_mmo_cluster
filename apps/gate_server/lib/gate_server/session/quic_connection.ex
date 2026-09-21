@@ -540,51 +540,15 @@ defmodule GateServer.Session.QuicConnection do
       {:ok, {kind, request} = message}
       when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] and
              state.voxim_overlay ->
-        if state.builder and edit_scene?(state, request.logical_scene_id) do
-          coords =
-            case kind do
-              :voxel_prefab_place_v1 ->
-                case VoxelRegion.World.prefab_cells(
-                       state.route.world_ref,
-                       request.definition_id,
-                       request.anchor,
-                       request.orientation
-                     ) do
-                  {:ok, cells} ->
-                    {:ok,
-                     Enum.map(cells, fn {micro, _} ->
-                       elem(VoxelRegion.Prefab.macro_slot(micro), 0)
-                     end)}
-
-                  error ->
-                    error
-                end
-
-              :voxel_prefab_remove_v1 ->
-                VoxelRegion.World.instance_cells(state.route.world_ref, request.instance_id)
-
-              :voxel_prefab_replace_v1 ->
-                VoxelRegion.World.replacement_cells(
-                  state.route.world_ref,
-                  request.instance_id,
-                  request.definition_id
-                )
-            end
-
-          case coords do
-            {:ok, cells} ->
-              if Enum.all?(cells, &within?(&1, state.bounds)) do
-                enqueue_edit(state, message)
-              else
-                close(state, 4)
-              end
-
-            {:error, _} ->
-              enqueue_edit(state, message)
-          end
-        else
-          close(state, 4)
-        end
+        if state.builder and edit_scene?(state, request.logical_scene_id) and
+             GateServer.Session.Dispatch.prefab_within?(
+               state.route.world_ref,
+               kind,
+               request,
+               state.bounds
+             ),
+           do: enqueue_edit(state, message),
+           else: close(state, 4)
 
       {:ok, {kind, request} = message}
       when kind in [:voxel_edit_intent, :voxel_batch_edit_intent] and state.voxim_overlay ->
