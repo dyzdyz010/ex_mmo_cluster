@@ -1,6 +1,6 @@
 # Prefab 里的宏格（VXPD v3）与 Prefab Designer 内核 — 决策稿
 
-2026-09-21，与用户逐项确认。**已定方向，未实施。** 排期见 `Voxim/starter.md`“排期与进入条件”的 Prefab Designer D0–D3；
+2026-09-21，与用户逐项确认。**已定方向；名单移除、D0 与 VXPD v3 已实施，D1–D3 待实施。** 排期见 `Voxim/starter.md`“排期与进入条件”的 Prefab Designer D0–D3；
 NPC 一侧的背景见 [`2026-09-21-npc-unified-interface-design.md`](2026-09-21-npc-unified-interface-design.md) §0。
 
 2026-09-22 实施增量 0（全局系统功能）：已移除 §6 建造者名单及 QUIC 登录缓存，部署编辑盒保留。
@@ -17,7 +17,7 @@ Gate 路由无名单时改前事务序号不变，改后正常提交；NPC 真�
 完成准星放置/替换/F 拆卸，事务 413807/413819/413828，两端逐笔属性一致、World 占用与双方余额恢复。
 证据 `assembly-final/acceptance.json`、原始两端日志及截图；共享森林 Demo 保留，公网未改动。
 旧 smoke 仅凭回放完成会假通过，现补操作/结果/副本/World 判定；`assembly-isolated` 的 occupied 原始失败仍保留。
-本轮 D0 数字与近似边界见 [测量记录](2026-09-22-prefab-d0-measurement.md)；VXPD v3 与 D1–D2 尚未实施。
+本轮 D0 数字与近似边界见 [测量记录](2026-09-22-prefab-d0-measurement.md)；VXPD v3 的实现、兼容与实跑边界见 [增量验收](2026-09-22-prefab-v3-validation.md)；D1–D2 尚未实施。
 
 ## 0. 为什么
 
