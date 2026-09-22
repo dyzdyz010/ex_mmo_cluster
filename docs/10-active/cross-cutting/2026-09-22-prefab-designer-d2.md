@@ -76,6 +76,10 @@ skills: %{
 
 修复提交 `8217a78c`：Scene Check/Facade 19 passed、Gate Llm/Skills/Design 32 passed（`d2-world-ground-{scene,gate}-final.log`）。额外负X与Y/Z region接缝场景通过，选择world_ground共3 passed/8 excluded（`d2-world-ground-seams.log`）；只测试新采样边界。正常构建镜像 `voxim-gameplay:prefab-d2-ground-20260922` 已切入独立Demo，余额、保护点和目录不变。原失败定义在当前天然场地只读重放：route=no_path，134宏格及1,152 micro均悬空，入口脚下是空气；`d2-world-ground-runtime-regression.json`。模型验收每轮改用独立角色、空记忆及唯一一次供给，避免旧角色经历污染单句目标。
 
+天然Demo attempt5在修复后的真实镜像（image `b3d4be51a7fbcbe7511a04c86abba2152b5945314911a888c1866c450fe578c4`）运行：父脑2请求/4,627 tokens，design 12请求/234,324 tokens（225,668输入、8,656输出），Jev22请求但usage未知。耗尽12轮，未发布、未放置；最后入口 `{804,4072,852}` 的身体被实际格 `{801,4072,851}` 阻挡，route仍失败。停止后余额未变、NPC已回空Routine、临时端点文件已删除。没有继续增加预算或盲目重跑；证据 `isolated-server/d2-session/20260922-094655/`、`d2-natural-demo-attempt5.log`，exit1。当前结论是已修复并实跑地面检查缺陷，D2完整模型目标仍未验收。
+
+本轮命令：两层屋在Gate目录设置 `MMO_DB_PORT=5433`、`DESIGN_LIVE_CASE=two_storey` 后运行 `mix.bat test --no-start test/gate_server/npc_skill_design_live_test.exs --include live_llm`；独立Demo在Voxim目录运行 `python Saved/Gameplay/prefab-designer-20260922/d2_demo.py --run`。后者当前失败即停止并保留原始证据；后续必须先根据上述入口/楼梯失败改进设计过程，不能将重复采样直到成功当作回归。
+
 独立旧 Demo 镜像 `voxim-gameplay:prefab-d2-20260922`（image `7065c8deba922d4a34d2d6f2973e7303dede6046be3649f177824ef2d116579a`）由正式构建图生成；升级保留原 worldgen、世界版本、协议 16、余额及保护点。共享森林 Demo 未改。
 
 `python Docs/Gameplay/smoke.py --mode assembly --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test --out Saved/Gameplay/prefab-designer-20260922/d2-assembly`：exit 0，双方 success；txn 431922 / 431934 / 431943，每端完整匹配 4 个叶子状态，材料恢复。已查看 `placed.png`。这只证明当前构建的玩家 assembly 链，不代表设计目标验收通过。
