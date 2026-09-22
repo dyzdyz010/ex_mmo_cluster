@@ -5,7 +5,17 @@ defmodule GateServer.NpcSkillBrainTest do
 
   defmodule Memory do
     def recent(_, _), do: []
-    def journal(_, _, _), do: :ok
+    def recent_notes(_,_),do: []
+    def search(_,_,_),do: []
+    def journal(cid, text, position) do
+      send(Process.whereis(__MODULE__),{:journal,cid,text,position})
+      :ok
+    end
+  end
+
+  setup do
+    Process.register(self(),Memory)
+    :ok
   end
 
   # 只测试：在技能自身调用的持久化接口内冻结退出，控制最后一个Body命令的先后。
@@ -14,6 +24,8 @@ defmodule GateServer.NpcSkillBrainTest do
     def start_link(owner),do: Agent.start_link(fn -> %{owner: owner,body: nil} end,name: __MODULE__)
     def body(body),do: Agent.update(__MODULE__,&%{&1 | body: body})
     def recent(_,_),do: []
+    def recent_notes(_,_),do: []
+    def search(_,_,_),do: []
     def journal(_,_,_),do: :ok
     def get(_,_,_) do
       %{owner: owner,body: body}=Agent.get(__MODULE__,& &1)
@@ -72,6 +84,8 @@ defmodule GateServer.NpcSkillBrainTest do
     GenServer.cast(body,{:event,{:outcome,%{id: {:skill,1,1},verb: :prefab_place,status: :done,reason: nil,data: %{seq: 41}}}})
     assert_receive {:asked,%{"outcomes"=>[%{"verb"=>"build","status"=>"done","data"=>%{"seq"=>41},
       "command"=>%{"tool"=>"build"}}]}},2_000
+    assert_receive {:journal,7,text,{1.0,2.0,3.0}}
+    assert text =~ "status=done" and text =~ "anchor_micro" and text =~ "seq: 41"
   end
 
   test "Jev can interrupt while the skill is waiting; stopping Body precedes the final interrupted outcome" do
@@ -194,5 +208,7 @@ defmodule GateServer.NpcSkillBrainTest do
     on_exit(fn -> :timer.cancel(timer) end)
     assert_receive {:asked,%{"outcomes"=>[%{"reason"=>["skill_failed","killed"],
       "data"=>%{"metrics"=>%{"request_count"=>nil,"jev_request_count"=>nil,"parent_jev_request_count"=>0}}}]}},2_000
+    assert_receive {:journal,7,text,_}
+    assert text =~ "status=rejected" and text =~ "skill_failed" and text =~ "killed"
   end
 end

@@ -10,12 +10,14 @@ defmodule GateServer.Npc.Skills.Design do
   alias VoxelRegion.Prefab.Draft
   alias SceneServer.{PrefabDesigner, Movement.Scene}
   alias SceneServer.PrefabDesigner.Check
+  alias GateServer.Npc.{Context, Memory, Perception, Brain.Llm}
 
   @metrics %{request_count: 0, rounds: 0, input_tokens: 0, output_tokens: 0,
     total_tokens: 0, failed_checks: 0, usage_complete: true}
 
   @doc "返回发布结果或明确失败及实际模型计量；模型请求由 context.request 注入。"
   def run(context, args) do
+    context = Map.put(context, :memory, Map.get(Map.get(context,:profile,%{}),:memory,DataService.NpcMemory))
     catalog = World.prefab_catalog(context.world)
     properties = World.material_catalog(context.world)
     scene = Scene.design_context(context.scene)
@@ -24,7 +26,9 @@ defmodule GateServer.Npc.Skills.Design do
       draft: %{macro_cells: 0,micro_cells: 0,child_slots: []},
       orientations: %{columns: [:id,:local_x_direction,:local_y_direction,:local_z_direction],
         rows: for(o <- 0..23,do: [o|Enum.map([{1,0,0},{0,1,0},{0,0,1}],&Prefab.point(&1,{0,0,0},o))])},
-      profile: Map.take(scene.profile, [:radius, :half_height, :step_height]),
+      self: %{entity_id: context.actor.cid,position: context.actor.position,
+        eye_m: context.actor.eye,body: Context.body(scene.profile)},
+      coordinates: Context.coordinates(),
       site: site(context, args.anchor), spawn_probes_m: scene.probes,
       materials: for({id, row} <- Enum.sort(properties.materials), do:
         %{id: id, name: row["display_name"], blocks_movement: MmoContracts.VoxelMaterialCatalog.blocks_movement?(id)}),
@@ -38,7 +42,7 @@ defmodule GateServer.Npc.Skills.Design do
   defp site(context, anchor) do
     [x,y,z] = anchor |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1,Spatial.micro_resolution()))
     cells = for yy <- (y-1)..y, xx <- x..(x+15), zz <- z..(z+15), do: {xx,yy,zz}
-    snapshot = World.material_snapshot(context.world,[context.actor.cid],cells)
+    snapshot = World.material_snapshot(context.world,[context.actor.cid],cells,:micro)
     layers = for yy <- (y-1)..y do
       rows = Enum.filter(snapshot.probe_occupancy, &(Enum.at(&1.cell,1) == yy))
       values = Enum.map(rows, &Map.take(&1,[:material,:refined,:placed_by])) |> Enum.uniq()
@@ -68,14 +72,26 @@ defmodule GateServer.Npc.Skills.Design do
 
   defp loop(context, args, state) do
     cond do
-      state.metrics.rounds >= context.budget.rounds -> {:error, :round_budget, state.metrics}
-      state.metrics.total_tokens >= context.budget.tokens -> {:error, :token_budget, state.metrics}
+      state.metrics.rounds >= context.budget.rounds -> failed(:round_budget, state)
+      state.metrics.total_tokens >= context.budget.tokens -> failed(:token_budget, state)
       true -> request(context, args, state)
     end
   end
 
   defp request(context, args, state) do
-    body = %{model: context.endpoint.model, instructions: instructions(), input: state.history,
+    with {:ok, actor} <- context.actor.refresh.(context.actor.player,context.actor.identity) do
+      request_current(%{context | actor: actor},args,state)
+    else
+      {:error,reason} -> failed(reason,state)
+    end
+  end
+
+  defp request_current(context, args, state) do
+    query = args.goal <> " " <> inspect(check_summary(state.last_check),limit: 20,printable_limit: 300)
+    memory = Memory.context(context.memory, context.actor.cid, query)
+    body = %{model: context.endpoint.model, instructions: instructions(),
+      input: state.history ++ [%{"role" => "user","content" => encode(%{current_memory: memory,
+        current_self: %{entity_id: context.actor.cid,position: context.actor.position,eye_m: context.actor.eye}})}],
       tools: tools(), tool_choice: "required", parallel_tool_calls: false, store: false,
       reasoning: %{effort: Map.get(context.endpoint, :effort, "low")},
       max_output_tokens: min(context.budget.max_output_tokens, context.budget.tokens - state.metrics.total_tokens)}
@@ -97,12 +113,12 @@ defmodule GateServer.Npc.Skills.Design do
                     loop(context, args, %{next | history: next.history ++ [output]})
                   {:done, result} -> {:ok, Map.put(result, :metrics, state.metrics)}
                 end
-              {:error, reason} -> {:error, reason, state.metrics}
+              {:error, reason} -> failed(reason,state)
             end
-          {:ok, metrics} -> {:error, :token_budget, metrics}
-          {:error, reason} -> {:error, reason, %{state.metrics | usage_complete: false}}
+          {:ok, metrics} -> failed(:token_budget,%{state | metrics: metrics})
+          {:error, reason} -> failed(reason,put_in(state.metrics.usage_complete,false))
         end
-      {:error, reason} -> {:error, {:request_failed, reason}, %{state.metrics | usage_complete: false}}
+      {:error, reason} -> failed({:request_failed,reason},put_in(state.metrics.usage_complete,false))
     end
   end
 
@@ -117,7 +133,7 @@ defmodule GateServer.Npc.Skills.Design do
     case Enum.filter(output, &(is_map(&1) and &1["type"] == "function_call")) do
       [%{"call_id" => id, "name" => name, "arguments" => json}] when is_binary(id) and is_binary(json) ->
         cond do
-          name not in ["edit", "view", "slice", "check", "publish"] -> {:error, {:unknown_tool, name}}
+          name not in ["edit", "view", "slice", "check", "publish", "look", "inspect", "remember", "recall", "search_memory"] -> {:error, {:unknown_tool, name}}
           true -> case Jason.decode(json) do
             {:ok, %{} = params} -> {:ok, id, name, params}
             _ -> {:error, :invalid_tool_arguments}
@@ -127,6 +143,35 @@ defmodule GateServer.Npc.Skills.Design do
     end
   end
   defp call(_), do: {:error, :invalid_model_response}
+
+  defp failed(reason, state), do: {:error,reason,Map.put(state.metrics,:last_check,check_summary(state.last_check))}
+  defp check_summary(nil), do: nil
+  defp check_summary(checked), do: %{passed: checked.passed,reasons: checked.reasons,
+    world_seq: checked.world_seq,route: route_summary(checked.report.route),
+    endpoints: Map.get(checked.report,:endpoints),headroom: checked.report.headroom.inside}
+  defp route_summary({:ok,path}),do: %{status: :reachable,steps: length(path)}
+  defp route_summary(other),do: other
+
+  defp execute(name, params, context, _, state) when name in ["look","inspect"] do
+    with {:ok, actor} <- context.actor.refresh.(context.actor.player,context.actor.identity),
+         {_,_} = call <- Perception.prepare(actor.position,Perception.command(name,params)),
+         {:ok,data} <- Perception.read(context.world,actor.cid,call) do
+      verb = if name == "look",do: :look,else: :inspect
+      [result] = Llm.remember(%{verb: verb,status: :done,data: data},[],actor.position)
+      {:continue,%{ok: true,observation: result.data,self_position_m: actor.position},state}
+    else
+      nil -> rejected(:invalid_perception_bounds,state)
+      {:error,reason} -> rejected(reason,state)
+    end
+  end
+  defp execute(name, params, context, _, state) when name in ["remember","recall","search_memory"] do
+    with {:ok,actor} <- context.actor.refresh.(context.actor.player,context.actor.identity) do
+      outcome = Memory.execute(context.memory,actor.cid,actor.position,Memory.command(name,params,state.metrics.rounds))
+      {:continue,%{ok: outcome.status == :done,memory: outcome},state}
+    else
+      {:error,reason} -> rejected(reason,state)
+    end
+  end
 
   defp execute("edit", %{"ops" => ops}, _, _, state) do
     case Draft.edit(state.draft, ops) do
@@ -290,6 +335,11 @@ defmodule GateServer.Npc.Skills.Design do
       "Nonuniform layers use normal rows [WORLD x,WORLD z,material,placed_by] (null ownership is preserved); refined contains full original cell/slot records. " <>
       "Within that layer's bounded XZ rectangle only, cells absent from both lists are material 0, unowned and unrefined with no slots. " <>
       "Attachments were not sampled; upper layers and outside the bounds are unknown. Use the actual sampled materials and blocks_movement to select ground, never liquid as support. " <>
+      "You can call look for any nearby WORLD macro box (including outside the initial site and upper layers); refined.micro_cells gives exact occupied WORLD micro coordinates. " <>
+      "Call inspect for nearby attachments/components. Before selecting entry feet, query its support and full body envelope using self.body dimensions; do not guess unknown terrain. " <>
+      "current_memory is refreshed each turn: recent experiences and relevant/ recent notes, with dates. Memory is historical, never current World truth. " <>
+      "Use search_memory to discover older experience without knowing a key, recall to read a key, remember to save or update useful findings/plans. " <>
+      "The supplied tools are the callable capabilities in this design session. Edit changes the draft, publish saves a definition; movement and World construction belong to the parent brain after this skill returns. " <>
       "Entry must be outside the complete prefab geometry XZ bounding box, including all children; inside must belong to a declared room. " <>
       "Endpoint diagnostics use the real profile radius, height and standing rules; body/support hits explain invalid feet. " <>
       "A current check must pass outside entry, route, headroom, complete roof, no floating solids, material affordability, occupancy and spawn columns. " <>
@@ -315,7 +365,7 @@ defmodule GateServer.Npc.Skills.Design do
        %{target: %{type: "string"},axis: %{type: "integer",enum: [0,1,2]},at: %{type: "integer"}},["target","axis","at"]),
      tool("check", "Check this house combined with actual World terrain at its anchor. Explicit WORLD micro feet and half-open XZ rooms; terrain and support come from the World.",
        %{entry: point, inside: point, interiors: %{type: "array", items: room}}, ["entry", "inside", "interiors"]),
-     tool("publish", "Publish only after the unchanged draft passes every house criterion.", %{}, [])]
+     tool("publish", "Publish only after the unchanged draft passes every house criterion.", %{}, [])] ++ Perception.tools() ++ Memory.tools()
   end
   defp tool(name, description, properties, required), do: %{type: "function", name: name, description: description,
     parameters: %{type: "object", properties: properties, required: required, additionalProperties: false}}

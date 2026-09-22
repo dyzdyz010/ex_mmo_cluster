@@ -32,6 +32,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
   end
 
   test "one real model designs, repairs, publishes and pays for the selected house" do
+    MmoTest.Database.start!()
     Logger.configure(level: :info)
     selected = System.get_env("DESIGN_LIVE_CASE", "cottage")
     goal = Map.fetch!(@goals, selected)
@@ -65,7 +66,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
         "travel_min_m" => [0.5,0.5,0.5],"travel_max_exclusive_m" => [63.0,63.0,63.0],
         "spawn_probes_m" => [[8.5,4.0,8.5]],"spawn_min_y_m" => 0.5}]})
     actor = %{cid: @cid,gate: self(),identity: :design_live,refresh: &Actor.tool_context/2,
-      eye: {10.5,2.0,9.0},tick_us: 16_667}
+      eye: {10.5,2.0,9.0},position: {10.5,1.4,9.0},tick_us: 16_667}
     actor = Map.put(actor,:player,start_supervised!({Actor,actor}))
     {:ok,_} = Application.ensure_all_started(:inets)
     {:ok,_} = Application.ensure_all_started(:ssl)

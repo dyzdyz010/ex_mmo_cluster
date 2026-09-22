@@ -14,6 +14,15 @@ defmodule GateServer.NpcBrainLlmTest do
       end)
     end
     def get(cid,kind,key),do: Agent.get(__MODULE__,& &1.notes[{cid,kind,key}])
+    def recent_notes(cid,limit),do: Agent.get(__MODULE__,fn s ->
+      for {{^cid,"note",key},body} <- s.notes do
+        %{id: key,kind: "note",key: key,body: body,at: ~U[2026-09-22 00:00:00Z],position: body["position"]}
+      end |> Enum.take(limit)
+    end)
+    def search(cid,query,_limit) do
+      Agent.get(__MODULE__,fn s -> send(s.observer,{:memory_search,cid,query}) end)
+      []
+    end
     def recent(cid,limit),do: Agent.get(__MODULE__,fn s ->
       send(s.observer,{:recent_read,cid,limit})
       Enum.take(s.events,limit)
@@ -227,7 +236,7 @@ defmodule GateServer.NpcBrainLlmTest do
     probe = Enum.find(body.tools, &(&1.name == "probe_toward")).parameters
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
-    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances recall remember say scoop stop use_tool wait) ==
+    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances recall remember say scoop search_memory stop use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
     refute Map.has_key?(input,"notes")
     assert input["experiences"]==[]
@@ -295,6 +304,8 @@ defmodule GateServer.NpcBrainLlmTest do
     assert_receive {:asked,2,input},2_000
     assert_receive {:recent_read,77,5}
     assert [%{"text"=>"new event","position"=>[4,5,6]}]=input["experiences"]
+    assert [%{"key"=>"plan","body"=>%{"text"=>"先挖后砌"}}] = input["memories"]
+    assert_receive {:memory_search,77,_}
     assert [%{"id"=>1,"verb"=>"remember","status"=>"done","command"=>%{"tool"=>"remember","args"=>%{"key"=>"plan","text"=>"先挖后砌"}}}]=input["outcomes"]
     assert_receive {:asked,3,input},2_000
     assert_receive {:recent_read,77,5}

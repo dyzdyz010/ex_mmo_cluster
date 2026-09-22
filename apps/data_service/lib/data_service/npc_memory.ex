@@ -48,4 +48,42 @@ defmodule DataService.NpcMemory do
         select: %{text: fragment("?->>'text'", m.body), place: {m.x, m.y, m.z}, at: type(m.inserted_at, :utc_datetime_usec)}
     )
   end
+
+  @doc "近期笔记；与经历分开，避免新笔记被事件淹没。"
+  def recent_notes(cid, limit) do
+    Repo.all(from m in @table, where: m.cid == ^cid and m.kind == "note",
+      order_by: [desc: m.inserted_at, desc: m.id], limit: ^limit,
+      select: %{id: m.id, kind: m.kind, key: m.key, body: m.body,
+        at: type(m.inserted_at, :utc_datetime_usec)})
+    |> Enum.map(&Map.put(&1, :position, &1.body["position"]))
+  end
+
+  @doc "按 cid 检索笔记/经历；英文词与中文相邻字片段匹配，命中数优先，同分新在前。不是向量语义检索。"
+  def search(cid, query, limit) do
+    terms = Regex.scan(~r/[\p{Han}]+|[\p{L}\p{N}_]+/u, String.downcase(query))
+      |> List.flatten()
+      |> Enum.flat_map(fn word ->
+        if Regex.match?(~r/^\p{Han}{2,}$/u, word),
+          do: word |> String.graphemes() |> Enum.chunk_every(2, 1, :discard) |> Enum.map(&Enum.join/1),
+          else: [word]
+      end)
+      |> Enum.reject(&(&1 == "_")) |> Enum.uniq() |> Enum.take(32)
+    fragments = Enum.filter(terms, &Regex.match?(~r/\p{Han}/u, &1))
+
+    result = Ecto.Adapters.SQL.query!(Repo, """
+      SELECT m.id, m.kind, m.key, m.body, m.inserted_at, m.x, m.y, m.z, hit.score
+      FROM npc_memories m
+      CROSS JOIN LATERAL (
+        SELECT count(*) AS score FROM unnest($2::text[]) AS term
+        WHERE term = ANY(regexp_split_to_array(lower(coalesce(m.key, '') || ' ' || coalesce(m.body->>'text', '')), '[^[:alnum:]_]+'))
+          OR (term = ANY($4::text[]) AND strpos(coalesce(m.key, '') || ' ' || coalesce(m.body->>'text', ''), term) > 0)
+      ) hit
+      WHERE m.cid = $1 AND m.kind IN ('note', 'event') AND hit.score > 0
+      ORDER BY hit.score DESC, m.inserted_at DESC, m.id DESC LIMIT $3
+      """, [cid, terms, limit, fragments])
+    Enum.map(result.rows, fn [id, kind, key, body, at, x, y, z, score] ->
+      %{id: id, kind: kind, key: key, body: body, at: DateTime.from_naive!(at, "Etc/UTC"),
+        position: if(kind == "event", do: [x,y,z], else: body["position"]), score: score}
+    end)
+  end
 end

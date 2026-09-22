@@ -5,7 +5,7 @@ defmodule GateServer.Npc.Brain.Llm do
   每次请求无状态：目标 + 当前 Observation + 最近的 Outcome + 持久化经历。模型的输出是外部输入，合法性由 Body 与权威裁决。
   请求之间模型看不到自己上一次调用了什么，所以给它看的每条 Outcome 都附上当初那次调用（`command`）：
   只有 `{id, verb, status}` 时模型对不上“哪一格放好了”，实测会原地反复 look。
-  `remember` / `recall` 通过 NpcMemory 保存与读取长期记忆；每轮现读最近 5 条经历，不维护第二份记忆缓存。
+  `remember` / `recall` / `search_memory` 通过 NpcMemory 保存、读取与搜索长期记忆；每轮现读近期与相关内容。
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
@@ -17,7 +17,7 @@ defmodule GateServer.Npc.Brain.Llm do
   """
   @behaviour GateServer.Npc.Brain
   require Logger
-  alias GateServer.Npc.{Memory, Skills, Jev}
+  alias GateServer.Npc.{Memory, Skills, Jev, Context, Perception}
 
   @history 8
   # inspect 在建成区能有几百行：只把离自己最近的这么多件给模型，总数另报。
@@ -36,8 +36,8 @@ defmodule GateServer.Npc.Brain.Llm do
         type: "function",
         name: "move_to",
         description:
-          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、走上一格高的台阶、从高处落下，但不会跳，也不进液体；单程水平不超过 32 米。" <>
-            "同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数）。走不通会被拒绝：no_path = 现在没有路（高差超过一格就得先砌台阶），" <>
+          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、按 self.body.move_to.max_step_macro 上台阶、从高处落下，但不会跳，也不进液体；单程水平不超过 32 米。" <>
+            "同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数）。走不通会被拒绝：no_path = 现在没有路，" <>
             "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。到达后才会再次询问。",
         parameters: %{
           type: "object",
@@ -81,27 +81,7 @@ defmodule GateServer.Npc.Brain.Llm do
           additionalProperties: false
         }
       },
-      %{
-        type: "function",
-        name: "look",
-        description:
-          "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
-            "最多 512 格，各边离自己不超过 32 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]；有人放下的格是 [y, material, 放置者的 entity_id]，" <>
-            "没有第三项表示没有放置溯源，可能是天然地形或历史／作者写入）。refined 单列细化构件的占用与归属；两处都没列出的才是空气。",
-        parameters: %{
-          type: "object",
-          properties: %{
-            x0: %{type: "integer"},
-            y0: %{type: "integer"},
-            z0: %{type: "integer"},
-            x1: %{type: "integer"},
-            y1: %{type: "integer"},
-            z1: %{type: "integer"}
-          },
-          required: ["x0", "y0", "z0", "x1", "y1", "z1"],
-          additionalProperties: false
-        }
-      },
+
       %{
         type: "function",
         name: "place",
@@ -193,14 +173,7 @@ defmodule GateServer.Npc.Brain.Llm do
           additionalProperties: false
         }
       },
-      %{
-        type: "function",
-        name: "inspect",
-        description:
-          "列出周围（自己所在 64 米 tile 及相邻 tile）的附件与预制件构件：附件给 attachment_id、kind、axis、micro 坐标、material、hp、电路状态；" <>
-            "构件给 instance [birth, occurrence] 与占的格。只列离自己最近的 24 件，total 是总数。detach、prefab remove / replace、对附件 use_tool 都要用这里的身份。",
-        parameters: %{type: "object", properties: %{}, additionalProperties: false}
-      },
+
       %{
         type: "function",
         name: "say",
@@ -229,7 +202,7 @@ defmodule GateServer.Npc.Brain.Llm do
           additionalProperties: false
         }
       }
-    ] ++ Memory.tools() ++ Skills.tools(profile)
+    ] ++ Perception.tools() ++ Memory.tools() ++ Skills.tools(profile)
   end
 
   @impl true
@@ -329,7 +302,7 @@ defmodule GateServer.Npc.Brain.Llm do
           }
 
         # 只属于本 adapter：不发给 Body。
-        name when name in ["remember", "recall"] ->
+        name when name in ["remember", "recall", "search_memory"] ->
           Memory.command(name, args, id)
 
         # 只属于本 adapter：不发给 Body，挂起询问。
@@ -464,7 +437,7 @@ defmodule GateServer.Npc.Brain.Llm do
 
         {:answer, {:ok, response}} ->
           all = commands(response, state.probe, state.things, state.next_id)
-          {local, commands} = Enum.split_with(all, &(&1.verb in [:wait, :remember, :recall]))
+          {local, commands} = Enum.split_with(all, &(&1.verb in [:wait, :remember, :recall, :search_memory]))
           {skills, body_commands} = Enum.split_with(commands, &(&1.verb == :skill))
 
           {memories, waits} = Enum.split_with(local, &(&1.verb != :wait))
@@ -566,7 +539,11 @@ defmodule GateServer.Npc.Brain.Llm do
       data
     else
       actor = state.observation.self
-      case Memory.journal(state.memory, actor.entity_id, "Skill #{active.command.skill} finished with status #{status}.", actor.position) do
+      experience = "Skill #{active.command.skill}: status=#{status}; reason=#{inspect(reason)}; " <>
+        "request=#{inspect(active.command.args,limit: 20,printable_limit: 350)}; " <>
+        "last_check=#{inspect(Map.get(metrics,:last_check),limit: 30,printable_limit: 500)}; " <>
+        "result=#{inspect(Map.take(data,[:definition_id,:seq,:instance_id]),limit: 10)}"
+      case Memory.journal(state.memory, actor.entity_id, String.slice(experience,0,1500), actor.position) do
         {:ok, _} -> data
         {:error, error} -> Map.put(data, :memory_error, error)
       end
@@ -620,7 +597,9 @@ defmodule GateServer.Npc.Brain.Llm do
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
     older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
-    [%{outcome | data: %{solid: columns, refined: Enum.filter(cells, & &1.refined)}} | older]
+    data = Map.take(outcome.data, [:seq,:bounds_macro_inclusive,:outside,:attachments])
+      |> Map.merge(%{solid: columns,refined: Enum.filter(cells,& &1.refined)})
+    [%{outcome | data: data} | older]
   end
 
   # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。
@@ -640,11 +619,11 @@ defmodule GateServer.Npc.Brain.Llm do
       for %{owner: {birth, occurrence}} = row <- nearest.(Enum.filter(rows, &(&1.granularity == 2))),
         do: %{instance: [birth, occurrence], material: row.material, cells: row.observation_cells}
 
-    data = %{
+    data = Map.merge(Map.take(outcome.data,[:seq,:bounds_region_half_open]), %{
       attachments: attachments,
       components: components,
       total: %{attachments: Enum.count(rows, &(&1.granularity == 3)), components: Enum.count(rows, &(&1.granularity == 2))}
-    }
+    })
 
     older = for o <- outcomes, do: if(o.verb == :inspect, do: %{o | data: nil}, else: o)
     [%{outcome | data: data} | older]
@@ -661,10 +640,8 @@ defmodule GateServer.Npc.Brain.Llm do
 
     if now - state.asked_ms >= @min_gap_ms do
       owner = self()
-      experiences = case Memory.recent(state.memory, observation.self.entity_id) do
-        {:ok, events} -> events
-        {:error, reason} -> %{memory_error: reason}
-      end
+      query = state.profile.goal <> " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
+      experiences = Memory.context(state.memory, observation.self.entity_id, query)
       body = body(state.profile, observation, state.outcomes, experiences)
       pid = spawn_link(fn -> send(owner, {:answer, state.request.(state.profile.endpoint, body)}) end)
       %{state | dirty: false, asking: true, request_pid: pid, asked_ms: now}
@@ -684,10 +661,13 @@ defmodule GateServer.Npc.Brain.Llm do
           "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。" <>
           "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算；balances 是你的背包（每种 material 还能放几个整格）。" <>
           "记忆不是世界真值；每次动手前先用 look/inspect 核对当前位置与目标。" <>
-          "experiences 是最近的持久化经历；memory_error 表示记忆读取失败。outcomes 只有最近几条，计划与约定可用 remember 保存、recall 读取。",
+          "experiences 是近期经历；memories 是每轮检索的相关记忆和近期笔记，带时间与来源；memory_error 表示读取失败。" <>
+          "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。" <>
+          "能力以本次 tools 参数表为准；设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。",
       input:
         Jason.encode!(%{
           goal: profile.goal,
+          coordinates: Context.coordinates(),
           self: plain(observation.self),
           tools: profile.tools,
           # 背包：每种材料还能放几个整格；null = 还没读过。
@@ -708,7 +688,7 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   defp memory_input(events) when is_list(events), do: %{experiences: plain(events)}
-  defp memory_input(%{memory_error: reason}), do: %{memory_error: plain(reason)}
+  defp memory_input(%{} = context), do: plain(context)
 
   # 元组 → 列表，其余原样；权威返回的 reason / data 可能含元组与原子。
   defp plain(%{} = map), do: Map.new(map, fn

@@ -11,14 +11,18 @@ defmodule GateServer.Npc.Memory do
         parameters: %{type: "object",properties: %{key: key,text: %{type: "string",minLength: 1,maxLength: @text_limit}},
           required: ["key","text"],additionalProperties: false}},
       %{type: "function",name: "recall",description: "按键读取自己的长期记忆；不存在时明确返回 missing。",
-        parameters: %{type: "object",properties: %{key: key},required: ["key"],additionalProperties: false}}
+        parameters: %{type: "object",properties: %{key: key},required: ["key"],additionalProperties: false}},
+      %{type: "function",name: "search_memory",description: "搜索自己的笔记和经历，不必知道键。英文词/中文片段匹配，最多5条；换关键词可继续查。历史记忆不是当前世界真值。",
+        parameters: %{type: "object",properties: %{query: %{type: "string",minLength: 1,maxLength: @text_limit}},
+          required: ["query"],additionalProperties: false}}
     ]
   end
 
   def command("remember",args,id) when is_map(args),
     do: %{id: id,verb: :remember,key: args["key"],text: args["text"]}
   def command("recall",args,id) when is_map(args),do: %{id: id,verb: :recall,key: args["key"]}
-  def command(name,_,id) when name in ["remember","recall"],do: command(name,%{},id)
+  def command("search_memory",args,id) when is_map(args),do: %{id: id,verb: :search_memory,query: args["query"]}
+  def command(name,_,id) when name in ["remember","recall","search_memory"],do: command(name,%{},id)
   def command(_,_,_),do: nil
 
   def execute(memory,cid,position,%{id: id,verb: verb}=command) do
@@ -40,6 +44,25 @@ defmodule GateServer.Npc.Memory do
     end)
   end
 
+  @doc "每轮现读近期经历、近期笔记与相关记忆；不缓存、不把查询失败当空记忆。"
+  def context(memory, cid, query) do
+    with {:ok, events} <- recent(memory, cid) do
+      case storage(fn ->
+        notes = memory.recent_notes(cid, 5)
+        related = memory.search(cid, query, 5)
+        {:ok, Enum.map(Enum.uniq_by(related ++ notes, & &1.id), &dated/1)}
+      end) do
+        {:ok, records} -> %{experiences: events, memories: records, memory_query: query,
+          memory_retrieval: :lexical_words_and_cjk_bigrams}
+        {:error, reason} -> %{experiences: events, memory_error: reason}
+      end
+    else
+      {:error, reason} -> %{memory_error: reason}
+    end
+  end
+
+  defp dated(row), do: Map.update!(row, :at, &DateTime.to_iso8601/1)
+
   @doc "记录技能结束的事实经历；数据库不可用时显式返回错误。"
   def journal(memory,cid,text,position) do
     storage(fn ->
@@ -52,6 +75,7 @@ defmodule GateServer.Npc.Memory do
 
   defp valid?(%{verb: :remember,key: key,text: text}),do: text?(key,@key_limit) and text?(text,@text_limit)
   defp valid?(%{verb: :recall,key: key}),do: text?(key,@key_limit)
+  defp valid?(%{verb: :search_memory,query: query}),do: text?(query,@text_limit)
   defp valid?(_),do: false
   defp text?(text,limit),do: is_binary(text) and String.length(text) in 1..limit
 
@@ -70,6 +94,10 @@ defmodule GateServer.Npc.Memory do
       {:error,reason} -> {:error,{:memory_unavailable,reason}}
     end
   end
+
+  defp perform(memory,cid,_position,%{verb: :search_memory,query: query}),
+    do: {:ok,%{query: query,method: :lexical_words_and_cjk_bigrams,
+      matches: Enum.map(memory.search(cid,query,5), &dated/1)}}
 
   # 只转换数据库不可用；程序缺陷继续抛出，错误结果不暴露SQL或连接参数。
   defp storage(fun) do

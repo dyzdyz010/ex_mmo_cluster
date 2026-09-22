@@ -41,8 +41,7 @@ defmodule GateServer.Npc.Body do
     prefab_replace: :voxel_prefab_replace_v1
   }
   # look 的上限：Brain 是外部输入，而快照在 World 进程内逐格求值、冷区域还会触发生成。
-  @look_cells 512
-  @look_reach 32
+  @look_reach GateServer.Npc.Perception.reach()
   # 寻路取盒：起终点包围盒水平外扩 @path_margin 格、上下各 @path_margin 格；单程水平不超过 @look_reach。
   @path_margin 6
   # 这么多 tick 里挪动不到 @stall_m 米 = 被堵住（60 Hz，3 秒）。
@@ -336,6 +335,7 @@ defmodule GateServer.Npc.Body do
     %{
       self: %{
         entity_id: state.cid,
+        body: GateServer.Npc.Context.body(state.profile),
         tick: state.tick,
         position: session.position,
         yaw: session.yaw,
@@ -595,19 +595,8 @@ defmodule GateServer.Npc.Body do
   defp world_call(_state, %{verb: :query_balances}), do: :balances
 
   # macro 格闭区间，限制在自己周围：玩家也只看得到流送到身边的世界。
-  defp world_call(%{position: {px, py, pz}}, %{verb: :look, min: {x0, y0, z0}, max: {x1, y1, z1}})
-       when is_integer(x0) and is_integer(y0) and is_integer(z0) and is_integer(x1) and
-              is_integer(y1) and is_integer(z1) and x0 <= x1 and y0 <= y1 and z0 <= z1 and
-              (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) <= @look_cells and
-              x0 >= px - @look_reach and x1 <= px + @look_reach and y0 >= py - @look_reach and
-              y1 <= py + @look_reach and z0 >= pz - @look_reach and z1 <= pz + @look_reach,
-       do: {:look, for(x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z})}
-
-  # 自己所在 tile 周围 3×3×3 个 tile：与玩家客户端收到属性状态的窗口相同。
-  defp world_call(%{position: {x, y, z}}, %{verb: :inspect}) do
-    {rx, ry, rz} = {floor(x / 64), floor(y / 64), floor(z / 64)}
-    {:inspect, {{rx - 1, ry - 1, rz - 1}, {rx + 2, ry + 2, rz + 2}}}
-  end
+  defp world_call(%{position: position}, %{verb: verb} = command) when verb in [:look,:inspect],
+    do: GateServer.Npc.Perception.prepare(position,command)
 
   defp world_call(_state, _command), do: nil
 
@@ -698,16 +687,8 @@ defmodule GateServer.Npc.Body do
 
   defp execute(_session, :balances), do: nil
 
-  defp execute(session, {:look, cells}),
-    do: {:ok, World.material_snapshot(session.world_ref, [session.cid], cells)}
-
-  # 附件（granularity 3）与 prefab 构件（granularity 2）的身份和状态；热账、液体量等不属于角色感知。
-  defp execute(session, {:inspect, box}),
-    do:
-      {:ok,
-       session.world_ref
-       |> World.simulation_snapshot([session.cid], box)
-       |> Map.take([:seq, :property_states])}
+  defp execute(session, {kind,_} = call) when kind in [:look,:inspect],
+    do: GateServer.Npc.Perception.read(session.world_ref,session.cid,call)
 
   defp execute(session, call) do
     with :ok <- prefab_gate(session, call),

@@ -13,7 +13,14 @@ defmodule GateServer.NpcSkillDesignTest do
     def schedule(_, _, _), do: :ok
   end
 
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
   setup context do
+    import Ecto.Query, only: [from: 2]
+    DataService.Repo.delete_all(from m in "npc_memories",where: m.cid == 1001)
     root = Path.join(System.tmp_dir!(), "npc_design_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "prefabs"))
     catalog = Path.join(root, "properties.json")
@@ -35,7 +42,7 @@ defmodule GateServer.NpcSkillDesignTest do
         "travel_min_m" => [0.5,0.5,0.5], "travel_max_exclusive_m" => [63.0,63.0,63.0],
         "spawn_probes_m" => [[30.5,4.0,30.5]], "spawn_min_y_m" => 0.5}]})
     actor = %{cid: 1001, gate: self(), identity: :designer, refresh: &Actor.tool_context/2,
-      eye: {10.5,2.0,8.0}, tick_us: 16_667}
+      eye: {10.5,2.0,8.0},position: {10.5,1.4,8.0}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))
     on_exit(fn -> File.rm_rf!(root) end)
     %{world: world, scene: scene, actor: actor, endpoint: %{model: "frozen", effort: "low"},
@@ -43,6 +50,66 @@ defmodule GateServer.NpcSkillDesignTest do
   end
 
   defp args, do: %{goal: "A sheltered room with a complete roof", anchor: {80,8,80}, orientation: 0}
+
+  @tag :context_contract
+  test "designer receives explicit body dimensions and callable perception and memory", c do
+    c = %{c | budget: %{rounds: 1,tokens: 100,max_output_tokens: 30}}
+    assert {:error,:round_budget,_} = Design.run(script(c,[answer(1,"view",%{})]),args())
+    assert_receive {:model_request,body}
+    initial = hd(body.input)["content"] |> Jason.decode!()
+    assert initial["self"]["body"]["height_m"] == 1.8
+    assert initial["self"]["body"]["radius_m"] == 0.35
+    assert initial["self"]["body"]["walk_speed_m_s"] == 8
+    for tool <- ["look","inspect","remember","recall","search_memory"],
+      do: assert(Enum.any?(body.tools, &(&1.name == tool)))
+  end
+
+  @tag :context_contract
+  test "designer queries an obstacle outside initial site and receives the real version and exact micro", c do
+    assert {:ok,_} = World.material_supply(c.world,1001,"outside-perception",%{11 => 1})
+    leaf = %{cells: [{{0,0,0},11}],macro_cells: [],children: [],attachments: []}
+    assert {:ok,id} = World.publish_prefab(c.world,c.actor,Prefab.encode(leaf))
+    assert {:ok,birth} = World.prefab_intent(c.world,c.actor,:voxel_prefab_place_v1,
+      %{definition_id: id,anchor: {76,24,72},orientation: 0,client_intent_seq: 1})
+    c = %{c | budget: %{rounds: 3,tokens: 100,max_output_tokens: 30}}
+    assert {:error,:round_budget,_} = Design.run(script(c,[
+      answer(1,"look",%{x0: 9,y0: 2,z0: 9,x1: 9,y1: 4,z1: 9}),
+      answer(2,"look",%{x0: 100,y0: 2,z0: 9,x1: 100,y1: 4,z1: 9}),answer(3,"view",%{})]),args())
+    assert_receive {:model_request,first}
+    assert Jason.decode!(hd(first.input)["content"])["site"]["bounds_macro"] == [[10,0,10],[26,2,26]]
+    assert_receive {:model_request,second}
+    result = tool_result(second,"c1")
+    assert result["ok"]
+    assert result["observation"]["seq"] == World.seq(c.world)
+    assert result["observation"]["bounds_macro_inclusive"] == [[9,2,9],[9,4,9]]
+    assert result["observation"]["outside"] == "unknown"
+    assert [%{"micro_cells" => [%{"micro" => [76,24,72],"material" => 11,"instance" => [^birth,0]}]}] =
+      result["observation"]["refined"]
+    assert_receive {:model_request,third}
+    assert tool_result(third,"c2")["error"] == "invalid_perception_bounds"
+  end
+
+  @tag :context_contract
+  test "designer automatically retrieves old relevant memory and persists new information for next turn", c do
+    store = DataService.NpcMemory
+    :ok = store.put(1001,"note","old-roof",%{"text" => "sheltered room roof needs headroom"})
+    for n <- 1..7,do: :ok = store.put(1001,"note","unrelated#{n}",%{"text" => "无关#{n}"})
+    c = %{c | budget: %{rounds: 4,tokens: 100,max_output_tokens: 30}}
+    assert {:error,:round_budget,_} = Design.run(script(c,[
+      answer(1,"remember",%{key: "door",text: "西门头顶有横梁，先查净空"}),
+      answer(2,"search_memory",%{query: "西门净空"}),answer(3,"recall",%{key: "door"}),answer(4,"view",%{})]),args())
+    assert_receive {:model_request,first}
+    memories = Jason.decode!(List.last(first.input)["content"])["current_memory"]["memories"]
+    assert Enum.any?(memories,&(&1["key"] == "old-roof"))
+    assert_receive {:model_request,second}
+    memories = Jason.decode!(List.last(second.input)["content"])["current_memory"]["memories"]
+    assert Enum.any?(memories,&(&1["key"] == "door"))
+    assert_receive {:model_request,third}
+    assert [%{"key" => "door"}] = tool_result(third,"c2")["memory"]["data"]["matches"]
+    assert_receive {:model_request,fourth}
+    assert tool_result(fourth,"c3")["memory"]["data"]["body"]["text"] == "西门头顶有横梁，先查净空"
+    assert %{"text" => "西门头顶有横梁，先查净空"} = Task.async(fn -> store.get(1001,"note","door") end) |> Task.await()
+  end
   defp answer(id, tool, arguments) do
     %{"output" => [%{"type" => "reasoning", "id" => "r#{id}", "summary" => []},
       %{"type" => "function_call", "call_id" => "c#{id}", "name" => tool, "arguments" => Jason.encode!(arguments)}],
@@ -300,7 +367,7 @@ defmodule GateServer.NpcSkillDesignTest do
     assert upper["normal"] == [[10,10,11,1001]]
     refined = %{"cell" => [11,1,10],"material" => 0,"placed_by" => nil,"refined" => true,
       "slots" => [%{"material" => 11,"instance" => [3,0],"count" => 1}]}
-    assert upper["refined"] == [refined]
+    assert upper["refined"] == [Map.put(refined,"micro_cells",[%{"micro" => [88,8,80],"material" => 11,"instance" => [3,0]}])]
     expected = for {x,y,z} <- cells do
       empty = %{"cell" => [x,y,z],"material" => 0,"placed_by" => nil,"refined" => false,"slots" => []}
       case {x,y,z} do
@@ -321,7 +388,7 @@ defmodule GateServer.NpcSkillDesignTest do
         nil -> %{"cell" => [x,y,z],"material" => 0,"placed_by" => nil,"refined" => false,"slots" => []}
       end
     end
-    assert restored == expected
+    assert Enum.map(restored,&Map.delete(&1,"micro_cells")) == expected
     legacy = for y <- 0..1,do: %{macro_y: y,cells: Enum.filter(rows,&(Enum.at(&1["cell"],1) == y))}
     assert byte_size(Jason.encode!(site["layers"])) < div(byte_size(Jason.encode!(legacy)),4)
   end

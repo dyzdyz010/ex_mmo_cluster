@@ -186,10 +186,12 @@ defmodule VoxelRegion.World do
   def material_supply(server, cid, supply_id, quantities),
     do: GenServer.call(server, {:material_supply, cid, supply_id, quantities}, 300_000)
 
-  @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影，不读取热/液体模拟状态。"
-  def material_snapshot(server, characters, cells) do
+  @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影；detail=:micro 增加细化格精确坐标，不读取热/液体模拟状态。"
+  def material_snapshot(server, characters, cells, detail \\ :summary) when detail in [:summary, :micro] do
     prepare(server, Enum.uniq(Enum.map(cells, &{0, region_of(&1)})))
-    GenServer.call(server, {:material_snapshot, characters, cells}, 300_000)
+    message = if detail == :summary, do: {:material_snapshot, characters, cells},
+      else: {:material_snapshot, characters, cells, detail}
+    GenServer.call(server, message, 300_000)
   end
 
   @doc """
@@ -642,7 +644,10 @@ defmodule VoxelRegion.World do
   end
 
   # 一次 owner 调用提供一致投影；物化缓存仍可丢弃。
-  def handle_call({:material_snapshot, characters, cells}, _, state) do
+  def handle_call({:material_snapshot, characters, cells}, from, state),
+    do: handle_call({:material_snapshot, characters, cells, :summary}, from, state)
+
+  def handle_call({:material_snapshot, characters, cells, detail}, _, state) do
     {occupancy, state} = Enum.map_reduce(cells, state, fn cell, s ->
       {:ok, {material, _}, s} = cell_value(s, 0, cell)
       refined = Map.get(s.refined, cell, %{})
@@ -650,8 +655,15 @@ defmodule VoxelRegion.World do
         |> Enum.map(fn {{m, {birth, occurrence}}, values} ->
           %{material: m, instance: [birth, occurrence], count: length(values)}
         end)
-      {%{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots,
-         placed_by: Map.get(s.placed_by, cell)}, s}
+      row = %{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots,
+         placed_by: Map.get(s.placed_by, cell)}
+      row = if detail == :micro and map_size(refined) > 0 do
+        Map.put(row, :micro_cells, for({slot,{m,owner}} <- Enum.sort(refined),
+          do: %{micro: Prefab.micro_coord(cell,slot),material: m,instance: owner}))
+      else
+        row
+      end
+      {row, s}
     end)
     balances = balance_projection(state.material_balances, characters)
     snapshot = %{seq: state.seq,

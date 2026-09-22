@@ -163,6 +163,7 @@ defmodule SceneServer.Movement.Player do
         cid: state.id,
         identity: identity,
         eye: {x, y + 0.6, z},
+        position: {x, y, z},
         tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
         refresh: &__MODULE__.tool_context/2
       }}, state}

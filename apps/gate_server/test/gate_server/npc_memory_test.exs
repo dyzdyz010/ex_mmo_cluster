@@ -24,8 +24,15 @@ defmodule GateServer.NpcMemoryTest do
     def get(_,_,_),do: raise ArgumentError,"program defect"
   end
 
+  defmodule FailedSearch do
+    def recent(_,_),do: []
+    def recent_notes(_,_),do: []
+    def search(_,_,_),do: raise DBConnection.ConnectionError,message: "private database parameters"
+  end
+
   test "tool schemas require every declared argument and commands retain explicit identity" do
-    [remember,recall]=Memory.tools()
+    [remember,recall,search]=Memory.tools()
+    assert search.name == "search_memory" and search.parameters.required == ["query"]
     assert remember.type=="function" and remember.name=="remember"
     assert remember.parameters.required==["key","text"]
     assert remember.parameters.additionalProperties==false
@@ -85,6 +92,10 @@ defmodule GateServer.NpcMemoryTest do
     recall=Memory.command("recall",%{"key"=>"plan"},2)
     assert %{status: :rejected,reason: {:memory_unavailable,DBConnection.ConnectionError}}=Memory.execute(FailedStore,701,{0,0,0},recall)
     assert {:error,{:memory_unavailable,:process_exit}}=Memory.recent(FailedStore,701)
+    assert %{memory_error: {:memory_unavailable,DBConnection.ConnectionError}} = Memory.context(FailedSearch,701,"door")
+    search = Memory.command("search_memory",%{"query"=>"door"},3)
+    assert %{status: :rejected,reason: {:memory_unavailable,DBConnection.ConnectionError}} =
+      Memory.execute(FailedSearch,701,{0,0,0},search)
     assert_raise ArgumentError,"program defect",fn -> Memory.execute(BuggyStore,701,{0,0,0},recall) end
   end
 end

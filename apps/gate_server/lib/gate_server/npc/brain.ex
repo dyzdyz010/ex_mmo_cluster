@@ -5,7 +5,8 @@ defmodule GateServer.Npc.Brain do
   通用角色使用一个 `Brain.Llm`，拥有全部原子动词；长任务是 `profile.skills` 提供的工具，
   在独立 worker 中运行并只回一个最终 Outcome。荒野施工复用 Builder 的纯状态机，
   不启动第二个决策大脑。运行期间由父大脑调用 Jev；活动、判据、优先级均来自 profile。
-  记忆工具直接读写 NpcMemory，最近经历每次现读；进度与动手依据始终由 World 现查。
+  记忆工具直接读写 NpcMemory，每轮检索近期经历、近期笔记和相关记忆；进度与动手依据始终由 World 现查。
+  输入规范见 docs/10-active/cross-cutting/2026-09-22-npc-context-memory-contract.md。
 
   回调在 Body 进程内同步调用，必须立刻返回：慢后端在 `init/1` 里起自己的进程，事件转发过去，算好后用
   `GateServer.Npc.Body.command/2` 异步投回。返回空命令表 = 保持当前动作；停止必须显式 `:stop`。
@@ -14,13 +15,15 @@ defmodule GateServer.Npc.Brain do
 
   ## Observation（每个 OwnerAck 一次，20 Hz）
 
-      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:},
+      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:, body:},
         entities: [%{entity_id:, entity_epoch:, kind:, tick:, position:}],   # kind 0 = 玩家、1 = NPC；各自的 tick
         balances: [%{material:, balance:, cost:, seq:}] | nil,        # 自己的背包；nil = 还没取过
         pending: [%{id:, verb:}]}
 
   `balances` 是 World 余额表的原样副本，在 `query_balances` 与自己的每次世界事务之后重取；`cost` = 放置一个 macro 格
   要花的单位数。地形不进 Observation，要看就发 `look`。
+  `self.body` 由权威 Session profile 经 Context.body/1 投影：完整身高、半高、半径、直径、速度、
+  加减速与台阶高度，字段显式标注米/秒；设计净空与 Body 宏格寻路限制分别列出。
 
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
@@ -64,9 +67,10 @@ defmodule GateServer.Npc.Brain do
   `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理，`data` 带同一份 ACK 的 `position` 与
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
   世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
-  `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/3` 的原样（`probe_occupancy` 逐格
+  `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/4` 的精确投影（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
-  天然地形、作者写入的格、被别的编辑改过的格是 nil）；`inspect` 是 `%{seq:, property_states:}`，取自
+  天然地形、作者写入的格、被别的编辑改过的格是 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属。
+  感知额外返回采样边界与版本；窗口外未知、未采样附件不是空。`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。
 

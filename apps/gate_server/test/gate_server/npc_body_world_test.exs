@@ -22,6 +22,8 @@ defmodule GateServer.NpcBodyWorldTest do
     def put(cid, kind, key, body), do: Agent.update(__MODULE__, &put_in(&1.plans[{cid, kind, key}], body))
     def delete(cid, kind, key), do: Agent.update(__MODULE__, &%{&1 | plans: Map.delete(&1.plans, {cid, kind, key})})
     def journal(cid, text, place), do: Agent.update(__MODULE__, &%{&1 | journal: [{cid, text, place} | &1.journal]})
+    def recent_notes(_,_),do: []
+    def search(_,_,_),do: []
     def entries, do: Agent.get(__MODULE__, &Enum.map(&1.journal, fn {_, text, _} -> text end))
     def recent(cid, limit), do: Agent.get(__MODULE__, fn state ->
       for {^cid, text, place} <- Enum.take(state.journal, limit),
@@ -246,6 +248,7 @@ defmodule GateServer.NpcBodyWorldTest do
           send(test, {:wilderness_worker, self()})
           {:ok, %{"output" => [%{"type" => "function_call", "name" => "submit_blueprint", "arguments" => Jason.encode!(%{ops: @hut_ops})}]}}
         true ->
+          send(test,{:parent_context,Jason.decode!(body.input)})
           outcomes = Jason.decode!(body.input)["outcomes"]
           {name, args} =
             case Enum.find(outcomes, &(&1["verb"] == "wilderness")) do
@@ -763,6 +766,9 @@ defmodule GateServer.NpcBodyWorldTest do
   @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
   @tag timeout: 300_000
   test "the general brain calls wilderness once and the real World contains the paid-for hut", %{world: world} do
+    assert_receive {:parent_context,input},5_000
+    assert %{"height_m" => 1.8,"radius_m" => 0.35,"walk_speed_m_s" => 8.0} = input["self"]["body"]
+    assert input["coordinates"]["position_origin"] == "body_center"
     assert_receive :wilderness_invocation, 20_000
     assert_receive {:asked, :planner, _}, 20_000
     await(fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building: 48 blocks")), do: true end,

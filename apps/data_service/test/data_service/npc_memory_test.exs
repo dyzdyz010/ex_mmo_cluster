@@ -13,6 +13,21 @@ defmodule DataService.NpcMemoryTest do
     :ok
   end
 
+  test "content retrieval finds old Chinese and English notes without keys and isolates cid" do
+    :ok = NpcMemory.put(7, "note", "entrance", %{"text" => "西门有障碍，先检查头顶净空", "position" => [-2,3,4]})
+    :ok = NpcMemory.journal(7, "Doorway headroom blocked by a beam", {1,2,3})
+    for n <- 1..8, do: :ok = NpcMemory.put(7, "note", "noise#{n}", %{"text" => "无关记录#{n}"})
+    :ok = NpcMemory.put(8, "note", "entrance", %{"text" => "西门净空 headroom private"})
+    assert [%{key: "entrance", body: %{"text" => "西门有障碍，先检查头顶净空"}, position: [-2,3,4]}] =
+      NpcMemory.search(7, "检查西门净空", 5)
+    assert [%{kind: "event", body: %{"text" => "Doorway headroom blocked by a beam"}}] =
+      NpcMemory.search(7, "HEADROOM", 5)
+    assert [] == NpcMemory.search(9, "西门 headroom", 5)
+    assert [] == NpcMemory.search(7, "%_", 5)
+    assert [] == NpcMemory.search(7, "head", 5)
+    assert length(NpcMemory.recent_notes(7, 5)) == 5
+  end
+
   test "working memory is one overwritable row per {cid, kind, key}, separate per NPC" do
     assert nil == NpcMemory.get(7, "plan", "current")
     :ok = NpcMemory.put(7, "plan", "current", %{"ops" => [%{"op" => "fill", "min" => [0, 0, 0]}]})
