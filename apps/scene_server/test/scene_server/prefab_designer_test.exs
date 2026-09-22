@@ -96,6 +96,20 @@ defmodule SceneServer.PrefabDesignerTest do
   end
 
   @tag :prefab_designer
+  @tag :world_ground
+  test "terrain sampling spans negative X and Y/Z region seams", c do
+    assert {:ok,_} = World.apply_edits(c.world,
+      for(x <- -3..1,z <- 126..130,do: {{x,63,z},11}))
+    assert {:ok,report} = PrefabDesigner.check(c.world,c.scene,c.actor,draft([{{-2,64,128},11}]),
+      options(entry: {-4,512,1020},inside: {-4,512,1036},interiors: []))
+    assert {:ok,path} = report.route
+    assert List.last(path) == {-4,512,1036}
+    assert report.floating.macro_cells == []
+    assert report.endpoints.entry.position.standable
+    assert report.endpoints.inside.position.standable
+  end
+
+  @tag :prefab_designer
   test "scene design context exposes actual profile and spawn configuration only", c do
     context = Scene.design_context(c.scene)
     assert Map.keys(context) |> Enum.sort() == [:probes,:profile,:spawn_min_y]

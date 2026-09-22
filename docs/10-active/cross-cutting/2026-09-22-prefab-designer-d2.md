@@ -74,6 +74,8 @@ skills: %{
 
 真实World最小反例：同一两格立柱在空气里，旧检查给出可走路线和非悬空，改前 `d2-world-ground-red.log` 1项失败；正常作者入口安装地面后应可走，真实入口障碍仍拒绝。另手算单micro支撑验证周围空气不被填满。Gate的既有“可走场地”用例补上一次真实作者地面，原先只是假设地面；原断言保留，并新增虚构地面不得发布/扣料的回归。该修复不证明两层屋模型目标已完成。
 
+修复提交 `8217a78c`：Scene Check/Facade 19 passed、Gate Llm/Skills/Design 32 passed（`d2-world-ground-{scene,gate}-final.log`）。额外负X与Y/Z region接缝场景通过，选择world_ground共3 passed/8 excluded（`d2-world-ground-seams.log`）；只测试新采样边界。正常构建镜像 `voxim-gameplay:prefab-d2-ground-20260922` 已切入独立Demo，余额、保护点和目录不变。原失败定义在当前天然场地只读重放：route=no_path，134宏格及1,152 micro均悬空，入口脚下是空气；`d2-world-ground-runtime-regression.json`。模型验收每轮改用独立角色、空记忆及唯一一次供给，避免旧角色经历污染单句目标。
+
 独立旧 Demo 镜像 `voxim-gameplay:prefab-d2-20260922`（image `7065c8deba922d4a34d2d6f2973e7303dede6046be3649f177824ef2d116579a`）由正式构建图生成；升级保留原 worldgen、世界版本、协议 16、余额及保护点。共享森林 Demo 未改。
 
 `python Docs/Gameplay/smoke.py --mode assembly --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test --out Saved/Gameplay/prefab-designer-20260922/d2-assembly`：exit 0，双方 success；txn 431922 / 431934 / 431943，每端完整匹配 4 个叶子状态，材料恢复。已查看 `placed.png`。这只证明当前构建的玩家 assembly 链，不代表设计目标验收通过。
