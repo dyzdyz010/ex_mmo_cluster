@@ -75,3 +75,10 @@ request-4 已带回真实 seq=2 的地形与上方空间。第4次 HTTP 请求�
 
 这是“真实模型可自主感知”的实跑证据，不是 D2 房屋通过。D2 仍未验收；未验证新版本 UE 双客户端行走、性能或分发。
 旧 Builder 一次性蓝图规划和 Jev 分类器没有被扩展为自由多轮对话；本契约适用于当前父脑与设计及后续对话式决策入口。
+
+独立 Demo 已更新：运行源码 `b3877b7b`，镜像 `voxim-gameplay:prefab-d2-context-20260922`
+（`sha256:346e04dec54461a03acd088ae0ee66e61a422cb564e4c8410892a3bb71137b0b`），容器仍为 `voxim-prefab-designer-test`。
+沿现有正式 Mix/Docker 入口构建；Saved 目录下 `build_d2_context_image.py` 与 `d2-context-upgrade.py` 保留执行入口。
+启动后角色余额、指定采样格和目录与切换前一致；旧容器保留为 `voxim-prefab-designer-test-before-d2-context`。
+`d2-context-runtime-probe.json` 记录真实 NPC 经 Body.skill_context 的身体参数、Perception 的36格查询、
+Memory.context 检索及已加载模块版本；这是部署模块只读冒烟，不是双客户端或房屋验收。共享森林 Demo 未修改。
