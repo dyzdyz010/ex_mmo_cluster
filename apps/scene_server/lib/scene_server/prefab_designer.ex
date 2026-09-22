@@ -4,10 +4,10 @@ defmodule SceneServer.PrefabDesigner do
 
   `check/5` 接收解码后的 v3 草稿或 VXPD 字节、actor 或角色编号，以及显式的
   `entry` / `inside` 世界 micro 脚点。可选 `interiors` 是带名称、整数 `floor_y`
-  的 micro XZ 半开矩形；`ground_y` 显式提供草稿地面平面。`anchor` 是世界 micro
+  的 micro XZ 半开矩形；地形来自 World。`anchor` 是世界 micro
   锚点，`orientation` 沿用 prefab 旋转。不得猜测房间范围或工地地形。
 
-  路线、屋顶、净空和悬空报告仅针对草稿。放置报告读取当前 World 占用；出生报告
+  路线、屋顶、净空和悬空报告读取草稿与当前 World；ground_y 不能覆盖真实地形。放置报告读取当前 World 占用；出生报告
   标记受影响的探测列，不代表出生或放置许可。角色编号仅选择余额投影；实际发布
   与放置仍由 World 鉴权裁决。检查窗口各轴最多 24 米，扫描工作量与寻路节点有界。
   """
@@ -29,10 +29,12 @@ defmodule SceneServer.PrefabDesigner do
       context = Scene.design_context(scene)
       compiled = transform(compiled, Keyword.get(opts, :anchor, {0, 0, 0}), Keyword.get(opts, :orientation, 0))
       with {:ok, bounds} <- bounds(compiled, context.profile, opts),
+           {:ok, snapshot, conflicts} <- placement(world, character(actor), compiled),
+           {:ok, terrain} <- terrain(world, bounds),
+           :ok <- same_world(world, snapshot.seq),
            {:ok, report} <- Check.run(compiled, Keyword.merge(opts,
-             bounds: bounds, profile: context.profile, properties: World.material_catalog(world),
-             max_path_nodes: @path_limit, max_scan_cells: @scan_limit)),
-           {:ok, snapshot, conflicts} <- placement(world, character(actor), compiled) do
+             bounds: bounds, terrain: terrain, profile: context.profile, properties: World.material_catalog(world),
+             max_path_nodes: @path_limit, max_scan_cells: @scan_limit)) do
         balances = Map.new(snapshot.material_balances, &{&1.material, &1.units})
         balances = Map.new(report.materials.units, fn {m, _} -> {m, Map.get(balances, m, 0)} end)
         shortages = for {m, n} <- report.materials.units, n > balances[m], into: %{}, do: {m, n - balances[m]}
@@ -55,7 +57,6 @@ defmodule SceneServer.PrefabDesigner do
     cond do
       not point?(opts[:entry]) or not point?(opts[:inside]) -> {:error, :missing_check_points}
       not point?(Keyword.get(opts, :anchor, {0, 0, 0})) or Keyword.get(opts, :orientation, 0) not in 0..23 -> {:error, :invalid_transform}
-      opts[:ground_y] != nil and not is_integer(opts[:ground_y]) -> {:error, :invalid_ground}
       not is_list(Keyword.get(opts, :interiors, [])) or not Enum.all?(Keyword.get(opts, :interiors, []), &interior?/1) -> {:error, :invalid_interior}
       true -> :ok
     end
@@ -135,6 +136,23 @@ defmodule SceneServer.PrefabDesigner do
   end
 
   defp same_world(world, seq), do: if(World.seq(world) == seq, do: :ok, else: {:error, :world_changed})
+
+  # 检查窗口小于一个region边长；八个角覆盖它相交的全部region，支撑邻格也计入边界。
+  defp terrain(world, {lo, hi}) do
+    cells = for x <- [elem(lo,0)-1,elem(hi,0)], y <- [elem(lo,1)-1,elem(hi,1)],
+      z <- [elem(lo,2)-1,elem(hi,2)], do: elem(Prefab.macro_slot({x,y,z}),0)
+    with {:ok, loaded} <- payloads(world,cells) do
+      {:ok, fn point ->
+        {cell,slot} = Prefab.macro_slot(point)
+        payload = Map.fetch!(loaded,region(cell))
+        local = Payload.local(payload.region,cell)
+        case Map.get(payload.refined,Payload.cell_index(local)) do
+          nil -> Payload.material(payload,local)
+          slots -> case Map.get(slots,slot) do nil -> 0; {material,_} -> material end
+        end
+      end}
+    end
+  end
 
   defp region(cell), do: cell |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1, Payload.extent() - 2)) |> List.to_tuple()
   defp payloads(_, []), do: {:ok, %{}}

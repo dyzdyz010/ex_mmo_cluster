@@ -56,6 +56,46 @@ defmodule SceneServer.PrefabDesignerTest do
     interiors: [%{name: "room",floor_y: 8,min: {8,8},max: {24,24}}]],extra)
 
   @tag :prefab_designer
+  @tag :world_ground
+  test "online route and support use real terrain rather than the declared ground plane", c do
+    design = draft([{{1,1,1},11},{{1,2,1},11}])
+    opts = options(entry: {20,8,12},inside: {20,8,20},interiors: [])
+    assert {:ok,air} = PrefabDesigner.check(c.world,c.scene,c.actor,design,opts)
+    assert air.route == :no_path
+    assert air.floating.macro_cells == [{1,1,1},{1,2,1}]
+    assert air.endpoints.entry.support.kind == :open
+
+    assert {:ok,_} = World.apply_edits(c.world,for(x <- 0..3,z <- 0..3,do: {{x,0,z},11}))
+    assert {:ok,grounded} = PrefabDesigner.check(c.world,c.scene,c.actor,design,opts)
+    assert {:ok,path} = grounded.route
+    assert List.last(path) == {20,8,20}
+    assert grounded.floating.macro_cells == []
+    assert grounded.endpoints.entry.support.kind == :solid
+
+    # 真实墙体位于草稿之外，虚构更高的地面不能使被堵住的入口通过。
+    assert {:ok,_} = World.apply_edit(c.world,{2,1,1},19)
+    assert {:ok,blocked} = PrefabDesigner.check(c.world,c.scene,c.actor,design,Keyword.put(opts,:ground_y,16))
+    assert blocked.route == :no_path
+    assert blocked.endpoints.entry.body.kind == :solid
+  end
+
+  @tag :prefab_designer
+  @tag :world_ground
+  test "a terrain micro support does not fill its surrounding macro air", c do
+    assert {:ok,id} = PrefabDesigner.publish(c.world,c.actor,draft([],[{{20,7,12},11}]))
+    assert {:ok,_} = World.place_prefab(c.world,id,{0,0,0},0)
+    design = draft([{{1,2,1},11}])
+    assert {:ok,report} = PrefabDesigner.check(c.world,c.scene,c.actor,design,
+      options(entry: {20,8,12},inside: {20,8,20},interiors: []))
+    assert report.endpoints.entry.position.standable
+    assert report.endpoints.entry.support == %{kind: :solid,cell: {20,7,12}}
+    refute report.endpoints.inside.position.standable
+    assert report.endpoints.inside.support.kind == :open
+    assert report.route == :no_path
+    assert report.floating.macro_cells == [{1,2,1}]
+  end
+
+  @tag :prefab_designer
   test "scene design context exposes actual profile and spawn configuration only", c do
     context = Scene.design_context(c.scene)
     assert Map.keys(context) |> Enum.sort() == [:probes,:profile,:spawn_min_y]

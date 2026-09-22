@@ -5,6 +5,7 @@ defmodule SceneServer.PrefabDesigner.Check do
   所有坐标与编译节点使用同一套 micro 坐标。`bounds` 是显式已知的半开检查窗口：
   窗口内未占用位置是草稿空气，窗外未知。可选 `ground_y` 明确声明该 micro 平面以下是地面，
   不表示已经检查真实工地的地形。调用方的输入接纳边界负责保证 bounds 和 interiors 是正跨度半开区域。
+  在线调用方提供不可变 World 载荷的 `terrain` 查询；此时空气位置和支撑读取真实地形，忽略假设 ground_y。
 
   必填选项：`profile`（米制 radius/half_height/step_height）、`properties`（已发布的 Damage 目录）、
   `bounds`、`entry`、`inside`、`max_path_nodes`、`max_scan_cells`。可选 `interiors` 是带名称和明确
@@ -85,7 +86,8 @@ defmodule SceneServer.PrefabDesigner.Check do
       {:error, :check_budget}
     else
       ground = Keyword.get(opts, :ground_y)
-      sample = fn p -> sample(p, micros, macros, bounds, ground) end
+      terrain = Keyword.get(opts, :terrain)
+      sample = fn p -> sample(p, micros, macros, bounds, ground, terrain) end
       profile = Keyword.fetch!(opts, :profile)
       offsets = radius_offsets(profile.radius * @micro)
       probe = fn p -> query_sample(p,sample,offsets) end
@@ -98,12 +100,12 @@ defmodule SceneServer.PrefabDesigner.Check do
       room_reports = Enum.map(rooms, &room(&1, sample, bounds))
 
       {:ok, %{
-        scope: :draft, bounds: bounds, route: route,
+        scope: if(terrain, do: :draft_with_world, else: :draft), bounds: bounds, route: route,
         endpoints: %{entry: endpoint(Keyword.fetch!(opts,:entry),query,probe,height),
           inside: endpoint(inside,query,probe,height)},
         headroom: %{inside: clearance(inside, sample, bounds), interiors: Enum.map(room_reports, & &1.headroom)},
         roof: Enum.map(room_reports, & &1.roof),
-        floating: floating(micros, macros, ground),
+        floating: floating(micros, macros, ground, terrain),
         materials: materials(compiled, Keyword.fetch!(opts, :properties)),
         views: views(micros, macros, bounds)
       }}
@@ -129,9 +131,14 @@ defmodule SceneServer.PrefabDesigner.Check do
     %{requested: point,position: Walk.position(query,point,height),body: body,support: probe.({x,y-1,z})}
   end
 
-  defp sample({_, y, _} = p, micros, macros, bounds, ground) do
+  defp sample({_, y, _} = p, micros, macros, bounds, ground, terrain) do
     cond do
       not inside?(p, bounds) -> :unknown
+      terrain != nil ->
+        case Map.get(micros, p, Map.get(macros, macro(p))) do
+          nil -> kind(terrain.(p))
+          material -> kind(material)
+        end
       ground != nil and y < ground -> :solid
       true -> kind(Map.get(micros, p, Map.get(macros, macro(p), 0)))
     end
@@ -193,12 +200,18 @@ defmodule SceneServer.PrefabDesigner.Check do
     %{units: units, volume_m3: Map.new(units, fn {m, n} -> {m, n / (quantum * @micro * @micro * @micro)} end)}
   end
 
-  defp floating(_, _, nil), do: %{status: :unknown, reason: :ground_not_supplied}
-  defp floating(micros, macros, ground) do
+  defp floating(_, _, nil, nil), do: %{status: :unknown, reason: :ground_not_supplied}
+  defp floating(micros, macros, ground, terrain) do
     micros = Map.filter(micros, fn {_, m} -> Materials.blocks_movement?(m) end)
     macros = Map.filter(macros, fn {_, m} -> Materials.blocks_movement?(m) end)
     parts = MapSet.new(Enum.map(Map.keys(micros), &{:micro, &1}) ++ Enum.map(Map.keys(macros), &{:macro, &1}))
-    seeds = Enum.filter(parts, fn {kind, {_, y, _}} -> y * if(kind == :macro, do: @micro, else: 1) <= ground end)
+    seeds = Enum.filter(parts, fn {size, {_, y, _}} = part ->
+      if terrain do
+        Enum.any?(neighbors(part), &(kind(terrain.(&1)) == :solid))
+      else
+        y * if(size == :macro, do: @micro, else: 1) <= ground
+      end
+    end)
     rest = connected(:queue.from_list(seeds), MapSet.difference(parts, MapSet.new(seeds)), micros, macros)
     %{status: :checked, macro_cells: Enum.sort(for {:macro, p} <- rest, do: p),
       micro_cells: Enum.sort(for {:micro, p} <- rest, do: p)}

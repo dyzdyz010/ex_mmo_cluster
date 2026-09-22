@@ -71,8 +71,8 @@ defmodule GateServer.NpcSkillDesignLiveTest do
     {:ok,_} = Application.ensure_all_started(:ssl)
     endpoint = %{url: System.fetch_env!("NPC_LLM_URL"),key: System.fetch_env!("NPC_LLM_KEY"),
       model: "gpt-5.6-terra",effort: "high"}
-    # 首次实测五轮用了 54,082 tokens，含重复历史；后续测试预算据此调整。
-    budget = %{rounds: 12,tokens: 120_000,max_output_tokens: 4096}
+    # 两层与天然场地实测后段约20k/轮；保留12轮，按12×20k给足有界工作台预算。
+    budget = %{rounds: 12,tokens: 240_000,max_output_tokens: 4096}
     {:ok, meter} = Agent.start_link(fn -> %{requests: 0,input_tokens: 0,output_tokens: 0,total_tokens: 0} end)
     request = fn endpoint,body -> recorded_request(endpoint,body,out,meter) end
     context = %{world: world,scene: scene,actor: actor,request: request,

@@ -20,6 +20,7 @@ defmodule GateServer.Npc.Skills.Design do
     properties = World.material_catalog(context.world)
     scene = Scene.design_context(context.scene)
     initial = %{goal: args.goal, anchor_micro: args.anchor, orientation: args.orientation,
+      session_budget: context.budget,
       draft: %{macro_cells: 0,micro_cells: 0,child_slots: []},
       orientations: %{columns: [:id,:local_x_direction,:local_y_direction,:local_z_direction],
         rows: for(o <- 0..23,do: [o|Enum.map([{1,0,0},{0,1,0},{0,0,1}],&Prefab.point(&1,{0,0,0},o))])},
@@ -90,6 +91,8 @@ defmodule GateServer.Npc.Skills.Design do
                 state = %{state | history: state.history ++ response["output"]}
                 case execute(name, params, context, args, state) do
                   {:continue, result, next} ->
+                    result = Map.put(result,:remaining_budget,%{rounds: context.budget.rounds-next.metrics.rounds,
+                      tokens: context.budget.tokens-next.metrics.total_tokens})
                     output = %{"type" => "function_call_output", "call_id" => id, "output" => encode(result)}
                     loop(context, args, %{next | history: next.history ++ [output]})
                   {:done, result} -> {:ok, Map.put(result, :metrics, state.metrics)}
@@ -204,11 +207,11 @@ defmodule GateServer.Npc.Skills.Design do
     Map.new(overlaps,fn {kind,points}->{kind,floating_cells(points)} end)
   end)
 
-  defp check_options(%{"entry" => entry, "inside" => inside, "interiors" => rooms} = params) when is_list(rooms) do
+  defp check_options(%{"entry" => entry, "inside" => inside, "interiors" => rooms}) when is_list(rooms) do
     with {:ok, entry} <- point(entry), {:ok, {x,y,z} = inside} <- point(inside), {:ok, rooms} <- rooms(rooms),
          true <- Enum.any?(rooms, &(y == &1.floor_y and x >= elem(&1.min,0) and x < elem(&1.max,0) and
            z >= elem(&1.min,1) and z < elem(&1.max,1))) do
-      {:ok, [entry: entry, inside: inside, interiors: rooms, ground_y: params["ground_y"]]}
+      {:ok, [entry: entry, inside: inside, interiors: rooms]}
     else
       false -> {:error, :inside_outside_interiors}
       error -> error
@@ -240,8 +243,8 @@ defmodule GateServer.Npc.Skills.Design do
       route: criterion(match?({:ok, [_ | _]}, report.route), :reachable_inside, report.route),
       headroom: criterion(headroom, %{min_clear_micro: height}, report.headroom),
       roof: criterion(report.roof != [] and Enum.all?(report.roof, & &1.complete), :all_declared_rooms_covered, report.roof),
-      floating: criterion(is_integer(opts[:ground_y]) and floating.status == :checked and floating.macro_cells == [] and floating.micro_cells == [],
-        :explicit_ground_and_connected_solids, floating),
+      floating: criterion(floating.status == :checked and floating.macro_cells == [] and floating.micro_cells == [],
+        :connected_to_world_terrain, floating),
       materials: criterion(report.materials.affordable, :enough_inventory, report.materials),
       placement: criterion(report.placement.conflicts == [], :no_occupancy_conflict, report.placement.conflicts),
       spawn: criterion(Enum.all?(report.placement.spawn_probes, &(&1.status == :clear)), :clear_probe_columns, report.placement.spawn_probes)
@@ -277,12 +280,12 @@ defmodule GateServer.Npc.Skills.Design do
       "Draft macro boxes use inclusive integer bounds; 1 macro = 1 metre, 8 micro = 1 metre, Y is up. " <>
       "walls fills only the XZ perimeter over its Y range, never the floor or roof; add those explicitly with fill. " <>
       "clear deletes only macro cells; micro with material 0 deletes a micro cell. prefab replaces the child at the same slot; remove_prefab deletes that slot. " <>
-      "Draft cells and prefab child anchors are local; check entry/inside feet, room rectangles and ground_y are WORLD micro coordinates. " <>
+      "Draft cells and prefab child anchors are local; check entry/inside feet and room rectangles are WORLD micro coordinates. " <>
       "orientations lists the transformed local axis directions; the anchor is the local origin, so cells along a negative axis extend below the anchor. " <>
       "Use supplied content IDs and labels for details. A view shows local geometry (+ means micro detail, not a filled macro). " <>
       "view works even when geometry cannot be published and reports overlapping local coordinates; macro_micro coordinates are MACRO cells to resolve, micro_cells coordinates are MICRO. " <>
       "slice inspects an exact micro plane of draft or any catalog id. Use it to see component openings and stair direction instead of treating a bounding box as filled or guessing details. " <>
-      "Explicitly declare nonempty room interiors and a known ground plane. Never invent terrain observations. " <>
+      "Explicitly declare nonempty room interiors. Route, clearance and support checks combine the draft with actual World terrain, never an assumed ground plane. " <>
       "site reports only its half-open WORLD macro bounds at world_seq; a uniform layer applies to that bounded XZ rectangle. " <>
       "Nonuniform layers use normal rows [WORLD x,WORLD z,material,placed_by] (null ownership is preserved); refined contains full original cell/slot records. " <>
       "Within that layer's bounded XZ rectangle only, cells absent from both lists are material 0, unowned and unrefined with no slots. " <>
@@ -290,7 +293,9 @@ defmodule GateServer.Npc.Skills.Design do
       "Entry must be outside the complete prefab geometry XZ bounding box, including all children; inside must belong to a declared room. " <>
       "Endpoint diagnostics use the real profile radius, height and standing rules; body/support hits explain invalid feet. " <>
       "A current check must pass outside entry, route, headroom, complete roof, no floating solids, material affordability, occupancy and spawn columns. " <>
-      "Read every criterion and repair failures. Edits invalidate the previous check. Publishing saves a definition only; it does not place it."
+      "Read every criterion and repair failures. Edits invalidate the previous check. Publishing saves a definition only; it does not place it. " <>
+      "The session_budget and each remaining_budget limit this session, including check and publish calls. Tokens count all repeated history and reasoning input plus output. " <>
+      "Reserve calls for repairs, a passing check and publication; use view or slice when needed to resolve geometry rather than repeating observations."
   end
 
   defp tools do
@@ -308,8 +313,8 @@ defmodule GateServer.Npc.Skills.Design do
      tool("view", "Show local draft layers/elevations, component slots and overlap diagnostics even for an invalid draft. Viewing never approves publication.", %{}, []),
      tool("slice", "Inspect one exact local micro plane of target 'draft' or a catalog definition id. axis 0/1/2 fixes X/Y/Z at the integer at; other axes span the geometry bounds. Each character is one micro cell, not a projection.",
        %{target: %{type: "string"},axis: %{type: "integer",enum: [0,1,2]},at: %{type: "integer"}},["target","axis","at"]),
-     tool("check", "Check this house at its anchor. Explicit WORLD micro feet and half-open XZ rooms; ground_y must be known.",
-       %{entry: point, inside: point, interiors: %{type: "array", items: room}, ground_y: %{type: "integer"}}, ["entry", "inside", "interiors", "ground_y"]),
+     tool("check", "Check this house combined with actual World terrain at its anchor. Explicit WORLD micro feet and half-open XZ rooms; terrain and support come from the World.",
+       %{entry: point, inside: point, interiors: %{type: "array", items: room}}, ["entry", "inside", "interiors"]),
      tool("publish", "Publish only after the unchanged draft passes every house criterion.", %{}, [])]
   end
   defp tool(name, description, properties, required), do: %{type: "function", name: name, description: description,

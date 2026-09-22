@@ -13,7 +13,7 @@ defmodule GateServer.NpcSkillDesignTest do
     def schedule(_, _, _), do: :ok
   end
 
-  setup do
+  setup context do
     root = Path.join(System.tmp_dir!(), "npc_design_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "prefabs"))
     catalog = Path.join(root, "properties.json")
@@ -23,6 +23,10 @@ defmodule GateServer.NpcSkillDesignTest do
       tools: [%{id: "pick", tool_id: 1, action: "damage", power: 30, range_macro: 8, interval_seconds: 0.5}], definitions: []}))
     world = start_supervised!({World, [source: Source, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, prefab_catalog_path: Path.join(root, "prefabs"), production_materials: [11]]})
+    # 在线检查不再使用模型假设的地面；需要可步行场地的用例一次安装真实作者地面。
+    if context[:real_ground] do
+      assert {:ok,_} = World.apply_edits(world,for(x <- 8..14,z <- 8..14,do: {{x,0,z},11}))
+    end
     fixture = Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
     profile = Jason.decode!(File.read!(fixture))["profile"] |> Map.put("fixed_hz", 60)
     scene = start_supervised!({Scene, [scene_id: 1, scene_epoch: 1, world_ref: world, clock: {Clock,nil},
@@ -64,6 +68,7 @@ defmodule GateServer.NpcSkillDesignTest do
   end
 
   @tag :design_skill
+  @tag :real_ground
   test "history preserves reasoning and call ids; a failed roof is repaired before formal publication", c do
     assert {:ok,_} = World.material_supply(c.world,1001,"design-house",%{11 => 12*512})
     before = World.seq(c.world)
@@ -86,6 +91,10 @@ defmodule GateServer.NpcSkillDesignTest do
     second = Enum.at(requests,1)
     assert Enum.at(second.input,1) == hd(hd(responses)["output"])
     assert tool_result(second,"c1")["ok"]
+    assert (hd(second.input)["content"] |> Jason.decode!())["session_budget"] ==
+      %{"rounds" => 12,"tokens" => 48_000,"max_output_tokens" => 4096}
+    assert tool_result(second,"c1")["remaining_budget"] == %{"rounds" => 11,"tokens" => 47_985}
+    assert tool_result(Enum.at(requests,8),"c8")["remaining_budget"] == %{"rounds" => 4,"tokens" => 47_880}
     assert tool_result(Enum.at(requests,3),"c3")["check"]["criteria"]["roof"]["passed"] == false
     assert tool_result(Enum.at(requests,4),"c4")["error"] == "check_failed"
     assert tool_result(Enum.at(requests,5),"c5")["error"] == "invalid_edit"
@@ -148,6 +157,21 @@ defmodule GateServer.NpcSkillDesignTest do
   end
 
   @tag :design_skill
+  @tag :world_ground
+  test "a model supplied ground cannot approve an unsupported house in the real World", c do
+    assert {:ok,_} = World.material_supply(c.world,1001,"unsupported-house",%{11 => 12*512})
+    ops = roof_ops() ++ [%{op: "fill",min: [1,3,1],max: [1,3,1],material: 11}]
+    checked = rejected_check(c,ops,checks(),args())
+    refute checked["criteria"]["floating"]["passed"]
+    refute checked["criteria"]["route"]["passed"]
+    assert checked["report"]["scope"] == "draft_with_world"
+    assert checked["report"]["floating"]["total_cells"] == 12
+    assert World.stats(c.world).instances == 0
+    assert [%{units: 6144}] = World.material_snapshot(c.world,[1001],[]).material_balances
+  end
+
+  @tag :design_skill
+  @tag :real_ground
   test "low roof separately rejects route and headroom despite complete coverage", c do
     assert {:ok,_} = World.material_supply(c.world,1001,"low-roof",%{11 => 12*512})
     ops = [%{op: "fill",min: [0,1,0],max: [2,1,2],material: 11},
@@ -161,6 +185,7 @@ defmodule GateServer.NpcSkillDesignTest do
 
   @tag :design_skill
   @tag :floating_projection
+  @tag :real_ground
   test "an unattached roof is rejected as floating even with a walkable covered room", c do
     assert {:ok,_} = World.material_supply(c.world,1001,"floating-roof",%{11 => 12*512})
     checked = rejected_check(c,[%{op: "fill",min: [0,3,0],max: [2,3,2],material: 11}],checks(),args())
@@ -193,6 +218,7 @@ defmodule GateServer.NpcSkillDesignTest do
 
   @tag :design_skill
   @tag :outside_entry
+  @tag :real_ground
   test "a sealed box cannot pass by putting both route endpoints inside", c do
     assert {:ok,_} = World.material_supply(c.world,1001,"sealed-house",%{11 => 33*512})
     ops = [%{op: "walls",min: [0,0,0],max: [2,2,2],material: 11},
