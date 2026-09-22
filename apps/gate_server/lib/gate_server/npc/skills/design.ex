@@ -21,6 +21,8 @@ defmodule GateServer.Npc.Skills.Design do
     scene = Scene.design_context(context.scene)
     initial = %{goal: args.goal, anchor_micro: args.anchor, orientation: args.orientation,
       draft: %{macro_cells: 0,micro_cells: 0,child_slots: []},
+      orientations: %{columns: [:id,:local_x_direction,:local_y_direction,:local_z_direction],
+        rows: for(o <- 0..23,do: [o|Enum.map([{1,0,0},{0,1,0},{0,0,1}],&Prefab.point(&1,{0,0,0},o))])},
       profile: Map.take(scene.profile, [:radius, :half_height, :step_height]),
       site: site(context, args.anchor), spawn_probes_m: scene.probes,
       materials: for({id, row} <- Enum.sort(properties.materials), do:
@@ -112,7 +114,7 @@ defmodule GateServer.Npc.Skills.Design do
     case Enum.filter(output, &(is_map(&1) and &1["type"] == "function_call")) do
       [%{"call_id" => id, "name" => name, "arguments" => json}] when is_binary(id) and is_binary(json) ->
         cond do
-          name not in ["edit", "view", "check", "publish"] -> {:error, {:unknown_tool, name}}
+          name not in ["edit", "view", "slice", "check", "publish"] -> {:error, {:unknown_tool, name}}
           true -> case Jason.decode(json) do
             {:ok, %{} = params} -> {:ok, id, name, params}
             _ -> {:error, :invalid_tool_arguments}
@@ -131,10 +133,21 @@ defmodule GateServer.Npc.Skills.Design do
     end
   end
   defp execute("view", params, context, _, state) when map_size(params) == 0 do
-    with {:ok, id, compiled} <- compile(context, state.draft), {:ok, views} <- Check.view(compiled) do
-      {:continue, %{ok: true, definition_id: id, scope: :draft_local, views: views}, state}
+    with {:ok, bytes} <- draft_bytes(state.draft),
+         {:ok,id,geometry,diagnostics} <- Prefab.preview(bytes,World.prefab_catalog(context.world)),
+         {:ok, views} <- Check.view(geometry) do
+      {:continue, %{ok: true, definition_id: id, scope: :draft_local, views: views,
+        diagnostics: preview_output(diagnostics),components: state.draft.children}, state}
     else
       {:error, reason} -> rejected(reason, state)
+    end
+  end
+  defp execute("slice", %{"target"=>target,"axis"=>axis,"at"=>at},context,_,state) do
+    with {:ok,id,geometry,scope} <- slice_target(target,context,state.draft),
+         {:ok,section} <- Check.slice(geometry,axis,at) do
+      {:continue,%{ok: true,definition_id: id,scope: scope,section: section},state}
+    else
+      {:error,reason} -> rejected(reason,state)
     end
   end
   defp execute("check", params, context, args, state) do
@@ -166,10 +179,30 @@ defmodule GateServer.Npc.Skills.Design do
   defp rejected(reason, state), do: {:continue, %{ok: false, error: reason}, state}
 
   defp compile(context, draft) do
+    with {:ok,bytes} <- draft_bytes(draft),do: Prefab.compile(bytes,World.prefab_catalog(context.world))
+  end
+  defp draft_bytes(draft) do
     if draft.cells == [] and draft.macro_cells == [] and draft.children == [] and draft.attachments == [],
       do: {:error, :empty_draft},
-      else: Prefab.compile(Prefab.encode(draft), World.prefab_catalog(context.world))
+      else: {:ok,Prefab.encode(draft)}
   end
+  defp slice_target("draft",context,draft) do
+    with {:ok,bytes} <- draft_bytes(draft),
+         {:ok,id,geometry,_} <- Prefab.preview(bytes,World.prefab_catalog(context.world)),
+         do: {:ok,id,geometry,:draft_local}
+  end
+  defp slice_target(target,context,_) when is_binary(target) do
+    with {:ok,<<id::binary-size(32)>>} <- Base.decode16(target,case: :mixed),
+         {:ok,compiled} <- Map.fetch(World.prefab_catalog(context.world),id) do
+      {:ok,id,compiled,:catalog_local}
+    else
+      _ -> {:error,:definition_not_found}
+    end
+  end
+  defp slice_target(_,_,_),do: {:error,:invalid_view}
+  defp preview_output(diagnostics),do: Map.update!(diagnostics,:overlaps,fn overlaps ->
+    Map.new(overlaps,fn {kind,points}->{kind,floating_cells(points)} end)
+  end)
 
   defp check_options(%{"entry" => entry, "inside" => inside, "interiors" => rooms} = params) when is_list(rooms) do
     with {:ok, entry} <- point(entry), {:ok, {x,y,z} = inside} <- point(inside), {:ok, rooms} <- rooms(rooms),
@@ -245,7 +278,10 @@ defmodule GateServer.Npc.Skills.Design do
       "walls fills only the XZ perimeter over its Y range, never the floor or roof; add those explicitly with fill. " <>
       "clear deletes only macro cells; micro with material 0 deletes a micro cell. prefab replaces the child at the same slot; remove_prefab deletes that slot. " <>
       "Draft cells and prefab child anchors are local; check entry/inside feet, room rectangles and ground_y are WORLD micro coordinates. " <>
+      "orientations lists the transformed local axis directions; the anchor is the local origin, so cells along a negative axis extend below the anchor. " <>
       "Use supplied content IDs and labels for details. A view shows local geometry (+ means micro detail, not a filled macro). " <>
+      "view works even when geometry cannot be published and reports overlapping local coordinates; macro_micro coordinates are MACRO cells to resolve, micro_cells coordinates are MICRO. " <>
+      "slice inspects an exact micro plane of draft or any catalog id. Use it to see component openings and stair direction instead of treating a bounding box as filled or guessing details. " <>
       "Explicitly declare nonempty room interiors and a known ground plane. Never invent terrain observations. " <>
       "site reports only its half-open WORLD macro bounds at world_seq; a uniform layer applies to that bounded XZ rectangle. " <>
       "Nonuniform layers use normal rows [WORLD x,WORLD z,material,placed_by] (null ownership is preserved); refined contains full original cell/slot records. " <>
@@ -269,7 +305,9 @@ defmodule GateServer.Npc.Skills.Design do
       required: ["name", "floor_y", "min", "max"], additionalProperties: false}
     [tool("edit", "Atomic ordered edits: fill/walls/clear use inclusive macro boxes. walls is only the XZ perimeter, no floor/roof. clear removes macros only. micro uses cell and material (0 deletes). prefab uses slot/id/anchor_micro/orientation and replaces that slot; remove_prefab uses slot. Child anchors are local micro.",
        %{ops: %{type: "array", items: operation}}, ["ops"]),
-     tool("view", "Show the draft's local layers and elevations without guessing check points.", %{}, []),
+     tool("view", "Show local draft layers/elevations, component slots and overlap diagnostics even for an invalid draft. Viewing never approves publication.", %{}, []),
+     tool("slice", "Inspect one exact local micro plane of target 'draft' or a catalog definition id. axis 0/1/2 fixes X/Y/Z at the integer at; other axes span the geometry bounds. Each character is one micro cell, not a projection.",
+       %{target: %{type: "string"},axis: %{type: "integer",enum: [0,1,2]},at: %{type: "integer"}},["target","axis","at"]),
      tool("check", "Check this house at its anchor. Explicit WORLD micro feet and half-open XZ rooms; ground_y must be known.",
        %{entry: point, inside: point, interiors: %{type: "array", items: room}, ground_y: %{type: "integer"}}, ["entry", "inside", "interiors", "ground_y"]),
      tool("publish", "Publish only after the unchanged draft passes every house criterion.", %{}, [])]

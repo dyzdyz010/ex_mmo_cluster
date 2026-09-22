@@ -104,34 +104,57 @@ defmodule VoxelRegion.Prefab do
   end
 
   defp publish_one(definitions,id) do
+    with {:ok,geometry,diagnostics} <- definition_geometry(definitions,id) do
+      if diagnostics.publishable,do: {:ok,geometry},else: {:error,diagnostics.error}
+    end
+  end
+
+  defp definition_geometry(definitions,id) do
     with {:ok,_} <- references(definitions,id,MapSet.new()),
            nodes = expand_definition(definitions,id,{0,0,0},0,nil,0,[]) |> elem(0),
            cells = Enum.flat_map(nodes,& &1.cells),
-           macros = Enum.flat_map(nodes,& &1.macro_cells),
-           true <- nonoverlapping?(cells,macros),
-           :ok <- attachment_definition(nodes,cells,macros) do
-        # 发布目录长期不变；节点体素保存为二进制，避免每次世界 GC 扫描展开坐标。
+           macros = Enum.flat_map(nodes,& &1.macro_cells) do
+      overlaps=overlaps(cells,macros)
+      error=if Enum.any?(overlaps,fn {_,points}->points != [] end) do
+        :overlapping_definition
+      else
+        case attachment_definition(nodes,cells,macros) do
+          :ok->nil
+          {:error,reason}->reason
+        end
+      end
+      # 发布目录长期不变；节点体素保存为二进制，避免每次世界 GC 扫描展开坐标。
       summary=compiled_summary(nodes)
       nodes = Enum.map(nodes,fn node -> %{node | cells: :erlang.term_to_binary(node.cells),macro_cells: :erlang.term_to_binary(node.macro_cells)} end)
-      {:ok,%{nodes: nodes,has_macro_cells: macros != [],definition: Map.fetch!(definitions,id),summary: summary}}
-    else
-      false -> {:error,:overlapping_definition}
-      error -> error
+      {:ok,%{nodes: nodes,has_macro_cells: macros != [],definition: Map.fetch!(definitions,id),summary: summary},
+        %{publishable: error==nil,error: error,overlaps: overlaps}}
     end
   end
 
   @doc "运行时单根发布边界：先按每次引用合并预算与包围盒，再展开和验证实际几何。"
-  def compile(bytes,_catalog) when is_binary(bytes) and byte_size(bytes) > @runtime_bytes,
+  def compile(bytes,catalog) do
+    with {:ok,id,definitions} <- runtime_definition(bytes,catalog),
+         {:ok,compiled} <- publish_one(definitions,id),
+         do: {:ok,id,compiled}
+  end
+
+  @doc "有界草稿预览：复用发布展开与几何判据，冲突坐标完整保留。geometry 仅供查看，不能作为发布凭证。"
+  def preview(bytes,catalog) do
+    with {:ok,id,definitions} <- runtime_definition(bytes,catalog),
+         {:ok,geometry,diagnostics} <- definition_geometry(definitions,id),
+         do: {:ok,id,geometry,diagnostics}
+  end
+
+  defp runtime_definition(bytes,_catalog) when is_binary(bytes) and byte_size(bytes) > @runtime_bytes,
     do: {:error,:definition_bytes_limit}
-  def compile(bytes,catalog) when is_binary(bytes) do
+  defp runtime_definition(bytes,catalog) when is_binary(bytes) do
     with {:ok,definition} <- decode_definition(bytes,true),
          {:ok,_summary} <- runtime_summary(definition,catalog),
          id = :crypto.hash(:sha256,bytes),
          definitions = Map.new(catalog,fn {key,value} -> {key,value.definition} end) |> Map.put(id,definition),
-         {:ok,compiled} <- publish_one(definitions,id),
-         do: {:ok,id,compiled}
+         do: {:ok,id,definitions}
   end
-  def compile(_,_),do: {:error,:invalid_definition}
+  defp runtime_definition(_,_),do: {:error,:invalid_definition}
 
   defp count_limit(_,_,false),do: :ok
   defp count_limit(field,count,true) do
@@ -218,12 +241,15 @@ defmodule VoxelRegion.Prefab do
   defp union_bounds(a,nil),do: a
   defp union_bounds({a,b},{c,d}),do: {List.to_tuple(for i<-0..2,do: min(elem(a,i),elem(c,i))),List.to_tuple(for i<-0..2,do: max(elem(b,i),elem(d,i)))}
 
-  defp nonoverlapping?(cells,macros) do
+  defp overlaps(cells,macros) do
     macro_coords = MapSet.new(macros, &elem(&1,0))
-    length(cells) == MapSet.size(MapSet.new(cells,&elem(&1,0))) and
-      length(macros) == MapSet.size(macro_coords) and
-      Enum.all?(cells,fn {micro,_} -> not MapSet.member?(macro_coords,elem(macro_slot(micro),0)) end)
+    macro_micro=for {micro,_}<-cells,macro=elem(macro_slot(micro),0),MapSet.member?(macro_coords,macro),do: macro
+    %{micro_cells: duplicate_coords(cells),macro_cells: duplicate_coords(macros),
+      macro_micro: Enum.sort(Enum.uniq(macro_micro))}
   end
+
+  defp duplicate_coords(cells),do: cells |> Enum.frequencies_by(&elem(&1,0))
+    |> Enum.flat_map(fn {point,count}->if count>1,do: [point],else: [] end) |> Enum.sort()
 
   defp references(definitions,id,path) do
     cond do

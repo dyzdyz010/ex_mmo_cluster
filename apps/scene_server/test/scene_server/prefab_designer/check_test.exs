@@ -105,4 +105,26 @@ defmodule SceneServer.PrefabDesigner.CheckTest do
     assert {:error,:empty_draft} = Check.view(compiled([]) |> Map.put(:summary,%{bounds: nil}))
     assert Check.materials(definition,@properties).units == %{11 => 5120,19 => 10}
   end
+
+  @tag :micro_slice
+  test "micro sections expose stair direction and preserve negative macro coordinates" do
+    stairs = for x <- 0..2,y <- 0..x,do: {{x,y,0},11}
+    geometry = compiled(stairs) |> Map.put(:summary,%{bounds: {{0,0,0},{3,3,1}}})
+    assert {:ok,section} = Check.slice(geometry,2,0)
+    assert section.text == "..+\n.++\n+++"
+    assert section.resolution == :micro
+    assert section.columns == %{axis: :x,min: 0,max_exclusive: 3}
+    assert section.rows == %{axis: :y,min: 0,max_exclusive: 3,order: :descending}
+    assert {:error,:outside_view} = Check.slice(geometry,2,1)
+
+    mixed = compiled([{{0,0,0},19}],[{{-1,0,0},11}])
+      |> Map.put(:summary,%{bounds: {{-8,0,0},{1,8,8}}})
+    assert {:ok,top} = Check.slice(mixed,1,0)
+    assert top.text == Enum.join(["########+"|List.duplicate("########.",7)],"\n")
+    assert top.columns == %{axis: :x,min: -8,max_exclusive: 1}
+    assert top.rows == %{axis: :z,min: 0,max_exclusive: 8,order: :ascending}
+    assert {:error,:invalid_view} = Check.slice(mixed,3,0)
+    huge = %{mixed|summary: %{bounds: {{0,0,0},{129,1,129}}}}
+    assert {:error,:view_budget} = Check.slice(huge,1,0)
+  end
 end

@@ -33,6 +33,25 @@ skills: %{
 
 上述本机 live 用例直接调用正式 Skills→Design、真实 World/Scene 发布和放置；没有父脑 Jev 请求，因此不能拿其 0 次 Jev 代表 Demo 的通用大脑调度成本。独立 Demo 的自然场地与父脑 design→build 链、两层屋、通用目标和采集验收尚未完成。
 
+## 9月22日继续实跑与预览修复
+
+用户要求保留端点和模型配置。随后一次64输出token上限的连通性请求在2.450秒返回（4,397 tokens），不执行工具，不算目标验收；正式超时仍为60秒。
+
+- 地板／天花板 attempt4：4请求、42,678 tokens（39,668输入、3,010输出）、0次检查失败，68.9秒，1 passed / exit 0。定义 `203423d60a42de07e420dba025ff205cfe88f7289c7d7c36885dbc1d1c2ba8e7`，122宏格、1,040 micro、4节点。真实World发布、放置、全部几何与余额通过；独立造价石料153,616,384、木料106,496,000单位。证据 `d2-live-floor_ceiling-1790031554246-4/verified.json`。
+- 两层屋 attempt2：11请求、133,153 tokens（127,040输入、6,113输出），超过预算的第11轮未执行，0次检查。四次view只返回 `overlapping_definition`。离线仅应用第1/3/5/7/9轮编辑，确认第6/8/10轮冲突始终是根楼板与门框上部的宏格 `{3,3,1}`、`{4,3,1}`；移除楼梯和窗户并未消除冲突。证据 `d2-live-two_storey-1790031652331-6275/offline-geometry/`。
+
+复用Prefab发布的同一几何展开与冲突判据，增加有界 `preview`：保持字节、引用、对齐和容量拒绝；几何重叠时返回草稿和冲突，正式compile/publish仍拒绝。view不再以发布成功为前提，返回冲突数量、包围盒、最多4个坐标样本及部件槽位。完整冲突留在Prefab API。初始输入的24个朝向基向量来自既有 `Prefab.point`。
+
+新增 `slice(target,axis,at)` 读取草稿或目录定义的真实micro切面，每字符一格，保留门洞和楼梯形状；轴0/1/2分别固定X/Y/Z，立面Y从高向低。复用Prefab footprint，预览不能批准发布。手算三级楼梯、负坐标宏格与micro接缝作为期望。
+
+改前失败日志 `d2-invalid-draft-view-red.log`、`d2-micro-slice-red.log`；改后Gate Design 12 passed、Scene Check 9 passed、Prefab preview/runtime publish/既有定义32 passed，各app正常 `mix.bat test --no-start`，World使用 `MMO_DB_PORT=5433`。`d2-preview-slice-green.log` 中跨app路径写错，实际只选中Gate的12项，不能计为Scene通过；Scene另以正确入口运行，日志 `d2-micro-slice-green.log`。
+
+冻结两层屋原第7请求的单次A/B只替换最后view输出，提示词、工具和此前历史不变。B用14,911 tokens（13,777输入、1,134输出），仍以整片墙覆盖部件，导致10个macro/micro冲突，**没有修复**；0世界写入，不算目标通过。证据 `d2-preview-ab-1790038732902/verification-B.json`。完整新接口另行实跑，不拿此对照宣称模型已学会修复。
+
+两层屋 attempt3使用完整新接口：先切面查看楼梯、门框，再编辑和查看，草稿可发布且无重叠；但两次检查仍有入口身体碰撞和楼梯区被声明为房间导致的净空/屋顶失败。9请求、136,917 tokens（127,180输入、9,737输出），199.7秒；第9响应预算拒绝，未执行、未发布或放置。证据 `d2-live-two_storey-1790038786392-11266/`，不视为目标通过。
+
+预览增量以正式构建部署到独立Demo：`voxim-gameplay:prefab-d2-preview-20260922`，image `2957f86608f2b3f2bb359dd623a98a7c529f6e2d371fe679e4584a08e7228be8`。首次双客户端因原测试CA及服务端证书在2026-09-21 21:24 UTC过期而在TLS阶段失败（app298），未提交玩法意图。只对独立副本用现有 `Docs/M1/tools/certificates.ps1` 续发并重启，TLS验证保持开启。第二次 `smoke.py --mode assembly` 双方success、exit0；事务472371/472383/472392，每端4个完整叶子状态、材料恢复，已检查placed.png。证据 `d2-preview-assembly-renewed/acceptance.json`；原失败保留在 `d2-preview-assembly/`。
+
 ## 当前 Demo 的玩家回归
 
 独立旧 Demo 镜像 `voxim-gameplay:prefab-d2-20260922`（image `7065c8deba922d4a34d2d6f2973e7303dede6046be3649f177824ef2d116579a`）由正式构建图生成；升级保留原 worldgen、世界版本、协议 16、余额及保护点。共享森林 Demo 未改。

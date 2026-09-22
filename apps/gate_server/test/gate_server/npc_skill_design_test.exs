@@ -239,6 +239,8 @@ defmodule GateServer.NpcSkillDesignTest do
     assert_receive {:model_request,body}
     initial = hd(body.input)["content"] |> Jason.decode!()
     assert initial["draft"] == %{"macro_cells" => 0,"micro_cells" => 0,"child_slots" => []}
+    assert Enum.take(initial["orientations"]["rows"],2) ==
+      [[0,[1,0,0],[0,1,0],[0,0,1]],[1,[0,0,1],[0,1,0],[-1,0,0]]]
     assert initial["site"]["bounds_macro"] == [[10,0,10],[26,2,26]]
     assert initial["site"]["sampled_cells"] == 512
     assert initial["site"]["world_seq"] == World.seq(c.world)
@@ -296,5 +298,31 @@ defmodule GateServer.NpcSkillDesignTest do
     assert restored == expected
     legacy = for y <- 0..1,do: %{macro_y: y,cells: Enum.filter(rows,&(Enum.at(&1["cell"],1) == y))}
     assert byte_size(Jason.encode!(site["layers"])) < div(byte_size(Jason.encode!(legacy)),4)
+  end
+
+  @tag :invalid_draft_view
+  test "overlapping drafts remain visible and catalog slices do not make them publishable", c do
+    leaf = %{cells: [{{0,0,0},19}],macro_cells: [],children: [],attachments: []}
+    assert {:ok,id} = World.publish_prefab(c.world,c.actor,Prefab.encode(leaf))
+    hex = Base.encode16(id,case: :lower)
+    ops = [%{op: "fill",min: [0,0,0],max: [0,0,0],material: 11},
+      %{op: "prefab",slot: 7,id: hex,anchor_micro: [0,0,0],orientation: 0}]
+    context = %{c|budget: %{rounds: 4,tokens: 100,max_output_tokens: 30}}
+    replies = [answer(1,"edit",%{ops: ops}),answer(2,"view",%{}),
+      answer(3,"slice",%{target: hex,axis: 2,at: 0}),answer(4,"publish",%{})]
+    assert {:error,:round_budget,%{rounds: 4}} = Design.run(script(context,replies),args())
+    requests = for _ <- replies do assert_receive {:model_request,body}; body end
+    preview = tool_result(Enum.at(requests,2),"c2")
+    assert preview["ok"]
+    assert preview["diagnostics"]["publishable"] == false
+    assert preview["diagnostics"]["error"] == "overlapping_definition"
+    assert preview["diagnostics"]["overlaps"]["macro_micro"] ==
+      %{"count"=>1,"bounds"=>[[0,0,0],[1,1,1]],"sample"=>[[0,0,0]]}
+    assert preview["views"]["layers"] == [%{"macro_y"=>0,"text"=>"#"}]
+    slice = tool_result(Enum.at(requests,3),"c3")
+    assert slice["scope"] == "catalog_local" and slice["section"]["text"] == "+"
+    assert slice["definition_id"] == hex
+    assert Map.keys(World.prefab_catalog(c.world)) == [id]
+    assert World.stats(c.world).instances == 0
   end
 end

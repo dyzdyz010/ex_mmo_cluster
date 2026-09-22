@@ -26,6 +26,46 @@ defmodule SceneServer.PrefabDesigner.Check do
       Map.new(Prefab.macro_footprint(compiled, {0, 0, 0}, 0)), bounds)}
   end
 
+  @doc "一个真实 micro 切面：轴 0/1/2 固定 X/Y/Z；顶视图 Z 递增，立面 Y 从高到低。每字符一格，不投影遮盖后方。"
+  def slice(%{summary: %{bounds: nil}},_,_), do: {:error,:empty_draft}
+  def slice(%{summary: %{bounds: {lo,hi}}} = geometry,axis,at)
+      when axis in 0..2 and is_integer(at) do
+    {horizontal,vertical,order} = case axis do
+      0 -> {2,1,:descending}
+      1 -> {0,2,:ascending}
+      2 -> {0,1,:descending}
+    end
+    width = elem(hi,horizontal)-elem(lo,horizontal)
+    height = elem(hi,vertical)-elem(lo,vertical)
+    cond do
+      at < elem(lo,axis) or at >= elem(hi,axis) -> {:error,:outside_view}
+      width*height > Prefab.limits().extent_micro ** 2 -> {:error,:view_budget}
+      true ->
+        micros = Map.new(Prefab.footprint(geometry,{0,0,0},0))
+        macros = Map.new(Prefab.macro_footprint(geometry,{0,0,0},0))
+        rows = elem(lo,vertical)..(elem(hi,vertical)-1)
+        rows = if order == :descending,do: Enum.reverse(rows),else: rows
+        text = Enum.map_join(rows,"\n",fn v ->
+          Enum.map_join(elem(lo,horizontal)..(elem(hi,horizontal)-1),fn h ->
+            point = {0,0,0} |> put_elem(axis,at) |> put_elem(horizontal,h) |> put_elem(vertical,v)
+            material = Map.get(micros,point,Map.get(macros,macro(point),0))
+            cond do
+              material == 0 -> "."
+              kind(material) != :solid -> "~"
+              Map.has_key?(micros,point) -> "+"
+              true -> "#"
+            end
+          end)
+        end)
+        names = {:x,:y,:z}
+        {:ok,%{resolution: :micro,fixed_axis: elem(names,axis),at: at,
+          columns: %{axis: elem(names,horizontal),min: elem(lo,horizontal),max_exclusive: elem(hi,horizontal)},
+          rows: %{axis: elem(names,vertical),min: elem(lo,vertical),max_exclusive: elem(hi,vertical),order: order},
+          text: text,legend: "Each character is 1 micro cell: # solid macro; + solid micro; ~ nonblocking/non-walkable material; . air. No projection."}}
+    end
+  end
+  def slice(_,_,_), do: {:error,:invalid_view}
+
   @doc "沿用正式材料单位和附件计价，供目录与完整检查共用。"
   def materials(compiled, properties), do: materials(compiled,
     Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0)),
