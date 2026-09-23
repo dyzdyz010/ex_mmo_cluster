@@ -499,7 +499,7 @@ defmodule VoxelRegion.World do
           log: {log, log.open(world_dir, cv)}
         }
 
-        state = replay_log(state)
+        state = replay_log(state) |> environment_tolerance(state.thermal)
 
         state =
           if state.seq == 0,
@@ -3175,6 +3175,12 @@ defmodule VoxelRegion.World do
       path -> Damage.load(path)
     end
   end
+
+  # 全局系统功能：平衡容差是求解分辨率，以环境资产为准；回放的热账（环境温度、换热系数、能量账）保持存档值。
+  defp environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
+    do: %{state | thermal: %{thermal | config: Map.put(config, "tolerance_kelvin", asset["tolerance_kelvin"])}}
+
+  defp environment_tolerance(state, _), do: state
 
   # 全局环境不包含测试源；玩家设施只从已经支付的燃料获得能量。
   defp load_thermal_environment(opts) do

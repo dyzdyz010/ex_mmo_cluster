@@ -58,7 +58,8 @@ defmodule VoxelRegion.ThermalStaticPhaseTest do
 
     prefab = Path.join(root, "prefabs")
     File.mkdir_p!(prefab)
-    # Production environment asset values (DA_ThermalEnvironment): 293.15 K, h = 10 W/(m² K), tolerance 0.01 K.
+    # DA_ThermalEnvironment values at the time of the fix: 293.15 K, h = 10 W/(m² K), tolerance 0.01 K (the hand-computed
+    # exit time below uses 0.01 K; production is 1 K since 2026-09-23 and still excludes 20 K-off natural snow).
     pulse = Path.join(root, "pulse.json")
 
     File.write!(

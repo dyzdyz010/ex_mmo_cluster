@@ -448,6 +448,22 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b3_heater
+  test "a restart takes the equilibrium tolerance from the environment asset, not from the replayed thermal ledger", c do
+    path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01}))
+    stop_supervised!(World)
+    w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
+    # Any committed transaction carries the thermal ledger (and its config) into the log.
+    assert {:ok,seq}=World.material_supply(w,1001,"tolerance-restart",%{19=>512})
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 1.0}))
+    stop_supervised!(World)
+    w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
+    assert observe(w).seq==seq
+    # The config is internal solver state; the public snapshot carries only the ledger.
+    assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0}
+  end
+
+  @tag :b3_heater
   test "paid heater fuel and energy commit together, reject duplicates and survive restart", c do
     data=Jason.decode!(File.read!(c.catalog))
     data=Map.update!(data,"tags",&(&1++[%{"id"=>"heat"},%{"id"=>"heat.receiver"}]))
