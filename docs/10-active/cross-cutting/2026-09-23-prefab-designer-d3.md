@@ -20,7 +20,7 @@
 
 未做（D3-2 及以后）：自制件的服务端名称／发布者元数据与跨会话列表、按 id 下载定义（HTTP 内容寻址）、草稿 micro 格与子 prefab 引用、
 检查面板（`PrefabDesigner.check`）、命名输入框（中文输入法）、撤销、旋转草稿、Qinglan 集成。
-（发布者与跨会话列表已由下节 D3-2 W-A 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。）
+（发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。）
 
 ## D3-2 增量 W-A：共享的已发布列表（协议仍为 17）
 
@@ -37,7 +37,7 @@
   每次按 `9` 各拉一次；只应用最新一次请求的应答（旧的较短列表不会让 `SelectedPrefab` 越界）。应答整体替换拼装仓库的自制部分；
   名称派生为“作品 N · 我”／“作品 N · 玩家 <cid>”（N = 服务端序号）；`9` 从最新发布起向旧轮换并回绕。发布接受后不再本地追加。
 
-**W-A 已实现、已实跑；D3 整体未验收**（W-B 撤销／材料清单未做）。
+**W-A 已实现、已实跑；D3 整体未验收**（W-B 撤销／材料清单见下节）。
 
 - 服务端：`apps/voxel_region` 新增 World 测试（A、B 由 cid1 发布、cid2 重发 A，冷重启后列表 `[{1,A},{1,B}]`；作者目录子件不列出；
   删掉 B 的 .pub 后重启不列出但仍可放置，cid2 重发补记为 `{2002,B}` 并跨重启保留），prefab 相关 6 个文件 59 passed；全量 356/357，
@@ -53,6 +53,31 @@
   B 按 9 两次都选中“作品 1 · 玩家 359443468289”，在 before.json 证明为空的 z=58 行放置，txn 634904 接受；服务端快照 (43,519,58)(44,519,58)(43,520,58)
   为木材、placed_by 为 B，B 木材 −6,291,456 单位、A 不变；判定器另经真实 HTTP 入口读到同一 id 与发布者。截图已实际检查（发布提示、A／B 的名称、放置后）。
   证据 `Voxim/Saved/Gameplay/prefab-list-20260923/smoke-01/`。回归：同镜像 `smoke.py --mode assembly` 通过（`regress-assembly/`）。
+
+## D3-2 增量 W-B：撤销与材料清单（只改客户端，协议仍为 17）
+
+分类：全局系统功能（`FVoxelPrefabDraft::Undo`、`PrefabMaterialBill`、`UVoxelInteractionComponent::PrefabBillText／UndoPrefabDraft`）；
+Demo HUD 显示、smoke 与独立旧 Demo 部署为只测试。
+
+- **撤销**：草稿每次 `Set` 记下该格原材料，`Undo` 逆序恢复一步且不再记录。编辑空间里 `Z`（既有 `SelectPrefabLeaf` 绑定）转为撤销，提示“[Z] 撤销”。
+- **材料清单**：`PrefabMaterialBill(micro 占地, 宏格占地, UnitsPerMicro)` 与 `World.prefab_payment` 空地放置同口径——宏格 `512 × UnitsPerMicro`、
+  micro 格 `UnitsPerMicro`，附件不计。编辑中取草稿格，世界里取所选拼装件的预览占地；在草稿编辑／撤销／进出编辑空间／预览重建／余额回执／断线时重算。
+  每种材料一行“木材 需 3.000 m³ / 持有 61.367 m³”，不够时加“不足”，余额未确认为“待确认”；材料名复用目录 `DisplayName` 经 `DisplayLabels` 的同一函数 `MaterialName`。
+  Demo HUD 把它接在“模式／反馈”面板的 Selection 文字后（`VoxelStatsHud.cpp`），未改 WBP，实跑截图未截断。
+
+**W-B 已实现、已实跑；D3 整体未验收。**
+
+- 客户端单元：`Voxim.Prefab.Draft.Undo`（放石、放木、删石三步，逐步撤回到空草稿，第四次返回 false）与 `Voxim.Prefab.Bill`
+  （UnitsPerMicro 4096：木 2 宏格 + 3 micro = 4,206,592；石 1 宏格 = 2,097,152，手算），受影响范围同上共 40/40。
+- 实跑（独立旧 Demo 升级为镜像 `voxim-gameplay:prefab-bill-20260923`，服务端 master `198c21fe`（含燃烧重调合并），源码清单
+  `Voxim/Saved/Gameplay/prefab-bill-20260923/image/source-manifest.json`；切换前备份数据库与部署目录，回滚容器
+  `voxim-prefab-designer-test-before-prefab-bill`；目录经既有 playkit.exs → `World.publish_parameters` 从 `e4dc89a4…` 升级为 `fbd4f301…`，
+  `fuel_rebase_j≈1.9e-9`，余额与探测格不变）：`smoke.py --mode prefab_editor --row 63`——A 放 4 格后按 Z，草稿面 1→2→3→4→3 格，
+  清单依次 4.000／3.000／3.000 m³（`D3 bill material=19 units=8388608／6291456`，持有 = before 快照的 A 木材 128,696,975 单位 = 61.367 m³）；
+  发布同形 `33ffc16a…9cec` → 冷重启 → A、B 按 9 选中后世界清单各为“需 3.000 / 持有 61.367”“需 3.000 / 持有 61.000”，B 在 z=63 行放置 txn 637406，
+  三格木材 placed_by B，B 木材 −6,291,456、A 不变。判定器按手算单位与 before 快照独立核对清单与 HUD 文字。截图已实际检查
+  （4 格／撤销后 3 格的编辑空间与清单、发布提示、A／B 世界清单、放置后清单变为持有 58.000 且新目录的木材“导热率 150、燃烧热 12 MJ/m³”）。
+  证据 `Voxim/Saved/Gameplay/prefab-bill-20260923/smoke-01/`；回归 `smoke.py --mode assembly`（世界里 `Z` 选叶级路径）通过（`regress-assembly/`）。
 
 ## 状态
 
@@ -85,6 +110,6 @@ python Docs/Gameplay/smoke.py --mode prefab_editor --server-dir Saved/Gameplay/p
 mix.bat test
 # D3-2（RUSTUP_TOOLCHAIN=1.91.0，MMO_DB_PORT=5433）
 #   apps/voxel_region: mix.bat test test/prefab_runtime_publish_test.exs ...；apps/auth_server: mix.bat test test/auth_server_web/controllers/voxel_prefabs_controller_test.exs test/auth_server_web/playtest_access_test.exs
-#   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>；镜像与切换 Voxim/Saved/Gameplay/prefab-list-20260923/{build_image.py,upgrade.py}
+#   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>；镜像与切换 Voxim/Saved/Gameplay/prefab-bill-20260923/{build_image.py,upgrade.py}（W-A 为 prefab-list-20260923）
 # 镜像与切换（只测试）：Voxim/Saved/Gameplay/prefab-editor-20260923/{build_image.py,upgrade.py,upgrade-resume.py}
 ```
