@@ -595,7 +595,7 @@ defmodule VoxelRegion.World do
         end)
 
     if compatible do
-      publish_property_catalog(state, catalog, state.thermal)
+      publish_property_catalog(state, catalog, state.thermal, state.damage)
     else
       {:reply, {:error, :property_version_in_use}, state}
     end
@@ -610,7 +610,9 @@ defmodule VoxelRegion.World do
         {:reply, {:error, :property_version_in_use}, state}
 
       true ->
-        publish_property_catalog(state, catalog, VoxelRegion.ParameterEvolution.thermal_reference(state.thermal, state.damage, state.properties, catalog))
+        thermal = VoxelRegion.ParameterEvolution.thermal_reference(state.thermal, state.damage, state.properties, catalog)
+        {damage, thermal} = VoxelRegion.ParameterEvolution.combustion(state.damage, thermal, state.properties, catalog)
+        publish_property_catalog(state, catalog, thermal, damage)
     end
   end
 
@@ -2251,7 +2253,7 @@ defmodule VoxelRegion.World do
     ledger = Map.take(thermal, [:active, :elapsed_s, :supplied_j, :environment_j,
       :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,
       :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_light_j,
-      :circuit_rejected_j, :circuit_cooling_j, :circuit_removed_j, :parameter_rebase_j,
+      :circuit_rejected_j, :circuit_cooling_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
@@ -4975,13 +4977,14 @@ defmodule VoxelRegion.World do
     if squared <= range * range, do: :ok, else: {:error, :out_of_reach}
   end
 
-  # 参数只改变下一次计算；实例温度、HP、余燃料、源预算与相变焓不改写。
+  # 参数只改变下一次计算；实例温度、HP、源预算与相变焓不改写；
+  # 已点燃行的余燃料与功率由调用方按新目录保比例重标后传入。
   # 复用既有同步落盘后广播边界；失败时目录与所有实例状态一起保持旧值。
-  defp publish_property_catalog(state, catalog, thermal) do
+  defp publish_property_catalog(state, catalog, thermal, damage) do
     if state.properties.digest == catalog.digest do
       {:reply, :ok, enable_liquid(state, rebuild_thermal_work(%{state | properties: catalog}))}
     else
-      rows = for {_, t} <- state.damage,
+      rows = for {_, t} <- damage,
         do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0}
       next = %{state | properties: catalog, thermal: thermal, seq: state.seq + 1,
         damage: Map.new(rows, &{Damage.key(&1), &1})} |> rebuild_thermal_work()
@@ -4993,7 +4996,7 @@ defmodule VoxelRegion.World do
           next = remember_entry(next, txn)
           fanout(next, txn)
           fanout_canonical(next, txn, [], [], state)
-          Logger.info("voxel_parameter_publication seq=#{next.seq} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0}")
+          Logger.info("voxel_parameter_publication seq=#{next.seq} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0} fuel_rebase_j=#{if thermal, do: Map.get(thermal, :fuel_rebase_j, 0.0), else: 0.0}")
           {:reply, :ok, schedule_liquid(enable_liquid(state, next))}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end

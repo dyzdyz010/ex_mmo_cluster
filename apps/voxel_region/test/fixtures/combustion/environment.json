@@ -1,0 +1,7 @@
+{
+  "classification": "Global system",
+  "asset": "/Game/Voxel/Properties/DA_ThermalEnvironment",
+  "ambient_kelvin": 293.15,
+  "environment_w_per_m2_k": 10,
+  "tolerance_kelvin": 0.01
+}
