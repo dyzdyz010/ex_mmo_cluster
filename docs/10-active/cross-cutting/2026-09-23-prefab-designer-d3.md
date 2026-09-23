@@ -20,7 +20,8 @@
 
 未做（D3-2 及以后）：自制件的服务端名称／发布者元数据与跨会话列表、按 id 下载定义（HTTP 内容寻址）、草稿 micro 格与子 prefab 引用、
 检查面板（`PrefabDesigner.check`）、命名输入框（中文输入法）、撤销、旋转草稿、Qinglan 集成。
-（发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。）
+（发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。
+草稿 micro 格、薄面／细线、整体旋转已由 D3-3 增量 1 完成；子 prefab 插入、命名（协议 18）、Qinglan 集成为后续增量。）
 
 ## D3-2 增量 W-A：共享的已发布列表（协议仍为 17）
 
@@ -79,6 +80,48 @@ Demo HUD 显示、smoke 与独立旧 Demo 部署为只测试。
   （4 格／撤销后 3 格的编辑空间与清单、发布提示、A／B 世界清单、放置后清单变为持有 58.000 且新目录的木材“导热率 150、燃烧热 12 MJ/m³”）。
   证据 `Voxim/Saved/Gameplay/prefab-bill-20260923/smoke-01/`；回归 `smoke.py --mode assembly`（世界里 `Z` 选叶级路径）通过（`regress-assembly/`）。
 
+## D3-3 增量 1：小块、薄面／细线、整体旋转、完整清单、合并目录（只改客户端，协议仍为 17）
+
+分类：全局系统功能（`FVoxelPrefabDraft`、`RotatePrefabDefinition`、`AimAttachment`、`PrefabMaterialBill`、交互组件的合并目录与草稿工具）；
+Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改：VXPD v3 本就承载 micro + 宏格 + 附件，发布与放置裁决不变。
+
+- **草稿唯一真值**：草稿只保存一份 `FVoxelPrefabDefinition`（定义局部 = 工作台局部 − BoxMin），撤销 = 每步一份定义快照（上限约 115 KB／步，不设上限）；
+  拾取用的驻留 Tile、渲染和清单用的占地每步由 `BuildPrefab{,Macro,Attachment}Footprint` 从定义重建（micro 进 Tile 的 refined 数据）。
+- **编辑工具**：编辑空间里 `Q` 循环 整块／小块（1/8 m）／薄面／细线，与世界的附件模式互不影响（`CycleAttachmentMode` 在编辑中转给草稿）。
+  小块放在命中 micro + 法线；整块只进空且不含小块的宏格；薄面／细线用与世界同一个纯函数 `AimAttachment`（从 `UpdateAttachmentTarget` 移入 `Voxel/`）：
+  命中宏格面为 8×8 组、命中小块面为单槽，槽位重叠即拒绝，组 id 从现有最大值递增。左键删命中物：整块／小块工具删命中的格，薄面／细线工具删命中槽所在的组；
+  删格后失去支撑的附件组随之移除（与世界同一支撑规则，否则发布会被 `:unsupported_attachment` 拒绝）。材料只接受挡移动的实体材料。
+- **整体旋转**：编辑中 `R`（`RotatePrefab` 转来）= 整个草稿绕盒心 micro (64,64,64) 竖直四分之一转（朝向 1），可撤销。唯一旋转函数
+  `RotatePrefabDefinition(定义, 朝向, 支点)` 复用放置的 `TransformCell`／`TransformPoint`／附件端点变换（附件变换抽成与服务端 `attachment_slot` 同式的一处）：
+  在 A、朝向 0 放下结果 == 在 A + 支点 − R·支点、朝向 o 放下原定义。子件锚点／朝向同样变换（子件插入属下一增量）。
+- **完整清单**：`PrefabMaterialBill(micro, 宏格, 附件槽, 附件规格)`：宏格 512 × UnitsPerMicro、micro UnitsPerMicro、每个附件槽 `SlotUnits`
+  （面 = units × 面厚 × 8，棱 = units × 截面 × 64，与服务端 `damage.ex` face_units／edge_units 及 `World.prefab_payment` 逐槽扣料同式；
+  无附件规格的旧目录每槽 1 单位，与 `Attachments.units/2` 的回退一致，这条规则也收进 `SlotUnits`，世界放置文字不再各写一遍）。
+- **合并目录（修崩溃）**：交互组件维护一份目录 = 各作者资产的发布内容及依赖 + 服务端发布列表，世界选件与草稿都从它展开子件。此前自制件用空目录，
+  引用子件的已发布定义在选中时 `FindChecked` 断言崩溃。
+- **不做 `PrefabDesigner.check` 面板**（设计定案 (e)）：它要 NPC 房屋的入口／室内点；玩家侧有清单、中文拒绝原因与放置预览已够。
+
+**D3-3 增量 1 已实现、已实跑；D3 整体未验收。**
+
+- 客户端单元（全部手算期望）：`Voxim.Prefab.Draft.MicroAndAttachments`（命中 micro (258,71,258)+y → 局部 (66,8,66)；整块进含小块宏格被拒且草稿不变；
+  小块叠小块、整块工具删小块；+x 面组 (72,0,64)、细线 (64,8,64)、重叠拒绝；删石连带无支撑的棱）、`Voxim.Prefab.Rotate`（2 宏格 + micro + 顶面组 + 子件的手算转后定义；
+  转后朝向 0 与原定义朝向 1 平移 (128,0,0) 的三种占地逐项相等；四次回到原样）、`Voxim.Prefab.Draft.Undo`（五步快照逐字节撤回、Tile 重建）、
+  `Voxim.Prefab.Bill`（木 4,206,592、石 2,097,152、铜面 64 槽 + 棱 8 槽 = 4,160；旧目录每槽 1 → 72）、`Voxim.Prefab.Palette.PublishedChild`
+  （服务端列表父件引用列表内子件：改前 `Assertion failed: Pair != nullptr` 崩溃，日志留在 scratchpad `inc1/Automation_…_d3inc1_red_b0.log`；改后两种朝向手算宏格相等）。
+  受影响范围 `Voxim.Prefab.+Voxim.R7.Prefab.+Voxim.R7.B4.+Voxim.R7.Hierarchy.+Voxim.Raycast.+Voxim.Foliage.+Voxim.R7.Properties.+Voxim.Gameplay.+Voxim.Demo.` 51/51。
+- 实跑（独立旧 Demo `voxim-prefab-designer-test`，镜像不变 `prefab-bill-20260923`）：`smoke.py --mode prefab_editor --row 70` 三阶段——A 进编辑空间放木 2 格，
+  `Q` 小块在第一格顶放 1/8 m 木块，`Q` 薄面、滚轮换铜在第二格顶铺铜面，`R` 整体旋转，`Q Q` 回整块放一格铜后 `Z` 撤销，`Enter` 发布 → 同容器冷重启 →
+  A、B 各按 `9` 选中最新作品，B 在 z=70 行放置，txn 660214 接受。判定器逐项核对：草稿面 (格,附件槽) 依次 (0,0)(1,0)(2,0)(3,0)(3,64)(3,64)(4,64)(3,64)；
+  旋转前后定义与手算一致；真实 HTTP 列表里的 VXPD 字节独立解码为宏格 (7,0,8)(7,0,9)、micro (61,8,66)、面组 轴 1 锚 (56,8,72) 边 8；B 的放置锚点 micro (288,4152,496)；
+  服务端快照木宏格 (43,519,70)(43,519,71) placed_by B、(43,520,70) 槽 133 木 micro（owner 660214:0）、64 个铜面槽（轴 1，y=4160，x∈[344,352)，z∈[568,576)，同一 id）；
+  B 木 −4,198,400、铜 −4,096（64 槽 × 64），A 不变；编辑中与 A／B 世界清单“木材 需 2.002 m³ / 铜 需 0.002 m³”及各自持有按 before 快照独立核对。
+  证据 `Voxim/Saved/Gameplay/prefab-d3inc1-20260923/smoke-02/`（退出 0）。原始失败 `smoke-01/`：所有放置与服务端核对已对，只因 A 按 9 与 Status
+  同帧执行、A 的世界清单缺行而判败（脚本给 Status 留 2 s 后复跑）；smoke-01 已发布同一字节（同 id、序号 2），smoke-02 为重发，保留首个发布者与序号。
+  截图已实际检查（编辑空间两格＋铜面＋小块、旋转后、多放一格、撤销后、A／B 世界清单、B 预览与放置）。
+- 回归（未完成）：编辑器输入语义变了（编辑中 Q／R），`deploy.py --reset` 后重跑 `smoke.py --mode circuit_fire`（`fire-d3inc1-01`）。
+  设计段已实跑：草稿面 0→10→9（含左键删辅助块）与原 `DRAFT_SURFACES` 一致，发布 txn 接受，放置锚点 micro (464,3320,-4176) 与 fire-03 相同；
+  随后观察期内本机内存不足，后台任务被系统终止，客户端已关闭，**判定器未运行，不计通过**；该部署世界已被部分消耗，下次实跑前须再 `--reset`。
+
 ## 状态
 
 **D3-1 已实现、已实跑；D3 整体未验收。**
@@ -110,6 +153,6 @@ python Docs/Gameplay/smoke.py --mode prefab_editor --server-dir Saved/Gameplay/p
 mix.bat test
 # D3-2（RUSTUP_TOOLCHAIN=1.91.0，MMO_DB_PORT=5433）
 #   apps/voxel_region: mix.bat test test/prefab_runtime_publish_test.exs ...；apps/auth_server: mix.bat test test/auth_server_web/controllers/voxel_prefabs_controller_test.exs test/auth_server_web/playtest_access_test.exs
-#   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>；镜像与切换 Voxim/Saved/Gameplay/prefab-bill-20260923/{build_image.py,upgrade.py}（W-A 为 prefab-list-20260923）
+#   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>（D3-3 起占 row 与 row+1）；镜像与切换 Voxim/Saved/Gameplay/prefab-bill-20260923/{build_image.py,upgrade.py}（W-A 为 prefab-list-20260923）
 # 镜像与切换（只测试）：Voxim/Saved/Gameplay/prefab-editor-20260923/{build_image.py,upgrade.py,upgrade-resume.py}
 ```
