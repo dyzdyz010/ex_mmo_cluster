@@ -21,7 +21,7 @@
 未做（D3-2 及以后）：自制件的服务端名称／发布者元数据与跨会话列表、按 id 下载定义（HTTP 内容寻址）、草稿 micro 格与子 prefab 引用、
 检查面板（`PrefabDesigner.check`）、命名输入框（中文输入法）、撤销、旋转草稿、Qinglan 集成。
 （发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；草稿 micro 格、薄面／细线、整体旋转已由 D3-3 增量 1 完成，子 prefab 插入由增量 2 完成，
-命名（协议 18）由增量 3 完成，见下文“命名”节；不暴露 `PrefabDesigner.check`，理由同节。Qinglan 集成为后续增量。）
+命名（协议 18）由增量 3 完成，见下文“D3-3 增量 3”节；不暴露 `PrefabDesigner.check`，理由同节。Qinglan 集成为后续增量。）
 
 ## D3-2 增量 W-A：共享的已发布列表（协议仍为 17）
 
@@ -160,9 +160,9 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
   三设备 119.565984 A、加热器 42,888.07 W、源 57,391.67 W，源耗电 57,391.7 W，合闸后 83.1 s HOST 起燃、186.2 s 云杉底起燃被烧掉，7.32 MJ 已供、5.18 MJ 随设备弃置，
   双端 1246 条燃烧确认一致（证据 `Voxim/Saved/Gameplay/emergent-loop-20260923/fire-06/`，截图已看）。
 
-## D3-2 命名（协议 18，服务端半）
+## D3-3 增量 3：命名（协议 18）
 
-分类：全局系统功能（0x71 名称字段、`Prefab.check_name/1`、`.pub` 名称、列表名称字段、Hello18）；测试为只测试。
+分类：全局系统功能（0x71 名称字段、`Prefab.check_name/1`、`.pub` 名称、列表名称字段、Hello18；客户端 `UVoxelPrefabNameDialog` 与资产 `WBP_PrefabNameDialog`、交互组件的 `PrefabNameDialogClass`／`NamePrefabDraft`／`PublishPrefabDraft(Name)`、列表名称解码与显示）；`L_GameplayDemo` 接线、回放命令 `@type`／`@slate`、smoke 与判定器、两个独立旧 Demo 部署为只测试。
 
 - **0x71**：定义字节之后追加 `name_len:u16, name:UTF-8`（大端，同帧其余整数）。Hello17 帧（无名称字段）解码即拒绝。
 - **信任边界**：`World.publish_prefab/4` 在刷新 `tool_context` 之后、编译之前调用 `Prefab.check_name/1`：非法 UTF-8、含 Unicode Cc 控制字符
@@ -175,16 +175,50 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
 - **不暴露 `PrefabDesigner.check`**：它需要 NPC 设计用的 `entry`／`inside` 脚点才能给出路线、净空等报告（`prefab_designer.ex` 顶部），
   玩家编辑空间没有这些输入；材料清单、中文拒绝原因和放置预览已覆盖玩家需要的反馈。决定不做玩家检查面板。
 
-**服务端半已实现，单元与模块接缝测试通过；未实跑（客户端半与 Hello18 镜像随后一起落地），D3 整体未验收。**
+- **客户端**：Hello 18；0x71 以 `FBigWriter::Text` 追加名称；列表解码读 `name_len:u16` + UTF-8；拼装仓库名称 = 服务端名称（空名为“作品 N”）+ “ · 我”／“ · 玩家 <cid>”。
+  编辑中 `Enter`（控制器键表 `author_controls.py` 改绑 `NamePrefabDraft`）创建关卡指定的 `WBP_PrefabNameDialog`（MONOLITH 面板 + 按钮 + 输入框，
+  `author_name_dialog.py` 经 MCP 创作；按钮 `OnClicked → Submit` 在资产图里），切 UI-only 输入并把键盘焦点给输入框；输入框 `Enter` 或按钮提交即发布（空名合法），
+  `Esc` 取消并切回 GameOnly。Esc 在对话框的 `NativeOnPreviewKeyDown` 截下：`SEditableTextBox` 外壳会自己吃掉 Esc 并把焦点移出内层文字框（见 naming-01）。
+  客户端不校验名称，拒绝原因经 `DisplayLabels`（`invalid_name` = “名称无效（最多 48 字节，不含控制字符）”）显示。
+- **回放（只测试）**：`@type <文字>` 逐字符走 `FSlateApplication::OnKeyChar`，`@slate <键>` 走 `OnKeyDown`／`OnKeyUp`（按焦点路由，与真实键盘同一 Slate 入口）；
+  `@press` 仍直接进 PlayerController，到不了 UMG。它们不经过系统输入法组合。
+
+**D3-3 增量 3 已实现、已实跑（命名双客户端 smoke 与 circuit_fire 回归通过）；系统中文输入法未验证；D3 整体未验收。**
+
+- 服务端在 `prefab-naming` 分支完成后变基到 master（只有本记录冲突，两侧内容合并），快进 master 为 `b4d6e432` 后在主工作区重跑：
 
 - `apps/mmo_contracts` 116 passed：0x71 冻结帧（名称“石屋”= `E7 9F B3 E5 B1 8B`，空名、Hello17 帧／截断／多余字节拒绝）与列表冻结字节（一项“石屋”、一项空名）；
   Hello 版本钉住改为 18（combustion／liquid／liquid_falls）。
 - `apps/voxel_region` prefab* 6 个文件 60 passed：名称跨重启、重发保留首名、崩溃补记者名称、12 字节旧 .pub 载入为空名、`.pub` 冻结字节；
   非法 UTF-8（截断、过长编码 `C0 80`、`FF`）、LF、TAB、DEL、U+0085、49 字节拒绝且不入目录、不写文件，恰好 48 字节接受。
 - `apps/gate_server` 新增 `voxim_prefab_publish_dispatch_test.exs`：冻结 0x71 帧经正式解码 + `Dispatch.handle` 进真实 World，
-  含 LF 名称得到冻结的 `0x68 … ":invalid_name"` 字节、合法名称得到 `"ok"` 并列出；连同 codec／dispatch／session／npc 设计共 182 passed
-  （`quic_connection_test` 在 Windows 不能运行，未跑）。`apps/auth_server` HTTP 列表冻结字节（一新一旧 .pub）与邀请码 6 passed；
-  `apps/scene_server` `prefab_designer_test` 11 passed。
+  含 LF 名称得到冻结的 `0x68 … ":invalid_name"` 字节、合法名称得到 `"ok"` 并列出；主工作区重跑 gate_server 除 `quic_connection_test`（Windows 不能运行）
+  外全部测试文件 340 passed（10 excluded）。`apps/auth_server` HTTP 列表冻结字节（一新一旧 .pub）与邀请码 6 passed；`apps/scene_server` `prefab_designer_test` 11 passed。
+  分支与工作区已删除。
+- 客户端单元：`Voxim.R7.Prefab.PublishWire`（与服务端同一冻结帧：“石屋”与空名）、`Voxim.R7.Prefab.PublishedList`（冻结列表：名称“石屋”与空名；
+  名称长度越界、协议 17 的同一列表拒绝）、`Voxim.M1.Codec.Boundary`（Hello18，Hello17 拒绝）；受影响范围
+  `Voxim.Prefab.+Voxim.R7.Prefab.+Voxim.R7.B4.+Voxim.R7.Hierarchy.+Voxim.Raycast.+Voxim.Foliage.+Voxim.R7.Properties.+Voxim.Gameplay.+Voxim.Demo.+Voxim.M1.Codec.+Voxim.R7.B3.ReplayDeadline` 61/61。
+- 镜像与切换（只测试）：服务端 master `b4d6e432` 正常 Linux Mix 构建为 `voxim-gameplay:prefab-naming-20260923`（`DEMO_BUILD_PROTOCOL=18`，源码清单
+  `Voxim/Saved/Gameplay/prefab-naming-20260923/image/source-manifest.json`）。`upgrade.py designer|emergent` 先 pg_dump 数据库、复制部署目录，
+  旧容器改名 `…-before-prefab-naming` 作回滚，`entry.exs` 协议守卫 17→18；`voxim-prefab-designer-test` 切换前后余额、探测格、目录一致，
+  真实 HTTP 列表读回旧 12 字节 .pub 的三项为空名；`voxim-emergent-loop-20260923` 切换后 `deploy.py --reset`（断言协议 18）。
+- 实跑 `smoke.py --mode prefab_naming`（证据 `Voxim/Saved/Gameplay/prefab-naming-20260923/naming-02/`，退出 0）：A 在编辑空间放木 3 格
+  （局部宏格 (8,0,9)(8,0,8)(9,0,8)），经对话框键入 20 个汉字（60 字节）→ 服务端 `:invalid_name` 拒绝，反馈“发布被拒绝：名称无效（最多 48 字节，不含控制字符）”，
+  列表不变；键入“石屋”后 Esc → 对话框关闭、未发送；键入“石屋”、Enter → 发布 `5a762488…e746`；经 Slate 按 P 回世界（证明键盘已交还游戏）→ 同容器冷重启 →
+  A、B 按 9：A “石屋 · 我”、B “石屋 · 玩家 359443468289”（模式面板截图可见）；B 瞄 (48,518,67) 顶面放置，锚 micro (320,4152,472)（手算），txn 670602，
+  (48,519,67)(49,519,67)(48,519,68) 木材 placed_by B，B 木 −6,291,456、A 不变；判定器经真实 HTTP 列表核对旧三项不变、新项发布者 A、名称“石屋”、字节解码为上述三格。
+  截图已实际检查（长名输入、拒绝反馈、Esc 后、输入“石屋”、发布后、B 选中与放置后、A 选中）。
+  **原始失败保留** `naming-01/`（`naming-01.out`）：①通用故障过滤把本场景预期的一次 `:invalid_name` 当故障（判定器改为只在 A 发布阶段容许该原因，时间线仍要求恰好一次）；
+  ②真实缺陷：Esc 被输入框外壳吃掉、焦点移出内层文字框，之后 Enter 不再提交（以 `SlateDebugger` 探针 `probe-01` 定位，改为隧道阶段截 Esc 后 `probe-02` 通过）；
+  ③夹具：第三格瞄点被第一格挡住，叠成与 D3-1 相同的形状（同 id 重发不改名），放置顺序改为由远及近；该次 B 按 9 选中增量 2 作品放在 (46..48,519,65..66)，保留在测试世界。
+  当前判定器对 naming-01 复判仍失败（只发出一次 0x71），对 naming-02 复判通过。输入框默认浅底白字对比度不足、MONOLITH 按钮不报告高度，已在资产里改深底主文字色、外包 48 高 SizeBox。
+- `smoke.py --mode prefab_editor` 与 emergent_loop／circuit_fire 的发布步骤改为 `Enter` + `@slate Enter`（空名）。prefab_editor 本次未重跑：它要求“列表最新一项 = 增量 1 形状”且台面
+  x∈[43,45] 有空双行，当前世界两者都不成立（重跑需新部署）。回归：`deploy.py --reset` 后 `smoke.py --mode circuit_fire` → `fire-naming-01` 十五项全过、退出 0
+  （119.565984 A、源耗电 57,391.7 W，合闸后 83.2 s HOST、186.6 s 云杉底起燃，7.32 MJ 已供、5.18 MJ 弃置，双端 1246 条燃烧确认一致；截图已看）。
+- **未验证（需人工）**：系统中文输入法。回放的 `@type` 走 Slate 字符入口，不经 Windows TSF 组合，不能证明组合、选词与组合中 Enter 的行为。人工步骤：
+  编辑器 Play `L_GameplayDemo`（连协议 18 的独立旧 Demo）或 `-game` 客户端 → `P` 进编辑空间放一格 → `Enter` 打开对话框 → 切到微软拼音 →
+  输入 `shiwu`，候选框出现后按 `Enter`：应只把拼音上屏／结束组合、**不得**发布或关闭对话框；再用空格选“石屋”上屏，确认输入框显示“石屋”、无截断；
+  组合中按 `Esc` 应只取消组合；最后无组合时按 `Enter` → 反馈“已发布”，`9` 选中显示“石屋 · 我”。若组合中 Enter 就发布了，需在提交处判断组合态（另开增量）。
 
 ## 状态
 
@@ -219,4 +253,6 @@ mix.bat test
 #   apps/voxel_region: mix.bat test test/prefab_runtime_publish_test.exs ...；apps/auth_server: mix.bat test test/auth_server_web/controllers/voxel_prefabs_controller_test.exs test/auth_server_web/playtest_access_test.exs
 #   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>（D3-3 起占 row 与 row+1）；镜像与切换 Voxim/Saved/Gameplay/prefab-bill-20260923/{build_image.py,upgrade.py}（W-A 为 prefab-list-20260923）
 # 镜像与切换（只测试）：Voxim/Saved/Gameplay/prefab-editor-20260923/{build_image.py,upgrade.py,upgrade-resume.py}
+# D3-3 增量 3（协议 18）：python Docs/Gameplay/author_name_dialog.py（MCP 8000）；镜像 Voxim/Saved/Gameplay/prefab-naming-20260923/{build_image.py,upgrade.py designer|emergent,recheck.py}
+#   python Docs/Gameplay/smoke.py --mode prefab_naming --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test --out <新目录>
 ```
