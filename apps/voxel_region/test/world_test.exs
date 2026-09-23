@@ -186,6 +186,33 @@ defmodule VoxelRegion.WorldTest do
   end
 
   @tag :replica
+  test "replica delta history follows the World checkpoint horizon one checkpoint behind", %{root: root} do
+    alias VoxelRegion.Replica
+    world = start_supervised!({World, root: root, name: :replica_horizon_authority})
+    box = {{0, 0, 0}, {1, 2, 1}}
+    replica = start_supervised!({Replica, authority_ref: world, l0_box: box, name: :replica_horizon})
+    request = make_ref()
+    assert :ok = Replica.canonical_snapshot_and_subscribe(replica, box, self(), request)
+    assert_receive {:canonical_snapshot, ^request, %{transaction_seq: 0}}
+    edit = fn x, seq ->
+      assert {:ok, ^seq} = World.apply_edit(world, {x, 63, 5}, 0)
+      assert_receive {:canonical_delta, %{transaction_seq: ^seq} = delta}, 5_000
+      delta
+    end
+    for x <- 1..3, do: edit.(x, x)
+    # First checkpoint at seq 3: the previous horizon is the snapshot (0), nothing is released yet.
+    assert :ok = World.compact(world)
+    assert Replica.stats(replica).retained_deltas == 3
+    later = for x <- 4..5, do: edit.(x, x)
+    # Second checkpoint at seq 5 releases the history covered by the first one (seq <= 3).
+    assert :ok = World.compact(world)
+    assert Replica.stats(replica).retained_deltas == 2
+    assert Replica.canonical_deltas_after(replica, 3) == later
+    assert Replica.canonical_deltas_after(replica, 4) == tl(later)
+    assert Replica.canonical_deltas_after(replica, 2) == {:error, :before_replica_snapshot}
+  end
+
+  @tag :replica
   test "region replica serves local snapshots and ordered canonical updates without a writer", %{root: root} do
     alias VoxelRegion.Replica
     world = start_supervised!({World, root: root, name: :replica_authority})

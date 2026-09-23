@@ -3146,6 +3146,8 @@ defmodule VoxelRegion.World do
       end)
 
     if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
+    # Replicas mirror this history horizon; sent after every delta up to this seq.
+    Enum.each(Map.keys(state.replica_subs), &send(&1, {:canonical_replica_checkpoint, state.seq}))
     remember_entry(%{state | entries: %{}, entry_regions: %{}, checkpoint_timer: nil,
       checkpoints: state.checkpoints + 1}, txn)
   end

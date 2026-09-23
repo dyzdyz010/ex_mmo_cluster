@@ -62,6 +62,7 @@ defmodule VoxelRegion.Replica do
           epochs: Map.get(snapshot, :epochs, %{}),
           subscribers: %{},
           deltas: [],
+          checkpoint_seq: snapshot.transaction_seq,
           update_payload_bytes: 0
         }
 
@@ -174,6 +175,21 @@ defmodule VoxelRegion.Replica do
     end)
 
     {:noreply, state}
+  end
+
+  # The World keeps only the history since its last checkpoint. Mirror that horizon one
+  # checkpoint behind, so a transfer cut taken just before a checkpoint still gets its tail;
+  # older prefixes are rejected explicitly like a request before this replica's snapshot.
+  def handle_info({:canonical_replica_checkpoint, seq}, state) do
+    horizon = state.checkpoint_seq
+
+    {:noreply,
+     %{
+       state
+       | deltas: Enum.take_while(state.deltas, &(&1.transaction_seq > horizon)),
+         baseline_seq: max(state.baseline_seq, horizon),
+         checkpoint_seq: seq
+     }}
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, %{monitor: monitor} = state),
