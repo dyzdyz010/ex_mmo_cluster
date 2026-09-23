@@ -220,6 +220,17 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
   输入 `shiwu`，候选框出现后按 `Enter`：应只把拼音上屏／结束组合、**不得**发布或关闭对话框；再用空格选“石屋”上屏，确认输入框显示“石屋”、无截断；
   组合中按 `Esc` 应只取消组合；最后无组合时按 `Enter` → 反馈“已发布”，`9` 选中显示“石屋 · 我”。若组合中 Enter 就发布了，需在提交处判断组合态（另开增量）。
 
+## D3-3 增量 4：青岚集成（只本地，未部署）
+
+分类：青岚接线、发布工具与本地版本为只分发；共享按键表 `Voxim/Docs/R7/tools/player_controls.py` 为全局系统功能；冒烟与回放命令 `@await_intents` 为只测试。服务端源码未改（master `c89a6f8d`）。
+
+- **已实现**：青岚关卡摆放 `BP_PrefabWorkbench`、名称对话框、清单 HUD、编辑说明、`P／Enter／9`（与 Demo 同一份按键表）、中文 `invalid_name`、工具 19 进 `C` 循环；
+  Asset Registry 依赖检查 1244 个包、唯一地图 L_Qinglan、0 个 Test-only（MONOLITH 面板／按钮改标全局）；打包 1092 个包，无 Test-only 资产或模块。
+- **已实跑（本机）**：镜像 `voxim-qinglan-server:20260923-qinglan-prefab-editor`（协议 18）运行在青岚世界与数据库的副本上，目录经 `World.publish_parameters` 从 `e4dc89a4…` 升到 `4b2c6abe…`，
+  seq 145→146，overlay／refined／micro／实例／余额逐项不变，副本无点燃行（`fuel_rebase_j = 0`）。`smoke.py --mode prefab_editor` 改为按定义 id 识别发布、按 before 快照选场地，
+  设计器容器复跑通过（txn 674932），青岚副本 smoke-02 通过（txn 151；smoke-01 因回执晚到 7.5 s 而实例读数过早，保留失败）。打包客户端双端人工输入冒烟：采集、编辑、命名“木亭”发布、`9`、放置、另一端可见、`K` 点火两端一致。
+- **未做**：公网部署、公网双端实跑、系统中文输入法组合。记录与部署步骤见 `Voxim/Docs/Playtest/release-20260923-qinglan-prefab-editor.md`。
+
 ## 状态
 
 **D3-1 已实现、已实跑；D3 整体未验收。**
