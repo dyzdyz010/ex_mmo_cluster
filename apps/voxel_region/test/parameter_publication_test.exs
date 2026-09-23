@@ -84,6 +84,26 @@ defmodule VoxelRegion.ParameterPublicationTest do
     assert after_state.property_digest == c.before.property_digest
   end
 
+  test "追加新工具 id 可在线发布；改已有工具的电气额定值仍拒绝", c do
+    data = Jason.decode!(File.read!(c.path))
+    source = Enum.find(data["tools"], &(&1["tool_id"] == 3))
+    id = Enum.max(Enum.map(data["tools"], & &1["tool_id"])) + 1
+    appended = Map.update!(data, "tools", &(&1 ++ [Map.merge(source, %{"tool_id" => id,
+      "id" => "circuit.dc_source_480v", "display_name" => "480 V finite DC source", "circuit_voltage_v" => 480.0})]))
+    File.write!(c.next_path, Jason.encode!(appended))
+    assert :ok = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
+    after_state = observe(c.w)
+    assert after_state.property_digest == Damage.load(c.next_path).digest
+    assert after_state.damage |> Map.values() |> Enum.map(&Map.drop(&1, [:seq, :digest])) ==
+             c.before.damage |> Map.values() |> Enum.map(&Map.drop(&1, [:seq, :digest]))
+    # 反例：同一 id 3 的电压改成 480 V 不是追加，已有工具语义变化必须拒绝且不改权威状态。
+    retuned = Map.update!(appended, "tools", &Enum.map(&1, fn t ->
+      if t["tool_id"] == 3, do: Map.put(t, "circuit_voltage_v", 480.0), else: t end))
+    File.write!(c.next_path, Jason.encode!(retuned))
+    assert {:error, :property_version_in_use} = World.publish_parameters(c.w, c.next_path, after_state.property_digest)
+    assert observe(c.w).property_digest == after_state.property_digest
+  end
+
   test "落盘失败不切换目录、状态或重标账", c do
     handle = Log.open(c.opts[:root],World.content_version(c.w))
     File.write!(handle <> ".reject", "reject")
