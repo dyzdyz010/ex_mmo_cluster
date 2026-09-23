@@ -2,8 +2,9 @@ defmodule VoxelRegion.CombustionProductionTest do
   @moduledoc """
   只测试：正式发布的生产目录与生产热环境下的燃烧行为。
 
-  目录夹具 `fixtures/combustion/<digest>.json` 必须与 UE 发布的 DA_MaterialCoverageV1 字节一致
-  （文件名即 sha256）；热环境为 Saved/Gameplay/Server/environment.json 的副本。
+  目录夹具 `fixtures/combustion/<digest>.json` 是 UE 曾发布的 DA_MaterialCoverageV1 字节 fbd4f301（文件名即 sha256；
+  青岚驿现用的 4b2c6abe 只在其后追加工具 19，材料行相同），热环境为生产环境 `environment.json`（辐射关闭 ε 0）。
+  这一对就是青岚驿的现行组合；2026-09-24 为辐射重调的目录只与 ε > 0 配对，见 fire_furnace_production_test.exs。
   材料只经 material_supply 入账，炉体经 publish_prefabs + prefab_intent 付费建造，
   点火经 tool_intent 工具 9，时间只经 :thermal_commit 推进。
   期望值全部来自目录算术或设计阈值（Docs：combustion retune design §4），不取自内核输出。

@@ -345,7 +345,7 @@ World 独占 canonical 读取，并冻结成 `point → nil | {target, phase_vol
 
 正常鉴权工具 `action=heat` 必须命中带 `heat.receiver` 的宏格，消费目录指定燃料并添加有限J，余额与能源同笔保存。
 建造不生成能源；源绑定目标身份，拆除取消余能并记录 `discarded_source_j`，材料携带显热记入 `removed_j`。
-`thermal_environment_path` 读取资产发布的ambient/h/tolerance，无自动热源；Test-only `thermal_experiment` 保留为实验入口。
+`thermal_environment_path` 读取资产发布的ambient/h/tolerance/emissivity/view_range_cells，无自动热源；Test-only `thermal_experiment` 保留为实验入口。生产环境（`DA_ThermalEnvironment`）ε 0 关闭辐射；Test-only 部署挂 `DA_ThermalEnvironmentRadiation_TestOnly` 的发布文件（ε 0.9）。2026-09-24 起目录（`5be2e8c7…`）按辐射调参，只与 ε > 0 配对；青岚驿停在 `4b2c6abe…` + ε 0，见 Voxim `Docs/Playtest/README.md`。
 已有热状态优先从同一overlay恢复，停机不补算；发布兼容扩展保留既有热材料定义、HP、身份和占用。
 granularity1保存独立微格温度、2保存叶子共享HP；微格过热伤害按叶子汇总，归零时整个叶子与同批宏格破坏原子提交。
 温度行不参与旧微格HP迁移，附近快照与窗口退出覆盖这些新行；未激活的热格使用已声明环境默认值。
