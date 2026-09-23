@@ -5,7 +5,9 @@ defmodule VoxelRegion.ParameterEvolution do
   @doc "保留在用材料、工具、相变及数量语义，只允许参数发布契约声明的变化。"
   def compatible?(old, new) do
     material_fields =
-      ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j)
+      ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j) ++
+        # 单向转化是一次性事件，行上不存进度：五个字段可在线新增、调整或撤下。
+        ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit)
 
     tool_fields =
       ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j)

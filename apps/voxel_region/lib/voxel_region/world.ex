@@ -27,7 +27,7 @@ defmodule VoxelRegion.World do
   import Bitwise
   alias VoxelRegion.{OverlayLog, Damage}
   alias VoxelRegion.{CollisionSource, FileStore, Prefab, Reducer}
-  alias VoxelRegion.{Combustion, Liquid, Phase}
+  alias VoxelRegion.{Combustion, Liquid, Phase, Transform}
   alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @micro VoxelRegion.Spatial.micro_resolution()
@@ -1078,7 +1078,7 @@ defmodule VoxelRegion.World do
 
     state =
       if state.thermal.active or map_size(VoxelRegion.Circuit.devices(state.damage)) > 0,
-        do: advance_thermal(state),
+        do: state |> advance_thermal() |> transform_heated_materials(),
         else: state
 
     Process.send_after(self(), :thermal_commit, 500)
@@ -1765,6 +1765,8 @@ defmodule VoxelRegion.World do
       {phase_values,settlement} = Map.pop(settlement,:prefab_phase_values,%{})
       {phase_micro,settlement} = Map.pop(settlement,:prefab_phase_micro,[])
       {phase_preserved,settlement} = Map.pop(settlement,:prefab_phase_preserved,MapSet.new())
+      {products,settlement} = Map.pop(settlement,:transform_products,%{})
+      {carried_rows,settlement} = Map.pop(settlement,:property_states,[])
       # 同材质替换也可能把半格相态补满；碰撞必须消费最终有限数量。
       material_changes = Enum.uniq(material_changes ++ Enum.filter(cells,fn cell ->
         Map.get(before.liquid_units,cell) != Map.get(state.liquid_units,cell)
@@ -1787,7 +1789,12 @@ defmodule VoxelRegion.World do
       {state, metadata} = damage_geometry(before, state, cells, macro_identity_changes,phase_preserved)
       {state,phase_rows} = put_phase_values(state,phase_values)
       {state,micro_rows} = put_prefab_phase_micro(state,phase_micro)
-      metadata = Map.update!(metadata,:property_states,&(&1 ++ phase_rows ++ micro_rows))
+      {state,product_rows} = put_transform_products(state,products)
+      rows = metadata.property_states ++ phase_rows ++ micro_rows ++ product_rows
+      # 调用方随带的行只补本笔几何未改写的键；几何移除与新身份行为准。
+      written = MapSet.new(rows,&Damage.key/1)
+      metadata = %{metadata | property_states:
+        Enum.reject(carried_rows,&MapSet.member?(written,Damage.key(&1))) ++ rows}
       metadata = if state.thermal,do: Map.put(metadata,:thermal,state.thermal),else: metadata
 
       txn =
@@ -2263,7 +2270,8 @@ defmodule VoxelRegion.World do
       :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,
       :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_light_j,
       :circuit_rejected_j, :circuit_cooling_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
-      :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j])
+      :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
+      :transform_j, :transform_units, :transform_reductant_fuel_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
     Map.put(ledger, :sources, sources)
@@ -3756,6 +3764,118 @@ defmodule VoxelRegion.World do
     )
 
     state
+  end
+
+  # R8 单向转化：热提交落盘后，达到转化温度且面接触足量还原剂的节点在一笔几何事务里换成产物。
+  # 占用、归属与完整度比例保留；相对环境的显热减去反应热后按产物热容折算；还原剂按化学燃料比例扣减。
+  defp transform_heated_materials(state) do
+    materials = state.properties.materials
+    ambient = state.thermal.config["ambient_kelvin"]
+
+    due = Enum.sort(for {key, t} <- state.damage, Transform.due?(t, materials[t.material]), do: {key, t})
+
+    {next, products, carried} =
+      Enum.reduce(due, {state, %{}, %{}}, fn {_, ore}, {s, products, carried} ->
+        material = materials[ore.material]
+        reductant_id = material["transform_reductant_material_id"]
+        reductant = materials[reductant_id]
+        volume = Damage.volume(ore.granularity)
+        {rows, s} = touching_reductants(s, ore, reductant_id)
+        used = Transform.reductant_j(material, volume, reductant)
+
+        case Transform.draw(Enum.map(rows, &elem(&1, 1)), used) do
+          :insufficient ->
+            {s, products, carried}
+
+          {:ok, taken} ->
+            # 从未点燃的还原剂首次建立燃料余量，与点火同一初始化账。
+            drawn = MapSet.new(taken, &Damage.key/1)
+            initialized =
+              for {true, row} <- rows, MapSet.member?(drawn, Damage.key(row)), reduce: 0.0,
+                do: (sum -> sum + row.remaining_fuel_j)
+
+            thermal =
+              s.thermal
+              |> Map.update(:fuel_initialized_j, initialized, &(&1 + initialized))
+              |> Map.update(:transform_reductant_fuel_j, used, &(&1 + used))
+              |> Map.update(:transform_j, volume * material["transform_heat_per_macro_j"],
+                &(&1 + volume * material["transform_heat_per_macro_j"]))
+              |> Map.update(:transform_units, round(volume * liquid_capacity(s)),
+                &(&1 + round(volume * liquid_capacity(s))))
+
+            product_id = material["transform_material_id"]
+            {cell, slot} = Prefab.macro_slot(ore.micro)
+
+            s =
+              if ore.granularity == 0,
+                do: put_overlay(s, 0, cell, {product_id, MmoContracts.Voxel.Skins.uniform(product_id)}),
+                else: %{s | refined: Map.update!(s.refined, cell,
+                  &Map.update!(&1, slot, fn {_, owner} -> {product_id, owner} end))}
+
+            temperature = Transform.product_temperature(ore.temperature_kelvin, material, materials[product_id], ambient)
+            damage = Map.merge(s.damage, Map.new(taken, &{Damage.key(&1), &1}))
+
+            {%{s | damage: damage, thermal: thermal},
+             Map.put(products, ore.micro, %{temperature_kelvin: temperature, integrity: ore.hp / ore.max_hp}),
+             Map.merge(carried, Map.new(taken, &{Damage.key(&1), %{&1 | seq: state.seq + 1, request_id: 0}}))}
+        end
+      end)
+
+    if map_size(products) == 0 do
+      next
+    else
+      cells = products |> Map.keys() |> Enum.map(&elem(Prefab.macro_slot(&1), 0)) |> Enum.uniq()
+      preserved = MapSet.new(for {_, ore} <- due, Map.has_key?(products, ore.micro), do: Damage.key(ore))
+      settlement = %{transform_products: products, property_states: Map.values(carried),
+        prefab_phase_preserved: preserved}
+
+      case prefab_reply(state, next, cells, settlement) do
+        {:reply, {:ok, _}, committed} ->
+          Logger.info("voxel_transform seq=#{committed.seq} nodes=#{map_size(products)} transform_j=#{committed.thermal.transform_j}")
+          committed
+
+        {:reply, {:error, reason}, _} ->
+          Logger.error("voxel_transform failed=#{inspect(reason)}")
+          state
+      end
+    end
+  end
+
+  # 面接触的还原剂节点（宏格或精确微格），按键排序；{是否首次初始化燃料, 带 remaining_fuel_j 的行}。
+  defp touching_reductants(state, ore, reductant) do
+    {_, neighbors} =
+      Enum.find(VoxelRegion.ThermalGeometry.faces(Damage.macro(ore), state.refined), &(elem(&1, 0) == ore.micro))
+
+    {targets, state} =
+      Enum.reduce(neighbors, {%{}, state}, fn {point, _, _}, {found, s} ->
+        {target, s} = target_at(point, s)
+        target = if target && target.granularity == 2, do: %{target | granularity: 1}, else: target
+        if target && target.material == reductant,
+          do: {Map.put(found, Damage.key(target), target), s},
+          else: {found, s}
+      end)
+
+    rows =
+      for {key, target} <- Enum.sort(targets),
+          row = Map.get_lazy(state.damage, key, fn -> property_state(state, target) end),
+          row.hp > 0 and not Combustion.exhausted?(row) do
+        capacity = Combustion.capacity_j(state.properties.materials[reductant], combustion_volume(state, target))
+        {not Map.has_key?(row, :remaining_fuel_j), Map.put_new(row, :remaining_fuel_j, capacity)}
+      end
+
+    {rows, state}
+  end
+
+  # 产物行在几何事务的新身份（宏格新纪元、微格原出生与归属）下建立；宏格按源完整度比例折算 HP。
+  defp put_transform_products(state, products) do
+    Enum.reduce(products, {state, []}, fn {micro, product}, {s, rows} ->
+      {target, s} = target_at(micro, s)
+      target = if target.granularity == 2, do: %{target | granularity: 1}, else: target
+      row = property_state(s, target) |> Map.put(:temperature_kelvin, product.temperature_kelvin)
+      row = if row.granularity == 0, do: %{row | hp: row.max_hp * product.integrity}, else: row
+      s = %{s | damage: Map.put(s.damage, Damage.key(row), row)}
+      {s, [row | rows]}
+    end)
   end
 
   # 点燃只消费实际温度；热源、电热和燃烧热共用接触导热，不另设火种邻接真值。

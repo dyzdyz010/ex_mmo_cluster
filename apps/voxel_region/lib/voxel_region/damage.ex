@@ -158,6 +158,19 @@ defmodule VoxelRegion.Damage do
       true = is_number(m["heat_capacity_per_macro"]) and m["heat_capacity_per_macro"] > 0
     end
 
+    # R8 单向转化：五个字段成组出现；源与产物都带热模型且不是相态材料，还原剂可燃（剩余量即剩余燃料比例）。
+    for {id, m} <- materials,
+        Enum.any?(Map.keys(m), &String.starts_with?(&1, "transform_")) do
+      product = Map.fetch!(materials, m["transform_material_id"])
+      reductant = Map.fetch!(materials, m["transform_reductant_material_id"])
+      true = m["transform_material_id"] not in [0, id]
+      true = Enum.all?([m, product], &(is_number(&1["heat_capacity_per_macro"]) and not VoxelRegion.Phase.enabled?(&1)))
+      true = VoxelRegion.Combustion.combustible?(reductant)
+      true = is_number(m["transform_kelvin"]) and m["transform_kelvin"] > 0
+      true = is_number(m["transform_heat_per_macro_j"]) and m["transform_heat_per_macro_j"] >= 0
+      true = is_number(m["transform_reductant_units_per_unit"]) and m["transform_reductant_units_per_unit"] > 0
+    end
+
     liquid = data["liquid"]
     if liquid do
       capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro

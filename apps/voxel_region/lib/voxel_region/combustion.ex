@@ -63,13 +63,17 @@ defmodule VoxelRegion.Combustion do
     power = if row.burning, do: row.power_w, else: 0.0
     fuel = max(0.0, Map.get(row, :remaining_fuel_j, 0.0))
     used = min(fuel, power * dt)
+    {consume(Map.put(row, :remaining_fuel_j, fuel), used), used, used}
+  end
 
-    next =
-      row
-      |> Map.put(:remaining_fuel_j, fuel - used)
-      |> Map.put(:power_w, if(fuel - used > @fuel_epsilon_j, do: power, else: 0.0))
-      |> Map.put(:burning, fuel - used > @fuel_epsilon_j)
+  @doc "从已初始化的余量中取走 used 焦耳化学燃料；取尽即熄灭，由既有耗尽规则移除。"
+  def consume(row, used) do
+    left = row.remaining_fuel_j - used
+    alive = left > @fuel_epsilon_j and Map.get(row, :burning, false)
 
-    {next, used, used}
+    row
+    |> Map.put(:remaining_fuel_j, left)
+    |> Map.put(:power_w, if(alive, do: row.power_w, else: 0.0))
+    |> Map.put(:burning, alive)
   end
 end
