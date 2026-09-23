@@ -3472,7 +3472,7 @@ defmodule VoxelRegion.World do
         thermal_faces = Enum.filter(faces, fn {point, _} ->
           case Map.fetch!(samples, point) do
             nil -> false
-            {target, _} -> Map.has_key?(s.properties.materials[target.material], "heat_capacity_per_macro")
+            {target, volume} -> thermal_node?(s, target, volume)
           end
         end)
         {samples, s} = thermal_samples(s, VoxelRegion.ThermalGeometry.points(thermal_faces), samples)
@@ -3594,6 +3594,31 @@ defmodule VoxelRegion.World do
     )
 
     {%{state | damage: damage, thermal: thermal, thermal_work: work}, changed, done}
+  end
+
+  # A cell without a sparse thermal record is at rest by contract. Untouched
+  # phase cells whose default enthalpy maps off ambient by more than the
+  # equilibrium tolerance (generated snow/ice below its transition under a
+  # warmer ambient) are not at rest in the kernel: joining as a neighbour would
+  # pin them at the transition and make an unbounded sink. They stay static
+  # canonical truth (an adiabatic boundary, like any cell outside the domain)
+  # until an authoring, tool or transfer transaction records their enthalpy.
+  defp thermal_node?(state, target, volume) do
+    materials = state.properties.materials
+    material = materials[target.material]
+    config = state.thermal.config
+
+    Map.has_key?(material, "heat_capacity_per_macro") and
+      (not phase_target?(state, target) or
+         Map.has_key?(Map.get(state.damage, Damage.key(target), %{}), :phase_energy_j) or
+         abs(
+           Phase.temperature(
+             target.material,
+             Phase.energy(target, volume, material, config["ambient_kelvin"]),
+             volume,
+             materials
+           ) - config["ambient_kelvin"]
+         ) <= config["tolerance_kelvin"])
   end
 
   # canonical 读取留在 owner 内；计算模块仅接收当次不可变采样，不捕获 World state。
