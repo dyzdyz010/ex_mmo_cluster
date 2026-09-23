@@ -43,13 +43,16 @@ defmodule VoxelRegion.ParameterPublicationTest do
     %{w: w, opts: opts, before: before, old_catalog: catalog, occupancy: World.material_snapshot(w,[1001],[{1,1,2}]).probe_occupancy, next_path: next_path, path: path, data: data}
   end
 
-  test "显式旧版本升级保留状态存量，重标不是供能，重启不补料", c do
+  test "显式旧版本升级保留状态存量，燃料按比例重标，重标不是供能，重启不补料", c do
     assert {:error, :property_version_in_use} = World.publish_properties(c.w, c.next_path)
     assert :ok = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
     after_state = observe(c.w)
     [old] = Map.values(c.before.damage)
     [new] = Map.values(after_state.damage)
-    assert Map.drop(new, [:seq, :digest]) == Map.drop(old, [:seq, :digest])
+    # 目录燃料 90 kJ → 9 MJ（×100）：已烧比例不变，余量 1234 J → 123 400 J；熄灭行功率仍为零。
+    assert Map.drop(new, [:seq, :digest]) ==
+             Map.drop(%{old | remaining_fuel_j: 123_400.0}, [:seq, :digest])
+    assert_in_delta after_state.thermal.fuel_rebase_j, 123_400.0 - 1234.0, 1.0e-6
     assert after_state.material_balances == c.before.material_balances
     assert World.material_snapshot(c.w,[1001],[{1,1,2}]).probe_occupancy == c.occupancy
     assert after_state.thermal.supplied_j == c.before.thermal.supplied_j
@@ -65,6 +68,7 @@ defmodule VoxelRegion.ParameterPublicationTest do
     assert recovered.damage == after_state.damage
     assert recovered.material_balances == after_state.material_balances
     assert recovered.thermal.parameter_rebase_j == after_state.thermal.parameter_rebase_j
+    assert recovered.thermal.fuel_rebase_j == after_state.thermal.fuel_rebase_j
   end
 
   test "错误旧版本和潜热语义变化拒绝，失败不改权威状态", c do

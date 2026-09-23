@@ -76,4 +76,33 @@ defmodule VoxelRegion.ParameterEvolution do
 
     Map.update(thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
   end
+
+  @doc """
+  按新目录重标已点燃行的剩余燃料与燃烧功率，保持已烧比例不变。
+  两者都与体积成正比，按单宏格字段之比缩放即对宏格、微格、附件同样成立；
+  熄灭行功率为零仍为零。差额记入独立燃料重标账，不计为燃烧或供热。
+  """
+  def combustion(damage, nil, _old_catalog, _catalog), do: {damage, nil}
+
+  def combustion(damage, thermal, old_catalog, catalog) do
+    {damage, rebase} =
+      Enum.map_reduce(damage, 0.0, fn {key, row}, sum ->
+        if Map.has_key?(row, :remaining_fuel_j) do
+          old = old_catalog.materials[row.material]
+          next = catalog.materials[row.material]
+
+          remaining =
+            row.remaining_fuel_j / old["fuel_energy_per_macro_j"] * next["fuel_energy_per_macro_j"]
+
+          power = row.power_w / old["burn_power_per_macro_w"] * next["burn_power_per_macro_w"]
+
+          {{key, %{row | remaining_fuel_j: remaining, power_w: power}},
+           sum + remaining - row.remaining_fuel_j}
+        else
+          {{key, row}, sum}
+        end
+      end)
+
+    {Map.new(damage), Map.update(thermal, :fuel_rebase_j, rebase, &(&1 + rebase))}
+  end
 end
