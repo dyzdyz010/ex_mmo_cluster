@@ -147,6 +147,31 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
     assert World.seq(c.world)==0
   end
 
+  test "published list keeps first publisher and publication order across restart, author catalog unlisted",c do
+    a=Prefab.encode(%{cells: [],macro_cells: [{{0,0,0},11}],children: [],attachments: []})
+    b=Prefab.encode(%{cells: [],macro_cells: [{{1,0,0},19}],children: [],attachments: []})
+    other=%{c.actor | cid: 2002,identity: make_ref()}
+    other=%{other | player: start_supervised!({Actor,other},id: :other_actor)}
+    restart=fn -> stop_supervised(World); start_supervised!({World,c.opts}) end
+    assert World.published_prefabs(c.world)==[]
+    assert {:ok,_}=World.publish_prefab(c.world,c.actor,a)
+    assert {:ok,id_b}=World.publish_prefab(c.world,c.actor,b)
+    assert {:ok,_}=World.publish_prefab(c.world,other,a)
+    assert World.published_prefabs(c.world)==[{1001,a},{1001,b}]
+    world=restart.()
+    assert World.published_prefabs(world)==[{1001,a},{1001,b}]
+    # 作者目录子件在放置目录里，但不是运行时发布。
+    assert Map.has_key?(World.prefab_catalog(world),c.child_id)
+    # 写完 .vxpd、未写 .pub 时崩溃：定义可放置但不列出；重发者补记为下一序号。
+    File.rm!(Path.join([c.root,"prefabs",Base.encode16(id_b,case: :lower)<>".pub"]))
+    world=restart.()
+    assert World.published_prefabs(world)==[{1001,a}]
+    assert Map.has_key?(World.prefab_catalog(world),id_b)
+    assert {:ok,^id_b}=World.publish_prefab(world,other,b)
+    assert World.published_prefabs(world)==[{1001,a},{2002,b}]
+    assert World.published_prefabs(restart.())==[{1001,a},{2002,b}]
+  end
+
   test "runtime republishing an existing author definition persists its original bytes",c do
     author_dir=Path.join(c.root,"dynamic_author")
     File.mkdir_p!(author_dir)

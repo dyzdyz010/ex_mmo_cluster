@@ -21,6 +21,16 @@ defmodule VoxelRegion.Prefab do
     catalog
   end
 
+  @doc "D3-2 运行时发布记录：<hex>.pub = <<序号::32, cid::64>>，按序号排列，字节取同名 .vxpd。"
+  def load_published(dir) do
+    # expand 统一分隔符：wildcard 把 Windows 反斜杠当转义。
+    Path.wildcard(Path.expand("*.pub",dir)) |> Enum.map(fn path ->
+      <<ordinal::32,cid::64>> = File.read!(path)
+      bytes = File.read!(Path.rootname(path)<>".vxpd")
+      {ordinal,%{id: :crypto.hash(:sha256,bytes),publisher: cid,bytes: bytes}}
+    end) |> Enum.sort_by(&elem(&1,0)) |> Enum.map(&elem(&1,1))
+  end
+
   defp read_definitions(nil),do: %{}
   defp read_definitions(path) do
     File.ls!(path) |> Enum.filter(&(Path.extname(&1) == ".vxpd")) |> Map.new(fn name ->

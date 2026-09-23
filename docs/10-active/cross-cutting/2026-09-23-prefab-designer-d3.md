@@ -20,6 +20,39 @@
 
 未做（D3-2 及以后）：自制件的服务端名称／发布者元数据与跨会话列表、按 id 下载定义（HTTP 内容寻址）、草稿 micro 格与子 prefab 引用、
 检查面板（`PrefabDesigner.check`）、命名输入框（中文输入法）、撤销、旋转草稿、Qinglan 集成。
+（发布者与跨会话列表已由下节 D3-2 W-A 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。）
+
+## D3-2 增量 W-A：共享的已发布列表（协议仍为 17）
+
+分类：全局系统功能（发布记录持久化、`World.published_prefabs/1`、`Codec.encode_prefab_list/1`、`POST /ingame/voxel/prefabs`、
+`POST /playtest/prefabs`、客户端列表解码与拉取）；smoke 与独立旧 Demo 部署为只测试。
+
+- **持久化**：`World.publish_prefab` 在写 `prefabs/<hex>.vxpd`（已有则跳过）之后，若该 id 尚未列出，再原子写 `prefabs/<hex>.pub = <<序号::32, cid::64>>`；
+  序号 = 已列出数 + 1，cid 取刷新后的 `tool_context`。先 .vxpd 后 .pub：两步之间崩溃只让定义暂不列出（仍可放置），重发即补记；
+  重发保留首个发布者与序号。World 启动时 `Prefab.load_published/1` 按序号载入 `published`。**D3-2 之前的发布没有 .pub，不迁移、不列出**，直到再次发布。
+- **HTTP**：`POST /ingame/voxel/prefabs`（与 regions 同样受 `dev_auto_login` 控制）与 `POST /playtest/prefabs`（邀请码，已加入 `PlaytestAccess` 允许列表），
+  经 `WorldServer.Movement.route` 找到 World。请求体为空；应答小端 `count:u32, count × {publisher_cid:u64, len:u32, vxpd}`，发布序，只含运行时发布。
+  线格式见 `Voxim/Docs/R7/wire.md` D3-2 段。定义只存字节与发布者；数量、包围盒、成本由客户端从字节和目录推导。
+- **客户端**：地址 = `FPaths::GetPath(RegionServerUrl) / "prefabs"`，复用 `MakeHttpRegionTransport`（同一邀请码头）。每个新会话 epoch、自己的发布被接受后、
+  每次按 `9` 各拉一次；只应用最新一次请求的应答（旧的较短列表不会让 `SelectedPrefab` 越界）。应答整体替换拼装仓库的自制部分；
+  名称派生为“作品 N · 我”／“作品 N · 玩家 <cid>”（N = 服务端序号）；`9` 从最新发布起向旧轮换并回绕。发布接受后不再本地追加。
+
+**W-A 已实现、已实跑；D3 整体未验收**（W-B 撤销／材料清单未做）。
+
+- 服务端：`apps/voxel_region` 新增 World 测试（A、B 由 cid1 发布、cid2 重发 A，冷重启后列表 `[{1,A},{1,B}]`；作者目录子件不列出；
+  删掉 B 的 .pub 后重启不列出但仍可放置，cid2 重发补记为 `{2002,B}` 并跨重启保留），prefab 相关 6 个文件 59 passed；全量 356/357，
+  唯一失败 `prefab_macro_world_test.exs:177` 为测试库迁移时连接池超时，单独重跑该文件 14 passed。`apps/mmo_contracts` 116 passed（冻结 `encode_prefab_list` 字节）。
+  `apps/auth_server` 新增 `voxel_prefabs_controller_test.exs`（真实 World 启动载入 .pub/.vxpd，HTTP 返回冻结字节、`dev_auto_login` 关闭为 403、
+  playtest 无邀请码 401／有邀请码 200）与 `playtest_access_test` 的 `/playtest/prefabs`，连同 regions 测试共 10 passed。
+- 客户端：`Voxim.R7.Prefab.PublishedList` 解码同一冻结样本（发布者、离线 sha256 id、宏格），截断／多余字节／count 超出均拒绝；
+  受影响范围 `Voxim.Prefab.Draft.+Voxim.R7.Prefab.+Voxim.R7.B4.+Voxim.R7.Hierarchy.+Voxim.Raycast.+Voxim.Foliage.` 38/38 通过。
+- 实跑（独立旧 Demo，镜像 `voxim-gameplay:prefab-list-20260923`，正常 Linux Mix 构建，源码清单
+  `Voxim/Saved/Gameplay/prefab-list-20260923/image/source-manifest.json`；切换前备份数据库与部署目录，切换前后余额、探测格、目录一致；
+  回滚容器 `voxim-prefab-designer-test-before-prefab-list`）：`smoke.py --mode prefab_editor` 三阶段——A 进编辑空间放 3 格并发布
+  （`33ffc16a…9cec`，与 D3-1 同形同 id：它此前无 .pub，本次被补记为序号 1、发布者 A）→ 同容器冷重启 → 新开 A、B：A 按 9 显示“作品 1 · 我”，
+  B 按 9 两次都选中“作品 1 · 玩家 359443468289”，在 before.json 证明为空的 z=58 行放置，txn 634904 接受；服务端快照 (43,519,58)(44,519,58)(43,520,58)
+  为木材、placed_by 为 B，B 木材 −6,291,456 单位、A 不变；判定器另经真实 HTTP 入口读到同一 id 与发布者。截图已实际检查（发布提示、A／B 的名称、放置后）。
+  证据 `Voxim/Saved/Gameplay/prefab-list-20260923/smoke-01/`。回归：同镜像 `smoke.py --mode assembly` 通过（`regress-assembly/`）。
 
 ## 状态
 
@@ -50,5 +83,8 @@ python Docs/Gameplay/author_workbench.py; python Docs/Gameplay/author_controls.p
 python Docs/Gameplay/smoke.py --mode prefab_editor --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test --out <新目录>
 # ex_mmo_cluster/apps/mmo_contracts
 mix.bat test
+# D3-2（RUSTUP_TOOLCHAIN=1.91.0，MMO_DB_PORT=5433）
+#   apps/voxel_region: mix.bat test test/prefab_runtime_publish_test.exs ...；apps/auth_server: mix.bat test test/auth_server_web/controllers/voxel_prefabs_controller_test.exs test/auth_server_web/playtest_access_test.exs
+#   Voxim: python Docs/Gameplay/smoke.py --mode prefab_editor ... --out <新目录> --row <空行>；镜像与切换 Voxim/Saved/Gameplay/prefab-list-20260923/{build_image.py,upgrade.py}
 # 镜像与切换（只测试）：Voxim/Saved/Gameplay/prefab-editor-20260923/{build_image.py,upgrade.py,upgrade-resume.py}
 ```

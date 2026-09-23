@@ -20,7 +20,7 @@ defmodule AuthServerWeb.PlaytestAccessTest do
   end
 
   test "登录和地形请求都需要邀请码" do
-    for route <- ["/playtest/login", "/playtest/regions"], code <- [nil, "wrong"] do
+    for route <- ["/playtest/login", "/playtest/regions", "/playtest/prefabs"], code <- [nil, "wrong"] do
       request = conn(:post, route)
 
       request =

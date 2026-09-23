@@ -313,6 +313,9 @@ defmodule VoxelRegion.World do
     do: GenServer.call(server, {:publish_prefab, actor, bytes}, 300_000)
 
   def prefab_catalog(server \\ @name), do: GenServer.call(server, :prefab_catalog)
+
+  @doc "全局系统功能（D3-2）：运行时发布的 {首个发布者 cid, 定义字节}，按发布序；不含作者目录。"
+  def published_prefabs(server \\ @name), do: GenServer.call(server, :published_prefabs)
   def material_catalog(server \\ @name), do: GenServer.call(server, :material_catalog)
 
   def replace_prefab(server \\ @name, instance_id, definition_id) do
@@ -474,6 +477,7 @@ defmodule VoxelRegion.World do
           structure: %{},
           instances: %{},
           prefab_dir: Path.join(world_dir, "prefabs"),
+          published: Prefab.load_published(Path.join(world_dir, "prefabs")),
           prefabs:
             Prefab.load(
               Keyword.get(
@@ -805,13 +809,17 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call(:prefab_catalog, _, state), do: {:reply, state.prefabs, state}
+
+  def handle_call(:published_prefabs, _, state),
+    do: {:reply, Enum.map(state.published, &{&1.publisher, &1.bytes}), state}
   def handle_call(:material_catalog, _, state), do: {:reply, state.properties, state}
 
   def handle_call({:publish_prefab, actor, bytes}, _, state) do
-    with {:ok, _actor} <- current_actor(actor),
+    with {:ok, actor} <- current_actor(actor),
          {:ok, id, compiled} <- Prefab.compile(bytes, state.prefabs),
-         :ok <- persist_prefab(state, id, bytes) do
-      {:reply, {:ok, id}, %{state | prefabs: Map.put(state.prefabs, id, compiled)}}
+         {:ok, published} <- persist_prefab(state, actor.cid, id, bytes) do
+      {:reply, {:ok, id},
+       %{state | prefabs: Map.put(state.prefabs, id, compiled), published: published}}
     else
       error -> {:reply, error, state}
     end
@@ -5008,16 +5016,29 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # 世界串行接纳；完整文件原子改名成功后才暴露目录项，临时文件不参与恢复。
-  defp persist_prefab(state, id, bytes) do
-    target = Path.join(state.prefab_dir, Base.encode16(id, case: :lower) <> ".vxpd")
+  # 世界串行接纳；先 .vxpd 后 .pub（<<序号::32, cid::64>>）：两步之间崩溃只让定义暂不列出，重发即补记；
+  # 重发保留首个发布者与序号。
+  defp persist_prefab(state, cid, id, bytes) do
+    stem = Path.join(state.prefab_dir, Base.encode16(id, case: :lower))
+    listed = Enum.any?(state.published, &(&1.id == id))
+    ordinal = length(state.published) + 1
 
+    with :ok <- write_new(stem <> ".vxpd", bytes),
+         :ok <- if(listed, do: :ok, else: write_new(stem <> ".pub", <<ordinal::32, cid::64>>)) do
+      if listed,
+        do: {:ok, state.published},
+        else: {:ok, state.published ++ [%{id: id, publisher: cid, bytes: bytes}]}
+    end
+  end
+
+  # 完整文件原子改名成功后才暴露，临时文件不参与恢复。
+  defp write_new(target, bytes) do
     if File.exists?(target) do
       :ok
     else
       temporary = target <> ".tmp"
 
-      with :ok <- File.mkdir_p(state.prefab_dir),
+      with :ok <- File.mkdir_p(Path.dirname(target)),
            :ok <- File.write(temporary, bytes, [:binary, :sync]),
            :ok <- File.rename(temporary, target) do
         :ok

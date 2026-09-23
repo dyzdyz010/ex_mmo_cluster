@@ -15,6 +15,7 @@ defmodule AuthServerWeb.IngameController do
   - `GET /ingame/voxel/world_pack` -> `voxel_world_pack/2`
   - `GET /ingame/voxel/world_diff` -> `voxel_world_diff/2`
   - `POST /ingame/voxel/regions` -> `voxel_regions/2`（Voxim R6，二进制批量 region 载荷）
+  - `POST /ingame/voxel/prefabs` -> `voxel_prefabs/2`（Voxim D3-2，运行时发布的 prefab 列表）
   """
 
   use AuthServerWeb, :controller
@@ -72,6 +73,10 @@ defmodule AuthServerWeb.IngameController do
   @doc "已确认的受邀客户端读取权威 region；不依赖开发免密入口开关。"
   def playtest_regions(%{assigns: %{playtest_username: _}} = conn, _params),
     do: do_voxel_regions(conn)
+
+  @doc "已确认的受邀客户端读取运行时发布的 prefab 列表。"
+  def playtest_prefabs(%{assigns: %{playtest_username: _}} = conn, _params),
+    do: do_voxel_prefabs(conn)
 
   @doc """
   Demo JSON hook that prepares the default server-authoritative voxel lease.
@@ -315,6 +320,29 @@ defmodule AuthServerWeb.IngameController do
         |> put_status(:service_unavailable)
         |> json(%{error: "world_server_unavailable"})
     end
+  end
+
+  @doc "Voxim D3-2：运行时发布的 prefab 定义与发布者（线格式见 `MmoContracts.Voxel.Codec.encode_prefab_list/1`）；与 regions 同样只在 `dev_auto_login` 下开放。"
+  def voxel_prefabs(conn, _params) do
+    if Application.get_env(:auth_server, :dev_auto_login, false) do
+      do_voxel_prefabs(conn)
+    else
+      conn
+      |> put_status(:forbidden)
+      |> json(%{error: "dev_auto_login_disabled"})
+    end
+  end
+
+  defp do_voxel_prefabs(conn) do
+    {:ok, %{world_ref: world_ref}} =
+      WorldServer.Movement.route(Application.fetch_env!(:auth_server, :voxel_scene_id))
+
+    conn
+    |> put_resp_content_type("application/octet-stream")
+    |> send_resp(
+      200,
+      MmoContracts.Voxel.Codec.encode_prefab_list(VoxelRegion.World.published_prefabs(world_ref))
+    )
   end
 
   defp do_voxel_regions(conn) do

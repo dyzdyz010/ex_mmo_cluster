@@ -19,7 +19,7 @@ defmodule AuthServerWeb.Plugs.PlaytestAccess do
   end
 
   defp authorize(%{method: "POST", request_path: route} = conn, path)
-       when route in ["/playtest/login", "/playtest/regions"] do
+       when route in ["/playtest/login", "/playtest/regions", "/playtest/prefabs"] do
     with ["Bearer " <> code] <- get_req_header(conn, "authorization"),
          digest = :crypto.hash(:sha256, code) |> Base.encode16(case: :lower),
          {:ok, username} <- path |> File.read!() |> Jason.decode!() |> Map.fetch(digest) do

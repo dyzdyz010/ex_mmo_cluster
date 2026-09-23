@@ -560,6 +560,16 @@ defmodule MmoContracts.Voxel.Codec do
     ]
   end
 
+  @doc "D3-2 `POST /voxel/prefabs` 应答：count:u32 + 每项 publisher_cid:u64、len:u32、VXPD 字节，全部小端，按发布序。"
+  def encode_prefab_list(published) do
+    [
+      <<length(published)::32-little>>
+      | Enum.map(published, fn {cid, bytes} ->
+          [<<cid::64-little, byte_size(bytes)::32-little>>, bytes]
+        end)
+    ]
+  end
+
   @doc "HTTP region 应答解码为版本与条目数组。"
   def decode_reply(
         <<@reply_magic, @wire_version::32-little, content_version::64-little, count::32-little,

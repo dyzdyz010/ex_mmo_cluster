@@ -18,6 +18,7 @@ defmodule AuthServerWeb.Router do
     pipe_through :api
     post "/login", IngameController, :playtest_login
     post "/regions", IngameController, :playtest_regions
+    post "/prefabs", IngameController, :playtest_prefabs
   end
 
   scope "/", AuthServerWeb do
@@ -42,6 +43,7 @@ defmodule AuthServerWeb.Router do
     get "/voxel/world_pack", IngameController, :voxel_world_pack
     get "/voxel/world_diff", IngameController, :voxel_world_diff
     post "/voxel/regions", IngameController, :voxel_regions
+    post "/voxel/prefabs", IngameController, :voxel_prefabs
     post "/voxel/dev_seed", IngameController, :voxel_dev_seed
     post "/voxel/set_temperature", IngameController, :voxel_set_temperature
     post "/voxel/dev_heat_voxel", IngameController, :voxel_dev_heat_voxel
