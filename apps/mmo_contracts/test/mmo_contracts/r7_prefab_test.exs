@@ -146,6 +146,16 @@ defmodule MmoContracts.R7PrefabTest do
     assert decoded.content_version == 123
   end
 
+  test "runtime publish carries the exact VXPD bytes and rejects a length mismatch" do
+    vxpd = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 0::96, 11::16-little>>
+    frame = <<0x71, 1::64, 2::32, 3::64, byte_size(vxpd)::32, vxpd::binary>>
+
+    assert {:ok, {:voxel_prefab_publish_v1, request}} = Codec.decode(frame)
+    assert request == %{request_id: 1, client_intent_seq: 2, logical_scene_id: 3, definition: vxpd}
+    assert {:error, :invalid_message} = Codec.decode(binary_part(frame, 0, byte_size(frame) - 1))
+    assert {:error, :invalid_message} = Codec.decode(frame <> <<0>>)
+  end
+
   test "placement and removal decode exact identity without client footprint" do
     id = :binary.copy(<<42>>, 32)
 

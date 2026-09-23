@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 16
+  @protocol_version 17
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session

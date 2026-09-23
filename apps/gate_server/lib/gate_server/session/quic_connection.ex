@@ -517,7 +517,8 @@ defmodule GateServer.Session.QuicConnection do
           do: enqueue_edit(state, message),
           else: close(state, 4)
 
-      {:ok, {:voxel_tool_intent, request} = message} when state.voxim_overlay ->
+      {:ok, {kind, request} = message}
+      when kind in [:voxel_tool_intent, :voxel_prefab_publish_v1] and state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id),
           do: enqueue_edit(state, message),
           else: close(state, 4)

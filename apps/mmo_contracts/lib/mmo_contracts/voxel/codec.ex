@@ -81,6 +81,7 @@ defmodule MmoContracts.Voxel.Codec do
                   @msg_voxel_edit_intent,
                   @msg_voxel_overlay_subscribe,
                   @msg_voxel_batch_edit_intent,
+                  0x71,
                   0x7A,
                   0x7B,
                   0x7C,
@@ -238,6 +239,15 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B, 0x7C],
     do: {:error, :invalid_message}
+
+  # D3 玩家运行时发布：整份 VXPD 字节；上限、格式与目录校验由 World.publish_prefab 统一裁决。
+  def decode(<<0x71, rid::64, seq::32, scene::64, n::32, definition::binary-size(n)>>),
+    do:
+      {:ok,
+       {:voxel_prefab_publish_v1,
+        %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, definition: definition}}}
+
+  def decode(<<0x71, _::binary>>), do: {:error, :invalid_message}
 
   def decode(
         <<@msg_voxel_edit_intent, request_id::64-big, client_intent_seq::32-big,

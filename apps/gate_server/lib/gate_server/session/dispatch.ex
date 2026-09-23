@@ -698,6 +698,40 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  # D3：玩家发布自制定义。发布不扣料、不产生体素事务；id 即字节 sha256，客户端自行计算。
+  def handle({:voxel_prefab_publish_v1, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    result =
+      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity),
+           do: VoxelRegion.World.publish_prefab(state.world_ref, actor, request.definition)
+
+    case result do
+      {:ok, _id} ->
+        send_encoded(
+          state,
+          {:voxel_intent_result,
+           %{
+             request_id: request.request_id,
+             client_intent_seq: request.client_intent_seq,
+             logical_scene_id: request.logical_scene_id,
+             result_code: :accepted,
+             result_ref: 0,
+             authoritative: [],
+             reason: "ok"
+           }}
+        )
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  def handle({:voxel_prefab_publish_v1, _}, state) do
+    result_error(state, :invalid_state, 0)
+    {:ok, state}
+  end
+
   def handle({kind, _}, state)
       when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] do
     result_error(state, :invalid_state, 0)
