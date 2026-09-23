@@ -625,7 +625,7 @@ defmodule VoxelRegion.World do
 
     true =
       config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and
-        config["tolerance_kelvin"] > 0
+        config["tolerance_kelvin"] > 0 and radiation_config?(config)
 
     true = config["power_w"] > 0 and config["energy_j"] > 0
     micro = config["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
@@ -2879,7 +2879,7 @@ defmodule VoxelRegion.World do
             {state, phase_rows} = put_phase_values(state, phase_values)
             metadata = Map.update!(metadata, :property_states, &(&1 ++ phase_rows))
             if_phase_dirty = Map.keys(phase_values) |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)])
-            state = put_in(state.thermal_work.geometry, Map.drop(state.thermal_work.geometry, if_phase_dirty))
+            state = drop_thermal_geometry(state, if_phase_dirty)
             metadata = if state.thermal, do: Map.put(metadata,:thermal,state.thermal), else: metadata
             imaged = System.monotonic_time(:microsecond)
             txn = Map.merge(txn, metadata) |> Map.merge(settlement)
@@ -3176,11 +3176,19 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # 全局系统功能：平衡容差是求解分辨率，以环境资产为准；回放的热账（环境温度、换热系数、能量账）保持存档值。
+  # 全局系统功能：平衡容差是求解分辨率，辐射参数随本变更引入、旧存档没有，二者以环境资产为准；
+  # 回放的热账（环境温度、换热系数、能量账）保持存档值。
   defp environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
-    do: %{state | thermal: %{thermal | config: Map.put(config, "tolerance_kelvin", asset["tolerance_kelvin"])}}
+    do: %{state | thermal: %{thermal | config: Map.merge(config,
+      Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells)))}}
 
   defp environment_tolerance(state, _), do: state
+
+  # 辐射环境字段必须显式发布：发射率 ∈ [0, 1]（0 = 关闭辐射），视距为正整数宏格。
+  defp radiation_config?(config) do
+    is_number(config["emissivity"]) and config["emissivity"] >= 0 and config["emissivity"] <= 1 and
+      is_integer(config["view_range_cells"]) and config["view_range_cells"] > 0
+  end
 
   # 全局环境不包含测试源；玩家设施只从已经支付的燃料获得能量。
   defp load_thermal_environment(opts) do
@@ -3195,7 +3203,7 @@ defmodule VoxelRegion.World do
       path ->
         config =
           Jason.decode!(File.read!(path))
-          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin))
+          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells))
 
         true =
           Enum.all?(
@@ -3203,7 +3211,7 @@ defmodule VoxelRegion.World do
             &is_number(config[&1])
           ) and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
-            config["tolerance_kelvin"] > 0
+            config["tolerance_kelvin"] > 0 and radiation_config?(config)
 
         %{
           config: config,
@@ -3309,6 +3317,13 @@ defmodule VoxelRegion.World do
       do: Map.put(row, :temperature_kelvin, state.thermal.config["ambient_kelvin"]),
       else: row
   end
+
+  # 占用编辑只让派生几何与视线失效；无热环境时工作集恒为空。
+  defp drop_thermal_geometry(%{thermal: nil} = state, _cells), do: state
+
+  defp drop_thermal_geometry(state, cells),
+    do: %{state | thermal_work:
+      ThermalWork.drop(state.thermal_work, cells, state.thermal.config["view_range_cells"])}
 
   # 全局系统功能：温度和 HP 仍由同一个 World 的稀疏状态记录持有。
   # 每 500 ms 提交一次；原生核按容量/接触选择不超过 50 ms 的稳定步长。
@@ -3473,21 +3488,12 @@ defmodule VoxelRegion.World do
     plan = ThermalWork.plan(state.thermal_work, state.thermal.sources, powers, state.damage)
     neighborhood_done = System.monotonic_time(:microsecond)
 
-    {geometry, state} =
-      Enum.reduce(plan.missing, {plan.geometry, state}, fn cell, {geometry, s} ->
-        faces = VoxelRegion.ThermalGeometry.faces(cell, s.refined)
-        {samples, s} = thermal_samples(s, Enum.map(faces, &elem(&1, 0)), %{})
-        thermal_faces = Enum.filter(faces, fn {point, _} ->
-          case Map.fetch!(samples, point) do
-            nil -> false
-            {target, volume} -> thermal_node?(s, target, volume)
-          end
-        end)
-        {samples, s} = thermal_samples(s, VoxelRegion.ThermalGeometry.points(thermal_faces), samples)
-        nodes = VoxelRegion.ThermalGeometry.cell(thermal_faces, s.properties.materials, samples)
+    {geometry, state} = Enum.reduce(plan.missing, {plan.geometry, state}, &thermal_cell/2)
 
-        {Map.put(geometry, cell, nodes), s}
-      end)
+    {plan, geometry, state} =
+      if VoxelRegion.ThermalRadiation.enabled?(config),
+        do: sight_domain(state, plan, geometry),
+        else: {plan, geometry, state}
 
     geometry_done = System.monotonic_time(:microsecond)
 
@@ -3516,6 +3522,12 @@ defmodule VoxelRegion.World do
 
     ordered = work.ordered
     indexed_edges = work.indexed_edges
+
+    radiation =
+      if VoxelRegion.ThermalRadiation.enabled?(config),
+        do: VoxelRegion.ThermalRadiation.terms(ordered, work.sights, config["emissivity"]),
+        else: {[], []}
+
     nodes_done = System.monotonic_time(:microsecond)
 
     sources =
@@ -3545,7 +3557,8 @@ defmodule VoxelRegion.World do
         config["ambient_kelvin"] * 1.0,
         config["environment_w_per_m2_k"] * 1.0,
         config["tolerance_kelvin"] * 1.0,
-        batch.duration
+        batch.duration,
+        radiation
       )
 
     calculated = System.monotonic_time(:microsecond)
@@ -3594,7 +3607,7 @@ defmodule VoxelRegion.World do
     work = if active, do: %{work | hot: hot}, else: %{ThermalWork.new() | builds: work.builds}
 
     Logger.info(
-      "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
+      "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} radiation_pairs=#{length(elem(radiation, 0))} sky_faces=#{length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
     )
 
     Logger.info(
@@ -3602,6 +3615,78 @@ defmodule VoxelRegion.World do
     )
 
     {%{state | damage: damage, thermal: thermal, thermal_work: work}, changed, done}
+  end
+
+  # 一个宏格的热节点几何：canonical 读取留在 owner 内，摘要由 ThermalGeometry 纯函数生成。
+  defp thermal_cell(cell, {geometry, s}) do
+    faces = VoxelRegion.ThermalGeometry.faces(cell, s.refined)
+    {samples, s} = thermal_samples(s, Enum.map(faces, &elem(&1, 0)), %{})
+    thermal_faces = Enum.filter(faces, fn {point, _} ->
+      case Map.fetch!(samples, point) do
+        nil -> false
+        {target, volume} -> thermal_node?(s, target, volume)
+      end
+    end)
+    {samples, s} = thermal_samples(s, VoxelRegion.ThermalGeometry.points(thermal_faces), samples)
+    nodes = VoxelRegion.ThermalGeometry.cell(thermal_faces, s.properties.materials, samples)
+
+    {Map.put(geometry, cell, nodes), s}
+  end
+
+  # 辐射候选域：补齐候选宏格的视线（按宏格缓存），热种子视线命中的伙伴宏格一并读取几何并入域。
+  # 伙伴不是种子；只有真实升温越过容差才由既有前沿规则扩张它自己的邻域和视线。
+  defp sight_domain(state, plan, geometry) do
+    {state, sights} = Enum.reduce(plan.cells, {state, state.thermal_work.sights}, &cell_sights(&1, &2, geometry))
+    extra = MapSet.difference(VoxelRegion.ThermalRadiation.partners(sights, plan.seeds), plan.cells)
+    {geometry, state} = Enum.reduce(extra, {geometry, state}, &thermal_cell/2)
+    {state, sights} = Enum.reduce(extra, {state, sights}, &cell_sights(&1, &2, geometry))
+
+    {%{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, extra)},
+     geometry, put_in(state.thermal_work.sights, sights)}
+  end
+
+  defp cell_sights(cell, {state, sights}, geometry) do
+    if Map.has_key?(sights, cell) do
+      {state, sights}
+    else
+      range = state.thermal.config["view_range_cells"] * @micro
+      {rows, state} = Enum.flat_map_reduce(Map.fetch!(geometry, cell), state, fn {key, node}, s ->
+        {hits, s} = Enum.map_reduce(node.rays, s, fn {start, axis, sign, area}, s ->
+          {hit, s} = sight(s, start, axis, sign, range)
+          {{hit, area}, s}
+        end)
+        {VoxelRegion.ThermalRadiation.sights(key, hits), s}
+      end)
+      {state, Map.put(sights, cell, rows)}
+    end
+  end
+
+  # 沿法线读取 canonical 实占用至多 range 个微格长度：refined 或有限液柱宏格内逐微格，
+  # 其余空宏格整格跳过。命中热节点返回其节点键与宏格；无热容量占用或视距内全空为天空。
+  defp sight(state, _point, _axis, _sign, left) when left <= 0, do: {:sky, state}
+
+  defp sight(state, point, axis, sign, left) do
+    case target_at(point, state) do
+      {nil, state} ->
+        {cell, _} = Prefab.macro_slot(point)
+        offset = Integer.mod(elem(point, axis), @micro)
+
+        step =
+          cond do
+            Map.has_key?(state.refined, cell) or Map.has_key?(state.liquid_units, cell) -> 1
+            sign > 0 -> @micro - offset
+            true -> offset + 1
+          end
+
+        sight(state, put_elem(point, axis, elem(point, axis) + sign * step), axis, sign, left - step)
+
+      {target, state} ->
+        target = if target.granularity == 2, do: %{target | granularity: 1}, else: target
+
+        if thermal_node?(state, target, phase_volume(state, target)),
+          do: {{VoxelRegion.ThermalGeometry.key(target), Damage.macro(target)}, state},
+          else: {:sky, state}
+    end
   end
 
   # A cell without a sparse thermal record is at rest by contract. Untouched
@@ -4424,14 +4509,9 @@ defmodule VoxelRegion.World do
     metadata = %{property_states: states ++ attachment_states, epochs: epochs}
     metadata = if thermal, do: Map.put(metadata, :thermal, thermal), else: metadata
     affected = cells |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)])
-    work = %{state.thermal_work | geometry: Map.drop(state.thermal_work.geometry, affected)}
 
-    state = %{
-      state
-      | epochs: Map.merge(state.epochs, epochs),
-        thermal: thermal,
-        thermal_work: work
-    }
+    state =
+      drop_thermal_geometry(%{state | epochs: Map.merge(state.epochs, epochs), thermal: thermal}, affected)
 
     state =
       if before.attachments == state.attachments, do: state, else: rebuild_thermal_work(state)

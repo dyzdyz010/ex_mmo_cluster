@@ -52,7 +52,7 @@ defmodule VoxelRegion.DamageWorldTest do
     opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11] ++ if(context[:flora],do: [32,35],else: [])]
     opts=if context[:thermal_environment] do
       environment=Path.join(root,"environment.json")
-      File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01}))
+      File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
       Keyword.put(opts,:thermal_environment_path,environment)
     else
       opts
@@ -368,7 +368,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,_}=World.apply_edit(c.w,{4,1,2},19)
     experiment=Path.join(Keyword.fetch!(c.opts,:root),"thermal.json")
     File.write!(experiment,Jason.encode!(%{classification: "Test-only",source_macro: [1,1,2],ambient_kelvin: 293.15,
-      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,power_w: 10000.0,energy_j: 10000.0}))
+      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,power_w: 10000.0,energy_j: 10000.0}))
     assert :ok=World.thermal_experiment(c.w,experiment)
     Process.sleep(650)
     assert {:ok,a}=World.tool_intent(c.w,c.actor,c.request)
@@ -399,7 +399,7 @@ defmodule VoxelRegion.DamageWorldTest do
     {:ok,_}=World.apply_edit(c.w,cell,19)
     path=Path.join(Keyword.fetch!(c.opts,:root),"thermal.json")
     File.write!(path,Jason.encode!(%{classification: "Test-only",source_macro: Tuple.to_list(cell),ambient_kelvin: 293.15,
-      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,power_w: power,energy_j: energy}))
+      environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,power_w: power,energy_j: energy}))
     :ok=World.thermal_experiment(c.w,path)
   end
 
@@ -420,7 +420,7 @@ defmodule VoxelRegion.DamageWorldTest do
     state = observe(c.w)
     assert VoxelRegion.Circuit.devices(state.damage) == %{}
     # 只读计数，不启用会复制完整 World 实参的调用消息。
-    mfa = {VoxelRegion.ThermalNative, :advance, 6}
+    mfa = {VoxelRegion.ThermalNative, :advance, 7}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
@@ -437,7 +437,7 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :b3_heater
   test "global thermal environment starts without a test source or free energy", c do
     path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     state=observe(w)
@@ -450,17 +450,17 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :b3_heater
   test "a restart takes the equilibrium tolerance from the environment asset, not from the replayed thermal ledger", c do
     path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     # Any committed transaction carries the thermal ledger (and its config) into the log.
     assert {:ok,seq}=World.material_supply(w,1001,"tolerance-restart",%{19=>512})
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 1.0}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 1.0,emissivity: 0.0,view_range_cells: 8}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     assert observe(w).seq==seq
     # The config is internal solver state; the public snapshot carries only the ledger.
-    assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0}
+    assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0,"emissivity"=>0.0,"view_range_cells"=>8}
   end
 
   @tag :b3_heater
@@ -1897,7 +1897,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert :ok=World.publish_properties(c.w,c.catalog)
     path=Path.join(c.opts[:root],"attachment-heat.json")
     File.write!(path,Jason.encode!(%{classification: "Test-only",source_macro: [1,1,2],
-      ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.01,power_w: 1.0e6,energy_j: 1.0e6}))
+      ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,power_w: 1.0e6,energy_j: 1.0e6}))
     assert :ok=World.thermal_experiment(c.w,path)
     state=observe(c.w)
     removed=Enum.reduce_while(1..10,state,fn _,_ ->

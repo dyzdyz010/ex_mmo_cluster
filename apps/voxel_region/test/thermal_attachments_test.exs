@@ -129,7 +129,7 @@ defmodule VoxelRegion.ThermalAttachmentsTest do
     input=for {id,n}<-ordered,do: {if(id==ThermalAttachments.key(a),do: 400.0,else: 300.0),1.0,1.0,
       n.capacity*1.0,10.0,1000.0,0.0,0.0,0.0,true}
     contacts=for {a,b,g}<-edges,do: {index[a],index[b],g}
-    {_,out,0.0,0.0}=ThermalNative.advance(input,contacts,293.15,0.0,0.01,0.1)
+    {_,out,0.0,0.0}=ThermalNative.advance(input,contacts,293.15,0.0,0.01,0.1, {[], []})
     before=Enum.sum(for n<-input,do: elem(n,0)*elem(n,3))
     after_heat=Enum.zip_with(input,out,fn n,{t,_,_}->t*elem(n,3) end) |> Enum.sum()
     assert_in_delta before,after_heat,1.0e-7

@@ -15,7 +15,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     catalog=Path.join(root,"properties.json")
     File.cp!(source,catalog)
     env=Path.join(root,"environment.json")
-    File.write!(env,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01}))
+    File.write!(env,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
     prefab=Path.join(root,"prefabs")
     File.mkdir_p!(prefab)
     bytes=<<"VXPD",1::32-little,1::32-little,0::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
@@ -195,7 +195,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
     path=Path.join(c.opts[:root],"heat-ignition.json")
     File.write!(path,Jason.encode!(%{classification: "Test-only",source_macro: [1,1,2],
-      ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,
+      ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,
       power_w: 60_000.0,energy_j: 30_000.0}))
     assert :ok=World.thermal_experiment(c.w,path)
     tick(c.w)

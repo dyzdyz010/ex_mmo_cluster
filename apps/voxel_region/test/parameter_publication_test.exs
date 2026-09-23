@@ -14,7 +14,7 @@ defmodule VoxelRegion.ParameterPublicationTest do
     path = Path.join(root, "catalog.json")
     File.cp!(VoxelRegion.TestSupport.catalog("ebefc6390e4b934951fd0ce4b1b7d5bd1f212dbc4b2f38f6a3ca42e68315b311"), path)
     env = Path.join(root, "environment.json")
-    File.write!(env, Jason.encode!(%{ambient_kelvin: 293.15, environment_w_per_m2_k: 0.0, tolerance_kelvin: 0.01}))
+    File.write!(env, Jason.encode!(%{ambient_kelvin: 293.15, environment_w_per_m2_k: 0.0, tolerance_kelvin: 0.01, emissivity: 0.0, view_range_cells: 8}))
     opts = [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: path, thermal_environment_path: env]
     # 只测试旧存档升级：在 owner 启动前生成历史日志，所有状态均经正式 replay 接纳。

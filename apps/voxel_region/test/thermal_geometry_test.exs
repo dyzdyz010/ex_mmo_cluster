@@ -71,12 +71,12 @@ defmodule VoxelRegion.ThermalGeometryTest do
   test "极小体积自动缩短步长：守恒且不超调，不同采样预算收敛" do
     input=[{400.0,1.0,1.0,1000.0/512,1000.0,1000.0,0.0,0.0,0.0,true},
            {300.0,1.0,1.0,1000.0/512,1000.0,1000.0,0.0,0.0,0.0,true}]
-    {0.5,rows,0.0,0.0}=ThermalNative.advance(input,[{0,1,125.0}],293.15,0.0,0.01,0.5)
+    {0.5,rows,0.0,0.0}=ThermalNative.advance(input,[{0,1,125.0}],293.15,0.0,0.01,0.5, {[], []})
     for {t,_,_}<-rows,do: assert(t>=300.0 and t<=400.0)
     assert_in_delta Enum.sum(Enum.map(rows,&elem(&1,0))),700.0,1.0e-9
     assert_in_delta elem(hd(rows),0),350.0,1.0e-6
     small=Enum.reduce(1..100,input,fn _,nodes->
-      {_,next,_,_}=ThermalNative.advance(nodes,[{0,1,125.0}],293.15,0.0,0.01,0.005)
+      {_,next,_,_}=ThermalNative.advance(nodes,[{0,1,125.0}],293.15,0.0,0.01,0.005, {[], []})
       Enum.zip_with(nodes,next,fn n,{t,hp,left}->n |> put_elem(0,t) |> put_elem(1,hp) |> put_elem(8,left) end)
     end)
     assert_in_delta elem(hd(small),0),elem(hd(rows),0),1.0e-6

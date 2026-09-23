@@ -69,6 +69,8 @@ defmodule VoxelRegion.ThermalStaticPhaseTest do
         ambient_kelvin: 293.15,
         environment_w_per_m2_k: 10.0,
         tolerance_kelvin: 0.01,
+        emissivity: 0.0,
+        view_range_cells: 8,
         source_macro: Tuple.to_list(@dirt_cell),
         power_w: 1000.0,
         energy_j: 10_000.0

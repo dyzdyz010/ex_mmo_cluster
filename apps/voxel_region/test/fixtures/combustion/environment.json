@@ -3,5 +3,7 @@
   "asset": "/Game/Voxel/Properties/DA_ThermalEnvironment",
   "ambient_kelvin": 293.15,
   "environment_w_per_m2_k": 10,
-  "tolerance_kelvin": 1
+  "tolerance_kelvin": 1,
+  "emissivity": 0,
+  "view_range_cells": 8
 }

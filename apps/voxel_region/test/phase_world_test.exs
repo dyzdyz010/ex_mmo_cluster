@@ -55,7 +55,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     File.write!(catalog,Jason.encode!(data))
     environment=Path.join(root,"environment.json")
     File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,
-      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001}))
+      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001,emissivity: 0.0,view_range_cells: 8}))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
     opts=[source: Source,log: if(context[:database_metadata], do: DatabaseMetadataLog, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,
@@ -804,7 +804,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert :ok=World.publish_parameters(c.w,c.catalog,observe(c.w).property_digest)
     heat=Path.join(c.root,"pick-heat.json")
     File.write!(heat,Jason.encode!(%{classification: "Test-only",source_macro: [63,1,2],
-      ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.00001,power_w: 1.0,energy_j: 1.0}))
+      ambient_kelvin: 293.15,environment_w_per_m2_k: 0.01,tolerance_kelvin: 0.00001,emissivity: 0.0,view_range_cells: 8,power_w: 1.0,energy_j: 1.0}))
     assert :ok=World.thermal_experiment(c.w,heat)
     send(c.w,:thermal_commit)
     [heat_txn]=World.entries_after(c.w,World.seq(c.w)-1)

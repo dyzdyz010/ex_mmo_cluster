@@ -86,7 +86,9 @@ defmodule VoxelRegion.ThermalBatchTest do
       Jason.encode!(%{
         ambient_kelvin: ambient,
         environment_w_per_m2_k: 0.0,
-        tolerance_kelvin: 0.00001
+        tolerance_kelvin: 0.00001,
+        emissivity: 0.0,
+        view_range_cells: 8
       })
     )
 
@@ -131,6 +133,8 @@ defmodule VoxelRegion.ThermalBatchTest do
         ambient_kelvin: 293.15,
         environment_w_per_m2_k: 0.1,
         tolerance_kelvin: 0.00001,
+        emissivity: 0.0,
+        view_range_cells: 8,
         power_w: power,
         energy_j: energy
       })
@@ -194,7 +198,7 @@ defmodule VoxelRegion.ThermalBatchTest do
   @tag :latent_batch
   test "潜热区无其他事件的半秒 World 批至多两次进入 NIF" do
     {c, before, row} = latent_world()
-    mfa = {ThermalNative, :advance, 6}
+    mfa = {ThermalNative, :advance, 7}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
@@ -245,7 +249,7 @@ defmodule VoxelRegion.ThermalBatchTest do
     heat(c, {0, 0, 0}, 100.0, 200.0)
     before = cache_tick(c.w)
     assert before.thermal.sources == %{}
-    mfa = {ThermalNative, :advance, 6}
+    mfa = {ThermalNative, :advance, 7}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
@@ -278,7 +282,7 @@ defmodule VoxelRegion.ThermalBatchTest do
               293.15,
               0.1,
               0.00001,
-              0.05
+              0.05, {[], []}
             )
 
           nodes =
@@ -360,7 +364,7 @@ defmodule VoxelRegion.ThermalBatchTest do
       phase = {energy, 1.0, 273.15, 1000.0, 100.0, Phase.liquid?(material)}
 
       {_, [{temperature, hp, _, enthalpy}], _, _} =
-        ThermalNative.advance([{node, {nil, phase, false}}], [], ambient, 10.0, 0.01, 0.5)
+        ThermalNative.advance([{node, {nil, phase, false}}], [], ambient, 10.0, 0.01, 0.5, {[], []})
 
       current = Phase.material(material, enthalpy, 1.0, properties)
       assert current == expected_material
@@ -380,13 +384,13 @@ defmodule VoxelRegion.ThermalBatchTest do
     contacts = [{0, 1, 0.2}]
 
     {done, result, supplied, environment} =
-      ThermalNative.advance(nodes, contacts, 293.15, 15.0, 0.01, 0.5)
+      ThermalNative.advance(nodes, contacts, 293.15, 15.0, 0.01, 0.5, {[], []})
 
     # 旧入口每次都只收到 50ms，稳定步不能用整批时长重新均分。
     {reference, old_supplied, old_environment} =
       Enum.reduce(1..10, {nodes, 0.0, 0.0}, fn _, {input, q, air} ->
         {step, output, dq, da} =
-          ThermalNative.advance(input, contacts, 293.15, 15.0, 0.01, 0.05)
+          ThermalNative.advance(input, contacts, 293.15, 15.0, 0.01, 0.05, {[], []})
 
         assert_in_delta step, 0.05, 1.0e-12
 
@@ -414,8 +418,8 @@ defmodule VoxelRegion.ThermalBatchTest do
     node = {400.0, 100.0, 100.0, 1000.0, 1.0, 310.0, 0.0, 0.0, 0.0, true}
 
     for control <- [{399.0, nil, false}, {nil, nil, true}] do
-      {done, result, _, _} = ThermalNative.advance([{node, control}], [], 293.15, 0.0, 0.01, 0.5)
-      {old_done, old_result, _, _} = ThermalNative.advance([node], [], 293.15, 0.0, 0.01, 0.05)
+      {done, result, _, _} = ThermalNative.advance([{node, control}], [], 293.15, 0.0, 0.01, 0.5, {[], []})
+      {old_done, old_result, _, _} = ThermalNative.advance([node], [], 293.15, 0.0, 0.01, 0.05, {[], []})
       assert done == old_done
       assert result == old_result
     end
@@ -423,14 +427,14 @@ defmodule VoxelRegion.ThermalBatchTest do
     dying = put_elem(node, 1, 0.001)
 
     assert {0.05, [{400.0, 0.0, 0.0}], 0.0, 0.0} =
-             ThermalNative.advance([{dying, {nil, nil, false}}], [], 293.15, 0.0, 0.01, 0.5)
+             ThermalNative.advance([{dying, {nil, nil, false}}], [], 293.15, 0.0, 0.01, 0.5, {[], []})
   end
 
   test "未到点燃或损伤阈值的共享节点不打断批次" do
     node = {300.0, 100.0, 100.0, 1000.0, 1.0, 310.0, 0.0, 0.0, 0.0, true}
 
     {done, _, _, _} =
-      ThermalNative.advance([{node, {400.0, nil, true}}], [], 293.15, 0.0, 0.01, 0.5)
+      ThermalNative.advance([{node, {400.0, nil, true}}], [], 293.15, 0.0, 0.01, 0.5, {[], []})
 
     assert_in_delta done, 0.5, 1.0e-12
   end
@@ -441,7 +445,7 @@ defmodule VoxelRegion.ThermalBatchTest do
     phase = {2000.0, 1.0, 273.15, 1000.0, 100.0, false}
 
     assert {0.05, [{273.15, 100.0, 0.0, 2000.0}], 0.0, 0.0} =
-             ThermalNative.advance([{node, {nil, phase, false}}], [], 293.15, 0.0, 0.01, 0.5)
+             ThermalNative.advance([{node, {nil, phase, false}}], [], 293.15, 0.0, 0.01, 0.5, {[], []})
   end
 
   test "融冻显热、潜热与完成事件按有限源解析热量守恒" do
@@ -503,7 +507,7 @@ defmodule VoxelRegion.ThermalBatchTest do
     phase = {energy, 0.5, 273.15, 100.0, 10.0, liquid}
 
     {done, [{t, hp, left, next_energy}], dq, da} =
-      ThermalNative.advance([{node, {nil, phase, false}}], [], 293.15, 0.0, 0.01, remaining)
+      ThermalNative.advance([{node, {nil, phase, false}}], [], 293.15, 0.0, 0.01, remaining, {[], []})
 
     next = node |> put_elem(0, t) |> put_elem(1, hp) |> put_elem(8, left)
     phase_batch(next, next_energy, liquid, remaining - done, q + dq, air + da, calls + 1)

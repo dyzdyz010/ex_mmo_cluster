@@ -5,7 +5,7 @@ defmodule VoxelRegion.ThermalWork do
   只消费该职责的值，不读取 World 或保存温度、HP、燃料真值。
   几何缺键表示需要 owner 重新读取；空列表表示已经派生的空气或无热容量占用。
   """
-  alias VoxelRegion.{Attachments, Damage, Thermal, ThermalGeometry}
+  alias VoxelRegion.{Attachments, Damage, Thermal, ThermalGeometry, ThermalRadiation}
 
   @doc "创建空派生缓存；冷恢复、附件或目录变化时可直接重建。"
   def new do
@@ -21,7 +21,8 @@ defmodule VoxelRegion.ThermalWork do
       attachment_graph: nil,
       solid_nodes: %{},
       thermal_slots: %{},
-      indexed_edges: []
+      indexed_edges: [],
+      sights: %{}
     }
   end
 
@@ -40,7 +41,7 @@ defmodule VoxelRegion.ThermalWork do
         do: cell
   end
 
-  @doc "合并活动种子，选择六邻域及缺失几何；返回值交 owner 读取本次 canonical 摘要。"
+  @doc "合并活动种子，选择六邻域、已知辐射视线伙伴及缺失几何；返回值交 owner 读取本次 canonical 摘要。"
   def plan(work, sources, powers, damage) do
     electric =
       for {key, _} <- powers,
@@ -68,7 +69,11 @@ defmodule VoxelRegion.ThermalWork do
     cells =
       if seeds == work.seeds,
         do: work.cells,
-        else: seeds |> Enum.flat_map(&[&1 | Thermal.neighbors(&1)]) |> MapSet.new()
+        else:
+          seeds
+          |> Enum.flat_map(&[&1 | Thermal.neighbors(&1)])
+          |> MapSet.new()
+          |> MapSet.union(ThermalRadiation.partners(work.sights, seeds))
 
     # 几何键原本恰好覆盖旧域；编辑只删键。未变且未删键时不遍历几何。
     reuse = cells == work.cells and map_size(work.geometry) == MapSet.size(cells)
@@ -119,9 +124,29 @@ defmodule VoxelRegion.ThermalWork do
          attachment_cells: attachment_cells,
          solid_nodes: nodes,
          thermal_slots: slots,
+         sights: Map.take(work.sights, MapSet.to_list(plan.cells)),
          builds: work.builds + MapSet.size(plan.missing)
      }, rebuild?}
   end
+
+  @doc "占用编辑后丢弃受影响宏格的几何；编辑落在已缓存视线的包围盒外扩视距内时整体丢弃视线。"
+  def drop(work, cells, range) do
+    geometry = Map.drop(work.geometry, cells)
+
+    box = if map_size(work.sights) > 0, do: box(Map.keys(work.sights), range)
+    sights = if box && Enum.any?(cells, &within?(&1, box)), do: %{}, else: work.sights
+
+    %{work | geometry: geometry, sights: sights}
+  end
+
+  defp box(cells, range) do
+    for axis <- 0..2 do
+      {low, high} = cells |> Enum.map(&elem(&1, axis)) |> Enum.min_max()
+      (low - range)..(high + range)
+    end
+  end
+
+  defp within?(cell, box), do: Enum.all?(Enum.with_index(box), fn {span, axis} -> elem(cell, axis) in span end)
 
   @doc "按原节点遍历顺序生成每对一次的接触和索引，保持浮点累加顺序。"
   def index(work, nodes, attachment_graph) do

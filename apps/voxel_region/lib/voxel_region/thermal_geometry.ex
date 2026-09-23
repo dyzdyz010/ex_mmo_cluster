@@ -2,19 +2,20 @@ defmodule VoxelRegion.ThermalGeometry do
   @moduledoc "全局系统功能：从 canonical 实占用生成可丢弃的热容量、接触面积和导热摘要。"
   alias VoxelRegion.Prefab
   @micro VoxelRegion.Spatial.micro_resolution()
+  @length 1.0/@micro
 
   @doc "温度节点身份：宏格或精确微格；生命期身份保留在 target 中。"
   def key(%{granularity: 4}=t),do: VoxelRegion.ThermalAttachments.key(VoxelRegion.Attachments.slot(t))
   def key(t), do: {t.granularity,t.micro}
 
-  @doc "列出宏格或实际微格的面采样点；仅使用 refined 的占用索引，不读取世界。"
+  @doc "列出宏格或实际微格的面采样点 {点, 法向轴, 采样面片边长(m)}；仅使用 refined 的占用索引，不读取世界。"
   def faces(cell, refined) do
     case Map.fetch(refined, cell) do
       {:ok, slots} ->
         Enum.map(slots, fn {slot, _} ->
           micro = Prefab.micro_coord(cell, slot)
           {micro, for(axis <- 0..2, sign <- [-1, 1],
-            do: {put_elem(micro, axis, elem(micro, axis) + sign), axis})}
+            do: {put_elem(micro, axis, elem(micro, axis) + sign), axis, @length})}
         end)
 
       :error ->
@@ -29,11 +30,11 @@ defmodule VoxelRegion.ThermalGeometry do
                   |> put_elem(axis, elem(micro, axis) + if(sign == 1, do: @micro, else: -1))
                   |> put_elem(u, elem(micro, u) + a)
                   |> put_elem(v, elem(micro, v) + b)
-                {point, axis}
+                {point, axis, @length}
               end
               samples ++ acc
             else
-              [{scale(neighbor, @micro), axis} | acc]
+              [{scale(neighbor, @micro), axis, 1.0} | acc]
             end
         end
         [{micro, faces}]
@@ -47,7 +48,7 @@ defmodule VoxelRegion.ThermalGeometry do
     end) |> Enum.uniq()
   end
 
-  @doc "消费冻结的 point → nil 或 {target, volume} 值，生成热节点；缺失采样不是空气。"
+  @doc "消费冻结的 point → nil 或 {target, volume} 值，生成热节点；缺失采样不是空气。空气面另记辐射视线起点 rays。"
   def cell(faces, materials, samples) do
     Enum.flat_map(faces, fn {micro, neighbors} ->
       case Map.fetch!(samples, micro) do
@@ -56,7 +57,7 @@ defmodule VoxelRegion.ThermalGeometry do
           material = Map.fetch!(materials, target.material)
           if Map.has_key?(material, "heat_capacity_per_macro") do
             bounds = bounds(target, volume)
-            contacts = Enum.map(neighbors, fn {point, axis} ->
+            contacts = Enum.map(neighbors, fn {point, axis, _} ->
               case Map.fetch!(samples, point) do
                 nil -> {nil, {0.0, 0.0, 0.0}}
                 {other, volume} -> {other, contact(bounds, bounds(other, volume), axis)}
@@ -70,10 +71,13 @@ defmodule VoxelRegion.ThermalGeometry do
               g = if k == 0 or ko == 0, do: 0.0, else: area/(d/k + other_d/ko)
               {key(other), g}
             end
+            rays = for {point, axis, size} <- neighbors, Map.fetch!(samples, point) == nil,
+                area = overlap(bounds, patch(point, size), axis), area > 0,
+                do: ray(bounds, point, axis, size, area)
             {x, y, z} = lengths(bounds)
             [{key(target), %{target: target, material: material,
               capacity: material["heat_capacity_per_macro"]*x*y*z,
-              exposed_faces: 2*(x*y+x*z+y*z)-covered, contacts: contacts}}]
+              exposed_faces: 2*(x*y+x*z+y*z)-covered, contacts: contacts, rays: rays}}]
           else
             []
           end
@@ -92,6 +96,24 @@ defmodule VoxelRegion.ThermalGeometry do
     low=target.micro |> Tuple.to_list() |> Enum.map(&(&1/@micro)) |> List.to_tuple()
     high=for axis<-0..2,do: elem(low,axis)+size*if(axis==1,do: volume,else: 1.0)
     {low,List.to_tuple(high)}
+  end
+
+  # 空气面片沿外法线的视线：{起始微格, 轴, 方向, 面积}。宏格面从面中心列出发，
+  # 负向进入相邻宏格时从其顶层微格开始，使有限液柱与 refined 宏格按实占用命中。
+  defp ray({low, high}, point, axis, size, area) do
+    sign = if elem(point, axis) >= elem(high, axis) * @micro, do: 1, else: -1
+    start = if size == @length, do: point, else:
+      for(i <- 0..2, do: cond do
+        i != axis -> floor((elem(low, i) + elem(high, i)) / 2 * @micro)
+        sign > 0 -> elem(point, i)
+        true -> elem(point, i) + @micro - 1
+      end) |> List.to_tuple()
+    {start, axis, sign, area}
+  end
+
+  defp patch(point, size) do
+    low = point |> Tuple.to_list() |> Enum.map(&(&1/@micro)) |> List.to_tuple()
+    {low, low |> Tuple.to_list() |> Enum.map(&(&1 + size)) |> List.to_tuple()}
   end
 
   defp lengths({low,high}),do: for(axis<-0..2,do: elem(high,axis)-elem(low,axis)) |> List.to_tuple()
