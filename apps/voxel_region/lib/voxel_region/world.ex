@@ -308,13 +308,13 @@ defmodule VoxelRegion.World do
     GenServer.call(server, {:publish_prefabs, catalog}, 300_000)
   end
 
-  # 全局系统功能：运行时内容发布与工作台只读目录；不产生体素事务。
-  def publish_prefab(server, actor, bytes),
-    do: GenServer.call(server, {:publish_prefab, actor, bytes}, 300_000)
+  # 全局系统功能：运行时内容发布与工作台只读目录；不产生体素事务。name 为玩家输入的名称，NPC 发布为空名。
+  def publish_prefab(server, actor, bytes, name \\ ""),
+    do: GenServer.call(server, {:publish_prefab, actor, bytes, name}, 300_000)
 
   def prefab_catalog(server \\ @name), do: GenServer.call(server, :prefab_catalog)
 
-  @doc "全局系统功能（D3-2）：运行时发布的 {首个发布者 cid, 定义字节}，按发布序；不含作者目录。"
+  @doc "全局系统功能（D3-2）：运行时发布的 {首个发布者 cid, 首次名称, 定义字节}，按发布序；不含作者目录。"
   def published_prefabs(server \\ @name), do: GenServer.call(server, :published_prefabs)
   def material_catalog(server \\ @name), do: GenServer.call(server, :material_catalog)
 
@@ -813,13 +813,14 @@ defmodule VoxelRegion.World do
   def handle_call(:prefab_catalog, _, state), do: {:reply, state.prefabs, state}
 
   def handle_call(:published_prefabs, _, state),
-    do: {:reply, Enum.map(state.published, &{&1.publisher, &1.bytes}), state}
+    do: {:reply, Enum.map(state.published, &{&1.publisher, &1.name, &1.bytes}), state}
   def handle_call(:material_catalog, _, state), do: {:reply, state.properties, state}
 
-  def handle_call({:publish_prefab, actor, bytes}, _, state) do
+  def handle_call({:publish_prefab, actor, bytes, name}, _, state) do
     with {:ok, actor} <- current_actor(actor),
+         :ok <- Prefab.check_name(name),
          {:ok, id, compiled} <- Prefab.compile(bytes, state.prefabs),
-         {:ok, published} <- persist_prefab(state, actor.cid, id, bytes) do
+         {:ok, published} <- persist_prefab(state, actor.cid, name, id, bytes) do
       {:reply, {:ok, id},
        %{state | prefabs: Map.put(state.prefabs, id, compiled), published: published}}
     else
@@ -5019,18 +5020,19 @@ defmodule VoxelRegion.World do
     end
   end
 
-  # 世界串行接纳；先 .vxpd 后 .pub（<<序号::32, cid::64>>）：两步之间崩溃只让定义暂不列出，重发即补记；
-  # 重发保留首个发布者与序号。
-  defp persist_prefab(state, cid, id, bytes) do
+  # 世界串行接纳；先 .vxpd 后 .pub（<<序号::32, cid::64, 名称::binary>>）：两步之间崩溃只让定义暂不列出，重发即补记；
+  # 重发保留首个发布者、名称与序号。
+  defp persist_prefab(state, cid, name, id, bytes) do
     stem = Path.join(state.prefab_dir, Base.encode16(id, case: :lower))
     listed = Enum.any?(state.published, &(&1.id == id))
     ordinal = length(state.published) + 1
 
     with :ok <- write_new(stem <> ".vxpd", bytes),
-         :ok <- if(listed, do: :ok, else: write_new(stem <> ".pub", <<ordinal::32, cid::64>>)) do
+         :ok <-
+           if(listed, do: :ok, else: write_new(stem <> ".pub", <<ordinal::32, cid::64, name::binary>>)) do
       if listed,
         do: {:ok, state.published},
-        else: {:ok, state.published ++ [%{id: id, publisher: cid, bytes: bytes}]}
+        else: {:ok, state.published ++ [%{id: id, publisher: cid, name: name, bytes: bytes}]}
     end
   end
 

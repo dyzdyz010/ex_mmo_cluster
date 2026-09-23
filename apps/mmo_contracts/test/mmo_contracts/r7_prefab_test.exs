@@ -146,27 +146,44 @@ defmodule MmoContracts.R7PrefabTest do
     assert decoded.content_version == 123
   end
 
-  test "runtime publish carries the exact VXPD bytes and rejects a length mismatch" do
+  # 冻结样本与 Voxim.R7.Prefab.PublishWire 逐字节相同：头部大端，名称 "石屋" = E7 9F B3 E5 B1 8B（Hello18）。
+  test "runtime publish carries the exact VXPD bytes and UTF-8 name, rejects a length mismatch" do
     vxpd = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 0::96, 11::16-little>>
-    frame = <<0x71, 1::64, 2::32, 3::64, byte_size(vxpd)::32, vxpd::binary>>
+
+    frame =
+      <<0x71, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 38>> <>
+        vxpd <> <<0, 6, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B>>
 
     assert {:ok, {:voxel_prefab_publish_v1, request}} = Codec.decode(frame)
-    assert request == %{request_id: 1, client_intent_seq: 2, logical_scene_id: 3, definition: vxpd}
+
+    assert request == %{
+             request_id: 1,
+             client_intent_seq: 2,
+             logical_scene_id: 3,
+             definition: vxpd,
+             name: "石屋"
+           }
+
+    unnamed = binary_part(frame, 0, byte_size(frame) - 8) <> <<0, 0>>
+    assert {:ok, {_, %{name: "", definition: ^vxpd}}} = Codec.decode(unnamed)
+    # Hello17 帧（无名称字段）、截断与多余字节一律拒绝。
+    assert {:error, :invalid_message} = Codec.decode(binary_part(frame, 0, byte_size(frame) - 8))
     assert {:error, :invalid_message} = Codec.decode(binary_part(frame, 0, byte_size(frame) - 1))
     assert {:error, :invalid_message} = Codec.decode(frame <> <<0>>)
   end
 
-  # 冻结样本与 Voxim.R7.Prefab.PublishedList 逐字节相同：两项，发布序、小端。
+  # 冻结样本与 Voxim.R7.Prefab.PublishedList 逐字节相同：两项，发布序、小端；第二项无名称。
   test "published prefab list frozen bytes" do
     a = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 0::96, 11::16-little>>
     b = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 255, 255, 255, 255, 0::32, 2, 0, 0, 0, 19, 0>>
 
     frozen =
-      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 38, 0, 0, 0>> <>
-        a <> <<9, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> b
+      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0, 0>> <>
+        a <> <<9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> b
 
-    assert IO.iodata_to_binary(Codec.encode_prefab_list([{0x0102030405060708, a}, {9, b}])) ==
-             frozen
+    assert IO.iodata_to_binary(
+             Codec.encode_prefab_list([{0x0102030405060708, "石屋", a}, {9, "", b}])
+           ) == frozen
 
     assert IO.iodata_to_binary(Codec.encode_prefab_list([])) == <<0, 0, 0, 0>>
   end

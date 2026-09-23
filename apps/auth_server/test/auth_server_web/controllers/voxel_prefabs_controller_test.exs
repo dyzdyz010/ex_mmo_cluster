@@ -24,11 +24,11 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
     prefabs = Path.join([root, Base.encode16(<<@content_version::64>>, case: :lower), "prefabs"])
     File.mkdir_p!(prefabs)
 
-    # 发布序与文件名序相反，证明按 .pub 序号而非目录顺序排列。
-    for {ordinal, cid, bytes} <- [{2, 9, @b}, {1, 0x0102030405060708, @a}] do
+    # 发布序与文件名序相反，证明按 .pub 序号而非目录顺序排列；B 为 Hello18 前的 12 字节记录（空名）。
+    for {pub, bytes} <- [{<<2::32, 9::64>>, @b}, {<<1::32, 0x0102030405060708::64, "石屋">>, @a}] do
       stem = Path.join(prefabs, Base.encode16(:crypto.hash(:sha256, bytes), case: :lower))
       File.write!(stem <> ".vxpd", bytes)
-      File.write!(stem <> ".pub", <<ordinal::32, cid::64>>)
+      File.write!(stem <> ".pub", pub)
     end
 
     Application.put_env(:auth_server, :dev_auto_login, true)
@@ -70,8 +70,8 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
     conn: conn
   } do
     frozen =
-      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 38, 0, 0, 0>> <>
-        @a <> <<9, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> @b
+      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0, 0>> <>
+        @a <> <<9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> @b
 
     response = post_prefabs(conn, ~p"/ingame/voxel/prefabs")
     assert response.status == 200

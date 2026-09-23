@@ -147,29 +147,52 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
     assert World.seq(c.world)==0
   end
 
-  test "published list keeps first publisher and publication order across restart, author catalog unlisted",c do
+  test "published list keeps first publisher, name and publication order across restart, author catalog unlisted",c do
     a=Prefab.encode(%{cells: [],macro_cells: [{{0,0,0},11}],children: [],attachments: []})
     b=Prefab.encode(%{cells: [],macro_cells: [{{1,0,0},19}],children: [],attachments: []})
     other=%{c.actor | cid: 2002,identity: make_ref()}
     other=%{other | player: start_supervised!({Actor,other},id: :other_actor)}
     restart=fn -> stop_supervised(World); start_supervised!({World,c.opts}) end
+    pub=fn bytes -> Path.join([c.root,"prefabs",Base.encode16(:crypto.hash(:sha256,bytes),case: :lower)<>".pub"]) end
     assert World.published_prefabs(c.world)==[]
-    assert {:ok,_}=World.publish_prefab(c.world,c.actor,a)
+    assert {:ok,_}=World.publish_prefab(c.world,c.actor,a,"石屋")
     assert {:ok,id_b}=World.publish_prefab(c.world,c.actor,b)
-    assert {:ok,_}=World.publish_prefab(c.world,other,a)
-    assert World.published_prefabs(c.world)==[{1001,a},{1001,b}]
+    assert {:ok,_}=World.publish_prefab(c.world,other,a,"别名")
+    assert World.published_prefabs(c.world)==[{1001,"石屋",a},{1001,"",b}]
+    # .pub 大端：序号 1、cid 1001、名称 UTF-8 原样。
+    assert File.read!(pub.(a))==<<0,0,0,1,0,0,0,0,0,0,3,0xE9,0xE7,0x9F,0xB3,0xE5,0xB1,0x8B>>
     world=restart.()
-    assert World.published_prefabs(world)==[{1001,a},{1001,b}]
+    assert World.published_prefabs(world)==[{1001,"石屋",a},{1001,"",b}]
     # 作者目录子件在放置目录里，但不是运行时发布。
     assert Map.has_key?(World.prefab_catalog(world),c.child_id)
-    # 写完 .vxpd、未写 .pub 时崩溃：定义可放置但不列出；重发者补记为下一序号。
-    File.rm!(Path.join([c.root,"prefabs",Base.encode16(id_b,case: :lower)<>".pub"]))
+    # 写完 .vxpd、未写 .pub 时崩溃：定义可放置但不列出；重发者补记为下一序号与其名称。
+    File.rm!(pub.(b))
     world=restart.()
-    assert World.published_prefabs(world)==[{1001,a}]
+    assert World.published_prefabs(world)==[{1001,"石屋",a}]
     assert Map.has_key?(World.prefab_catalog(world),id_b)
-    assert {:ok,^id_b}=World.publish_prefab(world,other,b)
-    assert World.published_prefabs(world)==[{1001,a},{2002,b}]
-    assert World.published_prefabs(restart.())==[{1001,a},{2002,b}]
+    assert {:ok,^id_b}=World.publish_prefab(world,other,b,"木台")
+    assert World.published_prefabs(world)==[{1001,"石屋",a},{2002,"木台",b}]
+    assert World.published_prefabs(restart.())==[{1001,"石屋",a},{2002,"木台",b}]
+    # Hello18 前写下的 12 字节 .pub 原样载入为空名，不迁移。
+    File.write!(pub.(a),<<0,0,0,1,0,0,0,0,0,0,3,0xE9>>)
+    assert World.published_prefabs(restart.())==[{1001,"",a},{2002,"木台",b}]
+  end
+
+  test "publish name is checked at the trust boundary before anything is compiled or written",c do
+    bytes=Prefab.encode(%{cells: [],macro_cells: [{{2,0,0},11}],children: [],attachments: []})
+    id=:crypto.hash(:sha256,bytes)
+    for name <- [<<0xE7,0x9F>>,<<0xC0,0x80>>,<<0xFF>>,"石\n屋","\t","a\x7F",<<0xC2,0x85>>,String.duplicate("石",16)<>"a"] do
+      assert {:error,:invalid_name}=World.publish_prefab(c.world,c.actor,bytes,name)
+    end
+    refute Map.has_key?(World.prefab_catalog(c.world),id)
+    assert World.published_prefabs(c.world)==[]
+    refute File.exists?(Path.join([c.root,"prefabs",Base.encode16(id,case: :lower)<>".vxpd"]))
+    # 恰好 48 字节（16 个三字节汉字）、含空格与全角标点均合法。
+    max=String.duplicate("石",16)
+    assert byte_size(max)==48
+    assert {:ok,^id}=World.publish_prefab(c.world,c.actor,bytes,max)
+    assert World.published_prefabs(c.world)==[{1001,max,bytes}]
+    assert :ok=Prefab.check_name("小 屋，二层")
   end
 
   test "runtime republishing an existing author definition persists its original bytes",c do

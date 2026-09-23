@@ -702,7 +702,13 @@ defmodule GateServer.Session.Dispatch do
   def handle({:voxel_prefab_publish_v1, request}, %{status: :in_scene, voxim_overlay: true} = state) do
     result =
       with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity),
-           do: VoxelRegion.World.publish_prefab(state.world_ref, actor, request.definition)
+           do:
+             VoxelRegion.World.publish_prefab(
+               state.world_ref,
+               actor,
+               request.definition,
+               request.name
+             )
 
     case result do
       {:ok, _id} ->

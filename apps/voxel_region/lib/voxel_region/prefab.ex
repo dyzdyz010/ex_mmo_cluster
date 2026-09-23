@@ -21,14 +21,20 @@ defmodule VoxelRegion.Prefab do
     catalog
   end
 
-  @doc "D3-2 运行时发布记录：<hex>.pub = <<序号::32, cid::64>>，按序号排列，字节取同名 .vxpd。"
+  @doc "D3-2 运行时发布记录：<hex>.pub = <<序号::32, cid::64, 名称::binary>>（Hello18 前的 12 字节记录即空名），按序号排列，字节取同名 .vxpd。"
   def load_published(dir) do
     # expand 统一分隔符：wildcard 把 Windows 反斜杠当转义。
     Path.wildcard(Path.expand("*.pub",dir)) |> Enum.map(fn path ->
-      <<ordinal::32,cid::64>> = File.read!(path)
+      <<ordinal::32,cid::64,name::binary>> = File.read!(path)
       bytes = File.read!(Path.rootname(path)<>".vxpd")
-      {ordinal,%{id: :crypto.hash(:sha256,bytes),publisher: cid,bytes: bytes}}
+      {ordinal,%{id: :crypto.hash(:sha256,bytes),publisher: cid,name: name,bytes: bytes}}
     end) |> Enum.sort_by(&elem(&1,0)) |> Enum.map(&elem(&1,1))
+  end
+
+  @doc "玩家发布名称的信任边界：合法 UTF-8、无控制字符（Unicode Cc）、至多 48 字节；空名合法。"
+  def check_name(name) do
+    if byte_size(name) <= 48 and String.valid?(name) and not String.match?(name,~r/\p{Cc}/u),
+      do: :ok,else: {:error,:invalid_name}
   end
 
   defp read_definitions(nil),do: %{}

@@ -20,8 +20,8 @@
 
 未做（D3-2 及以后）：自制件的服务端名称／发布者元数据与跨会话列表、按 id 下载定义（HTTP 内容寻址）、草稿 micro 格与子 prefab 引用、
 检查面板（`PrefabDesigner.check`）、命名输入框（中文输入法）、撤销、旋转草稿、Qinglan 集成。
-（发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；名称为派生、不存储；D3-2 定案不暴露 `PrefabDesigner.check`、不做命名输入框。
-草稿 micro 格、薄面／细线、整体旋转已由 D3-3 增量 1 完成，子 prefab 插入由增量 2 完成；命名（协议 18）、Qinglan 集成为后续增量。）
+（发布者与跨会话列表已由下节 D3-2 W-A 完成，撤销与材料清单由 W-B 完成；草稿 micro 格、薄面／细线、整体旋转已由 D3-3 增量 1 完成，子 prefab 插入由增量 2 完成，
+命名（协议 18）由增量 3 完成，见下文“命名”节；不暴露 `PrefabDesigner.check`，理由同节。Qinglan 集成为后续增量。）
 
 ## D3-2 增量 W-A：共享的已发布列表（协议仍为 17）
 
@@ -159,6 +159,32 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
   以同名 `harness_<pid>` 起 Erlang 节点（“name … in use”），节点名加线程 id；两者都是只测试 harness 的并发缺陷，不是编辑器语义变化。`fire-06` 十五项全过、退出 0：
   三设备 119.565984 A、加热器 42,888.07 W、源 57,391.67 W，源耗电 57,391.7 W，合闸后 83.1 s HOST 起燃、186.2 s 云杉底起燃被烧掉，7.32 MJ 已供、5.18 MJ 随设备弃置，
   双端 1246 条燃烧确认一致（证据 `Voxim/Saved/Gameplay/emergent-loop-20260923/fire-06/`，截图已看）。
+
+## D3-2 命名（协议 18，服务端半）
+
+分类：全局系统功能（0x71 名称字段、`Prefab.check_name/1`、`.pub` 名称、列表名称字段、Hello18）；测试为只测试。
+
+- **0x71**：定义字节之后追加 `name_len:u16, name:UTF-8`（大端，同帧其余整数）。Hello17 帧（无名称字段）解码即拒绝。
+- **信任边界**：`World.publish_prefab/4` 在刷新 `tool_context` 之后、编译之前调用 `Prefab.check_name/1`：非法 UTF-8、含 Unicode Cc 控制字符
+  （U+0000–001F、U+007F–009F）或超过 48 字节 → `{:error, :invalid_name}`，经既有 `ResultFrame.error` 以 `0x68` rejected、reason `":invalid_name"` 下行，
+  不编译、不写文件。空名合法（客户端显示“作品 N”）。拒绝原因中文标签由客户端 `author_chinese.py` 维护。
+- **持久化**：`.pub = <<序号::32, cid::64, 名称::binary>>`（名称占文件剩余字节）；启动载入用同一匹配，Hello18 前写下的 12 字节记录即空名，不迁移。
+  重发同一定义保留首个发布者、首次名称与序号；崩溃补记（有 .vxpd 无 .pub）时由补记者的名称写入。
+- **列表**：每项 `publisher_cid:u64, name_len:u16, name, len:u32, vxpd`，全部小端。
+- **NPC**：`PrefabDesigner.publish` 走 `World.publish_prefab/3`（名称默认空）。
+- **不暴露 `PrefabDesigner.check`**：它需要 NPC 设计用的 `entry`／`inside` 脚点才能给出路线、净空等报告（`prefab_designer.ex` 顶部），
+  玩家编辑空间没有这些输入；材料清单、中文拒绝原因和放置预览已覆盖玩家需要的反馈。决定不做玩家检查面板。
+
+**服务端半已实现，单元与模块接缝测试通过；未实跑（客户端半与 Hello18 镜像随后一起落地），D3 整体未验收。**
+
+- `apps/mmo_contracts` 116 passed：0x71 冻结帧（名称“石屋”= `E7 9F B3 E5 B1 8B`，空名、Hello17 帧／截断／多余字节拒绝）与列表冻结字节（一项“石屋”、一项空名）；
+  Hello 版本钉住改为 18（combustion／liquid／liquid_falls）。
+- `apps/voxel_region` prefab* 6 个文件 60 passed：名称跨重启、重发保留首名、崩溃补记者名称、12 字节旧 .pub 载入为空名、`.pub` 冻结字节；
+  非法 UTF-8（截断、过长编码 `C0 80`、`FF`）、LF、TAB、DEL、U+0085、49 字节拒绝且不入目录、不写文件，恰好 48 字节接受。
+- `apps/gate_server` 新增 `voxim_prefab_publish_dispatch_test.exs`：冻结 0x71 帧经正式解码 + `Dispatch.handle` 进真实 World，
+  含 LF 名称得到冻结的 `0x68 … ":invalid_name"` 字节、合法名称得到 `"ok"` 并列出；连同 codec／dispatch／session／npc 设计共 182 passed
+  （`quic_connection_test` 在 Windows 不能运行，未跑）。`apps/auth_server` HTTP 列表冻结字节（一新一旧 .pub）与邀请码 6 passed；
+  `apps/scene_server` `prefab_designer_test` 11 passed。
 
 ## 状态
 

@@ -240,12 +240,21 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(<<opcode, _::binary>>) when opcode in [0x7A, 0x7B, 0x7C],
     do: {:error, :invalid_message}
 
-  # D3 玩家运行时发布：整份 VXPD 字节；上限、格式与目录校验由 World.publish_prefab 统一裁决。
-  def decode(<<0x71, rid::64, seq::32, scene::64, n::32, definition::binary-size(n)>>),
-    do:
-      {:ok,
-       {:voxel_prefab_publish_v1,
-        %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, definition: definition}}}
+  # D3 玩家运行时发布：整份 VXPD 字节 + 名称（Hello18）；名称、上限、格式与目录校验由 World.publish_prefab 统一裁决。
+  def decode(
+        <<0x71, rid::64, seq::32, scene::64, n::32, definition::binary-size(n), name_len::16,
+          name::binary-size(name_len)>>
+      ),
+      do:
+        {:ok,
+         {:voxel_prefab_publish_v1,
+          %{
+            request_id: rid,
+            client_intent_seq: seq,
+            logical_scene_id: scene,
+            definition: definition,
+            name: name
+          }}}
 
   def decode(<<0x71, _::binary>>), do: {:error, :invalid_message}
 
@@ -560,12 +569,12 @@ defmodule MmoContracts.Voxel.Codec do
     ]
   end
 
-  @doc "D3-2 `POST /voxel/prefabs` 应答：count:u32 + 每项 publisher_cid:u64、len:u32、VXPD 字节，全部小端，按发布序。"
+  @doc "D3-2 `POST /voxel/prefabs` 应答：count:u32 + 每项 publisher_cid:u64、name_len:u16、UTF-8 名称、len:u32、VXPD 字节，全部小端，按发布序。"
   def encode_prefab_list(published) do
     [
       <<length(published)::32-little>>
-      | Enum.map(published, fn {cid, bytes} ->
-          [<<cid::64-little, byte_size(bytes)::32-little>>, bytes]
+      | Enum.map(published, fn {cid, name, bytes} ->
+          [<<cid::64-little, byte_size(name)::16-little>>, name, <<byte_size(bytes)::32-little>>, bytes]
         end)
     ]
   end
