@@ -142,4 +142,59 @@ defmodule VoxelRegion.CircuitTest do
     assert limited.cooling_j<=capacity*0.001+1.0e-9
     assert_in_delta Enum.sum(Map.values(limited.powers))*limited.duration+limited.rejected_j,limited.supplied_j,1.0e-8
   end
+
+  describe "电阻发光材料（R8-04）" do
+    # 只测试：一个 24 V / 1 Ω 源（微面设备，两端口宿主各是一个铜微格），铜微格 — n 个电阻合金微格 — 铜微格串成一条线。
+    # 目录值与发布目录同口径：铜 σ 5.8e7，合金 σ 4、λ 0.2；线截面 = 发布值。期望逐项按 r = d/(σ·A)（接触边两侧各半格）手算。
+    @section 3.814697265625e-06
+    @micro_area 1 / 64
+    defp resistive_fixture(n) do
+      catalog = %{tools: %{3 => %{"circuit_resistance_ohm" => 1.0, "circuit_voltage_v" => 24.0, "circuit_light_fraction" => 0.0}},
+        materials: %{24 => %{"electrical_conductivity" => 5.8e7}, 40 => %{"electrical_conductivity" => 4.0, "luminous_fraction" => 0.2}},
+        attachments: %{"line_section_m2" => @section, "face_thickness_m" => 1 / 512}}
+      target = fn x, material -> %{micro: {x, 0, 0}, granularity: 1, material: material, owner: {9, 0}, incarnation: 100 + x} end
+      cells = [target.(0, 24)] ++ for(x <- 1..n, do: target.(x, 40)) ++ [target.(n + 1, 24)]
+      slot = {0, 1, {0, 8, 0}}
+      c = %{tool_id: 3, kind: 1, anchor: {0, 8, 0}, size: 1, closed: true, fault: 0, remaining_j: 1.0e9,
+        voltage_v: 0.0, current_a: 0.0, power_w: 0.0}
+      damage = %{{3, 1} => Map.merge(Attachments.identity(slot, {1, 24}), %{flags: 0, circuit: c})}
+      input = Circuit.prepare(%{slot => {1, 24}}, damage, catalog, nil, 0.5)
+      [a, b] = Circuit.points(input)
+      hosts = %{a => [hd(cells)], b => [List.last(cells)]}
+      contacts = for [p, q] <- Enum.chunk_every(cells, 2, 1, :discard), do: {p, q, @micro_area}
+      {Circuit.plan(input, hosts, contacts), cells, catalog}
+    end
+
+    # 手算：铜宿主半格 (1/8)/2/(σ_Cu·截面)；铜—合金接触 ((1/8)/σ_Cu + (1/8)/σ)/2/A；合金—合金 (1/8)/σ·2/2/A = 2 Ω。
+    defp copper_host, do: 0.125 / 2 / (5.8e7 * @section)
+    defp copper_alloy, do: (0.125 / 5.8e7 + 0.125 / 4) / 2 / @micro_area
+    defp chain(n), do: 1.0 + 2 * copper_host() + 2 * copper_alloy() + (n - 1) * 2.0
+
+    test "单格灯丝：接触边按电阻份额分热，灯丝得到自身两条接触边 I²R 的 ≥ 1 − 1e-6，铜几乎为 0" do
+      {plan, [cu, fil, _], _} = resistive_fixture(1)
+      i = 24.0 / chain(1)
+      assert_in_delta plan.outputs[1].current_a, i, 1.0e-9
+      edge_joule = 2 * i * i * copper_alloy()
+      {_, w, a} = plan.electric[{1, fil.micro}]
+      assert w >= (1 - 1.0e-6) * edge_joule and w <= edge_joule
+      assert_in_delta a, i, 1.0e-9
+      # 灯丝 λ = 0.2：热节点只得 0.8。铜只得到端口落点的宿主边与接触边里自己那半格的份额，没有光。
+      assert_in_delta plan.powers[{1, fil.micro}], 0.8 * w, 1.0e-9
+      assert_in_delta plan.powers[{1, cu.micro}], i * i * (copper_host() + 0.125 / 5.8e7 / 2 / @micro_area), 1.0e-12
+      refute Map.has_key?(plan.electric, {1, cu.micro})
+    end
+
+    test "n 格灯丝串联：I = V /(r_源 + 2n + 铜)，光 = λ × 灯丝焦耳，热 + 光 = 供能" do
+      for n <- [1, 2, 5] do
+        {plan, cells, _} = resistive_fixture(n)
+        i = 24.0 / chain(n)
+        assert_in_delta plan.outputs[1].current_a, i, 1.0e-9
+        filament = for c <- cells, c.material == 40, do: elem(plan.electric[{1, c.micro}], 1)
+        assert length(filament) == n
+        assert_in_delta plan.light_j, 0.2 * Enum.sum(filament) * plan.duration, 1.0e-9
+        assert_in_delta Enum.sum(Map.values(plan.powers)) * plan.duration + plan.light_j, plan.supplied_j, 1.0e-6
+        assert_in_delta plan.supplied_j, 24.0 * i * plan.duration, 1.0e-6
+      end
+    end
+  end
 end

@@ -3483,7 +3483,9 @@ defmodule VoxelRegion.World do
 
   defp circuit_steps(state, remaining, visited) do
     if map_size(VoxelRegion.Circuit.devices(state.damage)) == 0 do
-      thermal_steps(state, remaining, visited, %{})
+      {state, visited} = thermal_steps(state, remaining, visited, %{})
+      {damage, visited} = electric_rows(state.damage, visited, %{})
+      {%{state | damage: damage}, visited}
     else
       # 受保护区域：导线/设备端点按槽的持有者分开，端点只接同一持有者的实体导体。
       protection = state.protection
@@ -3511,6 +3513,8 @@ defmodule VoxelRegion.World do
           {Map.update!(damage, key, &Map.put(&1, :circuit, c)), MapSet.put(visited, key)}
         end)
 
+      {damage, visited} = electric_rows(damage, visited, plan.electric)
+
       thermal =
         state.thermal
         |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))
@@ -3519,7 +3523,7 @@ defmodule VoxelRegion.World do
         |> Map.update(:circuit_rejected_j, plan.rejected_j, &(&1 + plan.rejected_j))
 
       Logger.info(
-        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} cooling_j=#{plan.cooling_j} rejected_j=#{plan.rejected_j}"
+        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} cooling_j=#{plan.cooling_j} rejected_j=#{plan.rejected_j} luminous=#{map_size(plan.electric)}"
       )
 
       circuit_steps(
@@ -3528,6 +3532,23 @@ defmodule VoxelRegion.World do
         visited
       )
     end
+  end
+
+  # 全局系统功能：发光导体（目录 λ > 0）本段求解的电功率与穿过电流是派生观察，写在已有温度记录上随属性下发；
+  # 不再通电的记录去掉这两个字段。值不变的记录不进提交（提交只发与提交前不同的记录）。
+  defp electric_rows(damage, visited, electric) do
+    lit =
+      for {_key, {target, w, a}} <- electric, key <- [Damage.key(target)],
+          %{temperature_kelvin: _} <- [Map.get(damage, key)], into: %{},
+          do: {key, %{electric_w: w, current_a: a}}
+
+    stale = for {key, %{electric_w: _}} <- damage, not Map.has_key?(lit, key), into: %{},
+      do: {key, nil}
+
+    Enum.reduce(Map.merge(stale, lit), {damage, visited}, fn
+      {key, nil}, {d, v} -> {Map.update!(d, key, &Map.drop(&1, [:electric_w, :current_a])), MapSet.put(v, key)}
+      {key, fields}, {d, v} -> {Map.update!(d, key, &Map.merge(&1, fields)), MapSet.put(v, key)}
+    end)
   end
 
   # 按实际连通导体扩张 canonical 读取；不预读全世界，也不把 owner 交给计算模块。

@@ -32,34 +32,37 @@ defmodule VoxelRegion.Circuit do
       o=domain && owner(domain,footprint)
       edge=%{a: node(c.anchor,domain,o),b: node(offset(c.anchor,u,c.size),domain,o),r: tool["circuit_resistance_ohm"],
         emf: if(c.kind==1 and c.remaining_j>0,do: tool["circuit_voltage_v"],else: 0.0),
-        device: id,heat: for(s<-footprint,do: {VoxelRegion.ThermalAttachments.key(s),1.0/length(footprint)}),
-        light: tool["circuit_light_fraction"],
+        device: id,heat: for(s<-footprint,do: {VoxelRegion.ThermalAttachments.key(s),1.0/length(footprint),tool["circuit_light_fraction"]}),
         cooling: if(c.kind==5,do: cooling_limits(footprint,id,target.material,tool,damage,catalog,ambient,cooling_duration),else: %{})}
       conducting=intact and c.closed and (c.kind != 1 or c.remaining_j>0) and
         (c.kind != 5 or Enum.all?(edge.cooling,fn {_,{limit,_}}->limit>0 end))
       {if(conducting,do: [edge|edges],else: edges),Enum.reduce(footprint,faces,&MapSet.put(&2,&1))}
     end)
     section=catalog.attachments["line_section_m2"]
-    edges=Enum.reduce(slots,edges,fn {slot={kind,axis,p},{_id,material}},edges->
+    {edges,luminous}=Enum.reduce(slots,{edges,%{}},fn {slot={kind,axis,p},{id,material}},{edges,luminous}->
       sigma=Map.get(catalog.materials[material],"electrical_conductivity",0.0)
       if sigma>0 and not MapSet.member?(faces,slot) do
-        heat=[{VoxelRegion.ThermalAttachments.key(slot),1.0}]
+        key=VoxelRegion.ThermalAttachments.key(slot)
+        lum=luminous_fraction(catalog,material)
+        heat=[{key,1.0,lum}]
+        luminous=if lum>0,do: Map.put(luminous,key,Attachments.identity(slot,{id,material}) |> Map.put(:granularity,4)),else: luminous
         o=domain && domain.(slot)
-        if kind==1 do
+        edges=if kind==1 do
           [edge(node(p,domain,o),node(offset(p,axis,1),domain,o),@length/(sigma*section),heat)|edges]
         else
           [u,v]=Enum.reject(0..2,&(&1==axis))
           corners=[p,offset(p,u,1),offset(p,v,1),p |> offset(u,1) |> offset(v,1)]
           r=2.0/(sigma*catalog.attachments["face_thickness_m"])
           for {a,b}<-[{0,1},{0,2},{1,3},{2,3}],reduce: edges do
-            acc->[edge(node(Enum.at(corners,a),domain,o),node(Enum.at(corners,b),domain,o),r,Enum.map(heat,fn {k,w}->{k,w} end))|acc]
+            acc->[edge(node(Enum.at(corners,a),domain,o),node(Enum.at(corners,b),domain,o),r,heat)|acc]
           end
         end
+        {edges,luminous}
       else
-        edges
+        {edges,luminous}
       end
     end)
-    %{devices: devices, grouped: grouped, catalog: catalog, edges: edges,
+    %{devices: devices, grouped: grouped, catalog: catalog, edges: edges, luminous: luminous,
       duration: duration, cooling_duration: cooling_duration, started: started}
   end
 
@@ -76,41 +79,53 @@ defmodule VoxelRegion.Circuit do
       |> Enum.filter(&(Map.get(catalog.materials[&1.material],"electrical_conductivity",0.0)>0))
   end
 
-  @doc "求解冻结的端点宿主与实占用接触摘要，输出功率和设备状态，不返回世界。"
+  @doc """
+  求解冻结的端点宿主与实占用接触摘要，输出功率和设备状态，不返回世界。
+
+  每条支路的 I²R 按两侧各自的电阻份额分给两侧热节点（接触边 r = r_a + r_b，a 得 r_a/r）；节点所在材料的
+  `luminous_fraction` λ 那一份离开热账记为光（`light_j`），其余进热节点。发光节点另给出电功率与通过电流
+  （`electric`：热键 → {目标, W, A}；A = 该节点全部非设备支路 |i| 之和的一半，即两端导体的穿过电流）。
+  """
   def plan(input,hosts,contacts) do
-    %{devices: devices,grouped: grouped,catalog: catalog,edges: edges,
+    %{devices: devices,grouped: grouped,catalog: catalog,edges: edges,luminous: luminous,
       duration: duration,cooling_duration: cooling_duration,started: started}=input
     section=catalog.attachments["line_section_m2"]
-    edges=Enum.reduce(points(input),edges,fn p,edges ->
-      Enum.reduce(Map.fetch!(hosts,p),edges,fn target,edges ->
+    {edges,luminous}=Enum.reduce(points(input),{edges,luminous},fn p,acc ->
+      Enum.reduce(Map.fetch!(hosts,p),acc,fn target,{edges,luminous} ->
         key=ThermalGeometry.key(target)
         sigma=catalog.materials[target.material]["electrical_conductivity"]
-        [edge(p,{:solid,key},size(target)/2/(sigma*section),[{key,1.0}])|edges]
+        lum=luminous_fraction(catalog,target.material)
+        {[edge(p,{:solid,key},size(target)/2/(sigma*section),[{key,1.0,lum}])|edges],glowing(luminous,key,target,lum)}
       end)
     end)
     # owner 保留原遍历和前插次序；纯计算按同一边顺序求解，避免浮点累加漂移。
-    edges=Enum.map(contacts,fn {target,other,area} ->
+    {contact_edges,luminous}=Enum.map_reduce(contacts,luminous,fn {target,other,area},luminous ->
       a=ThermalGeometry.key(target); b=ThermalGeometry.key(other)
-      r=(size(target)/catalog.materials[target.material]["electrical_conductivity"]+
-         size(other)/catalog.materials[other.material]["electrical_conductivity"])/2/area
-      edge({:solid,a},{:solid,b},r,[{a,0.5},{b,0.5}])
-    end)++edges
+      ra=size(target)/catalog.materials[target.material]["electrical_conductivity"]/2/area
+      rb=size(other)/catalog.materials[other.material]["electrical_conductivity"]/2/area
+      la=luminous_fraction(catalog,target.material); lb=luminous_fraction(catalog,other.material)
+      {edge({:solid,a},{:solid,b},ra+rb,[{a,ra/(ra+rb),la},{b,rb/(ra+rb),lb}]),
+        luminous |> glowing(a,target,la) |> glowing(b,other,lb)}
+    end)
+    edges=contact_edges++edges
     result=DCNetwork.solve(edges)
     reset=Map.new(devices,fn {id,{t,c}} ->
       intact=MapSet.new(Map.get(grouped,id,[]))==MapSet.new(Attachments.footprint(0,rem(elem(t.owner,1),3),c.anchor,c.size))
       {id,%{c | voltage_v: 0.0,current_a: 0.0,power_w: 0.0,fault: if(intact,do: 0,else: 1)}}
     end)
-    {outputs,powers,source_w,light_w,cooling_w,rejected_w}=Enum.zip(edges,result.currents) |> Enum.with_index() |> Enum.reduce({reset,%{},%{},0.0,0.0,0.0},fn {{e,i},index},{out,heat,sources,light,cooling,rejected}->
+    {outputs,powers,source_w,light_w,cooling_w,rejected_w,electric}=Enum.zip(edges,result.currents) |> Enum.with_index() |> Enum.reduce({reset,%{},%{},0.0,0.0,0.0,%{}},fn {{e,i},index},{out,heat,sources,light,cooling,rejected,electric}->
       # 实跑开路残差约 8e-11 A；低于 1e-10 A 的消元舍入不作为供能。
       i=if abs(i)<1.0e-10,do: 0.0,else: i
       watts=i*i*e.r
-      light_power=watts*e.light
-      {heat,extracted}=Enum.reduce(e.heat,{heat,0.0},fn {key,weight},{h,extracted}->
-        q=case Map.get(e.cooling,key) do
-          nil -> (watts-light_power)*weight
-          {limit,cop} -> -min(limit,watts*weight*cop)
+      {heat,extracted,light}=Enum.reduce(e.heat,{heat,0.0,light},fn {key,weight,lum},{h,extracted,light}->
+        {q,glow}=case Map.get(e.cooling,key) do
+          nil -> {watts*weight*(1.0-lum),watts*weight*lum}
+          {limit,cop} -> {-min(limit,watts*weight*cop),0.0}
         end
-        {Map.update(h,key,q,&(&1+q)),extracted+if(map_size(e.cooling)>0,do: -q,else: 0.0)}
+        {Map.update(h,key,q,&(&1+q)),extracted+if(map_size(e.cooling)>0,do: -q,else: 0.0),light+glow}
+      end)
+      electric=if e.device,do: electric,else: Enum.reduce(e.heat,electric,fn {key,weight,lum},acc->
+        if lum>0,do: Map.update(acc,key,{watts*weight,abs(i)},fn {w,a}->{w+watts*weight,a+abs(i)} end),else: acc
       end)
       rejected=rejected+if(map_size(e.cooling)>0,do: watts+extracted,else: 0.0)
       cooling=cooling+extracted
@@ -120,9 +135,9 @@ defmodule VoxelRegion.Circuit do
         power=if c.kind==1,do: max(0.0,-e.emf*i),else: watts
         c=%{c | voltage_v: v,current_a: abs(i),power_w: power,fault: if(MapSet.member?(result.faults,index),do: 2,else: 0)}
         sources=if c.kind==1 and power>0,do: Map.put(sources,e.device,power),else: sources
-        {Map.put(out,e.device,c),heat,sources,light+light_power,cooling,rejected}
+        {Map.put(out,e.device,c),heat,sources,light,cooling,rejected,electric}
       else
-        {out,heat,sources,light+light_power,cooling,rejected}
+        {out,heat,sources,light,cooling,rejected,electric}
       end
     end)
     # 仅实际移热需要冷板控制段；停止移热时仍由真实源余量决定截断。
@@ -131,9 +146,10 @@ defmodule VoxelRegion.Circuit do
     outputs=Enum.reduce(source_w,outputs,fn {id,power},all->update_in(all[id].remaining_j,fn energy->
       if done==energy/power,do: 0.0,else: max(0.0,energy-power*done)
     end) end)
+    electric=for {key,{w,a}}<-electric,w>0.0,into: %{},do: {key,{Map.fetch!(luminous,key),w,a/2}}
     %{duration: done,outputs: outputs,powers: Map.reject(powers,fn {_,w}->w==0.0 end),
       supplied_j: Enum.sum(Map.values(source_w))*done,light_j: light_w*done,
-      cooling_j: cooling_w*done,rejected_j: rejected_w*done,
+      cooling_j: cooling_w*done,rejected_j: rejected_w*done,electric: electric,
       nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
   end
 
@@ -180,7 +196,9 @@ defmodule VoxelRegion.Circuit do
       _ -> {:mixed,slots}
     end
   end
-  defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,device: nil,heat: heat,light: 0.0,cooling: %{}}
+  defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,device: nil,heat: heat,cooling: %{}}
+  defp luminous_fraction(catalog,material),do: Map.get(catalog.materials[material],"luminous_fraction",0.0)
+  defp glowing(luminous,key,target,lum),do: if(lum>0,do: Map.put(luminous,key,target),else: luminous)
   defp thermal_target(%{granularity: 2}=t),do: %{t | granularity: 1}
   defp thermal_target(t),do: t
   defp size(%{granularity: 0}),do: 1.0

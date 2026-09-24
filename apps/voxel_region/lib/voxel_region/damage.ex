@@ -176,6 +176,14 @@ defmodule VoxelRegion.Damage do
       true = is_number(m["transform_reductant_units_per_unit"]) and m["transform_reductant_units_per_unit"] > 0
     end
 
+    # R8-04 电阻发光轴：λ（I²R 中成为光的份额）∈ [0, 1]，只能在导体上。
+    true =
+      Enum.all?(materials, fn {_, m} ->
+        not Map.has_key?(m, "luminous_fraction") or
+          (is_number(m["luminous_fraction"]) and m["luminous_fraction"] >= 0 and
+             m["luminous_fraction"] <= 1 and Map.get(m, "electrical_conductivity", 0) > 0)
+      end)
+
     liquid = data["liquid"]
     if liquid do
       capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro

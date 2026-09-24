@@ -362,11 +362,19 @@ defmodule MmoContracts.Voxel.Codec do
           <<>>
       end
 
+    # 协议 20：发光导体（目录 λ > 0）的电功率与穿过电流，只随带温度的格/槽记录出现，16 字节、在最后；
+    # 由 flags 位 1 声明（位 0 仍是删除），不靠剩余长度猜。
+    {electric, present} =
+      case Map.fetch(t, :electric_w) do
+        {:ok, w} -> {<<w::float-64, t.current_a::float-64>>, 2}
+        :error -> {<<>>, 0}
+      end
+
     {:ok,
      <<0x7E, t.request_id::64, t.seq::64, x::signed-64, y::signed-64, z::signed-64,
        t.granularity::8, t.incarnation::64, birth::64, occurrence::32, t.material::16,
        t.hp::float-64, t.max_hp::float-64, t.defense::float-64, t.digest::binary-size(32),
-       t.flags::8, temperature::binary, circuit::binary, combustion::binary>>}
+       t.flags + present::8, temperature::binary, circuit::binary, combustion::binary, electric::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
