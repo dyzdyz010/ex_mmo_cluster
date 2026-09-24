@@ -35,6 +35,32 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(wrong)) end
   end
 
+  test "UE 发布字节：DA_MagicCatalogV1 增量 2 冻结样本（%.17g 数值、integer 槽、取能 2 MJ 预设）原样加载、预设可施放" do
+    # 冻结样本 = Voxim Content/Voxel/Magic/Published/88e9a01b….json 原字节（部署进服务端的就是这份）。
+    digest = "88e9a01be67a72897847f226c5460b38fa88421cd60fa50343fda151d58747af"
+    bytes = File.read!(Path.expand("fixtures/magic/#{digest}.json", __DIR__))
+    assert bytes =~ ~s("radius_m":0.40000000000000002) and bytes =~ ~s("integer":true)
+    catalog = Catalog.decode(bytes)
+    assert Base.encode16(catalog.digest, case: :lower) == digest
+    assert catalog.semblance == %{specific_heat: 500.0, conductivity: 400.0}
+    assert catalog.symbols["form.semblance"].integer == ["shape"]
+    presets = Map.new(Jason.decode!(bytes)["presets"], &{&1["id"], &1["program"]})
+    assert Enum.sort(Map.keys(presets)) == ~w(dispel draw_1mj draw_2mj hot_throw ignite_near light_orb)
+    {:ok, throw} = Program.validate(presets["hot_throw"], catalog)
+    # 手算：C = 2 kg × 500 = 1000 J/K，ΔT = 1706.85 K → 1 706 850 J；½·2·12² = 144 J；E_phys = 1 706 994 J；
+    # E_ctl = 2000 · (2 + 1.706994)^1.5 = 14 274.56 J（至 0.01 J）。
+    q = Cost.quote(throw, catalog, 293.15)
+    assert_in_delta q.physical_j, 1_706_994.0, 1.0e-6
+    assert_in_delta q.control_j, 14_274.56, 0.01
+    {:ok, orb} = Program.validate(presets["light_orb"], catalog)
+    # 光球：C·ΔT = 0，发光 100 W × 120 s = 12 000 J；E_ctl = 2000 · 1.012^1.5 = 2036.11 J。
+    q = Cost.quote(orb, catalog, 293.15)
+    assert_in_delta q.physical_j, 12_000.0, 1.0e-6
+    assert_in_delta q.control_j, 2036.11, 0.01
+    assert {:ok, %{steps: [%{sym: "energy.draw", args: %{"energy_j" => 2.0e6}}]}} = Program.validate(presets["draw_2mj"], catalog)
+    assert {:ok, %{emit: :at_target}} = Program.validate(presets["dispel"], catalog)
+  end
+
   test "程序形态：三个预设合法；形态与发出方式不符、形状非整数、只投不形一律 invalid_program", c do
     assert {:ok, %{emit: :hand, steps: [%{sym: "form.semblance"}, %{sym: "act.throw", args: %{"speed_mps" => 12.0}}]}} =
              Program.validate(preset(c, "hot_throw"), c.catalog)
