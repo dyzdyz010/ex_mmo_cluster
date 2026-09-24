@@ -57,6 +57,12 @@ Scene 通过 W1 显式 World 引用接收 canonical snapshot/delta；各 Player 
 - `Skill`：面向玩家的技能定义。
 - `Targeting`：不依赖具体角色类型的 AOI 选目标逻辑。
 
+### `body/`
+
+身体 L1 纯值模型（Voxim `Docs/Magic.md` §6，首片只接体温）：`Body` 保存核心 / 皮肤温度、烧伤冻伤剂量与
+濒死计时，推导系统功能水平、生命值和伤病表；`Body.Thermo.step/3` 按两节点模型推进一步并返回能量账。
+尚未接入 `Movement.Player`，参数与依据见 [`body/README.md`](body/README.md)。
+
 ### `worker/`
 
 长生命周期的权威角色和基础设施：
