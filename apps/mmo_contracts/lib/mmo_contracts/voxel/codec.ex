@@ -54,7 +54,8 @@ defmodule MmoContracts.Voxel.Codec do
          thermal_enabled: :bool,
          ambient_kelvin: :f64,
          epochs: :bytes,
-         states: {:array, :u32, :bytes}
+         states: {:array, :u32, :bytes},
+         protection: :bytes
        ]}
   }
 
@@ -960,5 +961,60 @@ defmodule MmoContracts.Voxel.Codec do
     end)
   end
 
+  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, complete: complete}) do
+    {:ok, delta} = decode_protection(bytes)
+    true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
+  end
+
   defp accept_m1(_), do: :ok
+
+  @doc """
+  全局系统功能（协议 19）：受保护区域增量 `%{{seq, n} => 区域 | nil}` 的线字节，放在 PropertyBatch 末尾。
+  每条 37 B、大端、按 id 升序且唯一：
+
+      id_seq:u64, id_n:u32, holder:u8 (0 删除 / 1 保留 / 2 角色), cid:u64,
+      min_x:i32, min_z:i32, max_x:i32, max_z:i32
+
+  删除记录 cid 与矩形全为 0；保留区域 cid 为 0；矩形是闭区间宏格，y 不限。
+  """
+  def encode_protection(delta) do
+    for {{seq, n}, region} <- Enum.sort(delta), into: <<>> do
+      {holder, cid, {x0, z0}, {x1, z1}} =
+        case region do
+          nil -> {0, 0, {0, 0}, {0, 0}}
+          %{holder: :reserved} -> {1, 0, region.min, region.max}
+          %{holder: {:character, cid}} -> {2, cid, region.min, region.max}
+        end
+
+      <<seq::64, n::32, holder::8, cid::64, x0::signed-32, z0::signed-32, x1::signed-32,
+        z1::signed-32>>
+    end
+  end
+
+  @doc "`encode_protection/1` 的逆；区域只含 holder/min/max。"
+  def decode_protection(bytes), do: decode_protection(bytes, nil, %{})
+
+  defp decode_protection(<<>>, _, acc), do: {:ok, acc}
+
+  defp decode_protection(
+         <<seq::64, n::32, holder::8, cid::64, x0::signed-32, z0::signed-32, x1::signed-32,
+           z1::signed-32, rest::binary>>,
+         previous,
+         acc
+       )
+       when previous == nil or {seq, n} > previous do
+    region =
+      case {holder, cid} do
+        {0, 0} when {x0, z0, x1, z1} == {0, 0, 0, 0} -> nil
+        {1, 0} when x0 <= x1 and z0 <= z1 -> %{holder: :reserved, min: {x0, z0}, max: {x1, z1}}
+        {2, cid} when cid > 0 and x0 <= x1 and z0 <= z1 -> %{holder: {:character, cid}, min: {x0, z0}, max: {x1, z1}}
+        _ -> :invalid
+      end
+
+    if region == :invalid,
+      do: {:error, :invalid_protection},
+      else: decode_protection(rest, {seq, n}, Map.put(acc, {seq, n}, region))
+  end
+
+  defp decode_protection(_, _, _), do: {:error, :invalid_protection}
 end

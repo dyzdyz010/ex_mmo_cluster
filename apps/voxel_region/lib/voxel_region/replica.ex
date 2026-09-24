@@ -60,6 +60,8 @@ defmodule VoxelRegion.Replica do
           damage: Map.new(Map.get(snapshot,:property_states,[]),&{VoxelRegion.Damage.key(&1),&1}),
           property_context: Map.get(snapshot, :property_context),
           epochs: Map.get(snapshot, :epochs, %{}),
+          # 受保护区域（World 真值在本副本窗口内的投影）；只转发给订阅者，副本不裁决。
+          protection: Map.get(snapshot, :protection, %{}),
           subscribers: %{},
           deltas: [],
           checkpoint_seq: snapshot.transaction_seq,
@@ -136,7 +138,7 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
-      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs}) |> VoxelRegion.PropertyObservation.project(box)
+      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection}) |> VoxelRegion.PropertyObservation.project(box)
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
       {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, box)}}
@@ -163,7 +165,11 @@ defmodule VoxelRegion.Replica do
     damage = Enum.reduce(Map.get(delta.transaction,:property_states,[]),state.damage,fn t,acc ->
       if t.flags==1,do: Map.delete(acc,VoxelRegion.Damage.key(t)),else: Map.put(acc,VoxelRegion.Damage.key(t),t)
     end)
-    state = %{state | damage: damage, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
+    protection = Enum.reduce(Map.get(delta.transaction, :protection, %{}), state.protection, fn
+      {id, nil}, acc -> Map.delete(acc, id)
+      {id, region}, acc -> Map.put(acc, id, region)
+    end)
+    state = %{state | damage: damage, protection: protection, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
       property_context: Map.get(delta.transaction,:property_context,state.property_context)}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(

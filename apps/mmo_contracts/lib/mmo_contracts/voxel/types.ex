@@ -83,5 +83,6 @@ defmodule MmoContracts.Voxel.PropertyBatch do
     :epochs,
     :states
   ]
-  defstruct @enforce_keys
+  # 协议 19：受保护区域记录（`Voxel.Codec.encode_protection/1`）；完整批次为窗口内全部区域，增量批次为本事务的变化。
+  defstruct @enforce_keys ++ [protection: <<>>]
 end

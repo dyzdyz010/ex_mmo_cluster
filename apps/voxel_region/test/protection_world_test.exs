@@ -2,9 +2,10 @@ defmodule VoxelRegion.ProtectionWorldTest do
   @moduledoc """
   只测试：受保护区域（R8-03 增量 1，服务端）经真实 World 入口。
 
-  目录夹具 `fixtures/protection/<digest>.json` = 已发布 5be2e8c7（`fixtures/combustion/`，DA_MaterialCoverageV1 字节）
-  原样加一个 Test-only 认领工具行（tool 20，action protection.claim，region_max_count 5、region_max_area_m2 1 000 000）
-  与同名标签；材料与其余工具逐字节不变（下方第一个测试核对）。增量 2 由 UE 发布正式目录后替换本夹具。
+  目录夹具 `fixtures/protection/<digest>.json` = 5be2e8c7（`fixtures/combustion/`，DA_MaterialCoverageV1 字节）加认领工具行
+  （tool 20，action protection.claim，region_max_count 5、region_max_area_m2 1 000 000）与同名标签；材料与其余工具逐字节不变
+  （下方第一个测试核对）。增量 2 起它与 UE 正式发布的 DA_MaterialCoverageV1（Voxim
+  `Content/Voxel/Properties/Playable/Published/ab44556b….json`）逐字节相同，不再是 Test-only 专用目录。
   热环境 = Test-only 辐射环境 ε 0.9（`fixtures/combustion/environment-radiation.json`）。
 
   场景地形只经作者编辑入口建立；材料只经 material_supply；区域经认领工具（正式玩家路径）或作者入口 author_regions；
@@ -569,6 +570,38 @@ defmodule VoxelRegion.ProtectionWorldTest do
     w = restart.()
     assert regions(w) == %{}
     assert {:ok, _} = use_tool(w, b, {5, 0, 0}, 1)
+  end
+
+  # 协议 19：窗口快照与事务增量经真实 canonical 订阅（World 直连与 Replica 转发）携带区域，按窗口投影，
+  # 线字节（MmoContracts.Voxel.Codec.encode_protection）还原出同一持有者与矩形；删除总是送达。
+  test "区域经真实 canonical 订阅与副本到达窗口：快照带窗口内区域，认领/释放事务带增量，窗口外新建不送", c do
+    w = start(c, :wire)
+    {:ok, _} = World.apply_edits(w, for(x <- 0..12, do: {{x, 0, 0}, @stone}))
+    a = actor(@a)
+    assert {:ok, _} = claim(w, a, {0, 0}, {9, 0})
+    replica = start_supervised!({VoxelRegion.Replica, authority_ref: w, l0_box: {{-1, -1, -1}, {1, 1, 1}}, name: nil})
+    box = {{0, -1, 0}, {1, 1, 1}}
+    :ok = World.canonical_snapshot_and_subscribe(w, box, self(), :direct, false)
+    :ok = VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica, box, self(), :replica, false)
+    wire = fn map -> MmoContracts.Voxel.Codec.decode_protection(MmoContracts.Voxel.Codec.encode_protection(map)) end
+    [{id, _}] = Map.to_list(regions(w))
+    held = %{id => %{holder: {:character, @a}, min: {0, 0}, max: {9, 0}}}
+    for ref <- [:direct, :replica] do
+      assert_receive {:canonical_snapshot, ^ref, snapshot}, 5_000
+      assert wire.(snapshot.protection) == {:ok, held}
+    end
+    # 窗口外（x 1000）的新区域：事务照常推进，投影后增量为空。
+    {:ok, far} = World.author_regions(w, [%{holder: :reserved, min: {1000, 1000}, max: {1010, 1010}}])
+    for _ <- 1..2 do
+      assert_receive {:canonical_delta, %{transaction_seq: ^far} = delta}, 5_000
+      assert delta.transaction.protection == %{}
+    end
+    # 释放（区域内再点）：删除记录到达两条路径，线上为 holder 0。
+    {:ok, released} = use_tool(w, a, {5, 0, 0}, @claim)
+    for _ <- 1..2 do
+      assert_receive {:canonical_delta, %{transaction_seq: ^released} = delta}, 5_000
+      assert wire.(delta.transaction.protection) == {:ok, %{id => nil}}
+    end
   end
 
   test "索引：查询、重叠、删除后桶清空；1 km² 方形与 1 m 宽长条的桶数" do

@@ -691,7 +691,8 @@ defmodule SceneServer.Movement.Player do
           thermal_enabled: if(context.thermal_enabled, do: 1, else: 0),
           ambient_kelvin: context.ambient_kelvin,
           epochs: epochs,
-          states: states
+          states: states,
+          protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{}))
         }
 
         reliable(state, :voxel, message)
