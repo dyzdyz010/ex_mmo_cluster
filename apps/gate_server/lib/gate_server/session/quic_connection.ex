@@ -508,7 +508,9 @@ defmodule GateServer.Session.QuicConnection do
       {:ok, {:voxel_overlay_subscribe, _sub}} ->
         # Scene owns the single ordered world subscription, including reconnect
         # bootstrap. This admission never creates an independent Gate log sender.
-        %{state | voxim_overlay: true}
+        # 魔法增量 1：接纳时经编辑 worker 下发一次施法者状态（request_id 0）。
+        enqueue_edit(%{state | voxim_overlay: true},
+          {:voxel_caster_state_request, %{request_id: 0, logical_scene_id: state.identity.scene_id}})
 
       {:ok, {kind, request} = message}
       when kind in [:voxel_production_intent, :voxel_attachment_intent] and state.voxim_overlay ->
@@ -518,7 +520,7 @@ defmodule GateServer.Session.QuicConnection do
           else: close(state, 4)
 
       {:ok, {kind, request} = message}
-      when kind in [:voxel_tool_intent, :voxel_prefab_publish_v1] and state.voxim_overlay ->
+      when kind in [:voxel_tool_intent, :voxel_spell_intent, :voxel_prefab_publish_v1] and state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id),
           do: enqueue_edit(state, message),
           else: close(state, 4)

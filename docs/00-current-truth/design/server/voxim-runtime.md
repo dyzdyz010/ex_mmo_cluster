@@ -36,6 +36,18 @@ flowchart LR
 - **协议**：VXRC（版本 12）允许任何非空气、非细分宏格带数量；液体／相态仍按原版本编码。Hello 22 → 23（客户端增量镜像后合并）。
 - 复跑：`apps/voxel_region` 下 `MMO_DB_PORT=5433 mix test test/loose_world_test.exs`（11 项）；本地炉模拟 `mix test test/loose_furnace_sim_test.exs --only sim`；100 m³ 倾倒 `mix test test/loose_pour_benchmark_test.exs --only benchmark`。只证明服务端范围，不代替双客户端实跑。
 
+## 魔法增量 1：取能与远程点火（2026-09-25，分支 `magic-inc1`，未合并，等客户端 Hello 24 增量）
+
+设计正文见 Voxim `Docs/Magic.md` §2、§4、§10。服务端事实：
+
+- **目录**：`VoxelRegion.Magic.Catalog` 读取部署的魔法目录（app env / World opt `:magic_catalog_path`，部署同属性目录：UE `DA_MagicCatalogV1` Publish 的 `Content/Voxel/Magic/Published/<sha256>.json` 拷进服务端并在 entry 里 `put_env`），digest = 文件字节 sha256；只接受已实现动词 `energy.draw`、`act.heat`。有魔法目录的世界必须有热环境。
+- **程序与成本**：`Magic.Program` 在信任边界解析 JSON IR（增量 1 只接受 aim / at_target / 1 步，失败一律 `:invalid_program`）；`Magic.Cost` 是成本、相干度、走火、取能分账的唯一实现，报价与施放共用。取能的控制开销从取得的能量里付（可支付 = 余额 + η·ΔE）。
+- **真值**：施法者能量 `caster_energy`（cid ⇒ J）在 World，与蓄能石 `stored_j` 同一笔事务原子改变，随日志（`caster_energy` 增量）与检查点持久化，不自动回复。施法的热只经 `thermal.sources` 有限热源进世界：`act.heat` 在目标宏格建源（功率 = 槽 `power_w`，已有源拒 `heat_source_busy`）；控制开销、走火支出、取能损耗以 能量/0.5 s 的功率落脚下宏格／石格（同格并入）。
+- **校验**（不扣能量）：施法间隔（同工具 GCRA，`cast_too_soon`）→ 眼睛射线 30 m 首个命中须为请求目标（`stale_target`）、格心距眼 ≤ 6 m（`out_of_domain`，无命中同）→ 脚下宏格须为带热容的未细分宏格（`no_footing`）→ 动词对象（`invalid_target`）→ 目标格与脚下宏格 `Protection.permitted?`（`protected_region`）。
+- **账**（`thermal_accounting`）：`caster_drawn_j`、`draw_loss_j`、`cast_waste_j`、`spell_heat_j`；石减少 = caster_drawn_j + draw_loss_j，施法支出 = spell_heat_j + cast_waste_j。
+- **协议**：上行 0x82 `voxel_spell_intent`、下行 0x83 `voxel_caster_state`（`MmoContracts.Voxel.Codec`，冻结样本 `magic_wire_test.exs`）；施放与走火回 0x68 accepted（reason `ok`／`misfire_energy`／`misfire_coherence`），拒绝回 0x68 rejected。QUIC 接纳 0x76 时经编辑 worker 下发一次 0x83。Hello 23 → 24。
+- 复跑：`apps/voxel_region` 下 `mix test --no-start test/magic_test.exs test/magic_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test --no-start test/gate_server/voxim_spell_dispatch_test.exs`。只证明服务端范围，不代替双客户端实跑。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

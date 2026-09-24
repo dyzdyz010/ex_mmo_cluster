@@ -164,6 +164,8 @@ defmodule SceneServer.Movement.Player do
         identity: identity,
         eye: {x, y + 0.6, z},
         position: {x, y, z},
+        # 魔法增量 1：施法留热落脚下宏格；position 是胶囊中心，脚 = 中心下移 profile 半高。
+        feet: {x, y - state.config.profile.half_height, z},
         tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
         refresh: &__MODULE__.tool_context/2
       }}, state}

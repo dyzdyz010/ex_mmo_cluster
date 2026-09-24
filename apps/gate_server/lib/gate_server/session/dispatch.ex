@@ -555,7 +555,9 @@ defmodule GateServer.Session.Dispatch do
       coarse_min_level: sub.coarse_min_level
     })
 
-    {:ok, state |> Map.put(:voxim_overlay, true) |> Map.put(:world_ref, world_ref)}
+    state = state |> Map.put(:voxim_overlay, true) |> Map.put(:world_ref, world_ref)
+    send_caster_state(state, 0)
+    {:ok, state}
   end
 
   def handle({:voxel_overlay_subscribe, _sub}, state) do
@@ -663,6 +665,54 @@ defmodule GateServer.Session.Dispatch do
 
   def handle({:voxel_tool_intent, request}, state) do
     send_encoded(state, ResultFrame.error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  # 魔法增量 1：施法意图 0x82。先回施法者状态 0x83（同 request_id，带报价、实际支出与施放后能量）；
+  # 施放与走火都是已提交事务，再回 0x68 accepted（result_ref = seq，reason "ok" / "misfire_energy" /
+  # "misfire_coherence"）；报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式）。
+  def handle({:voxel_spell_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    result =
+      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
+        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
+        VoxelRegion.World.spell_intent(state.world_ref, actor, request)
+      end
+
+    case result do
+      {:ok, reply} ->
+        send_encoded(state, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
+
+        if request.action == 1 do
+          send_encoded(
+            state,
+            {:voxel_intent_result,
+             %{
+               request_id: request.request_id,
+               client_intent_seq: request.client_intent_seq,
+               logical_scene_id: request.logical_scene_id,
+               result_code: :accepted,
+               result_ref: reply.seq,
+               authoritative: [],
+               reason: Atom.to_string(reply.outcome || :ok)
+             }}
+          )
+        end
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+    end
+
+    {:ok, state}
+  end
+
+  def handle({:voxel_spell_intent, request}, state) do
+    send_encoded(state, ResultFrame.error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  # 魔法增量 1：QUIC 连接接纳 0x76 后经编辑 worker 下发一次施法者状态（与后续施法回执同一 FIFO）。
+  def handle({:voxel_caster_state_request, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    send_caster_state(state, request.request_id)
     {:ok, state}
   end
 
@@ -1103,6 +1153,12 @@ defmodule GateServer.Session.Dispatch do
     })
 
     send_encoded(state, {:enter_scene_result, :error, request_id})
+  end
+
+  # 未配置魔法目录的世界没有施法者状态可发。
+  defp send_caster_state(state, request_id) do
+    with {:ok, caster} <- VoxelRegion.World.caster_state(state.world_ref, state.cid),
+         do: send_encoded(state, {:voxel_caster_state, Map.put(caster, :request_id, request_id)})
   end
 
   defp send_material_balances(state, cid, request_id) do

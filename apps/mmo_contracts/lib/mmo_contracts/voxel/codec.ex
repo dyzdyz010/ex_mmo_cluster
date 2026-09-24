@@ -88,7 +88,8 @@ defmodule MmoContracts.Voxel.Codec do
                   0x7C,
                   0x7D,
                   0x7F,
-                  0x81
+                  0x81,
+                  0x82
                 ]
 
   @doc "当前下行消息的归属，用于 Gate 纯路由选择。"
@@ -100,7 +101,8 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_log_entry_payload,
                     :voxel_log_transaction_payload,
                     :voxel_property_state,
-                    :voxel_material_balance
+                    :voxel_material_balance,
+                    :voxel_caster_state
                   ]
 
   @doc "工具意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
@@ -121,6 +123,17 @@ defmodule MmoContracts.Voxel.Codec do
   @doc "Prefab 放置的合法性，线解码与进程内调用方（NPC Body）共用。"
   def prefab_place?(%{definition_id: id, orientation: orientation}),
     do: byte_size(id) == 32 and orientation in 0..23
+
+  @doc """
+  魔法增量 1（Hello 24）施法意图 0x82，大端，与 0x7D 工具意图同一目标表示：
+  rid u64、client_intent_seq u32、scene u64、action u8（0 报价 / 1 施放）、魔法目录 digest 32B、
+  眼睛方向 f64×3（单位向量）、目标微格 i64×3、incarnation u64、owner {birth u64, occurrence u32}、material u16、
+  granularity u8（0..2）、程序 u16 长度 + UTF-8 JSON。程序内容由 `VoxelRegion.Magic.Program` 在 World 裁决。
+  """
+  def spell_intent?(%{action: action, direction: {dx, dy, dz}, granularity: granularity}) do
+    norm = dx * dx + dy * dy + dz * dz
+    action in [0, 1] and granularity in [0, 1, 2] and norm > 0.99 and norm < 1.01
+  end
 
   @doc "现行帧字节（不含传输长度前缀）解码。"
   def decode(
@@ -147,6 +160,33 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   def decode(<<0x81, _::binary>>), do: {:error, :invalid_message}
+
+  def decode(
+        <<0x82, rid::64, seq::32, scene::64, action::8, digest::binary-size(32), dx::float-64,
+          dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64, incarnation::64,
+          birth::64, occurrence::32, material::16, granularity::8, n::16, program::binary-size(n)>>
+      ) do
+    request = %{
+      request_id: rid,
+      client_intent_seq: seq,
+      logical_scene_id: scene,
+      action: action,
+      catalog_digest: digest,
+      direction: {dx, dy, dz},
+      micro: {x, y, z},
+      incarnation: incarnation,
+      owner: {birth, occurrence},
+      material: material,
+      granularity: granularity,
+      program: program
+    }
+
+    if spell_intent?(request),
+      do: {:ok, {:voxel_spell_intent, request}},
+      else: {:error, :invalid_message}
+  end
+
+  def decode(<<0x82, _::binary>>), do: {:error, :invalid_message}
 
   def decode(
         <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
@@ -328,6 +368,14 @@ defmodule MmoContracts.Voxel.Codec do
   @doc "协议值编码为现行帧 iodata。"
   def encode({:voxel_material_balance, t}) do
     {:ok, <<0x81, t.request_id::64, t.seq::64, t.material::16, t.balance::64, t.cost::32>>}
+  end
+
+  # 魔法增量 1（Hello 24）施法者状态 0x83，大端：request_id u64（登录下发为 0）、world seq u64、
+  # 能量 J、容量 J、相干度、最近一次报价总支出 J、报价结构权重 S、本次实际支出 J（报价与登录为 0），均为 f64。
+  def encode({:voxel_caster_state, t}) do
+    {:ok,
+     <<0x83, t.request_id::64, t.seq::64, t.energy_j::float-64, t.capacity_j::float-64,
+       t.coherence::float-64, t.quote_j::float-64, t.quote_s::float-64, t.spent_j::float-64>>}
   end
 
   def encode({:voxel_property_state, t}) do

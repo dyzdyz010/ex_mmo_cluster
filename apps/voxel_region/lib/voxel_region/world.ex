@@ -28,12 +28,17 @@ defmodule VoxelRegion.World do
   alias VoxelRegion.{OverlayLog, Damage}
   alias VoxelRegion.{CollisionSource, FileStore, Prefab, Reducer}
   alias VoxelRegion.{Combustion, Liquid, Phase, Protection, Transform}
+  alias VoxelRegion.Magic
   alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @micro VoxelRegion.Spatial.micro_resolution()
   @max_level 5
   @resident_level 4
   @default_cache_bytes 512 * 1024 * 1024
+  # 魔法增量 1：登录下发与无报价时的报价字段。
+  @no_quote %{total_j: 0.0, structure: 0.0}
+  # 施法留热、走火与取能损耗以有限热源落地，在一个 500 ms 热提交内放完（热源机制要求有限功率）。
+  @deposit_seconds 0.5
   @name __MODULE__
 
   # ---- API
@@ -274,6 +279,22 @@ defmodule VoxelRegion.World do
     end
   end
 
+  @doc """
+  全局系统功能（魔法增量 1）：施法意图。action 0 = 报价（只算成本，不改世界）；1 = 施放。
+  返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 正常 / `:misfire_energy` / `:misfire_coherence`，
+  走火也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界）。
+  """
+  def spell_intent(server, actor, request) do
+    # 冷区域生成留在调用方进程；施法者射线在 owner 内对当时世界重新求交。
+    with 1 <- request.action, range when is_number(range) <- GenServer.call(server, :magic_range, 300_000),
+      do: prepare(server, tool_regions(actor, range))
+
+    GenServer.call(server, {:spell_intent, actor, request}, 300_000)
+  end
+
+  @doc "全局系统功能（魔法增量 1）：施法者状态（登录时下发一次）；世界未配置魔法目录时 `{:error, :magic_unavailable}`。"
+  def caster_state(server, cid), do: GenServer.call(server, {:caster_state, cid}, 300_000)
+
   @doc "B6 玩家燃烧意图，复用 DamageInput 的目标、会话、射程与速率校验。"
   def combustion_intent(server, actor, request), do: tool_intent(server, actor, request)
 
@@ -468,6 +489,11 @@ defmodule VoxelRegion.World do
           # 下一次热提交的墙钟到期时刻（毫秒，单调时钟）；nil 表示尚未排程。
           thermal_due: nil,
           material_balances: %{},
+          # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
+          caster_energy: %{},
+          # 施法间隔会话（按 Player 进程，断开即忘，不持久化），与工具会话同一 GCRA。
+          spell_sessions: %{},
+          magic: load_magic(opts),
           material_supplies: %{},
           # 合成账（R8-04）：材料 => 合成造成的累计净单位变化；随日志／检查点持久化。
           craft_ledger: %{},
@@ -514,6 +540,8 @@ defmodule VoxelRegion.World do
         }
 
         state = replay_log(state) |> environment_tolerance(state.thermal)
+        # 施法的热只经有限热源进世界：有魔法目录的世界必须有热环境。
+        true = state.magic == nil or state.thermal != nil
 
         state =
           if state.seq == 0,
@@ -744,6 +772,28 @@ defmodule VoxelRegion.World do
     if Enum.any?(delta, &(elem(&1, 1) == :overlap)),
       do: {:reply, {:error, :region_overlap}, state},
       else: commit_protection(state, state, Map.new(delta))
+  end
+
+  def handle_call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
+
+  def handle_call({:caster_state, cid}, _, state) do
+    reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0)}, else: {:error, :magic_unavailable}
+    {:reply, reply, state}
+  end
+
+  def handle_call({:spell_intent, actor, request}, _, state) do
+    with {:ok, actor} <- current_actor(actor),
+         true <- state.magic != nil and state.magic.digest == request.catalog_digest,
+         {:ok, program} <- Magic.Program.parse(request.program, state.magic) do
+      quote = Magic.Cost.quote(program, state.magic)
+
+      if request.action == 0,
+        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0)}}, state},
+        else: cast_spell(state, actor, request, program, quote)
+    else
+      false -> {:reply, {:error, :stale_magic_catalog}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:tool_range, id}, _, state) do
@@ -1154,6 +1204,7 @@ defmodule VoxelRegion.World do
            canonical_subs: Map.delete(state.canonical_subs, pid),
            replica_subs: Map.delete(state.replica_subs, pid),
            tool_sessions: Map.delete(state.tool_sessions, pid),
+           spell_sessions: Map.delete(state.spell_sessions, pid),
            claim_corners: Map.delete(state.claim_corners, pid),
            build_sessions: Map.delete(state.build_sessions, pid)
        }}
@@ -2325,7 +2376,8 @@ defmodule VoxelRegion.World do
       :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_charged_j, :circuit_thermoelectric_j,
       :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
-      :transform_j, :transform_units, :transform_reductant_fuel_j])
+      :transform_j, :transform_units, :transform_reductant_fuel_j,
+      :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
     Map.put(ledger, :sources, sources)
@@ -3197,6 +3249,7 @@ defmodule VoxelRegion.World do
         property_states: Map.values(state.damage),
         epochs: state.epochs,
         material_balances: state.material_balances,
+        caster_energy: state.caster_energy,
         material_supplies: state.material_supplies,
         craft_ledger: state.craft_ledger,
         placed_by: state.placed_by,
@@ -3247,6 +3300,13 @@ defmodule VoxelRegion.World do
          ) do
       nil -> nil
       path -> Damage.load(path)
+    end
+  end
+
+  defp load_magic(opts) do
+    case Keyword.get(opts, :magic_catalog_path, Application.get_env(:voxel_region, :magic_catalog_path)) do
+      nil -> nil
+      path -> Magic.Catalog.load(path)
     end
   end
 
@@ -4421,6 +4481,184 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # ---- 魔法增量 1：施放（Voxim Docs/Magic.md §4、§10）
+  # 施法者能量与蓄能石 stored_j 在同一笔事务里原子改变；施法的热只经 thermal.sources 有限热源进世界，
+  # 由热内核按守恒结算。校验失败（间隔、射线、施法域、目标、脚下、权限、目标已有热源）不扣能量、不改世界。
+
+  defp caster_view(state, cid, quote, spent) do
+    %{seq: state.seq, energy_j: Map.get(state.caster_energy, cid, 0.0), capacity_j: state.magic.capacity_j,
+      coherence: state.magic.coherence, quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent}
+  end
+
+  defp cast_spell(state, actor, request, program, quote) do
+    [%{sym: sym, args: args}] = program.steps
+    previous = Map.get(state.spell_sessions, actor.player)
+
+    with {:ok, session} <- admit_cast(previous, request, actor, state.magic),
+         {:ok, target, state} <- spell_target(state, actor, request, state.magic),
+         {:ok, foot, state} <- foot_target(state, actor),
+         :ok <- spell_subject(state, sym, target),
+         true <- Protection.permitted?(state.protection, {:character, actor.cid}, [Damage.macro(target), Damage.macro(foot)]) do
+      settle_spell(state, actor, request, session, previous, sym, args, target, foot, quote)
+    else
+      false -> {:reply, {:error, :protected_region}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, reason, _} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # 施法间隔与工具同一 GCRA（Gate 入口时钟、一个权威 tick 的相位借用）；过快即 cast_too_soon。
+  defp admit_cast(previous, request, actor, magic) do
+    case Damage.admit_attack(previous, request.client_intent_seq, actor.received_us, magic.cast_interval_us, actor.tick_us) do
+      {:error, :tool_cooldown} -> {:error, :cast_too_soon}
+      result -> result
+    end
+  end
+
+  # 施法者眼睛射线（与工具同一权威射线，射程 range_m）：首个命中必须是请求的目标，且其宏格中心在本地施法域内。
+  defp spell_target(state, actor, request, magic) do
+    case tool_target(state, actor, request, %{"range_macro" => magic.range_m, "action" => "magic"}) do
+      {:error, :no_target, state} ->
+        {:error, :out_of_domain, state}
+
+      {:ok, target, state} ->
+        {x, y, z} = Damage.macro(target)
+        {ex, ey, ez} = actor.eye
+
+        cond do
+          not same_tool_target?(target, request) ->
+            {:error, :stale_target, state}
+
+          (x + 0.5 - ex) ** 2 + (y + 0.5 - ey) ** 2 + (z + 0.5 - ez) ** 2 > magic.local_domain_m ** 2 ->
+            {:error, :out_of_domain, state}
+
+          true ->
+            {:ok, target, state}
+        end
+    end
+  end
+
+  # 脚下宏格：position 是胶囊中心，feet = 中心下移半高；+0.5 容忍贴地 skin（同 NPC Body 的脚格约定）。
+  # 施法留热与走火只能作为未细分宏格的有限热源落地；脚下不是这样的格（腾空、细分构件、空气）时拒绝施放。
+  defp foot_target(state, actor) do
+    {fx, fy, fz} = actor.feet
+    {x, y, z} = {floor(fx), floor(fy + 0.5) - 1, floor(fz)}
+
+    case target_at({x * @micro + 4, y * @micro, z * @micro + 4}, state) do
+      {%{granularity: 0} = foot, state} ->
+        if heat_node?(state, foot), do: {:ok, foot, state}, else: {:error, :no_footing, state}
+
+      {_, state} ->
+        {:error, :no_footing, state}
+    end
+  end
+
+  defp heat_node?(state, target),
+    do: is_number(state.properties.materials[target.material]["heat_capacity_per_macro"])
+
+  # 动词的作用对象：加热 = 带热容的未细分宏格且尚无热源；取能 = 未细分的蓄能石宏格。
+  defp spell_subject(state, "act.heat", target) do
+    cond do
+      target.granularity != 0 or not heat_node?(state, target) -> {:error, :invalid_target}
+      Map.has_key?(state.thermal.sources, Damage.macro(target)) -> {:error, :heat_source_busy}
+      true -> :ok
+    end
+  end
+
+  defp spell_subject(state, "energy.draw", target) do
+    if target.granularity == 0 and VoxelRegion.Circuit.battery?(state.properties.materials[target.material]),
+      do: :ok,
+      else: {:error, :invalid_target}
+  end
+
+  # 取能的控制开销从取得的能量里付（可支付 = 余额 + η·ΔE），否则空施法者永远取不了能。
+  # 走火：扣 min(总支出, 余额) 全部落脚下，不产生其他效果。账：石减少 = caster_drawn_j + draw_loss_j；
+  # 施法支出 spent = spell_heat_j + cast_waste_j。
+  defp settle_spell(before, actor, request, session, previous, sym, args, target, foot, quote) do
+    magic = before.magic
+    cid = actor.cid
+    balance = Map.get(before.caster_energy, cid, 0.0)
+    stone = if sym == "energy.draw", do: property_state(before, target)
+    draw = stone && Magic.Cost.draw(args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
+    available = if draw, do: balance + draw.gained_j, else: balance
+    outcome = Magic.Cost.misfire(quote, available, magic)
+    thermal = %{before.thermal | active: true}
+
+    {spent, left, rows, thermal} =
+      case {outcome, sym} do
+        {nil, "act.heat"} ->
+          source = %{target: target, power_w: args["power_w"], remaining_j: args["energy_j"]}
+          thermal = %{thermal | sources: Map.put(thermal.sources, Damage.macro(target), source)}
+
+          {quote.total_j, balance - quote.total_j, [],
+           thermal |> ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, quote.control_j)}
+
+        {nil, "energy.draw"} ->
+          row = Map.put(stone, :stored_j, Map.get(stone, :stored_j, 0.0) - draw.taken_j)
+
+          thermal =
+            thermal
+            |> deposit_heat(target, draw.loss_j)
+            |> ledger(:caster_drawn_j, draw.gained_j)
+            |> ledger(:draw_loss_j, draw.loss_j)
+            |> cast_waste(foot, quote.control_j)
+
+          {quote.control_j, available - quote.total_j, [row], thermal}
+
+        _misfire ->
+          spent = min(quote.total_j, balance)
+          {spent, balance - spent, [], cast_waste(thermal, foot, spent)}
+      end
+
+    seq = before.seq + 1
+    rows = Enum.map(rows, &%{&1 | seq: seq, request_id: 0})
+
+    next = %{
+      before
+      | seq: seq,
+        thermal: thermal,
+        caster_energy: Map.put(before.caster_energy, cid, left),
+        spell_sessions: Map.put(before.spell_sessions, actor.player, session),
+        damage: Enum.reduce(rows, before.damage, &Map.put(&2, Damage.key(&1), &1))
+    }
+
+    txn = %{seq: seq, entries: [], coarse: [], property_states: rows, thermal: thermal, caster_energy: %{cid => left}}
+
+    case append_log(next, txn) do
+      :ok ->
+        unless previous, do: Process.monitor(actor.player)
+        next = remember_entry(next, txn)
+        fanout(next, txn)
+        fanout_canonical(next, txn, [], [], before)
+
+        Logger.info(
+          "voxel_spell seq=#{seq} cid=#{cid} request_id=#{request.request_id} sym=#{sym} outcome=#{outcome || :cast} " <>
+            "structure=#{quote.structure} quote_j=#{quote.total_j} spent_j=#{spent} energy_j=#{left} " <>
+            "target=#{inspect(Damage.macro(target))} foot=#{inspect(Damage.macro(foot))}"
+        )
+
+        {:reply, {:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent)}}, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, before}
+    end
+  end
+
+  defp ledger(thermal, key, value), do: Map.update(thermal, key, value, &(&1 + value))
+
+  defp cast_waste(thermal, foot, energy),
+    do: thermal |> deposit_heat(foot, energy) |> ledger(:cast_waste_j, energy)
+
+  # 同格已有热源（同一施法的脚下与目标、连续施法）时并入：余量与功率相加，仍在一个热提交内放完。
+  defp deposit_heat(thermal, _target, energy) when energy <= 0, do: thermal
+
+  defp deposit_heat(thermal, target, energy) do
+    cell = Damage.macro(target)
+    source = Map.get(thermal.sources, cell, %{target: target, power_w: 0.0, remaining_j: 0.0})
+    source = %{source | power_w: source.power_w + energy / @deposit_seconds, remaining_j: source.remaining_j + energy}
+    %{thermal | sources: Map.put(thermal.sources, cell, source)}
+  end
+
   # Global system: a tool operates on the exact hit thermal node; HP continues
   # to belong to the existing macro / leaf / attachment damage authority.
   defp operate_combustion(before, state, actor, request, target, tool) do
@@ -4733,7 +4971,8 @@ defmodule VoxelRegion.World do
         macro_owners: merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
         instances: Map.get(txn,:prefab_instances,state.instances),
         material_balances:
-          Map.merge(state.material_balances, Map.get(txn, :material_balances, %{}))
+          Map.merge(state.material_balances, Map.get(txn, :material_balances, %{})),
+        caster_energy: Map.merge(state.caster_energy, Map.get(txn, :caster_energy, %{}))
     }
   end
 
