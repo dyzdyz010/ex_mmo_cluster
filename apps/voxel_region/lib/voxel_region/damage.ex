@@ -71,7 +71,7 @@ defmodule VoxelRegion.Damage do
       Enum.all?(tools, fn {id, t} ->
         id in 1..65535 and t["power"] > 0 and
           t["range_macro"] > 0 and t["interval_seconds"] > 0 and MapSet.member?(tags, t["action"]) and
-          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool) or
+          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool protection.claim) or
              String.starts_with?(t["action"], "damage.") or
              String.starts_with?(t["action"], "combustion."))
       end)
@@ -121,6 +121,11 @@ defmodule VoxelRegion.Damage do
             Map.has_key?(materials, t["fuel_material_id"]) and t["fuel_material_id"] != 0 and
               is_integer(t["fuel_units"]) and t["fuel_units"] > 0 and
               is_number(t["heat_energy_j"]) and t["heat_energy_j"] > 0
+
+          # 受保护区域认领（玩家适配）：每角色区域数与单区面积上限是已发布参数。
+          "protection.claim" ->
+            is_integer(t["region_max_count"]) and t["region_max_count"] > 0 and
+              is_integer(t["region_max_area_m2"]) and t["region_max_area_m2"] > 0
 
           action when action in ["combustion.extinguish", "phase.cool"] ->
             Map.has_key?(materials, t["fuel_material_id"]) and t["fuel_material_id"] != 0 and

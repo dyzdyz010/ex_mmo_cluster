@@ -14,8 +14,12 @@ defmodule VoxelRegion.Circuit do
   @doc "仅当前已安装设备参与模拟；设备真值在整件附件属性记录中。"
   def devices(damage),do: for {_,%{granularity: 3,circuit: c}=t}<-damage,t.flags==0,into: %{},do: {t.incarnation,{t,c}}
 
-  @doc "由已安装设备、目录和环境温度准备网络；不读取 canonical 占用。"
-  def prepare(slots,damage,catalog,ambient,duration) do
+  @doc """
+  由已安装设备、目录和环境温度准备网络；不读取 canonical 占用。
+  domain（可选）把附件槽映射到其受保护区域持有者：端点按持有者分开，跨持有者边界的导线/设备不在端点处相连；
+  nil 时端点为 `{:point, p}`，与无此参数时逐位相同。
+  """
+  def prepare(slots,damage,catalog,ambient,duration,domain \\ nil) do
     started=System.monotonic_time(:microsecond)
     devices=devices(damage)
     cooling_duration=min(duration,0.05)
@@ -25,7 +29,8 @@ defmodule VoxelRegion.Circuit do
       intact=MapSet.new(Map.get(grouped,id,[]))==MapSet.new(footprint)
       u=Enum.find(0..2,&(&1 != rem(elem(target.owner,1),3)))
       tool=catalog.tools[c.tool_id]
-      edge=%{a: {:point,c.anchor},b: {:point,offset(c.anchor,u,c.size)},r: tool["circuit_resistance_ohm"],
+      o=domain && owner(domain,footprint)
+      edge=%{a: node(c.anchor,domain,o),b: node(offset(c.anchor,u,c.size),domain,o),r: tool["circuit_resistance_ohm"],
         emf: if(c.kind==1 and c.remaining_j>0,do: tool["circuit_voltage_v"],else: 0.0),
         device: id,heat: for(s<-footprint,do: {VoxelRegion.ThermalAttachments.key(s),1.0/length(footprint)}),
         light: tool["circuit_light_fraction"],
@@ -39,14 +44,15 @@ defmodule VoxelRegion.Circuit do
       sigma=Map.get(catalog.materials[material],"electrical_conductivity",0.0)
       if sigma>0 and not MapSet.member?(faces,slot) do
         heat=[{VoxelRegion.ThermalAttachments.key(slot),1.0}]
+        o=domain && domain.(slot)
         if kind==1 do
-          [edge({:point,p},{:point,offset(p,axis,1)},@length/(sigma*section),heat)|edges]
+          [edge(node(p,domain,o),node(offset(p,axis,1),domain,o),@length/(sigma*section),heat)|edges]
         else
           [u,v]=Enum.reject(0..2,&(&1==axis))
           corners=[p,offset(p,u,1),offset(p,v,1),p |> offset(u,1) |> offset(v,1)]
           r=2.0/(sigma*catalog.attachments["face_thickness_m"])
           for {a,b}<-[{0,1},{0,2},{1,3},{2,3}],reduce: edges do
-            acc->[edge({:point,Enum.at(corners,a)},{:point,Enum.at(corners,b)},r,Enum.map(heat,fn {k,w}->{k,w} end))|acc]
+            acc->[edge(node(Enum.at(corners,a),domain,o),node(Enum.at(corners,b),domain,o),r,Enum.map(heat,fn {k,w}->{k,w} end))|acc]
           end
         end
       else
@@ -57,11 +63,11 @@ defmodule VoxelRegion.Circuit do
       duration: duration, cooling_duration: cooling_duration, started: started}
   end
 
-  @doc "需要接入实体导体的端点；保持原边顺序。"
-  def points(input), do: input.edges |> Enum.flat_map(&[elem(&1.a,1),elem(&1.b,1)]) |> Enum.uniq()
+  @doc "需要接入实体导体的端点节点（`{:point, p}` 或带持有者的 `{:point, p, holder}`）；保持原边顺序。"
+  def points(input), do: input.edges |> Enum.flat_map(&[&1.a,&1.b]) |> Enum.uniq()
 
-  @doc "端点周围的八个 canonical 微格采样点。"
-  def near_points(p), do: for(x<-[-1,0],y<-[-1,0],z<-[-1,0],do: add(p,{x,y,z}))
+  @doc "端点节点周围的八个 canonical 微格采样点。"
+  def near_points(point), do: for(x<-[-1,0],y<-[-1,0],z<-[-1,0],do: add(elem(point,1),{x,y,z}))
 
   @doc "按首次命中身份保留当前目录中的真实导体，微格使用独立热身份。"
   def conductors(targets,catalog) do
@@ -79,7 +85,7 @@ defmodule VoxelRegion.Circuit do
       Enum.reduce(Map.fetch!(hosts,p),edges,fn target,edges ->
         key=ThermalGeometry.key(target)
         sigma=catalog.materials[target.material]["electrical_conductivity"]
-        [edge({:point,p},{:solid,key},size(target)/2/(sigma*section),[{key,1.0}])|edges]
+        [edge(p,{:solid,key},size(target)/2/(sigma*section),[{key,1.0}])|edges]
       end)
     end)
     # owner 保留原遍历和前插次序；纯计算按同一边顺序求解，避免浮点累加漂移。
@@ -165,6 +171,15 @@ defmodule VoxelRegion.Circuit do
     end)
   end
 
+  defp node(p,nil,_),do: {:point,p}
+  defp node(p,_domain,holder),do: {:point,p,holder}
+  # 足迹跨持有者的设备自成一域，不与任何一侧相连。
+  defp owner(domain,slots) do
+    case slots |> Enum.map(domain) |> Enum.uniq() do
+      [holder] -> holder
+      _ -> {:mixed,slots}
+    end
+  end
   defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,device: nil,heat: heat,light: 0.0,cooling: %{}}
   defp thermal_target(%{granularity: 2}=t),do: %{t | granularity: 1}
   defp thermal_target(t),do: t

@@ -27,7 +27,7 @@ defmodule VoxelRegion.World do
   import Bitwise
   alias VoxelRegion.{OverlayLog, Damage}
   alias VoxelRegion.{CollisionSource, FileStore, Prefab, Reducer}
-  alias VoxelRegion.{Combustion, Liquid, Phase, Transform}
+  alias VoxelRegion.{Combustion, Liquid, Phase, Protection, Transform}
   alias MmoContracts.Voxel.{CanonicalDelta, CanonicalSnapshot, Codec, Payload}
 
   @micro VoxelRegion.Spatial.micro_resolution()
@@ -177,6 +177,12 @@ defmodule VoxelRegion.World do
     prepare(server, edit_keys(Enum.map(edits, &elem(&1,0))))
     GenServer.call(server, {:liquid_experiment, edits}, 300_000)
   end
+
+  @doc """
+  全局系统作者入口：一笔事务写入受保护区域 `[%{holder, min: {x, z}, max: {x, z}}]`（闭区间宏格，y 不限），
+  holder 为 `:reserved` 或 `{:character, cid}`；与既有区域或彼此重叠时整体拒绝。不经 Gate 暴露。
+  """
+  def author_regions(server, regions), do: GenServer.call(server, {:author_regions, regions}, 300_000)
 
   @doc "角色确认余额；单位为一个 canonical 微格体积。"
   def material_balances(server, cid),
@@ -464,6 +470,10 @@ defmodule VoxelRegion.World do
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
           macro_owners: %{},
+          # 受保护区域（全局系统）：唯一真值，随日志/检查点持久化；物理边界与意图许可都只读它。
+          protection: Protection.new(),
+          # 认领工具的待定第一角（玩家适配）：按 Player 进程保存，断开即忘，不持久化。
+          claim_corners: %{},
           phase_inventory: %{},
           material_units_per_micro: 1,
           build_sessions: %{},
@@ -710,6 +720,26 @@ defmodule VoxelRegion.World do
     end
   end
 
+  def handle_call({:author_regions, regions}, _, state) do
+    true = regions != [] and Enum.all?(regions, fn r ->
+      (r.holder == :reserved or match?({:character, cid} when is_integer(cid) and cid > 0, r.holder)) and
+        elem(r.min, 0) <= elem(r.max, 0) and elem(r.min, 1) <= elem(r.max, 1)
+    end)
+
+    {delta, _} =
+      regions
+      |> Enum.with_index(1)
+      |> Enum.map_reduce(state.protection, fn {r, n}, p ->
+        region = %{holder: r.holder, min: r.min, max: r.max, created_seq: state.seq + 1, created_by: nil}
+        {{{state.seq + 1, n}, if(Protection.overlaps?(p, r.min, r.max), do: :overlap, else: region)},
+         Protection.apply(p, %{{state.seq + 1, n} => region})}
+      end)
+
+    if Enum.any?(delta, &(elem(&1, 1) == :overlap)),
+      do: {:reply, {:error, :region_overlap}, state},
+      else: commit_protection(state, state, Map.new(delta))
+  end
+
   def handle_call({:tool_range, id}, _, state) do
     result =
       with %{tools: tools} <- state.properties,
@@ -793,6 +823,11 @@ defmodule VoxelRegion.World do
                 not same_tool_target?(target, request) ->
                   {:reply, {:error, :stale_target}, state}
 
+                # 受保护区域许可：认领工具自身的规则在其适配里裁决。
+                tool["action"] != "protection.claim" and
+                    not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
+                  {:reply, {:error, :protected_region}, state}
+
                 true ->
                   attack_target(before, state, actor, request, target, tool)
               end
@@ -869,7 +904,10 @@ defmodule VoxelRegion.World do
           {:reply, {:error, :replayed_build}, state}
 
         true ->
-          {:reply, reply, next} = player_prefab(state, actor, kind, request)
+          {:reply, reply, next} =
+            if Protection.permitted?(state.protection, {:character, actor.cid}, prefab_intent_cells(state, kind, request)),
+              do: player_prefab(state, actor, kind, request),
+              else: {:reply, {:error, :protected_region}, state}
           unless previous != nil, do: Process.monitor(actor.gate)
 
           next = %{
@@ -1101,6 +1139,7 @@ defmodule VoxelRegion.World do
            canonical_subs: Map.delete(state.canonical_subs, pid),
            replica_subs: Map.delete(state.replica_subs, pid),
            tool_sessions: Map.delete(state.tool_sessions, pid),
+           claim_corners: Map.delete(state.claim_corners, pid),
            build_sessions: Map.delete(state.build_sessions, pid)
        }}
 
@@ -2324,7 +2363,8 @@ defmodule VoxelRegion.World do
       property_states:
         macros ++ component_observations(state, box) ++ attachment_observations(state, box),
       property_context: property_context(state),
-      epochs: state.epochs
+      epochs: state.epochs,
+      protection: state.protection.regions
     }
     |> public_properties()
     |> VoxelRegion.PropertyObservation.project(box)
@@ -3136,6 +3176,7 @@ defmodule VoxelRegion.World do
         material_supplies: state.material_supplies,
         placed_by: state.placed_by,
         macro_owners: state.macro_owners,
+        protection: state.protection.regions,
         phase_inventory: state.phase_inventory,
         thermal: state.thermal
       })
@@ -3425,11 +3466,19 @@ defmodule VoxelRegion.World do
     if map_size(VoxelRegion.Circuit.devices(state.damage)) == 0 do
       thermal_steps(state, remaining, visited, %{})
     else
+      # 受保护区域：导线/设备端点按槽的持有者分开，端点只接同一持有者的实体导体。
+      protection = state.protection
+      domain = if not Protection.empty?(protection),
+        do: fn slot -> cells_holder(protection, Attachments.macros([slot]), slot) end
       input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties,
-        state.thermal.config["ambient_kelvin"], remaining)
+        state.thermal.config["ambient_kelvin"], remaining, domain)
       {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
         {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &target_at/2)
-        {{point, VoxelRegion.Circuit.conductors(targets, s.properties)}, s}
+        conductors = VoxelRegion.Circuit.conductors(targets, s.properties)
+        conductors = if domain,
+          do: Enum.filter(conductors, &({:holder, Protection.holder(protection, Damage.macro(&1))} == elem(point, 2))),
+          else: conductors
+        {{point, conductors}, s}
       end)
       solids = for {_point, targets} <- hosts, target <- targets, into: %{},
         do: {VoxelRegion.ThermalGeometry.key(target), target}
@@ -3473,7 +3522,8 @@ defmodule VoxelRegion.World do
       {targets, state} = Enum.map_reduce(VoxelRegion.Circuit.solid_points(target), state, &target_at/2)
       {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties),
         {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
-          if MapSet.member?(seen, other_key),
+          if MapSet.member?(seen, other_key) or
+               not Protection.same_holder?(state.protection, Damage.macro(target), Damage.macro(other)),
             do: {queue, contacts},
             else: {[other | queue], [{target, other, area} | contacts]}
         end)
@@ -3514,7 +3564,7 @@ defmodule VoxelRegion.World do
         {nodes, attachment_graph} = VoxelRegion.ThermalAttachments.add(
           work.solid_nodes, work.thermal_slots, state.properties, samples, work.attachment_graph)
 
-        work = ThermalWork.index(work, nodes, attachment_graph)
+        work = ThermalWork.index(work, protected_contacts(state, nodes), attachment_graph)
         # 默认记录只由目录、环境和实占用派生；已有属性仍在每个数值批次读取。
         defaults = %{state | damage: %{}}
         ordered = Enum.map(work.ordered, fn {key, n} ->
@@ -3658,9 +3708,11 @@ defmodule VoxelRegion.World do
       {state, sights}
     else
       range = state.thermal.config["view_range_cells"] * @micro
+      # 视线只在起点宏格的持有者范围内行进；无区域时不检查。
+      holder = if not Protection.empty?(state.protection), do: {:holder, Protection.holder(state.protection, cell)}
       {rows, state} = Enum.flat_map_reduce(Map.fetch!(geometry, cell), state, fn {key, node}, s ->
         {hits, s} = Enum.map_reduce(node.rays, s, fn {start, axis, sign, area}, s ->
-          {hit, s} = sight(s, start, axis, sign, range)
+          {hit, s} = sight(s, start, axis, sign, range, holder)
           {{hit, area}, s}
         end)
         {VoxelRegion.ThermalRadiation.sights(key, hits), s}
@@ -3671,9 +3723,16 @@ defmodule VoxelRegion.World do
 
   # 沿法线读取 canonical 实占用至多 range 个微格长度：refined 或有限液柱宏格内逐微格，
   # 其余空宏格整格跳过。命中热节点返回其节点键与宏格；无热容量占用或视距内全空为天空。
-  defp sight(state, _point, _axis, _sign, left) when left <= 0, do: {:sky, state}
+  defp sight(state, _point, _axis, _sign, left, _holder) when left <= 0, do: {:sky, state}
 
-  defp sight(state, point, axis, sign, left) do
+  defp sight(state, point, axis, sign, left, holder) do
+    if holder != nil and
+         {:holder, Protection.holder(state.protection, elem(Prefab.macro_slot(point), 0))} != holder,
+       do: {:blocked, state},
+       else: sight_step(state, point, axis, sign, left, holder)
+  end
+
+  defp sight_step(state, point, axis, sign, left, holder) do
     case target_at(point, state) do
       {nil, state} ->
         {cell, _} = Prefab.macro_slot(point)
@@ -3686,7 +3745,7 @@ defmodule VoxelRegion.World do
             true -> offset + 1
           end
 
-        sight(state, put_elem(point, axis, elem(point, axis) + sign * step), axis, sign, left - step)
+        sight(state, put_elem(point, axis, elem(point, axis) + sign * step), axis, sign, left - step, holder)
 
       {target, state} ->
         target = if target.granularity == 2, do: %{target | granularity: 1}, else: target
@@ -3850,7 +3909,8 @@ defmodule VoxelRegion.World do
       Enum.reduce(neighbors, {%{}, state}, fn {point, _, _}, {found, s} ->
         {target, s} = target_at(point, s)
         target = if target && target.granularity == 2, do: %{target | granularity: 1}, else: target
-        if target && target.material == reductant,
+        if target && target.material == reductant &&
+             Protection.same_holder?(s.protection, Damage.macro(ore), Damage.macro(target)),
           do: {Map.put(found, Damage.key(target), target), s},
           else: {found, s}
       end)
@@ -4097,6 +4157,9 @@ defmodule VoxelRegion.World do
         state = %{state | tool_sessions: Map.put(state.tool_sessions, actor.player, session)}
 
         cond do
+          tool["action"] == "protection.claim" ->
+            claim_region(before, state, actor, request, target, tool)
+
           String.starts_with?(tool["action"], "circuit.") ->
             operate_circuit(before, state, actor, request, target, tool)
 
@@ -4659,6 +4722,7 @@ defmodule VoxelRegion.World do
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_supplies: Map.merge(state.material_supplies, Map.get(txn, :material_supplies, %{})),
         placed_by: merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
+        protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
         macro_owners: merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
         instances: Map.get(txn,:prefab_instances,state.instances),
         material_balances:
@@ -4764,9 +4828,12 @@ defmodule VoxelRegion.World do
         {:reply, {:error, :replayed_build}, before}
 
       true ->
-        result = if request.action in [2,3],
-          do: transfer_liquid(before, actor, request),
-          else: build_material(before, actor, request)
+        result = cond do
+          not Protection.permitted?(before.protection, {:character, actor.cid}, [request.coord]) ->
+            {:error, :protected_region}
+          request.action in [2,3] -> transfer_liquid(before, actor, request)
+          true -> build_material(before, actor, request)
+        end
 
         {reply, state} =
           case result do
@@ -5108,9 +5175,12 @@ defmodule VoxelRegion.World do
       cell={x+dx,y+dy,z+dz}, liquid_inside?(cell,state.liquid_bounds), do: cell
     {open,water,state}=liquid_cells(state,cells,material)
     config=state.properties.liquid
+    # 下落留在同一列（同一持有者）；侧流不跨受保护区域边界。
+    connected = if not Protection.empty?(state.protection),
+      do: fn a, b -> Protection.same_holder?(state.protection, a, b) end
     {changes,stages}=Liquid.step_transfers(water,state.liquid_bounds,liquid_capacity(state),
       config["gravity_units_per_step"],config["side_units_per_step"],&Map.get(open,&1,false),
-      Map.get(config,"side_threshold_units",0),active)
+      Map.get(config,"side_threshold_units",0),active,connected)
     {values,state}=phase_values(state,Map.keys(water))
     {changes,values}=if phase_enabled?(state),do: Phase.transport_stages(values,water,changes,stages),else: {changes,%{}}
     state = %{state | liquid_active: MapSet.union(state.liquid_active, Liquid.next_active(stages))}
@@ -5200,7 +5270,9 @@ defmodule VoxelRegion.World do
     if Phase.liquid?(material) and liquid_enabled?(state) and liquid_inside?(cell,state.liquid_bounds) do
       cells = cell |> then(&Liquid.neighborhood([&1])) |> Enum.filter(&liquid_inside?(&1,state.liquid_bounds))
       {open,water,state} = liquid_cells(state,cells,material)
-      with {:ok,changes,flows} <- Liquid.displace(water,cell,liquid_capacity(state),state.liquid_bounds,&Map.fetch!(open,&1)) do
+      # 建造排液不排进持有者不同的格。
+      with {:ok,changes,flows} <- Liquid.displace(water,cell,liquid_capacity(state),state.liquid_bounds,
+             &(Map.fetch!(open,&1) and Protection.same_holder?(state.protection,cell,&1))) do
         {values,state} = phase_values(state,Map.keys(changes))
         values = if phase_enabled?(state),do: Phase.transport(values,water,flows),else: %{}
         edits = for {to,_} <- changes,to != cell,do: {to,material}
@@ -5312,6 +5384,7 @@ defmodule VoxelRegion.World do
       true ->
         result =
           with {:ok, tool} <- Map.fetch(before.properties.tools, request.tool_id),
+               :ok <- attachment_protection(before, actor, request),
                :ok <- attachment_reach(before, actor, request, tool),
                {:ok, state, slots, settlement} <- attachment_change(before, actor, request) do
             commit_attachment(before, state, slots, settlement)
@@ -5530,6 +5603,151 @@ defmodule VoxelRegion.World do
 
     {%{state | attachments: Map.drop(state.attachments, removed)},
      region_keys(Enum.map(Attachments.macros(removed), &{0, &1})), settlement}
+  end
+
+  # ---- 受保护区域：意图许可的受影响格、玩家认领适配、提交
+
+  # 工具意图作用的全部宏格：宏格本身、叶子构件的全部占用格、附件整件的足迹。
+  defp target_cells(state, %{granularity: 3} = t),
+    do: Attachments.macros(attachment_slots(state, t.incarnation))
+  defp target_cells(state, %{granularity: 2} = t), do: micro_owner_cells(state, MapSet.new([t.owner]))
+  defp target_cells(_state, t), do: [Damage.macro(t)]
+
+  # 附件放置的足迹必须落在同一持有者内（不跨区域边界）；拆除只看现有整件足迹。
+  defp attachment_protection(state, actor, r) do
+    holder = {:character, actor.cid}
+    cells =
+      if r.action == 0,
+        do: Attachments.macros(Attachments.footprint(r.kind, r.axis, r.anchor, r.size)),
+        else: Attachments.macros(attachment_slots(state, r.id))
+    single = r.action != 0 or Protection.empty?(state.protection) or
+      length(Enum.uniq_by(cells, &Protection.holder(state.protection, &1))) <= 1
+
+    if single and Protection.permitted?(state.protection, holder, cells),
+      do: :ok,
+      else: {:error, :protected_region}
+  end
+
+  # Prefab 放置看足迹，拆除/替换看整棵子树现有格（替换再加新足迹）。
+  defp prefab_intent_cells(state, :voxel_prefab_place_v1, r) do
+    case definition_cells(state, r.definition_id, r.anchor, r.orientation) do
+      {:ok, _, macros} -> macros
+      _ -> []
+    end
+  end
+
+  defp prefab_intent_cells(state, kind, r) do
+    replacement =
+      with :voxel_prefab_replace_v1 <- kind,
+           {:ok, instance} <- fetch_instance(state, r.instance_id),
+           {:ok, _, macros} <- definition_cells(state, r.definition_id, instance.anchor, instance.orientation),
+           do: macros,
+           else: (_ -> [])
+
+    owner_cells(state, r.instance_id) ++ replacement
+  end
+
+  # 玩家适配（认领工具）：第一次点地面记第一角；第二次点记对角并建区域（再点第一角同一格 = 取消）；
+  # 无待定角时点自己区域内的格 = 释放该区域。每次点击都经工具射线的射程与遮挡裁决。
+  # 上限（数量、面积）来自工具目录行；拒绝：:region_too_large / :region_limit / :region_overlap / :region_occupied。
+  defp claim_region(_before, state, actor, request, target, tool) do
+    holder = {:character, actor.cid}
+    cell = Damage.macro(target)
+    pending = Map.get(state.claim_corners, actor.player)
+    p = state.protection
+    corners = Map.delete(state.claim_corners, actor.player)
+
+    cond do
+      request.action != 1 ->
+        {:reply, {:error, :invalid_protection_operation}, state}
+
+      pending == cell ->
+        {:reply, {:ok, state.seq}, %{state | claim_corners: corners}}
+
+      pending != nil ->
+        {x0, _, z0} = pending
+        {x1, _, z1} = cell
+        min = {min(x0, x1), min(z0, z1)}
+        max = {max(x0, x1), max(z0, z1)}
+        region = %{holder: holder, min: min, max: max, created_seq: state.seq + 1, created_by: actor.cid}
+        state = %{state | claim_corners: corners}
+
+        cond do
+          Protection.area(region) > tool["region_max_area_m2"] -> {:reply, {:error, :region_too_large}, state}
+          length(Protection.held(p, holder)) >= tool["region_max_count"] -> {:reply, {:error, :region_limit}, state}
+          Protection.overlaps?(p, min, max) -> {:reply, {:error, :region_overlap}, state}
+          region_occupied?(state, region, actor.cid) -> {:reply, {:error, :region_occupied}, state}
+          true -> commit_protection(state, state, %{{state.seq + 1, 1} => region})
+        end
+
+      match?({_, %{holder: ^holder}}, Protection.region_at(p, cell)) ->
+        {id, _} = Protection.region_at(p, cell)
+        commit_protection(state, %{state | claim_corners: corners}, %{id => nil})
+
+      Protection.holder(p, cell) != nil ->
+        {:reply, {:error, :region_overlap}, state}
+
+      true ->
+        {:reply, {:ok, state.seq}, %{state | claim_corners: Map.put(state.claim_corners, actor.player, cell)}}
+    end
+  end
+
+  # 矩形内有别的角色花材料放下的格或他人建造的 Prefab 实例时不能认领；作者格与天然地形不算占用。
+  defp region_occupied?(state, region, cid) do
+    inside = &Protection.contains?(region, &1)
+    foreign = &(&1 != nil and &1 != cid)
+    placer = fn id -> state.instances |> Map.get(id, %{}) |> Map.get(:placed_by) end
+
+    Enum.any?(state.placed_by, fn {cell, by} -> foreign.(by) and inside.(cell) end) or
+      Enum.any?(state.macro_owners, fn {cell, id} -> inside.(cell) and foreign.(placer.(id)) end) or
+      Enum.any?(state.refined, fn {cell, slots} ->
+        inside.(cell) and Enum.any?(slots, fn {_, {_, id}} -> foreign.(placer.(id)) end)
+      end)
+  end
+
+  # 区域增量独立成一笔事务；边界改变后热工作集（接触图、视线缓存）整体重建，边界两侧液体重新唤醒。
+  defp commit_protection(before, state, delta) do
+    next = %{state | seq: state.seq + 1, protection: Protection.apply(state.protection, delta)}
+    rects = for {id, r} <- delta, r = r || before.protection.regions[id], do: r
+    wet = for {cell, _} <- next.liquid_units, Enum.any?(rects, &Protection.contains?(&1, cell, 1)), do: cell
+    next = next |> rebuild_thermal_work() |> wake_liquid(wet)
+    txn = %{seq: next.seq, entries: [], coarse: [], protection: delta}
+
+    case append_log(next, txn) do
+      :ok ->
+        next = remember_entry(next, txn)
+        fanout(next, txn)
+        fanout_canonical(next, txn, [], [], before)
+        Logger.info("voxel_protection seq=#{next.seq} changes=#{inspect(delta)} regions=#{map_size(next.protection.regions)}")
+        {:reply, {:ok, next.seq}, schedule_liquid(next)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, before}
+    end
+  end
+
+  # ---- 受保护区域：物理边界（理想绝热镜面）；无区域时全部原样返回。
+
+  # 节点所在持有者；附件足迹跨持有者时自成一域，与两侧都不接触。
+  defp cells_holder(p, cells, key) do
+    case cells |> Enum.map(&Protection.holder(p, &1)) |> Enum.uniq() do
+      [holder] -> {:holder, holder}
+      _ -> {:mixed, key}
+    end
+  end
+
+  defp node_holder(p, key, target), do: cells_holder(p, ThermalWork.cells(target), key)
+
+  defp protected_contacts(state, nodes) do
+    if Protection.empty?(state.protection) do
+      nodes
+    else
+      holders = Map.new(nodes, fn {key, n} -> {key, node_holder(state.protection, key, n.target)} end)
+
+      Map.new(nodes, fn {key, n} ->
+        {key, %{n | contacts: Enum.filter(n.contacts, fn {other, _} -> Map.get(holders, other) == holders[key] end)}}
+      end)
+    end
   end
 
   defp tool_regions(%{eye: {x, y, z}}, range) do

@@ -11,7 +11,7 @@ defmodule VoxelRegion.ThermalRadiation do
   @doc "环境是否启用辐射；发射率为 0 时不做视线读取，内核与无辐射版本逐位相同。"
   def enabled?(config), do: config["emissivity"] > 0
 
-  @doc "把一个节点全部视线的命中按目标合并：`[{节点键, :sky | {目标键, 目标宏格}, 面积}]`。"
+  @doc "把一个节点全部视线的命中按目标合并：`[{节点键, :sky | :blocked | {目标键, 目标宏格}, 面积}]`。"
   def sights(key, hits) do
     hits
     |> Enum.reduce(%{}, fn {hit, area}, sum -> Map.update(sum, hit, area, &(&1 + area)) end)
@@ -35,6 +35,8 @@ defmodule VoxelRegion.ThermalRadiation do
       rows
       |> Enum.sort()
       |> Enum.reduce({[], []}, fn
+        # 视线进入持有者不同的受保护区域：该面按理想镜面处理，不与伙伴或天空换热。
+        {_, :blocked, _}, acc -> acc
         {i, :sky, area}, {pairs, sky} -> {pairs, [{i, emissivity * area} | sky]}
         {i, {other, _}, area}, {pairs, sky} ->
           case Map.fetch(indices, other) do

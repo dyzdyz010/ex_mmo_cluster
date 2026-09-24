@@ -24,7 +24,8 @@ defmodule VoxelRegion.Liquid do
   end
 
   # Global system: expose the actual fluxes for thermal/integrity advection.
-  def step_transfers(water, bounds, capacity, gravity_limit, side_limit, open?, threshold \\ 0, active \\ nil) do
+  # connected?(a, b)：同层两格之间是否允许侧流（受保护区域边界为 false）；nil 表示全部连通。
+  def step_transfers(water, bounds, capacity, gravity_limit, side_limit, open?, threshold \\ 0, active \\ nil, connected? \\ nil) do
     sources = if active == nil, do: water, else: Map.take(water, Enum.to_list(active))
     {gravity, down} =
       Enum.reduce(sources, {%{}, []}, fn {{x, y, z} = from, quantity}, {deltas, flows} ->
@@ -51,7 +52,8 @@ defmodule VoxelRegion.Liquid do
       end)
       |> Enum.uniq()
       |> Enum.reduce({%{}, []}, fn {a, b}, {deltas, flows} ->
-        if available?(a, bounds, open?) and available?(b, bounds, open?) do
+        if available?(a, bounds, open?) and available?(b, bounds, open?) and
+             (connected? == nil or connected?.(a, b)) do
           difference = Map.get(fallen, a, 0) - Map.get(fallen, b, 0)
           flow = min(div(max(abs(difference) - threshold, 0), 8), side_limit)
           {from,to} = if difference > 0, do: {a,b}, else: {b,a}

@@ -290,8 +290,10 @@ defmodule VoxelRegion.DamageWorldTest do
     assert snapshot.property_states==[]
     assert [%{character: 1001,material: 19,units: 512}]=snapshot.material_balances
     assert snapshot.thermal_accounting==nil
+    # R8-03：同一提交点的受保护区域按窗口投影进入观察契约；本场景没有区域。
+    assert snapshot.protection==%{}
     assert Map.keys(snapshot)|>Enum.sort()==Enum.sort([:seq,:property_states,:property_context,:epochs,
-      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting])
+      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting,:protection])
     assert [_]=World.simulation_snapshot(c.w,[],{{1,0,0},{2,1,1}}).property_states
   end
 
