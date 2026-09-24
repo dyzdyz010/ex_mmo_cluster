@@ -231,14 +231,24 @@ defmodule VoxelRegion.Damage do
         end)
 
     liquid = data["liquid"]
+    capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro
     if liquid do
-      capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro
       true = is_number(liquid["step_seconds"]) and liquid["step_seconds"] > 0
       threshold = Map.get(liquid,"side_threshold_units",0)
       true = is_integer(threshold) and threshold >= 0 and threshold <= capacity
       true = Enum.all?(~w(gravity_units_per_step side_units_per_step),
         &(is_integer(liquid[&1]) and liquid[&1] > 0 and liquid[&1] <= capacity))
     end
+
+    # R8-07 散体：loose_threshold_units（同层相邻格的静止数量差上限，休止角 atan(t / 容量)）即可倾倒，
+    # 与液体共用步进参数；空气、液体、相态材料（雪暂不在本切片）与地面花草不可散体。
+    true =
+      Enum.all?(materials, fn {id, m} ->
+        t = m["loose_threshold_units"]
+        t == nil or
+          (liquid != nil and id != 0 and not VoxelRegion.Phase.liquid?(id) and not VoxelRegion.Phase.enabled?(m) and
+             not MmoContracts.VoxelMaterialCatalog.flora?(id) and is_integer(t) and t >= 0 and t <= capacity)
+      end)
     %{
       liquid: liquid,
       digest: :crypto.hash(:sha256, bytes),

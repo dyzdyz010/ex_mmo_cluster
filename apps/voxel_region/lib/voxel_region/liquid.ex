@@ -1,6 +1,8 @@
 defmodule VoxelRegion.Liquid do
   @moduledoc """
-  Global system：单一水材料的有限宏格液量计算，不持有世界或库存状态。
+  Global system：单一流动材料（液体，或 R8-07 可倾倒散体）的有限宏格数量计算，不持有世界或库存状态。
+  World 按材料分组逐种调用同一内核；散体与液体的唯一区别是侧向阈值（散体取目录 loose_threshold_units）：
+  静止时同层相邻格数量差不超过阈值（+7 量子截断），即休止角的离散版本。
 
   输入为 canonical Y-up 宏格坐标到正整数库存量子的稀疏表。容量、单步下落和
   侧向流量上限由已发布参数换算后传入，不能从显示高度反推水量。

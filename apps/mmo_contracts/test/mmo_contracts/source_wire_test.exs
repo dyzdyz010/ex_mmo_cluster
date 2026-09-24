@@ -55,11 +55,11 @@ defmodule MmoContracts.SourceWireTest do
     assert bytes(legacy) == bytes(row())
   end
 
-  test "Hello 22：Hello 21 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 22
-    hello = %Session.Hello{protocol_version: 22, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 23：Hello 21/22 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 23
+    hello = %Session.Hello{protocol_version: 23, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 22::16, tail::binary>> = packet
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<21::16>> <> tail)
+    <<prefix::binary-size(9), 23::16, tail::binary>> = packet
+    for old <- [21, 22], do: assert({:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<old::16>> <> tail))
   end
 end

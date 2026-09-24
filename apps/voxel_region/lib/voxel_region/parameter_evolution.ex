@@ -9,7 +9,10 @@ defmodule VoxelRegion.ParameterEvolution do
         # 单向转化是一次性事件，行上不存进度：五个字段可在线新增、调整或撤下。
         ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit) ++
         # 塞贝克系数只在每次求解时现读，行上不存与之相关的量。储能轴不在此列：行上的 stored_j 以它为容量。
-        ~w(seebeck_v_per_k)
+        ~w(seebeck_v_per_k) ++
+        # R8-07 散体休止阈值只在每步流动时现读（改动唤醒全部有限格）：可在线新增或调整；
+        # 已可倾倒的材料不能撤下（世界里可能有它的散体格），见下方检查。
+        ~w(loose_threshold_units)
 
     # 设备电阻只在每次建电路时按目录现读（Circuit.prepare），行上不存与之相关的量：可在线调整。
     tool_fields =
@@ -23,6 +26,7 @@ defmodule VoxelRegion.ParameterEvolution do
         case Map.fetch(new.materials, id) do
           {:ok, next} ->
             Map.drop(material, material_fields) == Map.drop(next, material_fields) and
+              (not Map.has_key?(material, "loose_threshold_units") or Map.has_key?(next, "loose_threshold_units")) and
               (not Phase.enabled?(material) or
                  Map.take(material, phase_fields) == Map.take(next, phase_fields))
 
@@ -46,10 +50,14 @@ defmodule VoxelRegion.ParameterEvolution do
     do: Map.delete(old, "side_threshold_units") == Map.delete(new, "side_threshold_units")
   defp liquid_compatible?(_, _), do: false
 
-  @doc "按实际属性行重标热参考；不供能、不改变温度、燃料、HP 或库存。"
-  def thermal_reference(nil, _rows, _old, _catalog), do: nil
+  @doc """
+  按实际属性行重标热参考；不供能、不改变温度、燃料、HP 或库存。
+  fill 给出宏格行的有限体积比例（散体按数量，R8-07）；缺省为满格。
+  """
+  def thermal_reference(thermal, rows, old_catalog, catalog, fill \\ fn _ -> 1.0 end)
+  def thermal_reference(nil, _rows, _old, _catalog, _fill), do: nil
 
-  def thermal_reference(thermal, rows, old_catalog, catalog) do
+  def thermal_reference(thermal, rows, old_catalog, catalog, fill) do
     ambient = thermal.config["ambient_kelvin"]
 
     rebase =
@@ -61,7 +69,7 @@ defmodule VoxelRegion.ParameterEvolution do
           volume =
             if row.granularity == 4,
               do: VoxelRegion.ThermalAttachments.volume(Attachments.slot(row), old_catalog),
-              else: Damage.volume(row.granularity)
+              else: Damage.volume(row.granularity) * fill.(row)
 
           next = catalog.materials[row.material]
 

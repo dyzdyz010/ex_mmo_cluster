@@ -24,6 +24,18 @@ flowchart LR
   Authority --> Replica[只读 Replica]
 ```
 
+## R8-07 散体增量 1（2026-09-24，分支 `r8-07-loose`，未合并，等客户端 Hello 23 增量）
+
+决策正文见 Voxim `Docs/R8/Design-decisions.md` §4「散体决策 D1–D9」。服务端事实：
+
+- **目录**：材料行 `loose_threshold_units`（整数 0..单格容量）即可倾倒；空气、液体、相态材料、地面花草不可，且须有液体步进参数（`Damage.load`）。可在线新增或调整、不可撤下（`ParameterEvolution`），改动唤醒全部有限格。样本目录 `7b69b79f…` = `b1aca503…` + 沙/煤 5/8 格、砾石/矿/产物 6/8 格。
+- **真值**：格有 `liquid_units` 数量记录即散体；天然地形与建造格静止、是墙。`World.finite_volume/2` 是唯一有限体积（q / 容量，无记录为 1），用于最大 HP、热采样与几何、燃烧燃料与功率、转化体积、参数热重标。换了材料而无随笔数量的格删除记录（挖掉、热毁、作者覆盖）。
+- **调度**：`advance_liquid` 按活跃邻域里出现的流动材料逐种调用同一 `Liquid.step_transfers`，侧向阈值按材料取；下落帧仍只发液体。散体不导电（D6）。
+- **搬运**：格值 `{能量, 完整度, 已烧燃料, 火}` 随通量搬运（`Phase.transport`）；带火流入即燃烧，功率 = 每宏格功率 × 体积；燃料初始化／舀出按显式燃料前后差记 `fuel_initialized_j`／`discarded_fuel_j`，舀出显热记 `removed_j`，入库 `floor(moved × 剩余 / 满燃料)`。
+- **意图**：工具 11/12 同时服务液体与散体；细分宏格回 `:needs_macro_opening`（D8）；散体格镐采／拆解回 `:use_liquid_tool`；转化接触按 1/8 m 实占用（下方散体不满 7/8 不接触），产物保留数量。
+- **协议**：VXRC（版本 12）允许任何非空气、非细分宏格带数量；液体／相态仍按原版本编码。Hello 22 → 23（客户端增量镜像后合并）。
+- 复跑：`apps/voxel_region` 下 `MMO_DB_PORT=5433 mix test test/loose_world_test.exs`（11 项）；本地炉模拟 `mix test test/loose_furnace_sim_test.exs --only sim`；100 m³ 倾倒 `mix test test/loose_pour_benchmark_test.exs --only benchmark`。只证明服务端范围，不代替双客户端实跑。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

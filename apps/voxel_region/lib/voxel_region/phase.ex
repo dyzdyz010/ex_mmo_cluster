@@ -1,10 +1,15 @@
 defmodule VoxelRegion.Phase do
   @moduledoc """
-  全局系统功能：水/冰当量（含雪）与玄武岩/熔岩的有限焓和完整度搬运。
+  全局系统功能：有限宏格（液体、相态材料与 R8-07 散体）随数量搬运的广延量。
   各相族以凝固相在目录转变温度处为零焓；潜热段恒温，整格完成后换材料。
+  无相变的散体以相对环境的显热 C·V·(T − T_amb) 为能量（与热账同一参考）。
   完整度为数量乘HP比例的广延量，流动、携带与再凝固不会免费修复。
-  只计算值，不读取 World、不分配事务序号、不保存库存或发送消息。
+  格值为 `{能量, 完整度, 已烧燃料 J, 火}`：已烧燃料 = 满燃料 − 剩余燃料（未初始化为 0），随数量按比例搬运；
+  火为 nil（燃料未初始化）/ false（已初始化未燃）/ true（燃烧），合并取较强者，流入燃烧格或带火流入即燃烧。
+  库存只携带 `{能量, 完整度}` 二元组。只计算值，不读取 World、不分配事务序号、不保存库存或发送消息。
   """
+
+  alias VoxelRegion.Combustion
 
   @typedoc "焓（J）与数量乘 HP 比例的完整度；数量和余额另由 World 持有。"
   @type extensive :: {number(), number()}
@@ -26,6 +31,15 @@ defmodule VoxelRegion.Phase do
   @doc "本轮明确支持的有向相变；雪融水后只重新凝固为冰。"
   def valid_pair?(material, peer),
     do: {material, peer} in [{4, 21}, {20, 21}, {21, 20}, {13, 22}, {22, 13}]
+
+  @doc "有限宏格的能量：相态材料为相族焓（energy/4），散体为相对环境的显热；无热环境时散体温度不建模，能量为零。"
+  def finite_energy(row, volume, material, ambient) do
+    cond do
+      enabled?(material) -> energy(row, volume, material, ambient)
+      ambient == nil -> 0.0
+      true -> material["heat_capacity_per_macro"] * volume * (Map.get(row, :temperature_kelvin, ambient) - ambient)
+    end
+  end
 
   def energy(row, volume, material, ambient) do
     Map.get_lazy(row, :phase_energy_j, fn ->
@@ -62,18 +76,28 @@ defmodule VoxelRegion.Phase do
   # 与数量内核共用同步通量，每阶段冻结来源，不能在两个阶段重复转移。
   def transport(values, quantities, transfers) do
     Enum.reduce(transfers, values, fn {from, to, units}, out ->
-      {energy, integrity} = Map.fetch!(values, from)
-      ratio = units / Map.fetch!(quantities, from)
-      moved = {energy * ratio, integrity * ratio}
+      moved = scale(Map.fetch!(values, from), units / Map.fetch!(quantities, from))
       out |> add(from, scale(moved, -1)) |> add(to, moved)
     end)
   end
 
-  def add(values, key, {energy, integrity}) do
-    Map.update(values, key, {energy, integrity}, fn {e, i} -> {e + energy, i + integrity} end)
-  end
+  def add(values, key, value), do: Map.update(values, key, value, &merge(&1, value))
+
+  @doc "同材料两份值合并：广延量相加，火取较强者。"
+  def merge({e, i}, {e2, i2}), do: {e + e2, i + i2}
+  def merge({e, i, b, f}, {e2, i2, b2, f2}), do: {e + e2, i + i2, b + b2, fire(f, f2)}
+
+  @doc "格值的 {能量, 完整度} 部分（库存只携带这两项）。"
+  def pair({energy, integrity}), do: {energy, integrity}
+  def pair({energy, integrity, _burnt, _fire}), do: {energy, integrity}
 
   def scale({energy, integrity}, factor), do: {energy * factor, integrity * factor}
+  def scale({energy, integrity, burnt, fire}, factor),
+    do: {energy * factor, integrity * factor, burnt * factor, fire}
+
+  defp fire(a, b) when a == true or b == true, do: true
+  defp fire(nil, nil), do: nil
+  defp fire(_, _), do: false
 
   @doc "按已接纳的来源数量搬运焓和完整度，返回格与库存的新广延量。"
   @spec transfer(extensive(), extensive(), pos_integer(), pos_integer(), :scoop | :pour) ::
@@ -90,17 +114,52 @@ defmodule VoxelRegion.Phase do
     {values.cell, values.inventory}
   end
 
-  @doc "按实际有限数量和携带完整度派生属性；身份、事务序号仍由调用方持有。"
-  def restore(row, {energy, integrity}, units, capacity, properties) do
-    volume = units / capacity
-    maximum = properties[row.material]["max_hp_per_macro"] * volume
+  @doc """
+  按实际有限数量和携带值派生属性；身份、事务序号仍由调用方持有。
+  相态材料写焓与温度；散体按显热写温度（ambient 为 nil 时不建模温度），可燃散体的燃料已初始化（火非 nil）时
+  写剩余燃料 = 满燃料 − 已烧、燃烧功率 = 每宏格功率 × 体积。
+  """
+  def restore(row, value, units, capacity, properties, ambient \\ nil)
 
-    Map.merge(row, %{
-      max_hp: maximum,
-      hp: maximum * max(0.0, min(1.0, integrity / units)),
-      phase_energy_j: energy,
-      temperature_kelvin: temperature(row.material, energy, volume, properties)
-    })
+  def restore(row, {energy, integrity}, units, capacity, properties, ambient),
+    do: restore(row, {energy, integrity, 0.0, nil}, units, capacity, properties, ambient)
+
+  def restore(row, {energy, integrity, burnt, fire}, units, capacity, properties, ambient) do
+    volume = units / capacity
+    material = properties[row.material]
+    maximum = material["max_hp_per_macro"] * volume
+    row = Map.merge(row, %{max_hp: maximum, hp: maximum * max(0.0, min(1.0, integrity / units))})
+
+    cond do
+      enabled?(material) ->
+        Map.merge(row, %{
+          phase_energy_j: energy,
+          temperature_kelvin: temperature(row.material, energy, volume, properties)
+        })
+
+      ambient == nil ->
+        row
+
+      true ->
+        row = Map.put(row, :temperature_kelvin, ambient + energy / (material["heat_capacity_per_macro"] * volume))
+
+        if fire != nil and Combustion.combustible?(material) do
+          remaining = Combustion.capacity_j(material, volume) - burnt
+          burning = fire and remaining > 0.0
+          Map.merge(row, %{remaining_fuel_j: remaining, burning: burning,
+            power_w: if(burning, do: Combustion.power_w(material, volume), else: 0.0)})
+        else
+          row
+        end
+    end
+  end
+
+  @doc "格值中已初始化的剩余燃料（J）；未初始化或不可燃为 0。热账的燃料初始化／移除按它前后之差记。"
+  def explicit_fuel({_, _}, _material, _volume), do: 0.0
+  def explicit_fuel({_, _, _, nil}, _material, _volume), do: 0.0
+
+  def explicit_fuel({_, _, burnt, _}, material, volume) do
+    if Combustion.combustible?(material), do: Combustion.capacity_j(material, volume) - burnt, else: 0.0
   end
 
   @doc "已接纳工具的有限能量账；足额时精确抵达相变端点，不把多付能量注入材料。"
@@ -132,8 +191,10 @@ defmodule VoxelRegion.Phase do
         {old, _} = Map.fetch!(current, cell)
 
         if units > 0 and old == 0 and not Map.has_key?(supplied, cell) do
-          energy = energy(%{material: liquid}, units / capacity, properties[liquid], ambient)
-          Map.put(values, cell, {energy, units * 1.0})
+          energy = finite_energy(%{material: liquid}, units / capacity, properties[liquid], ambient)
+          fresh = if tuple_size(elem(Map.fetch!(current, cell), 1)) == 4,
+            do: {energy, units * 1.0, 0.0, nil}, else: {energy, units * 1.0}
+          Map.put(values, cell, fresh)
         else
           values
         end

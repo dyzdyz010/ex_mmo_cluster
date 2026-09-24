@@ -65,7 +65,7 @@ defmodule MmoContracts.Voxel.Payload do
     with {:ok, header, raw} <- MmoContracts.Voxel.Codec.decode_payload_body(bytes),
          {:ok, payload} <- decode_body(raw, header.version),
          true <- header.version != 6 or header.level >= 1,
-         true <- header.version not in [7, 8, 9, 10, 11] or header.level == 0,
+         true <- header.version not in [7, 8, 9, 10, 11, 12] or header.level == 0,
          true <-
            Enum.all?(payload.attachments, fn {{_, _, anchor}, _} ->
              Enum.all?(0..2, fn i ->
@@ -105,8 +105,10 @@ defmodule MmoContracts.Voxel.Payload do
            Enum.all?(liquid_units, fn {index, _} ->
              material = :binary.decode_unsigned(binary_part(cells, index * 2, 2), :little)
 
+             # VXRC（12，R8-07 散体）：任何非空气宏格都可带有限数量；refined 宏格从不带。
              (material == 21 or (version >= 10 and material == 20) or
-                (version >= 11 and material in [4, 13, 22])) and not Map.has_key?(refined, index)
+                (version >= 11 and material in [4, 13, 22]) or (version >= 12 and material != 0)) and
+               not Map.has_key?(refined, index)
            end),
          {:ok, records} <-
            decode_records(extent, map_extent, row_start, col_x, faces, masks, fmi, maps) do
@@ -158,7 +160,7 @@ defmodule MmoContracts.Voxel.Payload do
 
   # Global system: VXR9 carries finite L0 Water21 quantities with owned/ring occupancy.
   # VXR4-8 Water21 without a record means one full macro at the published inventory scale.
-  defp decode_tail(tail, version) when version in [9, 10, 11] do
+  defp decode_tail(tail, version) when version in [9, 10, 11, 12] do
     with {:ok, refined, instances, tail} <- MmoContracts.Voxel.Refined.decode_prefix(tail, 7),
          <<n::little-32, slots::binary-size(n * 36), tail::binary>> <- tail,
          {:ok, attachments} <-
@@ -442,14 +444,18 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   defp encode_with_details(terrain, p, seq, content_version) do
+    materials = for {i, _} <- p.liquid_units, into: MapSet.new(),
+      do: :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little)
+
     version =
       cond do
-        Enum.any?(p.liquid_units, fn {i, _} ->
-          :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little) in [4, 13, 22]
-        end) ->
+        Enum.any?(materials, &(&1 not in [4, 13, 20, 21, 22])) ->
+          12
+
+        Enum.any?(materials, &(&1 in [4, 13, 22])) ->
           11
 
-        Enum.any?(p.liquid_units, fn {i, _} -> binary_part(terrain, 4 + i * 2, 2) == <<20, 0>> end) ->
+        MapSet.member?(materials, 20) ->
           10
 
         map_size(p.liquid_units) > 0 ->
@@ -473,7 +479,7 @@ defmodule MmoContracts.Voxel.Payload do
 
     raw =
       case version do
-        v when v in [9, 10, 11] ->
+        v when v in [9, 10, 11, 12] ->
           terrain <>
             MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7) <>
             MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)

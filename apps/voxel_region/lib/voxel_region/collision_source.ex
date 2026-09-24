@@ -48,7 +48,8 @@ defmodule VoxelRegion.CollisionSource do
   @doc "从完整 L0 载荷，或世界格读取器（coord → {terrain 材质, slot map}）投影相同 chunk 占用。"
   # Global system: derived conservative 1/8m collision slab, never material truth.
   # Exact display height is q/capacity; top overestimates by less than 1/8m.
-  def phase_slots(material, slots, quantity, capacity) when material in [4,13,20,22] and is_integer(quantity) and quantity < capacity do
+  # 有数量记录的实体宏格（相态固体、熔岩与 R8-07 散体）都按同一规则取整；水不挡移动，不投影。
+  def phase_slots(material, slots, quantity, capacity) when material not in [0,21] and is_integer(quantity) and quantity < capacity do
     layers=div(quantity*@micro+capacity-1,capacity)
     Map.new(0..(@micro*@micro*@micro-1),fn slot ->
       {slot,{if(rem(div(slot,@micro),@micro)<layers,do: material,else: 0),{0,0}}}

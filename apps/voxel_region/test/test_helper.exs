@@ -1,5 +1,5 @@
 # 只测试：默认仅加载共享夹具；数据库由需要持久化的测试显式启动。
-ExUnit.start(exclude: [:oracle, :realtime, :benchmark])
+ExUnit.start(exclude: [:oracle, :realtime, :benchmark, :sim])
 Logger.configure(level: :warning)
 Code.require_file("support/world_fixtures.exs", __DIR__)
 Code.require_file("../../data_service/test/support/database.exs", __DIR__)
