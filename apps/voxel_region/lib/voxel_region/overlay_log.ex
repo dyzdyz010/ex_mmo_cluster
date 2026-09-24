@@ -25,8 +25,15 @@ defmodule VoxelRegion.OverlayLog do
     do: [:circuit, :tool_id, :kind, :size, :anchor, :closed, :fault, :remaining_j, :voltage_v, :current_a, :power_w,
          :circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j]
 
-  @doc "日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。"
-  def term(bytes), do: :erlang.binary_to_term(bytes, [:safe])
+  @doc """
+  日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。拟态记录（`thermal.semblances`）的键
+  （`mass_kg`、`age_s`、`kinetic_j` 等）只出现在惰性加载的 `VoxelRegion.Magic.Semblance` 里，冷重启的新 VM 回放时它可能还没加载，
+  所以解码前先加载它（magic-inc2 首次双端实跑的冷重启即因此失败）。
+  """
+  def term(bytes) do
+    {:module, _} = Code.ensure_loaded(VoxelRegion.Magic.Semblance)
+    :erlang.binary_to_term(bytes, [:safe])
+  end
 
   @doc "事务 → 行（legacy 裸条目先归一成事务）。"
   def rows(%{seq: seq, coord: _} = legacy), do: rows(Map.merge(%{seq: seq, entries: [%{legacy | coarse: []}], coarse: legacy.coarse}, Map.drop(legacy,[:seq,:coord,:material,:coarse])))
