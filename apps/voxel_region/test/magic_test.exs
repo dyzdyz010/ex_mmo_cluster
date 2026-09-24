@@ -34,6 +34,20 @@ defmodule VoxelRegion.MagicTest do
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(bad)) end
   end
 
+  test "UE 发布字节：DA_MagicCatalogV1 的冻结样本（%.17g 数值：整数 4、0.90000000000000002）原样加载" do
+    # 冻结样本 = Voxim Content/Voxel/Magic/Published/2aaa8597….json 原字节（部署进服务端的就是这份）。
+    digest = "2aaa859715037d66be72a833bbe142f9e0b8ea63866e91e076c80cca9cbee9f0"
+    bytes = File.read!(Path.expand("fixtures/magic/#{digest}.json", __DIR__))
+    assert bytes =~ ~s("coherence":4,) and bytes =~ ~s("draw_efficiency":0.90000000000000002)
+    catalog = Catalog.decode(bytes)
+    assert Base.encode16(catalog.digest, case: :lower) == digest
+    assert {catalog.capacity_j, catalog.coherence, catalog.draw_efficiency} == {5.0e6, 4.0, 0.9}
+    assert {catalog.local_domain_m, catalog.cast_interval_us, catalog.program_max_bytes} == {6.0, 500_000, 2048}
+    # 远程点火预设 0.4 MJ / 200 kW 可施放。
+    ignite = Jason.decode!(bytes)["presets"] |> Enum.find(&(&1["id"] == "ignite_near"))
+    assert {:ok, %{steps: [%{args: %{"energy_j" => 4.0e5, "power_w" => 2.0e5}}]}} = Program.validate(ignite["program"], catalog)
+  end
+
   test "程序：两个预设合法；非法各类一律 :invalid_program", c do
     assert {:ok, %{steps: [%{sym: "energy.draw", args: %{"energy_j" => 1.0e6}}]}} = parse(c, program([draw(1_000_000)]))
     assert {:ok, %{steps: [%{sym: "act.heat", args: %{"energy_j" => 4.0e5, "power_w" => 5.0e4}}]}} =
