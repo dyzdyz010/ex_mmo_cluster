@@ -104,6 +104,20 @@ defmodule VoxelRegion.ParameterPublicationTest do
     assert observe(c.w).property_digest == after_state.property_digest
   end
 
+  test "已有设备工具的电阻可在线发布：电路每次按目录现读，行上不存与电阻相关的量", c do
+    # 青岚 4b2c6abe → ab44556b 把加热器（工具 6）从 3 Ω 调到 1.5 Ω；同一改动在这里作用于测试目录的工具 6。
+    data = Jason.decode!(File.read!(c.path))
+    assert %{"id" => "circuit.heater", "circuit_resistance_ohm" => 3} = Enum.find(data["tools"], &(&1["tool_id"] == 6))
+    retuned = Map.update!(data, "tools", &Enum.map(&1, fn t ->
+      if t["tool_id"] == 6, do: Map.put(t, "circuit_resistance_ohm", 1.5), else: t end))
+    File.write!(c.next_path, Jason.encode!(retuned))
+    assert :ok = World.publish_parameters(c.w, c.next_path, c.before.property_digest)
+    after_state = observe(c.w)
+    assert after_state.property_digest == Damage.load(c.next_path).digest
+    assert after_state.damage |> Map.values() |> Enum.map(&Map.drop(&1, [:seq, :digest])) ==
+             c.before.damage |> Map.values() |> Enum.map(&Map.drop(&1, [:seq, :digest]))
+  end
+
   test "落盘失败不切换目录、状态或重标账", c do
     handle = Log.open(c.opts[:root],World.content_version(c.w))
     File.write!(handle <> ".reject", "reject")

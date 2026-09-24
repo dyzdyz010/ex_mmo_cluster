@@ -9,8 +9,9 @@ defmodule VoxelRegion.ParameterEvolution do
         # 单向转化是一次性事件，行上不存进度：五个字段可在线新增、调整或撤下。
         ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit)
 
+    # 设备电阻只在每次建电路时按目录现读（Circuit.prepare），行上不存与之相关的量：可在线调整。
     tool_fields =
-      ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j)
+      ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j circuit_resistance_ohm)
 
     phase_fields =
       ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
