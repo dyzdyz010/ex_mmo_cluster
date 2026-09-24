@@ -4432,7 +4432,8 @@ defmodule VoxelRegion.World do
       identity = Map.take(target, [:micro, :granularity, :incarnation, :owner, :material])
       identity = if identity.granularity == 2, do: %{identity | granularity: 1}, else: identity
       row = property_state(state, identity)
-      row = Map.merge(row, %{closed: not Map.get(row, :closed, false), seq: state.seq + 1, request_id: request.request_id})
+      # 复制记录不带请求号（属性批次要求 0，客户端据此拒收整帧；switch-02 实跑）。
+      row = Map.merge(row, %{closed: not Map.get(row, :closed, false), seq: state.seq + 1, request_id: 0})
       next = %{state | seq: state.seq + 1, damage: Map.put(state.damage, Damage.key(row), row)}
       txn = %{seq: next.seq, entries: [], coarse: [], property_states: [row], epochs: %{}}
 

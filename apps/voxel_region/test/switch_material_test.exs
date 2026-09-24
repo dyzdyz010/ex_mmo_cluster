@@ -196,6 +196,8 @@ defmodule VoxelRegion.SwitchMaterialTest do
     # 复制：同一事务号的增量带闭合的开关整件行，编码后 flags 位 2 置位。
     assert_receive {:canonical_delta, %{transaction_seq: ^toggled, transaction: %{property_states: [row]}}}, 5_000
     assert {row.granularity, row.incarnation, row.material, row.closed} == {3, switch, @switch, true}
+    # 属性批次里的记录没有请求号；客户端对非 0 请求号拒收整帧（switch-02 实跑：切换后会话 protocol decode 失败）。
+    assert row.request_id == 0
     {:ok, bytes} = Codec.encode({:voxel_property_state, row})
     assert Bitwise.band(:binary.at(IO.iodata_to_binary(bytes), 120), 4) == 4
     lit = Enum.reduce(1..3, nil, fn _, _ -> commit(w) end)
