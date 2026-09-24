@@ -57,12 +57,12 @@ defmodule GateServer.VoximSpellDispatchTest do
   end
 
   # 0x82：rid 7、seq 8、scene 1、目标 = 叶宏格 (0,2,3) 的角微格 {0,16,24}、incarnation 1（作者编辑后的纪元）、
-  # 方向 (0,0,1)、程序 = 契约预设 ignite_near。
+  # 方向 (0,0,1)、目标拟态 id {0, 0}（Hello 25；加热不用）、程序 = 契约预设 ignite_near。
   defp spell(action, digest) do
     program = ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":50000}}]})
 
     <<0x82, 7::64, 8::32, 1::64, action, digest::binary-size(32), 0.0::float-64, 0.0::float-64, 1.0::float-64,
-      0::signed-64, 16::signed-64, 24::signed-64, 1::64, 0::64, 0::32, 28::16, 0, byte_size(program)::16,
+      0::signed-64, 16::signed-64, 24::signed-64, 1::64, 0::64, 0::32, 28::16, 0, 0::64, 0::32, byte_size(program)::16,
       program::binary>>
   end
 

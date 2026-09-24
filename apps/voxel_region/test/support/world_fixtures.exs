@@ -54,7 +54,8 @@ defmodule VoxelRegion.TestSupport do
       thermal: snapshot.thermal_accounting, liquid_units: snapshot.liquid_quantities,
       phase_inventory: snapshot.phase_inventory, epochs: snapshot.epochs,
       property_digest: snapshot.property_context.digest,
-      material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units})}
+      material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units}),
+      semblances: Map.get(snapshot, :semblances, %{})}
   end
 
   @doc "只测试：通过正式 payload 服务观察一个区域，保留协议所有者/结构和附件表示。"

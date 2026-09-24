@@ -42,10 +42,10 @@ defmodule MmoContracts.ProtectionWireTest do
   end
 
   test "Hello 21：旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 24
-    hello = %Session.Hello{protocol_version: 24, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 25
+    hello = %Session.Hello{protocol_version: 25, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 24::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 25::16, tail::binary>> = packet
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<20::16>> <> tail)
   end
 
@@ -60,12 +60,13 @@ defmodule MmoContracts.ProtectionWireTest do
   test "区域段附在属性批次末尾：增量可含删除，完整批次不能含删除" do
     {:ok, empty} = Voxel.Codec.encode_m1(batch(0, <<>>))
     {:ok, frame} = Voxel.Codec.encode_m1(batch(0, @sample))
-    # 信封头 9 B（255, 版本 u16, 领域, kind, 长度 u32）；无区域时末尾是 0 长度，有区域时同一前缀后接 u32 长度与样本。
+    # 信封头 9 B（255, 版本 u16, 领域, kind, 长度 u32）；无区域时区域段是 0 长度，有区域时同一前缀后接 u32 长度与样本。
+    # 协议 25 起区域段之后还有拟态段（这里为空：0 长度）。
     <<head::binary-size(5), size0::32, rest0::binary>> = empty
     <<^head::binary-size(5), size1::32, rest1::binary>> = frame
     assert size1 == size0 + 111
-    assert binary_part(rest0, byte_size(rest0) - 4, 4) == <<0::32>>
-    assert rest1 == binary_part(rest0, 0, byte_size(rest0) - 4) <> <<111::32>> <> @sample
+    assert binary_part(rest0, byte_size(rest0) - 8, 8) == <<0::32, 0::32>>
+    assert rest1 == binary_part(rest0, 0, byte_size(rest0) - 8) <> <<111::32>> <> @sample <> <<0::32>>
     assert {:ok, decoded} = Voxel.Codec.decode_m1(frame)
     assert decoded.protection == @sample
 

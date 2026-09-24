@@ -694,7 +694,8 @@ defmodule SceneServer.Movement.Player do
           ambient_kelvin: context.ambient_kelvin,
           epochs: epochs,
           states: states,
-          protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{}))
+          protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{})),
+          semblances: Voxel.Codec.encode_semblances(Map.get(value, :semblances, %{}))
         }
 
         reliable(state, :voxel, message)

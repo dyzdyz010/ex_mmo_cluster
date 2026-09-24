@@ -25,7 +25,7 @@ defmodule VoxelRegion.MagicTest do
     assert {c.catalog.e0_j, c.catalog.e_ref_j, c.catalog.alpha} == {2000.0, 1.0e6, 1.5}
     assert c.catalog.symbols["act.heat"].slots == %{"energy_j" => {1000, 4_000_000}, "power_w" => {1000, 200_000}}
 
-    unknown = update_in(c.data, ["symbols"], &[%{hd(&1) | "id" => "form.semblance"} | tl(&1)])
+    unknown = update_in(c.data, ["symbols"], &[%{hd(&1) | "id" => "act.cool"} | tl(&1)])
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(unknown)) end
     missing = update_in(c.data, ["limits"], &Map.delete(&1, "cast_interval_ms"))
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(missing)) end

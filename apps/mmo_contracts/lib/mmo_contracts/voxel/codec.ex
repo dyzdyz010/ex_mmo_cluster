@@ -55,7 +55,8 @@ defmodule MmoContracts.Voxel.Codec do
          ambient_kelvin: :f64,
          epochs: :bytes,
          states: {:array, :u32, :bytes},
-         protection: :bytes
+         protection: :bytes,
+         semblances: :bytes
        ]}
   }
 
@@ -125,10 +126,11 @@ defmodule MmoContracts.Voxel.Codec do
     do: byte_size(id) == 32 and orientation in 0..23
 
   @doc """
-  魔法增量 1（Hello 24）施法意图 0x82，大端，与 0x7D 工具意图同一目标表示：
+  魔法施法意图 0x82（Hello 25），大端，与 0x7D 工具意图同一目标表示：
   rid u64、client_intent_seq u32、scene u64、action u8（0 报价 / 1 施放）、魔法目录 digest 32B、
   眼睛方向 f64×3（单位向量）、目标微格 i64×3、incarnation u64、owner {birth u64, occurrence u32}、material u16、
-  granularity u8（0..2）、程序 u16 长度 + UTF-8 JSON。程序内容由 `VoxelRegion.Magic.Program` 在 World 裁决。
+  granularity u8（0..2）、目标拟态 id {seq u64, n u32}（增量 2，驱散用；其余程序填 0）、程序 u16 长度 + UTF-8 JSON。
+  程序内容由 `VoxelRegion.Magic.Program` 在 World 裁决。
   """
   def spell_intent?(%{action: action, direction: {dx, dy, dz}, granularity: granularity}) do
     norm = dx * dx + dy * dy + dz * dz
@@ -164,7 +166,8 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(
         <<0x82, rid::64, seq::32, scene::64, action::8, digest::binary-size(32), dx::float-64,
           dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64, incarnation::64,
-          birth::64, occurrence::32, material::16, granularity::8, n::16, program::binary-size(n)>>
+          birth::64, occurrence::32, material::16, granularity::8, semblance_seq::64, semblance_n::32, n::16,
+          program::binary-size(n)>>
       ) do
     request = %{
       request_id: rid,
@@ -178,6 +181,7 @@ defmodule MmoContracts.Voxel.Codec do
       owner: {birth, occurrence},
       material: material,
       granularity: granularity,
+      semblance: {semblance_seq, semblance_n},
       program: program
     }
 
@@ -1018,9 +1022,11 @@ defmodule MmoContracts.Voxel.Codec do
     end)
   end
 
-  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, complete: complete}) do
+  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, semblances: semblances, complete: complete}) do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
+    {:ok, delta} = decode_semblances(semblances)
+    true = complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil end)
   end
 
   defp accept_m1(_), do: :ok
@@ -1074,4 +1080,63 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_protection(_, _, _), do: {:error, :invalid_protection}
+
+  @doc """
+  魔法增量 2（协议 25）：拟态增量 `%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
+  每条 134 B、大端、按 id 升序且唯一；坐标为 canonical 米（Y-up），客户端不逐 tick 接收位置而自行插值：
+
+      id_seq:u64, id_n:u32, live:u8 (0 删除 / 1 存在), caster:u64, shape:u8 (0 球 / 1 立方),
+      radius_m:f64, temperature_k:f64, glow_w:f64,
+      origin_x/y/z:f64, velocity_x/y/z:f64, t0_us:u64, flight_s:f64, rest_x/y/z:f64
+
+  位置 p(τ) = origin + velocity·τ − ½·9.81·τ²·ŷ，τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
+  静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务端墙钟（与 SessionStart.server_time_us 同源）。
+  删除记录除 id 外全为 0。
+  """
+  def encode_semblances(delta) do
+    for {{seq, n}, s} <- Enum.sort(delta), into: <<>> do
+      case s do
+        nil ->
+          <<seq::64, n::32, 0::8, 0::size(121)-unit(8)>>
+
+        s ->
+          {ox, oy, oz} = s.origin
+          {vx, vy, vz} = s.velocity
+          {rx, ry, rz} = s.rest
+
+          <<seq::64, n::32, 1::8, s.caster::64, s.shape::8, s.radius_m::float-64, s.temperature_k::float-64,
+            s.glow_w::float-64, ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64,
+            vz::float-64, s.t0_us::64, s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
+      end
+    end
+  end
+
+  @doc "`encode_semblances/1` 的逆；拟态只含线上字段。"
+  def decode_semblances(bytes), do: decode_semblances(bytes, nil, %{})
+
+  defp decode_semblances(<<>>, _, acc), do: {:ok, acc}
+
+  defp decode_semblances(<<seq::64, n::32, 0::8, zero::binary-size(121), rest::binary>>, previous, acc)
+       when previous == nil or {seq, n} > previous do
+    if zero == <<0::size(121)-unit(8)>>,
+      do: decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, nil)),
+      else: {:error, :invalid_semblance}
+  end
+
+  defp decode_semblances(
+         <<seq::64, n::32, 1::8, caster::64, shape::8, radius::float-64, temperature::float-64, glow::float-64,
+           ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, t0::64,
+           flight::float-64, rx::float-64, ry::float-64, rz::float-64, rest::binary>>,
+         previous,
+         acc
+       )
+       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and radius > 0 and temperature > 0 and
+              glow >= 0 and flight >= 0 do
+    s = %{caster: caster, shape: shape, radius_m: radius, temperature_k: temperature, glow_w: glow,
+      origin: {ox, oy, oz}, velocity: {vx, vy, vz}, t0_us: t0, flight_s: flight, rest: {rx, ry, rz}}
+
+    decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, s))
+  end
+
+  defp decode_semblances(_, _, _), do: {:error, :invalid_semblance}
 end

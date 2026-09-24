@@ -39,6 +39,8 @@ defmodule VoxelRegion.World do
   @no_quote %{total_j: 0.0, structure: 0.0}
   # 施法留热、走火与取能损耗以有限热源落地，在一个 500 ms 热提交内放完（热源机制要求有限功率）。
   @deposit_seconds 0.5
+  # 魔法增量 2：emit = hand 的拟态在眼前 0.5 m（沿眼睛方向）成形；弹道从这里出发。
+  @hand_reach 0.5
   @name __MODULE__
 
   # ---- API
@@ -784,8 +786,9 @@ defmodule VoxelRegion.World do
   def handle_call({:spell_intent, actor, request}, _, state) do
     with {:ok, actor} <- current_actor(actor),
          true <- state.magic != nil and state.magic.digest == request.catalog_digest,
-         {:ok, program} <- Magic.Program.parse(request.program, state.magic) do
-      quote = Magic.Cost.quote(program, state.magic)
+         {:ok, program} <- Magic.Program.parse(request.program, state.magic),
+         :ok <- warm_semblance(program, state.thermal.config["ambient_kelvin"]) do
+      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
 
       if request.action == 0,
         do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0)}}, state},
@@ -1175,7 +1178,7 @@ defmodule VoxelRegion.World do
     started = System.monotonic_time(:microsecond)
 
     {state, transform_us} =
-      if state.thermal.active or circuit_seeds(state) != [] do
+      if state.thermal.active or circuit_seeds(state) != [] or semblances(state) != %{} do
         state = advance_thermal(state)
         advanced = System.monotonic_time(:microsecond)
         state = transform_heated_materials(state)
@@ -2377,10 +2380,25 @@ defmodule VoxelRegion.World do
       :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
       :transform_j, :transform_units, :transform_reductant_fuel_j,
-      :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j])
+      :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j,
+      :semblance_created_j, :semblance_exchanged_j, :semblance_light_j, :semblance_released_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
-    Map.put(ledger, :sources, sources)
+    ledger = Map.put(ledger, :sources, sources)
+
+    # 拟态账的剩余项是整个世界的快照：显热 ΣC(T − T_amb) 与其余存量（飞行动能 + 发光余量）；只在出现过拟态的世界里有。
+    # 闭合：semblance_created_j = exchanged + light + released + thermal + stored。
+    case thermal do
+      %{semblances: semblances} ->
+        live = Map.values(semblances)
+        ambient = thermal.config["ambient_kelvin"]
+        thermal_j = Enum.sum(Enum.map(live, &Magic.Semblance.thermal_j(&1, ambient))) * 1.0
+        stored_j = Enum.sum(Enum.map(live, &Magic.Semblance.stored_j(&1, ambient))) * 1.0
+        Map.merge(ledger, %{semblance_thermal_j: thermal_j, semblance_stored_j: stored_j - thermal_j})
+
+      _ ->
+        ledger
+    end
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
@@ -2431,7 +2449,8 @@ defmodule VoxelRegion.World do
         macros ++ component_observations(state, box) ++ attachment_observations(state, box),
       property_context: property_context(state),
       epochs: state.epochs,
-      protection: state.protection.regions
+      protection: state.protection.regions,
+      semblances: semblances(state)
     }
     |> public_properties()
     |> VoxelRegion.PropertyObservation.project(box)
@@ -3530,11 +3549,11 @@ defmodule VoxelRegion.World do
     dead = Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state,&1)))
 
     if dead == [] and map_size(phase_changes)>0 do
-      {:ok,state}=commit_liquid(state,phase_changes,%{property_states: rows})
+      {:ok,state}=commit_liquid(state,phase_changes,Map.merge(%{property_states: rows}, semblance_txn(semblances(before), state)))
       state
     else
     if dead == [] do
-      thermal_commit(state, rows)
+      thermal_commit(state, rows, semblance_txn(semblances(before), state))
     else
       # 归零与占用删除在原宏格损伤事务中一起持久化，不能留下已提交的零血量实体。
       # 同一步其他节点的温度、热源余量也属于这笔事务；热损伤不发放采掘奖励。
@@ -3550,7 +3569,8 @@ defmodule VoxelRegion.World do
       attachments = MapSet.new(for t <- dead, t.granularity == 3, do: t.incarnation)
 
       {:ok, state} =
-        commit_liquid(state, phase_changes, %{property_states: rows}, macros, owners, attachments)
+        commit_liquid(state, phase_changes, Map.merge(%{property_states: rows}, semblance_txn(semblances(before), state)),
+          macros, owners, attachments)
 
       state
     end
@@ -3703,7 +3723,10 @@ defmodule VoxelRegion.World do
     started = System.monotonic_time(:microsecond)
     config = state.thermal.config
 
-    plan = ThermalWork.plan(state.thermal_work, state.thermal.sources, powers, state.damage)
+    # 魔法增量 2：已落地拟态的接触宏格与热源同为热种子（plan 只读键）。
+    contacts = for {_, %{contact: %{cell: cell}} = s} <- semblances(state), Magic.Semblance.landed?(s),
+      into: %{}, do: {cell, nil}
+    plan = ThermalWork.plan(state.thermal_work, Map.merge(contacts, state.thermal.sources), powers, state.damage)
     neighborhood_done = System.monotonic_time(:microsecond)
 
     {geometry, state} = Enum.reduce(plan.missing, {plan.geometry, state}, &thermal_cell/2)
@@ -3778,16 +3801,23 @@ defmodule VoxelRegion.World do
       end)
     sampled = System.monotonic_time(:microsecond)
 
+    semblances = Enum.sort(semblances(state))
+    duration = Magic.Semblance.cap(Enum.map(semblances, &elem(&1, 1)), duration)
+
     batch = VoxelRegion.ThermalBatch.prepare(
       samples, sources, powers, work.hot, config["ambient_kelvin"], duration)
-    input = batch.input
+
+    # 拟态是内核外部节点：接在世界节点之后，接触边与辐射项按同一索引追加；结果按世界节点数切分。
+    count = length(batch.input)
+    {extra, edges, radiation} = semblance_terms(state, semblances, work.indices, ordered, count, radiation)
+    input = batch.input ++ extra
 
     prepared = System.monotonic_time(:microsecond)
 
     {done, result, supplied, environment} =
       VoxelRegion.ThermalNative.advance(
         input,
-        indexed_edges,
+        indexed_edges ++ edges,
         config["ambient_kelvin"] * 1.0,
         config["environment_w_per_m2_k"] * 1.0,
         config["tolerance_kelvin"] * 1.0,
@@ -3796,6 +3826,7 @@ defmodule VoxelRegion.World do
       )
 
     calculated = System.monotonic_time(:microsecond)
+    {result, semblance_result} = Enum.split(result, count)
 
     {changes, sources, hot, losses, combustion_used} =
       VoxelRegion.ThermalSettlement.apply(batch.targets, result, sources, config, done)
@@ -3842,6 +3873,7 @@ defmodule VoxelRegion.World do
     }
 
     work = if active, do: ThermalWork.burned(%{work | hot: hot}, changes), else: %{ThermalWork.new() | builds: work.builds}
+    state = advance_semblances(%{state | damage: damage, thermal: thermal}, semblances, semblance_result, done)
 
     Logger.info(
       "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} radiation_pairs=#{length(elem(radiation, 0))} sky_faces=#{length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
@@ -3851,7 +3883,118 @@ defmodule VoxelRegion.World do
       "voxel_thermal_prepare neighborhood_us=#{neighborhood_done - started} geometry_us=#{geometry_done - neighborhood_done} nodes_us=#{nodes_done - geometry_done} input_us=#{prepared - nodes_done} refresh_us=#{refreshed - geometry_done} rebuild_us=#{rebuilt - refreshed} terms_us=#{nodes_done - rebuilt} samples_us=#{sampled - nodes_done} batch_us=#{prepared - sampled} settle_us=#{settled - calculated} merge_us=#{merged - settled} ignite_us=#{ignited - merged} rebuild=#{rebuild?}"
     )
 
-    {%{state | damage: damage, thermal: thermal, thermal_work: work}, changed, done}
+    {%{state | thermal_work: work}, changed, done}
+  end
+
+  # ---- 魔法增量 2：拟态作为热内核外部节点（Voxim Docs/Magic.md §3；纯规则在 Magic.Semblance）
+  # 节点 {T,1,1,C,k_s,1e6,暴露面积,0,0,true}；已落地且接触节点在本次域内时连接触边（串联导热同 ThermalGeometry）、
+  # 与接触节点按角系数互换辐射，其余对天空；受保护区域边界同 protected_contacts：拟态所在格与接触节点持有者不同则不连。
+
+  defp semblances(%{thermal: nil}), do: %{}
+  defp semblances(state), do: Map.get(state.thermal, :semblances, %{})
+
+  defp semblance_terms(_state, [], _indices, _ordered, _count, radiation), do: {[], [], radiation}
+
+  defp semblance_terms(state, semblances, indices, ordered, count, {pairs, sky}) do
+    config = state.thermal.config
+    conductivity = state.magic.semblance.conductivity
+    emissivity = if VoxelRegion.ThermalRadiation.enabled?(config), do: config["emissivity"] * 1.0, else: 0.0
+    nodes = Map.new(ordered)
+
+    {extra, edges, pairs, sky} =
+      semblances
+      |> Enum.with_index(count)
+      |> Enum.reduce({[], [], pairs, sky}, fn {{_id, s}, i}, {extra, edges, pairs, sky} ->
+        other =
+          with %{contact: %{key: key, cell: cell}} <- s,
+               true <- Magic.Semblance.landed?(s),
+               {:ok, j} <- Map.fetch(indices, key),
+               true <- Protection.empty?(state.protection) or
+                 Protection.same_holder?(state.protection, Magic.Semblance.macro(s.rest), cell) do
+            {j, Map.fetch!(nodes, key)}
+          else
+            _ -> nil
+          end
+
+        {mutual, open} = Magic.Semblance.radiation(s, emissivity, other != nil)
+
+        {edges, pairs} =
+          case other do
+            {j, n} ->
+              half = if n.target.granularity == 0, do: 0.5, else: 0.5 / @micro
+              g = Magic.Semblance.conductance(s, conductivity, n.material["thermal_conductivity"], half)
+              {[{j, i, g} | edges], if(mutual > 0, do: [{i, j, mutual} | pairs], else: pairs)}
+
+            nil ->
+              {edges, pairs}
+          end
+
+        sky = if open > 0, do: [{i, open} | sky], else: sky
+        {[Magic.Semblance.node(s, conductivity, other != nil) | extra], edges, pairs, sky}
+      end)
+
+    {Enum.reverse(extra), Enum.reverse(edges), {pairs, sky}}
+  end
+
+  # 一段演进后：写回温度、计光与流出账；到达落点转内能；寿命到期移除并把剩余能量作为有限热源释放到接触宏格。
+  defp advance_semblances(state, [], _result, _done), do: state
+
+  defp advance_semblances(state, semblances, result, done) do
+    {kept, thermal} =
+      Enum.zip(semblances, result)
+      |> Enum.reduce({%{}, state.thermal}, fn {{id, s}, {temperature, _, _}}, {kept, thermal} ->
+        {s, light, exchanged} = Magic.Semblance.step(s, temperature, done)
+        thermal = thermal |> ledger(:semblance_light_j, light) |> ledger(:semblance_exchanged_j, exchanged)
+        {Map.put(kept, id, s), thermal}
+      end)
+
+    state = %{state | thermal: Map.put(thermal, :semblances, kept)}
+
+    kept
+    |> Enum.filter(fn {_, s} -> Magic.Semblance.expired?(s) end)
+    |> Enum.reduce(state, fn {id, s}, state -> release_semblance(state, id, s) end)
+  end
+
+  # 移除拟态（寿命到期或驱散）：剩余能量（显热 + 飞行动能 + 发光余量）记 semblance_released_j；已落地且接触宏格仍是
+  # 同一未细分热节点时作为有限热源落入该格（0.5 s 放完），否则（飞行中、无接触、接触格已变）散入空气。
+  defp release_semblance(state, id, s) do
+    {cell, state} = release_cell(state, s)
+    %{state | thermal: release(state.thermal, id, s, cell)}
+  end
+
+  defp release(thermal, id, s, cell) do
+    energy = Magic.Semblance.stored_j(s, thermal.config["ambient_kelvin"])
+
+    thermal =
+      thermal
+      |> Map.update!(:semblances, &Map.delete(&1, id))
+      |> ledger(:semblance_released_j, energy)
+
+    if cell, do: deposit_heat(%{thermal | active: true}, cell, energy), else: thermal
+  end
+
+  defp release_cell(state, %{contact: %{target: %{granularity: 0} = target}} = s) do
+    if Magic.Semblance.landed?(s) do
+      {current, state} = target_at(target.micro, state)
+      {if(current && same_target?(current, target) && heat_node?(state, current), do: current), state}
+    else
+      {nil, state}
+    end
+  end
+
+  defp release_cell(state, _s), do: {nil, state}
+
+  # 拟态表的变化随同一事务下发（按 id：新值或 nil 删除）；持久化靠事务里的 thermal（含整张表）。
+  defp semblance_txn(before, state) do
+    after_map = semblances(state)
+
+    delta =
+      for id <- Enum.uniq(Map.keys(before) ++ Map.keys(after_map)),
+          Map.get(before, id) != Map.get(after_map, id),
+          into: %{},
+          do: {id, Map.get(after_map, id)}
+
+    if delta == %{}, do: %{}, else: %{semblances: delta}
   end
 
   # 一个宏格的热节点几何：canonical 读取留在 owner 内，摘要由 ThermalGeometry 纯函数生成。
@@ -3976,7 +4119,7 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  defp thermal_commit(state, rows) do
+  defp thermal_commit(state, rows, extra \\ %{}) do
     state = %{
       state
       | seq: state.seq + 1,
@@ -3989,7 +4132,7 @@ defmodule VoxelRegion.World do
       coarse: [],
       property_states: rows,
       thermal: state.thermal
-    }
+    } |> Map.merge(extra)
 
     start = System.monotonic_time(:microsecond)
     :ok = append_log(state, txn)
@@ -4490,20 +4633,98 @@ defmodule VoxelRegion.World do
       coherence: state.magic.coherence, quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent}
   end
 
+  # 拟态只能比环境热（吸热 / 制冷待世界书提案）；低于环境温度的程序与其他非法程序同为 invalid_program。
+  defp warm_semblance(%{steps: [%{sym: "form.semblance", args: %{"temperature_k" => t}} | _]}, ambient) when t < ambient,
+    do: {:error, :invalid_program}
+
+  defp warm_semblance(_program, _ambient), do: :ok
+
   defp cast_spell(state, actor, request, program, quote) do
-    [%{sym: sym, args: args}] = program.steps
     previous = Map.get(state.spell_sessions, actor.player)
 
     with {:ok, session} <- admit_cast(previous, request, actor, state.magic),
-         {:ok, target, state} <- spell_target(state, actor, request, state.magic),
+         {:ok, effect, state} <- spell_effect(state, actor, request, program),
          {:ok, foot, state} <- foot_target(state, actor),
-         :ok <- spell_subject(state, sym, target),
-         true <- Protection.permitted?(state.protection, {:character, actor.cid}, [Damage.macro(target), Damage.macro(foot)]) do
-      settle_spell(state, actor, request, session, previous, sym, args, target, foot, quote)
+         :ok <- spell_subject(state, effect),
+         true <- Protection.permitted?(state.protection, {:character, actor.cid}, effect.cells ++ [Damage.macro(foot)]) do
+      settle_spell(state, actor, request, session, previous, effect, foot, quote)
     else
       false -> {:reply, {:error, :protected_region}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
       {:error, reason, _} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # 施法的作用对象与需要地块权限的宏格。加热 / 取能：眼睛射线目标。拟态：自手边成形（可抛出），落点格与接触格。
+  # 驱散：线上给出的拟态 id，须存在且当前位置在本地施法域内。
+  defp spell_effect(state, actor, request, %{steps: [%{sym: sym, args: args}]}) when sym in ["act.heat", "energy.draw"] do
+    with {:ok, target, state} <- spell_target(state, actor, request, state.magic),
+         do: {:ok, %{sym: sym, args: args, target: target, cells: [Damage.macro(target)]}, state}
+  end
+
+  defp spell_effect(state, actor, request, %{steps: [%{sym: "act.dispel"}]}) do
+    id = Map.get(request, :semblance)
+
+    case semblances(state) do
+      %{^id => s} ->
+        {px, py, pz} = position = Magic.Semblance.current(s)
+        {ex, ey, ez} = actor.eye
+
+        if (px - ex) ** 2 + (py - ey) ** 2 + (pz - ez) ** 2 > state.magic.local_domain_m ** 2 do
+          {:error, :out_of_domain, state}
+        else
+          {cell, state} = release_cell(state, s)
+          {:ok, %{sym: "act.dispel", id: id, semblance: s, release: cell, cells: [Magic.Semblance.macro(position)]}, state}
+        end
+
+      _ ->
+        {:error, :stale_target, state}
+    end
+  end
+
+  defp spell_effect(state, actor, request, %{steps: [%{sym: "form.semblance", args: form} | throw]}) do
+    owned = Enum.count(semblances(state), fn {_, s} -> s.caster == actor.cid end)
+    {dx, dy, dz} = request.direction
+    {ex, ey, ez} = actor.eye
+    hand = {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}
+
+    velocity =
+      case throw do
+        [%{args: %{"speed_mps" => v}}] -> {dx * v, dy * v, dz * v}
+        [] -> {0.0, 0.0, 0.0}
+      end
+
+    if owned >= state.magic.max_semblances do
+      {:error, :semblance_limit, state}
+    else
+      case Magic.Semblance.trace(actor.eye, hand, velocity, form["radius_m"], state.magic.range_m, state, &semblance_cast/4) do
+        {:miss, state} ->
+          {:error, :out_of_domain, state}
+
+        {{:free, point}, state} ->
+          launch = %{origin: point, velocity: velocity, flight_s: 0.0, rest: point, contact: nil}
+          {:ok, %{sym: "form.semblance", args: form, launch: launch, cells: [Magic.Semblance.macro(point)]}, state}
+
+        {{:hit, t, rest, target}, state} ->
+          node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
+          contact = %{target: target, key: VoxelRegion.ThermalGeometry.key(node), cell: Damage.macro(target)}
+          launch = %{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}
+          {:ok, %{sym: "form.semblance", args: form, launch: launch,
+                  cells: Enum.uniq([Magic.Semblance.macro(rest), contact.cell])}, state}
+      end
+    end
+  end
+
+  # 拟态弹道的 canonical 求交：同一 Amanatides-Woo 射线，命中返回目标与进入的微格。
+  defp semblance_cast(origin, direction, length, state) do
+    at = fn micro, s ->
+      {target, s} = target_at(micro, s)
+      {target && {target, micro}, s}
+    end
+
+    case Damage.raycast(origin, direction, length, state, at) do
+      {:ok, hit, state} -> {hit, state}
+      {:error, :no_target, state} -> {nil, state}
     end
   end
 
@@ -4556,8 +4777,8 @@ defmodule VoxelRegion.World do
   defp heat_node?(state, target),
     do: is_number(state.properties.materials[target.material]["heat_capacity_per_macro"])
 
-  # 动词的作用对象：加热 = 带热容的未细分宏格且尚无热源；取能 = 未细分的蓄能石宏格。
-  defp spell_subject(state, "act.heat", target) do
+  # 动词的作用对象：加热 = 带热容的未细分宏格且尚无热源；取能 = 未细分的蓄能石宏格；拟态与驱散在 spell_effect 已定。
+  defp spell_subject(state, %{sym: "act.heat", target: target}) do
     cond do
       target.granularity != 0 or not heat_node?(state, target) -> {:error, :invalid_target}
       Map.has_key?(state.thermal.sources, Damage.macro(target)) -> {:error, :heat_source_busy}
@@ -4565,35 +4786,40 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp spell_subject(state, "energy.draw", target) do
+  defp spell_subject(state, %{sym: "energy.draw", target: target}) do
     if target.granularity == 0 and VoxelRegion.Circuit.battery?(state.properties.materials[target.material]),
       do: :ok,
       else: {:error, :invalid_target}
   end
 
+  defp spell_subject(_state, _effect), do: :ok
+
   # 取能的控制开销从取得的能量里付（可支付 = 余额 + η·ΔE），否则空施法者永远取不了能。
   # 走火：扣 min(总支出, 余额) 全部落脚下，不产生其他效果。账：石减少 = caster_drawn_j + draw_loss_j；
-  # 施法支出 spent = spell_heat_j + cast_waste_j。
-  defp settle_spell(before, actor, request, session, previous, sym, args, target, foot, quote) do
+  # 施法支出 spent = spell_heat_j + semblance_created_j + cast_waste_j。
+  # 拟态：新记录 id = {本事务 seq, 0}，物理能量记 semblance_created_j；驱散：剩余能量记 semblance_released_j
+  # 并作为有限热源落入接触宏格（或散入空气），已发生的燃烧与热不撤销。
+  defp settle_spell(before, actor, request, session, previous, effect, foot, quote) do
     magic = before.magic
     cid = actor.cid
+    seq = before.seq + 1
     balance = Map.get(before.caster_energy, cid, 0.0)
-    stone = if sym == "energy.draw", do: property_state(before, target)
-    draw = stone && Magic.Cost.draw(args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
+    stone = if effect.sym == "energy.draw", do: property_state(before, effect.target)
+    draw = stone && Magic.Cost.draw(effect.args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
     available = if draw, do: balance + draw.gained_j, else: balance
     outcome = Magic.Cost.misfire(quote, available, magic)
     thermal = %{before.thermal | active: true}
 
     {spent, left, rows, thermal} =
-      case {outcome, sym} do
-        {nil, "act.heat"} ->
+      case {outcome, effect} do
+        {nil, %{sym: "act.heat", target: target, args: args}} ->
           source = %{target: target, power_w: args["power_w"], remaining_j: args["energy_j"]}
           thermal = %{thermal | sources: Map.put(thermal.sources, Damage.macro(target), source)}
 
           {quote.total_j, balance - quote.total_j, [],
            thermal |> ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, quote.control_j)}
 
-        {nil, "energy.draw"} ->
+        {nil, %{sym: "energy.draw", target: target}} ->
           row = Map.put(stone, :stored_j, Map.get(stone, :stored_j, 0.0) - draw.taken_j)
 
           thermal =
@@ -4605,12 +4831,30 @@ defmodule VoxelRegion.World do
 
           {quote.control_j, available - quote.total_j, [row], thermal}
 
+        {nil, %{sym: "form.semblance", args: form, launch: launch}} ->
+          s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, System.system_time(:microsecond)))
+
+          thermal =
+            thermal
+            |> Map.update(:semblances, %{{seq, 0} => s}, &Map.put(&1, {seq, 0}, s))
+            |> ledger(:semblance_created_j, quote.physical_j)
+            |> cast_waste(foot, quote.control_j)
+
+          {quote.total_j, balance - quote.total_j, [], thermal}
+
+        {nil, %{sym: "act.dispel", id: id, semblance: s, release: cell}} ->
+          thermal =
+            thermal
+            |> release(id, s, cell)
+            |> cast_waste(foot, quote.control_j)
+
+          {quote.total_j, balance - quote.total_j, [], thermal}
+
         _misfire ->
           spent = min(quote.total_j, balance)
           {spent, balance - spent, [], cast_waste(thermal, foot, spent)}
       end
 
-    seq = before.seq + 1
     rows = Enum.map(rows, &%{&1 | seq: seq, request_id: 0})
 
     next = %{
@@ -4622,7 +4866,9 @@ defmodule VoxelRegion.World do
         damage: Enum.reduce(rows, before.damage, &Map.put(&2, Damage.key(&1), &1))
     }
 
-    txn = %{seq: seq, entries: [], coarse: [], property_states: rows, thermal: thermal, caster_energy: %{cid => left}}
+    txn =
+      %{seq: seq, entries: [], coarse: [], property_states: rows, thermal: thermal, caster_energy: %{cid => left}}
+      |> Map.merge(semblance_txn(semblances(before), next))
 
     case append_log(next, txn) do
       :ok ->
@@ -4632,9 +4878,9 @@ defmodule VoxelRegion.World do
         fanout_canonical(next, txn, [], [], before)
 
         Logger.info(
-          "voxel_spell seq=#{seq} cid=#{cid} request_id=#{request.request_id} sym=#{sym} outcome=#{outcome || :cast} " <>
+          "voxel_spell seq=#{seq} cid=#{cid} request_id=#{request.request_id} sym=#{effect.sym} outcome=#{outcome || :cast} " <>
             "structure=#{quote.structure} quote_j=#{quote.total_j} spent_j=#{spent} energy_j=#{left} " <>
-            "target=#{inspect(Damage.macro(target))} foot=#{inspect(Damage.macro(foot))}"
+            "cells=#{inspect(effect.cells)} foot=#{inspect(Damage.macro(foot))}"
         )
 
         {:reply, {:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent)}}, next}

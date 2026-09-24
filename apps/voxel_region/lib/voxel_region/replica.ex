@@ -62,6 +62,8 @@ defmodule VoxelRegion.Replica do
           epochs: Map.get(snapshot, :epochs, %{}),
           # 受保护区域（World 真值在本副本窗口内的投影）；只转发给订阅者，副本不裁决。
           protection: Map.get(snapshot, :protection, %{}),
+          # 拟态（魔法增量 2，World thermal 真值在窗口内的投影）；同受保护区域只转发、不裁决。
+          semblances: Map.get(snapshot, :semblances, %{}),
           subscribers: %{},
           deltas: [],
           checkpoint_seq: snapshot.transaction_seq,
@@ -138,7 +140,7 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
-      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection}) |> VoxelRegion.PropertyObservation.project(box)
+      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection, semblances: state.semblances}) |> VoxelRegion.PropertyObservation.project(box)
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
       {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, box)}}
@@ -169,7 +171,11 @@ defmodule VoxelRegion.Replica do
       {id, nil}, acc -> Map.delete(acc, id)
       {id, region}, acc -> Map.put(acc, id, region)
     end)
-    state = %{state | damage: damage, protection: protection, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
+    semblances = Enum.reduce(Map.get(delta.transaction, :semblances, %{}), state.semblances, fn
+      {id, nil}, acc -> Map.delete(acc, id)
+      {id, semblance}, acc -> Map.put(acc, id, semblance)
+    end)
+    state = %{state | damage: damage, protection: protection, semblances: semblances, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
       property_context: Map.get(delta.transaction,:property_context,state.property_context)}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(

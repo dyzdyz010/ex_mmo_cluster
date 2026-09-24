@@ -17,12 +17,19 @@ defmodule VoxelRegion.PropertyObservation do
     |> project_falls(fn cell -> contains?(cell, box) end)
     |> Map.update(:epochs, %{}, &Map.filter(&1, fn {cell, _} -> contains?(cell, box) end))
     |> project_protection(box)
+    |> project_semblances(box)
   end
 
   # 受保护区域：新建/现有区域按矩形与窗口相交筛选；删除（nil）不知旧范围，总是保留。
   defp project_protection(%{protection: regions} = value, box),
     do: %{value | protection: Map.filter(regions, fn {_, r} -> r == nil or VoxelRegion.Protection.relevant?(r, box) end)}
   defp project_protection(value, _box), do: value
+
+  # 拟态（魔法增量 2）：出发点或落点宏格在窗口内的保留；删除（nil）不知旧位置，总是保留。
+  defp project_semblances(%{semblances: semblances} = value, box),
+    do: %{value | semblances: Map.filter(semblances, fn {_, s} ->
+      s == nil or Enum.any?(VoxelRegion.Magic.Semblance.cells(s), &contains?(&1, box)) end)}
+  defp project_semblances(value, _box), do: value
   @doc "实时整帧按接收方空间谓词投影；空帧仍表示清除。"
   def project_falls(%{liquid_falls: frame} = value, contains?) do
     %{value | liquid_falls: %{frame | transfers: Enum.filter(frame.transfers, fn {cell, _units} -> contains?.(cell) end)}}

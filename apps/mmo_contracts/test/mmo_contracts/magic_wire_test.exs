@@ -1,7 +1,8 @@
 defmodule MmoContracts.MagicWireTest do
   @moduledoc """
-  只测试：魔法增量 1（Hello 24）线格式冻结样本。0x82 施法意图（上行，大端，目标表示同 0x7D）与
-  0x83 施法者状态（下行，大端）；样本字节逐字段手写，f64 取 IEEE 754 大端位型。
+  只测试：魔法线格式冻结样本（增量 1 起、Hello 25 现行）。0x82 施法意图（上行，大端，目标表示同 0x7D，
+  增量 2 在粒度后加目标拟态 id）、0x83 施法者状态（下行，大端）与增量 2 PropertyBatch 末尾的拟态记录；
+  样本字节逐字段手写，f64 取 IEEE 754 大端位型。
   """
   use ExUnit.Case, async: true
   alias MmoContracts.Session
@@ -11,25 +12,26 @@ defmodule MmoContracts.MagicWireTest do
   @digest :binary.copy(<<0x11>>, 32)
 
   # 0x82：rid 1、seq 2、scene 3、action 1、digest 0x11×32、方向 (0, −1, 0)、目标微格 (−8, 16, 24)、
-  # incarnation 5、owner {0, 0}、material 28、granularity 0、程序 2 字节 "{}"。
+  # incarnation 5、owner {0, 0}、material 28、granularity 0、目标拟态 {7, 1}、程序 2 字节 "{}"。
   @spell Base.decode16!(
            "82" <> "0000000000000001" <> "00000002" <> "0000000000000003" <> "01" <>
              String.duplicate("11", 32) <>
              "0000000000000000" <> "BFF0000000000000" <> "0000000000000000" <>
              "FFFFFFFFFFFFFFF8" <> "0000000000000010" <> "0000000000000018" <>
              "0000000000000005" <> "0000000000000000" <> "00000000" <> "001C" <> "00" <>
-             "0002" <> "7B7D"
+             "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 24" do
-    assert Session.Codec.protocol_version() == 24
-    hello = %Session.Hello{protocol_version: 24, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 25：Hello 24 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 25
+    hello = %Session.Hello{protocol_version: 25, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<_prefix::binary-size(9), 24::16, _tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 25::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<24::16>> <> tail)
   end
 
   test "0x82 冻结样本解码为施法意图；非法动作、粒度、方向与长度拒绝" do
-    assert byte_size(@spell) == 1 + 8 + 4 + 8 + 1 + 32 + 24 + 24 + 8 + 12 + 2 + 1 + 2 + 2
+    assert byte_size(@spell) == 1 + 8 + 4 + 8 + 1 + 32 + 24 + 24 + 8 + 12 + 2 + 1 + 12 + 2 + 2
     assert Codec.is_opcode(0x82)
 
     assert {:ok,
@@ -46,12 +48,13 @@ defmodule MmoContracts.MagicWireTest do
                owner: {0, 0},
                material: 28,
                granularity: 0,
+               semblance: {7, 1},
                program: "{}"
              }}} = Codec.decode(@spell)
 
-    # action 在下标 21；granularity 在程序长度之前（下标 size − 5）。
+    # action 在下标 21；granularity 在目标拟态 id 与程序长度之前（下标 size − 17）。
     assert {:error, :invalid_message} = Codec.decode(put(@spell, 21, 2))
-    assert {:error, :invalid_message} = Codec.decode(put(@spell, byte_size(@spell) - 5, 3))
+    assert {:error, :invalid_message} = Codec.decode(put(@spell, byte_size(@spell) - 17, 3))
     # dy 改为 −0.5：非单位方向。
     assert {:error, :invalid_message} =
              Codec.decode(binary_part(@spell, 0, 62) <> <<-0.5::float-64>> <> binary_part(@spell, 70, byte_size(@spell) - 70))
@@ -74,6 +77,52 @@ defmodule MmoContracts.MagicWireTest do
     assert {:ok, bytes} = Codec.encode({:voxel_caster_state, state})
     assert IO.iodata_to_binary(bytes) == expected
     assert byte_size(expected) == 1 + 8 + 8 + 6 * 8
+  end
+
+  # 拟态记录（每条 134 B，大端，按 id 升序）：删除 {5, 2}；存在 {9, 0}——施法者 1001、球、半径 0.4 m、2000 K、
+  # 无发光、出发点 (0.5, 2.5, 1.0)、速度 (0, 0, 12)、t0 = 1.7e15 µs、飞行 1/6 s、落点 (0.5, 2.36375, 2.6)。
+  @semblances Base.decode16!(
+                "0000000000000005" <> "00000002" <> "00" <> String.duplicate("00", 121) <>
+                  "0000000000000009" <> "00000000" <> "01" <> "00000000000003E9" <> "00" <>
+                  "3FD999999999999A" <> "409F400000000000" <> "0000000000000000" <>
+                  "3FE0000000000000" <> "4004000000000000" <> "3FF0000000000000" <>
+                  "0000000000000000" <> "0000000000000000" <> "4028000000000000" <>
+                  "00060A24181E4000" <> "3FC5555555555555" <>
+                  "3FE0000000000000" <> "4002E8F5C28F5C29" <> "4004CCCCCCCCCCCD"
+              )
+
+  @delta %{
+    {5, 2} => nil,
+    {9, 0} => %{caster: 1001, shape: 0, radius_m: 0.4, temperature_k: 2000.0, glow_w: 0.0, origin: {0.5, 2.5, 1.0},
+      velocity: {0.0, 0.0, 12.0}, t0_us: 1_700_000_000_000_000, flight_s: 1 / 6, rest: {0.5, 2.36375, 2.6}}
+  }
+
+  test "拟态记录逐字节等于手写样本；World 内部字段不上线；属性批次末尾携带，完整批次不能含删除" do
+    assert byte_size(@semblances) == 2 * 134
+    internal = Map.new(@delta, fn {id, s} -> {id, s && Map.merge(s, %{mass_kg: 2.0, age_s: 0.3, contact: nil})} end)
+    assert Codec.encode_semblances(internal) == @semblances
+    assert Codec.decode_semblances(@semblances) == {:ok, @delta}
+    assert Codec.encode_semblances(%{}) == <<>>
+
+    batch = fn complete, semblances ->
+      %MmoContracts.Voxel.PropertyBatch{identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
+        transaction_seq: 7, l0_min: {0, 0, 0}, l0_max_exclusive: {1, 1, 1}, complete: complete, hp_enabled: 1,
+        digest: :binary.copy(<<0xA5>>, 32), thermal_enabled: 1, ambient_kelvin: 293.15, epochs: <<>>, states: [],
+        semblances: semblances}
+    end
+
+    {:ok, frame} = Codec.encode_m1(batch.(0, @semblances))
+    # 帧尾：区域段 0 长度，随后拟态段 u32 长度 268 与样本。
+    assert binary_part(frame, byte_size(frame) - 276, 276) == <<0::32, 268::32>> <> @semblances
+    assert {:ok, %{semblances: @semblances}} = Codec.decode_m1(frame)
+    live = binary_part(@semblances, 134, 134)
+    assert {:ok, %{semblances: ^live}} = Codec.decode_m1(elem(Codec.encode_m1(batch.(1, live)), 1))
+    assert {:error, :invalid_m1_message} = Codec.decode_m1(elem(Codec.encode_m1(batch.(1, @semblances)), 1))
+
+    # 反例：乱序、重复、未知形状、删除记录带非零字段、截断。
+    <<gone::binary-size(134), kept::binary-size(134)>> = @semblances
+    for bad <- [kept <> gone, kept <> kept, put(kept, 21, 2), put(gone, 40, 1), binary_part(@semblances, 0, 200)],
+      do: assert({:error, :invalid_semblance} == Codec.decode_semblances(bad), inspect(bad))
   end
 
   defp put(bytes, at, value),

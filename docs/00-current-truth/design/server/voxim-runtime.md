@@ -48,6 +48,18 @@ flowchart LR
 - **协议**：上行 0x82 `voxel_spell_intent`、下行 0x83 `voxel_caster_state`（`MmoContracts.Voxel.Codec`，冻结样本 `magic_wire_test.exs`）；施放与走火回 0x68 accepted（reason `ok`／`misfire_energy`／`misfire_coherence`），拒绝回 0x68 rejected。QUIC 接纳 0x76 时经编辑 worker 下发一次 0x83。Hello 23 → 24。
 - 复跑：`apps/voxel_region` 下 `mix test --no-start test/magic_test.exs test/magic_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test --no-start test/gate_server/voxim_spell_dispatch_test.exs`。只证明服务端范围，不代替双客户端实跑。
 
+## 魔法增量 2：拟态运行时（2026-09-25，分支 `magic-inc2`，基于 `magic-inc1`，未合并，等客户端 Hello 25 增量）
+
+设计正文见 Voxim `Docs/Magic.md` §3、§10。服务端事实：
+
+- **真值**：拟态表在 `thermal.semblances`（id ⇒ 记录，id = {创建事务 seq, 0}），与有限热源同属热状态，随每笔施法事务与每次热提交的 `thermal`（整表）落日志、进检查点、冷启动重放；`thermal_experiment`（Test-only）重置热状态时一并清空。记录与纯规则见 `VoxelRegion.Magic.Semblance`：施法者、形状（0 球 / 1 立方）、半径、质量、热容 = 质量 × 目录比热、温度、发光功率、寿命、已存在模拟时长、飞行动能、弹道（出发点、速度、服务端墙钟 t0_us、落点时刻 flight_s、落点）、接触节点。`solid` 恒 false（实体墙是增量 5）；没有需维持的拟态，断线与冷启动都不释放。
+- **动词**：`form.semblance`（emit = hand：眼前 0.5 m 成形；单步 = 静止在手边）、`act.throw`（同程序内接在形态后：沿眼睛方向 speed_mps 运动学抛出，重力 9.81，施法时对当时世界以 0.05 s 弦段求交，命中面解析解出落点时刻）、`act.dispel`（线上目标拟态 id；须存在且当前位置距眼 ≤ 本地施法域）。每名施法者同时至多 `max_semblances`（6）个，超出 `semblance_limit`；落点格与接触格、驱散对象格、脚下宏格都走 `Protection.permitted?`。抛出后 30 m 路程内无命中 `out_of_domain`；已不存在的驱散目标 `stale_target`。拟态温度低于环境 `invalid_program`（制冷待世界书提案）。
+- **成本**：E_phys = C·(T − T_amb) + glow_w·lifetime_s + ½·m·v²（`Semblance.form_j`／`kinetic_j`，报价与账同一实现），控制开销与走火同增量 1。
+- **推进**：挂既有 500 ms 热提交（入口条件加拟态非空）。每段内核演进前按寿命与落点端点截短段长；拟态作为外部节点 `{T,1,1,C,k_s,1e6,暴露面积,0,0,true}` 追加在世界节点之后：落地且接触节点在域内时连接触边 G = A/(r/k_s + d/k_o)（与 ThermalGeometry 同一串联式），球与接触节点按角系数 1/2 互换辐射、其余对天空，立方只导热；受保护区域持有者不同则不连。接触宏格并入热种子，点燃走既有 `ignite_heated_materials`。落地时飞行动能转为自身内能；发光按 W·dt 计光（不进热账）；寿命到期移除，剩余能量作为有限热源落入仍有效的接触宏格，否则散入空气。
+- **账**（`thermal_accounting`）：累计 `semblance_created_j`、`semblance_exchanged_j`（C·ΔT 流出 = 传给世界 + 散到环境，内核环境账不可拆分）、`semblance_light_j`、`semblance_released_j`；快照 `semblance_thermal_j`（ΣC(T − T_amb)）、`semblance_stored_j`（飞行动能 + 发光余量）。闭合：created = exchanged + light + released + thermal + stored；施法支出 = spell_heat_j + semblance_created_j + cast_waste_j。
+- **下行**：PropertyBatch 末尾新增 `semblances` 字节段（`Voxel.Codec.encode_semblances/1`，每条 134 B，完整批次为窗口内全部、增量批次为本事务变化，nil = 删除），窗口投影按出发点／落点宏格；客户端用 origin/velocity/t0_us/flight_s 按服务端时钟插值，不逐 tick 复制位置。0x82 在粒度后加目标拟态 id {seq u64, n u32}。Hello 24 → 25。
+- 复跑：`apps/voxel_region` 下 `mix test test/magic_semblance_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`。只证明服务端范围，不代替双客户端实跑。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

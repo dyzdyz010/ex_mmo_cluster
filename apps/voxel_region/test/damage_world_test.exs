@@ -292,8 +292,10 @@ defmodule VoxelRegion.DamageWorldTest do
     assert snapshot.thermal_accounting==nil
     # R8-03：同一提交点的受保护区域按窗口投影进入观察契约；本场景没有区域。
     assert snapshot.protection==%{}
+    # 魔法增量 2：窗口内拟态同为属性观察的一部分；本场景没有拟态（无热环境，拟态不存在）。
+    assert snapshot.semblances==%{}
     assert Map.keys(snapshot)|>Enum.sort()==Enum.sort([:seq,:property_states,:property_context,:epochs,
-      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting,:protection])
+      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting,:protection,:semblances])
     assert [_]=World.simulation_snapshot(c.w,[],{{1,0,0},{2,1,1}}).property_states
   end
 
