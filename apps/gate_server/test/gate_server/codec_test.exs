@@ -28,7 +28,7 @@ defmodule GateServer.CodecTest do
     assert {:ok, encoded} = Sink.encode({:voxel_log_transaction_payload, bytes})
     assert IO.iodata_to_binary(encoded) == <<0x79, bytes::binary>>
 
-    for material <- [2, 23, 24, 40, 41] do
+    for material <- [2, 23, 24, 40, 41, 42, 43] do
       assert {:ok, {:voxel_batch_edit_intent, %{edits: [{{1, 2, 3}, ^material}]}}} =
                Dispatch.decode(
                  <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,
@@ -36,7 +36,7 @@ defmodule GateServer.CodecTest do
                )
     end
 
-    for material <- [42, 255] do
+    for material <- [44, 255] do
       assert {:error, :invalid_message} =
                Dispatch.decode(
                  <<0x78, 1::64-big, 2::32-big, 3::64-big, 1::32-big, 1::32-big-signed,

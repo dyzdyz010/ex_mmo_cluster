@@ -7,7 +7,8 @@ defmodule VoxelRegion.ProtectionWorldTest do
   （下方第一个测试核对）。增量 2 起它与 UE 正式发布的 DA_MaterialCoverageV1（Voxim
   `Content/Voxel/Properties/Playable/Published/ab44556b….json`）逐字节相同，不再是 Test-only 专用目录。
   热环境 = Test-only 辐射环境 ε 0.9（`fixtures/combustion/environment-radiation.json`）。
-  R8-04 增量 2 起世界测试用当前发布目录 `0c67824f…`（开关材料 41、撤下设备工具 4/5/6/16）；上面的夹具身份测试仍核对 ab44556b 这份历史发布。
+  R8-04 增量 3 起世界测试用当前发布目录 `b1aca503…`（蓄能石 42、热电石 43、撤下电源／补能／加热器投料工具 3/15/19/8/2，
+  增量 2 已撤下 4/5/6/16）；上面的夹具身份测试仍核对 ab44556b 这份历史发布。
 
   场景地形只经作者编辑入口建立；材料只经 material_supply；区域经认领工具（正式玩家路径）或作者入口 author_regions；
   玩家动作经 tool/production/attachment/prefab 四个正式意图入口；时间只经 :thermal_commit / :liquid_commit 推进。
@@ -21,7 +22,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
 
   @digest "ab44556b0f1d93167f7f0f958c809cfe3281d22f25209b55f0eb2f9601168b7b"
   @base "5be2e8c79d8789a29aa17e023294c8aafbff51ff4b8c07a945035dbfcf91fe57"
-  @current "0c67824f97992de46ea7306b3e7596b6b29eea3d51e4e2a226bf947b2cf21552"
+  @current "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
   @fixtures Path.expand("fixtures", __DIR__)
   @grass 1
   @clay 8
@@ -33,10 +34,11 @@ defmodule VoxelRegion.ProtectionWorldTest do
   @water 21
   @copper 24
   @switch 41
+  @te 43
   @a 1001
   @b 1002
   @claim 20
-  @materials [@grass, @clay, @stone, @coal, @ore, @wood, @ice, @water, @copper, @switch]
+  @materials [@grass, @clay, @stone, @coal, @ore, @wood, @ice, @water, @copper, @switch, @te]
 
   setup do
     root = Path.join(System.tmp_dir!(), "protection_#{System.unique_integer([:positive])}")
@@ -237,7 +239,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
   # 顺序：先在静止世界里逐项验证 A 对 B 区域的请求被拒绝且一切不变；再由 B 在自己区域、A 在野外执行同一请求并成功。
   describe "许可：每个动作 × 自己区域 / 邻居区域 / 野外" do
     @lanes ~w(build mine f_macro f_leaf prefab_place prefab_remove prefab_replace attach_place attach_remove
-      pour scoop fire heater cool heat install toggle feed)a
+      pour scoop fire cool heat toggle)a
     defp lane(name), do: Enum.find_index(@lanes, &(&1 == name)) * 3 + 1
 
     defp macro_prefab(dir, material) do
@@ -279,7 +281,8 @@ defmodule VoxelRegion.ProtectionWorldTest do
         kind: 0, axis: 1, size: 8, anchor: {x * 8, (y + 1) * 8, z * 8}, id: id, material: material, tool_id: 1})
     end
 
-    defp device(w, a, {x, y, z}, id, tool, material \\ @copper) do
+    # 附件整件上的工具（增量 3 起只剩开关切换）。
+    defp switch_tool(w, a, {x, y, z}, id, tool, material) do
       a = move(a, {x + 0.5, y + 2.5, z + 0.5})
       seq = next()
       World.tool_intent(w, stamp(a, seq), %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1,
@@ -301,7 +304,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
       xs = [4, 20]
       at = fn name, x -> {x, 1, lane(name)} end
       ground = for x <- [-16, -1, 0, 15 | xs], z <- 0..58, do: {{x, 0, z}, @stone}
-      blocks = for x <- xs, {name, m} <- [mine: @stone, fire: @wood, heater: @ore], do: {at.(name, x), m}
+      blocks = for x <- xs, {name, m} <- [mine: @stone, fire: @wood], do: {at.(name, x), m}
       cups = for x <- xs, name <- [:pour, :scoop, :cool, :heat], do: cup(x, lane(name))
       {:ok, _} = World.apply_edits(w, ground ++ blocks ++ List.flatten(cups))
       assert {:ok, _} = claim(w, a, {-16, 0}, {-1, 58})
@@ -319,7 +322,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
         {x, %{macro: macro, leaf: leaf, remove: removed, replace: replaced}}
       end
       faces = for x <- xs, into: %{} do
-        ids = for name <- [:attach_remove, :install, :toggle, :feed], into: %{} do
+        ids = for name <- [:attach_remove, :toggle], into: %{} do
           {:ok, id} = face(w, b, {x, 0, lane(name)}, 0, 0, if(name == :toggle, do: @switch, else: @copper))
           {name, id}
         end
@@ -345,11 +348,8 @@ defmodule VoxelRegion.ProtectionWorldTest do
         scoop: fn who, x -> production(w, who, 2, @water, 11, at.(:scoop, x)) end,
         ignite: fn who, x -> use_tool(w, who, at.(:fire, x), 9) end,
         extinguish: fn who, x -> use_tool(w, who, at.(:fire, x), 10) end,
-        heater: fn who, x -> use_tool(w, who, at.(:heater, x), 2) end,
         cool: fn who, x -> use_tool(w, who, at.(:cool, x), 13) end,
-        install: fn who, x -> device(w, who, {x, 0, lane(:install)}, faces[x].install, 3) end,
-        toggle: fn who, x -> device(w, who, {x, 0, lane(:toggle)}, faces[x].toggle, 7, @switch) end,
-        feed: fn who, x -> device(w, who, {x, 0, lane(:feed)}, faces[x].feed, 8) end
+        toggle: fn who, x -> switch_tool(w, who, {x, 0, lane(:toggle)}, faces[x].toggle, 7, @switch) end
       ]
 
       for {name, request} <- requests do
@@ -360,16 +360,14 @@ defmodule VoxelRegion.ProtectionWorldTest do
         end)
       end
 
-      # 放行：B 在自己区域、A 在野外；投料先安装电源，灭火先点火，化冰先在杯里放冰；开关是材料面，直接切换。
-      for {name, request} <- requests, name not in [:toggle, :feed, :extinguish], who <- [{b, 4}, {a, 20}] do
+      # 放行：B 在自己区域、A 在野外；灭火先点火，化冰先在杯里放冰；开关是材料面，直接切换。
+      for {name, request} <- requests, name not in [:toggle, :extinguish], who <- [{b, 4}, {a, 20}] do
         {actor, x} = who
         assert {:ok, _} = request.(actor, x), "#{name} by #{actor.cid} at x=#{x}"
       end
       for {actor, x} <- [{b, 4}, {a, 20}] do
         assert {:ok, _} = requests[:extinguish].(actor, x)
         assert {:ok, _} = requests[:toggle].(actor, x)
-        assert {:ok, _} = device(w, actor, {x, 0, lane(:feed)}, faces[x].feed, 3)
-        assert {:ok, _} = requests[:feed].(actor, x)
         assert {:ok, _} = production(w, actor, 1, @ice, 1, at.(:heat, x))
       end
       # 化冰（phase.heat）的对象只能在热活动开始后建立，拒绝用活动期判据。
@@ -479,26 +477,30 @@ defmodule VoxelRegion.ProtectionWorldTest do
         IO.puts("PROTECTION_LIQUID claims=#{unquote(claims?)} quantities=#{inspect(Enum.sort(q))}")
       end
 
-      test "电路：边界两侧的源与回程铜面串成回路#{if claims?, do: "，跨边界不连通，源电流 0", else: "（对照：有电流）"}", c do
+      test "电路：A 侧的热电石经边界两侧的铜串成回路#{if claims?, do: "，跨边界不连通，电流 0", else: "（对照：有电流）"}", c do
         w = start(c, :"circuit_#{unquote(claims?)}")
-        row = [{{18, 1, 0}, @copper}, {{19, 1, 0}, @wood}, {{20, 1, 0}, @copper}, {{21, 1, 0}, @wood}, {{22, 1, 0}, @copper}]
-        back = [{{18, 1, 1}, @copper}, {{22, 1, 1}, @copper}] ++ for(x <- 18..22, do: {{x, 1, 2}, @copper})
-        {:ok, _} = World.apply_edits(w, row ++ back)
+        # A 侧（x ≤ 20）：热铜 H (19,1,0) 带实验热源、热电石 T (20,1,0)、回程 (19,2)(19,3)(20,3)；B 侧（x ≥ 21）：
+        # 冷铜 C (21,1)、(21,2)、(21,3)。回路 H→T→C→(21,2)→(21,3)→(20,3)→(19,3)→(19,2)→H 两次跨过 x = 20|21；(20,2) 是空气。
+        cells = [{{19, 1, 0}, @copper}, {{20, 1, 0}, @te}, {{21, 1, 0}, @copper}, {{21, 2, 0}, @copper}, {{21, 3, 0}, @copper},
+          {{20, 3, 0}, @copper}, {{19, 3, 0}, @copper}, {{19, 2, 0}, @copper}]
+        {:ok, _} = World.apply_edits(w, cells)
         if unquote(claims?), do: {:ok, _} = World.author_regions(w, [
           %{holder: {:character, @a}, min: {10, -5}, max: {20, 5}}, %{holder: {:character, @b}, min: {21, -5}, max: {30, 5}}])
-        a = actor(@a)
-        b = actor(@b)
-        {:ok, source} = face(w, a, {19, 1, 0}, 0)
-        # B 在 21 号木头顶面铺一块铜面（R8-04 起加热器是材料，不是设备）：两角落在铜 20 与铜 22 上，闭合回路。
-        {:ok, _} = face(w, b, {21, 1, 0}, 0)
-        assert {:ok, _} = device(w, a, {19, 1, 0}, source, 3)
-        assert {:ok, _} = device(w, a, {19, 1, 0}, source, 8)
+        path = Path.join(c.root, "heat_circuit_#{unquote(claims?)}.json")
+        File.write!(path, Jason.encode!(%{classification: "Test-only", source_macro: [19, 1, 0], ambient_kelvin: c.ambient,
+          environment_w_per_m2_k: 10.0, tolerance_kelvin: 1.0, emissivity: 0.0, view_range_cells: 8, power_w: 1.0e6, energy_j: 1.0e8}))
+        :ok = World.thermal_experiment(w, path)
+        te = Enum.reduce_while(1..200, nil, fn _, _ ->
+          send(w, :thermal_commit)
+          t = row(observe(w), {20, 1, 0})
+          if t && Map.get(t, :temperature_kelvin, 0.0) > c.ambient + 50, do: {:halt, t}, else: {:cont, t}
+        end)
         send(w, :thermal_commit)
-        devices = for {_, %{granularity: 3, circuit: d}} <- observe(w).damage, into: %{}, do: {d.tool_id, d}
+        te = row(observe(w), {20, 1, 0}) || te
         if unquote(claims?),
-          do: assert(devices[3].current_a == 0.0 and devices[3].remaining_j == c.tools[8]["circuit_energy_j"]),
-          else: assert(devices[3].current_a > 0.1)
-        IO.puts("PROTECTION_CIRCUIT claims=#{unquote(claims?)} source_a=#{devices[3].current_a}")
+          do: assert(te.source_current_a == 0.0),
+          else: assert(te.source_current_a > 0.1)
+        IO.puts("PROTECTION_CIRCUIT claims=#{unquote(claims?)} te_a=#{te.source_current_a} te_v=#{te.source_emf_v}")
       end
 
       test "冶炼：A 的铜矿被加热过转化温度，B 的煤紧贴#{if claims?, do: "，矿不取煤、不转化，煤无属性行", else: "（对照：转化为铜）"}", c do

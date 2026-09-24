@@ -574,9 +574,6 @@ defmodule VoxelRegion.World do
       Damage.material_units(catalog) == state.material_units_per_micro and
         (map_size(state.attachments) == 0 or
            Map.get(state.properties, :attachments) == Map.get(catalog, :attachments)) and
-        Enum.all?(VoxelRegion.Circuit.devices(state.damage), fn {_, {_, c}} ->
-          Map.fetch!(state.properties.tools, c.tool_id) == Map.get(catalog.tools, c.tool_id)
-        end) and
         Enum.all?(state.phase_inventory,fn {{cid,material},_}->
           fields = ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
           Map.get(state.material_balances,{cid,material},0)==0 or
@@ -1123,7 +1120,7 @@ defmodule VoxelRegion.World do
     started = System.monotonic_time(:microsecond)
 
     {state, transform_us} =
-      if state.thermal.active or map_size(VoxelRegion.Circuit.devices(state.damage)) > 0 do
+      if state.thermal.active or VoxelRegion.Circuit.seeds(state.damage, state.properties) != [] do
         state = advance_thermal(state)
         advanced = System.monotonic_time(:microsecond)
         state = transform_heated_materials(state)
@@ -2320,8 +2317,8 @@ defmodule VoxelRegion.World do
   defp thermal_accounting(thermal, in_box) do
     ledger = Map.take(thermal, [:active, :elapsed_s, :supplied_j, :environment_j,
       :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,
-      :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_light_j,
-      :circuit_rejected_j, :circuit_cooling_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
+      :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_charged_j, :circuit_thermoelectric_j,
+      :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
       :transform_j, :transform_units, :transform_reductant_fuel_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
@@ -3489,16 +3486,20 @@ defmodule VoxelRegion.World do
   defp circuit_steps(state, remaining, visited) when remaining < 1.0e-12, do: {state, visited}
 
   defp circuit_steps(state, remaining, visited) do
-    if map_size(VoxelRegion.Circuit.devices(state.damage)) == 0 do
+    seeds = VoxelRegion.Circuit.seeds(state.damage, state.properties)
+
+    if seeds == [] do
       {state, visited} = thermal_steps(state, remaining, visited, %{})
       {damage, visited} = electric_rows(state.damage, visited, %{})
+      {damage, visited} = source_rows(state, damage, visited, %{})
       {%{state | damage: damage}, visited}
     else
-      # 受保护区域：导线/设备端点按槽的持有者分开，端点只接同一持有者的实体导体。
+      # 受保护区域：导线端点按槽的持有者分开，端点只接同一持有者的实体导体。
       protection = state.protection
       domain = if not Protection.empty?(protection),
         do: fn slot -> cells_holder(protection, Attachments.macros([slot]), slot) end
-      input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties, remaining, domain)
+      input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties, remaining,
+        state.thermal.config["ambient_kelvin"], domain)
       {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
         {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &target_at/2)
         conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage)
@@ -3507,27 +3508,24 @@ defmodule VoxelRegion.World do
           else: conductors
         {{point, conductors}, s}
       end)
-      solids = for {_point, targets} <- hosts, target <- targets, into: %{},
+      # 导体图从线端点的宿主与电动势种子（有储能的蓄能石、带温度的热电石）两头按实接触扩张。
+      solids = for target <- seeds ++ for({_point, targets} <- hosts, target <- targets, do: target), into: %{},
         do: {VoxelRegion.ThermalGeometry.key(target), target}
       {contacts, state} = circuit_contacts(Map.values(solids), MapSet.new(), [], state)
       plan = VoxelRegion.Circuit.plan(input, Map.new(hosts), contacts)
       {state, visited} = thermal_steps(state, plan.duration, visited, plan.powers)
-
-      {damage, visited} =
-        Enum.reduce(plan.outputs, {state.damage, visited}, fn {id, c}, {damage, visited} ->
-          key = {3, id}
-          {Map.update!(damage, key, &Map.put(&1, :circuit, c)), MapSet.put(visited, key)}
-        end)
-
-      {damage, visited} = electric_rows(damage, visited, plan.electric)
+      {damage, visited} = electric_rows(state.damage, visited, plan.electric)
+      {damage, visited} = source_rows(state, damage, visited, plan.sources)
 
       thermal =
         state.thermal
         |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))
+        |> Map.update(:circuit_charged_j, plan.charged_j, &(&1 + plan.charged_j))
+        |> Map.update(:circuit_thermoelectric_j, plan.thermoelectric_j, &(&1 + plan.thermoelectric_j))
         |> Map.update(:circuit_light_j, plan.light_j, &(&1 + plan.light_j))
 
       Logger.info(
-        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)}"
+        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)}"
       )
 
       circuit_steps(
@@ -3536,6 +3534,29 @@ defmodule VoxelRegion.World do
         visited
       )
     end
+  end
+
+  # 全局系统功能（R8-04 增量 3）：蓄能石的储能 `stored_j` 是格属性行上的真值；本段求解的电动势与带号电流
+  # （蓄能石、热电石）是派生观察，写在同一行上随属性下发。新放置的蓄能石没有行，按需建默认行；离开所有已求解
+  # 网络的行去掉两个观察字段，储能保留。值不变的记录不进提交。
+  defp source_rows(state, damage, visited, sources) do
+    lit =
+      for {_key, view} <- sources, into: %{} do
+        target = view.target
+        key = Damage.key(target)
+        row = Map.get_lazy(damage, key, fn -> property_state(%{state | damage: damage}, target) end)
+        battery = VoxelRegion.Circuit.battery?(state.properties.materials[target.material])
+        fields = %{source_emf_v: view.emf_v, source_current_a: view.current_a}
+        fields = if battery, do: Map.put(fields, :stored_j, view.stored_j), else: fields
+        {key, Map.merge(row, fields)}
+      end
+
+    stale = for {key, %{source_emf_v: _} = row} <- damage, not Map.has_key?(lit, key), into: %{},
+      do: {key, Map.drop(row, [:source_emf_v, :source_current_a])}
+
+    Enum.reduce(Map.merge(stale, lit), {damage, visited}, fn {key, row}, {d, v} ->
+      if Map.get(d, key) == row, do: {d, v}, else: {Map.put(d, key, row), MapSet.put(v, key)}
+    end)
   end
 
   # 全局系统功能：发光导体（目录 λ > 0）本段求解的电功率与穿过电流是派生观察，写在已有温度记录上随属性下发；
@@ -4176,16 +4197,7 @@ defmodule VoxelRegion.World do
             {s, rows}
 
           maximum == 0 ->
-            thermal =
-              case Map.get(t, :circuit) do
-                %{remaining_j: joules} ->
-                  Map.update(s.thermal, :circuit_removed_j, joules, &(&1 + joules))
-
-                nil ->
-                  s.thermal
-              end
-
-            {%{s | damage: Map.delete(s.damage, key), thermal: thermal},
+            {%{s | damage: Map.delete(s.damage, key)},
              [%{t | hp: 0.0, flags: 1, seq: s.seq, request_id: 0} | rows]}
 
           true ->
@@ -4240,8 +4252,9 @@ defmodule VoxelRegion.World do
           tool["action"] == "circuit.toggle" ->
             toggle_switch(before, state, actor, request, target)
 
-          String.starts_with?(tool["action"], "circuit.") ->
-            operate_circuit(before, state, actor, request, target, tool)
+          # R8-04 增量 3：电源安装、补能与加热器投料退役（目录 retired_tools）。迁移前的旧目录仍可加载，其工具只被拒绝。
+          tool["action"] in ["circuit.install", "circuit.feed", "heat"] ->
+            {:reply, {:error, :retired_tool}, state}
 
           String.starts_with?(tool["action"], "combustion.") ->
             operate_combustion(before, state, actor, request, target, tool)
@@ -4251,9 +4264,6 @@ defmodule VoxelRegion.World do
 
           phase_target?(state,target) and not Phase.liquid?(target.material) ->
             damage_phase_solid(before, state, actor, request, target, tool)
-
-          tool["action"] == "heat" ->
-            feed_heater(before, state, actor, request, target, tool)
 
           true ->
             material = Map.fetch!(state.properties.materials, target.material)
@@ -4334,106 +4344,6 @@ defmodule VoxelRegion.World do
                 end
             end
         end
-    end
-  end
-
-  # 全局系统功能：投料与有限能源同笔保存；建造不产生能源，拆除不返还已经消费的燃料。
-  defp operate_circuit(before, state, actor, request, target, tool) do
-    with true <-
-           request.action == 1 and state.thermal != nil and target.granularity == 3 and
-             elem(target.owner, 1) < 3,
-         true <-
-           tool["action"] != "circuit.install" or
-             Map.get(state.properties.materials[target.material], "electrical_conductivity", 0) > 0,
-         {:ok, anchor, size} <-
-           VoxelRegion.Circuit.shape(attachment_slots(state, target.incarnation)),
-         {:ok, c, state, settlement} <-
-           circuit_operation(state, actor, target, tool, anchor, size) do
-      target = target |> Map.put(:circuit, c) |> Map.put(:seq, state.seq + 1)
-
-      next = %{
-        state
-        | seq: state.seq + 1,
-          damage: Map.put(state.damage, Damage.key(target), target)
-      }
-
-      txn =
-        Map.merge(
-          %{
-            seq: next.seq,
-            entries: [],
-            coarse: [],
-            property_states: [target],
-            thermal: next.thermal
-          },
-          settlement
-        )
-
-      case append_log(next, txn) do
-        :ok ->
-          next = remember_entry(next, txn)
-          fanout(next, txn)
-          fanout_canonical(next, txn, [], [], before)
-
-          Logger.info(
-            "voxel_circuit_input seq=#{next.seq} cid=#{actor.cid} id=#{target.incarnation} action=#{tool["action"]} kind=#{c.kind} closed=#{c.closed} remaining_j=#{c.remaining_j}"
-          )
-
-          {:reply, {:ok, next.seq}, next}
-
-        {:error, reason} ->
-          {:reply, {:error, reason}, before}
-      end
-    else
-      false -> {:reply, {:error, :not_a_circuit_face}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  defp circuit_operation(state, actor, target, tool, anchor, size) do
-    c = Map.get(target, :circuit)
-
-    case tool["action"] do
-      "circuit.install" when c == nil ->
-        {:ok,
-         %{
-           tool_id: tool["tool_id"],
-           kind: tool["circuit_kind"],
-           anchor: anchor,
-           size: size,
-           closed: true,
-           fault: 0,
-           remaining_j: 0.0,
-           voltage_v: 0.0,
-           current_a: 0.0,
-           power_w: 0.0
-         }, state, %{}}
-
-      "circuit.feed" when c != nil and c.kind == 1 ->
-        fuel = tool["fuel_material_id"]
-        units = tool["fuel_units"] * state.material_units_per_micro
-
-        if Map.get(state.material_balances, {actor.cid, fuel}, 0) >= units do
-          {state, settlement} = settle_material(state, actor.cid, fuel, -units)
-
-          state =
-            put_in(
-              state.thermal,
-              Map.update(
-                state.thermal,
-                :circuit_fed_j,
-                tool["circuit_energy_j"],
-                &(&1 + tool["circuit_energy_j"])
-              )
-            )
-
-          {:ok, %{c | remaining_j: c.remaining_j + tool["circuit_energy_j"]}, state, settlement}
-        else
-          {:error, :insufficient_material}
-        end
-
-      _ ->
-        {:error, :invalid_circuit_operation}
     end
   end
 
@@ -4605,69 +4515,6 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp feed_heater(before, state, actor, request, target, tool) do
-    fuel = tool["fuel_material_id"]
-    units = tool["fuel_units"] * state.material_units_per_micro
-
-    cond do
-      request.action != 1 or state.thermal == nil ->
-        {:reply, {:error, :thermal_unavailable}, state}
-
-      target.granularity != 0 or
-          "heat.receiver" not in state.properties.materials[target.material]["tags"] ->
-        {:reply, {:error, :not_a_heater}, state}
-
-      Map.get(state.material_balances, {actor.cid, fuel}, 0) < units ->
-        {:reply, {:error, :insufficient_material}, state}
-
-      true ->
-        {state, settlement} = settle_material(state, actor.cid, fuel, -units)
-        cell = Damage.macro(target)
-        previous = Map.get(state.thermal.sources, cell)
-
-        remaining =
-          if previous && same_target?(previous.target, target),
-            do: previous.remaining_j,
-            else: 0.0
-
-        source = %{
-          target: target,
-          power_w: tool["heat_power_w"],
-          remaining_j: remaining + tool["heat_energy_j"]
-        }
-
-        thermal = %{
-          state.thermal
-          | sources: Map.put(state.thermal.sources, cell, source),
-            active: true
-        }
-
-        next = %{state | seq: state.seq + 1, thermal: thermal} |> rebuild_thermal_work()
-
-        txn =
-          Map.merge(
-            %{seq: next.seq, entries: [], coarse: [], property_states: [], thermal: thermal},
-            settlement
-          )
-
-        case append_log(next, txn) do
-          :ok ->
-            next = remember_entry(next, txn)
-            fanout(next, txn)
-            fanout_canonical(next, txn, [], [], before)
-
-            Logger.info(
-              "voxel_heater_feed seq=#{next.seq} cid=#{actor.cid} cell=#{inspect(cell)} fuel=#{fuel} units=#{units} energy_j=#{tool["heat_energy_j"]} remaining_j=#{source.remaining_j}"
-            )
-
-            {:reply, {:ok, next.seq}, next}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, before}
-        end
-    end
-  end
-
   defp leaf_component?(state, owner),
     do: not Enum.any?(state.instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) == owner end)
 
@@ -4787,8 +4634,12 @@ defmodule VoxelRegion.World do
             sum + if(Map.has_key?(sources, cell), do: 0.0, else: s.remaining_j)
           end)
 
+        # 蓄能石随格移除时储能不进库存（材料单位不带电），记入移除账。
+        stored_j = Enum.reduce(removed, 0.0, fn t, sum -> sum + Map.get(t, :stored_j, 0.0) end)
+
         %{state.thermal | active: true, sources: sources}
         |> Map.update(:removed_j, removed_j, &(&1 + removed_j))
+        |> Map.update(:circuit_removed_j, stored_j, &(&1 + stored_j))
         |> Map.update(:discarded_source_j, discarded, &(&1 + discarded))
         |> Map.update(:discarded_fuel_j,Enum.reduce(removed,0.0,fn t,sum->sum+Map.get(t,:remaining_fuel_j,0.0) end),
           &(&1+Enum.reduce(removed,0.0,fn t,sum->sum+Map.get(t,:remaining_fuel_j,0.0) end)))

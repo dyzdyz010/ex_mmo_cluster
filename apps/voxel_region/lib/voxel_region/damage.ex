@@ -96,7 +96,8 @@ defmodule VoxelRegion.Damage do
     true =
       Enum.all?(tools, fn {_, t} ->
         case t["action"] do
-          # R8-04 增量 2 起电路只模拟电源（kind 1）；历史目录里的 2..5 仍按原格式校验加载，发布新目录时按 retired_tools 迁移。
+          # R8-04 增量 3 起电路里没有设备（电源、补能、加热器投料都已退役）；历史目录里的这些工具仍按原格式校验加载，
+          # 其动作只被拒绝（:retired_tool），发布新目录时按 retired_tools 迁移。
           "circuit.install" ->
             t["circuit_kind"] in 1..5 and is_number(t["circuit_resistance_ohm"]) and
               t["circuit_resistance_ohm"] > 0 and
@@ -201,14 +202,32 @@ defmodule VoxelRegion.Damage do
                 end)))
       end)
 
-    # 退役的设备工具 → 在用设备迁移成的附件材料（ParameterEvolution.retire_devices）；工具不能仍在目录里。
+    # R8-04 增量 3 储能轴（蓄能石）：每宏格储能 J 与每米电动势 V 成组、均为正，只在导体上，不与发光、开关、塞贝克同行。
+    # 温差发电轴（热电石）：塞贝克系数 V/K 非零，只在导体上（导体必带热物性），不与开关、储能同行。
+    true =
+      Enum.all?(materials, fn {_, m} ->
+        battery = Map.has_key?(m, "battery_volts_per_m") or Map.has_key?(m, "battery_energy_per_macro_j")
+        conductor = Map.get(m, "electrical_conductivity", 0) > 0
+
+        (not battery or
+           (is_number(m["battery_volts_per_m"]) and m["battery_volts_per_m"] > 0 and
+              is_number(m["battery_energy_per_macro_j"]) and m["battery_energy_per_macro_j"] > 0 and conductor and
+              not Enum.any?(~w(luminous_fraction circuit_switch seebeck_v_per_k), &Map.has_key?(m, &1)))) and
+          (not Map.has_key?(m, "seebeck_v_per_k") or
+             (is_number(m["seebeck_v_per_k"]) and m["seebeck_v_per_k"] != 0 and conductor and
+                not Map.has_key?(m, "circuit_switch") and not battery))
+      end)
+
+    # 退役工具 → 在用设备迁移成的附件材料（ParameterEvolution.retire_devices）；工具不能仍在目录里。
+    # 没有设备的工具（补能、加热器投料）退役时不带材料（material_id 缺省）。
     retired = Map.new(data["retired_tools"] || [], &{&1["tool_id"], &1["material_id"]})
 
     true =
       map_size(retired) == length(data["retired_tools"] || []) and
         Enum.all?(retired, fn {tool, material} ->
-          is_integer(tool) and not Map.has_key?(tools, tool) and Map.has_key?(materials, material) and
-            MmoContracts.Voxel.Attachments.material?(material)
+          is_integer(tool) and not Map.has_key?(tools, tool) and
+            (material == nil or
+               (Map.has_key?(materials, material) and MmoContracts.Voxel.Attachments.material?(material)))
         end)
 
     liquid = data["liquid"]

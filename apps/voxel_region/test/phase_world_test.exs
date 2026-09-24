@@ -32,7 +32,7 @@ defmodule VoxelRegion.PhaseWorldTest do
         "phase_peer_material_id"=>if(m["material_id"]==20,do: 21,else: 20),
         "phase_transition_kelvin"=>273.15,"latent_heat_per_macro_j"=>334_000_000.0,
         "heat_capacity_per_macro"=>if(m["material_id"]==20,do: 1_930_000.0,else: 4_180_000.0),
-        "thermal_conductivity"=>if(m["material_id"]==20,do: 2.2,else: 0.6),"heat_resistance_kelvin"=>1_000_000.0}),else: m
+        "thermal_conductivity"=>if(m["material_id"]==20,do: 22.0,else: 6.0),"heat_resistance_kelvin"=>1_000_000.0}),else: m
     end)
     materials = if context[:database_metadata], do: Enum.map(materials, fn m ->
       if m["material_id"] in [13,22], do: Map.merge(m,%{

@@ -27,13 +27,13 @@ defmodule MmoContracts.CombustionWireTest do
   end
 
   test "B7 Hello16 接纳，旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 21
-    hello = %Session.Hello{protocol_version: 21, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 22
+    hello = %Session.Hello{protocol_version: 22, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 21::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 22::16, tail::binary>> = packet
 
-    for version <- 1..20 do
+    for version <- 1..21 do
       assert {:error, :invalid_m1_message} =
                Session.Codec.decode(prefix <> <<version::16>> <> tail)
     end
@@ -55,35 +55,6 @@ defmodule MmoContracts.CombustionWireTest do
       assert packet == thermal <> <<flag, fuel::float-64, power::float-64>>
       assert byte_size(packet) == 146
     end
-  end
-
-  test "B5 电路与 B6 燃烧字段共存且电路前缀保持不变" do
-    circuit = %{
-      tool_id: 3,
-      kind: 1,
-      size: 8,
-      closed: true,
-      fault: 0,
-      anchor: {-8, 4112, 504},
-      remaining_j: 7500.0,
-      voltage_v: 24.0,
-      current_a: 2.0,
-      power_w: 48.0
-    }
-
-    device = Map.put(state(), :circuit, circuit)
-    packet = bytes(device)
-    assert byte_size(packet) == 191
-
-    assert binary_part(packet, 129, 62) ==
-             <<3::16, 1, 8, 1, 0, -8::signed-64, 4112::signed-64, 504::signed-64,
-               7500.0::float-64, 24.0::float-64, 2.0::float-64, 48.0::float-64>>
-
-    combined =
-      bytes(Map.merge(device, %{burning: true, remaining_fuel_j: 12345.0, power_w: 1000.0}))
-
-    assert byte_size(combined) == 208
-    assert combined == packet <> <<1, 12345.0::float-64, 1000.0::float-64>>
   end
 
   test "完整属性快照与后续批次原样传输燃烧确认状态" do

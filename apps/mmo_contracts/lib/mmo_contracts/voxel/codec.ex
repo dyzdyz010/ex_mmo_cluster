@@ -340,19 +340,6 @@ defmodule MmoContracts.Voxel.Codec do
         :error -> <<>>
       end
 
-    circuit =
-      case Map.fetch(t, :circuit) do
-        {:ok, c} ->
-          {a, b, d} = c.anchor
-
-          <<c.tool_id::16, c.kind::8, c.size::8, if(c.closed, do: 1, else: 0)::8, c.fault::8,
-            a::signed-64, b::signed-64, d::signed-64, c.remaining_j::float-64,
-            c.voltage_v::float-64, c.current_a::float-64, c.power_w::float-64>>
-
-        :error ->
-          <<>>
-      end
-
     combustion =
       case Map.fetch(t, :burning) do
         {:ok, burning} ->
@@ -373,11 +360,20 @@ defmodule MmoContracts.Voxel.Codec do
     # 协议 21：开关材料（目录 circuit_switch）的格／附件行闭合时置 flags 位 2，无后缀；缺省或断开为 0。
     closed = if Map.get(t, :closed, false), do: 4, else: 0
 
+    # 协议 22：蓄能石／热电石格行的电源后缀 24 字节（储能 J、电动势 V、带号电流 A，+ 为向外供能），flags 位 3，
+    # 在发光后缀之后。只有储能而本段不在网络里的蓄能石行电动势与电流为 0。设备记录（原电源等）已无生产者，不再编码。
+    {source, supply} =
+      if Map.has_key?(t, :stored_j) or Map.has_key?(t, :source_emf_v),
+        do: {<<Map.get(t, :stored_j, 0.0)::float-64, Map.get(t, :source_emf_v, 0.0)::float-64,
+               Map.get(t, :source_current_a, 0.0)::float-64>>, 8},
+        else: {<<>>, 0}
+
     {:ok,
      <<0x7E, t.request_id::64, t.seq::64, x::signed-64, y::signed-64, z::signed-64,
        t.granularity::8, t.incarnation::64, birth::64, occurrence::32, t.material::16,
        t.hp::float-64, t.max_hp::float-64, t.defense::float-64, t.digest::binary-size(32),
-       t.flags + present + closed::8, temperature::binary, circuit::binary, combustion::binary, electric::binary>>}
+       t.flags + present + closed + supply::8, temperature::binary, combustion::binary, electric::binary,
+       source::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do

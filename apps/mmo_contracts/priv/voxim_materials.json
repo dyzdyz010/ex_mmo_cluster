@@ -208,5 +208,15 @@
     "id": 41,
     "name": "switch",
     "blocks_movement": true
+  },
+  {
+    "id": 42,
+    "name": "energy_stone",
+    "blocks_movement": true
+  },
+  {
+    "id": 43,
+    "name": "thermoelectric_stone",
+    "blocks_movement": true
   }
 ]

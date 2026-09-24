@@ -420,7 +420,7 @@ defmodule VoxelRegion.DamageWorldTest do
   test "无新前沿或冷板的半秒提交至多两次进入热 NIF", c do
     b3_experiment(c, 10000.0, 100.0)
     state = observe(c.w)
-    assert VoxelRegion.Circuit.devices(state.damage) == %{}
+    assert VoxelRegion.Circuit.seeds(:sys.get_state(c.w).damage, :sys.get_state(c.w).properties) == []
     # 只读计数，不启用会复制完整 World 实参的调用消息。
     mfa = {VoxelRegion.ThermalNative, :advance, 7}
     :erlang.trace_pattern(mfa, true, [:call_count])
@@ -463,52 +463,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert observe(w).seq==seq
     # The config is internal solver state; the public snapshot carries only the ledger.
     assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0,"emissivity"=>0.0,"view_range_cells"=>8}
-  end
-
-  @tag :b3_heater
-  test "paid heater fuel and energy commit together, reject duplicates and survive restart", c do
-    data=Jason.decode!(File.read!(c.catalog))
-    data=Map.update!(data,"tags",&(&1++[%{"id"=>"heat"},%{"id"=>"heat.receiver"}]))
-    data=Map.update!(data,"materials",fn rows -> Enum.map(rows,fn row ->
-      if row["material_id"]==19,do: Map.put(row,"tags",["heat.receiver"]),else: row
-    end) end)
-    tool=%{"id"=>"heater","tool_id"=>2,"action"=>"heat","power"=>1.0,"range_macro"=>6.0,
-      "interval_seconds"=>0.5,"fuel_material_id"=>19,"fuel_units"=>256,"heat_energy_j"=>1000.0,"heat_power_w"=>200.0}
-    File.write!(c.catalog,Jason.encode!(Map.update!(data,"tools",&(&1++[tool]))))
-    b3_experiment(c,1.0,1.0)
-    assert {:ok,_}=World.apply_edit(c.w,{-6,1,-4},19)
-    assert :ok=VoxelRegion.TestSupport.mine_authored(c.w,1001)
-    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
-    request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
-      |> Map.merge(%{action: 1,tool_id: 2,client_intent_seq: 1})
-    actor=Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
-    before=observe(c.w)
-    assert {:ok,seq}=World.tool_intent(c.w,actor,request)
-    after_feed=observe(c.w)
-    assert after_feed.material_balances[{1001,19}]==256
-    assert after_feed.thermal.sources[{1,1,2}].remaining_j==before.thermal.sources[{1,1,2}].remaining_j+1000.0
-    [txn]=World.entries_after(c.w,before.seq)
-    assert txn.entries==[] and txn.material_balances==%{{1001,19}=>256}
-    assert Map.take(txn.thermal,Map.keys(after_feed.thermal)) |> Map.delete(:sources)==Map.delete(after_feed.thermal,:sources)
-    assert Map.take(txn.thermal.sources[{1,1,2}],[:remaining_j,:power_w])==after_feed.thermal.sources[{1,1,2}]
-    assert {:error,:replayed_attack}=World.tool_intent(c.w,actor,request)
-    assert World.seq(c.w)==seq
-    stop_supervised(World)
-    w=start_supervised!({World,c.opts})
-    restored=observe(w)
-    assert restored.thermal==after_feed.thermal
-    assert restored.material_balances==after_feed.material_balances
-    path=Log.open(c.opts[:root],World.content_version(w))
-    File.write!(path<>".reject","")
-    assert {:error,:test_disk_failure}=World.tool_intent(w,%{actor | received_us: 1_000_000},%{request | client_intent_seq: 2})
-    assert Map.take(observe(w),[:thermal,:material_balances,:seq])==Map.take(restored,[:thermal,:material_balances,:seq])
-    File.rm!(path<>".reject")
-    assert {:ok,_}=World.tool_intent(w,%{actor | received_us: 1_000_000},%{request | client_intent_seq: 2})
-    assert {:error,:insufficient_material}=World.tool_intent(w,%{actor | received_us: 1_500_000},%{request | client_intent_seq: 3})
-    assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
-    assert {:ok,_}=World.apply_edit(w,{1,1,2},19)
-    assert b3_tick(w).thermal.sources==%{}
-    assert observe(w).material_balances[{1001,19}]==0
   end
 
   @tag :b3_heater
@@ -1746,100 +1700,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,^removed}=World.prefab_intent(w,c.actor,:voxel_prefab_remove_v1,remove)
     assert balance(w,1001).balance==512
     assert World.stats(w).attachment_slots==0
-  end
-
-  @tag :circuit_material_update
-  @tag :b5
-  @tag :physical_units
-  @tag :thermal_environment
-  @tag :switch
-  test "电源安装投料、开关材料面切换与热结算同笔恢复；非开关不能切换，重新安装和旧身份不得补充能源",c do
-    r=b4_funded(c)
-    data=Jason.decode!(File.read!(c.catalog))
-    thermal=%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>0.0,"heat_resistance_kelvin"=>1000.0,"electrical_conductivity"=>58.0e6}
-    materials=Enum.map(data["materials"],fn m->if m["material_id"]==19,do: Map.merge(m,thermal),else: m end)
-    # 只测试：开关材料 41（闭合时 σ 同铜、断开绝缘），与木头同热参数。
-    switch=Map.merge(hd(materials),%{"material_id"=>41,"max_hp_per_macro"=>100.0,"circuit_switch"=>true}) |> Map.merge(thermal)
-    source=%{"id"=>"source","tool_id"=>3,"action"=>"circuit.install","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5,
-      "circuit_kind"=>1,"circuit_resistance_ohm"=>1.0,"circuit_voltage_v"=>12.0,"circuit_light_fraction"=>0.0}
-    toggle=%{"id"=>"toggle","tool_id"=>7,"action"=>"circuit.toggle","power"=>1.0,"range_macro"=>6.0,"interval_seconds"=>0.5}
-    feed=Map.merge(toggle,%{"id"=>"feed","tool_id"=>8,"action"=>"circuit.feed","fuel_material_id"=>19,"fuel_units"=>16,"circuit_energy_j"=>600.0})
-    data=%{data | "materials"=>materials++[switch],"tools"=>data["tools"]++[source,toggle,feed],
-      "tags"=>data["tags"]++Enum.map(~w(circuit.install circuit.toggle circuit.feed),&%{"id"=>&1})}
-    File.write!(c.catalog,Jason.encode!(data))
-    assert :ok=World.publish_properties(c.w,c.catalog)
-    {:ok,_}=World.material_supply(c.w,1001,"switch",%{41=>4096})
-    # 竖直面环（z = 16 微格平面，面轴 z，切向 u = x）：源在 F(1,1)，端口 (8,8)→(16,8)；开关面 F(2,1) 接端口 b，
-    # 经角点 (16,16) 连木面 F(1,2)、角点 (8,16) 连木面 F(0,1)、角点 (8,8) 回到端口 a。背后四格是绝缘石。
-    assert {:ok,_}=World.apply_edits(c.w,[{{0,1,2},11},{{2,1,2},11},{{1,2,2},11}])
-    faces=for {{x,y,material},i}<-Enum.with_index([{1,1,19},{2,1,41},{1,2,19},{0,1,19}]) do
-      assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | anchor: {x*8,y*8,16},material: material,request_id: 20+i,client_intent_seq: 20+i})
-      {id,{x,y,material}}
-    end
-    [{source_id,_},{switch_id,_},{wood_id,_}|_]=faces
-    use=fn w,{id,{x,y,material}},tool,seq->
-      request=Map.merge(c.request,%{granularity: 3,micro: {x*8,y*8,16},owner: {id,2},incarnation: id,material: material,
-        action: 1,tool_id: tool,request_id: seq,client_intent_seq: seq})
-      World.tool_intent(w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request)
-    end
-    [source_face,switch_face,wood_face|_]=faces
-    assert {:ok,_}=use.(c.w,source_face,3,40)
-    assert {:error,:invalid_circuit_operation}=use.(c.w,source_face,3,41)
-    assert {:error,:not_a_switch}=use.(c.w,wood_face,7,42)
-    prior=balance(c.w,1001).balance
-    assert {:ok,_}=use.(c.w,source_face,8,43)
-    assert balance(c.w,1001).balance==prior-16*4096
-    # 开关缺省断开：源有能量但回路不通。
-    open=b3_tick(c.w)
-    assert open.damage[{3,source_id}].circuit.current_a==0.0
-    assert open.damage[{3,source_id}].circuit.remaining_j==600.0
-    refute Map.get(open.damage[{3,switch_id}] || %{},:closed,false)
-    assert {:ok,_}=use.(c.w,switch_face,7,44)
-    assert observe(c.w).damage[{3,switch_id}].closed
-    warm=b3_tick(c.w)
-    # 付费 600 J 在约 144 W 下可供约 4 s，一次 0.5 s 提交内不会耗尽。回路 = 源内阻 1 Ω + 三块面的网格（每条棱 2/(σ·厚) ≈ 1.8e-5 Ω，几条串并联 < 1e-3 Ω）。
-    current=warm.damage[{3,source_id}].circuit.current_a
-    assert current<=12.0 and current>=12.0/(1+1.0e-3)
-    assert warm.thermal.circuit_supplied_j>0
-    assert_in_delta warm.thermal.circuit_supplied_j,warm.thermal.supplied_j+warm.thermal.circuit_light_j,1.0e-7
-    assert Enum.any?(warm.damage,fn {_,t}->t.granularity==4 and t.temperature_kelvin>293.15 end)
-    assert {:ok,_}=use.(c.w,switch_face,7,45)
-    off=b3_tick(c.w)
-    assert off.damage[{3,source_id}].circuit.current_a==0.0
-    assert_in_delta off.thermal.circuit_supplied_j,warm.thermal.circuit_supplied_j,1.0e-8
-    # 开合与电源余能随日志恢复；恢复后再闭合继续从同一余量供电。
-    assert {:ok,_}=use.(c.w,switch_face,7,46)
-    closed=observe(c.w)
-    stop_supervised(World)
-    w=start_supervised!({World,c.opts})
-    restored=observe(w)
-    assert restored.damage==closed.damage
-    assert restored.thermal==closed.thermal
-    assert restored.material_balances==closed.material_balances
-    assert restored.damage[{3,switch_id}].closed
-    # 已安装设备的参数不能借目录发布改变；扩充其他内容仍沿既有发布路径。
-    changed=update_in(data["tools"],&Enum.map(&1,fn t->if t["tool_id"]==3,do: Map.put(t,"circuit_voltage_v",24.0),else: t end))
-    File.write!(c.catalog,Jason.encode!(changed))
-    assert {:error,:property_version_in_use}=World.publish_properties(w,c.catalog)
-    File.write!(c.catalog,Jason.encode!(data))
-    for _<-1..20,do: b3_tick(w)
-    depleted=observe(w)
-    assert depleted.damage[{3,source_id}].circuit.remaining_j==0.0
-    assert_in_delta depleted.thermal.circuit_supplied_j,600.0,1.0e-7
-    assert_in_delta depleted.thermal.circuit_supplied_j,depleted.thermal.supplied_j+depleted.thermal.circuit_light_j,1.0e-7
-    assert {:ok,_}=use.(w,source_face,8,47)
-    funded=balance(w,1001).balance
-    # 删除源的最后支撑会丢弃储能，既不返燃料，也不把储能转成热。
-    assert {:ok,_}=World.apply_edit(w,{1,1,2},0)
-    removed=observe(w)
-    assert_in_delta removed.thermal.circuit_removed_j,600.0,1.0e-7
-    assert balance(w,1001).balance==funded
-    assert {:ok,_}=World.apply_edit(w,{1,1,2},11)
-    assert {:ok,new_id}=World.attachment_intent(w,c.actor,%{r | anchor: {8,8,16},request_id: 48,client_intent_seq: 48})
-    assert new_id>source_id
-    assert {:ok,_}=use.(w,{new_id,{1,1,19}},3,49)
-    assert observe(w).damage[{3,new_id}].circuit.remaining_j==0.0
-    assert wood_id>0
   end
 
   @tag :b5

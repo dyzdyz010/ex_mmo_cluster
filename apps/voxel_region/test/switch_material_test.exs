@@ -156,89 +156,48 @@ defmodule VoxelRegion.SwitchMaterialTest do
     assert balances(w) == %{@stone => 0, @coal => 0, @copper => 0, @alloy => 0, @switch => 4096 + @macro}
   end
 
-  # 回路（地面宏格 y = 0 为石；y = 1 一排：铜 C1 (0,1,0)、电阻合金 L (1,1,0)、铜 C2 (2,1,0)）。地面顶上三块面：
-  # 铜面 F_a (x 0, z 1)、开关面 S (x 2, z 1)、铜面 F0 (x 1, z 2) 上装 24 V 源；源端口 (1,2)→(2,2)。
-  # 端口 a 是 F_a 的角 → F_a 北沿 9 个点接 C1 → C1–L–C2 两个接触 → C2 接 S 北沿 → S 的角是端口 b。S 断开时端口 b 悬空。
-  defp lamp_circuit(c, name) do
+  # 地面宏格 y = 0 为石；y = 1 一排：铜 C1 (0,1,0)、电阻合金 L (1,1,0)、铜 C2 (2,1,0)。地面顶上两块面：铜面 F_a (x 0, z 1)、
+  # 开关面 S (x 2, z 1)。增量 3 起电源设备退役：开关材料在真实回路里的电流由 energy_material_test（蓄能石 + 开关 + 合金灯）
+  # 与 circuit_test（线里的开关附件）核对；这里只核对开关行本身：切换、复制、持久化。
+  defp switch_faces(c, name) do
     {w, root} = start(c, name)
     a = actor({1.5, 3.5, 2.5})
     ground = for x <- -1..4, z <- -1..4, do: {{x, 0, z}, @stone}
     {:ok, _} = World.apply_edits(w, ground ++ [{{0, 1, 0}, @copper}, {{1, 1, 0}, @alloy}, {{2, 1, 0}, @copper}])
-    {:ok, _} = World.material_supply(w, 1001, "fixture", %{@copper => 2 * 4096, @switch => 4096, @coal => @macro})
+    {:ok, _} = World.material_supply(w, 1001, "fixture", %{@copper => 4096, @switch => 4096})
     {:ok, fa} = face(w, a, {0, 8, 8}, @copper)
     {:ok, switch} = face(w, a, {16, 8, 8}, @switch)
-    {:ok, source} = face(w, a, {8, 8, 16}, @copper)
-    on_face = fn id, anchor, material -> [micro: anchor, incarnation: id, owner: {id, 1}, material: material] end
-    {:ok, _} = use_tool(w, a, {8, 8, 16}, 3, granularity: 3, target: on_face.(source, {8, 8, 16}, @copper))
-    {:ok, _} = use_tool(w, a, {8, 8, 16}, 8, granularity: 3, target: on_face.(source, {8, 8, 16}, @copper))
-    toggle = fn -> use_tool(w, a, {16, 8, 8}, 7, granularity: 3, target: on_face.(switch, {16, 8, 8}, @switch)) end
-    %{w: w, root: root, a: a, fa: fa, switch: switch, source: source, toggle: toggle}
+    toggle = fn -> use_tool(w, a, {16, 8, 8}, 7, granularity: 3,
+      target: [micro: {16, 8, 8}, incarnation: switch, owner: {switch, 1}, material: @switch]) end
+    %{w: w, root: root, a: a, fa: fa, switch: switch, toggle: toggle}
   end
 
-  defp commit(w) do
-    send(w, :thermal_commit)
-    observe(w)
-  end
-
-  defp source_row(s, id), do: s.damage[{3, id}].circuit
-  defp lamp(s), do: Enum.find(Map.values(s.damage), &(&1.granularity == 0 and &1.micro == {8, 8, 0}))
-
-  test "开关面缺省断开：源有能量也严格 0 A；闭合按手算电流点亮电阻合金，再断开熄灭；开合随日志恢复并下发 flags 位 2", c do
-    %{w: w, switch: switch, source: source, toggle: toggle} = lamp_circuit(c, :lamp)
-    open = commit(w)
-    assert source_row(open, source).current_a == 0.0
-    assert source_row(open, source).remaining_j == c.tools[8]["circuit_energy_j"]
-    refute Map.has_key?(lamp(open) || %{}, :electric_w)
+  test "开关面缺省断开；G 闭合：同一事务号的增量带闭合的整件行（请求号 0、flags 位 2）；开合随日志恢复，再切换断开", c do
+    %{w: w, switch: switch, toggle: toggle} = switch_faces(c, :lamp)
+    refute Map.get(observe(w).damage[{3, switch}] || %{}, :closed, false)
     ref = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(w, {{0, 0, 0}, {1, 1, 1}}, self(), ref, false)
     assert_receive {:canonical_snapshot, ^ref, _}
     {:ok, toggled} = toggle.()
-    # 复制：同一事务号的增量带闭合的开关整件行，编码后 flags 位 2 置位。
     assert_receive {:canonical_delta, %{transaction_seq: ^toggled, transaction: %{property_states: [row]}}}, 5_000
     assert {row.granularity, row.incarnation, row.material, row.closed} == {3, switch, @switch, true}
     # 属性批次里的记录没有请求号；客户端对非 0 请求号拒收整帧（switch-02 实跑：切换后会话 protocol decode 失败）。
     assert row.request_id == 0
     {:ok, bytes} = Codec.encode({:voxel_property_state, row})
     assert Bitwise.band(:binary.at(IO.iodata_to_binary(bytes), 120), 4) == 4
-    lit = Enum.reduce(1..3, nil, fn _, _ -> commit(w) end)
-    # 手算：R = 源内阻 1 Ω + 两个铜—合金接触各 (1/σ_Cu + 1/σ_A)/2/1 m²（合金一侧 0.125 Ω）
-    #   + 两侧“面网格 + 宿主半格”，每侧上界 = 8 条棱 × 2/(σ_Cu·面厚) + 一个宿主半格 1/2/(σ_Cu·线截面)（并联只会更小）；
-    # 下界另扣合金经 F_a、S 角点的宿主半格 1/2/(σ_A·线截面) ≈ 3.3e4 Ω 并联旁路（相对 < 1e-5）。
-    sigma_cu = c.materials[@copper]["electrical_conductivity"]
-    sigma_a = c.materials[@alloy]["electrical_conductivity"]
-    contacts = 2 * (1 / sigma_cu + 1 / sigma_a) / 2
-    side = 8 * 2 / (sigma_cu * c.data["attachments"]["face_thickness_m"]) + 0.5 / (sigma_cu * c.section)
-    r_min = (1 + contacts) * (1 - 1.0e-5)
-    r_max = 1 + contacts + 2 * side
-    i = source_row(lit, source).current_a
-    assert i >= 24 / r_max and i <= 24 / r_min
-    # 电阻合金整格：两条接触边里合金一侧的份额 = I² × 2 × 0.125 Ω（铜侧份额 ~1e-8 相对）。
-    joule = i * i * 2 * (1 / sigma_a) / 2
-    assert_in_delta lamp(lit).electric_w, joule, 1.0e-4 * joule
-    later = commit(w)
-    dt = later.thermal.elapsed_s - lit.thermal.elapsed_s
-    assert_in_delta later.thermal.circuit_light_j - lit.thermal.circuit_light_j, 0.2 * joule * dt, 1.0e-3 * joule * dt
-    IO.puts("SWITCH_LAMP current=#{i} bounds=[#{24 / r_max},#{24 / r_min}] lamp_w=#{lamp(lit).electric_w} light_w=#{0.2 * lamp(lit).electric_w}")
-    # 重启：闭合状态与电源余量从日志恢复，恢复后照常供电。
     closed = observe(w)
     w = restart(c, :lamp)
     restored = observe(w)
     assert restored.damage[{3, switch}].closed
     assert restored.damage[{3, switch}] == closed.damage[{3, switch}]
-    assert source_row(restored, source).remaining_j == source_row(closed, source).remaining_j
-    assert source_row(commit(w), source).current_a > 19.0
-    # 断开：同一回路再次严格开路，合金行去掉电功率。
     a = actor({1.5, 3.5, 2.5})
     {:ok, _} = use_tool(w, a, {16, 8, 8}, 7, granularity: 3,
       target: [micro: {16, 8, 8}, incarnation: switch, owner: {switch, 1}, material: @switch])
-    dark = commit(w)
-    assert source_row(dark, source).current_a == 0.0
-    refute Map.has_key?(lamp(dark), :electric_w)
-    refute dark.damage[{3, switch}].closed
+    refute observe(w).damage[{3, switch}].closed
   end
 
-  test "开关宏格与电源在同一目录下：非开关材料不能切换，切换只翻转命中的那一格", c do
-    %{w: w, a: a, fa: fa} = lamp_circuit(c, :targets)
+  test "开关宏格与铜面在同一目录下：非开关材料不能切换，切换只翻转命中的那一格", c do
+    %{w: w, a: a, fa: fa} = switch_faces(c, :targets)
     {:ok, _} = World.material_supply(w, 1001, "switch", %{@switch => 2 * @macro})
     for {coord, seq} <- [{{0, 2, 0}, next()}, {{2, 2, 0}, next()}] do
       {:ok, _} = World.production_intent(w, stamp(a, seq), %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
@@ -259,7 +218,7 @@ defmodule VoxelRegion.SwitchMaterialTest do
     test "retire_devices：开关保持开合、灯／加热器变电阻合金、冷板变铜，电源不动；槽行换材料键、HP 按每宏格 HP 之比、热容差计入重标账" do
       mat = fn hp, cap, extra -> Map.merge(%{"max_hp_per_macro" => hp, "heat_capacity_per_macro" => cap}, extra) end
       # 附件规格与发布目录同口径：每微格 4096 单位、面厚 1/512 m → 每槽 64 单位 = 1/64 m² × 1/512 m。
-      old = %{materials: %{24 => mat.(100, 34500.0, %{})}, attachments: %{"material_units_per_micro" => 4096, "face_units" => 64}}
+      old = %{materials: %{24 => mat.(100, 34500.0, %{})}, tools: %{}, attachments: %{"material_units_per_micro" => 4096, "face_units" => 64}}
       new = %{materials: %{24 => mat.(100, 34500.0, %{}), 40 => mat.(50, 40000.0, %{}), 41 => mat.(100, 34500.0, %{"circuit_switch" => true})},
         retired: %{4 => 41, 5 => 40, 16 => 24}}
       device = fn id, tool, closed ->
@@ -272,7 +231,7 @@ defmodule VoxelRegion.SwitchMaterialTest do
         |> Map.merge(%{granularity: 4, flags: 0, hp: 0.2, max_hp: 0.2, temperature_kelvin: 393.15})
       damage = Map.new([device.(1, 4, false), device.(2, 5, true), device.(3, 16, true), device.(4, 3, true), {Damage.key(hot), hot}])
       attachments = Map.new(for id <- 1..4, do: {{0, 1, {id * 8, 8, 0}}, {id, 24}})
-      thermal = %{config: %{"ambient_kelvin" => 293.15}}
+      thermal = %{config: %{"ambient_kelvin" => 293.15}, sources: %{}}
       m = ParameterEvolution.retire_devices(damage, attachments, thermal, old, new)
       assert Map.drop(m.damage[{3, 1}], [:closed]) == Map.drop(damage[{3, 1}], [:circuit]) |> Map.put(:material, 41)
       assert m.damage[{3, 1}].closed == false
@@ -290,73 +249,6 @@ defmodule VoxelRegion.SwitchMaterialTest do
       assert m.attachments == %{attachments | {0, 1, {8, 8, 0}} => {1, 41}, {0, 1, {16, 8, 0}} => {2, 40}, {0, 1, {24, 8, 0}} => {3, 24}}
     end
 
-    # 旧目录上的开关设备装上即闭合；增量 2 起切换工具只翻转开关材料，世界里造不出断开的开关设备，断开的映射由上面的纯函数测试覆盖。
-    test "世界：旧目录上的开关、灯、加热器、冷板与电源经一次参数发布迁移；附件载荷、订阅与重启一致；退役工具不可再用", c do
-      old_root = Path.join(c.root, "migrate")
-      File.mkdir_p!(old_root)
-      File.cp!(Path.join(@fixtures, @previous <> ".json"), Path.join(old_root, "properties.json"))
-      {w, root} = start(c, :migrate, @previous)
-      a = actor({3.5, 3.5, 1.5})
-      {:ok, _} = World.apply_edits(w, for(x <- -1..7, z <- -1..3, do: {{x, 0, z}, @stone}))
-      {:ok, _} = World.material_supply(w, 1001, "fixture", %{@copper => 6 * 4096, @coal => @macro})
-      installs = [switch: 4, lamp: 5, heater: 6, cold: 16, source: 3]
-      faces = for {{name, tool}, x} <- Enum.with_index(installs), into: %{} do
-        anchor = {x * 8, 8, 8}
-        {:ok, id} = face(w, a, anchor, @copper)
-        target = [micro: anchor, incarnation: id, owner: {id, 1}, material: @copper]
-        {:ok, _} = use_tool(w, a, anchor, tool, granularity: 3, target: target)
-        {name, {id, anchor}}
-      end
-      {switch_id, switch_anchor} = faces.switch
-      {source_id, source_anchor} = faces.source
-      {:ok, _} = use_tool(w, a, source_anchor, 8, granularity: 3,
-        target: [micro: source_anchor, incarnation: source_id, owner: {source_id, 1}, material: @copper])
-      box = {{-1, -1, -1}, {1, 1, 1}}
-      before = observe(w, box)
-      assert before.damage[{3, switch_id}].circuit.closed == true
-      ref = make_ref()
-      :ok = World.canonical_snapshot_and_subscribe(w, {{0, 0, 0}, {1, 1, 1}}, self(), ref, false)
-      assert_receive {:canonical_snapshot, ^ref, _}
-      assert :ok = World.publish_parameters(w, Path.join(@fixtures, @digest <> ".json"), before.property_digest)
-      after_state = observe(w, box)
-      assert after_state.seq == before.seq + 1
-      assert after_state.property_digest == Damage.load(Path.join(@fixtures, @digest <> ".json")).digest
-      expected = %{switch: {@switch, true}, lamp: {@alloy, nil}, heater: {@alloy, nil}, cold: {@copper, nil}}
-      for {name, {material, closed}} <- expected do
-        {id, _} = faces[name]
-        row = after_state.damage[{3, id}]
-        assert {row.material, Map.get(row, :closed), Map.has_key?(row, :circuit)} == {material, closed, false}, "#{name}"
-      end
-      assert after_state.damage[{3, source_id}].circuit.tool_id == 3
-      assert after_state.damage[{3, source_id}].circuit.remaining_j == before.damage[{3, source_id}].circuit.remaining_j
-      # 附件真值：区域载荷里这些面的槽已换成映射材料（客户端据此重画）。
-      slots = VoxelRegion.TestSupport.payload(w, 0, {0, 0, 0}).attachments
-      for {name, {material, _}} <- expected do
-        {id, anchor} = faces[name]
-        assert slots[{0, 1, anchor}] == {id, material}, "#{name}"
-      end
-      # 同一事务：订阅者收到带附件区域 afterimage 与迁移后属性行的一笔增量。
-      assert_receive {:canonical_delta, %{transaction_seq: seq, transaction: txn}}, 5_000
-      assert seq == after_state.seq
-      migrated = for %{granularity: 3} = r <- txn.property_states, into: %{}, do: {r.incarnation, r}
-      assert migrated[switch_id].material == @switch and migrated[switch_id].closed == true
-      {lamp_id, _} = faces.lamp
-      assert migrated[lamp_id].material == @alloy and not Map.has_key?(migrated[lamp_id], :circuit)
-      # 退役工具不再是工具；迁移后的开关按材料切换。
-      {_, lamp_anchor} = faces.lamp
-      assert {:error, :invalid_tool} = use_tool(w, a, lamp_anchor, 5, granularity: 3,
-        target: [micro: lamp_anchor, incarnation: lamp_id, owner: {lamp_id, 1}, material: @alloy])
-      assert {:ok, _} = use_tool(w, a, switch_anchor, 7, granularity: 3,
-        target: [micro: switch_anchor, incarnation: switch_id, owner: {switch_id, 1}, material: @switch])
-      toggled = observe(w, box)
-      assert toggled.damage[{3, switch_id}].closed == false
-      # 重启：新目录路径（部署时替换的文件）加日志恢复出同一状态。
-      File.cp!(Path.join(@fixtures, @digest <> ".json"), Path.join(root, "properties.json"))
-      w = restart(c, :migrate)
-      restored = observe(w, box)
-      assert restored.damage == toggled.damage
-      assert restored.thermal == toggled.thermal
-      assert VoxelRegion.TestSupport.payload(w, 0, {0, 0, 0}).attachments == slots
-    end
+    # 旧世界的五种设备经一次参数发布迁移的世界级核对在 energy_material_test（增量 3 之前的服务端代码记录的旧日志夹具）。
   end
 end

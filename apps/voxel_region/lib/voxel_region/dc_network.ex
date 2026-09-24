@@ -1,35 +1,91 @@
 defmodule VoxelRegion.DCNetwork do
-  @moduledoc "全局系统功能：线性电阻网络的 KCL 节点求解；每个连通分量至多一个有限内阻电源。"
+  @moduledoc """
+  全局系统功能：线性电阻网络的 KCL 节点求解；任意支路可带电动势（多个电源、蓄能石串并联、热电石）。
 
-  @doc "输入支路 a/b、欧姆 r、伏特 emf；返回节点电压、同序支路电流及多源故障支路索引。"
+  桥（去掉后图不再连通的支路）上的电流严格为 0：割集上只有这一条支路，KCL 使它的电流为零；它两端电位差
+  等于它的电动势（开路电压）。所以先去掉全部桥，只在剩下的双边连通块内消元求解，块间电位沿桥传递。
+  断开的开关、悬空的导线与电池串因此严格 0 A，不交给消元（大电导网格上的舍入会留下 ~1e-8 A 的假电流）。
+  """
+
+  @doc "输入支路 a/b、欧姆 r、伏特 emf（支路电流 a→b = (V_a − V_b − emf)/r）；返回节点电压与同序支路电流。"
   def solve(edges) do
-    adjacency=Enum.reduce(edges,%{},fn e,g ->
-      g |> Map.update(e.a,[e.b],&[e.b|&1]) |> Map.update(e.b,[e.a],&[e.a|&1])
+    indexed=Enum.with_index(edges)
+    adjacency=Enum.reduce(indexed,%{},fn {e,i},g ->
+      g |> Map.update(e.a,[{e.b,i}],&[{e.b,i}|&1]) |> Map.update(e.b,[{e.a,i}],&[{e.a,i}|&1])
     end)
-    parts=components(adjacency)
-    # 每条边只归入一次所在分量（保持原边序）；不再对每个分量扫描全部边。
-    owner=parts |> Enum.with_index() |> Enum.reduce(%{},fn {nodes,c},m->Enum.reduce(nodes,m,&Map.put(&2,&1,c)) end)
-    grouped=edges |> Enum.with_index() |> Enum.group_by(fn {e,_}->Map.fetch!(owner,e.a) end)
-    {volts,faults}=parts |> Enum.with_index() |> Enum.reduce({%{},MapSet.new()},fn {nodes,c},{volts,faults}->
-      local=Map.get(grouped,c,[])
-      sources=Enum.filter(local,fn {e,_}->e.emf  !=  0.0 end)
-      case sources do
-        [] -> {Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0)),faults}
-        [{source,index}] ->
-          # 源支路是桥（去掉它两端不再连通，例如开关断开）：严格开路，两侧各自等势、源两端差 emf，全部电流为 0，
-          # 不交给消元（大电导网格上的舍入会留下 ~1e-8 A 的假电流）。
-          rest=for {e,i}<-local,i != index,reduce: %{},do: (g->g |> Map.update(e.a,[e.b],&[e.b|&1]) |> Map.update(e.b,[e.a],&[e.a|&1]))
-          side=walk(Map.put_new(rest,source.a,[]),[source.a],MapSet.new())
-          if MapSet.member?(side,source.b),
-            do: {Map.merge(volts,component(local,nodes,source.b)),faults},
-            else: {Enum.reduce(nodes,volts,&Map.put(&2,&1,if(MapSet.member?(side,&1),do: source.emf,else: 0.0))),faults}
-        _ -> {Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0)),Enum.reduce(local,faults,fn {_,i},f->MapSet.put(f,i) end)}
+    bridges=bridges(adjacency)
+    inner=for {e,i}<-indexed,not MapSet.member?(bridges,i),do: {e,i}
+    # 双边连通块：只经非桥支路连通的节点集合；每条非桥支路只归入它所在的块一次（保持原边序）。
+    blocks=inner |> Enum.reduce(Map.new(Map.keys(adjacency),&{&1,[]}),fn {e,_},g ->
+      g |> Map.update!(e.a,&[e.b|&1]) |> Map.update!(e.b,&[e.a|&1])
+    end) |> components()
+    owner=blocks |> Enum.with_index() |> Enum.reduce(%{},fn {nodes,c},m->Enum.reduce(nodes,m,&Map.put(&2,&1,c)) end)
+    grouped=Enum.group_by(inner,fn {e,_}->Map.fetch!(owner,e.a) end)
+    local=blocks |> Enum.with_index() |> Enum.reduce(%{},fn {nodes,c},volts->
+      block=Map.get(grouped,c,[])
+      case Enum.find(block,fn {e,_}->e.emf != 0.0 end) do
+        nil -> Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0))
+        {source,_} -> Map.merge(volts,component(block,nodes,source.b))
       end
     end)
-    currents=edges |> Enum.with_index() |> Enum.map(fn {e,i}->
-      if MapSet.member?(faults,i),do: 0.0,else: (volts[e.a]-volts[e.b]-e.emf)/e.r
+    volts=link(adjacency,edges,bridges,owner,blocks |> Enum.map(&MapSet.to_list/1) |> List.to_tuple(),local)
+    currents=Enum.map(indexed,fn {e,i}->
+      if MapSet.member?(bridges,i),do: 0.0,else: (volts[e.a]-volts[e.b]-e.emf)/e.r
     end)
-    %{volts: volts,currents: currents,faults: faults}
+    %{volts: volts,currents: currents}
+  end
+
+  # 块内电位各自以块内一点为零；沿桥从每个连通分量的一个块出发平移：桥上 i = 0，V_b = V_a − emf。
+  defp link(adjacency,edges,bridges,owner,members,local) do
+    tuple=List.to_tuple(edges)
+    Enum.reduce(Map.keys(adjacency),{%{},MapSet.new()},fn start,{volts,seen}->
+      if MapSet.member?(seen,Map.fetch!(owner,start)),do: {volts,seen},
+        else: shift([{start,0.0}],adjacency,tuple,bridges,{owner,members},local,volts,MapSet.put(seen,Map.fetch!(owner,start)))
+    end) |> elem(0)
+  end
+  defp shift([],_g,_edges,_bridges,_blocks,_local,volts,seen),do: {volts,seen}
+  defp shift([{node,offset}|queue],g,edges,bridges,{owner,members}=blocks,local,volts,seen) do
+    # 以入口节点定块的平移量：块内每点 = 本地电位 − 入口本地电位 + 入口绝对电位。
+    base=offset-Map.fetch!(local,node)
+    members=elem(members,Map.fetch!(owner,node))
+    volts=Enum.reduce(members,volts,&Map.put(&2,&1,Map.fetch!(local,&1)+base))
+    {queue,seen}=Enum.reduce(members,{queue,seen},fn n,acc->
+      Enum.reduce(Map.fetch!(g,n),acc,fn {m,i},{q,s}->
+        next=Map.fetch!(owner,m)
+        if MapSet.member?(bridges,i) and not MapSet.member?(s,next) do
+          e=elem(edges,i)
+          # 桥 a→b：V_a − V_b = emf。
+          v=if e.a==n,do: Map.fetch!(volts,n)-e.emf,else: Map.fetch!(volts,n)+e.emf
+          {[{m,v}|q],MapSet.put(s,next)}
+        else
+          {q,s}
+        end
+      end)
+    end)
+    shift(queue,g,edges,bridges,blocks,local,volts,seen)
+  end
+
+  # Tarjan 桥：按支路编号跳过来路（平行支路不是桥）。
+  defp bridges(adjacency) do
+    Enum.reduce(Map.keys(adjacency),{%{},MapSet.new(),0},fn n,{order,found,t}=acc->
+      if Map.has_key?(order,n),do: acc,else: (
+        {order,_low,found,t}=dfs(adjacency,n,nil,order,%{},found,t)
+        {order,found,t})
+    end) |> elem(1)
+  end
+  defp dfs(g,n,via,order,low,found,t) do
+    order=Map.put(order,n,t); low=Map.put(low,n,t)
+    Enum.reduce(Map.fetch!(g,n),{order,low,found,t+1},fn {m,i},{order,low,found,t}->
+      cond do
+        i==via -> {order,low,found,t}
+        Map.has_key?(order,m) -> {order,Map.update!(low,n,&min(&1,Map.fetch!(order,m))),found,t}
+        true ->
+          {order,low,found,t}=dfs(g,m,i,order,low,found,t)
+          low=Map.update!(low,n,&min(&1,Map.fetch!(low,m)))
+          found=if Map.fetch!(low,m)>Map.fetch!(order,n),do: MapSet.put(found,i),else: found
+          {order,low,found,t}
+      end
+    end)
   end
 
   defp components(g),do: components(g,Map.keys(g),MapSet.new(),[])

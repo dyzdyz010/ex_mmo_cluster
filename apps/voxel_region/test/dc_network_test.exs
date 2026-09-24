@@ -14,14 +14,27 @@ defmodule VoxelRegion.DCNetworkTest do
     assert_in_delta b,2.0,1.0e-10
     assert_in_delta -source*12,Enum.zip(edges,result.currents) |> Enum.reduce(0.0,fn {e,i},s->s+i*i*e.r end),1.0e-9
   end
-  test "开路、有限内阻短路、独立回路和多源故障" do
-    assert_in_delta hd(DCNetwork.solve([edge(1,0,1.0,12.0)]).currents),0.0,1.0e-12
+  test "开路、有限内阻短路；多个电源：并联环流、串联相加、独立回路各自求解" do
+    assert hd(DCNetwork.solve([edge(1,0,1.0,12.0)]).currents)==0.0
     [i,j]=DCNetwork.solve([edge(1,0,1.0,12.0),edge(1,0,0.001)]).currents
     assert_in_delta i,-12/1.001,1.0e-9
     assert_in_delta j,-i,1.0e-9
+    # 12 V 与 6 V 各 1 Ω 并联：节点电压 9 V，环流 (12 − 6)/2 = 3 A；独立回路 12 V/1 Ω 接 2 Ω：V = 8 V，4 A。
     r=DCNetwork.solve([edge(1,0,1.0,12.0),edge(1,0,1.0,6.0),edge(3,2,1.0,12.0),edge(3,2,2.0)])
-    assert r.faults==MapSet.new([0,1])
-    assert_in_delta Enum.at(r.currents,2),-4.0,1.0e-10
+    [a,b,c,_]=r.currents
+    assert_in_delta a,-3.0,1.0e-12
+    assert_in_delta b,3.0,1.0e-12
+    assert_in_delta c,-4.0,1.0e-12
+    assert_in_delta r.volts[1]-r.volts[0],9.0,1.0e-12
+    # 两个 12 V/1 Ω 串联接 4 Ω：I = 24/(1 + 1 + 4) = 4 A，中点 8 V、顶端 16 V。
+    s=DCNetwork.solve([edge(1,0,1.0,12.0),edge(2,1,1.0,12.0),edge(2,0,4.0)])
+    assert_in_delta Enum.at(s.currents,2),4.0,1.0e-12
+    assert_in_delta s.volts[2]-s.volts[0],16.0,1.0e-12
+  end
+  test "树（全部是桥）带电动势：电流严格为 0，端电压逐段等于电动势之和" do
+    t=DCNetwork.solve([edge(0,1,1.0,5.0),edge(1,2,1.0,7.0),edge(2,3,3.0)])
+    assert t.currents==[0.0,0.0,0.0]
+    assert t.volts[0]-t.volts[1]==5.0 and t.volts[1]-t.volts[2]==7.0 and t.volts[2]==t.volts[3]
   end
   test "源支路是桥（开关断开的回路）：严格开路，一端挂着大电导网格也不留舍入电流" do
     # 源一端接一张 20×20、每边 1.8e-5 Ω 的网格（开关断开后的铜面），另一端悬空：精确解每条支路 0 A。

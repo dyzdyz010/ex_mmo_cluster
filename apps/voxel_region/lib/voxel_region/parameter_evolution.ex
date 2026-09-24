@@ -7,7 +7,9 @@ defmodule VoxelRegion.ParameterEvolution do
     material_fields =
       ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j) ++
         # 单向转化是一次性事件，行上不存进度：五个字段可在线新增、调整或撤下。
-        ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit)
+        ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit) ++
+        # 塞贝克系数只在每次求解时现读，行上不存与之相关的量。储能轴不在此列：行上的 stored_j 以它为容量。
+        ~w(seebeck_v_per_k)
 
     # 设备电阻只在每次建电路时按目录现读（Circuit.prepare），行上不存与之相关的量：可在线调整。
     tool_fields =
@@ -31,7 +33,8 @@ defmodule VoxelRegion.ParameterEvolution do
       Enum.all?(old.tools, fn {id, tool} ->
         case Map.fetch(new.tools, id) do
           {:ok, next} -> Map.drop(tool, tool_fields) == Map.drop(next, tool_fields)
-          :error -> Map.has_key?(new.retired, id)
+          # 有在用设备的工具（安装类）退役时必须给出迁移材料。
+          :error -> Map.has_key?(new.retired, id) and (tool["action"] != "circuit.install" or new.retired[id] != nil)
         end
       end)
   end
@@ -110,10 +113,11 @@ defmodule VoxelRegion.ParameterEvolution do
   end
 
   @doc """
-  R8-04 增量 2（D8）：新目录 `retired_tools` 撤下的设备工具，其在用设备在同一次发布里变成同一附件的材料面：
+  R8-04 增量 2／3（D8）：新目录 `retired_tools` 撤下的设备工具，其在用设备在同一次发布里变成同一附件的材料面：
   整件行去掉电路记录、换成映射材料（映射到开关材料时保持原开合），逐槽热行换材料键（旧键出删除记录）、温度不变；
   整件与逐槽 HP 按两种材料每宏格 HP 之比缩放；槽热容差按 thermal_reference 同一口径计入参数重标账。
-  被撤下的开关、灯、加热器、冷板没有能源（只有电源持有 remaining_j），没有能量需要移除。
+  电源（增量 3，映射到铜面）的剩余电能不退还，记入 `circuit_removed_j`。撤下加热器投料工具（动作 heat）时，
+  它付费注入的有限热源一并撤销，剩余热能记入 `discarded_source_j`。
   返回 %{damage, attachments, slots（改了材料的槽）, tombstones（旧槽热行）, thermal}。
   """
   def retire_devices(damage, attachments, nil, _old, _new),
@@ -125,6 +129,14 @@ defmodule VoxelRegion.ParameterEvolution do
     moved =
       for {_, %{granularity: 3, circuit: c} = t} <- damage, Map.has_key?(new.retired, c.tool_id), into: %{},
         do: {t.incarnation, {t.material, new.retired[c.tool_id], c.closed}}
+
+    removed =
+      for {_, %{granularity: 3, circuit: c}} <- damage, Map.has_key?(new.retired, c.tool_id), reduce: 0.0,
+        do: (sum -> sum + Map.get(c, :remaining_j, 0.0))
+
+    heater? = Enum.any?(old.tools, fn {id, t} -> t["action"] == "heat" and Map.has_key?(new.retired, id) end)
+    discarded = if heater?, do: Enum.reduce(thermal.sources, 0.0, fn {_, source}, sum -> sum + source.remaining_j end), else: 0.0
+    thermal = if heater?, do: %{thermal | sources: %{}}, else: thermal
 
     {rows, {tombstones, rebase}} =
       Enum.map_reduce(damage, {[], 0.0}, fn {key, row}, {tombstones, sum} ->
@@ -161,7 +173,11 @@ defmodule VoxelRegion.ParameterEvolution do
         end),
       slots: slots,
       tombstones: tombstones,
-      thermal: Map.update(thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
+      thermal:
+        thermal
+        |> Map.update(:parameter_rebase_j, rebase, &(&1 + rebase))
+        |> Map.update(:circuit_removed_j, removed, &(&1 + removed))
+        |> Map.update(:discarded_source_j, discarded, &(&1 + discarded))
     }
   end
 end

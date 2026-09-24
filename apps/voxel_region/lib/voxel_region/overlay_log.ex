@@ -17,6 +17,12 @@ defmodule VoxelRegion.OverlayLog do
   @callback replay(handle :: term()) :: [map()]
   @callback checkpoint(handle :: term(), transaction :: map()) :: :ok
 
+  @doc """
+  已部署日志里、现行代码不再提及的元数据原子（R8-04 增量 2／3 撤下的设备记录与账目）。回放用 `binary_to_term(_, [:safe])`，
+  原子须已存在；本模块在解码前已加载，这些字面量随之进入原子表。
+  """
+  def historical_atoms, do: [:circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j, :voltage_v, :fault]
+
   @doc "事务 → 行（legacy 裸条目先归一成事务）。"
   def rows(%{seq: seq, coord: _} = legacy), do: rows(Map.merge(%{seq: seq, entries: [%{legacy | coarse: []}], coarse: legacy.coarse}, Map.drop(legacy,[:seq,:coord,:material,:coarse])))
 
