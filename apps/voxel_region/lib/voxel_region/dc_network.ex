@@ -6,8 +6,12 @@ defmodule VoxelRegion.DCNetwork do
     adjacency=Enum.reduce(edges,%{},fn e,g ->
       g |> Map.update(e.a,[e.b],&[e.b|&1]) |> Map.update(e.b,[e.a],&[e.a|&1])
     end)
-    {volts,faults}=components(adjacency) |> Enum.reduce({%{},MapSet.new()},fn nodes,{volts,faults}->
-      local=edges |> Enum.with_index() |> Enum.filter(fn {e,_}->MapSet.member?(nodes,e.a) end)
+    parts=components(adjacency)
+    # 每条边只归入一次所在分量（保持原边序）；不再对每个分量扫描全部边。
+    owner=parts |> Enum.with_index() |> Enum.reduce(%{},fn {nodes,c},m->Enum.reduce(nodes,m,&Map.put(&2,&1,c)) end)
+    grouped=edges |> Enum.with_index() |> Enum.group_by(fn {e,_}->Map.fetch!(owner,e.a) end)
+    {volts,faults}=parts |> Enum.with_index() |> Enum.reduce({%{},MapSet.new()},fn {nodes,c},{volts,faults}->
+      local=Map.get(grouped,c,[])
       sources=Enum.filter(local,fn {e,_}->e.emf  !=  0.0 end)
       case sources do
         [] -> {Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0)),faults}
@@ -58,20 +62,26 @@ defmodule VoxelRegion.DCNetwork do
     end)
   end
 
-  # 正定接地矩阵的稀疏消元；优先低度节点，线段不产生稠密填充。
-  defp eliminate(matrix,stack) when map_size(matrix)==0,do: stack
+  # 正定接地矩阵的稀疏消元；优先低度节点，线段不产生稠密填充。主元按 {行非零数, 节点} 最小选取，
+  # 用有序集合维护，每步只更新受影响的行（原先每步扫描全部剩余行，O(N²)）；选取次序与算术不变。
   defp eliminate(matrix,stack) do
-    {node,{row,rhs}}=Enum.min_by(matrix,fn {n,{r,_}}->{map_size(r),n} end)
+    queue=Enum.reduce(matrix,:gb_sets.empty(),fn {n,{r,_}},q->:gb_sets.add({map_size(r),n},q) end)
+    eliminate(matrix,queue,stack)
+  end
+  defp eliminate(matrix,_queue,stack) when map_size(matrix)==0,do: stack
+  defp eliminate(matrix,queue,stack) do
+    {{_,node},queue}=:gb_sets.take_smallest(queue)
+    {row,rhs}=Map.fetch!(matrix,node)
     diagonal=Map.fetch!(row,node)
     row=Map.delete(row,node)
     matrix=Map.delete(matrix,node)
-    matrix=Enum.reduce(row,matrix,fn {other,weight},m ->
-      Map.update!(m,other,fn {r,b}->
-        r=Map.delete(r,node)
-        r=Enum.reduce(row,r,fn {column,value},r->Map.update(r,column,-weight*value/diagonal,&(&1-weight*value/diagonal)) end)
-        {r,b-weight*rhs/diagonal}
-      end)
+    {matrix,queue}=Enum.reduce(row,{matrix,queue},fn {other,weight},{m,q} ->
+      {r,b}=Map.fetch!(m,other)
+      q=:gb_sets.delete({map_size(r),other},q)
+      r=Map.delete(r,node)
+      r=Enum.reduce(row,r,fn {column,value},r->Map.update(r,column,-weight*value/diagonal,&(&1-weight*value/diagonal)) end)
+      {Map.put(m,other,{r,b-weight*rhs/diagonal}),:gb_sets.add({map_size(r),other},q)}
     end)
-    eliminate(matrix,[{node,diagonal,row,rhs}|stack])
+    eliminate(matrix,queue,[{node,diagonal,row,rhs}|stack])
   end
 end

@@ -3563,7 +3563,7 @@ defmodule VoxelRegion.World do
       circuit_contacts(queue, seen, contacts, state)
     else
       seen = MapSet.put(seen, key)
-      {targets, state} = Enum.map_reduce(VoxelRegion.Circuit.solid_points(target), state, &target_at/2)
+      {targets, state} = Enum.flat_map_reduce(VoxelRegion.Circuit.solid_faces(target), state, &face_targets/2)
       {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties, state.damage),
         {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
           if MapSet.member?(seen, other_key) or
@@ -3572,6 +3572,18 @@ defmodule VoxelRegion.World do
             else: {[other | queue], [{target, other, area} | contacts]}
         end)
       circuit_contacts(queue, seen, contacts, state)
+    end
+  end
+
+  # 一个面的全部采样点都在同一个相邻宏格里时：该格未细分、没有液位（液位让同一格按高度部分为空）就对每个点给出
+  # 同一个目标，只读一次（原先宏格导体每面逐点 64 次）；否则逐点读取，每点一段。
+  defp face_targets([point | _] = points, state) do
+    {cell, _} = Prefab.macro_slot(point)
+    if length(points) > 1 and not Map.has_key?(state.refined, cell) and not Map.has_key?(state.liquid_units, cell) do
+      {target, state} = target_at(point, state)
+      {[{target, length(points)}], state}
+    else
+      Enum.map_reduce(points, state, fn p, s -> {t, s} = target_at(p, s); {{t, 1}, s} end)
     end
   end
 

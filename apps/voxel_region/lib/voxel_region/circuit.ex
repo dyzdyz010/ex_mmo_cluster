@@ -150,22 +150,30 @@ defmodule VoxelRegion.Circuit do
       nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
   end
 
-  @doc "体积导体各面微格采样；不依赖热接触缓存或区域划分。"
-  def solid_points(target) do
+  @doc """
+  体积导体六个面的微格采样，每面一组（宏格每面 8×8 点，都落在同一个相邻宏格里；微格每面 1 点）；
+  不依赖热接触缓存或区域划分。
+  """
+  def solid_faces(target) do
     n=if target.granularity==0,do: @micro,else: 1
-    for axis<-0..2,sign<-[-1,1],a<-0..(n-1),b<-0..(n-1) do
+    for axis<-0..2,sign<-[-1,1] do
       [u,v]=Enum.reject(0..2,&(&1==axis))
-      target.micro |> offset(axis,if(sign<0,do: -1,else: n)) |> offset(u,a) |> offset(v,b)
+      for a<-0..(n-1),b<-0..(n-1),
+        do: target.micro |> offset(axis,if(sign<0,do: -1,else: n)) |> offset(u,a) |> offset(v,b)
     end
   end
 
-  @doc "将各面实际采样按此刻导电的导体身份累计接触面积；重复微面保留实际面积贡献。"
-  def solid_contacts(targets,catalog,damage) do
-    Enum.reduce(targets,%{},fn target,contacts ->
+  @doc """
+  将各面实际采样按此刻导电的导体身份累计接触面积；重复微面保留实际面积贡献。
+  采样以 `{目标, 点数}` 成段给出（同一相邻宏格的一整面是一段）；每点面积 1/64 m²，段面积 = 点数 × 1/64，
+  与逐点累加的二进制值相同（全是 1/64 的整数倍）。
+  """
+  def solid_contacts(runs,catalog,damage) do
+    Enum.reduce(runs,%{},fn {target,count},contacts ->
       target=target && thermal_target(target)
       if target && sigma(catalog,damage,target)>0 do
         key=ThermalGeometry.key(target)
-        Map.update(contacts,key,{target,@length*@length},fn {other,area}->{other,area+@length*@length} end)
+        Map.update(contacts,key,{target,count*@length*@length},fn {other,area}->{other,area+count*@length*@length} end)
       else
         contacts
       end

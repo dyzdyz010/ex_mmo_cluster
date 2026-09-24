@@ -51,13 +51,17 @@ defmodule VoxelRegion.CircuitTest do
     {_slots,damage,catalog}=fixture()
     macro=%{micro: {8,0,0},granularity: 0,material: 16,owner: {0,0},incarnation: 1}
     micro=%{micro: {0,0,0},granularity: 2,material: 16,owner: {7,1},incarnation: 7}
-    samples=[macro,macro,micro,nil,%{macro | material: 11}]
+    samples=[{macro,2},{micro,1},{nil,1},{%{macro | material: 11},1}]
     contacts=Circuit.solid_contacts(samples,catalog,damage)
     assert contacts[{0,{8,0,0}}]=={macro,2/64}
     assert contacts[{1,{0,0,0}}]=={%{micro | granularity: 1},1/64}
     assert map_size(contacts)==2
-    assert length(Circuit.solid_points(macro))==384
-    assert length(Circuit.solid_points(micro))==6
+    # 一整面（同一相邻宏格 64 点）作为一段累计，与逐点 64 次累加的二进制值相同：1/64 的整数倍都精确可表示。
+    whole=Circuit.solid_contacts([{macro,64},{micro,1}],catalog,damage)
+    pointwise=Circuit.solid_contacts(List.duplicate({macro,1},64)++[{micro,1}],catalog,damage)
+    assert whole===pointwise and elem(whole[{0,{8,0,0}}],1)===1.0
+    assert Enum.map(Circuit.solid_faces(macro),&length/1)==List.duplicate(64,6)
+    assert Enum.map(Circuit.solid_faces(micro),&length/1)==List.duplicate(1,6)
   end
 
   @tag :phase_coverage
@@ -117,7 +121,7 @@ defmodule VoxelRegion.CircuitTest do
     micro=%{micro: {5,6,7},granularity: 2,material: 41,owner: {9,2},incarnation: 9}
     closed=fn t->Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:closed,true)) end
     assert Circuit.conductors([cell,micro],catalog,damage)==[]
-    assert Circuit.solid_contacts([cell,micro],catalog,damage)==%{}
+    assert Circuit.solid_contacts([{cell,1},{micro,1}],catalog,damage)==%{}
     assert Circuit.conductors([cell],catalog,closed.(cell))==[cell]
     assert Circuit.sigma(catalog,closed.(cell),cell)==58.0e6
     thermal=%{micro | granularity: 1}
