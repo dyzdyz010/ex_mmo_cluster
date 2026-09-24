@@ -125,6 +125,28 @@ defmodule VoxelRegion.CircuitTest do
     assert empty.sources[key(b1)].current_a==0.0 and empty.supplied_j==0.0
   end
 
+  test "空电池遇到低于自身电动势的外加：电流 0（不按 0 V 导通）；外加超过电动势才充电" do
+    # 充电方向：两块满电池（48 V）从上往下驱动右列一块空电池 b3（正极朝下，见反向串联用例）——48 V > 24 V，b3 充电。
+    [_,b1,b2|_]=cells=loop(42,42)
+    b3=Enum.at(cells,7)
+    charging=run(cells,Map.new([stored(b1,5.0e6),stored(b2,5.0e6)]))
+    assert charging.sources[key(b3)].current_a < -100.0 and charging.charged_j>0
+    # 只剩一块满电池（24 V）对空的 b3（24 V 反向）：净电动势 0，严格无电流、不充电。
+    [_,b|_]=single=loop(24,42)
+    b3=Enum.at(single,7)
+    weak=run(single,Map.new([stored(b,5.0e6)]))
+    assert weak.sources[key(b)].current_a==0.0 and weak.sources[key(b3)].current_a==0.0
+    assert weak.charged_j==0.0 and weak.supplied_j==0.0
+    # 弱电源换成热电石：热端 h 在下（700 K），冷端 c 在上（293 K），开路电动势 0.05 × (699.25 − 293.9) ≈ 20.3 V，
+    # 把电流从上面灌进空电池 b 的正极（充电方向）却低于 24 V：同样 0 A——按 0 V 重解会让电流穿过空格却不储能，这里断开。
+    [h,t,c]=[macro({0,0,0},24),macro({0,1,0},43),macro({0,2,0},24)]
+    ring=[h,t,c,macro({1,2,0},24),macro({2,2,0},24),macro({2,1,0},42),macro({2,0,0},24),macro({1,0,0},24)]
+    b=Enum.at(ring,5)
+    plan=run(ring,Map.new([hot(h,700.0),hot(t,500.0),hot(c,293.15)]))
+    assert_in_delta plan.sources[key(t)].emf_v,0.05*((8000*700+30*500)/8030-(8000*293.15+30*500)/8030),1.0e-9
+    assert plan.sources[key(b)].current_a==0.0 and plan.sources[key(t)].current_a==0.0
+  end
+
   test "放电截断：储能耗尽即截断本段，储能恰为 0" do
     [_,b1,b2|_]=cells=loop()
     i=48.0/loop_r(2,14)

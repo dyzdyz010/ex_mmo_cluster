@@ -18,10 +18,15 @@ defmodule VoxelRegion.OverlayLog do
   @callback checkpoint(handle :: term(), transaction :: map()) :: :ok
 
   @doc """
-  已部署日志里、现行代码不再提及的元数据原子（R8-04 增量 2／3 撤下的设备记录与账目）。回放用 `binary_to_term(_, [:safe])`，
-  原子须已存在；本模块在解码前已加载，这些字面量随之进入原子表。
+  已部署日志里的设备记录键与撤下的账目（R8-04 增量 2／3）。回放用 `binary_to_term(_, [:safe])`，原子须已存在；现行代码里
+  只有惰性加载的迁移模块还提到其中一些（`:circuit`），回放可能早于它加载。本模块在解码前已加载，这些字面量随之进入原子表。
   """
-  def historical_atoms, do: [:circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j, :voltage_v, :fault]
+  def historical_atoms,
+    do: [:circuit, :tool_id, :kind, :size, :anchor, :closed, :fault, :remaining_j, :voltage_v, :current_a, :power_w,
+         :circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j]
+
+  @doc "日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。"
+  def term(bytes), do: :erlang.binary_to_term(bytes, [:safe])
 
   @doc "事务 → 行（legacy 裸条目先归一成事务）。"
   def rows(%{seq: seq, coord: _} = legacy), do: rows(Map.merge(%{seq: seq, entries: [%{legacy | coarse: []}], coarse: legacy.coarse}, Map.drop(legacy,[:seq,:coord,:material,:coarse])))
@@ -59,7 +64,7 @@ defmodule VoxelRegion.OverlayLog do
       Enum.reduce(chunk, %{seq: seq, entries: [], coarse: []}, fn
         %{kind: 1, payload: bytes}, txn -> %{txn | entries: txn.entries ++ [%{seq: seq, payload: bytes}]}
         %{kind: kind, payload: bytes}, txn when kind in [0,4] -> {:ok, cell} = Codec.decode_entry(bytes); %{txn | entries: txn.entries ++ [cell]}
-        %{kind: 3, payload: bytes}, txn -> Map.merge(txn,:erlang.binary_to_term(bytes,[:safe]))
+        %{kind: 3, payload: bytes}, txn -> Map.merge(txn,term(bytes))
         %{kind: 2, payload: bytes}, txn -> {:ok, c} = Codec.decode_coarse(bytes); %{txn | coarse: txn.coarse ++ [c]}
       end)
     end)
@@ -121,7 +126,7 @@ defmodule VoxelRegion.OverlayLog do
     defp frames(<<>>, acc), do: Enum.reverse(acc)
 
     defp frames(<<len::32, term::binary-size(len), rest::binary>>, acc),
-      do: frames(rest, [:erlang.binary_to_term(term, [:safe]) | acc])
+      do: frames(rest, [VoxelRegion.OverlayLog.term(term) | acc])
   end
 
 end

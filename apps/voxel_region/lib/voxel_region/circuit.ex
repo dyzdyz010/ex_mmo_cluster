@@ -6,7 +6,9 @@ defmodule VoxelRegion.Circuit do
   - **蓄能石**（目录 `battery_energy_per_macro_j`、`battery_volts_per_m`）：电动势 = 每米伏数 × 格边长，正极朝 +Y；
     只经 ±Y 面导电（其他面的接触、线端点都不接它）。格心到上下两面各升 E/2，落在它的 ±Y 接触边上。
     储能 `stored_j` 在格的属性行上（宏格行／微格 granularity 1 热行），新放置为空；放电扣、充电加，
-    充满后的充电功率成为该格的热；空格若在放电方向，按电动势 0 重解（成为电阻）。
+    充满后的充电功率成为该格的热。空格若在放电方向，按电动势 0 重解（成为电阻，例如与有电的格串联）；
+    重解后若电流反成充电方向（外加电动势低于它自己的电动势），它两端电压介于 0 与 E 之间、电流为 0：
+    该格的接触边断开（外加不足以给空格充电，不产生无储能的“充电”电流）。
   - **热电石**（目录 `seebeck_v_per_k` S）：接触边 a→b 的电动势升 ε = −[S_a(T_i − T_a) + S_b(T_b − T_i)]，
     界面温度 T_i 按两侧 k/(半格长) 加权；每个结吸收佩尔捷热 (S_b − S_a)·T_i·i（两侧各一半）。按 KCL，
     全网 Σε·i = Σ佩尔捷，热电做功恰由热节点支付。
@@ -173,7 +175,7 @@ defmodule VoxelRegion.Circuit do
     end)
     edges=contact_edges++edges
     stored=Map.new(cells,fn {key,c}->{key,Map.get(Map.get(damage,Damage.key(c.target),%{}),:stored_j,0.0)} end)
-    {result,flat}=solve(edges,stored,MapSet.new())
+    {result,flat}=solve(edges,stored,MapSet.new(),MapSet.new())
     currents=Enum.map(result.currents,fn i->if abs(i)<1.0e-10,do: 0.0,else: i end)
     {heat,light_w,electric,cells,te_w}=Enum.zip(edges,currents) |> Enum.reduce({%{},0.0,%{},cells,0.0},fn {e,i},{heat,light,electric,cells,te_w}->
       watts=i*i*e.r
@@ -226,14 +228,24 @@ defmodule VoxelRegion.Circuit do
       nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
   end
 
-  # 求解；放电方向上已空的蓄能石按电动势 0 重解，直到没有新的空格在放电。
-  defp solve(edges,stored,flat) do
-    result=DCNetwork.solve(Enum.map(edges,&%{&1 | emf: emf_of(&1,flat)}))
-    power=Enum.zip(edges,result.currents) |> Enum.reduce(%{},fn {e,i},p->
+  # 求解；放电方向上已空的蓄能石按电动势 0 重解；按 0 重解后电流反成充电方向的空格断开（电流 0）。直到状态不再变化；
+  # 每格至多经历一次“空 → 电动势 0 → 断开”，迭代有限。返回的电流与原边同序（断开的边为 0）。
+  defp solve(edges,stored,flat,blocked) do
+    open=fn e->Enum.any?(e.batteries,fn {k,_}->MapSet.member?(blocked,k) end) end
+    live=for e<-edges,not open.(e),do: %{e | emf: emf_of(e,flat)}
+    result=DCNetwork.solve(live)
+    {currents,[]}=Enum.map_reduce(edges,result.currents,fn e,rest->
+      if open.(e),do: {0.0,rest},else: {hd(rest),tl(rest)}
+    end)
+    result=%{result | currents: currents}
+    # 按名义电动势计的功率：> 0 放电方向，< 0 充电方向。
+    power=Enum.zip(edges,currents) |> Enum.reduce(%{},fn {e,i},p->
       Enum.reduce(e.batteries,p,fn {k,rise},p->Map.update(p,k,rise*i,&(&1+rise*i)) end)
     end)
     empty=for {k,w}<-power,w>0.0,Map.get(stored,k,0.0)<=0.0,not MapSet.member?(flat,k),do: k
-    if empty==[],do: {result,flat},else: solve(edges,stored,MapSet.union(flat,MapSet.new(empty)))
+    stuck=for {k,w}<-power,w<0.0,MapSet.member?(flat,k),not MapSet.member?(blocked,k),do: k
+    if empty==[] and stuck==[],do: {result,flat},
+      else: solve(edges,stored,MapSet.union(flat,MapSet.new(empty)),MapSet.union(blocked,MapSet.new(stuck)))
   end
 
   # 生产约定：支路电流 a→b = (V_a − V_b − emf)/r，所以 emf 是 a→b 电动势升的相反数。
