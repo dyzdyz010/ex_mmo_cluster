@@ -203,5 +203,10 @@
     "id": 40,
     "name": "resistive_alloy",
     "blocks_movement": true
+  },
+  {
+    "id": 41,
+    "name": "switch",
+    "blocks_movement": true
   }
 ]

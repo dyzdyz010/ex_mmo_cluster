@@ -6,8 +6,9 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
   `environment-radiation.json` = `Content/Voxel/Gameplay/thermal-environment-radiation.json`（DA_ThermalEnvironmentRadiation_TestOnly）。
   这套目录只在辐射开启时成立：ε 0 下 400 kW 的木格会过热自毁，所以青岚驿（ε 0）停在旧目录，见 Voxim Docs/Playtest/README.md。
 
-  场景由作者编辑入口一次建立，点火经正式工具 9（K），电路经正式附件、安装、投料与开关工具；时间只经 :thermal_commit 推进。
-  期望来自目录算术（燃期 fuel/P、点火温度、欧姆定律、反应物账）或设计阈值（露天堆比转化温度低 ≥ 100 K、60 s 内引燃邻木、
+  场景由作者编辑入口一次建立，点火经正式工具 9（K）；时间只经 :thermal_commit 推进。原“电点火闭环现场”（480 V 源 + 开关设备 + 加热器设备）
+  随 R8-04 增量 2 撤下加热器与开关设备而删除，电阻合金板点燃木头由 device_material_production_test 覆盖。
+  期望来自目录算术（燃期 fuel/P、点火温度、反应物账）或设计阈值（露天堆比转化温度低 ≥ 100 K、60 s 内引燃邻木、
   炉体与产物不被热毁、火烧完后活动集清空），不取自内核输出。持久化不在本测试范围，日志用不落盘的替身。
   """
   use ExUnit.Case, async: false
@@ -242,53 +243,5 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
     assert_ledgers(c, s)
     IO.puts("FIRE_HOUSE cells=#{length(house)} last_lit=#{acc.lit |> Map.values() |> Enum.max()} " <>
       "last_gone=#{acc.gone |> Map.values() |> Enum.max()} settled_at=#{s.thermal.elapsed_s}")
-  end
-
-  test "电点火闭环现场：480 V 源 + 开关 + 加热器装在木头上，付费电能用完前点燃木头，火传到相邻云杉", c do
-    # 局部坐标 = 涌现闭环世界坐标 − (64,412,−517)：石底座 2×3、木 HOST (3,4,3) 与 W2 (3,4,4)、云杉干 (4,3..10,4) 与树冠、
-    # 铜导体 (4,4,2)；HOST 西/北/顶三面铸铜面，分别装 480 V 源（19）、开关（4）、加热器（6）。
-    ground = ground(0..6, 0..6, @grass, 2) ++ ground(0..6, 0..6, @dirt, 1)
-    base = for x <- 2..3, z <- 3..5, do: {{x, 3, z}, @stone}
-    trunk = for y <- 3..10, do: {{4, y, 4}, @spruce}
-    leaves = for x <- 3..5, y <- 7..10, z <- 3..5, {x, z} != {4, 4}, do: {{x, y, z}, 31}
-    w = start(c, :circuit, [1, @dirt, @stone, @wood, @copper, @spruce, 31])
-    {:ok, _} = World.apply_edits(w, ground ++ base ++ [{{3, 4, 3}, @wood}, {{3, 4, 4}, @wood}, {{4, 4, 2}, @copper}] ++ trunk ++ leaves)
-    {:ok, _} = World.material_supply(w, 1001, "copper", %{@copper => 10_000_000})
-    a = actor({2.5, 5.6, 1.5})
-    face = %{request_id: 10, client_intent_seq: 10, logical_scene_id: 1, action: 0, kind: 0, axis: 0, size: 8,
-      anchor: {24, 32, 24}, id: 0, material: @copper, tool_id: 1}
-    [source, switch, heater] =
-      for {{axis, anchor}, i} <- Enum.with_index([{0, {24, 32, 24}}, {2, {24, 32, 24}}, {1, {24, 40, 24}}]) do
-        {:ok, id} = World.attachment_intent(w, a, %{face | axis: axis, anchor: anchor, request_id: 10 + i, client_intent_seq: 10 + i})
-        {id, axis, anchor}
-      end
-    use = fn {id, axis, anchor}, tool, seq ->
-      r = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1, tool_id: tool, direction: {1.0, 0.0, 0.0},
-        micro: anchor, granularity: 3, incarnation: id, owner: {id, axis}, material: @copper}
-      {:ok, _} = World.tool_intent(w, Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()}), r)
-    end
-    use.(source, 19, 20)
-    use.(switch, 4, 21)
-    use.(heater, 6, 22)
-    use.(switch, 7, 23)
-    use.(source, 8, 24)
-    use.(source, 8, 25)
-    use.(switch, 7, 26)
-    send(w, :thermal_commit)
-    closed = observe(w)
-    # 欧姆定律（目录）：源内阻 + 开关 + 加热器 + 1 m 铜导体（长度 / (σ_Cu × 线截面)）。
-    t = c.tools
-    wire = 1.0 / (c.materials[@copper]["electrical_conductivity"] * c.data["attachments"]["line_section_m2"])
-    current = t[19]["circuit_voltage_v"] / (t[19]["circuit_resistance_ohm"] + t[4]["circuit_resistance_ohm"] + t[6]["circuit_resistance_ohm"] + wire)
-    devices = for {_, %{granularity: 3, circuit: d}} <- closed.damage, into: %{}, do: {d.tool_id, d}
-    assert_in_delta devices[6].current_a, current, 1.0e-6
-    assert_in_delta devices[6].power_w, current * current * t[6]["circuit_resistance_ohm"], 1.0e-3
-    paid_s = 2 * t[8]["circuit_energy_j"] / (t[19]["circuit_voltage_v"] * current)
-    {_, acc} = run(c, w, fn _, acc -> Map.has_key?(acc.lit, {4, 4, 4}) end, closed.thermal.elapsed_s + 420)
-    host = acc.lit[{3, 4, 3}] - closed.thermal.elapsed_s
-    assert host <= paid_s
-    assert Map.has_key?(acc.lit, {4, 4, 4})
-    IO.puts("FIRE_CIRCUIT current=#{current} heater_w=#{devices[6].power_w} paid_s=#{paid_s} host_lit=#{host} " <>
-      "spruce_lit=#{acc.lit[{4, 4, 4}] - closed.thermal.elapsed_s}")
   end
 end

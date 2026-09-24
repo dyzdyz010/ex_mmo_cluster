@@ -1,8 +1,8 @@
 defmodule VoxelRegion.ParameterEvolution do
   @moduledoc "全局系统功能：目录参数升级的兼容规则与热参考重标纯计算。"
-  alias VoxelRegion.{Phase, Damage, Attachments}
+  alias VoxelRegion.{Phase, Damage, Attachments, ThermalAttachments}
 
-  @doc "保留在用材料、工具、相变及数量语义，只允许参数发布契约声明的变化。"
+  @doc "保留在用材料、工具、相变及数量语义，只允许参数发布契约声明的变化；新目录 retired_tools 列出的工具可撤下（retire_devices 迁移）。"
   def compatible?(old, new) do
     material_fields =
       ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j) ++
@@ -31,7 +31,7 @@ defmodule VoxelRegion.ParameterEvolution do
       Enum.all?(old.tools, fn {id, tool} ->
         case Map.fetch(new.tools, id) do
           {:ok, next} -> Map.drop(tool, tool_fields) == Map.drop(next, tool_fields)
-          :error -> false
+          :error -> Map.has_key?(new.retired, id)
         end
       end)
   end
@@ -107,5 +107,61 @@ defmodule VoxelRegion.ParameterEvolution do
       end)
 
     {Map.new(damage), Map.update(thermal, :fuel_rebase_j, rebase, &(&1 + rebase))}
+  end
+
+  @doc """
+  R8-04 增量 2（D8）：新目录 `retired_tools` 撤下的设备工具，其在用设备在同一次发布里变成同一附件的材料面：
+  整件行去掉电路记录、换成映射材料（映射到开关材料时保持原开合），逐槽热行换材料键（旧键出删除记录）、温度不变；
+  整件与逐槽 HP 按两种材料每宏格 HP 之比缩放；槽热容差按 thermal_reference 同一口径计入参数重标账。
+  被撤下的开关、灯、加热器、冷板没有能源（只有电源持有 remaining_j），没有能量需要移除。
+  返回 %{damage, attachments, slots（改了材料的槽）, tombstones（旧槽热行）, thermal}。
+  """
+  def retire_devices(damage, attachments, nil, _old, _new),
+    do: %{damage: damage, attachments: attachments, slots: [], tombstones: [], thermal: nil}
+
+  def retire_devices(damage, attachments, thermal, old, new) do
+    ambient = thermal.config["ambient_kelvin"]
+
+    moved =
+      for {_, %{granularity: 3, circuit: c} = t} <- damage, Map.has_key?(new.retired, c.tool_id), into: %{},
+        do: {t.incarnation, {t.material, new.retired[c.tool_id], c.closed}}
+
+    {rows, {tombstones, rebase}} =
+      Enum.map_reduce(damage, {[], 0.0}, fn {key, row}, {tombstones, sum} ->
+        case {row.granularity, Map.get(moved, row.incarnation)} do
+          {granularity, {from, to, closed}} when granularity in [3, 4] ->
+            ratio = new.materials[to]["max_hp_per_macro"] / old.materials[from]["max_hp_per_macro"]
+            next = %{row | material: to, hp: row.hp * ratio, max_hp: row.max_hp * ratio}
+
+            if granularity == 3 do
+              next = Map.delete(next, :circuit)
+              next = if Map.get(new.materials[to], "circuit_switch", false), do: Map.put(next, :closed, closed), else: next
+              {{key, next}, {tombstones, sum}}
+            else
+              energy =
+                ThermalAttachments.volume(Attachments.slot(row), old) *
+                  (new.materials[to]["heat_capacity_per_macro"] - old.materials[from]["heat_capacity_per_macro"]) *
+                  (row.temperature_kelvin - ambient)
+
+              {{Damage.key(next), next}, {[row | tombstones], sum + energy}}
+            end
+
+          _ ->
+            {{key, row}, {tombstones, sum}}
+        end
+      end)
+
+    slots = for {slot, {id, _}} <- attachments, Map.has_key?(moved, id), do: slot
+
+    %{
+      damage: Map.new(rows),
+      attachments:
+        Enum.reduce(slots, attachments, fn slot, all ->
+          Map.update!(all, slot, fn {id, _} -> {id, elem(Map.fetch!(moved, id), 1)} end)
+        end),
+      slots: slots,
+      tombstones: tombstones,
+      thermal: Map.update(thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
+    }
   end
 end

@@ -96,6 +96,7 @@ defmodule VoxelRegion.Damage do
     true =
       Enum.all?(tools, fn {_, t} ->
         case t["action"] do
+          # R8-04 增量 2 起电路只模拟电源（kind 1）；历史目录里的 2..5 仍按原格式校验加载，发布新目录时按 retired_tools 迁移。
           "circuit.install" ->
             t["circuit_kind"] in 1..5 and is_number(t["circuit_resistance_ohm"]) and
               t["circuit_resistance_ohm"] > 0 and
@@ -184,6 +185,32 @@ defmodule VoxelRegion.Damage do
              m["luminous_fraction"] <= 1 and Map.get(m, "electrical_conductivity", 0) > 0)
       end)
 
+    # R8-04 增量 2 开关材料轴：circuit_switch 的格／附件闭合时按本行电导率导电，断开绝缘，只能在导体上。
+    # 配方（黑盒构件的唯一来源）：产物行上 recipe_inputs（其他非空气材料、正整数单位）与 recipe_units（一次合成的产物单位）成组。
+    true =
+      Enum.all?(materials, fn {id, m} ->
+        (not Map.has_key?(m, "circuit_switch") or
+           (m["circuit_switch"] == true and Map.get(m, "electrical_conductivity", 0) > 0)) and
+          Map.has_key?(m, "recipe_inputs") == Map.has_key?(m, "recipe_units") and
+          (not Map.has_key?(m, "recipe_units") or
+             (is_integer(m["recipe_units"]) and m["recipe_units"] > 0 and m["recipe_inputs"] != [] and
+                length(Enum.uniq_by(m["recipe_inputs"], & &1["material_id"])) == length(m["recipe_inputs"]) and
+                Enum.all?(m["recipe_inputs"], fn i ->
+                  Map.has_key?(materials, i["material_id"]) and i["material_id"] not in [0, id] and
+                    is_integer(i["units"]) and i["units"] > 0
+                end)))
+      end)
+
+    # 退役的设备工具 → 在用设备迁移成的附件材料（ParameterEvolution.retire_devices）；工具不能仍在目录里。
+    retired = Map.new(data["retired_tools"] || [], &{&1["tool_id"], &1["material_id"]})
+
+    true =
+      map_size(retired) == length(data["retired_tools"] || []) and
+        Enum.all?(retired, fn {tool, material} ->
+          is_integer(tool) and not Map.has_key?(tools, tool) and Map.has_key?(materials, material) and
+            MmoContracts.Voxel.Attachments.material?(material)
+        end)
+
     liquid = data["liquid"]
     if liquid do
       capacity = (if specification, do: specification["material_units_per_micro"], else: 1) * @micro * @micro * @micro
@@ -198,6 +225,7 @@ defmodule VoxelRegion.Damage do
       digest: :crypto.hash(:sha256, bytes),
       materials: materials,
       tools: tools,
+      retired: retired,
       attachments: specification
     }
   end

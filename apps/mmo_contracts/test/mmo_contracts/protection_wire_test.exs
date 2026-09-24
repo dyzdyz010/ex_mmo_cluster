@@ -41,12 +41,12 @@ defmodule MmoContracts.ProtectionWireTest do
     }
   end
 
-  test "Hello 20：旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 20
-    hello = %Session.Hello{protocol_version: 20, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 21：旧 Hello 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 21
+    hello = %Session.Hello{protocol_version: 21, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 20::16, tail::binary>> = packet
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<19::16>> <> tail)
+    <<prefix::binary-size(9), 21::16, tail::binary>> = packet
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<20::16>> <> tail)
   end
 
   test "区域增量逐字节等于手写样本；存储字段（created_seq/created_by）不上线" do

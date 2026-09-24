@@ -3,28 +3,33 @@ defmodule VoxelRegion.CircuitTest do
   @moduletag :b5
   alias VoxelRegion.{Circuit,Attachments}
 
+  # 只测试：一个 12 V / 1 Ω 源（微面设备 id 1，端口 (0,8,511)→(1,8,511)）后面串一段开关线（材料 41，闭合）
+  # 与一段负载线（材料 40，σ 取使一段线恰为 12 Ω、λ 0.2），经 x = 3 的竖线、z = 512 的三段铜线与 x = 0 的竖线回到源。
+  # 线段 r = (1/8 m)/(σ·截面)：铜与闭合开关各 0.125 × 512² / 5.8e7 Ω，负载 12 Ω。
+  @section 1/(512*512)
+  @load_sigma 0.125/(12.0*@section)
   defp fixture do
-    tools=for {id,kind,r,v,light}<-[{3,1,1.0,12.0,0.0},{4,2,0.01,0.0,0.0},{5,3,12.0,0.0,0.2}],into: %{},
-      do: {id,%{"circuit_resistance_ohm"=>r,"circuit_voltage_v"=>v,"circuit_light_fraction"=>light}}
-    catalog=%{tools: tools,materials: %{16=>%{"electrical_conductivity"=>58.0e6},11=>%{}},
-      attachments: %{"line_section_m2"=>1/(512*512),"face_thickness_m"=>1/512}}
-    slots=Map.new(for x<-0..2,do: {{0,1,{x,8,511}},{x+1,16}})
+    tools=%{3=>%{"circuit_resistance_ohm"=>1.0,"circuit_voltage_v"=>12.0,"circuit_light_fraction"=>0.0}}
+    catalog=%{tools: tools,materials: %{16=>%{"electrical_conductivity"=>58.0e6},11=>%{},
+        41=>%{"electrical_conductivity"=>58.0e6,"circuit_switch"=>true},
+        40=>%{"electrical_conductivity"=>@load_sigma,"luminous_fraction"=>0.2}},
+      attachments: %{"line_section_m2"=>@section,"face_thickness_m"=>1/512}}
+    slots=%{{0,1,{0,8,511}}=>{1,16},{1,0,{1,8,511}}=>{2,41},{1,0,{2,8,511}}=>{3,40}}
     slots=Enum.reduce([{2,{0,8,511}},{2,{3,8,511}}]++for(x<-0..2,do: {0,{x,8,512}}),slots,fn {a,p},s->Map.put(s,{1,a,p},{10,16}) end)
-    damage=for x<-0..2,into: %{} do
-      target=Attachments.identity({0,1,{x,8,511}},{x+1,16})
-      c=%{tool_id: x+3,kind: x+1,anchor: {x,8,511},size: 1,closed: true,fault: 0,
-        remaining_j: if(x==0,do: 6.0,else: 0.0),voltage_v: 0.0,current_a: 0.0,power_w: 0.0}
-      {{3,x+1},Map.merge(target,%{flags: 0,circuit: c})}
-    end
+    source=Attachments.identity({0,1,{0,8,511}},{1,16})
+    c=%{tool_id: 3,kind: 1,anchor: {0,8,511},size: 1,closed: true,fault: 0,remaining_j: 6.0,voltage_v: 0.0,current_a: 0.0,power_w: 0.0}
+    switch=Attachments.identity({1,0,{1,8,511}},{2,41})
+    damage=%{{3,1}=>Map.merge(source,%{flags: 0,circuit: c}),{3,2}=>Map.merge(switch,%{flags: 0,closed: true})}
     {slots,damage,catalog}
   end
+  defp copper,do: 0.125/(58.0e6*@section)
+  defp load_key,do: VoxelRegion.ThermalAttachments.key({1,0,{2,8,511}})
   # 只测试：本组夹具为空气或单个宏格导体，没有实体之间的接触边。
-  defp plan(slots,damage,catalog,state,at,duration) do
-    ambient=if state,do: state.thermal.config["ambient_kelvin"]
-    input=Circuit.prepare(slots,damage,catalog,ambient,duration)
+  defp plan(slots,damage,catalog,at,duration) do
+    input=Circuit.prepare(slots,damage,catalog,duration)
     hosts=Map.new(Circuit.points(input),fn point ->
-      targets=Enum.map(Circuit.near_points(point),fn p -> elem(at.(p,state),0) end)
-      {point,Circuit.conductors(targets,catalog)}
+      targets=Enum.map(Circuit.near_points(point),fn p -> elem(at.(p,nil),0) end)
+      {point,Circuit.conductors(targets,catalog,damage)}
     end)
     Circuit.plan(input,hosts,[])
   end
@@ -33,21 +38,21 @@ defmodule VoxelRegion.CircuitTest do
 
   test "电路准备和求解只消费目录设备与导体摘要，不接收或返回世界" do
     {slots, damage, catalog} = fixture()
-    input = Circuit.prepare(slots, damage, catalog, nil, 0.5)
+    input = Circuit.prepare(slots, damage, catalog, 0.5)
     hosts = Map.new(Circuit.points(input), &{&1, []})
     plan = Circuit.plan(input, hosts, [])
     refute Map.has_key?(input, :state)
     refute Map.has_key?(plan, :state)
     assert plan.outputs[1].remaining_j < 6.0
-    assert plan.outputs[3].power_w > 0.0
+    assert plan.powers[load_key()] > 0.0
   end
 
   test "体积导体邻面保留微面面积，绝缘与空气不进入导体图" do
-    {_slots,_damage,catalog}=fixture()
+    {_slots,damage,catalog}=fixture()
     macro=%{micro: {8,0,0},granularity: 0,material: 16,owner: {0,0},incarnation: 1}
     micro=%{micro: {0,0,0},granularity: 2,material: 16,owner: {7,1},incarnation: 7}
     samples=[macro,macro,micro,nil,%{macro | material: 11}]
-    contacts=Circuit.solid_contacts(samples,catalog)
+    contacts=Circuit.solid_contacts(samples,catalog,damage)
     assert contacts[{0,{8,0,0}}]=={macro,2/64}
     assert contacts[{1,{0,0,0}}]=={%{micro | granularity: 1},1/64}
     assert map_size(contacts)==2
@@ -56,48 +61,70 @@ defmodule VoxelRegion.CircuitTest do
   end
 
   @tag :phase_coverage
-  test "矿石目录失导保留设备余能，普通加工铜替换返回线恢复" do
+  test "矿石目录失导保留电源余能，普通加工铜替换返回线恢复" do
     {slots,damage,catalog}=fixture()
     catalog=put_in(catalog.materials[24],catalog.materials[16])
     catalog=put_in(catalog.materials[16]["electrical_conductivity"],0.0)
-    stopped=plan(slots,damage,catalog,nil,&air/2,0.5)
+    stopped=plan(slots,damage,catalog,&air/2,0.5)
     assert stopped.outputs[1].remaining_j==6.0
     assert stopped.outputs[1].power_w==0.0
-    assert stopped.outputs[3].power_w==0.0
+    refute Map.has_key?(stopped.powers,load_key())
     replaced=Map.new(slots,fn
       {{1,_,_}=slot,{id,16}}->{slot,{id,24}}
       item->item
     end)
-    running=plan(replaced,damage,catalog,nil,&air/2,0.1)
+    running=plan(replaced,damage,catalog,&air/2,0.1)
     assert running.outputs[1].remaining_j<6.0
-    assert running.outputs[3].power_w>0.0
+    assert running.powers[load_key()]>0.0
     assert damage[{3,1}].material==16
   end
 
   test "跨区线端点串联与光热电能同口径，有限能源截断步长" do
     {slots,damage,catalog}=fixture()
-    result=plan(slots,damage,catalog,nil,&air/2,1.0)
-    expected=12/(1+0.01+12+5*0.125/(58.0e6/(512*512)))
+    result=plan(slots,damage,catalog,&air/2,1.0)
+    expected=12/(1+12+6*copper())
     assert_in_delta result.outputs[1].current_a,expected,1.0e-8
     assert result.duration<1.0
     assert_in_delta result.outputs[1].remaining_j,0.0,1.0e-10
     assert_in_delta result.supplied_j,6.0,1.0e-9
+    # 负载线 λ 0.2：它的 I²R 里 0.2 成为光、其余进热节点；热 + 光 = 供能。
+    assert_in_delta result.light_j,0.2*expected*expected*12*result.duration,1.0e-9
     assert_in_delta Enum.sum(Map.values(result.powers))*result.duration+result.light_j,6.0,1.0e-8
     assert result.powers[{4,{3,{0,8,512}}}]>0
   end
-  test "开关、断线、近邻绝缘与破损设备不通电" do
+
+  test "开关材料断开（行上 closed 为假，或根本没有行）、断线、近邻绝缘与破损设备都不通电" do
     {slots,damage,catalog}=fixture()
-    opened=put_in(damage[{3,2}].circuit.closed,false)
-    for {s,d}<- [{slots,opened},{Map.delete(slots,{1,0,{1,8,512}}),damage},
-                 {Map.put(slots,{1,0,{1,8,512}},{10,11}),damage}] do
-      r=plan(s,d,catalog,nil,&air/2,0.5)
-      assert_in_delta r.outputs[3].power_w,0.0,1.0e-9
+    for d<-[put_in(damage[{3,2}].closed,false),Map.delete(damage,{3,2})] do
+      r=plan(slots,d,catalog,&air/2,0.5)
+      assert r.outputs[1].current_a==0.0
       assert_in_delta r.outputs[1].remaining_j,6.0,1.0e-9
     end
-    broken=put_in(damage[{3,3}].circuit.size,8)
-    r=plan(slots,broken,catalog,nil,&air/2,0.5)
-    assert r.outputs[3].fault==1
-    assert r.outputs[3].power_w==0.0
+    for s<-[Map.delete(slots,{1,0,{1,8,512}}),Map.put(slots,{1,0,{1,8,512}},{10,11})] do
+      r=plan(s,damage,catalog,&air/2,0.5)
+      refute Map.has_key?(r.powers,load_key())
+      assert_in_delta r.outputs[1].remaining_j,6.0,1.0e-9
+    end
+    broken=put_in(damage[{3,1}].circuit.size,8)
+    r=plan(slots,broken,catalog,&air/2,0.5)
+    assert r.outputs[1].fault==1
+    assert r.outputs[1].power_w==0.0
+  end
+
+  test "开关材料的格：闭合时按目录电导率进入导体图与接触，断开或无行时绝缘；小块按 granularity 1 热身份的行" do
+    {_slots,damage,catalog}=fixture()
+    cell=%{micro: {16,0,0},granularity: 0,material: 41,owner: {0,0},incarnation: 3}
+    micro=%{micro: {5,6,7},granularity: 2,material: 41,owner: {9,2},incarnation: 9}
+    closed=fn t->Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:closed,true)) end
+    assert Circuit.conductors([cell,micro],catalog,damage)==[]
+    assert Circuit.solid_contacts([cell,micro],catalog,damage)==%{}
+    assert Circuit.conductors([cell],catalog,closed.(cell))==[cell]
+    assert Circuit.sigma(catalog,closed.(cell),cell)==58.0e6
+    thermal=%{micro | granularity: 1}
+    assert Circuit.conductors([micro],catalog,closed.(thermal))==[thermal]
+    # 构件行（granularity 2）不是微格的开合真值。
+    assert Circuit.conductors([micro],catalog,closed.(micro))==[]
+    assert Circuit.sigma(catalog,closed.(cell),%{cell | material: 16})==58.0e6
   end
   test "体积导体桥接断线；绝缘宿主不能桥接" do
     {slots,damage,catalog}=fixture()
@@ -107,40 +134,9 @@ defmodule VoxelRegion.CircuitTest do
         do: %{micro: {0,0,512},granularity: 0,material: 16,owner: {0,0},incarnation: 1}
       {t,s}
     end
-    r=plan(slots,damage,catalog,nil,sample,0.1)
-    assert r.outputs[3].power_w>1.0
+    r=plan(slots,damage,catalog,sample,0.1)
+    assert r.powers[load_key()]>1.0
     assert r.powers[{0,{0,0,512}}]>0
-  end
-
-  test "有限电源驱动冷板，吸热与热端排放闭合；最低温度与断电停止" do
-    {slots,damage,catalog}=fixture()
-    catalog=put_in(catalog.tools[5],%{"circuit_resistance_ohm"=>12.0,"circuit_voltage_v"=>0.0,
-      "circuit_light_fraction"=>0.0,"circuit_cooling_cop"=>2.0,"circuit_min_kelvin"=>250.0})
-    catalog=put_in(catalog.materials[16]["heat_capacity_per_macro"],3.45e6)
-    catalog=put_in(catalog.attachments["material_units_per_micro"],4096)
-    catalog=put_in(catalog.attachments["face_units"],64)
-    damage=put_in(damage[{3,3}].circuit.kind,5)
-    state=%{thermal: %{config: %{"ambient_kelvin"=>293.15}}}
-    r=plan(slots,damage,catalog,state,&air/2,0.5)
-    assert r.duration==0.05
-    assert r.powers[{4,{1,{2,8,511}}}]<0
-    assert r.outputs[1].remaining_j<6.0
-    assert_in_delta r.cooling_j,2*r.outputs[3].power_w*r.duration,1.0e-9
-    assert_in_delta r.rejected_j,r.cooling_j+r.outputs[3].power_w*r.duration,1.0e-9
-    assert_in_delta Enum.sum(Map.values(r.powers))*r.duration+r.rejected_j,r.supplied_j,1.0e-8
-    t=Attachments.identity({0,1,{2,8,511}},{3,16}) |> Map.put(:granularity,4)
-    cold=Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:temperature_kelvin,250.0))
-    for d<-[cold,put_in(damage[{3,1}].circuit.remaining_j,0.0),put_in(damage[{3,2}].circuit.closed,false)] do
-      stopped=plan(slots,d,catalog,state,&air/2,0.5)
-      assert stopped.cooling_j==0.0
-      assert stopped.supplied_j==0.0
-      assert stopped.duration==0.5
-    end
-    warm=Map.put(damage,VoxelRegion.Damage.key(t),Map.put(t,:temperature_kelvin,250.001))
-    limited=plan(slots,warm,catalog,state,&air/2,0.5)
-    capacity=catalog.materials[16]["heat_capacity_per_macro"]*VoxelRegion.ThermalAttachments.volume({0,1,{2,8,511}},catalog)
-    assert limited.cooling_j<=capacity*0.001+1.0e-9
-    assert_in_delta Enum.sum(Map.values(limited.powers))*limited.duration+limited.rejected_j,limited.supplied_j,1.0e-8
   end
 
   describe "电阻发光材料（R8-04）" do
@@ -158,7 +154,7 @@ defmodule VoxelRegion.CircuitTest do
       c = %{tool_id: 3, kind: 1, anchor: {0, 8, 0}, size: 1, closed: true, fault: 0, remaining_j: 1.0e9,
         voltage_v: 0.0, current_a: 0.0, power_w: 0.0}
       damage = %{{3, 1} => Map.merge(Attachments.identity(slot, {1, 24}), %{flags: 0, circuit: c})}
-      input = Circuit.prepare(%{slot => {1, 24}}, damage, catalog, nil, 0.5)
+      input = Circuit.prepare(%{slot => {1, 24}}, damage, catalog, 0.5)
       [a, b] = Circuit.points(input)
       hosts = %{a => [hd(cells)], b => [List.last(cells)]}
       contacts = for [p, q] <- Enum.chunk_every(cells, 2, 1, :discard), do: {p, q, @micro_area}

@@ -11,7 +11,14 @@ defmodule VoxelRegion.DCNetwork do
       sources=Enum.filter(local,fn {e,_}->e.emf  !=  0.0 end)
       case sources do
         [] -> {Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0)),faults}
-        [{source,_}] -> {Map.merge(volts,component(local,nodes,source.b)),faults}
+        [{source,index}] ->
+          # 源支路是桥（去掉它两端不再连通，例如开关断开）：严格开路，两侧各自等势、源两端差 emf，全部电流为 0，
+          # 不交给消元（大电导网格上的舍入会留下 ~1e-8 A 的假电流）。
+          rest=for {e,i}<-local,i != index,reduce: %{},do: (g->g |> Map.update(e.a,[e.b],&[e.b|&1]) |> Map.update(e.b,[e.a],&[e.a|&1]))
+          side=walk(Map.put_new(rest,source.a,[]),[source.a],MapSet.new())
+          if MapSet.member?(side,source.b),
+            do: {Map.merge(volts,component(local,nodes,source.b)),faults},
+            else: {Enum.reduce(nodes,volts,&Map.put(&2,&1,if(MapSet.member?(side,&1),do: source.emf,else: 0.0))),faults}
         _ -> {Enum.reduce(nodes,volts,&Map.put(&2,&1,0.0)),Enum.reduce(local,faults,fn {_,i},f->MapSet.put(f,i) end)}
       end
     end)

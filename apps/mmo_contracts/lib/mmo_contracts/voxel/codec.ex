@@ -111,8 +111,8 @@ defmodule MmoContracts.Voxel.Codec do
       norm > 0.99 and norm < 1.01
   end
 
-  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒）的合法性，线解码与进程内调用方（NPC Body）共用。"
-  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3] and tool > 0
+  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次）的合法性，线解码与进程内调用方（NPC Body）共用。"
+  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3, 4] and tool > 0
 
   @doc "附件意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
@@ -370,11 +370,14 @@ defmodule MmoContracts.Voxel.Codec do
         :error -> {<<>>, 0}
       end
 
+    # 协议 21：开关材料（目录 circuit_switch）的格／附件行闭合时置 flags 位 2，无后缀；缺省或断开为 0。
+    closed = if Map.get(t, :closed, false), do: 4, else: 0
+
     {:ok,
      <<0x7E, t.request_id::64, t.seq::64, x::signed-64, y::signed-64, z::signed-64,
        t.granularity::8, t.incarnation::64, birth::64, occurrence::32, t.material::16,
        t.hp::float-64, t.max_hp::float-64, t.defense::float-64, t.digest::binary-size(32),
-       t.flags + present::8, temperature::binary, circuit::binary, combustion::binary, electric::binary>>}
+       t.flags + present + closed::8, temperature::binary, circuit::binary, combustion::binary, electric::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do

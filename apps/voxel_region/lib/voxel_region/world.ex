@@ -210,7 +210,7 @@ defmodule VoxelRegion.World do
 
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server, actor, request) do
-    if valid_edit_coord?(request.coord) do
+    if request.action == 4 or valid_edit_coord?(request.coord) do
       if request.action in [2,3] do
         case GenServer.call(server, {:tool_range, request.tool_id}, 300_000) do
           {:error,_}=error -> error
@@ -469,6 +469,8 @@ defmodule VoxelRegion.World do
           thermal_due: nil,
           material_balances: %{},
           material_supplies: %{},
+          # 合成账（R8-04）：材料 => 合成造成的累计净单位变化；随日志／检查点持久化。
+          craft_ledger: %{},
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
           macro_owners: %{},
@@ -611,7 +613,8 @@ defmodule VoxelRegion.World do
         end)
 
     if compatible do
-      publish_property_catalog(state, catalog, state.thermal, state.damage)
+      publish_property_catalog(state, catalog, state.thermal, state.damage,
+        %{attachments: state.attachments, slots: [], tombstones: []})
     else
       {:reply, {:error, :property_version_in_use}, state}
     end
@@ -628,7 +631,9 @@ defmodule VoxelRegion.World do
       true ->
         thermal = VoxelRegion.ParameterEvolution.thermal_reference(state.thermal, state.damage, state.properties, catalog)
         {damage, thermal} = VoxelRegion.ParameterEvolution.combustion(state.damage, thermal, state.properties, catalog)
-        publish_property_catalog(state, catalog, thermal, damage)
+        # R8-04 增量 2：目录撤下的设备工具在同一笔发布事务里迁移成材料面（D8）。
+        migration = VoxelRegion.ParameterEvolution.retire_devices(damage, state.attachments, thermal, state.properties, catalog)
+        publish_property_catalog(state, catalog, migration.thermal, migration.damage, migration)
     end
   end
 
@@ -686,7 +691,8 @@ defmodule VoxelRegion.World do
     balances = balance_projection(state.material_balances, characters)
     snapshot = %{seq: state.seq,
       catalog: if(state.properties, do: Base.encode16(state.properties.digest, case: :lower), else: nil),
-      capacity_units: liquid_capacity(state), material_balances: balances, probe_occupancy: occupancy}
+      capacity_units: liquid_capacity(state), material_balances: balances, craft_ledger: state.craft_ledger,
+      probe_occupancy: occupancy}
     {:reply, snapshot, state}
   end
 
@@ -3181,6 +3187,7 @@ defmodule VoxelRegion.World do
         epochs: state.epochs,
         material_balances: state.material_balances,
         material_supplies: state.material_supplies,
+        craft_ledger: state.craft_ledger,
         placed_by: state.placed_by,
         macro_owners: state.macro_owners,
         protection: state.protection.regions,
@@ -3491,11 +3498,10 @@ defmodule VoxelRegion.World do
       protection = state.protection
       domain = if not Protection.empty?(protection),
         do: fn slot -> cells_holder(protection, Attachments.macros([slot]), slot) end
-      input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties,
-        state.thermal.config["ambient_kelvin"], remaining, domain)
+      input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties, remaining, domain)
       {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
         {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &target_at/2)
-        conductors = VoxelRegion.Circuit.conductors(targets, s.properties)
+        conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage)
         conductors = if domain,
           do: Enum.filter(conductors, &({:holder, Protection.holder(protection, Damage.macro(&1))} == elem(point, 2))),
           else: conductors
@@ -3519,11 +3525,9 @@ defmodule VoxelRegion.World do
         state.thermal
         |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))
         |> Map.update(:circuit_light_j, plan.light_j, &(&1 + plan.light_j))
-        |> Map.update(:circuit_cooling_j, plan.cooling_j, &(&1 + plan.cooling_j))
-        |> Map.update(:circuit_rejected_j, plan.rejected_j, &(&1 + plan.rejected_j))
 
       Logger.info(
-        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} cooling_j=#{plan.cooling_j} rejected_j=#{plan.rejected_j} luminous=#{map_size(plan.electric)}"
+        "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)}"
       )
 
       circuit_steps(
@@ -3560,7 +3564,7 @@ defmodule VoxelRegion.World do
     else
       seen = MapSet.put(seen, key)
       {targets, state} = Enum.map_reduce(VoxelRegion.Circuit.solid_points(target), state, &target_at/2)
-      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties),
+      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties, state.damage),
         {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
           if MapSet.member?(seen, other_key) or
                not Protection.same_holder?(state.protection, Damage.macro(target), Damage.macro(other)),
@@ -4221,6 +4225,9 @@ defmodule VoxelRegion.World do
           tool["action"] == "protection.claim" ->
             claim_region(before, state, actor, request, target, tool)
 
+          tool["action"] == "circuit.toggle" ->
+            toggle_switch(before, state, actor, request, target)
+
           String.starts_with?(tool["action"], "circuit.") ->
             operate_circuit(before, state, actor, request, target, tool)
 
@@ -4390,9 +4397,6 @@ defmodule VoxelRegion.World do
            power_w: 0.0
          }, state, %{}}
 
-      "circuit.toggle" when c != nil and c.kind == 2 ->
-        {:ok, %{c | closed: not c.closed}, state, %{}}
-
       "circuit.feed" when c != nil and c.kind == 1 ->
         fuel = tool["fuel_material_id"]
         units = tool["fuel_units"] * state.material_units_per_micro
@@ -4418,6 +4422,37 @@ defmodule VoxelRegion.World do
 
       _ ->
         {:error, :invalid_circuit_operation}
+    end
+  end
+
+  # 全局系统功能（R8-04 增量 2）：开关是材料（目录 circuit_switch），不是设备。G 翻转命中格（微格按 granularity 1
+  # 热身份）或附件整件属性行上的 closed，缺省断开；与其他属性一样随日志持久化并复制，电路在下一次求解时读取。
+  defp toggle_switch(before, state, actor, request, target) do
+    if request.action == 1 and Map.get(state.properties.materials[target.material], "circuit_switch", false) do
+      identity = Map.take(target, [:micro, :granularity, :incarnation, :owner, :material])
+      identity = if identity.granularity == 2, do: %{identity | granularity: 1}, else: identity
+      row = property_state(state, identity)
+      row = Map.merge(row, %{closed: not Map.get(row, :closed, false), seq: state.seq + 1, request_id: request.request_id})
+      next = %{state | seq: state.seq + 1, damage: Map.put(state.damage, Damage.key(row), row)}
+      txn = %{seq: next.seq, entries: [], coarse: [], property_states: [row], epochs: %{}}
+
+      case append_log(next, txn) do
+        :ok ->
+          next = remember_entry(next, txn)
+          fanout(next, txn)
+          fanout_canonical(next, txn, [], [], before)
+
+          Logger.info(
+            "voxel_switch seq=#{next.seq} cid=#{actor.cid} granularity=#{row.granularity} micro=#{inspect(row.micro)} incarnation=#{row.incarnation} closed=#{row.closed}"
+          )
+
+          {:reply, {:ok, next.seq}, next}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, before}
+      end
+    else
+      {:reply, {:error, :not_a_switch}, state}
     end
   end
 
@@ -4782,6 +4817,7 @@ defmodule VoxelRegion.World do
         thermal: Map.get(txn, :thermal, state.thermal),
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_supplies: Map.merge(state.material_supplies, Map.get(txn, :material_supplies, %{})),
+        craft_ledger: Map.get(txn, :craft_ledger, state.craft_ledger),
         placed_by: merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
         protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
         macro_owners: merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
@@ -4890,6 +4926,7 @@ defmodule VoxelRegion.World do
 
       true ->
         result = cond do
+          request.action == 4 -> craft(before, actor, request)
           not Protection.permitted?(before.protection, {:character, actor.cid}, [request.coord]) ->
             {:error, :protected_region}
           request.action in [2,3] -> transfer_liquid(before, actor, request)
@@ -4911,6 +4948,45 @@ defmodule VoxelRegion.World do
         }
 
         {:reply, reply, state}
+    end
+  end
+
+  # 全局系统功能（R8-04 增量 2）：黑盒构件只能按目录配方从库存合成（生产意图 action 4，material = 产物，一次一份）。
+  # 输入全部足额才整笔扣减、产物入库；合成账 craft_ledger 记各材料累计净变化。拆掉产物只返还产物本身（不可拆回原料）。
+  defp craft(before, actor, request) do
+    product = Map.get(before.properties.materials, request.material, %{})
+
+    cond do
+      not Map.has_key?(product, "recipe_inputs") or request.material not in before.production_materials ->
+        {:error, :unknown_recipe}
+
+      Enum.any?(product["recipe_inputs"], &(balance_state(before, actor.cid, &1["material_id"]).balance < &1["units"])) ->
+        {:error, :insufficient_material}
+
+      true ->
+        delta = Map.put(Map.new(product["recipe_inputs"], &{&1["material_id"], -&1["units"]}), request.material, product["recipe_units"])
+
+        {state, balances} =
+          Enum.reduce(delta, {before, %{}}, fn {material, units}, {s, balances} ->
+            {s, paid} = settle_material(s, actor.cid, material, units)
+            {s, Map.merge(balances, paid.material_balances)}
+          end)
+
+        ledger = Enum.reduce(delta, state.craft_ledger, fn {material, units}, l -> Map.update(l, material, units, &(&1 + units)) end)
+        next = %{state | seq: before.seq + 1, craft_ledger: ledger}
+        txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances, craft_ledger: ledger}
+
+        case append_log(next, txn) do
+          :ok ->
+            next = remember_entry(next, txn)
+            fanout(next, txn)
+            fanout_canonical(next, txn, [], [], before)
+            Logger.info("voxel_craft seq=#{next.seq} cid=#{actor.cid} product=#{request.material} delta=#{inspect(delta)}")
+            {:ok, next}
+
+          error ->
+            error
+        end
     end
   end
 
@@ -5355,23 +5431,29 @@ defmodule VoxelRegion.World do
   # 参数只改变下一次计算；实例温度、HP、源预算与相变焓不改写；
   # 已点燃行的余燃料与功率由调用方按新目录保比例重标后传入。
   # 复用既有同步落盘后广播边界；失败时目录与所有实例状态一起保持旧值。
-  defp publish_property_catalog(state, catalog, thermal, damage) do
+  # migration：退役设备迁移后的附件槽、改了材料的槽（其区域 afterimage 同笔写出）与旧槽热行的删除记录。
+  defp publish_property_catalog(state, catalog, thermal, damage, migration) do
     if state.properties.digest == catalog.digest do
       {:reply, :ok, enable_liquid(state, rebuild_thermal_work(%{state | properties: catalog}))}
     else
       rows = for {_, t} <- damage,
         do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0}
-      next = %{state | properties: catalog, thermal: thermal, seq: state.seq + 1,
+      tombstones = for t <- migration.tombstones,
+        do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0, flags: 1}
+      next = %{state | properties: catalog, thermal: thermal, seq: state.seq + 1, attachments: migration.attachments,
         damage: Map.new(rows, &{Damage.key(&1), &1})} |> rebuild_thermal_work()
       next = if state.properties.liquid != catalog.liquid,
         do: wake_liquid(next, Map.keys(next.liquid_units)), else: next
-      txn = %{seq: next.seq, entries: [], coarse: [], property_states: rows, thermal: thermal}
+      {txn, keys, next} = if migration.slots == [],
+        do: {%{seq: next.seq, entries: [], coarse: []}, [], next},
+        else: attachment_geometry(state, next, migration.slots)
+      txn = Map.merge(txn, %{property_states: tombstones ++ rows, thermal: thermal})
       case append_log(next, txn) do
         :ok ->
           next = remember_entry(next, txn)
           fanout(next, txn)
-          fanout_canonical(next, txn, [], [], state)
-          Logger.info("voxel_parameter_publication seq=#{next.seq} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0} fuel_rebase_j=#{if thermal, do: Map.get(thermal, :fuel_rebase_j, 0.0), else: 0.0}")
+          fanout_canonical(next, txn, [], keys, state)
+          Logger.info("voxel_parameter_publication seq=#{next.seq} retired_slots=#{length(migration.slots)} old=#{Base.encode16(state.properties.digest, case: :lower)} new=#{Base.encode16(catalog.digest, case: :lower)} rebase_j=#{if thermal, do: Map.get(thermal, :parameter_rebase_j, 0.0), else: 0.0} fuel_rebase_j=#{if thermal, do: Map.get(thermal, :fuel_rebase_j, 0.0), else: 0.0}")
           {:reply, :ok, schedule_liquid(enable_liquid(state, next))}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end
@@ -5511,20 +5593,8 @@ defmodule VoxelRegion.World do
     settlement =
       if state.thermal, do: Map.put(settlement, :thermal, state.thermal), else: settlement
 
-    dirty = Enum.map(Attachments.macros(slots), &{0, &1})
-    {:ok, coarse, state, _} = reduce_batch(state, dirty, 1, [], 0)
-    {coarse_txn, state} = select_transaction(state, coarse)
-    keys = region_keys(dirty)
-
-    {state, structure_keys, structure_cells} =
-      refresh_structure(state, Enum.map(dirty, &elem(&1, 1)))
-
-    {entries, state} = region_afterimages(state, keys, before.payloads)
-
-    entries = entries ++ structure_entries(state, structure_cells)
-
-    keys = Enum.uniq(keys ++ structure_keys)
-    txn = Map.merge(%{coarse_txn | entries: entries ++ coarse_txn.entries}, settlement)
+    {txn, keys, state} = attachment_geometry(before, state, slots)
+    txn = Map.merge(txn, settlement)
 
     case append_log(state, txn) do
       :ok ->
@@ -5541,6 +5611,21 @@ defmodule VoxelRegion.World do
       error ->
         error
     end
+  end
+
+  # 附件槽变化的派生几何（粗层表皮投票、core 区域与结构 afterimage），与槽事实同一事务写出。
+  defp attachment_geometry(before, state, slots) do
+    dirty = Enum.map(Attachments.macros(slots), &{0, &1})
+    {:ok, coarse, state, _} = reduce_batch(state, dirty, 1, [], 0)
+    {coarse_txn, state} = select_transaction(state, coarse)
+    keys = region_keys(dirty)
+
+    {state, structure_keys, structure_cells} =
+      refresh_structure(state, Enum.map(dirty, &elem(&1, 1)))
+
+    {entries, state} = region_afterimages(state, keys, before.payloads)
+    entries = entries ++ structure_entries(state, structure_cells)
+    {%{coarse_txn | entries: entries ++ coarse_txn.entries}, Enum.uniq(keys ++ structure_keys), state}
   end
 
   defp attachment_reach(state, actor, r, tool) do
