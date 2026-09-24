@@ -1,0 +1,175 @@
+{
+  "schema": "voxim-worldgen-v1",
+  "kernel": "worldgen_density_v3@1",
+  "materials": [
+    {
+      "id": 0,
+      "name": "air"
+    },
+    {
+      "id": 1,
+      "name": "grass"
+    },
+    {
+      "id": 2,
+      "name": "dry_grass"
+    },
+    {
+      "id": 3,
+      "name": "moss"
+    },
+    {
+      "id": 4,
+      "name": "snow"
+    },
+    {
+      "id": 5,
+      "name": "sand"
+    },
+    {
+      "id": 6,
+      "name": "gravel"
+    },
+    {
+      "id": 7,
+      "name": "dirt"
+    },
+    {
+      "id": 8,
+      "name": "clay"
+    },
+    {
+      "id": 9,
+      "name": "sandstone"
+    },
+    {
+      "id": 10,
+      "name": "limestone"
+    },
+    {
+      "id": 11,
+      "name": "stone"
+    },
+    {
+      "id": 12,
+      "name": "granite"
+    },
+    {
+      "id": 13,
+      "name": "basalt"
+    },
+    {
+      "id": 14,
+      "name": "marble"
+    },
+    {
+      "id": 15,
+      "name": "coal_ore"
+    },
+    {
+      "id": 16,
+      "name": "copper_ore"
+    },
+    {
+      "id": 17,
+      "name": "iron_ore"
+    },
+    {
+      "id": 18,
+      "name": "gold_ore"
+    },
+    {
+      "id": 19,
+      "name": "wood"
+    },
+    {
+      "id": 20,
+      "name": "ice"
+    },
+    {
+      "id": 21,
+      "name": "water"
+    },
+    {
+      "id": 22,
+      "name": "lava"
+    },
+    {
+      "id": 23,
+      "name": "glowstone"
+    },
+    {
+      "id": 24,
+      "name": "copper"
+    },
+    {
+      "id": 25,
+      "name": "birch_wood"
+    },
+    {
+      "id": 26,
+      "name": "maple_wood"
+    },
+    {
+      "id": 27,
+      "name": "spruce_wood"
+    },
+    {
+      "id": 28,
+      "name": "oak_leaves"
+    },
+    {
+      "id": 29,
+      "name": "birch_leaves"
+    },
+    {
+      "id": 30,
+      "name": "maple_leaves"
+    },
+    {
+      "id": 31,
+      "name": "spruce_leaves"
+    },
+    {
+      "id": 32,
+      "name": "short_grass"
+    },
+    {
+      "id": 33,
+      "name": "tall_grass"
+    },
+    {
+      "id": 34,
+      "name": "fern"
+    },
+    {
+      "id": 35,
+      "name": "poppy"
+    },
+    {
+      "id": 36,
+      "name": "dandelion"
+    },
+    {
+      "id": 37,
+      "name": "cornflower"
+    },
+    {
+      "id": 38,
+      "name": "daisy"
+    },
+    {
+      "id": 39,
+      "name": "allium"
+    }
+  ],
+  "world_half_extent_m": 2048,
+  "seed": 1337,
+  "min_height": -200,
+  "sea_level": 326,
+  "max_height": 586,
+  "soil_depth": 4,
+  "lowland_amplitude": 381.77066,
+  "mountain_amplitude": 1223.743774,
+  "cave_max_depth": 96
+}

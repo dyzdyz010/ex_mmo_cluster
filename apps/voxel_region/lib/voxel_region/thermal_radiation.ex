@@ -23,9 +23,9 @@ defmodule VoxelRegion.ThermalRadiation do
     for seed <- seeds, {_, {_, cell}, _} <- Map.get(sights, seed, []), into: MapSet.new(), do: cell
   end
 
-  @doc "按内核节点顺序生成 `{半对, 对天空}`；伙伴不在本次节点集内时按域边界绝热处理。"
-  def terms(ordered, sights, emissivity) do
-    indices = ordered |> Enum.with_index() |> Map.new(fn {{key, _}, i} -> {key, i} end)
+  @doc "按内核节点顺序生成 `{半对, 对天空}`；伙伴不在本次节点集内时按域边界绝热处理。`indices` 为同一顺序的节点键 => 下标。"
+  def terms(ordered, sights, emissivity, indices \\ nil) do
+    indices = indices || ordered |> Enum.with_index() |> Map.new(fn {{key, _}, i} -> {key, i} end)
     grey = emissivity / (2 - emissivity)
 
     rows = for {_, rows} <- sights, {key, hit, area} <- rows, Map.has_key?(indices, key),

@@ -1,7 +1,7 @@
 defmodule VoxelRegion.ThermalWorkTest do
   @moduledoc "只测试：热候选域与可丢弃接触图的复用、编辑失效和索引契约。"
   use ExUnit.Case, async: true
-  alias VoxelRegion.{Attachments, ThermalAttachments, ThermalWork}
+  alias VoxelRegion.{Attachments, ThermalAttachments, ThermalRadiation, ThermalWork}
 
   test "热记录、有限源、电功率与燃烧种子覆盖完整三维附件足迹" do
     slot = {0, 0, {512, 0, 0}}
@@ -102,6 +102,39 @@ defmodule VoxelRegion.ThermalWorkTest do
     assert elem(Enum.at(work.ordered, i), 0) == a
     assert elem(Enum.at(work.ordered, j), 0) == b
     assert work.attachment_graph == :attachment_graph
+  end
+
+  test "提交内种子只增：增量扩域与整域重算得到同一候选域、节点表和燃烧行" do
+    key = fn cell -> {0, cell |> Tuple.to_list() |> Enum.map(&(&1 * 8)) |> List.to_tuple()} end
+    geometry = fn cells -> Map.new(cells, &{&1, if(elem(&1, 1) == 0, do: [{key.(&1), %{contacts: []}}], else: [])}) end
+    # 种子 {0,0,0} 的一条视线命中 {5,0,0}；视线表按 World 的 sight_domain 在计算该格视线的同一轮补入伙伴格。
+    sights = %{{0, 0, 0} => [{key.({0, 0, 0}), {key.({5, 0, 0}), {5, 0, 0}}, 1.0}]}
+    sight_domain = fn plan ->
+      extra = MapSet.difference(ThermalRadiation.partners(sights, plan.fresh), plan.cells)
+      %{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, extra),
+        grown: plan.grown && MapSet.union(plan.grown, extra)}
+    end
+
+    work = %{warm() | sights: sights, seeds: nil}
+    base = sight_domain.(ThermalWork.plan(work, %{}, %{}, %{}))
+    {work, _} = ThermalWork.refresh(work, base, Map.merge(work.geometry, geometry.(base.missing)), %{})
+    assert work.exact and MapSet.member?(work.cells, {5, 0, 0})
+    grown = %{work | hot: MapSet.new([{0, 0, 0}, {1, 0, 0}, {3, 0, 0}])}
+
+    incremental = sight_domain.(ThermalWork.plan(grown, %{}, %{}, %{}))
+    full = sight_domain.(ThermalWork.plan(%{grown | exact: false}, %{}, %{}, %{}))
+    assert incremental.grown != nil and full.grown == nil
+    assert incremental.cells == full.cells
+    assert incremental.missing == MapSet.difference(full.cells, MapSet.new(Map.keys(work.geometry)))
+
+    all = Map.merge(work.geometry, geometry.(incremental.missing))
+    {a, true} = ThermalWork.refresh(grown, incremental, all, %{})
+    {b, true} = ThermalWork.refresh(%{grown | exact: false}, full, all, %{})
+    assert Enum.to_list(a.solid_nodes) == Enum.to_list(b.solid_nodes)
+
+    burning = %{micro: {8, 0, 0}, granularity: 0, burning: true}
+    work = ThermalWork.burned(%{a | burning: %{}}, [{:a, burning}, {:b, burning}, {:a, %{burning | burning: false}}])
+    assert work.burning == %{b: [{1, 0, 0}]}
   end
 
   defp warm do

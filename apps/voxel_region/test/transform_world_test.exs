@@ -64,7 +64,9 @@ defmodule VoxelRegion.TransformWorldTest do
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{-1, -1, -1}, {8, 8, 8}})
   defp occupancy(w, cell), do: hd(World.material_snapshot(w, [], [cell], :micro).probe_occupancy)
 
-  defp run_until(w, stop?, left \\ 4000) do
+  # 每次手动提交推进 0.5 s；最慢的炼铜场景约 2800 s 才平息。固定节拍之前每次手动提交还会多排一条后台定时链，
+  # 旧上限 4000 次靠那些额外提交才够用。
+  defp run_until(w, stop?, left \\ 8000) do
     send(w, :thermal_commit)
     s = observe(w)
     cond do

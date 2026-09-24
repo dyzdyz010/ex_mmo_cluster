@@ -465,6 +465,8 @@ defmodule VoxelRegion.World do
           tool_sessions: %{},
           thermal: load_thermal_environment(opts),
           thermal_work: ThermalWork.new(),
+          # 下一次热提交的墙钟到期时刻（毫秒，单调时钟）；nil 表示尚未排程。
+          thermal_due: nil,
           material_balances: %{},
           material_supplies: %{},
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
@@ -529,7 +531,7 @@ defmodule VoxelRegion.World do
         )
 
         state = schedule_liquid(state)
-        if state.thermal, do: Process.send_after(self(), :thermal_commit, 500)
+        state = if state.thermal, do: schedule_thermal(state), else: state
         {:ok, state}
 
       {:error, :no_world} ->
@@ -654,7 +656,7 @@ defmodule VoxelRegion.World do
       active: true
     }
 
-    if state.thermal == nil, do: Process.send_after(self(), :thermal_commit, 500)
+    state = if state.thermal == nil, do: schedule_thermal(state), else: state
     state = thermal_commit(rebuild_thermal_work(%{state | thermal: thermal}), [])
     {:reply, :ok, state}
   end
@@ -1114,17 +1116,22 @@ defmodule VoxelRegion.World do
   def handle_info(:thermal_commit, state) do
     started = System.monotonic_time(:microsecond)
 
-    state =
-      if state.thermal.active or map_size(VoxelRegion.Circuit.devices(state.damage)) > 0,
-        do: state |> advance_thermal() |> transform_heated_materials(),
-        else: state
+    {state, transform_us} =
+      if state.thermal.active or map_size(VoxelRegion.Circuit.devices(state.damage)) > 0 do
+        state = advance_thermal(state)
+        advanced = System.monotonic_time(:microsecond)
+        state = transform_heated_materials(state)
+        {state, System.monotonic_time(:microsecond) - advanced}
+      else
+        {state, 0}
+      end
 
-    Process.send_after(self(), :thermal_commit, 500)
+    state = schedule_thermal(state)
 
     if state.thermal.active,
       do:
         Logger.info(
-          "voxel_thermal_callback elapsed_us=#{System.monotonic_time(:microsecond) - started}"
+          "voxel_thermal_callback elapsed_us=#{System.monotonic_time(:microsecond) - started} transform_us=#{transform_us} sim_s=#{state.thermal.elapsed_s} seq=#{state.seq}"
         )
 
     {:noreply, state}
@@ -3367,6 +3374,15 @@ defmodule VoxelRegion.World do
       else: row
   end
 
+  # 固定 500 ms 墙钟节拍：下一次到期 = 上次到期 + 500 ms，回调耗时不再拉长周期
+  # （原先在回调末尾再等 500 ms，模拟时间只有墙钟的 0.5/(0.5+回调秒数)）。落后时立即提交、不积压补跑。
+  defp schedule_thermal(state) do
+    now = System.monotonic_time(:millisecond)
+    due = max((state.thermal_due || now) + 500, now)
+    Process.send_after(self(), :thermal_commit, due - now)
+    %{state | thermal_due: due}
+  end
+
   # 占用编辑只让派生几何与视线失效；无热环境时工作集恒为空。
   defp drop_thermal_geometry(%{thermal: nil} = state, _cells), do: state
 
@@ -3390,8 +3406,10 @@ defmodule VoxelRegion.World do
   defp advance_thermal(state) do
     start = System.monotonic_time(:microsecond)
     before = state
-    state = put_in(state.thermal_work.builds, 0)
+    # 燃烧行在提交之间可被工具、放置等事务改写：每次提交首轮重新扫描。
+    state = %{state | thermal_work: %{state.thermal_work | builds: 0, burning: nil}}
     {state, visited} = circuit_steps(state, 0.5, MapSet.new())
+    stepped = System.monotonic_time(:microsecond)
     # 同一提交内只扩张热域，避免容差边缘反复删添接触；批末按当前真值收缩。
     hot = ThermalWork.hot(state.damage, state.thermal.config)
     state = %{state | thermal_work: %{state.thermal_work | hot: hot},
@@ -3414,9 +3432,10 @@ defmodule VoxelRegion.World do
       end
     end)
     work = state.thermal_work
+    scanned = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_thermal_sim simulated_s=0.5 max_step_ms=50 elapsed_us=#{System.monotonic_time(:microsecond) - start} hot=#{MapSet.size(work.hot)} candidates=#{map_size(work.geometry)} geometry_builds=#{work.builds}"
+      "voxel_thermal_sim steps_us=#{stepped - start} scan_us=#{scanned - stepped} damage_rows=#{map_size(state.damage)} simulated_s=0.5 max_step_ms=50 elapsed_us=#{System.monotonic_time(:microsecond) - start} hot=#{MapSet.size(work.hot)} candidates=#{map_size(work.geometry)} geometry_builds=#{work.builds}"
     )
 
     rows =
@@ -3556,6 +3575,7 @@ defmodule VoxelRegion.World do
     geometry_done = System.monotonic_time(:microsecond)
 
     {work, rebuild?} = ThermalWork.refresh(state.thermal_work, plan, geometry, state.attachments)
+    refreshed = System.monotonic_time(:microsecond)
 
     {work, state} =
       if rebuild? do
@@ -3566,24 +3586,38 @@ defmodule VoxelRegion.World do
 
         work = ThermalWork.index(work, protected_contacts(state, nodes), attachment_graph)
         # 默认记录只由目录、环境和实占用派生；已有属性仍在每个数值批次读取。
+        # 同一几何节点的派生字段按目录与环境标签缓存；相态宏格的默认 HP 随有限数量变化，每次重算。
         defaults = %{state | damage: %{}}
-        ordered = Enum.map(work.ordered, fn {key, n} ->
-          {key, Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
-                              cells: ThermalWork.cells(n.target), default: property_state(defaults, n.target),
-                              ignition: if(Combustion.combustible?(n.material),
-                                do: n.material["ignition_kelvin"] * 1.0, else: nil)})}
+        tag = {state.properties.digest, config["ambient_kelvin"]}
+        cache = case work.augmented do
+          {^tag, cache} -> cache
+          _ -> %{}
+        end
+        # 增量扩域只添加节点，沿用缓存；整域重算时只保留仍在域内的节点。
+        grown? = plan.grown != nil
+        {ordered, cache} = Enum.map_reduce(work.ordered, if(grown?, do: cache, else: %{}), fn {key, n}, kept ->
+          case cache do
+            %{^key => {^n, node} = entry} -> {{key, node}, if(grown?, do: kept, else: Map.put(kept, key, entry))}
+            _ ->
+              node = Map.merge(n, %{damage_key: Damage.key(n.target), cell: Damage.macro(n.target),
+                                    cells: ThermalWork.cells(n.target), default: property_state(defaults, n.target),
+                                    ignition: if(Combustion.combustible?(n.material),
+                                      do: n.material["ignition_kelvin"] * 1.0, else: nil)})
+              {{key, node}, if(phase_target?(state, n.target), do: kept, else: Map.put(kept, key, {n, node}))}
+          end
         end)
-        {%{work | ordered: ordered}, state}
+        {%{work | ordered: ordered, augmented: {tag, cache}}, state}
       else
         {work, state}
       end
 
+    rebuilt = System.monotonic_time(:microsecond)
     ordered = work.ordered
     indexed_edges = work.indexed_edges
 
     radiation =
       if VoxelRegion.ThermalRadiation.enabled?(config),
-        do: VoxelRegion.ThermalRadiation.terms(ordered, work.sights, config["emissivity"]),
+        do: VoxelRegion.ThermalRadiation.terms(ordered, work.sights, config["emissivity"], work.indices),
         else: {[], []}
 
     nodes_done = System.monotonic_time(:microsecond)
@@ -3601,6 +3635,7 @@ defmodule VoxelRegion.World do
         volume = if phase_target?(state, row), do: phase_volume(state, row)
         {key, node, row, volume}
       end)
+    sampled = System.monotonic_time(:microsecond)
 
     batch = VoxelRegion.ThermalBatch.prepare(
       samples, sources, powers, work.hot, config["ambient_kelvin"], duration)
@@ -3623,6 +3658,7 @@ defmodule VoxelRegion.World do
 
     {changes, sources, hot, losses, combustion_used} =
       VoxelRegion.ThermalSettlement.apply(batch.targets, result, sources, config, done)
+    settled = System.monotonic_time(:microsecond)
 
     changes =
       Enum.reduce(losses, changes, fn {{granularity, _}, {micro, loss}}, changes ->
@@ -3637,7 +3673,9 @@ defmodule VoxelRegion.World do
       end)
 
     damage = Map.merge(state.damage, Map.new(changes))
+    merged = System.monotonic_time(:microsecond)
     {damage, propagated} = ignite_heated_materials(state, damage, ordered)
+    ignited = System.monotonic_time(:microsecond)
     changes = changes ++ propagated
     changed = MapSet.new(changes, &elem(&1, 0))
     hot = MapSet.union(work.hot, MapSet.new(hot))
@@ -3662,14 +3700,14 @@ defmodule VoxelRegion.World do
         combustion_j: thermal_base.combustion_j + combustion_used
     }
 
-    work = if active, do: %{work | hot: hot}, else: %{ThermalWork.new() | builds: work.builds}
+    work = if active, do: ThermalWork.burned(%{work | hot: hot}, changes), else: %{ThermalWork.new() | builds: work.builds}
 
     Logger.info(
       "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} radiation_pairs=#{length(elem(radiation, 0))} sky_faces=#{length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
     )
 
     Logger.info(
-      "voxel_thermal_prepare neighborhood_us=#{neighborhood_done - started} geometry_us=#{geometry_done - neighborhood_done} nodes_us=#{nodes_done - geometry_done} input_us=#{prepared - nodes_done}"
+      "voxel_thermal_prepare neighborhood_us=#{neighborhood_done - started} geometry_us=#{geometry_done - neighborhood_done} nodes_us=#{nodes_done - geometry_done} input_us=#{prepared - nodes_done} refresh_us=#{refreshed - geometry_done} rebuild_us=#{rebuilt - refreshed} terms_us=#{nodes_done - rebuilt} samples_us=#{sampled - nodes_done} batch_us=#{prepared - sampled} settle_us=#{settled - calculated} merge_us=#{merged - settled} ignite_us=#{ignited - merged} rebuild=#{rebuild?}"
     )
 
     {%{state | damage: damage, thermal: thermal, thermal_work: work}, changed, done}
@@ -3693,13 +3731,15 @@ defmodule VoxelRegion.World do
 
   # 辐射候选域：补齐候选宏格的视线（按宏格缓存），热种子视线命中的伙伴宏格一并读取几何并入域。
   # 伙伴不是种子；只有真实升温越过容差才由既有前沿规则扩张它自己的邻域和视线。
+  # 计划只列出尚缺视线的格与需要核对伙伴的种子（精确域内旧种子的伙伴已在域内）。
   defp sight_domain(state, plan, geometry) do
-    {state, sights} = Enum.reduce(plan.cells, {state, state.thermal_work.sights}, &cell_sights(&1, &2, geometry))
-    extra = MapSet.difference(VoxelRegion.ThermalRadiation.partners(sights, plan.seeds), plan.cells)
+    {state, sights} = Enum.reduce(plan.sightless, {state, state.thermal_work.sights}, &cell_sights(&1, &2, geometry))
+    extra = MapSet.difference(VoxelRegion.ThermalRadiation.partners(sights, plan.fresh), plan.cells)
     {geometry, state} = Enum.reduce(extra, {geometry, state}, &thermal_cell/2)
     {state, sights} = Enum.reduce(extra, {state, sights}, &cell_sights(&1, &2, geometry))
 
-    {%{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, extra)},
+    {%{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, extra),
+       grown: plan.grown && MapSet.union(plan.grown, extra)},
      geometry, put_in(state.thermal_work.sights, sights)}
   end
 
