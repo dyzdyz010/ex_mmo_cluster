@@ -364,6 +364,12 @@ World 独占 canonical 读取，并冻结成 `point → nil | {target, phase_vol
 正常鉴权工具 `action=heat` 必须命中带 `heat.receiver` 的宏格，消费目录指定燃料并添加有限J，余额与能源同笔保存。
 建造不生成能源；源绑定目标身份，拆除取消余能并记录 `discarded_source_j`，材料携带显热记入 `removed_j`。
 `thermal_environment_path` 读取资产发布的ambient/h/tolerance/emissivity/view_range_cells，无自动热源；Test-only `thermal_experiment` 保留为实验入口。生产环境（`DA_ThermalEnvironment`）ε 0 关闭辐射；Test-only 部署挂 `DA_ThermalEnvironmentRadiation_TestOnly` 的发布文件（ε 0.9）。2026-09-24 起目录（`5be2e8c7…`）按辐射调参，只与 ε > 0 配对；青岚驿停在 `4b2c6abe…` + ε 0，见 Voxim `Docs/Playtest/README.md`。
+气候区（2026-09-25，可选 `climate_zones`：`[{"min": [x0, z0], "max": [x1, z1], "ambient_kelvin": K}]`，canonical 宏格 x/z 闭矩形、全高、列表在前者优先）是大气边界：
+`VoxelRegion.Thermal.ambient/2` 是唯一取值入口，区内未记录格默认温度、相变天然温度（寒区天然冰/雪 = 区温，静止）、空气换热与对天辐射（NIF 逐节点 ambient）、
+静止判据、显热参考（移除、参数重标、灭火、冶炼、电路默认温度）都按格所在区；区边界与受保护区域同为热分区边界（理想绝热镜面，导热与辐射视线不跨），
+否则两侧各在自己环境温度的未记录格会在两个无限热库之间持续导热、被拉入活动集合（反事实实测：9 格石条 20000 s 仍活动）。
+拟态账、库存相态与新作者液体仍以全局 ambient 为参考；资产无该字段时逐位不变（`climate_zone_world_test` 对 master d6695e86 冻结哈希）。
+Scene 的身体从 World 快照 `property_context.climate_zones` 取同一份区表。
 已有热状态优先从同一overlay恢复，停机不补算；发布兼容扩展保留既有热材料定义、HP、身份和占用。
 granularity1保存独立微格温度、2保存叶子共享HP；微格过热伤害按叶子汇总，归零时整个叶子与同批宏格破坏原子提交。
 温度行不参与旧微格HP迁移，附近快照与窗口退出覆盖这些新行；未激活的热格使用已声明环境默认值。

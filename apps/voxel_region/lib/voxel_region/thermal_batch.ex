@@ -3,14 +3,17 @@ defmodule VoxelRegion.ThermalBatch do
   全局系统功能：由本次已读取的节点、属性、相态体积构造热内核批次。
   只计算有限时长、供能预算和事件参数，不访问 World、不保存演化状态。
   """
-  alias VoxelRegion.{Combustion, Phase}
+  alias VoxelRegion.{Combustion, Phase, Thermal}
 
   @typedoc "按接触索引原顺序排列的节点键、几何摘要、当前属性和可选相态体积。"
   @type sample :: {term(), map(), map(), number() | nil}
 
-  @doc "共同批长不越过有限源/燃料耗尽点；返回内核输入及按同一顺序结算所需的目标摘要。"
-  @spec prepare([sample()], map(), map(), MapSet.t(), number(), number()) :: map()
-  def prepare(samples, sources, powers, hot, ambient, duration) do
+  @doc """
+  共同批长不越过有限源/燃料耗尽点；返回内核输入、逐节点环境温度（节点宏格所在气候区，`Thermal.ambient/2`）
+  及按同一顺序结算所需的目标摘要。`config` 为热环境配置。
+  """
+  @spec prepare([sample()], map(), map(), MapSet.t(), map(), number()) :: map()
+  def prepare(samples, sources, powers, hot, config, duration) do
     duration =
       Enum.reduce(sources, duration, fn {_, s}, dt -> min(dt, s.remaining_j / s.power_w) end)
 
@@ -23,6 +26,7 @@ defmodule VoxelRegion.ThermalBatch do
 
     {targets, input} =
       Enum.map(samples, fn {key, n, row, volume} ->
+        ambient = Thermal.ambient(config, n.cell)
         temperature = Map.get(row, :temperature_kelvin, ambient)
         source = if row.granularity == 0, do: Map.get(sources, n.cell)
         combustion = if Map.get(row, :burning, false), do: row.power_w, else: 0.0
@@ -52,6 +56,7 @@ defmodule VoxelRegion.ThermalBatch do
       end)
       |> Enum.unzip()
 
-    %{duration: duration, targets: targets, input: input}
+    %{duration: duration, targets: targets, input: input,
+      ambient: Enum.map(samples, fn {_, n, _, _} -> Thermal.ambient(config, n.cell) * 1.0 end)}
   end
 end

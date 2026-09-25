@@ -13,7 +13,7 @@ defmodule VoxelRegion.Circuit do
     界面温度 T_i 按两侧 k/(半格长) 加权；每个结吸收佩尔捷热 (S_b − S_a)·T_i·i（两侧各一半）。按 KCL，
     全网 Σε·i = Σ佩尔捷，热电做功恰由热节点支付。
   """
-  alias VoxelRegion.{Attachments,Damage,DCNetwork,ThermalGeometry}
+  alias VoxelRegion.{Attachments,Damage,DCNetwork,Thermal,ThermalGeometry}
   @micro VoxelRegion.Spatial.micro_resolution()
   @length 1.0/@micro
 
@@ -44,9 +44,9 @@ defmodule VoxelRegion.Circuit do
   @doc """
   由目录和附件导体准备网络（线与面各自成边）；不读取 canonical 占用。
   domain（可选）把附件槽映射到其受保护区域持有者：端点按持有者分开，跨持有者边界的导线不在端点处相连；
-  nil 时端点为 `{:point, p}`。
+  nil 时端点为 `{:point, p}`。`environment` 为热环境配置：无温度记录的导体取其宏格所在气候区的环境温度。
   """
-  def prepare(slots,damage,catalog,duration,ambient,domain \\ nil) do
+  def prepare(slots,damage,catalog,duration,environment,domain \\ nil) do
     started=System.monotonic_time(:microsecond)
     section=catalog.attachments["line_section_m2"]
     {edges,luminous}=Enum.reduce(slots,{[],%{}},fn {slot={kind,axis,p},{id,material}},{edges,luminous}->
@@ -72,7 +72,7 @@ defmodule VoxelRegion.Circuit do
         {edges,luminous}
       end
     end)
-    %{catalog: catalog, damage: damage, ambient: ambient, edges: edges, luminous: luminous,
+    %{catalog: catalog, damage: damage, environment: environment, edges: edges, luminous: luminous,
       duration: duration, started: started}
   end
 
@@ -130,7 +130,7 @@ defmodule VoxelRegion.Circuit do
   热节点净得 supplied − charged − light（充满后的溢出也在热里）。
   """
   def plan(input,hosts,contacts) do
-    %{catalog: catalog,damage: damage,ambient: ambient,edges: edges,luminous: luminous,
+    %{catalog: catalog,damage: damage,environment: environment,edges: edges,luminous: luminous,
       duration: duration,started: started}=input
     section=catalog.attachments["line_section_m2"]
     {edges,luminous}=Enum.reduce(points(input),{edges,luminous},fn p,acc ->
@@ -141,7 +141,8 @@ defmodule VoxelRegion.Circuit do
         {[edge(p,{:solid,key},size(target)/2/(sigma*section),[{key,1.0,lum}])|edges],glowing(luminous,key,target,lum)}
       end)
     end)
-    temperature=fn target -> Map.get(Map.get(damage,Damage.key(target),%{}),:temperature_kelvin,ambient) end
+    temperature=fn target -> Map.get(Map.get(damage,Damage.key(target),%{}),:temperature_kelvin,
+      Thermal.ambient(environment,Damage.macro(target))) end
     # owner 保留原遍历和前插次序；纯计算按同一边顺序求解，避免浮点累加漂移。
     {contact_edges,{luminous,cells}}=Enum.flat_map_reduce(contacts,{luminous,%{}},fn {target,other,area},{luminous,cells} ->
       ma=catalog.materials[target.material]; mb=catalog.materials[other.material]

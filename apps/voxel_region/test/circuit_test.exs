@@ -32,7 +32,7 @@ defmodule VoxelRegion.CircuitTest do
     Enum.sort(d)==[0,0,8]
   end
   defp run(cells,damage \\ %{},duration \\ 0.5,slots \\ %{},hosts \\ %{}) do
-    input=Circuit.prepare(slots,damage,catalog(),duration,@ambient)
+    input=Circuit.prepare(slots,damage,catalog(),duration,%{"ambient_kelvin"=>@ambient})
     Circuit.plan(input,hosts,contacts(cells))
   end
   defp stored(t,joules),do: {Damage.key(t),Map.put(t,:stored_j,joules)}
@@ -273,7 +273,7 @@ defmodule VoxelRegion.CircuitTest do
       slot={1,0,{1,3,0}}
       damage=Map.new([stored(bat,1.0e4)])
       damage=if closed==nil,do: damage,else: Map.put(damage,{3,1},Map.put(VoxelRegion.Attachments.identity(slot,{1,wire}),:closed,closed))
-      input=Circuit.prepare(%{slot=>{1,wire}},damage,catalog(),0.5,@ambient)
+      input=Circuit.prepare(%{slot=>{1,wire}},damage,catalog(),0.5,%{"ambient_kelvin"=>@ambient})
       # 断开的开关线不进网络：没有端点，也就没有宿主。
       hosts=case Circuit.points(input) do
         [a,b]->%{a=>[List.last(chain)],b=>[bottom]}

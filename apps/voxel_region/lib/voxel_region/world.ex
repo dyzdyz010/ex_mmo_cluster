@@ -678,7 +678,8 @@ defmodule VoxelRegion.World do
 
     true =
       config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and
-        config["tolerance_kelvin"] > 0 and radiation_config?(config)
+        config["tolerance_kelvin"] > 0 and radiation_config?(config) and
+        VoxelRegion.Thermal.climate_zones?(config)
 
     true = config["power_w"] > 0 and config["energy_j"] > 0
     micro = config["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
@@ -752,7 +753,7 @@ defmodule VoxelRegion.World do
     changes = for {cell,m} <- edits, Phase.liquid?(m) or phase_material?(state,m) or Map.has_key?(state.liquid_units,cell),
       into: %{}, do: {cell,if(Phase.liquid?(m) or phase_material?(state,m),do: liquid_capacity(state),else: 0)}
     values = for {cell,m} <- edits, phase_material?(state,m), into: %{},
-      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],phase_ambient(state)),liquid_capacity(state)*1.0}}
+      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
     # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
     thermal=if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},t->
       t |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
@@ -1640,7 +1641,7 @@ defmodule VoxelRegion.World do
     # 作者入口与既有 liquid_experiment 一样，首次给宏格建立有限相态。
     added = changed_prefab_macros(state,before,cells)
     values = for {cell,m} <- added,phase_material?(state,m),into: %{},
-      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],phase_ambient(state)),liquid_capacity(state)*1.0}}
+      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
     quantities = for {cell,m} <- added,Phase.liquid?(m) or phase_material?(state,m),into: %{},
       do: {cell,liquid_capacity(state)}
     thermal = if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},thermal ->
@@ -1676,7 +1677,7 @@ defmodule VoxelRegion.World do
       {m,Map.get(before.liquid_units,cell,liquid_capacity(before)),Phase.pair(Map.fetch!(old_values,cell))}
     end) ++ Enum.map(removed_micro,fn target ->
       row = property_state(before,target)
-      energy = Phase.energy(row,Damage.volume(1),before.properties.materials[target.material],phase_ambient(before))
+      energy = Phase.energy(row,Damage.volume(1),before.properties.materials[target.material],ambient_at(before,Damage.macro(target)))
       {target.material,before.material_units_per_micro,{energy,before.material_units_per_micro*ratios[target.owner]}}
     end)
     {inventory,balances} = Enum.reduce(removed,{%{},state.material_balances},fn {m,q,value},{inventory,balances} ->
@@ -2443,13 +2444,18 @@ defmodule VoxelRegion.World do
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
+  # 有气候区时附上同一份区表（Scene 的身体按所在格取空气温度，VoxelRegion.Thermal.ambient/2）；没有时不加键。
   defp property_context(state) do
-    %{
+    context = %{
       hp_enabled: state.properties != nil,
       digest: if(state.properties, do: state.properties.digest, else: <<0::256>>),
       thermal_enabled: state.thermal != nil,
       ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)
     }
+
+    if state.thermal && VoxelRegion.Thermal.zoned?(state.thermal.config),
+      do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
+      else: context
   end
 
   defp component_observations(%{properties: nil}, _box), do: []
@@ -3373,9 +3379,11 @@ defmodule VoxelRegion.World do
 
   # 全局系统功能：平衡容差是求解分辨率，辐射参数随本变更引入、旧存档没有，二者以环境资产为准；
   # 回放的热账（环境温度、换热系数、能量账）保持存档值。
+  # 气候区同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
   defp environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
-    do: %{state | thermal: %{thermal | config: Map.merge(config,
-      Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells)))}}
+    do: %{state | thermal: %{thermal | config: config
+      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones)))
+      |> then(&if(Map.has_key?(asset, "climate_zones"), do: &1, else: Map.delete(&1, "climate_zones")))}}
 
   defp environment_tolerance(state, _), do: state
 
@@ -3398,7 +3406,7 @@ defmodule VoxelRegion.World do
       path ->
         config =
           Jason.decode!(File.read!(path))
-          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells))
+          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones))
 
         true =
           Enum.all?(
@@ -3406,7 +3414,8 @@ defmodule VoxelRegion.World do
             &is_number(config[&1])
           ) and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
-            config["tolerance_kelvin"] > 0 and radiation_config?(config)
+            config["tolerance_kelvin"] > 0 and radiation_config?(config) and
+            VoxelRegion.Thermal.climate_zones?(config)
 
         %{
           config: config,
@@ -3503,13 +3512,13 @@ defmodule VoxelRegion.World do
 
           if state.thermal && target.granularity in [0, 4] &&
                Map.has_key?(m, "heat_capacity_per_macro"),
-             do: Map.put(row, :temperature_kelvin, state.thermal.config["ambient_kelvin"]),
+             do: Map.put(row, :temperature_kelvin, ambient_at(state, Damage.macro(target))),
              else: row
       end
 
     # 整件 HP 记录上的环境值仅声明附件默认温度；命中槽的确认温度由 granularity 4 覆盖。
     if state.thermal && target.granularity == 3 && Map.has_key?(m, "heat_capacity_per_macro"),
-      do: Map.put(row, :temperature_kelvin, state.thermal.config["ambient_kelvin"]),
+      do: Map.put(row, :temperature_kelvin, ambient_at(state, Damage.macro(target))),
       else: row
   end
 
@@ -3585,7 +3594,7 @@ defmodule VoxelRegion.World do
 
     phase_changes = for {_,t}<-state.damage, phase_target?(state,t),
       q=Map.get(state.liquid_units,Damage.macro(t),liquid_capacity(state)),
-      e=Phase.energy(t,q/liquid_capacity(state),state.properties.materials[t.material],state.thermal.config["ambient_kelvin"]),
+      e=Phase.energy(t,q/liquid_capacity(state),state.properties.materials[t.material],ambient_at(state,Damage.macro(t))),
       Phase.material(t.material,e,q/liquid_capacity(state),state.properties.materials)!=t.material,
       into: %{}, do: {Damage.macro(t),q}
     dead = Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state,&1)))
@@ -3635,7 +3644,7 @@ defmodule VoxelRegion.World do
       domain = if not Protection.empty?(protection),
         do: fn slot -> cells_holder(protection, Attachments.macros([slot]), slot) end
       input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties, remaining,
-        state.thermal.config["ambient_kelvin"], domain)
+        state.thermal.config, domain)
       {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
         {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &circuit_target/2)
         conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage)
@@ -3796,7 +3805,7 @@ defmodule VoxelRegion.World do
         # 默认记录只由目录、环境和实占用派生；已有属性仍在每个数值批次读取。
         # 同一几何节点的派生字段按目录与环境标签缓存；相态宏格的默认 HP 随有限数量变化，每次重算。
         defaults = %{state | damage: %{}}
-        tag = {state.properties.digest, config["ambient_kelvin"]}
+        tag = {state.properties.digest, config["ambient_kelvin"], config["climate_zones"]}
         cache = case work.augmented do
           {^tag, cache} -> cache
           _ -> %{}
@@ -3849,7 +3858,7 @@ defmodule VoxelRegion.World do
     duration = Magic.Semblance.cap(Enum.map(semblances, &elem(&1, 1)), duration)
 
     batch = VoxelRegion.ThermalBatch.prepare(
-      samples, sources, powers, work.hot, config["ambient_kelvin"], duration)
+      samples, sources, powers, work.hot, config, duration)
 
     # 拟态是内核外部节点：接在世界节点之后，接触边与辐射项按同一索引追加；结果按世界节点数切分。
     count = length(batch.input)
@@ -3858,6 +3867,10 @@ defmodule VoxelRegion.World do
     {body_nodes, body_edges} = body_terms(bodies, work.indices, semblances, count)
     input = batch.input ++ extra ++ body_nodes
     edges = edges ++ body_edges
+    # 逐节点环境温度：世界节点按所在宏格，拟态按所在宏格，身体（暴露面积 0、恒为种子）取全局值不影响数值。
+    ambient = batch.ambient ++
+      Enum.map(semblances, fn {_, s} -> ambient_at(state, Magic.Semblance.macro(Magic.Semblance.current(s))) * 1.0 end) ++
+      Enum.map(bodies, fn _ -> config["ambient_kelvin"] * 1.0 end)
 
     prepared = System.monotonic_time(:microsecond)
 
@@ -3865,7 +3878,7 @@ defmodule VoxelRegion.World do
       VoxelRegion.ThermalNative.advance(
         input,
         indexed_edges ++ edges,
-        config["ambient_kelvin"] * 1.0,
+        ambient,
         config["environment_w_per_m2_k"] * 1.0,
         config["tolerance_kelvin"] * 1.0,
         batch.duration,
@@ -3958,8 +3971,8 @@ defmodule VoxelRegion.World do
           with %{contact: %{key: key, cell: cell}} <- s,
                true <- Magic.Semblance.landed?(s),
                {:ok, j} <- Map.fetch(indices, key),
-               true <- Protection.empty?(state.protection) or
-                 Protection.same_holder?(state.protection, Magic.Semblance.macro(s.rest), cell) do
+               true <- not thermal_bounded?(state) or
+                 thermal_holder(state, Magic.Semblance.macro(s.rest)) == thermal_holder(state, cell) do
             {j, Map.fetch!(nodes, key)}
           else
             _ -> nil
@@ -4057,9 +4070,10 @@ defmodule VoxelRegion.World do
       case foot_target(state, %{feet: feet}) do
         {:ok, foot, state} ->
           m = state.properties.materials[foot.material]
-          t = Map.get(property_state(state, foot), :temperature_kelvin, config["ambient_kelvin"])
+          ambient = ambient_at(state, Damage.macro(foot))
+          t = Map.get(property_state(state, foot), :temperature_kelvin, ambient)
 
-          if Phase.liquid?(foot.material) or abs(t - config["ambient_kelvin"]) <= config["tolerance_kelvin"],
+          if Phase.liquid?(foot.material) or abs(t - ambient) <= config["tolerance_kelvin"],
             do: {[], state},
             else: {[{:node, VoxelRegion.ThermalGeometry.key(foot), Damage.macro(foot),
                      VoxelRegion.BodyContact.sole(m["thermal_conductivity"], 0.5)}], state}
@@ -4172,8 +4186,8 @@ defmodule VoxelRegion.World do
       {state, sights}
     else
       range = state.thermal.config["view_range_cells"] * @micro
-      # 视线只在起点宏格的持有者范围内行进；无区域时不检查。
-      holder = if not Protection.empty?(state.protection), do: {:holder, Protection.holder(state.protection, cell)}
+      # 视线只在起点宏格的热分区（持有者 × 气候区）内行进；无区域且无气候区时不检查。
+      holder = if thermal_bounded?(state), do: {:holder, thermal_holder(state, cell)}
       {rows, state} = Enum.flat_map_reduce(Map.fetch!(geometry, cell), state, fn {key, node}, s ->
         {hits, s} = Enum.map_reduce(node.rays, s, fn {start, axis, sign, area}, s ->
           {hit, s} = sight(s, start, axis, sign, range, holder)
@@ -4191,7 +4205,7 @@ defmodule VoxelRegion.World do
 
   defp sight(state, point, axis, sign, left, holder) do
     if holder != nil and
-         {:holder, Protection.holder(state.protection, elem(Prefab.macro_slot(point), 0))} != holder,
+         {:holder, thermal_holder(state, elem(Prefab.macro_slot(point), 0))} != holder,
        do: {:blocked, state},
        else: sight_step(state, point, axis, sign, left, holder)
   end
@@ -4231,6 +4245,8 @@ defmodule VoxelRegion.World do
     materials = state.properties.materials
     material = materials[target.material]
     config = state.thermal.config
+    # 天然温度与静止判据都按格所在气候区：寒区里的天然冰/雪默认就在区温，静止并可作邻居入域。
+    ambient = VoxelRegion.Thermal.ambient(config, Damage.macro(target))
 
     Map.has_key?(material, "heat_capacity_per_macro") and
       (not phase_target?(state, target) or
@@ -4238,10 +4254,10 @@ defmodule VoxelRegion.World do
          abs(
            Phase.temperature(
              target.material,
-             Phase.energy(target, volume, material, config["ambient_kelvin"]),
+             Phase.energy(target, volume, material, ambient),
              volume,
              materials
-           ) - config["ambient_kelvin"]
+           ) - ambient
          ) <= config["tolerance_kelvin"])
   end
 
@@ -4293,7 +4309,6 @@ defmodule VoxelRegion.World do
   # 占用、归属与完整度比例保留；相对环境的显热减去反应热后按产物热容折算；还原剂按化学燃料比例扣减。
   defp transform_heated_materials(state) do
     materials = state.properties.materials
-    ambient = state.thermal.config["ambient_kelvin"]
 
     due = Enum.sort(for {key, t} <- state.damage, Transform.due?(t, materials[t.material]), do: {key, t})
 
@@ -4335,7 +4350,8 @@ defmodule VoxelRegion.World do
                 else: %{s | refined: Map.update!(s.refined, cell,
                   &Map.update!(&1, slot, fn {_, owner} -> {product_id, owner} end))}
 
-            temperature = Transform.product_temperature(ore.temperature_kelvin, material, materials[product_id], ambient)
+            temperature = Transform.product_temperature(ore.temperature_kelvin, material, materials[product_id],
+              ambient_at(s, cell))
             damage = Map.merge(s.damage, Map.new(taken, &{Damage.key(&1), &1}))
 
             {%{s | damage: damage, thermal: thermal},
@@ -4430,7 +4446,7 @@ defmodule VoxelRegion.World do
         target = Map.get_lazy(rows, node.damage_key, fn -> %{node.default | seq: state.seq} end)
         if target.hp > 0 and
              not Map.get(target, :burning, false) and not Combustion.exhausted?(target) and
-             Map.get(target, :temperature_kelvin, state.thermal.config["ambient_kelvin"]) >= material["ignition_kelvin"] do
+             Map.get(target, :temperature_kelvin, ambient_at(state, node.cell)) >= material["ignition_kelvin"] do
           row = Combustion.ignite(target, material, combustion_volume(state, target))
           {Map.put(rows, Damage.key(row), row), [{Damage.key(row), row} | changed]}
         else
@@ -4565,7 +4581,7 @@ defmodule VoxelRegion.World do
           energy =
             VoxelRegion.ThermalAttachments.volume(Attachments.slot(t), s.properties) *
               s.properties.materials[t.material]["heat_capacity_per_macro"] *
-              (t.temperature_kelvin - s.thermal.config["ambient_kelvin"])
+              (t.temperature_kelvin - ambient_at(s, Damage.macro(t)))
 
           thermal = s.thermal |> Map.update(:removed_j, energy, &(&1 + energy))
             |> Map.update(:discarded_fuel_j,Map.get(t,:remaining_fuel_j,0.0),&(&1+Map.get(t,:remaining_fuel_j,0.0)))
@@ -5156,7 +5172,7 @@ defmodule VoxelRegion.World do
   defp combustion_operation(before, state, actor, target, tool, material) do
     volume = combustion_volume(state, target)
     capacity = material["heat_capacity_per_macro"] * volume
-    ambient = state.thermal.config["ambient_kelvin"]
+    ambient = ambient_at(state, Damage.macro(target))
     temperature = Map.get(target, :temperature_kelvin, ambient)
     units = ceil(tool["fuel_units"] * state.material_units_per_micro * volume)
     action = tool["action"]
@@ -5352,7 +5368,7 @@ defmodule VoxelRegion.World do
                 sum +
                   state.properties.materials[t.material]["heat_capacity_per_macro"] *
                     Damage.volume(t.granularity) * finite_volume(before, t) *
-                    (t.temperature_kelvin - state.thermal.config["ambient_kelvin"]),
+                    (t.temperature_kelvin - ambient_at(state, Damage.macro(t))),
               else: sum
           end)
 
@@ -5601,7 +5617,10 @@ defmodule VoxelRegion.World do
   defp phase_enabled?(s), do: s.properties != nil and Enum.any?(s.properties.materials,fn {_,m}->Phase.enabled?(m) end)
   defp phase_material?(s,m), do: s.properties != nil and Phase.enabled?(s.properties.materials[m])
   defp phase_target?(s,t), do: t.granularity == 0 and phase_material?(s,t.material)
+  # 无位置的库存（供给、背包里的相态材料）按全局环境；落在格上的一律按该格气候区（ambient_at）。
   defp phase_ambient(s), do: s.thermal.config["ambient_kelvin"]
+  # 格所在气候区的环境温度：未记录格的默认温度、相变天然温度、静止判据与显热参考（VoxelRegion.Thermal.ambient/2）。
+  defp ambient_at(s, cell), do: VoxelRegion.Thermal.ambient(s.thermal.config, cell)
 
   # R8-07 散体：目录 loose_threshold_units 即可倾倒；格有数量记录（liquid_units 条目）才是散体，天然地形与建造格静止。
   defp loose_material?(s,m), do: s.properties != nil and Map.has_key?(Map.get(s.properties.materials,m,%{}),"loose_threshold_units")
@@ -5633,7 +5652,7 @@ defmodule VoxelRegion.World do
           volume=finite_volume(s,target)
           q=Map.get(s.liquid_units,cell,liquid_capacity(s))
           fuel=Map.get(row,:remaining_fuel_j)
-          {Phase.finite_energy(row,volume,m,s.thermal && phase_ambient(s)),q*row.hp/row.max_hp,
+          {Phase.finite_energy(row,volume,m,s.thermal && ambient_at(s,cell)),q*row.hp/row.max_hp,
             if(fuel,do: Combustion.capacity_j(m,volume)-fuel,else: 0.0),
             if(fuel,do: Map.get(row,:burning,false),else: nil)}
         else
@@ -5701,7 +5720,7 @@ defmodule VoxelRegion.World do
           {target,s}=target_at(micro,s)
           existing=Map.has_key?(s.damage,Damage.key(target))
           row=property_state(s,target)
-          row=Phase.restore(row,value,q,liquid_capacity(s),s.properties.materials,s.thermal && phase_ambient(s))
+          row=Phase.restore(row,value,q,liquid_capacity(s),s.properties.materials,s.thermal && ambient_at(s,cell))
             |> Map.merge(%{seq: s.seq,request_id: 0})
           # 散体在环境温度、完整、燃料未动时就是默认记录，不为每个流动格写属性行。
           resting=not phase_target?(s,target) and at_rest?(value,q)
@@ -6585,13 +6604,27 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp node_holder(p, key, target), do: cells_holder(p, ThermalWork.cells(target), key)
+  # 热分区 = 受保护区域持有者 × 气候区：分区不同即理想绝热镜面（导热、辐射视线、拟态接触都不跨）。
+  # 气候区是大气边界，两侧未记录格各在自己的环境温度静止；若允许跨区导热，边界两侧会在两个无限热库之间
+  # 持续传热、不断偏离各自环境而被拉入活动集合（与“埋雪吞并”同类）。无区域且无气候区时原样返回。
+  defp thermal_bounded?(state),
+    do: not Protection.empty?(state.protection) or VoxelRegion.Thermal.zoned?(state.thermal.config)
+
+  defp thermal_holder(state, cell),
+    do: {Protection.holder(state.protection, cell), VoxelRegion.Thermal.zone(state.thermal.config, cell)}
+
+  defp node_holder(state, key, target) do
+    case target |> ThermalWork.cells() |> Enum.map(&thermal_holder(state, &1)) |> Enum.uniq() do
+      [holder] -> {:holder, holder}
+      _ -> {:mixed, key}
+    end
+  end
 
   defp protected_contacts(state, nodes) do
-    if Protection.empty?(state.protection) do
+    if not thermal_bounded?(state) do
       nodes
     else
-      holders = Map.new(nodes, fn {key, n} -> {key, node_holder(state.protection, key, n.target)} end)
+      holders = Map.new(nodes, fn {key, n} -> {key, node_holder(state, key, n.target)} end)
 
       Map.new(nodes, fn {key, n} ->
         {key, %{n | contacts: Enum.filter(n.contacts, fn {other, _} -> Map.get(holders, other) == holders[key] end)}}

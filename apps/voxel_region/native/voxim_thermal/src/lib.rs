@@ -17,6 +17,13 @@ type Radiation = (Vec<(usize, usize, f64)>, Vec<(usize, f64)>);
 #[derive(rustler::NifTuple)]
 struct PhaseInput(f64, f64, f64, f64, f64, bool);
 
+// 环境温度：全局标量，或逐节点（节点所在气候区，与节点同序同长）。
+#[derive(rustler::NifUntaggedEnum)]
+enum Ambient {
+    Uniform(f64),
+    PerNode(Vec<f64>),
+}
+
 #[derive(rustler::NifUntaggedEnum)]
 enum AdvanceOutput {
     Numeric(Output),
@@ -45,18 +52,25 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
         let ka=input[a].4; let kb=input[b].4;
         (a,b,if ka+kb==0.0 {0.0} else {2.0*ka*kb/(ka+kb)})
     }).collect();
-    Ok(evolve(&input, &contacts, &(vec![], vec![]), ambient, exchange, tolerance, dt, steps, true))
+    let ambient=vec![ambient; input.len()];
+    Ok(evolve(&input, &contacts, &(vec![], vec![]), &ambient, exchange, tolerance, dt, steps, true))
 }
 
 // 有限体积显式离散：dt <= C / (接触导热系数之和 + 环境换热系数 + 辐射线性化系数)，保留正系数。
+// ambient 逐节点：节点所在气候区的空气温度（无气候区时全部等于全局环境，数值与标量版逐位相同）。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
-fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: f64, exchange: f64,
+fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: Ambient, exchange: f64,
            tolerance: f64, duration: f64, radiation: Radiation) -> NifResult<(f64,Vec<AdvanceOutput>,f64,f64)> {
     let (input, events): (Vec<_>, Vec<_>) = nodes.into_iter().map(|node| match node {
         AdvanceInput::Controlled((input, events)) => (input, events),
         AdvanceInput::Numeric(input) => (input, (None, None, false)),
     }).unzip();
-    if !duration.is_finite() || duration <= 0.0 || !ambient.is_finite()
+    let ambient = match ambient {
+        Ambient::Uniform(a) => vec![a; input.len()],
+        Ambient::PerNode(a) => a,
+    };
+    if !duration.is_finite() || duration <= 0.0 || ambient.len() != input.len()
+        || ambient.iter().any(|a| !a.is_finite())
         || !exchange.is_finite() || exchange < 0.0 || !tolerance.is_finite() || tolerance < 0.0
         || input.iter().any(|n| [n.0,n.1,n.2,n.3,n.4,n.5,n.6,n.7,n.8].iter().any(|v| !v.is_finite())
             || n.3<=0.0 || n.5<=0.0 || n.6<0.0 || n.8<0.0)
@@ -93,12 +107,12 @@ fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: 
         } else { linear };
         let steps=(segment/stable).ceil() as u32;
         let dt=segment/f64::from(steps);
-        let (count,q,air,mut frontier)=evolve_steps(&input,&contacts,&radiation,ambient,exchange,tolerance,
+        let (count,q,air,mut frontier)=evolve_steps(&input,&contacts,&radiation,&ambient,exchange,tolerance,
             dt,steps,false,&mut state,&mut flow,&mut heat);
         let advanced=f64::from(count)*dt;
         done+=advanced; remaining-=advanced; supplied+=q; environment+=air;
         let mut phase_complete=false;
-        for ((((s,(_,params,_)),phase),n),delta) in state.iter_mut().zip(&events).zip(&mut phases).zip(&input).zip(&heat) {
+        for (((((s,(_,params,_)),phase),n),delta),a) in state.iter_mut().zip(&events).zip(&mut phases).zip(&input).zip(&heat).zip(&ambient) {
             if let (Some(p),Some(energy))=(params.as_ref(),phase.as_mut()) {
                 let before=*energy;
                 // 焓直接接收同一段的净热量，避免从已舍入的温差逆推能量。
@@ -106,7 +120,7 @@ fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: 
                 let sensible=if p.5 { (*energy-p.3).max(0.0) } else { energy.min(0.0) };
                 s.0=p.2+sensible/(p.1*p.4);
                 // 原 World 在焓回写后也会激活新热格；首次初始化的相变几何不能延迟扩域。
-                frontier |= !n.9 && ((s.0-ambient).abs()>tolerance || s.2>0.0);
+                frontier |= !n.9 && ((s.0-a).abs()>tolerance || s.2>0.0);
                 // 只在完成条件首次跨越时通知；材质替换仍由 World 的既有提交规则负责。
                 phase_complete |= if p.5 { before>0.0 && *energy<=0.0 }
                     else { before<p.3 && *energy>=p.3 };
@@ -133,7 +147,7 @@ fn stable_dt(input: &[Input], diagonal: &[f64]) -> f64 {
         .map(|(n,g)| 0.45*n.3/g).fold(0.05_f64,f64::min)
 }
 
-fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: f64, exchange: f64,
+fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: &[f64], exchange: f64,
           tolerance: f64, dt: f64, steps: u32, return_on_cooling: bool) -> (u32, Vec<Output>, f64, f64) {
     let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
     let mut flow=vec![0.0; input.len()];
@@ -143,11 +157,10 @@ fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation
     (done,state,supplied,environment)
 }
 
-fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: f64, exchange: f64,
+fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: &[f64], exchange: f64,
           tolerance: f64, dt: f64, steps: u32, return_on_cooling: bool,
           state: &mut [Output], flow: &mut [f64], heat: &mut [f64]) -> (u32, f64, f64, bool) {
     let (mut supplied,mut environment)=(0.0,0.0);
-    let ambient4=ambient.powi(4);
     heat.fill(0.0);
     for step in 1..=steps {
         flow.fill(0.0);
@@ -161,7 +174,7 @@ fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Rad
             flow[a]+=q; flow[b]-=q;
         }
         for &(i,s) in &radiation.1 {
-            let q=SIGMA*s*(ambient4-state[i].0.powi(4))*dt;
+            let q=SIGMA*s*(ambient[i].powi(4)-state[i].0.powi(4))*dt;
             flow[i]+=q; environment+=q;
         }
         let mut changed_support=false;
@@ -169,7 +182,7 @@ fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Rad
             let (temperature,hp,remaining)=state[i];
             let used=remaining.min(n.7.abs()*dt);
             let q=used*n.7.signum();
-            let air=exchange*n.6*(ambient-temperature)*dt;
+            let air=exchange*n.6*(ambient[i]-temperature)*dt;
             let delta=flow[i]+q+air;
             let temperature=temperature+delta/n.3;
             heat[i]+=delta;
@@ -177,7 +190,7 @@ fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Rad
             let remaining=remaining-used;
             state[i]=(temperature,hp,remaining);
             supplied+=q; environment+=air;
-            let active=(temperature-ambient).abs()>tolerance || remaining>0.0;
+            let active=(temperature-ambient[i]).abs()>tolerance || remaining>0.0;
             changed_support |= if return_on_cooling { active != n.9 } else { active && !n.9 };
         }
         // 新热前沿立即交还 World 扩张六邻域；advance 的冷却域在提交批末统一收缩。
@@ -206,7 +219,7 @@ mod tests {
                 (None, Some(PhaseInput(energy, 1.0, 273.15, 334_000_000.0,
                                       1_930_000.0, false)), false),
             ));
-            let (done, out, q, air) = advance(vec![node], vec![], 293.15, 0.0, 0.01, 0.5, (vec![], vec![])).unwrap();
+            let (done, out, q, air) = advance(vec![node], vec![], Ambient::PerNode(vec![293.15]), 0.0, 0.01, 0.5, (vec![], vec![])).unwrap();
             assert_eq!(done, 0.5);
             match out[0] {
                 AdvanceOutput::Phase((temperature, _, _, next)) => {
@@ -241,7 +254,7 @@ mod tests {
                                         1.0, 0.0, 0.0, true)),
         ];
         let (done, out, supplied, environment) =
-            advance(nodes, vec![(0, 1, 100.0)], 293.15, 10.0, 0.01, 0.5, (vec![], vec![])).unwrap();
+            advance(nodes, vec![(0, 1, 100.0)], Ambient::Uniform(293.15), 10.0, 0.01, 0.5, (vec![], vec![])).unwrap();
         assert_eq!(done, 0.5);
         let mut delta = 0.0;
         for (index, initial) in [ice_energy, water_energy].into_iter().enumerate() {

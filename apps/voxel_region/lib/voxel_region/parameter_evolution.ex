@@ -58,11 +58,11 @@ defmodule VoxelRegion.ParameterEvolution do
   def thermal_reference(nil, _rows, _old, _catalog, _fill), do: nil
 
   def thermal_reference(thermal, rows, old_catalog, catalog, fill) do
-    ambient = thermal.config["ambient_kelvin"]
-
     rebase =
       Enum.reduce(rows, 0.0, fn {_, row}, sum ->
         old = old_catalog.materials[row.material]
+        # 显热参考 = 行所在宏格的气候区环境温度（与热内核、默认温度同一取值）。
+        ambient = VoxelRegion.Thermal.ambient(thermal.config, Damage.macro(row))
 
         if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and
              not Phase.enabled?(old) do
@@ -132,8 +132,6 @@ defmodule VoxelRegion.ParameterEvolution do
     do: %{damage: damage, attachments: attachments, slots: [], tombstones: [], thermal: nil}
 
   def retire_devices(damage, attachments, thermal, old, new) do
-    ambient = thermal.config["ambient_kelvin"]
-
     moved =
       for {_, %{granularity: 3, circuit: c} = t} <- damage, Map.has_key?(new.retired, c.tool_id), into: %{},
         do: {t.incarnation, {t.material, new.retired[c.tool_id], c.closed}}
@@ -161,7 +159,7 @@ defmodule VoxelRegion.ParameterEvolution do
               energy =
                 ThermalAttachments.volume(Attachments.slot(row), old) *
                   (new.materials[to]["heat_capacity_per_macro"] - old.materials[from]["heat_capacity_per_macro"]) *
-                  (row.temperature_kelvin - ambient)
+                  (row.temperature_kelvin - VoxelRegion.Thermal.ambient(thermal.config, Damage.macro(row)))
 
               {{Damage.key(next), next}, {[row | tombstones], sum + energy}}
             end

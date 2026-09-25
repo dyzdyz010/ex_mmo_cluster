@@ -61,7 +61,8 @@ defmodule SceneServer.Movement.Player do
         body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
-        ambient_k: nil
+        # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
+        climate: nil
       })
 
     state =
@@ -85,7 +86,7 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
-          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :ambient_k]))
+          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate]))
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
@@ -213,7 +214,7 @@ defmodule SceneServer.Movement.Player do
         :queued_seq,
         :body,
         :body_exchange_j,
-        :ambient_k
+        :climate
       ])
       |> Map.merge(%{
         transaction_seq: state.updates.transaction_seq,
@@ -406,7 +407,8 @@ defmodule SceneServer.Movement.Player do
 
             state =
               case Map.get(snapshot, :property_context) do
-                %{thermal_enabled: true, ambient_kelvin: ambient} -> %{state | ambient_k: ambient}
+                %{thermal_enabled: true, ambient_kelvin: ambient} = context ->
+                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, [])}}
                 _ -> state
               end
 
@@ -498,16 +500,19 @@ defmodule SceneServer.Movement.Player do
 
   # 1 Hz：Body 推进 1 s（吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
-  defp body_tick(%{ambient_k: nil} = state), do: state
+  # 空气温度 = 身体所在格的气候区温度（与 World 热内核同一函数、同一份区表）；未接触的地面在同一环境温度。
+  defp body_tick(%{climate: nil} = state), do: state
   defp body_tick(%{state: nil} = state), do: state
 
   defp body_tick(state) do
     heat = state.body_heat
     before = state.body.status
+    {px, py, pz} = state.state.position
+    air_k = VoxelRegion.Thermal.ambient(state.climate, {floor(px), floor(py), floor(pz)})
 
     {body, account} =
-      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, max_contact_k: heat.max_contact_k || state.ambient_k,
-        air_k: state.ambient_k, immersed: heat.immersed})
+      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, max_contact_k: heat.max_contact_k || air_k,
+        air_k: air_k, immersed: heat.immersed})
 
     if body.status != before,
       do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
@@ -533,7 +538,7 @@ defmodule SceneServer.Movement.Player do
     character_event(state, state, :body_state, %{life: report.life, status: body.status, core_k: body.core_k,
       skin_k: body.skin_k, injuries: Map.new(report.injuries), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
       immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
-      sent: report.key != state.body_sent})
+      air_k: air_k, reserve_j: body.reserve_j, shiver_j: account.shiver_j, sent: report.key != state.body_sent})
 
     %{state | body: body, body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0}, body_sent: report.key}
   end

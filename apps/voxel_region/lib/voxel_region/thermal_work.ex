@@ -42,7 +42,7 @@ defmodule VoxelRegion.ThermalWork do
     for {_, row} <- damage,
         Map.get(row, :burning, false) or
           (Map.has_key?(row, :temperature_kelvin) and
-             abs(row.temperature_kelvin - config["ambient_kelvin"]) > config["tolerance_kelvin"]),
+             abs(row.temperature_kelvin - Thermal.ambient(config, Damage.macro(row))) > config["tolerance_kelvin"]),
         cell <- cells(row),
         into: MapSet.new(),
         do: cell

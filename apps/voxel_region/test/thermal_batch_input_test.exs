@@ -14,7 +14,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
         sources,
         %{key => -5.0},
         MapSet.new(),
-        293.15,
+        %{"ambient_kelvin" => 293.15},
         0.5
       )
 
@@ -25,7 +25,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
     assert elem(input, 9)
     assert [{_, _, ^burner, 293.15, -5.0, 10.0}] = batch.targets
 
-    batch = ThermalBatch.prepare([{key, n, t, volume}], sources, %{}, MapSet.new(), 293.15, 0.5)
+    batch = ThermalBatch.prepare([{key, n, t, volume}], sources, %{}, MapSet.new(), %{"ambient_kelvin" => 293.15}, 0.5)
     assert batch.duration == 0.1
     assert elem(elem(hd(batch.input), 0), 8) == 2.0
   end
@@ -35,7 +35,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
     t = Map.merge(t, %{temperature_kelvin: 280.0, hp: 7.0})
 
     batch =
-      ThermalBatch.prepare([{key, n, t, nil}], %{}, %{key => -12.0}, MapSet.new(), 293.15, 0.5)
+      ThermalBatch.prepare([{key, n, t, nil}], %{}, %{key => -12.0}, MapSet.new(), %{"ambient_kelvin" => 293.15}, 0.5)
 
     assert [{input, _}] = batch.input
     assert {elem(input, 0), elem(input, 1), elem(input, 2)} == {280.0, 7.0, 100.0}
@@ -55,7 +55,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
           {%{t | hp: 0.0}, nil},
           {Map.merge(t, %{burning: true, remaining_fuel_j: 5.0, power_w: 1.0}), nil}
         ] do
-      batch = ThermalBatch.prepare([{key, n, row, nil}], %{}, %{}, MapSet.new(), 293.15, 0.5)
+      batch = ThermalBatch.prepare([{key, n, row, nil}], %{}, %{}, MapSet.new(), %{"ambient_kelvin" => 293.15}, 0.5)
       assert [{_, {^expected, nil, false}}] = batch.input
     end
   end
@@ -71,7 +71,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
       })
 
     n = %{n | material: material, ignition: nil}
-    batch = ThermalBatch.prepare([{key, n, t, 0.25}], %{}, %{}, MapSet.new([n.cell]), 293.15, 0.5)
+    batch = ThermalBatch.prepare([{key, n, t, 0.25}], %{}, %{}, MapSet.new([n.cell]), %{"ambient_kelvin" => 293.15}, 0.5)
     assert [{input, {nil, {12.0, 0.25, 273.15, 250.0, 100.0, true}, false}}] = batch.input
     assert elem(input, 9)
   end
@@ -88,7 +88,7 @@ defmodule VoxelRegion.ThermalBatchInputTest do
         sources,
         %{},
         MapSet.new(),
-        293.15,
+        %{"ambient_kelvin" => 293.15},
         0.5
       )
 
