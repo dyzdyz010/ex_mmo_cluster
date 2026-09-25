@@ -542,6 +542,7 @@ defmodule SceneServer.Movement.Player do
       skin_k: body.skin_k, injuries: Map.new(report.injuries), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
       sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
       air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j,
+      fat_reserve_j: body.fat_reserve_j, shiver_glycogen_j: account.shiver_glycogen_j, shiver_fat_j: account.shiver_fat_j,
       tissue_k: body.tissue_k, burn_dose_s: body.burn_dose_s, wetness: body.wetness, drying_j: account.drying_j,
       heat_content_j: Body.heat_content_j(body),
       sent: report.key != state.body_sent})

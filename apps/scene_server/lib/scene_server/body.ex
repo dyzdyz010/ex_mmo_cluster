@@ -10,10 +10,12 @@ defmodule SceneServer.Body do
   - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
-  另存寒战燃料储备 `reserve_j`（糖原，J）：寒战产热的唯一来源，有限、只减不自然恢复（进食补充待食物系统）。
+  另存两个寒战燃料储备（J）：`reserve_j`（糖原）与 `fat_reserve_j`（脂肪）。寒战热由两者合付——糖原付约 27%、脂肪付其余，
+  糖原耗尽后脂肪全付、总寒战不变，两者都耗尽才无寒战（Blondin 2010、Haman 2004，见 `body/README.md`）；只在寒战时消耗、
+  不随时间自然下降（进食补充待食物系统）。
   另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
-  身体（含储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
+  身体（含两个储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
 
   状态推进由 `SceneServer.Body.Thermo.step/3` 完成；本模块只放数据、参数与推导。
 
@@ -61,7 +63,8 @@ defmodule SceneServer.Body do
     metabolic_w_per_m2: 58.2,
     # —— 寒战（Tikuisis & Giesbrecht 1999，冷水浸泡 14 名男性拟合）：
     #    [155.5·(37 − T_核心) + 47.0·(33 − T_皮) − 1.57·(33 − T_皮)²] / √体脂%，W/m²；体脂 15%（Stolwijk 标准人脂肪 11.16/74.4 kg）。
-    #    峰值 232.8 W/m²（约 4 met 额外，Eyolfson et al. 2001 峰值寒战 4.9 倍静息）× 储备/满储备。——
+    #    峰值 232.8 W/m²（约 4 met 额外，Eyolfson et al. 2001 峰值寒战 4.9 倍静息），不随储备多少变化（Haman 2004：糖原低时
+    #    总产热不变）。——
     shiver_core_w_per_m2_k: 155.5,
     shiver_skin_w_per_m2_k: 47.0,
     shiver_skin_w_per_m2_k2: 1.57,
@@ -69,10 +72,15 @@ defmodule SceneServer.Body do
     shiver_skin_ref_k: 33.0 + @c,
     body_fat_percent: 15.0,
     shiver_max_w_per_m2: 232.8,
-    # —— 寒战燃料储备（糖原）：成人肝糖原约 100 g + 肌糖原约 350 g ≈ 450 g，氧化热约 17 kJ/g → 7.65 MJ。
-    # 只有寒战从这里取能；静息代谢不取、储备不随时间自然下降；寒战上限按 储备/满储备 线性下降，储备为零即无寒战。
-    # 这是游戏规则：实测寒战的糖原只占约三成、低糖原时脂肪补上（README“已知偏差”）。进食补充待食物系统（首片不做）。——
+    # —— 寒战燃料：两个有限储备，只有寒战从中取能（静息代谢不取），不随时间自然下降；进食补充待食物系统（首片不做）。
+    # 糖原 `reserve_j`：成人肝糖原约 100 g + 肌糖原约 350 g ≈ 450 g，氧化热约 17 kJ/g → 7.65 MJ。
+    # 脂肪 `fat_reserve_j`：Stolwijk 1971 标准人 74.4 kg、脂肪 11.16 kg（15%）× 脂肪能量密度 9 kcal/g = 37.6812 MJ/kg
+    # （Atwater 系数；纯甘油三酯燃烧热约 37–39 MJ/kg）→ 420.52 MJ；不扣必需脂肪，蛋白质氧化（Haman 2004 占 12–19%）并入此项。
+    # 寒战热的 27% 由糖原付（Blondin et al. 2010：约 3 倍静息的中等寒战，肌糖原约占总产热 27%），其余由脂肪付；糖原不够时
+    # 脂肪补足（Haman et al. 2004：低糖原时总产热不变、脂肪蛋白补上），脂肪不够时糖原补足，两者都空才无寒战。——
     reserve_full_j: 7_650_000.0,
+    fat_full_j: 11.16 * 9 * 4_186_800.0,
+    glycogen_shiver_share: 0.27,
     # —— 调定点（Gagge 1971）：血管舒缩与出汗读它们 ——
     core_set_k: 36.8 + @c,
     skin_set_k: 34.0 + @c,
@@ -170,6 +178,7 @@ defmodule SceneServer.Body do
             frost_dose_k_s: 0.0,
             lethal_s: 0.0,
             reserve_j: 7_650_000.0,
+            fat_reserve_j: 11.16 * 9 * 4_186_800.0,
             tissue_k: 34.0 + @c,
             wetness: 0.0,
             status: :alive
@@ -187,6 +196,7 @@ defmodule SceneServer.Body do
           frost_dose_k_s: float(),
           lethal_s: float(),
           reserve_j: float(),
+          fat_reserve_j: float(),
           tissue_k: float(),
           wetness: float(),
           status: status()

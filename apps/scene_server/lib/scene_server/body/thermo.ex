@@ -9,13 +9,15 @@ defmodule SceneServer.Body.Thermo do
     对流系数随风速，h_c = max(3.1, 8.3·v^0.6)），出汗蒸发、湿衣蒸发散热；
   - 局部接触组织块：温度只随 World 回传的 `tissue_j` 变化；烧伤 / 冻伤剂量按本步末组织块温度累计；
   - 产热：1 met 静息代谢按 Stolwijk 基础产热比例分到各节点；寒战（Tikuisis & Giesbrecht 1999，读核心与皮肤温度）按份额进
-    躯干 / 四肢肌肉（头部份额进核心），全部取自有限的糖原储备 `reserve_j`，上限按 储备/满储备 线性下降（储备为零即无寒战）；
+    躯干 / 四肢肌肉（头部份额进核心），封顶峰值；寒战热由糖原 `reserve_j` 付 27%、脂肪 `fat_reserve_j` 付其余，一方不够时
+    另一方补足，总寒战不因糖原低而下降（Blondin 2010、Haman 2004），两者都空才无寒战；
   - 体温调节（血管舒缩、寒战、出汗）按 `SceneServer.Body.systems/1` 的体温调节功能水平缩放（核心 32 → 28 °C 线性降到 0）；
   - 衣物湿度：浸水部分按 `soak_s` 时间常数趋于湿透；空气中湿衣保温按湿度线性损失 16%，露出水面的湿衣在衣面蒸发
     （`drying_j`，潜热经衣物取自皮肤），衣面温度解“经衣物导来的热 = 对流辐射 + 蒸发”，湿度按蒸发掉的水量下降。最后推进濒死计时。
 
   能量账：本步身体储热变化 `stored_j = q_j + metabolic_j − convection_j − sweat_j − drying_j` = Σ 各节点热容 × 温升 + 组织块热容 × 温升
-  （`Body.heat_content_j/1` 之差）；层间导热与血液换热两边抵消，不进账。`metabolic_j` 含寒战 `shiver_j`，后者等于本步储备减少量。
+  （`Body.heat_content_j/1` 之差）；层间导热与血液换热两边抵消，不进账。`metabolic_j` 含寒战 `shiver_j` = `shiver_glycogen_j` + `shiver_fat_j`，
+  两项分别等于本步糖原与脂肪储备的减少量。
 
   浸没：`immersed` 为浸在液体里的体表比例（World 按身体与液体宏格的竖向重叠算出）；这部分皮肤不与空气换热、
   不蒸发出汗，与液体的换热由世界回传的 `q_j` 体现。
@@ -41,7 +43,9 @@ defmodule SceneServer.Body.Thermo do
           convection_j: float(),
           sweat_j: float(),
           drying_j: float(),
-          shiver_j: float()
+          shiver_j: float(),
+          shiver_glycogen_j: float(),
+          shiver_fat_j: float()
         }
 
   @doc """
@@ -69,8 +73,11 @@ defmodule SceneServer.Body.Thermo do
     warm_core = max(body.core_k - p.core_set_k, 0.0)
     warm_skin = max(body.skin_k - p.skin_set_k, 0.0)
 
-    shiver_cap = p.shiver_max_w_per_m2 * body.reserve_j / p.reserve_full_j
-    shiver_j = min(level * min(shiver_demand_w_per_m2(body), shiver_cap) * area * dt, body.reserve_j)
+    fuel = max(body.reserve_j + body.fat_reserve_j, 0.0)
+    shiver_j = min(level * min(shiver_demand_w_per_m2(body), p.shiver_max_w_per_m2) * area * dt, fuel)
+    # 糖原付 27%；脂肪不够付其余时糖原补足；糖原不够时脂肪补足（shiver_j ≤ 两者之和，故两项都不超过各自储备）。
+    glycogen_j = min(max(p.glycogen_shiver_share * shiver_j, shiver_j - body.fat_reserve_j), body.reserve_j)
+    fat_j = shiver_j - glycogen_j
 
     sweat_w =
       level * p.sweat_g_per_m2_h_k * warm_core * :math.exp(warm_skin / p.sweat_skin_scale_k) *
@@ -105,7 +112,8 @@ defmodule SceneServer.Body.Thermo do
         tissue_k: tissue_k,
         burn_dose_s: body.burn_dose_s + burn_rate(tissue_k, p) * dt,
         frost_dose_k_s: body.frost_dose_k_s + max(p.frost_onset_k - tissue_k, 0.0) * dt,
-        reserve_j: body.reserve_j - shiver_j,
+        reserve_j: body.reserve_j - glycogen_j,
+        fat_reserve_j: body.fat_reserve_j - fat_j,
         wetness: wetness(body.wetness, drying_j, immersed, dt, p)
       })
 
@@ -117,7 +125,9 @@ defmodule SceneServer.Body.Thermo do
       convection_j: convection_j,
       sweat_j: sweat_j,
       drying_j: drying_j,
-      shiver_j: shiver_j
+      shiver_j: shiver_j,
+      shiver_glycogen_j: glycogen_j,
+      shiver_fat_j: fat_j
     }
 
     {Body.progress(body, dt), account}
@@ -125,7 +135,7 @@ defmodule SceneServer.Body.Thermo do
 
   @doc """
   寒战需求，W/m²（Tikuisis & Giesbrecht 1999）：[155.5·(37 − T_核心) + 47.0·(33 − T_皮) − 1.57·(33 − T_皮)²] / √体脂%，负值取 0。
-  实际寒战 = 体温调节功能水平 × min(需求, 峰值 × 储备/满储备) × 体表面积。
+  实际寒战 = 体温调节功能水平 × min(需求, 峰值) × 体表面积，不超过糖原 + 脂肪储备。
   """
   @spec shiver_demand_w_per_m2(Body.t()) :: float()
   def shiver_demand_w_per_m2(%Body{} = body) do

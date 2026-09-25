@@ -21,11 +21,14 @@ defmodule SceneServer.Body.ThermoTest do
   defp air(k), do: %{q_j: 0.0, air_k: k}
 
   # 推进一步并核对能量账：储热变化（各节点热容 × 温升之和）= q + 代谢 − 干热散失 − 出汗 − 湿衣蒸发；
-  # 寒战热 = 储备减少量；组织块只随 tissue_j 变化。
+  # 寒战热 = 糖原付 + 脂肪付，各等于该储备的减少量；组织块只随 tissue_j 变化。
   defp step!(body, inputs, dt \\ 1.0) do
     {next, account} = Thermo.step(body, dt, inputs)
     assert_in_delta account.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
-    assert_in_delta account.shiver_j, body.reserve_j - next.reserve_j, 1.0e-6
+    assert_in_delta account.shiver_glycogen_j, body.reserve_j - next.reserve_j, 1.0e-6
+    assert_in_delta account.shiver_fat_j, body.fat_reserve_j - next.fat_reserve_j, 1.0e-6
+    assert_in_delta account.shiver_j, account.shiver_glycogen_j + account.shiver_fat_j, 1.0e-9
+    assert account.shiver_glycogen_j >= 0.0 and account.shiver_fat_j >= 0.0
     assert_in_delta Body.tissue_capacity_j_per_k() * (next.tissue_k - body.tissue_k), Map.get(inputs, :tissue_j, 0.0), 1.0e-9
 
     assert_in_delta account.stored_j,
@@ -88,7 +91,7 @@ defmodule SceneServer.Body.ThermoTest do
       assert_in_delta next.trunk_muscle_k - body.trunk_muscle_k, 440.92968 / 67_616.82, 1.0e-9
     end
 
-    test "寒战在峰值处封顶（232.8 W/m² × 储备/满储备），调定点身体不寒战" do
+    test "寒战在峰值处封顶（232.8 W/m²），调定点身体不寒战" do
       colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
       # 需求 (155.5·4 + 47·15 − 1.57·225)/√15 = 251.42117 > 232.8 → 439.45656 W
       {_, account} = step!(colder, air(0.0 + @c))
@@ -107,6 +110,7 @@ defmodule SceneServer.Body.ThermoTest do
       assert later.core_k - @c > 36.8 and later.core_k - @c < 37.0
       assert abs(later.core_k - body.core_k) < 0.005
       assert later.reserve_j == Body.params().reserve_full_j
+      assert later.fat_reserve_j == Body.params().fat_full_j
       assert Body.injuries(later) == []
       assert Body.life(later) == 100
       assert later.status == :alive
@@ -223,7 +227,7 @@ defmodule SceneServer.Body.ThermoTest do
     end
 
     test "持续失热使核心跌破 35 °C 的那一步出现体温过低" do
-      chilled = %{uniform(35.05) | skin_k: 30.0 + @c, reserve_j: 0.0}
+      chilled = %{uniform(35.05) | skin_k: 30.0 + @c, reserve_j: 0.0, fat_reserve_j: 0.0}
       loss = %{q_j: -1000.0, air_k: 20.0 + @c}
 
       crossed =
@@ -276,31 +280,76 @@ defmodule SceneServer.Body.ThermoTest do
     end
   end
 
-  describe "寒战储备（糖原 450 g × 17 kJ/g = 7.65 MJ）" do
+  # 寒战燃料：糖原 450 g × 17 kJ/g = 7.65 MJ；脂肪 11.16 kg × 9 kcal/g × 4186.8 J/kcal = 420 522 192 J（Stolwijk 标准人 74.4 kg 的 15%）。
+  # 糖原付寒战热的 27%（Blondin 2010），不够时脂肪补足、总寒战不变（Haman 2004），脂肪不够时糖原补足，两者都空才无寒战。
+  # 峰值寒战 232.8 × 1.8877 = 439.45656 W：糖原 0.27 × 439.45656 = 118.6532712 J，脂肪 320.8032888 J。
+  describe "寒战储备（糖原 + 脂肪）" do
     @full 7_650_000.0
+    @fat 420_522_192.0
 
-    test "寒战热全部取自储备：满储备封顶 439.45656 W、储备减同值；半储备上限减半 219.72828 W；空储备无寒战" do
+    test "满储备：寒战 439.45656 W，糖原付 27% = 118.6532712 J、脂肪付 320.8032888 J，两储备各减同值" do
       colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
       assert colder.reserve_j == @full
+      assert_in_delta colder.fat_reserve_j, @fat, 1.0e-3
 
-      {full, account} = step!(colder, air(0.0 + @c))
+      {next, account} = step!(colder, air(0.0 + @c))
       assert_in_delta account.shiver_j, 439.45656, 1.0e-6
       assert_in_delta account.metabolic_j, @met + 439.45656, 1.0e-6
-      assert_in_delta full.reserve_j, @full - 439.45656, 1.0e-6
+      assert_in_delta account.shiver_glycogen_j, 118.6532712, 1.0e-6
+      assert_in_delta account.shiver_fat_j, 320.8032888, 1.0e-6
+      assert_in_delta next.reserve_j, @full - 118.6532712, 1.0e-6
+      assert_in_delta next.fat_reserve_j, colder.fat_reserve_j - 320.8032888, 1.0e-6
+    end
+
+    test "糖原低或耗尽时总寒战不变（Haman 2004）：半糖原仍 439.45656 W；剩 50 J 时糖原付 50、脂肪付 389.45656；糖原空时脂肪全付" do
+      colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
 
       {_, account} = step!(%{colder | reserve_j: @full / 2}, air(0.0 + @c))
-      assert_in_delta account.shiver_j, 219.72828, 1.0e-6
+      assert_in_delta account.shiver_j, 439.45656, 1.0e-6
+      assert_in_delta account.shiver_glycogen_j, 118.6532712, 1.0e-6
+
+      {low, account} = step!(%{colder | reserve_j: 50.0}, air(0.0 + @c))
+      assert_in_delta account.shiver_glycogen_j, 50.0, 1.0e-9
+      assert_in_delta account.shiver_fat_j, 389.45656, 1.0e-6
+      assert low.reserve_j == 0.0
 
       {empty, account} = step!(%{colder | reserve_j: 0.0}, air(0.0 + @c))
-      assert account.shiver_j == 0.0
-      assert_in_delta account.metabolic_j, @met, 1.0e-9
+      assert_in_delta account.shiver_j, 439.45656, 1.0e-6
+      assert account.shiver_glycogen_j == 0.0
+      assert_in_delta account.shiver_fat_j, 439.45656, 1.0e-6
       assert empty.reserve_j == 0.0
     end
 
-    test "储备空时 −25 °C、5 m/s 失温快得多：无寒战核心 1 小时内跌破 35 °C，满储备同条件 1 小时后仍在 35 °C 以上" do
+    test "脂肪剩 100 J 时糖原补足 339.45656 J；两储备都空无寒战；两者合计剩 200 J 时寒战只有 200 J" do
+      colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
+
+      {lean, account} = step!(%{colder | fat_reserve_j: 100.0}, air(0.0 + @c))
+      assert_in_delta account.shiver_j, 439.45656, 1.0e-6
+      assert_in_delta account.shiver_fat_j, 100.0, 1.0e-9
+      assert_in_delta account.shiver_glycogen_j, 339.45656, 1.0e-6
+      assert_in_delta lean.fat_reserve_j, 0.0, 1.0e-9
+
+      {none, account} = step!(%{colder | reserve_j: 0.0, fat_reserve_j: 0.0}, air(0.0 + @c))
+      assert account.shiver_j == 0.0
+      assert_in_delta account.metabolic_j, @met, 1.0e-9
+      assert none.reserve_j == 0.0 and none.fat_reserve_j == 0.0
+
+      {last, account} = step!(%{colder | reserve_j: 150.0, fat_reserve_j: 50.0}, air(0.0 + @c))
+      assert_in_delta account.shiver_j, 200.0, 1.0e-9
+      # 糖原 max(0.27 × 200, 200 − 50) = 150，脂肪 50：两者同时归零
+      assert_in_delta account.shiver_glycogen_j, 150.0, 1.0e-9
+      assert last.reserve_j == 0.0 and last.fat_reserve_j == 0.0
+    end
+
+    test "−25 °C、5 m/s：两储备都空时无寒战、核心 1 小时内跌破 35 °C；只糖原空时与满储备逐步相同（寒战改由脂肪付）" do
       windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
-      assert run(%{Body.new() | reserve_j: 0.0}, windy, 3600).core_k < 35.0 + @c
-      assert run(Body.new(), windy, 3600).core_k > 35.0 + @c
+      assert run(%{Body.new() | reserve_j: 0.0, fat_reserve_j: 0.0}, windy, 3600).core_k < 35.0 + @c
+
+      full = run(Body.new(), windy, 3600)
+      glycogen_empty = run(%{Body.new() | reserve_j: 0.0}, windy, 3600)
+      assert full.core_k > 35.0 + @c
+      assert glycogen_empty.core_k == full.core_k
+      assert glycogen_empty.fat_reserve_j < full.fat_reserve_j
     end
   end
 
