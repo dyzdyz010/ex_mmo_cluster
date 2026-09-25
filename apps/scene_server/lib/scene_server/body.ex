@@ -2,8 +2,9 @@ defmodule SceneServer.Body do
   @moduledoc """
   角色身体 L1 的纯值状态（Voxim `Docs/Magic.md` §6）。
 
-  首片只接体温这一路：核心 / 皮肤两节点温度、烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和
-  存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
+  首片只接体温这一路。体温是多层模型（Stolwijk 1971 被动系统按“躯干 + 头”与“四肢”两组归并，见 `body/README.md`）的
+  七个节点温度：核心（头、躯干核心与中心血液）、躯干肌肉、躯干脂肪、四肢核心（骨等）、四肢肌肉、四肢脂肪、皮肤（全身共用一个）；
+  另存烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
   - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；
@@ -16,32 +17,69 @@ defmodule SceneServer.Body do
 
   状态推进由 `SceneServer.Body.Thermo.step/3` 完成；本模块只放数据、参数与推导。
 
-  所有参数集中在 `params/0`（首片为模块常量，**待资产化**）。温度一律用开尔文，与
+  所有参数集中在 `params/0` 与 `nodes/0`、`edges/0`（首片为模块常量，**待资产化**）。温度一律用开尔文，与
   `VoxelRegion.World` 热内核一致。参数取值与依据见同目录 `body/README.md`。
   """
 
   @c 273.15
+  # Stolwijk 1971 的表以 kcal 为单位：1 kcal/K = 4186.8 J/K，1 kcal/h = 1.163 W。
+  @kcal 4186.8
+  @kcal_h 1.163
+
+  # —— 多层节点（Stolwijk 1971, NASA CR-1855 表 5/8/12 的六段按“躯干 + 头”“四肢（臂、手、腿、足）”两组求和；皮肤六段合为一个）——
+  # {字段, 热容 kcal/K, 基础产热 kcal/h, 与中心血液（= 核心节点）交换的基础血流 L/h, 寒战份额}
+  # 核心 = 头核心 2.22 + 躯干核心 9.82 + 中心血液 2.25 + 头肌肉 0.33 + 头脂肪 0.22（头部组织块小、脑血流 45 L/h，并入核心）；
+  # 四肢核心 = 臂 / 手 / 腿 / 足核心（骨与结缔组织，基础血流合计 3.79 L/h）。皮肤血流随体温调节，另算（`Thermo`）。
+  # 寒战份额（表 12 CHILM）：头 0.02（并入核心，直接进核心）、躯干 0.85、臂 0.05 + 腿 0.07，按合计 0.99 归一。
+  @nodes [
+    {:core_k, 14.84, 58.43, 0.0, 0.02},
+    {:trunk_muscle_k, 16.15, 5.00, 6.00, 0.85},
+    {:trunk_fat_k, 4.25, 2.13, 2.56, 0.0},
+    {:limb_core_k, 6.02, 3.14, 3.79, 0.0},
+    {:limb_muscle_k, 12.33, 4.03, 4.83, 0.12},
+    {:limb_fat_k, 2.23, 0.67, 0.81, 0.0},
+    {:skin_k, 3.35, 1.05, 0.0, 0.0}
+  ]
+
+  # —— 层间导热（表 6 TC，kcal/(h·K)，同组各段并联求和）——
+  # 头部“核心→肌肉→脂肪→皮肤”三段串联 1/(1/1.38 + 1/11.4 + 1/13.8) = 1.1302（头部肌肉、脂肪并入核心后成为核心→皮肤一条边）；
+  # 躯干 1.37 / 4.75 / 19.80；四肢 臂 + 手 + 腿 + 足 = 29.7 / 48.65 / 114.2。
+  @edges [
+    {:core_k, :skin_k, 1 / (1 / 1.38 + 1 / 11.4 + 1 / 13.8)},
+    {:core_k, :trunk_muscle_k, 1.37},
+    {:trunk_muscle_k, :trunk_fat_k, 4.75},
+    {:trunk_fat_k, :skin_k, 19.80},
+    {:limb_core_k, :limb_muscle_k, 29.7},
+    {:limb_muscle_k, :limb_fat_k, 48.65},
+    {:limb_fat_k, :skin_k, 114.2}
+  ]
 
   @params %{
-    # —— 人体几何与热容（ASHRAE Fundamentals 第 9 章两节点模型标准人）——
-    area_m2: 1.8,
-    mass_kg: 70.0,
-    specific_heat_j_per_kg_k: 3490.0,
-    skin_mass_fraction: 0.1,
-    # —— 产热（1 met 静息代谢；寒战峰值约为静息的 5 倍，即额外 4 met）——
+    # —— 人体几何（Stolwijk 1971 标准人 74.4 kg、1.8877 m²（表 2 六段面积和））——
+    area_m2: 1.8877,
+    # —— 产热：1 met 静息代谢（ASHRAE），按 Stolwijk 表 8 基础产热比例分到各节点 ——
     metabolic_w_per_m2: 58.2,
-    shiver_w_per_m2_k2: 19.4,
+    # —— 寒战（Tikuisis & Giesbrecht 1999，冷水浸泡 14 名男性拟合）：
+    #    [155.5·(37 − T_核心) + 47.0·(33 − T_皮) − 1.57·(33 − T_皮)²] / √体脂%，W/m²；体脂 15%（Stolwijk 标准人脂肪 11.16/74.4 kg）。
+    #    峰值 232.8 W/m²（约 4 met 额外，Eyolfson et al. 2001 峰值寒战 4.9 倍静息）× 储备/满储备。——
+    shiver_core_w_per_m2_k: 155.5,
+    shiver_skin_w_per_m2_k: 47.0,
+    shiver_skin_w_per_m2_k2: 1.57,
+    shiver_core_ref_k: 37.0 + @c,
+    shiver_skin_ref_k: 33.0 + @c,
+    body_fat_percent: 15.0,
     shiver_max_w_per_m2: 232.8,
     # —— 寒战燃料储备（糖原）：成人肝糖原约 100 g + 肌糖原约 350 g ≈ 450 g，氧化热约 17 kJ/g → 7.65 MJ。
-    # 只有寒战（及以后的代谢加速 / 修复）从这里取能；静息代谢不取、储备不随时间自然下降；
-    # 寒战上限按 储备/满储备 线性下降，储备为零即无寒战。进食补充待食物系统（首片不做）。——
+    # 只有寒战从这里取能；静息代谢不取、储备不随时间自然下降；寒战上限按 储备/满储备 线性下降，储备为零即无寒战。
+    # 这是游戏规则：实测寒战的糖原只占约三成、低糖原时脂肪补上（README“已知偏差”）。进食补充待食物系统（首片不做）。——
     reserve_full_j: 7_650_000.0,
-    # —— 调定点（Gagge 1971）——
+    # —— 调定点（Gagge 1971）：血管舒缩与出汗读它们 ——
     core_set_k: 36.8 + @c,
     skin_set_k: 34.0 + @c,
-    # —— 核心-皮肤传导：组织导热 + 皮肤血流 ——
-    tissue_w_per_m2_k: 5.28,
+    # —— 血液：1 kcal/(L·K)（Stolwijk 与 Gagge 同值）；寒战肌肉每 1 kcal/h 产热需 1 L/h 血流（Stolwijk 1971 p.29）——
     blood_w_h_per_l_k: 1.163,
+    # —— 皮肤血流（Gagge 1971）：(6.3 + 50·暖核心)/(1 + 0.5·冷皮肤) L/(m²·h)；6.3 × 1.8877 = 11.9 L/h 与 Stolwijk 表 8 皮肤
+    # 基础血流合计 11.89 L/h 一致 ——
     skin_blood_base_l_per_m2_h: 6.3,
     vasodilation_l_per_m2_h_k: 50.0,
     vasoconstriction_per_k: 0.5,
@@ -57,17 +95,21 @@ defmodule SceneServer.Body do
     radiative_w_per_m2_k: 4.7,
     clothing_m2_k_per_w: 0.155,
     # —— 局部接触组织块（鞋底 / 手掌触碰处的皮肤组织，两处共用一块）：面积 0.03 m²（两脚掌着地面积，同 BodyContact 鞋底）
-    # × 厚 2 mm（表皮 + 真皮全层，即三度烧伤的深度）× 1000 kg/m³ = 0.06 kg，热容 0.06 × 3490 = 209.4 J/K。与皮肤节点之间
-    # 的导热 = 面积 × 本步核心-皮肤导热 K_cs（组织导热 5.28 + 皮肤血流项，同一 Gagge 式；冷时血管收缩降、热时舒张升）。——
+    # × 厚 2 mm（表皮 + 真皮全层，即三度烧伤的深度）× 1000 kg/m³ = 0.06 kg，比热 3490 J/(kg·K)（ASHRAE 人体组织），
+    # 热容 209.4 J/K。与皮肤节点之间的导热 = 面积 × (局部组织壳导热 5.28 W/(m²·K)（Gagge 1971 组织导热，沿用；本次冷暴露
+    # 校准未改）+ 血液 × 本步皮肤血流)。——
     contact_tissue_m2: 0.03,
     contact_tissue_kg: 0.06,
-    # —— 湿衣：浸水部分的衣物按时间常数 20 s 趋于湿透（织物浸没数十秒内吸饱）；湿透衣物热阻取 BodyContact 的
-    # wet_m2_k_per_w（0.03，约为干 1 clo 的 19%），湿度间线性插值。离水后湿衣表面蒸发（ASHRAE Fundamentals 第 9 章：
-    # 蒸发换热系数 = Lewis 比 16.5 K/kPa × 对流系数 h_c；推动力 = 衣面饱和水汽压 − 相对湿度 × 空气饱和水汽压，
-    # Magnus 式（Alduchov & Eskridge 1996）；衣面温度按干热回路 T_空 + (T_皮 − T_空)·R_空/(R_衣 + R_空)），
-    # 蒸发潜热 2430 J/g 从皮肤取走；湿透时衣物含水 1 kg（1 clo 常规服装约 1–1.5 kg，棉织物沥干后含水约为自重的 50–100%）；
-    # 空气相对湿度 0.5（气候接口暂无湿度）。——
+    tissue_specific_heat_j_per_kg_k: 3490.0,
+    contact_tissue_w_per_m2_k: 5.28,
+    # —— 湿衣：浸水部分的衣物按时间常数 20 s 趋于湿透（织物浸没数十秒内吸饱）。空气中湿衣的非蒸发保温损失按湿度线性
+    # 到 16%（Bröde et al. 2008：湿中间层使总热阻降 0.02 m²·K/W，走动 16%、站立 9%，取大）；湿衣的主要作用是蒸发：
+    # 衣面蒸发 = Lewis 比 16.5 K/kPa × h_c × (p_s(T_衣面) − 相对湿度 × p_s(T_空))（ASHRAE Fundamentals 第 9 章；Magnus 式，
+    # Alduchov & Eskridge 1996），衣面温度按“经衣物导来的热 = 对流辐射 + 蒸发”求解（蒸发热必须穿过衣物送到衣面）。
+    # 浸没在水里的湿衣热阻是 World 浸没边的 `VoxelRegion.BodyContact` 参数，不在这里。
+    # 湿透衣物含水 1 kg（1 clo 常规服装约 1–1.5 kg，棉织物沥干后含水约为自重的 50–100%）；空气相对湿度 0.5（气候接口暂无湿度）。——
     soak_s: 20.0,
+    wet_insulation_loss: 0.16,
     clothing_water_kg: 1.0,
     lewis_k_per_kpa: 16.5,
     relative_humidity: 0.5,
@@ -94,7 +136,35 @@ defmodule SceneServer.Body do
     frostbite_dose_k_s: [600.0]
   }
 
+  # 调定点身体：核心 36.8 °C、皮肤 34 °C（Gagge 调定点），其余五层取该核心 / 皮肤温度、1 met、基础血流下的稳态
+  # （每层：产热 + Σ 导热 × (邻层 − 本层) + 血液 × (核心 − 本层) = 0；高斯-赛德尔迭代，编译期解出）。
+  @neutral (fn ->
+              fixed = %{core_k: 36.8 + @c, skin_k: 34.0 + @c}
+              total = Enum.sum(for {_, _, q, _, _} <- @nodes, do: q)
+              free = for {f, _, _, _, _} <- @nodes, not Map.has_key?(fixed, f), do: f
+
+              Enum.reduce(1..2000, Map.merge(fixed, Map.new(free, &{&1, 35.0 + @c})), fn _, t ->
+                Enum.reduce(free, t, fn f, t ->
+                  {^f, _, q, blood, _} = List.keyfind(@nodes, f, 0)
+                  met = @params.metabolic_w_per_m2 * @params.area_m2 * q / total
+
+                  links =
+                    [{:core_k, @params.blood_w_h_per_l_k * blood}] ++
+                      for({a, b, g} <- @edges, a == f, do: {b, g * @kcal_h}) ++
+                      for({a, b, g} <- @edges, b == f, do: {a, g * @kcal_h})
+
+                  num = met + Enum.sum(for {n, g} <- links, do: g * t[n])
+                  Map.put(t, f, num / Enum.sum(for {_, g} <- links, do: g))
+                end)
+              end)
+            end).()
+
   defstruct core_k: 36.8 + @c,
+            trunk_muscle_k: @neutral.trunk_muscle_k,
+            trunk_fat_k: @neutral.trunk_fat_k,
+            limb_core_k: @neutral.limb_core_k,
+            limb_muscle_k: @neutral.limb_muscle_k,
+            limb_fat_k: @neutral.limb_fat_k,
             skin_k: 34.0 + @c,
             burn_dose_s: 0.0,
             frost_dose_k_s: 0.0,
@@ -107,6 +177,11 @@ defmodule SceneServer.Body do
   @type status :: :alive | :dying | :dead
   @type t :: %__MODULE__{
           core_k: float(),
+          trunk_muscle_k: float(),
+          trunk_fat_k: float(),
+          limb_core_k: float(),
+          limb_muscle_k: float(),
+          limb_fat_k: float(),
           skin_k: float(),
           burn_dose_s: float(),
           frost_dose_k_s: float(),
@@ -123,27 +198,50 @@ defmodule SceneServer.Body do
           progression: :tracks_core | :permanent
         }
 
-  @doc "身体 L1 全部参数（首片常量，待资产化）。"
+  @doc "身体 L1 全部标量参数（首片常量，待资产化）。"
   @spec params() :: map()
   def params, do: @params
 
-  @doc "调定点上的健康身体：核心 36.8 °C、皮肤与组织块 34 °C、衣物干、无伤病、存活。"
+  @doc """
+  多层节点表：`{字段, 热容 J/K, 静息产热 W（1 met 按基础产热比例分配）, 与核心交换的基础血流 L/h, 寒战份额}`，
+  顺序固定（核心在前、皮肤在后）。寒战份额合计 1。
+  """
+  @spec nodes() :: [{atom(), float(), float(), float(), float()}]
+  def nodes do
+    total_q = Enum.sum(for {_, _, q, _, _} <- @nodes, do: q)
+    total_s = Enum.sum(for {_, _, _, _, s} <- @nodes, do: s)
+
+    for {f, c, q, blood, s} <- @nodes,
+        do: {f, c * @kcal, @params.metabolic_w_per_m2 * @params.area_m2 * q / total_q, blood, s / total_s}
+  end
+
+  @doc "层间导热边：`{节点, 节点, W/K}`。"
+  @spec edges() :: [{atom(), atom(), float()}]
+  def edges, do: for({a, b, g} <- @edges, do: {a, b, g * @kcal_h})
+
+  @doc "调定点上的健康身体：核心 36.8 °C、皮肤与组织块 34 °C、其余层为该核心 / 皮肤下的稳态，衣物干、无伤病、存活。"
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @doc "皮肤节点热容 J/K。"
+  @doc "身体各节点（七层 + 局部接触组织块）的热容 × 温度之和，J。能量账：一步的变化 = `Thermo.step/3` 的 `stored_j`。"
+  @spec heat_content_j(t()) :: float()
+  def heat_content_j(%__MODULE__{} = body) do
+    Enum.sum(for {f, c, _, _, _} <- nodes(), do: c * Map.fetch!(body, f)) + tissue_capacity_j_per_k() * body.tissue_k
+  end
+
+  @doc "皮肤节点热容 J/K（World 外部节点）。"
   @spec skin_capacity_j_per_k() :: float()
-  def skin_capacity_j_per_k,
-    do: @params.skin_mass_fraction * @params.mass_kg * @params.specific_heat_j_per_kg_k
+  def skin_capacity_j_per_k, do: capacity(:skin_k)
+
+  @doc "核心节点热容 J/K（头、躯干核心与中心血液）。"
+  @spec core_capacity_j_per_k() :: float()
+  def core_capacity_j_per_k, do: capacity(:core_k)
 
   @doc "局部接触组织块热容 J/K。"
   @spec tissue_capacity_j_per_k() :: float()
-  def tissue_capacity_j_per_k, do: @params.contact_tissue_kg * @params.specific_heat_j_per_kg_k
+  def tissue_capacity_j_per_k, do: @params.contact_tissue_kg * @params.tissue_specific_heat_j_per_kg_k
 
-  @doc "核心节点热容 J/K。"
-  @spec core_capacity_j_per_k() :: float()
-  def core_capacity_j_per_k,
-    do: (1 - @params.skin_mass_fraction) * @params.mass_kg * @params.specific_heat_j_per_kg_k
+  defp capacity(field), do: nodes() |> List.keyfind(field, 0) |> elem(1)
 
   @doc """
   三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤度上限约束

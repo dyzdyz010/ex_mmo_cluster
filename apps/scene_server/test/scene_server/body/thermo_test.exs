@@ -1,11 +1,13 @@
 defmodule SceneServer.Body.ThermoTest do
   @moduledoc """
-  身体 L1 体温模型单测。期望值均为手算：
+  身体 L1 体温模型单测：单步手算、能量账、伤病推导与湿衣。期望值均为手算（参数表见 body/README.md）：
 
-  - 热容：皮肤 0.1×70×3490 = 24430 J/K，核心 0.9×70×3490 = 219870 J/K；
-  - 静息代谢 58.2×1.8 = 104.76 W；
-  - 干热交换系数 1.8 / (0.155 + 1/(3.1+4.7)) = 1.8 / 0.28320513 = 6.3558170 W/K；
-  - 调定点皮肤血流 6.3 L/(m²·h) 时核心-皮肤导热 (5.28 + 1.163×6.3)×1.8 = 22.69242 W/K。
+  - 体表 1.8877 m²（Stolwijk 标准人）；静息代谢 58.2 × 1.8877 = 109.86414 W，按 Stolwijk 基础产热比例（合计 74.45 kcal/h）分配：
+    核心 58.43 → 86.223797 W，躯干肌肉 5.00 → 7.3783842 W，躯干脂肪 2.13 → 3.1431916 W，皮肤 1.05 → 1.5494607 W；
+  - 热容（kcal/K × 4186.8）：核心 14.84 → 62132.112，躯干肌肉 16.15 → 67616.82，躯干脂肪 4.25 → 17793.9，皮肤 3.35 → 14025.78 J/K；
+  - 静止空气 1 clo 干热系数 1.8877/(0.155 + 1/7.8) = 6.6654866 W/K；
+  - 寒战需求（Tikuisis & Giesbrecht 1999）[155.5·(37 − T_c) + 47·(33 − T_s) − 1.57·(33 − T_s)²]/√15 W/m²。
+  寒冷暴露的实测对照（冷水浸泡、冷空气）在 `cold_validation_test.exs`。
   """
   use ExUnit.Case, async: true
 
@@ -13,22 +15,18 @@ defmodule SceneServer.Body.ThermoTest do
   alias SceneServer.Body.Thermo
 
   @c 273.15
-  @skin_c 24_430.0
-  @core_c 219_870.0
-
-  @tissue_c 209.4
+  @met 109.86414
+  @inner [:trunk_muscle_k, :trunk_fat_k, :limb_core_k, :limb_muscle_k, :limb_fat_k]
 
   defp air(k), do: %{q_j: 0.0, air_k: k}
 
-  # 推进一步并核对能量账：储热变化 = 三节点热容 × 温升 = q + 代谢 − 干热散失 − 出汗 − 湿衣蒸发；寒战热 = 储备减少量；
-  # 组织块只随 tissue_j 变化。
+  # 推进一步并核对能量账：储热变化（各节点热容 × 温升之和）= q + 代谢 − 干热散失 − 出汗 − 湿衣蒸发；
+  # 寒战热 = 储备减少量；组织块只随 tissue_j 变化。
   defp step!(body, inputs, dt \\ 1.0) do
     {next, account} = Thermo.step(body, dt, inputs)
-    stored = @skin_c * (next.skin_k - body.skin_k) + @core_c * (next.core_k - body.core_k) +
-      @tissue_c * (next.tissue_k - body.tissue_k)
-    assert_in_delta account.stored_j, stored, 1.0e-6
+    assert_in_delta account.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
     assert_in_delta account.shiver_j, body.reserve_j - next.reserve_j, 1.0e-6
-    assert_in_delta @tissue_c * (next.tissue_k - body.tissue_k), Map.get(inputs, :tissue_j, 0.0), 1.0e-9
+    assert_in_delta Body.tissue_capacity_j_per_k() * (next.tissue_k - body.tissue_k), Map.get(inputs, :tissue_j, 0.0), 1.0e-9
 
     assert_in_delta account.stored_j,
                     account.q_j + account.metabolic_j - account.convection_j - account.sweat_j - account.drying_j,
@@ -40,6 +38,8 @@ defmodule SceneServer.Body.ThermoTest do
   defp run(body, inputs, steps),
     do: Enum.reduce(1..steps, body, fn _, b -> step!(b, inputs) |> elem(0) end)
 
+  defp uniform(t_c), do: Enum.reduce([:core_k, :skin_k | @inner], Body.new(), &Map.put(&2, &1, t_c + @c))
+
   defp severity(body, tag) do
     case Enum.find(Body.injuries(body), &(&1.tag == tag)) do
       nil -> 0
@@ -47,62 +47,107 @@ defmodule SceneServer.Body.ThermoTest do
     end
   end
 
-  describe "能量账与单步手算" do
-    test "调定点身体、20 °C 空气、接触吸热 1000 J 的一步" do
-      {next, account} =
-        step!(Body.new(), %{q_j: 1000.0, air_k: 20.0 + @c})
-
-      # 核心→皮肤 22.69242×2.8 = 63.538776 W；干热 6.3558170×14 = 88.981438 W
-      assert_in_delta account.metabolic_j, 104.76, 1.0e-9
-      assert_in_delta account.convection_j, 88.981438, 1.0e-5
-      assert account.sweat_j == 0.0
-      assert_in_delta account.stored_j, 1000 + 104.76 - 88.981438, 1.0e-5
-      # 核心 +(104.76 − 63.538776)/219870；皮肤 +(1000 + 63.538776 − 88.981438)/24430
-      assert_in_delta next.core_k, 36.8 + @c + 41.221224 / 219_870, 1.0e-9
-      assert_in_delta next.skin_k, 34.0 + @c + 974.557338 / 24_430, 1.0e-7
+  describe "单步手算与能量账" do
+    test "调定点身体的五个内层是该核心 / 皮肤温度下的稳态：一步后内层温度不变" do
+      body = Body.new()
+      assert body.core_k == 36.8 + @c and body.skin_k == 34.0 + @c
+      {next, _} = step!(body, air(20.0 + @c))
+      for f <- @inner, do: assert_in_delta(Map.fetch!(next, f), Map.fetch!(body, f), 1.0e-9)
+      # 由外向内：皮肤 34 < 四肢脂肪 < 四肢肌肉 < 四肢核心、躯干脂肪 < 躯干肌肉 < 核心 36.8
+      assert body.limb_fat_k < body.limb_muscle_k and body.limb_muscle_k < body.limb_core_k
+      assert body.trunk_fat_k < body.trunk_muscle_k and body.trunk_muscle_k < body.core_k
+      assert body.skin_k < body.limb_fat_k
     end
 
-    test "寒战产热按 19.4×冷皮肤×冷核心 计入代谢，并在 5 met 峰值处封顶" do
-      cold = %{Body.new() | core_k: 36.0 + @c, skin_k: 30.0 + @c}
-      {_, account} = step!(cold, air(0.0 + @c))
-      # 19.4 × 4 × 0.8 × 1.8 = 111.744 W
-      assert_in_delta account.metabolic_j, 104.76 + 111.744, 1.0e-9
+    test "全身均匀 37 °C（内部无温差、无导热与血流换热）、20 °C 空气、接触吸热 1000 J：各节点只按自己的产热与外部项变化" do
+      {next, account} = step!(uniform(37.0), %{q_j: 1000.0, air_k: 20.0 + @c})
+      # 干热 6.6654866 × 17 = 113.31327 W；出汗 170·0.2·e^(3/10.7)·2430/3600·1.8877 = 57.343008 W；无寒战（需求为负）
+      assert_in_delta account.metabolic_j, @met, 1.0e-9
+      assert_in_delta account.convection_j, 113.31327, 1.0e-4
+      assert_in_delta account.sweat_j, 57.343008, 1.0e-5
+      assert_in_delta next.core_k - (37.0 + @c), 86.223797 / 62_132.112, 1.0e-10
+      assert_in_delta next.skin_k - (37.0 + @c), (1000 + 1.5494607 - 113.31327 - 57.343008) / 14_025.78, 1.0e-8
+      assert_in_delta next.trunk_fat_k - (37.0 + @c), 3.1431916 / 17_793.9, 1.0e-10
+    end
 
-      colder = %{Body.new() | core_k: 34.0 + @c, skin_k: 20.0 + @c}
+    test "层间导热与血流：躯干脂肪 35 °C、其余 37 °C 时它得 肌肉导热 + 皮肤导热 + 血流 = 63.05786 W" do
+      body = %{uniform(37.0) | trunk_fat_k: 35.0 + @c}
+      {next, _} = step!(body, air(37.0 + @c))
+      # 肌肉→脂肪 4.75 × 1.163 × 2 = 11.0485；皮肤→脂肪 19.8 × 1.163 × 2 = 46.0548；血液 2.56 L/h × 1.163 × 2 = 5.95456
+      assert_in_delta next.trunk_fat_k - body.trunk_fat_k, (63.05786 + 3.1431916) / 17_793.9, 1.0e-10
+    end
+
+    test "寒战：需求按核心与皮肤温度手算，进躯干肌肉 0.85/0.99，肌肉血流随寒战增加（每 kcal/h 1 L/h）" do
+      body = %{uniform(36.0) | skin_k: 20.0 + @c, trunk_muscle_k: 35.0 + @c}
+      {next, account} = step!(body, air(20.0 + @c))
+      # 需求 (155.5 + 47·13 − 1.57·169)/√15 = 129.40154 W/m² → 244.27128 W（低于峰值 232.8 × 1.8877 = 439.45656 W）
+      assert_in_delta account.shiver_j, 244.27128, 1.0e-4
+      assert_in_delta account.metabolic_j, @met + 244.27128, 1.0e-4
+      # 躯干肌肉：产热 7.3783842 + 寒战 244.27128 × 0.85/0.99 = 209.72787；血流 (6.00 + 209.72787/1.163) L/h × 1.163 × 1 K = 216.70587；
+      # 核心导热 1.37 × 1.163 × 1 = 1.59331；脂肪导热 4.75 × 1.163 × 1 = 5.52425 → 合计 440.92968 W
+      assert_in_delta next.trunk_muscle_k - body.trunk_muscle_k, 440.92968 / 67_616.82, 1.0e-9
+    end
+
+    test "寒战在峰值处封顶（232.8 W/m² × 储备/满储备），调定点身体不寒战" do
+      colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
+      # 需求 (155.5·4 + 47·15 − 1.57·225)/√15 = 251.42117 > 232.8 → 439.45656 W
       {_, account} = step!(colder, air(0.0 + @c))
-      # 19.4 × 14 × 2.8 = 760.48 W/m² > 232.8 峰值 → 232.8 × 1.8 = 419.04 W
-      assert_in_delta account.metabolic_j, 104.76 + 419.04, 1.0e-9
+      assert_in_delta account.shiver_j, 439.45656, 1.0e-6
+      assert Thermo.shiver_demand_w_per_m2(Body.new()) == 0.0
+      {_, account} = step!(Body.new(), air(20.0 + @c))
+      assert account.shiver_j == 0.0
     end
   end
 
   describe "环境" do
-    test "20 °C 空气（世界全局环境温度）下调定点身体 4 小时保持约 37 °C 稳态" do
+    test "20 °C 空气（世界全局环境温度）下调定点身体 4 小时保持约 37 °C 稳态、不寒战" do
       body = run(Body.new(), air(20.0 + @c), 4 * 3600)
       later = run(body, air(20.0 + @c), 600)
 
       assert later.core_k - @c > 36.8 and later.core_k - @c < 37.0
       assert abs(later.core_k - body.core_k) < 0.005
+      assert later.reserve_j == Body.params().reserve_full_j
       assert Body.injuries(later) == []
       assert Body.life(later) == 100
       assert later.status == :alive
     end
 
-    test "0 °C 空气无接触：皮肤先降、核心随后按手算速率下降，寒战提高产热" do
-      {first, _} = step!(Body.new(), air(0.0 + @c))
-      # 皮肤 (63.538776 − 6.3558170×34)/24430 = −152.559003/24430 K/s
-      assert_in_delta first.skin_k - (34.0 + @c), -152.559003 / 24_430, 1.0e-9
+    test "0 °C 空气无接触：第一步干热按手算，之后皮肤与外层先降、寒战提高产热，核心随后才降" do
+      {_, account} = step!(Body.new(), air(0.0 + @c))
+      # 6.6654866 × 34 = 226.62655 W
+      assert_in_delta account.convection_j, 226.62655, 1.0e-4
 
-      # 皮肤已降到 26 °C、核心仍在调定点：血流 6.3/(1+0.5×8) = 1.26，
-      # 核心→皮肤 (5.28 + 1.163×1.26)×1.8×10.8 = 131.130187 W > 代谢 104.76 W，寒战 0（核心未低于调定点）
-      cooled = %{Body.new() | skin_k: 26.0 + @c}
-      {next, account} = step!(cooled, air(0.0 + @c))
-      assert_in_delta next.core_k - cooled.core_k, (104.76 - 131.130187) / 219_870, 1.0e-10
-      assert_in_delta account.metabolic_j, 104.76, 1.0e-9
+      ten = run(Body.new(), air(0.0 + @c), 600)
+      assert ten.skin_k < 33.0 + @c
+      assert ten.limb_fat_k < Body.new().limb_fat_k
+      assert ten.core_k > 36.6 + @c
+      {_, account} = step!(ten, air(0.0 + @c))
+      assert account.shiver_j > 0.0
+    end
+  end
 
-      hour = run(Body.new(), air(0.0 + @c), 3600)
-      assert hour.core_k < 36.8 + @c
-      {_, account} = step!(hour, air(0.0 + @c))
-      assert account.metabolic_j > 104.76
+  # 风（气候区 wind_mps）：对流系数 h_c = max(3.1, 8.3·v^0.6)（Gagge / ASHRAE）。
+  #   v = 5：h_c = 21.800181；干热系数 1.8877/(0.155 + 1/(21.800181 + 4.7)) = 9.7942471 W/K；v = 1：1.8877/(0.155 + 1/13) = 8.1393367 W/K。
+  #   v = 0.1：8.3·0.1^0.6 = 2.0849 < 3.1 → 取下限 3.1，与静止空气相同。
+  describe "风（气候区 wind_mps）" do
+    test "风速 0、缺省、低于自然对流下限（0.1 m/s）：一步结果与不传风速逐位相同" do
+      body = %{Body.new() | skin_k: 25.0 + @c, core_k: 36.2 + @c}
+      still = Thermo.step(body, 1.0, air(-25.0 + @c))
+
+      for v <- [0.0, 0, 0.1],
+          do: assert(Thermo.step(body, 1.0, Map.put(air(-25.0 + @c), :wind_mps, v)) == still)
+    end
+
+    test "5 m/s、−25 °C：干热 9.7942471 × 59 = 577.86058 W；1 m/s、0 °C：8.1393367 × 34 = 276.73745 W" do
+      {_, account} = step!(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0))
+      assert_in_delta account.convection_j, 577.86058, 1.0e-4
+      {_, account} = step!(Body.new(), Map.put(air(0.0 + @c), :wind_mps, 1.0))
+      assert_in_delta account.convection_j, 276.73745, 1.0e-4
+    end
+
+    test "干衣热阻可由输入给定（衣物系统接入前供校验场景用）：0.5 clo、0 °C 静止空气 1.8877 × 34/(0.0775 + 1/7.8)" do
+      {_, account} = step!(Body.new(), Map.put(air(0.0 + @c), :clothing_m2_k_per_w, 0.0775))
+      assert_in_delta account.convection_j, 1.8877 * 34 / (0.0775 + 1 / 7.8), 1.0e-9
     end
   end
 
@@ -111,10 +156,12 @@ defmodule SceneServer.Body.ThermoTest do
     defp held(tissue_c), do: %{Body.new() | tissue_k: tissue_c + @c}
 
     test "World 回传的 tissue_j 按组织块热容改变其温度，差额进皮肤：tissue_j = 2094 J → 组织块 +10 K" do
-      {next, account} = step!(Body.new(), %{q_j: 3000.0, tissue_j: 2094.0, air_k: 20.0 + @c})
+      body = Body.new()
+      {next, account} = step!(body, %{q_j: 3000.0, tissue_j: 2094.0, air_k: 20.0 + @c})
+      {plain, _} = step!(body, %{q_j: 906.0, air_k: 20.0 + @c})
       assert_in_delta next.tissue_k, 44.0 + @c, 1.0e-9
-      # 皮肤得 3000 − 2094 = 906 J，其余同“调定点、20 °C 空气”一步：+(906 + 63.538776 − 88.981438)/24430
-      assert_in_delta next.skin_k, 34.0 + @c + 880.557338 / 24_430, 1.0e-7
+      # 皮肤只得 3000 − 2094 = 906 J：与直接给 906 J、不给组织块热的一步相同
+      assert_in_delta next.skin_k, plain.skin_k, 1.0e-12
       assert account.tissue_j == 2094.0
     end
 
@@ -145,6 +192,16 @@ defmodule SceneServer.Body.ThermoTest do
       assert severity(b64, "trauma.thermal.frostbite") == 1
     end
 
+    test "组织块 −25 °C：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
+      cold = air(-25.0 + @c)
+      b24 = run(%{Body.new() | tissue_k: -25.0 + @c}, cold, 24)
+      assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
+      assert severity(b24, "trauma.thermal.frostbite") == 0
+      {b25, _} = step!(b24, cold)
+      assert_in_delta b25.frost_dose_k_s, 611.25, 1.0e-6
+      assert severity(b25, "trauma.thermal.frostbite") == 1
+    end
+
     test "接触温度本身不进剂量：World 报 600 K 接触、但组织块只吸了 20.94 J（+0.1 K），不烧伤" do
       {b, _} = step!(Body.new(), %{q_j: 57.3, tissue_j: 20.94, air_k: 20.0 + @c})
       assert_in_delta b.tissue_k, 34.1 + @c, 1.0e-9
@@ -166,8 +223,8 @@ defmodule SceneServer.Body.ThermoTest do
     end
 
     test "持续失热使核心跌破 35 °C 的那一步出现体温过低" do
-      chilled = %{Body.new() | core_k: 35.05 + @c, skin_k: 30.0 + @c}
-      loss = %{q_j: -1000.0, max_contact_k: 20.0 + @c, air_k: 20.0 + @c}
+      chilled = %{uniform(35.05) | skin_k: 30.0 + @c, reserve_j: 0.0}
+      loss = %{q_j: -1000.0, air_k: 20.0 + @c}
 
       crossed =
         Stream.iterate(chilled, fn b -> step!(b, loss) |> elem(0) end)
@@ -179,19 +236,12 @@ defmodule SceneServer.Body.ThermoTest do
           b.core_k < 35.0 + @c
         end)
 
-      assert [
-               %{
-                 tag: "temperature.hypothermia",
-                 part: :whole,
-                 severity: 1,
-                 progression: :tracks_core
-               }
-             ] =
+      assert [%{tag: "temperature.hypothermia", part: :whole, severity: 1, progression: :tracks_core}] =
                Body.injuries(crossed)
     end
 
     test "核心 28 °C：神经功能 0 低于致命水平，10 秒后濒死，再 120 秒死亡" do
-      body = %{Body.new() | core_k: 28.0 + @c, skin_k: 27.0 + @c}
+      body = %{uniform(28.0) | skin_k: 27.0 + @c}
       states = Enum.scan(1..130, body, fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
 
       assert Enum.map(Enum.take(states, 9), & &1.status) == List.duplicate(:alive, 9)
@@ -215,8 +265,8 @@ defmodule SceneServer.Body.ThermoTest do
     end
 
     test "回到 30 °C 温暖环境：体温过低逐步减轻至消失，烧伤不自愈只停止恶化" do
-      body = %{Body.new() | core_k: 34.0 + @c, skin_k: 30.0 + @c, burn_dose_s: 3.0}
-      states = Enum.scan(1..3600, body, fn _, b -> step!(b, air(30.0 + @c)) |> elem(0) end)
+      body = %{uniform(34.0) | skin_k: 30.0 + @c, burn_dose_s: 3.0}
+      states = Enum.scan(1..7200, body, fn _, b -> step!(b, air(30.0 + @c)) |> elem(0) end)
 
       hypo = Enum.map([body | states], &severity(&1, "temperature.hypothermia"))
       assert hd(hypo) == 1
@@ -229,144 +279,55 @@ defmodule SceneServer.Body.ThermoTest do
   describe "寒战储备（糖原 450 g × 17 kJ/g = 7.65 MJ）" do
     @full 7_650_000.0
 
-    test "寒战热全部取自储备：满储备 5 met 封顶 419.04 W、储备减同值；半储备上限减半 209.52 W；空储备无寒战" do
-      colder = %{Body.new() | core_k: 34.0 + @c, skin_k: 20.0 + @c}
+    test "寒战热全部取自储备：满储备封顶 439.45656 W、储备减同值；半储备上限减半 219.72828 W；空储备无寒战" do
+      colder = %{Body.new() | core_k: 33.0 + @c, skin_k: 18.0 + @c}
       assert colder.reserve_j == @full
 
       {full, account} = step!(colder, air(0.0 + @c))
-      # 需求 19.4 × 14 × 2.8 = 760.48 W/m² > 上限 232.8 → 232.8 × 1.8 = 419.04 W
-      assert_in_delta account.shiver_j, 419.04, 1.0e-9
-      assert_in_delta account.metabolic_j, 104.76 + 419.04, 1.0e-9
-      assert_in_delta full.reserve_j, @full - 419.04, 1.0e-6
+      assert_in_delta account.shiver_j, 439.45656, 1.0e-6
+      assert_in_delta account.metabolic_j, @met + 439.45656, 1.0e-6
+      assert_in_delta full.reserve_j, @full - 439.45656, 1.0e-6
 
-      # 半储备：上限 232.8 × 0.5 = 116.4 W/m² → 209.52 W
       {_, account} = step!(%{colder | reserve_j: @full / 2}, air(0.0 + @c))
-      assert_in_delta account.shiver_j, 209.52, 1.0e-9
+      assert_in_delta account.shiver_j, 219.72828, 1.0e-6
 
       {empty, account} = step!(%{colder | reserve_j: 0.0}, air(0.0 + @c))
       assert account.shiver_j == 0.0
-      assert_in_delta account.metabolic_j, 104.76, 1.0e-9
+      assert_in_delta account.metabolic_j, @met, 1.0e-9
       assert empty.reserve_j == 0.0
     end
 
-    test "不寒战就不耗储备：20 °C 空气 4 小时后储备仍为满值（储备不随时间自然下降）" do
-      assert run(Body.new(), air(20.0 + @c), 4 * 3600).reserve_j == @full
-    end
-
-    # 手算不动点（静止空气、1 clo、体温调节水平 1）：给皮肤温度 Ts（°C），
-    #   干热散失 L = 6.3558170·(Ts − Ta)，寒战 S = L − 104.76，
-    #   核心-皮肤 G = (5.28 + 1.163·6.3/(1 + 0.5·(34 − Ts)))·1.8，Tc = Ts + L/G，
-    #   寒战需求 19.4·1.8·(34 − Ts)·(36.8 − Tc) 必须等于 S —— 二分求 Ts，得稳态寒战功率 P*。
-    # 储备按 P* 线性下降，直到上限 419.04·R/R_full 低于 P*（拐点 R* = R_full·P*/419.04），之后寒战跟不上、核心下降。
-    defp steady_shiver(ta, dry \\ 6.3558170) do
-      f = fn ts ->
-        l = dry * (ts - ta)
-        g = (5.28 + 1.163 * 6.3 / (1 + 0.5 * (34 - ts))) * 1.8
-        tc = ts + l / g
-        {19.4 * 1.8 * (34 - ts) * (36.8 - tc) - (l - 104.76), l - 104.76, tc}
-      end
-
-      {ts, _} =
-        Enum.reduce(1..60, {0.0, 30.0}, fn _, {lo, hi} ->
-          mid = (lo + hi) / 2
-          if elem(f.(mid), 0) > 0, do: {mid, hi}, else: {lo, mid}
-        end)
-
-      {_, p, tc} = f.(ts)
-      {ts, tc, p}
-    end
-
-    test "−25 °C 静止空气、1 clo：储备按手算稳态寒战功率下降，越过拐点后才失温；每步寒战热 = 储备减少" do
-      {ts, tc, p} = steady_shiver(-25.0)
-      # 手算：Ts ≈ 13.62 °C、Tc ≈ 36.60 °C、P* ≈ 140.7 W；拐点 R* = 7.65 MJ × 140.7/419.04 ≈ 2.57 MJ
-      assert_in_delta ts, 13.62, 0.01
-      assert_in_delta tc, 36.60, 0.01
-      assert_in_delta p, 140.7, 0.1
-      knee = @full * p / 419.04
-
-      cold = air(-25.0 + @c)
-      states = Enum.scan(1..(24 * 3600), Body.new(), fn _, b -> step!(b, cold) |> elem(0) end)
-      at = fn s -> Enum.at(states, s - 1) end
-
-      assert_in_delta (at.(7200).reserve_j - at.(28_800).reserve_j) / 21_600, p, p * 0.01
-      assert Enum.all?(states, &(&1.reserve_j < 1.05 * knee or &1.core_k >= 36.5 + @c))
-
-      hypo = Enum.find_index(states, &(&1.core_k < 35.0 + @c))
-      assert hypo != nil
-      assert at.(hypo + 1).reserve_j < knee
-    end
-
-    test "组织块 −25 °C（如手按冰已冷透）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
-      cold = air(-25.0 + @c)
-      b24 = run(%{Body.new() | tissue_k: -25.0 + @c}, cold, 24)
-      assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
-      assert severity(b24, "trauma.thermal.frostbite") == 0
-      {b25, _} = step!(b24, cold)
-      assert_in_delta b25.frost_dose_k_s, 611.25, 1.0e-6
-      assert severity(b25, "trauma.thermal.frostbite") == 1
-    end
-  end
-
-  # 风（气候区 wind_mps）：对流系数 h_c = max(3.1, 8.3·v^0.6)（Gagge / ASHRAE）。
-  #   v = 5：5^0.6 = 2.6265278 → h_c = 21.800181；干热系数 1.8/(0.155 + 1/(21.800181 + 4.7)) = 9.3392195 W/K，
-  #   是静止空气 6.3558170 的 1.4694 倍。v = 1：h_c = 8.3 → 1.8/(0.155 + 1/13) = 7.7611940 W/K。
-  #   v = 0.1：8.3·0.1^0.6 = 2.0849 < 3.1 → 取下限 3.1，与静止空气相同。
-  describe "风（气候区 wind_mps）" do
-    test "风速 0、缺省、低于自然对流下限（0.1 m/s）：一步结果与不传风速逐位相同" do
-      body = %{Body.new() | skin_k: 25.0 + @c, core_k: 36.2 + @c}
-      still = Thermo.step(body, 1.0, air(-25.0 + @c))
-
-      for v <- [0.0, 0, 0.1],
-          do: assert(Thermo.step(body, 1.0, Map.put(air(-25.0 + @c), :wind_mps, v)) == still)
-    end
-
-    test "5 m/s、−25 °C 空气、调定点身体一步：干热散失 9.3392195 × 59 = 551.01395 W；1 m/s、0 °C：7.7611940 × 34 = 263.88060 W" do
-      {_, account} = step!(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0))
-      assert_in_delta account.convection_j, 551.01395, 1.0e-4
-      {_, account} = step!(Body.new(), Map.put(air(0.0 + @c), :wind_mps, 1.0))
-      assert_in_delta account.convection_j, 263.88060, 1.0e-4
-    end
-
-    # 同静止空气那条的手算不动点，只把干热系数换成 5 m/s 的 9.3392195：Ts ≈ 7.49 °C、Tc ≈ 36.59 °C、P* ≈ 198.7 W；
-    # 拐点 R* = 7.65 MJ × 198.7/419.04 ≈ 3.63 MJ，按 P* 耗到拐点约 5.6 h——失温不可能早于此（静止空气拐点约 10 h）。
-    test "−25 °C、5 m/s、1 clo：稳态寒战 P* ≈ 198.7 W（手算）、储备按 P* 线性下降，拐点前核心不低于 36.5 °C，越过拐点后失温" do
-      {ts, tc, p} = steady_shiver(-25.0, 9.3392195)
-      assert_in_delta ts, 7.49, 0.01
-      assert_in_delta tc, 36.59, 0.01
-      assert_in_delta p, 198.7, 0.1
-      knee = @full * p / 419.04
-
+    test "储备空时 −25 °C、5 m/s 失温快得多：无寒战核心 1 小时内跌破 35 °C，满储备同条件 1 小时后仍在 35 °C 以上" do
       windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
-      states = Enum.scan(1..(12 * 3600), Body.new(), fn _, b -> step!(b, windy) |> elem(0) end)
-      at = fn s -> Enum.at(states, s - 1) end
-
-      assert_in_delta (at.(7200).reserve_j - at.(18_000).reserve_j) / 10_800, p, p * 0.01
-      assert Enum.all?(states, &(&1.reserve_j < 1.05 * knee or &1.core_k >= 36.5 + @c))
-
-      hypo = Enum.find_index(states, &(&1.core_k < 35.0 + @c))
-      assert hypo != nil and hypo + 1 > 5.6 * 3600
-      assert at.(hypo + 1).reserve_j < knee
+      assert run(%{Body.new() | reserve_j: 0.0}, windy, 3600).core_k < 35.0 + @c
+      assert run(Body.new(), windy, 3600).core_k > 35.0 + @c
     end
   end
 
-  # 湿衣（Body 参数表的依据见 body/README.md）。−25 °C、5 m/s：h_c = 21.800181，空气热阻 1/(21.800181 + 4.7) = 0.03773559；
-  #   湿透衣物热阻 0.03（BodyContact 湿衣热阻）→ 干热 1.8 × 59 / 0.06773559 = 1567.8611 W（干衣 551.01395 W 的 2.85 倍）；
-  #   衣面温度 248.15 + 59 × 0.03773559/0.06773559 = 281.01898 K（7.869 °C），Magnus 饱和水汽压 1.0618333 kPa，
-  #   空气 0.5 × 0.0809761 kPa → 蒸发 16.5 × 21.800181 × (1.0618333 − 0.0404880) × 1.8 = 661.28565 W，
-  #   含水 1 kg、潜热 2430 J/g → 湿度每秒降 661.28565 / 2 430 000 = 2.72134e-4。
+  # 湿衣：空气中非蒸发保温损失 16%（Bröde et al. 2008）；蒸发在衣面，衣面温度 T_面 解
+  #   (T_皮 − T_面)/R_衣 = (T_面 − T_空)/R_空 + E(T_面)，E = 16.5·h_c·(p_s(T_面) − 0.5·p_s(T_空))·湿度（Lewis 关系、Magnus 式）。
   describe "湿衣" do
-    test "干衣逐位不变：湿度 0 时干热与不引入湿衣前相同，不蒸发" do
-      {_, account} = step!(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0))
-      assert_in_delta account.convection_j, 551.01395, 1.0e-4
-      assert account.drying_j == 0.0
-    end
+    defp magnus(k), do: 0.61094 * :math.exp(17.625 * (k - @c) / (k - @c + 243.04))
 
-    test "湿透一步（−25 °C、5 m/s）：干热 1567.8611 W、蒸发 661.28565 W 由皮肤付，湿度降 2.72134e-4" do
+    test "干衣不蒸发；湿透衣物空气中热阻 0.155 × 0.84，衣面热平衡成立：经衣物导出的热 = 对流辐射 + 蒸发" do
+      windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
+      {_, dry} = step!(Body.new(), windy)
+      assert dry.drying_j == 0.0
+
       wet = %{Body.new() | wetness: 1.0}
-      {next, account} = step!(wet, Map.put(air(-25.0 + @c), :wind_mps, 5.0))
-      assert_in_delta account.convection_j, 1567.8611, 1.0e-3
-      assert_in_delta account.drying_j, 661.28565, 1.0e-3
-      assert_in_delta next.wetness, 1.0 - 2.72134e-4, 1.0e-8
+      {next, account} = step!(wet, windy)
+      h_c = 8.3 * :math.pow(5.0, 0.6)
+      r_air = 1 / (h_c + 4.7)
+      r_cloth = 0.155 * 0.84
+      # 由对流辐射反推衣面温度，再核对两个独立关系：衣物导热平衡、Lewis 蒸发式
+      t_s = -25.0 + @c + account.convection_j / 1.8877 * r_air
+      assert_in_delta (wet.skin_k - t_s) / r_cloth * 1.8877, account.convection_j + account.drying_j, 1.0e-6
+      assert_in_delta account.drying_j, 16.5 * h_c * (magnus(t_s) - 0.5 * magnus(-25.0 + @c)) * 1.8877, 1.0e-6
+      # 衣面介于空气与皮肤之间；湿度按蒸发掉的水下降（1 kg、2430 J/g）
+      assert t_s > -25.0 + @c and t_s < wet.skin_k
+      assert_in_delta next.wetness, 1.0 - account.drying_j / 2.43e6, 1.0e-12
+      # 衣面被蒸发冷却：比无蒸发的干热回路分压低
+      assert t_s < -25.0 + @c + 59.0 * r_air / (r_cloth + r_air)
     end
 
     test "浸水：全身浸没时湿度按 20 s 时间常数趋于湿透（1 − e^(−n/20)），水下不蒸发；只浸一半湿到略低于 0.5" do
@@ -374,44 +335,16 @@ defmodule SceneServer.Body.ThermoTest do
       states = Enum.scan(1..20, Body.new(), fn _, b -> step!(b, water) |> elem(0) end)
       assert_in_delta hd(states).wetness, 0.048770575, 1.0e-9
       assert_in_delta List.last(states).wetness, 0.632120559, 1.0e-9
-      # 半身浸没：浸水拉向 0.5，露出的一半同时蒸发（20 °C 约 1e-4 /s 量级），平衡点略低于 0.5。
       half = run(Body.new(), %{water | immersed: 0.5}, 600)
       assert half.wetness < 0.5 and half.wetness > 0.49
     end
 
-    # 失温时长（数字由逐秒推进得出，打印供报告；断言只卡相对关系）：同一 −25 °C、5 m/s、1 clo、满储备，
-    # 干衣 8.7 h（见“风”一节），湿透衣物明显更早。组织块无接触时由 World 经内部边拉向皮肤：这里用两节点里组织块一侧的
-    # 解析松弛（皮肤段内视为常数）扮演 World，tissue_j = C_t·(T_皮 − T_组织)·(1 − e^(−G_i/C_t))，G_i = 0.03·K_cs。
-    test "−25 °C、5 m/s 湿透衣物：核心 < 35 °C 早于干衣（干衣 6 小时内不失温）；湿度随蒸发下降；皮肤冻到冰点以下时组织块随之冻伤" do
-      windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
-      relax = fn b ->
-        g = Body.params().contact_tissue_m2 * Thermo.core_to_skin_w_per_m2_k(b)
-        Map.put(windy, :tissue_j, @tissue_c * (b.skin_k - b.tissue_k) * (1 - :math.exp(-g / @tissue_c)))
-      end
-      crossing = fn start ->
-        Enum.reduce_while(1..(6 * 3600), {start, nil}, fn t, {b, frost} ->
-          {b, _} = step!(b, relax.(b))
-          frost = frost || (severity(b, "trauma.thermal.frostbite") == 1 && t)
-          if b.core_k < 35.0 + @c, do: {:halt, {t, b, frost}}, else: {:cont, {b, frost}}
-        end)
-      end
-
-      assert {%Body{}, _} = crossing.(Body.new())
-      {t, b, frost} = crossing.(%{Body.new() | wetness: 1.0})
-      IO.puts("WET_HYPOTHERMIA minutes=#{Float.round(t / 60, 1)} frostbite_min=#{frost && Float.round(frost / 60, 1)} wetness=#{b.wetness} skin_c=#{b.skin_k - @c} reserve_j=#{b.reserve_j}")
-      assert b.wetness < 1.0
-      assert frost && frost < t
-    end
-
-    test "0 °C 水中 10 分钟（浸没 G 45 W/K 接皮肤）后出水到 20 °C 静止空气：出水时湿透，之后湿度只降、皮肤回升" do
-      water = fn b -> %{q_j: 45.0 * (@c - b.skin_k), air_k: 20.0 + @c, immersed: 1.0} end
-      soaked = Enum.reduce(1..600, Body.new(), fn _, b -> step!(b, water.(b)) |> elem(0) end)
-      assert soaked.wetness > 0.999
-      out = Enum.scan(1..(3 * 3600), soaked, fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
-      at = fn s -> Enum.at(out, s - 1) end
-      assert Enum.chunk_every(out, 2, 1, :discard) |> Enum.all?(fn [a, b] -> b.wetness <= a.wetness end)
-      assert at.(3 * 3600).skin_k > soaked.skin_k
-      IO.puts("WET_WATER after_10min skin_c=#{soaked.skin_k - @c} core_c=#{soaked.core_k - @c} | out 30min skin_c=#{at.(1800).skin_k - @c} wet=#{at.(1800).wetness} | 1h skin_c=#{at.(3600).skin_k - @c} wet=#{at.(3600).wetness} | 3h skin_c=#{at.(10_800).skin_k - @c} wet=#{at.(10_800).wetness} core_c=#{at.(10_800).core_k - @c}")
+    test "湿透出水到 20 °C 静止空气：湿度只降，蒸发取走的热使皮肤比干衣时低" do
+      wet = %{Body.new() | wetness: 1.0}
+      out = Enum.scan(1..3600, wet, fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
+      assert Enum.chunk_every([wet | out], 2, 1, :discard) |> Enum.all?(fn [a, b] -> b.wetness <= a.wetness end)
+      assert List.last(out).wetness < 1.0
+      assert List.last(out).skin_k < run(Body.new(), air(20.0 + @c), 3600).skin_k
     end
   end
 end

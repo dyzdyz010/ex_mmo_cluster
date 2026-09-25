@@ -501,7 +501,7 @@ defmodule SceneServer.Movement.Player do
   # 1 Hz：Body 推进 1 s（吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
-  # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步核心-皮肤导热），World 用它们接内部边。
+  # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
   defp body_tick(%{climate: nil} = state), do: state
   defp body_tick(%{state: nil} = state), do: state
 
@@ -527,7 +527,7 @@ defmodule SceneServer.Movement.Player do
         feet: {x, y - profile.half_height, z}, height: 2 * profile.half_height, radius: profile.radius,
         skin_k: body.skin_k, capacity: Body.skin_capacity_j_per_k(), area: Body.params().area_m2,
         tissue_k: body.tissue_k, tissue_capacity: Body.tissue_capacity_j_per_k(),
-        tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.core_to_skin_w_per_m2_k(body)}})
+        tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)}})
 
     report = Body.report(body)
 
@@ -543,6 +543,7 @@ defmodule SceneServer.Movement.Player do
       sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
       air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j,
       tissue_k: body.tissue_k, burn_dose_s: body.burn_dose_s, wetness: body.wetness, drying_j: account.drying_j,
+      heat_content_j: Body.heat_content_j(body),
       sent: report.key != state.body_sent})
 
     %{state | body: body, body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0}, body_sent: report.key}
