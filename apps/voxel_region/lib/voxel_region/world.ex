@@ -495,6 +495,9 @@ defmodule VoxelRegion.World do
           caster_energy: %{},
           # 施法间隔会话（按 Player 进程，断开即忘，不持久化），与工具会话同一 GCRA。
           spell_sessions: %{},
+          # 魔法增量 4：Scene 每秒报来的身体接触（cid => 几何、皮肤温度与本次接触边），派生、不持久化；
+          # 过期（2.5 s 未续报）即丢。身体真值在 Scene（SceneServer.Body）。
+          bodies: %{},
           magic: load_magic(opts),
           material_supplies: %{},
           # 合成账（R8-04）：材料 => 合成造成的累计净单位变化；随日志／检查点持久化。
@@ -1174,11 +1177,29 @@ defmodule VoxelRegion.World do
     {:noreply, schedule_liquid(state)}
   end
 
+  # 魔法增量 4：Scene 的 Player 每秒报一次身体（脚位、身高、半径、皮肤温度与热容、体表面积）；
+  # 本次算出的接触边留到下一次热提交使用，无接触即注销。无热环境的世界忽略。
+  def handle_info({:body_contact, cid, pid, body}, %{thermal: thermal} = state) when thermal != nil do
+    {contacts, immersed, state} = body_contacts(state, body)
+
+    bodies =
+      if contacts == [],
+        do: Map.delete(state.bodies, cid),
+        else: Map.put(state.bodies, cid, Map.merge(body, %{pid: pid, contacts: contacts, immersed: immersed,
+          at: System.monotonic_time(:millisecond)}))
+
+    {:noreply, %{state | bodies: bodies}}
+  end
+
+  def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
+
   def handle_info(:thermal_commit, state) do
     started = System.monotonic_time(:microsecond)
+    now = System.monotonic_time(:millisecond)
+    state = %{state | bodies: Map.filter(state.bodies, fn {_, b} -> now - b.at <= 2_500 end)}
 
     {state, transform_us} =
-      if state.thermal.active or circuit_seeds(state) != [] or semblances(state) != %{} do
+      if state.thermal.active or circuit_seeds(state) != [] or semblances(state) != %{} or state.bodies != %{} do
         state = advance_thermal(state)
         advanced = System.monotonic_time(:microsecond)
         state = transform_heated_materials(state)
@@ -2381,7 +2402,7 @@ defmodule VoxelRegion.World do
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
       :transform_j, :transform_units, :transform_reductant_fuel_j,
       :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j,
-      :semblance_created_j, :semblance_exchanged_j, :semblance_light_j, :semblance_released_j])
+      :semblance_created_j, :semblance_exchanged_j, :semblance_light_j, :semblance_released_j, :body_exchange_j])
     sources = for {cell, source} <- thermal.sources, in_box.(cell), into: %{},
       do: {cell, Map.take(source, [:remaining_j, :power_w])}
     ledger = Map.put(ledger, :sources, sources)
@@ -3726,6 +3747,8 @@ defmodule VoxelRegion.World do
     # 魔法增量 2：已落地拟态的接触宏格与热源同为热种子（plan 只读键）。
     contacts = for {_, %{contact: %{cell: cell}} = s} <- semblances(state), Magic.Semblance.landed?(s),
       into: %{}, do: {cell, nil}
+    # 魔法增量 4：身体接触的世界格同为热种子。
+    contacts = for {_, b} <- state.bodies, {:node, _key, cell, _g} <- b.contacts, into: contacts, do: {cell, nil}
     plan = ThermalWork.plan(state.thermal_work, Map.merge(contacts, state.thermal.sources), powers, state.damage)
     neighborhood_done = System.monotonic_time(:microsecond)
 
@@ -3810,7 +3833,10 @@ defmodule VoxelRegion.World do
     # 拟态是内核外部节点：接在世界节点之后，接触边与辐射项按同一索引追加；结果按世界节点数切分。
     count = length(batch.input)
     {extra, edges, radiation} = semblance_terms(state, semblances, work.indices, ordered, count, radiation)
-    input = batch.input ++ extra
+    bodies = Enum.sort(state.bodies)
+    {body_nodes, body_edges} = body_terms(bodies, work.indices, semblances, count)
+    input = batch.input ++ extra ++ body_nodes
+    edges = edges ++ body_edges
 
     prepared = System.monotonic_time(:microsecond)
 
@@ -3826,7 +3852,8 @@ defmodule VoxelRegion.World do
       )
 
     calculated = System.monotonic_time(:microsecond)
-    {result, semblance_result} = Enum.split(result, count)
+    {result, external} = Enum.split(result, count)
+    {semblance_result, body_result} = Enum.split(external, length(semblances))
 
     {changes, sources, hot, losses, combustion_used} =
       VoxelRegion.ThermalSettlement.apply(batch.targets, result, sources, config, done)
@@ -3874,6 +3901,7 @@ defmodule VoxelRegion.World do
 
     work = if active, do: ThermalWork.burned(%{work | hot: hot}, changes), else: %{ThermalWork.new() | builds: work.builds}
     state = advance_semblances(%{state | damage: damage, thermal: thermal}, semblances, semblance_result, done)
+    state = exchange_bodies(state, bodies, body_edges, body_result, result ++ semblance_result, done)
 
     Logger.info(
       "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} radiation_pairs=#{length(elem(radiation, 0))} sky_faces=#{length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
@@ -3995,6 +4023,97 @@ defmodule VoxelRegion.World do
           do: {id, Map.get(after_map, id)}
 
     if delta == %{}, do: %{}, else: %{semblances: delta}
+  end
+
+  # ---- 魔法增量 4：身体皮肤作为热内核外部节点（接触规则在 BodyContact；身体真值在 Scene）
+  # 节点接在拟态之后：{T_skin, 1, 1, C_skin, 0, 1e6, 暴露 0, 0, 0, true}；接触边只连本次域内的世界节点与在册拟态。
+
+  # 本次报告的接触：脚下偏离环境的实体格、脚所在列与身体竖向重叠的液体格（浸没比例一并回传）、碰到的已落地拟态。
+  defp body_contacts(state, %{feet: {fx, fy, fz} = feet, height: height, radius: radius, area: area}) do
+    config = state.thermal.config
+
+    {sole, state} =
+      case foot_target(state, %{feet: feet}) do
+        {:ok, foot, state} ->
+          m = state.properties.materials[foot.material]
+          t = Map.get(property_state(state, foot), :temperature_kelvin, config["ambient_kelvin"])
+
+          if Phase.liquid?(foot.material) or abs(t - config["ambient_kelvin"]) <= config["tolerance_kelvin"],
+            do: {[], state},
+            else: {[{:node, VoxelRegion.ThermalGeometry.key(foot), Damage.macro(foot),
+                     VoxelRegion.BodyContact.sole(m["thermal_conductivity"], 0.5)}], state}
+
+        {:error, _, state} ->
+          {[], state}
+      end
+
+    {x, z} = {floor(fx), floor(fz)}
+
+    {wet, state} =
+      Enum.flat_map_reduce(floor(fy)..floor(fy + height - 1.0e-9)//1, state, fn y, state ->
+        case target_at({x * @micro + 4, y * @micro, z * @micro + 4}, state) do
+          {%{granularity: 0} = t, state} ->
+            overlap = VoxelRegion.BodyContact.overlap(fy, height, y, finite_volume(state, t))
+
+            if Phase.liquid?(t.material) and overlap > 0,
+              do: {[{overlap, {:node, VoxelRegion.ThermalGeometry.key(t), Damage.macro(t),
+                     VoxelRegion.BodyContact.immersion(area, overlap, height)}}], state},
+              else: {[], state}
+
+          {_, state} ->
+            {[], state}
+        end
+      end)
+
+    touched =
+      for {id, s} <- semblances(state), Magic.Semblance.landed?(s),
+          VoxelRegion.BodyContact.touching?(s.rest, s.radius_m, feet, height, radius),
+          do: {:semblance, id, VoxelRegion.BodyContact.touch(s.radius_m, state.magic.semblance.conductivity)}
+
+    immersed = min(1.0, Enum.sum(Enum.map(wet, &elem(&1, 0))) / height)
+    {sole ++ Enum.map(wet, &elem(&1, 1)) ++ touched, immersed, state}
+  end
+
+  defp body_terms([], _indices, _semblances, _count), do: {[], []}
+
+  defp body_terms(bodies, indices, semblances, count) do
+    first = count + length(semblances)
+    semblance_index = semblances |> Enum.with_index(count) |> Map.new(fn {{id, _}, i} -> {id, i} end)
+
+    edges =
+      for {{_cid, b}, i} <- Enum.with_index(bodies, first), contact <- b.contacts,
+          j = body_peer(contact, indices, semblance_index), j != nil,
+          do: {j, i, elem(contact, tuple_size(contact) - 1)}
+
+    nodes = for {_cid, b} <- bodies, do: {b.skin_k, 1.0, 1.0, b.capacity, 0.0, 1.0e6, 0.0, 0.0, 0.0, true}
+    {nodes, edges}
+  end
+
+  defp body_peer({:node, key, _cell, _g}, indices, _semblances), do: Map.get(indices, key)
+  defp body_peer({:semblance, id, _g}, _indices, semblances), do: Map.get(semblances, id)
+
+  # 一段演进后：身体吸热 q = C_skin·(T_后 − T_前)，记 body_exchange_j 并回传 Scene（同一值两端各记一笔）；
+  # 本段没有连上任何接触边的身体不回传。
+  defp exchange_bodies(state, [], _edges, _result, _others, _done), do: state
+
+  defp exchange_bodies(state, bodies, edges, result, others, done) do
+    others = List.to_tuple(others)
+
+    bodies
+    |> Enum.zip(result)
+    |> Enum.with_index(tuple_size(others))
+    |> Enum.reduce(state, fn {{{_cid, b}, {temperature, _, _}}, i}, state ->
+      touched = for {j, ^i, _g} <- edges, do: elem(elem(others, j), 0)
+
+      if touched == [] do
+        state
+      else
+        q = b.capacity * (temperature - b.skin_k)
+        send(b.pid, {:body_heat, %{q_j: q, max_contact_k: Enum.max(touched), immersed: b.immersed, dt_s: done,
+          seq: state.seq}})
+        %{state | thermal: ledger(state.thermal, :body_exchange_j, q)}
+      end
+    end)
   end
 
   # 一个宏格的热节点几何：canonical 读取留在 owner 内，摘要由 ThermalGeometry 纯函数生成。

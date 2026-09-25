@@ -60,6 +60,8 @@ defmodule SceneServer.Body do
     burn_reference_k: 60.0 + @c,
     burn_doubling_k: 1.32,
     burn_degree_dose_s: [1.0, 2.5, 5.0],
+    # 烧伤影响循环（Magic.md §6.3“影响哪些系统”：深度烧伤体液丢失）：1/2/3 度时循环功能上限
+    burn_circulation_levels: [1.0, 0.9, 0.7],
     # —— 冻伤：接触温度低于组织冰点 −0.55 °C 起累计 K·s ——
     frost_onset_k: -0.55 + @c,
     frostbite_dose_k_s: [600.0]
@@ -107,15 +109,19 @@ defmodule SceneServer.Body do
     do: (1 - @params.skin_mass_fraction) * @params.mass_kg * @params.specific_heat_j_per_kg_k
 
   @doc """
-  三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]。
+  三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤度上限约束
+  （`burn_circulation_levels`，深度烧伤体液丢失）。
 
   首片只有体温这一路写入，故不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
   @spec systems(t()) :: %{thermoregulation: float(), circulation: float(), nervous: float()}
-  def systems(%__MODULE__{core_k: core}) do
+  def systems(%__MODULE__{core_k: core} = body) do
+    burn = Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
+    cap = if burn == 0, do: 1.0, else: Enum.at(@params.burn_circulation_levels, burn - 1)
+
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
-      circulation: level(core, @params.circulation_band),
+      circulation: min(level(core, @params.circulation_band), cap),
       nervous: level(core, @params.nervous_band)
     }
   end
@@ -170,6 +176,18 @@ defmodule SceneServer.Body do
       end
 
     %{body | lethal_s: lethal_s, status: status}
+  end
+
+  @doc """
+  下行视图（Session.BodyState）：生命、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、伤病 `{标签, 严重度}`。
+  `key` 是“有变化”的比较键：温度取 0.1 K，其余原值。
+  """
+  def report(%__MODULE__{} = body) do
+    injuries = Enum.map(injuries(body), &{&1.tag, &1.severity})
+    status = %{alive: 0, dying: 1, dead: 2}[body.status]
+
+    %{life: life(body), status: status, core_k: body.core_k, skin_k: body.skin_k, injuries: injuries,
+      key: {life(body), status, round(body.core_k * 10), round(body.skin_k * 10), injuries}}
   end
 
   defp lethal_level(body) do

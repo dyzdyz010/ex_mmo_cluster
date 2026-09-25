@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 25
+  @protocol_version 26
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -84,6 +84,18 @@ defmodule MmoContracts.Session.Codec do
          transaction_seq: :u64,
          collision_revision: :u64,
          state: :state
+       ]},
+    # 魔法增量 4（Hello 26）：本人身体的推导视图，有变化才发（Voxim Docs/Magic.md §6）。
+    # 生命 0..100、状态 0 存活 / 1 濒死 / 2 死亡、核心与皮肤温度 K、伤病 [标签 utf8, 严重度 u8]。
+    12 =>
+      {Session.BodyState,
+       [
+         identity: :identity,
+         life: :u8,
+         status: :u8,
+         core_k: :f64,
+         skin_k: :f64,
+         injuries: {:array, :u16, {:struct, Session.BodyInjury, [tag: :utf8, severity: :u8]}}
        ]}
   }
 
@@ -200,6 +212,9 @@ defmodule MmoContracts.Session.Codec do
         next.scene_id != old.scene_id and
         next.scene_epoch > 0 and seq > 0 and tick >= seq
   end
+
+  defp accept_m1(%Session.BodyState{life: life, status: status, injuries: injuries}),
+    do: true = life <= 100 and status <= 2 and Enum.all?(injuries, &(&1.severity > 0))
 
   defp accept_m1(_), do: :ok
 end

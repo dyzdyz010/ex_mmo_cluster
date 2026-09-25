@@ -1,6 +1,6 @@
 defmodule MmoContracts.MagicWireTest do
   @moduledoc """
-  只测试：魔法线格式冻结样本（增量 1 起、Hello 25 现行）。0x82 施法意图（上行，大端，目标表示同 0x7D，
+  只测试：魔法线格式冻结样本（增量 1 起、Hello 26 现行）。0x82 施法意图（上行，大端，目标表示同 0x7D，
   增量 2 在粒度后加目标拟态 id）、0x83 施法者状态（下行，大端）与增量 2 PropertyBatch 末尾的拟态记录；
   样本字节逐字段手写，f64 取 IEEE 754 大端位型。
   """
@@ -22,12 +22,12 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 25：Hello 24 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 25
-    hello = %Session.Hello{protocol_version: 25, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 26：Hello 25 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 26
+    hello = %Session.Hello{protocol_version: 26, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 25::16, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<24::16>> <> tail)
+    <<prefix::binary-size(9), 26::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<25::16>> <> tail)
   end
 
   test "0x82 冻结样本解码为施法意图；非法动作、粒度、方向与长度拒绝" do

@@ -5,6 +5,7 @@ defmodule SceneServer.Movement.Player do
   alias MmoContracts.{Session, Movement, Voxel}
   alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock}
   alias VoxelRegion.CollisionStream
+  alias SceneServer.Body
 
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -53,7 +54,14 @@ defmodule SceneServer.Movement.Player do
         stream_cursor: 0,
         window_domains: [],
         requested_window: nil,
-        window_pending: false
+        window_pending: false,
+        # 魔法增量 4：身体真值（Docs/Magic.md §6），会话内存，不持久化（重登 / 冷重启即新身体，已知缺口）。
+        # body_heat = 自上次 1 Hz 推进以来 World 回传的接触热累计；body_exchange_j = 本端收到的接触热总和（与 World 账同值）。
+        body: Body.new(),
+        body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0},
+        body_exchange_j: 0.0,
+        body_sent: nil,
+        ambient_k: nil
       })
 
     state =
@@ -77,6 +85,8 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
+          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :ambient_k]))
+          |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
 
@@ -200,7 +210,10 @@ defmodule SceneServer.Movement.Player do
         :window_domains,
         :requested_window,
         :window_pending,
-        :queued_seq
+        :queued_seq,
+        :body,
+        :body_exchange_j,
+        :ambient_k
       ])
       |> Map.merge(%{
         transaction_seq: state.updates.transaction_seq,
@@ -389,6 +402,14 @@ defmodule SceneServer.Movement.Player do
             property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
             fence(state)
             character_event(state, state, :session_start, %{content_version: content_version})
+            schedule_body()
+
+            state =
+              case Map.get(snapshot, :property_context) do
+                %{thermal_enabled: true, ambient_kelvin: ambient} -> %{state | ambient_k: ambient}
+                _ -> state
+              end
+
             publish(state)
           else
             fail(state, 4)
@@ -453,7 +474,71 @@ defmodule SceneServer.Movement.Player do
     finish(state)
   end
 
+  # 魔法增量 4：World 每段热演化回传的接触热（J）、接触最高温度与浸没比例；下一次 1 Hz 推进时一并吃进 Body。
+  def handle_info({:body_heat, %{q_j: q, max_contact_k: max_k, immersed: immersed} = step}, state) do
+    heat = state.body_heat
+
+    heat = %{heat | q_j: heat.q_j + q, immersed: immersed,
+      max_contact_k: if(heat.max_contact_k, do: max(heat.max_contact_k, max_k), else: max_k)}
+
+    character_event(state, state, :body_heat, Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q}))
+
+    {:noreply, %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q}}
+  end
+
+  def handle_info(:body_tick, %{transfer: transfer} = state) when transfer in [:requested, :sealed],
+    do: {:noreply, state}
+
+  def handle_info(:body_tick, state) do
+    schedule_body()
+    {:noreply, body_tick(state)}
+  end
+
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
+
+  # 1 Hz：Body 推进 1 s（吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
+  # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
+  defp body_tick(%{ambient_k: nil} = state), do: state
+  defp body_tick(%{state: nil} = state), do: state
+
+  defp body_tick(state) do
+    heat = state.body_heat
+    before = state.body.status
+
+    {body, account} =
+      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, max_contact_k: heat.max_contact_k || state.ambient_k,
+        air_k: state.ambient_k, immersed: heat.immersed})
+
+    if body.status != before,
+      do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
+
+    body = if body.status == :dead, do: Body.new(), else: body
+    {x, y, z} = state.state.position
+    profile = state.config.profile
+
+    if authority = Map.get(state, :authority_ref),
+      do: send(authority, {:body_contact, state.id, self(), %{
+        feet: {x, y - profile.half_height, z}, height: 2 * profile.half_height, radius: profile.radius,
+        skin_k: body.skin_k, capacity: Body.skin_capacity_j_per_k(), area: Body.params().area_m2}})
+
+    report = Body.report(body)
+
+    if report.key != state.body_sent do
+      reliable(state, :control, %MmoContracts.Session.BodyState{
+        identity: state.identity, life: report.life, status: report.status, core_k: report.core_k,
+        skin_k: report.skin_k,
+        injuries: for({tag, n} <- report.injuries, do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n})})
+    end
+
+    character_event(state, state, :body_state, %{life: report.life, status: body.status, core_k: body.core_k,
+      skin_k: body.skin_k, injuries: Map.new(report.injuries), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
+      immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
+      sent: report.key != state.body_sent})
+
+    %{state | body: body, body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0}, body_sent: report.key}
+  end
+
+  defp schedule_body, do: Process.send_after(self(), :body_tick, 1_000)
 
   defp input_start(
          %{state: value, ready: true, clock_ready: true, origin: nil, failure: nil} = state

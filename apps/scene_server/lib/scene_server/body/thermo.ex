@@ -10,8 +10,10 @@ defmodule SceneServer.Body.Thermo do
   能量账：本步身体储热变化 `stored_j = q_j + metabolic_j − convection_j − sweat_j`，核心-皮肤之间的内部
   传热两边抵消，不进账。
 
-  未建模（首片已知偏差）：呼吸散热、湿度对出汗蒸发的上限、辐射加热、浸水（`immersed` 字段先保留，
-  水的冷却由世界回传的 `q_j` 体现）。
+  浸没：`immersed` 为浸在液体里的体表比例（World 按身体与液体宏格的竖向重叠算出）；这部分皮肤不与空气换热、
+  不蒸发出汗，与液体的换热由世界回传的 `q_j` 体现。
+
+  未建模（首片已知偏差）：呼吸散热、湿度对出汗蒸发的上限、辐射加热。
   """
 
   alias SceneServer.Body
@@ -20,7 +22,7 @@ defmodule SceneServer.Body.Thermo do
           required(:q_j) => float(),
           required(:max_contact_k) => float(),
           required(:air_k) => float(),
-          optional(:immersed) => boolean()
+          optional(:immersed) => float()
         }
   @type account :: %{
           stored_j: float(),
@@ -37,15 +39,16 @@ defmodule SceneServer.Body.Thermo do
   - `q_j`：世界算出的本步接触热，J，正为身体吸热；
   - `max_contact_k`：本步接触宏格的最高温度，K；**无接触时传空气温度**（低于烧伤阈值、高于冻伤阈值即不累计）；
   - `air_k`：环境空气温度，K；
-  - `immersed`：是否浸水，首片保留不用。
+  - `immersed`：浸在液体里的体表比例 0..1（缺省 0）；空气干热交换与出汗蒸发按 1 − immersed 缩放。
 
   返回 `{body, account}`，`account` 各项单位 J，`convection_j` / `sweat_j` 为正表示身体散热。
   """
   @spec step(Body.t(), float(), inputs()) :: {Body.t(), account()}
-  def step(%Body{} = body, dt, %{q_j: q, max_contact_k: contact_k, air_k: air_k}) do
+  def step(%Body{} = body, dt, %{q_j: q, max_contact_k: contact_k, air_k: air_k} = inputs) do
     p = Body.params()
     level = Body.systems(body).thermoregulation
     area = p.area_m2
+    exposed = area * (1 - Map.get(inputs, :immersed, 0.0))
 
     cold_core = max(p.core_set_k - body.core_k, 0.0)
     warm_core = max(body.core_k - p.core_set_k, 0.0)
@@ -65,10 +68,10 @@ defmodule SceneServer.Body.Thermo do
 
     sweat_w =
       level * p.sweat_g_per_m2_h_k * warm_core * :math.exp(warm_skin / p.sweat_skin_scale_k) *
-        p.latent_j_per_g / 3600 * area
+        p.latent_j_per_g / 3600 * exposed
 
     convection_w =
-      area * (body.skin_k - air_k) /
+      exposed * (body.skin_k - air_k) /
         (p.clothing_m2_k_per_w + 1 / (p.convective_w_per_m2_k + p.radiative_w_per_m2_k))
 
     metabolic_j = (p.metabolic_w_per_m2 * area + shiver_w) * dt
