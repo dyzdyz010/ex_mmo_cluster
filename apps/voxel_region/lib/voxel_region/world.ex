@@ -788,7 +788,7 @@ defmodule VoxelRegion.World do
   def handle_call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
 
   def handle_call({:caster_state, cid}, _, state) do
-    reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0)}, else: {:error, :magic_unavailable}
+    reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0, 0.0)}, else: {:error, :magic_unavailable}
     {:reply, reply, state}
   end
 
@@ -800,7 +800,7 @@ defmodule VoxelRegion.World do
       quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
 
       if request.action == 0,
-        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0)}}, state},
+        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0, quote.windup_s)}}, state},
         else: cast_spell(state, from, actor, request, program, quote)
     else
       false -> {:reply, {:error, :stale_magic_catalog}, state}
@@ -4796,9 +4796,12 @@ defmodule VoxelRegion.World do
   # 施法者能量与蓄能石 stored_j 在同一笔事务里原子改变；施法的热只经 thermal.sources 有限热源进世界，
   # 由热内核按守恒结算。校验失败（间隔、射线、施法域、目标、脚下、权限、目标已有热源）不扣能量、不改世界。
 
-  defp caster_view(state, cid, quote, spent) do
+  # quote_windup_s（Hello 28）：只有报价回复带本次报价的前摇 Σ(T_adj + T_inj)（与施放计时同一 `Cost.quote` 结果），
+  # 登录推送与施放结算后的状态为 0。
+  defp caster_view(state, cid, quote, spent, windup_s) do
     %{seq: state.seq, energy_j: Map.get(state.caster_energy, cid, 0.0), capacity_j: state.magic.capacity_j,
-      coherence: state.magic.coherence, quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent}
+      coherence: state.magic.coherence, quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent,
+      quote_windup_s: windup_s}
   end
 
   # 拟态只能比环境热（吸热 / 制冷待世界书提案）；低于环境温度的程序与其他非法程序同为 invalid_program。
@@ -5122,7 +5125,7 @@ defmodule VoxelRegion.World do
             "cells=#{inspect(effect.cells)} foot=#{inspect(Damage.macro(foot))}"
         )
 
-        {{:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent)}}, next}
+        {{:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent, 0.0)}}, next}
 
       {:error, reason} ->
         {{:error, reason}, before}

@@ -376,11 +376,13 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   # 魔法增量 1（Hello 24）施法者状态 0x83，大端：request_id u64（登录下发为 0）、world seq u64、
-  # 能量 J、容量 J、相干度、最近一次报价总支出 J、报价结构权重 S、本次实际支出 J（报价与登录为 0），均为 f64。
+  # 能量 J、容量 J、相干度、最近一次报价总支出 J、报价结构权重 S、本次实际支出 J（报价与登录为 0），
+  # Hello 28 末尾追加本次报价的前摇 s（非报价推送为 0），均为 f64。
   def encode({:voxel_caster_state, t}) do
     {:ok,
      <<0x83, t.request_id::64, t.seq::64, t.energy_j::float-64, t.capacity_j::float-64,
-       t.coherence::float-64, t.quote_j::float-64, t.quote_s::float-64, t.spent_j::float-64>>}
+       t.coherence::float-64, t.quote_j::float-64, t.quote_s::float-64, t.spent_j::float-64,
+       t.quote_windup_s::float-64>>}
   end
 
   def encode({:voxel_property_state, t}) do

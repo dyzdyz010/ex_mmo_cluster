@@ -93,6 +93,19 @@ defmodule VoxelRegion.MagicWindupWorldTest do
 
   defp settle(c, record), do: send(c.w, {:settle_cast, @cid, record.t0_us})
 
+  # Hello 28：报价回复带本次程序前摇（契约 §2 手算表：远程点火 0.891983 s、取能 0.526861 s），报价不结算、不产生待施放。
+  test "报价带前摇：远程点火 0.89198349 s、取能 0.52686110 s；不扣能量、无待施放", c do
+    for {program, windup} <- [{heat(), 0.89198349452}, {draw(), 0.52686110483}] do
+      {actor, request} = request(c, @leaf_micro, program, 1_000_000, 0)
+      assert {:ok, %{outcome: nil, caster: caster}} = World.spell_intent(c.w, actor, request)
+      rel(caster.quote_windup_s, windup)
+      assert caster.spent_j == 0.0
+    end
+
+    assert observe(c.w).casts == %{}
+    assert energy(c) == 0.0
+  end
+
   test "前摇：点火通过校验后不结算，广播施放记录（各步时长同手算、出发点 = 手边、程序字节原样）；真实定时器到期后结算并广播 live=0", c do
     {a, r} = request(c, @stone_micro, draw(), 1_000_000)
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(c.w, a, r)
@@ -137,6 +150,8 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert settle_seq > start_seq
     rel(caster.spent_j, 402_292.5445548)
     rel(energy(c), 496_653.7332355)
+    # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
+    assert caster.quote_windup_s == 0.0
     assert_receive {:canonical_delta, %{transaction_seq: ^settle_seq, transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}}}}, 5_000
     s = observe(c.w)
     assert s.casts == %{}

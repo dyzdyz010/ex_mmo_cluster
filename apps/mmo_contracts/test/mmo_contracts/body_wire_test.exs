@@ -30,11 +30,11 @@ defmodule MmoContracts.BodyWireTest do
     ]
   }
 
-  test "Hello 27：Hello 26 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 27
-    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 27, kernel_id: <<1::256>>, profile_id: <<2::256>>})
-    <<prefix::binary-size(9), 27::16, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<26::16>> <> tail)
+  test "Hello 28：Hello 27 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 28
+    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 28, kernel_id: <<1::256>>, profile_id: <<2::256>>})
+    <<prefix::binary-size(9), 28::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<27::16>> <> tail)
   end
 
   test "BodyState 冻结样本：编码逐字节相等、解码还原" do

@@ -1,6 +1,6 @@
 defmodule MmoContracts.MagicWireTest do
   @moduledoc """
-  只测试：魔法线格式冻结样本（增量 1 起、Hello 27 现行）。0x82 施法意图（上行，大端，目标表示同 0x7D，
+  只测试：魔法线格式冻结样本（增量 1 起、Hello 28 现行）。0x82 施法意图（上行，大端，目标表示同 0x7D，
   增量 2 在粒度后加目标拟态 id）、0x83 施法者状态（下行，大端）与增量 2 PropertyBatch 末尾的拟态记录；
   样本字节逐字段手写，f64 取 IEEE 754 大端位型。
   """
@@ -22,12 +22,12 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 27：Hello 26 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 27
-    hello = %Session.Hello{protocol_version: 27, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 28：Hello 27 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 28
+    hello = %Session.Hello{protocol_version: 28, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 27::16, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<26::16>> <> tail)
+    <<prefix::binary-size(9), 28::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<27::16>> <> tail)
   end
 
   test "0x82 冻结样本解码为施法意图；非法动作、粒度、方向与长度拒绝" do
@@ -63,20 +63,22 @@ defmodule MmoContracts.MagicWireTest do
     assert {:error, :invalid_message} = Codec.decode(@spell <> <<0>>)
   end
 
+  # Hello 28：末尾追加报价前摇 quote_windup_s（f64，这里 1.5 s = 3FF8000000000000），其余字段位置不变。
   test "0x83 施法者状态编码为冻结字节" do
     state = %{request_id: 9, seq: 10, energy_j: 898_000.0, capacity_j: 5.0e6, coherence: 4.0,
-      quote_j: 2000.0, quote_s: 1.0, spent_j: 2000.0}
+      quote_j: 2000.0, quote_s: 1.0, spent_j: 2000.0, quote_windup_s: 1.5}
 
     expected =
       Base.decode16!(
         "83" <> "0000000000000009" <> "000000000000000A" <> "412B67A000000000" <> "415312D000000000" <>
-          "4010000000000000" <> "409F400000000000" <> "3FF0000000000000" <> "409F400000000000"
+          "4010000000000000" <> "409F400000000000" <> "3FF0000000000000" <> "409F400000000000" <>
+          "3FF8000000000000"
       )
 
     assert Codec.is_message({:voxel_caster_state, state})
     assert {:ok, bytes} = Codec.encode({:voxel_caster_state, state})
     assert IO.iodata_to_binary(bytes) == expected
-    assert byte_size(expected) == 1 + 8 + 8 + 6 * 8
+    assert byte_size(expected) == 1 + 8 + 8 + 7 * 8
   end
 
   # 拟态记录（每条 134 B，大端，按 id 升序）：删除 {5, 2}；存在 {9, 0}——施法者 1001、球、半径 0.4 m、2000 K、

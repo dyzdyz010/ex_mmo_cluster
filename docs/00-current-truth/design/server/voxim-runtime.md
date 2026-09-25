@@ -69,6 +69,7 @@ flowchart LR
 - **待施放**：施放意图先做立即校验（间隔、目标、施法域、脚下、权限），失败立即拒绝；通过后 World 记 `pending_casts`（cid ⇒ 记录、调用方、开始时的施法者与意图），提交一笔只带 `casts` 的事务（日志里是空事务，保持 seq 连续），按 ⌈前摇 ms⌉ 定时 `{:settle_cast, cid, t0_us}`。到期用开始时的施法者与意图重做同一校验并走原结算路径（走火在此判定）；结算事务带 `casts: %{cid => live 0, outcome 0/1}`，结算时校验失败另提交 `outcome 2` 并拒绝、不扣能。前摇中同一施法者再施放 `cast_too_soon`；报价不受影响。`World.spell_intent/3` 的施放调用在结算后才返回；Gate Dispatch 对施放在独立进程里等待（编辑 worker 不被占住），因此紧挨着的两次施放到达 World 的先后不保证等于发送顺序。
 - **不持久化**：`casts` 不进日志、检查点、回放尾与 Replica 保留的增量；冷重启丢失待施放、未扣能。
 - **下行**：PropertyBatch 末尾（拟态之后）新增 `casts` 字节段（`Voxel.Codec.encode_casts/1`，按施法者升序）；完整批次为窗口内全部待施放（按手边出发点宏格投影），增量批次为本事务变化（已结算记录总保留）。Hello 26 → 27。
+- **报价前摇**（分支 `quote-windup`，Hello 27 → 28）：0x83 施法者状态末尾追加 `quote_windup_s`（f64 大端）= 报价程序的前摇 Σ(T_adj + T_inj)，取自与施放计时同一次 `Cost.quote` 的 `windup_s`；只有报价回复（0x82 action 0）非零，登录推送与施放结算后的状态为 0。0x83 以外布局不变。
 - 复跑：`apps/voxel_region` 下 `mix test test/magic_test.exs test/magic_semblance_test.exs test/magic_windup_world_test.exs test/magic_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test test/gate_server/voxim_spell_dispatch_test.exs`。
 
 ## 活跃兼容边界

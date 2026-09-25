@@ -124,6 +124,8 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     # 支出 = E_phys 1 706 994 + E_loss 14 256.0775635 = 1 721 250.0775635 J（手算见 magic_semblance_test）；余 77 696.2002268 J。
     assert_in_delta caster.spent_j, 1_721_250.0775635, 1.0e-3
     assert_in_delta caster.energy_j, 77_696.2002268, 1.0e-3
+    # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
+    assert caster.quote_windup_s == 0.0
     s = observe(c.w)
     ball = s.semblances[{seq, 0}]
     assert {ball.caster, ball.shape, ball.capacity, ball.kinetic_j} == {@cid, 0, 1000.0, 144.0}
@@ -143,6 +145,24 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     closed?(burning)
     assert ledger(burning, :semblance_exchanged_j) > 0
     IO.puts("SEMBLANCE_IGNITE burning_at_s=#{burning.thermal.elapsed_s - s0.thermal.elapsed_s} ball_k=#{ball.temperature_k} leaf_k=#{cell(burning, {0, 2, 3}).temperature_kelvin}")
+  end
+
+  # Hello 28：报价（action 0）的施法者状态带本次程序前摇 Σ(T_adj + T_inj)，与施放计时同一 `Cost.quote`；
+  # 期望取前摇契约 §2 手算表（环境 293.15 K，推导见 magic_semblance_test）：炽热投掷 2.285945 s、光球 0.639569 s、驱散 1.053722 s。
+  # 登录推送（caster_state）为 0；报价不扣能量、不改世界。
+  test "报价带前摇：炽热投掷、光球、驱散按手算表；登录状态为 0；报价不扣能量", c do
+    assert {:ok, %{quote_windup_s: +0.0}} = World.caster_state(c.w, @cid)
+    seq = World.seq(c.w)
+
+    for {program, windup} <- [{c.presets["hot_throw"], 2.2859448725}, {c.presets["light_orb"], 0.63956855593},
+                              {c.presets["dispel"], 1.0537222097}] do
+      assert {:ok, %{outcome: nil, caster: caster}} = cast(c, program, @forward, at: 1_000_000, action: 0)
+      assert_in_delta caster.quote_windup_s, windup, 1.0e-6 * windup
+      assert caster.spent_j == 0.0
+    end
+
+    assert World.seq(c.w) == seq
+    assert energy(c) == 0.0
   end
 
   # 树冠：命中叶与 7 片相邻叶连成一团（叶–叶接触 G = 1/(0.5/50 + 0.5/50) = 50 W/K 每面），热被邻叶分走，
