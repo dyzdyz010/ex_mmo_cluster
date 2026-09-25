@@ -18,11 +18,12 @@ defmodule SceneServer.Body.ThermoTest do
 
   defp air(k), do: %{q_j: 0.0, max_contact_k: k, air_k: k}
 
-  # 推进一步并核对能量账：储热变化 = 两节点热容 × 温升 = q + 代谢 − 干热散失 − 出汗。
+  # 推进一步并核对能量账：储热变化 = 两节点热容 × 温升 = q + 代谢 − 干热散失 − 出汗；寒战热 = 储备减少量。
   defp step!(body, inputs, dt \\ 1.0) do
     {next, account} = Thermo.step(body, dt, inputs)
     stored = @skin_c * (next.skin_k - body.skin_k) + @core_c * (next.core_k - body.core_k)
     assert_in_delta account.stored_j, stored, 1.0e-6
+    assert_in_delta account.shiver_j, body.reserve_j - next.reserve_j, 1.0e-6
 
     assert_in_delta account.stored_j,
                     account.q_j + account.metabolic_j - account.convection_j - account.sweat_j,
@@ -213,6 +214,87 @@ defmodule SceneServer.Body.ThermoTest do
       assert List.last(hypo) == 0
       assert hypo == Enum.sort(hypo, :desc)
       assert Enum.all?(states, &(severity(&1, "trauma.thermal.burn") == 2))
+    end
+  end
+
+  describe "寒战储备（糖原 450 g × 17 kJ/g = 7.65 MJ）" do
+    @full 7_650_000.0
+
+    test "寒战热全部取自储备：满储备 5 met 封顶 419.04 W、储备减同值；半储备上限减半 209.52 W；空储备无寒战" do
+      colder = %{Body.new() | core_k: 34.0 + @c, skin_k: 20.0 + @c}
+      assert colder.reserve_j == @full
+
+      {full, account} = step!(colder, air(0.0 + @c))
+      # 需求 19.4 × 14 × 2.8 = 760.48 W/m² > 上限 232.8 → 232.8 × 1.8 = 419.04 W
+      assert_in_delta account.shiver_j, 419.04, 1.0e-9
+      assert_in_delta account.metabolic_j, 104.76 + 419.04, 1.0e-9
+      assert_in_delta full.reserve_j, @full - 419.04, 1.0e-6
+
+      # 半储备：上限 232.8 × 0.5 = 116.4 W/m² → 209.52 W
+      {_, account} = step!(%{colder | reserve_j: @full / 2}, air(0.0 + @c))
+      assert_in_delta account.shiver_j, 209.52, 1.0e-9
+
+      {empty, account} = step!(%{colder | reserve_j: 0.0}, air(0.0 + @c))
+      assert account.shiver_j == 0.0
+      assert_in_delta account.metabolic_j, 104.76, 1.0e-9
+      assert empty.reserve_j == 0.0
+    end
+
+    test "不寒战就不耗储备：20 °C 空气 4 小时后储备仍为满值（储备不随时间自然下降）" do
+      assert run(Body.new(), air(20.0 + @c), 4 * 3600).reserve_j == @full
+    end
+
+    # 手算不动点（静止空气、1 clo、体温调节水平 1）：给皮肤温度 Ts（°C），
+    #   干热散失 L = 6.3558170·(Ts − Ta)，寒战 S = L − 104.76，
+    #   核心-皮肤 G = (5.28 + 1.163·6.3/(1 + 0.5·(34 − Ts)))·1.8，Tc = Ts + L/G，
+    #   寒战需求 19.4·1.8·(34 − Ts)·(36.8 − Tc) 必须等于 S —— 二分求 Ts，得稳态寒战功率 P*。
+    # 储备按 P* 线性下降，直到上限 419.04·R/R_full 低于 P*（拐点 R* = R_full·P*/419.04），之后寒战跟不上、核心下降。
+    defp steady_shiver(ta) do
+      f = fn ts ->
+        l = 6.3558170 * (ts - ta)
+        g = (5.28 + 1.163 * 6.3 / (1 + 0.5 * (34 - ts))) * 1.8
+        tc = ts + l / g
+        {19.4 * 1.8 * (34 - ts) * (36.8 - tc) - (l - 104.76), l - 104.76, tc}
+      end
+
+      {ts, _} =
+        Enum.reduce(1..60, {0.0, 30.0}, fn _, {lo, hi} ->
+          mid = (lo + hi) / 2
+          if elem(f.(mid), 0) > 0, do: {mid, hi}, else: {lo, mid}
+        end)
+
+      {_, p, tc} = f.(ts)
+      {ts, tc, p}
+    end
+
+    test "−25 °C 静止空气、1 clo：储备按手算稳态寒战功率下降，越过拐点后才失温；每步寒战热 = 储备减少" do
+      {ts, tc, p} = steady_shiver(-25.0)
+      # 手算：Ts ≈ 13.62 °C、Tc ≈ 36.60 °C、P* ≈ 140.7 W；拐点 R* = 7.65 MJ × 140.7/419.04 ≈ 2.57 MJ
+      assert_in_delta ts, 13.62, 0.01
+      assert_in_delta tc, 36.60, 0.01
+      assert_in_delta p, 140.7, 0.1
+      knee = @full * p / 419.04
+
+      cold = air(-25.0 + @c)
+      states = Enum.scan(1..(24 * 3600), Body.new(), fn _, b -> step!(b, cold) |> elem(0) end)
+      at = fn s -> Enum.at(states, s - 1) end
+
+      assert_in_delta (at.(7200).reserve_j - at.(28_800).reserve_j) / 21_600, p, p * 0.01
+      assert Enum.all?(states, &(&1.reserve_j < 1.05 * knee or &1.core_k >= 36.5 + @c))
+
+      hypo = Enum.find_index(states, &(&1.core_k < 35.0 + @c))
+      assert hypo != nil
+      assert at.(hypo + 1).reserve_j < knee
+    end
+
+    test "−25 °C 区温地面（无接触时接触温度 = 空气）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
+      cold = air(-25.0 + @c)
+      b24 = run(Body.new(), cold, 24)
+      assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
+      assert severity(b24, "trauma.thermal.frostbite") == 0
+      {b25, _} = step!(b24, cold)
+      assert_in_delta b25.frost_dose_k_s, 611.25, 1.0e-6
+      assert severity(b25, "trauma.thermal.frostbite") == 1
     end
   end
 end

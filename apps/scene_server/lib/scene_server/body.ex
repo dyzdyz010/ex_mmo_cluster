@@ -9,6 +9,9 @@ defmodule SceneServer.Body do
   - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
+  另存寒战燃料储备 `reserve_j`（糖原，J）：寒战产热的唯一来源，有限、只减不自然恢复（进食补充待食物系统）。
+  身体（含储备）与其余字段一样不跨登录、死亡后重建为满储备（已知缺口，同 §10.7）。
+
   状态推进由 `SceneServer.Body.Thermo.step/3` 完成；本模块只放数据、参数与推导。
 
   所有参数集中在 `params/0`（首片为模块常量，**待资产化**）。温度一律用开尔文，与
@@ -27,6 +30,10 @@ defmodule SceneServer.Body do
     metabolic_w_per_m2: 58.2,
     shiver_w_per_m2_k2: 19.4,
     shiver_max_w_per_m2: 232.8,
+    # —— 寒战燃料储备（糖原）：成人肝糖原约 100 g + 肌糖原约 350 g ≈ 450 g，氧化热约 17 kJ/g → 7.65 MJ。
+    # 只有寒战（及以后的代谢加速 / 修复）从这里取能；静息代谢不取、储备不随时间自然下降；
+    # 寒战上限按 储备/满储备 线性下降，储备为零即无寒战。进食补充待食物系统（首片不做）。——
+    reserve_full_j: 7_650_000.0,
     # —— 调定点（Gagge 1971）——
     core_set_k: 36.8 + @c,
     skin_set_k: 34.0 + @c,
@@ -72,6 +79,7 @@ defmodule SceneServer.Body do
             burn_dose_s: 0.0,
             frost_dose_k_s: 0.0,
             lethal_s: 0.0,
+            reserve_j: 7_650_000.0,
             status: :alive
 
   @type status :: :alive | :dying | :dead
@@ -81,6 +89,7 @@ defmodule SceneServer.Body do
           burn_dose_s: float(),
           frost_dose_k_s: float(),
           lethal_s: float(),
+          reserve_j: float(),
           status: status()
         }
   @type injury :: %{

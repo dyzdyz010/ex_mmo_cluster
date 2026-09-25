@@ -3,12 +3,13 @@ defmodule SceneServer.Body.Thermo do
   身体体温的一步推进（Gagge 两节点模型的简化版，显式欧拉）。
 
   - 皮肤节点：吸收世界回传的接触热 `q_j`，经服装与空气做干热交换（对流 + 线性化辐射），出汗蒸发散热；
-  - 核心节点：静息代谢 + 寒战产热，经组织导热与皮肤血流把热送到皮肤；
+  - 核心节点：静息代谢 + 寒战产热，经组织导热与皮肤血流把热送到皮肤；寒战产热全部取自有限的糖原储备
+    `reserve_j`，寒战上限按 储备/满储备 线性下降（储备为零即无寒战；上限饱和后储备按指数趋零）；
   - 体温调节（血管舒缩、寒战、出汗）按 `SceneServer.Body.systems/1` 的体温调节功能水平缩放；
   - 接触温度累计烧伤 / 冻伤剂量，最后推进濒死计时。
 
   能量账：本步身体储热变化 `stored_j = q_j + metabolic_j − convection_j − sweat_j`，核心-皮肤之间的内部
-  传热两边抵消，不进账。
+  传热两边抵消，不进账。`metabolic_j` 含寒战 `shiver_j`，后者等于本步储备减少量（储备 → 体热，闭合）。
 
   浸没：`immersed` 为浸在液体里的体表比例（World 按身体与液体宏格的竖向重叠算出）；这部分皮肤不与空气换热、
   不蒸发出汗，与液体的换热由世界回传的 `q_j` 体现。
@@ -29,7 +30,8 @@ defmodule SceneServer.Body.Thermo do
           q_j: float(),
           metabolic_j: float(),
           convection_j: float(),
-          sweat_j: float()
+          sweat_j: float(),
+          shiver_j: float()
         }
 
   @doc """
@@ -63,8 +65,10 @@ defmodule SceneServer.Body.Thermo do
       (p.tissue_w_per_m2_k + p.blood_w_h_per_l_k * skin_blood) * area *
         (body.core_k - body.skin_k)
 
+    shiver_cap = p.shiver_max_w_per_m2 * body.reserve_j / p.reserve_full_j
+
     shiver_w =
-      level * min(p.shiver_w_per_m2_k2 * cold_skin * cold_core, p.shiver_max_w_per_m2) * area
+      level * min(p.shiver_w_per_m2_k2 * cold_skin * cold_core, shiver_cap) * area
 
     sweat_w =
       level * p.sweat_g_per_m2_h_k * warm_core * :math.exp(warm_skin / p.sweat_skin_scale_k) *
@@ -74,7 +78,8 @@ defmodule SceneServer.Body.Thermo do
       exposed * (body.skin_k - air_k) /
         (p.clothing_m2_k_per_w + 1 / (p.convective_w_per_m2_k + p.radiative_w_per_m2_k))
 
-    metabolic_j = (p.metabolic_w_per_m2 * area + shiver_w) * dt
+    shiver_j = min(shiver_w * dt, body.reserve_j)
+    metabolic_j = p.metabolic_w_per_m2 * area * dt + shiver_j
     core_to_skin_j = core_to_skin_w * dt
     convection_j = convection_w * dt
     sweat_j = sweat_w * dt
@@ -86,7 +91,8 @@ defmodule SceneServer.Body.Thermo do
           body.skin_k +
             (q + core_to_skin_j - convection_j - sweat_j) / Body.skin_capacity_j_per_k(),
         burn_dose_s: body.burn_dose_s + burn_rate(contact_k, p) * dt,
-        frost_dose_k_s: body.frost_dose_k_s + max(p.frost_onset_k - contact_k, 0.0) * dt
+        frost_dose_k_s: body.frost_dose_k_s + max(p.frost_onset_k - contact_k, 0.0) * dt,
+        reserve_j: body.reserve_j - shiver_j
     }
 
     account = %{
@@ -94,7 +100,8 @@ defmodule SceneServer.Body.Thermo do
       q_j: q,
       metabolic_j: metabolic_j,
       convection_j: convection_j,
-      sweat_j: sweat_j
+      sweat_j: sweat_j,
+      shiver_j: shiver_j
     }
 
     {Body.progress(body, dt), account}
