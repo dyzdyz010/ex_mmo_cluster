@@ -7,16 +7,20 @@ defmodule VoxelRegion.Magic.Semblance do
   施法者 caster、形状 shape（0 球 / 1 立方，radius_m 为半径或半边长）、质量 mass_kg、热容 capacity（= 质量 × 目录比热，J/K）、
   温度 temperature_k、发光 glow_w、寿命 lifetime_s、已存在模拟时长 age_s、飞行中动能 kinetic_j、
   运动 origin / velocity / t0_us（服务端墙钟 µs，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
-  接触 contact（nil 或 `%{target, key, cell}`：落点所在热节点）。solid 恒为 false（实体拟态是增量 5）。
+  命中 contact（nil 或 `%{target, key, cell}`：弹道命中的热节点，只用作到期 / 驱散时剩余能量的落点）。solid 恒为 false（实体拟态是增量 5）。
 
   - 弹道：先走眼 → 手直线段，再自手边按 p(t) = hand + v·t − ½·g·t²·ŷ（g = 9.81 m/s²，Y-up）以 0.05 s 弦段求交；
     命中面精确解出穿越时刻（x/z 面线性、y 面二次），拟态中心停在命中点沿面法线外移一个半径处。施法时对当时世界求交，
     之后世界变化不改弹道（已知偏差：运动学、无冲量与反冲、拟态中心点求交而非扫掠球体）。
   - 落地：飞行动能全部转为拟态自身内能（完全非弹性），ΔT = ½mv²/C。
   - 热节点：`{T, 1, 1, C, k_s, 1e6, 对流暴露面积, 0, 0, true}`（耐热阈值 1e6 K 使 HP 恒不变；无功率、无源余能、恒为活动种子）。
-    接触边导热 G = A / (r / k_s + d / k_o)，与 `ThermalGeometry` 同一串联式（d = 接触节点法向半程）；接触面积
-    A = min(πr², 1) 球 / min(4r², 1) 立方。辐射：球与接触节点之间按球对无限平面的角系数 F = 1/2 互换
-    （εσF·A_exp·(T_s⁴ − T_c⁴)），其余 (1 − F) 对天空；立方体接触面整面导热，其余面全部对天空（F = 0）。
+  - 接触（落地后每段按当前世界重算，不绑定命中格）：拟态的包围立方体（中心 rest、半边 r）与每个热节点的实占用盒
+    （`ThermalGeometry.bounds/2`）贴面或重叠即接触；接触法向取重叠最小的轴，接触面积 = 其余两轴重叠
+    （`ThermalGeometry.overlap/3`）× 形状系数（球 π/4 = 内切圆占外切正方形投影，立方体 1）。于是完整落在一个宏格面上的
+    球接触面积为 πr²，跨格边界的球按各格实际重叠面积分到多条边。每条边导热 G = A / (r / k_s + d / k_o)，与
+    `ThermalGeometry` 同一串联式（d = 该节点沿接触法向的半程）。
+  - 辐射：球与接触节点之间按球对无限平面的角系数 F = 1/2 互换（εσF·A_exp·(T_s⁴ − T_c⁴)，A_exp = 总表面 − 接触面积之和），
+    多条接触时按接触面积比例分摊，其余 (1 − F) 对天空；立方体接触面整面导热，其余面全部对天空（F = 0）。
     飞行中或无接触时全部暴露面对天空。
   - 剩余能量 = C·(T − T_amb) + 飞行中动能 + 发光余量 glow_w·(lifetime − age)。发光按 W·dt 计入光账（不进热账），
     寿命到期（即发光预算耗尽）移除，剩余能量作为有限热源释放。
@@ -28,6 +32,10 @@ defmodule VoxelRegion.Magic.Semblance do
   @view_factor %{0 => 0.5, 1 => 0.0}
   # 数值容差：累加的模拟时长与落点 / 寿命端点对齐判定。
   @epsilon 1.0e-9
+  # 贴面判据（m）：落点 = 命中面 ± 半径，包围立方体的贴面只差浮点舍入。
+  @touch 1.0e-9
+  # 接触面积 = 包围立方体投影重叠 × 形状系数：球取内切圆占外切正方形的 π/4，立方体整面。
+  @footprint %{0 => :math.pi() / 4, 1 => 1.0}
 
   @doc "重力加速度（m/s²，Y-up 向下）；弹道与客户端插值共用。"
   def gravity, do: @gravity
@@ -173,33 +181,51 @@ defmodule VoxelRegion.Magic.Semblance do
   @doc "发光余量 glow_w·(lifetime − age)。"
   def glow_j(s), do: s.glow_w * max(s.lifetime_s - s.age_s, 0.0)
 
-  @doc "{总表面积, 接触面积}（m²）。"
-  def areas(%{shape: 0, radius_m: r}), do: {4 * :math.pi() * r * r, min(:math.pi() * r * r, 1.0)}
-  def areas(%{shape: 1, radius_m: r}), do: {24 * r * r, min(4 * r * r, 1.0)}
+  @doc "总表面积（m²）：球 4πr²，立方体 24r²（半边 r）。"
+  def surface(%{shape: 0, radius_m: r}), do: 4 * :math.pi() * r * r
+  def surface(%{shape: 1, radius_m: r}), do: 24 * r * r
 
-  @doc "热内核外部节点元组；`touching` 为是否与接触节点连边（接触面不对流）。"
-  def node(s, conductivity, touching) do
-    {total, contact} = areas(s)
-    exposed = if touching, do: total - contact, else: total
-    {s.temperature_k, 1.0, 1.0, s.capacity, conductivity, 1.0e6, exposed, 0.0, 0.0, true}
+  @doc "包围立方体 {低角, 高角}（m）：中心 rest、半边 radius_m。"
+  def box(%{rest: {x, y, z}, radius_m: r}), do: {{x - r, y - r, z - r}, {x + r, y + r, z + r}}
+
+  @doc "接触候选宏格：包围立方体覆盖或贴面的全部宏格（热内核的种子与接触查找范围）。"
+  def span(s) do
+    {lo, hi} = box(s)
+    [xs, ys, zs] = for i <- 0..2, do: floor(elem(lo, i) - @touch)..floor(elem(hi, i) + @touch)//1
+    for x <- xs, y <- ys, z <- zs, do: {x, y, z}
   end
 
-  @doc "接触边导热 G = A / (r / k_s + d / k_o)（W/K）；任一导热率为 0 时不导热。"
-  def conductance(s, conductivity, other_k, other_half) do
-    {_, area} = areas(s)
-    if conductivity == 0 or other_k == 0, do: 0.0, else: area / (s.radius_m / conductivity + other_half / other_k)
+  @doc """
+  与一个实占用盒 `{低角, 高角}` 的接触：`{面积 m², 法向轴}`，不接触为 nil。任一轴分离即不接触；贴面或重叠时取重叠最小的轴
+  为法向（贴面时该轴重叠为 0），面积 = 其余两轴重叠 × 形状系数。
+  """
+  def contact(s, other) do
+    {lo, hi} = cube = box(s)
+    {blo, bhi} = other
+    {depth, axis} = for(i <- 0..2, do: min(elem(hi, i), elem(bhi, i)) - max(elem(lo, i), elem(blo, i))) |> Enum.with_index() |> Enum.min()
+    area = VoxelRegion.ThermalGeometry.overlap(cube, other, axis) * @footprint[s.shape]
+    if depth >= -@touch and area > 0, do: {area, axis}
   end
 
-  @doc "辐射项 {与接触节点互换的 εF·A_exp（无接触为 0）, 对天空 ε(1 − F)·A_exp}；ε 取热环境发射率。"
-  def radiation(s, emissivity, touching) do
-    {total, contact} = areas(s)
+  @doc "热内核外部节点元组；`contact` 为本段全部接触面积之和（接触面不对流）。"
+  def node(s, conductivity, contact),
+    do: {s.temperature_k, 1.0, 1.0, s.capacity, conductivity, 1.0e6, max(surface(s) - contact, 0.0), 0.0, 0.0, true}
 
-    if touching do
-      exposed = total - contact
+  @doc "一条接触边导热 G = A / (r / k_s + d / k_o)（W/K）；任一导热率为 0 时不导热。"
+  def conductance(s, conductivity, other_k, other_half, area),
+    do: if(conductivity == 0 or other_k == 0, do: 0.0, else: area / (s.radius_m / conductivity + other_half / other_k))
+
+  @doc """
+  辐射项 {与全部接触节点互换的 εF·A_exp 合计, 对天空 ε(1 − F)·A_exp}；`contact` 为接触面积之和，为 0 时全部对天空。
+  互换项由调用方按各接触面积比例分摊；ε 取热环境发射率。
+  """
+  def radiation(s, emissivity, contact) do
+    if contact > 0 do
+      exposed = max(surface(s) - contact, 0.0)
       f = @view_factor[s.shape]
       {emissivity * f * exposed, emissivity * (1 - f) * exposed}
     else
-      {0.0, emissivity * total}
+      {0.0, emissivity * surface(s)}
     end
   end
 

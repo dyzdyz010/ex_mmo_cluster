@@ -131,7 +131,8 @@ defmodule VoxelRegion.ThermalGeometry do
     {if(touching,do: overlap(bounds,patch,axis),else: 0.0),(elem(high,axis)-elem(low,axis))/2}
   end
 
-  defp overlap({alo,ahi},{blo,bhi},normal) do
+  @doc "两盒在法向轴以外两轴上的重叠面积（m²）；任一轴不重叠为 0。"
+  def overlap({alo,ahi},{blo,bhi},normal) do
     for axis<-0..2,axis != normal,reduce: 1.0 do
       area->area*max(0.0,min(elem(ahi,axis),elem(bhi,axis))-max(elem(alo,axis),elem(blo,axis)))
     end

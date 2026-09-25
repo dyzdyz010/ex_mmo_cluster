@@ -5,30 +5,33 @@
 
 ```mermaid
 flowchart LR
-  W[World 外部节点<br/>q_j, max_contact_k] --> T[Body.Thermo.step/3]
+  W[World 外部节点<br/>q_j, tissue_j] --> T[Body.Thermo.step/3]
   A[环境空气 air_k] --> T
-  T --> B[%Body{}<br/>core_k skin_k 剂量 lethal_s status]
+  T --> B[%Body{}<br/>core_k skin_k tissue_k wetness 剂量 lethal_s status]
   B --> S[systems/1] --> L[life/1]
   B --> I[injuries/1]
   B --> P[progress/2 濒死计时]
 ```
 
-- `SceneServer.Body`：状态字段只有 `core_k`、`skin_k`、`burn_dose_s`、`frost_dose_k_s`、`lethal_s`、`status`；
-  系统功能水平、生命值、伤病表全部由它们推导，不另存。
-- `SceneServer.Body.Thermo.step(body, dt, %{q_j, max_contact_k, sole_k, air_k, wind_mps, immersed})` → `{body, account}`，
-  `account.stored_j = q_j + metabolic_j − convection_j − sweat_j`（J）。
+- `SceneServer.Body`：状态字段 `core_k`、`skin_k`、`tissue_k`（局部接触组织块）、`wetness`（衣物湿度）、`burn_dose_s`、
+  `frost_dose_k_s`、`lethal_s`、`reserve_j`、`status`；系统功能水平、生命值、伤病表全部由它们推导，不另存。
+- `SceneServer.Body.Thermo.step(body, dt, %{q_j, tissue_j, air_k, wind_mps, immersed})` → `{body, account}`，
+  `account.stored_j = q_j + metabolic_j − convection_j − sweat_j − drying_j`（J）= C_core·ΔT_core + C_skin·ΔT_skin + C_tissue·ΔT_tissue。
 
 ## 接入（魔法首片增量 4 后半）
 
 - `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
   吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`，
-  区表随 World 快照的 `property_context.climate_zones` 到达；无鞋底接触时 `sole_k` = 空气温度，即脚下是区温地面）→ 把脚位、身高、半径、皮肤温度与热容、
-  体表面积报给 World（`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/1`）有变化才下发 `Session.BodyState`
-  （kind 12，Hello 26）。死亡由系统重建身体（复活后虚弱待做）；玩家暂无传送复活路径。
-- World 把皮肤当热内核外部节点（暴露面积 0），接触导热在 `VoxelRegion.BodyContact`（鞋底 / 浸没 / 触碰拟态），
-  每段演进回传 `{:body_heat, %{q_j, sole_k, max_contact_k, immersed, dt_s, seq}}`（鞋底格温度与其余裸接触最高温分两路，
-  没有即 nil）并记 `body_exchange_j`；Player 收到的累计
-  与 World 账同值（`body_state` / `body_heat` 日志里的 `body_exchange_j`）。
+  区表随 World 快照的 `property_context.climate_zones` 到达）→ 把脚位、身高、半径、皮肤温度与热容、体表面积、组织块温度 /
+  热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.core_to_skin_w_per_m2_k/1`）报给 World（`{:body_contact, cid, pid, …}`）
+  → 推导视图（`Body.report/1`）有变化才下发 `Session.BodyState`（kind 12，Hello 26，本次未改）。死亡由系统重建身体
+  （复活后虚弱待做）；玩家暂无传送复活路径。
+- World 把皮肤与组织块当热内核的两个外部节点（暴露面积 0），两者之间一条内部边；接触导热在 `VoxelRegion.BodyContact`
+  （鞋底、触碰拟态接组织块，浸没接皮肤）。无接触但组织块与皮肤温差超过热容差时也登记（只走内部边趋同），平衡后注销。
+  每段演进回传 `{:body_heat, %{q_j, tissue_j, tissue_k, sole_k, max_contact_k, immersed, dt_s, seq}}`：`q_j` = 经接触边进身体的
+  热（= C_skin·ΔT_skin + C_tissue·ΔT_tissue），`tissue_j` = 其中存进组织块的部分，`tissue_k` 为段末组织块温度（World 用作下一段
+  起点，下次报告覆盖）；`sole_k` / `max_contact_k` 只是接触温度诊断（进日志，不进剂量）。World 记 `body_exchange_j`；Player 收到的
+  累计与 World 账同值（`body_state` / `body_heat` 日志里的 `body_exchange_j`）。
 - 烧伤影响循环：1/2/3 度时循环功能上限 1.0 / 0.9 / 0.7（Magic.md §6.3“影响哪些系统”，深度烧伤体液丢失；原创取值），
   所以三度烧伤生命降到 70 且不回升（伤口撤不回）。
 - 浸没：`immersed` = 浸在液体里的体表比例，空气干热与出汗按 1 − immersed 缩放。
@@ -55,20 +58,47 @@ h_c = max(3.1, 8.3·v^0.6)（风速 0 与引入前逐位相同）；服装热阻
 储备长时间托住核心。敏感度（−25 °C、5 m/s）：0.5 clo 5.1 h、0.2 clo 3.2 h、裸身 2.0 h；储备 50% 3.4 h、25% 100 min、
 10% 72 min、空 60 min。时间尺度要压缩需另行决定（服装 / 储备 / 模型），本切片未改。
 
-冻伤：接触温度累计剂量；**鞋底接触隔着冬靴**（`VoxelRegion.BodyContact` 的 `sole_m2_k_per_w` 0.15 m²·K/W，同一值串联在
-World 的鞋底接触边里）——脚底组织温度取核心 ↔ 地面的稳态分压 `T_脚 = T_地 + (T_核 − T_地)·R_鞋/(1/K_cs + R_鞋)`，
-K_cs 为本步核心-皮肤导热（组织 5.28 + 血流项，W/(m²·K)）。Scene 在没有鞋底接触时把 `sole_k` 设为所在区空气温度（区温地面）。
-−25 °C 冰上 K_cs 最低 5.28 时只有核心 < 30.3 °C 才会冻脚，所以站 −25 °C 冰穿冬靴 12 h 内不冻伤；−40 °C 冰约 11 min 冻伤。
-鞋底热阻敏感度（冻伤到达时刻，−25 °C / −40 °C 冰，5 m/s）：0（裸脚）0.4 / 0.3 min、0.06 4.2 / 1.1 min、0.10 23 / 3.4 min、
-0.12 9.7 h / 5.6 min、0.15 无 / 11.4 min、0.20 无 / 6.6 h。裸接触（浸没液体、触碰拟态）仍直接按接触温度累计：
-手按 −25 °C 冰 25 s 冻伤。Gagge 两节点对冷水浸没偏乐观的局限仍在（实测 0–5 °C 水中 30–60 min 轻度失温）。
+**局部接触组织块（2026-09-25）**：烧伤 / 冻伤剂量只读组织块的演化温度——伤害由真实传入组织的热决定，接触格原始温度
+（`max_contact_k` / `sole_k`）不再进剂量，旧的“核心 ↔ 地面经鞋底的稳态分压”剂量温度已删。组织块 = 鞋底 / 手掌触碰处的皮肤
+组织，面积 0.03 m²（两脚掌着地）× 厚 2 mm（表皮 + 真皮全层）× 1000 kg/m³ = 0.06 kg，热容 209.4 J/K；与皮肤节点之间的导热
+= 0.03 m² × 本步核心-皮肤导热 K_cs（组织导热 5.28 + 皮肤血流项，Gagge；调定点 0.378 W/K，冷时血管收缩到约 0.2，热时升到 1 以上）。
+一个身体一块，鞋底与手触共用（手掌 0.01 m² 的触碰因此被 0.03 m² 的内部导热稀释；按单位面积算，赤脚踩冰与徒手按冰的曲线相同）。
+浸没接皮肤而不接组织块：浸没可达全身（45 W/K），皮肤节点本身就是被浸的那层；若经组织块，冷水冷不了身体。
+
+时长（`contact_test.exs` 逐秒推进，世界一侧用组织块两边导热的解析解扮演 World；World 内核对同一组织块的数值积分由
+voxel_region `body_contact_world_test` 逐段核对到 0.001 K）：
+
+| 场景 | 组织块 | 伤害 |
+|---|---|---|
+| 冬靴站 1296 K 燃木（G_c 0.196 W/K） | 第 11 s 过 44 °C，稳态约 371 °C | 一 / 二 / 三度烧伤：第 28 / 30 / 31 s |
+| 赤脚站 1296 K 燃木（G_c 9 W/K） | 第 1 s 末 75.6 °C | 第 1 s 三度 |
+| 徒手触 2000 K 拟态（G_c 10 W/K，替身里拟态恒温） | 第 1 s 末 112.9 °C | 第 1 s 三度 |
+| 冬靴站 −25 °C 冰（暖区里偏离环境的冰） | 稳在约 15.4 °C | 不冻伤 |
+| 赤脚站 −25 °C 冰（G_c 1.32 W/K） | 第 175 s 降到 −0.55 °C | 第 313 s 冻伤 |
+
+区温地面不进 World 内核（只让有温差的接触进活动集合），所以寒区里站在区温的冰雪上不冷却组织块：脚只随皮肤变冷，
+冻伤要等皮肤本身冻到 −0.55 °C 以下（已知缺口；旧的稳态分压曾近似过这一路）。
+
+**湿衣（2026-09-25）**：`wetness` 0..1 只随浸水与干燥变化（不持久，同身体）。浸在液体里的体表比例 `immersed` 把湿度按 20 s
+时间常数拉向该比例（织物浸没数十秒内吸饱）；衣物热阻在干 1 clo（0.155）与湿透值 0.03 m²·K/W（`VoxelRegion.BodyContact` 的
+湿衣热阻，约干燥的 19%；棉织物湿透约剩一成、羊毛约一半，混纺取中）之间按湿度线性插值。露出水面的湿衣蒸发：
+E = 16.5 K/kPa × h_c × (p_s(T_衣面) − 0.5 × p_s(T_空)) × 露出面积 × 湿度（ASHRAE Fundamentals 第 9 章 Lewis 关系；Magnus 饱和水汽压，
+Alduchov & Eskridge 1996；衣面温度取干热回路分压；空气相对湿度 0.5，气候接口暂无湿度），潜热 2430 J/g 从皮肤取走，记
+`drying_j`；湿透衣物含水 1 kg（1 clo 常规服装约 1–1.5 kg，棉织物沥干后含水约为自重的 50–100%），湿度按蒸发掉的水量下降。
+所以干燥速率随风速（h_c）与气温（饱和水汽压差）变化：−25 °C、5 m/s 湿透身体第一秒蒸发 661 W、湿度每秒降 2.7e-4；
+20 °C 静止空气出水后约 3 小时湿度从 1 降到 0.54。
+
+−25 °C、5 m/s、1 clo、满储备：干衣 8.7 h 失温；**湿透 3.9 h（236.8 min）核心 < 35 °C**，第 58 min 皮肤冻到冰点以下、组织块随之
+冻伤；湿透时干热 1568 W（干衣 551 W）+ 蒸发 661 W，皮肤 5 min 内跌到约 15 °C，但 Gagge 两节点的血管收缩把核心→皮肤导热压到
+约 9.5 W/K、寒战（7.65 MJ 糖原）托住核心，目标“30–60 min 失温”在现有模型下达不到（未压缩时间）。0 °C 水全身浸没 10 min：
+皮肤 14.0 °C、核心 36.68 °C、湿透；出水到 20 °C 静止空气：30 min 皮肤 21.8 °C（湿度 0.93）、1 h 23.0 °C（0.84）、3 h 25.4 °C（0.54）。
 
 ## 模型
 
 Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Fundamentals 第 9 章 two-node model）的
-简化版，显式欧拉：皮肤节点吸收 `q_j`、经服装 + 空气散热、出汗蒸发；核心节点产热（静息 + 寒战），经组织导热
-与皮肤血流传到皮肤。血管舒缩、寒战、出汗按体温调节功能水平缩放。未建模：呼吸散热、湿度对蒸发的上限、
-辐射加热、浸水（`immersed` 保留字段）。1 clo 服装下全局 20 °C 空气稳态核心约 36.9 °C；0 °C 空气中寒战
+简化版，显式欧拉：皮肤节点吸收 `q_j − tissue_j`、经服装 + 空气散热、出汗蒸发、湿衣蒸发；核心节点产热（静息 + 寒战），
+经组织导热与皮肤血流传到皮肤；局部接触组织块只随 World 回传的 `tissue_j` 变化。血管舒缩、寒战、出汗按体温调节功能水平缩放。
+未建模：呼吸散热、湿度对出汗蒸发的上限、附近火焰的辐射加热（站火旁不受热，已知缺口）、湿衣吸水的水温与世界水量。1 clo 服装下全局 20 °C 空气稳态核心约 36.9 °C；0 °C 空气中寒战
 可把核心维持在约 36.7 °C，直到寒战储备降到上限跟不上（见上）。
 
 ## 参数（`Body.params/0`，首片常量，待资产化）
@@ -93,19 +123,19 @@ Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Funda
 | 濒死 | 致命水平 < 0.1 持续 10 s → 濒死，再 120 s → 死亡 | 原创游戏参数；时间压缩系数待定（Magic.md §6.7） |
 | 体温过低 1/2/3 | 核心 < 35 / 32 / 28 °C | 临床分级（轻 32–35、中 28–32、重 < 28） |
 | 体温过高 1/2/3 | 核心 > 38.5 / 40 / 41 °C | 热衰竭 / 热射病 > 40 °C |
-| 烧伤剂量 | 接触 ≥ 44 °C 起，率 2^((T − 60 °C)/1.32 K)，单位 = 60 °C 下的秒 | 拟合 Moritz & Henriques 1947（44 °C 约 6 h 全层坏死）与 CPSC 热水烫伤表（60 °C 约 5 s 三度）两端点：16 K / log2(21600/5) = 1.32 K |
+| 烧伤剂量 | 组织块 ≥ 44 °C 起，率 2^((T − 60 °C)/1.32 K)，单位 = 60 °C 下的秒 | 拟合 Moritz & Henriques 1947（44 °C 约 6 h 全层坏死）与 CPSC 热水烫伤表（60 °C 约 5 s 三度）两端点：16 K / log2(21600/5) = 1.32 K |
 | 烧伤 1/2/3 度 | 剂量 1 / 2.5 / 5 | 三度锚 5 s；一、二度比例为原创取值 |
-| 冻伤剂量 | 接触低于 −0.55 °C（组织冰点）累计 K·s，600 K·s 冻伤 | 冰点为常见临床取值；600 K·s 为原创取值，待校准 |
-| 鞋底（剂量） | 脚底组织温度 = 核心 ↔ 地面经 1/K_cs 与鞋底 0.15 m²·K/W 的稳态分压 | 鞋底值见 `VoxelRegion.BodyContact`（冬靴外底 + 内底）；分压式为两节点模型的原创局部近似，不另建脚节点 |
+| 冻伤剂量 | 组织块低于 −0.55 °C（组织冰点）累计 K·s，600 K·s 冻伤 | 冰点为常见临床取值；600 K·s 为原创取值，待校准 |
+| 局部接触组织块 | 0.03 m² × 2 mm × 1000 kg/m³ = 0.06 kg（209.4 J/K）；与皮肤导热 0.03 m² × K_cs | 两脚掌着地面积；表皮 + 真皮全层约 2 mm（三度烧伤深度）；K_cs 同 Gagge 核心-皮肤导热（组织 + 血流） |
+| 湿衣 | 浸水 20 s 时间常数；湿透热阻 0.03 m²·K/W；含水 1 kg；Lewis 16.5 K/kPa；相对湿度 0.5 | 见上“湿衣”段 |
 
 烧伤 / 冻伤首片按设计“伤口撤不回”：剂量只增不减，严重度不自愈，自然愈合留给后续切片（Magic.md §6.5）。
 体温过低 / 过高随核心温度变化，回到正常带即消失。
 
 ## 测试
 
-`apps/scene_server/test/scene_server/body/thermo_test.exs`：手算单步、能量账每步闭合、20 °C 稳态、0 °C 寒战、
-60 °C / 600 K 烧伤、−10 °C 冻伤、体温伤病与生命推导、濒死 → 死亡、窗口内救回、复温恢复而烧伤保留；
-寒战储备（满 / 半 / 空储备的寒战上限、不寒战不耗储备、−25 °C 空气按手算稳态寒战功率耗储备并越过拐点后失温、
-裸接触 −25 °C 第 25 s 冻伤）；风（风速 0 / 缺省 / 0.1 m/s 逐位相同、5 m/s 与 1 m/s 干热手算、−25 °C 5 m/s 手算稳态寒战与拐点后失温）；
-鞋底（调定点与冷皮肤身体的脚底分压手算、−25 °C 5 m/s 站冰 1 h 不冻伤）。`contact_test.exs`：经鞋底站燃木仍一步三度烧伤。
-气候查询见 voxel_region `climate_test`，寒区热模拟与冷重启通知见 `climate_zone_world_test`。
+`apps/scene_server/test/scene_server/body/thermo_test.exs`：手算单步、能量账每步闭合（三节点 + 湿衣蒸发）、20 °C 稳态、0 °C 寒战、
+组织块温度驱动的烧伤 / 冻伤剂量（60 °C、44 °C、−10 °C、−25 °C；接触温度本身不进剂量）、体温伤病与生命推导、濒死 → 死亡、
+窗口内救回、复温恢复而烧伤保留；寒战储备；风；湿衣（干衣逐位不变、湿透一步手算、浸水时间常数、−25 °C 5 m/s 湿透失温与冻伤、
+0 °C 水中与出水后）。`contact_test.exs`：组织块参数、冬靴 / 赤脚站 1296 K 燃木、徒手触 2000 K 拟态、冬靴 / 赤脚站 −25 °C 冰。
+气候查询见 voxel_region `climate_test`，寒区热模拟与冷重启通知见 `climate_zone_world_test`，World 内核里的组织块见 `body_contact_world_test`。

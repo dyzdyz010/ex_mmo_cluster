@@ -166,10 +166,11 @@ defmodule VoxelRegion.MagicSemblanceTest do
     s = Semblance.new(1, %{"shape" => 0.0, "radius_m" => 0.25, "mass_kg" => 2.0, "temperature_k" => 1293.15,
       "glow_w" => 0.0, "lifetime_s" => 600.0}, c.catalog,
       %{origin: {0.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}, t0_us: 0, flight_s: 0.0, rest: {0.0, 0.0, 0.0}, contact: nil})
-    g = Semblance.conductance(s, c.catalog.semblance.conductivity, 50.0, 0.5)
+    area = :math.pi() * 0.25 * 0.25
+    g = Semblance.conductance(s, c.catalog.semblance.conductivity, 50.0, 0.5, area)
     assert_in_delta g, 18.479957, 1.0e-6
     leaf = {293.15, 20.0, 20.0, 1200.0, 50.0, 1900.0, 0.0, 0.0, 0.0, true}
-    nodes = [leaf, Semblance.node(s, c.catalog.semblance.conductivity, true)]
+    nodes = [leaf, Semblance.node(s, c.catalog.semblance.conductivity, area)]
 
     {done, [{leaf_t, _, _}, {semblance_t, _, _}], supplied, environment} =
       VoxelRegion.ThermalNative.advance(nodes, [{0, 1, g}], 293.15, 0.0, 1.0, 600.0, {[], []})
@@ -179,6 +180,61 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert_in_delta 1200 * (leaf_t - 293.15) + 1000 * (semblance_t - 1293.15), 0.0, 1.0e-6
     assert_in_delta leaf_t, 747.695455, 1.0e-4
     assert_in_delta semblance_t, 747.695455, 1.0e-4
+  end
+
+  # 接触几何（手算）：r = 0.4 m 球的包围立方体边长 0.8 m；完整落在一个宏格面上时面积 = 0.8² × π/4 = 0.5026548 m² = πr²。
+  defp ball_at(rest, shape \\ 0),
+    do: %{shape: shape, radius_m: 0.4, rest: rest}
+
+  defp cell_box({x, y, z}), do: {{x * 1.0, y * 1.0, z * 1.0}, {x + 1.0, y + 1.0, z + 1.0}}
+
+  test "接触几何：同一孤立叶格从侧面（−z 面）与从下方（−y 面）接触，面积同为 πr²、法向各为该面轴；分离即无接触" do
+    leaf = cell_box({0, 2, 3})
+    side = ball_at({0.5, 2.5, 2.6})
+    below = ball_at({0.5, 1.6, 3.5})
+    assert {area, 2} = Semblance.contact(side, leaf)
+    assert_in_delta area, :math.pi() * 0.16, 1.0e-12
+    assert {^area, 1} = Semblance.contact(below, leaf)
+    # 候选宏格：侧面球立方体 x [0.1, 0.9]、y [2.1, 2.9]、z [2.2, 3.0] → 贴面的 z = 3 格在内。
+    assert Semblance.span(side) == [{0, 2, 2}, {0, 2, 3}]
+    # 离面 1 cm：不接触。
+    assert Semblance.contact(ball_at({0.5, 2.5, 2.59}), leaf) == nil
+    # 立方体形状整面：0.8² = 0.64 m²。
+    assert {cube, 2} = Semblance.contact(ball_at({0.5, 2.5, 2.6}, 1), leaf)
+    assert_in_delta cube, 0.64, 1.0e-12
+  end
+
+  test "接触几何：球心停在两叶格的分界上方 → 两条接触边各半面积；压进地面旁的墙格 → 地面与墙各一条（墙按最小重叠轴）" do
+    # 球心 x = 1.0 正在 (0,2,3) 与 (1,2,3) 的分界：x 重叠各 0.4 → 各 0.4 × 0.8 × π/4 = 0.2513274 m²，合计 πr²。
+    ball = ball_at({1.0, 2.5, 2.6})
+    {a, 2} = Semblance.contact(ball, cell_box({0, 2, 3}))
+    {b, 2} = Semblance.contact(ball, cell_box({1, 2, 3}))
+    assert_in_delta a, 0.32 * :math.pi() / 4, 1.0e-12
+    assert_in_delta a + b, :math.pi() * 0.16, 1.0e-12
+    # 落在 y = 1 地面顶面上、球心 x = 0.85：立方体 x [0.45, 1.25] 压进 (1,1,0) 墙格 0.25 m（最小重叠轴 x），
+    # 墙面积 = y 重叠 [1.0, 1.8] 0.8 × z 重叠 0.8 × π/4 = πr²；地面 (0,0,0) 只接 x [0.45, 1.0] 部分：0.55 × 0.8 × π/4。
+    floor_ball = ball_at({0.85, 1.4, 0.5})
+    assert {wall, 0} = Semblance.contact(floor_ball, cell_box({1, 1, 0}))
+    assert_in_delta wall, :math.pi() * 0.16, 1.0e-12
+    assert {ground, 1} = Semblance.contact(floor_ball, cell_box({0, 0, 0}))
+    assert_in_delta ground, 0.55 * 0.8 * :math.pi() / 4, 1.0e-12
+  end
+
+  test "外部节点：一个拟态与两个格按两条接触边、无环境交换时能量守恒，三节点趋热容加权平衡温度", c do
+    # 拟态 C = 1000 J/K、1293.15 K；两格 C = 1200 / 21360 J/K、k = 50 / 25、293.15 K，面积按分界球各半 0.2513274 m²。
+    # 平衡温度 = (1000 × 1293.15 + (1200 + 21360) × 293.15) / 23560 = 335.594652 K。
+    s = Semblance.new(1, %{"shape" => 0.0, "radius_m" => 0.4, "mass_kg" => 2.0, "temperature_k" => 1293.15,
+      "glow_w" => 0.0, "lifetime_s" => 6000.0}, c.catalog,
+      %{origin: {1.0, 2.5, 2.6}, velocity: {0.0, 0.0, 0.0}, t0_us: 0, flight_s: 0.0, rest: {1.0, 2.5, 2.6}, contact: nil})
+    half = 0.32 * :math.pi() / 4
+    k = c.catalog.semblance.conductivity
+    leaf = {293.15, 20.0, 20.0, 1200.0, 50.0, 1900.0, 0.0, 0.0, 0.0, true}
+    stone = {293.15, 20.0, 20.0, 21_360.0, 25.0, 1900.0, 0.0, 0.0, 0.0, true}
+    edges = [{0, 2, Semblance.conductance(s, k, 50.0, 0.5, half)}, {1, 2, Semblance.conductance(s, k, 25.0, 0.5, half)}]
+    {6000.0, [{leaf_t, _, _}, {stone_t, _, _}, {ball_t, _, _}], +0.0, +0.0} =
+      VoxelRegion.ThermalNative.advance([leaf, stone, Semblance.node(s, k, 2 * half)], edges, 293.15, 0.0, 1.0e-3, 6000.0, {[], []})
+    assert_in_delta 1200 * (leaf_t - 293.15) + 21_360 * (stone_t - 293.15) + 1000 * (ball_t - 1293.15), 0.0, 1.0e-3
+    for t <- [leaf_t, stone_t, ball_t], do: assert_in_delta(t, 335.594652, 0.01)
   end
 
   test "一段演进：流出 = C·ΔT；发光按余寿计光；落地时飞行动能转为内能；寿命端点对齐", c do

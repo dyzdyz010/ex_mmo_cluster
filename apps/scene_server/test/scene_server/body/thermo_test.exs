@@ -16,17 +16,22 @@ defmodule SceneServer.Body.ThermoTest do
   @skin_c 24_430.0
   @core_c 219_870.0
 
-  defp air(k), do: %{q_j: 0.0, max_contact_k: k, air_k: k}
+  @tissue_c 209.4
 
-  # 推进一步并核对能量账：储热变化 = 两节点热容 × 温升 = q + 代谢 − 干热散失 − 出汗；寒战热 = 储备减少量。
+  defp air(k), do: %{q_j: 0.0, air_k: k}
+
+  # 推进一步并核对能量账：储热变化 = 三节点热容 × 温升 = q + 代谢 − 干热散失 − 出汗 − 湿衣蒸发；寒战热 = 储备减少量；
+  # 组织块只随 tissue_j 变化。
   defp step!(body, inputs, dt \\ 1.0) do
     {next, account} = Thermo.step(body, dt, inputs)
-    stored = @skin_c * (next.skin_k - body.skin_k) + @core_c * (next.core_k - body.core_k)
+    stored = @skin_c * (next.skin_k - body.skin_k) + @core_c * (next.core_k - body.core_k) +
+      @tissue_c * (next.tissue_k - body.tissue_k)
     assert_in_delta account.stored_j, stored, 1.0e-6
     assert_in_delta account.shiver_j, body.reserve_j - next.reserve_j, 1.0e-6
+    assert_in_delta @tissue_c * (next.tissue_k - body.tissue_k), Map.get(inputs, :tissue_j, 0.0), 1.0e-9
 
     assert_in_delta account.stored_j,
-                    account.q_j + account.metabolic_j - account.convection_j - account.sweat_j,
+                    account.q_j + account.metabolic_j - account.convection_j - account.sweat_j - account.drying_j,
                     1.0e-9
 
     {next, account}
@@ -45,7 +50,7 @@ defmodule SceneServer.Body.ThermoTest do
   describe "能量账与单步手算" do
     test "调定点身体、20 °C 空气、接触吸热 1000 J 的一步" do
       {next, account} =
-        step!(Body.new(), %{q_j: 1000.0, max_contact_k: 30.0 + @c, air_k: 20.0 + @c})
+        step!(Body.new(), %{q_j: 1000.0, air_k: 20.0 + @c})
 
       # 核心→皮肤 22.69242×2.8 = 63.538776 W；干热 6.3558170×14 = 88.981438 W
       assert_in_delta account.metabolic_j, 104.76, 1.0e-9
@@ -101,45 +106,49 @@ defmodule SceneServer.Body.ThermoTest do
     end
   end
 
-  describe "烧伤与冻伤" do
-    test "60 °C 接触每秒累计 1 个剂量单位：1、3、5 秒依次出现 1、2、3 度，只增不减" do
-      hot = %{q_j: 0.0, max_contact_k: 60.0 + @c, air_k: 20.0 + @c}
+  # 剂量读局部接触组织块温度：Scene 里它只随 World 回传的 tissue_j 变化，这里给定组织块温度、tissue_j = 0 即保持该温度。
+  describe "烧伤与冻伤（组织块温度）" do
+    defp held(tissue_c), do: %{Body.new() | tissue_k: tissue_c + @c}
 
+    test "World 回传的 tissue_j 按组织块热容改变其温度，差额进皮肤：tissue_j = 2094 J → 组织块 +10 K" do
+      {next, account} = step!(Body.new(), %{q_j: 3000.0, tissue_j: 2094.0, air_k: 20.0 + @c})
+      assert_in_delta next.tissue_k, 44.0 + @c, 1.0e-9
+      # 皮肤得 3000 − 2094 = 906 J，其余同“调定点、20 °C 空气”一步：+(906 + 63.538776 − 88.981438)/24430
+      assert_in_delta next.skin_k, 34.0 + @c + 880.557338 / 24_430, 1.0e-7
+      assert account.tissue_j == 2094.0
+    end
+
+    test "组织块 60 °C 每秒累计 1 个剂量单位：1、3、5 秒依次出现 1、2、3 度，只增不减" do
       degrees =
-        Enum.scan(1..5, Body.new(), fn _, b -> step!(b, hot) |> elem(0) end)
+        Enum.scan(1..5, held(60.0), fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
         |> Enum.map(&severity(&1, "trauma.thermal.burn"))
 
       assert degrees == [1, 1, 2, 2, 3]
 
-      burnt = run(Body.new(), hot, 5) |> run(air(20.0 + @c), 60)
+      burnt = run(held(60.0), air(20.0 + @c), 5) |> then(&%{&1 | tissue_k: 34.0 + @c}) |> run(air(20.0 + @c), 60)
 
       assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 3, progression: :permanent}] =
                Body.injuries(burnt)
     end
 
-    test "600 K 宏格接触 1 秒即三度烧伤，持续接触后保持三度" do
-      fire = %{q_j: 5000.0, max_contact_k: 600.0, air_k: 20.0 + @c}
-      {one, _} = step!(Body.new(), fire)
-      assert severity(one, "trauma.thermal.burn") == 3
-      assert severity(run(one, fire, 5), "trauma.thermal.burn") == 3
-    end
-
-    test "44 °C 以下接触不累计烧伤；44 °C 需约 1.2 小时才一度" do
-      warm = run(Body.new(), %{q_j: 0.0, max_contact_k: 43.9 + @c, air_k: 20.0 + @c}, 36_000)
-      assert warm.burn_dose_s == 0.0
-
+    test "组织块 44 °C 以下不累计烧伤；44 °C 需约 1.2 小时才一度" do
+      assert run(held(43.9), air(20.0 + @c), 36_000).burn_dose_s == 0.0
       # 44 °C 剂量率 2^(−16/1.32) = 2.2446e-4 /s → 1 小时 0.808 < 1，1.5 小时 1.21 ≥ 1
-      at44 = %{q_j: 0.0, max_contact_k: 44.0 + @c, air_k: 20.0 + @c}
-      assert severity(run(Body.new(), at44, 3600), "trauma.thermal.burn") == 0
-      assert severity(run(Body.new(), at44, 5400), "trauma.thermal.burn") == 1
+      assert severity(run(held(44.0), air(20.0 + @c), 3600), "trauma.thermal.burn") == 0
+      assert severity(run(held(44.0), air(20.0 + @c), 5400), "trauma.thermal.burn") == 1
     end
 
-    test "−10 °C 接触每秒累计 9.45 K·s：63 秒 595.35 未冻伤，64 秒 604.8 冻伤" do
-      ice = %{q_j: 0.0, max_contact_k: -10.0 + @c, air_k: 20.0 + @c}
-      b63 = run(Body.new(), ice, 63)
+    test "组织块 −10 °C 每秒累计 9.45 K·s：63 秒 595.35 未冻伤，64 秒 604.8 冻伤" do
+      b63 = run(held(-10.0), air(20.0 + @c), 63)
       assert severity(b63, "trauma.thermal.frostbite") == 0
-      {b64, _} = step!(b63, ice)
+      {b64, _} = step!(b63, air(20.0 + @c))
       assert severity(b64, "trauma.thermal.frostbite") == 1
+    end
+
+    test "接触温度本身不进剂量：World 报 600 K 接触、但组织块只吸了 20.94 J（+0.1 K），不烧伤" do
+      {b, _} = step!(Body.new(), %{q_j: 57.3, tissue_j: 20.94, air_k: 20.0 + @c})
+      assert_in_delta b.tissue_k, 34.1 + @c, 1.0e-9
+      assert b.burn_dose_s == 0.0
     end
   end
 
@@ -287,9 +296,9 @@ defmodule SceneServer.Body.ThermoTest do
       assert at.(hypo + 1).reserve_j < knee
     end
 
-    test "裸接触 −25 °C（如手按冰，不经鞋底）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
+    test "组织块 −25 °C（如手按冰已冷透）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
       cold = air(-25.0 + @c)
-      b24 = run(Body.new(), cold, 24)
+      b24 = run(%{Body.new() | tissue_k: -25.0 + @c}, cold, 24)
       assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
       assert severity(b24, "trauma.thermal.frostbite") == 0
       {b25, _} = step!(b24, cold)
@@ -340,38 +349,69 @@ defmodule SceneServer.Body.ThermoTest do
     end
   end
 
-  # 鞋底（冬靴 R_鞋 0.15 m²·K/W，VoxelRegion.BodyContact）：脚底组织温度 = 核心 ↔ 地面经 1/K_cs 与 R_鞋 的稳态分压，
-  #   T_脚 = T_地 + (T_核 − T_地)·R_鞋/(1/K_cs + R_鞋)，K_cs = 5.28 + 1.163·皮肤血流。
-  #   调定点身体：血流 6.3 → K_cs = 12.6069；站 −25 °C 冰：T_脚 = 248.15 + 61.8·0.15/(0.0793216 + 0.15) = 288.57357 K（15.4 °C）。
-  #   皮肤 20 °C（冷皮肤 14 K）：血流 6.3/8 → K_cs = 6.1958625；−40 °C 冰 T_脚 = 270.14445 K → 冻伤剂量率 272.6 − 270.14445 = 2.45555；
-  #   −25 °C 冰 T_脚 = 277.91897 K，不累计。血流最低时 K_cs → 5.28：−25 °C 冰上只有核心 < 30.32 °C 才可能冻脚。
-  describe "鞋底隔热" do
-    defp on_ice(k), do: %{q_j: 0.0, max_contact_k: nil, sole_k: k, air_k: k}
-
-    test "调定点身体站 −25 °C 冰一步：T_脚 = 288.574 K，不累计冻伤；同温裸接触则累计 24.45 K·s" do
-      {shod, _} = step!(Body.new(), on_ice(-25.0 + @c))
-      assert shod.frost_dose_k_s == 0.0
-      {bare, _} = step!(Body.new(), air(-25.0 + @c))
-      assert_in_delta bare.frost_dose_k_s, 24.45, 1.0e-9
+  # 湿衣（Body 参数表的依据见 body/README.md）。−25 °C、5 m/s：h_c = 21.800181，空气热阻 1/(21.800181 + 4.7) = 0.03773559；
+  #   湿透衣物热阻 0.03（BodyContact 湿衣热阻）→ 干热 1.8 × 59 / 0.06773559 = 1567.8611 W（干衣 551.01395 W 的 2.85 倍）；
+  #   衣面温度 248.15 + 59 × 0.03773559/0.06773559 = 281.01898 K（7.869 °C），Magnus 饱和水汽压 1.0618333 kPa，
+  #   空气 0.5 × 0.0809761 kPa → 蒸发 16.5 × 21.800181 × (1.0618333 − 0.0404880) × 1.8 = 661.28565 W，
+  #   含水 1 kg、潜热 2430 J/g → 湿度每秒降 661.28565 / 2 430 000 = 2.72134e-4。
+  describe "湿衣" do
+    test "干衣逐位不变：湿度 0 时干热与不引入湿衣前相同，不蒸发" do
+      {_, account} = step!(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0))
+      assert_in_delta account.convection_j, 551.01395, 1.0e-4
+      assert account.drying_j == 0.0
     end
 
-    test "皮肤 20 °C 的身体：−40 °C 冰剂量率 2.45555 K·s/s，−25 °C 冰为 0；裸接触与鞋底同时存在取较高温度" do
-      cold = %{Body.new() | skin_k: 20.0 + @c}
-      {b, _} = step!(cold, on_ice(-40.0 + @c))
-      assert_in_delta b.frost_dose_k_s, 272.6 - 270.14445, 1.0e-4
-      {b, _} = step!(cold, on_ice(-25.0 + @c))
-      assert b.frost_dose_k_s == 0.0
-      # 鞋底在 −40 °C 冰上（T_脚 270.14 K）+ 裸接触 0 °C 水：剂量温度取 273.15 K，高于冻伤阈值 272.6 K
-      {b, _} = step!(cold, %{on_ice(-40.0 + @c) | max_contact_k: 273.15})
-      assert b.frost_dose_k_s == 0.0
+    test "湿透一步（−25 °C、5 m/s）：干热 1567.8611 W、蒸发 661.28565 W 由皮肤付，湿度降 2.72134e-4" do
+      wet = %{Body.new() | wetness: 1.0}
+      {next, account} = step!(wet, Map.put(air(-25.0 + @c), :wind_mps, 5.0))
+      assert_in_delta account.convection_j, 1567.8611, 1.0e-3
+      assert_in_delta account.drying_j, 661.28565, 1.0e-3
+      assert_in_delta next.wetness, 1.0 - 2.72134e-4, 1.0e-8
     end
 
-    test "−25 °C、5 m/s 站区温冰（Scene 无鞋底接触时 sole_k = 区温）1 小时：不冻伤；对照裸接触 25 秒冻伤" do
-      windy = Map.put(on_ice(-25.0 + @c), :wind_mps, 5.0)
-      hour = run(Body.new(), windy, 3600)
-      assert hour.frost_dose_k_s == 0.0
-      assert hour.core_k > 36.5 + @c
-      assert severity(run(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0), 25), "trauma.thermal.frostbite") == 1
+    test "浸水：全身浸没时湿度按 20 s 时间常数趋于湿透（1 − e^(−n/20)），水下不蒸发；只浸一半湿到略低于 0.5" do
+      water = %{q_j: 0.0, air_k: 20.0 + @c, immersed: 1.0}
+      states = Enum.scan(1..20, Body.new(), fn _, b -> step!(b, water) |> elem(0) end)
+      assert_in_delta hd(states).wetness, 0.048770575, 1.0e-9
+      assert_in_delta List.last(states).wetness, 0.632120559, 1.0e-9
+      # 半身浸没：浸水拉向 0.5，露出的一半同时蒸发（20 °C 约 1e-4 /s 量级），平衡点略低于 0.5。
+      half = run(Body.new(), %{water | immersed: 0.5}, 600)
+      assert half.wetness < 0.5 and half.wetness > 0.49
+    end
+
+    # 失温时长（数字由逐秒推进得出，打印供报告；断言只卡相对关系）：同一 −25 °C、5 m/s、1 clo、满储备，
+    # 干衣 8.7 h（见“风”一节），湿透衣物明显更早。组织块无接触时由 World 经内部边拉向皮肤：这里用两节点里组织块一侧的
+    # 解析松弛（皮肤段内视为常数）扮演 World，tissue_j = C_t·(T_皮 − T_组织)·(1 − e^(−G_i/C_t))，G_i = 0.03·K_cs。
+    test "−25 °C、5 m/s 湿透衣物：核心 < 35 °C 早于干衣（干衣 6 小时内不失温）；湿度随蒸发下降；皮肤冻到冰点以下时组织块随之冻伤" do
+      windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
+      relax = fn b ->
+        g = Body.params().contact_tissue_m2 * Thermo.core_to_skin_w_per_m2_k(b)
+        Map.put(windy, :tissue_j, @tissue_c * (b.skin_k - b.tissue_k) * (1 - :math.exp(-g / @tissue_c)))
+      end
+      crossing = fn start ->
+        Enum.reduce_while(1..(6 * 3600), {start, nil}, fn t, {b, frost} ->
+          {b, _} = step!(b, relax.(b))
+          frost = frost || (severity(b, "trauma.thermal.frostbite") == 1 && t)
+          if b.core_k < 35.0 + @c, do: {:halt, {t, b, frost}}, else: {:cont, {b, frost}}
+        end)
+      end
+
+      assert {%Body{}, _} = crossing.(Body.new())
+      {t, b, frost} = crossing.(%{Body.new() | wetness: 1.0})
+      IO.puts("WET_HYPOTHERMIA minutes=#{Float.round(t / 60, 1)} frostbite_min=#{frost && Float.round(frost / 60, 1)} wetness=#{b.wetness} skin_c=#{b.skin_k - @c} reserve_j=#{b.reserve_j}")
+      assert b.wetness < 1.0
+      assert frost && frost < t
+    end
+
+    test "0 °C 水中 10 分钟（浸没 G 45 W/K 接皮肤）后出水到 20 °C 静止空气：出水时湿透，之后湿度只降、皮肤回升" do
+      water = fn b -> %{q_j: 45.0 * (@c - b.skin_k), air_k: 20.0 + @c, immersed: 1.0} end
+      soaked = Enum.reduce(1..600, Body.new(), fn _, b -> step!(b, water.(b)) |> elem(0) end)
+      assert soaked.wetness > 0.999
+      out = Enum.scan(1..(3 * 3600), soaked, fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
+      at = fn s -> Enum.at(out, s - 1) end
+      assert Enum.chunk_every(out, 2, 1, :discard) |> Enum.all?(fn [a, b] -> b.wetness <= a.wetness end)
+      assert at.(3 * 3600).skin_k > soaked.skin_k
+      IO.puts("WET_WATER after_10min skin_c=#{soaked.skin_k - @c} core_c=#{soaked.core_k - @c} | out 30min skin_c=#{at.(1800).skin_k - @c} wet=#{at.(1800).wetness} | 1h skin_c=#{at.(3600).skin_k - @c} wet=#{at.(3600).wetness} | 3h skin_c=#{at.(10_800).skin_k - @c} wet=#{at.(10_800).wetness} core_c=#{at.(10_800).core_k - @c}")
     end
   end
 end

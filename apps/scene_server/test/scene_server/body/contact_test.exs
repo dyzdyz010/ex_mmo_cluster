@@ -1,10 +1,18 @@
 defmodule SceneServer.Body.ContactTest do
   @moduledoc """
-  只测试：魔法增量 4 的身体后果——World 回传的接触热（导热按 `VoxelRegion.BodyContact` 手算，World 侧的回传与两端
-  同值见 voxel_region `body_contact_world_test`）喂进 `Body.Thermo` 后的烧伤、生命、核心与浸没（Voxim Docs/Magic.md §6）。
+  只测试：身体接触后果——World 回传的接触热与局部接触组织块热（导热按 `VoxelRegion.BodyContact` 手算，World 热内核对同一
+  组织块的数值积分与两端同值见 voxel_region `body_contact_world_test`）喂进 `Body.Thermo` 后的烧伤、冻伤、生命与浸没
+  （Voxim Docs/Magic.md §6）。
 
-  手算导热：鞋底（冬靴 R 0.15）踩木 0.03/(0.15 + 0.5/150) = 0.1956522 W/K；0 °C 水全身浸没 1.8/(0.03 + 1/100) = 45 W/K；
-  手碰 r 0.4 m 拟态 0.01/(0.4/400) = 10 W/K。每秒 q = G·(T_接触 − T_皮)（皮肤在 1 s 内变化 < 1 K，按步首值）。
+  World 的角色由解析解替身扮演（每秒一段，段内世界格温度 T_w 与皮肤温度 T_s 视为常数）：组织块热容 C_t = 209.4 J/K，
+  接触导热 G_c，组织块-皮肤导热 G_i = 0.03 m² × K_cs（本步核心-皮肤导热）：
+    k = (G_c + G_i)/C_t，T_ss = (G_c·T_w + G_i·T_s)/(G_c + G_i)，T_末 = T_ss + (T_0 − T_ss)·e^(−k)；
+    tissue_j = C_t·(T_末 − T_0)，q = G_c·[(T_w − T_ss) + (T_ss − T_0)·(1 − e^(−k))/k]。
+
+  手算导热：冬靴踩木 0.03/(0.15 + 0.5/150) = 0.1956522 W/K，赤脚 0.03/(0.5/150) = 9 W/K；冬靴踩冰（k 22）
+  0.03/(0.15 + 0.5/22) = 0.1736842 W/K，赤脚 0.03/(0.5/22) = 1.32 W/K；手碰 r 0.4 m 拟态 0.01/(0.4/400) = 10 W/K；
+  0 °C 水全身浸没 1.8/(0.03 + 1/100) = 45 W/K（浸没接皮肤，不经组织块）。
+  调定点身体 K_cs = 5.28 + 1.163 × 6.3 = 12.6069 → G_i = 0.378207 W/K。
   """
   use ExUnit.Case, async: true
 
@@ -14,41 +22,85 @@ defmodule SceneServer.Body.ContactTest do
 
   @c 273.15
   @air 293.15
+  @wood 150.0
+  @ice 22.0
 
-  defp tick(body, g, contact_k, immersed \\ 0.0) do
-    q = g * (contact_k - body.skin_k)
-    {body, account} = Thermo.step(body, 1.0, %{q_j: q, max_contact_k: contact_k, air_k: @air, immersed: immersed})
-    {body, account}
+  # 一秒接触：解析解替身给出 q 与 tissue_j，再推进身体；每步核对三节点能量账。
+  defp contact_step(body, g_c, t_w) do
+    c_t = Body.tissue_capacity_j_per_k()
+    g_i = Body.params().contact_tissue_m2 * Thermo.core_to_skin_w_per_m2_k(body)
+    k = (g_c + g_i) / c_t
+    ss = (g_c * t_w + g_i * body.skin_k) / (g_c + g_i)
+    decay = :math.exp(-k)
+    tissue_j = c_t * (ss + (body.tissue_k - ss) * decay - body.tissue_k)
+    q = g_c * ((t_w - ss) + (ss - body.tissue_k) * (1 - decay) / k)
+    {next, account} = Thermo.step(body, 1.0, %{q_j: q, tissue_j: tissue_j, air_k: @air})
+
+    stored = Body.core_capacity_j_per_k() * (next.core_k - body.core_k) + Body.skin_capacity_j_per_k() * (next.skin_k - body.skin_k) +
+      c_t * (next.tissue_k - body.tissue_k)
+    assert_in_delta account.stored_j, stored, 1.0e-6
+    next
   end
 
-  defp sole_tick(body, g, ground_k),
-    do: Thermo.step(body, 1.0, %{q_j: g * (ground_k - body.skin_k), max_contact_k: nil, sole_k: ground_k, air_k: @air})
+  defp scenario(g_c, t_w, seconds), do: Enum.scan(1..seconds, Body.new(), fn _, b -> contact_step(b, g_c, t_w) end)
 
-  defp run(body, g, contact_k, seconds, immersed \\ 0.0),
-    do: Enum.reduce(1..seconds, body, fn _, b -> tick(b, g, contact_k, immersed) |> elem(0) end)
-
-  defp air(body, seconds),
-    do: Enum.reduce(1..seconds, body, fn _, b -> Thermo.step(b, 1.0, %{q_j: 0.0, max_contact_k: @air, air_k: @air}) |> elem(0) end)
-
+  # 第一个满足条件的秒（1 起）；没有为 nil。
+  defp first(states, f), do: Enum.find_index(states, f) |> then(&(&1 && &1 + 1))
   defp severity(body, tag), do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
+  defp burn(body), do: severity(body, "trauma.thermal.burn")
 
-  # 鞋底接触：剂量温度为脚底组织温度 T_脚 = 600 + (309.95 − 600)·0.15/(1/12.6069 + 0.15) = 410.277 K（137 °C），
-  # 隔着冬靴仍远超烧伤阈值。
-  test "站在 600 K 燃木上（经鞋底）：1 s 即三度烧伤，循环受烧伤上限 0.7 → 生命 100 → 70；离开 5 分钟烧伤与生命不回" do
-    g = BodyContact.sole(150, 0.5)
-    assert_in_delta g, 0.1956521739, 1.0e-9
-    {burnt, account} = sole_tick(Body.new(), g, 600.0)
-    # q = 0.1956522·(600 − 307.15) = 57.29674 J（1 s）
-    assert_in_delta account.q_j, 57.29674, 1.0e-4
-    assert severity(burnt, "trauma.thermal.burn") == 3
-    assert Body.systems(burnt).circulation == 0.7
-    assert Body.life(burnt) == 70
-    assert burnt.status == :alive
+  test "组织块参数：0.06 kg × 3490 = 209.4 J/K；调定点 G_i = 0.03 × 12.6069 = 0.378207 W/K" do
+    assert_in_delta Body.tissue_capacity_j_per_k(), 209.4, 1.0e-9
+    assert_in_delta Body.params().contact_tissue_m2 * Thermo.core_to_skin_w_per_m2_k(Body.new()), 0.378207, 1.0e-9
+  end
 
-    rested = air(Enum.reduce(1..9, burnt, fn _, b -> sole_tick(b, g, 600.0) |> elem(0) end), 300)
-    assert severity(rested, "trauma.thermal.burn") == 3
-    assert Body.life(rested) == 70
-    assert severity(rested, "temperature.hyperthermia") == 0
+  # 冬靴站 1296 K 燃木：T_ss = (0.1956522·1296 + 0.378207·307.15)/0.5738592 = 644.29 K，k = 0.5738592/209.4 = 0.0027405 /s；
+  # 44 °C（317.15 K）：e^(−kt) = (644.29 − 317.15)/337.14 → t ≈ 11.0 s；60 °C：t ≈ 29.3 s。近 60 °C 时组织块每秒约升 0.87 K，
+  # 剂量率每 1.52 s 翻倍，累计剂量 ≈ 2.73 × 当前剂量率 → 1 / 2.5 / 5 分别在 331.2 / 333.0 / 334.3 K，即约第 28 / 30 / 31 秒。
+  # 皮肤每秒只多得约 0.2 W/K × 1000 K ≈ 190 W，30 s 内升不到 0.3 K，对 T_ss 的影响 < 0.2 K。
+  test "冬靴站 1296 K 燃木：组织块逐秒升温，约 11 s 过 44 °C，一、二、三度烧伤约在第 28、30、31 秒依次出现" do
+    states = scenario(BodyContact.sole(@wood, 0.5), 1296.0, 60)
+    warm = first(states, &(&1.tissue_k >= 44.0 + @c))
+    degrees = for d <- 1..3, do: first(states, &(burn(&1) >= d))
+    IO.puts("BURN_BOOTED tissue_44c_s=#{warm} degree_s=#{inspect(degrees)} tissue_k_at_30s=#{Enum.at(states, 29).tissue_k}")
+    assert warm in 10..12
+    assert Enum.all?(Enum.take(states, warm - 1), &(&1.burn_dose_s == 0.0))
+    [d1, d2, d3] = degrees
+    assert d1 in 26..30 and d2 in 28..32 and d3 in 29..33 and d1 <= d2 and d2 <= d3
+    assert Body.life(Enum.at(states, d3 - 1)) == 70
+  end
+
+  # 赤脚（无鞋底热阻）：G_c = 9 W/K，T_ss = (9·1296 + 0.378207·307.15)/9.378207 = 1256.1 K，k = 0.0447861 /s；
+  # 第 1 秒末 T = 1256.12 − 948.97·e^(−0.0447861) = 348.71 K（75.6 °C），剂量率 2^((348.6 − 333.15)/1.32) ≈ 3.3e3 → 第 1 秒即三度。
+  test "赤脚站 1296 K 燃木：第 1 秒组织块已 75 °C、即三度烧伤（冬靴约 31 秒）" do
+    [one | _] = scenario(0.03 / (0.5 / @wood), 1296.0, 3)
+    assert_in_delta one.tissue_k, 348.71, 0.05
+    assert burn(one) == 3
+  end
+
+  # 手碰 2000 K 拟态（替身里拟态温度恒定；真实拟态以辐射急速冷却，只会更慢）：G_c = 10 W/K，T_ss = 1938.31 K，
+  # k = 0.0495616 /s，第 1 秒末 T = 1938.31 − 1631.16·e^(−0.0495616) = 386.02 K → 第 1 秒三度。
+  test "徒手触 2000 K 拟态：第 1 秒组织块 386 K、即三度烧伤；皮肤只得组织块送来的一小部分热" do
+    [one | _] = scenario(BodyContact.touch(0.4, 400), 2000.0, 1)
+    assert_in_delta one.tissue_k, 386.02, 0.05
+    assert burn(one) == 3
+    assert one.skin_k - (34.0 + @c) < 0.01
+  end
+
+  # 冬靴站 −25 °C 冰（暖区里一块冷冰，偏离环境才进 World 内核）：T_ss = (0.1736842·248.15 + 0.378207·307.15)/0.5518912
+  # = 288.58 K（15.4 °C）> 冻伤阈值 272.6 K → 永不冻伤。赤脚：G_c = 1.32，T_ss = (1.32·248.15 + 0.378207·307.15)/1.698207
+  # = 261.29 K，k = 0.0081099 /s，降到 272.6 K：e^(−kt) = (272.6 − 261.29)/45.86 → t ≈ 173 s；再累计 600 K·s
+  # （过冷差 11.31·(1 − e^(−kτ)) 的积分）τ ≈ 135 s → 约第 308 秒冻伤（皮肤 20 °C 空气下略降、血管收缩使 G_i 变小，只会略早）。
+  test "站 −25 °C 冰：冬靴 1 小时不冻伤（组织块稳在约 15 °C）；赤脚约 5 分钟冻伤" do
+    shod = scenario(BodyContact.sole(@ice, 0.5), 248.15, 3600)
+    assert Enum.all?(shod, &(&1.frost_dose_k_s == 0.0))
+    assert_in_delta List.last(shod).tissue_k, 288.6, 1.5
+
+    bare = scenario(0.03 / (0.5 / @ice), 248.15, 600)
+    below = first(bare, &(&1.tissue_k < 272.6))
+    frost = first(bare, &(severity(&1, "trauma.thermal.frostbite") == 1))
+    IO.puts("FROST_BAREFOOT below_onset_s=#{below} frostbite_s=#{frost}")
+    assert below in 150..180 and frost in 270..320
   end
 
   test "二度烧伤（剂量 2.5..5）：循环上限 0.9 → 生命 90" do
@@ -56,38 +108,31 @@ defmodule SceneServer.Body.ContactTest do
     assert Body.life(%{Body.new() | burn_dose_s: 1.0}) == 100
   end
 
-  test "手碰 2000 K 拟态 1 s：q = 10·(2000 − 307.15) = 16928.5 J，三度烧伤；皮肤按手算升温" do
-    g = BodyContact.touch(0.4, 400)
-    {touched, account} = tick(Body.new(), g, 2000.0)
-    assert_in_delta account.q_j, 16_928.5, 1.0e-6
-    assert severity(touched, "trauma.thermal.burn") == 3
-    # 皮肤 +(16928.5 + 22.69242·2.8 − 6.3558170·14)/24430（同 thermo_test 调定点项）
-    assert_in_delta touched.skin_k - (34.0 + @c), (16_928.5 + 63.538776 - 88.981438) / 24_430, 1.0e-6
-  end
-
-  test "0 °C 水全身浸没（G 45 W/K、浸没 1.0）：皮肤骤降、寒战升高、核心下降；Gagge 两节点下寒战托住核心，1 小时不出现体温过低" do
+  test "0 °C 水全身浸没（G 45 W/K 接皮肤、浸没 1.0）：皮肤骤降、寒战升高、核心下降；Gagge 两节点下寒战托住核心，1 小时不出现体温过低" do
     g = BodyContact.immersion(1.8, 1.8, 1.8)
     assert_in_delta g, 45.0, 1.0e-9
-    {first, account} = tick(Body.new(), g, @c, 1.0)
-    # q = 45·(273.15 − 307.15) = −1530 J；浸没时空气干热与出汗为 0
+    tick = fn b -> Thermo.step(b, 1.0, %{q_j: g * (@c - b.skin_k), air_k: @air, immersed: 1.0}) end
+    {first, account} = tick.(Body.new())
+    # q = 45·(273.15 − 307.15) = −1530 J；浸没时空气干热、出汗与湿衣蒸发为 0
     assert_in_delta account.q_j, -1530.0, 1.0e-9
-    assert account.convection_j == 0.0 and account.sweat_j == 0.0
+    assert account.convection_j == 0.0 and account.sweat_j == 0.0 and account.drying_j == 0.0
     assert first.skin_k < 34.0 + @c
 
-    ten = run(Body.new(), g, @c, 600, 1.0)
+    ten = Enum.reduce(1..600, Body.new(), fn _, b -> tick.(b) |> elem(0) end)
     assert ten.skin_k - @c < 15.0
-    {_, account} = tick(ten, g, @c, 1.0)
+    {_, account} = tick.(ten)
     # 寒战 = 19.4·冷皮肤·冷核心·1.8（体温调节功能满值），10 分钟时已达数十瓦
     shiver = 19.4 * (34.0 + @c - ten.skin_k) * (36.8 + @c - ten.core_k) * 1.8
     assert_in_delta account.metabolic_j, 104.76 + shiver, 1.0e-6
     assert shiver > 50
 
-    hour = run(ten, g, @c, 3000, 1.0)
+    hour = Enum.reduce(1..3000, ten, fn _, b -> tick.(b) |> elem(0) end)
     assert hour.core_k < 36.8 + @c - 0.1
     # 已知局限（body/README.md）：血管收缩后核心→皮肤导热约 10.7 W/K，37 K 温差下失热约 400 W，
-    # 低于静息 + 寒战峰值 524 W，核心稳定在约 36.58 °C；世界里没有 0 °C 以下的液体，失温在现有内容下不可达。
+    # 低于静息 + 寒战峰值 524 W，核心稳定在约 36.58 °C。
     assert hour.core_k > 36.5 + @c
     assert severity(hour, "temperature.hypothermia") == 0
+    assert hour.wetness > 0.999
   end
 
   test "report：有变化才发的比较键（温度取 0.1 K）与状态码" do

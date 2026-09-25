@@ -245,7 +245,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
 
     # 身体脚踩寒区石（区温 248.15 K）：与环境无温差，不进内核；若按全局 293.15 K 判据会是 45 K 温差的接触。
     send(w, {:body_contact, 1001, self(), %{feet: {6.5, 5.0, 8.5}, height: 1.8, radius: 0.3, skin_k: 307.15,
-      capacity: 24_430.0, area: 1.8}})
+      capacity: 24_430.0, area: 1.8, tissue_k: 307.15, tissue_capacity: 209.4, tissue_g: 0.378207}})
     send(w, :thermal_commit)
     _ = observe(w)
     refute_received {:body_heat, _}

@@ -155,6 +155,74 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert Enum.find_value(1..60, fn _ -> burning?(commit(c.w)) end), "canopy leaf never ignited"
   end
 
+  # 逐次提交，返回 {首次着火时的累计模拟秒 | nil, 峰值温度, 最后快照}。
+  defp watch(c, cell, n) do
+    Enum.reduce_while(1..n, {nil, 0.0, nil}, fn _, {_, peak, _} ->
+      t = commit(c.w)
+      row = cell(t, cell) || %{}
+      peak = max(peak, Map.get(row, :temperature_kelvin, 293.15))
+      if Map.get(row, :burning, false), do: {:halt, {t.thermal.elapsed_s, peak, t}}, else: {:cont, {nil, peak, t}}
+    end)
+  end
+
+  # 同一孤立叶格、同一预设：侧面（眼睛略上仰，球落点 y ≈ 2.56，立方体 [2.16, 2.96] 整个在叶的 −z 面内）与下方（竖直上抛，
+  # 落点 (0.5, 4.6, 0.5) 贴 (0,5,0) 的 −y 面）接触面积同为 πr² = 0.5026548 m²（纯几何见 magic_semblance_test），
+  # 两者都在落地后数秒内着火。飞行时长不同（1/6 s 与 0.14 s），落地时球温略异，着火时刻按提交粒度（0.5 s）比较。
+  test "侧面与下方对称：同一球从侧面或从下方接触孤立叶格都着火，着火时刻相差不超过一次提交", c do
+    {:ok, _} = World.apply_edits(c.w, [{{0, 5, 0}, @leaf}])
+    assert {:ok, _} = draw(c, 1_000_000)
+    n = :math.sqrt(0.08 * 0.08 + 1)
+    assert {:ok, %{seq: side, outcome: nil}} = cast(c, c.presets["hot_throw"], {0.0, 0.08 / n, 1 / n}, at: 2_000_000)
+    ball = observe(c.w).semblances[{side, 0}]
+    {_, y, _} = ball.rest
+    assert ball.contact.cell == {0, 2, 3} and y - 0.4 > 2.0 and y + 0.4 < 3.0
+    landed = observe(c.w).thermal.elapsed_s
+    {side_at, side_peak, _} = watch(c, {0, 2, 3}, 40)
+    assert side_at, "side contact never ignited"
+
+    assert {:ok, _} = draw(c, 30_000_000)
+    assert {:ok, %{seq: below, outcome: nil}} = cast(c, c.presets["hot_throw"], {0.0, 1.0, 0.0}, at: 31_000_000)
+    ball = observe(c.w).semblances[{below, 0}]
+    assert ball.rest == {0.5, 4.6, 0.5} and ball.contact.cell == {0, 5, 0}
+    start = observe(c.w).thermal.elapsed_s
+    {below_at, below_peak, _} = watch(c, {0, 5, 0}, 40)
+    assert below_at, "underside contact never ignited"
+    IO.puts("SEMBLANCE_SYMMETRY side_ignite_s=#{side_at - landed} below_ignite_s=#{below_at - start} side_peak=#{side_peak} below_peak=#{below_peak}")
+    assert abs((side_at - landed) - (below_at - start)) <= 0.5 + 1.0e-9
+  end
+
+  # 树冠深处：命中叶 (0,2,3) 在 5 × 3 × 3 叶块的 −z 面上，除迎球面与底面外四面都是叶（每面叶–叶 G = 50 W/K）。
+  test "树冠深处叶格侧面命中也着火（着火时刻与峰值见输出）", c do
+    canopy = for x <- -2..2, y <- 2..4, z <- 3..5, {x, y, z} != {0, 2, 3}, do: {{x, y, z}, @leaf}
+    {:ok, _} = World.apply_edits(c.w, canopy)
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{outcome: nil}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000)
+    start = observe(c.w).thermal.elapsed_s
+    {at, peak, s} = watch(c, {0, 2, 3}, 40)
+    assert at, "deep canopy leaf never ignited"
+    closed?(s)
+    IO.puts("SEMBLANCE_DEEP_CANOPY ignite_s=#{at - start} peak_k=#{peak}")
+  end
+
+  # 回归（改前失败）：球斜向下落到施法者脚边的石地面上。手算：方向 (0.3, −0.954)/1.000058 → 手边 (0.649991, 2.023028, 0.5)、
+  # v = (3.599791, −11.44734, 0)；球心到地面顶面 y = 1：4.905t² + 11.447336t − 1.0230277 = 0 → t = 0.0861854 s、x = 0.6499913 + 3.5997912 × 0.0861854 = 0.9602409，
+  # 球心停在 (0.9602409, 1.4, 0.5)，包围立方体 x [0.56, 1.36] 压进旁边叶格 (1,1,0) 0.36 m。旧规则接触只绑命中的地面格，叶格
+  # 拿不到接触热；按真实几何叶格一条（最小重叠轴 x，面积 0.8² × π/4 = πr²）、地面 (0,0,0) 与 (1,0,0) 各一条，互换辐射按面积分摊。
+  test "落地旁贴叶：球落在地面上但包围盒压进旁边叶格，叶格也拿到接触热（旧规则只接地面、叶不升温）", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    {:ok, _} = World.apply_edits(c.w, [{{1, 1, 0}, @leaf}])
+    n = :math.sqrt(0.3 * 0.3 + 0.954 * 0.954)
+    assert {:ok, %{seq: seq, outcome: nil}} = cast(c, c.presets["hot_throw"], {0.3 / n, -0.954 / n, 0.0}, at: 2_000_000)
+    ball = observe(c.w).semblances[{seq, 0}]
+    {x, y, _} = ball.rest
+    assert ball.contact.cell == {0, 0, 0} and abs(y - 1.4) < 1.0e-9
+    assert_in_delta x, 0.9602409, 1.0e-6
+    {at, peak, s} = watch(c, {1, 1, 0}, 40)
+    closed?(s)
+    IO.puts("SEMBLANCE_BESIDE rest_x=#{x} leaf_peak_k=#{peak} ignite_s=#{inspect(at)}")
+    assert peak > 293.15 + 100
+  end
+
   test "光球：100 W、寿命 2 s 静止在手边 → 发光 200 J 后移除；光账等于 glow_w × 寿命，账闭合", c do
     assert {:ok, _} = draw(c, 1_000_000)
     assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = cast(c, light(2), @forward, at: 2_000_000)

@@ -10,7 +10,9 @@ defmodule SceneServer.Body do
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
   另存寒战燃料储备 `reserve_j`（糖原，J）：寒战产热的唯一来源，有限、只减不自然恢复（进食补充待食物系统）。
-  身体（含储备）与其余字段一样不跨登录、死亡后重建为满储备（已知缺口，同 §10.7）。
+  另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
+  只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
+  身体（含储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
 
   状态推进由 `SceneServer.Body.Thermo.step/3` 完成；本模块只放数据、参数与推导。
 
@@ -54,6 +56,21 @@ defmodule SceneServer.Body do
     wind_exponent: 0.6,
     radiative_w_per_m2_k: 4.7,
     clothing_m2_k_per_w: 0.155,
+    # —— 局部接触组织块（鞋底 / 手掌触碰处的皮肤组织，两处共用一块）：面积 0.03 m²（两脚掌着地面积，同 BodyContact 鞋底）
+    # × 厚 2 mm（表皮 + 真皮全层，即三度烧伤的深度）× 1000 kg/m³ = 0.06 kg，热容 0.06 × 3490 = 209.4 J/K。与皮肤节点之间
+    # 的导热 = 面积 × 本步核心-皮肤导热 K_cs（组织导热 5.28 + 皮肤血流项，同一 Gagge 式；冷时血管收缩降、热时舒张升）。——
+    contact_tissue_m2: 0.03,
+    contact_tissue_kg: 0.06,
+    # —— 湿衣：浸水部分的衣物按时间常数 20 s 趋于湿透（织物浸没数十秒内吸饱）；湿透衣物热阻取 BodyContact 的
+    # wet_m2_k_per_w（0.03，约为干 1 clo 的 19%），湿度间线性插值。离水后湿衣表面蒸发（ASHRAE Fundamentals 第 9 章：
+    # 蒸发换热系数 = Lewis 比 16.5 K/kPa × 对流系数 h_c；推动力 = 衣面饱和水汽压 − 相对湿度 × 空气饱和水汽压，
+    # Magnus 式（Alduchov & Eskridge 1996）；衣面温度按干热回路 T_空 + (T_皮 − T_空)·R_空/(R_衣 + R_空)），
+    # 蒸发潜热 2430 J/g 从皮肤取走；湿透时衣物含水 1 kg（1 clo 常规服装约 1–1.5 kg，棉织物沥干后含水约为自重的 50–100%）；
+    # 空气相对湿度 0.5（气候接口暂无湿度）。——
+    soak_s: 20.0,
+    clothing_water_kg: 1.0,
+    lewis_k_per_kpa: 16.5,
+    relative_humidity: 0.5,
     # —— 系统功能水平带 {冷侧归零, 冷侧满值, 热侧满值, 热侧归零} ——
     thermoregulation_band: {28.0 + @c, 32.0 + @c, 40.0 + @c, 42.0 + @c},
     circulation_band: {24.0 + @c, 32.0 + @c, 40.0 + @c, 43.0 + @c},
@@ -65,14 +82,14 @@ defmodule SceneServer.Body do
     # —— 体温伤病：核心低于 / 高于各阈值的个数即严重度 ——
     hypothermia_below_k: [35.0 + @c, 32.0 + @c, 28.0 + @c],
     hyperthermia_above_k: [38.5 + @c, 40.0 + @c, 41.0 + @c],
-    # —— 烧伤：接触温度 ≥ 44 °C 起累计剂量，剂量率 2^((T-60 °C)/1.32 K)，单位 = 60 °C 下的秒 ——
+    # —— 烧伤：组织块温度 ≥ 44 °C 起累计剂量，剂量率 2^((T-60 °C)/1.32 K)，单位 = 60 °C 下的秒 ——
     burn_onset_k: 44.0 + @c,
     burn_reference_k: 60.0 + @c,
     burn_doubling_k: 1.32,
     burn_degree_dose_s: [1.0, 2.5, 5.0],
     # 烧伤影响循环（Magic.md §6.3“影响哪些系统”：深度烧伤体液丢失）：1/2/3 度时循环功能上限
     burn_circulation_levels: [1.0, 0.9, 0.7],
-    # —— 冻伤：接触温度低于组织冰点 −0.55 °C 起累计 K·s ——
+    # —— 冻伤：组织块温度低于组织冰点 −0.55 °C 起累计 K·s ——
     frost_onset_k: -0.55 + @c,
     frostbite_dose_k_s: [600.0]
   }
@@ -83,6 +100,8 @@ defmodule SceneServer.Body do
             frost_dose_k_s: 0.0,
             lethal_s: 0.0,
             reserve_j: 7_650_000.0,
+            tissue_k: 34.0 + @c,
+            wetness: 0.0,
             status: :alive
 
   @type status :: :alive | :dying | :dead
@@ -93,6 +112,8 @@ defmodule SceneServer.Body do
           frost_dose_k_s: float(),
           lethal_s: float(),
           reserve_j: float(),
+          tissue_k: float(),
+          wetness: float(),
           status: status()
         }
   @type injury :: %{
@@ -106,7 +127,7 @@ defmodule SceneServer.Body do
   @spec params() :: map()
   def params, do: @params
 
-  @doc "调定点上的健康身体：核心 36.8 °C、皮肤 34 °C、无伤病、存活。"
+  @doc "调定点上的健康身体：核心 36.8 °C、皮肤与组织块 34 °C、衣物干、无伤病、存活。"
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
@@ -114,6 +135,10 @@ defmodule SceneServer.Body do
   @spec skin_capacity_j_per_k() :: float()
   def skin_capacity_j_per_k,
     do: @params.skin_mass_fraction * @params.mass_kg * @params.specific_heat_j_per_kg_k
+
+  @doc "局部接触组织块热容 J/K。"
+  @spec tissue_capacity_j_per_k() :: float()
+  def tissue_capacity_j_per_k, do: @params.contact_tissue_kg * @params.specific_heat_j_per_kg_k
 
   @doc "核心节点热容 J/K。"
   @spec core_capacity_j_per_k() :: float()
