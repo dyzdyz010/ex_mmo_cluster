@@ -55,7 +55,34 @@ defmodule VoxelRegion.TestSupport do
       phase_inventory: snapshot.phase_inventory, epochs: snapshot.epochs,
       property_digest: snapshot.property_context.digest,
       material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units}),
-      semblances: Map.get(snapshot, :semblances, %{})}
+      semblances: Map.get(snapshot, :semblances, %{}), casts: Map.get(snapshot, :casts, %{})}
+  end
+
+  # 覆盖测试世界全部 tile 的窗口（只用于找施法者的待施放记录）。
+  @everywhere {{-1_000, -1_000, -1_000}, {1_000, 1_000, 1_000}}
+
+  @doc """
+  只测试：施放意图的正式入口。施放（action 1）通过立即校验后进入前摇，调用在结算后才返回；测试不等墙钟——
+  待施放记录出现在观察快照后，直接投递它的到期消息（同直接投递 `:thermal_commit`），立即拒绝与报价直接返回。
+  """
+  def spell(world, actor, request) do
+    task = Task.async(fn -> VoxelRegion.World.spell_intent(world, actor, request) end)
+    settle(world, actor.cid, task)
+  end
+
+  defp settle(world, cid, task) do
+    with nil <- Task.yield(task, 5) do
+      case observe(world, [cid], @everywhere).casts do
+        %{^cid => %{t0_us: t0}} ->
+          send(world, {:settle_cast, cid, t0})
+          Task.await(task, 60_000)
+
+        _ ->
+          settle(world, cid, task)
+      end
+    else
+      {:ok, result} -> result
+    end
   end
 
   @doc "只测试：通过正式 payload 服务观察一个区域，保留协议所有者/结构和附件表示。"

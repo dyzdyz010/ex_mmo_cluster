@@ -64,6 +64,8 @@ defmodule VoxelRegion.Replica do
           protection: Map.get(snapshot, :protection, %{}),
           # 拟态（魔法增量 2，World thermal 真值在窗口内的投影）；同受保护区域只转发、不裁决。
           semblances: Map.get(snapshot, :semblances, %{}),
+          # 待施放（施放前摇，World 内存状态在窗口内的投影，不持久化）；只转发、不裁决。
+          casts: Map.get(snapshot, :casts, %{}),
           subscribers: %{},
           deltas: [],
           checkpoint_seq: snapshot.transaction_seq,
@@ -140,7 +142,7 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
-      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection, semblances: state.semblances}) |> VoxelRegion.PropertyObservation.project(box)
+      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection, semblances: state.semblances, casts: state.casts}) |> VoxelRegion.PropertyObservation.project(box)
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
       {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, box)}}
@@ -159,7 +161,7 @@ defmodule VoxelRegion.Replica do
       | seq: delta.transaction_seq,
         regions: Map.merge(state.regions, Map.new(regions)),
         chunks: Map.merge(state.chunks, Map.new(delta.chunks, &{&1.coord, &1})),
-        deltas: [%{delta | transaction: Map.delete(delta.transaction, :liquid_falls)} | state.deltas],
+        deltas: [%{delta | transaction: Map.drop(delta.transaction, [:liquid_falls, :casts])} | state.deltas],
         update_payload_bytes:
           state.update_payload_bytes + Enum.sum(Enum.map(regions, &byte_size(elem(&1, 1))))
     }
@@ -175,7 +177,11 @@ defmodule VoxelRegion.Replica do
       {id, nil}, acc -> Map.delete(acc, id)
       {id, semblance}, acc -> Map.put(acc, id, semblance)
     end)
-    state = %{state | damage: damage, protection: protection, semblances: semblances, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
+    casts = Enum.reduce(Map.get(delta.transaction, :casts, %{}), state.casts, fn
+      {caster, %{live: 0}}, acc -> Map.delete(acc, caster)
+      {caster, cast}, acc -> Map.put(acc, caster, cast)
+    end)
+    state = %{state | damage: damage, protection: protection, semblances: semblances, casts: casts, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
       property_context: Map.get(delta.transaction,:property_context,state.property_context)}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(

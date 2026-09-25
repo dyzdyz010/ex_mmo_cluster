@@ -294,8 +294,10 @@ defmodule VoxelRegion.DamageWorldTest do
     assert snapshot.protection==%{}
     # 魔法增量 2：窗口内拟态同为属性观察的一部分；本场景没有拟态（无热环境，拟态不存在）。
     assert snapshot.semblances==%{}
+    # 施放前摇（协议 27）：窗口内待施放同为属性观察的一部分；本场景没有施法。
+    assert snapshot.casts==%{}
     assert Map.keys(snapshot)|>Enum.sort()==Enum.sort([:seq,:property_states,:property_context,:epochs,
-      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting,:protection,:semblances])
+      :material_balances,:liquid_quantities,:phase_inventory,:thermal_accounting,:protection,:semblances,:casts])
     assert [_]=World.simulation_snapshot(c.w,[],{{1,0,0},{2,1,1}}).property_states
   end
 

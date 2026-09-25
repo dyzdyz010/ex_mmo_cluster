@@ -14,6 +14,10 @@ defmodule VoxelRegion.Magic.Catalog do
   （枚举槽，如拟态形状），此时取值必须是整数。含 `form.semblance` 的目录必须给出 `semblance` 段：拟态的
   比热（J/(kg·K)，热容 = 质量 × 比热）与导热率（W/(m·K)），与材料共用同一属性轴与单位。`reading`（Sevara 读法占位）与 `presets` 名称只服务客户端，不参与判定；
   预设程序在这里按同一 `Program.validate/2` 校验，保证发布的预设都可施放。
+
+  版本 2（施放前摇，Voxim Docs/Magic.md §13.6）：每个符号带 `pose`（共享连杆的 4 个关节角，整数度、45 的倍数、
+  |q| ≤ 135，解码为弧度），`cost` 为构型损耗参数 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`（去掉增量 1 的 `e0_j`），
+  `caster.max_power_w` 是注能的最大输出功率。姿态只是数据，时长与损耗由 `Cost` 的通用公式算出。
   """
 
   alias VoxelRegion.Magic.Program
@@ -28,11 +32,12 @@ defmodule VoxelRegion.Magic.Catalog do
   @doc "目录字节 → 目录值；字节即发布物，digest 取其 sha256。"
   def decode(bytes) do
     data = Jason.decode!(bytes)
-    true = data["version"] == 1
+    true = data["version"] == 2
 
     caster = data["caster"]
     true = positive?(caster["capacity_j"]) and positive?(caster["coherence"])
     true = positive?(caster["draw_efficiency"]) and caster["draw_efficiency"] <= 1
+    true = positive?(caster["max_power_w"])
 
     limits = data["limits"]
 
@@ -45,12 +50,14 @@ defmodule VoxelRegion.Magic.Catalog do
     true = limits["local_domain_m"] <= limits["range_m"]
 
     cost = data["cost"]
-    true = positive?(cost["e0_j"]) and positive?(cost["e_ref_j"]) and positive?(cost["alpha"])
+    true = Enum.all?(~w(eta_j_s_per_rad2 b0_w e_ref_j alpha), &positive?(cost[&1]))
 
     symbols =
       Map.new(data["symbols"], fn s ->
         true = @implemented[s["id"]] == s["category"] and positive?(s["weight"])
         true = length(Enum.uniq_by(s["slots"], & &1["name"])) == length(s["slots"])
+        true = is_list(s["pose"]) and length(s["pose"]) == 4 and
+                 Enum.all?(s["pose"], &(is_integer(&1) and rem(&1, 45) == 0 and abs(&1) <= 135))
 
         slots =
           Map.new(s["slots"], fn slot ->
@@ -59,7 +66,8 @@ defmodule VoxelRegion.Magic.Catalog do
           end)
 
         integer = for slot <- s["slots"], slot["integer"] == true, do: slot["name"]
-        {s["id"], %{weight: s["weight"], target: s["target"], slots: slots, integer: integer}}
+        {s["id"], %{weight: s["weight"], target: s["target"], slots: slots, integer: integer,
+          pose: Enum.map(s["pose"], &(&1 * :math.pi() / 180))}}
       end)
 
     true = map_size(symbols) == length(data["symbols"])
@@ -77,12 +85,14 @@ defmodule VoxelRegion.Magic.Catalog do
       capacity_j: caster["capacity_j"] * 1.0,
       coherence: caster["coherence"] * 1.0,
       draw_efficiency: caster["draw_efficiency"] * 1.0,
+      max_power_w: caster["max_power_w"] * 1.0,
       range_m: limits["range_m"] * 1.0,
       local_domain_m: limits["local_domain_m"] * 1.0,
       cast_interval_us: round(limits["cast_interval_ms"] * 1000),
       max_semblances: limits["max_semblances"],
       program_max_bytes: limits["program_max_bytes"],
-      e0_j: cost["e0_j"] * 1.0,
+      eta: cost["eta_j_s_per_rad2"] * 1.0,
+      b0_w: cost["b0_w"] * 1.0,
       e_ref_j: cost["e_ref_j"] * 1.0,
       alpha: cost["alpha"] * 1.0,
       symbols: symbols,

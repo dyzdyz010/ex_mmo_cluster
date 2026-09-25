@@ -60,6 +60,17 @@ flowchart LR
 - **下行**：PropertyBatch 末尾新增 `semblances` 字节段（`Voxel.Codec.encode_semblances/1`，每条 134 B，完整批次为窗口内全部、增量批次为本事务变化，nil = 删除），窗口投影按出发点／落点宏格；客户端用 origin/velocity/t0_us/flight_s 按服务端时钟插值，不逐 tick 复制位置。0x82 在粒度后加目标拟态 id {seq u64, n u32}。Hello 24 → 25。
 - 复跑：`apps/voxel_region` 下 `mix test test/magic_semblance_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`。只证明服务端范围，不代替双客户端实跑。
 
+## 施放前摇与符文预警（2026-09-25，分支 `magic-windup`，未合并，等客户端 Hello 27）
+
+设计正文见 Voxim `Docs/Magic.md` §13.6。服务端事实：
+
+- **计价**：`Magic.Cost.quote/3` 用构型距离损耗取代控制开销：第 i 步姿态 q_i（目录，度 → 弧度，q_0 静息），d_i = ‖q_i − q_{i−1}‖，b_i = b0·(S_i + H_i/E_ref)^α（S、H 为前 i 步权重与物理能量之和），构型调整 T = d·√(η/b)、注能 T = E_i/P_max，损耗 L_i = 2d·√(ηb) + b·T_inj；报价返回 `loss_j`、`windup_s` 与各步 `{调整 s, 注能 s}`，E_loss 进 `cast_waste_j`（取能的损耗同样从取得能量里付）。同符号相邻两步 d = 0，合并反而比拆开便宜（超线性只对不同符号成立，形态待定）。
+- **目录**：版本 2。每个符号 `pose`（4 个整数度，45 的倍数，|q| ≤ 135），`cost` 为 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`，`caster.max_power_w`。
+- **待施放**：施放意图先做立即校验（间隔、目标、施法域、脚下、权限），失败立即拒绝；通过后 World 记 `pending_casts`（cid ⇒ 记录、调用方、开始时的施法者与意图），提交一笔只带 `casts` 的事务（日志里是空事务，保持 seq 连续），按 ⌈前摇 ms⌉ 定时 `{:settle_cast, cid, t0_us}`。到期用开始时的施法者与意图重做同一校验并走原结算路径（走火在此判定）；结算事务带 `casts: %{cid => live 0, outcome 0/1}`，结算时校验失败另提交 `outcome 2` 并拒绝、不扣能。前摇中同一施法者再施放 `cast_too_soon`；报价不受影响。`World.spell_intent/3` 的施放调用在结算后才返回；Gate Dispatch 对施放在独立进程里等待（编辑 worker 不被占住），因此紧挨着的两次施放到达 World 的先后不保证等于发送顺序。
+- **不持久化**：`casts` 不进日志、检查点、回放尾与 Replica 保留的增量；冷重启丢失待施放、未扣能。
+- **下行**：PropertyBatch 末尾（拟态之后）新增 `casts` 字节段（`Voxel.Codec.encode_casts/1`，按施法者升序）；完整批次为窗口内全部待施放（按手边出发点宏格投影），增量批次为本事务变化（已结算记录总保留）。Hello 26 → 27。
+- 复跑：`apps/voxel_region` 下 `mix test test/magic_test.exs test/magic_semblance_test.exs test/magic_windup_world_test.exs test/magic_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test test/gate_server/voxim_spell_dispatch_test.exs`。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

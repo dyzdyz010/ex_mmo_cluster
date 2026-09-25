@@ -3,7 +3,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
   只测试：魔法增量 4 在真实 World 里的身体接触换热（Voxim Docs/Magic.md §6）——身体皮肤是热内核外部节点，
   World 把每段演进的交换热回传给报告者（这里测试进程扮演 Scene 的 Player），两端各记一笔、同值。
 
-  目录：材料 `b1aca503…`（石 11 k 25、木 19 k 150 燃点 573.15 K、水 21、蓄能石 42），魔法 `0e8ecf14…`（拟态 k_s 400）；
+  目录：材料 `b1aca503…`（石 11 k 25、木 19 k 150 燃点 573.15 K、水 21、蓄能石 42），魔法 `1ff967d7…`（拟态 k_s 400）；
   热环境 = 生产 ε 0.9、环境 293.15 K、容差 1 K。地面石 11 铺 y = 0；身体脚 y = 1.0、身高 1.8 m、半径 0.3 m、
   皮肤 307.15 K（34 °C）、皮肤热容 24430 J/K、体表 1.8 m²。热初态（600 K 的石 / 木、10 MJ 蓄能石）作为作者初态经持久化
   边界安装一次（同 magic_semblance_world_test）；水经 Test-only `liquid_experiment` 作者入口装入围起的两格坑。
@@ -17,7 +17,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "0e8ecf1497829de1a91a65256377c335c447035e8693756c894e7f803d820d3a"
+  @magic "1ff967d746cd0f1064924292011ce5227dcb6db03d99d45a9befa98a89908075"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @wood 19
@@ -188,7 +188,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
     request = %{request_id: next(), client_intent_seq: next(), logical_scene_id: 1, action: 1, catalog_digest: c.digest,
       direction: query(a, {20, 12, 4}).direction, program: Jason.encode!(draw), semblance: {0, 0}}
       |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
-    assert {:ok, %{outcome: nil}} = World.spell_intent(c.w, Map.merge(a, %{received_us: 1_000_000, clock_node: node()}), request)
+    assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(c.w, Map.merge(a, %{received_us: 1_000_000, clock_node: node()}), request)
 
     # 竖直向下投掷：手边 (0.5, 2.0, 0.5)，v = (0, −12, 0)，球心停在地面顶面上方一个半径 (0.5, 1.4, 0.5)，正在施法者脚边。
     seq = next()
@@ -196,7 +196,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
       direction: {0.0, -1.0, 0.0}, micro: {0, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0,
       semblance: {0, 0}, program: Jason.encode!(c.presets["hot_throw"])}
     assert {:ok, %{outcome: nil, seq: ball_seq}} =
-             World.spell_intent(c.w, Map.merge(a, %{received_us: 2_000_000, clock_node: node()}), throw)
+             VoxelRegion.TestSupport.spell(c.w, Map.merge(a, %{received_us: 2_000_000, clock_node: node()}), throw)
 
     landed = Enum.find_value(1..10, fn _ -> s = commit(c.w); b = s.semblances[{ball_seq, 0}]; if b.age_s >= b.flight_s, do: s end)
     ball = landed.semblances[{ball_seq, 0}]

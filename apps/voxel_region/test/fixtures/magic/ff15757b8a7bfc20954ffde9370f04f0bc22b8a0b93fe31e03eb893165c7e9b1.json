@@ -1,9 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
   "caster": {
     "capacity_j": 5000000,
     "coherence": 4.0,
-    "draw_efficiency": 0.9
+    "draw_efficiency": 0.9,
+    "max_power_w": 1000000
   },
   "limits": {
     "max_steps": 8,
@@ -15,7 +16,8 @@
     "draw_max_j": 2000000
   },
   "cost": {
-    "e0_j": 2000,
+    "eta_j_s_per_rad2": 50,
+    "b0_w": 1000,
     "e_ref_j": 1000000,
     "alpha": 1.5
   },
@@ -25,6 +27,12 @@
       "category": "act",
       "weight": 1.0,
       "target": "energy_stone",
+      "pose": [
+        -90,
+        -90,
+        -45,
+        0
+      ],
       "slots": [
         {
           "name": "energy_j",
@@ -40,6 +48,12 @@
       "category": "act",
       "weight": 1.0,
       "target": "macro_cell",
+      "pose": [
+        45,
+        -90,
+        90,
+        -90
+      ],
       "slots": [
         {
           "name": "energy_j",

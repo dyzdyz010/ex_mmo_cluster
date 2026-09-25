@@ -18,6 +18,7 @@ defmodule VoxelRegion.PropertyObservation do
     |> Map.update(:epochs, %{}, &Map.filter(&1, fn {cell, _} -> contains?(cell, box) end))
     |> project_protection(box)
     |> project_semblances(box)
+    |> project_casts(box)
   end
 
   # 受保护区域：新建/现有区域按矩形与窗口相交筛选；删除（nil）不知旧范围，总是保留。
@@ -30,6 +31,12 @@ defmodule VoxelRegion.PropertyObservation do
     do: %{value | semblances: Map.filter(semblances, fn {_, s} ->
       s == nil or Enum.any?(VoxelRegion.Magic.Semblance.cells(s), &contains?(&1, box)) end)}
   defp project_semblances(value, _box), do: value
+
+  # 待施放（施放前摇）：前摇中的记录按手边出发点宏格投影；已结算记录不带位置，总是保留。
+  defp project_casts(%{casts: casts} = value, box),
+    do: %{value | casts: Map.filter(casts, fn {_, c} ->
+      c.live == 0 or contains?(VoxelRegion.Magic.Semblance.macro(c.origin), box) end)}
+  defp project_casts(value, _box), do: value
   @doc "实时整帧按接收方空间谓词投影；空帧仍表示清除。"
   def project_falls(%{liquid_falls: frame} = value, contains?) do
     %{value | liquid_falls: %{frame | transfers: Enum.filter(frame.transfers, fn {cell, _units} -> contains?.(cell) end)}}

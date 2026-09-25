@@ -671,37 +671,15 @@ defmodule GateServer.Session.Dispatch do
   # 魔法增量 1：施法意图 0x82。先回施法者状态 0x83（同 request_id，带报价、实际支出与施放后能量）；
   # 施放与走火都是已提交事务，再回 0x68 accepted（result_ref = seq，reason "ok" / "misfire_energy" /
   # "misfire_coherence"）；报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式）。
+  # 施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才有，在独立进程里等，编辑 worker 不被占住
+  # （前摇中的再次施放要立即拿到 cast_too_soon，其他编辑意图照常）；报价同步回复。
+  def handle({:voxel_spell_intent, %{action: 1} = request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    spawn(fn -> reply_spell(request, state) end)
+    {:ok, state}
+  end
+
   def handle({:voxel_spell_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    result =
-      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
-        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
-        VoxelRegion.World.spell_intent(state.world_ref, actor, request)
-      end
-
-    case result do
-      {:ok, reply} ->
-        send_encoded(state, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
-
-        if request.action == 1 do
-          send_encoded(
-            state,
-            {:voxel_intent_result,
-             %{
-               request_id: request.request_id,
-               client_intent_seq: request.client_intent_seq,
-               logical_scene_id: request.logical_scene_id,
-               result_code: :accepted,
-               result_ref: reply.seq,
-               authoritative: [],
-               reason: Atom.to_string(reply.outcome || :ok)
-             }}
-          )
-        end
-
-      {:error, reason} ->
-        send_encoded(state, ResultFrame.error(request, reason))
-    end
-
+    reply_spell(request, state)
     {:ok, state}
   end
 
@@ -1118,6 +1096,38 @@ defmodule GateServer.Session.Dispatch do
   defp voxel_ctx(state), do: %{cid: state.cid, sink: state.sink}
 
   defp send_encoded(state, message), do: Sink.send_encoded(state.sink, message)
+
+  defp reply_spell(request, state) do
+    result =
+      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
+        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
+        VoxelRegion.World.spell_intent(state.world_ref, actor, request)
+      end
+
+    case result do
+      {:ok, reply} ->
+        send_encoded(state, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
+
+        if request.action == 1 do
+          send_encoded(
+            state,
+            {:voxel_intent_result,
+             %{
+               request_id: request.request_id,
+               client_intent_seq: request.client_intent_seq,
+               logical_scene_id: request.logical_scene_id,
+               result_code: :accepted,
+               result_ref: reply.seq,
+               authoritative: [],
+               reason: Atom.to_string(reply.outcome || :ok)
+             }}
+          )
+        end
+
+      {:error, reason} ->
+        send_encoded(state, ResultFrame.error(request, reason))
+    end
+  end
 
   defp emit(state, event, fields), do: Sink.emit(state.sink, event, fields)
 

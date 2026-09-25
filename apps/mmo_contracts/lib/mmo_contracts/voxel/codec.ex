@@ -56,7 +56,8 @@ defmodule MmoContracts.Voxel.Codec do
          epochs: :bytes,
          states: {:array, :u32, :bytes},
          protection: :bytes,
-         semblances: :bytes
+         semblances: :bytes,
+         casts: :bytes
        ]}
   }
 
@@ -1022,11 +1023,13 @@ defmodule MmoContracts.Voxel.Codec do
     end)
   end
 
-  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, semblances: semblances, complete: complete}) do
+  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, semblances: semblances, casts: casts, complete: complete}) do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
     {:ok, delta} = decode_semblances(semblances)
     true = complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil end)
+    {:ok, delta} = decode_casts(casts)
+    true = complete == 0 or Enum.all?(delta, fn {_, c} -> c.live == 1 end)
   end
 
   defp accept_m1(_), do: :ok
@@ -1139,4 +1142,61 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_semblances(_, _, _), do: {:error, :invalid_semblance}
+
+  @doc """
+  施放前摇（协议 27，Voxim Docs/Magic.md §13.6）：待施放增量 `%{caster => 记录}` 的线字节，放在 PropertyBatch 末尾
+  （拟态之后）。大端、按 caster 升序且唯一，变长：
+
+      caster:u64, live:u8 (1 前摇中 / 0 已结算), outcome:u8 (0 成功 / 1 走火 / 2 结算时拒绝；live=1 时为 0),
+      t0_us:u64, origin_x/y/z:f64, n:u8, n × (adjust_s:f64, inject_s:f64), program_len:u16, program bytes
+
+  t0_us 是服务端墙钟（与拟态 t0_us、SessionStart.server_time_us 同源），第 k 步构型调整段接在前一步注能段之后；
+  origin 是施法者手边位置（canonical 米，Y-up）；program 为施放意图里的规范程序字节原样。
+  已结算记录除 caster、live、outcome 外全为 0（n = 0、program_len = 0）。
+  """
+  def encode_casts(delta) do
+    for {caster, c} <- Enum.sort(delta), into: <<>> do
+      case c do
+        %{live: 0, outcome: outcome} ->
+          <<caster::64, 0::8, outcome::8, 0::64, 0.0::float-64, 0.0::float-64, 0.0::float-64, 0::8, 0::16>>
+
+        %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program} ->
+          <<caster::64, 1::8, 0::8, t0::64, x::float-64, y::float-64, z::float-64, length(steps)::8,
+            (for {a, i} <- steps, into: <<>>, do: <<a::float-64, i::float-64>>)::binary,
+            byte_size(program)::16, program::binary>>
+      end
+    end
+  end
+
+  @doc """
+  `encode_casts/1` 的逆。已结算记录按同一布局解析，只取 caster、live、outcome（其余字段编码端写 0，解码端不用）；
+  前摇中记录要求 outcome 0、至少 1 步、各段时长非负、程序非空。
+  """
+  def decode_casts(bytes), do: decode_casts(bytes, nil, %{})
+
+  defp decode_casts(<<>>, _, acc), do: {:ok, acc}
+
+  defp decode_casts(
+         <<caster::64, live::8, outcome::8, t0::64, x::float-64, y::float-64, z::float-64, n::8,
+           steps::binary-size(n * 16), size::16, program::binary-size(size), rest::binary>>,
+         previous,
+         acc
+       )
+       when previous == nil or caster > previous do
+    steps = for <<a::float-64, i::float-64 <- steps>>, do: {a, i}
+
+    cond do
+      live == 0 and outcome in [0, 1, 2] ->
+        decode_casts(rest, caster, Map.put(acc, caster, %{live: 0, outcome: outcome}))
+
+      live == 1 and outcome == 0 and n > 0 and size > 0 and Enum.all?(steps, fn {a, i} -> a >= 0 and i >= 0 end) ->
+        decode_casts(rest, caster, Map.put(acc, caster,
+          %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program}))
+
+      true ->
+        {:error, :invalid_cast}
+    end
+  end
+
+  defp decode_casts(_, _, _), do: {:error, :invalid_cast}
 end

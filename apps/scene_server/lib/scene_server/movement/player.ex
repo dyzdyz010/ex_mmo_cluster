@@ -780,7 +780,8 @@ defmodule SceneServer.Movement.Player do
           epochs: epochs,
           states: states,
           protection: Voxel.Codec.encode_protection(Map.get(value, :protection, %{})),
-          semblances: Voxel.Codec.encode_semblances(Map.get(value, :semblances, %{}))
+          semblances: Voxel.Codec.encode_semblances(Map.get(value, :semblances, %{})),
+          casts: Voxel.Codec.encode_casts(Map.get(value, :casts, %{}))
         }
 
         reliable(state, :voxel, message)

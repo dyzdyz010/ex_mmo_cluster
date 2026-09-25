@@ -285,6 +285,8 @@ defmodule VoxelRegion.World do
   全局系统功能（魔法增量 1）：施法意图。action 0 = 报价（只算成本，不改世界）；1 = 施放。
   返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 正常 / `:misfire_energy` / `:misfire_coherence`，
   走火也是一笔已提交事务）或 `{:error, reason}`（不扣能量、不改世界）。
+  施放（action 1）通过立即校验后先进入前摇（Voxim Docs/Magic.md §13.6），本调用在前摇结束、结算完成后才返回；
+  前摇中同一施法者再施放立即返回 `{:error, :cast_too_soon}`。
   """
   def spell_intent(server, actor, request) do
     # 冷区域生成留在调用方进程；施法者射线在 owner 内对当时世界重新求交。
@@ -495,6 +497,9 @@ defmodule VoxelRegion.World do
           caster_energy: %{},
           # 施法间隔会话（按 Player 进程，断开即忘，不持久化），与工具会话同一 GCRA。
           spell_sessions: %{},
+          # 施放前摇（Voxim Docs/Magic.md §13.6）：待施放（cid => 广播记录、调用方与开始时捕获的施法者、
+          # 意图、程序、报价），每施法者至多一条；不持久化，冷重启即丢（未扣能）。
+          pending_casts: %{},
           # 魔法增量 4：Scene 每秒报来的身体接触（cid => 几何、皮肤温度与本次接触边），派生、不持久化；
           # 过期（2.5 s 未续报）即丢。身体真值在 Scene（SceneServer.Body）。
           bodies: %{},
@@ -786,7 +791,7 @@ defmodule VoxelRegion.World do
     {:reply, reply, state}
   end
 
-  def handle_call({:spell_intent, actor, request}, _, state) do
+  def handle_call({:spell_intent, actor, request}, from, state) do
     with {:ok, actor} <- current_actor(actor),
          true <- state.magic != nil and state.magic.digest == request.catalog_digest,
          {:ok, program} <- Magic.Program.parse(request.program, state.magic),
@@ -795,7 +800,7 @@ defmodule VoxelRegion.World do
 
       if request.action == 0,
         do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0)}}, state},
-        else: cast_spell(state, actor, request, program, quote)
+        else: cast_spell(state, from, actor, request, program, quote)
     else
       false -> {:reply, {:error, :stale_magic_catalog}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -1192,6 +1197,20 @@ defmodule VoxelRegion.World do
   end
 
   def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
+
+  # 施放前摇到期：用开始时捕获的施法者、意图与程序走现有结算路径；回执此时才回给施放调用方。
+  # 到期消息以记录的 t0_us 标识这条待施放；已结算的旧定时器（t0 不符）直接忽略。
+  def handle_info({:settle_cast, cid, t0_us}, state) do
+    case state.pending_casts do
+      %{^cid => %{record: %{t0_us: ^t0_us}} = pending} ->
+        {reply, state} = settle_cast(%{state | pending_casts: Map.delete(state.pending_casts, cid)}, pending)
+        GenServer.reply(pending.from, reply)
+        {:noreply, state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(:thermal_commit, state) do
     started = System.monotonic_time(:microsecond)
@@ -2257,7 +2276,7 @@ defmodule VoxelRegion.World do
   # ---- 日志
 
   defp append_log(%{log: {backend, handle}} = state, txn),
-    do: backend.append(handle, attachment_metadata(state, Map.delete(txn, :liquid_falls)))
+    do: backend.append(handle, attachment_metadata(state, Map.drop(txn, [:liquid_falls, :casts])))
 
   # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
   defp attachment_metadata(state, txn),
@@ -2272,7 +2291,8 @@ defmodule VoxelRegion.World do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   defp remember_entry(state, txn) do
-    txn = Map.delete(txn, :liquid_falls)
+    # 实时落体帧与待施放记录只随本次广播，不进日志、检查点与回放尾。
+    txn = Map.drop(txn, [:liquid_falls, :casts])
     state = %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
     # 单个完整检查点不再生长；只有新历史出现时安排一次维护。
@@ -2471,7 +2491,8 @@ defmodule VoxelRegion.World do
       property_context: property_context(state),
       epochs: state.epochs,
       protection: state.protection.regions,
-      semblances: semblances(state)
+      semblances: semblances(state),
+      casts: Map.new(state.pending_casts, fn {cid, pending} -> {cid, pending.record} end)
     }
     |> public_properties()
     |> VoxelRegion.PropertyObservation.project(box)
@@ -4758,7 +4779,19 @@ defmodule VoxelRegion.World do
 
   defp warm_semblance(_program, _ambient), do: :ok
 
-  defp cast_spell(state, actor, request, program, quote) do
+  # 施放前摇（§13.6）：立即校验（间隔、目标、施法域、脚下、权限）失败即刻拒绝；通过后不结算，记一条待施放并广播
+  # 施放记录，前摇到期（`{:settle_cast, …}`）再以开始时捕获的施法者与意图重做同一校验并结算。前摇中再施放 = cast_too_soon。
+  defp cast_spell(state, from, actor, request, program, quote) do
+    with false <- Map.has_key?(state.pending_casts, actor.cid),
+         {:ok, _checked, _state} <- check_cast(state, actor, request, program) do
+      begin_cast(state, from, actor, request, program, quote)
+    else
+      true -> {:reply, {:error, :cast_too_soon}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp check_cast(state, actor, request, program) do
     previous = Map.get(state.spell_sessions, actor.player)
 
     with {:ok, session} <- admit_cast(previous, request, actor, state.magic),
@@ -4766,11 +4799,68 @@ defmodule VoxelRegion.World do
          {:ok, foot, state} <- foot_target(state, actor),
          :ok <- spell_subject(state, effect),
          true <- Protection.permitted?(state.protection, {:character, actor.cid}, effect.cells ++ [Damage.macro(foot)]) do
-      settle_spell(state, actor, request, session, previous, effect, foot, quote)
+      {:ok, %{session: session, previous: previous, effect: effect, foot: foot}, state}
     else
-      false -> {:reply, {:error, :protected_region}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-      {:error, reason, _} -> {:reply, {:error, reason}, state}
+      false -> {:error, :protected_region}
+      {:error, reason} -> {:error, reason}
+      {:error, reason, _} -> {:error, reason}
+    end
+  end
+
+  # 施放记录：t0 = World 墙钟（与拟态 t0_us 同源），出发点 = 手边（与投掷拟态同一来源），程序字节原样。
+  defp begin_cast(state, from, actor, request, program, quote) do
+    {dx, dy, dz} = request.direction
+    {ex, ey, ez} = actor.eye
+
+    record = %{live: 1, t0_us: System.system_time(:microsecond), steps: quote.steps, program: request.program,
+      origin: {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}}
+
+    case commit_casts(state, %{actor.cid => record}) do
+      {:ok, next} ->
+        Process.send_after(self(), {:settle_cast, actor.cid, record.t0_us}, ceil(quote.windup_s * 1000))
+
+        Logger.info(
+          "voxel_cast_begin seq=#{next.seq} cid=#{actor.cid} request_id=#{request.request_id} t0_us=#{record.t0_us} " <>
+            "windup_s=#{quote.windup_s} physical_j=#{quote.physical_j} loss_j=#{quote.loss_j} steps=#{inspect(quote.steps)}"
+        )
+
+        pending = %{record: record, from: from, actor: actor, request: request, program: program, quote: quote}
+        {:noreply, %{next | pending_casts: Map.put(next.pending_casts, actor.cid, pending)}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  # 结算：成功与走火由 settle_spell 提交（事务带 live=0 记录）；此时校验失败（如目标已失效）照常拒绝、不扣能，
+  # 另提交一笔只带 live=0 / outcome 2 的事务。
+  defp settle_cast(state, pending) do
+    case check_cast(state, pending.actor, pending.request, pending.program) do
+      {:ok, checked, next} ->
+        settle_spell(next, pending.actor, pending.request, checked, pending.quote)
+
+      {:error, reason} ->
+        case commit_casts(state, %{pending.actor.cid => %{live: 0, outcome: 2}}) do
+          {:ok, next} ->
+            Logger.info("voxel_cast_rejected seq=#{next.seq} cid=#{pending.actor.cid} request_id=#{pending.request.request_id} reason=#{reason}")
+            {{:error, reason}, next}
+
+          {:error, error} ->
+            {{:error, error}, state}
+        end
+    end
+  end
+
+  # 只带待施放记录的事务（同只带落体帧的事务）：日志里是空事务，保持 seq 连续；记录只随本次广播。
+  defp commit_casts(state, casts) do
+    next = %{state | seq: state.seq + 1}
+    txn = %{seq: next.seq, entries: [], coarse: [], casts: casts}
+
+    with :ok <- append_log(next, txn) do
+      next = remember_entry(next, txn)
+      fanout(next, txn)
+      fanout_canonical(next, txn, [], [], state)
+      {:ok, next}
     end
   end
 
@@ -4913,12 +5003,12 @@ defmodule VoxelRegion.World do
 
   defp spell_subject(_state, _effect), do: :ok
 
-  # 取能的控制开销从取得的能量里付（可支付 = 余额 + η·ΔE），否则空施法者永远取不了能。
+  # 取能的构型损耗从取得的能量里付（可支付 = 余额 + η·ΔE），否则空施法者永远取不了能。
   # 走火：扣 min(总支出, 余额) 全部落脚下，不产生其他效果。账：石减少 = caster_drawn_j + draw_loss_j；
   # 施法支出 spent = spell_heat_j + semblance_created_j + cast_waste_j。
   # 拟态：新记录 id = {本事务 seq, 0}，物理能量记 semblance_created_j；驱散：剩余能量记 semblance_released_j
   # 并作为有限热源落入接触宏格（或散入空气），已发生的燃烧与热不撤销。
-  defp settle_spell(before, actor, request, session, previous, effect, foot, quote) do
+  defp settle_spell(before, actor, request, %{session: session, previous: previous, effect: effect, foot: foot}, quote) do
     magic = before.magic
     cid = actor.cid
     seq = before.seq + 1
@@ -4936,7 +5026,7 @@ defmodule VoxelRegion.World do
           thermal = %{thermal | sources: Map.put(thermal.sources, Damage.macro(target), source)}
 
           {quote.total_j, balance - quote.total_j, [],
-           thermal |> ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, quote.control_j)}
+           thermal |> ledger(:spell_heat_j, args["energy_j"]) |> cast_waste(foot, quote.loss_j)}
 
         {nil, %{sym: "energy.draw", target: target}} ->
           row = Map.put(stone, :stored_j, Map.get(stone, :stored_j, 0.0) - draw.taken_j)
@@ -4946,9 +5036,9 @@ defmodule VoxelRegion.World do
             |> deposit_heat(target, draw.loss_j)
             |> ledger(:caster_drawn_j, draw.gained_j)
             |> ledger(:draw_loss_j, draw.loss_j)
-            |> cast_waste(foot, quote.control_j)
+            |> cast_waste(foot, quote.loss_j)
 
-          {quote.control_j, available - quote.total_j, [row], thermal}
+          {quote.loss_j, available - quote.total_j, [row], thermal}
 
         {nil, %{sym: "form.semblance", args: form, launch: launch}} ->
           s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, System.system_time(:microsecond)))
@@ -4957,7 +5047,7 @@ defmodule VoxelRegion.World do
             thermal
             |> Map.update(:semblances, %{{seq, 0} => s}, &Map.put(&1, {seq, 0}, s))
             |> ledger(:semblance_created_j, quote.physical_j)
-            |> cast_waste(foot, quote.control_j)
+            |> cast_waste(foot, quote.loss_j)
 
           {quote.total_j, balance - quote.total_j, [], thermal}
 
@@ -4965,7 +5055,7 @@ defmodule VoxelRegion.World do
           thermal =
             thermal
             |> release(id, s, cell)
-            |> cast_waste(foot, quote.control_j)
+            |> cast_waste(foot, quote.loss_j)
 
           {quote.total_j, balance - quote.total_j, [], thermal}
 
@@ -4986,7 +5076,8 @@ defmodule VoxelRegion.World do
     }
 
     txn =
-      %{seq: seq, entries: [], coarse: [], property_states: rows, thermal: thermal, caster_energy: %{cid => left}}
+      %{seq: seq, entries: [], coarse: [], property_states: rows, thermal: thermal, caster_energy: %{cid => left},
+        casts: %{cid => %{live: 0, outcome: if(outcome, do: 1, else: 0)}}}
       |> Map.merge(semblance_txn(semblances(before), next))
 
     case append_log(next, txn) do
@@ -4998,14 +5089,15 @@ defmodule VoxelRegion.World do
 
         Logger.info(
           "voxel_spell seq=#{seq} cid=#{cid} request_id=#{request.request_id} sym=#{effect.sym} outcome=#{outcome || :cast} " <>
-            "structure=#{quote.structure} quote_j=#{quote.total_j} spent_j=#{spent} energy_j=#{left} " <>
+            "structure=#{quote.structure} quote_j=#{quote.total_j} loss_j=#{quote.loss_j} windup_s=#{quote.windup_s} " <>
+            "spent_j=#{spent} energy_j=#{left} " <>
             "cells=#{inspect(effect.cells)} foot=#{inspect(Damage.macro(foot))}"
         )
 
-        {:reply, {:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent)}}, next}
+        {{:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent)}}, next}
 
       {:error, reason} ->
-        {:reply, {:error, reason}, before}
+        {{:error, reason}, before}
     end
   end
 
