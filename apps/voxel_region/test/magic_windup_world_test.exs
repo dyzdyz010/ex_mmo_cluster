@@ -153,9 +153,13 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     # 结算后的状态不是报价：前摇字段为 0（Hello 28）。
     assert caster.quote_windup_s == 0.0
     assert_receive {:canonical_delta, %{transaction_seq: ^settle_seq, transaction: %{casts: %{@cid => %{live: 0, outcome: 0}}}}}, 5_000
-    s = observe(c.w)
-    assert s.casts == %{}
-    assert s.thermal.sources[{0, 2, 3}] == %{remaining_j: 400_000.0, power_w: 200_000.0}
+    assert observe(c.w).casts == %{}
+    # 施放的热在结算事务里作为有限热源落地（程序原值 400 kJ / 200 kW）。读持久化的结算事务本身：
+    # 取能留下的热源使 World 每 500 ms 热提交，结算回复之后任一次提交都会按 200 kW × 0.5 s 放热，
+    # 观察快照里的余量取决于读取前跑过几次提交，不是结算时的值。
+    [settled] = OverlayLog.File.replay(Path.join(c.root, "overlay.log")) |> Enum.filter(&(&1.seq == settle_seq))
+    assert Map.take(settled.thermal.sources[{0, 2, 3}], [:remaining_j, :power_w]) ==
+             %{remaining_j: 400_000.0, power_w: 200_000.0}
   end
 
   test "前摇中再施放：立即 cast_too_soon、不扣能、不提交；报价不受影响；结算后照常", c do
