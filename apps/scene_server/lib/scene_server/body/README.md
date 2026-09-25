@@ -18,6 +18,24 @@ flowchart LR
 - `SceneServer.Body.Thermo.step(body, dt, %{q_j, max_contact_k, air_k, immersed})` → `{body, account}`，
   `account.stored_j = q_j + metabolic_j − convection_j − sweat_j`（J）。
 
+## 接入（魔法首片增量 4 后半）
+
+- `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
+  吃进 World 回传的接触热推进 `Thermo.step`（无接触时接触温度 = 空气）→ 把脚位、身高、半径、皮肤温度与热容、
+  体表面积报给 World（`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/1`）有变化才下发 `Session.BodyState`
+  （kind 12，Hello 26）。死亡由系统重建身体（复活后虚弱待做）；玩家暂无传送复活路径。
+- World 把皮肤当热内核外部节点（暴露面积 0），接触导热在 `VoxelRegion.BodyContact`（鞋底 / 浸没 / 触碰拟态），
+  每段演进回传 `{:body_heat, %{q_j, max_contact_k, immersed, dt_s, seq}}` 并记 `body_exchange_j`；Player 收到的累计
+  与 World 账同值（`body_state` / `body_heat` 日志里的 `body_exchange_j`）。
+- 烧伤影响循环：1/2/3 度时循环功能上限 1.0 / 0.9 / 0.7（Magic.md §6.3“影响哪些系统”，深度烧伤体液丢失；原创取值），
+  所以三度烧伤生命降到 70 且不回升（伤口撤不回）。
+- 浸没：`immersed` = 浸在液体里的体表比例，空气干热与出汗按 1 − immersed 缩放。
+
+**已知局限（失温不可达）**：血管收缩后核心→皮肤导热约 (5.28 + 1.163×0.57)×1.8 ≈ 10.7 W/K，皮肤贴近 0 °C 水时
+失热约 400 W，低于静息 + 寒战峰值 524 W，0 °C 全身浸没核心稳定在约 36.58 °C（`contact_test`）。Gagge 两节点对冷水
+浸没偏乐观（实测 0–5 °C 水中 30–60 min 轻度失温）；世界全局空气 20 °C、液体不低于 0 °C，所以现有内容下体温过低与
+冻伤都不可达。修正方向（未做）：浸没时的组织导热（Veicsteinas 1982 瘦人最大组织绝热约 0.07–0.15 m²·K/W）或寒战耐力。
+
 ## 模型
 
 Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Fundamentals 第 9 章 two-node model）的
@@ -42,7 +60,8 @@ Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Funda
 | 体温调节功能带 | 28 °C→0、32 °C→1；40 °C→1、42 °C→0 | 中度失温 28–32 °C 寒战停止（瑞士分级 HT II）；热射病 > 40 °C 出汗衰竭；原创线性插值 |
 | 循环功能带 | 24→0、32→1；40→1、43→0 °C | < 24 °C 心脏骤停风险高（HT IV）；> 42–43 °C 常致命 |
 | 神经功能带 | 28→0、35→1；39→1、42→0 °C | < 28 °C 意识丧失（HT III）；热射病昏迷 |
-| 生命值 | round(100 × min(循环, 神经)) | Magic.md §6.2（首片只接体温这一路） |
+| 生命值 | round(100 × min(循环, 神经)) | Magic.md §6.2（首片只接体温与烧伤两路） |
+| 烧伤对循环 | 1/2/3 度循环上限 1.0 / 0.9 / 0.7 | 原创取值（深度烧伤体液丢失；未按烧伤面积） |
 | 濒死 | 致命水平 < 0.1 持续 10 s → 濒死，再 120 s → 死亡 | 原创游戏参数；时间压缩系数待定（Magic.md §6.7） |
 | 体温过低 1/2/3 | 核心 < 35 / 32 / 28 °C | 临床分级（轻 32–35、中 28–32、重 < 28） |
 | 体温过高 1/2/3 | 核心 > 38.5 / 40 / 41 °C | 热衰竭 / 热射病 > 40 °C |
