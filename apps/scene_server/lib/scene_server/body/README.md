@@ -15,29 +15,53 @@ flowchart LR
 
 - `SceneServer.Body`：状态字段只有 `core_k`、`skin_k`、`burn_dose_s`、`frost_dose_k_s`、`lethal_s`、`status`；
   系统功能水平、生命值、伤病表全部由它们推导，不另存。
-- `SceneServer.Body.Thermo.step(body, dt, %{q_j, max_contact_k, air_k, immersed})` → `{body, account}`，
+- `SceneServer.Body.Thermo.step(body, dt, %{q_j, max_contact_k, sole_k, air_k, wind_mps, immersed})` → `{body, account}`，
   `account.stored_j = q_j + metabolic_j − convection_j − sweat_j`（J）。
 
 ## 接入（魔法首片增量 4 后半）
 
 - `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
-  吃进 World 回传的接触热推进 `Thermo.step`（空气温度 = 身体所在格的气候区温度，`VoxelRegion.Thermal.ambient/2`，
-  区表随 World 快照的 `property_context.climate_zones` 到达；无接触时接触温度 = 空气，即脚下是区温地面）→ 把脚位、身高、半径、皮肤温度与热容、
+  吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`，
+  区表随 World 快照的 `property_context.climate_zones` 到达；无鞋底接触时 `sole_k` = 空气温度，即脚下是区温地面）→ 把脚位、身高、半径、皮肤温度与热容、
   体表面积报给 World（`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/1`）有变化才下发 `Session.BodyState`
   （kind 12，Hello 26）。死亡由系统重建身体（复活后虚弱待做）；玩家暂无传送复活路径。
 - World 把皮肤当热内核外部节点（暴露面积 0），接触导热在 `VoxelRegion.BodyContact`（鞋底 / 浸没 / 触碰拟态），
-  每段演进回传 `{:body_heat, %{q_j, max_contact_k, immersed, dt_s, seq}}` 并记 `body_exchange_j`；Player 收到的累计
+  每段演进回传 `{:body_heat, %{q_j, sole_k, max_contact_k, immersed, dt_s, seq}}`（鞋底格温度与其余裸接触最高温分两路，
+  没有即 nil）并记 `body_exchange_j`；Player 收到的累计
   与 World 账同值（`body_state` / `body_heat` 日志里的 `body_exchange_j`）。
 - 烧伤影响循环：1/2/3 度时循环功能上限 1.0 / 0.9 / 0.7（Magic.md §6.3“影响哪些系统”，深度烧伤体液丢失；原创取值），
   所以三度烧伤生命降到 70 且不回升（伤口撤不回）。
 - 浸没：`immersed` = 浸在液体里的体表比例，空气干热与出汗按 1 − immersed 缩放。
 
-**失温 / 冻伤（2026-09-25 冷源）**：热环境资产的气候区给出低于 0 °C 的空气（大气边界）；寒战产热改为取自有限的
-糖原储备 `reserve_j`（7.65 MJ），寒战上限按 储备/满储备 线性下降，储备只在寒战时消耗、不随时间自然下降（进食补充
-待食物系统）。1 clo 静止空气下（仿真，1 Hz）：−25 °C 约 13.8 h 核心 < 35 °C（前约 10 h 寒战按稳态约 141 W 维持核心
-36.6 °C、储备线性下降，储备降到约 2.57 MJ 后上限跟不上），−40 °C 约 8.8 h；储备已空时 −25 °C 约 82 min。0 °C 全身浸没
-约 8.1 h（空储备 43 min）。冻伤仍按接触温度累计：−25 °C 地面 / 冰 24.45 K·s/s，第 25 s 冻伤（鞋底隔热未建模）。
-Gagge 两节点对冷水浸没偏乐观的局限仍在（实测 0–5 °C 水中 30–60 min 轻度失温）。
+**失温 / 冻伤（2026-09-25 冷源）**：空气温度与风速只经气候查询入口 `VoxelRegion.Climate.at/2`（首个提供者 = 热环境
+资产的静态气候区，`ambient_kelvin` + 可选 `wind_mps`）。寒战产热取自有限的糖原储备 `reserve_j`（7.65 MJ），寒战上限按
+储备/满储备 线性下降，储备只在寒战时消耗、不随时间自然下降（进食补充待食物系统）。风只改皮肤对流系数
+h_c = max(3.1, 8.3·v^0.6)（风速 0 与引入前逐位相同）；服装热阻不随风衰减（未建模）。
+
+仿真（1 Hz，1 clo，满储备，脚下区温冰；数字由 `Thermo.step` 逐秒推进得出）：
+
+| 条件 | 核心 < 35 °C | < 32 °C | 濒死 / 死亡 |
+|---|---|---|---|
+| −25 °C、5 m/s | 8.7 h（520 min） | 10.9 h | 12.4 h / 12.5 h |
+| −25 °C、静止 | 13.8 h | 16.5 h | 18.6 h |
+| −25 °C、10 m/s | 8.1 h | 10.3 h | 11.7 h |
+| −25 °C、5 m/s、储备已空 | 60 min | 123 min | 193 min / 195 min |
+| −40 °C、5 m/s | 5.4 h | 7.2 h | 8.4 h |
+
+−25 °C、5 m/s 前几分钟：干热散失 551 W（静止空气 375 W，×1.47）；皮肤 34 → 32.8（1 min）→ 28.6（5 min）→ 24.3（10 min）
+→ 14.2 °C（30 min）；核心 36.8 °C 附近不动；寒战约第 9 分钟才起（冷皮肤 × 冷核心），15 min 32 W、30 min 123 W、1 h 182 W，
+稳态约 199 W（手算不动点）；储备约 0.72 MJ/h 线性下降，降到拐点约 3.63 MJ（约 5.6 h 后）寒战跟不上，核心才下降。
+目标“30–60 min 失温”在 1 clo + 满储备下达不到：两节点模型的血管收缩把核心→皮肤导热压到约 10 W/K，寒战由 7.65 MJ
+储备长时间托住核心。敏感度（−25 °C、5 m/s）：0.5 clo 5.1 h、0.2 clo 3.2 h、裸身 2.0 h；储备 50% 3.4 h、25% 100 min、
+10% 72 min、空 60 min。时间尺度要压缩需另行决定（服装 / 储备 / 模型），本切片未改。
+
+冻伤：接触温度累计剂量；**鞋底接触隔着冬靴**（`VoxelRegion.BodyContact` 的 `sole_m2_k_per_w` 0.15 m²·K/W，同一值串联在
+World 的鞋底接触边里）——脚底组织温度取核心 ↔ 地面的稳态分压 `T_脚 = T_地 + (T_核 − T_地)·R_鞋/(1/K_cs + R_鞋)`，
+K_cs 为本步核心-皮肤导热（组织 5.28 + 血流项，W/(m²·K)）。Scene 在没有鞋底接触时把 `sole_k` 设为所在区空气温度（区温地面）。
+−25 °C 冰上 K_cs 最低 5.28 时只有核心 < 30.3 °C 才会冻脚，所以站 −25 °C 冰穿冬靴 12 h 内不冻伤；−40 °C 冰约 11 min 冻伤。
+鞋底热阻敏感度（冻伤到达时刻，−25 °C / −40 °C 冰，5 m/s）：0（裸脚）0.4 / 0.3 min、0.06 4.2 / 1.1 min、0.10 23 / 3.4 min、
+0.12 9.7 h / 5.6 min、0.15 无 / 11.4 min、0.20 无 / 6.6 h。裸接触（浸没液体、触碰拟态）仍直接按接触温度累计：
+手按 −25 °C 冰 25 s 冻伤。Gagge 两节点对冷水浸没偏乐观的局限仍在（实测 0–5 °C 水中 30–60 min 轻度失温）。
 
 ## 模型
 
@@ -60,7 +84,7 @@ Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Funda
 | 核心-皮肤导热 | 5.28 W/(m²·K) + 1.163 W·h/(L·K) × 皮肤血流 | Gagge 1971 |
 | 皮肤血流 | (6.3 + 50·暖核心)/(1 + 0.5·冷皮肤) L/(m²·h) | Gagge 1971 / ASHRAE |
 | 出汗 | 170 g/(m²·h·K) × 暖核心 × e^(暖皮肤/10.7)，潜热 2430 J/g | Gagge 1971 / ASHRAE（首片用核心信号代替平均体温信号） |
-| 干热交换 | 对流 3.1 + 辐射 4.7 W/(m²·K)，服装 0.155 m²·K/W（1 clo） | Gagge 静止空气 h_c；ASHRAE 典型线性辐射系数；ASHRAE 55 常规服装 |
+| 干热交换 | 对流 h_c = max(3.1, 8.3·v^0.6) + 辐射 4.7 W/(m²·K)，服装 0.155 m²·K/W（1 clo） | Gagge 静止空气下限 3.1 与受迫对流 8.3·v^0.6（ASHRAE Fundamentals 第 9 章，v 为风速 m/s）；ASHRAE 典型线性辐射系数；ASHRAE 55 常规服装 |
 | 体温调节功能带 | 28 °C→0、32 °C→1；40 °C→1、42 °C→0 | 中度失温 28–32 °C 寒战停止（瑞士分级 HT II）；热射病 > 40 °C 出汗衰竭；原创线性插值 |
 | 循环功能带 | 24→0、32→1；40→1、43→0 °C | < 24 °C 心脏骤停风险高（HT IV）；> 42–43 °C 常致命 |
 | 神经功能带 | 28→0、35→1；39→1、42→0 °C | < 28 °C 意识丧失（HT III）；热射病昏迷 |
@@ -72,6 +96,7 @@ Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Funda
 | 烧伤剂量 | 接触 ≥ 44 °C 起，率 2^((T − 60 °C)/1.32 K)，单位 = 60 °C 下的秒 | 拟合 Moritz & Henriques 1947（44 °C 约 6 h 全层坏死）与 CPSC 热水烫伤表（60 °C 约 5 s 三度）两端点：16 K / log2(21600/5) = 1.32 K |
 | 烧伤 1/2/3 度 | 剂量 1 / 2.5 / 5 | 三度锚 5 s；一、二度比例为原创取值 |
 | 冻伤剂量 | 接触低于 −0.55 °C（组织冰点）累计 K·s，600 K·s 冻伤 | 冰点为常见临床取值；600 K·s 为原创取值，待校准 |
+| 鞋底（剂量） | 脚底组织温度 = 核心 ↔ 地面经 1/K_cs 与鞋底 0.15 m²·K/W 的稳态分压 | 鞋底值见 `VoxelRegion.BodyContact`（冬靴外底 + 内底）；分压式为两节点模型的原创局部近似，不另建脚节点 |
 
 烧伤 / 冻伤首片按设计“伤口撤不回”：剂量只增不减，严重度不自愈，自然愈合留给后续切片（Magic.md §6.5）。
 体温过低 / 过高随核心温度变化，回到正常带即消失。
@@ -81,4 +106,6 @@ Gagge 两节点模型（Gagge, Stolwijk & Nishi 1971；ASHRAE Handbook — Funda
 `apps/scene_server/test/scene_server/body/thermo_test.exs`：手算单步、能量账每步闭合、20 °C 稳态、0 °C 寒战、
 60 °C / 600 K 烧伤、−10 °C 冻伤、体温伤病与生命推导、濒死 → 死亡、窗口内救回、复温恢复而烧伤保留；
 寒战储备（满 / 半 / 空储备的寒战上限、不寒战不耗储备、−25 °C 空气按手算稳态寒战功率耗储备并越过拐点后失温、
-−25 °C 第 25 s 冻伤）。气候区取温与寒区热模拟见 voxel_region `climate_zone_world_test`。
+裸接触 −25 °C 第 25 s 冻伤）；风（风速 0 / 缺省 / 0.1 m/s 逐位相同、5 m/s 与 1 m/s 干热手算、−25 °C 5 m/s 手算稳态寒战与拐点后失温）；
+鞋底（调定点与冷皮肤身体的脚底分压手算、−25 °C 5 m/s 站冰 1 h 不冻伤）。`contact_test.exs`：经鞋底站燃木仍一步三度烧伤。
+气候查询见 voxel_region `climate_test`，寒区热模拟与冷重启通知见 `climate_zone_world_test`。

@@ -232,7 +232,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
 
   # 生产热环境资产形态：气候区写在 environment.json（DA_ThermalEnvironment 发布）；资产是唯一来源，冷重启以资产为准。
   test "资产气候区：未记录格按所在区取默认温度，快照带同一份区表；站在区温地面无鞋底接触；资产去掉气候区后冷重启即恢复", c do
-    zones = [%{"min" => [0, 0], "max" => [7, 63], "ambient_kelvin" => @cold}]
+    zones = [%{"min" => [0, 0], "max" => [7, 63], "ambient_kelvin" => @cold, "wind_mps" => 5.0}]
     env = Path.join(c.root, "environment.json")
     File.write!(env, Jason.encode!(%{classification: "Global system", ambient_kelvin: @warm, environment_w_per_m2_k: 10,
       tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, climate_zones: zones}))
@@ -256,5 +256,34 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
     w = start(c, :asset, natural, thermal_environment_path: env)
     assert_in_delta query(w, {6, 4, 8}).temperature_kelvin, @warm, 1.0e-9
     refute Map.has_key?(World.simulation_snapshot(w, [], @box).property_context, :climate_zones)
+  end
+
+  # 气候变化通知（VoxelRegion.Climate 契约 2 / 4）：暖世界里热脉冲落定后，石板留下在 293.15 K ± 1 K 的温度行、热模拟静止；
+  # 资产新加覆盖石板的寒区后冷重启，这些行偏离新区温约 45 K ≫ 容差 1 K，必须作为热种子重新入活动集合并回落到区温。
+  # 若重启只沿用存档的“静止”标志，热提交不运行，行永远停在旧温度。
+  test "冷重启新加寒区：旧温度行重新入活动集合、回落到区温 ±1 K 后落定", c do
+    env = Path.join(c.root, "environment-restart.json")
+    base = %{classification: "Global system", ambient_kelvin: @warm, environment_w_per_m2_k: 10, tolerance_kelvin: 1,
+      emissivity: 0.9, view_range_cells: 8}
+    File.write!(env, Jason.encode!(base))
+    natural = for x <- 5..11, z <- 5..11, do: {{x, 4, z}, @stone}
+    w = start(c, :restart, natural, thermal_environment_path: env)
+    :ok = World.thermal_experiment(w, pulse(c, :restart, %{source_macro: [8, 4, 8], power_w: 20_000.0,
+      energy_j: 200_000.0}))
+    {warm, _} = run_until(w, 20_000.0)
+    refute warm.thermal.active
+    warm_rows = for row <- rows(warm), do: row
+    assert warm_rows != []
+    for row <- warm_rows, do: assert(abs(row.temperature_kelvin - @warm) <= 1.0)
+
+    :ok = stop_supervised(:restart)
+    File.write!(env, Jason.encode!(Map.put(base, :climate_zones, [zone({0, 0}, {63, 63}, @cold)])))
+    w = start(c, :restart, natural, thermal_environment_path: env)
+    restarted = observe(w)
+    assert restarted.thermal.active
+
+    {settled, _} = run_until(w, 200_000.0)
+    refute settled.thermal.active
+    for row <- rows(settled), do: assert(abs(row.temperature_kelvin - @cold) <= 1.0)
   end
 end

@@ -62,7 +62,7 @@ defmodule VoxelRegion.ParameterEvolution do
       Enum.reduce(rows, 0.0, fn {_, row}, sum ->
         old = old_catalog.materials[row.material]
         # 显热参考 = 行所在宏格的气候区环境温度（与热内核、默认温度同一取值）。
-        ambient = VoxelRegion.Thermal.ambient(thermal.config, Damage.macro(row))
+        ambient = VoxelRegion.Climate.air_k(thermal.config, Damage.macro(row))
 
         if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and
              not Phase.enabled?(old) do
@@ -159,7 +159,7 @@ defmodule VoxelRegion.ParameterEvolution do
               energy =
                 ThermalAttachments.volume(Attachments.slot(row), old) *
                   (new.materials[to]["heat_capacity_per_macro"] - old.materials[from]["heat_capacity_per_macro"]) *
-                  (row.temperature_kelvin - VoxelRegion.Thermal.ambient(thermal.config, Damage.macro(row)))
+                  (row.temperature_kelvin - VoxelRegion.Climate.air_k(thermal.config, Damage.macro(row)))
 
               {{Damage.key(next), next}, {[row | tombstones], sum + energy}}
             end

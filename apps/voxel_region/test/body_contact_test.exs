@@ -2,7 +2,7 @@ defmodule VoxelRegion.BodyContactTest do
   @moduledoc """
   只测试：身体接触换热的纯规则（魔法增量 4，Voxim Docs/Magic.md §6）。期望全部手算：
 
-  - 鞋底：0.03 / (0.06 + 0.5/25) = 0.375 W/K（石 k 25）；0.03 / (0.06 + 0.5/150) = 0.47368421 W/K（木 k 150）；
+  - 鞋底（冬靴 R 0.15）：0.03 / (0.15 + 0.5/25) = 0.17647059 W/K（石 k 25）；0.03 / (0.15 + 0.5/150) = 0.19565217 W/K（木 k 150）；
   - 浸没：A 1.8 m²、身高 1.8 m、重叠 1.8 m → 1.8 / (0.03 + 1/100) = 45 W/K；重叠 0.8 m → 20 W/K；
   - 触碰：r 0.4 m、k_s 400 → 0.01 / (0.4/400) = 10 W/K。
   """
@@ -10,8 +10,8 @@ defmodule VoxelRegion.BodyContactTest do
   alias VoxelRegion.BodyContact
 
   test "三类接触导热按串联式手算" do
-    assert_in_delta BodyContact.sole(25, 0.5), 0.375, 1.0e-12
-    assert_in_delta BodyContact.sole(150, 0.5), 0.03 / (0.06 + 0.5 / 150), 1.0e-12
+    assert_in_delta BodyContact.sole(25, 0.5), 0.176470588235, 1.0e-12
+    assert_in_delta BodyContact.sole(150, 0.5), 0.195652173913, 1.0e-12
     assert BodyContact.sole(0, 0.5) == 0.0
     assert_in_delta BodyContact.immersion(1.8, 1.8, 1.8), 45.0, 1.0e-9
     assert_in_delta BodyContact.immersion(1.8, 0.8, 1.8), 20.0, 1.0e-9

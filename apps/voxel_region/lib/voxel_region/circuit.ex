@@ -13,7 +13,7 @@ defmodule VoxelRegion.Circuit do
     界面温度 T_i 按两侧 k/(半格长) 加权；每个结吸收佩尔捷热 (S_b − S_a)·T_i·i（两侧各一半）。按 KCL，
     全网 Σε·i = Σ佩尔捷，热电做功恰由热节点支付。
   """
-  alias VoxelRegion.{Attachments,Damage,DCNetwork,Thermal,ThermalGeometry}
+  alias VoxelRegion.{Attachments,Climate,Damage,DCNetwork,ThermalGeometry}
   @micro VoxelRegion.Spatial.micro_resolution()
   @length 1.0/@micro
 
@@ -142,7 +142,7 @@ defmodule VoxelRegion.Circuit do
       end)
     end)
     temperature=fn target -> Map.get(Map.get(damage,Damage.key(target),%{}),:temperature_kelvin,
-      Thermal.ambient(environment,Damage.macro(target))) end
+      Climate.air_k(environment,Damage.macro(target))) end
     # owner 保留原遍历和前插次序；纯计算按同一边顺序求解，避免浮点累加漂移。
     {contact_edges,{luminous,cells}}=Enum.flat_map_reduce(contacts,{luminous,%{}},fn {target,other,area},{luminous,cells} ->
       ma=catalog.materials[target.material]; mb=catalog.materials[other.material]

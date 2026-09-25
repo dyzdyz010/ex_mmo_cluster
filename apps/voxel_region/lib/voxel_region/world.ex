@@ -679,7 +679,7 @@ defmodule VoxelRegion.World do
     true =
       config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and
         config["tolerance_kelvin"] > 0 and radiation_config?(config) and
-        VoxelRegion.Thermal.climate_zones?(config)
+        VoxelRegion.Climate.valid?(config)
 
     true = config["power_w"] > 0 and config["energy_j"] > 0
     micro = config["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
@@ -1186,12 +1186,12 @@ defmodule VoxelRegion.World do
   # 魔法增量 4：Scene 的 Player 每秒报一次身体（脚位、身高、半径、皮肤温度与热容、体表面积）；
   # 本次算出的接触边留到下一次热提交使用，无接触即注销。无热环境的世界忽略。
   def handle_info({:body_contact, cid, pid, body}, %{thermal: thermal} = state) when thermal != nil do
-    {contacts, immersed, state} = body_contacts(state, body)
+    {contacts, immersed, sole, state} = body_contacts(state, body)
 
     bodies =
       if contacts == [],
         do: Map.delete(state.bodies, cid),
-        else: Map.put(state.bodies, cid, Map.merge(body, %{pid: pid, contacts: contacts, immersed: immersed,
+        else: Map.put(state.bodies, cid, Map.merge(body, %{pid: pid, contacts: contacts, immersed: immersed, sole: sole,
           at: System.monotonic_time(:millisecond)}))
 
     {:noreply, %{state | bodies: bodies}}
@@ -2444,7 +2444,7 @@ defmodule VoxelRegion.World do
   end
 
   # 全局系统功能：占用与属性在同一 GenServer 提交点采样。
-  # 有气候区时附上同一份区表（Scene 的身体按所在格取空气温度，VoxelRegion.Thermal.ambient/2）；没有时不加键。
+  # 有气候区时附上同一份区表（Scene 的身体按所在格取空气温度，VoxelRegion.Climate.air_k/2）；没有时不加键。
   defp property_context(state) do
     context = %{
       hp_enabled: state.properties != nil,
@@ -2453,7 +2453,7 @@ defmodule VoxelRegion.World do
       ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)
     }
 
-    if state.thermal && VoxelRegion.Thermal.zoned?(state.thermal.config),
+    if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
       do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
       else: context
   end
@@ -3415,7 +3415,7 @@ defmodule VoxelRegion.World do
           ) and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
             config["tolerance_kelvin"] > 0 and radiation_config?(config) and
-            VoxelRegion.Thermal.climate_zones?(config)
+            VoxelRegion.Climate.valid?(config)
 
         %{
           config: config,
@@ -3544,10 +3544,13 @@ defmodule VoxelRegion.World do
   defp rebuild_thermal_work(%{thermal: nil} = state),
     do: %{state | thermal_work: ThermalWork.new()}
 
+  # 也是气候变化的通知点（VoxelRegion.Climate 契约 2）：环境变了，偏离新环境的记录格即热种子，非空就置活动；
+  # 冷启动时资产气候区与存档时不同（如新加寒区）走的正是这里。
   defp rebuild_thermal_work(state) do
     hot = ThermalWork.hot(state.damage, state.thermal.config)
 
-    active = state.thermal.active or Enum.any?(state.damage, fn {_, t} -> Combustion.exhausted?(t) end)
+    active = state.thermal.active or MapSet.size(hot) > 0 or
+      Enum.any?(state.damage, fn {_, t} -> Combustion.exhausted?(t) end)
     %{state | thermal: %{state.thermal | active: active}, thermal_work: %{ThermalWork.new() | hot: hot}}
   end
 
@@ -3935,7 +3938,7 @@ defmodule VoxelRegion.World do
 
     work = if active, do: ThermalWork.burned(%{work | hot: hot}, changes), else: %{ThermalWork.new() | builds: work.builds}
     state = advance_semblances(%{state | damage: damage, thermal: thermal}, semblances, semblance_result, done)
-    state = exchange_bodies(state, bodies, body_edges, body_result, result ++ semblance_result, done)
+    state = exchange_bodies(state, bodies, body_edges, body_result, result ++ semblance_result, work.indices, done)
 
     Logger.info(
       "voxel_thermal_kernel simulated_s=#{done} nodes=#{length(input)} edges=#{length(indexed_edges)} radiation_pairs=#{length(elem(radiation, 0))} sky_faces=#{length(elem(radiation, 1))} prepare_us=#{prepared - started} nif_us=#{calculated - prepared} accept_us=#{System.monotonic_time(:microsecond) - calculated}"
@@ -4106,7 +4109,8 @@ defmodule VoxelRegion.World do
           do: {:semblance, id, VoxelRegion.BodyContact.touch(s.radius_m, state.magic.semblance.conductivity)}
 
     immersed = min(1.0, Enum.sum(Enum.map(wet, &elem(&1, 0))) / height)
-    {sole ++ Enum.map(wet, &elem(&1, 1)) ++ touched, immersed, state}
+    sole_key = Enum.find_value(sole, fn {:node, key, _cell, _g} -> key end)
+    {sole ++ Enum.map(wet, &elem(&1, 1)) ++ touched, immersed, sole_key, state}
   end
 
   defp body_terms([], _indices, _semblances, _count), do: {[], []}
@@ -4128,23 +4132,27 @@ defmodule VoxelRegion.World do
   defp body_peer({:semblance, id, _g}, _indices, semblances), do: Map.get(semblances, id)
 
   # 一段演进后：身体吸热 q = C_skin·(T_后 − T_前)，记 body_exchange_j 并回传 Scene（同一值两端各记一笔）；
-  # 本段没有连上任何接触边的身体不回传。
-  defp exchange_bodies(state, [], _edges, _result, _others, _done), do: state
+  # 本段没有连上任何接触边的身体不回传。接触温度分两路回传：鞋底格温度 sole_k（Body 按鞋底热阻折算脚底组织温度）
+  # 与其余裸接触（浸没液体、触碰拟态）的最高温度 max_contact_k；某路没有接触时为 nil。
+  defp exchange_bodies(state, [], _edges, _result, _others, _indices, _done), do: state
 
-  defp exchange_bodies(state, bodies, edges, result, others, done) do
+  defp exchange_bodies(state, bodies, edges, result, others, indices, done) do
     others = List.to_tuple(others)
 
     bodies
     |> Enum.zip(result)
     |> Enum.with_index(tuple_size(others))
     |> Enum.reduce(state, fn {{{_cid, b}, {temperature, _, _}}, i}, state ->
-      touched = for {j, ^i, _g} <- edges, do: elem(elem(others, j), 0)
+      sole = b.sole && Map.get(indices, b.sole)
+      touched = for {j, ^i, _g} <- edges, do: {j == sole, elem(elem(others, j), 0)}
 
       if touched == [] do
         state
       else
         q = b.capacity * (temperature - b.skin_k)
-        send(b.pid, {:body_heat, %{q_j: q, max_contact_k: Enum.max(touched), immersed: b.immersed, dt_s: done,
+        bare = for {false, k} <- touched, do: k
+        send(b.pid, {:body_heat, %{q_j: q, max_contact_k: if(bare != [], do: Enum.max(bare)),
+          sole_k: Enum.find_value(touched, fn {on_sole, k} -> on_sole && k end), immersed: b.immersed, dt_s: done,
           seq: state.seq}})
         %{state | thermal: ledger(state.thermal, :body_exchange_j, q)}
       end
@@ -4246,7 +4254,7 @@ defmodule VoxelRegion.World do
     material = materials[target.material]
     config = state.thermal.config
     # 天然温度与静止判据都按格所在气候区：寒区里的天然冰/雪默认就在区温，静止并可作邻居入域。
-    ambient = VoxelRegion.Thermal.ambient(config, Damage.macro(target))
+    ambient = VoxelRegion.Climate.air_k(config, Damage.macro(target))
 
     Map.has_key?(material, "heat_capacity_per_macro") and
       (not phase_target?(state, target) or
@@ -5619,8 +5627,8 @@ defmodule VoxelRegion.World do
   defp phase_target?(s,t), do: t.granularity == 0 and phase_material?(s,t.material)
   # 无位置的库存（供给、背包里的相态材料）按全局环境；落在格上的一律按该格气候区（ambient_at）。
   defp phase_ambient(s), do: s.thermal.config["ambient_kelvin"]
-  # 格所在气候区的环境温度：未记录格的默认温度、相变天然温度、静止判据与显热参考（VoxelRegion.Thermal.ambient/2）。
-  defp ambient_at(s, cell), do: VoxelRegion.Thermal.ambient(s.thermal.config, cell)
+  # 格所在气候区的环境温度：未记录格的默认温度、相变天然温度、静止判据与显热参考（VoxelRegion.Climate.air_k/2）。
+  defp ambient_at(s, cell), do: VoxelRegion.Climate.air_k(s.thermal.config, cell)
 
   # R8-07 散体：目录 loose_threshold_units 即可倾倒；格有数量记录（liquid_units 条目）才是散体，天然地形与建造格静止。
   defp loose_material?(s,m), do: s.properties != nil and Map.has_key?(Map.get(s.properties.materials,m,%{}),"loose_threshold_units")
@@ -6608,10 +6616,10 @@ defmodule VoxelRegion.World do
   # 气候区是大气边界，两侧未记录格各在自己的环境温度静止；若允许跨区导热，边界两侧会在两个无限热库之间
   # 持续传热、不断偏离各自环境而被拉入活动集合（与“埋雪吞并”同类）。无区域且无气候区时原样返回。
   defp thermal_bounded?(state),
-    do: not Protection.empty?(state.protection) or VoxelRegion.Thermal.zoned?(state.thermal.config)
+    do: not Protection.empty?(state.protection) or VoxelRegion.Climate.zoned?(state.thermal.config)
 
   defp thermal_holder(state, cell),
-    do: {Protection.holder(state.protection, cell), VoxelRegion.Thermal.zone(state.thermal.config, cell)}
+    do: {Protection.holder(state.protection, cell), VoxelRegion.Climate.region(state.thermal.config, cell)}
 
   defp node_holder(state, key, target) do
     case target |> ThermalWork.cells() |> Enum.map(&thermal_holder(state, &1)) |> Enum.uniq() do

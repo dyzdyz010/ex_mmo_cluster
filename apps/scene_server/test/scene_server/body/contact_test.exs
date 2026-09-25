@@ -3,7 +3,7 @@ defmodule SceneServer.Body.ContactTest do
   只测试：魔法增量 4 的身体后果——World 回传的接触热（导热按 `VoxelRegion.BodyContact` 手算，World 侧的回传与两端
   同值见 voxel_region `body_contact_world_test`）喂进 `Body.Thermo` 后的烧伤、生命、核心与浸没（Voxim Docs/Magic.md §6）。
 
-  手算导热：鞋底踩木 0.03/(0.06 + 0.5/150) = 0.473684 W/K；0 °C 水全身浸没 1.8/(0.03 + 1/100) = 45 W/K；
+  手算导热：鞋底（冬靴 R 0.15）踩木 0.03/(0.15 + 0.5/150) = 0.1956522 W/K；0 °C 水全身浸没 1.8/(0.03 + 1/100) = 45 W/K；
   手碰 r 0.4 m 拟态 0.01/(0.4/400) = 10 W/K。每秒 q = G·(T_接触 − T_皮)（皮肤在 1 s 内变化 < 1 K，按步首值）。
   """
   use ExUnit.Case, async: true
@@ -21,6 +21,9 @@ defmodule SceneServer.Body.ContactTest do
     {body, account}
   end
 
+  defp sole_tick(body, g, ground_k),
+    do: Thermo.step(body, 1.0, %{q_j: g * (ground_k - body.skin_k), max_contact_k: nil, sole_k: ground_k, air_k: @air})
+
   defp run(body, g, contact_k, seconds, immersed \\ 0.0),
     do: Enum.reduce(1..seconds, body, fn _, b -> tick(b, g, contact_k, immersed) |> elem(0) end)
 
@@ -29,18 +32,20 @@ defmodule SceneServer.Body.ContactTest do
 
   defp severity(body, tag), do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
 
-  test "站在 600 K 燃木上：1 s 即三度烧伤，循环受烧伤上限 0.7 → 生命 100 → 70；离开 5 分钟烧伤与生命不回" do
+  # 鞋底接触：剂量温度为脚底组织温度 T_脚 = 600 + (309.95 − 600)·0.15/(1/12.6069 + 0.15) = 410.277 K（137 °C），
+  # 隔着冬靴仍远超烧伤阈值。
+  test "站在 600 K 燃木上（经鞋底）：1 s 即三度烧伤，循环受烧伤上限 0.7 → 生命 100 → 70；离开 5 分钟烧伤与生命不回" do
     g = BodyContact.sole(150, 0.5)
-    assert_in_delta g, 0.4736842105, 1.0e-9
-    {burnt, account} = tick(Body.new(), g, 600.0)
-    # q = 0.4736842·(600 − 307.15) = 138.7184 J（1 s）
-    assert_in_delta account.q_j, 138.71842, 1.0e-4
+    assert_in_delta g, 0.1956521739, 1.0e-9
+    {burnt, account} = sole_tick(Body.new(), g, 600.0)
+    # q = 0.1956522·(600 − 307.15) = 57.29674 J（1 s）
+    assert_in_delta account.q_j, 57.29674, 1.0e-4
     assert severity(burnt, "trauma.thermal.burn") == 3
     assert Body.systems(burnt).circulation == 0.7
     assert Body.life(burnt) == 70
     assert burnt.status == :alive
 
-    rested = air(run(burnt, g, 600.0, 9), 300)
+    rested = air(Enum.reduce(1..9, burnt, fn _, b -> sole_tick(b, g, 600.0) |> elem(0) end), 300)
     assert severity(rested, "trauma.thermal.burn") == 3
     assert Body.life(rested) == 70
     assert severity(rested, "temperature.hyperthermia") == 0

@@ -249,9 +249,9 @@ defmodule SceneServer.Body.ThermoTest do
     #   核心-皮肤 G = (5.28 + 1.163·6.3/(1 + 0.5·(34 − Ts)))·1.8，Tc = Ts + L/G，
     #   寒战需求 19.4·1.8·(34 − Ts)·(36.8 − Tc) 必须等于 S —— 二分求 Ts，得稳态寒战功率 P*。
     # 储备按 P* 线性下降，直到上限 419.04·R/R_full 低于 P*（拐点 R* = R_full·P*/419.04），之后寒战跟不上、核心下降。
-    defp steady_shiver(ta) do
+    defp steady_shiver(ta, dry \\ 6.3558170) do
       f = fn ts ->
-        l = 6.3558170 * (ts - ta)
+        l = dry * (ts - ta)
         g = (5.28 + 1.163 * 6.3 / (1 + 0.5 * (34 - ts))) * 1.8
         tc = ts + l / g
         {19.4 * 1.8 * (34 - ts) * (36.8 - tc) - (l - 104.76), l - 104.76, tc}
@@ -287,7 +287,7 @@ defmodule SceneServer.Body.ThermoTest do
       assert at.(hypo + 1).reserve_j < knee
     end
 
-    test "−25 °C 区温地面（无接触时接触温度 = 空气）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
+    test "裸接触 −25 °C（如手按冰，不经鞋底）：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
       cold = air(-25.0 + @c)
       b24 = run(Body.new(), cold, 24)
       assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
@@ -295,6 +295,83 @@ defmodule SceneServer.Body.ThermoTest do
       {b25, _} = step!(b24, cold)
       assert_in_delta b25.frost_dose_k_s, 611.25, 1.0e-6
       assert severity(b25, "trauma.thermal.frostbite") == 1
+    end
+  end
+
+  # 风（气候区 wind_mps）：对流系数 h_c = max(3.1, 8.3·v^0.6)（Gagge / ASHRAE）。
+  #   v = 5：5^0.6 = 2.6265278 → h_c = 21.800181；干热系数 1.8/(0.155 + 1/(21.800181 + 4.7)) = 9.3392195 W/K，
+  #   是静止空气 6.3558170 的 1.4694 倍。v = 1：h_c = 8.3 → 1.8/(0.155 + 1/13) = 7.7611940 W/K。
+  #   v = 0.1：8.3·0.1^0.6 = 2.0849 < 3.1 → 取下限 3.1，与静止空气相同。
+  describe "风（气候区 wind_mps）" do
+    test "风速 0、缺省、低于自然对流下限（0.1 m/s）：一步结果与不传风速逐位相同" do
+      body = %{Body.new() | skin_k: 25.0 + @c, core_k: 36.2 + @c}
+      still = Thermo.step(body, 1.0, air(-25.0 + @c))
+
+      for v <- [0.0, 0, 0.1],
+          do: assert(Thermo.step(body, 1.0, Map.put(air(-25.0 + @c), :wind_mps, v)) == still)
+    end
+
+    test "5 m/s、−25 °C 空气、调定点身体一步：干热散失 9.3392195 × 59 = 551.01395 W；1 m/s、0 °C：7.7611940 × 34 = 263.88060 W" do
+      {_, account} = step!(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0))
+      assert_in_delta account.convection_j, 551.01395, 1.0e-4
+      {_, account} = step!(Body.new(), Map.put(air(0.0 + @c), :wind_mps, 1.0))
+      assert_in_delta account.convection_j, 263.88060, 1.0e-4
+    end
+
+    # 同静止空气那条的手算不动点，只把干热系数换成 5 m/s 的 9.3392195：Ts ≈ 7.49 °C、Tc ≈ 36.59 °C、P* ≈ 198.7 W；
+    # 拐点 R* = 7.65 MJ × 198.7/419.04 ≈ 3.63 MJ，按 P* 耗到拐点约 5.6 h——失温不可能早于此（静止空气拐点约 10 h）。
+    test "−25 °C、5 m/s、1 clo：稳态寒战 P* ≈ 198.7 W（手算）、储备按 P* 线性下降，拐点前核心不低于 36.5 °C，越过拐点后失温" do
+      {ts, tc, p} = steady_shiver(-25.0, 9.3392195)
+      assert_in_delta ts, 7.49, 0.01
+      assert_in_delta tc, 36.59, 0.01
+      assert_in_delta p, 198.7, 0.1
+      knee = @full * p / 419.04
+
+      windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
+      states = Enum.scan(1..(12 * 3600), Body.new(), fn _, b -> step!(b, windy) |> elem(0) end)
+      at = fn s -> Enum.at(states, s - 1) end
+
+      assert_in_delta (at.(7200).reserve_j - at.(18_000).reserve_j) / 10_800, p, p * 0.01
+      assert Enum.all?(states, &(&1.reserve_j < 1.05 * knee or &1.core_k >= 36.5 + @c))
+
+      hypo = Enum.find_index(states, &(&1.core_k < 35.0 + @c))
+      assert hypo != nil and hypo + 1 > 5.6 * 3600
+      assert at.(hypo + 1).reserve_j < knee
+    end
+  end
+
+  # 鞋底（冬靴 R_鞋 0.15 m²·K/W，VoxelRegion.BodyContact）：脚底组织温度 = 核心 ↔ 地面经 1/K_cs 与 R_鞋 的稳态分压，
+  #   T_脚 = T_地 + (T_核 − T_地)·R_鞋/(1/K_cs + R_鞋)，K_cs = 5.28 + 1.163·皮肤血流。
+  #   调定点身体：血流 6.3 → K_cs = 12.6069；站 −25 °C 冰：T_脚 = 248.15 + 61.8·0.15/(0.0793216 + 0.15) = 288.57357 K（15.4 °C）。
+  #   皮肤 20 °C（冷皮肤 14 K）：血流 6.3/8 → K_cs = 6.1958625；−40 °C 冰 T_脚 = 270.14445 K → 冻伤剂量率 272.6 − 270.14445 = 2.45555；
+  #   −25 °C 冰 T_脚 = 277.91897 K，不累计。血流最低时 K_cs → 5.28：−25 °C 冰上只有核心 < 30.32 °C 才可能冻脚。
+  describe "鞋底隔热" do
+    defp on_ice(k), do: %{q_j: 0.0, max_contact_k: nil, sole_k: k, air_k: k}
+
+    test "调定点身体站 −25 °C 冰一步：T_脚 = 288.574 K，不累计冻伤；同温裸接触则累计 24.45 K·s" do
+      {shod, _} = step!(Body.new(), on_ice(-25.0 + @c))
+      assert shod.frost_dose_k_s == 0.0
+      {bare, _} = step!(Body.new(), air(-25.0 + @c))
+      assert_in_delta bare.frost_dose_k_s, 24.45, 1.0e-9
+    end
+
+    test "皮肤 20 °C 的身体：−40 °C 冰剂量率 2.45555 K·s/s，−25 °C 冰为 0；裸接触与鞋底同时存在取较高温度" do
+      cold = %{Body.new() | skin_k: 20.0 + @c}
+      {b, _} = step!(cold, on_ice(-40.0 + @c))
+      assert_in_delta b.frost_dose_k_s, 272.6 - 270.14445, 1.0e-4
+      {b, _} = step!(cold, on_ice(-25.0 + @c))
+      assert b.frost_dose_k_s == 0.0
+      # 鞋底在 −40 °C 冰上（T_脚 270.14 K）+ 裸接触 0 °C 水：剂量温度取 273.15 K，高于冻伤阈值 272.6 K
+      {b, _} = step!(cold, %{on_ice(-40.0 + @c) | max_contact_k: 273.15})
+      assert b.frost_dose_k_s == 0.0
+    end
+
+    test "−25 °C、5 m/s 站区温冰（Scene 无鞋底接触时 sole_k = 区温）1 小时：不冻伤；对照裸接触 25 秒冻伤" do
+      windy = Map.put(on_ice(-25.0 + @c), :wind_mps, 5.0)
+      hour = run(Body.new(), windy, 3600)
+      assert hour.frost_dose_k_s == 0.0
+      assert hour.core_k > 36.5 + @c
+      assert severity(run(Body.new(), Map.put(air(-25.0 + @c), :wind_mps, 5.0), 25), "trauma.thermal.frostbite") == 1
     end
   end
 end

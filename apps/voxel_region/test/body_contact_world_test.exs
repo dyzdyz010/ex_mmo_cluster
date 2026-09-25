@@ -8,9 +8,10 @@ defmodule VoxelRegion.BodyContactWorldTest do
   皮肤 307.15 K（34 °C）、皮肤热容 24430 J/K、体表 1.8 m²。热初态（600 K 的石 / 木、10 MJ 蓄能石）作为作者初态经持久化
   边界安装一次（同 magic_semblance_world_test）；水经 Test-only `liquid_experiment` 作者入口装入围起的两格坑。
 
-  手算导热（BodyContact）：鞋底踩石 0.03/(0.06 + 0.5/25) = 0.375 W/K；两格水 [1,2) 与 [2,2.8) 浸没
+  手算导热（BodyContact）：鞋底（冬靴 R 0.15）踩石 0.03/(0.15 + 0.5/25) = 0.17647059 W/K；两格水 [1,2) 与 [2,2.8) 浸没
   1.8·1.0/1.8/0.04 + 1.8·0.8/1.8/0.04 = 25 + 20 = 45 W/K；触碰 r 0.4 m 拟态 0.01/(0.4/400) = 10 W/K。
-  World 自身每 500 ms 也提交：断言只用每条回传里的同段量（q、段长、接触最高温）与两端累计。
+  World 自身每 500 ms 也提交：断言只用每条回传里的同段量（q、段长、接触温度）与两端累计。
+  接触温度分两路：鞋底格 `sole_k`、其余裸接触（浸没、触碰）最高温 `max_contact_k`，某路没有接触为 nil。
   """
   use ExUnit.Case, async: false
   alias VoxelRegion.{World, OverlayLog}
@@ -103,7 +104,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
   # 两端同值：本端逐条累加（同一加法次序）等于 World 账。
   defp both_ends(heats, s), do: assert(Enum.reduce(heats, 0.0, &(&2 + &1.q_j)) == ledger(s))
 
-  test "脚下 600 K 石：G = 0.375 W/K，每段 q/dt = G·(T_接触 − 307.15)（1%）；皮肤升温方向；两端交换量相等", c do
+  test "脚下 600 K 石：鞋底 G = 0.17647 W/K，每段 q/dt = G·(T_鞋底格 − 307.15)（1%）；无裸接触；两端交换量相等", c do
     c = install(c, [{{0.5, 2.5, 0.5}, {4, 7, 4}, %{temperature_kelvin: 600.0}}])
     heats =
       for _ <- 1..4 do
@@ -116,8 +117,8 @@ defmodule VoxelRegion.BodyContactWorldTest do
     assert heats != []
 
     for h <- heats do
-      assert h.immersed == 0.0 and h.max_contact_k > 590
-      expected = 0.375 * (h.max_contact_k - @skin) * h.dt_s
+      assert h.immersed == 0.0 and h.max_contact_k == nil and h.sole_k > 590
+      expected = 0.03 / 0.17 * (h.sole_k - @skin) * h.dt_s
       assert_in_delta h.q_j, expected, 0.01 * expected
     end
 
@@ -136,7 +137,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
 
     wood = Enum.find(Map.values(s.damage), &(&1.granularity == 0 and &1.micro == {0, 0, 48}))
     assert wood.burning
-    assert Enum.all?(heats, &(&1.q_j > 0 and &1.max_contact_k >= 573.15))
+    assert Enum.all?(heats, &(&1.q_j > 0 and &1.sole_k >= 573.15 and &1.max_contact_k == nil))
     both_ends(heats, s)
   end
 
@@ -159,6 +160,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
     for h <- heats do
       assert_in_delta h.immersed, 1.0, 1.0e-12
       assert_in_delta h.max_contact_k, 293.15, 0.05
+      assert h.sole_k == nil
       expected = 45.0 * (h.max_contact_k - @skin) * h.dt_s
       assert h.q_j < 0
       assert_in_delta h.q_j, expected, 0.01 * abs(expected)

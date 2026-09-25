@@ -31,31 +31,6 @@ defmodule VoxelRegion.ThermalTest do
             %{"min" => [-5, 5], "max" => [5, 5], "ambient_kelvin" => 263.15}]
     defp zoned, do: %{"ambient_kelvin" => 293.15, "climate_zones" => @zones}
 
-    test "按格 x/z 闭矩形取区温，全高；重叠处列表在前者优先；区外与无字段时为全局环境" do
-      assert Thermal.ambient(zoned(), {-10, 0, 0}) == 248.15
-      assert Thermal.ambient(zoned(), {-1, -500, 20}) == 248.15
-      assert Thermal.ambient(zoned(), {-3, 7, 5}) == 248.15
-      assert Thermal.ambient(zoned(), {0, 7, 5}) == 263.15
-      assert Thermal.ambient(zoned(), {5, 7, 5}) == 263.15
-      assert Thermal.ambient(zoned(), {0, 7, 6}) == 293.15
-      assert Thermal.ambient(zoned(), {-11, 0, 0}) == 293.15
-      assert Thermal.ambient(zoned(), {-1, 0, 21}) == 293.15
-      assert Thermal.ambient(%{"ambient_kelvin" => 293.15}, {-3, 0, 5}) == 293.15
-      assert Thermal.zone(zoned(), {-3, 0, 5}) == 0
-      assert Thermal.zone(zoned(), {0, 0, 5}) == 1
-      assert Thermal.zone(%{"ambient_kelvin" => 293.15}, {0, 0, 5}) == nil
-      refute Thermal.zoned?(%{"ambient_kelvin" => 293.15, "climate_zones" => []})
-    end
-
-    test "字段校验：整数闭矩形 min ≤ max、正区温；缺省合法" do
-      assert Thermal.climate_zones?(%{})
-      assert Thermal.climate_zones?(zoned())
-      refute Thermal.climate_zones?(%{"climate_zones" => [%{"min" => [1, 0], "max" => [0, 0], "ambient_kelvin" => 250}]})
-      refute Thermal.climate_zones?(%{"climate_zones" => [%{"min" => [0.5, 0], "max" => [1, 0], "ambient_kelvin" => 250}]})
-      refute Thermal.climate_zones?(%{"climate_zones" => [%{"min" => [0, 0], "max" => [1, 0], "ambient_kelvin" => 0}]})
-      refute Thermal.climate_zones?(%{"climate_zones" => %{}})
-    end
-
     test "参考步进的空气换热按节点所在区：寒区节点向 248.15 K、区外节点向 293.15 K" do
       a = {-3, 0, 1}; b = {3, 0, 1}
       config = Map.put(zoned(), "environment_w_per_m2_k", 10.0)

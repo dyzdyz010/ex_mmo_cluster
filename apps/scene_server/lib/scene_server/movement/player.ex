@@ -58,7 +58,7 @@ defmodule SceneServer.Movement.Player do
         # 魔法增量 4：身体真值（Docs/Magic.md §6），会话内存，不持久化（重登 / 冷重启即新身体，已知缺口）。
         # body_heat = 自上次 1 Hz 推进以来 World 回传的接触热累计；body_exchange_j = 本端收到的接触热总和（与 World 账同值）。
         body: Body.new(),
-        body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0},
+        body_heat: %{q_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
         # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
@@ -476,12 +476,12 @@ defmodule SceneServer.Movement.Player do
     finish(state)
   end
 
-  # 魔法增量 4：World 每段热演化回传的接触热（J）、接触最高温度与浸没比例；下一次 1 Hz 推进时一并吃进 Body。
-  def handle_info({:body_heat, %{q_j: q, max_contact_k: max_k, immersed: immersed} = step}, state) do
+  # 魔法增量 4：World 每段热演化回传的接触热（J）、鞋底格温度、裸接触最高温度与浸没比例；下一次 1 Hz 推进时一并吃进 Body。
+  def handle_info({:body_heat, %{q_j: q, max_contact_k: max_k, sole_k: sole_k, immersed: immersed} = step}, state) do
     heat = state.body_heat
 
     heat = %{heat | q_j: heat.q_j + q, immersed: immersed,
-      max_contact_k: if(heat.max_contact_k, do: max(heat.max_contact_k, max_k), else: max_k)}
+      max_contact_k: highest(heat.max_contact_k, max_k), sole_k: highest(heat.sole_k, sole_k)}
 
     character_event(state, state, :body_heat, Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q}))
 
@@ -500,7 +500,8 @@ defmodule SceneServer.Movement.Player do
 
   # 1 Hz：Body 推进 1 s（吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
-  # 空气温度 = 身体所在格的气候区温度（与 World 热内核同一函数、同一份区表）；未接触的地面在同一环境温度。
+  # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）；
+  # 没有鞋底接触时，脚下是在区温的地面（sole_k = 空气温度）。
   defp body_tick(%{climate: nil} = state), do: state
   defp body_tick(%{state: nil} = state), do: state
 
@@ -508,11 +509,11 @@ defmodule SceneServer.Movement.Player do
     heat = state.body_heat
     before = state.body.status
     {px, py, pz} = state.state.position
-    air_k = VoxelRegion.Thermal.ambient(state.climate, {floor(px), floor(py), floor(pz)})
+    %{air_k: air_k, wind_mps: wind} = VoxelRegion.Climate.at(state.climate, {floor(px), floor(py), floor(pz)})
 
     {body, account} =
-      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, max_contact_k: heat.max_contact_k || air_k,
-        air_k: air_k, immersed: heat.immersed})
+      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, max_contact_k: heat.max_contact_k,
+        sole_k: heat.sole_k || air_k, air_k: air_k, wind_mps: wind, immersed: heat.immersed})
 
     if body.status != before,
       do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
@@ -537,11 +538,15 @@ defmodule SceneServer.Movement.Player do
 
     character_event(state, state, :body_state, %{life: report.life, status: body.status, core_k: body.core_k,
       skin_k: body.skin_k, injuries: Map.new(report.injuries), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
-      immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
-      air_k: air_k, reserve_j: body.reserve_j, shiver_j: account.shiver_j, sent: report.key != state.body_sent})
+      sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
+      air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j, sent: report.key != state.body_sent})
 
-    %{state | body: body, body_heat: %{q_j: 0.0, max_contact_k: nil, immersed: 0.0}, body_sent: report.key}
+    %{state | body: body, body_heat: %{q_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0}, body_sent: report.key}
   end
+
+  defp highest(nil, k), do: k
+  defp highest(k, nil), do: k
+  defp highest(a, b), do: max(a, b)
 
   defp schedule_body, do: Process.send_after(self(), :body_tick, 1_000)
 

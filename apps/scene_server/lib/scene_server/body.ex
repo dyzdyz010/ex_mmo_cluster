@@ -47,8 +47,11 @@ defmodule SceneServer.Body do
     sweat_g_per_m2_h_k: 170.0,
     sweat_skin_scale_k: 10.7,
     latent_j_per_g: 2430.0,
-    # —— 皮肤-空气干热交换：静止空气对流 + 线性化辐射，外加 1 clo 服装热阻 ——
+    # —— 皮肤-空气干热交换：对流 + 线性化辐射，外加 1 clo 服装热阻。对流系数 h_c = max(3.1, 8.3·v^0.6)
+    # （Gagge / ASHRAE Fundamentals 第 9 章：静止空气自然对流下限 3.1，受迫对流 8.3·v^0.6，v 为风速 m/s）——
     convective_w_per_m2_k: 3.1,
+    wind_convective_w_per_m2_k: 8.3,
+    wind_exponent: 0.6,
     radiative_w_per_m2_k: 4.7,
     clothing_m2_k_per_w: 0.155,
     # —— 系统功能水平带 {冷侧归零, 冷侧满值, 热侧满值, 热侧归零} ——

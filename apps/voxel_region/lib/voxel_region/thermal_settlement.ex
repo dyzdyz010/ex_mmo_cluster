@@ -35,7 +35,7 @@ defmodule VoxelRegion.ThermalSettlement do
       burned = Damage.pick_baseline(burned, hp)
 
       hot =
-        if abs(temperature - VoxelRegion.Thermal.ambient(config, cell)) > config["tolerance_kelvin"] or
+        if abs(temperature - VoxelRegion.Climate.air_k(config, cell)) > config["tolerance_kelvin"] or
              Map.get(burned, :burning, false), do: target_cells ++ hot, else: hot
 
       pool = if t.granularity == 4, do: {3, t.incarnation}, else: {2, t.owner}
