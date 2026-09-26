@@ -12,7 +12,9 @@ defmodule VoxelRegion.ParameterEvolution do
         ~w(seebeck_v_per_k) ++
         # R8-07 散体休止阈值只在每步流动时现读（改动唤醒全部有限格）：可在线新增或调整；
         # 已可倾倒的材料不能撤下（世界里可能有它的散体格），见下方检查。
-        ~w(loose_threshold_units)
+        ~w(loose_threshold_units) ++
+        # Voxim 背包（2026-09-26）：密度只供客户端派生重量显示，服务端不读、行上无相关状态：可在线新增或调整。
+        ~w(density_kg_m3)
 
     # 设备电阻只在每次建电路时按目录现读（Circuit.prepare），行上不存与之相关的量：可在线调整。
     tool_fields =
