@@ -61,6 +61,9 @@ defmodule SceneServer.Movement.Player do
         body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
+        # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
+        # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
+        revive: nil,
         # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
         climate: nil
       })
@@ -86,7 +89,7 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
-          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate]))
+          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive]))
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
@@ -214,7 +217,10 @@ defmodule SceneServer.Movement.Player do
         :queued_seq,
         :body,
         :body_exchange_j,
-        :climate
+        :climate,
+        :probe,
+        :authority_ref,
+        :revive
       ])
       |> Map.merge(%{
         transaction_seq: state.updates.transaction_seq,
@@ -503,19 +509,22 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info(:body_tick, state) do
     schedule_body()
-    {:noreply, body_tick(state)}
+    finish(body_tick(state))
   end
 
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
 
   # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/4`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
-  # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
+  # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。
+  # 身体闭环 H2：死亡那一秒照常下发 status 2 并通知 World 掉落、开始回会话出生点；下一秒换成统一复活身体（`Body.revive/0`）。
+  # 神经功能每秒报给 World（施法相干度的倍率，`{:body_nervous, cid, level}`）。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
   # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
   defp body_tick(%{climate: nil} = state), do: state
   defp body_tick(%{state: nil} = state), do: state
 
   defp body_tick(state) do
+    state = if state.body.status == :dead, do: revive(state), else: state
     heat = state.body_heat
     before = state.body.status
     {px, py, pz} = state.state.position
@@ -528,7 +537,6 @@ defmodule SceneServer.Movement.Player do
     if body.status != before,
       do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
 
-    body = if body.status == :dead, do: Body.new(), else: body
     {x, y, z} = state.state.position
     profile = state.config.profile
 
@@ -538,6 +546,9 @@ defmodule SceneServer.Movement.Player do
         skin_k: body.skin_k, capacity: Body.skin_capacity_j_per_k(), area: Body.params().area_m2,
         tissue_k: body.tissue_k, tissue_capacity: Body.tissue_capacity_j_per_k(),
         tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)}})
+
+    nervous = Body.systems(body).nervous
+    if authority, do: send(authority, {:body_nervous, state.id, nervous})
 
     report = Body.report(body, 1.0)
 
@@ -560,11 +571,78 @@ defmodule SceneServer.Movement.Player do
       heat_content_j: Body.heat_content_j(body),
       protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal, burn_age_s: body.burn_age_s,
       repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
-      synth_fat_j: account.synth_fat_j,
+      synth_fat_j: account.synth_fat_j, weak_s: body.weak_s, daze_s: body.daze_s, nervous: nervous,
+      lethal_level: Body.lethal_level(body),
       sent: report.key != state.body_sent})
 
-    %{state | body: body, body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0}, body_sent: report.key}
+    state = %{state | body: body, body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
+      body_sent: report.key}
+
+    if body.status == :dead, do: died(state), else: state
   end
+
+  # 死亡（Magic.md §6.10）：通知 World 在死亡点附近按 5% 掷骰掉落（`{:body_death, cid, 脚位}`，World 裁决并记账），
+  # 并开始回会话出生点（`relocate/1`）。
+  defp died(state) do
+    {x, y, z} = state.state.position
+    feet = {x, y - state.config.profile.half_height, z}
+    if authority = Map.get(state, :authority_ref), do: send(authority, {:body_death, state.id, feet})
+    character_event(state, state, :body_death, %{feet: Tuple.to_list(feet), probe: Tuple.to_list(state.probe)})
+    relocate(state)
+  end
+
+  defp revive(state) do
+    character_event(state, state, :body_revived, %{position: Tuple.to_list(state.state.position)})
+    %{state | body: Body.revive()}
+  end
+
+  # 回会话出生点：出生柱（`probe`）上按入场同一规则重找落脚点（世界可能已变）。非流送会话世界固定，下一个模拟 tick 即换；
+  # 流送会话先请求覆盖出生点的新窗口，窗口安装时再找落脚点（`revive_spawn/3`），与窗口同一 apply_tick 生效。
+  defp relocate(%{stream: nil} = state) do
+    case find_spawn(state, state.probe) do
+      {:ok, native} ->
+        tick = state.simulation_tick + 1
+        spawned = from_pod(native, state.state.yaw)
+        reliable(state, :voxel, %Voxel.Relocate{identity: state.identity, apply_tick: tick, state: spawned})
+        character_event(state, state, :revive_relocate, %{apply_tick: tick, position: Tuple.to_list(spawned.position)})
+        %{state | revive: {tick, spawned}}
+
+      :outside ->
+        fail(state, 4)
+
+      :not_found ->
+        fail(state, 10)
+    end
+  end
+
+  defp relocate(state), do: stream_window(%{state | revive: :pending})
+
+  # 复活窗口（`revive: :window`）安装于 tick：在新窗口的世界与移动域里找出生点，返回要先于该窗口发出的 Relocate。
+  defp revive_spawn(%{revive: :window} = state, domain, tick) do
+    case find_spawn(state, state.probe, domain) do
+      {:ok, native} ->
+        spawned = from_pod(native, state.state.yaw)
+        character_event(state, state, :revive_relocate, %{apply_tick: tick, position: Tuple.to_list(spawned.position)})
+        {%{state | revive: {tick, spawned}}, [{:relocate, tick, spawned}]}
+
+      :outside ->
+        {fail(state, 4), []}
+
+      :not_found ->
+        {fail(state, 10), []}
+    end
+  end
+
+  defp revive_spawn(state, _domain, _tick), do: {state, []}
+
+  # 模拟 tick 之前：apply_tick − 1 的状态换成出生点（与 Voxel.Relocate 同一语义）。
+  defp relocated(%{revive: {tick, spawned}, simulation_tick: simulated} = state) when tick == simulated + 1 do
+    character_event(state, state, :revive_relocated, %{apply_tick: tick, from: Tuple.to_list(state.state.position),
+      to: Tuple.to_list(spawned.position)})
+    %{state | state: spawned, revive: nil}
+  end
+
+  defp relocated(state), do: state
 
   defp highest(nil, k), do: k
   defp highest(k, nil), do: k
@@ -613,6 +691,8 @@ defmodule SceneServer.Movement.Player do
   defp advance(%{transfer: transfer} = state) when transfer != nil, do: state
 
   defp advance(state) do
+    state = relocated(state)
+
     cond do
       state.state == nil or state.simulation_tick >= state.tick ->
         state
@@ -735,6 +815,9 @@ defmodule SceneServer.Movement.Player do
   defp emit_transactions(state, tick, events) do
     for event <- events do
       case event do
+        {:relocate, apply_tick, spawned} ->
+          reliable(state, :voxel, %Voxel.Relocate{identity: state.identity, apply_tick: apply_tick, state: spawned})
+
         {:window, snapshot, revision} ->
           domain = window_domain(snapshot)
 
@@ -882,7 +965,8 @@ defmodule SceneServer.Movement.Player do
             native_build_us: native_build_us
           })
 
-          {s, output ++ [{:window, snapshot, updates.revision}]}
+          {s, relocation} = revive_spawn(s, window_domain(snapshot), next)
+          {s, output ++ relocation ++ [{:window, snapshot, updates.revision}]}
       end)
 
     %{state | tick: next}
@@ -1011,20 +1095,20 @@ defmodule SceneServer.Movement.Player do
     end)
   end
 
-  defp query_allowed?(state, value) do
+  defp query_allowed?(state, value, domain \\ nil) do
     {lo, hi} = state.updates.native.query_bounds(state.config.profile_tuple, pod(value))
-    domain = domain_at(state, state.simulation_tick + 1)
+    domain = domain || domain_at(state, state.simulation_tick + 1)
     {min, max} = domain.bounds
 
     inside?(value.position, domain.travel) and
       Enum.all?(0..2, &(elem(lo, &1) >= elem(min, &1) and elem(hi, &1) < elem(max, &1)))
   end
 
-  defp find_spawn(state, probe) do
+  defp find_spawn(state, probe, domain \\ nil) do
     start = from_pod({probe, {0.0, 0.0, 0.0}, 0}, 0)
     finish = %{start | position: put_elem(probe, 1, state.config.spawn_min_y)}
 
-    if query_allowed?(state, start) and query_allowed?(state, finish) do
+    if query_allowed?(state, start, domain) and query_allowed?(state, finish, domain) do
       state.updates.native.find_spawn(
         state.updates.world,
         state.config.profile_tuple,
@@ -1071,18 +1155,31 @@ defmodule SceneServer.Movement.Player do
     state = %{state | window_domains: newer ++ Enum.take(older, 1)}
     box = CollisionStream.box(state.state.position, state.config.streaming_radius)
 
-    if not state.window_pending and box != state.requested_window do
-      character_event(state, state, :collision_window_request, %{
-        l0_min: Tuple.to_list(elem(box, 0)),
-        l0_max_exclusive: Tuple.to_list(elem(box, 1)),
-        server_time_us: System.system_time(:microsecond)
-      })
+    cond do
+      # 复活：等上一个窗口装好后请求覆盖出生点的窗口（即使与当前窗口相同也要一个新窗口作切点）；瞬移完成前不随位置换窗。
+      state.revive == :pending and not state.window_pending ->
+        %{request_window(state, CollisionStream.box(state.probe, state.config.streaming_radius)) | revive: :window}
 
-      CollisionStream.window(state.stream, box)
-      %{state | requested_window: box, window_pending: true}
-    else
-      state
+      state.revive != nil ->
+        state
+
+      not state.window_pending and box != state.requested_window ->
+        request_window(state, box)
+
+      true ->
+        state
     end
+  end
+
+  defp request_window(state, box) do
+    character_event(state, state, :collision_window_request, %{
+      l0_min: Tuple.to_list(elem(box, 0)),
+      l0_max_exclusive: Tuple.to_list(elem(box, 1)),
+      server_time_us: System.system_time(:microsecond)
+    })
+
+    CollisionStream.window(state.stream, box)
+    %{state | requested_window: box, window_pending: true}
   end
 
   defp pod(state), do: {state.position, state.velocity, state.grounded}

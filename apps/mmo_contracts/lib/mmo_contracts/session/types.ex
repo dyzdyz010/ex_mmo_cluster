@@ -145,7 +145,7 @@ defmodule MmoContracts.Session.BodyState do
 end
 
 defmodule MmoContracts.Session.BodyInjury do
-  @moduledoc "BodyState 的一条伤病：标签（如 trauma.thermal.burn）、严重度 1..、愈合进度 0..100 %（Hello 29；不愈合的伤病为 0）、剩余愈合秒数估算 remaining_s（Hello 30；−1 停止：营养为 0，−2 停止：速率为 0，不愈合的伤病为 0）。"
+  @moduledoc "BodyState 的一条伤病：标签（如 trauma.thermal.burn）、严重度 1..、愈合进度 0..100 %（Hello 29；不愈合的伤病为 0）、剩余愈合秒数估算 remaining_s（Hello 30；−1 停止：营养为 0，−2 停止：速率为 0，不愈合的伤病为 0）。复活 debuff（Hello 31 起出现，线格式不变）：`recovery.weakness`、`nervous.daze` 的愈合进度 = 已过时间比例，remaining_s = 剩余秒数。"
   @enforce_keys [:tag, :severity, :heal, :remaining_s]
   defstruct @enforce_keys
 end

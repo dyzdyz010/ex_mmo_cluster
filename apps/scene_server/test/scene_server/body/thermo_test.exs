@@ -225,9 +225,10 @@ defmodule SceneServer.Body.ThermoTest do
       assert severity(%{Body.new() | core_k: 31.0 + @c}, "temperature.hypothermia") == 2
       assert severity(%{Body.new() | core_k: 40.5 + @c}, "temperature.hyperthermia") == 2
 
-      # 30 °C：循环 (30−24)/8 = 0.75，神经 (30−28)/7 = 0.2857 → 生命 29；体温调节 (30−28)/4 = 0.5
+      # 30 °C：循环 (30−24)/8 = 0.75，神经 (30−28)/7 = 0.2857 → 合成（H2，p = 2）1 − √(0.25² + 0.7143²) = 0.2432 → 生命 24；
+      # 体温调节 (30−28)/4 = 0.5
       at30 = %{Body.new() | core_k: 30.0 + @c}
-      assert Body.life(at30) == 29
+      assert Body.life(at30) == 24
       assert_in_delta Body.systems(at30).thermoregulation, 0.5, 1.0e-9
     end
 

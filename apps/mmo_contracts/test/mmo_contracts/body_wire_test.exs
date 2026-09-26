@@ -1,6 +1,6 @@
 defmodule MmoContracts.BodyWireTest do
   @moduledoc """
-  只测试：BodyState 线格式冻结样本（魔法增量 4 引入于 Hello 26；身体闭环 H1 于 Hello 29、生命条可恢复段于 Hello 30 追加字段；
+  只测试：BodyState 线格式冻结样本（魔法增量 4 引入于 Hello 26；身体闭环 H1 于 Hello 29、生命条可恢复段于 Hello 30 追加字段；复活瞬移 Voxel.Relocate 于 Hello 31 新增；
   M1 Session 领域 1、kind 12，大端）。客户端 `Voxim.Body.Wire` Automation 用同一串手写字节。
 
   样本（119 字节体 = 0x77）：identity (1, 2, 3)，生命 70（0x46），可恢复 2（0x02），状态 0，核心 310.0 K（0x4073600000000000），
@@ -35,11 +35,33 @@ defmodule MmoContracts.BodyWireTest do
     protein_g: 42.5
   }
 
-  test "Hello 30：Hello 29 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 30
-    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 30, kernel_id: <<1::256>>, profile_id: <<2::256>>})
-    <<prefix::binary-size(9), 30::16, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
+  test "Hello 31：Hello 30 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 31
+    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 31, kernel_id: <<1::256>>, profile_id: <<2::256>>})
+    <<prefix::binary-size(9), 31::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<30::16>> <> tail)
+  end
+
+  # 身体闭环 H2（Hello 31）：复活瞬移 Voxel.Relocate（M1 Voxel 领域 3、kind 6，大端）。体 83 字节 = 0x53：
+  # identity (1, 2, 3) 24 + apply_tick 45 (0x2D) 8 + 状态 51（位置 (40.0, 500.5, 40.0)：0x4044…、0x407F48…；速度 0；
+  # 着地 1；yaw 16384 = 0x4000）。客户端 Automation 用同一串手写字节。
+  test "Relocate 冻结样本：编码逐字节相等、解码还原" do
+    sample = Base.decode16!(
+      "FF0001030600000053" <>
+        "0000000000000001" <> "0000000000000002" <> "0000000000000003" <> "000000000000002D" <>
+        "4044000000000000" <> "407F480000000000" <> "4044000000000000" <>
+        "0000000000000000" <> "0000000000000000" <> "0000000000000000" <> "01" <> "4000"
+    )
+
+    value = %MmoContracts.Voxel.Relocate{
+      identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
+      apply_tick: 45,
+      state: %Session.State{position: {40.0, 500.5, 40.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 16384}
+    }
+
+    {:ok, bytes} = MmoContracts.Voxel.Codec.encode_m1(value)
+    assert IO.iodata_to_binary(bytes) == sample
+    assert {:ok, ^value} = MmoContracts.Voxel.Codec.decode_m1(sample)
   end
 
   # 身体闭环 H1（Hello 29）：进食沿用 0x7F 生产信封（38 字节），action 5、material = 可食材料（这里蒲公英 36），坐标不用、填 0。

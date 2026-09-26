@@ -495,6 +495,9 @@ defmodule VoxelRegion.World do
           material_balances: %{},
           # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
           caster_energy: %{},
+          # 身体闭环 H2：Scene 每秒报来的施法者神经功能水平（cid => 0..1，SceneServer.Body 推导），相干度 = 目录相干度 × 它
+          # （`coherence/2`）；派生、不持久化，未报过按 1.0。
+          caster_nervous: %{},
           # 施法间隔会话（按 Player 进程，断开即忘，不持久化），与工具会话同一 GCRA。
           spell_sessions: %{},
           # 施放前摇（Voxim Docs/Magic.md §13.6）：待施放（cid => 广播记录、调用方与开始时捕获的施法者、
@@ -1200,6 +1203,17 @@ defmodule VoxelRegion.World do
   end
 
   def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
+
+  # 身体闭环 H2：Scene 身体 → World 施法者的单向数据（神经功能水平，每秒一次）。
+  def handle_info({:body_nervous, cid, level}, state),
+    do: {:noreply, %{state | caster_nervous: Map.put(state.caster_nervous, cid, level)}}
+
+  # 身体闭环 H2：角色死亡（Scene 送来脚位），按 `death_drop/3` 裁决掉落并记账。
+  def handle_info({:body_death, cid, feet}, state) do
+    {result, state} = death_drop(state, cid, feet)
+    Logger.info("voxel_death_drop " <> Enum.map_join(Map.put(result, :cid, cid), " ", fn {k, v} -> "#{k}=#{inspect(v)}" end))
+    {:noreply, schedule_liquid(state)}
+  end
 
   # 施放前摇到期：用开始时捕获的施法者、意图与程序走现有结算路径；回执此时才回给施放调用方。
   # 到期消息以记录的 t0_us 标识这条待施放；已结算的旧定时器（t0 不符）直接忽略。
@@ -4803,9 +4817,12 @@ defmodule VoxelRegion.World do
   # 登录推送与施放结算后的状态为 0。
   defp caster_view(state, cid, quote, spent, windup_s) do
     %{seq: state.seq, energy_j: Map.get(state.caster_energy, cid, 0.0), capacity_j: state.magic.capacity_j,
-      coherence: state.magic.coherence, quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent,
+      coherence: coherence(state, cid), quote_j: quote.total_j, quote_s: quote.structure, spent_j: spent,
       quote_windup_s: windup_s}
   end
+
+  # 身体闭环 H2（Magic.md §4.4）：施法者相干度 = 目录相干度 × 神经功能水平（Scene 身体推导、每秒报来）；报价回复与走火判定共用。
+  defp coherence(state, cid), do: state.magic.coherence * Map.get(state.caster_nervous, cid, 1.0)
 
   # 拟态只能比环境热（吸热 / 制冷待世界书提案）；低于环境温度的程序与其他非法程序同为 invalid_program。
   defp warm_semblance(%{steps: [%{sym: "form.semblance", args: %{"temperature_k" => t}} | _]}, ambient) when t < ambient,
@@ -5050,7 +5067,7 @@ defmodule VoxelRegion.World do
     stone = if effect.sym == "energy.draw", do: property_state(before, effect.target)
     draw = stone && Magic.Cost.draw(effect.args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
     available = if draw, do: balance + draw.gained_j, else: balance
-    outcome = Magic.Cost.misfire(quote, available, magic)
+    outcome = Magic.Cost.misfire(quote, available, %{magic | coherence: coherence(before, cid)})
     thermal = %{before.thermal | active: true}
 
     {spent, left, rows, thermal} =
@@ -5967,28 +5984,131 @@ defmodule VoxelRegion.World do
          :ok <- if(Map.has_key?(before.refined,request.coord),do: {:error,:needs_macro_opening},else: :ok),
          {:ok,session} <- Damage.admit_attack(Map.get(before.tool_sessions,actor.player),
            request.client_intent_seq,actor.received_us,ceil(tool["interval_seconds"]*1_000_000),actor.tick_us) do
-      {open,water,state}=liquid_cells(before,[request.coord],request.material)
-      balance=balance_state(state,actor.cid,request.material).balance
-      transfer=case request.action do
-        2 -> Liquid.scoop(water,request.coord,balance,tool["liquid_transfer_units"])
-        3 -> Liquid.pour(water,request.coord,balance,tool["liquid_transfer_units"],liquid_capacity(state),state.liquid_bounds,&Map.fetch!(open,&1))
-      end
-      if transfer.transferred_units == 0 or not Map.fetch!(open,request.coord) do
-        {:error,:no_liquid_transfer}
-      else
-        unless Map.has_key?(state.tool_sessions,actor.player), do: Process.monitor(actor.player)
-        state=%{state | tool_sessions: Map.put(state.tool_sessions,actor.player,session)}
-        {state,carried,inventory,units}=transfer_phase_inventory(state,actor.cid,request.coord,request.material,
-          request.action,transfer.transferred_units,balance)
-        {state,settlement}=settle_material(state,actor.cid,request.material,units)
-        settlement=Map.merge(settlement,%{phase_values: carried,phase_inventory: inventory,liquid_material: request.material})
-        commit_liquid(state,transfer.changes,settlement)
+      state=%{before | tool_sessions: Map.put(before.tool_sessions,actor.player,session)}
+      with {:ok,_}=result <- move_flowing(state,actor.cid,request.coord,request.material,request.action,tool["liquid_transfer_units"]) do
+        unless Map.has_key?(before.tool_sessions,actor.player), do: Process.monitor(actor.player)
+        result
       end
     else
       false -> {:error,:invalid_liquid_operation}
       :error -> {:error,:invalid_tool}
       {:error,_}=error -> error
     end
+  end
+
+  # 盛取（action 2）/ 倾倒（action 3）一格至多 limit 单位的流动材料：数量、相态账与余额同一笔提交。
+  # 玩家盛倒（`transfer_liquid/3`）与死亡掉落（`death_drop/3`）共用。
+  defp move_flowing(state,cid,cell,material,action,limit) do
+    {open,water,state}=liquid_cells(state,[cell],material)
+    balance=balance_state(state,cid,material).balance
+    transfer=case action do
+      2 -> Liquid.scoop(water,cell,balance,limit)
+      3 -> Liquid.pour(water,cell,balance,limit,liquid_capacity(state),state.liquid_bounds,&Map.fetch!(open,&1))
+    end
+    if transfer.transferred_units == 0 or not Map.fetch!(open,cell) do
+      {:error,:no_liquid_transfer}
+    else
+      {state,carried,inventory,units}=transfer_phase_inventory(state,cid,cell,material,action,transfer.transferred_units,balance)
+      {state,settlement}=settle_material(state,cid,material,units)
+      settlement=Map.merge(settlement,%{phase_values: carried,phase_inventory: inventory,liquid_material: material})
+      commit_liquid(state,transfer.changes,settlement)
+    end
+  end
+
+  # 身体闭环 H2（Voxim Docs/Magic.md §6.10，用户 2026-09-26 定）：死亡掉落。
+  # 死亡点 = 脚所在宏格；死者在该格不被地块保护许可（他人地块 / 保留区）则不掉。确定性掷骰 `drop_roll(死亡格, 0)` <
+  # @death_drop_probability 才掉。候选 = 死者余额 ≥ 1/8 m³、且 1/8 m³ 在世界里有现成形态的可放置材料：散体（有休止阈值）
+  # 倾倒成一格 1/8 m³ 的量（与玩家倾倒同一提交 `move_flowing/6`）；单次放置量恰为 1/8 m³ 的材料（花草）放置成一格
+  # （与放置同一提交）。整格材料（石、土、木等，一次放置 = 1 m³）没有 1/8 m³ 的世界形态，不参选。候选按材料 id 排序，
+  # `drop_roll(死亡格, 1)` 选一种；落点 = 死亡格周围 3×3×3 按（距离²、y、x、z）排序的第一个许可、非细分的空气格
+  # （散体还须在流动域内，花草还须有草 / 苔 / 土托底）。余额同量扣除。返回 `{日志字段, state}`。
+  @death_drop_probability 0.05
+  defp death_drop(state, cid, {fx, fy, fz}) do
+    cell = {floor(fx), floor(fy), floor(fz)}
+    eighth = div(liquid_capacity(state), 8)
+    roll = drop_roll(state, cell, 0)
+
+    candidates =
+      state.material_balances
+      |> Enum.flat_map(fn
+        {{^cid, material}, balance} when balance >= eighth ->
+          case drop_form(state, material, eighth) do
+            nil -> []
+            form -> [{material, form}]
+          end
+
+        _ ->
+          []
+      end)
+      |> Enum.sort()
+
+    cond do
+      not Protection.permitted?(state.protection, {:character, cid}, [cell]) ->
+        {%{outcome: :protected, cell: cell}, state}
+
+      roll >= @death_drop_probability ->
+        {%{outcome: :no_drop, cell: cell, roll: roll}, state}
+
+      candidates == [] ->
+        {%{outcome: :no_material, cell: cell, roll: roll}, state}
+
+      true ->
+        {material, form} = Enum.at(candidates, floor(drop_roll(state, cell, 1) * length(candidates)))
+        facts = %{cell: cell, roll: roll, material: material, units: eighth}
+
+        case drop_cell(state, cid, cell, material, form) do
+          {nil, state} ->
+            {Map.put(facts, :outcome, :no_space), state}
+
+          {target, state} ->
+            committed =
+              if form == :pour,
+                do: move_flowing(state, cid, target, material, 3, eighth),
+                else: death_place(state, cid, target, material)
+
+            case committed do
+              {:ok, next} -> {Map.merge(facts, %{outcome: :dropped, target: target, seq: next.seq}), next}
+              {:error, reason} -> {Map.merge(facts, %{outcome: :rejected, target: target, reason: reason}), state}
+            end
+        end
+    end
+  end
+
+  defp drop_form(state, material, eighth) do
+    cond do
+      material not in state.production_materials or Phase.liquid?(material) -> nil
+      loose_material?(state, material) and liquid_enabled?(state) -> :pour
+      not loose_material?(state, material) and build_cost(state, material) == eighth -> :place
+      true -> nil
+    end
+  end
+
+  defp drop_cell(state, cid, {x, y, z}, material, form) do
+    offsets = Enum.sort_by(for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {dx, dy, dz}),
+      fn {dx, dy, dz} -> {dx * dx + dy * dy + dz * dz, dy, dx, dz} end)
+
+    Enum.reduce_while(offsets, {nil, state}, fn {dx, dy, dz}, {nil, s} ->
+      c = {x + dx, y + dy, z + dz}
+
+      if Protection.permitted?(s.protection, {:character, cid}, [c]) and not Map.has_key?(s.refined, c) and
+           (form == :place or liquid_inside?(c, s.liquid_bounds)) do
+        case cell_value(s, 0, c) do
+          {:ok, {0, _}, s} ->
+            if form == :pour or match?({:ok, _}, plant_support(s, %{material: material, coord: c})),
+              do: {:halt, {c, s}}, else: {:cont, {nil, s}}
+
+          {_, _, s} ->
+            {:cont, {nil, s}}
+        end
+      else
+        {:cont, {nil, s}}
+      end
+    end)
+  end
+
+  defp death_place(state, cid, cell, material) do
+    {state, settlement} = settle_material(state, cid, material, -build_cost(state, material))
+    apply_batch(state, [{cell, material}], false, Map.put(settlement, :placed, %{cell => cid}))
   end
 
   defp liquid_sight(state,eye,coord) do

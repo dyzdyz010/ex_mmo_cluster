@@ -58,7 +58,10 @@ defmodule MmoContracts.Voxel.Codec do
          protection: :bytes,
          semblances: :bytes,
          casts: :bytes
-       ]}
+       ]},
+    # 身体闭环 H2（Hello 31）：复活瞬移。本人在 apply_tick − 1 的移动状态换成 state（会话出生点），apply_tick 起从它推进。
+    # 与 CollisionWindow、TimelineFence 同一可靠流：流送时紧接在覆盖出生点的新窗口之前发出（同一 apply_tick）。
+    6 => {Voxel.Relocate, [identity: :identity, apply_tick: :u64, state: :state]}
   }
 
   @doc "新增 M1 Voxel envelope；既有 R6 入口和内嵌字节不变。"

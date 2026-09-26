@@ -83,6 +83,29 @@ flowchart LR
 - **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。Hello 28 → 29。新伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
 - 复跑：`apps/scene_server` 下 `mix test test/scene_server/body`；`apps/voxel_region` 下 `mix test test/damage_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。只证明服务端范围，不代替双客户端实跑。
 
+## 身体闭环 H2：伤病合成、复活、死亡掉落、神经 → 相干度（2026-09-26，分支 `body-h2`，未合并，等客户端 Hello 31）
+
+设计正文见 Voxim `Docs/Magic.md` §6.10、§4.4；参数与手算见 `apps/scene_server/lib/scene_server/body/README.md`“身体闭环 H2”。服务端事实：
+
+- **伤病合成**：同一系统内各原因相乘（循环 = 体温带 × 烧伤上限 × 虚弱；神经 = 体温带 × 烧伤疼痛 × 恍惚）；致命系统之间按缺损 p-范数，
+  致命水平 = 1 − min(1, (Σ dᵢ^p)^(1/p))，p = `lethal_norm_p`（默认 2），`Body.combined_level/2`。生命与濒死计时都读它。
+- **复活**：死亡那一秒 Player 照常下发 BodyState status 2，并发 `{:body_death, cid, 脚位}` 给 World、开始回会话出生点；下一秒身体换成
+  `Body.revive/0`（营养 0、糖原 0、脂肪 420.52 MJ、调定点体温、无伤口，虚弱 120 s、恍惚 40 s）。复活 debuff 走伤病表（`:timed`），线格式不变。
+- **复活瞬移（Hello 30 → 31）**：新增 M1 Voxel kind 6 `Voxel.Relocate {identity, apply_tick, state}`（同一可靠 voxel 流）：`apply_tick − 1`
+  的本人状态换成出生柱（`probe`）上按入场同一 `find_spawn` 重找的落脚点，`apply_tick` 起按原输入推进。流送会话先请求覆盖出生点的新窗口
+  （即使与当前窗口相同），窗口安装时找落脚点，Relocate 紧接在同一 `apply_tick` 的 CollisionWindow 之前发出；瞬移完成前不随位置换窗。
+  非流送会话在下一个模拟 tick 生效。找不到落脚点按入场同一失败（4 / 10）结束会话。移交切点新带 `probe`、`authority_ref`、`revive`
+  （修正：此前移交后的 Player 没有 `authority_ref`，身体接触热也停了）。
+- **神经 → 相干度**：Player 每秒发 `{:body_nervous, cid, 神经}` 给 World；World `caster_nervous`（派生、不持久化，未报按 1.0），
+  相干度 = 目录相干度 × 神经，报价 / 状态回复（0x83 `coherence`）与走火判定共用。
+- **死亡掉落**：World `death_drop/3`。死亡格 = 脚所在宏格，死者不被地块许可则不掉；确定性掷骰 `drop_roll(死亡格, 0)` < 5%；候选 = 余额
+  ≥ 1/8 m³ 且 1/8 m³ 有世界形态的可放置材料——散体（倾倒成一格 1/8 m³ 的量，与玩家倾倒共用 `move_flowing/6`）或单次放置量恰为 1/8 m³ 的
+  材料（花草，与放置同一提交）；整格材料没有 1/8 m³ 形态，不参选。`drop_roll(死亡格, 1)` 在按 id 排序的候选里选一种；落点 = 死亡格
+  3×3×3 按（距离²、y、x、z）第一个许可、非细分的空气格。同一笔事务扣余额。日志 `voxel_death_drop outcome=…`。
+- 复跑：`apps/scene_server` 下 `mix test test/scene_server/body test/scene_server/movement/revive_relocation_test.exs`；`apps/voxel_region`
+  下 `mix test --no-start test/death_drop_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。
+  只证明服务端范围，不代替双客户端实跑。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 30
+  @protocol_version 31
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -90,7 +90,8 @@ defmodule MmoContracts.Session.Codec do
     # 蛋白质储备 g（f64，玩家看到的“营养”）。身体闭环 H1（Hello 29）追加每条伤病的 heal 与末尾 protein_g。
     # 生命条可恢复段（Hello 30）：life 后追加 recoverable u8（伤口愈合后会回来的生命，life + recoverable ≤ 100），
     # 每条伤病 heal 后追加 remaining_s f64（按此刻速度估算的剩余愈合秒数 ≥ 0；−1 愈合停止：营养为 0；−2 愈合停止：速率为 0；
-    # 不愈合的伤病为 0）。
+    # 不愈合的伤病为 0）。身体闭环 H2（Hello 31）线格式不变：新增复活 debuff 标签 recovery.weakness / nervous.daze（进度 = 已过时间比例，
+    # remaining_s = 剩余秒数），死亡时先发一帧 status 2、下一秒复活；复活瞬移见 Voxel.Relocate。
     12 =>
       {Session.BodyState,
        [
