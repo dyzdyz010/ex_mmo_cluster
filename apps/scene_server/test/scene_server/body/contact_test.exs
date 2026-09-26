@@ -65,8 +65,11 @@ defmodule SceneServer.Body.ContactTest do
     assert Enum.all?(Enum.take(states, warm - 1), &(&1.burn_dose_s == 0.0))
     [d1, d2, d3] = degrees
     assert d1 in 26..30 and d2 in 28..32 and d3 in 29..33 and d1 <= d2 and d2 <= d3
-    # 进三度那一步进度归零：循环上限 1 − 0.090906 = 0.909094 → 生命 91
-    assert Body.life(Enum.at(states, d3 - 1)) == 91
+    # 本场景只推进 Thermo（急性期计时由 Repair.tick 推进，见 repair_test）：进三度那一刻计时 0 → 上限 1、生命 100；
+    # 同一身体急性期满（30 s）→ 上限 1 − 0.090906 = 0.909094 → 生命 91
+    third = Enum.at(states, d3 - 1)
+    assert Body.life(third) == 100
+    assert Body.life(%{third | burn_age_s: 30.0}) == 91
   end
 
   # 赤脚（无鞋底热阻）：G_c = 9 W/K，T_ss = (9·1296 + 0.378207·307.15)/9.378207 = 1256.1 K，k = 0.0447861 /s；
@@ -109,10 +112,10 @@ defmodule SceneServer.Body.ContactTest do
   end
 
   # 慢性深度 0.25 × √(92.5551 s / T)：1 度 0.25、2 度 0.151287（T 252.7405 s）、3 度 0.090906（T 699.9887 s），见 repair_test 手算
-  test "未愈合烧伤压循环：1 / 2 / 3 度上限 0.75 / 0.848713 / 0.909094 → 生命 75 / 85 / 91" do
-    assert Body.life(%{Body.new() | burn_dose_s: 1.0}) == 75
-    assert Body.life(%{Body.new() | burn_dose_s: 3.0}) == 85
-    assert Body.life(%{Body.new() | burn_dose_s: 6.0}) == 91
+  test "未愈合烧伤急性期满（30 s）后压循环：1 / 2 / 3 度上限 0.75 / 0.848713 / 0.909094 → 生命 75 / 85 / 91" do
+    assert Body.life(%{Body.new() | burn_dose_s: 1.0, burn_age_s: 30.0}) == 75
+    assert Body.life(%{Body.new() | burn_dose_s: 3.0, burn_age_s: 30.0}) == 85
+    assert Body.life(%{Body.new() | burn_dose_s: 6.0, burn_age_s: 30.0}) == 91
   end
 
   test "0 °C 水全身浸没（G 47.1925 W/K 接皮肤、浸没 1.0）：皮肤骤降、寒战升高、核心下降，1 小时内出现体温过低" do
@@ -145,7 +148,7 @@ defmodule SceneServer.Body.ContactTest do
     at = &Body.report(%{Body.new() | skin_k: &1}, 1.0).key
     assert at.(307.0) == at.(307.03)
     refute at.(307.0) == at.(307.2)
-    burnt = %{Body.new() | burn_dose_s: 6.0, status: :dying}
+    burnt = %{Body.new() | burn_dose_s: 6.0, burn_age_s: 30.0, status: :dying}
     # Hello 29：伤病带愈合进度 %（未开始愈合为 0），下行带蛋白质储备（新身体满 100 g）；Hello 30：可恢复 9、剩余秒数（repair_test 手算）
     assert %{life: 91, recoverable: 9, status: 1, injuries: [{"trauma.thermal.burn", 3, 0, _}], protein_g: 100.0} =
              Body.report(burnt, 1.0)

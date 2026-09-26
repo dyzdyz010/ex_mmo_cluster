@@ -10,6 +10,9 @@ defmodule SceneServer.Body.Repair do
     × 合成能 `synthesis_j_per_g` 不超过糖原 + 脂肪——付不起就停在原处，不欠账。多处伤口按烧伤、冻伤顺序共用同一储备。
   - **合成能**：由糖原 / 脂肪按寒战同一规则付（`Body.fuel_split/2`），全部作为热经 `Thermo.step/3` 的 `core_j` 进核心节点。
   - **加重**：愈合中伤口严重度上升（再次烧到更深一度、浅冻伤冻成深冻伤）时进度归零——已沉积的组织随新坏死一起失去，不返还蛋白。
+  - **烧伤急性期计时** `burn_age_s`：烧伤存在时每步 + dt，愈合即归零。加重时从新严重度重新计时，但起点接上此刻的下压量
+    （r₀ = min(1, 旧下压 / 新深度)）——否则 r 归零会让生命跳回；更深一度的满深度反而更浅（`Body.chronic_depth/2` 越长越弱），
+    旧下压超过新满深度时 r₀ = 1，生命仍回升到新度的最低值（例：一度压满 0.25 后进二度，上限 0.75 → 0.848713）。
   - **进食**：蛋白质加到上限，食物能量（已含蛋白的 Atwater 份额）扣去进了蛋白储备的那部分后，先补糖原到满、余下进脂肪（不设上限）；
     超上限的蛋白被氧化，其能量留在能量里。
 
@@ -101,7 +104,24 @@ defmodule SceneServer.Body.Repair do
         if Body.severity(b, kind) > Body.severity(healed, kind), do: Map.put(b, heal_field, 0.0), else: b
       end)
 
-    {next, Map.merge(account, repair)}
+    {%{next | burn_age_s: burn_age(next, healed, dt)}, Map.merge(account, repair)}
+  end
+
+  # 急性期计时：无烧伤 0；加重时按此刻（计时已走 dt）的旧下压量接续；否则 + dt。
+  defp burn_age(next, healed, dt) do
+    burn = Body.severity(next, :burn)
+
+    cond do
+      burn == 0 ->
+        0.0
+
+      burn > Body.severity(healed, :burn) ->
+        depressed = Body.burn_depression(%{healed | burn_age_s: healed.burn_age_s + dt})
+        Body.burn_onset_s() * min(1.0, depressed / Body.chronic_depth(:burn, burn))
+
+      true ->
+        healed.burn_age_s + dt
+    end
   end
 
   @doc """

@@ -558,7 +558,7 @@ defmodule SceneServer.Movement.Player do
       fat_reserve_j: body.fat_reserve_j, shiver_glycogen_j: account.shiver_glycogen_j, shiver_fat_j: account.shiver_fat_j,
       tissue_k: body.tissue_k, burn_dose_s: body.burn_dose_s, wetness: body.wetness, drying_j: account.drying_j,
       heat_content_j: Body.heat_content_j(body),
-      protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal,
+      protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal, burn_age_s: body.burn_age_s,
       repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
       synth_fat_j: account.synth_fat_j,
       sent: report.key != state.body_sent})

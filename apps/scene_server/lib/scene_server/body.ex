@@ -14,7 +14,7 @@ defmodule SceneServer.Body do
   一方耗尽后另一方全付，两者都耗尽才无寒战、无修复（Blondin 2010、Haman 2004，见 `body/README.md`）；只在寒战与修复时消耗、
   不随时间自然下降，进食补充（`SceneServer.Body.Repair.eat/3`）。
   另存蛋白质储备 `protein_g`（玩家看到的“营养”，上限 100 g，只在修复时消耗）与两处伤口的愈合进度 `burn_heal`、`frost_heal`（0..1），
-  修复账见 `SceneServer.Body.Repair`。
+  以及烧伤急性期计时 `burn_age_s`（当前烧伤严重度出现后经过的秒数，`Repair.tick/4` 推进）；修复账见 `SceneServer.Body.Repair`。
   另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
   身体（含两个储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
@@ -162,6 +162,9 @@ defmodule SceneServer.Body do
     # 总量（深度 × 时长 ∝ √时长）越高；愈合中按进度线性回到 1.0。本增量只有烧伤压循环（体液丢失），冻伤不压系统（后果待 H5）。
     # 基数 0.25（用户 2026-09-26 定，原 0.10 时可恢复段只有 4–10%、玩家感知不到）：烧伤 1 / 2 / 3 度生命 75 / 85 / 91。
     chronic_depth_at_first_degree: 0.25,
+    # 急性期（用户 2026-09-26 定）：伤后压低深度不瞬间到位，按 r = min(1, burn_age_s / onset) 线性加深。onset 用同一时长公式换算
+    # 真实烧伤休克期约 1 天（伤后毛细血管渗漏、体液丢失在 24 h 内最甚，Parkland 公式按伤后 24 h 补液）：30 s × 1^0.7 = 30 s（`burn_onset_s/0`）。
+    burn_onset_days: 1.0,
     # 蛋白质净沉积的合成能：肽键合成最低约 4 ATP/键 ≈ 4.2 kJ/g（Waterlow），修复中合成—降解周转约 3 倍 → 12 kJ/g
     # （设计稿区间 4.2–12 的上端）；由糖原 / 脂肪按寒战同一份额付（`fuel_split/2`），全部作为热进核心节点。
     synthesis_j_per_g: 12_000.0,
@@ -213,7 +216,8 @@ defmodule SceneServer.Body do
             status: :alive,
             protein_g: 100.0,
             burn_heal: 0.0,
-            frost_heal: 0.0
+            frost_heal: 0.0,
+            burn_age_s: 0.0
 
   @type status :: :alive | :dying | :dead
   @type t :: %__MODULE__{
@@ -234,7 +238,8 @@ defmodule SceneServer.Body do
           status: status(),
           protein_g: float(),
           burn_heal: float(),
-          frost_heal: float()
+          frost_heal: float(),
+          burn_age_s: float()
         }
   @type injury :: %{
           tag: String.t(),
@@ -310,6 +315,22 @@ defmodule SceneServer.Body do
   def chronic_depth(kind, severity),
     do: @params.chronic_depth_at_first_degree * :math.sqrt(heal_s(:burn, 1) / heal_s(kind, severity))
 
+  @doc "烧伤急性期时长 s：同一时长公式换算真实 `burn_onset_days`（1 天 → 30 s）。"
+  @spec burn_onset_s() :: float()
+  def burn_onset_s, do: heal_s(@params.burn_onset_days)
+
+  @doc """
+  烧伤此刻把循环上限压低的量：`chronic_depth(:burn, 度) × r × (1 − burn_heal)`，r = min(1, `burn_age_s` / `burn_onset_s/0`)
+  （急性期线性加深，满 onset 后到位）；无烧伤为 0。
+  """
+  @spec burn_depression(t()) :: float()
+  def burn_depression(%__MODULE__{} = body) do
+    case severity(body, :burn) do
+      0 -> 0.0
+      burn -> chronic_depth(:burn, burn) * min(1.0, body.burn_age_s / burn_onset_s()) * (1 - body.burn_heal)
+    end
+  end
+
   @doc """
   寒战与修复合成共用的取能规则：`j` 焦耳由糖原付 `glycogen_shiver_share`（27%），脂肪付其余；一方不够时另一方补足
   （Blondin 2010、Haman 2004）。调用方保证 `j ≤ reserve_j + fat_reserve_j`。返回 `{糖原付, 脂肪付}`。
@@ -322,15 +343,13 @@ defmodule SceneServer.Body do
 
   @doc """
   三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤上限约束（体液丢失）：
-  上限 = 1 − `chronic_depth(:burn, 度)` × (1 − `burn_heal`)，即随愈合进度线性回到 1.0。
+  上限 = 1 − `burn_depression/1`：伤后急性期内线性压深，同时随愈合进度线性回到 1.0。
 
   首片只有体温这一路写入，故不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
   @spec systems(t()) :: %{thermoregulation: float(), circulation: float(), nervous: float()}
   def systems(%__MODULE__{core_k: core} = body) do
-    burn = severity(body, :burn)
-
-    cap = if burn == 0, do: 1.0, else: 1 - chronic_depth(:burn, burn) * (1 - body.burn_heal)
+    cap = 1 - burn_depression(body)
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
@@ -357,8 +376,8 @@ defmodule SceneServer.Body do
   def heal_rate(%__MODULE__{} = body, kind, m), do: m / heal_s(kind, severity(body, kind)) * min(1.0, systems(body).circulation)
 
   @doc """
-  按此刻速度估算的剩余愈合秒数：`(1 − 进度) / heal_rate`（不预测之后循环回升、体温或营养变化；烧伤愈合中循环上限回升，
-  实际总是不晚于估算）。愈合停止时返回约定负值：营养（蛋白储备）为 0 → `-1.0`；速率为 0（循环归零，只在濒死 / 死亡时）→ `-2.0`。
+  按此刻速度估算的剩余愈合秒数：`(1 − 进度) / heal_rate`（不预测之后循环变化、体温或营养变化：烧伤急性期内上限仍在下压，
+  实际晚于估算；急性期过后上限随愈合回升，实际不晚于估算）。愈合停止时返回约定负值：营养（蛋白储备）为 0 → `-1.0`；速率为 0（循环归零，只在濒死 / 死亡时）→ `-2.0`。
   """
   @spec remaining_s(t(), :burn | :frostbite, number()) :: float()
   def remaining_s(%__MODULE__{} = body, kind, m) do
