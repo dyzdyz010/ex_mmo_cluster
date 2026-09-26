@@ -244,25 +244,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert_raise MatchError,fn -> VoxelRegion.Damage.load(publish.(%{"place_units"=>64,"food"=>%{"protein_g"=>1}})) end
   end
 
-  # 愈合时间压缩系数随热环境资产发布：有则原样进快照 property_context（Scene 身体读它），无则不加键；非正数拒绝加载。
-  test "热环境 heal_time_compression：原样进 property_context，缺省不加键，非正数拒绝", c do
-    env=fn extra ->
-      path=Path.join(Path.dirname(c.catalog),"env-#{System.unique_integer([:positive])}.json")
-      File.write!(path,Jason.encode!(Map.merge(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,
-        emissivity: 0.0,view_range_cells: 8},extra)))
-      Keyword.put(c.opts,:thermal_environment_path,path)
-    end
-    context=fn w -> World.simulation_snapshot(w,[],{{0,0,0},{1,1,1}}).property_context end
-    stop_supervised(World)
-    w=start_supervised!({World,env.(%{heal_time_compression: 1008})})
-    assert context.(w).heal_time_compression == 1008
-    stop_supervised(World)
-    w=start_supervised!({World,env.(%{})})
-    refute Map.has_key?(context.(w),:heal_time_compression)
-    stop_supervised(World)
-    assert {:error,_}=start_supervised({World,env.(%{heal_time_compression: 0})})
-  end
-
   defp b2_hit(c,actor,target,seq) do
     actor=Map.merge(actor,%{received_us: seq*500_000,clock_node: node()})
     request=Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))

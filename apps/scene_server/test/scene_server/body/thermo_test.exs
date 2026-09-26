@@ -190,21 +190,25 @@ defmodule SceneServer.Body.ThermoTest do
       assert severity(run(held(44.0), air(20.0 + @c), 5400), "trauma.thermal.burn") == 1
     end
 
-    test "组织块 −10 °C 每秒累计 9.45 K·s：63 秒 595.35 未冻伤，64 秒 604.8 冻伤" do
+    test "组织块 −10 °C 每秒累计 9.45 K·s：31 秒 292.95 无冻伤、32 秒 302.4 浅冻伤；63 秒 595.35 仍浅、64 秒 604.8 深冻伤" do
+      b31 = run(held(-10.0), air(20.0 + @c), 31)
+      assert severity(b31, "trauma.thermal.frostbite") == 0
+      {b32, _} = step!(b31, air(20.0 + @c))
+      assert severity(b32, "trauma.thermal.frostbite") == 1
       b63 = run(held(-10.0), air(20.0 + @c), 63)
-      assert severity(b63, "trauma.thermal.frostbite") == 0
+      assert severity(b63, "trauma.thermal.frostbite") == 1
       {b64, _} = step!(b63, air(20.0 + @c))
-      assert severity(b64, "trauma.thermal.frostbite") == 1
+      assert severity(b64, "trauma.thermal.frostbite") == 2
     end
 
-    test "组织块 −25 °C：冻伤剂量 24.45 K·s/s，24 秒 586.8 未冻伤、25 秒 611.25 冻伤" do
+    test "组织块 −25 °C：冻伤剂量 24.45 K·s/s，24 秒 586.8 浅冻伤、25 秒 611.25 深冻伤" do
       cold = air(-25.0 + @c)
       b24 = run(%{Body.new() | tissue_k: -25.0 + @c}, cold, 24)
       assert_in_delta b24.frost_dose_k_s, 586.8, 1.0e-6
-      assert severity(b24, "trauma.thermal.frostbite") == 0
+      assert severity(b24, "trauma.thermal.frostbite") == 1
       {b25, _} = step!(b24, cold)
       assert_in_delta b25.frost_dose_k_s, 611.25, 1.0e-6
-      assert severity(b25, "trauma.thermal.frostbite") == 1
+      assert severity(b25, "trauma.thermal.frostbite") == 2
     end
 
     test "接触温度本身不进剂量：World 报 600 K 接触、但组织块只吸了 20.94 J（+0.1 K），不烧伤" do

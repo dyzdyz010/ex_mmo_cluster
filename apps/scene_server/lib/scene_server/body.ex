@@ -19,7 +19,7 @@ defmodule SceneServer.Body do
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
   身体（含两个储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
 
-  状态推进由 `SceneServer.Body.Repair.tick/5`（修复 → `SceneServer.Body.Thermo.step/3`）完成；本模块只放数据、参数与推导。
+  状态推进由 `SceneServer.Body.Repair.tick/4`（修复 → `SceneServer.Body.Thermo.step/3`）完成；本模块只放数据、参数与推导。
 
   所有参数集中在 `params/0` 与 `nodes/0`、`edges/0`（首片为模块常量，**待资产化**）。温度一律用开尔文，与
   `VoxelRegion.World` 热内核一致。参数取值与依据见同目录 `body/README.md`。
@@ -139,20 +139,28 @@ defmodule SceneServer.Body do
     burn_reference_k: 60.0 + @c,
     burn_doubling_k: 1.32,
     burn_degree_dose_s: [1.0, 2.5, 5.0],
-    # 烧伤影响循环（Magic.md §6.3“影响哪些系统”：深度烧伤体液丢失）：1/2/3 度时循环功能上限
-    burn_circulation_levels: [1.0, 0.9, 0.7],
-    # —— 冻伤：组织块温度低于组织冰点 −0.55 °C 起累计 K·s ——
+    # —— 冻伤：组织块温度低于组织冰点 −0.55 °C 起累计 K·s；浅 / 深两级（部位“脚”：冻伤只来自鞋底接触）。
+    # 深 600 K·s 为原创取值（沿用）；浅 300 K·s 待确认——临床只按冻结深度分浅（1–2 度）/ 深（3–4 度），没有查到按
+    # 过冷剂量分级的文献阈值（用户 2026-09-26：找不到依据取 300 并标待确认）。——
     frost_onset_k: -0.55 + @c,
-    frostbite_dose_k_s: [600.0],
+    frostbite_dose_k_s: [300.0, 600.0],
     # —— 修复账（身体闭环 H1，Magic.md §6.5–6.7，body/README.md“修复账”）——
     # 伤口组织量 = 局部接触组织块面积 0.03 m² × 深度 × 1000 kg/m³；深度：1 度 0.1 mm（表皮）、2 度 1 mm（真皮中层）、
-    # 3 度与冻伤 2 mm（全层，即组织块厚度）。湿皮蛋白约 30%（真皮约 70% 水、干重以胶原为主）。
-    wound_depth_m: %{burn: [0.0001, 0.001, 0.002], frostbite: [0.002]},
+    # 3 度与深冻伤 2 mm（全层，即组织块厚度）；浅冻伤 1 mm（临床浅冻伤 = 1–2 度、清亮水疱，同 2 度烧伤的部分厚度）。
+    # 湿皮蛋白约 30%（真皮约 70% 水、干重以胶原为主）。
+    wound_depth_m: %{burn: [0.0001, 0.001, 0.002], frostbite: [0.001, 0.002]},
     tissue_density_kg_per_m3: 1000.0,
     tissue_protein_fraction: 0.30,
     # 真实愈合时间（天）：1 度 3–6 d 取 5，浅 2 度 2–3 周取 21，3 度（300 cm² 不植皮，靠收缩与边缘上皮化）取 90，
-    # 冻伤 4–8 周分界取 42。游戏内时间 = 真实时间 ÷ 时间压缩系数 K（发布参数，热环境资产 `heal_time_compression`，无代码默认值）。
-    wound_heal_days: %{burn: [5.0, 21.0, 90.0], frostbite: [42.0]},
+    # 浅冻伤取 7，深冻伤 4–8 周分界取 42。生物学只决定排序（Magic.md §12，用户 2026-09-26 定）：
+    # 游戏内愈合时长 = clamp(30 s × 真实天数^0.7, 30 s, 1800 s)（`heal_s/2`）。
+    wound_heal_days: %{burn: [5.0, 21.0, 90.0], frostbite: [7.0, 42.0]},
+    heal_scale_s: 30.0,
+    heal_exponent: 0.7,
+    heal_bounds_s: {30.0, 1800.0},
+    # 慢性影响（Magic.md §12）：伤口压低系统上限的深度 = 0.10 × √(一度烧伤时长 / 本伤时长)——越长每秒越弱、
+    # 总量（深度 × 时长 ∝ √时长）越高；愈合中按进度线性回到 1.0。本增量只有烧伤压循环（体液丢失），冻伤不压系统（后果待 H5）。
+    chronic_depth_at_first_degree: 0.10,
     # 蛋白质净沉积的合成能：肽键合成最低约 4 ATP/键 ≈ 4.2 kJ/g（Waterlow），修复中合成—降解周转约 3 倍 → 12 kJ/g
     # （设计稿区间 4.2–12 的上端）；由糖原 / 脂肪按寒战同一份额付（`fuel_split/2`），全部作为热进核心节点。
     synthesis_j_per_g: 12_000.0,
@@ -229,7 +237,7 @@ defmodule SceneServer.Body do
         }
   @type injury :: %{
           tag: String.t(),
-          part: :whole | :contact,
+          part: :whole | :contact | :feet,
           severity: pos_integer(),
           progression: :tracks_core | :heals | :tracks_protein,
           heal: float()
@@ -280,10 +288,26 @@ defmodule SceneServer.Body do
 
   defp capacity(field), do: nodes() |> List.keyfind(field, 0) |> elem(1)
 
-  @doc "伤口严重度（0 = 无）：烧伤 1–3 度、冻伤 1，由累计组织损伤剂量按阈值推导。"
+  @doc "伤口严重度（0 = 无）：烧伤 1–3 度、冻伤 1 浅 / 2 深，由累计组织损伤剂量按阈值推导。"
   @spec severity(t(), :burn | :frostbite) :: non_neg_integer()
   def severity(%__MODULE__{} = body, :burn), do: Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
   def severity(%__MODULE__{} = body, :frostbite), do: Enum.count(@params.frostbite_dose_k_s, &(body.frost_dose_k_s >= &1))
+
+  @doc "游戏内愈合时长 s：clamp(30 s × 真实天数^0.7, 30 s, 1800 s)。"
+  @spec heal_s(number()) :: float()
+  def heal_s(days) do
+    {low, high} = @params.heal_bounds_s
+    (@params.heal_scale_s * :math.pow(days, @params.heal_exponent)) |> max(low) |> min(high)
+  end
+
+  @doc "伤口的游戏内愈合时长 s（循环满值、速率倍数 1 时）。"
+  @spec heal_s(:burn | :frostbite, pos_integer()) :: float()
+  def heal_s(kind, severity), do: @params.wound_heal_days |> Map.fetch!(kind) |> Enum.at(severity - 1) |> heal_s()
+
+  @doc "慢性伤口压低系统上限的深度（未愈合时）：0.10 × √(一度烧伤时长 / 本伤时长)。"
+  @spec chronic_depth(:burn | :frostbite, pos_integer()) :: float()
+  def chronic_depth(kind, severity),
+    do: @params.chronic_depth_at_first_degree * :math.sqrt(heal_s(:burn, 1) / heal_s(kind, severity))
 
   @doc """
   寒战与修复合成共用的取能规则：`j` 焦耳由糖原付 `glycogen_shiver_share`（27%），脂肪付其余；一方不够时另一方补足
@@ -296,8 +320,8 @@ defmodule SceneServer.Body do
   end
 
   @doc """
-  三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤度上限约束
-  （`burn_circulation_levels`，深度烧伤体液丢失），上限随愈合进度线性恢复：`cap + (1 − cap) × burn_heal`。
+  三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤上限约束（体液丢失）：
+  上限 = 1 − `chronic_depth(:burn, 度)` × (1 − `burn_heal`)，即随愈合进度线性回到 1.0。
 
   首片只有体温这一路写入，故不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
@@ -305,10 +329,7 @@ defmodule SceneServer.Body do
   def systems(%__MODULE__{core_k: core} = body) do
     burn = severity(body, :burn)
 
-    cap =
-      if burn == 0,
-        do: 1.0,
-        else: Enum.at(@params.burn_circulation_levels, burn - 1) |> then(&(&1 + (1 - &1) * body.burn_heal))
+    cap = if burn == 0, do: 1.0, else: 1 - chronic_depth(:burn, burn) * (1 - body.burn_heal)
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
@@ -326,7 +347,7 @@ defmodule SceneServer.Body do
 
   - `temperature.hypothermia` / `temperature.hyperthermia`：部位 `:whole`，严重度随核心温度，
     回到正常带即消失（`:tracks_core`）；
-  - `trauma.thermal.burn`（1–3 度）/ `trauma.thermal.frostbite`：部位 `:contact`，严重度由累计组织
+  - `trauma.thermal.burn`（1–3 度，部位 `:contact`）/ `trauma.thermal.frostbite`（1 浅 / 2 深，部位 `:feet`）：严重度由累计组织
     损伤剂量决定；按修复账愈合（`:heals`，`SceneServer.Body.Repair`），`heal` 是愈合进度 0..1，
     走完即剂量与进度归零、伤病消失。严重度不降级（深度烧伤以疤痕愈合，不经过浅度）；
   - `nutrition.hunger`：部位 `:whole`，蛋白质储备低于上限 `hunger_below_fraction` 时出现，进食回到阈值以上即消失（`:tracks_protein`）。
@@ -341,7 +362,7 @@ defmodule SceneServer.Body do
       {"temperature.hyperthermia", :whole,
        Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core, 0.0},
       {"trauma.thermal.burn", :contact, severity(body, :burn), :heals, body.burn_heal},
-      {"trauma.thermal.frostbite", :contact, severity(body, :frostbite), :heals, body.frost_heal},
+      {"trauma.thermal.frostbite", :feet, severity(body, :frostbite), :heals, body.frost_heal},
       {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0}
     ]
     |> Enum.filter(fn {_tag, _part, severity, _rule, _heal} -> severity > 0 end)

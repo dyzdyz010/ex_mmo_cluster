@@ -1,11 +1,16 @@
 defmodule SceneServer.Body.RepairTest do
   @moduledoc """
-  身体闭环 H1 修复账与进食单测。期望值均为手算（参数依据见 body/README.md“修复账”），K 由测试显式给出：
+  身体闭环 H1 修复账与进食单测。期望值均为手算（参数依据见 body/README.md“修复账”）：
 
-  - 伤口蛋白 = 0.03 m² × 深度 × 1000 kg/m³ × 30%：1 度 0.1 mm → 0.9 g，2 度 1 mm → 9 g，3 度 / 冻伤 2 mm → 18 g；
+  - 伤口蛋白 = 0.03 m² × 深度 × 1000 kg/m³ × 30%：1 度 0.1 mm → 0.9 g，2 度 / 浅冻伤 1 mm → 9 g，3 度 / 深冻伤 2 mm → 18 g；
   - 合成能 12 kJ/g：1 度 0.9 g → 10 800 J，糖原付 27% = 2 916 J、脂肪付 7 884 J（储备满、20 °C 空气不寒战）；
-  - 真实愈合 1 度 5 d = 432 000 s、3 度 90 d = 7 776 000 s、冻伤 42 d = 3 628 800 s；
-    K = 3375 时 1 度每秒进度 3375/432000 = 1/128（二进制精确）→ 第 128 秒愈合；K = 1008 时 432000/1008 = 428.57 s → 第 429 秒；
+  - 游戏内愈合时长 T = clamp(30 s × 天数^0.7, 30, 1800)（Magic.md §12），按 e^(0.7 ln d) 手算：
+    5 d：ln 5 = 1.6094379 → e^1.1266065 = 3.0851693 → 92.5551 s；21 d：e^2.1311657 = 8.4246818 → 252.7405 s；
+    90 d：e^3.1498668 = 23.332956 → 699.9887 s；7 d：e^1.3621371 = 3.9045288 → 117.1359 s；42 d：e^2.6163687 = 13.685936 → 410.5781 s；
+  - 慢性深度 = 0.10 × √(92.5551 / T)：1 度 0.1、2 度 0.1 × √0.366206 = 0.060515、3 度 0.1 × √0.132224 = 0.036363；
+    浅冻伤 0.088890、深冻伤 0.047479（冻伤本增量不压系统，深度只供单调性断言）；
+  - 烧伤循环上限 c + (1 − c)·h（c = 1 − 深度），离散一步 h' = h + (c + (1 − c)h)/T，闭式 h_n = (c/(1 − c))((1 + (1 − c)/T)^n − 1)，
+    h_n ≥ 1 ⇔ n ≥ ln(1/c) / ln(1 + (1 − c)/T)：1 度 97.57 → 第 98 步，2 度 260.74 → 第 261 步；
   - 进食：蒲公英一株蛋白 1.08 g、能量 18 kcal = 75 362.4 J（USDA 生重，40 g × 2.7 g、45 kcal /100 g）；
     进了蛋白储备的蛋白按 Atwater 4 kcal/g = 16 747.2 J/g 从能量里扣出：1.08 g → 18 086.976 J，进能量储备 57 275.424 J。
   """
@@ -15,14 +20,13 @@ defmodule SceneServer.Body.RepairTest do
   alias SceneServer.Body.{Repair, Thermo}
 
   @c 273.15
-  @k 3375
   @air %{q_j: 0.0, air_k: 20.0 + @c}
   @glycogen_full 7_650_000.0
 
   # 推进一步并核对完整账：储热变化 = stored_j = q + core_j + 代谢 − 散热；core_j = 合成放热 = 糖原付 + 脂肪付；
-  # 糖原 / 脂肪减少 = 寒战付 + 合成付；蛋白减少 = 修复蛋白。
-  defp tick!(body, k \\ @k, inputs \\ @air) do
-    {next, a} = Repair.tick(body, 1.0, inputs, k, 1.0)
+  # 糖原 / 脂肪减少 = 寒战付 + 合成付；蛋白减少 = 修复蛋白。`m` 是速率倍数（魔法“调”留口，Player 恒 1）。
+  defp tick!(body, m \\ 1.0, inputs \\ @air) do
+    {next, a} = Repair.tick(body, 1.0, inputs, m)
     assert_in_delta a.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
     assert_in_delta a.stored_j, a.q_j + a.core_j + a.metabolic_j - a.convection_j - a.sweat_j - a.drying_j, 1.0e-9
     assert a.core_j == a.synth_j
@@ -33,91 +37,153 @@ defmodule SceneServer.Body.RepairTest do
     {next, a}
   end
 
-  defp run(body, n, k \\ @k, inputs \\ @air),
+  defp run(body, n),
     do: Enum.reduce(1..n, {body, 0.0, 0.0}, fn _, {b, p, s} ->
-      {b, a} = tick!(b, k, inputs)
+      {b, a} = tick!(b)
       {b, p + a.repair_protein_g, s + a.synth_j}
     end)
 
   defp severity(body, tag), do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
 
-  describe "伤口量" do
-    test "伤口蛋白 1/2/3 度 0.9 / 9 / 18 g，冻伤 18 g；真实愈合 5 / 21 / 90 d、冻伤 42 d" do
+  # 按时长升序（92.6 < 117.1 < 252.7 < 410.6 < 700.0 s）
+  @wounds [{:burn, 1}, {:frostbite, 1}, {:burn, 2}, {:frostbite, 2}, {:burn, 3}]
+
+  describe "伤口量、时长与慢性深度" do
+    test "伤口蛋白：烧伤 1/2/3 度 0.9 / 9 / 18 g，浅 / 深冻伤 9 / 18 g" do
       assert_in_delta Repair.wound_protein_g(:burn, 1), 0.9, 1.0e-12
       assert_in_delta Repair.wound_protein_g(:burn, 2), 9.0, 1.0e-12
       assert_in_delta Repair.wound_protein_g(:burn, 3), 18.0, 1.0e-12
-      assert_in_delta Repair.wound_protein_g(:frostbite, 1), 18.0, 1.0e-12
-      assert Repair.heal_real_s(:burn, 1) == 432_000.0
-      assert Repair.heal_real_s(:burn, 3) == 7_776_000.0
-      assert Repair.heal_real_s(:frostbite, 1) == 3_628_800.0
+      assert_in_delta Repair.wound_protein_g(:frostbite, 1), 9.0, 1.0e-12
+      assert_in_delta Repair.wound_protein_g(:frostbite, 2), 18.0, 1.0e-12
+    end
+
+    # 回归（改前失败）：旧实现游戏内时长 = 真实时长 ÷ 统一压缩系数 K，没有 heal_s。
+    test "游戏内愈合时长 clamp(30 s × 天数^0.7, 30, 1800)：1 度 92.56 s、2 度 252.74 s、3 度 699.99 s、浅冻伤 117.14 s、深冻伤 410.58 s" do
+      for {{kind, severity}, t} <- [{{:burn, 1}, 92.5551}, {{:burn, 2}, 252.7405}, {{:burn, 3}, 699.9887},
+                                    {{:frostbite, 1}, 117.1359}, {{:frostbite, 2}, 410.5781}] do
+        assert_in_delta Body.heal_s(kind, severity), t, 1.0e-3
+      end
+    end
+
+    test "时长被夹住：1 d 恰为 30 s；0.5 d（30 × 0.5^0.7 = 18.47 s）夹到 30 s；365 d（30 × 62.17 = 1865 s）夹到 1800 s" do
+      assert Body.heal_s(1) == 30.0
+      assert Body.heal_s(0.5) == 30.0
+      assert Body.heal_s(365) == 1800.0
+      # 夹界之内不受影响：2 d = 30 × 2^0.7 = 30 × 1.6245048 = 48.735 s
+      assert_in_delta Body.heal_s(2), 48.735, 1.0e-3
+    end
+
+    test "慢性深度 0.10 × √(T_1度 / T)：随时长单调下降，深度 × 时长（总量）单调上升" do
+      assert Body.chronic_depth(:burn, 1) == 0.1
+      assert_in_delta Body.chronic_depth(:burn, 2), 0.060515, 1.0e-6
+      assert_in_delta Body.chronic_depth(:burn, 3), 0.036363, 1.0e-6
+      assert_in_delta Body.chronic_depth(:frostbite, 1), 0.088890, 1.0e-6
+      assert_in_delta Body.chronic_depth(:frostbite, 2), 0.047479, 1.0e-6
+
+      durations = for {k, s} <- @wounds, do: Body.heal_s(k, s)
+      depths = for {k, s} <- @wounds, do: Body.chronic_depth(k, s)
+      totals = Enum.zip_with(depths, durations, &(&1 * &2))
+      assert durations == Enum.sort(durations)
+      assert depths |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a > b end)
+      assert totals |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a < b end)
+      # 总量手算：1 度 0.1 × 92.5551 = 9.2555，3 度 0.036363 × 699.9887 = 25.453
+      assert_in_delta hd(totals), 9.2555, 1.0e-3
+      assert_in_delta List.last(totals), 25.453, 1.0e-2
+    end
+
+    test "烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 90 / 94 / 96；3 度进度 0.5 → 0.981819（生命 98）；冻伤不压循环" do
+      assert_in_delta Body.systems(%{Body.new() | burn_dose_s: 1.0}).circulation, 0.9, 1.0e-12
+      assert Body.life(%{Body.new() | burn_dose_s: 1.0}) == 90
+      assert Body.life(%{Body.new() | burn_dose_s: 3.0}) == 94
+      assert Body.life(%{Body.new() | burn_dose_s: 5.0}) == 96
+      half = %{Body.new() | burn_dose_s: 5.0, burn_heal: 0.5}
+      assert_in_delta Body.systems(half).circulation, 0.981819, 1.0e-6
+      assert Body.life(half) == 98
+      assert Body.life(%{Body.new() | frost_dose_k_s: 600.0}) == 100
     end
   end
 
   describe "自然愈合" do
-    # 回归（改前失败）：旧实现伤口剂量只增不减、`:permanent`，同样离火 128 s 后仍是一度烧伤。
-    test "一度烧伤、K = 3375：第 127 秒进度 127/128，第 128 秒剂量与进度归零、伤病消失；共耗蛋白 0.9 g、合成能 10 800 J" do
+    # 回归（改前失败）：旧实现伤口剂量只增不减、`:permanent`；K 实现下一度烧伤不压循环、需传 K。
+    test "一度烧伤：首步进度 0.9/92.5551 = 0.0097239；第 97 步 0.993856 仍在，第 98 步剂量与进度归零；共耗蛋白 0.9 g、合成能 10 800 J" do
       burnt = %{Body.new() | burn_dose_s: 1.0}
-      assert [%{tag: "trauma.thermal.burn", severity: 1, progression: :heals, heal: +0.0}] = Body.injuries(burnt)
+      assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 1, progression: :heals, heal: +0.0}] = Body.injuries(burnt)
 
-      {b127, protein, synth} = run(burnt, 127)
-      assert severity(b127, "trauma.thermal.burn") == 1
-      assert b127.burn_heal == 127 / 128
+      {b1, _} = tick!(burnt)
+      assert_in_delta b1.burn_heal, 0.0097239, 1.0e-7
 
-      {b128, a} = tick!(b127)
-      assert Body.injuries(b128) == []
-      assert b128.burn_dose_s == 0.0 and b128.burn_heal == 0.0
+      {b97, protein, synth} = run(burnt, 97)
+      assert severity(b97, "trauma.thermal.burn") == 1
+      assert_in_delta b97.burn_heal, 0.993856, 1.0e-6
+
+      {b98, a} = tick!(b97)
+      assert Body.injuries(b98) == []
+      assert b98.burn_dose_s == 0.0 and b98.burn_heal == 0.0
       assert_in_delta protein + a.repair_protein_g, 0.9, 1.0e-9
-      assert_in_delta 100.0 - b128.protein_g, 0.9, 1.0e-9
+      assert_in_delta 100.0 - b98.protein_g, 0.9, 1.0e-9
       assert_in_delta synth + a.synth_j, 10_800.0, 1.0e-6
       # 20 °C 空气不寒战：储备的减少全部是合成能，按 27% / 73% 拆分
-      assert_in_delta @glycogen_full - b128.reserve_j, 2_916.0, 1.0e-6
-      assert_in_delta Body.params().fat_full_j - b128.fat_reserve_j, 7_884.0, 1.0e-6
-      assert Body.life(b128) == 100
+      assert_in_delta @glycogen_full - b98.reserve_j, 2_916.0, 1.0e-6
+      assert_in_delta Body.params().fat_full_j - b98.fat_reserve_j, 7_884.0, 1.0e-6
+      assert Body.life(b98) == 100
     end
 
-    test "一度烧伤、K = 1008：432000/1008 = 428.57 s，第 428 秒仍在、第 429 秒愈合" do
-      {b428, _, _} = run(%{Body.new() | burn_dose_s: 1.0}, 428, 1008)
-      assert severity(b428, "trauma.thermal.burn") == 1
-      {b429, _} = tick!(b428, 1008)
-      assert severity(b429, "trauma.thermal.burn") == 0
+    test "二度烧伤：第 260 步仍在、第 261 步愈合，共耗蛋白 9 g" do
+      {b260, protein, _} = run(%{Body.new() | burn_dose_s: 3.0}, 260)
+      assert severity(b260, "trauma.thermal.burn") == 2
+      {b261, a} = tick!(b260)
+      assert severity(b261, "trauma.thermal.burn") == 0
+      assert_in_delta protein + a.repair_protein_g, 9.0, 1.0e-9
     end
 
-    test "三度烧伤首步：进度 = 3375/7776000 × 循环 0.7；蛋白 18 × 0.7 × 3375/7776000 = 0.00546875 g，合成 65.625 J" do
+    test "三度烧伤首步：进度 = 循环 0.963637 / 699.9887 = 0.00137665；蛋白 × 18 = 0.0247796 g，合成 297.356 J" do
       {b, a} = tick!(%{Body.new() | burn_dose_s: 5.0})
-      assert_in_delta b.burn_heal, 0.7 * 3375 / 7_776_000, 1.0e-15
-      assert_in_delta a.repair_protein_g, 0.00546875, 1.0e-12
-      assert_in_delta a.synth_j, 65.625, 1.0e-9
+      assert_in_delta b.burn_heal, 0.00137665, 1.0e-8
+      assert_in_delta a.repair_protein_g, 0.0247796, 1.0e-7
+      assert_in_delta a.synth_j, 297.356, 1.0e-3
     end
 
-    test "三度烧伤：循环上限 0.7 随进度线性恢复（进度 0.5 → 0.85，生命 85）" do
-      assert Body.systems(%{Body.new() | burn_dose_s: 5.0}).circulation == 0.7
-      half = %{Body.new() | burn_dose_s: 5.0, burn_heal: 0.5}
-      assert_in_delta Body.systems(half).circulation, 0.85, 1.0e-12
-      assert Body.life(half) == 85
+    test "浅冻伤（300 K·s，部位脚、不压循环）：117/117.1359 = 0.99884 第 117 步仍在，第 118 步愈合，耗蛋白 9 g" do
+      frozen = %{Body.new() | frost_dose_k_s: 300.0}
+      assert [%{tag: "trauma.thermal.frostbite", part: :feet, severity: 1, progression: :heals}] = Body.injuries(frozen)
+      {b117, protein, _} = run(frozen, 117)
+      assert severity(b117, "trauma.thermal.frostbite") == 1
+      assert_in_delta b117.frost_heal, 0.998840, 1.0e-6
+      {b118, a} = tick!(b117)
+      assert severity(b118, "trauma.thermal.frostbite") == 0 and b118.frost_dose_k_s == 0.0
+      assert_in_delta protein + a.repair_protein_g, 9.0, 1.0e-9
     end
 
-    test "冻伤不压循环（生命 100），K = 3375：3628800/3375 = 1075.2 s，第 1075 秒仍在、第 1076 秒愈合，耗蛋白 18 g" do
+    test "深冻伤（600 K·s）：410/410.5781 第 410 步仍在，第 411 步愈合，耗蛋白 18 g" do
       frozen = %{Body.new() | frost_dose_k_s: 600.0}
-      assert Body.life(frozen) == 100
-      {b1075, protein, _} = run(frozen, 1075)
-      assert severity(b1075, "trauma.thermal.frostbite") == 1
-      {b1076, a} = tick!(b1075)
-      assert severity(b1076, "trauma.thermal.frostbite") == 0 and b1076.frost_dose_k_s == 0.0
+      assert severity(frozen, "trauma.thermal.frostbite") == 2
+      {b410, protein, _} = run(frozen, 410)
+      assert severity(b410, "trauma.thermal.frostbite") == 2
+      {b411, a} = tick!(b410)
+      assert severity(b411, "trauma.thermal.frostbite") == 0 and b411.frost_dose_k_s == 0.0
       assert_in_delta protein + a.repair_protein_g, 18.0, 1.0e-9
     end
 
     test "愈合中再烧到更深一度：进度归零，已付的蛋白不返还" do
-      # 组织块 60 °C 每秒剂量 +1：第 1 步剂量 2.0 仍是一度（进度 0.5 + 1/128），第 2 步 3.0 进二度 → 进度 0
+      # 组织块 60 °C 每秒剂量 +1：第 1 步剂量 2.0 仍是一度（进度 0.5 + (0.9 + 0.1 × 0.5)/92.5551 = 0.5102642），第 2 步 3.0 进二度 → 进度 0
       healing = %{Body.new() | burn_dose_s: 1.0, burn_heal: 0.5, tissue_k: 60.0 + @c}
       {b1, _} = tick!(healing)
-      assert severity(b1, "trauma.thermal.burn") == 1 and b1.burn_heal == 0.5 + 1 / 128
+      assert severity(b1, "trauma.thermal.burn") == 1
+      assert_in_delta b1.burn_heal, 0.5102642, 1.0e-7
       {b2, _} = tick!(b1)
       assert severity(b2, "trauma.thermal.burn") == 2 and b2.burn_heal == 0.0
       assert b2.protein_g < 100.0
     end
+
+    test "浅冻伤愈合中冻成深冻伤：进度归零" do
+      # 组织块 −10 °C 每秒过冷剂量约 9.45 K·s：599 → 约 608 ≥ 600
+      healing = %{Body.new() | frost_dose_k_s: 599.0, frost_heal: 0.5, tissue_k: -10.0 + @c}
+      {b, _} = tick!(healing)
+      assert severity(b, "trauma.thermal.frostbite") == 2 and b.frost_heal == 0.0
+    end
   end
 
-  describe "底物约束（付不起就停在原处，不欠账）" do
+  describe "底物约束（付不起就停在原处，不欠账；速率倍数 M = 1000 使速率不是瓶颈）" do
     test "营养为 0：一度烧伤 100 秒进度不动，不耗能量储备" do
       {b, protein, synth} = run(%{Body.new() | burn_dose_s: 1.0, protein_g: 0.0}, 100)
       assert b.burn_heal == 0.0 and severity(b, "trauma.thermal.burn") == 1
@@ -127,17 +193,17 @@ defmodule SceneServer.Body.RepairTest do
 
     test "蛋白只剩 0.45 g（一度伤口的一半）：一步最多走到进度 0.5，蛋白归零，此后不动" do
       body = %{Body.new() | burn_dose_s: 1.0, protein_g: 0.45}
-      {b, a} = tick!(body, 432_000)
+      {b, a} = tick!(body, 1000.0)
       assert_in_delta b.burn_heal, 0.5, 1.0e-12
       assert b.protein_g == 0.0
       assert_in_delta a.synth_j, 5_400.0, 1.0e-6
-      {b2, _} = tick!(b, 432_000)
+      {b2, _} = tick!(b, 1000.0)
       assert b2.burn_heal == b.burn_heal
     end
 
     test "能量只剩脂肪 1080 J（一度伤口合成能的 1/10）：进度 0.1，蛋白 0.09 g，储备归零" do
       body = %{Body.new() | burn_dose_s: 1.0, reserve_j: 0.0, fat_reserve_j: 1_080.0}
-      {b, a} = tick!(body, 432_000)
+      {b, a} = tick!(body, 1000.0)
       assert_in_delta b.burn_heal, 0.1, 1.0e-12
       assert_in_delta a.repair_protein_g, 0.09, 1.0e-12
       assert b.reserve_j == 0.0 and b.fat_reserve_j == 0.0

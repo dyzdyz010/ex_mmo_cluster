@@ -76,8 +76,9 @@ flowchart LR
 
 设计正文见 Voxim `Docs/Magic.md` §6.5–6.7、§6.10；参数、依据与账见 `apps/scene_server/lib/scene_server/body/README.md`“修复账”。服务端事实：
 
-- **修复账**：`SceneServer.Body.Repair`（纯函数）。烧伤 / 冻伤 = 剂量 + 愈合进度 0..1；速率 K × M / T_real(严重度) × min(1, 循环)，受蛋白质与糖原 + 脂肪储备约束（付不起停在原处）；合成能按寒战同一份额取自糖原 / 脂肪，经 `Thermo.step/3` 新可选输入 `core_j` 进核心。Player 1 Hz 调 `Repair.tick/5`（M 恒 1）。
-- **K**：热环境资产 `environment.json` 的 `heal_time_compression`（正数，World 加载时校验，冷重启以资产为准），经快照 `property_context` 到 Scene；有热环境而没发布 K 时 Player 入场 `Map.fetch!` 显式失败。**代码无默认值。**
+- **修复账**：`SceneServer.Body.Repair`（纯函数）。烧伤 / 冻伤 = 剂量 + 愈合进度 0..1；速率 M / T(严重度) × min(1, 循环)，受蛋白质与糖原 + 脂肪储备约束（付不起停在原处）；合成能按寒战同一份额取自糖原 / 脂肪，经 `Thermo.step/3` 新可选输入 `core_j` 进核心。Player 1 Hz 调 `Repair.tick/4`（M 恒 1）。
+- **时长与慢性影响**（2026-09-26 修订，取代统一压缩系数 K）：T = clamp(30 s × 真实愈合天数^0.7, 30 s, 1800 s)，真实天数是身体参数（`Body.params/0`，不进热环境）；烧伤循环上限 1 − 0.10 × √(T_1度 / T) × (1 − 进度)。热环境资产不再有 `heal_time_compression`，World / property_context / Player 不带 K；旧环境文件里若仍有该键，加载时被忽略。
+- **冻伤**：浅（≥ 300 K·s，待确认）/ 深（≥ 600 K·s），同一标签 `trauma.thermal.frostbite` 严重度 1 / 2，部位脚；本增量不压系统。
 - **进食**：0x7F action 5，material = 可食材料；World 查属性目录 `food`、扣一株 `place_units`、记 `food_ledger`（持久化），提交后发 `{:body_food, cid, protein_g, energy_j}` 给该角色 Player。拒绝 `not_edible` / `insufficient_material`，重发幂等。
 - **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。Hello 28 → 29。新伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
 - 复跑：`apps/scene_server` 下 `mix test test/scene_server/body`；`apps/voxel_region` 下 `mix test test/damage_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。只证明服务端范围，不代替双客户端实跑。

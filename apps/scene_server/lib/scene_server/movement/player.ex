@@ -61,7 +61,7 @@ defmodule SceneServer.Movement.Player do
         body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
-        # 热环境（全局 ambient_kelvin + 可选气候区 + 愈合时间压缩系数），来自 World 快照的 property_context；身体按所在格取空气温度。
+        # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
         climate: nil
       })
 
@@ -407,10 +407,8 @@ defmodule SceneServer.Movement.Player do
 
             state =
               case Map.get(snapshot, :property_context) do
-                # 愈合时间压缩系数是必填发布参数（热环境资产 heal_time_compression）：有热环境却没发布它时显式失败。
                 %{thermal_enabled: true, ambient_kelvin: ambient} = context ->
-                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, []),
-                    "heal_time_compression" => Map.fetch!(context, :heal_time_compression)}}
+                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, [])}}
                 _ -> state
               end
 
@@ -510,7 +508,7 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
 
-  # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/5`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
+  # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/4`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
   # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
@@ -525,7 +523,7 @@ defmodule SceneServer.Movement.Player do
 
     {body, account} =
       Body.Repair.tick(state.body, 1.0, %{q_j: heat.q_j, tissue_j: heat.tissue_j, air_k: air_k, wind_mps: wind,
-        immersed: heat.immersed}, Map.fetch!(state.climate, "heal_time_compression"), 1.0)
+        immersed: heat.immersed}, 1.0)
 
     if body.status != before,
       do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})

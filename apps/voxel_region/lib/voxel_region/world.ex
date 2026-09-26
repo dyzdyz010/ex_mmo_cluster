@@ -2455,16 +2455,9 @@ defmodule VoxelRegion.World do
       ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)
     }
 
-    context =
-      if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
-        do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
-        else: context
-
-    # 身体闭环 H1：愈合时间压缩系数随热环境发布（身体只在有热环境时推进），原样带给 Scene；没发布时不加键（Player 入场显式失败）。
-    case state.thermal && state.thermal.config["heal_time_compression"] do
-      k when is_number(k) -> Map.put(context, :heal_time_compression, k)
-      _ -> context
-    end
+    if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
+      do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
+      else: context
   end
 
   defp component_observations(%{properties: nil}, _box), do: []
@@ -3389,11 +3382,11 @@ defmodule VoxelRegion.World do
 
   # 全局系统功能：平衡容差是求解分辨率，辐射参数随本变更引入、旧存档没有，二者以环境资产为准；
   # 回放的热账（环境温度、换热系数、能量账）保持存档值。
-  # 气候区与愈合时间压缩系数同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
+  # 气候区同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
   defp environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
     do: %{state | thermal: %{thermal | config: config
-      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones heal_time_compression)))
-      |> then(&Map.drop(&1, for(key <- ~w(climate_zones heal_time_compression), not Map.has_key?(asset, key), do: key)))}}
+      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones)))
+      |> then(&if(Map.has_key?(asset, "climate_zones"), do: &1, else: Map.delete(&1, "climate_zones")))}}
 
   defp environment_tolerance(state, _), do: state
 
@@ -3416,7 +3409,7 @@ defmodule VoxelRegion.World do
       path ->
         config =
           Jason.decode!(File.read!(path))
-          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones heal_time_compression))
+          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones))
 
         true =
           Enum.all?(
@@ -3425,9 +3418,7 @@ defmodule VoxelRegion.World do
           ) and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
             config["tolerance_kelvin"] > 0 and radiation_config?(config) and
-            VoxelRegion.Climate.valid?(config) and
-            (not Map.has_key?(config, "heal_time_compression") or
-               (is_number(config["heal_time_compression"]) and config["heal_time_compression"] > 0))
+            VoxelRegion.Climate.valid?(config)
 
         %{
           config: config,

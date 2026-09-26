@@ -5,11 +5,11 @@ defmodule SceneServer.Body.Repair do
 
   - **伤口** = 剂量（`burn_dose_s` / `frost_dose_k_s`，严重度由它推导）+ 愈合进度（`burn_heal` / `frost_heal`，0..1）。
     进度走到 1：剂量与进度同时归零、伤病消失。伤口总蛋白 = 组织块面积 × 深度（按严重度）× 密度 × 蛋白比例。
-  - **速率**：`d(进度)/dt = K × M / T_real(严重度) × min(1, 循环功能水平)`，K 为时间压缩系数（发布参数，调用方显式传入，
-    无代码默认值），M 为速率倍数（魔法“调”留口，本增量恒 1）。再受底物约束：本步进度 × 伤口总蛋白不超过蛋白质储备，
+  - **速率**：`d(进度)/dt = M / T(严重度) × min(1, 循环功能水平)`，T = `Body.heal_s/2` 游戏内愈合时长
+    （clamp(30 s × 真实天数^0.7, 30 s, 1800 s)），M 为速率倍数（魔法“调”留口，本增量恒 1）。再受底物约束：本步进度 × 伤口总蛋白不超过蛋白质储备，
     × 合成能 `synthesis_j_per_g` 不超过糖原 + 脂肪——付不起就停在原处，不欠账。多处伤口按烧伤、冻伤顺序共用同一储备。
   - **合成能**：由糖原 / 脂肪按寒战同一规则付（`Body.fuel_split/2`），全部作为热经 `Thermo.step/3` 的 `core_j` 进核心节点。
-  - **加重**：愈合中伤口严重度上升（再次烧到更深一度）时进度归零——已沉积的组织随新坏死一起失去，不返还蛋白。
+  - **加重**：愈合中伤口严重度上升（再次烧到更深一度、浅冻伤冻成深冻伤）时进度归零——已沉积的组织随新坏死一起失去，不返还蛋白。
   - **进食**：蛋白质加到上限，食物能量（已含蛋白的 Atwater 份额）扣去进了蛋白储备的那部分后，先补糖原到满、余下进脂肪（不设上限）；
     超上限的蛋白被氧化，其能量留在能量里。
 
@@ -20,7 +20,6 @@ defmodule SceneServer.Body.Repair do
   alias SceneServer.Body
   alias SceneServer.Body.Thermo
 
-  @day_s 86_400.0
   # {伤口, 进度字段, 剂量字段}；顺序即共用储备时的付账顺序。
   @wounds [{:burn, :burn_heal, :burn_dose_s}, {:frostbite, :frost_heal, :frost_dose_k_s}]
 
@@ -39,17 +38,12 @@ defmodule SceneServer.Body.Repair do
     p.contact_tissue_m2 * depth * p.tissue_density_kg_per_m3 * 1000 * p.tissue_protein_fraction
   end
 
-  @doc "伤口的真实愈合时间，s（游戏内 = 本值 / (K × M × 循环水平)）。"
-  @spec heal_real_s(:burn | :frostbite, pos_integer()) :: float()
-  def heal_real_s(kind, severity),
-    do: Body.params().wound_heal_days |> Map.fetch!(kind) |> Enum.at(severity - 1) |> Kernel.*(@day_s)
-
   @doc """
-  推进 `dt` 秒愈合（不改体温）。`k` 时间压缩系数、`m` 速率倍数，均为正数。
+  推进 `dt` 秒愈合（不改体温）。`m` 速率倍数，正数。
   返回 `{body, account}`，`synth_j` 是本步应作为 `core_j` 进核心的合成放热。
   """
-  @spec heal(Body.t(), float(), number(), number()) :: {Body.t(), account()}
-  def heal(%Body{} = body, dt, k, m) do
+  @spec heal(Body.t(), float(), number()) :: {Body.t(), account()}
+  def heal(%Body{} = body, dt, m) do
     p = Body.params()
     circulation = min(1.0, Body.systems(body).circulation)
     zero = %{repair_protein_g: 0.0, synth_j: 0.0, synth_glycogen_j: 0.0, synth_fat_j: 0.0}
@@ -67,7 +61,7 @@ defmodule SceneServer.Body.Repair do
           step =
             Enum.min([
               1 - heal,
-              k * m / heal_real_s(kind, severity) * circulation * dt,
+              m / Body.heal_s(kind, severity) * circulation * dt,
               b.protein_g / total_g,
               fuel / (total_g * p.synthesis_j_per_g)
             ])
@@ -95,12 +89,12 @@ defmodule SceneServer.Body.Repair do
   end
 
   @doc """
-  身体的一次完整推进（Player 1 Hz 调用）：`heal/4` → `Thermo.step/3`（合成放热作 `core_j`）→ 加重的伤口进度归零。
+  身体的一次完整推进（Player 1 Hz 调用）：`heal/3` → `Thermo.step/3`（合成放热作 `core_j`）→ 加重的伤口进度归零。
   `inputs` 同 `Thermo.step/3`（不含 `core_j`）。返回 `{body, account}`，`account` = Thermo 账 ∪ 修复账。
   """
-  @spec tick(Body.t(), float(), map(), number(), number()) :: {Body.t(), map()}
-  def tick(%Body{} = body, dt, inputs, k, m) do
-    {healed, repair} = heal(body, dt, k, m)
+  @spec tick(Body.t(), float(), map(), number()) :: {Body.t(), map()}
+  def tick(%Body{} = body, dt, inputs, m) do
+    {healed, repair} = heal(body, dt, m)
     {next, account} = Thermo.step(healed, dt, Map.put(inputs, :core_j, repair.synth_j))
 
     next =
