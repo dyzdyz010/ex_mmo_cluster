@@ -158,9 +158,10 @@ defmodule SceneServer.Body do
     heal_scale_s: 30.0,
     heal_exponent: 0.7,
     heal_bounds_s: {30.0, 1800.0},
-    # 慢性影响（Magic.md §12）：伤口压低系统上限的深度 = 0.10 × √(一度烧伤时长 / 本伤时长)——越长每秒越弱、
+    # 慢性影响（Magic.md §12）：伤口压低系统上限的深度 = 0.25 × √(一度烧伤时长 / 本伤时长)——越长每秒越弱、
     # 总量（深度 × 时长 ∝ √时长）越高；愈合中按进度线性回到 1.0。本增量只有烧伤压循环（体液丢失），冻伤不压系统（后果待 H5）。
-    chronic_depth_at_first_degree: 0.10,
+    # 基数 0.25（用户 2026-09-26 定，原 0.10 时可恢复段只有 4–10%、玩家感知不到）：烧伤 1 / 2 / 3 度生命 75 / 85 / 91。
+    chronic_depth_at_first_degree: 0.25,
     # 蛋白质净沉积的合成能：肽键合成最低约 4 ATP/键 ≈ 4.2 kJ/g（Waterlow），修复中合成—降解周转约 3 倍 → 12 kJ/g
     # （设计稿区间 4.2–12 的上端）；由糖原 / 脂肪按寒战同一份额付（`fuel_split/2`），全部作为热进核心节点。
     synthesis_j_per_g: 12_000.0,
@@ -304,7 +305,7 @@ defmodule SceneServer.Body do
   @spec heal_s(:burn | :frostbite, pos_integer()) :: float()
   def heal_s(kind, severity), do: @params.wound_heal_days |> Map.fetch!(kind) |> Enum.at(severity - 1) |> heal_s()
 
-  @doc "慢性伤口压低系统上限的深度（未愈合时）：0.10 × √(一度烧伤时长 / 本伤时长)。"
+  @doc "慢性伤口压低系统上限的深度（未愈合时）：0.25 × √(一度烧伤时长 / 本伤时长)。"
   @spec chronic_depth(:burn | :frostbite, pos_integer()) :: float()
   def chronic_depth(kind, severity),
     do: @params.chronic_depth_at_first_degree * :math.sqrt(heal_s(:burn, 1) / heal_s(kind, severity))
@@ -345,7 +346,7 @@ defmodule SceneServer.Body do
   @doc """
   可恢复生命（生命条上另一种颜色的那一截）：伤口全部愈合后的生命 − 现在的生命 = `life(剂量与进度归零的同一身体) − life(body)`。
   只有慢性伤口压低的部分（本增量只有烧伤压循环）随愈合自己回来；体温偏离等急性损失不经伤口愈合，不计入——
-  两者同时存在时取“去掉伤口后仍被急性压住”的部分为急性，例如核心低温把神经压到 0.85、烧伤上限 0.90 → 生命 85、可恢复 0。
+  两者同时存在时取“去掉伤口后仍被急性压住”的部分为急性，例如核心低温把神经压到 0.70、一度烧伤上限 0.75 → 生命 70、可恢复 0。
   """
   @spec recoverable_life(t()) :: 0..100
   def recoverable_life(%__MODULE__{} = body),
