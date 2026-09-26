@@ -142,6 +142,7 @@ defmodule SceneServer.Body.ContactTest do
     assert at.(307.0) == at.(307.03)
     refute at.(307.0) == at.(307.2)
     burnt = %{Body.new() | burn_dose_s: 6.0, status: :dying}
-    assert %{life: 70, status: 1, injuries: [{"trauma.thermal.burn", 3}]} = Body.report(burnt)
+    # Hello 29：伤病带愈合进度 %（未开始愈合为 0），下行带蛋白质储备（新身体满 100 g）
+    assert %{life: 70, status: 1, injuries: [{"trauma.thermal.burn", 3, 0}], protein_g: 100.0} = Body.report(burnt)
   end
 end

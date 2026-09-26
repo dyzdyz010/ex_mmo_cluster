@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 28
+  @protocol_version 29
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -86,7 +86,8 @@ defmodule MmoContracts.Session.Codec do
          state: :state
        ]},
     # 魔法增量 4（Hello 26）：本人身体的推导视图，有变化才发（Voxim Docs/Magic.md §6）。
-    # 生命 0..100、状态 0 存活 / 1 濒死 / 2 死亡、核心与皮肤温度 K、伤病 [标签 utf8, 严重度 u8]。
+    # 生命 0..100、状态 0 存活 / 1 濒死 / 2 死亡、核心与皮肤温度 K、伤病 [标签 utf8, 严重度 u8, 愈合进度 u8 0..100 %]、
+    # 蛋白质储备 g（f64，玩家看到的“营养”）。身体闭环 H1（Hello 29）追加每条伤病的 heal 与末尾 protein_g。
     12 =>
       {Session.BodyState,
        [
@@ -95,7 +96,8 @@ defmodule MmoContracts.Session.Codec do
          status: :u8,
          core_k: :f64,
          skin_k: :f64,
-         injuries: {:array, :u16, {:struct, Session.BodyInjury, [tag: :utf8, severity: :u8]}}
+         injuries: {:array, :u16, {:struct, Session.BodyInjury, [tag: :utf8, severity: :u8, heal: :u8]}},
+         protein_g: :f64
        ]}
   }
 
@@ -213,8 +215,8 @@ defmodule MmoContracts.Session.Codec do
         next.scene_epoch > 0 and seq > 0 and tick >= seq
   end
 
-  defp accept_m1(%Session.BodyState{life: life, status: status, injuries: injuries}),
-    do: true = life <= 100 and status <= 2 and Enum.all?(injuries, &(&1.severity > 0))
+  defp accept_m1(%Session.BodyState{life: life, status: status, injuries: injuries, protein_g: protein}),
+    do: true = life <= 100 and status <= 2 and protein >= 0 and Enum.all?(injuries, &(&1.severity > 0 and &1.heal <= 100))
 
   defp accept_m1(_), do: :ok
 end

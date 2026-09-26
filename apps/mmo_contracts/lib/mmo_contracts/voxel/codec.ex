@@ -115,8 +115,8 @@ defmodule MmoContracts.Voxel.Codec do
       norm > 0.99 and norm < 1.01
   end
 
-  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次）的合法性，线解码与进程内调用方（NPC Body）共用。"
-  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3, 4] and tool > 0
+  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29））的合法性，线解码与进程内调用方（NPC Body）共用。"
+  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3, 4, 5] and tool > 0
 
   @doc "附件意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),

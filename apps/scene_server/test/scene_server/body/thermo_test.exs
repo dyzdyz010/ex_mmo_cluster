@@ -178,7 +178,8 @@ defmodule SceneServer.Body.ThermoTest do
 
       burnt = run(held(60.0), air(20.0 + @c), 5) |> then(&%{&1 | tissue_k: 34.0 + @c}) |> run(air(20.0 + @c), 60)
 
-      assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 3, progression: :permanent}] =
+      # 只推进体温不走修复账：剂量不减、进度不动（愈合由 Body.Repair 推进，见 repair_test.exs）
+      assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 3, progression: :heals, heal: +0.0}] =
                Body.injuries(burnt)
     end
 

@@ -507,6 +507,8 @@ defmodule VoxelRegion.World do
           material_supplies: %{},
           # 合成账（R8-04）：材料 => 合成造成的累计净单位变化；随日志／检查点持久化。
           craft_ledger: %{},
+          # 食物账（身体闭环 H1）：材料 => 被吃掉的累计单位（物质离开世界进入身体）；随日志／检查点持久化。
+          food_ledger: %{},
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
           macro_owners: %{},
@@ -729,7 +731,7 @@ defmodule VoxelRegion.World do
     snapshot = %{seq: state.seq,
       catalog: if(state.properties, do: Base.encode16(state.properties.digest, case: :lower), else: nil),
       capacity_units: liquid_capacity(state), material_balances: balances, craft_ledger: state.craft_ledger,
-      probe_occupancy: occupancy}
+      food_ledger: state.food_ledger, probe_occupancy: occupancy}
     {:reply, snapshot, state}
   end
 
@@ -2453,9 +2455,16 @@ defmodule VoxelRegion.World do
       ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)
     }
 
-    if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
-      do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
-      else: context
+    context =
+      if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
+        do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
+        else: context
+
+    # 身体闭环 H1：愈合时间压缩系数随热环境发布（身体只在有热环境时推进），原样带给 Scene；没发布时不加键（Player 入场显式失败）。
+    case state.thermal && state.thermal.config["heal_time_compression"] do
+      k when is_number(k) -> Map.put(context, :heal_time_compression, k)
+      _ -> context
+    end
   end
 
   defp component_observations(%{properties: nil}, _box), do: []
@@ -3319,6 +3328,7 @@ defmodule VoxelRegion.World do
         caster_energy: state.caster_energy,
         material_supplies: state.material_supplies,
         craft_ledger: state.craft_ledger,
+        food_ledger: state.food_ledger,
         placed_by: state.placed_by,
         macro_owners: state.macro_owners,
         protection: state.protection.regions,
@@ -3379,11 +3389,11 @@ defmodule VoxelRegion.World do
 
   # 全局系统功能：平衡容差是求解分辨率，辐射参数随本变更引入、旧存档没有，二者以环境资产为准；
   # 回放的热账（环境温度、换热系数、能量账）保持存档值。
-  # 气候区同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
+  # 气候区与愈合时间压缩系数同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
   defp environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
     do: %{state | thermal: %{thermal | config: config
-      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones)))
-      |> then(&if(Map.has_key?(asset, "climate_zones"), do: &1, else: Map.delete(&1, "climate_zones")))}}
+      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones heal_time_compression)))
+      |> then(&Map.drop(&1, for(key <- ~w(climate_zones heal_time_compression), not Map.has_key?(asset, key), do: key)))}}
 
   defp environment_tolerance(state, _), do: state
 
@@ -3406,7 +3416,7 @@ defmodule VoxelRegion.World do
       path ->
         config =
           Jason.decode!(File.read!(path))
-          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones))
+          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones heal_time_compression))
 
         true =
           Enum.all?(
@@ -3415,7 +3425,9 @@ defmodule VoxelRegion.World do
           ) and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
             config["tolerance_kelvin"] > 0 and radiation_config?(config) and
-            VoxelRegion.Climate.valid?(config)
+            VoxelRegion.Climate.valid?(config) and
+            (not Map.has_key?(config, "heal_time_compression") or
+               (is_number(config["heal_time_compression"]) and config["heal_time_compression"] > 0))
 
         %{
           config: config,
@@ -5454,6 +5466,7 @@ defmodule VoxelRegion.World do
         phase_inventory: Map.merge(state.phase_inventory, Map.get(txn, :phase_inventory, %{})),
         material_supplies: Map.merge(state.material_supplies, Map.get(txn, :material_supplies, %{})),
         craft_ledger: Map.get(txn, :craft_ledger, state.craft_ledger),
+        food_ledger: Map.get(txn, :food_ledger, state.food_ledger),
         placed_by: merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
         protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
         macro_owners: merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
@@ -5564,6 +5577,7 @@ defmodule VoxelRegion.World do
       true ->
         result = cond do
           request.action == 4 -> craft(before, actor, request)
+          request.action == 5 -> consume(before, actor, request)
           not Protection.permitted?(before.protection, {:character, actor.cid}, [request.coord]) ->
             {:error, :protected_region}
           request.action in [2,3] -> transfer_liquid(before, actor, request)
@@ -5585,6 +5599,41 @@ defmodule VoxelRegion.World do
         }
 
         {:reply, reply, state}
+    end
+  end
+
+  # 全局系统功能（身体闭环 H1）：进食 = 生产意图 action 5，material = 可食材料（目录“可食”轴 food），一次吃一株 = place_units。
+  # 余额足额才扣一株；食物账 food_ledger 记各材料累计吃掉的单位。提交后把该株的蛋白 g 与能量 J 送给该角色的 Player
+  # （`{:body_food, cid, protein_g, energy_j}`，与 `{:body_heat}` 同一收件人），身体真值在 Scene。不写世界格，不受地块保护约束。
+  defp consume(before, actor, request) do
+    food = get_in(before, [Access.key(:properties), Access.key(:materials, %{}), request.material, "food"])
+    units = build_cost(before, request.material)
+
+    cond do
+      food == nil or request.material not in before.production_materials ->
+        {:error, :not_edible}
+
+      balance_state(before, actor.cid, request.material).balance < units ->
+        {:error, :insufficient_material}
+
+      true ->
+        {state, paid} = settle_material(before, actor.cid, request.material, -units)
+        ledger = Map.update(state.food_ledger, request.material, units, &(&1 + units))
+        next = %{state | seq: before.seq + 1, food_ledger: ledger}
+        txn = %{seq: next.seq, entries: [], coarse: [], material_balances: paid.material_balances, food_ledger: ledger}
+
+        case append_log(next, txn) do
+          :ok ->
+            next = remember_entry(next, txn)
+            fanout(next, txn)
+            fanout_canonical(next, txn, [], [], before)
+            send(actor.player, {:body_food, actor.cid, food["protein_g"], food["energy_j"]})
+            Logger.info("voxel_consume seq=#{next.seq} cid=#{actor.cid} material=#{request.material} units=#{units} protein_g=#{food["protein_g"]} energy_j=#{food["energy_j"]}")
+            {:ok, next}
+
+          error ->
+            error
+        end
     end
   end
 

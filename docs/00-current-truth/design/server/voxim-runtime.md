@@ -72,6 +72,16 @@ flowchart LR
 - **报价前摇**（分支 `quote-windup`，Hello 27 → 28）：0x83 施法者状态末尾追加 `quote_windup_s`（f64 大端）= 报价程序的前摇 Σ(T_adj + T_inj)，取自与施放计时同一次 `Cost.quote` 的 `windup_s`；只有报价回复（0x82 action 0）非零，登录推送与施放结算后的状态为 0。0x83 以外布局不变。
 - 复跑：`apps/voxel_region` 下 `mix test test/magic_test.exs test/magic_semblance_test.exs test/magic_windup_world_test.exs test/magic_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test test/gate_server/voxim_spell_dispatch_test.exs`。
 
+## 身体闭环 H1：修复账 + 进食（2026-09-26，分支 `body-repair`，未合并，等客户端 Hello 29）
+
+设计正文见 Voxim `Docs/Magic.md` §6.5–6.7、§6.10；参数、依据与账见 `apps/scene_server/lib/scene_server/body/README.md`“修复账”。服务端事实：
+
+- **修复账**：`SceneServer.Body.Repair`（纯函数）。烧伤 / 冻伤 = 剂量 + 愈合进度 0..1；速率 K × M / T_real(严重度) × min(1, 循环)，受蛋白质与糖原 + 脂肪储备约束（付不起停在原处）；合成能按寒战同一份额取自糖原 / 脂肪，经 `Thermo.step/3` 新可选输入 `core_j` 进核心。Player 1 Hz 调 `Repair.tick/5`（M 恒 1）。
+- **K**：热环境资产 `environment.json` 的 `heal_time_compression`（正数，World 加载时校验，冷重启以资产为准），经快照 `property_context` 到 Scene；有热环境而没发布 K 时 Player 入场 `Map.fetch!` 显式失败。**代码无默认值。**
+- **进食**：0x7F action 5，material = 可食材料；World 查属性目录 `food`、扣一株 `place_units`、记 `food_ledger`（持久化），提交后发 `{:body_food, cid, protein_g, energy_j}` 给该角色 Player。拒绝 `not_edible` / `insufficient_material`，重发幂等。
+- **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。Hello 28 → 29。新伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
+- 复跑：`apps/scene_server` 下 `mix test test/scene_server/body`；`apps/voxel_region` 下 `mix test test/damage_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。只证明服务端范围，不代替双客户端实跑。
+
 ## 活跃兼容边界
 
 旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。

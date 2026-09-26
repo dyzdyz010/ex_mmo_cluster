@@ -139,13 +139,13 @@ defmodule MmoContracts.Session.SessionEnd do
 end
 
 defmodule MmoContracts.Session.BodyState do
-  @moduledoc "魔法增量 4（Hello 26）：本人身体的推导视图（生命、状态、核心/皮肤温度、伤病）；真值在 Scene 的 SceneServer.Body。"
-  @enforce_keys [:identity, :life, :status, :core_k, :skin_k, :injuries]
+  @moduledoc "魔法增量 4（Hello 26）：本人身体的推导视图（生命、状态、核心/皮肤温度、伤病）；Hello 29 追加蛋白质储备 protein_g（g）。真值在 Scene 的 SceneServer.Body。"
+  @enforce_keys [:identity, :life, :status, :core_k, :skin_k, :injuries, :protein_g]
   defstruct @enforce_keys
 end
 
 defmodule MmoContracts.Session.BodyInjury do
-  @moduledoc "BodyState 的一条伤病：标签（如 trauma.thermal.burn）与严重度 1..。"
-  @enforce_keys [:tag, :severity]
+  @moduledoc "BodyState 的一条伤病：标签（如 trauma.thermal.burn）、严重度 1..、愈合进度 0..100 %（Hello 29；不愈合的伤病为 0）。"
+  @enforce_keys [:tag, :severity, :heal]
   defstruct @enforce_keys
 end

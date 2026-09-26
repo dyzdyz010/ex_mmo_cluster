@@ -61,7 +61,7 @@ defmodule SceneServer.Movement.Player do
         body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
-        # 热环境（全局 ambient_kelvin + 可选气候区），来自 World 快照的 property_context；身体按所在格取空气温度。
+        # 热环境（全局 ambient_kelvin + 可选气候区 + 愈合时间压缩系数），来自 World 快照的 property_context；身体按所在格取空气温度。
         climate: nil
       })
 
@@ -407,8 +407,10 @@ defmodule SceneServer.Movement.Player do
 
             state =
               case Map.get(snapshot, :property_context) do
+                # 愈合时间压缩系数是必填发布参数（热环境资产 heal_time_compression）：有热环境却没发布它时显式失败。
                 %{thermal_enabled: true, ambient_kelvin: ambient} = context ->
-                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, [])}}
+                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, []),
+                    "heal_time_compression" => Map.fetch!(context, :heal_time_compression)}}
                 _ -> state
               end
 
@@ -488,6 +490,16 @@ defmodule SceneServer.Movement.Player do
     {:noreply, %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q}}
   end
 
+  # 身体闭环 H1：World 裁决进食（0x7F action 5）并扣掉一株余额后送来该株的蛋白 g 与能量 J；立即并入身体（修复账的唯一进项）。
+  def handle_info({:body_food, cid, protein_g, energy_j}, %{id: cid} = state) do
+    {body, account} = Body.Repair.eat(state.body, protein_g, energy_j)
+
+    character_event(state, state, :body_food, Map.merge(account, %{protein_in_g: protein_g, energy_in_j: energy_j,
+      protein_g: body.protein_g, reserve_j: body.reserve_j, fat_reserve_j: body.fat_reserve_j}))
+
+    {:noreply, %{state | body: body}}
+  end
+
   def handle_info(:body_tick, %{transfer: transfer} = state) when transfer in [:requested, :sealed],
     do: {:noreply, state}
 
@@ -498,7 +510,7 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
 
-  # 1 Hz：Body 推进 1 s（吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
+  # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/5`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。死亡由系统重建身体（复活后虚弱待做）。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
   # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
@@ -512,8 +524,8 @@ defmodule SceneServer.Movement.Player do
     %{air_k: air_k, wind_mps: wind} = VoxelRegion.Climate.at(state.climate, {floor(px), floor(py), floor(pz)})
 
     {body, account} =
-      Body.Thermo.step(state.body, 1.0, %{q_j: heat.q_j, tissue_j: heat.tissue_j, air_k: air_k, wind_mps: wind,
-        immersed: heat.immersed})
+      Body.Repair.tick(state.body, 1.0, %{q_j: heat.q_j, tissue_j: heat.tissue_j, air_k: air_k, wind_mps: wind,
+        immersed: heat.immersed}, Map.fetch!(state.climate, "heal_time_compression"), 1.0)
 
     if body.status != before,
       do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
@@ -534,17 +546,21 @@ defmodule SceneServer.Movement.Player do
     if report.key != state.body_sent do
       reliable(state, :control, %MmoContracts.Session.BodyState{
         identity: state.identity, life: report.life, status: report.status, core_k: report.core_k,
-        skin_k: report.skin_k,
-        injuries: for({tag, n} <- report.injuries, do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n})})
+        skin_k: report.skin_k, protein_g: report.protein_g,
+        injuries: for({tag, n, heal} <- report.injuries, do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n, heal: heal})})
     end
 
     character_event(state, state, :body_state, %{life: report.life, status: body.status, core_k: body.core_k,
-      skin_k: body.skin_k, injuries: Map.new(report.injuries), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
+      skin_k: body.skin_k, injuries: Map.new(report.injuries, fn {tag, n, _} -> {tag, n} end),
+      injury_heal: Map.new(report.injuries, fn {tag, _, heal} -> {tag, heal} end), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
       sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
       air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j,
       fat_reserve_j: body.fat_reserve_j, shiver_glycogen_j: account.shiver_glycogen_j, shiver_fat_j: account.shiver_fat_j,
       tissue_k: body.tissue_k, burn_dose_s: body.burn_dose_s, wetness: body.wetness, drying_j: account.drying_j,
       heat_content_j: Body.heat_content_j(body),
+      protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal,
+      repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
+      synth_fat_j: account.synth_fat_j,
       sent: report.key != state.body_sent})
 
     %{state | body: body, body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0}, body_sent: report.key}

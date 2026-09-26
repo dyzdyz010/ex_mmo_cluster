@@ -67,6 +67,17 @@ defmodule VoxelRegion.Damage do
           end)
       end)
 
+    # 身体闭环 H1 可食轴：food = {protein_g, energy_j}，每株（一株 = place_units）的蛋白质 g 与 Atwater 可代谢能 J
+    # （USDA 生重营养，能量含蛋白部分），均非负；只在有 place_units 的材料上。进食裁决见 World 生产意图 action 5。
+    true =
+      Enum.all?(materials, fn {_, m} ->
+        food = m["food"]
+
+        food == nil or
+          (is_map(food) and is_integer(m["place_units"]) and is_number(food["protein_g"]) and
+             food["protein_g"] >= 0 and is_number(food["energy_j"]) and food["energy_j"] >= 0)
+      end)
+
     true =
       Enum.all?(tools, fn {id, t} ->
         id in 1..65535 and t["power"] > 0 and

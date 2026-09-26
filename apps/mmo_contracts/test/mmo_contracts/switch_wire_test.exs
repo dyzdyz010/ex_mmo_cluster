@@ -36,7 +36,7 @@ defmodule MmoContracts.SwitchWireTest do
     assert binary_part(bytes(Map.merge(row(), %{closed: true, flags: 1})), 120, 1) == <<5>>
   end
 
-  test "合成意图沿用 0x7F 生产信封，action 4 = 按目录配方合成 material 一次；5 仍非法" do
+  test "合成意图沿用 0x7F 生产信封，action 4 = 按目录配方合成 material 一次；6 仍非法（5 = 进食，Hello 29）" do
     wire = <<0x7F, 21::64, 8::32, 1::64, 4, 0::signed-32, 0::signed-32, 0::signed-32, 1::16, 41::16>>
     assert byte_size(wire) == 38
     assert Base.encode16(wire, case: :lower) == "7f00000000000000150000000800000000000000010400000000000000000000000000010029"
@@ -44,14 +44,14 @@ defmodule MmoContracts.SwitchWireTest do
     assert {:ok, {:voxel_production_intent, %{request_id: 21, client_intent_seq: 8, action: 4, material: 41, tool_id: 1}}} =
              Voxel.Codec.decode(wire)
 
-    assert {:error, :invalid_message} = Voxel.Codec.decode(<<0x7F, 21::64, 8::32, 1::64, 5, 0::96, 1::16, 41::16>>)
+    assert {:error, :invalid_message} = Voxel.Codec.decode(<<0x7F, 21::64, 8::32, 1::64, 6, 0::96, 1::16, 41::16>>)
   end
 
   test "Hello 21：Hello 20 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 28
-    hello = %Session.Hello{protocol_version: 28, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 29
+    hello = %Session.Hello{protocol_version: 29, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 28::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 29::16, tail::binary>> = packet
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<20::16>> <> tail)
   end
 end

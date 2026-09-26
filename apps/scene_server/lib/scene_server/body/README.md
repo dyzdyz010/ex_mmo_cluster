@@ -1,13 +1,16 @@
 # body/ — 角色身体 L1（首片：体温）
 
 设计来源：Voxim `Docs/Magic.md` §6。本目录只有纯值与纯函数，不持有进程；由 `Movement.Player` 以 1 Hz
-调用 `Thermo.step/3`，接触热 `q_j` 由 `VoxelRegion.World` 作为热内核外部节点算出并异步回传。
+调用 `Repair.tick/5`（修复账 → `Thermo.step/3`），接触热 `q_j` 由 `VoxelRegion.World` 作为热内核外部节点算出并异步回传。
 
 ```mermaid
 flowchart LR
   W[World 外部节点<br/>q_j, tissue_j] --> T[Body.Thermo.step/3]
   A[气候 air_k wind_mps] --> T
-  T --> B[%Body{}<br/>七层温度 tissue_k wetness 剂量 reserve_j fat_reserve_j lethal_s status]
+  R[Repair.heal/4<br/>蛋白 + 合成能] -->|core_j| T
+  F[World 进食 body_food] --> E[Repair.eat/3] --> B
+  T --> B[%Body{}<br/>七层温度 tissue_k wetness 剂量 愈合进度 protein_g reserve_j fat_reserve_j lethal_s status]
+  B --> R
   B --> S[systems/1] --> L[life/1]
   B --> I[injuries/1]
   B --> P[progress/2 濒死计时]
@@ -39,6 +42,43 @@ flowchart LR
   `shiver_glycogen_j`、`shiver_fat_j`（本步寒战热中糖原 / 脂肪各付多少，J）；`reserve_j` 仍是糖原储备、`shiver_j` 仍是本步寒战热总量。
   账：`shiver_j = shiver_glycogen_j + shiver_fat_j`，前一条 `reserve_j` − 本条 = `shiver_glycogen_j`，脂肪同理。**验收脚本要改**：
   旧式“糖原减少 = 寒战热”不再成立，改为“糖原减少 + 脂肪减少 = 寒战热”。线格式与 World 接口不变。
+
+## 修复账与进食（身体闭环 H1，2026-09-26）
+
+分类：Global system。模块 `SceneServer.Body.Repair`；热模型方程与校准参数不变，只给 `Thermo.step/3` 加可选输入 `core_j`（进核心节点的外来热，入账 `stored_j`）。
+
+- **状态**：`Body` 追加 `protein_g`（蛋白质储备 = 玩家看到的“营养”，上限 100 g，新身体满）、`burn_heal`、`frost_heal`（愈合进度 0..1）。
+  严重度仍由剂量推导（阈值不变）；进度走到 1 → 剂量与进度归零、伤病消失；不降级（3 度以疤愈合，不经 2 度）。
+  愈合中再烧到更深一度 → 进度归零（已沉积组织随新坏死失去，蛋白不返还）。
+- **速率**：`d(进度)/dt = K × M / T_real(严重度) × min(1, 循环)`；K = 时间压缩系数（热环境资产 `heal_time_compression`，必填发布参数，
+  代码无默认值；缺失时 Player 入场失败）；M = 速率倍数（魔法“调”留口，本增量恒 1）。循环含烧伤上限，所以 3 度实际比 T_real/K 慢约 19%
+  （∫₀¹ dp/(0.7+0.3p) = ln(1/0.7)/0.3 = 1.189）、2 度约 5%。
+- **底物**：本步进度 × 伤口总蛋白 ≤ 蛋白储备；× 合成能 12 kJ/g ≤ 糖原 + 脂肪。付不起停在原处（不欠账）。烧伤先付、冻伤后付。
+- **合成能**：按寒战同一规则由糖原付 27%、脂肪付其余（`Body.fuel_split/2`，Thermo 与 Repair 共用），全部作 `core_j` 进核心。
+- **循环上限**：烧伤 1/2/3 度上限 1.0/0.9/0.7 随进度线性恢复 `cap + (1 − cap) × burn_heal`。冻伤不压系统（系统后果未定）。
+- **饥饿**：`protein_g < 20 g`（上限 20%）→ `nutrition.hunger`（部位 whole、严重度 1、`:tracks_protein`），进食回到 20 g 以上即消失。
+- **进食**：World 裁决 0x7F action 5（目录 `food`、扣一株 `place_units`、`food_ledger`），把该株 `{protein_g, energy_j}` 送给 Player，
+  立即 `Repair.eat/3`：蛋白加到上限；能量储备 += 能量 − 收进蛋白储备的蛋白 × 16 747.2 J/g（Atwater 4 kcal/g；USDA 能量已含蛋白份额，
+  不重复计），先补糖原到满、余下进脂肪（不设上限）。储备满照吃：超上限的蛋白被氧化，其能量留在能量里。
+  Scene 日志 `body_food` 事件：`food_protein_g`、`food_energy_j`、`food_glycogen_j`、`food_fat_j` 与吃后储备。
+- **账**（每步闭合，`repair_test.exs` 逐项断言）：蛋白变化 = `food_protein_g − repair_protein_g`；糖原减少 = `shiver_glycogen_j + synth_glycogen_j − food_glycogen_j`，
+  脂肪同理；`core_j = synth_j = synth_glycogen_j + synth_fat_j`；`heat_content_j` 之差 = `stored_j = q_j + core_j + metabolic_j − convection_j − sweat_j − drying_j`。
+  Scene 日志 `body_state` 新增 `protein_g`、`burn_heal`、`frost_heal`、`repair_protein_g`、`synth_j`、`synth_glycogen_j`、`synth_fat_j`、`injury_heal`（标签 → 进度 %）；`injuries` 形状不变。
+- **下行**：BodyState 每条伤病严重度后 `heal` u8（⌊进度 × 100⌋）、体末尾 `protein_g` f64（Hello 29）；比较键含进度 % 与蛋白 0.1 g。
+- **不做 / 已知缺口**：复活、虚弱 / 恍惚、死亡掉落（H2）；魔法“调”（H3）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
+  Scene 移交封存后才到达的 `body_food` 随旧 Player 丢失（余额已扣；窗口是移交那一刻）。
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| 伤口深度 | 烧伤 1/2/3 度 0.1 / 1 / 2 mm，冻伤 2 mm；面积 = 组织块 0.03 m²；1000 kg/m³ | 表皮 / 真皮中层 / 全层；与组织块同一几何 |
+| 组织蛋白比例 | 30% → 伤口蛋白 0.9 / 9 / 18 g，冻伤 18 g | 真皮约 70% 水、干重以胶原为主 |
+| 真实愈合 | 1 度 5 d、2 度 21 d、3 度 90 d、冻伤 42 d | 临床常见表述：1 度 3–6 d、浅 2 度 2–3 周；3 度 300 cm² 不植皮自愈的量级（原创取值，真实需植皮）；冻伤 4–8 周分界 |
+| 合成能 | 12 kJ/g 净沉积蛋白 | Waterlow：约 4 ATP/肽键 ≈ 4.2 kJ/g，修复中合成—降解周转约 3 倍（设计稿区间 4.2–12 的上端） |
+| 营养上限 / 饥饿 | 100 g / < 20% | 游离氨基酸池量级；用户 2026-09-26 定 |
+| 蛋白可代谢能 | 16 747.2 J/g | Atwater 4 kcal/g |
+| 时间压缩系数 K | 发布参数，无默认 | 候选 144 / 1008 / 4320，待定（Magic.md §6.7） |
+
+K 候选下的游戏内愈合时长（循环满值时；3 度另乘约 1.19）：1 度 50 / 7.1 / 1.7 min，2 度 3.5 h / 30 min / 7 min，3 度 15 h / 2.1 h / 30 min，冻伤 7 h / 1 h / 14 min（K = 144 / 1008 / 4320）。
 
 ## 模型（2026-09-26 冷暴露校准）
 
@@ -173,12 +213,14 @@ flowchart LR
 | 烧伤剂量 | 组织块 ≥ 44 °C 起，率 2^((T − 60 °C)/1.32 K)；1 / 2.5 / 5 为 1/2/3 度 | Moritz & Henriques 1947 与 CPSC 热水烫伤表两端点 |
 | 冻伤剂量 | 组织块低于 −0.55 °C 累计 K·s，600 K·s 冻伤 | 组织冰点；600 K·s 原创取值 |
 
-烧伤 / 冻伤首片按设计“伤口撤不回”：剂量只增不减，严重度不自愈（Magic.md §6.5）。体温过低 / 过高随核心温度变化。
+烧伤 / 冻伤按修复账愈合（见“修复账与进食”）；只推进 `Thermo.step/3` 时剂量只增不减。体温过低 / 过高随核心温度变化。
 
 ## 测试
 
 - `thermo_test.exs`：单步手算（均匀体温下只剩自身产热与外部项、单条层间导热 + 血流、寒战需求与肌肉血流、峰值封顶）、能量账每步闭合
   （`heat_content_j` 之差）、20 °C 稳态、0 °C 空气、风、烧伤 / 冻伤剂量、伤病与濒死、寒战储备（糖原 27% / 脂肪 73% 拆分、一方不足另一方补足、两者都空无寒战、两储备账每步闭合）、湿衣（衣面热平衡 + Lewis 蒸发两个独立关系）。
 - `contact_test.exs`：组织块参数、冬靴 / 赤脚站 1296 K 燃木、徒手触 2000 K 拟态、冬靴 / 赤脚站 −25 °C 冰、0 °C 水全身浸没。
+- `repair_test.exs`：修复账与进食（手算：伤口蛋白、K = 3375 时 1 度第 128 秒愈合、K = 1008 时第 429 秒、3 度首步、冻伤第 1076 秒、
+  营养 0 不动、蛋白 / 能量不够只付到储备为止、加重归零、进食分账与饥饿阈值、`core_j`、下行视图），每步断言完整账闭合。
 - `cold_validation_test.exs`：上表的实测对照（期望全部来自文献），含寒战耐力（Tikuisis 2002）与供能（Blondin 2010、Haman 2004）。
 - 气候查询见 voxel_region `climate_test`，World 内核里的组织块见 `body_contact_world_test`（World 侧未改）。

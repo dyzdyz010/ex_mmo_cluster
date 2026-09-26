@@ -17,11 +17,11 @@ defmodule MmoContracts.LiquidWireTest do
   end
 
   test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 28
-    hello = %Session.Hello{protocol_version: 28, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 29
+    hello = %Session.Hello{protocol_version: 29, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 28::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 29::16, tail::binary>> = packet
     for version <- [10,15,16,17,18,19,20,21,22] do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<version::16>> <> tail)
     end
@@ -39,7 +39,7 @@ defmodule MmoContracts.LiquidWireTest do
     end
 
     assert {:error, :invalid_message} =
-             Voxel.Codec.decode(<<0x7F, 19::64, 7::32, 1::64, 5, 0::96, 11::16, 21::16>>)
+             Voxel.Codec.decode(<<0x7F, 19::64, 7::32, 1::64, 6, 0::96, 11::16, 21::16>>)
   end
 
   test "VXR9 quantity uses same region seq/hash and sorted little-endian suffix" do

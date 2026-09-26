@@ -15,7 +15,7 @@ defmodule SceneServer.Body.Thermo do
   - 衣物湿度：浸水部分按 `soak_s` 时间常数趋于湿透；空气中湿衣保温按湿度线性损失 16%，露出水面的湿衣在衣面蒸发
     （`drying_j`，潜热经衣物取自皮肤），衣面温度解“经衣物导来的热 = 对流辐射 + 蒸发”，湿度按蒸发掉的水量下降。最后推进濒死计时。
 
-  能量账：本步身体储热变化 `stored_j = q_j + metabolic_j − convection_j − sweat_j − drying_j` = Σ 各节点热容 × 温升 + 组织块热容 × 温升
+  能量账：本步身体储热变化 `stored_j = q_j + core_j + metabolic_j − convection_j − sweat_j − drying_j` = Σ 各节点热容 × 温升 + 组织块热容 × 温升
   （`Body.heat_content_j/1` 之差）；层间导热与血液换热两边抵消，不进账。`metabolic_j` 含寒战 `shiver_j` = `shiver_glycogen_j` + `shiver_fat_j`，
   两项分别等于本步糖原与脂肪储备的减少量。
 
@@ -31,6 +31,7 @@ defmodule SceneServer.Body.Thermo do
           required(:q_j) => float(),
           required(:air_k) => float(),
           optional(:tissue_j) => float(),
+          optional(:core_j) => float(),
           optional(:wind_mps) => float(),
           optional(:immersed) => float(),
           optional(:clothing_m2_k_per_w) => float()
@@ -38,6 +39,7 @@ defmodule SceneServer.Body.Thermo do
   @type account :: %{
           stored_j: float(),
           q_j: float(),
+          core_j: float(),
           tissue_j: float(),
           metabolic_j: float(),
           convection_j: float(),
@@ -54,6 +56,7 @@ defmodule SceneServer.Body.Thermo do
   `inputs`：
   - `q_j`：世界算出的本步接触热，J，正为身体吸热（皮肤与组织块合计）；
   - `tissue_j`：其中存进局部接触组织块的部分，J（缺省 0）；
+  - `core_j`：进核心节点的体内外来热，J（缺省 0；修复合成放热，由 `SceneServer.Body.Repair` 从储备付出后传入）；
   - `air_k`：环境空气温度，K；
   - `wind_mps`：风速，m/s（缺省 0 = 静止空气）；
   - `immersed`：浸在液体里的体表比例 0..1（缺省 0）；空气干热交换、出汗与湿衣蒸发按 1 − immersed 缩放；
@@ -76,8 +79,8 @@ defmodule SceneServer.Body.Thermo do
     fuel = max(body.reserve_j + body.fat_reserve_j, 0.0)
     shiver_j = min(level * min(shiver_demand_w_per_m2(body), p.shiver_max_w_per_m2) * area * dt, fuel)
     # 糖原付 27%；脂肪不够付其余时糖原补足；糖原不够时脂肪补足（shiver_j ≤ 两者之和，故两项都不超过各自储备）。
-    glycogen_j = min(max(p.glycogen_shiver_share * shiver_j, shiver_j - body.fat_reserve_j), body.reserve_j)
-    fat_j = shiver_j - glycogen_j
+    {glycogen_j, fat_j} = Body.fuel_split(body, shiver_j)
+    core_q = Map.get(inputs, :core_j, 0.0)
 
     sweat_w =
       level * p.sweat_g_per_m2_h_k * warm_core * :math.exp(warm_skin / p.sweat_skin_scale_k) *
@@ -98,7 +101,13 @@ defmodule SceneServer.Body.Thermo do
     temps =
       for {f, c, met_w, _blood, share} <- Body.nodes(), into: %{} do
         e = (met_w + internal[f]) * dt + share * shiver_j
-        e = if f == :skin_k, do: e + q - tissue_q - convection_j - sweat_j - drying_j, else: e
+
+        e =
+          case f do
+            :skin_k -> e + q - tissue_q - convection_j - sweat_j - drying_j
+            :core_k -> e + core_q
+            _ -> e
+          end
         {f, Map.fetch!(body, f) + e / c}
       end
 
@@ -118,8 +127,9 @@ defmodule SceneServer.Body.Thermo do
       })
 
     account = %{
-      stored_j: q + metabolic_j - convection_j - sweat_j - drying_j,
+      stored_j: q + core_q + metabolic_j - convection_j - sweat_j - drying_j,
       q_j: q,
+      core_j: core_q,
       tissue_j: tissue_q,
       metabolic_j: metabolic_j,
       convection_j: convection_j,

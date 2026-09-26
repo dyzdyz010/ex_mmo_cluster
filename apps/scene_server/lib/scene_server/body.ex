@@ -10,14 +10,16 @@ defmodule SceneServer.Body do
   - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
-  另存两个寒战燃料储备（J）：`reserve_j`（糖原）与 `fat_reserve_j`（脂肪）。寒战热由两者合付——糖原付约 27%、脂肪付其余，
-  糖原耗尽后脂肪全付、总寒战不变，两者都耗尽才无寒战（Blondin 2010、Haman 2004，见 `body/README.md`）；只在寒战时消耗、
-  不随时间自然下降（进食补充待食物系统）。
+  另存两个能量储备（J）：`reserve_j`（糖原）与 `fat_reserve_j`（脂肪）。寒战热与修复合成能由两者合付——糖原付约 27%、脂肪付其余，
+  一方耗尽后另一方全付，两者都耗尽才无寒战、无修复（Blondin 2010、Haman 2004，见 `body/README.md`）；只在寒战与修复时消耗、
+  不随时间自然下降，进食补充（`SceneServer.Body.Repair.eat/3`）。
+  另存蛋白质储备 `protein_g`（玩家看到的“营养”，上限 100 g，只在修复时消耗）与两处伤口的愈合进度 `burn_heal`、`frost_heal`（0..1），
+  修复账见 `SceneServer.Body.Repair`。
   另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
   身体（含两个储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
 
-  状态推进由 `SceneServer.Body.Thermo.step/3` 完成；本模块只放数据、参数与推导。
+  状态推进由 `SceneServer.Body.Repair.tick/5`（修复 → `SceneServer.Body.Thermo.step/3`）完成；本模块只放数据、参数与推导。
 
   所有参数集中在 `params/0` 与 `nodes/0`、`edges/0`（首片为模块常量，**待资产化**）。温度一律用开尔文，与
   `VoxelRegion.World` 热内核一致。参数取值与依据见同目录 `body/README.md`。
@@ -72,7 +74,7 @@ defmodule SceneServer.Body do
     shiver_skin_ref_k: 33.0 + @c,
     body_fat_percent: 15.0,
     shiver_max_w_per_m2: 232.8,
-    # —— 寒战燃料：两个有限储备，只有寒战从中取能（静息代谢不取），不随时间自然下降；进食补充待食物系统（首片不做）。
+    # —— 能量储备：两个有限储备，只有寒战与修复合成从中取能（静息代谢不取），不随时间自然下降；进食补充（`Repair.eat/3`）。
     # 糖原 `reserve_j`：成人肝糖原约 100 g + 肌糖原约 350 g ≈ 450 g，氧化热约 17 kJ/g → 7.65 MJ。
     # 脂肪 `fat_reserve_j`：Stolwijk 1971 标准人 74.4 kg、脂肪 11.16 kg（15%）× 脂肪能量密度 9 kcal/g = 37.6812 MJ/kg
     # （Atwater 系数；纯甘油三酯燃烧热约 37–39 MJ/kg）→ 420.52 MJ；不扣必需脂肪，蛋白质氧化（Haman 2004 占 12–19%）并入此项。
@@ -141,7 +143,25 @@ defmodule SceneServer.Body do
     burn_circulation_levels: [1.0, 0.9, 0.7],
     # —— 冻伤：组织块温度低于组织冰点 −0.55 °C 起累计 K·s ——
     frost_onset_k: -0.55 + @c,
-    frostbite_dose_k_s: [600.0]
+    frostbite_dose_k_s: [600.0],
+    # —— 修复账（身体闭环 H1，Magic.md §6.5–6.7，body/README.md“修复账”）——
+    # 伤口组织量 = 局部接触组织块面积 0.03 m² × 深度 × 1000 kg/m³；深度：1 度 0.1 mm（表皮）、2 度 1 mm（真皮中层）、
+    # 3 度与冻伤 2 mm（全层，即组织块厚度）。湿皮蛋白约 30%（真皮约 70% 水、干重以胶原为主）。
+    wound_depth_m: %{burn: [0.0001, 0.001, 0.002], frostbite: [0.002]},
+    tissue_density_kg_per_m3: 1000.0,
+    tissue_protein_fraction: 0.30,
+    # 真实愈合时间（天）：1 度 3–6 d 取 5，浅 2 度 2–3 周取 21，3 度（300 cm² 不植皮，靠收缩与边缘上皮化）取 90，
+    # 冻伤 4–8 周分界取 42。游戏内时间 = 真实时间 ÷ 时间压缩系数 K（发布参数，热环境资产 `heal_time_compression`，无代码默认值）。
+    wound_heal_days: %{burn: [5.0, 21.0, 90.0], frostbite: [42.0]},
+    # 蛋白质净沉积的合成能：肽键合成最低约 4 ATP/键 ≈ 4.2 kJ/g（Waterlow），修复中合成—降解周转约 3 倍 → 12 kJ/g
+    # （设计稿区间 4.2–12 的上端）；由糖原 / 脂肪按寒战同一份额付（`fuel_split/2`），全部作为热进核心节点。
+    synthesis_j_per_g: 12_000.0,
+    # —— 营养（蛋白质储备，玩家看到的“营养”）：上限 100 g（人体游离氨基酸池量级），只在修复时消耗、不随时间下降；
+    # 低于上限 20% 出现 `nutrition.hunger`（用户 2026-09-26 定）。蛋白质可代谢能 4 kcal/g = 16 747.2 J/g（Atwater）：
+    # 食物能量（USDA，Atwater）已含其蛋白部分，进了蛋白储备的那部分不再计入能量储备；超上限的蛋白被氧化，其能量留在能量里。——
+    protein_full_g: 100.0,
+    hunger_below_fraction: 0.2,
+    protein_atwater_j_per_g: 4 * 4186.8
   }
 
   # 调定点身体：核心 36.8 °C、皮肤 34 °C（Gagge 调定点），其余五层取该核心 / 皮肤温度、1 met、基础血流下的稳态
@@ -181,7 +201,10 @@ defmodule SceneServer.Body do
             fat_reserve_j: 11.16 * 9 * 4_186_800.0,
             tissue_k: 34.0 + @c,
             wetness: 0.0,
-            status: :alive
+            status: :alive,
+            protein_g: 100.0,
+            burn_heal: 0.0,
+            frost_heal: 0.0
 
   @type status :: :alive | :dying | :dead
   @type t :: %__MODULE__{
@@ -199,13 +222,17 @@ defmodule SceneServer.Body do
           fat_reserve_j: float(),
           tissue_k: float(),
           wetness: float(),
-          status: status()
+          status: status(),
+          protein_g: float(),
+          burn_heal: float(),
+          frost_heal: float()
         }
   @type injury :: %{
           tag: String.t(),
           part: :whole | :contact,
           severity: pos_integer(),
-          progression: :tracks_core | :permanent
+          progression: :tracks_core | :heals | :tracks_protein,
+          heal: float()
         }
 
   @doc "身体 L1 全部标量参数（首片常量，待资产化）。"
@@ -253,16 +280,35 @@ defmodule SceneServer.Body do
 
   defp capacity(field), do: nodes() |> List.keyfind(field, 0) |> elem(1)
 
+  @doc "伤口严重度（0 = 无）：烧伤 1–3 度、冻伤 1，由累计组织损伤剂量按阈值推导。"
+  @spec severity(t(), :burn | :frostbite) :: non_neg_integer()
+  def severity(%__MODULE__{} = body, :burn), do: Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
+  def severity(%__MODULE__{} = body, :frostbite), do: Enum.count(@params.frostbite_dose_k_s, &(body.frost_dose_k_s >= &1))
+
+  @doc """
+  寒战与修复合成共用的取能规则：`j` 焦耳由糖原付 `glycogen_shiver_share`（27%），脂肪付其余；一方不够时另一方补足
+  （Blondin 2010、Haman 2004）。调用方保证 `j ≤ reserve_j + fat_reserve_j`。返回 `{糖原付, 脂肪付}`。
+  """
+  @spec fuel_split(t(), float()) :: {float(), float()}
+  def fuel_split(%__MODULE__{} = body, j) do
+    glycogen_j = min(max(@params.glycogen_shiver_share * j, j - body.fat_reserve_j), body.reserve_j)
+    {glycogen_j, j - glycogen_j}
+  end
+
   @doc """
   三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤度上限约束
-  （`burn_circulation_levels`，深度烧伤体液丢失）。
+  （`burn_circulation_levels`，深度烧伤体液丢失），上限随愈合进度线性恢复：`cap + (1 − cap) × burn_heal`。
 
   首片只有体温这一路写入，故不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
   @spec systems(t()) :: %{thermoregulation: float(), circulation: float(), nervous: float()}
   def systems(%__MODULE__{core_k: core} = body) do
-    burn = Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
-    cap = if burn == 0, do: 1.0, else: Enum.at(@params.burn_circulation_levels, burn - 1)
+    burn = severity(body, :burn)
+
+    cap =
+      if burn == 0,
+        do: 1.0,
+        else: Enum.at(@params.burn_circulation_levels, burn - 1) |> then(&(&1 + (1 - &1) * body.burn_heal))
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
@@ -281,23 +327,26 @@ defmodule SceneServer.Body do
   - `temperature.hypothermia` / `temperature.hyperthermia`：部位 `:whole`，严重度随核心温度，
     回到正常带即消失（`:tracks_core`）；
   - `trauma.thermal.burn`（1–3 度）/ `trauma.thermal.frostbite`：部位 `:contact`，严重度由累计组织
-    损伤剂量决定，只增不减（`:permanent`）——首片按设计“伤口撤不回”，自然愈合留给后续切片。
+    损伤剂量决定；按修复账愈合（`:heals`，`SceneServer.Body.Repair`），`heal` 是愈合进度 0..1，
+    走完即剂量与进度归零、伤病消失。严重度不降级（深度烧伤以疤痕愈合，不经过浅度）；
+  - `nutrition.hunger`：部位 `:whole`，蛋白质储备低于上限 `hunger_below_fraction` 时出现，进食回到阈值以上即消失（`:tracks_protein`）。
   """
   @spec injuries(t()) :: [injury()]
   def injuries(%__MODULE__{} = body) do
+    hungry = body.protein_g < @params.hunger_below_fraction * @params.protein_full_g
+
     [
       {"temperature.hypothermia", :whole,
-       Enum.count(@params.hypothermia_below_k, &(body.core_k < &1)), :tracks_core},
+       Enum.count(@params.hypothermia_below_k, &(body.core_k < &1)), :tracks_core, 0.0},
       {"temperature.hyperthermia", :whole,
-       Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core},
-      {"trauma.thermal.burn", :contact,
-       Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1)), :permanent},
-      {"trauma.thermal.frostbite", :contact,
-       Enum.count(@params.frostbite_dose_k_s, &(body.frost_dose_k_s >= &1)), :permanent}
+       Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core, 0.0},
+      {"trauma.thermal.burn", :contact, severity(body, :burn), :heals, body.burn_heal},
+      {"trauma.thermal.frostbite", :contact, severity(body, :frostbite), :heals, body.frost_heal},
+      {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0}
     ]
-    |> Enum.filter(fn {_tag, _part, severity, _rule} -> severity > 0 end)
-    |> Enum.map(fn {tag, part, severity, rule} ->
-      %{tag: tag, part: part, severity: severity, progression: rule}
+    |> Enum.filter(fn {_tag, _part, severity, _rule, _heal} -> severity > 0 end)
+    |> Enum.map(fn {tag, part, severity, rule, heal} ->
+      %{tag: tag, part: part, severity: severity, progression: rule, heal: heal}
     end)
   end
 
@@ -324,15 +373,17 @@ defmodule SceneServer.Body do
   end
 
   @doc """
-  下行视图（Session.BodyState）：生命、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、伤病 `{标签, 严重度}`。
-  `key` 是“有变化”的比较键：温度取 0.1 K，其余原值。
+  下行视图（Session.BodyState）：生命、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、伤病 `{标签, 严重度, 愈合进度 %}`
+  （进度 = ⌊heal × 100⌋，0..99；不愈合的伤病为 0）、蛋白质储备 g。
+  `key` 是“有变化”的比较键：温度取 0.1 K，蛋白质取 0.1 g，其余原值。
   """
   def report(%__MODULE__{} = body) do
-    injuries = Enum.map(injuries(body), &{&1.tag, &1.severity})
+    injuries = Enum.map(injuries(body), &{&1.tag, &1.severity, floor(&1.heal * 100)})
     status = %{alive: 0, dying: 1, dead: 2}[body.status]
 
     %{life: life(body), status: status, core_k: body.core_k, skin_k: body.skin_k, injuries: injuries,
-      key: {life(body), status, round(body.core_k * 10), round(body.skin_k * 10), injuries}}
+      protein_g: body.protein_g,
+      key: {life(body), status, round(body.core_k * 10), round(body.skin_k * 10), injuries, round(body.protein_g * 10)}}
   end
 
   defp lethal_level(body) do

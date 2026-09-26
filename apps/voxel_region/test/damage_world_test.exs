@@ -21,12 +21,14 @@ defmodule VoxelRegion.DamageWorldTest do
     catalog=Path.join(root,"properties.json")
     materials=for id <- 0..23,do: %{material_id: id,max_hp_per_macro: if(id==0,do: 0.0,else: 100.0),
       defense: 2.0,tags: [],responses: [%{action: "damage",multiplier: 1.0}]}
-    # 只测试：花草样本——罂粟一击即碎，必掉自身 64、几乎不可能掉木头；矮草半概率掉自身 8。
+    # 只测试：花草样本——罂粟一击即碎，必掉自身 64、几乎不可能掉木头；矮草半概率掉自身 8；
+    # 蒲公英一株 64 单位、可食（USDA 生重 40 g：蛋白 1.08 g、18 kcal = 75 362.4 J）。
     materials=if context[:flora] do
       materials ++ for id <- 24..39 do
         extra=case id do
           35 -> %{max_hp_per_macro: 10.0,place_units: 64,drops: [%{material_id: 35,units: 64,probability: 1.0},%{material_id: 19,units: 8,probability: 1.0e-12}]}
           32 -> %{max_hp_per_macro: 10.0,place_units: 8,drops: [%{material_id: 32,units: 8,probability: 0.5}]}
+          36 -> %{max_hp_per_macro: 10.0,place_units: 64,food: %{protein_g: 1.08,energy_j: 75_362.4}}
           _ -> %{}
         end
         Map.merge(%{material_id: id,max_hp_per_macro: 100.0,defense: 2.0,tags: [],responses: [%{action: "damage",multiplier: 1.0}]},extra)
@@ -49,7 +51,7 @@ defmodule VoxelRegion.DamageWorldTest do
       0::signed-little-32,0::signed-little-32,0::signed-little-32,11::16-little,
       1::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>
     File.write!(Path.join(prefab,"test.vxpd"),bytes)
-    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11] ++ if(context[:flora],do: [32,35],else: []) ++ if(context[:switch],do: [41],else: [])]
+    opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11] ++ if(context[:flora],do: [32,35,36],else: []) ++ if(context[:switch],do: [41],else: [])]
     opts=if context[:thermal_environment] do
       environment=Path.join(root,"environment.json")
       File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
@@ -194,6 +196,72 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   defp balance(w,cid,material \\ 19), do: Enum.find(World.material_balances(w,cid), &(&1.material==material))
+
+  # 身体闭环 H1：进食 = 生产意图 action 5。收件人是该角色的 Player（这里是测试进程本身）。
+  @tag :flora
+  test "进食：余额足额扣一株 place_units，Player 收到该株蛋白与能量；重发幂等；不可食、余额不足显式拒绝；食物账随日志与压实持久化", c do
+    me=self()
+    actor=%{c.actor | refresh: fn _,_ -> {:ok,%{cid: 1001,gate: me,player: me,identity: :test_session}} end}
+    assert {:ok,_}=World.material_supply(c.w,1001,"food-test",%{36=>128,35=>64})
+    eat=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 5,coord: {0,0,0},tool_id: 1,material: 36}
+    assert {:ok,seq}=World.production_intent(c.w,actor,eat)
+    assert_receive {:body_food,1001,1.08,75_362.4}
+    assert balance(c.w,1001,36).balance == 64
+    assert [%{material_balances: %{{1001,36}=>64},food_ledger: %{36=>64}}]=World.entries_after(c.w,seq-1)
+    # 同一请求重发：回原回执，不再扣、不再送
+    assert {:ok,^seq}=World.production_intent(c.w,actor,eat)
+    refute_receive {:body_food,_,_,_},50
+    assert {:ok,_}=World.production_intent(c.w,actor,%{eat | request_id: 11,client_intent_seq: 11})
+    assert_receive {:body_food,1001,1.08,75_362.4}
+    assert balance(c.w,1001,36).balance == 0
+    assert {:error,:insufficient_material}=World.production_intent(c.w,actor,%{eat | request_id: 12,client_intent_seq: 12})
+    # 罂粟有余额但目录没有可食轴
+    assert {:error,:not_edible}=World.production_intent(c.w,actor,%{eat | request_id: 13,client_intent_seq: 13,material: 35})
+    assert balance(c.w,1001,35).balance == 64
+    refute_receive {:body_food,_,_,_},50
+    assert World.material_snapshot(c.w,[1001],[]).food_ledger == %{36=>128}
+
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.material_snapshot(w,[1001],[]).food_ledger == %{36=>128}
+    assert balance(w,1001,36).balance == 0
+    assert :ok == World.compact(w)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert World.material_snapshot(w,[1001],[]).food_ledger == %{36=>128}
+  end
+
+  test "目录可食轴：蛋白与能量须为非负数，且只在有 place_units（一株）的材料上", c do
+    data=Jason.decode!(File.read!(c.catalog))
+    publish=fn row ->
+      path=Path.join(Path.dirname(c.catalog),"food-#{System.unique_integer([:positive])}.json")
+      File.write!(path,Jason.encode!(%{data | "materials" => Enum.map(data["materials"],&if(&1["material_id"]==5,do: Map.merge(&1,row),else: &1))}))
+      path
+    end
+    assert %{"food" => _}=VoxelRegion.Damage.load(publish.(%{"place_units"=>64,"food"=>%{"protein_g"=>1.08,"energy_j"=>75_362.4}})).materials[5]
+    assert_raise MatchError,fn -> VoxelRegion.Damage.load(publish.(%{"food"=>%{"protein_g"=>1.08,"energy_j"=>75_362.4}})) end
+    assert_raise MatchError,fn -> VoxelRegion.Damage.load(publish.(%{"place_units"=>64,"food"=>%{"protein_g"=>-1,"energy_j"=>1}})) end
+    assert_raise MatchError,fn -> VoxelRegion.Damage.load(publish.(%{"place_units"=>64,"food"=>%{"protein_g"=>1}})) end
+  end
+
+  # 愈合时间压缩系数随热环境资产发布：有则原样进快照 property_context（Scene 身体读它），无则不加键；非正数拒绝加载。
+  test "热环境 heal_time_compression：原样进 property_context，缺省不加键，非正数拒绝", c do
+    env=fn extra ->
+      path=Path.join(Path.dirname(c.catalog),"env-#{System.unique_integer([:positive])}.json")
+      File.write!(path,Jason.encode!(Map.merge(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,
+        emissivity: 0.0,view_range_cells: 8},extra)))
+      Keyword.put(c.opts,:thermal_environment_path,path)
+    end
+    context=fn w -> World.simulation_snapshot(w,[],{{0,0,0},{1,1,1}}).property_context end
+    stop_supervised(World)
+    w=start_supervised!({World,env.(%{heal_time_compression: 1008})})
+    assert context.(w).heal_time_compression == 1008
+    stop_supervised(World)
+    w=start_supervised!({World,env.(%{})})
+    refute Map.has_key?(context.(w),:heal_time_compression)
+    stop_supervised(World)
+    assert {:error,_}=start_supervised({World,env.(%{heal_time_compression: 0})})
+  end
 
   defp b2_hit(c,actor,target,seq) do
     actor=Map.merge(actor,%{received_us: seq*500_000,clock_node: node()})
