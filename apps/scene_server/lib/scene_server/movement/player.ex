@@ -539,18 +539,20 @@ defmodule SceneServer.Movement.Player do
         tissue_k: body.tissue_k, tissue_capacity: Body.tissue_capacity_j_per_k(),
         tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)}})
 
-    report = Body.report(body)
+    report = Body.report(body, 1.0)
 
     if report.key != state.body_sent do
       reliable(state, :control, %MmoContracts.Session.BodyState{
-        identity: state.identity, life: report.life, status: report.status, core_k: report.core_k,
-        skin_k: report.skin_k, protein_g: report.protein_g,
-        injuries: for({tag, n, heal} <- report.injuries, do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n, heal: heal})})
+        identity: state.identity, life: report.life, recoverable: report.recoverable, status: report.status,
+        core_k: report.core_k, skin_k: report.skin_k, protein_g: report.protein_g,
+        injuries: for({tag, n, heal, left} <- report.injuries,
+          do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left})})
     end
 
-    character_event(state, state, :body_state, %{life: report.life, status: body.status, core_k: body.core_k,
-      skin_k: body.skin_k, injuries: Map.new(report.injuries, fn {tag, n, _} -> {tag, n} end),
-      injury_heal: Map.new(report.injuries, fn {tag, _, heal} -> {tag, heal} end), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
+    character_event(state, state, :body_state, %{life: report.life, recoverable: report.recoverable, status: body.status,
+      core_k: body.core_k, skin_k: body.skin_k, injuries: Map.new(report.injuries, fn {tag, n, _, _} -> {tag, n} end),
+      injury_heal: Map.new(report.injuries, fn {tag, _, heal, _} -> {tag, heal} end),
+      injury_remaining_s: Map.new(report.injuries, fn {tag, _, _, left} -> {tag, left} end), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
       sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
       air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j,
       fat_reserve_j: body.fat_reserve_j, shiver_glycogen_j: account.shiver_glycogen_j, shiver_fat_j: account.shiver_fat_j,

@@ -45,7 +45,6 @@ defmodule SceneServer.Body.Repair do
   @spec heal(Body.t(), float(), number()) :: {Body.t(), account()}
   def heal(%Body{} = body, dt, m) do
     p = Body.params()
-    circulation = min(1.0, Body.systems(body).circulation)
     zero = %{repair_protein_g: 0.0, synth_j: 0.0, synth_glycogen_j: 0.0, synth_fat_j: 0.0}
 
     Enum.reduce(@wounds, {body, zero}, fn {kind, heal_field, dose_field}, {b, acc} ->
@@ -61,7 +60,7 @@ defmodule SceneServer.Body.Repair do
           step =
             Enum.min([
               1 - heal,
-              m / Body.heal_s(kind, severity) * circulation * dt,
+              Body.heal_rate(body, kind, m) * dt,
               b.protein_g / total_g,
               fuel / (total_g * p.synthesis_j_per_g)
             ])

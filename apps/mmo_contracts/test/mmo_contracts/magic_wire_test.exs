@@ -22,12 +22,12 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 29：Hello 28 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 29
-    hello = %Session.Hello{protocol_version: 29, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 30：Hello 29 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 30
+    hello = %Session.Hello{protocol_version: 30, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 29::16, tail::binary>> = IO.iodata_to_binary(packet)
-    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<28::16>> <> tail)
+    <<prefix::binary-size(9), 30::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
   end
 
   test "0x82 冻结样本解码为施法意图；非法动作、粒度、方向与长度拒绝" do

@@ -29,7 +29,7 @@ flowchart LR
 - `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
   吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`）→ 把脚位、身高、半径、
   皮肤温度与热容、体表面积、组织块温度 / 热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.contact_tissue_w_per_m2_k/1`）报给 World
-  （`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/1`）有变化才下发 `Session.BodyState`（kind 12）。死亡由系统重建身体。
+  （`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。死亡由系统重建身体。
 - World 把**皮肤**与**组织块**当热内核的两个外部节点（暴露面积 0），两者之间一条内部边；接触导热在 `VoxelRegion.BodyContact`
   （鞋底、触碰拟态接组织块，浸没接皮肤）。身体内部的其余五层只在 Scene 里，World 不知道。回传
   `{:body_heat, %{q_j, tissue_j, tissue_k, sole_k, max_contact_k, immersed, dt_s, seq}}`，World 记 `body_exchange_j`，与 Player 累计同值。
@@ -69,6 +69,15 @@ flowchart LR
   脂肪同理；`core_j = synth_j = synth_glycogen_j + synth_fat_j`；`heat_content_j` 之差 = `stored_j = q_j + core_j + metabolic_j − convection_j − sweat_j − drying_j`。
   Scene 日志 `body_state` 新增 `protein_g`、`burn_heal`、`frost_heal`、`repair_protein_g`、`synth_j`、`synth_glycogen_j`、`synth_fat_j`、`injury_heal`（标签 → 进度 %）；`injuries` 形状不变。
 - **下行**：BodyState 每条伤病严重度后 `heal` u8（⌊进度 × 100⌋）、体末尾 `protein_g` f64（Hello 29）；比较键含进度 % 与蛋白 0.1 g。
+- **生命条可恢复段与剩余时间**（Hello 30，Voxim `Docs/Magic.md` §10.16）：
+  - 可恢复生命 `Body.recoverable_life/1` = 伤口全愈后的生命 − 现在的生命 = `life(剂量与进度归零的同一身体) − life(body)`。只有慢性伤口压掉、
+    会随愈合回来的那一截（本增量只有烧伤压循环）；体温偏离等急性损失不计入：两者叠加时，去掉伤口后仍被急性压住的部分算急性
+    （例：一度上限 0.90、神经 0.85 → 生命 85、可恢复 0；神经 0.95 → 生命 90、可恢复 5）。一度受伤瞬间 10，三度 4，随进度线性缩短到 0。
+  - 剩余愈合秒数 `Body.remaining_s/3` = `(1 − 进度) / 速率`，速率 `Body.heal_rate/3` = `M / T × min(1, 循环)`（与 `Repair.heal/3` 同一处）。
+    按此刻速度估算，不预测之后的循环回升、体温或营养变化；烧伤愈合中上限回升，实际不晚于估算（一度首秒估 102.84 s，实际第 98 步愈合）。
+    停止用约定负值：营养为 0 → −1；速率为 0（循环归零，只在濒死 / 死亡时）→ −2。不愈合的伤病为 0。
+  - 下行：`life` 后追加 `recoverable` u8（`life + recoverable ≤ 100`），每条伤病 `heal` 后追加 `remaining_s` f64；比较键含可恢复与剩余整秒
+    （愈合中每秒一帧）。Scene 日志 `body_state` 新增 `recoverable`、`injury_remaining_s`（标签 → 秒）。
 - **不做 / 已知缺口**：复活、虚弱 / 恍惚、死亡掉落（H2）；魔法“调”（H3）；冻伤的系统后果（移动变慢，H5）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
   Scene 移交封存后才到达的 `body_food` 随旧 Player 丢失（余额已扣；窗口是移交那一刻）。
 

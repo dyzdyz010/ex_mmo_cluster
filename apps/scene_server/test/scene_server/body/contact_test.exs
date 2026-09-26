@@ -139,13 +139,14 @@ defmodule SceneServer.Body.ContactTest do
   end
 
   test "report：有变化才发的比较键（温度取 0.1 K）与状态码" do
-    r = Body.report(Body.new())
+    r = Body.report(Body.new(), 1.0)
     assert {r.life, r.status, r.injuries} == {100, 0, []}
-    at = &Body.report(%{Body.new() | skin_k: &1}).key
+    at = &Body.report(%{Body.new() | skin_k: &1}, 1.0).key
     assert at.(307.0) == at.(307.03)
     refute at.(307.0) == at.(307.2)
     burnt = %{Body.new() | burn_dose_s: 6.0, status: :dying}
-    # Hello 29：伤病带愈合进度 %（未开始愈合为 0），下行带蛋白质储备（新身体满 100 g）
-    assert %{life: 96, status: 1, injuries: [{"trauma.thermal.burn", 3, 0}], protein_g: 100.0} = Body.report(burnt)
+    # Hello 29：伤病带愈合进度 %（未开始愈合为 0），下行带蛋白质储备（新身体满 100 g）；Hello 30：可恢复 4、剩余秒数（repair_test 手算）
+    assert %{life: 96, recoverable: 4, status: 1, injuries: [{"trauma.thermal.burn", 3, 0, _}], protein_g: 100.0} =
+             Body.report(burnt, 1.0)
   end
 end

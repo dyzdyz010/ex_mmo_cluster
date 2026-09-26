@@ -265,13 +265,79 @@ defmodule SceneServer.Body.RepairTest do
     assert_in_delta a.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
   end
 
-  test "report：伤病带愈合进度 ⌊heal × 100⌋，下行带蛋白质储备；进度或蛋白变化 0.1 g 即换比较键" do
+  test "report：伤病带愈合进度 ⌊heal × 100⌋ 与剩余秒数，下行带蛋白质储备；进度、剩余整秒或蛋白变化 0.1 g 即换比较键" do
+    # 二度、进度 0.506：上限 1 − 0.060515 × 0.494 = 0.970106，剩余 0.494 × 252.7405 / 0.970106 = 128.7012 s
     body = %{Body.new() | burn_dose_s: 3.0, burn_heal: 0.506, protein_g: 42.0}
-    r = Body.report(body)
-    assert r.injuries == [{"trauma.thermal.burn", 2, 50}]
+    r = Body.report(body, 1.0)
+    assert [{"trauma.thermal.burn", 2, 50, left}] = r.injuries
+    assert_in_delta left, 128.7012, 1.0e-3
     assert r.protein_g == 42.0
-    refute Body.report(%{body | burn_heal: 0.51}).key == r.key
-    refute Body.report(%{body | protein_g: 42.1}).key == r.key
-    assert Body.report(%{body | protein_g: 42.01}).key == r.key
+    refute Body.report(%{body | burn_heal: 0.51}, 1.0).key == r.key
+    refute Body.report(%{body | protein_g: 42.1}, 1.0).key == r.key
+    assert Body.report(%{body | protein_g: 42.01}, 1.0).key == r.key
+    # 进度 0.508 仍是 50 %，但剩余 0.492 × 252.7405 / 0.970227 = 128.16 s → 整秒 128 ≠ 129，换键
+    refute Body.report(%{body | burn_heal: 0.508}, 1.0).key == r.key
+  end
+
+  # 生命条可恢复段与剩余愈合时间（Hello 30）。期望手算，见 moduledoc 的时长与慢性深度；循环带 24/32/40/43 °C、神经带 28/35/39/42 °C（body.ex）。
+  describe "可恢复生命与剩余愈合时间" do
+    test "一度烧伤受伤瞬间：生命 90、可恢复 10（全愈后 100）；剩余 = 92.5551 / 0.9 = 102.839 s" do
+      burnt = %{Body.new() | burn_dose_s: 1.0}
+      r = Body.report(burnt, 1.0)
+      assert {r.life, r.recoverable} == {90, 10}
+      assert [{"trauma.thermal.burn", 1, 0, left}] = r.injuries
+      assert_in_delta left, 102.839, 1.0e-3
+    end
+
+    test "三度烧伤：受伤瞬间生命 96、可恢复 4、剩余 699.9887 / 0.963637 = 726.40 s；进度 0.5 → 生命 98、可恢复 2、剩余 0.5 × 699.9887 / 0.981819 = 356.48 s" do
+      r = Body.report(%{Body.new() | burn_dose_s: 5.0}, 1.0)
+      assert {r.life, r.recoverable} == {96, 4}
+      assert [{_, 3, 0, left}] = r.injuries
+      assert_in_delta left, 726.40, 1.0e-2
+      r = Body.report(%{Body.new() | burn_dose_s: 5.0, burn_heal: 0.5}, 1.0)
+      assert {r.life, r.recoverable} == {98, 2}
+      assert [{_, 3, 50, left}] = r.injuries
+      assert_in_delta left, 356.48, 1.0e-2
+    end
+
+    test "急性损失不算可恢复：核心 33.95 °C 神经 (33.95 − 28)/7 = 0.85 低于一度上限 0.9 → 生命 85、可恢复 0；核心 34.65 °C 神经 0.95 → 生命 90、可恢复 5" do
+      burnt = %{Body.new() | burn_dose_s: 1.0}
+      assert Body.life(%{burnt | core_k: 33.95 + @c}) == 85
+      assert Body.recoverable_life(%{burnt | core_k: 33.95 + @c}) == 0
+      assert Body.life(%{burnt | core_k: 34.65 + @c}) == 90
+      assert Body.recoverable_life(%{burnt | core_k: 34.65 + @c}) == 5
+      # 无伤口时同一体温：生命 95，可恢复 0
+      assert Body.recoverable_life(%{Body.new() | core_k: 34.65 + @c}) == 0
+    end
+
+    test "冻伤不压系统：浅冻伤生命 100、可恢复 0，剩余 = 时长 117.1359 s（循环满值）；体温伤病与饥饿不愈合，剩余 0" do
+      r = Body.report(%{Body.new() | frost_dose_k_s: 300.0, core_k: 34.5 + @c, protein_g: 10.0}, 1.0)
+      assert {r.life, r.recoverable} == {93, 0}
+      assert [{"temperature.hypothermia", 1, 0, +0.0}, {"trauma.thermal.frostbite", 1, 0, left}, {"nutrition.hunger", 1, 0, +0.0}] =
+               r.injuries
+      assert_in_delta left, 117.1359, 1.0e-3
+    end
+
+    test "营养为 0 → 剩余 −1（愈合停止：需要营养）；循环归零（核心 23 °C 低于循环冷侧 24 °C）→ −2" do
+      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, protein_g: 0.0}, :burn, 1.0) == -1.0
+      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, core_k: 23.0 + @c}, :burn, 1.0) == -2.0
+    end
+
+    test "一度烧伤逐秒：剩余单调下降、每步降幅 ≥ 1 s（循环回升只会更快），愈合前一步（第 97 步，进度 0.993856）剩余 0.006144 × 92.5551 / 0.999386 = 0.569 s，第 98 步愈合" do
+      steps =
+        Enum.scan(1..97, {%{Body.new() | burn_dose_s: 1.0}, nil}, fn _, {b, _} -> tick!(b) end)
+        |> Enum.map(fn {b, _} -> {b, Body.remaining_s(b, :burn, 1.0), Body.recoverable_life(b)} end)
+
+      lefts = [Body.remaining_s(%{Body.new() | burn_dose_s: 1.0}, :burn, 1.0) | Enum.map(steps, &elem(&1, 1))]
+      assert lefts |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a - b >= 1.0 - 1.0e-9 end)
+      {b97, left97, _} = List.last(steps)
+      assert_in_delta left97, 0.569, 1.0e-3
+      # 可恢复段随愈合缩短：从 10 单调不增，第 97 步上限 0.999386 → 生命 100、可恢复 0
+      recoverable = [10 | Enum.map(steps, &elem(&1, 2))]
+      assert recoverable |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a >= b end)
+      assert List.last(recoverable) == 0
+      {b98, _} = tick!(b97)
+      assert Body.injuries(b98) == [] and Body.recoverable_life(b98) == 0
+    end
   end
 end

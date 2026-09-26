@@ -7,7 +7,7 @@ defmodule SceneServer.Body do
   另存烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
-  - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；
+  - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；`recoverable_life/1`：其中伤口愈合后会回来的那一截；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
   另存两个能量储备（J）：`reserve_j`（糖原）与 `fat_reserve_j`（脂肪）。寒战热与修复合成能由两者合付——糖原付约 27%、脂肪付其余，
@@ -343,6 +343,35 @@ defmodule SceneServer.Body do
   def life(%__MODULE__{} = body), do: round(100 * lethal_level(body))
 
   @doc """
+  可恢复生命（生命条上另一种颜色的那一截）：伤口全部愈合后的生命 − 现在的生命 = `life(剂量与进度归零的同一身体) − life(body)`。
+  只有慢性伤口压低的部分（本增量只有烧伤压循环）随愈合自己回来；体温偏离等急性损失不经伤口愈合，不计入——
+  两者同时存在时取“去掉伤口后仍被急性压住”的部分为急性，例如核心低温把神经压到 0.85、烧伤上限 0.90 → 生命 85、可恢复 0。
+  """
+  @spec recoverable_life(t()) :: 0..100
+  def recoverable_life(%__MODULE__{} = body),
+    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0}) - life(body)
+
+  @doc "伤口此刻的愈合速率（进度 /s）：`m / T(严重度) × min(1, 循环)`；`Repair.heal/3` 与 `remaining_s/3` 共用这一处。"
+  @spec heal_rate(t(), :burn | :frostbite, number()) :: float()
+  def heal_rate(%__MODULE__{} = body, kind, m), do: m / heal_s(kind, severity(body, kind)) * min(1.0, systems(body).circulation)
+
+  @doc """
+  按此刻速度估算的剩余愈合秒数：`(1 − 进度) / heal_rate`（不预测之后循环回升、体温或营养变化；烧伤愈合中循环上限回升，
+  实际总是不晚于估算）。愈合停止时返回约定负值：营养（蛋白储备）为 0 → `-1.0`；速率为 0（循环归零，只在濒死 / 死亡时）→ `-2.0`。
+  """
+  @spec remaining_s(t(), :burn | :frostbite, number()) :: float()
+  def remaining_s(%__MODULE__{} = body, kind, m) do
+    rate = heal_rate(body, kind, m)
+    progress = if kind == :burn, do: body.burn_heal, else: body.frost_heal
+
+    cond do
+      body.protein_g <= 0 -> -1.0
+      rate <= 0 -> -2.0
+      true -> (1 - progress) / rate
+    end
+  end
+
+  @doc """
   当前伤病表。
 
   - `temperature.hypothermia` / `temperature.hyperthermia`：部位 `:whole`，严重度随核心温度，
@@ -394,17 +423,28 @@ defmodule SceneServer.Body do
   end
 
   @doc """
-  下行视图（Session.BodyState）：生命、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、伤病 `{标签, 严重度, 愈合进度 %}`
-  （进度 = ⌊heal × 100⌋，0..99；不愈合的伤病为 0）、蛋白质储备 g。
-  `key` 是“有变化”的比较键：温度取 0.1 K，蛋白质取 0.1 g，其余原值。
+  下行视图（Session.BodyState）：生命、可恢复生命（`recoverable_life/1`）、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、
+  伤病 `{标签, 严重度, 愈合进度 %, 剩余秒数}`（进度 = ⌊heal × 100⌋，0..99；剩余 = `remaining_s/3`，含停止负值；
+  不愈合的伤病进度与剩余都为 0）、蛋白质储备 g。`m` 是愈合速率倍数（Player 恒 1）。
+  `key` 是“有变化”的比较键：温度取 0.1 K，蛋白质取 0.1 g，剩余取整秒，其余原值。
   """
-  def report(%__MODULE__{} = body) do
-    injuries = Enum.map(injuries(body), &{&1.tag, &1.severity, floor(&1.heal * 100)})
-    status = %{alive: 0, dying: 1, dead: 2}[body.status]
+  def report(%__MODULE__{} = body, m) do
+    kinds = %{"trauma.thermal.burn" => :burn, "trauma.thermal.frostbite" => :frostbite}
 
-    %{life: life(body), status: status, core_k: body.core_k, skin_k: body.skin_k, injuries: injuries,
+    injuries =
+      for i <- injuries(body) do
+        remaining = if kind = kinds[i.tag], do: remaining_s(body, kind, m), else: 0.0
+        {i.tag, i.severity, floor(i.heal * 100), remaining}
+      end
+
+    status = %{alive: 0, dying: 1, dead: 2}[body.status]
+    life = life(body)
+    recoverable = recoverable_life(body)
+
+    %{life: life, recoverable: recoverable, status: status, core_k: body.core_k, skin_k: body.skin_k, injuries: injuries,
       protein_g: body.protein_g,
-      key: {life(body), status, round(body.core_k * 10), round(body.skin_k * 10), injuries, round(body.protein_g * 10)}}
+      key: {life, recoverable, status, round(body.core_k * 10), round(body.skin_k * 10),
+            for({tag, n, heal, left} <- injuries, do: {tag, n, heal, round(left)}), round(body.protein_g * 10)}}
   end
 
   defp lethal_level(body) do
