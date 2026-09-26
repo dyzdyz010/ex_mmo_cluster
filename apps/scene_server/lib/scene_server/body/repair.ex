@@ -91,7 +91,8 @@ defmodule SceneServer.Body.Repair do
   end
 
   @doc """
-  身体的一次完整推进（Player 1 Hz 调用）：`heal/3` → `Thermo.step/3`（合成放热作 `core_j`）→ 加重的伤口进度归零。
+  身体的一次完整推进（Player 1 Hz 调用）：`heal/3` → `Thermo.step/3`（合成放热作 `core_j`）→ 加重的伤口进度归零 →
+  复活 debuff 计时（`weak_s`、`daze_s`）各减 `dt`、到 0 即解除。
   `inputs` 同 `Thermo.step/3`（不含 `core_j`）。返回 `{body, account}`，`account` = Thermo 账 ∪ 修复账。
   """
   @spec tick(Body.t(), float(), map(), number()) :: {Body.t(), map()}
@@ -104,7 +105,8 @@ defmodule SceneServer.Body.Repair do
         if Body.severity(b, kind) > Body.severity(healed, kind), do: Map.put(b, heal_field, 0.0), else: b
       end)
 
-    {%{next | burn_age_s: burn_age(next, healed, dt)}, Map.merge(account, repair)}
+    {%{next | burn_age_s: burn_age(next, healed, dt), weak_s: max(0.0, next.weak_s - dt), daze_s: max(0.0, next.daze_s - dt)},
+     Map.merge(account, repair)}
   end
 
   # 急性期计时：无烧伤 0；加重时按此刻（计时已走 dt）的旧下压量接续；否则 + dt。

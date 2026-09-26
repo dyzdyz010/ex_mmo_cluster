@@ -9,7 +9,8 @@ defmodule SceneServer.Body.RepairTest do
     90 d：e^3.1498668 = 23.332956 → 699.9887 s；7 d：e^1.3621371 = 3.9045288 → 117.1359 s；42 d：e^2.6163687 = 13.685936 → 410.5781 s；
   - 慢性深度 = 0.25 × √(92.5551 / T)（基数用户 2026-09-26 定）：1 度 0.25、2 度 0.25 × √0.366206 = 0.25 × 0.605150 = 0.151287、
     3 度 0.25 × √0.132224 = 0.25 × 0.363626 = 0.090906；浅冻伤 0.25 × √(92.5551/117.1359) = 0.222226、深冻伤 0.118698
-    （冻伤本增量不压系统，深度只供单调性断言）；未愈合循环上限 0.75 / 0.848713 / 0.909094 → 生命 75 / 85 / 91；
+    （冻伤本增量不压系统，深度只供单调性断言）；未愈合循环上限 0.75 / 0.848713 / 0.909094，疼痛以同一下压量压神经（H2），
+    两系统按 p = 2 合成 1 − √2 × 下压 → 生命 65 / 79 / 87；
   - 急性期（用户 2026-09-26 定）：onset = 30 s × 1^0.7 = 30 s（真实烧伤休克期 1 天），r = min(1, 急性期计时 / 30)；
     烧伤循环上限 1 − D·r·(1 − h)。从受伤（计时 0、进度 0）起逐秒递推（第 k 步用步前的计时 k − 1 与进度）：
     h_k = h_{k−1} + (1 − D·min(1, (k − 1)/30)·(1 − h_{k−1}))/T，第 k 秒末计时 k、上限 1 − D·min(1, k/30)·(1 − h_k)。
@@ -99,15 +100,15 @@ defmodule SceneServer.Body.RepairTest do
       assert_in_delta List.last(totals), 63.633, 1.0e-2
     end
 
-    test "急性期满（计时 ≥ onset 30 s）后烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 75 / 85 / 91；3 度进度 0.5 → 1 − 0.090906 × 0.5 = 0.954547（生命 95）；冻伤不压循环" do
+    test "急性期满（计时 ≥ onset 30 s）后烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 65 / 79 / 87；3 度进度 0.5 → 1 − 0.090906 × 0.5 = 0.954547（合成 1 − √2 × 0.045453 = 0.935719，生命 94）；冻伤不压循环" do
       assert Body.burn_onset_s() == 30.0
       assert_in_delta Body.systems(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}).circulation, 0.75, 1.0e-12
-      assert Body.life(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}) == 75
-      assert Body.life(%{Body.new() | burn_dose_s: 3.0, burn_age_s: @onset}) == 85
-      assert Body.life(%{Body.new() | burn_dose_s: 5.0, burn_age_s: 100.0}) == 91
+      assert Body.life(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}) == 65
+      assert Body.life(%{Body.new() | burn_dose_s: 3.0, burn_age_s: @onset}) == 79
+      assert Body.life(%{Body.new() | burn_dose_s: 5.0, burn_age_s: 100.0}) == 87
       half = %{Body.new() | burn_dose_s: 5.0, burn_heal: 0.5, burn_age_s: @onset}
       assert_in_delta Body.systems(half).circulation, 0.954547, 1.0e-6
-      assert Body.life(half) == 95
+      assert Body.life(half) == 94
       assert Body.life(%{Body.new() | frost_dose_k_s: 600.0}) == 100
     end
   end
@@ -176,30 +177,30 @@ defmodule SceneServer.Body.RepairTest do
 
     test "愈合中再烧到更深一度：进度归零，已付的蛋白不返还；急性期计时接上此刻下压量，生命不跳回" do
       # 组织块 60 °C 每秒剂量 +1：第 1 步剂量 2.0 仍是一度（进度 0.5 + (0.75 + 0.25 × 0.5)/92.5551 = 0.5094538，
-      # 上限 1 − 0.25 × 0.4905462 = 0.877363 → 生命 88）；第 2 步 3.0 进二度 → 进度 0。第 2 步修复后一度进度
+      # 上限 1 − 0.25 × 0.4905462 = 0.877363，合成 1 − √2 × 0.122637 = 0.826566 → 生命 83）；第 2 步 3.0 进二度 → 进度 0。第 2 步修复后一度进度
       # 0.5094538 + (1 − 0.25 × 0.4905462)/92.5551 = 0.5189332，此刻下压 0.25 × 0.4810668 = 0.1202667，
-      # r₀ = 0.1202667 / 0.151287 = 0.794955 → 计时 30 × r₀ = 23.8487 s，上限 1 − 0.1202667 = 0.879733 → 生命仍 88
+      # r₀ = 0.1202667 / 0.151287 = 0.794955 → 计时 30 × r₀ = 23.8487 s，上限 1 − 0.1202667 = 0.879733，合成 0.829916 → 生命仍 83
       healing = %{Body.new() | burn_dose_s: 1.0, burn_heal: 0.5, burn_age_s: @onset, tissue_k: 60.0 + @c}
       {b1, _} = tick!(healing)
       assert severity(b1, "trauma.thermal.burn") == 1
       assert_in_delta b1.burn_heal, 0.5094538, 1.0e-7
-      assert Body.life(b1) == 88
+      assert Body.life(b1) == 83
       {b2, _} = tick!(b1)
       assert severity(b2, "trauma.thermal.burn") == 2 and b2.burn_heal == 0.0
       assert_in_delta b2.burn_age_s, 23.8487, 1.0e-3
-      assert Body.life(b2) == 88
+      assert Body.life(b2) == 83
       assert b2.protein_g < 100.0
     end
 
-    test "一度压满后再烧进二度：旧下压 0.245943 超过二度满深度 0.151287 → 计时直接满 30 s，生命回升到二度最低值 85（更深一度的满深度更浅）" do
-      # 第 1 步进度 0.75/92.5551 = 0.0081033（生命 round(100 × (1 − 0.25 × 0.9918967)) = 75）；第 2 步修复后
+    test "一度压满后再烧进二度：旧下压 0.245943 超过二度满深度 0.151287 → 计时直接满 30 s，生命回升到二度最低值 79（更深一度的满深度更浅）" do
+      # 第 1 步进度 0.75/92.5551 = 0.0081033（下压 0.25 × 0.9918967 = 0.247974，合成 1 − √2 × 0.247974 = 0.649316 → 生命 65）；第 2 步修复后
       # 0.0081033 + (1 − 0.25 × 0.9918967)/92.5551 = 0.0162285，下压 0.25 × 0.9837715 = 0.245943 > 0.151287 → r₀ = 1
       burnt = %{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset, tissue_k: 60.0 + @c}
       {b1, _} = tick!(burnt)
-      assert severity(b1, "trauma.thermal.burn") == 1 and Body.life(b1) == 75
+      assert severity(b1, "trauma.thermal.burn") == 1 and Body.life(b1) == 65
       {b2, _} = tick!(b1)
       assert severity(b2, "trauma.thermal.burn") == 2 and b2.burn_age_s == @onset
-      assert Body.life(b2) == 85
+      assert Body.life(b2) == 79
     end
 
     test "浅冻伤愈合中冻成深冻伤：进度归零" do
@@ -309,7 +310,9 @@ defmodule SceneServer.Body.RepairTest do
   # 生命条可恢复段与剩余愈合时间（Hello 30）。期望手算，见 moduledoc 的时长与慢性深度；循环带 24/32/40/43 °C、神经带 28/35/39/42 °C（body.ex）。
   describe "可恢复生命与剩余愈合时间" do
     # 回归（改前失败）：旧实现受伤瞬间即压到最低（生命 75、可恢复 25、剩余 92.5551 / 0.75 = 123.407 s）。
-    test "一度烧伤急性期：第 0 / 15 / 30 / 60 秒生命 100 / 89 / 82 / 89、可恢复 0 / 11 / 18 / 11；剩余按此刻速度 92.5551 / 87.6119 / 79.5306 / 44.5688 s" do
+    # H2：疼痛以同一下压量压神经，合成 1 − √2 × 下压：第 15 秒下压 0.25 × 0.5 × 0.8464382 = 0.1058048 → 0.850368；第 30 秒 0.1768325 → 0.749920；
+    # 第 60 秒 0.1074494 → 0.848043。愈合速率只读循环，进度与剩余不变。
+    test "一度烧伤急性期：第 0 / 15 / 30 / 60 秒生命 100 / 85 / 75 / 85、可恢复 0 / 15 / 25 / 15；剩余按此刻速度 92.5551 / 87.6119 / 79.5306 / 44.5688 s" do
       burnt = %{Body.new() | burn_dose_s: 1.0}
       r = Body.report(burnt, 1.0)
       assert {r.life, r.recoverable} == {100, 0}
@@ -318,7 +321,7 @@ defmodule SceneServer.Body.RepairTest do
       states = Enum.scan(1..60, burnt, fn _, b -> tick!(b) |> elem(0) end)
 
       # 剩余 = (1 − h) × 92.5551 / 上限：第 15 秒 0.8464382 × 92.5551 / 0.894195、第 30 秒 0.7073301 × 92.5551 / 0.823167、第 60 秒 0.4297975 × 92.5551 / 0.892551
-      for {k, heal, life, recoverable, left} <- [{15, 0.1535618, 89, 11, 87.6119}, {30, 0.2926699, 82, 18, 79.5306}, {60, 0.5702025, 89, 11, 44.5688}] do
+      for {k, heal, life, recoverable, left} <- [{15, 0.1535618, 85, 15, 87.6119}, {30, 0.2926699, 75, 25, 79.5306}, {60, 0.5702025, 85, 15, 44.5688}] do
         b = Enum.at(states, k - 1)
         assert b.burn_age_s == k * 1.0
         assert_in_delta b.burn_heal, heal, 1.0e-6
@@ -329,30 +332,33 @@ defmodule SceneServer.Body.RepairTest do
       end
     end
 
-    test "急性期满后二度上限 0.848713 → 生命 85、可恢复 15；急性期一半（15 s）→ 1 − 0.151287 × 0.5 = 0.924357 → 生命 92、可恢复 8" do
+    test "急性期满后二度上限 0.848713 → 合成 0.786047，生命 79、可恢复 21；急性期一半（15 s）→ 下压 0.0756435，合成 1 − √2 × 0.0756435 = 0.893024 → 生命 89、可恢复 11" do
       second = %{Body.new() | burn_dose_s: 3.0, burn_age_s: @onset}
-      assert {Body.life(second), Body.recoverable_life(second)} == {85, 15}
+      assert {Body.life(second), Body.recoverable_life(second)} == {79, 21}
       half = %{second | burn_age_s: 15.0}
-      assert {Body.life(half), Body.recoverable_life(half)} == {92, 8}
+      assert {Body.life(half), Body.recoverable_life(half)} == {89, 11}
     end
 
-    test "三度烧伤（急性期满）：进度 0 生命 91、可恢复 9、剩余 699.9887 / 0.909094 = 769.99 s；进度 0.5 → 生命 95、可恢复 5、剩余 0.5 × 699.9887 / 0.954547 = 366.66 s" do
+    test "三度烧伤（急性期满）：进度 0 生命 87、可恢复 13、剩余 699.9887 / 0.909094 = 769.99 s；进度 0.5 → 生命 94、可恢复 6、剩余 0.5 × 699.9887 / 0.954547 = 366.66 s" do
       r = Body.report(%{Body.new() | burn_dose_s: 5.0, burn_age_s: @onset}, 1.0)
-      assert {r.life, r.recoverable} == {91, 9}
+      assert {r.life, r.recoverable} == {87, 13}
       assert [{_, 3, 0, left}] = r.injuries
       assert_in_delta left, 769.99, 1.0e-2
       r = Body.report(%{Body.new() | burn_dose_s: 5.0, burn_heal: 0.5, burn_age_s: @onset}, 1.0)
-      assert {r.life, r.recoverable} == {95, 5}
+      assert {r.life, r.recoverable} == {94, 6}
       assert [{_, 3, 50, left}] = r.injuries
       assert_in_delta left, 366.66, 1.0e-2
     end
 
-    test "急性损失不算可恢复：核心 32.9 °C 神经 (32.9 − 28)/7 = 0.70 低于一度上限 0.75（循环带 32 °C 起满值）→ 生命 70、可恢复 0；核心 33.6 °C 神经 0.80 → 生命 75、可恢复 5" do
+    # H2：同一系统内相乘、系统间合成。核心 32.9 °C：神经带 (32.9 − 28)/7 = 0.70 × 疼痛 0.75 = 0.525，循环 1 × 0.75 →
+    # 1 − √(0.25² + 0.475²) = 0.463227 → 生命 46；去掉伤口 → 神经 0.70 单独 → 70，可恢复 24（体温那 30 不算）。
+    # 核心 33.6 °C：神经 0.80 × 0.75 = 0.60 → 1 − √(0.0625 + 0.16) = 0.528301 → 53；去掉伤口 80 → 可恢复 27。
+    test "急性损失不算可恢复：核心 32.9 °C 一度压满 → 生命 46、可恢复 24（去掉伤口 70）；核心 33.6 °C → 生命 53、可恢复 27（去掉伤口 80）" do
       burnt = %{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}
-      assert Body.life(%{burnt | core_k: 32.9 + @c}) == 70
-      assert Body.recoverable_life(%{burnt | core_k: 32.9 + @c}) == 0
-      assert Body.life(%{burnt | core_k: 33.6 + @c}) == 75
-      assert Body.recoverable_life(%{burnt | core_k: 33.6 + @c}) == 5
+      assert Body.life(%{burnt | core_k: 32.9 + @c}) == 46
+      assert Body.recoverable_life(%{burnt | core_k: 32.9 + @c}) == 24
+      assert Body.life(%{burnt | core_k: 33.6 + @c}) == 53
+      assert Body.recoverable_life(%{burnt | core_k: 33.6 + @c}) == 27
       # 无伤口时同一体温：生命 80，可恢复 0
       assert Body.recoverable_life(%{Body.new() | core_k: 33.6 + @c}) == 0
     end
@@ -377,7 +383,7 @@ defmodule SceneServer.Body.RepairTest do
       {falling, rising} = Enum.split(lives, 31)
       assert falling |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a >= b end)
       assert [List.last(falling) | rising] |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a <= b end)
-      assert Enum.min(lives) == 82 and Enum.at(lives, 30) == 82
+      assert Enum.min(lives) == 75 and Enum.at(lives, 30) == 75
       assert Enum.all?(bodies, &(Body.life(&1) + Body.recoverable_life(&1) == 100))
 
       lefts = bodies |> Enum.drop(30) |> Enum.map(&Body.remaining_s(&1, :burn, 1.0))

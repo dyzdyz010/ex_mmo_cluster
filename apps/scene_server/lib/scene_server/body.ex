@@ -7,7 +7,7 @@ defmodule SceneServer.Body do
   另存烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
-  - `life/1`：由致命系统（循环、神经）推导的生命值 0..100；`recoverable_life/1`：其中伤口愈合后会回来的那一截；
+  - `life/1`：由致命系统（循环、神经）按缺损 p-范数合成（`lethal_level/1`）的生命值 0..100；`recoverable_life/1`：其中伤口愈合后会回来的那一截；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
   另存两个能量储备（J）：`reserve_j`（糖原）与 `fat_reserve_j`（脂肪）。寒战热与修复合成能由两者合付——糖原付约 27%、脂肪付其余，
@@ -17,7 +17,8 @@ defmodule SceneServer.Body do
   以及烧伤急性期计时 `burn_age_s`（当前烧伤严重度出现后经过的秒数，`Repair.tick/4` 推进）；修复账见 `SceneServer.Body.Repair`。
   另存局部接触组织块温度 `tissue_k`：鞋底 / 触碰处约 0.06 kg 的皮肤组织，是 World 热内核里接在皮肤上的小热容外部节点，
   只随 World 回传的热变化；烧伤 / 冻伤剂量读它。另存衣物湿度 `wetness`（0 干 .. 1 湿透）：只随浸水与干燥变化。
-  身体（含两个储备、组织块、湿度）与其余字段一样不跨登录、死亡后重建（已知缺口，同 §10.7）。
+  另存两个复活 debuff 的剩余秒数 `weak_s`（虚弱）、`daze_s`（恍惚），`Repair.tick/4` 按时间递减。
+  身体不跨登录（已知缺口，同 §10.7）；死亡后由 Player 换成 `revive/0` 的统一复活状态（身体闭环 H2）。
 
   状态推进由 `SceneServer.Body.Repair.tick/4`（修复 → `SceneServer.Body.Thermo.step/3`）完成；本模块只放数据、参数与推导。
 
@@ -127,7 +128,11 @@ defmodule SceneServer.Body do
     thermoregulation_band: {28.0 + @c, 32.0 + @c, 40.0 + @c, 42.0 + @c},
     circulation_band: {24.0 + @c, 32.0 + @c, 40.0 + @c, 43.0 + @c},
     nervous_band: {28.0 + @c, 35.0 + @c, 39.0 + @c, 42.0 + @c},
-    # —— 濒死：致命系统低于该水平持续 dying_after_s → 濒死，再持续 rescue_window_s → 死亡 ——
+    # —— 伤病合成（身体闭环 H2，用户 2026-09-26 定，“试一下效果”）：同一系统内各原因相乘；致命系统（循环、神经）之间按缺损
+    # dᵢ = 1 − fᵢ 的 p-范数合成，致命水平 = 1 − min(1, (Σ dᵢ^p)^(1/p))（`lethal_level/1`）。p → ∞ 退化为旧的“取最弱”；
+    # 单系统受损时与旧结果相同。p 越小越严（两系统各 0.5：p = 2 → 0.29、3 → 0.37、4 → 0.41）。原创合成规则。——
+    lethal_norm_p: 2.0,
+    # —— 濒死：致命水平（合成后）低于该值持续 dying_after_s → 濒死，再持续 rescue_window_s → 死亡 ——
     lethal_level: 0.1,
     dying_after_s: 10.0,
     rescue_window_s: 120.0,
@@ -173,7 +178,17 @@ defmodule SceneServer.Body do
     # 食物能量（USDA，Atwater）已含其蛋白部分，进了蛋白储备的那部分不再计入能量储备；超上限的蛋白被氧化，其能量留在能量里。——
     protein_full_g: 100.0,
     hunger_below_fraction: 0.2,
-    protein_atwater_j_per_g: 4 * 4186.8
+    protein_atwater_j_per_g: 4 * 4186.8,
+    # —— 复活（Magic.md §6.10，用户 2026-09-26 定）：所有人复活后是同一个固定状态（`revive/0`），不用死者储备、不继承死前状态。
+    # 复活 debuff 各自计时、各自解除（伤病表 `:timed`）：
+    # 虚弱（新愈）`recovery.weakness`：循环 × 0.85（生命最高 85），120 s；
+    # 恍惚 `nervous.daze`：神经 × 0.45，40 s。相干度 = 目录相干度 × 神经（`VoxelRegion.World`）：目录 4、发布程序结构 S ≤ 2
+    # （单步 1、“拟态 + 投掷”2），走火判据 S > 相干度 → 神经须 < 0.5 两步法术才走火；取 0.45（相干度 1.8）：两步法术走火、
+    # 单步照常，不是“不能施法”。0.8 之类（相干度 3.2）在现有目录下感知不到。原创取值。——
+    revive_weak_s: 120.0,
+    weak_circulation: 0.85,
+    revive_daze_s: 40.0,
+    daze_nervous: 0.45
   }
 
   # 调定点身体：核心 36.8 °C、皮肤 34 °C（Gagge 调定点），其余五层取该核心 / 皮肤温度、1 met、基础血流下的稳态
@@ -217,7 +232,9 @@ defmodule SceneServer.Body do
             protein_g: 100.0,
             burn_heal: 0.0,
             frost_heal: 0.0,
-            burn_age_s: 0.0
+            burn_age_s: 0.0,
+            weak_s: 0.0,
+            daze_s: 0.0
 
   @type status :: :alive | :dying | :dead
   @type t :: %__MODULE__{
@@ -239,13 +256,15 @@ defmodule SceneServer.Body do
           protein_g: float(),
           burn_heal: float(),
           frost_heal: float(),
-          burn_age_s: float()
+          burn_age_s: float(),
+          weak_s: float(),
+          daze_s: float()
         }
   @type injury :: %{
           tag: String.t(),
           part: :whole | :contact | :feet,
           severity: pos_integer(),
-          progression: :tracks_core | :heals | :tracks_protein,
+          progression: :tracks_core | :heals | :tracks_protein | :timed,
           heal: float()
         }
 
@@ -273,6 +292,15 @@ defmodule SceneServer.Body do
   @doc "调定点上的健康身体：核心 36.8 °C、皮肤与组织块 34 °C、其余层为该核心 / 皮肤下的稳态，衣物干、无伤病、存活。"
   @spec new() :: t()
   def new, do: %__MODULE__{}
+
+  @doc """
+  复活后的统一身体（Magic.md §6.10）：调定点体温、无伤病；营养（蛋白）与糖原清零，脂肪为标准人满值 `fat_full_j`（420.52 MJ，
+  所有人相同，保证复活后仍能寒战产热）；带虚弱 `revive_weak_s` 与恍惚 `revive_daze_s`。饥饿由营养 0 推导（`injuries/1`）。
+  """
+  @spec revive() :: t()
+  def revive,
+    do: %{new() | protein_g: 0.0, reserve_j: 0.0, fat_reserve_j: @params.fat_full_j,
+          weak_s: @params.revive_weak_s, daze_s: @params.revive_daze_s}
 
   @doc "身体各节点（七层 + 局部接触组织块）的热容 × 温度之和，J。能量账：一步的变化 = `Thermo.step/3` 的 `stored_j`。"
   @spec heat_content_j(t()) :: float()
@@ -342,34 +370,39 @@ defmodule SceneServer.Body do
   end
 
   @doc """
-  三个系统的功能水平，由核心温度按各自功能带线性推导，夹在 [0, 1]；循环另受烧伤上限约束（体液丢失）：
-  上限 = 1 − `burn_depression/1`：伤后急性期内线性压深，同时随愈合进度线性回到 1.0。
+  三个系统的功能水平，夹在 [0, 1]。各系统先由核心温度按各自功能带线性推导，再乘上各原因的系数（同一系统内相乘）：
 
-  首片只有体温这一路写入，故不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
+  - 循环 × 烧伤上限（1 − `burn_depression/1`，体液丢失：急性期内线性压深，随愈合进度线性回到 1.0）× 虚弱（`weak_circulation`）；
+  - 神经 × 烧伤疼痛（1 − `burn_depression/1`，与循环同一下压量：急性期先升、随愈合降）× 恍惚（`daze_nervous`）。
+
+  神经功能同时是施法相干度的倍率（Player 每秒报给 World）。首片不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
   @spec systems(t()) :: %{thermoregulation: float(), circulation: float(), nervous: float()}
   def systems(%__MODULE__{core_k: core} = body) do
-    cap = 1 - burn_depression(body)
+    wound = 1 - burn_depression(body)
+    weak = if body.weak_s > 0, do: @params.weak_circulation, else: 1.0
+    daze = if body.daze_s > 0, do: @params.daze_nervous, else: 1.0
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
-      circulation: min(level(core, @params.circulation_band), cap),
-      nervous: level(core, @params.nervous_band)
+      circulation: level(core, @params.circulation_band) * wound * weak,
+      nervous: level(core, @params.nervous_band) * wound * daze
     }
   end
 
-  @doc "由致命系统（循环、神经）推导的生命值 0..100：取两者最低功能水平 × 100 后四舍五入。"
+  @doc "由致命系统（循环、神经）推导的生命值 0..100：合成后的致命水平（`lethal_level/1`）× 100 后四舍五入。"
   @spec life(t()) :: 0..100
   def life(%__MODULE__{} = body), do: round(100 * lethal_level(body))
 
   @doc """
-  可恢复生命（生命条上另一种颜色的那一截）：伤口全部愈合后的生命 − 现在的生命 = `life(剂量与进度归零的同一身体) − life(body)`。
-  只有慢性伤口压低的部分（本增量只有烧伤压循环）随愈合自己回来；体温偏离等急性损失不经伤口愈合，不计入——
-  两者同时存在时取“去掉伤口后仍被急性压住”的部分为急性，例如核心低温把神经压到 0.70、一度烧伤上限 0.75 → 生命 70、可恢复 0。
+  可恢复生命（生命条上另一种颜色的那一截）：伤口全部愈合、复活 debuff 全部到时后的生命 − 现在的生命
+  = `life(剂量、进度与 debuff 计时归零的同一身体) − life(body)`。只有会随时间自己回来的部分（伤口慢性下压与疼痛、虚弱、恍惚）计入；
+  体温偏离等急性损失不计入——例如核心低温把神经压到 0.70、一度烧伤压满（循环 0.75、神经 0.70 × 0.75）→ 生命 46、
+  去掉伤口后 70，可恢复 24。
   """
   @spec recoverable_life(t()) :: 0..100
   def recoverable_life(%__MODULE__{} = body),
-    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0}) - life(body)
+    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0, weak_s: 0.0, daze_s: 0.0}) - life(body)
 
   @doc "伤口此刻的愈合速率（进度 /s）：`m / T(严重度) × min(1, 循环)`；`Repair.heal/3` 与 `remaining_s/3` 共用这一处。"
   @spec heal_rate(t(), :burn | :frostbite, number()) :: float()
@@ -399,7 +432,9 @@ defmodule SceneServer.Body do
   - `trauma.thermal.burn`（1–3 度，部位 `:contact`）/ `trauma.thermal.frostbite`（1 浅 / 2 深，部位 `:feet`）：严重度由累计组织
     损伤剂量决定；按修复账愈合（`:heals`，`SceneServer.Body.Repair`），`heal` 是愈合进度 0..1，
     走完即剂量与进度归零、伤病消失。严重度不降级（深度烧伤以疤痕愈合，不经过浅度）；
-  - `nutrition.hunger`：部位 `:whole`，蛋白质储备低于上限 `hunger_below_fraction` 时出现，进食回到阈值以上即消失（`:tracks_protein`）。
+  - `nutrition.hunger`：部位 `:whole`，蛋白质储备低于上限 `hunger_below_fraction` 时出现，进食回到阈值以上即消失（`:tracks_protein`）；
+  - `recovery.weakness`（虚弱，新愈）/ `nervous.daze`（恍惚）：复活 debuff，部位 `:whole`，按时间解除（`:timed`），
+    `heal` 是已过时间占总时长的比例。
   """
   @spec injuries(t()) :: [injury()]
   def injuries(%__MODULE__{} = body) do
@@ -412,7 +447,9 @@ defmodule SceneServer.Body do
        Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core, 0.0},
       {"trauma.thermal.burn", :contact, severity(body, :burn), :heals, body.burn_heal},
       {"trauma.thermal.frostbite", :feet, severity(body, :frostbite), :heals, body.frost_heal},
-      {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0}
+      {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0},
+      {"recovery.weakness", :whole, if(body.weak_s > 0, do: 1, else: 0), :timed, 1 - body.weak_s / @params.revive_weak_s},
+      {"nervous.daze", :whole, if(body.daze_s > 0, do: 1, else: 0), :timed, 1 - body.daze_s / @params.revive_daze_s}
     ]
     |> Enum.filter(fn {_tag, _part, severity, _rule, _heal} -> severity > 0 end)
     |> Enum.map(fn {tag, part, severity, rule, heal} ->
@@ -423,7 +460,7 @@ defmodule SceneServer.Body do
   @doc """
   推进 `dt` 秒的濒死计时。
 
-  致命系统最低功能水平低于 `lethal_level` 时累计 `lethal_s`，否则清零（在濒死窗口内被救回即恢复 `:alive`）。
+  合成后的致命水平（`lethal_level/1`）低于参数 `lethal_level` 时累计 `lethal_s`，否则清零（在濒死窗口内被救回即恢复 `:alive`）。
   累计达 `dying_after_s` 进入 `:dying`，再达 `rescue_window_s` 进入 `:dead`；`:dead` 为终态。
   """
   @spec progress(t(), float()) :: t()
@@ -444,16 +481,18 @@ defmodule SceneServer.Body do
 
   @doc """
   下行视图（Session.BodyState）：生命、可恢复生命（`recoverable_life/1`）、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、
-  伤病 `{标签, 严重度, 愈合进度 %, 剩余秒数}`（进度 = ⌊heal × 100⌋，0..99；剩余 = `remaining_s/3`，含停止负值；
-  不愈合的伤病进度与剩余都为 0）、蛋白质储备 g。`m` 是愈合速率倍数（Player 恒 1）。
+  伤病 `{标签, 严重度, 愈合进度 %, 剩余秒数}`（进度 = ⌊heal × 100⌋，0..99；伤口剩余 = `remaining_s/3`，含停止负值；
+  复活 debuff 剩余 = 计时；不愈合的伤病进度与剩余都为 0）、蛋白质储备 g。`m` 是愈合速率倍数（Player 恒 1）。
   `key` 是“有变化”的比较键：温度取 0.1 K，蛋白质取 0.1 g，剩余取整秒，其余原值。
   """
   def report(%__MODULE__{} = body, m) do
-    kinds = %{"trauma.thermal.burn" => :burn, "trauma.thermal.frostbite" => :frostbite}
+    left = %{"trauma.thermal.burn" => fn -> remaining_s(body, :burn, m) end,
+      "trauma.thermal.frostbite" => fn -> remaining_s(body, :frostbite, m) end,
+      "recovery.weakness" => fn -> body.weak_s end, "nervous.daze" => fn -> body.daze_s end}
 
     injuries =
       for i <- injuries(body) do
-        remaining = if kind = kinds[i.tag], do: remaining_s(body, kind, m), else: 0.0
+        remaining = if f = left[i.tag], do: f.(), else: 0.0
         {i.tag, i.severity, floor(i.heal * 100), remaining}
       end
 
@@ -467,10 +506,20 @@ defmodule SceneServer.Body do
             for({tag, n, heal, left} <- injuries, do: {tag, n, heal, round(left)}), round(body.protein_g * 10)}}
   end
 
-  defp lethal_level(body) do
+  @doc "合成后的致命水平 0..1：`combined_level/2` 作用于此刻的循环与神经功能水平，p = `lethal_norm_p`。"
+  @spec lethal_level(t()) :: float()
+  def lethal_level(%__MODULE__{} = body) do
     %{circulation: circulation, nervous: nervous} = systems(body)
-    min(circulation, nervous)
+    combined_level([circulation, nervous], @params.lethal_norm_p)
   end
+
+  @doc """
+  致命系统合成规则：缺损 dᵢ = 1 − fᵢ，水平 = `1 − min(1, (Σ dᵢ^p)^(1/p))`。
+  p = 2：两系统各 0.5 → 0.2929；各 0.3 → 0.0101；单系统 0.5 → 0.5；0.2 与 0.95 → 0.1984。
+  """
+  @spec combined_level([float()], number()) :: float()
+  def combined_level(levels, p),
+    do: 1 - min(1.0, :math.pow(Enum.sum(for f <- levels, do: :math.pow(1 - f, p)), 1 / p))
 
   # 两侧线性斜坡取小再夹到 [0, 1]：带内 1，冷侧 / 热侧各自线性降到 0。
   defp level(t, {cold_zero, cold_full, hot_full, hot_zero}) do

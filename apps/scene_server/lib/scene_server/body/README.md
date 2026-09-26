@@ -9,16 +9,18 @@ flowchart LR
   A[气候 air_k wind_mps] --> T
   R[Repair.heal/3<br/>蛋白 + 合成能] -->|core_j| T
   F[World 进食 body_food] --> E[Repair.eat/3] --> B
-  T --> B[%Body{}<br/>七层温度 tissue_k wetness 剂量 愈合进度 protein_g reserve_j fat_reserve_j lethal_s status]
+  T --> B[%Body{}<br/>七层温度 tissue_k wetness 剂量 愈合进度 protein_g reserve_j fat_reserve_j weak_s daze_s lethal_s status]
   B --> R
-  B --> S[systems/1] --> L[life/1]
+  B --> S[systems/1] --> C[combined_level/2 p-范数] --> L[life/1]
+  S -->|神经 → 相干度倍率| WM[World caster_nervous]
   B --> I[injuries/1]
-  B --> P[progress/2 濒死计时]
+  C --> P[progress/2 濒死计时]
+  P -->|dead| D[Player: body_death → World 掉落<br/>Relocate 回出生点<br/>下一秒 revive/0]
 ```
 
 - `SceneServer.Body`：状态字段 `core_k`、`trunk_muscle_k`、`trunk_fat_k`、`limb_core_k`、`limb_muscle_k`、`limb_fat_k`、`skin_k`（七层）、
-  `tissue_k`（局部接触组织块）、`wetness`（衣物湿度）、`burn_dose_s`、`frost_dose_k_s`、`lethal_s`、`reserve_j`（糖原）、`fat_reserve_j`（脂肪）、`status`；系统功能水平、
-  生命值、伤病表全部由它们推导，不另存。`nodes/0`、`edges/0` 是多层结构表，`heat_content_j/1` 是 Σ 热容 × 温度。
+  `tissue_k`（局部接触组织块）、`wetness`（衣物湿度）、`burn_dose_s`、`frost_dose_k_s`、`lethal_s`、`reserve_j`（糖原）、`fat_reserve_j`（脂肪）、`status`，
+  修复账字段（见下）与复活 debuff 计时 `weak_s`、`daze_s`（H2）；系统功能水平、生命值、伤病表全部由它们推导，不另存。`nodes/0`、`edges/0` 是多层结构表，`heat_content_j/1` 是 Σ 热容 × 温度。
 - `SceneServer.Body.Thermo.step(body, dt, %{q_j, tissue_j, air_k, wind_mps, immersed, clothing_m2_k_per_w})` → `{body, account}`，
   `account.stored_j = q_j + metabolic_j − convection_j − sweat_j − drying_j`（J）= `heat_content_j` 之差（每步闭合）；
   `metabolic_j` 含寒战 `shiver_j = shiver_glycogen_j + shiver_fat_j`，两项分别等于本步 `reserve_j`、`fat_reserve_j` 的减少量（每步闭合）。
@@ -29,7 +31,8 @@ flowchart LR
 - `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
   吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`）→ 把脚位、身高、半径、
   皮肤温度与热容、体表面积、组织块温度 / 热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.contact_tissue_w_per_m2_k/1`）报给 World
-  （`{:body_contact, cid, pid, …}`）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。死亡由系统重建身体。
+  （`{:body_contact, cid, pid, …}`）与神经功能（`{:body_nervous, cid, level}`，H2）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。
+  死亡见“身体闭环 H2”。
 - World 把**皮肤**与**组织块**当热内核的两个外部节点（暴露面积 0），两者之间一条内部边；接触导热在 `VoxelRegion.BodyContact`
   （鞋底、触碰拟态接组织块，浸没接皮肤）。身体内部的其余五层只在 Scene 里，World 不知道。回传
   `{:body_heat, %{q_j, tissue_j, tissue_k, sole_k, max_contact_k, immersed, dt_s, seq}}`，World 记 `body_exchange_j`，与 Player 累计同值。
@@ -84,7 +87,7 @@ flowchart LR
     停止用约定负值：营养为 0 → −1；速率为 0（循环归零，只在濒死 / 死亡时）→ −2。不愈合的伤病为 0。
   - 下行：`life` 后追加 `recoverable` u8（`life + recoverable ≤ 100`），每条伤病 `heal` 后追加 `remaining_s` f64；比较键含可恢复与剩余整秒
     （愈合中每秒一帧）。Scene 日志 `body_state` 新增 `recoverable`、`injury_remaining_s`（标签 → 秒）。
-- **不做 / 已知缺口**：复活、虚弱 / 恍惚、死亡掉落（H2）；魔法“调”（H3）；冻伤的系统后果（移动变慢，H5）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
+- **不做 / 已知缺口**：魔法“调”（H3）；冻伤的系统后果（移动变慢，H5）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
   Scene 移交封存后才到达的 `body_food` 随旧 Player 丢失（余额已扣；窗口是移交那一刻）。
 
 | 参数 | 值 | 依据 |
@@ -98,6 +101,40 @@ flowchart LR
 | 合成能 | 12 kJ/g 净沉积蛋白 | Waterlow：约 4 ATP/肽键 ≈ 4.2 kJ/g，修复中合成—降解周转约 3 倍（设计稿区间 4.2–12 的上端） |
 | 营养上限 / 饥饿 | 100 g / < 20% | 游离氨基酸池量级；用户 2026-09-26 定 |
 | 蛋白可代谢能 | 16 747.2 J/g | Atwater 4 kcal/g |
+
+## 身体闭环 H2：伤病合成、复活、死亡掉落、神经 → 相干度（2026-09-26）
+
+分类：Global system。设计正文 Voxim `Docs/Magic.md` §6.10（用户 2026-09-26 定）。
+
+- **合成规则**（用户定，“试一下效果，太严格也不行”；原创规则）：同一系统内各原因**相乘**——循环 = 体温带 × 烧伤上限（1 − 下压）× 虚弱 0.85；
+  神经 = 体温带 × 烧伤疼痛（1 − 同一下压）× 恍惚 0.45。致命系统（循环、神经）之间按缺损 dᵢ = 1 − fᵢ 的 p-范数合成：
+  致命水平 = 1 − min(1, (Σ dᵢ^p)^(1/p))（`Body.combined_level/2`、`lethal_level/1`），p = `lethal_norm_p` 默认 2；p → ∞ 即旧的“取最弱”，
+  单系统受损时与旧结果相同。生命 = round(100 × 致命水平)；濒死仍是“致命水平 < 0.1 持续 10 s”，改读合成值。
+- **疼痛放进神经**（“神经功能 → 相干度”同一接口）：强度 = 烧伤此刻的下压量（急性期先升、随愈合降），与循环上限同一个数。
+  后果：同时压两个致命系统，烧伤生命比 H1 低（下表）。
+- **复活统一状态**（`Body.revive/0`）：调定点体温、无伤口；营养（蛋白）0、糖原 0、脂肪 = 标准人满值 420.52 MJ（11.16 kg × 9 kcal/g，所有人相同，
+  保证复活后还能寒战）；虚弱 `recovery.weakness` 120 s、恍惚 `nervous.daze` 40 s（伤病表 `:timed`，`heal` = 已过比例，下行 `remaining_s` = 剩余秒数），
+  饥饿 `nutrition.hunger` 由营养 0 推导，吃到 ≥ 20 g 解除。`Repair.tick/4` 每步两个计时各减 dt。可恢复生命把 debuff 也算作会回来的部分
+  （复活瞬间生命 43、可恢复 57）。死前正面效果全部清除是统一规则——目前没有正面效果，未写代码。
+- **恍惚压多少**：相干度 = 目录相干度 × 神经（World）。现行目录相干度 4、程序结构 S ≤ 2（单步 1，“拟态 + 投掷” 2），走火判据 S > 相干度，
+  所以神经须 < 0.5 两步法术才走火；取 0.45（相干度 1.8）：两步走火、单步照常。0.8（相干度 3.2）在现行目录下完全感知不到。原创取值。
+  烧伤疼痛单独最多 0.75（一度压满，相干度 3.0），现行目录下不致走火，与恍惚或失温叠加时才会（例：恍惚 × 一度 = 0.3375 → 1.35，单步也不走火、两步走火）。
+- **死亡流程**（Player）：状态变 `:dead` 那一秒照常下发 status 2，发 `{:body_death, cid, 脚位}` 给 World（掉落裁决见 World `death_drop/3`），
+  开始回会话出生点（`Voxel.Relocate`，Hello 31，见 `docs/00-current-truth/design/server/voxim-runtime.md`）；下一秒换成复活身体。
+  Scene 日志：`body_death`、`body_revived`、`revive_relocate`、`revive_relocated`；`body_state` 新增 `weak_s`、`daze_s`、`nervous`、`lethal_level`。
+- **手算表**（`revive_test.exs` 断言）：
+
+| 致命系统 | p = 2 | p = 3 | p = 4 | 旧（取最弱） |
+|---|---|---|---|---|
+| 0.5 + 0.5 | 29 | 37 | 41 | 50 |
+| 0.3 + 0.3 | 1 | 12 | 17 | 30 |
+| 单 0.5 | 50 | 50 | 50 | 50 |
+| 0.2 + 0.95 | 20 | 20 | 20 | 20 |
+| 复活（0.85 + 0.45） | 43 | 45 | 45 | 45 |
+| 一 / 二 / 三度烧伤压满（两系统同压） | 65 / 79 / 87 | 69 / 81 / 89 | 70 / 82 / 89 | 75 / 85 / 91 |
+
+  一度烧伤急性期逐秒：生命 100（0 s）→ 85（15 s）→ 75（30 s，谷底）→ 85（60 s）→ 100，第 103 秒愈合（愈合速率只读循环，时长不变）。
+  核心 30 °C（循环 0.75、神经 0.286）：24（旧 29）。
 
 ## 模型（2026-09-26 冷暴露校准）
 
@@ -123,7 +160,7 @@ flowchart LR
 - **寒战供能（2026-09-26 按实测改）**：两个有限储备——糖原 7.65 MJ（`reserve_j`）与脂肪 420.52 MJ（`fat_reserve_j`）。每步寒战热
   27% 由糖原付、73% 由脂肪付（Blondin 2010：约 3 倍静息的中等寒战，肌糖原约占总产热 27%）；糖原不够时脂肪补足，总寒战不变
   （Haman 2004：低糖原时总产热不变、脂肪蛋白补上）；脂肪不够时糖原补足；两者都空才无寒战。储备只在寒战时消耗，不随时间自然下降，
-  静息代谢不取；进食补充待食物系统（首片不做）；身体不持久化，死亡重建满储备。
+  静息代谢不取；进食补充（H1）；身体不持久化；复活身体糖原 0、脂肪标准满值（H2）。
   取最简单的常数份额：文献里糖原份额随强度与糖原水平变化（Haman 2005 寒战加强时肌糖原变为主导；Haman 2004 高糖原 CHO 65%、
   低糖原 28%），但总产热都不变，所以份额只影响糖原多久耗尽、不影响体温；常数 27% 取中等强度、未进食的实测值。
   旧规则（寒战全取自糖原、上限按储备线性下降）等于隐含的“寒战疲劳”，已删除。
@@ -225,9 +262,10 @@ flowchart LR
 | 局部接触组织块 | 0.03 m² × 2 mm × 1000 kg/m³ = 0.06 kg，比热 3490（209.4 J/K）；与皮肤导热 0.03 m² × (5.28 + 1.163 × 皮肤血流) | 两脚掌着地面积；表皮 + 真皮全层；Gagge 组织导热（沿用） |
 | 体温调节功能带 | 28 °C→0、32 °C→1；40 °C→1、42 °C→0 | 中度失温 28–32 °C 寒战停止（瑞士分级 HT II）；热射病 > 40 °C |
 | 循环 / 神经功能带 | 24→0、32→1；40→1、43→0 °C / 28→0、35→1；39→1、42→0 °C | HT IV 心脏骤停风险；HT III 意识丧失 |
-| 生命值 | round(100 × min(循环, 神经)) | Magic.md §6.2 |
-| 烧伤对循环 | 未愈合上限 1 − 慢性深度：1/2/3 度 0.900 / 0.939 / 0.964 | Magic.md §12（越长越弱） |
-| 濒死 | 致命水平 < 0.1 持续 10 s → 濒死，再 120 s → 死亡 | 原创游戏参数 |
+| 生命值 | round(100 × (1 − min(1, √((1 − 循环)² + (1 − 神经)²))))，p = 2 | Magic.md §6.2；合成规则用户 2026-09-26 定（H2） |
+| 烧伤对循环与神经 | 未愈合上限 1 − 慢性深度 × r × (1 − 进度)：急性期满 1/2/3 度 0.75 / 0.849 / 0.909，循环（体液丢失）与神经（疼痛）同压 | Magic.md §12（越长越弱）；疼痛进神经 H2 |
+| 复活 debuff | 虚弱：循环 × 0.85，120 s；恍惚：神经 × 0.45，40 s | 用户 2026-09-26 定时长与 0.85；0.45 原创（现行目录下两步法术走火的最小可感知值） |
+| 濒死 | 合成致命水平 < 0.1 持续 10 s → 濒死，再 120 s → 死亡 | 原创游戏参数 |
 | 体温过低 / 过高 1/2/3 | 核心 < 35 / 32 / 28 °C；> 38.5 / 40 / 41 °C | 临床分级 |
 | 烧伤剂量 | 组织块 ≥ 44 °C 起，率 2^((T − 60 °C)/1.32 K)；1 / 2.5 / 5 为 1/2/3 度 | Moritz & Henriques 1947 与 CPSC 热水烫伤表两端点 |
 | 冻伤剂量 | 组织块低于 −0.55 °C 累计 K·s，300 K·s 浅冻伤、600 K·s 深冻伤 | 组织冰点；600 K·s 原创取值；300 K·s **待确认**（临床只按冻结深度分浅 1–2 度 / 深 3–4 度，未查到按过冷剂量分级的文献阈值） |
@@ -241,5 +279,8 @@ flowchart LR
 - `contact_test.exs`：组织块参数、冬靴 / 赤脚站 1296 K 燃木、徒手触 2000 K 拟态、冬靴 / 赤脚站 −25 °C 冰、0 °C 水全身浸没。
 - `repair_test.exs`：修复账与进食（手算：伤口蛋白、五种伤口的游戏内时长与 30 s / 1800 s 夹界、慢性深度与“深度降 / 总量升”单调性、
   烧伤循环上限与生命、1 度第 98 秒 / 2 度第 261 秒愈合、3 度首步、浅冻伤第 118 秒 / 深冻伤第 411 秒、烧伤与冻伤加重归零、营养 0 不动、蛋白 / 能量不够只付到储备为止、加重归零、进食分账与饥饿阈值、`core_j`、下行视图），每步断言完整账闭合。
+- `revive_test.exs`（H2）：合成手算表（p = 2 / 3 / 4）、核心 30 °C、濒死读合成值（改前取最弱不会濒死）、疼痛 / 恍惚压神经、复活逐字段、
+  虚弱 120 s / 恍惚 40 s 到点解除、饥饿吃到 20 g 解除。Player 层复活瞬移见 `movement/revive_relocation_test.exs`，World 掉落与相干度见
+  voxel_region `death_drop_world_test`、`magic_semblance_world_test`。
 - `cold_validation_test.exs`：上表的实测对照（期望全部来自文献），含寒战耐力（Tikuisis 2002）与供能（Blondin 2010、Haman 2004）。
 - 气候查询见 voxel_region `climate_test`，World 内核里的组织块见 `body_contact_world_test`（World 侧未改）。

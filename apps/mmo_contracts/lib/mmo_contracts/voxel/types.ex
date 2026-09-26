@@ -68,6 +68,16 @@ defmodule MmoContracts.Voxel.CollisionWindow do
   defstruct @enforce_keys
 end
 
+defmodule MmoContracts.Voxel.Relocate do
+  @moduledoc """
+  全局系统功能（身体闭环 H2，Hello 31）：服务端对本人移动状态的一次不连续改写（复活回会话出生点）。
+  语义：`apply_tick − 1` 时刻的状态换成 `state`，`apply_tick` 起按原输入从它推进；客户端据此重放预测。
+  流送会话里它紧接在同一 `apply_tick` 的 CollisionWindow 之前（新窗口覆盖出生点），非流送会话单独发出。
+  """
+  @enforce_keys [:identity, :apply_tick, :state]
+  defstruct @enforce_keys
+end
+
 defmodule MmoContracts.Voxel.PropertyBatch do
   @moduledoc "全局系统功能：同一窗口与提交点的完整属性快照或状态增量。"
   @enforce_keys [

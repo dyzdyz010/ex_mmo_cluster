@@ -165,6 +165,22 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert energy(c) == 0.0
   end
 
+  # 身体闭环 H2（Magic.md §4.4）：相干度 = 目录 4.0 × Scene 报来的神经功能。恍惚 0.45 → 1.8：两步的炽热投掷（结构 S = 2 > 1.8）
+  # 走火 misfire_coherence，单步取能（S = 1）照常；神经 0.5 → 相干度 2.0，S = 2 不大于它，投掷不走火。未报过按 1.0（改前恒为 4.0）。
+  test "神经功能压低相干度：恍惚 0.45 → 相干度 1.8，两步投掷走火、单步取能照常；0.5 → 2.0 不走火", c do
+    assert {:ok, %{coherence: 4.0}} = World.caster_state(c.w, @cid)
+    send(c.w, {:body_nervous, @cid, 0.45})
+    assert {:ok, %{coherence: coherence}} = World.caster_state(c.w, @cid)
+    assert_in_delta coherence, 1.8, 1.0e-12
+    assert {:ok, %{outcome: nil}} = draw(c, 1_000_000)
+    assert {:ok, %{outcome: nil, caster: %{coherence: quoted}}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000, action: 0)
+    assert_in_delta quoted, 1.8, 1.0e-12
+    assert {:ok, %{outcome: :misfire_coherence}} = cast(c, c.presets["hot_throw"], @forward, at: 3_000_000)
+    assert {:ok, %{outcome: nil}} = draw(c, 4_000_000)
+    send(c.w, {:body_nervous, @cid, 0.5})
+    assert {:ok, %{outcome: nil}} = cast(c, c.presets["hot_throw"], @forward, at: 5_000_000)
+  end
+
   # 树冠：命中叶与 7 片相邻叶连成一团（叶–叶接触 G = 1/(0.5/50 + 0.5/50) = 50 W/K 每面），热被邻叶分走，
   # 仍须在同一预设下着火（实测扫描见增量 2 报告：r 0.25 m 的同能量球在树冠上峰值只到 489 K）。
   test "炽热拟态投掷：同一预设命中树冠外缘叶也着火", c do
