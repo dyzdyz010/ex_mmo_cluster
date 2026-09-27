@@ -517,7 +517,7 @@ defmodule SceneServer.Movement.Player do
   # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/4`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。
   # 身体闭环 H2：死亡那一秒照常下发 status 2 并通知 World 掉落、开始回会话出生点；下一秒换成统一复活身体（`Body.revive/0`）。
-  # 神经功能每秒报给 World（施法相干度的倍率，`{:body_nervous, cid, level}`）。
+  # 施法相干度系数（神经 × 疼痛 × 恍惚，`Body.coherence_factor/1`）每秒报给 World（`{:body_coherence, cid, factor}`）。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
   # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
   defp body_tick(%{climate: nil} = state), do: state
@@ -547,8 +547,8 @@ defmodule SceneServer.Movement.Player do
         tissue_k: body.tissue_k, tissue_capacity: Body.tissue_capacity_j_per_k(),
         tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)}})
 
-    nervous = Body.systems(body).nervous
-    if authority, do: send(authority, {:body_nervous, state.id, nervous})
+    coherence = Body.coherence_factor(body)
+    if authority, do: send(authority, {:body_coherence, state.id, coherence})
 
     report = Body.report(body, 1.0)
 
@@ -571,7 +571,7 @@ defmodule SceneServer.Movement.Player do
       heat_content_j: Body.heat_content_j(body),
       protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal, burn_age_s: body.burn_age_s,
       repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
-      synth_fat_j: account.synth_fat_j, weak_s: body.weak_s, daze_s: body.daze_s, nervous: nervous,
+      synth_fat_j: account.synth_fat_j, weak_s: body.weak_s, daze_s: body.daze_s, coherence_factor: coherence,
       lethal_level: Body.lethal_level(body),
       sent: report.key != state.body_sent})
 

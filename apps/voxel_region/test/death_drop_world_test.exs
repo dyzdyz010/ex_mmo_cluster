@@ -1,7 +1,9 @@
 defmodule VoxelRegion.DeathDropWorldTest do
   @moduledoc """
   只测试：身体闭环 H2 死亡掉落（Voxim Docs/Magic.md §6.10）经真实 World：Scene 送来 `{:body_death, cid, 脚位}`，
-  World 按确定性掷骰 5% 从死者余额里选一种有 1/8 m³ 世界形态的可放置材料，写到死亡点附近第一个可用空格并同量扣余额。
+  World 按确定性掷骰（概率参数 `death_drop_probability`）从死者余额里选一种有 1/8 m³ 世界形态的可放置材料，写到死亡点附近
+  第一个可用空格并同量扣余额。用户 2026-09-27 定：先留接口、不掉任何东西——默认概率 0；逻辑用非零概率 0.05 覆盖一次（启动参数），
+  再断言默认 0 时掷骰 < 0.05 也不掉。
 
   目录 = 散体测试目录 `7b69b79f…`（沙 5、煤 15、铜矿 16 等带休止阈值，可倾倒；花草 32–39 单次放置 262 144 = 1/8 m³）。
   单格容量 2 097 152（每微格 4096 × 512），1/8 m³ = 262 144。
@@ -26,7 +28,7 @@ defmodule VoxelRegion.DeathDropWorldTest do
   @dandelion 36
   @box {{-9, -1, -9}, {17, 8, 17}}
 
-  setup do
+  setup context do
     root = Path.join(System.tmp_dir!(), "death_drop_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
@@ -40,7 +42,7 @@ defmodule VoxelRegion.DeathDropWorldTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env,
       production_materials: [@sand, @stone, @coal, @ore, @water, @dandelion],
-      liquid_bounds: {{0, 0, 0}, {8, 8, 8}}]})
+      liquid_bounds: {{0, 0, 0}, {8, 8, 8}}] ++ Map.get(context, :drop, [death_drop_probability: 0.05])})
 
     {:ok, _} = World.apply_edits(w, for(x <- -8..15, z <- -8..15, do: {{x, 0, z}, @dirt}))
     {:ok, _} = World.material_supply(w, 1001, "death-drop",
@@ -103,6 +105,16 @@ defmodule VoxelRegion.DeathDropWorldTest do
     assert Map.get(after_drop, {2002, @dandelion}, 0) == 0
     assert Map.delete(after_drop, {2002, @dandelion}) == Map.delete(before, {2002, @dandelion})
     assert material(w, hit) == @dandelion
+  end
+
+  @tag drop: []
+  test "默认概率 0：掷骰 < 0.05 的死亡格也不掉，余额与世界不变、seq 不前进", %{w: w} do
+    hit = find(w, @inside, &(&1 < 0.05))
+    before = balances(w, 1001)
+    seq = World.seq(w)
+    assert die(w, 1001, hit) == seq
+    assert balances(w, 1001) == before
+    assert quantities(w)[hit] == nil
   end
 
   test "死亡点在他人地块内不掉（即使掷骰 < 5%）", %{w: w} do

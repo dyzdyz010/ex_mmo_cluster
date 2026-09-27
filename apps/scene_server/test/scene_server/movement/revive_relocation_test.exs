@@ -6,12 +6,12 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   玩家先按 +x 走 12 帧离开出生点，再把身体置为濒死最后 0.5 s（核心 20 °C、循环与神经为 0，夹具经 `:sys.replace_state`
   写入会话内身体；climate 同法给 20 °C 全局空气，因为本夹具的快照不带属性上下文）。期望（独立依据）：
 
-  - 死亡那一秒下发 BodyState status 2；下一秒复活身体：生命 1 − √(0.15² + 0.55²) = 0.4299 → 43，伤病 = 饥饿 + 虚弱（剩 119 s）
+  - 死亡那一秒下发 BodyState status 2；下一秒复活身体：生命 1 − √(0.15² + 0²) = 0.85 → 85（恍惚只降相干度，不进生命），伤病 = 饥饿 + 虚弱（剩 119 s）
     + 恍惚（剩 39 s）（复活后已推进 1 s）。
   - Relocate.state 的位置 / 速度 / 着地 = SessionStart.state（出生柱不变、世界不变 → 同一落脚点）；
     apply_tick 起从它推进：位置 = 在同一世界从出生点用该 tick 的输入走一步（native `step_characters`）。
   - 非流送：apply_tick = 死亡时模拟 tick + 1；流送：先收到同一 apply_tick 的 Relocate 再收到覆盖出生点的新窗口，
-    并且 World（authority）收到 `{:body_death, cid, 脚位}` 与每秒的 `{:body_nervous, cid, 神经}`。
+    并且 World（authority）收到 `{:body_death, cid, 脚位}` 与每秒的 `{:body_coherence, cid, 相干度系数}`（死亡身体核心 20 °C 神经 0 → 系数 0）。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Body
@@ -154,7 +154,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   defp revived(p) do
     send(p, :body_tick)
     assert_receive {:reliable, _, :control, %Session.BodyState{status: 0} = revived}, 2000
-    assert revived.life == 43
+    assert revived.life == 85
     assert {"recovery.weakness", 119.0} in Enum.map(revived.injuries, &{&1.tag, &1.remaining_s})
     assert {"nervous.daze", 39.0} in Enum.map(revived.injuries, &{&1.tag, &1.remaining_s})
     assert "nutrition.hunger" in Enum.map(revived.injuries, & &1.tag)
@@ -174,7 +174,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     revived(p)
   end
 
-  test "流送：死亡请求覆盖出生点的新窗口，Relocate 先于同一 apply_tick 的 CollisionWindow；World 收到死亡脚位与神经功能" do
+  test "流送：死亡请求覆盖出生点的新窗口，Relocate 先于同一 apply_tick 的 CollisionWindow；World 收到死亡脚位与相干度系数" do
     {ctx, p, start} = walk(setup_scene(1))
     dead_at = Player.observe(p).state.position
     refute same_spot?(Player.observe(p).state, start.state)
@@ -183,8 +183,8 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     half = start.profile.half_height
     assert_receive {:authority, {:body_death, 20, {^x, feet_y, ^z}}}, 2000
     assert_in_delta feet_y, y - half, 1.0e-12
-    assert_receive {:authority, {:body_nervous, 20, nervous}}, 2000
-    assert nervous == 0.0
+    assert_receive {:authority, {:body_coherence, 20, factor}}, 2000
+    assert factor == 0.0
     # 覆盖出生点的窗口异步到达：等它排进 Player 的 FIFO 再推进 tick，窗口在下一个 tick 安装。
     wait(fn -> s = :sys.get_state(p); s.revive == :window and :queue.len(s.updates.queue) > 0 end)
     tick(ctx, ctx.origin + 12)

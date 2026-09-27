@@ -7,6 +7,7 @@ defmodule SceneServer.Body do
   另存烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
+  - `coherence_factor/1`：施法相干度系数 = 神经 × 烧伤疼痛 × 恍惚（只降相干度，不进生命）；
   - `life/1`：由致命系统（循环、神经）按缺损 p-范数合成（`lethal_level/1`）的生命值 0..100；`recoverable_life/1`：其中伤口愈合后会回来的那一截；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
@@ -182,13 +183,13 @@ defmodule SceneServer.Body do
     # —— 复活（Magic.md §6.10，用户 2026-09-26 定）：所有人复活后是同一个固定状态（`revive/0`），不用死者储备、不继承死前状态。
     # 复活 debuff 各自计时、各自解除（伤病表 `:timed`）：
     # 虚弱（新愈）`recovery.weakness`：循环 × 0.85（生命最高 85），120 s；
-    # 恍惚 `nervous.daze`：神经 × 0.45，40 s。相干度 = 目录相干度 × 神经（`VoxelRegion.World`）：目录 4、发布程序结构 S ≤ 2
-    # （单步 1、“拟态 + 投掷”2），走火判据 S > 相干度 → 神经须 < 0.5 两步法术才走火；取 0.45（相干度 1.8）：两步法术走火、
-    # 单步照常，不是“不能施法”。0.8 之类（相干度 3.2）在现有目录下感知不到。原创取值。——
+    # 恍惚 `nervous.daze`：相干度系数 × 0.45，40 s，不进生命（用户 2026-09-27 定）。相干度 = 目录相干度 × 系数（`VoxelRegion.World`）：
+    # 目录 4、发布程序结构 S ≤ 2（单步 1、“拟态 + 投掷”2），走火判据 S > 相干度 → 系数须 < 0.5 两步法术才走火；取 0.45（相干度 1.8）：
+    # 两步法术走火、单步照常，不是“不能施法”。0.8 之类（相干度 3.2）在现有目录下感知不到。原创取值。——
     revive_weak_s: 120.0,
     weak_circulation: 0.85,
     revive_daze_s: 40.0,
-    daze_nervous: 0.45
+    daze_coherence: 0.45
   }
 
   # 调定点身体：核心 36.8 °C、皮肤 34 °C（Gagge 调定点），其余五层取该核心 / 皮肤温度、1 met、基础血流下的稳态
@@ -373,21 +374,30 @@ defmodule SceneServer.Body do
   三个系统的功能水平，夹在 [0, 1]。各系统先由核心温度按各自功能带线性推导，再乘上各原因的系数（同一系统内相乘）：
 
   - 循环 × 烧伤上限（1 − `burn_depression/1`，体液丢失：急性期内线性压深，随愈合进度线性回到 1.0）× 虚弱（`weak_circulation`）；
-  - 神经 × 烧伤疼痛（1 − `burn_depression/1`，与循环同一下压量：急性期先升、随愈合降）× 恍惚（`daze_nervous`）。
+  - 神经只由真正危及生命的原因决定，当前只有核心体温（用户 2026-09-27 定；疼痛与恍惚只降相干度，见 `coherence_factor/1`）。
 
-  神经功能同时是施法相干度的倍率（Player 每秒报给 World）。首片不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
+  首片不会出现亢进（> 1.0）；亢进留给后续魔法“调”动词。
   """
   @spec systems(t()) :: %{thermoregulation: float(), circulation: float(), nervous: float()}
   def systems(%__MODULE__{core_k: core} = body) do
-    wound = 1 - burn_depression(body)
     weak = if body.weak_s > 0, do: @params.weak_circulation, else: 1.0
-    daze = if body.daze_s > 0, do: @params.daze_nervous, else: 1.0
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
-      circulation: level(core, @params.circulation_band) * wound * weak,
-      nervous: level(core, @params.nervous_band) * wound * daze
+      circulation: level(core, @params.circulation_band) * (1 - burn_depression(body)) * weak,
+      nervous: level(core, @params.nervous_band)
     }
+  end
+
+  @doc """
+  施法相干度系数（Magic.md §4.4，用户 2026-09-27 定）= 神经功能 × 烧伤疼痛 × 恍惚，Player 每秒报给 World，
+  相干度 = 目录相干度 × 系数。疼痛 = 1 − `burn_depression/1`（与循环上限同一下压量：急性期先升、随愈合降；一度压满 0.75 → 相干度 3.0，
+  现行目录不走火）；恍惚 = `daze_coherence` 0.45（相干度 1.8，两步法术走火）。两者只降相干度，不进生命。
+  """
+  @spec coherence_factor(t()) :: float()
+  def coherence_factor(%__MODULE__{} = body) do
+    daze = if body.daze_s > 0, do: @params.daze_coherence, else: 1.0
+    systems(body).nervous * (1 - burn_depression(body)) * daze
   end
 
   @doc "由致命系统（循环、神经）推导的生命值 0..100：合成后的致命水平（`lethal_level/1`）× 100 后四舍五入。"
@@ -396,9 +406,9 @@ defmodule SceneServer.Body do
 
   @doc """
   可恢复生命（生命条上另一种颜色的那一截）：伤口全部愈合、复活 debuff 全部到时后的生命 − 现在的生命
-  = `life(剂量、进度与 debuff 计时归零的同一身体) − life(body)`。只有会随时间自己回来的部分（伤口慢性下压与疼痛、虚弱、恍惚）计入；
-  体温偏离等急性损失不计入——例如核心低温把神经压到 0.70、一度烧伤压满（循环 0.75、神经 0.70 × 0.75）→ 生命 46、
-  去掉伤口后 70，可恢复 24。
+  = `life(剂量、进度与 debuff 计时归零的同一身体) − life(body)`。只有会随时间自己回来的部分（伤口慢性下压、虚弱）计入；
+  体温偏离等急性损失不计入——例如核心低温把神经压到 0.70、一度烧伤压满（循环 0.75）→ 1 − √(0.25² + 0.30²) 生命 61、
+  去掉伤口后 70，可恢复 9。
   """
   @spec recoverable_life(t()) :: 0..100
   def recoverable_life(%__MODULE__{} = body),
@@ -433,7 +443,7 @@ defmodule SceneServer.Body do
     损伤剂量决定；按修复账愈合（`:heals`，`SceneServer.Body.Repair`），`heal` 是愈合进度 0..1，
     走完即剂量与进度归零、伤病消失。严重度不降级（深度烧伤以疤痕愈合，不经过浅度）；
   - `nutrition.hunger`：部位 `:whole`，蛋白质储备低于上限 `hunger_below_fraction` 时出现，进食回到阈值以上即消失（`:tracks_protein`）；
-  - `recovery.weakness`（虚弱，新愈）/ `nervous.daze`（恍惚）：复活 debuff，部位 `:whole`，按时间解除（`:timed`），
+  - `recovery.weakness`（虚弱，新愈，压循环）/ `nervous.daze`（恍惚，只降相干度）：复活 debuff，部位 `:whole`，按时间解除（`:timed`），
     `heal` 是已过时间占总时长的比例。
   """
   @spec injuries(t()) :: [injury()]

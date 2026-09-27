@@ -495,9 +495,11 @@ defmodule VoxelRegion.World do
           material_balances: %{},
           # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
           caster_energy: %{},
-          # 身体闭环 H2：Scene 每秒报来的施法者神经功能水平（cid => 0..1，SceneServer.Body 推导），相干度 = 目录相干度 × 它
-          # （`coherence/2`）；派生、不持久化，未报过按 1.0。
-          caster_nervous: %{},
+          # 身体闭环 H2：Scene 每秒报来的施法者相干度系数（cid => 0..1，SceneServer.Body.coherence_factor/1 = 神经 × 疼痛 × 恍惚），
+          # 相干度 = 目录相干度 × 它（`coherence/2`）；派生、不持久化，未报过按 1.0。
+          caster_coherence: %{},
+          # 身体闭环 H2：死亡掉落概率（用户 2026-09-27 定：先留接口、不掉任何东西，默认 0；`death_drop/3`）。
+          death_drop_probability: Keyword.get(opts, :death_drop_probability, 0.0),
           # 施法间隔会话（按 Player 进程，断开即忘，不持久化），与工具会话同一 GCRA。
           spell_sessions: %{},
           # 施放前摇（Voxim Docs/Magic.md §13.6）：待施放（cid => 广播记录、调用方与开始时捕获的施法者、
@@ -1204,9 +1206,9 @@ defmodule VoxelRegion.World do
 
   def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
 
-  # 身体闭环 H2：Scene 身体 → World 施法者的单向数据（神经功能水平，每秒一次）。
-  def handle_info({:body_nervous, cid, level}, state),
-    do: {:noreply, %{state | caster_nervous: Map.put(state.caster_nervous, cid, level)}}
+  # 身体闭环 H2：Scene 身体 → World 施法者的单向数据（相干度系数，每秒一次）。
+  def handle_info({:body_coherence, cid, factor}, state),
+    do: {:noreply, %{state | caster_coherence: Map.put(state.caster_coherence, cid, factor)}}
 
   # 身体闭环 H2：角色死亡（Scene 送来脚位），按 `death_drop/3` 裁决掉落并记账。
   def handle_info({:body_death, cid, feet}, state) do
@@ -4821,8 +4823,9 @@ defmodule VoxelRegion.World do
       quote_windup_s: windup_s}
   end
 
-  # 身体闭环 H2（Magic.md §4.4）：施法者相干度 = 目录相干度 × 神经功能水平（Scene 身体推导、每秒报来）；报价回复与走火判定共用。
-  defp coherence(state, cid), do: state.magic.coherence * Map.get(state.caster_nervous, cid, 1.0)
+  # 身体闭环 H2（Magic.md §4.4）：施法者相干度 = 目录相干度 × 相干度系数（神经 × 疼痛 × 恍惚，Scene 身体推导、每秒报来）；
+  # 报价回复与走火判定共用。
+  defp coherence(state, cid), do: state.magic.coherence * Map.get(state.caster_coherence, cid, 1.0)
 
   # 拟态只能比环境热（吸热 / 制冷待世界书提案）；低于环境温度的程序与其他非法程序同为 invalid_program。
   defp warm_semblance(%{steps: [%{sym: "form.semblance", args: %{"temperature_k" => t}} | _]}, ambient) when t < ambient,
@@ -6017,12 +6020,11 @@ defmodule VoxelRegion.World do
 
   # 身体闭环 H2（Voxim Docs/Magic.md §6.10，用户 2026-09-26 定）：死亡掉落。
   # 死亡点 = 脚所在宏格；死者在该格不被地块保护许可（他人地块 / 保留区）则不掉。确定性掷骰 `drop_roll(死亡格, 0)` <
-  # @death_drop_probability 才掉。候选 = 死者余额 ≥ 1/8 m³、且 1/8 m³ 在世界里有现成形态的可放置材料：散体（有休止阈值）
+  # 概率 `death_drop_probability`（启动参数，默认 0 = 不掉，用户 2026-09-27 定先留接口）才掉。候选 = 死者余额 ≥ 1/8 m³、且 1/8 m³ 在世界里有现成形态的可放置材料：散体（有休止阈值）
   # 倾倒成一格 1/8 m³ 的量（与玩家倾倒同一提交 `move_flowing/6`）；单次放置量恰为 1/8 m³ 的材料（花草）放置成一格
   # （与放置同一提交）。整格材料（石、土、木等，一次放置 = 1 m³）没有 1/8 m³ 的世界形态，不参选。候选按材料 id 排序，
   # `drop_roll(死亡格, 1)` 选一种；落点 = 死亡格周围 3×3×3 按（距离²、y、x、z）排序的第一个许可、非细分的空气格
   # （散体还须在流动域内，花草还须有草 / 苔 / 土托底）。余额同量扣除。返回 `{日志字段, state}`。
-  @death_drop_probability 0.05
   defp death_drop(state, cid, {fx, fy, fz}) do
     cell = {floor(fx), floor(fy), floor(fz)}
     eighth = div(liquid_capacity(state), 8)
@@ -6046,7 +6048,7 @@ defmodule VoxelRegion.World do
       not Protection.permitted?(state.protection, {:character, cid}, [cell]) ->
         {%{outcome: :protected, cell: cell}, state}
 
-      roll >= @death_drop_probability ->
+      roll >= state.death_drop_probability ->
         {%{outcome: :no_drop, cell: cell, roll: roll}, state}
 
       candidates == [] ->
