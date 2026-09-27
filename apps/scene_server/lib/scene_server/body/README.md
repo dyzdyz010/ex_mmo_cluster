@@ -124,6 +124,10 @@ flowchart LR
   开始回会话出生点（`Voxel.Relocate`，Hello 31，见 `docs/00-current-truth/design/server/voxim-runtime.md`）；下一秒换成复活身体。
   Scene 日志：`body_death`、`body_revived`、`revive_relocate`、`revive_relocated`；`body_state` 新增 `weak_s`、`daze_s`、`coherence_factor`、`lethal_level`。
 - **死亡掉落**：用户 2026-09-27 定先留接口、不掉任何东西——World 启动参数 `death_drop_probability` 默认 0（代码路径保留，单测用 0.05 覆盖一次）。
+- **客户端与实跑**（Voxim Docs/Magic.md §10.18）：客户端 Hello 31 解码 Relocate，把出生点作为 `apply_tick − 1` 的状态重放预测（出生点不在当前碰撞域时等同一
+  `apply_tick` 的窗口），本人瞬移不做修正平滑，远端相邻样本位移超出速度可达距离即不插值；虚弱 / 恍惚中文与剩余秒数、恍惚走火提示、死亡与复活提示。
+  Test-only 森林 Demo 真实双客户端 `revive-02`：1 m 坑里约 90 °C 热水（浸没 0.55）入水 14.9 min 濒死、16.9 min 死亡；复活生命 85、三个 debuff、
+  恍惚中两步法术 `misfire_coherence`、40 s 后同一法术成功、120 s 后生命 100、吃 19 株蒲公英（20.52 g）解除饥饿、死亡不掉落、B 看到一跳 22.47 m 不滑动。
 - **手算表**（`revive_test.exs`、`repair_test.exs`、`contact_test.exs` 断言）：
 
 | 情形 | 循环 | 神经 | 生命（p = 2） | 相干度系数 → 相干度 |

@@ -105,7 +105,8 @@ flowchart LR
   3×3×3 按（距离²、y、x、z）第一个许可、非细分的空气格。同一笔事务扣余额。日志 `voxel_death_drop outcome=…`。
 - 复跑：`apps/scene_server` 下 `mix test test/scene_server/body test/scene_server/movement/revive_relocation_test.exs`；`apps/voxel_region`
   下 `mix test --no-start test/death_drop_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。
-  只证明服务端范围，不代替双客户端实跑。
+- 双客户端实跑：Voxim `Docs/Magic.md` §10.18（`body_revive` 的 `revive-02` 复判 10/10；`body_heal`、`body_thermal`、`magic_editor` 回归），
+  Test-only 镜像 `voxim-gameplay:body-h2-20260927`。
 
 ## 活跃兼容边界
 
