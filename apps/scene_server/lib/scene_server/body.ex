@@ -8,6 +8,7 @@ defmodule SceneServer.Body do
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
   - `coherence_factor/1`：施法相干度系数 = 神经 × 烧伤疼痛 × 恍惚（只降相干度，不进生命）；
+  - `movement_factor/1`：冻伤移动系数，按当前严重度与愈合进度推导，修复过半恢复全速；
   - `life/1`：由致命系统（循环、神经）按缺损 p-范数合成（`lethal_level/1`）的生命值 0..100；`recoverable_life/1`：其中伤口愈合后会回来的那一截；
   - `injuries/1`：伤病表，每条 = 标签 + 部位 + 严重度 + 进展规则。
 
@@ -150,6 +151,10 @@ defmodule SceneServer.Body do
     # 过冷剂量分级的文献阈值（用户 2026-09-26：找不到依据取 300 并标待确认）。——
     frost_onset_k: -0.55 + @c,
     frostbite_dose_k_s: [300.0, 600.0],
+    # —— 冻伤移动（用户 2026-09-28 定）：浅 / 深初始速度 85% / 65%，修复到 50% 恢复全速；
+    # 游戏手感参数，不是临床速度模型。只读当前严重度，不叠乘，不另存移动恢复进度。——
+    frost_movement_initial: [0.85, 0.65],
+    frost_movement_recovered_at: 0.5,
     # —— 修复账（身体闭环 H1，Magic.md §6.5–6.7，body/README.md“修复账”）——
     # 伤口组织量 = 局部接触组织块面积 0.03 m² × 深度 × 1000 kg/m³；深度：1 度 0.1 mm（表皮）、2 度 1 mm（真皮中层）、
     # 3 度与深冻伤 2 mm（全层，即组织块厚度）；浅冻伤 1 mm（临床浅冻伤 = 1–2 度、清亮水疱，同 2 度烧伤的部分厚度）。
@@ -165,7 +170,7 @@ defmodule SceneServer.Body do
     heal_exponent: 0.7,
     heal_bounds_s: {30.0, 1800.0},
     # 慢性影响（Magic.md §12）：伤口压低系统上限的深度 = 0.25 × √(一度烧伤时长 / 本伤时长)——越长每秒越弱、
-    # 总量（深度 × 时长 ∝ √时长）越高；愈合中按进度线性回到 1.0。本增量只有烧伤压循环（体液丢失），冻伤不压系统（后果待 H5）。
+    # 总量（深度 × 时长 ∝ √时长）越高；愈合中按进度线性回到 1.0。只有烧伤压循环（体液丢失），冻伤另由 movement_factor/1 推导移动影响。
     # 基数 0.25（用户 2026-09-26 定，原 0.10 时可恢复段只有 4–10%、玩家感知不到）：烧伤 1 / 2 / 3 度生命 75 / 85 / 91。
     chronic_depth_at_first_degree: 0.25,
     # 急性期（用户 2026-09-26 定）：伤后压低深度不瞬间到位，按 r = min(1, burn_age_s / onset) 线性加深。onset 用同一时长公式换算
@@ -398,6 +403,22 @@ defmodule SceneServer.Body do
   def coherence_factor(%__MODULE__{} = body) do
     daze = if body.daze_s > 0, do: @params.daze_coherence, else: 1.0
     systems(body).nervous * (1 - burn_depression(body)) * daze
+  end
+
+  @doc """
+  冻伤移动系数：无冻伤为 1.0，浅 / 深冻伤初始为 0.85 / 0.65，随 `frost_heal` 线性恢复，修复到 50% 即全速。
+  只取当前严重度，不叠乘浅与深冻伤；烧伤、虚弱与恍惚不额外影响移动。不另存恢复状态。
+  """
+  @spec movement_factor(t()) :: float()
+  def movement_factor(%__MODULE__{} = body) do
+    case severity(body, :frostbite) do
+      0 ->
+        1.0
+
+      severity ->
+        initial = Enum.at(@params.frost_movement_initial, severity - 1)
+        1.0 - (1.0 - initial) * max(0.0, 1.0 - body.frost_heal / @params.frost_movement_recovered_at)
+    end
   end
 
   @doc "由致命系统（循环、神经）推导的生命值 0..100：合成后的致命水平（`lethal_level/1`）× 100 后四舍五入。"

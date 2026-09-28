@@ -3,7 +3,7 @@ defmodule SceneServer.Movement.VoximInputRecoveryTest do
   alias SceneServer.Movement.InputSlots
   alias MmoContracts.Movement.{InputBatch, InputFrame}
 
-  test "400ms delivery pause preserves direction changes release and one jump" do
+  test "400ms断流后过期换向和跳跃不回写最终模拟" do
     identity = %MmoContracts.Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 1}
 
     frames =
@@ -34,23 +34,16 @@ defmodule SceneServer.Movement.VoximInputRecoveryTest do
         inspect(%{pause_ms: 400, processed_without_arrival: slots.processed_input_seq})
     )
 
-    assert slots.processed_input_seq == 0
+    assert slots.processed_input_seq == 24
 
     slots =
       Enum.reduce(Enum.reverse(Enum.chunk_every(frames, 6)), slots, fn batch, s ->
-        {next, :accepted} =
+        {next, :late} =
           InputSlots.receive_batch(s, %InputBatch{identity: identity, frames: batch})
 
         next
       end)
 
-    {slots, recovered} =
-      Enum.reduce(1..24, {slots, []}, fn _, {s, taken} ->
-        {next, frame} = InputSlots.take(s, 123)
-        {next, taken ++ [frame]}
-      end)
-
-    assert recovered == frames
     assert slots.processed_input_seq == 24
     assert {^slots, :waiting} = InputSlots.take(slots, 123)
 

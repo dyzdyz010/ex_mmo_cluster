@@ -1,3 +1,9 @@
+defmodule MmoContracts.Movement.SpeedScale do
+  @moduledoc "全局系统：在 apply_tick 生效的权威移动速度系数，与 TimelineFence 同一可靠流。"
+  @enforce_keys [:identity, :apply_tick, :factor]
+  defstruct @enforce_keys
+end
+
 defmodule MmoContracts.Movement.InputFrame do
   @moduledoc "M1 InputFrame 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。"
   @enforce_keys [:input_seq, :axis_x, :axis_z, :yaw, :jump_pressed]

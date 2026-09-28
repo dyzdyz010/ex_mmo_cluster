@@ -13,6 +13,7 @@ flowchart LR
   B --> R
   B --> S[systems/1] --> C[combined_level/2 p-范数] --> L[life/1]
   B --> K[coherence_factor/1<br/>神经 × 疼痛 × 恍惚] -->|body_coherence| WM[World caster_coherence]
+  B --> M[movement_factor/1<br/>冻伤严重度 + 愈合进度]
   B --> I[injuries/1]
   C --> P[progress/2 濒死计时]
   P -->|dead| D[Player: body_death → World 掉落<br/>Relocate 回出生点<br/>下一秒 revive/0]
@@ -33,6 +34,9 @@ flowchart LR
   皮肤温度与热容、体表面积、组织块温度 / 热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.contact_tissue_w_per_m2_k/1`）报给 World
   （`{:body_contact, cid, pid, …}`）与相干度系数（`{:body_coherence, cid, factor}`，H2）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。
   死亡见“身体闭环 H2”。
+- 冻伤系数变化时，Player 在既有 voxel 可靠时间线发 `Movement.SpeedScale`，`apply_tick = 已发布 tick + 1`；每个固定步只乘
+  `Profile.speed`，按模拟 tick 消费并退休变化点（保留锚点与未来），Scene 移交携带完整未消费时间线。prepared 目标只重排身体计时，
+  激活前不推进身体或发变化。`body_state` / `input_selected` 日志与 Player 观测暴露系数、生效点及模拟速度；具体线格式以 mmo_contracts 为准。
 - World 把**皮肤**与**组织块**当热内核的两个外部节点（暴露面积 0），两者之间一条内部边；接触导热在 `VoxelRegion.BodyContact`
   （鞋底、触碰拟态接组织块，浸没接皮肤）。身体内部的其余五层只在 Scene 里，World 不知道。回传
   `{:body_heat, %{q_j, tissue_j, tissue_k, sole_k, max_contact_k, immersed, dt_s, seq}}`，World 记 `body_exchange_j`，与 Player 累计同值。
@@ -54,7 +58,11 @@ flowchart LR
   严重度仍由剂量推导；进度走到 1 → 剂量与进度归零、伤病消失；不降级（3 度以疤愈合，不经 2 度）。
   愈合中加重（烧到更深一度、浅冻伤冻成深冻伤）→ 进度归零（已沉积组织随新坏死失去，蛋白不返还）。
 - **冻伤**：浅（≥ 300 K·s，待确认）/ 深（≥ 600 K·s）两级，标签仍是 `trauma.thermal.frostbite`、严重度 1 / 2，部位 `:feet`
-  （冻伤只来自鞋底接触，不拆组织块）。本增量冻伤不压任何系统（移动变慢属 H5），只按下式愈合。
+  （冻伤只来自鞋底接触，不拆组织块）。冻伤不压循环或神经，移动影响由 `Body.movement_factor/1` 纯推导（Global system）：
+  无冻伤系数 1；浅 / 深初始系数 0.85 / 0.65，取当前严重度、不叠乘。系数 = `1 − (1 − 初始系数) × max(0, 1 − frost_heal / 0.5)`，
+  修复 25% 时为 0.925 / 0.825，修复 50% 起全速。营养或两种能量不足导致修复停滞时，移动恢复也停滞；浅转深沿用 Repair 的进度归零。
+  参数集中在 `Body.params/0` 的 `frost_movement_initial`、`frost_movement_recovered_at`；数值与曲线是用户 2026-09-28 确认的游戏规则，
+  不作为临床速度模型。烧伤、虚弱、恍惚不额外减速，`revive/0` 的无冻伤新身体系数为 1。
 - **时长**（Magic.md §12，用户 2026-09-26 定，取代统一压缩系数 K）：游戏内 `T = clamp(30 s × 真实愈合天数^0.7, 30 s, 1800 s)`
   （`Body.heal_s/2`；生物学只决定排序）。`d(进度)/dt = M / T × min(1, 循环)`，M = 速率倍数（魔法“调”留口，本增量恒 1）。
   烧伤自身压循环（含急性期，逐秒递推见 `repair_test.exs`），1 / 2 / 3 度从受伤起实际在第 103 / 272 / 733 秒愈合（比 T 慢约 11%、8%、5%）。
@@ -87,7 +95,7 @@ flowchart LR
     停止用约定负值：营养为 0 → −1；速率为 0（循环归零，只在濒死 / 死亡时）→ −2。不愈合的伤病为 0。
   - 下行：`life` 后追加 `recoverable` u8（`life + recoverable ≤ 100`），每条伤病 `heal` 后追加 `remaining_s` f64；比较键含可恢复与剩余整秒
     （愈合中每秒一帧）。Scene 日志 `body_state` 新增 `recoverable`、`injury_remaining_s`（标签 → 秒）。
-- **不做 / 已知缺口**：魔法“调”（H3）；冻伤的系统后果（移动变慢，H5）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
+- **不做 / 已知缺口**：魔法“调”（H3）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
   Scene 移交封存后才到达的 `body_food` 随旧 Player 丢失（余额已扣；窗口是移交那一刻）。
 
 | 参数 | 值 | 依据 |
@@ -289,5 +297,7 @@ flowchart LR
 - `revive_test.exs`（H2）：合成手算表（p = 2 / 3 / 4）、核心 30 °C、濒死读合成值（改前取最弱不会濒死）、相干度系数（疼痛 / 恍惚不进生命，
   烧伤谷底 82 / 87 / 91）、复活逐字段（生命 85）、虚弱 120 s / 恍惚 40 s 到点解除、饥饿吃到 20 g 解除。Player 层复活瞬移见 `movement/revive_relocation_test.exs`，World 掉落与相干度见
   voxel_region `death_drop_world_test`、`magic_semblance_world_test`。
+- `movement_test.exs`：冻伤移动系数手算（0 / 25 / 50 / 100% 修复）、当前严重度不叠乘、真实 Repair 浅转深与零底物停滞，
+  烧伤 / 虚弱 / 恍惚不额外减速、复活新身体全速；只证明 Body / Repair 范围，不替代 Player 与客户端移动验收。
 - `cold_validation_test.exs`：上表的实测对照（期望全部来自文献），含寒战耐力（Tikuisis 2002）与供能（Blondin 2010、Haman 2004）。
 - 气候查询见 voxel_region `climate_test`，World 内核里的组织块见 `body_contact_world_test`（World 侧未改）。

@@ -56,23 +56,20 @@ defmodule SceneServer.Movement.VoximSceneTest do
     {slots, first} = InputSlots.take(slots, 100)
     assert first.jump_pressed == 1
     assert {^slots, :waiting} = InputSlots.take(slots, 100)
-    {slots, :duplicate} = InputSlots.receive_batch(slots, batch)
+    {slots, :late} = InputSlots.receive_batch(slots, batch)
 
-    for tick <- 101..124 do
-      assert {^slots, :waiting} = InputSlots.take(slots, tick)
-    end
+    slots = Enum.reduce(101..124, slots, fn tick, s ->
+      {next, frame} = InputSlots.take(s, tick)
+      assert frame.jump_pressed == 0
+      assert frame.axis_x == if(tick <= 103, do: 32767, else: 0)
+      next
+    end)
+    assert slots.processed_input_seq == 25
+    assert slots.substituted_through_seq == 25
+    {same, :late} = InputSlots.receive_batch(slots, %{batch | frames: [%{one | input_seq: 2}]})
+    assert same == slots
+    assert {^slots, :waiting} = InputSlots.take(slots,124)
 
-    assert slots.processed_input_seq == 1
-
-    {slots, :accepted} =
-      InputSlots.receive_batch(slots, %{
-        batch
-        | frames: [%{one | input_seq: 2, jump_pressed: 0, axis_x: 0}]
-      })
-
-    {slots, release} = InputSlots.take(slots, 124)
-    assert release.input_seq == 2 and release.axis_x == 0 and release.jump_pressed == 0
-    assert {^slots, :waiting} = InputSlots.take(slots, 124)
   end
 
   test "1 3 2 ordering retains first value and conflicting duplicate is rejected" do
@@ -313,7 +310,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
   end
 
   @tag :input_recovery
-  test "late real commands catch up once using the collision at each simulation tick", ctx do
+  test "断流仍使用每个模拟tick的历史碰撞，迟到操作不重演", ctx do
     start = join(ctx)
 
     Player.time_probe(player(ctx.scene, identity()), identity(), %Session.TimeProbe{
@@ -363,10 +360,10 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     await(ctx.scene, &(&1.queue_length == 1))
     advance(ctx, 44)
     stalled = advance(ctx, 55)
-    assert hd(stalled.characters).processed_input_seq == 0
-    assert hd(stalled.characters).simulation_tick == 31
-    assert hd(stalled.characters).state == anchor
-    assert stalled.physics_steps == at31.physics_steps
+    assert hd(stalled.characters).processed_input_seq == 24
+    assert hd(stalled.characters).simulation_tick == 55
+    assert elem(hd(stalled.characters).state.position,1) < elem(anchor.position,1)
+    assert stalled.physics_steps - at31.physics_steps == 24
 
     for frames <- commands |> Enum.chunk_every(6) |> Enum.reverse() do
       Player.input(player(ctx.scene, identity()), identity(), %Movement.InputBatch{
@@ -376,9 +373,9 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     end
 
     recovered = advance(ctx, 56)
-    assert hd(recovered.characters).processed_input_seq == 24
-    assert hd(recovered.characters).simulation_tick == 55
-    assert recovered.physics_steps - stalled.physics_steps == 24
+    assert hd(recovered.characters).processed_input_seq == 25
+    assert hd(recovered.characters).simulation_tick == 56
+    assert recovered.physics_steps - stalled.physics_steps == 1
     assert recovered.tick == 56
     # 独立按原时段推进真实 P1，R2 只在第13条命令开始生效。
     native = SceneServer.Native.VoximMovement
@@ -395,12 +392,12 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     profile = for(<<v::float-64 <- bytes>>, do: v) |> List.to_tuple()
 
     expected =
-      Enum.reduce(commands, {anchor.position, anchor.velocity, anchor.grounded}, fn f, state ->
-        world = if f.input_seq >= 13, do: edited, else: world
-        {x, z} = Movement.Codec.axes(f)
+      Enum.reduce(1..25, {anchor.position, anchor.velocity, anchor.grounded}, fn seq, state ->
+        world = if seq >= 13, do: edited, else: world
+        {x, z} = {0.0, 0.0}
 
         [{20, next}] =
-          native.step_characters(world, profile, [{20, state, {x, z, f.jump_pressed}}])
+          native.step_characters(world, profile, [{20, state, {x, z, 0}}])
 
         next
       end)
@@ -416,13 +413,13 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     end
 
     duplicate = advance(ctx, 57)
-    assert duplicate.physics_steps == recovered.physics_steps
+    assert duplicate.physics_steps == recovered.physics_steps + 1
 
     assert_receive {:datagram, _,
                     %Movement.OwnerAck{
                       server_tick: 57,
-                      simulation_tick: 55,
-                      processed_input_seq: 24,
+                      simulation_tick: 57,
+                      processed_input_seq: 26,
                       collision_revision: 2
                     }}
 
@@ -477,11 +474,12 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert_receive {:datagram, _,
                     %Movement.OwnerAck{
                       server_tick: 42,
-                      processed_input_seq: 0,
-                      simulation_tick: 40
+                      processed_input_seq: 2,
+                      substituted_through_seq: 2,
+                      simulation_tick: 42
                     }}
 
-    assert observe(ctx.scene).physics_steps == 39
+    assert observe(ctx.scene).physics_steps == 41
   end
 
   test "two immutable versions get separate ticks; marker fences the join prefix", ctx do
@@ -598,9 +596,9 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert_receive {:datagram, _,
                     %Movement.OwnerAck{
                       server_tick: 33,
-                      simulation_tick: 32,
-                      processed_input_seq: 1,
-                      substituted_through_seq: 0
+                      simulation_tick: 33,
+                      processed_input_seq: 2,
+                      substituted_through_seq: 2
                     }}
 
     Player.input(player(ctx.scene, identity()), identity(), %{
@@ -611,14 +609,14 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     advance(ctx, 34)
     info = observe(ctx.scene)
     assert hd(info.characters).processed_input_seq == 3 and info.physics_steps == 33
-    assert info.substitutions == 0
+    assert info.substitutions == 1
     :atomics.put(ctx.clock, 1, 999_999)
     send(ctx.scene, :tick)
     info = await(ctx.scene, &(&1.tick == 59))
-    assert info.physics_steps == 33
+    assert info.physics_steps == 58
     :atomics.put(ctx.clock, 1, 1_000_000)
     send(ctx.scene, :tick)
-    assert await(ctx.scene, &(&1.tick == 60)).physics_steps == 33
+    assert await(ctx.scene, &(&1.tick == 60)).physics_steps == 59
   end
 
   test "Ready waits for TimeProbe and Gate DOWN frees its slot", ctx do
@@ -1010,11 +1008,13 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     parsed = Scene.load_config!(path)
     assert %Session.Profile{fixed_hz: 60} = parsed.profile
 
+    # 44 项现行材质的 blocking SHA256 为 a926d11b…2fc5；按 Wire 声明的 15 个 f64 + 60Hz
+    # 在独立 Python struct/hashlib 中计算。旧 65c215d1…来自只含 25 项的历史目录。
     assert Session.Codec.profile_id(
              parsed.profile,
              MmoContracts.VoxelMaterialCatalog.blocking_hash()
            ) ==
-             Base.decode16!("65C215D168535CCA82FA29ED1D5251F269AB57FAD138A8C04982B63E16DD0C42")
+             Base.decode16!("9153A6125CB5EDA91F95BF7EB83C226199EA9860CA7313020434AB3B67DEBA85")
 
     assert parsed.l0 == {{-1, 7, -1}, {1, 9, 1}} and tuple_size(parsed.profile_tuple) == 15
     File.write!(path, Jason.encode!(Map.delete(config(), "profile")))
@@ -1159,7 +1159,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     end
 
     advance(%{scene: scene, clock: clock}, 32)
-    assert Enum.all?(observe(scene).characters, &(&1.processed_input_seq == 0))
+    assert Enum.all?(observe(scene).characters, &(&1.simulation_tick == 32))
 
     for c <- observe(scene).characters do
       frames =
@@ -1269,7 +1269,8 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert length(snapshot.regions) == 8 and length(snapshot.chunks) == 512
 
     # 当前自然资源 kernel 的完整 body 金样（含 cells、CSR、面贴图）；旧 S1 快照保留给历史 FileStore 测试。
-    # 源码 SHA256：5e45e6797acdd6ba55bc61a0bb36fdf9c5b786eb31880eaae71350b8b55cb5e5。
+    # 这些几何 body 金样继续保留；当前源码身份为 290472a6…e48a12（森林密度版本），
+    # 新世界 content_version 由该身份与八项生成参数决定，不沿用旧源码的 header 身份。
     expected = %{
       {-1, 7, -1} => "ba92aa087fe9d3f1866bcdb1458ad510463d7d11618810fa230a2a1e096b68e8",
       {-1, 7, 0} => "3d1987152f0f4e4b855239e8693632f12356df120efcce6d0d4ada0ba01c5633",
@@ -1287,7 +1288,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
       assert Base.encode16(:crypto.hash(:sha256, body), case: :lower) ==
                Map.fetch!(expected, coord)
 
-      assert header.content_version == 0x0CD1114C83C1FA9C and header.seq == 0
+      assert header.content_version == 0x4ECF1F7864707144 and header.seq == 0
     end
 
     clock = :atomics.new(1, signed: true)

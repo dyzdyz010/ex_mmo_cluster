@@ -223,7 +223,9 @@ defmodule GateServer.Session.QuicConnection do
         state: artifact.state
       }
 
-      {:noreply, send_message(state, 1, message)}
+      # Player 在 seal 回复前已把最后的倍率与 fence 发入本邮箱；排到其后，不能直接越过邮箱写流。
+      send(self(), {:mmo_reliable, identity, 2, message})
+      {:noreply, state}
     else
       {:error, reason} ->
         Logger.warning(
@@ -764,6 +766,8 @@ defmodule GateServer.Session.QuicConnection do
     {:ok, bytes} =
       case {purpose, message} do
         {1, _} -> Session.Codec.encode(message)
+        {2, %Session.Transfer{}} -> Session.Codec.encode(message)
+        {2, %MmoContracts.Movement.SpeedScale{}} -> MmoContracts.Movement.Codec.encode(message)
         {2, %{__struct__: _}} -> MmoContracts.Voxel.Codec.encode_m1(message)
         {2, _} -> MmoContracts.Voxel.Codec.encode(message)
       end

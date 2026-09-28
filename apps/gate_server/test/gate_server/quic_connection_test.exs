@@ -169,11 +169,11 @@ defmodule T1TransportTest do
     batch = %MmoContracts.Movement.InputBatch{identity: identity, frames: [frame]}
     {:ok, current} = MmoContracts.Movement.Codec.encode(batch)
     {:ok, _} = :quicer.async_send_dgram(conn, IO.iodata_to_binary(current))
-    assert_receive {:input, ^identity, ^batch}, 5000
+    assert_receive {:input, ^identity, ^batch, {_, _, _}}, 5000
     old = %{batch | identity: %{identity | session_epoch: identity.session_epoch - 1}}
     {:ok, old_bytes} = MmoContracts.Movement.Codec.encode(old)
     {:ok, _} = :quicer.async_send_dgram(conn, IO.iodata_to_binary(old_bytes))
-    refute_receive {:input, _, ^old}, 100
+    refute_receive {:input, _, ^old, _}, 100
     assert GenServer.call(sink, :stats).stale_identity == 1
 
     state = %Session.State{
@@ -962,7 +962,7 @@ defmodule M4aGateTransferTest do
 
     {:ok, bytes} = Movement.Codec.encode(batch)
     send(gate, {:quic, IO.iodata_to_binary(bytes), :connection, %{}})
-    assert_receive {:"$gen_cast", {:input, ^fresh, _}}, 500
+    assert_receive {:"$gen_cast", {:input, ^fresh, _, _}}, 500
 
     {:ok, bytes} =
       Session.Codec.encode(%Session.Ready{
@@ -1255,7 +1255,7 @@ defmodule M4aGateTransferTest do
       {state, batch} = input(initial, identity, transport)
       fresh = initial.pending_transfer.identity
       rebound = %{batch | identity: fresh}
-      assert_receive {:"$gen_cast", {:input, ^fresh, ^rebound}}
+      assert_receive {:"$gen_cast", {:input, ^fresh, ^rebound, _}}
       assert state.identity == initial.identity
       assert state.pending_transfer.input_batches == 1
       refute state.closing
@@ -1271,11 +1271,11 @@ defmodule M4aGateTransferTest do
       {state, _} = input(initial, %{initial.identity | session_epoch: 9}, transport)
       assert state.stale_identity == 1
       refute state.closing
-      refute_receive {:"$gen_cast", {:input, _, _}}
+      refute_receive {:"$gen_cast", {:input, _, _, _}}
     end
   end
 
-  test "Gate seals the source before preparing and keeps old fence output until Ready" do
+  test "Gate queues Transfer behind the sealed source SpeedScale and Fence on the same reliable stream" do
     {old, fresh} = identities()
     owner = self()
 
@@ -1295,11 +1295,22 @@ defmodule M4aGateTransferTest do
       slots: %{processed_input_seq: 30}
     }
 
+    scale = %Movement.SpeedScale{identity: old, apply_tick: 61, factor: 0.65}
+    fence = %MmoContracts.Voxel.TimelineFence{
+      identity: old,
+      server_tick: 60,
+      transaction_seq: 20,
+      collision_revision: 3
+    }
+
     source =
       spawn_link(fn ->
         receive do
           {:"$gen_call", from, {:seal, ^old}} ->
             send(owner, :source_sealed)
+            # 源尾在 seal 回复前到达 Gate 邮箱；Fence 已覆盖 cut，但未来倍率仍必须先于 Transfer。
+            send(owner, {:mmo_reliable, old, 2, scale})
+            send(owner, {:mmo_reliable, old, 2, fence})
             GenServer.reply(from, {:ok, artifact})
         end
       end)
@@ -1324,7 +1335,22 @@ defmodule M4aGateTransferTest do
     assert state.identity == old and state.player == source
     assert state.pending_transfer.identity == fresh
     assert state.transfer_prepared == 1 and state.transfer_committed == 0
-    [{bytes, _, _}] = :queue.to_list(state.reliable[1])
+    assert :queue.is_empty(state.reliable[1])
+    assert :queue.is_empty(state.reliable[2])
+
+    state =
+      Enum.reduce([Movement.SpeedScale, MmoContracts.Voxel.TimelineFence, Session.Transfer], state, fn type, state ->
+        # 逐笔取实际邮箱头；不能按类型选择接收，从而掩盖错误顺序。
+        assert_receive {:mmo_reliable, ^old, 2, event} = queued
+        assert event.__struct__ == type
+        {:noreply, next} = QuicConnection.handle_info(queued, state)
+        next
+      end)
+
+    assert :queue.is_empty(state.reliable[1])
+    [{scale_bytes, _, _}, {fence_bytes, _, _}, {bytes, _, _}] = :queue.to_list(state.reliable[2])
+    assert {:ok, ^scale} = Movement.Codec.decode(scale_bytes)
+    assert {:ok, ^fence} = MmoContracts.Voxel.Codec.decode_m1(fence_bytes)
 
     assert {:ok,
             %Session.Transfer{
@@ -1337,16 +1363,6 @@ defmodule M4aGateTransferTest do
               state: ^value
             }} =
              Session.Codec.decode(bytes)
-
-    fence = %MmoContracts.Voxel.TimelineFence{
-      identity: old,
-      server_tick: 60,
-      transaction_seq: 20,
-      collision_revision: 3
-    }
-
-    {:noreply, state} = QuicConnection.handle_info({:mmo_reliable, old, 2, fence}, state)
-    assert :queue.len(state.reliable[2]) == 1
 
     {:noreply, ^state} =
       QuicConnection.handle_info({:mmo_transfer_request, old, source, 2}, state)

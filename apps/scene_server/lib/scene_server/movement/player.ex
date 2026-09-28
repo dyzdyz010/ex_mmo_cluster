@@ -9,8 +9,9 @@ defmodule SceneServer.Movement.Player do
 
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-  @doc "Gate 直接转发已鉴权输入，额度只取公共已发布 tick。"
-  def input(player, identity, batch), do: GenServer.cast(player, {:input, identity, batch})
+  @doc "Gate 直接转发已鉴权输入并冻结服务端接收时刻；测试时钟通过同一参数传入。"
+  def input(player, identity, batch, received_us \\ {node(), System.monotonic_time(:microsecond), System.system_time(:microsecond)}),
+    do: GenServer.cast(player, {:input, identity, batch, received_us})
   @doc "确认该会话自己的 bootstrap N/R。"
   def ready(player, identity, seq, revision),
     do: GenServer.cast(player, {:ready, identity, seq, revision})
@@ -61,6 +62,8 @@ defmodule SceneServer.Movement.Player do
         body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
+        # 冻伤系数的已发布变化点（新到旧）；固定步按自己的 tick 消费，积压不追溯应用新身体状态。
+        movement_scales: [{0, 1.0}],
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
@@ -89,7 +92,7 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
-          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive]))
+          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive, :movement_scales]))
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
@@ -217,6 +220,7 @@ defmodule SceneServer.Movement.Player do
         :queued_seq,
         :body,
         :body_exchange_j,
+        :movement_scales,
         :climate,
         :probe,
         :authority_ref,
@@ -245,7 +249,7 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
-  def handle_cast({:input, _, _}, %{transfer: :sealed} = state),
+  def handle_cast({:input, _, _, _}, %{transfer: :sealed} = state),
     do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
   def handle_cast({:ready, identity, seq, revision}, %{identity: identity} = state) do
@@ -273,17 +277,16 @@ defmodule SceneServer.Movement.Player do
   end
 
   def handle_cast(
-        {:input, identity, %Movement.InputBatch{identity: identity} = batch},
+        {:input, identity, %Movement.InputBatch{identity: identity} = batch, arrived},
         %{identity: identity} = state
       ) do
-    arrived = now(state)
-
+    arrived = input_monotonic(state, arrived)
     state =
       if state.slots == nil do
         input_arrivals(state, identity, state, batch.frames, :not_started, arrived)
         %{state | rejected_inputs: state.rejected_inputs + 1}
       else
-        {slots, result, decisions} = InputSlots.receive_batch_observed(state.slots, batch)
+        {slots, result, decisions} = InputSlots.receive_batch_observed(state.slots, batch, Clock.due_tick(state, arrived))
 
         for {frame, disposition} <- decisions,
             do: input_arrivals(state, identity, state, [frame], disposition, arrived)
@@ -507,6 +510,11 @@ defmodule SceneServer.Movement.Player do
   def handle_info(:body_tick, %{transfer: transfer} = state) when transfer in [:requested, :sealed],
     do: {:noreply, state}
 
+  def handle_info(:body_tick, %{transfer: :prepared} = state) do
+    schedule_body()
+    {:noreply, state}
+  end
+
   def handle_info(:body_tick, state) do
     schedule_body()
     finish(body_tick(state))
@@ -550,6 +558,8 @@ defmodule SceneServer.Movement.Player do
     coherence = Body.coherence_factor(body)
     if authority, do: send(authority, {:body_coherence, state.id, coherence})
 
+    state = publish_movement_scale(state, body)
+    {movement_apply_tick, movement_factor} = hd(state.movement_scales)
     report = Body.report(body, 1.0)
 
     if report.key != state.body_sent do
@@ -572,6 +582,7 @@ defmodule SceneServer.Movement.Player do
       protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal, burn_age_s: body.burn_age_s,
       repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
       synth_fat_j: account.synth_fat_j, weak_s: body.weak_s, daze_s: body.daze_s, coherence_factor: coherence,
+      movement_factor: movement_factor, movement_apply_tick: movement_apply_tick,
       lethal_level: Body.lethal_level(body),
       sent: report.key != state.body_sent})
 
@@ -579,6 +590,29 @@ defmodule SceneServer.Movement.Player do
       body_sent: report.key}
 
     if body.status == :dead, do: died(state), else: state
+  end
+
+  # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
+  defp publish_movement_scale(state, body) do
+    factor = Body.movement_factor(body)
+    {_, previous} = hd(state.movement_scales)
+
+    if factor == previous do
+      state
+    else
+      tick = state.tick + 1
+      reliable(state, :voxel, %Movement.SpeedScale{identity: state.identity, apply_tick: tick, factor: factor})
+      character_event(state, state, :movement_scale, %{apply_tick: tick, movement_factor: factor})
+      %{state | movement_scales: [{tick, factor} | Enum.reject(state.movement_scales, &(elem(&1, 0) == tick))]}
+    end
+  end
+
+  defp movement_scale(state, tick), do: Enum.find(state.movement_scales, &(elem(&1, 0) <= tick))
+
+  # 保留模拟锚点的系数和未来变化，供积压追赶与 Scene 移交继续消费。
+  defp retire_movement_scales(scales, tick) do
+    {future, history} = Enum.split_while(scales, &(elem(&1, 0) > tick))
+    future ++ Enum.take(history, 1)
   end
 
   # 死亡（Magic.md §6.10）：通知 World 在死亡点附近按 5% 掷骰掉落（`{:body_death, cid, 脚位}`，World 裁决并记账），
@@ -721,6 +755,8 @@ defmodule SceneServer.Movement.Player do
 
           {world, revision} = CollisionUpdates.at_tick(state.updates, tick)
           {x, z, jump} = input
+          {movement_apply_tick, movement_factor} = movement_scale(state, tick)
+          profile = put_elem(state.config.profile_tuple, 2, elem(state.config.profile_tuple, 2) * movement_factor)
 
           character_event(state, state, :input_selected, %{
             input_seq: if(frame == :joining_zero, do: nil, else: frame.input_seq),
@@ -733,13 +769,16 @@ defmodule SceneServer.Movement.Player do
             jump_pressed: jump,
             native_axis_x: x,
             native_axis_z: z,
+            movement_factor: movement_factor,
+            movement_apply_tick: movement_apply_tick,
+            movement_speed: elem(profile, 2),
             selection: selection,
             lag_ticks: state.tick - tick
           })
 
           {us, [{_, result}]} =
             :timer.tc(fn ->
-              state.updates.native.step_characters(world, state.config.profile_tuple, [
+              state.updates.native.step_characters(world, profile, [
                 {state.id, pod(state.state), input}
               ])
             end)
@@ -764,7 +803,8 @@ defmodule SceneServer.Movement.Player do
               yaw
             )
 
-          state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1}
+          state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1,
+            substitutions: state.substitutions + if(selection in [:held, :neutral], do: 1, else: 0)}
 
           %{
             state
@@ -772,6 +812,7 @@ defmodule SceneServer.Movement.Player do
               slots: slots,
               simulation_tick: tick,
               simulation_revision: revision,
+              movement_scales: retire_movement_scales(state.movement_scales, tick),
               updates: CollisionUpdates.retire_before(state.updates, tick)
           }
           |> stream_window()
@@ -986,6 +1027,7 @@ defmodule SceneServer.Movement.Player do
 
   defp observation(state) do
     {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)
+    {movement_apply_tick, movement_factor} = movement_scale(state, state.simulation_tick)
 
     %{
       identity: state.identity,
@@ -997,6 +1039,9 @@ defmodule SceneServer.Movement.Player do
       state: state.state,
       origin_tick: state.origin,
       simulation_tick: state.simulation_tick,
+      movement_factor: movement_factor,
+      movement_apply_tick: movement_apply_tick,
+      movement_speed: elem(state.config.profile_tuple, 2) * movement_factor,
       collision_revision: state.simulation_revision,
       pending_inputs: if(state.slots, do: map_size(state.slots.pending), else: 0),
       processed_input_seq: if(state.slots, do: state.slots.processed_input_seq, else: 0),
@@ -1032,6 +1077,12 @@ defmodule SceneServer.Movement.Player do
       })
 
   defp now(state), do: Clock.monotonic(state)
+  # 同节点使用原单调样本；跨节点沿现有服务器时间映射，不能相减两个 VM 的单调零点。
+  defp input_monotonic(_state, {source, mono, _wall}) when source == node(), do: mono
+  defp input_monotonic(state, {_source, _mono, wall}),
+    do: state.time_mono_origin + wall - state.time_origin
+  defp input_monotonic(_state, mono) when is_integer(mono), do: mono
+
   defp server_time(state), do: state |> Clock.sample() |> elem(0)
 
   # 字段只投影当前 owner 的确定事实；日志不重新接纳输入或推进时间。

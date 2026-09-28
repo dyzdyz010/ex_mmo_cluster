@@ -98,11 +98,23 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     Application.put_env(:scene_server, :e1_observer, self())
     source = if tags[:generated], do: VoxelRegion.GeneratedStore, else: VoxelRegion.FileStore
 
+    # GeneratedStore 场景新建测试世界，不重开历史发布世界；配置照旧，去掉旧世界的身份钉住。
+    # 正式 open/1 的 pinned 校验保持不变，由 GeneratedStore 的恢复／拒错测试覆盖。
+    manifest_path =
+      if tags[:generated] do
+        manifest = System.fetch_env!("E1_MANIFEST") |> File.read!() |> Jason.decode!()
+        path = Path.join(root, "generated-manifest.json")
+        File.write!(path, Jason.encode!(Map.delete(manifest, "content_version")))
+        path
+      else
+        System.fetch_env!("E1_MANIFEST")
+      end
+
     if tags[:generated] do
       {:ok, store} =
         VoxelRegion.GeneratedStore.open(
           root: root,
-          manifest_path: System.fetch_env!("E1_MANIFEST")
+          manifest_path: manifest_path
         )
 
       for level <- 1..5 do
@@ -117,7 +129,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
          root: root,
          name: :e1_actual_world,
          source: source,
-         manifest_path: System.fetch_env!("E1_MANIFEST")}
+         manifest_path: manifest_path}
       )
 
     profile =

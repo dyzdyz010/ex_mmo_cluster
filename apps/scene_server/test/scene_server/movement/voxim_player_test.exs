@@ -184,6 +184,46 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     {p, q, start}
   end
 
+  test "断流角色仍推进，迟到跳跃不补跑，另一角色保持正常输入", ctx do
+    {p, q, _} = activate(ctx)
+    f = %Movement.InputFrame{input_seq: 1, axis_x: 32767, axis_z: 0, yaw: 123, jump_pressed: 0}
+    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [f]}, Clock.now(ctx.clock))
+    Player.observe(p)
+    for t <- 33..56 do
+      frame = %{f | input_seq: t-32, axis_x: 0}
+      Player.input(q, identity(2), %Movement.InputBatch{identity: identity(2), frames: [frame]}, Clock.now(ctx.clock))
+      Player.observe(q)
+      tick(ctx,t)
+    end
+    wait(fn -> Player.observe(p).simulation_tick == 56 and Player.observe(q).simulation_tick == 56 end)
+    before = Player.observe(p)
+    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [%{f | input_seq: 12, jump_pressed: 1}]}, Clock.now(ctx.clock))
+    after_late = Player.observe(p)
+    assert before.state == after_late.state
+    assert before.physics_steps == after_late.physics_steps
+    assert before.processed_input_seq == 24
+    assert before.substitutions == 23
+    assert Player.observe(q).substitutions == 0
+  end
+
+  test "已进入 owner 邮箱的输入排在切点之前，跨节点不使用发送方单调零点", ctx do
+    {p, _q, _} = activate(ctx)
+    state = :sys.get_state(p)
+    wall = state.time_origin + Clock.now(ctx.clock) - state.time_mono_origin
+    frame = %Movement.InputFrame{input_seq: 1, axis_x: 32767, axis_z: 0, yaw: 123, jump_pressed: 0}
+    :ok = :sys.suspend(p)
+    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]},
+      {:another_node, 9_000_000_000, wall})
+    tick(ctx, 33)
+    :ok = :sys.resume(p)
+    wait(fn -> Player.observe(p).simulation_tick == 33 end)
+    observed = Player.observe(p)
+    assert observed.processed_input_seq == 1
+    assert observed.substitutions == 0
+    assert observed.state.yaw == 123
+    assert elem(observed.state.velocity, 0) > 0
+  end
+
   test "suspended P retains exact R history while Q consumes 60Hz real inputs across R+1", ctx do
     {p, q, start} = activate(ctx)
     assert p != q
@@ -278,8 +318,8 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     assert_receive {:datagram, _,
                     %Movement.OwnerAck{
                       server_tick: 57,
-                      simulation_tick: 56,
-                      processed_input_seq: 24,
+                      simulation_tick: 57,
+                      processed_input_seq: 25,
                       collision_revision: 2
                     }},
                    1000
@@ -365,7 +405,7 @@ defmodule SceneServer.Movement.VoximPlayerTest do
   end
 
   # Test-only：冷 bootstrap 的 Ready 与首批真实输入分别迟到，仍只积分原编号对应的历史步。
-  test "slow bootstrap and delayed first records catch up without rebasing origin", ctx do
+  test "慢入场保持origin，停流按截止推进且迟到首批不补跑", ctx do
     {player, _} = join(ctx, 1, 20, 1)
     tick(ctx, 120)
     wait(fn -> Player.observe(player).simulation_tick == 120 end)
@@ -387,8 +427,8 @@ defmodule SceneServer.Movement.VoximPlayerTest do
         if value.published_tick == 240, do: value
       end)
 
-    assert waiting.simulation_tick == 150
-    assert waiting.processed_input_seq == 0
+    assert waiting.simulation_tick == 240
+    assert waiting.processed_input_seq == 90
 
     frames =
       for seq <- 1..91,
@@ -405,15 +445,15 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     recovered =
       wait(fn ->
         value = Player.observe(player)
-        if value.processed_input_seq == 90, do: value
+        if value.processed_input_seq == 90 and value.pending_inputs == 1, do: value
       end)
 
     assert recovered.simulation_tick == recovered.published_tick
     assert recovered.origin_tick == 151
     assert recovered.pending_inputs == 1
-    assert recovered.physics_steps - waiting.physics_steps == 90
-    assert recovered.substitutions == 0
-    assert elem(recovered.state.position, 0) > elem(waiting.state.position, 0)
+    assert recovered.physics_steps == waiting.physics_steps
+    assert recovered.substitutions == 90
+    assert recovered.state == waiting.state
     Player.ready(player, identity(1), 0, 1)
     Player.ready(player, identity(0), 0, 1)
     Player.input(player, identity(0), %Movement.InputBatch{identity: identity(0), frames: frames})
@@ -424,7 +464,7 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     refute_receive {:reliable, _, :control, %Session.InputStart{}}, 0
 
     IO.puts(
-      "M1_COLD_START origin=151 waited_through=240 prefix=90 caught_up=240 future_waited=1 stale_isolated=true"
+      "M1_COLD_START origin=151 finalized_through=240 prefix=90 substituted=90 future_waited=1 stale_isolated=true"
     )
   end
 

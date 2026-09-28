@@ -116,10 +116,17 @@ retains and retires its own exact historical versions. A stalled player can
 therefore replay R while another player queries R+1. Versions in a delayed
 mailbox also retain their references until that prefix is consumed.
 
-A Player consumes only contiguous real InputSlots whose assigned ticks are
-no later than its known public prefix. Input arrival may wake consumption of
-already published time; message count cannot create time or physics steps.
-Missing input waits without substitution. Joining zero-input physics remains
+Hello33 finalizes every elapsed InputSlot within the known canonical collision prefix.
+Missing continuous axes hold the last real sample for 3 ticks, then become zero;
+yaw holds and jump is never synthesized. Late frames cannot rewrite finalized slots.
+Gate stamps trusted ingress time before Player queuing. Same-node stamps use monotonic
+time; cross-node stamps use the existing server-time mapping (cross-host clock error
+remains outside the measured same-host scope). A frame must precede its deadline AND
+reach the owner before that slot is finalized; earlier Gate time cannot undo a cut.
+ACK processed_input_seq is a final slot watermark, not proof of receiving a real command.
+substituted_through_seq records the latest substituted slot; per-frame logs distinguish
+received/held/neutral/late. Physics time is never created by packet count.
+Joining zero-input physics remains
 the existing explicit pre-InputStart behavior. Ready confirms the exact
 bootstrap N/R; after TimeProbe and joining physics catch up, InputStart
 freezes origin=anchor+30. No state or ACK is emitted for a future unknown

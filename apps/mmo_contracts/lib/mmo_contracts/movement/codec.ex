@@ -23,6 +23,7 @@ defmodule MmoContracts.Movement.Codec do
          substituted_through_seq: :u32,
          simulation_tick: :u64
        ]},
+    4 => {Movement.SpeedScale, [identity: :identity, apply_tick: :u64, factor: :f64]},
     3 =>
       {Movement.Snapshot,
        [
@@ -56,6 +57,11 @@ defmodule MmoContracts.Movement.Codec do
 
   defp accept_m1(%Movement.Snapshot{records: records}),
     do: MmoContracts.Session.Wire.ordered!(Enum.map(records, & &1.entity_id))
+
+  defp accept_m1(%Movement.SpeedScale{apply_tick: tick, factor: factor}) do
+    true = tick > 0 and factor > 0.0 and factor <= 1.0
+    :ok
+  end
 
   defp accept_m1(_), do: :ok
 end
