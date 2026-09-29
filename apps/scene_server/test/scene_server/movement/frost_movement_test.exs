@@ -88,7 +88,7 @@ defmodule SceneServer.Movement.FrostMovementTest do
       assert profile == put_elem(state.config.profile_tuple, 2, 5.2)
     end
     assert state.simulation_tick == 12
-    assert state.movement_scales == [{11, 0.65}]
+    assert state.movement_scales == [{11, 0.65, 1.0}]
 
     state = input(state, 13..30)
     {:noreply, state} = Player.handle_info({:timeline, 30, 0, 1, [], []}, state)
@@ -103,7 +103,7 @@ defmodule SceneServer.Movement.FrostMovementTest do
     state = input(state, 31..50)
     {:noreply, state} = Player.handle_info({:timeline, 50, 0, 1, [], []}, state)
     assert_in_delta elem(state.state.velocity, 0), 8.0, 1.0e-9
-    assert state.movement_scales == [{31, 1.0}]
+    assert state.movement_scales == [{31, 1.0, 1.0}]
   end
 
   test "倍率不变不重复发，同 tick 后到变化覆盖，修复恢复全速" do
@@ -114,10 +114,10 @@ defmodule SceneServer.Movement.FrostMovementTest do
     state = body_tick(%{state | body: %{state.body | frost_heal: 0.25}})
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: factor}}
     assert_in_delta factor, 0.825, 1.0e-12
-    assert state.movement_scales == [{11, factor}, {0, 1.0}]
+    assert state.movement_scales == [{11, factor, 1.0}, {0, 1.0, 1.0}]
     state = body_tick(%{state | tick: 12, body: %{state.body | frost_heal: 0.5}})
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 13, factor: 1.0}}
-    assert state.movement_scales == [{13, 1.0}, {11, factor}, {0, 1.0}]
+    assert state.movement_scales == [{13, 1.0, 1.0}, {11, factor, 1.0}, {0, 1.0, 1.0}]
   end
 
   test "复活身体在未来 tick 发布恢复全速" do
@@ -133,7 +133,7 @@ defmodule SceneServer.Movement.FrostMovementTest do
     source = body_tick(player())
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: 0.65}}
     {:reply, {:ok, cut}, sealed} = Player.handle_call({:seal, source.identity}, nil, %{source | transfer: :requested})
-    assert cut.movement_scales == [{11, 0.65}, {0, 1.0}]
+    assert cut.movement_scales == [{11, 0.65, 1.0}, {0, 1.0, 1.0}]
     assert {:noreply, ^sealed} = Player.handle_info(:body_tick, sealed)
 
     {:ok, target} = Player.init(Keyword.merge(opts(), import: cut, tail: [], tick: 10))
@@ -145,6 +145,24 @@ defmodule SceneServer.Movement.FrostMovementTest do
     active = input(active, [9, 10])
     {:noreply, active} = Player.handle_info({:timeline, 11, 0, 1, [], []}, active)
     active = input(active, [11])
-    assert active.movement_scales == [{11, 0.65}]
+    assert active.movement_scales == [{11, 0.65, 1.0}]
   end
+  test "真实 Native 固定步同时消费冻伤和前摇限制，原始跑跳输入不能越过约束" do
+    state = player() |> body_tick() |> input([9, 10]) |> Map.put(:authority_ref, self())
+    for _ <- 1..2, do: assert_receive({:stepped, _, _})
+    request = %{action: 1, client_intent_seq: 1, request_id: 1, direction: {1.0, 0.0, 0.0}}
+    {:noreply, state} = Player.handle_call({:spell, state.identity, request, %{}}, {self(), make_ref()}, state)
+    frames = for n <- 11..40, do: %Movement.InputFrame{input_seq: n, axis_x: 32767, axis_z: 0, yaw: 0, jump_pressed: 1}
+    {:noreply, state} = Player.handle_cast({:input, state.identity, %Movement.InputBatch{identity: state.identity, frames: frames}, 166_666}, state)
+    {:noreply, state} = Player.handle_info({:timeline, 40, 0, 1, [], []}, state)
+    for _ <- 11..40 do
+      assert_receive {:stepped, profile, [{20, _, {x, z, jump}}]}
+      assert {x, z, jump} == {0.35, 0.0, 0}
+      assert elem(profile, 2) == 5.2
+    end
+    assert_in_delta elem(state.state.velocity, 0), 1.82, 1.0e-9
+    assert state.state.grounded == 1
+    assert_in_delta elem(state.state.position, 1), 1.91, 0.02
+  end
+
 end

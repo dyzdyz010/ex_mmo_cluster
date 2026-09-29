@@ -27,12 +27,15 @@ defmodule VoxelRegion.TestSupport do
   defmodule Actor do
     use GenServer
     def start_link(state),do: GenServer.start_link(__MODULE__,state)
-    def init(state),do: {:ok,state}
+    def init(state),do: {:ok,Map.put_new(state,:coherence_factor,1.0)}
     def tool_context(player,id),do: GenServer.call(player,{:tool_context,id})
     def handle_call({:tool_context,id},_,%{identity: id}=state),do: {:reply,{:ok,Map.put(state,:player,self())},state}
     def handle_call({:tool_context,_},_,state),do: {:reply,{:error,:invalid_state},state}
+    def handle_call({:coherence, factor}, _, state), do: {:reply, :ok, %{state | coherence_factor: factor}}
     def handle_call({:eye,eye},_,state),do: {:reply,:ok,%{state | eye: eye}}
     def handle_call(:seal,_,state),do: {:reply,:ok,%{state | identity: :sealed}}
+    # World 单元测试显式提供授权；不模拟角色前摇 owner。
+    def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
   end
 
   defmodule Log do
@@ -67,18 +70,20 @@ defmodule VoxelRegion.TestSupport do
   """
   def spell(world, actor, request) do
     task = Task.async(fn -> VoxelRegion.World.spell_intent(world, actor, request) end)
-    settle(world, actor.cid, task)
+    settle(world, actor, request, task)
   end
 
-  defp settle(world, cid, task) do
+  defp settle(world, actor, request, task) do
+    cid = actor.cid
     with nil <- Task.yield(task, 5) do
       case observe(world, [cid], @everywhere).casts do
-        %{^cid => %{t0_us: t0}} ->
-          send(world, {:settle_cast, cid, t0})
+        %{^cid => %{t0_us: _}} ->
+          {:ok, current} = actor.refresh.(actor.player, actor.identity)
+          send(world, {:authorize_cast, {actor.identity, request.client_intent_seq}, current, request})
           Task.await(task, 60_000)
 
         _ ->
-          settle(world, cid, task)
+          settle(world, actor, request, task)
       end
     else
       {:ok, result} -> result

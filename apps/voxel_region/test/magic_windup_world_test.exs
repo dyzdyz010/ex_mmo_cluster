@@ -91,7 +91,10 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     {task, request, record}
   end
 
-  defp settle(c, record), do: send(c.w, {:settle_cast, @cid, record.t0_us})
+  defp settle(c, request) do
+    {:ok, actor} = Actor.tool_context(c.a.player, c.a.identity)
+    send(c.w, {:authorize_cast, {actor.identity, request.client_intent_seq}, actor, request})
+  end
 
   # Hello 28：报价回复带本次程序前摇（契约 §2 手算表：远程点火 0.891983 s、取能 0.526861 s），报价不结算、不产生待施放。
   test "报价带前摇：远程点火 0.89198349 s、取能 0.52686110 s；不扣能量、无待施放", c do
@@ -106,7 +109,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert energy(c) == 0.0
   end
 
-  test "前摇：点火通过校验后不结算，广播施放记录（各步时长同手算、出发点 = 手边、程序字节原样）；真实定时器到期后结算并广播 live=0", c do
+  test "前摇：点火通过校验后不结算，广播施放记录（各步时长同手算、出发点 = 手边、程序字节原样）；只有角色授权后结算并广播 live=0", c do
     {a, r} = request(c, @stone_micro, draw(), 1_000_000)
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(c.w, a, r)
     rel(energy(c), 898_946.2777903)
@@ -118,7 +121,6 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     {actor, request} = request(c, @leaf_micro, heat(), 2_000_000)
     seq0 = World.seq(c.w)
     before_us = System.system_time(:microsecond)
-    started = System.monotonic_time(:millisecond)
     task = Task.async(fn -> World.spell_intent(c.w, actor, request) end)
 
     start_seq = seq0 + 1
@@ -144,9 +146,10 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref2)
     assert_receive {:canonical_snapshot, ^ref2, %{casts: %{@cid => ^record}}}, 5_000
 
-    # 定时器按前摇 0.89198 s（向上取整到 892 ms）到期，走现有结算路径：点火成功，扣 402 292.5445548 J。
+    assert Task.yield(task, 0) == nil
+    settle(c, request)
+    # 角色授权后按前摇 0.89198 s（向上取整到 892 ms）到期，走现有结算路径：点火成功，扣 402 292.5445548 J。
     assert {:ok, %{outcome: nil, seq: settle_seq, caster: caster}} = Task.await(task, 10_000)
-    assert System.monotonic_time(:millisecond) - started >= 892
     assert settle_seq > start_seq
     rel(caster.spent_j, 402_292.5445548)
     rel(energy(c), 496_653.7332355)
@@ -165,7 +168,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   test "前摇中再施放：立即 cast_too_soon、不扣能、不提交；报价不受影响；结算后照常", c do
     {a, r} = request(c, @stone_micro, draw(), 1_000_000)
     assert {:ok, _} = VoxelRegion.TestSupport.spell(c.w, a, r)
-    {task, _request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
+    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
     seq = World.seq(c.w)
 
     # 入口时钟晚于间隔 500 ms（不是 GCRA 过快），仍因前摇中被拒；同一 World 进程立即回复，不等前摇结束。
@@ -178,12 +181,12 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     rel(energy(c), 898_946.2777903)
     assert observe(c.w).casts == %{@cid => record}
 
-    settle(c, record)
+    settle(c, cast_request)
     assert {:ok, %{outcome: nil, seq: settled}} = Task.await(task, 10_000)
     assert settled == seq + 1
     rel(energy(c), 496_653.7332355)
     # 已结算的记录不再响应到期消息（旧定时器稍后到达时忽略）。
-    settle(c, record)
+    settle(c, cast_request)
     assert World.seq(c.w) == settled
   end
 
@@ -191,10 +194,10 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     ref = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
     assert_receive {:canonical_snapshot, ^ref, _}, 5_000
-    {task, _request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
+    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
     assert record.live == 1
     assert energy(c) == 0.0
-    settle(c, record)
+    settle(c, cast_request)
     assert {:ok, %{outcome: :misfire_energy, seq: seq, caster: %{spent_j: spent}}} = Task.await(task, 10_000)
     assert spent == 0.0
     assert_receive {:canonical_delta, %{transaction_seq: ^seq, transaction: %{casts: %{@cid => %{live: 0, outcome: 1}}}}}, 5_000
@@ -207,11 +210,11 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     ref = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
     assert_receive {:canonical_snapshot, ^ref, _}, 5_000
-    {task, _request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
+    {task, cast_request, record} = begin(c, @leaf_micro, heat(), 2_000_000)
     {:ok, _} = World.apply_edits(c.w, [{{0, 2, 3}, @stone}])
     seq = World.seq(c.w)
 
-    settle(c, record)
+    settle(c, cast_request)
     assert {:error, :stale_target} = Task.await(task, 10_000)
     rejected = seq + 1
     assert World.seq(c.w) == rejected
@@ -239,4 +242,18 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(w, actor, request)
     rel(energy(c), 496_653.7332355)
   end
+  test "取消不扣能、不产生作用，旧授权无效且监视随动作退休", c do
+    monitors = elem(Process.info(c.w, :monitors), 1)
+    {task, request, _} = begin(c, @stone_micro, draw(), 1_000_000)
+    key = {c.a.identity, request.client_intent_seq}
+    send(c.w, {:cancel_cast, key, :cast_cancelled})
+    assert Task.await(task) == {:error, :cast_cancelled}
+    seq = World.seq(c.w)
+    assert energy(c) == 0.0
+    assert observe(c.w).casts == %{}
+    settle(c, request)
+    assert World.seq(c.w) == seq
+    assert elem(Process.info(c.w, :monitors), 1) == monitors
+  end
+
 end

@@ -35,10 +35,10 @@ defmodule MmoContracts.BodyWireTest do
     protein_g: 42.5
   }
 
-  test "Hello 33：旧 Hello 31／32 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 33
-    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 33, kernel_id: <<1::256>>, profile_id: <<2::256>>})
-    <<prefix::binary-size(9), 33::16, tail::binary>> = IO.iodata_to_binary(packet)
+  test "Hello 34：旧 Hello 31／32 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 34
+    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 34, kernel_id: <<1::256>>, profile_id: <<2::256>>})
+    <<prefix::binary-size(9), 34::16, tail::binary>> = IO.iodata_to_binary(packet)
     for old <- [31, 32] do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<old::16>> <> tail)
     end

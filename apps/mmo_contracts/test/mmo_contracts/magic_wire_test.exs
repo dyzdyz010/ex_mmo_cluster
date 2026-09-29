@@ -22,11 +22,11 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 33：Hello 29 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 33
-    hello = %Session.Hello{protocol_version: 33, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 34：Hello 29 在线边界拒绝" do
+    assert Session.Codec.protocol_version() == 34
+    hello = %Session.Hello{protocol_version: 34, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 33::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 34::16, tail::binary>> = IO.iodata_to_binary(packet)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
   end
 
@@ -53,7 +53,10 @@ defmodule MmoContracts.MagicWireTest do
              }}} = Codec.decode(@spell)
 
     # action 在下标 21；granularity 在目标拟态 id 与程序长度之前（下标 size − 17）。
-    assert {:error, :invalid_message} = Codec.decode(put(@spell, 21, 2))
+    for action <- [2, 3] do
+      assert {:ok, {:voxel_spell_intent, %{action: ^action, client_intent_seq: 2}}} = Codec.decode(put(@spell, 21, action))
+    end
+    assert {:error, :invalid_message} = Codec.decode(put(@spell, 21, 4))
     assert {:error, :invalid_message} = Codec.decode(put(@spell, byte_size(@spell) - 17, 3))
     # dy 改为 −0.5：非单位方向。
     assert {:error, :invalid_message} =

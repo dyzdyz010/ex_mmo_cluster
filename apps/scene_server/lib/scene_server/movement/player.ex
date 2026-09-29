@@ -22,6 +22,8 @@ defmodule SceneServer.Movement.Player do
 
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
+  @doc "角色 owner 排序施法请求；World 异步准备与结算。"
+  def spell(player, identity, request, ingress), do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
   def tool_context(player, identity), do: GenServer.call(player, {:tool_context, identity})
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
@@ -63,7 +65,9 @@ defmodule SceneServer.Movement.Player do
         body_exchange_j: 0.0,
         body_sent: nil,
         # 冻伤系数的已发布变化点（新到旧）；固定步按自己的 tick 消费，积压不追溯应用新身体状态。
-        movement_scales: [{0, 1.0}],
+        movement_scales: [{0, 1.0, 1.0}],
+        action: nil,
+        action_seq: 0,
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
@@ -161,37 +165,39 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
-  def handle_call(
-        {:tool_context, identity},
-        _,
-        %{
-          identity: identity,
-          ready: true,
-          transfer: nil,
-          failure: nil,
-          state: %{position: {x, y, z}}
-        } = state
-      ) do
-    {:reply,
-     {:ok,
-      %{
-        player: self(),
-        gate: state.gate,
-        cid: state.id,
-        identity: identity,
-        eye: {x, y + 0.6, z},
-        position: {x, y, z},
-        # 魔法增量 1：施法留热落脚下宏格；position 是胶囊中心，脚 = 中心下移 profile 半高。
-        feet: {x, y - state.config.profile.half_height, z},
-        tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
-        refresh: &__MODULE__.tool_context/2
-      }}, state}
+  def handle_call({:spell, identity, request, ingress}, from,
+      %{identity: identity, ready: true, transfer: nil, failure: nil} = state) do
+    key = {identity, request.client_intent_seq}
+    case {request.action, state.action} do
+      {0, _} ->
+        send(state.authority_ref, {:quote_cast, actor_context(state), request, from})
+        {:noreply, state}
+      {1, nil} when request.client_intent_seq > state.action_seq and state.body.status != :dead ->
+        actor = Map.merge(actor_context(state), ingress)
+        send(state.authority_ref, {:prepare_cast, key, actor, request, from})
+        next = %{state | action: %{key: key, request: request, phase: :preparing, timer: nil}, action_seq: request.client_intent_seq}
+        {:noreply, publish_movement_scale(next, next.body)}
+      {1, _} -> {:reply, {:error, :cast_too_soon}, state}
+      {2, %{key: ^key}} -> {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
+      {3, %{key: ^key} = action} ->
+        # 控制请求只更新当前动作的方向，不替换程序和目标。
+        next = %{action | request: %{action.request | direction: request.direction}}
+        {:reply, {:ok, :controlled}, %{state | action: next}}
+      {_, _} -> {:reply, {:error, :already_released}, state}
+    end
   end
+  def handle_call({:spell, _, _, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
 
+  def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state) when action != nil,
+    do: {:reply, {:error, :casting}, state}
+  def handle_call({:tool_context, identity}, _,
+      %{identity: identity, ready: true, transfer: nil, failure: nil} = state),
+    do: {:reply, {:ok, Map.put(actor_context(state), :refresh, &__MODULE__.tool_context/2)}, state}
   def handle_call({:tool_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
 
   def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
+    state = cancel_cast(state, :cast_cancelled)
     fence(state)
 
     checkpoint =
@@ -249,6 +255,13 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
+  def handle_cast({:spell, identity, request, ingress, from}, state) do
+    case handle_call({:spell, identity, request, ingress}, from, state) do
+      {:reply, reply, next} -> GenServer.reply(from, reply); {:noreply, next}
+      {:noreply, next} -> {:noreply, next}
+    end
+  end
+
   def handle_cast({:input, _, _, _}, %{transfer: :sealed} = state),
     do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
@@ -306,6 +319,27 @@ defmodule SceneServer.Movement.Player do
   def handle_cast(_, state), do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
   @impl true
+  def handle_info({:cast_prepared, key, windup_s}, %{action: %{key: key, phase: :preparing} = action} = state) do
+    timer = Process.send_after(self(), {:release_cast, key}, ceil(windup_s * 1000))
+    {:noreply, %{state | action: %{action | phase: :windup, timer: timer}}}
+  end
+  def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
+  def handle_info({:cast_failed, key}, %{action: %{key: key}} = state),
+    do: {:noreply, clear_cast(state)}
+  def handle_info({:cast_failed, _}, state), do: {:noreply, state}
+  def handle_info({:release_cast, key}, %{action: %{key: key, phase: :windup} = action} = state) do
+    if state.body.status == :dead or state.failure != nil or state.transfer != nil do
+      {:noreply, cancel_cast(state, :cast_cancelled)}
+    else
+      actor = actor_context(state)
+      character_event(state, state, :cast_authorized, %{client_intent_seq: action.request.client_intent_seq,
+        position: Tuple.to_list(actor.position), direction: Tuple.to_list(action.request.direction), coherence_factor: actor.coherence_factor})
+      send(state.authority_ref, {:authorize_cast, key, actor, action.request})
+      {:noreply, clear_cast(state)}
+    end
+  end
+  def handle_info({:release_cast, _}, state), do: {:noreply, state}
+
   def handle_info({:clock_origin, origin}, state), do: {:noreply, %{state | mono_origin: origin}}
 
   def handle_info({:collision_stream, _, _, _}, %{transfer: :sealed} = state),
@@ -559,7 +593,7 @@ defmodule SceneServer.Movement.Player do
     if authority, do: send(authority, {:body_coherence, state.id, coherence})
 
     state = publish_movement_scale(state, body)
-    {movement_apply_tick, movement_factor} = hd(state.movement_scales)
+    {movement_apply_tick, movement_factor, _} = hd(state.movement_scales)
     report = Body.report(body, 1.0)
 
     if report.key != state.body_sent do
@@ -593,17 +627,37 @@ defmodule SceneServer.Movement.Player do
   end
 
   # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
+  defp actor_context(state) do
+    {x, y, z} = state.state.position
+    %{player: self(), gate: state.gate, cid: state.id, identity: state.identity,
+      eye: {x, y + 0.6, z}, position: {x, y, z}, feet: {x, y - state.config.profile.half_height, z},
+      tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
+      coherence_factor: Body.coherence_factor(state.body)}
+  end
+
+  defp cancel_cast(%{action: nil} = state, _), do: state
+  defp cancel_cast(state, reason) do
+    character_event(state, state, :cast_cancelled, %{client_intent_seq: state.action.request.client_intent_seq, reason: reason})
+    send(state.authority_ref, {:cancel_cast, state.action.key, reason})
+    clear_cast(state)
+  end
+  defp clear_cast(state) do
+    if state.action.timer, do: Process.cancel_timer(state.action.timer)
+    publish_movement_scale(%{state | action: nil}, state.body)
+  end
+
   defp publish_movement_scale(state, body) do
     factor = Body.movement_factor(body)
-    {_, previous} = hd(state.movement_scales)
+    {_, previous, previous_limit} = hd(state.movement_scales)
+    limit = if state.action, do: 0.35, else: 1.0
 
-    if factor == previous do
+    if factor == previous and limit == previous_limit do
       state
     else
       tick = state.tick + 1
-      reliable(state, :voxel, %Movement.SpeedScale{identity: state.identity, apply_tick: tick, factor: factor})
-      character_event(state, state, :movement_scale, %{apply_tick: tick, movement_factor: factor})
-      %{state | movement_scales: [{tick, factor} | Enum.reject(state.movement_scales, &(elem(&1, 0) == tick))]}
+      reliable(state, :voxel, %Movement.SpeedScale{identity: state.identity, apply_tick: tick, factor: factor, input_limit: limit})
+      character_event(state, state, :movement_scale, %{apply_tick: tick, movement_factor: factor, input_limit: limit})
+      %{state | movement_scales: [{tick, factor, limit} | Enum.reject(state.movement_scales, &(elem(&1, 0) == tick))]}
     end
   end
 
@@ -618,6 +672,7 @@ defmodule SceneServer.Movement.Player do
   # 死亡（Magic.md §6.10）：通知 World 在死亡点附近按 5% 掷骰掉落（`{:body_death, cid, 脚位}`，World 裁决并记账），
   # 并开始回会话出生点（`relocate/1`）。
   defp died(state) do
+    state = cancel_cast(state, :cast_cancelled)
     {x, y, z} = state.state.position
     feet = {x, y - state.config.profile.half_height, z}
     if authority = Map.get(state, :authority_ref), do: send(authority, {:body_death, state.id, feet})
@@ -754,8 +809,9 @@ defmodule SceneServer.Movement.Player do
             end
 
           {world, revision} = CollisionUpdates.at_tick(state.updates, tick)
+          {movement_apply_tick, movement_factor, input_limit} = movement_scale(state, tick)
+          input = Movement.Codec.constrain(input, input_limit)
           {x, z, jump} = input
-          {movement_apply_tick, movement_factor} = movement_scale(state, tick)
           profile = put_elem(state.config.profile_tuple, 2, elem(state.config.profile_tuple, 2) * movement_factor)
 
           character_event(state, state, :input_selected, %{
@@ -770,6 +826,7 @@ defmodule SceneServer.Movement.Player do
             native_axis_x: x,
             native_axis_z: z,
             movement_factor: movement_factor,
+            input_limit: input_limit,
             movement_apply_tick: movement_apply_tick,
             movement_speed: elem(profile, 2),
             selection: selection,
@@ -1027,7 +1084,7 @@ defmodule SceneServer.Movement.Player do
 
   defp observation(state) do
     {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)
-    {movement_apply_tick, movement_factor} = movement_scale(state, state.simulation_tick)
+    {movement_apply_tick, movement_factor, input_limit} = movement_scale(state, state.simulation_tick)
 
     %{
       identity: state.identity,
@@ -1040,6 +1097,7 @@ defmodule SceneServer.Movement.Player do
       origin_tick: state.origin,
       simulation_tick: state.simulation_tick,
       movement_factor: movement_factor,
+      input_limit: input_limit,
       movement_apply_tick: movement_apply_tick,
       movement_speed: elem(state.config.profile_tuple, 2) * movement_factor,
       collision_revision: state.simulation_revision,

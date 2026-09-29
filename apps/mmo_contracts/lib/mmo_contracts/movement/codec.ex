@@ -23,7 +23,7 @@ defmodule MmoContracts.Movement.Codec do
          substituted_through_seq: :u32,
          simulation_tick: :u64
        ]},
-    4 => {Movement.SpeedScale, [identity: :identity, apply_tick: :u64, factor: :f64]},
+    4 => {Movement.SpeedScale, [identity: :identity, apply_tick: :u64, factor: :f64, input_limit: :f64]},
     3 =>
       {Movement.Snapshot,
        [
@@ -50,6 +50,12 @@ defmodule MmoContracts.Movement.Codec do
     {x / length, z / length}
   end
 
+  @doc "限制输入幅度，不二次乘速度；前摇不能起跳。"
+  def constrain({x, z, jump}, limit) do
+    scale = max(1.0, :math.sqrt(x * x + z * z) / limit)
+    {x / scale, z / scale, if(limit < 1.0, do: 0, else: jump)}
+  end
+
   defp accept_m1(%Movement.InputBatch{frames: frames}) do
     true = length(frames) in 1..6
     MmoContracts.Session.Wire.ordered!(Enum.map(frames, & &1.input_seq))
@@ -58,8 +64,8 @@ defmodule MmoContracts.Movement.Codec do
   defp accept_m1(%Movement.Snapshot{records: records}),
     do: MmoContracts.Session.Wire.ordered!(Enum.map(records, & &1.entity_id))
 
-  defp accept_m1(%Movement.SpeedScale{apply_tick: tick, factor: factor}) do
-    true = tick > 0 and factor > 0.0 and factor <= 1.0
+  defp accept_m1(%Movement.SpeedScale{apply_tick: tick, factor: factor, input_limit: limit}) do
+    true = tick > 0 and factor > 0.0 and factor <= 1.0 and limit > 0.0 and limit <= 1.0
     :ok
   end
 

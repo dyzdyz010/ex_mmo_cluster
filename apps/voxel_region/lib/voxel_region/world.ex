@@ -800,18 +800,9 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call({:spell_intent, actor, request}, from, state) do
-    with {:ok, actor} <- current_actor(actor),
-         true <- state.magic != nil and state.magic.digest == request.catalog_digest,
-         {:ok, program} <- Magic.Program.parse(request.program, state.magic),
-         :ok <- warm_semblance(program, state.thermal.config["ambient_kelvin"]) do
-      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
-
-      if request.action == 0,
-        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0, quote.windup_s)}}, state},
-        else: cast_spell(state, from, actor, request, program, quote)
-    else
-      false -> {:reply, {:error, :stale_magic_catalog}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+    case current_actor(actor) do
+      {:ok, current} -> prepare_spell(state, from, Map.put(current, :action_key, {actor.identity, request.client_intent_seq}), request)
+      error -> {:reply, error, state}
     end
   end
 
@@ -1217,19 +1208,37 @@ defmodule VoxelRegion.World do
     {:noreply, schedule_liquid(state)}
   end
 
-  # 施放前摇到期：用开始时捕获的施法者、意图与程序走现有结算路径；回执此时才回给施放调用方。
-  # 到期消息以记录的 t0_us 标识这条待施放；已结算的旧定时器（t0 不符）直接忽略。
-  def handle_info({:settle_cast, cid, t0_us}, state) do
-    case state.pending_casts do
-      %{^cid => %{record: %{t0_us: ^t0_us}} = pending} ->
-        {reply, state} = settle_cast(%{state | pending_casts: Map.delete(state.pending_casts, cid)}, pending)
-        GenServer.reply(pending.from, reply)
-        {:noreply, state}
-
-      _ ->
-        {:noreply, state}
+  # 全局系统：Player 是唯一前摇/授权 owner，World 仅保存待支付的领域负载。
+  def handle_info({:quote_cast, actor, request, from}, state) do
+    {:reply, result, next} = prepare_spell(state, from, actor, request)
+    GenServer.reply(from, result)
+    {:noreply, next}
+  end
+  def handle_info({:prepare_cast, key, actor, request, from}, state) do
+    case prepare_spell(state, from, Map.put(actor, :action_key, key), request) do
+      {:noreply, next} -> {:noreply, next}
+      {:reply, result, next} ->
+        send(actor.player, {:cast_failed, key})
+        GenServer.reply(from, result)
+        {:noreply, next}
     end
   end
+  def handle_info({:authorize_cast, key, actor, request}, state) do
+    case state.pending_casts[actor.cid] do
+      %{actor: %{action_key: ^key, player: player}} = pending when player == actor.player ->
+        # 授权快照来自角色 owner，同一消息携带姿态与 Body；不再同步回调 Player。
+        Process.demonitor(pending.monitor, [:flush])
+        current = Map.merge(pending.actor, actor)
+        pending = %{pending | actor: current, request: %{pending.request | direction: request.direction}}
+        next = %{state | pending_casts: Map.delete(state.pending_casts, actor.cid),
+          caster_coherence: Map.put(state.caster_coherence, actor.cid, actor.coherence_factor)}
+        {reply, next} = settle_cast(next, pending)
+        GenServer.reply(pending.from, reply)
+        {:noreply, next}
+      _ -> {:noreply, state}
+    end
+  end
+  def handle_info({:cancel_cast, key, reason}, state), do: {:noreply, cancel_pending_cast(state, key, reason)}
 
   def handle_info(:thermal_commit, state) do
     started = System.monotonic_time(:microsecond)
@@ -1257,8 +1266,10 @@ defmodule VoxelRegion.World do
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state),
-    do:
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    state = Enum.reduce(state.pending_casts, state, fn {_, pending}, acc ->
+      if pending.actor.player == pid, do: cancel_pending_cast(acc, pending.actor.action_key, :invalid_session), else: acc
+    end)
       {:noreply,
        %{
          state
@@ -1270,6 +1281,7 @@ defmodule VoxelRegion.World do
            claim_corners: Map.delete(state.claim_corners, pid),
            build_sessions: Map.delete(state.build_sessions, pid)
        }}
+  end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
@@ -4835,6 +4847,20 @@ defmodule VoxelRegion.World do
 
   # 施放前摇（§13.6）：立即校验（间隔、目标、施法域、脚下、权限）失败即刻拒绝；通过后不结算，记一条待施放并广播
   # 施放记录，前摇到期（`{:settle_cast, …}`）再以开始时捕获的施法者与意图重做同一校验并结算。前摇中再施放 = cast_too_soon。
+  defp prepare_spell(state, from, actor, request) do
+    with true <- state.magic != nil and state.magic.digest == request.catalog_digest,
+         {:ok, program} <- Magic.Program.parse(request.program, state.magic),
+         :ok <- warm_semblance(program, state.thermal.config["ambient_kelvin"]) do
+      quote = Magic.Cost.quote(program, state.magic, state.thermal.config["ambient_kelvin"])
+
+      if request.action == 0,
+        do: {:reply, {:ok, %{seq: state.seq, outcome: nil, caster: caster_view(state, actor.cid, quote, 0.0, quote.windup_s)}}, state},
+        else: cast_spell(state, from, actor, request, program, quote)
+    else
+      false -> {:reply, {:error, :stale_magic_catalog}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
   defp cast_spell(state, from, actor, request, program, quote) do
     with false <- Map.has_key?(state.pending_casts, actor.cid),
          {:ok, _checked, _state} <- check_cast(state, actor, request, program) do
@@ -4871,14 +4897,15 @@ defmodule VoxelRegion.World do
 
     case commit_casts(state, %{actor.cid => record}) do
       {:ok, next} ->
-        Process.send_after(self(), {:settle_cast, actor.cid, record.t0_us}, ceil(quote.windup_s * 1000))
+        monitor = Process.monitor(actor.player)
+        send(actor.player, {:cast_prepared, actor.action_key, quote.windup_s})
 
         Logger.info(
           "voxel_cast_begin seq=#{next.seq} cid=#{actor.cid} request_id=#{request.request_id} t0_us=#{record.t0_us} " <>
             "windup_s=#{quote.windup_s} physical_j=#{quote.physical_j} loss_j=#{quote.loss_j} steps=#{inspect(quote.steps)}"
         )
 
-        pending = %{record: record, from: from, actor: actor, request: request, program: program, quote: quote}
+        pending = %{record: record, from: from, actor: actor, request: request, program: program, quote: quote, monitor: monitor}
         {:noreply, %{next | pending_casts: Map.put(next.pending_casts, actor.cid, pending)}}
 
       {:error, reason} ->
@@ -4888,6 +4915,17 @@ defmodule VoxelRegion.World do
 
   # 结算：成功与走火由 settle_spell 提交（事务带 live=0 记录）；此时校验失败（如目标已失效）照常拒绝、不扣能，
   # 另提交一笔只带 live=0 / outcome 2 的事务。
+  defp cancel_pending_cast(state, key, reason) do
+    case Enum.find(state.pending_casts, fn {_, pending} -> pending.actor.action_key == key end) do
+      nil -> state
+      {cid, pending} ->
+        Process.demonitor(pending.monitor, [:flush])
+        {:ok, next} = commit_casts(state, %{cid => %{live: 0, outcome: 2}})
+        GenServer.reply(pending.from, {:error, reason})
+        %{next | pending_casts: Map.delete(next.pending_casts, cid)}
+    end
+  end
+
   defp settle_cast(state, pending) do
     case check_cast(state, pending.actor, pending.request, pending.program) do
       {:ok, checked, next} ->
@@ -5070,7 +5108,7 @@ defmodule VoxelRegion.World do
     stone = if effect.sym == "energy.draw", do: property_state(before, effect.target)
     draw = stone && Magic.Cost.draw(effect.args["energy_j"], Map.get(stone, :stored_j, 0.0), balance, magic)
     available = if draw, do: balance + draw.gained_j, else: balance
-    outcome = Magic.Cost.misfire(quote, available, %{magic | coherence: coherence(before, cid)})
+    outcome = Magic.Cost.misfire(quote, available, %{magic | coherence: magic.coherence * actor.coherence_factor})
     thermal = %{before.thermal | active: true}
 
     {spent, left, rows, thermal} =

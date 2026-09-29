@@ -138,7 +138,7 @@ defmodule MmoContracts.Voxel.Codec do
   """
   def spell_intent?(%{action: action, direction: {dx, dy, dz}, granularity: granularity}) do
     norm = dx * dx + dy * dy + dz * dz
-    action in [0, 1] and granularity in [0, 1, 2] and norm > 0.99 and norm < 1.01
+    action in [0, 1, 2, 3] and granularity in [0, 1, 2] and norm > 0.99 and norm < 1.01
   end
 
   @doc "现行帧字节（不含传输长度前缀）解码。"

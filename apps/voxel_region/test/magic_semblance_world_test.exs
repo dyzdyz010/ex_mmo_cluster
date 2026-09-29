@@ -169,14 +169,19 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
   # 走火 misfire_coherence，单步取能（S = 1）照常；系数 0.5 → 相干度 2.0，S = 2 不大于它，投掷不走火。未报过按 1.0（改前恒为 4.0）。
   test "相干度系数压低相干度：恍惚 0.45 → 相干度 1.8，两步投掷走火、单步取能照常；0.5 → 2.0 不走火", c do
     assert {:ok, %{coherence: 4.0}} = World.caster_state(c.w, @cid)
+    GenServer.call(c.a.player, {:coherence, 0.45})
     send(c.w, {:body_coherence, @cid, 0.45})
     assert {:ok, %{coherence: coherence}} = World.caster_state(c.w, @cid)
     assert_in_delta coherence, 1.8, 1.0e-12
     assert {:ok, %{outcome: nil}} = draw(c, 1_000_000)
     assert {:ok, %{outcome: nil, caster: %{coherence: quoted}}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000, action: 0)
     assert_in_delta quoted, 1.8, 1.0e-12
-    assert {:ok, %{outcome: :misfire_coherence}} = cast(c, c.presets["hot_throw"], @forward, at: 3_000_000)
+    # World 独立测试：模拟旧的每秒推送缓存，授权快照必须胜出且回执与裁决一致。
+    send(c.w, {:body_coherence, @cid, 0.9})
+    assert {:ok, %{outcome: :misfire_coherence, caster: %{coherence: released}}} = cast(c, c.presets["hot_throw"], @forward, at: 3_000_000)
+    assert_in_delta released, 1.8, 1.0e-12
     assert {:ok, %{outcome: nil}} = draw(c, 4_000_000)
+    GenServer.call(c.a.player, {:coherence, 0.5})
     send(c.w, {:body_coherence, @cid, 0.5})
     assert {:ok, %{outcome: nil}} = cast(c, c.presets["hot_throw"], @forward, at: 5_000_000)
   end

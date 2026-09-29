@@ -674,7 +674,15 @@ defmodule GateServer.Session.Dispatch do
   # 施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才有，在独立进程里等，编辑 worker 不被占住
   # （前摇中的再次施放要立即拿到 cast_too_soon，其他编辑意图照常）；报价同步回复。
   def handle({:voxel_spell_intent, %{action: 1} = request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    spawn(fn -> reply_spell(request, state) end)
+    ref = make_ref()
+    waiter = spawn(fn ->
+      monitor = Process.monitor(state.player)
+      receive do
+        {^ref, result} -> Process.demonitor(monitor, [:flush]); reply_spell_result(result, request, state)
+        {:DOWN, ^monitor, :process, _, _} -> reply_spell_result({:error, :invalid_session}, request, state)
+      end
+    end)
+    GenServer.cast(state.player, {:spell, state.identity, request, Map.take(state, [:received_us, :clock_node]), {waiter, ref}})
     {:ok, state}
   end
 
@@ -1098,13 +1106,13 @@ defmodule GateServer.Session.Dispatch do
   defp send_encoded(state, message), do: Sink.send_encoded(state.sink, message)
 
   defp reply_spell(request, state) do
-    result =
-      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
-        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
-        VoxelRegion.World.spell_intent(state.world_ref, actor, request)
-      end
+    result = SceneServer.Movement.Player.spell(state.player, state.identity, request, Map.take(state, [:received_us, :clock_node]))
+    reply_spell_result(result, request, state)
+  end
 
+  defp reply_spell_result(result, request, state) do
     case result do
+      {:ok, :controlled} -> :ok
       {:ok, reply} ->
         send_encoded(state, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
 

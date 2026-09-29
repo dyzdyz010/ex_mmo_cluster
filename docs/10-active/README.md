@@ -85,3 +85,5 @@
 - [`2026-07-21-voxia-far-render-governance-implementation-plan.md`](voxel-far-field/2026-07-21-voxia-far-render-governance-implementation-plan.md) — RG0–RG6 远景渲染治理执行证据
 
 旧 XZ tile column、VHI/heightmap、finite-Y、近远交接与 VLOD 阶段稿已移入 [`../20-archive/voxel-far-field/`](../20-archive/voxel-far-field/)；只保留历史证据，不得作为当前设计。
+
+- [施法前摇与移动约束（Hello34）](movement-sync/2026-09-29-cast-actions.md)：当前动作 owner、工具互斥与验证入口。
