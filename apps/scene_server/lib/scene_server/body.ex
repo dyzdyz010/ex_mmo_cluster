@@ -2,9 +2,9 @@ defmodule SceneServer.Body do
   @moduledoc """
   角色身体 L1 的纯值状态（Voxim `Docs/Magic.md` §6）。
 
-  首片只接体温这一路。体温是多层模型（Stolwijk 1971 被动系统按“躯干 + 头”与“四肢”两组归并，见 `body/README.md`）的
+  身体包含体温、热伤与粗部位机械外伤。体温是多层模型（Stolwijk 1971 被动系统按“躯干 + 头”与“四肢”两组归并，见 `body/README.md`）的
   七个节点温度：核心（头、躯干核心与中心血液）、躯干肌肉、躯干脂肪、四肢核心（骨等）、四肢肌肉、四肢脂肪、皮肤（全身共用一个）；
-  另存烧伤与冻伤的组织损伤剂量、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
+  另存烧伤与冻伤的组织损伤剂量、部位外伤 `traumas`（深度、修复蛋白量、时长与进度）、致命系统跌破阈值的持续时间和存活状态。以下都是由这些字段**推导**的只读视图，不另存第二份：
 
   - `systems/1`：体温调节、循环、神经三个系统的功能水平（1.0 = 正常，0.0 = 完全抑制）；
   - `coherence_factor/1`：施法相干度系数 = 神经 × 烧伤疼痛 × 恍惚（只降相干度，不进生命）；
@@ -237,6 +237,7 @@ defmodule SceneServer.Body do
             status: :alive,
             protein_g: 100.0,
             burn_heal: 0.0,
+            traumas: %{},
             frost_heal: 0.0,
             burn_age_s: 0.0,
             weak_s: 0.0,
@@ -298,6 +299,21 @@ defmodule SceneServer.Body do
   @doc "调定点上的健康身体：核心 36.8 °C、皮肤与组织块 34 °C、其余层为该核心 / 皮肤下的稳态，衣物干、无伤病、存活。"
   @spec new() :: t()
   def new, do: %__MODULE__{}
+
+  @doc "Global system：目录定义的部位外伤。只增加尚未受损部分的缺损，不写入独立生命值。"
+  def trauma(%__MODULE__{} = body, part, impact) when part in [:head, :torso, :legs] do
+    wound = case body.traumas[part] do
+      nil -> Map.put(impact, :heal, 0.0)
+      old -> %{depth: 1 - (1 - old.depth * (1 - old.heal)) * (1 - impact.depth),
+        protein_g: old.protein_g * (1 - old.heal) + impact.protein_g,
+        heal_s: max(old.heal_s * (1 - old.heal), impact.heal_s), heal: 0.0}
+    end
+    %{body | traumas: Map.put(body.traumas, part, wound)}
+  end
+
+  @doc "部位外伤的循环功能乘数，和热伤沿同一系统合成。"
+  def trauma_factor(%__MODULE__{} = body),
+    do: Enum.reduce(body.traumas, 1.0, fn {_, w}, f -> f * (1 - w.depth * (1 - w.heal)) end)
 
   @doc """
   复活后的统一身体（Magic.md §6.10）：调定点体温、无伤病；营养（蛋白）与糖原清零，脂肪为标准人满值 `fat_full_j`（420.52 MJ，
@@ -389,7 +405,7 @@ defmodule SceneServer.Body do
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
-      circulation: level(core, @params.circulation_band) * (1 - burn_depression(body)) * weak,
+      circulation: level(core, @params.circulation_band) * (1 - burn_depression(body)) * weak * trauma_factor(body),
       nervous: level(core, @params.nervous_band)
     }
   end
@@ -433,7 +449,7 @@ defmodule SceneServer.Body do
   """
   @spec recoverable_life(t()) :: 0..100
   def recoverable_life(%__MODULE__{} = body),
-    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0, weak_s: 0.0, daze_s: 0.0}) - life(body)
+    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0, weak_s: 0.0, daze_s: 0.0, traumas: %{}}) - life(body)
 
   @doc "伤口此刻的愈合速率（进度 /s）：`m / T(严重度) × min(1, 循环)`；`Repair.heal/3` 与 `remaining_s/3` 共用这一处。"
   @spec heal_rate(t(), :burn | :frostbite, number()) :: float()
@@ -471,7 +487,8 @@ defmodule SceneServer.Body do
   def injuries(%__MODULE__{} = body) do
     hungry = body.protein_g < @params.hunger_below_fraction * @params.protein_full_g
 
-    [
+    ((for {part, wound} <- Enum.sort(body.traumas),
+      do: {"trauma.mechanical.#{part}", part, 1, :heals, wound.heal}) ++ [
       {"temperature.hypothermia", :whole,
        Enum.count(@params.hypothermia_below_k, &(body.core_k < &1)), :tracks_core, 0.0},
       {"temperature.hyperthermia", :whole,
@@ -481,7 +498,7 @@ defmodule SceneServer.Body do
       {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0},
       {"recovery.weakness", :whole, if(body.weak_s > 0, do: 1, else: 0), :timed, 1 - body.weak_s / @params.revive_weak_s},
       {"nervous.daze", :whole, if(body.daze_s > 0, do: 1, else: 0), :timed, 1 - body.daze_s / @params.revive_daze_s}
-    ]
+    ])
     |> Enum.filter(fn {_tag, _part, severity, _rule, _heal} -> severity > 0 end)
     |> Enum.map(fn {tag, part, severity, rule, heal} ->
       %{tag: tag, part: part, severity: severity, progression: rule, heal: heal}
@@ -523,7 +540,17 @@ defmodule SceneServer.Body do
 
     injuries =
       for i <- injuries(body) do
-        remaining = if f = left[i.tag], do: f.(), else: 0.0
+        remaining = cond do
+          String.starts_with?(i.tag, "trauma.mechanical.") ->
+            wound = Map.fetch!(body.traumas, i.part)
+            cond do
+              body.protein_g <= 0 -> -1.0
+              systems(body).circulation <= 0 or body.reserve_j + body.fat_reserve_j <= 0 -> -2.0
+              true -> (1 - wound.heal) * wound.heal_s / (m * systems(body).circulation)
+            end
+          f = left[i.tag] -> f.()
+          true -> 0.0
+        end
         {i.tag, i.severity, floor(i.heal * 100), remaining}
       end
 

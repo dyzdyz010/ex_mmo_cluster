@@ -114,7 +114,10 @@ defmodule MmoContracts.Voxel.Codec do
   def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
     norm = dx * dx + dy * dy + dz * dz
 
-    action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3] and
+    action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3, 5] and
+      (Map.get(request, :granularity, 0) != 5 or
+        (action in [0, 1] and match?({id, 0} when id > 0, request.owner) and
+          (action == 0 or request.incarnation > 0))) and
       norm > 0.99 and norm < 1.01
   end
 

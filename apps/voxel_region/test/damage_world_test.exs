@@ -75,6 +75,26 @@ defmodule VoxelRegion.DamageWorldTest do
     World.tool_intent(w,actor,request)
   end
 
+  @tag :tool_combat
+  test "body ray uses canonical obstruction and reach", c do
+    assert :ok = World.body_tool(c.w, c.actor, c.request, 1.0)
+    assert {:error, :out_of_reach} = World.body_tool(c.w, c.actor, c.request, 6.01)
+    assert {:ok, 1} = World.apply_edit(c.w, {1,1,1}, 19)
+    assert {:error, :occluded} = World.body_tool(c.w, c.actor, c.request, 1.5)
+  end
+
+  @tag :tool_combat
+  test "body attack and terrain attack share cooldown", c do
+    assert {:ok, 1} = World.apply_edit(c.w, {1,1,2}, 19)
+    assert {:ok, target} = World.tool_intent(c.w, c.actor, c.request)
+    actor = Map.merge(c.actor, %{received_us: 1_000_000, clock_node: node()})
+    assert :ok = World.body_tool(c.w, actor, %{c.request | action: 1}, 1.0)
+    terrain = Map.merge(c.request, Map.take(target, [:micro,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 1, client_intent_seq: 2})
+    assert {:error, :tool_cooldown} = World.tool_intent(c.w, actor, terrain)
+    assert {:ok, _} = World.tool_intent(c.w, %{actor | received_us: 1_500_000}, %{terrain | client_intent_seq: 3})
+  end
+
   @tag :b2
   test "B2 harvest and paid build preserve world and balance in the same log", c do
     assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)

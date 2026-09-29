@@ -99,7 +99,8 @@ defmodule SceneServer.Body.RepairTest do
       assert_in_delta List.last(totals), 63.633, 1.0e-2
     end
 
-    test "急性期满（计时 ≥ onset 30 s）后烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 75 / 85 / 91；3 度进度 0.5 → 1 − 0.090906 × 0.5 = 0.954547（生命 95）；冻伤不压循环" do
+    # 急性期满（计时 ≥ onset 30 s）后烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 75 / 85 / 91；3 度进度 0.5 → 1 − 0.090906 × 0.5 = 0.954547（生命 95）；冻伤不压循环
+    test "急性期后烧伤循环上限随深度和愈合进度变化；冻伤不压循环" do
       assert Body.burn_onset_s() == 30.0
       assert_in_delta Body.systems(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}).circulation, 0.75, 1.0e-12
       assert Body.life(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}) == 75
@@ -114,7 +115,8 @@ defmodule SceneServer.Body.RepairTest do
 
   describe "自然愈合" do
     # 回归（改前失败）：旧实现伤口剂量只增不减、`:permanent`；K 实现下一度烧伤不压循环、需传 K。
-    test "一度烧伤（从受伤起，含急性期）：首步上限 1 → 进度 1/92.5551 = 0.0108044；第 102 步 0.998484 仍在，第 103 步剂量、进度与计时归零；共耗蛋白 0.9 g、合成能 10 800 J" do
+    # 一度烧伤（从受伤起，含急性期）：首步上限 1 → 进度 1/92.5551 = 0.0108044；第 102 步 0.998484 仍在，第 103 步剂量、进度与计时归零；共耗蛋白 0.9 g、合成能 10 800 J
+    test "一度烧伤103步愈合：共耗0.9g蛋白和10800J合成能" do
       burnt = %{Body.new() | burn_dose_s: 1.0}
       assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 1, progression: :heals, heal: +0.0}] = Body.injuries(burnt)
 
@@ -336,7 +338,8 @@ defmodule SceneServer.Body.RepairTest do
       assert {Body.life(half), Body.recoverable_life(half)} == {92, 8}
     end
 
-    test "三度烧伤（急性期满）：进度 0 生命 91、可恢复 9、剩余 699.9887 / 0.909094 = 769.99 s；进度 0.5 → 生命 95、可恢复 5、剩余 0.5 × 699.9887 / 0.954547 = 366.66 s" do
+    # 三度烧伤（急性期满）：进度 0 生命 91、可恢复 9、剩余 699.9887 / 0.909094 = 769.99 s；进度 0.5 → 生命 95、可恢复 5、剩余 0.5 × 699.9887 / 0.954547 = 366.66 s
+    test "三度烧伤：进度0与0.5的生命、可恢复及剩余时间" do
       r = Body.report(%{Body.new() | burn_dose_s: 5.0, burn_age_s: @onset}, 1.0)
       assert {r.life, r.recoverable} == {91, 9}
       assert [{_, 3, 0, left}] = r.injuries
@@ -373,7 +376,7 @@ defmodule SceneServer.Body.RepairTest do
       assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, core_k: 23.0 + @c}, :burn, 1.0) == -2.0
     end
 
-    test "一度烧伤逐秒：生命先降（0–30 s 不增）后升（30 s 起不减）；急性期后剩余每步降幅 ≥ 1 s（上限回升只会更快）；第 102 步（进度 0.998484）剩余 0.001516 × 92.5551 / 0.999621 = 0.140 s，第 103 步愈合" do
+    test "一度烧伤：前30秒生命不增，随后不减；剩余每步降至少1秒，第102步剩0.140秒，第103步愈合" do
       burnt = %{Body.new() | burn_dose_s: 1.0}
       bodies = [burnt | Enum.scan(1..102, burnt, fn _, b -> tick!(b) |> elem(0) end)]
       lives = Enum.map(bodies, &Body.life/1)

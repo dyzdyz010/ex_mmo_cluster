@@ -622,22 +622,18 @@ defmodule GateServer.Session.Dispatch do
     started = System.monotonic_time(:microsecond)
 
     result =
-      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
-        context_done = System.monotonic_time(:microsecond)
-        actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
-        result = VoxelRegion.World.tool_intent(state.world_ref, actor, request)
-
-        if request.action in [1, 2],
-          do: send_material_balances(state, actor.cid, request.request_id)
-
-        Logger.info(
-          "voxel_tool_dispatch request_id=#{request.request_id} node=#{node()} context_us=#{context_done - started} world_us=#{System.monotonic_time(:microsecond) - context_done}"
-        )
-
-        result
-      end
+      SceneServer.Movement.ToolAction.run(state.player, state.identity, state.world_ref, request,
+        Map.take(state, [:received_us, :clock_node]))
+    if request.action in [1, 2] and request.granularity != 5,
+      do: send_material_balances(state, state.cid, request.request_id)
+    Logger.info("voxel_tool_dispatch request_id=#{request.request_id} elapsed_us=#{System.monotonic_time(:microsecond) - started}")
 
     case result do
+      {:body, receipt} ->
+        {gate, _edit_ref} = state.sink.ref
+        Sink.reliable(gate, state.identity, :control,
+          SceneServer.Movement.ToolAction.message(receipt, state.identity, request.request_id))
+
       {:ok, %{} = target} ->
         send_encoded(state, {:voxel_property_state, target})
 

@@ -96,6 +96,16 @@ defmodule VoxelRegion.Damage do
              is_number(t["heat_power_w"]) and t["heat_power_w"] > 0)
       end)
 
+    true = Enum.all?(tools, fn {_, tool} ->
+      case tool["body_impact"] do
+        nil -> true
+        %{"depth" => d, "protein_g" => p, "heal_s" => s} ->
+          String.starts_with?(tool["action"], "damage") and is_number(d) and d > 0 and d < 1 and
+            is_number(p) and p > 0 and is_number(s) and s > 0
+        _ -> false
+      end
+    end)
+
     # B1 已发布目录没有热字段；带热模型的材料必须完整提供有量纲参数。
     true =
       Enum.all?(materials, fn {_, m} ->

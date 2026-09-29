@@ -19,6 +19,8 @@ defmodule SceneServer.Movement.Scene do
   def design_context(scene), do: GenServer.call(scene, :design_context)
   @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
   def metrics(scene), do: observe(scene)
+  @doc "当前战斗场成员路由；只在工具请求时使用，身体事实仍由 Player 提供。"
+  def tool_candidates(scene), do: GenServer.call(scene, :tool_candidates)
 
   @doc "公开已初始化的邻区复制端点和时钟锚点；不公开碰撞资源或可写角色。"
   def neighbour_endpoint(scene), do: GenServer.call(scene, :neighbour_endpoint)
@@ -98,7 +100,11 @@ defmodule SceneServer.Movement.Scene do
       streaming_radius: Map.get(raw, "collision_window_radius_tiles", 0),
       neighbours: [],
       probes: probes,
-      spawn_min_y: min_y
+      spawn_min_y: min_y,
+      combat_scope: case raw["test_combat_bounds_m"] do
+        nil -> nil
+        [low, high] -> {float_tuple(low), float_tuple(high)}
+      end
     }
   end
 
@@ -182,6 +188,12 @@ defmodule SceneServer.Movement.Scene do
   end
 
   def handle_call(:neighbour_endpoint, _, state), do: {:reply, {:error, :scene_not_ready}, state}
+
+  def handle_call(:tool_candidates, _, state) do
+    if state.config.combat_scope == nil,
+      do: {:reply, {:error, :combat_not_permitted}, state},
+      else: {:reply, {:ok, for({_, c} <- state.characters, do: c.player)}, state}
+  end
 
   def handle_call({:connect_neighbour, peer, offset}, _, state) do
     :ok = Replication.neighbour(state.replication, peer, offset)

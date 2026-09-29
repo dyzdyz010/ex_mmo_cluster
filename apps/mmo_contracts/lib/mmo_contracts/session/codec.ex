@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 34
+  @protocol_version 35
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -103,7 +103,10 @@ defmodule MmoContracts.Session.Codec do
          skin_k: :f64,
          injuries: {:array, :u16, {:struct, Session.BodyInjury, [tag: :utf8, severity: :u8, heal: :u8, remaining_s: :f64]}},
          protein_g: :f64
-       ]}
+       ]},
+    13 => {Session.ToolState, [identity: :identity, request_id: :u64,
+      source_id: :u64, source_session: :u64, source_life: :u64, action_seq: :u32,
+      target_id: :u64, target_life: :u64, part: :utf8, life: :u8, recoverable: :u8]}
   }
 
   @moduledoc "现行认证、入场、心跳的纯字节契约；大端，入场位置仍为旧 UE/cm，不是 canonical 米。"
@@ -223,6 +226,10 @@ defmodule MmoContracts.Session.Codec do
   defp accept_m1(%Session.BodyState{life: life, recoverable: recoverable, status: status, injuries: injuries, protein_g: protein}),
     do: true = life + recoverable <= 100 and status <= 2 and protein >= 0 and
                Enum.all?(injuries, &(&1.severity > 0 and &1.heal <= 100 and (&1.remaining_s >= 0 or &1.remaining_s in [-1.0, -2.0])))
+
+  defp accept_m1(%Session.ToolState{target_id: id, target_life: generation, part: part,
+                                  life: life, recoverable: recoverable}),
+    do: true = id > 0 and generation > 0 and part in ["head", "torso", "legs"] and life + recoverable <= 100
 
   defp accept_m1(_), do: :ok
 end

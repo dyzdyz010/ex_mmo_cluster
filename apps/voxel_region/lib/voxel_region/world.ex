@@ -281,6 +281,15 @@ defmodule VoxelRegion.World do
     end
   end
 
+  @doc "Global system：读取现有作者工具定义，人物作用不借用体素 HP 参数。"
+  def tool_definition(server, id), do: GenServer.call(server, {:tool_definition, id})
+
+  @doc "人物工具作用的世界授权：当前 canonical 遮挡和既有工具频率；身体提交由目标 owner 完成。"
+  def body_tool(server, actor, request, distance) do
+    prepare(server, tool_regions(actor, distance))
+    GenServer.call(server, {:body_tool, actor, request, distance}, 300_000)
+  end
+
   @doc """
   全局系统功能（魔法增量 1）：施法意图。action 0 = 报价（只算成本，不改世界）；1 = 施放。
   返回 `{:ok, %{seq, outcome, caster}}`（outcome：nil 正常 / `:misfire_energy` / `:misfire_coherence`，
@@ -813,6 +822,31 @@ defmodule VoxelRegion.World do
            do: tool["range_macro"]
 
     {:reply, if(is_number(result), do: result, else: {:error, :invalid_tool}), state}
+  end
+
+  def handle_call({:tool_definition, id}, _, state),
+    do: {:reply, Map.fetch(state.properties.tools, id), state}
+
+  def handle_call({:body_tool, actor, request, distance}, _, state) do
+    tool = Map.fetch!(state.properties.tools, request.tool_id)
+    previous = state.tool_sessions[actor.player]
+    interval = ceil(tool["interval_seconds"] * 1_000_000)
+    # 和地形攻击共用 GCRA，不能交替打人／挖地规避频率。
+    with true <- distance <= tool["range_macro"],
+         {:error, :no_target, _} <- Damage.raycast(actor.eye, request.direction, distance, state, &target_at/2),
+         {:ok, session} <- if(request.action == 0,
+           do: {:ok, nil}, else: Damage.admit_attack(previous, request.client_intent_seq, actor.received_us, interval, actor.tick_us)) do
+      if session == nil do
+        {:reply, :ok, state}
+      else
+        if previous == nil, do: Process.monitor(actor.player)
+        {:reply, :ok, %{state | tool_sessions: Map.put(state.tool_sessions, actor.player, session)}}
+      end
+    else
+      false -> {:reply, {:error, :out_of_reach}, state}
+      {:ok, _, _} -> {:reply, {:error, :occluded}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:material_balances, cid}, _, state),

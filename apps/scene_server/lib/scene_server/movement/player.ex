@@ -25,6 +25,21 @@ defmodule SceneServer.Movement.Player do
   @doc "角色 owner 排序施法请求；World 异步准备与结算。"
   def spell(player, identity, request, ingress), do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
   def tool_context(player, identity), do: GenServer.call(player, {:tool_context, identity})
+  @doc "登记一次工具动作；重投读取原结果，未完成的重投不再次授权。"
+  def authorize_tool(player, identity, request, ingress),
+    do: GenServer.call(player, {:authorize_tool, identity, request, ingress})
+  @doc "请求 worker 交回领域结果，不在角色 owner 内等待 World。"
+  def finish_tool(player, key, result), do: GenServer.call(player, {:finish_tool, key, result})
+  @doc "只读身体命中快照，生命代次与连接 epoch 分开。"
+  def hit_context(player, body_for \\ nil), do: target_call(player, {:hit_context, body_for})
+  @doc "接收 World 已授权的机械作用，目标 owner 去重并复核生命。"
+  def receive_hit(player, hit), do: target_call(player, {:receive_hit, hit})
+  # 目标可在 Scene 候选采样后离场；目标 owner 退出是明确拒绝，不断开攻击者的请求 worker。
+  defp target_call(player, request) do
+    GenServer.call(player, request)
+  catch
+    :exit, _ -> {:error, :invalid_state}
+  end
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
@@ -68,6 +83,9 @@ defmodule SceneServer.Movement.Player do
         movement_scales: [{0, 1.0, 1.0}],
         action: nil,
         action_seq: 0,
+        tool_action: nil,
+        life_generation: System.unique_integer([:positive, :monotonic]),
+        body_hits: %{},
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
@@ -96,7 +114,8 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
-          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive, :movement_scales]))
+          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive, :movement_scales,
+            :life_generation, :body_hits, :tool_action]))
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
@@ -167,7 +186,7 @@ defmodule SceneServer.Movement.Player do
   @impl true
   def handle_call({:spell, identity, request, ingress}, from,
       %{identity: identity, ready: true, transfer: nil, failure: nil} = state) do
-    key = {identity, request.client_intent_seq}
+    key = MmoContracts.Action.key(identity, request.client_intent_seq)
     case {request.action, state.action} do
       {0, _} ->
         send(state.authority_ref, {:quote_cast, actor_context(state), request, from})
@@ -194,6 +213,61 @@ defmodule SceneServer.Movement.Player do
       %{identity: identity, ready: true, transfer: nil, failure: nil} = state),
     do: {:reply, {:ok, Map.put(actor_context(state), :refresh, &__MODULE__.tool_context/2)}, state}
   def handle_call({:tool_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+
+  def handle_call({:authorize_tool, identity, request, ingress}, _,
+      %{identity: identity, ready: true, transfer: nil, failure: nil} = state) do
+    key = MmoContracts.Action.key(identity, request.client_intent_seq)
+    previous = state.tool_action
+    cond do
+      previous != nil and previous.key == key and previous.request == request ->
+        {:reply, {:done, previous.result || {:error, :action_pending}}, state}
+      previous != nil and request.client_intent_seq <= previous.request.client_intent_seq ->
+        {:reply, {:error, :replayed_attack}, state}
+      state.action != nil -> {:reply, {:error, :casting}, state}
+      state.body.status == :dead -> {:reply, {:error, :dead}, state}
+      true ->
+        actor = actor_context(state) |> Map.merge(ingress)
+          |> Map.merge(%{action_key: key, life_generation: state.life_generation, scene: state.scene,
+            refresh: &__MODULE__.tool_context/2})
+        next = if request.action == 0, do: state,
+          else: %{state | tool_action: %{key: key, request: request, result: nil}}
+        {:reply, {:ok, actor}, next}
+    end
+  end
+  def handle_call({:authorize_tool, _, _, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+  def handle_call({:finish_tool, key, result}, _, %{tool_action: %{key: key} = action} = state),
+    do: {:reply, result, %{state | tool_action: %{action | result: result}}}
+  def handle_call({:finish_tool, _, result}, _, state), do: {:reply, result, state}
+  def handle_call({:hit_context, body_for}, _, %{ready: true, transfer: nil, failure: nil} = state) do
+    {:reply, {:ok, %{player: self(), id: state.id, life_generation: state.life_generation,
+      position: state.state.position, profile: state.config.profile, scope: Map.get(state.config, :combat_scope),
+      status: state.body.status, body: if(state.id == body_for, do: Body.report(state.body, 1.0), else: nil)}}, state}
+  end
+  def handle_call({:hit_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+  def handle_call({:receive_hit, hit}, _, state) do
+    alias SceneServer.Movement.ToolHit
+    cond do
+      state.life_generation != hit.target.life_generation or state.body.status == :dead ->
+        {:reply, {:error, :stale_life}, state}
+      Map.has_key?(state.body_hits, hit.key) -> {:reply, {:ok, state.body_hits[hit.key]}, state}
+      state.transfer != nil or state.failure != nil -> {:reply, {:error, :invalid_state}, state}
+      not ToolHit.permitted?(Map.get(state.config, :combat_scope), hit.actor.position, state.state.position) ->
+        {:reply, {:error, :combat_not_permitted}, state}
+      true ->
+        # 即时工具使用本次 live owner 采样的命中几何；采样后继续移动不撤回该作用。
+        # 提交仍复核生命、存活和当前战斗范围，不能把等待 World 的时间当成“必须站定”。
+        body = Body.trauma(state.body, hit.part, hit.impact)
+        report = Body.report(body, 1.0)
+        receipt = %{source_id: hit.actor.cid, source_life: hit.actor.life_generation,
+          source_session: hit.actor.identity.session_epoch, action_seq: elem(hit.key, 1),
+          target_id: state.id, target_life: state.life_generation, part: hit.part, body: report}
+        character_event(state, state, :tool_hit, Map.drop(receipt, [:body]) |> Map.merge(%{
+          life_before: Body.life(state.body), life: report.life, recoverable: report.recoverable}))
+        reliable(state, :control, SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id))
+        next = %{state | body: body, body_hits: Map.put(state.body_hits, hit.key, receipt)}
+        {:reply, {:ok, receipt}, publish_body(next, report)}
+    end
+  end
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
 
   def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
@@ -225,6 +299,9 @@ defmodule SceneServer.Movement.Player do
         :window_pending,
         :queued_seq,
         :body,
+        :life_generation,
+        :body_hits,
+        :tool_action,
         :body_exchange_j,
         :movement_scales,
         :climate,
@@ -596,13 +673,7 @@ defmodule SceneServer.Movement.Player do
     {movement_apply_tick, movement_factor, _} = hd(state.movement_scales)
     report = Body.report(body, 1.0)
 
-    if report.key != state.body_sent do
-      reliable(state, :control, %MmoContracts.Session.BodyState{
-        identity: state.identity, life: report.life, recoverable: report.recoverable, status: report.status,
-        core_k: report.core_k, skin_k: report.skin_k, protein_g: report.protein_g,
-        injuries: for({tag, n, heal, left} <- report.injuries,
-          do: %MmoContracts.Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left})})
-    end
+    if report.key != state.body_sent, do: publish_body(state, report)
 
     character_event(state, state, :body_state, %{life: report.life, recoverable: report.recoverable, status: body.status,
       core_k: body.core_k, skin_k: body.skin_k, injuries: Map.new(report.injuries, fn {tag, n, _, _} -> {tag, n} end),
@@ -627,6 +698,15 @@ defmodule SceneServer.Movement.Player do
   end
 
   # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
+  defp publish_body(state, report) do
+    reliable(state, :control, %Session.BodyState{
+      identity: state.identity, life: report.life, recoverable: report.recoverable, status: report.status,
+      core_k: report.core_k, skin_k: report.skin_k, protein_g: report.protein_g,
+      injuries: for({tag, n, heal, left} <- report.injuries,
+        do: %Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left})})
+    %{state | body_sent: report.key}
+  end
+
   defp actor_context(state) do
     {x, y, z} = state.state.position
     %{player: self(), gate: state.gate, cid: state.id, identity: state.identity,
@@ -682,7 +762,7 @@ defmodule SceneServer.Movement.Player do
 
   defp revive(state) do
     character_event(state, state, :body_revived, %{position: Tuple.to_list(state.state.position)})
-    %{state | body: Body.revive()}
+    %{state | body: Body.revive(), life_generation: state.life_generation + 1, body_hits: %{}}
   end
 
   # 回会话出生点：出生柱（`probe`）上按入场同一规则重找落脚点（世界可能已变）。非流送会话世界固定，下一个模拟 tick 即换；

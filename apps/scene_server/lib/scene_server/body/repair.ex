@@ -47,7 +47,6 @@ defmodule SceneServer.Body.Repair do
   """
   @spec heal(Body.t(), float(), number()) :: {Body.t(), account()}
   def heal(%Body{} = body, dt, m) do
-    p = Body.params()
     zero = %{repair_protein_g: 0.0, synth_j: 0.0, synth_glycogen_j: 0.0, synth_fat_j: 0.0}
 
     Enum.reduce(@wounds, {body, zero}, fn {kind, heal_field, dose_field}, {b, acc} ->
@@ -58,36 +57,41 @@ defmodule SceneServer.Body.Repair do
         severity ->
           total_g = wound_protein_g(kind, severity)
           heal = Map.fetch!(b, heal_field)
-          fuel = b.reserve_j + b.fat_reserve_j
-
-          step =
-            Enum.min([
-              1 - heal,
-              Body.heal_rate(body, kind, m) * dt,
-              b.protein_g / total_g,
-              fuel / (total_g * p.synthesis_j_per_g)
-            ])
-
-          protein = min(step * total_g, b.protein_g)
-          synth = min(protein * p.synthesis_j_per_g, fuel)
-          {glycogen, fat} = Body.fuel_split(b, synth)
-
-          b = %{b | protein_g: b.protein_g - protein, reserve_j: b.reserve_j - glycogen, fat_reserve_j: b.fat_reserve_j - fat}
+          {b, step, acc} = repair_step(b, total_g, heal, Body.heal_rate(body, kind, m) * dt, acc)
 
           b =
             if step >= 1 - heal,
               do: b |> Map.put(heal_field, 0.0) |> Map.put(dose_field, 0.0),
               else: Map.put(b, heal_field, heal + step)
 
-          {b,
-           %{
-             repair_protein_g: acc.repair_protein_g + protein,
-             synth_j: acc.synth_j + synth,
-             synth_glycogen_j: acc.synth_glycogen_j + glycogen,
-             synth_fat_j: acc.synth_fat_j + fat
-           }}
+          {b, acc}
       end
     end)
+    |> then(fn thermal ->
+      Enum.reduce(Enum.sort(body.traumas), thermal, fn {part, wound}, {b, acc} ->
+        rate = m * Body.systems(body).circulation / wound.heal_s
+        {b, step, acc} = repair_step(b, wound.protein_g, wound.heal, rate * dt, acc)
+        wounds = if step >= 1 - wound.heal,
+          do: Map.delete(b.traumas, part),
+          else: Map.put(b.traumas, part, %{wound | heal: wound.heal + step})
+        {%{b | traumas: wounds}, acc}
+      end)
+    end)
+  end
+
+  # 热伤和机械外伤共用唯一资源支付；本步合成放热仍由 tick 交给 Thermo。
+  defp repair_step(body, total_g, heal, requested, account) do
+    cost = Body.params().synthesis_j_per_g
+    fuel = body.reserve_j + body.fat_reserve_j
+    step = Enum.min([1 - heal, requested, body.protein_g / total_g, fuel / (total_g * cost)])
+    protein = min(step * total_g, body.protein_g)
+    synth = min(protein * cost, fuel)
+    {glycogen, fat} = Body.fuel_split(body, synth)
+    next = %{body | protein_g: body.protein_g - protein,
+      reserve_j: body.reserve_j - glycogen, fat_reserve_j: body.fat_reserve_j - fat}
+    {next, step, %{repair_protein_g: account.repair_protein_g + protein,
+      synth_j: account.synth_j + synth, synth_glycogen_j: account.synth_glycogen_j + glycogen,
+      synth_fat_j: account.synth_fat_j + fat}}
   end
 
   @doc """

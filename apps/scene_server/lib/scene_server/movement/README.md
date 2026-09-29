@@ -277,3 +277,9 @@ success alone does not establish 200-player capacity.
 
 This shared layer is what keeps player and NPC motion on the same authority
 rules.
+
+## 2026-09-29 工具命中人物（Hello35）
+
+Global system：`ToolAction` 在既有 Gate 请求 worker 中编排；`Player` 授权工具身份，`ToolHit` 对当前权威移动胶囊做人物部位求交，World 检查 canonical 遮挡和共用工具频率，目标 Player 去重并提交既有 Body 外伤。没有第二份 HP。查询只为指定目标生成 Body 报告，候选扫描仍为 O(N)，没有容量验收结论。
+
+Test-only：只有显式配置 `test_combat_bounds_m` 的场景允许范围内互伤，未开放正式 PvP 或击杀奖励。详细协议、边界及真实双端验证见同级客户端仓库 `Voxim/Docs/Gameplay/ToolCombat.md` 和 `ToolCombat/QueryOptimization.md`；火球伤人、治疗与恢复验收留后续。

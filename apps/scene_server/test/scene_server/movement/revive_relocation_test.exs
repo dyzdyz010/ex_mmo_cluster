@@ -165,6 +165,8 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   test "非流送：死亡下发 status 2 与 Relocate（apply_tick = 死亡时模拟 tick + 1，出生点 = SessionStart），该 tick 从出生点推进；下一秒复活身体" do
     {ctx, p, start} = walk(setup_scene(0))
     refute same_spot?(Player.observe(p).state, start.state)
+    # Test-only owner fixture: emulate a generation imported from a different node.
+    :sys.replace_state(p, &%{&1 | life_generation: 1_000_000_000_000})
     kill(p)
     apply_tick = ctx.origin + 12
     assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}}, 2000
@@ -172,6 +174,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     step(ctx, p, 13, 0)
     assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) == stepped(start, spawned, 0)
     revived(p)
+    assert :sys.get_state(p).life_generation == 1_000_000_000_001
   end
 
   test "流送：死亡请求覆盖出生点的新窗口，Relocate 先于同一 apply_tick 的 CollisionWindow；World 收到死亡脚位与相干度系数" do
@@ -187,12 +190,12 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     assert factor == 0.0
     # 覆盖出生点的窗口异步到达：等它排进 Player 的 FIFO 再推进 tick，窗口在下一个 tick 安装。
     wait(fn -> s = :sys.get_state(p); s.revive == :window and :queue.len(s.updates.queue) > 0 end)
-    tick(ctx, ctx.origin + 12)
+    # 中性输入须在该 tick 截止前到达；先 tick 再送同 tick 输入只会保留旧 +x，不能证明复活后的中性积分。
+    step(ctx, p, 13, 0)
     assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: apply_tick, state: spawned}}, 2000
     assert_receive {:reliable, _, :voxel, %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {-1, 7, -1}}}, 2000
     assert apply_tick == ctx.origin + 12
     assert same_spot?(spawned, start.state)
-    step(ctx, p, 13, 0)
     assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) == stepped(start, spawned, 0)
     assert :sys.get_state(p).revive == nil
     revived(p)
