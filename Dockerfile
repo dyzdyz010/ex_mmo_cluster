@@ -83,8 +83,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 1000 voxim \
- && useradd --system --uid 1000 --gid voxim --home /app --shell /bin/sh voxim
+ && useradd --system --uid 1000 --gid voxim --home /app --shell /bin/sh voxim \
+ && install -d -o voxim -g voxim /app
 
+# The release writes its tmp dir under /app at start: the directory itself must belong to voxim
+# (COPY --chown only changes the copied files).
 WORKDIR /app
 COPY --from=builder --chown=voxim:voxim /build/ex_mmo_cluster/_build/prod/rel/voxim_server ./
 USER voxim
