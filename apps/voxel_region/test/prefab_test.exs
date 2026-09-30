@@ -224,6 +224,8 @@ defmodule VoxelRegion.PrefabTest do
     {:ok,w} = World.start_link(opts)
     on_exit(fn -> if Process.alive?(w),do: GenServer.stop(w) end)
     mfa = {VoxelRegion.World.Edits,:valid_edit_coord?,1}
+    # 调用计数只挂在已加载的模块上；本测试之前不一定有别的路径加载过它（热提交休眠后更少）。
+    Code.ensure_loaded!(VoxelRegion.World.Edits)
     session = :trace.session_create(:prefab_range_checks,self(),[])
     try do
       :trace.function(session,mfa,true,[:call_time])

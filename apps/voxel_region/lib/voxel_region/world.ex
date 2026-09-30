@@ -466,8 +466,12 @@ defmodule VoxelRegion.World do
           tool_sessions: %{},
           thermal: load_thermal_environment(opts),
           thermal_work: ThermalWork.new(),
-          # 下一次热提交的墙钟到期时刻（毫秒，单调时钟）；nil 表示尚未排程。
+          # 下一次热提交的墙钟到期时刻（毫秒，单调时钟）；nil 表示未排程（休眠，等事务或身体接触唤醒）。
           thermal_due: nil,
+          # 待到期节拍的定时器；nil 表示没有（休眠，或进行中的提交完成时再排）。
+          thermal_timer: nil,
+          # 最近一次零功率热提交之后的事务号：此后没有新事务时，电路种子本身不再推进热提交。
+          thermal_quiet_seq: nil,
           # 进行中的分步热提交；nil 表示两次提交之间。
           thermal_run: nil,
           material_balances: %{},
@@ -557,7 +561,7 @@ defmodule VoxelRegion.World do
         )
 
         state = schedule_liquid(state)
-        state = if state.thermal, do: Thermal.schedule(state), else: state
+        state = Thermal.wake(state)
         {:ok, state}
 
       {:error, :no_world} ->
@@ -713,7 +717,6 @@ defmodule VoxelRegion.World do
       active: true
     }
 
-    state = if state.thermal == nil, do: Thermal.schedule(state), else: state
     state = thermal_commit(Thermal.rebuild_work(%{state | thermal: thermal}), [])
     {:reply, :ok, state}
   end
@@ -1230,7 +1233,7 @@ defmodule VoxelRegion.World do
         else: Map.put(state.bodies, cid, Map.merge(body, %{pid: pid, contacts: contacts, immersed: immersed, sole: sole,
           at: System.monotonic_time(:millisecond)}))
 
-    {:noreply, %{state | bodies: bodies}}
+    {:noreply, Thermal.wake(%{state | bodies: bodies})}
   end
 
   def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
@@ -1279,13 +1282,14 @@ defmodule VoxelRegion.World do
   def handle_info({:cancel_cast, key, reason}, state), do: {:noreply, cancel_pending_cast(state, key, reason)}
 
   # 定时提交按内核步分成多条消息推进，步间先处理已排队的工具、建造和查询调用；整段仍作为一笔热事务提交。
+  # 无可推进的状态时休眠：不再排下一拍，直到事务或身体接触唤醒（R8-05）。
   def handle_info(:thermal_tick, %{thermal_run: nil} = state) do
-    state = Thermal.begin(state)
-    {:noreply, if(state.thermal_run, do: step_thermal(state), else: Thermal.schedule(state))}
+    state = state |> Thermal.fired() |> Thermal.begin()
+    {:noreply, if(state.thermal_run, do: step_thermal(state), else: Thermal.rest(state))}
   end
 
   # 进行中的提交完成时才排下一次；此时到期的节拍不另起提交。
-  def handle_info(:thermal_tick, state), do: {:noreply, state}
+  def handle_info(:thermal_tick, state), do: {:noreply, Thermal.fired(state)}
 
   def handle_info({:thermal_step, ref}, %{thermal_run: %{ref: ref}} = state), do: {:noreply, step_thermal(state)}
   def handle_info({:thermal_step, _ref}, state), do: {:noreply, state}
@@ -1293,7 +1297,7 @@ defmodule VoxelRegion.World do
   # 直接投递的提交在本次回调内完整执行；先完成进行中的定时提交，不把两段模拟混入同一事务。
   def handle_info(:thermal_commit, state) do
     state = state |> drain_thermal() |> Thermal.begin() |> drain_thermal()
-    {:noreply, Thermal.schedule(state)}
+    {:noreply, Thermal.wake(state)}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -1319,7 +1323,7 @@ defmodule VoxelRegion.World do
   defp step_thermal(state) do
     case Thermal.tick(state) do
       {:more, state} -> send(self(), {:thermal_step, state.thermal_run.ref}); state
-      {:done, state, commit} -> state |> commit_thermal(commit) |> Thermal.schedule()
+      {:done, state, commit} -> state |> commit_thermal(commit) |> Thermal.wake()
     end
   end
 

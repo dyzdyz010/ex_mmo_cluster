@@ -39,6 +39,8 @@ defmodule VoxelRegion.World.HeatCommit do
           state
       end
 
+    # 零功率电路记到本事务为止；此后任何事务（含下面的转化）都使下一拍重新求解（`Thermal.begin/1`）。
+    state = if commit.quiet, do: %{state | thermal_quiet_seq: state.seq}, else: state
     transformed = System.monotonic_time(:microsecond)
     state = transform_heated_materials(state)
     now = System.monotonic_time(:microsecond)
