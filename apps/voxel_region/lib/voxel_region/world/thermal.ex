@@ -180,7 +180,7 @@ defmodule VoxelRegion.World.Thermal do
       state.thermal.config, domain)
     {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
       {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &circuit_target/2)
-      conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage)
+      conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage, s.thermal.config)
       conductors = if domain,
         do: Enum.filter(conductors, &({:holder, Protection.holder(protection, Damage.macro(&1))} == elem(point, 2))),
         else: conductors
@@ -268,7 +268,8 @@ defmodule VoxelRegion.World.Thermal do
     else
       seen = MapSet.put(seen, key)
       {targets, state} = Enum.flat_map_reduce(VoxelRegion.Circuit.solid_faces(target), state, &face_targets/2)
-      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties, state.damage),
+      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties, state.damage,
+          state.thermal.config),
         {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
           if MapSet.member?(seen, other_key) or
                not Protection.same_holder?(state.protection, Damage.macro(target), Damage.macro(other)),

@@ -8,8 +8,8 @@ defmodule VoxelRegion.ParameterEvolution do
       ~w(display_name tags heat_capacity_per_macro thermal_conductivity heat_resistance_kelvin ignition_kelvin fuel_energy_per_macro_j burn_power_per_macro_w electrical_conductivity phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j) ++
         # 单向转化是一次性事件，行上不存进度：五个字段可在线新增、调整或撤下。
         ~w(transform_material_id transform_kelvin transform_heat_per_macro_j transform_reductant_material_id transform_reductant_units_per_unit) ++
-        # 塞贝克系数只在每次求解时现读，行上不存与之相关的量。储能轴不在此列：行上的 stored_j 以它为容量。
-        ~w(seebeck_v_per_k) ++
+        # 塞贝克系数、温敏截止温度只在每次求解时现读，行上不存与之相关的量。储能轴不在此列：行上的 stored_j 以它为容量。
+        ~w(seebeck_v_per_k electrical_cutoff_kelvin) ++
         # R8-07 散体休止阈值只在每步流动时现读（改动唤醒全部有限格）：可在线新增或调整；
         # 已可倾倒的材料不能撤下（世界里可能有它的散体格），见下方检查。
         ~w(loose_threshold_units) ++
