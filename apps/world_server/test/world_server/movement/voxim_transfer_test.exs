@@ -12,7 +12,9 @@ defmodule WorldServer.Movement.VoximTransferTest do
   end
 
   for edit_during_transfer <- [false, true] do
-    @tag timeout: 60_000, edit_during_transfer: edit_during_transfer
+    # 整例上限只覆盖夹具耗时：GitHub runner 上 edits=true 的 L1–L5 预烘焙 35–50 s、首次编辑冷生成 5 个源约 11 s
+    # （CI 4daf50ca / c82777a9 日志）；内部各 await 的等待上限不变。
+    @tag timeout: 180_000, edit_during_transfer: edit_during_transfer
     test "a boundary cut transfers the unprocessed prefix and activates exactly one writer edits=#{edit_during_transfer}",
          %{edit_during_transfer: edit_during_transfer, base: base} do
       world =
