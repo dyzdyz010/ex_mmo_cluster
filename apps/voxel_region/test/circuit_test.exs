@@ -5,7 +5,7 @@ defmodule VoxelRegion.CircuitTest do
 
   # 只测试：目录值与发布目录同口径——铜 σ 5.8e7、k 4000；电阻合金 σ 4、λ 0.2；开关 41（闭合同铜）；
   # 蓄能石 42 σ 20、每米 24 V、每宏格 10 MJ；热电石 43 σ 2、k 15、S 0.05 V/K。线截面、面厚 = 发布值。
-  # 44 只是这张测试目录里的键（温敏导体提案值 σ 10、截止 373.15 K），电路函数不读材料契约；契约里没有 44。
+  # 45 只是这张测试目录里的键（温敏导体提案值 σ 10、截止 373.15 K），电路函数不读材料契约；契约里 44 是玻璃（R8-08），没有 45。
   # 期望逐项按 r = d/(σA)（接触边两侧各半格）与 KCL 手算。
   # 容差：同一回路里铜—铜接触半格 8.6e-9 Ω（电导 1.2e8 S）与合金／电池半格 0.025–0.125 Ω 相差 ~1e7，
   # 消元的相对误差 ≈ κ·ε ≈ 1e7 × 2.2e-16 ≈ 3e-9，所以电流按 1e-8 相对容差比较。
@@ -21,7 +21,7 @@ defmodule VoxelRegion.CircuitTest do
         41=>%{"electrical_conductivity"=>@cu,"circuit_switch"=>true,"thermal_conductivity"=>4000},
         42=>%{"electrical_conductivity"=>20.0,"battery_volts_per_m"=>24.0,"battery_energy_per_macro_j"=>1.0e7,"thermal_conductivity"=>25},
         43=>%{"electrical_conductivity"=>2.0,"seebeck_v_per_k"=>0.05,"thermal_conductivity"=>15},
-        44=>%{"electrical_conductivity"=>10.0,"electrical_cutoff_kelvin"=>373.15,"thermal_conductivity"=>23.43}},
+        45=>%{"electrical_conductivity"=>10.0,"electrical_cutoff_kelvin"=>373.15,"thermal_conductivity"=>23.43}},
       attachments: %{"line_section_m2"=>@section,"face_thickness_m"=>1/512}}
   end
   defp macro({x,y,z},material),do: %{micro: {x*8,y*8,z*8},granularity: 0,material: material,owner: {0,0},incarnation: 1}
@@ -330,7 +330,7 @@ defmodule VoxelRegion.CircuitTest do
   end
 
   describe "温敏电导（R8-10）" do
-    # 只测试：44 = 温敏导体（σ 10 → 宏格半格 0.05 Ω，截止 373.15 K）。World 的接触摘要只收此刻导电的导体
+    # 只测试：45 = 温敏导体（σ 10 → 宏格半格 0.05 Ω，截止 373.15 K）。World 的接触摘要只收此刻导电的导体
     # （solid_contacts 按 sigma），这里用同一个产品函数筛出进入导体图的格，再按相邻关系成边。
     defp live(cells,damage,env),
       do: Enum.filter(cells,&(Circuit.solid_contacts([{&1,64}],catalog(),damage,env) != %{}))
@@ -342,7 +342,7 @@ defmodule VoxelRegion.CircuitTest do
 
     test "串联：低于截止温度按 σ 导电（I = 48 /(0.1 + 0.25 + 0.1 + 12 个铜半格)），达到截止即绝缘、严格 0 A；无温度记录按气候区空气温度" do
       # loop/2 的顶行 (1,3) 由铜换成温敏导体：它的两个半格 2 × 0.05 Ω 替换两个铜半格。
-      cells=List.replace_at(loop(),4,macro({1,3,0},44))
+      cells=List.replace_at(loop(),4,macro({1,3,0},45))
       [_,b1,b2,_,r|_]=cells
       i=48.0/(2*2*half(20.0)+2*half(4.0)+2*half(10.0)+12*half(@cu))
       for damage<-[loaded([b1,b2]),Map.new([stored(b1,1.0e6),stored(b2,1.0e6),hot(r,373.14)])] do
@@ -369,7 +369,7 @@ defmodule VoxelRegion.CircuitTest do
       # z = 0 平面：x = 0 列 铜 (0,0)、电池 (0,1)、铜 (0,2)；底母线 (0..3,0) 与顶母线 (0..3,2) 铜；
       # 支路 A：合金 (1,1)；支路 B：温敏导体 (3,1)；(2,1) 是空气。电池与合金侧面相邻（电池只经 ±Y 面导电，无边）。
       cells=[macro({0,0,0},24),macro({1,0,0},24),macro({2,0,0},24),macro({3,0,0},24),
-        macro({0,1,0},42),macro({1,1,0},40),macro({3,1,0},44),
+        macro({0,1,0},42),macro({1,1,0},40),macro({3,1,0},45),
         macro({0,2,0},24),macro({1,2,0},24),macro({2,2,0},24),macro({3,2,0},24)]
       b=Enum.at(cells,4); alloy=Enum.at(cells,5); r=Enum.at(cells,6)
       h=half(@cu)
@@ -397,19 +397,19 @@ defmodule VoxelRegion.CircuitTest do
     end
 
     test "小块按 granularity 1 热身份行、附件按逐槽 granularity 4 热行判定；开关与温敏各自独立" do
-      micro=%{micro: {5,6,7},granularity: 2,material: 44,owner: {9,2},incarnation: 9}
+      micro=%{micro: {5,6,7},granularity: 2,material: 45,owner: {9,2},incarnation: 9}
       thermal=%{micro | granularity: 1}
       assert Circuit.conductors([micro],catalog(),%{},@env)==[thermal]
       assert Circuit.conductors([micro],catalog(),Map.new([hot(thermal,380.0)]),@env)==[]
       # 构件行（granularity 2）不是微格的温度真值。
       assert Circuit.conductors([micro],catalog(),Map.new([hot(micro,380.0)]),@env)==[thermal]
       slot={1,0,{1,3,0}}
-      identity=VoxelRegion.Attachments.identity(slot,{7,44})
+      identity=VoxelRegion.Attachments.identity(slot,{7,45})
       slot_row=%{identity | granularity: 4}
       assert Circuit.sigma(catalog(),%{},@env,identity)==10.0
       assert Circuit.sigma(catalog(),Map.new([hot(slot_row,373.15)]),@env,identity)==0.0
       assert Circuit.sigma(catalog(),Map.new([hot(identity,900.0)]),@env,identity)==10.0
-      input=Circuit.prepare(%{slot=>{7,44}},Map.new([hot(slot_row,380.0)]),catalog(),0.5,@env)
+      input=Circuit.prepare(%{slot=>{7,45}},Map.new([hot(slot_row,380.0)]),catalog(),0.5,@env)
       assert input.edges==[]
     end
   end
