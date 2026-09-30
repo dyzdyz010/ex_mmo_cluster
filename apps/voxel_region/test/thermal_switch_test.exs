@@ -2,8 +2,8 @@ defmodule VoxelRegion.ThermalSwitchTest do
   @moduledoc """
   只测试：R8-10 温敏电导（Voxim Docs/R8/plan.md §R8-10、Design-decisions.md §2 “热了就断，玩家自己拼出恒温器”）。
 
-  目录 = UE 发布字节 `b1aca503…` 追加一行 Test-only 温敏导体 44（σ 10 S/m、截止 373.15 K，热物性取大理石 14）；
-  它还没有 UE 发布目录与客户端外观，id 在合并阶段确认。热环境 = 生产 ε 0.9。
+  目录 = UE 发布字节 `b1aca503…`，Test-only 地给大理石 14 这一行加上 σ 10 S/m 与截止 373.15 K 当温敏导体（热物性不变）。
+  截止轴对任一契约内导体都成立；专用温敏材料的 id 要等 UE 发布含它的目录时与契约同批加入，这里不占新号。热环境 = 生产 ε 0.9。
   场景地形只经作者编辑入口，热只经 Test-only 实验热源（有限能量），电只来自热电石发电；温度全部由热内核演化。
   期望来自目录算术（r = d/(σA)）、截止温度的定义与账目恒等式，不取自内核输出。
   """
@@ -18,7 +18,7 @@ defmodule VoxelRegion.ThermalSwitchTest do
   @copper 24
   @alloy 40
   @te 43
-  @thermistor 44
+  @thermistor 14
   @cutoff 373.15
   @box {{-2, -2, -2}, {2, 2, 2}}
 
@@ -27,10 +27,10 @@ defmodule VoxelRegion.ThermalSwitchTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     data = Jason.decode!(File.read!(Path.join(@fixtures, @digest <> ".json")))
-    marble = Enum.find(data["materials"], &(&1["material_id"] == 14))
-    thermistor = Map.merge(marble, %{"material_id" => @thermistor, "display_name" => "Thermistor Stone (Test-only)",
-      "electrical_conductivity" => 10, "electrical_cutoff_kelvin" => @cutoff})
-    data = Map.update!(data, "materials", &(&1 ++ [thermistor]))
+    data = Map.update!(data, "materials", fn ms ->
+      Enum.map(ms, &if(&1["material_id"] == @thermistor,
+        do: Map.merge(&1, %{"electrical_conductivity" => 10, "electrical_cutoff_kelvin" => @cutoff}), else: &1))
+    end)
     %{root: root, data: data, materials: Map.new(data["materials"], &{&1["material_id"], &1}), ambient: 293.15}
   end
 
@@ -57,7 +57,7 @@ defmodule VoxelRegion.ThermalSwitchTest do
   defp cell(s, {x, y, z}), do: Enum.find(Map.values(s.damage), &(&1.granularity == 0 and &1.micro == {x * 8, y * 8, z * 8}))
   defp temperature(s, c, coord), do: Map.get(cell(s, coord) || %{}, :temperature_kelvin, c.ambient)
 
-  test "目录：温敏截止温度只能在导体上，不能与储能、塞贝克同行；追加 44 的目录可加载", c do
+  test "目录：温敏截止温度只能在导体上，不能与储能、塞贝克同行；带截止轴的目录可加载", c do
     assert Damage.load(catalog_file(c, "ok", c.data)).materials[@thermistor]["electrical_cutoff_kelvin"] == @cutoff
     edit = fn changes ->
       Map.update!(c.data, "materials", fn ms ->

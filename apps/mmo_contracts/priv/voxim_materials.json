@@ -218,10 +218,5 @@
     "id": 43,
     "name": "thermoelectric_stone",
     "blocks_movement": true
-  },
-  {
-    "id": 44,
-    "name": "thermistor_stone",
-    "blocks_movement": true
   }
 ]
