@@ -17,38 +17,58 @@ defmodule GateServer.Npc.Skills.Wilderness do
   def run(context, %{goal: goal} = args) do
     {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
-    profile = context.profile |> Map.put(:goal, goal)
-      |> Map.put(:request, Map.get(context, :request, Map.get(context.profile, :request, &Llm.request/2)))
+
+    profile =
+      context.profile
+      |> Map.put(:goal, goal)
+      |> Map.put(
+        :request,
+        Map.get(context, :request, Map.get(context.profile, :request, &Llm.request/2))
+      )
+
     context = %{context | profile: profile}
-    ops = case args do
-      %{ops: ops} -> ops
-      _ ->
-        case profile.memory.get(profile.cid, "plan", "current") do
-          %{"goal" => ^goal, "ops" => ops} -> ops
-          _ -> nil
-        end
-    end
+
+    ops =
+      case args do
+        %{ops: ops} ->
+          ops
+
+        _ ->
+          case profile.memory.get(profile.cid, "plan", "current") do
+            %{"goal" => ^goal, "ops" => ops} -> ops
+            _ -> nil
+          end
+      end
+
     state = Builder.new(profile, ops)
+
     if Map.has_key?(args, :ops) and state.cells,
       do: effect({:remember, ops}, state, context)
-    advance(state, {:observation, context.observation}, state.cells, context,
-      %{request_count: 0, jev_request_count: 0})
+
+    advance(state, {:observation, context.observation}, state.cells, context, %{
+      request_count: 0,
+      jev_request_count: 0
+    })
   end
 
   defp advance(state, event, target, context, metrics) do
     {state, effects} = Builder.step(state, event)
     target = state.cells || target
+
     if state.phase == :idle do
       finish(state, target, effects, context, metrics)
     else
-      metrics = Enum.reduce(effects, metrics, fn effect, metrics ->
-        effect(effect, state, context)
-        case effect do
-          {:plan, _} -> Map.update!(metrics, :request_count, &(&1 + 1))
-          {:triage, _} -> Map.update!(metrics, :jev_request_count, &(&1 + 1))
-          _ -> metrics
-        end
-      end)
+      metrics =
+        Enum.reduce(effects, metrics, fn effect, metrics ->
+          effect(effect, state, context)
+
+          case effect do
+            {:plan, _} -> Map.update!(metrics, :request_count, &(&1 + 1))
+            {:triage, _} -> Map.update!(metrics, :jev_request_count, &(&1 + 1))
+            _ -> metrics
+          end
+        end)
+
       receive do
         event -> advance(state, event, target, context, metrics)
       end
@@ -57,46 +77,77 @@ defmodule GateServer.Npc.Skills.Wilderness do
 
   defp effect({:command, command}, _, context),
     do: Body.command(context.body, %{command | id: {:skill, context.call_id, command.id}})
+
   defp effect({:plan, request}, _, %{profile: profile}) do
     Logger.info("npc_wilderness_plan cid=#{profile.cid} note=#{inspect(request.note)}")
-    answer = with {:ok, response} <- profile.request.(profile.planner, Builder.plan_body(profile.planner, request)),
-                  {:ok, ops} <- Builder.plan_ops(response) do
-      {:blueprint, ops}
-    else
-      other -> {:plan_failed, other}
-    end
+
+    answer =
+      with {:ok, response} <-
+             profile.request.(profile.planner, Builder.plan_body(profile.planner, request)),
+           {:ok, ops} <- Builder.plan_ops(response) do
+        {:blueprint, ops}
+      else
+        other -> {:plan_failed, other}
+      end
+
     send(self(), answer)
   end
+
   defp effect({:triage, problem}, _, %{profile: profile}),
     do: send(self(), {:verdict, Builder.triage_verdict(profile, problem)})
+
   defp effect({:remember, ops}, state, %{profile: profile}),
     do: profile.memory.put(profile.cid, "plan", "current", %{"ops" => ops, "goal" => state.goal})
-  defp effect(:forget, _, %{profile: profile}), do: profile.memory.delete(profile.cid, "plan", "current")
+
+  defp effect(:forget, _, %{profile: profile}),
+    do: profile.memory.delete(profile.cid, "plan", "current")
+
   defp effect({:journal, text}, state, %{profile: profile}) do
     Logger.info("npc_wilderness_journal cid=#{profile.cid} #{text}")
-    profile.memory.journal(profile.cid, text, state.position || {0,0,0})
+    profile.memory.journal(profile.cid, text, state.position || {0, 0, 0})
   end
 
   defp finish(state, target, effects, context, metrics) do
-    remaining = if target do
-      world = for %{cell: [x,y,z], material: material} <- World.material_snapshot(context.world,
-        [context.profile.cid], Map.keys(target)).probe_occupancy, into: %{}, do: {{x,y,z}, material}
-      Blueprint.remaining(target, world)
-    else
-      :unknown
-    end
+    remaining =
+      if target do
+        world =
+          for %{cell: [x, y, z], material: material} <-
+                World.material_snapshot(context.world, [context.profile.cid], Map.keys(target)).probe_occupancy,
+              into: %{},
+              do: {{x, y, z}, material}
+
+        Blueprint.remaining(target, world)
+      else
+        :unknown
+      end
+
     completed = :forget in effects
+
     if completed and remaining == %{todo: [], wrong: []} do
       Enum.each(effects, &effect(&1, state, context))
-      {:ok, %{status: :completed, cells: map_size(target), remaining: remaining, metrics: metrics}}
+
+      {:ok,
+       %{status: :completed, cells: map_size(target), remaining: remaining, metrics: metrics}}
     else
-      reason = if completed, do: :world_changed,
-        else: Enum.find_value(effects, fn {:journal, text} -> text; _ -> nil end)
+      reason =
+        if completed,
+          do: :world_changed,
+          else:
+            Enum.find_value(effects, fn
+              {:journal, text} -> text
+              _ -> nil
+            end)
+
       if completed do
-        effect({:journal, "Stopped wilderness: the World changed after the final look."}, state, context)
+        effect(
+          {:journal, "Stopped wilderness: the World changed after the final look."},
+          state,
+          context
+        )
       else
         Enum.each(effects, &effect(&1, state, context))
       end
+
       {:error, %{status: :blocked, reason: reason, remaining: remaining}, metrics}
     end
   end

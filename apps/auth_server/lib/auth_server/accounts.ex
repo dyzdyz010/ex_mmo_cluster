@@ -56,27 +56,8 @@ defmodule AuthServer.Accounts do
   end
 
   defp data_service_target do
-    cond do
-      Process.whereis(AuthServer.Interface) != nil ->
-        case safe_call(AuthServer.Interface, :data_service) do
-          {:ok, nil} -> {:error, :data_service_unavailable}
-          {:ok, node} -> {DataService.Dispatcher, node}
-          {:error, _reason} -> {:error, :data_service_unavailable}
-        end
-
-      Process.whereis(DataService.Dispatcher) != nil ->
-        DataService.Dispatcher
-
-      true ->
-        {:error, :data_service_unavailable}
-    end
-  end
-
-  defp safe_call(server, message) do
-    try do
-      {:ok, GenServer.call(server, message)}
-    catch
-      :exit, reason -> {:error, reason}
-    end
+    if Process.whereis(DataService.Dispatcher),
+      do: DataService.Dispatcher,
+      else: {:error, :data_service_unavailable}
   end
 end

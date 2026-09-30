@@ -34,36 +34,6 @@ config :auth_server, AuthServerWeb.Endpoint,
 
 config :auth_server, dev_routes: true
 
-config :visualize_server, VisualizeServerWeb.Endpoint,
-  http: [ip: {127, 0, 0, 1}, port: 20001],
-  check_origin: false,
-  code_reloader: dev_reload?,
-  debug_errors: true,
-  secret_key_base: "cRHn0OH9C34RWALtOr+NCizxbJwJ4oEvmxzGuK8t1sC2MO9OVtTUb598BHSsID3l",
-  watchers:
-    if(dev_reload?,
-      do: [
-        esbuild: {Esbuild, :install_and_run, [:visualize_server, ~w(--sourcemap=inline --watch)]},
-        tailwind: {Tailwind, :install_and_run, [:visualize_server, ~w(--watch)]}
-      ],
-      else: []
-    ),
-  live_reload:
-    if(dev_reload?,
-      do: [
-        web_console_logger: true,
-        patterns: [
-          ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)\z",
-          ~r"priv/gettext/.*\.po\z",
-          ~r"lib/visualize_server_web/router\.ex\z",
-          ~r"lib/visualize_server_web/(controllers|live|components)/.*\.(ex|heex)\z"
-        ]
-      ],
-      else: []
-    )
-
-config :visualize_server, dev_routes: true
-
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 

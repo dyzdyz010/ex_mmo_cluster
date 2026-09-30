@@ -1,32 +1,16 @@
 # SceneServer 运行时边界
 
-本目录承载项目的权威模拟和场景运行时。
+本目录承载 Voxim 的移动权威与身体模拟。Voxim 是唯一客户端；旧的 chunk/field/AOI/NPC/Physics 链路已于 2026-09-30 删除。
 
 ## 顶层监督树
 
-`SceneServer.Application` 有显式 M1 Scene 配置时只启动 `InterfaceSup` 和
-`Movement.Scene`，由部署入口先启动真实 `VoxelRegion.World`。旧 Physics/Voxel/Aoi/Npc
-监督树只在未配置 M1 的参考现场启动，避免让无关旧 NIF 成为 M1 的启动依赖。
-各子树职责：
+`SceneServer.Application` 只在单 Scene 部署（设了 `VOXIM_M1_CONFIG`、没设 `VOXIM_TOPOLOGY`）时直接启动 `Movement.Scene`；
+多 Scene 由 `WorldServer.Topology` 在本应用的监督树下（或 peer 节点上）启动。部署入口先启动真实 `VoxelRegion.World`。
 
-- `SceneServer.InterfaceSup`
-  - 节点注册和服务发现入口，测试环境之外启用
-- `SceneServer.PhysicsSup`
-  - 原生场景和物理集成
-- `SceneServer.VoxelSup`
-  - `SceneServer.Voxel.RegionRuntime`
-  - `SceneServer.VoxelChunkSup`
-  - `SceneServer.Voxel.ChunkDirectory`
-- `SceneServer.AoiSup`
-  - `SceneServer.AoiManager`
-  - `SceneServer.AoiItemSup`
 - `SceneServer.Movement.Scene`
   - M3 公共60Hz时钟与 W1 碰撞 FIFO，发布不可变 P1 world 版本
   - 启动独立 Player DynamicSupervisor 与单个 Replication 派生 owner
   - 显式加载 D1 资产导出配置，完成 source/bootstrap 前不启动移动
-- `SceneServer.NpcSup`
-  - `SceneServer.NpcActorSup`
-  - `SceneServer.NpcManager`
 
 ## 权威边界
 
@@ -38,61 +22,17 @@ Scene 通过 W1 显式 World 引用接收 canonical snapshot/delta；各 Player 
 只消费已发布碰撞前缀；Replication 异步消费只读步后状态。详见本目录
 [`movement/README.md`](movement/README.md) 的 API、时间线和测试入口。
 
-以下旧共享移动模型继续服务 NPC 与既有 legacy 测试：
-
-- `Profile`：共享移动调参。
-- `InputFrame`：固定步长输入样本。
-- `State`：权威移动状态。
-- `Ack`：发给操控客户端的校正载荷。
-- `RemoteSnapshot`：AOI 广播快照载荷。
-- `Engine`：Rustler 移动数学的 Elixir 门面。
-- `Integrator`：测试和文档使用的 Elixir 参考实现。
-
-### `combat/`
-
-玩家和 NPC 共享的战斗基础结构：
-
-- `Profile`：生命值和重生默认值。
-- `State`：生命值与死亡状态机。
-- `Skill`：面向玩家的技能定义。
-- `Targeting`：不依赖具体角色类型的 AOI 选目标逻辑。
-
 ### `body/`
 
 身体 L1 纯值模型（Voxim `Docs/Magic.md` §6，首片只接体温）：`Body` 保存核心 / 皮肤温度、烧伤冻伤剂量与
 濒死计时，推导系统功能水平、生命值和伤病表；`Body.Thermo.step/3` 按多层模型（Stolwijk 1971 被动系统按躯干 + 头 / 四肢归并的七节点，冷暴露按实测校准，见 `body/README.md`）推进一步并返回能量账。
 尚未接入 `Movement.Player`，参数与依据见 [`body/README.md`](body/README.md)。
 
-### `worker/`
+### `native/`
 
-长生命周期的权威角色和基础设施：
+`VoximMovement`：与 Voxim 客户端共享的移动内核（`native/voxim_movement_nif`，路径依赖 `../Voxim/Plugins/VoximMovement/Native`）。
+`native/voxim_m0` 是同一内核的服务端离线回放实验入口。
 
-- `PlayerCharacter` / `PlayerManager`：保留旧测试/参考调用，正式 Application
-  不再启动其监督树；M1 Gate 不得向它们接入玩家。
-- `AoiManager`：共享八叉树和索引。
-- `Aoi.AoiItem`：每个角色的 AOI 订阅和广播适配器。
+### `prefab_designer`
 
-### `voxel/`
-
-Scene 侧热体素运行时：
-
-- `RegionRuntime`：本地租约缓存、邻区租约缓存，以及 `BoundaryVoxelEvent` 校验。
-  迁移期间的旧事件会先在这里被拒绝，不能影响热体素状态。
-- `ChunkProcess`：一个已租约区块的热状态拥有者。它生成快照载荷，并且必须通过
-  DataService 写入令牌围栏持久化之后才提交状态。
-- `ChunkDirectory`：区块进程的稳定查找和按需启动门面。
-
-### `npc/`
-
-建立在共享移动和战斗基础上的 NPC 专属角色模型：
-
-- `Profile`：静态 NPC 模板和配置。
-- `Facts`：只读感知快照。
-- `Brain`：纯意图选择逻辑。
-- `Navigation`：从意图到移动输入的转换。
-- `Attack`：从 NPC 配置到战斗技能的转换。
-- `State`：NPC 意图状态。
-- `Actor`：一个在线 NPC 的聚合根。
-- `Manager`：NPC 生成和索引门面。
-
-NPC 细分流程见 `npc/README.md`。
+无状态 prefab 设计检查，通过 `VoxelRegion.World` 正式入口发布（供 NPC 设计技能调用）。

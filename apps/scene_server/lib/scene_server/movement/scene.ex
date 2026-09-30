@@ -101,10 +101,11 @@ defmodule SceneServer.Movement.Scene do
       neighbours: [],
       probes: probes,
       spawn_min_y: min_y,
-      combat_scope: case raw["test_combat_bounds_m"] do
-        nil -> nil
-        [low, high] -> {float_tuple(low), float_tuple(high)}
-      end
+      combat_scope:
+        case raw["test_combat_bounds_m"] do
+          nil -> nil
+          [low, high] -> {float_tuple(low), float_tuple(high)}
+        end
     }
   end
 
@@ -374,7 +375,8 @@ defmodule SceneServer.Movement.Scene do
         {:reply, {:error, :closed}, state}
 
       spawn == nil and
-          Enum.count(state.characters, fn {_, c} -> c.slot != nil end) == length(state.config.probes) ->
+          Enum.count(state.characters, fn {_, c} -> c.slot != nil end) ==
+            length(state.config.probes) ->
         close_sink(state, gate, identity, 10)
         {:reply, {:error, :closed}, state}
 

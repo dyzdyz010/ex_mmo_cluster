@@ -7,7 +7,6 @@ defmodule Cluster.MixProject do
       version: "0.1.0",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases(),
       releases: releases()
     ]
   end
@@ -19,48 +18,21 @@ defmodule Cluster.MixProject do
     []
   end
 
-  # Root-level aliases usable from the umbrella root.
-  defp aliases do
-    [
-      # Build all Phoenix assets for production. Runs each Phoenix app's
-      # assets.deploy (tailwind --minify, esbuild --minify, phx.digest).
-      "assets.deploy": [
-        "cmd --app auth_server mix assets.deploy",
-        "cmd --app visualize_server mix assets.deploy"
-      ]
-    ]
-  end
-
-  # Release definitions. MVP ships a single container/node that bundles
-  # all maintained umbrella apps. Legacy Mnesia cluster apps
-  # (data_store, data_contact) are intentionally excluded.
+  # Voxim 服务端唯一发布：单节点运行 World / Scene / Auth / Gate，多 Scene 拓扑由 `VOXIM_TOPOLOGY` 在本节点旁起
+  # peer 节点。启动顺序由各 app 的运行时依赖决定（data_service → voxel_region → scene_server → world_server →
+  # auth_server / gate_server）；`rel/overlays/bin/server` 先迁移数据库再启动。
   defp releases do
     [
-      ex_mmo_cluster: [
+      voxim_server: [
         include_executables_for: [:unix],
         include_erts: true,
         applications: [
-          # Infra / discovery
-          beacon_server: :permanent,
-          # Data layer
-          data_init: :permanent,
           data_service: :permanent,
-          # Game logic
+          voxel_region: :permanent,
+          scene_server: :permanent,
           world_server: :permanent,
-          scene_server: :load,
-          # Edge
-          gate_server: :permanent,
           auth_server: :permanent,
-          visualize_server: :permanent
-        ]
-      ],
-      ex_mmo_scene: [
-        include_executables_for: [:unix],
-        include_erts: true,
-        applications: [
-          beacon_server: :permanent,
-          data_service: :permanent,
-          scene_server: :permanent
+          gate_server: :permanent
         ]
       ]
     ]

@@ -17,7 +17,11 @@ defmodule GateServer.Npc.Jev do
   @doc "请求体。profile 与 situation 为英文；planned_action 是将做的破坏性动作，没有则不问 harm。"
   def body(endpoint, profile, situation, planned_action \\ nil) do
     questions = %{
-      activity: %{type: "choice", instructions: profile.instructions, criteria: profile.activities}
+      activity: %{
+        type: "choice",
+        instructions: profile.instructions,
+        criteria: profile.activities
+      }
     }
 
     questions =
@@ -34,7 +38,9 @@ defmodule GateServer.Npc.Jev do
           }),
         else: questions
 
-    state = if planned_action, do: situation <> " Planned action: " <> planned_action, else: situation
+    state =
+      if planned_action, do: situation <> " Planned action: " <> planned_action, else: situation
+
     %{model: endpoint.model, state: state, questions: questions}
   end
 
@@ -58,8 +64,15 @@ defmodule GateServer.Npc.Jev do
   end
 
   @doc "问一次，返回 {:ok, verdict, response} 或 {:error, reason}；HTTP 与 LLM 共用发送函数。"
-  def ask(endpoint, profile, situation, planned_action \\ nil, request \\ &GateServer.Npc.Brain.Llm.request/2) do
-    with {:ok, response} <- request.(endpoint, body(endpoint, profile, situation, planned_action)),
+  def ask(
+        endpoint,
+        profile,
+        situation,
+        planned_action \\ nil,
+        request \\ &GateServer.Npc.Brain.Llm.request/2
+      ) do
+    with {:ok, response} <-
+           request.(endpoint, body(endpoint, profile, situation, planned_action)),
          do: {:ok, verdict(response, profile), response}
   end
 end

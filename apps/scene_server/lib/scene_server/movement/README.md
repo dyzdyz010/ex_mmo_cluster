@@ -14,7 +14,6 @@ canonical collision publication and the public 60 Hz clock. Each `Player`
 owns one authenticated identity's InputSlots, state, simulation tick and ACK.
 `Replication` consumes immutable Player results and distributes frames to four
 workers, each owning a disjoint set of observers' derived AOI relations.
-Legacy actor/NPC callers below remain separate from this production path.
 
 2026-09-18：InputStart 保持 Hello13 的 `origin=anchor+30` 冻结合同。
 用已有 `Clock.sample/1` 检查起点是否仍留有协议规定的8tick预测提前量；
@@ -222,61 +221,6 @@ unknown future prefixes, reconnect/crash isolation and queued TimeProbe clock
 pairing. Scene, collision timeline, AOI and Gate tests cover their changed
 seams. Real two-UE and load acceptance are recorded in sibling Docs/M3; test
 success alone does not establish 200-player capacity.
-
-## Legacy and NPC responsibilities
-
-- `Profile` - shared movement tuning parameters
-- `InputFrame` - one sanitized fixed-step input sample
-- `State` - authoritative movement state at a tick
-- `Ack` - controlling-client reconciliation payload
-- `RemoteSnapshot` - AOI broadcast payload for remote observers
-- `Engine` - stable Elixir API over the Rustler movement math
-- `VoxelCollision` - stateless read-only adapter from movement AABBs to
-  authoritative voxel occupancy queries
-- `Integrator` - readable Elixir reference implementation for tests/docs
-
-## Authority / reconciliation contract
-
-- `PlayerCharacter` owns the authoritative player movement state. Gate
-  connections only forward sanitized input frames and encoded acks.
-- `VoxelCollision` does not own actor or voxel state. It converts the
-  `PlayerCharacter` center-anchor movement state into voxel samples and asks
-  `ChunkDirectory` / `ChunkProcess` for read-only occupancy truth. Ground
-  contact is half-open: a center at `terrain_top + avatar_half_height` is clear,
-  while descending into the terrain resolves back to that center height.
-- `ChunkProcess` remains the only owner of hot voxel storage. Movement receives
-  occupied samples and returns corrected movement state plus
-  `CorrectionFlags.collision_push/0` when terrain blocks replay.
-- `Engine.build_ack_with_intent/5` is the preferred player hot-path ack builder
-  when the input frame that produced the state is available. It preserves
-  server correction intent such as collision push; `build_ack/4` remains the
-  legacy snapshot-only path and intentionally emits zero correction flags.
-- `Ack.auth_tick` is the client reconciliation timeline. `ack_seq` identifies
-  the last accepted input command, but clients should anchor replay to
-  `auth_tick` first and use `ack_seq` only as a fallback lookup.
-- `RemoteSnapshot` is created from authoritative actor state. AOI workers may
-  add observer-specific priority metadata before fan-out; movement actors do
-  not own observer priority.
-
-## Jump / airborne contract
-
-- `InputFrame.movement_flags` uses `0x0004` as a one-shot jump request.
-- Only `:grounded` actors can consume that request and enter `:airborne`.
-- `State.ground_z` is owned by the movement state so an airborne arc can land
-  back on the ground height it launched from, independent of current Z.
-- `Profile` owns airborne tuning: `jump_impulse`, `gravity`, `air_control`,
-  `air_accel`, and `max_fall_speed`. The default `jump_impulse=900` gives an
-  apex of roughly 4.1m under `gravity=980`, so players can escape multi-block
-  voxel traps while collision testing.
-
-## Relationship to actors
-
-- `SceneServer.PlayerCharacter` consumes network input and steps movement here
-- `SceneServer.Npc.Actor` builds its own input via `Npc.Navigation` and steps
-  movement here
-
-This shared layer is what keeps player and NPC motion on the same authority
-rules.
 
 ## 2026-09-29 工具命中人物（Hello35）
 

@@ -135,7 +135,7 @@ defmodule VoxelRegion.ThermalAttachments do
     {area,d}=ThermalGeometry.surface_contact(bounds,axis,elem(low,axis),{low,List.to_tuple(high)})
     if area>0,do: [{area,d}],else: []
   end
-  defp host_patches({1,axis,p},{blo,bhi}=bounds,w) do
+  defp host_patches({1,axis,p},{blo,bhi},w) do
     origin=metres(p)
     # Each neighboring quadrant touches two half-width strips. Clip each strip
     # against actual host bounds, including a finite Y-up liquid column.

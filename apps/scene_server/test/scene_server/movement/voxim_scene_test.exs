@@ -58,18 +58,19 @@ defmodule SceneServer.Movement.VoximSceneTest do
     assert {^slots, :waiting} = InputSlots.take(slots, 100)
     {slots, :late} = InputSlots.receive_batch(slots, batch)
 
-    slots = Enum.reduce(101..124, slots, fn tick, s ->
-      {next, frame} = InputSlots.take(s, tick)
-      assert frame.jump_pressed == 0
-      assert frame.axis_x == if(tick <= 103, do: 32767, else: 0)
-      next
-    end)
+    slots =
+      Enum.reduce(101..124, slots, fn tick, s ->
+        {next, frame} = InputSlots.take(s, tick)
+        assert frame.jump_pressed == 0
+        assert frame.axis_x == if(tick <= 103, do: 32767, else: 0)
+        next
+      end)
+
     assert slots.processed_input_seq == 25
     assert slots.substituted_through_seq == 25
     {same, :late} = InputSlots.receive_batch(slots, %{batch | frames: [%{one | input_seq: 2}]})
     assert same == slots
-    assert {^slots, :waiting} = InputSlots.take(slots,124)
-
+    assert {^slots, :waiting} = InputSlots.take(slots, 124)
   end
 
   test "1 3 2 ordering retains first value and conflicting duplicate is rejected" do
@@ -362,7 +363,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     stalled = advance(ctx, 55)
     assert hd(stalled.characters).processed_input_seq == 24
     assert hd(stalled.characters).simulation_tick == 55
-    assert elem(hd(stalled.characters).state.position,1) < elem(anchor.position,1)
+    assert elem(hd(stalled.characters).state.position, 1) < elem(anchor.position, 1)
     assert stalled.physics_steps - at31.physics_steps == 24
 
     for frames <- commands |> Enum.chunk_every(6) |> Enum.reverse() do

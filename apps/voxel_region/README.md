@@ -1,5 +1,58 @@
 # Voxim Region 真值
 
+2026-09-30 大火热模拟：分步提交与常驻原生拓扑（Global system；基准、回放与等价性测试为 Test-only）：
+Demo 林火（约 1.2 万热格、2 万内核节点）里 World 每 0.5 模拟秒要连续跑约 10 个内核步、共约 1.8 s，
+玩家挖放在 World 邮箱里排 5–8 s。一，定时提交改为逐步消息（`:thermal_tick` 开始、`{:thermal_step, ref}` 每条一步），
+步间先处理排队的调用，0.5 模拟秒仍作为一笔事务提交；测试的 `:thermal_commit` 仍在一次回调内完整执行。
+二，热模拟移出 `world.ex`：`World.Thermal`（编排与内核步，完成时交回待提交记录）、`World.Canonical`（只读 canonical 读取），
+依赖单向 World → Thermal → Canonical。三，内核拓扑常驻原生侧：`ThermalDomain` 维护内核节点表（键 => 分区过滤后的节点与派生字段，
+遍历次序即内核次序），只把变化节点的接触与视线按整数槽位推给 NIF 资源，每轮交出下标次序与发边次序，原生侧生成边与辐射项
+（`native/voxim_thermal/README.md`）。原先每步在 Elixir 重建编号、边界过滤与默认记录缓存（元组键 map 查找约 0.4 µs／次）。
+逐位一致：OTP 27 中超过 32 键的 map，推导式遍历与 `Enum.to_list/1` 次序互逆，原实现下标用后者、发边用前者，常驻拓扑照此分别给出；
+首版只给一个次序时燃烧木屋 ε 0 冻结摘要在 90 s 失败、林火离线回放与 BENCH_DIGEST 却看不出（林火节点多为不超过两条域内接触，
+加法可交换），所以逐位判定以燃烧木屋冻结摘要为准。验证：`thermal_domain_equivalence_test` ε 0 通过、辐射目录仍停在改前同一失败摘要
+（`1af236f2…`，既有问题未改）；BENCH_DIGEST 林火 300 s 新旧 60 个摘要逐个相同；导出的线上状态冷启动回放 3 次提交摘要相同；
+`thermal_domain_test` 对照 `ThermalGeometry.contacts/1`、`ThermalRadiation.terms/4`（发边次序写错时失败）；带 5433 数据库全套 530 项仅上述既有失败。
+线上（镜像 dig-place-20260929-05，约 1.7 万节点）：每步准备 100–130 → 46 ms，提交 1.4–1.9 s → 约 1.09 s，
+模拟由实时约 27% 升到约 52%；World 仍接近满负荷，挖放确认 0.31–0.75 s。余下每步约 99 ms 主要是动态部分
+（批次 20、采样 9、结算 11、合并 7、结算后处理 11、NIF 10 ms），下一步是动态值常驻原生侧。
+四（同日，2B），热节点动态值与逐步规则常驻原生侧：`ThermalDomain` 装入节点时由 `ThermalRecord` 给出静态量与动态量（温度、HP、
+燃料、功率、燃烧、采掘基线、相态焓），`sim.rs` 按原顺序执行燃烧（`Combustion.step` 移入，燃料 ε 仍取 `Combustion.fuel_epsilon_j/0`）、
+点燃事件、耐热失血（按共享池 `(损失 + 前值) − HP` 聚合）、采掘基线与热源，逐步只回传变化键与事件；`ThermalBatch`、`ThermalSettlement`
+删除。属性记录仍是唯一真值，原生值只是提交进行中的工作副本：提交末（`settle_run`）以及任何非豁免调用处理前（`World` 的写回子句）
+先 `Thermal.flush/2` 把待写回节点整批并入 `damage`；外部改写（镐击、放置、液体）在下一步开头按热字段（`ThermalRecord.same?/2`）
+比对重装，事务号变化不重装。豁免清单 `@unflushed` 只放整条处理链不读写属性记录的消息（区域载荷、工具目录、版本号、身体相干度）；
+身体接触只读脚格温度，`Thermal.body_contacts/2` 在待写回时直接读原生侧该格当前值。尚未写回的相态节点用 `recorded` 标记补上
+"记录已有焓"的判断。验证：`thermal_domain_equivalence_test` ε 0 通过、辐射仍为同一既有失败摘要；林火 BENCH_DIGEST 须同一天、同一地形缓存
+新旧对比（Docker 重建后地形缓存重生成，前一天的基线全部不同，今日旧代码重跑与新代码 60/60 相同）；`combustion_world_test` 的镐击穿插
+（改前写回覆盖镐击时失败）与身体接触读当前值（读记录时失败）两例；cargo 12 例。线上（镜像 dig-place-20260929-09，保留林火约 1.1 万热节点、
+每步仍在扩域）：每步准备约 15–29 ms、提交中位 0.45 s（节拍 0.5 s）；提交中途写回由每局约 500 次降到只剩真正读写记录的调用（每类个位数），
+单次整批写回约 25 ms／1.1 万行；镐击确认 0.13–0.30 s。放置仍 0.6–1.1 s：同一 World 进程里玩家窗口快照（`canonical_snapshot`，
+区域与碰撞 0.2–1.5 s／次，进场与跨窗口触发）与区域首次编辑的 L1+ 归约冷缓存（117 ms）排在它前面，属下一项。
+五（同日），窗口快照的碰撞投影移出 World：World 只按同一 seq 取区域字节与属性快照，交给该订阅者的发送进程 `CanonicalFeed`；
+它解码区域、投影碰撞 chunk（`CollisionSource.snapshot_chunks/2`）、发出快照后答复调用方，此后 World 的增量也经它按提交次序转发——
+订阅者只从这一个进程收消息，次序与 World 直接发送相同（`collision_source_test` 在 World 暂停时排入加入与编辑，直接发送增量的写法失败）。
+缓存命中时进场占 World 210–275 → 29–37 ms，投影 0.25–0.45 s 在发送进程里。六，检查点压实换基底不再清空整个载荷缓存：换基底只改变真值的
+表示（稀疏编辑并入基底），任何区域物化出的字节不变，只丢弃被吸收区域自己的缓存与源解码；此前每 60 s 一次压实把缓存清空，之后每次进场
+都在 World 里重新编码 27 个区域（0.3–1.3 s）。`world_test` 压实例增加：邻区压实前已缓存、压实后命中且与重启后重新物化的字节相同（旧写法命中数不增、失败）。
+七，`world.ex` 由约 5950 行拆为 1321 行：私有函数按职责原样搬入 `World.{Payloads, Observation, Log, Edits, Prefabs, Casting, Tools,
+Production, Phases, Liquids, AttachmentOps, Claims, Catalogs, HeatCommit}`（均为输入输出 World 状态的函数，互相远程调用、不互相导入），
+World 保留 API、`init` 与 `handle_*`；逻辑未改。拆分暴露一处真实回归：冷重启回放 `binary_to_term(_, [:safe])` 需要的元数据原子（如 `semblance_created_j`）原是 World 的字面量，拆出后只在惰性加载的子模块里，`overlay_log_fresh_vm_test` 失败；`OverlayLog.term/1` 改为解码前加载全部写入方（World、`world/*.ex` 按文件名得到的模块、拟态记录）。`prefab_test` 的白盒 trace 目标随函数移到 `World.Edits`。全套 527 项仅既有辐射摘要一项失败，gate 生产派发与 NPC 身体 10 项通过，镜像 dig-place-20260929-13 双端冒烟通过。线上（镜像 dig-place-20260929-12，去掉放置后立即截图的冒烟）：放置确认 0.04 / 0.21 s，
+镐击 0.05–0.11 s。此前各轮"放置 0.57–0.86 s 且只隔 1 帧"是冒烟脚本在发送帧里截图造成的客户端卡顿，不是服务端。`voxel_serve_item` 统计日志记录
+每件的回复类型、缓存命中与耗时。
+八（同日），检查点与冷路径继续移出 World：一，压实时上次检查点后 core 没有编辑（`Log.core_cells/2` 为空）的完整区域不再换基底——基底就是它自己，
+换基底只会删掉它的载荷缓存与源解码，下一次压实和进场再各编码一遍（线上 7 个区域每次 69–93 ms，另解码 7 ms）；`voxel_checkpoint` 日志按
+select／image／persist／rebase 分段记录（原先只有定时器路径记总耗时，`compact/1` 调用路径不记）。二，没有格条目的事务（热提交、镐击、余额）
+在 `entries` 只留 `seq/entries/coarse`：订阅补发与区域增量只读这三项，正文本就逐笔持久化；此前两次压实之间留着每笔约 4400 行属性
+（30 s 约 27.6 万行），`entries_after/2`（测试与诊断用）对这类事务改从持久日志补回正文。三，工具／生产意图编辑链上未解码的 L1+ 区域
+（载荷可能已缓存给客户端，但归约读的是解码后的来源）在 `prepare_intent` 回复里列出，调用方从不可变来源解码后随 `prepared_intent` 交回，
+World 只接纳仍缺的项；首次编辑冷路径原在 World 里 57–125 ms。回归（旧写法各自失败，`Voxim/Saved/Diagnostics/DigPlace-20260930/red-*.log`）：
+`world_test` 无编辑再压实后载荷缓存命中且字节不变；`damage_world_test` 首次放置时 World 收到 L1–L5 解码且自己不读 L1+ 来源、纯属性事务只留投影字段。
+全套 529 项仅既有辐射摘要一项失败（摘要仍为 `1af236f2…`），gate 生产派发与 NPC 身体 10 项通过。线上（镜像 dig-place-20260929-14，同一保留林火世界）：
+检查点占 World 由中位约 350 ms（282–454，另有 1.8 s、4.7 s 离群）降到 185–222 ms（重启后首次 1.47 s，缓存冷），区域图像 69–93 → 0.03–0.06 ms；
+余下几乎全是同步整表替换写库（persist 163–213 ms）。World GC 30 s 窗口 major 最长 65 → 41 ms、minor 合计 544 → 468 ms。
+smoke17 双端逐笔核对、余额闭合：放置确认 0.194 s，镐击 0.031 / 0.051 / 0.167 s，观察端应用 0.11–0.20 s。
+
 2026-09-24 大火热模拟实时性（Global system；基准与等价性测试为 Test-only）：辐射世界林火 rad-loop-04 里
 热模拟只有墙钟的 0.78–0.95×。根因一：`:thermal_commit` 在回调做完后才再排 500 ms，模拟/墙钟 = 0.5/(0.5+回调秒数)，
 与计算余量无关；改为固定墙钟节拍（下次到期 = 上次到期 + 500 ms，落后即刻提交、不积压补跑）。测试的手动提交
@@ -569,7 +622,7 @@ L0 不在门内：它按玩家位置在线生成（单块几十毫秒）。`Worl
 
 缓存生成先写入同目录、含 OS PID 与 BEAM 唯一值的临时文件，再用 [`File.ln/2`](https://www.erlang.org/doc/apps/kernel/file.html#make_link/2) 建立同文件系统 hardlink，完成拒绝覆盖的原子发布；目标已存在的生成者删除自己的临时文件并读取、校验胜者。文件系统不支持 hardlink 时明确返回 `cache_publish_failed`，没有 rename 或运行时生成 fallback。缓存命中会完整解压并复核 body 长度与 hash，避免截断或损坏的生成结果被永久复用；warm serve 的重复解压成本留给后续性能切片处理。
 
-最后一个命令需要本地服务，临时改变 `(40,504,39)` 一格后恢复原材质。S4 服务启动必须同时设置 `VOXEL_REGION_ROOT=<空的生成缓存根>` 和 `VOXEL_REGION_MANIFEST=<s4_worldgen_manifest.json>`；Demo manifest 的当前导出位于 `Voxim/Docs/R6/runtime/s4_worldgen_manifest.json`。另设 `DEV_AUTO_LOGIN=true`、隔离的 `AUTH_PORT` / `GATE_TCP_PORT` 与所需数据库配置后，在 umbrella 根运行 `mix phx.server`。旧 ChunkProcess 开发世界默认不初始化；仅运行历史探针时显式设 `VOXEL_DEV_REGION_BOOTSTRAP=true`。`start_s4.ps1` 明确设为 `false`，不会继承调用 shell 的旧值。不要把 `VOXEL_REGION_ROOT` 指向原 `WorldBake`；生成 baseline cache 写入该根下的 content-version 目录，权威 overlay 写入数据库并按 `content_version` 隔离。
+最后一个命令需要本地服务，临时改变 `(40,504,39)` 一格后恢复原材质。S4 服务启动必须同时设置 `VOXEL_REGION_ROOT=<空的生成缓存根>` 和 `VOXEL_REGION_MANIFEST=<s4_worldgen_manifest.json>`；Demo manifest 的当前导出位于 `Voxim/Docs/R6/runtime/s4_worldgen_manifest.json`。另设 `DEV_AUTO_LOGIN=true`、隔离的 `AUTH_PORT` / `GATE_TCP_PORT` 与所需数据库配置后，在 umbrella 根运行 `mix phx.server`。旧 ChunkProcess 开发世界已于 2026-09-30 删除。不要把 `VOXEL_REGION_ROOT` 指向原 `WorldBake`；生成 baseline cache 写入该根下的 content-version 目录，权威 overlay 写入数据库并按 `content_version` 隔离。
 
 manifest schema 是 `voxim-worldgen-v1`，显式包含 `kernel`、完整且有序的 `materials` 24 项表、`world_half_extent_m`（世界半边长，米；只决定就绪门枚举范围，不进 content_version）与八项 config：`seed/min_height/sea_level/max_height/soil_depth/lowland_amplitude/mountain_amplitude/cave_max_depth`。`GeneratedStore.open/1` 在创建版本目录前要求 manifest 表与 `MmoContracts.VoxelMaterialCatalog` 完全相等。`content_version` 使用 `voxim-content-version-md5-64-v2`：输入依次为规则名、Rust NIF 提供的完整 kernel identity（算法名 + 构建时源码 digest）、按 id 排序的紧凑 `[[id,name],...]` JSON（当前 327 bytes），三段以 NUL 分隔，再跟 seed i64 LE、四个高度/土层 i32 LE、两个 IEEE754 f64 LE、洞穴深度 i32 LE；MD5 首 8 字节按 little-endian u64 解释。
 

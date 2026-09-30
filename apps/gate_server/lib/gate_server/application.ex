@@ -6,10 +6,9 @@ defmodule GateServer.Application do
 
   The gate owns:
 
-  - the explicitly selected Voxim QUIC listener and per-connection supervision
+  - the Voxim QUIC listener and per-connection supervision
   - Gate-owned authenticated session identities
-  - explicitly selected legacy reference TCP/WS and fast-lane services
-  - optional stdio inspection hooks for automation
+  - the NPC body supervisor
 
   It does **not** own authoritative gameplay simulation; instead it forwards
   authenticated requests to scene/auth services and encodes their replies for
@@ -29,83 +28,18 @@ defmodule GateServer.Application do
   @impl true
   def start(_type, _args) do
     children =
-      [
-        # Starts a worker by calling: GateServer.Worker.start_link(arg)
-        # {GateServer.Worker, arg}
-        interface_child(),
-        stdio_child()
-      ]
-      |> Enum.reject(&is_nil/1)
-      |> Kernel.++(transport_children())
+      if @is_test_build do
+        []
+      else
+        [
+          {GateServer.Session.Claims, name: GateServer.Session.Claims},
+          {GateServer.Transport.QuicListener,
+           [claims: GateServer.Session.Claims] ++ Application.fetch_env!(:gate_server, :quic)},
+          {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one}
+        ]
+      end
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
     opts = [strategy: :one_for_one, name: GateServer.Supervisor]
     Supervisor.start_link(children, opts)
-  end
-
-  defp transport_children do
-    case Application.fetch_env!(:gate_server, :transport) do
-      :voxim_quic ->
-        if @is_test_build do
-          []
-        else
-          [
-            {GateServer.Session.Claims, name: GateServer.Session.Claims},
-            {GateServer.Transport.QuicListener,
-             [claims: GateServer.Session.Claims] ++ Application.fetch_env!(:gate_server, :quic)},
-            # NPC Body 在 Scene 建好后由部署脚本加入；独立监督者隔离其重启强度。
-            {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one}
-          ]
-        end
-
-      :legacy_reference ->
-        [
-          {GateServer.FastLaneRegistry, name: GateServer.FastLaneRegistry},
-          {GateServer.TcpConnectionSup, name: GateServer.TcpConnectionSup},
-          {GateServer.WsConnectionSup, name: GateServer.WsConnectionSup},
-          tcp_acceptor_child()
-        ]
-        |> Enum.reject(&is_nil/1)
-        |> Kernel.++(udp_children())
-    end
-  end
-
-  defp interface_child do
-    if @is_test_build do
-      nil
-    else
-      {GateServer.InterfaceSup, name: GateServer.InterfaceSup}
-    end
-  end
-
-  defp tcp_acceptor_child do
-    if @is_test_build do
-      nil
-    else
-      {GateServer.TcpAcceptorSup, name: GateServer.TcpAcceptorSup}
-    end
-  end
-
-  defp udp_children do
-    if @is_test_build do
-      []
-    else
-      [{GateServer.UdpAcceptorSup, name: GateServer.UdpAcceptorSup}]
-    end
-  end
-
-  defp stdio_child do
-    if @is_test_build do
-      nil
-    else
-      enabled? =
-        Application.get_env(:gate_server, :stdio_interface, false) ||
-          System.get_env("GATE_SERVER_STDIO") in ["1", "true", "TRUE", "yes", "on"]
-
-      if enabled? do
-        {GateServer.StdioInterface, name: GateServer.StdioInterface}
-      end
-    end
   end
 end

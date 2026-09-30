@@ -1,21 +1,29 @@
-//! 全局系统功能：不可变世界输入的批量热演化；不持有 canonical 状态。
-use rustler::{Error, NifResult};
+//! 全局系统功能：热演化的 NIF 边界。常驻的只有可丢弃的热域（拓扑 `domain` 与节点工作副本 `sim`），
+//! 不持有 canonical 状态：World 的属性记录是唯一真值，节点值由 World 装入、变化由 World 取回写回。
+mod domain;
+mod kernel;
+mod sim;
 
-// 温度、HP、MaxHP、热容量、导热率、耐热阈值、暴露面数、功率、源余能、是否活动种子。
-#[derive(rustler::NifTuple)]
-struct Input(f64, f64, f64, f64, f64, f64, f64, f64, f64, bool);
-type Output = (f64, f64, f64);
+use domain::{Contact, Domain, Sight};
+use kernel::{Events, Input, Output, Radiation};
+#[cfg(test)]
+use kernel::PhaseInput;
+use rustler::{Error, NifResult, ResourceArc};
+use sim::{Node, Phase, Sim};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
-// 斯特藩-玻尔兹曼常数，W/(m²·K⁴)（CODATA 2018 精确值）。
-const SIGMA: f64 = 5.670374419e-8;
+/// World 的热域：拓扑与节点工作副本；World 丢弃工作集时随之释放。
+pub struct DomainResource(Mutex<Resident>);
 
-// 灰体辐射项：互见面半对 (a, b, 有效面积) 与对天空面 (节点, ε×面积)，发射率因子已由 World 乘入。
-// 两个列表为空即无辐射，数值路径与引入辐射前逐位相同。
-type Radiation = (Vec<(usize, usize, f64)>, Vec<(usize, f64)>);
+#[derive(Default)]
+pub struct Resident {
+    domain: Domain,
+    sim: Sim,
+}
 
-// 焓、实际体积、相变温度、实际潜热总量、单位体积热容、是否液体；数值来自 World 的已发布目录。
-#[derive(rustler::NifTuple)]
-struct PhaseInput(f64, f64, f64, f64, f64, bool);
+#[rustler::resource_impl]
+impl rustler::Resource for DomainResource {}
 
 // 环境温度：全局标量，或逐节点（节点所在气候区，与节点同序同长）。
 #[derive(rustler::NifUntaggedEnum)]
@@ -30,12 +38,54 @@ enum AdvanceOutput {
     Phase((f64, f64, f64, f64)),
 }
 
+type Advanced = (f64, Vec<AdvanceOutput>, f64, f64);
+
 // 纯数值调用保持原元组；World 额外声明点燃阈值、相变回写和共享完整度结算边界。
 #[derive(rustler::NifUntaggedEnum)]
 enum AdvanceInput {
-    Controlled((Input, (Option<f64>, Option<PhaseInput>, bool))),
+    Controlled((Input, Events)),
     Numeric(Input),
 }
+
+/// 节点静态量：热容、导热率、耐热阈值、暴露面、所在气候区空气温度、点燃温度、共享完整度、
+/// 整宏格节点的宏格编号、足迹宏格编号、相态目录值 {相变温度, 单格潜热, 单格热容, 是否液体}。
+#[derive(rustler::NifTuple)]
+struct NodeStatic(f64, f64, f64, f64, f64, Option<f64>, bool, Option<u32>, Vec<u32>, Option<(f64, f64, f64, bool)>);
+
+/// 节点动态量（与属性记录对应）：温度（无记录为空气温度）、HP、MaxHP、燃料余量、燃烧功率、是否燃烧、
+/// 采掘基线、相态 {有限体积, 焓, 记录已有焓}。
+#[derive(rustler::NifTuple)]
+struct NodeDynamic(f64, f64, f64, Option<f64>, f64, bool, Option<f64>, Option<(f64, f64, bool)>);
+
+/// 一步结算：{实际时长, 供能, 环境交换, 燃烧耗燃, 外部节点结果, 新热格, 点燃候选, 共享损失, 熄灭, 变化节点, 有限源余量, 所请求下标的温度}。
+#[derive(rustler::NifTuple)]
+struct StepOut(f64, f64, f64, f64, Vec<Output>, Vec<u32>, Vec<u32>, Vec<(u32, f64, f64)>, Vec<u32>, Vec<u32>, Vec<(u32, f64)>, Vec<f64>);
+
+fn node(s: NodeStatic, d: NodeDynamic) -> Node {
+    let mut n = Node {
+        capacity: s.0, conductivity: s.1, resistance: s.2, faces: s.3, ambient: s.4, ignition: s.5, shared: s.6,
+        macro_cell: s.7, cells: s.8,
+        phase: s.9.map(|(transition, latent, capacity, liquid)| Phase {
+            transition, latent, capacity, liquid, volume: 1.0, energy: 0.0, stored: false }),
+        temperature: 0.0, hp: 0.0, max_hp: 0.0, fuel: None, power: 0.0, burning: false, baseline: None,
+    };
+    apply(&mut n, d);
+    n
+}
+
+fn apply(n: &mut Node, d: NodeDynamic) {
+    (n.temperature, n.hp, n.max_hp, n.fuel, n.power, n.burning, n.baseline) = (d.0, d.1, d.2, d.3, d.4, d.5, d.6);
+    if let (Some(p), Some((volume, energy, stored))) = (n.phase.as_mut(), d.7) {
+        (p.volume, p.energy, p.stored) = (volume, energy, stored);
+    }
+}
+
+fn dynamic(n: &Node) -> NodeDynamic {
+    NodeDynamic(n.temperature, n.hp, n.max_hp, n.fuel, n.power, n.burning, n.baseline,
+                n.phase.map(|p| (p.volume, p.energy, p.stored)))
+}
+
+fn finite(values: &[f64]) -> bool { values.iter().all(|v| v.is_finite()) }
 
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
 fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: f64,
@@ -53,150 +103,149 @@ fn batch(input: Vec<Input>, edges: Vec<(usize, usize)>, ambient: f64, exchange: 
         (a,b,if ka+kb==0.0 {0.0} else {2.0*ka*kb/(ka+kb)})
     }).collect();
     let ambient=vec![ambient; input.len()];
-    Ok(evolve(&input, &contacts, &(vec![], vec![]), &ambient, exchange, tolerance, dt, steps, true))
+    Ok(kernel::evolve(&input, &contacts, &(vec![], vec![]), &ambient, exchange, tolerance, dt, steps, true))
 }
 
-// 有限体积显式离散：dt <= C / (接触导热系数之和 + 环境换热系数 + 辐射线性化系数)，保留正系数。
-// ambient 逐节点：节点所在气候区的空气温度（无气候区时全部等于全局环境，数值与标量版逐位相同）。
+// 有限体积显式离散，按 50ms 分段推进焓/温度；新前沿、相变完成、点燃及共享 HP 事件交还 World。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
 fn advance(nodes: Vec<AdvanceInput>, contacts: Vec<(usize,usize,f64)>, ambient: Ambient, exchange: f64,
-           tolerance: f64, duration: f64, radiation: Radiation) -> NifResult<(f64,Vec<AdvanceOutput>,f64,f64)> {
-    let (input, events): (Vec<_>, Vec<_>) = nodes.into_iter().map(|node| match node {
-        AdvanceInput::Controlled((input, events)) => (input, events),
-        AdvanceInput::Numeric(input) => (input, (None, None, false)),
-    }).unzip();
+           tolerance: f64, duration: f64, radiation: Radiation) -> NifResult<Advanced> {
+    let (input, events): (Vec<_>, Vec<_>) = nodes.into_iter().map(unpack).unzip();
     let ambient = match ambient {
         Ambient::Uniform(a) => vec![a; input.len()],
         Ambient::PerNode(a) => a,
     };
-    if !duration.is_finite() || duration <= 0.0 || ambient.len() != input.len()
-        || ambient.iter().any(|a| !a.is_finite())
-        || !exchange.is_finite() || exchange < 0.0 || !tolerance.is_finite() || tolerance < 0.0
-        || input.iter().any(|n| [n.0,n.1,n.2,n.3,n.4,n.5,n.6,n.7,n.8].iter().any(|v| !v.is_finite())
-            || n.3<=0.0 || n.5<=0.0 || n.6<0.0 || n.8<0.0)
-        || contacts.iter().chain(&radiation.0).any(|&(a,b,g)| a>=input.len() || b>=input.len() || a==b || !g.is_finite() || g<0.0)
-        || radiation.1.iter().any(|&(i,s)| i>=input.len() || !s.is_finite() || s<0.0)
-        || events.iter().any(|(ignition,phase,_)|
-            ignition.is_some_and(|t| !t.is_finite() || t<=0.0)
-                || phase.as_ref().is_some_and(|p|
-                    [p.0,p.1,p.2,p.3,p.4].iter().any(|v| !v.is_finite())
-                        || p.1<=0.0 || p.2<=0.0 || p.3<=0.0 || p.4<=0.0)) {
+    if !kernel::valid(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation) {
         return Err(Error::BadArg);
     }
-    let mut diagonal: Vec<f64> = input.iter().map(|n| exchange*n.6).collect();
-    for &(a,b,g) in &contacts { diagonal[a]+=g; diagonal[b]+=g; }
-    let linear = stable_dt(&input,&diagonal);
-    let radiating = !radiation.0.is_empty() || !radiation.1.is_empty();
-    let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
-    let mut flow=vec![0.0; input.len()];
-    let mut heat=vec![0.0; input.len()];
-    let mut phases: Vec<_> = events.iter().map(|(_,p,_)| p.as_ref().map(|p| p.0)).collect();
-    let (mut remaining,mut done,mut supplied,mut environment)=(duration,0.0,0.0,0.0);
-    loop {
-        // 保留 World 原有的 50ms 分段及每段 ceil/dt 算术，不把整批重新均分。
-        let segment=remaining.min(0.05);
-        // T⁴ 项按段首温度线性化 4σwT³ 重算稳定步长；无辐射时沿用原一次性步长。
-        let stable=if radiating {
-            let mut diagonal=diagonal.clone();
-            for &(a,b,w) in &radiation.0 {
-                let h=4.0*SIGMA*w*state[a].0.max(state[b].0).powi(3);
-                diagonal[a]+=h; diagonal[b]+=h;
-            }
-            for &(i,s) in &radiation.1 { diagonal[i]+=4.0*SIGMA*s*state[i].0.powi(3); }
-            stable_dt(&input,&diagonal)
-        } else { linear };
-        let steps=(segment/stable).ceil() as u32;
-        let dt=segment/f64::from(steps);
-        let (count,q,air,mut frontier)=evolve_steps(&input,&contacts,&radiation,&ambient,exchange,tolerance,
-            dt,steps,false,&mut state,&mut flow,&mut heat);
-        let advanced=f64::from(count)*dt;
-        done+=advanced; remaining-=advanced; supplied+=q; environment+=air;
-        let mut phase_complete=false;
-        for (((((s,(_,params,_)),phase),n),delta),a) in state.iter_mut().zip(&events).zip(&mut phases).zip(&input).zip(&heat).zip(&ambient) {
-            if let (Some(p),Some(energy))=(params.as_ref(),phase.as_mut()) {
-                let before=*energy;
-                // 焓直接接收同一段的净热量，避免从已舍入的温差逆推能量。
-                *energy+=delta;
-                let sensible=if p.5 { (*energy-p.3).max(0.0) } else { energy.min(0.0) };
-                s.0=p.2+sensible/(p.1*p.4);
-                // 原 World 在焓回写后也会激活新热格；首次初始化的相变几何不能延迟扩域。
-                frontier |= !n.9 && ((s.0-a).abs()>tolerance || s.2>0.0);
-                // 只在完成条件首次跨越时通知；材质替换仍由 World 的既有提交规则负责。
-                phase_complete |= if p.5 { before>0.0 && *energy<=0.0 }
-                    else { before<p.3 && *energy>=p.3 };
-            }
-        }
-        let world_event=input.iter().zip(&state).zip(&events).any(|((n,s),(ignition,_,shared))| {
-            ignition.is_some_and(|t| s.0>=t) || (*shared && s.1<n.1)
-                || (n.1>0.0 && s.1==0.0)
-        });
-        // 与 World 剩余时长终止条件相同；跨系统事件不在 NIF 写回 canonical 真值。
-        if frontier || phase_complete || world_event || remaining<1.0e-12 {
-            let elapsed=if remaining<1.0e-12 { duration } else { done };
-            let output=state.into_iter().zip(phases).map(|(s,p)| match p {
-                Some(energy)=>AdvanceOutput::Phase((s.0,s.1,s.2,energy)),
-                None=>AdvanceOutput::Numeric(s),
-            }).collect();
-            return Ok((elapsed,output,supplied,environment));
-        }
+    let out = kernel::advance(&input, &events, &contacts, &ambient, exchange, tolerance, duration, &radiation);
+    let output = out.state.into_iter().zip(out.phases).map(|(s, p)| match p {
+        Some(energy) => AdvanceOutput::Phase((s.0, s.1, s.2, energy)),
+        None => AdvanceOutput::Numeric(s),
+    }).collect();
+    Ok((out.elapsed, output, out.supplied, out.environment))
+}
+
+fn unpack(node: AdvanceInput) -> (Input, Events) {
+    match node {
+        AdvanceInput::Controlled((input, events)) => (input, events),
+        AdvanceInput::Numeric(input) => (input, (None, None, false)),
     }
 }
 
-fn stable_dt(input: &[Input], diagonal: &[f64]) -> f64 {
-    input.iter().zip(diagonal).filter(|(_,g)| **g>0.0)
-        .map(|(n,g)| 0.45*n.3/g).fold(0.05_f64,f64::min)
+#[cfg_attr(not(test), rustler::nif)]
+fn domain_new() -> ResourceArc<DomainResource> {
+    ResourceArc::new(DomainResource(Mutex::new(Resident::default())))
 }
 
-fn evolve(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: &[f64], exchange: f64,
-          tolerance: f64, dt: f64, steps: u32, return_on_cooling: bool) -> (u32, Vec<Output>, f64, f64) {
-    let mut state: Vec<Output> = input.iter().map(|n| (n.0,n.1,n.8)).collect();
-    let mut flow=vec![0.0; input.len()];
-    let mut heat=vec![0.0; input.len()];
-    let (done,supplied,environment,_)=evolve_steps(input,contacts,radiation,ambient,exchange,tolerance,
-        dt,steps,return_on_cooling,&mut state,&mut flow,&mut heat);
-    (done,state,supplied,environment)
-}
-
-fn evolve_steps(input: &[Input], contacts: &[(usize,usize,f64)], radiation: &Radiation, ambient: &[f64], exchange: f64,
-          tolerance: f64, dt: f64, steps: u32, return_on_cooling: bool,
-          state: &mut [Output], flow: &mut [f64], heat: &mut [f64]) -> (u32, f64, f64, bool) {
-    let (mut supplied,mut environment)=(0.0,0.0);
-    heat.fill(0.0);
-    for step in 1..=steps {
-        flow.fill(0.0);
-        for &(a,b,k) in contacts {
-            let q=k*(state[b].0-state[a].0)*dt;
-            flow[a]+=q; flow[b]-=q;
-        }
-        // 互见面对反对称交换，能量守恒；对天空面换热与线性环境换热同记环境账。
-        for &(a,b,w) in &radiation.0 {
-            let q=SIGMA*w*(state[b].0.powi(4)-state[a].0.powi(4))*dt;
-            flow[a]+=q; flow[b]-=q;
-        }
-        for &(i,s) in &radiation.1 {
-            let q=SIGMA*s*(ambient[i].powi(4)-state[i].0.powi(4))*dt;
-            flow[i]+=q; environment+=q;
-        }
-        let mut changed_support=false;
-        for (i,n) in input.iter().enumerate() {
-            let (temperature,hp,remaining)=state[i];
-            let used=remaining.min(n.7.abs()*dt);
-            let q=used*n.7.signum();
-            let air=exchange*n.6*(ambient[i]-temperature)*dt;
-            let delta=flow[i]+q+air;
-            let temperature=temperature+delta/n.3;
-            heat[i]+=delta;
-            let hp=(hp-n.2*dt*(temperature/n.5-1.0).max(0.0)).max(0.0);
-            let remaining=remaining-used;
-            state[i]=(temperature,hp,remaining);
-            supplied+=q; environment+=air;
-            let active=(temperature-ambient[i]).abs()>tolerance || remaining>0.0;
-            changed_support |= if return_on_cooling { active != n.9 } else { active && !n.9 };
-        }
-        // 新热前沿立即交还 World 扩张六邻域；advance 的冷却域在提交批末统一收缩。
-        if changed_support { return (step,supplied,environment,true); }
+// 写入变化的节点接触、移除离开的槽位（连同其工作副本）、替换节点视线（`reset_sights` 时先清空全部视线）；
+// 内核边与辐射项在下一次 `domain_index` 时按次序重建。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_put(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, Vec<Contact>)>, removed: Vec<u32>,
+              sights: Vec<(u32, Vec<Sight>)>, reset_sights: bool) -> NifResult<rustler::Atom> {
+    if nodes.iter().flat_map(|(_, c)| c).any(|&(_, g, _)| !g.is_finite() || g < 0.0)
+        || sights.iter().flat_map(|(_, s)| s).any(|&(_, a)| !a.is_finite() || a < 0.0) {
+        return Err(Error::BadArg);
     }
-    (steps,supplied,environment,false)
+    let mut r = domain.0.lock().unwrap();
+    r.sim.remove(&removed);
+    r.domain.put(nodes, removed);
+    if reset_sights { r.domain.clear_sights(); }
+    r.domain.put_sights(sights);
+    Ok(rustler::types::atom::ok())
+}
+
+// 装入节点的静态量与当前记录值（新加入热域，或几何／目录改变）。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_load(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, NodeStatic, NodeDynamic)>) -> NifResult<rustler::Atom> {
+    if nodes.iter().any(|(_, s, d)| !finite(&[s.0, s.1, s.2, s.3, s.4, d.0, d.1, d.2, d.4])
+        || s.0 <= 0.0 || s.2 <= 0.0 || s.3 < 0.0 || s.5.is_some_and(|t| !t.is_finite() || t <= 0.0)) {
+        return Err(Error::BadArg);
+    }
+    domain.0.lock().unwrap().sim.load(nodes.into_iter().map(|(slot, s, d)| (slot, node(s, d))).collect());
+    Ok(rustler::types::atom::ok())
+}
+
+// 按当前记录替换节点的动态量（外部事务改写、点燃之后）；`only_clean` 时跳过有待写回变化的节点。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_reload(domain: ResourceArc<DomainResource>, nodes: Vec<(u32, NodeDynamic)>, only_clean: bool)
+                 -> NifResult<rustler::Atom> {
+    if nodes.iter().any(|(_, d)| !finite(&[d.0, d.1, d.2, d.4])) { return Err(Error::BadArg); }
+    let mut r = domain.0.lock().unwrap();
+    for (slot, d) in nodes { r.sim.reload(slot, only_clean, |n| apply(n, d)); }
+    Ok(rustler::types::atom::ok())
+}
+
+// 热格集合（World 的 ThermalWork.hot，宏格编号）。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_hot(domain: ResourceArc<DomainResource>, cells: Vec<u32>) -> rustler::Atom {
+    domain.0.lock().unwrap().sim.set_hot(cells);
+    rustler::types::atom::ok()
+}
+
+// 本轮节点次序（槽位列表，决定内核下标）与发边次序（同一组槽位）；返回 {边数, 互见半对数, 对天空面数}。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_index(domain: ResourceArc<DomainResource>, order: Vec<u32>, emission: Vec<u32>, emissivity: f64)
+                -> NifResult<(usize, usize, usize)> {
+    if !emissivity.is_finite() || !(0.0..2.0).contains(&emissivity) || emission.len() != order.len() {
+        return Err(Error::BadArg);
+    }
+    let mut r = domain.0.lock().unwrap();
+    if order.iter().any(|&slot| r.sim.node(slot).is_none()) { return Err(Error::BadArg); }
+    r.domain.index(&order, &emission, emissivity);
+    Ok((r.domain.edges.len(), r.domain.pairs.len(), r.domain.sky.len()))
+}
+
+// 一个内核步：世界节点取自常驻工作副本（上次 `domain_index` 的次序）；外部节点（拟态、身体）的接触追加在世界边之后，
+// 外部辐射项排在世界辐射项之前，与 World 端原拼接次序相同。`sources` 为 {宏格编号, 功率, 余能}，`powers` 为 {槽位, 电功率}，
+// `epsilon` 为燃料耗尽阈值（VoxelRegion.Combustion.fuel_epsilon_j/0）。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_step(domain: ResourceArc<DomainResource>, duration: f64, exchange: f64, tolerance: f64, epsilon: f64,
+               sources: Vec<(u32, f64, f64)>, powers: Vec<(u32, f64)>, extra: Vec<AdvanceInput>,
+               extra_contacts: Vec<(usize,usize,f64)>, extra_ambient: Vec<f64>, prefix: Radiation,
+               requested: Vec<usize>) -> NifResult<StepOut> {
+    if sources.iter().any(|&(_, p, r)| !finite(&[p, r]) || p <= 0.0) || powers.iter().any(|&(_, p)| !p.is_finite()) {
+        return Err(Error::BadArg);
+    }
+    let mut guard = domain.0.lock().unwrap();
+    let Resident { domain, sim } = &mut *guard;
+    if requested.iter().any(|&i| i >= domain.nodes) { return Err(Error::BadArg); }
+    let contacts = domain.edges.iter().copied().chain(extra_contacts).collect();
+    let radiation = (prefix.0.into_iter().chain(domain.pairs.iter().copied()).collect(),
+                     prefix.1.into_iter().chain(domain.sky.iter().copied()).collect());
+    let powers: HashMap<u32, f64> = powers.into_iter().collect();
+    let extra = extra.into_iter().map(unpack).collect();
+    let s = sim.step(&domain.order, contacts, radiation, duration, exchange, tolerance, epsilon, &sources, &powers,
+                     extra, extra_ambient, &requested).ok_or(Error::BadArg)?;
+    Ok(StepOut(s.elapsed, s.supplied, s.environment, s.combustion, s.extra, s.hot, s.ignitions, s.losses,
+               s.extinguished, s.changed, s.sources, s.requested))
+}
+
+// 取回自上次取回以来变化的节点当前值 {槽位, 动态量}，交 World 写回属性记录。
+#[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
+fn domain_flush(domain: ResourceArc<DomainResource>) -> Vec<(u32, NodeDynamic)> {
+    domain.0.lock().unwrap().sim.take_dirty().iter().map(|(slot, n)| (*slot, dynamic(n))).collect()
+}
+
+// 节点当前值（不改变待写回标记）；不在热域内为 nil。
+#[cfg_attr(not(test), rustler::nif)]
+fn domain_values(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> Vec<Option<NodeDynamic>> {
+    let r = domain.0.lock().unwrap();
+    slots.into_iter().map(|slot| r.sim.node(slot).map(dynamic)).collect()
+}
+
+// 槽位在本轮节点次序中的内核下标；不在节点集内为 nil。
+#[cfg_attr(not(test), rustler::nif)]
+fn domain_positions(domain: ResourceArc<DomainResource>, slots: Vec<u32>) -> Vec<Option<usize>> {
+    let r = domain.0.lock().unwrap();
+    slots.into_iter().map(|slot| r.domain.at(slot)).collect()
+}
+
+// 上次 `domain_index` 生成的 {内核边, 互见半对, 对天空}，供核对与 World 端参考规则逐项相同。
+#[cfg_attr(not(test), rustler::nif)]
+fn domain_terms(domain: ResourceArc<DomainResource>) -> (Vec<(usize,usize,f64)>, Radiation) {
+    let r = domain.0.lock().unwrap();
+    (r.domain.edges.clone(), (r.domain.pairs.clone(), r.domain.sky.clone()))
 }
 
 #[cfg(not(test))]

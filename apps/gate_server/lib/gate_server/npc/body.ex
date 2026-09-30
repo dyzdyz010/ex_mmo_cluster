@@ -165,14 +165,28 @@ defmodule GateServer.Npc.Body do
       {:reply,
        Map.take(state, [:position, :tick, :move, :world, :entities, :balances, :outcomes]), state}
 
-  def handle_call(:skill_context, _, %{player: player,identity: identity,profile: profile} = state)
+  def handle_call(
+        :skill_context,
+        _,
+        %{player: player, identity: identity, profile: profile} = state
+      )
       when player != nil and profile != nil do
-    result = with {:ok, actor} <- Player.tool_context(player,identity),
-                  {:ok, route} <- state.router.route(state.scene_id),
-      do: {:ok,%{actor: actor,world: state.world_ref,scene: route.scene_ref,movement_profile: profile}}
-    {:reply,result,state}
+    result =
+      with {:ok, actor} <- Player.tool_context(player, identity),
+           {:ok, route} <- state.router.route(state.scene_id),
+           do:
+             {:ok,
+              %{
+                actor: actor,
+                world: state.world_ref,
+                scene: route.scene_ref,
+                movement_profile: profile
+              }}
+
+    {:reply, result, state}
   end
-  def handle_call(:skill_context, _, state), do: {:reply,{:error,:invalid_session},state}
+
+  def handle_call(:skill_context, _, state), do: {:reply, {:error, :invalid_session}, state}
 
   @impl true
   def handle_cast({:command, command}, state), do: {:noreply, apply_commands(state, [command])}
@@ -197,7 +211,8 @@ defmodule GateServer.Npc.Body do
         {:mmo_reliable, identity, 1, %Session.InputStart{first_input_seq: 1} = start},
         %{identity: identity} = state
       ),
-      do: {:noreply, feed(%{state | origin: start.origin_tick}, start.state, start.anchor_tick, 0)}
+      do:
+        {:noreply, feed(%{state | origin: start.origin_tick}, start.state, start.anchor_tick, 0)}
 
   def handle_info(
         {:mmo_datagram, identity, %Movement.OwnerAck{} = ack},
@@ -270,8 +285,20 @@ defmodule GateServer.Npc.Body do
 
   def handle_info({:npc_path, id, result}, %{move: %{id: id, path: :planning} = move} = state) do
     case result do
-      {:ok, path} -> {:noreply, %{state | move: %{move | path: path, from: flat(state.position), mark: {state.position, state.tick}}}}
-      :no_path -> {:noreply, reject_move(state, :no_path)}
+      {:ok, path} ->
+        {:noreply,
+         %{
+           state
+           | move: %{
+               move
+               | path: path,
+                 from: flat(state.position),
+                 mark: {state.position, state.tick}
+             }
+         }}
+
+      :no_path ->
+        {:noreply, reject_move(state, :no_path)}
     end
   end
 
@@ -281,13 +308,29 @@ defmodule GateServer.Npc.Body do
   # 跨 Scene 移交，与玩家连接同一条路：seal 源 → Claims 预留并在目标 Scene 准备 → 提交。玩家要等客户端换好世界再回
   # Ready 才提交；无头 Body 没有要换的东西，准备好就提交。输入序号与 origin 随切点延续，在途的移动命令照常继续。
   # 任一步失败就退出，由监督者重新 claim（玩家连接在同样情形下是断开重连）。
-  def handle_info({:mmo_transfer_request, identity, player, target}, %{identity: identity, player: player} = state) do
+  def handle_info(
+        {:mmo_transfer_request, identity, player, target},
+        %{identity: identity, player: player} = state
+      ) do
     with {:ok, artifact} <- Player.seal(player, identity),
-         {:ok, fresh, route, next} <- GenServer.call(state.claims, {:prepare_transfer, identity, target, artifact}),
+         {:ok, fresh, route, next} <-
+           GenServer.call(state.claims, {:prepare_transfer, identity, target, artifact}),
          :ok <- GenServer.call(state.claims, {:commit_transfer, identity, fresh, state.cid}) do
       Process.monitor(next)
-      Logger.info("npc_transfer cid=#{state.cid} old_scene=#{identity.scene_id} new_scene=#{target} cut=#{artifact.simulation_tick}")
-      {:noreply, %{state | identity: fresh, player: next, scene_id: target, world_ref: Map.get(route, :world_ref), entities: %{}}}
+
+      Logger.info(
+        "npc_transfer cid=#{state.cid} old_scene=#{identity.scene_id} new_scene=#{target} cut=#{artifact.simulation_tick}"
+      )
+
+      {:noreply,
+       %{
+         state
+         | identity: fresh,
+           player: next,
+           scene_id: target,
+           world_ref: Map.get(route, :world_ref),
+           entities: %{}
+       }}
     else
       {:error, reason} -> {:stop, {:transfer_failed, target, reason}, state}
     end
@@ -366,7 +409,8 @@ defmodule GateServer.Npc.Body do
 
   defp finish_move(state), do: state
 
-  defp steering(%{move: %{zero_from: nil, path: :planning}} = state, _due), do: {state, {0, 0, state.yaw}, 0.0}
+  defp steering(%{move: %{zero_from: nil, path: :planning}} = state, _due),
+    do: {state, {0, 0, state.yaw}, 0.0}
 
   # 移动命令只写未来槽：零输入从下一个未送且未过期的序号开始。
   defp steering(%{move: %{zero_from: nil, verb: :stop} = move} = state, due),
@@ -378,7 +422,9 @@ defmodule GateServer.Npc.Body do
     {marked, since} = move.mark
 
     move =
-      if distance(state.position, flat(marked)) > @stall_m, do: %{move | mark: {state.position, state.tick}}, else: move
+      if distance(state.position, flat(marked)) > @stall_m,
+        do: %{move | mark: {state.position, state.tick}},
+        else: move
 
     cond do
       rest == [] and distance(state.position, target) <= move.tolerance ->
@@ -392,10 +438,20 @@ defmodule GateServer.Npc.Body do
         {px, _, pz} = state.position
         {vx, _, vz} = state.velocity
         ahead = @lead / state.profile.fixed_hz
-        aim = Enum.find([{px + vx * ahead, 0.0, pz + vz * ahead}, state.position], &(distance(&1, target) > 0.05))
+
+        aim =
+          Enum.find(
+            [{px + vx * ahead, 0.0, pz + vz * ahead}, state.position],
+            &(distance(&1, target) > 0.05)
+          )
 
         # 每个路点都是拐点、换层点或终点：离它还有多远就允许多快（v² = 2·braking·d），不低于拐弯速度。
-        limit = max(@corner_speed, :math.sqrt(2 * state.profile.braking * distance(state.position, target)))
+        limit =
+          max(
+            @corner_speed,
+            :math.sqrt(2 * state.profile.braking * distance(state.position, target))
+          )
+
         {%{state | move: move}, if(aim, do: steer(aim, target), else: {0, 0, state.yaw}), limit}
     end
   end
@@ -403,7 +459,10 @@ defmodule GateServer.Npc.Body do
   defp steering(state, _due), do: {state, {0, 0, state.yaw}, 0.0}
 
   # 中途点：走近了、或沿这一段的方向已经越过它，就换下一个；末项（target）由 tolerance 判定，不在这里丢。
-  defp advance(%{path: [{wx, wz} = point, _ | _] = path, from: {fx, fz}} = move, {px, _, pz} = position) do
+  defp advance(
+         %{path: [{wx, wz} = point, _ | _] = path, from: {fx, fz}} = move,
+         {px, _, pz} = position
+       ) do
     passed = (px - wx) * (wx - fx) + (pz - wz) * (wz - fz) >= 0
 
     if passed or distance(position, point) <= @waypoint_m,
@@ -424,10 +483,19 @@ defmodule GateServer.Npc.Body do
     advance = fn speed, on ->
       if on,
         do: min(profile.speed, speed + profile.acceleration / profile.fixed_hz),
-        else: max(0.0, speed - (profile.braking + profile.friction * profile.braking_friction_factor * speed) / profile.fixed_hz)
+        else:
+          max(
+            0.0,
+            speed -
+              (profile.braking + profile.friction * profile.braking_friction_factor * speed) /
+                profile.fixed_hz
+          )
     end
 
-    speed = Enum.reduce(state.inflight, :math.sqrt(vx * vx + vz * vz), fn {_, on}, speed -> advance.(speed, on) end)
+    speed =
+      Enum.reduce(state.inflight, :math.sqrt(vx * vx + vz * vz), fn {_, on}, speed ->
+        advance.(speed, on)
+      end)
 
     {frames, {_, sent}} =
       Enum.map_reduce(frames, {speed, []}, fn frame, {speed, sent} ->
@@ -459,7 +527,17 @@ defmodule GateServer.Npc.Body do
        )
        when is_number(x) and is_number(z) and is_number(tolerance) and tolerance > 0 do
     goal_y = Map.get(command, :y)
-    move = %{id: id, verb: :move_to, target: {x, z}, tolerance: tolerance, zero_from: nil, path: :planning, from: nil, mark: nil}
+
+    move = %{
+      id: id,
+      verb: :move_to,
+      target: {x, z},
+      tolerance: tolerance,
+      zero_from: nil,
+      path: :planning,
+      from: nil,
+      mark: nil
+    }
 
     cond do
       not (goal_y == nil or is_integer(goal_y)) ->
@@ -471,6 +549,7 @@ defmodule GateServer.Npc.Body do
       true ->
         # position 是胶囊中心；脚所在的格 = 中心下移半高（+0.5 容忍贴地的 skin / snap）。
         start = {floor(px), floor(py - profile.half_height + 0.5), floor(pz)}
+
         plan = %{
           start: start,
           from: {px, pz},
@@ -487,7 +566,17 @@ defmodule GateServer.Npc.Body do
   end
 
   defp apply_command(state, %{id: id, verb: :stop}),
-    do: move(state, %{id: id, verb: :stop, target: nil, tolerance: nil, zero_from: nil, path: [], from: nil, mark: nil})
+    do:
+      move(state, %{
+        id: id,
+        verb: :stop,
+        target: nil,
+        tolerance: nil,
+        zero_from: nil,
+        path: [],
+        from: nil,
+        mark: nil
+      })
 
   defp apply_command(state, %{id: id, verb: verb} = command)
        when verb in [:probe_toward, :use_tool, :query_balances, :look, :inspect] or
@@ -545,7 +634,15 @@ defmodule GateServer.Npc.Body do
   # anchor 是 micro 坐标；detach 要带上那件附件的 id（attachment_id）与材料，与玩家请求同形。
   defp world_call(
          state,
-         %{verb: verb, kind: _, axis: _, size: _, anchor: {x, y, z}, material: material, tool_id: tool} =
+         %{
+           verb: verb,
+           kind: _,
+           axis: _,
+           size: _,
+           anchor: {x, y, z},
+           material: material,
+           tool_id: tool
+         } =
            command
        )
        when is_map_key(@attachment, verb) and is_integer(x) and is_integer(y) and is_integer(z) and
@@ -595,8 +692,8 @@ defmodule GateServer.Npc.Body do
   defp world_call(_state, %{verb: :query_balances}), do: :balances
 
   # macro 格闭区间，限制在自己周围：玩家也只看得到流送到身边的世界。
-  defp world_call(%{position: position}, %{verb: verb} = command) when verb in [:look,:inspect],
-    do: GateServer.Npc.Perception.prepare(position,command)
+  defp world_call(%{position: position}, %{verb: verb} = command) when verb in [:look, :inspect],
+    do: GateServer.Npc.Perception.prepare(position, command)
 
   defp world_call(_state, _command), do: nil
 
@@ -615,7 +712,8 @@ defmodule GateServer.Npc.Body do
     do:
       send(
         state.worker,
-        {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]), call}
+        {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]),
+         call}
       )
 
   defp invalid(state, command) when is_map(command) do
@@ -629,8 +727,17 @@ defmodule GateServer.Npc.Body do
   end
 
   defp reject_move(%{move: move} = state, reason) do
-    Logger.warning("npc_move_rejected cid=#{state.cid} reason=#{reason} position=#{inspect(state.position)} target=#{inspect(move.target)} path=#{inspect(move.path)}")
-    emit(%{state | move: nil}, %{id: move.id, verb: move.verb, status: :rejected, reason: reason, data: nil})
+    Logger.warning(
+      "npc_move_rejected cid=#{state.cid} reason=#{reason} position=#{inspect(state.position)} target=#{inspect(move.target)} path=#{inspect(move.path)}"
+    )
+
+    emit(%{state | move: nil}, %{
+      id: move.id,
+      verb: move.verb,
+      status: :rejected,
+      reason: reason,
+      data: nil
+    })
   end
 
   defp move(%{move: nil} = state, move), do: %{state | move: move}
@@ -652,13 +759,15 @@ defmodule GateServer.Npc.Body do
 
         # 与 Gate 给玩家补发余额的时机相同：探测与只读感知之外的每次调用之后。
         balances =
-          unless match?({:tool, %{action: 0}}, call) or match?({kind, _} when kind in [:look, :inspect], call),
-            do: World.material_balances(session.world_ref, session.cid)
+          unless match?({:tool, %{action: 0}}, call) or
+                   match?({kind, _} when kind in [:look, :inspect], call),
+                 do: World.material_balances(session.world_ref, session.cid)
 
         send(body, {:npc_world_result, id, result || {:ok, %{balances: balances}}, balances})
         world_calls()
 
-      {:plan, body, id, world, cid, %{start: {sx, sy, sz} = start, target: {tx, tz} = target, goal_y: goal_y} = plan} ->
+      {:plan, body, id, world, cid,
+       %{start: {sx, sy, sz} = start, target: {tx, tz} = target, goal_y: goal_y} = plan} ->
         {gx, gz} = goal = {floor(tx), floor(tz)}
         [y0, y1] = Enum.sort([sy, goal_y || sy])
 
@@ -678,7 +787,8 @@ defmodule GateServer.Npc.Body do
 
         result =
           with {:ok, cells} <- Path.find(grid, start, goal, goal_y, plan.step, plan.height),
-               do: {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
+               do:
+                 {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
 
         send(body, {:npc_path, id, result})
         world_calls()
@@ -687,8 +797,8 @@ defmodule GateServer.Npc.Body do
 
   defp execute(_session, :balances), do: nil
 
-  defp execute(session, {kind,_} = call) when kind in [:look,:inspect],
-    do: GateServer.Npc.Perception.read(session.world_ref,session.cid,call)
+  defp execute(session, {kind, _} = call) when kind in [:look, :inspect],
+    do: GateServer.Npc.Perception.read(session.world_ref, session.cid, call)
 
   defp execute(session, call) do
     with :ok <- prefab_gate(session, call),

@@ -78,11 +78,17 @@ defmodule GateServer.MovementRouteTest do
     assert World.seq(VoxelRegion.World) == 0
   end
 
-  test "Gate R6 subscription and both edit paths retain the configured world_ref", %{route: route} do
-    initial = %{status: :in_scene, cid: 55, sink: Sink.ws(self())}
-    sub = %{have_seq: 0, box: {{0, 1000, 0}, {0, 1000, 0}}, coarse_min_level: 1}
-    assert {:ok, state} = Dispatch.handle({:voxel_overlay_subscribe, sub}, initial)
-    assert state.world_ref == route.world_ref
+  # 上下文与 QuicConnection 编辑 worker 收到的相同：world_ref 取自配置路由；订阅直接挂在该 World 上观察提交。
+  test "both Voxim edit paths commit to the configured route world_ref", %{route: route} do
+    state = %{
+      status: :in_scene,
+      cid: 55,
+      voxim_overlay: true,
+      world_ref: route.world_ref,
+      sink: Sink.quic(self(), :edit)
+    }
+
+    :ok = World.subscribe(route.world_ref, self(), 0, {{0, 1000, 0}, {0, 1000, 0}}, 1)
 
     request = %{
       request_id: 1,

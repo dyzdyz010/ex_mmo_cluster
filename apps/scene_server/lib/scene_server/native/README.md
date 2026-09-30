@@ -1,28 +1,5 @@
 # Scene native adapter map
 
-This directory contains Elixir-side Rustler adapters for native runtime pieces.
+- `voxim_movement.ex`：Rustler 适配 `native/voxim_movement_nif`，执行与 Voxim 客户端共享的移动内核。
 
-## Current bindings
-
-- `movement_engine.ex`
-  - authoritative movement stepping and replay math
-- `field_kernel.ex`
-  - thin Rustler binding for deterministic, chunk-local field math such as
-    conduction path search, dielectric-breakdown discharge search, sparse
-    temperature diffusion, and material-aware electric potential propagation;
-    Field-side backend selection and DTO encoding belong under
-    `SceneServer.Voxel.Field.NativeBackend`
-- `scene_ops/scene_ops.ex`
-  - native scene/physics operations on character data
-- `octree/`
-  - AOI spatial index backend(AOI 唯一空间结构)
-
-## Design rule
-
-These modules should stay thin. Business rules, actor orchestration, and process
-state belong in Elixir runtime modules above them.
-
-For the `field_kernel` crate specifically, keep `src/lib.rs` as the Rustler
-entrypoint only. Solver implementations belong in separate modules
-(`conduction_path`, `discharge_path`, `temperature_diffusion`,
-`electric_potential`) and shared AABB/index helpers belong in `grid`.
+适配层保持薄：业务规则与进程状态留在上层 Elixir 模块。

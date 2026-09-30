@@ -223,7 +223,7 @@ defmodule VoxelRegion.PrefabTest do
     File.write!(Path.join(Keyword.fetch!(opts,:prefab_catalog_path),"dense.vxpd"),bytes)
     {:ok,w} = World.start_link(opts)
     on_exit(fn -> if Process.alive?(w),do: GenServer.stop(w) end)
-    mfa = {World,:valid_edit_coord?,1}
+    mfa = {VoxelRegion.World.Edits,:valid_edit_coord?,1}
     session = :trace.session_create(:prefab_range_checks,self(),[])
     try do
       :trace.function(session,mfa,true,[:call_time])

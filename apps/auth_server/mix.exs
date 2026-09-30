@@ -63,20 +63,16 @@ defmodule AuthServer.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
-      {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:websock_adapter, "~> 0.5"},
       {:bcrypt_elixir, "~> 3.0"},
-      {:libcluster, "~> 3.4"},
       {:mmo_contracts, in_umbrella: true},
       {:voxel_region, in_umbrella: true},
-      {:data_init, in_umbrella: true},
       {:data_service, in_umbrella: true},
-      {:beacon_server, in_umbrella: true},
       # Dev voxel endpoints are auth routes backed by co-located world/scene apps
       # in the release. Keep these compile-visible for controller tests without
       # making every test consumer of auth_server auto-start the scene runtime.
-      {:world_server, in_umbrella: true, runtime: false},
+      {:world_server, in_umbrella: true},
       {:scene_server, in_umbrella: true, runtime: false}
     ]
   end

@@ -1,23 +1,9 @@
 defmodule GateServer.Session.Sink do
   @moduledoc """
-  Gate 会话的**出站传输契约** —— TCP 连接与 WebSocket 连接之间唯一的真实差异。
+  Voxim QUIC 会话的出站契约：体素意图回执、余额、属性与施法者状态经连接 owner 进程下发。
 
-  两个连接进程（`GateServer.TcpConnection` / `GateServer.WsConnection`）跑的是同一套
-  会话状态机与同一套体素业务管线；它们只在三件事上不同：
-
-  1. 编码后的字节往哪写（`:gen_tcp.send/2` vs 转交 WebSocket owner 进程）；
-  2. 已含 opcode 的裸帧往哪写（同上，但不过字节 codec）；
-  3. 结构化 observe 事件名的传输前缀（TCP 无前缀，WS 用 `ws_`）。
-
-  把这三点收进本结构后，业务侧只依赖 sink 契约，不再需要知道自己跑在哪条链路上，
-  tcp / ws 也就不必再各自维护一份逐字镜像的实现。
-
-  ## observe 事件命名
-
-  `emit/3` 会给事件名加上传输前缀，因此同一段共享代码在 TCP 下发
-  `voxel_prefab_routed`、在 WS 下发 `ws_voxel_prefab_routed` —— 与拆分前逐字一致。
-  少数历史上两条链路共用同一个无前缀名字的事件（如 `voxel_edit_intent_routed`）
-  直接调 `GateServer.CliObserve.emit/2`，不走本模块，以免改变既有 CLI 契约。
+  字节由现行领域 codec（`MmoContracts.Session.Codec` / `MmoContracts.Voxel.Codec`）编码；
+  编不出的消息只记日志并丢弃，不带崩连接。
   """
 
   require Logger
@@ -25,7 +11,7 @@ defmodule GateServer.Session.Sink do
   @enforce_keys [:transport, :ref, :event_prefix]
   defstruct [:transport, :ref, :event_prefix]
 
-  @type transport :: :tcp | :ws | :quic
+  @type transport :: :quic
 
   @type t :: %__MODULE__{
           transport: transport(),
@@ -50,16 +36,7 @@ defmodule GateServer.Session.Sink do
   @doc "只选择消息所属的字节 owner，不改变传输行为。"
   def encode(message) when SessionCodec.is_message(message), do: SessionCodec.encode(message)
   def encode(message) when VoxelCodec.is_message(message), do: VoxelCodec.encode(message)
-  def encode(message), do: GateServer.Codec.encode(message)
-
-  @doc "为一条已接管的 TCP socket 构造 sink。"
-  @spec tcp(port()) :: t()
-  def tcp(socket), do: %__MODULE__{transport: :tcp, ref: socket, event_prefix: ""}
-
-  @doc "为一个 WebSocket owner 进程构造 sink。"
-  @spec ws(pid()) :: t()
-  def ws(owner_pid) when is_pid(owner_pid),
-    do: %__MODULE__{transport: :ws, ref: owner_pid, event_prefix: "ws_"}
+  def encode(message), do: {:error, {:unknown_outbound, elem(message, 0)}}
 
   def quic(owner_pid, identity),
     do: %__MODULE__{transport: :quic, ref: {owner_pid, identity}, event_prefix: "quic_"}
@@ -100,16 +77,6 @@ defmodule GateServer.Session.Sink do
   def send_raw(%__MODULE__{transport: :quic, ref: {owner_pid, identity}}, payload)
       when is_binary(payload) do
     send(owner_pid, {:mmo_voxel_bytes, identity, payload})
-    :ok
-  end
-
-  def send_raw(%__MODULE__{transport: :tcp, ref: socket}, payload) when is_binary(payload) do
-    _ = :gen_tcp.send(socket, payload)
-    :ok
-  end
-
-  def send_raw(%__MODULE__{transport: :ws, ref: owner_pid}, payload) when is_binary(payload) do
-    send(owner_pid, {:gate_ws_send, payload})
     :ok
   end
 

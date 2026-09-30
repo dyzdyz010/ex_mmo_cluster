@@ -102,5 +102,4 @@ defmodule DataService.CharacterStoreTest do
                Repo.insert(Character.changeset(%Character{}, %{id: 9, name: "no-account"}))
     end
   end
-
 end

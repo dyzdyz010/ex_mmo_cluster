@@ -24,15 +24,23 @@ defmodule SceneServer.Body.ThermoTest do
   # 寒战热 = 糖原付 + 脂肪付，各等于该储备的减少量；组织块只随 tissue_j 变化。
   defp step!(body, inputs, dt \\ 1.0) do
     {next, account} = Thermo.step(body, dt, inputs)
-    assert_in_delta account.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
+
+    assert_in_delta account.stored_j,
+                    Body.heat_content_j(next) - Body.heat_content_j(body),
+                    1.0e-6
+
     assert_in_delta account.shiver_glycogen_j, body.reserve_j - next.reserve_j, 1.0e-6
     assert_in_delta account.shiver_fat_j, body.fat_reserve_j - next.fat_reserve_j, 1.0e-6
     assert_in_delta account.shiver_j, account.shiver_glycogen_j + account.shiver_fat_j, 1.0e-9
     assert account.shiver_glycogen_j >= 0.0 and account.shiver_fat_j >= 0.0
-    assert_in_delta Body.tissue_capacity_j_per_k() * (next.tissue_k - body.tissue_k), Map.get(inputs, :tissue_j, 0.0), 1.0e-9
+
+    assert_in_delta Body.tissue_capacity_j_per_k() * (next.tissue_k - body.tissue_k),
+                    Map.get(inputs, :tissue_j, 0.0),
+                    1.0e-9
 
     assert_in_delta account.stored_j,
-                    account.q_j + account.metabolic_j - account.convection_j - account.sweat_j - account.drying_j,
+                    account.q_j + account.metabolic_j - account.convection_j - account.sweat_j -
+                      account.drying_j,
                     1.0e-9
 
     {next, account}
@@ -41,7 +49,8 @@ defmodule SceneServer.Body.ThermoTest do
   defp run(body, inputs, steps),
     do: Enum.reduce(1..steps, body, fn _, b -> step!(b, inputs) |> elem(0) end)
 
-  defp uniform(t_c), do: Enum.reduce([:core_k, :skin_k | @inner], Body.new(), &Map.put(&2, &1, t_c + @c))
+  defp uniform(t_c),
+    do: Enum.reduce([:core_k, :skin_k | @inner], Body.new(), &Map.put(&2, &1, t_c + @c))
 
   defp severity(body, tag) do
     case Enum.find(Body.injuries(body), &(&1.tag == tag)) do
@@ -56,6 +65,7 @@ defmodule SceneServer.Body.ThermoTest do
       assert body.core_k == 36.8 + @c and body.skin_k == 34.0 + @c
       {next, _} = step!(body, air(20.0 + @c))
       for f <- @inner, do: assert_in_delta(Map.fetch!(next, f), Map.fetch!(body, f), 1.0e-9)
+
       # 由外向内：皮肤 34 < 四肢脂肪 < 四肢肌肉 < 四肢核心、躯干脂肪 < 躯干肌肉 < 核心 36.8
       assert body.limb_fat_k < body.limb_muscle_k and body.limb_muscle_k < body.limb_core_k
       assert body.trunk_fat_k < body.trunk_muscle_k and body.trunk_muscle_k < body.core_k
@@ -64,28 +74,38 @@ defmodule SceneServer.Body.ThermoTest do
 
     test "全身均匀 37 °C（内部无温差、无导热与血流换热）、20 °C 空气、接触吸热 1000 J：各节点只按自己的产热与外部项变化" do
       {next, account} = step!(uniform(37.0), %{q_j: 1000.0, air_k: 20.0 + @c})
+
       # 干热 6.6654866 × 17 = 113.31327 W；出汗 170·0.2·e^(3/10.7)·2430/3600·1.8877 = 57.343008 W；无寒战（需求为负）
       assert_in_delta account.metabolic_j, @met, 1.0e-9
       assert_in_delta account.convection_j, 113.31327, 1.0e-4
       assert_in_delta account.sweat_j, 57.343008, 1.0e-5
       assert_in_delta next.core_k - (37.0 + @c), 86.223797 / 62_132.112, 1.0e-10
-      assert_in_delta next.skin_k - (37.0 + @c), (1000 + 1.5494607 - 113.31327 - 57.343008) / 14_025.78, 1.0e-8
+
+      assert_in_delta next.skin_k - (37.0 + @c),
+                      (1000 + 1.5494607 - 113.31327 - 57.343008) / 14_025.78,
+                      1.0e-8
+
       assert_in_delta next.trunk_fat_k - (37.0 + @c), 3.1431916 / 17_793.9, 1.0e-10
     end
 
     test "层间导热与血流：躯干脂肪 35 °C、其余 37 °C 时它得 肌肉导热 + 皮肤导热 + 血流 = 63.05786 W" do
       body = %{uniform(37.0) | trunk_fat_k: 35.0 + @c}
       {next, _} = step!(body, air(37.0 + @c))
+
       # 肌肉→脂肪 4.75 × 1.163 × 2 = 11.0485；皮肤→脂肪 19.8 × 1.163 × 2 = 46.0548；血液 2.56 L/h × 1.163 × 2 = 5.95456
-      assert_in_delta next.trunk_fat_k - body.trunk_fat_k, (63.05786 + 3.1431916) / 17_793.9, 1.0e-10
+      assert_in_delta next.trunk_fat_k - body.trunk_fat_k,
+                      (63.05786 + 3.1431916) / 17_793.9,
+                      1.0e-10
     end
 
     test "寒战：需求按核心与皮肤温度手算，进躯干肌肉 0.85/0.99，肌肉血流随寒战增加（每 kcal/h 1 L/h）" do
       body = %{uniform(36.0) | skin_k: 20.0 + @c, trunk_muscle_k: 35.0 + @c}
       {next, account} = step!(body, air(20.0 + @c))
+
       # 需求 (155.5 + 47·13 − 1.57·169)/√15 = 129.40154 W/m² → 244.27128 W（低于峰值 232.8 × 1.8877 = 439.45656 W）
       assert_in_delta account.shiver_j, 244.27128, 1.0e-4
       assert_in_delta account.metabolic_j, @met + 244.27128, 1.0e-4
+
       # 躯干肌肉：产热 7.3783842 + 寒战 244.27128 × 0.85/0.99 = 209.72787；血流 (6.00 + 209.72787/1.163) L/h × 1.163 × 1 K = 216.70587；
       # 核心导热 1.37 × 1.163 × 1 = 1.59331；脂肪导热 4.75 × 1.163 × 1 = 5.52425 → 合计 440.92968 W
       assert_in_delta next.trunk_muscle_k - body.trunk_muscle_k, 440.92968 / 67_616.82, 1.0e-9
@@ -164,6 +184,7 @@ defmodule SceneServer.Body.ThermoTest do
       {next, account} = step!(body, %{q_j: 3000.0, tissue_j: 2094.0, air_k: 20.0 + @c})
       {plain, _} = step!(body, %{q_j: 906.0, air_k: 20.0 + @c})
       assert_in_delta next.tissue_k, 44.0 + @c, 1.0e-9
+
       # 皮肤只得 3000 − 2094 = 906 J：与直接给 906 J、不给组织块热的一步相同
       assert_in_delta next.skin_k, plain.skin_k, 1.0e-12
       assert account.tissue_j == 2094.0
@@ -176,15 +197,27 @@ defmodule SceneServer.Body.ThermoTest do
 
       assert degrees == [1, 1, 2, 2, 3]
 
-      burnt = run(held(60.0), air(20.0 + @c), 5) |> then(&%{&1 | tissue_k: 34.0 + @c}) |> run(air(20.0 + @c), 60)
+      burnt =
+        run(held(60.0), air(20.0 + @c), 5)
+        |> then(&%{&1 | tissue_k: 34.0 + @c})
+        |> run(air(20.0 + @c), 60)
 
       # 只推进体温不走修复账：剂量不减、进度不动（愈合由 Body.Repair 推进，见 repair_test.exs）
-      assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 3, progression: :heals, heal: +0.0}] =
+      assert [
+               %{
+                 tag: "trauma.thermal.burn",
+                 part: :contact,
+                 severity: 3,
+                 progression: :heals,
+                 heal: +0.0
+               }
+             ] =
                Body.injuries(burnt)
     end
 
     test "组织块 44 °C 以下不累计烧伤；44 °C 需约 1.2 小时才一度" do
       assert run(held(43.9), air(20.0 + @c), 36_000).burn_dose_s == 0.0
+
       # 44 °C 剂量率 2^(−16/1.32) = 2.2446e-4 /s → 1 小时 0.808 < 1，1.5 小时 1.21 ≥ 1
       assert severity(run(held(44.0), air(20.0 + @c), 3600), "trauma.thermal.burn") == 0
       assert severity(run(held(44.0), air(20.0 + @c), 5400), "trauma.thermal.burn") == 1
@@ -246,7 +279,14 @@ defmodule SceneServer.Body.ThermoTest do
           b.core_k < 35.0 + @c
         end)
 
-      assert [%{tag: "temperature.hypothermia", part: :whole, severity: 1, progression: :tracks_core}] =
+      assert [
+               %{
+                 tag: "temperature.hypothermia",
+                 part: :whole,
+                 severity: 1,
+                 progression: :tracks_core
+               }
+             ] =
                Body.injuries(crossed)
     end
 
@@ -349,7 +389,9 @@ defmodule SceneServer.Body.ThermoTest do
 
     test "−25 °C、5 m/s：两储备都空时无寒战、核心 1 小时内跌破 35 °C；只糖原空时与满储备逐步相同（寒战改由脂肪付）" do
       windy = Map.put(air(-25.0 + @c), :wind_mps, 5.0)
-      assert run(%{Body.new() | reserve_j: 0.0, fat_reserve_j: 0.0}, windy, 3600).core_k < 35.0 + @c
+
+      assert run(%{Body.new() | reserve_j: 0.0, fat_reserve_j: 0.0}, windy, 3600).core_k <
+               35.0 + @c
 
       full = run(Body.new(), windy, 3600)
       glycogen_empty = run(%{Body.new() | reserve_j: 0.0}, windy, 3600)
@@ -374,10 +416,18 @@ defmodule SceneServer.Body.ThermoTest do
       h_c = 8.3 * :math.pow(5.0, 0.6)
       r_air = 1 / (h_c + 4.7)
       r_cloth = 0.155 * 0.84
+
       # 由对流辐射反推衣面温度，再核对两个独立关系：衣物导热平衡、Lewis 蒸发式
       t_s = -25.0 + @c + account.convection_j / 1.8877 * r_air
-      assert_in_delta (wet.skin_k - t_s) / r_cloth * 1.8877, account.convection_j + account.drying_j, 1.0e-6
-      assert_in_delta account.drying_j, 16.5 * h_c * (magnus(t_s) - 0.5 * magnus(-25.0 + @c)) * 1.8877, 1.0e-6
+
+      assert_in_delta (wet.skin_k - t_s) / r_cloth * 1.8877,
+                      account.convection_j + account.drying_j,
+                      1.0e-6
+
+      assert_in_delta account.drying_j,
+                      16.5 * h_c * (magnus(t_s) - 0.5 * magnus(-25.0 + @c)) * 1.8877,
+                      1.0e-6
+
       # 衣面介于空气与皮肤之间；湿度按蒸发掉的水下降（1 kg、2430 J/g）
       assert t_s > -25.0 + @c and t_s < wet.skin_k
       assert_in_delta next.wetness, 1.0 - account.drying_j / 2.43e6, 1.0e-12
@@ -397,7 +447,10 @@ defmodule SceneServer.Body.ThermoTest do
     test "湿透出水到 20 °C 静止空气：湿度只降，蒸发取走的热使皮肤比干衣时低" do
       wet = %{Body.new() | wetness: 1.0}
       out = Enum.scan(1..3600, wet, fn _, b -> step!(b, air(20.0 + @c)) |> elem(0) end)
-      assert Enum.chunk_every([wet | out], 2, 1, :discard) |> Enum.all?(fn [a, b] -> b.wetness <= a.wetness end)
+
+      assert Enum.chunk_every([wet | out], 2, 1, :discard)
+             |> Enum.all?(fn [a, b] -> b.wetness <= a.wetness end)
+
       assert List.last(out).wetness < 1.0
       assert List.last(out).skin_k < run(Body.new(), air(20.0 + @c), 3600).skin_k
     end

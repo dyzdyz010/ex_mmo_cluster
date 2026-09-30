@@ -21,38 +21,12 @@ defmodule AuthServerWeb.Router do
     post "/prefabs", IngameController, :playtest_prefabs
   end
 
-  scope "/", AuthServerWeb do
-    pipe_through :browser
-
-    get "/", PageController, :home
-  end
-
-  scope "/ingame", AuthServerWeb do
-    pipe_through :browser
-
-    get "/login", IngameController, :login
-    post "/login_post", IngameController, :login_post
-    get "/login_success", IngameController, :login_success
-  end
-
   scope "/ingame", AuthServerWeb do
     pipe_through :api
 
     post "/auto_login", IngameController, :auto_login
-    get "/voxel/world_manifest", IngameController, :voxel_world_manifest
-    get "/voxel/world_pack", IngameController, :voxel_world_pack
-    get "/voxel/world_diff", IngameController, :voxel_world_diff
     post "/voxel/regions", IngameController, :voxel_regions
     post "/voxel/prefabs", IngameController, :voxel_prefabs
-    post "/voxel/dev_seed", IngameController, :voxel_dev_seed
-    post "/voxel/set_temperature", IngameController, :voxel_set_temperature
-    post "/voxel/dev_heat_voxel", IngameController, :voxel_dev_heat_voxel
-    post "/voxel/conduct", IngameController, :voxel_conduct
-    post "/voxel/auto_circuit", IngameController, :voxel_auto_circuit
-  end
-
-  scope "/ingame", AuthServerWeb do
-    get "/ws", GameSocketController, :upgrade
   end
 
   # Other scopes may use custom stacks.

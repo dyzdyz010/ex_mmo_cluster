@@ -25,13 +25,18 @@ defmodule VoxelRegion.OverlayLog do
     do: [:circuit, :tool_id, :kind, :size, :anchor, :closed, :fault, :remaining_j, :voltage_v, :current_a, :power_w,
          :circuit_fed_j, :circuit_rejected_j, :circuit_cooling_j]
 
+  # 元数据的写入方：World 与它的状态模块（`world/*.ex`，按文件名得模块名）、拟态记录。
+  @metadata_modules [VoxelRegion.World, VoxelRegion.Magic.Semblance |
+    for(file <- Path.wildcard(Path.join(__DIR__, "world/*.ex")),
+      do: Module.concat(VoxelRegion.World, Macro.camelize(Path.basename(file, ".ex"))))]
+
   @doc """
-  日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。拟态记录（`thermal.semblances`）的键
-  （`mass_kg`、`age_s`、`kinetic_j` 等）只出现在惰性加载的 `VoxelRegion.Magic.Semblance` 里，冷重启的新 VM 回放时它可能还没加载，
-  所以解码前先加载它（magic-inc2 首次双端实跑的冷重启即因此失败）。
+  日志元数据解码（两个后端共用）：调用本模块即保证上面的历史原子已在原子表里。元数据的键是写入方模块里的字面量原子
+  （拟态记录的 `mass_kg`、`age_s`，施法账的 `semblance_created_j` 等），冷重启的新 VM 回放时这些模块可能还没加载，
+  所以解码前先加载全部写入方（magic-inc2 首次双端实跑的冷重启即因此失败；World 拆出状态模块后同理）。
   """
   def term(bytes) do
-    {:module, _} = Code.ensure_loaded(VoxelRegion.Magic.Semblance)
+    Enum.each(@metadata_modules, &({:module, _} = Code.ensure_loaded(&1)))
     :erlang.binary_to_term(bytes, [:safe])
   end
 

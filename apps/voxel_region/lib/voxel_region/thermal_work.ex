@@ -1,11 +1,11 @@
 defmodule VoxelRegion.ThermalWork do
   @moduledoc """
-  全局系统功能：可丢弃的热候选域、接触图复用与内核索引。
+  全局系统功能：可丢弃的热候选域与接触图复用；内核节点表与拓扑在 `VoxelRegion.ThermalDomain`。
 
   只消费该职责的值，不读取 World 或保存温度、HP、燃料真值。
   几何缺键表示需要 owner 重新读取；空列表表示已经派生的空气或无热容量占用。
   """
-  alias VoxelRegion.{Attachments, Damage, Thermal, ThermalGeometry, ThermalRadiation}
+  alias VoxelRegion.{Attachments, Damage, Thermal, ThermalDomain, ThermalRadiation}
 
   @doc "创建空派生缓存；冷恢复、附件或目录变化时可直接重建。"
   def new do
@@ -13,29 +13,30 @@ defmodule VoxelRegion.ThermalWork do
       hot: MapSet.new(),
       cells: MapSet.new(),
       geometry: %{},
-      edges: [],
       builds: 0,
       seeds: nil,
+      # 内核次序的节点列表 [{键, 节点}]，每次重建由 domain 给出。
       ordered: [],
-      indices: %{},
+      domain: ThermalDomain.new(),
       attachment_cells: nil,
       attachment_graph: nil,
       solid_nodes: %{},
       thermal_slots: %{},
-      indexed_edges: [],
       sights: %{},
       # cells 恰为 seeds 的六邻域 ∪ 视线伙伴、几何与视线未被编辑丢弃：此时种子只增时可按增量扩域。
       exact: false,
       # 本次提交内燃烧行键 => 足迹宏格；提交首轮扫描一次，其后按每轮变更行维护。
-      burning: nil,
-      # 节点键 => {几何节点, 附带默认记录的内核节点}；目录/环境标签变化即整体作废。
-      augmented: {nil, %{}}
+      burning: nil
     }
   end
 
   @doc "目标涉及的全部 canonical 宏格，附件可跨宏格和区域。"
   def cells(%{granularity: 4} = target), do: Attachments.macros([Attachments.slot(target)])
   def cells(target), do: [Damage.macro(target)]
+
+  @doc "热节点键的全部 canonical 足迹；未进入计算域的邻点也有确定的边界归属。"
+  def key_cells({4, {type, point}}), do: Attachments.macros([{div(type, 3), rem(type, 3), point}])
+  def key_cells({_granularity, point}), do: [Damage.macro(%{micro: point})]
 
   @doc "从当前温度与燃烧记录派生热种子，不持有属性真值。"
   def hot(damage, config) do
@@ -204,21 +205,4 @@ defmodule VoxelRegion.ThermalWork do
   end
 
   defp within?(cell, box), do: Enum.all?(Enum.with_index(box), fn {span, axis} -> elem(cell, axis) in span end)
-
-  @doc "按原节点遍历顺序生成每对一次的接触和索引，保持浮点累加顺序。"
-  def index(work, nodes, attachment_graph) do
-    ordered = Enum.to_list(nodes)
-    edges = ThermalGeometry.contacts(nodes)
-    indices = ordered |> Enum.with_index() |> Map.new(fn {{key, _}, i} -> {key, i} end)
-
-    %{
-      work
-      | ordered: ordered,
-        indices: indices,
-        edges: edges,
-        indexed_edges:
-          for({a, b, g} <- edges, do: {Map.fetch!(indices, a), Map.fetch!(indices, b), g}),
-        attachment_graph: attachment_graph
-    }
-  end
 end

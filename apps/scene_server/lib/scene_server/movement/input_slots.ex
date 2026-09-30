@@ -25,17 +25,24 @@ defmodule SceneServer.Movement.InputSlots do
 
   @doc "从原接纳分支返回逐帧处置，不在日志调用方重新分类。"
   def receive_batch_observed(slots, batch, closed_tick \\ -1)
-  def receive_batch_observed(%{identity: identity} = slots, %InputBatch{
-        identity: other,
-        frames: frames
-      }, _closed_tick)
+
+  def receive_batch_observed(
+        %{identity: identity} = slots,
+        %InputBatch{
+          identity: other,
+          frames: frames
+        },
+        _closed_tick
+      )
       when identity != other,
       do: {slots, :old_identity, decisions(frames, :old_identity)}
 
   def receive_batch_observed(slots, %InputBatch{frames: frames}, closed_tick) do
-    {late, live} = Enum.split_with(frames, fn frame ->
-      frame.input_seq <= slots.processed_input_seq or slots.origin_tick + frame.input_seq - 1 <= closed_tick
-    end)
+    {late, live} =
+      Enum.split_with(frames, fn frame ->
+        frame.input_seq <= slots.processed_input_seq or
+          slots.origin_tick + frame.input_seq - 1 <= closed_tick
+      end)
 
     {next, result} =
       cond do
@@ -79,10 +86,19 @@ defmodule SceneServer.Movement.InputSlots do
           {nil, _pending} ->
             missing = slots.missing + 1
             hold = missing <= @hold_ticks and slots.processed_input_seq > slots.missing
-            frame = %InputFrame{input_seq: seq, axis_x: if(hold, do: slots.axis_x, else: 0),
-              axis_z: if(hold, do: slots.axis_z, else: 0), yaw: slots.yaw, jump_pressed: 0}
+
+            frame = %InputFrame{
+              input_seq: seq,
+              axis_x: if(hold, do: slots.axis_x, else: 0),
+              axis_z: if(hold, do: slots.axis_z, else: 0),
+              yaw: slots.yaw,
+              jump_pressed: 0
+            }
+
             selection = if hold, do: :held, else: :neutral
-            {%{slots | processed_input_seq: seq, substituted_through_seq: seq, missing: missing}, frame, selection}
+
+            {%{slots | processed_input_seq: seq, substituted_through_seq: seq, missing: missing},
+             frame, selection}
 
           {frame, pending} ->
             {%{

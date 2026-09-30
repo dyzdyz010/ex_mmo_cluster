@@ -77,7 +77,10 @@ defmodule SceneServer.Body.Thermo do
     warm_skin = max(body.skin_k - p.skin_set_k, 0.0)
 
     fuel = max(body.reserve_j + body.fat_reserve_j, 0.0)
-    shiver_j = min(level * min(shiver_demand_w_per_m2(body), p.shiver_max_w_per_m2) * area * dt, fuel)
+
+    shiver_j =
+      min(level * min(shiver_demand_w_per_m2(body), p.shiver_max_w_per_m2) * area * dt, fuel)
+
     # 糖原付 27%；脂肪不够付其余时糖原补足；糖原不够时脂肪补足（shiver_j ≤ 两者之和，故两项都不超过各自储备）。
     {glycogen_j, fat_j} = Body.fuel_split(body, shiver_j)
     core_q = Map.get(inputs, :core_j, 0.0)
@@ -87,10 +90,19 @@ defmodule SceneServer.Body.Thermo do
         p.latent_j_per_g / 3600 * exposed
 
     # Gagge / ASHRAE：静止空气（自然对流）下限 3.1，受迫对流 8.3·v^0.6 W/(m²·K)。
-    convective = max(p.convective_w_per_m2_k, p.wind_convective_w_per_m2_k * :math.pow(Map.get(inputs, :wind_mps, 0.0), p.wind_exponent))
+    convective =
+      max(
+        p.convective_w_per_m2_k,
+        p.wind_convective_w_per_m2_k * :math.pow(Map.get(inputs, :wind_mps, 0.0), p.wind_exponent)
+      )
+
     air_r = 1 / (convective + p.radiative_w_per_m2_k)
+
     # 空气中湿衣：非蒸发保温按湿度线性损失 wet_insulation_loss（Bröde et al. 2008）。
-    clothing = Map.get(inputs, :clothing_m2_k_per_w, p.clothing_m2_k_per_w) * (1 - p.wet_insulation_loss * body.wetness)
+    clothing =
+      Map.get(inputs, :clothing_m2_k_per_w, p.clothing_m2_k_per_w) *
+        (1 - p.wet_insulation_loss * body.wetness)
+
     {convection_w, drying_w} = surface_w(body, clothing, air_r, convective, air_k, p)
 
     convection_j = convection_w * exposed * dt
@@ -108,6 +120,7 @@ defmodule SceneServer.Body.Thermo do
             :core_k -> e + core_q
             _ -> e
           end
+
         {f, Map.fetch!(body, f) + e / c}
       end
 
@@ -216,11 +229,16 @@ defmodule SceneServer.Body.Thermo do
     do: {(body.skin_k - air_k) / (clothing + air_r), 0.0}
 
   defp surface_w(body, clothing, air_r, h_c, air_k, p) do
-    evap = fn t -> p.lewis_k_per_kpa * h_c * max(saturation_kpa(t) - p.relative_humidity * saturation_kpa(air_k), 0.0) * body.wetness end
+    evap = fn t ->
+      p.lewis_k_per_kpa * h_c *
+        max(saturation_kpa(t) - p.relative_humidity * saturation_kpa(air_k), 0.0) * body.wetness
+    end
+
     residual = fn t -> (body.skin_k - t) / clothing - (t - air_k) / air_r - evap.(t) end
 
     {lo, hi} =
-      Enum.reduce(1..60, {min(body.skin_k, air_k) - 60.0, max(body.skin_k, air_k)}, fn _, {lo, hi} ->
+      Enum.reduce(1..60, {min(body.skin_k, air_k) - 60.0, max(body.skin_k, air_k)}, fn _,
+                                                                                       {lo, hi} ->
         mid = (lo + hi) / 2
         if residual.(mid) > 0, do: {mid, hi}, else: {lo, mid}
       end)

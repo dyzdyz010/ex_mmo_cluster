@@ -17,13 +17,15 @@ defmodule MmoContracts.LiquidWireTest do
   end
 
   test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 34
-    hello = %Session.Hello{protocol_version: 34, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 35
+    hello = %Session.Hello{protocol_version: 35, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 34::16, tail::binary>> = packet
-    for version <- [10,15,16,17,18,19,20,21,22] do
-      assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<version::16>> <> tail)
+    <<prefix::binary-size(9), 35::16, tail::binary>> = packet
+
+    for version <- [10, 15, 16, 17, 18, 19, 20, 21, 22] do
+      assert {:error, :invalid_m1_message} =
+               Session.Codec.decode(prefix <> <<version::16>> <> tail)
     end
 
     for action <- [2, 3] do
@@ -90,8 +92,9 @@ defmodule MmoContracts.LiquidWireTest do
   # R8-07 冻结样本：region {-1,8,0} 的格 {64,31,4} 为沙 5、有限量 524288（0.25 m³），seq 50、cv 9。
   # 头部前 50 字节（magic "VXRC"、版本 12、层级、区域、seq、cv、未压缩体 hash、编码、未压缩体长度）逐字节冻结；
   # hash 覆盖整个未压缩体（含尾部数量记录），客户端解码器以同一份字节验证。压缩体长度随 zlib 实现变化，不冻结。
-  @vxrc_header <<"VXRC", 12::little-32, 0, -1::little-signed-32, 8::little-signed-32, 0::little-signed-32,
-                 50::little-64, 9::little-64, 144, 89, 70, 216, 225, 81, 211, 183, 1, 575_056::little-32>>
+  @vxrc_header <<"VXRC", 12::little-32, 0, -1::little-signed-32, 8::little-signed-32,
+                 0::little-signed-32, 50::little-64, 9::little-64, 144, 89, 70, 216, 225, 81, 211,
+                 183, 1, 575_056::little-32>>
 
   test "VXRC承载任意非空气宏格的散体有限量，旧版本不能重解释，空气仍拒绝" do
     {p, index} = water(128)
@@ -100,10 +103,12 @@ defmodule MmoContracts.LiquidWireTest do
     packet = Payload.encode(sand, %{}, 50, 9)
     assert binary_part(packet, 0, 50) == @vxrc_header
     assert {:ok, %{version: 12}, raw} = Voxel.Codec.decode_payload_body(packet)
+
     assert binary_part(raw, byte_size(raw) - 12, 12) ==
              <<1::little-32, index::little-32, 524_288::little-32>>
 
-    assert {:ok, %{liquid_units: %{^index => 524_288}, format_version: 12}} = Payload.decode(packet)
+    assert {:ok, %{liquid_units: %{^index => 524_288}, format_version: 12}} =
+             Payload.decode(packet)
 
     for version <- [9, 10, 11] do
       assert {:error, :invalid_payload} =
@@ -111,9 +116,11 @@ defmodule MmoContracts.LiquidWireTest do
     end
 
     # 液体与相态材料的有限量仍按原版本编码，不因本版本升级。
-    assert {:ok, %{version: 9}, _} = Voxel.Codec.decode_payload_body(Payload.encode(p, %{}, 50, 9))
+    assert {:ok, %{version: 9}, _} =
+             Voxel.Codec.decode_payload_body(Payload.encode(p, %{}, 50, 9))
 
     air = %{p | cells: head <> <<0::little-16>> <> tail, liquid_units: %{index => 524_288}}
+
     # 细化宏格的地形格恒为空气（既有校验），所以同一条“非空气”规则也拒绝细化宏格上的数量。
     assert {:error, :invalid_payload} = Payload.decode(Payload.encode(air, %{}, 50, 9))
     if path = System.get_env("R8_07_GOLDEN_PATH"), do: File.write!(path, packet)

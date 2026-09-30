@@ -289,7 +289,9 @@ defmodule SceneServer.Body do
     total_s = Enum.sum(for {_, _, _, _, s} <- @nodes, do: s)
 
     for {f, c, q, blood, s} <- @nodes,
-        do: {f, c * @kcal, @params.metabolic_w_per_m2 * @params.area_m2 * q / total_q, blood, s / total_s}
+        do:
+          {f, c * @kcal, @params.metabolic_w_per_m2 * @params.area_m2 * q / total_q, blood,
+           s / total_s}
   end
 
   @doc "层间导热边：`{节点, 节点, W/K}`。"
@@ -302,12 +304,20 @@ defmodule SceneServer.Body do
 
   @doc "Global system：目录定义的部位外伤。只增加尚未受损部分的缺损，不写入独立生命值。"
   def trauma(%__MODULE__{} = body, part, impact) when part in [:head, :torso, :legs] do
-    wound = case body.traumas[part] do
-      nil -> Map.put(impact, :heal, 0.0)
-      old -> %{depth: 1 - (1 - old.depth * (1 - old.heal)) * (1 - impact.depth),
-        protein_g: old.protein_g * (1 - old.heal) + impact.protein_g,
-        heal_s: max(old.heal_s * (1 - old.heal), impact.heal_s), heal: 0.0}
-    end
+    wound =
+      case body.traumas[part] do
+        nil ->
+          Map.put(impact, :heal, 0.0)
+
+        old ->
+          %{
+            depth: 1 - (1 - old.depth * (1 - old.heal)) * (1 - impact.depth),
+            protein_g: old.protein_g * (1 - old.heal) + impact.protein_g,
+            heal_s: max(old.heal_s * (1 - old.heal), impact.heal_s),
+            heal: 0.0
+          }
+      end
+
     %{body | traumas: Map.put(body.traumas, part, wound)}
   end
 
@@ -321,13 +331,20 @@ defmodule SceneServer.Body do
   """
   @spec revive() :: t()
   def revive,
-    do: %{new() | protein_g: 0.0, reserve_j: 0.0, fat_reserve_j: @params.fat_full_j,
-          weak_s: @params.revive_weak_s, daze_s: @params.revive_daze_s}
+    do: %{
+      new()
+      | protein_g: 0.0,
+        reserve_j: 0.0,
+        fat_reserve_j: @params.fat_full_j,
+        weak_s: @params.revive_weak_s,
+        daze_s: @params.revive_daze_s
+    }
 
   @doc "身体各节点（七层 + 局部接触组织块）的热容 × 温度之和，J。能量账：一步的变化 = `Thermo.step/3` 的 `stored_j`。"
   @spec heat_content_j(t()) :: float()
   def heat_content_j(%__MODULE__{} = body) do
-    Enum.sum(for {f, c, _, _, _} <- nodes(), do: c * Map.fetch!(body, f)) + tissue_capacity_j_per_k() * body.tissue_k
+    Enum.sum(for {f, c, _, _, _} <- nodes(), do: c * Map.fetch!(body, f)) +
+      tissue_capacity_j_per_k() * body.tissue_k
   end
 
   @doc "皮肤节点热容 J/K（World 外部节点）。"
@@ -340,14 +357,18 @@ defmodule SceneServer.Body do
 
   @doc "局部接触组织块热容 J/K。"
   @spec tissue_capacity_j_per_k() :: float()
-  def tissue_capacity_j_per_k, do: @params.contact_tissue_kg * @params.tissue_specific_heat_j_per_kg_k
+  def tissue_capacity_j_per_k,
+    do: @params.contact_tissue_kg * @params.tissue_specific_heat_j_per_kg_k
 
   defp capacity(field), do: nodes() |> List.keyfind(field, 0) |> elem(1)
 
   @doc "伤口严重度（0 = 无）：烧伤 1–3 度、冻伤 1 浅 / 2 深，由累计组织损伤剂量按阈值推导。"
   @spec severity(t(), :burn | :frostbite) :: non_neg_integer()
-  def severity(%__MODULE__{} = body, :burn), do: Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
-  def severity(%__MODULE__{} = body, :frostbite), do: Enum.count(@params.frostbite_dose_k_s, &(body.frost_dose_k_s >= &1))
+  def severity(%__MODULE__{} = body, :burn),
+    do: Enum.count(@params.burn_degree_dose_s, &(body.burn_dose_s >= &1))
+
+  def severity(%__MODULE__{} = body, :frostbite),
+    do: Enum.count(@params.frostbite_dose_k_s, &(body.frost_dose_k_s >= &1))
 
   @doc "游戏内愈合时长 s：clamp(30 s × 真实天数^0.7, 30 s, 1800 s)。"
   @spec heal_s(number()) :: float()
@@ -358,12 +379,15 @@ defmodule SceneServer.Body do
 
   @doc "伤口的游戏内愈合时长 s（循环满值、速率倍数 1 时）。"
   @spec heal_s(:burn | :frostbite, pos_integer()) :: float()
-  def heal_s(kind, severity), do: @params.wound_heal_days |> Map.fetch!(kind) |> Enum.at(severity - 1) |> heal_s()
+  def heal_s(kind, severity),
+    do: @params.wound_heal_days |> Map.fetch!(kind) |> Enum.at(severity - 1) |> heal_s()
 
   @doc "慢性伤口压低系统上限的深度（未愈合时）：0.25 × √(一度烧伤时长 / 本伤时长)。"
   @spec chronic_depth(:burn | :frostbite, pos_integer()) :: float()
   def chronic_depth(kind, severity),
-    do: @params.chronic_depth_at_first_degree * :math.sqrt(heal_s(:burn, 1) / heal_s(kind, severity))
+    do:
+      @params.chronic_depth_at_first_degree *
+        :math.sqrt(heal_s(:burn, 1) / heal_s(kind, severity))
 
   @doc "烧伤急性期时长 s：同一时长公式换算真实 `burn_onset_days`（1 天 → 30 s）。"
   @spec burn_onset_s() :: float()
@@ -376,8 +400,12 @@ defmodule SceneServer.Body do
   @spec burn_depression(t()) :: float()
   def burn_depression(%__MODULE__{} = body) do
     case severity(body, :burn) do
-      0 -> 0.0
-      burn -> chronic_depth(:burn, burn) * min(1.0, body.burn_age_s / burn_onset_s()) * (1 - body.burn_heal)
+      0 ->
+        0.0
+
+      burn ->
+        chronic_depth(:burn, burn) * min(1.0, body.burn_age_s / burn_onset_s()) *
+          (1 - body.burn_heal)
     end
   end
 
@@ -387,7 +415,9 @@ defmodule SceneServer.Body do
   """
   @spec fuel_split(t(), float()) :: {float(), float()}
   def fuel_split(%__MODULE__{} = body, j) do
-    glycogen_j = min(max(@params.glycogen_shiver_share * j, j - body.fat_reserve_j), body.reserve_j)
+    glycogen_j =
+      min(max(@params.glycogen_shiver_share * j, j - body.fat_reserve_j), body.reserve_j)
+
     {glycogen_j, j - glycogen_j}
   end
 
@@ -405,7 +435,9 @@ defmodule SceneServer.Body do
 
     %{
       thermoregulation: level(core, @params.thermoregulation_band),
-      circulation: level(core, @params.circulation_band) * (1 - burn_depression(body)) * weak * trauma_factor(body),
+      circulation:
+        level(core, @params.circulation_band) * (1 - burn_depression(body)) * weak *
+          trauma_factor(body),
       nervous: level(core, @params.nervous_band)
     }
   end
@@ -433,7 +465,9 @@ defmodule SceneServer.Body do
 
       severity ->
         initial = Enum.at(@params.frost_movement_initial, severity - 1)
-        1.0 - (1.0 - initial) * max(0.0, 1.0 - body.frost_heal / @params.frost_movement_recovered_at)
+
+        1.0 -
+          (1.0 - initial) * max(0.0, 1.0 - body.frost_heal / @params.frost_movement_recovered_at)
     end
   end
 
@@ -449,11 +483,22 @@ defmodule SceneServer.Body do
   """
   @spec recoverable_life(t()) :: 0..100
   def recoverable_life(%__MODULE__{} = body),
-    do: life(%{body | burn_dose_s: 0.0, burn_heal: 0.0, frost_dose_k_s: 0.0, frost_heal: 0.0, weak_s: 0.0, daze_s: 0.0, traumas: %{}}) - life(body)
+    do:
+      life(%{
+        body
+        | burn_dose_s: 0.0,
+          burn_heal: 0.0,
+          frost_dose_k_s: 0.0,
+          frost_heal: 0.0,
+          weak_s: 0.0,
+          daze_s: 0.0,
+          traumas: %{}
+      }) - life(body)
 
   @doc "伤口此刻的愈合速率（进度 /s）：`m / T(严重度) × min(1, 循环)`；`Repair.heal/3` 与 `remaining_s/3` 共用这一处。"
   @spec heal_rate(t(), :burn | :frostbite, number()) :: float()
-  def heal_rate(%__MODULE__{} = body, kind, m), do: m / heal_s(kind, severity(body, kind)) * min(1.0, systems(body).circulation)
+  def heal_rate(%__MODULE__{} = body, kind, m),
+    do: m / heal_s(kind, severity(body, kind)) * min(1.0, systems(body).circulation)
 
   @doc """
   按此刻速度估算的剩余愈合秒数：`(1 − 进度) / heal_rate`（不预测之后循环变化、体温或营养变化：烧伤急性期内上限仍在下压，
@@ -487,18 +532,23 @@ defmodule SceneServer.Body do
   def injuries(%__MODULE__{} = body) do
     hungry = body.protein_g < @params.hunger_below_fraction * @params.protein_full_g
 
-    ((for {part, wound} <- Enum.sort(body.traumas),
-      do: {"trauma.mechanical.#{part}", part, 1, :heals, wound.heal}) ++ [
-      {"temperature.hypothermia", :whole,
-       Enum.count(@params.hypothermia_below_k, &(body.core_k < &1)), :tracks_core, 0.0},
-      {"temperature.hyperthermia", :whole,
-       Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core, 0.0},
-      {"trauma.thermal.burn", :contact, severity(body, :burn), :heals, body.burn_heal},
-      {"trauma.thermal.frostbite", :feet, severity(body, :frostbite), :heals, body.frost_heal},
-      {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0},
-      {"recovery.weakness", :whole, if(body.weak_s > 0, do: 1, else: 0), :timed, 1 - body.weak_s / @params.revive_weak_s},
-      {"nervous.daze", :whole, if(body.daze_s > 0, do: 1, else: 0), :timed, 1 - body.daze_s / @params.revive_daze_s}
-    ])
+    (for(
+       {part, wound} <- Enum.sort(body.traumas),
+       do: {"trauma.mechanical.#{part}", part, 1, :heals, wound.heal}
+     ) ++
+       [
+         {"temperature.hypothermia", :whole,
+          Enum.count(@params.hypothermia_below_k, &(body.core_k < &1)), :tracks_core, 0.0},
+         {"temperature.hyperthermia", :whole,
+          Enum.count(@params.hyperthermia_above_k, &(body.core_k > &1)), :tracks_core, 0.0},
+         {"trauma.thermal.burn", :contact, severity(body, :burn), :heals, body.burn_heal},
+         {"trauma.thermal.frostbite", :feet, severity(body, :frostbite), :heals, body.frost_heal},
+         {"nutrition.hunger", :whole, if(hungry, do: 1, else: 0), :tracks_protein, 0.0},
+         {"recovery.weakness", :whole, if(body.weak_s > 0, do: 1, else: 0), :timed,
+          1 - body.weak_s / @params.revive_weak_s},
+         {"nervous.daze", :whole, if(body.daze_s > 0, do: 1, else: 0), :timed,
+          1 - body.daze_s / @params.revive_daze_s}
+       ])
     |> Enum.filter(fn {_tag, _part, severity, _rule, _heal} -> severity > 0 end)
     |> Enum.map(fn {tag, part, severity, rule, heal} ->
       %{tag: tag, part: part, severity: severity, progression: rule, heal: heal}
@@ -534,23 +584,33 @@ defmodule SceneServer.Body do
   `key` 是“有变化”的比较键：温度取 0.1 K，蛋白质取 0.1 g，剩余取整秒，其余原值。
   """
   def report(%__MODULE__{} = body, m) do
-    left = %{"trauma.thermal.burn" => fn -> remaining_s(body, :burn, m) end,
+    left = %{
+      "trauma.thermal.burn" => fn -> remaining_s(body, :burn, m) end,
       "trauma.thermal.frostbite" => fn -> remaining_s(body, :frostbite, m) end,
-      "recovery.weakness" => fn -> body.weak_s end, "nervous.daze" => fn -> body.daze_s end}
+      "recovery.weakness" => fn -> body.weak_s end,
+      "nervous.daze" => fn -> body.daze_s end
+    }
 
     injuries =
       for i <- injuries(body) do
-        remaining = cond do
-          String.starts_with?(i.tag, "trauma.mechanical.") ->
-            wound = Map.fetch!(body.traumas, i.part)
-            cond do
-              body.protein_g <= 0 -> -1.0
-              systems(body).circulation <= 0 or body.reserve_j + body.fat_reserve_j <= 0 -> -2.0
-              true -> (1 - wound.heal) * wound.heal_s / (m * systems(body).circulation)
-            end
-          f = left[i.tag] -> f.()
-          true -> 0.0
-        end
+        remaining =
+          cond do
+            String.starts_with?(i.tag, "trauma.mechanical.") ->
+              wound = Map.fetch!(body.traumas, i.part)
+
+              cond do
+                body.protein_g <= 0 -> -1.0
+                systems(body).circulation <= 0 or body.reserve_j + body.fat_reserve_j <= 0 -> -2.0
+                true -> (1 - wound.heal) * wound.heal_s / (m * systems(body).circulation)
+              end
+
+            f = left[i.tag] ->
+              f.()
+
+            true ->
+              0.0
+          end
+
         {i.tag, i.severity, floor(i.heal * 100), remaining}
       end
 
@@ -558,10 +618,19 @@ defmodule SceneServer.Body do
     life = life(body)
     recoverable = recoverable_life(body)
 
-    %{life: life, recoverable: recoverable, status: status, core_k: body.core_k, skin_k: body.skin_k, injuries: injuries,
+    %{
+      life: life,
+      recoverable: recoverable,
+      status: status,
+      core_k: body.core_k,
+      skin_k: body.skin_k,
+      injuries: injuries,
       protein_g: body.protein_g,
-      key: {life, recoverable, status, round(body.core_k * 10), round(body.skin_k * 10),
-            for({tag, n, heal, left} <- injuries, do: {tag, n, heal, round(left)}), round(body.protein_g * 10)}}
+      key:
+        {life, recoverable, status, round(body.core_k * 10), round(body.skin_k * 10),
+         for({tag, n, heal, left} <- injuries, do: {tag, n, heal, round(left)}),
+         round(body.protein_g * 10)}
+    }
   end
 
   @doc "合成后的致命水平 0..1：`combined_level/2` 作用于此刻的循环与神经功能水平，p = `lethal_norm_p`。"

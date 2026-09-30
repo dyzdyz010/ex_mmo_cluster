@@ -70,7 +70,8 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
     conn: conn
   } do
     frozen =
-      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0, 0>> <>
+      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0,
+        0>> <>
         @a <> <<9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> @b
 
     response = post_prefabs(conn, ~p"/ingame/voxel/prefabs")

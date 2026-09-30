@@ -162,6 +162,31 @@ defmodule VoxelRegion.CollisionSourceTest do
     assert_received ^unrelated
   end
 
+  # 碰撞投影在订阅者的发送进程里做、不占 World：World 暂停时先排入重新加入窗口、再排入一笔编辑，恢复后 World 先交出快照
+  # 再提交编辑，而发送进程此时仍在投影 8 个区域——编辑的增量必须排在快照之后，快照不含该编辑。
+  test "join projection runs off World; an edit queued right behind the join arrives after the snapshot",
+       %{world: world} do
+    snapshot(world)
+    assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, 11}])
+    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 1}}, 10_000
+    subscriber = self()
+    request = make_ref()
+    :sys.suspend(world)
+    join = Task.async(fn -> GenServer.call(world, {:canonical_snapshot, @box, subscriber, request, true}, 300_000) end)
+    queued(world, 1)
+    edit = Task.async(fn -> GenServer.call(world, {:apply_edits, [{{40, 558, 40}, 0}]}, 300_000) end)
+    queued(world, 2)
+    :sys.resume(world)
+    assert {:ok, 2} = Task.await(edit, 300_000)
+    assert :ok = Task.await(join, 300_000)
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot], 10_000
+    assert {:canonical_snapshot, ^request, %CanonicalSnapshot{transaction_seq: 1} = baseline} = message
+    assert occupancy_at(baseline.chunks, {40, 558, 40}) == 1
+    assert_receive message when elem(message, 0) in [:canonical_delta, :canonical_snapshot]
+    assert {:canonical_delta, %CanonicalDelta{transaction_seq: 2, chunks: [chunk]}} = message
+    assert occupancy_at([chunk], {40, 558, 40}) == 0
+  end
+
   test "same-chunk N+1/N+2 and cross-chunk transactions keep full immutable intermediate cores",
        %{world: world} do
     unrelated = {:w1_unrelated, make_ref()}
@@ -302,6 +327,9 @@ defmodule VoxelRegion.CollisionSourceTest do
     refute_receive {:canonical_snapshot, ^request, _}
     assert World.seq(world) == 0
   end
+
+  defp queued(world, n),
+    do: true = Enum.find_value(1..1000, fn _ -> elem(Process.info(world, :message_queue_len), 1) >= n || (Process.sleep(1); nil) end)
 
   defp snapshot(world) do
     request = make_ref()

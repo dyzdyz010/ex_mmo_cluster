@@ -125,11 +125,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
     world =
       start_supervised!(
-        {World,
-         root: root,
-         name: :e1_actual_world,
-         source: source,
-         manifest_path: manifest_path}
+        {World, root: root, name: :e1_actual_world, source: source, manifest_path: manifest_path}
       )
 
     profile =
@@ -747,7 +743,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
           do: {wx, wy, wall_z}
 
     wall = delta(ctx, Enum.map(cells, &{&1, 11}), 1)
-    assert observe(ctx.scene).collision_revision == 1
+
+    # 测试进程与 Scene 各自收到 delta；推进 tick 前等 Scene 真正入队（同本文件其余用例）。
+    assert await(ctx.scene, &(&1.queue_length == 1)).collision_revision == 1
     advance(ctx, 3)
     applied(wall, 3, 2)
     native_events()
@@ -760,6 +758,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
            inspect(%{start: start.state, blocked: hd(blocked.characters).state, wall_z: wall_z})
 
     removed = delta(ctx, Enum.map(cells, &{&1, 0}), 2)
+    await(ctx.scene, &(&1.queue_length == 1))
     # 显式保留拆墙 tick 的连续输入号；缺少 seq51 时正确行为是等待。
     send_walk_input(ctx, 82, 32)
     advance(ctx, 82)

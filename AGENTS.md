@@ -9,22 +9,22 @@
 
 ## 1. 项目与当前焦点
 
-`ex_mmo_cluster` 是探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目（`gate_server`、`scene_server`、`world_server`、`agent_server`、`auth_server`、`data_service`、`beacon_server`、`mmo_contracts` 等），核心方向是**服务端权威**的移动、AOI、体素、局部场与物理现象运行时。当前推进重点是体素世界生产化（baseline = 算法基底 + delta + 轻量 H，见 [`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)）与局部场运行时（Phase 7+）。Mnesia 相关 app 是迁移期兼容组件，不要把旧拓扑误认为最终架构。
+`ex_mmo_cluster` 是探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目（`gate_server`、`scene_server`、`world_server`、`voxel_region`、`auth_server`、`data_service`、`mmo_contracts`），核心方向是**服务端权威**的移动、AOI、体素、局部场与物理现象运行时。当前推进重点是体素世界生产化（baseline = 算法基底 + delta + 轻量 H，见 [`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)）与局部场运行时（Phase 7+）。服务端以单个 `voxim_server` release 部署（`deploy/`），多 Scene 由拓扑文件在本机起 peer 节点。
 
 **客户端口径（统一到 `docs/00-current-truth/`，覆盖任何旧文档的相反表述）**：
 
-- 同级 `../Voxim`（UE5.8）是**当前主线客户端与联调焦点**；路线以其 `starter.md`、`Docs/M1/plan.md` 和 brief 为准。`clients/Voxia` 仅作算法、行为与性能参考。
-- `clients/web_client` 与 `clients/bevy_client` 是**逻辑归档客户端**——代码和历史证据保留原位，默认不读取、不开发、不验证、不进入 CI / 发布 / 进度判断；只有用户显式点名时才临时纳入任务。
+- 同级 `../Voxim`（UE5.8）是**唯一客户端**；路线以其 `starter.md`、`Docs/M1/plan.md` 和 brief 为准。
+- `clients/Voxia`、`clients/web_client`、`clients/bevy_client` 已弃用（2026-09-30）：服务端服务它们的旧链路（chunk/field/TCP/WS/旧 opcode）已删除，这些目录只剩历史代码，不读取、不开发、不验证。
 - 现行 Session/Voxel wire SSOT 是纯 `apps/mmo_contracts/lib/mmo_contracts/{session,voxel}/codec.ex` 与 `voxel/payload.ex`；旧 Gate codec 只保留有活调用方的旧领域。G0 的 31 个冻结字节不能随抽取重捕获。
 
 ## 2. 架构铁律
 
 1. **服务端权威优先**：移动、AOI、战斗、体素、object state、field truth 等核心运行时状态以服务端 authority 为准。客户端可以预测、预览和呈现，但不能成为 confirmed truth 来源。
-2. **confirmed voxel truth 只吃服务端**：Voxim 在线确认态只接受服务端 region payload、日志/事务与意图结果；Voxia 的旧 snapshot/delta/object/field 协议是参考实现；归档 Web / Bevy 若被用户显式临时纳入，也必须遵守同一规则。本地编辑只允许作为 preview、pending UI 或离线模式能力。体素编辑全程服务端权威、不做客户端乐观预测（点击只发 intent，等服务端广播 delta/快照才渲染）；乐观预测仅用于移动和技能特效。
-3. **体素基线的权威接纳边界**：客户端本地 world pack / region manifest / chunk baseline / diff chain 的强制入场校验及缺包拒绝规则仅属 **legacy/reference（Voxia 旧客户端契约）**，不作为 Voxim 入场前置条件。Voxim 当前 R6 消费服务端 region payload、日志/事务与意图结果，经既有 canonical 管线形成确认态；M1 已由完整权威 R6 L0 payload 的 CanonicalBootstrap 接入同一管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才发 Ready（详见 [`../Voxim/Docs/M1/plan.md §2`](../Voxim/Docs/M1/plan.md)）。实际不完整或身份/版本不符的权威来源仍必须显式拒绝，不得把缺失当空气或用本地包、snapshot/resync 静默兜底；该 bootstrap/Ready runtime 已接入正式 QUIC 链路并完成 M1 验收，G1 只表示早期字节 owner 抽取。
-4. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；`VoxelRegion.World` 拥有 Voxim canonical 体素、材料事务与热/相变/电路提交；`WorldServer` 负责路由与跨 Scene 编排，`SceneServer.Movement` 拥有移动、碰撞历史与 AOI；DataService 负责持久化。旧 `SceneServer.Voxel.ChunkProcess` 仍是 legacy/reference chunk 与 field 活调用链的 owner，不是 Voxim canonical owner；客户端只消费权威结果。实现入口见 [Voxim runtime](docs/00-current-truth/design/server/voxim-runtime.md)。
-5. **Field kernel 不直接改世界**：`FieldKernel` 只能演化 `FieldRegion` / `FieldLayer` 并产出结构化 `FieldEffect`；legacy voxel / object / combat truth 写回必须经过 ChunkProcess 或其 authority dispatcher。Voxim 材料内核结果由 `VoxelRegion.World` 统一提交，不绕过对应 owner。
-6. **跨 app 不绕边界**：跨 app 通信优先通过 Interface 模块、稳定公共 API、`BeaconServer.Client` 和既有 region routing；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
+2. **confirmed voxel truth 只吃服务端**：Voxim 在线确认态只接受服务端 region payload、日志/事务与意图结果。本地编辑只允许作为 preview、pending UI 或离线模式能力。体素编辑全程服务端权威、不做客户端乐观预测（点击只发 intent，等服务端广播 delta/快照才渲染）；乐观预测仅用于移动和技能特效。
+3. **体素基线的权威接纳边界**：Voxim 当前 R6 消费服务端 region payload、日志/事务与意图结果，经既有 canonical 管线形成确认态；M1 已由完整权威 R6 L0 payload 的 CanonicalBootstrap 接入同一管线，全部规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已消费才发 Ready（详见 [`../Voxim/Docs/M1/plan.md §2`](../Voxim/Docs/M1/plan.md)）。实际不完整或身份/版本不符的权威来源仍必须显式拒绝，不得把缺失当空气或用本地包、snapshot/resync 静默兜底；该 bootstrap/Ready runtime 已接入正式 QUIC 链路并完成 M1 验收，G1 只表示早期字节 owner 抽取。
+4. **边界清晰**：Gate 负责协议 decode / 鉴权 / 转发；`VoxelRegion.World` 拥有 Voxim canonical 体素、材料事务与热/相变/电路提交；`WorldServer` 负责路由与跨 Scene 编排，`SceneServer.Movement` 拥有移动、碰撞历史与 AOI；DataService 负责持久化；客户端只消费权威结果。实现入口见 [Voxim runtime](docs/00-current-truth/design/server/voxim-runtime.md)。
+5. **材料内核不直接改世界**：热/相变/电路等内核结果由 `VoxelRegion.World` 统一提交，不绕过对应 owner。
+6. **跨 app 不绕边界**：跨 app 通信走稳定公共 API 与 `WorldServer.Movement` 路由；不要硬编码节点名、PID 或直接穿透别的 app 内部 worker。
 7. **按阶段冻结协议**：G1 必须保持 G0 Session/Voxel 全部字节与含义；新 Movement 按 Voxim M1 合同另行冻结，**无旧移动兼容义务**。现行 codec SSOT 在纯 mmo_contracts，以其 golden 与 Voxim decoder 验证。旧 Gate/NPC/战斗有活调用方时保留；归档 Web / Bevy parity 不作门禁。
 8. **显式失败，不静默降级**：连接、鉴权、movement reconcile、voxel intent、field source、kernel effect、消息编解码、NIF 调用、持久化写入失败时，要返回可诊断错误并打结构化日志；禁止吞错后伪装成功。
 9. **迁移期兼容要可见**：PostgreSQL 主路径与 Mnesia 遗留路径并存时，代码和文档必须标明当前来源、兼容原因、退出条件。
@@ -65,7 +65,7 @@
 6. **用户交互必须三入口覆盖**：涉及用户交互的功能必须提供真实用户操作入口、自动化测试入口、CLI / 日志验证入口，并在最终验收中覆盖这些入口。
 7. **禁止补丁式修复**：遇到 bug 先定位根因和边界归属，再修复；不要用局部 hack、吞错、硬编码等待、临时绕路掩盖架构问题。
 8. **阶段性改动先有决策稿**：新增 phase、重排运行时边界、协议扩展、事务 / supervisor / field runtime 变化，应先在 `docs/10-active/<子系统>/` 写目标、范围、决策项、测试矩阵和进度日志（收口后移入 `docs/20-archive/`；文档分层见 `docs/README.md`）。
-9. **不确定就查本仓真相源**：对 Phoenix / LiveView / Ecto / Rustler / 协议语义 / FieldRuntime / voxel 事务不确定时，先查本仓 README、阶段文档、协议文档、目录 README 和现有测试，再动手。
+9. **不确定就查本仓真相源**：对 Phoenix / LiveView / Ecto / Rustler / 协议语义 / voxel 事务不确定时，先查本仓 README、阶段文档、协议文档、目录 README 和现有测试，再动手。
 10. **复杂任务职责隔离**：复杂改动尽量把设计、实现、验证分开做；最终说明中要区分实现内容、验证证据和残余风险。
 11. **代码旁文档同步维护**：
    - Elixir 公共模块补 `@moduledoc`，公共函数补 `@doc`。
@@ -94,10 +94,8 @@
 ## 5. 验证入口
 
 - 根级常规验证：`mix compile`、`mix test`。根 `mix.exs` 当前没有 `precommit` alias，不要假设 `mix precommit` 在 umbrella 根可用。
-- Phoenix app 验证：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`。
+- Phoenix app 验证：`cd apps/auth_server && mix precommit`。
 - 单 app 测试：`cd apps/<app> && mix test --no-start`，按影响范围选择。
-- WebSocket 双客户端 smoke：`node scripts/run_ws_dual_smoke_supervised.js`，结构化产物写入 `.demo/observe/`。
-- Voxia 参考客户端 CLI（非 Voxim 默认验收）：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`；服务端 CLI：`elixir --sname voxia_server_cli --cookie mmo scripts/voxia_server_stdio_cli.exs --cmd "..."`。
 - 完整命令清单见 [`docs/30-reference/engineering/project-engineering-guide.md`](docs/30-reference/engineering/project-engineering-guide.md) 与 [`docs/00-current-truth/impl/README.md`](docs/00-current-truth/impl/README.md)。
 - 归档客户端：Web / Bevy 不进入默认验证；只有用户显式点名时才按各自 README 运行历史测试或工具。
 
@@ -110,10 +108,9 @@
 - 线协议：[`docs/30-reference/protocol/2026-04-10-线协议规范.md`](docs/30-reference/protocol/2026-04-10-线协议规范.md)（现行 Session/Voxel 真值在纯 mmo_contracts，旧 Gate 只持有遗留领域）
 - 体素权威主索引：[`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)
 - 体素 baseline 边界决策：[`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
-- Voxia 参考实现的纯 3D 窗口 / 远景壳路线：[`docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md`](docs/10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md)
 - 旧体素同步 / 窗口 / 渲染设计（仅历史证据）：[`docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md`](docs/20-archive/voxel-authority/2026-06-29-voxel-sync-window-and-render-design.md)
 - Phase 7 局部场路线图：[`docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md`](docs/10-active/field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)
 - 当前会话 / 后续接力：[`docs/10-active/cross-cutting/_session-handoff.md`](docs/10-active/cross-cutting/_session-handoff.md)
-- 当前客户端：[`../Voxim/starter.md`](../Voxim/starter.md)；参考客户端：[`clients/Voxia/README.md`](clients/Voxia/README.md)
+- 当前客户端：[`../Voxim/starter.md`](../Voxim/starter.md)
 - M1 抽取历史与验收入口：[`2026-09-08-voxim-m1.md`](docs/10-active/movement-sync/2026-09-08-voxim-m1.md)（页首索引后续验收；早期 G1 待实施条目仅是历史）
 - 归档客户端策略：[`docs/10-active/cross-cutting/2026-07-14-web-bevy-client-archive-policy.md`](docs/10-active/cross-cutting/2026-07-14-web-bevy-client-archive-policy.md)

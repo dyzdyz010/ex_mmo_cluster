@@ -1,7 +1,7 @@
 defmodule VoxelRegion.ThermalBatchTest do
   @moduledoc "只测试：真实 World 热提交、纯 NIF 守恒与事件边界；World样本经作者及工具入口建立。"
   use ExUnit.Case, async: false
-  alias VoxelRegion.{World, Damage, Phase, ThermalNative, ThermalAttachments}
+  alias VoxelRegion.{World, Damage, Phase, ThermalNative, ThermalAttachments, ThermalGeometry}
   alias VoxelRegion.TestSupport.{Source, Log, Actor}
 
   defp world(ambient) do
@@ -198,7 +198,8 @@ defmodule VoxelRegion.ThermalBatchTest do
   @tag :latent_batch
   test "潜热区无其他事件的半秒 World 批至多两次进入 NIF" do
     {c, before, row} = latent_world()
-    mfa = {ThermalNative, :advance, 7}
+    # World 的半秒批经常驻热域进入内核。
+    mfa = {ThermalNative, :domain_step, 12}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
@@ -249,7 +250,8 @@ defmodule VoxelRegion.ThermalBatchTest do
     heat(c, {0, 0, 0}, 100.0, 200.0)
     before = cache_tick(c.w)
     assert before.thermal.sources == %{}
-    mfa = {ThermalNative, :advance, 7}
+    # World 的半秒批经常驻热域进入内核。
+    mfa = {ThermalNative, :domain_step, 12}
     :erlang.trace_pattern(mfa, true, [:call_count])
 
     try do
@@ -264,6 +266,9 @@ defmodule VoxelRegion.ThermalBatchTest do
 
       # 对正常派生的实际节点，比较旧十个 50ms 步与整批结果；不构造第二份 World。
       ordered = next.thermal_work.ordered
+      # 参考接触按 ThermalGeometry.contacts/1 与节点次序独立编号，不读取被测的原生热域。
+      indices = ordered |> Enum.with_index() |> Map.new(fn {{key, _}, i} -> {key, i} end)
+      edges = for {a, b, g} <- ThermalGeometry.contacts(Map.new(ordered)), do: {indices[a], indices[b], g}
 
       input =
         Enum.map(ordered, fn {_, n} ->
@@ -278,7 +283,7 @@ defmodule VoxelRegion.ThermalBatchTest do
           {0.05, result, 0.0, delta} =
             ThermalNative.advance(
               nodes,
-              next.thermal_work.indexed_edges,
+              edges,
               293.15,
               0.1,
               0.00001,

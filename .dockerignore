@@ -52,3 +52,10 @@ apps/*/test-results/
 *.dll
 *.exe
 *.pdb
+
+# Not part of the server image
+clients/
+.worktrees/
+scripts/
+deploy/
+.demo/

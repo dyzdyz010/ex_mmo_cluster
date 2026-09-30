@@ -3,6 +3,7 @@ Code.require_file("../../support/movement_fixture.exs", __DIR__)
 defmodule WorldServer.Movement.VoximTransferTest do
   @moduledoc "只测试：World 路由的跨 Scene 移交与单一写入者。"
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
   alias SceneServer.Movement.{Scene, Player}
   alias MmoContracts.{Session, Movement}
 
@@ -155,16 +156,52 @@ defmodule WorldServer.Movement.VoximTransferTest do
       Player.input(target, new, %Movement.InputBatch{identity: new, frames: frames})
       Process.sleep(40)
       assert Player.observe(target).physics_steps == 0
-      assert :ok = WorldServer.Movement.commit_transfer(old, new)
-      await(fn -> Player.observe(target).processed_input_seq == 120 end)
+
+      # Hello33 起每个到期槽都最终处理（缺帧用替代帧），目标 commit 后立即追到当前 tick、不再停在 120；
+      # 移交前缀改由目标自己的逐槽 input_selected 事实核对。
+      log =
+        capture_log(
+          [level: :debug, format: "$message
+"],
+          fn ->
+            assert :ok = WorldServer.Movement.commit_transfer(old, new)
+            await(fn -> Player.observe(target).processed_input_seq >= 120 end)
+          end
+        )
+
       final = Player.observe(target)
-      assert final.physics_steps == 120 - cut.slots.processed_input_seq
+
+      selected =
+        for line <- String.split(log, "
+", trim: true),
+            String.starts_with?(line, "{"),
+            row = Jason.decode!(line),
+            row["event"] == "input_selected" and row["entity_id"] == 100,
+            do: row
+
+      prefix = (cut.slots.processed_input_seq + 1)..120
+      transferred = Enum.filter(selected, &(&1["input_seq"] in prefix))
+
+      # 未处理前缀每槽恰好一次、都是移交来的真实帧、只由新身份写入，槽与 tick 的映射不变。
+      assert Enum.map(transferred, & &1["input_seq"]) == Enum.to_list(prefix)
+
+      for row <- transferred do
+        assert row["session_epoch"] == 11 and row["selection"] == "received"
+        assert row["axis_x"] == if(row["input_seq"] <= 45, do: 32767, else: 0)
+        assert row["simulation_tick"] == input_start.origin_tick + row["input_seq"] - 1
+      end
+
+      refute Enum.any?(selected, &(&1["session_epoch"] == 10))
+      # 物理时间只随最终槽推进；120 之后才开始替代。
+      assert final.physics_steps == final.processed_input_seq - cut.slots.processed_input_seq
+      assert final.substitutions == final.processed_input_seq - 120
+      assert final.simulation_tick == input_start.origin_tick + final.processed_input_seq - 1
       assert final.entity_epoch == start.entity_epoch
       assert final.old_identity == 1
 
       if edit_during_transfer do
-        assert final.collision_revision == 1
-        assert final.simulation_tick == input_start.origin_tick + 119
+        # 首次编辑晚于 origin+119：前缀按各自 tick 的历史碰撞回放，而不是移交时的当前 world。
+        assert Enum.all?(transferred, &(&1["collision_revision"] == 1))
       end
 
       assert Scene.observe(a).character_count == 0
@@ -172,7 +209,9 @@ defmodule WorldServer.Movement.VoximTransferTest do
       refute Process.alive?(source)
       Player.input(target, new, %Movement.InputBatch{identity: new, frames: frames})
       Process.sleep(40)
-      assert Player.observe(target).physics_steps == final.physics_steps
+      # 重发的帧全部迟到，不能创造额外物理步。
+      again = Player.observe(target)
+      assert again.physics_steps == again.processed_input_seq - cut.slots.processed_input_seq
 
       if edit_during_transfer do
         assert {:ok, 3} = VoxelRegion.World.apply_edit(world, {42, 504, 40}, 0)
@@ -198,27 +237,14 @@ defmodule WorldServer.Movement.VoximTransferTest do
         assert_transaction_order(publications)
 
         last_seq = third_tick - input_start.origin_tick + 4
-        send_frames(target, new, 121..last_seq, 0)
-        await(fn -> Player.observe(target).processed_input_seq == last_seq end)
+        await(fn -> Player.observe(target).processed_input_seq >= last_seq end)
         continued = Player.observe(target)
         assert continued.collision_revision == 4
-        assert continued.physics_steps == last_seq - cut.slots.processed_input_seq
+
+        assert continued.physics_steps ==
+                 continued.processed_input_seq - cut.slots.processed_input_seq
       end
     end
-  end
-
-  defp send_frames(player, identity, range, axis) do
-    frames =
-      for seq <- range,
-          do: %Movement.InputFrame{
-            input_seq: seq,
-            axis_x: axis,
-            axis_z: 0,
-            yaw: 0,
-            jump_pressed: 0
-          }
-
-    Player.input(player, identity, %Movement.InputBatch{identity: identity, frames: frames})
   end
 
   defp through_fence(identity, seq, acc \\ []) do

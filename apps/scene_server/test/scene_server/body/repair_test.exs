@@ -36,22 +36,35 @@ defmodule SceneServer.Body.RepairTest do
   defp tick!(body, m \\ 1.0, inputs \\ @air) do
     {next, a} = Repair.tick(body, 1.0, inputs, m)
     assert_in_delta a.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
-    assert_in_delta a.stored_j, a.q_j + a.core_j + a.metabolic_j - a.convection_j - a.sweat_j - a.drying_j, 1.0e-9
+
+    assert_in_delta a.stored_j,
+                    a.q_j + a.core_j + a.metabolic_j - a.convection_j - a.sweat_j - a.drying_j,
+                    1.0e-9
+
     assert a.core_j == a.synth_j
     assert_in_delta a.synth_j, a.synth_glycogen_j + a.synth_fat_j, 1.0e-9
-    assert_in_delta body.reserve_j - next.reserve_j, a.shiver_glycogen_j + a.synth_glycogen_j, 1.0e-6
-    assert_in_delta body.fat_reserve_j - next.fat_reserve_j, a.shiver_fat_j + a.synth_fat_j, 1.0e-6
+
+    assert_in_delta body.reserve_j - next.reserve_j,
+                    a.shiver_glycogen_j + a.synth_glycogen_j,
+                    1.0e-6
+
+    assert_in_delta body.fat_reserve_j - next.fat_reserve_j,
+                    a.shiver_fat_j + a.synth_fat_j,
+                    1.0e-6
+
     assert_in_delta body.protein_g - next.protein_g, a.repair_protein_g, 1.0e-12
     {next, a}
   end
 
   defp run(body, n),
-    do: Enum.reduce(1..n, {body, 0.0, 0.0}, fn _, {b, p, s} ->
-      {b, a} = tick!(b)
-      {b, p + a.repair_protein_g, s + a.synth_j}
-    end)
+    do:
+      Enum.reduce(1..n, {body, 0.0, 0.0}, fn _, {b, p, s} ->
+        {b, a} = tick!(b)
+        {b, p + a.repair_protein_g, s + a.synth_j}
+      end)
 
-  defp severity(body, tag), do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
+  defp severity(body, tag),
+    do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
 
   # 按时长升序（92.6 < 117.1 < 252.7 < 410.6 < 700.0 s）
   @wounds [{:burn, 1}, {:frostbite, 1}, {:burn, 2}, {:frostbite, 2}, {:burn, 3}]
@@ -67,8 +80,13 @@ defmodule SceneServer.Body.RepairTest do
 
     # 回归（改前失败）：旧实现游戏内时长 = 真实时长 ÷ 统一压缩系数 K，没有 heal_s。
     test "游戏内愈合时长 clamp(30 s × 天数^0.7, 30, 1800)：1 度 92.56 s、2 度 252.74 s、3 度 699.99 s、浅冻伤 117.14 s、深冻伤 410.58 s" do
-      for {{kind, severity}, t} <- [{{:burn, 1}, 92.5551}, {{:burn, 2}, 252.7405}, {{:burn, 3}, 699.9887},
-                                    {{:frostbite, 1}, 117.1359}, {{:frostbite, 2}, 410.5781}] do
+      for {{kind, severity}, t} <- [
+            {{:burn, 1}, 92.5551},
+            {{:burn, 2}, 252.7405},
+            {{:burn, 3}, 699.9887},
+            {{:frostbite, 1}, 117.1359},
+            {{:frostbite, 2}, 410.5781}
+          ] do
         assert_in_delta Body.heal_s(kind, severity), t, 1.0e-3
       end
     end
@@ -102,7 +120,11 @@ defmodule SceneServer.Body.RepairTest do
     # 急性期满（计时 ≥ onset 30 s）后烧伤循环上限 1 − 深度 × (1 − 进度)：未愈合 1/2/3 度生命 75 / 85 / 91；3 度进度 0.5 → 1 − 0.090906 × 0.5 = 0.954547（生命 95）；冻伤不压循环
     test "急性期后烧伤循环上限随深度和愈合进度变化；冻伤不压循环" do
       assert Body.burn_onset_s() == 30.0
-      assert_in_delta Body.systems(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}).circulation, 0.75, 1.0e-12
+
+      assert_in_delta Body.systems(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}).circulation,
+                      0.75,
+                      1.0e-12
+
       assert Body.life(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset}) == 75
       assert Body.life(%{Body.new() | burn_dose_s: 3.0, burn_age_s: @onset}) == 85
       assert Body.life(%{Body.new() | burn_dose_s: 5.0, burn_age_s: 100.0}) == 91
@@ -118,7 +140,16 @@ defmodule SceneServer.Body.RepairTest do
     # 一度烧伤（从受伤起，含急性期）：首步上限 1 → 进度 1/92.5551 = 0.0108044；第 102 步 0.998484 仍在，第 103 步剂量、进度与计时归零；共耗蛋白 0.9 g、合成能 10 800 J
     test "一度烧伤103步愈合：共耗0.9g蛋白和10800J合成能" do
       burnt = %{Body.new() | burn_dose_s: 1.0}
-      assert [%{tag: "trauma.thermal.burn", part: :contact, severity: 1, progression: :heals, heal: +0.0}] = Body.injuries(burnt)
+
+      assert [
+               %{
+                 tag: "trauma.thermal.burn",
+                 part: :contact,
+                 severity: 1,
+                 progression: :heals,
+                 heal: +0.0
+               }
+             ] = Body.injuries(burnt)
 
       {b1, _} = tick!(burnt)
       assert_in_delta b1.burn_heal, 0.0108044, 1.0e-7
@@ -157,7 +188,10 @@ defmodule SceneServer.Body.RepairTest do
 
     test "浅冻伤（300 K·s，部位脚、不压循环）：117/117.1359 = 0.99884 第 117 步仍在，第 118 步愈合，耗蛋白 9 g" do
       frozen = %{Body.new() | frost_dose_k_s: 300.0}
-      assert [%{tag: "trauma.thermal.frostbite", part: :feet, severity: 1, progression: :heals}] = Body.injuries(frozen)
+
+      assert [%{tag: "trauma.thermal.frostbite", part: :feet, severity: 1, progression: :heals}] =
+               Body.injuries(frozen)
+
       {b117, protein, _} = run(frozen, 117)
       assert severity(b117, "trauma.thermal.frostbite") == 1
       assert_in_delta b117.frost_heal, 0.998840, 1.0e-6
@@ -181,7 +215,14 @@ defmodule SceneServer.Body.RepairTest do
       # 上限 1 − 0.25 × 0.4905462 = 0.877363 → 生命 88）；第 2 步 3.0 进二度 → 进度 0。第 2 步修复后一度进度
       # 0.5094538 + (1 − 0.25 × 0.4905462)/92.5551 = 0.5189332，此刻下压 0.25 × 0.4810668 = 0.1202667，
       # r₀ = 0.1202667 / 0.151287 = 0.794955 → 计时 30 × r₀ = 23.8487 s，上限 1 − 0.1202667 = 0.879733 → 生命仍 88
-      healing = %{Body.new() | burn_dose_s: 1.0, burn_heal: 0.5, burn_age_s: @onset, tissue_k: 60.0 + @c}
+      healing = %{
+        Body.new()
+        | burn_dose_s: 1.0,
+          burn_heal: 0.5,
+          burn_age_s: @onset,
+          tissue_k: 60.0 + @c
+      }
+
       {b1, _} = tick!(healing)
       assert severity(b1, "trauma.thermal.burn") == 1
       assert_in_delta b1.burn_heal, 0.5094538, 1.0e-7
@@ -275,7 +316,10 @@ defmodule SceneServer.Body.RepairTest do
     test "饥饿：营养 < 20 g（上限 20%）出现 nutrition.hunger，20 g 不出现；19 g 吃一株蒲公英到 20.08 g 即消失" do
       assert severity(%{Body.new() | protein_g: 20.0}, "nutrition.hunger") == 0
       hungry = %{Body.new() | protein_g: 19.99}
-      assert [%{tag: "nutrition.hunger", part: :whole, severity: 1, progression: :tracks_protein}] = Body.injuries(hungry)
+
+      assert [%{tag: "nutrition.hunger", part: :whole, severity: 1, progression: :tracks_protein}] =
+               Body.injuries(hungry)
+
       assert Body.life(hungry) == 100
       {p, e} = @dandelion
       {fed, _} = Repair.eat(%{Body.new() | protein_g: 19.0}, p, e)
@@ -285,8 +329,21 @@ defmodule SceneServer.Body.RepairTest do
   end
 
   test "Thermo 的 core_j：均匀 37 °C、20 °C 空气、core_j 1000 J 只进核心：核心温升 (86.223797 + 1000)/62132.112" do
-    body = Enum.reduce([:core_k, :skin_k, :trunk_muscle_k, :trunk_fat_k, :limb_core_k, :limb_muscle_k, :limb_fat_k],
-      Body.new(), &Map.put(&2, &1, 37.0 + @c))
+    body =
+      Enum.reduce(
+        [
+          :core_k,
+          :skin_k,
+          :trunk_muscle_k,
+          :trunk_fat_k,
+          :limb_core_k,
+          :limb_muscle_k,
+          :limb_fat_k
+        ],
+        Body.new(),
+        &Map.put(&2, &1, 37.0 + @c)
+      )
+
     {plain, _} = Thermo.step(body, 1.0, @air)
     {next, a} = Thermo.step(body, 1.0, Map.put(@air, :core_j, 1000.0))
     assert_in_delta next.core_k - (37.0 + @c), (86.223797 + 1000) / 62_132.112, 1.0e-10
@@ -304,6 +361,7 @@ defmodule SceneServer.Body.RepairTest do
     refute Body.report(%{body | burn_heal: 0.51}, 1.0).key == r.key
     refute Body.report(%{body | protein_g: 42.1}, 1.0).key == r.key
     assert Body.report(%{body | protein_g: 42.01}, 1.0).key == r.key
+
     # 进度 0.508 仍是 50 %，但剩余 0.492 × 252.7405 / 0.925567 = 134.35 s → 整秒 134 ≠ 136，换键
     refute Body.report(%{body | burn_heal: 0.508}, 1.0).key == r.key
   end
@@ -320,7 +378,11 @@ defmodule SceneServer.Body.RepairTest do
       states = Enum.scan(1..60, burnt, fn _, b -> tick!(b) |> elem(0) end)
 
       # 剩余 = (1 − h) × 92.5551 / 上限：第 15 秒 0.8464382 × 92.5551 / 0.894195、第 30 秒 0.7073301 × 92.5551 / 0.823167、第 60 秒 0.4297975 × 92.5551 / 0.892551
-      for {k, heal, life, recoverable, left} <- [{15, 0.1535618, 89, 11, 87.6119}, {30, 0.2926699, 82, 18, 79.5306}, {60, 0.5702025, 89, 11, 44.5688}] do
+      for {k, heal, life, recoverable, left} <- [
+            {15, 0.1535618, 89, 11, 87.6119},
+            {30, 0.2926699, 82, 18, 79.5306},
+            {60, 0.5702025, 89, 11, 44.5688}
+          ] do
         b = Enum.at(states, k - 1)
         assert b.burn_age_s == k * 1.0
         assert_in_delta b.burn_heal, heal, 1.0e-6
@@ -364,16 +426,30 @@ defmodule SceneServer.Body.RepairTest do
     end
 
     test "冻伤不压系统：浅冻伤生命 100、可恢复 0，剩余 = 时长 117.1359 s（循环满值）；体温伤病与饥饿不愈合，剩余 0" do
-      r = Body.report(%{Body.new() | frost_dose_k_s: 300.0, core_k: 34.5 + @c, protein_g: 10.0}, 1.0)
+      r =
+        Body.report(
+          %{Body.new() | frost_dose_k_s: 300.0, core_k: 34.5 + @c, protein_g: 10.0},
+          1.0
+        )
+
       assert {r.life, r.recoverable} == {93, 0}
-      assert [{"temperature.hypothermia", 1, 0, +0.0}, {"trauma.thermal.frostbite", 1, 0, left}, {"nutrition.hunger", 1, 0, +0.0}] =
+
+      assert [
+               {"temperature.hypothermia", 1, 0, +0.0},
+               {"trauma.thermal.frostbite", 1, 0, left},
+               {"nutrition.hunger", 1, 0, +0.0}
+             ] =
                r.injuries
+
       assert_in_delta left, 117.1359, 1.0e-3
     end
 
     test "营养为 0 → 剩余 −1（愈合停止：需要营养）；循环归零（核心 23 °C 低于循环冷侧 24 °C）→ −2" do
-      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, protein_g: 0.0}, :burn, 1.0) == -1.0
-      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, core_k: 23.0 + @c}, :burn, 1.0) == -2.0
+      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, protein_g: 0.0}, :burn, 1.0) ==
+               -1.0
+
+      assert Body.remaining_s(%{Body.new() | burn_dose_s: 1.0, core_k: 23.0 + @c}, :burn, 1.0) ==
+               -2.0
     end
 
     test "一度烧伤：前30秒生命不增，随后不减；剩余每步降至少1秒，第102步剩0.140秒，第103步愈合" do
@@ -382,12 +458,20 @@ defmodule SceneServer.Body.RepairTest do
       lives = Enum.map(bodies, &Body.life/1)
       {falling, rising} = Enum.split(lives, 31)
       assert falling |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a >= b end)
-      assert [List.last(falling) | rising] |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a <= b end)
+
+      assert [List.last(falling) | rising]
+             |> Enum.chunk_every(2, 1, :discard)
+             |> Enum.all?(fn [a, b] -> a <= b end)
+
       assert Enum.min(lives) == 82 and Enum.at(lives, 30) == 82
       assert Enum.all?(bodies, &(Body.life(&1) + Body.recoverable_life(&1) == 100))
 
       lefts = bodies |> Enum.drop(30) |> Enum.map(&Body.remaining_s(&1, :burn, 1.0))
-      assert lefts |> Enum.chunk_every(2, 1, :discard) |> Enum.all?(fn [a, b] -> a - b >= 1.0 - 1.0e-9 end)
+
+      assert lefts
+             |> Enum.chunk_every(2, 1, :discard)
+             |> Enum.all?(fn [a, b] -> a - b >= 1.0 - 1.0e-9 end)
+
       assert_in_delta List.last(lefts), 0.140, 1.0e-3
       b102 = List.last(bodies)
       assert {Body.life(b102), Body.recoverable_life(b102)} == {100, 0}

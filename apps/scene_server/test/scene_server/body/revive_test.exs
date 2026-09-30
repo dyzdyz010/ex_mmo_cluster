@@ -40,9 +40,24 @@ defmodule SceneServer.Body.ReviveTest do
   describe "伤病合成" do
     test "手算表：p = 2 / 3 / 4 下 0.5 + 0.5、0.3 + 0.3、单 0.5、0.2 + 0.95" do
       table = %{
-        2.0 => [{[0.5, 0.5], 0.292893, 29}, {[0.3, 0.3], 0.010051, 1}, {[0.5, 1.0], 0.5, 50}, {[0.2, 0.95], 0.198439, 20}],
-        3.0 => [{[0.5, 0.5], 0.370039, 37}, {[0.3, 0.3], 0.118055, 12}, {[0.5, 1.0], 0.5, 50}, {[0.2, 0.95], 0.199935, 20}],
-        4.0 => [{[0.5, 0.5], 0.405396, 41}, {[0.3, 0.3], 0.167555, 17}, {[0.5, 1.0], 0.5, 50}, {[0.2, 0.95], 0.199997, 20}]
+        2.0 => [
+          {[0.5, 0.5], 0.292893, 29},
+          {[0.3, 0.3], 0.010051, 1},
+          {[0.5, 1.0], 0.5, 50},
+          {[0.2, 0.95], 0.198439, 20}
+        ],
+        3.0 => [
+          {[0.5, 0.5], 0.370039, 37},
+          {[0.3, 0.3], 0.118055, 12},
+          {[0.5, 1.0], 0.5, 50},
+          {[0.2, 0.95], 0.199935, 20}
+        ],
+        4.0 => [
+          {[0.5, 0.5], 0.405396, 41},
+          {[0.3, 0.3], 0.167555, 17},
+          {[0.5, 1.0], 0.5, 50},
+          {[0.2, 0.95], 0.199997, 20}
+        ]
       }
 
       for {p, rows} <- table, {levels, level, life} <- rows do
@@ -63,7 +78,15 @@ defmodule SceneServer.Body.ReviveTest do
     end
 
     test "濒死读合成水平（改前取最弱不会濒死）：核心 29.5 °C + 一度烧伤压满 + 虚弱 → 循环 0.438281、神经 0.214286，各自 ≥ 0.1，合成 0.034146 → 10 秒后濒死" do
-      body = %{Body.new() | core_k: 29.5 + @c, burn_dose_s: 1.0, burn_age_s: @onset, weak_s: 500.0, daze_s: 500.0}
+      body = %{
+        Body.new()
+        | core_k: 29.5 + @c,
+          burn_dose_s: 1.0,
+          burn_age_s: @onset,
+          weak_s: 500.0,
+          daze_s: 500.0
+      }
+
       %{circulation: circ, nervous: nerve} = Body.systems(body)
       assert_in_delta circ, 0.6875 * 0.75 * 0.85, 1.0e-12
       assert_in_delta nerve, 1.5 / 7, 1.0e-12
@@ -100,8 +123,18 @@ defmodule SceneServer.Body.ReviveTest do
     end
 
     test "疼痛随急性期先升后随愈合降：一度计时 15 s → 1 − 0.25 × 0.5 = 0.875；压满且进度 0.5 → 0.875" do
-      assert_in_delta Body.coherence_factor(%{Body.new() | burn_dose_s: 1.0, burn_age_s: 15.0}), 0.875, 1.0e-12
-      assert_in_delta Body.coherence_factor(%{Body.new() | burn_dose_s: 1.0, burn_age_s: @onset, burn_heal: 0.5}), 0.875, 1.0e-12
+      assert_in_delta Body.coherence_factor(%{Body.new() | burn_dose_s: 1.0, burn_age_s: 15.0}),
+                      0.875,
+                      1.0e-12
+
+      assert_in_delta Body.coherence_factor(%{
+                        Body.new()
+                        | burn_dose_s: 1.0,
+                          burn_age_s: @onset,
+                          burn_heal: 0.5
+                      }),
+                      0.875,
+                      1.0e-12
     end
 
     test "恍惚与疼痛相乘：恍惚 0.45 × 一度压满 0.75 = 0.3375；恍惚不改生命（75）；核心 30 °C 神经 0.285714 也进系数" do
@@ -119,7 +152,10 @@ defmodule SceneServer.Body.ReviveTest do
       assert {b.protein_g, b.reserve_j} == {0.0, 0.0}
       assert_in_delta b.fat_reserve_j, 420_522_192.0, 1.0e-3
       assert {b.core_k, b.skin_k, b.tissue_k} == {36.8 + @c, 34.0 + @c, 34.0 + @c}
-      assert {b.burn_dose_s, b.frost_dose_k_s, b.burn_heal, b.frost_heal, b.burn_age_s} == {0.0, 0.0, 0.0, 0.0, 0.0}
+
+      assert {b.burn_dose_s, b.frost_dose_k_s, b.burn_heal, b.frost_heal, b.burn_age_s} ==
+               {0.0, 0.0, 0.0, 0.0, 0.0}
+
       assert {b.status, b.lethal_s, b.wetness} == {:alive, 0.0, 0.0}
       assert {b.weak_s, b.daze_s} == {120.0, 40.0}
       assert tags(b) == ["nervous.daze", "nutrition.hunger", "recovery.weakness"]
@@ -154,7 +190,10 @@ defmodule SceneServer.Body.ReviveTest do
     end
 
     test "饥饿吃到 20 g 解除：蒲公英每株 1.08 g，18 株 19.44 g 仍饥饿，第 19 株 20.52 g 解除；虚弱、恍惚不受进食影响" do
-      eat = fn b, n -> Enum.reduce(1..n, b, fn _, b -> b |> Repair.eat(1.08, 75_362.4) |> elem(0) end) end
+      eat = fn b, n ->
+        Enum.reduce(1..n, b, fn _, b -> b |> Repair.eat(1.08, 75_362.4) |> elem(0) end)
+      end
+
       b18 = eat.(Body.revive(), 18)
       assert_in_delta b18.protein_g, 19.44, 1.0e-9
       assert "nutrition.hunger" in tags(b18)

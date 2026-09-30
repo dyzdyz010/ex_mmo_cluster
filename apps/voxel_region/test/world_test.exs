@@ -411,13 +411,23 @@ defmodule VoxelRegion.WorldTest do
     assert {:ok,3} = World.apply_edits(:batch,[{{5,63,5},11}])
     [sparse] = World.entries_after(:batch,2)
     assert [%{coord: {5,63,5},material: 11}] = sparse.entries
+    # 邻区在压实前已进缓存：压实把 {0,0,0} 的编辑并入基底，邻区缓存保留（命中），且与重启后重新物化的字节相同。
+    cached_ring = fetch_payload(:batch,0,{0,1,0})
     assert :ok = World.compact(:batch)
     final = fetch_payload(:batch,0,{0,0,0})
+    hits = World.stats(:batch).hits
     final_ring = fetch_payload(:batch,0,{0,1,0})
+    assert World.stats(:batch).hits > hits
+    assert final_ring == cached_ring
     GenServer.stop(world)
     {:ok,_} = World.start_link(root: root, log: OverlayLog.Db, name: :batch)
     assert fetch_payload(:batch,0,{0,0,0}) == final
     assert fetch_payload(:batch,0,{0,1,0}) == final_ring
+    # 上次检查点后没有编辑的完整区域再压实时不换基底：载荷缓存保留（命中），字节不变。
+    assert :ok = World.compact(:batch)
+    hits = World.stats(:batch).hits
+    assert fetch_payload(:batch,0,{0,0,0}) == final
+    assert World.stats(:batch).hits > hits
     # 完整 L0 终态：全部 66³ 格，包括 owned 与 ring。
     {:ok,p} = Payload.decode(final)
     {:ok,base} = Payload.decode(before)

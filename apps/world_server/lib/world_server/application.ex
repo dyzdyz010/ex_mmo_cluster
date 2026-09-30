@@ -1,22 +1,17 @@
 defmodule WorldServer.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc false
 
   use Application
 
+  # 路由与跨 Scene 编排是纯函数（`WorldServer.Movement`）；配置了拓扑文件时由 `WorldServer.Topology` 启动全部 Scene。
   @impl true
   def start(_type, _args) do
-    children = [
-      # Starts a worker by calling: WorldServer.Worker.start_link(arg)
-      # {WorldServer.Worker, arg}
-      {WorldServer.WorldSup, name: WorldServer.WorldSup},
-      {WorldServer.InterfaceSup, name: WorldServer.InterfaceSup}
-    ]
+    children =
+      case Application.get_env(:world_server, :topology) do
+        nil -> []
+        path -> [{WorldServer.Topology, path}]
+      end
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: WorldServer.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children, strategy: :one_for_one, name: WorldServer.Supervisor)
   end
 end

@@ -10,8 +10,15 @@ defmodule SceneServer.Movement.Player do
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   @doc "Gate 直接转发已鉴权输入并冻结服务端接收时刻；测试时钟通过同一参数传入。"
-  def input(player, identity, batch, received_us \\ {node(), System.monotonic_time(:microsecond), System.system_time(:microsecond)}),
-    do: GenServer.cast(player, {:input, identity, batch, received_us})
+  def input(
+        player,
+        identity,
+        batch,
+        received_us \\ {node(), System.monotonic_time(:microsecond),
+         System.system_time(:microsecond)}
+      ),
+      do: GenServer.cast(player, {:input, identity, batch, received_us})
+
   @doc "确认该会话自己的 bootstrap N/R。"
   def ready(player, identity, seq, revision),
     do: GenServer.cast(player, {:ready, identity, seq, revision})
@@ -23,23 +30,28 @@ defmodule SceneServer.Movement.Player do
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
   @doc "角色 owner 排序施法请求；World 异步准备与结算。"
-  def spell(player, identity, request, ingress), do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
+  def spell(player, identity, request, ingress),
+    do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
+
   def tool_context(player, identity), do: GenServer.call(player, {:tool_context, identity})
   @doc "登记一次工具动作；重投读取原结果，未完成的重投不再次授权。"
   def authorize_tool(player, identity, request, ingress),
     do: GenServer.call(player, {:authorize_tool, identity, request, ingress})
+
   @doc "请求 worker 交回领域结果，不在角色 owner 内等待 World。"
   def finish_tool(player, key, result), do: GenServer.call(player, {:finish_tool, key, result})
   @doc "只读身体命中快照，生命代次与连接 epoch 分开。"
   def hit_context(player, body_for \\ nil), do: target_call(player, {:hit_context, body_for})
   @doc "接收 World 已授权的机械作用，目标 owner 去重并复核生命。"
   def receive_hit(player, hit), do: target_call(player, {:receive_hit, hit})
+
   # 目标可在 Scene 候选采样后离场；目标 owner 退出是明确拒绝，不断开攻击者的请求 worker。
   defp target_call(player, request) do
     GenServer.call(player, request)
   catch
     :exit, _ -> {:error, :invalid_state}
   end
+
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
@@ -114,8 +126,20 @@ defmodule SceneServer.Movement.Player do
             queued_seq: cut.transaction_seq,
             resume_pending: true
           })
-          |> Map.merge(Map.take(cut, [:body, :body_exchange_j, :climate, :probe, :authority_ref, :revive, :movement_scales,
-            :life_generation, :body_hits, :tool_action]))
+          |> Map.merge(
+            Map.take(cut, [
+              :body,
+              :body_exchange_j,
+              :climate,
+              :probe,
+              :authority_ref,
+              :revive,
+              :movement_scales,
+              :life_generation,
+              :body_hits,
+              :tool_action
+            ])
+          )
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
       end
@@ -184,90 +208,193 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
-  def handle_call({:spell, identity, request, ingress}, from,
-      %{identity: identity, ready: true, transfer: nil, failure: nil} = state) do
+  def handle_call(
+        {:spell, identity, request, ingress},
+        from,
+        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
+      ) do
     key = MmoContracts.Action.key(identity, request.client_intent_seq)
+
     case {request.action, state.action} do
       {0, _} ->
         send(state.authority_ref, {:quote_cast, actor_context(state), request, from})
         {:noreply, state}
+
       {1, nil} when request.client_intent_seq > state.action_seq and state.body.status != :dead ->
         actor = Map.merge(actor_context(state), ingress)
         send(state.authority_ref, {:prepare_cast, key, actor, request, from})
-        next = %{state | action: %{key: key, request: request, phase: :preparing, timer: nil}, action_seq: request.client_intent_seq}
+
+        next = %{
+          state
+          | action: %{key: key, request: request, phase: :preparing, timer: nil},
+            action_seq: request.client_intent_seq
+        }
+
         {:noreply, publish_movement_scale(next, next.body)}
-      {1, _} -> {:reply, {:error, :cast_too_soon}, state}
-      {2, %{key: ^key}} -> {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
+
+      {1, _} ->
+        {:reply, {:error, :cast_too_soon}, state}
+
+      {2, %{key: ^key}} ->
+        {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
+
       {3, %{key: ^key} = action} ->
         # 控制请求只更新当前动作的方向，不替换程序和目标。
         next = %{action | request: %{action.request | direction: request.direction}}
         {:reply, {:ok, :controlled}, %{state | action: next}}
-      {_, _} -> {:reply, {:error, :already_released}, state}
+
+      {_, _} ->
+        {:reply, {:error, :already_released}, state}
     end
   end
+
   def handle_call({:spell, _, _, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
 
-  def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state) when action != nil,
-    do: {:reply, {:error, :casting}, state}
-  def handle_call({:tool_context, identity}, _,
-      %{identity: identity, ready: true, transfer: nil, failure: nil} = state),
-    do: {:reply, {:ok, Map.put(actor_context(state), :refresh, &__MODULE__.tool_context/2)}, state}
+  def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state)
+      when action != nil,
+      do: {:reply, {:error, :casting}, state}
+
+  def handle_call(
+        {:tool_context, identity},
+        _,
+        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
+      ),
+      do:
+        {:reply, {:ok, Map.put(actor_context(state), :refresh, &__MODULE__.tool_context/2)},
+         state}
+
   def handle_call({:tool_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
 
-  def handle_call({:authorize_tool, identity, request, ingress}, _,
-      %{identity: identity, ready: true, transfer: nil, failure: nil} = state) do
+  def handle_call(
+        {:authorize_tool, identity, request, ingress},
+        _,
+        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
+      ) do
     key = MmoContracts.Action.key(identity, request.client_intent_seq)
     previous = state.tool_action
+
     cond do
       previous != nil and previous.key == key and previous.request == request ->
         {:reply, {:done, previous.result || {:error, :action_pending}}, state}
+
       previous != nil and request.client_intent_seq <= previous.request.client_intent_seq ->
         {:reply, {:error, :replayed_attack}, state}
-      state.action != nil -> {:reply, {:error, :casting}, state}
-      state.body.status == :dead -> {:reply, {:error, :dead}, state}
+
+      state.action != nil ->
+        {:reply, {:error, :casting}, state}
+
+      state.body.status == :dead ->
+        {:reply, {:error, :dead}, state}
+
       true ->
-        actor = actor_context(state) |> Map.merge(ingress)
-          |> Map.merge(%{action_key: key, life_generation: state.life_generation, scene: state.scene,
-            refresh: &__MODULE__.tool_context/2})
-        next = if request.action == 0, do: state,
-          else: %{state | tool_action: %{key: key, request: request, result: nil}}
+        actor =
+          actor_context(state)
+          |> Map.merge(ingress)
+          |> Map.merge(%{
+            action_key: key,
+            life_generation: state.life_generation,
+            scene: state.scene,
+            refresh: &__MODULE__.tool_context/2
+          })
+
+        next =
+          if request.action == 0,
+            do: state,
+            else: %{state | tool_action: %{key: key, request: request, result: nil}}
+
         {:reply, {:ok, actor}, next}
     end
   end
-  def handle_call({:authorize_tool, _, _, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+
+  def handle_call({:authorize_tool, _, _, _}, _, state),
+    do: {:reply, {:error, :invalid_state}, state}
+
   def handle_call({:finish_tool, key, result}, _, %{tool_action: %{key: key} = action} = state),
     do: {:reply, result, %{state | tool_action: %{action | result: result}}}
+
   def handle_call({:finish_tool, _, result}, _, state), do: {:reply, result, state}
-  def handle_call({:hit_context, body_for}, _, %{ready: true, transfer: nil, failure: nil} = state) do
-    {:reply, {:ok, %{player: self(), id: state.id, life_generation: state.life_generation,
-      position: state.state.position, profile: state.config.profile, scope: Map.get(state.config, :combat_scope),
-      status: state.body.status, body: if(state.id == body_for, do: Body.report(state.body, 1.0), else: nil)}}, state}
+
+  def handle_call(
+        {:hit_context, body_for},
+        _,
+        %{ready: true, transfer: nil, failure: nil} = state
+      ) do
+    {:reply,
+     {:ok,
+      %{
+        player: self(),
+        id: state.id,
+        life_generation: state.life_generation,
+        position: state.state.position,
+        profile: state.config.profile,
+        scope: Map.get(state.config, :combat_scope),
+        status: state.body.status,
+        body: if(state.id == body_for, do: Body.report(state.body, 1.0), else: nil)
+      }}, state}
   end
+
   def handle_call({:hit_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+
   def handle_call({:receive_hit, hit}, _, state) do
     alias SceneServer.Movement.ToolHit
+
     cond do
       state.life_generation != hit.target.life_generation or state.body.status == :dead ->
         {:reply, {:error, :stale_life}, state}
-      Map.has_key?(state.body_hits, hit.key) -> {:reply, {:ok, state.body_hits[hit.key]}, state}
-      state.transfer != nil or state.failure != nil -> {:reply, {:error, :invalid_state}, state}
-      not ToolHit.permitted?(Map.get(state.config, :combat_scope), hit.actor.position, state.state.position) ->
+
+      Map.has_key?(state.body_hits, hit.key) ->
+        {:reply, {:ok, state.body_hits[hit.key]}, state}
+
+      state.transfer != nil or state.failure != nil ->
+        {:reply, {:error, :invalid_state}, state}
+
+      not ToolHit.permitted?(
+        Map.get(state.config, :combat_scope),
+        hit.actor.position,
+        state.state.position
+      ) ->
         {:reply, {:error, :combat_not_permitted}, state}
+
       true ->
         # 即时工具使用本次 live owner 采样的命中几何；采样后继续移动不撤回该作用。
         # 提交仍复核生命、存活和当前战斗范围，不能把等待 World 的时间当成“必须站定”。
         body = Body.trauma(state.body, hit.part, hit.impact)
         report = Body.report(body, 1.0)
-        receipt = %{source_id: hit.actor.cid, source_life: hit.actor.life_generation,
-          source_session: hit.actor.identity.session_epoch, action_seq: elem(hit.key, 1),
-          target_id: state.id, target_life: state.life_generation, part: hit.part, body: report}
-        character_event(state, state, :tool_hit, Map.drop(receipt, [:body]) |> Map.merge(%{
-          life_before: Body.life(state.body), life: report.life, recoverable: report.recoverable}))
-        reliable(state, :control, SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id))
+
+        receipt = %{
+          source_id: hit.actor.cid,
+          source_life: hit.actor.life_generation,
+          source_session: hit.actor.identity.session_epoch,
+          action_seq: elem(hit.key, 1),
+          target_id: state.id,
+          target_life: state.life_generation,
+          part: hit.part,
+          body: report
+        }
+
+        character_event(
+          state,
+          state,
+          :tool_hit,
+          Map.drop(receipt, [:body])
+          |> Map.merge(%{
+            life_before: Body.life(state.body),
+            life: report.life,
+            recoverable: report.recoverable
+          })
+        )
+
+        reliable(
+          state,
+          :control,
+          SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id)
+        )
+
         next = %{state | body: body, body_hits: Map.put(state.body_hits, hit.key, receipt)}
         {:reply, {:ok, receipt}, publish_body(next, report)}
     end
   end
+
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
 
   def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
@@ -334,8 +461,12 @@ defmodule SceneServer.Movement.Player do
   @impl true
   def handle_cast({:spell, identity, request, ingress, from}, state) do
     case handle_call({:spell, identity, request, ingress}, from, state) do
-      {:reply, reply, next} -> GenServer.reply(from, reply); {:noreply, next}
-      {:noreply, next} -> {:noreply, next}
+      {:reply, reply, next} ->
+        GenServer.reply(from, reply)
+        {:noreply, next}
+
+      {:noreply, next} ->
+        {:noreply, next}
     end
   end
 
@@ -371,12 +502,14 @@ defmodule SceneServer.Movement.Player do
         %{identity: identity} = state
       ) do
     arrived = input_monotonic(state, arrived)
+
     state =
       if state.slots == nil do
         input_arrivals(state, identity, state, batch.frames, :not_started, arrived)
         %{state | rejected_inputs: state.rejected_inputs + 1}
       else
-        {slots, result, decisions} = InputSlots.receive_batch_observed(state.slots, batch, Clock.due_tick(state, arrived))
+        {slots, result, decisions} =
+          InputSlots.receive_batch_observed(state.slots, batch, Clock.due_tick(state, arrived))
 
         for {frame, disposition} <- decisions,
             do: input_arrivals(state, identity, state, [frame], disposition, arrived)
@@ -396,25 +529,39 @@ defmodule SceneServer.Movement.Player do
   def handle_cast(_, state), do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
   @impl true
-  def handle_info({:cast_prepared, key, windup_s}, %{action: %{key: key, phase: :preparing} = action} = state) do
+  def handle_info(
+        {:cast_prepared, key, windup_s},
+        %{action: %{key: key, phase: :preparing} = action} = state
+      ) do
     timer = Process.send_after(self(), {:release_cast, key}, ceil(windup_s * 1000))
     {:noreply, %{state | action: %{action | phase: :windup, timer: timer}}}
   end
+
   def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
+
   def handle_info({:cast_failed, key}, %{action: %{key: key}} = state),
     do: {:noreply, clear_cast(state)}
+
   def handle_info({:cast_failed, _}, state), do: {:noreply, state}
+
   def handle_info({:release_cast, key}, %{action: %{key: key, phase: :windup} = action} = state) do
     if state.body.status == :dead or state.failure != nil or state.transfer != nil do
       {:noreply, cancel_cast(state, :cast_cancelled)}
     else
       actor = actor_context(state)
-      character_event(state, state, :cast_authorized, %{client_intent_seq: action.request.client_intent_seq,
-        position: Tuple.to_list(actor.position), direction: Tuple.to_list(action.request.direction), coherence_factor: actor.coherence_factor})
+
+      character_event(state, state, :cast_authorized, %{
+        client_intent_seq: action.request.client_intent_seq,
+        position: Tuple.to_list(actor.position),
+        direction: Tuple.to_list(action.request.direction),
+        coherence_factor: actor.coherence_factor
+      })
+
       send(state.authority_ref, {:authorize_cast, key, actor, action.request})
       {:noreply, clear_cast(state)}
     end
   end
+
   def handle_info({:release_cast, _}, state), do: {:noreply, state}
 
   def handle_info({:clock_origin, origin}, state), do: {:noreply, %{state | mono_origin: origin}}
@@ -528,8 +675,16 @@ defmodule SceneServer.Movement.Player do
             state =
               case Map.get(snapshot, :property_context) do
                 %{thermal_enabled: true, ambient_kelvin: ambient} = context ->
-                  %{state | climate: %{"ambient_kelvin" => ambient, "climate_zones" => Map.get(context, :climate_zones, [])}}
-                _ -> state
+                  %{
+                    state
+                    | climate: %{
+                        "ambient_kelvin" => ambient,
+                        "climate_zones" => Map.get(context, :climate_zones, [])
+                      }
+                  }
+
+                _ ->
+                  state
               end
 
             publish(state)
@@ -597,13 +752,27 @@ defmodule SceneServer.Movement.Player do
   end
 
   # 魔法增量 4：World 每段热演化回传的接触热（J）、鞋底格温度、裸接触最高温度与浸没比例；下一次 1 Hz 推进时一并吃进 Body。
-  def handle_info({:body_heat, %{q_j: q, max_contact_k: max_k, sole_k: sole_k, immersed: immersed} = step}, state) do
+  def handle_info(
+        {:body_heat, %{q_j: q, max_contact_k: max_k, sole_k: sole_k, immersed: immersed} = step},
+        state
+      ) do
     heat = state.body_heat
 
-    heat = %{heat | q_j: heat.q_j + q, tissue_j: heat.tissue_j + step.tissue_j, immersed: immersed,
-      max_contact_k: highest(heat.max_contact_k, max_k), sole_k: highest(heat.sole_k, sole_k)}
+    heat = %{
+      heat
+      | q_j: heat.q_j + q,
+        tissue_j: heat.tissue_j + step.tissue_j,
+        immersed: immersed,
+        max_contact_k: highest(heat.max_contact_k, max_k),
+        sole_k: highest(heat.sole_k, sole_k)
+    }
 
-    character_event(state, state, :body_heat, Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q}))
+    character_event(
+      state,
+      state,
+      :body_heat,
+      Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q})
+    )
 
     {:noreply, %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q}}
   end
@@ -612,14 +781,25 @@ defmodule SceneServer.Movement.Player do
   def handle_info({:body_food, cid, protein_g, energy_j}, %{id: cid} = state) do
     {body, account} = Body.Repair.eat(state.body, protein_g, energy_j)
 
-    character_event(state, state, :body_food, Map.merge(account, %{protein_in_g: protein_g, energy_in_j: energy_j,
-      protein_g: body.protein_g, reserve_j: body.reserve_j, fat_reserve_j: body.fat_reserve_j}))
+    character_event(
+      state,
+      state,
+      :body_food,
+      Map.merge(account, %{
+        protein_in_g: protein_g,
+        energy_in_j: energy_j,
+        protein_g: body.protein_g,
+        reserve_j: body.reserve_j,
+        fat_reserve_j: body.fat_reserve_j
+      })
+    )
 
     {:noreply, %{state | body: body}}
   end
 
-  def handle_info(:body_tick, %{transfer: transfer} = state) when transfer in [:requested, :sealed],
-    do: {:noreply, state}
+  def handle_info(:body_tick, %{transfer: transfer} = state)
+      when transfer in [:requested, :sealed],
+      do: {:noreply, state}
 
   def handle_info(:body_tick, %{transfer: :prepared} = state) do
     schedule_body()
@@ -647,24 +827,53 @@ defmodule SceneServer.Movement.Player do
     heat = state.body_heat
     before = state.body.status
     {px, py, pz} = state.state.position
-    %{air_k: air_k, wind_mps: wind} = VoxelRegion.Climate.at(state.climate, {floor(px), floor(py), floor(pz)})
+
+    %{air_k: air_k, wind_mps: wind} =
+      VoxelRegion.Climate.at(state.climate, {floor(px), floor(py), floor(pz)})
 
     {body, account} =
-      Body.Repair.tick(state.body, 1.0, %{q_j: heat.q_j, tissue_j: heat.tissue_j, air_k: air_k, wind_mps: wind,
-        immersed: heat.immersed}, 1.0)
+      Body.Repair.tick(
+        state.body,
+        1.0,
+        %{
+          q_j: heat.q_j,
+          tissue_j: heat.tissue_j,
+          air_k: air_k,
+          wind_mps: wind,
+          immersed: heat.immersed
+        },
+        1.0
+      )
 
     if body.status != before,
-      do: character_event(state, state, :body_status, %{from: before, to: body.status, life: Body.life(body)})
+      do:
+        character_event(state, state, :body_status, %{
+          from: before,
+          to: body.status,
+          life: Body.life(body)
+        })
 
     {x, y, z} = state.state.position
     profile = state.config.profile
 
     if authority = Map.get(state, :authority_ref),
-      do: send(authority, {:body_contact, state.id, self(), %{
-        feet: {x, y - profile.half_height, z}, height: 2 * profile.half_height, radius: profile.radius,
-        skin_k: body.skin_k, capacity: Body.skin_capacity_j_per_k(), area: Body.params().area_m2,
-        tissue_k: body.tissue_k, tissue_capacity: Body.tissue_capacity_j_per_k(),
-        tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)}})
+      do:
+        send(
+          authority,
+          {:body_contact, state.id, self(),
+           %{
+             feet: {x, y - profile.half_height, z},
+             height: 2 * profile.half_height,
+             radius: profile.radius,
+             skin_k: body.skin_k,
+             capacity: Body.skin_capacity_j_per_k(),
+             area: Body.params().area_m2,
+             tissue_k: body.tissue_k,
+             tissue_capacity: Body.tissue_capacity_j_per_k(),
+             tissue_g:
+               Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)
+           }}
+        )
 
     coherence = Body.coherence_factor(body)
     if authority, do: send(authority, {:body_coherence, state.id, coherence})
@@ -675,24 +884,57 @@ defmodule SceneServer.Movement.Player do
 
     if report.key != state.body_sent, do: publish_body(state, report)
 
-    character_event(state, state, :body_state, %{life: report.life, recoverable: report.recoverable, status: body.status,
-      core_k: body.core_k, skin_k: body.skin_k, injuries: Map.new(report.injuries, fn {tag, n, _, _} -> {tag, n} end),
+    character_event(state, state, :body_state, %{
+      life: report.life,
+      recoverable: report.recoverable,
+      status: body.status,
+      core_k: body.core_k,
+      skin_k: body.skin_k,
+      injuries: Map.new(report.injuries, fn {tag, n, _, _} -> {tag, n} end),
       injury_heal: Map.new(report.injuries, fn {tag, _, heal, _} -> {tag, heal} end),
-      injury_remaining_s: Map.new(report.injuries, fn {tag, _, _, left} -> {tag, left} end), q_j: heat.q_j, max_contact_k: heat.max_contact_k,
-      sole_k: heat.sole_k, immersed: heat.immersed, stored_j: account.stored_j, body_exchange_j: state.body_exchange_j,
-      air_k: air_k, wind_mps: wind, frost_dose_k_s: body.frost_dose_k_s, reserve_j: body.reserve_j, shiver_j: account.shiver_j,
-      fat_reserve_j: body.fat_reserve_j, shiver_glycogen_j: account.shiver_glycogen_j, shiver_fat_j: account.shiver_fat_j,
-      tissue_k: body.tissue_k, burn_dose_s: body.burn_dose_s, wetness: body.wetness, drying_j: account.drying_j,
+      injury_remaining_s: Map.new(report.injuries, fn {tag, _, _, left} -> {tag, left} end),
+      q_j: heat.q_j,
+      max_contact_k: heat.max_contact_k,
+      sole_k: heat.sole_k,
+      immersed: heat.immersed,
+      stored_j: account.stored_j,
+      body_exchange_j: state.body_exchange_j,
+      air_k: air_k,
+      wind_mps: wind,
+      frost_dose_k_s: body.frost_dose_k_s,
+      reserve_j: body.reserve_j,
+      shiver_j: account.shiver_j,
+      fat_reserve_j: body.fat_reserve_j,
+      shiver_glycogen_j: account.shiver_glycogen_j,
+      shiver_fat_j: account.shiver_fat_j,
+      tissue_k: body.tissue_k,
+      burn_dose_s: body.burn_dose_s,
+      wetness: body.wetness,
+      drying_j: account.drying_j,
       heat_content_j: Body.heat_content_j(body),
-      protein_g: body.protein_g, burn_heal: body.burn_heal, frost_heal: body.frost_heal, burn_age_s: body.burn_age_s,
-      repair_protein_g: account.repair_protein_g, synth_j: account.synth_j, synth_glycogen_j: account.synth_glycogen_j,
-      synth_fat_j: account.synth_fat_j, weak_s: body.weak_s, daze_s: body.daze_s, coherence_factor: coherence,
-      movement_factor: movement_factor, movement_apply_tick: movement_apply_tick,
+      protein_g: body.protein_g,
+      burn_heal: body.burn_heal,
+      frost_heal: body.frost_heal,
+      burn_age_s: body.burn_age_s,
+      repair_protein_g: account.repair_protein_g,
+      synth_j: account.synth_j,
+      synth_glycogen_j: account.synth_glycogen_j,
+      synth_fat_j: account.synth_fat_j,
+      weak_s: body.weak_s,
+      daze_s: body.daze_s,
+      coherence_factor: coherence,
+      movement_factor: movement_factor,
+      movement_apply_tick: movement_apply_tick,
       lethal_level: Body.lethal_level(body),
-      sent: report.key != state.body_sent})
+      sent: report.key != state.body_sent
+    })
 
-    state = %{state | body: body, body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
-      body_sent: report.key}
+    state = %{
+      state
+      | body: body,
+        body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
+        body_sent: report.key
+    }
 
     if body.status == :dead, do: died(state), else: state
   end
@@ -700,27 +942,51 @@ defmodule SceneServer.Movement.Player do
   # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
   defp publish_body(state, report) do
     reliable(state, :control, %Session.BodyState{
-      identity: state.identity, life: report.life, recoverable: report.recoverable, status: report.status,
-      core_k: report.core_k, skin_k: report.skin_k, protein_g: report.protein_g,
-      injuries: for({tag, n, heal, left} <- report.injuries,
-        do: %Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left})})
+      identity: state.identity,
+      life: report.life,
+      recoverable: report.recoverable,
+      status: report.status,
+      core_k: report.core_k,
+      skin_k: report.skin_k,
+      protein_g: report.protein_g,
+      injuries:
+        for(
+          {tag, n, heal, left} <- report.injuries,
+          do: %Session.BodyInjury{tag: tag, severity: n, heal: heal, remaining_s: left}
+        )
+    })
+
     %{state | body_sent: report.key}
   end
 
   defp actor_context(state) do
     {x, y, z} = state.state.position
-    %{player: self(), gate: state.gate, cid: state.id, identity: state.identity,
-      eye: {x, y + 0.6, z}, position: {x, y, z}, feet: {x, y - state.config.profile.half_height, z},
+
+    %{
+      player: self(),
+      gate: state.gate,
+      cid: state.id,
+      identity: state.identity,
+      eye: {x, y + 0.6, z},
+      position: {x, y, z},
+      feet: {x, y - state.config.profile.half_height, z},
       tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
-      coherence_factor: Body.coherence_factor(state.body)}
+      coherence_factor: Body.coherence_factor(state.body)
+    }
   end
 
   defp cancel_cast(%{action: nil} = state, _), do: state
+
   defp cancel_cast(state, reason) do
-    character_event(state, state, :cast_cancelled, %{client_intent_seq: state.action.request.client_intent_seq, reason: reason})
+    character_event(state, state, :cast_cancelled, %{
+      client_intent_seq: state.action.request.client_intent_seq,
+      reason: reason
+    })
+
     send(state.authority_ref, {:cancel_cast, state.action.key, reason})
     clear_cast(state)
   end
+
   defp clear_cast(state) do
     if state.action.timer, do: Process.cancel_timer(state.action.timer)
     publish_movement_scale(%{state | action: nil}, state.body)
@@ -735,9 +1001,26 @@ defmodule SceneServer.Movement.Player do
       state
     else
       tick = state.tick + 1
-      reliable(state, :voxel, %Movement.SpeedScale{identity: state.identity, apply_tick: tick, factor: factor, input_limit: limit})
-      character_event(state, state, :movement_scale, %{apply_tick: tick, movement_factor: factor, input_limit: limit})
-      %{state | movement_scales: [{tick, factor, limit} | Enum.reject(state.movement_scales, &(elem(&1, 0) == tick))]}
+
+      reliable(state, :voxel, %Movement.SpeedScale{
+        identity: state.identity,
+        apply_tick: tick,
+        factor: factor,
+        input_limit: limit
+      })
+
+      character_event(state, state, :movement_scale, %{
+        apply_tick: tick,
+        movement_factor: factor,
+        input_limit: limit
+      })
+
+      %{
+        state
+        | movement_scales: [
+            {tick, factor, limit} | Enum.reject(state.movement_scales, &(elem(&1, 0) == tick))
+          ]
+      }
     end
   end
 
@@ -755,8 +1038,15 @@ defmodule SceneServer.Movement.Player do
     state = cancel_cast(state, :cast_cancelled)
     {x, y, z} = state.state.position
     feet = {x, y - state.config.profile.half_height, z}
-    if authority = Map.get(state, :authority_ref), do: send(authority, {:body_death, state.id, feet})
-    character_event(state, state, :body_death, %{feet: Tuple.to_list(feet), probe: Tuple.to_list(state.probe)})
+
+    if authority = Map.get(state, :authority_ref),
+      do: send(authority, {:body_death, state.id, feet})
+
+    character_event(state, state, :body_death, %{
+      feet: Tuple.to_list(feet),
+      probe: Tuple.to_list(state.probe)
+    })
+
     relocate(state)
   end
 
@@ -772,8 +1062,18 @@ defmodule SceneServer.Movement.Player do
       {:ok, native} ->
         tick = state.simulation_tick + 1
         spawned = from_pod(native, state.state.yaw)
-        reliable(state, :voxel, %Voxel.Relocate{identity: state.identity, apply_tick: tick, state: spawned})
-        character_event(state, state, :revive_relocate, %{apply_tick: tick, position: Tuple.to_list(spawned.position)})
+
+        reliable(state, :voxel, %Voxel.Relocate{
+          identity: state.identity,
+          apply_tick: tick,
+          state: spawned
+        })
+
+        character_event(state, state, :revive_relocate, %{
+          apply_tick: tick,
+          position: Tuple.to_list(spawned.position)
+        })
+
         %{state | revive: {tick, spawned}}
 
       :outside ->
@@ -791,7 +1091,12 @@ defmodule SceneServer.Movement.Player do
     case find_spawn(state, state.probe, domain) do
       {:ok, native} ->
         spawned = from_pod(native, state.state.yaw)
-        character_event(state, state, :revive_relocate, %{apply_tick: tick, position: Tuple.to_list(spawned.position)})
+
+        character_event(state, state, :revive_relocate, %{
+          apply_tick: tick,
+          position: Tuple.to_list(spawned.position)
+        })
+
         {%{state | revive: {tick, spawned}}, [{:relocate, tick, spawned}]}
 
       :outside ->
@@ -805,9 +1110,14 @@ defmodule SceneServer.Movement.Player do
   defp revive_spawn(state, _domain, _tick), do: {state, []}
 
   # 模拟 tick 之前：apply_tick − 1 的状态换成出生点（与 Voxel.Relocate 同一语义）。
-  defp relocated(%{revive: {tick, spawned}, simulation_tick: simulated} = state) when tick == simulated + 1 do
-    character_event(state, state, :revive_relocated, %{apply_tick: tick, from: Tuple.to_list(state.state.position),
-      to: Tuple.to_list(spawned.position)})
+  defp relocated(%{revive: {tick, spawned}, simulation_tick: simulated} = state)
+       when tick == simulated + 1 do
+    character_event(state, state, :revive_relocated, %{
+      apply_tick: tick,
+      from: Tuple.to_list(state.state.position),
+      to: Tuple.to_list(spawned.position)
+    })
+
     %{state | state: spawned, revive: nil}
   end
 
@@ -892,7 +1202,13 @@ defmodule SceneServer.Movement.Player do
           {movement_apply_tick, movement_factor, input_limit} = movement_scale(state, tick)
           input = Movement.Codec.constrain(input, input_limit)
           {x, z, jump} = input
-          profile = put_elem(state.config.profile_tuple, 2, elem(state.config.profile_tuple, 2) * movement_factor)
+
+          profile =
+            put_elem(
+              state.config.profile_tuple,
+              2,
+              elem(state.config.profile_tuple, 2) * movement_factor
+            )
 
           character_event(state, state, :input_selected, %{
             input_seq: if(frame == :joining_zero, do: nil, else: frame.input_seq),
@@ -940,8 +1256,13 @@ defmodule SceneServer.Movement.Player do
               yaw
             )
 
-          state = %{state | step_us: state.step_us + us, physics_steps: state.physics_steps + 1,
-            substitutions: state.substitutions + if(selection in [:held, :neutral], do: 1, else: 0)}
+          state = %{
+            state
+            | step_us: state.step_us + us,
+              physics_steps: state.physics_steps + 1,
+              substitutions:
+                state.substitutions + if(selection in [:held, :neutral], do: 1, else: 0)
+          }
 
           %{
             state
@@ -994,7 +1315,11 @@ defmodule SceneServer.Movement.Player do
     for event <- events do
       case event do
         {:relocate, apply_tick, spawned} ->
-          reliable(state, :voxel, %Voxel.Relocate{identity: state.identity, apply_tick: apply_tick, state: spawned})
+          reliable(state, :voxel, %Voxel.Relocate{
+            identity: state.identity,
+            apply_tick: apply_tick,
+            state: spawned
+          })
 
         {:window, snapshot, revision} ->
           domain = window_domain(snapshot)
@@ -1164,7 +1489,9 @@ defmodule SceneServer.Movement.Player do
 
   defp observation(state) do
     {:message_queue_len, mailbox} = Process.info(self(), :message_queue_len)
-    {movement_apply_tick, movement_factor, input_limit} = movement_scale(state, state.simulation_tick)
+
+    {movement_apply_tick, movement_factor, input_limit} =
+      movement_scale(state, state.simulation_tick)
 
     %{
       identity: state.identity,
@@ -1215,10 +1542,13 @@ defmodule SceneServer.Movement.Player do
       })
 
   defp now(state), do: Clock.monotonic(state)
+
   # 同节点使用原单调样本；跨节点沿现有服务器时间映射，不能相减两个 VM 的单调零点。
   defp input_monotonic(_state, {source, mono, _wall}) when source == node(), do: mono
+
   defp input_monotonic(state, {_source, _mono, wall}),
     do: state.time_mono_origin + wall - state.time_origin
+
   defp input_monotonic(_state, mono) when is_integer(mono), do: mono
 
   defp server_time(state), do: state |> Clock.sample() |> elem(0)
@@ -1347,7 +1677,10 @@ defmodule SceneServer.Movement.Player do
     cond do
       # 复活：等上一个窗口装好后请求覆盖出生点的窗口（即使与当前窗口相同也要一个新窗口作切点）；瞬移完成前不随位置换窗。
       state.revive == :pending and not state.window_pending ->
-        %{request_window(state, CollisionStream.box(state.probe, state.config.streaming_radius)) | revive: :window}
+        %{
+          request_window(state, CollisionStream.box(state.probe, state.config.streaming_radius))
+          | revive: :window
+        }
 
       state.revive != nil ->
         state

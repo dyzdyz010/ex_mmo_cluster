@@ -175,10 +175,15 @@ defmodule MmoContracts.R7PrefabTest do
   # 冻结样本与 Voxim.R7.Prefab.PublishedList 逐字节相同：两项，发布序、小端；第二项无名称。
   test "published prefab list frozen bytes" do
     a = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 0::96, 11::16-little>>
-    b = "VXPD" <> <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 255, 255, 255, 255, 0::32, 2, 0, 0, 0, 19, 0>>
+
+    b =
+      "VXPD" <>
+        <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 255, 255, 255, 255, 0::32, 2, 0, 0, 0,
+          19, 0>>
 
     frozen =
-      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0, 0>> <>
+      <<2, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 6, 0, 0xE7, 0x9F, 0xB3, 0xE5, 0xB1, 0x8B, 38, 0, 0,
+        0>> <>
         a <> <<9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0>> <> b
 
     assert IO.iodata_to_binary(

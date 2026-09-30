@@ -3,6 +3,7 @@ defmodule VoxelRegion.CombustionWorldTest do
   use ExUnit.Case, async: false
   @moduletag :b6
   alias VoxelRegion.{World, Damage}
+  alias VoxelRegion.World.Thermal
   alias VoxelRegion.TestSupport.{Source, Actor, Log}
 
   # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
@@ -59,6 +60,94 @@ defmodule VoxelRegion.CombustionWorldTest do
   end
 
   defp wood_balance(w),do: Enum.find(World.material_balances(w,1001),&(&1.material==19)).balance
+
+  # 只测试：两份相同存档冷启动，一份按定时节拍分步推进、一份直接投递完整提交作对照。
+  # 点火后首次提交里相邻木块越过容差，内核按扩域事件分成多步返回。
+  test "定时热提交在内核步间先答复排队调用，完成后与完整提交逐记录相同",c do
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    assert {:ok,_}=operate(c,9,1)
+    stop_supervised!(World)
+    copy=fn tag ->
+      root=c.opts[:root]<>"_"<>tag
+      File.cp_r!(c.opts[:root],root)
+      on_exit(fn->File.rm_rf!(root) end)
+      Keyword.put(c.opts,:root,root)
+    end
+    whole=start_supervised!({World,copy.("whole")},id: :whole)
+    start=observe(whole)
+    assert start.thermal.active
+    expected=tick(whole)
+    stepped=start_supervised!({World,copy.("stepped")},id: :stepped)
+    assert observe(stepped)==start
+    send(stepped,:thermal_tick)
+    mid=observe(stepped)
+    assert mid.seq==start.seq
+    assert mid.thermal.elapsed_s>start.thermal.elapsed_s and mid.thermal.elapsed_s<start.thermal.elapsed_s+0.5
+    done=Enum.find_value(1..500,fn _ -> s=observe(stepped); if s.seq>start.seq,do: s,else: (Process.sleep(10); nil) end)
+    assert expected.seq==start.seq+1
+    assert done.seq==expected.seq
+    assert done.damage==expected.damage
+    assert done.thermal==expected.thermal
+  end
+
+  # 只测试：点火后首次定时提交分多步（相邻木块越过容差）；紧跟节拍的镐击落在内核步之间。
+  # 镐击先见到原生热域写回的当前温度（不是提交开始时的记录），其 HP 改写装回热域，提交完成后的 HP 不高于镐击记录。
+  test "定时热提交进行中的镐击读到当前值，且不被热提交写回覆盖",c do
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    assert {:ok,_}=operate(c,9,1)
+    stop_supervised!(World)
+    root=c.opts[:root]<>"_stepped"
+    File.cp_r!(c.opts[:root],root)
+    on_exit(fn->File.rm_rf!(root) end)
+    w=start_supervised!({World,Keyword.put(c.opts,:root,root)},id: :stepped)
+    {:ok,target}=World.tool_intent(w,c.actor,c.request)
+    hit=Map.merge(c.request,Map.take(target,[:micro,:granularity,:incarnation,:owner,:material]))
+      |> Map.merge(%{action: 1,tool_id: 1,client_intent_seq: 2,request_id: 2})
+    message={:tool_intent,Map.merge(c.actor,%{received_us: 2_000_000,clock_node: node()}),hit}
+    # World.tool_intent/3 先经 prepare_intent 在 World 外备好来源，再以 prepared_intent 执行；这里先备好来源，
+    # 执行那一次调用放进受控的邮箱次序。
+    {:prepare,_,_,keys,_,_}=GenServer.call(w,{:prepare_intent,message})
+    start=observe(w)
+    # 邮箱次序由测试控制：World 暂停时先放入节拍、再放入镐击调用，恢复后先走第一步、再处理镐击。
+    :sys.suspend(w)
+    send(w,:thermal_tick)
+    task=Task.async(fn -> GenServer.call(w,{:prepared_intent,keys,message,[]}) end)
+    true=Enum.find_value(1..1000,fn _ -> elem(Process.info(w,:message_queue_len),1)>=2 || (Process.sleep(1); nil) end)
+    :sys.resume(w)
+    assert {:ok,hit_seq}=Task.await(task)
+    done=Enum.find_value(1..500,fn _ ->
+      s=observe(w); if s.thermal.elapsed_s>=start.thermal.elapsed_s+0.5,do: s,else: (Process.sleep(10); nil)
+    end)
+    [struck|_]=World.entries_after(w,hit_seq-1)
+    wood=Enum.find(struck.property_states,&(&1.micro=={8,8,16} and &1.granularity==0))
+    before=Map.fetch!(start.damage,Damage.key(wood))
+    assert struck.seq==hit_seq and wood.hp<before.hp
+    # 镐击之后才完成热提交：镐击落在提交进行中，且读到了第一步之后的温度。
+    assert done.seq>hit_seq
+    refute wood.temperature_kelvin==before.temperature_kelvin
+    assert Map.fetch!(done.damage,Damage.key(wood)).hp<=wood.hp
+  end
+
+  # 只测试：身体接触不先写回热域，脚格温度读原生侧当前值。中间态取点火后首次提交（多步）的第一步：在 World 状态副本上
+  # 直接推进一步。把燃烧木块的记录改回空气温度，模拟"记录落后于原生侧"——读记录的写法会判为不偏离、不登记鞋底接触。
+  test "热提交进行中身体踩着尚未写回的燃烧木块：读原生侧当前值，与先写回再读的接触相同",c do
+    {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
+    {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
+    assert {:ok,_}=operate(c,9,1)
+    state=:sys.get_state(c.w)
+    stop_supervised!(World)
+    {:more,state}=Thermal.tick(Thermal.begin(state))
+    assert state.thermal_work.domain.pending
+    {key,wood}=Enum.find(state.damage,fn {_,row} -> row.micro=={8,8,16} and row.granularity==0 end)
+    stale=%{state|damage: Map.put(state.damage,key,%{wood|temperature_kelvin: 293.15})}
+    body=%{feet: {1.5,2.0,2.5},height: 1.8,radius: 0.3,area: 1.8}
+    {contacts,_,sole,_}=Thermal.body_contacts(stale,body)
+    assert [{:node,^sole,{1,1,2},_}]=contacts
+    {flushed,_,flushed_sole,_}=Thermal.body_contacts(Thermal.flush(stale,:test),body)
+    assert {flushed,flushed_sole}=={contacts,sole}
+  end
 
   test "自然耗尽同笔删除宏格，燃料账闭合且冷恢复不复活",c do
     short_fuel(c)

@@ -1,65 +1,22 @@
 defmodule SceneServer.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc """
-  Boots the scene-side authority runtime.
+  Boots the scene-side authority runtime: the M3 public timeline
+  (`SceneServer.Movement.Scene`) with its Player DynamicSupervisor and Replication owner.
 
-  `SceneServer.Application` wires together the supervision roots for:
-
-  - scene registration and lookup (`SceneServer.InterfaceSup`)
-  - physics/native scene integration (`SceneServer.PhysicsSup`)
-  - voxel chunk authority and directory processes (`SceneServer.VoxelSup`)
-  - AOI indexing and fan-out (`SceneServer.AoiSup`)
-  - M3 public timeline (`SceneServer.Movement.Scene`), its Player DynamicSupervisor and Replication owner
-  - authoritative NPC actors (`SceneServer.NpcSup`)
-
-  See `apps/scene_server/lib/scene_server/README.md` for the current supervisor
-  tree and how movement/combat/NPC responsibilities are split underneath it.
+  Voxim 是唯一客户端：只有配置了 M1 Scene（`VOXIM_M1_CONFIG`）时才启动；未配置时（测试构建）由用例自己启动。
+  See `apps/scene_server/lib/scene_server/README.md`.
   """
 
   use Application
 
-  @is_test_build Mix.env() == :test
-
   @impl true
   def start(_type, _args) do
     children =
-      [
-        # Starts a worker by calling: SceneServer.Worker.start_link(arg)
-        # {SceneServer.Worker, arg}
-        interface_child(),
-        interface_runtime()
-      ]
-      |> List.flatten()
-      |> Enum.reject(&is_nil/1)
+      case Application.get_env(:scene_server, SceneServer.Movement.Scene) do
+        nil -> []
+        config -> [{SceneServer.Movement.Scene, config}]
+      end
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: SceneServer.Supervisor]
-    Supervisor.start_link(children, opts)
-  end
-
-  # M1 只组合当前权威链路；旧物理、chunk 与 NPC 仍留给未配置 M1 的参考现场。
-  defp interface_runtime do
-    case Application.get_env(:scene_server, SceneServer.Movement.Scene) do
-      nil ->
-        [
-          {SceneServer.PhysicsSup, name: SceneServer.PhysicsSup},
-          {SceneServer.VoxelSup, name: SceneServer.VoxelSup},
-          {SceneServer.AoiSup, name: SceneServer.AoiSup},
-          {SceneServer.NpcSup, name: SceneServer.NpcManagerSup}
-        ]
-
-      config ->
-        [{SceneServer.Movement.Scene, config}]
-    end
-  end
-
-  defp interface_child do
-    if @is_test_build do
-      nil
-    else
-      {SceneServer.InterfaceSup, name: SceneServer.InterfaceSup}
-    end
+    Supervisor.start_link(children, strategy: :one_for_one, name: SceneServer.Supervisor)
   end
 end

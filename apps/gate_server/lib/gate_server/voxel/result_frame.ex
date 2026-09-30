@@ -34,6 +34,21 @@ defmodule GateServer.Voxel.ResultFrame do
      }}
   end
 
+  @doc "体素世界事务成功回执：`result_ref` 取提交的 seq（或调用方给定的引用），`reason` 默认 \"ok\"。"
+  @spec accepted(request(), non_neg_integer(), String.t()) :: tuple()
+  def accepted(request, result_ref, reason \\ "ok") do
+    {:voxel_intent_result,
+     %{
+       request_id: request.request_id,
+       client_intent_seq: request.client_intent_seq,
+       logical_scene_id: request.logical_scene_id,
+       result_code: :accepted,
+       result_ref: result_ref,
+       authoritative: [],
+       reason: reason
+     }}
+  end
+
   @doc "撞击意图（0x64）成功回执，`result_ref` 取写入后的 chunk_version。"
   @spec impact_ok(request(), map()) :: tuple()
   def impact_ok(request, result) do

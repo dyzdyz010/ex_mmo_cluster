@@ -10,7 +10,7 @@ runs:
     - uses: actions/checkout@v4
       with:
         repository: dyzdyz010/Voxim
-        ref: a3c3fe98919af2e086d44fb796e9f8977e056147
+        ref: 19f8baa5068fee96774c0d2a9e8266dbece82da3
         path: .ci-voxim
         ssh-key: ${{ inputs.ssh-key }}
         persist-credentials: false
@@ -18,7 +18,7 @@ runs:
           Source/Voxim/Voxel
           Plugins/VoximMovement
           Docs
-          Content/Voxel/Properties/Published
+          Content/Voxel/Properties
           Content/Voxel/R7/Published
     - shell: bash
       run: ln -s "$GITHUB_WORKSPACE/.ci-voxim" "$GITHUB_WORKSPACE/../Voxim"

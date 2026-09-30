@@ -41,7 +41,6 @@ defmodule SceneServer.Movement.VoximApplicationTest do
     info = SceneServer.Movement.Scene.observe(SceneServer.Movement.Scene)
     assert is_pid(info.player_supervisor_pid) and is_pid(info.replication_pid)
     assert DynamicSupervisor.count_children(info.player_supervisor_pid).active == 0
-    assert Process.whereis(SceneServer.PhysicsManager) == nil
     assert_receive {:m1_snapshot_requested, worker}
     Supervisor.stop(supervisor)
     Process.exit(worker, :kill)

@@ -41,11 +41,16 @@ defmodule SceneServer.Body.ColdValidationTest do
 
   defp immersion(water_c, total_r, immersed, seconds) do
     g = Body.params().area_m2 * immersed / total_r
-    simulate(Body.new(), seconds, fn b -> %{q_j: g * (water_c + @c - b.skin_k), air_k: water_c + @c, immersed: immersed} end)
+
+    simulate(Body.new(), seconds, fn b ->
+      %{q_j: g * (water_c + @c - b.skin_k), air_k: water_c + @c, immersed: immersed}
+    end)
   end
 
   # 第一个核心低于 x °C 的时刻（分钟）；没有为 nil。
-  defp minutes_below(states, x), do: Enum.find_index(states, &(&1.core_k < x + @c)) |> then(&(&1 && &1 / 60))
+  defp minutes_below(states, x),
+    do: Enum.find_index(states, &(&1.core_k < x + @c)) |> then(&(&1 && &1 / 60))
+
   # 15–60 分钟的平均核心降温率 °C/h（Hayward 的线性段在约 15 分钟的平台之后）。
   defp rate(states), do: (Enum.at(states, 900).core_k - Enum.at(states, 3600).core_k) / 0.75
   # 热平衡：最后 2 小时核心变化 < 0.05 K 且在 30 °C 以上。
@@ -55,7 +60,8 @@ defmodule SceneServer.Body.ColdValidationTest do
   end
 
   describe "冷水浸泡（Hayward 1975；衣物热阻范围 Nunneley 1985）" do
-    test "5 / 10 / 15 °C：Hayward 实测降温率与存活时间落在 0.23 clo 与 0.06 clo（浸没衣物范围两端）的模型结果之间；产热不低于 Hayward、不超过峰值寒战" do
+    # 实测降温率与存活时间落在 0.23 clo 与 0.06 clo（浸没衣物范围两端）的模型结果之间；产热不低于 Hayward、不超过峰值寒战。
+    test "5 / 10 / 15 °C 浸泡：Hayward 降温率与存活时间落在两端衣物热阻的模型之间" do
       for tw <- [5.0, 10.0, 15.0] do
         hayward_rate = (0.0785 - 0.0034 * tw) * 60
         hayward_survival = 15 + 7.2 / (0.0785 - 0.0034 * tw)
@@ -66,30 +72,42 @@ defmodule SceneServer.Body.ColdValidationTest do
 
         {fast, slow} = {rate(thin_states), rate(thick_states)}
         {early, late} = {minutes_below(thin_states, 30.0), minutes_below(thick_states, 30.0)}
-        [m_thin, m_thick] = for m <- [thin_met, thick_met], do: Enum.sum(Enum.take(m, 3600)) / 3600
 
-        IO.puts("VALIDATE hayward Tw=#{tw} rate_C_per_h model[0.23clo..0.06clo]=#{Float.round(slow, 2)}..#{Float.round(fast, 2)} data=#{Float.round(hayward_rate, 2)} | " <>
-                  "t30_min model=#{early && Float.round(early, 1)}..#{late && Float.round(late, 1)} data=#{Float.round(hayward_survival, 1)} | " <>
-                  "met_W model=#{round(m_thick)}..#{round(m_thin)} data=#{round(hayward_met)} | t35_min=#{inspect(minutes_below(thick_states, 35.0))}..#{inspect(minutes_below(thin_states, 35.0))}")
+        [m_thin, m_thick] =
+          for m <- [thin_met, thick_met], do: Enum.sum(Enum.take(m, 3600)) / 3600
+
+        IO.puts(
+          "VALIDATE hayward Tw=#{tw} rate_C_per_h model[0.23clo..0.06clo]=#{Float.round(slow, 2)}..#{Float.round(fast, 2)} data=#{Float.round(hayward_rate, 2)} | " <>
+            "t30_min model=#{early && Float.round(early, 1)}..#{late && Float.round(late, 1)} data=#{Float.round(hayward_survival, 1)} | " <>
+            "met_W model=#{round(m_thick)}..#{round(m_thin)} data=#{round(hayward_met)} | t35_min=#{inspect(minutes_below(thick_states, 35.0))}..#{inspect(minutes_below(thin_states, 35.0))}"
+        )
 
         assert slow <= hayward_rate and hayward_rate <= fast
+
         # Hayward 的存活时间是把降温率线性外推到 30 °C；寒战能抵消失热时核心进入热平衡、线性外推不成立（Brooks 第 7 章 c 节）。
         # 所以快端（0.06 clo）要么不晚于 Hayward 到 30 °C，要么在 30 °C 以上进入热平衡（最后 2 小时核心变化 < 0.05 K）。
-        assert (early != nil and early <= hayward_survival) or (early == nil and balanced?(thin_states))
+        assert (early != nil and early <= hayward_survival) or
+                 (early == nil and balanced?(thin_states))
+
         assert late == nil or hayward_survival <= late
+
         # 产热：不低于 Hayward（静止、救生衣），不超过峰值寒战 4.9 倍静息（Eyolfson 2001）
-        for m <- [m_thin, m_thick], do: assert(m >= hayward_met and m <= 4.9 * 58.2 * Body.params().area_m2)
+        for m <- [m_thin, m_thick],
+            do: assert(m >= hayward_met and m <= 4.9 * 58.2 * Body.params().area_m2)
       end
     end
 
-    test "游戏内浸没（World 浸没边：湿衣 0.03 + 水 1/100 m²·K/W，全身浸没）：0 °C 与 5 °C 水 15–60 min 降温率在 2 °C/h（Hawley 2024 下限）与 Hayward 之间" do
+    # World 浸没边：湿衣 0.03 + 水 1/100 m²·K/W；降温率在 2 °C/h（Hawley 2024 下限）与 Hayward 之间。
+    test "游戏内全身浸没：0 / 5 °C 水 15–60 min 降温率在 Hawley 下限与 Hayward 之间" do
       for tw <- [0.0, 5.0] do
         {states, _} = immersion(tw, 0.03 + 1 / 100, 1.0, 4 * 3600)
         r = rate(states)
         hayward = (0.0785 - 0.0034 * tw) * 60
 
-        IO.puts("VALIDATE game_immersion Tw=#{tw} rate_C_per_h=#{Float.round(r, 2)} range=2.0..#{Float.round(hayward, 2)} | " <>
-                  "t35_min=#{Float.round(minutes_below(states, 35.0), 1)} t32_min=#{minutes_below(states, 32.0) && Float.round(minutes_below(states, 32.0), 1)} t28_min=#{minutes_below(states, 28.0) && Float.round(minutes_below(states, 28.0), 1)}")
+        IO.puts(
+          "VALIDATE game_immersion Tw=#{tw} rate_C_per_h=#{Float.round(r, 2)} range=2.0..#{Float.round(hayward, 2)} | " <>
+            "t35_min=#{Float.round(minutes_below(states, 35.0), 1)} t32_min=#{minutes_below(states, 32.0) && Float.round(minutes_below(states, 32.0), 1)} t28_min=#{minutes_below(states, 28.0) && Float.round(minutes_below(states, 28.0), 1)}"
+        )
 
         assert r >= 2.0 and r <= hayward
       end
@@ -115,18 +133,31 @@ defmodule SceneServer.Body.ColdValidationTest do
 
         {last, shiver, glycogen} =
           Enum.reduce(1..(388 * 60), {held, 0.0, 0.0}, fn _, {b, s, g} ->
-            {n, a} = Thermo.step(%{held | reserve_j: b.reserve_j, fat_reserve_j: b.fat_reserve_j}, 1.0, %{q_j: 0.0, air_k: 33.0 + @c})
+            {n, a} =
+              Thermo.step(
+                %{held | reserve_j: b.reserve_j, fat_reserve_j: b.fat_reserve_j},
+                1.0,
+                %{q_j: 0.0, air_k: 33.0 + @c}
+              )
+
             assert_in_delta a.shiver_j, f * peak, 1.0e-6
             {n, s + a.shiver_j, g + a.shiver_glycogen_j}
           end)
 
         # 账：Σ 寒战 = 糖原减少 + 脂肪减少；糖原份额 27%（Blondin 2010）
-        assert_in_delta shiver, held.reserve_j - last.reserve_j + held.fat_reserve_j - last.fat_reserve_j, 1.0e-3
+        assert_in_delta shiver,
+                        held.reserve_j - last.reserve_j + held.fat_reserve_j - last.fat_reserve_j,
+                        1.0e-3
+
         assert_in_delta glycogen / shiver, 0.27, 1.0e-9
 
         glycogen_h = p.reserve_full_j / (0.27 * f * peak) / 3600
         total_h = (p.reserve_full_j + p.fat_full_j) / (f * peak) / 3600
-        IO.puts("VALIDATE endurance f=#{f} shiver_W=#{Float.round(f * peak, 1)} glycogen_empty_h=#{Float.round(glycogen_h, 1)} both_empty_h=#{Float.round(total_h, 1)} (data 105..388 min, no cessation)")
+
+        IO.puts(
+          "VALIDATE endurance f=#{f} shiver_W=#{Float.round(f * peak, 1)} glycogen_empty_h=#{Float.round(glycogen_h, 1)} both_empty_h=#{Float.round(total_h, 1)} (data 105..388 min, no cessation)"
+        )
+
         assert total_h * 60 >= 388
       end
     end
@@ -159,17 +190,31 @@ defmodule SceneServer.Body.ColdValidationTest do
       {states, _} =
         Enum.map_reduce(1..(4 * 3600), Body.new(), fn t, b ->
           air = @c + max(22.0 * (1 - t / ramp), 0.0)
-          {n, _} = Thermo.step(b, 1.0, %{q_j: 0.0, air_k: air, wind_mps: 1.0, clothing_m2_k_per_w: 0.63 * @clo})
+
+          {n, _} =
+            Thermo.step(b, 1.0, %{
+              q_j: 0.0,
+              air_k: air,
+              wind_mps: 1.0,
+              clothing_m2_k_per_w: 0.63 * @clo
+            })
+
           {n, n}
         end)
         |> then(fn {s, _} -> {[Body.new() | s], nil} end)
 
       start = Body.new().core_k
-      drop = fn d -> Enum.find_index(states, &(&1.core_k <= start - d)) |> then(&(&1 && &1 / 60)) end
+
+      drop = fn d ->
+        Enum.find_index(states, &(&1.core_k <= start - d)) |> then(&(&1 && &1 / 60))
+      end
+
       at = fn m -> start - Enum.at(states, m * 60).core_k end
 
-      IO.puts("VALIDATE wallace drop0.3_min=#{Float.round(drop.(0.3), 1)} (data 103±37, 20..146) drop0.8_min=#{inspect(drop.(0.8))} (data 149±32, 89..173) | " <>
-                "drop@149=#{Float.round(at.(149), 2)} drop@173=#{Float.round(at.(173), 2)} skin@19=#{Float.round(Enum.at(states, 19 * 60).skin_k - @c, 1)} (data ~27)")
+      IO.puts(
+        "VALIDATE wallace drop0.3_min=#{Float.round(drop.(0.3), 1)} (data 103±37, 20..146) drop0.8_min=#{inspect(drop.(0.8))} (data 149±32, 89..173) | " <>
+          "drop@149=#{Float.round(at.(149), 2)} drop@173=#{Float.round(at.(173), 2)} skin@19=#{Float.round(Enum.at(states, 19 * 60).skin_k - @c, 1)} (data ~27)"
+      )
 
       assert drop.(0.3) >= 20 and drop.(0.3) <= 146
     end

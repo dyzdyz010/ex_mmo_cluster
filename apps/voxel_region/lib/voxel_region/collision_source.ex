@@ -31,6 +31,16 @@ defmodule VoxelRegion.CollisionSource do
     {Integer.floor_div(x, n), Integer.floor_div(y, n), Integer.floor_div(z, n)}
   end
 
+  @doc "窗口快照的碰撞 chunk：逐区域解码 L0 载荷字节并投影其全部 chunk，按坐标排序。"
+  def snapshot_chunks(regions, capacity) do
+    regions
+    |> Enum.flat_map(fn {coord, bytes} ->
+      {:ok, payload} = Payload.decode(bytes)
+      Enum.map(chunk_coords(coord), &capture(payload, &1, capacity))
+    end)
+    |> Enum.sort_by(& &1.coord)
+  end
+
   def in_box?(coord, {{x0, y0, z0}, {x1, y1, z1}}) do
     {x, y, z} = region_coord(coord)
     x >= x0 and x < x1 and y >= y0 and y < y1 and z >= z0 and z < z1

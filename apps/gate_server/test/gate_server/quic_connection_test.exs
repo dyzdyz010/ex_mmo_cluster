@@ -1296,6 +1296,7 @@ defmodule M4aGateTransferTest do
     }
 
     scale = %Movement.SpeedScale{identity: old, apply_tick: 61, factor: 0.65}
+
     fence = %MmoContracts.Voxel.TimelineFence{
       identity: old,
       server_tick: 60,
@@ -1308,6 +1309,7 @@ defmodule M4aGateTransferTest do
         receive do
           {:"$gen_call", from, {:seal, ^old}} ->
             send(owner, :source_sealed)
+
             # 源尾在 seal 回复前到达 Gate 邮箱；Fence 已覆盖 cut，但未来倍率仍必须先于 Transfer。
             send(owner, {:mmo_reliable, old, 2, scale})
             send(owner, {:mmo_reliable, old, 2, fence})
@@ -1339,13 +1341,17 @@ defmodule M4aGateTransferTest do
     assert :queue.is_empty(state.reliable[2])
 
     state =
-      Enum.reduce([Movement.SpeedScale, MmoContracts.Voxel.TimelineFence, Session.Transfer], state, fn type, state ->
-        # 逐笔取实际邮箱头；不能按类型选择接收，从而掩盖错误顺序。
-        assert_receive {:mmo_reliable, ^old, 2, event} = queued
-        assert event.__struct__ == type
-        {:noreply, next} = QuicConnection.handle_info(queued, state)
-        next
-      end)
+      Enum.reduce(
+        [Movement.SpeedScale, MmoContracts.Voxel.TimelineFence, Session.Transfer],
+        state,
+        fn type, state ->
+          # 逐笔取实际邮箱头；不能按类型选择接收，从而掩盖错误顺序。
+          assert_receive {:mmo_reliable, ^old, 2, event} = queued
+          assert event.__struct__ == type
+          {:noreply, next} = QuicConnection.handle_info(queued, state)
+          next
+        end
+      )
 
     assert :queue.is_empty(state.reliable[1])
     [{scale_bytes, _, _}, {fence_bytes, _, _}, {bytes, _, _}] = :queue.to_list(state.reliable[2])

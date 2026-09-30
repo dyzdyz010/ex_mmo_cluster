@@ -14,7 +14,10 @@ defmodule GateServer.NpcBodyTest do
 
   defmodule Source do
     use GenServer
-    def start_link(snapshot), do: GenServer.start_link(__MODULE__, snapshot, name: :npc_body_source)
+
+    def start_link(snapshot),
+      do: GenServer.start_link(__MODULE__, snapshot, name: :npc_body_source)
+
     def init(snapshot), do: {:ok, snapshot}
 
     def canonical_snapshot_and_subscribe(pid, _box, subscriber, ref, _chunks \\ true),
@@ -32,7 +35,12 @@ defmodule GateServer.NpcBodyTest do
     def handle_call({:material_snapshot, _characters, cells}, _, snapshot) do
       occupancy =
         for {x, y, z} <- cells,
-            do: %{cell: [x, y, z], material: if(y == 500, do: 1, else: 0), refined: false, slots: []}
+            do: %{
+              cell: [x, y, z],
+              material: if(y == 500, do: 1, else: 0),
+              refined: false,
+              slots: []
+            }
 
       {:reply, %{probe_occupancy: occupancy}, snapshot}
     end
@@ -42,7 +50,11 @@ defmodule GateServer.NpcBodyTest do
     def route(1),
       do:
         {:ok,
-         %{scene_ref: Process.whereis(:npc_body_scene), world_ref: Process.whereis(:npc_body_source), scene_epoch: 7}}
+         %{
+           scene_ref: Process.whereis(:npc_body_scene),
+           world_ref: Process.whereis(:npc_body_source),
+           scene_epoch: 7
+         }}
   end
 
   describe "pure input generation (hand-computed)" do
@@ -79,9 +91,15 @@ defmodule GateServer.NpcBodyTest do
 
     test "without dig it walks the route in a cycle, one move_to per arrival" do
       state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}]})
-      {[%{id: 1, verb: :move_to, position: {1.0, 0.0}}], state} = Patrol.handle_event(obs(5), state)
+
+      {[%{id: 1, verb: :move_to, position: {1.0, 0.0}}], state} =
+        Patrol.handle_event(obs(5), state)
+
       assert {[], state} = Patrol.handle_event(obs(6), state)
-      {[%{id: 2, verb: :move_to, position: {9.0, 0.0}}], state} = Patrol.handle_event(done(1), state)
+
+      {[%{id: 2, verb: :move_to, position: {9.0, 0.0}}], state} =
+        Patrol.handle_event(done(1), state)
+
       # 不是自己在等的 id：忽略。
       assert {[], state} = Patrol.handle_event(done(1), state)
       {[%{id: 3, verb: :move_to, position: {1.0, 0.0}}], _} = Patrol.handle_event(done(2), state)
@@ -91,17 +109,25 @@ defmodule GateServer.NpcBodyTest do
       dig = %{direction: {1.0, 0.0, 0.0}, tool_id: 1}
       state = Patrol.init(%{route: [{1.0, 0.0}, {9.0, 0.0}], dig: dig})
       {[%{id: 1}], state} = Patrol.handle_event(obs(100), state)
-      {[%{id: 2, verb: :probe_toward, direction: {1.0, 0.0, 0.0}, tool_id: 1}], state} = Patrol.handle_event(done(1), state)
-      {[%{id: 3, verb: :use_tool, target: @target}], state} = Patrol.handle_event(done(2, @target), state)
+
+      {[%{id: 2, verb: :probe_toward, direction: {1.0, 0.0, 0.0}, tool_id: 1}], state} =
+        Patrol.handle_event(done(1), state)
+
+      {[%{id: 3, verb: :use_tool, target: @target}], state} =
+        Patrol.handle_event(done(2, @target), state)
+
       {[], state} = Patrol.handle_event(done(3, %{seq: 9}), state)
       assert {[], state} = Patrol.handle_event(obs(135), state)
       {[%{id: 4, verb: :probe_toward}], state} = Patrol.handle_event(obs(136), state)
       # 同一身份（HP 变了不算身份变化）→ 继续攻击。
-      {[%{id: 5, verb: :use_tool}], state} = Patrol.handle_event(done(4, %{@target | current_hp: 44.0}), state)
+      {[%{id: 5, verb: :use_tool}], state} =
+        Patrol.handle_event(done(4, %{@target | current_hp: 44.0}), state)
+
       {[], state} = Patrol.handle_event(done(5, %{seq: 10}), state)
       {[%{id: 6, verb: :probe_toward}], state} = Patrol.handle_event(obs(200), state)
       # 命中的是另一个身份 → 原目标没了，走向下一个路点。
-      {[%{id: 7, verb: :move_to, position: {9.0, 0.0}}], _} = Patrol.handle_event(done(6, %{@target | incarnation: 8}), state)
+      {[%{id: 7, verb: :move_to, position: {9.0, 0.0}}], _} =
+        Patrol.handle_event(done(6, %{@target | incarnation: 8}), state)
     end
 
     test "a rejected probe or attack is not retried: on to the next waypoint" do
@@ -139,7 +165,11 @@ defmodule GateServer.NpcBodyTest do
       chunks =
         for x <- -4..3, y <- 28..35, z <- -4..3 do
           cells =
-            for _ <- 0..15, cy <- 0..15, _ <- 0..15, into: <<>>, do: <<if(y * 16 + cy == 500, do: 1, else: 0)>>
+            for _ <- 0..15,
+                cy <- 0..15,
+                _ <- 0..15,
+                into: <<>>,
+                do: <<if(y * 16 + cy == 500, do: 1, else: 0)>>
 
           %Voxel.ChunkOccupancy{
             coord: {x, y, z},
@@ -194,7 +224,14 @@ defmodule GateServer.NpcBodyTest do
       b = npc.(:npc_b, @npc_b, {42.0, 503.0, 40.0}, [{42.0, 30.0}, {42.0, 40.0}])
 
       {:ok, route} = Route.route(1)
-      {identity, {:ok, player}} = GenServer.call(claims, {:claim, Scene, Map.put(route, :scene_id, 1), %{id: 20, name: "observer", kind: "player"}})
+
+      {identity, {:ok, player}} =
+        GenServer.call(
+          claims,
+          {:claim, Scene, Map.put(route, :scene_id, 1),
+           %{id: 20, name: "observer", kind: "player"}}
+        )
+
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
       assert_receive {:mmo_reliable, ^identity, 1, %Session.SessionStart{} = start}, 5_000
       Player.ready(player, identity, start.baseline_transaction_seq, start.collision_revision)
@@ -220,7 +257,9 @@ defmodule GateServer.NpcBodyTest do
 
     test "input backlog: exactly 120 behind keeps feeding, 121 behind exits for a supervised re-claim",
          %{scene: scene, a: a} do
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}}, 8_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}},
+                     8_000
+
       c = Enum.find(Scene.observe(scene).characters, &(&1.entity_id == @npc_a))
       monitor = Process.monitor(a)
 
@@ -244,10 +283,17 @@ defmodule GateServer.NpcBodyTest do
 
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",
          %{scene: scene, a: a, b: b} do
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1} = enter_a}, 8_000
-      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b, kind: 1} = enter_b}, 8_000
+      assert_receive {:mmo_reliable, _, 1,
+                      %Session.EntityEnter{entity_id: @npc_a, kind: 1} = enter_a},
+                     8_000
+
+      assert_receive {:mmo_reliable, _, 1,
+                      %Session.EntityEnter{entity_id: @npc_b, kind: 1} = enter_b},
+                     8_000
+
       # 真实 Scene 产生的 EntityEnter 必须能上线编码（末尾 1 字节 kind）。
-      for enter <- [enter_a, enter_b], do: assert {:ok, <<_::binary>>} = MmoContracts.Session.Codec.encode(enter)
+      for enter <- [enter_a, enter_b],
+          do: assert({:ok, <<_::binary>>} = MmoContracts.Session.Codec.encode(enter))
 
       seen = samples(System.monotonic_time(:millisecond) + 6_000, %{})
       xs = for {x, _, _} <- seen[@npc_a], do: x
@@ -267,6 +313,7 @@ defmodule GateServer.NpcBodyTest do
       by_id = Map.new(Scene.observe(scene).characters, &{&1.entity_id, &1})
       assert by_id[@npc_a].processed_input_seq > 200
       assert by_id[@npc_b].processed_input_seq > 200
+
       # 玩家连接传入的是角色行（kind: "player"），NPC Body 传 "npc"；Scene 一处映射成线上的 0 / 1。
       assert {0, 1, 1} == {by_id[20].kind, by_id[@npc_a].kind, by_id[@npc_b].kind}
 

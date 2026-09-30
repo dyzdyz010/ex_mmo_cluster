@@ -27,8 +27,6 @@ defmodule DataService.MixProject do
   defp deps do
     [
       {:mmo_contracts, in_umbrella: true},
-      {:data_init, in_umbrella: true},
-      {:beacon_server, in_umbrella: true},
       {:poolboy, "~> 1.5.2"},
       {:bcrypt_elixir, "~> 3.0"},
       {:ecto_sql, "~> 3.12"},

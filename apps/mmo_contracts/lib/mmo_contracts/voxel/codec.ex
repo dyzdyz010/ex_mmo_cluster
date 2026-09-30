@@ -116,13 +116,14 @@ defmodule MmoContracts.Voxel.Codec do
 
     action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3, 5] and
       (Map.get(request, :granularity, 0) != 5 or
-        (action in [0, 1] and match?({id, 0} when id > 0, request.owner) and
-          (action == 0 or request.incarnation > 0))) and
+         (action in [0, 1] and match?({id, 0} when id > 0, request.owner) and
+            (action == 0 or request.incarnation > 0))) and
       norm > 0.99 and norm < 1.01
   end
 
   @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29））的合法性，线解码与进程内调用方（NPC Body）共用。"
-  def production_intent?(%{action: action, tool_id: tool}), do: action in [0, 1, 2, 3, 4, 5] and tool > 0
+  def production_intent?(%{action: action, tool_id: tool}),
+    do: action in [0, 1, 2, 3, 4, 5] and tool > 0
 
   @doc "附件意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
@@ -173,8 +174,8 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(
         <<0x82, rid::64, seq::32, scene::64, action::8, digest::binary-size(32), dx::float-64,
           dy::float-64, dz::float-64, x::signed-64, y::signed-64, z::signed-64, incarnation::64,
-          birth::64, occurrence::32, material::16, granularity::8, semblance_seq::64, semblance_n::32, n::16,
-          program::binary-size(n)>>
+          birth::64, occurrence::32, material::16, granularity::8, semblance_seq::64,
+          semblance_n::32, n::16, program::binary-size(n)>>
       ) do
     request = %{
       request_id: rid,
@@ -425,16 +426,17 @@ defmodule MmoContracts.Voxel.Codec do
     # 在发光后缀之后。只有储能而本段不在网络里的蓄能石行电动势与电流为 0。设备记录（原电源等）已无生产者，不再编码。
     {source, supply} =
       if Map.has_key?(t, :stored_j) or Map.has_key?(t, :source_emf_v),
-        do: {<<Map.get(t, :stored_j, 0.0)::float-64, Map.get(t, :source_emf_v, 0.0)::float-64,
-               Map.get(t, :source_current_a, 0.0)::float-64>>, 8},
+        do:
+          {<<Map.get(t, :stored_j, 0.0)::float-64, Map.get(t, :source_emf_v, 0.0)::float-64,
+             Map.get(t, :source_current_a, 0.0)::float-64>>, 8},
         else: {<<>>, 0}
 
     {:ok,
      <<0x7E, t.request_id::64, t.seq::64, x::signed-64, y::signed-64, z::signed-64,
        t.granularity::8, t.incarnation::64, birth::64, occurrence::32, t.material::16,
        t.hp::float-64, t.max_hp::float-64, t.defense::float-64, t.digest::binary-size(32),
-       t.flags + present + closed + supply::8, temperature::binary, combustion::binary, electric::binary,
-       source::binary>>}
+       t.flags + present + closed + supply::8, temperature::binary, combustion::binary,
+       electric::binary, source::binary>>}
   end
 
   def encode({:voxel_log_entry_payload, payload}) when is_binary(payload) do
@@ -643,7 +645,12 @@ defmodule MmoContracts.Voxel.Codec do
     [
       <<length(published)::32-little>>
       | Enum.map(published, fn {cid, name, bytes} ->
-          [<<cid::64-little, byte_size(name)::16-little>>, name, <<byte_size(bytes)::32-little>>, bytes]
+          [
+            <<cid::64-little, byte_size(name)::16-little>>,
+            name,
+            <<byte_size(bytes)::32-little>>,
+            bytes
+          ]
         end)
     ]
   end
@@ -1031,7 +1038,12 @@ defmodule MmoContracts.Voxel.Codec do
     end)
   end
 
-  defp accept_m1(%Voxel.PropertyBatch{protection: bytes, semblances: semblances, casts: casts, complete: complete}) do
+  defp accept_m1(%Voxel.PropertyBatch{
+         protection: bytes,
+         semblances: semblances,
+         casts: casts,
+         complete: complete
+       }) do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
     {:ok, delta} = decode_semblances(semblances)
@@ -1079,10 +1091,17 @@ defmodule MmoContracts.Voxel.Codec do
        when previous == nil or {seq, n} > previous do
     region =
       case {holder, cid} do
-        {0, 0} when {x0, z0, x1, z1} == {0, 0, 0, 0} -> nil
-        {1, 0} when x0 <= x1 and z0 <= z1 -> %{holder: :reserved, min: {x0, z0}, max: {x1, z1}}
-        {2, cid} when cid > 0 and x0 <= x1 and z0 <= z1 -> %{holder: {:character, cid}, min: {x0, z0}, max: {x1, z1}}
-        _ -> :invalid
+        {0, 0} when {x0, z0, x1, z1} == {0, 0, 0, 0} ->
+          nil
+
+        {1, 0} when x0 <= x1 and z0 <= z1 ->
+          %{holder: :reserved, min: {x0, z0}, max: {x1, z1}}
+
+        {2, cid} when cid > 0 and x0 <= x1 and z0 <= z1 ->
+          %{holder: {:character, cid}, min: {x0, z0}, max: {x1, z1}}
+
+        _ ->
+          :invalid
       end
 
     if region == :invalid,
@@ -1115,9 +1134,10 @@ defmodule MmoContracts.Voxel.Codec do
           {vx, vy, vz} = s.velocity
           {rx, ry, rz} = s.rest
 
-          <<seq::64, n::32, 1::8, s.caster::64, s.shape::8, s.radius_m::float-64, s.temperature_k::float-64,
-            s.glow_w::float-64, ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64,
-            vz::float-64, s.t0_us::64, s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
+          <<seq::64, n::32, 1::8, s.caster::64, s.shape::8, s.radius_m::float-64,
+            s.temperature_k::float-64, s.glow_w::float-64, ox::float-64, oy::float-64,
+            oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
+            s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
       end
     end
   end
@@ -1127,7 +1147,11 @@ defmodule MmoContracts.Voxel.Codec do
 
   defp decode_semblances(<<>>, _, acc), do: {:ok, acc}
 
-  defp decode_semblances(<<seq::64, n::32, 0::8, zero::binary-size(121), rest::binary>>, previous, acc)
+  defp decode_semblances(
+         <<seq::64, n::32, 0::8, zero::binary-size(121), rest::binary>>,
+         previous,
+         acc
+       )
        when previous == nil or {seq, n} > previous do
     if zero == <<0::size(121)-unit(8)>>,
       do: decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, nil)),
@@ -1135,16 +1159,28 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   defp decode_semblances(
-         <<seq::64, n::32, 1::8, caster::64, shape::8, radius::float-64, temperature::float-64, glow::float-64,
-           ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64, vz::float-64, t0::64,
-           flight::float-64, rx::float-64, ry::float-64, rz::float-64, rest::binary>>,
+         <<seq::64, n::32, 1::8, caster::64, shape::8, radius::float-64, temperature::float-64,
+           glow::float-64, ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64,
+           vz::float-64, t0::64, flight::float-64, rx::float-64, ry::float-64, rz::float-64,
+           rest::binary>>,
          previous,
          acc
        )
-       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and radius > 0 and temperature > 0 and
+       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and radius > 0 and
+              temperature > 0 and
               glow >= 0 and flight >= 0 do
-    s = %{caster: caster, shape: shape, radius_m: radius, temperature_k: temperature, glow_w: glow,
-      origin: {ox, oy, oz}, velocity: {vx, vy, vz}, t0_us: t0, flight_s: flight, rest: {rx, ry, rz}}
+    s = %{
+      caster: caster,
+      shape: shape,
+      radius_m: radius,
+      temperature_k: temperature,
+      glow_w: glow,
+      origin: {ox, oy, oz},
+      velocity: {vx, vy, vz},
+      t0_us: t0,
+      flight_s: flight,
+      rest: {rx, ry, rz}
+    }
 
     decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, s))
   end
@@ -1166,11 +1202,13 @@ defmodule MmoContracts.Voxel.Codec do
     for {caster, c} <- Enum.sort(delta), into: <<>> do
       case c do
         %{live: 0, outcome: outcome} ->
-          <<caster::64, 0::8, outcome::8, 0::64, 0.0::float-64, 0.0::float-64, 0.0::float-64, 0::8, 0::16>>
+          <<caster::64, 0::8, outcome::8, 0::64, 0.0::float-64, 0.0::float-64, 0.0::float-64,
+            0::8, 0::16>>
 
         %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program} ->
-          <<caster::64, 1::8, 0::8, t0::64, x::float-64, y::float-64, z::float-64, length(steps)::8,
-            (for {a, i} <- steps, into: <<>>, do: <<a::float-64, i::float-64>>)::binary,
+          <<caster::64, 1::8, 0::8, t0::64, x::float-64, y::float-64, z::float-64,
+            length(steps)::8,
+            for({a, i} <- steps, into: <<>>, do: <<a::float-64, i::float-64>>)::binary,
             byte_size(program)::16, program::binary>>
       end
     end
@@ -1197,9 +1235,19 @@ defmodule MmoContracts.Voxel.Codec do
       live == 0 and outcome in [0, 1, 2] ->
         decode_casts(rest, caster, Map.put(acc, caster, %{live: 0, outcome: outcome}))
 
-      live == 1 and outcome == 0 and n > 0 and size > 0 and Enum.all?(steps, fn {a, i} -> a >= 0 and i >= 0 end) ->
-        decode_casts(rest, caster, Map.put(acc, caster,
-          %{live: 1, t0_us: t0, origin: {x, y, z}, steps: steps, program: program}))
+      live == 1 and outcome == 0 and n > 0 and size > 0 and
+          Enum.all?(steps, fn {a, i} -> a >= 0 and i >= 0 end) ->
+        decode_casts(
+          rest,
+          caster,
+          Map.put(acc, caster, %{
+            live: 1,
+            t0_us: t0,
+            origin: {x, y, z},
+            steps: steps,
+            program: program
+          })
+        )
 
       true ->
         {:error, :invalid_cast}

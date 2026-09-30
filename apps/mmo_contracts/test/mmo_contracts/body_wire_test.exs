@@ -14,10 +14,25 @@ defmodule MmoContracts.BodyWireTest do
 
   @sample Base.decode16!(
             "FF0001010C00000077" <>
-              "0000000000000001" <> "0000000000000002" <> "0000000000000003" <>
-              "46" <> "02" <> "00" <> "4073600000000000" <> "4073380000000000" <>
-              "0002" <> "0013" <> "747261756D612E746865726D616C2E6275726E" <> "03" <> "32" <> "4075E80000000000" <>
-              "0017" <> "74656D70657261747572652E6879706F746865726D6961" <> "01" <> "00" <> "0000000000000000" <>
+              "0000000000000001" <>
+              "0000000000000002" <>
+              "0000000000000003" <>
+              "46" <>
+              "02" <>
+              "00" <>
+              "4073600000000000" <>
+              "4073380000000000" <>
+              "0002" <>
+              "0013" <>
+              "747261756D612E746865726D616C2E6275726E" <>
+              "03" <>
+              "32" <>
+              "4075E80000000000" <>
+              "0017" <>
+              "74656D70657261747572652E6879706F746865726D6961" <>
+              "01" <>
+              "00" <>
+              "0000000000000000" <>
               "4045400000000000"
           )
 
@@ -37,8 +52,16 @@ defmodule MmoContracts.BodyWireTest do
 
   test "Hello 35 rejects older wire versions" do
     assert Session.Codec.protocol_version() == 35
-    {:ok, packet} = Session.Codec.encode(%Session.Hello{protocol_version: 35, kernel_id: <<1::256>>, profile_id: <<2::256>>})
+
+    {:ok, packet} =
+      Session.Codec.encode(%Session.Hello{
+        protocol_version: 35,
+        kernel_id: <<1::256>>,
+        profile_id: <<2::256>>
+      })
+
     <<prefix::binary-size(9), 35::16, tail::binary>> = IO.iodata_to_binary(packet)
+
     for old <- [31, 32, 34] do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<old::16>> <> tail)
     end
@@ -48,17 +71,28 @@ defmodule MmoContracts.BodyWireTest do
   # identity (1, 2, 3) 24 + apply_tick 45 (0x2D) 8 + 状态 51（位置 (40.0, 500.5, 40.0)：0x4044…、0x407F48…；速度 0；
   # 着地 1；yaw 16384 = 0x4000）。客户端 Automation 用同一串手写字节。
   test "Relocate 冻结样本：编码逐字节相等、解码还原" do
-    sample = Base.decode16!(
-      "FF0001030600000053" <>
-        "0000000000000001" <> "0000000000000002" <> "0000000000000003" <> "000000000000002D" <>
-        "4044000000000000" <> "407F480000000000" <> "4044000000000000" <>
-        "0000000000000000" <> "0000000000000000" <> "0000000000000000" <> "01" <> "4000"
-    )
+    sample =
+      Base.decode16!(
+        "FF0001030600000053" <>
+          "0000000000000001" <>
+          "0000000000000002" <>
+          "0000000000000003" <>
+          "000000000000002D" <>
+          "4044000000000000" <>
+          "407F480000000000" <>
+          "4044000000000000" <>
+          "0000000000000000" <> "0000000000000000" <> "0000000000000000" <> "01" <> "4000"
+      )
 
     value = %MmoContracts.Voxel.Relocate{
       identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
       apply_tick: 45,
-      state: %Session.State{position: {40.0, 500.5, 40.0}, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 16384}
+      state: %Session.State{
+        position: {40.0, 500.5, 40.0},
+        velocity: {0.0, 0.0, 0.0},
+        grounded: 1,
+        yaw: 16384
+      }
     }
 
     {:ok, bytes} = MmoContracts.Voxel.Codec.encode_m1(value)
@@ -68,12 +102,29 @@ defmodule MmoContracts.BodyWireTest do
 
   # 身体闭环 H1（Hello 29）：进食沿用 0x7F 生产信封（38 字节），action 5、material = 可食材料（这里蒲公英 36），坐标不用、填 0。
   test "进食意图 0x7F action 5 冻结样本" do
-    wire = Base.decode16!("7F" <> "0000000000000016" <> "00000009" <> "0000000000000001" <> "05" <>
-                            "000000000000000000000000" <> "0001" <> "0024")
+    wire =
+      Base.decode16!(
+        "7F" <>
+          "0000000000000016" <>
+          "00000009" <>
+          "0000000000000001" <>
+          "05" <>
+          "000000000000000000000000" <> "0001" <> "0024"
+      )
+
     assert byte_size(wire) == 38
 
-    assert {:ok, {:voxel_production_intent, %{request_id: 22, client_intent_seq: 9, logical_scene_id: 1, action: 5,
-                                              coord: {0, 0, 0}, tool_id: 1, material: 36}}} =
+    assert {:ok,
+            {:voxel_production_intent,
+             %{
+               request_id: 22,
+               client_intent_seq: 9,
+               logical_scene_id: 1,
+               action: 5,
+               coord: {0, 0, 0},
+               tool_id: 1,
+               material: 36
+             }}} =
              MmoContracts.Voxel.Codec.decode(wire)
   end
 
@@ -92,17 +143,37 @@ defmodule MmoContracts.BodyWireTest do
     assert {:ok, %{recoverable: 30}} = Session.Codec.decode(head <> <<30>> <> rest)
     <<head::binary-size(35), _status, rest::binary>> = @sample
     assert {:error, _} = Session.Codec.decode(head <> <<3>> <> rest)
+
     # 第二条伤病：严重度在倒数第 18 字节、进度倒数第 17、剩余倒数第 16..9（其后是 8 字节蛋白）
     n = byte_size(@sample)
-    remaining = fn v -> binary_part(@sample, 0, n - 16) <> <<v::float-64>> <> binary_part(@sample, n - 8, 8) end
-    assert {:error, _} = Session.Codec.decode(binary_part(@sample, 0, n - 18) <> <<0>> <> binary_part(@sample, n - 17, 17))
-    assert {:error, _} = Session.Codec.decode(binary_part(@sample, 0, n - 17) <> <<101>> <> binary_part(@sample, n - 16, 16))
-    assert {:ok, _} = Session.Codec.decode(binary_part(@sample, 0, n - 17) <> <<100>> <> binary_part(@sample, n - 16, 16))
+
+    remaining = fn v ->
+      binary_part(@sample, 0, n - 16) <> <<v::float-64>> <> binary_part(@sample, n - 8, 8)
+    end
+
+    assert {:error, _} =
+             Session.Codec.decode(
+               binary_part(@sample, 0, n - 18) <> <<0>> <> binary_part(@sample, n - 17, 17)
+             )
+
+    assert {:error, _} =
+             Session.Codec.decode(
+               binary_part(@sample, 0, n - 17) <> <<101>> <> binary_part(@sample, n - 16, 16)
+             )
+
+    assert {:ok, _} =
+             Session.Codec.decode(
+               binary_part(@sample, 0, n - 17) <> <<100>> <> binary_part(@sample, n - 16, 16)
+             )
+
     assert {:ok, %{injuries: [_, %{remaining_s: -1.0}]}} = Session.Codec.decode(remaining.(-1.0))
     assert {:ok, %{injuries: [_, %{remaining_s: -2.0}]}} = Session.Codec.decode(remaining.(-2.0))
     assert {:error, _} = Session.Codec.decode(remaining.(-0.5))
     assert {:error, _} = Session.Codec.decode(remaining.(-3.0))
-    assert {:error, _} = Session.Codec.decode(binary_part(@sample, 0, n - 8) <> <<-1.0::float-64>>)
+
+    assert {:error, _} =
+             Session.Codec.decode(binary_part(@sample, 0, n - 8) <> <<-1.0::float-64>>)
+
     assert {:error, _} = Session.Codec.decode(binary_part(@sample, 0, n - 1))
   end
 end

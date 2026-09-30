@@ -444,8 +444,10 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   defp encode_with_details(terrain, p, seq, content_version) do
-    materials = for {i, _} <- p.liquid_units, into: MapSet.new(),
-      do: :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little)
+    materials =
+      for {i, _} <- p.liquid_units,
+          into: MapSet.new(),
+          do: :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little)
 
     version =
       cond do

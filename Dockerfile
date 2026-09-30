@@ -1,17 +1,21 @@
-# syntax=docker/dockerfile:1.7
 # -----------------------------------------------------------------------------
-# ex_mmo_cluster — production image
+# Voxim server — production image (release `voxim_server`)
 #
-# Production image contains two Elixir releases: ex_mmo_cluster for the
-# edge/world/data control plane and ex_mmo_scene for horizontally scalable scene
-# runtimes. Rust NIFs (scene_ops / octree / coordinate_system / movement_engine)
-# are compiled inside the builder stage via Rustler.
+# One BEAM node runs World / Scene / Auth / Gate; a multi-Scene topology
+# (`VOXIM_TOPOLOGY`) starts extra Scene peer nodes from the same release.
+# World data, certificates, catalogs and the topology file are mounted at
+# runtime (see deploy/README.md); nothing world-specific is baked in.
 #
-# Target: linux/amd64 only.
+# The server shares two sources with the Voxim client repository, supplied as a
+# named build context:
+#   docker build --build-context voxim=../Voxim -t voxim-server:<version> .
+# (see deploy/build-image.sh).
+#
+# Target: linux/amd64.
 # -----------------------------------------------------------------------------
 
 # ============================================================================
-# Stage 1 — Builder: Elixir + OTP + Node + Rust toolchain
+# Stage 1 — Builder: Elixir + OTP + Rust + CMake (MsQuic for quicer)
 # ============================================================================
 FROM hexpm/elixir:1.18.5-erlang-27.2.4-debian-bookworm-20260824-slim AS builder
 
@@ -19,76 +23,55 @@ ENV MIX_ENV=prod \
     LANG=C.UTF-8 \
     DEBIAN_FRONTEND=noninteractive
 
-# System build deps + Node (for Phoenix asset pipeline) + curl (for rustup).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential \
       ca-certificates \
+      cmake \
       curl \
       git \
+      perl \
       pkg-config \
       libssl-dev \
-      nodejs \
-      npm \
  && rm -rf /var/lib/apt/lists/*
 
-# Rust toolchain — pinned to 1.94 stable. rapier3d-f64 + rustler 0.37 verified.
-ARG RUST_VERSION=1.94.0
+# Same toolchain as the verified local builds (rustler NIFs + the shared movement crate).
+ARG RUST_VERSION=1.91.0
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Hex + rebar (release deps fetch).
 RUN mix local.hex --force && mix local.rebar --force
 
-WORKDIR /app
+WORKDIR /build/ex_mmo_cluster
 
-# Copy the full source tree. .dockerignore excludes _build, deps, docs, .omc,
-# apps/*/target, node_modules, etc. For umbrella releases the per-app mix.exs
-# files are all required before `mix deps.get`, so a partial-copy cache trick
-# would be brittle — accept slower cache invalidation for simplicity.
+# voxel_region reads the client's spatial constants at compile time and the
+# movement NIF links the shared movement crate (its build.rs writes the C header
+# into Plugins/VoximMovement/Source). Paths are relative to /build/ex_mmo_cluster.
+COPY --from=voxim Source/Voxim/Voxel/VoxelSpatialConstants.h /build/Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h
+COPY --from=voxim Plugins/VoximMovement/Native /build/Voxim/Plugins/VoximMovement/Native
+COPY --from=voxim Plugins/VoximMovement/Source /build/Voxim/Plugins/VoximMovement/Source
+
 COPY mix.exs mix.lock ./
 COPY config config
 COPY apps apps
+COPY rel rel
 
-# voxel_region reads the client's spatial constants header at compile time
-# (apps/voxel_region/lib/voxel_region/spatial.ex resolves ../../../../../Voxim
-# relative to /app, i.e. /Voxim). Supply it from a named build context:
-#   docker build --build-context voxim=../Voxim .
-COPY --from=voxim Source/Voxim/Voxel/VoxelSpatialConstants.h /Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h
-# 服务端与客户端共用移动内核；cbindgen 同时需要原有头文件输出目录。
-COPY --from=voxim Plugins/VoximMovement/Native /Voxim/Plugins/VoximMovement/Native
-COPY --from=voxim Plugins/VoximMovement/Source /Voxim/Plugins/VoximMovement/Source
-
-# Fetch + compile deps. `--only prod` trims dev/test dependencies.
-RUN mix deps.get --only prod
-RUN mix deps.compile
-
-# Compile the umbrella (triggers Rustler → Cargo compile for all 4 NIFs).
-RUN mix compile
-
-# Phoenix asset pipeline: tailwind --minify, esbuild --minify, phx.digest.
-# Root alias `assets.deploy` fans out into both Phoenix apps (see mix.exs).
-RUN mix assets.deploy
-
-# Build both production releases.
-#
-# - ex_mmo_cluster: edge/world/data release; scene_server code is loaded for
-#   remote calls but the scene runtime is not started here.
-# - ex_mmo_scene: scene-only runtime used by the scalable Compose service.
-RUN mix release ex_mmo_cluster && mix release ex_mmo_scene
+RUN mix deps.get --only prod \
+ && mix deps.compile \
+ && mix compile \
+ && mix release voxim_server
 
 # ============================================================================
-# Stage 2 — Runtime: minimal debian-slim + libssl + ncurses (ERTS dep)
+# Stage 2 — Runtime
 # ============================================================================
-FROM debian:bookworm-slim AS runtime
+# Same Debian bookworm base as the builder (keeps OpenSSL / libstdc++ ABI identical to the build).
+FROM hexpm/elixir:1.18.5-erlang-27.2.4-debian-bookworm-20260824-slim AS runtime
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     DEBIAN_FRONTEND=noninteractive
 
-# ERTS is bundled via include_erts:true, but it still requires these shared
-# libraries at the OS level.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libstdc++6 \
@@ -99,30 +82,23 @@ RUN apt-get update \
       tini \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root user.
-RUN groupadd --system --gid 1000 ex_mmo_cluster \
- && useradd --system --uid 1000 --gid ex_mmo_cluster --home /app --shell /bin/bash ex_mmo_cluster
+RUN groupadd --system --gid 1000 voxim \
+ && useradd --system --uid 1000 --gid voxim --home /app --shell /bin/sh voxim
 
 WORKDIR /app
+COPY --from=builder --chown=voxim:voxim /build/ex_mmo_cluster/_build/prod/rel/voxim_server ./
+USER voxim
 
-COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/ex_mmo_cluster ./
-COPY --from=builder --chown=ex_mmo_cluster:ex_mmo_cluster /app/_build/prod/rel/ex_mmo_scene ./ex_mmo_scene
-
-USER ex_mmo_cluster
-
-# Safe single-node defaults that can be overridden by docker-compose env_file /
-# environment. Production Compose enables clustering for app + scalable scene
-# containers. Actual secrets (SECRET_KEY_BASE, DB creds, RELEASE_COOKIE) must be
-# injected.
+# Distribution is required: Scene peer nodes connect back to this node. Secrets
+# (SECRET_KEY_BASE, MMO_DB_PASSWORD, RELEASE_COOKIE) and the world/cert paths are
+# injected by the deployment (deploy/.env).
 ENV PHX_SERVER=true \
-    DISABLE_CLUSTER=true \
-    RELEASE_DISTRIBUTION=none \
-    AUTH_PORT=20000 \
-    VISUALIZE_PORT=20001 \
-    GATE_TCP_PORT=20002 \
-    GATE_UDP_PORT=20003
+    RELEASE_DISTRIBUTION=name \
+    RELEASE_NODE=voxim@127.0.0.1 \
+    AUTH_PORT=24640 \
+    VOXIM_QUIC_PORT=24643
 
-EXPOSE 20000 20001 20002 20003/udp
+EXPOSE 24640 24643/udp
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/bin/ex_mmo_cluster"]
-CMD ["start"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/app/bin/server"]

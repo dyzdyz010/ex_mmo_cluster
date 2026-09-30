@@ -69,10 +69,8 @@ mix test apps/mmo_contracts/test
   `Voxel.Fields` 保留旧字段边界检查 `u8!/2`、`u16!/2`、`u32!/2`、`u64!/2`、`world_micro!/1`、`face_normal!/1`，
   当前编辑和旧 surface-element 编码共用，避免重复同一字段规则。
 
-Gate 的既有 `Session.Dispatch.decode/1` 与 `Session.Sink.encode/1` 只按 guard 选择上述 owner，
-其他消息交给仍有活调用方的 `GateServer.Codec`；TCP/WS 共用，旧 UDP fast-lane 保持原路径。
-旧 Gate codec 保留 movement/time-sync/fast-lane、玩家/NPC、聊天/战斗、Scene chunk/object/field/prefab 等协议，
-不保留当前 Session/Voxel 字节逻辑或 delegate。旧 `VoxelRegion.Codec`/`Payload` 已无调用方并删除。
+Gate 的 `Session.Sink.encode/1` 只按 guard 选择上述 owner；QUIC 连接按通道直接调用对应 codec 解码。
+旧 `GateServer.Codec`（TCP/WS、fast-lane、chunk 协议）已于 2026-09-30 随旧客户端删除。
 新 Movement 的纯类型与 codec 由下述 C1 提供；固定 60 Hz 权威联调、QUIC 集成、bootstrap runtime 仍待后续阶段实施，不要求兼容旧移动协议。
 
 G0 普通测试直接调用新 owner，期望仍为同级 Voxim 的原 31 个二进制文件；不再 require sibling 源码。

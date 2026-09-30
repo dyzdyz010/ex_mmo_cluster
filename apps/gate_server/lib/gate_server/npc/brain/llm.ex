@@ -55,7 +55,8 @@ defmodule GateServer.Npc.Brain.Llm do
       %{
         type: "function",
         name: "probe_toward",
-        description: "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
+        description:
+          "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
         parameters: %{
           type: "object",
           properties: %{
@@ -81,12 +82,10 @@ defmodule GateServer.Npc.Brain.Llm do
           additionalProperties: false
         }
       },
-
       %{
         type: "function",
         name: "place",
-        description:
-          "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
+        description: "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
         parameters: %{
           type: "object",
           properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
@@ -139,7 +138,8 @@ defmodule GateServer.Npc.Brain.Llm do
       %{
         type: "function",
         name: "detach",
-        description: "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
+        description:
+          "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
         parameters: %{
           type: "object",
           properties:
@@ -173,7 +173,6 @@ defmodule GateServer.Npc.Brain.Llm do
           additionalProperties: false
         }
       },
-
       %{
         type: "function",
         name: "say",
@@ -294,7 +293,12 @@ defmodule GateServer.Npc.Brain.Llm do
         "prefab" ->
           %{
             id: id,
-            verb: %{"place" => :prefab_place, "remove" => :prefab_remove, "replace" => :prefab_replace}[args["op"]],
+            verb:
+              %{
+                "place" => :prefab_place,
+                "remove" => :prefab_remove,
+                "replace" => :prefab_replace
+              }[args["op"]],
             definition_id: hex(args["definition"]),
             anchor: {args["x"], args["y"], args["z"]},
             orientation: args["orientation"],
@@ -323,12 +327,14 @@ defmodule GateServer.Npc.Brain.Llm do
 
   @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/4` 相同；Outcome 回来时附给模型看。"
   def calls(%{"output" => output}, next_id) do
-    for {call, id} <- output |> Enum.filter(&(&1["type"] == "function_call")) |> Enum.with_index(next_id),
+    for {call, id} <-
+          output |> Enum.filter(&(&1["type"] == "function_call")) |> Enum.with_index(next_id),
         into: %{},
         do: {id, %{tool: call["name"], args: Jason.decode!(call["arguments"])}}
   end
 
-  defp unit(%{"dx" => dx, "dy" => dy, "dz" => dz}) when is_number(dx) and is_number(dy) and is_number(dz) do
+  defp unit(%{"dx" => dx, "dy" => dy, "dz" => dz})
+       when is_number(dx) and is_number(dy) and is_number(dz) do
     length = :math.sqrt(dx * dx + dy * dy + dz * dz)
     if length > 0, do: {dx / length, dy / length, dz / length}, else: {dx, dy, dz}
   end
@@ -380,6 +386,7 @@ defmodule GateServer.Npc.Brain.Llm do
         {:observation, observation} ->
           if state.skill && state.skill.command.skill != :design && state.skill.cancelling == nil,
             do: send(state.skill.pid, {:observation, observation})
+
           %{state | observation: observation}
 
         {:outcome, %{id: {:skill, id, step}} = outcome} ->
@@ -387,11 +394,17 @@ defmodule GateServer.Npc.Brain.Llm do
             %{command: %{id: ^id}, cancelling: nil} = active ->
               send(active.pid, {:outcome, %{outcome | id: step}})
               state
+
             %{command: %{id: ^id}, cancelling: reason} when step == :stop ->
-              reason = if outcome.status == :done, do: reason,
-                else: {:stop_failed, outcome.status, outcome.reason}
+              reason =
+                if outcome.status == :done,
+                  do: reason,
+                  else: {:stop_failed, outcome.status, outcome.reason}
+
               finish_skill(state, {:error, reason, %{request_count: nil, jev_request_count: nil}})
-            _ -> state
+
+            _ ->
+              state
           end
 
         {:outcome, outcome} ->
@@ -416,14 +429,26 @@ defmodule GateServer.Npc.Brain.Llm do
         {:DOWN, ref, :process, _pid, reason} ->
           case state.skill do
             %{ref: ^ref, cancelling: nil} ->
-              finish_skill(state, {:error, {:skill_failed, exit_kind(reason)}, %{request_count: nil, jev_request_count: nil}})
+              finish_skill(
+                state,
+                {:error, {:skill_failed, exit_kind(reason)},
+                 %{request_count: nil, jev_request_count: nil}}
+              )
+
             %{ref: ^ref} = active ->
               # 等技能退出，最后一条原子命令已发完，再排入停止命令。
-              GateServer.Npc.Body.command(state.body, %{id: {:skill, active.command.id, :stop}, verb: :stop})
+              GateServer.Npc.Body.command(state.body, %{
+                id: {:skill, active.command.id, :stop},
+                verb: :stop
+              })
+
               state
+
             %{jev_ref: ^ref, cancelling: nil} when reason != :normal ->
               interrupt_skill(state, :scheduler_unavailable)
-            _ -> state
+
+            _ ->
+              state
           end
 
         {:EXIT, body, _reason} when body == state.body ->
@@ -433,11 +458,15 @@ defmodule GateServer.Npc.Brain.Llm do
         {:EXIT, pid, reason} when pid == state.request_pid and reason != :normal ->
           exit(reason)
 
-        {:EXIT, _pid, _reason} -> state
+        {:EXIT, _pid, _reason} ->
+          state
 
         {:answer, {:ok, response}} ->
           all = commands(response, state.probe, state.things, state.next_id)
-          {local, commands} = Enum.split_with(all, &(&1.verb in [:wait, :remember, :recall, :search_memory]))
+
+          {local, commands} =
+            Enum.split_with(all, &(&1.verb in [:wait, :remember, :recall, :search_memory]))
+
           {skills, body_commands} = Enum.split_with(commands, &(&1.verb == :skill))
 
           {memories, waits} = Enum.split_with(local, &(&1.verb != :wait))
@@ -446,8 +475,9 @@ defmodule GateServer.Npc.Brain.Llm do
           for command <- body_commands, do: GateServer.Npc.Body.command(state.body, command)
 
           # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
-          for %{seconds: seconds} <- waits, is_number(seconds),
-            do: Process.send_after(self(), :wake, round(min(300, max(1, seconds)) * 1_000))
+          for %{seconds: seconds} <- waits,
+              is_number(seconds),
+              do: Process.send_after(self(), :wake, round(min(300, max(1, seconds)) * 1_000))
 
           probes =
             for %{verb: :probe_toward, id: id, direction: direction} <- commands,
@@ -455,13 +485,23 @@ defmodule GateServer.Npc.Brain.Llm do
                 do: {id, direction}
 
           sent = Map.take(calls(response, state.next_id), Enum.map(commands ++ memories, & &1.id))
-          state = %{state | asking: false, request_pid: nil, probes: probes, calls: Map.merge(state.calls, sent), next_id: state.next_id + length(all)}
 
-          state = Enum.reduce(memories, state, fn command, state ->
-            actor = state.observation.self
-            outcome = Memory.execute(state.memory, actor.entity_id, actor.position, command)
-            record_outcome(state, outcome)
-          end)
+          state = %{
+            state
+            | asking: false,
+              request_pid: nil,
+              probes: probes,
+              calls: Map.merge(state.calls, sent),
+              next_id: state.next_id + length(all)
+          }
+
+          state =
+            Enum.reduce(memories, state, fn command, state ->
+              actor = state.observation.self
+              outcome = Memory.execute(state.memory, actor.entity_id, actor.position, command)
+              record_outcome(state, outcome)
+            end)
+
           Enum.reduce(skills, state, &start_skill(&2, &1))
 
         :wake ->
@@ -478,43 +518,97 @@ defmodule GateServer.Npc.Brain.Llm do
   defp start_skill(%{skill: nil} = state, command) do
     active = Skills.start(state.body, command, state.profile, state.observation)
     timer = Process.send_after(self(), {:skill_check, command.id}, 10_000)
-    %{state | skill: Map.merge(active, %{timer: timer, cancelling: nil, jev_ref: nil, jev_pid: nil, jev_requests: 0})}
-  end
-  defp start_skill(state, command),
-    do: record_outcome(state, %{id: command.id, verb: command.skill, status: :rejected, reason: :skill_busy, data: nil})
 
-  defp check_skill(%{skill: %{command: %{id: id}, cancelling: nil, jev_ref: nil} = active} = state, id) do
+    %{
+      state
+      | skill:
+          Map.merge(active, %{
+            timer: timer,
+            cancelling: nil,
+            jev_ref: nil,
+            jev_pid: nil,
+            jev_requests: 0
+          })
+    }
+  end
+
+  defp start_skill(state, command),
+    do:
+      record_outcome(state, %{
+        id: command.id,
+        verb: command.skill,
+        status: :rejected,
+        reason: :skill_busy,
+        data: nil
+      })
+
+  defp check_skill(
+         %{skill: %{command: %{id: id}, cancelling: nil, jev_ref: nil} = active} = state,
+         id
+       ) do
     parent = self()
     # 不把用户目标或聊天原文塞进 Jev；只给英文事实和结构化权威观察。
-    situation = "An NPC is executing the #{active.command.skill} skill. " <>
-      "A player is addressing the NPC: #{state.heard}. Current observation: " <>
-      Jason.encode!(plain(Map.take(state.observation, [:self, :entities, :balances, :pending])))
-    {pid, ref} = :erlang.spawn_opt(fn ->
-      result = Jev.ask(state.profile.scheduler, state.profile.activities, situation, nil, state.request)
-      send(parent, {:skill_verdict, id, result})
-    end, [:link, :monitor])
-    %{state | skill: %{active | jev_ref: ref, jev_pid: pid, jev_requests: active.jev_requests + 1}}
+    situation =
+      "An NPC is executing the #{active.command.skill} skill. " <>
+        "A player is addressing the NPC: #{state.heard}. Current observation: " <>
+        Jason.encode!(plain(Map.take(state.observation, [:self, :entities, :balances, :pending])))
+
+    {pid, ref} =
+      :erlang.spawn_opt(
+        fn ->
+          result =
+            Jev.ask(
+              state.profile.scheduler,
+              state.profile.activities,
+              situation,
+              nil,
+              state.request
+            )
+
+          send(parent, {:skill_verdict, id, result})
+        end,
+        [:link, :monitor]
+      )
+
+    %{
+      state
+      | skill: %{active | jev_ref: ref, jev_pid: pid, jev_requests: active.jev_requests + 1}
+    }
   end
+
   defp check_skill(state, _), do: state
 
-  defp decide_skill(%{skill: %{command: %{id: id}, cancelling: nil} = active} = state, id, verdict) do
+  defp decide_skill(
+         %{skill: %{command: %{id: id}, cancelling: nil} = active} = state,
+         id,
+         verdict
+       ) do
     Process.demonitor(active.jev_ref, [:flush])
     state = %{state | skill: %{active | jev_ref: nil, jev_pid: nil}}
+
     case verdict do
       {:ok, {:act, activity}, _} when activity == state.profile.continue_activity ->
         Process.cancel_timer(active.timer)
         timer = Process.send_after(self(), {:skill_check, id}, 10_000)
         %{state | skill: %{state.skill | timer: timer}}
-      {:ok, {:act, activity}, _} -> interrupt_skill(state, {:interrupted, activity})
-      {:ok, other, _} -> interrupt_skill(state, {:interrupted, other})
-      {:error, _} -> interrupt_skill(state, :scheduler_unavailable)
+
+      {:ok, {:act, activity}, _} ->
+        interrupt_skill(state, {:interrupted, activity})
+
+      {:ok, other, _} ->
+        interrupt_skill(state, {:interrupted, other})
+
+      {:error, _} ->
+        interrupt_skill(state, :scheduler_unavailable)
     end
   end
+
   defp decide_skill(state, _, _), do: state
 
   defp interrupt_skill(%{skill: active} = state, reason) do
     Process.cancel_timer(active.timer)
     Process.exit(active.pid, :shutdown)
+
     # DOWN 后才发 stop；它不能撤销已提交的世界事务，只有权威 done 才确认停止。
     %{state | skill: %{active | cancelling: reason}}
   end
@@ -524,33 +618,57 @@ defmodule GateServer.Npc.Brain.Llm do
     Process.demonitor(active.ref, [:flush])
     if active.jev_pid, do: Process.exit(active.jev_pid, :shutdown)
     if active.jev_ref, do: Process.demonitor(active.jev_ref, [:flush])
-    {status, reason, data} = case result do
-      {:ok, data} -> {:done, nil, data}
-      {:error, reason, metrics} -> {:rejected, reason, %{metrics: metrics}}
-    end
+
+    {status, reason, data} =
+      case result do
+        {:ok, data} -> {:done, nil, data}
+        {:error, reason, metrics} -> {:rejected, reason, %{metrics: metrics}}
+      end
+
     # 子进程未返回统计时保留未知；父脑自己发出的 Jev 次数始终确知。
-    metrics = Map.update(Map.get(data, :metrics, %{}), :jev_request_count, active.jev_requests, fn
-      nil -> nil
-      count -> count + active.jev_requests
-    end) |> Map.put(:parent_jev_request_count, active.jev_requests)
+    metrics =
+      Map.update(Map.get(data, :metrics, %{}), :jev_request_count, active.jev_requests, fn
+        nil -> nil
+        count -> count + active.jev_requests
+      end)
+      |> Map.put(:parent_jev_request_count, active.jev_requests)
+
     data = Map.put(data, :metrics, metrics)
     # 荒野状态机已有事实 journal；其他技能在这里记一条结束经历。
-    data = if active.command.skill == :wilderness do
-      data
-    else
-      actor = state.observation.self
-      experience = "Skill #{active.command.skill}: status=#{status}; reason=#{inspect(reason)}; " <>
-        "request=#{inspect(active.command.args,limit: 20,printable_limit: 350)}; " <>
-        "last_check=#{inspect(Map.get(metrics,:last_check),limit: 30,printable_limit: 500)}; " <>
-        "result=#{inspect(Map.take(data,[:definition_id,:seq,:instance_id]),limit: 10)}"
-      case Memory.journal(state.memory, actor.entity_id, String.slice(experience,0,1500), actor.position) do
-        {:ok, _} -> data
-        {:error, error} -> Map.put(data, :memory_error, error)
+    data =
+      if active.command.skill == :wilderness do
+        data
+      else
+        actor = state.observation.self
+
+        experience =
+          "Skill #{active.command.skill}: status=#{status}; reason=#{inspect(reason)}; " <>
+            "request=#{inspect(active.command.args, limit: 20, printable_limit: 350)}; " <>
+            "last_check=#{inspect(Map.get(metrics, :last_check), limit: 30, printable_limit: 500)}; " <>
+            "result=#{inspect(Map.take(data, [:definition_id, :seq, :instance_id]), limit: 10)}"
+
+        case Memory.journal(
+               state.memory,
+               actor.entity_id,
+               String.slice(experience, 0, 1500),
+               actor.position
+             ) do
+          {:ok, _} -> data
+          {:error, error} -> Map.put(data, :memory_error, error)
+        end
       end
-    end
-    Logger.info("npc_skill_outcome skill=#{active.command.skill} status=#{status} metrics=#{inspect(metrics)}")
-    record_outcome(%{state | skill: nil, heard: false}, %{id: active.command.id, verb: active.command.skill,
-      status: status, reason: reason, data: data})
+
+    Logger.info(
+      "npc_skill_outcome skill=#{active.command.skill} status=#{status} metrics=#{inspect(metrics)}"
+    )
+
+    record_outcome(%{state | skill: nil, heard: false}, %{
+      id: active.command.id,
+      verb: active.command.skill,
+      status: status,
+      reason: reason,
+      data: data
+    })
   end
 
   defp exit_kind({%{__struct__: module}, _}), do: module
@@ -562,7 +680,13 @@ defmodule GateServer.Npc.Brain.Llm do
     position = state.observation && state.observation.self.position
     {call, calls} = Map.pop(state.calls, outcome.id)
     outcome = if call, do: Map.put(outcome, :command, call), else: outcome
-    %{state | calls: calls, dirty: true, outcomes: Enum.take(remember(outcome, state.outcomes, position), @history)}
+
+    %{
+      state
+      | calls: calls,
+        dirty: true,
+        outcomes: Enum.take(remember(outcome, state.outcomes, position), @history)
+    }
   end
 
   defp remember_probe(state, %{verb: :probe_toward, id: id} = outcome) do
@@ -588,25 +712,40 @@ defmodule GateServer.Npc.Brain.Llm do
   defp remember_probe(state, _), do: state
 
   @doc "Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；更早的 look 只留结论。"
-  def remember(%{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome, outcomes, _position) do
+  def remember(
+        %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome,
+        outcomes,
+        _position
+      ) do
     columns =
-      for(%{cell: [x, y, z], material: material} = cell <- cells, material != 0,
+      for(
+        %{cell: [x, y, z], material: material} = cell <- cells,
+        material != 0,
         # 有人花材料放下的格带上放置者的 entity_id（第三项）；天然地形与作者写入的格只有 [y, material]。
         do: {"#{x},#{z}", [y, material] ++ List.wrap(cell[:placed_by])}
       )
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
     older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
-    data = Map.take(outcome.data, [:seq,:bounds_macro_inclusive,:outside,:attachments])
-      |> Map.merge(%{solid: columns,refined: Enum.filter(cells,& &1.refined)})
+
+    data =
+      Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])
+      |> Map.merge(%{solid: columns, refined: Enum.filter(cells, & &1.refined)})
+
     [%{outcome | data: data} | older]
   end
 
   # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。
-  def remember(%{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome, outcomes, position) do
+  def remember(
+        %{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome,
+        outcomes,
+        position
+      ) do
     # micro 坐标 / 8 = 米；按到自己的距离取最近的 @nearest 件。
     nearest = fn rows ->
-      rows |> Enum.sort_by(fn %{micro: {x, y, z}} -> distance({x / 8, y / 8, z / 8}, position) end) |> Enum.take(@nearest)
+      rows
+      |> Enum.sort_by(fn %{micro: {x, y, z}} -> distance({x / 8, y / 8, z / 8}, position) end)
+      |> Enum.take(@nearest)
     end
 
     attachments =
@@ -616,14 +755,23 @@ defmodule GateServer.Npc.Brain.Llm do
       end
 
     components =
-      for %{owner: {birth, occurrence}} = row <- nearest.(Enum.filter(rows, &(&1.granularity == 2))),
-        do: %{instance: [birth, occurrence], material: row.material, cells: row.observation_cells}
+      for %{owner: {birth, occurrence}} = row <-
+            nearest.(Enum.filter(rows, &(&1.granularity == 2))),
+          do: %{
+            instance: [birth, occurrence],
+            material: row.material,
+            cells: row.observation_cells
+          }
 
-    data = Map.merge(Map.take(outcome.data,[:seq,:bounds_region_half_open]), %{
-      attachments: attachments,
-      components: components,
-      total: %{attachments: Enum.count(rows, &(&1.granularity == 3)), components: Enum.count(rows, &(&1.granularity == 2))}
-    })
+    data =
+      Map.merge(Map.take(outcome.data, [:seq, :bounds_region_half_open]), %{
+        attachments: attachments,
+        components: components,
+        total: %{
+          attachments: Enum.count(rows, &(&1.granularity == 3)),
+          components: Enum.count(rows, &(&1.granularity == 2))
+        }
+      })
 
     older = for o <- outcomes, do: if(o.verb == :inspect, do: %{o | data: nil}, else: o)
     [%{outcome | data: data} | older]
@@ -635,15 +783,25 @@ defmodule GateServer.Npc.Brain.Llm do
     do: :math.sqrt((x - px) * (x - px) + (y - py) * (y - py) + (z - pz) * (z - pz))
 
   # 有新情况、没有在途命令、没有在途请求、且过了最小间隔，才问一次。
-  defp ask(%{dirty: true, asking: false, skill: nil, observation: %{pending: []} = observation} = state) do
+  defp ask(
+         %{dirty: true, asking: false, skill: nil, observation: %{pending: []} = observation} =
+           state
+       ) do
     now = System.monotonic_time(:millisecond)
 
     if now - state.asked_ms >= @min_gap_ms do
       owner = self()
-      query = state.profile.goal <> " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
+
+      query =
+        state.profile.goal <>
+          " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
+
       experiences = Memory.context(state.memory, observation.self.entity_id, query)
       body = body(state.profile, observation, state.outcomes, experiences)
-      pid = spawn_link(fn -> send(owner, {:answer, state.request.(state.profile.endpoint, body)}) end)
+
+      pid =
+        spawn_link(fn -> send(owner, {:answer, state.request.(state.profile.endpoint, body)}) end)
+
       %{state | dirty: false, asking: true, request_pid: pid, asked_ms: now}
     else
       state
@@ -665,20 +823,24 @@ defmodule GateServer.Npc.Brain.Llm do
           "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。" <>
           "能力以本次 tools 参数表为准；设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。",
       input:
-        Jason.encode!(%{
-          goal: profile.goal,
-          coordinates: Context.coordinates(),
-          self: plain(observation.self),
-          tools: profile.tools,
-          # 背包：每种材料还能放几个整格；null = 还没读过。
-          balances:
-            observation.balances &&
-              for(%{balance: balance} = b when balance > 0 <- observation.balances,
-                do: %{material: b.material, cells: balance / b.cost}
-              ),
-          entities: Enum.map(observation.entities, &plain/1),
-          outcomes: outcomes |> Enum.reverse() |> Enum.map(&plain/1)
-        } |> Map.merge(memory_input(experiences))),
+        Jason.encode!(
+          %{
+            goal: profile.goal,
+            coordinates: Context.coordinates(),
+            self: plain(observation.self),
+            tools: profile.tools,
+            # 背包：每种材料还能放几个整格；null = 还没读过。
+            balances:
+              observation.balances &&
+                for(
+                  %{balance: balance} = b when balance > 0 <- observation.balances,
+                  do: %{material: b.material, cells: balance / b.cost}
+                ),
+            entities: Enum.map(observation.entities, &plain/1),
+            outcomes: outcomes |> Enum.reverse() |> Enum.map(&plain/1)
+          }
+          |> Map.merge(memory_input(experiences))
+        ),
       tools: tools(profile),
       tool_choice: "required",
       parallel_tool_calls: false,
@@ -691,13 +853,19 @@ defmodule GateServer.Npc.Brain.Llm do
   defp memory_input(%{} = context), do: plain(context)
 
   # 元组 → 列表，其余原样；权威返回的 reason / data 可能含元组与原子。
-  defp plain(%{} = map), do: Map.new(map, fn
-    {:definition_id, <<_::256>> = id} -> {:definition_id, Base.encode16(id, case: :lower)}
-    {k, v} -> {k, plain(v)}
-  end)
+  defp plain(%{} = map),
+    do:
+      Map.new(map, fn
+        {:definition_id, <<_::256>> = id} -> {:definition_id, Base.encode16(id, case: :lower)}
+        {k, v} -> {k, plain(v)}
+      end)
+
   defp plain(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> Enum.map(&plain/1)
   defp plain(list) when is_list(list), do: Enum.map(list, &plain/1)
-  defp plain(binary) when is_binary(binary), do: if(String.valid?(binary), do: binary, else: Base.encode16(binary))
+
+  defp plain(binary) when is_binary(binary),
+    do: if(String.valid?(binary), do: binary, else: Base.encode16(binary))
+
   defp plain(other), do: other
 
   @doc false
@@ -713,7 +881,9 @@ defmodule GateServer.Npc.Brain.Llm do
         end
 
     headers = [{~c"authorization", String.to_charlist("Bearer " <> endpoint.key)}]
-    request = {String.to_charlist(endpoint.url), headers, ~c"application/json", Jason.encode!(body)}
+
+    request =
+      {String.to_charlist(endpoint.url), headers, ~c"application/json", Jason.encode!(body)}
 
     case :httpc.request(:post, request, [ssl: ssl, timeout: 60_000], body_format: :binary) do
       {:ok, {{_, 200, _}, _, response}} -> {:ok, Jason.decode!(response)}

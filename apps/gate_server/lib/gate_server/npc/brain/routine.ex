@@ -11,7 +11,8 @@ defmodule GateServer.Npc.Brain.Routine do
   @gap 36
 
   @impl true
-  def init(%{steps: steps}), do: %{steps: steps, waiting: nil, ready_at: 0, tick: 0, probe: nil, next_id: 1}
+  def init(%{steps: steps}),
+    do: %{steps: steps, waiting: nil, ready_at: 0, tick: 0, probe: nil, next_id: 1}
 
   @impl true
   def handle_event(
@@ -26,7 +27,11 @@ defmodule GateServer.Npc.Brain.Routine do
   def handle_event({:observation, %{self: %{tick: tick}}}, state), do: {[], %{state | tick: tick}}
 
   def handle_event({:outcome, %{id: id} = outcome}, %{waiting: id} = state) do
-    probe = if match?(%{verb: :probe_toward, status: :done}, outcome), do: outcome.data, else: state.probe
+    probe =
+      if match?(%{verb: :probe_toward, status: :done}, outcome),
+        do: outcome.data,
+        else: state.probe
+
     {[], %{state | waiting: nil, probe: probe, ready_at: state.tick + @gap}}
   end
 

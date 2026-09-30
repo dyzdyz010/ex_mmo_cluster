@@ -1,0 +1,6 @@
+#!/bin/sh
+# Voxim 服务端容器入口：先把数据库迁移到最新，再以前台方式启动 release。
+set -eu
+cd -P -- "$(dirname -- "$0")/.."
+bin/voxim_server eval 'DataService.Release.migrate()'
+exec bin/voxim_server start

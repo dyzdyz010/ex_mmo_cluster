@@ -2,6 +2,9 @@ defmodule VoxelRegion.Combustion do
   @moduledoc "全局系统功能：B6 充足氧气下的有限燃料燃烧规则。"
   @fuel_epsilon_j 1.0e-9
 
+  @doc "燃料耗尽阈值（J）；原生热域的燃烧推进与点燃判定使用同一值。"
+  def fuel_epsilon_j, do: @fuel_epsilon_j
+
   @doc "已初始化燃料达到耗尽阈值；无记录表示尚未点燃，不虚构余量。"
   def exhausted?(row),
     do: is_map_key(row, :remaining_fuel_j) and row.remaining_fuel_j <= @fuel_epsilon_j
@@ -57,14 +60,6 @@ defmodule VoxelRegion.Combustion do
   end
 
   def extinguish(row), do: Map.merge(row, %{burning: false, power_w: 0.0})
-
-  @doc "推进一个模拟时间步，返回新行、放热 J、实际耗燃 J。"
-  def step(row, dt) do
-    power = if row.burning, do: row.power_w, else: 0.0
-    fuel = max(0.0, Map.get(row, :remaining_fuel_j, 0.0))
-    used = min(fuel, power * dt)
-    {consume(Map.put(row, :remaining_fuel_j, fuel), used), used, used}
-  end
 
   @doc "从已初始化的余量中取走 used 焦耳化学燃料；取尽即熄灭，由既有耗尽规则移除。"
   def consume(row, used) do

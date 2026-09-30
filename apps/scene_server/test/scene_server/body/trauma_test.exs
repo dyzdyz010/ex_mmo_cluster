@@ -9,7 +9,12 @@ defmodule SceneServer.Body.TraumaTest do
     body = Body.trauma(Body.new(), :torso, @impact)
     assert Body.life(body) == 80
     assert Body.recoverable_life(body) == 20
-    assert Enum.any?(Body.injuries(body), &(&1.tag == "trauma.mechanical.torso" and &1.part == :torso))
+
+    assert Enum.any?(
+             Body.injuries(body),
+             &(&1.tag == "trauma.mechanical.torso" and &1.part == :torso)
+           )
+
     assert Body.life(Body.trauma(body, :torso, @impact)) == 64
     assert Body.life(Body.new()) == 100
   end

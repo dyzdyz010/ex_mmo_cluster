@@ -116,12 +116,15 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
   defp frame(seq, x, z, jump),
     do: %Movement.InputFrame{input_seq: seq, axis_x: x, axis_z: z, yaw: 100, jump_pressed: jump}
 
+  # 接收时刻按 `Player.input/4` 契约经参数传入受控时钟（Gate 在真实运行中冻结同一时刻）。
   defp input(ctx, frames),
     do:
-      Player.input(player(ctx.scene, identity(1)), identity(1), %Movement.InputBatch{
-        identity: identity(1),
-        frames: frames
-      })
+      Player.input(
+        player(ctx.scene, identity(1)),
+        identity(1),
+        %Movement.InputBatch{identity: identity(1), frames: frames},
+        {node(), :atomics.get(ctx.clock, 1), System.system_time(:microsecond)}
+      )
 
   # 删除日志、错报原始轴/代际/到期槽、把累计成本当单步成本都会失败。
   test "normal INFO retains lifecycle and one summary per second without per-input rows" do
@@ -288,7 +291,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     assert Enum.map(arrivals, &{&1["input_seq"], &1["disposition"], &1["due_tick"]}) ==
              [
                {1, "accepted", 32},
-               {1, "duplicate", 32},
+               {1, "late", 32},
                {2, "accepted", 33}
              ] ++ Enum.map(3..10, &{&1, "accepted", &1 + 31})
 
@@ -458,8 +461,13 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     assert character.identity == current
     assert after_run.old_identity >= 1001
     assert after_run.rejected_inputs == 1
-    assert character.processed_input_seq == 1
-    assert character.simulation_tick == input_start.origin_tick
+
+    # Hello33 截止：只有 1 号是真实输入，其后每个到期槽都以保持／归零替代帧最终处理（不因重复包多出时间）；
+    # 未来的 10000 号仍挂起未执行。
+    assert character.processed_input_seq ==
+             character.simulation_tick - input_start.origin_tick + 1
+
+    assert character.substitutions == character.processed_input_seq - 1
     assert character.pending_inputs == 1
 
     assert after_run.physics_steps - before.physics_steps <=

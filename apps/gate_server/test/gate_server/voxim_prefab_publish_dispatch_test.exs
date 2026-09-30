@@ -12,7 +12,9 @@ defmodule GateServer.VoximPrefabPublishDispatchTest do
   @header <<0x71, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 38>>
 
   setup do
-    root = Path.join(System.tmp_dir!(), "d3_publish_dispatch_#{System.unique_integer([:positive])}")
+    root =
+      Path.join(System.tmp_dir!(), "d3_publish_dispatch_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
 
@@ -28,8 +30,15 @@ defmodule GateServer.VoximPrefabPublishDispatchTest do
          production_materials: [11, 19]}
       )
 
-    actor = %{cid: 1001, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
-      eye: {1.0625, 1.0625, 0.0625}, tick_us: 16_667}
+    actor = %{
+      cid: 1001,
+      gate: self(),
+      identity: make_ref(),
+      refresh: &Actor.tool_context/2,
+      eye: {1.0625, 1.0625, 0.0625},
+      tick_us: 16_667
+    }
+
     player = start_supervised!({Actor, actor})
 
     state = %{
@@ -51,7 +60,8 @@ defmodule GateServer.VoximPrefabPublishDispatchTest do
     reply
   end
 
-  test "named publish is accepted and listed; a control character is rejected as :invalid_name", c do
+  test "named publish is accepted and listed; a control character is rejected as :invalid_name",
+       c do
     # 名称 "石\n屋"：7 字节，含 LF。
     assert publish(c.state, <<0, 7, 0xE7, 0x9F, 0xB3, 0x0A, 0xE5, 0xB1, 0x8B>>) ==
              <<0x68, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0, 0, 0, 0,

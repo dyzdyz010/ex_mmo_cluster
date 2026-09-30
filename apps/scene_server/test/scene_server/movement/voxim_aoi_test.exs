@@ -244,11 +244,13 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
     enters = lifecycle(events)
     assert length(enters) == 2
 
+    # Hello33 起到期槽以替代帧最终处理：锚点是该角色实际模拟到的 tick（此处已随公共时钟到 33）。
     for enter <- enters do
-      assert enter.server_tick == 32
-      assert enter.state == Enum.find(info.characters, &(&1.entity_id == enter.entity_id)).state
+      character = Enum.find(info.characters, &(&1.entity_id == enter.entity_id))
+      assert enter.server_tick == character.simulation_tick and enter.server_tick == 33
+      assert enter.state == character.state
       snap = Enum.find(snapshots(events), &(&1.identity == enter.identity))
-      assert snap.server_tick == 32
+      assert snap.server_tick == enter.server_tick
       assert [record] = snap.records
 
       assert record.state == enter.state and
@@ -320,7 +322,13 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
 
   test "fast and stalled players retain distinct snapshot ticks and collision revisions", ctx do
     active_pair(ctx)
-    old = Player.observe(player(ctx.scene, identity(1)))
+
+    # Hello33 起缺输入的到期槽也按替代帧推进，"停滞"只剩 Player 进程本身落后：挂起玩家 20 的进程，
+    # 它最后发布的结果（旧 tick、旧碰撞版本）必须原样出现在快照里，而不是被公共 tick 或新版本冒充。
+    stalled = player(ctx.scene, identity(1))
+    old = Player.observe(stalled)
+    :ok = :sys.suspend(stalled)
+    on_exit(fn -> if Process.alive?(stalled), do: :sys.resume(stalled) end)
     chunk = Enum.find(ctx.snapshot.chunks, &(&1.coord == {2, 31, 2}))
 
     GenServer.call(
@@ -349,12 +357,14 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
            end)
 
     assert Enum.any?(events, fn snapshot ->
-             snapshot.server_tick == 32 and
+             snapshot.server_tick == old.simulation_tick and old.simulation_tick < 42 and
                Enum.any?(
                  snapshot.records,
                  &(&1.entity_id == 20 and &1.collision_revision == 1 and &1.state == old.state)
                )
            end)
+
+    :sys.resume(stalled)
   end
 end
 

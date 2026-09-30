@@ -10,11 +10,26 @@ defmodule MmoContracts.ProtectionWireTest do
 
   # 每条 37 B：id_seq:u64 id_n:u32 holder:u8 cid:u64 min_x:i32 min_z:i32 max_x:i32 max_z:i32（大端）。
   @sample Base.decode16!(
-            "0000000000000005" <> "00000002" <> "00" <> "0000000000000000" <>
-              "00000000" <> "00000000" <> "00000000" <> "00000000" <>
-              "0000000000000007" <> "00000001" <> "02" <> "000000000000002A" <>
-              "FFFFFFFD" <> "00000010" <> "0000000F" <> "0000001F" <>
-              "0000000000000007" <> "00000002" <> "01" <> "0000000000000000" <>
+            "0000000000000005" <>
+              "00000002" <>
+              "00" <>
+              "0000000000000000" <>
+              "00000000" <>
+              "00000000" <>
+              "00000000" <>
+              "00000000" <>
+              "0000000000000007" <>
+              "00000001" <>
+              "02" <>
+              "000000000000002A" <>
+              "FFFFFFFD" <>
+              "00000010" <>
+              "0000000F" <>
+              "0000001F" <>
+              "0000000000000007" <>
+              "00000002" <>
+              "01" <>
+              "0000000000000000" <>
               "00000064" <> "FFFFFF38" <> "000000A3" <> "FFFFFF77"
           )
 
@@ -42,16 +57,19 @@ defmodule MmoContracts.ProtectionWireTest do
   end
 
   test "Hello 21：旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 34
-    hello = %Session.Hello{protocol_version: 34, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 35
+    hello = %Session.Hello{protocol_version: 35, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 34::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 35::16, tail::binary>> = packet
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<20::16>> <> tail)
   end
 
   test "区域增量逐字节等于手写样本；存储字段（created_seq/created_by）不上线" do
     assert byte_size(@sample) == 3 * 37
-    stored = Map.new(@delta, fn {id, r} -> {id, r && Map.merge(r, %{created_seq: 7, created_by: 42})} end)
+
+    stored =
+      Map.new(@delta, fn {id, r} -> {id, r && Map.merge(r, %{created_seq: 7, created_by: 42})} end)
+
     assert Voxel.Codec.encode_protection(stored) == @sample
     assert Voxel.Codec.decode_protection(@sample) == {:ok, @delta}
     assert Voxel.Codec.encode_protection(%{}) == <<>>
@@ -60,19 +78,28 @@ defmodule MmoContracts.ProtectionWireTest do
   test "区域段附在属性批次末尾：增量可含删除，完整批次不能含删除" do
     {:ok, empty} = Voxel.Codec.encode_m1(batch(0, <<>>))
     {:ok, frame} = Voxel.Codec.encode_m1(batch(0, @sample))
+
     # 信封头 9 B（255, 版本 u16, 领域, kind, 长度 u32）；无区域时区域段是 0 长度，有区域时同一前缀后接 u32 长度与样本。
     # 协议 25 起区域段之后还有拟态段、协议 27 起再有施放段（这里都为空：0 长度）。
     <<head::binary-size(5), size0::32, rest0::binary>> = empty
     <<^head::binary-size(5), size1::32, rest1::binary>> = frame
     assert size1 == size0 + 111
     assert binary_part(rest0, byte_size(rest0) - 12, 12) == <<0::32, 0::32, 0::32>>
-    assert rest1 == binary_part(rest0, 0, byte_size(rest0) - 12) <> <<111::32>> <> @sample <> <<0::32, 0::32>>
+
+    assert rest1 ==
+             binary_part(rest0, 0, byte_size(rest0) - 12) <>
+               <<111::32>> <> @sample <> <<0::32, 0::32>>
+
     assert {:ok, decoded} = Voxel.Codec.decode_m1(frame)
     assert decoded.protection == @sample
 
     complete = Voxel.Codec.encode_protection(Map.delete(@delta, {5, 2}))
-    assert {:ok, %{protection: ^complete}} = Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(1, complete)), 1))
-    assert {:error, :invalid_m1_message} = Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(1, @sample)), 1))
+
+    assert {:ok, %{protection: ^complete}} =
+             Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(1, complete)), 1))
+
+    assert {:error, :invalid_m1_message} =
+             Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(1, @sample)), 1))
   end
 
   test "反例：乱序、重复、未知持有者、保留区带 cid、角色 cid 0、反向矩形、删除带矩形、截断都拒绝" do
@@ -91,7 +118,9 @@ defmodule MmoContracts.ProtectionWireTest do
           binary_part(@sample, 0, 110)
         ] do
       assert Voxel.Codec.decode_protection(bad) == {:error, :invalid_protection}
-      assert {:error, :invalid_m1_message} = Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(0, bad)), 1))
+
+      assert {:error, :invalid_m1_message} =
+               Voxel.Codec.decode_m1(elem(Voxel.Codec.encode_m1(batch(0, bad)), 1))
     end
   end
 end

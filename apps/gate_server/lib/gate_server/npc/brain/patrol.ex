@@ -19,14 +19,20 @@ defmodule GateServer.Npc.Brain.Patrol do
   def handle_event({:observation, %{self: %{tick: tick}}}, %{phase: :start} = state),
     do: walk(%{state | tick: tick})
 
-  def handle_event({:observation, %{self: %{tick: tick}}}, %{phase: {:cooldown, until, target}} = state)
+  def handle_event(
+        {:observation, %{self: %{tick: tick}}},
+        %{phase: {:cooldown, until, target}} = state
+      )
       when tick >= until,
       do: probe(%{state | tick: tick}, target)
 
   def handle_event({:observation, %{self: %{tick: tick}}}, state), do: {[], %{state | tick: tick}}
 
-  def handle_event({:outcome, %{id: id, status: :done}}, %{phase: {:walking, id}, dig: nil} = state),
-    do: walk(next(state))
+  def handle_event(
+        {:outcome, %{id: id, status: :done}},
+        %{phase: {:walking, id}, dig: nil} = state
+      ),
+      do: walk(next(state))
 
   def handle_event({:outcome, %{id: id, status: :done}}, %{phase: {:walking, id}} = state),
     do: probe(state, nil)
@@ -40,8 +46,11 @@ defmodule GateServer.Npc.Brain.Patrol do
       else: walk(next(state))
   end
 
-  def handle_event({:outcome, %{id: id, status: :done}}, %{phase: {:attacking, id, target}} = state),
-    do: {[], %{state | phase: {:cooldown, state.tick + @attack_gap, target}}}
+  def handle_event(
+        {:outcome, %{id: id, status: :done}},
+        %{phase: {:attacking, id, target}} = state
+      ),
+      do: {[], %{state | phase: {:cooldown, state.tick + @attack_gap, target}}}
 
   # 探测或攻击被权威拒绝（射程外、目标已变…）：不重试，走向下一个路点。
   def handle_event({:outcome, %{id: id, status: :rejected}}, %{phase: {kind, id, _}} = state)
@@ -60,7 +69,10 @@ defmodule GateServer.Npc.Brain.Patrol do
     do: command(state, :probing, Map.put(state.dig, :verb, :probe_toward), [previous])
 
   defp attack(state, target),
-    do: command(state, :attacking, Map.merge(state.dig, %{verb: :use_tool, target: target}), [target])
+    do:
+      command(state, :attacking, Map.merge(state.dig, %{verb: :use_tool, target: target}), [
+        target
+      ])
 
   defp command(%{next_id: id} = state, kind, command, extra) do
     phase = List.to_tuple([kind, id | extra])

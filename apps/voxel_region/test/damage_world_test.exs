@@ -75,12 +75,57 @@ defmodule VoxelRegion.DamageWorldTest do
     World.tool_intent(w,actor,request)
   end
 
+  # 首次放置：编辑链上未解码的 L1+ 来源由调用方解码后随 prepared_intent 交给 World，World 归约时不再读来源。
+  test "a first build decodes cold L1+ sources outside World", c do
+    assert {:ok,1}=World.material_supply(c.w,1001,"cold-l1",%{19=>4096})
+    :erlang.trace_pattern({VoxelRegion.TestSupport.Source,:read,3},true,[:local])
+    :erlang.trace(c.w,true,[:call,:receive])
+    on_exit(fn -> :erlang.trace_pattern({VoxelRegion.TestSupport.Source,:read,3},false,[:local]) end)
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 19}
+    assert {:ok,2}=World.production_intent(c.w,c.actor,build)
+    ref=:erlang.trace_delivered(c.w)
+    assert_receive {:trace_delivered,_,^ref}
+    assert_received {:trace,_,:receive,{:"$gen_call",_,{:prepared_intent,_,{:production_intent,_,_},decoded}}}
+    assert decoded |> Enum.map(fn {{level,_},_} -> level end) |> Enum.sort() == [1,2,3,4,5]
+    levels=Stream.repeatedly(fn -> receive do {:trace,_,:call,{VoxelRegion.TestSupport.Source,:read,[_,level,_]}} -> level after 0 -> nil end end)
+      |> Enum.take_while(& &1)
+    assert Enum.filter(levels,&(&1 > 0)) == []
+  end
+
+  # 没有格条目的事务（余额、镐击、热提交）在 World 内只留投影字段；正文仍在持久日志，entries_after 读得到。
+  test "property-only transactions keep only projection fields in memory", c do
+    assert {:ok,1}=World.material_supply(c.w,1001,"retained",%{19=>512})
+    assert %{1 => %{seq: 1,entries: [],coarse: []} = retained} = :sys.get_state(c.w).entries
+    assert map_size(retained) == 3
+    assert [%{seq: 1,material_balances: balances}] = World.entries_after(c.w,0)
+    assert balances[{1001,19}] == 512
+  end
+
   @tag :tool_combat
   test "body ray uses canonical obstruction and reach", c do
     assert :ok = World.body_tool(c.w, c.actor, c.request, 1.0)
     assert {:error, :out_of_reach} = World.body_tool(c.w, c.actor, c.request, 6.01)
     assert {:ok, 1} = World.apply_edit(c.w, {1,1,1}, 19)
     assert {:error, :occluded} = World.body_tool(c.w, c.actor, c.request, 1.5)
+  end
+
+  test "已驻留的工具准备不再追加一次液体接纳排队", c do
+    assert {:ok, _} = World.apply_edit(c.w, {1, 1, 1}, 19)
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{-1, -1, -1}, {1, 1, 1}}, self(), :warm, false)
+    assert_receive {:canonical_snapshot, :warm, _}
+    assert {:ok, target} = World.tool_intent(c.w, c.actor, c.request)
+    assert target.micro == {8, 8, 8}
+    :erlang.trace(c.w, true, [:receive])
+    on_exit(fn -> if Process.alive?(c.w), do: :erlang.trace(c.w, false, [:receive]) end)
+    assert {:ok, ^target} = World.tool_intent(c.w, c.actor, c.request)
+    # 同发送者的 trace fence 保证检查时接收跟踪已经全部投递。
+    ref = :erlang.trace_delivered(c.w)
+    assert_receive {:trace_delivered, _, ^ref}
+    assert_receive {:trace, _, :receive, {:"$gen_call", _, {:prepare_intent, {:tool_intent, _, _}}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:prepare, _}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:tool_range, _}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:tool_intent, _, _}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:adopt_liquid, _}}}
   end
 
   @tag :tool_combat
@@ -561,6 +606,13 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:error,:property_version_in_use}=World.publish_properties(w,c.catalog)
   end
 
+  # 只测试白盒：常驻热域的内核边按内核次序译回节点键。
+  defp key_edges(s) do
+    keys=s.thermal_work.ordered |> Enum.map(&elem(&1,0)) |> List.to_tuple()
+    {edges,_}=VoxelRegion.ThermalNative.domain_terms(s.thermal_work.domain.native)
+    for {i,j,g}<-edges,do: {elem(keys,i),elem(keys,j),g}
+  end
+
   @tag :b3
   # 只测试白盒：派生工作集几何/边复用。
   test "B3 reuses geometry but reads current HP; deleting contact invalidates exposed faces", c do
@@ -570,12 +622,12 @@ defmodule VoxelRegion.DamageWorldTest do
     assert elem(hd(first.thermal_work.geometry[{1,1,2}]),1).exposed_faces==5
     second=cache_tick(c.w)
     assert second.thermal_work.builds==0
-    assert second.thermal_work.edges==[{{0,{8,8,16}},{0,{16,8,16}},1000.0}]
+    assert key_edges(second)==[{{0,{8,8,16}},{0,{16,8,16}},1000.0}]
     {:ok,_}=World.apply_edit(c.w,{2,1,2},0)
     after_edit=cache_tick(c.w)
     assert after_edit.thermal_work.builds>0
     assert elem(hd(after_edit.thermal_work.geometry[{1,1,2}]),1).exposed_faces==6
-    assert after_edit.thermal_work.edges==[]
+    assert key_edges(after_edit)==[]
     assert Enum.all?(after_edit.damage,fn {_,t}->t.micro=={8,8,16} end)
   end
 

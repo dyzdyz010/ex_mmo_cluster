@@ -28,12 +28,6 @@ defmodule MmoContracts.StateRegistryTest do
       assert StateRegistry.validate!() == :ok
     end
 
-    test "四个分类都有代表性持有者" do
-      for class <- StateClass.all() do
-        assert StateRegistry.by_class(class) != [], "分类 #{class} 缺少登记的持有者"
-      end
-    end
-
     test "holders 无重复" do
       holders = StateRegistry.holders()
       assert holders == Enum.uniq(holders)

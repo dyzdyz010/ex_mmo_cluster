@@ -1,44 +1,28 @@
-# ex_mmo_cluster — production stack
+# Voxim server — deployment stack (Postgres + one release container).
 #
-# Usage on server:
-#   cd /data/ex_mmo_cluster
-#   cp .env.example .env   # edit with real secrets + domain
-#   set -a; . ./.env; set +a
-#   docker compose up -d --scale scene=${SCENE_SERVER_COUNT}
+#   cd <deploy dir>            # contains this file, .env and the data dir
+#   cp .env.example .env       # fill secrets, version and paths
+#   docker compose up -d
 #
-# Upgrade (after CI pushes a new image):
-#   docker compose pull
-#   set -a; . ./.env; set +a
-#   docker compose up -d --scale scene=${SCENE_SERVER_COUNT} app scene
-#
-# Scope:
-#   - one app container for edge/world/data services
-#   - N scene containers for scene_server BEAM nodes; configure with
-#     SCENE_SERVER_COUNT and pass it to docker compose via --scale scene=N
-#   - postgres container on internal network only
-#   - HTTP ports bound to 127.0.0.1 only — host-side nginx terminates TLS
-#     and reverse-proxies auth.${DOMAIN} / game.${DOMAIN} to these ports.
-#     See deploy/nginx.conf.example for the matching nginx config.
-#   - gate_server TCP exposed directly on host:${GATE_TCP_PORT} (custom
-#     binary protocol, not HTTP — nginx http module can't proxy it)
-
-# Pin the project name so container/network/volume names don't depend on the
-# host directory layout (i.e. /data/ex_mmo_cluster). Resulting names: ex_mmo_cluster-app-1,
-# ex_mmo_cluster-scene-1, ex_mmo_cluster-postgres-1.
-name: ex_mmo_cluster
+# The app uses host networking: QUIC (UDP) must be answered from the host's own
+# stack (a TUN/policy-routing proxy on the host drops bridged container UDP replies),
+# and Scene peer nodes connect back over Erlang distribution on 127.0.0.1.
+# HTTP (auth / regions / prefabs) listens on 127.0.0.1:${AUTH_PORT}; host nginx
+# terminates TLS and proxies /playtest/ to it (deploy/nginx.conf.example).
+name: voxim
 
 services:
-  postgres:
-    image: postgres:16-alpine
+  db:
+    image: postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${MMO_DB_USER}
       POSTGRES_PASSWORD: ${MMO_DB_PASSWORD}
       POSTGRES_DB: ${MMO_DB_NAME}
+    ports:
+      - "127.0.0.1:${MMO_DB_PORT}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-    networks:
-      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${MMO_DB_USER} -d ${MMO_DB_NAME}"]
       interval: 10s
@@ -46,68 +30,20 @@ services:
       retries: 10
 
   app:
-    image: ${IMAGE_TAG}
-    hostname: app.ex-mmo-cluster.internal
+    image: voxim-server:${VOXIM_VERSION}
     restart: unless-stopped
+    network_mode: host
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
     env_file: .env
     environment:
-      # Override DB host to use the compose service name, not whatever the
-      # .env might have set for local dev.
-      MMO_DB_HOST: postgres
-      # Keep container listen ports fixed to the image/runtime defaults. The
-      # .env port variables below are host-side published ports, so production
-      # can keep legacy public ports such as 14000/29000 without making the
-      # release listen on those numbers inside the container.
-      AUTH_PORT: "20000"
-      VISUALIZE_PORT: "20001"
-      GATE_TCP_PORT: "20002"
-      GATE_UDP_PORT: "20003"
-      DISABLE_CLUSTER: "false"
-      CLUSTER_MULTICAST_IF: "0.0.0.0"
-      RELEASE_DISTRIBUTION: name
-      RELEASE_NODE: app@app.ex-mmo-cluster.internal
-    ports:
-      # Host-side HTTP ports — bound to loopback so only host-side nginx can reach them.
-      # Containers always listen on 20000/20001 (see environment overrides above).
-      - "127.0.0.1:${AUTH_PORT}:20000"
-      - "127.0.0.1:${VISUALIZE_PORT}:20001"
-      # Host-side TCP/UDP ports for the custom game protocols — exposed directly.
-      # Containers always listen on 20002/20003.
-      - "${GATE_TCP_PORT}:20002"
-      # UDP fast lane for high-frequency movement packets.
-      - "${GATE_UDP_PORT}:20003/udp"
-    networks:
-      internal:
-        aliases:
-          - app.ex-mmo-cluster.internal
-
-  scene:
-    image: ${IMAGE_TAG}
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      MMO_DB_HOST: postgres
-      DISABLE_CLUSTER: "false"
-      CLUSTER_MULTICAST_IF: "0.0.0.0"
-      RELEASE_DISTRIBUTION: name
-    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
-    command:
-      - |
-        SCENE_HOST_IP="$$(hostname -i | awk '{print $$1}')"
-        export RELEASE_NODE="scene_$${HOSTNAME}@$${SCENE_HOST_IP}"
-        exec /app/ex_mmo_scene/bin/ex_mmo_scene start
-    networks:
-      - internal
+      MMO_DB_HOST: 127.0.0.1
+    # World baselines, overlay-adjacent files (published prefabs) and certificates live here.
+    volumes:
+      - ${VOXIM_DATA_DIR}:/srv/voxim
+    mem_limit: ${VOXIM_MEM_LIMIT}
+    stop_grace_period: 60s
 
 volumes:
   pg_data:
-
-networks:
-  internal:
-    driver: bridge

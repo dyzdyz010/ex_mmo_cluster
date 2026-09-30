@@ -1,7 +1,7 @@
 defmodule VoxelRegion.ThermalWorkTest do
-  @moduledoc "只测试：热候选域与可丢弃接触图的复用、编辑失效和索引契约。"
+  @moduledoc "只测试：热候选域与可丢弃接触图的复用和编辑失效；内核节点表与拓扑见 ThermalDomainTest。"
   use ExUnit.Case, async: true
-  alias VoxelRegion.{Attachments, ThermalAttachments, ThermalRadiation, ThermalWork}
+  alias VoxelRegion.{Attachments, ThermalAttachments, ThermalDomain, ThermalRadiation, ThermalWork}
 
   test "热记录、有限源、电功率与燃烧种子覆盖完整三维附件足迹" do
     slot = {0, 0, {512, 0, 0}}
@@ -45,7 +45,6 @@ defmodule VoxelRegion.ThermalWorkTest do
     {next, rebuild?} = ThermalWork.refresh(expanded, plan, geometry, %{})
     refute rebuild?
     assert next.ordered == work.ordered
-    assert next.indexed_edges == work.indexed_edges
     assert next.builds == work.builds + MapSet.size(plan.missing)
 
     cooled = %{next | hot: work.hot}
@@ -91,19 +90,6 @@ defmodule VoxelRegion.ThermalWorkTest do
     assert Map.has_key?(next.solid_nodes, key)
   end
 
-  test "接触索引跟随原节点顺序，每条接触只结算一次" do
-    a = {0, {504, 0, 0}}
-    b = {0, {512, 0, 0}}
-    nodes = %{a => %{contacts: [{b, 2.0}]}, b => %{contacts: [{a, 2.0}]}}
-    work = ThermalWork.index(ThermalWork.new(), nodes, :attachment_graph)
-    assert work.ordered == Enum.to_list(nodes)
-    assert work.edges == [{a, b, 2.0}]
-    assert [{i, j, 2.0}] = work.indexed_edges
-    assert elem(Enum.at(work.ordered, i), 0) == a
-    assert elem(Enum.at(work.ordered, j), 0) == b
-    assert work.attachment_graph == :attachment_graph
-  end
-
   test "提交内种子只增：增量扩域与整域重算得到同一候选域、节点表和燃烧行" do
     key = fn cell -> {0, cell |> Tuple.to_list() |> Enum.map(&(&1 * 8)) |> List.to_tuple()} end
     geometry = fn cells -> Map.new(cells, &{&1, if(elem(&1, 1) == 0, do: [{key.(&1), %{contacts: []}}], else: [])}) end
@@ -144,6 +130,18 @@ defmodule VoxelRegion.ThermalWorkTest do
     node = %{contacts: []}
     geometry = Map.new(plan.cells, &{&1, []}) |> Map.put({0, 0, 0}, [{key, node}])
     {work, true} = ThermalWork.refresh(work, plan, geometry, %{})
-    ThermalWork.index(work, %{key => node}, nil)
+    domain = ThermalDomain.sync(work.domain, %{key => node}, :full, [], :tag, nil,
+      &{Map.merge(%{cell: {0, 0, 0}, cells: [{0, 0, 0}], damage_key: :row}, &1), false},
+      fn _ -> {{1.0, 1.0, 1000.0, 6.0, 293.15, nil, false, true, nil}, {293.15, 1.0, 1.0, nil, 0.0, false, nil, nil}} end)
+    {domain, ordered} = ThermalDomain.index(domain, 0.0)
+    %{work | domain: domain, ordered: ordered}
+  end
+
+  test "热键足迹覆盖负坐标微格以及所有附件方向" do
+    assert ThermalWork.key_cells({1, {-1, -9, 8}}) == [{-1, -2, 1}]
+    for kind <- 0..1, axis <- 0..2 do
+      slot = {kind, axis, {-8, -8, -8}}
+      assert ThermalWork.key_cells(ThermalAttachments.key(slot)) == Attachments.macros([slot])
+    end
   end
 end

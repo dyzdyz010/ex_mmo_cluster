@@ -3,15 +3,7 @@ defmodule GateServer.VoximAuthBoundaryTest do
   alias GateServer.Session.Auth
   alias AuthServer.AuthWorker
 
-  # Only service discovery is local test plumbing. Gate calls the real AuthWorker
-  # through its normal RPC boundary; signing/verification use the real Endpoint.
-  defmodule AuthNode do
-    use GenServer
-    def start_link(_), do: GenServer.start_link(__MODULE__, nil, name: GateServer.Interface)
-    def init(nil), do: {:ok, nil}
-    def handle_call(:auth_server, _, state), do: {:reply, node(), state}
-  end
-
+  # Gate 直接调用本节点的真实 AuthWorker；签名与校验使用真实 Endpoint。
   test "Gate rejects an expired signed token and tampering while preserving exact cid ownership" do
     {:ok, _} = Application.ensure_all_started(:phoenix)
 
@@ -25,8 +17,6 @@ defmodule GateServer.VoximAuthBoundaryTest do
          pubsub_server: AuthServer.PubSub}
       )
     end
-
-    start_supervised!(AuthNode)
 
     claims = AuthWorker.build_session_claims("m1-isolated-auth", cid: 101)
     token = AuthWorker.issue_token(claims)
@@ -53,7 +43,7 @@ defmodule GateServer.VoximAuthBoundaryTest do
           wrong_username_rejected: true,
           wrong_cid_rejected: true,
           gate_auth_and_auth_worker: "production",
-          discovery: "isolated_local_node",
+          discovery: "local_call",
           http_quic_or_live_database: false,
           tokens_logged: false
         })

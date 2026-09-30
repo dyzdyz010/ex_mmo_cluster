@@ -53,7 +53,13 @@ defmodule DataService.CharacterStore do
         <<cid::64>> = DataService.UidGenerator.generate()
 
         %Character{}
-        |> Character.changeset(%{id: cid, kind: "npc", name: name, base_attrs: %{}, battle_attrs: %{}})
+        |> Character.changeset(%{
+          id: cid,
+          kind: "npc",
+          name: name,
+          base_attrs: %{},
+          battle_attrs: %{}
+        })
         |> Repo.insert()
     end
   end

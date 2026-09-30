@@ -187,17 +187,46 @@ defmodule SceneServer.Movement.VoximPlayerTest do
   test "断流角色仍推进，迟到跳跃不补跑，另一角色保持正常输入", ctx do
     {p, q, _} = activate(ctx)
     f = %Movement.InputFrame{input_seq: 1, axis_x: 32767, axis_z: 0, yaw: 123, jump_pressed: 0}
-    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [f]}, Clock.now(ctx.clock))
+
+    Player.input(
+      p,
+      identity(1),
+      %Movement.InputBatch{identity: identity(1), frames: [f]},
+      Clock.now(ctx.clock)
+    )
+
     Player.observe(p)
+
     for t <- 33..56 do
-      frame = %{f | input_seq: t-32, axis_x: 0}
-      Player.input(q, identity(2), %Movement.InputBatch{identity: identity(2), frames: [frame]}, Clock.now(ctx.clock))
+      frame = %{f | input_seq: t - 32, axis_x: 0}
+
+      Player.input(
+        q,
+        identity(2),
+        %Movement.InputBatch{identity: identity(2), frames: [frame]},
+        Clock.now(ctx.clock)
+      )
+
       Player.observe(q)
-      tick(ctx,t)
+      tick(ctx, t)
     end
-    wait(fn -> Player.observe(p).simulation_tick == 56 and Player.observe(q).simulation_tick == 56 end)
+
+    wait(fn ->
+      Player.observe(p).simulation_tick == 56 and Player.observe(q).simulation_tick == 56
+    end)
+
     before = Player.observe(p)
-    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [%{f | input_seq: 12, jump_pressed: 1}]}, Clock.now(ctx.clock))
+
+    Player.input(
+      p,
+      identity(1),
+      %Movement.InputBatch{
+        identity: identity(1),
+        frames: [%{f | input_seq: 12, jump_pressed: 1}]
+      },
+      Clock.now(ctx.clock)
+    )
+
     after_late = Player.observe(p)
     assert before.state == after_late.state
     assert before.physics_steps == after_late.physics_steps
@@ -210,10 +239,24 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     {p, _q, _} = activate(ctx)
     state = :sys.get_state(p)
     wall = state.time_origin + Clock.now(ctx.clock) - state.time_mono_origin
-    frame = %Movement.InputFrame{input_seq: 1, axis_x: 32767, axis_z: 0, yaw: 123, jump_pressed: 0}
+
+    frame = %Movement.InputFrame{
+      input_seq: 1,
+      axis_x: 32767,
+      axis_z: 0,
+      yaw: 123,
+      jump_pressed: 0
+    }
+
     :ok = :sys.suspend(p)
-    Player.input(p, identity(1), %Movement.InputBatch{identity: identity(1), frames: [frame]},
-      {:another_node, 9_000_000_000, wall})
+
+    Player.input(
+      p,
+      identity(1),
+      %Movement.InputBatch{identity: identity(1), frames: [frame]},
+      {:another_node, 9_000_000_000, wall}
+    )
+
     tick(ctx, 33)
     :ok = :sys.resume(p)
     wait(fn -> Player.observe(p).simulation_tick == 33 end)

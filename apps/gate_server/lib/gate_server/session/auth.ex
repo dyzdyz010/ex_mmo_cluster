@@ -10,37 +10,17 @@ defmodule GateServer.Session.Auth do
   `:auth_unavailable` / `:server_error`），由调用方编成对应错误帧，不做静默降级。
   """
 
-  alias GateServer.Session.Call
-
   @doc """
-  校验客户端 token，成功返回 claims。
+  校验客户端 token，成功返回 claims；凭据不匹配为 `:mismatch`。
 
-  AuthServer 不可达（无节点 / badrpc）与凭据不匹配是**不同**的失败：前者
-  `:auth_unavailable`（可重试），后者 `:mismatch`（业务拒绝）。
+  Gate 与 AuthServer 同在一个节点（Voxim 单节点部署），直接调用 `AuthServer.AuthWorker`。
   """
   @spec verify_token(term()) :: {:ok, map()} | {:error, atom()}
   def verify_token(token) do
-    case auth_node() do
-      {:error, _reason} = error ->
-        error
-
-      {:ok, auth_node} ->
-        case :rpc.call(auth_node, AuthServer.AuthWorker, :verify_token, [token]) do
-          {:ok, claims} when is_map(claims) -> {:ok, claims}
-          {:error, :mismatch} -> {:error, :mismatch}
-          {:badrpc, _reason} -> {:error, :auth_unavailable}
-          _ -> {:error, :server_error}
-        end
-    end
-  end
-
-  @doc "从 `GateServer.Interface` 取当前 auth 节点。"
-  @spec auth_node() :: {:ok, node()} | {:error, :auth_unavailable}
-  def auth_node do
-    case Call.safe(GateServer.Interface, :auth_server) do
-      {:ok, nil} -> {:error, :auth_unavailable}
-      {:ok, auth_node} -> {:ok, auth_node}
-      {:error, _reason} -> {:error, :auth_unavailable}
+    case AuthServer.AuthWorker.verify_token(token) do
+      {:ok, claims} when is_map(claims) -> {:ok, claims}
+      {:error, :mismatch} -> {:error, :mismatch}
+      _ -> {:error, :server_error}
     end
   end
 
@@ -49,7 +29,7 @@ defmodule GateServer.Session.Auth do
   def authorize_cid(nil, _cid), do: {:error, :invalid_state}
 
   def authorize_cid(claims, cid) do
-    case apply(AuthServer.AuthWorker, :validate_cid, [claims, cid]) do
+    case AuthServer.AuthWorker.validate_cid(claims, cid) do
       :ok -> :ok
       {:error, :cid_mismatch} -> {:error, :cid_mismatch}
       {:error, _reason} -> {:error, :server_error}
@@ -59,25 +39,22 @@ defmodule GateServer.Session.Auth do
   @doc "取该 claims 授权下的角色记录（含归属校验，由 AuthServer 权威判定）。"
   @spec fetch_authorized_character(map(), integer()) :: {:ok, map()} | {:error, atom()}
   def fetch_authorized_character(claims, cid) do
-    with {:ok, auth_node} <- auth_node() do
-      case :rpc.call(auth_node, AuthServer.AuthWorker, :fetch_authorized_character, [claims, cid]) do
-        {:ok, character} when is_map(character) -> {:ok, character}
-        {:error, :account_not_found} -> {:error, :cid_mismatch}
-        {:error, :cid_mismatch} -> {:error, :cid_mismatch}
-        {:error, :data_service_unavailable} -> {:error, :auth_unavailable}
-        {:badrpc, _reason} -> {:error, :auth_unavailable}
-        _ -> {:error, :server_error}
-      end
+    case AuthServer.AuthWorker.fetch_authorized_character(claims, cid) do
+      {:ok, character} when is_map(character) -> {:ok, character}
+      {:error, :account_not_found} -> {:error, :cid_mismatch}
+      {:error, :cid_mismatch} -> {:error, :cid_mismatch}
+      {:error, :data_service_unavailable} -> {:error, :auth_unavailable}
+      _ -> {:error, :server_error}
     end
   end
 
   @doc "校验 claims 与客户端自报 username 一致。"
   @spec validate_username(map(), String.t()) :: :ok | {:error, term()}
   def validate_username(claims, username) do
-    apply(AuthServer.AuthWorker, :validate_username, [claims, username])
+    AuthServer.AuthWorker.validate_username(claims, username)
   end
 
-  @doc "构造下游（Scene / Interface）使用的鉴权上下文。字符串键为既有跨 app 契约。"
+  @doc "构造下游（Scene）使用的鉴权上下文。字符串键为既有跨 app 契约。"
   @spec build_context(String.t(), term(), map()) :: map()
   def build_context(username, token, claims) do
     %{

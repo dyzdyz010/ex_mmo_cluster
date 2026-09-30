@@ -6,7 +6,6 @@
 新世界，不修改发布 manifest、不共享日志、不手工拼 BEAM 路径。
 单 app 运行用 `elixir --sname world_tests -S mix test --no-start`；需要命名节点的用例明确检查此条件。
 普通路由及纯值测试不启动数据库，持久化测试才调用共享 `MmoTest.Database.start!`。
-下方 MapLedger 等说明属于仍有活调用方的旧区域路径，不表示它们取代当前 `VoxelRegion.World` 权威。
 
 正式文档已迁移到 `docs/` 目录。
 
@@ -14,39 +13,8 @@
 
 ## 运行时边界
 
-`WorldServer.WorldSup` 当前启动：
-
-- `WorldServer.Voxel.SceneNodeRegistry`
-- `WorldServer.Voxel.SceneNodeMonitor`
-- `WorldServer.Voxel.MapLedger`
-- `WorldServer.Voxel.DefaultRegionBootstrapper`（开发 / demo 配置启用时）
-- `WorldServer.Voxel.TransactionCoordinator`
-- `WorldServer.Voxel.TransactionRecoveryWatcher`
-
-`MapLedger` 拥有体素区域分配、租约签发、向 DataService 发布写入令牌、区块路由，以及
-按租约计算事务参与者的职责。它还保存迁移计划，按“预热、切换、完成”的阶段推进地块
-拥有者变更；迁移预热切片是按区块坐标轴和宽度拆出的连续区块范围，用来让目标 Scene
-分批加载交接数据，避免一次性迁移整个区域。
-
-`DefaultRegionBootstrapper` 把本地 / demo 默认体素区域准备移到服务端生命周期里：
-服务端启动后准备默认区域、续租，Scene 还没注册时重试。浏览器打开后只登录、入场、订阅读取
-格子状态，不再把区域准备作为首屏交互前置步骤。
-
-`TransactionCoordinator` 记录准备确认以及提交 / 放弃决策。WorldServer 仍然不保存完整
-区块真相，也不执行逐帧体素规则；SceneServer 仍然是已租约区域的热执行拥有者。
-
-## CLI 观测验收
-
-World 侧体素权威可以不经过 GUI 直接验收：
-
-```bash
-mix world_server.voxel_observe --logical-scene-id 1
-```
-
-默认情况下，该任务会重写 `.demo/observe/world-voxel-authority-<logical_scene_id>.log`。
-可以用 `--observe-dir <dir>` 或 `--observe-log <path>` 改写结构化日志位置。
-
-这条验收流会发布区域租约、路由区块、生成全部迁移预热切片（迁移前目标 Scene 分批加载的
-区块范围）、读取迁移交接载荷、切换到新的 Scene 实例，并记录旧写入令牌和当前写入令牌在
-WorldServer 与 DataService 两侧的校验结果。World 只有在全部预热切片已经规划后，才允许把
-迁移标记为已预热。
+`WorldServer.Movement` 按 `:movement_routes` 把 scene_id 解析到 Scene 与 canonical `VoxelRegion.World`，并在控制面连接相邻 Scene。
+配置了拓扑文件（`VOXIM_TOPOLOGY` → `:world_server, :topology`）时，`WorldServer.Application` 启动 `WorldServer.Topology`：
+按文件在本节点起本地 Scene（可经本地 Replica）、用 `:peer` 在本机起 Scene 节点，写路由、连接相邻 Scene，全部就绪后应用才启动完毕，
+Auth / Gate 因运行时依赖排在其后。拓扑格式与部署见仓库根 `deploy/README.md`；测试 `test/world_server/topology_test.exs`。
+旧的区域租约、跨 chunk 事务协调与 world pack 链路（MapLedger、TransactionCoordinator 等）已于 2026-09-30 随旧客户端删除。

@@ -16,7 +16,6 @@ class ScopeTests(unittest.TestCase):
         jobs = scope.select(["apps/voxel_region/lib/voxel_region/phase.ex"])
         self.assertIn("test-voxel-region", jobs)
         self.assertNotIn("test-auth-server", jobs)
-        self.assertNotIn("smoke-ws-dual", jobs)
 
     def test_wire_selects_producer_and_consumers(self):
         jobs = scope.select(["apps/mmo_contracts/lib/mmo_contracts/voxel/codec.ex"])
@@ -39,11 +38,8 @@ class ScopeTests(unittest.TestCase):
     def test_moved_tests_select_their_owning_apps(self):
         self.assertEqual(scope.select(["apps/gate_server/test/movement_route_test.exs"]),
                          ["format", "test-gate-server"])
-        self.assertEqual(scope.select(["apps/world_server/test/world_server/scene_interface_announce_test.exs"]),
+        self.assertEqual(scope.select(["apps/world_server/test/world_server/movement/voxim_transfer_test.exs"]),
                          ["format", "test-standalone"])
-
-    def test_executable_document_is_not_prose(self):
-        self.assertEqual(scope.select(["docs/acceptance/run.py"]), ["smoke-ws-dual"])
 
 
 if __name__ == "__main__":

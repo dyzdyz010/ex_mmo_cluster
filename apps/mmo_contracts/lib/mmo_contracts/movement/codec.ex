@@ -23,7 +23,9 @@ defmodule MmoContracts.Movement.Codec do
          substituted_through_seq: :u32,
          simulation_tick: :u64
        ]},
-    4 => {Movement.SpeedScale, [identity: :identity, apply_tick: :u64, factor: :f64, input_limit: :f64]},
+    4 =>
+      {Movement.SpeedScale,
+       [identity: :identity, apply_tick: :u64, factor: :f64, input_limit: :f64]},
     3 =>
       {Movement.Snapshot,
        [

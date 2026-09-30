@@ -33,23 +33,34 @@ defmodule SceneServer.Body.ContactTest do
     ss = (g_c * t_w + g_i * body.skin_k) / (g_c + g_i)
     decay = :math.exp(-k)
     tissue_j = c_t * (ss + (body.tissue_k - ss) * decay - body.tissue_k)
-    q = g_c * ((t_w - ss) + (ss - body.tissue_k) * (1 - decay) / k)
+    q = g_c * (t_w - ss + (ss - body.tissue_k) * (1 - decay) / k)
     {next, account} = Thermo.step(body, 1.0, %{q_j: q, tissue_j: tissue_j, air_k: @air})
 
-    assert_in_delta account.stored_j, Body.heat_content_j(next) - Body.heat_content_j(body), 1.0e-6
+    assert_in_delta account.stored_j,
+                    Body.heat_content_j(next) - Body.heat_content_j(body),
+                    1.0e-6
+
     next
   end
 
-  defp scenario(g_c, t_w, seconds), do: Enum.scan(1..seconds, Body.new(), fn _, b -> contact_step(b, g_c, t_w) end)
+  defp scenario(g_c, t_w, seconds),
+    do: Enum.scan(1..seconds, Body.new(), fn _, b -> contact_step(b, g_c, t_w) end)
 
   # 第一个满足条件的秒（1 起）；没有为 nil。
   defp first(states, f), do: Enum.find_index(states, f) |> then(&(&1 && &1 + 1))
-  defp severity(body, tag), do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
+
+  defp severity(body, tag),
+    do: Enum.find_value(Body.injuries(body), 0, &(&1.tag == tag && &1.severity))
+
   defp burn(body), do: severity(body, "trauma.thermal.burn")
 
   test "组织块参数：0.06 kg × 3490 = 209.4 J/K；调定点 G_i = 0.03 × 12.6069 = 0.378207 W/K" do
     assert_in_delta Body.tissue_capacity_j_per_k(), 209.4, 1.0e-9
-    assert_in_delta Body.params().contact_tissue_m2 * Thermo.contact_tissue_w_per_m2_k(Body.new()), 0.378207, 1.0e-9
+
+    assert_in_delta Body.params().contact_tissue_m2 *
+                      Thermo.contact_tissue_w_per_m2_k(Body.new()),
+                    0.378207,
+                    1.0e-9
   end
 
   # 冬靴站 1296 K 燃木：T_ss = (0.1956522·1296 + 0.378207·307.15)/0.5738592 = 644.29 K，k = 0.5738592/209.4 = 0.0027405 /s；
@@ -60,11 +71,16 @@ defmodule SceneServer.Body.ContactTest do
     states = scenario(BodyContact.sole(@wood, 0.5), 1296.0, 60)
     warm = first(states, &(&1.tissue_k >= 44.0 + @c))
     degrees = for d <- 1..3, do: first(states, &(burn(&1) >= d))
-    IO.puts("BURN_BOOTED tissue_44c_s=#{warm} degree_s=#{inspect(degrees)} tissue_k_at_30s=#{Enum.at(states, 29).tissue_k}")
+
+    IO.puts(
+      "BURN_BOOTED tissue_44c_s=#{warm} degree_s=#{inspect(degrees)} tissue_k_at_30s=#{Enum.at(states, 29).tissue_k}"
+    )
+
     assert warm in 10..12
     assert Enum.all?(Enum.take(states, warm - 1), &(&1.burn_dose_s == 0.0))
     [d1, d2, d3] = degrees
     assert d1 in 26..30 and d2 in 28..32 and d3 in 29..33 and d1 <= d2 and d2 <= d3
+
     # 本场景只推进 Thermo（急性期计时由 Repair.tick 推进，见 repair_test）：进三度那一刻计时 0 → 上限 1、生命 100；
     # 同一身体急性期满（30 s）→ 上限 1 − 0.090906 = 0.909094 → 生命 91
     third = Enum.at(states, d3 - 1)
@@ -121,8 +137,13 @@ defmodule SceneServer.Body.ContactTest do
   test "0 °C 水全身浸没（G 47.1925 W/K 接皮肤、浸没 1.0）：皮肤骤降、寒战升高、核心下降，1 小时内出现体温过低" do
     g = BodyContact.immersion(Body.params().area_m2, 1.8, 1.8)
     assert_in_delta g, 47.1925, 1.0e-9
-    tick = fn b -> Thermo.step(b, 1.0, %{q_j: g * (@c - b.skin_k), air_k: @air, immersed: 1.0}) end
+
+    tick = fn b ->
+      Thermo.step(b, 1.0, %{q_j: g * (@c - b.skin_k), air_k: @air, immersed: 1.0})
+    end
+
     {first, account} = tick.(Body.new())
+
     # q = 47.1925·(273.15 − 307.15) = −1604.545 J；浸没时空气干热、出汗与湿衣蒸发为 0
     assert_in_delta account.q_j, -1604.545, 1.0e-9
     assert account.convection_j == 0.0 and account.sweat_j == 0.0 and account.drying_j == 0.0
@@ -131,12 +152,14 @@ defmodule SceneServer.Body.ContactTest do
     ten = Enum.reduce(1..600, Body.new(), fn _, b -> tick.(b) |> elem(0) end)
     assert ten.skin_k - @c < 20.0
     {_, account} = tick.(ten)
+
     # 寒战 = 需求（Tikuisis & Giesbrecht 1999）× 体表面积（体温调节功能满值、未到峰值）
     shiver = Thermo.shiver_demand_w_per_m2(ten) * Body.params().area_m2
     assert_in_delta account.shiver_j, shiver, 1.0e-9
     assert shiver > 150
 
     hour = Enum.reduce(1..3000, ten, fn _, b -> tick.(b) |> elem(0) end)
+
     # 实测对照（冷水浸泡 0–5 °C 核心 2–4 °C/h、约 40 分钟进入 35 °C 以下）见 cold_validation_test.exs
     assert severity(hour, "temperature.hypothermia") >= 1
     assert hour.wetness > 0.999
@@ -149,8 +172,15 @@ defmodule SceneServer.Body.ContactTest do
     assert at.(307.0) == at.(307.03)
     refute at.(307.0) == at.(307.2)
     burnt = %{Body.new() | burn_dose_s: 6.0, burn_age_s: 30.0, status: :dying}
+
     # Hello 29：伤病带愈合进度 %（未开始愈合为 0），下行带蛋白质储备（新身体满 100 g）；Hello 30：可恢复 9、剩余秒数（repair_test 手算）
-    assert %{life: 91, recoverable: 9, status: 1, injuries: [{"trauma.thermal.burn", 3, 0, _}], protein_g: 100.0} =
+    assert %{
+             life: 91,
+             recoverable: 9,
+             status: 1,
+             injuries: [{"trauma.thermal.burn", 3, 0, _}],
+             protein_g: 100.0
+           } =
              Body.report(burnt, 1.0)
   end
 end

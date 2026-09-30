@@ -152,8 +152,9 @@ defmodule WorldServer.Movement.VoximNeighbourNodesTest do
         values
       end
 
+    # Hello33 起到期槽缺帧也按替代帧最终处理，处理序号随时钟越过 120 而不停在最后一帧。
     await(
-      fn -> Enum.all?(players, &(Player.observe(&1.pid).processed_input_seq == 120)) end,
+      fn -> Enum.all?(players, &(Player.observe(&1.pid).processed_input_seq >= 120)) end,
       5000
     )
 

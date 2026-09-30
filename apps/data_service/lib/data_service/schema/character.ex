@@ -40,7 +40,9 @@ defmodule DataService.Schema.Character do
     ])
     |> validate_required([:id, :name])
     |> validate_inclusion(:kind, ["player", "npc"])
-    |> then(&if(get_field(&1, :kind) == "player", do: validate_required(&1, [:account]), else: &1))
+    |> then(
+      &if(get_field(&1, :kind) == "player", do: validate_required(&1, [:account]), else: &1)
+    )
     |> check_constraint(:account, name: :npc_has_no_account)
     |> unique_constraint(:name)
   end

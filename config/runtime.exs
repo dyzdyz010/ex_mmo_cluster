@@ -11,22 +11,17 @@ import Config
 
 if System.get_env("PHX_SERVER") do
   config :auth_server, AuthServerWeb.Endpoint, server: true
-  config :visualize_server, VisualizeServerWeb.Endpoint, server: true
 end
 
 config :auth_server, AuthServerWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("AUTH_PORT", "20000"))]
 
-config :visualize_server, VisualizeServerWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("VISUALIZE_PORT", "20001"))]
-
 # ---------------------------------------------------------------------------
 # Demo auto-login endpoint (POST /ingame/auto_login)
 # ---------------------------------------------------------------------------
-# Set DEV_AUTO_LOGIN=true in local/dev/demo deployments to let web and Bevy
-# clients bootstrap a signed token by just sending a username.
+# Set DEV_AUTO_LOGIN=true in local/dev/demo deployments to let the Voxim client
+# bootstrap a signed token by just sending a username.
 dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
-world_pack_generate? = System.get_env("VOXEL_WORLD_PACK_GENERATE", "0") in ["true", "1"]
 
 config :auth_server, :dev_auto_login, dev_auto_login?
 config :auth_server, :playtest_access_file, System.get_env("VOXIM_PLAYTEST_ACCESS_FILE")
@@ -48,21 +43,28 @@ config :world_server, :movement_routes, %{
 config :gate_server, :voxel_scene_id, 1
 config :auth_server, :voxel_scene_id, 1
 
-# Voxim 正式入口只走 QUIC；旧业务回归必须显式选择 reference，不做自动降级。
-transport =
-  case System.get_env("VOXIM_TRANSPORT", "voxim_quic") do
-    "voxim_quic" -> :voxim_quic
-    "legacy_reference" -> :legacy_reference
-  end
-
-config :gate_server, :transport, transport
-
+# 入场身份：kernel_id 取发布的 kernel manifest 字节的 sha256（`VOXIM_KERNEL_MANIFEST`），profile_id 由主 Scene 配置的
+# 移动 profile 与材料阻挡表导出；两者都可用十六进制环境变量显式覆盖（`VOXIM_KERNEL_ID` / `VOXIM_PROFILE_ID`）。
 if cert = System.get_env("VOXIM_QUIC_CERT") do
   <<kernel_id::binary-size(32)>> =
-    System.fetch_env!("VOXIM_KERNEL_ID") |> Base.decode16!(case: :mixed)
+    case System.get_env("VOXIM_KERNEL_ID") do
+      nil -> :crypto.hash(:sha256, File.read!(System.fetch_env!("VOXIM_KERNEL_MANIFEST")))
+      hex -> Base.decode16!(hex, case: :mixed)
+    end
 
   <<profile_id::binary-size(32)>> =
-    System.fetch_env!("VOXIM_PROFILE_ID") |> Base.decode16!(case: :mixed)
+    case System.get_env("VOXIM_PROFILE_ID") do
+      nil ->
+        System.fetch_env!("VOXIM_M1_CONFIG")
+        |> SceneServer.Movement.Scene.load_config!()
+        |> Map.fetch!(:profile)
+        |> MmoContracts.Session.Codec.profile_id(
+          MmoContracts.VoxelMaterialCatalog.blocking_hash()
+        )
+
+      hex ->
+        Base.decode16!(hex, case: :mixed)
+    end
 
   config :gate_server, :quic,
     name: GateServer.Transport.QuicListener,
@@ -77,15 +79,47 @@ if cert = System.get_env("VOXIM_QUIC_CERT") do
       )
 end
 
+# `VOXIM_M1_CONFIG` 是主 Scene（scene 1）的配置：Gate 的入场范围取自它。
+# 单 Scene 部署由 scene_server 按它直接启动；设了 `VOXIM_TOPOLOGY` 时改由 `WorldServer.Topology` 按拓扑文件启动全部 Scene。
 if config_path = System.get_env("VOXIM_M1_CONFIG") do
   config :gate_server, :quic, bounds: SceneServer.Movement.Scene.load_config!(config_path).bounds
 
-  config :scene_server, SceneServer.Movement.Scene,
-    name: SceneServer.Movement.Scene,
-    scene_id: 1,
-    scene_epoch: 1,
-    world_ref: {VoxelRegion.World, node()},
-    config_path: config_path
+  if topology = System.get_env("VOXIM_TOPOLOGY") do
+    config :world_server, :topology, topology
+  else
+    config :scene_server, SceneServer.Movement.Scene,
+      name: SceneServer.Movement.Scene,
+      scene_id: 1,
+      scene_epoch: 1,
+      world_ref: {VoxelRegion.World, node()},
+      config_path: config_path
+  end
+end
+
+# 世界目录与资产（发布根里的文件）；未设时保持各自的代码默认值。
+for {env, key} <- [
+      {"VOXIM_PROPERTY_CATALOG_PATH", :property_catalog_path},
+      {"VOXIM_THERMAL_ENVIRONMENT_PATH", :thermal_environment_path},
+      {"VOXIM_MAGIC_CATALOG_PATH", :magic_catalog_path}
+    ],
+    value = System.get_env(env),
+    value != nil,
+    do: config(:voxel_region, key, value)
+
+# 有限液体只在这个宏格盒内模拟（"x0,y0,z0,x1,y1,z1"）；不设即关闭液体。
+if bounds = System.get_env("VOXIM_LIQUID_BOUNDS") do
+  [x0, y0, z0, x1, y1, z1] =
+    bounds |> String.split(",") |> Enum.map(&String.to_integer(String.trim(&1)))
+
+  config :voxel_region, :liquid_bounds, {{x0, y0, z0}, {x1, y1, z1}}
+end
+
+if materials = System.get_env("VOXIM_PRODUCTION_MATERIALS") do
+  config :voxel_region,
+         :production_materials,
+         materials
+         |> String.split(",", trim: true)
+         |> Enum.map(&String.to_integer(String.trim(&1)))
 end
 
 # 冷 miss 生成在每个请求进程里的并发上限；内存载荷缓存 L0–L3 的 LRU 字节上限（L4+ 常驻不计）。
@@ -96,100 +130,6 @@ config :voxel_region,
 config :voxel_region,
        :payload_cache_bytes,
        String.to_integer(System.get_env("VOXEL_REGION_PAYLOAD_CACHE_MB", "512")) * 1024 * 1024
-
-# 旧 ChunkProcess 开发世界不再随 auto-login 隐式初始化；历史探针必须显式开启。
-dev_region_bootstrap? = System.get_env("VOXEL_DEV_REGION_BOOTSTRAP", "false") in ["true", "1"]
-
-config :world_server, :default_voxel_region_bootstrap,
-  enabled?: dev_region_bootstrap?,
-  logical_scene_id: String.to_integer(System.get_env("VOXEL_DEV_REGION_LOGICAL_SCENE_ID", "1")),
-  retry_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_RETRY_MS", "1000")),
-  refresh_ms: String.to_integer(System.get_env("VOXEL_DEV_REGION_REFRESH_MS", "1800000")),
-  seed_terrain?: System.get_env("VOXEL_DEV_REGION_SEED_TERRAIN", "1") != "0"
-
-world_pack_version = System.get_env("VOXEL_WORLD_PACK_VERSION", "worldgen-v1-xyz-window-v2")
-
-world_pack_status =
-  System.get_env(
-    "VOXEL_WORLD_PACK_STATUS",
-    if(world_pack_generate?, do: "materializing", else: "missing")
-  )
-
-world_pack_content_version =
-  System.get_env("VOXEL_WORLD_PACK_CONTENT_VERSION", world_pack_version)
-
-world_pack_world_macro_extent =
-  String.to_integer(System.get_env("VOXEL_WORLD_MACRO_EXTENT", "32768"))
-
-world_pack_seed =
-  case System.get_env("VOXEL_WORLD_SEED") do
-    nil -> nil
-    value -> String.to_integer(value)
-  end
-
-config :auth_server, :voxel_world_pack,
-  status: world_pack_status,
-  version: world_pack_version,
-  content_version: world_pack_content_version,
-  world_macro_extent: world_pack_world_macro_extent
-
-config :world_server, :world_pack_bootstrapper,
-  enabled?: world_pack_generate?,
-  logical_scene_id: String.to_integer(System.get_env("VOXEL_WORLD_PACK_LOGICAL_SCENE_ID", "1")),
-  chunk_min: System.get_env("VOXEL_WORLD_PACK_CHUNK_MIN", "-7,-7,-7"),
-  chunk_max: System.get_env("VOXEL_WORLD_PACK_CHUNK_MAX", "13,13,13"),
-  batch_size: String.to_integer(System.get_env("VOXEL_WORLD_PACK_BATCH_SIZE", "64")),
-  max_chunks: System.get_env("VOXEL_WORLD_PACK_MAX_CHUNKS", "10000"),
-  retry_ms: String.to_integer(System.get_env("VOXEL_WORLD_PACK_RETRY_MS", "1000")),
-  version: world_pack_version,
-  content_version: world_pack_content_version,
-  world_macro_extent: world_pack_world_macro_extent,
-  seed: world_pack_seed
-
-# 旧运行时 WorldGen 已降级为 dev migration helper。正式 runtime 不应在缺 chunk /
-# heightmap 时重跑噪声作为第二真值；需要时只能显式设置 VOXEL_WORLDGEN=1 做本地
-# 开发临时材化，默认关闭。
-config :scene_server, :voxel_worldgen,
-  enabled?: System.get_env("VOXEL_WORLDGEN", "0") == "1",
-  seed: String.to_integer(System.get_env("VOXEL_WORLD_SEED", "1337"))
-
-# 阶段3 step3.2 chunk idle 驱逐:无订阅者 + 无活跃 field region 连续 idle 达 evict_after_ms 即自停,
-# 让无界大世界的万级 chunk 进程内存有界(再访问由 DB 重载；WorldGen 仅可显式 dev opt-in)。test 关闭。
-config :scene_server, :voxel_chunk_idle_eviction,
-  enabled?: config_env() != :test and System.get_env("VOXEL_CHUNK_IDLE_EVICTION", "1") != "0",
-  check_ms: String.to_integer(System.get_env("VOXEL_CHUNK_IDLE_CHECK_MS", "15000")),
-  evict_after_ms: String.to_integer(System.get_env("VOXEL_CHUNK_IDLE_EVICT_AFTER_MS", "120000"))
-
-# 阶段7-bis:peer 等待**轮询**(client 已改)的 give-up 超时。真集群下 peer 一出现即早返回,
-# 此值只是单节点 give-up 上限;默认 250ms(原固定 sleep 1000ms),直接砍每个 interface 的启动
-# 阻塞 → 砍冷启动。慢 gossip 的部署可 `BEACON_CLUSTER_JOIN_WAIT_MS` 调大。
-config :beacon_server,
-       :cluster_join_wait_ms,
-       String.to_integer(System.get_env("BEACON_CLUSTER_JOIN_WAIT_MS", "250"))
-
-# ---------------------------------------------------------------------------
-# gate_server listen ports (env-driven so prod container can remap)
-# ---------------------------------------------------------------------------
-
-config :gate_server,
-  tcp_port: String.to_integer(System.get_env("GATE_TCP_PORT", "20002")),
-  udp_port: String.to_integer(System.get_env("GATE_UDP_PORT", "20003"))
-
-if System.get_env("CLUSTER_MULTICAST_IF") do
-  config :libcluster,
-    topologies: [
-      mmo_cluster: [
-        strategy: Cluster.Strategy.Gossip,
-        config: [
-          port: String.to_integer(System.get_env("CLUSTER_GOSSIP_PORT", "45892")),
-          if_addr: System.get_env("CLUSTER_IF_ADDR", "0.0.0.0"),
-          multicast_if: System.fetch_env!("CLUSTER_MULTICAST_IF"),
-          multicast_addr: System.get_env("CLUSTER_MULTICAST_ADDR", "230.1.1.251"),
-          multicast_ttl: String.to_integer(System.get_env("CLUSTER_MULTICAST_TTL", "1"))
-        ]
-      ]
-    ]
-end
 
 # ---------------------------------------------------------------------------
 # Production-only: secrets, DB, cluster disable
@@ -205,15 +145,7 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
-  config :auth_server, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
-  config :visualize_server, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
-
   config :auth_server, AuthServerWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
-    http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}],
-    secret_key_base: secret_key_base
-
-  config :visualize_server, VisualizeServerWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}],
     secret_key_base: secret_key_base
@@ -242,15 +174,6 @@ if config_env() == :prod do
     password: db_password,
     port: String.to_integer(System.get_env("MMO_DB_PORT", "5432")),
     pool_size: String.to_integer(System.get_env("MMO_DB_POOL_SIZE", "10"))
-
-  # --- Cluster discovery
-  #
-  # Local/single-node mode can set DISABLE_CLUSTER=true to neutralize
-  # libcluster gossip. Production Compose leaves this false so app and scalable
-  # scene containers can discover each other inside the bridge network.
-  if System.get_env("DISABLE_CLUSTER") in ["true", "1"] do
-    config :libcluster, topologies: []
-  end
 end
 
 config :voxel_region, :prefab_catalog_path, System.get_env("VOXIM_PREFAB_CATALOG_PATH")

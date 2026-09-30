@@ -19,7 +19,14 @@ defmodule GateServer.Npc.Blueprint do
 
   @doc "包围盒 `{min, max}`。"
   def bounds(cells) do
-    {xs, ys, zs} = cells |> Map.keys() |> Enum.map(&Tuple.to_list/1) |> Enum.zip() |> Enum.map(&Tuple.to_list/1) |> List.to_tuple()
+    {xs, ys, zs} =
+      cells
+      |> Map.keys()
+      |> Enum.map(&Tuple.to_list/1)
+      |> Enum.zip()
+      |> Enum.map(&Tuple.to_list/1)
+      |> List.to_tuple()
+
     {{Enum.min(xs), Enum.min(ys), Enum.min(zs)}, {Enum.max(xs), Enum.max(ys), Enum.max(zs)}}
   end
 
@@ -36,7 +43,8 @@ defmodule GateServer.Npc.Blueprint do
 
     %{
       todo: Enum.sort_by(todo, fn {{x, y, z}, _} -> {y, x, z} end),
-      wrong: for({cell, material} <- Enum.sort(wrong), do: {cell, Map.fetch!(world, cell), material})
+      wrong:
+        for({cell, material} <- Enum.sort(wrong), do: {cell, Map.fetch!(world, cell), material})
     }
   end
 
@@ -49,6 +57,8 @@ defmodule GateServer.Npc.Blueprint do
     {mx, mz} = {(x0 + x1 + 1) / 2, (z0 + z1 + 1) / 2}
 
     [{mx, z0 - 1.5}, {mx, z1 + 2.5}, {x0 - 1.5, mz}, {x1 + 2.5, mz}]
-    |> Enum.sort_by(fn {x, z} -> (x - cx - 0.5) * (x - cx - 0.5) + (z - cz - 0.5) * (z - cz - 0.5) end)
+    |> Enum.sort_by(fn {x, z} ->
+      (x - cx - 0.5) * (x - cx - 0.5) + (z - cz - 0.5) * (z - cz - 0.5)
+    end)
   end
 end

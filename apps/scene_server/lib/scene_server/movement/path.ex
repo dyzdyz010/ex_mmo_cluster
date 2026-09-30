@@ -32,12 +32,20 @@ defmodule SceneServer.Movement.Path do
         goal? = fn {x, y, z} -> x == gx and z == gz and (goal_y == nil or y == goal_y) end
         estimate = fn {x, _, z} -> abs(gx - x) + abs(gz - z) end
         queue = :gb_sets.singleton({estimate.(start), 0, start})
-        search(queue, %{start => nil}, goal?, estimate, {grid, step, height, Keyword.get(opts, :max_nodes, :infinity)})
+
+        search(
+          queue,
+          %{start => nil},
+          goal?,
+          estimate,
+          {grid, step, height, Keyword.get(opts, :max_nodes, :infinity)}
+        )
     end
   end
 
   @doc "只读脚点诊断：复用寻路的站立与下落规则，不改变起点接纳。"
-  def position(grid, cell, height), do: %{standable: standable?(grid,cell,height),landed: land(grid,cell,height)}
+  def position(grid, cell, height),
+    do: %{standable: standable?(grid, cell, height), landed: land(grid, cell, height)}
 
   @doc """
   `cells` 是 `find/6` 的结果，`from` / `target` 是水平点 `{x, z}`（target 在最后一格内），`level` 是起步所站的层。
@@ -80,14 +88,18 @@ defmodule SceneServer.Movement.Path do
     Enum.all?(0..samples, fn i ->
       {x, z} = {ax + (bx - ax) * i / samples, az + (bz - az) * i / samples}
 
-      Enum.all?([{-radius, -radius}, {-radius, radius}, {radius, -radius}, {radius, radius}], fn {dx, dz} ->
-        standable?(grid, {floor(x + dx), level, floor(z + dz)}, height)
-      end)
+      Enum.all?(
+        [{-radius, -radius}, {-radius, radius}, {radius, -radius}, {radius, radius}],
+        fn {dx, dz} ->
+          standable?(grid, {floor(x + dx), level, floor(z + dz)}, height)
+        end
+      )
     end)
   end
 
-  defp search(_queue, came, _goal?, _estimate, {_, _, _, limit}) when is_integer(limit) and map_size(came) > limit,
-    do: {:error, :search_limit}
+  defp search(_queue, came, _goal?, _estimate, {_, _, _, limit})
+       when is_integer(limit) and map_size(came) > limit,
+       do: {:error, :search_limit}
 
   defp search(queue, came, goal?, estimate, rules) do
     if :gb_sets.is_empty(queue) do
@@ -101,7 +113,8 @@ defmodule SceneServer.Movement.Path do
         {queue, came} =
           for next <- moves(rules, cell), not is_map_key(came, next), reduce: {queue, came} do
             {queue, came} ->
-              {:gb_sets.add({cost + 1 + estimate.(next), cost + 1, next}, queue), Map.put(came, next, cell)}
+              {:gb_sets.add({cost + 1 + estimate.(next), cost + 1, next}, queue),
+               Map.put(came, next, cell)}
           end
 
         search(queue, came, goal?, estimate, rules)
@@ -147,7 +160,8 @@ defmodule SceneServer.Movement.Path do
     end
   end
 
-  defp clear?(grid, {x, y, z}, height), do: Enum.all?(0..(height - 1), &(sample(grid, {x, y + &1, z}) == :open))
+  defp clear?(grid, {x, y, z}, height),
+    do: Enum.all?(0..(height - 1), &(sample(grid, {x, y + &1, z}) == :open))
 
   defp standable?(grid, {x, y, z} = cell, height),
     do: clear?(grid, cell, height) and sample(grid, {x, y - 1, z}) == :solid

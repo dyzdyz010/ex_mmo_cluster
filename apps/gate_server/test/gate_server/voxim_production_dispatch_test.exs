@@ -57,4 +57,49 @@ defmodule GateServer.VoximProductionDispatchTest do
     assert World.seq(c.w) == 0
     assert Enum.all?(World.material_balances(c.w, 1001), &(&1.balance == 0))
   end
+
+  # 余额是回执之后的另一次 World 查询；回执不等它，先到客户端。
+  @tag :b2
+  test "B2 build result reaches the client before the balance refresh", c do
+    player =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:tool_context, :session}} ->
+            GenServer.reply(from, {:ok, %{cid: 1001}})
+        end
+      end)
+
+    state = %{
+      status: :in_scene,
+      voxim_overlay: true,
+      cid: 1001,
+      player: player,
+      identity: :session,
+      world_ref: c.w,
+      sink: Sink.quic(self(), :session)
+    }
+
+    request = %{
+      request_id: 2,
+      client_intent_seq: 2,
+      logical_scene_id: 1,
+      action: 1,
+      coord: :outside_world,
+      tool_id: 1,
+      material: 19
+    }
+
+    assert {:ok, _} = Dispatch.handle({:voxel_production_intent, request}, state)
+
+    frames =
+      for _ <- 1..3,
+          do:
+            (receive do
+               {:mmo_voxel_bytes, :session, bytes} -> bytes
+             after
+               1_000 -> nil
+             end)
+
+    assert [<<0x68, _::binary>>, <<0x81, 2::64, _::binary>>, <<0x81, 2::64, _::binary>>] = frames
+  end
 end

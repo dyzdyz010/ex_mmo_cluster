@@ -7,13 +7,13 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JOBS = {
-    "gate_server": "test-gate-server", "beacon_server": "test-beacon-server",
+    "gate_server": "test-gate-server",
     "data_service": "test-data-service", "scene_server": "test-scene-server",
     "world_server": "test-standalone", "auth_server": "test-auth-server",
-    "visualize_server": "test-visualize-server", "voxel_region": "test-voxel-region",
+    "voxel_region": "test-voxel-region",
     "mmo_contracts": "test-mmo-contracts",
 }
-ALL = set(APP_JOBS.values()) | {"compile", "format", "test-native-rust", "smoke-ws-dual"}
+ALL = set(APP_JOBS.values()) | {"compile", "format", "test-native-rust"}
 
 
 def select(paths):
@@ -52,12 +52,8 @@ def select(paths):
             jobs |= ALL
         elif name == ".formatter.exs":
             jobs.add("format")
-        elif name.startswith(("tools/", "scripts/")):
-            # 运维/联调入口的直接接缝：正式双端入口，不默认带材料性能。
-            jobs.add("smoke-ws-dual")
-        elif name.startswith("docs/") and path.suffix in {".py", ".exs", ".sh", ".ps1", ".js"}:
-            jobs.add("smoke-ws-dual")
-        elif name.startswith(("docs/", ".demo/")) or name in {".gitignore", ".gitattributes"}:
+        elif name.startswith(("tools/", "scripts/", "docs/", ".demo/")) or name in {".gitignore", ".gitattributes"}:
+            # 只测试的运维/联调脚本与文档：CI 没有能真实执行它们的作业（WS 双端 smoke 随旧客户端删除）。
             continue
         else:
             raise ValueError("变更未分类，请补映射：" + name)
@@ -72,8 +68,6 @@ def select(paths):
             jobs.add(APP_JOBS[app])
     if changed:
         jobs.add("compile")
-    if affected & {"gate_server", "auth_server", "world_server", "scene_server", "mmo_contracts"}:
-        jobs.add("smoke-ws-dual")
     return sorted(jobs)
 
 

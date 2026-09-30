@@ -9,7 +9,7 @@ defmodule MmoContracts.StateRegistry do
   与 `MmoContracts.StateClassed` 配套:各持有者模块用 `use MmoContracts.StateClassed, class: ...`
   做**编译期**自声明;本清单做**集中登记**;迁移测试断言二者一致(梯队 0 step 0.5)。
 
-  > 本清单随迁移推进**增量补全**。当前为种子集,覆盖四类各自的代表性持有者。
+  > 本清单随迁移推进**增量补全**。
   """
   alias MmoContracts.StateClass
 
@@ -24,95 +24,11 @@ defmodule MmoContracts.StateRegistry do
   @entries [
     # —— durable_authoritative:成功确认前必须可恢复(AUTH-2/PERS-6)——
     %{
-      holder: SceneServer.Voxel.Storage,
-      state_class: :durable_authoritative,
-      app: :scene_server,
-      spec: "PERS-5/AUTH-2",
-      note: "chunk hot truth;经 ChunkSnapshotStore 落库"
-    },
-    %{
-      holder: DataService.Voxel.ChunkSnapshotStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/CELL-19",
-      note: "chunk 权威快照;advisory_lock+FOR UPDATE+chunk_version CAS"
-    },
-    %{
-      holder: DataService.Voxel.SceneObjectStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5",
-      note: "prefab/object 资产持久化"
-    },
-    %{
-      holder: DataService.Voxel.MapLedgerStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/CELL-23",
-      note: "region 所有权目录/owner_epoch/lease 持久化(单行 blob,阶段2 起被 per-region 目录取代)"
-    },
-    %{
-      holder: DataService.Voxel.RegionDirectoryStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/CELL-23",
-      note: "per-region durable 所有权目录(阶段2 scale-first:每 region 一行,O(1) per change,可分片)"
-    },
-    %{
-      holder: DataService.Voxel.WriteTokenStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/CELL-19/21",
-      note: "lease 写令牌 fence(梯队1 step1.2 改 Postgres durable)"
-    },
-    %{
-      holder: DataService.Voxel.RegionEpochStore,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/CELL-18/23",
-      note: "owner_epoch 线性化分配器(梯队1 step1.3,消除 ANTI-32)"
-    },
-    %{
-      holder: DataService.Voxel.CommandLog,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/AUTH-4/SEC-4",
-      note: "命令 replay-protection 幂等日志(梯队1 step1.5)"
-    },
-    %{
       holder: DataService.Voxel.OverlayLogStore,
       state_class: :durable_authoritative,
       app: :data_service,
       spec: "Voxim R6 决策稿 §9 第 1 项",
       note: "Voxim region 世界的权威 overlay 日志（VoxelRegion.World 事务按条目落行，压实 = 替换为检查点）"
-    },
-    %{
-      holder: DataService.Voxel.Outbox,
-      state_class: :durable_authoritative,
-      app: :data_service,
-      spec: "PERS-5/AUTH-9/10",
-      note: "durable replication outbox(梯队3 step3.9,committed delta 可靠重投 + visibility_watermark)"
-    },
-    %{
-      holder: WorldServer.Voxel.MapLedger,
-      state_class: :durable_authoritative,
-      app: :world_server,
-      spec: "PERS-5/CELL-18/23",
-      note: "区域所有权/lease/epoch 单写者目录(运行时态,持久化后端 MapLedgerStore)"
-    },
-    %{
-      holder: WorldServer.Voxel.TransactionCoordinator,
-      state_class: :durable_authoritative,
-      app: :world_server,
-      spec: "PERS-5/AUTH-10/12",
-      note: "跨区事务状态;coordinator snapshot 持久化(saga/outbox 雏形)"
-    },
-    %{
-      holder: SceneServer.Voxel.ObjectRegistry,
-      state_class: :durable_authoritative,
-      app: :scene_server,
-      spec: "PERS-5/AUTH-11",
-      note: "object/part 健康与销毁;经 SceneObjectStore 落库(梯队3 补 system_actor 信封)"
     },
     %{
       holder: DataService.Schema.Account,
@@ -127,61 +43,6 @@ defmodule MmoContracts.StateRegistry do
       app: :data_service,
       spec: "PERS-5",
       note: "角色"
-    },
-
-    # —— runtime_authoritative:服务端裁决,checkpoint/input log 恢复(AUTH-15/PERS-12)——
-    %{
-      holder: SceneServer.PlayerCharacter,
-      state_class: :runtime_authoritative,
-      app: :scene_server,
-      spec: "PERS-5/AUTH-15/PERS-12",
-      note: "玩家移动权威态(固定 tick 积分);梯队1 补恢复声明"
-    },
-    %{
-      holder: SceneServer.Combat.State,
-      state_class: :runtime_authoritative,
-      app: :scene_server,
-      spec: "PERS-5/AUTH-15",
-      note: "HP/死亡/respawn;进入最终结算须转 durable AUTH"
-    },
-
-    # —— derived:可重建,不持久化(PERS-1/3/7)——
-    %{
-      holder: SceneServer.Voxel.Field.FieldRegion,
-      state_class: :derived,
-      app: :scene_server,
-      spec: "PERS-1/3",
-      note: "物理场;解析弛豫+warm-up 重建;触发权威后果须经 AUTH-11"
-    },
-    %{
-      holder: SceneServer.Voxel.Field.FieldLayer,
-      state_class: :derived,
-      app: :scene_server,
-      spec: "PERS-1/3",
-      note: "密集场数组;derived 不落盘"
-    },
-    %{
-      holder: SceneServer.Voxel.SimulationTick,
-      state_class: :derived,
-      app: :scene_server,
-      spec: "PERS-7/DET-2",
-      note: "模拟 tick 调度态;确定性 output_hash 可重建"
-    },
-    %{
-      holder: DataService.Voxel.LodHeightmapStore,
-      state_class: :derived,
-      app: :data_service,
-      spec: "PERS-5/I-5",
-      note: "持久化 LOD heightmap projection;从 canonical voxel chunks 可重建,不是独立真值源"
-    },
-
-    # —— ephemeral:可丢失,禁止影响最终结算(PERS-8)——
-    %{
-      holder: SceneServer.Combat.EffectEvent,
-      state_class: :ephemeral,
-      app: :scene_server,
-      spec: "PERS-8/AUTH-6",
-      note: "无状态视觉 cue;不影响经济/资产/战斗最终裁决"
     }
   ]
 

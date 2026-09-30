@@ -1,16 +1,7 @@
 import Config
 
+# 反向代理（nginx）终止 TLS；Auth 只提供 JSON / 二进制 API，没有静态资源。
 config :auth_server, AuthServerWeb.Endpoint,
-  cache_static_manifest: "priv/static/cache_manifest.json",
-  force_ssl: [
-    rewrite_on: [:x_forwarded_proto],
-    exclude: [
-      hosts: ["localhost", "127.0.0.1"]
-    ]
-  ]
-
-config :visualize_server, VisualizeServerWeb.Endpoint,
-  cache_static_manifest: "priv/static/cache_manifest.json",
   force_ssl: [
     rewrite_on: [:x_forwarded_proto],
     exclude: [

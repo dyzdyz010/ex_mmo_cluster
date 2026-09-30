@@ -13,8 +13,7 @@ defmodule DataService.StateClassDeclarationTest do
   @data_service_holders Enum.map(@data_service_entries, & &1.holder)
 
   test "清单覆盖 data_service 核心持有者" do
-    assert DataService.Voxel.ChunkSnapshotStore in @data_service_holders
-    assert DataService.Voxel.MapLedgerStore in @data_service_holders
+    assert DataService.Voxel.OverlayLogStore in @data_service_holders
     assert DataService.Schema.Account in @data_service_holders
   end
 

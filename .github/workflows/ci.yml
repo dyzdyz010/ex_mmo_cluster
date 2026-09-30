@@ -73,22 +73,17 @@ jobs:
         run: mix deps.get
 
       - name: Compile shared dependencies
-        run: |
-          mix deps.compile
-          cd apps/data_init && mix compile
+        run: mix deps.compile
 
       - name: Compile maintained apps (warnings as errors)
         run: |
-          # Apps with no legacy Mnesia deps — strict compilation
+          # Strict compilation (warnings as errors).
           # scene_server compiled in its dedicated Rust-backed test job.
-          # (agent_server / agent_manager were consolidated away during arch-align.)
           strict_apps=(
             apps/mmo_contracts
-            apps/beacon_server
             apps/gate_server
             apps/world_server
             apps/auth_server
-            apps/visualize_server
             apps/data_service
           )
 
@@ -166,9 +161,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache deps and cargo registry
-        # _build is NOT cached: gate_server's protocol/voxel/smoke tests boot
-        # scene_server at runtime, which loads the Rustler NIFs (scene_ops /
-        # field_kernel). A warm _build cache can omit the freshly-copied *.so
+        # _build is NOT cached: gate_server tests boot scene_server at runtime,
+        # which loads the Rustler NIF (voxim_movement_nif). A warm _build cache
+        # can omit the freshly-copied *.so
         # (documented in test-scene-server) → {:undef} NIF crashes. Rebuild the NIF
         # from source each run; the cargo registry cache keeps that fast.
         uses: actions/cache@v4
@@ -190,47 +185,7 @@ jobs:
 
       - name: Run gate_server tests
         run: cd apps/gate_server && mix test --no-start
-        # includes codec/framing tests plus protocol tests that boot auth/data deps against PostgreSQL
-
-  test-beacon-server:
-    name: Test beacon_server
-    needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-beacon-server')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout shared Voxim source and fixtures
-        uses: ./.github/actions/voxim-fixtures
-        with:
-          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
-
-      - name: Prepare isolated test fixtures
-        run: python3 .github/prepare-test-fixtures.py
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
-
-      - name: Cache deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Compile
-        run: mix compile
-
-      - name: Run beacon_server tests
-        run: cd apps/beacon_server && mix test --no-start
-        # 16 tests: beacon logic, client API, registration, requirements
+        # includes Voxim QUIC session/dispatch tests that boot auth/data deps against PostgreSQL
 
   test-data-service:
     name: Test data_service
@@ -351,11 +306,7 @@ jobs:
         run: mix compile
 
       - name: Run scene_server tests
-        # 109 test files: NIF physics/movement, plus the full voxel-authority layer
-        # (codec/wire golden parity, chunk process, field provisioning, reaction/light/
-        # heat kernels, surface elements). The voxel-authority suite writes through
-        # DataService.Repo on PostgreSQL — test_helper.exs runs storage_up + migrations
-        # itself against the postgres service, so no separate ecto step is needed here.
+        # Voxim M1 Scene: shared movement NIF, replication, body and prefab designer.
         run: cd apps/scene_server && mix test --no-start
 
   test-native-rust:
@@ -375,22 +326,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            apps/scene_server/native/field_kernel
-            apps/scene_server/native/movement_core
-            apps/scene_server/native/octree
+            apps/voxel_region/native/voxim_worldgen
 
       - name: Run native crate unit tests
-        # Pure-Rust unit tests for the NIF-backed logic, never exercised by the
-        # Elixir suite: field_kernel (temperature/electric/conduction/discharge/
-        # cell_sim), movement_core (integrator/ack/profile/state), octree (spatial).
-        # scene_ops/movement_engine have no #[test]s (covered via Elixir NIF tests).
-        run: |
-          for crate in field_kernel movement_core octree; do
-            echo "::group::cargo test ${crate}"
-            (cd "apps/scene_server/native/${crate}" && cargo test)
-            echo "::endgroup::"
-          done
-          (cd apps/voxel_region/native/voxim_worldgen && cargo test)
+        run: (cd apps/voxel_region/native/voxim_worldgen && cargo test)
 
   test-standalone:
     name: Test standalone apps
@@ -489,9 +428,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache deps and cargo registry
-        # _build is NOT cached: auth_server's IngameController boots scene_server,
-        # whose Rustler NIF (scene_ops, via new_physics_system) must load. A warm
-        # _build cache can omit the freshly-copied *.so (documented in
+        # _build is NOT cached: auth_server tests boot scene_server, whose Rustler
+        # NIF (voxim_movement_nif) must load. A warm _build cache can omit the
+        # freshly-copied *.so (documented in
         # test-scene-server) → NIF load_failed. Rebuild the NIF from source each run.
         uses: actions/cache@v4
         with:
@@ -512,122 +451,8 @@ jobs:
 
       - name: Run auth_server tests
         # Phoenix 1.8 Endpoint uses persistent_term — needs the app started.
-        # AuthServer.Application skips cluster Interface in :test via
-        # :start_interface? config, so no beacon_server required.
         run: cd apps/auth_server && mix test
 
-  smoke-ws-dual:
-    name: Smoke WebSocket dual movement
-    needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'smoke-ws-dual')
-    runs-on: ubuntu-latest
-    env:
-      MIX_ENV: dev
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: mmo_dev
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Checkout shared Voxim source and fixtures
-        uses: ./.github/actions/voxim-fixtures
-        with:
-          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
-
-      - name: Prepare isolated test fixtures
-        run: python3 .github/prepare-test-fixtures.py
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Cache deps and cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            deps
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Compile
-        run: mix compile
-
-      - name: Run WebSocket dual movement smoke
-        run: node scripts/run_ws_dual_smoke_supervised.js
-
-      - name: Upload smoke observe logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ws-dual-smoke-observe
-          path: .demo/observe/ws-dual-*
-
-  test-visualize-server:
-    name: Test visualize_server
-    needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'test-visualize-server')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout shared Voxim source and fixtures
-        uses: ./.github/actions/voxim-fixtures
-        with:
-          ssh-key: ${{ secrets.VOXIM_READONLY_DEPLOY_KEY }}
-
-      - name: Prepare isolated test fixtures
-        run: python3 .github/prepare-test-fixtures.py
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
-
-      - name: Cache deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
-
-      - name: Install dependencies
-        run: mix deps.get
-
-      - name: Compile
-        run: mix compile
-
-      - name: Run visualize_server tests
-        # Phoenix 1.8 Endpoint uses persistent_term — needs the app started.
-        run: cd apps/visualize_server && mix test
   test-voxel-region:
     name: Test voxel_region (normal Mix entry)
     needs: changes
@@ -732,7 +557,7 @@ jobs:
   required:
     name: CI result
     if: always()
-    needs: [changes, compile, format, test-gate-server, test-beacon-server, test-data-service, test-scene-server, test-native-rust, test-standalone, test-auth-server, smoke-ws-dual, test-visualize-server, test-voxel-region, test-mmo-contracts]
+    needs: [changes, compile, format, test-gate-server, test-data-service, test-scene-server, test-native-rust, test-standalone, test-auth-server, test-voxel-region, test-mmo-contracts]
     runs-on: ubuntu-latest
     steps:
       - env:

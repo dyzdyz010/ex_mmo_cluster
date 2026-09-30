@@ -152,7 +152,18 @@ end
 
 defmodule MmoContracts.Session.ToolState do
   @moduledoc "Global system Hello35：准星人物确认或机械命中回执。source_id=0 为只读确认；有来源则双方共享动作与目标生命身份。"
-  @enforce_keys [:identity, :request_id, :source_id, :source_session, :source_life, :action_seq,
-    :target_id, :target_life, :part, :life, :recoverable]
+  @enforce_keys [
+    :identity,
+    :request_id,
+    :source_id,
+    :source_session,
+    :source_life,
+    :action_seq,
+    :target_id,
+    :target_life,
+    :part,
+    :life,
+    :recoverable
+  ]
   defstruct @enforce_keys
 end

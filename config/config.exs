@@ -30,23 +30,6 @@ config :auth_server, AuthServerWeb.Endpoint,
   live_view: [signing_salt: "uYwimls9"]
 
 # ===========================================================================
-# VisualizeServer (Phoenix 1.8)
-# ===========================================================================
-
-config :visualize_server,
-  generators: [timestamp_type: :utc_datetime]
-
-config :visualize_server, VisualizeServerWeb.Endpoint,
-  url: [host: "localhost"],
-  adapter: Bandit.PhoenixAdapter,
-  render_errors: [
-    formats: [html: VisualizeServerWeb.ErrorHTML, json: VisualizeServerWeb.ErrorJSON],
-    layout: false
-  ],
-  pubsub_server: VisualizeServer.PubSub,
-  live_view: [signing_salt: "sfZK67fw"]
-
-# ===========================================================================
 # Asset pipelines (esbuild + tailwind) for all Phoenix apps
 # ===========================================================================
 
@@ -56,12 +39,6 @@ config :esbuild,
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../apps/auth_server/assets", __DIR__),
-    env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
-  ],
-  visualize_server: [
-    args:
-      ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
-    cd: Path.expand("../apps/visualize_server/assets", __DIR__),
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ]
 
@@ -73,13 +50,6 @@ config :tailwind,
       --output=priv/static/assets/css/app.css
     ),
     cd: Path.expand("../apps/auth_server", __DIR__)
-  ],
-  visualize_server: [
-    args: ~w(
-      --input=assets/css/app.css
-      --output=priv/static/assets/css/app.css
-    ),
-    cd: Path.expand("../apps/visualize_server", __DIR__)
   ]
 
 # ===========================================================================
@@ -94,42 +64,6 @@ config :phoenix, :json_library, Jason
 
 # Silence Phoenix LiveView colocated-hook symlink warning on Windows.
 config :phoenix_live_view, :colocated_js, disable_symlink_warning: true
-
-# ===========================================================================
-# Cluster auto-discovery (all nodes)
-# ===========================================================================
-
-config :libcluster,
-  topologies: [
-    mmo_cluster: [
-      strategy: Cluster.Strategy.Gossip,
-      config: [
-        port: 45892,
-        if_addr: "0.0.0.0",
-        multicast_if: "127.0.0.1",
-        multicast_addr: "230.1.1.251",
-        multicast_ttl: 1
-      ]
-    ]
-  ]
-
-# ===========================================================================
-# SceneServer (Voxel runtime)
-# ===========================================================================
-
-# Phase 5.E voxel simulators registry. 每个 ChunkProcess 启动时按本配置
-# 注入低频规则帧 simulator 列表（实现 `SceneServer.Voxel.Simulator`
-# behaviour）。Phase 5.E 框架就绪，Phase 5.F 提供 `SceneServer.Voxel.DiffusionSimulator`
-# (3D 7-stencil 温度 / 湿度扩散)，但 **Phase 5.F 本 commit 保持空列表**
-# 以保证 603 voxel baseline 不回归（Phase 5.F 草案 §step 6 硬纪律：现有测试
-# 不依赖 simulator 自动启动）。multi-instance config 注入 + 真正启用推到
-# Phase 5.F.runtime；届时本字段会改为类似：
-#     [
-#       {SceneServer.Voxel.DiffusionSimulator, %{attribute_name: "temperature", alpha: 0.05, dt: 0.1}},
-#       {SceneServer.Voxel.DiffusionSimulator, %{attribute_name: "moisture",    alpha: 0.02, dt: 0.1}}
-#     ]
-# Phase 6 追加 FieldLayer tick simulators。
-config :scene_server, :voxel_simulators, []
 
 # ===========================================================================
 # Data Service (Ecto + PostgreSQL)

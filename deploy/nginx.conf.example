@@ -1,85 +1,18 @@
-# ex_mmo_cluster — nginx reverse proxy 模板（单域名版）
-#
-# 用法（服务器上）:
-#   1. 复制到 /etc/nginx/sites-available/ex_mmo_cluster.conf
-#   2. 替换 ${DOMAIN} 占位符为实际域名（如 mmo.hemifuture.cn）
-#   3. 替换端口为 .env 里 AUTH_PORT 的值（默认 20000）
-#   4. 确认证书路径与本机一致（默认 /etc/nginx/ssl/${DOMAIN}/{cert,key}.pem）
-#   5. ln -s /etc/nginx/sites-available/ex_mmo_cluster.conf /etc/nginx/sites-enabled/
-#   6. nginx -t && systemctl reload nginx
-#
-# 前置条件:
-#   - DNS A 记录 ${DOMAIN} 已解析到本机公网 IP
-#   - 证书由 acme.sh 部署到 /etc/nginx/ssl/${DOMAIN}/cert.pem + key.pem
-#     续期由 `acme.sh --install-cert ... --reloadcmd "service nginx reload"` 注册的
-#     cron 自动处理，证书文件会被覆盖写 + nginx reload，无需手动干预
-#     （若改用 certbot/Let's Encrypt，把 ssl_certificate{,_key} 改为
-#      /etc/letsencrypt/live/${DOMAIN}/fullchain.pem 与 privkey.pem）
-#   - docker compose 里 app 已经把 20000 绑到 127.0.0.1
-#   - gate_server 的 20002 TCP / 20003 UDP 端口走防火墙直连
-#   - visualize_server (20001) 不走公网，运维通过 SSH 隧道访问：
-#       ssh -L 20001:127.0.0.1:20001 user@server
-#       浏览器开 http://localhost:20001
-#
-# Phoenix LiveView / Channels 走 WebSocket，必须保留 Upgrade/Connection 头。
-
-# ============================================================================
-# ${DOMAIN} → auth_server (玩家登录/注册 API + 未来的游戏 HTTP 端点)
-# ============================================================================
+# Host nginx: TLS termination for the Voxim HTTP API (login / regions / prefabs).
+# QUIC (UDP ${VOXIM_QUIC_PORT}) is not proxied; the client connects to it directly.
 server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN};
+    listen 443 ssl;
+    server_name mmo.example.com;
 
-    ssl_certificate     /etc/nginx/ssl/${DOMAIN}/cert.pem;
-    ssl_certificate_key /etc/nginx/ssl/${DOMAIN}/key.pem;
+    ssl_certificate     /etc/nginx/ssl/example/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/example/privkey.pem;
 
-    access_log /var/log/nginx/ex_mmo_cluster.access.log;
-    error_log  /var/log/nginx/ex_mmo_cluster.error.log;
-
-    # 客户端上传（注册时可能有头像之类）。按需调整。
-    client_max_body_size 4M;
-
-    # Host-side browser client. upgrade.sh replaces this directory from the
-    # WEB_CLIENT_IMAGE_TAG static-resource image when that variable is set.
-    location = /client {
-        return 301 /client/;
-    }
-
-    location /client/ {
-        alias /data/ex_mmo_cluster/web_client/dist/;
-        try_files $uri $uri/ /client/index.html;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:20000;
-        proxy_http_version 1.1;
-
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    # Invite-code playtest routes. Cold region requests can take tens of seconds on a fresh cache.
+    location /playtest/ {
+        proxy_pass http://127.0.0.1:24640;
+        proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Phoenix LiveView / Channels
-        proxy_set_header Upgrade           $http_upgrade;
-        proxy_set_header Connection        "upgrade";
-
-        # 长连接保活
-        proxy_read_timeout    3600s;
-        proxy_send_timeout    3600s;
-        proxy_connect_timeout 60s;
-    }
-}
-
-# ============================================================================
-# 80 → 443 跳转
-# ============================================================================
-server {
-    listen 80;
-    server_name ${DOMAIN};
-
-    # 若日后改用 certbot/Let's Encrypt，需要在此之前加一个
-    # `location /.well-known/acme-challenge/ { root /var/www/html; }`
-    location / {
-        return 301 https://$host$request_uri;
+        proxy_read_timeout 180s;
+        client_max_body_size 16m;
     }
 }

@@ -24,7 +24,9 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   end
 
   defmodule Sink do
-    def reliable(pid, identity, purpose, message), do: send(pid, {:reliable, identity, purpose, message})
+    def reliable(pid, identity, purpose, message),
+      do: send(pid, {:reliable, identity, purpose, message})
+
     def datagram(pid, identity, message), do: send(pid, {:datagram, identity, message})
     def close(pid, identity, reason), do: send(pid, {:closed, identity, reason})
   end
@@ -46,7 +48,11 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
 
     def handle_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
-      send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.ReviveRelocationTest.snapshot(box)})
+      send(
+        subscriber,
+        {:canonical_snapshot, ref, SceneServer.Movement.ReviveRelocationTest.snapshot(box)}
+      )
+
       {:reply, :ok, state}
     end
 
@@ -59,25 +65,54 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   @probe [40.0, 558.0, 40.0]
 
   def snapshot({{x0, y0, z0}, {x1, y1, z1}} = box) do
-    floor = for _z <- 0..15, cy <- 0..15, _x <- 0..15, into: <<>>, do: <<if(31 * 16 + cy == 500, do: 1, else: 0)>>
+    floor =
+      for _z <- 0..15,
+          cy <- 0..15,
+          _x <- 0..15,
+          into: <<>>,
+          do: <<if(31 * 16 + cy == 500, do: 1, else: 0)>>
 
     chunks =
-      for x <- (x0 * 4)..(x1 * 4 - 1), y <- (y0 * 4)..(y1 * 4 - 1), z <- (z0 * 4)..(z1 * 4 - 1), y == 31 do
-        %Voxel.ChunkOccupancy{coord: {x, y, z}, n: 16, scale_m: 1.0, origin_m: {x * 16.0, y * 16.0, z * 16.0}, cells: floor}
+      for x <- (x0 * 4)..(x1 * 4 - 1),
+          y <- (y0 * 4)..(y1 * 4 - 1),
+          z <- (z0 * 4)..(z1 * 4 - 1),
+          y == 31 do
+        %Voxel.ChunkOccupancy{
+          coord: {x, y, z},
+          n: 16,
+          scale_m: 1.0,
+          origin_m: {x * 16.0, y * 16.0, z * 16.0},
+          cells: floor
+        }
       end
 
-    %Voxel.CanonicalSnapshot{content_version: 9, transaction_seq: 0, l0_min: elem(box, 0), l0_max_exclusive: elem(box, 1),
-      chunks: chunks, regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})}
+    %Voxel.CanonicalSnapshot{
+      content_version: 9,
+      transaction_seq: 0,
+      l0_min: elem(box, 0),
+      l0_max_exclusive: elem(box, 1),
+      chunks: chunks,
+      regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})
+    }
   end
 
   defp config(radius) do
     path = Path.expand("../../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
-    profile = File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
 
-    %{"schema" => "voxim-m1-demo-v1", "l0_min" => [-1, 7, -1], "l0_max_exclusive" => [2, 10, 2],
-      "travel_min_m" => [-48.0, 464.0, -48.0], "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
-      "spawn_probes_m" => [@probe], "spawn_min_y_m" => 464.0, "profile" => profile,
-      "collision_window_radius_tiles" => radius}
+    profile =
+      File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
+
+    %{
+      "schema" => "voxim-m1-demo-v1",
+      "l0_min" => [-1, 7, -1],
+      "l0_max_exclusive" => [2, 10, 2],
+      "travel_min_m" => [-48.0, 464.0, -48.0],
+      "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
+      "spawn_probes_m" => [@probe],
+      "spawn_min_y_m" => 464.0,
+      "profile" => profile,
+      "collision_window_radius_tiles" => radius
+    }
   end
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
@@ -87,15 +122,32 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     source = start_supervised!({Source, %{owner: self()}})
 
     scene =
-      start_supervised!({Scene, [scene_id: 1, scene_epoch: 7, world_ref: source, config: config(radius),
-        clock: {Clock, clock}, sink: Sink, world_api: Source]})
+      start_supervised!(
+        {Scene,
+         [
+           scene_id: 1,
+           scene_epoch: 7,
+           world_ref: source,
+           config: config(radius),
+           clock: {Clock, clock},
+           sink: Sink,
+           world_api: Source
+         ]}
+      )
 
     wait(fn -> Scene.observe(scene).initialized end)
     %{scene: scene, clock: clock, radius: radius}
   end
 
   defp wait(fun, attempts \\ 4000) do
-    if value = fun.(), do: value, else: (assert(attempts > 0); Process.sleep(1); wait(fun, attempts - 1))
+    if value = fun.(),
+      do: value,
+      else:
+        (
+          assert(attempts > 0)
+          Process.sleep(1)
+          wait(fun, attempts - 1)
+        )
   end
 
   defp tick(ctx, tick) do
@@ -104,10 +156,15 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     wait(fn -> Scene.observe(ctx.scene).tick >= tick end)
   end
 
-  defp frame(seq, axis_x), do: %Movement.InputFrame{input_seq: seq, axis_x: axis_x, axis_z: 0, yaw: 0, jump_pressed: 0}
+  defp frame(seq, axis_x),
+    do: %Movement.InputFrame{input_seq: seq, axis_x: axis_x, axis_z: 0, yaw: 0, jump_pressed: 0}
 
   defp step(ctx, p, seq, axis_x) do
-    Player.input(p, identity(), %Movement.InputBatch{identity: identity(), frames: [frame(seq, axis_x)]})
+    Player.input(p, identity(), %Movement.InputBatch{
+      identity: identity(),
+      frames: [frame(seq, axis_x)]
+    })
+
     tick(ctx, seq + ctx.origin - 1)
     wait(fn -> Player.observe(p).processed_input_seq == seq end)
   end
@@ -133,8 +190,11 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
 
   defp kill(p) do
     :sys.replace_state(p, fn s ->
-      %{s | climate: %{"ambient_kelvin" => 293.15, "climate_zones" => []},
-        body: %{Body.new() | core_k: 293.15, status: :dying, lethal_s: 129.5}}
+      %{
+        s
+        | climate: %{"ambient_kelvin" => 293.15, "climate_zones" => []},
+          body: %{Body.new() | core_k: 293.15, status: :dying, lethal_s: 129.5}
+      }
     end)
 
     send(p, :body_tick)
@@ -143,11 +203,22 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
 
   defp stepped(start, spawned, axis_x) do
     native = SceneServer.Native.VoximMovement
-    world = native.set_chunks(native.new_world(), CollisionUpdates.operations(snapshot({{-1, 7, -1}, {2, 10, 2}}).chunks))
+
+    world =
+      native.set_chunks(
+        native.new_world(),
+        CollisionUpdates.operations(snapshot({{-1, 7, -1}, {2, 10, 2}}).chunks)
+      )
+
     <<bytes::binary-size(120), 60::16>> = Session.Codec.encode_profile(start.profile)
     profile = for(<<v::float-64 <- bytes>>, do: v) |> List.to_tuple()
     {x, z} = Movement.Codec.axes(frame(0, axis_x))
-    [{20, next}] = native.step_characters(world, profile, [{20, {spawned.position, spawned.velocity, spawned.grounded}, {x, z, 0}}])
+
+    [{20, next}] =
+      native.step_characters(world, profile, [
+        {20, {spawned.position, spawned.velocity, spawned.grounded}, {x, z, 0}}
+      ])
+
     next
   end
 
@@ -160,7 +231,8 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     assert "nutrition.hunger" in Enum.map(revived.injuries, & &1.tag)
   end
 
-  defp same_spot?(a, b), do: {a.position, a.velocity, a.grounded} == {b.position, b.velocity, b.grounded}
+  defp same_spot?(a, b),
+    do: {a.position, a.velocity, a.grounded} == {b.position, b.velocity, b.grounded}
 
   test "非流送：死亡下发 status 2 与 Relocate（apply_tick = 死亡时模拟 tick + 1，出生点 = SessionStart），该 tick 从出生点推进；下一秒复活身体" do
     {ctx, p, start} = walk(setup_scene(0))
@@ -169,10 +241,17 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     :sys.replace_state(p, &%{&1 | life_generation: 1_000_000_000_000})
     kill(p)
     apply_tick = ctx.origin + 12
-    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}}, 2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}},
+                   2000
+
     assert same_spot?(spawned, start.state)
     step(ctx, p, 13, 0)
-    assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) == stepped(start, spawned, 0)
+
+    assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) ==
+             stepped(start, spawned, 0)
+
     revived(p)
     assert :sys.get_state(p).life_generation == 1_000_000_000_001
   end
@@ -188,15 +267,30 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     assert_in_delta feet_y, y - half, 1.0e-12
     assert_receive {:authority, {:body_coherence, 20, factor}}, 2000
     assert factor == 0.0
+
     # 覆盖出生点的窗口异步到达：等它排进 Player 的 FIFO 再推进 tick，窗口在下一个 tick 安装。
-    wait(fn -> s = :sys.get_state(p); s.revive == :window and :queue.len(s.updates.queue) > 0 end)
+    wait(fn ->
+      s = :sys.get_state(p)
+      s.revive == :window and :queue.len(s.updates.queue) > 0
+    end)
+
     # 中性输入须在该 tick 截止前到达；先 tick 再送同 tick 输入只会保留旧 +x，不能证明复活后的中性积分。
     step(ctx, p, 13, 0)
-    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: apply_tick, state: spawned}}, 2000
-    assert_receive {:reliable, _, :voxel, %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {-1, 7, -1}}}, 2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.Relocate{apply_tick: apply_tick, state: spawned}},
+                   2000
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {-1, 7, -1}}},
+                   2000
+
     assert apply_tick == ctx.origin + 12
     assert same_spot?(spawned, start.state)
-    assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) == stepped(start, spawned, 0)
+
+    assert Player.observe(p).state |> then(&{&1.position, &1.velocity, &1.grounded}) ==
+             stepped(start, spawned, 0)
+
     assert :sys.get_state(p).revive == nil
     revived(p)
   end

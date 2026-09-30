@@ -222,7 +222,15 @@ defmodule SceneServer.Movement.Replication do
           entities ++ bridges,
           &Map.take(
             &1,
-            [:identity, :entity_id, :entity_epoch, :kind, :state, :simulation_tick, :collision_revision]
+            [
+              :identity,
+              :entity_id,
+              :entity_epoch,
+              :kind,
+              :state,
+              :simulation_tick,
+              :collision_revision
+            ]
           )
         )
 

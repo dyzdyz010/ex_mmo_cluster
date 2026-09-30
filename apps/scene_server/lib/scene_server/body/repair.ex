@@ -71,9 +71,12 @@ defmodule SceneServer.Body.Repair do
       Enum.reduce(Enum.sort(body.traumas), thermal, fn {part, wound}, {b, acc} ->
         rate = m * Body.systems(body).circulation / wound.heal_s
         {b, step, acc} = repair_step(b, wound.protein_g, wound.heal, rate * dt, acc)
-        wounds = if step >= 1 - wound.heal,
-          do: Map.delete(b.traumas, part),
-          else: Map.put(b.traumas, part, %{wound | heal: wound.heal + step})
+
+        wounds =
+          if step >= 1 - wound.heal,
+            do: Map.delete(b.traumas, part),
+            else: Map.put(b.traumas, part, %{wound | heal: wound.heal + step})
+
         {%{b | traumas: wounds}, acc}
       end)
     end)
@@ -87,11 +90,21 @@ defmodule SceneServer.Body.Repair do
     protein = min(step * total_g, body.protein_g)
     synth = min(protein * cost, fuel)
     {glycogen, fat} = Body.fuel_split(body, synth)
-    next = %{body | protein_g: body.protein_g - protein,
-      reserve_j: body.reserve_j - glycogen, fat_reserve_j: body.fat_reserve_j - fat}
-    {next, step, %{repair_protein_g: account.repair_protein_g + protein,
-      synth_j: account.synth_j + synth, synth_glycogen_j: account.synth_glycogen_j + glycogen,
-      synth_fat_j: account.synth_fat_j + fat}}
+
+    next = %{
+      body
+      | protein_g: body.protein_g - protein,
+        reserve_j: body.reserve_j - glycogen,
+        fat_reserve_j: body.fat_reserve_j - fat
+    }
+
+    {next, step,
+     %{
+       repair_protein_g: account.repair_protein_g + protein,
+       synth_j: account.synth_j + synth,
+       synth_glycogen_j: account.synth_glycogen_j + glycogen,
+       synth_fat_j: account.synth_fat_j + fat
+     }}
   end
 
   @doc """
@@ -106,11 +119,17 @@ defmodule SceneServer.Body.Repair do
 
     next =
       Enum.reduce(@wounds, next, fn {kind, heal_field, _}, b ->
-        if Body.severity(b, kind) > Body.severity(healed, kind), do: Map.put(b, heal_field, 0.0), else: b
+        if Body.severity(b, kind) > Body.severity(healed, kind),
+          do: Map.put(b, heal_field, 0.0),
+          else: b
       end)
 
-    {%{next | burn_age_s: burn_age(next, healed, dt), weak_s: max(0.0, next.weak_s - dt), daze_s: max(0.0, next.daze_s - dt)},
-     Map.merge(account, repair)}
+    {%{
+       next
+       | burn_age_s: burn_age(next, healed, dt),
+         weak_s: max(0.0, next.weak_s - dt),
+         daze_s: max(0.0, next.daze_s - dt)
+     }, Map.merge(account, repair)}
   end
 
   # 急性期计时：无烧伤 0；加重时按此刻（计时已走 dt）的旧下压量接续；否则 + dt。
@@ -142,8 +161,17 @@ defmodule SceneServer.Body.Repair do
     energy = energy_j - absorbed * p.protein_atwater_j_per_g
     glycogen = min(energy, p.reserve_full_j - body.reserve_j)
 
-    {%{body | protein_g: body.protein_g + absorbed, reserve_j: body.reserve_j + glycogen,
-       fat_reserve_j: body.fat_reserve_j + energy - glycogen},
-     %{food_protein_g: absorbed, food_energy_j: energy, food_glycogen_j: glycogen, food_fat_j: energy - glycogen}}
+    {%{
+       body
+       | protein_g: body.protein_g + absorbed,
+         reserve_j: body.reserve_j + glycogen,
+         fat_reserve_j: body.fat_reserve_j + energy - glycogen
+     },
+     %{
+       food_protein_g: absorbed,
+       food_energy_j: energy,
+       food_glycogen_j: glycogen,
+       food_fat_j: energy - glycogen
+     }}
   end
 end

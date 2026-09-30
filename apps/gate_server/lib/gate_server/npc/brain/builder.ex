@@ -32,7 +32,8 @@ defmodule GateServer.Npc.Brain.Builder do
         "fetch_material" => "Stop building and go gather more building material.",
         "respond_to_player" => "Pause work and respond to a player who is addressing the NPC.",
         "move_to_safety" => "Get away from an immediate physical danger.",
-        "replan" => "The world contradicts the blueprint, or the same step failed repeatedly, so the plan cannot proceed as written."
+        "replan" =>
+          "The world contradicts the blueprint, or the same step failed repeatedly, so the plan cannot proceed as written."
       }
     }
   end
@@ -73,28 +74,45 @@ defmodule GateServer.Npc.Brain.Builder do
   @doc "事件：Body 的 `{:observation, _}` / `{:outcome, _}`，以及壳送回的 `{:blueprint, ops}`、`{:plan_failed, reason}`、`{:verdict, v}`。"
   def step(state, {:observation, %{self: %{position: position}, balances: balances}}) do
     state = %{state | position: position, balances: balances || state.balances}
-    if state.phase == :start and state.waiting == nil, do: command(%{state | phase: :balances}, %{verb: :query_balances}), else: {state, []}
+
+    if state.phase == :start and state.waiting == nil,
+      do: command(%{state | phase: :balances}, %{verb: :query_balances}),
+      else: {state, []}
   end
 
-  def step(%{waiting: id} = state, {:outcome, %{id: id} = outcome}), do: outcome(%{state | waiting: nil}, outcome)
+  def step(%{waiting: id} = state, {:outcome, %{id: id} = outcome}),
+    do: outcome(%{state | waiting: nil}, outcome)
+
   def step(state, {:outcome, _}), do: {state, []}
 
   def step(%{phase: :planning} = state, {:blueprint, ops}) do
     case Blueprint.cells(ops) do
-      {:ok, cells} -> approach(%{state | cells: cells}, [{:remember, ops}])
-      :error -> plan(state, "The previous blueprint was rejected: malformed operations, empty, or more than 2000 cells.")
+      {:ok, cells} ->
+        approach(%{state | cells: cells}, [{:remember, ops}])
+
+      :error ->
+        plan(
+          state,
+          "The previous blueprint was rejected: malformed operations, empty, or more than 2000 cells."
+        )
     end
   end
 
-  def step(%{phase: :planning} = state, {:plan_failed, reason}), do: plan(state, "The previous planning request failed: #{inspect(reason)}.")
+  def step(%{phase: :planning} = state, {:plan_failed, reason}),
+    do: plan(state, "The previous planning request failed: #{inspect(reason)}.")
 
-  def step(%{phase: :triage} = state, {:verdict, {:act, :continue_building}}), do: survey(state, [])
+  def step(%{phase: :triage} = state, {:verdict, {:act, :continue_building}}),
+    do: survey(state, [])
 
   def step(%{phase: :triage} = state, {:verdict, {:act, :fetch_material}}),
     do: idle(state, "Stopped building: not enough material for the blueprint.")
 
-  def step(%{phase: :triage} = state, {:verdict, {:escalate, _}}), do: plan(%{state | cells: nil}, state.problem)
-  def step(%{phase: :triage} = state, {:verdict, other}), do: idle(state, "Stopped building: #{inspect(other)}.")
+  def step(%{phase: :triage} = state, {:verdict, {:escalate, _}}),
+    do: plan(%{state | cells: nil}, state.problem)
+
+  def step(%{phase: :triage} = state, {:verdict, other}),
+    do: idle(state, "Stopped building: #{inspect(other)}.")
+
   def step(state, _event), do: {state, []}
 
   # 余额读到了（取这条结果里的，不等下一次 Observation）：有蓝图就去工地，没有就请规划者画。
@@ -108,14 +126,26 @@ defmodule GateServer.Npc.Brain.Builder do
 
   defp outcome(%{phase: :approach, stands: [_ | rest]} = state, %{reason: reason}) do
     case rest do
-      [] -> triage(state, "Movement to the building site failed with the reason: #{reason}. No standing spot around the site can be reached.")
-      [next | _] -> command(%{state | stands: rest}, move(next))
+      [] ->
+        triage(
+          state,
+          "Movement to the building site failed with the reason: #{reason}. No standing spot around the site can be reached."
+        )
+
+      [next | _] ->
+        command(%{state | stands: rest}, move(next))
     end
   end
 
   # 对账：一层一个 look，攒齐了再算还差哪些格。
-  defp outcome(%{phase: :survey, looks: looks} = state, %{status: :done, data: %{probe_occupancy: cells}}) do
-    world = for %{cell: [x, y, z], material: material} <- cells, into: state.world, do: {{x, y, z}, material}
+  defp outcome(%{phase: :survey, looks: looks} = state, %{
+         status: :done,
+         data: %{probe_occupancy: cells}
+       }) do
+    world =
+      for %{cell: [x, y, z], material: material} <- cells,
+          into: state.world,
+          do: {{x, y, z}, material}
 
     case looks do
       [next | rest] -> command(%{state | world: world, looks: rest}, next)
@@ -124,47 +154,90 @@ defmodule GateServer.Npc.Brain.Builder do
   end
 
   defp outcome(%{phase: :survey} = state, %{reason: reason}),
-    do: triage(state, "Looking at the building site was rejected with the reason: #{inspect(reason)}.")
+    do:
+      triage(
+        state,
+        "Looking at the building site was rejected with the reason: #{inspect(reason)}."
+      )
 
   # 施工：放好了就下一格；够不着换站位；被占了重新对账（同一格连续两次 = 世界与蓝图不符）；其余交给调度。
   defp outcome(%{phase: :build, todo: [_ | rest]} = state, %{verb: :place, status: :done}),
     do: build(%{state | todo: rest, stands: nil, occupied_at: nil})
 
-  defp outcome(%{phase: :build, todo: [{cell, _} | _]} = state, %{verb: :place, reason: :out_of_reach}) do
+  defp outcome(%{phase: :build, todo: [{cell, _} | _]} = state, %{
+         verb: :place,
+         reason: :out_of_reach
+       }) do
     case state.stands do
-      [] -> triage(state, "The cell #{inspect(cell)} of the blueprint cannot be reached from any standing spot around the site.")
-      [next | rest] -> command(%{state | stands: rest}, move(next))
+      [] ->
+        triage(
+          state,
+          "The cell #{inspect(cell)} of the blueprint cannot be reached from any standing spot around the site."
+        )
+
+      [next | rest] ->
+        command(%{state | stands: rest}, move(next))
     end
   end
 
-  defp outcome(%{phase: :build, todo: [{cell, _} | _], occupied_at: cell} = state, %{verb: :place, reason: :occupied}),
-    do: triage(state, "Placing a block at #{inspect(cell)} was rejected twice with the reason: occupied. The blueprint says that cell should be empty.")
+  defp outcome(%{phase: :build, todo: [{cell, _} | _], occupied_at: cell} = state, %{
+         verb: :place,
+         reason: :occupied
+       }),
+       do:
+         triage(
+           state,
+           "Placing a block at #{inspect(cell)} was rejected twice with the reason: occupied. The blueprint says that cell should be empty."
+         )
 
-  defp outcome(%{phase: :build, todo: [{cell, _} | _]} = state, %{verb: :place, reason: :occupied}), do: survey(%{state | occupied_at: cell}, [])
+  defp outcome(%{phase: :build, todo: [{cell, _} | _]} = state, %{verb: :place, reason: :occupied}),
+       do: survey(%{state | occupied_at: cell}, [])
 
   defp outcome(%{phase: :build} = state, %{verb: :place, reason: :insufficient_material}),
-    do: triage(state, "Material check by the game: not enough material for the next block of the blueprint. #{length(state.todo)} blocks are still missing.")
+    do:
+      triage(
+        state,
+        "Material check by the game: not enough material for the next block of the blueprint. #{length(state.todo)} blocks are still missing."
+      )
 
   defp outcome(%{phase: :build, todo: [{cell, _} | _]} = state, %{verb: :place, reason: reason}),
-    do: triage(state, "Placing a block at #{inspect(cell)} was rejected with the reason: #{inspect(reason)}.")
+    do:
+      triage(
+        state,
+        "Placing a block at #{inspect(cell)} was rejected with the reason: #{inspect(reason)}."
+      )
 
   # 换站位的那一步走完（或走不到）：都回去再试放；走不到的站位已经从表里去掉了。
   defp outcome(%{phase: :build} = state, %{verb: :move_to}), do: build(state)
   defp outcome(state, _), do: {state, []}
 
   defp reconciled(state, %{todo: [], wrong: []}),
-    do: idle(%{state | cells: nil}, "Finished building: #{map_size(state.cells)} blocks placed as the blueprint says. Goal was: #{state.goal}", [:forget])
+    do:
+      idle(
+        %{state | cells: nil},
+        "Finished building: #{map_size(state.cells)} blocks placed as the blueprint says. Goal was: #{state.goal}",
+        [:forget]
+      )
 
   defp reconciled(state, %{wrong: [{cell, found, _} | _] = wrong}),
     do:
-      triage(state, "You looked at the site: #{length(wrong)} cells of the blueprint are occupied by other material " <>
-        "(for example #{inspect(cell)} holds material #{found}), which the blueprint did not account for.")
+      triage(
+        state,
+        "You looked at the site: #{length(wrong)} cells of the blueprint are occupied by other material " <>
+          "(for example #{inspect(cell)} holds material #{found}), which the blueprint did not account for."
+      )
 
   defp reconciled(state, %{todo: todo}), do: build(%{state | todo: todo})
 
   defp build(%{todo: [{{x, y, z} = cell, material} | _]} = state) do
     stands = state.stands || Blueprint.stands(state.cells, cell)
-    command(%{state | phase: :build, stands: stands}, %{verb: :place, coord: {x, y, z}, material: material, tool_id: state.tool_id})
+
+    command(%{state | phase: :build, stands: stands}, %{
+      verb: :place,
+      coord: {x, y, z},
+      material: material,
+      tool_id: state.tool_id
+    })
   end
 
   defp build(%{todo: []} = state), do: survey(state, [])
@@ -179,19 +252,31 @@ defmodule GateServer.Npc.Brain.Builder do
   defp survey(state, effects) do
     {{x0, y0, z0}, {x1, y1, z1}} = Blueprint.bounds(state.cells)
     [first | rest] = for y <- y0..y1, do: %{verb: :look, min: {x0, y, z0}, max: {x1, y, z1}}
-    {state, more} = command(%{state | phase: :survey, world: %{}, looks: rest, stands: nil}, first)
+
+    {state, more} =
+      command(%{state | phase: :survey, world: %{}, looks: rest, stands: nil}, first)
+
     {state, effects ++ more}
   end
 
-  defp plan(%{plans: @plans} = state, _note), do: idle(state, "Stopped: no usable blueprint after #{@plans} planning attempts. Goal was: #{state.goal}")
+  defp plan(%{plans: @plans} = state, _note),
+    do:
+      idle(
+        state,
+        "Stopped: no usable blueprint after #{@plans} planning attempts. Goal was: #{state.goal}"
+      )
 
   defp plan(state, note) do
     request = %{goal: state.goal, position: state.position, balances: state.balances, note: note}
     {%{state | phase: :planning, plans: state.plans + 1, cells: nil}, [{:plan, request}]}
   end
 
-  defp triage(state, problem), do: {%{state | phase: :triage, problem: problem}, [{:triage, problem}]}
-  defp idle(state, entry, effects \\ []), do: {%{state | phase: :idle}, [{:journal, entry} | effects]}
+  defp triage(state, problem),
+    do: {%{state | phase: :triage, problem: problem}, [{:triage, problem}]}
+
+  defp idle(state, entry, effects \\ []),
+    do: {%{state | phase: :idle}, [{:journal, entry} | effects]}
+
   defp move({x, z}), do: %{verb: :move_to, position: {x, z}, tolerance: 0.5}
 
   defp command(state, command) do
@@ -215,7 +300,12 @@ defmodule GateServer.Npc.Brain.Builder do
         Jason.encode!(%{
           goal: goal,
           npc_position: position && Tuple.to_list(position),
-          backpack_cells: balances && for(%{balance: b, cost: c, material: m} when b > 0 <- balances, do: %{material: m, cells: div(b, c)}),
+          backpack_cells:
+            balances &&
+              for(
+                %{balance: b, cost: c, material: m} when b > 0 <- balances,
+                do: %{material: m, cells: div(b, c)}
+              ),
           note: note
         }),
       tools: [
@@ -255,7 +345,11 @@ defmodule GateServer.Npc.Brain.Builder do
 
   @doc "应答 → 蓝图操作表（`{:ok, ops}` / `:error`）。"
   def plan_ops(%{"output" => output}) do
-    with %{"arguments" => arguments} <- Enum.find(output, &(&1["type"] == "function_call" and &1["name"] == "submit_blueprint")),
+    with %{"arguments" => arguments} <-
+           Enum.find(
+             output,
+             &(&1["type"] == "function_call" and &1["name"] == "submit_blueprint")
+           ),
          {:ok, %{"ops" => ops}} when is_list(ops) <- Jason.decode(arguments) do
       {:ok, ops}
     else
@@ -315,8 +409,8 @@ defmodule GateServer.Npc.Brain.Builder do
     verdict
   end
 
-
-  defp perform({:command, command}, _state, _profile, body), do: GateServer.Npc.Body.command(body, command)
+  defp perform({:command, command}, _state, _profile, body),
+    do: GateServer.Npc.Body.command(body, command)
 
   defp perform({:plan, request}, _state, profile, _body) do
     owner = self()
@@ -336,7 +430,6 @@ defmodule GateServer.Npc.Brain.Builder do
     end)
   end
 
-
   defp perform({:triage, problem}, _state, profile, _body) do
     owner = self()
     spawn_link(fn -> send(owner, {:verdict, triage_verdict(profile, problem)}) end)
@@ -345,7 +438,8 @@ defmodule GateServer.Npc.Brain.Builder do
   defp perform({:remember, ops}, state, profile, _body),
     do: profile.memory.put(profile.cid, "plan", "current", %{"ops" => ops, "goal" => state.goal})
 
-  defp perform(:forget, _state, profile, _body), do: profile.memory.delete(profile.cid, "plan", "current")
+  defp perform(:forget, _state, profile, _body),
+    do: profile.memory.delete(profile.cid, "plan", "current")
 
   defp perform({:journal, text}, state, profile, _body) do
     Logger.info("npc_builder_journal cid=#{profile.cid} #{text}")

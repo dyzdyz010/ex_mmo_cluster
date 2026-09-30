@@ -10,7 +10,7 @@
 
 ---
 
-`ex_mmo_cluster` is the beating heart of **The Genesis Initiative**: a distributed game server that generates an **unbounded** procedural voxel universe, simulates its physics and emergent systems, and streams that world — as authoritative truth — to the current **[Voxim](../Voxim)** client (Unreal Engine 5.8); **[Voxia](clients/Voxia)** is an algorithm, behavior and performance reference.
+`ex_mmo_cluster` is the beating heart of **The Genesis Initiative**: a distributed game server that generates an **unbounded** procedural voxel universe, simulates its physics and emergent systems, and streams that world — as authoritative truth — to the **[Voxim](../Voxim)** client (Unreal Engine 5.8), its only client.
 
 It is an experiment in answering one question: *what does an MMO look like when the server is genuinely the source of truth, the world is procedurally infinite, and the engine underneath it never stops scaling?*
 
@@ -43,22 +43,16 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
                         ┌──────────────────────────────────────────┐
                         │  Data         data_service (PostgreSQL / Ecto)
                         └──────────────────────────────────────────┘
-                                          │
-                        ┌──────────────────────────────────────────┐
-                        │  Infra        beacon_server (libcluster + Horde)
-                        └──────────────────────────────────────────┘
 ```
 
 | App | Role |
 |-----|------|
-| `gate_server` | Voxim QUIC gateway; TCP/WS remain explicit legacy/reference transports |
+| `gate_server` | Voxim QUIC gateway (auth, session, voxel intents) |
 | `auth_server` | Authentication (Phoenix) |
-| `scene_server` | Movement authority, collision history and AOI; legacy ChunkProcess/fields retain their own callers |
+| `scene_server` | Movement authority, collision history, AOI and body simulation |
 | `voxel_region` | Voxim canonical World, material transactions, generated baseline, overlay persistence and read-only replicas |
-| `world_server` | World-layer coordination + durable voxel control plane |
+| `world_server` | Scene routing, cross-Scene transfer and the deployment topology (`WorldServer.Topology`) |
 | `data_service` | Canonical persistence (PostgreSQL via Ecto) |
-| `beacon_server` | Cluster service discovery (libcluster + Horde) |
-| `visualize_server` | Live world visualization (Phoenix LiveView) |
 | `mmo_contracts` | Shared cross-app contracts |
 
 ## Tech stack
@@ -94,10 +88,9 @@ mix test
 
 | Client | Engine | Role |
 |--------|--------|------|
-| **[Voxim](../Voxim)** | Unreal Engine 5.8 | 当前主线客户端；阶段与验收以其 starter、M1/M4a/R7 记录为准 |
-| **[Voxia](clients/Voxia)** | Unreal Engine 5.8 | 算法、行为与性能参考，不作为 Voxim 当前生产入口 |
-| [`clients/web_client`](clients/web_client) | TypeScript · Three.js | 归档；仅显式点名时使用 |
-| [`clients/bevy_client`](clients/bevy_client) | Rust · Bevy | 归档；仅显式点名时使用 |
+| **[Voxim](../Voxim)** | Unreal Engine 5.8 | 唯一客户端；阶段与验收以其 starter、M1/M4a/R7 记录为准 |
+
+`clients/Voxia`、`clients/web_client`、`clients/bevy_client` 已弃用（2026-09-30），服务端对应的旧链路已删除。
 
 ---
 
