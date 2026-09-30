@@ -242,6 +242,16 @@ defmodule VoxelRegion.Damage do
                 not Map.has_key?(m, "circuit_switch") and not battery))
       end)
 
+    # R8-10 温敏电导轴：electrical_cutoff_kelvin > 0，格／附件温度达到它即绝缘、低于时按电导率导电；只在导体上，
+    # 不与储能、塞贝克同行（电动势种子不经电导率判定入网，截止对它们不成立）。
+    true =
+      Enum.all?(materials, fn {_, m} ->
+        not Map.has_key?(m, "electrical_cutoff_kelvin") or
+          (is_number(m["electrical_cutoff_kelvin"]) and m["electrical_cutoff_kelvin"] > 0 and
+             Map.get(m, "electrical_conductivity", 0) > 0 and
+             not Enum.any?(~w(battery_volts_per_m battery_energy_per_macro_j seebeck_v_per_k), &Map.has_key?(m, &1)))
+      end)
+
     # 退役工具 → 在用设备迁移成的附件材料（ParameterEvolution.retire_devices）；工具不能仍在目录里。
     # 没有设备的工具（补能、加热器投料）退役时不带材料（material_id 缺省）。
     retired = Map.new(data["retired_tools"] || [], &{&1["tool_id"], &1["material_id"]})

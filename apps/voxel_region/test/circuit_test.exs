@@ -5,6 +5,7 @@ defmodule VoxelRegion.CircuitTest do
 
   # 只测试：目录值与发布目录同口径——铜 σ 5.8e7、k 4000；电阻合金 σ 4、λ 0.2；开关 41（闭合同铜）；
   # 蓄能石 42 σ 20、每米 24 V、每宏格 10 MJ；热电石 43 σ 2、k 15、S 0.05 V/K。线截面、面厚 = 发布值。
+  # 44 只是这张测试目录里的键（温敏导体提案值 σ 10、截止 373.15 K），电路函数不读材料契约；契约里没有 44。
   # 期望逐项按 r = d/(σA)（接触边两侧各半格）与 KCL 手算。
   # 容差：同一回路里铜—铜接触半格 8.6e-9 Ω（电导 1.2e8 S）与合金／电池半格 0.025–0.125 Ω 相差 ~1e7，
   # 消元的相对误差 ≈ κ·ε ≈ 1e7 × 2.2e-16 ≈ 3e-9，所以电流按 1e-8 相对容差比较。
@@ -12,13 +13,15 @@ defmodule VoxelRegion.CircuitTest do
   @section 3.814697265625e-06
   @cu 5.8e7
   @ambient 293.15
+  @env %{"ambient_kelvin"=>@ambient}
   defp catalog do
     %{materials: %{11=>%{},
         24=>%{"electrical_conductivity"=>@cu,"thermal_conductivity"=>4000},
         40=>%{"electrical_conductivity"=>4.0,"luminous_fraction"=>0.2,"thermal_conductivity"=>25},
         41=>%{"electrical_conductivity"=>@cu,"circuit_switch"=>true,"thermal_conductivity"=>4000},
         42=>%{"electrical_conductivity"=>20.0,"battery_volts_per_m"=>24.0,"battery_energy_per_macro_j"=>1.0e7,"thermal_conductivity"=>25},
-        43=>%{"electrical_conductivity"=>2.0,"seebeck_v_per_k"=>0.05,"thermal_conductivity"=>15}},
+        43=>%{"electrical_conductivity"=>2.0,"seebeck_v_per_k"=>0.05,"thermal_conductivity"=>15},
+        44=>%{"electrical_conductivity"=>10.0,"electrical_cutoff_kelvin"=>373.15,"thermal_conductivity"=>23.43}},
       attachments: %{"line_section_m2"=>@section,"face_thickness_m"=>1/512}}
   end
   defp macro({x,y,z},material),do: %{micro: {x*8,y*8,z*8},granularity: 0,material: material,owner: {0,0},incarnation: 1}
@@ -32,7 +35,7 @@ defmodule VoxelRegion.CircuitTest do
     Enum.sort(d)==[0,0,8]
   end
   defp run(cells,damage \\ %{},duration \\ 0.5,slots \\ %{},hosts \\ %{}) do
-    input=Circuit.prepare(slots,damage,catalog(),duration,%{"ambient_kelvin"=>@ambient})
+    input=Circuit.prepare(slots,damage,catalog(),duration,@env)
     Circuit.plan(input,hosts,contacts(cells))
   end
   defp stored(t,joules),do: {Damage.key(t),Map.put(t,:stored_j,joules)}
@@ -103,7 +106,7 @@ defmodule VoxelRegion.CircuitTest do
     switch=Enum.at(cells,7)
     loaded=Map.new([stored(b1,1.0e6),stored(b2,1.0e6)])
     # 断开的开关不是导体：World 的接触摘要（solid_contacts 按 sigma）里没有它，两侧的铜悬空。
-    assert Circuit.solid_contacts([{switch,64}],catalog(),loaded)==%{}
+    assert Circuit.solid_contacts([{switch,64}],catalog(),loaded,@env)==%{}
     plan=run(cells--[switch],loaded)
     assert plan.sources[key(b1)].current_a==0.0
     assert plan.supplied_j==0.0 and plan.powers==%{}
@@ -216,7 +219,7 @@ defmodule VoxelRegion.CircuitTest do
   test "线端点不接蓄能石（它只经 ±Y 面导电）；铜宿主照常" do
     b=macro({0,1,0},42)
     cu=macro({0,0,0},24)
-    assert Circuit.conductors([b,cu],catalog(),%{})==[cu]
+    assert Circuit.conductors([b,cu],catalog(),%{},@env)==[cu]
   end
 
   test "体积导体邻面保留微面面积，绝缘与空气不进入导体图" do
@@ -224,13 +227,13 @@ defmodule VoxelRegion.CircuitTest do
     macro=%{micro: {8,0,0},granularity: 0,material: 24,owner: {0,0},incarnation: 1}
     micro=%{micro: {0,0,0},granularity: 2,material: 24,owner: {7,1},incarnation: 7}
     samples=[{macro,2},{micro,1},{nil,1},{%{macro | material: 11},1}]
-    contacts=Circuit.solid_contacts(samples,catalog,%{})
+    contacts=Circuit.solid_contacts(samples,catalog,%{},@env)
     assert contacts[{0,{8,0,0}}]=={macro,2/64}
     assert contacts[{1,{0,0,0}}]=={%{micro | granularity: 1},1/64}
     assert map_size(contacts)==2
     # 一整面（同一相邻宏格 64 点）作为一段累计，与逐点 64 次累加的二进制值相同：1/64 的整数倍都精确可表示。
-    whole=Circuit.solid_contacts([{macro,64},{micro,1}],catalog,%{})
-    pointwise=Circuit.solid_contacts(List.duplicate({macro,1},64)++[{micro,1}],catalog,%{})
+    whole=Circuit.solid_contacts([{macro,64},{micro,1}],catalog,%{},@env)
+    pointwise=Circuit.solid_contacts(List.duplicate({macro,1},64)++[{micro,1}],catalog,%{},@env)
     assert whole===pointwise and elem(whole[{0,{8,0,0}}],1)===1.0
     assert Enum.map(Circuit.solid_faces(macro),&length/1)==List.duplicate(64,6)
     assert Enum.map(Circuit.solid_faces(micro),&length/1)==List.duplicate(1,6)
@@ -241,14 +244,14 @@ defmodule VoxelRegion.CircuitTest do
     cell=%{micro: {16,0,0},granularity: 0,material: 41,owner: {0,0},incarnation: 3}
     micro=%{micro: {5,6,7},granularity: 2,material: 41,owner: {9,2},incarnation: 9}
     closed=fn t->%{Damage.key(t)=>Map.put(t,:closed,true)} end
-    assert Circuit.conductors([cell,micro],catalog,%{})==[]
-    assert Circuit.solid_contacts([{cell,1},{micro,1}],catalog,%{})==%{}
-    assert Circuit.conductors([cell],catalog,closed.(cell))==[cell]
-    assert Circuit.sigma(catalog,closed.(cell),cell)==58.0e6
+    assert Circuit.conductors([cell,micro],catalog,%{},@env)==[]
+    assert Circuit.solid_contacts([{cell,1},{micro,1}],catalog,%{},@env)==%{}
+    assert Circuit.conductors([cell],catalog,closed.(cell),@env)==[cell]
+    assert Circuit.sigma(catalog,closed.(cell),@env,cell)==58.0e6
     thermal=%{micro | granularity: 1}
-    assert Circuit.conductors([micro],catalog,closed.(thermal))==[thermal]
+    assert Circuit.conductors([micro],catalog,closed.(thermal),@env)==[thermal]
     # 构件行（granularity 2）不是微格的开合真值。
-    assert Circuit.conductors([micro],catalog,closed.(micro))==[]
+    assert Circuit.conductors([micro],catalog,closed.(micro),@env)==[]
   end
 
   test "种子：有储能的蓄能石、带温度的热电石；空电池与常温无行的热电石不是种子" do
@@ -323,6 +326,91 @@ defmodule VoxelRegion.CircuitTest do
         assert_in_delta Enum.sum(Map.values(plan.powers))*plan.duration+plan.light_j,plan.supplied_j,1.0e-6
         assert_in_delta plan.supplied_j,3.0*i*plan.duration,1.0e-6
       end
+    end
+  end
+
+  describe "温敏电导（R8-10）" do
+    # 只测试：44 = 温敏导体（σ 10 → 宏格半格 0.05 Ω，截止 373.15 K）。World 的接触摘要只收此刻导电的导体
+    # （solid_contacts 按 sigma），这里用同一个产品函数筛出进入导体图的格，再按相邻关系成边。
+    defp live(cells,damage,env),
+      do: Enum.filter(cells,&(Circuit.solid_contacts([{&1,64}],catalog(),damage,env) != %{}))
+    defp solve(cells,damage,env \\ @env) do
+      input=Circuit.prepare(%{},damage,catalog(),0.5,env)
+      Circuit.plan(input,%{},contacts(live(cells,damage,env)))
+    end
+    defp loaded(batteries),do: Map.new(batteries,&stored(&1,1.0e6))
+
+    test "串联：低于截止温度按 σ 导电（I = 48 /(0.1 + 0.25 + 0.1 + 12 个铜半格)），达到截止即绝缘、严格 0 A；无温度记录按气候区空气温度" do
+      # loop/2 的顶行 (1,3) 由铜换成温敏导体：它的两个半格 2 × 0.05 Ω 替换两个铜半格。
+      cells=List.replace_at(loop(),4,macro({1,3,0},44))
+      [_,b1,b2,_,r|_]=cells
+      i=48.0/(2*2*half(20.0)+2*half(4.0)+2*half(10.0)+12*half(@cu))
+      for damage<-[loaded([b1,b2]),Map.new([stored(b1,1.0e6),stored(b2,1.0e6),hot(r,373.14)])] do
+        plan=solve(cells,damage)
+        assert_in_delta plan.sources[key(b1)].current_a,i,i*@rel
+        # 温敏导体自身两条接触边里它那一半：I² × 2 × 0.05 Ω。
+        assert_in_delta plan.powers[key(r)],i*i*2*half(10.0),i*i*2*half(10.0)*@rel
+      end
+      for damage<-[Map.new([stored(b1,1.0e6),stored(b2,1.0e6),hot(r,373.15)]),Map.new([stored(b1,1.0e6),stored(b2,1.0e6),hot(r,900.0)])] do
+        plan=solve(cells,damage)
+        assert plan.sources[key(b1)].current_a==0.0 and plan.sources[key(b2)].current_a==0.0
+        assert plan.supplied_j==0.0 and plan.powers==%{} and plan.electric==%{}
+        assert plan.sources[key(b1)].stored_j==1.0e6
+      end
+      # 没有温度记录：按所在气候区的空气温度；空气 400 K 时同样断开，293.15 K 时导通。
+      assert Circuit.temperature(%{},@env,r)==@ambient
+      hot_air=%{"ambient_kelvin"=>400.0}
+      assert solve(cells,loaded([b1,b2]),hot_air).sources[key(b1)].current_a==0.0
+      assert Circuit.conductors([r],catalog(),%{},hot_air)==[]
+      assert Circuit.conductors([r],catalog(),%{},@env)==[r]
+    end
+
+    test "并联：一条支路经温敏导体。冷时 I = 24 /(内阻 + R_A ∥ R_B)、支路按电导分流；热时只剩合金支路 I = 24 /(内阻 + R_A)" do
+      # z = 0 平面：x = 0 列 铜 (0,0)、电池 (0,1)、铜 (0,2)；底母线 (0..3,0) 与顶母线 (0..3,2) 铜；
+      # 支路 A：合金 (1,1)；支路 B：温敏导体 (3,1)；(2,1) 是空气。电池与合金侧面相邻（电池只经 ±Y 面导电，无边）。
+      cells=[macro({0,0,0},24),macro({1,0,0},24),macro({2,0,0},24),macro({3,0,0},24),
+        macro({0,1,0},42),macro({1,1,0},40),macro({3,1,0},44),
+        macro({0,2,0},24),macro({1,2,0},24),macro({2,2,0},24),macro({3,2,0},24)]
+      b=Enum.at(cells,4); alloy=Enum.at(cells,5); r=Enum.at(cells,6)
+      h=half(@cu)
+      # 串联段：电池两个半格 + 两侧铜半格，(0,0)–(1,0) 与 (0,2)–(1,2) 各两个铜半格。
+      series=2*half(20.0)+6*h
+      ra=2*half(4.0)+2*h
+      # 支路 B 从 (1,0)/(1,2) 起算：温敏两个半格 + 两侧铜半格 + 母线 (1,0)–(2,0)–(3,0)、(1,2)–(2,2)–(3,2) 八个铜半格。
+      rb=2*half(10.0)+10*h
+      i=24.0/(series+ra*rb/(ra+rb))
+      ia=i*rb/(ra+rb); ib=i*ra/(ra+rb)
+      cold=solve(cells,loaded([b]))
+      assert_in_delta cold.sources[key(b)].current_a,i,i*@rel
+      {_,_,a}=cold.electric[key(alloy)]
+      assert_in_delta a,ia,ia*@rel
+      assert_in_delta cold.powers[key(r)],ib*ib*2*half(10.0),ib*ib*2*half(10.0)*@rel
+      # 数值（铜半格 8.6e-9 Ω 只移动 ~1e-4 A）：冷 197.65 A（合金 56.47 A、温敏 141.18 A）；热 80 A。
+      assert_in_delta i,24.0/(0.05+0.25*0.1/0.35),1.0e-3
+      assert_in_delta ia,197.647*0.1/0.35,1.0e-3
+      hot=solve(cells,Map.new([stored(b,1.0e6),hot(r,400.0)]))
+      i_hot=24.0/(series+ra)
+      assert_in_delta hot.sources[key(b)].current_a,i_hot,i_hot*@rel
+      {_,_,a}=hot.electric[key(alloy)]
+      assert_in_delta a,i_hot,i_hot*@rel
+      refute Map.has_key?(hot.powers,key(r))
+    end
+
+    test "小块按 granularity 1 热身份行、附件按逐槽 granularity 4 热行判定；开关与温敏各自独立" do
+      micro=%{micro: {5,6,7},granularity: 2,material: 44,owner: {9,2},incarnation: 9}
+      thermal=%{micro | granularity: 1}
+      assert Circuit.conductors([micro],catalog(),%{},@env)==[thermal]
+      assert Circuit.conductors([micro],catalog(),Map.new([hot(thermal,380.0)]),@env)==[]
+      # 构件行（granularity 2）不是微格的温度真值。
+      assert Circuit.conductors([micro],catalog(),Map.new([hot(micro,380.0)]),@env)==[thermal]
+      slot={1,0,{1,3,0}}
+      identity=VoxelRegion.Attachments.identity(slot,{7,44})
+      slot_row=%{identity | granularity: 4}
+      assert Circuit.sigma(catalog(),%{},@env,identity)==10.0
+      assert Circuit.sigma(catalog(),Map.new([hot(slot_row,373.15)]),@env,identity)==0.0
+      assert Circuit.sigma(catalog(),Map.new([hot(identity,900.0)]),@env,identity)==10.0
+      input=Circuit.prepare(%{slot=>{7,44}},Map.new([hot(slot_row,380.0)]),catalog(),0.5,@env)
+      assert input.edges==[]
     end
   end
 end

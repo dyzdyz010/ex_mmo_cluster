@@ -20,11 +20,30 @@ defmodule VoxelRegion.Circuit do
   @doc """
   目标此刻的体积电导率 S/m。开关材料（目录 `circuit_switch`）只在其属性行 `closed` 为真时按目录值导电，
   缺省（没有行或未闭合）断开、绝缘；格用自身行（微格用 granularity 1 热行），附件用整件行。
+  温敏电导（R8-10，目录 `electrical_cutoff_kelvin`）：目标此刻温度（`temperature/3`）达到截止温度即绝缘，
+  低于时按目录值导电；只读温度，行上不存导通状态。
   """
-  def sigma(catalog,damage,target) do
+  def sigma(catalog,damage,environment,target) do
     m=catalog.materials[target.material]
-    if Map.get(m,"circuit_switch",false) and not Map.get(Map.get(damage,Damage.key(target),%{}),:closed,false),
-      do: 0.0,else: Map.get(m,"electrical_conductivity",0.0)
+    cond do
+      Map.get(m,"circuit_switch",false) and not Map.get(Map.get(damage,Damage.key(target),%{}),:closed,false) -> 0.0
+      Map.has_key?(m,"electrical_cutoff_kelvin") and
+          temperature(damage,environment,target)>=m["electrical_cutoff_kelvin"] -> 0.0
+      true -> Map.get(m,"electrical_conductivity",0.0)
+    end
+  end
+
+  @doc """
+  目标此刻的温度 K：热身份行（宏格行、微格 granularity 1 行、附件逐槽 granularity 4 行）上的 `temperature_kelvin`；
+  没有温度记录即处于所在宏格气候区的环境空气温度。
+  """
+  def temperature(damage,environment,target) do
+    thermal=case target do
+      %{granularity: 3}->%{target | granularity: 4}
+      _->thermal_target(target)
+    end
+    Map.get(Map.get(damage,Damage.key(thermal),%{}),:temperature_kelvin,
+      Climate.air_k(environment,Damage.macro(target)))
   end
 
   @doc "蓄能石：带储能与每米电动势的材料。"
@@ -50,7 +69,7 @@ defmodule VoxelRegion.Circuit do
     started=System.monotonic_time(:microsecond)
     section=catalog.attachments["line_section_m2"]
     {edges,luminous}=Enum.reduce(slots,{[],%{}},fn {slot={kind,axis,p},{id,material}},{edges,luminous}->
-      sigma=sigma(catalog,damage,Attachments.identity(slot,{id,material}))
+      sigma=sigma(catalog,damage,environment,Attachments.identity(slot,{id,material}))
       if sigma>0 do
         key=VoxelRegion.ThermalAttachments.key(slot)
         lum=luminous_fraction(catalog,material)
@@ -83,10 +102,10 @@ defmodule VoxelRegion.Circuit do
   def near_points(point), do: for(x<-[-1,0],y<-[-1,0],z<-[-1,0],do: add(elem(point,1),{x,y,z}))
 
   @doc "线端点的宿主：按首次命中身份保留此刻导电的真实导体（断开的开关、只经 ±Y 面导电的蓄能石不算），微格使用独立热身份。"
-  def conductors(targets,catalog,damage) do
+  def conductors(targets,catalog,damage,environment) do
     targets |> Enum.reject(&is_nil/1) |> Enum.map(&thermal_target/1)
       |> Enum.uniq_by(&ThermalGeometry.key/1)
-      |> Enum.filter(&(sigma(catalog,damage,&1)>0 and not battery?(catalog.materials[&1.material])))
+      |> Enum.filter(&(sigma(catalog,damage,environment,&1)>0 and not battery?(catalog.materials[&1.material])))
   end
 
   @doc """
@@ -107,10 +126,10 @@ defmodule VoxelRegion.Circuit do
   采样以 `{目标, 点数}` 成段给出（同一相邻宏格的一整面是一段）；每点面积 1/64 m²，段面积 = 点数 × 1/64，
   与逐点累加的二进制值相同（全是 1/64 的整数倍）。
   """
-  def solid_contacts(runs,catalog,damage) do
+  def solid_contacts(runs,catalog,damage,environment) do
     Enum.reduce(runs,%{},fn {target,count},contacts ->
       target=target && thermal_target(target)
-      if target && sigma(catalog,damage,target)>0 do
+      if target && sigma(catalog,damage,environment,target)>0 do
         key=ThermalGeometry.key(target)
         Map.update(contacts,key,{target,count*@length*@length},fn {other,area}->{other,area+count*@length*@length} end)
       else
@@ -141,8 +160,7 @@ defmodule VoxelRegion.Circuit do
         {[edge(p,{:solid,key},size(target)/2/(sigma*section),[{key,1.0,lum}])|edges],glowing(luminous,key,target,lum)}
       end)
     end)
-    temperature=fn target -> Map.get(Map.get(damage,Damage.key(target),%{}),:temperature_kelvin,
-      Climate.air_k(environment,Damage.macro(target))) end
+    temperature=&temperature(damage,environment,&1)
     # owner 保留原遍历和前插次序；纯计算按同一边顺序求解，避免浮点累加漂移。
     {contact_edges,{luminous,cells}}=Enum.flat_map_reduce(contacts,{luminous,%{}},fn {target,other,area},{luminous,cells} ->
       ma=catalog.materials[target.material]; mb=catalog.materials[other.material]
