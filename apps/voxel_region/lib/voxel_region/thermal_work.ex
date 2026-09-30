@@ -11,6 +11,9 @@ defmodule VoxelRegion.ThermalWork do
   def new do
     %{
       hot: MapSet.new(),
+      # 上次判定时的热行（键 => 足迹）与此后事务改写过的行键：提交末只重判这两部分（R8-05 增量维护）。
+      hot_rows: %{},
+      touched: MapSet.new(),
       cells: MapSet.new(),
       geometry: %{},
       builds: 0,
@@ -38,15 +41,31 @@ defmodule VoxelRegion.ThermalWork do
   def key_cells({4, {type, point}}), do: Attachments.macros([{div(type, 3), rem(type, 3), point}])
   def key_cells({_granularity, point}), do: [Damage.macro(%{micro: point})]
 
-  @doc "从当前温度与燃烧记录派生热种子，不持有属性真值。"
-  def hot(damage, config) do
-    for {_, row} <- damage,
-        Map.get(row, :burning, false) or
-          (Map.has_key?(row, :temperature_kelvin) and
-             abs(row.temperature_kelvin - VoxelRegion.Climate.air_k(config, Damage.macro(row))) > config["tolerance_kelvin"]),
-        cell <- cells(row),
-        into: MapSet.new(),
-        do: cell
+  @doc "从当前温度与燃烧记录派生全部热行（键 => 足迹）：燃烧，或温度偏离所在宏格环境超过容差；不持有属性真值。"
+  def hot_rows(damage, config), do: for({key, row} <- damage, hot_row?(row, config), into: %{}, do: {key, cells(row)})
+
+  @doc """
+  增量维护热行：只按当前记录重判上次的热行与 `keys`（此后改写过的行），其余行沿用上次判定。
+  只要其余行自上次判定以来未被改写、环境与容差未变，结果与 `hot_rows/2` 全量扫描相同；删除的行不再是热行。
+  """
+  def rehot(rows, keys, damage, config) do
+    Enum.reduce(keys, Enum.reduce(Map.keys(rows), rows, &judge(&2, &1, damage, config)), &judge(&2, &1, damage, config))
+  end
+
+  @doc "热行的足迹并集（热格集合）。"
+  def footprints(rows), do: for({_, footprint} <- rows, cell <- footprint, into: MapSet.new(), do: cell)
+
+  defp judge(rows, key, damage, config) do
+    case damage do
+      %{^key => row} -> if hot_row?(row, config), do: Map.put(rows, key, cells(row)), else: Map.delete(rows, key)
+      _ -> Map.delete(rows, key)
+    end
+  end
+
+  defp hot_row?(row, config) do
+    Map.get(row, :burning, false) or
+      (Map.has_key?(row, :temperature_kelvin) and
+         abs(row.temperature_kelvin - VoxelRegion.Climate.air_k(config, Damage.macro(row))) > config["tolerance_kelvin"])
   end
 
   @doc "合并活动种子，选择六邻域、已知辐射视线伙伴及缺失几何；返回值交 owner 读取本次 canonical 摘要。"

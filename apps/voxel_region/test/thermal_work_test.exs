@@ -9,11 +9,11 @@ defmodule VoxelRegion.ThermalWorkTest do
     hot = %{target | material: 19} |> Map.put(:temperature_kelvin, 310.0)
     config = %{"ambient_kelvin" => 300.0, "tolerance_kelvin" => 0.1}
     footprint = MapSet.new(Attachments.macros([slot]))
-    assert ThermalWork.hot(%{slot => hot}, config) == footprint
+    assert ThermalWork.footprints(ThermalWork.hot_rows(%{slot => hot}, config)) == footprint
 
     burning = Map.put(target, :burning, true)
-    assert ThermalWork.hot(%{slot => burning}, config) == footprint
-    assert ThermalWork.hot(%{slot => %{hot | temperature_kelvin: 300.0}}, config) == MapSet.new()
+    assert ThermalWork.footprints(ThermalWork.hot_rows(%{slot => burning}, config)) == footprint
+    assert ThermalWork.footprints(ThermalWork.hot_rows(%{slot => %{hot | temperature_kelvin: 300.0}}, config)) == MapSet.new()
 
     work = %{ThermalWork.new() | hot: MapSet.new([{-5, -6, -7}])}
     source = {1, 2, 3}
@@ -35,6 +35,45 @@ defmodule VoxelRegion.ThermalWorkTest do
     assert MapSet.member?(plan.cells, {1, 2, 4})
     refute MapSet.member?(plan.cells, {2, 3, 4})
     assert plan.missing == plan.cells
+  end
+
+  # R8-05：提交末只重判上次的热行与此后改写过的行；期望按判据手算（环境 300 K、容差 0.1 K）。
+  test "热行增量重判：冷却移出、改写升温与新行加入、删除移出，未改写的行沿用上次判定" do
+    config = %{"ambient_kelvin" => 300.0, "tolerance_kelvin" => 0.1}
+    row = fn x, fields -> Map.merge(%{micro: {x * 8, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 11}, fields) end
+    key = &VoxelRegion.Damage.key/1
+    a = row.(0, %{temperature_kelvin: 310.0})
+    b = row.(1, %{temperature_kelvin: 300.05})
+    c = row.(2, %{burning: true})
+    rows = ThermalWork.hot_rows(Map.new([a, b, c], &{key.(&1), &1}), config)
+    assert rows == %{key.(a) => [{0, 0, 0}], key.(c) => [{2, 0, 0}]}
+
+    # a 在提交内冷却到容差内（本次提交改写），b 被事务加热、d 由事务新建为低温行，c 被删除。
+    d = row.(3, %{temperature_kelvin: 290.0})
+    damage = Map.new([%{a | temperature_kelvin: 300.0}, %{b | temperature_kelvin: 305.0}, d], &{key.(&1), &1})
+    next = ThermalWork.rehot(rows, [key.(a), key.(b), key.(d)], damage, config)
+    assert next == %{key.(b) => [{1, 0, 0}], key.(d) => [{3, 0, 0}]}
+    assert ThermalWork.footprints(next) == MapSet.new([{1, 0, 0}, {3, 0, 0}])
+    # 删除行的事务不带该行：上次的热行不在改写集合里也按当前记录重判（c 被删除，a、b 未变）。
+    assert ThermalWork.rehot(rows, [], Map.new([a, b], &{key.(&1), &1}), config) == %{key.(a) => [{0, 0, 0}]}
+  end
+
+  # 成本（默认排除，`--only benchmark`）：Demo 实测约 2.7 万条属性记录；小装置只有少数热行与改写行。
+  @tag :benchmark
+  test "热行判定成本：全量扫描与增量重判" do
+    config = %{"ambient_kelvin" => 293.15, "tolerance_kelvin" => 1.0}
+    rows = for i <- 0..26_999, do: %{micro: {rem(i, 300) * 8, div(i, 90_000) * 8, div(i, 300) * 8}, granularity: 0,
+      incarnation: 0, owner: {0, 0}, material: 11, hp: 50.0, temperature_kelvin: 293.4}
+    damage = Map.new(rows, &{VoxelRegion.Damage.key(&1), &1})
+    lamp = rows |> Enum.take(12) |> Enum.map(&%{&1 | temperature_kelvin: 400.0})
+    damage = Map.merge(damage, Map.new(lamp, &{VoxelRegion.Damage.key(&1), &1}))
+    keys = Enum.map(lamp, &VoxelRegion.Damage.key/1)
+    hot = ThermalWork.hot_rows(damage, config)
+    time = fn f -> Enum.min(for _ <- 1..20, do: elem(:timer.tc(f), 0)) end
+    full = time.(fn -> ThermalWork.hot_rows(damage, config) end)
+    incremental = time.(fn -> ThermalWork.rehot(hot, keys, damage, config) end)
+    assert ThermalWork.rehot(hot, keys, damage, config) == hot
+    IO.puts("THERMAL_HOT_COST rows=#{map_size(damage)} hot=#{map_size(hot)} touched=#{length(keys)} full_us=#{full} incremental_us=#{incremental}")
   end
 
   test "空气扩域和收缩保留接触图，收缩丢弃离域几何" do

@@ -29,14 +29,16 @@ defmodule VoxelRegion.World.Log do
       })
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
-  def remember_entry(state, txn) do
+  def remember_entry(state, full) do
     # 实时落体帧与待施放记录只随本次广播，不进日志、检查点与回放尾。
     # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
-    txn = if match?(%{entries: [], coarse: []}, txn),
-      do: Map.take(txn, [:seq, :entries, :coarse]),
-      else: Map.drop(txn, [:liquid_falls, :casts])
+    txn = if match?(%{entries: [], coarse: []}, full),
+      do: Map.take(full, [:seq, :entries, :coarse]),
+      else: Map.drop(full, [:liquid_falls, :casts])
     state = %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
+    # 每笔事务都是热提交的唤醒事件（R8-05）：记下改写的属性行供热行增量重判，休眠中的热模拟排一拍。
+    state = VoxelRegion.World.Thermal.touch(state, Map.get(full, :property_states, []))
     # 单个完整检查点不再生长；只有新历史出现时安排一次维护。
     if map_size(state.entries) > 1 and state.checkpoint_timer == nil,
       do: %{state | checkpoint_timer: :erlang.start_timer(60_000, self(), :checkpoint)},

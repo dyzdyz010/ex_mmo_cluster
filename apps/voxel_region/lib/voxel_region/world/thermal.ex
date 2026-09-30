@@ -17,14 +17,38 @@ defmodule VoxelRegion.World.Thermal do
 
   @doc """
   排下一次定时热提交：固定 500 ms 墙钟节拍，下一次到期 = 上次到期 + 500 ms，回调耗时不拉长周期；
-  落后时立即开始、不积压补跑。
+  落后时立即开始、不积压补跑。任何时刻至多一个待到期节拍（新排程取消旧的）。
   """
   def schedule(state) do
+    if state.thermal_timer, do: Process.cancel_timer(state.thermal_timer)
     now = System.monotonic_time(:millisecond)
     due = max((state.thermal_due || now) + 500, now)
-    Process.send_after(self(), :thermal_tick, due - now)
-    %{state | thermal_due: due}
+    %{state | thermal_due: due, thermal_timer: Process.send_after(self(), :thermal_tick, due - now)}
   end
+
+  @doc """
+  事件唤醒（R8-05）：没有待到期节拍、也没有进行中的提交时排一拍；无热环境时不变。身体接触报告与
+  `touch/2`（每笔事务，含热提交自己的事务）调用它；是否真的推进由下一拍的 `begin/1` 判定。
+  """
+  def wake(%{thermal: nil} = state), do: state
+  def wake(%{thermal_timer: nil, thermal_run: nil} = state), do: schedule(state)
+  def wake(state), do: state
+
+  @doc """
+  一笔事务改写了这些属性记录（`VoxelRegion.World.Log.remember_entry/2`）：记下行键供提交末增量重判热行，并唤醒。
+  """
+  def touch(%{thermal: nil} = state, _rows), do: state
+
+  def touch(state, rows) do
+    touched = Enum.reduce(rows, state.thermal_work.touched, &MapSet.put(&2, Damage.key(&1)))
+    wake(put_in(state.thermal_work.touched, touched))
+  end
+
+  @doc "节拍已到（World 处理 `:thermal_tick` 时调用）：不再有待到期节拍。"
+  def fired(state), do: %{state | thermal_timer: nil}
+
+  @doc "休眠：这一拍没有需要推进的状态，不再排下一拍，直到 `wake/1`。"
+  def rest(state), do: %{state | thermal_due: nil}
 
   @doc "占用编辑只让受影响宏格的派生热几何与视线失效；无热环境时工作集恒为空。"
   def drop_geometry(%{thermal: nil} = state, _cells), do: state
@@ -42,41 +66,50 @@ defmodule VoxelRegion.World.Thermal do
     do: %{state | thermal_work: ThermalWork.new()}
 
   def rebuild_work(state) do
-    hot = ThermalWork.hot(state.damage, state.thermal.config)
+    rows = ThermalWork.hot_rows(state.damage, state.thermal.config)
+    hot = ThermalWork.footprints(rows)
 
     active = state.thermal.active or MapSet.size(hot) > 0 or
       Enum.any?(state.damage, fn {_, t} -> Combustion.exhausted?(t) end)
-    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{ThermalWork.new() | hot: hot}}
+    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{ThermalWork.new() | hot: hot, hot_rows: rows}}
   end
 
   @doc """
-  开始一次 0.5 模拟秒的定时提交：先移除 2.5 s 未更新的身体接触；无热活动、电路、拟态和身体接触时
-  不开提交（`thermal_run` 仍为 nil）。
+  开始一次 0.5 模拟秒的定时提交：先移除 2.5 s 未更新的身体接触；无热活动、拟态、身体接触，且电路要么没有种子、
+  要么自上次零功率提交以来没有新事务（`thermal_quiet_seq`）时不开提交（`thermal_run` 仍为 nil）。
+  电路种子（有储能的蓄能石、带温度记录的热电石）本身不推进：零功率网络的解只随事务（开关、编辑、温度写回）变化。
   """
   def begin(state) do
     now = System.monotonic_time(:millisecond)
     state = %{state | bodies: Map.filter(state.bodies, fn {_, b} -> now - b.at <= 2_500 end)}
 
-    if state.thermal.active or circuit_seeds(state) != [] or semblances(state) != %{} or state.bodies != %{} do
+    if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
+         (state.thermal_quiet_seq != state.seq and circuit_seeds(state) != []) do
       run = %{ref: make_ref(), damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
         remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0,
-        started: System.monotonic_time(:microsecond)}
+        started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写：每次提交首轮重新扫描。
       %{state | thermal_run: run, thermal_work: %{state.thermal_work | builds: 0, burning: nil}}
     else
-      state
+      # 不推进时也把此后改写的行并入热行判定，改写键集合不随休眠期的事务增长。
+      work = state.thermal_work
+      %{state | thermal_work: %{work | hot_rows: ThermalWork.rehot(work.hot_rows, work.touched, state.damage,
+        state.thermal.config), touched: MapSet.new()}}
     end
   end
 
   @doc """
   推进进行中的提交：纯热段一个内核步，电路段一整段。未完成时 `{:more, state}`；0.5 模拟秒走完时
-  `{:done, state, commit}`，`commit` 是本次提交的属性记录、归零记录、相变数量与拟态变化，由 World 写成一笔事务。
+  `{:done, state, commit}`，`commit` 是本次提交的属性记录、归零记录、相变数量与拟态变化，由 World 写成一笔事务；
+  `commit.quiet` 表示本次提交的电路全程零功率、步间没有其他事务且没有改写任何记录。
   """
   def tick(state) do
     started = System.monotonic_time(:microsecond)
     run = state.thermal_run
-    # 步间已有其他事务提交：燃烧行可能被改写，本步重新扫描。
-    state = if state.seq != run.seq, do: %{state | thermal_work: %{state.thermal_work | burning: nil}}, else: state
+    # 步间已有其他事务提交：燃烧行可能被改写，本步重新扫描；本次提交不能据段首的电路解判定零功率。
+    {state, run} = if state.seq != run.seq,
+      do: {%{state | thermal_work: %{state.thermal_work | burning: nil}}, %{run | disturbed: true}},
+      else: {state, run}
     {state, run} = advance_run(state, run)
     run = %{run | seq: state.seq, steps: run.steps + 1,
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
@@ -97,8 +130,8 @@ defmodule VoxelRegion.World.Thermal do
 
       _seeds ->
         # 电路求解读取记录里的温度与储能：先写回原生热域；段末的发光与电源观察行由这里直接写记录。
-        {state, visited, duration} = circuit_segment(flush(state), run.remaining, run.visited)
-        {seen(state), %{run | visited: visited, remaining: run.remaining - duration}}
+        {state, visited, duration, powered} = circuit_segment(flush(state), run.remaining, run.visited)
+        {seen(state), %{run | visited: visited, remaining: run.remaining - duration, powered: run.powered or powered}}
     end
   end
 
@@ -121,9 +154,12 @@ defmodule VoxelRegion.World.Thermal do
     stepped = System.monotonic_time(:microsecond)
     state = flush(state)
     visited = run.visited
-    # 同一提交内只扩张热域，避免容差边缘反复删添接触；批末按当前真值收缩。
-    hot = ThermalWork.hot(state.damage, state.thermal.config)
-    state = %{state | thermal_work: %{state.thermal_work | hot: hot},
+    # 同一提交内只扩张热域，避免容差边缘反复删添接触；批末按当前真值收缩。只重判上次的热行、本次提交改写的行
+    # 与其他事务改写过的行（R8-05），其余记录自上次判定以来未变。
+    hot_rows = ThermalWork.rehot(state.thermal_work.hot_rows, MapSet.union(state.thermal_work.touched, visited),
+      state.damage, state.thermal.config)
+    hot = ThermalWork.footprints(hot_rows)
+    state = %{state | thermal_work: %{state.thermal_work | hot: hot, hot_rows: hot_rows, touched: MapSet.new()},
       thermal: %{state.thermal | active: map_size(state.thermal.sources) > 0 or MapSet.size(hot) > 0}}
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
@@ -162,13 +198,15 @@ defmodule VoxelRegion.World.Thermal do
       Phase.material(t.material,e,q/liquid_capacity(state),state.properties.materials)!=t.material,
       into: %{}, do: {Damage.macro(t),q}
 
+    # 零功率、步间无其他事务、本次没有改写任何记录：下一次求解的输入与本次相同，电路不再自行推进。
     {state, %{rows: rows, phase_changes: phase_changes,
+      quiet: not run.powered and not run.disturbed and rows == [] and phase_changes == %{},
       dead: Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state, &1))),
       semblances: semblance_txn(run.semblances, state),
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - stepped, started: run.started, steps: run.steps}}
   end
 
-  # 一个电路段：按段起点求解功率，段内内核步连续执行，段末写入发光与电源观察行。
+  # 一个电路段：按段起点求解功率，段内内核步连续执行，段末写入发光与电源观察行；另返回本段是否有非零功率。
   defp circuit_segment(state, remaining, visited) do
     seeds = circuit_seeds(state)
 
@@ -206,7 +244,7 @@ defmodule VoxelRegion.World.Thermal do
       "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)}"
     )
 
-    {%{state | damage: damage, thermal: thermal}, visited, plan.duration}
+    {%{state | damage: damage, thermal: thermal}, visited, plan.duration, plan.powers != %{}}
   end
 
   # 全局系统功能（R8-04 增量 3）：蓄能石的储能 `stored_j` 是格属性行上的真值；本段求解的电动势与带号电流
@@ -465,7 +503,8 @@ defmodule VoxelRegion.World.Thermal do
     state =
       if active,
         do: put_in(state.thermal_work, ThermalWork.burned(state.thermal_work, burned)),
-        else: %{flush(state) | thermal_work: %{ThermalWork.new() | builds: work.builds}}
+        else: %{flush(state) | thermal_work: %{ThermalWork.new() | builds: work.builds, hot_rows: work.hot_rows,
+          touched: work.touched}}
 
     state = advance_semblances(state, semblances, semblance_result, done)
     temperatures = Map.new(Enum.zip(requested, step.temperatures) ++

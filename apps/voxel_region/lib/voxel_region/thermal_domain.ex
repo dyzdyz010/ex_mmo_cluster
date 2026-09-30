@@ -93,7 +93,7 @@ defmodule VoxelRegion.ThermalDomain do
     domain
   end
 
-  @doc "热格集合（`ThermalWork.hot`）；与上次交给原生侧的集合相同时不推送。"
+  @doc "热格集合（`ThermalWork.footprints/1`）；与上次交给原生侧的集合相同时不推送。"
   def put_hot(%{hot: hot} = domain, hot), do: domain
 
   def put_hot(domain, hot) do
