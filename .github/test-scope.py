@@ -30,6 +30,10 @@ def select(paths):
             continue
         if name.startswith("apps/"):
             app = path.parts[1]
+            if app not in graph and not (ROOT / "apps" / app).exists():
+                # 整个 app 已删除：只需确认剩余 app 不再引用它。
+                jobs.add("compile")
+                continue
             if app not in graph:
                 raise ValueError("未映射 app：" + name)
             if name == "apps/data_service/test/support/database.exs":
@@ -52,6 +56,9 @@ def select(paths):
             jobs |= ALL
         elif name == ".formatter.exs":
             jobs.add("format")
+        elif name.startswith(("rel/", "deploy/")) or name in {"Dockerfile", ".dockerignore"}:
+            # release 打包与部署：由 docker-publish.yml 构建镜像，CI 测试作业不执行它们。
+            continue
         elif name.startswith(("tools/", "scripts/", "docs/", ".demo/")) or name in {".gitignore", ".gitattributes"}:
             # 只测试的运维/联调脚本与文档：CI 没有能真实执行它们的作业（WS 双端 smoke 随旧客户端删除）。
             continue
@@ -77,7 +84,9 @@ if __name__ == "__main__":
     if set(base) == {"0"}:
         paths = ["mix.exs"]
     else:
-        paths = subprocess.check_output(["git", "diff", "--name-only", base, "HEAD"], cwd=ROOT, text=True).splitlines()
+        # -z：非 ASCII 文件名不加引号转义。
+        paths = subprocess.check_output(["git", "diff", "--name-only", "-z", base, "HEAD"], cwd=ROOT,
+                                        text=True, encoding="utf-8").split("\0")[:-1]
     result = json.dumps(select(paths))
     print(result)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

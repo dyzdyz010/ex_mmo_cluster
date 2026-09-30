@@ -41,6 +41,13 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(scope.select(["apps/world_server/test/world_server/movement/voxim_transfer_test.exs"]),
                          ["format", "test-standalone"])
 
+    def test_removed_app_only_needs_compile(self):
+        self.assertEqual(scope.select(["apps/beacon_server/lib/beacon_server.ex"]), ["compile"])
+
+    def test_release_packaging_starts_no_test_job(self):
+        self.assertEqual(scope.select(["Dockerfile", ".dockerignore", "rel/overlays/bin/server",
+                                       "deploy/docker-compose.yml"]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
