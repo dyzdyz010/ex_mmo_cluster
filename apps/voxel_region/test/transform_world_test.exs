@@ -246,14 +246,15 @@ defmodule VoxelRegion.TransformWorldTest do
     assert occupancy(w, @coal_cell).material == 0
   end
 
-  test "目录：转化字段须成组且还原剂可燃；可经参数发布在线加入", c do
+  test "目录：转化必填字段成组且还原剂可燃；可经参数发布在线加入", c do
     base = Jason.decode!(File.read!(Path.join(@fixtures, @digest <> ".json")))
     broken = Map.update!(base, "materials", &Enum.map(&1, fn m ->
       if m["material_id"] == @ore, do: Map.merge(m, %{"transform_material_id" => @copper, "transform_kelvin" => @x}), else: m
     end))
     path = Path.join(c.root, "broken.json")
     File.write!(path, Jason.encode!(broken))
-    assert_raise KeyError, fn -> Damage.load(path) end
+    # 缺反应热（R8-08 起还原剂两项可一起省略，产物、温度、反应热仍必填）。
+    assert_raise MatchError, fn -> Damage.load(path) end
 
     stone_reductant = put_in(Jason.decode!(File.read!(c.opts[:property_catalog_path])),
       ["materials", Access.at(@ore), "transform_reductant_material_id"], @stone)

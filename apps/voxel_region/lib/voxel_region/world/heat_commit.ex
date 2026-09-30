@@ -84,7 +84,7 @@ defmodule VoxelRegion.World.HeatCommit do
     state
   end
 
-  # R8 单向转化：热提交落盘后，达到转化温度且面接触足量还原剂的节点在一笔几何事务里换成产物。
+  # R8 单向转化：热提交落盘后，达到转化温度（规则要求还原剂时还须面接触足量还原剂）的节点在一笔几何事务里换成产物。
   # 占用、归属与完整度比例保留；相对环境的显热减去反应热后按产物热容折算；还原剂按化学燃料比例扣减。
   def transform_heated_materials(state) do
     materials = state.properties.materials
@@ -94,11 +94,17 @@ defmodule VoxelRegion.World.HeatCommit do
     {next, products, carried} =
       Enum.reduce(due, {state, %{}, %{}}, fn {_, ore}, {s, products, carried} ->
         material = materials[ore.material]
-        reductant_id = material["transform_reductant_material_id"]
-        reductant = materials[reductant_id]
         volume = Damage.volume(ore.granularity) * finite_volume(s, ore)
-        {rows, s} = touching_reductants(s, ore, reductant_id)
-        used = Transform.reductant_j(material, volume, reductant)
+
+        # 无还原剂的规则（Sand→Glass）只看温度：不找接触、不扣燃料。
+        {rows, s, used} =
+          if Transform.reductant?(material) do
+            reductant_id = material["transform_reductant_material_id"]
+            {rows, s} = touching_reductants(s, ore, reductant_id)
+            {rows, s, Transform.reductant_j(material, volume, materials[reductant_id])}
+          else
+            {[], s, 0.0}
+          end
 
         case Transform.draw(Enum.map(rows, &elem(&1, 1)), used) do
           :insufficient ->
