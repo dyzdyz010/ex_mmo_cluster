@@ -2,18 +2,22 @@ defmodule VoxelRegion.Transform do
   @moduledoc """
   全局系统功能：材料单向转化（R8 §3 "透明 + 单向转化" 轴，B7 相变的不可逆版本；§10 冶炼主干）。
 
-  目录字段（均在源材料上，缺一不可）：
+  目录字段（均在源材料上）：
   - `transform_material_id`：产物材料；同体积 1:1 替换源材料，占用、归属与完整度比例保留。
   - `transform_kelvin`：节点温度达到即转化。
   - `transform_heat_per_macro_j`：每 m³ 源材料吸收的反应热（J），从该节点显热中扣除。
   - `transform_reductant_material_id`：必须面接触的还原剂；须是可燃材料，其剩余量即剩余化学燃料比例。
   - `transform_reductant_units_per_unit`：每单位源材料消耗的还原剂数量（体积量子之比）。
 
-  无接触还原剂或余量不足时不转化，节点只是保持高温。只计算值，不读取 World、不分配事务序号。
+  前三项必填；还原剂两项成组，可一起省略（R8-08 Sand→Glass：只靠温度的熔制）。
+  需要还原剂而无接触或余量不足时不转化，节点只是保持高温。只计算值，不读取 World、不分配事务序号。
   """
   alias VoxelRegion.Combustion
 
   def enabled?(material), do: Map.has_key?(material, "transform_material_id")
+
+  @doc "转化是否需要面接触的还原剂。"
+  def reductant?(material), do: Map.has_key?(material, "transform_reductant_material_id")
 
   @doc "未归零、带温度且达到阈值的宏格或精确微格节点。"
   def due?(row, material) do
