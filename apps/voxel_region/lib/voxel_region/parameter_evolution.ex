@@ -14,11 +14,14 @@ defmodule VoxelRegion.ParameterEvolution do
         # 已可倾倒的材料不能撤下（世界里可能有它的散体格），见下方检查。
         ~w(loose_threshold_units) ++
         # Voxim 背包（2026-09-26）：密度只供客户端派生重量显示，服务端不读、行上无相关状态：可在线新增或调整。
-        ~w(density_kg_m3)
+        ~w(density_kg_m3) ++
+        # 身体闭环 H1 可食轴：只在进食裁决时现读（Production.consume），行上无相关状态：可在线新增或调整。
+        ~w(food)
 
     # 设备电阻只在每次建电路时按目录现读（Circuit.prepare），行上不存与之相关的量：可在线调整。
+    # 工具伤身参数只在命中时现读（Scene ToolAction / World.body_tool），同样可在线新增或调整。
     tool_fields =
-      ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j circuit_resistance_ohm)
+      ~w(display_name interval_seconds fuel_units heat_energy_j heat_power_w cooling_energy_j circuit_energy_j circuit_resistance_ohm body_impact)
 
     phase_fields =
       ~w(phase_peer_material_id phase_transition_kelvin latent_heat_per_macro_j heat_capacity_per_macro max_hp_per_macro)
