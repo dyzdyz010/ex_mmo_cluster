@@ -38,6 +38,6 @@ defmodule MmoContracts.Voxel.Attachments do
 
   defp slots(_, _, _), do: {:error, :invalid_attachments}
 
-  @doc "首片只允许目录中不透明实体材料（排除空气、水、冰）。"
-  def material?(id), do: MmoContracts.VoxelMaterialCatalog.valid_id?(id) and id not in [0, 20, 21]
+  @doc "只允许目录中不透明实体材料（排除空气与透明的冰、水、玻璃；与客户端 MaterialIsTransparent 同一集合）。"
+  def material?(id), do: MmoContracts.VoxelMaterialCatalog.valid_id?(id) and id not in [0, 20, 21, 44]
 end

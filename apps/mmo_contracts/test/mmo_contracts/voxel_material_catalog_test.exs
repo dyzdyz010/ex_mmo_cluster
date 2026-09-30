@@ -27,6 +27,12 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
     refute VoxelMaterialCatalog.valid_id?(255)
   end
 
+  # R8-08：玻璃与冰、水一样透明，客户端区域解码拒绝透明材料的附件，所以服务端也不许用它做面／线附件。
+  test "透明材料（冰、水、玻璃）与空气不能做附件，其余实体材料可以" do
+    refute Enum.any?([0, 20, 21, 44], &MmoContracts.Voxel.Attachments.material?/1)
+    assert Enum.all?([5, 11, 22, 24, 43], &MmoContracts.Voxel.Attachments.material?/1)
+  end
+
   test "identity bytes 是紧凑有序 pair JSON，而非 map 枚举结果" do
     expected =
       "[[0,\"air\"],[1,\"grass\"],[2,\"dry_grass\"],[3,\"moss\"],[4,\"snow\"],[5,\"sand\"],[6,\"gravel\"],[7,\"dirt\"],[8,\"clay\"],[9,\"sandstone\"],[10,\"limestone\"],[11,\"stone\"],[12,\"granite\"],[13,\"basalt\"],[14,\"marble\"],[15,\"coal_ore\"],[16,\"copper_ore\"],[17,\"iron_ore\"],[18,\"gold_ore\"],[19,\"wood\"],[20,\"ice\"],[21,\"water\"],[22,\"lava\"],[23,\"glowstone\"],[24,\"copper\"],[25,\"birch_wood\"],[26,\"maple_wood\"],[27,\"spruce_wood\"],[28,\"oak_leaves\"],[29,\"birch_leaves\"],[30,\"maple_leaves\"],[31,\"spruce_leaves\"],[32,\"short_grass\"],[33,\"tall_grass\"],[34,\"fern\"],[35,\"poppy\"],[36,\"dandelion\"],[37,\"cornflower\"],[38,\"daisy\"],[39,\"allium\"],[40,\"resistive_alloy\"],[41,\"switch\"],[42,\"energy_stone\"],[43,\"thermoelectric_stone\"],[44,\"glass\"]]"
