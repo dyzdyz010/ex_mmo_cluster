@@ -28,12 +28,12 @@ defmodule VoxelRegion.World.Catalogs do
     end
   end
 
-  # 全局系统功能：平衡容差是求解分辨率，辐射参数随本变更引入、旧存档没有，二者以环境资产为准；
+  # 全局系统功能：平衡容差是求解分辨率，辐射参数与电路零功率阈值随各自变更引入、旧存档没有，均以环境资产为准；
   # 回放的热账（环境温度、换热系数、能量账）保持存档值。
   # 气候区同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
   def environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
     do: %{state | thermal: %{thermal | config: config
-      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells climate_zones)))
+      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells circuit_min_power_w climate_zones)))
       |> then(&if(Map.has_key?(asset, "climate_zones"), do: &1, else: Map.delete(&1, "climate_zones")))}}
 
   def environment_tolerance(state, _), do: state
@@ -57,13 +57,15 @@ defmodule VoxelRegion.World.Catalogs do
       path ->
         config =
           Jason.decode!(File.read!(path))
-          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells climate_zones))
+          |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells
+            circuit_min_power_w climate_zones))
 
+        # circuit_min_power_w：电路零功率判据（W），电源输出功率低于它的连通网络视为断流（`VoxelRegion.Circuit`）。
         true =
           Enum.all?(
-            ~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin),
+            ~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin circuit_min_power_w),
             &is_number(config[&1])
-          ) and
+          ) and config["circuit_min_power_w"] >= 0 and
             config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] >= 0 and
             config["tolerance_kelvin"] > 0 and radiation_config?(config) and
             VoxelRegion.Climate.valid?(config)

@@ -235,7 +235,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
     zones = [%{"min" => [0, 0], "max" => [7, 63], "ambient_kelvin" => @cold, "wind_mps" => 5.0}]
     env = Path.join(c.root, "environment.json")
     File.write!(env, Jason.encode!(%{classification: "Global system", ambient_kelvin: @warm, environment_w_per_m2_k: 10,
-      tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, climate_zones: zones}))
+      tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, circuit_min_power_w: 1.0, climate_zones: zones}))
     natural = for x <- 4..12, z <- 6..10, do: {{x, 4, z}, @stone}
     w = start(c, :asset, natural, thermal_environment_path: env)
 
@@ -252,7 +252,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
 
     :ok = stop_supervised(:asset)
     File.write!(env, Jason.encode!(%{classification: "Global system", ambient_kelvin: @warm, environment_w_per_m2_k: 10,
-      tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8}))
+      tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, circuit_min_power_w: 1.0}))
     w = start(c, :asset, natural, thermal_environment_path: env)
     assert_in_delta query(w, {6, 4, 8}).temperature_kelvin, @warm, 1.0e-9
     refute Map.has_key?(World.simulation_snapshot(w, [], @box).property_context, :climate_zones)
@@ -264,7 +264,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   test "冷重启新加寒区：旧温度行重新入活动集合、回落到区温 ±1 K 后落定", c do
     env = Path.join(c.root, "environment-restart.json")
     base = %{classification: "Global system", ambient_kelvin: @warm, environment_w_per_m2_k: 10, tolerance_kelvin: 1,
-      emissivity: 0.9, view_range_cells: 8}
+      emissivity: 0.9, view_range_cells: 8, circuit_min_power_w: 1.0}
     File.write!(env, Jason.encode!(base))
     natural = for x <- 5..11, z <- 5..11, do: {{x, 4, z}, @stone}
     w = start(c, :restart, natural, thermal_environment_path: env)

@@ -28,7 +28,7 @@ defmodule VoxelRegion.ThermalRadiationWorldTest do
       tools: [], definitions: []}))
     environment = Path.join(root, "environment.json")
     File.write!(environment, Jason.encode!(%{ambient_kelvin: @ambient, environment_w_per_m2_k: 10.0,
-      tolerance_kelvin: 1.0, emissivity: emissivity, view_range_cells: 8}))
+      tolerance_kelvin: 1.0, emissivity: emissivity, view_range_cells: 8, circuit_min_power_w: 1.0}))
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(),
       property_catalog_path: catalog, thermal_environment_path: environment, name: nil,
       production_materials: [19]]}, id: name)

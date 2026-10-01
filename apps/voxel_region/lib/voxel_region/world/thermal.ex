@@ -245,7 +245,7 @@ defmodule VoxelRegion.World.Thermal do
       |> Map.update(:circuit_light_j, plan.light_j, &(&1 + plan.light_j))
 
     Logger.info(
-      "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} peltier_absorbed_j=#{plan.peltier_absorbed_j} peltier_released_j=#{plan.peltier_released_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)}"
+      "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} peltier_absorbed_j=#{plan.peltier_absorbed_j} peltier_released_j=#{plan.peltier_released_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)} idle_networks=#{plan.idle_networks} idle_w=#{plan.idle_w}"
     )
 
     {%{state | damage: damage, thermal: thermal}, visited, plan.duration, plan.powers != %{}}

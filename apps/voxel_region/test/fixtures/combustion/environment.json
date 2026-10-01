@@ -5,5 +5,6 @@
   "environment_w_per_m2_k": 10,
   "tolerance_kelvin": 1,
   "emissivity": 0,
-  "view_range_cells": 8
+  "view_range_cells": 8,
+  "circuit_min_power_w": 1.0
 }
