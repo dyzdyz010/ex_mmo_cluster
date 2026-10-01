@@ -223,5 +223,10 @@
     "id": 44,
     "name": "glass",
     "blocks_movement": true
+  },
+  {
+    "id": 45,
+    "name": "thermistor_ceramic",
+    "blocks_movement": true
   }
 ]

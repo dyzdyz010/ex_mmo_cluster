@@ -1009,13 +1009,14 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     parsed = Scene.load_config!(path)
     assert %Session.Profile{fixed_hz: 60} = parsed.profile
 
-    # 45 项现行材质（R8-08 追加玻璃 44）的 blocking SHA256 为 a5aa928c…6f80；按 Wire 声明的 15 个 f64 + 60Hz
-    # 在独立 Python struct/hashlib 中计算（同法复算 44 项得旧值 9153A612…BA85）。更早的 65c215d1…来自 25 项目录。
+    # 46 项现行材质（R8-10 追加温敏陶瓷 45）的 blocking SHA256 为 57420f55…bfcc；按 Wire 声明的 15 个 f64 + 60Hz
+    # 在独立 Python struct/hashlib 中计算（同法复算 45 项得旧值 37158387…7AE0、44 项得 9153A612…BA85）。
+    # 更早的 65c215d1…来自 25 项目录。
     assert Session.Codec.profile_id(
              parsed.profile,
              MmoContracts.VoxelMaterialCatalog.blocking_hash()
            ) ==
-             Base.decode16!("37158387D001B500FD6A7AB981CEBC27622FA9D39773DE5C7593E6D099927AE0")
+             Base.decode16!("A299EAB440DF9E97D0C2F1570FE32799FCB6AA5086F7D842FA4356E439A086D5")
 
     assert parsed.l0 == {{-1, 7, -1}, {1, 9, 1}} and tuple_size(parsed.profile_tuple) == 15
     File.write!(path, Jason.encode!(Map.delete(config(), "profile")))

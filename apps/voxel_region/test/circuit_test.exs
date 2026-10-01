@@ -5,7 +5,8 @@ defmodule VoxelRegion.CircuitTest do
 
   # 只测试：目录值与发布目录同口径——铜 σ 5.8e7、k 4000；电阻合金 σ 4、λ 0.2；开关 41（闭合同铜）；
   # 蓄能石 42 σ 20、每米 24 V、每宏格 10 MJ；热电石 43 σ 2、k 15、S 0.05 V/K。线截面、面厚 = 发布值。
-  # 45 只是这张测试目录里的键（温敏导体提案值 σ 10、截止 373.15 K），电路函数不读材料契约；契约里 44 是玻璃（R8-08），没有 45。
+  # 45 = 温敏陶瓷（R8-10 契约 thermistor_ceramic）：σ 10、截止 373.15 K、k 25 与发布目录行同值（夹具 b4d8bf35…）；
+  # 电路函数不读材料契约，这里只取求解用到的键。
   # 期望逐项按 r = d/(σA)（接触边两侧各半格）与 KCL 手算。
   # 容差：同一回路里铜—铜接触半格 8.6e-9 Ω（电导 1.2e8 S）与合金／电池半格 0.025–0.125 Ω 相差 ~1e7，
   # 消元的相对误差 ≈ κ·ε ≈ 1e7 × 2.2e-16 ≈ 3e-9，所以电流按 1e-8 相对容差比较。
@@ -22,7 +23,7 @@ defmodule VoxelRegion.CircuitTest do
         41=>%{"electrical_conductivity"=>@cu,"circuit_switch"=>true,"thermal_conductivity"=>4000},
         42=>%{"electrical_conductivity"=>20.0,"battery_volts_per_m"=>24.0,"battery_energy_per_macro_j"=>1.0e7,"thermal_conductivity"=>25},
         43=>%{"electrical_conductivity"=>2.0,"seebeck_v_per_k"=>0.05,"thermal_conductivity"=>15},
-        45=>%{"electrical_conductivity"=>10.0,"electrical_cutoff_kelvin"=>373.15,"thermal_conductivity"=>23.43}},
+        45=>%{"electrical_conductivity"=>10.0,"electrical_cutoff_kelvin"=>373.15,"thermal_conductivity"=>25}},
       attachments: %{"line_section_m2"=>@section,"face_thickness_m"=>1/512}}
   end
   defp macro({x,y,z},material),do: %{micro: {x*8,y*8,z*8},granularity: 0,material: material,owner: {0,0},incarnation: 1}
