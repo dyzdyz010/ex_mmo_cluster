@@ -71,11 +71,7 @@ defmodule VoxelRegion.ParameterEvolution do
 
         if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and
              not Phase.enabled?(old) do
-          volume =
-            if row.granularity == 4,
-              do: VoxelRegion.ThermalAttachments.volume(Attachments.slot(row), old_catalog),
-              else: Damage.volume(row.granularity) * fill.(row)
-
+          volume = node_volume(row, old_catalog, fill)
           next = catalog.materials[row.material]
 
           previous =
@@ -95,6 +91,31 @@ defmodule VoxelRegion.ParameterEvolution do
 
     Map.update(thermal, :parameter_rebase_j, rebase, &(&1 + rebase))
   end
+
+  @doc """
+  环境显热参考改变（Test-only 实验入口换了环境温度或气候区）：热账换成新配置，非相态热行的显热
+  C·V·(T − T_amb) 按各自宏格的新旧环境温度重标，差额 ΣC·V·(T_amb,旧 − T_amb,新) 记入参数重标账（与目录发布同一键）。
+  相态行的焓不随环境温度变，不重标。
+  """
+  def ambient_reference(thermal, config, rows, catalog, fill) do
+    rebase =
+      Enum.reduce(rows, 0.0, fn {_, row}, sum ->
+        m = catalog.materials[row.material]
+
+        if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and not Phase.enabled?(m) do
+          cell = Damage.macro(row)
+          sum + node_volume(row, catalog, fill) * Map.get(m, "heat_capacity_per_macro", 0.0) *
+            (VoxelRegion.Climate.air_k(thermal.config, cell) - VoxelRegion.Climate.air_k(config, cell))
+        else
+          sum
+        end
+      end)
+
+    Map.update(%{thermal | config: config}, :parameter_rebase_j, rebase, &(&1 + rebase))
+  end
+
+  defp node_volume(%{granularity: 4} = row, catalog, _fill), do: ThermalAttachments.volume(Attachments.slot(row), catalog)
+  defp node_volume(row, _catalog, fill), do: Damage.volume(row.granularity) * fill.(row)
 
   @doc """
   按新目录重标已点燃行的剩余燃料与燃烧功率，保持已烧比例不变。

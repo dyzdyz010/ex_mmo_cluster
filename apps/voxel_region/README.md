@@ -437,7 +437,7 @@ granularity1保存独立微格温度、2保存叶子共享HP；微格过热伤�
 2026-09-15 R7-B3 热传递首片（历史实现，现已扩展如上）：`Thermal` 是全局系统功能，只消费 canonical 派生的普通宏格六面接触摘要；
 温度复用 World 的 B1 身份、稀疏属性状态、overlay 日志和确认流。50 ms 显式步进，500 ms 批量权威提交，
 同步持久化后广播；只有过热归零才在同一宏格事务中删除占用，不发放采掘奖励。
-`World.thermal_experiment/2` 是只测试的有限供能作者入口，不开放给玩家 Gate；Qinglan 不依赖它。
+`World.thermal_experiment/2` 是只测试的有限供能作者入口，不开放给玩家 Gate；Qinglan 不依赖它。2026-10-01（D3）起它在原热账上累加：已有账键、热源、拟态与时钟原样保留，新源与同格未放完的源合并、放出时才记入供热；配置只覆盖实验文件给出的键；实验换了环境温度或气候区时，存量非相态热行的显热参考 ΣC·V·(T_amb,旧 − T_amb,新) 记入 `parameter_rebase_j`；无热环境时从空热账开始。
 独立双客户端、真实重启、节奏与成本测量、范围边界见 [B3 首片记录](../../../Voxim/Docs/R7/B3-first-slice.md)。
 数值方案沿用 [NIST FiPy 显式扩散示例](https://github.com/usnistgov/fipy/blob/master/examples/diffusion/mesh1D.py)
 的守恒离散与步长稳定性约束；这里仅采用普通宏格接触模型，不引入 FiPy 或通用场框架。

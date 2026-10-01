@@ -8,8 +8,8 @@ defmodule VoxelRegion.QinglanMigrationTest do
 
   旧世界夹具 `fixtures/qinglan_migration`：当前服务端已拒绝 circuit.install／feed，所以由青岚 0923 版服务端源码 79dde382 经正式入口录制
   （作者铺地 → Test-only 记账供料 → 付费铜面 → 工具 19 安装 → 工具 8 投料两次），录制器 `record_79dde382_helper.exs` 同目录保存。
-  迁移后发电的热来自玩家火：作者放置的木头经正式工具 9（K）点燃，煤取自旧世界剩下的余额。不用 Test-only 实验热源：
-  `World.thermal_experiment` 会整本替换热账，抹掉迁移刚写下的移除账，证明不了迁移后账目连续。
+  迁移后发电的热来自玩家火：作者放置的木头经正式工具 9（K）点燃，煤取自旧世界剩下的余额（正式链路，不用实验热源）。
+  `World.thermal_experiment` 在迁移后的原热账上累加（D3），由单独一项核对；该入口旧实现整本替换热账、抹掉迁移移除账。
   热电石等器件格经作者编辑放置；开关切换走正式工具 7。
   期望来自目录算术（2 × 6.25 MJ、4 × 4096 单位／次、点火 2 × 4096 单位与 3.125 MJ、S·ΔT_i、k/半格长、r = d/(σA)、
   光 = 发光份额 × 焦耳）与账目恒等式（迁移写下的键在之后的点火与发电中原样保留），不取自内核输出。
@@ -166,6 +166,83 @@ defmodule VoxelRegion.QinglanMigrationTest do
 
   test "迁移到青岚已部署目录 249f2442：在用的工具 19 电源变铜面、剩余 12.5 MJ 记入移除账、旧工具被拒、冷重启一致", c do
     migrate(c, :deployed, @deployed)
+  end
+
+  # D3：Test-only 实验热源在原热账上累加。迁移写下的账（移除账 12.5 MJ 等）在装源、放完、冷重启后逐键不变；
+  # 供热账恰好多出实验源的有限能量 E，时钟从迁移后的值按每笔提交 0.5 模拟秒继续走；显热增量 = 本段各账增量之和。
+  # 旧实现整本替换热账：迁移键全部丢失、供热与时钟从 0 重开。
+  test "迁移后装 Test-only 实验热源：迁移账逐键保留，供热、时钟在原账上累加且显热增量闭合，冷重启一致", c do
+    {w, migrated} = migrate(c, :experiment, @current)
+    carried = [:circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j, :discarded_source_j]
+    kept = Map.take(migrated.thermal, carried)
+    assert kept.circuit_removed_j == 2 * rows(@qinglan, "tools", "tool_id")[8]["circuit_energy_j"]
+
+    # 热源装在夹具地面石 (0,0,4)，远离旧电源面；环境参数与部署环境相同（只加源字段）。E = 10 kJ、P = 20 kW。
+    energy = 10_000.0
+    env = Jason.decode!(File.read!(Path.join(@catalogs, "environment-radiation.json")))
+    path = Path.join(c.root, "experiment-heat.json")
+    File.write!(path, Jason.encode!(Map.merge(env, %{"classification" => "Test-only", "source_macro" => [0, 0, 4],
+      "power_w" => 20_000.0, "energy_j" => energy})))
+    :ok = World.thermal_experiment(w, path)
+    installed = observe(w)
+    assert Map.take(installed.thermal, carried) == kept
+    assert installed.thermal.elapsed_s == migrated.thermal.elapsed_s
+    assert installed.thermal.supplied_j == migrated.thermal.supplied_j
+
+    left = fn s -> Enum.sum([0.0 | for({_, src} <- s.thermal.sources, do: src.remaining_j)]) end
+    {spent, n} = Enum.reduce_while(1..20, nil, fn k, _ ->
+      s = commit(w)
+      if left.(s) == 0.0, do: {:halt, {s, k}}, else: {:cont, {s, k}}
+    end)
+    assert left.(spent) == 0.0
+    assert Map.take(spent.thermal, carried) == kept
+    assert_in_delta spent.thermal.supplied_j - migrated.thermal.supplied_j, energy, 1.0e-6
+    assert_in_delta spent.thermal.elapsed_s - migrated.thermal.elapsed_s, 0.5 * n, 1.0e-9
+
+    # 显热 ΣC·V·(T − Ta)，热节点行粒度 0／1／4（本世界只有整格石，整件行粒度 3 不是热节点）；
+    # 增量 = Δ供热 + Δ环境 + Δ参数重标 − Δ移除。
+    m = rows(@current, "materials", "material_id")
+    sensible = fn s ->
+      for {_, r} <- s.damage, r.granularity in [0, 1, 4], Map.has_key?(r, :temperature_kelvin), reduce: 0.0 do
+        sum -> (0 = r.granularity; sum + m[r.material]["heat_capacity_per_macro"] * (r.temperature_kelvin - c.ambient))
+      end
+    end
+    delta = fn key -> Map.get(spent.thermal, key, 0.0) - Map.get(migrated.thermal, key, 0.0) end
+    book = delta.(:supplied_j) + delta.(:environment_j) + delta.(:parameter_rebase_j) - delta.(:removed_j)
+    assert sensible.(spent) > 0.0
+    assert_in_delta sensible.(spent) - sensible.(migrated), book, 1.0e-6 * energy
+
+    :ok = stop_supervised(:experiment)
+    {w, _} = start(c, :experiment)
+    restored = observe(w)
+    assert restored.damage == spent.damage
+    assert Map.drop(restored.thermal, [:active]) == Map.drop(spent.thermal, [:active])
+
+    # 第二次实验换环境温度 293.15 → 303.15 K（Test-only 入口仍可换环境）：存量非相态热行的显热参考重标进参数重标账，
+    # 手算 = −10 K × C_石 × 1 m³ × 装源时的热行数；之后显热按新环境温度计，增量仍等于各账增量之和。
+    hot = for {_, r} <- restored.damage, r.granularity in [0, 1, 4], Map.has_key?(r, :temperature_kelvin), do: r
+    assert hot != [] and Enum.all?(hot, &(&1.material == @stone))
+    warm = 303.15
+    path = Path.join(c.root, "experiment-warm.json")
+    File.write!(path, Jason.encode!(Map.merge(env, %{"classification" => "Test-only", "source_macro" => [2, 0, 4],
+      "ambient_kelvin" => warm, "power_w" => 20_000.0, "energy_j" => energy})))
+    :ok = World.thermal_experiment(w, path)
+    rebased = observe(w)
+    assert Map.take(rebased.thermal, carried -- [:parameter_rebase_j]) == Map.drop(kept, [:parameter_rebase_j])
+    assert_in_delta rebased.thermal.parameter_rebase_j - kept.parameter_rebase_j,
+      -10.0 * m[@stone]["heat_capacity_per_macro"] * length(hot), 1.0e-6
+    warm_sensible = fn s ->
+      for {_, r} <- s.damage, r.granularity in [0, 1, 4], Map.has_key?(r, :temperature_kelvin), reduce: 0.0,
+        do: (sum -> sum + m[r.material]["heat_capacity_per_macro"] * (r.temperature_kelvin - warm))
+    end
+    later = Enum.reduce(1..20, nil, fn _, _ -> commit(w) end)
+    step = fn key -> Map.get(later.thermal, key, 0.0) - Map.get(restored.thermal, key, 0.0) end
+    assert_in_delta step.(:supplied_j), energy, 1.0e-6
+    assert_in_delta warm_sensible.(later) - sensible.(restored),
+      step.(:supplied_j) + step.(:environment_j) + step.(:parameter_rebase_j) - step.(:removed_j), 1.0e-6 * energy
+    IO.puts("THERMAL_EXPERIMENT_AMBIENT rows=#{length(hot)} rebase=#{step.(:parameter_rebase_j)} environment=#{step.(:environment_j)}")
+    IO.puts("THERMAL_EXPERIMENT_ACCUMULATES commits=#{n} supplied_delta=#{delta.(:supplied_j)} " <>
+      "environment_delta=#{delta.(:environment_j)} sensible_delta=#{sensible.(spent) - sensible.(migrated)} kept=#{inspect(kept)}")
   end
 
   # 迁移后同一世界（z = 2 平面，地面是夹具里的石，电源旧面在 (5,0,0) 顶面、不在回路里）：

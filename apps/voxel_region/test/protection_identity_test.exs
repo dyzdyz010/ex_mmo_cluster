@@ -48,25 +48,36 @@ defmodule VoxelRegion.ProtectionIdentityTest do
   defp stamp(a, seq), do: Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()})
   defp observe(w), do: World.simulation_snapshot(w, [1001], {{-1, -1, -1}, {1, 1, 1}})
 
-  defp digest(s) do
+  defp digest(s, base) do
     # 身份字段（纪元、附件 id、构件 owner）取自事务序号，随定时提交与额外作者事务平移；只比物理值与位置。
     rows = s.property_states |> Enum.map(&Map.drop(&1, [:seq, :request_id, :incarnation, :owner])) |> Enum.sort()
     # 冷板撤下（R8-04 增量 2）后电路不再维护冷板的制冷／排热两本账（新世界里不出现这两个键）；比较不含它们。
     ledger = Map.drop(s.thermal_accounting, [:elapsed_s, :active, :circuit_cooling_j, :circuit_rejected_j])
     # R8-04 增量 3：格被移除时按移除格上的储能记移除账；没有蓄能石时该键为 0.0（主线里不出现），不属于物理值。
     ledger = if Map.get(ledger, :circuit_removed_j) == 0.0, do: Map.delete(ledger, :circuit_removed_j), else: ledger
+    # D3（2026-10-01）：Test-only 实验入口改为在原热账上累加；主线记录 ore 时它整本替换热账、从空账起算。
+    # ore 比较装源之后的账：base（装源前一刻的账）里的数值键取增量；自装源起没变的键主线里没有，去掉，
+    # 主线实验新账自带的四个键（1b2a10c8 handle_call 字面量）除外。其余场景 base 为空，账原样比较。
+    fresh = [:supplied_j, :environment_j, :combustion_j, :combustion_removed_j]
+    ledger = for {k, v} <- ledger, into: %{} do
+      case Map.fetch(base, k) do
+        {:ok, b} when is_number(v) and is_number(b) -> {k, if(v == b and k not in fresh, do: :unchanged, else: v - b)}
+        _ -> {k, v}
+      end
+    end
+    ledger = Map.reject(ledger, fn {_, v} -> v == :unchanged end)
     # 原子键 map 的内部次序随原子表而变，编码必须用 deterministic。
     :crypto.hash(:sha256, :erlang.term_to_binary({rows, ledger, Enum.sort(s.liquid_quantities)}, [:deterministic]))
     |> Base.encode16(case: :lower) |> binary_part(0, 16)
   end
 
   # 每次手动提交后按相对模拟时刻记录摘要，直到 until 秒。
-  defp trace(w, t0, until, acc \\ %{}) do
+  defp trace(w, t0, until, base \\ %{}, acc \\ %{}) do
     send(w, :thermal_commit)
     s = observe(w)
     t = s.thermal_accounting.elapsed_s - t0
-    acc = Map.put(acc, t, digest(s))
-    if t >= until, do: acc, else: trace(w, t0, until, acc)
+    acc = Map.put(acc, t, digest(s, base))
+    if t >= until, do: acc, else: trace(w, t0, until, base, acc)
   end
 
   # 时间原点取动作事务自身记录的模拟时刻，不受其前后插入的定时提交影响。
@@ -113,9 +124,10 @@ defmodule VoxelRegion.ProtectionIdentityTest do
     File.write!(path, Jason.encode!(%{classification: "Test-only", source_macro: [20, 5, 0], ambient_kelvin: 293.15,
       environment_w_per_m2_k: 10.0, tolerance_kelvin: 1.0, emissivity: 0.9, view_range_cells: 8,
       power_w: 1.0e6, energy_j: 2.6e7}))
+    base = observe(w).thermal_accounting
     :ok = World.thermal_experiment(w, path)
-    # 实验入口以新热账开始，模拟时刻从 0 计。
-    trace(w, 0.0, 40.0)
+    # 实验入口在原热账上累加（D3）：模拟时刻从装源前的时钟起算，账比增量（digest/2）。
+    trace(w, base.elapsed_s, 40.0, base)
   end
 
   # 主线 1b2a10c8 上以本文件场景运行两次得到的同一记录（记录用的临时测试随后删除）。
