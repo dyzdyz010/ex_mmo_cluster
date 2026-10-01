@@ -146,7 +146,9 @@ defmodule VoxelRegion.Circuit do
   （`electric`：热键 → {目标, W, A}；A = 该节点全部支路 |i| 之和的一半）。
   `sources`：本次网络里每个蓄能石／热电石格 → %{target, stored_j, emf_v, current_a}（电流带号：+ 为向外供能）。
   账：`supplied_j` 放电、`charged_j` 充入储能、`thermoelectric_j` 热电做功（= 佩尔捷吸热）、`light_j` 光；
-  热节点净得 supplied − charged − light（充满后的溢出也在热里）。
+  热节点净得 supplied − charged − light（充满后的溢出也在热里）。佩尔捷按结分项（R8-09）：`peltier_absorbed_j`
+  = Σ max((S_b − S_a)·T_i·i, 0)·Δt（热端结从热节点取走的热）、`peltier_released_j` = Σ max(−(S_b − S_a)·T_i·i, 0)·Δt
+  （冷端结放回热节点的热）；按 KCL 两者之差 = `thermoelectric_j`。
   """
   def plan(input,hosts,contacts) do
     %{catalog: catalog,damage: damage,environment: environment,edges: edges,luminous: luminous,
@@ -196,7 +198,7 @@ defmodule VoxelRegion.Circuit do
     stored=Map.new(cells,fn {key,c}->{key,Map.get(Map.get(damage,Damage.key(c.target),%{}),:stored_j,0.0)} end)
     {result,flat}=solve(edges,stored,MapSet.new(),MapSet.new())
     currents=Enum.map(result.currents,fn i->if abs(i)<1.0e-10,do: 0.0,else: i end)
-    {heat,light_w,electric,cells,te_w}=Enum.zip(edges,currents) |> Enum.reduce({%{},0.0,%{},cells,0.0},fn {e,i},{heat,light,electric,cells,te_w}->
+    {heat,light_w,electric,cells,te_w,{absorbed_w,released_w}}=Enum.zip(edges,currents) |> Enum.reduce({%{},0.0,%{},cells,0.0,{0.0,0.0}},fn {e,i},{heat,light,electric,cells,te_w,{absorbed,released}}->
       watts=i*i*e.r
       {heat,light}=Enum.reduce(e.heat,{heat,light},fn {key,weight,lum},{h,light}->
         {Map.update(h,key,watts*weight*(1.0-lum),&(&1+watts*weight*(1.0-lum))),light+watts*weight*lum}
@@ -218,7 +220,8 @@ defmodule VoxelRegion.Circuit do
           _->cells
         end
       end)
-      {heat,light,electric,cells,te_w+e.te*i}
+      junction=e.peltier*i
+      {heat,light,electric,cells,te_w+e.te*i,{absorbed+max(junction,0.0),released+max(-junction,0.0)}}
     end)
     # 放电中的蓄能石决定本段时长（与原有限电源同一截断口径）。
     done=Enum.reduce(cells,duration,fn {key,c},dt->
@@ -243,7 +246,7 @@ defmodule VoxelRegion.Circuit do
     electric=for {key,{w,a}}<-electric,w>0.0,into: %{},do: {key,{Map.fetch!(luminous,key),w,a/2}}
     sources=Map.new(cells,fn {key,c}->{key,source_view(c)} end)
     %{duration: done,powers: Map.reject(heat,fn {_,w}->w==0.0 end),supplied_j: supplied,charged_j: charged,
-      thermoelectric_j: te_w*done,light_j: light_w*done,electric: electric,sources: sources,
+      thermoelectric_j: te_w*done,peltier_absorbed_j: absorbed_w*done,peltier_released_j: released_w*done,light_j: light_w*done,electric: electric,sources: sources,
       nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
   end
 

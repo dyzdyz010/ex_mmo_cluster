@@ -58,7 +58,7 @@ defmodule VoxelRegion.World.Observation do
     ledger = Map.take(thermal, [:active, :elapsed_s, :supplied_j, :environment_j,
       :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,
       :fuel_initialized_j, :discarded_fuel_j, :circuit_supplied_j, :circuit_charged_j, :circuit_thermoelectric_j,
-      :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
+      :circuit_peltier_absorbed_j, :circuit_peltier_released_j, :circuit_light_j, :circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j,
       :phase_paid_j, :phase_unused_j, :phase_supplied_j, :phase_authored_units, :phase_authored_energy_j,
       :transform_j, :transform_units, :transform_reductant_fuel_j,
       :caster_drawn_j, :draw_loss_j, :cast_waste_j, :spell_heat_j,

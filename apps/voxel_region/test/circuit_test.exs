@@ -214,6 +214,112 @@ defmodule VoxelRegion.CircuitTest do
       assert_in_delta plan.powers[key(c)],0.05*ti(480.0,818.0)*i/2+2*i*i*half(@cu),1.0e-6
       assert Enum.all?(rest,&Map.has_key?(plan.powers,key(&1)))
     end
+
+    # R8-09 佩尔捷分项：热端结吸热 S·T_i,h·I、冷端结放热 S·T_i,c·I；两者之差 = 热电做功 Σε·I·Δt。
+    # 期望全部按界面温度与 r = d/(σA) 手算（R8-09 方案 §2 的数，本文件再独立验算）；铜半格 0.5/σ_Cu 照算以保 1e-9。
+    test "手算例 1（单块，8 格环）：1000/650/300 K，ε = 34.869240 V、I = 46.492314 A；每 0.5 s 吸热 1160.788 J、放热 350.212 J、做功 810.576 J，各节点焓变" do
+      [h,t,c,alloy|_]=cells=[macro({0,2,0},24),macro({1,2,0},43),macro({2,2,0},24),macro({2,1,0},40),
+        macro({2,0,0},24),macro({1,0,0},24),macro({0,0,0},24),macro({0,1,0},24)]
+      plan=run(cells,Map.new([hot(h,1000.0),hot(t,650.0),hot(c,300.0)]),0.5)
+      tih=ti(1000.0,650.0); tic=ti(300.0,650.0)
+      assert_in_delta tih,998.692403,1.0e-6
+      assert_in_delta tic,301.307597,1.0e-6
+      emf=0.05*(tih-tic)
+      i=emf/(2*half(2.0)+2*half(4.0)+12*half(@cu))
+      assert_in_delta emf,34.869240,1.0e-6
+      assert_in_delta i,46.492314,1.0e-6
+      assert_in_delta plan.sources[key(t)].current_a,i,i*1.0e-9
+      absorbed=0.05*tih*i*0.5; released=0.05*tic*i*0.5
+      assert_in_delta absorbed,1160.788,1.0e-3
+      assert_in_delta released,350.212,1.0e-3
+      assert_in_delta plan.peltier_absorbed_j,absorbed,absorbed*1.0e-9
+      assert_in_delta plan.peltier_released_j,released,released*1.0e-9
+      assert_in_delta plan.thermoelectric_j,emf*i*0.5,emf*i*0.5*1.0e-9
+      assert_in_delta plan.thermoelectric_j,810.576,1.0e-3
+      assert_in_delta plan.peltier_absorbed_j-plan.peltier_released_j,plan.thermoelectric_j,plan.thermoelectric_j*1.0e-9
+      # 各节点 0.5 s 焓变：热铜 −Q_h/2（+ 自身铜半格焦耳）、热电石 −Q_h/2 + Q_c/2 + I²·0.5 Ω、冷铜 +Q_c/2、合金 0.8 × I²·0.25 Ω；光 0.2 × I²·0.25 Ω。
+      dh=fn k->plan.powers[key(k)]*0.5 end
+      assert_in_delta dh.(h),-absorbed/2+2*i*i*half(@cu)*0.5,1.0e-6
+      assert_in_delta dh.(h),-580.394,1.0e-3
+      assert_in_delta dh.(t),-absorbed/2+released/2+i*i*2*half(2.0)*0.5,1.0e-6
+      assert_in_delta dh.(t),135.096,1.0e-3
+      assert_in_delta dh.(c),released/2+2*i*i*half(@cu)*0.5,1.0e-6
+      assert_in_delta dh.(c),175.106,1.0e-3
+      # 合金在两条接触边上各得自身半格那一份：I² × 0.25 Ω，其中 0.8 进热节点。
+      assert_in_delta dh.(alloy),0.8*i*i*2*half(4.0)*0.5,1.0e-6
+      assert_in_delta dh.(alloy),216.154,1.0e-3
+      assert_in_delta plan.light_j,0.2*i*i*2*half(4.0)*0.5,plan.light_j*1.0e-9
+      assert_in_delta plan.light_j,54.038,1.0e-3
+      assert_in_delta Enum.sum(Map.values(plan.powers))*0.5,-plan.light_j,plan.thermoelectric_j*1.0e-9
+    end
+
+    # 两热电石同在 y = 2 一行：A 热铜 (0,2)—A (1,2)—A 冷铜 (2,2)—铜 (3,2)—B 热铜 (4,2)—B (5,2)—B 冷铜 (6,2)；
+    # B 冷铜下合金 (6,1)，底行 (6..0,0) 铜，(0,1) 铜回到 A 热铜；第 1 行其余是空气。
+    # 二十六个铜半格：行内 1+1+2+2+1+1、合金两侧 1+1、底行 6 × 2、左列 2 + 2。
+    defp pair(b_left,b_right) do
+      cells=[macro({0,2,0},24),macro({1,2,0},43),macro({2,2,0},24),macro({3,2,0},24),macro({4,2,0},24),
+        macro({5,2,0},43),macro({6,2,0},24),macro({6,1,0},40)]++for(x<-6..0//-1,do: macro({x,0,0},24))++[macro({0,1,0},24)]
+      [ha,ta,ca,_,lb,tb,rb|_]=cells
+      damage=Map.new([hot(ha,1000.0),hot(ta,650.0),hot(ca,300.0),hot(lb,b_left),hot(tb,610.0),hot(rb,b_right)])
+      {run(cells,damage,0.5),ta,tb}
+    end
+    defp pair_r,do: 4*half(2.0)+2*half(4.0)+26*half(@cu)
+
+    test "手算例 2（双热壁串联，热 A 经负载接冷 B）：Σε = 63.760897 V、I = 51.008717 A；每 0.5 s 做功 1626.181 J、吸热 2419.865 J、放热 793.684 J" do
+      {plan,ta,tb}=pair(900.0,320.0)
+      [ha,ca,hb,cb]=[ti(1000.0,650.0),ti(300.0,650.0),ti(900.0,610.0),ti(320.0,610.0)]
+      assert_in_delta hb,898.916563,1.0e-6
+      assert_in_delta cb,321.083437,1.0e-6
+      emf=0.05*(ha-ca)+0.05*(hb-cb)
+      assert_in_delta emf,63.760897,1.0e-6
+      i=emf/pair_r()
+      # 方案 §2 的 51.008717 A 忽略了 26 个铜半格（2.2e-7 Ω，相对 1.8e-7）；这里的 i 计入它们。
+      assert_in_delta i,51.008717,2.0e-5
+      for t<-[ta,tb],do: assert_in_delta(plan.sources[key(t)].current_a,i,i*1.0e-9)
+      assert_in_delta plan.thermoelectric_j,emf*i*0.5,emf*i*0.5*1.0e-9
+      assert_in_delta plan.peltier_absorbed_j,0.05*(ha+hb)*i*0.5,0.05*(ha+hb)*i*0.5*1.0e-9
+      assert_in_delta plan.peltier_released_j,0.05*(ca+cb)*i*0.5,0.05*(ca+cb)*i*0.5*1.0e-9
+      assert_in_delta plan.thermoelectric_j,1626.181,1.0e-3
+      assert_in_delta plan.peltier_absorbed_j,2419.865,1.0e-3
+      assert_in_delta plan.peltier_released_j,793.684,1.0e-3
+      assert_in_delta plan.peltier_absorbed_j-plan.peltier_released_j,plan.thermoelectric_j,plan.thermoelectric_j*1.0e-9
+      assert_in_delta plan.light_j,0.2*i*i*2*half(4.0)*0.5,plan.light_j*1.0e-9
+      assert_in_delta plan.light_j,65.047,1.0e-3
+    end
+
+    test "反接（热 A 经负载接热 B）：电动势相减 5.977584 V、I = 4.782067 A；B 内电流由冷到热，B 冷端结吸热、热端结放热，差仍 = 做功" do
+      {plan,ta,tb}=pair(320.0,900.0)
+      [ha,ca,hb,cb]=[ti(1000.0,650.0),ti(300.0,650.0),ti(900.0,610.0),ti(320.0,610.0)]
+      emf=0.05*(ha-ca)-0.05*(hb-cb)
+      assert_in_delta emf,5.977584,1.0e-6
+      i=emf/pair_r()
+      assert_in_delta i,4.782067,2.0e-6
+      # 消元误差随节点电位（~Σ|ε| = 63.8 V）而非净电动势：按文件头的 1e-8 相对容差折到 Σ|ε|/R 上（≈ 5e-7 A）。
+      tol=1.0e-8*(0.05*(ha-ca)+0.05*(hb-cb))/pair_r()
+      # 两块的电流同号（同一串），B 的塞贝克功率为负（被 A 反向驱动）。
+      assert_in_delta plan.sources[key(ta)].current_a,i,tol
+      assert_in_delta abs(plan.sources[key(tb)].current_a),i,tol
+      assert_in_delta plan.thermoelectric_j,emf*i*0.5,emf*tol*0.5
+      assert_in_delta plan.thermoelectric_j,14.2926,1.0e-4
+      assert_in_delta plan.peltier_absorbed_j,0.05*(ha+cb)*i*0.5,0.05*(ha+cb)*tol*0.5
+      assert_in_delta plan.peltier_released_j,0.05*(ca+hb)*i*0.5,0.05*(ca+hb)*tol*0.5
+      assert_in_delta plan.peltier_absorbed_j,157.7814,1.0e-4
+      assert_in_delta plan.peltier_released_j,143.4888,1.0e-4
+      # 两种求和只在 KCL 精确时相等：差 = Σ S·T_热电石·(i_出 − i_入)·Δt，KCL 残差与上面的电流误差同量级（tol）。
+      assert_in_delta plan.peltier_absorbed_j-plan.peltier_released_j,plan.thermoelectric_j,0.05*(650.0+610.0)*tol*0.5
+    end
+
+    test "等温 700 K：两块电动势都为 0，严格 0 A，无功率、无吸放热" do
+      cells=[macro({0,2,0},24),macro({1,2,0},43),macro({2,2,0},24),macro({3,2,0},24),macro({4,2,0},24),
+        macro({5,2,0},43),macro({6,2,0},24),macro({6,1,0},40)]++for(x<-6..0//-1,do: macro({x,0,0},24))++[macro({0,1,0},24)]
+      damage=Map.new(for c<-Enum.slice(cells,0,7),do: hot(c,700.0))
+      plan=run(cells,damage,0.5)
+      assert plan.sources[key(Enum.at(cells,1))].current_a==0.0
+      assert plan.sources[key(Enum.at(cells,5))].current_a==0.0
+      assert plan.sources[key(Enum.at(cells,1))].emf_v==0.0
+      assert plan.powers==%{}
+      assert plan.thermoelectric_j==0.0 and plan.peltier_absorbed_j==0.0 and plan.peltier_released_j==0.0
+    end
   end
 
   test "线端点不接蓄能石（它只经 ±Y 面导电）；铜宿主照常" do
