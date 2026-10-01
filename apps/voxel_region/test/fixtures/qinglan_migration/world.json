@@ -1,0 +1,16 @@
+{
+  "seq": 6,
+  "source": {
+    "id": 3,
+    "tool_id": 19,
+    "anchor": [
+      40,
+      8,
+      0
+    ],
+    "remaining_j": 1.25e7
+  },
+  "catalog": "4b2c6abeaec3818e2203a0b95e3ee03f1cf1aed6bf796c5f33ab41001eb641ed",
+  "coal_left_units": 16384,
+  "recorded_by": "ex_mmo_cluster 79dde382 (Qinglan 0923 server), test/fixtures/qinglan_migration/record_79dde382_helper.exs"
+}
