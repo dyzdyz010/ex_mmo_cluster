@@ -54,6 +54,7 @@ defmodule VoxelRegion.World.Observation do
   end
 
   def thermal_accounting(nil, _in_box), do: nil
+  # 佩尔捷两键缺失表示尚未引入（片 1 之前的世界）；核对“吸热 − 放热 = 热电做功”时取它们出现之后的增量。
   def thermal_accounting(thermal, in_box) do
     ledger = Map.take(thermal, [:active, :elapsed_s, :supplied_j, :environment_j,
       :removed_j, :discarded_source_j, :combustion_j, :combustion_removed_j,

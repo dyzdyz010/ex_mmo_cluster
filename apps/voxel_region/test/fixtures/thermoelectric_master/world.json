@@ -1,0 +1,11 @@
+{
+  "seq": 779,
+  "catalog": "b88329ab0d3652c30f67d012fce04fd30afd7fd6dcc263e5066ba0b08f90284f",
+  "frames": 1,
+  "clicks": 2,
+  "circuit_thermoelectric_j": 10000.640248174874,
+  "checkpoints": 1,
+  "recorded_by": "ex_mmo_cluster 7bfd0bba (master, after R8-04 increment 3, before R8-09 slice 1), test/fixtures/thermoelectric_master/record_7bfd0bba_helper.exs",
+  "elapsed_s": 387.0,
+  "peltier_keys_present": false
+}

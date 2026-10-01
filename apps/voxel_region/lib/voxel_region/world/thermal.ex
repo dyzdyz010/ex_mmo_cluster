@@ -233,6 +233,8 @@ defmodule VoxelRegion.World.Thermal do
     {damage, visited} = electric_rows(state.damage, visited, plan.electric)
     {damage, visited} = source_rows(state, damage, visited, plan.sources)
 
+    # 佩尔捷两键在 R8-09 片 1 引入；之前已累计热电做功的世界升级后它们从 0 起算、不补造历史值，
+    # 所以“吸热 − 放热 = 热电做功”只对键引入之后的增量成立（基线 = 引入时的热电做功）。
     thermal =
       state.thermal
       |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))

@@ -12,7 +12,9 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
   期望来自目录算术（r = d/(σA)、ε = S·ΔT_i）与账目恒等式，不取自内核输出：
   - 显热账：带温度记录的非相态节点 C·V·(T − Ta) = 供热 + 环境交换 + 重标 − 移除 − 转化吸热；
   - 供热分解：供热 = 实验热源放出 + 燃烧 + 电路净热（放电 − 充入 − 光），本装置无蓄能石，电路净热 = −光；
-  - 佩尔捷分项：吸热 − 放热 = 热电做功；每笔 0.5 s 提交的做功增量 = Σ 行上电动势 × 电流 × 0.5；
+  - 佩尔捷分项：Δ吸热 − Δ放热 = Δ热电做功，Δ 从佩尔捷键引入世界时起算（新世界与实验入口重置的账从 0 起，基线全 0；
+    片 1 之前已累计热电做功的世界升级后，基线 = 回放时的热电做功，佩尔捷键从 0 起，不补造历史值）；
+    每笔 0.5 s 提交的做功增量 = Σ 行上电动势 × 电流 × 0.5；
   - 卡诺上限：热电做功 ≤ 热输入 × (1 − Ta/T峰)。
   """
   use ExUnit.Case, async: false
@@ -110,8 +112,14 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     circuit = ledger(s, :circuit_supplied_j) - ledger(s, :circuit_charged_j) - ledger(s, :circuit_light_j)
     assert_in_delta supplied - delivered(s, energy) - ledger(s, :combustion_j) - Map.get(c, :ignition, 0.0), circuit,
       1.0e-6 * scale
-    te = ledger(s, :circuit_thermoelectric_j)
-    assert_in_delta ledger(s, :circuit_peltier_absorbed_j) - ledger(s, :circuit_peltier_released_j), te, 1.0e-6 * max(1.0, te)
+    assert_peltier(s, Map.get(c, :peltier_base, {0.0, 0.0, 0.0}))
+  end
+
+  # 佩尔捷恒等式只对键引入之后的增量成立：base = 引入时的 {吸热, 放热, 热电做功}。
+  defp assert_peltier(s, {absorbed0, released0, te0}) do
+    dte = ledger(s, :circuit_thermoelectric_j) - te0
+    assert_in_delta (ledger(s, :circuit_peltier_absorbed_j) - absorbed0) - (ledger(s, :circuit_peltier_released_j) - released0),
+      dte, 1.0e-6 * max(1.0, abs(dte))
   end
 
   defp te_rows(s), do: for(p <- [@te_a, @te_b], do: cell(s, p))
@@ -343,11 +351,12 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
       "emf_ice=#{emf(iced)} emf_plain=#{emf(plain)} Ac_ice=#{temperature(iced, {6, 1, 2})} Ac_plain=#{temperature(plain, {6, 1, 2})}")
   end
 
-  # ---- 旧检查点：增量 3 之前的服务端代码记录的日志（fixtures/energy_migration，热账里没有热电与佩尔捷键）。
+  # ---- 旧检查点：增量 3 之前的服务端代码记录的日志（fixtures/energy_migration）。热电做功键在增量 3 才引入，所以这份日志里
+  # 热电做功与佩尔捷键都缺、升级后一起从 0 起算（基线全 0）。真实的升级路径是下一个用例的 master 时代检查点。
 
   @oldest "0b2bb0b6e47e5fe52aa4393f9e8eaae7f68aac7cd42af01f8269df89a725f172"
   @published "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  test "旧检查点缺佩尔捷账键：回放后按 0 起算；迁移发布后整格煤炉（K 点燃）发电，吸热 − 放热 = 热电做功，重启后逐项相同", c do
+  test "增量 3 之前的旧日志（热电与佩尔捷键都缺）：回放后一起按 0 起算；迁移发布后整格煤炉（K 点燃）发电，吸热 − 放热 = 热电做功，重启后逐项相同", c do
     root = Path.join(c.root, "old")
     File.mkdir_p!(root)
     File.cp!(Path.expand("fixtures/energy_migration/overlay.log", __DIR__), Path.join(root, "overlay.log"))
@@ -386,18 +395,64 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     assert ledger(s, :circuit_peltier_released_j) > 0.0
     # 旧账键不被重置。
     assert ledger(s, :circuit_removed_j) == removed
-    {_, frozen_before, restored} = restart_old(c)
+    {_, frozen_before, restored} = restart_old(c, :old)
     assert Map.drop(restored.thermal, [:active]) == Map.drop(frozen_before.thermal, [:active])
     IO.puts("TE_OLD clicks=#{clicks} sim_s=#{s.thermal.elapsed_s} te_j=#{te} absorbed_j=#{ledger(s, :circuit_peltier_absorbed_j)} " <>
       "released_j=#{ledger(s, :circuit_peltier_released_j)} H=#{temperature(s, {11, 3, 2})} C=#{temperature(s, {13, 3, 2})}")
   end
 
-  defp restart_old(c) do
+  defp restart_old(c, id) do
     before = frozen(c.w)
-    :ok = stop_supervised(:old)
-    w = start_supervised!({World, c.opts}, id: :old)
+    :ok = stop_supervised(id)
+    w = start_supervised!({World, c.opts}, id: id)
     restored = frozen(w)
     :sys.resume(w)
     {%{c | w: w}, before, restored}
+  end
+
+  # ---- master 时代检查点（fixtures/thermoelectric_master，由 R8-09 片 1 之前的 master 7bfd0bba 经正式入口录制、压实成一帧检查点，
+  # 录制器 record_7bfd0bba_helper.exs）：整格煤 K 点燃、单热壁热电石发电中，热账里热电做功已累计 te_old（world.json，旧代码写下），
+  # 没有佩尔捷键。升级后佩尔捷键从 0 起算、热电做功接着累加：Δ吸热 − Δ放热 = Δ做功，而绝对值差恒为 −te_old（不补造历史值）。
+  @master_fixture Path.expand("fixtures/thermoelectric_master", __DIR__)
+  test "master 时代检查点（热电做功已累计、无佩尔捷键）：回放后原样保留不补造；续烧发电后 Δ吸热 − Δ放热 = Δ做功、绝对差恒为 −te_old；重启后逐项相同", c do
+    meta = Jason.decode!(File.read!(Path.join(@master_fixture, "world.json")))
+    assert meta["catalog"] == @catalog and meta["peltier_keys_present"] == false and meta["frames"] == 1
+    root = Path.join(c.root, "master")
+    File.mkdir_p!(Path.join(root, "prefabs"))
+    File.cp!(Path.join(@master_fixture, "overlay.log"), Path.join(root, "overlay.log"))
+    File.cp!(Path.join(@fixtures, @catalog <> ".json"), Path.join(root, "properties.json"))
+    File.cp!(Path.join(@fixtures, "environment-radiation.json"), Path.join(root, "environment.json"))
+    opts = [source: Source, log: Log, root: root, observer: self(), name: nil,
+      property_catalog_path: Path.join(root, "properties.json"), thermal_environment_path: Path.join(root, "environment.json"),
+      prefab_catalog_path: Path.join(root, "prefabs"), production_materials: [@stone, @coal, @copper, @alloy, @te]]
+    w = start_supervised!({World, opts}, id: :master)
+    # 首个定时热提交在启动后 500 ms 才到期；回放态必须恰是录制末态（seq、时钟、热电做功逐位相同）。
+    replayed = frozen(w)
+    :sys.resume(w)
+    c = %{c | w: w, opts: opts}
+    te_old = meta["circuit_thermoelectric_j"]
+    assert te_old > 1.0e4
+    assert {replayed.seq, replayed.thermal.elapsed_s, replayed.thermal.circuit_thermoelectric_j} == {meta["seq"], meta["elapsed_s"], te_old}
+    refute Map.has_key?(replayed.thermal, :circuit_peltier_absorbed_j)
+    refute Map.has_key?(replayed.thermal, :circuit_peltier_released_j)
+    assert cell(observe(w), {1, 3, 2}).burning
+    base = {0.0, 0.0, te_old}
+
+    s = Enum.reduce_while(1..3000, nil, fn _, _ ->
+      s = commit(c.w)
+      assert_peltier(s, base)
+      # 不补造：吸热 − 放热 − 做功 = −te_old（绝对恒等式在升级世界上不成立，验收只核对增量）。
+      assert_in_delta ledger(s, :circuit_peltier_absorbed_j) - ledger(s, :circuit_peltier_released_j) - ledger(s, :circuit_thermoelectric_j),
+        -te_old, 1.0e-6 * ledger(s, :circuit_thermoelectric_j)
+      if ledger(s, :circuit_thermoelectric_j) - te_old > 1.0e4, do: {:halt, s}, else: {:cont, s}
+    end)
+    dte = ledger(s, :circuit_thermoelectric_j) - te_old
+    assert dte > 1.0e4
+    assert ledger(s, :circuit_peltier_released_j) > 0.0
+    {c, frozen_before, restored} = restart_old(c, :master)
+    assert Map.drop(restored.thermal, [:active]) == Map.drop(frozen_before.thermal, [:active])
+    assert_peltier(commit(c.w), base)
+    IO.puts("TE_MASTER te_old_j=#{te_old} sim_s=#{s.thermal.elapsed_s} dte_j=#{dte} absorbed_j=#{ledger(s, :circuit_peltier_absorbed_j)} " <>
+      "released_j=#{ledger(s, :circuit_peltier_released_j)} H=#{temperature(s, {2, 3, 2})} C=#{temperature(s, {4, 3, 2})}")
   end
 end
