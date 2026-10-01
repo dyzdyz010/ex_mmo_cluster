@@ -294,6 +294,8 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
   end
 
   # ---- 冰作冷端：同一整格炉在两个世界里并排推进，只差冷铜顶上的整格冰（作者供料一次、正式建造放下）。
+  # 冰不是可倾倒的流动材料，只能整格放；整格冰潜热 334 MJ，本装置冷端只给每块冰约 2.7 kW，化完要 ~1.2e5 模拟秒，
+  # “冰化完后输出下降”不在本用例窗口内（数字随 TE_ICE 打印）。
 
   defp twin(c) do
     root = Path.join(c.root, "twin")
