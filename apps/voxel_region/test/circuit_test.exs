@@ -13,7 +13,8 @@ defmodule VoxelRegion.CircuitTest do
   @section 3.814697265625e-06
   @cu 5.8e7
   @ambient 293.15
-  @env %{"ambient_kelvin"=>@ambient}
+  # 电路零功率阈值取生产环境资产值（DA_ThermalEnvironment CircuitMinPowerW = 1 W）。
+  @env %{"ambient_kelvin"=>@ambient,"circuit_min_power_w"=>1.0}
   defp catalog do
     %{materials: %{11=>%{},
         24=>%{"electrical_conductivity"=>@cu,"thermal_conductivity"=>4000},
@@ -309,6 +310,57 @@ defmodule VoxelRegion.CircuitTest do
       assert_in_delta plan.peltier_absorbed_j-plan.peltier_released_j,plan.thermoelectric_j,0.05*(650.0+610.0)*tol*0.5
     end
 
+    # 零功率判据（R8-05／R8-09）：连通网络的电源输出功率 Σε·i 低于环境 circuit_min_power_w（生产 1 W）即本段断流。
+    # 单块 8 格环：R = 2 × 0.25 + 2 × 0.125 + 12 个铜半格 ≈ 0.75 Ω，P = ε²/R，阈值对应 ε* = √0.75 ≈ 0.866 V。
+    # 热电石与冷铜同为 300 K、热铜 h：ε = 0.05 × 8000 × (h − 300)/8030；h = 316.06 → 0.8 V，h = 320.075 → 1.0 V。
+    defp ring,do: [macro({0,2,0},24),macro({1,2,0},43),macro({2,2,0},24),macro({2,1,0},40),
+      macro({2,0,0},24),macro({1,0,0},24),macro({0,0,0},24),macro({0,1,0},24)]
+    defp ring_r,do: 2*half(2.0)+2*half(4.0)+12*half(@cu)
+    defp ring_plan(h_k,env) do
+      [h,t,c|_]=cells=ring()
+      input=Circuit.prepare(%{},Map.new([hot(h,h_k),hot(t,300.0),hot(c,300.0)]),catalog(),0.5,env)
+      {Circuit.plan(input,%{},contacts(cells)),t}
+    end
+
+    test "零功率判据：ε 0.8 V（P = 0.853 W < 1 W）断流——电流 0、无热无光无佩尔捷、开路电动势照常；ε 1.0 V（1.333 W）按 I = ε/R 导通；阈值 0 时 0.8 V 也导通" do
+      assert_in_delta 0.05*8000*(316.06-300.0)/8030,0.8,1.0e-12
+      assert_in_delta 0.05*8000*(320.075-300.0)/8030,1.0,1.0e-12
+      {below,t}=ring_plan(316.06,@env)
+      assert_in_delta below.sources[key(t)].emf_v,0.8,1.0e-9
+      assert below.sources[key(t)].current_a==0.0
+      assert below.powers==%{} and below.light_j==0.0 and below.electric==%{}
+      assert below.thermoelectric_j==0.0 and below.peltier_absorbed_j==0.0 and below.peltier_released_j==0.0
+      assert below.supplied_j==0.0 and below.charged_j==0.0
+      assert below.idle_networks==1
+      assert_in_delta below.idle_w,0.64/ring_r(),0.64/ring_r()*1.0e-8
+      assert_in_delta below.idle_w,0.853333,1.0e-6
+      {above,t}=ring_plan(320.075,@env)
+      i=1.0/ring_r()
+      assert_in_delta i,1.333333,1.0e-6
+      assert_in_delta above.sources[key(t)].current_a,i,i*1.0e-9
+      assert_in_delta above.thermoelectric_j,1.0*i*0.5,i*0.5*1.0e-9
+      assert above.idle_networks==0 and above.idle_w==0.0
+      # 同一 0.8 V 在阈值 0 下导通：断流只来自判据，不来自求解器。
+      {open,t}=ring_plan(316.06,Map.put(@env,"circuit_min_power_w",0.0))
+      assert_in_delta open.sources[key(t)].current_a,0.8/ring_r(),0.8/ring_r()*1.0e-9
+      assert_in_delta open.thermoelectric_j,0.64/ring_r()*0.5,0.64/ring_r()*0.5*1.0e-9
+    end
+
+    test "零功率判据按连通网络分别判：同一次求解里 24 V 电池灯路照常放电，旁边 0.8 V 热电环断流" do
+      # 电池环在 z = 0（loop/2：两块蓄能石 48 V），热电环搬到 z = 2：两网络不相邻。
+      far=fn t->%{t | micro: put_elem(t.micro,2,16)} end
+      [h,t,c|_]=te=Enum.map(ring(),far)
+      [_,b1,b2|_]=bat=loop()
+      damage=Map.new([hot(h,316.06),hot(t,300.0),hot(c,300.0),stored(b1,1.0e6),stored(b2,1.0e6)])
+      plan=Circuit.plan(Circuit.prepare(%{},damage,catalog(),0.5,@env),%{},contacts(te++bat))
+      assert plan.sources[key(t)].current_a==0.0
+      i=48.0/loop_r(2,14)
+      assert_in_delta plan.sources[key(b1)].current_a,i,i*@rel
+      assert_in_delta plan.supplied_j,48.0*i*0.5,48.0*i*0.5*@rel
+      assert plan.thermoelectric_j==0.0 and plan.idle_networks==1
+      assert Enum.all?([h,t,c],&(not Map.has_key?(plan.powers,key(&1))))
+    end
+
     test "等温 700 K：两块电动势都为 0，严格 0 A，无功率、无吸放热" do
       cells=[macro({0,2,0},24),macro({1,2,0},43),macro({2,2,0},24),macro({3,2,0},24),macro({4,2,0},24),
         macro({5,2,0},43),macro({6,2,0},24),macro({6,1,0},40)]++for(x<-6..0//-1,do: macro({x,0,0},24))++[macro({0,1,0},24)]
@@ -372,7 +424,7 @@ defmodule VoxelRegion.CircuitTest do
     # 下端铜在电池下方，电池上方是一格铜，再由一根铜线（附件）接回线的末端铜。期望按 r = d/(σA) 手算。
     @micro_area 1/64
     defp micro(x,y,material),do: %{micro: {x,y,0},granularity: 1,material: material,owner: {9,0},incarnation: 100+x+10*y}
-    defp resistive(n,wire \\ 24,closed \\ nil) do
+    defp resistive(n,wire \\ 24,closed \\ nil,env \\ @env) do
       # 电池微格 B (0,1)，下 cu_bottom (0,0)、上 cu_top (0,2)；cu_top 右接 n 格合金 (1..n,2)，再接 cu_end (n+1,2)；
       # 一根 1/8 m 铜线（附件）从 cu_end 接回 cu_bottom（两端宿主直接给出）。
       bottom=micro(0,0,24); bat=micro(0,1,42); top=micro(0,2,24)
@@ -382,7 +434,7 @@ defmodule VoxelRegion.CircuitTest do
       slot={1,0,{1,3,0}}
       damage=Map.new([stored(bat,1.0e4)])
       damage=if closed==nil,do: damage,else: Map.put(damage,{3,1},Map.put(VoxelRegion.Attachments.identity(slot,{1,wire}),:closed,closed))
-      input=Circuit.prepare(%{slot=>{1,wire}},damage,catalog(),0.5,%{"ambient_kelvin"=>@ambient})
+      input=Circuit.prepare(%{slot=>{1,wire}},damage,catalog(),0.5,env)
       # 断开的开关线不进网络：没有端点，也就没有宿主。
       hosts=case Circuit.points(input) do
         [a,b]->%{a=>[List.last(chain)],b=>[bottom]}
@@ -421,9 +473,10 @@ defmodule VoxelRegion.CircuitTest do
       assert_in_delta plan.sources[key(bat)].current_a,3.0/chain(1),3.0/chain(1)*1.0e-9
     end
 
+    # 本例验证串联电阻律，与零功率判据无关：阈值取 0。生产阈值 1 W 下 5 格灯丝 P = 9/R ≈ 0.86 W，整条网络断流（末尾断言）。
     test "n 格灯丝串联：I = E /(电池 + 2n + 铜)，光 = λ × 灯丝焦耳，热 + 光 = 放电" do
       for n<-[1,2,5] do
-        {plan,cells,bat}=resistive(n)
+        {plan,cells,bat}=resistive(n,24,nil,%{@env | "circuit_min_power_w"=>0.0})
         i=3.0/chain(n)
         assert_in_delta plan.sources[key(bat)].current_a,i,i*1.0e-9
         filament=for c<-cells,c.material==40,do: elem(plan.electric[{1,c.micro}],1)
@@ -432,6 +485,12 @@ defmodule VoxelRegion.CircuitTest do
         assert_in_delta Enum.sum(Map.values(plan.powers))*plan.duration+plan.light_j,plan.supplied_j,1.0e-6
         assert_in_delta plan.supplied_j,3.0*i*plan.duration,1.0e-6
       end
+      assert 9.0/chain(2)>1.0 and 9.0/chain(5)<1.0
+      {two,_,bat}=resistive(2)
+      assert_in_delta two.sources[key(bat)].current_a,3.0/chain(2),3.0/chain(2)*1.0e-9
+      {five,_,bat}=resistive(5)
+      assert five.sources[key(bat)].current_a==0.0 and five.supplied_j==0.0 and five.light_j==0.0
+      assert five.sources[key(bat)].stored_j==1.0e4
     end
   end
 
@@ -465,7 +524,7 @@ defmodule VoxelRegion.CircuitTest do
       end
       # 没有温度记录：按所在气候区的空气温度；空气 400 K 时同样断开，293.15 K 时导通。
       assert Circuit.temperature(%{},@env,r)==@ambient
-      hot_air=%{"ambient_kelvin"=>400.0}
+      hot_air=%{@env | "ambient_kelvin"=>400.0}
       assert solve(cells,loaded([b1,b2]),hot_air).sources[key(b1)].current_a==0.0
       assert Circuit.conductors([r],catalog(),%{},hot_air)==[]
       assert Circuit.conductors([r],catalog(),%{},@env)==[r]

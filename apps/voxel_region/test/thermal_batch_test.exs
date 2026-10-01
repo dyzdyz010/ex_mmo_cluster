@@ -88,7 +88,8 @@ defmodule VoxelRegion.ThermalBatchTest do
         environment_w_per_m2_k: 0.0,
         tolerance_kelvin: 0.00001,
         emissivity: 0.0,
-        view_range_cells: 8
+        view_range_cells: 8,
+        circuit_min_power_w: 1.0
       })
     )
 

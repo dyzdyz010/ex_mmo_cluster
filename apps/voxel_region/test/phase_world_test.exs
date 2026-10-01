@@ -55,7 +55,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     File.write!(catalog,Jason.encode!(data))
     environment=Path.join(root,"environment.json")
     File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,
-      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001,emissivity: 0.0,view_range_cells: 8}))
+      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
     opts=[source: Source,log: if(context[:database_metadata], do: DatabaseMetadataLog, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,

@@ -88,7 +88,8 @@ defmodule VoxelRegion.DCNetwork do
     end)
   end
 
-  defp components(g),do: components(g,Map.keys(g),MapSet.new(),[])
+  @doc "无向图（节点 → 邻点列表）的连通分量，每个分量是一个节点 MapSet。"
+  def components(g),do: components(g,Map.keys(g),MapSet.new(),[])
   defp components(_g,[],_seen,result),do: result
   defp components(g,[n|rest],seen,result) do
     if MapSet.member?(seen,n),do: components(g,rest,seen,result),else:

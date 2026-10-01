@@ -694,6 +694,8 @@ defmodule VoxelRegion.World do
 
   def handle_call({:thermal_experiment, config}, _, state) do
     true = config["classification"] == "Test-only"
+    # 实验只覆盖它写出的环境字段；没写电路零功率阈值时沿用部署的环境资产值。
+    config = Map.merge(Map.take(get_in(state, [:thermal, :config]) || %{}, ["circuit_min_power_w"]), config)
 
     true =
       config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and

@@ -149,6 +149,8 @@ defmodule VoxelRegion.Circuit do
   热节点净得 supplied − charged − light（充满后的溢出也在热里）。佩尔捷按结分项（R8-09）：`peltier_absorbed_j`
   = Σ max((S_b − S_a)·T_i·i, 0)·Δt（热端结从热节点取走的热）、`peltier_released_j` = Σ max(−(S_b − S_a)·T_i·i, 0)·Δt
   （冷端结放回热节点的热）；按 KCL 两者之差 = `thermoelectric_j`。
+  零功率判据：电源输出功率低于环境 `circuit_min_power_w` 的连通网络本段电流记 0（见 `threshold/4`）；
+  `idle_networks`／`idle_w` 是被断流的有电流网络数与它们本可转换的功率。
   """
   def plan(input,hosts,contacts) do
     %{catalog: catalog,damage: damage,environment: environment,edges: edges,luminous: luminous,
@@ -198,6 +200,7 @@ defmodule VoxelRegion.Circuit do
     stored=Map.new(cells,fn {key,c}->{key,Map.get(Map.get(damage,Damage.key(c.target),%{}),:stored_j,0.0)} end)
     {result,flat}=solve(edges,stored,MapSet.new(),MapSet.new())
     currents=Enum.map(result.currents,fn i->if abs(i)<1.0e-10,do: 0.0,else: i end)
+    {currents,idle}=threshold(edges,currents,flat,Map.fetch!(environment,"circuit_min_power_w"))
     {heat,light_w,electric,cells,te_w,{absorbed_w,released_w}}=Enum.zip(edges,currents) |> Enum.reduce({%{},0.0,%{},cells,0.0,{0.0,0.0}},fn {e,i},{heat,light,electric,cells,te_w,{absorbed,released}}->
       watts=i*i*e.r
       {heat,light}=Enum.reduce(e.heat,{heat,light},fn {key,weight,lum},{h,light}->
@@ -247,7 +250,24 @@ defmodule VoxelRegion.Circuit do
     sources=Map.new(cells,fn {key,c}->{key,source_view(c)} end)
     %{duration: done,powers: Map.reject(heat,fn {_,w}->w==0.0 end),supplied_j: supplied,charged_j: charged,
       thermoelectric_j: te_w*done,peltier_absorbed_j: absorbed_w*done,peltier_released_j: released_w*done,light_j: light_w*done,electric: electric,sources: sources,
-      nodes: map_size(result.volts),edges: length(edges),elapsed_us: System.monotonic_time(:microsecond)-started}
+      nodes: map_size(result.volts),edges: length(edges),idle_networks: elem(idle,0),idle_w: elem(idle,1),
+      elapsed_us: System.monotonic_time(:microsecond)-started}
+  end
+
+  # 零功率判据（R8-05／R8-09）：按连通网络（全部支路的连通分量）累计电源输出功率 Σ max(ε升·i, 0)
+  # （= 该网络的焦耳热 + 光 + 充入储能，Tellegen）；低于热环境资产 `circuit_min_power_w` 的网络本段断流：
+  # 电流记 0，于是不产生焦耳热、光、放电／充电与佩尔捷项——电能不转换，温度场照常由热内核演化，账不变。
+  # 返回 {电流, {被断流的有电流网络数, 它们本可转换的功率 W}}。
+  defp threshold(edges,currents,flat,minimum) do
+    graph=Enum.reduce(edges,%{},fn e,g->g |> Map.update(e.a,[e.b],&[e.b|&1]) |> Map.update(e.b,[e.a],&[e.a|&1]) end)
+    network=for {nodes,n}<-Enum.with_index(DCNetwork.components(graph)),node<-nodes,into: %{},do: {node,n}
+    power=Enum.zip(edges,currents) |> Enum.reduce(%{},fn {e,i},p->
+      w=max(-emf_of(e,flat)*i,0.0)
+      Map.update(p,network[e.a],w,&(&1+w))
+    end)
+    idle=for {n,w}<-power,w<minimum,into: %{},do: {n,w}
+    {Enum.zip_with(edges,currents,fn e,i->if Map.has_key?(idle,network[e.a]),do: 0.0,else: i end),
+     {Enum.count(idle,fn {_,w}->w>0.0 end),Enum.sum([0.0|Map.values(idle)])}}
   end
 
   # 求解；放电方向上已空的蓄能石按电动势 0 重解；按 0 重解后电流反成充电方向的空格断开（电流 0）。直到状态不再变化；

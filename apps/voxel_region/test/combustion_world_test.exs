@@ -16,7 +16,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     catalog=Path.join(root,"properties.json")
     File.cp!(source,catalog)
     env=Path.join(root,"environment.json")
-    File.write!(env,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
+    File.write!(env,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     prefab=Path.join(root,"prefabs")
     File.mkdir_p!(prefab)
     bytes=<<"VXPD",1::32-little,1::32-little,0::signed-little-32,0::signed-little-32,0::signed-little-32,19::16-little,0::32-little>>

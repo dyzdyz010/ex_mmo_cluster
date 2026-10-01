@@ -166,7 +166,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     {%{c | w: w}, before, restored}
   end
 
-  test "整格炉 + Test-only 有限热源：每笔账闭合、单笔做功 = Σε·I·Δt、卡诺上限、不越过耐热；热源耗尽后衰减；冷重启账逐项相同；散热后严格 0 A", c do
+  test "整格炉 + Test-only 有限热源：每笔账闭合、单笔做功 = Σε·I·Δt、卡诺上限、不越过耐热；热源耗尽后衰减；冷重启账逐项相同；生产环境下功率低于 1 W 断流、余温衰减后热调度休眠", c do
     # 炉膛 = 一格石（实验热源所在格），上盖一格石。
     generator(c, [{{3, 1, 2}, @stone}, {{3, 2, 2}, @stone}])
     power = 150_000.0
@@ -194,10 +194,15 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     {cooling, acc2} = run(c, hot, energy, fn s, a -> a.commits >= 200 and emf(s) < 0.8 * a.emf_peak end, 4000)
     assert emf(cooling) < 0.8 * acc2.emf_peak and current(cooling) > 0.0
     IO.puts("TE_HEARTH_COOL sim_s=#{cooling.thermal.elapsed_s} emf=#{emf(cooling)} emf_peak=#{acc2.emf_peak} current=#{current(cooling)}")
-    # 生产环境（h = 10）下的衰减速度：再推进 400 笔，按指数估时间常数与电流降到求解器零阈值 1e-10 A 还要多久（只记录，作风险数据）。
+    # 生产环境（h = 10）下的衰减速度：再推进 400 笔，按指数 I ∝ e^(−t/τ) 估时间常数，据此给出两个独立的时间界：
+    # 旧判据（求解器零阈值 1e-10 A）的断流时刻 τ·ln(I/1e-10)，与新判据（电源输出功率 P = I²·ΣR 低于环境资产
+    # circuit_min_power_w）的断流时刻 (τ/2)·ln(P/P_min)。
     {tail, _} = run(c, cooling, energy, fn _, _ -> false end, 400)
     tau = (tail.thermal.elapsed_s - cooling.thermal.elapsed_s) / :math.log(current(cooling) / current(tail))
-    IO.puts("TE_HEARTH_TAU tau_s=#{tau} current=#{current(tail)} projected_s_to_1e-10A=#{tau * :math.log(current(tail) / 1.0e-10)}")
+    min_w = Jason.decode!(File.read!(Keyword.fetch!(c.opts, :thermal_environment_path)))["circuit_min_power_w"]
+    old_zero_s = tau * :math.log(current(tail) / 1.0e-10)
+    cut_s = tau / 2 * :math.log(current(tail) * current(tail) * loop_r(c) / min_w)
+    IO.puts("TE_HEARTH_TAU tau_s=#{tau} current=#{current(tail)} projected_s_to_1e-10A=#{old_zero_s} projected_s_to_#{min_w}W=#{cut_s}")
 
     # 冷重启：日志恢复出的属性行与热账逐项相同（挂起 World，取无进行中提交的原始状态）。
     {c, before, restored} = restart(c)
@@ -208,23 +213,69 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     after_restart = observe(c.w)
     assert_ledgers(c, after_restart, energy)
 
-    # 散热到电流严格为 0：换强对流环境（h = 2000 W/m²K，只为把衰减压到几百模拟秒；热源余能 1 J），账在实验入口重置。
-    experiment(c, "sink", {3, 1, 2}, 1.0, 1.0, 2000.0)
-    {dead, acc3} = run_until_zero(c, 6000)
+    # 生产环境（实验文件 = 生产 h = 10 W/m²K、ε 0.9、容差 1 K；电路零功率阈值沿用环境资产 1 W）下继续推进，
+    # 不换环境、不重置热账：电源输出功率 Σε·I 降到 1 W 以下的那一笔起回路断流（R8-05／R8-09 零功率判据），
+    # 余温照常由热内核衰减到容差内，随后热调度自行休眠。旧判据（求解器 1e-10 A）在这里要上万模拟秒才断流。
+    # 界：断流在模型时刻的 2 倍之内（按笔数 ceil(2·cut_s/0.5) 截止）；休眠早于旧判据的断流时刻（旧判据下电流未断不可能休眠）。
+    {flowing, dead, acc3} = run_until_zero(c, after_restart, energy, ceil(2 * cut_s / 0.5))
+    assert dead.thermal.elapsed_s - tail.thermal.elapsed_s <= 2 * cut_s
     assert current(dead) == 0.0
     assert Enum.all?(te_rows(dead), &(Map.get(&1, :source_current_a, 0.0) == 0.0))
-    # 电路零功率后不再推进：再投递一笔提交，热电做功账不变。
-    again = commit(c.w)
-    assert ledger(again, :circuit_thermoelectric_j) == ledger(dead, :circuit_thermoelectric_j)
-    IO.puts("TE_HEARTH_ZERO commits=#{acc3} sim_s=#{dead.thermal.elapsed_s} emf=#{emf(dead)} " <>
-      "Ah=#{temperature(dead, {4, 1, 2})} Ac=#{temperature(dead, {6, 1, 2})}")
+    # 断流前最后一笔仍按 I = Σε/ΣR 导通且 Σε·I ≥ 1 W；断流这一笔开路 Σε²/ΣR < 1 W（单串回路，Σε 取两块热电石行上的电动势）。
+    assert emf(flowing) * current(flowing) >= 1.0
+    assert emf(dead) * emf(dead) / loop_r(c) < 1.0
+    # 断流后电能不转换：热电做功、佩尔捷吸放热与光账此后不变，温度场照常演化（每笔账仍闭合）。
+    {idle, acc4} = run(c, dead, energy, fn s, _ -> not s.thermal.active end,
+      ceil((tail.thermal.elapsed_s + old_zero_s - dead.thermal.elapsed_s) / 0.5))
+    refute idle.thermal.active
+    assert idle.thermal.elapsed_s < tail.thermal.elapsed_s + old_zero_s
+    for key <- [:circuit_thermoelectric_j, :circuit_peltier_absorbed_j, :circuit_peltier_released_j, :circuit_light_j],
+      do: assert(ledger(idle, key) == ledger(dead, key))
+    assert idle.thermal.environment_j < dead.thermal.environment_j
+    # 热调度休眠：最后一笔降温提交之后，零功率网络按新温度至多再确认一次，此后真实定时器窗口里没有热事务。
+    confirm = window(c.w, 1_200)
+    rest = window(c.w, 2_000)
+    IO.puts("TE_HEARTH_ZERO commits=#{acc3.commits} sim_s=#{dead.thermal.elapsed_s} emf=#{emf(dead)} flowing_w=#{emf(flowing) * current(flowing)} " <>
+      "Ah=#{temperature(dead, {4, 1, 2})} Ac=#{temperature(dead, {6, 1, 2})} hearth=#{temperature(dead, {3, 1, 2})}")
+    IO.puts("TE_HEARTH_SLEEP commits=#{acc4.commits} sim_s=#{idle.thermal.elapsed_s} confirm_txns=#{confirm.seq} rest_ticks=#{rest.ticks} " <>
+      "rest_txns=#{rest.seq} hearth=#{temperature(idle, {3, 1, 2})} peak=#{peak(idle)}")
+    assert confirm.seq <= 1
+    assert rest.seq == 0 and rest.ticks <= 1
+    assert physics(rest.before) == physics(rest.after)
   end
 
-  defp run_until_zero(c, limit) do
-    Enum.reduce_while(1..limit, nil, fn n, _ ->
-      s = commit(c.w)
-      if current(s) == 0.0, do: {:halt, {s, n}}, else: {:cont, {s, n}}
-    end)
+  # 逐笔推进（账、单笔做功同 run/6）直到两块热电石电流都为 0；返回 {断流前一笔, 断流笔, 统计}。
+  defp run_until_zero(c, s0, energy, limit, acc \\ nil) do
+    {s, acc} = run(c, s0, energy, fn _, _ -> true end, 1, acc)
+    cond do
+      current(s) == 0.0 -> {s0, s, acc}
+      acc.commits >= limit -> flunk("#{acc.commits} 笔后电流仍为 #{current(s)} A（Σε #{emf(s)} V）")
+      true -> run_until_zero(c, s, energy, limit, acc)
+    end
+  end
+
+  # 固定观察窗口内数定时器节拍（进程接收事件）与世界序号变化（同 thermal_activity_world_test）。
+  defp window(w, ms) do
+    flush_trace()
+    s0 = observe(w)
+    :erlang.trace(w, true, [:receive])
+    Process.sleep(ms)
+    :erlang.trace(w, false, [:receive])
+    s1 = observe(w)
+    %{ticks: flush_trace(), seq: s1.seq - s0.seq, before: s0, after: s1}
+  end
+
+  defp flush_trace(n \\ 0) do
+    receive do
+      {:trace, _, :receive, :thermal_tick} -> flush_trace(n + 1)
+      {:trace, _, :receive, _} -> flush_trace(n)
+    after 0 -> n
+    end
+  end
+
+  defp physics(s) do
+    rows = s.damage |> Map.values() |> Enum.map(&Map.drop(&1, [:seq, :request_id])) |> Enum.sort()
+    {rows, Map.drop(s.thermal, [:elapsed_s])}
   end
 
   # ---- 散体煤炉膛：正式倾倒（工具 12，每次 0.25 m³）→ K 点燃 → 燃烧中续料；限定窗口（各 300 笔 = 150 模拟秒）。

@@ -54,7 +54,7 @@ defmodule VoxelRegion.DamageWorldTest do
     opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,prefab_catalog_path: prefab,name: nil,production_materials: [19,11] ++ if(context[:flora],do: [32,35,36],else: []) ++ if(context[:switch],do: [41],else: [])]
     opts=if context[:thermal_environment] do
       environment=Path.join(root,"environment.json")
-      File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
+      File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 0.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
       Keyword.put(opts,:thermal_environment_path,environment)
     else
       opts
@@ -557,7 +557,7 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :b3_heater
   test "global thermal environment starts without a test source or free energy", c do
     path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     state=observe(w)
@@ -568,19 +568,19 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b3_heater
-  test "a restart takes the equilibrium tolerance from the environment asset, not from the replayed thermal ledger", c do
+  test "a restart takes the equilibrium tolerance and the circuit zero-power threshold from the environment asset, not from the replayed thermal ledger", c do
     path=Path.join(Keyword.fetch!(c.opts,:root),"environment.json")
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 0.01,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 0.5}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     # Any committed transaction carries the thermal ledger (and its config) into the log.
     assert {:ok,seq}=World.material_supply(w,1001,"tolerance-restart",%{19=>512})
-    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 1.0,emissivity: 0.0,view_range_cells: 8}))
+    File.write!(path,Jason.encode!(%{ambient_kelvin: 293.15,environment_w_per_m2_k: 10.0,tolerance_kelvin: 1.0,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     stop_supervised!(World)
     w=start_supervised!({World,Keyword.put(c.opts,:thermal_environment_path,path)})
     assert observe(w).seq==seq
     # The config is internal solver state; the public snapshot carries only the ledger.
-    assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0,"emissivity"=>0.0,"view_range_cells"=>8}
+    assert :sys.get_state(w).thermal.config==%{"ambient_kelvin"=>293.15,"environment_w_per_m2_k"=>10.0,"tolerance_kelvin"=>1.0,"emissivity"=>0.0,"view_range_cells"=>8,"circuit_min_power_w"=>1.0}
   end
 
   @tag :b3_heater
