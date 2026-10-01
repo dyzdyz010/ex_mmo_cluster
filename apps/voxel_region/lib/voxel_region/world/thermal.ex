@@ -233,15 +233,19 @@ defmodule VoxelRegion.World.Thermal do
     {damage, visited} = electric_rows(state.damage, visited, plan.electric)
     {damage, visited} = source_rows(state, damage, visited, plan.sources)
 
+    # 佩尔捷两键在 R8-09 片 1 引入；之前已累计热电做功的世界升级后它们从 0 起算、不补造历史值，
+    # 所以“吸热 − 放热 = 热电做功”只对键引入之后的增量成立（基线 = 引入时的热电做功）。
     thermal =
       state.thermal
       |> Map.update(:circuit_supplied_j, plan.supplied_j, &(&1 + plan.supplied_j))
       |> Map.update(:circuit_charged_j, plan.charged_j, &(&1 + plan.charged_j))
       |> Map.update(:circuit_thermoelectric_j, plan.thermoelectric_j, &(&1 + plan.thermoelectric_j))
+      |> Map.update(:circuit_peltier_absorbed_j, plan.peltier_absorbed_j, &(&1 + plan.peltier_absorbed_j))
+      |> Map.update(:circuit_peltier_released_j, plan.peltier_released_j, &(&1 + plan.peltier_released_j))
       |> Map.update(:circuit_light_j, plan.light_j, &(&1 + plan.light_j))
 
     Logger.info(
-      "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)}"
+      "voxel_circuit simulated_s=#{plan.duration} nodes=#{plan.nodes} edges=#{plan.edges} solve_us=#{plan.elapsed_us} supplied_j=#{plan.supplied_j} charged_j=#{plan.charged_j} thermoelectric_j=#{plan.thermoelectric_j} peltier_absorbed_j=#{plan.peltier_absorbed_j} peltier_released_j=#{plan.peltier_released_j} light_j=#{plan.light_j} luminous=#{map_size(plan.electric)} sources=#{map_size(plan.sources)}"
     )
 
     {%{state | damage: damage, thermal: thermal}, visited, plan.duration, plan.powers != %{}}
