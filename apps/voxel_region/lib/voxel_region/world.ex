@@ -692,33 +692,40 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:thermal_experiment, config}, _, state) do
-    true = config["classification"] == "Test-only"
-    # 实验只覆盖它写出的环境字段；没写电路零功率阈值时沿用部署的环境资产值。
-    config = Map.merge(Map.take(get_in(state, [:thermal, :config]) || %{}, ["circuit_min_power_w"]), config)
+  # D3：在原热账上累加。已有热账（环境资产、迁移、燃烧、电路、拟态……）逐键保留，时钟与各账从当前值继续；
+  # 配置只覆盖实验文件给出的键（未给出的如气候区沿用原环境）。实验换了环境温度或气候区时，
+  # 存量热行的显热参考按 ParameterEvolution.ambient_reference 重标进参数重标账，账仍闭合。
+  # 新热源与同格未放完的热源合并（余量、功率相加），和其他有限热源一样只在放出时记入供热账。
+  # 没有热环境时从空热账开始。电路零功率阈值随原环境配置继承（D1），实验文件不必再写。
+  def handle_call({:thermal_experiment, experiment}, _, state) do
+    true = experiment["classification"] == "Test-only"
+    base = state.thermal || empty_thermal(experiment)
+    config = Map.merge(base.config, experiment)
 
     true =
       config["ambient_kelvin"] > 0 and config["environment_w_per_m2_k"] > 0 and
         config["tolerance_kelvin"] > 0 and radiation_config?(config) and
         VoxelRegion.Climate.valid?(config)
 
-    true = config["power_w"] > 0 and config["energy_j"] > 0
-    micro = config["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
+    true = experiment["power_w"] > 0 and experiment["energy_j"] > 0
+    micro = experiment["source_macro"] |> Enum.map(&(&1 * @micro)) |> List.to_tuple()
     {%{granularity: 0} = target, state} = target_at(micro, state)
     true = Map.fetch!(state.properties.materials, target.material)["heat_capacity_per_macro"] > 0
-    source = %{target: target, power_w: config["power_w"], remaining_j: config["energy_j"]}
+    source = %{target: target, power_w: experiment["power_w"], remaining_j: experiment["energy_j"]}
 
-    thermal = %{
-      config: config,
-      sources: %{Damage.macro(target) => source},
-      elapsed_s: 0.0,
-      supplied_j: 0.0,
-      environment_j: 0.0,
-      combustion_j: 0.0,
-      combustion_removed_j: 0.0,
-      active: true
-    }
+    sources = Map.update(base.sources, Damage.macro(target), source, fn old ->
+      %{source | power_w: old.power_w + source.power_w, remaining_j: old.remaining_j + source.remaining_j}
+    end)
 
+    reference = ~w(ambient_kelvin climate_zones)
+
+    base =
+      if Map.take(config, reference) == Map.take(base.config, reference),
+        do: base,
+        else: VoxelRegion.ParameterEvolution.ambient_reference(base, config, state.damage, state.properties,
+          &finite_volume(state, &1))
+
+    thermal = %{base | config: config, sources: sources, active: true}
     state = thermal_commit(Thermal.rebuild_work(%{state | thermal: thermal}), [])
     {:reply, :ok, state}
   end

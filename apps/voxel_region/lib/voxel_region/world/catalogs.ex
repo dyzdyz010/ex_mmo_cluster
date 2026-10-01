@@ -70,18 +70,14 @@ defmodule VoxelRegion.World.Catalogs do
             config["tolerance_kelvin"] > 0 and radiation_config?(config) and
             VoxelRegion.Climate.valid?(config)
 
-        %{
-          config: config,
-          sources: %{},
-          elapsed_s: 0.0,
-          supplied_j: 0.0,
-          environment_j: 0.0,
-          combustion_j: 0.0,
-          combustion_removed_j: 0.0,
-          active: false
-        }
+        empty_thermal(config)
     end
   end
+
+  @doc "空热账：环境配置、无热源、时钟与各账为 0、静止。环境资产加载与无热环境时的 Test-only 实验共用。"
+  def empty_thermal(config),
+    do: %{config: config, sources: %{}, elapsed_s: 0.0, supplied_j: 0.0, environment_j: 0.0, combustion_j: 0.0,
+      combustion_removed_j: 0.0, active: false}
 
   # 参数只改变下一次计算；实例温度、HP、源预算与相变焓不改写；
   # 已点燃行的余燃料与功率由调用方按新目录保比例重标后传入。
