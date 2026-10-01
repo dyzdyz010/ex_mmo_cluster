@@ -8,8 +8,11 @@ defmodule VoxelRegion.QinglanMigrationTest do
 
   旧世界夹具 `fixtures/qinglan_migration`：当前服务端已拒绝 circuit.install／feed，所以由青岚 0923 版服务端源码 79dde382 经正式入口录制
   （作者铺地 → Test-only 记账供料 → 付费铜面 → 工具 19 安装 → 工具 8 投料两次），录制器 `record_79dde382_helper.exs` 同目录保存。
-  迁移后发电的热只经 Test-only 实验热源；热电石等器件格经作者编辑放置；开关切换走正式工具 7。
-  期望来自目录算术（2 × 6.25 MJ、4 × 4096 单位／次、S·ΔT_i、k/半格长）与账目恒等式，不取自内核输出。
+  迁移后发电的热来自玩家火：作者放置的木头经正式工具 9（K）点燃，煤取自旧世界剩下的余额。不用 Test-only 实验热源：
+  `World.thermal_experiment` 会整本替换热账，抹掉迁移刚写下的移除账，证明不了迁移后账目连续。
+  热电石等器件格经作者编辑放置；开关切换走正式工具 7。
+  期望来自目录算术（2 × 6.25 MJ、4 × 4096 单位／次、点火 2 × 4096 单位与 3.125 MJ、S·ΔT_i、k/半格长、r = d/(σA)、
+  光 = 发光份额 × 焦耳）与账目恒等式（迁移写下的键在之后的点火与发电中原样保留），不取自内核输出。
   """
   use ExUnit.Case, async: false
   @moduletag :energy_material
@@ -23,13 +26,14 @@ defmodule VoxelRegion.QinglanMigrationTest do
   @fixture Path.expand("fixtures/qinglan_migration", __DIR__)
   @stone 11
   @coal 15
+  @wood 19
   @copper 24
   @alloy 40
   @switch 41
   @battery 42
   @te 43
   @units 4096
-  @materials [@stone, @coal, @copper, @alloy, @switch, @battery, @te]
+  @materials [@stone, @coal, @wood, @copper, @alloy, @switch, @battery, @te]
   @box {{-2, -2, -2}, {7, 4, 5}}
 
   setup do
@@ -165,22 +169,34 @@ defmodule VoxelRegion.QinglanMigrationTest do
   end
 
   # 迁移后同一世界（z = 2 平面，地面是夹具里的石，电源旧面在 (5,0,0) 顶面、不在回路里）：
-  #   y = 3：热铜 H (1,3)（实验热源）— 热电石 T (2,3) — 冷铜 C (3,3)
-  #   y = 2：铜 (1,2)；蓄能石 B (3,2)（正极朝上接 C）
-  #   y = 1：铜 (1,1) — 开关 S1 (2,1) — 铜 (3,1)（B 的负极）
-  # 充电回路 H→T→C→B(+)→B(−)→(3,1)→S1→(1,1)→(1,2)→H。
-  test "迁移到当前目录 b88329ab 后，同一世界可用热电石发电：开路电动势 = S·ΔT_i，闭合开关给蓄能石充电（充入 = 储能）", c do
+  #   y = 4：木 (0,4) — 木 (1,4)
+  #   y = 3：木 (0,3)（K 点燃）— 热铜 H (1,3) — 热电石 T (2,3) — 冷铜 C (3,3)
+  #   y = 2：铜 (1,2)；电阻合金灯 L (3,2)
+  #   y = 1：铜 (1,1) — 开关 S1 (2,1) — 铜 (3,1)
+  # 回路 H→T→C→L→(3,1)→S1→(1,1)→(1,2)→H。木头、石不导电。
+  # 负载用灯而不是蓄能石：一堆露天木火只把 H 烧到约 500 K（开路约 10 V），够不到蓄能石的 24 V；炉膛双热壁串联到 ≥ 48 V 属片 1／片 2。
+  test "迁移到当前目录 b88329ab 后，同一世界用玩家木火经热电石发电点灯；迁移写下的账目在发电后原样保留", c do
     {w, migrated} = migrate(c, :current, @current)
-    removed = migrated.thermal.circuit_removed_j
+    # 迁移写下的账（移除账 12.5 MJ 等）：之后的点火、热推进与电路结算只能累加别的键，不能改写或抹掉这些键。
+    carried = [:circuit_removed_j, :parameter_rebase_j, :fuel_rebase_j, :discarded_source_j]
+    kept = Map.take(migrated.thermal, carried)
+    assert kept.circuit_removed_j == 2 * rows(@qinglan, "tools", "tool_id")[8]["circuit_energy_j"]
     cells = [{{1, 3, 2}, @copper}, {{2, 3, 2}, @te}, {{3, 3, 2}, @copper},
-      {{1, 2, 2}, @copper}, {{3, 2, 2}, @battery}, {{1, 1, 2}, @copper}, {{2, 1, 2}, @switch}, {{3, 1, 2}, @copper}]
+      {{1, 2, 2}, @copper}, {{3, 2, 2}, @alloy}, {{1, 1, 2}, @copper}, {{2, 1, 2}, @switch}, {{3, 1, 2}, @copper},
+      {{0, 3, 2}, @wood}, {{0, 4, 2}, @wood}, {{1, 4, 2}, @wood}]
     {:ok, _} = World.apply_edits(w, cells)
     # 开关作者放置为断开（无行 = 断开）；先确认它确实断开，回路悬空。
-    refute Map.get(cell(observe(w), {2, 1, 2}) || %{}, :closed, false)
-    path = Path.join(c.root, "heat.json")
-    File.write!(path, Jason.encode!(%{classification: "Test-only", source_macro: [1, 3, 2], ambient_kelvin: c.ambient,
-      environment_w_per_m2_k: 10.0, tolerance_kelvin: 1.0, emissivity: 0.9, view_range_cells: 8, power_w: 2.0e6, energy_j: 1.0e9}))
-    :ok = World.thermal_experiment(w, path)
+    unlit = observe(w)
+    refute Map.get(cell(unlit, {2, 1, 2}) || %{}, :closed, false)
+
+    # K（正式工具 9）点燃贴着 H 的木头：煤用旧世界余额，一次份额 = 2 微格 × 4096 单位；点火热 3.125 MJ 记入供热账。
+    ignite = rows(@current, "tools", "tool_id")[9]
+    {:ok, _} = use_tool(w, actor({-1.5, 3.5, 2.5}), {4, 3 * 8 + 4, 2 * 8 + 4}, 9)
+    lit = observe(w)
+    assert cell(lit, {0, 3, 2}).burning
+    assert lit.material_balances[{1001, @coal}] == unlit.material_balances[{1001, @coal}] - ignite["fuel_units"] * @units
+    assert_in_delta lit.thermal.supplied_j - unlit.thermal.supplied_j, ignite["heat_energy_j"], 1.0e-6
+    assert Map.take(lit.thermal, carried) == kept
 
     # 界面温度按 k/半格长加权（目录值：铜 4000、热电石 15，半格 0.5 m）；ε = S·(T_i,热 − T_i,冷)。
     m = rows(@current, "materials", "material_id")
@@ -192,25 +208,43 @@ defmodule VoxelRegion.QinglanMigrationTest do
       m[@te]["seebeck_v_per_k"] * (ti.(temperature(s, c, {1, 3, 2})) - ti.(temperature(s, c, {3, 3, 2})))
     end
     # 每次提交先按提交前的温度求解、再推进热：一次提交写下的电动势对应上一次提交结束时的温度。
+    # 开路等到 5 V（木火约 1 分钟；整堆烧完前峰值约 10 V）。
     {previous, hot} = Enum.reduce_while(1..2000, {nil, observe(w)}, fn _, {_, s0} ->
       s = commit(w)
-      if emf.(s0) > 30.0, do: {:halt, {s0, s}}, else: {:cont, {s0, s}}
+      if emf.(s0) > 5.0, do: {:halt, {s0, s}}, else: {:cont, {s0, s}}
     end)
     te = cell(hot, {2, 3, 2})
     assert_in_delta te.source_emf_v, emf.(previous), 1.0e-9
     assert te.source_current_a == 0.0
-    assert Map.get(cell(hot, {3, 2, 2}) || %{}, :stored_j, 0.0) == 0.0
+    assert Enum.any?(Map.values(hot.damage), &Map.get(&1, :burning, false))
 
-    # 闭合 S1（正式工具 7，眼睛在开关正上方）：热电石经 B 正极灌入，B 充电。
+    # 闭合 S1（正式工具 7，眼睛在开关正上方）。ΣR = 热电石两个半格 + 灯两个半格 + 铜／开关半格（H、C、(3,1)、S1、(1,1)、(1,2) 各两个）。
     {:ok, _} = use_tool(w, actor({2.5, 2.5, 2.5}), {2 * 8 + 4, 8 + 4, 2 * 8 + 4}, 7)
-    charged = commits(w, 40)
-    b = cell(charged, {3, 2, 2})
-    assert b.stored_j > 0 and b.source_current_a < 0 and b.source_emf_v == 24.0
-    assert cell(charged, {2, 3, 2}).source_current_a > 0
-    assert_in_delta charged.thermal.circuit_charged_j, b.stored_j, 1.0e-6
-    assert charged.thermal.circuit_thermoelectric_j > b.stored_j
+    sigma = fn id -> m[id]["electrical_conductivity"] end
+    r = 2 * 0.5 / sigma.(@te) + 2 * 0.5 / sigma.(@alloy) + 12 * 0.5 / sigma.(@copper)
+    closed = observe(w)
+    on = commit(w)
+    te = cell(on, {2, 3, 2})
+    i = emf.(closed) / r
+    assert_in_delta te.source_emf_v, emf.(closed), 1.0e-9
+    assert_in_delta te.source_current_a, i, i * 1.0e-8
+    lamp = cell(on, {3, 2, 2})
+    assert_in_delta lamp.electric_w, i * i * 2 * 0.5 / sigma.(@alloy), i * i * 1.0e-6
+    # 下一笔提交：热电做功 = ε·I·dt（全电阻回路里 = 焦耳热），光 = 灯的发光份额 × 灯焦耳 × dt；两者都只经本笔写下的电流。
+    later = commit(w)
+    dt = later.thermal.elapsed_s - on.thermal.elapsed_s
+    te2 = cell(later, {2, 3, 2})
+    lamp2 = cell(later, {3, 2, 2})
+    work = te2.source_emf_v * te2.source_current_a * dt
+    light = m[@alloy]["luminous_fraction"] * lamp2.electric_w * dt
+    assert_in_delta later.thermal.circuit_thermoelectric_j - on.thermal.circuit_thermoelectric_j, work, work * 1.0e-6
+    assert_in_delta later.thermal.circuit_light_j - on.thermal.circuit_light_j, light, light * 1.0e-6
+    # 迁移账在点火、热推进、电路结算之后原样保留；时钟与供热账从迁移后的值继续累加，不从 0 重开。
+    assert Map.take(later.thermal, carried) == kept
+    assert later.thermal.elapsed_s > migrated.thermal.elapsed_s
+    assert later.thermal.supplied_j > lit.thermal.supplied_j and lit.thermal.supplied_j > migrated.thermal.supplied_j
     # 旧电源面迁移后只是铜面：不在回路里、不带设备记录，发电不经过它。
-    refute Map.has_key?(charged.damage[{3, c.meta["source"]["id"]}], :circuit)
-    IO.puts("QINGLAN_MIGRATION removed_j=#{removed} emf=#{te.source_emf_v} stored_j=#{b.stored_j} te_work_j=#{charged.thermal.circuit_thermoelectric_j} elapsed=#{charged.thermal.elapsed_s}")
+    refute Map.has_key?(later.damage[{3, c.meta["source"]["id"]}], :circuit)
+    IO.puts("QINGLAN_MIGRATION removed_j=#{later.thermal.circuit_removed_j} emf=#{te.source_emf_v} current_a=#{te.source_current_a} hand_a=#{i} lamp_w=#{lamp.electric_w} te_work_j=#{later.thermal.circuit_thermoelectric_j} light_j=#{later.thermal.circuit_light_j} elapsed=#{later.thermal.elapsed_s}")
   end
 end
