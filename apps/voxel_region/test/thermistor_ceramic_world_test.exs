@@ -257,7 +257,7 @@ defmodule VoxelRegion.ThermistorCeramicWorldTest do
     # （设计稿写的 0.40000013793 Ω / 59.99997931 A 按 8 格铜算，回路里只有 7 格；两者相对差 4.3e-8 > 容差 1e-8。）
     # 容差 1e-8 相对：铜—铜半格与合金半格相差 ~1e7，消元相对误差 ≈ κ·ε ≈ 3e-9（同 circuit_test）。
     @rel 1.0e-8
-    @env %{"ambient_kelvin" => 293.15}
+    @env %{"ambient_kelvin" => 293.15, "circuit_min_power_w" => 1.0}
     @i 59.99998189655719
 
     defp macro({x, y, z}, material),
