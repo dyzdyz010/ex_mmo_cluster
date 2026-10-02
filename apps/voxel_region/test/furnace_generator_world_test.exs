@@ -604,8 +604,10 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
   @t_cell {2, 3, 2}
   @r_cell {2, 1, 2}
   @lamp {3, 2, 2}
-  test "温敏陶瓷 45：低于 373.15 K 时 I = ε/ΣR；R 越过 373.15 K 的下一笔 0 A、灯熄、电动势仍在；冷却到截止以下的下一笔恢复 ε/ΣR；冷重启账逐项相同", c do
-    f = world(c, :thermistor)
+
+  # 温控回路 + 实验热源（1e8 J、5e5 W）；返回世界与手算 ΣR：T、L、R 各两个半格，铜半格 10 个（H、C、(3,1)、(1,1)、(1,2) 各两个），无并联。
+  defp thermistor_loop(c, id) do
+    f = world(c, id)
     ground = for x <- -1..5, z <- 0..4, do: {{x, 0, z}, @stone}
     cells = [{{1, 3, 2}, @copper}, {@t_cell, @te}, {{3, 3, 2}, @copper}, {{1, 2, 2}, @copper}, {@lamp, @alloy},
       {{1, 1, 2}, @copper}, {@r_cell, @thermistor}, {{3, 1, 2}, @copper}]
@@ -616,9 +618,12 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
       %{classification: "Test-only", source_macro: [1, 3, 2], power_w: 5.0e5, energy_j: energy})))
     :ok = World.thermal_experiment(f.w, path)
     f = %{f | experiment: energy}
+    {f, 2 * 0.5 / sigma(f, @te) + 2 * 0.5 / sigma(f, @alloy) + 2 * 0.5 / sigma(f, @thermistor) + 10 * 0.5 / sigma(f, @copper)}
+  end
+
+  test "温敏陶瓷 45：低于 373.15 K 时 I = ε/ΣR；R 越过 373.15 K 的下一笔 0 A、灯熄、电动势仍在；冷却到截止以下的下一笔恢复 ε/ΣR；冷重启账逐项相同", c do
+    {f, r} = thermistor_loop(c, :thermistor)
     cutoff = c.materials[@thermistor]["electrical_cutoff_kelvin"]
-    # ΣR：T、L、R 各两个半格，铜半格 10 个（H、C、(3,1)、(1,1)、(1,2) 各两个），无并联。
-    r = 2 * 0.5 / sigma(f, @te) + 2 * 0.5 / sigma(f, @alloy) + 2 * 0.5 / sigma(f, @thermistor) + 10 * 0.5 / sigma(f, @copper)
     i_of = fn s -> field(s, @t_cell, :source_current_a) end
     e_of = fn s -> field(s, @t_cell, :source_emf_v) end
     t0 = System.monotonic_time(:millisecond)
@@ -676,6 +681,103 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
       "reset_i=#{reset_i} hand_i=#{reset_emf / r} r_peak_k=#{acc.r_peak} r_ohm=#{r}")
   end
 
+  # ---- 5. 在线调整温敏截止温度（R8-10“可在线新增／调整”，正式参数发布入口 World.publish_parameters）
+
+  # 当前目录只把 45 的截止温度改成 kelvin（其余字节同 c.data 的编码）。
+  defp cutoff_catalog(c, f, kelvin) do
+    data = Map.update!(c.data, "materials", &Enum.map(&1, fn m ->
+      if m["material_id"] == @thermistor, do: Map.put(m, "electrical_cutoff_kelvin", kelvin), else: m end))
+    path = Path.join(f.root, "cutoff-#{kelvin}.json")
+    File.write!(path, Jason.encode!(data))
+    path
+  end
+
+  defp txn_row(txn, {x, y, z}), do: Enum.find(txn.property_states, &(&1.granularity == 0 and &1.micro == {x * 8, y * 8, z * 8}))
+
+  # 发布事务：seq 之后第一笔行摘要 = digest 的事务（它的属性行是发布时刻的全部行）。
+  defp publication(f, seq, digest),
+    do: Enum.find(World.entries_after(f.w, seq), &match?([%{digest: ^digest} | _], &1.property_states))
+
+  # 发布（或重启）之后的第一笔热提交：只推进一个 0.5 s 步，按发布时刻的温度求解。定时器拍可能先到，所以从日志取第一笔，而不是看最新状态。
+  defp next_solve(f, seq, elapsed) do
+    commit(f.w)
+    [txn | _] = World.entries_after(f.w, seq)
+    assert_in_delta txn.thermal.elapsed_s, elapsed + 0.5, 1.0e-9
+    txn
+  end
+
+  test "在线调整 45 的截止温度：R 在 353.15–373.15 K 之间旧目录导通，发布 353.15 K 后下一笔严格 0 A、旧 id 拒绝；冷重启新阈值保持；再发布 393.15 K 后下一笔恢复 ε/ΣR", c do
+    {f, r} = thermistor_loop(c, :cutoff_publish)
+    old_cutoff = c.materials[@thermistor]["electrical_cutoff_kelvin"]
+    low = 353.15
+    high = 393.15
+    assert old_cutoff == 373.15
+    i_of = fn s -> field(s, @t_cell, :source_current_a) end
+    e_of = fn s -> field(s, @t_cell, :source_emf_v) end
+    # 目录 id = 目录文件字节的 sha256（与 UE 发布同法）。
+    old_digest = observe(f.w).property_digest
+    assert old_digest == :crypto.hash(:sha256, File.read!(f.opts[:property_catalog_path]))
+
+    # 1. 旧目录（373.15 K）：R 已到 353.15 K 以上、仍低于 373.15 K 时按 ε/ΣR 导通。
+    {lit, before_lit} = run(f, observe(f.w), nil, 40_000, fn prev, s, single, _ ->
+      if single and temperature(prev, @r_cell) >= low and i_of.(s) > 0.0, do: {:halt, prev}, else: {:cont, nil}
+    end)
+    lit_k = temperature(before_lit, @r_cell)
+    assert lit_k < old_cutoff
+    assert_in_delta i_of.(lit), e_of.(lit) / r, i_of.(lit) * 1.0e-8
+
+    # 2. 在线发布 353.15 K：目录 id 变为新文件的 sha256；以旧 id 再发布按现有语义 property_version_mismatch、权威目录不变。
+    lowered = cutoff_catalog(c, f, low)
+    low_digest = :crypto.hash(:sha256, File.read!(lowered))
+    assert low_digest != old_digest
+    assert :ok = World.publish_parameters(f.w, lowered, old_digest)
+    assert observe(f.w).property_digest == low_digest
+    raised = cutoff_catalog(c, f, high)
+    assert {:error, :property_version_mismatch} = World.publish_parameters(f.w, raised, old_digest)
+    assert observe(f.w).property_digest == low_digest
+    pub = publication(f, lit.seq, low_digest)
+    pub_k = txn_row(pub, @r_cell).temperature_kelvin
+    assert low <= pub_k and pub_k < old_cutoff
+    # 发布后下一笔按 R 发布时刻温度求解：≥ 353.15 K 即严格 0 A；电源功率仍远高于零功率阈值（断开的是温敏，不是 D1 断流）。
+    cut = next_solve(f, pub.seq, pub.thermal.elapsed_s)
+    te = txn_row(cut, @t_cell)
+    assert Map.get(te, :source_current_a, 0.0) == 0.0
+    assert te.source_emf_v ** 2 / r >= 1.01 * @min_w
+    refute Map.has_key?(row(observe(f.w), @lamp), :electric_w)
+    assert_ledgers(f, observe(f.w))
+
+    # 3. 冷重启：已发布目录按部署语义放到 property_catalog_path。仍放旧目录文件时，回放出的行摘要与之不符，启动被拒绝。
+    {f, before, restored} = restart(f, fn ->
+      assert {:error, _} = start_supervised({World, f.opts}, id: f.id)
+      File.cp!(lowered, f.opts[:property_catalog_path])
+    end)
+    assert restored.damage == before.damage
+    assert restored.properties.digest == low_digest
+    assert restored.properties.materials[@thermistor]["electrical_cutoff_kelvin"] == low
+    restart_k = temperature(restored, @r_cell)
+    assert low <= restart_k and restart_k < old_cutoff
+    held = txn_row(next_solve(f, restored.seq, restored.thermal.elapsed_s), @t_cell)
+    assert Map.get(held, :source_current_a, 0.0) == 0.0
+    assert held.source_emf_v ** 2 / r >= 1.01 * @min_w
+
+    # 4. 反向：在线发布 393.15 K（期望旧 id = 353.15 K 目录），R 仍在 353.15 K 以上，下一笔恢复 ε/ΣR。
+    assert {:error, :property_version_mismatch} = World.publish_parameters(f.w, raised, old_digest)
+    high_digest = :crypto.hash(:sha256, File.read!(raised))
+    assert :ok = World.publish_parameters(f.w, raised, low_digest)
+    assert observe(f.w).property_digest == high_digest
+    pub2 = publication(f, restored.seq, high_digest)
+    pub2_k = txn_row(pub2, @r_cell).temperature_kelvin
+    assert low <= pub2_k and pub2_k < high
+    on = txn_row(next_solve(f, pub2.seq, pub2.thermal.elapsed_s), @t_cell)
+    assert on.source_current_a > 0.0
+    assert_in_delta on.source_current_a, on.source_emf_v / r, on.source_current_a * 1.0e-8
+    assert_ledgers(f, observe(f.w))
+    IO.puts("FURNACE_CUTOFF_PUBLISH old_k=#{old_cutoff} low_k=#{low} high_k=#{high} lit_r_k=#{lit_k} lit_i=#{i_of.(lit)} " <>
+      "pub_r_k=#{pub_k} cut_emf=#{te.source_emf_v} restart_r_k=#{restart_k} pub2_r_k=#{pub2_k} on_i=#{on.source_current_a} " <>
+      "hand_i=#{on.source_emf_v / r} old=#{Base.encode16(old_digest, case: :lower)} low=#{Base.encode16(low_digest, case: :lower)} " <>
+      "high=#{Base.encode16(high_digest, case: :lower)}")
+  end
+
   # 冻结 World（没有进行中的提交）后取原始状态；返回时进程仍挂起。
   defp frozen(w) do
     :sys.suspend(w)
@@ -683,9 +785,11 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     if s.thermal_run == nil, do: s, else: (:sys.resume(w); Process.sleep(2); frozen(w))
   end
 
-  defp restart(f) do
+  # deploy：停机后、启动前执行（部署新目录文件等）。
+  defp restart(f, deploy \\ fn -> :ok end) do
     before = frozen(f.w)
     :ok = stop_supervised(f.id)
+    deploy.()
     w = start_supervised!({World, f.opts}, id: f.id)
     restored = frozen(w)
     :sys.resume(w)
