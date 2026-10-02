@@ -1,7 +1,7 @@
 defmodule VoxelRegion.FurnaceGeneratorWorldTest do
   @moduledoc """
   只测试（World 集成，Voxim Docs/Testing.md §2.2）：R8-09 实体燃料炉膛发电与 R8-10 温敏陶瓷的长时演化，按生产参数逐提交推进。
-  Voxim 双端 `furnace_generator` 只证明玩家入口、权威结果与双端复制；燃尽、衰减、续料对照、充电、断流、休眠与温控的时间演化
+  Voxim 双端 `furnace_generator` 只证明玩家入口、权威结果与双端复制；燃尽、衰减、续料对照、充电、断流、休眠、完全静止后由开关事务唤醒（R8-05）与温控的时间演化
   由本文件证明，真实客户端不在墙钟上空等（Testing.md §2.3“短”）。
 
   参数：目录 = 当前可玩发布 `b4d8bf35…`（含温敏陶瓷 45），只把液体步长改成 3600 s（散体由测试投递 :liquid_commit 落定）；
@@ -49,11 +49,12 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
   @battery 42
   @te 43
   @thermistor 45
-  @materials [@stone, @coal, @copper, @alloy, @battery, @te, @thermistor]
+  @switch 41
+  @materials [@stone, @coal, @copper, @alloy, @battery, @te, @thermistor, @switch]
   @ambient 293.15
   @min_w 1.0
   # 求解器的绝对电流误差：铜边电导 0.5/5.8e7 Ω 的倒数 ~1.2e8 S 乘以 ~50 V 电位的双精度舍入 ~1e-14 V，约 1e-6 A
-  # （circuit_test 在 46 A 时 1e-8 相对，同量级）；小电流时它主导，所有电流比对另加这一绝对项。
+  # （circuit_test 在 46 A 时 1e-8 相对，同量级）；小电流时它主导，所有电流比对另加这一绝对项（判据经用户 2026-10-02 确认）。
   @i_abs 1.0e-6
   @coal_j_per_m3 8.0e8
   @k_heat_j 3_125_000.0
@@ -342,7 +343,7 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     for p <- [@te_a, @te_b], do: assert(row(idle, p).hp == row(idle, p).max_hp)
     # 热调度休眠（R8-05：零功率、无其他事务且未改写任何记录的提交才算静止）：热推进停下后，电路按停下时的温度
     # 至多再写一次读数（热电石开路电动势；本笔求解用的是上一笔推进前的温度），再一笔什么都不改写的确认即停——
-    # 这两笔不改温度、不改任何热／电账；此后真实定时器窗口里没有热事务。
+    # 这两笔不改温度、不改任何热／电账；此后真实定时器窗口里没有热事务（“至多 2 笔”判据经用户 2026-10-02 确认）。
     confirm = window(f.w, 1_200)
     rest = window(f.w, 2_000)
     assert confirm.seq <= 2
@@ -428,7 +429,7 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     # Δ燃料初始化 = 0.5 m³ × 8e8 J（带火散体合并时按并入数量初始化燃料）；对照仍是点燃时的 0.5 m³。
     assert_in_delta ledger(eb2, :fuel_initialized_j), 0.5 * @coal_j_per_m3, 1.0e-3
     assert_in_delta ledger(ea2, :fuel_initialized_j) - ledger(eb2, :fuel_initialized_j), 0.5 * @coal_j_per_m3, 1.0e-3
-    # 续料后同刻比较：后半窗口（续料 + 300 s 起）每个共同时刻 Σε(续料) > Σε(对照)。
+    # 续料后同刻比较：后半窗口（续料 + 300 s 起，起点经用户 2026-10-02 确认）每个共同时刻 Σε(续料) > Σε(对照)。
     eb_at = Map.new(hb2, fn {t, e, _} -> {t, e} end)
     pairs = for {t, e, _} <- ha2, t >= @refuel_s + 300.0, Map.has_key?(eb_at, t), do: {t, e, eb_at[t]}
     assert length(pairs) > 500
@@ -494,6 +495,104 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     IO.puts("FURNACE_CHARGE sim_s=#{last.thermal.elapsed_s} commits=#{acc.commits} wall_ms=#{wall} charging_commits=#{acc.charging} " <>
       "emf_peak_v=#{acc.emf_peak} i_peak_a=#{acc.i_peak} stored_each_j=#{each} charged_j=#{ledger(last, :circuit_charged_j)} " <>
       "te_j=#{ledger(last, :circuit_thermoelectric_j)} r_ohm=#{r}")
+  end
+
+  # ---- 5. 完全静止后由开关事务唤醒（R8-05）
+
+  # 充电支路（用例 3）把 (2,4,5) 换成开关 S_c；另接一条蓄能石放电支路（z = 6，开关 S_d 断开）：
+  #   蓄能石顶 (3,4,5) → (3,4,6) → S_d (4,4,6) → (5,4,6) → 合金灯 L3 (5,3,6) → (5,2,6) → (5,1,6) → (4,1,6) → (3,1,6) → (3,1,5) 蓄能石底。
+  # S_c 断开后炉子一侧只挂在 (3,1,5) 上、不成回路；放电回路只含两块蓄能石、L3、S_d 与 8 格铜。
+  @s_charge {2, 4, 5}
+  @s_discharge {4, 4, 6}
+  defp wake_chain do
+    (charge_chain() -- [{{2, 4, 5}, @copper}]) ++ [{@s_charge, @switch}] ++
+      [{{3, 4, 6}, @copper}, {@s_discharge, @switch}, {{5, 4, 6}, @copper}, {{5, 3, 6}, @alloy}, {{5, 2, 6}, @copper},
+       {{5, 1, 6}, @copper}, {{4, 1, 6}, @copper}, {{3, 1, 6}, @copper}] ++ for(x <- -2..8, do: {{x, 0, 6}, @stone})
+  end
+
+  # 正式工具 G（7）：从目标正上方的眼睛竖直向下，先查询命中身份再以同一身份切换（同 thermal_activity_world_test）。
+  defp toggle(f, {x, y, z}) do
+    a = %{cid: 1001, gate: self(), identity: {f.id, make_ref()}, refresh: &Actor.tool_context/2, eye: {x + 0.5, y + 1.5, z + 0.5},
+      tick_us: 16_667}
+    a = Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
+    query = %{request_id: next(), client_intent_seq: next(), logical_scene_id: 1, action: 0, tool_id: 7,
+      direction: {0.0, -1.0, 0.0}, micro: {x * 8 + 4, y * 8 + 4, z * 8 + 4}, granularity: 0, incarnation: 0, owner: {0, 0}, material: 0}
+    {:ok, target} = World.tool_intent(f.w, a, query)
+    assert {target.material, VoxelRegion.Damage.macro(target)} == {@switch, {x, y, z}}
+    seq = next()
+    request = Map.merge(query, Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
+      |> Map.merge(%{action: 1, request_id: seq, client_intent_seq: seq})
+    {:ok, _} = World.tool_intent(f.w, Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()}), request)
+    observe(f.w)
+  end
+
+  # 下一笔带蓄能石行的事务（真实定时器推进，测试不投递提交）。
+  defp await_battery(f) do
+    receive do
+      {:canonical_delta, %{transaction_seq: seq, transaction: %{property_states: rows}}} ->
+        case Enum.filter(rows, &(&1.material == @battery and &1.granularity == 0)) do
+          [] -> await_battery(f)
+          batteries -> {seq, batteries}
+        end
+    after 3_000 -> flunk("#{f.id}: no battery row within 3 s")
+    end
+  end
+
+  test "完全静止后由开关唤醒：炉经 S_c 充两块蓄能石后断开，燃尽冷却到休眠、定时器窗口 0 笔；闭合 S_d 的下一笔热事务 I = 48 V／ΣR，每块放 24·I·0.5 J", c do
+    {f, s0, _} = furnace(c, :wake, wake_chain(), 4)
+    t0 = System.monotonic_time(:millisecond)
+    assert row(toggle(f, @s_charge), @s_charge).closed
+    stored = fn s, p -> field(s, p, :stored_j) end
+
+    # 充电：Σε 越过 48 V 后经 S_c 充两块蓄能石；回落到 48 V 以下时断开 S_c（玩家动作，事务），之后储能不再变化。
+    {charged, n1} = run(f, s0, 0, 20_000, fn _prev, s, _single, n ->
+      if stored.(s, @b_top) > 0.0 and emf(s) < 48.0, do: {:halt, n + 1}, else: {:cont, n + 1}
+    end)
+    open = toggle(f, @s_charge)
+    refute row(open, @s_charge).closed
+    held = {stored.(open, @b_top), stored.(open, @b_bot)}
+    assert elem(held, 0) > 0.0 and elem(held, 0) == stored.(charged, @b_top)
+
+    # 燃尽、断流、冷却，直到热调度不再活跃；储能逐笔不变（两块都只挂在断开的支路上）。
+    {idle, n2} = run(f, open, 0, 80_000, fn _prev, s, _single, n ->
+      assert {stored.(s, @b_top), stored.(s, @b_bot)} == held
+      if s.thermal.active, do: {:cont, n + 1}, else: {:halt, n + 1}
+    end)
+    refute burning?(idle)
+    # 完全静止（R8-05；尾提交至多 2 笔且不改温度与任何账、之后 0 笔，判据经用户 2026-10-02 确认）：
+    # 此后真实定时器窗口里没有热事务，世界里只剩两块有储能的蓄能石（电路种子）与两个断开的开关。
+    confirm = window(f.w, 1_200)
+    rest = window(f.w, 2_000)
+    assert confirm.seq <= 2
+    assert physics(confirm.before, [:source_emf_v]) == physics(confirm.after, [:source_emf_v])
+    assert rest.seq == 0 and rest.ticks <= 1
+    assert physics(rest.before) == physics(rest.after)
+    still = rest.after
+
+    # 唤醒：闭合 S_d（正式工具，一笔事务）。不投递提交，等真实定时器推进的第一笔热事务。
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(f.w, {{0, 0, 0}, {1, 1, 1}}, self(), ref, false)
+    assert_receive {:canonical_snapshot, ^ref, _}
+    closed = toggle(f, @s_discharge)
+    assert row(closed, @s_discharge).closed
+    assert closed.seq == still.seq + 1
+    {seq, batteries} = await_battery(f)
+    # ΣR：两块蓄能石各两个半格（0.5/20）、L3 两个半格（0.5/4）、S_d 两个半格与 8 格铜各两个半格（0.5/5.8e7）。
+    r = 4 * 0.5 / sigma(f, @battery) + 2 * 0.5 / sigma(f, @alloy) + 18 * 0.5 / sigma(f, @copper)
+    i = 48.0 / r
+    # 开关事务的下一笔就是热事务，两块蓄能石都在这笔里按 I = 48 V／ΣR 放电，各放 24 V × I × 0.5 s。
+    assert seq == closed.seq + 1
+    assert Enum.sort(Enum.map(batteries, &VoxelRegion.Damage.macro/1)) == Enum.sort([@b_top, @b_bot])
+    for b <- batteries do
+      assert_in_delta b.source_current_a, i, i * 1.0e-8 + @i_abs
+      assert b.source_emf_v == 24.0
+      before = stored.(still, VoxelRegion.Damage.macro(b))
+      assert_in_delta before - b.stored_j, 24.0 * i * 0.5, 24.0 * i * 0.5 * 1.0e-8
+    end
+    {before_top, _} = held
+    IO.puts("FURNACE_WAKE sim_s=#{still.thermal.elapsed_s} commits=#{n1 + n2} wall_ms=#{wall_ms(t0)} stored_each_j=#{before_top} " <>
+      "confirm_txns=#{confirm.seq} rest_ticks=#{rest.ticks} rest_txns=#{rest.seq} switch_seq=#{closed.seq} thermal_seq=#{seq} " <>
+      "current_a=#{hd(batteries).source_current_a} hand_a=#{i} r_ohm=#{r}")
   end
 
   # ---- 4. 温敏陶瓷 45 温控开关

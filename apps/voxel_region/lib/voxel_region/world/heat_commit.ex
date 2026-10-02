@@ -7,7 +7,7 @@ defmodule VoxelRegion.World.HeatCommit do
   require Logger
   alias VoxelRegion.Damage
   alias VoxelRegion.Prefab
-  alias VoxelRegion.{Combustion, Protection, Transform}
+  alias VoxelRegion.{Combustion, Protection, ThermalWork, Transform}
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Observation, Log, Edits, Prefabs, Liquids}
 
@@ -42,7 +42,7 @@ defmodule VoxelRegion.World.HeatCommit do
     # 零功率电路记到本事务为止；此后任何事务（含下面的转化）都使下一拍重新求解（`Thermal.begin/1`）。
     state = if commit.quiet, do: %{state | thermal_quiet_seq: state.seq}, else: state
     transformed = System.monotonic_time(:microsecond)
-    state = transform_heated_materials(state)
+    state = transform_heated_materials(state, commit.settled)
     now = System.monotonic_time(:microsecond)
 
     if state.thermal.active,
@@ -86,10 +86,15 @@ defmodule VoxelRegion.World.HeatCommit do
 
   # R8 单向转化：热提交落盘后，达到转化温度（规则要求还原剂时还须面接触足量还原剂）的节点在一笔几何事务里换成产物。
   # 占用、归属与完整度比例保留；相对环境的显热减去反应热后按产物热容折算；还原剂按化学燃料比例扣减。
-  def transform_heated_materials(state) do
+  # 只重判热结算交来的改写行键、此后事务改写的行与上次达阈值而未转化的行（R8-05，`ThermalWork.transform_keys/4`）。
+  def transform_heated_materials(state, settled) do
     materials = state.properties.materials
+    work = state.thermal_work
+    keys = ThermalWork.transform_keys(settled, work.pending, work.due, state.damage)
 
-    due = Enum.sort(for {key, t} <- state.damage, Transform.due?(t, materials[t.material]), do: {key, t})
+    due = Enum.sort(for key <- keys, {:ok, t} <- [Map.fetch(state.damage, key)], Transform.due?(t, materials[t.material]),
+      do: {key, t})
+    state = put_in(state.thermal_work.due, MapSet.new(due, &elem(&1, 0)))
 
     {next, products, carried} =
       Enum.reduce(due, {state, %{}, %{}}, fn {_, ore}, {s, products, carried} ->

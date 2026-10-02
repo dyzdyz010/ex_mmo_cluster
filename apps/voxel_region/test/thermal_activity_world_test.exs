@@ -11,12 +11,12 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
   - 唤醒：正式工具闭合 S2 这一事件在下一个节拍重新推进，第一笔热事务的电流 = 24 V / ΣR（目录算术），之后持续推进。
   - 再休眠：断开 S2 后灯熄、降温结束后至多一笔不改写真值的确认提交（零功率网络按降温后的温度再解一次）即停；
     冷却（被动导热）进行中即使电功率为 0 也持续推进。
-  - 热行增量维护（`ThermalWork.rehot/4`）在各阶段之间与全量扫描当前记录相同。
+  - 热行增量维护（`ThermalWork.rehot/4`）、燃烧行与电路候选（`ThermalWork.touched/3`）在各阶段之间与全量扫描当前记录相同。
   期望来自目录算术与账目恒等式；成本数字随输出打印（`THERMAL_ACTIVITY …`），用于与改动前比较。
   """
   use ExUnit.Case, async: false
   @moduletag :thermal_activity
-  alias VoxelRegion.{ThermalWork, World}
+  alias VoxelRegion.{Circuit, ThermalWork, World}
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @digest "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
@@ -134,6 +134,13 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
       work = s.thermal_work
       assert ThermalWork.rehot(work.hot_rows, work.touched, s.damage, s.thermal.config) ==
                ThermalWork.hot_rows(s.damage, s.thermal.config)
+      # 燃烧行（已派生时）与电路候选同理：按当前记录过滤后等于全量扫描，种子与带电观察字段的行都在候选里。
+      if work.burning,
+        do: assert(ThermalWork.live_burning(work.burning, s.damage) ==
+          for({k, r} <- s.damage, Map.get(r, :burning, false), into: %{}, do: {k, ThermalWork.cells(r)}))
+      assert MapSet.new(Circuit.seeds(s.damage, s.properties, work.electric)) == MapSet.new(Circuit.seeds(s.damage, s.properties))
+      for {k, r} <- s.damage, Map.has_key?(r, :electric_w) or Map.has_key?(r, :source_emf_v),
+        do: assert(MapSet.member?(work.electric, k))
     end
   end
 
