@@ -39,10 +39,7 @@ defmodule VoxelRegion.World.Thermal do
   """
   def touch(%{thermal: nil} = state, _rows), do: state
 
-  def touch(state, rows) do
-    touched = Enum.reduce(rows, state.thermal_work.touched, &MapSet.put(&2, Damage.key(&1)))
-    wake(put_in(state.thermal_work.touched, touched))
-  end
+  def touch(state, rows), do: wake(%{state | thermal_work: ThermalWork.touched(state.thermal_work, rows, state.properties)})
 
   @doc "节拍已到（World 处理 `:thermal_tick` 时调用）：不再有待到期节拍。"
   def fired(state), do: %{state | thermal_timer: nil}
@@ -71,7 +68,9 @@ defmodule VoxelRegion.World.Thermal do
 
     active = state.thermal.active or MapSet.size(hot) > 0 or
       Enum.any?(state.damage, fn {_, t} -> Combustion.exhausted?(t) end)
-    %{state | thermal: %{state.thermal | active: active}, thermal_work: %{ThermalWork.new() | hot: hot, hot_rows: rows}}
+    electric = ThermalWork.electric(Map.keys(state.damage), state.damage, state.properties)
+    %{state | thermal: %{state.thermal | active: active},
+      thermal_work: %{ThermalWork.new() | hot: hot, hot_rows: rows, electric: electric}}
   end
 
   @doc """
@@ -84,12 +83,13 @@ defmodule VoxelRegion.World.Thermal do
     state = %{state | bodies: Map.filter(state.bodies, fn {_, b} -> now - b.at <= 2_500 end)}
 
     if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
-         (state.thermal_quiet_seq != state.seq and circuit_seeds(state) != []) do
+         (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != []) do
       run = %{ref: make_ref(), damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
         remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0,
         started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
-      # 燃烧行在提交之间可被工具、放置等事务改写：每次提交首轮重新扫描。
-      %{state | thermal_run: run, thermal_work: %{state.thermal_work | builds: 0, burning: nil}}
+      # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
+      work = state.thermal_work
+      %{state | thermal_run: run, thermal_work: %{work | builds: 0, burning: ThermalWork.live_burning(work.burning, state.damage)}}
     else
       # 不推进时也把此后改写的行并入热行判定，改写键集合不随休眠期的事务增长。
       work = state.thermal_work
@@ -108,7 +108,8 @@ defmodule VoxelRegion.World.Thermal do
     run = state.thermal_run
     # 步间已有其他事务提交：燃烧行可能被改写，本步重新扫描；本次提交不能据段首的电路解判定零功率。
     {state, run} = if state.seq != run.seq,
-      do: {%{state | thermal_work: %{state.thermal_work | burning: nil}}, %{run | disturbed: true}},
+      do: {%{state | thermal_work: %{state.thermal_work |
+        burning: ThermalWork.live_burning(state.thermal_work.burning, state.damage)}}, %{run | disturbed: true}},
       else: {state, run}
     {state, run} = advance_run(state, run)
     run = %{run | seq: state.seq, steps: run.steps + 1,
@@ -124,7 +125,7 @@ defmodule VoxelRegion.World.Thermal do
 
   # 纯热段每条消息只推进一个内核步；电路段按段起点求解的功率整段连续执行。
   defp advance_run(state, %{segment: nil} = run) do
-    case circuit_seeds(state) do
+    case circuit_seeds(state, run.visited) do
       [] ->
         advance_run(state, %{run | segment: run.remaining})
 
@@ -141,8 +142,9 @@ defmodule VoxelRegion.World.Thermal do
 
     if left - done < 1.0e-12 do
       # 无电路时本段用完整次提交的剩余时间。
-      {damage, visited} = electric_rows(state.damage, run.visited, %{})
-      {damage, visited} = source_rows(state, damage, visited, %{})
+      candidates = electric_candidates(state, run.visited)
+      {damage, visited} = electric_rows(state.damage, run.visited, %{}, candidates)
+      {damage, visited} = source_rows(state, damage, visited, %{}, candidates)
       {seen(%{state | damage: damage}), %{run | visited: visited, segment: nil, remaining: 0.0}}
     else
       {state, run}
@@ -161,9 +163,15 @@ defmodule VoxelRegion.World.Thermal do
     hot = ThermalWork.footprints(hot_rows)
     state = %{state | thermal_work: %{state.thermal_work | hot: hot, hot_rows: hot_rows, touched: MapSet.new()},
       thermal: %{state.thermal | active: map_size(state.thermal.sources) > 0 or MapSet.size(hot) > 0}}
+    # 耗尽、相变与转化只重判上次结算后改写过的行（事务改写 + 本次提交改写，R8-05）：其余行与上次判定时相同，
+    # 上次已耗尽的行已归零（重判不改变什么），上次的相变已由相变事务换掉材料；尚未派生（nil）时全量。
+    pending = state.thermal_work.pending
+    damage = state.damage
+    exhausted = for key <- ThermalWork.settle_keys(pending, visited, damage),
+      {:ok, row} <- [Map.fetch(damage, key)], Combustion.exhausted?(row), do: row
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
-    {state, visited} = Enum.reduce(state.damage, {state, visited}, fn {_, row}, {s, keys} ->
+    {state, visited} = Enum.reduce(exhausted, {state, visited}, fn row, {s, keys} ->
       if Combustion.exhausted?(row) do
         granularity = case row.granularity do
           1 -> 2
@@ -192,14 +200,21 @@ defmodule VoxelRegion.World.Thermal do
           Map.get(run.damage, key) != t,
           do: %{t | seq: state.seq + 1, request_id: 0}
 
-    phase_changes = for {_,t}<-state.damage, phase_target?(state,t),
+    settled = ThermalWork.settle_keys(pending, visited, state.damage)
+    phase_changes = for key <- settled, {:ok, t} <- [Map.fetch(state.damage, key)], phase_target?(state,t),
       q=Map.get(state.liquid_units,Damage.macro(t),liquid_capacity(state)),
       e=Phase.energy(t,q/liquid_capacity(state),state.properties.materials[t.material],ambient_at(state,Damage.macro(t))),
       Phase.material(t.material,e,q/liquid_capacity(state),state.properties.materials)!=t.material,
       into: %{}, do: {Damage.macro(t),q}
 
+    # 电路候选按当前记录收缩（并入本次改写的行）；待判键从此重新累计。
+    work = state.thermal_work
+    state = %{state | thermal_work: %{work | pending: MapSet.new(),
+      electric: ThermalWork.electric(Enum.into(visited, work.electric), state.damage, state.properties)}}
+
     # 零功率、步间无其他事务、本次没有改写任何记录：下一次求解的输入与本次相同，电路不再自行推进。
-    {state, %{rows: rows, phase_changes: phase_changes,
+    # `settled`：交给提交后的转化重判的行键。
+    {state, %{rows: rows, phase_changes: phase_changes, settled: settled,
       quiet: not run.powered and not run.disturbed and rows == [] and phase_changes == %{},
       dead: Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state, &1))),
       semblances: semblance_txn(run.semblances, state),
@@ -208,7 +223,7 @@ defmodule VoxelRegion.World.Thermal do
 
   # 一个电路段：按段起点求解功率，段内内核步连续执行，段末写入发光与电源观察行；另返回本段是否有非零功率。
   defp circuit_segment(state, remaining, visited) do
-    seeds = circuit_seeds(state)
+    seeds = circuit_seeds(state, visited)
 
     # 受保护区域：导线端点按槽的持有者分开，端点只接同一持有者的实体导体。
     protection = state.protection
@@ -230,8 +245,9 @@ defmodule VoxelRegion.World.Thermal do
     {contacts, state} = circuit_contacts(Map.values(solids), MapSet.new(), [], state)
     plan = VoxelRegion.Circuit.plan(input, Map.new(hosts), contacts)
     {state, visited} = thermal_steps(state, plan.duration, visited, plan.powers)
-    {damage, visited} = electric_rows(state.damage, visited, plan.electric)
-    {damage, visited} = source_rows(state, damage, visited, plan.sources)
+    candidates = electric_candidates(state, visited)
+    {damage, visited} = electric_rows(state.damage, visited, plan.electric, candidates)
+    {damage, visited} = source_rows(state, damage, visited, plan.sources, candidates)
 
     # 佩尔捷两键在 R8-09 片 1 引入；之前已累计热电做功的世界升级后它们从 0 起算、不补造历史值，
     # 所以“吸热 − 放热 = 热电做功”只对键引入之后的增量成立（基线 = 引入时的热电做功）。
@@ -254,7 +270,7 @@ defmodule VoxelRegion.World.Thermal do
   # 全局系统功能（R8-04 增量 3）：蓄能石的储能 `stored_j` 是格属性行上的真值；本段求解的电动势与带号电流
   # （蓄能石、热电石）是派生观察，写在同一行上随属性下发。新放置的蓄能石没有行，按需建默认行；离开所有已求解
   # 网络的行去掉两个观察字段，储能保留。值不变的记录不进提交。
-  defp source_rows(state, damage, visited, sources) do
+  defp source_rows(state, damage, visited, sources, candidates) do
     lit =
       for {_key, view} <- sources, into: %{} do
         target = view.target
@@ -266,7 +282,7 @@ defmodule VoxelRegion.World.Thermal do
         {key, Map.merge(row, fields)}
       end
 
-    stale = for {key, %{source_emf_v: _} = row} <- damage, not Map.has_key?(lit, key), into: %{},
+    stale = for key <- candidates, %{source_emf_v: _} = row <- [Map.get(damage, key)], not Map.has_key?(lit, key), into: %{},
       do: {key, Map.drop(row, [:source_emf_v, :source_current_a])}
 
     Enum.reduce(Map.merge(stale, lit), {damage, visited}, fn {key, row}, {d, v} ->
@@ -276,13 +292,13 @@ defmodule VoxelRegion.World.Thermal do
 
   # 全局系统功能：发光导体（目录 λ > 0）本段求解的电功率与穿过电流是派生观察，写在已有温度记录上随属性下发；
   # 不再通电的记录去掉这两个字段。值不变的记录不进提交（提交只发与提交前不同的记录）。
-  defp electric_rows(damage, visited, electric) do
+  defp electric_rows(damage, visited, electric, candidates) do
     lit =
       for {_key, {target, w, a}} <- electric, key <- [Damage.key(target)],
           %{temperature_kelvin: _} <- [Map.get(damage, key)], into: %{},
           do: {key, %{electric_w: w, current_a: a}}
 
-    stale = for {key, %{electric_w: _}} <- damage, not Map.has_key?(lit, key), into: %{},
+    stale = for key <- candidates, %{electric_w: _} <- [Map.get(damage, key)], not Map.has_key?(lit, key), into: %{},
       do: {key, nil}
 
     Enum.reduce(Map.merge(stale, lit), {damage, visited}, fn
@@ -292,8 +308,13 @@ defmodule VoxelRegion.World.Thermal do
   end
 
   # D6：散体格（带数量记录）不导电——不是种子、不是线端宿主、不参与实体接触。
-  defp circuit_seeds(state),
-    do: Enum.reject(VoxelRegion.Circuit.seeds(state.damage, state.properties), &loose_cell?(state, &1))
+  # 只在电路候选与本次提交改写过的行（`visited`）里判定（R8-05）：候选之外的行不是种子。
+  defp circuit_seeds(state, visited),
+    do: Enum.reject(VoxelRegion.Circuit.seeds(state.damage, state.properties, electric_candidates(state, visited)),
+      &loose_cell?(state, &1))
+
+  # 可能带电观察字段或是种子的行键：上次结算后的候选、此后事务改写（touch 已并入）与本次提交改写过的行。
+  defp electric_candidates(state, visited), do: Enum.into(visited, state.thermal_work.electric)
 
   defp circuit_target(point, state) do
     {target, state} = target_at(point, state)
@@ -509,7 +530,7 @@ defmodule VoxelRegion.World.Thermal do
       if active,
         do: put_in(state.thermal_work, ThermalWork.burned(state.thermal_work, burned)),
         else: %{flush(state) | thermal_work: %{ThermalWork.new() | builds: work.builds, hot_rows: work.hot_rows,
-          touched: work.touched}}
+          touched: work.touched, burning: %{}, pending: work.pending, due: work.due, electric: work.electric}}
 
     state = advance_semblances(state, semblances, semblance_result, done)
     temperatures = Map.new(Enum.zip(requested, step.temperatures) ++

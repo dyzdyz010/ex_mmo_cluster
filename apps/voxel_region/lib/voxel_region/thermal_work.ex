@@ -28,10 +28,55 @@ defmodule VoxelRegion.ThermalWork do
       sights: %{},
       # cells 恰为 seeds 的六邻域 ∪ 视线伙伴、几何与视线未被编辑丢弃：此时种子只增时可按增量扩域。
       exact: false,
-      # 本次提交内燃烧行键 => 足迹宏格；提交首轮扫描一次，其后按每轮变更行维护。
-      burning: nil
+      # 燃烧行键 => 足迹宏格；首次全量扫描，其后按提交内变更行与事务改写的行（`touched/3`）维护（R8-05）。
+      burning: nil,
+      # R8-05 结算增量：上次结算以来事务改写过的行键（提交内的改写另由 visited 给出）。结算的耗尽、相变与提交后的转化
+      # 只重判这些行，转化另加上次达到阈值而未转化的 `due`；nil 表示尚未派生，下次结算全量扫描。
+      pending: nil,
+      due: MapSet.new(),
+      # 电路候选行键（`VoxelRegion.Circuit.candidate?/2`）：种子与电观察清理只在候选与本次提交改写的行里判定；
+      # 每次结算按当前记录收缩。nil 表示尚未派生（`rebuild_work` 全量派生）。
+      electric: nil
     }
   end
+
+  @doc """
+  一笔事务改写了这些行（R8-05）：记入热行重判键、结算待判键；燃烧行与电路候选按行的当前值更新。
+  已派生的增量集合才更新（nil 仍待全量派生）。删除行不经这里，使用处按当前记录过滤。
+  """
+  def touched(work, rows, catalog) do
+    keys = Enum.map(rows, &Damage.key/1)
+    work = %{work | touched: Enum.into(keys, work.touched),
+      pending: work.pending && Enum.into(keys, work.pending)}
+    work = if work.burning, do: burned(work, Enum.zip(keys, rows)), else: work
+    if work.electric,
+      do: %{work | electric: for({key, row} <- Enum.zip(keys, rows), VoxelRegion.Circuit.candidate?(row, catalog),
+        into: work.electric, do: key)},
+      else: work
+  end
+
+  @doc """
+  结算重判耗尽与相变的行键（R8-05）：上次结算以来事务改写的 `pending` 与本次提交改写的 `visited`；
+  pending 尚未派生（nil）时为全部记录。其余行自上次结算未变：已耗尽的已归零，相变已由相变事务换掉材料。
+  """
+  def settle_keys(nil, _visited, damage), do: Map.keys(damage)
+  def settle_keys(pending, visited, _damage), do: Enum.into(visited, pending)
+
+  @doc """
+  提交后转化重判的行键：结算交来的键、此后事务改写的行（`pending`）与上次达到阈值而未转化的行（`due`，如缺还原剂）。
+  结算之后的事务重建了工作集（如燃尽删除附件，pending 回到 nil）时为全部记录。
+  """
+  def transform_keys(_settled, nil, _due, damage), do: Map.keys(damage)
+  def transform_keys(settled, pending, due, _damage), do: settled |> Enum.into(pending) |> Enum.into(due)
+
+  @doc "燃烧行按当前记录过滤（删除行不经事务 touch）；nil 仍待全量扫描。"
+  def live_burning(nil, _damage), do: nil
+  def live_burning(burning, damage),
+    do: for({key, footprint} <- burning, Map.get(Map.get(damage, key, %{}), :burning, false), into: %{}, do: {key, footprint})
+
+  @doc "电路候选按当前记录收缩，并入本次提交改写过的行键。"
+  def electric(keys, damage, catalog),
+    do: for(key <- keys, row = Map.get(damage, key), VoxelRegion.Circuit.candidate?(row, catalog), into: MapSet.new(), do: key)
 
   @doc "目标涉及的全部 canonical 宏格，附件可跨宏格和区域。"
   def cells(%{granularity: 4} = target), do: Attachments.macros([Attachments.slot(target)])

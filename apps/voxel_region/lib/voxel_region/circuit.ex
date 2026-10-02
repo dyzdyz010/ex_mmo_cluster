@@ -54,10 +54,23 @@ defmodule VoxelRegion.Circuit do
   @doc """
   电路的种子：有储能的蓄能石格、带温度记录的热电石格（热身份目标）。没有种子时全世界没有电动势，不求解。
   """
-  def seeds(damage,catalog) do
-    for {_,%{granularity: g}=row}<-damage,g in [0,1],m=catalog.materials[row.material],
+  def seeds(damage,catalog),do: seeds(damage,catalog,Map.keys(damage))
+
+  @doc "只在给定行键里找种子（R8-05 增量候选，见 `candidate?/2`）；缺行的键略过。"
+  def seeds(damage,catalog,keys) do
+    for key<-keys,%{granularity: g}=row<-[Map.get(damage,key)],g in [0,1],m=catalog.materials[row.material],
         (battery?(m) and Map.get(row,:stored_j,0.0)>0.0) or (seebeck(m) != 0.0 and Map.has_key?(row,:temperature_kelvin)),
         do: Map.take(row,[:micro,:granularity,:incarnation,:owner,:material])
+  end
+
+  @doc """
+  电路增量候选（R8-05）：可能是种子或带电观察字段（发光、电源读数）的行——蓄能石／热电石材料的格行，或已带这些字段的行。
+  只看材料与字段、不看储能与温度，所以候选行改写前后都留在候选里，由使用处按当前记录判定。
+  """
+  def candidate?(row,catalog) do
+    m=catalog.materials[row.material]
+    Map.has_key?(row,:electric_w) or Map.has_key?(row,:source_emf_v) or
+      (row.granularity in [0,1] and (battery?(m) or seebeck(m) != 0.0))
   end
 
   @doc """

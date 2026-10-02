@@ -58,6 +58,38 @@ defmodule VoxelRegion.ThermalWorkTest do
     assert ThermalWork.rehot(rows, [], Map.new([a, b], &{key.(&1), &1}), config) == %{key.(a) => [{0, 0, 0}]}
   end
 
+  # R8-05：事务改写的行增量维护燃烧行、结算待判键与电路候选；期望按判据手算（42 蓄能石、43 热电石、11 石）。
+  test "事务改写的行：点燃加入、熄灭移出燃烧行；待判键累计；蓄能石／热电石与带电观察字段的行进入电路候选，删除行使用处过滤" do
+    catalog = %{materials: %{11 => %{}, 42 => %{"battery_volts_per_m" => 24}, 43 => %{"seebeck_v_per_k" => 0.05}}}
+    row = fn x, m, fields -> Map.merge(%{micro: {x * 8, 0, 0}, granularity: 0, incarnation: 0, owner: {0, 0}, material: m}, fields) end
+    key = &VoxelRegion.Damage.key/1
+    stone = row.(0, 11, %{burning: true})
+    lamp = row.(1, 11, %{electric_w: 3.0})
+    battery = row.(2, 42, %{})
+    te = row.(3, 43, %{temperature_kelvin: 310.0})
+    work = %{ThermalWork.new() | burning: %{}, pending: MapSet.new(), electric: MapSet.new()}
+    work = ThermalWork.touched(work, [stone, lamp, battery, te], catalog)
+    assert work.burning == %{key.(stone) => [{0, 0, 0}]}
+    assert work.pending == MapSet.new(Enum.map([stone, lamp, battery, te], key))
+    assert work.electric == MapSet.new(Enum.map([lamp, battery, te], key))
+    # 熄灭移出；未派生（nil）的集合保持待全量派生。
+    work = ThermalWork.touched(%{work | pending: nil}, [%{stone | burning: false}], catalog)
+    assert work.burning == %{} and work.pending == nil
+    # 删除行不经事务：燃烧行与候选按当前记录过滤（石被删除，灯去掉了观察字段）。
+    damage = Map.new([%{lamp | electric_w: nil} |> Map.delete(:electric_w), battery, te], &{key.(&1), &1})
+    assert ThermalWork.live_burning(%{key.(stone) => [{0, 0, 0}]}, damage) == %{}
+    assert ThermalWork.electric(Map.keys(damage) ++ [key.(stone)], damage, catalog) == MapSet.new([key.(battery), key.(te)])
+  end
+
+  # R8-05：结算与转化只重判改写过的行；期望按集合手算。
+  test "结算重判键 = 事务改写 ∪ 本次提交改写；转化另加上次未转化的行；未派生或被重建时为全部记录" do
+    damage = %{a: 1, b: 2, c: 3, d: 4}
+    assert ThermalWork.settle_keys(MapSet.new([:a]), [:b], damage) == MapSet.new([:a, :b])
+    assert Enum.sort(ThermalWork.settle_keys(nil, [:b], damage)) == [:a, :b, :c, :d]
+    assert ThermalWork.transform_keys(MapSet.new([:a]), MapSet.new([:b]), MapSet.new([:c]), damage) == MapSet.new([:a, :b, :c])
+    assert Enum.sort(ThermalWork.transform_keys(MapSet.new([:a]), nil, MapSet.new(), damage)) == [:a, :b, :c, :d]
+  end
+
   # 成本（默认排除，`--only benchmark`）：Demo 实测约 2.7 万条属性记录；小装置只有少数热行与改写行。
   @tag :benchmark
   test "热行判定成本：全量扫描与增量重判" do
