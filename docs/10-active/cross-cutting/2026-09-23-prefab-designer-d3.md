@@ -231,6 +231,60 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
   设计器容器复跑通过（txn 674932），青岚副本 smoke-02 通过（txn 151；smoke-01 因回执晚到 7.5 s 而实例读数过早，保留失败）。打包客户端双端人工输入冒烟：采集、编辑、命名“木亭”发布、`9`、放置、另一端可见、`K` 点火两端一致。
 - **未做**：公网部署、公网双端实跑、系统中文输入法组合。记录与部署步骤见 `Voxim/Docs/Playtest/release-20260923-qinglan-prefab-editor.md`。
 
+## D3-4 增量 1：建模式编辑（只改客户端，协议仍为 18）
+
+分类：全局系统功能（`FVoxelPrefabDraft` 的选择／平移／复制／删除／重做与盒外射线、`Voxel/Prefab/VoxelPrefabGizmo`、交互组件的编辑空间输入与相机、
+工作台资产上的 `SelectionSurface`／`Gizmo` 组件、`PrefabEditor/` 下的控件与选中材质、`WBP_EditorMarquee`）；`L_GameplayDemo` 接线、回放命令
+`@cursor`／`@cursor_px`、`Voxim/Docs/Gameplay/prefab_dcc.py` 冒烟与各场景脚本的编辑段迁移为只测试。服务端未改：发布、放置与裁决不变。
+
+2026-10-02 用户要求：编辑空间改成 3ds Max 一类建模软件的操作方式——相机只用于观察，用鼠标指针和坐标轴控件变换，不再用越肩准星。
+同日拍板：相机按“游戏友好式”（右键拖环绕、中键拖平移、滚轮缩放、Alt+中键也可环绕）；体素没有无级缩放，“缩放”工具改为推拉面（后续增量）；
+旋转只绕竖直轴（与子件朝向、世界放置一致）。路线：①相机／指针拾取／选择／移动控件／删除复制／重做（本增量）→ ②拖拽创建盒／空心盒／线、逐层工作平面、刷材质
+→ ③旋转控件、镜像、复制粘贴、子件变换 → ④载入已发布件继续编辑或另存、正交与预设视角。
+
+- **输入**：`P` 进入时压入一个阻塞的输入组件（`BindEditorInput`），编辑中的键鼠全部由它处理，角色、控制器按键蓝图和世界交互都收不到；
+  `P` 离开时弹出。指针常显、不锁进视口（`FInputModeGameAndUI`）。名称对话框关闭后回到这个输入方式。原来经世界按键表转进编辑的
+  `AttackTarget`／`BuildTarget`／`CycleAttachmentMode`／`RotatePrefab`／`SelectPrefabLeaf` 分支与角色的 `MovementRedirect` 已删。
+- **相机**：环绕状态（枢轴、偏航、俯仰、距离，工作台局部 canonical 米）每帧推出编辑相机；初始枢轴为盒心偏下 (32,12,32)、偏航 90°、俯仰 −35°、22 m。
+  右键／Alt+中键拖环绕 0.3°/px，中键拖平移（枢轴随指针，每像素 = 距离 × 0.0015 m），滚轮每格距离 ×0.85（2–60 m），`F` 聚焦所选（无选择时整个草稿）。
+  相机可在草稿 Tile 外：`FVoxelPrefabDraft::Pick` 先把射线推进到驻留范围（Tile 0 核心 [0,64)³，`IsResident` 按 `VoxelTileOf`）再求交。
+- **两种工具**：选择（`W`，默认）——左键点选，Ctrl+左键加减选，拖出框为框选（元素中心投影在框内，不论遮挡），`Del`／退格删除，`Ctrl+A` 全选，`Esc` 取消；
+  画笔（`B`）——左键放置当前块类（`Q` 循环整块／小块／薄面／细线，`Q` 也切到画笔），Shift+左键删除命中元素。`2–8`／`9` 选拼装件后左键插入子件，`R` 转子件朝向，`1`／`Esc` 退出插入。
+  换料在编辑空间里是 `Tab`／`Shift+Tab`（滚轮是缩放）。撤销／重做 `Ctrl+Z`／`Ctrl+Y`（`Ctrl+Shift+Z` 同重做）；`R`（未选子件时）仍为整体旋转；`Enter` 命名发布。
+- **选择元素**（`FVoxelDraftElement`，只认顶层）：整块（定义局部宏格）、小块（定义局部 micro）、附件组（Slot）、顶层子件（Slot）。点选优先级：子件 > 薄面组 > 细线组
+  （命中点离棱 ≤ 1/16 m）> 小块 > 整块。
+- **移动控件**：选中时出现在所选包围盒中心（只选附件时取附件中心平均），长度 = 相机距离 × 0.12。三条轴（canonical X 红、竖直 Y 绿、Z 蓝）与三个平面方块
+  （两轴 [0.25, 0.45] 倍长度）；判定在屏幕空间：先平面方块（投影四边形内，投影面积 < 12² px 的近侧对方块不参与，否则会盖住旁边的轴），再轴（指针到投影线段 ≤ 10 px）。
+  拖动＝指针射线与轴（或平面）的最近点位移，按步长取整：含整块或子件时 8 micro（1 m，宏格对齐），只有小块／附件时 1 micro；Shift 拖动为复制（新件取新 Slot，
+  松手后选中复制出的元素）。位移变化时用 `CanMove` 预检，选中高亮整体平移并换成有效／阻挡材质；松手提交，不合法则不变并提示原因（出盒、格重叠、薄面／细线悬空）。
+- **草稿规则**（`FVoxelPrefabDraft::Move`／`Delete`／`Redo`，与服务端发布裁决同口径的本地预检）：结果全部在 16 m 盒内、宏格与小块不重叠、小块不进整块、
+  附件槽不重叠且全部有支撑；删除后失去支撑的附件组随之移除（与 `Remove` 同一规则）。新编辑清空重做栈。
+- **资产**（`Voxim/Docs/Gameplay/author_workbench.py`）：工作台加 `SelectionSurface`（同 ChildPreview 的 ISM）与 `Gizmo` 场景组件（6 个箭杆／箭头用引擎圆柱／圆锥，3 个平面方块用引擎平面）；
+  `M_EditorGizmo`（不受光、半透明、不做深度测试）及 `MI_GizmoAxis{X,Y,Z}`／`MI_GizmoPlane{X,Y,Z}`／`MI_GizmoHover`（`text.primary`）；
+  `M_PrefabSelection`（UI 规范 `selection` 色、35 % 不透明、沿顶点法线外推 2 cm）；`WBP_EditorMarquee`（`selection` 色 12 % 底 + 1.5 px 描边）。
+  交互组件新属性 `PrefabSelectionMaterial`／`GizmoHoverMaterial`／`MarqueeWidgetClass` 由关卡指定（`place()` 写入）；青岚接线留到下次分发集成。
+
+**D3-4 增量 1 已实现、已实跑；D3 整体未验收。**
+
+- 客户端单元（手算期望）：`Voxim.Prefab.Draft.SelectMoveCopy`（盒外射线距离 91、点选、步长 8、撞木／半米／出盒拒绝、上移 1 m、复制、撤销／重做、删除清空重做栈）、
+  `Voxim.Prefab.Draft.SelectAttachmentsAndMicro`（点中面组非棱、面组单独上移悬空被拒、格与面组同移、小块步长 1、删格连带面组）、`Voxim.Prefab.Gizmo.Math`
+  （射线—轴最近点 s = 3、平行无解、射线—平面、点到线段、凸四边形两种绕向、取整）。受影响范围 `Voxim.Prefab.+Voxim.R7.Prefab.+Voxim.R7.Hierarchy.+Voxim.Raycast.`
+  31/31（首跑盒外射线按 [0,66) 裁剪、落在 ring 上不驻留而失败并崩在测试里的未检查取值，已改 [0,64) 与测试先判后取）。
+- 实跑（r8acc Demo `voxim-r8acc`，镜像 `voxim-server:20261001-r8acc`，协议 35，空世界）：`python Docs/Gameplay/prefab_dcc.py --out Saved/Gameplay/prefab-dcc-20261002/run-01`。
+  真实单客户端，键鼠走 `@press`，指针走 `@cursor`（Slate 平台移动入口；回读 `GetMousePosition` 与投影像素差 ≤ 0.5 px）。15 个状态块逐一与手写期望相同：
+  画笔三格 (8..10,0,8) → 点选 (9,0,8) → Ctrl 加选 → 拖竖直轴上移 2 m 为 (9,2,8)(10,2,8) → Shift 拖 X 轴 3 m 复制出 (12,2,8)(13,2,8) 并选中 → Esc →
+  框选 5 → 删除为空 → Ctrl+Z／Y／Z → 环绕 +150／−50 px、滚轮两格为偏航 135°、俯仰 −20°、距离 15.89 m → F 聚焦整稿 (35,9.5,32.5)、10.85 m →
+  命名“DCC测试”发布，服务端真实 HTTP 列表含同名同 id。原始判定把环绕一项判败：判定器正则 `pivot=\S+` 匹配不了带空格的枢轴坐标（数值本身正确），
+  修正后 `--recheck` 写 `acceptance-recheck.json` 全部通过，原始 `acceptance.json` 保留。截图已看（选中高亮、控件、复制、框选、聚焦、回到世界）。
+  `run-02` 在发布前加了迁移脚本所用的操作：画笔 `Tab` 放一格（下一种材料，Demo 为冰 20）、`Shift+Tab` 再放一格（回到木材 19）、`Q` 小块落在地面格顶
+  局部 (66,8,66)、`Q Q Q` 回整块、Shift+左键删 (9,2,8)、`3` 插入作者件“黏土隔热桥”、`1` 退出，19 个状态块与 27 项全部符合；首次判定在写结果时崩溃
+  （判定器把元组作 JSON 键，未写出 acceptance.json），修正后 `--recheck` 通过。证据 `Voxim/Saved/Gameplay/prefab-dcc-20261002/run-0{1,2}/`。
+- 场景脚本迁移（只测试）：`emergent_loop.Timeline` 加 `editor()`（P + B）、`brush(点, erase)`（指针 + 左键／Shift+左键）、`tab(n)`；`smelting_loop.Player`
+  加 `edit_select(材料)`；`emergent_loop`／`circuit_fire`／`lamp_material`／`loose_pile`／`magic_range`／`body_revive`／`device_hud`／`smelting_loop`／`smoke.py`
+  （`prefab_editor`、`prefab_naming`）的编辑段由“准星 + 右键 + 滚轮”改为上述辅助。这些场景本次未逐个复跑（它们的编辑段只是搭夹具），
+  辅助本身在 `prefab_dcc` 里实跑。`showcase_bergen.py`（宣传视频，自己移动编辑相机）未迁移。
+- 未做：上面路线的 ②–④；青岚关卡接线；演示 HUD 右侧操作指南里旧的编辑说明（左侧编辑反馈已是新说明）。
+
 ## 状态
 
 **D3-1 已实现、已实跑；D3 整体未验收。**
