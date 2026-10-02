@@ -81,15 +81,6 @@ defmodule VoxelRegion.ThermalWorkTest do
     assert ThermalWork.electric(Map.keys(damage) ++ [key.(stone)], damage, catalog) == MapSet.new([key.(battery), key.(te)])
   end
 
-  # R8-05：结算与转化只重判改写过的行；期望按集合手算。
-  test "结算重判键 = 事务改写 ∪ 本次提交改写；转化另加上次未转化的行；未派生或被重建时为全部记录" do
-    damage = %{a: 1, b: 2, c: 3, d: 4}
-    assert ThermalWork.settle_keys(MapSet.new([:a]), [:b], damage) == MapSet.new([:a, :b])
-    assert Enum.sort(ThermalWork.settle_keys(nil, [:b], damage)) == [:a, :b, :c, :d]
-    assert ThermalWork.transform_keys(MapSet.new([:a]), MapSet.new([:b]), MapSet.new([:c]), damage) == MapSet.new([:a, :b, :c])
-    assert Enum.sort(ThermalWork.transform_keys(MapSet.new([:a]), nil, MapSet.new(), damage)) == [:a, :b, :c, :d]
-  end
-
   # 成本（默认排除，`--only benchmark`）：Demo 实测约 2.7 万条属性记录；小装置只有少数热行与改写行。
   @tag :benchmark
   test "热行判定成本：全量扫描与增量重判" do

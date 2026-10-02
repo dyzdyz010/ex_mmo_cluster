@@ -165,10 +165,10 @@ defmodule VoxelRegion.World.Thermal do
       thermal: %{state.thermal | active: map_size(state.thermal.sources) > 0 or MapSet.size(hot) > 0}}
     # 耗尽、相变与转化只重判上次结算后改写过的行（事务改写 + 本次提交改写，R8-05）：其余行与上次判定时相同，
     # 上次已耗尽的行已归零（重判不改变什么），上次的相变已由相变事务换掉材料；尚未派生（nil）时全量。
-    pending = state.thermal_work.pending
+    # 同一键集交给耗尽、相变与提交后的转化：耗尽归零只新增部件池行（粒度 2/3，HP 0），既非相变目标也不会转化。
     damage = state.damage
-    exhausted = for key <- ThermalWork.settle_keys(pending, visited, damage),
-      {:ok, row} <- [Map.fetch(damage, key)], Combustion.exhausted?(row), do: row
+    settled = ThermalWork.settle_keys(state.thermal_work.pending, visited, damage)
+    exhausted = for key <- settled, {:ok, row} <- [Map.fetch(damage, key)], Combustion.exhausted?(row), do: row
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
     {state, visited} = Enum.reduce(exhausted, {state, visited}, fn row, {s, keys} ->
@@ -200,7 +200,6 @@ defmodule VoxelRegion.World.Thermal do
           Map.get(run.damage, key) != t,
           do: %{t | seq: state.seq + 1, request_id: 0}
 
-    settled = ThermalWork.settle_keys(pending, visited, state.damage)
     phase_changes = for key <- settled, {:ok, t} <- [Map.fetch(state.damage, key)], phase_target?(state,t),
       q=Map.get(state.liquid_units,Damage.macro(t),liquid_capacity(state)),
       e=Phase.energy(t,q/liquid_capacity(state),state.properties.materials[t.material],ambient_at(state,Damage.macro(t))),

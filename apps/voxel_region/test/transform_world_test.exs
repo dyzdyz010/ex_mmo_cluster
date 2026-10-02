@@ -246,6 +246,88 @@ defmodule VoxelRegion.TransformWorldTest do
     assert occupancy(w, @coal_cell).material == 0
   end
 
+  # R8-05 增量结算的两条非内核路径（审查 2026-10-02）：结算只重判上次结算后改写过的行，转化另加上次达阈值而缺还原剂
+  # 未转化的行（`ThermalWork.due`），耗尽／相变另加事务改写的行（`ThermalWork.pending`）。293 K 环境里 ≥ X 的矿是热行、
+  # 每步都变温，总在内核改写集合里，这两条路径分辨不出；只有静止（不被内核访问）的矿与煤才能分辨。所以这里用
+  # 450 K 气候区（> X）与 5 K 容差：矿越过 X 后在区温容差内静止，转化产物铜（Ta + (C矿(T−Ta) − H)/C铜，偏离 < 3 K）
+  # 与刚好被取尽的煤也静止。区外一块孤立石头上的长效热源让定时提交持续（无热活动就不开提交，转化也不会发生）；
+  # 气候区边界与空气隔开它，热域碰不到区内各格。
+  # 去掉 due（转化只看结算交来的键与此后事务改写的行）时矿永不转化；去掉 pending（结算只看内核改写的行）时
+  # 被转化事务取尽的煤永不归零。
+  test "静止矿达 X 后才放煤：下一笔转化；转化事务取尽的静止煤下一次结算归零", c do
+    zone = 450.0
+    tolerance = 5.0
+    center = {2, 1, 2}
+    ores = [{1, 1, 2}, {3, 1, 2}, {2, 1, 1}, {2, 1, 3}]
+    far = {8, 1, 8}
+    w = start(c)
+    {:ok, _} = World.apply_edits(w, [{center, @stone}, {far, @stone} | Enum.map(ores, &{&1, @ore})])
+
+    experiment = fn cell, power, energy ->
+      path = Path.join(c.root, "thermal.json")
+      File.write!(path, Jason.encode!(%{classification: "Test-only", source_macro: Tuple.to_list(cell),
+        ambient_kelvin: @ambient, environment_w_per_m2_k: 10.0, tolerance_kelvin: tolerance, emissivity: 0.0,
+        view_range_cells: 8, power_w: power, energy_j: energy,
+        climate_zones: [%{min: [0, 0], max: [4, 4], ambient_kelvin: zone}]}))
+      :ok = World.thermal_experiment(w, path)
+    end
+    experiment.(far, 1_000.0, 1.0e9)
+    # 中心石 3e5 J：四块矿经面接触升温、得到温度记录（≥ X），随后全部回落到区温容差内静止。
+    experiment.(center, 2_000.0, 3.0e5)
+
+    # 观察快照给每行盖当前序号；只比较行值。
+    zone_rows = fn s -> for {key, row} <- s.damage, {x, _, z} = Damage.macro(row), x <= 4 and z <= 4, into: %{},
+      do: {key, Map.drop(row, [:seq])} end
+    rest = Enum.reduce_while(1..4000, {nil, 0}, fn _, {last, quiet} ->
+      send(w, :thermal_commit)
+      s = observe(w)
+      rows = zone_rows.(s)
+      quiet = if rows == last, do: quiet + 1, else: 0
+      if quiet >= 3, do: {:halt, s}, else: {:cont, {rows, quiet}}
+    end)
+    assert %{damage: _} = rest
+    assert rest.thermal.active
+    ore_rows = Map.new(ores, &{&1, node(rest, micro(&1))})
+    for {_, row} <- ore_rows do
+      assert row.material == @ore and row.temperature_kelvin >= @x
+      assert abs(row.temperature_kelvin - zone) <= tolerance
+    end
+    refute Map.has_key?(rest.thermal, :transform_units)
+
+    # 正式作者编辑入口把中心石换成煤（无温度记录 = 区温，未达燃点 673.15 K）。
+    {:ok, _} = World.apply_edits(w, [{center, @coal}])
+    from = observe(w).seq
+    Enum.each(1..3, fn _ -> send(w, :thermal_commit) end)
+    converted = observe(w)
+
+    # 放煤后的第一笔是热提交，紧接着就是转化事务：四块矿按键序各取 0.25 × 800 MJ，煤恰好取尽。
+    [heat_commit, txn | _] = World.entries_after(w, from)
+    assert heat_commit.seq == from + 1
+    assert txn == transform_txn(w, from)
+    assert txn.seq == from + 2
+    c_ore = c.materials[@ore]["heat_capacity_per_macro"]
+    c_cu = c.materials[@copper]["heat_capacity_per_macro"]
+    for {cell, ore} <- ore_rows do
+      copper = Enum.find(txn.property_states, &(&1.material == @copper and &1.micro == micro(cell)))
+      assert_in_delta copper.temperature_kelvin, zone + (c_ore * (ore.temperature_kelvin - zone) - @heat) / c_cu, 1.0e-9
+      assert abs(copper.temperature_kelvin - zone) <= tolerance
+      assert occupancy(w, cell).material == @copper
+    end
+    fuel = c.materials[@coal]["fuel_energy_per_macro_j"]
+    coal = Enum.find(txn.property_states, &(&1.material == @coal and &1.micro == micro(center)))
+    assert coal.hp > 0.0 and coal.remaining_fuel_j <= 1.0e-6
+    assert converted.thermal.transform_units == 4 * c.macro_units
+    assert_in_delta converted.thermal.transform_reductant_fuel_j, 4 * @ratio * fuel, 1.0e-3
+    assert_in_delta converted.thermal.fuel_initialized_j, fuel, 1.0e-3
+
+    # 转化事务之后的第一笔热提交把取尽的煤归零并删除占用；铜与煤都不在内核改写集合里。
+    [after_transform | _] = World.entries_after(w, txn.seq)
+    assert after_transform.seq == txn.seq + 1
+    assert Enum.any?(after_transform.property_states, &(&1.material == @coal and &1.micro == micro(center) and &1.hp == 0.0))
+    assert occupancy(w, center).material == 0
+    assert_fuel_closes(converted)
+  end
+
   test "目录：转化必填字段成组且还原剂可燃；可经参数发布在线加入", c do
     base = Jason.decode!(File.read!(Path.join(@fixtures, @digest <> ".json")))
     broken = Map.update!(base, "materials", &Enum.map(&1, fn m ->
