@@ -285,6 +285,55 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
   辅助本身在 `prefab_dcc` 里实跑。`showcase_bergen.py`（宣传视频，自己移动编辑相机）未迁移。
 - 未做：上面路线的 ②–④；青岚关卡接线；演示 HUD 右侧操作指南里旧的编辑说明（左侧编辑反馈已是新说明）。
 
+## D3-4 增量 2：拖拽建形、逐层工作平面、刷材质（只改客户端，协议仍为 18）
+
+分类：全局系统功能（`FVoxelPrefabDraft::PlanFill／Fill／Paint／PlaneCell`、`DraftShapeCells`、工作平面拾取、交互组件的形状与刷料工具、
+工作台资产上的 `WorkPlane` 组件与 `PrefabEditor/MI_WorkPlane`）；`prefab_dcc.py` 增量 2 段、`test_prefab_dcc.py` 判定器反例、
+`deploy.py --stage prefab` 部署为只测试。服务端未改。
+
+2026-10-03 开工前与用户确认的交互（四项都选推荐）：盒子两段式（3ds Max 式）；空心盒 = 封闭外壳；线在平面内任意方向、Shift 锁轴；
+盒子／线的起点始终在工作平面上（不吸附已有表面）。
+
+- **工具键**：`X` 实心盒、`H` 空心盒、`L` 线、`M` 刷材质（`W` 选择、`B` 画笔不变；`E` 留给 ③ 旋转）。形状只用整块或小块：
+  形状工具里 `Q` 在两者之间切换，薄面／细线工具时按整块。
+- **工作平面**：`PgUp`／`PgDn` 升降，整块一层 1 m（第 0–15 层），小块一层 1/8 m（第 0–127 层）；高度存为定义局部 micro，整块类工具取整到整米。
+  抬离盒底时显示 16×16 m 半透明面（`WorkPlane`，选中高亮主材质的实例，telemetry 色 12 %）；状态栏显示“工作层 N m”。
+  画笔与插入子件时，指针没命中格、或平面比命中的格更近，就落在平面上（格底贴平面）；平面在盒底时与以前只有地面完全相同。
+  选择与刷料不拾取平面，平面挡不住它下面的格。
+- **盒子**：左键在工作平面上按下、拖出底面、松开；之后指针射线到过底面远角 B 中心的竖直线的最近点定高度
+  （向上时盒顶随指针，按层四舍五入；也可向下），单击生效，右键／`Esc` 取消。**空心盒**为壁厚一格的封闭外壳，只有一层高时为一圈。
+  **线**：拖动、松手即生效，格子直线（主轴每步一格，副轴四舍五入、远离零取整）；按住 Shift 锁到离起点更远的水平轴。
+  拖动中虚影用 `ChildPreview`（有效／阻挡材质），状态栏显示尺寸与新增格数。
+- **形状规则**（`PlanFill`）：只填空格（整块跳过含小块的宏格，小块跳过整块里的 micro），整个形状算一步撤销；全部已占为“已全是方块”；
+  任一角出 16 m 盒则拒绝（虚影画出整个形状并标阻挡）；填上后超出服务端 `Prefab.limits`（展开后宏格 512、micro 8192）则拒绝。
+  形状格数先按公式算（实心 = 长×宽×高，空心 = 实心 − 内部，线 = 主轴长 + 1），已占的格本就计入现有总量，所以格数本身超限就一定超限，
+  不必先枚举（小块盒最大 128³）。
+- **刷材质**：左键单击或按住拖过，命中的整块／小块／附件组改成当前材料；材料相同不算一步；一次拖动并入同一步撤销（`Commit` 的 amend）。
+  子件是引用，不能刷（提示“子件是引用，不能刷材质”）；不能放的材料（液体、花草等）同样不能刷。
+
+**D3-4 增量 2 已实现、已实跑（单端）；D3 整体未验收。**
+
+- 客户端单元（手算期望）：`Voxim.Prefab.Draft.ShapeCells`（实心 2×2×3 = 12 且两角顺序无关，空心 3³ = 26 无中心，一层空心 4×4 为 12 格一圈，
+  两层空心 3×2×3 全满 18，线 (0,0,0)→(4,0,2) 与反向、直线、单格）、`Voxim.Prefab.Draft.FillAndWorkPlane`（跳过已占格、一步撤销／重做、
+  全占为 Empty、出盒拒绝且虚影为整个形状、576 格超限、512 新格 + 3 已有超限、空心 10³ = 488 不超限、小块线跳过整块里的 micro、
+  整块盒跳过含小块的宏格、128×1×65 小块超限、平面第 3 层放格、平面比下方格更近、盒底平面不挡格、1/8 m 平面放小块、平面上的子件锚点、
+  平面格与从下方求交、平行无解）、`Voxim.Prefab.Draft.Paint`（一笔两格一步撤销、同料不算、面组、小块、子件拒绝、空处拒绝）。
+  受影响范围 `Voxim.Prefab.+Voxim.R7.Prefab.+Voxim.R7.Hierarchy.+Voxim.Raycast.` selected=34 completed=34 failed=0（首跑即过）。
+  判定器反例 `python -m unittest Docs/Gameplay/test_prefab_dcc.py` 4/4：合成的正确日志通过，刷料撤销只回一半、出盒盒被接受、空心盒被填满各自判败。
+- 实跑：新部署 `deploy.py --stage prefab --create`（容器 `voxim-d3dcc`，镜像 `voxim-server:20261002-r8close` = master `99d1c5e5`，
+  协议 35，目录 `b4d8bf35…`，空世界；旧 r8acc 镜像无材料 45，与当前客户端目录不符）。客户端从提交的独立 worktree `../Voxim-d3` 编译。
+  `prefab_dcc` 在增量 1 的流程后加：PgUp×2 画笔落在第 2 层 (36,10,26)；`X` 第 1 层拖底面 (26,9,34)–(28,9,35)、指针升 2.2 m（两层）、单击 →
+  12 格木材；`H` 地面 (31,8,35)–(34,8,38) 升 3.2 m → 4×3×4 外壳 44 格；`L` (24,8,37)→(28,8,39) 5 格、Shift 锁轴 (24..29,8,35)；
+  `X` 拖到 x = 41 出盒 → `result=2`、草稿不变、提示“超出 16 m 编辑盒”；`M` 刷盒顶前排 (26..28,10,34) 一笔 → Ctrl+Z 三格一起恢复木材、Ctrl+Y 再刷上。
+  28 个状态块与 12 项专项判定全部符合，发布后服务端 HTTP 列表含同名同 id。
+  - run-01（a3edb72，刷料用 `Tab` 冰 20）通过，退出 0；但截图里刷上的冰几乎看不见：草稿预览只有一个不透明 ISM，透明材料（冰、玻璃）
+    画得很淡——这是增量 1 起就有的预览限制（世界里透明材料走单独的透明通道），不影响定义与清单（清单显示冰 4 m³）。
+  - run-02（ca48193，刷料改 `Shift+Tab` 金矿石 18；部署先 `--reset`）通过，退出 0；截图已看：工作层半透明面、两段式盒子的高度虚影、空心盒、
+    两条线、出盒提示、盒顶前排三格的顶面与正面变为金矿石。证据 `Voxim/Saved/Gameplay/prefab-dcc-20261003/run-0{1,2}/`
+    （截图在 `Voxim/Captures/Saved/Gameplay/prefab-dcc-20261003/run-0{1,2}/shots/`）。
+- 未做：草稿预览的透明材料通道（冰／玻璃在编辑空间里画得很淡）；演示 HUD 右侧操作指南仍是旧编辑说明；③ 旋转控件、镜像、复制粘贴、子件变换；
+  ④ 载入已发布件续编／另存、正交与预设视角；青岚接线；用户手动试用。
+
 ## 状态
 
 **D3-1 已实现、已实跑；D3 整体未验收。**
@@ -320,4 +369,7 @@ mix.bat test
 # 镜像与切换（只测试）：Voxim/Saved/Gameplay/prefab-editor-20260923/{build_image.py,upgrade.py,upgrade-resume.py}
 # D3-3 增量 3（协议 18）：python Docs/Gameplay/author_name_dialog.py（MCP 8000）；镜像 Voxim/Saved/Gameplay/prefab-naming-20260923/{build_image.py,upgrade.py designer|emergent,recheck.py}
 #   python Docs/Gameplay/smoke.py --mode prefab_naming --server-dir Saved/Gameplay/prefab-designer-20260922/isolated-server --container voxim-prefab-designer-test --out <新目录>
+# D3-4 增量 2（Voxim，Test-only）：python Docs/R8/r8acc-demo/deploy.py --stage prefab --create|--reset
+#   python Docs/Gameplay/prefab_dcc.py --out Saved/Gameplay/prefab-dcc-20261003/<新目录> --server-dir Saved/Gameplay/prefab-dcc-20261003/server --container voxim-d3dcc
+#   python -m unittest Docs/Gameplay/test_prefab_dcc.py；单元 python Docs/R5/tools/run_tests.py filter=Voxim.Prefab.+Voxim.R7.Prefab.+Voxim.R7.Hierarchy.+Voxim.Raycast.
 ```
