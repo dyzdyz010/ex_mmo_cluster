@@ -27,7 +27,7 @@ defmodule VoxelRegion.TestSupport do
   defmodule Actor do
     use GenServer
     def start_link(state),do: GenServer.start_link(__MODULE__,state)
-    def init(state),do: {:ok,Map.put_new(state,:coherence_factor,1.0)}
+    def init(state),do: {:ok, state |> Map.put_new(:coherence_factor, 1.0) |> Map.put(:caster_recipient, {state.gate, state.identity})}
     def tool_context(player,id),do: GenServer.call(player,{:tool_context,id})
     def handle_call({:tool_context,id},_,%{identity: id}=state),do: {:reply,{:ok,Map.put(state,:player,self())},state}
     def handle_call({:tool_context,_},_,state),do: {:reply,{:error,:invalid_state},state}

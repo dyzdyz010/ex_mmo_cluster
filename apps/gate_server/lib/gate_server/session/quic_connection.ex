@@ -247,6 +247,17 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   # 编辑回执属于接纳它的连接；正常 Scene 移交不改变此引用，重连则创建新引用。
+  # World 是施法成功状态和身体状态的唯一发送者；在此按邮箱顺序编码，0x83 与成功 0x68 不再绕行 Dispatch。
+  def handle_info({:mmo_spell_reply, ref, request, reply}, %{edit_ref: ref, closing: false} = state) do
+    state = send_message(state, 2, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
+    state = if request.action == 1,
+      do: send_message(state, 2, GateServer.Voxel.ResultFrame.accepted(request, reply.seq, Atom.to_string(reply.outcome || :ok))),
+      else: state
+    {:noreply, state}
+  end
+
+  def handle_info({:mmo_spell_reply, _, _, _}, state), do: {:noreply, state}
+
   def handle_info({:mmo_voxel_bytes, ref, bytes}, %{edit_ref: ref, closing: false} = state),
     do: {:noreply, send_bytes(state, 2, bytes, 0)}
 

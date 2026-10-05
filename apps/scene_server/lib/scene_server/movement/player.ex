@@ -234,7 +234,7 @@ defmodule SceneServer.Movement.Player do
 
     case {request.action, state.action} do
       {0, _} ->
-        send(state.authority_ref, {:quote_cast, actor_context(state), request, from})
+        send(state.authority_ref, {:quote_cast, Map.merge(actor_context(state), ingress), request, from})
         {:noreply, state}
 
       {1, nil} when request.client_intent_seq > state.action_seq and state.body.status != :dead ->
@@ -947,7 +947,7 @@ defmodule SceneServer.Movement.Player do
   # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/4`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。
   # 身体闭环 H2：死亡那一秒照常下发 status 2 并通知 World 掉落、开始回会话出生点；下一秒换成统一复活身体（`Body.revive/0`）。
-  # 施法相干度系数（神经 × 疼痛 × 恍惚，`Body.coherence_factor/1`）每秒报给 World（`{:body_coherence, cid, factor}`）。
+  # 施法相干度系数每秒报给 World，携带本人会话身份；变化时由 World 复用 0x83 推送权威状态。
   # 空气（温度、风速）= 身体所在格的气候（VoxelRegion.Climate，与 World 热内核同一入口、同一份区表）。
   # 报告里带局部接触组织块温度、热容与组织块-皮肤导热（面积 × 本步组织块导热 `Thermo.contact_tissue_w_per_m2_k/1`），World 用它们接内部边。
   defp body_tick(%{climate: nil} = state), do: state
@@ -1263,7 +1263,7 @@ defmodule SceneServer.Movement.Player do
          }}
       )
 
-      send(authority, {:body_coherence, state.id, Body.coherence_factor(body)})
+      send(authority, {:body_coherence, state.id, Body.coherence_factor(body), state.gate, state.identity})
     end
 
     state

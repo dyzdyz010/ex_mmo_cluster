@@ -195,7 +195,7 @@ defmodule GateServer.Session.Dispatch do
 
     GenServer.cast(
       state.player,
-      {:spell, state.identity, request, Map.take(state, [:received_us, :clock_node]),
+      {:spell, state.identity, request, spell_ingress(state),
        {waiter, ref}}
     )
 
@@ -331,7 +331,7 @@ defmodule GateServer.Session.Dispatch do
         state.player,
         state.identity,
         request,
-        Map.take(state, [:received_us, :clock_node])
+        spell_ingress(state)
       )
 
     reply_spell_result(result, request, state)
@@ -342,18 +342,9 @@ defmodule GateServer.Session.Dispatch do
       {:ok, :controlled} ->
         :ok
 
-      {:ok, reply} ->
-        send_encoded(
-          state,
-          {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)}
-        )
-
-        if request.action == 1 do
-          send_encoded(
-            state,
-            ResultFrame.accepted(request, reply.seq, Atom.to_string(reply.outcome || :ok))
-          )
-        end
+      {:ok, _reply} ->
+        # 成功状态与施放回执已由 World 的同一出口排入连接；此调用回复不再重复下发。
+        :ok
 
       {:error, reason} ->
         send_encoded(state, ResultFrame.error(request, reason))
@@ -382,9 +373,11 @@ defmodule GateServer.Session.Dispatch do
   end
 
   defp send_caster_state(state, request_id) do
-    with {:ok, caster} <- VoxelRegion.World.caster_state(state.world_ref, state.cid),
-         do: send_encoded(state, {:voxel_caster_state, Map.put(caster, :request_id, request_id)})
+    VoxelRegion.World.send_caster_state(state.world_ref, state.cid, request_id, state.sink.ref)
   end
+
+  defp spell_ingress(state),
+    do: Map.put(Map.take(state, [:received_us, :clock_node]), :caster_recipient, state.sink.ref)
 
   defp send_material_balances(state, cid, request_id) do
     for balance <- VoxelRegion.World.material_balances(state.world_ref, cid) do

@@ -278,6 +278,10 @@ defmodule VoxelRegion.World do
   @doc "全局系统功能（魔法增量 1）：施法者状态（登录时下发一次）；世界未配置魔法目录时 `{:error, :magic_unavailable}`。"
   def caster_state(server, cid), do: GenServer.call(server, {:caster_state, cid}, 300_000)
 
+  @doc "全局系统功能：由 World 有序出口发送登录施法者状态，和报价、结算及身体变化共用同一发送者。"
+  def send_caster_state(server, cid, request_id, recipient),
+    do: GenServer.call(server, {:send_caster_state, cid, request_id, recipient}, 300_000)
+
   @doc "B6 玩家燃烧意图，复用 DamageInput 的目标、会话、射程与速率校验。"
   def combustion_intent(server, actor, request), do: tool_intent(server, actor, request)
 
@@ -480,7 +484,7 @@ defmodule VoxelRegion.World do
           material_balances: %{},
           # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
           caster_energy: %{},
-          # 身体闭环 H2：Scene 每秒报来的施法者相干度系数（cid => 0..1，SceneServer.Body.coherence_factor/1 = 神经 × 疼痛 × 恍惚），
+          # Scene 每秒报来的施法者相干度系数（cid => {identity, factor}）；identity 只界定派生状态推送的去重范围。
           # 相干度 = 目录相干度 × 它（`coherence/2`）；派生、不持久化，未报过按 1.0。
           caster_coherence: %{},
           # 身体闭环 H2：死亡掉落概率（用户 2026-09-27 定：先留接口、不掉任何东西，默认 0；`death_drop/3`）。
@@ -821,6 +825,15 @@ defmodule VoxelRegion.World do
   def handle_call({:caster_state, cid}, _, state) do
     reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0, 0.0)}, else: {:error, :magic_unavailable}
     {:reply, reply, state}
+  end
+
+  def handle_call({:send_caster_state, cid, request_id, recipient}, from, state) do
+    {:reply, result, state} = handle_call({:caster_state, cid}, from, state)
+    case result do
+      {:ok, caster} -> publish_caster_state(recipient, request_id, caster)
+      {:error, _} -> :ok
+    end
+    {:reply, result, state}
   end
 
   def handle_call({:spell_intent, actor, request}, from, state) do
@@ -1268,9 +1281,19 @@ defmodule VoxelRegion.World do
     {:noreply, %{state | bodies: bodies}}
   end
 
-  # 身体闭环 H2：Scene 身体 → World 施法者的单向数据（相干度系数，每秒一次）。
-  def handle_info({:body_coherence, cid, factor}, state),
-    do: {:noreply, %{state | caster_coherence: Map.put(state.caster_coherence, cid, factor)}}
+  # 身体系数变化沿既有 0x83 推送本人；request 0 只刷新状态，报价与支出仍属于各自请求。
+  # 会话身份交给 Gate 的既有出站边界拒旧；seal/stop 的 body_detach fence 已排在旧 owner 的消息之后。
+  def handle_info({:body_coherence, cid, factor, gate, identity}, state) do
+    value = {identity, factor}
+    changed = Map.get(state.caster_coherence, cid) != value
+    state = %{state | caster_coherence: Map.put(state.caster_coherence, cid, value)}
+
+    if changed and state.magic != nil do
+      publish_caster_state({gate, identity}, 0, caster_view(state, cid, @no_quote, 0.0, 0.0))
+    end
+
+    {:noreply, state}
+  end
 
   # 身体闭环 H2：角色死亡（Scene 送来脚位），按 `death_drop/3` 裁决掉落并记账。
   def handle_info({:body_death, cid, feet}, state) do
@@ -1282,6 +1305,7 @@ defmodule VoxelRegion.World do
   # 全局系统：Player 是唯一前摇/授权 owner，World 仅保存待支付的领域负载。
   def handle_info({:quote_cast, actor, request, from}, state) do
     {:reply, result, next} = prepare_spell(state, from, actor, request)
+    publish_cast_reply(actor, request, result)
     GenServer.reply(from, result)
     {:noreply, next}
   end
@@ -1302,8 +1326,9 @@ defmodule VoxelRegion.World do
         current = Map.merge(pending.actor, actor)
         pending = %{pending | actor: current, request: %{pending.request | direction: request.direction}}
         next = %{state | pending_casts: Map.delete(state.pending_casts, actor.cid),
-          caster_coherence: Map.put(state.caster_coherence, actor.cid, actor.coherence_factor)}
+          caster_coherence: Map.put(state.caster_coherence, actor.cid, {actor.identity, actor.coherence_factor})}
         {reply, next} = settle_cast(next, pending)
+        publish_cast_reply(pending.actor, pending.request, reply)
         GenServer.reply(pending.from, reply)
         {:noreply, next}
       _ -> {:noreply, state}

@@ -13,6 +13,7 @@ flowchart LR
   B --> R
   B --> S[systems/1] --> C[combined_level/2 p-范数] --> L[life/1]
   B --> K[coherence_factor/1<br/>神经 × 疼痛 × 恍惚] -->|body_coherence| WM[World caster_coherence]
+  WM -->|变化 / 新 identity| CS[本人 0x83 状态<br/>相干度 / 能量 / 容量]
   B --> M[movement_factor/1<br/>冻伤严重度 + 愈合进度]
   B --> I[injuries/1]
   C --> P[progress/2 濒死计时]
@@ -32,8 +33,23 @@ flowchart LR
 - `SceneServer.Movement.Player` 独占 `%Body{}`，经 `Body.Snapshot` / `DataService.BodyStore` 保存完整身体、待吸收热及分世界食物游标；存储以角色为键、会话 epoch 拒绝旧 owner。重登恢复身体，离线不推进，位置仍走既有出生规则。每秒：
   吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`）→ 把脚位、身高、半径、
   皮肤温度与热容、体表面积、组织块温度 / 热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.contact_tissue_w_per_m2_k/1`）报给 World
-  （`{:body_contact, cid, pid, …}`）与相干度系数（`{:body_coherence, cid, factor}`，H2）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。
+  （`{:body_contact, cid, pid, …}`）与相干度系数（`{:body_coherence, cid, factor, gate, identity}`）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。
   死亡见“身体闭环 H2”。
+- 2026-10-05 P1（全局系统功能）：World 的既有 `caster_coherence` 派生缓存以 `{identity, factor}` 去重；系数变化或新 identity 首次上报，
+  复用 `0x83` 的 `request_id = 0` 状态推送。此变体不带请求报价/实际支出，Voxim 只刷新 seq、能量、容量、相干度，保留已有报价、前摇和支出；
+  不匹配 PendingSpell，也不触发额外施法。编辑器按既有事件刷新当前相干度与走火提示，不从伤病标签重算。
+  登录状态、报价和施放成功均由 World 向同一 Gate 发送；成功回复经 `mmo_spell_reply` 在 Gate 连续编码 `0x83`、对应 `0x68`，
+  Dispatch 的延迟调用回复不再二次发送。已接纳请求保留连接 `edit_ref`，正常 Scene 移交可继续收回执；身体推送保留 identity，旧 Scene/旧连接不能回写当前客户端。
+  Player 的 seal/stop 在旧身体消息之后发送 `body_detach` fence，停止身体 Tick 后才交接；不另建身体 owner 或持久化相干度真值。
+
+  依据 [Erlang 官方进程信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html)：同一发送者到同一接收者的顺序有保证，
+  不把 World→调用回复代理→Gate 与 World→Gate 两条路径误当作有序；故统一成功状态和成功回执出口，而不是靠周期重发纠正乱序。
+  呈现复用 [Epic 的事件驱动 UMG 更新](https://dev.epicgames.com/documentation/unreal-engine/driving-ui-updates-with-events-in-unreal-engine?lang=en-US)
+  原则，只接既有 `ReceiveCasterState`，不添加 Tick、ViewModel 框架或外观资产。
+
+  验证范围：真实 World 降低/恢复、去重与新 identity 首推；真实连接回调/可靠队列配可控报价回复延迟，验证状态顺序、无重复包、0x83→0x68 和重连隔离；
+  Scene 回归核对正式 Player 入口传递回执目标。该模块测试不代表真实 QUIC socket 或 UE 界面验收；本轮 UE 构建/Automation/双客户端实跑按用户要求暂缓。
+  命令及原始 RED/GREEN 位于 Voxim `Saved/P1/coherence-*.log`，正常 Mix 入口为 `Saved/P1/Environment/mix.sh`。
 - 冻伤系数变化时，Player 在既有 voxel 可靠时间线发 `Movement.SpeedScale`，`apply_tick = 已发布 tick + 1`；每个固定步只乘
   `Profile.speed`，按模拟 tick 消费并退休变化点（保留锚点与未来），Scene 移交携带完整未消费时间线。prepared 目标只重排身体计时，
   激活前不推进身体或发变化。`body_state` / `input_selected` 日志与 Player 观测暴露系数、生效点及模拟速度；具体线格式以 mmo_contracts 为准。
@@ -119,7 +135,7 @@ flowchart LR
   单系统受损时与旧结果相同。生命 = round(100 × 致命水平)；濒死仍是“致命水平 < 0.1 持续 10 s”，改读合成值。
 - **相干度系数**（2026-09-27 用户定：疼痛、恍惚只降施法相干度，不进生命）：`Body.coherence_factor/1` =
   神经 × 疼痛 × 恍惚，其中疼痛 = 1 − 烧伤下压（与循环上限同一个数：急性期先升、随愈合降），恍惚 = `daze_coherence` 0.45（40 s 内）。
-  Player 每秒发 `{:body_coherence, cid, 系数}` 给 World，相干度 = 目录相干度 4 × 系数。
+  Player 每秒发携带本人 gate/identity 的 `body_coherence` 给 World，相干度 = 目录相干度 4 × 系数；本人变化推送见上面的 P1 接入说明。
 - **恍惚压多少**：现行目录程序结构 S ≤ 2（单步 1，“拟态 + 投掷” 2），走火判据 S > 相干度，所以系数须 < 0.5 两步法术才走火；
   取 0.45（相干度 1.8）：两步走火、单步照常。0.8（相干度 3.2）在现行目录下完全感知不到。原创取值。
   烧伤疼痛单独最多 0.75（一度压满，相干度 3.0），现行目录下不致走火，与恍惚或失温叠加时才会（例：恍惚 × 一度 = 0.3375 → 1.35，单步也不走火、两步走火）。

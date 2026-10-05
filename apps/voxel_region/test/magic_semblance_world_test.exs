@@ -165,24 +165,55 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert energy(c) == 0.0
   end
 
+  # 只测试：真实 World + 出站消息契约，Player/Gate 为消息端点；不覆盖墙钟身体推进或 UE 展示。
+  # 手算 4 × 0.45 = 1.8；身体状态推送 request 0，不带报价/支出、不提交事务，重复系数不重复推送。
+  test "身体相干度变化主动推送本人状态，恢复无需报价或施放，重复值不推送", c do
+    identity = c.a.identity
+    seq = World.seq(c.w)
+    send(c.w, {:body_coherence, @cid, 0.45, self(), identity})
+    assert_receive {:mmo_voxel_bytes, ^identity,
+      <<0x83, 0::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, 1.8::float-64,
+        +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+    assert {:ok, %{coherence: 1.8}} = World.caster_state(c.w, @cid)
+
+    send(c.w, {:body_coherence, @cid, 0.45, self(), identity})
+    assert World.seq(c.w) == seq
+    refute_received {:mmo_voxel_bytes, ^identity, _}
+
+    # 旧 Scene 的推送可能被新 identity 的 Gate 丢弃；新 owner 相同系数也必须首次推送。
+    fresh = make_ref()
+    send(c.w, {:body_coherence, @cid, 0.45, self(), fresh})
+    assert_receive {:mmo_voxel_bytes, ^fresh,
+      <<0x83, 0::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, 1.8::float-64,
+        +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+
+    send(c.w, {:body_coherence, @cid, 1.0, self(), fresh})
+    assert_receive {:mmo_voxel_bytes, ^fresh,
+      <<0x83, 0::64, ^seq::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
+        +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+    assert World.seq(c.w) == seq
+    assert observe(c.w).casts == %{}
+    assert energy(c) == 0.0
+  end
+
   # 身体闭环 H2（Magic.md §4.4）：相干度 = 目录 4.0 × Scene 报来的相干度系数（神经 × 疼痛 × 恍惚）。恍惚 0.45 → 1.8：两步的炽热投掷（结构 S = 2 > 1.8）
   # 走火 misfire_coherence，单步取能（S = 1）照常；系数 0.5 → 相干度 2.0，S = 2 不大于它，投掷不走火。未报过按 1.0（改前恒为 4.0）。
   test "相干度系数压低相干度：恍惚 0.45 → 相干度 1.8，两步投掷走火、单步取能照常；0.5 → 2.0 不走火", c do
     assert {:ok, %{coherence: 4.0}} = World.caster_state(c.w, @cid)
     GenServer.call(c.a.player, {:coherence, 0.45})
-    send(c.w, {:body_coherence, @cid, 0.45})
+    send(c.w, {:body_coherence, @cid, 0.45, self(), c.a.identity})
     assert {:ok, %{coherence: coherence}} = World.caster_state(c.w, @cid)
     assert_in_delta coherence, 1.8, 1.0e-12
     assert {:ok, %{outcome: nil}} = draw(c, 1_000_000)
     assert {:ok, %{outcome: nil, caster: %{coherence: quoted}}} = cast(c, c.presets["hot_throw"], @forward, at: 2_000_000, action: 0)
     assert_in_delta quoted, 1.8, 1.0e-12
     # World 独立测试：模拟旧的每秒推送缓存，授权快照必须胜出且回执与裁决一致。
-    send(c.w, {:body_coherence, @cid, 0.9})
+    send(c.w, {:body_coherence, @cid, 0.9, self(), c.a.identity})
     assert {:ok, %{outcome: :misfire_coherence, caster: %{coherence: released}}} = cast(c, c.presets["hot_throw"], @forward, at: 3_000_000)
     assert_in_delta released, 1.8, 1.0e-12
     assert {:ok, %{outcome: nil}} = draw(c, 4_000_000)
     GenServer.call(c.a.player, {:coherence, 0.5})
-    send(c.w, {:body_coherence, @cid, 0.5})
+    send(c.w, {:body_coherence, @cid, 0.5, self(), c.a.identity})
     assert {:ok, %{outcome: nil}} = cast(c, c.presets["hot_throw"], @forward, at: 5_000_000)
   end
 

@@ -14,6 +14,23 @@ defmodule GateServer.VoximSpellDispatchTest do
   alias VoxelRegion.World
   alias VoxelRegion.TestSupport.{Source, Actor}
 
+  # 只测试：使用真实连接回调与可靠队列，替换最终 QUIC socket，把编码帧交给测试进程。
+  defmodule Connection do
+    use GenServer
+    alias GateServer.Session.QuicConnection
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+    def init(opts) do
+      {:ok, state} = QuicConnection.init(conn: :test, listener: opts.owner, hello: nil)
+      {:ok, %{state: %{state | identity: opts.identity, edit_ref: :session}, owner: opts.owner}}
+    end
+    def handle_info(message, context) do
+      {:noreply, state} = QuicConnection.handle_info(message, context.state)
+      for {bytes, _, _} <- :queue.to_list(state.reliable[2]),
+        do: send(context.owner, {:mmo_voxel_bytes, :session, bytes})
+      {:noreply, %{context | state: put_in(state.reliable[2], :queue.new())}}
+    end
+  end
+
   @fixtures Path.expand("../../../voxel_region/test/fixtures", __DIR__)
 
   # 只测试：Player 施法协议替身。报价 / 准备按真实 `SceneServer.Movement.Player` 的消息转给 World，World 回
@@ -32,6 +49,12 @@ defmodule GateServer.VoximSpellDispatchTest do
     def handle_call({:spell, identity, request, ingress}, from, state),
       do: spell(identity, request, ingress, from, state)
 
+    def handle_call(:hold_reply, _, state), do: {:reply, :ok, Map.put(state, :hold_reply, true)}
+    def handle_call(:release_reply, _, %{held_reply: {from, result}} = state) do
+      GenServer.reply(from, result)
+      {:reply, :ok, Map.delete(state, :held_reply)}
+    end
+
     @impl true
     def handle_cast({:spell, identity, request, ingress, from}, state),
       do: spell(identity, request, ingress, from, state)
@@ -49,11 +72,23 @@ defmodule GateServer.VoximSpellDispatchTest do
 
     def handle_info({:cast_failed, _key}, state), do: {:noreply, state}
 
+    # 只测试：控制报价调用回复的到达顺序，不延迟 World 自己的权威状态出口。
+    def handle_info({ref, result}, %{reply_waiter: {ref, from}} = state) do
+      send(state.actor.test_owner, :caster_reply_held)
+      {:noreply, Map.put(state, :held_reply, {from, result})}
+    end
+
     defp spell(identity, request, ingress, from, %{actor: %{identity: identity}} = state) do
       case request.action do
         0 ->
-          send(state.world, {:quote_cast, actor(state), request, from})
-          {:noreply, state}
+          if Map.get(state, :hold_reply, false) do
+            ref = make_ref()
+            send(state.world, {:quote_cast, Map.merge(actor(state), ingress), request, {self(), ref}})
+            {:noreply, Map.put(state, :reply_waiter, {ref, from})}
+          else
+            send(state.world, {:quote_cast, Map.merge(actor(state), ingress), request, from})
+            {:noreply, state}
+          end
 
         1 ->
           key = MmoContracts.Action.key(identity, request.client_intent_seq)
@@ -94,10 +129,13 @@ defmodule GateServer.VoximSpellDispatchTest do
     # 地面石 (0,0,0)、叶 (0,2,3)；脚 (0.5,1,0.5)、眼 (0.5,2.5,0.5)，叶在正 z 方向 3 m。
     {:ok, _} = World.apply_edits(world, [{{0, 0, 0}, 11}, {{0, 2, 3}, 28}])
 
+    identity = make_ref()
+    connection = start_supervised!({Connection, %{owner: self(), identity: identity}})
     actor = %{
       cid: 1001,
-      gate: self(),
-      identity: make_ref(),
+      gate: connection,
+      test_owner: self(),
+      identity: identity,
       refresh: &Actor.tool_context/2,
       coherence_factor: 1.0,
       eye: {0.5, 2.5, 0.5},
@@ -116,7 +154,7 @@ defmodule GateServer.VoximSpellDispatchTest do
       world_ref: world,
       received_us: 1_000_000,
       clock_node: node(),
-      sink: Sink.quic(self(), :session)
+      sink: Sink.quic(connection, :session)
     }
 
     %{world: world, state: state}
@@ -206,5 +244,45 @@ defmodule GateServer.VoximSpellDispatchTest do
     assert_receive {:mmo_voxel_bytes, :session,
                     <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
                       +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+  end
+
+  test "报价调用回复延迟时，World 仍先发报价再发身体状态；迟到回复不重发旧相干度", c do
+    :ok = GenServer.call(c.state.player, :hold_reply)
+    task = Task.async(fn -> dispatch(c.state, spell(0, Base.decode16!(@magic, case: :lower))) end)
+    assert_receive :caster_reply_held
+    assert_receive {:mmo_voxel_bytes, :session,
+      <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64, _::binary-size(32)>>}
+
+    identity = c.state.identity
+    {gate, _} = c.state.sink.ref
+    send(c.world, {:body_coherence, c.state.cid, 0.45, gate, identity})
+    assert_receive {:mmo_voxel_bytes, :session,
+      <<0x83, 0::64, 1::64, +0.0::float-64, 5.0e6::float-64, 1.8::float-64,
+        +0.0::float-64, +0.0::float-64, +0.0::float-64, +0.0::float-64>>}
+
+    :ok = GenServer.call(c.state.player, :release_reply)
+    Task.await(task)
+    refute_receive {:mmo_voxel_bytes, _, <<0x83, _::binary>>}, 50
+  end
+
+  test "同一连接跨 Scene 的施法成功先状态后结果；旧连接及关闭连接不接纳" do
+    alias GateServer.Session.QuicConnection
+    {:ok, initial} = QuicConnection.init(conn: :test, listener: self(), hello: nil)
+    moved = %{initial | identity: make_ref()}
+    request = %{request_id: 7, client_intent_seq: 8, logical_scene_id: 1, action: 1}
+    result = %{seq: 9, outcome: :misfire_coherence,
+      caster: %{seq: 9, energy_j: 100.0, capacity_j: 5.0e6, coherence: 1.8,
+        quote_j: 120.0, quote_s: 2.0, spent_j: 120.0, quote_windup_s: 0.0}}
+    message = {:mmo_spell_reply, initial.edit_ref, request, result}
+    assert {:noreply, accepted} = QuicConnection.handle_info(message, moved)
+    assert [{caster, _, _}, {receipt, _, _}] = :queue.to_list(accepted.reliable[2])
+    assert <<0x83, 7::64, 9::64, 100.0::float-64, 5.0e6::float-64, 1.8::float-64,
+      120.0::float-64, 2.0::float-64, 120.0::float-64, +0.0::float-64>> == caster
+    assert <<0x68, 7::64, 8::32, 1::64, 0, 9::64, 0::16, 17::16, "misfire_coherence">> == receipt
+
+    {:ok, reconnected} = QuicConnection.init(conn: :next, listener: self(), hello: nil)
+    assert {:noreply, ^reconnected} = QuicConnection.handle_info(message, reconnected)
+    closing = %{moved | closing: true}
+    assert {:noreply, ^closing} = QuicConnection.handle_info(message, closing)
   end
 end

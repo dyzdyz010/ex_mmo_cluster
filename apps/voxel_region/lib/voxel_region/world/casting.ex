@@ -28,7 +28,25 @@ defmodule VoxelRegion.World.Casting do
 
   # 身体闭环 H2（Magic.md §4.4）：施法者相干度 = 目录相干度 × 相干度系数（神经 × 疼痛 × 恍惚，Scene 身体推导、每秒报来）；
   # 报价回复与走火判定共用。
-  def coherence(state, cid), do: state.magic.coherence * Map.get(state.caster_coherence, cid, 1.0)
+  def coherence(state, cid) do
+    {_identity, factor} = Map.get(state.caster_coherence, cid, {nil, 1.0})
+    state.magic.coherence * factor
+  end
+
+  @doc "全局系统功能：World 的无请求状态出口；登录及身体推送都保留接纳它的连接/会话身份。"
+  def publish_caster_state({gate, identity}, request_id, caster) do
+    {:ok, bytes} = MmoContracts.Voxel.Codec.encode({:voxel_caster_state, Map.put(caster, :request_id, request_id)})
+    send(gate, {:mmo_voxel_bytes, identity, IO.iodata_to_binary(bytes)})
+    :ok
+  end
+
+  @doc "全局系统功能：成功报价/施放按 World 顺序交给连接编码，施法状态先于对应成功回执；拒绝仍由调用方返回。"
+  def publish_cast_reply(actor, request, {:ok, reply}) do
+    {gate, ref} = actor.caster_recipient
+    send(gate, {:mmo_spell_reply, ref, request, reply})
+    :ok
+  end
+  def publish_cast_reply(_actor, _request, {:error, _}), do: :ok
 
   # 拟态只能比环境热（吸热 / 制冷待世界书提案）；低于环境温度的程序与其他非法程序同为 invalid_program。
   def warm_semblance(%{steps: [%{sym: "form.semblance", args: %{"temperature_k" => t}} | _]}, ambient) when t < ambient,

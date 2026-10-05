@@ -43,8 +43,9 @@ defmodule SceneServer.Movement.CastActionTest do
   end
 
   test "准备立即互斥工具；取消先于授权时旧到期消息不能释放", c do
-    assert {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
-    assert_receive {:prepare_cast, key, _, _, _}
+    recipient = {self(), make_ref()}
+    assert {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{caster_recipient: recipient}}, c.from, c.state)
+    assert_receive {:prepare_cast, key, %{caster_recipient: ^recipient}, _, _}
     assert {:reply, {:error, :casting}, _} = Player.handle_call({:tool_context, c.id}, c.from, s)
     assert_receive {:wire, %{input_limit: 0.35, apply_tick: 41}}
 
@@ -56,6 +57,16 @@ defmodule SceneServer.Movement.CastActionTest do
     assert {:noreply, _} = Player.handle_info({:release_cast, key}, s)
     refute_receive {:authorize_cast, _, _, _}, 0
     assert_receive {:wire, %{input_limit: 1.0}}
+  end
+
+  test "报价保留入口连接的回执目标，不创建施法动作", c do
+    recipient = {self(), make_ref()}
+    request = %{c.request | action: 0}
+    assert {:noreply, state} = Player.handle_call({:spell, c.id, request, %{caster_recipient: recipient}}, c.from, c.state)
+    assert_receive {:quote_cast, %{caster_recipient: ^recipient}, ^request, _}
+    assert state.action == nil
+    assert state.action_seq == 0
+    refute_received {:prepare_cast, _, _, _, _}
   end
 
   test "授权冻结当前位置和瞄准；重复到期不重复释放，之后取消返回已释放", c do

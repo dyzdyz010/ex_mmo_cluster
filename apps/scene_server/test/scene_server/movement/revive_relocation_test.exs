@@ -11,7 +11,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   - Relocate.state 的位置 / 速度 / 着地 = SessionStart.state（出生柱不变、世界不变 → 同一落脚点）；
     apply_tick 起从它推进：位置 = 在同一世界从出生点用该 tick 的输入走一步（native `step_characters`）。
   - 非流送：apply_tick = 死亡时模拟 tick + 1；流送：先收到同一 apply_tick 的 Relocate 再收到覆盖出生点的新窗口，
-    并且 World（authority）收到 `{:body_death, cid, 脚位}` 与每秒的 `{:body_coherence, cid, 相干度系数}`（死亡身体核心 20 °C 神经 0 → 系数 0）。
+    并且 World（authority）收到 `{:body_death, cid, 脚位}` 与每秒携带 gate/identity 的 `body_coherence`（死亡身体核心 20 °C 神经 0 → 系数 0）。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Body
@@ -272,7 +272,9 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     half = start.profile.half_height
     assert_receive {:authority, {:body_death, 20, {^x, feet_y, ^z}}}, 2000
     assert_in_delta feet_y, y - half, 1.0e-12
-    assert_receive {:authority, {:body_coherence, 20, factor}}, 2000
+    gate = self()
+    identity = start.identity
+    assert_receive {:authority, {:body_coherence, 20, factor, ^gate, ^identity}}, 2000
     assert factor == 0.0
 
     # 覆盖出生点的窗口异步到达：等它排进 Player 的 FIFO 再推进 tick，窗口在下一个 tick 安装。
