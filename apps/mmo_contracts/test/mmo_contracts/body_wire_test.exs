@@ -51,16 +51,16 @@ defmodule MmoContracts.BodyWireTest do
   }
 
   test "Hello 35 rejects older wire versions" do
-    assert Session.Codec.protocol_version() == 35
+    assert Session.Codec.protocol_version() == 37
 
     {:ok, packet} =
       Session.Codec.encode(%Session.Hello{
-        protocol_version: 35,
+        protocol_version: 37,
         kernel_id: <<1::256>>,
         profile_id: <<2::256>>
       })
 
-    <<prefix::binary-size(9), 35::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 37::16, tail::binary>> = IO.iodata_to_binary(packet)
 
     for old <- [31, 32, 34] do
       assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<old::16>> <> tail)

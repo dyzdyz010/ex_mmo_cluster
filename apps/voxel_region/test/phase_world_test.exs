@@ -345,6 +345,36 @@ defmodule VoxelRegion.PhaseWorldTest do
         tool_id: if(action==2,do: 11,else: 12),coord: cell})
   end
 
+  for material <- [4,20] do
+    @tag :operation
+    @tag :empty_inventory
+    test "author sample #{material} emits actual hit and dig only on player commits", c do
+      path = Path.join(c.root,"audio-source.json")
+      File.write!(path,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,1,2],material: unquote(material)}]}))
+      assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:audio,false)
+      assert_receive {:canonical_snapshot,:audio,_}
+      assert {:ok,_} = World.liquid_experiment(c.w,path)
+      assert_receive {:canonical_delta,authored}
+      refute Map.has_key?(authored.transaction,:operation)
+      # Each pick targets current authority; the loop ends only at a committed removal.
+      ended = Enum.reduce_while(1..30,nil,fn n,_ ->
+        assert {:ok,seq} = operate(c,1,n)
+        assert_receive {:canonical_delta,%{transaction_seq: ^seq}=delta}
+        event = delta.transaction.operation
+        assert Map.drop(event,[:kind]) == %{character: 1001,client_seq: n,material: unquote(material),micro: {508,12,20}}
+        removed = Enum.any?(delta.transaction.property_states,&(&1.material == unquote(material) and &1.hp == 0.0))
+        assert event.kind == if(removed,do: 1,else: 0)
+        if removed, do: {:halt,true}, else: {:cont,false}
+      end)
+      assert ended
+      assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+      send(c.w,:liquid_commit)
+      World.seq(c.w)
+      receive do {:canonical_delta,delta} -> refute Map.has_key?(delta.transaction,:operation) after 0 -> :ok end
+    end
+  end
+
+  @tag :operation
   @tag :database_metadata
   test "normal building displaces water atomically with energy, integrity, cost and replay", c do
     assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
@@ -353,7 +383,11 @@ defmodule VoxelRegion.PhaseWorldTest do
     build = fn seq, cell -> World.production_intent(c.w, c.actor,
       %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
         action: 1, material: 15, tool_id: 1, coord: cell}) end
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:audio,false)
+    assert_receive {:canonical_snapshot,:audio,_}
     assert {:ok, seq} = build.(2, {63,1,2})
+    assert_receive {:canonical_delta,%{transaction_seq: ^seq}=delta}
+    assert delta.transaction.operation == %{character: 1001,client_seq: 2,kind: 2,material: 15,micro: {508,12,20}}
     assert seq == before.seq + 1
     after_build = observe(c.w)
     assert after_build.material_balances[{1001,15}] == before.material_balances[{1001,15}] - @capacity

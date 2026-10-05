@@ -864,7 +864,8 @@ defmodule MmoContracts.Voxel.Codec do
       end),
       <<length(coarse)::32-little>>,
       Enum.map(coarse, &encode_coarse/1),
-      encode_liquid_falls(Map.get(txn, :liquid_falls))
+      encode_liquid_falls(Map.get(txn, :liquid_falls)),
+      encode_operation(Map.get(txn, :operation))
     ]
   end
 
@@ -873,7 +874,7 @@ defmodule MmoContracts.Voxel.Codec do
     with {:ok, entries, <<n::32-little, rest::binary>>} <-
            decode_transaction_entries(rest, count, []),
          {:ok, coarse, rest} <- decode_coarse(rest, n, []),
-         {:ok, metadata} <- decode_liquid_falls(rest) do
+         {:ok, metadata} <- decode_transaction_metadata(rest, %{}) do
       {:ok, Map.merge(%{seq: seq, entries: entries, coarse: coarse}, metadata)}
     else
       _ -> {:error, :invalid_transaction}
@@ -892,21 +893,32 @@ defmodule MmoContracts.Voxel.Codec do
     ]
   end
 
-  defp decode_liquid_falls(<<>>), do: {:ok, %{}}
-
-  defp decode_liquid_falls(<<2, material::little-16, count::little-32, bytes::binary>>)
-       when material in [21, 22] and byte_size(bytes) == count * 16 do
-    transfers =
-      for <<x::little-signed-32, y::little-signed-32, z::little-signed-32,
-            units::little-32 <- bytes>>,
-          do: {{x, y, z}, units}
-
-    if Enum.all?(transfers, fn {_, units} -> units > 0 end),
-      do: {:ok, %{liquid_falls: %{material: material, transfers: transfers}}},
-      else: {:error, :invalid_transaction}
+  # Global system: ephemeral authoritative player feedback, never world truth.
+  defp encode_operation(nil), do: []
+  defp encode_operation(%{character: character, client_seq: client_seq, kind: kind,
+                         material: material, micro: {x,y,z}}) do
+    <<3, character::little-64, client_seq::little-32, kind, material::little-16,
+      x::little-signed-64, y::little-signed-64, z::little-signed-64>>
   end
 
-  defp decode_liquid_falls(_), do: {:error, :invalid_transaction}
+  defp decode_transaction_metadata(<<>>, metadata), do: {:ok, metadata}
+  defp decode_transaction_metadata(<<2, material::little-16, count::little-32,
+         bytes::binary-size(count * 16), rest::binary>>, metadata)
+       when material in [21,22] and not is_map_key(metadata, :liquid_falls) do
+    transfers = for <<x::little-signed-32, y::little-signed-32, z::little-signed-32,
+                      units::little-32 <- bytes>>, do: {{x,y,z},units}
+    if Enum.all?(transfers, fn {_,units} -> units > 0 end),
+      do: decode_transaction_metadata(rest, Map.put(metadata,:liquid_falls,%{material: material,transfers: transfers})),
+      else: {:error,:invalid_transaction}
+  end
+  defp decode_transaction_metadata(<<3, character::little-64, client_seq::little-32,
+         kind, material::little-16, x::little-signed-64, y::little-signed-64,
+         z::little-signed-64, rest::binary>>, metadata)
+       when kind in 0..2 and not is_map_key(metadata, :operation) do
+    decode_transaction_metadata(rest, Map.put(metadata,:operation,%{character: character,
+      client_seq: client_seq,kind: kind,material: material,micro: {x,y,z}}))
+  end
+  defp decode_transaction_metadata(_, _), do: {:error,:invalid_transaction}
 
   defp decode_transaction_entries(rest, 0, acc), do: {:ok, Enum.reverse(acc), rest}
 

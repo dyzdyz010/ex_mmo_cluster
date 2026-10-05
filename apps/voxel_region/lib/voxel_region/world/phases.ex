@@ -8,7 +8,7 @@ defmodule VoxelRegion.World.Phases do
   alias VoxelRegion.Damage
   alias VoxelRegion.{Combustion, Phase}
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.World.{Production, Liquids}
+  alias VoxelRegion.World.{Production, Liquids, Observation}
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
@@ -179,6 +179,7 @@ defmodule VoxelRegion.World.Phases do
       {state,%{cell=>q},%{phase_values: values}}
     end
     {state,changes,settlement}=settlement
+    settlement=Map.put(settlement,:operation,Observation.operation(actor,request,if(request.action==2 or target.hp==0.0,do: 1,else: 0),target))
     case Liquids.commit_liquid(state,changes,settlement) do
       {:ok,next}->{:reply,{:ok,next.seq},next}
       {:error,reason}->{:reply,{:error,reason},before}

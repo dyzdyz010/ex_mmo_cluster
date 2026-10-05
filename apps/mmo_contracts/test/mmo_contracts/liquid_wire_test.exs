@@ -17,11 +17,11 @@ defmodule MmoContracts.LiquidWireTest do
   end
 
   test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 35
-    hello = %Session.Hello{protocol_version: 35, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 37
+    hello = %Session.Hello{protocol_version: 37, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 35::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 37::16, tail::binary>> = packet
 
     for version <- [10, 15, 16, 17, 18, 19, 20, 21, 22] do
       assert {:error, :invalid_m1_message} =

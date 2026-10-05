@@ -3,6 +3,19 @@ defmodule VoxelRegion.LogProjectionTest do
   alias VoxelRegion.LogProjection
   alias MmoContracts.Voxel.Codec
 
+  test "operation-only commits project complete negative XYZ and never enter region history" do
+    operation = %{character: 7, client_seq: 8, kind: 0, material: 20, micro: {-9,83,-17}}
+    txn = %{seq: 8, entries: [], coarse: [], operation: operation}
+    assert VoxelRegion.PropertyObservation.project(txn, {{-1,0,-1},{0,1,0}}).operation == operation
+    for box <- [{{0,0,-1},{1,1,0}}, {{-1,1,-1},{0,2,0}}, {{-1,0,0},{0,1,1}}] do
+      refute Map.has_key?(VoxelRegion.PropertyObservation.project(txn,box), :operation)
+    end
+    refute Map.has_key?(LogProjection.region(txn,0,{-1,0,-1}), :operation)
+    assert {:voxel_log_transaction_payload,bytes} = LogProjection.message(txn,{{{-1,0,-1},{-1,0,-1}},0})
+    assert {:ok,%{operation: ^operation}} = Codec.decode_transaction(bytes)
+    assert LogProjection.message(txn,{{{0,0,-1},{0,0,-1}},0}) == nil
+  end
+
   # Test-only: pure committed-log projection. World commit/reload integration lives in damage_world_test.
   test "live full frame is scoped including empty clear; historical regions never activate transient flow" do
     txn = %{seq: 8, entries: [], coarse: [], liquid_falls: %{material: 21, transfers: [{{-1,2,3},1},{{200,2,3},524288}]}}

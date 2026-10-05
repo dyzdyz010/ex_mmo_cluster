@@ -15,7 +15,7 @@ defmodule VoxelRegion.World.Log do
   # ---- 日志
 
   def append_log(%{log: {backend, handle}} = state, txn),
-    do: backend.append(handle, attachment_metadata(state, Map.drop(txn, [:liquid_falls, :casts])))
+    do: backend.append(handle, attachment_metadata(state, Map.drop(txn, [:liquid_falls, :casts, :operation])))
 
   # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
   def attachment_metadata(state, txn),
@@ -41,7 +41,7 @@ defmodule VoxelRegion.World.Log do
     # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
     txn = if match?(%{entries: [], coarse: []}, full),
       do: Map.take(full, [:seq, :entries, :coarse]),
-      else: Map.drop(full, [:liquid_falls, :casts])
+      else: Map.drop(full, [:liquid_falls, :casts, :operation])
     %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
   end

@@ -57,6 +57,32 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     logical_scene_id: 1,action: 0,direction: {0.0,0.0,1.0},micro: {0,0,0},incarnation: 0,
     owner: {0,0},material: 0,tool_id: 1})
 
+  @tag :operation
+  test "macro prefab places at its actual center and tool dismantle emits one dig", c do
+    id = define(c,[{{1,0,0},11}])
+    assert :ok = publish(c)
+    assert {:ok,_} = World.material_supply(c.world,1001,"macro-audio",%{11=>512})
+    assert :ok = World.canonical_snapshot_and_subscribe(c.world,{{0,0,0},{1,1,1}},self(),:audio,false)
+    assert_receive {:canonical_snapshot,:audio,_}
+    assert {:ok,_} = place(c,id)
+    assert_receive {:canonical_delta,placed}
+    assert placed.transaction.operation == %{character: 1001,client_seq: 1,kind: 2,material: 11,micro: {20,12,20}}
+    :ok = GenServer.call(c.actor.player,{:eye,{2.0625,1.0625,0.0625}})
+    assert {:ok,target} = query(c)
+    request = Map.take(target,[:micro,:granularity,:incarnation,:owner,:material])
+      |> Map.merge(%{request_id: 2,client_intent_seq: 2,logical_scene_id: 1,action: 2,direction: {0.0,0.0,1.0},tool_id: 1})
+    actor = Map.merge(c.actor,%{received_us: 1_000_000,clock_node: node()})
+    assert {:ok,_} = World.tool_intent(c.world,actor,request)
+    assert_receive {:canonical_delta,removed}
+    assert removed.transaction.operation == %{character: 1001,client_seq: 2,kind: 1,material: 11,micro: {20,12,20}}
+    refute_received {:canonical_delta,_}
+    stop_supervised!(World)
+    world = start_supervised!({World,c.opts})
+    assert Enum.all?(World.entries_after(world,0), &(not Map.has_key?(&1,:operation)))
+    assert :ok = World.compact(world)
+    assert Enum.all?(World.entries_after(world,0), &(not Map.has_key?(&1,:operation)))
+  end
+
   @tag :macro_provenance
   test "new legacy micro instances retain placer through log replay and checkpoint", c do
     id = define(c,[],[{{0,0,0},11}],[],1)

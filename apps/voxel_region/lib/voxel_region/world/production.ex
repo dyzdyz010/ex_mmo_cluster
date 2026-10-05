@@ -342,7 +342,8 @@ defmodule VoxelRegion.World.Production do
               )
 
             # 溯源：这一格是 actor 花自己的材料放下的。
-            settlement = Map.put(settlement, :placed, %{request.coord => actor.cid})
+            settlement = Map.merge(settlement, %{placed: %{request.coord => actor.cid},
+              operation: Observation.operation(actor,request,2,%{material: request.material,micro: Observation.center_micro(request.coord)})})
 
             if phase_material?(state,request.material) do
               cost=liquid_capacity(state)

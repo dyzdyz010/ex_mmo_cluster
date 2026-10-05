@@ -76,6 +76,107 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   # 首次放置：编辑链上未解码的 L1+ 来源由调用方解码后随 prepared_intent 交给 World，World 归约时不再读来源。
+  @tag :operation_replica
+  test "replica forwards operation live but never replays it to a late subscriber", c do
+    assert {:ok,_} = World.apply_edit(c.w,{1,1,2},19)
+    replica = start_supervised!({VoxelRegion.Replica,authority_ref: c.w,l0_box: {{0,0,0},{1,1,1}},name: nil})
+    assert :ok = VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica,{{0,0,0},{1,1,1}},self(),:audio,false)
+    assert_receive {:canonical_snapshot,:audio,snapshot}
+    assert {:ok,target} = World.tool_intent(c.w,c.actor,c.request)
+    actor = Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
+    request = Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material])) |> Map.put(:action,1)
+    assert {:ok,seq} = World.tool_intent(c.w,actor,request)
+    assert_receive {:canonical_delta,%{transaction_seq: ^seq}=delta}
+    assert delta.transaction.operation == %{character: 1001,client_seq: 1,kind: 0,material: 19,micro: {12,12,20}}
+    assert [retained] = VoxelRegion.Replica.canonical_deltas_after(replica,snapshot.transaction_seq)
+    refute Map.has_key?(retained.transaction,:operation)
+  end
+
+  @tag :operation
+  test "attachment creation removal and host break each emit only their own committed operation", c do
+    r = b4_funded(c)
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{-1,-1,-1},{1,1,1}}, self(), :audio, false)
+    assert_receive {:canonical_snapshot,:audio,_}
+    assert {:ok,id} = World.attachment_intent(c.w,c.actor,r)
+    assert_receive {:canonical_delta,placed}
+    assert placed.transaction.operation == %{character: 1001,client_seq: 10,kind: 2,material: 19,micro: {8,8,16}}
+    assert {:ok,_} = World.attachment_intent(c.w,c.actor,%{r | action: 1,id: id,client_intent_seq: 11})
+    assert_receive {:canonical_delta,removed}
+    assert removed.transaction.operation == %{character: 1001,client_seq: 11,kind: 1,material: 19,micro: {8,8,16}}
+    assert {:ok,_} = World.attachment_intent(c.w,c.actor,%{r | client_intent_seq: 12})
+    assert_receive {:canonical_delta,_}
+    # Ray enters from the uncovered back so the target is the stone host.
+    :ok = GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,4.0}})
+    query = %{c.request | direction: {0.0,0.0,-1.0}}
+    assert {:ok,target} = World.tool_intent(c.w,c.actor,query)
+    assert target.material == 11
+    for n <- 20..23 do
+      actor = Map.merge(c.actor,%{received_us: n*500_000,clock_node: node()})
+      request = Map.merge(query,Map.take(target,[:micro,:incarnation,:owner,:material])) |> Map.merge(%{action: 1,client_intent_seq: n})
+      assert {:ok,_} = World.tool_intent(c.w,actor,request)
+      assert_receive {:canonical_delta,delta}
+      assert delta.transaction.operation == %{character: 1001,client_seq: n,kind: if(n==23,do: 1,else: 0),material: 11,micro: {12,12,20}}
+    end
+    assert World.stats(c.w).attachment_slots == 0
+    refute_received {:canonical_delta,_}
+  end
+
+  @tag :operation
+  test "mixed prefab events select the actual micro footprint and remove once", c do
+    assert {:ok,_} = World.material_supply(c.w,1001,"prefab-audio",%{11=>10,19=>10})
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{-1,-1,-1},{1,1,1}}, self(), :audio, false)
+    assert_receive {:canonical_snapshot,:audio,_}
+    place = %{definition_id: c.id,anchor: {8,8,16},orientation: 0,client_intent_seq: 20}
+    assert {:ok,birth} = World.prefab_intent(c.w,c.actor,:voxel_prefab_place_v1,place)
+    assert_receive {:canonical_delta,placed}
+    assert placed.transaction.operation == %{character: 1001,client_seq: 20,kind: 2,material: 11,micro: {8,8,16}}
+    replace = %{definition_id: c.id,instance_id: {birth,0},client_intent_seq: 21}
+    assert {:ok,replaced} = World.prefab_intent(c.w,c.actor,:voxel_prefab_replace_v1,replace)
+    assert_receive {:canonical_delta,replacement}
+    assert replacement.transaction.operation == %{character: 1001,client_seq: 21,kind: 2,material: 11,micro: {8,8,16}}
+    remove = %{instance_id: {replaced,0},client_intent_seq: 22}
+    assert {:ok,seq} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,remove)
+    assert_receive {:canonical_delta,removed}
+    assert removed.transaction.operation == %{character: 1001,client_seq: 22,kind: 1,material: 11,micro: {8,8,16}}
+    assert {:ok,^seq} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,remove)
+    refute_received {:canonical_delta,_}
+    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+  end
+
+  @tag :operation
+  test "successful hit dig and place are live once and absent from replay", c do
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{-1,-1,-1},{1,1,1}}, self(), :audio, false)
+    assert_receive {:canonical_snapshot, :audio, _}
+    assert {:ok, 1} = World.apply_edit(c.w, {1,1,2}, 19)
+    assert_receive {:canonical_delta, authored}
+    refute Map.has_key?(authored.transaction, :operation)
+    assert {:ok, target} = World.tool_intent(c.w,c.actor,c.request)
+    refute_received {:canonical_delta, _}
+    for n <- 1..4 do
+      actor = Map.merge(c.actor,%{received_us: n*500_000,clock_node: node()})
+      request = Map.merge(c.request,Map.take(target,[:micro,:incarnation,:owner,:material]))
+        |> Map.merge(%{action: 1, client_intent_seq: n})
+      assert {:ok, seq} = World.tool_intent(c.w,actor,request)
+      assert_receive {:canonical_delta, delta}
+      assert delta.transaction_seq == seq
+      assert delta.transaction.operation == %{character: 1001, client_seq: n,
+        kind: if(n == 4, do: 1, else: 0), material: 19, micro: {12,12,20}}
+      assert {:error, _} = World.tool_intent(c.w,actor,request)
+      refute_received {:canonical_delta, _}
+    end
+    build = %{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 19}
+    assert {:ok, seq} = World.production_intent(c.w,c.actor,build)
+    assert_receive {:canonical_delta, placed}
+    assert placed.transaction.operation == %{character: 1001,client_seq: 10,kind: 2,material: 19,micro: {12,12,20}}
+    assert {:ok, ^seq} = World.production_intent(c.w,c.actor,build)
+    refute_received {:canonical_delta, _}
+    assert {:error, :insufficient_material} = World.production_intent(c.w,c.actor,%{build | client_intent_seq: 11})
+    refute_received {:canonical_delta, _}
+    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+    assert :ok = World.compact(c.w)
+    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+  end
+
   test "a first build decodes cold L1+ sources outside World", c do
     assert {:ok,1}=World.material_supply(c.w,1001,"cold-l1",%{19=>4096})
     :erlang.trace_pattern({VoxelRegion.TestSupport.Source,:read,3},true,[:local])

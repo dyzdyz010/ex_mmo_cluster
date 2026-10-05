@@ -179,13 +179,13 @@ defmodule VoxelRegion.World.Tools do
                 {:reply, {:error, :ineffective_tool}, state}
 
               target.granularity == 3 and (request.action == 2 or target.hp == 0.0) ->
-                AttachmentOps.destroy_attachment(before, state, actor, target)
+                AttachmentOps.destroy_attachment(before, state, actor, request, target)
 
               request.action == 2 ->
-                dismantle_target(before, state, actor, target)
+                dismantle_target(before, state, actor, request, target)
 
               target.hp == 0.0 and target.granularity == 2 ->
-                dismantle_target(before, state, actor, target)
+                dismantle_target(before, state, actor, request, target)
 
               target.hp == 0.0 ->
                 {state, settlement} =
@@ -204,7 +204,7 @@ defmodule VoxelRegion.World.Tools do
                   before,
                   %{state | damage: Map.put(state.damage, Damage.key(target), target)},
                   target,
-                  Map.put(settlement, :recovery_cid, actor.cid)
+                  Map.merge(settlement, %{recovery_cid: actor.cid, operation: Observation.operation(actor,request,1,target)})
                 )
 
               true ->
@@ -219,6 +219,7 @@ defmodule VoxelRegion.World.Tools do
                   entries: [],
                   coarse: [],
                   property_states: [target],
+                  operation: Observation.operation(actor,request,0,target),
                   epochs: %{}
                 }
 
@@ -408,17 +409,17 @@ defmodule VoxelRegion.World.Tools do
   def leaf_component?(state, owner),
     do: not Enum.any?(state.instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) == owner end)
 
-  def dismantle_target(before, _state, _actor, %{granularity: 0, owner: {0,0}}) do
+  def dismantle_target(before, _state, _actor, _request, %{granularity: 0, owner: {0,0}}) do
     {:reply, {:error, :not_a_component}, before}
   end
 
-  def dismantle_target(before, state, actor, %{granularity: 0} = target) do
+  def dismantle_target(before, state, actor, request, %{granularity: 0} = target) do
     units = recover_units(state,target,@micro*@micro*@micro*state.material_units_per_micro)
     {state,settlement} = Production.settle_material(state,actor.cid,target.material,units)
-    destroy_target(before,state,target,Map.put(settlement,:recovery_cid,actor.cid))
+    destroy_target(before,state,target,Map.merge(settlement,%{recovery_cid: actor.cid,operation: Observation.operation(actor,request,1,target)}))
   end
 
-  def dismantle_target(before, state, actor, target) do
+  def dismantle_target(before, state, actor, request, target) do
     # 拆卸只认权威射线命中的叶子 occurrence，不采用客户端选中的父级。
     if not leaf_component?(state, target.owner) do
       {:reply, {:error, :not_a_leaf_component}, before}
@@ -438,7 +439,7 @@ defmodule VoxelRegion.World.Tools do
         {s,Map.merge(balances,settlement.material_balances)}
       end)
 
-      settlement = %{material_balances: balances, recovery_cid: actor.cid}
+      settlement = %{material_balances: balances, recovery_cid: actor.cid,operation: Observation.operation(actor,request,1,target)}
       # Include a tombstone even when a small leaf dies on its first hit.
       damaged = %{before | damage: Map.put(before.damage, Damage.key(target), target)}
 

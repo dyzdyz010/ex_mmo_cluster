@@ -117,10 +117,10 @@ defmodule MmoContracts.SourceWireTest do
   end
 
   test "Hello 23：Hello 21/22 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 35
-    hello = %Session.Hello{protocol_version: 35, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 37
+    hello = %Session.Hello{protocol_version: 37, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 35::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 37::16, tail::binary>> = packet
 
     for old <- [21, 22],
         do:

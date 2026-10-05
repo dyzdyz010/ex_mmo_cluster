@@ -16,6 +16,18 @@ defmodule VoxelRegion.World.Observation do
 
   # ---- 订阅
 
+  # Global system: the committing player path supplies the fact; no geometry inference.
+  def operation(actor, request, kind, %{material: material} = target) do
+    micro = if Map.get(target,:granularity) == 0,
+      do: center_micro(Damage.macro(target)), else: target.micro
+    %{character: actor.cid, client_seq: request.client_intent_seq,
+      kind: kind, material: material, micro: micro}
+  end
+  def center_micro({x,y,z}) do
+    n = VoxelRegion.Spatial.micro_resolution()
+    {x*n+div(n,2), y*n+div(n,2), z*n+div(n,2)}
+  end
+
   def fanout(state, entry) do
     Enum.each(state.subs, fn {pid, filter} -> send_filtered(pid, entry, filter) end)
   end

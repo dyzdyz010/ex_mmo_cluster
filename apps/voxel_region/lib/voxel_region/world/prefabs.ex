@@ -106,6 +106,7 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def player_prefab(state, actor, :voxel_prefab_place_v1, r) do
+    actor = Map.merge(actor,%{operation_request: r, operation_kind: 2})
     with {:ok, definition} <- Map.fetch(state.prefabs, r.definition_id) do
       place_tree(state, state, definition, r.anchor, r.orientation, {0, 0}, 0, [], actor)
     else
@@ -114,6 +115,7 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def player_prefab(state, actor, kind, r) do
+    actor = Map.merge(actor,%{operation_request: r, operation_kind: if(kind == :voxel_prefab_remove_v1,do: 1,else: 2)})
     with {:ok, instance} <- fetch_instance(state, r.instance_id) do
       ids = subtree_ids(state, r.instance_id)
       cells = subtree_cells(state, ids)
@@ -232,7 +234,7 @@ defmodule VoxelRegion.World.Prefabs do
           {s, Map.merge(b, paid.material_balances)}
         end)
 
-      {:ok, next, Map.put(phase,:material_balances,balances)}
+      {:ok, next, Map.merge(phase,%{material_balances: balances,operation: prefab_operation(before,state,cells,actor)})}
     else
       {:error, _} = error -> error
     end
@@ -251,6 +253,20 @@ defmodule VoxelRegion.World.Prefabs do
     end)
     {:ok,%{state | liquid_units: Liquid.apply_changes(state.liquid_units,quantities),thermal: thermal},
       Map.put(settlement,:prefab_phase_values,values)}
+  end
+
+  # Select one actual committed footprint element after support pruning, not the template anchor.
+  defp prefab_operation(before, state, cells, actor) do
+    {source, other} = if actor.operation_kind == 1, do: {before,state}, else: {state,before}
+    macro = for {cell,material} <- changed_prefab_macros(source,other,cells),
+      do: {Observation.center_micro(cell),material}
+    micro = for cell <- cells, {slot,{material,_}=value} <- Map.get(source.refined,cell,%{}),
+      Map.get(Map.get(other.refined,cell,%{}),slot) != value,
+      do: {Prefab.micro_coord(cell,slot),material}
+    attachments = for {{_,_,micro}=slot,{_,material}=value} <- source.attachments,
+      Map.get(other.attachments,slot) != value, do: {micro,material}
+    {micro,material} = Enum.min(macro ++ micro ++ attachments)
+    Observation.operation(actor,actor.operation_request,actor.operation_kind,%{micro: micro,material: material})
   end
 
   def changed_prefab_macros(state, other, cells) do

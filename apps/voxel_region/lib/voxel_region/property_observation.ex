@@ -15,6 +15,7 @@ defmodule VoxelRegion.PropertyObservation do
     value
     |> Map.update(:property_states, [], &Enum.filter(&1, fn row -> relevant?(row, box) end))
     |> project_falls(fn cell -> contains?(cell, box) end)
+    |> project_operation(fn cell -> contains?(cell, box) end)
     |> Map.update(:epochs, %{}, &Map.filter(&1, fn {cell, _} -> contains?(cell, box) end))
     |> project_protection(box)
     |> project_semblances(box)
@@ -42,5 +43,10 @@ defmodule VoxelRegion.PropertyObservation do
     %{value | liquid_falls: %{frame | transfers: Enum.filter(frame.transfers, fn {cell, _units} -> contains?.(cell) end)}}
   end
   def project_falls(value, _contains?), do: value
+  @doc "Global system: one live operation scoped by its full canonical XYZ position."
+  def project_operation(%{operation: operation} = value, contains?) do
+    if contains?.(Damage.macro(operation)), do: value, else: Map.delete(value,:operation)
+  end
+  def project_operation(value, _contains?), do: value
 
 end
