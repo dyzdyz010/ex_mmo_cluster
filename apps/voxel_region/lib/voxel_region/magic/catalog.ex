@@ -15,8 +15,8 @@ defmodule VoxelRegion.Magic.Catalog do
   比热（J/(kg·K)，热容 = 质量 × 比热）与导热率（W/(m·K)），与材料共用同一属性轴与单位。`reading`（Sevara 读法占位）与 `presets` 名称只服务客户端，不参与判定；
   预设程序在这里按同一 `Program.validate/2` 校验，保证发布的预设都可施放。
 
-  版本 2（施放前摇，Voxim Docs/Magic.md §13.6）：每个符号带 `pose`（共享连杆的 4 个关节角，整数度、45 的倍数、
-  |q| ≤ 135，解码为弧度），`cost` 为构型损耗参数 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`（去掉增量 1 的 `e0_j`），
+  版本 3（双支链施放前摇，Voxim Docs/Magic.md §13.6）：每个符号带 `pose`（双支链的 6 个关节角，整数度、5 的倍数、
+  |q| ≤ 175，解码为弧度），`cost` 为构型损耗参数 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`（去掉增量 1 的 `e0_j`），
   `caster.max_power_w` 是注能的最大输出功率。姿态只是数据，时长与损耗由 `Cost` 的通用公式算出。
   """
 
@@ -32,7 +32,8 @@ defmodule VoxelRegion.Magic.Catalog do
   @doc "目录字节 → 目录值；字节即发布物，digest 取其 sha256。"
   def decode(bytes) do
     data = Jason.decode!(bytes)
-    true = data["version"] == 2
+    true = data["version"] == 3
+    true = pose?(data["rest_pose"])
 
     caster = data["caster"]
     true = positive?(caster["capacity_j"]) and positive?(caster["coherence"])
@@ -56,8 +57,7 @@ defmodule VoxelRegion.Magic.Catalog do
       Map.new(data["symbols"], fn s ->
         true = @implemented[s["id"]] == s["category"] and positive?(s["weight"])
         true = length(Enum.uniq_by(s["slots"], & &1["name"])) == length(s["slots"])
-        true = is_list(s["pose"]) and length(s["pose"]) == 4 and
-                 Enum.all?(s["pose"], &(is_integer(&1) and rem(&1, 45) == 0 and abs(&1) <= 135))
+        true = pose?(s["pose"])
 
         slots =
           Map.new(s["slots"], fn slot ->
@@ -91,6 +91,7 @@ defmodule VoxelRegion.Magic.Catalog do
       cast_interval_us: round(limits["cast_interval_ms"] * 1000),
       max_semblances: limits["max_semblances"],
       program_max_bytes: limits["program_max_bytes"],
+      rest_pose: Enum.map(data["rest_pose"], &(&1 * :math.pi() / 180)),
       eta: cost["eta_j_s_per_rad2"] * 1.0,
       b0_w: cost["b0_w"] * 1.0,
       e_ref_j: cost["e_ref_j"] * 1.0,
@@ -102,6 +103,8 @@ defmodule VoxelRegion.Magic.Catalog do
     true = Enum.all?(data["presets"], &match?({:ok, _}, Program.validate(&1["program"], catalog)))
     catalog
   end
+
+  defp pose?(p), do: is_list(p) and length(p) == 6 and Enum.all?(p, &(is_integer(&1) and rem(&1, 5) == 0 and abs(&1) <= 175))
 
   defp positive?(value), do: is_number(value) and value > 0
 end

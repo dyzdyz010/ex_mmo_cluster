@@ -7,7 +7,7 @@ defmodule VoxelRegion.MagicTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Magic.{Catalog, Cost, Program}
 
-  @digest "ff15757b8a7bfc20954ffde9370f04f0bc22b8a0b93fe31e03eb893165c7e9b1"
+  @digest "b2fee8bafd3ae79ce1b0bb893a314176e51d5d6fb9d31129c7d191b649465703"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
   # UE 发布字节：Voxim Content/Voxel/Magic/Published/fa4435e7….json（DA_MagicCatalogV1 版本 2，Voxim 20ad218）。
   @ue "fa4435e7952e2c6391e0827d179bfda068c003bbba14d71e8e0e2358c97d1ac4"
@@ -54,29 +54,17 @@ defmodule VoxelRegion.MagicTest do
       # 姿态：缺失、3 个关节、非 45 的倍数、超出 ±135、非整数。
       symbol(c.data, "act.heat", &Map.delete(&1, "pose")),
       symbol(c.data, "act.heat", &%{&1 | "pose" => [45, -90, 90]}),
-      symbol(c.data, "act.heat", &%{&1 | "pose" => [30, -90, 90, -90]}),
-      symbol(c.data, "act.heat", &%{&1 | "pose" => [180, -90, 90, -90]}),
-      symbol(c.data, "act.heat", &%{&1 | "pose" => [45.0, -90, 90, -90]})
+      symbol(c.data, "act.heat", &%{&1 | "pose" => [31, -90, 90, -90, 0, 0]}),
+      symbol(c.data, "act.heat", &%{&1 | "pose" => [180, -90, 90, -90, 0, 0]}),
+      symbol(c.data, "act.heat", &%{&1 | "pose" => [45.0, -90, 90, -90, 0, 0]})
     ]
 
     for data <- rejected, do: assert_raise(MatchError, fn -> Catalog.decode(Jason.encode!(data)) end)
   end
 
-  test "UE 发布字节：DA_MagicCatalogV1 版本 2 的冻结样本（%.17g 数值：整数 4、0.90000000000000002）原样加载" do
-    # 冻结样本 = UE 发布文件原字节（部署进服务端的就是这份）。
+  test "old v2 UE publication is explicitly rejected" do
     bytes = File.read!(Path.expand("fixtures/magic/#{@ue}.json", __DIR__))
-    assert bytes =~ ~s("coherence":4,) and bytes =~ ~s("draw_efficiency":0.90000000000000002)
-    catalog = Catalog.decode(bytes)
-    assert Base.encode16(catalog.digest, case: :lower) == @ue
-    assert {catalog.capacity_j, catalog.coherence, catalog.draw_efficiency, catalog.max_power_w} == {5.0e6, 4.0, 0.9, 1.0e6}
-    assert {catalog.local_domain_m, catalog.cast_interval_us, catalog.program_max_bytes} == {6.0, 500_000, 2048}
-    assert {catalog.eta, catalog.b0_w, catalog.e_ref_j, catalog.alpha} == {50.0, 1000.0, 1.0e6, 1.5}
-    # 姿态同前摇契约 §3：〈散〉(−135, 135, −135, 135)°。
-    for {a, e} <- Enum.zip(catalog.symbols["act.dispel"].pose, [-0.75, 0.75, -0.75, 0.75]),
-        do: assert_in_delta(a, e * :math.pi(), 1.0e-12)
-    # 远程点火预设 0.4 MJ / 200 kW 可施放。
-    ignite = Jason.decode!(bytes)["presets"] |> Enum.find(&(&1["id"] == "ignite_near"))
-    assert {:ok, %{steps: [%{args: %{"energy_j" => 4.0e5, "power_w" => 2.0e5}}]}} = Program.validate(ignite["program"], catalog)
+    assert_raise MatchError, fn -> Catalog.decode(bytes) end
   end
 
   test "程序：两个预设合法；非法各类一律 :invalid_program", c do

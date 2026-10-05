@@ -13,7 +13,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "ff15757b8a7bfc20954ffde9370f04f0bc22b8a0b93fe31e03eb893165c7e9b1"
+  @magic "b2fee8bafd3ae79ce1b0bb893a314176e51d5d6fb9d31129c7d191b649465703"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @leaf 28

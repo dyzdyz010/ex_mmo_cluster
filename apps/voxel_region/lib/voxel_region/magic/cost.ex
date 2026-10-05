@@ -7,7 +7,7 @@ defmodule VoxelRegion.Magic.Cost do
   - 物理能量 E_phys：`energy.draw` 为 0（取能本身不耗施法者能量），`act.heat` 为其 `energy_j`；
     `form.semblance` 为拟态的热内容 C·(T − T_amb)（C = 质量 × 目录比热）加发光预算 glow_w × lifetime_s；
     `act.throw` 为动能 ½·m·v²（m 取同一程序里拟态的质量）；`act.dispel` 为 0（释放的是拟态自身剩余能量）。
-  - 构型损耗（§13.6，取代增量 1 的控制开销 e0·(…)^α）：第 i 步姿态 q_i 取目录（弧度），q_0 = 静息 (0,0,0,0)；
+  - 构型损耗（§13.6，取代增量 1 的控制开销 e0·(…)^α）：第 i 步姿态 q_i 取目录（弧度），q_0 = 目录 rest_pose（六维）；
     d_i = ‖q_i − q_{i−1}‖₂，S_i / H_i 为前 i 步权重 / 物理能量之和，维护功率 b_i = b0·(S_i + H_i/E_ref)^α；
     构型调整 T_adj = d_i·√(η/b_i)，注能 T_inj = E_i / P_max，本步损耗 L_i = 2·d_i·√(η·b_i) + b_i·T_inj。
     前摇 = Σ(T_adj + T_inj)，E_loss = Σ L_i；施放总支出 = E_phys + E_loss。
@@ -17,7 +17,6 @@ defmodule VoxelRegion.Magic.Cost do
 
   alias VoxelRegion.Magic.Semblance
 
-  @rest [0.0, 0.0, 0.0, 0.0]
 
   @doc """
   程序报价：结构权重、物理能量、构型损耗、总支出（J）、前摇（s）与各步 `{调整 s, 注能 s}`。
@@ -27,7 +26,7 @@ defmodule VoxelRegion.Magic.Cost do
     form = Enum.find_value(steps, fn %{sym: sym, args: args} -> sym == "form.semblance" && args end)
 
     {parts, _} =
-      Enum.map_reduce(steps, {@rest, 0.0, 0.0}, fn %{sym: sym} = step, {previous, s, h} ->
+      Enum.map_reduce(steps, {catalog.rest_pose, 0.0, 0.0}, fn %{sym: sym} = step, {previous, s, h} ->
         symbol = catalog.symbols[sym]
         energy = physical_j(step, form, catalog, ambient_k)
         {s, h} = {s + symbol.weight, h + energy}

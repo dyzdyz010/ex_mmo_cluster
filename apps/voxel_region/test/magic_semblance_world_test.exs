@@ -20,7 +20,7 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "1ff967d746cd0f1064924292011ce5227dcb6db03d99d45a9befa98a89908075"
+  @magic "3f8ade2382cd1e641b48a4b9e642fddf32c066514daf407efdf2d98550a7a052"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @leaf 28

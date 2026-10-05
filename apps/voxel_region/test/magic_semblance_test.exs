@@ -8,7 +8,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Semblance}
 
-  @digest "1ff967d746cd0f1064924292011ce5227dcb6db03d99d45a9befa98a89908075"
+  @digest "3f8ade2382cd1e641b48a4b9e642fddf32c066514daf407efdf2d98550a7a052"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
 
   setup_all do
@@ -37,9 +37,9 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(wrong)) end
   end
 
-  test "UE 发布字节：DA_MagicCatalogV1 版本 2 冻结样本（%.17g 数值、integer 槽、取能 2 MJ 预设）原样加载、预设可施放" do
+  test "UE 发布字节：DA_MagicCatalogV1 版本 3 双支链冻结样本（%.17g 数值、integer 槽、取能 2 MJ 预设）原样加载、预设可施放" do
     # 冻结样本 = Voxim Content/Voxel/Magic/Published/fa4435e7….json 原字节（Voxim 20ad218，部署进服务端的就是这份）。
-    digest = "fa4435e7952e2c6391e0827d179bfda068c003bbba14d71e8e0e2358c97d1ac4"
+    digest = "8b21fe22fcfae8c0b2823d5be4070c32052769b4cb401880ef10939f23856085"
     bytes = File.read!(Path.expand("fixtures/magic/#{digest}.json", __DIR__))
     assert bytes =~ ~s("radius_m":0.40000000000000002) and bytes =~ ~s("integer":true)
     catalog = Catalog.decode(bytes)
@@ -50,15 +50,15 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert Enum.sort(Map.keys(presets)) == ~w(dispel draw_1mj draw_2mj hot_throw ignite_near light_orb)
     {:ok, throw} = Program.validate(presets["hot_throw"], catalog)
     # 手算：C = 2 kg × 500 = 1000 J/K，ΔT = 1706.85 K → 1 706 850 J；½·2·12² = 144 J；E_phys = 1 706 994 J；
-    # E_loss = 14 256.08 J（前摇契约 §2 手算表，至 0.01 J）。
+    # v3: squared degree distances are 108000 and 111600; b uses unchanged physical energy.
     q = Cost.quote(throw, catalog, 293.15)
     assert_in_delta q.physical_j, 1_706_994.0, 1.0e-6
-    assert_in_delta q.loss_j, 14_256.08, 0.01
+    assert_in_delta q.loss_j, 19981.691466769178, 0.01
     {:ok, orb} = Program.validate(presets["light_orb"], catalog)
-    # 光球：C·ΔT = 0，发光 100 W × 120 s = 12 000 J；E_loss = 1290.01 J（契约表）。
+    # 光球：C·ΔT = 0，发光 100 W × 120 s = 12 000 J；v3 rest->form squared degree distance = 108000。
     q = Cost.quote(orb, catalog, 293.15)
     assert_in_delta q.physical_j, 12_000.0, 1.0e-6
-    assert_in_delta q.loss_j, 1290.01, 0.01
+    assert_in_delta q.loss_j, 2600.3677471155675, 0.01
     assert {:ok, %{steps: [%{sym: "energy.draw", args: %{"energy_j" => 2.0e6}}]}} = Program.validate(presets["draw_2mj"], catalog)
     assert {:ok, %{emit: :at_target}} = Program.validate(presets["dispel"], catalog)
   end
