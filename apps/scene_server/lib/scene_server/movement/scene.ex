@@ -720,7 +720,8 @@ defmodule SceneServer.Movement.Scene do
         _, s -> s
       end)
 
-    if rem(state.tick, 3) == 0, do: Replication.publish(state.replication, state.tick)
+    # Player仍按20Hz产结果；每个公共tick检查已到事实，避免异步结果错过机会后再等50ms。
+    Replication.publish(state.replication, state.tick)
     state
   end
 

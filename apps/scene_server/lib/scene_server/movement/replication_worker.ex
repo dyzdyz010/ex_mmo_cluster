@@ -7,7 +7,7 @@ defmodule SceneServer.Movement.ReplicationWorker do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   @doc "接管一个观察者的唯一输出路由。"
   def join(pid, identity, gate), do: GenServer.cast(pid, {:join, identity, gate})
-  @doc "消费一次公共 20 Hz 机会；每个目标保持自己的实际模拟 tick。"
+  @doc "消费一次新事实的合并发布；每个目标保持自己的实际模拟 tick。"
   def publish(pid, frame, tick), do: GenServer.cast(pid, {:publish, frame, tick})
   @doc "清理离场目标和本组观察者，可靠 Leave 不被快照替换。"
   def leave(pid, identity, id, epoch, tick),

@@ -12,7 +12,7 @@ defmodule SceneServer.Movement.Replication do
 
   @doc "消费当前 Player 发布的只读事实。"
   def result(pid, value), do: GenServer.cast(pid, {:result, value})
-  @doc "公共20Hz复制机会；不要求所有玩家到达相同 tick。"
+  @doc "每个公共tick合并已到的新事实；没有变化就不构帧，不等待所有玩家到达相同tick。"
   def publish(pid, tick), do: GenServer.cast(pid, {:publish, tick})
   @doc "在最近公共 tick 立即补发已收到的结果，供目标激活后的首帧使用。"
   def flush(pid), do: GenServer.cast(pid, :flush)
@@ -65,7 +65,15 @@ defmodule SceneServer.Movement.Replication do
       end
 
     {:ok,
-     %{members: %{}, workers: List.to_tuple(workers), neighbours: %{}, bridges: %{}, tick: 0}}
+     %{
+       members: %{},
+       workers: List.to_tuple(workers),
+       neighbours: %{},
+       bridges: %{},
+       tick: 0,
+       dirty: false,
+       local_dirty: false
+     }}
   end
 
   @impl true
@@ -83,7 +91,7 @@ defmodule SceneServer.Movement.Replication do
         }
       end)
 
-    {:reply, :ok, %{state | neighbours: neighbours}}
+    {:reply, :ok, local_changed(%{state | neighbours: neighbours})}
   end
 
   def handle_call({:take_observer, identity}, _, state) do
@@ -93,13 +101,15 @@ defmodule SceneServer.Movement.Replication do
 
   def handle_call({:put_observer, identity, gate, observer}, _, state) do
     ReplicationWorker.put_observer(observer_worker(state, identity), identity, gate, observer)
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | dirty: true}}
   end
 
   def handle_call({:handoff, old, fresh, target_scene_id}, _, state) do
     {member, members} = Map.pop!(state.members, old)
     bridge = %{value: member.value, target_scene_id: target_scene_id}
-    {:reply, :ok, %{state | members: members, bridges: Map.put(state.bridges, fresh, bridge)}}
+
+    {:reply, :ok,
+     local_changed(%{state | members: members, bridges: Map.put(state.bridges, fresh, bridge)})}
   end
 
   @impl true
@@ -126,7 +136,15 @@ defmodule SceneServer.Movement.Replication do
             end
           end)
 
-        {:noreply, %{state | neighbours: Map.put(state.neighbours, peer, next), bridges: bridges}}
+        {:noreply,
+         %{
+           state
+           | neighbours: Map.put(state.neighbours, peer, next),
+             bridges: bridges,
+             dirty: state.dirty or values != neighbour.entities or bridges != state.bridges,
+             # 源Scene即使已无成员，桥退休也必须向其他邻区导出；普通邻帧绝不回声。
+             local_dirty: state.local_dirty or bridges != state.bridges
+         }}
 
       _ ->
         {:noreply, state}
@@ -167,7 +185,7 @@ defmodule SceneServer.Movement.Replication do
       Process.demonitor(neighbour.monitor, [:flush])
     end
 
-    {:noreply, %{state | neighbours: %{}, bridges: %{}}}
+    {:noreply, local_changed(%{state | neighbours: %{}, bridges: %{}})}
   end
 
   def handle_cast({:join, identity, id, epoch, player, gate}, state) do
@@ -179,7 +197,7 @@ defmodule SceneServer.Movement.Replication do
       gate
     )
 
-    {:noreply, %{state | members: Map.put(state.members, identity, member)}}
+    {:noreply, local_changed(%{state | members: Map.put(state.members, identity, member)})}
   end
 
   def handle_cast({:result, value}, state) do
@@ -187,7 +205,10 @@ defmodule SceneServer.Movement.Replication do
       %{player: pid} = member when pid == value.player_pid ->
         if member.value == nil or value.simulation_tick >= member.value.simulation_tick do
           {:noreply,
-           %{state | members: Map.put(state.members, value.identity, %{member | value: value})}}
+           local_changed(%{
+             state
+             | members: Map.put(state.members, value.identity, %{member | value: value})
+           })}
         else
           {:noreply, state}
         end
@@ -201,14 +222,18 @@ defmodule SceneServer.Movement.Replication do
     {:noreply, publish_frame(%{state | tick: tick})}
   end
 
-  def handle_cast(:flush, state), do: {:noreply, publish_frame(state)}
+  def handle_cast(:flush, state), do: {:noreply, publish_frame(local_changed(state))}
 
   def handle_cast({:leave, identity, id, epoch, tick}, state) do
     for worker <- Tuple.to_list(state.workers),
         do: ReplicationWorker.leave(worker, identity, id, epoch, tick)
 
-    {:noreply, %{state | members: Map.delete(state.members, identity)}}
+    {:noreply, local_changed(%{state | members: Map.delete(state.members, identity)})}
   end
+
+  defp local_changed(state), do: %{state | dirty: true, local_dirty: true}
+
+  defp publish_frame(%{dirty: false} = state), do: state
 
   defp publish_frame(state) do
     tick = state.tick
@@ -216,7 +241,7 @@ defmodule SceneServer.Movement.Replication do
     bridges = Enum.map(state.bridges, fn {_, bridge} -> bridge.value end)
 
     # 本地产生的切点桥继续导出到目标确认首帧，填补 detach/activate 间隙；邻区事实不再转发。
-    if map_size(state.neighbours) > 0 do
+    if state.local_dirty and map_size(state.neighbours) > 0 do
       exported =
         Enum.map(
           entities ++ bridges,
@@ -241,7 +266,7 @@ defmodule SceneServer.Movement.Replication do
     remote = Enum.flat_map(state.neighbours, fn {_, neighbour} -> neighbour.entities end)
     frame = AOI.frame(entities ++ remote ++ bridges)
     for worker <- Tuple.to_list(state.workers), do: ReplicationWorker.publish(worker, frame, tick)
-    state
+    %{state | dirty: false, local_dirty: false}
   end
 
   defp observer_worker(state, identity) do
@@ -251,6 +276,13 @@ defmodule SceneServer.Movement.Replication do
 
   defp drop_neighbour(state, peer, scene_id) do
     bridges = Map.reject(state.bridges, fn {_, bridge} -> bridge.target_scene_id == scene_id end)
-    %{state | neighbours: Map.delete(state.neighbours, peer), bridges: bridges}
+
+    %{
+      state
+      | neighbours: Map.delete(state.neighbours, peer),
+        bridges: bridges,
+        dirty: true,
+        local_dirty: state.local_dirty or bridges != state.bridges
+    }
   end
 end

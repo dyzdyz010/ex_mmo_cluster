@@ -39,8 +39,9 @@ Scene 公开复制 PID 和 tick 零点的服务器时间；原始 monotonic 值�
 `Clock.translate_tick/2` 将源的历史 simulation_tick 转到观察者时间线，向下取整，
 不以收到消息时的 tick 替代源状态年龄。
 
-Replication 在既有 20 Hz 机会发送完整的本地角色事实，接收方只将邻区快照加入
-AOI 候选。邻区记录不成为本地观察者、不被再次转发，也不进入 Player/碰撞路径。
+Player 仍按 20 Hz 产生不可变结果；Replication 在既有 60 Hz Scene tick 检查已到变化，
+有新事实才合并构帧，本地事实或移交桥变化才向邻区发送完整帧。普通邻区导入只更新本地
+AOI 候选，不回声转发。邻区记录不成为本地观察者，也不进入 Player/碰撞路径。
 源的完整帧缺失实体时，本地 AOI 发出 Leave；旧帧被源 tick 水位拒绝；复制端点
 monitor 结束时清除其全部派生事实。canonical 源失败导致 Scene 停 Tick 时，
 Scene 显式关闭邻区通道；复制端点仍可观察，但迟到帧不能恢复已关闭的邻区。
@@ -170,8 +171,13 @@ equivalence. It also drives the real Replication owner and Gate sink into
 remain the responsibility of the real load run.
 
 The live 200-player rerun still overloaded a single relation owner. Per M3's
-observer partition, Replication now builds the shared immutable spatial frame
-once and sends it to four workers at each existing 20 Hz opportunity. The
+observer partition, Replication builds the shared immutable spatial frame
+once per changed publication and sends it to four workers. P1 checks pending
+facts on each existing 60 Hz Scene tick: a result arriving after its 20 Hz
+Player opportunity waits at most until the next Scene tick, without a barrier.
+No-change ticks skip frame construction and output; separately phased arrivals
+can produce up to 60 periodic publications per second, whose cost requires live
+measurement. Explicit first-frame flushing on target activation is unchanged. The
 Scene's consecutive entity epoch modulo four assigns each observer to exactly
 one worker; database entity IDs in the real 200-player sample occupied only
 two modulo-four buckets. Each worker owns

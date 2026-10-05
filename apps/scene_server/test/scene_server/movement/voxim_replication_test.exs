@@ -190,6 +190,56 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
     end
   end
 
+  @tag :replication_phase
+  test "公共tick合并已到结果，不重复发旧帧也不等待停滞成员" do
+    rep = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]})
+    a = value(1, 1, 1, 0.0)
+    b = value(2, 2, 1, 1.0)
+    stalled = value(3, 3, 1, 2.0)
+    for entity <- [a, b, stalled], do: join(rep, entity)
+    sample(rep, 60)
+    discard_outputs()
+
+    # 没有新结果时，60Hz检查不得变成60Hz重复AOI与快照输出。
+    for tick <- 61..63, do: sample(rep, tick)
+    refute_received {:mmo_datagram, _, _}
+    Replication.result(rep, %{a | simulation_tick: 63})
+    Replication.result(rep, %{b | simulation_tick: 63})
+    sample(rep, 64)
+    observer = a.identity
+
+    assert_receive {:mmo_datagram, ^observer,
+                    %Movement.Snapshot{server_tick: 63, records: [%{entity_id: 2}]}}
+
+    assert_receive {:mmo_datagram, ^observer,
+                    %Movement.Snapshot{server_tick: 60, records: [%{entity_id: 3}]}}
+
+    discard_outputs()
+    sample(rep, 65)
+    refute_received {:mmo_datagram, _, _}
+  end
+
+  @tag :replication_phase
+  test "晚到邻帧在下个公共tick本地可见，但不向第三邻区回声" do
+    rep = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]})
+    a = value(1, 1, 1, 0.0)
+    b = value(2, 2, 2, 1.0)
+    :ok = Replication.neighbour(rep, self(), 0, 2)
+    join(rep, a)
+    sample(rep, 60)
+    discard_outputs()
+    sample(rep, 63)
+    discard_outputs()
+    send(rep, {:neighbour_frame, self(), 63, [%{b | simulation_tick: 63}]})
+    sample(rep, 64)
+    observer = a.identity
+
+    assert_receive {:mmo_datagram, ^observer,
+                    %Movement.Snapshot{server_tick: 63, records: [%{entity_id: 2}]}}
+
+    refute_received {:neighbour_frame, ^rep, _, _}
+  end
+
   test "moving an observer keeps generation and visibility without emitting lifecycle" do
     source = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]}, id: :source)
     target = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]}, id: :target)
@@ -310,5 +360,36 @@ defmodule SceneServer.Movement.M4aReplicationTransferTest do
       send(peer, :stop)
       GenServer.stop(source)
     end
+  end
+
+  @tag :replication_phase
+  test "最后一个本地成员移交后，目标首帧仍向第三邻区导出空的已退休桥" do
+    source = start_supervised!({Replication, [sink: MmoContracts.Session.Outbound]})
+
+    target =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(target, :stop) end)
+    :ok = Replication.neighbour(source, target, 0, 2)
+    :ok = Replication.neighbour(source, self(), 0, 3)
+    a = value(1, 1, 1, 0.0)
+    fresh = %{a | identity: %{a.identity | scene_id: 2, session_epoch: 2}}
+    join(source, a)
+    sample(source, 60)
+    discard_outputs()
+    Replication.take_observer(source, a.identity)
+    :ok = Replication.handoff(source, a.identity, fresh.identity, 2)
+    sample(source, 63)
+    assert_receive {:neighbour_frame, ^source, 63, [bridge]}
+    assert bridge.identity == a.identity
+    send(source, {:neighbour_frame, target, 63, [fresh]})
+    sample(source, 64)
+    assert_receive {:neighbour_frame, ^source, 64, []}
+    sample(source, 65)
+    refute_received {:neighbour_frame, ^source, _, _}
   end
 end

@@ -190,6 +190,61 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     {p, q, start}
   end
 
+  @tag :replication_phase
+  test "20Hz结果晚于Scene发布机会到达时，下个公共tick即复制真实样本", ctx do
+    {p, q, _} = activate(ctx)
+    rep = Scene.observe(ctx.scene).replication_pid
+
+    for {player, epoch} <- [{p, 1}, {q, 2}] do
+      Player.input(
+        player,
+        identity(epoch),
+        %Movement.InputBatch{
+          identity: identity(epoch),
+          frames: [
+            %Movement.InputFrame{input_seq: 1, axis_x: 0, axis_z: 0, yaw: 0, jump_pressed: 0}
+          ]
+        },
+        Clock.now(ctx.clock)
+      )
+
+      Player.observe(player)
+    end
+
+    # 只测试：先停住Player，确认Scene的tick33发布已处理，再交付该tick的真实结果。
+    :ok = :sys.suspend(p)
+    :ok = :sys.suspend(q)
+
+    try do
+      tick(ctx, 33)
+      SceneServer.Movement.Replication.observe(rep)
+      discard_datagrams()
+    after
+      :ok = :sys.resume(p)
+      :ok = :sys.resume(q)
+    end
+
+    wait(fn ->
+      Player.observe(p).simulation_tick == 33 and Player.observe(q).simulation_tick == 33
+    end)
+
+    SceneServer.Movement.Replication.observe(rep)
+    tick(ctx, 34)
+    observer = identity(1)
+
+    assert_receive {:datagram, ^observer,
+                    %Movement.Snapshot{server_tick: 33, records: [%{entity_id: 10}]}},
+                   1000
+  end
+
+  defp discard_datagrams do
+    receive do
+      {:datagram, _, _} -> discard_datagrams()
+    after
+      0 -> :ok
+    end
+  end
+
   @tag :body_anchor
   test "入场前缀的较新食物不能让游标跳过完整快照中的旧收据", ctx do
     # 只测试：World 和存储是显式替身；验证真实 Scene/Player 的入场消息顺序，
