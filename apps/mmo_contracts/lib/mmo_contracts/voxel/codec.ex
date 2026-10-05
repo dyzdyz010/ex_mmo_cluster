@@ -1059,7 +1059,7 @@ defmodule MmoContracts.Voxel.Codec do
     {:ok, delta} = decode_protection(bytes)
     true = complete == 0 or Enum.all?(delta, fn {_, region} -> region != nil end)
     {:ok, delta} = decode_semblances(semblances)
-    true = complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil end)
+    true = complete == 0 or Enum.all?(delta, fn {_, s} -> s != nil and Map.get(s, :live, 1) == 1 end)
     {:ok, delta} = decode_casts(casts)
     true = complete == 0 or Enum.all?(delta, fn {_, c} -> c.live == 1 end)
   end
@@ -1124,29 +1124,33 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_protection(_, _, _), do: {:error, :invalid_protection}
 
   @doc """
-  魔法增量 2（协议 25）：拟态增量 `%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
-  每条 134 B、大端、按 id 升序且唯一；坐标为 canonical 米（Y-up），客户端不逐 tick 接收位置而自行插值：
+  拟态增量（协议 36）：`%{{seq, n} => 拟态 | nil}` 的线字节，放在 PropertyBatch 末尾（受保护区域之后）。
+  每条 135 B、大端、按 id 升序且唯一；坐标为 canonical 米（Y-up），客户端不逐 tick 接收位置而自行插值：
 
-      id_seq:u64, id_n:u32, live:u8 (0 删除 / 1 存在), caster:u64, shape:u8 (0 球 / 1 立方),
-      radius_m:f64, temperature_k:f64, glow_w:f64,
+      id_seq:u64, id_n:u32, live:u8 (0 普通删除 / 1 存在 / 2 碰撞结束快照), caster:u64, shape:u8 (0 球 / 1 立方),
+      break_on_hit:u8 (0 驻留 / 1 命中散解), radius_m:f64, temperature_k:f64, glow_w:f64,
       origin_x/y/z:f64, velocity_x/y/z:f64, t0_us:u64, flight_s:f64, rest_x/y/z:f64
 
   位置 p(τ) = origin + velocity·τ − ½·9.81·τ²·ŷ，τ = min((服务端时钟 µs − t0_us)/1e6, flight_s)；τ ≥ flight_s 后停在 rest。
   静止拟态 velocity 为 0、flight_s 为 0、rest = origin。t0_us 是服务端墙钟（与 SessionStart.server_time_us 同源）。
-  删除记录除 id 外全为 0。
+  碰撞结束（live = 2）携带最终完整记录且 break_on_hit 必须为 1，只能用于增量；客户端以此事件结束飞行并播放碰撞，
+  不由本地时钟或普通删除推测碰撞。热模拟按固定步推进，确认可早于墙钟轨迹终点。旧存档无 break_on_hit 时编码为 0。
+  普通删除（live = 0）除 id 外全为 0；过期与驱散不冒充碰撞。
   """
   def encode_semblances(delta) do
     for {{seq, n}, s} <- Enum.sort(delta), into: <<>> do
       case s do
         nil ->
-          <<seq::64, n::32, 0::8, 0::size(121)-unit(8)>>
+          <<seq::64, n::32, 0::8, 0::size(122)-unit(8)>>
 
         s ->
           {ox, oy, oz} = s.origin
           {vx, vy, vz} = s.velocity
           {rx, ry, rz} = s.rest
 
-          <<seq::64, n::32, 1::8, s.caster::64, s.shape::8, s.radius_m::float-64,
+          break_on_hit = if Map.get(s, :break_on_hit, false), do: 1, else: 0
+          live = Map.get(s, :live, 1)
+          <<seq::64, n::32, live::8, s.caster::64, s.shape::8, break_on_hit::8, s.radius_m::float-64,
             s.temperature_k::float-64, s.glow_w::float-64, ox::float-64, oy::float-64,
             oz::float-64, vx::float-64, vy::float-64, vz::float-64, s.t0_us::64,
             s.flight_s::float-64, rx::float-64, ry::float-64, rz::float-64>>
@@ -1160,30 +1164,32 @@ defmodule MmoContracts.Voxel.Codec do
   defp decode_semblances(<<>>, _, acc), do: {:ok, acc}
 
   defp decode_semblances(
-         <<seq::64, n::32, 0::8, zero::binary-size(121), rest::binary>>,
+         <<seq::64, n::32, 0::8, zero::binary-size(122), rest::binary>>,
          previous,
          acc
        )
        when previous == nil or {seq, n} > previous do
-    if zero == <<0::size(121)-unit(8)>>,
+    if zero == <<0::size(122)-unit(8)>>,
       do: decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, nil)),
       else: {:error, :invalid_semblance}
   end
 
   defp decode_semblances(
-         <<seq::64, n::32, 1::8, caster::64, shape::8, radius::float-64, temperature::float-64,
+         <<seq::64, n::32, live::8, caster::64, shape::8, break_on_hit::8, radius::float-64, temperature::float-64,
            glow::float-64, ox::float-64, oy::float-64, oz::float-64, vx::float-64, vy::float-64,
            vz::float-64, t0::64, flight::float-64, rx::float-64, ry::float-64, rz::float-64,
            rest::binary>>,
          previous,
          acc
        )
-       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and radius > 0 and
+       when (previous == nil or {seq, n} > previous) and shape in [0, 1] and break_on_hit in [0, 1] and
+              (live == 1 or (live == 2 and break_on_hit == 1)) and radius > 0 and
               temperature > 0 and
               glow >= 0 and flight >= 0 do
     s = %{
       caster: caster,
       shape: shape,
+      break_on_hit: break_on_hit == 1,
       radius_m: radius,
       temperature_k: temperature,
       glow_w: glow,
@@ -1194,6 +1200,7 @@ defmodule MmoContracts.Voxel.Codec do
       rest: {rx, ry, rz}
     }
 
+    s = if live == 2, do: Map.put(s, :live, 2), else: s
     decode_semblances(rest, {seq, n}, Map.put(acc, {seq, n}, s))
   end
 

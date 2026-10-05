@@ -190,9 +190,56 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
     })
   end
 
+  @tag timeout: 60_000
+  test "投射物查询读取正常输入后的当前 owner，身体接纳与重登持久去重", ctx do
+    ctx = %{ctx | config: ctx.config |> Map.put("test_combat_bounds_m", [[2, 2, 2], [14, 14, 14]])
+      |> Map.put("spawn_probes_m", [[4.5, 10, 6.5], [8.5, 10, 6.5]])}
+    [scene] = scenes(ctx, false)
+    previous = Application.get_env(:world_server, :movement_routes)
+    Application.put_env(:world_server, :movement_routes, %{1 => %{scene_ref: scene, world_ref: ctx.world, scene_epoch: 1}})
+    on_exit(fn -> Application.put_env(:world_server, :movement_routes, previous) end)
+    {a, ai} = join(scene, ctx.cid, 30)
+    {b, bi} = join(scene, ctx.cid + 1, 31)
+    {:ok, ac} = Player.hit_context(a)
+    {:ok, before} = Player.hit_context(b)
+    frames = for seq <- 1..120, do: %Movement.InputFrame{input_seq: seq, axis_x: 4000, axis_z: 0, yaw: 0, jump_pressed: 0}
+    Player.input(b, bi, %Movement.InputBatch{identity: bi, frames: frames})
+    await(fn -> {:ok, c} = Player.hit_context(b); elem(c.position, 0) > elem(before.position, 0) + 0.1 end)
+    {:ok, moved} = Player.hit_context(b)
+    {x, y, z} = moved.position
+    source = %{cid: ctx.cid, identity: ai, life_generation: ac.life_generation, position: ac.position}
+    # 只测试：查询输入是纯弹道值；不向在线 World/身体写入测试真值。
+    shot = %{projectile_source: source, origin: {x - 1.0, y, z}, velocity: {20.0, 0.0, 0.0},
+      age_s: 0.0, flight_s: 0.08, lifetime_s: 1.0, radius_m: 0.2,
+      t0_us: System.system_time(:microsecond) - 100_000}
+    [{_, _, {:sample, age, actor, {_, target}, sampled_us}}] = WorldServer.Movement.Projectile.poll([{{50, 0}, shot}], 123)
+    assert age >= 0.1 and age > shot.flight_s
+    assert sampled_us >= shot.t0_us + 100_000
+    assert target.id == ctx.cid + 1
+    assert target.position != before.position
+    assert elem(target.velocity, 0) > 0
+    hit = %{key: {123, 50, 0}, actor: actor, target: Map.take(target, [:id, :identity, :life_generation]),
+      q_j: 2094.0, position: target.position}
+    assert {:ok, receipt} = WorldServer.Movement.Projectile.deliver(hit)
+    saved = Player.body_snapshot(b)
+    assert saved.body_heat.q_j == 2094.0 and saved.body_heat.tissue_j == 2094.0
+    WorldServer.Movement.Projectile.notify(hit, 51)
+    assert_receive {:mmo_reliable, ^ai, 1, %Session.ProjectileHit{world_seq: 51, projectile_seq: 50, q_j: 2094.0} = ar}, 2_000
+    assert_receive {:mmo_reliable, ^bi, 1, %Session.ProjectileHit{world_seq: 51, projectile_seq: 50, q_j: 2094.0} = br}, 2_000
+    assert Map.drop(Map.from_struct(ar), [:identity]) == Map.drop(Map.from_struct(br), [:identity])
+    :ok = Scene.leave(scene, bi)
+    {restored, _} = join(scene, ctx.cid + 1, 32)
+    assert {:ok, ^receipt} = WorldServer.Movement.Projectile.deliver(hit)
+    assert Player.body_snapshot(restored) == saved
+    newer = %{hit | key: {123, 51, 0}}
+    assert {:error, :stale_owner} = WorldServer.Movement.Projectile.deliver(newer)
+    assert Player.body_snapshot(restored) == saved
+  end
+
   @tag :thermal
   @tag timeout: 60_000
   test "真实进食与水接触后正常越界：seal/activate 原样移交身体、收据游标和待吸收热", ctx do
+    ctx = %{ctx | config: Map.put(ctx.config, "test_combat_bounds_m", [[2, 2, 2], [14, 14, 14]])}
     [a, b] = scenes(ctx, true)
     previous = Application.get_env(:world_server, :movement_routes)
 
@@ -209,6 +256,12 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
 
     :ok = WorldServer.Movement.connect_neighbours(1, 2)
     {source, old} = join(a, ctx.cid, 10)
+    {:ok, target_context} = Player.hit_context(source)
+    hit = %{key: {123, 700, 0}, actor: %{cid: ctx.cid + 1, identity: old,
+      life_generation: 1, position: target_context.position},
+      target: Map.take(target_context, [:id, :identity, :life_generation]),
+      q_j: 20.0, position: target_context.position}
+    assert {:ok, projectile_receipt} = WorldServer.Movement.Projectile.deliver(hit)
     {:ok, food_seq} = eat(ctx.world, source, old)
     await(fn -> Player.body_snapshot(source).food_cursors[123] == food_seq end)
 
@@ -232,7 +285,7 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
     assert cut.body_heat.q_j < 0
     assert cut.food_cursors == %{123 => food_seq}
 
-    assert cut.body_exchange_j ==
+    assert cut.body_exchange_j - 20.0 ==
              World.simulation_snapshot(ctx.world, [ctx.cid], @box).thermal_accounting.body_exchange_j
 
     saved = Body.Snapshot.take(cut)
@@ -250,6 +303,9 @@ defmodule WorldServer.Movement.P0BodyWorldTest do
       refute Process.alive?(source)
       assert Scene.observe(a).character_count == 0
       assert Scene.observe(b).character_count == 1
+      assert {:ok, ^projectile_receipt} = WorldServer.Movement.Projectile.deliver(hit)
+      assert Player.body_snapshot(target) == saved
+      assert {:error, :stale_owner} = WorldServer.Movement.Projectile.deliver(%{hit | key: {123, 701, 0}})
       :ok = :sys.resume(ctx.world)
       send(ctx.world, :thermal_commit)
       World.seq(ctx.world)

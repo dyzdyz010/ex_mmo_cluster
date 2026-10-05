@@ -34,11 +34,12 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 34：Hello 29 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 37
-    hello = %Session.Hello{protocol_version: 37, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 38 rejects pre-integration wire versions" do
+    assert Session.Codec.protocol_version() == 38
+    hello = %Session.Hello{protocol_version: 38, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 37::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 38::16, tail::binary>> = IO.iodata_to_binary(packet)
+    assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<35::16>> <> tail)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
   end
 
@@ -118,18 +119,19 @@ defmodule MmoContracts.MagicWireTest do
     assert byte_size(expected) == 1 + 8 + 8 + 7 * 8
   end
 
-  # 拟态记录（每条 134 B，大端，按 id 升序）：删除 {5, 2}；存在 {9, 0}——施法者 1001、球、半径 0.4 m、2000 K、
+  # 拟态记录（每条 135 B，大端，按 id 升序）：删除 {5, 2}；存在 {9, 0}——施法者 1001、球、半径 0.4 m、2000 K、
   # 无发光、出发点 (0.5, 2.5, 1.0)、速度 (0, 0, 12)、t0 = 1.7e15 µs、飞行 1/6 s、落点 (0.5, 2.36375, 2.6)。
   @semblances Base.decode16!(
                 "0000000000000005" <>
                   "00000002" <>
                   "00" <>
-                  String.duplicate("00", 121) <>
+                  String.duplicate("00", 122) <>
                   "0000000000000009" <>
                   "00000000" <>
                   "01" <>
                   "00000000000003E9" <>
                   "00" <>
+                  "01" <>
                   "3FD999999999999A" <>
                   "409F400000000000" <>
                   "0000000000000000" <>
@@ -149,6 +151,7 @@ defmodule MmoContracts.MagicWireTest do
     {9, 0} => %{
       caster: 1001,
       shape: 0,
+      break_on_hit: true,
       radius_m: 0.4,
       temperature_k: 2000.0,
       glow_w: 0.0,
@@ -161,7 +164,7 @@ defmodule MmoContracts.MagicWireTest do
   }
 
   test "拟态记录逐字节等于手写样本；World 内部字段不上线；属性批次末尾携带，完整批次不能含删除" do
-    assert byte_size(@semblances) == 2 * 134
+    assert byte_size(@semblances) == 2 * 135
 
     internal =
       Map.new(@delta, fn {id, s} ->
@@ -171,6 +174,11 @@ defmodule MmoContracts.MagicWireTest do
     assert Codec.encode_semblances(internal) == @semblances
     assert Codec.decode_semblances(@semblances) == {:ok, @delta}
     assert Codec.encode_semblances(%{}) == <<>>
+    # Persisted pre-directive records encode as a persistent ball (zero byte at offset 22).
+    old = Map.delete(@delta[{9, 0}], :break_on_hit)
+    expected_old = @semblances |> binary_part(135, 135) |> put(22, 0)
+    assert Codec.encode_semblances(%{{9, 0} => old}) == expected_old
+    assert {:ok, %{{9, 0} => %{break_on_hit: false}}} = Codec.decode_semblances(expected_old)
 
     batch = fn complete, semblances ->
       %MmoContracts.Voxel.PropertyBatch{
@@ -191,12 +199,12 @@ defmodule MmoContracts.MagicWireTest do
 
     {:ok, frame} = Codec.encode_m1(batch.(0, @semblances))
 
-    # 帧尾：区域段 0 长度，随后拟态段 u32 长度 268 与样本，最后是空施放段（协议 27）。
-    assert binary_part(frame, byte_size(frame) - 280, 280) ==
-             <<0::32, 268::32>> <> @semblances <> <<0::32>>
+    # 帧尾：区域段 0 长度，随后拟态段 u32 长度 270 与样本，最后是空施放段（协议 27）。
+    assert binary_part(frame, byte_size(frame) - 282, 282) ==
+             <<0::32, 270::32>> <> @semblances <> <<0::32>>
 
     assert {:ok, %{semblances: @semblances}} = Codec.decode_m1(frame)
-    live = binary_part(@semblances, 134, 134)
+    live = binary_part(@semblances, 135, 135)
 
     assert {:ok, %{semblances: ^live}} =
              Codec.decode_m1(elem(Codec.encode_m1(batch.(1, live)), 1))
@@ -204,13 +212,24 @@ defmodule MmoContracts.MagicWireTest do
     assert {:error, :invalid_m1_message} =
              Codec.decode_m1(elem(Codec.encode_m1(batch.(1, @semblances)), 1))
 
+    # A collision end is a full independently frozen record with kind=2 at byte12;
+    # it survives coalescing over create and needs no preceding live record.
+    impact = Map.put(@delta[{9, 0}], :live, 2)
+    ended = put(live, 12, 2)
+    assert Codec.encode_semblances(%{{9, 0} => impact}) == ended
+    assert Codec.decode_semblances(ended) == {:ok, %{{9, 0} => impact}}
+    assert {:ok, %{semblances: ^ended}} = Codec.decode_m1(elem(Codec.encode_m1(batch.(0, ended)), 1))
+    assert {:error, :invalid_m1_message} = Codec.decode_m1(elem(Codec.encode_m1(batch.(1, ended)), 1))
+    assert {:error, :invalid_semblance} = Codec.decode_semblances(put(ended, 22, 0))
+
     # 反例：乱序、重复、未知形状、删除记录带非零字段、截断。
-    <<gone::binary-size(134), kept::binary-size(134)>> = @semblances
+    <<gone::binary-size(135), kept::binary-size(135)>> = @semblances
 
     for bad <- [
           kept <> gone,
           kept <> kept,
           put(kept, 21, 2),
+          put(kept, 22, 2),
           put(gone, 40, 1),
           binary_part(@semblances, 0, 200)
         ],

@@ -13,7 +13,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "b2fee8bafd3ae79ce1b0bb893a314176e51d5d6fb9d31129c7d191b649465703"
+  @magic "41d668f375b795ce9129dd3bbc1f9c70ce70278ded49f39c2441ccc540386bde"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @leaf 28
@@ -23,13 +23,21 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   @stone_micro {20, 12, 4}
   @leaf_micro {4, 20, 28}
 
-  setup do
+  setup context do
     root = Path.join(System.tmp_dir!(), "magic_windup_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     File.cp!(Path.join([@fixtures, "combustion", @catalog <> ".json"]), Path.join(root, "properties.json"))
     File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
     File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
+    if context[:release_hold] do
+      path = Path.join(root, "magic.json")
+      data = Jason.decode!(File.read!(path))
+      data = data |> Map.put("release_lead_s", 0.25) |> Map.update!("symbols", fn rows ->
+        Enum.map(rows, &Map.put(&1, "pose", data["rest_pose"]))
+      end)
+      File.write!(path, Jason.encode!(data))
+    end
     w = start(root)
     ground = for x <- -2..8, z <- -2..4, do: {{x, 0, z}, @stone}
     {:ok, _} = World.apply_edits(w, ground ++ [{{2, 1, 0}, @battery}, {{0, 2, 3}, @leaf}])
@@ -39,7 +47,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     :ok = stop_supervised(:world)
     OverlayLog.File.append(Path.join(root, "overlay.log"), %{seq: seq + 1, entries: [], coarse: [],
       property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]})
-    %{w: start(root), root: root, a: a, digest: Base.decode16!(@magic, case: :lower)}
+    %{w: start(root), root: root, a: a, digest: :crypto.hash(:sha256, File.read!(Path.join(root, "magic.json")))}
   end
 
   defp start(root) do
@@ -242,6 +250,30 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(w, actor, request)
     rel(energy(c), 496_653.7332355)
   end
+  @tag release_hold: true
+  test "符号已完成的出手前置段仍可取消；成功授权只付一次最终维护", c do
+    {actor, quote_request} = request(c, @stone_micro, draw(), 1_000_000, 0)
+    assert {:ok, %{caster: q}} = World.spell_intent(c.w, actor, quote_request)
+    assert q.quote_windup_s == 0.25
+    assert q.quote_j == 250.0
+    {task, request, record} = begin(c, @stone_micro, draw(), 2_000_000)
+    assert record.steps == [{0.0, 0.0}]
+    send(c.w, {:cancel_cast, {c.a.identity, request.client_intent_seq}, :cast_cancelled})
+    assert Task.await(task) == {:error, :cast_cancelled}
+    assert energy(c) == 0.0
+    settle(c, request)
+    assert observe(c.w).casts == %{}
+    {task, request, _} = begin(c, @stone_micro, draw(), 3_000_000)
+    settle(c, request)
+    assert {:ok, %{outcome: nil, caster: caster}} = Task.await(task)
+    assert caster.spent_j == 250.0
+    assert energy(c) == 899_750.0
+    seq = World.seq(c.w)
+    settle(c, request)
+    assert World.seq(c.w) == seq
+    assert energy(c) == 899_750.0
+  end
+
   test "取消不扣能、不产生作用，旧授权无效且监视随动作退休", c do
     monitors = elem(Process.info(c.w, :monitors), 1)
     {task, request, _} = begin(c, @stone_micro, draw(), 1_000_000)

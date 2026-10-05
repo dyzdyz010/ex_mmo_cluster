@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 37
+  @protocol_version 38
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -121,7 +121,10 @@ defmodule MmoContracts.Session.Codec do
          part: :utf8,
          life: :u8,
          recoverable: :u8
-       ]}
+       ]},
+    14 => {Session.ProjectileHit, [identity: :identity, world_seq: :u64,
+      projectile_seq: :u64, projectile_n: :u32, source_id: :u64, source_life: :u64,
+      target_id: :u64, target_life: :u64, q_j: :f64, position: :vec3]}
   }
 
   @moduledoc "现行认证、入场、心跳的纯字节契约；大端，入场位置仍为旧 UE/cm，不是 canonical 米。"

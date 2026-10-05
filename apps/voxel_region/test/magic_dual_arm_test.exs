@@ -7,7 +7,7 @@ defmodule VoxelRegion.MagicDualArmTest do
     path = Path.expand("fixtures/magic/ff15757b8a7bfc20954ffde9370f04f0bc22b8a0b93fe31e03eb893165c7e9b1.json", __DIR__)
     data = Jason.decode!(File.read!(path))
     rest = [150, -120, -120, 30, 120, 120]
-    data = data |> Map.put("version", 3) |> Map.put("rest_pose", rest)
+    data = data |> Map.put("version", 4) |> Map.put("release_lead_s", 0) |> Map.put("rest_pose", rest)
     data = Map.update!(data, "symbols", fn rows ->
       Enum.map(rows, &Map.put(&1, "pose", [150, -120, -120, 30, 120, 30]))
     end)

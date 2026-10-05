@@ -482,6 +482,9 @@ defmodule VoxelRegion.World do
           thermal_quiet_seq: nil,
           # 进行中的分步热提交；nil 表示两次提交之间。
           thermal_run: nil,
+          projectile_backend: Keyword.get(opts, :projectile_backend, Application.get_env(:voxel_region, :projectile_backend)),
+          projectile_timer: nil,
+          projectile_task: nil,
           material_balances: %{},
           # 魔法增量 1：施法者能量（cid => J）是权威真值，随日志／检查点持久化；不自动回复。
           caster_energy: %{},
@@ -573,6 +576,7 @@ defmodule VoxelRegion.World do
 
         state = schedule_liquid(state)
         state = Thermal.wake(state)
+        state = VoxelRegion.World.Projectiles.wake(state)
         {:ok, state}
 
       {:error, :no_world} ->
@@ -1253,6 +1257,17 @@ defmodule VoxelRegion.World do
     state = %{state | checkpoint_job: if(waiting == [], do: nil, else: %{task: nil, waiters: waiting})}
     state = state |> start_checkpoint() |> schedule_checkpoint()
     {:noreply, state, {:continue, {:checkpoint_gc, checkpoint.transaction.seq}}}
+  end
+
+  def handle_info(:projectile_tick, state) do
+    state = drain_thermal(state)
+    {:noreply, VoxelRegion.World.Projectiles.poll(%{state | projectile_timer: nil})}
+  end
+
+  def handle_info({ref, results}, %{projectile_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    state = drain_thermal(state)
+    {:noreply, VoxelRegion.World.Projectiles.accept(%{state | projectile_task: nil}, results)}
   end
 
   def handle_info(:liquid_commit, state) do

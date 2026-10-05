@@ -4,14 +4,18 @@ defmodule SceneServer.Body.Snapshot do
   @fields [:body, :body_heat, :body_exchange_j, :life_generation, :food_cursors]
 
   @doc "从身体 owner 提取不可变存档数据。"
-  def take(state), do: Map.take(state, @fields)
+  def take(state), do: Map.take(state, @fields ++ [:projectile_hits])
 
   @doc "身体与消费游标同笔编码，避免重启后重复吸收食物。"
-  def encode(state), do: :erlang.term_to_binary({:body, 1, take(state)})
+  def encode(state), do: :erlang.term_to_binary({:body, if(Map.has_key?(state, :projectile_hits), do: 2, else: 1), take(state)})
 
   @doc "持久化加载边界：只接受已知版本；损坏存档不得冒充新角色。"
   def decode!(bytes) do
     case :erlang.binary_to_term(bytes, [:safe]) do
+      {:body, 2, %{projectile_hits: hits} = saved} when is_map(hits) ->
+        base = saved |> Map.delete(:projectile_hits) |> then(&:erlang.term_to_binary({:body, 1, &1})) |> decode!()
+        Map.put(base, :projectile_hits, hits)
+
       {:body, 1,
        %{
          body: %Body{},

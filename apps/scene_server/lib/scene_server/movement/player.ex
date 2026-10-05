@@ -46,6 +46,9 @@ defmodule SceneServer.Movement.Player do
   @doc "接收 World 已授权的机械作用，目标 owner 去重并复核生命。"
   def receive_hit(player, hit), do: target_call(player, {:receive_hit, hit})
 
+  @doc "接纳 World 已冻结的投射物热转移；身体与去重收据同笔存档。"
+  def receive_projectile(player, hit), do: target_call(player, {:receive_projectile, hit})
+
   # 目标可在 Scene 候选采样后离场；目标 owner 退出是明确拒绝，不断开攻击者的请求 worker。
   defp target_call(player, request) do
     GenServer.call(player, request)
@@ -113,6 +116,7 @@ defmodule SceneServer.Movement.Player do
         tool_action: nil,
         life_generation: System.unique_integer([:positive, :monotonic]),
         body_hits: %{},
+        projectile_hits: %{},
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
@@ -154,6 +158,7 @@ defmodule SceneServer.Movement.Player do
               :movement_scales,
               :life_generation,
               :body_hits,
+              :projectile_hits,
               :tool_action
             ])
           )
@@ -341,8 +346,10 @@ defmodule SceneServer.Movement.Player do
       %{
         player: self(),
         id: state.id,
+        identity: state.identity,
         life_generation: state.life_generation,
         position: state.state.position,
+        velocity: state.state.velocity,
         profile: state.config.profile,
         scope: Map.get(state.config, :combat_scope),
         status: state.body.status,
@@ -351,6 +358,31 @@ defmodule SceneServer.Movement.Player do
   end
 
   def handle_call({:hit_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+
+  def handle_call({:receive_projectile, hit}, _, state) do
+    hits = state.projectile_hits
+
+    cond do
+      Map.has_key?(hits, hit.key) ->
+        {:reply, {:ok, Map.fetch!(hits, hit.key)}, state}
+      state.life_generation != hit.target.life_generation or state.body.status == :dead ->
+        {:reply, {:error, :stale_life}, state}
+      state.identity != hit.target.identity or state.id != hit.target.id ->
+        {:reply, {:error, :stale_owner}, state}
+      not state.ready or state.transfer != nil or state.failure != nil ->
+        {:reply, {:error, :invalid_state}, state}
+      not SceneServer.Movement.ToolHit.permitted?(Map.get(state.config, :combat_scope), hit.actor.position, state.state.position) ->
+        {:reply, {:error, :combat_not_permitted}, state}
+      true ->
+        heat = %{state.body_heat | q_j: state.body_heat.q_j + hit.q_j, tissue_j: state.body_heat.tissue_j + hit.q_j}
+        receipt = Map.take(hit, [:key, :q_j, :position, :target, :actor])
+        next = %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + hit.q_j,
+          projectile_hits: Map.put(hits, hit.key, receipt)} |> persist_body()
+        character_event(next, next, :projectile_heat, %{projectile: inspect(hit.key), source_id: hit.actor.cid,
+          target_id: state.id, target_life: state.life_generation, q_j: hit.q_j, tissue_j: hit.q_j})
+        {:reply, {:ok, receipt}, next}
+    end
+  end
 
   def handle_call({:receive_hit, hit}, _, state) do
     alias SceneServer.Movement.ToolHit
@@ -768,6 +800,19 @@ defmodule SceneServer.Movement.Player do
      persist_body(%{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q})}
   end
 
+  def handle_info({:projectile_receipt, identity, life, hit, seq}, %{identity: identity, life_generation: life} = state) do
+    {_, projectile_seq, projectile_n} = hit.key
+    receipt = %Session.ProjectileHit{identity: identity, world_seq: seq,
+      projectile_seq: projectile_seq, projectile_n: projectile_n, source_id: hit.actor.cid,
+      source_life: hit.actor.life_generation, target_id: hit.target.id,
+      target_life: hit.target.life_generation, q_j: hit.q_j, position: hit.position}
+    reliable(state, :control, receipt)
+    character_event(state, state, :projectile_receipt,
+      receipt |> Map.from_struct() |> Map.drop([:identity]) |> Map.update!(:position, &Tuple.to_list/1))
+    {:noreply, state}
+  end
+  def handle_info({:projectile_receipt, _, _, _, _}, state), do: {:noreply, state}
+
   def handle_info({:body_detached, ref}, %{body_fence: {ref, monitor, action, from}} = state) do
     Process.demonitor(monitor, [:flush])
     complete_body_detach(%{state | body_fence: nil}, action, from)
@@ -868,6 +913,7 @@ defmodule SceneServer.Movement.Player do
         :food_cursors,
         :life_generation,
         :body_hits,
+        :projectile_hits,
         :tool_action,
         :body_exchange_j,
         :movement_scales,
@@ -1086,7 +1132,8 @@ defmodule SceneServer.Movement.Player do
       position: {x, y, z},
       feet: {x, y - state.config.profile.half_height, z},
       tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
-      coherence_factor: Body.coherence_factor(state.body)
+      coherence_factor: Body.coherence_factor(state.body),
+      life_generation: state.life_generation
     }
   end
 

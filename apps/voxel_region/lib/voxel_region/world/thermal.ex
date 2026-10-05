@@ -88,7 +88,7 @@ defmodule VoxelRegion.World.Thermal do
     if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
          (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != []) do
       run = %{ref: make_ref(), damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
-        remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0,
+        remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0, impacts: %{},
         started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
       work = state.thermal_work
@@ -115,7 +115,7 @@ defmodule VoxelRegion.World.Thermal do
         burning: ThermalWork.live_burning(state.thermal_work.burning, state.damage)}}, %{run | disturbed: true}},
       else: {state, run}
     {state, run} = advance_run(state, run)
-    run = %{run | seq: state.seq, steps: run.steps + 1,
+    run = %{run | seq: state.seq, steps: run.steps + 1, impacts: state.thermal_run.impacts,
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
 
     if run.remaining < 1.0e-12 do
@@ -219,7 +219,7 @@ defmodule VoxelRegion.World.Thermal do
     {state, %{rows: rows, phase_changes: phase_changes, settled: settled,
       quiet: not run.powered and not run.disturbed and rows == [] and phase_changes == %{},
       dead: Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state, &1))),
-      semblances: semblance_txn(run.semblances, state),
+      semblances: semblance_txn(run.semblances, state, run.impacts),
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - stepped, started: run.started, steps: run.steps}}
   end
 
@@ -366,12 +366,17 @@ defmodule VoxelRegion.World.Thermal do
   end
 
   defp thermal_step(state, duration, powers) do
+    # A zero-flight hit is published at creation, then released before any simulated
+    # time passes, so observers receive its impact geometry without a glow/heat step.
+    state = Enum.reduce(semblances(state), state, fn {id, s}, state ->
+      if not Map.has_key?(s, :projectile_source) and Magic.Semblance.break_on_hit?(s), do: release_semblance(state, id, s, not Magic.Semblance.expired?(s)), else: state
+    end)
     started = System.monotonic_time(:microsecond)
     config = state.thermal.config
     state = refresh_native(state)
 
     # 魔法增量 2：已落地拟态的接触候选宏格（包围立方体覆盖或贴面）与热源同为热种子（plan 只读键）。
-    contacts = for {_, s} <- semblances(state), Magic.Semblance.landed?(s), cell <- Magic.Semblance.span(s),
+    contacts = for {_, s} <- semblances(state), not Map.has_key?(s, :projectile_source), Magic.Semblance.landed?(s), cell <- Magic.Semblance.span(s),
       into: %{}, do: {cell, nil}
     # 魔法增量 4：身体接触的世界格同为热种子。
     contacts = for {_, b} <- state.bodies, {kind, _key, cell, _g} <- b.contacts, kind in [:node, :wet], into: contacts,
@@ -441,7 +446,7 @@ defmodule VoxelRegion.World.Thermal do
         end)
       end)
 
-    semblances = Enum.sort(semblances(state))
+    semblances = semblances(state) |> Enum.reject(fn {_, s} -> Map.has_key?(s, :projectile_source) end) |> Enum.sort()
     duration = Magic.Semblance.cap(Enum.map(semblances, &elem(&1, 1)), duration)
 
     # 拟态是内核外部节点：接在世界节点之后，接触边与辐射项按同一下标追加；结果按世界节点数切分。
@@ -663,13 +668,13 @@ defmodule VoxelRegion.World.Thermal do
     {Enum.reverse(extra), Enum.reverse(edges), {pairs, sky}}
   end
 
-  # 一段演进后：写回温度、计光与流出账；到达落点转内能；寿命到期移除并把剩余能量作为有限热源释放到接触宏格。
+  # 一段演进后：写回温度、计光与流出账；到达落点转内能；寿命到期或触散命中时移除并把剩余能量作为有限热源释放。
   defp advance_semblances(state, [], _result, _done), do: state
 
   defp advance_semblances(state, semblances, result, done) do
     {kept, thermal} =
       Enum.zip(semblances, result)
-      |> Enum.reduce({%{}, state.thermal}, fn {{id, s}, {temperature, _, _}}, {kept, thermal} ->
+      |> Enum.reduce({Map.drop(semblances(state), Enum.map(semblances, &elem(&1, 0))), state.thermal}, fn {{id, s}, {temperature, _, _}}, {kept, thermal} ->
         {s, light, exchanged} = Magic.Semblance.step(s, temperature, done)
         thermal = thermal |> ledger(:semblance_light_j, light) |> ledger(:semblance_exchanged_j, exchanged)
         {Map.put(kept, id, s), thermal}
@@ -678,15 +683,20 @@ defmodule VoxelRegion.World.Thermal do
     state = %{state | thermal: Map.put(thermal, :semblances, kept)}
 
     kept
-    |> Enum.filter(fn {_, s} -> Magic.Semblance.expired?(s) end)
-    |> Enum.reduce(state, fn {id, s}, state -> release_semblance(state, id, s) end)
+    |> Enum.filter(fn {_, s} -> not Map.has_key?(s, :projectile_source) and (Magic.Semblance.expired?(s) or Magic.Semblance.break_on_hit?(s)) end)
+    |> Enum.reduce(state, fn {id, s}, state ->
+      release_semblance(state, id, s, Magic.Semblance.break_on_hit?(s) and not Magic.Semblance.expired?(s))
+    end)
   end
 
-  # 移除拟态（寿命到期或驱散）：剩余能量（显热 + 飞行动能 + 发光余量）记 semblance_released_j；已落地且接触宏格仍是
+  # 移除拟态（寿命到期、驱散或触散命中）：剩余能量（显热 + 飞行动能 + 发光余量）记 semblance_released_j；已落地且接触宏格仍是
   # 同一未细分热节点时作为有限热源落入该格（0.5 s 放完），否则（飞行中、无接触、接触格已变）散入空气。
-  defp release_semblance(state, id, s) do
+  defp release_semblance(state, id, s, impact?) do
     {cell, state} = release_cell(state, s)
-    %{state | thermal: release(state.thermal, id, s, cell)}
+    state = %{state | thermal: release(state.thermal, id, s, cell)}
+    # Immutable removal artifact for this commit only, never a live object or
+    # persistent thermal truth. It remains self-contained if create is coalesced.
+    if impact?, do: put_in(state.thermal_run.impacts[id], Map.put(s, :live, 2)), else: state
   end
 
   @doc "移除拟态并把剩余能量记账；给出落点时作为有限热源落入该格。"
@@ -714,8 +724,8 @@ defmodule VoxelRegion.World.Thermal do
   def release_cell(state, _s), do: {nil, state}
 
   # 拟态表的变化随同一事务下发（按 id：新值或 nil 删除）；持久化靠事务里的 thermal（含整张表）。
-  @doc "相对 `before` 变化的拟态随事务下发的字段。"
-  def semblance_txn(before, state) do
+  @doc "相对 `before` 的拟态变化；碰撞结束以本次提交的最终快照覆盖普通删除（不进入存活表）。"
+  def semblance_txn(before, state, impacts \\ %{}) do
     after_map = semblances(state)
 
     delta =
@@ -724,6 +734,7 @@ defmodule VoxelRegion.World.Thermal do
           into: %{},
           do: {id, Map.get(after_map, id)}
 
+    delta = Map.merge(delta, impacts)
     if delta == %{}, do: %{}, else: %{semblances: delta}
   end
 
@@ -772,7 +783,7 @@ defmodule VoxelRegion.World.Thermal do
       end)
 
     touched =
-      for {id, s} <- semblances(state), Magic.Semblance.landed?(s),
+      for {id, s} <- semblances(state), not Map.has_key?(s, :projectile_source), Magic.Semblance.landed?(s),
           VoxelRegion.BodyContact.touching?(s.rest, s.radius_m, feet, height, radius),
           do: {:semblance, id, VoxelRegion.BodyContact.touch(s.radius_m, state.magic.semblance.conductivity)}
 

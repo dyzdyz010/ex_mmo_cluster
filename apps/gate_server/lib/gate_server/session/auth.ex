@@ -10,6 +10,27 @@ defmodule GateServer.Session.Auth do
   `:auth_unavailable` / `:server_error`），由调用方编成对应错误帧，不做静默降级。
   """
 
+  @doc "正式 Join 消费一次性票据；开发免密仅在显式 Test-only 部署开放。"
+  def join(join,hello) do
+    if Application.get_env(:auth_server,:dev_auto_login,false) do
+      with {:ok,claims} <- verify_token(join.token),
+           :ok <- validate_username(claims,join.username),
+           :ok <- authorize_cid(claims,join.cid),
+           {:ok,character} <- fetch_authorized_character(claims,join.cid),do: {:ok,character,nil}
+    else
+      owner=Process.whereis(AuthServer.Connections)
+      if is_pid(owner) do
+        ref=Process.monitor(owner)
+        case AuthServer.Identity.consume_ticket(join.token,join.cid,join.username,join.scene_id,hello,self()) do
+          {:ok,%{character: character}} -> {:ok,character,ref}
+          error -> Process.demonitor(ref,[:flush]); error
+        end
+      else
+        {:error,:auth_unavailable}
+      end
+    end
+  end
+
   @doc """
   校验客户端 token，成功返回 claims；凭据不匹配为 `:mismatch`。
 

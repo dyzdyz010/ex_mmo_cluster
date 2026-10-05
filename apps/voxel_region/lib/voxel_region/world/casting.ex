@@ -18,7 +18,7 @@ defmodule VoxelRegion.World.Casting do
   # 施法者能量与蓄能石 stored_j 在同一笔事务里原子改变；施法的热只经 thermal.sources 有限热源进世界，
   # 由热内核按守恒结算。校验失败（间隔、射线、施法域、目标、脚下、权限、目标已有热源）不扣能量、不改世界。
 
-  # quote_windup_s（Hello 28）：只有报价回复带本次报价的前摇 Σ(T_adj + T_inj)（与施放计时同一 `Cost.quote` 结果），
+  # quote_windup_s（Hello 28）：只有报价回复带完整前摇（含目录出手前置段，与施放计时共用 `Cost.quote`），
   # 登录推送与施放结算后的状态为 0。
   def caster_view(state, cid, quote, spent, windup_s) do
     %{seq: state.seq, energy_j: Map.get(state.caster_energy, cid, 0.0), capacity_j: state.magic.capacity_j,
@@ -176,6 +176,9 @@ defmodule VoxelRegion.World.Casting do
     id = Map.get(request, :semblance)
 
     case Thermal.semblances(state) do
+      %{^id => %{impact_delivery: _}} ->
+        {:error, :stale_target, state}
+
       %{^id => s} ->
         {px, py, pz} = position = Magic.Semblance.current(s)
         {ex, ey, ez} = actor.eye
@@ -200,7 +203,7 @@ defmodule VoxelRegion.World.Casting do
 
     velocity =
       case throw do
-        [%{args: %{"speed_mps" => v}}] -> {dx * v, dy * v, dz * v}
+        [%{args: %{"speed_mps" => v}} | _] -> {dx * v, dy * v, dz * v}
         [] -> {0.0, 0.0, 0.0}
       end
 
@@ -219,6 +222,7 @@ defmodule VoxelRegion.World.Casting do
           node = if target.granularity == 2, do: %{target | granularity: 1}, else: target
           contact = %{target: target, key: VoxelRegion.ThermalGeometry.key(node), cell: Damage.macro(target)}
           launch = %{origin: hand, velocity: velocity, flight_s: t, rest: rest, contact: contact}
+          launch = if Enum.any?(throw, &(&1.sym == "act.break_on_hit")), do: Map.put(launch, :break_on_hit, true), else: launch
           {:ok, %{sym: "form.semblance", args: form, launch: launch,
                   cells: Enum.uniq([Magic.Semblance.macro(rest), contact.cell])}, state}
       end
@@ -324,6 +328,15 @@ defmodule VoxelRegion.World.Casting do
           {quote.loss_j, available - quote.total_j, [row], thermal}
 
         {nil, %{sym: "form.semblance", args: form, launch: launch}} ->
+          launch =
+            if Map.get(launch, :break_on_hit, false) and Map.has_key?(actor, :life_generation) and before.projectile_backend do
+              origin = if launch.flight_s == 0.0, do: launch.rest, else: launch.origin
+              %{launch | origin: origin, flight_s: form["lifetime_s"], contact: nil,
+                rest: Magic.Semblance.position(origin, launch.velocity, form["lifetime_s"])}
+              |> Map.put(:projectile_source, Map.take(actor, [:cid, :identity, :life_generation, :position]))
+            else
+              launch
+            end
           s = Magic.Semblance.new(cid, form, magic, Map.put(launch, :t0_us, System.system_time(:microsecond)))
 
           thermal =
@@ -377,7 +390,7 @@ defmodule VoxelRegion.World.Casting do
             "cells=#{inspect(effect.cells)} foot=#{inspect(Damage.macro(foot))}"
         )
 
-        {{:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent, 0.0)}}, next}
+        {{:ok, %{seq: seq, outcome: outcome, caster: caster_view(next, cid, quote, spent, 0.0)}}, VoxelRegion.World.Projectiles.wake(next)}
 
       {:error, reason} ->
         {{:error, reason}, before}

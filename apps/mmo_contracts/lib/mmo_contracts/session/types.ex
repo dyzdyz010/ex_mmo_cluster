@@ -150,6 +150,13 @@ defmodule MmoContracts.Session.BodyInjury do
   defstruct @enforce_keys
 end
 
+defmodule MmoContracts.Session.ProjectileHit do
+  @moduledoc "全局系统功能 Hello37：World 命中事务与 Player 已接纳的局部热能收据，双方字段一致；身体状态仍由 BodyState 表达。"
+  @enforce_keys [:identity, :world_seq, :projectile_seq, :projectile_n, :source_id, :source_life,
+    :target_id, :target_life, :q_j, :position]
+  defstruct @enforce_keys
+end
+
 defmodule MmoContracts.Session.ToolState do
   @moduledoc "Global system Hello35：准星人物确认或机械命中回执。source_id=0 为只读确认；有来源则双方共享动作与目标生命身份。"
   @enforce_keys [

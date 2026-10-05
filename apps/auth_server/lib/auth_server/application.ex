@@ -10,6 +10,8 @@ defmodule AuthServer.Application do
     children =
       [
         AuthServerWeb.Telemetry,
+        AuthServer.RateLimit,
+        AuthServer.Connections,
         {Phoenix.PubSub, name: AuthServer.PubSub},
         AuthServerWeb.Endpoint
       ]

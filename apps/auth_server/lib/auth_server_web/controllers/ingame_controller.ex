@@ -13,6 +13,11 @@ defmodule AuthServerWeb.IngameController do
   use AuthServerWeb, :controller
   require Logger
 
+  @doc "账号访问凭据已由 AccountAccess 校验，资源仍来自同一世界 owner。"
+  def game_regions(%{assigns: %{account_context: _}}=conn,_), do: do_voxel_regions(conn)
+  @doc "已认证账号读取同一正式 prefab 列表。"
+  def game_prefabs(%{assigns: %{account_context: _}}=conn,_), do: do_voxel_prefabs(conn)
+
   @doc """
   Demo JSON auto-login. Upserts account+character then returns a signed token.
 

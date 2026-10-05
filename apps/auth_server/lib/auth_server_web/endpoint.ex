@@ -10,6 +10,9 @@ defmodule AuthServerWeb.Endpoint do
     store: :cookie,
     key: "_auth_server_key",
     signing_salt: "Yz4kf7ap",
+    encryption_salt: "voxim-account-browser-v1",
+    http_only: true,
+    secure: Application.compile_env(:auth_server,:secure_cookies,true),
     same_site: "Lax"
   ]
 
@@ -47,7 +50,8 @@ defmodule AuthServerWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    length: 65_536
 
   plug Plug.MethodOverride
   plug Plug.Head

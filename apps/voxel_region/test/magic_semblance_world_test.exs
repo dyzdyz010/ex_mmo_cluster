@@ -20,7 +20,7 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "3f8ade2382cd1e641b48a4b9e642fddf32c066514daf407efdf2d98550a7a052"
+  @magic "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @leaf 28
@@ -30,30 +30,57 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
   @stone_micro {20, 12, 4}
   @forward {0.0, 0.0, 1.0}
 
-  setup do
+  # 只测试：人物查询与时钟受控，真实 World/NIF/事务不替换；真实 Player 接缝另在 world_server 验证。
+  defmodule ProjectileBackend do
+    def poll(shots, _cv) do
+      for {id, s} <- shots do
+        result = case s do
+          %{impact_delivery: hit} ->
+            if hit.target.identity == :hold do
+              send(__MODULE__, {:delivery_ready, self(), hit})
+              receive do :deliver -> :ok end
+            end
+            send(__MODULE__, {:projectile_delivered, hit})
+            {:delivered, {:ok, hit}}
+          _ ->
+            send(__MODULE__, {:projectile_poll, self(), id, s})
+            receive do
+              {:sample, age, target} -> {:sample, age, s.projectile_source, target, 123_000}
+            end
+        end
+        {id, s.age_s, result}
+      end
+    end
+    def notify(hit, seq), do: send(__MODULE__, {:projectile_receipt, hit, seq})
+  end
+
+  setup context do
+    backend = if context[:projectile], do: ProjectileBackend
+    if backend, do: Process.register(self(), ProjectileBackend)
     root = Path.join(System.tmp_dir!(), "magic_semblance_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     File.cp!(Path.join([@fixtures, "combustion", @catalog <> ".json"]), Path.join(root, "properties.json"))
     File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
     File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
-    w = start(root)
+    w = start(root, backend)
     ground = for x <- -2..8, z <- -2..8, do: {{x, 0, z}, @stone}
     {:ok, _} = World.apply_edits(w, ground ++ [{{2, 1, 0}, @battery}, {{0, 2, 3}, @leaf}])
-    a = actor()
+    a = actor(context[:projectile])
     {:ok, row} = World.tool_intent(w, a, query(a, @stone_micro))
     seq = World.seq(w)
     :ok = stop_supervised(:world)
     OverlayLog.File.append(Path.join(root, "overlay.log"), %{seq: seq + 1, entries: [], coarse: [],
       property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]})
-    w = start(root)
+    w = start(root, backend)
     data = Jason.decode!(File.read!(Path.join(root, "magic.json")))
     presets = Map.new(data["presets"], &{&1["id"], &1["program"]})
     %{w: w, root: root, a: a, digest: Base.decode16!(@magic, case: :lower), presets: presets}
   end
 
-  defp start(root) do
+  defp start(root, backend \\ nil) do
     start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
+      projectile_backend: backend,
       property_catalog_path: Path.join(root, "properties.json"),
       thermal_environment_path: Path.join(root, "environment.json"),
       magic_catalog_path: Path.join(root, "magic.json")]}, id: :world)
@@ -61,9 +88,10 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
 
   defp restart(c), do: (:ok = stop_supervised(:world); start(c.root))
 
-  defp actor do
+  defp actor(projectile) do
     a = %{cid: @cid, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2,
       eye: {0.5, 2.5, 0.5}, feet: {0.5, 1.0, 0.5}, tick_us: 16_667}
+    a = if projectile, do: Map.merge(a, %{life_generation: 77, position: {0.5, 1.9, 0.5}}), else: a
     Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
   end
 
@@ -115,6 +143,220 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
       ledger(s, :semblance_thermal_j) + ledger(s, :semblance_stored_j)
 
     assert_in_delta ledger(s, :semblance_created_j), out, 1.0e-6 * max(1.0, ledger(s, :semblance_created_j))
+  end
+
+  defp impact_program(c) do
+    update_in(c.presets["hot_throw"], ["steps"], fn steps ->
+      [form, toss] = steps
+      form = put_in(form, ["args", "glow_w"], 100)
+      [form, toss, %{"sym" => "act.break_on_hit", "args" => %{}}]
+    end)
+  end
+
+  @tag :projectile
+  test "实时球的热tick不预推进；当前人物先命中后只转身体一次且没有地块重复热", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, s}, 2_000
+    assert s.age_s == 0.0
+    assert s.flight_s == s.lifetime_s and s.contact == nil
+    commit(c.w)
+    assert observe(c.w).semblances[{seq, 0}].age_s == 0.0
+    refute_receive {:projectile_poll, _, _, _}, 0
+    send(worker, {:sample, 0.1, nil})
+    assert_receive {:projectile_poll, worker, {^seq, 0}, s}, 2_000
+    assert_in_delta s.age_s, 0.1, 1.0e-12
+    target = %{id: 2002, life_generation: 88, identity: :target,
+      position: {0.5, 2.0, 2.5}, velocity: {0.1, 0.0, 0.0}}
+    send(worker, {:sample, 0.2, {0.25, target}})
+    assert_receive {:projectile_delivered, hit}, 2_000
+    assert_receive {:projectile_receipt, ^hit, end_seq}, 2_000
+    assert hit.target.id == 2002 and hit.target.life_generation == 88
+    assert hit.key == {123, seq, 0}
+    final = observe(c.w)
+    refute Map.has_key?(final.semblances, {seq, 0})
+    assert ledger(final, :projectile_body_j) == hit.q_j
+    assert ledger(final, :body_exchange_j) == hit.q_j
+    assert ledger(final, :semblance_released_j) == hit.q_j
+    assert ledger(final, :projectile_rejected_j) == 0
+    closed?(final)
+    assert [%{semblances: %{{^seq, 0} => %{live: 2}}}] = World.entries_after(c.w, end_seq - 1)
+    assert ledger(commit(c.w), :projectile_body_j) == hit.q_j
+    refute_receive {:projectile_delivered, _}, 0
+  end
+
+  @tag :projectile
+  test "延迟采样覆盖已过时间；旧地形移除不在旧端点散解，新地形挡住后方人物", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    {:ok, _} = World.apply_edit(c.w, {0, 2, 3}, 0)
+    send(worker, {:sample, 0.2, nil})
+    assert_receive {:projectile_poll, worker, {^seq, 0}, s}, 2_000
+    assert_in_delta s.age_s, 0.2, 1.0e-12
+    assert s.flight_s > 0.2
+    {:ok, _} = World.apply_edit(c.w, {0, 1, 5}, @leaf)
+    target = %{id: 2002, life_generation: 88, identity: :target,
+      position: {0.5, 1.0, 6.0}, velocity: {0.1, 0.0, 0.0}}
+    send(worker, {:sample, 0.4, {0.99, target}})
+    await_projectile_gone(c.w, {seq, 0})
+    assert ledger(observe(c.w), :projectile_body_j) == 0
+    refute_receive {:projectile_delivered, _}, 0
+  end
+
+  defp await_projectile_gone(w, id, remaining \\ 200) do
+    if Map.has_key?(observe(w).semblances, id) do
+      assert remaining > 0
+      Process.sleep(10)
+      await_projectile_gone(w, id, remaining - 1)
+    end
+  end
+
+  @tag :projectile
+  test "冻结的命中不能驱散双花；World重启恢复同一目标金额后只最终释放一次", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    assert {:ok, %{seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:projectile_poll, worker, {^seq, 0}, _}, 2_000
+    target = %{id: 2002, life_generation: 88, identity: :hold,
+      position: {0.5, 2.0, 2.0}, velocity: {0.1, 0.0, 0.0}}
+    send(worker, {:sample, 0.1, {0.5, target}})
+    assert_receive {:delivery_ready, old_worker, hit}, 2_000
+    dispel = %{v: 1, target: %{kind: "aim"}, emit: "at_target", steps: [%{sym: "act.dispel", args: %{}}]}
+    assert {:error, :stale_target} = cast(c, dispel, @forward, at: 3_000_000, semblance: {seq, 0})
+    :ok = stop_supervised(:world)
+    if Process.alive?(old_worker), do: Process.exit(old_worker, :kill)
+    w = start(c.root, ProjectileBackend)
+    assert_receive {:delivery_ready, worker, ^hit}, 2_000
+    assert ledger(observe(w), :projectile_body_j) == 0
+    send(worker, :deliver)
+    assert_receive {:projectile_receipt, ^hit, _}, 2_000
+    final = observe(w)
+    refute Map.has_key?(final.semblances, {seq, 0})
+    assert ledger(final, :projectile_body_j) == hit.q_j
+    closed?(final)
+  end
+
+  @tag :impact_snapshot
+  test "触散：命中前存在，碰撞热提交删除并下发；余光和动能只释放一次，叶获热", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    # Source energy conservation catches duplicate heat deposits even if the
+    # semblance ledger itself is correct. Combustion has its own counted input.
+    source_energy = fn s -> ledger(s, :supplied_j) - ledger(s, :combustion_j) +
+      Enum.sum(for {_, source} <- s.thermal.sources, do: source.remaining_j) end
+    source_before = source_energy.(observe(c.w))
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
+    assert_receive {:canonical_snapshot, ^ref, _}, 5_000
+    assert {:ok, %{outcome: nil, seq: seq, caster: caster}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    before = observe(c.w)
+    assert %{break_on_hit: true, age_s: +0.0, kinetic_j: 144.0} = before.semblances[{seq, 0}]
+    assert_receive {:canonical_delta, %{transaction_seq: ^seq, transaction: %{semblances: %{{^seq, 0} => %{break_on_hit: true}}}}}, 5_000
+    after_hit = commit(c.w)
+    refute Map.has_key?(after_hit.semblances, {seq, 0})
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2} = impact}}}}, 5_000
+    assert impact.break_on_hit and impact.kinetic_j == 0.0
+    assert_in_delta impact.age_s, 1 / 6, 1.0e-9
+    assert impact.rest == before.semblances[{seq, 0}].rest
+    # Flight 1/6 s: 100 W * 1/6 emitted; unused 5983.333 J is released, not emitted.
+    assert_in_delta ledger(after_hit, :semblance_light_j), 100 / 6, 1.0e-8
+    assert_in_delta ledger(after_hit, :semblance_created_j), 1_712_994.0, 1.0e-6
+    released = ledger(after_hit, :semblance_released_j)
+    # Flight radiation is charged to exchanged_j; the remaining heat, kinetic and glow
+    # budget must close against the independently hand-calculated initial energy.
+    assert_in_delta released + ledger(after_hit, :semblance_exchanged_j) + 100 / 6, 1_712_994.0, 1.0e-6
+    assert_in_delta source_energy.(after_hit) - source_before, caster.spent_j - 1_712_994.0 + released, 1.0e-6
+    assert cell(after_hit, {0, 2, 3}).temperature_kelvin > 293.15
+    closed?(after_hit)
+    again = commit(c.w)
+    assert ledger(again, :semblance_released_j) == released
+    assert ledger(again, :semblance_light_j) == ledger(after_hit, :semblance_light_j)
+    assert_in_delta source_energy.(again) - source_before, caster.spent_j - 1_712_994.0 + released, 1.0e-6
+    closed?(again)
+    refute_received {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => _}}}}
+    # End snapshots are transaction artifacts: neither live snapshots nor recovery
+    # reconstruct them as another world object.
+    restarted = restart(c)
+    assert observe(restarted).semblances == %{}
+  end
+
+  @tag :impact_snapshot
+  test "触散：立即命中先广播零飞行记录，模拟开始前散解且不消耗发光预算", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
+    assert_receive {:canonical_snapshot, ^ref, _}, 5_000
+    # Standing/camera fixture only; aim ray still resolves the existing canonical leaf.
+    :ok = GenServer.call(c.a.player, {:eye, {0.5, 2.5, 2.75}})
+    assert {:ok, %{outcome: nil, seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:canonical_delta, %{transaction_seq: ^seq, transaction: %{semblances: %{{^seq, 0} => ball}}}}, 5_000
+    assert ball.flight_s == 0.0 and ball.break_on_hit
+    assert ball.rest == {0.5, 2.5, 2.6}
+    s = commit(c.w)
+    assert s.semblances == %{}
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2} = impact}}}}, 5_000
+    assert impact.rest == ball.rest and impact.flight_s == 0.0 and impact.age_s == 0.0
+    assert_in_delta ledger(s, :semblance_released_j), 1_712_994.0, 1.0e-6
+    assert ledger(s, :semblance_light_j) == 0.0
+    closed?(s)
+    s = commit(c.w)
+    assert cell(s, {0, 2, 3}).temperature_kelvin > 293.15
+    assert_in_delta ledger(s, :semblance_released_j), 1_712_994.0, 1.0e-6
+  end
+
+  @tag :impact_snapshot
+  test "触散程序在碰撞前寿命耗尽仍发普通删除，不冒充碰撞", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    program = update_in(impact_program(c), ["steps"], fn [form | tail] ->
+      [put_in(form, ["args", "lifetime_s"], 1) | tail]
+    end)
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
+    assert_receive {:canonical_snapshot, ^ref, _}, 5_000
+    assert {:ok, %{outcome: nil, seq: seq}} = cast(c, program, {0.0, 1.0, 0.0}, at: 2_000_000)
+    assert observe(c.w).semblances[{seq, 0}].flight_s > 1.0
+    for _ <- 1..3, do: commit(c.w)
+    assert observe(c.w).semblances == %{}
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => nil}}}}, 5_000
+    refute_received {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2}}}}}
+  end
+
+  @tag :impact_snapshot
+  test "触散程序碰撞前被驱散仍发普通删除，不冒充碰撞", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(c.w, @box, self(), ref)
+    assert_receive {:canonical_snapshot, ^ref, _}, 5_000
+    assert {:ok, %{outcome: nil, seq: seq}} = cast(c, impact_program(c), {0.0, 1.0, 0.0}, at: 2_000_000)
+    assert {:ok, %{outcome: nil}} = cast(c, c.presets["dispel"], @forward, at: 3_000_000, semblance: {seq, 0})
+    assert observe(c.w).semblances == %{}
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => nil}}}}, 5_000
+    refute_received {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2}}}}}
+  end
+
+  @tag :impact_replica
+  test "真实 Replica 转发碰撞结束事件并删除物化球，后来订阅的完整快照不含结束事件", c do
+    assert {:ok, _} = draw(c, 1_000_000)
+    box = {{0, 0, 0}, {1, 1, 1}}
+    replica = start_supervised!({VoxelRegion.Replica, [authority_ref: c.w, l0_box: box, name: nil]})
+    initial = VoxelRegion.Replica.seq(replica)
+    ref = make_ref()
+    :ok = VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica, box, self(), ref, false)
+    assert_receive {:canonical_snapshot, ^ref, %{semblances: %{}}}, 5_000
+    assert {:ok, %{outcome: nil, seq: seq}} = cast(c, impact_program(c), @forward, at: 2_000_000)
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{break_on_hit: true}}}}}, 5_000
+    commit(c.w)
+    assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2} = impact}}}}, 5_000
+    assert impact.rest == {0.5, 2.36375, 2.6}
+
+    later = make_ref()
+    :ok = VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica, box, self(), later, false)
+    assert_receive {:canonical_snapshot, ^later, snapshot}, 5_000
+    assert snapshot.semblances == %{}
+    # History keeps the immutable event for prefix catch-up, while the snapshot
+    # is strictly the current live set; both are consumed by actual Scene paths.
+    assert Enum.any?(VoxelRegion.Replica.canonical_deltas_after(replica, initial), fn delta ->
+      get_in(delta.transaction, [:semblances, {seq, 0}]) == impact
+    end)
   end
 
   test "炽热拟态投掷：r 0.4 m、2 kg、2000 K 球以 12 m/s 投向孤立叶 → 落点精确、叶着火；支出与账闭合", c do

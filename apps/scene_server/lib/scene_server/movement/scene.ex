@@ -22,6 +22,9 @@ defmodule SceneServer.Movement.Scene do
   @doc "当前战斗场成员路由；只在工具请求时使用，身体事实仍由 Player 提供。"
   def tool_candidates(scene), do: GenServer.call(scene, :tool_candidates)
 
+  @doc "查询此 Scene 当前持有的角色 owner；角色可正在移交，接纳权限由 Player 判断。"
+  def character_owner(scene, cid), do: GenServer.call(scene, {:character_owner, cid})
+
   @doc "公开已初始化的邻区复制端点和时钟锚点；不公开碰撞资源或可写角色。"
   def neighbour_endpoint(scene), do: GenServer.call(scene, :neighbour_endpoint)
 
@@ -195,6 +198,13 @@ defmodule SceneServer.Movement.Scene do
     if state.config.combat_scope == nil,
       do: {:reply, {:error, :combat_not_permitted}, state},
       else: {:reply, {:ok, for({_, c} <- state.characters, do: c.player)}, state}
+  end
+
+  def handle_call({:character_owner, cid}, _, state) do
+    owner = Enum.find_value(state.characters, fn {identity, c} ->
+      if c.id == cid, do: %{identity: identity, player: c.player}
+    end)
+    {:reply, owner, state}
   end
 
   def handle_call({:connect_neighbour, peer, offset}, _, state) do
@@ -519,6 +529,14 @@ defmodule SceneServer.Movement.Scene do
     do: {:noreply, drop(state, identity, reason)}
 
   @impl true
+  def handle_info({:projectile_receipt, id, identity, life, hit, seq}, state) do
+    case Map.get(state.characters, identity) do
+      %{id: ^id, player: player} -> send(player, {:projectile_receipt, identity, life, hit, seq})
+      _ -> :ok
+    end
+    {:noreply, state}
+  end
+
   def handle_info({:canonical_snapshot, _, _}, %{failure: reason} = state) when reason != nil,
     do: {:noreply, state}
 

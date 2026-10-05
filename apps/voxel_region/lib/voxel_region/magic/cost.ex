@@ -6,11 +6,11 @@ defmodule VoxelRegion.Magic.Cost do
 
   - 物理能量 E_phys：`energy.draw` 为 0（取能本身不耗施法者能量），`act.heat` 为其 `energy_j`；
     `form.semblance` 为拟态的热内容 C·(T − T_amb)（C = 质量 × 目录比热）加发光预算 glow_w × lifetime_s；
-    `act.throw` 为动能 ½·m·v²（m 取同一程序里拟态的质量）；`act.dispel` 为 0（释放的是拟态自身剩余能量）。
+    `act.throw` 为动能 ½·m·v²（m 取同一程序里拟态的质量）；`act.dispel` 与 `act.break_on_hit` 为 0（释放的是拟态自身剩余能量）。
   - 构型损耗（§13.6，取代增量 1 的控制开销 e0·(…)^α）：第 i 步姿态 q_i 取目录（弧度），q_0 = 目录 rest_pose（六维）；
     d_i = ‖q_i − q_{i−1}‖₂，S_i / H_i 为前 i 步权重 / 物理能量之和，维护功率 b_i = b0·(S_i + H_i/E_ref)^α；
     构型调整 T_adj = d_i·√(η/b_i)，注能 T_inj = E_i / P_max，本步损耗 L_i = 2·d_i·√(η·b_i) + b_i·T_inj。
-    前摇 = Σ(T_adj + T_inj)，E_loss = Σ L_i；施放总支出 = E_phys + E_loss。
+    前摇 = Σ(T_adj + T_inj) + release_lead_s，E_loss = Σ L_i + b_final·release_lead_s；施放总支出 = E_phys + E_loss。
   - S > 相干度 → `:misfire_coherence`（先判）；可支付能量 < 总支出 → `:misfire_energy`。
   - 取能：ΔE = min(请求, 石储能, 容量 − 余额)；施法者得 η·ΔE，(1 − η)·ΔE 为取能损耗。
   """
@@ -25,7 +25,7 @@ defmodule VoxelRegion.Magic.Cost do
   def quote(%{steps: steps}, catalog, ambient_k \\ nil) do
     form = Enum.find_value(steps, fn %{sym: sym, args: args} -> sym == "form.semblance" && args end)
 
-    {parts, _} =
+    {parts, {_, structure, stored}} =
       Enum.map_reduce(steps, {catalog.rest_pose, 0.0, 0.0}, fn %{sym: sym} = step, {previous, s, h} ->
         symbol = catalog.symbols[sym]
         energy = physical_j(step, form, catalog, ambient_k)
@@ -38,16 +38,17 @@ defmodule VoxelRegion.Magic.Cost do
       end)
 
     physical = Enum.sum(for {e, _, _, _} <- parts, do: e) * 1.0
-    loss = Enum.sum(for {_, _, _, l} <- parts, do: l) * 1.0
+    hold = catalog.b0_w * :math.pow(structure + stored / catalog.e_ref_j, catalog.alpha) * catalog.release_lead_s
+    loss = Enum.sum(for {_, _, _, l} <- parts, do: l) + hold
 
-    %{structure: Enum.sum(for %{sym: sym} <- steps, do: catalog.symbols[sym].weight * 1.0),
+    %{structure: structure,
       physical_j: physical, loss_j: loss, total_j: physical + loss,
-      windup_s: Enum.sum(for {_, a, i, _} <- parts, do: a + i) * 1.0,
+      windup_s: Enum.sum(for {_, a, i, _} <- parts, do: a + i) + catalog.release_lead_s,
       steps: for({_, a, i, _} <- parts, do: {a, i})}
   end
 
   defp physical_j(%{sym: "act.heat", args: %{"energy_j" => energy}}, _, _, _), do: energy
-  defp physical_j(%{sym: sym}, _, _, _) when sym in ["energy.draw", "act.dispel"], do: 0.0
+  defp physical_j(%{sym: sym}, _, _, _) when sym in ["energy.draw", "act.dispel", "act.break_on_hit"], do: 0.0
 
   defp physical_j(%{sym: "form.semblance", args: form}, _, catalog, ambient), do: Semblance.form_j(form, catalog, ambient)
   defp physical_j(%{sym: "act.throw", args: %{"speed_mps" => v}}, form, _, _), do: Semblance.kinetic_j(form["mass_kg"], v)

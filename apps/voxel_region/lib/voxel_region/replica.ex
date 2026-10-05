@@ -176,6 +176,7 @@ defmodule VoxelRegion.Replica do
     end)
     semblances = Enum.reduce(Map.get(delta.transaction, :semblances, %{}), state.semblances, fn
       {id, nil}, acc -> Map.delete(acc, id)
+      {id, %{live: 2}}, acc -> Map.delete(acc, id)
       {id, semblance}, acc -> Map.put(acc, id, semblance)
     end)
     casts = Enum.reduce(Map.get(delta.transaction, :casts, %{}), state.casts, fn

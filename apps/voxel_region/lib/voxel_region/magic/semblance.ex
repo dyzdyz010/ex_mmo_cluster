@@ -7,7 +7,8 @@ defmodule VoxelRegion.Magic.Semblance do
   施法者 caster、形状 shape（0 球 / 1 立方，radius_m 为半径或半边长）、质量 mass_kg、热容 capacity（= 质量 × 目录比热，J/K）、
   温度 temperature_k、发光 glow_w、寿命 lifetime_s、已存在模拟时长 age_s、飞行中动能 kinetic_j、
   运动 origin / velocity / t0_us（服务端墙钟 µs，仅供客户端插值）/ flight_s（落点时刻，模拟秒）/ rest（落点）、
-  命中 contact（nil 或 `%{target, key, cell}`：弹道命中的热节点，只用作到期 / 驱散时剩余能量的落点）。solid 恒为 false（实体拟态是增量 5）。
+  命中 contact（nil 或 `%{target, key, cell}`：弹道命中的热节点，作为散解时剩余能量的落点）。可选 `break_on_hit: true`
+  由〈触散〉编译而来，碰撞端点散解；没有该键的既有记录保持驻留。solid 恒为 false（实体拟态是增量 5）。
 
   - 弹道：先走眼 → 手直线段，再自手边按 p(t) = hand + v·t − ½·g·t²·ŷ（g = 9.81 m/s²，Y-up）以 0.05 s 弦段求交；
     命中面精确解出穿越时刻（x/z 面线性、y 面二次），拟态中心停在命中点沿面法线外移一个半径处。施法时对当时世界求交，
@@ -23,7 +24,7 @@ defmodule VoxelRegion.Magic.Semblance do
     多条接触时按接触面积比例分摊，其余 (1 − F) 对天空；立方体接触面整面导热，其余面全部对天空（F = 0）。
     飞行中或无接触时全部暴露面对天空。
   - 剩余能量 = C·(T − T_amb) + 飞行中动能 + 发光余量 glow_w·(lifetime − age)。发光按 W·dt 计入光账（不进热账），
-    寿命到期（即发光预算耗尽）移除，剩余能量作为有限热源释放。
+    寿命到期、驱散或带指令的碰撞时移除，剩余能量作为有限热源释放；未用发光预算散解时进入热账。
   """
 
   @gravity 9.81
@@ -131,6 +132,35 @@ defmodule VoxelRegion.Magic.Semblance do
   defp rest(point, axis, sign, radius), do: put_elem(point, axis, elem(point, axis) - sign * radius)
 
   defp distance({ax, ay, az}, {bx, by, bz}), do: :math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
+
+  @doc "当前飞行弦段的 canonical 首接触参数、球心落点与节点；地形仍沿既有中心射线边界。"
+  def segment(a, b, radius, state, cast) do
+    length = distance(a, b)
+    if length == 0.0 do
+      {nil, state}
+    else
+      d = direction(a, b, length)
+      case cast.(a, d, length, state) do
+        {nil, state} -> {nil, state}
+        {{target, micro}, state} ->
+          {axis, sign, s} = entry(a, d, micro)
+          point = a |> advance(d, s) |> put_elem(axis, plane(micro, axis, sign))
+          {{s / length, rest(point, axis, sign, radius), target}, state}
+      end
+    end
+  end
+
+  @doc "按已过墙钟区间切成最多 50ms 的重力弦段；不截掉 owner/RPC 处理所经过的时间。"
+  def flight_segments(s, ending) do
+    Stream.unfold(s.age_s, fn t ->
+      if t >= ending - @epsilon do
+        nil
+      else
+        next = min(t + @step_s, ending)
+        {{t, next, position(s.origin, s.velocity, t), position(s.origin, s.velocity, next)}, next}
+      end
+    end) |> Enum.to_list()
+  end
   defp direction({ax, ay, az}, {bx, by, bz}, l), do: {(bx - ax) / l, (by - ay) / l, (bz - az) / l}
   defp advance({x, y, z}, {dx, dy, dz}, s), do: {x + dx * s, y + dy * s, z + dz * s}
 
@@ -165,6 +195,10 @@ defmodule VoxelRegion.Magic.Semblance do
 
   @doc "寿命已到（发光预算同时耗尽）。"
   def expired?(s), do: s.age_s >= s.lifetime_s - @epsilon
+
+  @doc "触散指令只在实际碰撞端点生效；未带该指令的旧记录继续驻留。"
+  def break_on_hit?(%{break_on_hit: true, contact: contact} = s) when contact != nil, do: landed?(s)
+  def break_on_hit?(_s), do: false
 
   @doc "本段模拟时长不越过任何落点或寿命端点，使落地转换与发光账在端点上精确结算。"
   def cap(semblances, duration) do

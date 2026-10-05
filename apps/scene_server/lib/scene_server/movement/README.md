@@ -233,3 +233,7 @@ success alone does not establish 200-player capacity.
 Global system：`ToolAction` 在既有 Gate 请求 worker 中编排；`Player` 授权工具身份，`ToolHit` 对当前权威移动胶囊做人物部位求交，World 检查 canonical 遮挡和共用工具频率，目标 Player 去重并提交既有 Body 外伤。没有第二份 HP。查询只为指定目标生成 Body 报告，候选扫描仍为 O(N)，没有容量验收结论。
 
 Test-only：只有显式配置 `test_combat_bounds_m` 的场景允许范围内互伤，未开放正式 PvP 或击杀奖励。详细协议、边界及真实双端验证见同级客户端仓库 `Voxim/Docs/Gameplay/ToolCombat.md` 和 `ToolCombat/QueryOptimization.md`；火球伤人、治疗与恢复验收留后续。
+
+## 2026-10-05 投射物身体热交付（Hello37）
+
+Global system：World 的触散飞行每轮经 WorldServer 查询当前 Player 胶囊，ToolHit 复用球半径膨胀胶囊求交。World 冻结命中与焦耳，Player 接纳后把焦耳送进原 Body 局部组织 pending 热；没有新 HP、机械伤或击退。`projectile_hits` 与完整身体同笔持久化并随 Scene 移交，新 owner 重投已入账命中只返回原收据；旧会话/生命的新命中拒绝。Session ProjectileHit 供双方关联同一球、事务、人物生命与金额；本人承伤继续从正常 BodyState 推导。完整边界、测试与实际镜像见 `docs/10-active/magic/cast-phases-2026-10-05.md`；正式双客户端验收由 Voxim `Docs/Magic/CombatProjectile-plan.md` 记录。

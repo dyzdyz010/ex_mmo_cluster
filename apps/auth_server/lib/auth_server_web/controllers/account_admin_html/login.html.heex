@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Voxim 管理员登录</title></head>
+<body style="font:16px system-ui;background:#141719;color:#e7e9e9;padding:40px;max-width:440px;margin:auto">
+<h1>管理员登录</h1><p>使用获授权的 Voxim 邮箱账号。</p><p :if={@error} role="alert">{@error}</p>
+<.form for={%{}} action="/admin/login">
+  <p><label>邮箱 <input name="email" type="email" autocomplete="username" required/></label></p>
+  <p><label>密码 <input name="password" type="password" autocomplete="current-password" required/></label></p>
+  <button type="submit">登录</button>
+</.form></body></html>

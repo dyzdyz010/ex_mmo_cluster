@@ -1,0 +1,169 @@
+defmodule AuthServer.IdentityTest do
+  use ExUnit.Case, async: false
+
+  alias AuthServer.Identity
+
+  defmodule KilledConnection do
+    @moduledoc "Test-only: reproduces the real QUIC owner exiting :killed during linked-worker cleanup."
+    use GenServer
+    def start, do: GenServer.start(__MODULE__, nil)
+    def init(nil), do: {:ok, nil}
+    def terminate(_, _), do: Process.exit(self(), :kill)
+  end
+
+  Code.require_file("../../../data_service/test/support/database.exs", __DIR__)
+
+  setup_all do
+    MmoTest.Database.start!()
+    {:ok, _} = Application.ensure_all_started(:auth_server)
+    :ok
+  end
+
+  setup do
+    Application.put_env(:auth_server, :mail_adapter, AuthServer.TestMailer)
+    Application.put_env(:auth_server, :test_mail_recipient, self())
+    on_exit(fn ->
+      Application.delete_env(:auth_server, :mail_adapter)
+      Application.delete_env(:auth_server, :test_mail_recipient)
+    end)
+    suffix = System.unique_integer([:positive])
+    email = "account-#{suffix}@example.test"
+    {:ok, [invite]} = AuthServer.Admin.generate_invites(1, "test-#{suffix}", nil)
+    %{email: email, invite: invite, password: "a correct long password #{suffix}"}
+  end
+
+  defp proof(email, invite) do
+    assert :ok = Identity.send_registration_email(email, invite, "127.0.0.1")
+    assert_receive {:account_mail, ^email, :registration, code}
+    code
+  end
+
+  test "legacy ownership claim preserves identity and character and cannot be replayed", c do
+    username="old_#{System.unique_integer([:positive])}"
+    {:ok,%{account: old,character: character}}=AuthServer.Accounts.upsert_dev(username)
+    legacy=Identity.random_token()
+    assert :ok=DataService.AccountStore.import_legacy([{Identity.digest(legacy),username}],Identity.now())
+    assert :ok=Identity.send_claim_email(c.email,legacy,"local-claim")
+    assert_receive {:account_mail,_,:legacy_claim,code}
+    assert {:error,:invalid_legacy_claim}=Identity.claim_legacy(c.email,c.password,code,c.invite.code)
+    assert :ok=Identity.claim_legacy(c.email,c.password,code,legacy)
+    assert {:ok,session}=Identity.login(c.email,c.password,false)
+    assert session.account_id==Integer.to_string(old.id)
+    assert session.cid==Integer.to_string(character.id)
+    {_,after_character}=DataService.AccountStore.account_with_character(old.id)
+    assert after_character==character
+    assert {:error,:invalid_legacy_claim}=Identity.claim_legacy(c.email,c.password,code,legacy)
+  end
+
+  test "register consumes one invite and records the verified account", c do
+    code = proof(c.email, c.invite.code)
+    assert {:ok, account} = Identity.register(c.email, c.password, code, c.invite.code)
+    assert account.email == c.email
+    assert {:ok, session} = Identity.login(c.email, c.password, false)
+    assert session.account_id == Integer.to_string(account.id)
+    [record] = AuthServer.Admin.list_invites(%{id: c.invite.id})
+    assert record.used_by == account.id
+    assert record.used_at != nil
+    refute Map.has_key?(record, :code)
+    assert {:error, :invalid_verification} = Identity.register(c.email, c.password, code, c.invite.code)
+  end
+
+  test "invalid invite does not consume email proof and deleted used invite retains history", c do
+    code = proof(c.email, c.invite.code)
+    assert {:error, :invalid_invite} = Identity.register(c.email, c.password, code, "wrong")
+    assert {:ok, account} = Identity.register(c.email, c.password, code, c.invite.code)
+    assert :ok = AuthServer.Admin.delete_invite(c.invite.id)
+    [record] = AuthServer.Admin.list_invites(%{id: c.invite.id, include_deleted: true})
+    assert record.used_by == account.id
+    assert record.deleted_at != nil
+    assert {:ok, _} = Identity.login(c.email, c.password, false)
+  end
+
+  test "policy at commit rejects an old open form, opening does not consume supplied invite", c do
+    :ok = AuthServer.Admin.set_invite_required(false)
+    on_exit(fn -> AuthServer.Admin.set_invite_required(true) end)
+    code = proof(c.email, nil)
+    :ok = AuthServer.Admin.set_invite_required(true)
+    assert {:error, :invite_required} = Identity.register(c.email, c.password, code, nil)
+    :ok = AuthServer.Admin.set_invite_required(false)
+    assert {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    [record] = AuthServer.Admin.list_invites(%{id: c.invite.id})
+    assert record.used_by == nil
+  end
+
+  test "two verified emails racing for one invite create exactly one account", c do
+    other = "other-#{c.email}"
+    one = proof(c.email, c.invite.code)
+    two = proof(other, c.invite.code)
+    results =
+      [{c.email, one}, {other, two}]
+      |> Enum.map(fn {email, code} -> Task.async(fn -> Identity.register(email, c.password, code, c.invite.code) end) end)
+      |> Enum.map(&Task.await(&1, 15_000))
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &(&1 == {:error, :invalid_invite})) == 1
+  end
+
+  test "refresh rotates and reuse revokes session; ordinary accounts cannot manage invitations", c do
+    code = proof(c.email, c.invite.code)
+    assert {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    assert {:ok, session} = Identity.login(c.email, c.password, true)
+    assert {:ok, _} = Identity.authenticate(session.access_token)
+    assert {:error, :forbidden} = Identity.administer(session.access_token, :policy, false)
+    assert {:ok, next} = Identity.refresh(session.refresh_token)
+    assert next.refresh_token != session.refresh_token
+    assert {:error, :invalid_session} = Identity.refresh(session.refresh_token)
+    assert {:error, :invalid_session} = Identity.authenticate(next.access_token)
+  end
+
+  test "ticket is scene bound and single use, logout closes the registered connection", c do
+    code=proof(c.email,c.invite.code)
+    {:ok,_}=Identity.register(c.email,c.password,code,c.invite.code)
+    {:ok,s}=Identity.login(c.email,c.password,false)
+    hello=%MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(),kernel_id: <<1::256>>,profile_id: <<2::256>>}
+    assert {:ok,ticket}=Identity.game_ticket(s.access_token,1,hello)
+    assert {:error,:invalid_ticket}=Identity.consume_ticket(ticket.token,String.to_integer(s.cid),s.username,2,hello,self())
+    assert {:error,:invalid_ticket}=Identity.consume_ticket(s.access_token,String.to_integer(s.cid),s.username,1,hello,self())
+    pid=start_supervised!({Agent,fn -> nil end})
+    monitor=Process.monitor(pid)
+    assert {:ok,%{account_id: _}}=Identity.consume_ticket(ticket.token,String.to_integer(s.cid),s.username,1,hello,pid)
+    assert {:error,:invalid_ticket}=Identity.consume_ticket(ticket.token,String.to_integer(s.cid),s.username,1,hello,pid)
+    assert :ok=Identity.logout(s.access_token)
+    assert_receive {:DOWN,^monitor,:process,^pid,:normal}
+    assert {:error,:invalid_session}=Identity.game_ticket(s.access_token,1,hello)
+  end
+
+  test "a killed connection at revocation cannot restart Auth or close another session", c do
+    code = proof(c.email, c.invite.code)
+    {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    {:ok, one} = Identity.login(c.email, c.password, false)
+    {:ok, other} = Identity.login(c.email, c.password, false)
+    hello = %MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(), kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    {:ok, killed} = KilledConnection.start()
+    survivor = start_supervised!({Agent, fn -> nil end})
+    for {session, pid} <- [{one, killed}, {other, survivor}] do
+      {:ok, ticket} = Identity.game_ticket(session.access_token, 1, hello)
+      assert {:ok, _} = Identity.consume_ticket(ticket.token, String.to_integer(session.cid), session.username, 1, hello, pid)
+    end
+    owner = Process.whereis(AuthServer.Connections)
+    ref = Process.monitor(killed)
+    assert :ok = Identity.logout(one.access_token)
+    assert_receive {:DOWN, ^ref, :process, ^killed, :killed}
+    assert Process.whereis(AuthServer.Connections) == owner
+    assert Process.alive?(survivor)
+    assert {:ok, _} = Identity.authenticate(other.access_token)
+  end
+
+  test "password reset invalidates all sessions and proof cannot be reused", c do
+    code=proof(c.email,c.invite.code)
+    {:ok,_}=Identity.register(c.email,c.password,code,c.invite.code)
+    {:ok,s}=Identity.login(c.email,c.password,true)
+    assert :ok=Identity.forgot_password(c.email,"reset-source")
+    assert_receive {:account_mail,_,:password_reset,reset}
+    next="a different long password"
+    assert :ok=Identity.reset_password(c.email,reset,next)
+    assert {:error,:invalid_session}=Identity.authenticate(s.access_token)
+    assert {:error,:invalid_credentials}=Identity.login(c.email,c.password,false)
+    assert {:ok,_}=Identity.login(c.email,next,false)
+    assert {:error,:invalid_verification}=Identity.reset_password(c.email,reset,c.password)
+  end
+end

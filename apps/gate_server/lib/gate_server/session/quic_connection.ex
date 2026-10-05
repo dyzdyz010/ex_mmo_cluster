@@ -36,6 +36,7 @@ defmodule GateServer.Session.QuicConnection do
        voxim_overlay: false,
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        auth: Keyword.get(opts, :auth_module, Auth),
+       auth_monitor: nil,
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
        streams: %{},
        purposes: %{},
@@ -133,6 +134,9 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   @impl true
+  def handle_info({:DOWN,ref,:process,_,_},%{auth_monitor: ref}=state) when is_reference(ref),
+    do: {:stop,:normal,close(state,13)}
+
   def handle_info({:quic, :new_stream, stream, %{flags: flags}}, state) do
     if flags == 0 and map_size(state.streams) < 2 do
       :ok = :quicer.setopt(stream, :active, true)
@@ -639,10 +643,7 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   defp control(%{hello_seen: true, identity: nil} = state, %Session.Join{} = join) do
-    with {:ok, claims} <- state.auth.verify_token(join.token),
-         :ok <- state.auth.validate_username(claims, join.username),
-         :ok <- state.auth.authorize_cid(claims, join.cid),
-         {:ok, character} <- state.auth.fetch_authorized_character(claims, join.cid) do
+    with {:ok, character, auth_monitor} <- state.auth.join(join,state.hello) do
       case state.router.route(join.scene_id) do
         {:ok, route} ->
           {identity, result} =
@@ -654,6 +655,7 @@ defmodule GateServer.Session.QuicConnection do
           state = %{
             state
             | identity: identity,
+              auth_monitor: auth_monitor,
               cid: join.cid,
               route: route
           }

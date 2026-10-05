@@ -26,9 +26,32 @@ dev_auto_login? = System.get_env("DEV_AUTO_LOGIN") in ["true", "1"]
 config :auth_server, :dev_auto_login, dev_auto_login?
 config :auth_server, :playtest_access_file, System.get_env("VOXIM_PLAYTEST_ACCESS_FILE")
 
+# 全局系统功能：阿里云 DirectMail 使用对应地域 SMTP/465；仅本机邮件捕获器允许明文回环。
+if mail_host = System.get_env("VOXIM_MAIL_HOST") do
+  local_mail = mail_host in ["127.0.0.1", "localhost"]
+  smtp = [
+    relay: String.to_charlist(mail_host),
+    from: System.fetch_env!("VOXIM_MAIL_FROM"),
+    port: String.to_integer(System.get_env("VOXIM_MAIL_PORT",if(local_mail,do: "27025",else: "465"))),
+    ssl: not local_mail, tls: :never, no_mx_lookups: true, retries: 0, timeout: 10_000,
+    auth: if(local_mail,do: :never,else: :always)
+  ]
+  smtp = if local_mail do
+    smtp
+  else
+    smtp ++ [username: String.to_charlist(System.fetch_env!("VOXIM_MAIL_USER")),
+      password: String.to_charlist(System.fetch_env!("VOXIM_MAIL_PASSWORD")),
+      sockopts: [verify: :verify_peer, cacerts: :public_key.cacerts_get(),
+        server_name_indication: String.to_charlist(mail_host),
+        customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]]]
+  end
+  config :auth_server,:smtp,smtp
+end
+
 # Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
 config :voxel_region, :root, System.get_env("VOXEL_REGION_ROOT")
 config :voxel_region, :manifest_path, System.get_env("VOXEL_REGION_MANIFEST")
+config :voxel_region, :projectile_backend, WorldServer.Movement.Projectile
 
 # One explicitly deployed Voxim scene. Gate caches its World route at subscription/join;
 # HTTP resolves this same route per request. Distributed deployments replace these refs.

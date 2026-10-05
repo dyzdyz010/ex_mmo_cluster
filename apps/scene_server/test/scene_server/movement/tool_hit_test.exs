@@ -2,6 +2,15 @@ defmodule SceneServer.Movement.ToolHitTest do
   use ExUnit.Case, async: true
   alias SceneServer.Movement.ToolHit
 
+  test "球扫掠当前胶囊：半径、起始重叠、短段外和移动后的擦过" do
+    p = %{radius: 0.3, half_height: 0.9}
+    assert {:ok, t} = ToolHit.sweep({0.0, 0.0, 0.0}, {3.0, 0.0, 0.0}, 0.2, {2.0, 0.0, 0.0}, p)
+    assert_in_delta t, 0.5, 1.0e-12
+    assert {:ok, 0.0} = ToolHit.sweep({1.6, 0.0, 0.0}, {1.7, 0.0, 0.0}, 0.2, {2.0, 0.0, 0.0}, p)
+    assert :miss = ToolHit.sweep({0.0, 0.0, 0.0}, {1.49, 0.0, 0.0}, 0.2, {2.0, 0.0, 0.0}, p)
+    assert :miss = ToolHit.sweep({0.0, 0.0, 0.0}, {3.0, 0.0, 0.0}, 0.2, {2.0, 0.0, 0.501}, p)
+  end
+
   test "Y-up 胶囊正中、擦边和负坐标平移" do
     profile = %{radius: 0.3, half_height: 0.9}
 

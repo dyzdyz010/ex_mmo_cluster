@@ -11,6 +11,10 @@ defmodule DataService.Schema.Account do
     field(:salt, :string)
     field(:email, :string)
     field(:phone, :string)
+    field(:password_hash, :string, redact: true)
+    field(:email_verified_at, :integer)
+    field(:disabled_at, :integer)
+    field(:auth_admin, :boolean, default: false)
 
     timestamps()
   end

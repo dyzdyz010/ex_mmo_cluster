@@ -66,6 +66,8 @@ defmodule AuthServer.MixProject do
       {:bandit, "~> 1.5"},
       {:websock_adapter, "~> 0.5"},
       {:bcrypt_elixir, "~> 3.0"},
+      {:argon2_elixir, "~> 4.0"},
+      {:gen_smtp, "~> 1.3"},
       {:mmo_contracts, in_umbrella: true},
       {:voxel_region, in_umbrella: true},
       {:data_service, in_umbrella: true},

@@ -7,6 +7,15 @@ defmodule AuthServerWeb.Plugs.PlaytestAccess do
 
   @doc false
   def call(conn, _options) do
+    if List.first(conn.path_info) in ["account","auth","admin","game"] do
+      conn
+    else
+      if Application.get_env(:auth_server,:dev_auto_login,false),
+        do: legacy(conn), else: conn |> send_resp(404, "") |> halt()
+    end
+  end
+
+  defp legacy(conn) do
     case Application.get_env(:auth_server, :playtest_access_file) do
       nil ->
         if String.starts_with?(conn.request_path, "/playtest/"),

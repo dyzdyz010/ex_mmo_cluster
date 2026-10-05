@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Voxim 注册与邀请码</title>
+<style>body{font:15px system-ui;background:#141719;color:#e7e9e9;margin:32px}h1{font-size:24px}h2{font-size:18px;margin-top:32px}input,button{font:inherit;padding:7px;background:#242a2d;color:inherit;border:1px solid #626d72}button{cursor:pointer}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:12px;border-bottom:1px solid #444}small{color:#a8b0b4}code{user-select:all}form.inline{display:inline}a{color:#b9d5d1}</style></head>
+<body><h1>注册与邀请码</h1><.form for={%{}} action="/admin/logout"><button>退出管理</button></.form>
+<p :if={@message} role="status">{@message}</p>
+<h2>注册方式：{if @policy.invite_required, do: "邀请注册", else: "开放注册"}</h2>
+<p>切换只影响新账号注册，已有账号仍可登录。</p>
+<.form for={%{}} action="/admin/policy"><input type="hidden" name="invite_required" value={if @policy.invite_required,do: "false",else: "true"}/><button>{if @policy.invite_required,do: "关闭邀请码要求",else: "启用邀请码注册"}</button></.form>
+<h2>生成邀请码</h2><.form for={%{}} action="/admin/invites">
+<label>数量 <input name="count" type="number" value="1" min="1" max="100" required/></label>
+<label>批次备注 <input name="batch" maxlength="160"/></label>
+<label>有效天数 <input name="days" type="number" min="1" placeholder="留空为不限期"/></label><button>生成</button></.form>
+<ul :if={@codes != []}><li :for={c <- @codes}><code>{c.code}</code> <small>{c.id}</small></li></ul>
+<h2>邀请码与使用记录</h2><form method="get" action="/admin"><input name="search" placeholder="批次、掩码、邮箱或账号 ID"/><label><input type="checkbox" name="include_deleted" value="true"/>包含已删除</label><input name="offset" type="number" min="0" value="0" aria-label="分页起始条数"/><button>查询（每页 100 条）</button></form>
+<div style="overflow:auto"><table><thead><tr><th>邀请码／批次</th><th>状态</th><th>生成／有效期</th><th>使用者／时间</th><th>操作</th></tr></thead><tbody>
+<tr :for={i <- @invites}><td><code>{i.hint}</code><br/>{i.batch}<br/><small>{i.id}</small></td><td>{state(i)}</td><td>{time(i.created_at)}<br/>{time(i.expires_at)}<br/><small>生成者 {i.created_by}</small></td>
+<td><%= if i.used_by do %><span>{i.used_by}</span><br/>{i.email}<br/>{i.character}<br/>{time(i.used_at)}<% else %>未使用<% end %></td>
+<td><.form :if={!i.deleted_at && !i.revoked_at && !i.used_at} for={%{}} action={"/admin/invites/#{i.id}/revoke"} class="inline"><button>停用</button></.form>
+<.form :if={!i.deleted_at} for={%{}} action={"/admin/invites/#{i.id}/delete"} class="inline"><button>删除并保留历史</button></.form></td></tr>
+</tbody></table></div></body></html>

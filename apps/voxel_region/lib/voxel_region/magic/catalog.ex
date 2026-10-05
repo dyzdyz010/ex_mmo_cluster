@@ -7,15 +7,16 @@ defmodule VoxelRegion.Magic.Catalog do
   （`:magic_catalog_path`），digest = 文件字节 sha256，与属性目录同法（`VoxelRegion.Damage.load/1`）。
   部署文件是信任边界：结构在这里校验一次，之后 `Program` 与 `Cost` 直接消费。
   `max_steps`、`draw_max_j` 属于共享目录的完整结构，这里只校验存在且为正；执行器接受的程序形态由
-  `Program` 限定（至多 2 步），取能上限由 `energy.draw` 的槽上限约束，二者暂无服务端调用方。
+  `Program` 限定（至多 3 步），取能上限由 `energy.draw` 的槽上限约束，二者暂无服务端调用方。
   `max_semblances` 是每名施法者同时存在的拟态上限（增量 2）。
   符号只接受服务端已实现的动词（增量 1：`energy.draw`、`act.heat`；增量 2：`form.semblance`、`act.throw`、
-  `act.dispel`），目录里出现未实现动词即拒绝启动，运行时不再为未知动词设分支。槽可带 `"integer": true`
+  `act.dispel`、`act.break_on_hit`），目录里出现未实现动词即拒绝启动，运行时不再为未知动词设分支。槽可带 `"integer": true`
   （枚举槽，如拟态形状），此时取值必须是整数。含 `form.semblance` 的目录必须给出 `semblance` 段：拟态的
   比热（J/(kg·K)，热容 = 质量 × 比热）与导热率（W/(m·K)），与材料共用同一属性轴与单位。`reading`（Sevara 读法占位）与 `presets` 名称只服务客户端，不参与判定；
   预设程序在这里按同一 `Program.validate/2` 校验，保证发布的预设都可施放。
 
-  版本 3（双支链施放前摇，Voxim Docs/Magic.md §13.6）：每个符号带 `pose`（双支链的 6 个关节角，整数度、5 的倍数、
+  版本 4（双支链与分段施法，Voxim Docs/Magic.md §13.6）：`release_lead_s` 是最终定形到出手帧的时长，参与维护与前摇。
+  每个符号带 `pose`（双支链的 6 个关节角，整数度、5 的倍数、
   |q| ≤ 175，解码为弧度），`cost` 为构型损耗参数 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`（去掉增量 1 的 `e0_j`），
   `caster.max_power_w` 是注能的最大输出功率。姿态只是数据，时长与损耗由 `Cost` 的通用公式算出。
   """
@@ -24,7 +25,7 @@ defmodule VoxelRegion.Magic.Catalog do
 
   # 服务端已实现的动词及其类别；新动词随其实现一起加入。
   @implemented %{"energy.draw" => "act", "act.heat" => "act", "form.semblance" => "form",
-    "act.throw" => "act", "act.dispel" => "act"}
+    "act.throw" => "act", "act.dispel" => "act", "act.break_on_hit" => "act"}
 
   @doc "读取并校验已发布目录文件；返回带 digest 的不可变值。"
   def load(path), do: decode(File.read!(path))
@@ -32,7 +33,8 @@ defmodule VoxelRegion.Magic.Catalog do
   @doc "目录字节 → 目录值；字节即发布物，digest 取其 sha256。"
   def decode(bytes) do
     data = Jason.decode!(bytes)
-    true = data["version"] == 3
+    true = data["version"] == 4
+    true = is_number(data["release_lead_s"]) and data["release_lead_s"] >= 0
     true = pose?(data["rest_pose"])
 
     caster = data["caster"]
@@ -82,6 +84,7 @@ defmodule VoxelRegion.Magic.Catalog do
 
     catalog = %{
       digest: :crypto.hash(:sha256, bytes),
+      release_lead_s: data["release_lead_s"] * 1.0,
       capacity_j: caster["capacity_j"] * 1.0,
       coherence: caster["coherence"] * 1.0,
       draw_efficiency: caster["draw_efficiency"] * 1.0,

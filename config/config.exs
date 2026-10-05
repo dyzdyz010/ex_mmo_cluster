@@ -61,6 +61,7 @@ config :logger, :default_formatter,
   metadata: [:request_id]
 
 config :phoenix, :json_library, Jason
+config :phoenix, :filter_parameters, ["password", "password_confirmation", "code", "invite", "token", "refresh_token", "access_token", "email"]
 
 # Silence Phoenix LiveView colocated-hook symlink warning on Windows.
 config :phoenix_live_view, :colocated_js, disable_symlink_warning: true

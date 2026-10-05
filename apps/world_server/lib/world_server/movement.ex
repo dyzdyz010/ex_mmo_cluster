@@ -9,6 +9,14 @@ defmodule WorldServer.Movement do
     end
   end
 
+  @doc "从已部署 Scene 的当前成员查询角色 owner；移交重叠时取新会话，不保存第二份角色路由表。"
+  def character_owner(cid) do
+    Application.fetch_env!(:world_server, :movement_routes)
+    |> Enum.map(fn {_, route} -> SceneServer.Movement.Scene.character_owner(route.scene_ref, cid) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(& &1.identity.session_epoch, fn -> nil end)
+  end
+
   @doc "显式连接两个相邻 Scene 的只读复制；只在控制面执行，输入热路径不调用。"
   def connect_neighbours(a_id, b_id) when a_id != b_id do
     alias SceneServer.Movement.Scene

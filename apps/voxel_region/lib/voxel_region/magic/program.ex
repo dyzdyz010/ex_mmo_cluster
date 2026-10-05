@@ -8,6 +8,7 @@ defmodule VoxelRegion.Magic.Program do
   - `act.heat` / `energy.draw` / `act.dispel`：单步，emit = "at_target"（目标由眼睛射线或线上拟态 id 给出）；
   - `form.semblance`：单步，emit = "hand"，拟态静止在手边；
   - `form.semblance` + `act.throw`：emit = "hand"，拟态从手边沿眼睛方向运动学抛出。
+  - `form.semblance` + `act.throw` + `act.break_on_hit`：同一弹道，命中时散解；末步无参数。
 
   符号必须在目录里，参数键恰为该符号的槽名，每个值是落在槽 [min, max] 内的数，枚举槽（`integer`）取整数。
   任何不符都是同一个失败 `:invalid_program`（不扣能量）；通过后返回的值即合法程序，下游不再复核。
@@ -18,7 +19,8 @@ defmodule VoxelRegion.Magic.Program do
     ["energy.draw"] => {"at_target", :at_target},
     ["act.dispel"] => {"at_target", :at_target},
     ["form.semblance"] => {"hand", :hand},
-    ["form.semblance", "act.throw"] => {"hand", :hand}
+    ["form.semblance", "act.throw"] => {"hand", :hand},
+    ["form.semblance", "act.throw", "act.break_on_hit"] => {"hand", :hand}
   }
 
   @doc "程序字节 → `{:ok, program}` | `{:error, :invalid_program}`。"

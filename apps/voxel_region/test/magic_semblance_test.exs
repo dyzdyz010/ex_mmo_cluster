@@ -8,7 +8,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Semblance}
 
-  @digest "3f8ade2382cd1e641b48a4b9e642fddf32c066514daf407efdf2d98550a7a052"
+  @digest "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
   @path Path.expand("fixtures/magic/#{@digest}.json", __DIR__)
 
   setup_all do
@@ -21,6 +21,62 @@ defmodule VoxelRegion.MagicSemblanceTest do
   defp program(emit, steps), do: %{"v" => 1, "target" => %{"kind" => "aim"}, "emit" => emit, "steps" => steps}
   defp rel(actual, expected), do: assert(abs(actual - expected) <= 1.0e-6 * abs(expected), "#{actual} vs #{expected}")
   defp ball, do: %{"shape" => 0, "radius_m" => 0.25, "mass_kg" => 2, "temperature_k" => 2000, "glow_w" => 0, "lifetime_s" => 60}
+
+  test "UE 触散目录发布字节：火球三步可施放，持续热球两步保留" do
+    digest = "badc8a074db08d5abcc425178aebebfd36486305329c210031f49cb22ea7bd76"
+    bytes = File.read!(Path.expand("fixtures/magic/#{digest}.json", __DIR__))
+    c = Catalog.decode(bytes)
+    assert Base.encode16(c.digest, case: :lower) == digest
+    presets = Map.new(Jason.decode!(bytes)["presets"], &{&1["id"], &1["program"]})
+    assert {:ok, %{steps: [%{sym: "form.semblance"}, %{sym: "act.throw"}, %{sym: "act.break_on_hit"}]} = fireball} = Program.validate(presets["fireball"], c)
+    assert {:ok, %{steps: [%{sym: "form.semblance"}, %{sym: "act.throw"}]}} = Program.validate(presets["hot_throw"], c)
+    # 0.5 kg * 500 * (2000 - 293.15) + 0.5 * 0.5 * 12^2 = 426748.5 J.
+    quote = Cost.quote(fireball, c, 293.15)
+    assert_in_delta quote.physical_j, 426_748.5, 1.0e-6
+    assert quote.structure == 3.0
+    assert [{_, _}, {_, _}, {_, +0.0}] = quote.steps
+  end
+
+  test "触散只作为形投的终结指令，增加结构与前摇但不增加物理能量", c do
+    hit = %{"sym" => "act.break_on_hit", "args" => %{}}
+    assert {:ok, burst} = Program.validate(program("hand", [form(ball()), toss(12), hit]), c.catalog)
+    assert {:ok, persistent} = Program.validate(program("hand", [form(ball()), toss(12)]), c.catalog)
+    q = Cost.quote(burst, c.catalog, 293.15)
+    base = Cost.quote(persistent, c.catalog, 293.15)
+    assert q.structure == 3.0
+    assert_in_delta q.physical_j, 1_706_994.0, 1.0e-6
+    assert q.loss_j > base.loss_j and q.windup_s > base.windup_s
+    assert [{_, _}, {_, _}, {adjust, +0.0}] = q.steps
+    assert adjust > 0
+
+    for steps <- [[hit], [form(ball()), hit], [hit, form(ball()), toss(12)],
+                  [form(ball()), hit, toss(12)], [form(ball()), toss(12), hit, hit],
+                  [form(ball()), toss(12), %{hit | "args" => %{"energy_j" => 1}}]] do
+      assert {:error, :invalid_program} = Program.validate(program("hand", steps), c.catalog)
+    end
+    assert {:error, :invalid_program} = Program.validate(program("at_target", [form(ball()), toss(12), hit]), c.catalog)
+  end
+
+  test "触散在真实命中边界才释放，旧记录驻留；动能与未用发光预算各计一次", c do
+    form = %{"shape" => 0, "radius_m" => 0.1, "mass_kg" => 1.0,
+      "temperature_k" => 400.0, "glow_w" => 10.0, "lifetime_s" => 1.0}
+    launch = %{origin: {0.0, 0.0, 0.0}, velocity: {0.0, 0.0, 10.0}, t0_us: 0,
+      flight_s: 0.3, rest: {0.0, 0.0, 3.0}, contact: %{cell: {0, 0, 3}}}
+    old = Semblance.new(1, form, c.catalog, launch)
+    s = Semblance.new(1, form, c.catalog, Map.put(launch, :break_on_hit, true))
+    refute Semblance.break_on_hit?(s)
+    {s, light1, out1} = Semblance.step(s, 400.0, 0.1)
+    refute Semblance.break_on_hit?(s)
+    {s, light2, out2} = Semblance.step(s, 390.0, 0.2)
+    assert Semblance.break_on_hit?(s)
+    assert s.kinetic_j == 0.0
+    # 500*(400-293.15) + 50 + 10 = 53485; after 5000 heat and 3 light: 48482.
+    assert_in_delta Semblance.stored_j(s, 293.15), 48_482.0, 1.0e-9
+    assert_in_delta Semblance.stored_j(s, 293.15) + light1 + light2 + out1 + out2, 53_485.0, 1.0e-9
+    {old, _, _} = Semblance.step(old, 400.0, 0.3)
+    refute Semblance.break_on_hit?(old)
+    refute Semblance.break_on_hit?(%{s | contact: nil})
+  end
 
   test "目录：拟态段与上限；枚举槽取整；含 form.semblance 却缺 semblance 段的目录不能加载", c do
     assert Base.encode16(c.catalog.digest, case: :lower) == @digest
@@ -37,12 +93,13 @@ defmodule VoxelRegion.MagicSemblanceTest do
     assert_raise MatchError, fn -> Catalog.decode(Jason.encode!(wrong)) end
   end
 
-  test "UE 发布字节：DA_MagicCatalogV1 版本 3 双支链冻结样本（%.17g 数值、integer 槽、取能 2 MJ 预设）原样加载、预设可施放" do
-    # 冻结样本 = Voxim Content/Voxel/Magic/Published/fa4435e7….json 原字节（Voxim 20ad218，部署进服务端的就是这份）。
-    digest = "8b21fe22fcfae8c0b2823d5be4070c32052769b4cb401880ef10939f23856085"
+  test "UE 发布字节：v4 双支链与出手时长原样加载、预设可施放" do
+    # 当前 UE MCP 发布原字节；冻结为测试样本，不复制编码器产生期望。
+    digest = "c238094b9fea15024e68c10aef2204bcf5b610a1ae3083353b92c9bc0aa8adcf"
     bytes = File.read!(Path.expand("fixtures/magic/#{digest}.json", __DIR__))
     assert bytes =~ ~s("radius_m":0.40000000000000002) and bytes =~ ~s("integer":true)
     catalog = Catalog.decode(bytes)
+    assert catalog.release_lead_s == 0.3
     assert Base.encode16(catalog.digest, case: :lower) == digest
     assert catalog.semblance == %{specific_heat: 500.0, conductivity: 400.0}
     assert catalog.symbols["form.semblance"].integer == ["shape"]
@@ -53,12 +110,14 @@ defmodule VoxelRegion.MagicSemblanceTest do
     # v3: squared degree distances are 108000 and 111600; b uses unchanged physical energy.
     q = Cost.quote(throw, catalog, 293.15)
     assert_in_delta q.physical_j, 1_706_994.0, 1.0e-6
-    assert_in_delta q.loss_j, 19981.691466769178, 0.01
+    # 最终维护增加 1000 × (2 + 1.706994)^1.5 × 0.3 = 2141.184443 J。
+    assert_in_delta q.loss_j, 22122.875910041323, 0.01
     {:ok, orb} = Program.validate(presets["light_orb"], catalog)
     # 光球：C·ΔT = 0，发光 100 W × 120 s = 12 000 J；v3 rest->form squared degree distance = 108000。
     q = Cost.quote(orb, catalog, 293.15)
     assert_in_delta q.physical_j, 12_000.0, 1.0e-6
-    assert_in_delta q.loss_j, 2600.3677471155675, 0.01
+    # 单个光球最终维护增加 1000 × (1 + 0.012)^1.5 × 0.3 = 305.416168 J。
+    assert_in_delta q.loss_j, 2905.783914860499, 0.01
     assert {:ok, %{steps: [%{sym: "energy.draw", args: %{"energy_j" => 2.0e6}}]}} = Program.validate(presets["draw_2mj"], catalog)
     assert {:ok, %{emit: :at_target}} = Program.validate(presets["dispel"], catalog)
   end
@@ -262,5 +321,14 @@ defmodule VoxelRegion.MagicSemblanceTest do
     value = %{semblances: %{{1, 0} => inside, {2, 0} => outside, {3, 0} => nil}}
     projected = VoxelRegion.PropertyObservation.project(value, {{0, 0, 0}, {1, 1, 1}})
     assert projected.semblances == %{{1, 0} => inside, {3, 0} => nil}
+  end
+
+  test "碰撞结束是自足事务产物：即使提交开始时尚未创建该球，也保留结束快照并按位置投影" do
+    impact = %{live: 2, break_on_hit: true, origin: {1.0, 1.0, 1.0}, rest: {2.0, 1.0, 1.0}}
+    # World has already removed it; the commit artifact is the only end snapshot.
+    txn = VoxelRegion.World.Thermal.semblance_txn(%{}, %{thermal: %{semblances: %{}}}, %{{7, 0} => impact})
+    assert txn == %{semblances: %{{7, 0} => impact}}
+    projected = VoxelRegion.PropertyObservation.project(txn, {{0, 0, 0}, {1, 1, 1}})
+    assert projected.semblances == %{{7, 0} => impact}
   end
 end

@@ -20,7 +20,7 @@ defmodule SceneServer.Movement.ToolActionTest do
       ready: true,
       transfer: nil,
       failure: nil,
-      state: %{position: {2.0, 0.0, 0.0}},
+      state: %{position: {2.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}},
       scene: self(),
       gate: self(),
       sink: Sink,
@@ -38,6 +38,7 @@ defmodule SceneServer.Movement.ToolActionTest do
       body_sent: nil,
       life_generation: 99,
       body_hits: %{},
+      projectile_hits: %{},
       tool_action: nil,
       action: nil,
       tick: 40,
@@ -81,6 +82,30 @@ defmodule SceneServer.Movement.ToolActionTest do
 
     assert {:reply, {:error, :stale_life}, ^revived} =
              Player.handle_call({:receive_hit, c.hit}, c.from, revived)
+  end
+
+  test "投射物焦耳只入局部热一次；存档恢复仍去重，旧生命与 owner 拒绝", c do
+    hit = %{key: {77, 15, 0}, actor: c.hit.actor,
+      target: %{id: 20, identity: c.identity, life_generation: 99}, q_j: 2094.0,
+      position: {1.5, 0.0, 0.0}}
+    assert {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_projectile, hit}, c.from, c.state)
+    assert receipt.q_j == 2094.0
+    assert next.body_heat.q_j == 2094.0
+    assert next.body_heat.tissue_j == 2094.0
+    assert next.body_exchange_j == 2094.0
+    assert next.body == c.state.body
+    saved = SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next))
+    recovered = Map.merge(c.state, saved)
+    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_projectile, hit}, c.from, recovered)
+    stale = put_in(hit.target.life_generation, 98)
+    assert {:reply, {:error, :stale_life}, _} = Player.handle_call({:receive_projectile, stale}, c.from, c.state)
+    old = put_in(hit.target.identity.session_epoch, 6)
+    assert {:reply, {:error, :stale_owner}, _} = Player.handle_call({:receive_projectile, old}, c.from, c.state)
+    {body, account} = SceneServer.Body.Thermo.step(next.body, 1.0, %{q_j: 2094.0, tissue_j: 2094.0, air_k: 293.15})
+    # 0.06kg × 3490 J/(kg K) = 209.4 J/K；2094 J 独立手算升温 10 K。
+    assert_in_delta body.tissue_k - c.state.body.tissue_k, 10.0, 1.0e-10
+    assert account.q_j == 2094.0 and account.tissue_j == 2094.0
+    assert_in_delta Body.heat_content_j(body) - Body.heat_content_j(next.body), account.stored_j, 1.0e-7
   end
 
   test "范围外和关闭战斗场拒绝，本次采样后继续移动不撤回即时命中", c do

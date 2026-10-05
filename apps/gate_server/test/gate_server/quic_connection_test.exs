@@ -1,4 +1,10 @@
 defmodule T1Auth do
+  def join(join,_hello) do
+    with {:ok,claims} <- verify_token(join.token),
+         :ok <- validate_username(claims,join.username),
+         :ok <- authorize_cid(claims,join.cid),
+         {:ok,character} <- fetch_authorized_character(claims,join.cid),do: {:ok,character,nil}
+  end
   def verify_token("valid"), do: {:ok, %{username: "one", cid: 101}}
   def verify_token(_), do: {:error, :mismatch}
   def validate_username(%{username: username}, username), do: :ok

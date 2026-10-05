@@ -5,6 +5,8 @@ defmodule AuthServerWeb.PlaytestAccessTest do
   alias AuthServerWeb.Plugs.PlaytestAccess
 
   setup do
+    previous_dev = Application.get_env(:auth_server, :dev_auto_login)
+    Application.put_env(:auth_server, :dev_auto_login, true)
     previous = Application.get_env(:auth_server, :playtest_access_file)
     path = Path.join(System.tmp_dir!(), "invites-#{System.unique_integer([:positive])}.json")
     digest = :crypto.hash(:sha256, "test-invite") |> Base.encode16(case: :lower)
@@ -12,11 +14,21 @@ defmodule AuthServerWeb.PlaytestAccessTest do
     Application.put_env(:auth_server, :playtest_access_file, path)
 
     on_exit(fn ->
+      Application.put_env(:auth_server, :dev_auto_login, previous_dev)
       Application.put_env(:auth_server, :playtest_access_file, previous)
       File.rm!(path)
     end)
 
     %{path: path}
+  end
+
+  test "正式账号部署拒绝全部旧入口，即使持有有效旧邀请码" do
+    Application.put_env(:auth_server,:dev_auto_login,false)
+    for route <- ["/playtest/login","/playtest/regions","/playtest/prefabs","/ingame/auto_login","/ingame/voxel/regions"] do
+      response=conn(:post,route) |> put_req_header("authorization","Bearer test-invite") |> PlaytestAccess.call([])
+      assert response.status==404
+      assert response.halted
+    end
   end
 
   test "登录和地形请求都需要邀请码" do
