@@ -38,6 +38,14 @@ defmodule MmoContracts.Voxel.Payload do
   @doc "固定cells和空CSR布局的最小解压字节数。"
   def min_body_bytes, do: 4 + @cell_count * 2 + 16 + 5 * 4
 
+  @doc "覆盖后地形的解压字节下界：完整 CSR 行索引与记录平面，省略贴图和细节尾部。"
+  def min_body_bytes(%__MODULE__{} = p, overrides) do
+    {records, _extent} = updated_records(p, overrides)
+    count = map_size(records)
+    rows = if count == 0, do: 0, else: (@extent * @extent + 1) * 4
+    min_body_bytes() + rows + count * (2 + 6 + 2)
+  end
+
   @doc "v4 格/CSR 数量和 u16 贴图索引决定的最大编码容量；不是运行时预算。"
   def max_body_bytes,
     do:
@@ -329,25 +337,8 @@ defmodule MmoContracts.Voxel.Payload do
   """
   def encode(%__MODULE__{} = p, overrides, seq, content_version) do
     cells = splice_cells(p.cells, overrides)
-
-    base_records =
-      p.records
-      |> Map.drop(Map.keys(overrides))
-
-    override_records =
-      overrides
-      |> Enum.reject(fn {_, {m, s}} -> Skins.trivial?(s, m) end)
-      |> Map.new(fn {local, {_, s}} -> {local, s} end)
-
-    # 空CSR的贴图尺寸为1；首次加入非均匀表皮时，输出尺寸由新记录恢复。
-    # 旧压紧记录仍按原p.map_extent读取，不能把输出尺寸用于解析旧池。
-    ext =
-      Enum.reduce(override_records, p.map_extent, fn {_, {extent, _}}, current ->
-        max(current, extent)
-      end)
-
-    records =
-      Enum.sort_by(Map.merge(base_records, override_records), fn {{x, y, z}, _} -> {z, y, x} end)
+    {records, ext} = updated_records(p, overrides)
+    records = Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end)
 
     {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, p)
 
@@ -375,6 +366,24 @@ defmodule MmoContracts.Voxel.Payload do
       ])
 
     encode_with_details(raw, p, seq, content_version)
+  end
+
+  defp updated_records(p, overrides) do
+    base_records = Map.drop(p.records, Map.keys(overrides))
+
+    override_records =
+      overrides
+      |> Enum.reject(fn {_, {m, s}} -> Skins.trivial?(s, m) end)
+      |> Map.new(fn {local, {_, s}} -> {local, s} end)
+
+    # 空CSR的贴图尺寸为1；首次加入非均匀表皮时，输出尺寸由新记录恢复。
+    # 旧压紧记录仍按原p.map_extent读取，不能把输出尺寸用于解析旧池。
+    ext =
+      Enum.reduce(override_records, p.map_extent, fn {_, {extent, _}}, current ->
+        max(current, extent)
+      end)
+
+    {Map.merge(base_records, override_records), ext}
   end
 
   @doc "复用有效且地形仍为当前真值的载荷字节；p 提供新的 refined/structure，调用方负责地形缓存失效。"

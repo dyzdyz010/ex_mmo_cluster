@@ -22,6 +22,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   geometry commits, checkpoints), kernel node/edge/radiation counts, kernel calls and rows per commit, World memory.
   BENCH_DIGEST=1 instead prints a state digest every 5 s of simulated time (before/after physics comparison);
   BENCH_PROFILE=<s> runs eprof on the World for 10 simulated seconds from that time (diagnosis only).
+  BENCH_CHECKPOINT_OUT=<path> exports one immutable World checkpoint after the measured window for storage diagnosis.
 
   `MMO_DB_PORT=5433 mix test --no-start --only benchmark test/thermal_fire_benchmark_test.exs` in apps/voxel_region.
   """
@@ -191,7 +192,9 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
             "voxel_thermal_sim" -> put_in(acc.pending.sim, f)
             "voxel_thermal_commit" -> put_in(acc.pending.commit, f)
             "voxel_macro_stages" -> put_in(acc.pending.geometry, f)
-            "voxel_checkpoint" -> update_in(acc.checkpoints, &[f["elapsed_us"] | &1])
+            "voxel_checkpoint" ->
+              IO.puts(text)
+              update_in(acc.checkpoints, &[checkpoint_us(f) | &1])
             # Burn-out geometry commits: region selection / after-image encoding cost per level.
             region when region in ["voxel_select_region", "voxel_region_afterimage"] ->
               key = {region, f["level"], f["region_bytes"] != nil and f["region_bytes"] > 0}
@@ -243,6 +246,10 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   end
 
   defp pending, do: %{kernel: [], prepare: [], sim: nil, commit: nil, geometry: nil}
+
+  # 当前日志拆成四段，已经没有 elapsed_us；缺任一段都不能生成成功的总时长。
+  defp checkpoint_us(fields),
+    do: Enum.sum(Enum.map(~w(select_us image_us persist_us rebase_us), &Map.fetch!(fields, &1)))
 
   defp percentile(values, p) do
     sorted = Enum.sort(values)
@@ -418,11 +425,31 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
       summary = summarize(scene, acc.commits, acc.memory, acc.checkpoints)
       # Live World heap by state field at the end of the window (words shared inside a field counted once).
       state = :sys.get_state(w)
+
+      # 只测试：窗口结束后经公开入口生成检查点；从实际后端读回，包含持久化 envelope。
+      # 先导出再做昂贵的 heap 统计，避免 World 持续演化使样本远离声明窗口。
+      if path = System.get_env("BENCH_CHECKPOINT_OUT") do
+        :ok = World.compact(w)
+        {backend, handle} = state.log
+        [checkpoint | _] = backend.replay(handle)
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, :erlang.term_to_binary(checkpoint))
+        IO.puts("CHECKPOINT_ARTIFACT path=#{path} seq=#{checkpoint.seq} entries=#{length(checkpoint.entries)} coarse=#{length(checkpoint.coarse)}")
+      end
+
       words = :erlang.system_info(:wordsize)
       breakdown = for k <- [:entries, :damage, :thermal_work, :overlay, :decoded, :payloads, :refined, :region_bases,
           :entry_regions], into: %{}, do: {k, Float.round(:erts_debug.size(Map.fetch!(state, k)) * words / 1.0e6, 1)}
       IO.puts("  live_mb #{inspect(breakdown)} retained_transactions=#{map_size(state.entries)} damage_rows=#{map_size(state.damage)}")
       assert summary.commits > 0
+
+  end
+
+  @tag :checkpoint_timing
+  test "checkpoint time sums the four emitted stages without an elapsed_us field" do
+    fields = %{"select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40}
+    refute Map.has_key?(fields, "elapsed_us")
+    assert checkpoint_us(fields) == 101
   end
 
   test "large fire through the real World thermal commit path", c do

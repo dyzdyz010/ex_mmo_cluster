@@ -1199,20 +1199,25 @@ defmodule VoxelRegion.DamageWorldTest do
 
   @tag :interaction_latency
   test "small sparse transaction never encodes a losing region candidate", c do
-    assert {:ok,1}=World.apply_edits(c.w,[{{1,1,2},11}])
-    assert {:ok,2}=World.apply_edits(c.w,[{{1,1,2},0}])
+    # 20 个对齐宏格：L0 = 20 × 28 = 560 B；L1 最多 10 × 52 = 520 B，
+    # L2 最多 5 × 124 = 620 B。DEFLATE 的 length + distance 至少各 1 bit，
+    # 完整候选至少 54 + ceil(575032 / 1032) + 13 = 625 B，故这些候选都不可能更小。
+    cells=for x <- 0..19,do: {x,1,2}
+    placed=Enum.map(cells,&{&1,11})
+    assert {:ok,1}=World.apply_edits(c.w,placed)
+    assert {:ok,2}=World.apply_edits(c.w,Enum.map(cells,&{&1,0}))
     items=for level <- 0..5, do: %{level: level,region: {0,0,0},have_seq: 0,have_hash: 0}
     assert {:ok,_}=World.serve(c.w,Codec.encode_request(0,items)|>IO.iodata_to_binary())
     w=c.w
     :erlang.trace_pattern({Payload,:encode,4},true,[])
     :erlang.trace(w,true,[:call])
     try do
-      assert {:ok,3}=World.apply_edits(w,[{{1,1,2},11}])
+      assert {:ok,3}=World.apply_edits(w,placed)
       delivered=:erlang.trace_delivered(w)
       assert_receive {:trace_delivered,^w,^delivered}
       refute_received {:trace,^w,:call,{Payload,:encode,_}}
       [txn]=World.entries_after(w,2)
-      assert [%{coord: {1,1,2},material: 11}]=txn.entries
+      assert Enum.map(txn.entries,&{&1.coord,&1.material})==placed
       assert txn.coarse != []
     after
       :erlang.trace(w,false,[:call])

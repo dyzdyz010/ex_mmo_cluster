@@ -544,13 +544,13 @@ defmodule MmoContracts.Voxel.Codec do
   def payload_header_bytes, do: @payload_header_bytes
 
   @doc "当前raw/DEFLATE载荷的保守线格式下界，非经验压缩率。"
-  def payload_min_bytes do
-    # RFC 1951 sections 3.2.5/3.2.7: a literal/length code consumes at least
-    # one bit and emits at most 258 bytes. Ignoring distance/tree/framing bits
-    # only weakens the bound. Stored/raw encoding is larger still.
+  def payload_min_bytes(raw_min \\ MmoContracts.Voxel.Payload.min_body_bytes()) do
+    # RFC 1951 sections 3.2.5/3.2.7: a match emits at most 258 bytes and
+    # needs at least one length bit AND one distance bit (even a single
+    # distance code uses one bit). Literals and stored/raw blocks are larger.
+    # Ignoring tree/framing/extra bits only weakens this format-derived bound.
     # https://www.rfc-editor.org/rfc/rfc1951
-    bytes_per_encoded_byte = 258 * 8
-    raw_min = MmoContracts.Voxel.Payload.min_body_bytes()
+    bytes_per_encoded_byte = 258 * 4
     @payload_header_bytes + div(raw_min + bytes_per_encoded_byte - 1, bytes_per_encoded_byte)
   end
 

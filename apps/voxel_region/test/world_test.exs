@@ -47,6 +47,40 @@ defmodule VoxelRegion.WorldTest do
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
   @tag :replica
+  @tag :record_bound
+  test "CSR lower bound skips a losing region candidate after the general bound", %{root: root} do
+    # 只测试：启动前通过既有文件来源安装内部表皮样本；后续只走 World 编辑入口。
+    {:ok, source, _} = FileStore.read(root, @cv, 0, {0, 0, 0})
+    {:ok, payload} = Payload.decode(source)
+    skins = MmoContracts.Voxel.Skins.uniform(19)
+    records = for x <- 1..32, y <- 1..32, into: %{}, do: {{x, y, 10}, skins}
+    source = Payload.encode(%{payload | records: records}, %{}, 0, @cv)
+    File.write!(FileStore.path(root, @cv, 0, {0, 0, 0}), source)
+    world = start_supervised!({World, root: root, name: nil})
+    edits = for x <- 1..23, do: {{x, 2, 2}, 0}
+    # 23 个 L0 条目各 28 B：644 B；通用候选下界 625 B，记录下界 652 B。
+    assert length(edits) * 28 > 13 + Codec.payload_min_bytes()
+    :erlang.trace_pattern({Payload, :encode, 4}, true, [])
+    :erlang.trace(world, true, [:call])
+    try do
+      assert {:ok, 1} = World.apply_edits(world, edits)
+      delivered = :erlang.trace_delivered(world)
+      assert_receive {:trace_delivered, ^world, ^delivered}
+      refute_received {:trace, ^world, :call,
+        {Payload, :encode, [%Payload{level: 0, region: {0, 0, 0}}, _, _, _]}}
+      [txn] = World.entries_after(world, 0)
+      assert Enum.map(txn.entries, &{&1.coord, &1.material}) == edits
+      assert {:ok, current} = Payload.decode(fetch_payload(world, 0, {0, 0, 0}))
+      assert map_size(current.records) == 1024
+      for {cell, material} <- edits,
+        do: assert(Payload.material(current, Payload.local(current.region, cell)) == material)
+    after
+      :erlang.trace(world, false, [:call])
+      :erlang.trace_pattern({Payload, :encode, 4}, false, [])
+    end
+  end
+
+  @tag :replica
   test "authority identity lookup does not wait behind canonical preparation", %{root: root} do
     world = start_supervised!({World, root: root, name: :busy_authority})
     :ok = :sys.suspend(world)

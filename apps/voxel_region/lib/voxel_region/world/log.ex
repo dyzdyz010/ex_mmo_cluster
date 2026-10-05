@@ -207,8 +207,10 @@ defmodule VoxelRegion.World.Log do
 
         {bytes, s} =
           if cell_bytes > minimum_region_bytes do
-            {:ok, bytes, _header, next} = Payloads.payload_bytes(s, level, region)
-            {bytes, next}
+            case Payloads.payload_bytes(s, level, region, cell_bytes - entry_overhead) do
+              {:ok, bytes, _header, next} -> {bytes, next}
+              {:not_smaller, next} -> {nil, next}
+            end
           else
             {nil, s}
           end

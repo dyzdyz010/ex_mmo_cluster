@@ -62,8 +62,8 @@ defmodule VoxelRegion.World.Payloads do
     end
   end
 
-  # 缓存命中直接返回；miss 时被 overlay 碰过的 region 物化、否则原样读 source 载荷，两者都进缓存。
-  def payload_bytes(state, level, region) do
+  @doc "缓存或来源字节直接返回；需物化时可用严格字节上限跳过已知不可能更小的候选。"
+  def payload_bytes(state, level, region, byte_limit \\ :infinity) do
     key = {level, region}
 
     case cache_fetch(state, key) do
@@ -89,10 +89,16 @@ defmodule VoxelRegion.World.Payloads do
                 end)
 
               overrides = Map.merge(ring_overrides(bases, region), overrides)
-              payload = with_refined(state, payload)
-              bytes = Payload.encode(payload, overrides, state.seq, state.cv)
-              {:ok, header} = Codec.decode_payload_header(bytes)
-              {:ok, bytes, header, cache_put(state, key, bytes, header)}
+
+              if byte_limit != :infinity and
+                   Codec.payload_min_bytes(Payload.min_body_bytes(payload, overrides)) >= byte_limit do
+                {:not_smaller, state}
+              else
+                payload = with_refined(state, payload)
+                bytes = Payload.encode(payload, overrides, state.seq, state.cv)
+                {:ok, header} = Codec.decode_payload_header(bytes)
+                {:ok, bytes, header, cache_put(state, key, bytes, header)}
+              end
 
             {:error, :missing, state} ->
               {:error, :missing, state}
