@@ -17,6 +17,10 @@ defmodule VoxelRegion.World.Production do
     placed_by |> Map.drop(Enum.map(cleared, &elem(&1, 0))) |> Map.merge(Map.new(set))
   end
 
+  # 收据按角色与 World 事务号唯一；创建、日志重放与只读 Replica 使用同一合并语义。
+  def merge_food_receipts(receipts, delta),
+    do: Map.merge(receipts, delta, fn _cid, old, added -> Map.merge(old, added) end)
+
   # Canonical ownership deltas share the transaction with the actual geometry edit.
   # No-op edits retain identity; nil removes a row on both replay backends.
   def ownership_metadata(txn,before,state,cells) do
@@ -137,8 +141,8 @@ defmodule VoxelRegion.World.Production do
   end
 
   # 全局系统功能（身体闭环 H1）：进食 = 生产意图 action 5，material = 可食材料（目录“可食”轴 food），一次吃一株 = place_units。
-  # 余额足额才扣一株；食物账 food_ledger 记各材料累计吃掉的单位。提交后把该株的蛋白 g 与能量 J 送给该角色的 Player
-  # （`{:body_food, cid, protein_g, energy_j}`，与 `{:body_heat}` 同一收件人），身体真值在 Scene。不写世界格，不受地块保护约束。
+  # 余额足额才扣一株；food_ledger 记累计吃掉的单位，营养收据与扣料同笔持久化。
+  # Scene 从 canonical snapshot/delta 按本角色的 World 游标吸收收据，身体真值仍在 Scene。
   def consume(before, actor, request) do
     food = get_in(before, [Access.key(:properties), Access.key(:materials, %{}), request.material, "food"])
     units = build_cost(before, request.material)
@@ -153,15 +157,18 @@ defmodule VoxelRegion.World.Production do
       true ->
         {state, paid} = settle_material(before, actor.cid, request.material, -units)
         ledger = Map.update(state.food_ledger, request.material, units, &(&1 + units))
-        next = %{state | seq: before.seq + 1, food_ledger: ledger}
-        txn = %{seq: next.seq, entries: [], coarse: [], material_balances: paid.material_balances, food_ledger: ledger}
+        seq = before.seq + 1
+        receipts = %{actor.cid => %{seq => %{protein_g: food["protein_g"], energy_j: food["energy_j"]}}}
+        next = %{state | seq: seq, food_ledger: ledger,
+          food_receipts: merge_food_receipts(state.food_receipts, receipts)}
+        txn = %{seq: next.seq, entries: [], coarse: [], material_balances: paid.material_balances,
+          food_ledger: ledger, food_receipts: receipts}
 
         case Log.append_log(next, txn) do
           :ok ->
             next = Log.remember_entry(next, txn)
             Observation.fanout(next, txn)
             Observation.fanout_canonical(next, txn, [], [], before)
-            send(actor.player, {:body_food, actor.cid, food["protein_g"], food["energy_j"]})
             Logger.info("voxel_consume seq=#{next.seq} cid=#{actor.cid} material=#{request.material} units=#{units} protein_g=#{food["protein_g"]} energy_j=#{food["energy_j"]}")
             {:ok, next}
 

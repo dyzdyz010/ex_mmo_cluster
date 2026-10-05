@@ -60,6 +60,7 @@ defmodule VoxelRegion.Replica do
           damage: Map.new(Map.get(snapshot,:property_states,[]),&{VoxelRegion.Damage.key(&1),&1}),
           property_context: Map.get(snapshot, :property_context),
           epochs: Map.get(snapshot, :epochs, %{}),
+          food_receipts: Map.get(snapshot, :food_receipts, %{}),
           # 受保护区域（World 真值在本副本窗口内的投影）；只转发给订阅者，副本不裁决。
           protection: Map.get(snapshot, :protection, %{}),
           # 拟态（魔法增量 2，World thermal 真值在窗口内的投影）；同受保护区域只转发、不裁决。
@@ -142,7 +143,7 @@ defmodule VoxelRegion.Replica do
         chunks: chunks
       }
 
-      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, protection: state.protection, semblances: state.semblances, casts: state.casts}) |> VoxelRegion.PropertyObservation.project(box)
+      snapshot = Map.merge(snapshot, %{property_states: Enum.map(state.damage,fn {_,t}->%{t | seq: state.seq,request_id: 0} end), property_context: state.property_context, epochs: state.epochs, food_receipts: state.food_receipts, protection: state.protection, semblances: state.semblances, casts: state.casts}) |> VoxelRegion.PropertyObservation.project(box)
       unless Map.has_key?(state.subscribers, pid), do: Process.monitor(pid)
       send(pid, {:canonical_snapshot, request, snapshot})
       {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, box)}}
@@ -182,6 +183,7 @@ defmodule VoxelRegion.Replica do
       {caster, cast}, acc -> Map.put(acc, caster, cast)
     end)
     state = %{state | damage: damage, protection: protection, semblances: semblances, casts: casts, epochs: Map.merge(state.epochs, Map.get(delta.transaction,:epochs,%{})),
+      food_receipts: VoxelRegion.World.Production.merge_food_receipts(state.food_receipts, Map.get(delta.transaction, :food_receipts, %{})),
       property_context: Map.get(delta.transaction,:property_context,state.property_context)}
     Enum.each(state.subscribers, fn {pid, box} ->
       send(

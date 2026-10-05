@@ -262,22 +262,28 @@ defmodule VoxelRegion.DamageWorldTest do
 
   defp balance(w,cid,material \\ 19), do: Enum.find(World.material_balances(w,cid), &(&1.material==material))
 
-  # 身体闭环 H1：进食 = 生产意图 action 5。收件人是该角色的 Player（这里是测试进程本身）。
+  # 只测试：食物扣料与营养收据同一事务；Scene 消费 canonical 数据，重连按身体游标去重。
   @tag :flora
-  test "进食：余额足额扣一株 place_units，Player 收到该株蛋白与能量；重发幂等；不可食、余额不足显式拒绝；食物账随日志与压实持久化", c do
+  @tag :body_continuity
+  test "进食：扣料与营养收据同笔持久化，重发幂等，未吸收收据经重启和压实仍可读取", c do
     me=self()
     actor=%{c.actor | refresh: fn _,_ -> {:ok,%{cid: 1001,gate: me,player: me,identity: :test_session}} end}
     assert {:ok,_}=World.material_supply(c.w,1001,"food-test",%{36=>128,35=>64})
     eat=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 5,coord: {0,0,0},tool_id: 1,material: 36}
     assert {:ok,seq}=World.production_intent(c.w,actor,eat)
-    assert_receive {:body_food,1001,1.08,75_362.4}
+    food = %{protein_g: 1.08, energy_j: 75_362.4}
+    receipts = %{1001 => %{seq => food}}
+    assert food_snapshot(c.w).food_receipts == receipts
+    refute_received {:body_food,_,_,_}
     assert balance(c.w,1001,36).balance == 64
-    assert [%{material_balances: %{{1001,36}=>64},food_ledger: %{36=>64}}]=World.entries_after(c.w,seq-1)
+    assert [%{material_balances: %{{1001,36}=>64},food_ledger: %{36=>64},food_receipts: ^receipts}]=World.entries_after(c.w,seq-1)
     # 同一请求重发：回原回执，不再扣、不再送
     assert {:ok,^seq}=World.production_intent(c.w,actor,eat)
     refute_receive {:body_food,_,_,_},50
-    assert {:ok,_}=World.production_intent(c.w,actor,%{eat | request_id: 11,client_intent_seq: 11})
-    assert_receive {:body_food,1001,1.08,75_362.4}
+    assert food_snapshot(c.w).food_receipts == receipts
+    assert {:ok,next_seq}=World.production_intent(c.w,actor,%{eat | request_id: 11,client_intent_seq: 11})
+    receipts = %{1001 => %{seq => food, next_seq => food}}
+    assert food_snapshot(c.w).food_receipts == receipts
     assert balance(c.w,1001,36).balance == 0
     assert {:error,:insufficient_material}=World.production_intent(c.w,actor,%{eat | request_id: 12,client_intent_seq: 12})
     # 罂粟有余额但目录没有可食轴
@@ -290,10 +296,56 @@ defmodule VoxelRegion.DamageWorldTest do
     w=start_supervised!({World,c.opts})
     assert World.material_snapshot(w,[1001],[]).food_ledger == %{36=>128}
     assert balance(w,1001,36).balance == 0
+    assert food_snapshot(w).food_receipts == receipts
     assert :ok == World.compact(w)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert World.material_snapshot(w,[1001],[]).food_ledger == %{36=>128}
+    assert food_snapshot(w).food_receipts == receipts
+  end
+
+  defp food_snapshot(w) do
+    ref = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(w, {{0,0,0},{1,1,1}}, self(), ref, false)
+    assert_receive {:canonical_snapshot, ^ref, snapshot}
+    snapshot
+  end
+
+  @tag :flora
+  @tag :body_continuity
+  test "进食日志写入失败：不扣料、不产生可吸收收据，重启仍保持原余额", c do
+    assert {:ok,seq}=World.material_supply(c.w,1001,"food-failure",%{36=>64})
+    path=Path.join(c.opts[:root],"overlay.log.reject")
+    File.write!(path,"")
+    eat=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 5,coord: {0,0,0},tool_id: 1,material: 36}
+    assert {:error,:test_disk_failure}=World.production_intent(c.w,c.actor,eat)
+    assert World.seq(c.w)==seq
+    assert balance(c.w,1001,36).balance==64
+    assert food_snapshot(c.w).food_receipts==%{}
+    File.rm!(path)
+    stop_supervised(World)
+    w=start_supervised!({World,c.opts})
+    assert balance(w,1001,36).balance==64
+    assert food_snapshot(w).food_receipts==%{}
+  end
+
+  @tag :flora
+  @tag :body_continuity
+  test "Replica 的初始快照与后续收据合并，后入场者读到全部已扣料食物", c do
+    assert {:ok,_}=World.material_supply(c.w,1001,"food-replica",%{36=>128})
+    eat=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 5,coord: {0,0,0},tool_id: 1,material: 36}
+    assert {:ok,first}=World.production_intent(c.w,c.actor,eat)
+    replica=start_supervised!({VoxelRegion.Replica,[authority_ref: c.w,l0_box: {{0,0,0},{1,1,1}},name: nil]})
+    :ok=VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica,{{0,0,0},{1,1,1}},self(),:food_join,false)
+    assert_receive {:canonical_snapshot,:food_join,snapshot}
+    food=%{protein_g: 1.08,energy_j: 75_362.4}
+    assert snapshot.food_receipts==%{1001=>%{first=>food}}
+    assert {:ok,second}=World.production_intent(c.w,c.actor,%{eat | request_id: 11,client_intent_seq: 11})
+    assert_receive {:canonical_delta,%{transaction_seq: ^second,transaction: txn}}
+    assert txn.food_receipts==%{1001=>%{second=>food}}
+    :ok=VoxelRegion.Replica.canonical_snapshot_and_subscribe(replica,{{0,0,0},{1,1,1}},self(),:food_rejoin,false)
+    assert_receive {:canonical_snapshot,:food_rejoin,snapshot}
+    assert snapshot.food_receipts==%{1001=>%{first=>food,second=>food}}
   end
 
   test "目录可食轴：蛋白与能量须为非负数，且只在有 place_units（一株）的材料上", c do

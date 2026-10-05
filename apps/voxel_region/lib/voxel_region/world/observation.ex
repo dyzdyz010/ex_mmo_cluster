@@ -37,6 +37,7 @@ defmodule VoxelRegion.World.Observation do
         %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq, l0_min: l0_min,
           l0_max_exclusive: l0_max, regions: regions, chunks: []}
         |> Map.merge(property_snapshot(state, box))
+        |> Map.put(:food_receipts, state.food_receipts)
 
       Logger.info(
         "voxel_window_prepare seq=#{state.seq} box=#{inspect(box)} regions=#{length(regions)} " <>

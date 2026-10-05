@@ -6,6 +6,7 @@ defmodule SceneServer.Movement.Player do
   alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock}
   alias VoxelRegion.CollisionStream
   alias SceneServer.Body
+  alias SceneServer.Body.Snapshot
 
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -52,6 +53,16 @@ defmodule SceneServer.Movement.Player do
     :exit, _ -> {:error, :invalid_state}
   end
 
+  @doc "只读完整身体与持久化游标，不包含移动或碰撞状态。"
+  def body_snapshot(player), do: GenServer.call(player, :body_snapshot)
+  @doc "停止接收身体作用并完成存档后退出；供重连交接同步等待。"
+  def stop(player) do
+    GenServer.call(player, :stop)
+  catch
+    :exit, {:noproc, _} -> :ok
+    :exit, {:normal, _} -> :ok
+  end
+
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
@@ -85,9 +96,13 @@ defmodule SceneServer.Movement.Player do
         window_domains: [],
         requested_window: nil,
         window_pending: false,
-        # 魔法增量 4：身体真值（Docs/Magic.md §6），会话内存，不持久化（重登 / 冷重启即新身体，已知缺口）。
+        # 身体由 Player 独占；存档不恢复会话位置。
         # body_heat = 自上次 1 Hz 推进以来 World 回传的接触热累计；body_exchange_j = 本端收到的接触热总和（与 World 账同值）。
         body: Body.new(),
+        body_store: Keyword.get(opts, :body_store, {DataService.BodyStore, []}),
+        body_owned: false,
+        body_fence: nil,
+        food_cursors: %{},
         body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
         body_exchange_j: 0.0,
         body_sent: nil,
@@ -108,7 +123,7 @@ defmodule SceneServer.Movement.Player do
     state =
       case Keyword.get(opts, :import) do
         nil ->
-          state
+          restore_body(state)
 
         cut ->
           Map.merge(state, %{
@@ -129,6 +144,8 @@ defmodule SceneServer.Movement.Player do
           |> Map.merge(
             Map.take(cut, [
               :body,
+              :body_heat,
+              :food_cursors,
               :body_exchange_j,
               :climate,
               :probe,
@@ -384,76 +401,40 @@ defmodule SceneServer.Movement.Player do
           })
         )
 
+        next =
+          %{state | body: body, body_hits: Map.put(state.body_hits, hit.key, receipt)}
+          |> persist_body()
+
         reliable(
           state,
           :control,
           SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id)
         )
 
-        next = %{state | body: body, body_hits: Map.put(state.body_hits, hit.key, receipt)}
         {:reply, {:ok, receipt}, publish_body(next, report)}
     end
   end
 
   def handle_call(:observe, _, state), do: {:reply, observation(state), state}
 
-  def handle_call({:seal, identity}, _, %{identity: identity, transfer: :requested} = state) do
-    state = cancel_cast(state, :cast_cancelled)
-    fence(state)
+  def handle_call(:body_snapshot, _, state), do: {:reply, Snapshot.take(state), state}
+  def handle_call(:stop, from, state), do: begin_body_detach(state, :stop, from)
 
-    checkpoint =
-      if state.stream,
-        do: CollisionUpdates.export_stream_checkpoint(state.updates, state.simulation_tick),
-        else: CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
-
-    cut =
-      Map.take(state, [
-        :id,
-        :epoch,
-        :kind,
-        :identity,
-        :state,
-        :slots,
-        :origin,
-        :simulation_tick,
-        :simulation_revision,
-        :config,
-        :content_version,
-        :stream,
-        :stream_cursor,
-        :window_domains,
-        :requested_window,
-        :window_pending,
-        :queued_seq,
-        :body,
-        :life_generation,
-        :body_hits,
-        :tool_action,
-        :body_exchange_j,
-        :movement_scales,
-        :climate,
-        :probe,
-        :authority_ref,
-        :revive
-      ])
-      |> Map.merge(%{
-        transaction_seq: state.updates.transaction_seq,
-        published_tick: state.tick,
-        collision_checkpoint: checkpoint
-      })
-
-    character_event(state, state, :transfer_sealed, %{
-      cut_tick: state.simulation_tick,
-      checkpoint_bytes: :erlang.external_size(checkpoint),
-      retained_versions: length(checkpoint.revisions)
-    })
-
-    {:reply, {:ok, cut}, %{state | transfer: :sealed}}
-  end
+  def handle_call({:seal, identity}, from, %{identity: identity, transfer: :requested} = state),
+    do: begin_body_detach(state, :seal, from)
 
   def handle_call({:activate, identity}, _, %{identity: identity, transfer: :prepared} = state) do
+    {store, opts} = state.body_store
+    {:ok, _} = store.claim(state.id, state.identity.session_epoch, opts)
+    state = persist_body(%{state | body_owned: true})
     for {tick, events} <- Enum.reverse(state.deferred), do: emit_transactions(state, tick, events)
-    state = %{state | transfer: nil, deferred: []} |> advance() |> publish()
+
+    state =
+      %{state | transfer: nil, deferred: [], body_owned: true}
+      |> register_body_contact()
+      |> advance()
+      |> publish()
+
     fence(state)
     {:reply, :ok, state}
   end
@@ -525,7 +506,7 @@ defmodule SceneServer.Movement.Player do
     finish(state)
   end
 
-  def handle_cast(:stop, state), do: {:stop, :normal, state}
+  def handle_cast(:stop, state), do: begin_body_detach(state, :stop, nil)
   def handle_cast(_, state), do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
   @impl true
@@ -619,7 +600,10 @@ defmodule SceneServer.Movement.Player do
   end
 
   def handle_info({:anchor, tick, updates, content_version, snapshot}, state) do
-    state = %{state | tick: tick, updates: updates, content_version: content_version}
+    state =
+      %{state | tick: tick, updates: updates, content_version: content_version}
+      |> consume_food(snapshot)
+
     probe = state.probe
 
     state =
@@ -670,6 +654,12 @@ defmodule SceneServer.Movement.Player do
             property_batch(state, snapshot, true, {snapshot.l0_min, snapshot.l0_max_exclusive})
             fence(state)
             character_event(state, state, :session_start, %{content_version: content_version})
+
+            state =
+              state
+              |> publish_movement_scale(state.body)
+              |> publish_body(Body.report(state.body, 1.0))
+
             schedule_body()
 
             state =
@@ -687,7 +677,7 @@ defmodule SceneServer.Movement.Player do
                   state
               end
 
-            publish(state)
+            state |> register_body_contact() |> publish()
           else
             fail(state, 4)
           end
@@ -774,31 +764,17 @@ defmodule SceneServer.Movement.Player do
       Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q})
     )
 
-    {:noreply, %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q}}
+    {:noreply,
+     persist_body(%{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q})}
   end
 
-  # 身体闭环 H1：World 裁决进食（0x7F action 5）并扣掉一株余额后送来该株的蛋白 g 与能量 J；立即并入身体（修复账的唯一进项）。
-  def handle_info({:body_food, cid, protein_g, energy_j}, %{id: cid} = state) do
-    {body, account} = Body.Repair.eat(state.body, protein_g, energy_j)
-
-    character_event(
-      state,
-      state,
-      :body_food,
-      Map.merge(account, %{
-        protein_in_g: protein_g,
-        energy_in_j: energy_j,
-        protein_g: body.protein_g,
-        reserve_j: body.reserve_j,
-        fat_reserve_j: body.fat_reserve_j
-      })
-    )
-
-    {:noreply, %{state | body: body}}
+  def handle_info({:body_detached, ref}, %{body_fence: {ref, monitor, action, from}} = state) do
+    Process.demonitor(monitor, [:flush])
+    complete_body_detach(%{state | body_fence: nil}, action, from)
   end
 
   def handle_info(:body_tick, %{transfer: transfer} = state)
-      when transfer in [:requested, :sealed],
+      when transfer in [:requested, :sealed, :stopping],
       do: {:noreply, state}
 
   def handle_info(:body_tick, %{transfer: :prepared} = state) do
@@ -811,7 +787,162 @@ defmodule SceneServer.Movement.Player do
     finish(body_tick(state))
   end
 
-  def handle_info({:DOWN, _, :process, _, _}, state), do: {:stop, :normal, state}
+  def handle_info({:DOWN, monitor, :process, _, _}, %{body_fence: {_, monitor, _, from}} = state),
+    do: complete_body_detach(%{state | body_fence: nil}, :stop, from)
+
+  def handle_info({:DOWN, _, :process, _, _}, %{body_fence: fence} = state) when fence != nil,
+    do: {:noreply, state}
+
+  def handle_info({:DOWN, _, :process, _, _}, state), do: begin_body_detach(state, :stop, nil)
+
+  # World 先停止旧 PID 接触，再由同一发送者返回 fence；等待期间仍处理此前的热消息。
+  defp begin_body_detach(%{body_fence: {ref, monitor, previous, waiters}} = state, action, from) do
+    action = if action == :stop, do: :stop, else: previous
+    {:noreply, %{state | body_fence: {ref, monitor, action, [{action, from} | waiters]}}}
+  end
+
+  defp begin_body_detach(%{transfer: transfer} = state, :stop, from)
+       when transfer in [:prepared, :sealed],
+       do: complete_body_detach(state, :stop, [{:stop, from}])
+
+  defp begin_body_detach(state, action, from) do
+    state = cancel_cast(state, :cast_cancelled)
+    state = if action == :stop, do: %{state | transfer: :stopping}, else: state
+
+    if authority = Map.get(state, :authority_ref) do
+      ref = make_ref()
+      monitor = Process.monitor(authority)
+      VoxelRegion.World.body_detach(authority, state.id, self(), ref)
+      {:noreply, %{state | body_fence: {ref, monitor, action, [{action, from}]}}}
+    else
+      complete_body_detach(state, action, [{action, from}])
+    end
+  end
+
+  defp complete_body_detach(state, :seal, waiters) do
+    {reply, state} = seal_body(state)
+    for {:seal, from} <- waiters, from != nil, do: GenServer.reply(from, reply)
+    {:noreply, state}
+  end
+
+  defp complete_body_detach(state, :stop, waiters) do
+    state = persist_body(state)
+
+    for {action, from} <- waiters,
+        from != nil,
+        do: GenServer.reply(from, if(action == :stop, do: :ok, else: {:error, :closed}))
+
+    {:stop, :normal, state}
+  end
+
+  defp seal_body(state) do
+    state = persist_body(state)
+    fence(state)
+
+    checkpoint =
+      if state.stream,
+        do: CollisionUpdates.export_stream_checkpoint(state.updates, state.simulation_tick),
+        else: CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
+
+    cut =
+      Map.take(state, [
+        :id,
+        :epoch,
+        :kind,
+        :identity,
+        :state,
+        :slots,
+        :origin,
+        :simulation_tick,
+        :simulation_revision,
+        :config,
+        :content_version,
+        :stream,
+        :stream_cursor,
+        :window_domains,
+        :requested_window,
+        :window_pending,
+        :queued_seq,
+        :body,
+        :body_heat,
+        :food_cursors,
+        :life_generation,
+        :body_hits,
+        :tool_action,
+        :body_exchange_j,
+        :movement_scales,
+        :climate,
+        :probe,
+        :authority_ref,
+        :revive
+      ])
+      |> Map.merge(%{
+        transaction_seq: state.updates.transaction_seq,
+        published_tick: state.tick,
+        collision_checkpoint: checkpoint
+      })
+
+    character_event(state, state, :transfer_sealed, %{
+      cut_tick: state.simulation_tick,
+      checkpoint_bytes: :erlang.external_size(checkpoint),
+      retained_versions: length(checkpoint.revisions)
+    })
+
+    {{:ok, cut}, %{state | transfer: :sealed}}
+  end
+
+  defp restore_body(state) do
+    {store, opts} = state.body_store
+    {:ok, bytes} = store.claim(state.id, state.identity.session_epoch, opts)
+    state = if bytes, do: Map.merge(state, Snapshot.decode!(bytes)), else: state
+    persist_body(%{state | body_owned: true})
+  end
+
+  defp persist_body(%{body_owned: false} = state), do: state
+  defp persist_body(%{transfer: :sealed} = state), do: state
+
+  defp persist_body(state) do
+    {store, opts} = state.body_store
+    :ok = store.save(state.id, state.identity.session_epoch, Snapshot.encode(state), opts)
+    state
+  end
+
+  defp consume_food(state, artifact) do
+    receipts = Map.get(artifact, :food_receipts, %{}) |> Map.get(state.id, %{}) |> Enum.sort()
+
+    Enum.reduce(receipts, state, fn {seq, food}, current ->
+      if seq > Map.get(current.food_cursors, current.content_version, 0) do
+        {body, account} = Body.Repair.eat(current.body, food.protein_g, food.energy_j)
+
+        next =
+          %{
+            current
+            | body: body,
+              food_cursors: Map.put(current.food_cursors, current.content_version, seq)
+          }
+          |> persist_body()
+
+        character_event(
+          next,
+          next,
+          :body_food,
+          Map.merge(account, %{
+            world_seq: seq,
+            content_version: next.content_version,
+            protein_in_g: food.protein_g,
+            energy_in_j: food.energy_j,
+            protein_g: body.protein_g,
+            reserve_j: body.reserve_j,
+            fat_reserve_j: body.fat_reserve_j
+          })
+        )
+
+        next
+      else
+        current
+      end
+    end)
+  end
 
   # 1 Hz：Body 推进 1 s（修复账 → 体温，`Body.Repair.tick/4`，M 恒 1；吃进累计接触热；无接触时接触温度 = 空气）→ 把身体几何与新皮肤温度报给 World 算下一秒接触
   # → 推导视图有变化才下发 BodyState。无热环境的世界不推进身体。
@@ -853,31 +984,14 @@ defmodule SceneServer.Movement.Player do
           life: Body.life(body)
         })
 
-    {x, y, z} = state.state.position
-    profile = state.config.profile
-
-    if authority = Map.get(state, :authority_ref),
-      do:
-        send(
-          authority,
-          {:body_contact, state.id, self(),
-           %{
-             feet: {x, y - profile.half_height, z},
-             height: 2 * profile.half_height,
-             radius: profile.radius,
-             skin_k: body.skin_k,
-             capacity: Body.skin_capacity_j_per_k(),
-             area: Body.params().area_m2,
-             tissue_k: body.tissue_k,
-             tissue_capacity: Body.tissue_capacity_j_per_k(),
-             tissue_g:
-               Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)
-           }}
-        )
+    state =
+      persist_body(%{
+        state
+        | body: body,
+          body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0}
+      })
 
     coherence = Body.coherence_factor(body)
-    if authority, do: send(authority, {:body_coherence, state.id, coherence})
-
     state = publish_movement_scale(state, body)
     {movement_apply_tick, movement_factor, _} = hd(state.movement_scales)
     report = Body.report(body, 1.0)
@@ -936,7 +1050,8 @@ defmodule SceneServer.Movement.Player do
         body_sent: report.key
     }
 
-    if body.status == :dead, do: died(state), else: state
+    state = if body.status == :dead, do: died(state), else: state
+    register_body_contact(state)
   end
 
   # 与 fence 共用可靠时间线，生效点在已发布世界之后；同 tick 后到的值覆盖先到值。
@@ -1123,6 +1238,37 @@ defmodule SceneServer.Movement.Player do
 
   defp relocated(state), do: state
 
+  defp register_body_contact(%{climate: nil} = state), do: state
+  defp register_body_contact(%{state: nil} = state), do: state
+
+  defp register_body_contact(state) do
+    if authority = Map.get(state, :authority_ref) do
+      body = state.body
+      {x, y, z} = state.state.position
+      profile = state.config.profile
+
+      send(
+        authority,
+        {:body_contact, state.id, self(),
+         %{
+           feet: {x, y - profile.half_height, z},
+           height: 2 * profile.half_height,
+           radius: profile.radius,
+           skin_k: body.skin_k,
+           capacity: Body.skin_capacity_j_per_k(),
+           area: Body.params().area_m2,
+           tissue_k: body.tissue_k + state.body_heat.tissue_j / Body.tissue_capacity_j_per_k(),
+           tissue_capacity: Body.tissue_capacity_j_per_k(),
+           tissue_g: Body.params().contact_tissue_m2 * Body.Thermo.contact_tissue_w_per_m2_k(body)
+         }}
+      )
+
+      send(authority, {:body_coherence, state.id, Body.coherence_factor(body)})
+    end
+
+    state
+  end
+
   defp highest(nil, k), do: k
   defp highest(k, nil), do: k
   defp highest(a, b), do: max(a, b)
@@ -1285,7 +1431,7 @@ defmodule SceneServer.Movement.Player do
 
   defp finish(state) do
     send(state.scene, {:player_failed, state.identity, self(), state.failure})
-    {:stop, :normal, state}
+    begin_body_detach(state, :stop, nil)
   end
 
   defp active?(state),
@@ -1479,6 +1625,15 @@ defmodule SceneServer.Movement.Player do
   end
 
   defp deliver_transactions(state, tick, events) do
+    # 首次 anchor 的完整快照拥有全部历史收据；此前的尾部不能先抬高消费游标。
+    food_events = if state.baseline == nil, do: [], else: events
+    state =
+      Enum.reduce(food_events, state, fn
+        {_payload, _n, _r, _chunks, delta}, s -> consume_food(s, delta.transaction)
+        {:window, snapshot, _revision}, s -> consume_food(s, snapshot)
+        _, s -> s
+      end)
+
     if state.transfer == :prepared do
       if events == [], do: state, else: %{state | deferred: [{tick, events} | state.deferred]}
     else

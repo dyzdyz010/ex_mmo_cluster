@@ -190,6 +190,7 @@ defmodule GateServer.NpcBodyTest do
       }
 
       source = start_supervised!({Source, snapshot})
+      body_store = start_supervised!({MmoTest.BodyStore, []})
 
       scene =
         start_supervised!(
@@ -200,6 +201,7 @@ defmodule GateServer.NpcBodyTest do
              scene_epoch: 7,
              world_ref: source,
              world_api: Source,
+             body_store: {MmoTest.BodyStore, store: body_store},
              config: config
            ]}
         )

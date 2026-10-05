@@ -103,10 +103,19 @@ defmodule SceneServer.PrefabDesignerTest do
       "spawn_min_y_m" => 0.5
     }
 
+    body_store = start_supervised!({MmoTest.BodyStore, []})
+
     scene =
       start_supervised!(
         {Scene,
-         [scene_id: 1, scene_epoch: 1, world_ref: world, config: config, clock: {Clock, nil}]}
+         [
+           scene_id: 1,
+           scene_epoch: 1,
+           world_ref: world,
+           config: config,
+           clock: {Clock, nil},
+           body_store: {MmoTest.BodyStore, store: body_store}
+         ]}
       )
 
     actor = %{

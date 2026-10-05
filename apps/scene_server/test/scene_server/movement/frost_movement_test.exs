@@ -36,7 +36,12 @@ defmodule SceneServer.Movement.FrostMovementTest do
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 1}
 
-  defp opts do
+  setup do
+    store = start_supervised!({MmoTest.BodyStore, []})
+    %{body_store: {MmoTest.BodyStore, store: store}}
+  end
+
+  defp opts(body_store) do
     cells =
       for _z <- 0..15, y <- 0..15, _x <- 0..15, into: <<>>, do: <<if(y == 0, do: 1, else: 0)>>
 
@@ -74,6 +79,7 @@ defmodule SceneServer.Movement.FrostMovementTest do
 
     [
       id: 20,
+      body_store: body_store,
       epoch: 1,
       kind: 1,
       identity: identity(),
@@ -94,8 +100,8 @@ defmodule SceneServer.Movement.FrostMovementTest do
     ]
   end
 
-  defp player do
-    {:ok, state} = Player.init(opts())
+  defp player(body_store) do
+    {:ok, state} = Player.init(opts(body_store))
 
     %{
       state
@@ -147,8 +153,8 @@ defmodule SceneServer.Movement.FrostMovementTest do
     next
   end
 
-  test "新身体倍率在已发布 tick + 1 生效，积压步仍使用历史速度且只修改 speed" do
-    state = body_tick(player())
+  test "新身体倍率在已发布 tick + 1 生效，积压步仍使用历史速度且只修改 speed", ctx do
+    state = body_tick(player(ctx.body_store))
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: 0.65}}
     state = input(state, [9, 10])
 
@@ -184,8 +190,8 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert state.movement_scales == [{31, 1.0, 1.0}]
   end
 
-  test "倍率不变不重复发，同 tick 后到变化覆盖，修复恢复全速" do
-    state = body_tick(player())
+  test "倍率不变不重复发，同 tick 后到变化覆盖，修复恢复全速", ctx do
+    state = body_tick(player(ctx.body_store))
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: 0.65}}
     state = body_tick(state)
     refute_receive {:reliable, _, :voxel, %Movement.SpeedScale{}}, 0
@@ -198,8 +204,8 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert state.movement_scales == [{13, 1.0, 1.0}, {11, factor, 1.0}, {0, 1.0, 1.0}]
   end
 
-  test "复活身体在未来 tick 发布恢复全速" do
-    state = body_tick(player())
+  test "复活身体在未来 tick 发布恢复全速", ctx do
+    state = body_tick(player(ctx.body_store))
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{factor: 0.65}}
     state = body_tick(%{state | tick: 11, body: %{state.body | status: :dead}})
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 12, factor: 1.0}}
@@ -207,18 +213,32 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert state.body.daze_s == 39.0
   end
 
-  test "移交封存与导入保留未消费的倍率；prepared 身体计时不提前推进或发送" do
-    source = body_tick(player())
+  test "移交封存与导入保留未消费的倍率；prepared 身体计时不提前推进或发送", ctx do
+    source = body_tick(player(ctx.body_store))
     assert_receive {:reliable, _, :voxel, %Movement.SpeedScale{apply_tick: 11, factor: 0.65}}
 
-    {:reply, {:ok, cut}, sealed} =
-      Player.handle_call({:seal, source.identity}, nil, %{source | transfer: :requested})
+    # 纯回调小例：封存前收到尚未被下一次身体 tick 消费的 90 J，移交必须完整带走。
+    heat = %{q_j: 90.0, tissue_j: 40.0, max_contact_k: 330.0, sole_k: 320.0, immersed: 0.5, seq: 1}
+    {:noreply, source} = Player.handle_info({:body_heat, heat}, source)
+    assert source.body_heat == Map.delete(heat, :seq)
+    ref = make_ref()
+
+    assert {:noreply, sealed} =
+             Player.handle_call(
+               {:seal, source.identity},
+               {self(), ref},
+               %{source | transfer: :requested}
+             )
+
+    assert_receive {^ref, {:ok, cut}}
 
     assert cut.movement_scales == [{11, 0.65, 1.0}, {0, 1.0, 1.0}]
+    assert cut.body_heat == source.body_heat
     assert {:noreply, ^sealed} = Player.handle_info(:body_tick, sealed)
 
-    {:ok, target} = Player.init(Keyword.merge(opts(), import: cut, tail: [], tick: 10))
+    {:ok, target} = Player.init(Keyword.merge(opts(ctx.body_store), import: cut, tail: [], tick: 10))
     assert target.movement_scales == cut.movement_scales
+    assert target.body_heat == source.body_heat
     assert {:noreply, ^target} = Player.handle_info(:body_tick, target)
     refute_receive {:reliable, _, :voxel, %Movement.SpeedScale{}}, 0
     {:reply, :ok, active} = Player.handle_call({:activate, target.identity}, nil, target)
@@ -229,8 +249,8 @@ defmodule SceneServer.Movement.FrostMovementTest do
     assert active.movement_scales == [{11, 0.65, 1.0}]
   end
 
-  test "真实 Native 固定步同时消费冻伤和前摇限制，原始跑跳输入不能越过约束" do
-    state = player() |> body_tick() |> input([9, 10]) |> Map.put(:authority_ref, self())
+  test "真实 Native 固定步同时消费冻伤和前摇限制，原始跑跳输入不能越过约束", ctx do
+    state = player(ctx.body_store) |> body_tick() |> input([9, 10]) |> Map.put(:authority_ref, self())
     for _ <- 1..2, do: assert_receive({:stepped, _, _})
     request = %{action: 1, client_intent_seq: 1, request_id: 1, direction: {1.0, 0.0, 0.0}}
 

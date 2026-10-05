@@ -1,3 +1,5 @@
+Code.require_file("../../../../scene_server/test/support/body_store.exs", __DIR__)
+
 defmodule SceneServer.Movement.VoximNeighbourNodesProbe do
   @moduledoc "只测试：在 peer 中启动真实 World 与 Scene，不注入运行时真值。"
   alias SceneServer.Movement.Scene
@@ -31,27 +33,29 @@ defmodule SceneServer.Movement.VoximNeighbourNodesProbe do
            ]}
         ]
 
-    children =
-      source ++
-        [
-          {Scene,
-           [
-             name: Scene,
-             scene_id: id,
-             scene_epoch: 1,
-             world_ref: world || VoxelRegion.World,
-             config: config
-           ]}
-        ]
-
-    {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_one)
+    {:ok, sup} = Supervisor.start_link(source, strategy: :one_for_one)
     Process.unlink(sup)
+    {:ok, body_store} = Supervisor.start_child(sup, {MmoTest.BodyStore, []})
+
+    {:ok, scene} =
+      Supervisor.start_child(
+        sup,
+        {Scene,
+         [
+           name: Scene,
+           scene_id: id,
+           scene_epoch: 1,
+           world_ref: world || VoxelRegion.World,
+           body_store: {MmoTest.BodyStore, store: body_store},
+           config: config
+         ]}
+      )
 
     %{
       node: node(),
       os_pid: System.pid(),
       supervisor: sup,
-      scene: Process.whereis(Scene),
+      scene: scene,
       world: world || Process.whereis(VoxelRegion.World),
       config: config
     }

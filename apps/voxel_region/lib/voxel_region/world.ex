@@ -251,6 +251,9 @@ defmodule VoxelRegion.World do
   @doc "Global system：读取现有作者工具定义，人物作用不借用体素 HP 参数。"
   def tool_definition(server, id), do: GenServer.call(server, {:tool_definition, id})
 
+  @doc "异步停止旧 Player 的身体接触；同一 World 发出的既有 body_heat 先于 body_detached 到达。"
+  def body_detach(server, cid, pid, ref), do: send(server, {:body_detach, cid, pid, ref})
+
   @doc "人物工具作用的世界授权：当前 canonical 遮挡和既有工具频率；身体提交由目标 owner 完成。"
   def body_tool(server, actor, request, distance) do
     prepare(server, tool_regions(actor, distance))
@@ -496,6 +499,7 @@ defmodule VoxelRegion.World do
           craft_ledger: %{},
           # 食物账（身体闭环 H1）：材料 => 被吃掉的累计单位（物质离开世界进入身体）；随日志／检查点持久化。
           food_ledger: %{},
+          food_receipts: %{},
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
           macro_owners: %{},
@@ -1237,15 +1241,32 @@ defmodule VoxelRegion.World do
     {contacts, immersed, sole, state} = Thermal.body_contacts(state, body)
 
     bodies =
-      if contacts == [] and abs(body.tissue_k - body.skin_k) <= thermal.config["tolerance_kelvin"],
-        do: Map.delete(state.bodies, cid),
-        else: Map.put(state.bodies, cid, Map.merge(body, %{pid: pid, contacts: contacts, immersed: immersed, sole: sole,
-          at: System.monotonic_time(:millisecond)}))
+      if contacts == [] and abs(body.tissue_k - body.skin_k) <= thermal.config["tolerance_kelvin"] do
+        Thermal.detach_body(state.bodies, cid)
+      else
+        {bodies, monitor} = case Map.get(state.bodies, cid) do
+          %{pid: ^pid, monitor: monitor} -> {state.bodies, monitor}
+          _ -> {Thermal.detach_body(state.bodies, cid), Process.monitor(pid)}
+        end
+        Map.put(bodies, cid, Map.merge(body, %{pid: pid, monitor: monitor, contacts: contacts,
+          immersed: immersed, sole: sole, at: System.monotonic_time(:millisecond)}))
+      end
 
     {:noreply, Thermal.wake(%{state | bodies: bodies})}
   end
 
   def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
+
+  # 全局系统功能：Scene seal/退出等待此 fence，先吸收旧 owner 已收到的热量，再交接身体。
+  # 热内核每步同步回传；后续步从当前 bodies 取节点。迟到的旧 PID 不得摘掉新 Scene 的接触。
+  def handle_info({:body_detach, cid, pid, ref}, state) do
+    bodies = case Map.get(state.bodies, cid) do
+      %{pid: ^pid} -> Thermal.detach_body(state.bodies, cid)
+      _ -> state.bodies
+    end
+    send(pid, {:body_detached, ref})
+    {:noreply, %{state | bodies: bodies}}
+  end
 
   # 身体闭环 H2：Scene 身体 → World 施法者的单向数据（相干度系数，每秒一次）。
   def handle_info({:body_coherence, cid, factor}, state),
@@ -1313,10 +1334,14 @@ defmodule VoxelRegion.World do
     state = Enum.reduce(state.pending_casts, state, fn {_, pending}, acc ->
       if pending.actor.player == pid, do: cancel_pending_cast(acc, pending.actor.action_key, :invalid_session), else: acc
     end)
+    bodies = Enum.reduce(state.bodies, state.bodies, fn {cid, body}, bodies ->
+      if body.pid == pid, do: Thermal.detach_body(bodies, cid), else: bodies
+    end)
       {:noreply,
        %{
          state
-         | subs: Map.delete(state.subs, pid),
+         | bodies: bodies,
+           subs: Map.delete(state.subs, pid),
            canonical_subs: Map.delete(state.canonical_subs, pid),
            canonical_feeds: Map.delete(state.canonical_feeds, pid),
            replica_subs: Map.delete(state.replica_subs, pid),

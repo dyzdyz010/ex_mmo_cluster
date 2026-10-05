@@ -19,6 +19,7 @@ defmodule SceneServer.Movement.VoximApplicationTest do
   test "configured M1 application starts the real Scene without legacy native physics" do
     path = Path.expand("../../../../../../Voxim/Docs/M1/fixtures/demo-config.json", __DIR__)
     before = Application.get_env(:scene_server, SceneServer.Movement.Scene)
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     Application.put_env(:scene_server, SceneServer.Movement.Scene,
       name: SceneServer.Movement.Scene,
@@ -26,6 +27,7 @@ defmodule SceneServer.Movement.VoximApplicationTest do
       scene_epoch: 1,
       world_ref: self(),
       world_api: World,
+      body_store: {MmoTest.BodyStore, store: body_store},
       native: Native,
       config_path: path
     )

@@ -72,15 +72,16 @@ flowchart LR
 - **报价前摇**（分支 `quote-windup`，Hello 27 → 28）：0x83 施法者状态末尾追加 `quote_windup_s`（f64 大端）= 报价程序的前摇 Σ(T_adj + T_inj)，取自与施放计时同一次 `Cost.quote` 的 `windup_s`；只有报价回复（0x82 action 0）非零，登录推送与施放结算后的状态为 0。0x83 以外布局不变。
 - 复跑：`apps/voxel_region` 下 `mix test test/magic_test.exs test/magic_semblance_test.exs test/magic_windup_world_test.exs test/magic_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test test/gate_server/voxim_spell_dispatch_test.exs`。
 
-## 身体闭环 H1：修复账 + 进食（2026-09-26，分支 `body-repair`，未合并，等客户端 Hello 29）
+## 身体闭环 H1：修复账 + 进食（2026-09-26；2026-10-05 P0 补齐连续性）
 
 设计正文见 Voxim `Docs/Magic.md` §6.5–6.7、§6.10；参数、依据与账见 `apps/scene_server/lib/scene_server/body/README.md`“修复账”。服务端事实：
 
 - **修复账**：`SceneServer.Body.Repair`（纯函数）。烧伤 / 冻伤 = 剂量 + 愈合进度 0..1；速率 M / T(严重度) × min(1, 循环)，受蛋白质与糖原 + 脂肪储备约束（付不起停在原处）；合成能按寒战同一份额取自糖原 / 脂肪，经 `Thermo.step/3` 新可选输入 `core_j` 进核心。Player 1 Hz 调 `Repair.tick/4`（M 恒 1）。
 - **时长与慢性影响**（2026-09-26 修订，取代统一压缩系数 K）：T = clamp(30 s × 真实愈合天数^0.7, 30 s, 1800 s)，真实天数是身体参数（`Body.params/0`，不进热环境）；烧伤循环上限 1 − 0.10 × √(T_1度 / T) × (1 − 进度)。热环境资产不再有 `heal_time_compression`，World / property_context / Player 不带 K；旧环境文件里若仍有该键，加载时被忽略。
 - **冻伤**：浅（≥ 300 K·s，待确认）/ 深（≥ 600 K·s），同一标签 `trauma.thermal.frostbite` 严重度 1 / 2，部位脚；本增量不压系统。
-- **进食**：0x7F action 5，material = 可食材料；World 查属性目录 `food`、扣一株 `place_units`、记 `food_ledger`（持久化），提交后发 `{:body_food, cid, protein_g, energy_j}` 给该角色 Player。拒绝 `not_edible` / `insufficient_material`，重发幂等。
-- **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。Hello 28 → 29。新伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
+- **进食**：0x7F action 5，material = 可食材料；World 查属性目录 `food`、扣一株 `place_units`、记 `food_ledger`，并在同笔日志保存 `food_receipts[cid][seq]`。canonical snapshot/delta 携带内部收据，Player 按 content_version 分桶游标吸收，完整身体和游标同笔保存；不再直接向旧 PID 发 `body_food`。拒绝 `not_edible` / `insufficient_material`，重发幂等。身体 owner、离线冻结、移交热 fence 与当前验证状态见 [身体连续性 P0](../../../20-archive/cross-cutting/2026-10-05-body-continuity-p0.md)。
+- **身体恢复**：Player 为唯一身体 owner，DataService 按角色保存完整 Body、待吸收热、生命代次和分世界消费游标；session_epoch 拒绝旧会话覆盖。离线冻结，重登／冷重启读回，在线后按既有 1 Hz 继续；重登入场沿用原出生规则。Scene seal／正常退出先等待 World 热接触 fence，再保存交接；异常退出时 World 注销死亡 PID。
+- **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。该历史增量为 Hello 28 → 29；本轮 P0 未改变当前 wire。伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
 - 复跑：`apps/scene_server` 下 `mix test test/scene_server/body`；`apps/voxel_region` 下 `mix test test/damage_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。只证明服务端范围，不代替双客户端实跑。
 
 ## 身体闭环 H2：伤病合成、复活、死亡掉落、相干度系数（2026-09-26，2026-09-27 修订）

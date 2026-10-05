@@ -34,6 +34,10 @@ defmodule SceneServer.Movement.VoximPlayerTest do
       {:reply, :ok, Map.update(state, :held, [{subscriber, ref}], &(&1 ++ [{subscriber, ref}]))}
     end
 
+    # 只测试：冻结下一次入场快照的交付，仍允许此前 canonical delta 正常进入 Scene。
+    def handle_call({:hold, snapshot}, _, state),
+      do: {:reply, :ok, Map.merge(state, %{hold: true, snapshot: snapshot})}
+
     def handle_call(:release, _, state) do
       for {subscriber, ref} <- state.held do
         send(subscriber, {:canonical_snapshot, ref, state.snapshot})
@@ -110,6 +114,7 @@ defmodule SceneServer.Movement.VoximPlayerTest do
   setup do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{snapshot: snapshot(), owner: self()}})
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
@@ -121,6 +126,7 @@ defmodule SceneServer.Movement.VoximPlayerTest do
            config: config(),
            clock: {Clock, clock},
            sink: Sink,
+           body_store: {MmoTest.BodyStore, store: body_store},
            world_api: Source
          ]}
       )
@@ -182,6 +188,52 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     end)
 
     {p, q, start}
+  end
+
+  @tag :body_anchor
+  test "入场前缀的较新食物不能让游标跳过完整快照中的旧收据", ctx do
+    # 只测试：World 和存储是显式替身；验证真实 Scene/Player 的入场消息顺序，
+    # 不验证扣料或数据库。两份不可变收据为手算小例，分别提供 1000 J 和 2000 J。
+    first = %{protein_g: 0.0, energy_j: 1000.0}
+    second = %{protein_g: 0.0, energy_j: 2000.0}
+
+    delta = fn seq, food ->
+      %Voxel.CanonicalDelta{
+        transaction_seq: seq,
+        transaction: %{seq: seq, entries: [], coarse: [], food_receipts: %{20 => %{seq => food}}},
+        chunks: []
+      }
+    end
+
+    :ok = GenServer.call(ctx.source, {:delta, delta.(1, first)})
+    wait(fn -> Scene.observe(ctx.scene).queue_length == 1 end)
+    tick(ctx, 1)
+
+    :ok = GenServer.call(ctx.source, {:delta, delta.(2, second)})
+    wait(fn -> Scene.observe(ctx.scene).queue_length == 1 end)
+
+    complete =
+      %{snapshot() | transaction_seq: 2}
+      |> Map.put(:food_receipts, %{20 => %{1 => first, 2 => second}})
+
+    :ok = GenServer.call(ctx.source, {:hold, complete})
+    {:ok, player} = Scene.join(ctx.scene, identity(1), %{id: 20}, self())
+    assert_receive {:snapshot_held, _}
+
+    # 先前的 seq1 已发布给空 Scene；新 Player 在 anchor 前只看到 seq2。
+    tick(ctx, 2)
+    wait(fn -> Player.observe(player).published_tick == 2 end)
+    refute_received {:reliable, _, :control, %Session.SessionStart{}}
+
+    :ok = GenServer.call(ctx.source, :release)
+    wait(fn -> Scene.observe(ctx.scene).queue_length == 1 end)
+    tick(ctx, 3)
+    assert_receive {:reliable, _, :control, %Session.SessionStart{}}, 1000
+    saved = Player.body_snapshot(player)
+
+    assert saved.food_cursors == %{9 => 2}
+    assert saved.body.fat_reserve_j == SceneServer.Body.new().fat_reserve_j + 3000.0
+    assert :ok = Scene.leave(ctx.scene, identity(1))
   end
 
   test "断流角色仍推进，迟到跳跃不补跑，另一角色保持正常输入", ctx do

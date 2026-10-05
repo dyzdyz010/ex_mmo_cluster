@@ -10,6 +10,8 @@ defmodule SceneServer.Movement.ToolActionTest do
   # Test-only：受控 owner 回调，不冒充真实网络／World 集成。
   setup do
     identity = %Session.Identity{session_epoch: 7, scene_id: 1, scene_epoch: 2}
+    body_store = start_supervised!({MmoTest.BodyStore, []})
+    {:ok, nil} = MmoTest.BodyStore.claim(20, identity.session_epoch, store: body_store)
 
     state = %{
       identity: identity,
@@ -27,6 +29,12 @@ defmodule SceneServer.Movement.ToolActionTest do
         combat_scope: {{-5.0, -5.0, -5.0}, {5.0, 5.0, 5.0}}
       },
       body: Body.new(),
+      body_store: {MmoTest.BodyStore, store: body_store},
+      body_owned: true,
+      body_fence: nil,
+      body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
+      body_exchange_j: 0.0,
+      food_cursors: %{},
       body_sent: nil,
       life_generation: 99,
       body_hits: %{},

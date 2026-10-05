@@ -246,11 +246,13 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
   setup do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{snapshot: snapshot(), owner: self()}})
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
         {Scene,
          [
+           body_store: {MmoTest.BodyStore, store: body_store},
            scene_id: 1,
            scene_epoch: 7,
            world_ref: source,
@@ -263,7 +265,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
     assert_receive {:snapshot_sent, _}, 2000
     await(scene, & &1.initialized)
-    %{scene: scene, source: source, clock: clock}
+    %{scene: scene, source: source, clock: clock, body_store: body_store}
   end
 
   defp await(scene, predicate, attempts \\ 200) do
@@ -297,6 +299,10 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert {:reliable, _, :control, %Session.SessionStart{} = start} = next_reliable()
     assert {:reliable, _, :voxel, %Voxel.CanonicalBootstrap{}} = next_reliable()
     assert {:reliable, _, :voxel, %Voxel.TimelineFence{}} = next_reliable()
+    # P0：bootstrap 随即发送实际身体，重登也不必等下一秒才恢复 HUD。
+    assert {:reliable, _, :control, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+             next_reliable()
+
     start
   end
 
@@ -537,6 +543,9 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert {:reliable, _, :voxel, %Voxel.TimelineFence{server_tick: 3, transaction_seq: 2}} =
              next_reliable()
 
+    assert {:reliable, _, :control, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+             next_reliable()
+
     assert observe(ctx.scene).physics_steps == 2
   end
 
@@ -695,6 +704,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: ctx.source,
@@ -728,6 +738,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: ctx.source,
@@ -812,6 +823,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
           Supervisor.child_spec(
             {Scene,
              [
+               body_store: {MmoTest.BodyStore, store: ctx.body_store},
                scene_id: 1,
                scene_epoch: 7,
                world_ref: ctx.source,
@@ -908,6 +920,9 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert {:reliable, _, :voxel, %Voxel.CanonicalBootstrap{transaction_seq: 2}} = next_reliable()
     assert {:reliable, _, :voxel, %Voxel.TimelineFence{transaction_seq: 2}} = next_reliable()
 
+    assert {:reliable, _, :control, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+             next_reliable()
+
     assert observe(ctx.scene).transaction_seq == 2
     refute_receive {:reliable, _, :voxel, %Voxel.CollisionApplied{}}
     advance(ctx, 3)
@@ -928,6 +943,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: source,
@@ -974,6 +990,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: source,
@@ -1024,7 +1041,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
   end
 
   test "admission during initial source preparation cannot establish a second baseline subscription",
-       _ctx do
+       ctx do
     source =
       start_supervised!(
         Supervisor.child_spec({Source, %{snapshot: snapshot(), owner: self(), hold: true}},
@@ -1039,6 +1056,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: source,
@@ -1083,7 +1101,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
   @tag timeout: 120_000
   test "actual saved R6 World artifact installs 512 cores, spawns both probes and steps with P1 NIF",
-       _ctx do
+       ctx do
     fixture = Path.expand("../../../../../../Voxim/Docs/M1/runtime/S1/world-fixture", __DIR__)
     root = Path.join(System.tmp_dir!(), "voxim_s1_world_#{System.unique_integer([:positive])}")
     File.cp_r!(fixture, root)
@@ -1130,6 +1148,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: world,
@@ -1221,7 +1240,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
 
   @tag timeout: 120_000
   test "cold Linux GeneratedStore produces the same actual canonical artifacts and legal Scene spawns",
-       _ctx do
+       ctx do
     root =
       Path.join(System.tmp_dir!(), "voxim_s1_generated_#{System.unique_integer([:positive])}")
 
@@ -1300,6 +1319,7 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
         Supervisor.child_spec(
           {Scene,
            [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
              scene_id: 1,
              scene_epoch: 7,
              world_ref: world,

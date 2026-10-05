@@ -121,6 +121,87 @@ defmodule VoxelRegion.BodyContactWorldTest do
   # 两端同值：本端逐条累加（同一加法次序）等于 World 账。
   defp both_ends(heats, s), do: assert(Enum.reduce(heats, 0.0, &(&2 + &1.q_j)) == ledger(s))
 
+  @tag :body_continuity
+  test "身体摘离确认排在已发送热量之后，确认后不再从旧接触产热", c do
+    contact(c.w, {3.5, 1.0, 3.5}, %{tissue_k: 330.0})
+    ref = make_ref()
+    # 固定入队顺序：热步先运行，摘离排在它续发的下一步之前；不注入 World 真值。
+    :ok = :sys.suspend(c.w)
+    send(c.w, :thermal_tick)
+    World.body_detach(c.w, @cid, self(), ref)
+    :ok = :sys.resume(c.w)
+    # 仅接收这条 World 流，按 mailbox 次序读取，不能 selective receive 越过前面的热量。
+    heats = heat_until_detached(ref)
+    assert heats != []
+    assert Enum.all?(heats, &(&1.tissue_j < 0))
+    commit(c.w)
+    assert drain() == []
+    World.body_detach(c.w, @cid, self(), ref)
+    assert_receive {:body_detached, ^ref}
+  end
+
+  @tag :body_continuity
+  test "旧 Scene 的迟到摘离不会删除新 Scene 的接触", c do
+    parent = self()
+    receiver = spawn(fn -> forward_heat(parent) end)
+    on_exit(fn -> Process.exit(receiver, :kill) end)
+    body = Map.merge(@body, %{feet: {3.5, 1.0, 3.5}, tissue_k: 330.0})
+    send(c.w, {:body_contact, @cid, receiver, body})
+    ref = make_ref()
+    World.body_detach(c.w, @cid, self(), ref)
+    assert_receive {:body_detached, ^ref}
+    commit(c.w)
+    assert_receive {:new_scene_heat, %{tissue_j: tissue_j}}
+    assert tissue_j < 0
+    assert drain() == []
+  end
+
+  defp heat_until_detached(ref, heats \\ []) do
+    receive do
+      {:body_heat, heat} -> heat_until_detached(ref, [heat | heats])
+      {:body_detached, ^ref} -> Enum.reverse(heats)
+    after
+      1_000 -> flunk("World did not acknowledge body detach")
+    end
+  end
+
+  defp forward_heat(parent) do
+    receive do
+      {:body_heat, heat} -> send(parent, {:new_scene_heat, heat}); forward_heat(parent)
+    end
+  end
+
+  @tag :body_continuity
+  test "Player 异常退出后立即停止接触换热，不等两秒半续报超时", c do
+    path = Path.join(c.root, "disconnect-basin.json")
+    File.write!(path, Jason.encode!(%{classification: "Test-only",
+      deposits: [%{macro: [6,1,6], material: @water}, %{macro: [6,2,6], material: @water}]}))
+    {:ok, _} = World.liquid_experiment(c.w, path)
+    parent = self()
+    receiver = spawn(fn -> forward_heat(parent) end)
+    monitor = Process.monitor(receiver)
+    body = Map.merge(@body, %{feet: {6.5,1.0,6.5}})
+    send(c.w, {:body_contact, @cid, receiver, body})
+    before = ledger(commit(c.w))
+    assert before < 0
+    :ok = :sys.suspend(c.w)
+    Process.exit(receiver, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^receiver, :killed}
+    :ok = :sys.resume(c.w)
+    # 等待实际 DOWN 清理完成；没有 monitor 的旧实现直接继续，最终守恒断言仍能证伪。
+    wait_contact_exit(c.w, receiver)
+    assert ledger(commit(c.w)) == before
+  end
+
+  defp wait_contact_exit(world, pid, left \\ 1_000) do
+    {:monitors, monitors} = Process.info(world, :monitors)
+    if {:process, pid} in monitors do
+      assert left > 0
+      Process.sleep(1)
+      wait_contact_exit(world, pid, left - 1)
+    end
+  end
+
   # 鞋底接组织块：G_c = 0.17647059，T_ss = (0.17647059·~600 + 0.378207·307.15)/0.5546776 ≈ 400 K，k = 0.0026489 /s。
   # 两次报告之间 World 自己推进组织块（段末温度作下一段起点），报告再覆盖；每段按解析解核对段末温度与 q。
   test "脚下 600 K 石：鞋底边接组织块，每段组织块段末温度与 q 符合解析解；组织块逐段升温、跨段相接；两端交换量相等", c do

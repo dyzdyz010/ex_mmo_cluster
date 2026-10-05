@@ -12,7 +12,7 @@ defmodule SceneServer.Movement.Scene do
     do: GenServer.call(scene, {:join, identity, authorized_character, gate_pid})
 
   @doc "结束此 identity；旧 epoch 不影响重连。"
-  def leave(scene, identity, reason \\ 1), do: GenServer.cast(scene, {:leave, identity, reason})
+  def leave(scene, identity, reason \\ 1), do: GenServer.call(scene, {:leave, identity, reason})
   @doc "只读标量统计与角色状态，不暴露可变 NIF resource。"
   def observe(scene), do: GenServer.call(scene, :observe)
   @doc "从本场景的实际移动与出生配置提供只读设计上下文。"
@@ -135,6 +135,7 @@ defmodule SceneServer.Movement.Scene do
       world_ref: Keyword.fetch!(opts, :world_ref),
       world_api: Keyword.get(opts, :world_api, VoxelRegion.World),
       sink: Keyword.get(opts, :sink, MmoContracts.Session.Outbound),
+      body_store: Keyword.get(opts, :body_store, {DataService.BodyStore, []}),
       clock: clock,
       config: config,
       updates: CollisionUpdates.new(Keyword.get(opts, :native, SceneServer.Native.VoximMovement)),
@@ -293,6 +294,7 @@ defmodule SceneServer.Movement.Scene do
         time_mono_origin: state.time_mono_origin,
         mono_origin: state.mono_origin,
         sink: state.sink,
+        body_store: state.body_store,
         updates: updates,
         content_version: state.content_version,
         scene_id: state.scene_id,
@@ -354,6 +356,9 @@ defmodule SceneServer.Movement.Scene do
     end
   end
 
+  def handle_call({:leave, identity, reason}, _, state),
+    do: {:reply, :ok, drop(state, identity, reason)}
+
   def handle_call({:join, identity, %{id: cid} = character, gate}, _, state) do
     # 显式出生点（NPC）不占 probe 名额；普通角色按空闲 probe 槽出生。
     spawn = Map.get(character, :spawn)
@@ -407,6 +412,7 @@ defmodule SceneServer.Movement.Scene do
           time_mono_origin: state.time_mono_origin,
           mono_origin: if(state.initialized, do: state.mono_origin, else: nil),
           sink: state.sink,
+          body_store: state.body_store,
           updates: %{state.updates | queue: :queue.new()},
           content_version: state.content_version,
           scene_id: state.scene_id,
@@ -804,7 +810,7 @@ defmodule SceneServer.Movement.Scene do
         })
 
         Process.demonitor(c.monitor, [:flush])
-        GenServer.cast(c.player, :stop)
+        :ok = Player.stop(c.player)
         close_sink(state, c.gate, identity, reason)
         Replication.leave(state.replication, identity, c.id, c.epoch, state.tick)
         %{state | characters: characters}

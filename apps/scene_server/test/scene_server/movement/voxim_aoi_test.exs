@@ -84,6 +84,7 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
 
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{snapshot: snapshot, owner: self()}})
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
@@ -93,6 +94,7 @@ defmodule SceneServer.Movement.VoximAoiSceneTest do
            scene_epoch: 7,
            world_ref: source,
            world_api: Source,
+           body_store: {MmoTest.BodyStore, store: body_store},
            config: config,
            clock: {Clock, clock}
          ]}

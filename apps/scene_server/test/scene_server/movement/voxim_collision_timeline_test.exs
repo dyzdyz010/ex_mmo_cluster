@@ -146,6 +146,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     }
 
     clock = :atomics.new(1, signed: true)
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
@@ -154,6 +155,7 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
          scene_epoch: 7,
          world_ref: world,
          world_api: PreparingWorld,
+         body_store: {MmoTest.BodyStore, store: body_store},
          config: config,
          clock: {Clock, clock},
          native: Native}
@@ -246,6 +248,10 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     assert {:mmo_reliable, _, 1, %Session.SessionStart{} = start} = next_output(epoch)
     assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{} = bootstrap} = next_output(epoch)
     assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{} = fence} = next_output(epoch)
+
+    assert {:mmo_reliable, _, 1, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+             next_output(epoch)
+
     assert start.identity == identity(epoch) and bootstrap.identity == identity(epoch)
 
     assert {start.baseline_transaction_seq, start.collision_revision, start.server_tick} ==
@@ -470,6 +476,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
       assert {:mmo_reliable, ^who, 2, %Voxel.TimelineFence{server_tick: 1, transaction_seq: 1}} =
                next_output()
 
+      assert {:mmo_reliable, ^who, 1, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+               next_output()
+
       # 首个角色在本 tick 的步进阶段之后才锚定；空角色列表不产生虚构物理步。
       assert [{:p1_install, ops1}] = native_events()
       assert ops1 == CollisionUpdates.operations(d1.chunks)
@@ -490,6 +499,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
                next_output()
 
       assert {:mmo_reliable, ^who, 2, %Voxel.TimelineFence{server_tick: 2, transaction_seq: 2}} =
+               next_output()
+
+      assert {:mmo_reliable, ^who, 1, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
                next_output()
 
       assert [{:p1_step, [{20, _, _}], _, [{:ok, _}, :not_found]}] = native_events()
@@ -542,6 +554,9 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
 
     assert {:mmo_reliable, _, 2, %Voxel.CanonicalBootstrap{transaction_seq: 1}} = next_output()
     assert {:mmo_reliable, _, 2, %Voxel.TimelineFence{transaction_seq: 1}} = next_output()
+
+    assert {:mmo_reliable, _, 1, %Session.BodyState{status: 0, life: 100, protein_g: 100.0}} =
+             next_output()
 
     Player.time_probe(player(ctx.scene, start.identity), start.identity, %Session.TimeProbe{
       request_id: 1,

@@ -8,7 +8,8 @@ defmodule WorldServer.Movement.VoximTransferTest do
   alias MmoContracts.{Session, Movement}
 
   setup do
-    {:ok, base: WorldServer.MovementFixture.prepare()}
+    body_store = start_supervised!({MmoTest.BodyStore, []})
+    {:ok, base: WorldServer.MovementFixture.prepare(), body_store: body_store}
   end
 
   for edit_during_transfer <- [false, true] do
@@ -16,7 +17,7 @@ defmodule WorldServer.Movement.VoximTransferTest do
     # （CI 4daf50ca / c82777a9 日志）；内部各 await 的等待上限不变。
     @tag timeout: 180_000, edit_during_transfer: edit_during_transfer
     test "a boundary cut transfers the unprocessed prefix and activates exactly one writer edits=#{edit_during_transfer}",
-         %{edit_during_transfer: edit_during_transfer, base: base} do
+         %{edit_during_transfer: edit_during_transfer, base: base, body_store: body_store} do
       world =
         start_supervised!(
           {VoxelRegion.World,
@@ -74,6 +75,7 @@ defmodule WorldServer.Movement.VoximTransferTest do
                  scene_epoch: 1,
                  world_ref: replica,
                  world_api: VoxelRegion.Replica,
+                 body_store: {MmoTest.BodyStore, store: body_store},
                  config: config,
                  timeline_origin_us: anchor
                ]},

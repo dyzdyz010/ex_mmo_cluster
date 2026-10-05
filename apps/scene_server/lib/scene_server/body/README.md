@@ -8,7 +8,7 @@ flowchart LR
   W[World 外部节点<br/>q_j, tissue_j] --> T[Body.Thermo.step/3]
   A[气候 air_k wind_mps] --> T
   R[Repair.heal/3<br/>蛋白 + 合成能] -->|core_j| T
-  F[World 进食 body_food] --> E[Repair.eat/3] --> B
+  F[World 扣料事务中的食物收据] --> E[Repair.eat/3] --> B
   T --> B[%Body{}<br/>七层温度 tissue_k wetness 剂量 愈合进度 protein_g reserve_j fat_reserve_j weak_s daze_s lethal_s status]
   B --> R
   B --> S[systems/1] --> C[combined_level/2 p-范数] --> L[life/1]
@@ -29,7 +29,7 @@ flowchart LR
 
 ## 接入
 
-- `SceneServer.Movement.Player` 持 `%Body{}`（会话内存，不持久化：重登 / 冷重启即新身体，已知缺口）。每秒：
+- `SceneServer.Movement.Player` 独占 `%Body{}`，经 `Body.Snapshot` / `DataService.BodyStore` 保存完整身体、待吸收热及分世界食物游标；存储以角色为键、会话 epoch 拒绝旧 owner。重登恢复身体，离线不推进，位置仍走既有出生规则。每秒：
   吃进 World 回传的接触热推进 `Thermo.step`（空气温度与风速 = 身体所在格的气候，`VoxelRegion.Climate.at/2`）→ 把脚位、身高、半径、
   皮肤温度与热容、体表面积、组织块温度 / 热容 / 组织块-皮肤导热（`contact_tissue_m2 × Thermo.contact_tissue_w_per_m2_k/1`）报给 World
   （`{:body_contact, cid, pid, …}`）与相干度系数（`{:body_coherence, cid, factor}`，H2）→ 推导视图（`Body.report/2`）有变化才下发 `Session.BodyState`（kind 12）。
@@ -77,8 +77,8 @@ flowchart LR
   加重时从新严重度重新计时，但起点接上此刻下压量 `r₀ = min(1, 旧下压 / 新深度)`，生命不跳回；只有旧下压超过新度满深度
   （更深一度的满深度更浅，如一度压满 0.25 > 二度 0.151）时 r₀ = 1、生命回升到新度最低值（75 → 85）。
 - **饥饿**：`protein_g < 20 g`（上限 20%）→ `nutrition.hunger`（部位 whole、严重度 1、`:tracks_protein`），进食回到 20 g 以上即消失。
-- **进食**：World 裁决 0x7F action 5（目录 `food`、扣一株 `place_units`、`food_ledger`），把该株 `{protein_g, energy_j}` 送给 Player，
-  立即 `Repair.eat/3`：蛋白加到上限；能量储备 += 能量 − 收进蛋白储备的蛋白 × 16 747.2 J/g（Atwater 4 kcal/g；USDA 能量已含蛋白份额，
+- **进食**：World 裁决 0x7F action 5（目录 `food`、扣一株 `place_units`、`food_ledger`），同笔持久化该角色的 `{seq, protein_g, energy_j}` 收据；canonical snapshot/delta 传入 Player，由存档中的分世界游标去重，身体与游标同笔保存。
+  吸收调用 `Repair.eat/3`：蛋白加到上限；能量储备 += 能量 − 收进蛋白储备的蛋白 × 16 747.2 J/g（Atwater 4 kcal/g；USDA 能量已含蛋白份额，
   不重复计），先补糖原到满、余下进脂肪（不设上限）。储备满照吃：超上限的蛋白被氧化，其能量留在能量里。
   Scene 日志 `body_food` 事件：`food_protein_g`、`food_energy_j`、`food_glycogen_j`、`food_fat_j` 与吃后储备。
 - **账**（每步闭合，`repair_test.exs` 逐项断言）：蛋白变化 = `food_protein_g − repair_protein_g`；糖原减少 = `shiver_glycogen_j + synth_glycogen_j − food_glycogen_j`，
@@ -95,8 +95,7 @@ flowchart LR
     停止用约定负值：营养为 0 → −1；速率为 0（循环归零，只在濒死 / 死亡时）→ −2。不愈合的伤病为 0。
   - 下行：`life` 后追加 `recoverable` u8（`life + recoverable ≤ 100`），每条伤病 `heal` 后追加 `remaining_s` f64；比较键含可恢复与剩余整秒
     （愈合中每秒一帧）。Scene 日志 `body_state` 新增 `recoverable`、`injury_remaining_s`（标签 → 秒）。
-- **不做 / 已知缺口**：魔法“调”（H3）；坏死组织去向（D-9，未记账）；身体仍不持久化（重登即新满身体，D-14）；
-  Scene 移交封存后才到达的 `body_food` 随旧 Player 丢失（余额已扣；窗口是移交那一刻）。
+- **不做 / 已知缺口**：魔法“调”（H3）；坏死组织去向（D-9，未记账）。身体持久化与食物交接现按 [P0 记录](../../../../../docs/20-archive/cross-cutting/2026-10-05-body-continuity-p0.md) 接入；该记录分别列出模块测试、真实客户端与验收状态，不能用局部通过代替完整实跑。
 
 | 参数 | 值 | 依据 |
 |---|---|---|
@@ -174,7 +173,7 @@ flowchart LR
 - **寒战供能（2026-09-26 按实测改）**：两个有限储备——糖原 7.65 MJ（`reserve_j`）与脂肪 420.52 MJ（`fat_reserve_j`）。每步寒战热
   27% 由糖原付、73% 由脂肪付（Blondin 2010：约 3 倍静息的中等寒战，肌糖原约占总产热 27%）；糖原不够时脂肪补足，总寒战不变
   （Haman 2004：低糖原时总产热不变、脂肪蛋白补上）；脂肪不够时糖原补足；两者都空才无寒战。储备只在寒战时消耗，不随时间自然下降，
-  静息代谢不取；进食补充（H1）；身体不持久化；复活身体糖原 0、脂肪标准满值（H2）。
+  静息代谢不取；进食补充（H1）；身体离线冻结并持久化；复活身体糖原 0、脂肪标准满值（H2）。
   取最简单的常数份额：文献里糖原份额随强度与糖原水平变化（Haman 2005 寒战加强时肌糖原变为主导；Haman 2004 高糖原 CHO 65%、
   低糖原 28%），但总产热都不变，所以份额只影响糖原多久耗尽、不影响体温；常数 27% 取中等强度、未进食的实测值。
   旧规则（寒战全取自糖原、上限按储备线性下降）等于隐含的“寒战疲劳”，已删除。
@@ -300,4 +299,4 @@ flowchart LR
 - `movement_test.exs`：冻伤移动系数手算（0 / 25 / 50 / 100% 修复）、当前严重度不叠乘、真实 Repair 浅转深与零底物停滞，
   烧伤 / 虚弱 / 恍惚不额外减速、复活新身体全速；只证明 Body / Repair 范围，不替代 Player 与客户端移动验收。
 - `cold_validation_test.exs`：上表的实测对照（期望全部来自文献），含寒战耐力（Tikuisis 2002）与供能（Blondin 2010、Haman 2004）。
-- 气候查询见 voxel_region `climate_test`，World 内核里的组织块见 `body_contact_world_test`（World 侧未改）。
+- 气候查询见 voxel_region `climate_test`，World 内核里的组织块及 P0 接触注销见 `body_contact_world_test`。

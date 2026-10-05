@@ -8,7 +8,7 @@ defmodule VoxelRegion.OverlayLogFreshVmTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Magic.Semblance
 
-  test "带拟态记录的事务元数据在全新 VM 里可解码" do
+  test "带拟态与食物收据的事务元数据在全新 VM 里可解码" do
     catalog = %{semblance: %{specific_heat: 500.0, conductivity: 400.0}}
     form = %{"shape" => 0.0, "radius_m" => 0.4, "mass_kg" => 2.0, "temperature_k" => 2000.0, "glow_w" => 0.0, "lifetime_s" => 60.0}
     contact = %{target: %{micro: {584, 3424, -4192}, granularity: 0}, key: {73, 428, -525}, cell: {73, 428, -525}}
@@ -17,7 +17,8 @@ defmodule VoxelRegion.OverlayLogFreshVmTest do
       rest: {73.6, 427.6, -524.8}, contact: contact}
 
     s = Semblance.new(1001, form, catalog, launch)
-    metadata = %{caster_energy: %{1001 => 76_731.4}, thermal: %{semblances: %{{2229, 0} => s}, semblance_created_j: 1_706_994.0}}
+    metadata = %{caster_energy: %{1001 => 76_731.4}, thermal: %{semblances: %{{2229, 0} => s}, semblance_created_j: 1_706_994.0},
+      food_receipts: %{1001 => %{2230 => %{protein_g: 1.08, energy_j: 75_362.4}}}}
     path = Path.join(System.tmp_dir!(), "overlay-fresh-vm-#{System.unique_integer([:positive])}.etf")
     File.write!(path, :erlang.term_to_binary(metadata, [{:compressed, 1}]))
     on_exit(fn -> File.rm(path) end)

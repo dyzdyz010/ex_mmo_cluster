@@ -120,6 +120,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   defp setup_scene(radius) do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{owner: self()}})
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
@@ -131,6 +132,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
            config: config(radius),
            clock: {Clock, clock},
            sink: Sink,
+           body_store: {MmoTest.BodyStore, store: body_store},
            world_api: Source
          ]}
       )
@@ -175,6 +177,11 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     if ctx.radius == 0, do: wait(fn -> Scene.observe(ctx.scene).queue_length > 0 end)
     tick(ctx, 1)
     assert_receive {:reliable, _, :control, %Session.SessionStart{} = start}, 2000
+    # P0 入场即报告身体；它与本例随后触发的死亡、复活报告分别核对。
+    assert_receive {:reliable, _, :control,
+                    %Session.BodyState{status: 0, life: 100, protein_g: 100.0}},
+                   2000
+
     Player.time_probe(p, identity(), %Session.TimeProbe{request_id: 1, client_send_us: 1})
     %{baseline: {seq, revision}} = :sys.get_state(p)
     Player.ready(p, identity(), seq, revision)

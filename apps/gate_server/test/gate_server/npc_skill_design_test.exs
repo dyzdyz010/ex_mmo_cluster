@@ -84,6 +84,8 @@ defmodule GateServer.NpcSkillDesignTest do
     fixture = Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
     profile = Jason.decode!(File.read!(fixture))["profile"] |> Map.put("fixed_hz", 60)
 
+    body_store = start_supervised!({MmoTest.BodyStore, []})
+
     scene =
       start_supervised!(
         {Scene,
@@ -91,6 +93,7 @@ defmodule GateServer.NpcSkillDesignTest do
            scene_id: 1,
            scene_epoch: 1,
            world_ref: world,
+           body_store: {MmoTest.BodyStore, store: body_store},
            clock: {Clock, nil},
            config: %{
              "schema" => "voxim-m1-demo-v1",

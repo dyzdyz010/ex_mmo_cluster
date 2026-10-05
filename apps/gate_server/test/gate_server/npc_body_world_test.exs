@@ -187,6 +187,8 @@ defmodule GateServer.NpcBodyWorldTest do
       }
     end
 
+    body_store = start_supervised!({MmoTest.BodyStore, []})
+
     {router, scene} =
       if context[:two_scenes] do
         # 两个 authority 以 x=20 为界，同一个 World、同一条时间线；路由走正式的 WorldServer.Movement。
@@ -211,6 +213,7 @@ defmodule GateServer.NpcBodyWorldTest do
                    scene_epoch: 7,
                    world_ref: replica,
                    world_api: VoxelRegion.Replica,
+                   body_store: {MmoTest.BodyStore, store: body_store},
                    config: config.(min_x, max_x),
                    timeline_origin_us: anchor
                  ]},
@@ -253,6 +256,7 @@ defmodule GateServer.NpcBodyWorldTest do
               scene_id: 1,
               scene_epoch: 7,
               world_ref: world,
+              body_store: {MmoTest.BodyStore, store: body_store},
               config: config.(-60.0, 60.0)
             ]}
          )}

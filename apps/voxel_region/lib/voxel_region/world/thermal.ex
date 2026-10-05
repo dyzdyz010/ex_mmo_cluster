@@ -80,7 +80,10 @@ defmodule VoxelRegion.World.Thermal do
   """
   def begin(state) do
     now = System.monotonic_time(:millisecond)
-    state = %{state | bodies: Map.filter(state.bodies, fn {_, b} -> now - b.at <= 2_500 end)}
+    bodies = Enum.reduce(state.bodies, state.bodies, fn {cid, body}, bodies ->
+      if now - body.at > 2_500, do: detach_body(bodies, cid), else: bodies
+    end)
+    state = %{state | bodies: bodies}
 
     if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
          (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != []) do
@@ -786,6 +789,16 @@ defmodule VoxelRegion.World.Thermal do
     if domain.pending and Map.has_key?(domain.table, key),
       do: elem(Map.fetch!(ThermalDomain.values(domain, [key]), key), 0),
       else: Map.get(property_state(state, target), :temperature_kelvin, ambient)
+  end
+
+  @doc "身体接触及其进程 monitor 同寿命；离开、移交、断线与续报超时都走同一注销。"
+  def detach_body(bodies, cid) do
+    case Map.pop(bodies, cid) do
+      {nil, bodies} -> bodies
+      {%{monitor: monitor}, bodies} ->
+        Process.demonitor(monitor, [:flush])
+        bodies
+    end
   end
 
   defp body_terms([], _indices, _semblances, _count), do: {[], []}

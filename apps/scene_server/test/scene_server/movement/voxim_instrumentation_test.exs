@@ -73,11 +73,19 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     clock = :atomics.new(1, signed: true)
     :atomics.put(clock, 1, 7_000_000)
     clock_options = if real_clock, do: [], else: [clock: {Clock, clock}]
+    body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
       start_supervised!(
         {Scene,
-         [scene_id: 1, scene_epoch: 7, world_ref: world, config: config, native: Native] ++
+         [
+           scene_id: 1,
+           scene_epoch: 7,
+           world_ref: world,
+           config: config,
+           native: Native,
+           body_store: {MmoTest.BodyStore, store: body_store}
+         ] ++
            clock_options}
       )
 
