@@ -1,7 +1,20 @@
 # P2 authoritative operation feedback
 
 Classification: operation metadata and projection are Global system; tests and this execution record are Test-only.
-Contract/design: `../Voxim-p1/Docs/Audio/P2-operation-feedback.md` (Hello 37; main workspace magic work already reserves 36).
+Contract/design: `../Voxim/Docs/Audio/P2-operation-feedback.md`. The original isolated audio implementation used Hello37; the integrated version below uses Hello38.
+
+## Integrated Hello38 result
+
+2026-10-05: combined audio with the current magic/projectile and account source snapshot in `p2-integrate`, commit `f51de56d`; client `p2-integrate-client` commit `410e09a5`. Main workspaces received only the P2 merge delta, preserving other tasks and their indexes. Both former Hello37 variants are rejected by the combined Hello38 contract.
+
+- Formal Mix contracts: 138 executed, 0 failures. Affected damage/phase/macro-Prefab/projection files: 152 discovered, 1 existing realtime exclusion, 151 executed, 0 failures; independent PostgreSQL port26979, no injected authority state.
+- Formal Docker image `voxim-server:20261005-p2-integrated38`, ID `sha256:0d1ddf8a52a4eda8dcfdf36c05dc92c0def1acb8d04cd496b54a501f4313a9ac`; client rebuilt and 25 related UE Automation tests passed both in isolation and in main.
+- Fresh world `run-07`: 24 accepted real crosshair/key requests, each matching exactly one operation on both clients; actual refusal, query and reconnect produced no extra operation. Both replay scripts succeeded and both processes exited0. `acceptance.json` is true. Original failed runs remain unchanged.
+- This proves P2 on the combined build, not the entire magic/account feature acceptance or subjective listening, movement/streaming, benchmarks, packaging or distribution. The two rendered clients and this task's service/PG containers have exited.
+
+Evidence is retained once in `../Voxim/Saved/P2/Audio/`: `integration-build-identity.json`, `integration-contracts.log`, `integration-world.log`, `integration-client-tests.txt`, `main-integration-tests.txt`, and `run-07/`. Media: `../Voxim/Captures/P2/operation-07/`. Reproducible formal Mix wrapper `integration-mix.sh` selects `mmo_contracts test --no-start --seed 0`, or `voxel_region test --no-start test/damage_world_test.exs test/phase_world_test.exs test/prefab_macro_world_test.exs test/log_projection_test.exs --seed 0`.
+
+## Original isolated implementation
 
 Successful player tool hit/dig, ordinary build, attachment create/remove, and Prefab place/replace/remove attach one immutable `operation` to the existing canonical transaction. Macro positions use the central micro cell; Prefabs choose the lexicographically first actual added/removed footprint element after support pruning. Host removal emits the host operation once. Snow/Ice and water-displacing solid builds use the same settlement path. Queries, rejections, duplicate requests, author setup, thermal evolution, and liquid scoop/pour produce no operation. Liquid transfer sounds are outside this increment.
 
