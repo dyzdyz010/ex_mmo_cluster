@@ -30,17 +30,26 @@ defmodule VoxelRegion.World.Log do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   def remember_entry(state, full) do
+    state = retain_entry(state, full)
+    # 每笔事务都是热提交的唤醒事件（R8-05）：记下改写的属性行供热行增量重判，休眠中的热模拟排一拍。
+    state = VoxelRegion.World.Thermal.touch(state, Map.get(full, :property_states, []))
+    schedule_checkpoint(state)
+  end
+
+  defp retain_entry(state, full) do
     # 实时落体帧与待施放记录只随本次广播，不进日志、检查点与回放尾。
     # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
     txn = if match?(%{entries: [], coarse: []}, full),
       do: Map.take(full, [:seq, :entries, :coarse]),
       else: Map.drop(full, [:liquid_falls, :casts])
-    state = %{state | entries: Map.put(state.entries, txn.seq, txn),
+    %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
-    # 每笔事务都是热提交的唤醒事件（R8-05）：记下改写的属性行供热行增量重判，休眠中的热模拟排一拍。
-    state = VoxelRegion.World.Thermal.touch(state, Map.get(full, :property_states, []))
+  end
+
+  @doc "只有尚未压实的后缀且没有进行中的任务时才安排下一轮维护。"
+  def schedule_checkpoint(state) do
     # 单个完整检查点不再生长；只有新历史出现时安排一次维护。
-    if map_size(state.entries) > 1 and state.checkpoint_timer == nil,
+    if map_size(state.entries) > 1 and state.checkpoint_timer == nil and state.checkpoint_job == nil,
       do: %{state | checkpoint_timer: :erlang.start_timer(60_000, self(), :checkpoint)},
       else: state
   end
@@ -233,8 +242,26 @@ defmodule VoxelRegion.World.Log do
   def compact_log(%{seq: 0} = state), do: state
 
   def compact_log(state) do
+    checkpoint = state |> checkpoint_input() |> build_checkpoint()
+    state |> finish_checkpoint(checkpoint) |> schedule_checkpoint()
+  end
+
+  @doc "冻结检查点所需的不可变值；不携带订阅、热域资源、在线任务或历史正文。"
+  def checkpoint_input(state) do
+    state
+    |> Map.take([:seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
+      :snapshots, :refined, :instances, :structure, :macro_owners, :attachments, :liquid_units,
+      :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
+      :food_ledger, :food_receipts, :placed_by, :protection, :phase_inventory, :thermal,
+      :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
+      :payloads, :decoded, :lru, :lru_ticks, :tick, :lru_bytes, :resident_bytes, :cache_limit,
+      :cache_stats])
+    |> Map.put(:retained_before, map_size(state.entries))
+  end
+
+  @doc "只计算冻结前缀的完整事务；派生缓存不返回给在线World，不写日志或发送退休通知。"
+  def build_checkpoint(state) do
     started = System.monotonic_time(:microsecond)
-    retained = map_size(state.entries)
     # 检查点覆盖完整前缀；当前 seq 对任意更旧游标都是完整补丁。
     # 已有完整区域会在下方写入当前 after-image，不再先编码同一 core 的逐格条目。
     sparse =
@@ -270,13 +297,22 @@ defmodule VoxelRegion.World.Log do
         thermal: state.thermal
       })
 
+    %{transaction: attachment_metadata(state, txn), retained_before: state.retained_before, regions: length(extra),
+      select_us: selected - started, image_us: imaged - selected}
+  end
+
+  @doc "World唯一持久出口：替换已算好的前缀，保留期间提交的后缀与当前真值。"
+  def finish_checkpoint(state, %{transaction: txn} = checkpoint) do
+    started = System.monotonic_time(:microsecond)
     {backend, handle} = state.log
-    backend.checkpoint(handle, attachment_metadata(state, txn))
+    :ok = backend.checkpoint(handle, txn)
     persisted = System.monotonic_time(:microsecond)
 
+    # 有并行后缀时保留当前canonical表示，绝不把冻结前缀覆盖到新overlay或缓存。
+    entries_to_rebase = if state.seq == txn.seq, do: txn.entries, else: []
     # 上次检查点后 core 没有编辑的完整区域，基底就是它自己：跳过换基底，保留载荷缓存与解码。
     {state, rebased} =
-      Enum.reduce(txn.entries, {state, 0}, fn
+      Enum.reduce(entries_to_rebase, {state, 0}, fn
         %{payload: bytes}, {s, n} ->
           {:ok, h} = Codec.decode_payload_header(bytes)
 
@@ -292,17 +328,19 @@ defmodule VoxelRegion.World.Log do
       end)
 
     if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
-    # Replicas mirror this history horizon; sent after every delta up to this seq.
-    Enum.each(Map.keys(state.replica_subs), &send(&1, {:canonical_replica_checkpoint, state.seq}))
+    suffix = for {seq, entry} <- state.entries, seq > txn.seq, do: entry
+    state = Enum.reduce([txn | suffix], %{state | entries: %{}, entry_regions: %{},
+      checkpoint_timer: nil, checkpoints: state.checkpoints + 1}, &retain_entry(&2, &1))
+    # 只退休已落盘前缀；当前World还可能已经向Replica发出更晚的后缀。
+    Enum.each(Map.keys(state.replica_subs), &send(&1, {:canonical_replica_checkpoint, txn.seq}))
     now = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_checkpoint seq=#{state.seq} retained_before=#{retained} regions=#{length(extra)} rebased=#{rebased} " <>
-        "select_us=#{selected - started} image_us=#{imaged - selected} persist_us=#{persisted - imaged} rebase_us=#{now - persisted}"
+      "voxel_checkpoint seq=#{txn.seq} current_seq=#{state.seq} retained_before=#{checkpoint.retained_before} regions=#{checkpoint.regions} rebased=#{rebased} " <>
+        "select_us=#{checkpoint.select_us} image_us=#{checkpoint.image_us} persist_us=#{persisted - started} rebase_us=#{now - persisted}"
     )
 
-    remember_entry(%{state | entries: %{}, entry_regions: %{}, checkpoint_timer: nil,
-      checkpoints: state.checkpoints + 1}, txn)
+    state
   end
 
   # no-op 不追加日志；只向发起连接确认当前游标，排在此连接已有的 World 消息之后。

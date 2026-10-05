@@ -19,6 +19,122 @@ defmodule VoxelRegion.PhaseWorldTest do
     end
   end
 
+  defmodule HoldCheckpointThermal do
+    @moduledoc "只测试：在现有日志处定序热内核与检查点计算，不改变真值或替换计算。"
+    def log(%{msg: {:string, text}, meta: %{pid: emitter}}, %{config: %{owner: owner, gate: gate}}) do
+      text = IO.chardata_to_string(text)
+      cond do
+        String.starts_with?(text, "voxel_thermal_kernel ") and
+            :atomics.compare_exchange(gate, 1, 1, 0) == :ok ->
+          send(owner, {:thermal_kernel, self(), emitter})
+          receive do :continue_thermal -> :ok end
+
+        String.starts_with?(text, "voxel_select_region ") and
+            :atomics.compare_exchange(gate, 2, 1, 0) == :ok ->
+          [_, seq] = Regex.run(~r/seq=(\d+)/, text)
+          send(owner, {:checkpoint_selection, self(), emitter, String.to_integer(seq)})
+          receive do :continue_checkpoint -> :ok end
+
+        String.starts_with?(text, "voxel_checkpoint_gc ") ->
+          send(owner, {:checkpoint_finished, emitter})
+
+        true -> :ok
+      end
+      :ok
+    end
+    def log(_, _), do: :ok
+  end
+
+  # 直接边界：若compact冻结半步热状态，或finish把前缀属性/余额写回当前状态，本例必须失败。
+  # 使用正常作者入口、真实NIF热分步和工具裁决；基底、角色与文件存储沿本文件显式替身。
+  for trigger <- [:manual, :timer] do
+    @tag :empty_inventory
+    @tag :database_metadata
+    @tag :checkpoint_thermal
+    test "#{trigger} checkpoint waits for natural thermal commit and preserves property suffix", c do
+      assert {:ok, _} = World.apply_edit(c.w, {63,1,2}, 16)
+      assert {:ok, _} = operate(c, 19, 1)
+      initial = row(c.w, {63,1,2})
+      heat = Path.join(c.root, "checkpoint-heat.json")
+      File.write!(heat, Jason.encode!(%{classification: "Test-only", source_macro: [63,1,2],
+        ambient_kelvin: 293.15, environment_w_per_m2_k: 0.01, tolerance_kelvin: 1.0,
+        emissivity: 0.0, view_range_cells: 8, power_w: 1.0, energy_j: 0.25}))
+      assert :ok = World.thermal_experiment(c.w, heat)
+      before = observe(c.w)
+      # 只读取得真实维护计时器身份，提前投递同一到期事件；不改写World state。
+      timer = :sys.get_state(c.w).checkpoint_timer
+      assert is_reference(timer)
+      gate = :atomics.new(2, signed: false)
+      :atomics.put(gate, 1, 1)
+      :atomics.put(gate, 2, 1)
+      logger_level = Logger.level()
+      Logger.configure(level: :info)
+      :ok = :logger.add_handler(:checkpoint_thermal, HoldCheckpointThermal,
+        %{level: :info, config: %{owner: self(), gate: gate}})
+      on_exit(fn ->
+        :logger.remove_handler(:checkpoint_thermal)
+        Logger.configure(level: logger_level)
+      end)
+      send(c.w, :thermal_tick)
+      world = c.w
+      assert_receive {:thermal_kernel, ^world, ^world}, 5_000
+      task = if unquote(trigger) == :manual do
+        task = Task.async(fn -> receive do :start -> World.compact(world) end end)
+        caller = task.pid
+        :erlang.trace(caller, true, [:send])
+        send(caller, :start)
+        assert_receive {:trace, ^caller, :send, {:"$gen_call", _, :compact}, ^world}, 1_000
+        :erlang.trace(caller, false, [:send])
+        task
+      else
+        send(world, {:timeout, timer, :checkpoint})
+        nil
+      end
+      send(world, :continue_thermal)
+      assert_receive {:checkpoint_selection, worker, emitter, prefix}, 5_000
+      try do
+        refute worker == world
+        assert worker == emitter
+        committed = observe(world)
+        assert prefix == committed.seq
+        assert prefix > before.seq
+        assert_in_delta committed.thermal.elapsed_s - before.thermal.elapsed_s, 0.5, 1.0e-12
+        assert_in_delta committed.thermal.supplied_j - before.thermal.supplied_j, 0.25, 1.0e-12
+        refute committed.thermal.active
+        heated = row(world, {63,1,2})
+        assert heated.temperature_kelvin > initial.temperature_kelvin
+        assert {:ok, _} = operate(c, 19, 2)
+        attacked = row(world, {63,1,2})
+        assert attacked.hp < heated.hp
+        assert {:ok, supply_seq} = World.material_supply(world, 1001, "checkpoint-suffix", %{15 => 7})
+        suffix = World.entries_after(world, prefix)
+        assert length(suffix) == 2
+        assert Enum.all?(suffix, &(&1.entries == [] and &1.coarse == []))
+        saved = observe(world)
+        assert saved.material_balances[{1001,15}] == 7
+        send(worker, :continue_checkpoint)
+        if task, do: assert(Task.await(task, 5_000) == :ok)
+        assert_receive {:checkpoint_finished, ^world}, 5_000
+        after_checkpoint = observe(world)
+        assert Map.take(after_checkpoint, [:seq, :damage, :thermal, :phase_inventory, :material_balances]) ==
+          Map.take(saved, [:seq, :damage, :thermal, :phase_inventory, :material_balances])
+        [checkpoint | tail] = World.entries_after(world, 0)
+        assert checkpoint.seq == prefix
+        assert Map.delete(checkpoint.thermal, :config) == committed.thermal
+        assert Enum.any?(checkpoint.property_states, &(&1 == heated))
+        assert tail == suffix
+        stop_supervised!(World)
+        recovered = start_supervised!({World, c.opts})
+        assert Map.take(observe(recovered), [:seq, :damage, :thermal, :phase_inventory, :material_balances]) ==
+          Map.take(saved, [:seq, :damage, :thermal, :phase_inventory, :material_balances])
+        assert {:ok, ^supply_seq} = World.material_supply(recovered, 1001, "checkpoint-suffix", %{15 => 7})
+      after
+        send(worker, :continue_checkpoint)
+        :logger.remove_handler(:checkpoint_thermal)
+      end
+    end
+  end
+
   # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{-1,-1,-1},{5,2,2}})
 
@@ -55,7 +171,9 @@ defmodule VoxelRegion.PhaseWorldTest do
     File.write!(catalog,Jason.encode!(data))
     environment=Path.join(root,"environment.json")
     File.write!(environment,Jason.encode!(%{ambient_kelvin: 293.15,
-      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),tolerance_kelvin: 0.00001,emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
+      environment_w_per_m2_k: if(context[:native_phase],do: 10.0,else: 0.0),
+      tolerance_kelvin: if(context[:checkpoint_thermal],do: 1.0,else: 0.00001),
+      emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
     opts=[source: Source,log: if(context[:database_metadata], do: DatabaseMetadataLog, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,
@@ -115,7 +233,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     pid = c.w
     assert_receive {:trace, ^pid, :receive, {:timeout, _, :checkpoint}}, 65_000
     :erlang.trace(c.w, false, [:receive])
-    stats = World.stats(c.w)
+    stats = await_checkpoint(c.w, 1, System.monotonic_time(:millisecond) + 5_000)
     assert stats.checkpoints == 1
     assert stats.retained_transactions == 1
     refute stats.checkpoint_scheduled
@@ -143,6 +261,17 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert recovered.thermal == saved.thermal
     refute World.stats(w).checkpoint_scheduled
     assert {:ok, ^supply_seq} = World.material_supply(w, 1001, "checkpoint-supply", %{21 => @capacity})
+  end
+
+  # 定时器到达只表示请求开始；等待已持久化的完成条件，不把异步开始误判为完成。
+  defp await_checkpoint(w, count, deadline) do
+    stats = World.stats(w)
+    if stats.checkpoints == count do
+      stats
+    else
+      assert System.monotonic_time(:millisecond) < deadline, "checkpoint did not complete"
+      receive do after 10 -> await_checkpoint(w, count, deadline) end
+    end
   end
 
   @tag :empty_inventory
