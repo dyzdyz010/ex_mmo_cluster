@@ -532,16 +532,18 @@ defmodule MmoContracts.Voxel.Payload do
   defp build_csr(records, p) do
     rows = @extent * @extent
 
-    {ids_rev, masks_rev, col_x, fmi, maps, _pool, by_row} =
-      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}}, fn {{x, y, z}, record},
-                                                                {ids_rev, masks_rev, col_x, fmi,
-                                                                 maps, pool, by_row} ->
-        {ids, mask, fmi, maps, pool} = csr_faces(record, p, 0, {[], 0, fmi, maps, pool})
+    {ids_rev, masks_rev, col_x, fmi, maps, _pool, by_row, _canonical} =
+      Enum.reduce(records, {[], [], [], [], <<>>, %{}, %{}, %{}}, fn {{x, y, z}, record},
+                                                                     {ids_rev, masks_rev, col_x,
+                                                                      fmi, maps, pool, by_row,
+                                                                      canonical} ->
+        {{ids, mask, fmi, maps, pool}, canonical} =
+          csr_faces(record, p, 0, {[], 0, fmi, maps, pool}, canonical)
 
         row = y + @extent * z
 
         {[List.to_tuple(Enum.reverse(ids)) | ids_rev], [mask | masks_rev], [x | col_x], fmi, maps,
-         pool, Map.update(by_row, row, 1, &(&1 + 1))}
+         pool, Map.update(by_row, row, 1, &(&1 + 1)), canonical}
       end)
 
     ids = Enum.reverse(ids_rev)
@@ -557,28 +559,39 @@ defmodule MmoContracts.Voxel.Payload do
      Enum.reverse(fmi), maps}
   end
 
-  defp csr_faces(_record, _p, 6, acc), do: acc
+  defp csr_faces(_record, _p, 6, acc, canonical), do: {acc, canonical}
 
-  defp csr_faces({ids, mask, base}, p, face, acc) do
+  defp csr_faces({ids, mask, base}, p, face, acc, canonical) do
     id = ids &&& 255
 
-    {texels, next} =
+    {value, next, canonical} =
       if (mask &&& 1) == 0 do
-        {nil, base}
+        {{id, nil}, base, canonical}
       else
         <<index::16-little>> = binary_part(p.fmi, base * 2, 2)
-        size = p.map_extent * p.map_extent
-        {binary_part(p.maps, index * size, size), base + 1}
+
+        # 源池在本次编码内不变；同一贴图是否收拢还取决于面材质，不能只按index复用。
+        # 输出pool仍由csr_face按首次使用顺序去重，不受这份局部规范形表影响。
+        key = {index, id}
+
+        case Map.fetch(canonical, key) do
+          {:ok, value} ->
+            {value, base + 1, canonical}
+
+          :error ->
+            size = p.map_extent * p.map_extent
+            value = Skins.canonical_face({id, binary_part(p.maps, index * size, size)})
+            {value, base + 1, Map.put(canonical, key, value)}
+        end
       end
 
-    value = Skins.canonical_face({id, texels})
     acc = csr_face(value, face, acc)
-    csr_faces({ids >>> 8, mask >>> 1, next}, p, face + 1, acc)
+    csr_faces({ids >>> 8, mask >>> 1, next}, p, face + 1, acc, canonical)
   end
 
-  defp csr_faces({_ext, faces} = record, p, face, acc) do
+  defp csr_faces({_ext, faces} = record, p, face, acc, canonical) do
     acc = csr_face(elem(faces, face), face, acc)
-    csr_faces(record, p, face + 1, acc)
+    csr_faces(record, p, face + 1, acc, canonical)
   end
 
   defp csr_face({id, nil}, _face, {ids, mask, fmi, maps, pool}),
