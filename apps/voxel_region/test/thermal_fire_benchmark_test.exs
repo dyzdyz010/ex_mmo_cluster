@@ -23,6 +23,9 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   BENCH_DIGEST=1 instead prints a state digest every 5 s of simulated time (before/after physics comparison);
   BENCH_PROFILE=<s> runs eprof on the World for 10 simulated seconds from that time (diagnosis only).
   BENCH_CHECKPOINT_OUT=<path> exports one immutable World checkpoint after the measured window for storage diagnosis.
+  The measurement includes separate 20 ms single-in-flight World.seq latency probes and 100 ms World/worker/VM
+  memory samples. Async checkpoint work and World freeze/persist/apply/GC are reported separately.
+  BENCH_HEAP=0 skips the optional expensive post-window field-size breakdown; its default remains enabled.
 
   `MMO_DB_PORT=5433 mix test --no-start --only benchmark test/thermal_fire_benchmark_test.exs` in apps/voxel_region.
   """
@@ -42,11 +45,16 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
 
   defmodule Capture do
     @moduledoc "Test-only logger handler: forwards the World's own thermal timing lines to the benchmark."
-    def log(%{msg: {:string, text}}, %{config: %{pid: pid}}) do
+    def log(%{msg: {:string, text}} = event, %{config: %{pid: pid} = config}) do
       text = IO.chardata_to_string(text)
-      if String.starts_with?(text, ["voxel_thermal", "voxel_macro_stages", "voxel_checkpoint ", "voxel_select_region",
-          "voxel_region_afterimage"]),
-        do: send(pid, {:bench, text})
+      if String.starts_with?(text, ["voxel_thermal", "voxel_macro_stages", "voxel_checkpoint", "voxel_select_region",
+          "voxel_region_afterimage"]) do
+        send(pid, {:bench, text, System.monotonic_time(:microsecond)})
+        case {config[:memory_probe], get_in(event, [:meta, :checkpoint_worker])} do
+          {probe, worker} when is_pid(probe) and is_pid(worker) -> send(probe, {:worker, worker})
+          _ -> :ok
+        end
+      end
       :ok
     end
 
@@ -182,8 +190,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   # One commit record per `voxel_thermal_callback`: the kernel/prepare lines before it belong to it.
   defp collect(w, target, started, acc) do
     receive do
-      {:bench, text} ->
-        now = System.monotonic_time(:microsecond)
+      {:bench, text, now} ->
         {name, f} = fields(text)
         acc =
           case name do
@@ -192,9 +199,10 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
             "voxel_thermal_sim" -> put_in(acc.pending.sim, f)
             "voxel_thermal_commit" -> put_in(acc.pending.commit, f)
             "voxel_macro_stages" -> put_in(acc.pending.geometry, f)
-            "voxel_checkpoint" ->
+            checkpoint when checkpoint in ["voxel_checkpoint_start", "voxel_checkpoint", "voxel_checkpoint_gc"] ->
               IO.puts(text)
-              update_in(acc.checkpoints, &[checkpoint_us(f) | &1])
+              record = Map.put(f, "at_us", now - started)
+              update_in(acc.checkpoints, &Map.update(&1, f["seq"], %{checkpoint => record}, fn stages -> Map.put(stages, checkpoint, record) end))
             # Burn-out geometry commits: region selection / after-image encoding cost per level.
             region when region in ["voxel_select_region", "voxel_region_afterimage"] ->
               key = {region, f["level"], f["region_bytes"] != nil and f["region_bytes"] > 0}
@@ -202,10 +210,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
             "voxel_thermal_callback" ->
               record = Map.merge(acc.pending, %{callback_us: f["elapsed_us"], at_us: now - started, sim_s: f["sim_s"],
                 transform_us: f["transform_us"]})
-              acc = %{acc | commits: [record | acc.commits], pending: pending()}
-              if acc.memory == [] or now - started - hd(acc.memory).at_us > 5_000_000,
-                do: update_in(acc.memory, &[memory(w, now - started) | &1]),
-                else: acc
+              %{acc | commits: [record | acc.commits], pending: pending()}
             _ -> acc
           end
 
@@ -239,17 +244,78 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
     end
   end
 
-  defp memory(w, at_us) do
+  defp memory(w, workers, at_us) do
     {:memory, memory} = Process.info(w, :memory)
     {:message_queue_len, queue} = Process.info(w, :message_queue_len)
-    %{at_us: at_us, world_bytes: memory, queue: queue, vm_bytes: :erlang.memory(:total)}
+    live = for worker <- workers, info = Process.info(worker, [:memory, :message_queue_len]), info != nil,
+      do: %{pid: inspect(worker), memory_bytes: info[:memory], queue: info[:message_queue_len]}
+    %{at_us: at_us, world_bytes: memory, queue: queue, vm_bytes: :erlang.memory(:total), workers: live,
+      worker_bytes: Enum.reduce(live, 0, &(&1.memory_bytes + &2))}
+  end
+
+  # 两个只测试采样进程彼此独立：World被阻塞时，读探针不能阻止内存采样。
+  defp read_probe(w, started, acc) do
+    receive do
+      {:stop, from, ref} -> send(from, {ref, Enum.reverse(acc)})
+    after
+      20 ->
+        before = System.monotonic_time(:microsecond)
+        seq = World.seq(w)
+        after_call = System.monotonic_time(:microsecond)
+        sample = %{start_us: before - started, end_us: after_call - started, elapsed_us: after_call - before, seq: seq}
+        read_probe(w, started, [sample | acc])
+    end
+  end
+
+  defp memory_probe(w, started, workers, acc) do
+    receive do
+      {:worker, worker} -> memory_probe(w, started, [worker | workers], acc)
+      {:stop, from, ref} -> send(from, {ref, Enum.reverse(acc)})
+    after
+      100 ->
+        sample = memory(w, workers, System.monotonic_time(:microsecond) - started)
+        memory_probe(w, started, Enum.filter(workers, &Process.alive?/1), [sample | acc])
+    end
+  end
+
+  defp stop_probe(pid) do
+    ref = make_ref()
+    send(pid, {:stop, self(), ref})
+    receive do
+      {^ref, samples} -> samples
+    after
+      6_000 -> flunk("benchmark sampler did not finish")
+    end
   end
 
   defp pending, do: %{kernel: [], prepare: [], sim: nil, commit: nil, geometry: nil}
 
-  # 当前日志拆成四段，已经没有 elapsed_us；缺任一段都不能生成成功的总时长。
+  # 后台select/image与World同步阶段必须分开；所有阶段到齐才有完整工作量，绝不把其和称为阻塞。
   defp checkpoint_us(fields),
-    do: Enum.sum(Enum.map(~w(select_us image_us persist_us rebase_us), &Map.fetch!(fields, &1)))
+    do: Enum.sum(Enum.map(~w(freeze_us select_us image_us persist_us rebase_us gc_us), &Map.fetch!(fields, &1)))
+
+  defp checkpoint_samples(checkpoints) do
+    for {seq, stages} <- Enum.sort(checkpoints) do
+      start = Map.fetch!(stages, "voxel_checkpoint_start")
+      finish = Map.fetch!(stages, "voxel_checkpoint")
+      gc = Map.fetch!(stages, "voxel_checkpoint_gc")
+      fields = start |> Map.merge(finish) |> Map.merge(gc)
+      total = checkpoint_us(fields)
+      %{seq: seq, current_seq: Map.fetch!(finish, "current_seq"),
+        start_at_us: Map.fetch!(start, "at_us"), finish_at_us: Map.fetch!(finish, "at_us"), gc_at_us: Map.fetch!(gc, "at_us"),
+        freeze_us: fields["freeze_us"], select_us: fields["select_us"], image_us: fields["image_us"],
+        persist_us: fields["persist_us"], apply_us: fields["rebase_us"], gc_us: fields["gc_us"],
+        background_us: fields["select_us"] + fields["image_us"],
+        finish_and_gc_us: fields["persist_us"] + fields["rebase_us"] + fields["gc_us"], total_work_us: total}
+    end
+  end
+
+  defp validate_window!(commits, checkpoints, target) do
+    assert commits != [], "no thermal commits in the requested window"
+    assert Enum.max(Enum.map(commits, & &1.sim_s)) >= target, "thermal window ended before BENCH_SECONDS"
+    assert length(checkpoints) >= floor(target / 60), "missing periodic checkpoints in the requested window"
+    :ok
+  end
 
   defp percentile(values, p) do
     sorted = Enum.sort(values)
@@ -261,7 +327,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
 
   defp sum(list, key), do: Enum.reduce(list, 0, &(&2 + (Map.get(&1, key) || 0)))
 
-  defp summarize(scene, commits, memory, checkpoints) do
+  defp summarize(scene, commits, memory, checkpoints, reads, window_us) do
     # A commit that removes burnt-out cells is a geometry transaction without a `voxel_thermal_commit` line.
     commits = Enum.reverse(commits) |> Enum.filter(& &1.sim)
     windows =
@@ -336,7 +402,18 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
       callback_ms_p95: percentile(Enum.map(commits, & &1.callback_us), 0.95) / 1000,
       callback_ms_max: Enum.max(Enum.map(commits, & &1.callback_us)) / 1000,
       world_mb_max: Enum.max(Enum.map(memory, & &1.world_bytes), fn -> 0 end) / 1.0e6,
-      checkpoint_ms: Enum.map(Enum.reverse(checkpoints), &(&1 / 1000)),
+      checkpoint_total_work_ms: Enum.map(checkpoints, fn checkpoint -> checkpoint.total_work_us / 1000 end),
+      checkpoint_stages: checkpoints,
+      measurement_window_us: window_us,
+      read_probe_interval_ms: 20,
+      memory_sample_interval_ms: 100,
+      memory_peak_kind: "sampled, not an exact allocation high-water mark",
+      read_latency_ms: %{count: length(reads), p50: percentile(Enum.map(reads, & &1.elapsed_us), 0.5) / 1000,
+        p95: percentile(Enum.map(reads, & &1.elapsed_us), 0.95) / 1000,
+        p99: percentile(Enum.map(reads, & &1.elapsed_us), 0.99) / 1000,
+        max: Enum.max(Enum.map(reads, & &1.elapsed_us)) / 1000},
+      reads: reads,
+      worker_mb_max: Enum.max(Enum.map(memory, & &1.worker_bytes), fn -> 0 end) / 1.0e6,
       slowest: commits |> Enum.sort_by(& &1.callback_us, :desc) |> Enum.take(5)
         |> Enum.map(&%{sim_s: &1.sim_s, callback_ms: &1.callback_us / 1000, sim_ms: &1.sim["elapsed_us"] / 1000,
           nif_calls: length(&1.kernel), geometry: &1.geometry}),
@@ -349,7 +426,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
       "wall_s=#{Float.round(total_wall, 1)} ratio=#{Float.round(summary.ratio, 3)} capacity=#{Float.round(summary.capacity, 2)} " <>
       "callback_ms p50=#{summary.callback_ms_p50} p95=#{summary.callback_ms_p95} max=#{summary.callback_ms_max} " <>
       "world_mb_max=#{Float.round(summary.world_mb_max, 1)} vm_mb_max=#{Float.round(summary.vm_mb_max, 1)} " <>
-      "checkpoint_ms=#{inspect(summary.checkpoint_ms)}")
+      "checkpoint_total_work_ms=#{inspect(summary.checkpoint_total_work_ms)} read_latency_ms=#{inspect(summary.read_latency_ms)}")
     for c <- summary.slowest, do: IO.puts("  slow #{inspect(c)}")
 
     for w <- windows do
@@ -401,7 +478,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   # the whole property state and energy ledger is hashed for before/after comparison.
   defp digests(w, target) do
     receive do
-      {:bench, "voxel_thermal_callback" <> _} ->
+      {:bench, "voxel_thermal_callback" <> _, _at} ->
         s = GenServer.call(w, {:simulation_snapshot, [], {{-100, -100, -100}, {300, 600, 100}}}, :infinity)
         elapsed = s.thermal_accounting.elapsed_s
         if rem(trunc(elapsed * 2), 10) == 0 do
@@ -412,17 +489,34 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
         end
         if elapsed < target, do: digests(w, target)
 
-      {:bench, _} ->
+      {:bench, _, _at} ->
         digests(w, target)
     end
   end
 
   defp measure(w, scene, target) do
       started = System.monotonic_time(:microsecond)
-      acc = collect(w, target, started, %{commits: [], pending: pending(), memory: [], checkpoints: [], regions: %{}})
+      read_probe = spawn_link(fn -> read_probe(w, started, []) end)
+      memory_probe = spawn_link(fn -> memory_probe(w, started, [], []) end)
+      :ok = :logger.set_handler_config(:thermal_bench, :config, %{pid: self(), memory_probe: memory_probe})
+      {acc, window_us, reads, memory} = try do
+        acc = collect(w, target, started, %{commits: [], pending: pending(), checkpoints: %{}, regions: %{}})
+        reads = stop_probe(read_probe)
+        memory = stop_probe(memory_probe)
+        window_us = System.monotonic_time(:microsecond) - started
+        {acc, window_us, reads, memory}
+      after
+        for pid <- [read_probe, memory_probe], Process.alive?(pid) do
+          Process.unlink(pid)
+          Process.exit(pid, :shutdown)
+        end
+      end
+      checkpoints = checkpoint_samples(acc.checkpoints)
+      validate_window!(acc.commits, checkpoints, target)
+      assert reads != [] and memory != [], "latency or memory sampler produced no observations"
       for {{name, level, encoded}, {n, us}} <- Enum.sort(acc.regions),
         do: IO.puts("  #{name} level=#{inspect(level)} full_region=#{encoded} count=#{n} total_ms=#{Float.round(us / 1000, 1)}")
-      summary = summarize(scene, acc.commits, acc.memory, acc.checkpoints)
+      summary = summarize(scene, acc.commits, memory, checkpoints, reads, window_us)
       # Live World heap by state field at the end of the window (words shared inside a field counted once).
       state = :sys.get_state(w)
 
@@ -437,19 +531,40 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
         IO.puts("CHECKPOINT_ARTIFACT path=#{path} seq=#{checkpoint.seq} entries=#{length(checkpoint.entries)} coarse=#{length(checkpoint.coarse)}")
       end
 
-      words = :erlang.system_info(:wordsize)
-      breakdown = for k <- [:entries, :damage, :thermal_work, :overlay, :decoded, :payloads, :refined, :region_bases,
-          :entry_regions], into: %{}, do: {k, Float.round(:erts_debug.size(Map.fetch!(state, k)) * words / 1.0e6, 1)}
-      IO.puts("  live_mb #{inspect(breakdown)} retained_transactions=#{map_size(state.entries)} damage_rows=#{map_size(state.damage)}")
+      if System.get_env("BENCH_HEAP", "1") != "0" do
+        words = :erlang.system_info(:wordsize)
+        breakdown = for k <- [:entries, :damage, :thermal_work, :overlay, :decoded, :payloads, :refined, :region_bases,
+            :entry_regions], into: %{}, do: {k, Float.round(:erts_debug.size(Map.fetch!(state, k)) * words / 1.0e6, 1)}
+        IO.puts("  live_mb #{inspect(breakdown)} retained_transactions=#{map_size(state.entries)} damage_rows=#{map_size(state.damage)}")
+      end
       assert summary.commits > 0
 
   end
 
   @tag :checkpoint_timing
-  test "checkpoint time sums the four emitted stages without an elapsed_us field" do
-    fields = %{"select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40}
+  test "async checkpoint timing rejects missing freeze or GC instead of accepting four background stages" do
+    stages = %{"select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40}
+    assert_raise KeyError, fn -> checkpoint_us(stages) end
+    assert_raise KeyError, fn -> checkpoint_us(Map.put(stages, "freeze_us", 7)) end
+  end
+
+  @tag :checkpoint_timing
+  test "checkpoint work sums six stages while background work is distinct from World blocking" do
+    fields = %{"freeze_us" => 7, "select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40, "gc_us" => 13}
     refute Map.has_key?(fields, "elapsed_us")
-    assert checkpoint_us(fields) == 101
+    assert checkpoint_us(fields) == 121
+    stages = %{4 => %{"voxel_checkpoint_start" => Map.merge(fields, %{"at_us" => 10}),
+      "voxel_checkpoint" => Map.merge(fields, %{"at_us" => 100, "current_seq" => 6}),
+      "voxel_checkpoint_gc" => Map.merge(fields, %{"at_us" => 113})}}
+    assert [%{background_us: 31, finish_and_gc_us: 83, freeze_us: 7, total_work_us: 121}] = checkpoint_samples(stages)
+    assert_raise KeyError, fn -> checkpoint_samples(%{4 => Map.delete(stages[4], "voxel_checkpoint_gc")}) end
+  end
+
+  @tag :checkpoint_timing
+  test "a short or checkpoint-free window cannot be reported as a completed benchmark" do
+    assert_raise ExUnit.AssertionError, fn -> validate_window!([%{sim_s: 120.0}], [], 375.0) end
+    assert_raise ExUnit.AssertionError, fn -> validate_window!([%{sim_s: 375.0}], [], 375.0) end
+    assert :ok = validate_window!([%{sim_s: 375.0}], List.duplicate(%{}, 6), 375.0)
   end
 
   test "large fire through the real World thermal commit path", c do

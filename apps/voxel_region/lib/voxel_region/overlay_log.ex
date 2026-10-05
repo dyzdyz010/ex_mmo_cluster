@@ -8,6 +8,7 @@ defmodule VoxelRegion.OverlayLog do
   表里一行 = 一个条目：kind 0 `cell`（0x77 kind0 线格式）、1 `region`（完整 VXR4）、2 `coarse`（粗格线格式），
   kind 3 为属性/余额元数据，kind 4 为结构格 afterimage（0x77 kind2）。
   `ordinal` 保持事务内顺序；旧的单格入口 `apply_edit` 产出的裸条目 `%{seq, coord, material, coarse}` 入表时归一成事务。
+  `checkpoint(handle, txn)` 原子替换截至 `txn.seq` 的前缀，保留更晚事务；World 单一写入方串行调用 append/checkpoint。
   """
 
   alias MmoContracts.Voxel.Codec
@@ -100,7 +101,8 @@ defmodule VoxelRegion.OverlayLog do
     def replay(cv), do: cv |> OverlayLogStore.read_all() |> OverlayLog.transactions()
 
     @impl true
-    def checkpoint(cv, txn), do: OverlayLogStore.replace(cv, OverlayLog.rows(txn))
+    def checkpoint(cv, txn),
+      do: OverlayLogStore.replace(cv, OverlayLog.rows(txn), through_seq: txn.seq)
   end
 
   defmodule File do
@@ -126,7 +128,8 @@ defmodule VoxelRegion.OverlayLog do
 
     @impl true
     def checkpoint(path, txn) do
-      Elixir.File.write!(path <> ".tmp", frame(txn))
+      suffix = for next <- replay(path), next.seq > txn.seq, do: frame(next)
+      Elixir.File.write!(path <> ".tmp", [frame(txn) | suffix])
       Elixir.File.rename!(path <> ".tmp", path)
     end
 

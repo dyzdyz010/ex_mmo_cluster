@@ -53,4 +53,52 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
 
     assert Enum.map(OverlayLogStore.read_all(@cv), &{&1.seq, &1.payload}) == [{2, "checkpoint"}]
   end
+
+  test "prefix replacement keeps every later row and the other world" do
+    prefix = [row(1, 0, 0, 0, {-1, 0, 0}, "old"), row(4, 0, 3, 0, {0, 0, 0}, "at-cut")]
+
+    tail = [
+      row(5, 0, 0, 0, {1, 0, 0}, "tail-cell"),
+      row(5, 1, 3, 0, {0, 0, 0}, "tail-metadata"),
+      row(6, 0, 2, 1, {0, 0, 0}, "later")
+    ]
+
+    other = [row(2, 0, 0, 0, {0, 0, 0}, "other-world")]
+
+    checkpoint = [
+      row(4, 0, 1, 0, {-1, 0, 0}, "checkpoint-region"),
+      row(4, 1, 3, 0, {0, 0, 0}, "checkpoint-metadata")
+    ]
+
+    :ok = OverlayLogStore.append(@cv, prefix ++ tail)
+    :ok = OverlayLogStore.append(@other, other)
+
+    assert :ok = OverlayLogStore.replace(@cv, checkpoint, through_seq: 4)
+    assert OverlayLogStore.read_all(@cv) == checkpoint ++ tail
+    assert OverlayLogStore.read_all(@other) == other
+
+    # 截止序号独立于条目数；空检查点也只删除指定前缀。
+    assert :ok = OverlayLogStore.replace(@cv, [], through_seq: 5)
+    assert OverlayLogStore.read_all(@cv) == [List.last(tail)]
+    assert OverlayLogStore.read_all(@other) == other
+  end
+
+  test "failed second insert batch rolls back prefix deletion and partial checkpoint rows" do
+    before = [
+      row(1, 0, 0, 0, {0, 0, 0}, "old"),
+      row(4, 0, 3, 0, {0, 0, 0}, "at-cut"),
+      row(5, 0, 3, 0, {0, 0, 0}, "tail")
+    ]
+
+    :ok = OverlayLogStore.append(@cv, before)
+
+    # 第一批500行已写入后，第二批触发真实PG唯一约束；整笔替换必须回滚。
+    checkpoint = for ordinal <- 0..499, do: row(4, ordinal, 0, 0, {0, 0, 0}, "checkpoint")
+
+    assert_raise Postgrex.Error, fn ->
+      OverlayLogStore.replace(@cv, checkpoint ++ [hd(checkpoint)], through_seq: 4)
+    end
+
+    assert OverlayLogStore.read_all(@cv) == before
+  end
 end

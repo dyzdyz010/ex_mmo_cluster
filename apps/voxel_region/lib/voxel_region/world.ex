@@ -4,7 +4,8 @@ defmodule VoxelRegion.World do
 
   - **日志**：全局单调 `seq`，每条 `cell` 条目 = canonical 格的新材质 + 服务端算好的各级 reduce 结果（材质 + 表皮，
     从 L1 向上、某级材质与表皮都没变即停）。批次共享一个 seq，父格逐级去重，只规约一次。
-    文件 `<root>/<cv>/overlay.log`（`<<len::32, term>>`）记录选出的 region 快照与稀疏值；事务同步追加，启动或显式 compact 时压实完整前缀。
+    事务同步追加到日志后才确认。在线定时维护与显式 compact 共用一个异步前缀计算任务，
+    在热提交边界冻结；World 落盘时只替换已冻结前缀，保留期间提交的后缀。启动迁移仍同步完成。
   - **真值物化**：`region_bases` 保留已提交完整区域的地形；当前 refined、instances、structure 由世界各自唯一持有。
     `overlay` 的 `{level, cell} → {material, skins}` 只保留后续逐格编辑。
     core 依次读取 overlay、区域基底、baseline；ring 从相邻 core 投影，不展开为常驻逐格增量。
@@ -408,7 +409,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  @doc "压实完整前缀；任意旧 have_seq 都能从检查点补齐。"
+  @doc "压实完整前缀；覆盖调用时的事务序号且落盘后才回复，期间World继续处理后缀提交。"
   def compact(server \\ @name), do: GenServer.call(server, :compact, 300_000)
 
   # ---- GenServer
@@ -538,6 +539,8 @@ defmodule VoxelRegion.World do
           seq: 0,
           entries: %{},
           checkpoint_timer: nil,
+          # nil、等待现有热提交边界（task=nil）、单个前缀计算任务；只由World持久化与应用结果。
+          checkpoint_job: nil,
           checkpoints: 0,
           entry_regions: %{},
           subs: %{},
@@ -1085,7 +1088,7 @@ defmodule VoxelRegion.World do
       Map.merge(state.cache_stats, %{
         entries: map_size(state.payloads),
         retained_transactions: map_size(state.entries),
-        checkpoint_scheduled: state.checkpoint_timer != nil,
+        checkpoint_scheduled: state.checkpoint_timer != nil or state.checkpoint_job != nil,
         checkpoints: state.checkpoints,
         lru_bytes: state.lru_bytes,
         resident_bytes: state.resident_bytes,
@@ -1217,16 +1220,17 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call(:compact, _from, state) do
-    {:reply, :ok, compact_log(state), {:continue, :checkpoint_gc}}
+  def handle_call(:compact, from, state) do
+    {:noreply, request_checkpoint(state, from)}
   end
 
   @impl true
-  def handle_continue(:checkpoint_gc, state) do
+  def handle_continue({:checkpoint_gc, prefix}, state) do
     # 历史已释放，下一回调再 full GC，避免旧 state 在上一调用栈继续存活。
+    started = System.monotonic_time(:microsecond)
     :erlang.garbage_collect(self())
     {:memory, memory} = Process.info(self(), :memory)
-    Logger.info("voxel_checkpoint_gc seq=#{state.seq} memory_bytes=#{memory}")
+    Logger.info("voxel_checkpoint_gc seq=#{prefix} current_seq=#{state.seq} gc_us=#{System.monotonic_time(:microsecond) - started} memory_bytes=#{memory}")
     {:noreply, state}
   end
 
@@ -1237,9 +1241,19 @@ defmodule VoxelRegion.World do
       do: handle_info(message, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
 
   def handle_info({:timeout, ref, :checkpoint}, %{checkpoint_timer: ref} = state),
-    do: {:noreply, compact_log(state), {:continue, :checkpoint_gc}}
+    do: {:noreply, request_checkpoint(state, nil)}
 
   def handle_info({:timeout, _cancelled, :checkpoint}, state), do: {:noreply, state}
+
+  def handle_info({ref, checkpoint}, %{checkpoint_job: %{task: %Task{ref: ref}} = job} = state) do
+    Process.demonitor(ref, [:flush])
+    state = finish_checkpoint(state, checkpoint)
+    {done, waiting} = Enum.split_with(job.waiters, fn {_, seq} -> seq <= checkpoint.transaction.seq end)
+    Enum.each(done, fn {from, _} -> GenServer.reply(from, :ok) end)
+    state = %{state | checkpoint_job: if(waiting == [], do: nil, else: %{task: nil, waiters: waiting})}
+    state = state |> start_checkpoint() |> schedule_checkpoint()
+    {:noreply, state, {:continue, {:checkpoint_gc, checkpoint.transaction.seq}}}
+  end
 
   def handle_info(:liquid_commit, state) do
     if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
@@ -1352,7 +1366,7 @@ defmodule VoxelRegion.World do
   # 直接投递的提交在本次回调内完整执行；先完成进行中的定时提交，不把两段模拟混入同一事务。
   def handle_info(:thermal_commit, state) do
     state = state |> drain_thermal() |> Thermal.begin() |> drain_thermal()
-    {:noreply, Thermal.wake(state)}
+    {:noreply, state |> start_checkpoint() |> Thermal.wake()}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -1382,7 +1396,7 @@ defmodule VoxelRegion.World do
   defp step_thermal(state) do
     case Thermal.tick(state) do
       {:more, state} -> send(self(), {:thermal_step, state.thermal_run.ref}); state
-      {:done, state, commit} -> state |> commit_thermal(commit) |> Thermal.wake()
+      {:done, state, commit} -> state |> commit_thermal(commit) |> start_checkpoint() |> Thermal.wake()
     end
   end
 
@@ -1394,6 +1408,29 @@ defmodule VoxelRegion.World do
       {:done, state, commit} -> commit_thermal(state, commit)
     end
   end
+
+  defp request_checkpoint(%{seq: 0, checkpoint_job: nil} = state, from) do
+    if from, do: GenServer.reply(from, :ok)
+    state
+  end
+
+  defp request_checkpoint(state, from) do
+    if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
+    job = state.checkpoint_job || %{task: nil, waiters: []}
+    job = if from, do: %{job | waiters: [{from, state.seq} | job.waiters]}, else: job
+    %{state | checkpoint_timer: nil, checkpoint_job: job} |> start_checkpoint()
+  end
+
+  defp start_checkpoint(%{checkpoint_job: %{task: nil} = job, thermal_run: nil} = state) do
+    started = System.monotonic_time(:microsecond)
+    input = checkpoint_input(state)
+    task = Task.async(fn -> build_checkpoint(input) end)
+    Logger.info("voxel_checkpoint_start seq=#{input.seq} worker=#{inspect(task.pid)} freeze_us=#{System.monotonic_time(:microsecond) - started}",
+      checkpoint_worker: task.pid)
+    %{state | checkpoint_job: %{job | task: task}}
+  end
+
+  defp start_checkpoint(state), do: state
 
   @impl true
   def code_change(:region_bases, state, _extra), do: {:ok, Map.put_new(state, :region_bases, %{})}

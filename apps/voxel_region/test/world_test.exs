@@ -46,6 +46,124 @@ defmodule VoxelRegion.WorldTest do
 
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
 
+  defmodule HoldCheckpointSelection do
+    @moduledoc "只测试：在真实选型日志处定序计算进程，不替换检查点算法或修改在线真值。"
+    def log(%{msg: {:string, text}, meta: %{pid: emitter}}, %{config: %{owner: owner, gate: gate}}) do
+      prefix = :atomics.get(gate, 2)
+      if String.starts_with?(IO.chardata_to_string(text), "voxel_select_region seq=#{prefix} ") and
+           :atomics.compare_exchange(gate, 1, 1, 0) == :ok do
+        send(owner, {:checkpoint_selection, self(), emitter, prefix})
+        receive do :continue_checkpoint_selection -> :ok end
+      end
+      :ok
+    end
+    def log(_, _), do: :ok
+  end
+
+  defp hold_checkpoint_selection(prefix) do
+    gate = :atomics.new(2, signed: false)
+    :atomics.put(gate, 1, 1)
+    :atomics.put(gate, 2, prefix)
+    logger_level = Logger.level()
+    Logger.configure(level: :info)
+    :ok = :logger.add_handler(:checkpoint_selection, HoldCheckpointSelection,
+      %{level: :info, config: %{owner: self(), gate: gate}})
+    on_exit(fn ->
+      :logger.remove_handler(:checkpoint_selection)
+      Logger.configure(level: logger_level)
+    end)
+    gate
+  end
+
+  @tag :replica
+  @tag :checkpoint_async
+  test "checkpoint computation preserves concurrent suffix and each compact caller's prefix", %{root: root} do
+    opts = [root: root, name: nil, payload_cache_bytes: 1, production_materials: [19]]
+    world = start_supervised!({World, opts})
+    edits = for x <- 0..10, y <- 53..63, z <- 0..10, do: {{x, y, z}, 0}
+    assert {:ok, 1} = World.apply_edits(world, edits)
+    gate = hold_checkpoint_selection(1)
+    first = Task.async(fn -> World.compact(world) end)
+    assert_receive {:checkpoint_selection, worker, emitter, 1}, 5_000
+    try do
+      assert worker == emitter
+      IO.puts("CHECKPOINT_BARRIER world=#{inspect(world)} blocked=#{inspect(worker)} emitter=#{inspect(emitter)}")
+      # 计算被明确阻塞时，正式编辑仍须落盘并回复；不是用耗时阈值推断是否异步。
+      suffix = Task.async(fn -> World.apply_edit(world, {0, 63, 5}, 19) end)
+      assert Task.yield(suffix, 1_000) == {:ok, {:ok, 2}}
+      refute worker == world
+      assert {:ok, 3} = World.material_supply(world, 1001, "during-checkpoint", %{19 => 7})
+      assert Task.yield(first, 0) == nil
+      :erlang.trace(world, true, [:receive])
+      second = Task.async(fn -> World.compact(world) end)
+      second_pid = second.pid
+      assert_receive {:trace, ^world, :receive, {:"$gen_call", {^second_pid, _}, :compact}}, 1_000
+      :erlang.trace(world, false, [:receive])
+      World.seq(world)
+      :atomics.put(gate, 2, 3)
+      :atomics.put(gate, 1, 1)
+      refute_receive {:checkpoint_selection, _, _, 3}, 50
+      send(worker, :continue_checkpoint_selection)
+      assert Task.await(first, 5_000) == :ok
+      assert_receive {:checkpoint_selection, next_worker, next_emitter, 3}, 5_000
+      try do
+        assert next_worker == next_emitter
+        assert Task.yield(second, 0) == nil
+        assert Enum.map(World.entries_after(world, 0), & &1.seq) == [1, 2, 3]
+        assert [%{balance: 7}] = World.material_balances(world, 1001)
+        assert {:ok, 4} = World.apply_edit(world, {64, 63, 5}, 0)
+      after
+        send(next_worker, :continue_checkpoint_selection)
+      end
+      assert Task.await(second, 5_000) == :ok
+      assert World.seq(world) == 4
+      assert Enum.map(World.entries_after(world, 0), & &1.seq) == [3, 4]
+      assert [%{balance: 7}] = World.material_balances(world, 1001)
+      assert World.stats(world).checkpoint_scheduled
+      # seq已推进时不能把P的基底/缓存装回当前世界；core与邻区ring都观察后缀。
+      for region <- [{0, 0, 0}, {-1, 0, 0}, {0, 1, 0}] do
+        {:ok, payload} = Payload.decode(fetch_payload(world, 0, region))
+        assert Payload.material(payload, Payload.local(region, {0, 63, 5})) == 19
+      end
+      stop_supervised!(World)
+      recovered = start_supervised!({World, opts})
+      assert World.seq(recovered) == 4
+      assert [%{balance: 7}] = World.material_balances(recovered, 1001)
+      assert {:ok, 3} = World.material_supply(recovered, 1001, "during-checkpoint", %{19 => 7})
+      {:ok, payload} = Payload.decode(fetch_payload(recovered, 0, {1, 0, 0}))
+      assert Payload.material(payload, Payload.local({1, 0, 0}, {64, 63, 5})) == 0
+      {:ok, payload} = Payload.decode(fetch_payload(recovered, 0, {0, 0, 0}))
+      assert Payload.material(payload, Payload.local({0, 0, 0}, {0, 63, 5})) == 19
+    after
+      send(worker, :continue_checkpoint_selection)
+      :logger.remove_handler(:checkpoint_selection)
+    end
+  end
+
+  @tag :replica
+  @tag :checkpoint_async
+  test "failed checkpoint computation cannot acknowledge or replace the durable prefix", %{root: root} do
+    opts = [root: root, name: nil]
+    world = start_supervised!(Supervisor.child_spec({World, opts}, restart: :temporary))
+    assert {:ok, 1} = World.apply_edit(world, {5, 63, 5}, 0)
+    path = Path.join([root, FileStore.hex(@cv), "overlay.log"])
+    before = OverlayLog.File.replay(path)
+    hold_checkpoint_selection(1)
+    compact = Task.async(fn -> catch_exit(World.compact(world)) end)
+    assert_receive {:checkpoint_selection, worker, emitter, 1}, 5_000
+    assert worker == emitter and worker != world
+    monitor = Process.monitor(world)
+    # 只测试：新计算进程失败仍沿World既有显式失败语义退出，不降级成检查点成功。
+    Process.exit(worker, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^world, :killed}, 5_000
+    assert {:killed, {GenServer, :call, [^world, :compact, _]}} = Task.await(compact, 5_000)
+    assert OverlayLog.File.replay(path) == before
+    recovered = start_supervised!({World, opts})
+    assert World.seq(recovered) == 1
+    {:ok, payload} = Payload.decode(fetch_payload(recovered, 0, {0, 0, 0}))
+    assert Payload.material(payload, Payload.local({0, 0, 0}, {5, 63, 5})) == 0
+  end
+
   @tag :replica
   @tag :record_bound
   test "CSR lower bound skips a losing region candidate after the general bound", %{root: root} do
@@ -220,6 +338,7 @@ defmodule VoxelRegion.WorldTest do
   end
 
   @tag :replica
+  @tag :checkpoint_async
   test "replica delta history follows the World checkpoint horizon one checkpoint behind", %{root: root} do
     alias VoxelRegion.Replica
     world = start_supervised!({World, root: root, name: :replica_horizon_authority})
@@ -234,10 +353,18 @@ defmodule VoxelRegion.WorldTest do
       delta
     end
     for x <- 1..3, do: edit.(x, x)
-    # First checkpoint at seq 3: the previous horizon is the snapshot (0), nothing is released yet.
-    assert :ok = World.compact(world)
-    assert Replica.stats(replica).retained_deltas == 3
-    later = for x <- 4..5, do: edit.(x, x)
+    # 只测试：前缀3计算中，Replica已经收到4/5；完成通知只能退休到3，不能冒用当前5。
+    hold_checkpoint_selection(3)
+    compact = Task.async(fn -> World.compact(world) end)
+    assert_receive {:checkpoint_selection, worker, emitter, 3}, 5_000
+    later = try do
+      assert worker == emitter and worker != world
+      for x <- 4..5, do: edit.(x, x)
+    after
+      send(worker, :continue_checkpoint_selection)
+    end
+    assert Task.await(compact, 5_000) == :ok
+    assert Replica.stats(replica).retained_deltas == 5
     # Second checkpoint at seq 5 releases the history covered by the first one (seq <= 3).
     assert :ok = World.compact(world)
     assert Replica.stats(replica).retained_deltas == 2

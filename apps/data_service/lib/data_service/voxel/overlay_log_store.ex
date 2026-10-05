@@ -7,7 +7,8 @@ defmodule DataService.Voxel.OverlayLogStore do
 
   行 = 事务内一个条目 `%{seq, ordinal, kind, level, region: {x, y, z}, payload}`，按 `content_version` 分世界；
   `read_all/2` 按 `(seq, ordinal)` 升序返回整个世界的日志，`append/3` 追加一笔事务的行，`replace/3` 在一个数据库事务里
-  删掉该世界全部行并写入检查点事务（World 压实规则）。stateless，直走 `DataService.Repo`（`opts[:repo]` 可覆盖）。
+  按 `opts[:through_seq]` 删掉该世界截至 P 的前缀并写入检查点，保留计算期间追加的 `seq > P` 行。
+  不传截止序号时保持整世界替换，供既有测试清理使用。stateless，直走 `DataService.Repo`（`opts[:repo]` 可覆盖）。
   `content_version` 是 u64，这里按 64 位补码存进 bigint。
   """
 
@@ -22,7 +23,7 @@ defmodule DataService.Voxel.OverlayLogStore do
           payload: binary()
         }
 
-  # 一次 INSERT 多行：压实会整表重写（检查点上千行），逐行 round trip 实测占了稠密事务的大头。Postgres 参数上限 65535，9 列 → 每批 500 行。
+  # 一次 INSERT 多行：检查点可有上千行，逐行 round trip 实测占了稠密事务的大头。Postgres 参数上限 65535，9 列 → 每批 500 行。
   @columns 9
   @batch 500
 
@@ -38,12 +39,18 @@ defmodule DataService.Voxel.OverlayLogStore do
     repo = repo(opts)
     cv = signed(content_version)
 
+    {predicate, params} =
+      case Keyword.fetch(opts, :through_seq) do
+        {:ok, seq} -> {"content_version = $1 AND seq <= $2", [cv, seq]}
+        :error -> {"content_version = $1", [cv]}
+      end
+
     {:ok, :ok} =
       repo.transaction(fn ->
         Ecto.Adapters.SQL.query!(
           repo,
-          "DELETE FROM voxel_overlay_log WHERE content_version = $1",
-          [cv]
+          "DELETE FROM voxel_overlay_log WHERE " <> predicate,
+          params
         )
 
         insert_rows(repo, cv, rows)
