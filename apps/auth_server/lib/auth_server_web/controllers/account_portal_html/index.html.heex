@@ -22,7 +22,7 @@
   <p>{if @invite_required, do: "当前为邀请注册，请填写管理员发放的邀请码。", else: "当前开放注册，无需邀请码。"}</p>
   <.form for={%{}} action="/auth/register">
     <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="email" maxlength="254" required/>
-    <div :if={@invite_required}><label for="invite">邀请码</label><input id="invite" name="invite" value={@invite} autocomplete="off" maxlength="128" required/></div>
+    <div :if={@invite_required}><label for="invite">邀请码</label><input id="invite" name="invite" value={@invite} placeholder="5 位字母＋数字，不区分大小写" autocomplete="off" maxlength="128" required/></div>
     <button formaction="/auth/registration-email" formnovalidate class="secondary">发送注册验证码</button>
     <label for="code">邮箱验证码</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required/>
     <label for="password">设置密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="128" required/>

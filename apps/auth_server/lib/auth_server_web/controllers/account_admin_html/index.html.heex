@@ -6,7 +6,7 @@
 <h2>注册方式：{if @policy.invite_required, do: "邀请注册", else: "开放注册"}</h2>
 <p>切换只影响新账号注册，已有账号仍可登录。</p>
 <.form for={%{}} action="/admin/policy"><input type="hidden" name="invite_required" value={if @policy.invite_required,do: "false",else: "true"}/><button>{if @policy.invite_required,do: "关闭邀请码要求",else: "启用邀请码注册"}</button></.form>
-<h2>生成邀请码</h2><.form for={%{}} action="/admin/invites">
+<h2>生成邀请码</h2><p>5 位字母＋数字，不区分大小写；不使用易混淆的 0、1、I、O。每码仅限一个账号注册。</p><.form for={%{}} action="/admin/invites">
 <label>数量 <input name="count" type="number" value="1" min="1" max="100" required/></label>
 <label>批次备注 <input name="batch" maxlength="160"/></label>
 <label>有效天数 <input name="days" type="number" min="1" placeholder="留空为不限期"/></label><button>生成</button></.form>

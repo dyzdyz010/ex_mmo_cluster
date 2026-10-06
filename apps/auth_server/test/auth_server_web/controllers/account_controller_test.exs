@@ -40,7 +40,8 @@ defmodule AuthServerWeb.AccountControllerTest do
     :ok=Admin.grant(c.email)
     assert %{"ok"=>true}=request("/account/admin/policy",%{invite_required: true},session["access_token"]) |> json_response(200)
     assert %{"invites"=>[%{"code"=>code}]}=request("/account/admin/invites",%{count: 1,batch: "via-admin"},session["access_token"]) |> json_response(201)
-    assert byte_size(code)>=26
+    assert byte_size(code)==5
+    assert code =~ ~r/[A-Z]/ and code =~ ~r/[2-9]/
     assert %{"ok"=>true}=request("/account/logout",%{},session["access_token"]) |> json_response(200)
     assert %{"error"=>"invalid_session"}=request("/account/admin/invites",%{count: 1},session["access_token"]) |> json_response(401)
   end

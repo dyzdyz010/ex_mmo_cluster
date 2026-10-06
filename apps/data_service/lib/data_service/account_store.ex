@@ -54,8 +54,9 @@ defmodule DataService.AccountStore do
   def create_invites(records, actor, batch, expires_at, now) do
     transaction(fn ->
       Enum.each(records, fn r ->
-        sql("INSERT INTO auth_invites(id,digest,hint,batch,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        result = sql("INSERT INTO auth_invites(id,digest,hint,batch,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(digest) DO NOTHING",
           [uuid(r.id), r.digest, r.hint, batch, actor, now, expires_at])
+        if result.num_rows == 0, do: Repo.rollback(:invite_collision)
         audit(actor, "invite_created", r.id, %{batch: batch, expires_at: expires_at}, now)
       end)
       :ok

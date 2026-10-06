@@ -56,8 +56,9 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "register consumes one invite and records the verified account", c do
-    code = proof(c.email, c.invite.code)
-    assert {:ok, account} = Identity.register(c.email, c.password, code, c.invite.code)
+    invite = String.downcase(c.invite.code)
+    code = proof(c.email, invite)
+    assert {:ok, account} = Identity.register(c.email, c.password, code, invite)
     assert account.email == c.email
     assert {:ok, session} = Identity.login(c.email, c.password, false)
     assert session.account_id == Integer.to_string(account.id)
@@ -66,6 +67,29 @@ defmodule AuthServer.IdentityTest do
     assert record.used_at != nil
     refute Map.has_key?(record, :code)
     assert {:error, :invalid_verification} = Identity.register(c.email, c.password, code, c.invite.code)
+  end
+
+  test "new invitations are five unambiguous mixed characters and never reveal the full code in history" do
+    {:ok, invites} = AuthServer.Admin.generate_invites(100, "short-codes", nil)
+    codes = Enum.map(invites, & &1.code)
+    assert length(codes) == 100
+    assert MapSet.size(MapSet.new(codes)) == 100
+    for invite <- invites do
+      assert invite.code =~ ~r/\A[A-HJ-NP-Z2-9]{5}\z/
+      assert invite.code =~ ~r/[A-Z]/
+      assert invite.code =~ ~r/[2-9]/
+      assert String.length(invite.hint) == 3
+      refute invite.hint =~ invite.code
+    end
+  end
+
+  test "an invitation digest collision rolls back the entire batch and keeps the original code usable", c do
+    fresh = %{id: Ecto.UUID.generate(), digest: Identity.digest(Identity.random_token()), hint: "A…9"}
+    duplicate = %{id: Ecto.UUID.generate(), digest: Identity.invite_digest(c.invite.code), hint: "B…8"}
+    assert {:error, :invite_collision} = DataService.AccountStore.create_invites([fresh, duplicate], "test", "collision", nil, Identity.now())
+    assert [] == AuthServer.Admin.list_invites(%{id: fresh.id})
+    assert [] == AuthServer.Admin.list_invites(%{id: duplicate.id})
+    assert :ok == DataService.AccountStore.admission(Identity.invite_digest(c.invite.code), Identity.now())
   end
 
   test "invalid invite does not consume email proof and deleted used invite retains history", c do

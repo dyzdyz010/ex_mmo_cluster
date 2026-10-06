@@ -2,6 +2,7 @@ defmodule AuthServer.Admin do
   @moduledoc "全局系统功能：受控本机管理命令；网页入口必须通过 Identity.administer 鉴权。"
   alias DataService.AccountStore, as: Store
   alias AuthServer.Identity
+  @invite_alphabet "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
   @doc "受控控制台导入现有摘要→username 文件；原码不入库。"
   def import_legacy(path) do
@@ -30,10 +31,14 @@ defmodule AuthServer.Admin do
   def execute(actor,:generate,{count,batch,expiry}) when is_integer(count) and count in 1..100 and is_binary(batch) and byte_size(batch) <= 160 do
     if is_nil(expiry) or (is_integer(expiry) and expiry > Identity.now()) do
       records = for _ <- 1..count do
-        code = :crypto.strong_rand_bytes(16) |> Base.encode32(padding: false)
-        %{id: Ecto.UUID.generate(),code: code,digest: Identity.invite_digest(code),hint: String.slice(code,0,4) <> "…" <> String.slice(code,-4,4)}
+        code = invitation_code()
+        %{id: Ecto.UUID.generate(),code: code,digest: Identity.invite_digest(code),hint: String.first(code) <> "…" <> String.last(code)}
       end
-      with :ok <- Store.create_invites(records,actor,batch,expiry,Identity.now()), do: {:ok,Enum.map(records,&Map.take(&1,[:id,:code,:hint]))}
+      case Store.create_invites(records,actor,batch,expiry,Identity.now()) do
+        :ok -> {:ok,Enum.map(records,&Map.take(&1,[:id,:code,:hint]))}
+        {:error,:invite_collision} -> execute(actor,:generate,{count,batch,expiry})
+        error -> error
+      end
     else
       {:error,:invalid_request}
     end
@@ -47,4 +52,11 @@ defmodule AuthServer.Admin do
     end
   end
   def execute(_,_,_), do: {:error,:invalid_request}
+
+  # 32 个可区分字符均匀抽样；只接受同时包含数字和字母的五位码。
+  defp invitation_code do
+    <<bits::bitstring-size(25),_::7>> = :crypto.strong_rand_bytes(4)
+    code = for <<index::5 <- bits>>, into: "", do: <<:binary.at(@invite_alphabet,index)>>
+    if code =~ ~r/[A-Z]/ and code =~ ~r/[2-9]/, do: code, else: invitation_code()
+  end
 end
