@@ -24,6 +24,7 @@ defmodule VoxelRegion.GeneratedStore do
   @identity_schema "voxim-content-version-md5-64-v3"
   @fields ~w(seed min_height sea_level max_height soil_depth lowland_amplitude mountain_amplitude cave_max_depth)
   @lock_table :voxel_region_generation
+  @bounds_table :voxel_region_column_bounds
 
   @spec open(keyword()) :: {:ok, map()}
   def open(opts) do
@@ -69,7 +70,7 @@ defmodule VoxelRegion.GeneratedStore do
       end
     world_dir = Path.join(root, hex(version))
     File.mkdir_p!(world_dir)
-    ensure_lock_table()
+    ensure_tables()
     index_path = Path.join([world_dir, "baseline", "index.etf"])
 
     {:ok,
@@ -115,11 +116,26 @@ defmodule VoxelRegion.GeneratedStore do
     for rx <- lo..hi, rz <- lo..hi, do: {rx, rz}
   end
 
-  @doc "列的折叠边界：索引里有就用索引，否则现算（世界范围之外的列）。"
+  @doc "列的折叠边界：索引里有就用索引，否则现算（L0 与世界范围之外的列）并按世界目录缓存。"
   def bounds(store, level, {rx, rz}) do
     case store.index && Map.fetch(store.index.bounds, {level, rx, rz}) do
       {:ok, bounds} -> bounds
-      _ -> Native.column_bounds(level, {rx, rz}, store.config)
+      _ -> computed_bounds(store, level, {rx, rz})
+    end
+  end
+
+  # 同一列的每个 region、预备任务与 World 读取都要分类；dirty NIF（L5 列数秒）只算一次，否则排满 dirty CPU。
+  defp computed_bounds(store, level, {rx, rz}) do
+    key = {store.world_dir, level, rx, rz}
+
+    case :ets.lookup(@bounds_table, key) do
+      [{_, bounds}] ->
+        bounds
+
+      [] ->
+        bounds = Native.column_bounds(level, {rx, rz}, store.config)
+        :ets.insert(@bounds_table, {key, bounds})
+        bounds
     end
   end
 
@@ -221,10 +237,11 @@ defmodule VoxelRegion.GeneratedStore do
     version
   end
 
-  defp ensure_lock_table do
-    if :ets.whereis(@lock_table) == :undefined do
+  defp ensure_tables do
+    for {table, options} <- [{@lock_table, []}, {@bounds_table, [read_concurrency: true]}],
+        :ets.whereis(table) == :undefined do
       try do
-        :ets.new(@lock_table, [:named_table, :public, :set])
+        :ets.new(table, [:named_table, :public, :set | options])
       rescue
         ArgumentError -> :ok
       end

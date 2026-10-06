@@ -487,6 +487,32 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)
   end
 
+  # 2026-10-06 青岚重连：索引外的列（L0、世界范围外的远景 L4/L5）每次分类都在 dirty CPU 上现算列边界，
+  # 一次登录 525 次、累计排队 109 s，World 与玩家移动饿死，重连时 Scene 停止超时崩溃。
+  test "a column outside the index computes its bounds once for every region and process", %{
+    root: root,
+    manifest_path: manifest_path
+  } do
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
+    column = {50, 50}
+    expected = Native.column_bounds(0, column, store.config)
+    rows = Native.mixed_rows(0, expected, store.config)
+
+    :erlang.trace_pattern({Native, :column_bounds, 3}, true, [:call_count])
+    :erlang.trace(:all, true, [:call])
+
+    on_exit(fn -> :erlang.trace_pattern({Native, :column_bounds, 3}, false, [:call_count]) end)
+
+    classes =
+      for ry <- [hd(rows) - 1 | rows] do
+        Task.async(fn -> GeneratedStore.classify(store, 0, {50, ry, 50}) end) |> Task.await()
+      end
+
+    assert GeneratedStore.bounds(store, 0, column) == expected
+    assert {:call_count, 1} = :erlang.trace_info({Native, :column_bounds, 3}, :call_count)
+    assert classes == Enum.map([hd(rows) - 1 | rows], &Native.classify_region(0, &1, expected, store.config))
+  end
+
   test "asset pack holds every L4+ region of the world box as the bytes the store serves", %{
     baked: baked,
     root: root
