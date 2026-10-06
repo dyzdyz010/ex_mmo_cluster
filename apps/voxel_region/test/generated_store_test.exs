@@ -487,6 +487,37 @@ defmodule VoxelRegion.GeneratedStoreTest do
     assert %{generated: 3, misses: 3, hits: 4} = World.stats(:cold_world)
   end
 
+  # 2026-10-06 青岚重连：并发冷生成占满 dirty CPU，World 分类与玩家移动 NIF 排在其后，Scene 停止超时崩溃。
+  test "online generation leaves dirty CPU schedulers for short interactive kernels", %{
+    root: root,
+    manifest_path: manifest_path
+  } do
+    {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
+    # 发布节点 +S 4:4 时 dirty CPU 也只有 4 个；这里降到 2 个复现同样的排队。
+    online = :erlang.system_info(:dirty_cpu_schedulers_online)
+    :erlang.system_flag(:dirty_cpu_schedulers_online, 2)
+    on_exit(fn -> :erlang.system_flag(:dirty_cpu_schedulers_online, online) end)
+
+    mixed = fn rx ->
+      {rx, hd(Native.mixed_rows(0, GeneratedStore.bounds(store, 0, {rx, 0}), store.config)), 0}
+    end
+
+    regions = Enum.map(9..13, mixed)
+    probe = fn -> Native.column_bounds(0, {-1000, -1000}, store.config) end
+    probe.()
+    {idle_us, _} = :timer.tc(probe)
+    {generate_us, :ok} = :timer.tc(fn -> GeneratedStore.ensure(store, 0, hd(regions)) end)
+
+    started = GeneratedStore.generated(store)
+    tasks = for region <- tl(regions), do: Task.async(fn -> GeneratedStore.ensure(store, 0, region) end)
+    await_generated(store, started + 2)
+    {probe_us, _} = :timer.tc(probe)
+    assert Enum.all?(Task.await_many(tasks, 120_000), &(&1 == :ok))
+
+    assert probe_us < idle_us + generate_us / 2,
+           "short dirty NIF took #{probe_us} us under online generation (idle #{idle_us} us, one region #{generate_us} us)"
+  end
+
   test "asset pack holds every L4+ region of the world box as the bytes the store serves", %{
     baked: baked,
     root: root
@@ -632,6 +663,13 @@ defmodule VoxelRegion.GeneratedStoreTest do
   end
 
   defp request(items, cv), do: IO.iodata_to_binary(Codec.encode_request(cv, items))
+
+  defp await_generated(store, count) do
+    if GeneratedStore.generated(store) < count do
+      Process.sleep(1)
+      await_generated(store, count)
+    end
+  end
 
   defp payload_hash(bytes) do
     {:ok, header} = Codec.decode_payload_header(bytes)
