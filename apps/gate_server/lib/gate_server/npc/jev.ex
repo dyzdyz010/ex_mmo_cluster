@@ -13,6 +13,32 @@ defmodule GateServer.Npc.Jev do
   endpoint: `%{url:, key:, model:, cacertfile: 可选}`。
   """
   @confidence 0.85
+  @behaviour GateServer.Npc.Scheduler
+
+  @impl true
+  def decide(context, profile) do
+    situation =
+      "An NPC is executing the #{context.skill} skill. " <>
+        "A player is addressing the NPC: #{context.heard}. Current observation: " <>
+        Jason.encode!(
+          GateServer.Npc.Context.plain(
+            Map.take(context.observation, [:self, :entities, :balances, :pending])
+          )
+        )
+
+    case ask(
+           profile.scheduler,
+           profile.activities,
+           situation,
+           nil,
+           Map.get(profile, :request, &GateServer.Npc.Http.request/2)
+         ) do
+      {:ok, {:act, activity}, _} when activity == profile.continue_activity -> :continue
+      {:ok, {:act, activity}, _} -> {:interrupt, activity}
+      {:ok, decision, _} -> {:interrupt, decision}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @doc "请求体。profile 与 situation 为英文；planned_action 是将做的破坏性动作，没有则不问 harm。"
   def body(endpoint, profile, situation, planned_action \\ nil) do
@@ -69,7 +95,7 @@ defmodule GateServer.Npc.Jev do
         profile,
         situation,
         planned_action \\ nil,
-        request \\ &GateServer.Npc.Brain.Llm.request/2
+        request \\ &GateServer.Npc.Http.request/2
       ) do
     with {:ok, response} <-
            request.(endpoint, body(endpoint, profile, situation, planned_action)),

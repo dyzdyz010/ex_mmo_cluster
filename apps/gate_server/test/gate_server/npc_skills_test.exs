@@ -3,6 +3,44 @@ defmodule GateServer.NpcSkillsTest do
   use ExUnit.Case, async: false
   alias GateServer.Npc.Skills
 
+  # 只测试：独立技能验证配置注册，不替代被测运行器或任何世界裁决。
+  defmodule Survey do
+    @behaviour GateServer.Npc.Skill
+    def definition(_),
+      do: %{
+        description: "Report the requested sample",
+        parameters: %{
+          type: "object",
+          properties: %{sample: %{type: "integer"}},
+          required: ["sample"]
+        }
+      }
+
+    def run(_context, %{"sample" => sample}, _config),
+      do: {:ok, %{sample: sample, metrics: %{request_count: 0, jev_request_count: 0}}}
+  end
+
+  test "a configured skill module supplies its contract and executes without changing dispatch" do
+    profile = %{skills: %{survey: %{module: Survey}}}
+    assert [%{name: "survey", parameters: %{required: ["sample"]}}] = Skills.tools(profile)
+    command = Skills.command("survey", %{"sample" => 17}, 3, profile)
+    assert %{id: 3, skill: :survey} = command
+    assert {:ok, %{sample: 17}} = Skills.run(%{profile: profile}, command)
+    assert Skills.command("unconfigured", %{}, 4, profile) == nil
+
+    response = %{
+      "output" => [
+        %{"type" => "function_call", "name" => "survey", "arguments" => "{\"sample\":17}"}
+      ]
+    }
+
+    assert [%{id: 3, verb: :skill, skill: :survey, args: %{"sample" => 17}}] =
+             GateServer.Npc.Brain.Llm.commands(response, nil, %{}, 3, profile)
+
+    assert [%{id: 3, verb: :unknown_tool}] =
+             GateServer.Npc.Brain.Llm.commands(response, nil, %{}, 3, %{skills: %{}})
+  end
+
   defmodule Body do
     use GenServer
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)

@@ -10,8 +10,52 @@ defmodule GateServer.Npc.Skills.Wilderness do
   """
   require Logger
   alias GateServer.Npc.{Blueprint, Body}
-  alias GateServer.Npc.Brain.{Builder, Llm}
+  alias GateServer.Npc.Brain.Builder
   alias VoxelRegion.World
+
+  @behaviour GateServer.Npc.Skill
+  @impl true
+  def definition(profile) do
+    {_name, description, properties, required} =
+      {:wilderness, "荒野逐格施工：给一句地形整理或铺路等目标，代码规划并逐格执行，最终报告世界实际还差什么。建筑优先用 design 和 build。",
+       %{
+         goal: %{type: "string"},
+         tool_id: %{type: "integer", enum: Map.keys(Map.get(profile, :tools, %{}))}
+       }, ["goal", "tool_id"]}
+
+    %{
+      description: description,
+      parameters: %{
+        type: "object",
+        properties: properties,
+        required: required,
+        additionalProperties: false
+      }
+    }
+  end
+
+  @impl true
+  def run(context, %{"goal" => goal, "tool_id" => tool} = args, config)
+      when is_binary(goal) and byte_size(goal) > 0 and is_integer(tool) do
+    parsed = %{goal: goal, tool_id: tool}
+    parsed = if Map.has_key?(args, "ops"), do: Map.put(parsed, :ops, args["ops"]), else: parsed
+
+    profile =
+      Map.merge(config, %{
+        cid: context.actor.cid,
+        goal: goal,
+        tool_id: tool,
+        planner: context.profile.endpoint,
+        scheduler: context.profile.scheduler,
+        memory: Map.get(context.profile, :memory, DataService.NpcMemory),
+        request: context.request
+      })
+
+    run(%{context | profile: profile}, parsed)
+  end
+
+  def run(_, _, _),
+    do: {:error, :invalid_skill_arguments, %{request_count: 0, jev_request_count: 0}}
 
   @doc "同步运行，返回 {:ok, result} 或 {:error, blocked_result, metrics}。"
   def run(context, %{goal: goal} = args) do
@@ -23,7 +67,11 @@ defmodule GateServer.Npc.Skills.Wilderness do
       |> Map.put(:goal, goal)
       |> Map.put(
         :request,
-        Map.get(context, :request, Map.get(context.profile, :request, &Llm.request/2))
+        Map.get(
+          context,
+          :request,
+          Map.get(context.profile, :request, &GateServer.Npc.Http.request/2)
+        )
       )
 
     context = %{context | profile: profile}

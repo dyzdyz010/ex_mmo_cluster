@@ -8,6 +8,11 @@ defmodule GateServer.NpcSkillBrainTest do
     def recent_notes(_, _), do: []
     def search(_, _, _), do: []
 
+    def put(cid, kind, key, value),
+      do: Agent.update(:npc_runtime_memory, &Map.put(&1, {cid, kind, key}, value))
+
+    def get(cid, kind, key), do: Agent.get(:npc_runtime_memory, &Map.get(&1, {cid, kind, key}))
+
     def journal(cid, text, position) do
       send(Process.whereis(__MODULE__), {:journal, cid, text, position})
       :ok
@@ -16,6 +21,12 @@ defmodule GateServer.NpcSkillBrainTest do
 
   setup do
     Process.register(self(), Memory)
+
+    start_supervised!(%{
+      id: :npc_runtime_memory,
+      start: {Agent, :start_link, [fn -> %{} end, [name: :npc_runtime_memory]]}
+    })
+
     :ok
   end
 
@@ -59,7 +70,16 @@ defmodule GateServer.NpcSkillBrainTest do
   defmodule Body do
     use GenServer
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-    def init(opts), do: {:ok, Map.put(opts, :brain, Llm.init(opts.profile))}
+
+    def init(opts),
+      do:
+        {:ok,
+         Map.put(
+           opts,
+           :brain,
+           GateServer.Npc.Runtime.init({Map.get(opts, :backend, Llm), opts.profile})
+         )}
+
     def handle_call(:brain, _, s), do: {:reply, s.brain, s}
 
     def handle_call(:skill_context, {worker, _}, s) do
@@ -73,9 +93,183 @@ defmodule GateServer.NpcSkillBrainTest do
     end
 
     def handle_cast({:event, event}, s) do
-      Llm.handle_event(event, s.brain)
+      GateServer.Npc.Runtime.handle_event(event, s.brain)
       {:noreply, s}
     end
+
+    def handle_info({:npc_runtime_outcome, outcome}, s) do
+      send(s.owner, {:runtime_outcome, outcome})
+      {:noreply, s}
+    end
+  end
+
+  test "Routine writes and recalls memory through the same command runtime" do
+    profile = %{
+      memory: Memory,
+      steps: [
+        %{verb: :remember, key: "plan", text: "Build after gathering"},
+        %{verb: :recall, key: "plan"}
+      ]
+    }
+
+    body =
+      start_supervised!(
+        {Body, %{owner: self(), backend: GateServer.Npc.Brain.Routine, profile: profile}}
+      )
+
+    GenServer.cast(body, {:event, {:observation, observation()}})
+    assert_receive {:runtime_outcome, %{id: 1, verb: :remember, status: :done}}
+    next = put_in(observation(), [:self, :tick], 40)
+    GenServer.cast(body, {:event, {:observation, next}})
+
+    assert_receive {:runtime_outcome,
+                    %{
+                      id: 2,
+                      verb: :recall,
+                      status: :done,
+                      data: %{
+                        body: %{"text" => "Build after gathering", "position" => [1.0, 2.0, 3.0]}
+                      }
+                    }}
+
+    refute_receive {:command, _}, 50
+  end
+
+  # 只测试：脚本后端直接产生技能命令，不理解模型工具格式或技能 worker 协议。
+  defmodule Script do
+    @behaviour GateServer.Npc.Brain
+    def init(profile), do: profile
+
+    def handle_event({:observation, _}, %{started: false} = state),
+      do:
+        {[
+           %{
+             id: 1,
+             verb: :skill,
+             skill: :build,
+             args: %{
+               "definition" => String.duplicate("11", 32),
+               "anchor_micro" => [8, 8, 8],
+               "orientation" => 0
+             }
+           }
+         ], %{state | started: true}}
+
+    def handle_event({:outcome, outcome}, state) do
+      send(state.owner, {:script_outcome, outcome})
+      {[], state}
+    end
+
+    def handle_event(_, state), do: {[], state}
+  end
+
+  defmodule StopPolicy do
+    @behaviour GateServer.Npc.Scheduler
+    def decide(context, config) do
+      send(config.owner, {:policy_context, context})
+      {:interrupt, :needs_attention}
+    end
+  end
+
+  test "commands before the first observation are rejected without terminating the NPC" do
+    profile = %{skills: %{build: %{}}, memory: Memory, owner: self(), started: false}
+    body = start_supervised!({Body, %{owner: self(), backend: Script, profile: profile}})
+    runtime = GenServer.call(body, :brain)
+
+    for command <- [
+          %{id: 70, verb: :skill, skill: :build, args: %{}},
+          %{id: 71, verb: :recall, key: "plan"}
+        ] do
+      GateServer.Npc.Body.command(runtime, command)
+      id = command.id
+      assert_receive {:runtime_outcome, %{id: ^id, status: :rejected, reason: :invalid_session}}
+    end
+
+    assert Process.alive?(body)
+    refute_receive {:skill_worker, _}, 50
+    GenServer.cast(body, {:event, {:observation, observation()}})
+    assert_receive {:command, %{id: {:skill, 1, 1}, verb: :prefab_place}}
+  end
+
+  test "a script uses a configured interruption policy without a model endpoint" do
+    profile = %{
+      skills: %{build: %{}},
+      memory: Memory,
+      owner: self(),
+      started: false,
+      interrupt_policy: {StopPolicy, %{owner: self()}}
+    }
+
+    body = start_supervised!({Body, %{owner: self(), backend: Script, profile: profile}})
+    runtime = GenServer.call(body, :brain)
+    GenServer.cast(body, {:event, {:observation, observation()}})
+    assert_receive {:command, %{id: {:skill, 1, 1}}}
+    send(runtime, {:skill_check, 1})
+
+    assert_receive {:policy_context,
+                    %{skill: :build, observation: %{self: %{entity_id: 7}}, heard: false}}
+
+    assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
+
+    GenServer.cast(
+      body,
+      {:event,
+       {:outcome, %{id: {:skill, 1, :stop}, verb: :stop, status: :done, reason: nil, data: %{}}}}
+    )
+
+    assert_receive {:script_outcome,
+                    %{reason: {:interrupted, :needs_attention}, data: %{metrics: metrics}}}
+
+    assert metrics.scheduler_request_count == 1
+    assert metrics.parent_jev_request_count == 0
+  end
+
+  for {status, reason, data} <- [{:done, nil, %{seq: 41}}, {:rejected, :occupied, nil}] do
+    @result {status, reason, data}
+    test "script backend receives one build result: #{status}" do
+      {status, reason, data} = @result
+      profile = %{skills: %{build: %{}}, memory: Memory, owner: self(), started: false}
+      body = start_supervised!({Body, %{owner: self(), backend: Script, profile: profile}})
+      GenServer.cast(body, {:event, {:observation, observation()}})
+      assert_receive {:command, %{id: {:skill, 1, 1}, verb: :prefab_place}}
+
+      GenServer.cast(
+        body,
+        {:event,
+         {:outcome,
+          %{id: {:skill, 1, 1}, verb: :prefab_place, status: status, reason: reason, data: data}}}
+      )
+
+      assert_receive {:script_outcome,
+                      %{id: 1, verb: :build, status: ^status, reason: ^reason} = outcome}
+
+      if status == :done, do: assert(outcome.data.seq == 41)
+      refute_receive {:script_outcome, _}, 50
+      refute_receive {:command, _}, 50
+    end
+  end
+
+  test "script cancellation waits for stop and ignores late skill success" do
+    profile = %{skills: %{build: %{}}, memory: Memory, owner: self(), started: false}
+    body = start_supervised!({Body, %{owner: self(), backend: Script, profile: profile}})
+    runtime = GenServer.call(body, :brain)
+    GenServer.cast(body, {:event, {:observation, observation()}})
+    assert_receive {:command, %{id: {:skill, 1, 1}, verb: :prefab_place}}
+    GateServer.Npc.Body.command(runtime, %{id: 1, verb: :cancel_skill})
+    assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
+    send(runtime, {:skill_finished, 1, {:ok, %{seq: 41}}})
+    refute_receive {:script_outcome, _}, 50
+
+    GenServer.cast(
+      body,
+      {:event,
+       {:outcome, %{id: {:skill, 1, :stop}, verb: :stop, status: :done, reason: nil, data: %{}}}}
+    )
+
+    assert_receive {:script_outcome,
+                    %{id: 1, verb: :build, status: :rejected, reason: :cancelled}}
+
+    refute_receive {:script_outcome, _}, 50
   end
 
   defp call(name, args),

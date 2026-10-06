@@ -37,4 +37,21 @@ defmodule GateServer.Npc.Context do
       feet_y: "position.y - body.half_height_m"
     }
   end
+
+  @doc "将不可变观察转换为模型传输数据；不读取或改变世界。"
+  # 元组 → 列表，其余原样；权威返回的 reason / data 可能含元组与原子。
+  def plain(%{} = map),
+    do:
+      Map.new(map, fn
+        {:definition_id, <<_::256>> = id} -> {:definition_id, Base.encode16(id, case: :lower)}
+        {k, v} -> {k, plain(v)}
+      end)
+
+  def plain(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> Enum.map(&plain/1)
+  def plain(list) when is_list(list), do: Enum.map(list, &plain/1)
+
+  def plain(binary) when is_binary(binary),
+    do: if(String.valid?(binary), do: binary, else: Base.encode16(binary))
+
+  def plain(other), do: other
 end

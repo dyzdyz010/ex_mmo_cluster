@@ -2,14 +2,29 @@ defmodule GateServer.Npc.Brain do
   @moduledoc """
   全局系统功能：NPC 决策后端的可插拔边界。Body 固定，Brain 可换（决策树、LLM、外部分类模型）。
 
-  通用角色使用一个 `Brain.Llm`，拥有全部原子动词；长任务是 `profile.skills` 提供的工具，
-  在独立 worker 中运行并只回一个最终 Outcome。荒野施工复用 Builder 的纯状态机，
-  不启动第二个决策大脑。运行期间由父大脑调用 Jev；活动、判据、优先级均来自 profile。
-  记忆工具直接读写 NpcMemory，每轮检索近期经历、近期笔记和相关记忆；进度与动手依据始终由 World 现查。
+  所有后端由 `Runtime` 组合，拥有同一组原子动作、技能与记忆命令。
+  长任务来自 `profile.skills`，由 Runtime 的独立 worker 执行并只回一个最终 Outcome。
+  荒野施工复用 Builder 的纯状态机。中断策略由 `interrupt_policy` 选择，旧 scheduler 配置沿用 Jev；
+  不配置时不调用外部调度模型。记忆读写经 Memory，进度与动手依据始终由 World 现查。
   输入规范见 docs/10-active/cross-cutting/2026-09-22-npc-context-memory-contract.md。
 
-  回调在 Body 进程内同步调用，必须立刻返回：慢后端在 `init/1` 里起自己的进程，事件转发过去，算好后用
-  `GateServer.Npc.Body.command/2` 异步投回。返回空命令表 = 保持当前动作；停止必须显式 `:stop`。
+  回调在 Runtime 进程内同步调用，必须立刻返回。慢后端在 `init/1` 保存调用者 self() 作为命令接收端，
+  起自己的进程处理事件，算好后用 `GateServer.Npc.Body.command/2` 异步投回该接收端。
+  返回空命令表 = 保持当前动作；停止必须显式 `:stop`。每个调用 id 在本次 Runtime 生命周期中唯一，
+  `{:skill, call_id, step_id}` 保留给技能内部命令。不得从后端私自穿透 Runtime 取得 Body/World。
+
+  ## 共用技能与记忆命令
+
+      %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
+      %{id: 原技能调用号, verb: :cancel_skill}
+      %{id:, verb: :remember, key:, text:}
+      %{id:, verb: :recall, key:}
+      %{id:, verb: :search_memory, query:}
+
+  参数契约由 Skills.tools(profile) 给出；Skills 的每个模块实现 Skill behaviour。
+  技能终态的 verb 是所调用的技能名。取消沿用原调用号，不另回一个结果；没有对应在途技能时无操作。
+  取消等待 worker DOWN 和 Body.stop 的权威结果，失败明确返回 stop_failed，已提交的世界事务不撤销。
+  Body.observe 可读取技能终态。首个正式 Observation 前的技能和记忆调用回报 invalid_session。
 
   事件与命令都是纯数据（数字、原子、元组、map），不含 pid / ref / 闭包，进程外 adapter 负责自己的序列化。
 
@@ -79,7 +94,19 @@ defmodule GateServer.Npc.Brain do
   事件 `{:heard, %{entity_id:, text:}}` 与命令 `say` 是为玩家聊天预留的形状；正式栈接入聊天之前不会有 `:heard` 事件。
   """
 
-  @callback init(profile :: map) :: state :: term
-  @callback handle_event({:observation, map} | {:outcome, map} | {:heard, map}, state :: term) ::
-              {[map], state :: term}
+  @type command :: %{
+          required(:id) => term(),
+          required(:verb) => atom(),
+          optional(atom()) => term()
+        }
+  @type outcome :: %{
+          id: term(),
+          verb: atom(),
+          status: :done | :rejected | :superseded,
+          reason: term(),
+          data: map() | nil
+        }
+  @type event :: {:observation, map()} | {:outcome, outcome()} | {:heard, map()}
+  @callback init(profile :: map()) :: state :: term()
+  @callback handle_event(event(), state :: term()) :: {[command()], state :: term()}
 end

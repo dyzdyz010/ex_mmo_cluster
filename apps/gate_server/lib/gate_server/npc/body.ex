@@ -103,8 +103,7 @@ defmodule GateServer.Npc.Body do
        scene_id: Keyword.fetch!(opts, :scene_id),
        # 与玩家 QUIC 连接同一份部署编辑盒。
        bounds: Keyword.get(opts, :bounds, Application.get_env(:gate_server, :quic, [])[:bounds]),
-       brain: brain,
-       mind: brain.init(profile),
+       mind: GateServer.Npc.Runtime.init({brain, profile}),
        identity: nil,
        # 权威下发的移动 profile（SessionStart）；寻路的台阶高度与角色高度取自它。
        profile: nil,
@@ -339,6 +338,9 @@ defmodule GateServer.Npc.Body do
   def handle_info({:DOWN, _, :process, player, reason}, %{player: player} = state),
     do: {:stop, {:player_down, reason}, state}
 
+  def handle_info({:npc_runtime_outcome, outcome}, state),
+    do: {:noreply, %{state | outcomes: Enum.take([outcome | state.outcomes], @outcomes)}}
+
   def handle_info(_, state), do: {:noreply, state}
 
   defp feed(state, %Session.State{} = session, server_tick, processed) do
@@ -510,7 +512,7 @@ defmodule GateServer.Npc.Body do
   defp distance({x, _, z}, {tx, tz}), do: :math.sqrt((tx - x) * (tx - x) + (tz - z) * (tz - z))
 
   defp think(state, event) do
-    {commands, mind} = state.brain.handle_event(event, state.mind)
+    {commands, mind} = GateServer.Npc.Runtime.handle_event(event, state.mind)
     apply_commands(%{state | mind: mind}, commands)
   end
 
@@ -520,6 +522,12 @@ defmodule GateServer.Npc.Body do
   end
 
   defp apply_commands(state, commands), do: Enum.reduce(commands, state, &apply_command(&2, &1))
+
+  defp apply_command(state, %{verb: verb} = command)
+       when verb in [:skill, :cancel_skill, :remember, :recall, :search_memory] do
+    command(state.mind, command)
+    state
+  end
 
   defp apply_command(
          %{position: {px, py, pz}, profile: %{} = profile} = state,

@@ -9,7 +9,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
   """
   use ExUnit.Case, async: false
   require Logger
-  alias GateServer.Npc.{Skills, Brain.Llm}
+  alias GateServer.Npc.Skills
   alias VoxelRegion.{World, Prefab, Spatial}
   alias VoxelRegion.TestSupport.{Source, Actor}
   alias SceneServer.Movement.Scene
@@ -266,7 +266,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
       write_json(out, "request-#{round}.json", body)
       started = System.monotonic_time(:millisecond)
       Logger.info("design_live_request round=#{round} model=#{endpoint.model} status=start")
-      response = Llm.request(endpoint, body)
+      response = GateServer.Npc.Http.request(endpoint, body)
       write_json(out, "response-#{round}.json", response)
 
       {tools, usage} =

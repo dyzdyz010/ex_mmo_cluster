@@ -201,9 +201,11 @@ defmodule SceneServer.Movement.Scene do
   end
 
   def handle_call({:character_owner, cid}, _, state) do
-    owner = Enum.find_value(state.characters, fn {identity, c} ->
-      if c.id == cid, do: %{identity: identity, player: c.player}
-    end)
+    owner =
+      Enum.find_value(state.characters, fn {identity, c} ->
+        if c.id == cid, do: %{identity: identity, player: c.player}
+      end)
+
     {:reply, owner, state}
   end
 
@@ -534,6 +536,7 @@ defmodule SceneServer.Movement.Scene do
       %{id: ^id, player: player} -> send(player, {:projectile_receipt, identity, life, hit, seq})
       _ -> :ok
     end
+
     {:noreply, state}
   end
 
@@ -829,8 +832,10 @@ defmodule SceneServer.Movement.Scene do
         })
 
         Process.demonitor(c.monitor, [:flush])
-        :ok = Player.stop(c.player)
+
+        # 先通知会话 owner，再停止 Player；否则 owner 的 DOWN 会抢先丢失正式关闭原因。
         close_sink(state, c.gate, identity, reason)
+        :ok = Player.stop(c.player)
         Replication.leave(state.replication, identity, c.id, c.epoch, state.tick)
         %{state | characters: characters}
     end

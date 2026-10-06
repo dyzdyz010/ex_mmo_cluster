@@ -19,7 +19,6 @@ defmodule GateServer.Npc.Brain.Builder do
   @behaviour GateServer.Npc.Brain
   require Logger
   alias GateServer.Npc.{Blueprint, Jev}
-  alias GateServer.Npc.Brain.Llm
 
   @doc "荒野逐格施工的活动数据；调用方显式放进 profile.activities，Jev 不持有默认活动。"
   def activity_profile do
@@ -391,7 +390,7 @@ defmodule GateServer.Npc.Brain.Builder do
 
   @doc "用调用方活动数据调度荒野施工异常，返回原状态机认识的决定；不启动进程。"
   def triage_verdict(profile, problem) do
-    send = Map.get(profile, :request, &Llm.request/2)
+    send = Map.get(profile, :request, &GateServer.Npc.Http.request/2)
     situation = "You are a builder NPC in a voxel world, executing a blueprint. " <> problem
     Logger.info("npc_builder_triage cid=#{profile.cid} problem=#{problem}")
 
@@ -414,7 +413,7 @@ defmodule GateServer.Npc.Brain.Builder do
 
   defp perform({:plan, request}, _state, profile, _body) do
     owner = self()
-    send = Map.get(profile, :request, &Llm.request/2)
+    send = Map.get(profile, :request, &GateServer.Npc.Http.request/2)
     Logger.info("npc_builder_plan cid=#{profile.cid} note=#{inspect(request.note)}")
 
     spawn_link(fn ->

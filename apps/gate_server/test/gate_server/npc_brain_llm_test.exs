@@ -64,7 +64,7 @@ defmodule GateServer.NpcBrainLlmTest do
   end
 
   defp brain(profile) do
-    pid = Llm.init(Map.put_new(profile, :memory, Store))
+    pid = GateServer.Npc.Runtime.init({Llm, Map.put_new(profile, :memory, Store)})
     on_exit(fn -> stop_brain(pid) end)
     pid
   end
@@ -240,7 +240,7 @@ defmodule GateServer.NpcBrainLlmTest do
                  components: [%{instance: [10, 0], material: 3, cells: [{1, 1, 1}]}]
                }
              }
-           ] = Llm.remember(outcome, [], {15.0, 64.9, 10.0})
+           ] = GateServer.Npc.Perception.project(outcome, [], {15.0, 64.9, 10.0})
 
     # 建成区能有几百件：只给模型最近的 24 件，总数另报。
     # 第 i 件在 x = 10i 米；自己在 x = 12 → 最近的是第 1 件（2 米），第 24 件之后的被裁掉。
@@ -248,7 +248,7 @@ defmodule GateServer.NpcBrainLlmTest do
     far_first = %{outcome | data: %{seq: 9, property_states: Enum.reverse(many)}}
 
     assert [%{data: %{attachments: listed, total: %{attachments: 40, components: 0}}}] =
-             Llm.remember(far_first, [], {12.0, 64.9, 10.0})
+             GateServer.Npc.Perception.project(far_first, [], {12.0, 64.9, 10.0})
 
     assert Enum.to_list(1..24) == Enum.map(listed, & &1.attachment_id) |> Enum.sort()
     assert 1 == hd(listed).attachment_id
@@ -282,7 +282,7 @@ defmodule GateServer.NpcBrainLlmTest do
       %{id: id, verb: :look, status: :done, reason: nil, data: %{seq: 9, probe_occupancy: cells}}
     end
 
-    first = Llm.remember(look.(1, [cell.([16, 64, 10], 11)]), [], nil)
+    first = GateServer.Npc.Perception.project(look.(1, [cell.([16, 64, 10], 11)]), [], nil)
     assert [%{data: %{solid: %{"16,10" => [[64, 11]]}}}] = first
 
     # (16,64,10) 是 9101 号角色花材料放下的：模型看到的那一项多一个放置者；其余是天然地形。
@@ -301,7 +301,7 @@ defmodule GateServer.NpcBrainLlmTest do
                }
              },
              %{id: 1, verb: :look, data: nil}
-           ] = Llm.remember(look.(2, cells), first, nil)
+           ] = GateServer.Npc.Perception.project(look.(2, cells), first, nil)
 
     assert 2 == map_size(solid)
   end
@@ -316,7 +316,9 @@ defmodule GateServer.NpcBrainLlmTest do
     }
 
     outcome = %{id: 1, verb: :look, status: :done, reason: nil, data: %{probe_occupancy: [row]}}
-    assert [%{data: %{solid: %{}, refined: [^row]}}] = Llm.remember(outcome, [], nil)
+
+    assert [%{data: %{solid: %{}, refined: [^row]}}] =
+             GateServer.Npc.Perception.project(outcome, [], nil)
   end
 
   test "published definition IDs remain hexadecimal even when the digest bytes are valid text" do

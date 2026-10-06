@@ -52,6 +52,21 @@ defmodule GateServer.NpcBodyWorldTest do
          }}
   end
 
+  # 只测试：正式 build 已完成后暂停技能终态，控制取消与世界提交的顺序。
+  defmodule HoldBuild do
+    @behaviour GateServer.Npc.Skill
+    def definition(profile), do: GateServer.Npc.Skills.Build.definition(profile)
+
+    def run(context, args, config) do
+      result = GateServer.Npc.Skills.Build.run(context, args, config)
+      send(config.owner, {:build_committed, self(), result})
+
+      receive do
+        :finish -> result
+      end
+    end
+  end
+
   defp write_world(root) do
     File.mkdir_p!(Path.join([root, FileStore.hex(@cv), "L0"]))
     cells = 66 * 66 * 66
@@ -167,6 +182,13 @@ defmodule GateServer.NpcBodyWorldTest do
     if supply = context[:supply],
       do: {:ok, _} = World.material_supply(world, @npc, "npc-test-supply", supply)
 
+    if context[:runtime_build] do
+      bytes = runtime_definition()
+      id = :crypto.hash(:sha256, bytes)
+      File.write!(Path.join([root, "prefabs", Base.encode16(id) <> ".vxpd"]), bytes)
+      :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+    end
+
     profile =
       Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
       |> File.read!()
@@ -264,8 +286,9 @@ defmodule GateServer.NpcBodyWorldTest do
 
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
 
-    if context[:builder_brain] || context[:builder_live] || context[:wilderness_skill],
-      do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
+    if context[:builder_brain] || context[:builder_live] || context[:wilderness_skill] ||
+         context[:runtime_build],
+       do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
       start_supervised!(
@@ -301,6 +324,38 @@ defmodule GateServer.NpcBodyWorldTest do
     %{"op" => "clear", "min" => [9, 64, 14], "max" => [9, 65, 14]},
     %{"op" => "clear", "min" => [11, 65, 15], "max" => [11, 65, 16]}
   ]
+
+  # 只测试：一个石 micro，造价由正式库存精度手算为 1。
+  defp runtime_definition,
+    do:
+      <<"VXPD", 1::32-little, 1::32-little, 0::signed-little-32, 0::signed-little-32,
+        0::signed-little-32, @stone::16-little, 0::32-little>>
+
+  defp brain(%{runtime_build: true} = context) do
+    args = %{
+      "definition" => Base.encode16(:crypto.hash(:sha256, runtime_definition())),
+      "anchor_micro" => [48, 512, 80],
+      "orientation" => 0
+    }
+
+    steps =
+      if context[:cancel_committed],
+        do: [%{verb: :skill, skill: :build, args: args}],
+        else: [
+          %{verb: :skill, skill: :build, args: %{args | "anchor_micro" => [480, 512, 80]}},
+          %{verb: :skill, skill: :build, args: args},
+          %{verb: :query_balances}
+        ]
+
+    {GateServer.Npc.Brain.Routine,
+     %{
+       skills: %{
+         build: if(context[:cancel_committed], do: %{module: HoldBuild, owner: self()}, else: %{})
+       },
+       memory: Memory,
+       steps: steps
+     }}
+  end
 
   defp brain(%{prefab_access: true}),
     do: {GateServer.Npc.Brain.Routine, %{steps: [%{verb: :query_balances}]}}
@@ -396,7 +451,7 @@ defmodule GateServer.NpcBodyWorldTest do
 
     request = fn endpoint, body ->
       send(test, {:asked, if(is_map_key(body, :questions), do: :scheduler, else: :planner)})
-      GateServer.Npc.Brain.Llm.request(endpoint, body)
+      GateServer.Npc.Http.request(endpoint, body)
     end
 
     {GateServer.Npc.Brain.Builder,
@@ -586,6 +641,59 @@ defmodule GateServer.NpcBodyWorldTest do
 
   defp balance(world),
     do: Enum.find(World.material_balances(world, @npc), &(&1.material == @stone)).balance
+
+  @tag :prefab_access
+  @tag :runtime_build
+  @tag :cancel_committed
+  @tag supply: %{11 => 1}
+  test "cancelling a skill preserves an already committed World transaction", %{
+    world: world,
+    body: body
+  } do
+    assert_receive {:build_committed, worker, {:ok, %{seq: birth}}}, 10_000
+    monitor = Process.monitor(worker)
+    Body.command(body, %{id: 1, verb: :cancel_skill})
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :shutdown}
+
+    outcome =
+      await(
+        fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 1)) end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+
+    assert %{verb: :build, status: :rejected, reason: :cancelled} = outcome
+    assert 0 == balance(world)
+
+    assert [%{refined: true, slots: [%{material: @stone, instance: [^birth, 0], count: 1}]}] =
+             World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
+
+  @tag :prefab_access
+  @tag :runtime_build
+  @tag supply: %{11 => 1}
+  test "Routine calls the shared build skill with real rejection, placement and exact settlement",
+       %{world: world, body: body} do
+    await(
+      fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 3)) end,
+      System.monotonic_time(:millisecond) + 10_000
+    )
+
+    outcomes = Body.observe(body).outcomes
+
+    assert [%{verb: :build, status: :rejected, reason: :out_of_bounds}] =
+             Enum.filter(outcomes, &(&1.id == 1))
+
+    assert [%{verb: :build, status: :done, data: %{seq: birth}}] =
+             Enum.filter(outcomes, &(&1.id == 2))
+
+    assert [%{status: :done, data: %{balances: [%{material: @stone, balance: 0}]}}] =
+             Enum.filter(outcomes, &(&1.id == 3))
+
+    assert 0 == balance(world)
+
+    assert [%{refined: true, slots: [%{material: @stone, instance: [^birth, 0], count: 1}]}] =
+             World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
 
   @tag :prefab_access
   @tag supply: %{11 => 1}

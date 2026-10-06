@@ -10,7 +10,7 @@ defmodule GateServer.Npc.Skills.Design do
   alias VoxelRegion.Prefab.Draft
   alias SceneServer.{PrefabDesigner, Movement.Scene}
   alias SceneServer.PrefabDesigner.Check
-  alias GateServer.Npc.{Context, Memory, Perception, Brain.Llm}
+  alias GateServer.Npc.{Context, Memory, Perception}
 
   @metrics %{
     request_count: 0,
@@ -21,6 +21,42 @@ defmodule GateServer.Npc.Skills.Design do
     failed_checks: 0,
     usage_complete: true
   }
+
+  @behaviour GateServer.Npc.Skill
+  @impl true
+  def definition(_profile) do
+    %{
+      description: "多轮设计一栋住宅：在无界面工作台组合目录部件、修改宏格、查看并检查，成功返回已发布定义 id。不会放到地图上。",
+      parameters: %{
+        type: "object",
+        properties:
+          Map.put(GateServer.Npc.Skill.placement_properties(), :goal, %{type: "string"}),
+        required: ["goal", "anchor_micro", "orientation"],
+        additionalProperties: false
+      }
+    }
+  end
+
+  @impl true
+  def run(context, %{"goal" => goal, "anchor_micro" => anchor, "orientation" => o}, config)
+      when is_binary(goal) and byte_size(goal) > 0 do
+    case GateServer.Npc.Skill.anchor(anchor, o) do
+      {:ok, anchor} ->
+        run(
+          Map.merge(context, %{
+            endpoint: context.profile.endpoint,
+            labels: Map.get(config, :labels, %{}),
+            budget: Map.fetch!(config, :budget)
+          }),
+          %{goal: goal, anchor: anchor, orientation: o}
+        )
+
+      {:error, reason} ->
+        {:error, reason, @metrics}
+    end
+  end
+
+  def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
   @doc "返回发布结果或明确失败及实际模型计量；模型请求由 context.request 注入。"
   def run(context, args) do
@@ -322,7 +358,7 @@ defmodule GateServer.Npc.Skills.Design do
          {_, _} = call <- Perception.prepare(actor.position, Perception.command(name, params)),
          {:ok, data} <- Perception.read(context.world, actor.cid, call) do
       verb = if name == "look", do: :look, else: :inspect
-      [result] = Llm.remember(%{verb: verb, status: :done, data: data}, [], actor.position)
+      [result] = Perception.project(%{verb: verb, status: :done, data: data}, [], actor.position)
       {:continue, %{ok: true, observation: result.data, self_position_m: actor.position}, state}
     else
       nil -> rejected(:invalid_perception_bounds, state)
