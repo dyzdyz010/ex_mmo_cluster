@@ -7,11 +7,21 @@ defmodule DataService.NpcMemory do
     * 经历 `journal/3` / `recent/2`：只追加，一条一句英文短句 + 发生地点，给调度模型和规划者当背景。
 
   与 `DataService.CharacterStore` 同范式：直接走 `DataService.Repo` 的模块函数。`body` 是纯 JSON 数据（字符串键）。
+
+  保留上限（长期运行的 NPC 每轮询问都要检索，行数必须有界）：每个 cid 最多 200 条笔记（kind "note"，
+  按最近写入保留，覆盖同一 key 算写入）与 1000 条经历（kind "event"）；超出的最旧行在写入时删除并记日志。
+  其他 kind 的工作记忆（如当前蓝图）按 key 覆盖，本身有界。
   """
   import Ecto.Query, only: [from: 2]
+  require Logger
   alias DataService.Repo
 
   @table "npc_memories"
+  @note_limit 200
+  @event_limit 1000
+
+  @doc "每个 cid 保留的笔记与经历条数上限。"
+  def limits, do: %{notes: @note_limit, events: @event_limit}
 
   def put(cid, kind, key, %{} = body)
       when is_integer(cid) and is_binary(kind) and is_binary(key) do
@@ -22,6 +32,7 @@ defmodule DataService.NpcMemory do
       conflict_target: {:unsafe_fragment, "(cid, kind, key) WHERE key IS NOT NULL"}
     )
 
+    if kind == "note", do: trim(cid, "note", @note_limit)
     :ok
   end
 
@@ -51,7 +62,29 @@ defmodule DataService.NpcMemory do
     }
 
     Repo.insert_all(@table, [row])
+    trim(cid, "event", @event_limit)
     :ok
+  end
+
+  # 保留最新 keep 行，删掉更旧的；删了什么记一条日志（笔记给出 key）。
+  defp trim(cid, kind, keep) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        DELETE FROM npc_memories WHERE id IN (
+          SELECT id FROM npc_memories WHERE cid = $1 AND kind = $2
+          ORDER BY inserted_at DESC, id DESC OFFSET $3)
+        RETURNING key
+        """,
+        [cid, kind, keep]
+      )
+
+    if rows != [],
+      do:
+        Logger.info(
+          "npc_memory_trimmed cid=#{cid} kind=#{kind} removed=#{length(rows)} keys=#{inspect(List.flatten(rows))}"
+        )
   end
 
   @doc "最近的经历，新在前：`[%{text:, place: {x, y, z}, at: DateTime}]`。"

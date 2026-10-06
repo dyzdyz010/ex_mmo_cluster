@@ -1,6 +1,7 @@
-defmodule GateServer.Npc.Skills.Design do
+defmodule GateServer.Npc.Skills.HouseDesign do
   @moduledoc """
-  全局系统功能：有界住宅设计会话。调用方在技能 worker 中同步调用，不占用 Body 节拍。
+  全局系统功能：有界住宅设计会话（技能名 `design_house`）。发布条件是住宅验收，只适用于住宅；
+  其他建筑类型应是各自的设计技能，不复用这里的验收。调用方在技能 worker 中同步调用，不占用 Body 节拍。
   草稿复用 Prefab.Draft；完整 Responses 消息与工具结果只属于本次会话，世界仍由 World 裁决。
   住宅验收是本技能的发布条件，不增加 D1 或 World 的发布、放置权限。
   token 预算按响应 usage 累计，超限响应不执行工具；这不是单次请求前的费用硬封顶。
@@ -302,30 +303,15 @@ defmodule GateServer.Npc.Skills.Design do
 
   defp usage(_, _), do: {:error, :usage_unavailable}
 
-  defp call(%{"output" => output}) when is_list(output) do
-    case Enum.filter(output, &(is_map(&1) and &1["type"] == "function_call")) do
-      [%{"call_id" => id, "name" => name, "arguments" => json}]
-      when is_binary(id) and is_binary(json) ->
-        cond do
-          name not in [
-            "edit",
-            "view",
-            "slice",
-            "check",
-            "publish",
-            "look",
-            "inspect",
-            "remember",
-            "recall",
-            "search_memory"
-          ] ->
-            {:error, {:unknown_tool, name}}
+  @tools ~w(edit view slice check publish look inspect remember recall search_memory)
 
-          true ->
-            case Jason.decode(json) do
-              {:ok, %{} = params} -> {:ok, id, name, params}
-              _ -> {:error, :invalid_tool_arguments}
-            end
+  defp call(%{"output" => output} = response) when is_list(output) do
+    case GateServer.Npc.Responses.function_calls(response) do
+      [%{call_id: id, name: name, arguments: arguments}] when is_binary(id) ->
+        cond do
+          name not in @tools -> {:error, {:unknown_tool, name}}
+          match?({:ok, _}, arguments) -> {:ok, id, name, elem(arguments, 1)}
+          true -> arguments
         end
 
       _ ->

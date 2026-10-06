@@ -1,6 +1,6 @@
 defmodule GateServer.Npc.Skills.Wilderness do
   @moduledoc """
-  全局系统功能：荒野逐格施工技能，直接运行 Builder 的原状态机。
+  全局系统功能：荒野逐格施工技能，是 `GateServer.Npc.Builder` 纯状态机唯一的进程壳。
   大脑只调用一次；内部 Body 命令以 `{:skill, call_id, id}` 标识，由大脑路由并还原 Outcome id。
   中断由外层技能运行器负责，此处只保留施工状态机自身的异常调度。
 
@@ -10,14 +10,19 @@ defmodule GateServer.Npc.Skills.Wilderness do
   """
   require Logger
   alias GateServer.Npc.{Blueprint, Body}
-  alias GateServer.Npc.Brain.Builder
+  alias GateServer.Npc.Builder
   alias VoxelRegion.World
 
   @behaviour GateServer.Npc.Skill
+
+  # 状态机逐帧读位置与余额（见 Builder.step/2 的 observation 事件）。
+  @impl true
+  def observations?, do: true
+
   @impl true
   def definition(profile) do
     {_name, description, properties, required} =
-      {:wilderness, "荒野逐格施工：给一句地形整理或铺路等目标，代码规划并逐格执行，最终报告世界实际还差什么。建筑优先用 design 和 build。",
+      {:wilderness, "荒野逐格施工：给一句地形整理或铺路等目标，代码规划并逐格执行，最终报告世界实际还差什么。住宅优先用 design_house 和 build。",
        %{
          goal: %{type: "string"},
          tool_id: %{type: "integer", enum: Map.keys(Map.get(profile, :tools, %{}))}

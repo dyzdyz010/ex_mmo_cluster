@@ -1,7 +1,7 @@
 defmodule GateServer.Npc.Blueprint do
   @moduledoc """
   全局系统功能：建造蓝图。规划者（LLM）只交一份结构化蓝图，不逐格下命令；展开、排序、与世界对账都是这里的纯函数，
-  逐格施工由 `GateServer.Npc.Brain.Builder` 执行。
+  逐格施工由 `GateServer.Npc.Builder` 执行。
 
   蓝图是一串按顺序生效的操作（macro 格闭区间，纯数据，可以原样存进记忆）：
 

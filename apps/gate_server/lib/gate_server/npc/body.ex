@@ -17,9 +17,12 @@ defmodule GateServer.Npc.Body do
   `move_to` 带寻路：起步时经 `World.material_snapshot/3` 取一盒地形（与 `look` 同一个只读入口），交给
   `SceneServer.Movement.Path` 算出路点后即丢弃，不留体素副本；台阶高度与角色高度取自权威随 SessionStart 下发的
   移动 profile（玩家客户端收到的同一份）。Body 不重试：走不通回报 `:no_path`，路上被堵回报 `:stuck`，由 Brain 决定。
+  会话由本进程自己维护：积压、Scene 结束会话、Player 结束、移交失败或 claim 失败时不退出，稍后重新 claim，
+  Brain / Runtime 与在途技能不受影响；被同一 cid 的新 claim 顶替时正常结束。契约见本目录 README。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
   """
-  use GenServer
+  # transient：会话丢失由 Body 自己重新 claim，不经监督者；只有崩溃才重启，被同 cid 顶替（{:shutdown, :replaced}）不重启。
+  use GenServer, restart: :transient
   require Logger
   alias MmoContracts.{Movement, Session}
   alias GateServer.Session.Dispatch
@@ -31,6 +34,8 @@ defmodule GateServer.Npc.Body do
 
   @lead 8
   @backlog 120
+  # 会话丢失或 claim 失败后多久再 claim（毫秒）。
+  @reclaim_ms 1_000
   @outcomes 32
   # production_intent 的 action；0（余额）与 Gate 一样直接读 material_balances，不进事务。
   @production %{place: 1, scoop: 2, pour: 3}
@@ -104,12 +109,14 @@ defmodule GateServer.Npc.Body do
        # 与玩家 QUIC 连接同一份部署编辑盒。
        bounds: Keyword.get(opts, :bounds, Application.get_env(:gate_server, :quic, [])[:bounds]),
        mind: GateServer.Npc.Runtime.init({brain, profile}),
+       # 世界调用的 FIFO 执行进程跨会话保留：在途调用总会有结果，不因重新 claim 丢失。
+       worker: spawn_link(&world_calls/0),
        identity: nil,
        # 权威下发的移动 profile（SessionStart）；寻路的台阶高度与角色高度取自它。
        profile: nil,
        player: nil,
+       player_monitor: nil,
        world_ref: nil,
-       worker: nil,
        origin: nil,
        sent: 0,
        yaw: 0,
@@ -134,28 +141,76 @@ defmodule GateServer.Npc.Body do
   end
 
   @impl true
-  def handle_continue(:claim, state) do
-    {:ok, route} = state.router.route(state.scene_id)
+  def handle_continue(:claim, state), do: claim(state)
 
-    {identity, {:ok, player}} =
-      GenServer.call(
-        state.claims,
-        {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
-         %{id: state.cid, spawn: state.spawn, kind: "npc"}}
-      )
+  # 与玩家客户端断线重连同理：会话是 Body 自己维护的不变量。claim 失败（Scene 未就绪、正在重启）稍后再试，
+  # 不靠退出让监督者重启——一次 Scene 重启会让所有 NPC 同时退出，超出监督者重启强度后整组永久消失。
+  defp claim(state) do
+    with {:ok, route} <- state.router.route(state.scene_id),
+         {identity, {:ok, player}} <-
+           GenServer.call(
+             state.claims,
+             {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
+              %{id: state.cid, spawn: state.spawn, kind: "npc"}}
+           ) do
+      # 只用于置 clock_ready；送帧不依赖本地时钟映射。
+      Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
 
-    Process.monitor(player)
-    # 只用于置 clock_ready；送帧不依赖本地时钟映射。
-    Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
+      {:noreply,
+       %{
+         state
+         | identity: identity,
+           player: player,
+           player_monitor: Process.monitor(player),
+           world_ref: Map.get(route, :world_ref)
+       }}
+    else
+      failure ->
+        Logger.warning(
+          "npc_claim_failed cid=#{state.cid} scene_id=#{state.scene_id} result=#{inspect(failure)}"
+        )
 
-    {:noreply,
-     %{
-       state
-       | identity: identity,
-         player: player,
-         world_ref: Map.get(route, :world_ref),
-         worker: spawn_link(&world_calls/0)
-     }}
+        Process.send_after(self(), :claim, @reclaim_ms)
+        {:noreply, state}
+    end
+  end
+
+  # 会话没了：移动命令随会话作废（权威不再处理这些输入），在途世界调用保留、各自回结果；稍后重新 claim。
+  # Body 与 Brain / Runtime 不重启，记忆、在途技能与 Outcome 历史都还在。
+  defp lose_session(state, reason) do
+    Logger.warning("npc_session_lost cid=#{state.cid} reason=#{inspect(reason)}")
+    if state.player_monitor, do: Process.demonitor(state.player_monitor, [:flush])
+    Process.send_after(self(), :claim, @reclaim_ms)
+
+    state = %{
+      state
+      | identity: nil,
+        player: nil,
+        player_monitor: nil,
+        profile: nil,
+        origin: nil,
+        sent: 0,
+        yaw: 0,
+        position: nil,
+        velocity: {0.0, 0.0, 0.0},
+        inflight: [],
+        processed: 0,
+        entities: %{}
+    }
+
+    case state.move do
+      nil ->
+        state
+
+      move ->
+        emit(%{state | move: nil}, %{
+          id: move.id,
+          verb: move.verb,
+          status: :rejected,
+          reason: :session_lost,
+          data: nil
+        })
+    end
   end
 
   @impl true
@@ -171,7 +226,7 @@ defmodule GateServer.Npc.Body do
       )
       when player != nil and profile != nil do
     result =
-      with {:ok, actor} <- Player.tool_context(player, identity),
+      with {:ok, actor} <- tool_context(player, identity),
            {:ok, route} <- state.router.route(state.scene_id),
            do:
              {:ok,
@@ -221,7 +276,7 @@ defmodule GateServer.Npc.Body do
     due = ack.server_tick - origin + 1
 
     if due - ack.processed_input_seq > @backlog,
-      do: {:stop, {:input_backlog, due, ack.processed_input_seq}, state},
+      do: {:noreply, lose_session(state, {:input_backlog, due, ack.processed_input_seq})},
       else: {:noreply, feed(state, ack.state, ack.server_tick, ack.processed_input_seq)}
   end
 
@@ -301,12 +356,18 @@ defmodule GateServer.Npc.Body do
     end
   end
 
+  # 2 = 同一 cid 被新的 claim 顶替：另一个 Body 已接管，本进程正常结束，避免两个 Body 互相顶替。
+  def handle_info({:mmo_close, identity, 2}, %{identity: identity} = state),
+    do: {:stop, {:shutdown, :replaced}, state}
+
   def handle_info({:mmo_close, identity, reason}, %{identity: identity} = state),
-    do: {:stop, {:session_closed, reason}, state}
+    do: {:noreply, lose_session(state, {:session_closed, reason})}
+
+  def handle_info(:claim, %{player: nil} = state), do: claim(state)
 
   # 跨 Scene 移交，与玩家连接同一条路：seal 源 → Claims 预留并在目标 Scene 准备 → 提交。玩家要等客户端换好世界再回
   # Ready 才提交；无头 Body 没有要换的东西，准备好就提交。输入序号与 origin 随切点延续，在途的移动命令照常继续。
-  # 任一步失败就退出，由监督者重新 claim（玩家连接在同样情形下是断开重连）。
+  # 任一步失败按会话丢失处理：Body 自己重新 claim（玩家连接在同样情形下是断开重连）。
   def handle_info(
         {:mmo_transfer_request, identity, player, target},
         %{identity: identity, player: player} = state
@@ -315,7 +376,7 @@ defmodule GateServer.Npc.Body do
          {:ok, fresh, route, next} <-
            GenServer.call(state.claims, {:prepare_transfer, identity, target, artifact}),
          :ok <- GenServer.call(state.claims, {:commit_transfer, identity, fresh, state.cid}) do
-      Process.monitor(next)
+      Process.demonitor(state.player_monitor, [:flush])
 
       Logger.info(
         "npc_transfer cid=#{state.cid} old_scene=#{identity.scene_id} new_scene=#{target} cut=#{artifact.simulation_tick}"
@@ -326,17 +387,18 @@ defmodule GateServer.Npc.Body do
          state
          | identity: fresh,
            player: next,
+           player_monitor: Process.monitor(next),
            scene_id: target,
            world_ref: Map.get(route, :world_ref),
            entities: %{}
        }}
     else
-      {:error, reason} -> {:stop, {:transfer_failed, target, reason}, state}
+      {:error, reason} -> {:noreply, lose_session(state, {:transfer_failed, target, reason})}
     end
   end
 
   def handle_info({:DOWN, _, :process, player, reason}, %{player: player} = state),
-    do: {:stop, {:player_down, reason}, state}
+    do: {:noreply, lose_session(state, {:player_down, reason})}
 
   def handle_info({:npc_runtime_outcome, outcome}, state),
     do: {:noreply, %{state | outcomes: Enum.take([outcome | state.outcomes], @outcomes)}}
@@ -396,8 +458,19 @@ defmodule GateServer.Npc.Body do
   end
 
   # 首个零输入帧已被权威处理 → 移动命令完成；position 与 within_tolerance 取自同一份 ACK。
+  # 带 settle 的 stop（取消技能）还要等该技能已投递的世界调用全部有了结果，之后不会再有它引起的世界变化。
   defp finish_move(%{move: %{zero_from: zero} = move, processed: processed} = state)
        when zero != nil and processed >= zero do
+    call = Map.get(move, :settle)
+
+    if call != nil and Enum.any?(Map.keys(state.world), &match?({:skill, ^call, _}, &1)),
+      do: state,
+      else: finish_settled_move(state, move)
+  end
+
+  defp finish_move(state), do: state
+
+  defp finish_settled_move(state, move) do
     within = move.target == nil or distance(state.position, move.target) <= move.tolerance
 
     emit(%{state | move: nil}, %{
@@ -408,8 +481,6 @@ defmodule GateServer.Npc.Body do
       data: %{position: state.position, within_tolerance: within}
     })
   end
-
-  defp finish_move(state), do: state
 
   defp steering(%{move: %{zero_from: nil, path: :planning}} = state, _due),
     do: {state, {0, 0, state.yaw}, 0.0}
@@ -529,6 +600,10 @@ defmodule GateServer.Npc.Body do
     state
   end
 
+  # 没有会话（还没 claim 上或正在重新 claim）：身体与世界动作都无从执行。
+  defp apply_command(%{player: nil} = state, %{id: id, verb: verb}),
+    do: emit(state, %{id: id, verb: verb, status: :rejected, reason: :invalid_session, data: nil})
+
   defp apply_command(
          %{position: {px, py, pz}, profile: %{} = profile} = state,
          %{id: id, verb: :move_to, position: {x, z}, tolerance: tolerance} = command
@@ -573,7 +648,8 @@ defmodule GateServer.Npc.Body do
     end
   end
 
-  defp apply_command(state, %{id: id, verb: :stop}),
+  # settle = 技能调用号：Runtime 取消技能时用，见 finish_move/1。
+  defp apply_command(state, %{id: id, verb: :stop} = command),
     do:
       move(state, %{
         id: id,
@@ -583,7 +659,8 @@ defmodule GateServer.Npc.Body do
         zero_from: nil,
         path: [],
         from: nil,
-        mark: nil
+        mark: nil,
+        settle: Map.get(command, :settle)
       })
 
   defp apply_command(state, %{id: id, verb: verb} = command)
@@ -613,6 +690,8 @@ defmodule GateServer.Npc.Body do
   defp world_call(state, %{verb: verb, direction: {dx, dy, dz}, tool_id: tool} = command)
        when verb in [:probe_toward, :use_tool] and is_number(dx) and is_number(dy) and
               is_number(dz) and is_integer(tool) do
+    target = Map.get(command, :target)
+
     request =
       state
       |> request(%{
@@ -627,16 +706,14 @@ defmodule GateServer.Npc.Body do
       })
       |> Map.merge(
         # granularity 3 = 附件（电路工具的目标）：没有射线，按身份寻址。
-        Map.take(Map.get(command, :target) || %{}, [
-          :micro,
-          :incarnation,
-          :owner,
-          :material,
-          :granularity
-        ])
+        if(is_map(target),
+          do: Map.take(target, [:micro, :incarnation, :owner, :material, :granularity]),
+          else: %{}
+        )
       )
 
-    if Codec.tool_intent?(request), do: {:tool, request}
+    # target 只能是身份 map 或缺省（use_tool 无目标时交权威拒绝）；其他形状不是合法命令。
+    if (is_map(target) or target == nil) and Codec.tool_intent?(request), do: {:tool, request}
   end
 
   # anchor 是 micro 坐标；detach 要带上那件附件的 id（attachment_id）与材料，与玩家请求同形。
@@ -810,7 +887,7 @@ defmodule GateServer.Npc.Body do
 
   defp execute(session, call) do
     with :ok <- prefab_gate(session, call),
-         {:ok, actor} <- Player.tool_context(session.player, session.identity) do
+         {:ok, actor} <- tool_context(session.player, session.identity) do
       actor =
         Map.merge(actor, %{
           received_us: System.monotonic_time(:microsecond),
@@ -824,6 +901,13 @@ defmodule GateServer.Npc.Body do
         {:prefab, kind, request} -> World.prefab_intent(session.world_ref, actor, kind, request)
       end
     end
+  end
+
+  # 会话的 Player 在调用排队期间已结束（Scene 重启、会话被关闭、重新 claim）：请求尚未进 World，如实拒绝。
+  defp tool_context(player, identity) do
+    Player.tool_context(player, identity)
+  catch
+    :exit, _ -> {:error, :session_lost}
   end
 
   # Gate 在进 World 之前对玩家 prefab 请求做的同一道门。

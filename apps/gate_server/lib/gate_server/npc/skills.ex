@@ -8,10 +8,10 @@ defmodule GateServer.Npc.Skills do
 
   @builtins %{
     build: GateServer.Npc.Skills.Build,
-    design: GateServer.Npc.Skills.Design,
+    design_house: GateServer.Npc.Skills.HouseDesign,
     wilderness: GateServer.Npc.Skills.Wilderness
   }
-  @defaults %{skills: %{build: %{}, design: %{}, wilderness: %{}}}
+  @defaults %{skills: %{build: %{}, design_house: %{}, wilderness: %{}}}
   @metrics %{request_count: 0, jev_request_count: 0}
 
   @doc "已配置技能的能力描述；LLM 可以投影为工具，脚本可直接读取同一参数契约。"
@@ -30,9 +30,15 @@ defmodule GateServer.Npc.Skills do
     end
   end
 
-  @doc "启动受监视的技能进程；父进程接收 skill_finished 与普通 DOWN。"
+  @doc "启动受监视的技能进程；父进程接收 skill_finished 与普通 DOWN。observes = 技能是否逐帧读观察。"
   def start(body, command, profile, observation) do
     parent = self()
+
+    observes =
+      case Map.fetch(Map.get(profile, :skills, %{}), command.skill) do
+        {:ok, config} -> GateServer.Npc.Skill.observes?(implementation(command.skill, config))
+        :error -> false
+      end
 
     {pid, ref} =
       :erlang.spawn_opt(
@@ -58,7 +64,7 @@ defmodule GateServer.Npc.Skills do
         [:link, :monitor]
       )
 
-    %{pid: pid, ref: ref, command: command}
+    %{pid: pid, ref: ref, command: command, observes: observes}
   end
 
   @doc "调用已配置技能，拒绝未配置的能力。"

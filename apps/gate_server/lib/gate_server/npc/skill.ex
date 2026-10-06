@@ -8,6 +8,15 @@ defmodule GateServer.Npc.Skill do
   @type result :: {:ok, map()} | {:error, term(), map()}
   @callback definition(profile :: map()) :: %{description: String.t(), parameters: map()}
   @callback run(context :: map(), arguments :: map(), config :: map()) :: result()
+  @doc "可选：返回 true 时 Runtime 把每个 Observation 转给 worker；不实现即不转发，worker 邮箱不会堆积观察。"
+  @callback observations?() :: boolean()
+  @optional_callbacks observations?: 0
+
+  @doc "技能实现是否声明逐帧读取 Observation。"
+  def observes?(module) do
+    Code.ensure_loaded!(module)
+    function_exported?(module, :observations?, 0) and module.observations?()
+  end
 
   @doc "设计与放置共用的 micro 锚点及朝向参数说明。"
   def placement_properties do

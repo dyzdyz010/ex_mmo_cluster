@@ -3,7 +3,7 @@ Code.require_file("../../../voxel_region/test/support/world_fixtures.exs", __DIR
 defmodule GateServer.NpcSkillDesignTest do
   @moduledoc "只测试：冻结模型应答验证会话预算与历史；真实 World/Scene 验证设计修复、正式发布和付费放置。"
   use ExUnit.Case, async: false
-  alias GateServer.Npc.Skills.Design
+  alias GateServer.Npc.Skills.HouseDesign, as: Design
   alias SceneServer.Movement.Scene
   alias VoxelRegion.{World, Prefab}
   alias VoxelRegion.TestSupport.{Source, Actor}
@@ -604,7 +604,7 @@ defmodule GateServer.NpcSkillDesignTest do
       Map.put(context, :profile, %{
         endpoint: c.endpoint,
         skills: %{
-          design: %{labels: %{}, budget: %{rounds: 1, tokens: 100, max_output_tokens: 30}}
+          design_house: %{labels: %{}, budget: %{rounds: 1, tokens: 100, max_output_tokens: 30}}
         }
       })
 
@@ -612,7 +612,7 @@ defmodule GateServer.NpcSkillDesignTest do
              GateServer.Npc.Skills.run(
                context,
                %{
-                 skill: :design,
+                 skill: :design_house,
                  args: %{"goal" => args().goal, "anchor_micro" => [80, 8, 80], "orientation" => 0}
                }
              )

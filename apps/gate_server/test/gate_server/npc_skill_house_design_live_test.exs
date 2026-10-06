@@ -153,7 +153,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
       scene: scene,
       actor: actor,
       request: request,
-      profile: %{endpoint: endpoint, skills: %{design: %{labels: labels, budget: budget}}}
+      profile: %{endpoint: endpoint, skills: %{design_house: %{labels: labels, budget: budget}}}
     }
 
     before = World.material_snapshot(world, [@cid], Enum.map(ground, &elem(&1, 0)))
@@ -180,7 +180,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
     try do
       result =
         Skills.run(context, %{
-          skill: :design,
+          skill: :design_house,
           args: %{"goal" => goal, "anchor_micro" => Tuple.to_list(@anchor), "orientation" => 0}
         })
 

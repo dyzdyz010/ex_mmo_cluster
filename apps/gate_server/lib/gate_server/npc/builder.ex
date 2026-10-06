@@ -1,6 +1,6 @@
-defmodule GateServer.Npc.Brain.Builder do
+defmodule GateServer.Npc.Builder do
   @moduledoc """
-  全局系统功能：混合决策后端——建设者。三层分工：
+  全局系统功能：荒野逐格施工的纯状态机，由 `GateServer.Npc.Skills.Wilderness` 在技能 worker 里驱动。三层分工：
 
     * 规划归 LLM：只问一次，要一份结构化蓝图（`GateServer.Npc.Blueprint` 的操作表），不让它逐格下命令；
     * 施工归代码：走到站位、`look` 对账、自下而上逐格放，顺利时一次模型都不问；
@@ -9,14 +9,13 @@ defmodule GateServer.Npc.Brain.Builder do
   长期记忆（`profile.memory`，生产里是 `DataService.NpcMemory`）：当前蓝图按 cid 存着，Body 重启后接着盖；进度不存——
   世界是真值，每次都拿 `look` 的结果现算还差哪些格。完工、缺料停工等经历写进 journal。
 
-  `step/2` 是纯状态机（事件 → 新状态 + 效果表），进程壳只负责执行效果：发命令、问模型、读写记忆。
+  `step/2` 是纯状态机（事件 → 新状态 + 效果表）；执行效果（发命令、问模型、读写记忆）的唯一进程壳是荒野施工技能。
 
   profile:
       %{cid:, goal: "自然语言目标（含坐标与材料 id）", tool_id: 放置用的工具,
         planner: LLM endpoint, scheduler: Jev endpoint, activities: 显式 Jev 活动 profile,
         memory: 模块（get/3、put/4、delete/3、journal/3）}
   """
-  @behaviour GateServer.Npc.Brain
   require Logger
   alias GateServer.Npc.{Blueprint, Jev}
 
@@ -343,49 +342,14 @@ defmodule GateServer.Npc.Brain.Builder do
   end
 
   @doc "应答 → 蓝图操作表（`{:ok, ops}` / `:error`）。"
-  def plan_ops(%{"output" => output}) do
-    with %{"arguments" => arguments} <-
-           Enum.find(
-             output,
-             &(&1["type"] == "function_call" and &1["name"] == "submit_blueprint")
-           ),
-         {:ok, %{"ops" => ops}} when is_list(ops) <- Jason.decode(arguments) do
-      {:ok, ops}
-    else
+  def plan_ops(response) do
+    case Enum.find(
+           GateServer.Npc.Responses.function_calls(response),
+           &(&1.name == "submit_blueprint")
+         ) do
+      %{arguments: {:ok, %{"ops" => ops}}} when is_list(ops) -> {:ok, ops}
       _ -> :error
     end
-  end
-
-  # ---------------------------------------------------------------- 进程壳：执行效果
-
-  @impl true
-  def init(profile) do
-    body = self()
-    spawn_link(fn -> loop(start(profile), profile, body) end)
-  end
-
-  @impl true
-  def handle_event(event, pid) do
-    send(pid, event)
-    {[], pid}
-  end
-
-  defp start(profile) do
-    {:ok, _} = Application.ensure_all_started(:inets)
-    {:ok, _} = Application.ensure_all_started(:ssl)
-    plan = profile.memory.get(profile.cid, "plan", "current")
-    new(profile, plan && plan["ops"])
-  end
-
-  defp loop(state, profile, body) do
-    event =
-      receive do
-        event -> event
-      end
-
-    {state, effects} = step(state, event)
-    for effect <- effects, do: perform(effect, state, profile, body)
-    loop(state, profile, body)
   end
 
   @doc "用调用方活动数据调度荒野施工异常，返回原状态机认识的决定；不启动进程。"
@@ -406,42 +370,5 @@ defmodule GateServer.Npc.Brain.Builder do
 
     Logger.info("npc_builder_verdict cid=#{profile.cid} verdict=#{inspect(verdict)}")
     verdict
-  end
-
-  defp perform({:command, command}, _state, _profile, body),
-    do: GateServer.Npc.Body.command(body, command)
-
-  defp perform({:plan, request}, _state, profile, _body) do
-    owner = self()
-    send = Map.get(profile, :request, &GateServer.Npc.Http.request/2)
-    Logger.info("npc_builder_plan cid=#{profile.cid} note=#{inspect(request.note)}")
-
-    spawn_link(fn ->
-      answer =
-        with {:ok, response} <- send.(profile.planner, plan_body(profile.planner, request)),
-             {:ok, ops} <- plan_ops(response) do
-          {:blueprint, ops}
-        else
-          other -> {:plan_failed, other}
-        end
-
-      send(owner, answer)
-    end)
-  end
-
-  defp perform({:triage, problem}, _state, profile, _body) do
-    owner = self()
-    spawn_link(fn -> send(owner, {:verdict, triage_verdict(profile, problem)}) end)
-  end
-
-  defp perform({:remember, ops}, state, profile, _body),
-    do: profile.memory.put(profile.cid, "plan", "current", %{"ops" => ops, "goal" => state.goal})
-
-  defp perform(:forget, _state, profile, _body),
-    do: profile.memory.delete(profile.cid, "plan", "current")
-
-  defp perform({:journal, text}, state, profile, _body) do
-    Logger.info("npc_builder_journal cid=#{profile.cid} #{text}")
-    profile.memory.journal(profile.cid, text, state.position || {0, 0, 0})
   end
 end

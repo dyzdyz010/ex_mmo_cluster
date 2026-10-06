@@ -60,4 +60,40 @@ defmodule DataService.NpcMemoryTest do
     assert ["third", "second", "first"] == Enum.map(NpcMemory.recent(7, 10), & &1.text)
     assert ["someone else's"] == Enum.map(NpcMemory.recent(8, 10), & &1.text)
   end
+
+  # 长期运行的 NPC 每轮都检索记忆：行数必须有界。上限由存储层唯一拥有（limits/0）。
+  test "retention keeps the newest notes and events per NPC and drops only the oldest" do
+    require Ecto.Query
+    %{notes: notes, events: events} = NpcMemory.limits()
+    assert {200, 1000} == {notes, events}
+
+    for n <- 1..(notes + 1), do: :ok = NpcMemory.put(7, "note", "k#{n}", %{"text" => "note #{n}"})
+    :ok = NpcMemory.put(8, "note", "k1", %{"text" => "other npc"})
+    # 覆盖算一次写入：k2 被刷新后不再是最旧的。
+    :ok = NpcMemory.put(7, "note", "k2", %{"text" => "note 2 again"})
+    :ok = NpcMemory.put(7, "note", "k#{notes + 2}", %{"text" => "newest"})
+
+    assert nil == NpcMemory.get(7, "note", "k1")
+    assert nil == NpcMemory.get(7, "note", "k3")
+    assert %{"text" => "note 2 again"} == NpcMemory.get(7, "note", "k2")
+    assert %{"text" => "other npc"} == NpcMemory.get(8, "note", "k1")
+
+    count = fn cid, kind ->
+      DataService.Repo.aggregate(
+        Ecto.Query.from(m in "npc_memories", where: m.cid == ^cid and m.kind == ^kind),
+        :count
+      )
+    end
+
+    assert notes == count.(7, "note")
+
+    # 工作记忆（plan）不受笔记上限影响。
+    :ok = NpcMemory.put(7, "plan", "current", %{"ops" => []})
+    assert %{"ops" => []} == NpcMemory.get(7, "plan", "current")
+
+    for n <- 1..(events + 1), do: :ok = NpcMemory.journal(7, "event #{n}", {n, 0, 0})
+    assert events == count.(7, "event")
+    assert "event #{events + 1}" == hd(NpcMemory.recent(7, 1)).text
+    assert "event 2" == List.last(NpcMemory.recent(7, events)).text
+  end
 end

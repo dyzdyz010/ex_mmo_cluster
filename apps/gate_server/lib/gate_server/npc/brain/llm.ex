@@ -2,204 +2,59 @@ defmodule GateServer.Npc.Brain.Llm do
   @moduledoc """
   全局系统功能：LLM 决策后端（OpenAI Responses 线格式）。回调只把事件转给自己的进程，立刻返回；
   该进程在“没有在途命令且有新情况”时问一次模型，把模型的工具调用译成命令，用 `Body.command/2` 投回。
-  每次请求无状态：目标 + 当前 Observation + 最近的 Outcome + 持久化经历。模型的输出是外部输入，合法性由 Body 与权威裁决。
+  每次请求无状态：目标 + 当前 Observation + 最近的 Outcome + 持久化经历。模型的输出是外部输入：
+  工具与参数的译码在 `Actions` / `Perception` / `Memory` / `Skills` 各自的目录里，解析失败或未知工具在本地回报拒绝，
+  不发给 Body、也不让进程崩溃；合法性由 Body 与权威裁决。
   请求之间模型看不到自己上一次调用了什么，所以给它看的每条 Outcome 都附上当初那次调用（`command`）：
   只有 `{id, verb, status}` 时模型对不上“哪一格放好了”，实测会原地反复 look。
   `remember` / `recall` / `search_memory` 通过 NpcMemory 保存、读取与搜索长期记忆；每轮现读近期与相关内容。
 
+  “有新情况”= 有了新 Outcome、听到有人说话、`wait` 到期，或有实体走进身边 6 米（离开 8 米才算走远）。
+  询问节流：两次询问至少隔 1 秒；应答没有工具调用或请求失败时按 1、2、4…60 秒退避，拿到工具调用即清零；
+  每个 NPC 每小时最多 `max_requests_per_hour` 次（缺省 600），用完记一条日志，等下一个小时窗口。
+
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
-        endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选}}
+        endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
+        max_requests_per_hour: 可选}
 
   skills 是技能名到配置的 map；技能和记忆命令交给 Runtime，LLM 只等待最终 Outcome。
   Runtime 拥有可选中断策略、worker 与停止确认；本模块只拥有模型请求、工具解析和模型上下文。
   """
   @behaviour GateServer.Npc.Brain
   require Logger
-  alias GateServer.Npc.{Memory, Skills, Context, Perception}
+  alias GateServer.Npc.{Actions, Memory, Skills, Context, Perception, Responses}
 
   @history 8
   # 两次请求的最小间隔（毫秒）：连续被拒时不空转打接口。
   @min_gap_ms 1_000
+  # 无工具调用或请求失败时的退避上限（毫秒）。
+  @max_gap_ms 60_000
+  # 每个 NPC 每小时询问上限的缺省值：曾两次出现模型原地空转、持续花费额度。
+  @max_requests_per_hour 600
+  @hour_ms 3_600_000
+  # 实体走进这个距离（米）叫醒大脑；离开 @forget_m 才算走远，边界上来回不反复叫醒。
+  @notice_m 6.0
+  @forget_m 8.0
 
-  @cell %{x: %{type: "integer"}, y: %{type: "integer"}, z: %{type: "integer"}}
+  @wait %{
+    type: "function",
+    name: "wait",
+    description:
+      "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。" <>
+        "有人走到身边 6 米内或对你说话时会提前询问。",
+    parameters: %{
+      type: "object",
+      properties: %{seconds: %{type: "number"}},
+      required: ["seconds"],
+      additionalProperties: false
+    }
+  }
 
-  # 工具表随 profile 的工具带生成：tool_id 必填且只能取带着的 id，模型无从编造。
-  defp tools(%{tools: belt} = profile) do
-    tool_id = %{type: "integer", enum: Map.keys(belt), description: "用哪个工具，见输入里的 tools。"}
-
-    [
-      %{
-        type: "function",
-        name: "move_to",
-        description:
-          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、按 self.body.move_to.max_step_macro 上台阶、从高处落下，但不会跳，也不进液体；单程水平不超过 32 米。" <>
-            "同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数）。走不通会被拒绝：no_path = 现在没有路，" <>
-            "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。到达后才会再次询问。",
-        parameters: %{
-          type: "object",
-          properties: %{x: %{type: "number"}, z: %{type: "number"}, y: %{type: "integer"}},
-          required: ["x", "z"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "stop",
-        description: "停下。",
-        parameters: %{type: "object", properties: %{}, additionalProperties: false}
-      },
-      %{
-        type: "function",
-        name: "probe_toward",
-        description:
-          "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
-        parameters: %{
-          type: "object",
-          properties: %{
-            dx: %{type: "number"},
-            dy: %{type: "number"},
-            dz: %{type: "number"},
-            tool_id: tool_id
-          },
-          required: ["dx", "dy", "dz", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "use_tool",
-        description:
-          "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。" <>
-            "给了 attachment_id 就改为对最近一次 inspect 列出的那件附件使用（电路安装 / 投料 / 开关的目标都是附件）。",
-        parameters: %{
-          type: "object",
-          properties: %{tool_id: tool_id, attachment_id: %{type: "integer"}},
-          required: ["tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "place",
-        description: "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "scoop",
-        description: "用液体盛取工具从格 (x,y,z) 盛起 material 液体，进自己的 balances。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "pour",
-        description: "用液体倾倒工具把自己 balances 里的 material 液体倒进格 (x,y,z)。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "attach",
-        description:
-          "花 material 在实心格表面贴一件附件。kind 0 = 面片（axis 是法线轴）、1 = 棱条（axis 是走向）；axis 0/1/2 = X/Y/Z；" <>
-            "size 1 或 8；(x,y,z) 是 micro 坐标（1 格 = 8 micro），size 8 时须是 8 的倍数。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              kind: %{type: "integer"},
-              axis: %{type: "integer"},
-              size: %{type: "integer"},
-              material: %{type: "integer"},
-              tool_id: tool_id
-            }),
-          required: ["kind", "axis", "size", "x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "detach",
-        description:
-          "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              kind: %{type: "integer"},
-              axis: %{type: "integer"},
-              material: %{type: "integer"},
-              attachment_id: %{type: "integer"},
-              tool_id: tool_id
-            }),
-          required: ["kind", "axis", "x", "y", "z", "material", "attachment_id", "tool_id"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "prefab",
-        description:
-          "预制件。op = place：以 micro 坐标 (x,y,z)（1 格 = 8 micro）为锚点、orientation 0–23 放置 definition；" <>
-            "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              op: %{type: "string", enum: ["place", "remove", "replace"]},
-              definition: %{type: "string"},
-              orientation: %{type: "integer"},
-              instance: %{type: "array", items: %{type: "integer"}}
-            }),
-          required: ["op"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "say",
-        description: "对周围说一句话。",
-        parameters: %{
-          type: "object",
-          properties: %{text: %{type: "string"}},
-          required: ["text"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "query_balances",
-        description: "读取自己的背包余额（balances 为 null 时先调用它）。",
-        parameters: %{type: "object", properties: %{}, additionalProperties: false}
-      },
-      %{
-        type: "function",
-        name: "wait",
-        description: "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。",
-        parameters: %{
-          type: "object",
-          properties: %{seconds: %{type: "number"}},
-          required: ["seconds"],
-          additionalProperties: false
-        }
-      }
-    ] ++ Perception.tools() ++ Memory.tools() ++ Skills.tools(profile)
-  end
+  defp tools(profile),
+    do:
+      Actions.tools(profile) ++
+        [@wait] ++ Perception.tools() ++ Memory.tools() ++ Skills.tools(profile)
 
   @impl true
   def init(profile) do
@@ -216,149 +71,62 @@ defmodule GateServer.Npc.Brain.Llm do
   @doc """
   把一次 Responses 应答里的工具调用译成命令；`probe` 是最近一次成功探测 `%{direction:, target:}`，
   `things` 是最近一次 inspect 的附件身份（attachment_id => 目标）。
+  参数不是 JSON 对象 → `%{verb: :invalid_tool_arguments}`，没有这个工具 → `%{verb: :unknown_tool}`；
+  这两种与 `wait` 只在本 adapter 内处理，不发给 Body。
   """
   def commands(
         response,
         probe,
         things,
         next_id,
-        profile \\ %{skills: %{design: %{}, build: %{}, wilderness: %{}}}
-      )
-
-  def commands(%{"output" => output}, probe, things, next_id, profile) do
-    output
-    |> Enum.filter(&(&1["type"] == "function_call"))
+        profile \\ %{skills: %{design_house: %{}, build: %{}, wilderness: %{}}}
+      ) do
+    response
+    |> Responses.function_calls()
     |> Enum.with_index(next_id)
-    |> Enum.map(fn {call, id} ->
-      args = Jason.decode!(call["arguments"])
-
-      case call["name"] do
-        "move_to" ->
-          move = %{id: id, verb: :move_to, position: {args["x"], args["z"]}, tolerance: 0.5}
-          if args["y"], do: Map.put(move, :y, args["y"]), else: move
-
-        "stop" ->
-          %{id: id, verb: :stop}
-
-        "probe_toward" ->
-          %{id: id, verb: :probe_toward, tool_id: args["tool_id"], direction: unit(args)}
-
-        "look" ->
-          %{
-            id: id,
-            verb: :look,
-            min: {args["x0"], args["y0"], args["z0"]},
-            max: {args["x1"], args["y1"], args["z1"]}
-          }
-
-        name when name in ["place", "scoop", "pour"] ->
-          %{
-            id: id,
-            verb: %{"place" => :place, "scoop" => :scoop, "pour" => :pour}[name],
-            coord: {args["x"], args["y"], args["z"]},
-            material: args["material"],
-            tool_id: args["tool_id"]
-          }
-
-        "query_balances" ->
-          %{id: id, verb: :query_balances}
-
-        "inspect" ->
-          %{id: id, verb: :inspect}
-
-        "say" ->
-          %{id: id, verb: :say, text: args["text"]}
-
-        # 附件按身份寻址、不经射线；direction 只需是单位向量。
-        "use_tool" when is_map_key(args, "attachment_id") ->
-          %{
-            id: id,
-            verb: :use_tool,
-            tool_id: args["tool_id"],
-            direction: {1.0, 0.0, 0.0},
-            target: things[args["attachment_id"]]
-          }
-
-        name when name in ["attach", "detach"] ->
-          %{
-            id: id,
-            verb: %{"attach" => :attach, "detach" => :detach}[name],
-            kind: args["kind"],
-            axis: args["axis"],
-            size: args["size"] || 1,
-            anchor: {args["x"], args["y"], args["z"]},
-            material: args["material"],
-            attachment_id: args["attachment_id"] || 0,
-            tool_id: args["tool_id"]
-          }
-
-        "prefab" ->
-          %{
-            id: id,
-            verb:
-              %{
-                "place" => :prefab_place,
-                "remove" => :prefab_remove,
-                "replace" => :prefab_replace
-              }[args["op"]],
-            definition_id: hex(args["definition"]),
-            anchor: {args["x"], args["y"], args["z"]},
-            orientation: args["orientation"],
-            instance_id: List.to_tuple(args["instance"] || [])
-          }
-
-        # 只属于本 adapter：不发给 Body。
-        name when name in ["remember", "recall", "search_memory"] ->
-          Memory.command(name, args, id)
-
-        # 只属于本 adapter：不发给 Body，挂起询问。
-        "wait" ->
-          %{id: id, verb: :wait, seconds: args["seconds"]}
-
-        "use_tool" ->
-          %{
-            id: id,
-            verb: :use_tool,
-            tool_id: args["tool_id"],
-            direction: probe && probe.direction,
-            target: probe && probe.target
-          }
-
-        name ->
-          Skills.command(name, args, id, profile) || %{id: id, verb: :unknown_tool}
-      end
-    end)
+    |> Enum.map(fn {call, id} -> command(call, id, probe, things, profile) end)
   end
 
-  @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/4` 相同；Outcome 回来时附给模型看。"
-  def calls(%{"output" => output}, next_id) do
-    for {call, id} <-
-          output |> Enum.filter(&(&1["type"] == "function_call")) |> Enum.with_index(next_id),
-        into: %{},
-        do: {id, %{tool: call["name"], args: Jason.decode!(call["arguments"])}}
+  defp command(%{name: name, arguments: {:error, reason}}, id, _, _, _),
+    do: %{id: id, verb: reason, tool: name}
+
+  defp command(%{name: "wait", arguments: {:ok, args}}, id, _, _, _),
+    do: %{id: id, verb: :wait, seconds: args["seconds"]}
+
+  defp command(%{name: name, arguments: {:ok, args}}, id, probe, things, profile) do
+    Actions.command(name, args, id, probe, things) ||
+      perception(name, args, id) ||
+      Memory.command(name, args, id) ||
+      Skills.command(name, args, id, profile) ||
+      %{id: id, verb: :unknown_tool, tool: name}
   end
 
-  defp unit(%{"dx" => dx, "dy" => dy, "dz" => dz})
-       when is_number(dx) and is_number(dy) and is_number(dz) do
-    length = :math.sqrt(dx * dx + dy * dy + dz * dz)
-    if length > 0, do: {dx / length, dy / length, dz / length}, else: {dx, dy, dz}
-  end
-
-  defp unit(_), do: nil
-
-  defp hex(text) when is_binary(text) do
-    case Base.decode16(text, case: :mixed) do
-      {:ok, id} -> id
-      :error -> nil
+  defp perception(name, args, id) do
+    case Perception.command(name, args) do
+      nil -> nil
+      command -> Map.put(command, :id, id)
     end
   end
 
-  defp hex(_), do: nil
+  @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/4` 相同；Outcome 回来时附给模型看。"
+  def calls(response, next_id) do
+    for {call, id} <- response |> Responses.function_calls() |> Enum.with_index(next_id),
+        into: %{} do
+      args =
+        case call.arguments do
+          {:ok, args} -> args
+          {:error, reason} -> reason
+        end
+
+      {id, %{tool: call.name, args: args}}
+    end
+  end
 
   defp start(profile, body) do
     Process.flag(:trap_exit, true)
     {:ok, _} = Application.ensure_all_started(:inets)
     {:ok, _} = Application.ensure_all_started(:ssl)
+    now = System.monotonic_time(:millisecond)
 
     %{
       body: body,
@@ -374,11 +142,18 @@ defmodule GateServer.Npc.Brain.Llm do
       things: %{},
       # 发出去还没有 Outcome 的调用：id => %{tool:, args:}。
       calls: %{},
+      # 身边（@notice_m 内）的实体 id；有新的走近就叫醒。
+      nearby: MapSet.new(),
       dirty: true,
       asking: false,
       request_pid: nil,
+      # 连续“没有可用应答”的次数，决定退避间隔。
+      failures: 0,
       # monotonic_time 可以为负，不能用 0 当“很久以前”。
-      asked_ms: System.monotonic_time(:millisecond) - @min_gap_ms,
+      asked_ms: now - @min_gap_ms,
+      window_start_ms: now,
+      window_requests: 0,
+      budget_logged: false,
       next_id: 1
     }
   end
@@ -387,7 +162,14 @@ defmodule GateServer.Npc.Brain.Llm do
     state =
       receive do
         {:observation, observation} ->
-          %{state | observation: observation}
+          nearby = nearby(observation, state.nearby)
+
+          %{
+            state
+            | observation: observation,
+              nearby: nearby,
+              dirty: state.dirty or not MapSet.subset?(nearby, state.nearby)
+          }
 
         {:outcome, outcome} ->
           record_outcome(state, outcome)
@@ -405,46 +187,77 @@ defmodule GateServer.Npc.Brain.Llm do
           state
 
         {:answer, {:ok, response}} ->
-          all = commands(response, state.probe, state.things, state.next_id, state.profile)
-
-          {waits, commands} = Enum.split_with(all, &(&1.verb == :wait))
-
-          Logger.info("npc_llm_decision #{inspect(all, limit: :infinity)}")
-          for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
-
-          # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
-          for %{seconds: seconds} <- waits,
-              is_number(seconds),
-              do: Process.send_after(self(), :wake, round(min(300, max(1, seconds)) * 1_000))
-
-          probes =
-            for %{verb: :probe_toward, id: id, direction: direction} <- commands,
-                into: state.probes,
-                do: {id, direction}
-
-          sent = Map.take(calls(response, state.next_id), Enum.map(commands, & &1.id))
-
-          state = %{
-            state
-            | asking: false,
-              request_pid: nil,
-              probes: probes,
-              calls: Map.merge(state.calls, sent),
-              next_id: state.next_id + length(all)
-          }
-
-          state
+          answer(state, response)
 
         :wake ->
           %{state | dirty: true}
 
         {:answer, {:error, reason}} ->
-          Logger.warning("npc_llm_request_failed reason=#{inspect(reason)}")
-          %{state | asking: false, request_pid: nil, dirty: true}
+          Logger.warning(
+            "npc_llm_request_failed reason=#{inspect(reason)} failures=#{state.failures + 1}"
+          )
+
+          %{state | asking: false, request_pid: nil, dirty: true, failures: state.failures + 1}
       end
 
     loop(ask(state))
   end
+
+  defp answer(state, response) do
+    all = commands(response, state.probe, state.things, state.next_id, state.profile)
+    {waits, rest} = Enum.split_with(all, &(&1.verb == :wait))
+
+    {local, commands} =
+      Enum.split_with(rest, &(&1.verb in [:unknown_tool, :invalid_tool_arguments]))
+
+    Logger.info("npc_llm_decision #{inspect(all, limit: :infinity)}")
+    for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
+
+    # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
+    for %{seconds: seconds} <- waits,
+        is_number(seconds),
+        do: Process.send_after(self(), :wake, round(min(300, max(1, seconds)) * 1_000))
+
+    # 没有任何工具调用（如 incomplete、代理只回了文本）：不会有 Outcome 来叫醒，必须自己按退避重问。
+    if all == [] do
+      Logger.warning(
+        "npc_llm_no_tool_call status=#{inspect(response["status"])} failures=#{state.failures + 1}"
+      )
+    end
+
+    probes =
+      for %{verb: :probe_toward, id: id, direction: direction} <- commands,
+          into: state.probes,
+          do: {id, direction}
+
+    sent = Map.take(calls(response, state.next_id), Enum.map(commands ++ local, & &1.id))
+
+    state = %{
+      state
+      | asking: false,
+        request_pid: nil,
+        probes: probes,
+        calls: Map.merge(state.calls, sent),
+        next_id: state.next_id + length(all),
+        dirty: all == [],
+        failures: if(all == [], do: state.failures + 1, else: 0)
+    }
+
+    # 解析失败与未知工具不经 Body，直接作为被拒绝的 Outcome 给模型看（附原调用）。
+    Enum.reduce(local, state, fn %{id: id, verb: reason}, state ->
+      record_outcome(state, %{id: id, verb: reason, status: :rejected, reason: reason, data: nil})
+    end)
+  end
+
+  defp nearby(%{self: %{position: {x, y, z}}, entities: entities}, previous) do
+    for %{entity_id: id, position: {ex, ey, ez}} <- entities,
+        d = :math.sqrt((ex - x) * (ex - x) + (ey - y) * (ey - y) + (ez - z) * (ez - z)),
+        d <= @notice_m or (d <= @forget_m and MapSet.member?(previous, id)),
+        into: MapSet.new(),
+        do: id
+  end
+
+  defp nearby(_, previous), do: previous
 
   defp record_outcome(state, outcome) do
     state = remember_probe(state, outcome)
@@ -482,33 +295,64 @@ defmodule GateServer.Npc.Brain.Llm do
 
   defp remember_probe(state, _), do: state
 
-  # 有新情况、没有在途命令、没有在途请求、且过了最小间隔，才问一次。
+  # 有新情况、没有在途命令、没有在途请求、过了（退避后的）间隔、且本小时还有额度，才问一次。
   defp ask(
          %{dirty: true, asking: false, calls: calls, observation: %{pending: []} = observation} =
            state
-       ) do
+       )
+       when map_size(calls) == 0 do
     now = System.monotonic_time(:millisecond)
+    state = roll_window(state, now)
+    limit = Map.get(state.profile, :max_requests_per_hour, @max_requests_per_hour)
 
-    if map_size(calls) == 0 and now - state.asked_ms >= @min_gap_ms do
-      owner = self()
+    cond do
+      now - state.asked_ms < gap(state.failures) ->
+        state
 
-      query =
-        state.profile.goal <>
-          " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
+      state.window_requests >= limit ->
+        unless state.budget_logged,
+          do:
+            Logger.warning(
+              "npc_llm_budget_exhausted cid=#{observation.self.entity_id} limit_per_hour=#{limit}"
+            )
 
-      experiences = Memory.context(state.memory, observation.self.entity_id, query)
-      body = body(state.profile, observation, state.outcomes, experiences)
+        %{state | budget_logged: true}
 
-      pid =
-        spawn_link(fn -> send(owner, {:answer, state.request.(state.profile.endpoint, body)}) end)
+      true ->
+        owner = self()
 
-      %{state | dirty: false, asking: true, request_pid: pid, asked_ms: now}
-    else
-      state
+        query =
+          state.profile.goal <>
+            " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
+
+        experiences = Memory.context(state.memory, observation.self.entity_id, query)
+        body = body(state.profile, observation, state.outcomes, experiences)
+
+        pid =
+          spawn_link(fn ->
+            send(owner, {:answer, state.request.(state.profile.endpoint, body)})
+          end)
+
+        %{
+          state
+          | dirty: false,
+            asking: true,
+            request_pid: pid,
+            asked_ms: now,
+            window_requests: state.window_requests + 1
+        }
     end
   end
 
   defp ask(state), do: state
+
+  defp gap(failures), do: min(@max_gap_ms, @min_gap_ms * Integer.pow(2, failures))
+
+  defp roll_window(state, now) do
+    if now - state.window_start_ms >= @hour_ms,
+      do: %{state | window_start_ms: now, window_requests: 0, budget_logged: false},
+      else: state
+  end
 
   @doc "一次请求体：目标、当前 Observation、最近 Outcome（旧在前），要求恰好一次工具调用。"
   def body(profile, observation, outcomes, experiences \\ []) do

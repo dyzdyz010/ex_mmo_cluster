@@ -1,7 +1,7 @@
 defmodule GateServer.NpcBrainBuilderTest do
-  @moduledoc "只测试：建设者混合后端的纯状态机（手工排的事件序列）与规划请求的形状。真实 World / 模型见 npc_body_world_test 的 :builder_brain 用例。"
+  @moduledoc "只测试：荒野施工状态机（手工排的事件序列）、分诊与规划请求的形状。真实 World 见 npc_body_world_test 的 :wilderness_skill 用例。"
   use ExUnit.Case, async: true
-  alias GateServer.Npc.Brain.Builder
+  alias GateServer.Npc.Builder
 
   defmodule Memory do
     def get(_, _, _), do: nil
@@ -50,59 +50,43 @@ defmodule GateServer.NpcBrainBuilderTest do
     }
 
     request = fn _endpoint, body ->
-      if is_map_key(body, :questions) do
-        send(test, {:scheduler_request, body})
+      send(test, {:scheduler_request, body})
 
-        {:ok,
-         %{"answers" => %{"activity" => %{"choice" => "fetch_material", "confidence" => 0.99}}}}
-      else
-        {:ok,
-         %{
-           "output" => [
-             %{
-               "type" => "function_call",
-               "name" => "submit_blueprint",
-               "arguments" => Jason.encode!(%{ops: @ops})
-             }
-           ]
-         }}
-      end
+      {:ok,
+       %{"answers" => %{"activity" => %{"choice" => "fetch_material", "confidence" => 0.99}}}}
     end
 
-    pid =
-      Builder.init(%{
-        goal: "修一根柱子",
-        tool_id: 1,
-        cid: 91,
-        memory: Memory,
-        planner: %{model: "m"},
-        scheduler: %{model: "j"},
-        activities: activities,
-        request: request
-      })
+    # 状态机在缺料时产出的分诊问题（英文事实），经唯一的分诊入口问调度模型。
+    state = Builder.new(%{goal: "修一根柱子", tool_id: 1}, @ops)
 
-    try do
-      send(pid, @observation)
-      assert_receive {:"$gen_cast", {:command, %{id: 1, verb: :query_balances}}}
-      send(pid, done(1, :query_balances))
-      assert_receive {:"$gen_cast", {:command, %{id: 2, verb: :move_to}}}
-      send(pid, done(2, :move_to))
-      assert_receive {:"$gen_cast", {:command, %{id: 3, verb: :look}}}
-      send(pid, done(3, :look, layer(0, [0, 0])))
-      assert_receive {:"$gen_cast", {:command, %{id: 4, verb: :look}}}
-      send(pid, done(4, :look, layer(1, [0, 0])))
-      assert_receive {:"$gen_cast", {:command, %{id: 5, verb: :place}}}
-      send(pid, rejected(5, :place, :insufficient_material))
-      assert_receive {:scheduler_request, body}
-      assert body.questions.activity.criteria == activities.activities
-      assert body.questions.activity.instructions == activities.instructions
-      assert body.state =~ "not enough material"
-      refute body.state =~ "修一根柱子"
-      assert String.match?(body.state, ~r/^[\x00-\x7f]+$/)
-    after
-      Process.unlink(pid)
-      Process.exit(pid, :kill)
-    end
+    {_effects, state} =
+      run(state, [
+        @observation,
+        done(1, :query_balances),
+        done(2, :move_to),
+        done(3, :look, layer(0, [0, 0])),
+        done(4, :look, layer(1, [0, 0]))
+      ])
+
+    assert {state, [{:triage, problem}]} =
+             Builder.step(state, rejected(5, :place, :insufficient_material))
+
+    assert state.phase == :triage
+
+    profile = %{
+      cid: 91,
+      scheduler: %{model: "j"},
+      activities: activities,
+      request: request
+    }
+
+    assert {:act, :fetch_material} == Builder.triage_verdict(profile, problem)
+    assert_receive {:scheduler_request, body}
+    assert body.questions.activity.criteria == activities.activities
+    assert body.questions.activity.instructions == activities.instructions
+    assert body.state =~ "not enough material"
+    refute body.state =~ "修一根柱子"
+    assert String.match?(body.state, ~r/^[\x00-\x7f]+$/)
   end
 
   test "fresh start: balances, one plan request, remember the blueprint, approach, survey per layer, build bottom-up, verify, journal and forget" do

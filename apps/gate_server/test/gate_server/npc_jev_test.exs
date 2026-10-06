@@ -2,7 +2,7 @@ defmodule GateServer.NpcJevTest do
   @moduledoc "只测试：Jev 调度层的请求形状与决定规则。应答样本按官方 HTTP 文档的形状手写；真实接口见 :live_jev 用例。"
   use ExUnit.Case, async: true
   alias GateServer.Npc.Jev
-  @profile GateServer.Npc.Brain.Builder.activity_profile()
+  @profile GateServer.Npc.Builder.activity_profile()
 
   setup_all do
     {:ok, _} = Application.ensure_all_started(:inets)
@@ -89,6 +89,60 @@ defmodule GateServer.NpcJevTest do
              Jev.ask(%{model: "m"}, @profile, "s", nil, fn _, _ ->
                {:error, {429, "slow down"}}
              end)
+  end
+
+  # 中断检查（interrupt_policy）：问法如实描述听到的话；只有有把握地选了非继续的选项才中断。
+  describe "decide/2 as an interruption policy" do
+    defp policy(owner, answer) do
+      %{
+        scheduler: %{model: "j"},
+        activities: @profile,
+        continue_activity: "continue_building",
+        request: fn _endpoint, body ->
+          send(owner, {:state, body.state})
+          answer
+        end
+      }
+    end
+
+    defp context(heard),
+      do: %{
+        skill: :wilderness,
+        heard: heard,
+        observation: %{self: %{entity_id: 7}, entities: [], balances: nil, pending: []}
+      }
+
+    test "nothing heard is stated plainly; heard words are quoted newest first" do
+      assert :continue ==
+               Jev.decide(context([]), policy(self(), {:ok, response("continue_building", 0.99)}))
+
+      assert_receive {:state, state}
+      assert state =~ "No player is addressing the NPC."
+      refute state =~ "false"
+
+      heard = [%{entity_id: 5, text: "先停一下"}, %{entity_id: 6, text: "hello"}]
+      Jev.decide(context(heard), policy(self(), {:ok, response("continue_building", 0.99)}))
+      assert_receive {:state, state}
+      [_, quoted] = String.split(state, "Players are addressing the NPC (newest first): ")
+      [json, _] = String.split(quoted, ". Current observation: ")
+
+      assert [%{"entity_id" => 5, "text" => "先停一下"}, %{"entity_id" => 6, "text" => "hello"}] ==
+               Jason.decode!(json)
+    end
+
+    test "a confident other activity interrupts; doubt and unknown choices continue; transport errors are errors" do
+      assert {:interrupt, "respond_to_player"} ==
+               Jev.decide(context([]), policy(self(), {:ok, response("respond_to_player", 0.95)}))
+
+      assert :continue ==
+               Jev.decide(context([]), policy(self(), {:ok, response("respond_to_player", 0.6)}))
+
+      assert :continue ==
+               Jev.decide(context([]), policy(self(), {:ok, response("dance_293827", 0.99)}))
+
+      assert {:error, {429, "slow down"}} ==
+               Jev.decide(context([]), policy(self(), {:error, {429, "slow down"}}))
+    end
   end
 
   # 调度层的验收：评测目录里手工标注的 35 条调度情境，用本模块的原样问法过真实模型。

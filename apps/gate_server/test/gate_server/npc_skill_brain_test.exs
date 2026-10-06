@@ -207,7 +207,7 @@ defmodule GateServer.NpcSkillBrainTest do
     send(runtime, {:skill_check, 1})
 
     assert_receive {:policy_context,
-                    %{skill: :build, observation: %{self: %{entity_id: 7}}, heard: false}}
+                    %{skill: :build, observation: %{self: %{entity_id: 7}}, heard: []}}
 
     assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
 
@@ -255,8 +255,12 @@ defmodule GateServer.NpcSkillBrainTest do
     runtime = GenServer.call(body, :brain)
     GenServer.cast(body, {:event, {:observation, observation()}})
     assert_receive {:command, %{id: {:skill, 1, 1}, verb: :prefab_place}}
-    GateServer.Npc.Body.command(runtime, %{id: 1, verb: :cancel_skill})
-    assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
+    GateServer.Npc.Body.command(runtime, %{id: 90, verb: :cancel_skill, call: 1})
+
+    assert_receive {:script_outcome,
+                    %{id: 90, verb: :cancel_skill, status: :done, data: %{call: 1}}}
+
+    assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop, settle: 1}}
     send(runtime, {:skill_finished, 1, {:ok, %{seq: 41}}})
     refute_receive {:script_outcome, _}, 50
 
@@ -292,6 +296,15 @@ defmodule GateServer.NpcSkillBrainTest do
       balances: nil
     }
 
+  @activities %{
+    instructions: "Choose whether the current task should continue.",
+    activities: %{
+      "continue_task" => "No interruption is needed.",
+      "stop_task" => "A player needs attention now."
+    }
+  }
+
+  # 中断检查只由 interrupt_policy 开启；scheduler 是荒野施工内部分诊用的 endpoint，两者独立。
   defp profile(request) do
     %{
       goal: "放下已有定义",
@@ -300,15 +313,15 @@ defmodule GateServer.NpcSkillBrainTest do
       endpoint: %{model: "llm"},
       request: request,
       scheduler: %{model: "jev"},
-      continue_activity: "continue_task",
       skills: %{build: %{}},
-      activities: %{
-        instructions: "Choose whether the current task should continue.",
-        activities: %{
-          "continue_task" => "No interruption is needed.",
-          "stop_task" => "A player needs attention now."
-        }
-      }
+      interrupt_policy:
+        {GateServer.Npc.Jev,
+         %{
+           scheduler: %{model: "jev"},
+           request: request,
+           continue_activity: "continue_task",
+           activities: @activities
+         }}
     }
   end
 
@@ -392,7 +405,10 @@ defmodule GateServer.NpcSkillBrainTest do
     send(brain, {:skill_check, 1})
     assert_receive {:jev, jev}
     refute String.contains?(jev.state, "放下")
-    assert jev.questions.activity.criteria == profile(request).activities.activities
+    assert jev.questions.activity.criteria == @activities.activities
+    # 没听到任何话：明确说没有，不把布尔值拼进句子。
+    assert jev.state =~ "No player is addressing the NPC."
+    refute jev.state =~ ": false"
     assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
     refute_receive {:asked, _}, 1_200
 
@@ -597,5 +613,140 @@ defmodule GateServer.NpcSkillBrainTest do
 
     assert_receive {:journal, 7, text, _}
     assert text =~ "status=rejected" and text =~ "skill_failed" and text =~ "killed"
+  end
+
+  # —— 2026-10-06 评审修复的回归：取消、结算、中断策略的契约 ——
+
+  defmodule RecordPolicy do
+    @behaviour GateServer.Npc.Scheduler
+    def decide(context, config) do
+      send(config.owner, {:policy_context, context})
+      Map.get(config, :answer, :continue)
+    end
+  end
+
+  defp script_body(extra \\ %{}) do
+    profile =
+      Map.merge(%{skills: %{build: %{}}, memory: Memory, owner: self(), started: false}, extra)
+
+    body = start_supervised!({Body, %{owner: self(), backend: Script, profile: profile}})
+    runtime = GenServer.call(body, :brain)
+    GenServer.cast(body, {:event, {:observation, observation()}})
+    assert_receive {:command, %{id: {:skill, 1, 1}, verb: :prefab_place}}
+    {body, runtime}
+  end
+
+  defp body_outcome(body, outcome), do: GenServer.cast(body, {:event, {:outcome, outcome}})
+
+  test "cancel_skill has its own outcome: a call that is not running is rejected, nothing is stopped" do
+    {_body, runtime} = script_body()
+    GateServer.Npc.Body.command(runtime, %{id: 91, verb: :cancel_skill, call: 77})
+
+    assert_receive {:script_outcome,
+                    %{id: 91, verb: :cancel_skill, status: :rejected, reason: :no_active_skill}}
+
+    refute_receive {:command, %{verb: :stop}}, 100
+  end
+
+  test "results of a cancelled skill that settle before the stop are reported in its terminal" do
+    {body, runtime} = script_body()
+    GateServer.Npc.Body.command(runtime, %{id: 92, verb: :cancel_skill, call: 1})
+    assert_receive {:script_outcome, %{id: 92, verb: :cancel_skill, status: :done}}
+    assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop, settle: 1}}
+
+    # 已投递的 prefab_place 在取消请求之后才落定：它仍是这次调用造成的世界变化。
+    body_outcome(body, %{
+      id: {:skill, 1, 1},
+      verb: :prefab_place,
+      status: :done,
+      reason: nil,
+      data: %{seq: 55}
+    })
+
+    refute_receive {:script_outcome, %{id: 1}}, 100
+
+    body_outcome(body, %{
+      id: {:skill, 1, :stop},
+      verb: :stop,
+      status: :done,
+      reason: nil,
+      data: %{}
+    })
+
+    assert_receive {:script_outcome,
+                    %{
+                      id: 1,
+                      verb: :build,
+                      status: :rejected,
+                      reason: :cancelled,
+                      data: %{
+                        settled: [
+                          %{verb: :prefab_place, status: :done, reason: nil, data: %{seq: 55}}
+                        ]
+                      }
+                    }}
+  end
+
+  test "an interruption policy that cannot answer leaves the skill running and is counted" do
+    {body, runtime} =
+      script_body(%{
+        interrupt_policy: {RecordPolicy, %{owner: self(), answer: {:error, :timeout}}}
+      })
+
+    send(runtime, {:skill_check, 1})
+    assert_receive {:policy_context, %{skill: :build}}
+    refute_receive {:command, %{verb: :stop}}, 200
+
+    body_outcome(body, %{
+      id: {:skill, 1, 1},
+      verb: :prefab_place,
+      status: :done,
+      reason: nil,
+      data: %{seq: 41}
+    })
+
+    assert_receive {:script_outcome,
+                    %{
+                      id: 1,
+                      status: :done,
+                      data: %{metrics: %{scheduler_request_count: 1, scheduler_error_count: 1}}
+                    }}
+  end
+
+  test "the interruption policy receives what was heard during the skill, newest first" do
+    {_body, runtime} = script_body(%{interrupt_policy: {RecordPolicy, %{owner: self()}}})
+    send(runtime, {:heard, %{entity_id: 5, text: "先停一下"}})
+
+    assert_receive {:policy_context, %{heard: [%{entity_id: 5, text: "先停一下"}]}}
+  end
+
+  test "a scheduler endpoint alone (wilderness triage) does not turn on interruption checks" do
+    owner = self()
+
+    {_body, runtime} =
+      script_body(%{
+        scheduler: %{model: "jev"},
+        activities: @activities,
+        request: fn _, _ ->
+          send(owner, :jev_asked)
+          {:ok, %{"answers" => %{"activity" => %{"choice" => "stop_task", "confidence" => 1.0}}}}
+        end
+      })
+
+    send(runtime, {:skill_check, 1})
+    refute_receive :jev_asked, 300
+    refute_receive {:command, %{verb: :stop}}, 50
+  end
+
+  test "observations are not queued in a skill worker that never reads them" do
+    {body, runtime} = script_body()
+    assert_receive {:skill_worker, worker}
+    for _ <- 1..50, do: GenServer.cast(body, {:event, {:observation, observation()}})
+
+    # 屏障：Body 已把 50 个观察转给 Runtime，Runtime 按序处理完它们之后才回这条 recall 的结果。
+    GenServer.call(body, :brain)
+    GateServer.Npc.Body.command(runtime, %{id: 93, verb: :recall, key: "none"})
+    assert_receive {:runtime_outcome, %{id: 93, verb: :recall}}
+    assert {:message_queue_len, 0} == Process.info(worker, :message_queue_len)
   end
 end

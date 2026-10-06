@@ -194,6 +194,8 @@ Body 不持有本地时钟到 server tick 的映射；`time_probe` 只发一次�
   重力仍然生效，位置不冻结；新动作只写入 `seq > due_seq` 的未来槽，不回填过去。
 - 积压上限：严格 `due_seq - processed_input_seq > 120`（2 s；不是 `>=`，也不是未发送帧数）时 Body 不再追赶，主动
   leave 并异常退出，由 supervisor 重启后重新 claim/join。120 为第一片固定常量。
+  **2026-10-06 修订**：改为 Body 内丢弃会话、1 秒后重新 claim，不再退出——Scene 重启等批量会话丢失会让所有 NPC
+  同时退出，超过 NpcSup 的重启强度后整组永久消失。见 [评审修复记录](2026-10-06-npc-runtime-review-fixes.md)。
 
 ## 5. 接口草案（第三片才提取，此处只定形状）
 
@@ -326,9 +328,10 @@ rapier 在这里只是只读查询世界（体素 chunk 的 compound collider + 
 - 真实客户端登录后，在 NPC 30 m 内看到同一 `entity_id` 的实体沿固定路线移动；核对 `InputStart`、
   `processed_input_seq` 递增、`OwnerAck` 权威位移。
 - 杀 Body：客户端收到 `EntityLeave`，名额释放。
-- Player/Scene 侧先失败：Body 消费 `mmo_close` 后退出，`CollisionStream` 不残留。
+- Player/Scene 侧先失败：Body 消费 `mmo_close` 后退出，`CollisionStream` 不残留（2026-10-06 起改为重新 claim；
+  只有被同 cid 顶替时正常结束）。
 - 接缝用例（复用既有 Player 时钟测试夹具）：延迟 `InputStart`；ack 迟到但序号连续；世界轴转向的手算小例；
-  积压超 120 时 Body 退出。
+  积压超 120 时 Body 退出（2026-10-06 起改为 Body 内重新 claim，见 §4 修订）。
 - 记录 O-1 的测量项。单测不代替真实客户端实跑。
 
 ## 10. 审查记录

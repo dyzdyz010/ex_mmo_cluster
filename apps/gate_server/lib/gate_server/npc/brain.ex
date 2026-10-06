@@ -4,8 +4,8 @@ defmodule GateServer.Npc.Brain do
 
   所有后端由 `Runtime` 组合，拥有同一组原子动作、技能与记忆命令。
   长任务来自 `profile.skills`，由 Runtime 的独立 worker 执行并只回一个最终 Outcome。
-  荒野施工复用 Builder 的纯状态机。中断策略由 `interrupt_policy` 选择，旧 scheduler 配置沿用 Jev；
-  不配置时不调用外部调度模型。记忆读写经 Memory，进度与动手依据始终由 World 现查。
+  荒野施工驱动 Builder 纯状态机。中断检查只由 `interrupt_policy` 开启；不配置时不调用外部调度模型。
+  记忆读写经 Memory，进度与动手依据始终由 World 现查。
   输入规范见 docs/10-active/cross-cutting/2026-09-22-npc-context-memory-contract.md。
 
   回调在 Runtime 进程内同步调用，必须立刻返回。慢后端在 `init/1` 保存调用者 self() 作为命令接收端，
@@ -16,14 +16,16 @@ defmodule GateServer.Npc.Brain do
   ## 共用技能与记忆命令
 
       %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
-      %{id: 原技能调用号, verb: :cancel_skill}
+      %{id:, verb: :cancel_skill, call: 原技能调用号}
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}
       %{id:, verb: :search_memory, query:}
 
   参数契约由 Skills.tools(profile) 给出；Skills 的每个模块实现 Skill behaviour。
-  技能终态的 verb 是所调用的技能名。取消沿用原调用号，不另回一个结果；没有对应在途技能时无操作。
-  取消等待 worker DOWN 和 Body.stop 的权威结果，失败明确返回 stop_failed，已提交的世界事务不撤销。
+  技能终态的 verb 是所调用的技能名。取消命令有自己的 Outcome：受理为 done（data.call），没有对应在途技能为
+  no_active_skill；被取消的技能仍以原调用号回终态。取消等待 worker DOWN，再等带 settle 的 Body.stop：
+  移动停稳且该调用已投递的世界调用都有了结果；期间落定的结果放在终态 data.settled，已提交事务不撤销，
+  stop 失败明确返回 stop_failed。
   Body.observe 可读取技能终态。首个正式 Observation 前的技能和记忆调用回报 invalid_session。
 
   事件与命令都是纯数据（数字、原子、元组、map），不含 pid / ref / 闭包，进程外 adapter 负责自己的序列化。
@@ -43,7 +45,7 @@ defmodule GateServer.Npc.Brain do
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
       %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
-      %{id:, verb: :stop}                                       # 顶替在途的移动命令
+      %{id:, verb: :stop}                                       # 顶替在途的移动命令；settle: 技能调用号 见上文取消
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
       %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格

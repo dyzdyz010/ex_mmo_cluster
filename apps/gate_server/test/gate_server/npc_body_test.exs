@@ -237,7 +237,24 @@ defmodule GateServer.NpcBodyTest do
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
       assert_receive {:mmo_reliable, ^identity, 1, %Session.SessionStart{} = start}, 5_000
       Player.ready(player, identity, start.baseline_transaction_seq, start.collision_revision)
-      %{scene: scene, a: a, b: b}
+      %{scene: scene, a: a, b: b, claims: claims}
+    end
+
+    # 可观察条件：Scene 当前成员里同时有这些 cid（每个 cid 一条），超时即失败。
+    defp await_members(scene, cids, deadline) do
+      present = Enum.map(Scene.observe(scene).characters, & &1.entity_id)
+
+      cond do
+        Enum.all?(cids, &(&1 in present)) ->
+          Scene.observe(scene).characters
+
+        System.monotonic_time(:millisecond) > deadline ->
+          flunk("members #{inspect(cids)} not all present: #{inspect(present)}")
+
+        true ->
+          Process.sleep(50)
+          await_members(scene, cids, deadline)
+      end
     end
 
     defp samples(deadline, acc) do
@@ -257,7 +274,7 @@ defmodule GateServer.NpcBodyTest do
       end
     end
 
-    test "input backlog: exactly 120 behind keeps feeding, 121 behind exits for a supervised re-claim",
+    test "input backlog: exactly 120 behind keeps feeding; 121 behind drops the session and the same Body claims again",
          %{scene: scene, a: a} do
       assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a, kind: 1}},
                      8_000
@@ -280,11 +297,55 @@ defmodule GateServer.NpcBodyTest do
       send(a, {:mmo_datagram, c.identity, ack.(c.origin_tick + 129)})
       refute_receive {:DOWN, ^monitor, _, _, _}, 300
       send(a, {:mmo_datagram, c.identity, ack.(c.origin_tick + 130)})
-      assert_receive {:DOWN, ^monitor, :process, ^a, {:input_backlog, 131, 10}}, 1_000
+
+      # 重建在 Body 内完成：旧会话离场、同一个 Body 以新会话重新入场，进程不退出。
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityLeave{entity_id: @npc_a}}, 3_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_a}}, 5_000
+      refute_received {:DOWN, ^monitor, _, _, _}
+      fresh = Enum.find(Scene.observe(scene).characters, &(&1.entity_id == @npc_a))
+      assert fresh.identity.session_epoch > c.identity.session_epoch
+    end
+
+    test "a Scene that ends every NPC session at once loses none: each Body claims again under a default-intensity supervisor",
+         %{scene: scene, claims: claims} do
+      # 默认重启强度（5 秒 3 次）的动态监督器，与 GateServer.NpcSup 相同。
+      sup = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+      cids = Enum.to_list(9011..9014)
+
+      for {cid, i} <- Enum.with_index(cids) do
+        {:ok, _} =
+          DynamicSupervisor.start_child(
+            sup,
+            {Body,
+             claims: claims,
+             route_module: Route,
+             scene_id: 1,
+             cid: cid,
+             spawn: {30.0 + 2 * i, 503.0, 30.0},
+             brain: {GateServer.Npc.Brain.Routine, %{steps: []}}}
+          )
+      end
+
+      before = await_members(scene, cids, System.monotonic_time(:millisecond) + 8_000)
+      sup_monitor = Process.monitor(sup)
+
+      for %{entity_id: cid, identity: identity} <- before,
+          cid in cids,
+          do: :ok = Scene.leave(scene, identity, 4)
+
+      after_ = await_members(scene, cids, System.monotonic_time(:millisecond) + 8_000)
+      refute_received {:DOWN, ^sup_monitor, _, _, _}
+      assert 4 == length(DynamicSupervisor.which_children(sup))
+
+      epochs = Map.new(before, &{&1.entity_id, &1.identity.session_epoch})
+
+      for %{entity_id: cid, identity: identity} <- after_,
+          cid in cids,
+          do: assert(identity.session_epoch > epochs[cid])
     end
 
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",
-         %{scene: scene, a: a, b: b} do
+         %{scene: scene, a: a, b: b, claims: claims} do
       assert_receive {:mmo_reliable, _, 1,
                       %Session.EntityEnter{entity_id: @npc_a, kind: 1} = enter_a},
                      8_000
@@ -324,10 +385,25 @@ defmodule GateServer.NpcBodyTest do
       assert_receive {:mmo_reliable, _, 1, %Session.EntityLeave{entity_id: @npc_a}}, 3_000
       refute Enum.any?(Scene.observe(scene).characters, &(&1.entity_id == @npc_a))
 
-      # Scene 侧先结束会话：Body 消费 mmo_close 后以会话原因退出。
+      # Scene 侧先结束会话：Body 不退出，稍后以新会话重新入场。
       monitor = Process.monitor(b)
       Scene.leave(scene, by_id[@npc_b].identity, 4)
-      assert_receive {:DOWN, ^monitor, :process, ^b, {:session_closed, 4}}, 3_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityLeave{entity_id: @npc_b}}, 3_000
+      assert_receive {:mmo_reliable, _, 1, %Session.EntityEnter{entity_id: @npc_b}}, 5_000
+      refute_received {:DOWN, ^monitor, _, _, _}
+
+      # 同一 cid 被另一个 claim 顶替（关闭原因 2）：本 Body 正常结束（transient 不重启），不与新 owner 互相顶替。
+      {:ok, route} = Route.route(1)
+
+      # 只测试：测试进程以同一 NPC cid 走一次正式 claim，充当接管的新 owner。
+      {_, {:ok, _}} =
+        GenServer.call(
+          claims,
+          {:claim, Scene, Map.put(route, :scene_id, 1),
+           %{id: @npc_b, spawn: {42.0, 503.0, 40.0}, kind: "npc"}}
+        )
+
+      assert_receive {:DOWN, ^monitor, :process, ^b, {:shutdown, :replaced}}, 3_000
     end
   end
 end
