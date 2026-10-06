@@ -157,7 +157,7 @@ defmodule VoxelRegion.GeneratedStore do
 
         case File.read(path) do
           {:ok, bytes} -> read_cached(bytes, store.content_version, level, region)
-          {:error, :enoent} when level == 0 -> generate(store, path, level, region, :online)
+          {:error, :enoent} when level == 0 -> generate(store, path, level, region)
           {:error, :enoent} -> {:error, :not_baked}
           {:error, reason} -> {:error, {:cache_read_failed, reason}}
         end
@@ -168,19 +168,19 @@ defmodule VoxelRegion.GeneratedStore do
   def ensure(store, level, {_, _, _} = region) do
     case classify(store, level, region) do
       {:uniform, _} -> :ok
-      :mixed -> materialize(store, level, region, if(level == 0, do: :online))
+      :mixed -> materialize(store, level, region, level == 0)
     end
   end
 
   @doc "Bake 用：mixed region 缺文件就生成，任何 level。"
-  def bake_region(store, level, {_, _, _} = region), do: materialize(store, level, region, :bake)
+  def bake_region(store, level, {_, _, _} = region), do: materialize(store, level, region, true)
 
-  defp materialize(store, level, region, mode) do
+  defp materialize(store, level, region, generate?) do
     path = path(store, level, region)
 
     cond do
       File.exists?(path) -> :ok
-      mode != nil -> with {:ok, _bytes, _header} <- generate(store, path, level, region, mode), do: :ok
+      generate? -> with {:ok, _bytes, _header} <- generate(store, path, level, region), do: :ok
       true -> {:error, :not_baked}
     end
   end
@@ -234,12 +234,12 @@ defmodule VoxelRegion.GeneratedStore do
   end
 
   # 同一 region 同时只有一个生成者；其余轮询锁释放后读取发布结果。生成者被外部杀死时锁随其 pid 失效，由下一个请求者接手。
-  defp generate(store, path, level, region, mode) do
+  defp generate(store, path, level, region) do
     key = {store.world_dir, level, region}
 
     if :ets.insert_new(@lock_table, {key, self()}) do
       try do
-        generate_locked(store, path, level, region, mode)
+        generate_locked(store, path, level, region)
       after
         :ets.delete(@lock_table, key)
       end
@@ -268,14 +268,9 @@ defmodule VoxelRegion.GeneratedStore do
     end
   end
 
-  defp generate_locked(store, path, level, region, mode) do
+  defp generate_locked(store, path, level, region) do
     :counters.add(store.generations, 1, 1)
-
-    raw =
-      if mode == :online,
-        do: with_online_slot(fn -> Native.generate_region(level, region, store.config) end),
-        else: Native.generate_region(level, region, store.config)
-
+    raw = Native.generate_region(level, region, store.config)
     {:ok, _payload} = Payload.decode_body(raw)
     bytes = Codec.encode_payload(level, region, 0, store.content_version, raw)
     File.mkdir_p!(Path.dirname(path))
@@ -303,38 +298,6 @@ defmodule VoxelRegion.GeneratedStore do
       {:error, reason} ->
         File.rm(temporary)
         {:error, {:cache_publish_failed, reason}}
-    end
-  end
-
-  # 在线生成最多占一半 dirty CPU 调度器：移动、热、列边界等短 NIF 与它同队，不得排在数百毫秒的生成之后。
-  # 名额与生成锁同表、按 pid 登记；持有者被杀时由等待者回收。Bake 在就绪门前独占节点，不受限。
-  defp with_online_slot(fun) do
-    slot = acquire_online_slot(max(1, div(:erlang.system_info(:dirty_cpu_schedulers_online), 2)))
-
-    try do
-      fun.()
-    after
-      :ets.delete_object(@lock_table, {{:online_slot, slot}, self()})
-    end
-  end
-
-  defp acquire_online_slot(limit) do
-    case Enum.find(1..limit, &:ets.insert_new(@lock_table, {{:online_slot, &1}, self()})) do
-      nil ->
-        for slot <- 1..limit,
-            [{_, pid}] <- [:ets.lookup(@lock_table, {:online_slot, slot})],
-            not Process.alive?(pid),
-            do: :ets.delete_object(@lock_table, {{:online_slot, slot}, pid})
-
-        receive do
-        after
-          5 -> :ok
-        end
-
-        acquire_online_slot(limit)
-
-      slot ->
-        slot
     end
   end
 
