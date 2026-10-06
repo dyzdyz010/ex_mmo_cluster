@@ -13,7 +13,34 @@ authoritative overlay log, accounts/characters and NPC memories.
 | `docker-compose.yml` | `db` (Postgres 16, 127.0.0.1 only) + `app` (host network, memory limit) |
 | `.env.example` | Every setting; copy to `.env` |
 | `upgrade.sh <version>` | Backup (pg_dump + published prefabs) → switch version → wait for QUIC |
-| `nginx.conf.example` | TLS termination and `/playtest/` proxy to the HTTP port |
+| `nginx.conf.example` | TLS termination for the portal and game hosts (see Domains) |
+
+## Domains
+
+Flat names under `hemifuture.cn`, one level deep, so the shared `*.hemifuture.cn` wildcard certificate covers
+them all. This also matches the other products on that host (`calix.`, `eval.`, `huanxi.`, `inkstone.`, `mail.`).
+Hosts are split by audience: browsers carry cookies, while the game client carries bearer tokens, large
+downloads and UDP.
+
+| Host | Serves | Notes |
+|---|---|---|
+| `voxim.hemifuture.cn` | Player portal: `/auth` (account centre, `/` → `/auth`), `/admin` (invites) | `PHX_HOST`; mail links point here; session cookie stays on this host |
+| `mmo.hemifuture.cn` | Game service: `/account/*` client API, `/game/*` world data, `/playtest/*` legacy; QUIC `20003/udp` | Shipped clients and the QUIC certificate (`server_name`) use this name, so keep it. `/auth` → 301 portal |
+| `notify.hemifuture.cn` | Sender domain for Aliyun DirectMail (`noreply@notify.hemifuture.cn`) | SPF/DKIM/DMARC records only; `mail.hemifuture.cn` is the Stalwart mailbox server, so keep them separate |
+
+Reserved; create these only when a feature needs them:
+
+- `voxim-admin.` — move `/admin` here when it needs an IP allow-list or extra auth in front.
+- `voxim-cdn.` — client packages and large world assets via OSS+CDN.
+- `voxim-status.` — a status page.
+
+Further worlds or shards should come from a server list returned by the API, not from new DNS names in shipped
+clients.
+
+The brand site stays on `skopunarverk.com` (Cloudflare) and links to the portal.
+
+Every proxied location must send `X-Real-IP $remote_addr`. The app trusts it only from a loopback peer and uses
+it for per-client rate limits; without it, every player shares one 60-request/minute bucket.
 
 ## Data directory (`VOXIM_DATA_DIR`, mounted at `/srv/voxim`)
 

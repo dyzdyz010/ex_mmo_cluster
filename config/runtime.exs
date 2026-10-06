@@ -168,9 +168,13 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
+  # 发布容器使用 host 网络，HTTP 只由同机 nginx 转发；默认只监听回环，避免明文端口直接暴露公网。
+  # 桥接网络（端口发布）部署需设 AUTH_BIND_IP=0.0.0.0。
+  {:ok, bind_ip} = System.get_env("AUTH_BIND_IP", "127.0.0.1") |> String.to_charlist() |> :inet.parse_address()
+
   config :auth_server, AuthServerWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
-    http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}],
+    http: [ip: bind_ip],
     secret_key_base: secret_key_base
 
   # --- Database (runtime-read; compile-time config.exs defaults are ignored)

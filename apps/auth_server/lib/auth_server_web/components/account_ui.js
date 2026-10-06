@@ -46,6 +46,16 @@
     button.form?.addEventListener("submit", () => clearTimeout(timer));
   });
 
+  // 两步表单里第一个提交按钮是“发送验证码”；在第二步按回车应提交这一步自己的按钮，
+  // 否则会重新发信并让刚填写的验证码失效。输入法组合中的回车不提交。
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || event.target.tagName !== "INPUT") return;
+    const group = event.target.closest("[data-enter-submits]");
+    if (!group) return;
+    event.preventDefault();
+    group.closest("form").requestSubmit(document.getElementById(group.dataset.enterSubmits));
+  });
+
   // 防止重复提交，并给出处理中状态。
   document.addEventListener("submit", (event) => {
     const form = event.target;

@@ -12,7 +12,7 @@ defmodule AuthServerWeb.AccountAdminController do
     end
   end
   def login(conn,p) do
-    case Identity.login(p["email"],p["password"],false) do
+    case Identity.login(p["email"],p["password"],false,source: AuthServerWeb.AccountController.source(conn),web: true) do
       {:ok,s} ->
         case Identity.authenticate(s.access_token) do
           {:ok,%{auth_admin: true}} -> conn |> configure_session(renew: true) |> put_session(:account_access,s.access_token) |> redirect(to: "/admin")
@@ -47,10 +47,12 @@ defmodule AuthServerWeb.AccountAdminController do
     filters=AuthServerWeb.AccountController.filters(p)
     case Identity.administer(get_session(conn,:account_access),:list,filters) do
       {:ok,invites} -> render(conn,:index,invites: invites,filters: filters,policy: Identity.registration_policy(),notice: notice,codes: codes,viewer: Identity.viewer(get_session(conn,:account_access)))
-      _ -> conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
+      {:error,r}=error when r in [:forbidden,:invalid_session] -> denied_or_page(conn,error)
     end
   end
-  defp denied_or_page(conn,{:error,r}) when r in [:forbidden,:invalid_session], do: conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
+  # 普通玩家的网页登录仍有效，只说明没有管理权限，不清掉其账号中心会话。
+  defp denied_or_page(conn,{:error,:forbidden}), do: conn |> put_status(403) |> render(:login,error: "当前登录的账号没有管理权限，请使用管理员账号登录。")
+  defp denied_or_page(conn,{:error,:invalid_session}), do: conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
   defp denied_or_page(conn,{:error,r}), do: page(put_status(conn,400),%{},{:error,"操作失败：#{r}"},[])
   defp integer(v) when is_binary(v) do
     case Integer.parse(v) do

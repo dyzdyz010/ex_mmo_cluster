@@ -129,9 +129,10 @@ defmodule AuthServerWeb.VoxelRegionsControllerTest do
   test "bad frames are 400 and the endpoint is gated by dev_auto_login", %{conn: conn} do
     assert post_regions(conn, "garbage").status == 400
 
+    # 正式账号部署在 PlaytestAccess 处以 404 拒绝全部旧入口（见 playtest_access_test），不再到达控制器的 403。
     Application.put_env(:auth_server, :dev_auto_login, false)
     conn = post_regions(conn, request([], 0))
-    assert conn.status == 403
+    assert conn.status == 404
   end
 
   test "payload header round-trips through the codec", %{payload: payload} do

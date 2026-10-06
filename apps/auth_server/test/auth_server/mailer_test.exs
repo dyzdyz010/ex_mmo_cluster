@@ -26,6 +26,14 @@ defmodule AuthServer.MailerTest do
     refute html =~ "?code="
   end
 
+  test "existing-account notice carries no code and links to sign-in" do
+    %{"text/plain" => text, "text/html" => html} =
+      parts(AuthServer.Mailer.SMTP.message("accounts@voxim.test", "owner@example.test", :account_exists, nil))
+    assert text =~ "这个邮箱已经有账号"
+    assert html =~ ~s(href="#{AuthServerWeb.Endpoint.url()}/auth/login")
+    refute text =~ "验证码："
+  end
+
   test "registration mail shows the six-digit code without a link" do
     %{"text/plain" => text, "text/html" => html} =
       parts(AuthServer.Mailer.SMTP.message("accounts@voxim.test", "new@example.test", :registration, "042517"))

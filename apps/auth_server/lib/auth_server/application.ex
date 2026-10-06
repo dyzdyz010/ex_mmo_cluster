@@ -12,6 +12,7 @@ defmodule AuthServer.Application do
         AuthServerWeb.Telemetry,
         AuthServer.RateLimit,
         AuthServer.Connections,
+        {Task.Supervisor, name: AuthServer.MailTasks},
         {Phoenix.PubSub, name: AuthServer.PubSub},
         AuthServerWeb.Endpoint
       ]

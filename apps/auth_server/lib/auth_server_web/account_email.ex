@@ -9,23 +9,33 @@ defmodule AuthServerWeb.AccountEmail do
   use Phoenix.Component
   import AuthServerWeb.AccountUI, only: [color: 1, font: 1]
 
+  @ignore "若非本人操作，请忽略此邮件，账号不会有任何变化。"
   @copy %{
-    registration: %{subject: "Voxim 注册邮箱验证", title: "验证你的邮箱", proof: "邮箱验证码", ttl: "10 分钟", path: nil,
-      body: "在注册页面填写下面的验证码，然后设置密码即可完成注册。"},
-    legacy_claim: %{subject: "Voxim 原角色绑定验证", title: "绑定原角色", proof: "认领验证码", ttl: "10 分钟", path: "/auth/claim",
-      body: "点击下方按钮回到绑定页面，邮箱和验证码会自动填好。为保护原角色，请重新输入原登录邀请码并设置密码。"},
-    password_reset: %{subject: "Voxim 密码重置", title: "重置你的密码", proof: "密码重置码", ttl: "30 分钟", path: "/auth/reset",
-      body: "点击下方按钮设置新密码，邮箱和重置码会自动填好。成功后所有设备与游戏连接都会退出。"}
+    registration: %{subject: "Voxim 注册邮箱验证", title: "验证你的邮箱", proof: "邮箱验证码", path: nil, action: nil,
+      body: "在注册页面填写下面的验证码，然后设置密码即可完成注册。", note: "10 分钟内有效。" <> @ignore},
+    legacy_claim: %{subject: "Voxim 原角色绑定验证", title: "绑定原角色", proof: "认领验证码", path: "/auth/claim", action: "打开页面并自动填写 →",
+      body: "点击下方按钮回到绑定页面，邮箱和验证码会自动填好。为保护原角色，请重新输入原登录邀请码并设置密码。", note: "10 分钟内有效。" <> @ignore},
+    password_reset: %{subject: "Voxim 密码重置", title: "重置你的密码", proof: "密码重置码", path: "/auth/reset", action: "打开页面并自动填写 →",
+      body: "点击下方按钮设置新密码，邮箱和重置码会自动填好。成功后所有设备与游戏连接都会退出。", note: "30 分钟内有效。" <> @ignore},
+    # 有人用已注册的邮箱申请注册：不发验证码，提醒邮箱主人直接登录或找回密码。
+    account_exists: %{subject: "Voxim 注册提醒", title: "这个邮箱已经有账号", proof: nil, path: "/auth/login", action: "前往登录 →",
+      body: "刚才有人（可能是你）用这个邮箱申请注册 Voxim 账号。该邮箱已经注册，直接登录即可；忘记密码可在登录页找回。", note: @ignore}
   }
 
   @doc "返回 {主题, 纯文本, HTML}。"
   def compose(email, purpose, code) do
     copy = Map.fetch!(@copy, purpose)
-    link = copy.path && AuthServerWeb.Endpoint.url() <> copy.path <> "#" <> URI.encode_query(%{"email" => email, "code" => code})
-    text = [copy.title, "\r\n\r\n", copy.body, "\r\n\r\n", copy.proof, "：", code, "\r\n",
+    link =
+      cond do
+        is_nil(copy.path) -> nil
+        is_nil(code) -> AuthServerWeb.Endpoint.url() <> copy.path
+        true -> AuthServerWeb.Endpoint.url() <> copy.path <> "#" <> URI.encode_query(%{"email" => email, "code" => code})
+      end
+    text = [copy.title, "\r\n\r\n", copy.body, "\r\n\r\n",
+      if(code, do: [copy.proof, "：", code, "\r\n"], else: []),
       if(link, do: ["打开页面：", link, "\r\n"], else: []),
-      "\r\n", copy.ttl, "内有效。若非本人操作，请忽略此邮件，账号不会有任何变化。\r\n\r\n— Voxim 账号"]
-    html = %{copy: copy, code: code, link: link, short: byte_size(code) <= 8, c: &color/1, sans: font(:sans), mono: font(:mono)}
+      "\r\n", copy.note, "\r\n\r\n— Voxim 账号"]
+    html = %{copy: copy, code: code, link: link, short: code && byte_size(code) <= 8, c: &color/1, sans: font(:sans), mono: font(:mono)}
       |> html() |> Phoenix.HTML.Safe.to_iodata()
     {copy.subject, IO.iodata_to_binary(text), IO.iodata_to_binary(html)}
   end
@@ -46,15 +56,15 @@ defmodule AuthServerWeb.AccountEmail do
                 <p style={"margin:0;color:#{@c.(:dim)};font:600 11px/1.4 #{@mono};letter-spacing:2px;text-transform:uppercase;"}>{@copy.subject}</p>
                 <h1 style={"margin:12px 0 0;color:#ffffff;font-size:26px;line-height:1.3;font-weight:600;"}>{@copy.title}</h1>
                 <p style={"margin:14px 0 0;color:#{@c.(:muted)};font-size:15px;line-height:1.8;"}>{@copy.body}</p>
-                <p style={"margin:28px 0 8px;color:#{@c.(:dim)};font:600 11px/1 #{@mono};letter-spacing:2px;"}>{@copy.proof}</p>
-                <div style={"padding:18px 20px;background:#{@c.(:"surface-strong")};border:1px solid #2c2f5a;border-radius:14px;color:#ffffff;font-family:#{@mono};" <> if(@short, do: "font-size:30px;letter-spacing:10px;font-weight:600;", else: "font-size:15px;letter-spacing:1px;word-break:break-all;")}>{@code}</div>
+                <p :if={@code} style={"margin:28px 0 8px;color:#{@c.(:dim)};font:600 11px/1 #{@mono};letter-spacing:2px;"}>{@copy.proof}</p>
+                <div :if={@code} style={"padding:18px 20px;background:#{@c.(:"surface-strong")};border:1px solid #2c2f5a;border-radius:14px;color:#ffffff;font-family:#{@mono};" <> if(@short, do: "font-size:30px;letter-spacing:10px;font-weight:600;", else: "font-size:15px;letter-spacing:1px;word-break:break-all;")}>{@code}</div>
                 <table :if={@link} role="presentation" cellpadding="0" cellspacing="0" style="margin-top:28px;"><tr>
                   <td style={"border-radius:13px;background-color:#a9efff;background-image:linear-gradient(110deg,#f8fbff,#a9efff 42%,#a79bff 80%,#ff9ed9);"}>
-                    <a href={@link} style="display:inline-block;padding:15px 26px;color:#07101a;font-size:15px;font-weight:700;letter-spacing:1px;text-decoration:none;">打开页面并自动填写 →</a>
+                    <a href={@link} style="display:inline-block;padding:15px 26px;color:#07101a;font-size:15px;font-weight:700;letter-spacing:1px;text-decoration:none;">{@copy.action}</a>
                   </td>
                 </tr></table>
                 <p style={"margin:28px 0 0;padding-top:20px;border-top:1px solid #232a45;color:#{@c.(:dim)};font-size:13px;line-height:1.8;"}>
-                  {@copy.ttl}内有效。若非本人操作，请忽略此邮件，账号不会有任何变化。
+                  {@copy.note}
                 </p>
               </td></tr>
               <tr><td style={"padding:20px 4px 0;color:#{@c.(:dim)};font:600 10px/1.8 #{@mono};letter-spacing:3px;"}>

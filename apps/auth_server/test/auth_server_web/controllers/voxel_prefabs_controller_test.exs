@@ -79,8 +79,9 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
     assert response.resp_body == frozen
     assert ["application/octet-stream" <> _] = get_resp_header(response, "content-type")
 
+    # 正式账号部署在 PlaytestAccess 处以 404 拒绝全部旧入口（见 playtest_access_test），不再到达控制器的 403。
     Application.put_env(:auth_server, :dev_auto_login, false)
-    assert post_prefabs(build_conn(), ~p"/ingame/voxel/prefabs").status == 403
+    assert post_prefabs(build_conn(), ~p"/ingame/voxel/prefabs").status == 404
   end
 
   test "POST /playtest/prefabs needs the invite bearer" do

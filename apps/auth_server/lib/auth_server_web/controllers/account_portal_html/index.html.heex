@@ -59,7 +59,7 @@
             {if @sent, do: "重新发送验证码", else: "发送注册验证码"}
           </button>
         </fieldset>
-        <fieldset class="ac-group">
+        <fieldset class="ac-group" data-enter-submits="step-submit">
           <legend class="ac-legend">02 · 设置密码</legend>
           <div class="ac-field">
             <label class="ac-label" for="code">邮箱验证码</label>
@@ -67,7 +67,7 @@
             <p class="ac-hint">验证码 10 分钟内有效。邀请码与邮箱验证码是两个不同的凭据。</p>
           </div>
           <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
-          <button class="ac-btn ac-btn--primary ac-btn--block">创建账号<span class="ac-arrow" aria-hidden="true">→</span></button>
+          <button id="step-submit" class="ac-btn ac-btn--primary ac-btn--block">创建账号<span class="ac-arrow" aria-hidden="true">→</span></button>
         </fieldset>
       </.form>
       <div class="ac-card-foot">
@@ -147,7 +147,7 @@
             {if @sent, do: "重新发送认领验证码", else: "发送认领验证码"}
           </button>
         </fieldset>
-        <fieldset class="ac-group">
+        <fieldset class="ac-group" data-enter-submits="step-submit">
           <legend class="ac-legend">02 · 设置密码</legend>
           <div class="ac-field">
             <label class="ac-label" for="code">邮箱验证码</label>
@@ -155,7 +155,7 @@
             <p class="ac-hint">验证码 10 分钟内有效；从邮件按钮打开时会自动填好。</p>
           </div>
           <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
-          <button class="ac-btn ac-btn--primary ac-btn--block">绑定原角色</button>
+          <button id="step-submit" class="ac-btn ac-btn--primary ac-btn--block">绑定原角色</button>
         </fieldset>
       </.form>
       <div class="ac-card-foot">

@@ -1,18 +1,77 @@
-# Host nginx: TLS termination for the Voxim HTTP API (login / regions / prefabs).
-# QUIC (UDP ${VOXIM_QUIC_PORT}) is not proxied; the client connects to it directly.
+# Host nginx for Voxim on *.hemifuture.cn (shared wildcard certificate, renewed by root's acme.sh).
+#
+#   voxim.hemifuture.cn  player portal (browser): /auth (account centre), /admin (invites)
+#   mmo.hemifuture.cn    game service (client):   /account/* JSON API, /game/* world data,
+#                        /playtest/* legacy invite login; QUIC UDP 20003 is not proxied
+#
+# Every proxied location must send X-Real-IP: the app trusts it only from a loopback peer and uses it
+# for per-client rate limits. Without it every player shares one bucket.
+# Upstream: the release listens on 127.0.0.1:${AUTH_PORT} (AUTH_BIND_IP=127.0.0.1, host network).
+
+# ---------------------------------------------------------------------------- portal
 server {
     listen 443 ssl;
-    server_name mmo.example.com;
+    http2 on;
+    server_name voxim.hemifuture.cn;
 
-    ssl_certificate     /etc/nginx/ssl/example/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/example/privkey.pem;
+    ssl_certificate     "/etc/nginx/ssl/*.hemifuture.cn/cert.pem";
+    ssl_certificate_key "/etc/nginx/ssl/*.hemifuture.cn/key.pem";
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
-    # Invite-code playtest routes. Cold region requests can take tens of seconds on a fresh cache.
-    location /playtest/ {
+    location = / { return 302 /auth; }
+
+    location ~ ^/(auth|admin)(/|$) {
         proxy_pass http://127.0.0.1:24640;
-        proxy_set_header Host $host;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 180s;
-        client_max_body_size 16m;
+        client_max_body_size 64k;
     }
+
+    location / { return 404; }
+}
+
+# ---------------------------------------------------------------------------- game service
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name mmo.hemifuture.cn;
+
+    ssl_certificate     "/etc/nginx/ssl/*.hemifuture.cn/cert.pem";
+    ssl_certificate_key "/etc/nginx/ssl/*.hemifuture.cn/key.pem";
+
+    # The in-game "account web" button opens <api origin>/auth; browsers belong on the portal host.
+    location = / { return 302 https://voxim.hemifuture.cn/auth; }
+    location ~ ^/(auth|admin)(/|$) { return 301 https://voxim.hemifuture.cn$request_uri; }
+
+    location /account/ {
+        proxy_pass http://127.0.0.1:24640;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 64k;
+    }
+
+    # Cold region batches can take up to ~120 s; the read timeout must exceed the client's.
+    location ~ ^/(game|playtest)/ {
+        proxy_pass http://127.0.0.1:24640;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout    180s;
+        proxy_send_timeout    180s;
+        proxy_buffering       off;
+        client_max_body_size  1m;
+    }
+
+    location / { return 404; }
+}
+
+# ---------------------------------------------------------------------------- http → https
+server {
+    listen 80;
+    server_name voxim.hemifuture.cn mmo.hemifuture.cn;
+    return 301 https://$host$request_uri;
 }

@@ -1,6 +1,7 @@
 defmodule AuthServerWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :auth_server
 
+  plug AuthServerWeb.Plugs.ClientIp
   plug AuthServerWeb.Plugs.PlaytestAccess
 
   # The session will be stored in the cookie and signed,

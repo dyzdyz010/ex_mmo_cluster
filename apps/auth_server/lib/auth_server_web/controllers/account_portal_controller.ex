@@ -17,7 +17,7 @@ defmodule AuthServerWeb.AccountPortalController do
   end
 
   def login(conn, p) do
-    case Identity.login(p["email"], p["password"], false) do
+    case Identity.login(p["email"], p["password"], false, source: source(conn), web: true) do
       {:ok, session} ->
         Identity.logout(get_session(conn, :account_access))
         conn |> configure_session(renew: true) |> put_session(:account_access, session.access_token) |> redirect(to: "/auth")

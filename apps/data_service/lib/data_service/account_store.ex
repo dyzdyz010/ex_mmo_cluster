@@ -107,6 +107,14 @@ defmodule DataService.AccountStore do
     :ok
   end
 
+  @doc "不加锁预检邮箱证明，供调用方在昂贵的密码哈希前拒绝错误验证码；事务内仍由 challenge!/4 复核。"
+  def challenge_matches?(email, purpose, digest, now) do
+    case one("SELECT digest,expires_at,attempts FROM auth_challenges WHERE email=$1 AND purpose=$2", [email,purpose]) do
+      %{expires_at: e, attempts: a, digest: d} when e > now and a <= 5 -> :crypto.hash_equals(d,digest)
+      _ -> false
+    end
+  end
+
   @doc "先消耗一次验证尝试；失败尝试不会因后续业务事务回滚而清零。"
   def attempt_challenge(email, purpose, now) do
     sql("UPDATE auth_challenges SET attempts=attempts+1 WHERE email=$1 AND purpose=$2 AND expires_at>$3", [email,purpose,now])

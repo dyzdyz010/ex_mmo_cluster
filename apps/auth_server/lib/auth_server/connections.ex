@@ -9,7 +9,7 @@ defmodule AuthServer.Connections do
   @doc "撤销持久化授权并关闭登记连接。"
   def revoke(account,sid), do: GenServer.call(__MODULE__,{:revoke,account,sid},15_000)
   @doc "消费票据并监视连接，Auth 故障由连接反向监视并终止。"
-  def consume(digest,cid,username,scene,hello,pid),do: GenServer.call(__MODULE__,{:consume,digest,cid,username,scene,hello,pid})
+  def consume(digest,cid,username,scene,hello,pid),do: GenServer.call(__MODULE__,{:consume,digest,cid,username,scene,hello,pid},15_000)
   @impl true
   def init(state), do: {:ok,state}
   @impl true
@@ -49,12 +49,11 @@ defmodule AuthServer.Connections do
   defp stop_connection(pid) do
     GenServer.stop(pid,:normal,5_000)
   catch
-    # A normal disconnect may finish between receiving the revoke and stopping it.
-    :exit, :noproc -> :ok
-    :exit, {:noproc,_} -> :ok
-    :exit, {:normal,_} -> :ok
-    # QUIC's linked edit-worker cleanup can terminate the owner with :killed.
-    # GenServer.stop observed its death: revocation is complete, not an Auth failure.
-    :exit, {:killed,_} -> :ok
+    # A connection stuck past the timeout is still alive: force it down so revocation holds.
+    :exit, {:timeout,_} -> Process.exit(pid,:kill); :ok
+    # Any other exit (noproc, normal, killed by QUIC's linked edit-worker cleanup, or a crash
+    # in its terminate) means GenServer.stop observed the connection's death. This process
+    # must never crash here: every game connection monitors it and would be closed with it.
+    :exit, _ -> :ok
   end
 end

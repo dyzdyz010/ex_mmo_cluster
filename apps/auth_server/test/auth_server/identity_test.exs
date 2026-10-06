@@ -177,6 +177,81 @@ defmodule AuthServer.IdentityTest do
     assert {:ok, _} = Identity.authenticate(other.access_token)
   end
 
+  defmodule CrashingConnection do
+    @moduledoc "Test-only: a connection whose cleanup raises while it is being stopped."
+    use GenServer
+    def start, do: GenServer.start(__MODULE__, nil)
+    def init(nil), do: {:ok, nil}
+    def terminate(_, _), do: raise("cleanup failed")
+  end
+
+  test "a stuck or crashing connection at revocation is forced down without restarting Auth", c do
+    code = proof(c.email, c.invite.code)
+    {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    {:ok, one} = Identity.login(c.email, c.password, false)
+    {:ok, other} = Identity.login(c.email, c.password, false)
+    hello = %MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(), kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    # 不处理系统消息的进程模拟卡住的连接：GenServer.stop 会超时。
+    stuck = spawn(fn -> receive do: (:never -> :ok) end)
+    {:ok, crashing} = CrashingConnection.start()
+    survivor = start_supervised!({Agent, fn -> nil end})
+    for {session, pid} <- [{one, stuck}, {one, crashing}, {other, survivor}] do
+      {:ok, ticket} = Identity.game_ticket(session.access_token, 1, hello)
+      assert {:ok, _} = Identity.consume_ticket(ticket.token, String.to_integer(session.cid), session.username, 1, hello, pid)
+    end
+    owner = Process.whereis(AuthServer.Connections)
+    assert :ok = Identity.logout(one.access_token)
+    refute Process.alive?(stuck)
+    refute Process.alive?(crashing)
+    assert Process.whereis(AuthServer.Connections) == owner
+    assert Process.alive?(survivor)
+  end
+
+  test "failed reset attempts by someone else cannot lock the owner's 256-bit reset code", c do
+    code = proof(c.email, c.invite.code)
+    {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    assert :ok = Identity.forgot_password(c.email, "owner")
+    assert_receive {:account_mail, _, :password_reset, reset}
+    for _ <- 1..8, do: assert({:error, :invalid_verification} = Identity.reset_password(c.email, "guess", "an attacker chosen password"))
+    assert :ok = Identity.reset_password(c.email, reset, "the owner's new long password")
+  end
+
+  test "registering an existing email answers the same and mails the owner a sign-in notice", c do
+    # 用已存在的账号邮箱（开发账号），避免与本用例自己发信的每邮箱 60 秒限额冲突。
+    {:ok, %{account: existing}} = AuthServer.Accounts.upsert_dev("exists_#{System.unique_integer([:positive])}")
+    email = existing.email
+    assert :ok = Identity.send_registration_email(email, c.invite.code, "elsewhere")
+    assert_receive {:account_mail, ^email, :account_exists, nil}
+    refute_received {:account_mail, ^email, :registration, _}
+  end
+
+  test "a mistyped invite does not spend the email's one-per-minute mail slot", c do
+    assert {:error, :invalid_invite} = Identity.send_registration_email(c.email, "WRONG", "typo")
+    assert :ok = Identity.send_registration_email(c.email, c.invite.code, "typo")
+    assert_receive {:account_mail, _, :registration, _}
+  end
+
+  test "failed logins from one source do not lock the account for another source", c do
+    code = proof(c.email, c.invite.code)
+    {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    for _ <- 1..10, do: Identity.login(c.email, "a wrong long password guess", false, source: "attacker")
+    assert {:error, :rate_limited} = Identity.login(c.email, c.password, false, source: "attacker")
+    assert {:ok, session} = Identity.login(c.email, c.password, false, source: "owner")
+    # 相对寿命让客户端不依赖本机时钟。
+    assert session.access_expires_in in 899..900
+    assert {:ok, web} = Identity.login(c.email, c.password, false, source: "owner", web: true)
+    assert web.access_expires_in > 86_000
+  end
+
+  test "a malformed game ticket request is rejected without claiming the session is invalid", c do
+    code = proof(c.email, c.invite.code)
+    {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    {:ok, s} = Identity.login(c.email, c.password, false)
+    hello = %MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(), kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert {:error, :invalid_request} = Identity.game_ticket(s.access_token, "1", hello)
+    assert {:error, :invalid_session} = Identity.game_ticket(nil, 1, hello)
+  end
+
   test "password reset invalidates all sessions and proof cannot be reused", c do
     code=proof(c.email,c.invite.code)
     {:ok,_}=Identity.register(c.email,c.password,code,c.invite.code)

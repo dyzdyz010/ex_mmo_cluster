@@ -1,17 +1,18 @@
 defmodule AuthServer.Identity do
   @moduledoc "全局系统功能：邮箱密码、注册资格与账号会话的唯一认证边界。"
   alias DataService.AccountStore, as: Store
+  require Logger
   @password_options [argon2_type: 2, t_cost: 2, m_cost: 16, parallelism: 1]
 
   @doc "旧码需先由受控运维导入；独立邮箱证明不受新注册邀请码开关影响。"
   def send_claim_email(email,legacy,source) when is_binary(legacy) and byte_size(legacy)<=256 do
     with {:ok,email} <- normalize_email(email),
          :ok <- AuthServer.RateLimit.take({:mail_ip,source},20,3600),
-         :ok <- AuthServer.RateLimit.take({:mail_email,email},1,60),
-         %{id: id} <- Store.legacy_account(digest(legacy)) do
+         %{id: id} <- Store.legacy_account(digest(legacy)),
+         :ok <- AuthServer.RateLimit.take({:mail_email,email},1,60) do
       code=random_token()
       Store.put_challenge(email,"legacy_claim",proof_digest(email,"legacy_claim",Integer.to_string(id)<>"/"<>code),now()+600)
-      AuthServer.Mailer.deliver(email,:legacy_claim,code)
+      deliver_later(email,:legacy_claim,code)
     else
       nil -> {:error,:invalid_legacy_claim}
       error -> error
@@ -22,11 +23,14 @@ defmodule AuthServer.Identity do
   def claim_legacy(email,password,code,legacy) when is_binary(legacy) and byte_size(legacy)<=256 and is_binary(code) and byte_size(code)<=128 do
     with {:ok,email} <- normalize_email(email), :ok <- password_valid(password),
          :ok <- AuthServer.RateLimit.take({:claim,email},10,600),
-         %{id: id} <- Store.legacy_account(digest(legacy)) do
-      Store.attempt_challenge(email,"legacy_claim",now())
-      with {:ok,sids} <- Store.claim_legacy(email,proof_digest(email,"legacy_claim",Integer.to_string(id)<>"/"<>code),digest(legacy),Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(sids)
+         %{id: id} <- Store.legacy_account(digest(legacy)),
+         proof = proof_digest(email,"legacy_claim",Integer.to_string(id)<>"/"<>code),
+         true <- Store.challenge_matches?(email,"legacy_claim",proof,now()) do
+      # 认领码为 256 位随机串，不需要尝试次数上限；计数反而让他人能锁死受害者的认领码。
+      with {:ok,sids} <- Store.claim_legacy(email,proof,digest(legacy),Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(sids)
     else
       nil -> {:error,:invalid_legacy_claim}
+      false -> {:error,:invalid_verification}
       error -> error
     end
   end
@@ -39,16 +43,16 @@ defmodule AuthServer.Identity do
   def send_registration_email(email, invite, source) do
     with {:ok,email} <- normalize_email(email),
          :ok <- AuthServer.RateLimit.take({:mail_ip,source},20,3600),
-         :ok <- AuthServer.RateLimit.take({:mail_email,email},1,60),
-         :ok <- Store.admission(invite_digest(invite),now()) do
-      # 已有邮箱与新邮箱的公开响应一致，不替换现有凭据。
+         :ok <- Store.admission(invite_digest(invite),now()),
+         :ok <- AuthServer.RateLimit.take({:mail_email,email},1,60) do
+      # 已有邮箱与新邮箱的公开响应与耗时一致：都异步发一封信，已有账号收到登录提醒，不替换现有凭据。
       if Store.account(email) do
-        :ok
+        deliver_later(email,:account_exists,nil)
       else
         <<random::unsigned-64>> = :crypto.strong_rand_bytes(8)
         code = rem(random,1_000_000) |> Integer.to_string() |> String.pad_leading(6,"0")
         Store.put_challenge(email,"registration",proof_digest(email,"registration",code),now()+600)
-        AuthServer.Mailer.deliver(email,:registration,code)
+        deliver_later(email,:registration,code)
       end
     end
   end
@@ -59,17 +63,25 @@ defmodule AuthServer.Identity do
          true <- is_binary(code) and byte_size(code) <= 128,
          :ok <- AuthServer.RateLimit.take({:register,email},10,600) do
       Store.attempt_challenge(email,"registration",now())
-      Store.register(email,Argon2.hash_pwd_salt(password,@password_options),proof_digest(email,"registration",code),invite_digest(invite),now())
+      proof = proof_digest(email,"registration",code)
+      if Store.challenge_matches?(email,"registration",proof,now()),
+        do: Store.register(email,Argon2.hash_pwd_salt(password,@password_options),proof,invite_digest(invite),now()),
+        else: {:error,:invalid_verification}
     else
       false -> {:error,:invalid_verification}
       error -> error
     end
   end
 
-  @doc "密码登录，确认身份由服务端返回；邮箱不作为游戏公开名称。"
-  def login(email,password,remember) do
+  @doc """
+  密码登录，确认身份由服务端返回；邮箱不作为游戏公开名称。
+
+  选项：`source` 为请求来源地址，失败次数按“邮箱＋来源”计，他人无法借此锁死受害者；
+  `web: true` 用于网页会话，访问令牌与会话同寿命（每次请求仍经服务端核验，撤销立即生效）。
+  """
+  def login(email,password,remember,opts \\ []) do
     with {:ok,email} <- normalize_email(email), true <- is_binary(password) and byte_size(password) <= 512,
-         :ok <- AuthServer.RateLimit.take({:login,email},10,60) do
+         :ok <- AuthServer.RateLimit.take({:login,email,opts[:source]},10,60) do
       account = Store.account(email)
       verified = if account && account.password_hash, do: Argon2.verify_pass(password,account.password_hash), else: Argon2.no_user_verify(@password_options)
       cond do
@@ -78,7 +90,7 @@ defmodule AuthServer.Identity do
         true ->
           sid = Ecto.UUID.generate()
           expiry = now()+if(remember == true,do: 30*86400,else: 86400)
-          {public,tokens} = credentials(expiry)
+          {public,tokens} = credentials(expiry,if(opts[:web],do: expiry-now(),else: 900))
           with :ok <- Store.create_session(sid,account.id,account.password_hash,expiry,tokens,now()), do: {:ok,session_result(account.id,sid,expiry,public)}
       end
     else
@@ -133,7 +145,8 @@ defmodule AuthServer.Identity do
       {:ok,%{token: ticket,cid: Integer.to_string(character.id),username: a.username}}
     end
   end
-  def game_ticket(_,_,_),do: {:error,:invalid_session}
+  def game_ticket(access,_,_) when not is_binary(access),do: {:error,:invalid_session}
+  def game_ticket(_,_,_),do: {:error,:invalid_request}
   @doc "由 Gate 的正常入场边界调用，消费与连接登记串行化。"
   def consume_ticket(ticket,cid,username,scene,hello,pid) when is_binary(ticket) do
     AuthServer.Connections.consume(digest(ticket),cid,username,scene,:erlang.term_to_binary(hello),pid)
@@ -149,16 +162,18 @@ defmodule AuthServer.Identity do
         %{password_hash: hash} when is_binary(hash) ->
           code=random_token()
           Store.put_challenge(email,"password_reset",proof_digest(email,"password_reset",code),now()+1800)
-          AuthServer.Mailer.deliver(email,:password_reset,code)
+          deliver_later(email,:password_reset,code)
         _ -> :ok
       end
     end
   end
   @doc "通过独立用途重置码改密，成功后必须重新登录。"
   def reset_password(email,code,password) do
-    with {:ok,email} <- normalize_email(email), :ok <- password_valid(password), true <- is_binary(code) and byte_size(code)<=128 do
-      Store.attempt_challenge(email,"password_reset",now())
-      with {:ok,ids} <- Store.reset_password(email,proof_digest(email,"password_reset",code),Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(ids)
+    with {:ok,email} <- normalize_email(email), :ok <- password_valid(password), true <- is_binary(code) and byte_size(code)<=128,
+         proof = proof_digest(email,"password_reset",code),
+         true <- Store.challenge_matches?(email,"password_reset",proof,now()) do
+      # 重置码为 256 位随机串，不需要尝试次数上限；计数反而让他人能锁死受害者的重置码。
+      with {:ok,ids} <- Store.reset_password(email,proof,Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(ids)
     else
       false -> {:error,:invalid_verification}
       error -> error
@@ -220,15 +235,25 @@ defmodule AuthServer.Identity do
     if byte_size(value) <= 512 and String.length(value) in 15..128 and String.downcase(value) not in ["passwordpassword","123456789012345","1234567890123456","qwertyuiopasdfgh"], do: :ok, else: {:error,:invalid_password}
   end
   defp password_valid(_), do: {:error,:invalid_password}
-  defp credentials(expiry) do
+  defp credentials(expiry,access_ttl \\ 900) do
     access = random_token()
     refresh = random_token()
-    {%{access_token: access,refresh_token: refresh,access_expires_at: now()+900},
-      [%{digest: digest(access),purpose: "access",expires_at: min(now()+900,expiry)},%{digest: digest(refresh),purpose: "refresh",expires_at: expiry}]}
+    {%{access_token: access,refresh_token: refresh,access_expires_at: now()+access_ttl},
+      [%{digest: digest(access),purpose: "access",expires_at: min(now()+access_ttl,expiry)},%{digest: digest(refresh),purpose: "refresh",expires_at: expiry}]}
+  end
+  # 投递在请求之外完成：已注册与未注册邮箱的响应时间与结果一致，不泄露账号是否存在。
+  defp deliver_later(email,purpose,code) do
+    {:ok,_} = Task.Supervisor.start_child(AuthServer.MailTasks,fn ->
+      with {:error,reason} <- AuthServer.Mailer.deliver(email,purpose,code),
+        do: Logger.warning("account mail #{purpose} not delivered: #{inspect(reason)}")
+    end)
+    :ok
   end
   defp session_result(account_id,sid,expiry,public) do
     {account,character} = Store.account_with_character(account_id)
     public = Map.update!(public,:access_expires_at,&min(&1,expiry))
+    # 客户端按收到响应时的本机时间加相对寿命判断过期，不受本机时钟偏差影响。
+    public = Map.put(public,:access_expires_in,public.access_expires_at-now())
     Map.merge(public,%{account_id: Integer.to_string(account_id),cid: Integer.to_string(character.id),username: account.username,session_id: sid,expires_at: expiry})
   end
 end
