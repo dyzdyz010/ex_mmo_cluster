@@ -1,73 +1,220 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Voxim 账号中心</title>
-<style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#111719;color:#e7eeee;font:16px/1.6 system-ui,sans-serif}main{max-width:560px;margin:64px auto;padding:32px;background:#192226;border-top:2px solid #77c8ce}nav{display:flex;flex-wrap:wrap;gap:16px;margin:24px 0}a{color:#8bd6dc}h1{font-size:28px;margin:8px 0 24px}h2{font-size:20px;margin-top:32px}.brand{color:#8bd6dc;font-size:13px;letter-spacing:3px}p{color:#b8c7cc}label{display:block;margin:16px 0 6px}input{width:100%;padding:12px;background:#10181b;border:1px solid #55676e;border-radius:4px;color:inherit;font:inherit}input:focus,button:focus,a:focus{outline:2px solid #8bd6dc;outline-offset:3px}button{padding:12px 20px;background:#8bd6dc;color:#111719;border:0;border-radius:4px;font:inherit;cursor:pointer;margin:16px 8px 0 0}.secondary{background:#2b3b41;color:#e7eeee}aside{padding:16px;border-left:3px solid #d4b56e;background:#263035;overflow-wrap:anywhere}.account-id{overflow-wrap:anywhere}.divider{border-top:1px solid #34474e;margin-top:32px;padding-top:8px}@media(max-width:600px){main{margin:16px;padding:24px}button{width:100%}}
-</style></head>
-<body><main>
-<div class="brand">VOXIM / ACCOUNT</div>
-<nav aria-label="账号导航"><a href="/auth">账号管理</a><a href="/auth/register">注册</a><a href="/auth/login">登录</a><a href="/auth/forgot">找回密码</a></nav>
-<aside :if={Phoenix.Flash.get(@flash, :info)} role="status">{Phoenix.Flash.get(@flash, :info)}</aside>
-<aside :if={@message} role="status">{@message}</aside>
-<section :if={@screen == :login}>
-  <h1>登录账号中心</h1><p>在这里管理密码和登录设备。进入青岚，请打开 Voxim 游戏并登录。</p>
-  <.form for={%{}} action="/auth/login">
-    <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="username" maxlength="254" required/>
-    <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required/>
-    <button>登录</button>
-  </.form>
-</section>
-<section :if={@screen == :register}>
-  <h1>创建 Voxim 账号</h1><p>先验证邮箱，再设置密码。注册后使用同一账号登录游戏。</p>
-  <p>{if @invite_required, do: "当前为邀请注册，请填写管理员发放的邀请码。", else: "当前开放注册，无需邀请码。"}</p>
-  <.form for={%{}} action="/auth/register">
-    <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="email" maxlength="254" required/>
-    <div :if={@invite_required}><label for="invite">邀请码</label><input id="invite" name="invite" value={@invite} placeholder="5 位字母＋数字，不区分大小写" autocomplete="off" maxlength="128" required/></div>
-    <button formaction="/auth/registration-email" formnovalidate class="secondary">发送注册验证码</button>
-    <label for="code">邮箱验证码</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required/>
-    <label for="password">设置密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="128" required/>
-    <p>密码为 15–128 个字符。邀请码与邮箱验证码是两个不同的凭据。</p><button>创建账号</button>
-  </.form>
-  <p><a href="/auth/claim">已有旧登录邀请码？绑定原角色</a></p>
-</section>
-<section :if={@screen == :forgot}>
-  <h1>找回密码</h1><p>输入注册邮箱，接收密码重置邮件。</p>
-  <.form for={%{}} action="/auth/forgot">
-    <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="email" maxlength="254" required/>
-    <button>发送重置邮件</button>
-  </.form><p><a href="/auth/reset">已有重置码，设置新密码</a></p>
-</section>
-<section :if={@screen == :reset}>
-  <h1>重置密码</h1><p>成功后所有设备与游戏连接都会退出。</p>
-  <.form for={%{}} action="/auth/reset">
-    <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="email" maxlength="254" required/>
-    <label for="code">邮件重置码</label><input id="code" name="code" autocomplete="one-time-code" maxlength="128" required/>
-    <label for="password">新密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="128" required/>
-    <button>重置密码</button>
-  </.form>
-</section>
-<section :if={@screen == :claim}>
-  <h1>绑定原角色</h1><p>使用原登录邀请码验证身份，为原角色绑定邮箱和密码。</p>
-  <.form for={%{}} action="/auth/claim">
-    <label for="email">邮箱</label><input id="email" name="email" type="email" value={@email} autocomplete="email" maxlength="254" required/>
-    <label for="legacy">原登录邀请码</label><input id="legacy" name="legacy_code" type="password" autocomplete="off" maxlength="256" required/>
-    <button formaction="/auth/claim-email" formnovalidate class="secondary">发送认领验证码</button>
-    <label for="code">邮箱验证码</label><input id="code" name="code" autocomplete="one-time-code" maxlength="128" required/>
-    <label for="password">设置密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="128" required/>
-    <p>发送后请重新输入原登录邀请码。密码为 15–128 个字符。</p><button>绑定原角色</button>
-  </.form>
-</section>
-<section :if={@screen == :manage}>
-  <h1>账号管理</h1><p class="account-id">账号 ID：{Integer.to_string(@account.account_id)}</p>
-  <a :if={@account.auth_admin} href="/admin">注册与邀请码管理</a>
-  <h2>修改密码</h2><p>修改后所有设备与游戏连接都会退出，请使用新密码重新登录。</p>
-  <.form for={%{}} action="/auth/change-password">
-    <label for="current">当前密码</label><input id="current" name="current_password" type="password" autocomplete="current-password" maxlength="128" required/>
-    <label for="password">新密码</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="15" maxlength="128" required/>
-    <button>修改密码</button>
-  </.form>
-  <div class="divider"><h2>登录会话</h2><p>退出全部设备会立即关闭游戏连接；退出网页只结束本次网页登录。</p>
-  <.form for={%{}} action="/auth/logout-all"><button class="secondary">退出全部设备</button></.form>
-  <.form for={%{}} action="/auth/logout"><button class="secondary">退出账号网页</button></.form></div>
-</section>
-</main></body></html>
+<UI.page title={title(@screen)} nav={nav(@viewer)} current={current(@screen)} viewer={@viewer}>
+  <div :if={@screen != :manage} class="sk-container ac-w-auth ac-auth">
+    <section class="ac-intro" aria-label="Voxim 账号介绍">
+      <p class="ac-eyebrow"><span class="ac-dot"></span>Voxim Account · Qinglan</p>
+      <p class="ac-display">一个账号，<br /><span class="ac-gradient">通往青岚。</span></p>
+      <p class="ac-lead">注册、找回密码与登录设备管理都在这里完成。进入游戏时，在 Voxim 客户端使用同一邮箱和密码登录。</p>
+      <ol class="ac-flow">
+        <li><span>01</span><strong>创建账号</strong><p>验证邮箱并设置密码</p></li>
+        <li><span>02</span><strong>进入青岚</strong><p>在游戏登录面板使用同一账号</p></li>
+        <li><span>03</span><strong>管理安全</strong><p>修改密码或退出全部设备</p></li>
+      </ol>
+    </section>
+
+    <section :if={@screen == :login} class="ac-card" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--cyan"></span>Sign in</p>
+      <h1 id="screen-title" class="ac-title">登录账号中心</h1>
+      <p class="ac-text">在这里管理密码和登录设备。进入青岚，请打开 Voxim 游戏并登录。</p>
+      <UI.notice notice={@notice} />
+      <.form for={%{}} action="/auth/login" class="ac-form">
+        <div class="ac-field">
+          <label class="ac-label" for="email">邮箱</label>
+          <input id="email" name="email" type="email" class="ac-input" value={@email} autocomplete="username" maxlength="254" placeholder="you@example.com" autofocus={@email == ""} required />
+        </div>
+        <UI.secret id="password" name="password" label="密码" autocomplete="current-password" autofocus={@email != ""}>
+          <:aside><a href="/auth/forgot">忘记密码？</a></:aside>
+        </UI.secret>
+        <button class="ac-btn ac-btn--primary ac-btn--block">登录<span class="ac-arrow" aria-hidden="true">→</span></button>
+      </.form>
+      <div class="ac-card-foot">
+        <span>还没有账号？<a href="/auth/register">注册</a></span>
+        <a href="/auth/claim">绑定原角色</a>
+      </div>
+    </section>
+
+    <section :if={@screen == :register} class="ac-card ac-card--violet" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--violet"></span>Create account</p>
+      <h1 id="screen-title" class="ac-title">创建 Voxim 账号</h1>
+      <p class="ac-text">
+        <UI.badge tone={if @invite_required, do: "gold", else: "positive"}>{if @invite_required, do: "邀请注册", else: "开放注册"}</UI.badge>
+        {if @invite_required, do: "请填写管理员发放的邀请码。", else: "当前无需邀请码。"}
+      </p>
+      <ol class="ac-steps" aria-label="注册步骤">
+        <li class={@sent && "is-done"} aria-current={!@sent && "step"}><b>{if @sent, do: "✓", else: "01"}</b>验证邮箱</li>
+        <li aria-current={@sent && "step"}><b>02</b>设置密码</li>
+      </ol>
+      <UI.notice notice={@notice} />
+      <.form for={%{}} action="/auth/register" class="ac-form">
+        <fieldset class="ac-group">
+          <legend class="ac-legend">01 · 验证邮箱</legend>
+          <div class="ac-field">
+            <label class="ac-label" for="email">邮箱</label>
+            <input id="email" name="email" type="email" class="ac-input" value={@email} autocomplete="email" maxlength="254" placeholder="you@example.com" autofocus={!@sent} required />
+          </div>
+          <div :if={@invite_required} class="ac-field">
+            <label class="ac-label" for="invite">邀请码</label>
+            <input id="invite" name="invite" class="ac-input ac-input--invite" value={@invite} placeholder="5 位字母＋数字，不区分大小写" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="128" required />
+          </div>
+          <button formaction="/auth/registration-email" formnovalidate class="ac-btn ac-btn--block" data-cooldown={@sent && "60"}>
+            {if @sent, do: "重新发送验证码", else: "发送注册验证码"}
+          </button>
+        </fieldset>
+        <fieldset class="ac-group">
+          <legend class="ac-legend">02 · 设置密码</legend>
+          <div class="ac-field">
+            <label class="ac-label" for="code">邮箱验证码</label>
+            <input id="code" name="code" class="ac-input ac-input--code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字" autofocus={@sent} required />
+            <p class="ac-hint">验证码 10 分钟内有效。邀请码与邮箱验证码是两个不同的凭据。</p>
+          </div>
+          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
+          <button class="ac-btn ac-btn--primary ac-btn--block">创建账号<span class="ac-arrow" aria-hidden="true">→</span></button>
+        </fieldset>
+      </.form>
+      <div class="ac-card-foot">
+        <span>已有账号？<a href="/auth/login">登录</a></span>
+        <a href="/auth/claim">已有旧登录邀请码？绑定原角色</a>
+      </div>
+    </section>
+
+    <section :if={@screen == :forgot} class="ac-card ac-card--gold" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--gold"></span>Recovery</p>
+      <h1 id="screen-title" class="ac-title">找回密码</h1>
+      <p class="ac-text">输入注册邮箱，我们会发送一封密码重置邮件。邮件中的按钮可直接打开重置页面。</p>
+      <UI.notice notice={@notice} />
+      <.form for={%{}} action="/auth/forgot" class="ac-form">
+        <div class="ac-field">
+          <label class="ac-label" for="email">邮箱</label>
+          <input id="email" name="email" type="email" class="ac-input" value={@email} autocomplete="email" maxlength="254" placeholder="you@example.com" autofocus required />
+        </div>
+        <button class={["ac-btn ac-btn--block", !@sent && "ac-btn--primary"]} data-cooldown={@sent && "60"}>
+          {if @sent, do: "重新发送重置邮件", else: "发送重置邮件"}
+        </button>
+      </.form>
+      <a href="/auth/reset" class={["ac-btn ac-btn--block ac-gap-top", @sent && "ac-btn--primary"]}>已有重置码，设置新密码</a>
+      <div class="ac-card-foot">
+        <a href="/auth/login">返回登录</a>
+      </div>
+    </section>
+
+    <section :if={@screen == :reset} class="ac-card ac-card--gold" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--gold"></span>Recovery</p>
+      <h1 id="screen-title" class="ac-title">重置密码</h1>
+      <p class="ac-text">成功后所有设备与游戏连接都会退出。从邮件按钮打开时，邮箱和重置码会自动填好。</p>
+      <UI.notice notice={@notice} />
+      <.form for={%{}} action="/auth/reset" class="ac-form" data-prefill>
+        <div class="ac-field">
+          <label class="ac-label" for="email">邮箱</label>
+          <input id="email" name="email" type="email" class="ac-input" value={@email} autocomplete="email" maxlength="254" placeholder="you@example.com" required />
+        </div>
+        <div class="ac-field">
+          <label class="ac-label" for="code">邮件重置码</label>
+          <input id="code" name="code" class="ac-input ac-input--token" autocomplete="one-time-code" maxlength="128" spellcheck="false" required />
+          <p class="ac-hint">重置码 30 分钟内有效。</p>
+        </div>
+        <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={15} counter />
+        <button class="ac-btn ac-btn--primary ac-btn--block">重置密码</button>
+      </.form>
+      <div class="ac-card-foot">
+        <a href="/auth/forgot">重新发送重置邮件</a>
+        <a href="/auth/login">返回登录</a>
+      </div>
+    </section>
+
+    <section :if={@screen == :claim} class="ac-card ac-card--violet" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--violet"></span>Legacy character</p>
+      <h1 id="screen-title" class="ac-title">绑定原角色</h1>
+      <p class="ac-text">使用内测时的原登录邀请码验证身份，为原角色绑定邮箱和密码。角色与存档保持不变。</p>
+      <ol class="ac-steps" aria-label="绑定步骤">
+        <li class={@sent && "is-done"} aria-current={!@sent && "step"}><b>{if @sent, do: "✓", else: "01"}</b>验证身份</li>
+        <li aria-current={@sent && "step"}><b>02</b>设置密码</li>
+      </ol>
+      <UI.notice notice={@notice} />
+      <.form for={%{}} action="/auth/claim" class="ac-form" data-prefill>
+        <fieldset class="ac-group">
+          <legend class="ac-legend">01 · 验证身份</legend>
+          <div class="ac-field">
+            <label class="ac-label" for="email">邮箱</label>
+            <input id="email" name="email" type="email" class="ac-input" value={@email} autocomplete="email" maxlength="254" placeholder="you@example.com" autofocus={!@sent} required />
+          </div>
+          <div class="ac-field">
+            <label class="ac-label" for="legacy">原登录邀请码</label>
+            <input id="legacy" name="legacy_code" type="password" class="ac-input" autocomplete="off" maxlength="256" autofocus={@sent} required />
+            <p class={["ac-hint", @sent && "ac-hint--warn"]}>
+              {if @sent, do: "为保护原角色，页面不会保留原登录邀请码，请重新输入。", else: "原登录邀请码只用于本次认领，不会显示在页面上。"}
+            </p>
+          </div>
+          <button formaction="/auth/claim-email" formnovalidate class="ac-btn ac-btn--block" data-cooldown={@sent && "60"}>
+            {if @sent, do: "重新发送认领验证码", else: "发送认领验证码"}
+          </button>
+        </fieldset>
+        <fieldset class="ac-group">
+          <legend class="ac-legend">02 · 设置密码</legend>
+          <div class="ac-field">
+            <label class="ac-label" for="code">邮箱验证码</label>
+            <input id="code" name="code" autocomplete="one-time-code" maxlength="128" class="ac-input ac-input--token" spellcheck="false" required />
+            <p class="ac-hint">验证码 10 分钟内有效；从邮件按钮打开时会自动填好。</p>
+          </div>
+          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
+          <button class="ac-btn ac-btn--primary ac-btn--block">绑定原角色</button>
+        </fieldset>
+      </.form>
+      <div class="ac-card-foot">
+        <a href="/auth/register">注册新账号</a>
+        <a href="/auth/login">返回登录</a>
+      </div>
+    </section>
+  </div>
+
+  <div :if={@screen == :manage} class="sk-container ac-w-page">
+    <div class="ac-page-head">
+      <div>
+        <p class="ac-eyebrow"><span class="ac-dot"></span>Account · Overview</p>
+        <h1 class="ac-h1">账号管理</h1>
+      </div>
+    </div>
+    <UI.notice notice={@notice} />
+    <dl class="ac-stats">
+      <div class="ac-stat"><dt>邮箱</dt><dd>{@viewer.email}</dd></div>
+      <div class="ac-stat"><dt>角色</dt><dd>{@viewer.character}</dd></div>
+      <div class="ac-stat"><dt>账号 ID</dt><dd class="ac-mono">{Integer.to_string(@account.account_id)}</dd></div>
+    </dl>
+    <div class="ac-grid">
+      <section class="ac-card" aria-labelledby="password-title">
+        <p class="ac-eyebrow">Security</p>
+        <h2 id="password-title" class="ac-h2">修改密码</h2>
+        <p class="ac-text">修改后所有设备与游戏连接都会退出，请使用新密码重新登录。</p>
+        <.form for={%{}} action="/auth/change-password" class="ac-form">
+          <UI.secret id="current" name="current_password" label="当前密码" autocomplete="current-password" />
+          <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={15} counter />
+          <button class="ac-btn ac-btn--primary">修改密码</button>
+        </.form>
+      </section>
+      <div class="ac-stack">
+        <section class="ac-card ac-card--violet" aria-labelledby="play-title">
+          <p class="ac-eyebrow"><span class="ac-dot ac-dot--violet"></span>Play</p>
+          <h2 id="play-title" class="ac-h2">进入青岚</h2>
+          <ul class="ac-keys">
+            <li><span>01</span>打开 Voxim 客户端，在登录面板输入此邮箱和密码。</li>
+            <li><span>02</span>勾选“在此设备保持登录”，下次启动自动进入。</li>
+            <li><span>03</span>同一账号同时只保留一个游戏连接。</li>
+          </ul>
+        </section>
+        <section class="ac-card ac-card--magenta" aria-labelledby="session-title">
+          <p class="ac-eyebrow">Sessions</p>
+          <h2 id="session-title" class="ac-h2">登录会话</h2>
+          <p class="ac-text">退出网页只结束本次网页登录；怀疑密码泄露时，请退出全部设备并修改密码。</p>
+          <div class="ac-actions ac-gap-top">
+            <.form for={%{}} action="/auth/logout"><button class="ac-btn">退出账号网页</button></.form>
+          </div>
+          <details class="ac-confirm">
+            <summary>退出全部设备…</summary>
+            <div class="ac-confirm__body">
+              <p>所有网页登录与游戏连接会立即关闭，正在游戏中的角色将被断开。</p>
+              <.form for={%{}} action="/auth/logout-all"><button class="ac-btn ac-btn--danger ac-btn--block">确认退出全部设备</button></.form>
+            </div>
+          </details>
+        </section>
+      </div>
+    </div>
+  </div>
+</UI.page>

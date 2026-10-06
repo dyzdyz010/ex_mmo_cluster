@@ -5,7 +5,12 @@ defmodule AuthServerWeb.AccountAdminController do
   plug :put_layout, false
   plug :put_root_layout, false
 
-  def login_page(conn,_), do: render(conn,:login,error: nil)
+  def login_page(conn,_) do
+    case Identity.viewer(get_session(conn,:account_access)) do
+      %{admin: true} -> redirect(conn,to: "/admin")
+      _ -> render(conn,:login,error: nil)
+    end
+  end
   def login(conn,p) do
     case Identity.login(p["email"],p["password"],false) do
       {:ok,s} ->
@@ -26,7 +31,7 @@ defmodule AuthServerWeb.AccountAdminController do
     count=integer(p["count"])
     expiry=if p["days"] in [nil,""],do: nil,else: Identity.now()+integer(p["days"])*86400
     case Identity.administer(get_session(conn,:account_access),:generate,{count,p["batch"] || "",expiry}) do
-      {:ok,codes} -> page(conn,%{},"请现在复制这些邀请码；关闭后无法重新查看原码。",codes)
+      {:ok,codes} -> page(conn,%{},{:warn,"请现在复制这些邀请码；离开本页后无法再次查看原码。"},codes)
       error -> denied_or_page(conn,error)
     end
   end
@@ -38,14 +43,15 @@ defmodule AuthServerWeb.AccountAdminController do
       error -> denied_or_page(conn,error)
     end
   end
-  defp page(conn,p,message,codes) do
-    case Identity.administer(get_session(conn,:account_access),:list,AuthServerWeb.AccountController.filters(p)) do
-      {:ok,invites} -> render(conn,:index,invites: invites,policy: Identity.registration_policy(),message: message,codes: codes)
+  defp page(conn,p,notice,codes) do
+    filters=AuthServerWeb.AccountController.filters(p)
+    case Identity.administer(get_session(conn,:account_access),:list,filters) do
+      {:ok,invites} -> render(conn,:index,invites: invites,filters: filters,policy: Identity.registration_policy(),notice: notice,codes: codes,viewer: Identity.viewer(get_session(conn,:account_access)))
       _ -> conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
     end
   end
   defp denied_or_page(conn,{:error,r}) when r in [:forbidden,:invalid_session], do: conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
-  defp denied_or_page(conn,{:error,r}), do: page(put_status(conn,400),%{},"操作失败：#{r}",[])
+  defp denied_or_page(conn,{:error,r}), do: page(put_status(conn,400),%{},{:error,"操作失败：#{r}"},[])
   defp integer(v) when is_binary(v) do
     case Integer.parse(v) do
       {n,""}->n

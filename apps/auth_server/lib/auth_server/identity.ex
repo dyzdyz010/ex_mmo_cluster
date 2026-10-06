@@ -164,6 +164,18 @@ defmodule AuthServer.Identity do
       error -> error
     end
   end
+  @doc "账号中心展示的身份摘要；调用方已通过 authenticate/1。"
+  def profile(account_id) do
+    {a,c}=Store.account_with_character(account_id)
+    %{email: a.email, character: c.name}
+  end
+  @doc "网页顶栏的当前登录者；未登录或会话已失效时为 nil。"
+  def viewer(token) do
+    case authenticate(token) do
+      {:ok,c} -> profile(c.account_id) |> Map.put(:admin,c.auth_admin)
+      _ -> nil
+    end
+  end
   @doc "当前密码确认后更改密码，清除所有设备会话。"
   def change_password(access,current,password) do
     with {:ok,c} <- authenticate(access), :ok <- password_valid(password), true <- is_binary(current) and byte_size(current)<=512 do

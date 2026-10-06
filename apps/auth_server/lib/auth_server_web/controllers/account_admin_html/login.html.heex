@@ -1,9 +1,19 @@
-<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Voxim 管理员登录</title></head>
-<body style="font:16px system-ui;background:#141719;color:#e7e9e9;padding:40px;max-width:440px;margin:auto">
-<h1>管理员登录</h1><p>使用获授权的 Voxim 邮箱账号。</p><p :if={@error} role="alert">{@error}</p>
-<.form for={%{}} action="/admin/login">
-  <p><label>邮箱 <input name="email" type="email" autocomplete="username" required/></label></p>
-  <p><label>密码 <input name="password" type="password" autocomplete="current-password" required/></label></p>
-  <button type="submit">登录</button>
-</.form></body></html>
+<UI.page title="管理员登录" tagline="ADMIN" home="/admin">
+  <div class="sk-container ac-w-solo">
+    <section class="ac-card ac-card--gold" aria-labelledby="screen-title">
+      <p class="ac-eyebrow"><span class="ac-dot ac-dot--gold"></span>Admin · Sign in</p>
+      <h1 id="screen-title" class="ac-title">管理员登录</h1>
+      <p class="ac-text">使用已获授权的 Voxim 邮箱账号登录，管理注册方式与邀请码。</p>
+      <UI.notice notice={@error && {:error, @error}} role="alert" />
+      <.form for={%{}} action="/admin/login" class="ac-form">
+        <div class="ac-field">
+          <label class="ac-label" for="email">邮箱</label>
+          <input id="email" name="email" type="email" class="ac-input" autocomplete="username" maxlength="254" autofocus required />
+        </div>
+        <UI.secret id="password" name="password" label="密码" autocomplete="current-password" />
+        <button type="submit" class="ac-btn ac-btn--primary ac-btn--block">登录<span class="ac-arrow" aria-hidden="true">→</span></button>
+      </.form>
+      <div class="ac-card-foot"><a href="/auth">前往玩家账号中心</a></div>
+    </section>
+  </div>
+</UI.page>

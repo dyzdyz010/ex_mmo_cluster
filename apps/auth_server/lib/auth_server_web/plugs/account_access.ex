@@ -21,7 +21,13 @@ defmodule AuthServerWeb.Plugs.AccountRateLimit do
   def call(conn,_) do
     case AuthServer.RateLimit.take({:auth_ip,conn.remote_ip},60,60) do
       :ok -> conn |> put_resp_header("cache-control","no-store")
-      error -> conn |> AuthServerWeb.AccountController.respond(error) |> halt()
+      error -> conn |> limited(error) |> halt()
     end
   end
+  # 网页入口给出账号页面，API 保持 JSON 契约。
+  defp limited(%{private: %{phoenix_format: "html"}}=conn,_) do
+    conn |> put_resp_header("retry-after","60") |> put_resp_content_type("text/html")
+    |> send_resp(429,AuthServerWeb.AccountPortalHTML.rate_limited_page())
+  end
+  defp limited(conn,error), do: AuthServerWeb.AccountController.respond(conn,error)
 end
