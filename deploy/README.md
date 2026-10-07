@@ -24,15 +24,17 @@ downloads and UDP.
 
 | Host | Serves | Notes |
 |---|---|---|
-| `voxim.hemifuture.cn` | Player portal: `/auth` (account centre, `/` → `/auth`), `/admin` (invites) | `PHX_HOST`; mail links point here; session cookie stays on this host |
+| `account.hemifuture.cn` | Player portal: `/auth` (account centre, `/` → `/auth`), `/admin` (invites) | `PHX_HOST`; mail links point here; session cookie stays on this host |
 | `mmo.hemifuture.cn` | Game service: `/account/*` client API, `/game/*` world data, `/playtest/*` legacy; QUIC `20003/udp` | Shipped clients and the QUIC certificate (`server_name`) use this name, so keep it. `/auth` → 301 portal |
 | `notify.mmo.hemifuture.cn` | Sender domain for Aliyun DirectMail (`noreply@notify.mmo.hemifuture.cn`, SMTP `smtpdm.aliyun.com:465`) | SPF/DKIM (`aliyun-cn-hangzhou`)/DMARC/MX records only, no web host; `mail.hemifuture.cn` is the Stalwart mailbox server, so keep them separate |
 
-Reserved; create these only when a feature needs them:
+Names describe the role, not the project: the game may be renamed, and only page and mail text would follow.
 
-- `voxim-admin.` — move `/admin` here when it needs an IP allow-list or extra auth in front.
-- `voxim-cdn.` — client packages and large world assets via OSS+CDN.
-- `voxim-status.` — a status page.
+Reserved; create these only when a feature needs them (prefixed with the service, like `notify.mmo.`):
+
+- `mmo-admin.` — move `/admin` here when it needs an IP allow-list or extra auth in front.
+- `mmo-cdn.` — client packages and large world assets via OSS+CDN.
+- `mmo-status.` — a status page.
 
 Further worlds or shards should come from a server list returned by the API, not from new DNS names in shipped
 clients.
