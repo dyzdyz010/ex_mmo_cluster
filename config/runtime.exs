@@ -41,7 +41,8 @@ if mail_host = System.get_env("VOXIM_MAIL_HOST") do
   else
     smtp ++ [username: String.to_charlist(System.fetch_env!("VOXIM_MAIL_USER")),
       password: String.to_charlist(System.fetch_env!("VOXIM_MAIL_PASSWORD")),
-      sockopts: [verify: :verify_peer, cacerts: :public_key.cacerts_get(),
+      # gen_smtp 默认 depth 0（只接受根证书直签），公共 SMTP 证书都带中间证书，必须放宽链深度。
+      sockopts: [verify: :verify_peer, depth: 4, cacerts: :public_key.cacerts_get(),
         server_name_indication: String.to_charlist(mail_host),
         customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]]]
   end

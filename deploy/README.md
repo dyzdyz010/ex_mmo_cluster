@@ -26,7 +26,7 @@ downloads and UDP.
 |---|---|---|
 | `voxim.hemifuture.cn` | Player portal: `/auth` (account centre, `/` → `/auth`), `/admin` (invites) | `PHX_HOST`; mail links point here; session cookie stays on this host |
 | `mmo.hemifuture.cn` | Game service: `/account/*` client API, `/game/*` world data, `/playtest/*` legacy; QUIC `20003/udp` | Shipped clients and the QUIC certificate (`server_name`) use this name, so keep it. `/auth` → 301 portal |
-| `notify.hemifuture.cn` | Sender domain for Aliyun DirectMail (`noreply@notify.hemifuture.cn`) | SPF/DKIM/DMARC records only; `mail.hemifuture.cn` is the Stalwart mailbox server, so keep them separate |
+| `notify.mmo.hemifuture.cn` | Sender domain for Aliyun DirectMail (`noreply@notify.mmo.hemifuture.cn`, SMTP `smtpdm.aliyun.com:465`) | SPF/DKIM (`aliyun-cn-hangzhou`)/DMARC/MX records only, no web host; `mail.hemifuture.cn` is the Stalwart mailbox server, so keep them separate |
 
 Reserved; create these only when a feature needs them:
 
