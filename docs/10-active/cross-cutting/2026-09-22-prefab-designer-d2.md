@@ -14,6 +14,8 @@
 
 现有通用 Llm profile 加入以下技能配置即可调用；endpoint、scheduler、英文 activities、continue_activity 与持久化 memory 沿用 D4。`labels` 由调用方提供 `定义十六进制 id => 部件说明`，不在产品模块写死目录样本。
 
+2026-10-06 修订：技能名改为 `design_house`（模块 `Skills.HouseDesign`），配置键随之改为 `skills: %{design_house: ...}`；父脑中断检查改由 `interrupt_policy: {GateServer.Npc.Jev, %{scheduler:, activities:, continue_activity:}}` 显式开启，单独的 `scheduler` 只给荒野施工分诊用。见 [评审修复记录](2026-10-06-npc-runtime-review-fixes.md)。
+
 ```elixir
 skills: %{
   design: %{labels: labels, budget: %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}},

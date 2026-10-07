@@ -13,6 +13,60 @@ defmodule GateServer.Npc.Jev do
   endpoint: `%{url:, key:, model:, cacertfile: 可选}`。
   """
   @confidence 0.85
+  @behaviour GateServer.Npc.Scheduler
+  require Logger
+
+  @doc """
+  中断检查（`profile.interrupt_policy = {Jev, config}`）。config 为
+  `%{scheduler: endpoint, activities: 活动 profile, continue_activity: 继续的选项, request: 可选发送函数}`。
+  只有有把握地选了非继续的选项才中断；拿不准（置信度不足、选项不属于 profile）等同继续，下次检查再问。
+  """
+  @impl true
+  def decide(context, config) do
+    situation =
+      "An NPC is executing the #{context.skill} skill. " <>
+        heard(context.heard) <>
+        " Current observation: " <>
+        Jason.encode!(
+          GateServer.Npc.Context.plain(
+            Map.take(context.observation, [:self, :entities, :balances, :pending])
+          )
+        )
+
+    result =
+      ask(
+        config.scheduler,
+        config.activities,
+        situation,
+        nil,
+        Map.get(config, :request, &GateServer.Npc.Http.request/2)
+      )
+
+    decision =
+      case result do
+        {:ok, {:act, activity}, _} when activity == config.continue_activity -> :continue
+        {:ok, {:act, activity}, _} -> {:interrupt, activity}
+        {:ok, {:escalate, _}, _} -> :continue
+        {:ok, decision, _} -> {:interrupt, decision}
+        {:error, reason} -> {:error, reason}
+      end
+
+    verdict = with {:ok, verdict, _} <- result, do: verdict
+
+    Logger.info(
+      "npc_interrupt_check skill=#{context.skill} verdict=#{inspect(verdict)} decision=#{inspect(decision)}"
+    )
+
+    decision
+  end
+
+  # 听到的话原样转述（玩家原文可以是任何语言）；没有就明确说没有，不让分类器猜。
+  defp heard([]), do: "No player is addressing the NPC."
+
+  defp heard(messages),
+    do:
+      "Players are addressing the NPC (newest first): " <>
+        Jason.encode!(GateServer.Npc.Context.plain(messages)) <> "."
 
   @doc "请求体。profile 与 situation 为英文；planned_action 是将做的破坏性动作，没有则不问 harm。"
   def body(endpoint, profile, situation, planned_action \\ nil) do
@@ -69,7 +123,7 @@ defmodule GateServer.Npc.Jev do
         profile,
         situation,
         planned_action \\ nil,
-        request \\ &GateServer.Npc.Brain.Llm.request/2
+        request \\ &GateServer.Npc.Http.request/2
       ) do
     with {:ok, response} <-
            request.(endpoint, body(endpoint, profile, situation, planned_action)),

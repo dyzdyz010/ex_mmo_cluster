@@ -6,7 +6,7 @@ GateServer 负责鉴权、会话与 Voxim 协议解码转发，不拥有权威�
 
 - `GateServer.Session.Claims`：Gate 侧唯一的会话身份分配
 - `GateServer.Transport.QuicListener`：Voxim QUIC 监听与每连接进程
-- `GateServer.NpcSup`：NPC 身体（`npc/`）的动态监督器
+- `GateServer.NpcSup`：NPC 身体（`npc/`）的动态监督器；Body 为 transient，会话丢失由 Body 自己重新 claim，只有崩溃才经监督者重启（见 `npc/README.md`）
 
 ## Voxim M1 正式入口
 

@@ -64,7 +64,7 @@ defmodule GateServer.NpcBrainLlmTest do
   end
 
   defp brain(profile) do
-    pid = Llm.init(Map.put_new(profile, :memory, Store))
+    pid = GateServer.Npc.Runtime.init({Llm, Map.put_new(profile, :memory, Store)})
     on_exit(fn -> stop_brain(pid) end)
     pid
   end
@@ -240,7 +240,7 @@ defmodule GateServer.NpcBrainLlmTest do
                  components: [%{instance: [10, 0], material: 3, cells: [{1, 1, 1}]}]
                }
              }
-           ] = Llm.remember(outcome, [], {15.0, 64.9, 10.0})
+           ] = GateServer.Npc.Perception.project(outcome, [], {15.0, 64.9, 10.0})
 
     # 建成区能有几百件：只给模型最近的 24 件，总数另报。
     # 第 i 件在 x = 10i 米；自己在 x = 12 → 最近的是第 1 件（2 米），第 24 件之后的被裁掉。
@@ -248,7 +248,7 @@ defmodule GateServer.NpcBrainLlmTest do
     far_first = %{outcome | data: %{seq: 9, property_states: Enum.reverse(many)}}
 
     assert [%{data: %{attachments: listed, total: %{attachments: 40, components: 0}}}] =
-             Llm.remember(far_first, [], {12.0, 64.9, 10.0})
+             GateServer.Npc.Perception.project(far_first, [], {12.0, 64.9, 10.0})
 
     assert Enum.to_list(1..24) == Enum.map(listed, & &1.attachment_id) |> Enum.sort()
     assert 1 == hd(listed).attachment_id
@@ -282,7 +282,7 @@ defmodule GateServer.NpcBrainLlmTest do
       %{id: id, verb: :look, status: :done, reason: nil, data: %{seq: 9, probe_occupancy: cells}}
     end
 
-    first = Llm.remember(look.(1, [cell.([16, 64, 10], 11)]), [], nil)
+    first = GateServer.Npc.Perception.project(look.(1, [cell.([16, 64, 10], 11)]), [], nil)
     assert [%{data: %{solid: %{"16,10" => [[64, 11]]}}}] = first
 
     # (16,64,10) 是 9101 号角色花材料放下的：模型看到的那一项多一个放置者；其余是天然地形。
@@ -301,7 +301,7 @@ defmodule GateServer.NpcBrainLlmTest do
                }
              },
              %{id: 1, verb: :look, data: nil}
-           ] = Llm.remember(look.(2, cells), first, nil)
+           ] = GateServer.Npc.Perception.project(look.(2, cells), first, nil)
 
     assert 2 == map_size(solid)
   end
@@ -316,7 +316,9 @@ defmodule GateServer.NpcBrainLlmTest do
     }
 
     outcome = %{id: 1, verb: :look, status: :done, reason: nil, data: %{probe_occupancy: [row]}}
-    assert [%{data: %{solid: %{}, refined: [^row]}}] = Llm.remember(outcome, [], nil)
+
+    assert [%{data: %{solid: %{}, refined: [^row]}}] =
+             GateServer.Npc.Perception.project(outcome, [], nil)
   end
 
   test "published definition IDs remain hexadecimal even when the digest bytes are valid text" do
@@ -324,7 +326,12 @@ defmodule GateServer.NpcBrainLlmTest do
     profile = %{goal: "g", tools: %{}, endpoint: %{model: "m"}}
 
     outcomes = [
-      %{id: 1, verb: :design, status: :done, data: %{definition_id: :binary.copy(<<42>>, 32)}}
+      %{
+        id: 1,
+        verb: :design_house,
+        status: :done,
+        data: %{definition_id: :binary.copy(<<42>>, 32)}
+      }
     ]
 
     input = Llm.body(profile, observation, outcomes).input |> Jason.decode!()
@@ -723,5 +730,142 @@ defmodule GateServer.NpcBrainLlmTest do
     Process.sleep(700)
     Llm.handle_event({:observation, idle}, brain)
     assert_receive {:asked, 2}, 1_000
+  end
+
+  # —— 2026-10-06 评审修复的回归：模型输出是外部输入，询问必须有界且不会永久沉默 ——
+
+  defp idle(entities \\ []),
+    do: %{
+      self: %{entity_id: 77, tick: 1, position: {0.0, 0.0, 0.0}},
+      entities: entities,
+      pending: [],
+      balances: nil
+    }
+
+  # 按顺序给出应答，每次询问都报给测试进程（第 n 次 → {:asked, n, input}）。
+  defp scripted(answers) do
+    test = self()
+    count = :counters.new(1, [])
+
+    fn _endpoint, body ->
+      :counters.add(count, 1, 1)
+      n = :counters.get(count, 1)
+      send(test, {:asked, n, Jason.decode!(body.input)})
+      Enum.at(answers, n - 1, {:ok, %{"output" => [call("wait", %{seconds: 300})]}})
+    end
+  end
+
+  test "an answer without any tool call is asked again after a backoff instead of going silent" do
+    request =
+      scripted([
+        {:ok,
+         %{"status" => "incomplete", "output" => [%{"type" => "reasoning", "summary" => []}]}}
+      ])
+
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    observations(brain, idle())
+    assert_receive {:asked, 1, _}
+    # 第一次退避 2 秒：不会立刻重问，但一定会重问。
+    refute_receive {:asked, 2, _}, 1_500
+    assert_receive {:asked, 2, _}, 2_000
+  end
+
+  test "malformed arguments and unknown tools are rejected locally and shown to the model; nothing reaches Body" do
+    request =
+      scripted([
+        {:ok,
+         %{
+           "output" => [
+             %{
+               "type" => "function_call",
+               "name" => "place",
+               "arguments" => "{not json",
+               "call_id" => "a"
+             }
+           ]
+         }},
+        {:ok, %{"output" => [call("dance", %{style: "waltz"})]}}
+      ])
+
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    observations(brain, idle())
+    assert_receive {:asked, 1, _}
+
+    assert_receive {:asked, 2,
+                    %{
+                      "outcomes" => [
+                        %{
+                          "verb" => "invalid_tool_arguments",
+                          "status" => "rejected",
+                          "command" => %{"tool" => "place", "args" => "invalid_tool_arguments"}
+                        }
+                      ]
+                    }},
+                   3_000
+
+    assert_receive {:asked, 3,
+                    %{
+                      "outcomes" => [
+                        _,
+                        %{"verb" => "unknown_tool", "command" => %{"tool" => "dance"}}
+                      ]
+                    }},
+                   3_000
+
+    refute_received {:"$gen_cast", {:command, _}}
+    assert Process.alive?(brain)
+  end
+
+  test "a prefab instance that is not a list is passed on for Body to reject, not a crash" do
+    response = %{"output" => [call("prefab", %{op: "remove", instance: "abc"})]}
+    assert [%{verb: :prefab_remove, instance_id: "abc"}] = Llm.commands(response, nil, %{}, 1)
+  end
+
+  test "asks are capped per hour: after the budget is used the brain stays quiet" do
+    request =
+      scripted([
+        {:ok, %{"output" => [call("stop", %{})]}},
+        {:ok, %{"output" => [call("stop", %{})]}},
+        {:ok, %{"output" => [call("stop", %{})]}}
+      ])
+
+    brain =
+      brain(%{
+        goal: "g",
+        tools: %{1 => "镐"},
+        endpoint: %{model: "m"},
+        request: request,
+        max_requests_per_hour: 2
+      })
+
+    observations(brain, idle())
+
+    for id <- 1..2 do
+      assert_receive {:asked, ^id, _}, 3_000
+      assert_receive {:"$gen_cast", {:command, %{id: ^id, verb: :stop}}}
+
+      Llm.handle_event(
+        {:outcome, %{id: id, verb: :stop, status: :done, reason: nil, data: nil}},
+        brain
+      )
+    end
+
+    refute_receive {:asked, 3, _}, 2_500
+  end
+
+  test "someone walking up wakes a waiting brain; someone far away does not" do
+    request = scripted([{:ok, %{"output" => [call("wait", %{seconds: 300})]}}])
+    brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})
+    Llm.handle_event({:observation, idle()}, brain)
+    assert_receive {:asked, 1, _}
+    Process.sleep(1_100)
+
+    far = %{entity_id: 5, entity_epoch: 1, kind: 0, tick: 1, position: {20.0, 0.0, 0.0}}
+    Llm.handle_event({:observation, idle([far])}, brain)
+    refute_receive {:asked, 2, _}, 500
+
+    near = %{far | position: {3.0, 0.0, 0.0}}
+    Llm.handle_event({:observation, idle([near])}, brain)
+    assert_receive {:asked, 2, %{"entities" => [%{"entity_id" => 5}]}}, 1_000
   end
 end

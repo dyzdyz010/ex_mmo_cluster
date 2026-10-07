@@ -2,14 +2,31 @@ defmodule GateServer.Npc.Brain do
   @moduledoc """
   全局系统功能：NPC 决策后端的可插拔边界。Body 固定，Brain 可换（决策树、LLM、外部分类模型）。
 
-  通用角色使用一个 `Brain.Llm`，拥有全部原子动词；长任务是 `profile.skills` 提供的工具，
-  在独立 worker 中运行并只回一个最终 Outcome。荒野施工复用 Builder 的纯状态机，
-  不启动第二个决策大脑。运行期间由父大脑调用 Jev；活动、判据、优先级均来自 profile。
-  记忆工具直接读写 NpcMemory，每轮检索近期经历、近期笔记和相关记忆；进度与动手依据始终由 World 现查。
+  所有后端由 `Runtime` 组合，拥有同一组原子动作、技能与记忆命令。
+  长任务来自 `profile.skills`，由 Runtime 的独立 worker 执行并只回一个最终 Outcome。
+  荒野施工驱动 Builder 纯状态机。中断检查只由 `interrupt_policy` 开启；不配置时不调用外部调度模型。
+  记忆读写经 Memory，进度与动手依据始终由 World 现查。
   输入规范见 docs/10-active/cross-cutting/2026-09-22-npc-context-memory-contract.md。
 
-  回调在 Body 进程内同步调用，必须立刻返回：慢后端在 `init/1` 里起自己的进程，事件转发过去，算好后用
-  `GateServer.Npc.Body.command/2` 异步投回。返回空命令表 = 保持当前动作；停止必须显式 `:stop`。
+  回调在 Runtime 进程内同步调用，必须立刻返回。慢后端在 `init/1` 保存调用者 self() 作为命令接收端，
+  起自己的进程处理事件，算好后用 `GateServer.Npc.Body.command/2` 异步投回该接收端。
+  返回空命令表 = 保持当前动作；停止必须显式 `:stop`。每个调用 id 在本次 Runtime 生命周期中唯一，
+  `{:skill, call_id, step_id}` 保留给技能内部命令。不得从后端私自穿透 Runtime 取得 Body/World。
+
+  ## 共用技能与记忆命令
+
+      %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
+      %{id:, verb: :cancel_skill, call: 原技能调用号}
+      %{id:, verb: :remember, key:, text:}
+      %{id:, verb: :recall, key:}
+      %{id:, verb: :search_memory, query:}
+
+  参数契约由 Skills.tools(profile) 给出；Skills 的每个模块实现 Skill behaviour。
+  技能终态的 verb 是所调用的技能名。取消命令有自己的 Outcome：受理为 done（data.call），没有对应在途技能为
+  no_active_skill；被取消的技能仍以原调用号回终态。取消等待 worker DOWN，再等带 settle 的 Body.stop：
+  移动停稳且该调用已投递的世界调用都有了结果；期间落定的结果放在终态 data.settled，已提交事务不撤销，
+  stop 失败明确返回 stop_failed。
+  Body.observe 可读取技能终态。首个正式 Observation 前的技能和记忆调用回报 invalid_session。
 
   事件与命令都是纯数据（数字、原子、元组、map），不含 pid / ref / 闭包，进程外 adapter 负责自己的序列化。
 
@@ -28,7 +45,7 @@ defmodule GateServer.Npc.Brain do
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
       %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
-      %{id:, verb: :stop}                                       # 顶替在途的移动命令
+      %{id:, verb: :stop}                                       # 顶替在途的移动命令；settle: 技能调用号 见上文取消
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
       %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格
@@ -79,7 +96,19 @@ defmodule GateServer.Npc.Brain do
   事件 `{:heard, %{entity_id:, text:}}` 与命令 `say` 是为玩家聊天预留的形状；正式栈接入聊天之前不会有 `:heard` 事件。
   """
 
-  @callback init(profile :: map) :: state :: term
-  @callback handle_event({:observation, map} | {:outcome, map} | {:heard, map}, state :: term) ::
-              {[map], state :: term}
+  @type command :: %{
+          required(:id) => term(),
+          required(:verb) => atom(),
+          optional(atom()) => term()
+        }
+  @type outcome :: %{
+          id: term(),
+          verb: atom(),
+          status: :done | :rejected | :superseded,
+          reason: term(),
+          data: map() | nil
+        }
+  @type event :: {:observation, map()} | {:outcome, outcome()} | {:heard, map()}
+  @callback init(profile :: map()) :: state :: term()
+  @callback handle_event(event(), state :: term()) :: {[command()], state :: term()}
 end

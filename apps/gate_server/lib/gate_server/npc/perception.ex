@@ -84,4 +84,77 @@ defmodule GateServer.Npc.Perception do
        World.simulation_snapshot(world, [cid], box)
        |> Map.take([:seq, :property_states])
        |> Map.put(:bounds_region_half_open, box)}
+
+  # 模型工具输出限最近 24 件；原始只读查询仍返回完整窗口。
+  @nearest 24
+  @doc "Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；更早的 look 只留结论。"
+  def project(
+        %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome,
+        outcomes,
+        _position
+      ) do
+    columns =
+      for(
+        %{cell: [x, y, z], material: material} = cell <- cells,
+        material != 0,
+        # 有人花材料放下的格带上放置者的 entity_id（第三项）；天然地形与作者写入的格只有 [y, material]。
+        do: {"#{x},#{z}", [y, material] ++ List.wrap(cell[:placed_by])}
+      )
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
+
+    data =
+      Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])
+      |> Map.merge(%{solid: columns, refined: Enum.filter(cells, & &1.refined)})
+
+    [%{outcome | data: data} | older]
+  end
+
+  # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。
+  def project(
+        %{verb: :inspect, status: :done, data: %{property_states: rows}} = outcome,
+        outcomes,
+        position
+      ) do
+    # micro 坐标 / 8 = 米；按到自己的距离取最近的 @nearest 件。
+    nearest = fn rows ->
+      rows
+      |> Enum.sort_by(fn %{micro: {x, y, z}} -> distance({x / 8, y / 8, z / 8}, position) end)
+      |> Enum.take(@nearest)
+    end
+
+    attachments =
+      for %{owner: {id, type}} = row <- nearest.(Enum.filter(rows, &(&1.granularity == 3))) do
+        %{attachment_id: id, kind: div(type, 3), axis: rem(type, 3), micro: row.micro}
+        |> Map.merge(Map.take(row, [:material, :hp, :max_hp, :circuit]))
+      end
+
+    components =
+      for %{owner: {birth, occurrence}} = row <-
+            nearest.(Enum.filter(rows, &(&1.granularity == 2))),
+          do: %{
+            instance: [birth, occurrence],
+            material: row.material,
+            cells: row.observation_cells
+          }
+
+    data =
+      Map.merge(Map.take(outcome.data, [:seq, :bounds_region_half_open]), %{
+        attachments: attachments,
+        components: components,
+        total: %{
+          attachments: Enum.count(rows, &(&1.granularity == 3)),
+          components: Enum.count(rows, &(&1.granularity == 2))
+        }
+      })
+
+    older = for o <- outcomes, do: if(o.verb == :inspect, do: %{o | data: nil}, else: o)
+    [%{outcome | data: data} | older]
+  end
+
+  def project(outcome, outcomes, _position), do: [outcome | outcomes]
+
+  defp distance({x, y, z}, {px, py, pz}),
+    do: :math.sqrt((x - px) * (x - px) + (y - py) * (y - py) + (z - pz) * (z - pz))
 end

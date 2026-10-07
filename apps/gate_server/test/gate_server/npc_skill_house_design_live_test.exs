@@ -9,7 +9,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
   """
   use ExUnit.Case, async: false
   require Logger
-  alias GateServer.Npc.{Skills, Brain.Llm}
+  alias GateServer.Npc.Skills
   alias VoxelRegion.{World, Prefab, Spatial}
   alias VoxelRegion.TestSupport.{Source, Actor}
   alias SceneServer.Movement.Scene
@@ -153,7 +153,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
       scene: scene,
       actor: actor,
       request: request,
-      profile: %{endpoint: endpoint, skills: %{design: %{labels: labels, budget: budget}}}
+      profile: %{endpoint: endpoint, skills: %{design_house: %{labels: labels, budget: budget}}}
     }
 
     before = World.material_snapshot(world, [@cid], Enum.map(ground, &elem(&1, 0)))
@@ -180,7 +180,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
     try do
       result =
         Skills.run(context, %{
-          skill: :design,
+          skill: :design_house,
           args: %{"goal" => goal, "anchor_micro" => Tuple.to_list(@anchor), "orientation" => 0}
         })
 
@@ -266,7 +266,7 @@ defmodule GateServer.NpcSkillDesignLiveTest do
       write_json(out, "request-#{round}.json", body)
       started = System.monotonic_time(:millisecond)
       Logger.info("design_live_request round=#{round} model=#{endpoint.model} status=start")
-      response = Llm.request(endpoint, body)
+      response = GateServer.Npc.Http.request(endpoint, body)
       write_json(out, "response-#{round}.json", response)
 
       {tools, usage} =

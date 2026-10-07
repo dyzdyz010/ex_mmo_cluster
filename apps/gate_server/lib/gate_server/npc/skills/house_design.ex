@@ -1,6 +1,7 @@
-defmodule GateServer.Npc.Skills.Design do
+defmodule GateServer.Npc.Skills.HouseDesign do
   @moduledoc """
-  全局系统功能：有界住宅设计会话。调用方在技能 worker 中同步调用，不占用 Body 节拍。
+  全局系统功能：有界住宅设计会话（技能名 `design_house`）。发布条件是住宅验收，只适用于住宅；
+  其他建筑类型应是各自的设计技能，不复用这里的验收。调用方在技能 worker 中同步调用，不占用 Body 节拍。
   草稿复用 Prefab.Draft；完整 Responses 消息与工具结果只属于本次会话，世界仍由 World 裁决。
   住宅验收是本技能的发布条件，不增加 D1 或 World 的发布、放置权限。
   token 预算按响应 usage 累计，超限响应不执行工具；这不是单次请求前的费用硬封顶。
@@ -10,7 +11,7 @@ defmodule GateServer.Npc.Skills.Design do
   alias VoxelRegion.Prefab.Draft
   alias SceneServer.{PrefabDesigner, Movement.Scene}
   alias SceneServer.PrefabDesigner.Check
-  alias GateServer.Npc.{Context, Memory, Perception, Brain.Llm}
+  alias GateServer.Npc.{Context, Memory, Perception}
 
   @metrics %{
     request_count: 0,
@@ -21,6 +22,42 @@ defmodule GateServer.Npc.Skills.Design do
     failed_checks: 0,
     usage_complete: true
   }
+
+  @behaviour GateServer.Npc.Skill
+  @impl true
+  def definition(_profile) do
+    %{
+      description: "多轮设计一栋住宅：在无界面工作台组合目录部件、修改宏格、查看并检查，成功返回已发布定义 id。不会放到地图上。",
+      parameters: %{
+        type: "object",
+        properties:
+          Map.put(GateServer.Npc.Skill.placement_properties(), :goal, %{type: "string"}),
+        required: ["goal", "anchor_micro", "orientation"],
+        additionalProperties: false
+      }
+    }
+  end
+
+  @impl true
+  def run(context, %{"goal" => goal, "anchor_micro" => anchor, "orientation" => o}, config)
+      when is_binary(goal) and byte_size(goal) > 0 do
+    case GateServer.Npc.Skill.anchor(anchor, o) do
+      {:ok, anchor} ->
+        run(
+          Map.merge(context, %{
+            endpoint: context.profile.endpoint,
+            labels: Map.get(config, :labels, %{}),
+            budget: Map.fetch!(config, :budget)
+          }),
+          %{goal: goal, anchor: anchor, orientation: o}
+        )
+
+      {:error, reason} ->
+        {:error, reason, @metrics}
+    end
+  end
+
+  def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
   @doc "返回发布结果或明确失败及实际模型计量；模型请求由 context.request 注入。"
   def run(context, args) do
@@ -266,30 +303,15 @@ defmodule GateServer.Npc.Skills.Design do
 
   defp usage(_, _), do: {:error, :usage_unavailable}
 
-  defp call(%{"output" => output}) when is_list(output) do
-    case Enum.filter(output, &(is_map(&1) and &1["type"] == "function_call")) do
-      [%{"call_id" => id, "name" => name, "arguments" => json}]
-      when is_binary(id) and is_binary(json) ->
-        cond do
-          name not in [
-            "edit",
-            "view",
-            "slice",
-            "check",
-            "publish",
-            "look",
-            "inspect",
-            "remember",
-            "recall",
-            "search_memory"
-          ] ->
-            {:error, {:unknown_tool, name}}
+  @tools ~w(edit view slice check publish look inspect remember recall search_memory)
 
-          true ->
-            case Jason.decode(json) do
-              {:ok, %{} = params} -> {:ok, id, name, params}
-              _ -> {:error, :invalid_tool_arguments}
-            end
+  defp call(%{"output" => output} = response) when is_list(output) do
+    case GateServer.Npc.Responses.function_calls(response) do
+      [%{call_id: id, name: name, arguments: arguments}] when is_binary(id) ->
+        cond do
+          name not in @tools -> {:error, {:unknown_tool, name}}
+          match?({:ok, _}, arguments) -> {:ok, id, name, elem(arguments, 1)}
+          true -> arguments
         end
 
       _ ->
@@ -322,7 +344,7 @@ defmodule GateServer.Npc.Skills.Design do
          {_, _} = call <- Perception.prepare(actor.position, Perception.command(name, params)),
          {:ok, data} <- Perception.read(context.world, actor.cid, call) do
       verb = if name == "look", do: :look, else: :inspect
-      [result] = Llm.remember(%{verb: verb, status: :done, data: data}, [], actor.position)
+      [result] = Perception.project(%{verb: verb, status: :done, data: data}, [], actor.position)
       {:continue, %{ok: true, observation: result.data, self_position_m: actor.position}, state}
     else
       nil -> rejected(:invalid_perception_bounds, state)

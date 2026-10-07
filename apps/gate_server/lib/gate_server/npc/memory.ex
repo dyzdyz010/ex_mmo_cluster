@@ -11,7 +11,9 @@ defmodule GateServer.Npc.Memory do
       %{
         type: "function",
         name: "remember",
-        description: "按键保存或覆盖长期记忆：计划、经历与约定。世界现状请重新查询。",
+        description:
+          "按键保存或覆盖长期记忆：计划、经历与约定。世界现状请重新查询。最多保留最近写入的 #{DataService.NpcMemory.limits().notes} 条笔记，" <>
+            "更早的会被淘汰；要长期保留的内容请合并进少数几个键。",
         parameters: %{
           type: "object",
           properties: %{key: key, text: %{type: "string", minLength: 1, maxLength: @text_limit}},

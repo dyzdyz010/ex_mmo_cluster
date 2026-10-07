@@ -52,6 +52,21 @@ defmodule GateServer.NpcBodyWorldTest do
          }}
   end
 
+  # 只测试：正式 build 已完成后暂停技能终态，控制取消与世界提交的顺序。
+  defmodule HoldBuild do
+    @behaviour GateServer.Npc.Skill
+    def definition(profile), do: GateServer.Npc.Skills.Build.definition(profile)
+
+    def run(context, args, config) do
+      result = GateServer.Npc.Skills.Build.run(context, args, config)
+      send(config.owner, {:build_committed, self(), result})
+
+      receive do
+        :finish -> result
+      end
+    end
+  end
+
   defp write_world(root) do
     File.mkdir_p!(Path.join([root, FileStore.hex(@cv), "L0"]))
     cells = 66 * 66 * 66
@@ -167,6 +182,13 @@ defmodule GateServer.NpcBodyWorldTest do
     if supply = context[:supply],
       do: {:ok, _} = World.material_supply(world, @npc, "npc-test-supply", supply)
 
+    if context[:runtime_build] do
+      bytes = runtime_definition()
+      id = :crypto.hash(:sha256, bytes)
+      File.write!(Path.join([root, "prefabs", Base.encode16(id) <> ".vxpd"]), bytes)
+      :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+    end
+
     profile =
       Path.expand("../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
       |> File.read!()
@@ -264,8 +286,9 @@ defmodule GateServer.NpcBodyWorldTest do
 
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
 
-    if context[:builder_brain] || context[:builder_live] || context[:wilderness_skill],
-      do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
+    if context[:builder_live] || context[:wilderness_skill] ||
+         context[:runtime_build],
+       do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
       start_supervised!(
@@ -301,6 +324,38 @@ defmodule GateServer.NpcBodyWorldTest do
     %{"op" => "clear", "min" => [9, 64, 14], "max" => [9, 65, 14]},
     %{"op" => "clear", "min" => [11, 65, 15], "max" => [11, 65, 16]}
   ]
+
+  # 只测试：一个石 micro，造价由正式库存精度手算为 1。
+  defp runtime_definition,
+    do:
+      <<"VXPD", 1::32-little, 1::32-little, 0::signed-little-32, 0::signed-little-32,
+        0::signed-little-32, @stone::16-little, 0::32-little>>
+
+  defp brain(%{runtime_build: true} = context) do
+    args = %{
+      "definition" => Base.encode16(:crypto.hash(:sha256, runtime_definition())),
+      "anchor_micro" => [48, 512, 80],
+      "orientation" => 0
+    }
+
+    steps =
+      if context[:cancel_committed],
+        do: [%{verb: :skill, skill: :build, args: args}],
+        else: [
+          %{verb: :skill, skill: :build, args: %{args | "anchor_micro" => [480, 512, 80]}},
+          %{verb: :skill, skill: :build, args: args},
+          %{verb: :query_balances}
+        ]
+
+    {GateServer.Npc.Brain.Routine,
+     %{
+       skills: %{
+         build: if(context[:cancel_committed], do: %{module: HoldBuild, owner: self()}, else: %{})
+       },
+       memory: Memory,
+       steps: steps
+     }}
+  end
 
   defp brain(%{prefab_access: true}),
     do: {GateServer.Npc.Brain.Routine, %{steps: [%{verb: :query_balances}]}}
@@ -375,94 +430,54 @@ defmodule GateServer.NpcBodyWorldTest do
        goal: "Build the specified hut.",
        tools: %{1 => "pickaxe"},
        endpoint: %{model: "m"},
+       # 荒野施工内部分诊用的调度 endpoint；父脑的中断检查另由 interrupt_policy 显式开启。
        scheduler: %{model: "j"},
        request: request,
        memory: Memory,
-       activities: %{
-         instructions: "Continue the task unless immediate danger requires stopping.",
-         activities: %{
-           "continue_task" => "The current task can continue.",
-           "stop_task" => "Immediate danger requires stopping."
-         }
-       },
-       continue_activity: "continue_task",
-       skills: %{wilderness: %{activities: GateServer.Npc.Brain.Builder.activity_profile()}}
+       interrupt_policy:
+         {GateServer.Npc.Jev,
+          %{
+            scheduler: %{model: "j"},
+            request: request,
+            continue_activity: "continue_task",
+            activities: %{
+              instructions: "Continue the task unless immediate danger requires stopping.",
+              activities: %{
+                "continue_task" => "The current task can continue.",
+                "stop_task" => "Immediate danger requires stopping."
+              }
+            }
+          }},
+       skills: %{wilderness: %{activities: GateServer.Npc.Builder.activity_profile()}}
      }}
   end
 
-  # 混合后端，真实模型：规划者 = .env 里的 LLM，调度者 = 真实 Jev；发送函数只在外面包一层计数。
+  # 荒野施工技能，真实模型：规划者 = .env 里的 LLM，分诊 = 真实 Jev；脚本后端调用一次技能，发送函数只在外面包一层计数。
   defp brain(%{builder_live: true}) do
     test = self()
 
     request = fn endpoint, body ->
       send(test, {:asked, if(is_map_key(body, :questions), do: :scheduler, else: :planner)})
-      GateServer.Npc.Brain.Llm.request(endpoint, body)
+      GateServer.Npc.Http.request(endpoint, body)
     end
 
-    {GateServer.Npc.Brain.Builder,
+    goal =
+      "Build a small cottage. Footprint: cells x=8..13, z=14..18 (6 by 5). The ground surface is y=63, so the lowest wall cells are y=64. " <>
+        "Walls of stone (material 11), three cells high (y=64..66); a flat roof of wood (material 19) at y=67 covering the whole footprint; " <>
+        "a door opening in the wall that faces -Z; at least two window openings at y=65. The inside must stay empty."
+
+    {GateServer.Npc.Brain.Routine,
      %{
-       cid: @npc,
-       goal:
-         "Build a small cottage. Footprint: cells x=8..13, z=14..18 (6 by 5). The ground surface is y=63, so the lowest wall cells are y=64. " <>
-           "Walls of stone (material 11), three cells high (y=64..66); a flat roof of wood (material 19) at y=67 covering the whole footprint; " <>
-           "a door opening in the wall that faces -Z; at least two window openings at y=65. The inside must stay empty.",
-       tool_id: 1,
        memory: Memory,
        request: request,
-       planner: endpoint(),
-       activities: GateServer.Npc.Brain.Builder.activity_profile(),
+       endpoint: endpoint(),
        scheduler: %{
          url: System.fetch_env!("TYPESAFE_API_URL"),
          key: System.fetch_env!("TYPESAFE_API_KEY"),
          model: System.fetch_env!("TYPESAFE_MODEL")
-       }
-     }}
-  end
-
-  # 混合后端，模型用冻结应答的替身：规划者交 @hut_ops，调度者一律“继续”；每次询问都报给测试进程。
-  defp brain(%{builder_brain: true}) do
-    test = self()
-
-    request = fn _endpoint, body ->
-      if is_map_key(body, :questions) do
-        send(test, {:asked, :scheduler, body.state})
-
-        {:ok,
-         %{
-           "answers" => %{
-             "activity" => %{
-               "type" => "choice",
-               "choice" => "continue_building",
-               "confidence" => 0.99
-             }
-           }
-         }}
-      else
-        send(test, {:asked, :planner, Jason.decode!(body.input)})
-
-        {:ok,
-         %{
-           "output" => [
-             %{
-               "type" => "function_call",
-               "name" => "submit_blueprint",
-               "arguments" => Jason.encode!(%{ops: @hut_ops})
-             }
-           ]
-         }}
-      end
-    end
-
-    {GateServer.Npc.Brain.Builder,
-     %{
-       cid: @npc,
-       goal: "Build a small hut on cells x 8..11, z 14..17.",
-       tool_id: 1,
-       memory: Memory,
-       request: request,
-       activities: GateServer.Npc.Brain.Builder.activity_profile(),
-       planner: %{model: "m"},
-       scheduler: %{model: "j"}
+       },
+       skills: %{wilderness: %{activities: GateServer.Npc.Builder.activity_profile()}},
+       steps: [%{verb: :skill, skill: :wilderness, args: %{"goal" => goal, "tool_id" => 1}}]
      }}
   end
 
@@ -586,6 +601,60 @@ defmodule GateServer.NpcBodyWorldTest do
 
   defp balance(world),
     do: Enum.find(World.material_balances(world, @npc), &(&1.material == @stone)).balance
+
+  @tag :prefab_access
+  @tag :runtime_build
+  @tag :cancel_committed
+  @tag supply: %{11 => 1}
+  test "cancelling a skill preserves an already committed World transaction", %{
+    world: world,
+    body: body
+  } do
+    assert_receive {:build_committed, worker, {:ok, %{seq: birth}}}, 10_000
+    monitor = Process.monitor(worker)
+    Body.command(body, %{id: :cancel, verb: :cancel_skill, call: 1})
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :shutdown}
+    assert %{status: :done, data: %{call: 1}} = outcome(body, :cancel, 5_000)
+
+    outcome =
+      await(
+        fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 1)) end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+
+    assert %{verb: :build, status: :rejected, reason: :cancelled} = outcome
+    assert 0 == balance(world)
+
+    assert [%{refined: true, slots: [%{material: @stone, instance: [^birth, 0], count: 1}]}] =
+             World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
+
+  @tag :prefab_access
+  @tag :runtime_build
+  @tag supply: %{11 => 1}
+  test "Routine calls the shared build skill with real rejection, placement and exact settlement",
+       %{world: world, body: body} do
+    await(
+      fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 3)) end,
+      System.monotonic_time(:millisecond) + 10_000
+    )
+
+    outcomes = Body.observe(body).outcomes
+
+    assert [%{verb: :build, status: :rejected, reason: :out_of_bounds}] =
+             Enum.filter(outcomes, &(&1.id == 1))
+
+    assert [%{verb: :build, status: :done, data: %{seq: birth}}] =
+             Enum.filter(outcomes, &(&1.id == 2))
+
+    assert [%{status: :done, data: %{balances: [%{material: @stone, balance: 0}]}}] =
+             Enum.filter(outcomes, &(&1.id == 3))
+
+    assert 0 == balance(world)
+
+    assert [%{refined: true, slots: [%{material: @stone, instance: [^birth, 0], count: 1}]}] =
+             World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
 
   @tag :prefab_access
   @tag supply: %{11 => 1}
@@ -1006,96 +1075,6 @@ defmodule GateServer.NpcBodyWorldTest do
     measure.(more, "npc_scale")
   end
 
-  # 混合后端的调用层：规划一次、代码施工、世界逐格对得上蓝图、材料守恒、完工记一笔并忘掉蓝图；顺利时调度者一次都不问。
-  @tag :builder_brain
-  @tag materials: [11, 19]
-  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
-  @tag timeout: 300_000
-  test "the builder brain plans once and code builds the whole hut: walls, roof, door and window match the blueprint cell by cell",
-       %{world: world} do
-    {:ok, cells} = GateServer.Npc.Blueprint.cells(@hut_ops)
-    assert 48 == map_size(cells)
-
-    assert_receive {:asked, :planner,
-                    %{
-                      "goal" => "Build a small hut" <> _,
-                      "backpack_cells" => [
-                        %{"material" => 11, "cells" => 40},
-                        %{"material" => 19, "cells" => 20}
-                      ]
-                    }},
-                   20_000
-
-    await(
-      fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building: 48 blocks")), do: true end,
-      System.monotonic_time(:millisecond) + 240_000
-    )
-
-    box = for x <- 8..11, y <- 64..67, z <- 14..17, do: {x, y, z}
-
-    found =
-      for %{cell: [x, y, z], material: m} <-
-            World.material_snapshot(world, [@npc], box).probe_occupancy,
-          m != 0,
-          into: %{},
-          do: {{x, y, z}, m}
-
-    assert cells == found
-    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
-    assert {(40 - 32) * 512, (20 - 16) * 512} == {balances[11], balances[19]}
-    assert nil == Memory.get(@npc, "plan", "current")
-    refute_received {:asked, _, _}
-  end
-
-  # 长期记忆：盖到一半 Body 死掉；同一个 cid 重新起来，不再问规划者，从世界现算还差哪些格，接着盖完。
-  @tag :builder_brain
-  @tag materials: [11, 19]
-  @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
-  @tag timeout: 300_000
-  test "a Body restarted halfway resumes from the remembered blueprint without asking the planner again",
-       %{world: world, body: body, claims: claims, brain: brain} do
-    {:ok, cells} = GateServer.Npc.Blueprint.cells(@hut_ops)
-
-    placed = fn ->
-      Enum.count(
-        World.material_snapshot(world, [@npc], Map.keys(cells)).probe_occupancy,
-        &(&1.material != 0)
-      )
-    end
-
-    assert_receive {:asked, :planner, _}, 20_000
-    await(fn -> if placed.() >= 10, do: true end, System.monotonic_time(:millisecond) + 120_000)
-
-    stop_supervised!(Body)
-    halfway = placed.()
-    assert halfway < 48
-    assert %{"ops" => @hut_ops} = Memory.get(@npc, "plan", "current")
-
-    {:ok, _} =
-      start_supervised(
-        {Body,
-         claims: claims,
-         route_module: Route,
-         scene_id: 1,
-         cid: @npc,
-         spawn: {4.0, 66.0, 10.0},
-         brain: brain},
-        restart: :temporary
-      )
-
-    _ = body
-
-    await(
-      fn -> if Enum.any?(Memory.entries(), &(&1 =~ "Finished building")), do: true end,
-      System.monotonic_time(:millisecond) + 240_000
-    )
-
-    assert 48 == placed.()
-    balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
-    assert {(40 - 32) * 512, (20 - 16) * 512} == {balances[11], balances[19]}
-    refute_received {:asked, :planner, _}
-  end
-
   @tag :wilderness_skill
   @tag materials: [11, 19]
   @tag supply: %{11 => 40 * 512, 19 => 20 * 512}
@@ -1194,6 +1173,130 @@ defmodule GateServer.NpcBodyWorldTest do
     balances = Map.new(World.material_balances(world, @npc), &{&1.material, &1.balance})
     assert {8 * 512, 4 * 512} == {balances[11], balances[19]}
     refute_received {:asked, :planner, _}
+  end
+
+  # —— 2026-10-06 评审修复的回归：取消结算、会话中断与 Brain 输入的接缝（真实 Session / Scene / Player / World）——
+
+  # 冻住 World 让技能的 place 排在队里：带 settle 的 stop 必须等它落定；对照组（不带 settle 的 stop）照常完成，
+  # 证明 Scene 在冻住期间仍在推进，等待来自 settle 而不是停摆。
+  @tag :idle
+  @tag supply: %{11 => 512}
+  test "a settle stop is not done until the cancelled skill's queued World call has its result",
+       %{
+         world: world,
+         body: body
+       } do
+    ready(body)
+    :sys.suspend(world)
+
+    try do
+      Body.command(body, %{id: :control, verb: :stop})
+      assert %{status: :done} = outcome(body, :control, 5_000)
+
+      Body.command(body, %{
+        id: {:skill, 9, 1},
+        verb: :place,
+        coord: {6, 64, 10},
+        material: @stone,
+        tool_id: 1
+      })
+
+      Body.command(body, %{id: {:skill, 9, :stop}, verb: :stop, settle: 9})
+
+      # 权威再推进 60 tick（1 秒，远超 8 帧提前量）：零输入帧早已被处理，stop 仍须等 place。
+      tick = Body.observe(body).tick
+
+      await(
+        fn -> Body.observe(body).tick >= tick + 60 || nil end,
+        System.monotonic_time(:millisecond) + 5_000
+      )
+
+      refute Enum.any?(Body.observe(body).outcomes, &(&1.id == {:skill, 9, :stop}))
+    after
+      :sys.resume(world)
+    end
+
+    assert %{status: :done} = outcome(body, {:skill, 9, :stop}, 5_000)
+
+    order =
+      Body.observe(body).outcomes
+      |> Enum.reverse()
+      |> Enum.map(& &1.id)
+      |> Enum.filter(&match?({:skill, 9, _}, &1))
+
+    assert [{:skill, 9, 1}, {:skill, 9, :stop}] == order
+    assert %{status: :done, data: %{seq: _}} = outcome(body, {:skill, 9, 1}, 1_000)
+
+    assert [%{material: @stone}] =
+             World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+  end
+
+  # 排队中的调用遇到 Player 已结束：调用尚未进 World，如实拒绝为 session_lost；Body 不崩溃，并以新会话重新入场。
+  @tag :idle
+  @tag supply: %{11 => 1024}
+  test "a World call queued when the session's Player ends is rejected and the Body claims again",
+       %{
+         world: world,
+         scene: scene,
+         body: body
+       } do
+    ready(body)
+    %{player: player, identity: identity} = :sys.get_state(body)
+    monitor = Process.monitor(body)
+    :sys.suspend(world)
+
+    try do
+      cell = %{verb: :place, material: @stone, tool_id: 1}
+      Body.command(body, Map.merge(cell, %{id: :first, coord: {6, 64, 10}}))
+      Body.command(body, Map.merge(cell, %{id: :second, coord: {6, 64, 11}}))
+
+      # 第一条已取得会话上下文、卡在冻住的 World 前；第二条排在 Body 的世界调用进程里。
+      worker = :sys.get_state(body).worker
+
+      await(
+        fn ->
+          {:messages, messages} = Process.info(world, :messages)
+          Enum.any?(messages, &match?({:"$gen_call", {^worker, _}, _}, &1)) || nil
+        end,
+        System.monotonic_time(:millisecond) + 5_000
+      )
+
+      Process.exit(player, :kill)
+    after
+      :sys.resume(world)
+    end
+
+    assert %{status: :rejected, reason: :session_lost} = outcome(body, :second, 5_000)
+    refute_received {:DOWN, ^monitor, _, _, _}
+
+    await(
+      fn ->
+        Enum.find(
+          Scene.observe(scene).characters,
+          &(&1.entity_id == @npc and &1.identity.session_epoch > identity.session_epoch)
+        )
+      end,
+      System.monotonic_time(:millisecond) + 10_000
+    )
+  end
+
+  @tag :idle
+  test "a use_tool target that is not an identity map is rejected without taking the Body down",
+       %{
+         body: body
+       } do
+    ready(body)
+
+    Body.command(body, %{
+      id: :bad,
+      verb: :use_tool,
+      direction: {1.0, 0.0, 0.0},
+      tool_id: 1,
+      target: :unknown_attachment
+    })
+
+    assert %{status: :rejected, reason: :invalid_command} = outcome(body, :bad, 5_000)
+    assert Process.alive?(body)
   end
 
   # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。
