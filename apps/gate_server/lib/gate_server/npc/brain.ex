@@ -44,6 +44,17 @@ defmodule GateServer.Npc.Brain do
 
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
+  观察与目标目录：`Attention.tools/0`；同一组命令供所有后端调用。
+  Observation 的 `view` 给出眼点、独立观察方向、最远距离和视锥半角；`targets` 给出 enemy/friendly 组与 mark。
+  `get_view` / `look_at` / `get_aim` / `get_visible_entities` / `get_target_status` 与
+  `select_target` / `remove_target` / `get_targets` / `set_focus` / `cycle_focus` / `remove_focus` /
+  `clear_targets` / `toggle_mark` 不改变移动或攻击。目标参数为 `%{entity_id:, entity_epoch:}`，group 为 :enemy/:friendly。
+  `look_at` 接 `position: {x,y,z}` 或 `target`，一次转向，不持续跟踪；`cycle_focus` 的 direction 为 ±1。
+  视野角色以中心点采样，不枚举地形；`get_aim` 返回最近胶囊或 canonical 方块／构件命中、点、距离和属性。
+  角色尺寸沿用当前场景的已发布移动 profile；独立附件未采样。查询范围不是攻击范围，关注组不是阵营真值。
+  World 查询结果携带 self_tick/entity_tick/world_seq；这些是独立 owner 的采样版本，不是跨 owner 原子快照。
+  AOI 离开／代次替换／场景转移清理选择；旧身份选择拒绝 stale_target，查询状态返回 valid:false。
+
       %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
       %{id:, verb: :stop}                                       # 顶替在途的移动命令；settle: 技能调用号 见上文取消
       %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}

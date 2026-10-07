@@ -10,7 +10,8 @@
 - `Body` 接正式 Session/Player，产生观察并把动作交给 authority；自己维护会话（丢失后重新 claim）。
 - `Runtime` 组合任意 Brain，统一命令路由、记忆调用、技能 worker、中断、取消结算与终态记录。
 - `Actions` 原子动作目录：工具 schema 与“工具调用 → Body 命令”的译码只在这里定义。
-  `Perception`（look / inspect）、`Memory`（记忆工具）、`Skills`（长技能）各自拥有自己的目录。
+  `Perception`（look / inspect）、`Attention`（观察方向与敌／友目标组）、`Memory`（记忆工具）、
+  `Skills`（长技能）各自拥有自己的目录。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是共享 JSON 出站。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
@@ -58,6 +59,15 @@ flowchart LR
   两次询问至少隔 1 秒；应答没有工具调用或请求失败按 1、2、4…60 秒退避；
   每 NPC 每小时最多 `max_requests_per_hour`（缺省 600）次，用完记 `npc_llm_budget_exhausted`。
   参数不是 JSON 对象或工具不存在时，在本地回报 `invalid_tool_arguments` / `unknown_tool` 给模型，不发给 Body。
+- **观察与目标**：Body 拥有独立观察方向和敌／友目标组，各组一个焦点；目标身份是 `entity_id + entity_epoch`。
+  选择、观察转向、移动与攻击正交；本地组不是阵营或团队真值，目标 epoch 是观察身份，不能用来绕过攻击裁决。
+  实体离开 AOI、更换代次、换场景、会话丢失后重新入场时清理关注，旧身份的选择以 `stale_target` 拒绝，
+  `get_target_status` 返回 `valid: false`。观察半角 45°，最远距离沿用 `Perception.reach`；`look_at` 各轴超出
+  感知边界回 `out_of_range`，与眼点重合回 `zero_direction`，只转向一次、不持续跟踪。
+  视野里的角色只取已同步实体，以中心点做视锥与遮挡采样；`get_aim` 取最近的角色胶囊（当前场景移动 profile）
+  或 canonical 方块／构件命中，复用 World 的 `target_at`、Damage 的微格 DDA 与 ToolHit 求交，独立附件未采样，
+  遮挡按 canonical 实占用，尚无透明材质透视。结果带 `scene_id`、`session_epoch`、`self_tick`、实体 tick 与
+  World `seq`，是各 owner 的采样版本，不是跨 owner 原子快照。已知不等于可见，可见不等于可攻击。
 - **记忆**：每个 cid 最多 200 条笔记（按最近写入保留）与 1000 条经历；超出的最旧行在写入时删除并记
   `npc_memory_trimmed`。上限只在 `DataService.NpcMemory.limits/0` 定义，`remember` 工具说明从它派生。
 
@@ -80,6 +90,19 @@ brain: {GateServer.Npc.Brain.Routine, %{
 - 添加技能：实现 `GateServer.Npc.Skill`，配置 `skills: %{名字: %{module: 实现模块, ...}}`。
   `definition/1` 拥有参数说明，`run/3` 在 worker 内接纳输入并返回一个终态；无需改 Llm / Runtime 分派。
   逐帧需要位置的技能实现 `observations?/0` 返回 true。字符串工具名只在已配置名字中匹配，不把模型输出转成新原子。
+- 观察与目标：`Attention.tools/0` 是 13 个命令的唯一目录（LLM 直接使用），脚本 / 行为树返回同样的命令：
+
+  ```elixir
+  # target 来自本角色 observation.entities 或 get_visible_entities 的结果。
+  target = %{entity_id: entity_id, entity_epoch: entity_epoch}
+  Body.command(body, %{id: "select-1", verb: :select_target, target: target, group: :enemy})
+  Body.command(body, %{id: "look-1", verb: :look_at, target: target})
+  Body.command(body, %{id: "aim-1", verb: :get_aim})
+  ```
+
+  `get_targets` 返回两组 members + focus 与独立 mark，`set_focus` 只接受已选成员；`get_view` 返回 origin、
+  direction、range_m、half_angle_degrees；`get_aim` 的 hit（未命中为 nil）含 kind、target、point、distance_m，
+  方块带 properties、角色带采样 tick 与粗部位；`get_visible_entities` 标明 center 采样与已同步实体来源。
 - 添加中断策略：实现 `GateServer.Npc.Scheduler.decide/2`，配置 `interrupt_policy: {实现模块, 配置}`。
   Jev 的配置为 `%{scheduler: endpoint, activities: 活动 profile, continue_activity: 选项, request: 可选}`。
 - 查看：`Skills.tools(profile)` 与 `Actions.tools(profile)` 返回能力及参数；`Body.observe(body).outcomes`
@@ -94,6 +117,9 @@ brain: {GateServer.Npc.Brain.Routine, %{
   动态添加的子进程不会随监督者重启恢复，所以批量会话丢失不能交给监督者处理。
 - 生命周期与回调分离：Elixir behaviour（https://hexdocs.pm/elixir/typespecs.html ）；
   异步动作的运行中 / 终态 / halt 语义参考 BehaviorTree.CPP（https://www.behaviortree.dev/docs/guides/asynchronous_nodes/ ）。
+- 感知范围与决策分离、视野半角：Epic AI Perception 的 Sight Radius / Peripheral Vision Half Angle
+  （https://dev.epicgames.com/documentation/unreal-engine/ai-perception-in-unreal-engine?lang=en-US ）；
+  本项目用服务端 canonical 遮挡代替 UE 场景碰撞，目标双组行为沿用已验收的 Voxim 客户端双组契约。
 - Responses 应答可以是 `incomplete` 且不含工具调用（https://platform.openai.com/docs/api-reference/responses/object ）；
   失败重试用指数退避与上限（https://cloud.google.com/storage/docs/retry-strategy ）。
 

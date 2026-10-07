@@ -31,6 +31,8 @@ defmodule GateServer.Npc.Body do
   alias SceneServer.Movement.Path
   alias VoxelRegion.Phase
   alias VoxelRegion.World
+  alias GateServer.Npc.{Attention, Sight}
+  @attention_verbs Attention.verbs()
 
   @lead 8
   @backlog 120
@@ -127,6 +129,7 @@ defmodule GateServer.Npc.Body do
        tick: 0,
        processed: 0,
        entities: %{},
+       attention: Attention.new(),
        # 在途移动命令：%{id, verb, target, tolerance, zero_from, path, from, mark}；zero_from = 首个零输入帧的序号，
        # path = :planning | 剩余要走到的水平点（末项恒为 target），from = 当前这一段的起点，
        # mark = {position, tick}：上次挪动超过 @stall_m 时的位置与 tick。
@@ -195,7 +198,9 @@ defmodule GateServer.Npc.Body do
         velocity: {0.0, 0.0, 0.0},
         inflight: [],
         processed: 0,
-        entities: %{}
+        # 重新入场后实体代次可能已变：关注随已同步实体一起清空，与换场景相同。
+        entities: %{},
+        attention: Attention.new()
     }
 
     case state.move do
@@ -217,7 +222,16 @@ defmodule GateServer.Npc.Body do
   def handle_call(:observe, _, state),
     do:
       {:reply,
-       Map.take(state, [:position, :tick, :move, :world, :entities, :balances, :outcomes]), state}
+       Map.take(state, [
+         :position,
+         :tick,
+         :move,
+         :world,
+         :entities,
+         :attention,
+         :balances,
+         :outcomes
+       ]), state}
 
   def handle_call(
         :skill_context,
@@ -291,14 +305,36 @@ defmodule GateServer.Npc.Body do
       position: e.state.position
     }
 
-    {:noreply, %{state | entities: Map.put(state.entities, e.entity_id, entity)}}
+    attention =
+      case state.entities[e.entity_id] do
+        %{entity_epoch: epoch} when epoch != e.entity_epoch ->
+          Attention.forget(state.attention, e.entity_id)
+
+        _ ->
+          state.attention
+      end
+
+    {:noreply,
+     %{state | entities: Map.put(state.entities, e.entity_id, entity), attention: attention}}
   end
 
   def handle_info(
         {:mmo_reliable, identity, 1, %Session.EntityLeave{} = e},
         %{identity: identity} = state
-      ),
-      do: {:noreply, %{state | entities: Map.delete(state.entities, e.entity_id)}}
+      ) do
+    case state.entities[e.entity_id] do
+      %{entity_epoch: epoch} when epoch == e.entity_epoch ->
+        {:noreply,
+         %{
+           state
+           | entities: Map.delete(state.entities, e.entity_id),
+             attention: Attention.forget(state.attention, e.entity_id)
+         }}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   def handle_info(
         {:mmo_datagram, identity, %Movement.Snapshot{} = snapshot},
@@ -390,7 +426,8 @@ defmodule GateServer.Npc.Body do
            player_monitor: Process.monitor(next),
            scene_id: target,
            world_ref: Map.get(route, :world_ref),
-           entities: %{}
+           entities: %{},
+           attention: Attention.new()
        }}
     else
       {:error, reason} -> {:noreply, lose_session(state, {:transfer_failed, target, reason})}
@@ -450,6 +487,8 @@ defmodule GateServer.Npc.Body do
         processed_input_seq: state.processed
       },
       entities: for({id, e} <- state.entities, do: Map.put(e, :entity_id, id)),
+      view: Attention.view(state.attention, Player.eye_position(state.position)),
+      targets: Map.take(state.attention, [:enemy, :friendly, :mark]),
       balances: state.balances,
       pending:
         if(state.move, do: [Map.take(state.move, [:id, :verb])], else: []) ++
@@ -594,6 +633,59 @@ defmodule GateServer.Npc.Body do
 
   defp apply_commands(state, commands), do: Enum.reduce(commands, state, &apply_command(&2, &1))
 
+  defp apply_command(%{position: nil} = state, %{id: _, verb: verb} = command)
+       when verb in @attention_verbs,
+       do: attention_result(state, command, {:error, :invalid_session})
+
+  defp apply_command(state, %{id: _, verb: verb} = command)
+       when verb in [:get_aim, :get_visible_entities, :get_target_status] do
+    entities = for {id, e} <- Enum.sort(state.entities), do: Map.put(e, :entity_id, id)
+
+    selected =
+      if verb == :get_target_status,
+        do: Attention.resolve(state.entities, Map.get(command, :target)),
+        else: {:ok, entities}
+
+    case selected do
+      {:error, :stale_target} ->
+        attention_result(
+          state,
+          command,
+          {:ok, state.attention, %{valid: false, reason: :stale_target, target: command.target}}
+        )
+
+      {:error, reason} ->
+        attention_result(state, command, {:error, reason})
+
+      {:ok, selected} ->
+        query = %{
+          verb: verb,
+          view: Attention.view(state.attention, Player.eye_position(state.position)),
+          tick: state.tick,
+          scene_id: state.scene_id,
+          session_epoch: state.identity.session_epoch,
+          entities: List.wrap(selected),
+          profile: state.profile
+        }
+
+        submit(state, command.id, {:sight, query})
+        %{state | world: Map.put(state.world, command.id, verb)}
+    end
+  end
+
+  defp apply_command(state, %{id: _, verb: verb} = command) when verb in @attention_verbs,
+    do:
+      attention_result(
+        state,
+        command,
+        Attention.apply(
+          state.attention,
+          command,
+          state.entities,
+          Player.eye_position(state.position)
+        )
+      )
+
   defp apply_command(state, %{verb: verb} = command)
        when verb in [:skill, :cancel_skill, :remember, :recall, :search_memory] do
     command(state.mind, command)
@@ -684,6 +776,34 @@ defmodule GateServer.Npc.Body do
 
   # Brain 是可插拔的外部输入（含 LLM）：不合法的命令回报为拒绝，不让 Body 崩溃。
   defp apply_command(state, command), do: invalid(state, command)
+
+  # 关注命令的结果带本角色的采样版本（自身 tick、场景、会话代次）。
+  defp attention_result(state, command, {:ok, attention, data}) do
+    data =
+      Map.merge(data, %{
+        self_tick: state.tick,
+        scene_id: state.scene_id,
+        session_epoch: state.identity.session_epoch
+      })
+
+    emit(%{state | attention: attention}, %{
+      id: command.id,
+      verb: command.verb,
+      status: :done,
+      reason: nil,
+      data: data
+    })
+  end
+
+  defp attention_result(state, command, {:error, reason}),
+    do:
+      emit(state, %{
+        id: command.id,
+        verb: command.verb,
+        status: :rejected,
+        reason: reason,
+        data: nil
+      })
 
   # 语义命令 → World 公共 API 的一次调用；nil = 命令不合法。取值约束用 Codec 里与线解码共用的谓词，这里只补类型。
   # action 0 = 沿方向探测实际命中；action 1 = 攻击 probe_toward 返回的那个目标身份。
@@ -845,7 +965,7 @@ defmodule GateServer.Npc.Body do
         # 与 Gate 给玩家补发余额的时机相同：探测与只读感知之外的每次调用之后。
         balances =
           unless match?({:tool, %{action: 0}}, call) or
-                   match?({kind, _} when kind in [:look, :inspect], call),
+                   match?({kind, _} when kind in [:look, :inspect, :sight], call),
                  do: World.material_balances(session.world_ref, session.cid)
 
         send(body, {:npc_world_result, id, result || {:ok, %{balances: balances}}, balances})
@@ -881,6 +1001,8 @@ defmodule GateServer.Npc.Body do
   end
 
   defp execute(_session, :balances), do: nil
+
+  defp execute(session, {:sight, query}), do: Sight.read(session.world_ref, query)
 
   defp execute(session, {kind, _} = call) when kind in [:look, :inspect],
     do: GateServer.Npc.Perception.read(session.world_ref, session.cid, call)

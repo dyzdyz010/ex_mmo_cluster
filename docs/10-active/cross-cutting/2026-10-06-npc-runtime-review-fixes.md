@@ -81,7 +81,24 @@ sequenceDiagram
 
 ### 2.2 剩余
 
-- 主工作区另有未提交的 Attention / Sight 增量（`body.ex`、`brain/llm.ex`、`brain.ex`、`README.md`），
-  合并本分支时会在这些文件上冲突，需要按两边契约逐处合并：Attention 的 LLM 工具需要接到新的 `Actions` /
-  本地拒绝流程。
 - 世界变化（例如自己的建筑被拆）唤醒大脑、住宅以外的设计技能、正式聊天，仍是后续功能。
+
+## 3. 观察与目标接口（Attention / Sight，2026-10-07 合入）
+
+来源：2026-10-06 某个已结束会话在主工作区完成、未提交的增量，在线会话均未认领；用户批准接手，
+在独立 worktree 上放到合入评审修复后的 master 上。契约正文见 npc README「观察与目标」，这里只记合并决策与验证。
+
+- 新增 `Attention`（13 个命令的目录与纯状态）、`Sight`（视野 / 瞄准 → World 只读射线）、
+  `World.sight_snapshot/3`、`Damage.trace/5`（共用 DDA，额外返回首次进入实占用微格的距离）、
+  `Player.eye_position/1`（眼点偏移只此一处）。
+- 合并决策：LLM 工具目录与译码接到评审修复后的链路——`Attention.tools/0` 进 `tools/1`，
+  `Attention.command/3` 排在 `Actions` / `Perception` 之后、`Memory` / `Skills` 之前；参数不是对象仍在本地拒绝。
+  原增量把“眼睛在 self.position 上方 0.6 米”换成了 view 说明，合并时两句都保留。
+- 合并时发现并修复：评审修复新增的 `lose_session` 只清空已同步实体、不清关注；重新入场后对方实体代次已变，
+  而 EntityEnter 只在已知实体换代时清理，旧代次成员会永久留在组里。改为与换场景相同，一并重置关注。
+  改前红灯 `session-red.log`（`get_targets` 仍含旧代次成员），改后通过。
+
+验证（同 §2.1 环境，日志在 `../Voxim/Saved/npc-attention-20261007/`，原始增量补丁 `wip-from-main-worktree.patch`，
+原作者日志 `../Voxim/Saved/npc-attention-*.log`）：gate_server NPC 13 个文件 125 通过、10 排除（`gate-final.log`），
+其中真实 Session / Player / World 的观察用例 `--only attention` 2 通过（`attention-world.log`）；
+voxel_region `damage_test.exs` 6 通过（`damage.log`）。排除项同 §2.1，不计通过；未做付费模型、UE 双客户端或 Demo 镜像实跑。

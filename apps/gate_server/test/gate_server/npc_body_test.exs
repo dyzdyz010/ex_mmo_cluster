@@ -344,6 +344,76 @@ defmodule GateServer.NpcBodyTest do
           do: assert(identity.session_epoch > epochs[cid])
     end
 
+    test "after a session loss the Body re-enters with no stale attention: the old entity epoch is not kept as a ghost member",
+         %{scene: scene, a: a} do
+      seen = fn body, deadline ->
+        await(
+          fn ->
+            case Body.observe(body).entities[@npc_b] do
+              %{entity_epoch: epoch} -> epoch
+              nil -> nil
+            end
+          end,
+          deadline
+        )
+      end
+
+      old = seen.(a, System.monotonic_time(:millisecond) + 8_000)
+      target = %{entity_id: @npc_b, entity_epoch: old}
+
+      Body.command(a, %{id: :select, verb: :select_target, target: target, group: :enemy})
+      assert %{status: :done, data: %{enemy: %{members: [^target]}}} = outcome(a, :select)
+
+      # 两个会话同时结束：两者都重新入场，B 的实体代次随新会话变化。
+      for %{entity_id: cid, identity: identity} <- Scene.observe(scene).characters,
+          cid in [@npc_a, @npc_b],
+          do: :ok = Scene.leave(scene, identity, 4)
+
+      fresh =
+        await(
+          fn ->
+            epoch = Body.observe(a).entities[@npc_b][:entity_epoch]
+            if epoch && epoch != old, do: epoch
+          end,
+          System.monotonic_time(:millisecond) + 8_000
+        )
+
+      Body.command(a, %{id: :targets, verb: :get_targets})
+
+      assert %{status: :done, data: %{enemy: %{members: [], focus: nil}}} =
+               outcome(a, :targets)
+
+      Body.command(a, %{
+        id: :again,
+        verb: :select_target,
+        target: %{entity_id: @npc_b, entity_epoch: fresh},
+        group: :enemy
+      })
+
+      assert %{status: :done} = outcome(a, :again)
+    end
+
+    defp await(fun, deadline) do
+      cond do
+        value = fun.() ->
+          value
+
+        System.monotonic_time(:millisecond) > deadline ->
+          flunk("condition not reached")
+
+        true ->
+          Process.sleep(20)
+          await(fun, deadline)
+      end
+    end
+
+    defp outcome(body, id) do
+      await(
+        fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == id)) end,
+        System.monotonic_time(:millisecond) + 8_000
+      )
+    end
+
     test "observer sees both NPC entities patrol their own world-axis routes, and lifecycle cleans up both ways",
          %{scene: scene, a: a, b: b, claims: claims} do
       assert_receive {:mmo_reliable, _, 1,

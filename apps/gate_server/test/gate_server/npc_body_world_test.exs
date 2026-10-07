@@ -482,6 +482,17 @@ defmodule GateServer.NpcBodyWorldTest do
   end
 
   # 空脑：测试进程用 Body.command/2 充当进程外 Brain。
+  defp brain(%{attention_backend: true}),
+    do:
+      {GateServer.Npc.Brain.Routine,
+       %{
+         steps: [
+           %{verb: :look_at, position: {16.5, 65.5, 10.0}},
+           %{verb: :get_aim},
+           %{verb: :get_targets}
+         ]
+       }}
+
   defp brain(%{idle: true}), do: {GateServer.Npc.Brain.Routine, %{steps: []}}
 
   defp brain(%{hut: true}) do
@@ -876,6 +887,131 @@ defmodule GateServer.NpcBodyWorldTest do
 
   defp ready(body),
     do: await(fn -> Body.observe(body).position end, System.monotonic_time(:millisecond) + 10_000)
+
+  @tag :idle
+  @tag :attention
+  test "关注接口走真实 Session 与 World：瞄准、可见性、独立焦点和离场清理", %{body: body, claims: claims, world: world} do
+    ready(body)
+
+    call = fn id, verb, args ->
+      Body.command(body, Map.merge(%{id: id, verb: verb}, args))
+      outcome(body, id, 10_000)
+    end
+
+    before = World.material_snapshot(world, [], []).seq
+    assert %{status: :done} = call.(101, :look_at, %{position: {16.5, 65.5, 10.0}})
+
+    assert %{
+             status: :done,
+             data: %{
+               hit: %{kind: :world, target: target, point: {hx, hy, hz}, distance_m: distance},
+               world_seq: ^before
+             }
+           } = call.(102, :get_aim, %{})
+
+    assert target.material == @stone
+    assert target.micro == {128, 520, 80}
+    assert_in_delta hx, 16.0, 1.0e-8
+    assert hy >= 65 and hy < 66
+    assert_in_delta hz, 10.0, 1.0e-8
+    assert distance >= 12 and distance < 13
+
+    peers =
+      for {id, x} <- [{9102, 10.0}, {9103, 20.0}] do
+        b =
+          start_supervised!(
+            {Body,
+             claims: claims,
+             route_module: Route,
+             scene_id: 1,
+             cid: id,
+             spawn: {x, 66.0, 10.0},
+             brain: {GateServer.Npc.Brain.Routine, %{steps: []}}},
+            id: {:attention_peer, id},
+            restart: :temporary
+          )
+
+        ready(b)
+        b
+      end
+
+    entities =
+      await(
+        fn ->
+          e = Body.observe(body).entities
+          if map_size(e) == 2, do: e
+        end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+
+    front = %{entity_id: 9102, entity_epoch: entities[9102].entity_epoch}
+    hidden = %{entity_id: 9103, entity_epoch: entities[9103].entity_epoch}
+    assert %{status: :done, data: initial} = call.(103, :get_view, %{})
+    assert %{status: :done} = call.(104, :select_target, %{target: hidden, group: :enemy})
+    assert %{status: :done} = call.(105, :select_target, %{target: front, group: :friendly})
+    assert %{data: %{direction: direction}} = call.(106, :get_view, %{})
+    assert direction == initial.direction
+    assert %{status: :done} = call.(107, :look_at, %{target: front})
+
+    assert %{status: :done, data: %{hit: %{kind: :entity, target: ^front}}} =
+             call.(108, :get_aim, %{})
+
+    assert %{status: :done, data: %{entities: visible, world_seq: ^before}} =
+             call.(109, :get_visible_entities, %{})
+
+    assert Enum.map(visible, & &1.entity_id) == [9102]
+
+    assert %{data: %{valid: true, in_view: true, visible: false}} =
+             call.(110, :get_target_status, %{target: hidden})
+
+    assert %{data: %{valid: true, in_view: true, visible: true}} =
+             call.(111, :get_target_status, %{target: front})
+
+    assert %{status: :rejected, reason: :stale_target} =
+             call.(112, :select_target, %{
+               target: %{front | entity_epoch: front.entity_epoch - 1},
+               group: :enemy
+             })
+
+    assert %{status: :done} = call.(113, :look_at, %{position: {-10.0, 65.5, 10.0}})
+    assert %{data: %{entities: []}} = call.(114, :get_visible_entities, %{})
+
+    assert %{data: %{enemy: %{focus: ^hidden}, friendly: %{focus: ^front}}} =
+             call.(115, :get_targets, %{})
+
+    GenServer.stop(hd(peers))
+
+    await(
+      fn -> if not Map.has_key?(Body.observe(body).entities, 9102), do: true end,
+      System.monotonic_time(:millisecond) + 10_000
+    )
+
+    assert %{data: %{friendly: %{members: [], focus: nil}}} = call.(116, :get_targets, %{})
+
+    assert %{data: %{valid: false, reason: :stale_target}} =
+             call.(117, :get_target_status, %{target: front})
+
+    assert World.material_snapshot(world, [], []).seq == before
+  end
+
+  @tag :attention
+  @tag :attention_backend
+  test "脚本后端通过 Runtime 使用同一观察接口", %{body: body} do
+    assert %{
+             status: :done,
+             verb: :get_aim,
+             data: %{
+               hit: %{kind: :world, target: %{material: @stone}},
+               scene_id: 1,
+               session_epoch: epoch
+             }
+           } = outcome(body, 2, 10_000)
+
+    assert is_integer(epoch) and epoch > 0
+
+    assert %{status: :done, verb: :get_targets, data: %{enemy: %{members: [], focus: nil}}} =
+             outcome(body, 3, 10_000)
+  end
 
   # 调用层（Body + 真实 World / Scene / 碰撞）：寻路经 World 的只读快照取地形，Body 沿路点送输入，权威照常裁决位置。
   # 出生在 (4, 10)；x=8 处一堵两格高、z 7..13 的墙挡在去 (12.5, 10.5) 的直线上。

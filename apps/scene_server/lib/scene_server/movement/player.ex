@@ -1120,6 +1120,9 @@ defmodule SceneServer.Movement.Player do
     %{state | body_sent: report.key}
   end
 
+  @doc "canonical Y-up 角色中心到工具／观察眼点；所有调用共用同一偏移。"
+  def eye_position({x, y, z}), do: {x, y + 0.6, z}
+
   defp actor_context(state) do
     {x, y, z} = state.state.position
 
@@ -1128,7 +1131,7 @@ defmodule SceneServer.Movement.Player do
       gate: state.gate,
       cid: state.id,
       identity: state.identity,
-      eye: {x, y + 0.6, z},
+      eye: eye_position(state.state.position),
       position: {x, y, z},
       feet: {x, y - state.config.profile.half_height, z},
       tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),

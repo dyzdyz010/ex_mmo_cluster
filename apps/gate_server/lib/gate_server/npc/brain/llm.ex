@@ -23,7 +23,7 @@ defmodule GateServer.Npc.Brain.Llm do
   """
   @behaviour GateServer.Npc.Brain
   require Logger
-  alias GateServer.Npc.{Actions, Memory, Skills, Context, Perception, Responses}
+  alias GateServer.Npc.{Actions, Attention, Memory, Skills, Context, Perception, Responses}
 
   @history 8
   # 两次请求的最小间隔（毫秒）：连续被拒时不空转打接口。
@@ -54,7 +54,8 @@ defmodule GateServer.Npc.Brain.Llm do
   defp tools(profile),
     do:
       Actions.tools(profile) ++
-        [@wait] ++ Perception.tools() ++ Memory.tools() ++ Skills.tools(profile)
+        [@wait] ++
+        Perception.tools() ++ Attention.tools() ++ Memory.tools() ++ Skills.tools(profile)
 
   @impl true
   def init(profile) do
@@ -96,6 +97,7 @@ defmodule GateServer.Npc.Brain.Llm do
   defp command(%{name: name, arguments: {:ok, args}}, id, probe, things, profile) do
     Actions.command(name, args, id, probe, things) ||
       perception(name, args, id) ||
+      Attention.command(name, args, id) ||
       Memory.command(name, args, id) ||
       Skills.command(name, args, id, profile) ||
       %{id: id, verb: :unknown_tool, tool: name}
@@ -361,7 +363,9 @@ defmodule GateServer.Npc.Brain.Llm do
       instructions:
         "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。" <>
           "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。" <>
-          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算；balances 是你的背包（每种 material 还能放几个整格）。" <>
+          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算。" <>
+          "观察位置和方向见 view 或 get_view，独立于移动和目标选择；entities 仅表示已同步，get_visible_entities 才检查视锥与遮挡。" <>
+          "get_aim 的查询范围不是技能射程；balances 是你的背包（每种 material 还能放几个整格）。" <>
           "记忆不是世界真值；每次动手前先用 look/inspect 核对当前位置与目标。" <>
           "experiences 是近期经历；memories 是每轮检索的相关记忆和近期笔记，带时间与来源；memory_error 表示读取失败。" <>
           "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。" <>
@@ -383,6 +387,7 @@ defmodule GateServer.Npc.Brain.Llm do
             entities: Enum.map(observation.entities, &Context.plain/1),
             outcomes: outcomes |> Enum.reverse() |> Enum.map(&Context.plain/1)
           }
+          |> Map.merge(Context.plain(Map.take(observation, [:view, :targets])))
           |> Map.merge(memory_input(experiences))
         ),
       tools: tools(profile),

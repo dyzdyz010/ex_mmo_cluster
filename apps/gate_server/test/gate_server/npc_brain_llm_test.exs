@@ -378,8 +378,27 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
 
-    assert ~w(attach detach inspect look move_to place pour prefab probe_toward query_balances recall remember say scoop search_memory stop use_tool wait) ==
+    assert ~w(attach clear_targets cycle_focus detach get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances recall remember remove_focus remove_target say scoop search_memory select_target set_focus stop toggle_mark use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
+
+    enriched =
+      Map.merge(observation, %{
+        view: %{origin: {-2.0, 4.6, 3.0}, direction: {1.0, 0.0, 0.0}},
+        targets: %{
+          enemy: %{
+            members: [%{entity_id: 7, entity_epoch: 9}],
+            focus: %{entity_id: 7, entity_epoch: 9}
+          }
+        }
+      })
+
+    input_with_view = Jason.decode!(Llm.body(profile, enriched, []).input)
+    assert input_with_view["view"]["origin"] == [-2.0, 4.6, 3.0]
+
+    assert input_with_view["targets"]["enemy"]["focus"] == %{
+             "entity_id" => 7,
+             "entity_epoch" => 9
+           }
 
     refute Map.has_key?(input, "notes")
     assert input["experiences"] == []

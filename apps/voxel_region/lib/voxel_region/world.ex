@@ -216,6 +216,10 @@ defmodule VoxelRegion.World do
   def simulation_snapshot(server, characters, box),
     do: GenServer.call(server, {:simulation_snapshot, characters, box})
 
+  @doc "读取一批已由感知入口限距的 canonical 射线；共享 World seq，不修改世界事务。独立附件未采样。"
+  def sight_snapshot(server, origin, rays),
+    do: GenServer.call(server, {:sight_snapshot, origin, rays})
+
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server, actor, request) do
     if request.action == 4 or valid_edit_coord?(request.coord),
@@ -743,6 +747,22 @@ defmodule VoxelRegion.World do
     thermal = %{base | config: config, sources: sources, active: true}
     state = thermal_commit(Thermal.rebuild_work(%{state | thermal: thermal}), [])
     {:reply, :ok, state}
+  end
+
+  # NPC 观察射线：一次 owner 调用读同一 seq，不写事务。
+  def handle_call({:sight_snapshot, origin, rays}, _, state) do
+    {hits, state} =
+      Enum.map_reduce(rays, state, fn {direction, range}, s ->
+        case Damage.trace(origin, direction, range, s, &target_at/2) do
+          {:error, :no_target, s} ->
+            {nil, s}
+
+          {:ok, target, distance, s} ->
+            {%{target: target, distance_m: distance, properties: property_state(s, target)}, s}
+        end
+      end)
+
+    {:reply, %{seq: state.seq, hits: hits, attachments: :not_sampled}, state}
   end
 
   # 一次 owner 调用提供一致投影；物化缓存仍可丢弃。

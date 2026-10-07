@@ -337,6 +337,14 @@ defmodule VoxelRegion.Damage do
 
   # Amanatides-Woo traversal at canonical 1/8 m, including the starting cell.
   def raycast(origin, direction, range, state, at) do
+    case trace(origin, direction, range, state, at) do
+      {:ok, target, _distance, state} -> {:ok, target, state}
+      error -> error
+    end
+  end
+
+  @doc "共用微格射线遍历，额外返回首次进入实占用微格的距离（米）。"
+  def trace(origin, direction, range, state, at) do
     cell = origin |> Tuple.to_list() |> Enum.map(&floor(&1 * @micro)) |> List.to_tuple()
 
     axes =
@@ -352,10 +360,10 @@ defmodule VoxelRegion.Damage do
         end
       end
 
-    walk(cell, axes, range, state, at)
+    walk(cell, axes, range, state, at, 0.0)
   end
 
-  defp walk(cell, axes, range, state, at) do
+  defp walk(cell, axes, range, state, at, entered) do
     case at.(cell, state) do
       {nil, state} ->
         {_, distance, _} = Enum.min_by(axes, &elem(&1, 1))
@@ -374,11 +382,11 @@ defmodule VoxelRegion.Damage do
             end)
             |> then(fn {axes, cell} -> {cell, axes} end)
 
-          walk(cell, axes, range, state, at)
+          walk(cell, axes, range, state, at, distance)
         end
 
       {target, state} ->
-        {:ok, target, state}
+        {:ok, target, entered, state}
     end
   end
   @doc "实际 HP 损失同步扣除采回完整度基准；采回操作本身不免费修复。"
