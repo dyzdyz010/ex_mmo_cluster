@@ -4,6 +4,7 @@ defmodule GateServer.NpcBodyWorldTest do
   世界是作者写入的平地（y ≤ 63 实心）加一根两格高的石柱；NPC 的余额与世界格只经 World 的公共只读入口观察。
   """
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
   require Logger
   alias GateServer.Npc.Body
   alias MmoContracts.Voxel.Codec
@@ -158,6 +159,13 @@ defmodule GateServer.NpcBodyWorldTest do
             range_macro: 6.0,
             interval_seconds: 0.5
           }
+          # 只测试：combat 用例给镐加人物作用（同 tool_action_test 的伤身参数）。
+          |> Map.merge(
+            if(context[:combat],
+              do: %{body_impact: %{depth: 0.2, protein_g: 2, heal_s: 100}},
+              else: %{}
+            )
+          )
         ],
         definitions: []
       })
@@ -207,6 +215,13 @@ defmodule GateServer.NpcBodyWorldTest do
         "spawn_min_y_m" => 60.0,
         "profile" => profile
       }
+      # 只测试：人物战斗只在 Test-only 战斗范围内开放（同 world_server p0_body_world_test）。
+      |> Map.merge(
+        if(context[:combat],
+          do: %{"test_combat_bounds_m" => [[-60, 40, -60], [60, 120, 60]]},
+          else: %{}
+        )
+      )
     end
 
     body_store = start_supervised!({MmoTest.BodyStore, []})
@@ -702,8 +717,15 @@ defmodule GateServer.NpcBodyWorldTest do
 
     place = %{verb: :prefab_place, definition_id: first, anchor: {48, 512, 80}, orientation: 0}
 
-    assert %{status: :rejected, reason: :out_of_bounds} =
-             command.(100, %{place | anchor: {480, 512, 80}})
+    # 编辑盒越界在进 Intent 之前被拒，没有 character_intent 行，由 Body 记一行 npc_intent_rejected。
+    log =
+      capture_log(fn ->
+        assert %{status: :rejected, reason: :out_of_bounds} =
+                 command.(100, %{place | anchor: {480, 512, 80}})
+      end)
+
+    assert log =~
+             ~r/npc_intent_rejected cid=#{@npc} id=\d+ kind=voxel_prefab_place_v1 reason=:out_of_bounds/
 
     assert 1 == balance(world)
     assert %{status: :done, data: %{seq: birth}} = command.(101, place)
@@ -1433,6 +1455,97 @@ defmodule GateServer.NpcBodyWorldTest do
 
     assert %{status: :rejected, reason: :invalid_command} = outcome(body, :bad, 5_000)
     assert Process.alive?(body)
+  end
+
+  # I1（能力库设计稿 T1.2 的 Body 侧）：线布局表达不了的取值（实例 birth −1，0x7B 是 u64）拼不出意图，
+  # Body 回 invalid_command 且不崩溃。改前 Body 只查整数类型，birth −1 照样交给 World（得到 instance_not_found）。
+  @tag :idle
+  test "a prefab instance id the wire cannot express is an invalid command, not a World rejection",
+       %{body: body} do
+    ready(body)
+
+    log =
+      capture_log(fn ->
+        Body.command(body, %{id: :bad_birth, verb: :prefab_remove, instance_id: {-1, 0}})
+        assert %{status: :rejected, reason: :invalid_command} = outcome(body, :bad_birth, 5_000)
+      end)
+
+    assert log =~
+             "npc_intent_rejected cid=#{@npc} id=:bad_birth verb=prefab_remove reason=:invalid_command"
+
+    assert Process.alive?(body)
+  end
+
+  # I1（2026-10-07 能力库设计稿 T1.4）：NPC 的工具与玩家同经 ToolAction / authorize_tool，人物目标 g5 由此接通。
+  # 改前 Body 直接调 World.tool_intent，World 没有 g5 分支，探测被拒。独立读口：目标 owner 的 hit_context / body_snapshot。
+  @tag :idle
+  @tag :combat
+  test "an NPC probes another character (g5), the handle carries its life generation, and use_tool wounds it",
+       %{body: a, claims: claims} do
+    b =
+      start_supervised!(
+        {Body,
+         claims: claims,
+         route_module: Route,
+         scene_id: 1,
+         cid: @npc + 1,
+         bounds: {{-60, 40, -60}, {60, 120, 60}},
+         spawn: {6.0, 66.0, 10.0},
+         brain: {GateServer.Npc.Brain.Routine, %{steps: []}}},
+        id: :npc_b,
+        restart: :temporary
+      )
+
+    # 两者落地站稳（权威速度 y 为 0）后再按权威位置瞄准 B 的胶囊中心。
+    landed = fn body ->
+      await(
+        fn ->
+          with %{player: player} when player != nil <- :sys.get_state(body),
+               {:ok, %{velocity: {_, vy, _}, position: {_, y, _}} = hit}
+               when vy == 0.0 and y < 65.5 <-
+                 SceneServer.Movement.Player.hit_context(player) do
+            {player, hit}
+          else
+            _ -> nil
+          end
+        end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+    end
+
+    {_, %{position: pa}} = landed.(a)
+    {b_player, %{position: pb, life_generation: life}} = landed.(b)
+    {ex, ey, ez} = SceneServer.Movement.Player.eye_position(pa)
+    {bx, by, bz} = pb
+    length = :math.sqrt((bx - ex) ** 2 + (by - ey) ** 2 + (bz - ez) ** 2)
+    direction = {(bx - ex) / length, (by - ey) / length, (bz - ez) / length}
+
+    Body.command(a, %{
+      id: :probe,
+      verb: :probe_toward,
+      direction: direction,
+      tool_id: 1,
+      target: %{granularity: 5, owner: {@npc + 1, 0}}
+    })
+
+    assert %{status: :done, data: handle} = outcome(a, :probe, 5_000)
+
+    assert %{granularity: 5, owner: {target, 0}, incarnation: ^life, direction: ^direction} =
+             handle
+
+    assert target == @npc + 1
+    assert %{} == SceneServer.Movement.Player.body_snapshot(b_player).body.traumas
+
+    # 句柄原样作目标、不给方向：g5 句柄自带探测方向。
+    Body.command(a, %{id: :hit, verb: :use_tool, tool_id: 1, target: handle})
+    assert %{status: :done, data: receipt} = outcome(a, :hit, 5_000)
+    # 新伤口按目录 depth 0.2 取满：生命 = 100 × (1 − 0.2)（同 tool_action_test 的手算）。
+    assert %{source_id: @npc, target_id: ^target, target_life: ^life, life: 80, part: part} =
+             receipt
+
+    traumas = SceneServer.Movement.Player.body_snapshot(b_player).body.traumas
+    assert [String.to_existing_atom(part)] == Map.keys(traumas)
+    assert %{depth: 0.2, protein_g: 2, heal_s: 100} = traumas[String.to_existing_atom(part)]
   end
 
   # 同一列两层：y 选层。地面层（64）直接可达；柱顶（67）不可达。

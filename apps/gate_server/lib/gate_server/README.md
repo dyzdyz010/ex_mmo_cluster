@@ -19,6 +19,6 @@ Gate 只有 Voxim QUIC 一条入口：启动 `QuicListener` 与每连接的
 Auth token、username、cid 同时验证后，由 Gate 唯一分配 session epoch 并调用 Scene.join。
 Scene 仅用 `Sink.reliable/4`、`datagram/3`、`close/3` 出站；close 先可靠发送 SessionEnd 并完成
 control send shutdown，再关闭连接。Scene 的 voxel 出口保持 transaction/marker 顺序；旧 R6
-subscribe 只接纳该客户端编辑资格，不创建第二份 World 订阅。体素意图由连接的编辑 worker 串行交给 `Session.Dispatch`，转给 `VoxelRegion.World`。
+subscribe 只接纳该客户端编辑资格，不创建第二份 World 订阅。体素意图由连接的编辑 worker 串行交给 `Session.Dispatch`；角色世界意图经 `SceneServer.Movement.Intent.run/3`（与 NPC Body 同一入口）进 `VoxelRegion.World`；施法经 `Player.spell/4`，原始编辑与余额查询直接转给 World。
 
 TCP / WebSocket / UDP 快车道、旧 chunk 订阅与旧体素意图管线已于 2026-09-30 随旧客户端删除。

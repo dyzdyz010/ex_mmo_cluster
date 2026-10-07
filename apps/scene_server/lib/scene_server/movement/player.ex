@@ -34,7 +34,28 @@ defmodule SceneServer.Movement.Player do
   def spell(player, identity, request, ingress),
     do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
 
+  @doc """
+  非工具世界写意图（生产、附件、prefab、发布）与 World refresh 的角色 owner 接纳：同一 identity、已 ready、
+  不在移交或失败中，再依次拒绝施法中（`:casting`）与死亡（`:dead`）；通过时返回当前 actor。
+  它也是 NPC 技能上下文（`GateServer.Npc.Body.skill_context/1`）与 `design_house` 每轮请求、look / inspect、
+  记忆工具前刷新 actor 的来源：死亡期间技能无法开始（`:dead`）；进行中的 `design_house` 的这些工具回
+  `error: dead`，下一轮模型请求前以 `dead` 结束。
+  """
   def tool_context(player, identity), do: GenServer.call(player, {:tool_context, identity})
+
+  @doc """
+  Player 进程是否仍在运行（进程层面，不是角色生死）。Scene 可以跑在 peer 节点（`WorldServer.Topology`），
+  而 `Process.alive?/1` 只接受本地 pid：远端 pid 经 `:erpc` 在其节点上判定，节点已断开视为已退出；
+  其余 `:erpc` 错误（如超时）照常抛出，不当作已退出。
+  """
+  def running?(player) when node(player) == node(), do: Process.alive?(player)
+
+  def running?(player) do
+    :erpc.call(node(player), :erlang, :is_process_alive, [player], 1_000)
+  catch
+    :error, {:erpc, :noconnection} -> false
+  end
+
   @doc "登记一次工具动作；重投读取原结果，未完成的重投不再次授权。"
   def authorize_tool(player, identity, request, ingress),
     do: GenServer.call(player, {:authorize_tool, identity, request, ingress})
@@ -243,7 +264,11 @@ defmodule SceneServer.Movement.Player do
         send(state.authority_ref, {:quote_cast, Map.merge(actor_context(state), ingress), request, from})
         {:noreply, state}
 
-      {1, nil} when request.client_intent_seq > state.action_seq and state.body.status != :dead ->
+      # 死亡统一拒绝为 dead（与 tool_context 同一原因），不再混作 cast_too_soon。
+      {1, _} when state.body.status == :dead ->
+        {:reply, {:error, :dead}, state}
+
+      {1, nil} when request.client_intent_seq > state.action_seq ->
         actor = Map.merge(actor_context(state), ingress)
         send(state.authority_ref, {:prepare_cast, key, actor, request, from})
 
@@ -276,6 +301,15 @@ defmodule SceneServer.Movement.Player do
   def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state)
       when action != nil,
       do: {:reply, {:error, :casting}, state}
+
+  # 死亡门：放置、合成、附件、prefab、发布与 World 写意图的 refresh 都经这里，死后统一回 dead（与 authorize_tool 同序：施法互斥在前）。
+  def handle_call(
+        {:tool_context, identity},
+        _,
+        %{identity: identity, ready: true, transfer: nil, failure: nil, body: %{status: :dead}} =
+          state
+      ),
+      do: {:reply, {:error, :dead}, state}
 
   def handle_call(
         {:tool_context, identity},

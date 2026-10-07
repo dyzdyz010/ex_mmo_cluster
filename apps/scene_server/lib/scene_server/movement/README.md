@@ -237,3 +237,22 @@ Test-only：只有显式配置 `test_combat_bounds_m` 的场景允许范围内�
 ## 2026-10-05 投射物身体热交付（Hello37）
 
 Global system：World 的触散飞行每轮经 WorldServer 查询当前 Player 胶囊，ToolHit 复用球半径膨胀胶囊求交。World 冻结命中与焦耳，Player 接纳后把焦耳送进原 Body 局部组织 pending 热；没有新 HP、机械伤或击退。`projectile_hits` 与完整身体同笔持久化并随 Scene 移交，新 owner 重投已入账命中只返回原收据；旧会话/生命的新命中拒绝。Session ProjectileHit 供双方关联同一球、事务、人物生命与金额；本人承伤继续从正常 BodyState 推导。完整边界、测试与实际镜像见 `docs/10-active/magic/cast-phases-2026-10-05.md`；正式双客户端验收由 Voxim `Docs/Magic/CombatProjectile-plan.md` 记录。
+
+## 2026-10-08 角色世界意图唯一入口（能力库 I1）
+
+Global system：`Intent.run/3` 是角色世界意图（工具、生产 1..5、附件、prefab 放 / 拆 / 换、发布）的唯一执行入口，
+无进程无状态；玩家的 Gate 编辑 worker（`GateServer.Session.Dispatch`）与 NPC Body 的 FIFO worker 都只调它，
+交来与 `Codec.decode/1` 同形的 `{kind, request}` 和意图到达入口的时刻（`received_us`、`clock_node`）。
+工具走 `ToolAction.run/5`（`authorize_tool`），其余走 `Player.tool_context/2` 再进 World 公共 API；结果原样返回，
+另附“是否补发余额”（工具 action 1 / 2 且 granularity ≠ 5；生产 / 附件 / prefab 仅角色接纳通过；发布不补）。
+`tool_context` 在施法互斥之后加死亡门（`:dead`），施放 action 1 遇死亡也回 `:dead`（原为 `cast_too_soon`）；
+World 写意图与发布的 refresh 回调同一函数，所以“授权后、提交前死亡”同样得到 `dead`。同一函数也是 NPC
+技能上下文与 `design_house` 刷新 actor 的来源，死亡期间 NPC 技能无法开始，进行中的设计会话以 `dead` 结束。每次调用一行
+`character_intent kind= cid= client_seq= request_id= elapsed_us= action= tool= g= result=` 日志（action / tool / g
+用 `Map.get` 读，prefab 与发布留空），取代无解析方的 `voxel_tool_dispatch`。
+例外：NPC `design_house` 技能的发布仍直接调 `PrefabDesigner.publish/3`（死亡门与施法门经 `World.publish_prefab`
+内的 `actor.refresh` 生效，设计稿 §7.7），不经 Intent，也没有 `character_intent` 行；NPC Body 在进 Intent 之前拒绝的
+命令（类型守卫 `invalid_command`、位置未知 `invalid_session`、编辑盒 `out_of_bounds`）记 `npc_intent_rejected`。
+`ToolAction.public_receipt/1` 是身体回执的公开投影，玩家 ToolState 与 NPC Outcome 共用。设计与测试矩阵见
+`docs/10-active/cross-cutting/2026-10-07-character-capability-library.md` §7、§11；I1 合入时为“已实现、未实跑”，
+玩家路径的真实双客户端核对放在该稿的最终实跑。

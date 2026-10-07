@@ -29,6 +29,8 @@ defmodule SceneServer.Movement.CastActionTest do
       movement_scales: [{0, 1.0, 1.0}],
       action: nil,
       action_seq: 0,
+      # Player.init 恒设生命代次（player.ex init），actor_context 读它；夹具补上同一字段。
+      life_generation: 1,
       scene_id: 1,
       scene_epoch: 2,
       clock: {SceneServer.Movement.Clock, nil},
@@ -93,6 +95,34 @@ defmodule SceneServer.Movement.CastActionTest do
     assert Movement.Codec.constrain({1.0, 0.0, 1}, 0.35) == {0.35, 0.0, 0}
     assert Movement.Codec.constrain({0.2, 0.0, 1}, 0.35) == {0.2, 0.0, 0}
     assert Movement.Codec.constrain({1.0, 0.0, 1}, 1.0) == {1.0, 0.0, 1}
+  end
+
+  # D-1（docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §13）：死亡统一回 dead。
+  # 改前 tool_context 在死亡时照样给出 actor（放置、合成、附件、prefab、发布都能进 World），施放回 cast_too_soon。
+  test "死亡时非工具世界意图的接纳与施放都回 dead；施法互斥仍先于死亡", c do
+    dead = %{c.state | body: %{c.state.body | status: :dead}}
+
+    assert {:reply, {:ok, %{cid: 10, refresh: _}}, _} =
+             Player.handle_call({:tool_context, c.id}, c.from, c.state)
+
+    assert {:reply, {:error, :dead}, ^dead} =
+             Player.handle_call({:tool_context, c.id}, c.from, dead)
+
+    assert {:reply, {:error, :dead}, ^dead} =
+             Player.handle_call({:spell, c.id, c.request, %{}}, c.from, dead)
+
+    refute_received {:prepare_cast, _, _, _, _}
+
+    # 前摇中（action 非空）死亡：tool_context 仍按施法互斥回 casting，与 authorize_tool 同序。
+    {:noreply, casting} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
+    assert_receive {:prepare_cast, _, _, _, _}
+
+    assert {:reply, {:error, :casting}, _} =
+             Player.handle_call(
+               {:tool_context, c.id},
+               c.from,
+               %{casting | body: %{casting.body | status: :dead}}
+             )
   end
 
   test "死亡先于授权则只取消，旧身份控制不能改变本次施法", c do

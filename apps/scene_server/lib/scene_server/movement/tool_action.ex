@@ -1,9 +1,12 @@
 defmodule SceneServer.Movement.ToolAction do
-  @moduledoc "Global system：现有 Gate 请求 worker 的工具编排。Player 授权身份，World 判遮挡和频率，目标 Player 唯一提交 Body。"
+  @moduledoc """
+  Global system：角色工具编排，只由 `SceneServer.Movement.Intent` 调用（玩家 Gate 编辑 worker 与 NPC Body 共用）。
+  Player 授权身份，World 判遮挡和频率，目标 Player 唯一提交 Body。
+  """
   alias SceneServer.Movement.{Player, Scene, ToolHit}
   alias VoxelRegion.World
 
-  @doc "经当前角色 owner 登记后执行一次；重复请求读原结果。"
+  @doc "经当前角色 owner 登记后执行一次；重复请求读原结果。调用方只有 `SceneServer.Movement.Intent.run/3`。"
   def run(player, identity, world, request, ingress) do
     case Player.authorize_tool(player, identity, request, ingress) do
       {:ok, actor} ->
@@ -99,18 +102,24 @@ defmodule SceneServer.Movement.ToolAction do
     end
   end
 
+  @doc """
+  身体回执的公开投影（纯数据）：来源 / 目标身份、动作序号、部位（字符串）与目标的生命、可恢复生命，
+  不含完整身体报告。玩家下行的 ToolState 与 NPC 的 Outcome data 都用这一份。
+  """
+  def public_receipt(receipt) do
+    Map.drop(receipt, [:body])
+    |> Map.merge(%{
+      part: to_string(receipt.part),
+      life: receipt.body.life,
+      recoverable: receipt.body.recoverable
+    })
+  end
+
   @doc "把同一 Body 提交回执编码给双方；identity 仅决定接收会话，来源身份字段保持一致。"
   def message(receipt, identity, request_id) do
     struct!(
       MmoContracts.Session.ToolState,
-      Map.drop(receipt, [:body])
-      |> Map.merge(%{
-        identity: identity,
-        request_id: request_id,
-        part: to_string(receipt.part),
-        life: receipt.body.life,
-        recoverable: receipt.body.recoverable
-      })
+      Map.merge(public_receipt(receipt), %{identity: identity, request_id: request_id})
     )
   end
 end

@@ -1,18 +1,29 @@
 defmodule GateServer.Session.Dispatch do
   @moduledoc """
   Voxim QUIC 会话的体素意图分发：`GateServer.Session.QuicConnection` 的编辑 worker 串行调用 `handle/2`，
-  每条意图转给权威 `VoxelRegion.World`，回执与余额经 `:sink` 下发。
+  每条意图转给权威 `VoxelRegion.World`，回执与余额经 `:sink` 下发。角色世界意图（工具、生产 1..5、附件、
+  prefab 放 / 拆 / 换、发布）经 `SceneServer.Movement.Intent.run/3`，与 NPC Body 同一条裁决；本模块只负责按原帧编码回执。
 
   ## state 契约
 
   调用方传入的上下文 map 含 `:sink`、`:status`、`:cid`、`:voxim_overlay`、`:world_ref`、`:player`、`:identity`，
-  以及工具／施法所需的 `:received_us`、`:clock_node`。本模块不碰传输私有字段。
+  以及工具／施法所需的 `:received_us`、`:clock_node`。本模块不碰传输私有字段；state 本身即 Intent 的 session。
   """
 
   require Logger
 
   alias GateServer.Session.Sink
   alias GateServer.Voxel.ResultFrame
+
+  @intents [
+    :voxel_tool_intent,
+    :voxel_production_intent,
+    :voxel_attachment_intent,
+    :voxel_prefab_place_v1,
+    :voxel_prefab_remove_v1,
+    :voxel_prefab_replace_v1,
+    :voxel_prefab_publish_v1
+  ]
 
   @doc "Canonical macro targets used both by M1 admission and the existing R6 edit path."
   def voxim_edit_coords({:voxel_edit_intent, request}) do
@@ -86,80 +97,21 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  def handle({kind, request}, %{status: :in_scene, voxim_overlay: true} = state)
-      when kind in [:voxel_production_intent, :voxel_attachment_intent] do
-    with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity) do
-      actor = Map.merge(actor, Map.take(state, [:received_us, :clock_node]))
+  # 角色世界意图（工具、生产 1..5、附件、prefab 放 / 拆 / 换、发布）只经 Intent.run/3，与 NPC Body 同一条裁决。
+  # 回执先发：余额是另一次 World 查询，按 BalanceSeq 独立生效，不必挡在回执前面；是否补发由 Intent 的唯一规则决定。
+  def handle({kind, request} = intent, %{status: :in_scene, voxim_overlay: true} = state)
+      when kind in @intents do
+    {result, refresh} =
+      SceneServer.Movement.Intent.run(state, intent, Map.take(state, [:received_us, :clock_node]))
 
-      result =
-        if kind == :voxel_attachment_intent,
-          do: VoxelRegion.World.attachment_intent(state.world_ref, actor, request),
-          else: VoxelRegion.World.production_intent(state.world_ref, actor, request)
-
-      # 回执先发：余额是另一次 World 查询，按 BalanceSeq 独立生效，不必挡在回执前面。
-      case result do
-        {:ok, seq} ->
-          send_encoded(state, ResultFrame.accepted(request, seq))
-
-        {:error, reason} ->
-          send_encoded(state, ResultFrame.error(request, reason))
-      end
-
-      send_material_balances(state, actor.cid, request.request_id)
-    else
-      {:error, reason} -> send_encoded(state, ResultFrame.error(request, reason))
-    end
-
+    reply(state, request, result)
+    if refresh, do: send_material_balances(state, state.cid, request.request_id)
     {:ok, state}
   end
 
   def handle({kind, request}, state)
       when kind in [:voxel_production_intent, :voxel_attachment_intent] do
     send_encoded(state, ResultFrame.error(request, :invalid_state))
-    {:ok, state}
-  end
-
-  def handle({:voxel_tool_intent, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    started = System.monotonic_time(:microsecond)
-
-    result =
-      SceneServer.Movement.ToolAction.run(
-        state.player,
-        state.identity,
-        state.world_ref,
-        request,
-        Map.take(state, [:received_us, :clock_node])
-      )
-
-    case result do
-      {:body, receipt} ->
-        {gate, _edit_ref} = state.sink.ref
-
-        Sink.reliable(
-          gate,
-          state.identity,
-          :control,
-          SceneServer.Movement.ToolAction.message(receipt, state.identity, request.request_id)
-        )
-
-      {:ok, %{} = target} ->
-        send_encoded(state, {:voxel_property_state, target})
-
-      {:ok, seq} ->
-        send_encoded(state, ResultFrame.accepted(request, seq))
-
-      {:error, reason} ->
-        send_encoded(state, ResultFrame.error(request, reason))
-    end
-
-    # 回执先发，余额随后（同生产意图）。
-    if request.action in [1, 2] and request.granularity != 5,
-      do: send_material_balances(state, state.cid, request.request_id)
-
-    Logger.info(
-      "voxel_tool_dispatch request_id=#{request.request_id} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
-    )
-
     {:ok, state}
   end
 
@@ -221,51 +173,6 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
-  def handle({kind, request}, %{status: :in_scene, voxim_overlay: true} = state)
-      when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] do
-    case SceneServer.Movement.Player.tool_context(state.player, state.identity) do
-      {:ok, actor} ->
-        case VoxelRegion.World.prefab_intent(state.world_ref, actor, kind, request) do
-          {:ok, seq} -> send_encoded(state, ResultFrame.accepted(request, seq))
-          {:error, reason} -> send_encoded(state, ResultFrame.error(request, reason))
-        end
-
-        # 回执先发，余额随后（同生产意图）。
-        send_material_balances(state, actor.cid, request.request_id)
-
-      {:error, reason} ->
-        send_encoded(state, ResultFrame.error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
-  # D3：玩家发布自制定义。发布不扣料、不产生体素事务；id 即字节 sha256，客户端自行计算。
-  def handle(
-        {:voxel_prefab_publish_v1, request},
-        %{status: :in_scene, voxim_overlay: true} = state
-      ) do
-    result =
-      with {:ok, actor} <- SceneServer.Movement.Player.tool_context(state.player, state.identity),
-           do:
-             VoxelRegion.World.publish_prefab(
-               state.world_ref,
-               actor,
-               request.definition,
-               request.name
-             )
-
-    case result do
-      {:ok, _id} ->
-        send_encoded(state, ResultFrame.accepted(request, 0))
-
-      {:error, reason} ->
-        send_encoded(state, ResultFrame.error(request, reason))
-    end
-
-    {:ok, state}
-  end
-
   def handle({:voxel_prefab_publish_v1, _}, state) do
     result_error(state, :invalid_state, 0)
     {:ok, state}
@@ -324,6 +231,31 @@ defmodule GateServer.Session.Dispatch do
   # ── 内部辅助 ──
 
   defp send_encoded(state, message), do: Sink.send_encoded(state.sink, message)
+
+  # Intent 结果 → 玩家帧：身体回执走 control 流 ToolState；工具探测命中回 0x7E；
+  # 发布（id 即字节 sha256，客户端自行计算）回 accepted(0)；事务回 accepted(seq)；拒绝回 0x68 error。
+  defp reply(state, request, {:body, receipt}) do
+    {gate, _edit_ref} = state.sink.ref
+
+    Sink.reliable(
+      gate,
+      state.identity,
+      :control,
+      SceneServer.Movement.ToolAction.message(receipt, state.identity, request.request_id)
+    )
+  end
+
+  defp reply(state, _request, {:ok, %{} = target}),
+    do: send_encoded(state, {:voxel_property_state, target})
+
+  defp reply(state, request, {:ok, id}) when is_binary(id),
+    do: send_encoded(state, ResultFrame.accepted(request, 0))
+
+  defp reply(state, request, {:ok, seq}),
+    do: send_encoded(state, ResultFrame.accepted(request, seq))
+
+  defp reply(state, request, {:error, reason}),
+    do: send_encoded(state, ResultFrame.error(request, reason))
 
   defp reply_spell(request, state) do
     result =

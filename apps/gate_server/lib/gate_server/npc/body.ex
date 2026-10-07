@@ -7,46 +7,44 @@ defmodule GateServer.Npc.Body do
   输入由 OwnerAck 闭环驱动：`due_seq = server_tick - origin_tick + 1`，把已送序号连续补到 `due_seq + 8`；
   已过期未送的序号填零输入，移动命令只写未来槽。
 
-  世界事务与玩家同一条裁决：`Player.tool_context/2` 取权威 actor，再调 Gate 为玩家调用的同一组 World 公共 API
-  （`tool_intent/3`、`production_intent/3`、`attachment_intent/3`、`prefab_intent/4`、`material_balances/2`；
-  只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`）。所有角色都可放置 prefab，与玩家过同一道门：
-  涉及的格在部署的编辑盒（`:gate_server, :quic` 的 `bounds`）内。聊天在正式栈里还不存在：`say` 只占位。
-  调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧。余额的真值在 World，
-  这里只在每次自己的世界事务之后重取一份（与 Gate 给玩家补发余额的时机相同）。
+  世界事务与玩家同一条裁决：`GateServer.Npc.WorldRequest` 把命令拼成与线解码同形的 `{kind, request}`，交给
+  Gate 为玩家调用的同一个入口 `SceneServer.Movement.Intent.run/3`——工具经 `ToolAction.run/5`（`authorize_tool`：
+  死亡、施法互斥、重放、同 key 结果、人物目标 g5），生产 / 附件 / prefab 经 `Player.tool_context/2`，再到 World 公共 API。
+  Body 不复刻任何权威门；它自己的信任边界只有命令的模式匹配与类型守卫（`WorldRequest.build/2` 返回 nil →
+  `:invalid_command`）。只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`，余额读 `material_balances/2`。
+  所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:gate_server, :quic` 的 `bounds`）内，
+  与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。聊天在正式栈里还不存在：`say` 只占位。
+  调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧；意图的到达时刻（`received_us`）在受理命令时冻结。
+  执行进程对世界调用的退出只判一件事：会话的 Player 已退出 → `:session_lost`；否则照常退出，由监督者重启 Body。
+  余额的真值在 World，这里按 Intent 的补发规则（与 Gate 给玩家补发余额同一条）在世界事务之后重取一份。
 
   `move_to` 带寻路：起步时经 `World.material_snapshot/3` 取一盒地形（与 `look` 同一个只读入口），交给
   `SceneServer.Movement.Path` 算出路点后即丢弃，不留体素副本；台阶高度与角色高度取自权威随 SessionStart 下发的
   移动 profile（玩家客户端收到的同一份）。Body 不重试：走不通回报 `:no_path`，路上被堵回报 `:stuck`，由 Brain 决定。
   会话由本进程自己维护：积压、Scene 结束会话、Player 结束、移交失败或 claim 失败时不退出，稍后重新 claim，
   Brain / Runtime 与在途技能不受影响；被同一 cid 的新 claim 顶替时正常结束。契约见本目录 README。
-  设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md。
+  设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md；世界意图入口见
+  docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §7。
   """
   # transient：会话丢失由 Body 自己重新 claim，不经监督者；只有崩溃才重启，被同 cid 顶替（{:shutdown, :replaced}）不重启。
   use GenServer, restart: :transient
   require Logger
   alias MmoContracts.{Movement, Session}
   alias GateServer.Session.Dispatch
-  alias MmoContracts.Voxel.Codec
-  alias SceneServer.Movement.Player
-  alias SceneServer.Movement.Path
+  alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
   alias VoxelRegion.Phase
   alias VoxelRegion.World
-  alias GateServer.Npc.{Attention, Sight}
+  alias GateServer.Npc.{Attention, Sight, WorldRequest}
   @attention_verbs Attention.verbs()
+  # 世界写意图的动词（经 WorldRequest → Intent）；余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
+  @world_verbs WorldRequest.verbs()
+  @prefab_kinds [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1]
 
   @lead 8
   @backlog 120
   # 会话丢失或 claim 失败后多久再 claim（毫秒）。
   @reclaim_ms 1_000
   @outcomes 32
-  # production_intent 的 action；0（余额）与 Gate 一样直接读 material_balances，不进事务。
-  @production %{place: 1, scoop: 2, pour: 3}
-  @attachment %{attach: 0, detach: 1}
-  @prefab %{
-    prefab_place: :voxel_prefab_place_v1,
-    prefab_remove: :voxel_prefab_remove_v1,
-    prefab_replace: :voxel_prefab_replace_v1
-  }
   # look 的上限：Brain 是外部输入，而快照在 World 进程内逐格求值、冷区域还会触发生成。
   @look_reach GateServer.Npc.Perception.reach()
   # 寻路取盒：起终点包围盒水平外扩 @path_margin 格、上下各 @path_margin 格；单程水平不超过 @look_reach。
@@ -389,6 +387,10 @@ defmodule GateServer.Npc.Body do
 
       :no_path ->
         {:noreply, reject_move(state, :no_path)}
+
+      # 取盒时会话的 Player 已退出（执行进程的退出规则）。
+      {:error, reason} ->
+        {:noreply, reject_move(state, reason)}
     end
   end
 
@@ -735,7 +737,7 @@ defmodule GateServer.Npc.Body do
           radius: profile.radius
         }
 
-        send(state.worker, {:plan, self(), id, state.world_ref, state.cid, plan})
+        send(state.worker, {:plan, self(), id, Map.take(state, [:player, :world_ref, :cid]), plan})
         move(state, move)
     end
   end
@@ -755,11 +757,29 @@ defmodule GateServer.Npc.Body do
         settle: Map.get(command, :settle)
       })
 
+  # 世界写意图：拼成线解码同形的 {kind, request}；需按眼点补方向而位置还不知道（claim 后、首个 ACK 前）时回 invalid_session。
+  defp apply_command(state, %{id: id, verb: verb} = command) when verb in @world_verbs do
+    eye = state.position && Player.eye_position(state.position)
+    context = %{seq: state.request_seq + 1, scene_id: state.scene_id, eye: eye}
+
+    cond do
+      eye == nil and WorldRequest.aims?(command) ->
+        log_rejected(state.cid, id, "verb=#{verb}", :invalid_session)
+        emit(state, %{id: id, verb: verb, status: :rejected, reason: :invalid_session, data: nil})
+
+      intent = WorldRequest.build(command, context) ->
+        submit(state, id, intent)
+        %{state | request_seq: state.request_seq + 1, world: Map.put(state.world, id, verb)}
+
+      true ->
+        log_rejected(state.cid, id, "verb=#{verb}", :invalid_command)
+        invalid(state, command)
+    end
+  end
+
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:probe_toward, :use_tool, :query_balances, :look, :inspect] or
-              is_map_key(@production, verb) or is_map_key(@attachment, verb) or
-              is_map_key(@prefab, verb) do
-    case world_call(state, command) do
+       when verb in [:query_balances, :look, :inspect] do
+    case read_call(state, command) do
       nil ->
         invalid(state, command)
 
@@ -805,120 +825,20 @@ defmodule GateServer.Npc.Body do
         data: nil
       })
 
-  # 语义命令 → World 公共 API 的一次调用；nil = 命令不合法。取值约束用 Codec 里与线解码共用的谓词，这里只补类型。
-  # action 0 = 沿方向探测实际命中；action 1 = 攻击 probe_toward 返回的那个目标身份。
-  defp world_call(state, %{verb: verb, direction: {dx, dy, dz}, tool_id: tool} = command)
-       when verb in [:probe_toward, :use_tool] and is_number(dx) and is_number(dy) and
-              is_number(dz) and is_integer(tool) do
-    target = Map.get(command, :target)
+  # 只读请求：余额与 Gate 一样直接读 material_balances；look / inspect 的 macro 格限制在自己周围
+  # （玩家也只看得到流送到身边的世界）。nil = 命令不合法。
+  defp read_call(_state, %{verb: :query_balances}), do: :balances
 
-    request =
-      state
-      |> request(%{
-        action: if(verb == :probe_toward, do: 0, else: 1),
-        direction: {dx, dy, dz},
-        micro: {0, 0, 0},
-        incarnation: 0,
-        owner: {0, 0},
-        material: 0,
-        tool_id: tool,
-        granularity: 0
-      })
-      |> Map.merge(
-        # granularity 3 = 附件（电路工具的目标）：没有射线，按身份寻址。
-        if(is_map(target),
-          do: Map.take(target, [:micro, :incarnation, :owner, :material, :granularity]),
-          else: %{}
-        )
-      )
-
-    # target 只能是身份 map 或缺省（use_tool 无目标时交权威拒绝）；其他形状不是合法命令。
-    if (is_map(target) or target == nil) and Codec.tool_intent?(request), do: {:tool, request}
-  end
-
-  # anchor 是 micro 坐标；detach 要带上那件附件的 id（attachment_id）与材料，与玩家请求同形。
-  defp world_call(
-         state,
-         %{
-           verb: verb,
-           kind: _,
-           axis: _,
-           size: _,
-           anchor: {x, y, z},
-           material: material,
-           tool_id: tool
-         } =
-           command
-       )
-       when is_map_key(@attachment, verb) and is_integer(x) and is_integer(y) and is_integer(z) and
-              is_integer(material) and is_integer(tool) do
-    id = Map.get(command, :attachment_id, 0)
-
-    request =
-      state
-      |> request(Map.take(command, [:kind, :axis, :size, :anchor, :material, :tool_id]))
-      |> Map.merge(%{action: @attachment[verb], id: id})
-
-    if is_integer(id) and Codec.attachment_intent?(request), do: {:attachment, request}
-  end
-
-  defp world_call(state, %{verb: :prefab_place, definition_id: id, anchor: {x, y, z}} = command)
-       when is_binary(id) and is_integer(x) and is_integer(y) and is_integer(z) do
-    request = request(state, Map.take(command, [:definition_id, :anchor, :orientation]))
-
-    if is_map_key(request, :orientation) and Codec.prefab_place?(request),
-      do: {:prefab, @prefab.prefab_place, request}
-  end
-
-  defp world_call(state, %{verb: verb, instance_id: {birth, occurrence}} = command)
-       when verb in [:prefab_remove, :prefab_replace] and is_integer(birth) and
-              is_integer(occurrence) do
-    fields = if verb == :prefab_remove, do: [:instance_id], else: [:instance_id, :definition_id]
-    request = request(state, Map.take(command, fields))
-
-    if verb == :prefab_remove or match?(%{definition_id: <<_::binary-size(32)>>}, request),
-      do: {:prefab, @prefab[verb], request}
-  end
-
-  defp world_call(state, %{verb: verb, coord: {x, y, z}, material: material, tool_id: tool})
-       when is_map_key(@production, verb) and is_integer(x) and is_integer(y) and is_integer(z) and
-              is_integer(material) and is_integer(tool) do
-    request =
-      request(state, %{
-        action: @production[verb],
-        coord: {x, y, z},
-        material: material,
-        tool_id: tool
-      })
-
-    if Codec.production_intent?(request), do: {:production, request}
-  end
-
-  defp world_call(_state, %{verb: :query_balances}), do: :balances
-
-  # macro 格闭区间，限制在自己周围：玩家也只看得到流送到身边的世界。
-  defp world_call(%{position: position}, %{verb: verb} = command) when verb in [:look, :inspect],
+  defp read_call(%{position: position}, command),
     do: GateServer.Npc.Perception.prepare(position, command)
 
-  defp world_call(_state, _command), do: nil
-
-  # 与玩家请求同形的公共字段；client_intent_seq 在本会话内跨所有事务严格递增。
-  defp request(state, fields) do
-    seq = state.request_seq + 1
-
-    Map.merge(fields, %{
-      request_id: seq,
-      client_intent_seq: seq,
-      logical_scene_id: state.scene_id
-    })
-  end
-
+  # 意图到达角色入口的时刻在受理时冻结一次，随调用交给执行进程（与玩家连接入队时取值同一语义）；GCRA 按它判频。
   defp submit(state, id, call),
     do:
       send(
         state.worker,
         {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]),
-         call}
+         call, %{received_us: System.monotonic_time(:microsecond), clock_node: node()}}
       )
 
   defp invalid(state, command) when is_map(command) do
@@ -959,85 +879,124 @@ defmodule GateServer.Npc.Body do
 
   defp world_calls do
     receive do
-      {:call, body, id, session, call} ->
-        result = execute(session, call)
+      {:call, body, id, session, call, ingress} ->
+        {result, balances} =
+          session_call(session, {{:error, :session_lost}, nil}, fn ->
+            execute(session, call, ingress)
+          end)
 
-        # 与 Gate 给玩家补发余额的时机相同：探测与只读感知之外的每次调用之后。
-        balances =
-          unless match?({:tool, %{action: 0}}, call) or
-                   match?({kind, _} when kind in [:look, :inspect, :sight], call),
-                 do: World.material_balances(session.world_ref, session.cid)
-
-        send(body, {:npc_world_result, id, result || {:ok, %{balances: balances}}, balances})
+        send(body, {:npc_world_result, id, result, balances})
         world_calls()
 
-      {:plan, body, id, world, cid,
-       %{start: {sx, sy, sz} = start, target: {tx, tz} = target, goal_y: goal_y} = plan} ->
-        {gx, gz} = goal = {floor(tx), floor(tz)}
-        [y0, y1] = Enum.sort([sy, goal_y || sy])
-
-        cells =
-          for x <- (min(sx, gx) - @path_margin)..(max(sx, gx) + @path_margin),
-              y <- (y0 - @path_margin)..(y1 + @path_margin),
-              z <- (min(sz, gz) - @path_margin)..(max(sz, gz) + @path_margin),
-              do: {x, y, z}
-
-        # 细化格（含 micro 内容）一律当作占满；液体不进表：不能踩也不能穿过。
-        grid =
-          for %{cell: [x, y, z], material: material, refined: refined} <-
-                World.material_snapshot(world, [cid], cells).probe_occupancy,
-              not Phase.liquid?(material),
-              into: %{},
-              do: {{x, y, z}, if(material == 0 and not refined, do: :open, else: :solid)}
-
-        result =
-          with {:ok, cells} <- Path.find(grid, start, goal, goal_y, plan.step, plan.height),
-               do:
-                 {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
-
+      {:plan, body, id, session, plan} ->
+        result = session_call(session, {:error, :session_lost}, fn -> plan_path(session, plan) end)
         send(body, {:npc_path, id, result})
         world_calls()
     end
   end
 
-  defp execute(_session, :balances), do: nil
+  # 世界调用（Intent、读口、寻路取盒）的退出只判一件事：会话的 Player 已退出（Scene 重启、会话被关闭、重新 claim）
+  # → 回 lost，如实报会话丢失（写意图可能尚未进 World，也可能已提交：Brain 以 look / inspect 现算）；
+  # 否则照常退出，执行进程与 Body 同死，由监督者按 transient 重启。异常不捕获，代码缺陷照样崩溃。
+  # Scene 可在 peer 节点：判活用节点安全的 `Player.running?/1`（远端 pid 不能交给 Process.alive?/1）。
+  defp session_call(session, lost, fun) do
+    fun.()
+  catch
+    :exit, reason -> if Player.running?(session.player), do: exit(reason), else: lost
+  end
 
-  defp execute(session, {:sight, query}), do: Sight.read(session.world_ref, query)
+  defp plan_path(
+         session,
+         %{start: {sx, sy, sz} = start, target: {tx, tz} = target, goal_y: goal_y} = plan
+       ) do
+    {gx, gz} = goal = {floor(tx), floor(tz)}
+    [y0, y1] = Enum.sort([sy, goal_y || sy])
 
-  defp execute(session, {kind, _} = call) when kind in [:look, :inspect],
-    do: GateServer.Npc.Perception.read(session.world_ref, session.cid, call)
+    cells =
+      for x <- (min(sx, gx) - @path_margin)..(max(sx, gx) + @path_margin),
+          y <- (y0 - @path_margin)..(y1 + @path_margin),
+          z <- (min(sz, gz) - @path_margin)..(max(sz, gz) + @path_margin),
+          do: {x, y, z}
 
-  defp execute(session, call) do
-    with :ok <- prefab_gate(session, call),
-         {:ok, actor} <- tool_context(session.player, session.identity) do
-      actor =
-        Map.merge(actor, %{
-          received_us: System.monotonic_time(:microsecond),
-          clock_node: node()
-        })
+    # 细化格（含 micro 内容）一律当作占满；液体不进表：不能踩也不能穿过。
+    grid =
+      for %{cell: [x, y, z], material: material, refined: refined} <-
+            World.material_snapshot(session.world_ref, [session.cid], cells).probe_occupancy,
+          not Phase.liquid?(material),
+          into: %{},
+          do: {{x, y, z}, if(material == 0 and not refined, do: :open, else: :solid)}
 
-      case call do
-        {:tool, request} -> World.tool_intent(session.world_ref, actor, request)
-        {:production, request} -> World.production_intent(session.world_ref, actor, request)
-        {:attachment, request} -> World.attachment_intent(session.world_ref, actor, request)
-        {:prefab, kind, request} -> World.prefab_intent(session.world_ref, actor, kind, request)
-      end
+    with {:ok, cells} <- Path.find(grid, start, goal, goal_y, plan.step, plan.height),
+         do: {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
+  end
+
+  # 返回 {结果, 余额}；余额 nil = 这次不重取。
+  defp execute(session, :balances, _ingress) do
+    balances = World.material_balances(session.world_ref, session.cid)
+    {{:ok, %{balances: balances}}, balances}
+  end
+
+  defp execute(session, {:sight, query}, _ingress), do: {Sight.read(session.world_ref, query), nil}
+
+  defp execute(session, {kind, _} = call, _ingress) when kind in [:look, :inspect],
+    do: {GateServer.Npc.Perception.read(session.world_ref, session.cid, call), nil}
+
+  # 世界写意图：与玩家同一入口；补余额按 Intent 的唯一规则（回执先、余额后，同 Gate）。
+  defp execute(session, {kind, request} = intent, ingress) do
+    case prefab_gate(session, intent) do
+      :ok ->
+        {result, refresh} = Intent.run(session, intent, ingress)
+
+        {outcome(intent, result),
+         if(refresh, do: World.material_balances(session.world_ref, session.cid))}
+
+      {:error, reason} = error ->
+        log_rejected(session.cid, request.request_id, "kind=#{kind}", reason)
+        {error, nil}
     end
   end
 
-  # 会话的 Player 在调用排队期间已结束（Scene 重启、会话被关闭、重新 claim）：请求尚未进 World，如实拒绝。
+  # 探测命中补上本次方向，done data 原样就是下一次 use_tool 的目标句柄；人物回执取公开投影
+  # （`ToolAction.public_receipt/1`，与玩家下行 ToolState 同一份），g5 探测的回执同时构成人物句柄。
+  defp outcome({:voxel_tool_intent, %{action: 0} = request}, {:ok, %{} = hit}),
+    do: {:ok, Map.put(hit, :direction, request.direction)}
+
+  defp outcome({:voxel_tool_intent, %{action: 0} = request}, {:body, receipt}),
+    do:
+      {:ok,
+       Map.merge(ToolAction.public_receipt(receipt), %{
+         granularity: 5,
+         owner: {receipt.target_id, 0},
+         incarnation: receipt.target_life,
+         micro: {0, 0, 0},
+         material: 0,
+         direction: request.direction
+       })}
+
+  defp outcome(_intent, {:body, receipt}), do: {:ok, ToolAction.public_receipt(receipt)}
+  defp outcome(_intent, result), do: result
+
+  # 技能取上下文用：会话的 Player 已结束时如实回 session_lost。
   defp tool_context(player, identity) do
     Player.tool_context(player, identity)
   catch
     :exit, _ -> {:error, :session_lost}
   end
 
-  # Gate 在进 World 之前对玩家 prefab 请求做的同一道门。
-  defp prefab_gate(session, {:prefab, kind, request}) do
+  # 进 Intent 之前被 Body 拒绝的世界命令（类型守卫、位置未知、编辑盒越界）：这些不产生 `character_intent` 行，
+  # 各记一行供 CLI 按 reason 归类。id 在受理侧是命令 id，在执行进程里是请求号（request_id）。
+  defp log_rejected(cid, id, what, reason),
+    do:
+      Logger.warning(
+        "npc_intent_rejected cid=#{cid} id=#{inspect(id)} #{what} reason=#{inspect(reason)}"
+      )
+
+  # 部署编辑盒：与玩家连接在进 World 之前做的同一道门（共用 Dispatch.prefab_within?/4）。
+  defp prefab_gate(session, {kind, request}) when kind in @prefab_kinds do
     if Dispatch.prefab_within?(session.world_ref, kind, request, session.bounds),
       do: :ok,
       else: {:error, :out_of_bounds}
   end
 
-  defp prefab_gate(_session, _call), do: :ok
+  defp prefab_gate(_session, _intent), do: :ok
 end

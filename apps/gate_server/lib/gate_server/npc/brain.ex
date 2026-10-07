@@ -57,10 +57,13 @@ defmodule GateServer.Npc.Brain do
 
       %{id:, verb: :move_to, position: {x, z}, tolerance: m}   # 寻路走过去；顶替在途的移动命令；可选 y: 站立格（整数）
       %{id:, verb: :stop}                                       # 顶替在途的移动命令；settle: 技能调用号 见上文取消
-      %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}
-      %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data
+      %{id:, verb: :probe_toward, direction: {dx, dy, dz}, tool_id:}   # 可选 target: %{granularity: 5, owner: {cid, 0}} 探测人物
+      %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data；direction 可省（见下）
+      %{id:, verb: :dismantle, direction:, tool_id:, target:}   # 拆解 prefab 构件，按剩余燃料退料；direction 可省
       %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格
       %{id:, verb: :scoop | :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
+      %{id:, verb: :craft, material:}                            # 按目录配方合成 material 一次
+      %{id:, verb: :eat, material:}                              # 吃一株可食材料（一株 = 目录 place_units）
       %{id:, verb: :attach, kind:, axis:, size:, anchor: {x, y, z}, material:, tool_id:}   # anchor 是 micro 坐标
       %{id:, verb: :detach, kind:, axis:, size:, anchor:, material:, tool_id:, attachment_id:}
       %{id:, verb: :prefab_place, definition_id: <<32 字节>>, anchor: {x, y, z}, orientation: 0..23}   # anchor 是 micro 坐标
@@ -75,7 +78,11 @@ defmodule GateServer.Npc.Brain do
   `use_tool` 换一个 `tool_id`，不是各自的动词。电路工具的目标是附件：`target` 给
   `%{granularity: 3, micro: anchor, incarnation: id, owner: {id, kind * 3 + axis}, material:}`，按身份寻址、不经射线。
   `coord` / `look` 是 canonical macro 格（1 格 = 1 m，Y 向上）；附件与 prefab 的 `anchor` 是 micro 坐标（1 格 = 8 micro），
-  与玩家的线请求相同。
+  与玩家的线请求相同。世界写命令由 `GateServer.Npc.WorldRequest` 拼成玩家线帧的同形请求，经与玩家相同的
+  `SceneServer.Movement.Intent.run/3` 裁决（死亡、施法中、重放、同 key 结果、射程、余额等拒绝原样回报）。
+  `use_tool` / `dismantle` 不给 `direction` 时由 Body 按目标句柄从眼点瞄准（`WorldRequest.aim/2`：g0 宏格中心、
+  g1 / g2 micro 中心、g3 任意方向、g5 句柄里探测时的方向）；位置还未知时回 `invalid_session`。
+  人物目标（g5）的合法性只由权威的战斗范围裁决，正式世界一律拒绝。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 
@@ -94,7 +101,10 @@ defmodule GateServer.Npc.Brain do
 
   `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理，`data` 带同一份 ACK 的 `position` 与
   `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
-  世界事务的 `data`：`probe_toward` 是目标身份，`use_tool` 与各建造动词是 `%{seq:}`，
+  世界事务的 `data`：`probe_toward` 是目标身份加本次 `direction`（原样可作 `use_tool` 的 `target`）；探测人物（g5）时是
+  `%{granularity: 5, owner: {cid, 0}, incarnation: 目标生命代次, micro: {0,0,0}, material: 0, direction:}` 加人物回执字段
+  （`source_id`、`target_id`、`target_life`、`part`、`life`、`recoverable` 等，与玩家下行 ToolState 同一投影）；
+  对人物 `use_tool` 的 `data` 是同一份人物回执；其余 `use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/4` 的精确投影（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
   天然地形、作者写入的格、被别的编辑改过的格是 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属。

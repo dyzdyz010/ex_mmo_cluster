@@ -110,7 +110,7 @@ defmodule MmoContracts.Voxel.Codec do
                     :voxel_caster_state
                   ]
 
-  @doc "工具意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
+  @doc "工具意图的合法性，线解码与进程内调用方（`GateServer.Npc.WorldRequest`，经 `intent?/1`）共用同一组约束。"
   def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
     norm = dx * dx + dy * dy + dz * dz
 
@@ -121,17 +121,37 @@ defmodule MmoContracts.Voxel.Codec do
       norm > 0.99 and norm < 1.01
   end
 
-  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29））的合法性，线解码与进程内调用方（NPC Body）共用。"
+  @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29））的合法性，线解码与进程内调用方（`GateServer.Npc.WorldRequest`，经 `intent?/1`）共用。"
   def production_intent?(%{action: action, tool_id: tool}),
     do: action in [0, 1, 2, 3, 4, 5] and tool > 0
 
-  @doc "附件意图的合法性，线解码与进程内调用方（NPC Body）共用同一组约束。"
+  @doc "附件意图的合法性，线解码与进程内调用方（`GateServer.Npc.WorldRequest`，经 `intent?/1`）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
     do: action in [0, 1] and kind in [0, 1] and axis in 0..2 and size in [1, 8] and tool > 0
 
-  @doc "Prefab 放置的合法性，线解码与进程内调用方（NPC Body）共用。"
+  @doc "Prefab 放置的合法性，线解码与进程内调用方（`GateServer.Npc.WorldRequest`，经 `intent?/1`）共用。"
   def prefab_place?(%{definition_id: id, orientation: orientation}),
     do: byte_size(id) == 32 and orientation in 0..23
+
+  @doc "Prefab 拆除 0x7B 的取值约束：实例 id = {birth u64, occurrence u32}，与线布局同界；进程内调用方（`GateServer.Npc.WorldRequest`，经 `intent?/1`）共用。"
+  def prefab_remove?(%{instance_id: {birth, occurrence}}),
+    do: birth in 0..0xFFFF_FFFF_FFFF_FFFF and occurrence in 0..0xFFFF_FFFF
+
+  @doc "Prefab 替换 0x7C 的取值约束：同拆除的实例 id，另加 32 字节新定义 id。"
+  def prefab_replace?(%{definition_id: id} = request),
+    do: prefab_remove?(request) and byte_size(id) == 32
+
+  @doc """
+  角色世界意图 `{kind, request}`（`decode/1` 的输出形状）按 kind 分派上面的取值谓词。
+  只做取值约束，类型守卫由进程内调用方（`GateServer.Npc.WorldRequest`）先做；`decode/1` 与字节不受影响。
+  发布 0x71 没有线层取值约束（名称、格式与目录由 `World.publish_prefab` 裁决），不在此列。
+  """
+  def intent?({:voxel_tool_intent, request}), do: tool_intent?(request)
+  def intent?({:voxel_production_intent, request}), do: production_intent?(request)
+  def intent?({:voxel_attachment_intent, request}), do: attachment_intent?(request)
+  def intent?({:voxel_prefab_place_v1, request}), do: prefab_place?(request)
+  def intent?({:voxel_prefab_remove_v1, request}), do: prefab_remove?(request)
+  def intent?({:voxel_prefab_replace_v1, request}), do: prefab_replace?(request)
 
   @doc """
   魔法施法意图 0x82（Hello 25），大端，与 0x7D 工具意图同一目标表示：

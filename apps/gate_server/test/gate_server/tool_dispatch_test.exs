@@ -47,4 +47,41 @@ defmodule GateServer.ToolDispatchTest do
 
     refute_receive {:mmo_voxel_bytes, _, _}
   end
+
+  # 能力库 I1 只合并 in_scene 子句；未入场时各 kind 的拒绝帧逐字节保持原样（设计稿 F24）。期望按线布局手写：
+  # 0x68 = rid u64、seq u32、scene u64、result 2（rejected）、ref u64、authoritative u16、reason u16 长度 + 文本；
+  # 通用错误 = 0x80、packet u64 = 0、status 1。
+  test "outside a scene each world intent keeps its original rejection frame" do
+    state = %{
+      status: :connected,
+      voxim_overlay: true,
+      cid: 5,
+      sink: GateServer.Session.Sink.quic(self(), :session)
+    }
+
+    head = %{request_id: 1, client_intent_seq: 2, logical_scene_id: 3}
+
+    rejected =
+      <<0x68, 1::64, 2::32, 3::64, 2, 0::64, 0::16, 14::16>> <> ":invalid_state"
+
+    for {kind, fields, frame} <- [
+          {:voxel_production_intent, %{action: 1, coord: {0, 0, 0}, tool_id: 1, material: 11},
+           rejected},
+          {:voxel_production_intent, %{action: 0, coord: {0, 0, 0}, tool_id: 1, material: 0},
+           rejected},
+          {:voxel_attachment_intent, %{action: 0}, rejected},
+          {:voxel_tool_intent, %{action: 1, granularity: 0}, rejected},
+          {:voxel_prefab_place_v1, %{}, <<0x80, 0::64, 1>>},
+          {:voxel_prefab_remove_v1, %{}, <<0x80, 0::64, 1>>},
+          {:voxel_prefab_replace_v1, %{}, <<0x80, 0::64, 1>>},
+          {:voxel_prefab_publish_v1, %{}, <<0x80, 0::64, 1>>}
+        ] do
+      assert {:ok, ^state} =
+               GateServer.Session.Dispatch.handle({kind, Map.merge(head, fields)}, state)
+
+      assert_receive {:mmo_voxel_bytes, :session, ^frame}
+    end
+
+    refute_receive {:mmo_voxel_bytes, _, _}, 0
+  end
 end
