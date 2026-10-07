@@ -55,6 +55,18 @@ defmodule AuthServer.IdentityTest do
     assert {:error,:invalid_legacy_claim}=Identity.claim_legacy(c.email,c.password,code,legacy)
   end
 
+  test "legacy claim accepts a short code pasted with whitespace or typed in lower case", c do
+    username="old_#{System.unique_integer([:positive])}"
+    {:ok,%{account: old}}=AuthServer.Accounts.upsert_dev(username)
+    assert :ok=DataService.AccountStore.import_legacy([{Identity.digest("K7QX2"),username}],Identity.now())
+    assert :ok=Identity.send_claim_email(c.email," k7qx2
+","local-claim-case")
+    assert_receive {:account_mail,_,:legacy_claim,code}
+    assert :ok=Identity.claim_legacy(c.email,c.password,code,"k7qx2 ")
+    assert {:ok,session}=Identity.login(c.email,c.password,false)
+    assert session.account_id==Integer.to_string(old.id)
+  end
+
   test "register consumes one invite and records the verified account", c do
     invite = String.downcase(c.invite.code)
     code = proof(c.email, invite)

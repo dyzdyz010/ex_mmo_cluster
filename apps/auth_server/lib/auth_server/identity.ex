@@ -8,7 +8,7 @@ defmodule AuthServer.Identity do
   def send_claim_email(email,legacy,source) when is_binary(legacy) and byte_size(legacy)<=256 do
     with {:ok,email} <- normalize_email(email),
          :ok <- AuthServer.RateLimit.take({:mail_ip,source},20,3600),
-         %{id: id} <- Store.legacy_account(digest(legacy)),
+         {_,%{id: id}} <- legacy_account(legacy),
          :ok <- AuthServer.RateLimit.take({:mail_email,email},1,60) do
       code=random_token()
       Store.put_challenge(email,"legacy_claim",proof_digest(email,"legacy_claim",Integer.to_string(id)<>"/"<>code),now()+600)
@@ -23,11 +23,11 @@ defmodule AuthServer.Identity do
   def claim_legacy(email,password,code,legacy) when is_binary(legacy) and byte_size(legacy)<=256 and is_binary(code) and byte_size(code)<=128 do
     with {:ok,email} <- normalize_email(email), :ok <- password_valid(password),
          :ok <- AuthServer.RateLimit.take({:claim,email},10,600),
-         %{id: id} <- Store.legacy_account(digest(legacy)),
+         {legacy,%{id: id}} <- legacy_account(legacy),
          proof = proof_digest(email,"legacy_claim",Integer.to_string(id)<>"/"<>code),
          true <- Store.challenge_matches?(email,"legacy_claim",proof,now()) do
       # 认领码为 256 位随机串，不需要尝试次数上限；计数反而让他人能锁死受害者的认领码。
-      with {:ok,sids} <- Store.claim_legacy(email,proof,digest(legacy),Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(sids)
+      with {:ok,sids} <- Store.claim_legacy(email,proof,legacy,Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(sids)
     else
       nil -> {:error,:invalid_legacy_claim}
       false -> {:error,:invalid_verification}
@@ -35,6 +35,14 @@ defmodule AuthServer.Identity do
     end
   end
   def claim_legacy(_,_,_,_),do: {:error,:invalid_legacy_claim}
+
+  # 旧邀请码按原样比对摘要；玩家常从聊天里复制带空白、或把短码输成小写（短码只发大写），两者都按原码认领。
+  defp legacy_account(legacy) do
+    trimmed=String.trim(legacy)
+    Enum.find_value(Enum.uniq([trimmed,String.upcase(trimmed)]),fn code ->
+      with %{}=account <- Store.legacy_account(digest(code)),do: {digest(code),account}
+    end)
+  end
 
   @doc "当前注册界面所需的公开策略。"
   def registration_policy, do: %{invite_required: Store.policy()}
