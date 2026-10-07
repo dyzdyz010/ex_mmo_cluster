@@ -299,6 +299,7 @@ defmodule SceneServer.Movement.Scene do
         id: cut.id,
         epoch: cut.epoch,
         kind: cut.kind,
+        profile: cut.profile,
         slot: nil,
         config: state.config,
         clock: state.clock,
@@ -416,6 +417,8 @@ defmodule SceneServer.Movement.Scene do
           # EntityEnter.kind：characters 表 kind 列的词汇（玩家连接传的就是鉴权得到的角色行，NPC Body 传 "npc"）
           # 在这里一处映射成线上的 0 / 1；客户端无法自报。
           kind: if(Map.get(character, :kind) == "npc", do: 1, else: 0),
+          # 阵营档案（Voxim Docs/Factions.md §3）：玩家由 Gate 鉴权时附上；没有档案的调用方按无组织、无名字处理。
+          profile: Map.get(character, :profile) || MmoContracts.Relation.blank(),
           slot: slot,
           probe: spawn || Enum.at(state.config.probes, slot),
           config: state.config,

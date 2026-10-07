@@ -252,6 +252,7 @@ defmodule SceneServer.Movement.Replication do
               :entity_id,
               :entity_epoch,
               :kind,
+              :profile,
               :state,
               :simulation_tick,
               :collision_revision

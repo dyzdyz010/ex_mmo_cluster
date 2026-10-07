@@ -481,4 +481,44 @@ defmodule SceneServer.Movement.VoximAoiTest do
     {aoi, []} = AOI.remove(aoi, c.identity, 30, 1, 10)
     assert AOI.observe(aoi) == []
   end
+
+  # Voxim Docs/Factions.md §3、§10：EntityEnter 按收件的观察者解析关系；名字与组织名来自被看的实体。
+  test "Enter carries the target's name and the relation resolved for that observer" do
+    qinglan = %{id: 1, name: "青岚国"}
+    beiyuan = %{id: 2, name: "北原国"}
+    war = %{from: :nation, to: 2, relation: :hostile, locked: true, source: "国战"}
+
+    alan =
+      Map.put(entity(10, {0.0, 500.0, 0.0}), :profile, %{
+        name: "阿岚",
+        guild: %{id: 11, name: "铁砧公会"},
+        nation: qinglan,
+        standings: [war]
+      })
+
+    beichen =
+      Map.put(entity(20, {1.0, 500.0, 0.0}), :profile, %{
+        name: "北辰",
+        guild: nil,
+        nation: beiyuan,
+        standings: []
+      })
+
+    stranger = entity(30, {2.0, 500.0, 0.0})
+    {_, enters, _} = update(AOI.new(), [alan, beichen, stranger], 3, 1)
+    seen = Map.new(enters, &{{&1.identity.session_epoch, &1.entity_id}, &1})
+
+    assert %{name: "北辰", guild_name: "", nation_name: "北原国", relation: 4,
+             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"} = seen[{10, 20}]
+
+    # 北原方没有声明立场：青岚的锁定国战反向生效。
+    assert %{name: "阿岚", guild_name: "铁砧公会", nation_name: "青岚国", relation: 4,
+             relation_source: "青岚国 对 北原国：敌对（国战，锁定）"} = seen[{20, 10}]
+
+    # 没有档案的实体：无名、无组织、中立。
+    assert %{name: "", guild_name: "", nation_name: "", relation: 0} = seen[{10, 30}]
+    assert %{relation: 0, relation_source: "没有任何立场"} = seen[{30, 10}]
+
+    for event <- enters, do: assert({:ok, _} = MmoContracts.Session.Codec.encode(event))
+  end
 end

@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 38
+  @protocol_version 39
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -62,7 +62,13 @@ defmodule MmoContracts.Session.Codec do
          interest_generation: :u64,
          server_tick: :u64,
          state: :state,
-         kind: :u8
+         kind: :u8,
+         # 阵营 P1（Hello 39）：名牌显示的名字与组织名、按观察者解析的关系字节与来源（Voxim Docs/Factions.md §10）。
+         name: :utf8,
+         guild_name: :utf8,
+         nation_name: :utf8,
+         relation: :u8,
+         relation_source: :utf8
        ]},
     9 =>
       {Session.EntityLeave,

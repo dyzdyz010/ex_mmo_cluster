@@ -73,6 +73,7 @@ defmodule SceneServer.Movement.Player do
   def init(opts) do
     state =
       Map.new(opts)
+      |> Map.put_new(:profile, MmoContracts.Relation.blank())
       |> Map.merge(%{
         state: nil,
         baseline: nil,
@@ -894,6 +895,7 @@ defmodule SceneServer.Movement.Player do
         :id,
         :epoch,
         :kind,
+        :profile,
         :identity,
         :state,
         :slots,
@@ -1703,6 +1705,7 @@ defmodule SceneServer.Movement.Player do
       entity_id: state.id,
       entity_epoch: state.epoch,
       kind: state.kind,
+      profile: state.profile,
       player_pid: self(),
       gate_pid: state.gate,
       state: state.state,

@@ -34,11 +34,11 @@ defmodule MmoContracts.MagicWireTest do
              "0000000000000007" <> "00000001" <> "0002" <> "7B7D"
          )
 
-  test "Hello 38 rejects pre-integration wire versions" do
-    assert Session.Codec.protocol_version() == 38
-    hello = %Session.Hello{protocol_version: 38, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+  test "Hello 39 rejects pre-integration wire versions" do
+    assert Session.Codec.protocol_version() == 39
+    hello = %Session.Hello{protocol_version: 39, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 38::16, tail::binary>> = IO.iodata_to_binary(packet)
+    <<prefix::binary-size(9), 39::16, tail::binary>> = IO.iodata_to_binary(packet)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<35::16>> <> tail)
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<29::16>> <> tail)
   end

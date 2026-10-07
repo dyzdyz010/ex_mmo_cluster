@@ -57,10 +57,10 @@ defmodule MmoContracts.ProtectionWireTest do
   end
 
   test "Hello 21：旧 Hello 在线边界拒绝" do
-    assert Session.Codec.protocol_version() == 38
-    hello = %Session.Hello{protocol_version: 38, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 39
+    hello = %Session.Hello{protocol_version: 39, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
-    <<prefix::binary-size(9), 38::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 39::16, tail::binary>> = packet
     assert {:error, :invalid_m1_message} = Session.Codec.decode(prefix <> <<20::16>> <> tail)
   end
 

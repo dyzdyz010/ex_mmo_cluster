@@ -10,8 +10,16 @@ defmodule GateServer.Session.Auth do
   `:auth_unavailable` / `:server_error`），由调用方编成对应错误帧，不做静默降级。
   """
 
-  @doc "正式 Join 消费一次性票据；开发免密仅在显式 Test-only 部署开放。"
+  @doc """
+  正式 Join 消费一次性票据；开发免密仅在显式 Test-only 部署开放。
+  两条路径得到的角色行都在这里附上阵营档案（Voxim Docs/Factions.md §3），随 Scene.join 进入实体值。
+  """
   def join(join,hello) do
+    with {:ok,character,ref} <- authorize(join,hello),
+         do: {:ok,%{character | profile: DataService.Orgs.profile(character)},ref}
+  end
+
+  defp authorize(join,hello) do
     if Application.get_env(:auth_server,:dev_auto_login,false) do
       with {:ok,claims} <- verify_token(join.token),
            :ok <- validate_username(claims,join.username),

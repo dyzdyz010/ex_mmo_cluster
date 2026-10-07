@@ -99,6 +99,8 @@ defmodule MmoContracts.Session.EntityEnter do
   @moduledoc """
   M1 EntityEnter 不可变契约值；字段顺序与单位见 Voxim Docs/M1/plan.md §2。
   `kind`（协议 16 起，末尾 1 字节）：0 = 玩家，1 = NPC；真值是 characters 表的 kind 列。
+  阵营 P1（协议 39，kind 之后）：`name`、`guild_name`、`nation_name`（无则空串）、`relation`（`MmoContracts.Relation.code/1`）、
+  `relation_source`（玩家悬停名牌时看到的来源文字）。关系按本条消息的观察者计算（Voxim Docs/Factions.md §3）。
   """
   @enforce_keys [
     :identity,
@@ -107,7 +109,12 @@ defmodule MmoContracts.Session.EntityEnter do
     :interest_generation,
     :server_tick,
     :state,
-    :kind
+    :kind,
+    :name,
+    :guild_name,
+    :nation_name,
+    :relation,
+    :relation_source
   ]
   defstruct @enforce_keys
 end

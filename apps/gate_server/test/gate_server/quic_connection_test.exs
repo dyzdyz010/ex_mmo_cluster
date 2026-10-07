@@ -685,7 +685,12 @@ defmodule T1TransportTest do
       entity_epoch: old.entity_epoch,
       interest_generation: old.interest_generation,
       server_tick: 69,
-      state: old.state
+      state: old.state,
+      name: "",
+      guild_name: "",
+      nation_name: "",
+      relation: 0,
+      relation_source: ""
     }
 
     leave = %Session.EntityLeave{

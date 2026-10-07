@@ -224,7 +224,12 @@ defmodule GateServer.NpcAttentionTest do
       interest_generation: 1,
       server_tick: 20,
       kind: 0,
-      state: %Session.State{position: {4, 0, 0}, velocity: {0, 0, 0}, grounded: true, yaw: 0}
+      state: %Session.State{position: {4, 0, 0}, velocity: {0, 0, 0}, grounded: true, yaw: 0},
+      name: "",
+      guild_name: "",
+      nation_name: "",
+      relation: 0,
+      relation_source: ""
     }
 
     assert {:noreply, changed} =

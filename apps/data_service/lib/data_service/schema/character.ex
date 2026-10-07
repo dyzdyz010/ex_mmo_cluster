@@ -19,6 +19,11 @@ defmodule DataService.Schema.Character do
     field(:hp, :integer)
     field(:sp, :integer)
     field(:mp, :integer)
+    # 主链（Voxim Docs/Factions.md §2.1）：每层最多一个组织，写入只走 DataService.Orgs。
+    field(:guild_id, :id)
+    field(:nation_id, :id)
+    # 登录时由 GateServer.Session.Auth.join/2 用 DataService.Orgs.profile/1 填入，随 Scene.join 进入实体值；不落库。
+    field(:profile, :map, virtual: true)
 
     timestamps()
   end

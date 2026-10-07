@@ -4,7 +4,7 @@ defmodule SceneServer.Movement.AOI do
   输入仅含已到 origin 的步后实体值，输出为 C1 生命周期和绝对快照。
   每个观察者用单调计数器分配关系 generation；离开即删关系，断线即删观察者。
   """
-  alias MmoContracts.{Session, Movement}
+  alias MmoContracts.{Session, Movement, Relation}
 
   @cell_m 32
   @enter_m 30
@@ -89,6 +89,11 @@ defmodule SceneServer.Movement.AOI do
               if entity.entity_id != observer.entity_id and not Map.has_key?(seen, target) and
                    near?(observer, entity, @enter_m) do
                 gen = gen + 1
+                seen_by = Map.get(observer, :profile, Relation.blank())
+                profile = Map.get(entity, :profile, Relation.blank())
+
+                {relation, source} =
+                  Relation.resolve(observer.entity_id, seen_by, entity.entity_id, profile)
 
                 event = %Session.EntityEnter{
                   identity: observer.identity,
@@ -97,7 +102,12 @@ defmodule SceneServer.Movement.AOI do
                   interest_generation: gen,
                   server_tick: entity.simulation_tick,
                   state: entity.state,
-                  kind: entity.kind
+                  kind: entity.kind,
+                  name: profile.name || "",
+                  guild_name: org_name(profile.guild),
+                  nation_name: org_name(profile.nation),
+                  relation: Relation.code(relation),
+                  relation_source: source
                 }
 
                 {gen, Map.put(seen, target, gen), [event | events]}
@@ -187,6 +197,8 @@ defmodule SceneServer.Movement.AOI do
     }
 
   defp key(entity), do: {entity.entity_id, entity.entity_epoch}
+  defp org_name(nil), do: ""
+  defp org_name(org), do: org.name
   defp cell({x, y, z}), do: {floor(x / @cell_m), floor(y / @cell_m), floor(z / @cell_m)}
 
   defp candidates(grid, {x, y, z}) do
