@@ -1,18 +1,20 @@
 # Host nginx for Voxim on *.hemifuture.cn (shared wildcard certificate, renewed by root's acme.sh).
 #
-#   voxim.hemifuture.cn  player portal (browser): /auth (account centre), /admin (invites)
+#   account.hemifuture.cn player portal (browser): /auth (account centre), /admin (invites)
 #   mmo.hemifuture.cn    game service (client):   /account/* JSON API, /game/* world data,
 #                        /playtest/* legacy invite login; QUIC UDP 20003 is not proxied
 #
 # Every proxied location must send X-Real-IP: the app trusts it only from a loopback peer and uses it
 # for per-client rate limits. Without it every player shares one bucket.
+# Same listen form as the other sites on this host (mixing it with `http2 on` warns).
 # Upstream: the release listens on 127.0.0.1:${AUTH_PORT} (AUTH_BIND_IP=127.0.0.1, host network).
 
 # ---------------------------------------------------------------------------- portal
 server {
-    listen 443 ssl;
-    http2 on;
-    server_name voxim.hemifuture.cn;
+    listen 443 ssl http2;
+    server_name account.hemifuture.cn;
+    access_log /var/log/nginx/account.access.log;
+    error_log  /var/log/nginx/account.error.log;
 
     ssl_certificate     "/etc/nginx/ssl/*.hemifuture.cn/cert.pem";
     ssl_certificate_key "/etc/nginx/ssl/*.hemifuture.cn/key.pem";
@@ -34,16 +36,17 @@ server {
 
 # ---------------------------------------------------------------------------- game service
 server {
-    listen 443 ssl;
-    http2 on;
+    listen 443 ssl http2;
     server_name mmo.hemifuture.cn;
+    access_log /var/log/nginx/mmo.access.log;
+    error_log  /var/log/nginx/mmo.error.log;
 
     ssl_certificate     "/etc/nginx/ssl/*.hemifuture.cn/cert.pem";
     ssl_certificate_key "/etc/nginx/ssl/*.hemifuture.cn/key.pem";
 
     # The in-game "account web" button opens <api origin>/auth; browsers belong on the portal host.
-    location = / { return 302 https://voxim.hemifuture.cn/auth; }
-    location ~ ^/(auth|admin)(/|$) { return 301 https://voxim.hemifuture.cn$request_uri; }
+    location = / { return 302 https://account.hemifuture.cn/auth; }
+    location ~ ^/(auth|admin)(/|$) { return 301 https://account.hemifuture.cn$request_uri; }
 
     location /account/ {
         proxy_pass http://127.0.0.1:24640;
@@ -72,6 +75,6 @@ server {
 # ---------------------------------------------------------------------------- http → https
 server {
     listen 80;
-    server_name voxim.hemifuture.cn mmo.hemifuture.cn;
+    server_name account.hemifuture.cn mmo.hemifuture.cn;
     return 301 https://$host$request_uri;
 }
