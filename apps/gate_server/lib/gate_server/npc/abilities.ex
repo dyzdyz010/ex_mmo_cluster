@@ -3,12 +3,13 @@ defmodule GateServer.Npc.Abilities do
   全局系统功能：NPC 决策侧唯一的能力定义（角色能力函数库，设计稿
   docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §5）。
 
-  组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Perception`（look / inspect / query_balances /
-  read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、`Skills`（已配置的长技能）。每个条目只有
+  组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Genesis`（创世 fill_box / set_cells）、
+  `Perception`（look / inspect / query_balances / read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
+  `Skills`（已配置的长技能）。每个条目只有
   `%{name, group, done, description, params, build}`：
 
   - `name`：稳定 snake_case 英文，即 LLM 工具名、行为树 act 名、技能名；
-  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :memory | :skill`，供 `profile.groups` 裁剪；
+  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :memory | :skill`，供 `profile.groups` 裁剪；
   - `done`：done 的确切含义（一句话），`description`：给模型看的说明，数字由各域的源常量插值；
   - `params`：一份手写参数规格，同时生成 strict JSON Schema（`tools/1`）与参数译码（`command/4`）；
     技能是 `{:skill, schema}`，schema 原样取自技能的 `definition/1`，参数透传给技能；
@@ -22,6 +23,7 @@ defmodule GateServer.Npc.Abilities do
       {:enum, [整数]}                          # 整数枚举
       :belt                                    # 整数枚举 = profile.tools 的键（工具带）
       {:tuple, [spec]}                         # 定长数组 → 元组（元素同型，schema 取首元素）
+      {:list, spec}                            # 不定长数组 → 列表（长度上限由 Body 判，如创世的格数）
       {:map, [{atom, spec}]}                   # 对象 → 原子键 map
       {:nullable, spec}                        # 可为 null
 
@@ -30,7 +32,8 @@ defmodule GateServer.Npc.Abilities do
   `:belt` 只约束投影（工具带外的 id 不出现在 schema 里），译码只要求整数，World 受理目录里任何 tool_id。
 
   授予条件也只约束投影：`profile.groups`（缺省全部）、带 `:belt` 的条目要求 `profile.tools` 非空、技能条目要求
-  配置在 `profile.skills`、施法条目要求 `profile.spells`（作者法术带 `%{名字 => 程序字节}`）非空。schema 只依赖 profile，
+  配置在 `profile.skills`、施法条目要求 `profile.spells`（作者法术带 `%{名字 => 程序字节}`）非空、创世条目要求 `profile.genesis`
+  为真（唯一来源是注册表行，Body 另凭同源的启动选项受理）。schema 只依赖 profile，
   不随余额等观察状态增删（保护提示缓存）。
 
   不进条目：`say`（聊天占位，Body 的 stub 保留、不投影）、`cancel_skill`（Runtime 命令）、`wait`（LLM 适配器本地）、
@@ -38,7 +41,7 @@ defmodule GateServer.Npc.Abilities do
   的 `act` 叶子（与 LLM 共用同一组规格，句柄 granularity 0..3；静态参数在建树时经 `command/4` 译码一次）。g5 只由直接产出
   规范命令的代码 Brain（如 Routine）发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
   """
-  alias GateServer.Npc.{Actions, Attention, Memory, Perception, Skills}
+  alias GateServer.Npc.{Actions, Attention, Genesis, Memory, Perception, Skills}
 
   # D-2：2026-10-08 对当前代理做过一次 strict 工具 live 请求（enum、nullable、定长数组、嵌套对象），代理接受并按 schema 调用。
   @strict true
@@ -52,6 +55,7 @@ defmodule GateServer.Npc.Abilities do
           | :liquid
           | :inventory
           | :magic
+          | :genesis
           | :memory
           | :skill
   @type spec ::
@@ -62,6 +66,7 @@ defmodule GateServer.Npc.Abilities do
           | :belt
           | {:enum, %{String.t() => term()} | [integer()]}
           | {:tuple, [spec()]}
+          | {:list, spec()}
           | {:map, [{atom(), spec()}]}
           | {:nullable, spec()}
   @type entry :: %{
@@ -73,7 +78,7 @@ defmodule GateServer.Npc.Abilities do
           build: (map(), map() -> map())
         }
 
-  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、Perception、Attention、Memory、Skills）。"
+  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Memory、Skills）。"
   @spec entries(map()) :: [entry()]
   def entries(profile) do
     groups = Map.get(profile, :groups)
@@ -82,6 +87,7 @@ defmodule GateServer.Npc.Abilities do
     for entry <-
           Actions.entries() ++
             Actions.spells(profile) ++
+            Genesis.entries(profile) ++
             Perception.entries() ++
             Attention.entries() ++ Memory.entries() ++ Skills.entries(profile),
         groups == nil or entry.group in groups,
@@ -164,6 +170,9 @@ defmodule GateServer.Npc.Abilities do
       maxItems: length(specs)
     }
 
+  defp json_schema({:list, spec}, profile),
+    do: %{type: "array", items: json_schema(spec, profile)}
+
   defp json_schema({:map, fields}, profile), do: object(fields, profile)
 
   defp json_schema({:nullable, spec}, profile) do
@@ -215,19 +224,25 @@ defmodule GateServer.Npc.Abilities do
     do: if(value in values, do: {:ok, value}, else: :error)
 
   defp value({:tuple, specs}, list) when is_list(list) and length(list) == length(specs) do
-    Enum.zip(specs, list)
-    |> Enum.reduce_while({:ok, []}, fn {spec, item}, {:ok, done} ->
+    with {:ok, items} <- items(Enum.zip(specs, list)), do: {:ok, List.to_tuple(items)}
+  end
+
+  defp value({:list, spec}, list) when is_list(list), do: items(Enum.map(list, &{spec, &1}))
+
+  defp value({:map, fields}, args) when is_map(args), do: fields(fields, args)
+  defp value(_spec, _value), do: :error
+
+  # 数组元素逐个译码（元组与列表共用），任一不对即 :error。
+  defp items(pairs) do
+    Enum.reduce_while(pairs, {:ok, []}, fn {spec, item}, {:ok, done} ->
       case value(spec, item) do
         {:ok, item} -> {:cont, {:ok, [item | done]}}
         :error -> {:halt, :error}
       end
     end)
     |> case do
-      {:ok, items} -> {:ok, items |> Enum.reverse() |> List.to_tuple()}
+      {:ok, items} -> {:ok, Enum.reverse(items)}
       :error -> :error
     end
   end
-
-  defp value({:map, fields}, args) when is_map(args), do: fields(fields, args)
-  defp value(_spec, _value), do: :error
 end

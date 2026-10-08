@@ -350,6 +350,7 @@ defmodule GateServer.NpcBodyWorldTest do
          bounds: {{-60, 40, -60}, {60, 120, 60}},
          spawn: {4.0, 66.0, 10.0},
          faction: context[:faction],
+         genesis: context[:genesis] == true,
          brain: brain(context)},
         restart: :temporary
       )
@@ -2103,12 +2104,117 @@ defmodule GateServer.NpcBodyWorldTest do
     assert %{status: :rejected, reason: :no_path} = outcome(body, :reach, 10_000)
   end
 
+  # 放置阶段 M2（决策稿 2026-10-08-npc-placement-phase.md §3、§5）：创世编辑与 0x78 后门同一个 World 入口、同一语义——
+  # 逐格写成给定材料（0 = 空气），不扣料、不记 placed_by。期望格逐个手写；余额读 World 公共读口，前后相等。
+  @tag :idle
+  @tag genesis: true
+  @tag supply: %{11 => 512}
+  test "genesis fill_box / set_cells write exactly the asked cells, with no placed_by and no cost",
+       %{world: world, body: body} do
+    ready(body)
+    profile = %{genesis: true}
+    owned = fn -> for b <- World.material_balances(world, @npc), do: {b.material, b.balance} end
+    before = owned.()
+    assert {@stone, 512} in before
+
+    box = %{"min" => [6, 64, 12], "max" => [7, 65, 13], "material" => @stone}
+    Body.command(body, Abilities.command("fill_box", box, :fill, profile))
+    assert %{verb: :genesis_edit, status: :done, data: %{seq: _}} = outcome(body, :fill, 10_000)
+
+    cells = %{"cells" => [[5, 63, 12, 0], [5, 64, 12, @stone]]}
+    Body.command(body, Abilities.command("set_cells", cells, :dig, profile))
+    assert %{status: :done} = outcome(body, :dig, 10_000)
+
+    expected = %{
+      {6, 64, 12} => @stone,
+      {6, 64, 13} => @stone,
+      {6, 65, 12} => @stone,
+      {6, 65, 13} => @stone,
+      {7, 64, 12} => @stone,
+      {7, 64, 13} => @stone,
+      {7, 65, 12} => @stone,
+      {7, 65, 13} => @stone,
+      # 地面格挖成空气，它上面一格写成石料。
+      {5, 63, 12} => 0,
+      {5, 64, 12} => @stone,
+      # 盒外一圈不变：盒旁与盒顶上是空气，盒下是原地面。
+      {8, 64, 12} => 0,
+      {6, 66, 12} => 0,
+      {6, 63, 12} => @stone
+    }
+
+    rows =
+      Map.new(
+        World.material_snapshot(world, [@npc], Map.keys(expected)).probe_occupancy,
+        &{List.to_tuple(&1.cell), &1}
+      )
+
+    for {cell, material} <- expected,
+        do:
+          assert(
+            %{material: ^material, refined: false, placed_by: nil} = rows[cell],
+            inspect(cell)
+          )
+
+    assert before == owned.()
+  end
+
+  # 本层原因（决策稿 §3）：未授予 → not_permitted；超过 4096 格或形状不对 → invalid_command；任一格某轴离自己超过
+  # Perception.reach() → too_far；编辑盒外 → out_of_bounds。都不到 World：事务序号不变。
+  @tag :idle
+  test "a Body started without genesis refuses genesis_edit as not_permitted", %{
+    world: world,
+    body: body
+  } do
+    ready(body)
+    seq = World.material_snapshot(world, [], []).seq
+    Body.command(body, %{id: :g, verb: :genesis_edit, edits: [{{6, 64, 12}, @stone}]})
+    assert %{status: :rejected, reason: :not_permitted} = outcome(body, :g, 5_000)
+    assert seq == World.material_snapshot(world, [], []).seq
+  end
+
+  @tag :idle
+  @tag genesis: true
+  test "genesis_edit is refused at the Body: too many cells, too far, outside the edit box, malformed",
+       %{world: world, body: body} do
+    ready(body)
+    seq = World.material_snapshot(world, [], []).seq
+    profile = %{genesis: true}
+
+    # 17 × 16 × 16 = 4352 > 4096 格；各轴都在 32 m 与编辑盒 {-60,40,-60}–{60,120,60} 内。
+    big = %{"min" => [0, 64, 0], "max" => [16, 79, 15], "material" => @stone}
+
+    # 出生点 x = 4：x = 40 离自己 36 m；y = 39 离自己（胶囊中心 y ≈ 65–66）不到 27 m，但在编辑盒下沿（y ≥ 40）之外。
+    cases = [
+      {:big, Abilities.command("fill_box", big, :big, profile), :invalid_command},
+      {:far, Abilities.command("set_cells", %{"cells" => [[40, 64, 10, @stone]]}, :far, profile),
+       :too_far},
+      {:out, Abilities.command("set_cells", %{"cells" => [[4, 39, 10, @stone]]}, :out, profile),
+       :out_of_bounds},
+      {:empty, Abilities.command("set_cells", %{"cells" => []}, :empty, profile),
+       :invalid_command},
+      # 目录外的材料 id（同 0x78 解码的取值约束）、非整数格（代码 Brain 直接发的命令）。
+      {:material,
+       Abilities.command("set_cells", %{"cells" => [[4, 64, 12, 9999]]}, :material, profile),
+       :invalid_command},
+      {:raw, %{id: :raw, verb: :genesis_edit, edits: [{{4.0, 64, 12}, @stone}]}, :invalid_command}
+    ]
+
+    for {id, command, reason} <- cases do
+      Body.command(body, command)
+      assert %{status: :rejected, reason: ^reason} = outcome(body, id, 5_000), inspect(id)
+    end
+
+    assert seq == World.material_snapshot(world, [], []).seq
+  end
+
   # 正式生成入口（§9.2）：名字 → characters 表的 NPC 行（永久 cid）→ Orgs 档案 → claim 的 profile → 别人看到的名牌。
   # 同名再起一个：同一 cid，先起的 Body 被顶替后正常结束。数据库是 data_service 的测试库（本 VM 独占）。
   @tag :idle
   test "Body.start/2 makes the name the permanent identity and the nameplate others see",
        %{body: observer, claims: claims, scene: scene} do
     MmoTest.Database.start!()
+    start_supervised!({Registry, keys: :duplicate, name: GateServer.NpcNames})
     start_supervised!({DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one})
     name = "建设者#{System.unique_integer([:positive])}"
 
@@ -2148,11 +2254,12 @@ defmodule GateServer.NpcBodyWorldTest do
   # （真实 World / Scene / Player / Runtime；记忆用本文件的 Agent 替身，替身范围只到长期记忆存储），
   # Body 的类型守卫不得回 invalid_command。各条目的权威结果不在这里断言（原样来自 World，见各自的用例）。
   @tag :seam
+  @tag genesis: true
   @tag supply: %{11 => 2048}
   test "every entry projected to the LLM builds a command the real Body accepts (never invalid_command)",
        %{body: body} do
     ready(body)
-    profile = %{tools: %{1 => "镐"}, skills: %{build: %{}}}
+    profile = %{tools: %{1 => "镐"}, skills: %{build: %{}}, genesis: true}
     hex = String.duplicate("2a", 32)
     entity = %{"entity_id" => 424_242, "entity_epoch" => 1}
     blank = %{"x" => nil, "y" => nil, "z" => nil, "orientation" => nil}
@@ -2202,6 +2309,9 @@ defmodule GateServer.NpcBodyWorldTest do
           "orientation" => 0,
           "instance" => nil
         }),
+      # 创世（放置阶段 M2）：出生点旁、不碰其余条目用到的格。
+      "fill_box" => %{"min" => [1, 64, 6], "max" => [1, 64, 6], "material" => @stone},
+      "set_cells" => %{"cells" => [[2, 64, 6, @stone]]},
       "look" => %{"x0" => 3, "y0" => 63, "z0" => 9, "x1" => 5, "y1" => 65, "z1" => 11},
       "inspect" => %{},
       "query_balances" => %{},

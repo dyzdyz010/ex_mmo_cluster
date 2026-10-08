@@ -15,13 +15,15 @@ defmodule GateServer.NpcAbilitiesTest do
   @profile %{
     tools: %{1 => "镐", 9 => "点火器"},
     skills: %{build: %{}},
-    spells: %{"ignite" => @ignite}
+    spells: %{"ignite" => @ignite},
+    genesis: true
   }
   # 每个技能都配上：strict 不变量要覆盖内置技能的 schema。
   @full %{
     tools: %{1 => "镐", 9 => "点火器"},
     skills: %{build: %{}, design_house: %{}, gather: %{}, wilderness: %{}},
-    spells: %{"ignite" => @ignite, "light" => "{}"}
+    spells: %{"ignite" => @ignite, "light" => "{}"},
+    genesis: true
   }
   # D-3：Demo LLM NPC 的分组（Voxim Docs/Gameplay/npc.exs 的 LLM 后端；工具带同 Demo）。
   @demo %{
@@ -146,6 +148,14 @@ defmodule GateServer.NpcAbilitiesTest do
          }
        }},
       {"cancel_cast", %{}, %{verb: :cancel_cast}},
+      # 放置阶段 M2：闭区间 2 × 1 × 2 = 4 格，按 x、y、z 逐格（同 look 的展开顺序）；material 0 = 挖成空气。
+      {"fill_box", %{"min" => [1, 64, -3], "max" => [2, 64, -2], "material" => 0},
+       %{
+         verb: :genesis_edit,
+         edits: [{{1, 64, -3}, 0}, {{1, 64, -2}, 0}, {{2, 64, -3}, 0}, {{2, 64, -2}, 0}]
+       }},
+      {"set_cells", %{"cells" => [[5, 63, 12, 0], [-1, 64, 7, 11]]},
+       %{verb: :genesis_edit, edits: [{{5, 63, 12}, 0}, {{-1, 64, 7}, 11}]}},
       {"look", %{"x0" => 15, "y0" => 63, "z0" => -9, "x1" => 17, "y1" => 66, "z1" => 11},
        %{verb: :look, min: {15, 63, -9}, max: {17, 66, 11}}},
       {"inspect", %{}, %{verb: :inspect}},
@@ -306,7 +316,13 @@ defmodule GateServer.NpcAbilitiesTest do
           {"cast_spell", %{"spell" => "fireball", "target" => pillar}},
           {"cast_spell", %{"spell" => "ignite", "target" => %{pillar | "granularity" => 3}}},
           {"cast_spell", %{"spell" => "ignite", "target" => %{pillar | "granularity" => 5}}},
-          {"cast_spell", %{"spell" => "ignite"}}
+          {"cast_spell", %{"spell" => "ignite"}},
+          # 创世：格是定长 4 元整数数组，盒的角是定长 3 元。
+          {"set_cells", %{"cells" => [[5, 63, 12]]}},
+          {"set_cells", %{"cells" => [[5, 63, 12.5, 0]]}},
+          {"set_cells", %{"cells" => [5, 63, 12, 0]}},
+          {"fill_box", %{"min" => [1, 64], "max" => [2, 64, 3], "material" => 0}},
+          {"fill_box", %{"min" => [1, 64, 2], "max" => [2, 64, 3]}}
         ] do
       assert %{id: 1, verb: :invalid_tool_arguments, tool: ^name} =
                Abilities.command(name, args, 1, @profile),
@@ -352,6 +368,18 @@ defmodule GateServer.NpcAbilitiesTest do
       assert %{verb: :unknown_tool} = Abilities.command("cancel_cast", %{}, 1, profile)
     end
 
+    # 创世条目只在 profile.genesis 为真时投影（授予唯一来源是注册表行）；没有时连受理都是 unknown_tool。
+    for profile <- [%{}, %{genesis: false}, @demo, Map.delete(@full, :genesis)] do
+      names = Enum.map(Abilities.tools(profile), & &1.name)
+      refute "fill_box" in names or "set_cells" in names
+      assert %{verb: :unknown_tool} = Abilities.command("set_cells", %{"cells" => []}, 1, profile)
+    end
+
+    set_cells = Enum.find(Abilities.tools(@full), &(&1.name == "set_cells"))
+
+    assert %{type: "array", items: %{type: "array", minItems: 4, maxItems: 4}} =
+             set_cells.parameters.properties.cells
+
     cast = Enum.find(Abilities.tools(@full), &(&1.name == "cast_spell"))
     assert ["ignite", "light"] == cast.parameters.properties.spell.enum
     assert [0, 1, 2] == cast.parameters.properties.target.properties.granularity.enum
@@ -367,6 +395,8 @@ defmodule GateServer.NpcAbilitiesTest do
       case expected do
         %{verb: :skill, skill: skill} -> assert Atom.to_string(skill) == name
         %{verb: :prefab_place} -> assert name == "prefab"
+        # 创世的两个条目都构造同一个 Body 动词（盒与逐格只是两种写法）。
+        %{verb: :genesis_edit} -> assert name in ["fill_box", "set_cells"]
         %{verb: verb} -> assert Atom.to_string(verb) == name
       end
     end

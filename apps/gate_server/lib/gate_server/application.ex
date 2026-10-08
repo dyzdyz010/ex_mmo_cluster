@@ -8,7 +8,7 @@ defmodule GateServer.Application do
 
   - the Voxim QUIC listener and per-connection supervision
   - Gate-owned authenticated session identities
-  - the NPC body supervisor
+  - the NPC body supervisor, the NPC name registry and the one-shot start of registered NPCs
 
   It does **not** own authoritative gameplay simulation; instead it forwards
   authenticated requests to scene/auth services and encodes their replies for
@@ -35,7 +35,11 @@ defmodule GateServer.Application do
           {GateServer.Session.Claims, name: GateServer.Session.Claims},
           {GateServer.Transport.QuicListener,
            [claims: GateServer.Session.Claims] ++ Application.fetch_env!(:gate_server, :quic)},
-          {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one}
+          # 在跑的 NPC Body 按 cid 登记（Body.start/2 填），注册表据此找到它们。
+          {Registry, keys: :duplicate, name: GateServer.NpcNames},
+          {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one},
+          # 注册表里 enabled 的 NPC 随节点启动：一次性（Task 缺省 restart: :temporary），Scene 还没就绪时 Body 自己重试 claim。
+          {Task, &GateServer.Npc.Registry.start_all/0}
         ]
       end
 

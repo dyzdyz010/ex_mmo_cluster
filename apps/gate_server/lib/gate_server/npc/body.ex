@@ -15,9 +15,13 @@ defmodule GateServer.Npc.Body do
   所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:gate_server, :quic` 的 `bounds`）内，
   与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。聊天在正式栈里还不存在：`say` 只占位。
   目录读取（`read_catalog`）经 `GateServer.Npc.Perception.read/3` 读 World 的公共只读目录。
+  创世编辑（`genesis_edit`，能力组 `:genesis`，见 `GateServer.Npc.Genesis`）只在启动选项 `genesis: true` 时受理，否则
+  `:not_permitted`；`Genesis.prepare/3` 校验后由执行进程交给 `World.apply_edits/2`（与 0x78 原始编辑后门同一入口、同一语义）。
 
   正式生成入口是 `start/2`：名字即 NPC 的永久身份（同名永远同一 cid，同 cid 最后完成 claim 的 Body 留下），阵营档案取
   `DataService.Orgs.profile/1`（与玩家登录同一函数），claim 时作为 `profile` 交给 Scene，别人看到的名牌与关系由它算出。
+  经 `start/2` 起的 Body 以 cid 登记在 `GateServer.NpcNames`（重复键 Registry，崩溃重启后在 init 里重新登记），
+  注册表 `GateServer.Npc.Registry` 据此找到在跑的 Body。
   调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧；意图的到达时刻（`received_us`）在受理命令时冻结。
   执行进程对世界调用的退出只判一件事：会话的 Player 已退出 → `:session_lost`；否则照常退出，由监督者重启 Body。
   余额的真值在 World，这里按 Intent 的补发规则（与 Gate 给玩家补发余额同一条）在世界事务之后重取一份。
@@ -46,7 +50,7 @@ defmodule GateServer.Npc.Body do
   alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
   alias VoxelRegion.Phase
   alias VoxelRegion.World
-  alias GateServer.Npc.{Attention, Sight, WorldRequest}
+  alias GateServer.Npc.{Attention, Genesis, Sight, WorldRequest}
   @attention_verbs Attention.verbs()
   # 世界写意图的动词（经 WorldRequest 拼成线同形请求：施法 0x82 交给 Player.cast_spell/5，其余进 Intent.run/3）；
   # 余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
@@ -81,8 +85,8 @@ defmodule GateServer.Npc.Body do
   对同名永远返回同一 cid；名字已属于玩家角色时崩溃。名字唯一由调用方（作者 / 部署脚本）保证。
   同 cid 最后完成 claim 的 Body 留下：先起的 Body 持有会话时被顶替、以 `{:shutdown, :replaced}` 结束；它若正处于
   重新 claim（会话丢失后约 1 秒内，或 Scene 未就绪时的重试中），收不到顶替，稍后自己的 claim 反过来顶掉后起的。
-  要换掉同名 NPC，先停旧 Body 再 start（由部署脚本保证顺序）。阵营档案 = `DataService.Orgs.profile/1`。
-  `opts` 同 `start_link/1`（`scene_id`、`spawn`、`brain` 等），`cid` 与 `faction` 由这里填。
+  要换掉同名 NPC，先停旧 Body 再 start（`GateServer.Npc.Registry.put/2` 就这样做）。阵营档案 = `DataService.Orgs.profile/1`。
+  `opts` 同 `start_link/1`（`scene_id`、`spawn`、`brain`、`genesis` 等），`cid`、`faction` 与在 `GateServer.NpcNames` 的登记由这里填。
   """
   def start(name, opts) do
     with {:ok, character} <- DataService.CharacterStore.ensure_npc(name) do
@@ -90,7 +94,8 @@ defmodule GateServer.Npc.Body do
 
       DynamicSupervisor.start_child(
         GateServer.NpcSup,
-        {__MODULE__, Keyword.merge(opts, cid: character.id, faction: faction)}
+        {__MODULE__,
+         Keyword.merge(opts, cid: character.id, faction: faction, names: GateServer.NpcNames)}
       )
     end
   end
@@ -131,6 +136,10 @@ defmodule GateServer.Npc.Body do
   def init(opts) do
     {brain, profile} = Keyword.fetch!(opts, :brain)
 
+    # 正式入口（start/2）起的 Body 按 cid 登记，供注册表查找；重复键：同 cid 的新旧 Body 交接时可以短暂并存。
+    if names = Keyword.get(opts, :names),
+      do: {:ok, _} = Registry.register(names, Keyword.fetch!(opts, :cid), nil)
+
     {:ok,
      %{
        # cid 来自 characters 表的 NPC 行（DataService.CharacterStore.ensure_npc/1），永久且不复用。
@@ -145,6 +154,8 @@ defmodule GateServer.Npc.Body do
        scene_id: Keyword.fetch!(opts, :scene_id),
        # 与玩家 QUIC 连接同一份部署编辑盒。
        bounds: Keyword.get(opts, :bounds, Application.get_env(:gate_server, :quic, [])[:bounds]),
+       # 创世授予（GateServer.Npc.Genesis）：唯一来源是注册表行，与 Brain 的 profile.genesis 同源。
+       genesis: Keyword.get(opts, :genesis, false) == true,
        mind: GateServer.Npc.Runtime.init({brain, profile}),
        # 世界调用的 FIFO 执行进程跨会话保留：在途调用总会有结果，不因重新 claim 丢失。
        worker: spawn_link(&world_calls/0),
@@ -817,6 +828,10 @@ defmodule GateServer.Npc.Body do
     state
   end
 
+  # 创世编辑只给启动选项 genesis: true 的 Body（与会话无关，先判）。
+  defp apply_command(%{genesis: false} = state, %{id: id, verb: :genesis_edit}),
+    do: reject_genesis(state, id, :not_permitted)
+
   # 没有会话（还没 claim 上或正在重新 claim）：身体与世界动作都无从执行。
   defp apply_command(%{player: nil} = state, %{id: id, verb: verb}),
     do: emit(state, %{id: id, verb: verb, status: :rejected, reason: :invalid_session, data: nil})
@@ -941,6 +956,18 @@ defmodule GateServer.Npc.Body do
     end
   end
 
+  # 创世编辑：Genesis.prepare/3 是受理前的唯一校验（格数、各轴距离、编辑盒），之后交执行进程写 World。
+  defp apply_command(state, %{id: id, verb: :genesis_edit} = command) do
+    case Genesis.prepare(state.position, state.bounds, Map.get(command, :edits)) do
+      :ok ->
+        submit(state, id, {:genesis, command.edits})
+        %{state | world: Map.put(state.world, id, :genesis_edit)}
+
+      {:error, reason} ->
+        reject_genesis(state, id, reason)
+    end
+  end
+
   # 聊天占位：正式栈有玩家聊天后接同一条通道，届时收到的话以 `{:heard, ...}` 事件给 Brain。
   defp apply_command(state, %{id: id, verb: :say, text: text}) when is_binary(text),
     do:
@@ -992,6 +1019,11 @@ defmodule GateServer.Npc.Body do
         {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]),
          call, %{received_us: System.monotonic_time(:microsecond), clock_node: node()}}
       )
+
+  defp reject_genesis(state, id, reason) do
+    log_rejected(state.cid, id, "verb=genesis_edit", reason)
+    emit(state, %{id: id, verb: :genesis_edit, status: :rejected, reason: reason, data: nil})
+  end
 
   defp invalid(state, command) when is_map(command) do
     emit(state, %{
@@ -1134,6 +1166,17 @@ defmodule GateServer.Npc.Body do
 
   defp execute(session, {:sight, query}, _ingress), do: {Sight.read(session.world_ref, query), nil}
 
+  # 创世编辑：与 0x78 后门同一个 World 入口（不扣料、不记 placed_by），余额不变、不重取。
+  defp execute(session, {:genesis, edits}, _ingress) do
+    result = World.apply_edits(session.world_ref, edits)
+
+    Logger.info(
+      "npc_genesis_edit cid=#{session.cid} cells=#{length(edits)} result=#{inspect(result)}"
+    )
+
+    {result, nil}
+  end
+
   defp execute(session, call, _ingress) when elem(call, 0) in [:look, :inspect, :catalog],
     do: {GateServer.Npc.Perception.read(session.world_ref, session.cid, call), nil}
 
@@ -1187,8 +1230,8 @@ defmodule GateServer.Npc.Body do
     :exit, _ -> {:error, :session_lost}
   end
 
-  # 进 Intent 之前被 Body 拒绝的世界命令（类型守卫、位置未知、编辑盒越界）：这些不产生 `character_intent` 行，
-  # 各记一行供 CLI 按 reason 归类。id 在受理侧是命令 id，在执行进程里是请求号（request_id）。
+  # 进 Intent 之前被 Body 拒绝的世界命令（类型守卫、位置未知、编辑盒越界；创世编辑的授予与 Genesis.prepare/3 拒绝）：
+  # 这些不产生 `character_intent` 行，各记一行供 CLI 按 reason 归类。id 在受理侧是命令 id，在执行进程里是请求号（request_id）。
   defp log_rejected(cid, id, what, reason),
     do:
       Logger.warning(

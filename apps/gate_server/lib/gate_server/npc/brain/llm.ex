@@ -192,7 +192,8 @@ defmodule GateServer.Npc.Brain.Llm do
     {local, commands} =
       Enum.split_with(rest, &(&1.verb in [:unknown_tool, :invalid_tool_arguments]))
 
-    Logger.info("npc_llm_decision #{inspect(all, limit: :infinity)}")
+    # 每个列表最多打 64 项：创世 fill_box 一次可展开到 4096 格，全量打印一行约 100 KB。
+    Logger.info("npc_llm_decision #{inspect(all, limit: 64)}")
     for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
 
     # 每次询问都要花钱：模型说等多久就挂起多久（夹在 @min_wait_s–@max_wait_s 秒），到点再标记有新情况。

@@ -1,6 +1,6 @@
 # 角色能力函数库（决策稿）
 
-分类：**Global system**，决策稿。状态：**I1–I4 已实现并提交（b363f122、33377ad2、60f01c75、c727418f，合并 6b95d110）；最终实跑已做（本地 Demo + 真实双客户端，判据 6/6，见 §14）；实跑暴露的三处缺陷已修复并有红绿回归；24 h 长跑与“往世界里放 NPC”阶段（NPC 注册表、重启恢复、正式服取料规则）未做**。
+分类：**Global system**，决策稿。状态：**I1–I4 已实现并提交（b363f122、33377ad2、60f01c75、c727418f，合并 6b95d110）；最终实跑已做（本地 Demo + 真实双客户端，判据 6/6，见 §14）；实跑暴露的三处缺陷已修复并有红绿回归；24 h 长跑未做；“往世界里放 NPC”阶段见 [放置阶段决策稿](2026-10-08-npc-placement-phase.md)（NPC 注册表与重启恢复 M1、创世能力组 `:genesis` M2 已实现待提交；正式服取料规则未定）**。
 
 - 基线：服务端 master `f94a3d72`（worktree `ex_mmo_cluster-capabilities`，分支 `capability-library-20261007`）；Voxim `main` `b40f922c`。下文行号都按基线。
 - 上位与相邻文档：[NPC 统一接口层](2026-09-21-npc-unified-interface-design.md)、[NPC 运行层评审修复](2026-10-06-npc-runtime-review-fixes.md)、[上下文与记忆契约](2026-09-22-npc-context-memory-contract.md)、Voxim `Docs/Combat-Action-Design.md`、`Docs/Testing.md`。
@@ -139,7 +139,7 @@ flowchart TB
 ## 5 能力条目形状（Abilities）
 
 ```elixir
-@type group :: :move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :memory | :skill
+@type group :: :move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :memory | :skill
 @type spec ::
         :integer | :number | :string | :hex32              # hex32：64 位十六进制 → 32 字节
         | {:enum, %{String.t() => term()} | [integer()]}  # 字符串枚举 → 码 / 原子；或整数枚举
@@ -159,7 +159,7 @@ flowchart TB
 
 - **一份规格两种产物**：`schema/2` 生成 strict JSON Schema（每个 object `additionalProperties: false`、全部属性进 `required`、可空写 `type: [t, "null"]`）；`decode/2` 把 JSON 参数转成定型值，形状不对返回 `:error`。`decode` 是 Abilities 唯一的形状校验，不另写通用 JSON Schema 校验器；取值合法性仍由 Body 与权威裁决。
 - **I2b 实现注记（以代码为准）**：译码只认 JSON 写法（字符串键、数组）——当前调用方（`Brain.Llm`、design_house 共享工具）都给这种形状；I3 行为树同样只用 JSON 写法，不加 Elixir 写法（I2b 审查定案）。对象里多余的键忽略，可空字段缺键视为 null；可空枚举的 `enum` 另含 `null`；元组元素同型，schema 取首元素作 `items` 并写 `minItems = maxItems`。`:belt` 只约束 schema、只出现在顶层参数，译码只要求整数（与“授予条件只是投影约束”一致）。字符串长度不写进 schema（strict 不支持 minLength / maxLength），记忆的 key / text / query 上限写在描述里、仍由 `Memory.execute/4` 校验。技能参数原样透传（JSON 形）；技能 `definition/1` 的 schema 必须满足 strict（写进 Skill 契约与 README）。描述句数：stop、13 个关注动词等只有一两句，未到上面的“≥3 句”——每条都另附 done 说明，再加句会增大每次请求的 tools 字节（Demo 分组 11 887 B），取此折中。附件的 kind / axis 在 attach 参数与 inspect 投影里是同一组名字（`face` / `edge`、`x` / `y` / `z`，`Actions.attachment_names/1`），槽地址只由 `VoxelRegion.Attachments.slot/1` 恢复。LLM instructions 只写通用约定；只关乎某些工具的提示在这些工具都投影时才写进去。
-- **授予条件只是投影约束，不是权限**：`profile.groups` 可选过滤（缺省全部）；`:belt` 条目要求 `profile.tools` 非空；技能条目要求出现在 `profile.skills`；`:magic` 要求 `profile.spells` 非空。World 受理目录里任何 tool_id（world.ex:942），G22 不在本轮。
+- **授予条件只是投影约束，不是权限**：`profile.groups` 可选过滤（缺省全部）；`:belt` 条目要求 `profile.tools` 非空；技能条目要求出现在 `profile.skills`；`:magic` 要求 `profile.spells` 非空；`:genesis` 要求 `profile.genesis` 为真（放置阶段 M2；Body 另凭同源的启动选项受理，未授予回 `not_permitted`——这是本库唯一一处由 Body 持有的授予，因为创世编辑不经任何权威门）。World 受理目录里任何 tool_id（world.ex:942），G22 不在本轮。
 - **不进条目**：kind（只作下表文档）、射程 / 成本 / 冷却数值、reason 目录、`llm` 标志（只给代码用的 `cancel_skill` 归 Runtime，不是条目）。
 
 ### 5.1 done 的含义（文档表）
@@ -178,7 +178,7 @@ flowchart TB
 
 | 层 | reason |
 |---|---|
-| Body | `too_far` / `no_path` / `stuck` / `out_of_bounds` / `invalid_command` / `invalid_session` / `session_lost`；read_catalog 的 `definition_not_found`（与 World prefab_intent 同名同义）；cancel_cast 的 `no_active_cast`（没有待施法，I4） |
+| Body | `too_far` / `no_path` / `stuck` / `out_of_bounds` / `invalid_command` / `invalid_session` / `session_lost`；read_catalog 的 `definition_not_found`（与 World prefab_intent 同名同义）；cancel_cast 的 `no_active_cast`（没有待施法，I4）；genesis_edit 的 `not_permitted`（Body 未以 `genesis: true` 启动，放置阶段 M2） |
 | Runtime | `skill_busy` / `skill_not_configured` / `no_active_skill` / `already_cancelling` |
 | 技能 | build：`invalid_skill_arguments` / `body_timeout`；gather：`exhausted` / `unreachable` / `invalid_skill_arguments`；design_house：`too_far`（S3） |
 | 适配层（LLM、树） | `unknown_tool` / `invalid_tool_arguments`（本地回报，不发给 Body） |
@@ -238,6 +238,8 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | prefab | build | `{op:"place"\|"remove"\|"replace", definition: hex\|null, x,y,z:int\|null, orientation:int\|null, instance:[b,o]\|null}` | `%{seq}` | committed | 右键 → 0x7A；X → 0x7C；remove 只有控制台 0x7B | Body 编辑盒门 → Intent → `tool_context` → `World.prefab_intent` | 总有 | I1 |
 | cast_spell | magic | `{spell: enum(profile.spells 的名字), target: handle(g0–g2)}` → `%{verb: :cast_spell, program: 程序字节, direction, target}`（decode 时按名字取出程序字节） | World 回复原样（seq、outcome、caster） | settled | M → 0x82 a1 | Body worker 读 `World.magic_digest/1` 填请求 → `Player.cast_spell/5` → 前摇 / 授权 → World 结算 | spells 非空 | I4 |
 | cancel_cast | magic | `{}` | `%{}`；原施法回 rejected `cast_cancelled`；没有待施法回 `no_active_cast` | instant | 前摇中再按 M → a2 | worker → `Player.spell/4` a2（同一请求换 action 2 与新 request_id，client_intent_seq 不变，`WorldRequest.cancel/2`） | 同上 | I4 |
+| fill_box | genesis | `{min:[3 int], max:[3 int], material:int}` → `%{verb: :genesis_edit, edits: 闭区间按 x、y、z 逐格 [{{x,y,z}, material}]}`（只展开到上限多一格，格数由 Body 判） | `%{seq}` | committed | 无（0x78 原始编辑后门是开发期入口） | Body `Genesis.prepare/3`（授予、≤ 4096 格、各轴 ≤ `Perception.reach()`、编辑盒）→ worker → `World.apply_edits/2`（与 0x78 同一入口：不扣料、不记 placed_by） | `profile.genesis`（注册表行） | 放置 M2 |
+| set_cells | genesis | `{cells: [[x,y,z,material], …]}` → `%{verb: :genesis_edit, edits: [{{x,y,z}, material}]}` | `%{seq}` | committed | 同上 | 同上 | 同上 | 放置 M2 |
 | remember / recall / search_memory | memory | 现有 | 现有 | instant | 无 | Runtime → `Memory.execute/4` | 总有 | 已有 |
 | build | skill | `{definition, anchor_micro, orientation}` | `%{seq, metrics}` | long | 无（玩家直接 0x7A） | `Skills.Build` → Body prefab_place | skills | 已有 |
 | gather | skill | `{box:[[x0,y0,z0],[x1,y1,z1]], material:int, units:int, tool_id: belt}`（全部必填） | `%{mined, gained, skipped}` | long | 无（玩家逐格挖） | `Skills.Gather` → 只经 Body：move_to / look / query_balances / probe_toward / use_tool | skills | I3 |
@@ -253,7 +255,7 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | cancel_skill | Runtime 命令，不经 Abilities；技能执行期间 LLM 不被询问（llm.ex:301-305） |
 | wait | 只在 LLM 适配器内（本地计时）；树有自己的 `wait` 节点 |
 | jump、慢走、原始轴；跨 Scene 移交；回城、账号、HTTP | NPC 走 `move_to`；移交由 Body 自动完成；无 NPC 调用方 |
-| 原始编辑 0x70 / 0x78 | 开发期后门（D-11） |
+| 原始编辑 0x70 / 0x78 | 开发期后门（D-11；2026-10-08 改为保留给创世 NPC：`:genesis` 组的 fill_box / set_cells 走同一个 World 入口，见放置阶段决策稿） |
 | 报价 0x82 a0、改向 a3、法术编辑与预设 | NPC 施法方向固定、用作者法术带（D-10） |
 | material_supply、author_regions、publish_parameters、实验入口、admin prefab、`World.spell_intent/3` | 作者 / 运维 / 测试入口 |
 
@@ -511,7 +513,7 @@ end
 ```
 
 - 名字即永久身份，必须唯一（F16）：同名 NPC 拿到同一 cid，同 cid 最后完成 claim 的 Body 留下——先起者在线时被顶替（`{:shutdown, :replaced}`）；先起者若正处于重新 claim（会话丢失后约 1 s 内或 Scene 未就绪重试中），收不到顶替，稍后自己的 claim 会反过来顶掉后起者。换掉同名 NPC 由部署脚本先停旧 Body 再 start；需要强保证时再改 Claims（不给自己发 close）+ Body（identity 为 nil 时收到 close-2 也结束），本轮不做。同名玩家角色让 `ensure_npc` 抛 CaseClauseError。由调用方（作者 / 部署脚本）保证唯一，不加分支。
-- 字段名 `faction`（Body 的 `profile` 已是运动 profile）；claim 时传 `%{id, spawn, kind: "npc", profile: faction}`（scene.ex:421 读 `:profile`）。节点重启不自动恢复（D-7）。
+- 字段名 `faction`（Body 的 `profile` 已是运动 profile）；claim 时传 `%{id, spawn, kind: "npc", profile: faction}`（scene.ex:421 读 `:profile`）。节点重启不自动恢复（D-7）；放置阶段 M1 起由 NPC 注册表 `GateServer.Npc.Registry` 恢复（`start/2` 起的 Body 按 cid 登记在 `GateServer.NpcNames`，注册表据此先停旧再起新）。
 
 ### 9.3 本轮不做
 
@@ -529,7 +531,7 @@ end
 | S4 | `caster_recipient` 缺键让 World KeyError（F26） | `Player.cast_spell/5` 函数头要求它，构造处只有两个 | I4 |
 | S5 | World 调用退出带崩 Body（F8） | §7.6 的最小规则：Player 已退出 → `session_lost`，否则照常退出由监督者重启 | I1 |
 | S6 | 自主改造世界的护栏 | **真正的护栏是作者给定的采石盒**。gather 候选只取 `placed_by == nil` 的格，并在 probe 后核对命中 `granularity == 0 and owner == {0,0}` 且就是该格才 `use_tool`，否则计入 skipped / 换站位。`placed_by` 只能跳过有放置记录的格：作者 prefab 格只记 macro_owners（由 owner 核对挡住），被别的编辑改过的格与升级前的格仍会被挖（F20）。原子 `use_tool` 不加这条门，仍由权威裁决 | I3 |
-| — | 0x70 / 0x78 原始编辑后门（G20） | 不在本库，另案（D-11） | — |
+| — | 0x70 / 0x78 原始编辑后门（G20） | 不在本库，另案（D-11）；2026-10-08 用户改为保留一段时间给创世 NPC（放置阶段决策稿） | — |
 
 ## 11 增量计划与测试矩阵
 

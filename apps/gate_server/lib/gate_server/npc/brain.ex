@@ -90,6 +90,7 @@ defmodule GateServer.Npc.Brain do
                                                                  # 读目录；:prefab 必须给 definition，其余为 nil
       %{id:, verb: :cast_spell, program: <<程序字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
       %{id:, verb: :cancel_cast}                                 # 取消在前摇的施法（同一 client_intent_seq 的 0x82 action 2）
+      %{id:, verb: :genesis_edit, edits: [{{x, y, z}, material}]}   # 创世：只有启动选项 genesis: true 的 Body 受理（见下）
       %{id:, verb: :say, text:}                                  # 聊天占位：恒被拒 :chat_unavailable；不投影给 LLM
 
   工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路开关都是
@@ -106,6 +107,11 @@ defmodule GateServer.Npc.Brain do
   `program` 是 0x82 的程序字段（UTF-8 JSON），经 Abilities 时由作者法术带 `profile.spells`（`%{名字 => 程序字节}`）按名字
   填入，LLM 只选名字；目录 digest 由 Body 的执行进程投递前经 `World.magic_digest/1` 填入。前摇期间工具与非工具世界意图
   回 `casting`，再施放回 `cast_too_soon`；同一角色同时只有一个前摇，`cancel_cast` 取消的是它。
+
+  创世编辑 `genesis_edit`（能力组 `:genesis`，`GateServer.Npc.Genesis`）：`edits` 是 macro 格与材料（0 = 空气），交给
+  `World.apply_edits/2`——与 0x78 原始编辑后门同一入口、同一语义（不扣料、不记 placed_by、不查射程与保护区）。授予只来自
+  注册表行（`GateServer.Npc.Registry`）：Body 启动选项 `genesis: true` 才受理，否则 `not_permitted`；每次 1..4096 格、
+  整数格与目录合法材料，否则 `invalid_command`；任一格某轴离自己超过 32 m → `too_far`；编辑盒外 → `out_of_bounds`。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 
@@ -128,7 +134,7 @@ defmodule GateServer.Npc.Brain do
   世界事务的 `data`：`probe_toward` 是目标身份加本次 `direction`（原样可作 `use_tool` 的 `target`）；探测人物（g5）时是
   `%{granularity: 5, owner: {cid, 0}, incarnation: 目标生命代次, micro: {0,0,0}, material: 0, direction:}` 加人物回执字段
   （`source_id`、`target_id`、`target_life`、`part`、`life`、`recoverable` 等，与玩家下行 ToolState 同一投影）；
-  对人物 `use_tool` 的 `data` 是同一份人物回执；其余 `use_tool` 与各建造动词是 `%{seq:}`，
+  对人物 `use_tool` 的 `data` 是同一份人物回执；其余 `use_tool`、各建造动词与 `genesis_edit` 是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/4` 的精确投影（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
   天然地形、作者写入的格、被别的编辑改过的格是 nil；`slots` 逐个 prefab 实例 `%{material:, instance:, count:, placed_by:}`，
