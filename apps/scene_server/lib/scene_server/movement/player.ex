@@ -778,7 +778,11 @@ defmodule SceneServer.Movement.Player do
   def handle_info({:timeline, tick, seq, revision, versions, events}, state) do
     state =
       cond do
-        state.stream != nil and state.baseline == nil ->
+        # 碰撞基线（非流送的 anchor / 流送的首个窗口）装好之前，timeline 只推进公共 tick，不摄入其中的版本、事务与
+        # 食物收据。非流送：Scene 在同一 tick 先发 timeline 再发 anchor，anchor 带着 Scene 该 tick 的完整派生碰撞（含此前
+        # 全部已发布事务，anchor_join 断言 marker 的 seq 等于 Scene 已消费的 seq）并整体替换 updates，快照拥有全部历史
+        # 收据；入场时拿到的 updates 只是模板，Scene 尚未初始化时是空的，不是发布序列的前缀。流送：FIFO 由首个窗口初始化。
+        state.baseline == nil ->
           %{state | tick: tick}
 
         state.stream != nil ->
@@ -1730,11 +1734,10 @@ defmodule SceneServer.Movement.Player do
     |> private_ticks(tick)
   end
 
+  # 只在碰撞基线装好之后调用（基线前的 timeline 在入口只推进 tick，见 handle_info({:timeline, ...})）。
   defp deliver_transactions(state, tick, events) do
-    # 首次 anchor 的完整快照拥有全部历史收据；此前的尾部不能先抬高消费游标。
-    food_events = if state.baseline == nil, do: [], else: events
     state =
-      Enum.reduce(food_events, state, fn
+      Enum.reduce(events, state, fn
         {_payload, _n, _r, _chunks, delta}, s -> consume_food(s, delta.transaction)
         {:window, snapshot, _revision}, s -> consume_food(s, snapshot)
         _, s -> s
@@ -1743,7 +1746,7 @@ defmodule SceneServer.Movement.Player do
     if state.transfer == :prepared do
       if events == [], do: state, else: %{state | deferred: [{tick, events} | state.deferred]}
     else
-      if state.baseline != nil, do: emit_transactions(state, tick, events)
+      emit_transactions(state, tick, events)
       state
     end
   end

@@ -128,7 +128,7 @@ defmodule SceneServer.Movement.CollisionUpdates do
     end)
   end
 
-  @doc "接收 Scene 同源发布的版本与 artifact；共享 Native 句柄，不重复构建。"
+  @doc "接收 Scene 同源发布的版本与 artifact；共享 Native 句柄，不重复构建。只用于已由 anchor 装好的 Scene 派生碰撞。"
   def ingest_publication(updates, _tick, seq, revision, versions, events) do
     updates =
       Enum.reduce(events, updates, fn

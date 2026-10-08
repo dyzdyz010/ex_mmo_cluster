@@ -265,3 +265,16 @@ Global system：`Player.cast_spell/5` 是施放（0x82 action 1）的角色 owne
 调用方，成功结算的施法者状态由 World 先发 `{:mmo_spell_reply, ref, request, reply}` 给 caster_recipient。施法不经
 `Intent.run/3`（同步入口会让调用方等前摇）。报价 action 0、取消 2、改向 3 仍同步走 `spell/4`。只在流送 Scene
 （`authority_ref` 非 nil）可用。
+
+## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）
+
+Global system：Player 在碰撞基线装好之前（非流送：Scene 发来的 `{:anchor, ...}`；流送：首个 `CollisionStream` 窗口）
+收到的 `{:timeline, ...}` 只推进公共 tick，不摄入其中的版本、事务与食物收据。依据：Scene 的 `tick/1` 在同一 tick
+先向全部角色发 timeline、再由 `anchor_join/3` 发 anchor；anchor 携带 Scene 该 tick 的完整派生碰撞（`anchor_join` 断言
+marker 的 seq 等于已消费的 seq），由 Player 整体替换 `updates`，快照本身拥有全部历史收据。入场时 Scene 交给 Player 的
+`updates` 只是模板：Scene 尚未装好初始快照时它是 `CollisionUpdates.new/1` 的空值，不是发布序列的前缀。
+旧实现把基线前的 timeline 交给 `CollisionUpdates.ingest_publication/6`，Scene 初始化后、该 Player anchor 前一旦发布含
+chunk 的事务（夹具在 Body 入场前写入作者样本即可触发），`record_artifact/3` 取 `artifacts[revision - 1]` 得 KeyError，
+Player 崩溃、会话按原因 3 关闭。流送 Scene（正式 Demo / 青岚，`collision_window_radius_tiles` = 1）原本就在基线前只推进
+tick，且其 FIFO 由首个窗口 `initialize_stream/2` 初始化，不受影响。回归：`voxim_scene_test.exs`
+“join before the initial snapshot: a transaction published before the anchor is carried by the anchor”。
