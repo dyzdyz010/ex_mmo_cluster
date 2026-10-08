@@ -256,3 +256,12 @@ World 写意图与发布的 refresh 回调同一函数，所以“授权后、�
 `ToolAction.public_receipt/1` 是身体回执的公开投影，玩家 ToolState 与 NPC Outcome 共用。设计与测试矩阵见
 `docs/10-active/cross-cutting/2026-10-07-character-capability-library.md` §7、§11；I1 合入时为“已实现、未实跑”，
 玩家路径的真实双客户端核对放在该稿的最终实跑。
+
+## 2026-10-08 施放的公共入口（能力库 I4）
+
+Global system：`Player.cast_spell/5` 是施放（0x82 action 1）的角色 owner 入口，把请求异步排进与 `spell/4` 同一处理
+（玩家 Gate 的 `Dispatch` 与 NPC Body 是仅有的两个调用方）。函数头要求 `ingress.caster_recipient` 与 `reply_to` 都是
+`{pid, tag}`：前摇、授权与 World 结算不变，结算、立即拒绝、取消与会话结束都以 `GenServer.reply(reply_to, 结果)` 回给
+调用方，成功结算的施法者状态由 World 先发 `{:mmo_spell_reply, ref, request, reply}` 给 caster_recipient。施法不经
+`Intent.run/3`（同步入口会让调用方等前摇）。报价 action 0、取消 2、改向 3 仍同步走 `spell/4`。只在流送 Scene
+（`authority_ref` 非 nil）可用。

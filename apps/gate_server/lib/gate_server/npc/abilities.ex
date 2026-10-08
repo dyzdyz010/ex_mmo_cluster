@@ -3,12 +3,12 @@ defmodule GateServer.Npc.Abilities do
   全局系统功能：NPC 决策侧唯一的能力定义（角色能力函数库，设计稿
   docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §5）。
 
-  组合各域条目：`Actions`（移动、工具、建造、液体、背包）、`Perception`（look / inspect / query_balances /
+  组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Perception`（look / inspect / query_balances /
   read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、`Skills`（已配置的长技能）。每个条目只有
   `%{name, group, done, description, params, build}`：
 
   - `name`：稳定 snake_case 英文，即 LLM 工具名、行为树 act 名、技能名；
-  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :memory | :skill`，供 `profile.groups` 裁剪；
+  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :memory | :skill`，供 `profile.groups` 裁剪；
   - `done`：done 的确切含义（一句话），`description`：给模型看的说明，数字由各域的源常量插值；
   - `params`：一份手写参数规格，同时生成 strict JSON Schema（`tools/1`）与参数译码（`command/4`）；
     技能是 `{:skill, schema}`，schema 原样取自技能的 `definition/1`，参数透传给技能；
@@ -30,7 +30,8 @@ defmodule GateServer.Npc.Abilities do
   `:belt` 只约束投影（工具带外的 id 不出现在 schema 里），译码只要求整数，World 受理目录里任何 tool_id。
 
   授予条件也只约束投影：`profile.groups`（缺省全部）、带 `:belt` 的条目要求 `profile.tools` 非空、技能条目要求
-  配置在 `profile.skills`。schema 只依赖 profile，不随余额等观察状态增删（保护提示缓存）。
+  配置在 `profile.skills`、施法条目要求 `profile.spells`（作者法术带 `%{名字 => 程序字节}`）非空。schema 只依赖 profile，
+  不随余额等观察状态增删（保护提示缓存）。
 
   不进条目：`say`（聊天占位，Body 的 stub 保留、不投影）、`cancel_skill`（Runtime 命令）、`wait`（LLM 适配器本地）、
   人物目标 g5 句柄（D-13）。调用方是 JSON 形参数的适配层：`Brain.Llm`、`design_house` 的共享工具；I3 的行为树 `act`
@@ -43,7 +44,16 @@ defmodule GateServer.Npc.Abilities do
   @strict true
 
   @type group ::
-          :move | :sense | :attend | :act | :build | :liquid | :inventory | :memory | :skill
+          :move
+          | :sense
+          | :attend
+          | :act
+          | :build
+          | :liquid
+          | :inventory
+          | :magic
+          | :memory
+          | :skill
   @type spec ::
           :integer
           | :number
@@ -63,7 +73,7 @@ defmodule GateServer.Npc.Abilities do
           build: (map(), map() -> map())
         }
 
-  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、Perception、Attention、Memory、Skills）。"
+  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、Perception、Attention、Memory、Skills）。"
   @spec entries(map()) :: [entry()]
   def entries(profile) do
     groups = Map.get(profile, :groups)
@@ -71,6 +81,7 @@ defmodule GateServer.Npc.Abilities do
 
     for entry <-
           Actions.entries() ++
+            Actions.spells(profile) ++
             Perception.entries() ++
             Attention.entries() ++ Memory.entries() ++ Skills.entries(profile),
         groups == nil or entry.group in groups,

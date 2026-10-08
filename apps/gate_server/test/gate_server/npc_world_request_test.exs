@@ -16,8 +16,20 @@ defmodule GateServer.NpcWorldRequestTest do
   @one "3FF0000000000000"
   @def_ab String.duplicate("AB", 32)
   @def_cd String.duplicate("CD", 32)
+  # 0x82 的程序字节：Test-only 魔法目录 19c513f9… 的预设 ignite_near 原样；目录 digest 取 32 字节 EE。
+  @ignite ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":200000}}]})
+  @digest :binary.copy(<<0xEE>>, 32)
 
   defp frame(hex), do: Base.decode16!(String.replace(hex, " ", ""))
+
+  # 0x82 action 之后的字段：digest EE…、方向 (0.6, 0, -0.8)、g2 构件 micro (-17, 513, 83)、incarnation 12、owner {12, 1}、
+  # material 11、granularity 2、拟态 id {0, 0}；程序字段另接 u16 长度 + 字节。
+  @spell_body String.duplicate("EE", 32) <> "3FE3333333333333" <> @zero64 <> "BFE999999999999A" <>
+                "FFFFFFFFFFFFFFEF" <> "0000000000000201" <> "0000000000000053" <>
+                "000000000000000C" <> "000000000000000C" <> "00000001" <> "000B" <> "02" <>
+                @zero64 <> "00000000"
+
+  defp program_tail, do: <<byte_size(@ignite)::16, @ignite::binary>>
 
   defp same(hex, command, context \\ @context) do
     assert {:ok, decoded} = Codec.decode(frame(hex))
@@ -141,6 +153,66 @@ defmodule GateServer.NpcWorldRequestTest do
       "7C" <> @head <> "000000000000000C" <> "00000001" <> @def_cd,
       %{verb: :prefab_replace, instance_id: {12, 1}, definition_id: :binary.copy(<<0xCD>>, 32)}
     )
+  end
+
+  # I4（设计稿 §7.8）：0x82 的布局 = 公共头、action u8、目录 digest 32B、方向 f64×3、目标 micro i64×3、incarnation u64、
+  # owner {birth u64, occurrence u32}、material u16、granularity u8、拟态 id {seq u64, n u32}、程序 u16 长度 + 字节。
+  # 目录 digest 在 Body 受理时未知（执行进程投递前经 World.magic_digest/1 填入），build 留 nil，比较时补上 EE…。
+  describe "0x82 施法意图" do
+    test "a1 施放 g2 构件（负 micro、非零 owner）；a2 取消 = 同一请求换 action 与 request_id，client_intent_seq 不变" do
+      assert {:ok, {:voxel_spell_intent, cast} = decoded} =
+               Codec.decode(frame("82" <> @head <> "01" <> @spell_body) <> program_tail())
+
+      assert Codec.intent?(decoded)
+
+      command = %{
+        verb: :cast_spell,
+        program: @ignite,
+        direction: {0.6, 0.0, -0.8},
+        target: %{
+          granularity: 2,
+          micro: {-17, 513, 83},
+          incarnation: 12,
+          owner: {12, 1},
+          material: 11
+        }
+      }
+
+      assert {:voxel_spell_intent, built} = WorldRequest.build(command, @context)
+      assert built.catalog_digest == nil
+      assert %{built | catalog_digest: @digest} == cast
+
+      # 玩家前摇中再按 M：同一帧（同 digest、目标、程序与 client_intent_seq 5）换 action 2 与新 request_id 6。
+      a2 = "82" <> "0000000000000006" <> "00000005" <> "0000000000000001" <> "02" <> @spell_body
+      assert {:ok, {:voxel_spell_intent, cancel}} = Codec.decode(frame(a2) <> program_tail())
+      assert {:voxel_spell_intent, built_cancel} =
+               WorldRequest.cancel(built, %{@context | seq: 6})
+      assert %{built_cancel | catalog_digest: @digest} == cancel
+    end
+
+    test "不给方向时从眼点瞄准句柄；附件 g3、人物 g5、非二进制程序拼不出（0x82 的 granularity 只有 0..2）" do
+      handle = %{granularity: 0, micro: {8, 512, 0}, incarnation: 1, owner: {0, 0}, material: 11}
+      command = %{verb: :cast_spell, program: @ignite, target: handle}
+      assert WorldRequest.aims?(command)
+
+      # 与 0x7D 同一手算：宏格 (1, 64, 0) 中心 (1.5, 64.5, 0.5)，眼 (0.5, 64.6, 0.5) → (1, −0.1, 0) / √1.01。
+      assert {:voxel_spell_intent, %{direction: {dx, dy, dz}, micro: {8, 512, 0}, granularity: 0}} =
+               WorldRequest.build(command, %{@context | eye: {0.5, 64.6, 0.5}})
+
+      assert_in_delta dx, 1 / :math.sqrt(1.01), 1.0e-12
+      assert_in_delta dy, -0.1 / :math.sqrt(1.01), 1.0e-12
+      assert dz == 0.0
+
+      aimed = Map.put(command, :direction, {1.0, 0.0, 0.0})
+
+      for bad <- [
+            %{aimed | target: %{handle | granularity: 3}},
+            %{aimed | target: %{handle | granularity: 5, owner: {9102, 0}}},
+            %{aimed | program: 42},
+            %{aimed | target: %{handle | micro: {8.0, 512, 0}}}
+          ],
+          do: assert(WorldRequest.build(bad, @context) == nil, inspect(bad))
+    end
   end
 
   test "类型或取值不合法的命令拼不出意图（Body 据此回 invalid_command）" do

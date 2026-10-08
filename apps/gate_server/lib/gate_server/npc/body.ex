@@ -22,6 +22,14 @@ defmodule GateServer.Npc.Body do
   执行进程对世界调用的退出只判一件事：会话的 Player 已退出 → `:session_lost`；否则照常退出，由监督者重启 Body。
   余额的真值在 World，这里按 Intent 的补发规则（与 Gate 给玩家补发余额同一条）在世界事务之后重取一份。
 
+  施法（`cast_spell` / `cancel_cast`）与玩家同一个角色 owner 入口 `Player.cast_spell/5`，不经 Intent（前摇是 Player 的
+  异步协议）：执行进程读 `World.magic_digest/1` 填入请求后投递，回复目标是 `{本进程, {:npc_cast, id}}`。施法登记在在途
+  世界事务表里（id → `:cast_spell`），`{{:npc_cast, id}, 结果}`（结算、立即拒绝、取消、World 侧会话结束）是它唯一的
+  Outcome 来源；`{:mmo_spell_reply, …}` 只更新 Observation 的 `self.caster`。取消要用的请求按 id 记在 `casts`，
+  `cancel_cast` 取最早提交、还没有终态的那次（执行进程按提交顺序投递，后提交的在它前摇时只会被 `cast_too_soon` 拒绝）。
+  投给已退出 Player 的施放没有回复，由本进程收尾：会话丢失时在途施法以 `session_lost` 结束；跨 Scene 移交后仍监视旧 Player，
+  它退出时移交前提交、仍无终态的施法同样以 `session_lost` 结束。之后迟到的回复因表中无 id 被忽略：每次施法恰好一个终态。
+
   `move_to` 带寻路：起步时经 `World.material_snapshot/3` 取一盒地形（与 `look` 同一个只读入口），交给
   `SceneServer.Movement.Path` 算出路点后即丢弃，不留体素副本；台阶高度与角色高度取自权威随 SessionStart 下发的
   移动 profile（玩家客户端收到的同一份）。Body 不重试：走不通回报 `:no_path`，路上被堵回报 `:stuck`，由 Brain 决定。
@@ -40,7 +48,8 @@ defmodule GateServer.Npc.Body do
   alias VoxelRegion.World
   alias GateServer.Npc.{Attention, Sight, WorldRequest}
   @attention_verbs Attention.verbs()
-  # 世界写意图的动词（经 WorldRequest → Intent）；余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
+  # 世界写意图的动词（经 WorldRequest 拼成线同形请求：施法 0x82 交给 Player.cast_spell/5，其余进 Intent.run/3）；
+  # 余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
   @world_verbs WorldRequest.verbs()
   @prefab_kinds [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1]
 
@@ -159,8 +168,15 @@ defmodule GateServer.Npc.Body do
        # path = :planning | 剩余要走到的水平点（末项恒为 target），from = 当前这一段的起点，
        # mark = {position, tick}：上次挪动超过 @stall_m 时的位置与 tick。
        move: nil,
-       # 在途世界事务：id => verb。
+       # 在途世界事务：id => verb（施法同样登记在这里，终态只按这张表收尾）。
        world: %{},
+       # 在途施放的请求：id => request（world 里同一 id 是 :cast_spell）；取消用其中最早提交的那次（同一 client_intent_seq，
+       # 见 WorldRequest.cancel/2）。
+       casts: %{},
+       # 移交后仍在监视的旧 Player：monitor ref => 移交时在途的施法 id；旧 Player 退出时其中仍无终态的以 session_lost 结束。
+       retired: %{},
+       # 最近一次施法回复里的施法者状态 %{energy_j, capacity_j, coherence}；nil = 还没施过法。派生缓存，真值在 World。
+       caster: nil,
        request_seq: 0,
        # World 返回的余额表原样；nil = 还没取过（`query_balances` 或任一次世界事务之后才有）。
        balances: nil,
@@ -210,6 +226,10 @@ defmodule GateServer.Npc.Body do
     if state.player_monitor, do: Process.demonitor(state.player_monitor, [:flush])
     Process.send_after(self(), :claim, @reclaim_ms)
 
+    # 施法的回复只按 reply_to 来、执行进程不再兜底：会话没了，在途施法在这里以 session_lost 结束（见 lose_casts/2）。
+    # 其余世界调用照常各回结果。
+    casts = for {id, :cast_spell} <- state.world, do: id
+
     state = %{
       state
       | identity: nil,
@@ -229,6 +249,8 @@ defmodule GateServer.Npc.Body do
         entities: %{},
         attention: Attention.new()
     }
+
+    state = lose_casts(state, casts)
 
     case state.move do
       nil ->
@@ -413,8 +435,26 @@ defmodule GateServer.Npc.Body do
         {:error, reason} -> %{id: id, verb: verb, status: :rejected, reason: reason, data: nil}
       end
 
-    {:noreply, emit(%{state | world: world, balances: balances || state.balances}, outcome)}
+    {:noreply,
+     emit(
+       %{
+         state
+         | world: world,
+           casts: Map.delete(state.casts, id),
+           balances: balances || state.balances
+       },
+       outcome
+     )}
   end
+
+  # 施法的唯一 Outcome 来源：Player / World 以 GenServer.reply 发往 reply_to 的回复（结算 `{:ok, %{seq, outcome, caster}}`、
+  # 立即拒绝、取消 `cast_cancelled`、World 侧会话结束 `invalid_session`），与世界事务结果同一映射；id 已不在表中时忽略。
+  def handle_info({{:npc_cast, id}, result}, state),
+    do: handle_info({:npc_world_result, id, result, nil}, state)
+
+  # 成功报价 / 结算时 World 先发给 caster_recipient 的施法者状态：只更新 Observation 的 self.caster，不产生 Outcome。
+  def handle_info({:mmo_spell_reply, {:npc_cast, _}, _request, %{caster: caster}}, state),
+    do: {:noreply, %{state | caster: Map.take(caster, [:energy_j, :capacity_j, :coherence])}}
 
   def handle_info({:npc_path, id, result}, %{move: %{id: id, path: :planning} = move} = state) do
     case result do
@@ -459,7 +499,18 @@ defmodule GateServer.Npc.Body do
          {:ok, fresh, route, next} <-
            GenServer.call(state.claims, {:prepare_transfer, identity, target, artifact}),
          :ok <- GenServer.call(state.claims, {:commit_transfer, identity, fresh, state.cid}) do
-      Process.demonitor(state.player_monitor, [:flush])
+      # 旧 Player 已 seal：它处理过的施放都已回复（前摇中的被 seal 撤销，World 回 cast_cancelled），之后投给它的回
+      # invalid_state；执行进程投递时它已退出的，没有任何回复。所以有在途施法时留着对旧 Player 的监视（见 retired）。
+      # 旧会话的施法不能再取消（取消按新会话身份匹配），从 casts 里去掉。
+      casts = for {id, :cast_spell} <- state.world, do: id
+
+      retired =
+        if casts == [] do
+          Process.demonitor(state.player_monitor, [:flush])
+          state.retired
+        else
+          Map.put(state.retired, state.player_monitor, casts)
+        end
 
       Logger.info(
         "npc_transfer cid=#{state.cid} old_scene=#{identity.scene_id} new_scene=#{target} cut=#{artifact.simulation_tick}"
@@ -471,6 +522,8 @@ defmodule GateServer.Npc.Body do
          | identity: fresh,
            player: next,
            player_monitor: Process.monitor(next),
+           casts: %{},
+           retired: retired,
            scene_id: target,
            world_ref: Map.get(route, :world_ref),
            entities: %{},
@@ -483,6 +536,12 @@ defmodule GateServer.Npc.Body do
 
   def handle_info({:DOWN, _, :process, player, reason}, %{player: player} = state),
     do: {:noreply, lose_session(state, {:player_down, reason})}
+
+  # 移交前的旧 Player 退出：移交时在途、至今仍无终态的施法再也不会有回复。
+  def handle_info({:DOWN, ref, :process, _, _}, state) when is_map_key(state.retired, ref) do
+    {casts, retired} = Map.pop(state.retired, ref)
+    {:noreply, lose_casts(%{state | retired: retired}, casts)}
+  end
 
   def handle_info({:npc_runtime_outcome, outcome}, state),
     do: {:noreply, %{state | outcomes: Enum.take([outcome | state.outcomes], @outcomes)}}
@@ -532,7 +591,8 @@ defmodule GateServer.Npc.Body do
         yaw: session.yaw,
         grounded: session.grounded,
         processed_input_seq: state.processed,
-        body_state: state.body_state
+        body_state: state.body_state,
+        caster: state.caster
       },
       entities: for({id, e} <- state.entities, do: Map.put(e, :entity_id, id)),
       view: Attention.view(state.attention, Player.eye_position(state.position)),
@@ -817,12 +877,39 @@ defmodule GateServer.Npc.Body do
 
       intent = WorldRequest.build(command, context) ->
         submit(state, id, intent)
-        %{state | request_seq: state.request_seq + 1, world: Map.put(state.world, id, verb)}
+
+        %{
+          state
+          | request_seq: state.request_seq + 1,
+            world: Map.put(state.world, id, verb),
+            casts: remember_cast(state.casts, id, intent)
+        }
 
       true ->
         log_rejected(state.cid, id, "verb=#{verb}", :invalid_command)
         invalid(state, command)
     end
+  end
+
+  # 取消前摇：同一 client_intent_seq 的 0x82 action 2（WorldRequest.cancel/2），执行进程同步交给 Player.spell/4；
+  # cancel 自己 done（data 为空），原施法由 World 回 cast_cancelled。没有在途施放时没有可取消的请求。
+  defp apply_command(%{casts: casts} = state, %{id: id, verb: :cancel_cast})
+       when map_size(casts) == 0,
+       do:
+         emit(state, %{
+           id: id,
+           verb: :cancel_cast,
+           status: :rejected,
+           reason: :no_active_cast,
+           data: nil
+         })
+
+  # 取最早提交、还没有终态的那次：执行进程按提交顺序投递，它在前摇时后提交的只会被 cast_too_soon 拒绝；
+  # 它结算后才投递的后一次才会进入前摇，那时它已不在 casts 里。
+  defp apply_command(state, %{id: id, verb: :cancel_cast}) do
+    request = state.casts |> Map.values() |> Enum.min_by(& &1.client_intent_seq)
+    submit(state, id, WorldRequest.cancel(request, %{seq: state.request_seq + 1}))
+    %{state | request_seq: state.request_seq + 1, world: Map.put(state.world, id, :cancel_cast)}
   end
 
   defp apply_command(state, %{id: id, verb: verb} = command)
@@ -899,6 +986,29 @@ defmodule GateServer.Npc.Body do
     })
   end
 
+  defp remember_cast(casts, id, {:voxel_spell_intent, request}), do: Map.put(casts, id, request)
+  defp remember_cast(casts, _id, _intent), do: casts
+
+  # 投给已退出 Player 的施放不会再有回复：这些施法若仍在途，各以 session_lost 结束（已授权的可能已结算，Brain 以
+  # look / inspect 现算）；之后迟到的 {{:npc_cast, id}, _} 因表中无 id 被忽略。
+  defp lose_casts(state, ids) do
+    Enum.reduce(ids, state, fn id, state ->
+      case Map.pop(state.world, id) do
+        {:cast_spell, world} ->
+          emit(%{state | world: world, casts: Map.delete(state.casts, id)}, %{
+            id: id,
+            verb: :cast_spell,
+            status: :rejected,
+            reason: :session_lost,
+            data: nil
+          })
+
+        _ ->
+          state
+      end
+    end)
+  end
+
   defp reject_move(%{move: move} = state, reason) do
     Logger.warning(
       "npc_move_rejected cid=#{state.cid} reason=#{reason} position=#{inspect(state.position)} target=#{inspect(move.target)} path=#{inspect(move.path)}"
@@ -927,6 +1037,27 @@ defmodule GateServer.Npc.Body do
 
   defp world_calls do
     receive do
+      # 施放：读目录 digest 填入请求，交给角色 owner 后不等（前摇由 Player 推进）；结果按 reply_to 直接回 Body。
+      # 只有投递前会话已丢失时由这里回 session_lost（同下面的退出规则）。
+      {:call, body, id, session, {:voxel_spell_intent, %{action: 1} = request}, ingress} ->
+        case session_call(session, :lost, fn -> World.magic_digest(session.world_ref) end) do
+          :lost ->
+            send(body, {:npc_world_result, id, {:error, :session_lost}, nil})
+
+          digest ->
+            reply_to = {body, {:npc_cast, id}}
+
+            Player.cast_spell(
+              session.player,
+              session.identity,
+              %{request | catalog_digest: digest},
+              Map.put(ingress, :caster_recipient, reply_to),
+              reply_to
+            )
+        end
+
+        world_calls()
+
       {:call, body, id, session, call, ingress} ->
         {result, balances} =
           session_call(session, {{:error, :session_lost}, nil}, fn ->
@@ -988,6 +1119,14 @@ defmodule GateServer.Npc.Body do
 
   defp execute(session, call, _ingress) when elem(call, 0) in [:look, :inspect, :catalog],
     do: {GateServer.Npc.Perception.read(session.world_ref, session.cid, call), nil}
+
+  # 取消前摇（0x82 action 2）：与玩家同一个同步入口 Player.spell/4，角色 owner 撤销后回 :controlled。
+  defp execute(session, {:voxel_spell_intent, request}, ingress) do
+    case Player.spell(session.player, session.identity, request, ingress) do
+      {:ok, :controlled} -> {{:ok, %{}}, nil}
+      {:error, _} = error -> {error, nil}
+    end
+  end
 
   # 世界写意图：与玩家同一入口；补余额按 Intent 的唯一规则（回执先、余额后，同 Gate）。
   defp execute(session, {kind, request} = intent, ingress) do

@@ -6,8 +6,8 @@ defmodule GateServer.Npc.Brain.Llm do
   工具表是 `GateServer.Npc.Abilities.tools(profile)`（strict，按 `profile.groups` 裁剪）加本地的 `wait`；
   译码是 `Responses.function_calls/1` → `wait` 本地处理 → `Abilities.command/4`。解析失败、形状不对或未知工具在本地
   回报拒绝（`invalid_tool_arguments` / `unknown_tool`，附原调用），不发给 Body、也不让进程崩溃；合法性由 Body 与权威裁决。
-  本模块不保存“最近一次 probe / inspect”之类的隐式目标：`use_tool` / `dismantle` / `detach` 的 target 是模型从
-  probe_toward 结果或 inspect 行里原样抄来的显式句柄。
+  本模块不保存“最近一次 probe / inspect”之类的隐式目标：`use_tool` / `dismantle` / `detach` / `cast_spell`（g0–g2）的
+  target 是模型从 probe_toward 结果或 inspect 行里原样抄来的显式句柄。
   请求之间模型看不到自己上一次调用了什么，所以给它看的每条 Outcome 都附上当初那次调用（`command`）：
   只有 `{id, verb, status}` 时模型对不上“哪一格放好了”，实测会原地反复 look。
   `remember` / `recall` / `search_memory` 通过 NpcMemory 保存、读取与搜索长期记忆；每轮现读近期与相关内容。
@@ -19,7 +19,8 @@ defmodule GateServer.Npc.Brain.Llm do
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
         endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
-        groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选}
+        groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选,
+        spells: 可选（作者法术带 %{名字 => 程序字节}，非空时投影 cast_spell / cancel_cast；见 Abilities）}
 
   skills 是技能名到配置的 map；技能和记忆命令交给 Runtime，LLM 只等待最终 Outcome。
   Runtime 拥有可选中断策略、worker 与停止确认；本模块只拥有模型请求、工具解析和模型上下文。

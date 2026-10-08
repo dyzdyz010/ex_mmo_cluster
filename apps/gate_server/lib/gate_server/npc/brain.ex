@@ -32,7 +32,7 @@ defmodule GateServer.Npc.Brain do
 
   ## Observation（每个 OwnerAck 一次，20 Hz）
 
-      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:, body:, body_state:},
+      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:, body:, body_state:, caster:},
         entities: [%{entity_id:, entity_epoch:, kind:, name:, relation:, relation_source:, tick:, position:}],
         balances: [%{material:, balance:, cost:, seq:}] | nil,        # 自己的背包；nil = 还没取过
         pending: [%{id:, verb:}]}
@@ -45,6 +45,8 @@ defmodule GateServer.Npc.Brain do
   `%{life:, recoverable:, status:, core_k:, skin_k:, protein_g:, injuries: [%{tag:, severity:, heal:, remaining_s:}]}`，
   life / recoverable 0..100，status 0 存活 / 1 濒死 / 2 死亡；nil = 本会话还没收到（会话丢失后重新入场前也是 nil）。
   真值在 Scene 的身体 owner，这里是派生缓存；无热环境的世界不推进身体，只在入场与受伤时更新。
+  `self.caster` 是最近一次施法回复里的施法者状态 `%{energy_j:, capacity_j:, coherence:}`（与玩家 0x83 同一来源），
+  nil = 还没施过法；真值在 World，跨会话保留这份缓存（World 按 cid 记账）。
   `entities` 的 kind 0 = 玩家、1 = NPC，各自带 tick；`name`（无名为空串）、`relation`（`MmoContracts.Relation.code/1`：
   0 中立、1 自己、2 同属、3 友好、4 敌对，按本角色这个观察者算）、`relation_source`（来源文字，与玩家名牌悬停相同）
   取自 EntityEnter，保留到 Leave 或换代；Snapshot 只更新位置。关系只回答敌我颜色，不回答能否攻击。
@@ -84,6 +86,8 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
       %{id:, verb: :read_catalog, what: :prefab | :prefabs | :materials | :tools, definition: <<32 字节>> | nil}
                                                                  # 读目录；:prefab 必须给 definition，其余为 nil
+      %{id:, verb: :cast_spell, program: <<程序字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
+      %{id:, verb: :cancel_cast}                                 # 取消在前摇的施法（同一 client_intent_seq 的 0x82 action 2）
       %{id:, verb: :say, text:}                                  # 聊天占位：恒被拒 :chat_unavailable；不投影给 LLM
 
   工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路开关都是
@@ -95,6 +99,11 @@ defmodule GateServer.Npc.Brain do
   `use_tool` / `dismantle` 不给 `direction` 时由 Body 按目标句柄从眼点瞄准（`WorldRequest.aim/2`：g0 宏格中心、
   g1 / g2 micro 中心、g3 任意方向、g5 句柄里探测时的方向）；位置还未知时回 `invalid_session`。
   人物目标（g5）的合法性只由权威的战斗范围裁决，正式世界一律拒绝。
+
+  施法与玩家同一个角色 owner 入口 `Player.cast_spell/5`（不经 Intent，前摇由 Player 推进；只在流送 Scene 可用）。
+  `program` 是 0x82 的程序字段（UTF-8 JSON），经 Abilities 时由作者法术带 `profile.spells`（`%{名字 => 程序字节}`）按名字
+  填入，LLM 只选名字；目录 digest 由 Body 的执行进程投递前经 `World.magic_digest/1` 填入。前摇期间工具与非工具世界意图
+  回 `casting`，再施放回 `cast_too_soon`；同一角色同时只有一个前摇，`cancel_cast` 取消的是它。
 
   移动命令只影响尚未送出的输入序号；世界事务一旦提交不可顶替、不可撤销。
 
@@ -133,6 +142,13 @@ defmodule GateServer.Npc.Brain do
   生产材料给出，与 World 进食 / 合成门一致：非 nil 时 `eat` / `craft` 不会因 `not_edible` / `unknown_recipe` 被拒，
   余额不足照常回 `insufficient_material`）；`:tools` 是
   `%{tools: [%{tool_id:, action:, range_m:, interval_s:}]}`。
+  `cast_spell` 的 `:done` = 前摇结束且 World 已结算，`data` 是 World 回复原样 `%{seq:, outcome:, caster:}`：`outcome` 为
+  nil 是正常施放，`:misfire_energy` / `:misfire_coherence` 是走火（同样是已提交事务）；`caster` 是结算后的
+  `%{seq:, energy_j:, capacity_j:, coherence:, quote_j:, quote_s:, spent_j:, quote_windup_s:}`。拒绝原样来自权威
+  （`cast_too_soon`、`dead`、`out_of_domain`、`stale_target`…）；前摇中被 `cancel_cast` 或 `Player.stop/1` 撤销回
+  `cast_cancelled`，会话丢失回 `session_lost`（Body 先察觉）或 `invalid_session`（World 先察觉），每次施法恰好一个终态，
+  `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回
+  `already_released`（原样来自 Player）。
 
   ## 聊天（占位）
 

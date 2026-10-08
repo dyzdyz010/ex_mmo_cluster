@@ -125,6 +125,7 @@ defmodule GateServer.Session.Dispatch do
   # "misfire_coherence"）；报价只回 0x83；拒绝只回 0x68 rejected（reason 同工具意图的 inspect 形式）。
   # 施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才有，在独立进程里等，编辑 worker 不被占住
   # （前摇中的再次施放要立即拿到 cast_too_soon，其他编辑意图照常）；报价同步回复。
+  # 施放经角色 owner 的公共入口 Player.cast_spell/5（与 NPC Body 同一个），回复发往这里的等待进程。
   def handle(
         {:voxel_spell_intent, %{action: 1} = request},
         %{status: :in_scene, voxim_overlay: true} = state
@@ -145,10 +146,12 @@ defmodule GateServer.Session.Dispatch do
         end
       end)
 
-    GenServer.cast(
+    SceneServer.Movement.Player.cast_spell(
       state.player,
-      {:spell, state.identity, request, spell_ingress(state),
-       {waiter, ref}}
+      state.identity,
+      request,
+      spell_ingress(state),
+      {waiter, ref}
     )
 
     {:ok, state}

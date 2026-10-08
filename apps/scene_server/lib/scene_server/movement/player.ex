@@ -30,9 +30,28 @@ defmodule SceneServer.Movement.Player do
 
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
-  @doc "角色 owner 排序施法请求；World 异步准备与结算。"
+  @doc "角色 owner 排序施法请求（报价 action 0、取消 2、改向 3 同步回复）；World 异步准备与结算。"
   def spell(player, identity, request, ingress),
     do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
+
+  @doc """
+  施放（0x82 action 1）的角色 owner 入口：异步排进与 `spell/4` 同一处理，调用方不等前摇。前摇与授权由本进程推进，
+  World 结算后以 `GenServer.reply(reply_to, 结果)` 回 `{tag, {:ok, %{seq, outcome, caster}} | {:error, reason}}`；
+  立即拒绝（`cast_too_soon`、`dead`、`invalid_state` 等）、取消（`cast_cancelled`）与会话结束（`invalid_session`）
+  经同一 `reply_to`，本进程处理到的每次施放恰好一个回复；处理前本进程已退出则没有回复，调用方以本进程的 DOWN 收尾
+  （Dispatch 的等待进程与 Body 都监视它）。成功结算的施法者状态由 World 先发往 `ingress.caster_recipient`
+  （`{pid, ref}` → `{:mmo_spell_reply, ref, request, reply}`）。函数头要求两者都是 `{pid, tag}`：缺 caster_recipient 时
+  World 在结算出口 KeyError（能力库设计稿 F26 / S4）。调用方只有 Gate 的 `Dispatch` 与 NPC `Body`。
+  """
+  def cast_spell(
+        player,
+        identity,
+        request,
+        %{caster_recipient: {recipient, _}} = ingress,
+        {waiter, _} = reply_to
+      )
+      when is_pid(recipient) and is_pid(waiter),
+      do: GenServer.cast(player, {:spell, identity, request, ingress, reply_to})
 
   @doc """
   非工具世界写意图（生产、附件、prefab、发布）与 World refresh 的角色 owner 接纳：同一 identity、已 ready、
@@ -506,6 +525,7 @@ defmodule SceneServer.Movement.Player do
     {:reply, :ok, state}
   end
 
+  # `cast_spell/5` 的异步形：与同步施法同一处理，立即回复改由 GenServer.reply 发给调用方给的 reply_to。
   @impl true
   def handle_cast({:spell, identity, request, ingress, from}, state) do
     case handle_call({:spell, identity, request, ingress}, from, state) do

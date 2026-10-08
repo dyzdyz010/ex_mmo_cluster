@@ -6,7 +6,7 @@ linked 编辑 worker 串行执行。
 | 模块 | 职责 |
 |---|---|
 | `quic_connection.ex` | QUIC 连接进程：按通道选 codec 解码，路由移动输入与体素意图 |
-| `dispatch.ex` | 角色世界意图（工具、生产 1..5、附件、Prefab 放 / 拆 / 换、发布）经 `SceneServer.Movement.Intent.run/3`（与 NPC Body 同一入口）裁决，本模块只按原帧编码回执与补发余额；施法 0x82 不经 Intent（经 `Player.spell/4` 排序，前摇在独立进程等待），原始编辑 0x70 / 0x78 与余额查询（生产 action 0）直接调 `VoxelRegion.World` |
+| `dispatch.ex` | 角色世界意图（工具、生产 1..5、附件、Prefab 放 / 拆 / 换、发布）经 `SceneServer.Movement.Intent.run/3`（与 NPC Body 同一入口）裁决，本模块只按原帧编码回执与补发余额；施法 0x82 不经 Intent（施放 action 1 经 `Player.cast_spell/5`、回复交给独立的等待进程，与 NPC Body 同一入口；报价 / 取消 / 改向经 `Player.spell/4`），原始编辑 0x70 / 0x78 与余额查询（生产 action 0）直接调 `VoxelRegion.World` |
 | `sink.ex` | 出站契约：按现行领域 codec 编码后交给连接 owner |
 | `auth.ex` | token / cid / 角色档案，Gate 侧唯一鉴权信任边界 |
 | `claims.ex` | 会话身份与 epoch 分配 |

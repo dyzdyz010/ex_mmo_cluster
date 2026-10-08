@@ -283,6 +283,12 @@ defmodule VoxelRegion.World do
   @doc "全局系统功能（魔法增量 1）：施法者状态（登录时下发一次）；世界未配置魔法目录时 `{:error, :magic_unavailable}`。"
   def caster_state(server, cid), do: GenServer.call(server, {:caster_state, cid}, 300_000)
 
+  @doc """
+  全局系统功能：已加载魔法目录的 digest（目录文件字节的 sha256，0x82 请求的 catalog_digest 与它比对）；未配置魔法目录时
+  nil。只读。玩家客户端从同一发布文件自算这个值；NPC Body 的执行进程在施放投递前用它填请求（能力库设计稿 §7.8）。
+  """
+  def magic_digest(server), do: GenServer.call(server, :magic_digest, 300_000)
+
   @doc "全局系统功能：由 World 有序出口发送登录施法者状态，和报价、结算及身体变化共用同一发送者。"
   def send_caster_state(server, cid, request_id, recipient),
     do: GenServer.call(server, {:send_caster_state, cid, request_id, recipient}, 300_000)
@@ -848,6 +854,7 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
+  def handle_call(:magic_digest, _, state), do: {:reply, state.magic && state.magic.digest, state}
 
   def handle_call({:caster_state, cid}, _, state) do
     reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0, 0.0)}, else: {:error, :magic_unavailable}

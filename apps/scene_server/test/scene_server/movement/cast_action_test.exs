@@ -140,4 +140,34 @@ defmodule SceneServer.Movement.CastActionTest do
     assert_receive {:cancel_cast, ^key, :cast_cancelled}
     refute_receive {:authorize_cast, _, _, _}, 0
   end
+
+  # I4（docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §7.8、T4.4、S4）：施放的公共入口
+  # cast_spell/5 异步排进同一施法处理；立即拒绝（这里是 D-1 的死亡）经 reply_to 回 {tag, 结果}，与 World 结算回复同一目标。
+  # 函数头要求 caster_recipient 与 reply_to 都是 {pid, tag}：缺 caster_recipient 时 World 在结算出口 KeyError（F26）。
+  # 真实 NPC 场景造不出死亡（身体要在热环境里推进 130 s，且不得注入身体真值），Body 侧的立即拒绝由
+  # gate_server npc_cast_world_test 的 cast_too_soon 证明。
+  test "cast_spell/5：异步排进同一施法处理，死亡立即拒绝经 reply_to 回；函数头要求两个 {pid, tag}", c do
+    recipient = {self(), make_ref()}
+    reply_to = {self(), {:npc_cast, 3}}
+    :ok = Player.cast_spell(self(), c.id, c.request, %{caster_recipient: recipient}, reply_to)
+    assert_receive {:"$gen_cast", {:spell, _, _, _, ^reply_to} = message}
+
+    dead = %{c.state | body: %{c.state.body | status: :dead}}
+    assert {:noreply, ^dead} = Player.handle_cast(message, dead)
+    assert_receive {{:npc_cast, 3}, {:error, :dead}}
+    refute_received {:prepare_cast, _, _, _, _}
+
+    # 存活：同一条消息进入前摇准备；World 收到的 actor 带 caster_recipient，结算回复的目标就是 reply_to。
+    assert {:noreply, s} = Player.handle_cast(message, c.state)
+    assert_receive {:prepare_cast, _key, %{caster_recipient: ^recipient}, _, ^reply_to}
+    assert %{phase: :preparing} = s.action
+
+    assert_raise FunctionClauseError, fn ->
+      Player.cast_spell(self(), c.id, c.request, %{}, reply_to)
+    end
+
+    assert_raise FunctionClauseError, fn ->
+      Player.cast_spell(self(), c.id, c.request, %{caster_recipient: recipient}, :nowhere)
+    end
+  end
 end
