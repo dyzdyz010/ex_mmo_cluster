@@ -33,7 +33,7 @@ defmodule GateServer.Npc.Perception do
         description:
           "看一个整数格闭区间 (x0,y0,z0)–(x1,y1,z1) 里有什么：1 格 = 1 米，格 (x,y,z) 占据 [x,x+1)×[y,y+1)×[z,z+1)。" <>
             "最多 #{@cells} 格，各边离自己不超过 #{@reach} 米。结果只列非空气格（按 \"x,z\" 列给出 [y, material]；有人放下的格是 [y, material, 放置者的 entity_id]，" <>
-            "没有第三项表示没有放置溯源，可能是天然地形或历史／作者写入）。refined.micro_cells 给出精确 WORLD micro 坐标、材质与归属。" <>
+            "没有第三项表示没有放置溯源，可能是天然地形或历史／作者写入）。refined 行的 micro_boxes 按材质给出被占的 WORLD micro 闭区间盒 [x0,y0,z0,x1,y1,z1]（并起来恰好是被占的 micro 格），slots 给出各实例的格数与放置者。" <>
             "仅在 bounds_macro_inclusive 内两处都没列出的才是空气；窗口外未知，附件须用 inspect。",
         done: "data 是观察那一刻的世界（seq 为版本），不改世界。",
         params: [
@@ -232,6 +232,52 @@ defmodule GateServer.Npc.Perception do
   end
 
   @doc """
+  细化行给模型的紧凑形：逐个 micro 的 `micro_cells` 换成按材质合并的 `micro_boxes`
+  `[%{material:, box: [x0, y0, z0, x1, y1, z1]}]`（WORLD micro 坐标闭区间；同一材质的盒互不重叠，并起来恰好是原占用，
+  无损）。实例归属看 `slots`（各实例的格数与 placed_by）。没有 `micro_cells` 的行原样返回。
+  原样逐格列出时，一面 micro 薄墙一格就是上百项：建在自家 micro 构件旁的设计会话首条消息约 13 万 token，两轮就越过
+  会话预算（2026-10-08 长跑 run04）。只用于给模型的投影；Body 的 look Outcome 仍是 `World.material_snapshot/4` 原样。
+  """
+  def compact_refined(%{micro_cells: micros} = row) do
+    boxes =
+      micros
+      |> Enum.group_by(& &1.material, &micro_coord/1)
+      |> Enum.sort()
+      |> Enum.flat_map(fn {material, coords} ->
+        for box <- boxes(MapSet.new(coords)), do: %{material: material, box: box}
+      end)
+
+    row |> Map.delete(:micro_cells) |> Map.put(:micro_boxes, boxes)
+  end
+
+  def compact_refined(row), do: row
+
+  defp micro_coord(%{micro: {x, y, z}}), do: {x, y, z}
+  defp micro_coord(%{micro: [x, y, z]}), do: {x, y, z}
+
+  # 贪心合并：取 (z, y, x) 最小的格，先沿 x、再沿 y、再沿 z 尽量延伸成实心盒，去掉后对剩下的格重复。
+  defp boxes(set) do
+    case Enum.min_by(set, fn {x, y, z} -> {z, y, x} end, fn -> nil end) do
+      nil ->
+        []
+
+      {x0, y0, z0} ->
+        x1 = extend(x0, &MapSet.member?(set, {&1, y0, z0}))
+        y1 = extend(y0, fn y -> Enum.all?(x0..x1, &MapSet.member?(set, {&1, y, z0})) end)
+
+        z1 =
+          extend(z0, fn z ->
+            Enum.all?(x0..x1, fn x -> Enum.all?(y0..y1, &MapSet.member?(set, {x, &1, z})) end)
+          end)
+
+        covered = for x <- x0..x1, y <- y0..y1, z <- z0..z1, into: MapSet.new(), do: {x, y, z}
+        [[x0, y0, z0, x1, y1, z1] | boxes(MapSet.difference(set, covered))]
+    end
+  end
+
+  defp extend(a, ok?), do: if(ok?.(a + 1), do: extend(a + 1, ok?), else: a)
+
+  @doc """
   Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；最近 #{@kept_looks} 次 look 保留内容，
   更早的只留结论。
   """
@@ -260,7 +306,7 @@ defmodule GateServer.Npc.Perception do
 
     data =
       Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])
-      |> Map.merge(%{solid: columns, refined: Enum.filter(cells, & &1.refined)})
+      |> Map.merge(%{solid: columns, refined: for(c <- cells, c.refined, do: compact_refined(c))})
 
     [%{outcome | data: data} | older]
   end

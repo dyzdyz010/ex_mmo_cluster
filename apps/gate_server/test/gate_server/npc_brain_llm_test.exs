@@ -448,6 +448,32 @@ defmodule GateServer.NpcBrainLlmTest do
            ] = GateServer.Npc.Perception.project(outcome, [], nil)
   end
 
+  # 给模型的细化行：逐个 micro 换成按材质合并的闭区间盒，并起来恰好等于原占用（手算小例）。
+  test "refined rows reach the model as per-material micro boxes whose union is exactly the occupied micro cells" do
+    micro = fn x, y, z, m -> %{micro: {x, y, z}, material: m, instance: [3, 0]} end
+    # 宏格 (1,0,0)：x = 8 这一面 8×8 石（材料 11）+ 一个木 micro（材料 19）在 (15,0,0)。
+    face = for y <- 0..7, z <- 0..7, do: micro.(8, y, z, 11)
+    row = %{cell: [1, 0, 0], material: 0, refined: true, slots: [], placed_by: nil, micro_cells: [micro.(15, 0, 0, 19) | face]}
+
+    assert %{micro_boxes: [%{material: 11, box: [8, 0, 0, 8, 7, 7]}, %{material: 19, box: [15, 0, 0, 15, 0, 0]}]} =
+             compact = GateServer.Npc.Perception.compact_refined(row)
+
+    refute Map.has_key?(compact, :micro_cells)
+
+    # L 形（不能一个盒装下）：盒互不重叠、并起来等于原集合。
+    l = [{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {0, 2, 0}]
+    %{micro_boxes: boxes} =
+      GateServer.Npc.Perception.compact_refined(%{row | micro_cells: for({x, y, z} <- l, do: micro.(x, y, z, 11))})
+
+    covered = for %{box: [x0, y0, z0, x1, y1, z1]} <- boxes, x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z}
+    assert Enum.sort(covered) == Enum.sort(l)
+    assert length(covered) == length(Enum.uniq(covered))
+
+    # 没有 micro 明细的行原样返回。
+    plain = Map.delete(row, :micro_cells)
+    assert plain == GateServer.Npc.Perception.compact_refined(plain)
+  end
+
   test "a look outcome is kept as solid columns only, and only the latest three looks keep their data" do
     cell = fn coord, material -> %{cell: coord, material: material, refined: false, slots: []} end
 

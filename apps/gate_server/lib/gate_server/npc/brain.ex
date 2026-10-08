@@ -138,7 +138,7 @@ defmodule GateServer.Npc.Brain do
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/4` 的精确投影（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
   天然地形、作者写入的格、被别的编辑改过的格是 nil；`slots` 逐个 prefab 实例 `%{material:, instance:, count:, placed_by:}`，
-  `placed_by` 是放下这个实例的角色，作者放置与旧实例为 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属。
+  `placed_by` 是放下这个实例的角色，作者放置与旧实例为 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属（Body 的 Outcome 原样；给 LLM 的投影换成按材质合并的 `micro_boxes`，见 `Perception.compact_refined/1`）。
   感知额外返回采样边界与版本；窗口外未知、未采样附件不是空。`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。

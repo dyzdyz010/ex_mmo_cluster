@@ -166,7 +166,7 @@ defmodule GateServer.Npc.Skills.HouseDesign do
               macro_y: yy,
               normal_columns: [:x, :z, :material, :placed_by],
               normal: normal,
-              refined: Enum.filter(rows, & &1.refined),
+              refined: for(row <- rows, row.refined, do: Perception.compact_refined(row)),
               unlisted: :air_unowned_unrefined
             }
         end
@@ -671,10 +671,10 @@ defmodule GateServer.Npc.Skills.HouseDesign do
       "slice inspects an exact micro plane of draft or any catalog id. Use it to see component openings and stair direction instead of treating a bounding box as filled or guessing details. " <>
       "Explicitly declare nonempty room interiors. Route, clearance and support checks combine the draft with actual World terrain, never an assumed ground plane. " <>
       "site reports only its half-open WORLD macro bounds at world_seq; a uniform layer applies to that bounded XZ rectangle. " <>
-      "Nonuniform layers use normal rows [WORLD x,WORLD z,material,placed_by] (null ownership is preserved); refined contains full original cell/slot records. " <>
+      "Nonuniform layers use normal rows [WORLD x,WORLD z,material,placed_by] (null ownership is preserved); refined rows keep cell/material/slots/placed_by and give micro_boxes: per material, inclusive WORLD micro boxes [x0,y0,z0,x1,y1,z1] whose union is exactly the occupied micro cells. " <>
       "Within that layer's bounded XZ rectangle only, cells absent from both lists are material 0, unowned and unrefined with no slots. " <>
       "Attachments were not sampled; upper layers and outside the bounds are unknown. Use the actual sampled materials and blocks_movement to select ground, never liquid as support. " <>
-      "You can call look for any nearby WORLD macro box (including outside the initial site and upper layers); refined.micro_cells gives exact occupied WORLD micro coordinates. " <>
+      "You can call look for any nearby WORLD macro box (including outside the initial site and upper layers); its refined rows carry the same micro_boxes. " <>
       "Call inspect for nearby attachments/components. Before selecting entry feet, query its support and full body envelope using self.body dimensions; do not guess unknown terrain. " <>
       "current_memory is refreshed each turn: recent experiences and relevant/ recent notes, with dates. Memory is historical, never current World truth. " <>
       "Use search_memory to discover older experience without knowing a key, recall to read a key, remember to save or update useful findings/plans. " <>

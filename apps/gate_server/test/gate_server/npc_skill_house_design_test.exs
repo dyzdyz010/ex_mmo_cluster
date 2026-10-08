@@ -189,11 +189,12 @@ defmodule GateServer.NpcSkillDesignTest do
     assert result["observation"]["bounds_macro_inclusive"] == [[9, 2, 9], [9, 4, 9]]
     assert result["observation"]["outside"] == "unknown"
 
+    # 契约（2026-10-08 起）：给模型的细化行是按材质合并的 micro 闭区间盒，单个 micro (76, 24, 72) 即单格盒；
+    # 实例归属在 slots（实例 [birth, 0]、1 格）。
     assert [
              %{
-               "micro_cells" => [
-                 %{"micro" => [76, 24, 72], "material" => 11, "instance" => [^birth, 0]}
-               ]
+               "micro_boxes" => [%{"box" => [76, 24, 72, 76, 24, 72], "material" => 11}],
+               "slots" => [%{"instance" => [^birth, 0], "count" => 1}]
              }
            ] =
              result["observation"]["refined"]
@@ -703,10 +704,10 @@ defmodule GateServer.NpcSkillDesignTest do
       "slots" => [%{"material" => 11, "instance" => [3, 0], "count" => 1, "placed_by" => 1001}]
     }
 
+    # 契约（2026-10-08 起）：细化行给模型的是按材质合并的 micro 闭区间盒（Perception.compact_refined/1），
+    # 一个 micro 格 (88, 8, 80) 就是一个单格盒；实例归属看 slots。
     assert upper["refined"] == [
-             Map.put(refined, "micro_cells", [
-               %{"micro" => [88, 8, 80], "material" => 11, "instance" => [3, 0]}
-             ])
+             Map.put(refined, "micro_boxes", [%{"material" => 11, "box" => [88, 8, 80, 88, 8, 80]}])
            ]
 
     expected =
@@ -758,7 +759,8 @@ defmodule GateServer.NpcSkillDesignTest do
           end
       end
 
-    assert Enum.map(restored, &Map.delete(&1, "micro_cells")) == expected
+    # 场地的细化行把 micro_cells 换成了 micro_boxes（无损，见上一段断言），格级事实与原始行逐格相等。
+    assert Enum.map(restored, &Map.drop(&1, ["micro_cells", "micro_boxes"])) == expected
 
     legacy =
       for y <- 0..1, do: %{macro_y: y, cells: Enum.filter(rows, &(Enum.at(&1["cell"], 1) == y))}
