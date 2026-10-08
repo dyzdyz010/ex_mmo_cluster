@@ -102,6 +102,14 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 现象（I3 浸泡与 gate 全量各复现）：`CollisionUpdates.record_artifact/3`（collision_updates.ex:235，经 player.ex:772/792）
 `KeyError key 1`，Player 崩溃；NPC 1 s 后重新 claim。先定位根因与是否影响流送 Scene（正式 Demo / 青岚），再修。
 
+**根因**：非流送 Scene 允许初始快照到达前入场（scene.ex:467 只登记请求，:577 初始化后补发），此时 Player 拿到的 `updates` 是
+`CollisionUpdates.new/1` 的空模板；Scene 每 tick 先向全部成员发 timeline（:734）、再发 anchor（:743 / :768）。旧 Player 在非流送且
+无基线时也调 `ingest_publication`，Scene 初始化后、该 Player 的入场 marker 前若装了含 chunk 的事务，`record_artifact` 取
+`artifacts[1]` 得 KeyError。**判断**：timeline 早于 anchor 是正常时序（timeline 同时是公共时钟）；anchor 带 Scene 该 tick 的完整派生
+碰撞（:761 断言 seq 一致）并被整体替换（player.ex:691），所以基线前丢弃 timeline 内容在契约上正确。**修复**（690369e0）：Player 在
+`baseline == nil` 时只推进 tick（与流送原有分支合并）。**流送 Scene**（正式 Demo / 青岚，`collision_window_radius_tiles` = 1）不受影响。
+浸泡用例原先只计 Body 重启，Player 崩溃会假通过：已补计 Player 异常退出（`player_crashes == 0`）。
+
 ## 5 测试与实跑
 
 - M1：data_service 迁移与读写；gate 集成——`put` 后 Body 在真实 Scene 入场、`remove` 停止、模拟节点重启（停掉 NpcSup 全部子进程后 `start_all/0`）同 cid、同大脑回来；非法 params 在 `put` 被拒、不落库。
@@ -120,3 +128,4 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 |---|---|
 | 2026-10-08 | 决策稿；M1–M3 实施中 |
 | 2026-10-08 | M1、M2 实现（worktree `ex_mmo_cluster-capabilities`，未提交，待复核）：`npc_specs` 迁移 + `DataService.NpcSpecs`；`GateServer.Npc.Registry`（put / remove / list / start_all / brain）、`GateServer.NpcNames` 与启动 Task；`GateServer.Npc.Genesis` + Body 动词 `genesis_edit`（`not_permitted` 为 Body 层新原因）+ Abilities `{:list, spec}`。新测试改前红（表不存在 / 模块未定义 / genesis_edit 回 invalid_command）、改后绿；gate_server 全量与基线比对见复核记录。偏差与补全见 §2、§3 的实现注记 |
+| 2026-10-08 | M3 **已实现、已实跑（scene / gate 集成与 180 s 浸泡，非真实客户端）**（690369e0，合并 3e3b8863）：Player 在碰撞基线前的 timeline 只推进 tick；新增 scene 回归“join before the initial snapshot”（改前 KeyError、会话按 3 关闭；改后 22/22）；改前 180 s Settler 浸泡 1 次同栈崩溃，改后 0 次。scene 全量 243/255（12 项缺 E1/IS 夹具，补设本地夹具后 12/12）；gate 全量 223/280（57 项 T1Transport）；world_server 相关 8/8；voxel_region world_test 21/21。浸泡判据补 `player_crashes == 0` |

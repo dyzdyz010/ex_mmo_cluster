@@ -99,6 +99,9 @@ defmodule GateServer.NpcSettlerSoakTest do
       rejections: %{},
       idle: %{},
       session_lost: 0,
+      # Player 进程异常退出（退出原因是错误元组，不是 :normal / :shutdown / :killed）：Body 会重新 claim、不计重启，
+      # 只看 restarts 会把 Player 崩溃判成通过（2026-10-08 M3 的 CollisionUpdates 崩溃就曾这样假通过）。
+      player_crashes: 0,
       restarts: 0,
       samples: []
     }
@@ -107,6 +110,7 @@ defmodule GateServer.NpcSettlerSoakTest do
     report(state)
 
     assert state.restarts == 0
+    assert state.player_crashes == 0
     assert state.session_lost <= 2
     assert :counters.get(llm, 1) == 0
     assert state.max_standing <= 2
@@ -188,7 +192,8 @@ defmodule GateServer.NpcSettlerSoakTest do
         %{state | idle: Map.update(state.idle, reason, 1, &(&1 + 1))}
 
       String.starts_with?(line, "npc_session_lost") ->
-        %{state | session_lost: state.session_lost + 1}
+        crash = if line =~ "reason={:player_down, {", do: 1, else: 0
+        %{state | session_lost: state.session_lost + 1, player_crashes: state.player_crashes + crash}
 
       true ->
         state
