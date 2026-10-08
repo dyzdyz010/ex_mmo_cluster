@@ -4,7 +4,7 @@ defmodule GateServer.Npc.Abilities do
   docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §5）。
 
   组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Genesis`（创世 fill_box / set_cells）、
-  `Perception`（look / inspect / query_balances / read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
+  `Perception`（look / survey / inspect / query_balances / read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
   `Skills`（已配置的长技能）。每个条目只有
   `%{name, group, done, description, params, build}`：
 

@@ -1,5 +1,5 @@
 {
-  "about": "SceneServer.Movement.Path 的冻结样例（全局系统功能的契约样本；将来客户端 C++ 实现对同一份）。rows[z] 的第 x 个字符是一列：数字 h = y 0..h-1 实心、其上到 y=11 是空气（站立格 y=h）；'~' = y=0 实心、y=1 液体、其上空气；'_' = 整列空气且盒底之下未知。extra_solid 把个别格改成实心。期望路径都是手算的唯一最短路（不含起点）；null = 无路。step=1，height=2。",
+  "about": "SceneServer.Movement.Path 的冻结样例（全局系统功能的契约样本；将来客户端 C++ 实现对同一份）。rows[z] 的第 x 个字符是一列：数字 h = y 0..h-1 实心、其上到 y=11 是空气（站立格 y=h）；'~' = y=0 实心、y=1 液体、其上空气；'_' = 整列空气且盒底之下未知。extra_solid 把个别格改成实心；blocked 把个别格移出网格（既不能踩也不能穿过：细化格、液体、未知）。trusted_start: true = 起点是身体的权威位置（落不到站立格时以起点本身为站立格），缺省 false（草稿检查等假设的起点照常要求可落地）。期望路径都是手算的唯一最短路（不含起点）；null = 无路。step=1，height=2。",
   "step": 1,
   "height": 2,
   "cases": [
@@ -19,6 +19,15 @@
     {"name": "same step without the ceiling", "rows": ["12"], "start": [0, 1, 0], "goal": [1, 0], "path": [[1, 2, 0]]},
     {"name": "two levels in the goal column: nearest reachable one", "rows": ["111"], "extra_solid": [[2, 4, 0]], "start": [0, 1, 0], "goal": [2, 0], "path": [[1, 1, 0], [2, 1, 0]]},
     {"name": "goal_y picks the level; the bridge top is unreachable", "rows": ["111"], "extra_solid": [[2, 4, 0]], "start": [0, 1, 0], "goal": [2, 0], "goal_y": 5, "path": null},
-    {"name": "unknown below the box is not air", "rows": ["1_1"], "start": [0, 1, 0], "goal": [2, 0], "path": null}
+    {"name": "unknown below the box is not air", "rows": ["1_1"], "start": [0, 1, 0], "goal": [2, 0], "path": null},
+    {"name": "a blocked cell on the ground is neither a step nor a passage", "rows": ["111"], "blocked": [[1, 1, 0]], "start": [0, 1, 0], "goal": [2, 0], "path": null},
+    {"name": "around a blocked cell, never on top of it", "rows": ["111", "111"], "blocked": [[1, 1, 0]], "start": [0, 1, 0], "goal": [2, 0],
+     "path": [[0, 1, 1], [1, 1, 1], [2, 1, 1], [2, 1, 0]]},
+    {"name": "an assumed start inside a blocked cell has no path", "rows": ["111"], "blocked": [[0, 1, 0]], "start": [0, 1, 0], "goal": [2, 0], "path": null},
+    {"name": "a trusted start inside a blocked cell starts there", "rows": ["111"], "blocked": [[0, 1, 0]], "trusted_start": true, "start": [0, 1, 0], "goal": [2, 0],
+     "path": [[1, 1, 0], [2, 1, 0]]},
+    {"name": "a trusted start on top of a blocked cell starts there and drops", "rows": ["111"], "blocked": [[0, 1, 0]], "trusted_start": true, "start": [0, 2, 0], "goal": [2, 0],
+     "path": [[1, 1, 0], [2, 1, 0]]},
+    {"name": "a trusted start in mid-air still lands first", "rows": ["11"], "trusted_start": true, "start": [0, 5, 0], "goal": [1, 0], "path": [[1, 1, 0]]}
   ]
 }

@@ -18,11 +18,14 @@ defmodule GateServer.Npc.Context do
         can_jump: false,
         enters_liquid: false,
         max_step_macro: floor(profile.step_height),
-        clearance_macro: ceil(2 * profile.half_height),
+        clearance_macro: clearance(profile),
         refined_cells: :blocked_by_current_macro_navigation
       }
     }
   end
+
+  @doc "身高占的宏格数（寻路的净空、survey 与扩张判“站得下”都用它）：完整身高向上取整。"
+  def clearance(profile), do: ceil(2 * profile.half_height)
 
   @doc "所有决策入口共用的坐标约定。"
   def coordinates do

@@ -23,23 +23,24 @@ defmodule GateServer.NpcSkillsTest do
   end
 
   test "a configured skill module supplies its contract and executes without changing dispatch" do
-    profile = %{skills: %{survey: %{module: Survey}}}
+    # 技能名不与内置能力条目重名（survey 是感知条目）。
+    profile = %{skills: %{sampler: %{module: Survey}}}
 
-    assert [%{name: "survey", parameters: %{required: ["sample"]}}] =
+    assert [%{name: "sampler", parameters: %{required: ["sample"]}}] =
              Abilities.tools(Map.put(profile, :groups, [:skill]))
 
-    command = Abilities.command("survey", %{"sample" => 17}, 3, profile)
-    assert %{id: 3, skill: :survey} = command
+    command = Abilities.command("sampler", %{"sample" => 17}, 3, profile)
+    assert %{id: 3, skill: :sampler} = command
     assert {:ok, %{sample: 17}} = Skills.run(%{profile: profile}, command)
     assert %{verb: :unknown_tool} = Abilities.command("unconfigured", %{}, 4, profile)
 
     response = %{
       "output" => [
-        %{"type" => "function_call", "name" => "survey", "arguments" => "{\"sample\":17}"}
+        %{"type" => "function_call", "name" => "sampler", "arguments" => "{\"sample\":17}"}
       ]
     }
 
-    assert [%{id: 3, verb: :skill, skill: :survey, args: %{"sample" => 17}}] =
+    assert [%{id: 3, verb: :skill, skill: :sampler, args: %{"sample" => 17}}] =
              GateServer.Npc.Brain.Llm.commands(response, 3, profile)
 
     assert [%{id: 3, verb: :unknown_tool}] =

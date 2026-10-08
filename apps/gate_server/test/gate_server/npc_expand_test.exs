@@ -5,10 +5,11 @@ defmodule GateServer.NpcExpandTest do
   只测试：持续扩张技能 `GateServer.Npc.Skills.Expand`（放置阶段决策稿
   docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md §7）。
 
-  - 纯函数（选址 `site/5`、规格 `spec/3`、候选地块 `plots/3`、分段 `waypoints/3`、分块 `chunks/2`、采石候选 `quarry/3`）：
-    手写小世界，期望逐项手算。
-  - 集成：真实 World / Scene / Player / Body（`GateServer.NpcWorld` 夹具），NPC 起始余额 0；邻居的格经正常放置入口、
-    石堆经作者入口一次写入并记账，期望按夹具目录手算（一格石料 512 单位，两格高石柱材料单 1024，镐射程 6 米）。
+  - 纯函数（选址 `site/4`、平整 `level/2`、终态 `ending/1`、规格 `spec/3`、候选地块 `plots/3`、分段 `waypoints/3`、分块
+    `chunks/2`、采石候选 `quarry/3`）：手写小世界（survey 的列结果 / look 的格行），期望逐项手算。
+  - 集成：真实 World / Scene / Player / Body（`GateServer.NpcWorld` 夹具）；邻居的格经正常放置入口、石堆 / 起伏 / 台阶经作者入口
+    一次写入，NPC 的余额只经作者供给入口一次记账，期望按夹具目录手算（一格石料 512 单位，两格高石柱材料单 1024，三格石台
+    1536，镐射程 6 米、一格 4 击）。
   """
   use ExUnit.Case, async: false
   alias GateServer.Npc.{Abilities, Body}
@@ -43,11 +44,26 @@ defmodule GateServer.NpcExpandTest do
         Map.get_lazy(edits, cell, fn -> if y <= 63, do: @stone, else: 0 end)
       end)
 
+  # 手写勘察结果（`Perception.surfaces/2` 的列）：box 内逐列，缺省平地（地面 63、石料）；edits 给 {x, z} 的地表：整数 y、
+  # {y, 放置者}、{:refined, y}（这一列有细化格）、nil（范围内没有可站的地面）。
+  defp columns({{x0, z0}, {x1, z1}}, edits \\ %{}) do
+    for x <- x0..x1, z <- z0..z1, into: %{} do
+      column =
+        case Map.get(edits, {x, z}, 63) do
+          nil -> %{floors: [], y: nil, material: nil, placed_by: nil, refined: false}
+          {:refined, y} -> %{floors: [y], y: y, material: @stone, placed_by: nil, refined: true}
+          {y, by} -> %{floors: [y], y: y, material: @stone, placed_by: by, refined: false}
+          y -> %{floors: [y], y: y, material: @stone, placed_by: nil, refined: false}
+        end
+
+      {{x, z}, Map.put(column, :column, [x, z])}
+    end
+  end
+
   # 2×2 足迹、两格高、间隔 1、站位净空 2：包围盒 micro [0,16) 各轴。
   @spec2 %{offset: {0, 0, 0}, size: {2, 2, 2}, spacing: 1, clearance: 2}
-  # 地块 (10, 20)：足迹 x 10..11、z 20..21；窗口外扩 max(1, 2) = 2 → x 8..13、z 18..23；地面带 59..67，顶 67 + 2。
-  @window {{8, 59, 18}, {13, 69, 23}}
-  @band {59, 67}
+  # 地块 (10, 20)：足迹 x 10..11、z 20..21；勘察窗口外扩 max(1, 2) = 2 → x 8..13、z 18..23。
+  @window {{8, 18}, {13, 23}}
   # 自己在地块 −z 一侧。
   @from {10.0, 16.0}
 
@@ -62,7 +78,7 @@ defmodule GateServer.NpcExpandTest do
     end
 
     test "site: flat ground fits; the anchor sits on the ground and the nearest standable edge stand is chosen" do
-      # 地面 = 首列 (10, 20) 自上而下第一个上方不是实心的实心格 = 63；锚点格 (10, 64, 20) → micro × 8。
+      # 足迹四列地表都是 63 → 目标地面 63；锚点格 (10, 64, 20) → micro × 8。
       # 站位（Blueprint.stands，从 (10, 16) 由近到远）：(11.0, 18.5) 4.25、(8.5, 21.0) 24.25、(13.5, 21.0) 29.25、(11.0, 23.5) 49.25。
       assert {:ok,
               %{
@@ -70,89 +86,91 @@ defmodule GateServer.NpcExpandTest do
                 orientation: 0,
                 stand: [11.0, 18.5],
                 site_cell: [10, 64, 20],
-                ground: 63
-              }} == Expand.site(flat(@window), {10, 20}, @spec2, @band, @from)
+                ground: 63,
+                low: 63
+              }} == Expand.site(columns(@window), {10, 20}, @spec2, @from)
 
-      # 最近的站位列 (11, 18) 被一棵树占着（木头挡路）：换下一个 (8.5, 21.0)。
-      tree = flat(@window, %{{11, 64, 18} => 19})
-      assert {:ok, %{stand: [8.5, 21.0]}} = Expand.site(tree, {10, 20}, @spec2, @band, @from)
+      # 站位要离目标地面不超过 2 格：最近的站位列 (11, 18) 地面 60（低 3 格）不行，下一个 (8, 21) 地面 61（低 2 格）可以。
+      low = columns(@window, %{{11, 18} => 60, {8, 21} => 61})
+      assert {:ok, %{stand: [8.5, 21.0]}} = Expand.site(low, {10, 20}, @spec2, @from)
 
-      # 四个站位都没有同高的地面可站：no_stand。
-      moat = for {x, z} <- [{11, 18}, {8, 21}, {13, 21}, {11, 23}], into: %{}, do: {{x, 63, z}, 0}
-
-      assert {:error, :no_stand} ==
-               Expand.site(flat(@window, moat), {10, 20}, @spec2, @band, @from)
+      # 四个站位列都没有离 63 不超过 2 格的地面：no_stand。
+      moat = Map.new([{11, 18}, {8, 21}, {13, 21}, {11, 23}], &{&1, 60})
+      assert {:error, :no_stand} == Expand.site(columns(@window, moat), {10, 20}, @spec2, @from)
     end
 
-    test "site: a column one cell higher does not fit" do
-      # 首列高一格：地面取 64，(11, 64, 20) 不是实心 → 足迹各列地面不同高。
+    test "site: each plot's own ground, relief up to 2 cells is levelled to the lower median, more is uneven" do
+      # 地表 64、63、63、62（高差 2）：排序 62、63、63、64，下中位数（第 ⌈4/2⌉ = 2 个）= 63；最低 62。
+      bumpy = columns(@window, %{{10, 20} => 64, {11, 21} => 62})
+
+      assert {:ok, %{ground: 63, low: 62, site_cell: [10, 64, 20], anchor_micro: [80, 512, 160]}} =
+               Expand.site(bumpy, {10, 20}, @spec2, @from)
+
+      # 62、62、64、64：62..64 之间任何高度的土方量都是 4 格，取低的 62（只挖不填）→ 锚点格落在 63。
+      halves = columns(@window, %{{10, 20} => 62, {10, 21} => 62, {11, 20} => 64, {11, 21} => 64})
+
+      assert {:ok, %{ground: 62, low: 62, site_cell: [10, 63, 20]}} =
+               Expand.site(halves, {10, 20}, @spec2, @from)
+
+      # 整块地比自己脚下高很多也照样按它自己的地面判定（地面 80）：地面高度取自候选自己。
+      high = Map.new(Map.keys(columns(@window)), &{&1, 80})
+
+      assert {:ok, %{ground: 80, site_cell: [10, 81, 20]}} =
+               Expand.site(columns(@window, high), {10, 20}, @spec2, @from)
+
+      # 64 与 61：高差 3 → uneven。
       assert {:error, :uneven} ==
-               Expand.site(
-                 flat(@window, %{{10, 64, 20} => @stone}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
+               Expand.site(columns(@window, %{{10, 20} => 64, {11, 21} => 61}), {10, 20}, @spec2, @from)
 
-      # 别的列高一格：地面 63 各列都实心，但 (11, 64, 21) 占着建筑的体积。
-      assert {:error, :blocked} ==
-               Expand.site(
-                 flat(@window, %{{11, 64, 21} => @stone}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
-
-      # 地面带里找不到地面（整列空气）。
-      hole = for y <- 59..63, into: %{}, do: {{10, y, 20}, 0}
-
+      # 足迹有一列在勘察范围里没有可站的地面（水面、整列空气…）→ no_ground。
       assert {:error, :no_ground} ==
-               Expand.site(flat(@window, hole), {10, 20}, @spec2, @band, @from)
+               Expand.site(columns(@window, %{{11, 21} => nil}), {10, 20}, @spec2, @from)
     end
 
-    test "site: grass on the footprint does not fit (a prefab only goes into air)" do
-      # 花草不挡路：地面仍是 63；但 (10, 64, 20) 不是空气。
-      assert {:error, :blocked} ==
-               Expand.site(
-                 flat(@window, %{{10, 64, 20} => @grass}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
-    end
-
-    test "site: a placed or refined cell within spacing does not fit; one cell further out does" do
-      # 间隔 1：足迹外扩 1 = x 9..12、z 19..22。(12, 63, 22) 是别人铺的地板（有放置记录）。
+    test "site: a placed surface or a refined column within spacing does not fit; one column further out does" do
+      # 间隔 1：足迹外扩 1 = x 9..12、z 19..22。(12, 22) 的地表是别人铺的一格（有放置记录）。
       assert {:error, :crowded} ==
-               Expand.site(
-                 flat(@window, %{{12, 63, 22} => {@stone, @neighbour}}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
+               Expand.site(columns(@window, %{{12, 22} => {63, @neighbour}}), {10, 20}, @spec2, @from)
 
       assert {:error, :crowded} ==
-               Expand.site(
-                 flat(@window, %{{9, 64, 19} => :refined}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
+               Expand.site(columns(@window, %{{9, 19} => {:refined, 63}}), {10, 20}, @spec2, @from)
 
-      # (13, 63, 22) 在外扩 1 之外：放得下。
+      # (13, 22) 在外扩 1 之外：放得下。
       assert {:ok, %{site_cell: [10, 64, 20]}} =
-               Expand.site(
-                 flat(@window, %{{13, 63, 22} => {@stone, @neighbour}}),
-                 {10, 20},
-                 @spec2,
-                 @band,
-                 @from
-               )
+               Expand.site(columns(@window, %{{13, 22} => {63, @neighbour}}), {10, 20}, @spec2, @from)
+    end
+
+    test "level: natural cells above the ground are dug (flora too), holes at or below it are filled; anything else blocks" do
+      # 平整体积：足迹 x 10..11、z 20..21，y 从最低地表 62 到 g + 高 = 63 + 2 = 65。
+      box = {{10, 62, 20}, {11, 65, 21}}
+      # (10,20) 高出一格石头；(11,20) 地面上长草；(11,21) 是坑（63 是空气）。
+      bumpy = %{{10, 64, 20} => @stone, {11, 64, 20} => @grass, {11, 63, 21} => 0}
+
+      assert {:ok, %{dig: [{10, 64, 20}, {11, 64, 20}], fill: [{11, 63, 21}]}} ==
+               Expand.level(flat(box, bumpy), 63)
+
+      # 坑里长着草：放置直接覆盖花草，照样填；平地什么都不动。
+      assert {:ok, %{dig: [], fill: [{11, 63, 21}]}} ==
+               Expand.level(flat(box, %{{11, 63, 21} => @grass}), 63)
+
+      assert {:ok, %{dig: [], fill: []}} == Expand.level(flat(box), 63)
+
+      # 要动的格不是天然格：建筑体积里别人放的一格、坑里的水、细化格 → blocked（不拆、不改任何已有放置）。
+      for edit <- [
+            %{{10, 64, 21} => {@stone, @neighbour}},
+            %{{11, 63, 21} => 21},
+            %{{10, 65, 20} => :refined},
+            %{{11, 63, 21} => {@grass, @neighbour}}
+          ],
+          do: assert({:error, :blocked} == Expand.level(flat(box, edit), 63), inspect(edit))
+    end
+
+    test "ending: a plot skipped as unreachable, out of reach or short of material means no_reachable_site, else region_full" do
+      assert :region_full == Expand.ending(%{})
+      assert :region_full == Expand.ending(%{crowded: 3, uneven: 1, no_stand: 1, blocked: 2, occupied: 1})
+
+      for reason <- [:no_path, :stuck, :too_far, :out_of_reach, :insufficient_material],
+          do: assert(:no_reachable_site == Expand.ending(%{:crowded => 2, reason => 1}), inspect(reason))
     end
 
     test "plots: a lattice from the region corner with pitch = footprint + spacing, nearest first" do
@@ -221,6 +239,13 @@ defmodule GateServer.NpcExpandTest do
                  %{material: 19, ground: 63, area: {{0, 0}, {6, 0}}, keep: {{-1, -1}, {1, 1}}},
                  {0.5, 0.5}
                )
+    end
+
+    test "the expand description tells region_full from no_reachable_site" do
+      [tool] = Abilities.tools(%{groups: [:skill], tools: %{1 => "镐"}, skills: %{expand: %{}}})
+      assert tool.description =~ "region_full = 区域里已经没有能建的地块"
+      assert tool.description =~ "no_reachable_site = 还有本可成立的地块"
+      assert tool.description =~ "高差不超过 2 格"
     end
 
     test "the expand tool schema is strict; every argument is required" do
@@ -328,8 +353,50 @@ defmodule GateServer.NpcExpandTest do
     assert abs(x + 50.5) <= 0.5 and abs(z + 40.5) <= 0.5
   end
 
+  # 落地站稳在出生点地面（顶 63，脚 64，胶囊半高 0.9）。
+  defp grounded(body),
+    do:
+      NpcWorld.await(fn ->
+        case Body.observe(body).position do
+          {_, y, _} = position when abs(y - 64.9) < 0.05 -> position
+          _ -> nil
+        end
+      end)
+
+  defp outcome(body, id, timeout),
+    do: NpcWorld.await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == id)) end, timeout)
+
+  # 两层台地高差 8 米：出生点地面（脚 64）与东边平台（x 12..20、z 8..12，实心到 y 71，脚 72）之间一级一格的台阶（x 5..11，
+  # 顶 64..70），直线 12.5 米只有一段。改前这一段 move_to 不带 y：Body 寻路取盒竖直只到脚下上下 6 格（58..70），目标列在盒里
+  # 没有站立格 → no_path（2026-10-08 run06 住民从北坡去坡下的建房区，每段 no_path）。改后 travel 先 survey 段终点列，取离脚下
+  # 最近的可站层（地面 71 → 站立格 72）带 y 走，取盒竖直覆盖 58..78，顺台阶走上平台。
+  @tag timeout: 300_000
+  test "travel climbs an 8 m terrace: each leg surveys its end column and walks with that standing level" do
+    fixture = NpcWorld.start([])
+    stairs = for x <- 5..11, z <- 8..12, y <- 64..(64 + x - 5), do: {{x, y, z}, @stone}
+    plateau = for x <- 12..20, z <- 8..12, y <- 64..71, do: {{x, y, z}, @stone}
+    {:ok, _} = World.apply_edits(fixture.world, stairs ++ plateau)
+    profile = %{steps: [], tools: %{1 => "镐"}, skills: %{travel: %{}}, memory: NpcWorld.Memory}
+    %{body: body} = NpcWorld.body(fixture, {GateServer.Npc.Brain.Routine, profile})
+    grounded(body)
+
+    Body.command(body, %{id: 1, verb: :skill, skill: :travel, args: %{"x" => 16.5, "z" => 10.5}})
+
+    assert %{verb: :travel, status: :done, data: %{position: {x, y, z}, legs: 1}} =
+             outcome(body, 1, 120_000)
+
+    assert abs(x - 16.5) <= 0.5 and abs(z - 10.5) <= 0.5
+    assert_in_delta 72.9, y, 0.05
+
+    # 同一片台地经真实 Body / World 的 survey（z = 10 这一行）：x 3、4 平地 63，x 5..11 台阶顶 64..70，x 12、13 平台 71。
+    Body.command(body, %{id: 2, verb: :survey, min: {3, 10}, max: {13, 10}})
+    assert %{status: :done, data: %{columns: columns, seq: [seq, seq]}} = outcome(body, 2, 10_000)
+    assert [63, 63, 64, 65, 66, 67, 68, 69, 70, 71, 71] == Enum.map(columns, & &1.y)
+    assert Enum.all?(columns, &(&1.material == @stone and &1.placed_by == nil and not &1.refined))
+  end
+
   @tag timeout: 600_000
-  test "expand builds on the nearest free plot, gathers the shortage from the natural pile first, then the next plot, then no_site" do
+  test "expand builds on the nearest free plot, gathers the shortage from the natural pile first, then the next plot, then region_full" do
     fixture = start_layout()
     world = fixture.world
     profile = %{steps: [], tools: %{1 => "镐"}, skills: %{expand: %{}}, memory: NpcWorld.Memory}
@@ -395,8 +462,8 @@ defmodule GateServer.NpcExpandTest do
 
     assert Enum.all?(for(x <- 13..16, do: built[{x, 64, 10}]), &(&1.material == 0))
 
-    # 第三次：四块都不是空地（6、9 自家，12、15 邻居的格在间隔带里），不采不建。
-    assert %{verb: :expand, status: :rejected, reason: :no_site} =
+    # 第三次：四块都不是空地（6、9 自家，12、15 邻居的格在间隔带里），不采不建；全是“地块不成立”→ region_full。
+    assert %{verb: :expand, status: :rejected, reason: :region_full} =
              expand(body, :c, fixture.definition)
 
     assert 0 == NpcWorld.balance(world, @npc)
@@ -417,5 +484,141 @@ defmodule GateServer.NpcExpandTest do
            )
 
     assert Enum.all?(for(x <- [5, 17], z <- 7..11, do: around[{x, 64, z}]), &(&1.material == 0))
+  end
+
+  # —— 平整与换地块（2026-10-08 run06 的根因 2–4）——
+
+  # 三格石台（x 方向 3 × 1 × 1 个宏格）：材料单 3 × 512 = 1536；作者目录定义（World 启动时载入）。
+  @slab Prefab.encode(%{
+          cells: [],
+          macro_cells: [{{0, 0, 0}, @stone}, {{1, 0, 0}, @stone}, {{2, 0, 0}, @stone}],
+          children: [],
+          attachments: []
+        })
+  @dirt 7
+
+  defp expand_in(body, id, region),
+    do:
+      Body.command(body, %{
+        id: id,
+        verb: :skill,
+        skill: :expand,
+        args: %{
+          "definition" => NpcWorld.hex(@slab),
+          "region" => region,
+          "tool_id" => 1,
+          "spacing" => 2
+        }
+      })
+
+  # 自然起伏的地块：足迹 x 0..2、z 0 的地表 64、63、62（(0, 64, 0) 多一格天然石头，(2, 63, 0) 是坑），高差 2。改前选址要求各列
+  # 同高（脚下地面带里找地面）→ uneven，区域里唯一的地块不成立，回 no_site（run06：自然地形 4×4 同高的位置一个都没有）。
+  # 改后：下中位数 63 为目标地面，从站位 (−1.5, 0.5) 挖掉 (0, 64, 0)（+512 入账），花 512 把 (2, 63, 0) 填石，再放石台（−1536）。
+  # 余额：供给 1536 → 挖 2048 → 不缺（材料单 1536 + 填坑 512 = 2048）→ 填 1536 → 放 0。第二次：足迹上是自家石台 → region_full。
+  @tag timeout: 300_000
+  test "a plot with 1–2 cells of natural relief is levelled to the median, then built; balance and cells checked by hand" do
+    fixture = NpcWorld.start(prefab_access: true, prefabs: [@slab])
+    world = fixture.world
+    {:ok, _} = World.apply_edits(world, [{{0, 64, 0}, @stone}, {{2, 63, 0}, 0}])
+    {:ok, _} = World.material_supply(world, @npc, "expand-level", %{@stone => 1536})
+    profile = %{steps: [], tools: %{1 => "镐"}, skills: %{expand: %{}}, memory: NpcWorld.Memory}
+
+    %{body: body} =
+      NpcWorld.body(fixture, {GateServer.Npc.Brain.Routine, profile}, spawn: {-6.0, 66.0, 0.5})
+
+    grounded(body)
+    expand_in(body, :a, [[0, 0], [2, 0]])
+
+    assert %{
+             verb: :expand,
+             status: :done,
+             data: %{
+               anchor_micro: [0, 512, 0],
+               orientation: 0,
+               stand: [-1.5, 0.5],
+               site_cell: [0, 64, 0],
+               skipped: skipped
+             }
+           } = outcome(body, :a, 240_000)
+
+    assert skipped == %{}
+    assert 0 == NpcWorld.balance(world, @npc)
+
+    # 石台三格与填的坑是本 NPC 放下的；原地面 (0, 63)、(1, 63) 与坑底 (2, 62) 仍是天然石头。
+    footprint =
+      NpcWorld.cells(world, for(x <- 0..2, y <- 62..65, do: {x, y, 0}))
+
+    assert %{
+             {0, 64, 0} => %{material: @stone, placed_by: @npc},
+             {1, 64, 0} => %{material: @stone, placed_by: @npc},
+             {2, 64, 0} => %{material: @stone, placed_by: @npc},
+             {2, 63, 0} => %{material: @stone, placed_by: @npc},
+             {0, 63, 0} => %{material: @stone, placed_by: nil},
+             {1, 63, 0} => %{material: @stone, placed_by: nil},
+             {2, 62, 0} => %{material: @stone, placed_by: nil},
+             {0, 65, 0} => %{material: 0},
+             {1, 65, 0} => %{material: 0},
+             {2, 65, 0} => %{material: 0}
+           } = footprint
+
+    # 足迹外不动：x −1..3、z −1..1 的地面 63 仍是天然石头，其上 64 是空气（足迹那三格除外）。
+    around =
+      NpcWorld.cells(
+        world,
+        for(x <- -1..3, z <- -1..1, y <- [63, 64], not (z == 0 and x in 0..2), do: {x, y, z})
+      )
+
+    for {{_, y, _} = cell, row} <- around do
+      expected = if y == 63, do: @stone, else: 0
+      assert %{material: ^expected, placed_by: nil} = row, inspect(cell)
+    end
+
+    # 区域里唯一的地块已有自家石台：地块不成立 → region_full（可以停）。
+    expand_in(body, :b, [[0, 0], [2, 0]])
+    assert %{verb: :expand, status: :rejected, reason: :region_full} = outcome(body, :b, 120_000)
+    assert 0 == NpcWorld.balance(world, @npc)
+  end
+
+  # 换地块：区域 x 0..12、z 0，间隔 2 → 地块 A (0..2)、B (5..7)、C (10..12)，从出生点 (−6, 0.5) 由近到远；余额 0，材料单 1536（3 格）。
+  # - A：最近的站位列 (−2, 0) 四邻被三格高的天然石墙围住 → 走不到（no_path），换下一块；
+  # - B：站位 (3.5, 0.5) 周围区域内、保护区（足迹外扩 3 = x 2..10）之外露天的只有 x 0、1、11、12 的地面，都铺成了土（不是生产材料，
+  #   不采）→ 附近采不到（insufficient_material），换下一块。改前缺料是终态，扩张就此停住（2026-10-08 run06 建设者的循环）；
+  # - C：站位 (8.5, 0.5)，保护区 x 7..15 之外露天的石头是 x 2..6 的地面，由近到远采 (6, 63)、(5, 63)、(4, 63) 三格（各 512）→ 建成。
+  # done 的 skipped 是 %{no_path: 1, insufficient_material: 1}；余额 3 × 512 − 1536 = 0。
+  @tag timeout: 300_000
+  test "an unreachable plot and a plot short of material nearby are skipped; the next plot gathers and is built" do
+    fixture = NpcWorld.start(prefab_access: true, prefabs: [@slab])
+    world = fixture.world
+    walls = for {x, z} <- [{-3, 0}, {-1, 0}, {-2, -1}, {-2, 1}], y <- 64..66, do: {{x, y, z}, @stone}
+    dirt = for x <- [0, 1, 11, 12], do: {{x, 63, 0}, @dirt}
+    {:ok, _} = World.apply_edits(world, walls ++ dirt)
+    profile = %{steps: [], tools: %{1 => "镐"}, skills: %{expand: %{}}, memory: NpcWorld.Memory}
+
+    %{body: body} =
+      NpcWorld.body(fixture, {GateServer.Npc.Brain.Routine, profile}, spawn: {-6.0, 66.0, 0.5})
+
+    grounded(body)
+    assert 0 == NpcWorld.balance(world, @npc)
+    expand_in(body, :a, [[0, 0], [12, 0]])
+
+    assert %{
+             verb: :expand,
+             status: :done,
+             data: %{
+               anchor_micro: [80, 512, 0],
+               stand: [8.5, 0.5],
+               site_cell: [10, 64, 0],
+               skipped: skipped
+             }
+           } = outcome(body, :a, 240_000)
+
+    assert skipped == %{no_path: 1, insufficient_material: 1}
+    assert 0 == NpcWorld.balance(world, @npc)
+
+    cells = NpcWorld.cells(world, [{10, 64, 0}, {12, 64, 0}, {0, 64, 0} | for(x <- 0..6, do: {x, 63, 0})])
+    assert %{{10, 64, 0} => %{material: @stone, placed_by: @npc}, {12, 64, 0} => %{placed_by: @npc}} = cells
+    # 采掉的三格、没动的地面与土、A 的足迹。
+    assert [@dirt, @dirt, @stone, @stone, 0, 0, 0] == for(x <- 0..6, do: cells[{x, 63, 0}].material)
+    assert %{material: 0} = cells[{0, 64, 0}]
   end
 end

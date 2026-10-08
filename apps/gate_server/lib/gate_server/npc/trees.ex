@@ -20,9 +20,10 @@ defmodule GateServer.Npc.Trees do
   （units = 材料单 − 余额）→ 回站位 → 再 `build` 一次。`build` 回 `occupied` → `look` 锚点格：整格或格内构件实例的 `placed_by` 是自己 →
   视为已建成，否则跳过。其余拒绝（protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、
   unreachable…）这个工地本轮放弃，换下一个。配了 `expansion` 时，巡完已知工地后调一次 `expand`（`Skills.Expand`：在区域里找空地、
-  缺料自己采、放下）：done 就把新工地 `%{anchor_micro, orientation, stand}` 追加进黑板的工地列表，下一轮起与作者工地同样维护
-  （被拆就重建）；`no_site` 等拒绝记一行 `npc_settler_idle entity= act=expand reason=`（没有 context），下一轮再找（期间空出来的
-  地块会被用上）。所以每轮最多新建一座。一轮巡完等 `revisit_ticks` 再巡。
+  缺料自己采、地表略有起伏先平整、放下）：done 就把新工地 `%{anchor_micro, orientation, stand}` 追加进黑板的工地列表，下一轮起与
+  作者工地同样维护（被拆就重建）；其余结果记一行 `npc_settler_idle entity= act=expand reason=`（没有 context），下一轮再找：
+  `region_full` = 区域里没有能建的地块了（期间空出来的地块会被用上），`no_reachable_site` = 有本可成立的地块但此刻走不到、
+  够不着或附近采不到料（下一轮从新位置再试）。所以每轮最多新建一座。一轮巡完等 `revisit_ticks` 再巡。
 
   | 规则 | 内容 |
   |---|---|

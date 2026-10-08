@@ -26,6 +26,8 @@ defmodule GateServer.Npc.Skills.Gather do
   macro_owners，由探测命中的 owner 核对挡住；被别的编辑改过的格与放置溯源升级前的格仍会被挖。原子 `use_tool`
   本身不加这条门，仍由权威裁决。
 
+  挖一格的完整流程 `mine/3` 与挖掘顺序 `order/2` 是公开的：扩张技能平整地块时从站位逐格挖，用的是同一套（不复制）。
+
   采石盒要求（作者保证）：地表以上的料堆或深度不超过 1 层（坑沿会挡射线、寻路不跳坑）；盒内材料属于
   production_materials 且没有 drop_table（否则挖掉不入账）；盒子在 look 的上限内。
   """
@@ -127,16 +129,23 @@ defmodule GateServer.Npc.Skills.Gather do
   且在 `box`（`{{x0,y0,z0},{x1,y1,z1}}`，闭区间）内的格，按层自上而下、同层离站位 `{x, z}` 水平距离由近到远排序
   （再按坐标定序）。返回 `[{x, y, z}]`。
   """
-  def candidates(rows, %{box: {{x0, y0, z0}, {x1, y1, z1}}, material: material}, {sx, sz}) do
+  def candidates(rows, %{box: {{x0, y0, z0}, {x1, y1, z1}}, material: material}, from) do
     for %{cell: [x, y, z], material: ^material, refined: false, placed_by: nil} <- rows,
         material != 0 and not Phase.liquid?(material),
         x in x0..x1 and y in y0..y1 and z in z0..z1 do
       {x, y, z}
     end
-    |> Enum.sort_by(fn {x, y, z} ->
-      {-y, (x + 0.5 - sx) * (x + 0.5 - sx) + (z + 0.5 - sz) * (z + 0.5 - sz), x, z}
-    end)
+    |> order(from)
   end
+
+  @doc """
+  挖掘顺序（纯函数）：层自上而下、同层离 `{x, z}` 水平距离（到格心）由近到远，再按坐标定序。先挖上层与近处，后面的格才露出来。
+  """
+  def order(cells, {sx, sz}),
+    do:
+      Enum.sort_by(cells, fn {x, y, z} ->
+        {-y, (x + 0.5 - sx) * (x + 0.5 - sx) + (z + 0.5 - sz) * (z + 0.5 - sz), x, z}
+      end)
 
   # —— 站位循环 ——
 
@@ -241,7 +250,15 @@ defmodule GateServer.Npc.Skills.Gather do
     end
   end
 
-  defp mine(cell, eye, state) do
+  @doc """
+  从眼点 `eye` 挖掉一格天然宏格 `cell`：沿眼点 → 格心（`WorldRequest.aim/2` 的 g0 瞄准点）`probe_toward`，命中恰是这一格的
+  天然宏格（`granularity == 0`、`micro == 格 × 8`、`owner == {0, 0}`）才对这个句柄逐击 `use_tool`（两击至少隔工具间隔），每击之后
+  再探测，命中变了或 `no_target` 时 `look` 这一格判定。返回 `{:mined, state}`（这一格已是空气）、`{:blocked, state}`（这次没打到：
+  命中别的东西、射程外、`out_of_reach` / `occluded`）、`{:foreign, state}`（命中这一格但不是天然宏格，如作者 prefab 宏格）或
+  `{:error, 原因, state}`（其余拒绝原样）。`state` 要有 `body`、`call`、`step`、`tool`、`interval_ms`、`last_hit`（可选 `space`，见
+  `Skill.call/2`）。
+  """
+  def mine(cell, eye, state) do
     micro = cell |> Tuple.to_list() |> Enum.map(&(&1 * Spatial.micro_resolution())) |> List.to_tuple()
     direction = WorldRequest.aim(eye, %{granularity: 0, micro: micro})
 

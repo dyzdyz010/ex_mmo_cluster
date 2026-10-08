@@ -309,7 +309,7 @@ defmodule GateServer.NpcSettlerTest do
       args: %{"definition" => @hex, "region" => [[6, 8], [16, 10]], "tool_id" => 1, "spacing" => 2}
     }
 
-  test "expansion: after the known sites the round expands once; a done site joins the list and is maintained; no_site is logged" do
+  test "expansion: after the known sites the round expands once; a done site joins the list and is maintained; region_full is logged" do
     # expand 的 done data（Runtime 另加 metrics）：只有 anchor_micro / orientation / stand 进工地列表。
     new = %{anchor_micro: [48, 512, 64], orientation: 0, stand: [6.5, 10.5]}
 
@@ -336,14 +336,14 @@ defmodule GateServer.NpcSettlerTest do
            [walk(9, new)]},
           {done(9, :move_to), [build(10, new)]},
           {done(10, :build, %{seq: 9}), [expand(11)]},
-          # 没有空地：记一行 idle，本轮结束，休息。
-          {rejected(11, :expand, :no_site), []},
+          # 区域放满：记一行 idle，本轮结束，休息。
+          {rejected(11, :expand, :region_full), []},
           {obs(1201), []},
           {obs(1202), [read(12)]}
         ])
       end)
 
-    assert ["npc_settler_idle entity=7 act=expand reason=no_site"] == idle(log)
+    assert ["npc_settler_idle entity=7 act=expand reason=region_full"] == idle(log)
   end
 
   # —— T3.5 与多轮浸泡 (a)：真实 World ——
@@ -514,23 +514,23 @@ defmodule GateServer.NpcSettlerTest do
     NpcWorld.body(fixture, brain)
     deadline = System.monotonic_time(:millisecond) + 240_000
 
-    # 日志行 → 事件序列：放置成功、扩张 done、扩张 no_site（其余行不计）。
+    # 日志行 → 事件序列：放置成功、扩张 done、扩张 region_full（其余行不计）。
     events = fn lines ->
       Enum.flat_map(lines, fn line ->
         cond do
           line =~ "kind=voxel_prefab_place_v1 cid=#{@npc} " and line =~ "result=ok" -> [:placed]
           line =~ "npc_skill_outcome skill=expand status=done" -> [:expanded]
-          line =~ "npc_settler_idle" and line =~ "act=expand reason=no_site" -> [:no_site]
+          line =~ "npc_settler_idle" and line =~ "act=expand reason=region_full" -> [:region_full]
           true -> []
         end
       end)
     end
 
-    no_sites = fn lines -> Enum.count(events.(lines), &(&1 == :no_site)) end
+    fulls = fn lines -> Enum.count(events.(lines), &(&1 == :region_full)) end
 
-    # 第一轮没有已知工地，扩张建 A（地块 6）；第二轮维护 A、扩张建 B（地块 9）；第三轮维护两座、no_site。
-    before = logs_until([], &(no_sites.(&1) >= 1), deadline)
-    assert [:placed, :expanded, :placed, :expanded, :no_site] == events.(before)
+    # 第一轮没有已知工地，扩张建 A（地块 6）；第二轮维护 A、扩张建 B（地块 9）；第三轮维护两座、region_full。
+    before = logs_until([], &(fulls.(&1) >= 1), deadline)
+    assert [:placed, :expanded, :placed, :expanded, :region_full] == events.(before)
     assert [first, second] = placements(before, "ok")
     [seq_a, seq_b] = for line <- [first, second], do: String.to_integer(hd(Regex.run(~r/result=ok seq=(\d+)/, line, capture: :all_but_first)))
     assert 3072 - 2 * 1024 == NpcWorld.balance(world, @npc)
@@ -544,12 +544,12 @@ defmodule GateServer.NpcSettlerTest do
 
     for seq <- [seq_a, seq_b], do: assert({:ok, [_, _]} = World.instance_cells(world, {seq, 0}))
 
-    # 拆掉扩张出来的 A（作者入口，不退料）：下一轮维护把它重建在原锚点；此后扩张只回 no_site，只维护。
+    # 拆掉扩张出来的 A（作者入口，不退料）：下一轮维护把它重建在原锚点；此后扩张只回 region_full，只维护。
     {:ok, _} = World.remove_prefab(world, {seq_a, 0})
     assert %{{6, 64, 8} => %{material: 0}} = NpcWorld.cells(world, [{6, 64, 8}])
 
-    after_removal = logs_until([], &(no_sites.(&1) >= 2), deadline)
-    assert [:placed, :no_site, :no_site] == events.(after_removal)
+    after_removal = logs_until([], &(fulls.(&1) >= 2), deadline)
+    assert [:placed, :region_full, :region_full] == events.(after_removal)
     assert [rebuilt] = placements(after_removal, "ok")
     [seq] = Regex.run(~r/result=ok seq=(\d+)/, rebuilt, capture: :all_but_first)
     assert {:ok, [_, _]} = World.instance_cells(world, {String.to_integer(seq), 0})

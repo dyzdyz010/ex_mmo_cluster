@@ -158,6 +158,8 @@ defmodule GateServer.NpcAbilitiesTest do
        %{verb: :genesis_edit, edits: [{{5, 63, 12}, 0}, {{-1, 64, 7}, 11}]}},
       {"look", %{"x0" => 15, "y0" => 63, "z0" => -9, "x1" => 17, "y1" => 66, "z1" => 11},
        %{verb: :look, min: {15, 63, -9}, max: {17, 66, 11}}},
+      {"survey", %{"x0" => 15, "z0" => -9, "x1" => 17, "z1" => 11},
+       %{verb: :survey, min: {15, -9}, max: {17, 11}}},
       {"inspect", %{}, %{verb: :inspect}},
       {"query_balances", %{}, %{verb: :query_balances}},
       {"read_catalog", %{"what" => "prefab", "definition" => String.upcase(@hex)},
@@ -415,7 +417,7 @@ defmodule GateServer.NpcAbilitiesTest do
   end
 
   test "the Demo LLM profile projects exactly the hand-listed tools, and say is in no projection" do
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look inspect query_balances read_catalog remember recall search_memory) ==
+    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory) ==
              Enum.map(Abilities.tools(@demo), & &1.name)
 
     llm = %{goal: "g", endpoint: %{model: "m"}} |> Map.merge(@demo)
@@ -426,7 +428,7 @@ defmodule GateServer.NpcAbilitiesTest do
       balances: nil
     }
 
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look inspect query_balances read_catalog remember recall search_memory wait) ==
+    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory wait) ==
              Enum.map(GateServer.Npc.Brain.Llm.body(llm, observation, []).tools, & &1.name)
 
     # instructions 只依赖 profile 的工具表：不点名被 groups 裁掉的工具（Demo 没有 :attend 组，也没配技能）。
@@ -435,7 +437,7 @@ defmodule GateServer.NpcAbilitiesTest do
     pruned =
       Enum.map(Abilities.entries(@full), & &1.name) --
         String.split(
-          "move_to stop probe_toward use_tool dismantle place attach detach prefab look inspect query_balances read_catalog remember recall search_memory"
+          "move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory"
         )
 
     assert "get_aim" in pruned and "design_house" in pruned

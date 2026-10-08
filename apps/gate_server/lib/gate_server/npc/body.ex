@@ -11,7 +11,7 @@ defmodule GateServer.Npc.Body do
   Gate 为玩家调用的同一个入口 `SceneServer.Movement.Intent.run/3`——工具经 `ToolAction.run/5`（`authorize_tool`：
   死亡、施法互斥、重放、同 key 结果、人物目标 g5），生产 / 附件 / prefab 经 `Player.tool_context/2`，再到 World 公共 API。
   Body 不复刻任何权威门；它自己的信任边界只有命令的模式匹配与类型守卫（`WorldRequest.build/2` 返回 nil →
-  `:invalid_command`）。只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`，余额读 `material_balances/2`。
+  `:invalid_command`）。只读感知（look / survey / inspect）走 `material_snapshot/3` 与 `simulation_snapshot/3`，余额读 `material_balances/2`。
   所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:gate_server, :quic` 的 `bounds`）内，
   与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。聊天在正式栈里还不存在：`say` 只占位。
   目录读取（`read_catalog`）经 `GateServer.Npc.Perception.read/3` 读 World 的公共只读目录。
@@ -36,7 +36,9 @@ defmodule GateServer.Npc.Body do
 
   `move_to` 带寻路：起步时经 `World.material_snapshot/3` 取一盒地形（与 `look` 同一个只读入口），交给
   `SceneServer.Movement.Path` 算出路点后即丢弃，不留体素副本；台阶高度与角色高度取自权威随 SessionStart 下发的
-  移动 profile（玩家客户端收到的同一份）。Body 不重试：走不通回报 `:no_path`，路上被堵回报 `:stuck`，由 Brain 决定。
+  移动 profile（玩家客户端收到的同一份）。哪些格能踩、能穿过只用 `GateServer.Npc.Perception.walk_kind/1`（细化格与液体
+  既不能踩也不能穿过）；起点是身体的权威位置（`Path.find/7` 的 `trusted_start`）。Body 不重试：走不通回报 `:no_path`，
+  路上被堵回报 `:stuck`，由 Brain 决定。
   会话由本进程自己维护：积压、Scene 结束会话、Player 结束、移交失败或 claim 失败时不退出，稍后重新 claim，
   Brain / Runtime 与在途技能不受影响；被同一 cid 的新 claim 顶替时正常结束。契约见本目录 README。
   设计见 docs/10-active/cross-cutting/2026-09-21-npc-unified-interface-design.md；世界意图入口见
@@ -48,10 +50,8 @@ defmodule GateServer.Npc.Body do
   alias MmoContracts.{Movement, Session}
   alias GateServer.Session.Dispatch
   alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
-  alias MmoContracts.VoxelMaterialCatalog
-  alias VoxelRegion.Phase
   alias VoxelRegion.World
-  alias GateServer.Npc.{Attention, Genesis, Sight, WorldRequest}
+  alias GateServer.Npc.{Attention, Context, Genesis, Perception, Sight, WorldRequest}
   @attention_verbs Attention.verbs()
   # 世界写意图的动词（经 WorldRequest 拼成线同形请求：施法 0x82 交给 Player.cast_spell/5，其余进 Intent.run/3）；
   # 余额（生产 action 0）与 Gate 一样直接读 material_balances，不进事务。
@@ -109,6 +109,14 @@ defmodule GateServer.Npc.Body do
 
   @doc "慢技能取得当前正式会话上下文；不暴露 Body 或 World 的可变状态。"
   def skill_context(body), do: GenServer.call(body, :skill_context)
+
+  @doc "寻路取盒在起终点包围盒外扩的格数（水平与竖直）；不给 `y` 时竖直只覆盖脚所在格上下这么多格。"
+  def path_margin, do: @path_margin
+
+  @doc """
+  脚所在的格：`position` 是胶囊中心，中心下移半高；+0.5 容忍贴地的 skin / snap。寻路的起点、travel 选段终点站立层都用它。
+  """
+  def foot({px, py, pz}, half_height), do: {floor(px), floor(py - half_height + 0.5), floor(pz)}
 
   @doc "canonical X/Z 世界轴上的量化输入与朝向；yaw 不驱动移动，0 朝 +X、16384 朝 +Z。"
   def steer({x, _, z}, {tx, tz}) do
@@ -855,8 +863,7 @@ defmodule GateServer.Npc.Body do
       mark: nil
     }
 
-    # position 是胶囊中心；脚所在的格 = 中心下移半高（+0.5 容忍贴地的 skin / snap）。
-    {_, foot_y, _} = start = {floor(px), floor(py - profile.half_height + 0.5), floor(pz)}
+    {_, foot_y, _} = start = foot({px, py, pz}, profile.half_height)
 
     cond do
       not (goal_y == nil or is_integer(goal_y)) ->
@@ -874,7 +881,7 @@ defmodule GateServer.Npc.Body do
           target: {x, z},
           goal_y: goal_y,
           step: floor(profile.step_height),
-          height: ceil(2 * profile.half_height),
+          height: Context.clearance(profile),
           radius: profile.radius
         }
 
@@ -946,7 +953,7 @@ defmodule GateServer.Npc.Body do
   end
 
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:query_balances, :look, :inspect, :read_catalog] do
+       when verb in [:query_balances, :look, :survey, :inspect, :read_catalog] do
     case read_call(state, command) do
       nil ->
         invalid(state, command)
@@ -1005,12 +1012,16 @@ defmodule GateServer.Npc.Body do
         data: nil
       })
 
-  # 只读请求：余额与 Gate 一样直接读 material_balances；look / inspect 的 macro 格限制在自己周围
+  # 只读请求：余额与 Gate 一样直接读 material_balances；look / survey / inspect 的 macro 格限制在自己周围
   # （玩家也只看得到流送到身边的世界）；read_catalog 读目录，与位置无关。nil = 命令不合法。
+  # survey 判“站得下”要身高格数，取自权威下发的移动 profile。
   defp read_call(_state, %{verb: :query_balances}), do: :balances
 
+  defp read_call(%{position: position, profile: %{} = profile}, %{verb: :survey} = command),
+    do: Perception.prepare(position, command, Context.clearance(profile))
+
   defp read_call(%{position: position}, command),
-    do: GateServer.Npc.Perception.prepare(position, command)
+    do: Perception.prepare(position, command)
 
   # 意图到达角色入口的时刻在受理时冻结一次，随调用交给执行进程（与玩家连接入队时取值同一语义）；GCRA 按它判频。
   defp submit(state, id, call),
@@ -1147,22 +1158,20 @@ defmodule GateServer.Npc.Body do
           z <- (min(sz, gz) - @path_margin)..(max(sz, gz) + @path_margin),
           do: {x, y, z}
 
-    # 可否穿过与碰撞同一判据（`VoxelMaterialCatalog.blocks_movement?/1`，collision_source.ex 用它建碰撞）：空气与花草
-    # 等非阻挡材料可穿过、不能踩；细化格（含 micro 内容）一律当作占满；液体不进表：不能踩也不能穿过。
-    # 原先只有空气算 :open，站进草 / 蕨格的 NPC 起点就是实心，任何目标都 no_path（2026-10-08 长跑 run03）。
+    # 能踩（:solid）、能穿过（:open）只用 Perception.walk_kind/1 一个判据（与碰撞同源）；既不能踩也不能穿过的格（液体、
+    # 细化格）不进表。原先只有空气算 :open，站进草 / 蕨格的 NPC 起点就是实心（2026-10-08 run03）；细化格原先当作占满、
+    # 可踩：建设者被规划去踩 1/8 米的面板顶，落进面板格里（2026-10-08 run06）。
     grid =
-      for %{cell: [x, y, z], material: material, refined: refined} <-
-            World.material_snapshot(session.world_ref, [session.cid], cells).probe_occupancy,
-          not Phase.liquid?(material),
+      for row <- World.material_snapshot(session.world_ref, [session.cid], cells).probe_occupancy,
+          kind <- [Perception.walk_kind(row)],
+          kind != nil,
           into: %{},
-          do:
-            {{x, y, z},
-             if(not refined and not VoxelMaterialCatalog.blocks_movement?(material),
-               do: :open,
-               else: :solid
-             )}
+          do: {List.to_tuple(row.cell), kind}
 
-    with {:ok, cells} <- Path.find(grid, start, goal, goal_y, plan.step, plan.height),
+    # 起点是身体的权威位置：落不到站立格（站在细化格空着的部分或它上面）也从这里出发，不因网格保守而判成哪儿都去不了
+    # （run06：起点是自己放的面板格，对任何目标 no_path，建设者两次永久卡死）。
+    with {:ok, cells} <-
+           Path.find(grid, start, goal, goal_y, plan.step, plan.height, trusted_start: true),
          do: {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
   end
 
@@ -1185,8 +1194,8 @@ defmodule GateServer.Npc.Body do
     {result, nil}
   end
 
-  defp execute(session, call, _ingress) when elem(call, 0) in [:look, :inspect, :catalog],
-    do: {GateServer.Npc.Perception.read(session.world_ref, session.cid, call), nil}
+  defp execute(session, call, _ingress) when elem(call, 0) in [:look, :survey, :inspect, :catalog],
+    do: {Perception.read(session.world_ref, session.cid, call), nil}
 
   # 取消前摇（0x82 action 2）：与玩家同一个同步入口 Player.spell/4，角色 owner 撤销后回 :controlled。
   defp execute(session, {:voxel_spell_intent, request}, ingress) do

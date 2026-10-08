@@ -1,7 +1,10 @@
 defmodule GateServer.Npc.Perception do
   @moduledoc """
-  全局系统功能：父脑与技能共用的感知条目（look / inspect / query_balances / read_catalog，形状见
+  全局系统功能：父脑与技能共用的感知条目（look / survey / inspect / query_balances / read_catalog，形状见
   `GateServer.Npc.Abilities`）、范围校验、真实 World 只读入口与模型投影（`project/3`）。
+
+  步行判据也只在这里：`walk_kind/1`（一格能不能踩、能不能穿过；Body 的寻路网格、survey 与扩张选址共用）与列扫描
+  `floors/2`（一列里哪些格站得下自己）。survey 的地表（`surfaces/2`）、travel 的段终点站立层、expand 的地面都从它取。
 
   目录读取（Body 动词 `read_catalog`）也在这里：prefab 定义的材料单与尺寸、最近的运行时发布、材料表、工具表，
   全部取自 World 的公共只读目录（`prefab_catalog/1`、`published_prefabs/1`、`material_catalog/1`），不缓存。
@@ -9,9 +12,12 @@ defmodule GateServer.Npc.Perception do
   prefab 目录行（尺寸、材料单）只在 `prefab_row/3` 计算一次，`design_house` 的目录投影也用它。
   """
   alias GateServer.Npc.Actions
+  alias MmoContracts.VoxelMaterialCatalog
   alias SceneServer.PrefabDesigner.Check
-  alias VoxelRegion.{Spatial, World}
+  alias VoxelRegion.{Phase, Spatial, World}
   @cells 512
+  # 一次 survey 每边最多的列数。
+  @columns 32
   # 给模型的历史里保留内容的 look 次数（更早的只留结论）。
   @kept_looks 3
   @reach 32
@@ -26,6 +32,8 @@ defmodule GateServer.Npc.Perception do
   def reach, do: @reach
   @doc "一次 look 最多的格数（更大的范围分几次看）。"
   def look_cells, do: @cells
+  @doc "一次 survey 每边最多的列数。"
+  def survey_columns, do: @columns
   @doc "感知条目（group :sense，顺序固定）；条目形状见 `GateServer.Npc.Abilities`。"
   def entries,
     do: [
@@ -47,6 +55,20 @@ defmodule GateServer.Npc.Perception do
           z1: :integer
         ],
         build: fn p, _ -> %{verb: :look, min: {p.x0, p.y0, p.z0}, max: {p.x1, p.y1, p.z1}} end
+      },
+      %{
+        name: "survey",
+        group: :sense,
+        description:
+          "勘察一片地的高低（地表高度图）：整数列闭区间 (x0,z0)–(x1,z1)，1 列 = 1×1 米，每边最多 #{@columns} 列、各边离自己不超过 #{@reach} 米；" <>
+            "竖直只看自己所在高度上下 #{@reach} 米。每列的地表 = 扫描范围里最高的、上面站得下自己的实心格 y（站在上面时脚所在的格是 y + 1；" <>
+            "花草、液体、细化格都不是地面，花草长在地面上方）。rows 按 z 从 z0 到 z1 排，每行按 x 从 x0 到 x1：[y, material]，" <>
+            "null = 扫描范围里这一列没有站得下的地面（水面、被细化格或悬空物压着、整列空气或实心、在范围外）。" <>
+            "placed 列出地表格有放置者的列 [x, z, 放置者 entity_id]，refined 列出扫描范围里含细化格（micro 构件，多半是谁的建筑）的列 [x, z]。" <>
+            "看地势、核对整平、找落脚点用它：一次看整片，比分层 look 省；要知道某几格具体是什么再用 look。",
+        done: "data 是勘察时的世界（分 x 片读取，seq 是 [首片, 末片] 的版本），不改世界。",
+        params: [x0: :integer, z0: :integer, x1: :integer, z1: :integer],
+        build: fn p, _ -> %{verb: :survey, min: {p.x0, p.z0}, max: {p.x1, p.z1}} end
       },
       %{
         name: "inspect",
@@ -121,6 +143,81 @@ defmodule GateServer.Npc.Perception do
 
   def prepare(_, _), do: nil
 
+  @doc """
+  survey 的范围校验：列闭区间每边不超过 #{@columns} 列、各边离自己不超过 reach；竖直取自己所在高度上下 reach 的整数格
+  （与 look 同一距离护栏）。`clearance` 是身高占的格数（`GateServer.Npc.Context.clearance/1`）。返回 `{:survey, 范围}`；
+  非法参数返回 nil，不访问 World。
+  """
+  def prepare({px, py, pz}, %{verb: :survey, min: {x0, z0}, max: {x1, z1}}, clearance)
+      when is_integer(x0) and is_integer(z0) and is_integer(x1) and is_integer(z1) and
+             x0 <= x1 and z0 <= z1 and x1 - x0 < @columns and z1 - z0 < @columns and
+             x0 >= px - @reach and x1 <= px + @reach and z0 >= pz - @reach and z1 <= pz + @reach and
+             is_integer(clearance) and clearance > 0,
+      do:
+        {:survey,
+         %{
+           columns: {{x0, z0}, {x1, z1}},
+           y: {ceil(py - @reach), floor(py + @reach)},
+           clearance: clearance
+         }}
+
+  def prepare(_, _, _), do: nil
+
+  @doc """
+  一格对步行的意义（唯一判据：Body 的寻路网格、survey 与扩张选址共用）。`row` 是 `World.material_snapshot` 的格行。
+  `:solid` = 能踩：挡路（与碰撞同一判据 `VoxelMaterialCatalog.blocks_movement?/1`，collision_source.ex 用它建碰撞）、
+  非液体、非细化；`:open` = 可穿过：不挡路（空气、花草）、非液体、非细化；`nil` = 既不能踩也不能穿过：液体，以及细化格——
+  碰撞按 micro 几何，宏格网格只能保守地整格挡住，也不能站在它上面（1/8 米的面板顶站不住人）。
+  """
+  def walk_kind(%{material: material, refined: refined}) do
+    cond do
+      refined or Phase.liquid?(material) -> nil
+      VoxelMaterialCatalog.blocks_movement?(material) -> :solid
+      true -> :open
+    end
+  end
+
+  @doc """
+  列扫描（纯函数）：`cells` 是一列自下而上连续的格行（`%{cell: [x, y, z], material:, refined:}`），返回站得下的地面层 y
+  （升序）：该格 `:solid`，其上 `clearance` 格都在这一列里且都 `:open`（`walk_kind/1`）。站在地面 y 上时脚所在格是 y + 1；
+  净空伸出扫描范围的格不算（范围外未知）。
+  """
+  def floors(cells, clearance) do
+    cells
+    |> Enum.map(&{&1.cell, walk_kind(&1)})
+    |> Enum.chunk_every(clearance + 1, 1, :discard)
+    |> Enum.flat_map(fn
+      [{[_, y, _], :solid} | above] -> if Enum.all?(above, &(elem(&1, 1) == :open)), do: [y], else: []
+      _ -> []
+    end)
+  end
+
+  @doc """
+  survey 的列结果（纯函数）：`rows` 是若干整列的格行（每列同一竖直范围内的全部格，`World.material_snapshot` 的形状），返回按
+  `{x, z}` 排序的 `[%{column: [x, z], floors:, y:, material:, placed_by:, refined:}]`：`floors` 同 `floors/2`；地表 `y` = 最高的
+  一层（没有则 nil），`material` / `placed_by` 是地表这一格的；`refined` = 这一列扫描范围里有细化格。
+  """
+  def surfaces(rows, clearance) do
+    rows
+    |> Enum.group_by(fn %{cell: [x, _, z]} -> {x, z} end)
+    |> Enum.sort()
+    |> Enum.map(fn {{x, z}, cells} ->
+      cells = Enum.sort_by(cells, fn %{cell: [_, y, _]} -> y end)
+      floors = floors(cells, clearance)
+      top = List.last(floors)
+      surface = top && Enum.find(cells, &match?(%{cell: [_, ^top, _]}, &1))
+
+      %{
+        column: [x, z],
+        floors: floors,
+        y: top,
+        material: surface && surface.material,
+        placed_by: surface && surface.placed_by,
+        refined: Enum.any?(cells, & &1.refined)
+      }
+    end)
+  end
+
   @doc "读取已通过范围检查的请求；保留版本、采样范围与未观测边界。"
   def read(world, cid, {:look, cells}) do
     snapshot = World.material_snapshot(world, [cid], cells, :micro)
@@ -133,6 +230,24 @@ defmodule GateServer.Npc.Perception do
        outside: :unknown,
        attachments: :not_sampled
      })}
+  end
+
+  # survey：按 x 分片（一片 = 这一个 x 的全部 z × 竖直范围，≤ 32 × 65 格），与 look 同一个只读入口；片与片之间可能有别人的
+  # 事务，所以 seq 给 [首片, 末片]。不一次取整片：那会让 World 进程一口气逐格求值六万多格。
+  def read(world, _cid, {:survey, %{columns: {{x0, z0}, {x1, z1}}, y: {y0, y1}, clearance: clearance}}) do
+    snapshots =
+      for x <- x0..x1,
+          do: World.material_snapshot(world, [], for(z <- z0..z1, y <- y0..y1, do: {x, y, z}))
+
+    {:ok,
+     %{
+       seq: [hd(snapshots).seq, List.last(snapshots).seq],
+       bounds_columns_inclusive: [[x0, z0], [x1, z1]],
+       scanned_y: [y0, y1],
+       clearance: clearance,
+       columns: Enum.flat_map(snapshots, &surfaces(&1.probe_occupancy, clearance)),
+       outside: :unknown
+     }}
   end
 
   def read(world, cid, {:inspect, box}),
@@ -289,8 +404,8 @@ defmodule GateServer.Npc.Perception do
   defp extend(a, ok?), do: if(ok?.(a + 1), do: extend(a + 1, ok?), else: a)
 
   @doc """
-  Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；最近 #{@kept_looks} 次 look 保留内容，
-  更早的只留结论。
+  Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；survey 换成按行的地表高度图（放置者与
+  细化格另列）；look 与 survey 各自最近 #{@kept_looks} 次保留内容，更早的只留结论。
   """
   def project(
         %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome,
@@ -306,20 +421,31 @@ defmodule GateServer.Npc.Perception do
       )
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
-    # 一次 look 最多 512 格（@cells）：核对更大的区域要分几次看，只留最新一次时模型每次只看得到一部分，会回头反复看
-    # （2026-10-08 长跑 run03：创世者核对 1200 格平台时交替 look 两半，一小时额度全耗在这上面）。
-    {older, _} =
-      Enum.map_reduce(outcomes, @kept_looks - 1, fn
-        %{verb: :look, data: data} = o, kept when data != nil and kept > 0 -> {o, kept - 1}
-        %{verb: :look} = o, kept -> {%{o | data: nil}, kept}
-        o, kept -> {o, kept}
-      end)
-
     data =
       Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])
       |> Map.merge(%{solid: columns, refined: for(c <- cells, c.refined, do: compact_refined(c))})
 
-    [%{outcome | data: data} | older]
+    [%{outcome | data: data} | retain(outcomes, :look)]
+  end
+
+  # survey：地表高度图按行（z）给出，每行按 x：[y, material] 或 null；放置者与细化格另列（多数列没有，不逐列重复）。
+  def project(
+        %{verb: :survey, status: :done, data: %{columns: columns}} = outcome,
+        outcomes,
+        _position
+      ) do
+    [[x0, z0], [x1, z1]] = outcome.data.bounds_columns_inclusive
+    at = Map.new(columns, &{List.to_tuple(&1.column), &1})
+
+    data =
+      Map.take(outcome.data, [:seq, :bounds_columns_inclusive, :scanned_y, :outside])
+      |> Map.merge(%{
+        rows: for(z <- z0..z1, do: for(x <- x0..x1, do: height(at[{x, z}]))),
+        placed: for(%{placed_by: by, column: column} <- columns, by != nil, do: column ++ [by]),
+        refined: for(%{refined: true, column: column} <- columns, do: column)
+      })
+
+    [%{outcome | data: data} | retain(outcomes, :survey)]
   end
 
   # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。每行附原样目标句柄 target，
@@ -379,6 +505,23 @@ defmodule GateServer.Npc.Perception do
       do: [%{outcome | data: Map.put(data, :target, target(data))} | outcomes]
 
   def project(outcome, outcomes, _position), do: [outcome | outcomes]
+
+  # 给模型的历史里同一种观察（look / survey）只有最近 @kept_looks 次保留内容，更早的只留结论。一次 look 最多 512 格（@cells）：
+  # 核对更大的区域要分几次看，只留最新一次时模型每次只看得到一部分，会回头反复看（2026-10-08 长跑 run03：创世者核对 1200 格
+  # 平台时交替 look 两半，一小时额度全耗在这上面）。
+  defp retain(outcomes, verb) do
+    {older, _} =
+      Enum.map_reduce(outcomes, @kept_looks - 1, fn
+        %{verb: ^verb, data: data} = o, kept when data != nil and kept > 0 -> {o, kept - 1}
+        %{verb: ^verb} = o, kept -> {%{o | data: nil}, kept}
+        o, kept -> {o, kept}
+      end)
+
+    older
+  end
+
+  defp height(%{y: nil}), do: nil
+  defp height(%{y: y, material: material}), do: [y, material]
 
   # 目标句柄：0x7D 的身份字段 + 方向（inspect 行没有方向，为 nil，Body 按句柄从眼点瞄准）。
   defp target(row),

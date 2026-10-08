@@ -19,6 +19,7 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
       %{id:, verb: :skill, skill: :gather, args: %{"box" => [[x0,y0,z0],[x1,y1,z1]], "material" => m, "units" => n, "tool_id" => t}}
       %{id:, verb: :skill, skill: :expand, args: %{"definition" => hex, "region" => [[x0,z0],[x1,z1]], "tool_id" => t, "spacing" => n}}
+      %{id:, verb: :skill, skill: :travel, args: %{"x" => x, "z" => z}}
       %{id:, verb: :cancel_skill, call: 原技能调用号}
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}
@@ -86,6 +87,7 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :prefab_replace, instance_id:, definition_id:}   # prefab：所有角色可用，格在部署的编辑盒内，与玩家相同
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
+      %{id:, verb: :survey, min: {x, z}, max: {x, z}}           # 地表高度图：列闭区间每边 ≤ 32 列、离自己 ≤ 32 m，竖直自己上下 32 m
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
       %{id:, verb: :read_catalog, what: :prefab | :prefabs | :materials | :tools, definition: <<32 字节>> | nil}
                                                                  # 读目录；:prefab 必须给 definition，其余为 nil
@@ -118,9 +120,10 @@ defmodule GateServer.Npc.Brain do
 
   ## 寻路（Body 内置的系统机制，Brain 不参与）
 
-  `move_to` 起步时 Body 经 `World.material_snapshot/3` 取一盒地形（起终点包围盒外扩 6 格），交给纯模块
-  `SceneServer.Movement.Path`：4 邻接、平走 / 上 `step_height` 以内的台阶 / 下落任意高度、不起跳、液体与细化格不可过；
-  同层净空的路段拉直。算完即弃，不留体素副本。单程水平超过 32 m，或给了 `y` 且与脚所在格相差超过 32 格
+  `move_to` 起步时 Body 经 `World.material_snapshot/3` 取一盒地形（起终点包围盒外扩 6 格，竖直从脚所在格到 `y` 再上下外扩
+  6 格；不给 `y` 时只有脚下上下 6 格，高差更大的目标要给 `y`），交给纯模块 `SceneServer.Movement.Path`：4 邻接、平走 /
+  上 `step_height` 以内的台阶 / 下落任意高度、不起跳；液体与细化格既不能穿过也不能踩（细化格按整格挡住，不站在 micro 构件
+  上面）；身体当前所在的格总能出发（站在细化格空着的部分里也一样）。同层净空的路段拉直。算完即弃，不留体素副本。单程水平超过 32 m，或给了 `y` 且与脚所在格相差超过 32 格
   → `:too_far`（不问 World）；盒内无路 → `:no_path`；
   路是起步那一刻的世界算的，途中 3 秒挪不动 → `:stuck`。三者都是 `:rejected`，Body 不重试，由 Brain 决定（再发一次
   `move_to` 就按当时的世界重算）。同一列有多层可站时用 `y`（脚所在的空气格）选层，不给则取最先到达的那层。
@@ -140,6 +143,9 @@ defmodule GateServer.Npc.Brain do
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
   天然地形、作者写入的格、被别的编辑改过的格是 nil；`slots` 逐个 prefab 实例 `%{material:, instance:, count:, placed_by:}`，
   `placed_by` 是放下这个实例的角色，作者放置与旧实例为 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属（Body 的 Outcome 原样；给 LLM 的投影换成按材质合并的 `micro_boxes`，见 `Perception.compact_refined/1`）。
+  `survey` 是 `%{seq: [首片, 末片], bounds_columns_inclusive: [[x0, z0], [x1, z1]], scanned_y: [y0, y1], clearance:, outside: :unknown,
+  columns: [%{column: [x, z], floors: [y], y:, material:, placed_by:, refined:}]}`（`Perception.surfaces/2`：`floors` 是这一列站得下的
+  地面层，地表 `y` 是最高的一层，没有为 nil；`refined` = 这一列扫描范围里有细化格；给 LLM 的投影换成按行的高度图）。
   感知额外返回采样边界与版本；窗口外未知、未采样附件不是空。`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。

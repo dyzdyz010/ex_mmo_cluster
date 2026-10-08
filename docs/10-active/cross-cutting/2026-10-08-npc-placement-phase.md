@@ -141,6 +141,7 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 2026-10-08 | **M5 持续扩张已实现、测试通过（未实跑、未提交，待复核）**（§7）：新技能 `expand`（`Skills.Expand`，选址 / 网格 / 分段 / 分块 / 采石候选纯函数，采石复用 `Gather.run/3`，步号命名空间经新的 `Skill.call/2`）；`read_catalog prefab` 加 `bounds_micro`；`Brain.Tree` 的 act 加 `append:`；Settler 可选 `expansion`；注册表 settler 行 `expansion`、llm `skills` 可登记 `expand`。改前红：新用例 10/10 纯函数 `UndefinedFunctionError`；注册表 settler 行带 expansion 时旧代码静默丢掉（profile 无 expansion、技能无 expand），llm `"expand"` KeyError，Settler 脚本用例 KeyError。改后：npc_expand 11/11（含真实 World：余额 0 → 地块 A 先采石堆 2 格、地块 B 跳过 A、第三次 no_site）、npc_settler 11/11（含多轮：建 A → 维护 A 建 B → no_site；拆 A 后原锚点重建、此后只维护）、npc_registry 12/12；gate 全量 254/311，失败只有 T1Transport 57（与基线同）。日志在主控 scratchpad `phase3/logs/`（red-expand-pure、red-settler-registry、gate-full-1、green-final） |
 | 2026-10-08 | **长跑 run04 收尾（已实跑）**：实际 4 h 52 min（用户同意提前结束）。Body 重启 0、Player 异常 0、session_lost / claim_failed / error 行 0；BEAM 内存开跑 195 MB，峰值 252 MB（LLM 活跃），10:14 起 202–217 MB 无上涨，进程 592 → 575。建设者：拆 9 次重建 9 次（21–34 s），自采 2 次，idle 0，occupied 1 665；创世者 15 次决策（look 7 / fill_box 3 / wait 5），1 200 格核对违规 0；住民撤下前建成 2 座、design_house 6 次 2 成（根因见上，已由 65cecb84 修复）；npc_memory_trimmed 681（用户决定照常记）。双客户端观察第 2 次 O1–O5 全过（第 1 次 A 离房子太近镜头被坡挤住），14 张截图已看。证据 Voxim `Saved/CapabilityLibrary-20261008/run04/`、`Captures/CapabilityLibrary/2026-10-08/run04/` |
 | 2026-10-08 | `travel` 技能（长途分段行走）：Settler 回站位与 expand 共用 `Travel.walk/2`；llm 可登记。真实 World 用例：单个 move_to 到 74.3 m 外回 too_far，travel 分 3 段到达（改前无此技能）；Settler 纯函数用例的站位命令按契约改为 travel 技能 |
+| 2026-10-09 | **“持续扩展”长跑 run06 的机制缺陷与修复（已实现、测试通过，未实跑、未提交，待复核）**。run06（镜像 a8a8e1c7，证据 Voxim `Saved/CapabilityLibrary-20261008/run06/notes.md`）三个 NPC 都停在机制问题上，rpc 只读复现的根因：① **寻路与碰撞对细化格不一致**——Body 网格把细化格当作占满、可踩，规划让建设者踩 1/8 米面板顶（`[{55,420,-520}, …]`），身体落进面板格空着的 7/8 后起点不可站，对任何目标 no_path（15:23、19:08 两次永久卡死）→ 细化格既不能穿过也不能站（`Perception.walk_kind/1` 一个判据，不进网格），起点是身体的权威位置（`Path.find/7` 新选项 `trusted_start`，冻结样例 +6）；② **长途寻路的竖直范围**——`goal_y` 为 nil 时取盒竖直只到起点 ±6，travel / expand 的分段不带 y，高差 > 6 m 的段全部 no_path（住民从北坡去建房区）→ travel 每段先 survey 段终点列、取离脚下最近的可站层带 y 走（`Travel.stand_y/2`），move_to 说明写明不给 y 只看脚下 ±6；③ **expand 的失败处理**——走不到记为跳过、候选用尽回 `no_site`，与放满同一结果（住民按“放满了”每小时 wait，还写进了长期记忆）；缺料是依地块而定的，却作为终态（建设者 18:15 起每 90 s 同一拒绝）→ 走不到 / 够不着 / 附近采不到料都跳过换下一块，终态分 `region_full` 与 `no_reachable_site`；④ **选址要求逐列同高、地面只在脚下 ±4 找**——勘察结论“完全同高的 4×4 位置 0 个”，自然地形放不下房子；创世者核对整平要分 5 层 look、历史只留 3 次，永远“看不全” → 新感知原语 `survey`（地表高度图，一次 ≤ 32×32 列），expand 按每个候选自己的地表选址，高差 ≤ 2 格先平整到下中位数（挖天然格入账、填石花余额）。创世者被成本保护撤下是采样器墙钟 / 大脑单调钟 0.46 s 的口径误报（采样器已改，服务端不改）。改前红（同一 worktree 换回 HEAD 的 lib 跑新用例，日志 `phase4/logs/red-path.log`、`red-gate.log`）：面板旁的规划路点 `[{5.5,10.5},{6.5,10.5},…]` 经过面板格、站在面板格里 move_to `no_path`、8 m 台地 travel `no_path`、起伏 1–2 格的地块 `no_site`、缺料地块 `insufficient_material` 终态、Path 冻结样例 2 项 `no_path`、其余新纯函数 UndefinedFunctionError；改后全绿。scene 全量 249/261（失败只有 E1/IS 夹具 12 项）；gate 全量 266/324，失败 58 = T1Transport 57 + npc_brain_llm_test 一张手写工具表缺 survey（按契约补上后该文件 32/32），与基线同。编译无新增告警 |
 
 ## 7 持续扩张（M5）
 
@@ -152,15 +153,19 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 项 | 内容 |
 |---|---|
 | 技能 | `expand{definition: hex64, region: [[x0, z0], [x1, z1]]（整数格水平闭区间）, tool_id, spacing ≥ 0}`，内置技能（`Skills` 的 `@builtins`），strict schema。只经 Body 原子动作：`read_catalog` / `move_to` / `look` / `query_balances` / `prefab_place`；采石调 `Skills.Gather.run/3`（同一套原子动作，不复制采石逻辑；步号在本调用号下另起命名空间 `{:gather, n}`，技能内部一步统一由新的 `Skill.call/2` 发出） |
-| 选址 | `read_catalog prefab` 新增 `bounds_micro`（朝向 0 时相对锚点的 micro 半开包围盒）→ 足迹；只用朝向 0。候选地块 = 区域内从 (x0, z0) 起、间距“足迹宽 + spacing”的网格，按地块中心离自己由近到远。空地判定（纯函数 `site/5`，依次）：足迹外扩 spacing 内无放置记录 / 细化格（`crowded`）→ 首列找到地面（`no_ground`）→ 各列同高实心（`uneven`）→ 上方到建筑高度全是空气（`blocked`，依据 w/prefabs.ex `place_aligned_tree`：宏格与 micro 都只放进格值 `{0, _}`，花草也不行）→ 四个边中点站位有一个站得住（`no_stand`）。锚点在宏格角上（满足对齐门） |
-| 行走 | 看窗口不在 look 范围内时，先沿直线分段走到地块最近的站位（`waypoints/3`，每段 ≤ `Perception.reach()` − 2，每段仍由 Body 寻路）；某段 no_path / stuck / too_far → 换下一个候选 |
-| 取料 | `query_balances` 按材料单算缺额；缺的材料在站位周围（区域内、各轴离自己 ≤ 14 格）找露天的天然格（`placed_by == nil`、非细化、地面层或其上 2 层，层自上而下先挖料堆；离足迹 ≥ spacing + 2 格），逐格交给 gather（单格盒）直到不缺；采不够 → `insufficient_material`，不硬建 |
-| 结果 | done `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；放置被拒（occupied / out_of_reach / out_of_bounds / protected_region）、走不到、判定不过 → 换下一个候选（`skipped` 按原因计数）；候选用尽 → `no_site`；其余拒绝（会话丢失、死亡、材料不足…）原样作为终态 |
-| Settler | profile 可选 `expansion: %{region, spacing, tool_id}`（注册表 settler 行的 JSON 同名键，配了才加 expand 技能）。每轮巡完已知工地后调一次 expand：done 的新工地（anchor_micro / orientation / stand）经 `Brain.Tree` 新增的 `append:` 追加进黑板 `:sites`，下一轮起与作者工地同样维护（被拆重建）；`no_site` 等记 `npc_settler_idle entity= act=expand reason=` |
+| 步行网格 | Body 的寻路网格只用 `Perception.walk_kind/1`：挡路、非液体、非细化 = 能踩；不挡路（空气、花草）= 能穿过；液体与**细化格既不能穿过也不能站**（不进网格）。起点是身体的权威位置：`Path.find/7` 的 `trusted_start: true` 让落不到站立格的起点（站在细化格空着的部分或其上）照常出发；草稿检查（`PrefabDesigner.Check`）的假设入口点不受影响。冻结样例新增 `blocked` / `trusted_start` 两个键与 6 例（2026-10-09，run06 根因 ①） |
+| 勘察 | 新感知原语 `survey{x0, z0, x1, z1}`（`:sense` 组，strict，描述数字由源常量插值）：列闭区间每边 ≤ 32 列、各边离自己 ≤ reach，竖直取自己所在高度上下 reach（与 look 同一距离护栏），按 x 分片经 `World.material_snapshot/3` 读，`seq` 给 [首片, 末片]。每列 `floors`（站得下的地面层：能踩、其上身高格数都能穿过且在范围内，`Perception.floors/2`）、地表 `y`（最高一层）及其材质 / `placed_by`、`refined`（这一列有细化格）；LLM 投影为按行的 `[y, material]` 高度图 + placed / refined 稀疏表，与 look 一样只留最近 3 次。创世者核对整平、expand 选址、travel 找落脚共用这一份列扫描规则（run06 根因 ②④） |
+| 选址 | `read_catalog prefab` 新增 `bounds_micro`（朝向 0 时相对锚点的 micro 半开包围盒）→ 足迹；只用朝向 0。候选地块 = 区域内从 (x0, z0) 起、间距“足迹宽 + spacing”的网格，按地块中心离自己由近到远。逐个 survey 勘察窗口（足迹外扩 max(spacing, 2) 列），地面取**每个候选自己的地表**（原先只在自己脚下 ±4 格找）。判定（纯函数 `site/4`，依次）：足迹外扩 spacing 的列里地表有放置记录或有细化格（`crowded`）→ 足迹每列都有可站的地面（`no_ground`）→ 足迹各列地表高差 ≤ 2 格（`uneven`，原先要求逐列同高）→ 四个边中点站位里有一个离目标地面 ≤ 2 格、站得下（`no_stand`）。锚点在宏格角上（满足对齐门），底层落在目标地面 + 1 |
+| 平整 | 目标地面 g = 足迹各列地表的**下中位数**（规则与依据见下文取舍）。分块 look 平整体积（足迹各列从最低地表到 g + 建筑高度，纯函数 `level/2`）：g 以上的非空气天然格（含花草）挖掉，g 及以下的空位（空气或花草，放置会直接覆盖花草）填石；要动的格有放置记录 / 细化 / 液体 → `blocked`（依据 w/prefabs.ex `place_aligned_tree`：prefab 只放进格值 `{0, _}`）。到站位后逐格挖（`Gather.mine/3`，与 gather 同一套探测与逐击；材料照常入账；命中作者 prefab 宏格 → `blocked`，这次打不到 → `out_of_reach`），补料后自下而上 `place` 填石（与玩家同一入口、花自己的余额，石料 id 取材质契约的 stone）。只动足迹内的格，站位不动 |
+| 行走 | 勘察窗口不在 survey 范围内时，先 travel 走到地块最近的站位（`Travel.walk/2`：直线分段、每段 ≤ reach − 2，每段先 survey 段终点列、取离脚下最近的可站层带 y 走）；某段 no_path / stuck / too_far → 跳过这块地 |
+| 取料 | `query_balances` 按材料单加填坑石料算缺额；缺的材料在站位周围（区域内、各轴离自己 ≤ 14 格）找露天的天然格（`placed_by == nil`、非细化、地面层或其上 2 层，层自上而下先挖料堆；离足迹 ≥ spacing + 2 格），逐格交给 gather（单格盒）直到不缺；附近采不到够用的 → 跳过这块地（`insufficient_material`），不硬建；缺的是本世界不入账的材料 → 终态 |
+| 结果 | done `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`。跳过原因分两类：地块不成立（`crowded` / `no_ground` / `uneven` / `no_stand` / `blocked`，放置或填坑被拒 `occupied` / `out_of_bounds` / `protected_region`）与本可成立但此刻做不到（`no_path` / `stuck` / `too_far` / `out_of_reach` / `insufficient_material`）。候选用尽（纯函数 `ending/1`）：有第二类 → `no_reachable_site`，否则 → `region_full`（含区域里一块候选都没有）；其余拒绝（会话丢失、死亡…）原样作为终态。LLM 描述写明：region_full = 区域放满可以停；no_reachable_site = 暂时到不了或缺料，换个位置或稍后再试 |
+| Settler | profile 可选 `expansion: %{region, spacing, tool_id}`（注册表 settler 行的 JSON 同名键，配了才加 expand 技能）。每轮巡完已知工地后调一次 expand：done 的新工地（anchor_micro / orientation / stand）经 `Brain.Tree` 新增的 `append:` 追加进黑板 `:sites`，下一轮起与作者工地同样维护（被拆重建）；其余结果记 `npc_settler_idle entity= act=expand reason=region_full` / `no_reachable_site` / …，下一轮再找 |
 | 观察 | 每次 expand 结束记 `npc_expand entity= result= site= skipped= gathers=`；Settler 的 idle 行；放置照常 `character_intent` |
 
-**护栏**：`region` 是唯一的作者护栏——只在区域内动土（gather 的盒子是区域内的单格）与建造（足迹整个在区域内），行走与只读 look
-可以出区域；不拆任何已有放置（足迹只放进空气，间隔带里有放置记录的地块整个跳过，gather 只挖天然格）。作者 prefab 宏格 look
+**护栏**：`region` 是唯一的作者护栏——只在区域内动土（平整只动足迹内的格；gather 的盒子是区域内的单格）与建造（足迹整个在区域内），
+行走与只读 survey / look 可以出区域；不拆、不改任何已有放置（足迹只放进空气，间隔带里地表有放置记录或有细化格的地块整个跳过，平整与
+gather 只动天然格，挖前按探测命中的 owner 挡住作者 prefab 宏格）。作者 prefab 宏格 look
 看不到（能力库 F20），在间隔带里不算拥挤，在足迹里照样不是空气。
 
 **取舍**：
@@ -169,7 +174,17 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
   验证见 §7 测试的地块顺序与 Settler 多轮用例）：相邻地块之间恰好留出 spacing；候选数是逐格的 1 / 间距²，每个候选一两次 look；自己建过的地块重启后仍在网格
   原位（被拆后会被原地重建）。代价：网格位上有障碍就整块跳过，不左右挪动找位置。
 - 只用朝向 0：选址规则与朝向无关，足迹换成旋转后的包围盒即可；当前没有需要其他朝向的调用方。
-- 地面带：看它时自己脚下地面上下 4 格（作者保证区域大致平坦）；更陡的地块因看不到地面而跳过，走近之后的地块按新位置判定。
+- ~~地面带：看它时自己脚下地面上下 4 格~~（2026-10-09 撤销）：run06 勘察表明自然地形处处起伏，地面改取每个候选自己的地表（survey）。
+- 平整到下中位数：各列要挖或要填的格数是 |地表 − g|，中位数使总土方量最小（L1 损失的最优解是中位数）；偶数列时两个中间值之间任何
+  高度同样最小，取低的——少填多挖，挖出的天然格入账、填坑花石料。工程上的土地平整用最小二乘平面（平均高程）再升降到挖填比 1.1–1.5
+  （土被扰动后变密）；本项目目标面水平、按整格计、填方要花材料而非就近搬土，所以取中位数并偏挖。高差上限 2 格由用户在
+  run06 复盘时给定（2026-10-09），站位不平整，只要求离目标地面 ≤ 2 格、站得下。
+- 平整与放置之间不是事务：挖 / 填之后放置才被拒（被抢先、缺料）时已改的天然格不回滚，已入账 / 已花的材料照实；填过石的地块因地表有
+  自己的放置记录，此后算拥挤（放置射程按足迹任一格在射程内，站位离足迹 1.5 米，正常不会在填完后被拒）。
+- 细化格整格挡住、不可站（保守）：碰撞按 micro 几何，宏格网格表达不了“格里 7/8 是空气”；把细化格当可踩（原做法）会规划出物理上不存在
+  的台阶，当可穿过会撞进 micro 墙。代价：NPC 不走进 micro 构件的空隙、不在 micro 地板上走（住宅用 micro 墙时 NPC 只在屋外）。
+  起点放宽为权威位置：身体在哪里就从哪里出发，网格的保守不能让身体“哪儿都去不了”。
+- 终态二分：LLM 与 Settler 要区分“可以停”与“稍后再试”；判定按跳过原因的类别，不另做可达性预检（走到才知道）。
 - 扩张出来的工地只在黑板里，不存档、不写记忆（记忆将来换成独立系统，现在不依赖它）：重启后扩张从世界现状继续（已建地块因
   间隔带里有放置记录不再是候选），代价只是重启前扩张出来的建筑不再被维护；它们被拆后地块空出，又会被扩张在网格原位重建。
 - Settler 的 `expansion` 带 `tool_id`（挖掘工具）：工具带可有多把工具、采石盒的 tool_id 按材料各配，没有唯一来源，显式配置。
@@ -184,8 +199,20 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | Botea, Müller, Schaeffer, *Near Optimal Hierarchical Path-Finding*（J. Game Development 1(1):7–28, 2004，https://papersdb.cs.ualberta.ca/~papersdb/view_publication.php?pub_id=585 ） | HPA*：长路程拆成局部簇内的寻路段，全局层一大步跨一个簇 | 超出单程上限时沿直线分段，每段交给 Body 的局部寻路（S1 的单程上限不变） | 不建抽象图：直线分段失败就换候选，没有当前调用方需要绕远 |
 | BehaviorTree.CPP 黑板（https://www.behaviortree.dev/docs/tutorial-basics/tutorial_02_basic_ports/ ） | 黑板是“树内所有节点共享的键值存储”，节点经端口读写 | `append:` 只是 `store:` 的列表形写入；扩张工地不另存档，进度以世界为准 | 与 Settler 既有“进度不存档，以权威为准”一致 |
 | 本仓 w/prefabs.ex `place_aligned_tree` / `prefab_alignment` / `prefab_reach` | 放置只进空气、宏格定义锚点须对齐、足迹任一格在射程内即可 | 空地判定与锚点对齐直接照这几条；够不够得着仍由权威裁决 | 不在技能里复刻射程判定 |
+| Recast `rcConfig::walkableRadius` / `rcErodeWalkableArea` / `rcFilterLedgeSpans`（https://github.com/recastnavigation/recastnavigation/blob/main/Recast/Include/Recast.h ，2026-10-09 查证源码注释） | 体素化是保守的（障碍触到的体素算占用）；离障碍或边缘不足身体半径的可走面被腐蚀掉 | 细化格整格挡住；1/8 米的面板顶薄于身体，不可站 | 宏格粒度不做 micro 级腐蚀，直接整格不可站 |
+| Detour `dtNavMeshQuery::findNearestPoly`（https://github.com/recastnavigation/recastnavigation/blob/main/Detour/Source/DetourNavMeshQuery.cpp ） | 寻路从“查询盒内离点最近的可走多边形”出发；只给水平目标时同样投到最近的可走面 | 起点即身体所在格（`trusted_start`）；travel 段终点取离脚下最近的可站层 | 起点不另找邻格（身体就在那里）；段终点按竖直距离取最近层，同距取低的 |
+| Hastie, Tibshirani, Friedman, *The Elements of Statistical Learning*（2nd ed., §2.4）；FAO 灌溉手册第 6 章 Land levelling（https://www.fao.org/4/T0231E/t0231e08.htm ，2026-10-09 查证） | L1 损失的最优解是中位数；土地平整用最小二乘平面并把挖填比调到 1.1–1.5 | 平整目标 = 下中位数 | 见上文取舍（水平目标面、整格、填方花材料） |
 
-**测试**（`apps/gate_server/test/gate_server/npc_expand_test.exs`、`npc_settler_test.exs`、`npc_registry_test.exs`）：选址纯函数手算小世界
+**测试（2026-10-09 run06 修复）**：Path 冻结样例 +6（`blocked` 格不可踩不可穿、绕开它；假设起点在 blocked 格里无路；`trusted_start` 在
+blocked 格里 / 其上出发、悬空照旧先落地）；`npc_survey_test.exs`（walk_kind、手算小世界的列扫描：花草、水面、细化格、悬空两层、离地一格的悬空、
+放置者、净空伸出范围；范围校验；投影与只留 3 次；`stand_y`；strict schema）；`npc_body_world_test.exs` 2 项（面板旁的规划路点不进面板列、
+身体在面板格里照常出发）与接缝补 survey；`npc_expand_test.exs` 纯函数（survey 列上的 `site/4`：同高、起伏 2 格取下中位数、62/62/64/64 取 62、
+高处的地块按自己的地面、高差 3、无地面、拥挤；`level/2`：挖凸起与花草、填坑与坑里的花草、四种 blocked；`ending/1`；描述）与真实 World 3 项
+（8 m 台地 travel 一段到达并经 Body 的 survey 逐列核对；起伏 64/63/62 的地块平整后建成，余额与足迹及周围逐格手算核对，第二次 region_full；走不到的
+A、附近只有土的 B 跳过，C 采三格后建成，skipped `%{no_path: 1, insufficient_material: 1}`）；原有“第三次 no_site”与 Settler 的 idle 断言按契约改为
+region_full；能力表用例补 survey；npc_skills_test 的自定义技能改名（survey 已是内置条目名）。
+
+**测试（M5 首版）**（`apps/gate_server/test/gate_server/npc_expand_test.exs`、`npc_settler_test.exs`、`npc_registry_test.exs`）：选址纯函数手算小世界
 （平地放得下与站位排序、首列 / 别列高一格、足迹上有草、间隔带内有别人放置的格或细化格、外扩一格之外放得下）；规格换算、网格
 顺序、分段路点、分块、采石候选的手算用例；strict schema。真实 World：余额 0 的 NPC 连续三次 expand——地块 A（先采石堆两格）、
 地块 B（跳过已建的 A，`skipped %{crowded: 1}`）、`no_site`，余额、石堆、邻居的格与地面逐格核对。Settler 多轮：配 expansion 后

@@ -23,6 +23,7 @@ defmodule SceneServer.Movement.PathTest do
       end
 
     for([x, y, z] <- c["extra_solid"] || [], into: columns, do: {{x, y, z}, :solid})
+    |> Map.drop(for [x, y, z] <- c["blocked"] || [], do: {x, y, z})
     |> Map.reject(fn {_, kind} -> kind == :liquid end)
   end
 
@@ -40,7 +41,8 @@ defmodule SceneServer.Movement.PathTest do
                  {gx, gz},
                  c["goal_y"],
                  @suite["step"],
-                 @suite["height"]
+                 @suite["height"],
+                 trusted_start: c["trusted_start"] == true
                )
     end
   end

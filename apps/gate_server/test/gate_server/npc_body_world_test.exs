@@ -1705,6 +1705,89 @@ defmodule GateServer.NpcBodyWorldTest do
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 2, 30_000)
   end
 
+  # —— 细化格与寻路（放置阶段决策稿 §7；2026-10-08 长跑 run06 建设者两次永久卡死）——
+  # 一块 micro 薄面板：8 × 8 个石 micro 立在一个宏格的一个 z 面上（1/8 米厚），这一格其余 7/8 是空气。碰撞按 micro 几何；
+  # 宏格寻路网格只能把整格当作挡住，也不能站在它上面（1/8 米的面板顶站不住人）。作者入口放置（夹具，不是被测主体）。
+  defp panel(world, root, anchor) do
+    bytes =
+      Prefab.encode(%{
+        cells: for(x <- 0..7, y <- 0..7, do: {{x, y, 0}, @stone}),
+        macro_cells: [],
+        children: [],
+        attachments: []
+      })
+
+    id = :crypto.hash(:sha256, bytes)
+    File.write!(Path.join([root, "prefabs", Base.encode16(id) <> ".vxpd"]), bytes)
+    :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+    {:ok, _} = World.place_prefab(world, id, anchor, 0)
+  end
+
+  # 落地站稳（地面顶 y = 64，胶囊半高 0.9）。
+  defp grounded(body),
+    do:
+      await(
+        fn ->
+          case Body.observe(body).position do
+            {_, y, _} = position when abs(y - 64.9) < 0.05 -> position
+            _ -> nil
+          end
+        end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+
+  # 面板立在格 (6, 64, 10) 的低 z 面，挡在出生点与目标之间。改前网格把细化格当作占满、可踩：规划上到面板格顶 (6, 65, 10)
+  # 再下来，平滑后要先走到这一格的格心 (6.5, 10.5)——身体实际走进面板格里（run06 建设者的第一步，之后起点不可站）。
+  # 改后细化格既不能穿过也不能站：规划的路点没有一个落在这一列，身体照常走到目标、仍在地面上。
+  @tag :idle
+  @tag :prefab_access
+  test "the planned path goes around a refined cell (a thin panel), never onto it", %{
+    world: world,
+    body: body,
+    root: root
+  } do
+    grounded(body)
+    panel(world, root, {48, 512, 80})
+    assert [%{refined: true}] = World.material_snapshot(world, [], [{6, 64, 10}]).probe_occupancy
+
+    # 只测试观察：跟踪 Body 收到的寻路结果（执行进程回给它的 {:npc_path, id, 结果}），不改变 Body 的行为。
+    :erlang.trace(body, true, [:receive])
+    Body.command(body, %{id: :around, verb: :move_to, position: {8.5, 10.5}, tolerance: 0.5})
+    assert_receive {:trace, ^body, :receive, {:npc_path, :around, {:ok, points}}}, 10_000
+    :erlang.trace(body, false, [:receive])
+
+    refute Enum.any?(points, fn {x, z} -> floor(x) == 6 and floor(z) == 10 end), inspect(points)
+
+    assert %{status: :done, data: %{within_tolerance: true, position: {_, y, _}}} =
+             outcome(body, :around, 30_000)
+
+    assert_in_delta 64.9, y, 0.05
+  end
+
+  # 身体站在面板格空着的 7/8 里（run06 建设者卡死的状态）：面板放在脚所在这一格离身体较远的那个 z 面（身体半径 0.35、
+  # 离那个面 ≥ 0.5 米，面板 0.125 米厚，不相交）。改前起点格是“占满的细化格”、落不到站立格，对任何目标 no_path；
+  # 改后起点是身体的权威位置，照常出发、走到目标。
+  @tag :idle
+  @tag :prefab_access
+  test "move_to starts from inside the refined cell the body stands in", %{
+    world: world,
+    body: body,
+    root: root
+  } do
+    {x, _, z} = grounded(body)
+    {cx, cz} = {floor(x), floor(z)}
+    face = if z - cz < 0.5, do: cz * 8 + 7, else: cz * 8
+    panel(world, root, {cx * 8, 512, face})
+    assert [%{refined: true}] = World.material_snapshot(world, [], [{cx, 64, cz}]).probe_occupancy
+
+    Body.command(body, %{id: :inside, verb: :move_to, position: {8.5, 10.5}, tolerance: 0.5})
+
+    assert %{status: :done, data: %{within_tolerance: true, position: {_, y, _}}} =
+             outcome(body, :inside, 30_000)
+
+    assert_in_delta 64.9, y, 0.05
+  end
+
   # —— 能力库 I2a（docs/10-active/cross-cutting/2026-10-07-character-capability-library.md T2.5–T2.10、§9.2）——
   # 期望值按本文件的夹具目录手算；有限样本只经 setup 的 material_supply 作者入口一次供给并记账。
 
@@ -2331,6 +2414,7 @@ defmodule GateServer.NpcBodyWorldTest do
       "fill_box" => %{"min" => [1, 64, 6], "max" => [1, 64, 6], "material" => @stone},
       "set_cells" => %{"cells" => [[2, 64, 6, @stone]]},
       "look" => %{"x0" => 3, "y0" => 63, "z0" => 9, "x1" => 5, "y1" => 65, "z1" => 11},
+      "survey" => %{"x0" => 3, "z0" => 9, "x1" => 5, "z1" => 11},
       "inspect" => %{},
       "query_balances" => %{},
       "read_catalog" => %{"what" => "tools", "definition" => nil},

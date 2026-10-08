@@ -220,9 +220,10 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 
 | 稳定名 | 组 | 参数 → 规范命令 | done data | kind | 玩家入口 | NPC 执行路径 | 授予 | 增量 |
 |---|---|---|---|---|---|---|---|---|
-| move_to | move | `{x:number, z:number, y:int\|null}` → `%{verb: :move_to, position: {x,z}, tolerance: Actions.tolerance(), y:}` | `%{position, within_tolerance}` | accepted | WASD 原始帧（无寻路） | Body 取盒寻路 → `Player.input/4` | 总有 | 已有；I2 加 S1 |
+| move_to | move | `{x:number, z:number, y:int\|null}` → `%{verb: :move_to, position: {x,z}, tolerance: Actions.tolerance(), y:}` | `%{position, within_tolerance}` | accepted | WASD 原始帧（无寻路） | Body 取盒寻路 → `Player.input/4`；网格判据 `Perception.walk_kind/1`（细化格、液体既不能穿过也不能踩），起点即权威位置（`Path.find/7` 的 `trusted_start`）；不给 y 时取盒竖直只有脚下 ±6 格 | 总有 | 已有；I2 加 S1；放置 §7 细化格与起点（run06） |
 | stop | move | `{}` | 同上 | accepted | 松键 | Body | 总有 | 已有 |
 | look | sense | `{x0,y0,z0,x1,y1,z1:int}` → `%{verb: :look, min, max}` | material_snapshot 投影 + 边界 / seq | instant | 无（流送） | worker → `Perception.read` → `World.material_snapshot/4` | 总有 | 已有 |
+| survey | sense | `{x0,z0,x1,z1:int}` → `%{verb: :survey, min: {x0,z0}, max: {x1,z1}}`（每边 ≤ 32 列、各边离自己 ≤ reach） | `%{seq: [首片, 末片], bounds_columns_inclusive, scanned_y, clearance, columns: [%{column, floors, y, material, placed_by, refined}]}`；LLM 投影为按行的 `[y, material]` 高度图 + placed / refined 稀疏表 | instant | 无（流送） | worker → `Perception.read({:survey, …})`：竖直取自己上下 reach，按 x 分片经 `World.material_snapshot/3`，列扫描 `Perception.floors/2`（travel / expand 共用同一规则） | 总有 | 放置 §7（run06） |
 | inspect | sense | `{}` | `%{seq, property_states}`；LLM 每行附 `target` | instant | 无 | `World.simulation_snapshot/3` | 总有 | I2 改投影 |
 | query_balances | sense | `{}` | `%{balances}` | instant | 会话开始自动 0x7F a0 | `World.material_balances/2`（不经 Intent，同 dispatch.ex:81-87） | 总有 | 已有 |
 | read_catalog | sense | `{what: "prefab"\|"prefabs"\|"materials"\|"tools", definition: hex\|null}` → `%{verb: :read_catalog, what:, definition:}` | §9.1 | instant | 本地目录资产；HTTP /game/prefabs | worker → `Perception.read({:catalog, …})` | 总有 | I2 |
@@ -243,8 +244,8 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | remember / recall / search_memory | memory | 现有 | 现有 | instant | 无 | Runtime → `Memory.execute/4` | 总有 | 已有 |
 | build | skill | `{definition, anchor_micro, orientation}` | `%{seq, metrics}` | long | 无（玩家直接 0x7A） | `Skills.Build` → Body prefab_place | skills | 已有 |
 | gather | skill | `{box:[[x0,y0,z0],[x1,y1,z1]], material:int, units:int, tool_id: belt}`（全部必填） | `%{mined, gained, skipped}` | long | 无（玩家逐格挖） | `Skills.Gather` → 只经 Body：move_to / look / query_balances / probe_toward / use_tool | skills | I3 |
-| expand | skill | `{definition: hex, region:[[x0,z0],[x1,z1]], tool_id: belt, spacing: int ≥ 0}`（全部必填） | `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；找不到空地 `no_site`，采不够 `insufficient_material` | long | 无（玩家自己选址、挖、0x7A 放） | `Skills.Expand` → 只经 Body：read_catalog / move_to / look / query_balances / prefab_place，采石调 `Skills.Gather.run/3`（步号命名空间 `{:gather, n}`）；选址 / 网格 / 分段 / 采石候选是纯函数；`region` 是唯一护栏，不拆已有放置 | skills；Settler 配 `expansion` 时每轮调一次 | 放置 §7 |
-| travel | skill | `{x:number, z:number}` | `%{position, legs}`；任一段 no_path / stuck / too_far 原样结束 | long | 无（玩家自己走） | `Skills.Travel` → 只经 Body：逐段 move_to（直线等分、每段 ≤ reach − 2 米，`Travel.waypoints/3` 纯函数）；expand 与 Settler 回站位共用 `Travel.walk/2` | skills；Settler 固定带 | 放置 §7 |
+| expand | skill | `{definition: hex, region:[[x0,z0],[x1,z1]], tool_id: belt, spacing: int ≥ 0}`（全部必填） | `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；候选用尽：`region_full`（都不成立，可以停）/ `no_reachable_site`（有本可成立的地块但走不到、够不着或附近缺料，换位置或稍后再试）；走不到 / 缺料的地块跳过、不作终态 | long | 无（玩家自己选址、挖、0x7A 放） | `Skills.Expand` → 只经 Body：read_catalog / survey / look / move_to（经 travel）/ probe_toward / use_tool（`Gather.mine/3`）/ query_balances / place / prefab_place，采石调 `Skills.Gather.run/3`（步号命名空间 `{:gather, n}`）；选址按每个候选自己的地表（survey），高差 ≤ 2 格先平整到下中位数（挖天然格、填石）；选址 / 平整 / 终态 / 网格 / 采石候选是纯函数；`region` 是唯一护栏，不拆不改已有放置 | skills；Settler 配 `expansion` 时每轮调一次 | 放置 §7；run06 修复 |
+| travel | skill | `{x:number, z:number}` | `%{position, legs}`；任一段 no_path / stuck / too_far 原样结束（段终点列没有可站层也是 no_path） | long | 无（玩家自己走） | `Skills.Travel` → 只经 Body：逐段（直线等分、每段 ≤ reach − 2 米，`Travel.waypoints/3`）先 survey 段终点列、取离脚下最近的可站层（`Travel.stand_y/2`），再带 y move_to；expand 与 Settler 回站位共用 `Travel.walk/2` | skills；Settler 固定带 | 放置 §7；run06 加站立层 |
 | design_house | skill | 现有 | `%{definition_id, summary, check, metrics}` | long | 无（D3 编辑器） | `Skills.HouseDesign` | skills | I2：S3、共享工具 |
 | wilderness | skill | 现有 | 现有 | long | 无 | Builder → 逐格 place | skills | 不加码 |
 
@@ -460,7 +461,7 @@ tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
 | 次数上限 | 每次尝试最多 gather 一次、build 重试一次；瞬态原因整体重来一次，所以每工地每轮最多两次尝试（树结构保证，无循环）；第二次再遇瞬态原因记 idle 换下一工地 |
 | 其余拒绝 | protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、unreachable：该工地 FAILURE，记 `npc_settler_idle entity= act= reason= context=<site>`，换下一个 |
 | 移动范围 | 不做分段与长途寻路：作者保证各站位与采石盒站位两两水平距离 ≤ `Perception.reach()`（夹具断言） |
-| 扩张（放置阶段 §7） | profile 可选 `expansion: %{region, spacing, tool_id}`：每轮巡完已知工地后调一次 `expand`，done 的新工地 `append:` 进 `:sites`，下一轮起同样维护（被拆重建）；`no_site` 等记 `npc_settler_idle act=expand`。扩张出来的工地不存档，重启后扩张从世界现状继续。维护仍是单程 move_to，扩张区域（含站位）也要满足上一行 |
+| 扩张（放置阶段 §7） | profile 可选 `expansion: %{region, spacing, tool_id}`：每轮巡完已知工地后调一次 `expand`，done 的新工地 `append:` 进 `:sites`，下一轮起同样维护（被拆重建）；`region_full` / `no_reachable_site` 等记 `npc_settler_idle act=expand reason=`（2026-10-09 起区分放满与暂时到不了）。扩张出来的工地不存档，重启后扩张从世界现状继续。回工地站位走 travel（分段、每段带站立层） |
 | 进度 | 不存档，以权威为准。重启后从头巡：已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建。前提：自家格在 placed_by 升级后放下、没被别的编辑改过 |
 
 **Patrol / Routine 不动**：直接产出规范命令，Body 在信任边界一次裁决；Routine 的 `target: :probe` 与 Patrol 比对目标身份是它们自己的状态。gather 是技能（代码），LLM 与行为树都能调用。

@@ -5,7 +5,8 @@ defmodule SceneServer.Movement.Path do
   的冻结样例一起构成契约，将来客户端的 C++ 实现对同一份样例。
 
   `grid` 是 `%{{x, y, z} => :open | :solid}`：`:open` = 可穿过的空气格，`:solid` = 能踩的实心格；
-  不在表里的格（液体、快照之外的未知）既不能穿过也不能踩——缺失不冒充空气。
+  不在表里的格（液体、细化格、快照之外的未知）既不能穿过也不能踩——缺失不冒充空气。哪些格进表由调用方按自己的
+  碰撞判据决定。
   `grid` 也可为一元坐标查询函数，返回同样的格类型；草稿检查可直接查询稀疏宏格／micro，避免展开空气表。
 
   规则（`height` = 角色占的格数，`step` = 不起跳能迈上的格数，二者来自权威下发的移动 profile）：
@@ -22,9 +23,16 @@ defmodule SceneServer.Movement.Path do
   从 `start`（脚所在的格；悬空时先落到正下方第一个站立格）走到 `{gx, gz}` 列的站立格（给了 `goal_y` 就只认那一层）。
   返回 `{:ok, [cell]}`（不含起点、含终点；已在终点时为空表）或 `:no_path`。
   可选 `max_nodes` 限制本次发现的节点数；耗尽返回 `{:error, :search_limit}`，不冒充没有路径。
+
+  可选 `trusted_start: true`：`start` 是身体的权威位置（调用方担保身体此刻就在那里）。落不到站立格（起点格或下落途中
+  遇到不在表里的格，如身体站在细化格空着的部分、站在细化格上面）时以起点本身为站立格出发，不回 `:no_path`：网格是对
+  碰撞几何的保守离散，身体所在之处不能因离散而被判成去不了（2026-10-08 run06：建设者站进自己放的面板格后对任何目标
+  都 no_path）。能落地时照旧先落地。缺省 false：假设的起点（草稿检查的入口点）照旧必须能落到站立格。
   """
   def find(grid, {sx, sy, sz}, {gx, gz}, goal_y, step, height, opts \\ []) do
-    case land(grid, {sx, sy, sz}, height) do
+    landed = land(grid, {sx, sy, sz}, height)
+
+    case if(Keyword.get(opts, :trusted_start, false), do: landed || {sx, sy, sz}, else: landed) do
       nil ->
         :no_path
 
