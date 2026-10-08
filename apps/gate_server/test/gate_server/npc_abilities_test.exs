@@ -10,11 +10,18 @@ defmodule GateServer.NpcAbilitiesTest do
 
   @hex String.duplicate("2a", 32)
   @id :binary.copy(<<42>>, 32)
-  @profile %{tools: %{1 => "镐", 9 => "点火器"}, skills: %{build: %{}}}
+  # 作者法术带（D-10）：名字 → 0x82 程序字节；这里是 Test-only 魔法目录 19c513f9… 的预设 ignite_near 原样。
+  @ignite ~s({"v":1,"target":{"kind":"aim"},"emit":"at_target","steps":[{"sym":"act.heat","args":{"energy_j":400000,"power_w":200000}}]})
+  @profile %{
+    tools: %{1 => "镐", 9 => "点火器"},
+    skills: %{build: %{}},
+    spells: %{"ignite" => @ignite}
+  }
   # 每个技能都配上：strict 不变量要覆盖内置技能的 schema。
   @full %{
     tools: %{1 => "镐", 9 => "点火器"},
-    skills: %{build: %{}, design_house: %{}, gather: %{}, wilderness: %{}}
+    skills: %{build: %{}, design_house: %{}, gather: %{}, wilderness: %{}},
+    spells: %{"ignite" => @ignite, "light" => "{}"}
   }
   # D-3：Demo LLM NPC 的分组（Voxim Docs/Gameplay/npc.exs 的 LLM 后端；工具带同 Demo）。
   @demo %{
@@ -124,6 +131,21 @@ defmodule GateServer.NpcAbilitiesTest do
          "orientation" => 5,
          "instance" => nil
        }, %{verb: :prefab_place, definition_id: @id, anchor: {15, 64, 12}, orientation: 5}},
+      # I4：spell 名字 → 法术带里的程序字节；目标句柄同 use_tool（direction 单位化后提到命令上）。
+      {"cast_spell", %{"spell" => "ignite", "target" => pillar},
+       %{
+         verb: :cast_spell,
+         program: @ignite,
+         direction: {1.0, 0.0, 0.0},
+         target: %{
+           granularity: 0,
+           micro: {128, 520, 80},
+           incarnation: 3,
+           owner: {0, 0},
+           material: 11
+         }
+       }},
+      {"cancel_cast", %{}, %{verb: :cancel_cast}},
       {"look", %{"x0" => 15, "y0" => 63, "z0" => -9, "x1" => 17, "y1" => 66, "z1" => 11},
        %{verb: :look, min: {15, 63, -9}, max: {17, 66, 11}}},
       {"inspect", %{}, %{verb: :inspect}},
@@ -279,7 +301,12 @@ defmodule GateServer.NpcAbilitiesTest do
           {"read_catalog", %{"what" => "prefab", "definition" => String.duplicate("2a", 31)}},
           {"remember", %{"key" => "plan"}},
           {"cycle_focus", %{"group" => "enemy", "direction" => 2}},
-          {"build", "not an object"}
+          {"build", "not an object"},
+          # 法术带外的名字；0x82 的目标只有 g0..g2（附件 g3、人物 g5 都表达不了）。
+          {"cast_spell", %{"spell" => "fireball", "target" => pillar}},
+          {"cast_spell", %{"spell" => "ignite", "target" => %{pillar | "granularity" => 3}}},
+          {"cast_spell", %{"spell" => "ignite", "target" => %{pillar | "granularity" => 5}}},
+          {"cast_spell", %{"spell" => "ignite"}}
         ] do
       assert %{id: 1, verb: :invalid_tool_arguments, tool: ^name} =
                Abilities.command(name, args, 1, @profile),
@@ -317,6 +344,18 @@ defmodule GateServer.NpcAbilitiesTest do
                1,
                @profile
              )
+
+    # 施法条目只在 profile.spells 非空时投影；schema 只列法术名，不列程序字节。
+    for profile <- [%{}, %{spells: %{}}, @demo] do
+      names = Enum.map(Abilities.tools(profile), & &1.name)
+      refute "cast_spell" in names or "cancel_cast" in names
+      assert %{verb: :unknown_tool} = Abilities.command("cancel_cast", %{}, 1, profile)
+    end
+
+    cast = Enum.find(Abilities.tools(@full), &(&1.name == "cast_spell"))
+    assert ["ignite", "light"] == cast.parameters.properties.spell.enum
+    assert [0, 1, 2] == cast.parameters.properties.target.properties.granularity.enum
+    assert "cancel_cast" in Enum.map(Abilities.tools(@full), & &1.name)
   end
 
   test "names are unique and each one is the verb its build produces (prefab: prefab_<op>; skills: the skill name)" do

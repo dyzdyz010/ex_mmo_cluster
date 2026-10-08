@@ -1,13 +1,14 @@
 defmodule GateServer.Npc.Actions do
   @moduledoc """
-  全局系统功能：Body 原子动作的能力条目（移动、工具、建造、液体、背包）。条目形状与参数规格见
+  全局系统功能：Body 原子动作的能力条目（移动、工具、建造、液体、背包；施法见 `spells/1`）。条目形状与参数规格见
   `GateServer.Npc.Abilities`；命令形状见 `GateServer.Npc.Brain`，合法性仍由 Body 与权威裁决。
 
   目标句柄（`use_tool` / `dismantle` / `detach` 的 `target`）沿用 0x7D 的身份形状
   `%{granularity, micro, incarnation, owner, material, direction}`，原样取自 `probe_toward` 的结果或 inspect 行里的
   `target`（`Perception.project/3` 附上）；`direction` 为 nil 时 Body 从眼点瞄准（`WorldRequest.aim/2`）。
   经 Abilities 构造的句柄（LLM，以及 I3 起的行为树）只允许 granularity 0..3；人物 g5 只由直接产出规范命令的代码
-  Brain 发出（D-13）。附件的 kind / axis 在 `attach` 参数与 inspect 投影里是同一组名字（`attachment_names/1`）。
+  Brain 发出（D-13）；施法的目标只有 0x82 能表达的 g0..g2。附件的 kind / axis 在 `attach` 参数与 inspect 投影里是同一组名字
+  （`attachment_names/1`）。
   """
   alias GateServer.Npc.Perception
   alias VoxelRegion.{Attachments, Spatial}
@@ -209,6 +210,45 @@ defmodule GateServer.Npc.Actions do
     ]
   end
 
+  @doc """
+  施法条目（组 `:magic`：`cast_spell`、`cancel_cast`），授予条件 = `profile.spells` 非空。`profile.spells` 是作者给的
+  法术带 `%{名字 => 程序字节}`（0x82 的程序字段，UTF-8 JSON；D-10：LLM 只选名字）：schema 只列名字，译码时由名字取出
+  程序字节。目标句柄只取 0x82 能表达的 granularity 0..2（附件 g3 与人物 g5 都不行）。
+  """
+  def spells(profile) do
+    case Map.get(profile, :spells, %{}) do
+      spells when map_size(spells) == 0 ->
+        []
+
+      spells ->
+        [
+          %{
+            name: "cast_spell",
+            group: :magic,
+            description:
+              "对 target 施放作者配置的法术 spell（只选名字，程序已定）。target 原样抄 probe_toward 结果或 inspect 行里的 target，" <>
+                "target.direction 为 null 时从眼睛瞄准目标中心。施放先有前摇，前摇期间工具、建造等世界动作回 casting，" <>
+                "可用 cancel_cast 取消；能量或相干度不足会走火（扣掉的能量落在脚下，同样是已提交事务）。",
+            done:
+              "前摇结束且 World 已结算（data.seq）：data.outcome 为 null 是正常施放，misfire_energy / misfire_coherence 是走火；" <>
+                "data.caster 是结算后的施法者状态（能量、容量、相干度、本次支出），同 self.caster。",
+            params: [spell: {:enum, spells}, target: handle([0, 1, 2])],
+            build: fn %{spell: program, target: target}, _ ->
+              Map.merge(aimed(target), %{verb: :cast_spell, program: program})
+            end
+          },
+          %{
+            name: "cancel_cast",
+            group: :magic,
+            description: "取消自己正在前摇的施法，不扣能量。没有在前摇的施法时回 no_active_cast。",
+            done: "角色 owner 已撤销前摇（data 为空）；原 cast_spell 随后以 cast_cancelled 被拒。",
+            params: [],
+            build: fn _, _ -> %{verb: :cancel_cast} end
+          }
+        ]
+    end
+  end
+
   # 句柄规格：granularity 只取给定集合（LLM 投影不含 g5）；direction 可空。
   defp handle(granularities),
     do:
@@ -223,9 +263,11 @@ defmodule GateServer.Npc.Actions do
        ]}
 
   defp target_command(verb, %{tool_id: tool, target: target}, _),
+    do: Map.merge(aimed(target), %{verb: verb, tool_id: tool})
+
+  # 句柄拆成命令的 direction（可空；给了就归一化）与 target（身份字段）：use_tool / dismantle / cast_spell 共用。
+  defp aimed(target),
     do: %{
-      verb: verb,
-      tool_id: tool,
       direction: target.direction && unit(target.direction),
       target: Map.delete(target, :direction)
     }

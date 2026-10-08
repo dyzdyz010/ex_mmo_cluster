@@ -145,6 +145,7 @@ defmodule MmoContracts.Voxel.Codec do
   角色世界意图 `{kind, request}`（`decode/1` 的输出形状）按 kind 分派上面的取值谓词。
   只做取值约束，类型守卫由进程内调用方（`GateServer.Npc.WorldRequest`）先做；`decode/1` 与字节不受影响。
   发布 0x71 没有线层取值约束（名称、格式与目录由 `World.publish_prefab` 裁决），不在此列。
+  施法 0x82 用下面的 `spell_intent?/1`（NPC 施放与取消；施法不经 `SceneServer.Movement.Intent`，走 `Player.cast_spell/5`）。
   """
   def intent?({:voxel_tool_intent, request}), do: tool_intent?(request)
   def intent?({:voxel_production_intent, request}), do: production_intent?(request)
@@ -152,6 +153,7 @@ defmodule MmoContracts.Voxel.Codec do
   def intent?({:voxel_prefab_place_v1, request}), do: prefab_place?(request)
   def intent?({:voxel_prefab_remove_v1, request}), do: prefab_remove?(request)
   def intent?({:voxel_prefab_replace_v1, request}), do: prefab_replace?(request)
+  def intent?({:voxel_spell_intent, request}), do: spell_intent?(request)
 
   @doc """
   魔法施法意图 0x82（Hello 25），大端，与 0x7D 工具意图同一目标表示：
