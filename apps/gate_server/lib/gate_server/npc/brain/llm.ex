@@ -14,7 +14,7 @@ defmodule GateServer.Npc.Brain.Llm do
 
   “有新情况”= 有了新 Outcome、听到有人说话、`wait` 到期，或有实体走进身边 6 米（离开 8 米才算走远）。
   询问节流：两次询问至少隔 1 秒；应答没有工具调用或请求失败时按 1、2、4…60 秒退避，拿到工具调用即清零；
-  每个 NPC 每小时最多 `max_requests_per_hour` 次（缺省 600），用完记一条日志，等下一个小时窗口。
+  每个 NPC 任意连续一小时内最多 `max_requests_per_hour` 次（缺省 600，滑动窗口），用完记一条日志，等最早那次滑出一小时。
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
@@ -134,8 +134,8 @@ defmodule GateServer.Npc.Brain.Llm do
       failures: 0,
       # monotonic_time 可以为负，不能用 0 当“很久以前”。
       asked_ms: now - @min_gap_ms,
-      window_start_ms: now,
-      window_requests: 0,
+      # 最近一小时内各次询问的时刻（新在前），滑动窗口计额度。
+      asks: [],
       budget_logged: false,
       next_id: 1
     }
@@ -262,14 +262,15 @@ defmodule GateServer.Npc.Brain.Llm do
        )
        when map_size(calls) == 0 do
     now = System.monotonic_time(:millisecond)
-    state = roll_window(state, now)
     limit = Map.get(state.profile, :max_requests_per_hour, @max_requests_per_hour)
+    asks = recent_asks(state.asks, now)
+    state = if length(asks) < limit, do: %{state | asks: asks, budget_logged: false}, else: %{state | asks: asks}
 
     cond do
       now - state.asked_ms < gap(state.failures) ->
         state
 
-      state.window_requests >= limit ->
+      length(asks) >= limit ->
         unless state.budget_logged,
           do:
             Logger.warning(
@@ -299,7 +300,7 @@ defmodule GateServer.Npc.Brain.Llm do
             asking: true,
             request_pid: pid,
             asked_ms: now,
-            window_requests: state.window_requests + 1
+            asks: [now | asks]
         }
     end
   end
@@ -308,11 +309,12 @@ defmodule GateServer.Npc.Brain.Llm do
 
   defp gap(failures), do: min(@max_gap_ms, @min_gap_ms * Integer.pow(2, failures))
 
-  defp roll_window(state, now) do
-    if now - state.window_start_ms >= @hour_ms,
-      do: %{state | window_start_ms: now, window_requests: 0, budget_logged: false},
-      else: state
-  end
+  @doc """
+  滑动窗口：只留 `now` 之前一小时内的询问时刻（毫秒，新在前）。额度按它的长度判：任意连续一小时都不超过
+  `max_requests_per_hour`。原先是从启动起每满一小时清零的固定窗口，跨窗口边界的一小时里最多可到两倍额度
+  （2026-10-08 run05：过去一小时 26 次，而额度是 20）。
+  """
+  def recent_asks(asks, now), do: Enum.take_while(asks, &(now - &1 < @hour_ms))
 
   @doc "一次请求体：目标、当前 Observation、最近 Outcome（旧在前），要求恰好一次工具调用。"
   def body(profile, observation, outcomes, experiences \\ []) do

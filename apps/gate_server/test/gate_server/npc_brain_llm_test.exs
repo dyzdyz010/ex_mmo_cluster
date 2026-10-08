@@ -1058,6 +1058,20 @@ defmodule GateServer.NpcBrainLlmTest do
              Llm.commands(response, 1, @profile)
   end
 
+  # 滑动窗口（手算小例，分钟换成毫秒）：第 45–59 分钟 15 次、第 60–70 分钟 11 次。固定窗口（第 60 分钟清零）在第 71 分钟只算
+  # 新窗口的 11 次，会放行；滑动窗口算第 11–71 分钟内的 26 次，额度 20 时拒绝。之后逐次滑出：第 106 分钟剩第 47–70 分钟的
+  # 24 次，第 112 分钟剩第 53–70 分钟的 18 次，少于 20 才放行。
+  test "the hourly budget is a sliding hour: any 60 minutes hold at most the limit" do
+    min = 60_000
+    asks = Enum.map(Enum.reverse(Enum.to_list(45..59) ++ Enum.to_list(60..70)), &(&1 * min))
+
+    assert length(Llm.recent_asks(asks, 71 * min)) == 26
+    # 第 106 分钟：恰好一小时前（第 46 分钟）及更早的都滑出。
+    assert length(Llm.recent_asks(asks, 106 * min)) == 24
+    # 第 112 分钟：第 52 分钟及以前滑出，剩第 53–70 分钟的 18 次，额度 20 放行。
+    assert length(Llm.recent_asks(asks, 112 * min)) == 18
+  end
+
   test "asks are capped per hour: after the budget is used the brain stays quiet" do
     request =
       scripted([
