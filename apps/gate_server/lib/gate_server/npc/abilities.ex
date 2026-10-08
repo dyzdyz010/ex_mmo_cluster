@@ -33,9 +33,9 @@ defmodule GateServer.Npc.Abilities do
   配置在 `profile.skills`。schema 只依赖 profile，不随余额等观察状态增删（保护提示缓存）。
 
   不进条目：`say`（聊天占位，Body 的 stub 保留、不投影）、`cancel_skill`（Runtime 命令）、`wait`（LLM 适配器本地）、
-  人物目标 g5 句柄（D-13）。调用方是 JSON 形参数的适配层：`Brain.Llm`、`design_house` 的共享工具；I3 的行为树 `act`
-  叶子也将经这里，与 LLM 共用同一组规格（句柄 granularity 0..3）。g5 只由直接产出规范命令的代码 Brain（如 Routine）
-  发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
+  人物目标 g5 句柄（D-13）。调用方是 JSON 形参数的适配层：`Brain.Llm`、`design_house` 的共享工具、行为树 `Brain.Tree`
+  的 `act` 叶子（与 LLM 共用同一组规格，句柄 granularity 0..3；静态参数在建树时经 `command/4` 译码一次）。g5 只由直接产出
+  规范命令的代码 Brain（如 Routine）发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
   """
   alias GateServer.Npc.{Actions, Attention, Memory, Perception, Skills}
 
@@ -111,6 +111,14 @@ defmodule GateServer.Npc.Abilities do
     end
   end
 
+  @doc """
+  工具带的 JSON Schema：整数枚举 = `profile.tools` 的键（升序）。`:belt` 规格与技能 schema 里的 tool_id（如 gather）
+  都取它，工具带枚举只有这一份。
+  """
+  @spec belt_schema(map()) :: map()
+  def belt_schema(profile),
+    do: %{type: "integer", enum: profile |> Map.get(:tools, %{}) |> Map.keys() |> Enum.sort()}
+
   # —— 一份规格 → strict JSON Schema ——
   # 每个 object：additionalProperties false、全部属性进 required；可空写 type: [t, "null"]（枚举另加 null）。
 
@@ -130,8 +138,7 @@ defmodule GateServer.Npc.Abilities do
   defp json_schema(:string, _), do: %{type: "string"}
   defp json_schema(:hex32, _), do: %{type: "string"}
 
-  defp json_schema(:belt, profile),
-    do: %{type: "integer", enum: profile |> Map.get(:tools, %{}) |> Map.keys() |> Enum.sort()}
+  defp json_schema(:belt, profile), do: belt_schema(profile)
 
   defp json_schema({:enum, %{} = values}, _),
     do: %{type: "string", enum: values |> Map.keys() |> Enum.sort()}

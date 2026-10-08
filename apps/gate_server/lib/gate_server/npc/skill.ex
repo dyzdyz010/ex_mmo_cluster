@@ -16,6 +16,9 @@ defmodule GateServer.Npc.Skill do
   @callback observations?() :: boolean()
   @optional_callbacks observations?: 0
 
+  @doc "技能等一个 Body Outcome 的上限（毫秒）：Body 对每条命令都会回一个 Outcome，超时以 `body_timeout` 结束。"
+  def body_timeout, do: 300_000
+
   @doc "技能实现是否声明逐帧读取 Observation。"
   def observes?(module) do
     Code.ensure_loaded!(module)

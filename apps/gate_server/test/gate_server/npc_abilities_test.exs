@@ -14,7 +14,7 @@ defmodule GateServer.NpcAbilitiesTest do
   # 每个技能都配上：strict 不变量要覆盖内置技能的 schema。
   @full %{
     tools: %{1 => "镐", 9 => "点火器"},
-    skills: %{build: %{}, design_house: %{}, wilderness: %{}}
+    skills: %{build: %{}, design_house: %{}, gather: %{}, wilderness: %{}}
   }
   # D-3：Demo LLM NPC 的分组（Voxim Docs/Gameplay/npc.exs 的 LLM 后端；工具带同 Demo）。
   @demo %{

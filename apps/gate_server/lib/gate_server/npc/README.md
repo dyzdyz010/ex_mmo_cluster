@@ -22,16 +22,18 @@
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是共享 JSON 出站。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
-  `Brain.Routine`（作者脚本）、`Brain.Patrol`（巡逻决策树）是非 LLM 后端。
+  `Brain.Routine`（作者脚本）、`Brain.Patrol`（巡逻决策树）是非 LLM 后端，直接产出规范命令。
+  `Brain.Tree` 是最小行为树后端（纯函数，叶子 `act` 经 `Abilities.command/4` 构造命令，与 LLM 共用同一份能力定义）；
+  树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
   内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
 - `Memory` 提供模型记忆工具与上下文投影；`DataService.NpcMemory` 按永久 cid 持久化、检索，并拥有保留上限。
 
 ```mermaid
 flowchart LR
-  B[Brain 后端<br/>Llm / Routine / Patrol] -- 命令 --> R[Runtime]
+  B[Brain 后端<br/>Llm / Routine / Patrol / Tree] -- 命令 --> R[Runtime]
   R -- 原子动作 --> Body
   R -- 技能调用 --> W[技能 worker]
   W -- "{:skill, 调用号, 步}" 命令 --> Body
@@ -151,8 +153,75 @@ brain: {GateServer.Npc.Brain.Routine, %{
 - 查看：`Abilities.entries(profile)` / `Abilities.tools(profile)` 返回能力条目及 strict 参数；
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
-  含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_interrupt_check`、
+  含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`。
+
+### 行为树后端（`Brain.Tree`）
+
+配置 `brain: {GateServer.Npc.Brain.Tree, %{tree: fn profile -> {树, 黑板初值} end, tools: …, skills: …}}`；profile 的其余键
+就是 Abilities 的 profile（`tools`、`skills`、`groups`），`act` 能用的名字 = `Abilities.entries(profile)` 的名字。节点与语义的唯一正文是
+`Brain.Tree` 的 moduledoc，这里只写怎样写一棵树：
+
+```elixir
+# 全局系统功能示例：到站位后放一个已发布定义；被占就看锚点格是不是自己放的。
+fn profile ->
+  site =
+    {:seq, [
+      {:act, "move_to", %{"x" => 8.5, "z" => 11.5, "y" => nil}, retry: 60},
+      {:sel, [
+        {:act, "build", %{"definition" => profile.definition, "anchor_micro" => [64, 512, 112], "orientation" => 0}},
+        {:seq, [
+          {:cond, fn bb, _observation -> match?(%{last_failure: %{reason: :occupied}}, bb) end},
+          {:act, "look", %{"x0" => 8, "y0" => 64, "z0" => 14, "x1" => 8, "y1" => 64, "z1" => 14}, store: :anchor}
+        ]}
+      ]}
+    ]}
+
+  {{:repeat, :forever, {:seq, [{:succeed, site, log: "npc_example_idle"}, {:wait, 600}]}}, %{}}
+end
+```
+
+- **act 的参数**是 JSON 形（字符串键、数组，与 LLM 工具参数同形），或 `fn 黑板 -> map end`（tick 时求值）。静态参数在
+  `Tree.new/2` 建树时就译码一次，名字不在能力里、参数不合法、节点形状不对都直接 raise；函数形参数 tick 时不合法则本地失败
+  （黑板 `:last_failure` 的 reason 是 `invalid_tool_arguments`），不发给 Body。技能叶子（`build`、`gather`…）的参数原样透传，
+  建树时不校验，由技能运行时以 `invalid_skill_arguments` 拒绝。`{:act, 名字, 参数}` 即 opts 为 `[]`。经 Abilities 的目标句柄
+  只允许 granularity 0..3，打人（g5）只由直接产出规范命令的代码 Brain 发出。
+- **常用能力名**：`move_to`、`stop`、`look`、`inspect`、`query_balances`、`read_catalog`、`probe_toward`、`use_tool`、`dismantle`、
+  `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`design_house`、`wilderness`）；
+  每个名字的参数与 done 含义见 `Abilities.tools(profile)`。
+- **黑板**：`store: 键` 把 done 的 `data` 写进黑板；`each` 把当前项写进 `as`；任一 `act` 失败写
+  `:last_failure = %{act: 名字, reason: 原因}`，`cond` 与 `succeed log:` 都读它。黑板不写别的东西。
+- **retry**：`retry: ticks` 只对 `invalid_session` / `dead` / `session_lost`（`Tree.transient/0`）生效：不判失败，`ticks` 后用
+  新 id 原样重发同一命令；其他拒绝照常失败。只给与位置无关、重发也不会多做的命令用（只读、`move_to`）：死亡复活与重新
+  claim 后身体在出生点，参数又可能取自已变的世界状态（gather 中途失败时已挖的格已入账），这类步骤在树里从上游重来
+  （例：建设者的工地整体重来）。
+- **时间**只看 Observation 的 `self.tick`（60 Hz）；`wait` 与 retry 都按它推进，树本身不读时钟、不起进程。
+- **halt**：`Tree.halt/1` 放弃全部在途叶子（技能 → `cancel_skill`，移动 → `stop`，世界事务不撤销），其 Outcome 丢弃；
+  被取消的技能回终态前不会启动新的技能叶子。本轮的节点都带记忆、没有 reactive 节点，运行时不会自己 halt。
+
+### 建设者（`Trees.settler/1`）
+
+```elixir
+# 全局系统功能配置示例：工地、采石盒与定义由作者给定（定义须已发布：作者目录或运行时发布）。
+brain: {GateServer.Npc.Brain.Tree, %{
+  tree: &GateServer.Npc.Trees.settler/1,
+  definition: definition_hex,
+  sites: [%{anchor_micro: [64, 512, 112], orientation: 0, stand: [8.5, 11.5]}],
+  quarries: %{11 => %{box: [[10, 64, 4], [13, 64, 6]], tool_id: 1}},
+  revisit_ticks: 36_000,
+  tools: %{1 => "镐"}, skills: %{build: %{}, gather: %{}}
+}}
+```
+
+每轮 `read_catalog` 取材料单，逐个工地：到站位 → `build`；余额不够 → `query_balances` → 对第一种缺料且配了采石盒的材料 `gather`
+缺额 → 回站位再 `build` 一次；`occupied` → `look` 锚点格，`placed_by` 是自己就算建成，否则跳过；其余拒绝本工地本轮放弃。
+工地内任一步遇到 `invalid_session` / `dead` / `session_lost`：60 tick 后从站位整体重来一次（缺额重算），再遇则本工地本轮放弃；
+所以每工地每轮最多两次尝试，每次最多 gather 一次、build 重试一次。
+每个放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`（材料单取不到时没有 context）；一轮巡完等 `revisit_ticks`。
+主循环零 LLM，进度不存档，以权威为准：Body 重启后从头巡，已建的工地表现为 occupied → 自家锚点 → 跳过。
+作者保证：定义的宏格占着锚点格；站位离锚点格在工具射程内；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
+采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
+探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
 
 ## 依据
 
@@ -170,12 +239,12 @@ brain: {GateServer.Npc.Brain.Routine, %{
 
 ## 范围与剩余工作
 
-脚本是真实非 LLM 调用方，尚未有通用行为树引擎。世界意图入口已与玩家对齐（能力库 I1，见
+脚本与行为树（能力库 I3：`Brain.Tree`、建设者 `Trees.settler/1`、`gather` 技能）是真实非 LLM 调用方；行为树只有 Settler 用得到的节点，
+不做 reactive / parallel、通用编辑器或规划器。世界意图入口已与玩家对齐（能力库 I1，见
 [角色能力函数库](../../../../../docs/10-active/cross-cutting/2026-10-07-character-capability-library.md)）；
 NPC 的合成、进食、拆解、目录读取、身体视图与名牌、`Body.start/2` 已随 I2a 接上；I2b 起能力库 `Abilities` 是 LLM 工具表与
 design_house 共享工具的唯一来源，这些动词随之投影（strict、显式句柄）。Observation 的新字段（`self.body_state`、entities 的
 `name / relation / relation_source`）随 `Context.plain` 原样进入每次 LLM 请求的 input，relation 码与 body_state.status 码的含义
 写在 instructions 里（relation 码由 `MmoContracts.Relation.code/1` 插值）。
-NPC 施法、行为树 Brain 与 gather、正式聊天、住宅以外的设计技能、世界变化（如自己的建筑被拆）唤醒大脑，
-都是后续独立功能增量。
+NPC 施法、正式聊天、住宅以外的设计技能、世界变化（如自己的建筑被拆）唤醒大脑，都是后续独立功能增量。
 测试入口在 `apps/gate_server/test/gate_server/npc_*`；真实模型用例必须显式选择 `live_llm`。

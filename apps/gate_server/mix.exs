@@ -11,6 +11,8 @@ defmodule GateServer.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
+      # test/support 下是测试经 Code.require_file 载入的只测试夹具，不是测试文件。
+      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
       deps: deps()
     ]
   end

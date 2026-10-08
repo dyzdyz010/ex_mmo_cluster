@@ -1,6 +1,6 @@
 # 角色能力函数库（决策稿）
 
-分类：**Global system**，决策稿。状态：**I1 已提交（b363f122）；I2a 已实现、未实跑；I2b 已实现、已实跑（live_llm 1 次）；I2b 审查修复已实现（修复后未再跑 live）**（见 §14）。
+分类：**Global system**，决策稿。状态：**I1 已提交（b363f122）；I2a 已实现、未实跑；I2b 已实现、已实跑（live_llm 1 次）；I2b 审查修复已实现（修复后未再跑 live）；I2 已提交（33377ad2）；I3 已实现、已实跑（多轮集成用例 + 本机真实 World 夹具 30 min 浸泡；按主控 I3 任务指示（2026-10-08）代替 2 h 墙钟长跑，未验收）；I3 审查修复已实现、已实跑（修复后代码上重跑 30 min 浸泡）**（见 §14）。
 
 - 基线：服务端 master `f94a3d72`（worktree `ex_mmo_cluster-capabilities`，分支 `capability-library-20261007`）；Voxim `main` `b40f922c`。下文行号都按基线。
 - 上位与相邻文档：[NPC 统一接口层](2026-09-21-npc-unified-interface-design.md)、[NPC 运行层评审修复](2026-10-06-npc-runtime-review-fixes.md)、[上下文与记忆契约](2026-09-22-npc-context-memory-contract.md)、Voxim `Docs/Combat-Action-Design.md`、`Docs/Testing.md`。
@@ -25,7 +25,7 @@
 4. **最小行为树 Brain `GateServer.Npc.Brain.Tree`**：`seq / sel / act / cond / wait / repeat / each / succeed / fail`，语义按 BehaviorTree.CPP（叶子 RUNNING 直到 Outcome 回来；halt = 在途技能 `cancel_skill`、在途移动 `stop`）。`act` 叶子经 `Abilities.command/4` 构造命令（构造期即校验，相当于 typed ports）。
 5. **首个真实消费者：建设者 Settler 树**（`GateServer.Npc.Trees.settler/1`）加 `gather` 技能，主循环零 LLM。取料 → 建造 → 被占跳过 → 定期巡回；材料取自作者给定采石盒里的天然地形，因果闭环。
 6. **线协议与 Hello 39 零改动，UE 客户端零改动**，服务端可单独部署。玩家可感知的变化只有一处（D-1）：死亡后约 1 s 窗口内放置、合成、附件、prefab、发布被拒，原因 `dead`；客户端中文文案是后续资产项，期间 HUD 显示原文 `dead`。
-7. **增量**：I1 统一执行入口 → I2 能力库与 LLM 投影收敛及 NPC 补齐 → I3 gather + 行为树 + Settler + 2 h 长跑 → I4 NPC 施法 → 最终 Demo 镜像与真实双客户端短场景（§11）。
+7. **增量**：I1 统一执行入口 → I2 能力库与 LLM 投影收敛及 NPC 补齐 → I3 gather + 行为树 + Settler + 长时验证（逐轮推进的多轮集成用例 + 30 min 浸泡，主控 I3 任务指示（2026-10-08），代替原定 2 h 墙钟长跑）→ I4 NPC 施法 → 最终 Demo 镜像与真实双客户端短场景（§11）。
 
 ## 1 目标与范围
 
@@ -35,11 +35,11 @@
 |---|---|
 | 执行入口收敛（工具 / 生产 / 附件 / prefab / 发布），死亡门，ingress 时刻，补余额唯一规则，NPC 人物目标 g5，Body worker 最小退出隔离 | I1 |
 | 能力库与 LLM 投影（strict、显式句柄、描述常量化、say 不投影）；NPC 补 craft / eat / dismantle / read_catalog（craft / eat / dismantle 的 Body 受理与 `aim/2` 已随 I1 交付，I2 补 Abilities 条目与集成测试）；观察补 body_state、名字与关系；S1、S3；正式生成入口 `Body.start/2` | I2 |
-| `gather` 技能、行为树 Brain、Settler 树、本机真实 World 2 h 无人值守 | I3 |
+| `gather` 技能、行为树 Brain、Settler 树、本机真实 World 无人值守（多轮集成 + 30 min 浸泡，见 D-8） | I3 |
 | NPC 施法（`Player.cast_spell/5`） | I4 |
 | Demo 镜像 + 真实双客户端短场景 | 最终 |
 
-不在范围见 §12。24 小时验收按 D-8 在 2 h 通过后进行。
+不在范围见 §12。24 小时验收按 D-8 在 I3 长时验证通过后进行。
 
 ## 2 依据
 
@@ -158,7 +158,7 @@ flowchart TB
 ```
 
 - **一份规格两种产物**：`schema/2` 生成 strict JSON Schema（每个 object `additionalProperties: false`、全部属性进 `required`、可空写 `type: [t, "null"]`）；`decode/2` 把 JSON 参数转成定型值，形状不对返回 `:error`。`decode` 是 Abilities 唯一的形状校验，不另写通用 JSON Schema 校验器；取值合法性仍由 Body 与权威裁决。
-- **I2b 实现注记（以代码为准）**：译码只认 JSON 写法（字符串键、数组）——当前调用方（`Brain.Llm`、design_house 共享工具）都给这种形状；Elixir 写法（原子键、元组）等 I3 行为树有真实调用方时随它再加（I2b 审查）。对象里多余的键忽略，可空字段缺键视为 null；可空枚举的 `enum` 另含 `null`；元组元素同型，schema 取首元素作 `items` 并写 `minItems = maxItems`。`:belt` 只约束 schema、只出现在顶层参数，译码只要求整数（与“授予条件只是投影约束”一致）。字符串长度不写进 schema（strict 不支持 minLength / maxLength），记忆的 key / text / query 上限写在描述里、仍由 `Memory.execute/4` 校验。技能参数原样透传（JSON 形）；技能 `definition/1` 的 schema 必须满足 strict（写进 Skill 契约与 README）。描述句数：stop、13 个关注动词等只有一两句，未到上面的“≥3 句”——每条都另附 done 说明，再加句会增大每次请求的 tools 字节（Demo 分组 11 887 B），取此折中。附件的 kind / axis 在 attach 参数与 inspect 投影里是同一组名字（`face` / `edge`、`x` / `y` / `z`，`Actions.attachment_names/1`），槽地址只由 `VoxelRegion.Attachments.slot/1` 恢复。LLM instructions 只写通用约定；只关乎某些工具的提示在这些工具都投影时才写进去。
+- **I2b 实现注记（以代码为准）**：译码只认 JSON 写法（字符串键、数组）——当前调用方（`Brain.Llm`、design_house 共享工具）都给这种形状；I3 行为树同样只用 JSON 写法，不加 Elixir 写法（I2b 审查定案）。对象里多余的键忽略，可空字段缺键视为 null；可空枚举的 `enum` 另含 `null`；元组元素同型，schema 取首元素作 `items` 并写 `minItems = maxItems`。`:belt` 只约束 schema、只出现在顶层参数，译码只要求整数（与“授予条件只是投影约束”一致）。字符串长度不写进 schema（strict 不支持 minLength / maxLength），记忆的 key / text / query 上限写在描述里、仍由 `Memory.execute/4` 校验。技能参数原样透传（JSON 形）；技能 `definition/1` 的 schema 必须满足 strict（写进 Skill 契约与 README）。描述句数：stop、13 个关注动词等只有一两句，未到上面的“≥3 句”——每条都另附 done 说明，再加句会增大每次请求的 tools 字节（Demo 分组 11 887 B），取此折中。附件的 kind / axis 在 attach 参数与 inspect 投影里是同一组名字（`face` / `edge`、`x` / `y` / `z`，`Actions.attachment_names/1`），槽地址只由 `VoxelRegion.Attachments.slot/1` 恢复。LLM instructions 只写通用约定；只关乎某些工具的提示在这些工具都投影时才写进去。
 - **授予条件只是投影约束，不是权限**：`profile.groups` 可选过滤（缺省全部）；`:belt` 条目要求 `profile.tools` 非空；技能条目要求出现在 `profile.skills`；`:magic` 要求 `profile.spells` 非空。World 受理目录里任何 tool_id（world.ex:942），G22 不在本轮。
 - **不进条目**：kind（只作下表文档）、射程 / 成本 / 冷却数值、reason 目录、`llm` 标志（只给代码用的 `cancel_skill` 归 Runtime，不是条目）。
 
@@ -337,7 +337,7 @@ I1 必须**先补 `{:body, _}` 映射，再接通 g5**（F9）。
 | 私有包装 `tool_context/2` | 保留，`skill_context` 依赖它（body.ex:243） |
 
 - 判活不假设同节点：`WorldServer.Topology.start_peer/3` 会把 Scene 起在 peer 节点，Body 经 claim 或移交拿到的 Player 可能是远端 pid，而 `Process.alive?/1` 遇到远端 pid 抛 `ArgumentError`。`Player.running?/1` 本地 pid 用 `Process.alive?/1`，远端经 `:erpc.call(node, :erlang, :is_process_alive, [pid], 1_000)`，节点已断开（`{:erpc, :noconnection}`）视为已退出；其余 `:erpc` 错误照常抛出，不当作已退出。
-- 不引入 `world_call_failed`、退出原因分类或故障注入测试。2 h 长跑采样 Body 重启次数与 `npc_session_lost`，证明重启有害再加。
+- 不引入 `world_call_failed`、退出原因分类或故障注入测试。I3 浸泡采样 Body 重启次数与 `npc_session_lost`，证明重启有害再加。
 - 已知风险：多个 NPC 同时因 World 超时重启，可能撞上 DynamicSupervisor 默认 3 次 / 5 s 的重启强度；复现后再处理。
 
 ### 7.7 技能 worker
@@ -409,7 +409,7 @@ sequenceDiagram
 |---|---|
 | 构造期校验（typed ports） | `Tree.new/2`：每个 `act` 的 name 必须在 `Abilities.entries(profile)` 中；静态 map 参数在建树期 `decode` 一次。任一失败直接 raise（作者配置错误，启动即失败，不降级）。函数形参数在 tick 时 decode |
 | 黑板 | 普通 map，只由 `act` 的 `store:`、`each` 的 `as` 与失败写入：任一 `act` FAILURE 时写 `:last_failure = %{act: name, reason: reason}`（适配 1：BT.CPP 节点状态不带原因，本树经黑板传出，供 `cond` 与 `succeed log:` 读）；节点状态本身只有 SUCCESS / FAILURE / RUNNING |
-| 瞬态重试 | `act` 的 `retry: ticks`：rejected 且 reason ∈ `[:invalid_session, :dead, :session_lost]` 时不判失败，`ticks` 后用新 id 重发同一命令（适配 2：RetryUntilSuccessful 的叶子内联形）。这些原因表示命令未被执行或角色暂时不能行动；重发对 World 幂等安全（已建 → occupied，已挖 → 目标变化） |
+| 瞬态重试 | `act` 的 `retry: ticks`：rejected 且 reason ∈ `[:invalid_session, :dead, :session_lost]`（`Tree.transient/0`）时不判失败，`ticks` 后用新 id 原样重发同一命令（适配 2：RetryUntilSuccessful 的叶子内联形）。这些原因表示命令未被执行或角色暂时不能行动。原样重发只适合与位置无关、重发也不会多做的命令（只读、move_to；放置重发得 occupied）：死亡复活与重新 claim 后身体在出生点（player.ex died/1 → relocate；body.ex claim 传 spawn），gather 中途失败时已挖的格已入账、原样重发会多挖。这类步骤在树里从上游重来（Settler：工地整体重来，I3 审查修复） |
 | 事件 | `{:observation, o}` 更新黑板外的最新观察并推进 wait / retry；`{:outcome, o}` 只交给 id 匹配的 RUNNING 叶子；`{:heard, _}` 忽略。首个 Observation 到达后才 tick 根 |
 | halt | 父节点放弃一个 RUNNING 子节点时调用 `Tree.halt/1`：RUNNING 的技能叶子发 `%{verb: :cancel_skill, call: 叶子 id}`，RUNNING 的移动叶子发 `%{verb: :stop}`，RUNNING 的世界事务不撤销（已提交不可顶替）。被 halt 的 id 进入 `draining`，其 Outcome 丢弃；`draining` 含技能 id 时不启动新技能叶子（结构上避免 `skill_busy`），技能终态到达后移出。本轮节点都带记忆、没有 reactive 节点，Settler 树运行时不会放弃子节点；halt 作为 act 契约的另一半实现并单测（T3.1） |
 
@@ -425,21 +425,22 @@ sequenceDiagram
 ```
 
 ```elixir
-retry = [retry: 60]                                    # 瞬态原因 1 s 后重试同一步
-stand = {:act, "move_to", &stand_args/1, retry}
-build = {:act, "build", &build_args/1, retry}
-site =
+stand = {:act, "move_to", &stand_args/1}
+build = {:act, "build", &build_args/1}
+attempt =
   {:seq, [stand,
     {:sel, [build,                                     # 建成即本工地完成
       {:seq, [{:cond, &last?(&1, &2, :insufficient_material)},
-              {:act, "query_balances", %{}, [store: :balances] ++ retry},
+              {:act, "query_balances", %{}, store: :balances},
               {:cond, &shortage?/2},                   # 首个缺料且配了采石盒
-              {:act, "gather", &gather_args/1, retry}, # units = 缺额；material / units 必填
+              {:act, "gather", &gather_args/1},        # units = 缺额；material / units 必填
               stand, build]},                          # 先回站位再重试一次 build
       {:seq, [{:cond, &last?(&1, &2, :occupied)},
-              {:act, "look", &anchor_cell/1, [store: :anchor] ++ retry},
+              {:act, "look", &anchor_cell/1, store: :anchor},
               {:cond, &own_anchor?/2}]}]}]}            # 锚点格 placed_by == 自己 → 视为已建成
-round = {:seq, [{:act, "read_catalog", &bill_args/1, [store: :bill] ++ retry},   # what: "prefab"
+# 瞬态原因（Tree.transient/0）：60 tick 后从站位整体重来一次（身体可能在出生点、缺额重算）
+site = {:sel, [attempt, {:seq, [{:cond, &transient?/2}, {:wait, 60}, attempt]}]}
+round = {:seq, [{:act, "read_catalog", &bill_args/1, store: :bill, retry: 60},   # what: "prefab"；只读，原样重发
                 {:each, :sites, :site, {:succeed, site, log: "npc_settler_idle", context: :site}}]}
 tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
                                     {:wait, profile.revisit_ticks}]}}
@@ -450,7 +451,7 @@ tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
 | 材料单 | `read_catalog what: "prefab"` 按 id 取（作者目录与运行时发布都能查到，F21）；查不到 → 本轮 FAILURE，记 `npc_settler_idle reason=definition_not_found`，休息后再试 |
 | 缺料 | `shortage = bill.materials − balances`；取第一种缺料且配了采石盒的材料，`gather{box, material, units: 缺额, tool_id}`，然后先 `move_to stand` 再 build 一次 |
 | 被占 | 一律跳过；先 look 锚点格：`placed_by` 为自己 → 视为已建成（SUCCESS），否则 FAILURE 记 `reason=occupied`。不清场 |
-| 次数上限 | 每工地每轮最多 gather 一次、build 重试一次（树结构保证，无循环） |
+| 次数上限 | 每次尝试最多 gather 一次、build 重试一次；瞬态原因整体重来一次，所以每工地每轮最多两次尝试（树结构保证，无循环）；第二次再遇瞬态原因记 idle 换下一工地 |
 | 其余拒绝 | protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、unreachable：该工地 FAILURE，记 `npc_settler_idle entity= act= reason= context=<site>`，换下一个 |
 | 移动范围 | 不做分段与长途寻路：作者保证各站位与采石盒站位两两水平距离 ≤ `Perception.reach()`（夹具断言） |
 | 进度 | 不存档，以权威为准。重启后从头巡：已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建。前提：自家格在 placed_by 升级后放下、没被别的编辑改过 |
@@ -579,15 +580,15 @@ end
 
 ### I3 gather、行为树与 Settler
 
-**目标**：只靠代码驱动的建设型 NPC 在作者指定的工地与采石盒里循环工作（§8.2），本机真实 World 2 h 无人值守。
+**目标**：只靠代码驱动的建设型 NPC 在作者指定的工地与采石盒里循环工作（§8.2），本机真实 World 无人值守（主控 I3 任务指示（2026-10-08）：逐轮推进的多轮集成用例 + 30 min 浸泡，代替原定 2 h 墙钟长跑）。
 
 **gather 流程**（技能壳 + 纯函数；不声明 `observations?`）：
 
-1. `World.tool_definition(world, tool_id)` 取射程与间隔（唯一读路径）。
+1. `World.tool_definition(world, tool_id)` 取间隔（唯一读路径）。射程不在本地预检：够不够得着只由权威射线裁决（`Damage.trace` 量入射面距离），探测 `no_target` 即这个站位够不着（I3 审查修复）。
 2. 经 Body `query_balances` 取起始余额与该材料的 `cost`（每宏格单位）。
 3. 站位 = `GateServer.Npc.Blueprint.stands/2`（npc/blueprint.ex:55-63）；`move_to` 站位，位置取 done data。
 4. look 盒；look 被拒原样作为终态。候选：材质匹配、非空气、非液体、非细化、`placed_by == nil`；按（层自上而下，离当前站位水平距离由近到远）排序。
-5. 逐格：沿眼点到格心方向 `probe_toward`；命中 `granularity == 0 and owner == {0,0}` 且 `micro == cell×8` 才对句柄 `use_tool`，直到再探测命中变化或 `no_target`；命中别的格当作 occluded；`tool_cooldown` 在 worker 里等 interval 后重试；`stale_target` 重新探测；`out_of_reach` / occluded 换站位，站位用尽计入 skipped。
+5. 逐格：沿眼点到格心方向（`WorldRequest.aim/2` 的 g0 瞄准点）`probe_toward`；命中 `granularity == 0 and owner == {0,0}` 且 `micro == cell×8` 才对句柄 `use_tool`，直到再探测命中变化或 `no_target`；命中别的格当作 occluded；`tool_cooldown` 在 worker 里等 interval 后重试；`stale_target` 重新探测；`out_of_reach` / occluded 换站位，站位用尽计入 skipped。
 6. 按 `cost` 估算需挖格数；估算达到后再 `query_balances` 核对，不足按差额继续。增量 ≥ units → done `%{mined, gained, skipped}`；候选用尽 → `:exhausted`；无站位可达 → `:unreachable`。
 7. 采石盒要求：地表以上的料堆或深度不超过 1 层（坑沿会挡射线、Path 不跳坑）；盒内材料属于 production_materials 且无 drop_table（否则挖掉不入账，w/tools.ex:190-198），夹具断言。
 
@@ -596,12 +597,12 @@ end
 | 测试 | 文件 | 内容与期望来源 |
 |---|---|---|
 | T3.1 树语义 | `npc_tree_test.exs`（新，纯函数） | 手排事件序列 → 手写命令序列：seq / sel 带记忆续跑、each 遍历写黑板、repeat 每轮先 RUNNING、wait 按 tick、cond、`store:` 与 `:last_failure`、`succeed log:`；`retry:` 对三种瞬态原因重发、对其他原因失败；`Tree.halt/1` 对 RUNNING 技能发 `cancel_skill`、对 RUNNING 移动发 `stop`、draining 期间不启动新技能；`Tree.new/2` 对未知名字与坏静态参数 raise |
-| T3.2 Settler 树 | `npc_settler_test.exs`（新，纯函数部分） | 喂 Outcome 序列断言命令序列：缺料 → query_balances → gather（units = 手算缺额）→ move_to stand → build；无采石盒 → 记 idle 换下一工地；occupied → look → 自家锚点算建成 / 他人锚点跳过；每工地每轮 gather ≤ 1、build 重试 ≤ 1；`definition_not_found` 本轮休息；`invalid_session` 隔 60 tick 重试同一步；一轮完成 → wait → 再巡 |
+| T3.2 Settler 树 | `npc_settler_test.exs`（新，纯函数部分） | 喂 Outcome 序列断言命令序列：缺料 → query_balances → gather（units = 手算缺额）→ move_to stand → build；无采石盒 → 记 idle 换下一工地；occupied → look → 自家锚点算建成 / 他人锚点跳过；每工地每轮 gather ≤ 1、build 重试 ≤ 1；`definition_not_found` 本轮休息；瞬态原因隔 60 tick 从站位整体重来一次（build 回 dead 后先 move_to 再 build；gather 回 session_lost 后不原样重发旧 units，缺额重算），再遇则记 idle 换下一工地；一轮完成 → wait → 再巡 |
 | T3.3 gather 纯函数 | `npc_gather_test.exs`（新） | 手算小世界：他人格、自己格、液体、细化、盒外、材质不符都排除；排序按层与水平距离 |
 | T3.4 gather 集成 | 同上（真实 World / Scene / Player / Body） | 作者写入盒内 N 格石料，外加盒内一格由另一 NPC（另一个名字）放置、一格作者 prefab 宏格（只有 macro_owners）、一格盒外；done 时余额增量 = N × 每格单位（夹具目录手算）；另三格仍在（material_snapshot） |
 | T3.5 Settler 集成 | `npc_settler_test.exs` | 两个工地，供料只够一个：第二个触发 gather，最终 World 里两个实例，余额 = 供给 + 采得 − 2 × 材料单（手算）；中途重启 Body 后实例数不变、不重复建；再用一个作者目录定义跑一次，材料单可取到 |
 
-**实跑**：`npc_settler_soak_test.exs`（`@tag :npc_soak`，默认排除；本机真实 World 夹具，也可在 Demo 上跑），LLM 关闭，Settler 无人值守 2 h。每小时采样：新放下的 prefab 数（`character_intent` 中该 cid 的 prefab 成功行）、gather 挖掉的格数、按 reason 分类的拒绝、`npc_settler_idle` 分布（`exhausted` 是预期停因）、`npc_session_lost` 次数、Body 崩溃重启次数、LLM 请求数（应为 0）、body_state 的 life 与 protein 首尾值（夹具无 climate 时身体不推进，报告注明）。判据见 D-8。
+**实跑**：`npc_settler_soak_test.exs`（`@tag :npc_soak`，默认排除；本机真实 World 夹具，也可在 Demo 上跑），LLM 关闭，Settler 无人值守（主控 I3 任务指示（2026-10-08）：30 min，每 5 min 采样；另由逐轮推进的多轮集成用例证明 ≥ 6 轮与 Body 重启；原定 2 h、每小时采样）。采样：新放下的 prefab 数（`character_intent` 中该 cid 的 prefab 成功行）、gather 挖掉的格数、按 reason 分类的拒绝、`npc_settler_idle` 分布（`exhausted` 是预期停因）、`npc_session_lost` 次数、Body 崩溃重启次数、LLM 请求数（应为 0）、body_state 的 life 与 protein 首尾值（夹具无 climate 时身体不推进，报告注明）。判据见 D-8。
 
 ### I4 NPC 施法
 
@@ -631,7 +632,7 @@ end
 |---|---|---|---|---|
 | I1 | T1.1、T1.2 | T1.3、T1.4、T1.5 | 并入最终 | — |
 | I2 | T2.1、T2.3 | T2.2、T2.4–T2.11 | — | strict 预检 1 次；live_llm 1 次 |
-| I3 | T3.1、T3.2、T3.3 | T3.4、T3.5 | 并入最终（NPC 被看见） | 2 h npc_soak（D-8） |
+| I3 | T3.1、T3.2、T3.3 | T3.4、T3.5 | 并入最终（NPC 被看见） | 多轮集成 + 30 min npc_soak（D-8，代替 2 h） |
 | I4 | — | T4.1–T4.5 | 并入最终（玩家 M 施放） | — |
 | 最终 | — | — | 双客户端约 10 分钟 | — |
 
@@ -641,9 +642,9 @@ end
 |---|---|
 | 正式聊天与 say 投影（G14） | 先做玩家正式版，NPC 再接同一通道；stub 保留不投影 |
 | 技能发布改走 Body、`publish_prefab` 动词、删 `PrefabDesigner.publish/3` | 门禁已经由 refresh 生效（F4、F12）；唯一收益是 settle，发布无 seq、不扣料 |
-| 退出原因分类、`world_call_failed`、故障注入 | 没有复现；2 h 长跑证明重启有害再加 |
+| 退出原因分类、`world_call_failed`、故障注入 | 没有复现；长跑证明重启有害再加 |
 | reactive / parallel 节点、通用 BT 编辑器、GOAP、Utility 打分、Smart Object 预约 | 当前唯一树 Settler 不需要；多 NPC 抢工地真实复现后再做预约 |
-| Settler 清场（lot）、长途分段移动、travel 技能、进食与设计分支 | 清场是换名的地形改造，违背“逐格编辑不再加码”（prefab-macro-cells-design.md:6、24-25）；2 h 实跑出现伤病或营养耗尽再加 eat |
+| Settler 清场（lot）、长途分段移动、travel 技能、进食与设计分支 | 清场是换名的地形改造，违背“逐格编辑不再加码”（prefab-macro-cells-design.md:6、24-25）；长跑出现伤病或营养耗尽再加 eat |
 | 统一 reason 枚举、提示目录、outputSchema 运行时校验、can_* 预检、通用 JSON Schema 校验器 | 会成为权威的第二份副本或无调用方的框架 |
 | LLM 工具合并（probe + use、Attention 13 合 1） | 会多一个 Body 复合动作或第二套名字映射；分组裁剪即可 |
 | Runtime 统一类型校验、`%{call, args}` 字符串命令 | 破坏 brain.ex 原子键契约并造成双重校验 |
@@ -666,7 +667,7 @@ end
 | D-5 | 建设者材料来源 | Demo：作者采石盒内天然地形 + 一次性作者样本；正式服待“地形极难破坏 / 城区审批”规则确定后另议 |
 | D-6 | 建设者主脑 | 行为树 Settler，首跑零 LLM，使用玩家或作者已发布的定义；design_house 接入是后续增量 |
 | D-7 | 生成入口 | `Body.start/2`，名字唯一即身份，节点重启不自动恢复 |
-| D-8 | 验收顺序与指标 | 先 2 h：Body 崩溃 0、`npc_session_lost` ≤ 2、LLM 请求 0，给出每小时 prefab 数、挖掘格数、拒绝与 idle 分布、body_state 首尾值；默认在本机真实 World 夹具跑。通过后再 24 h，阈值届时确认 |
+| D-8 | 验收顺序与指标 | 先 I3 长时验证：Body 崩溃 0、`npc_session_lost` ≤ 2、LLM 请求 0，给出各采样点 prefab 数、挖掘格数、拒绝与 idle 分布、body_state 首尾值；默认在本机真实 World 夹具跑。原定 2 h 墙钟长跑、每小时采样；按主控 I3 任务指示（2026-10-08）改为逐轮推进的多轮集成用例（≥ 6 轮，含一次 Body 崩溃重启）+ 30 min 浸泡、每 5 min 采样（依据 Voxim `Docs/Testing.md`：长时演化用逐提交推进的 World 集成测试证明，不按墙钟空等）。通过后再 24 h，阈值届时确认 |
 | D-9 | 增量顺序 | I1 → I2 → I3 → I4 → 最终实跑 |
 | D-10 | NPC 法术来源 | 作者给的 `profile.spells`，LLM 只选名字；NPC 初始能量 0 会走火，有效施法需法术带含 `energy.draw` |
 | D-11 | 0x70 / 0x78 后门 | 独立安全项，不并入本库 |
@@ -686,3 +687,5 @@ end
 | 2026-10-08 | I2a 审查修复：read_catalog materials 的 edible / recipe 只对生产材料给出（集合取 `World.material_balances/2`，配方判据改用 `recipe_inputs`，与 w/production.ex:151、187 的进食 / 合成门同条件），T2.8 改为生产材料 [11, 20, 21] 并加反例：22（有 food）、23（有配方）不在其中 → 目录 edible / recipe 为 nil，eat 22 回 `not_edible`、craft 23 回 `unknown_recipe`（改前该用例红：22 的 edible 非 nil）；`Body.start/2` 文档按实际语义改为“同 cid 最后完成 claim 的 Body 留下，先起者正在重新 claim 时会反顶后起者，换人先停旧 Body”（§9.2、body.ex、README），不改 Claims；`move_to` 与 `design_house` 的 LLM 工具描述补上 too_far 上限（由 `Perception.reach()` 插值），§5.2 技能行补 `design_house：too_far`；house_design 锚点宏格换算合并为 `anchor_cell/1`（守卫与 site 读取同一格）；README 写明 Observation 新字段从 I2a 起已随 `Context.plain` 进入 LLM 请求 input，relation / status 码含义随 I2b 写进 instructions。gate 全量 170/231，失败 61 项名单与修复前逐条相同（T1Transport 57 + VoximSpellDispatch 4） |
 | 2026-10-08 | I2b（能力库 Abilities 与 LLM 投影收敛）**已实现**：开工前 strict 预检 1 次（strict:true 函数含字符串 / 整数枚举、`type: [t, "null"]`、定长数组、嵌套 object，HTTP 200、代理回显 strict、模型按 schema 调用 → D-2 定为开）；新建 `npc/abilities.ex`（`entries/1`、`tools/1`、`command/4`；一份 spec 生成 strict schema 与 JSON / Elixir 双写法译码，注记见 §5）；Actions / Perception / Attention / Memory / Skills 改为只提供条目，删掉各自的 tools / command 双份实现（Attention 动词表由条目派生；`Actions.tolerance/0`；query_balances 归 Perception 的 sense 条目；技能条目用各自 `definition/1` 的 schema）；显式目标句柄：use_tool / dismantle 的 target 抄 probe 结果或 inspect 行，detach 由 g3 句柄算 kind / axis / attachment_id，inspect 与 probe 命中的 LLM 投影各附 `target`，删 llm.ex 的 probes / probe / things 与默认技能表，g5 不进投影；`Llm.commands/3` = function_calls → wait 本地 → `Abilities.command/4`，`wait` 也标 strict；say 不投影（Body stub 保留）；描述数字由常量插值（reach、look 格数、inspect tile / 条数、NpcMemory.limits、tolerance、micro 分辨率），射程与间隔写“见 read_catalog tools”，删“镐 = 攻击”与电路安装 / 投料；instructions 补句柄规则与 relation（`Relation.code/1` 插值）/ body_state.status 码；`profile.groups` 可选（Demo 分组 16 条目 + wait = 17 个工具）；design_house 共享工具（look / inspect / remember / recall / search_memory）定义与译码取自 Abilities（strict），自有 edit / view / slice / check / publish 不改。既有期望随契约显式更新：move_to 命令恒带 `y`（可为 nil）；probe_toward 参数 dx/dy/dz → `direction` 数组；attach 的 kind / axis 改字符串枚举；prefab 坏 hex、非列表 instance、缺参数在本地回 `invalid_tool_arguments`（改前交 Body 回 `invalid_command`）；prefab 命令只带该 op 用到的键；记忆工具的长度上限从 schema 移进描述（strict 不支持 maxLength，`Memory.execute/4` 校验不变）；npc_attention / skills / memory 测试改调 Abilities。测试：新增 npc_abilities_test 9 项（T2.1）；npc_brain_llm_test 冻结 Responses 段改写为 8 项（T2.3：use_tool 显式句柄、detach g3 句柄 kind/axis 手算、未知工具 / 非对象 / 错形 / say / g5 本地拒绝、inspect 与 probe 投影带 target）；npc_body_world_test 新增 2 项（T2.2 接缝：34 个投影条目逐个交给真实 Body，无 `invalid_command`；T2.4 冻结应答 + 真实 World：probe 句柄 → use_tool × 4 挖掉石柱上格 → 放到 (14,64,12)，余额 0 → 512 → 0）。改前为红：临时还原 I2b 前代码（HEAD 版 llm / actions / attention / memory / skills，I2a 版 perception / house_design，去掉 abilities.ex）跑新测试，新单测 19 项失败、T2.2 `UndefinedFunctionError`、T2.4 的 probe_toward / use_tool 回 `invalid_command` 未挖成；旧 `Llm.commands/5` 对同一组冻结应答给出 use_tool target / direction nil、detach kind / axis nil、数组方向译不出、工具表含 say 且无 strict。改后 gate 全量 184/245（I2a 170/231 + 14），失败 61 项名单与 I2a 逐条相同（T1Transport 57 + VoximSpellDispatch 4）；编译无新增告警。**已实跑**：live_llm 挖石柱砌墙 1 次（Demo 分组、空记忆）通过：request_count 36，每次请求 tools 11 887 B（17 个工具），约 2.6 min 完成，0 次 unknown_tool / invalid_tool_arguments，use_tool 全部抄 probe 结果的 target；tools 字节对比（同一 profile、Jason 编码）：改前 31 个工具 12 293 B（无 strict、无 done 说明）；改后缺省全部组 34 个 18 850 B（审查修复时更正：原记 19 318 B 是关注动词 done 文字定稿前的测量）、Demo 分组 17 个 11 887 B。改前同一用例无 request_count 记录，审查修复时已在父状态补跑一次（见下一行）。Voxim `Docs/Gameplay/npc.exs` 的 Demo LLM NPC 还没配 `groups`（Voxim 仓库，随最终 Demo 增量改）；真实双客户端未跑 |
 | 2026-10-08 | I2b 审查修复**已实现**：① `WorldRequest.aim/2` 眼点恰在瞄准点上（长度 0）返回 nil，Body 回 `invalid_command`（改前在 Body 进程里 ArithmeticError；反例：眼 (60.5, 520.5, 57.5) 对 micro (480, 4160, 456) 的 g0 句柄）；② inspect 投影的附件 kind / axis 改为与 attach 参数同名的字符串（face / edge、x / y / z，`Actions.attachment_names/1`，与 attach 枚举同一张表），detach 的槽地址改取 `VoxelRegion.Attachments.slot/1`；③ 译码只认 JSON 写法，删掉无调用方的原子键 / 元组分支与技能参数转换（Elixir 写法随 I3 行为树的真实调用方再加），`:belt` 只看顶层；④ g5 按“经 Abilities 的 LLM 与行为树同为 0..3、g5 只由直接产出规范命令的代码 Brain 发出”写定（§5.3、D-13，主控可改）；⑤ instructions 只写通用约定，点名工具的提示在这些工具都投影时才写（Demo 分组不再点名 get_view / get_visible_entities / get_aim），句柄抄写规则只留在各工具说明；wait 的 1–300 秒与 6 米、眼高、body_state 的 status 码（新增 `SceneServer.Body.status_code/1`，`report/2` 同用）、build 技能的 micro 分辨率改由源常量插值；search_memory 说明补 query 1–1500 字；⑥ Skill 契约与 README 写明技能 schema 须满足 strict，Survey 夹具补 `additionalProperties: false`；⑦ live inspector 用例去掉“拆完说一句”与 say 断言（I2b 起 say 不投影），改为按 inspect 行的 target 拆（未实跑）；⑧ 文档：各域 `entries/0`（Skills `entries/1`）、`tolerance/0` 的实际范围（Patrol / Builder 仍是字面量，§12 独立清理）、描述句数取舍（§5 注记）。改前为红：新反例与 3 处新断言在修复前 4 项失败（ArithmeticError；Demo instructions 含 get_view；search_memory 说明无 1500；inspect 的 kind 为整数 0）。改后 NPC 相关 12 个测试文件 148 通过、7 项 live 排除；gate 全量 185/246，失败 61 项名单与 I2b 逐条相同；scene_server 全量 240/252，失败 12 项全是缺 E1_FIXTURE / IS_FIXTURE，与 I1 后相同；编译无新增告警。tools 字节：Demo 分组 11 887 → 11 948 B，缺省全部组 18 850 → 18 911 B；Demo instructions 1 529 → 1 201 B。**父状态补跑（已实跑）**：I2a 代码（actions.ex 用 HEAD 版，少 I2a 的 move_to too_far 一句，约 74 B）、同一 live 挖石柱用例与同一计数包装、未配 groups，跑 1 次：**未完成**（780 s 超时），request_count 82，每次 tools 12 219 B（31 个工具，无 strict）；40 次 use_tool 全部 `invalid_command`——模型按旧 schema 带了可选的 attachment_id，旧译码因此把它当作对“最近一次 inspect 的附件”使用，target 为 `:unknown_attachment`，一格未挖。对比 I2b：36 次、约 2.6 min 完成。修复后的描述与 instructions 未再跑 live |
+| 2026-10-08 | I3（gather、行为树与 Settler）**已实现**：新建 `npc/brain/tree.ex`（`Brain.Tree`：seq / sel / act / cond / wait / repeat / each / succeed / fail，语义按 §8.2；`new/2` 构造期校验 act 名字与静态参数、节点形状，失败 raise；`act` 经 `Abilities.command/4`（JSON 形参数或 `fn 黑板 -> map end`），id 单调分配，`store:` / `:last_failure` / `retry:`（只对 invalid_session / dead / session_lost）；`halt/1` 对在途技能发 cancel_skill、移动发 stop、世界事务不撤销，被 halt 的 id 进 draining、其 Outcome 丢弃、draining 含技能时不启动新技能叶子，之后下一个事件从根重来；superseded 记 reason `:superseded`；根结束后不再发命令）、`npc/trees.ex`（`Trees.settler/1` 按 §8.2 原样，停因日志 `npc_settler_idle entity= act= reason= [context=]`）、`npc/skills/gather.ex`（技能壳 + 纯函数 `candidates/3`，流程按 §11 I3 1–7 步，只经 Body 的 move_to / look / query_balances / probe_toward / use_tool；不声明 observations?）；skills.ex `@builtins` 加 gather。实现注记（以代码为准）：探测命中这一格但 owner 不是 `{0,0}`（作者 prefab 宏格）永久跳过、计入 skipped，不为它换站位；一个站位的候选里有够不着的格才去下一个站位，否则直接核对余额（look 覆盖整盒）；两击之间按工具间隔等待（撞上 tool_cooldown 也再等一个间隔）；盒角按 min / max 归一；目录里没有的工具、不是生产材料的材料、units ≤ 0 回 `invalid_skill_arguments`。测试新增 19 项：npc_tree_test 9（T3.1）、npc_gather_test 3（T3.3 候选手算小世界 + strict schema；T3.4 真实 World：盒内作者 4 格、邻居放的 1 格、作者 prefab 宏格 1 格、盒外 1 格，units 1024 → done `%{mined: 2, gained: 1024, skipped: 0}` 且先挖上层；再要 2048 → 西侧被邻居格挡住、换南侧挖完余下 2 格 → `exhausted`，余额共 2048 = 4 × 512，另三格仍在；参数不成立三例）、npc_settler_test 7（T3.2 纯函数 5：缺料 → query_balances → gather units 724 → 回站位 → build 一次、无采石盒 / 采石用尽记 idle 换下一工地、自家锚点算建成 / 他人锚点跳过、definition_not_found 本轮休息、invalid_session / dead 隔 60 tick 重试；T3.5 作者目录三格石柱：材料单 1536 由 read_catalog 取到、用供给建成；多轮浸泡 (a)：工地 A、B 自建 + C 被作者石料占，revisit 60 tick，供给 1324，第一轮 A 用供给、B 缺 724 → gather 2 格 → 建成，两轮后 kill Body（监督者 transient 重启）再跑 ≥4 轮：放置成功恰 2 次、B 首次 insufficient_material 1 次、其余放置一律 occupied（≥16 次）、idle 每轮恰一行且只有 C occupied、gather 只 1 次，余额 1324 + 1024 − 2 × 1024 = 300、采石堆剩 10 格、两个实例各占两格；约 30 s）；npc_abilities_test 的 strict 不变量覆盖改为含 gather。测试夹具：`apps/gate_server/test/support/npc_world.exs`（真实 World / Scene / Claims、Body 起在测试自己的 DynamicSupervisor 下、日志转发 LogTap），gate_server mix.exs 加 `test_ignore_filters` 忽略 test/support，test_helper 默认排除 `:npc_soak`。改前为红：同一 worktree 临时移走三个新模块并还原 skills.ex 跑三个新测试文件，0/19（UndefinedFunctionError；gather 集成为 `KeyError :gather`）。改后 gate 全量 204/265 + 1 doctest（I2 后 185/246 + 新增 19），失败 61 项名单与 I2 逐条相同（T1Transport 57 + VoximSpellDispatch 4）；编译无新增告警；scene_server 未改动、未重跑。**已实跑**：`npc_settler_soak_test.exs`（`--only npc_soak`）30 min 一次（基线 33377ad2 + 本切片未提交改动，LLM 关闭），同多轮夹具外加 Test-only 拆除者（每 120 s 用作者入口 `World.remove_prefab/2` 拆掉 NPC 最早的一座石柱，作者拆除不退料）、revisit 1800 tick。每 5 min 采样（t = 0/5/10/15/20/25/30 min）：放下 0/4/6/7/7/7/7 座、拆 0/2/4/7/7/7/7、挖掉 0/6/10/12/12/12/12 格（第 15 min 前采石堆 12 格挖空）、idle occupied 0/9/18/26/35/43/52、exhausted 0/0/0/6/24/41/58（挖空后两个自建工地每轮以 exhausted 停）、拒绝（character_intent 错误 + npc_intent_rejected + npc_move_rejected）末值 occupied 91 / insufficient_material 64 / no_target 4（gather 探测被挡）、npc_session_lost 1、Body 崩溃重启 0、LLM 请求 0、任何时刻立着的 NPC 石柱 ≤ 2、余额 1324 + 512 × 12 − 1024 × 7 = 300（守恒断言通过）；BEAM 进程数 134 → 134，内存 total 80.3 → 83.9 MB、processes 24.9 → 28.8 MB（中段 86–87 MB 后回落，无持续增长）。这次 30 min 浸泡满足 D-8 的三项阈值（崩溃 0、session_lost ≤ 2、LLM 0）——已实跑、未验收：原定 2 h 未跑，按主控 I3 任务指示（2026-10-08）以多轮集成用例 + 30 min 浸泡代替，验收待主控复核；夹具无 climate，身体不推进，body_state 当时未采样（审查修复补上，见下一行）。那 1 次 session_lost 不是 I3 引入：开跑约 2 s 时 Player 崩溃 `KeyError key 1` @ `SceneServer.Movement.CollisionUpdates.record_artifact/3`（非流送 Scene 里 Player 尚未装好碰撞基线就收到带 chunk 的 `{:timeline, …}`，夹具在 Body 入场前刚写入作者样本），Body 1 s 后重新 claim 继续；gate 全量里 cid 9101 也出现 1 次同一崩溃。未修，列为 scene_server 独立问题。真实双客户端与 Demo 未跑（并入最终实跑） |
+| 2026-10-08 | I3 审查修复**已实现、已实跑**：① Settler 瞬态重试改为工地级：工地内任一步遇 invalid_session / dead / session_lost，60 tick 后从站位整体重来一次（`site = {:sel, [attempt, {:seq, [transient?, {:wait, 60}, attempt]}]}`），move_to / build / query_balances / gather / look 不再带叶子 retry，只有 read_catalog（只读）保留原样重发。依据：死亡复活回会话出生点（player.ex died/1 → relocate）、重新 claim 从 spawn 入场，原样重发的 build 从出生点发出会回 out_of_reach；gather 中途失败时已挖的格已入账，原样重发旧 units 会多挖。次数上限改为每次尝试 gather ≤ 1、build 重试 ≤ 1，每工地每轮最多两次尝试（§8.2）；Tree / README / §8.2 删掉“重发对 World 幂等安全（已挖 → 目标变化）”，retry 只给与位置无关、重发不会多做的命令；新增 `Tree.transient/0`（Tree 的 retry 与 Settler 的 transient? 共用）。② gather 删本地射程预检（眼点到格心 > range_macro 判 blocked，比权威按入射面量的射线更严）与私有 `toward/2`：够不够得着只看 probe_toward（no_target / 命中别的 → 换站位），方向取 `WorldRequest.aim/2` 的 g0 瞄准点，tool_definition 只取间隔（§11 I3 第 1、5 步）。③ 语义去重：`Abilities.belt_schema/1`（`:belt` 规格与 gather 的 tool_id 同用）、`Skill.body_timeout/0`（build、gather 同用）、锚点 micro → 宏格换算在 Trees 与 HouseDesign 都改用 `VoxelRegion.Damage.macro/1`。④ Tree：删无调用方的 `{:succeed, 子}` 简写，节点表注明 `{:act, 名字, 参数}`（opts 缺省 `[]`），moduledoc / `new/2` 的 @doc / README 写明技能叶子参数原样透传、建树时不校验（运行时 `invalid_skill_arguments`）。⑤ 夹具：`NpcWorld.start/1` 断言石料是生产材料、目录无 drop_table（§11 I3 第 7 步）；站位两两 ≤ `Perception.reach()` 抽成 `NpcWorld.assert_stands_within_reach/2`，多轮与浸泡用例共用；删无调用方的 `stone/0`；浸泡采样补 body_state（Body 收到的身体视图 life / protein_g）。⑥ 文档：I3 的 2 h 口径按主控 I3 任务指示改为多轮集成 + 30 min 浸泡（§0、§1、§11、D-8、测试矩阵），实跑与验收分开；§5 的 I2b 注记改为 I3 同样只用 JSON 写法；README 模块图补 Tree。测试：npc_settler_test 原“invalid_session / dead 重试同一步”用例按契约修正替换为两例（build 回 dead → 60 tick 后先 move_to 站位再 build；gather 回 session_lost → 工地重来、缺额按新余额重算为 1024 − 812 = 212、不再出现 units 724 的第二条 gather，第二次瞬态原因记 idle 换下一工地）；npc_gather_test 新增 1 例真实 World：盒 x 20..32 / z 6..18 只有一格 (20,64,6)，出生在南侧站位 (26.5, 4.5)、眼高 65.5，到格心 ≈ 6.40 m > 射程 6 m、入射面 ≈ 5.87 m（手算），done `%{mined: 1, gained: 512, skipped: 0}`；npc_tree_test 补一行“技能叶子参数建树时不校验”。改前为红：三条新用例在修复前代码上 0/3（gather 用例 `exhausted`，四个站位都被本地预检判够不着；Settler 两例在重试时刻发出的不是 move_to）。改后 tree / settler / gather / abilities / skill_house_design 五个文件 47/47；gate 全量 207/268（1 doctest，206/267），失败 61 项名单与修复前逐条相同（T1Transport 57 + VoximSpellDispatch 4）；编译 npc/ 无告警；scene_server 未改动、未重跑。**已实跑**：修复后代码（基线 33377ad2 + 未提交改动）上 30 min 浸泡一次，每 5 min 采样：放下 0/4/6/7/7/7/7、拆 0/2/4/7/7/7/7、挖掉 0/6/10/12/12/12/12 格、idle occupied 0/9/18/26/35/44/52、exhausted 0/0/0/6/24/42/58，拒绝末值 occupied 91 / insufficient_material 64 / no_target 4，npc_session_lost 1（入场约 2 s 的同一 CollisionUpdates KeyError）、Body 崩溃重启 0、LLM 0、立着的 NPC 石柱 ≤ 2、余额 300 守恒，body_state 首尾 `%{life: 100, protein_g: 100.0}` 相同（夹具无 climate），进程 134 → 134，内存 79.8 → 77.1 MB。满足 D-8 三项阈值；未验收（同上一行，待主控复核）。瞬态重试路径只由纯函数用例覆盖，浸泡里没有遇到工地内的瞬态拒绝 |

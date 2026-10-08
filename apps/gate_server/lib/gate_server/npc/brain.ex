@@ -2,7 +2,8 @@ defmodule GateServer.Npc.Brain do
   @moduledoc """
   全局系统功能：NPC 决策后端的可插拔边界。Body 固定，Brain 可换（决策树、LLM、外部分类模型）。
 
-  所有后端由 `Runtime` 组合，拥有同一组原子动作、技能与记忆命令。
+  所有后端由 `Runtime` 组合，拥有同一组原子动作、技能与记忆命令。现有后端：`Brain.Llm`、`Brain.Routine`、`Brain.Patrol`、
+  行为树 `Brain.Tree`（树定义在 `GateServer.Npc.Trees`）。
   长任务来自 `profile.skills`，由 Runtime 的独立 worker 执行并只回一个最终 Outcome。
   荒野施工驱动 Builder 纯状态机。中断检查只由 `interrupt_policy` 开启；不配置时不调用外部调度模型。
   记忆读写经 Memory，进度与动手依据始终由 World 现查。
@@ -16,6 +17,7 @@ defmodule GateServer.Npc.Brain do
   ## 共用技能与记忆命令
 
       %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
+      %{id:, verb: :skill, skill: :gather, args: %{"box" => [[x0,y0,z0],[x1,y1,z1]], "material" => m, "units" => n, "tool_id" => t}}
       %{id:, verb: :cancel_skill, call: 原技能调用号}
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}

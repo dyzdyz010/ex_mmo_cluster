@@ -78,9 +78,8 @@ defmodule GateServer.Npc.Skills.HouseDesign do
     |> Enum.all?(fn {c, p} -> abs(c - p) <= Perception.reach() end)
   end
 
-  # 锚点所在的宏格 [x, y, z]（micro 坐标向下取整到宏格）。
-  defp anchor_cell(anchor),
-    do: anchor |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1, Spatial.micro_resolution()))
+  # 锚点所在的宏格 [x, y, z]（micro → macro 换算只用 `VoxelRegion.Damage.macro/1` 这一处，Trees 的锚点格同用它）。
+  defp anchor_cell(anchor), do: Tuple.to_list(VoxelRegion.Damage.macro(%{micro: anchor}))
 
   defp design(context, args) do
     context =

@@ -39,7 +39,7 @@ defmodule GateServer.Npc.Skills.Build do
         {:outcome, %{id: 1, reason: reason}} ->
           {:error, reason, @metrics}
       after
-        300_000 -> {:error, :body_timeout, @metrics}
+        GateServer.Npc.Skill.body_timeout() -> {:error, :body_timeout, @metrics}
       end
     else
       _ -> {:error, :invalid_skill_arguments, @metrics}
