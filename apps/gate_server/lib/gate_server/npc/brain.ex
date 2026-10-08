@@ -18,6 +18,7 @@ defmodule GateServer.Npc.Brain do
 
       %{id:, verb: :skill, skill: :build, args: %{"definition" => hex, "anchor_micro" => [x,y,z], "orientation" => 0}}
       %{id:, verb: :skill, skill: :gather, args: %{"box" => [[x0,y0,z0],[x1,y1,z1]], "material" => m, "units" => n, "tool_id" => t}}
+      %{id:, verb: :skill, skill: :expand, args: %{"definition" => hex, "region" => [[x0,z0],[x1,z1]], "tool_id" => t, "spacing" => n}}
       %{id:, verb: :cancel_skill, call: 原技能调用号}
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}
@@ -143,7 +144,8 @@ defmodule GateServer.Npc.Brain do
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。
   `read_catalog` 只读 World 的公共目录（单位与余额相同，都是微格体积单位）：
-  `:prefab` 是 `%{definition_id:, materials: %{material => units}, size_m: [x, y, z]}`（作者目录与运行时发布都查得到，
+  `:prefab` 是 `%{definition_id:, materials: %{material => units}, size_m: [x, y, z], bounds_micro: [[x0, y0, z0], [x1, y1, z1]]}`
+  （bounds_micro 是朝向 0 时相对锚点的 micro 半开包围盒；作者目录与运行时发布都查得到，
   没有这个 id 回 `definition_not_found`）；`:prefabs` 是 `%{prefabs: [%{definition_id:, name:, publisher:, materials:}], total:}`
   （最近 20 条运行时发布，新在前；不含作者目录）；`:materials` 是
   `%{materials: [%{material:, name:, edible: %{protein_g:, energy_j:} | nil, recipe: %{inputs: %{material => units}, units:} | nil}]}`

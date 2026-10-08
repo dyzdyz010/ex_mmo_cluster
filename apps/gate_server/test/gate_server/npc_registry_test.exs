@@ -59,6 +59,55 @@ defmodule GateServer.NpcRegistryTest do
                NpcRegistry.brain("settler", Map.delete(params, "quarries"))
     end
 
+    # 放置阶段决策稿 §7：可选的扩张区域；配了才多一个 expand 技能（Settler 树每轮维护完已知工地后调用一次）。
+    test "settler: an optional expansion (region, spacing, tool_id) becomes profile.expansion and adds the expand skill" do
+      params = %{
+        "definition" => @hex,
+        "sites" => [],
+        "revisit_ticks" => 600,
+        "tools" => %{"1" => "镐"},
+        "expansion" => %{"region" => [[6, 8], [16, 10]], "spacing" => 2, "tool_id" => 1}
+      }
+
+      assert {Brain.Tree,
+              %{
+                tree: &Trees.settler/1,
+                definition: @hex,
+                sites: [],
+                quarries: %{},
+                revisit_ticks: 600,
+                tools: %{1 => "镐"},
+                skills: %{build: %{}, gather: %{}, expand: %{}},
+                expansion: %{region: [[6, 8], [16, 10]], spacing: 2, tool_id: 1}
+              }} == NpcRegistry.brain("settler", params)
+
+      for bad <- [
+            %{"region" => [[6, 8], [16, 10]], "spacing" => -1, "tool_id" => 1},
+            %{"region" => [[6, 8]], "spacing" => 2, "tool_id" => 1},
+            %{"region" => [[6, 8], [16.5, 10]], "spacing" => 2, "tool_id" => 1},
+            %{"region" => [[6, 8], [16, 10]], "spacing" => 2},
+            %{"region" => [[6, 8], [16, 10]], "tool_id" => 1}
+          ] do
+        assert_raise_any(
+          fn -> NpcRegistry.brain("settler", %{params | "expansion" => bad}) end,
+          bad
+        )
+      end
+    end
+
+    test "llm: expand is registered without configuration and projected as a tool" do
+      with_env(@llm_env, fn ->
+        assert {Brain.Llm, %{skills: %{build: %{}, expand: %{}}} = profile} =
+                 NpcRegistry.brain("llm", %{
+                   "goal" => "g",
+                   "tools" => %{"1" => "镐"},
+                   "skills" => ["expand", "build"]
+                 })
+
+        assert "expand" in Enum.map(GateServer.Npc.Abilities.tools(profile), & &1.name)
+      end)
+    end
+
     test "llm: goal / belt / groups / skills / spells / genesis from the row, endpoint from the environment" do
       env = %{
         @llm_env

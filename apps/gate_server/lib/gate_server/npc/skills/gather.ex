@@ -3,7 +3,8 @@ defmodule GateServer.Npc.Skills.Gather do
   全局系统功能：从作者给定的采石盒里取天然格，直到自己某种材料的余额增加 `units`（角色能力函数库设计稿
   docs/10-active/cross-cutting/2026-10-07-character-capability-library.md §11 I3、§10 S6）。技能壳 + 纯函数
   `candidates/3`：只经 Body 的原子动作 `move_to` / `look` / `query_balances` / `probe_toward` / `use_tool`
-  （内部 id `{:skill, 调用号, 步}`），与玩家逐格挖同一条裁决；不逐帧读观察（不声明 `observations?/0`）。
+  （内部 id `{:skill, 调用号, 步}`，由 `Skill.call/2` 发出；被 `Skills.Expand` 在自己的调用里组合时，context 的 `step_space`
+  给步号加命名空间），与玩家逐格挖同一条裁决；不逐帧读观察（不声明 `observations?/0`）。
 
   流程：
 
@@ -29,13 +30,13 @@ defmodule GateServer.Npc.Skills.Gather do
   production_materials 且没有 drop_table（否则挖掉不入账）；盒子在 look 的上限内。
   """
   @behaviour GateServer.Npc.Skill
-  alias GateServer.Npc.{Abilities, Actions, Blueprint, Body, Skill, WorldRequest}
+  alias GateServer.Npc.{Abilities, Actions, Blueprint, Skill, WorldRequest}
   alias SceneServer.Movement.Player
   alias VoxelRegion.{Phase, Spatial}
 
   @metrics %{request_count: 0, jev_request_count: 0}
   # move_to 被这些原因拒绝 = 这个站位去不了，换下一个；其余拒绝原样作为终态。
-  @unreachable [:no_path, :stuck, :too_far]
+  @unreachable Skill.unreachable()
   # use_tool 被这些原因拒绝 = 从这个站位够不着这一格，留给下一个站位。
   @blocked [:out_of_reach, :occluded]
 
@@ -84,6 +85,8 @@ defmodule GateServer.Npc.Skills.Gather do
       body: context.body,
       call: context.call_id,
       step: 0,
+      # 被别的技能组合时（expand）的步号命名空间，见 `Skill.call/2`；单独调用时为 nil。
+      space: Map.get(context, :step_space),
       box: {{min(x0, x1), min(y0, y1), min(z0, z1)}, {max(x0, x1), max(y0, y1), max(z0, z1)}},
       material: material,
       units: units,
@@ -92,7 +95,7 @@ defmodule GateServer.Npc.Skills.Gather do
 
     # 工具不在目录里、材料不是本世界的生产材料（余额表里没有它）：参数不成立，不动手。
     with {:ok, definition} <- VoxelRegion.World.tool_definition(context.world, tool),
-         {:ok, %{balances: balances}, state} <- call(state, %{verb: :query_balances}),
+         {:ok, %{balances: balances}, state} <- Skill.call(state, %{verb: :query_balances}),
          %{balance: start, cost: cost} <- Enum.find(balances, &(&1.material == material)) do
       state =
         Map.merge(state, %{
@@ -140,11 +143,12 @@ defmodule GateServer.Npc.Skills.Gather do
   defp visit([], state), do: finish(state)
 
   defp visit([stand | rest], state) do
-    case call(state, %{verb: :move_to, position: stand, tolerance: Actions.tolerance()}) do
+    case Skill.call(state, %{verb: :move_to, position: stand, tolerance: Actions.tolerance()}) do
       {:ok, %{position: {px, _, pz} = position}, state} ->
         {lo, hi} = state.box
 
-        with {:ok, %{probe_occupancy: rows}, state} <- call(state, %{verb: :look, min: lo, max: hi}) do
+        with {:ok, %{probe_occupancy: rows}, state} <-
+               Skill.call(state, %{verb: :look, min: lo, max: hi}) do
           cells =
             candidates(rows, state, {px, pz})
             |> Enum.reject(&(state.skipped[&1] == :foreign))
@@ -196,7 +200,7 @@ defmodule GateServer.Npc.Skills.Gather do
 
   # 余额核对：增量够了 → done；不够按差额重估还要挖的格数。
   defp check(state) do
-    with {:ok, %{balances: balances}, state} <- call(state, %{verb: :query_balances}) do
+    with {:ok, %{balances: balances}, state} <- Skill.call(state, %{verb: :query_balances}) do
       gained = Enum.find(balances, &(&1.material == state.material)).balance - state.start
       state = %{state | gained: gained}
 
@@ -253,7 +257,9 @@ defmodule GateServer.Npc.Skills.Gather do
   defp strike(cell, hit, direction, state) do
     state = pace(state)
 
-    case call(state, %{verb: :use_tool, tool_id: state.tool, direction: direction, target: hit}) do
+    command = %{verb: :use_tool, tool_id: state.tool, direction: direction, target: hit}
+
+    case Skill.call(state, command) do
       {:ok, _, state} -> again(cell, hit, direction, state)
       {:error, :tool_cooldown, state} -> strike(cell, hit, direction, state)
       {:error, :stale_target, state} -> again(cell, hit, direction, state)
@@ -281,7 +287,7 @@ defmodule GateServer.Npc.Skills.Gather do
 
   # 这一格已是空气 = 挖掉；否则这次没打到它，留给下一个站位。
   defp settled(cell, state) do
-    case call(state, %{verb: :look, min: cell, max: cell}) do
+    case Skill.call(state, %{verb: :look, min: cell, max: cell}) do
       {:ok, %{probe_occupancy: [%{material: 0, refined: false}]}, state} -> {:mined, state}
       {:ok, _, state} -> {:blocked, state}
       {:error, _, _} = error -> error
@@ -289,7 +295,7 @@ defmodule GateServer.Npc.Skills.Gather do
   end
 
   defp probe(state, direction),
-    do: call(state, %{verb: :probe_toward, tool_id: state.tool, direction: direction})
+    do: Skill.call(state, %{verb: :probe_toward, tool_id: state.tool, direction: direction})
 
   defp identity(target), do: Map.take(target, [:granularity, :micro, :incarnation, :owner, :material])
 
@@ -303,17 +309,4 @@ defmodule GateServer.Npc.Skills.Gather do
   end
 
   defp now, do: System.monotonic_time(:millisecond)
-
-  defp call(state, command) do
-    step = state.step + 1
-    state = %{state | step: step}
-    Body.command(state.body, Map.put(command, :id, {:skill, state.call, step}))
-
-    receive do
-      {:outcome, %{id: ^step, status: :done, data: data}} -> {:ok, data, state}
-      {:outcome, %{id: ^step} = outcome} -> {:error, outcome.reason || outcome.status, state}
-    after
-      Skill.body_timeout() -> {:error, :body_timeout, state}
-    end
-  end
 end

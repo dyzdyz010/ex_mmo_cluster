@@ -18,6 +18,7 @@
 | M2 | 创世能力组 `:genesis`（`fill_box` / `set_cells`，底层 `World.apply_edits`，只授予注册表标了 genesis 的 NPC） | 已实现、测试通过，待复核提交（§6） |
 | M3 | scene_server：非流送 Scene 里 Player 在碰撞基线装好前收到 timeline 时 `CollisionUpdates.record_artifact/3` KeyError 崩溃 | 待做 |
 | M4 | 客户端 `dead` 中文文案（Voxim 资产，随客户端一起） | 待做 |
+| M5 | 持续扩张：技能 `expand`（区域内选址、缺料自采、放置）+ Settler 可选 `expansion`（每轮维护完再建一座） | 已实现、测试通过，待复核提交（§7） |
 | L | 长跑验收（建设者 / LLM 住民 / 创世 NPC，服务端浸泡 + 短双客户端） | 最后 |
 
 ## 2 M1 注册表
@@ -48,8 +49,8 @@ GateServer.Npc.Registry.start_all()    # 启动时调用：拉起全部 enabled 
 
 | brain | 模块 | params（JSON） |
 |---|---|---|
-| `settler` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`、`revisit_ticks`、`tools`（技能 build / gather 固定） |
-| `llm` | `Brain.Llm` | `goal`、`tools`、`groups`、`skills`、`spells`（可选）、`max_requests_per_hour`、`genesis`（可选，见 M2）；endpoint 不入库，启动时取运行环境 `NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL / NPC_LLM_EFFORT / NPC_LLM_CACERTFILE` |
+| `settler` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`、`revisit_ticks`、`tools`（技能 build / gather 固定）、`expansion`（可选，M5：`{"region": [[x0, z0], [x1, z1]], "spacing": n, "tool_id": t}`，配了再加 expand） |
+| `llm` | `Brain.Llm` | `goal`、`tools`、`groups`、`skills`（build / gather / expand / design_house）、`spells`（可选）、`max_requests_per_hour`、`genesis`（可选，见 M2）；endpoint 不入库，启动时取运行环境 `NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL / NPC_LLM_EFFORT / NPC_LLM_CACERTFILE` |
 | `patrol` | `Brain.Patrol` | `route`、`dig` |
 
 **启动**：gate 监督树在 `GateServer.NpcSup` 之后加一个临时 Task 调 `start_all/0`。Scene 还没就绪也没关系：Body 自己维护会话，
@@ -137,3 +138,55 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 2026-10-08 | **住民专项复验 run05（已实跑，独立容器 voxim-caplib-run05，镜像 65cecb84，76 min）**：同一块空地建成 3 座（run04 只到 2 座）：421b57f9 / cb006eb0 / 759f820d，石 52.5 / 9.8 / 8.9 m³；5 次 design_house 3 成 2 败（1 次 12 轮用满且余额 0，1 次被保护终止），首条消息最大 26.6 KB / 首轮约 1.7 万 token（run04 第五次约 13 万）；同一 site 实测 117 242 B → 9 294 B；最长单次请求 142 s（旧 60 s 超时会失败 3 次），超时 0、请求失败 0、Body 重启 0、Player 异常 0、session_lost 0；gather 内 no_path 2 次（夹具采石盒北侧站位无路，换候选继续）。11:38 被 Test-only 保护“trailing hour 主决策 > 25”撤下：大脑额度是固定窗口（每满一小时清零），跨边界的一小时最多两倍额度——不是失控（31 次决策无循环）。证据 Voxim `Saved/CapabilityLibrary-20261008/run05/` |
 | 2026-10-08 | LLM 额度改为滑动窗口（`Brain.Llm.recent_asks/2`）：任意连续一小时不超过 `max_requests_per_hour`；手算小例（第 45–70 分钟 26 次：第 71 分钟 26、第 106 分钟 24、第 112 分钟 18） |
 | 2026-10-08 | run04 观察：建设者每次回访的技能终态都写一条经历，约 3 h 写满 1000 条上限后逐条裁旧（`npc_memory_trimmed`）。**用户决定：照常记**——现有记忆只是过渡，后期接入更完善的独立记忆系统，与 NPC 完全解耦；本阶段不为经历写入加过滤或节流 |
+| 2026-10-08 | **M5 持续扩张已实现、测试通过（未实跑、未提交，待复核）**（§7）：新技能 `expand`（`Skills.Expand`，选址 / 网格 / 分段 / 分块 / 采石候选纯函数，采石复用 `Gather.run/3`，步号命名空间经新的 `Skill.call/2`）；`read_catalog prefab` 加 `bounds_micro`；`Brain.Tree` 的 act 加 `append:`；Settler 可选 `expansion`；注册表 settler 行 `expansion`、llm `skills` 可登记 `expand`。改前红：新用例 10/10 纯函数 `UndefinedFunctionError`；注册表 settler 行带 expansion 时旧代码静默丢掉（profile 无 expansion、技能无 expand），llm `"expand"` KeyError，Settler 脚本用例 KeyError。改后：npc_expand 11/11（含真实 World：余额 0 → 地块 A 先采石堆 2 格、地块 B 跳过 A、第三次 no_site）、npc_settler 11/11（含多轮：建 A → 维护 A 建 B → no_site；拆 A 后原锚点重建、此后只维护）、npc_registry 12/12；gate 全量 254/311，失败只有 T1Transport 57（与基线同）。日志在主控 scratchpad `phase3/logs/`（red-expand-pure、red-settler-registry、gate-full-1、green-final） |
+
+## 7 持续扩张（M5）
+
+用户 2026-10-08 问“建设者为什么不一直盖新房子”：Settler 只维护作者给定的工地清单，建完就只会被拆重建。要让它在作者划定的扩展
+区域里持续扩张——建完已知工地就去找下一块地、建下一座，材料不够自己找天然石料采；LLM 住民也能调用同一能力。
+
+**契约**（代码正文：`GateServer.Npc.Skills.Expand`、`GateServer.Npc.Trees` 的 moduledoc）：
+
+| 项 | 内容 |
+|---|---|
+| 技能 | `expand{definition: hex64, region: [[x0, z0], [x1, z1]]（整数格水平闭区间）, tool_id, spacing ≥ 0}`，内置技能（`Skills` 的 `@builtins`），strict schema。只经 Body 原子动作：`read_catalog` / `move_to` / `look` / `query_balances` / `prefab_place`；采石调 `Skills.Gather.run/3`（同一套原子动作，不复制采石逻辑；步号在本调用号下另起命名空间 `{:gather, n}`，技能内部一步统一由新的 `Skill.call/2` 发出） |
+| 选址 | `read_catalog prefab` 新增 `bounds_micro`（朝向 0 时相对锚点的 micro 半开包围盒）→ 足迹；只用朝向 0。候选地块 = 区域内从 (x0, z0) 起、间距“足迹宽 + spacing”的网格，按地块中心离自己由近到远。空地判定（纯函数 `site/5`，依次）：足迹外扩 spacing 内无放置记录 / 细化格（`crowded`）→ 首列找到地面（`no_ground`）→ 各列同高实心（`uneven`）→ 上方到建筑高度全是空气（`blocked`，依据 w/prefabs.ex `place_aligned_tree`：宏格与 micro 都只放进格值 `{0, _}`，花草也不行）→ 四个边中点站位有一个站得住（`no_stand`）。锚点在宏格角上（满足对齐门） |
+| 行走 | 看窗口不在 look 范围内时，先沿直线分段走到地块最近的站位（`waypoints/3`，每段 ≤ `Perception.reach()` − 2，每段仍由 Body 寻路）；某段 no_path / stuck / too_far → 换下一个候选 |
+| 取料 | `query_balances` 按材料单算缺额；缺的材料在站位周围（区域内、各轴离自己 ≤ 14 格）找露天的天然格（`placed_by == nil`、非细化、地面层或其上 2 层，层自上而下先挖料堆；离足迹 ≥ spacing + 2 格），逐格交给 gather（单格盒）直到不缺；采不够 → `insufficient_material`，不硬建 |
+| 结果 | done `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；放置被拒（occupied / out_of_reach / out_of_bounds / protected_region）、走不到、判定不过 → 换下一个候选（`skipped` 按原因计数）；候选用尽 → `no_site`；其余拒绝（会话丢失、死亡、材料不足…）原样作为终态 |
+| Settler | profile 可选 `expansion: %{region, spacing, tool_id}`（注册表 settler 行的 JSON 同名键，配了才加 expand 技能）。每轮巡完已知工地后调一次 expand：done 的新工地（anchor_micro / orientation / stand）经 `Brain.Tree` 新增的 `append:` 追加进黑板 `:sites`，下一轮起与作者工地同样维护（被拆重建）；`no_site` 等记 `npc_settler_idle entity= act=expand reason=` |
+| 观察 | 每次 expand 结束记 `npc_expand entity= result= site= skipped= gathers=`；Settler 的 idle 行；放置照常 `character_intent` |
+
+**护栏**：`region` 是唯一的作者护栏——只在区域内动土（gather 的盒子是区域内的单格）与建造（足迹整个在区域内），行走与只读 look
+可以出区域；不拆任何已有放置（足迹只放进空气，间隔带里有放置记录的地块整个跳过，gather 只挖天然格）。作者 prefab 宏格 look
+看不到（能力库 F20），在间隔带里不算拥挤，在足迹里照样不是空气。
+
+**取舍**：
+
+- 网格而非逐格枚举（**原创决策**：UAlbertaBot 逐格由近到远试，本仓改成从区域角起的网格；风险是网格位有障碍就整块跳过，
+  验证见 §7 测试的地块顺序与 Settler 多轮用例）：相邻地块之间恰好留出 spacing；候选数是逐格的 1 / 间距²，每个候选一两次 look；自己建过的地块重启后仍在网格
+  原位（被拆后会被原地重建）。代价：网格位上有障碍就整块跳过，不左右挪动找位置。
+- 只用朝向 0：选址规则与朝向无关，足迹换成旋转后的包围盒即可；当前没有需要其他朝向的调用方。
+- 地面带：看它时自己脚下地面上下 4 格（作者保证区域大致平坦）；更陡的地块因看不到地面而跳过，走近之后的地块按新位置判定。
+- 扩张出来的工地只在黑板里，不存档、不写记忆（记忆将来换成独立系统，现在不依赖它）：重启后扩张从世界现状继续（已建地块因
+  间隔带里有放置记录不再是候选），代价只是重启前扩张出来的建筑不再被维护；它们被拆后地块空出，又会被扩张在网格原位重建。
+- Settler 的 `expansion` 带 `tool_id`（挖掘工具）：工具带可有多把工具、采石盒的 tool_id 按材料各配，没有唯一来源，显式配置。
+- Settler 维护工地仍是单程 move_to：扩张区域（含外扩 2 格的站位）也要满足能力库设计稿 §8.2 “各站位两两水平距离 ≤ reach”，否则远处的扩张
+  工地在维护时 `too_far`、本轮跳过（日志可见）。expand 自己找地时分段走；维护也分段需要让树的 act 参数读到观察，是独立增量。
+- 每轮最多新建一座（扩张接在每轮维护之后）；候选都不成立时每轮多一次勘察（区域别太大：耗时与地块数成正比）。
+
+**依据**：
+
+| 来源 | 要点 | 本项目怎样用 | 取舍 |
+|---|---|---|---|
+| UAlbertaBot `BuildingPlacerManager::getBuildLocationNear` / `canBuildHereWithSpace`（https://github.com/davechurchill/ualbertabot/blob/master/UAlbertaBot/Source/BuildingPlacerManager.cpp ，2026-10-08 查证源码） | 成熟 RTS 机器人选址：候选格按离期望点由近到远（`getClosestTilesTo`）逐个试，第一个“足迹外扩 buildDist 内都可建”的就用 | 由近到远、足迹外扩 spacing 判定空地 | 候选从逐格改为网格（见上）；“可建”用权威的放置规则（只放进空气）与本仓的放置记录 |
+| Botea, Müller, Schaeffer, *Near Optimal Hierarchical Path-Finding*（J. Game Development 1(1):7–28, 2004，https://papersdb.cs.ualberta.ca/~papersdb/view_publication.php?pub_id=585 ） | HPA*：长路程拆成局部簇内的寻路段，全局层一大步跨一个簇 | 超出单程上限时沿直线分段，每段交给 Body 的局部寻路（S1 的单程上限不变） | 不建抽象图：直线分段失败就换候选，没有当前调用方需要绕远 |
+| BehaviorTree.CPP 黑板（https://www.behaviortree.dev/docs/tutorial-basics/tutorial_02_basic_ports/ ） | 黑板是“树内所有节点共享的键值存储”，节点经端口读写 | `append:` 只是 `store:` 的列表形写入；扩张工地不另存档，进度以世界为准 | 与 Settler 既有“进度不存档，以权威为准”一致 |
+| 本仓 w/prefabs.ex `place_aligned_tree` / `prefab_alignment` / `prefab_reach` | 放置只进空气、宏格定义锚点须对齐、足迹任一格在射程内即可 | 空地判定与锚点对齐直接照这几条；够不够得着仍由权威裁决 | 不在技能里复刻射程判定 |
+
+**测试**（`apps/gate_server/test/gate_server/npc_expand_test.exs`、`npc_settler_test.exs`、`npc_registry_test.exs`）：选址纯函数手算小世界
+（平地放得下与站位排序、首列 / 别列高一格、足迹上有草、间隔带内有别人放置的格或细化格、外扩一格之外放得下）；规格换算、网格
+顺序、分段路点、分块、采石候选的手算用例；strict schema。真实 World：余额 0 的 NPC 连续三次 expand——地块 A（先采石堆两格）、
+地块 B（跳过已建的 A，`skipped %{crowded: 1}`）、`no_site`，余额、石堆、邻居的格与地面逐格核对。Settler 多轮：配 expansion 后
+第一轮建 A、第二轮维护 A 并建 B、第三轮 no_site；拆掉 A 后下一轮维护把它在原锚点重建，此后只维护。纯函数脚本用例：done 的
+新工地进列表并在下一轮被维护、no_site 记 idle。

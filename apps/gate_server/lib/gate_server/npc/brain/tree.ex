@@ -20,7 +20,8 @@ defmodule GateServer.Npc.Brain.Tree do
   | succeed / fail | `{:succeed, 子, opts}` / `{:fail, 子}` | 子结束后强制 SUCCESS / FAILURE；`succeed` 带 `log: 标签` 时子 FAILURE 记一行 `标签 entity= act= reason=`（取黑板 `:last_failure`），带 `context: 键` 时追加 `context=` 该黑板值 |
 
   `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end`（tick 时求值）。
-  id 由树单调分配（1, 2, …）。done → SUCCESS（`store: 键` 时把 `data` 写进黑板）；rejected / superseded → FAILURE，
+  id 由树单调分配（1, 2, …）。done → SUCCESS（`store: 键` 时把 `data` 写进黑板；`append: {键, fun}` 时把 `fun.(data)` 追加到
+  黑板 `键` 的列表末尾，如 Settler 把扩张出来的新工地加进工地列表）；rejected / superseded → FAILURE，
   并把 `%{act: 名字, reason: 原因}` 写进黑板 `:last_failure`（superseded 的原因记 `:superseded`）。构造结果是
   `unknown_tool` / `invalid_tool_arguments` 时本地 FAILURE、不发给 Body。`retry: ticks`：被拒且原因是
   `:invalid_session` / `:dead` / `:session_lost`（`transient/0`：命令没被执行或角色暂时不能行动）时不判失败，`ticks` 后用
@@ -32,7 +33,8 @@ defmodule GateServer.Npc.Brain.Tree do
   节点形状不对、名字未知或静态参数不合法都 raise（作者配置错误，启动即失败，不降级）。技能叶子的参数原样透传
   （Abilities 不译码技能参数），建树时不校验，由技能在运行时以 `invalid_skill_arguments` 拒绝。函数形参数在 tick 时译码。
 
-  黑板是普通 map，只由 `act` 的 `store:`、`each` 的 `as` 与 `act` 的失败写入；节点状态只有 SUCCESS / FAILURE / RUNNING。
+  黑板是普通 map，只由 `act` 的 `store:` / `append:`、`each` 的 `as` 与 `act` 的失败写入；节点状态只有 SUCCESS / FAILURE / RUNNING。
+  `each` 在开始时取一次列表，遍历途中追加的项下一次遍历才出现。
 
   事件：`{:observation, o}` 更新最新观察并 tick 根（推进 wait 与 retry）；`{:outcome, o}` 只交给 id 匹配的 RUNNING 叶子，
   然后 tick 根；`{:heard, _}` 忽略。首个 Observation 到达后才 tick 根；根结束后不再发命令。
@@ -216,7 +218,7 @@ defmodule GateServer.Npc.Brain.Tree do
 
     cond do
       outcome.status == :done ->
-        {:success, nil, store(ctx, opts[:store], outcome.data)}
+        {:success, nil, ctx |> store(opts[:store], outcome.data) |> append(opts[:append], outcome.data)}
 
       outcome.status == :rejected and outcome.reason in @transient and opts[:retry] != nil ->
         {:running, %{retry_at: ctx.tick + opts[:retry], command: leaf.command}, ctx}
@@ -291,6 +293,11 @@ defmodule GateServer.Npc.Brain.Tree do
 
   defp store(ctx, nil, _value), do: ctx
   defp store(ctx, key, value), do: %{ctx | blackboard: Map.put(ctx.blackboard, key, value)}
+
+  defp append(ctx, nil, _data), do: ctx
+
+  defp append(ctx, {key, fun}, data),
+    do: %{ctx | blackboard: Map.update!(ctx.blackboard, key, &(&1 ++ [fun.(data)]))}
 
   defp log(tag, context, ctx) do
     failure = Map.get(ctx.blackboard, :last_failure, %{})

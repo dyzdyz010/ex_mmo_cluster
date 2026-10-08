@@ -12,13 +12,17 @@ defmodule GateServer.Npc.Trees do
         sites: [%{anchor_micro: [x, y, z], orientation: 0..23, stand: [x, z]}],
         quarries: %{material_id => %{box: [[x0, y0, z0], [x1, y1, z1]], tool_id: t}},   # 可缺省（只用现有余额）
         revisit_ticks: 36_000,                                # 一轮巡完后休息多久（tick，60 Hz）
+        expansion: %{region: [[x0, z0], [x1, z1]], spacing: n, tool_id: t},   # 可缺省；配了 skills 要有 expand
         tools: %{t => 说明}, skills: %{build: %{}, gather: %{}}}
 
   每轮：`read_catalog what: "prefab"` 取材料单，按顺序走每个工地：到站位 → `build`；建成即这个工地完成。
   `build` 回 `insufficient_material` → `query_balances` → 取第一种缺料且配了采石盒的材料，`gather` 缺额
   （units = 材料单 − 余额）→ 回站位 → 再 `build` 一次。`build` 回 `occupied` → `look` 锚点格：整格或格内构件实例的 `placed_by` 是自己 →
   视为已建成，否则跳过。其余拒绝（protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、
-  unreachable…）这个工地本轮放弃，换下一个。一轮巡完等 `revisit_ticks` 再巡。
+  unreachable…）这个工地本轮放弃，换下一个。配了 `expansion` 时，巡完已知工地后调一次 `expand`（`Skills.Expand`：在区域里找空地、
+  缺料自己采、放下）：done 就把新工地 `%{anchor_micro, orientation, stand}` 追加进黑板的工地列表，下一轮起与作者工地同样维护
+  （被拆就重建）；`no_site` 等拒绝记一行 `npc_settler_idle entity= act=expand reason=`（没有 context），下一轮再找（期间空出来的
+  地块会被用上）。所以每轮最多新建一座。一轮巡完等 `revisit_ticks` 再巡。
 
   | 规则 | 内容 |
   |---|---|
@@ -26,15 +30,18 @@ defmodule GateServer.Npc.Trees do
   | 瞬态原因 | `invalid_session` / `dead` / `session_lost`（`Brain.Tree.transient/0`）：工地内任一步遇到，60 tick（1 秒）后从站位整体重来一次——复活与重新 claim 后身体在出生点，缺额由 `query_balances` 重算，不原样重发旧命令；再遇瞬态原因本工地本轮放弃。只有 `read_catalog`（只读、与位置无关）带 `retry: 60` 原样重发 |
   | 停因日志 | 工地放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`；材料单取不到（`definition_not_found`）本轮放弃，记 `npc_settler_idle entity= act=read_catalog reason=…`，休息后再试 |
   | 进度 | 不存档，以权威为准：重启后从头巡，已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建 |
+  | 扩张出来的工地 | 只在黑板里，不存档：重启后只剩作者工地。扩张从世界现状继续（已建的地块因间隔带里有放置记录不再是候选），代价只是重启前扩张出来的建筑不再被维护；它们被拆后地块空出来，又会被扩张在网格上的原位置重建。不写进记忆：记忆将来换成独立系统，现在不依赖它（放置阶段决策稿 §7） |
 
   作者保证：定义（宏格或 micro 构件均可）占着锚点格（`anchor_micro` 所在的 macro 格，否则 occupied 时认不出是自家）；各站位与采石盒站位
-  两两水平距离不超过 `Perception.reach()`（不做分段与长途寻路）；站位离锚点格在工具射程内。被占一律跳过、不清场。
+  两两水平距离不超过 `Perception.reach()`（维护工地时是单程 move_to，不做分段与长途寻路）；配了扩张时，扩张区域（含外扩 2 格的站位）
+  也在这个范围里，否则远处扩张出来的工地在维护时 `too_far`、本轮跳过（`expand` 自己找地时会分段走）；站位离锚点格在工具射程内。
+  被占一律跳过、不清场。
   """
 
   # 瞬态原因之后等 1 秒（60 tick）。
   @pause 60
 
-  @doc "Settler 树与黑板初值（`definition`、`sites`、`quarries`）；形状见 moduledoc。"
+  @doc "Settler 树与黑板初值（`definition`、`sites`、`quarries`、`expansion`）；形状见 moduledoc。"
   def settler(profile) do
     stand = {:act, "move_to", &stand_args/1}
     build = {:act, "build", &build_args/1}
@@ -71,13 +78,20 @@ defmodule GateServer.Npc.Trees do
     # 瞬态原因：身体可能已回出生点、余额可能已变（gather 中途失败时已挖的格已入账），从站位整体重来一次。
     site = {:sel, [attempt, {:seq, [{:cond, &transient?/2}, {:wait, @pause}, attempt]}]}
 
+    expansion = Map.get(profile, :expansion)
+
+    # 巡完已知工地再扩张一次：done 的新工地追加进工地列表（下一轮起维护它），其余结果记 idle。
+    expand =
+      {:succeed, {:act, "expand", &expand_args/1, append: {:sites, &new_site/1}},
+       log: "npc_settler_idle"}
+
     round =
       {:seq,
        [
          {:act, "read_catalog", %{"what" => "prefab", "definition" => profile.definition},
           store: :bill, retry: @pause},
          {:each, :sites, :site, {:succeed, site, log: "npc_settler_idle", context: :site}}
-       ]}
+       ] ++ if(expansion, do: [expand], else: [])}
 
     tree =
       {:repeat, :forever,
@@ -87,9 +101,21 @@ defmodule GateServer.Npc.Trees do
      %{
        definition: profile.definition,
        sites: profile.sites,
-       quarries: Map.get(profile, :quarries, %{})
+       quarries: Map.get(profile, :quarries, %{}),
+       expansion: expansion
      }}
   end
+
+  defp expand_args(%{definition: definition, expansion: expansion}),
+    do: %{
+      "definition" => definition,
+      "region" => expansion.region,
+      "tool_id" => expansion.tool_id,
+      "spacing" => expansion.spacing
+    }
+
+  # expand 的 done data 里只有这三项是工地（另有 site_cell / seq / skipped 与 Runtime 加的 metrics）。
+  defp new_site(data), do: Map.take(data, [:anchor_micro, :orientation, :stand])
 
   defp stand_args(%{site: %{stand: [x, z]}}), do: %{"x" => x, "z" => z, "y" => nil}
 

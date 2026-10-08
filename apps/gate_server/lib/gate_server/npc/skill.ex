@@ -19,6 +19,35 @@ defmodule GateServer.Npc.Skill do
   @doc "技能等一个 Body Outcome 的上限（毫秒）：Body 对每条命令都会回一个 Outcome，超时以 `body_timeout` 结束。"
   def body_timeout, do: 300_000
 
+  @doc "`move_to` 被这些原因拒绝 = 去不了这个目标（Body 的寻路与单程上限），技能换下一个目标；其余拒绝原样作为终态。"
+  def unreachable, do: [:no_path, :stuck, :too_far]
+
+  @doc """
+  技能内部的一步原子动作：编下一个步号，以 `{:skill, 调用号, 步号}` 交给 Body，等这一步的 Outcome（上限 `body_timeout/0`）。
+  `state` 是技能自己的状态，至少有 `body`、`call`（调用号）与 `step`（上一个步号，从 0 起）。可选 `space`：一个技能在自己的
+  调用里组合另一个技能（如 expand 调 gather）时，给被组合的那次一个步号命名空间，步号写成 `{space, n}`，同一调用号下的
+  内部 id 不重复（Runtime 只按调用号路由，步号原样还给 worker）。返回 `{:ok, data, state}` 或 `{:error, 原因, state}`。
+  """
+  def call(state, command) do
+    step = state.step + 1
+    state = %{state | step: step}
+
+    key =
+      case Map.get(state, :space) do
+        nil -> step
+        space -> {space, step}
+      end
+
+    GateServer.Npc.Body.command(state.body, Map.put(command, :id, {:skill, state.call, key}))
+
+    receive do
+      {:outcome, %{id: ^key, status: :done, data: data}} -> {:ok, data, state}
+      {:outcome, %{id: ^key} = outcome} -> {:error, outcome.reason || outcome.status, state}
+    after
+      body_timeout() -> {:error, :body_timeout, state}
+    end
+  end
+
   @doc "技能实现是否声明逐帧读取 Observation。"
   def observes?(module) do
     Code.ensure_loaded!(module)

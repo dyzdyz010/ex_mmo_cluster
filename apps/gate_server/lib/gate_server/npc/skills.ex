@@ -9,6 +9,7 @@ defmodule GateServer.Npc.Skills do
   @builtins %{
     build: GateServer.Npc.Skills.Build,
     design_house: GateServer.Npc.Skills.HouseDesign,
+    expand: GateServer.Npc.Skills.Expand,
     gather: GateServer.Npc.Skills.Gather,
     wilderness: GateServer.Npc.Skills.Wilderness
   }

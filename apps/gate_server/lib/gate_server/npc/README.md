@@ -32,7 +32,9 @@
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
   内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`expand`（在作者划定的区域里找空地、缺料自己采、放下已发布定义，
+  `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
+  `Skill.call/2`（编步号、等 Outcome）；一个技能组合另一个技能（expand 调 gather 的 `run/3`）时给被组合的那次一个步号命名空间。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
 - `Memory` 提供模型记忆工具与上下文投影；`DataService.NpcMemory` 按永久 cid 持久化、检索，并拥有保留上限。
 
@@ -174,7 +176,7 @@ brain: {GateServer.Npc.Brain.Routine, %{
 - 查看：`Abilities.entries(profile)` / `Abilities.tools(profile)` 返回能力条目及 strict 参数；
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
-  含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_interrupt_check`、
+  含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`。
 
 ### 注册表（`Registry`，放置阶段 M1）
@@ -185,12 +187,14 @@ JSON 形（存的与解析的是同一份），再经 `Registry.brain/2` 解析�
 
 ```elixir
 # 全局系统功能运维示例（rpc 表达式）。
-# 建设者：参数同下文 Settler 的 profile（JSON 写法：工具带与采石盒的键是字符串化的整数）；技能固定 build / gather。
+# 建设者：参数同下文 Settler 的 profile（JSON 写法：工具带与采石盒的键是字符串化的整数）；技能固定 build / gather，
+# 配了 expansion（可选，见下文“持续扩张”）再加 expand。
 GateServer.Npc.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "settler",
   params: %{"definition" => definition_hex, "revisit_ticks" => 36_000, "tools" => %{"1" => "镐"},
     "sites" => [%{"anchor_micro" => [64, 512, 112], "orientation" => 0, "stand" => [8.5, 11.5]}],
-    "quarries" => %{"11" => %{"box" => [[10, 64, 4], [13, 64, 6]], "tool_id" => 1}}}})
-# LLM 住民：goal、tools 必填；groups / skills（只收 build、gather）/ spells / max_requests_per_hour / genesis 可选。
+    "quarries" => %{"11" => %{"box" => [[10, 64, 4], [13, 64, 6]], "tool_id" => 1}},
+    "expansion" => %{"region" => [[6, 8], [24, 24]], "spacing" => 2, "tool_id" => 1}}})
+# LLM 住民：goal、tools 必填；groups / skills（build、gather、expand、design_house）/ spells / max_requests_per_hour / genesis 可选。
 # 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE。
 GateServer.Npc.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
@@ -254,9 +258,10 @@ end
   建树时不校验，由技能运行时以 `invalid_skill_arguments` 拒绝。`{:act, 名字, 参数}` 即 opts 为 `[]`。经 Abilities 的目标句柄
   只允许 granularity 0..3，打人（g5）只由直接产出规范命令的代码 Brain 发出。
 - **常用能力名**：`move_to`、`stop`、`look`、`inspect`、`query_balances`、`read_catalog`、`probe_toward`、`use_tool`、`dismantle`、
-  `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`design_house`、`wilderness`）；
+  `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`expand`、`design_house`、`wilderness`）；
   每个名字的参数与 done 含义见 `Abilities.tools(profile)`。
-- **黑板**：`store: 键` 把 done 的 `data` 写进黑板；`each` 把当前项写进 `as`；任一 `act` 失败写
+- **黑板**：`store: 键` 把 done 的 `data` 写进黑板；`append: {键, fun}` 把 `fun.(data)` 追加到黑板 `键` 的列表末尾（`each`
+  开始时取一次列表，追加的项下一次遍历才出现）；`each` 把当前项写进 `as`；任一 `act` 失败写
   `:last_failure = %{act: 名字, reason: 原因}`，`cond` 与 `succeed log:` 都读它。黑板不写别的东西。
 - **retry**：`retry: ticks` 只对 `invalid_session` / `dead` / `session_lost`（`Tree.transient/0`）生效：不判失败，`ticks` 后用
   新 id 原样重发同一命令；其他拒绝照常失败。只给与位置无关、重发也不会多做的命令用（只读、`move_to`）：死亡复活与重新
@@ -289,6 +294,37 @@ brain: {GateServer.Npc.Brain.Tree, %{
 作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
 采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
 探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
+
+### 持续扩张（`expand` 技能与 Settler 的 `expansion`，放置阶段 §7）
+
+```elixir
+# 全局系统功能配置示例：Settler 每轮维护完已知工地后在区域里再建一座；sites 可以为空（从零开始扩张）。
+brain: {GateServer.Npc.Brain.Tree, %{
+  tree: &GateServer.Npc.Trees.settler/1,
+  definition: definition_hex, sites: [], quarries: %{}, revisit_ticks: 36_000,
+  expansion: %{region: [[6, 8], [24, 24]], spacing: 2, tool_id: 1},
+  tools: %{1 => "镐"}, skills: %{build: %{}, gather: %{}, expand: %{}}
+}}
+# LLM 住民同一个技能：skills: %{expand: %{}}，模型调用 expand{definition, region, tool_id, spacing}。
+```
+
+`expand{definition, region: [[x0, z0], [x1, z1]], tool_id, spacing}`（`Skills.Expand`，契约正文在其 moduledoc）：
+
+- **选址**：`read_catalog prefab` 取材料单与包围盒 `bounds_micro`（只用朝向 0）。候选地块是区域内从 (x0, z0) 起、间距
+  “足迹宽 + spacing”的网格，离自己由近到远逐个看（look 分块，每块 ≤ 512 格；看不到就先分段走过去，每段 ≤ reach − 2 米，
+  每段仍由 Body 寻路）。空地 = 足迹外扩 spacing 内没有任何放置记录或细化格、足迹各列地面同高、上方到建筑高度全是空气
+  （prefab 只放进空气，花草也不行）、四个边中点站位里有一个站得住。
+- **取料**：`query_balances` 算缺额；缺的材料在站位周围（区域内、离足迹 ≥ spacing + 2 格）找露天的天然格（地面层或其上的料堆，
+  层自上而下），逐格交给 gather（同一个 `Skills.Gather.run/3`）；采不够 → `insufficient_material`，不硬建。
+- **放置**：回站位 `prefab_place`（与玩家同一入口）；done `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`。
+  被拒（occupied / out_of_reach / out_of_bounds / protected_region）、走不到、判定不过都换下一个候选（`skipped` 按原因计数）；
+  候选用尽 → `no_site`。每次结束记 `npc_expand entity= result= site= skipped= gathers=`。
+- **护栏**：`region` 是唯一的作者护栏，只在区域内挖与建；不拆任何已有放置。
+- **Settler**：配了 `expansion` 时每轮巡完已知工地后调一次 expand；done 的新工地（anchor_micro / orientation / stand）追加进黑板的
+  工地列表（`Brain.Tree` 的 `append:`），下一轮起与作者工地同样维护（被拆就重建）；`no_site` 记
+  `npc_settler_idle entity= act=expand reason=no_site`，下一轮再找。扩张出来的工地只在黑板里：重启后只剩作者工地，扩张从世界现状
+  继续（已建地块因间隔带里有放置记录不再是候选），代价是重启前扩张的建筑不再被维护（被拆后地块空出，扩张会在网格原位重建）。
+  维护工地仍是单程 move_to：扩张区域（含站位）也要满足“各站位两两水平距离不超过 `Perception.reach()`”。
 
 ## 依据
 

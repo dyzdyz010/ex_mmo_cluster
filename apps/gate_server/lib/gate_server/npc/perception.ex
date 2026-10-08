@@ -24,6 +24,8 @@ defmodule GateServer.Npc.Perception do
 
   @doc "当前角色可查询的各轴距离上限，单位米。"
   def reach, do: @reach
+  @doc "一次 look 最多的格数（更大的范围分几次看）。"
+  def look_cells, do: @cells
   @doc "感知条目（group :sense，顺序固定）；条目形状见 `GateServer.Npc.Abilities`。"
   def entries,
     do: [
@@ -72,7 +74,8 @@ defmodule GateServer.Npc.Perception do
         name: "read_catalog",
         group: :sense,
         description:
-          "读世界的公共目录。what = prefab：给 definition（64 位十六进制 id）的材料单（material → 单位）与尺寸（米），" <>
+          "读世界的公共目录。what = prefab：给 definition（64 位十六进制 id）的材料单（material → 单位）、尺寸（米）与" <>
+            "包围盒 bounds_micro（朝向 0 时相对锚点的 micro 半开区间 [[x0,y0,z0],[x1,y1,z1]]，1 米 = #{Spatial.micro_resolution()} micro），" <>
             "没有这个 id 回 definition_not_found；prefabs：最近 #{@recent} 条运行时发布；materials：全部材料的名称、" <>
             "可食（edible）与合成配方（recipe）；tools：每个 tool_id 的动作、射程（米）与间隔（秒）。单位与 balances 相同；" <>
             "除 prefab 外 definition 写 null。",
@@ -144,7 +147,15 @@ defmodule GateServer.Npc.Perception do
     case Map.fetch(World.prefab_catalog(world), id) do
       {:ok, compiled} ->
         row = prefab_row(id, compiled, World.material_catalog(world))
-        {:ok, %{definition_id: id, materials: row.materials.units, size_m: row.size_m}}
+        {lo, hi} = row.summary.bounds
+
+        {:ok,
+         %{
+           definition_id: id,
+           materials: row.materials.units,
+           size_m: row.size_m,
+           bounds_micro: [Tuple.to_list(lo), Tuple.to_list(hi)]
+         }}
 
       :error ->
         {:error, :definition_not_found}

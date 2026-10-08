@@ -243,6 +243,7 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | remember / recall / search_memory | memory | 现有 | 现有 | instant | 无 | Runtime → `Memory.execute/4` | 总有 | 已有 |
 | build | skill | `{definition, anchor_micro, orientation}` | `%{seq, metrics}` | long | 无（玩家直接 0x7A） | `Skills.Build` → Body prefab_place | skills | 已有 |
 | gather | skill | `{box:[[x0,y0,z0],[x1,y1,z1]], material:int, units:int, tool_id: belt}`（全部必填） | `%{mined, gained, skipped}` | long | 无（玩家逐格挖） | `Skills.Gather` → 只经 Body：move_to / look / query_balances / probe_toward / use_tool | skills | I3 |
+| expand | skill | `{definition: hex, region:[[x0,z0],[x1,z1]], tool_id: belt, spacing: int ≥ 0}`（全部必填） | `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；找不到空地 `no_site`，采不够 `insufficient_material` | long | 无（玩家自己选址、挖、0x7A 放） | `Skills.Expand` → 只经 Body：read_catalog / move_to / look / query_balances / prefab_place，采石调 `Skills.Gather.run/3`（步号命名空间 `{:gather, n}`）；选址 / 网格 / 分段 / 采石候选是纯函数；`region` 是唯一护栏，不拆已有放置 | skills；Settler 配 `expansion` 时每轮调一次 | 放置 §7 |
 | design_house | skill | 现有 | `%{definition_id, summary, check, metrics}` | long | 无（D3 编辑器） | `Skills.HouseDesign` | skills | I2：S3、共享工具 |
 | wilderness | skill | 现有 | 现有 | long | 无 | Builder → 逐格 place | skills | 不加码 |
 
@@ -412,7 +413,7 @@ sequenceDiagram
 | 规则 | 内容 |
 |---|---|
 | 构造期校验（typed ports） | `Tree.new/2`：每个 `act` 的 name 必须在 `Abilities.entries(profile)` 中；静态 map 参数在建树期 `decode` 一次。任一失败直接 raise（作者配置错误，启动即失败，不降级）。函数形参数在 tick 时 decode |
-| 黑板 | 普通 map，只由 `act` 的 `store:`、`each` 的 `as` 与失败写入：任一 `act` FAILURE 时写 `:last_failure = %{act: name, reason: reason}`（适配 1：BT.CPP 节点状态不带原因，本树经黑板传出，供 `cond` 与 `succeed log:` 读）；节点状态本身只有 SUCCESS / FAILURE / RUNNING |
+| 黑板 | 普通 map，只由 `act` 的 `store:` / `append: {key, fun}`（done 时把 `fun.(data)` 追加到 key 的列表末尾；Settler 用它把扩张出来的工地加进工地列表，放置阶段 §7）、`each` 的 `as` 与失败写入：任一 `act` FAILURE 时写 `:last_failure = %{act: name, reason: reason}`（适配 1：BT.CPP 节点状态不带原因，本树经黑板传出，供 `cond` 与 `succeed log:` 读）；节点状态本身只有 SUCCESS / FAILURE / RUNNING |
 | 瞬态重试 | `act` 的 `retry: ticks`：rejected 且 reason ∈ `[:invalid_session, :dead, :session_lost]`（`Tree.transient/0`）时不判失败，`ticks` 后用新 id 原样重发同一命令（适配 2：RetryUntilSuccessful 的叶子内联形）。这些原因表示命令未被执行或角色暂时不能行动。原样重发只适合与位置无关、重发也不会多做的命令（只读、move_to；放置重发得 occupied）：死亡复活与重新 claim 后身体在出生点（player.ex died/1 → relocate；body.ex claim 传 spawn），gather 中途失败时已挖的格已入账、原样重发会多挖。这类步骤在树里从上游重来（Settler：工地整体重来，I3 审查修复） |
 | 事件 | `{:observation, o}` 更新黑板外的最新观察并推进 wait / retry；`{:outcome, o}` 只交给 id 匹配的 RUNNING 叶子；`{:heard, _}` 忽略。首个 Observation 到达后才 tick 根 |
 | halt | 父节点放弃一个 RUNNING 子节点时调用 `Tree.halt/1`：RUNNING 的技能叶子发 `%{verb: :cancel_skill, call: 叶子 id}`，RUNNING 的移动叶子发 `%{verb: :stop}`，RUNNING 的世界事务不撤销（已提交不可顶替）。被 halt 的 id 进入 `draining`，其 Outcome 丢弃；`draining` 含技能 id 时不启动新技能叶子（结构上避免 `skill_busy`），技能终态到达后移出。本轮节点都带记忆、没有 reactive 节点，Settler 树运行时不会放弃子节点；halt 作为 act 契约的另一半实现并单测（T3.1） |
@@ -458,6 +459,7 @@ tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
 | 次数上限 | 每次尝试最多 gather 一次、build 重试一次；瞬态原因整体重来一次，所以每工地每轮最多两次尝试（树结构保证，无循环）；第二次再遇瞬态原因记 idle 换下一工地 |
 | 其余拒绝 | protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、unreachable：该工地 FAILURE，记 `npc_settler_idle entity= act= reason= context=<site>`，换下一个 |
 | 移动范围 | 不做分段与长途寻路：作者保证各站位与采石盒站位两两水平距离 ≤ `Perception.reach()`（夹具断言） |
+| 扩张（放置阶段 §7） | profile 可选 `expansion: %{region, spacing, tool_id}`：每轮巡完已知工地后调一次 `expand`，done 的新工地 `append:` 进 `:sites`，下一轮起同样维护（被拆重建）；`no_site` 等记 `npc_settler_idle act=expand`。扩张出来的工地不存档，重启后扩张从世界现状继续。维护仍是单程 move_to，扩张区域（含站位）也要满足上一行 |
 | 进度 | 不存档，以权威为准。重启后从头巡：已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建。前提：自家格在 placed_by 升级后放下、没被别的编辑改过 |
 
 **Patrol / Routine 不动**：直接产出规范命令，Body 在信任边界一次裁决；Routine 的 `target: :probe` 与 Patrol 比对目标身份是它们自己的状态。gather 是技能（代码），LLM 与行为树都能调用。
@@ -493,7 +495,7 @@ Jev 只做多选一，不产参数、不操作世界（npc/README.md）。本轮
 
 | what | 返回 | 来源 |
 |---|---|---|
-| `"prefab"`（`definition` 必填） | `%{definition_id, materials: %{material => units}, size_m}`；无此 id 回 rejected `definition_not_found` | `World.prefab_catalog/1` 按 id 取已编译定义 + `PrefabDesigner.Check.materials/2`（check.ex:111）；作者目录与运行时发布都在内 |
+| `"prefab"`（`definition` 必填） | `%{definition_id, materials: %{material => units}, size_m, bounds_micro}`（bounds_micro：朝向 0 时相对锚点的 micro 半开包围盒，expand 选址用，放置阶段 §7）；无此 id 回 rejected `definition_not_found` | `World.prefab_catalog/1` 按 id 取已编译定义 + `PrefabDesigner.Check.materials/2`（check.ex:111）；作者目录与运行时发布都在内 |
 | `"prefabs"` | `%{prefabs: [%{definition_id, name, publisher, materials}], total}`：最近 20 条运行时发布（新在前）与总数，供 LLM 浏览 | `World.published_prefabs/1`（id = 字节 sha256）+ 同上 |
 | `"materials"` | `%{materials: [%{material, name, edible: %{protein_g, energy_j} \| nil, recipe: %{inputs: %{material => units}, units} \| nil}]}`：列全部材料；edible / recipe 只对生产材料给出，与进食 / 合成门一致（非 nil 时 eat / craft 不会回 `not_edible` / `unknown_recipe`） | `World.material_catalog/1` 的 `display_name / food / recipe_inputs / recipe_units` + 生产材料集合（`World.material_balances/2`，按 `production_materials` 逐项返回）；门条件同 w/production.ex:151、187 |
 | `"tools"` | `%{tools: [%{tool_id, action, range_m, interval_s}]}` | 目录 `tools` |

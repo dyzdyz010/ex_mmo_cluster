@@ -296,6 +296,55 @@ defmodule GateServer.NpcSettlerTest do
     assert line =~ "act=gather reason=dead context=#{inspect(@a)}"
   end
 
+  # —— 持续扩张（放置阶段决策稿 §7）——
+
+  @expansion %{region: [[6, 8], [16, 10]], spacing: 2, tool_id: 1}
+
+  defp expand(id),
+    do: %{
+      id: id,
+      verb: :skill,
+      skill: :expand,
+      args: %{"definition" => @hex, "region" => [[6, 8], [16, 10]], "tool_id" => 1, "spacing" => 2}
+    }
+
+  test "expansion: after the known sites the round expands once; a done site joins the list and is maintained; no_site is logged" do
+    # expand 的 done data（Runtime 另加 metrics）：只有 anchor_micro / orientation / stand 进工地列表。
+    new = %{anchor_micro: [48, 512, 64], orientation: 0, stand: [6.5, 10.5]}
+
+    log =
+      info(fn ->
+        settler(%{sites: [@a], expansion: @expansion, skills: %{build: %{}, gather: %{}, expand: %{}}})
+        |> script([
+          {obs(0), [read(1)]},
+          {done(1, :read_catalog, bill(%{11 => 1024})), [walk(2, @a)]},
+          {done(2, :move_to), [build(3, @a)]},
+          # 维护完已知工地：扩张一次。
+          {done(3, :build, %{seq: 5}), [expand(4)]},
+          {done(4, :expand, Map.merge(new, %{site_cell: [6, 64, 8], seq: 6, skipped: %{}, metrics: %{}})), []},
+          {obs(599), []},
+          {obs(600), []},
+          # 下一轮：作者工地之后维护新工地（这次它被拆了，重建成功），再扩张一次。
+          {obs(601), [read(5)]},
+          {done(5, :read_catalog, bill(%{11 => 1024})), [walk(6, @a)]},
+          {done(6, :move_to), [build(7, @a)]},
+          {rejected(7, :build, :occupied),
+           [%{id: 8, verb: :look, min: {8, 64, 14}, max: {8, 64, 14}}]},
+          {done(8, :look,
+            %{probe_occupancy: [%{cell: [8, 64, 14], material: 11, refined: false, slots: [], placed_by: 7}]}),
+           [walk(9, new)]},
+          {done(9, :move_to), [build(10, new)]},
+          {done(10, :build, %{seq: 9}), [expand(11)]},
+          # 没有空地：记一行 idle，本轮结束，休息。
+          {rejected(11, :expand, :no_site), []},
+          {obs(1201), []},
+          {obs(1202), [read(12)]}
+        ])
+      end)
+
+    assert ["npc_settler_idle entity=7 act=expand reason=no_site"] == idle(log)
+  end
+
   # —— T3.5 与多轮浸泡 (a)：真实 World ——
 
   # 两格高的石柱：两个 macro 格，材料单 2 × 512 = 1024；放下后锚点格有本 NPC 的放置溯源。
@@ -421,6 +470,99 @@ defmodule GateServer.NpcSettlerTest do
     end
 
     assert is_pid(restarted) and Process.alive?(restarted)
+  end
+
+  # 扩张区域 x 6..16、z 8..10，间隔 2 → 地块 x ∈ {6, 9, 12, 15}（z 8）。邻居在 (14, 64, 8) 放的格落在地块 12、15 的间隔带里
+  # （12 ± 2、15 ± 2），所以只有地块 6、9 是空地（站位与选址顺序的手算见 npc_expand_test）。余额供给 3 × 1024：两座新建 + 一次重建。
+  @tag timeout: 300_000
+  test "expansion: one new building per round in the region, a demolished expanded building is rebuilt, then only maintenance" do
+    fixture = NpcWorld.start(prefab_access: true)
+    world = fixture.world
+    neighbour = NpcWorld.actor(4242, {15.5, 65.5, 6.5})
+    {:ok, id} = World.publish_prefab(world, neighbour, @pillar, "石柱")
+    {:ok, _} = World.material_supply(world, 4242, "settler-neighbour", %{11 => 512})
+
+    {:ok, _} =
+      World.production_intent(world, neighbour, %{
+        request_id: 1,
+        client_intent_seq: 1,
+        logical_scene_id: 1,
+        action: 1,
+        coord: {14, 64, 8},
+        tool_id: 1,
+        material: 11
+      })
+
+    {:ok, _} = World.material_supply(world, @npc, "settler-expansion", %{11 => 3072})
+
+    brain =
+      {Tree,
+       %{
+         tree: &Trees.settler/1,
+         definition: Base.encode16(id),
+         sites: [],
+         quarries: %{},
+         revisit_ticks: 60,
+         tools: %{1 => "镐"},
+         skills: %{build: %{}, gather: %{}, expand: %{}},
+         expansion: @expansion,
+         memory: NpcWorld.Memory
+       }}
+
+    NpcWorld.LogTap.attach()
+    NpcWorld.body(fixture, brain)
+    deadline = System.monotonic_time(:millisecond) + 240_000
+
+    # 日志行 → 事件序列：放置成功、扩张 done、扩张 no_site（其余行不计）。
+    events = fn lines ->
+      Enum.flat_map(lines, fn line ->
+        cond do
+          line =~ "kind=voxel_prefab_place_v1 cid=#{@npc} " and line =~ "result=ok" -> [:placed]
+          line =~ "npc_skill_outcome skill=expand status=done" -> [:expanded]
+          line =~ "npc_settler_idle" and line =~ "act=expand reason=no_site" -> [:no_site]
+          true -> []
+        end
+      end)
+    end
+
+    no_sites = fn lines -> Enum.count(events.(lines), &(&1 == :no_site)) end
+
+    # 第一轮没有已知工地，扩张建 A（地块 6）；第二轮维护 A、扩张建 B（地块 9）；第三轮维护两座、no_site。
+    before = logs_until([], &(no_sites.(&1) >= 1), deadline)
+    assert [:placed, :expanded, :placed, :expanded, :no_site] == events.(before)
+    assert [first, second] = placements(before, "ok")
+    [seq_a, seq_b] = for line <- [first, second], do: String.to_integer(hd(Regex.run(~r/result=ok seq=(\d+)/, line, capture: :all_but_first)))
+    assert 3072 - 2 * 1024 == NpcWorld.balance(world, @npc)
+
+    assert %{
+             {6, 64, 8} => %{material: 11, placed_by: @npc},
+             {6, 65, 8} => %{material: 11, placed_by: @npc},
+             {9, 64, 8} => %{material: 11, placed_by: @npc},
+             {9, 65, 8} => %{material: 11, placed_by: @npc}
+           } = NpcWorld.cells(world, [{6, 64, 8}, {6, 65, 8}, {9, 64, 8}, {9, 65, 8}])
+
+    for seq <- [seq_a, seq_b], do: assert({:ok, [_, _]} = World.instance_cells(world, {seq, 0}))
+
+    # 拆掉扩张出来的 A（作者入口，不退料）：下一轮维护把它重建在原锚点；此后扩张只回 no_site，只维护。
+    {:ok, _} = World.remove_prefab(world, {seq_a, 0})
+    assert %{{6, 64, 8} => %{material: 0}} = NpcWorld.cells(world, [{6, 64, 8}])
+
+    after_removal = logs_until([], &(no_sites.(&1) >= 2), deadline)
+    assert [:placed, :no_site, :no_site] == events.(after_removal)
+    assert [rebuilt] = placements(after_removal, "ok")
+    [seq] = Regex.run(~r/result=ok seq=(\d+)/, rebuilt, capture: :all_but_first)
+    assert {:ok, [_, _]} = World.instance_cells(world, {String.to_integer(seq), 0})
+    assert 0 == NpcWorld.balance(world, @npc)
+
+    assert %{{6, 64, 8} => %{material: 11, placed_by: @npc}, {6, 65, 8} => %{material: 11, placed_by: @npc}} =
+             NpcWorld.cells(world, [{6, 64, 8}, {6, 65, 8}])
+
+    # 其余地块与邻居的格不变：12、15 足迹仍是空气，(14, 64, 8) 仍是邻居的。
+    assert %{
+             {12, 64, 8} => %{material: 0},
+             {15, 64, 8} => %{material: 0},
+             {14, 64, 8} => %{material: 11, placed_by: 4242}
+           } = NpcWorld.cells(world, [{12, 64, 8}, {15, 64, 8}, {14, 64, 8}])
   end
 
   @tag timeout: 120_000
