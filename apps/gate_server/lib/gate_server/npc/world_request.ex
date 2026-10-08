@@ -50,7 +50,7 @@ defmodule GateServer.Npc.WorldRequest do
   @doc """
   目标句柄的瞄准方向（单位向量，自眼点）：g0 瞄宏格中心（`micro + 4` micro），g1 / g2 瞄该 micro 的中心
   （`micro + 0.5`），g3 附件按身份寻址、任取 +X，g5 人物用探测时的方向（句柄里的 `direction`）。
-  micro 坐标 / 8 = 米。形状不对返回 nil。
+  micro 坐标 / 8 = 米。形状不对，或眼点恰在瞄准点上（没有方向，同 `Attention.toward/2` 的 zero_direction）返回 nil。
   """
   def aim(_eye, %{granularity: 5} = handle), do: vector(Map.get(handle, :direction))
   def aim(_eye, %{granularity: 3}), do: {1.0, 0.0, 0.0}
@@ -60,7 +60,7 @@ defmodule GateServer.Npc.WorldRequest do
     offset = if Map.get(handle, :granularity, 0) == 0, do: 4, else: 0.5
     {dx, dy, dz} = {(x + offset) / 8 - ex, (y + offset) / 8 - ey, (z + offset) / 8 - ez}
     length = :math.sqrt(dx * dx + dy * dy + dz * dz)
-    {dx / length, dy / length, dz / length}
+    if length > 0, do: {dx / length, dy / length, dz / length}
   end
 
   def aim(_eye, _handle), do: nil

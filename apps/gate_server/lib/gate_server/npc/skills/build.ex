@@ -7,7 +7,8 @@ defmodule GateServer.Npc.Skills.Build do
   def definition(_profile) do
     %{
       description:
-        "将已发布的 definition 整体放到地图上，经现有 prefab_place 结算。锚点是 micro 坐标，1米=8micro；先走到工具射程内。",
+        "将已发布的 definition 整体放到地图上，经现有 prefab_place 结算。锚点是 micro 坐标，" <>
+          "1 米 = #{VoxelRegion.Spatial.micro_resolution()} micro；先走到工具射程内。",
       parameters: %{
         type: "object",
         properties:

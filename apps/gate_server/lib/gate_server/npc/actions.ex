@@ -1,271 +1,259 @@
 defmodule GateServer.Npc.Actions do
   @moduledoc """
-  全局系统功能：Body 原子动作的公共能力目录。工具参数 schema 与“工具调用 → Body 命令”的译码只在这里定义一次，
-  LLM 适配器直接投影为工具，脚本／行为树可读取同一份参数契约；命令合法性仍由 Body 与权威裁决。
-  感知（`Perception`）、记忆（`Memory`）、长技能（`Skills`）各自拥有自己的目录。
+  全局系统功能：Body 原子动作的能力条目（移动、工具、建造、液体、背包）。条目形状与参数规格见
+  `GateServer.Npc.Abilities`；命令形状见 `GateServer.Npc.Brain`，合法性仍由 Body 与权威裁决。
+
+  目标句柄（`use_tool` / `dismantle` / `detach` 的 `target`）沿用 0x7D 的身份形状
+  `%{granularity, micro, incarnation, owner, material, direction}`，原样取自 `probe_toward` 的结果或 inspect 行里的
+  `target`（`Perception.project/3` 附上）；`direction` 为 nil 时 Body 从眼点瞄准（`WorldRequest.aim/2`）。
+  经 Abilities 构造的句柄（LLM，以及 I3 起的行为树）只允许 granularity 0..3；人物 g5 只由直接产出规范命令的代码
+  Brain 发出（D-13）。附件的 kind / axis 在 `attach` 参数与 inspect 投影里是同一组名字（`attachment_names/1`）。
   """
+  alias GateServer.Npc.Perception
+  alias VoxelRegion.{Attachments, Spatial}
 
-  @cell %{x: %{type: "integer"}, y: %{type: "integer"}, z: %{type: "integer"}}
+  # move_to 的到达容差（米）：LLM 与行为树经 Abilities 构造的移动命令都用它。
+  @tolerance 0.5
+  # 附件 kind / axis 的名字 → 码（Codec 0x81 的整数形）：attach 的参数枚举与 inspect 投影共用这一张表。
+  @kinds %{"face" => 0, "edge" => 1}
+  @axes %{"x" => 0, "y" => 1, "z" => 2}
 
-  @doc "原子动作的工具表；tool_id 必填且只能取 profile 工具带里的 id，模型无从编造。"
-  def tools(%{tools: belt}) do
-    tool_id = %{type: "integer", enum: Map.keys(belt), description: "用哪个工具，见输入里的 tools。"}
+  @doc "`move_to` 的到达容差（米）。"
+  def tolerance, do: @tolerance
+
+  @doc """
+  附件身份（inspect 行或 g3 句柄，owner `{id, kind * 3 + axis}`）的 kind / axis 名字，与 `attach` 参数同一组字符串
+  （kind `face` / `edge`，axis `x` / `y` / `z`）；槽地址取自 `VoxelRegion.Attachments.slot/1`。
+  """
+  def attachment_names(handle) do
+    {kind, axis, _anchor} = Attachments.slot(handle)
+    %{kind: name(@kinds, kind), axis: name(@axes, axis)}
+  end
+
+  defp name(table, code),
+    do: Enum.find_value(table, fn {name, value} -> value == code && name end)
+
+  @doc "原子动作条目（顺序固定）。"
+  def entries do
+    reach = Perception.reach()
+    micro = Spatial.micro_resolution()
+    cell = [x: :integer, y: :integer, z: :integer]
+    vector = {:tuple, [:number, :number, :number]}
 
     [
       %{
-        type: "function",
         name: "move_to",
+        group: :move,
         description:
-          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、按 self.body.move_to.max_step_macro 上台阶、从高处落下，但不会跳，也不进液体；单程水平不超过 32 米。" <>
-            "同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数）。走不通会被拒绝：no_path = 现在没有路，" <>
-            "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。到达后才会再次询问。",
-        parameters: %{
-          type: "object",
-          properties: %{x: %{type: "number"}, z: %{type: "number"}, y: %{type: "integer"}},
-          required: ["x", "z"],
-          additionalProperties: false
-        }
+          "走到水平坐标 (x, z)，自动寻路：会绕开障碍、按 self.body.move_to.max_step_macro 上台阶、从高处落下，但不会跳，也不进液体；" <>
+            "单程水平不超过 #{reach} 米。同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数），" <>
+            "y 与脚所在格相差不超过 #{reach} 格，不指定写 null。超出这些距离回 too_far；走不通会被拒绝：no_path = 现在没有路，" <>
+            "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。",
+        done:
+          "走到 #{@tolerance} 米内且首个零输入帧被权威处理（data.position、within_tolerance），不代表已停稳；到达或被拒后才会再次询问。",
+        params: [x: :number, z: :number, y: {:nullable, :integer}],
+        build: fn %{x: x, z: z, y: y}, _ ->
+          %{verb: :move_to, position: {x, z}, tolerance: @tolerance, y: y}
+        end
       },
       %{
-        type: "function",
         name: "stop",
-        description: "停下。",
-        parameters: %{type: "object", properties: %{}, additionalProperties: false}
+        group: :move,
+        description: "停下，顶替正在进行的移动。目标已完成或暂时无事可做时用 wait，不要反复调用 stop。",
+        done: "首个零输入帧被权威处理（data.position）。",
+        params: [],
+        build: fn _, _ -> %{verb: :stop} end
       },
       %{
-        type: "function",
         name: "probe_toward",
+        group: :act,
         description:
-          "从眼睛位置沿方向 (dx, dy, dz) 探测工具射程内实际命中的目标；没有目标会被拒绝。+X 是 (1,0,0)，+Z 是 (0,0,1)，Y 向上。",
-        parameters: %{
-          type: "object",
-          properties: %{
-            dx: %{type: "number"},
-            dy: %{type: "number"},
-            dz: %{type: "number"},
-            tool_id: tool_id
-          },
-          required: ["dx", "dy", "dz", "tool_id"],
-          additionalProperties: false
-        }
+          "从眼睛沿 direction [dx, dy, dz] 探测这把工具射程内实际命中的方块、构件或附件（+X 是 [1,0,0]，+Z 是 [0,0,1]，Y 向上，" <>
+            "自动归一化）；没有目标会被拒绝。射程与间隔见 read_catalog tools。",
+        done: "data 是命中目标的身份，其中 data.target 原样交给 use_tool / dismantle 的 target。",
+        params: [direction: vector, tool_id: :belt],
+        build: fn %{direction: direction, tool_id: tool}, _ ->
+          %{verb: :probe_toward, tool_id: tool, direction: unit(direction)}
+        end
       },
       %{
-        type: "function",
         name: "use_tool",
+        group: :act,
         description:
-          "对最近一次 probe_toward 命中的目标使用工具（镐 = 攻击；挖掉的材料进自己的 balances）。有约 0.5 秒的间隔限制；一个目标通常要多次。" <>
-            "给了 attachment_id 就改为对最近一次 inspect 列出的那件附件使用（电路安装 / 投料 / 开关的目标都是附件）。",
-        parameters: %{
-          type: "object",
-          properties: %{tool_id: tool_id, attachment_id: %{type: "integer"}},
-          required: ["tool_id"],
-          additionalProperties: false
-        }
+          "用工具作用于 target：挖掘、点火 / 灭火、加热 / 冷却、电路开关都是 use_tool 换一个 tool_id，效果由这把工具的 action 决定" <>
+            "（见 read_catalog tools）。target 原样抄 probe_toward 结果或 inspect 行里的 target，不要自己编；" <>
+            "target.direction 为 null 时从眼睛瞄准目标中心。挖下的材料进自己的 balances，一个目标通常要用多次。",
+        done: "World 已提交（data.seq）；被拒时 reason 原样来自权威。",
+        params: [tool_id: :belt, target: handle([0, 1, 2, 3])],
+        build: &target_command(:use_tool, &1, &2)
       },
       %{
-        type: "function",
+        name: "dismantle",
+        group: :act,
+        description:
+          "拆解一件 prefab 构件，按剩余燃料把材料退回自己的 balances。target 原样抄 probe_toward 结果或 inspect 的 components 行里的 target；" <>
+            "target.direction 为 null 时从眼睛瞄准。",
+        done: "World 已提交（data.seq），材料已退回。",
+        params: [tool_id: :belt, target: handle([0, 1, 2, 3])],
+        build: &target_command(:dismantle, &1, &2)
+      },
+      %{
         name: "place",
-        description: "花自己 balances 里的 material，在空气格 (x,y,z) 放一个实心格；格心要在眼睛的工具射程内。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
+        group: :build,
+        description:
+          "花自己 balances 里的 material，在空气格 (x, y, z) 放一个实心格（1 格 = 1 米，整数格坐标）。" <>
+            "格心要在这把工具的射程内（见 read_catalog tools）。",
+        done: "World 已提交（data.seq），balances 随之刷新。",
+        params: cell ++ [material: :integer, tool_id: :belt],
+        build: &production(:place, &1, &2)
       },
       %{
-        type: "function",
         name: "scoop",
-        description: "用液体盛取工具从格 (x,y,z) 盛起 material 液体，进自己的 balances。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
+        group: :liquid,
+        description: "用液体盛取工具从格 (x, y, z) 盛起 material 液体，进自己的 balances。工具须是液体盛取工具。",
+        done: "World 已提交（data.seq），balances 随之刷新。",
+        params: cell ++ [material: :integer, tool_id: :belt],
+        build: &production(:scoop, &1, &2)
       },
       %{
-        type: "function",
         name: "pour",
-        description: "用液体倾倒工具把自己 balances 里的 material 液体倒进格 (x,y,z)。",
-        parameters: %{
-          type: "object",
-          properties: Map.merge(@cell, %{material: %{type: "integer"}, tool_id: tool_id}),
-          required: ["x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
+        group: :liquid,
+        description: "用液体倾倒工具把自己 balances 里的 material 液体倒进格 (x, y, z)。工具须是液体倾倒工具。",
+        done: "World 已提交（data.seq），balances 随之刷新。",
+        params: cell ++ [material: :integer, tool_id: :belt],
+        build: &production(:pour, &1, &2)
       },
       %{
-        type: "function",
+        name: "craft",
+        group: :inventory,
+        description:
+          "按目录配方合成 material 一次：扣配方输入、得到产物单位，都在自己的 balances 里。" <>
+            "哪些材料能合成、配方是什么见 read_catalog materials 的 recipe。",
+        done: "World 已提交（data.seq），balances 随之刷新。",
+        params: [material: :integer],
+        build: fn %{material: material}, _ -> %{verb: :craft, material: material} end
+      },
+      %{
+        name: "eat",
+        group: :inventory,
+        description:
+          "吃一株自己 balances 里的可食材料 material（一株 = 目录 place_units 单位）。哪些能吃、营养多少见 read_catalog materials 的 edible。",
+        done: "World 已提交（data.seq）；营养由身体随后吸收，见 self.body_state。",
+        params: [material: :integer],
+        build: fn %{material: material}, _ -> %{verb: :eat, material: material} end
+      },
+      %{
         name: "attach",
+        group: :build,
         description:
-          "花 material 在实心格表面贴一件附件。kind 0 = 面片（axis 是法线轴）、1 = 棱条（axis 是走向）；axis 0/1/2 = X/Y/Z；" <>
-            "size 1 或 8；(x,y,z) 是 micro 坐标（1 格 = 8 micro），size 8 时须是 8 的倍数。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              kind: %{type: "integer"},
-              axis: %{type: "integer"},
-              size: %{type: "integer"},
-              material: %{type: "integer"},
-              tool_id: tool_id
-            }),
-          required: ["kind", "axis", "size", "x", "y", "z", "material", "tool_id"],
-          additionalProperties: false
-        }
+          "花 material 在实心格表面贴一件附件。kind = face（面片，axis 是法线轴）或 edge（棱条，axis 是走向）；" <>
+            "size 1 或 8；(x, y, z) 是 micro 坐标（1 格 = #{micro} micro），size 8 时须是 8 的倍数。",
+        done: "World 已提交（data.seq）；这件附件的身份用 inspect 查。",
+        params:
+          [kind: {:enum, @kinds}, axis: {:enum, @axes}, size: {:enum, [1, 8]}] ++
+            cell ++ [material: :integer, tool_id: :belt],
+        build: fn args, _ ->
+          %{
+            verb: :attach,
+            kind: args.kind,
+            axis: args.axis,
+            size: args.size,
+            anchor: {args.x, args.y, args.z},
+            material: args.material,
+            tool_id: args.tool_id
+          }
+        end
       },
       %{
-        type: "function",
         name: "detach",
-        description:
-          "拆下 attachment_id 那件附件，材料退回 balances；kind / axis / (x,y,z) / material 要与它一致。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              kind: %{type: "integer"},
-              axis: %{type: "integer"},
-              material: %{type: "integer"},
-              attachment_id: %{type: "integer"},
-              tool_id: tool_id
-            }),
-          required: ["kind", "axis", "x", "y", "z", "material", "attachment_id", "tool_id"],
-          additionalProperties: false
-        }
+        group: :build,
+        description: "拆下一件附件，材料退回自己的 balances。target 原样抄 inspect 的 attachments 行里的 target。",
+        done: "World 已提交（data.seq），材料已退回。",
+        params: [tool_id: :belt, target: handle([3])],
+        # 附件槽地址由句柄恢复（VoxelRegion.Attachments.slot/1）；拆除按槽寻址，size 不参与。
+        build: fn %{tool_id: tool, target: target}, _ ->
+          {kind, axis, anchor} = Attachments.slot(target)
+
+          %{
+            verb: :detach,
+            kind: kind,
+            axis: axis,
+            size: 1,
+            anchor: anchor,
+            material: target.material,
+            attachment_id: target.incarnation,
+            tool_id: tool
+          }
+        end
       },
       %{
-        type: "function",
         name: "prefab",
+        group: :build,
         description:
-          "预制件。op = place：以 micro 坐标 (x,y,z)（1 格 = 8 micro）为锚点、orientation 0–23 放置 definition；" <>
-            "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id，instance 是 [birth, occurrence]。",
-        parameters: %{
-          type: "object",
-          properties:
-            Map.merge(@cell, %{
-              op: %{type: "string", enum: ["place", "remove", "replace"]},
-              definition: %{type: "string"},
-              orientation: %{type: "integer"},
-              instance: %{type: "array", items: %{type: "integer"}}
-            }),
-          required: ["op"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "say",
-        description: "对周围说一句话。",
-        parameters: %{
-          type: "object",
-          properties: %{text: %{type: "string"}},
-          required: ["text"],
-          additionalProperties: false
-        }
-      },
-      %{
-        type: "function",
-        name: "query_balances",
-        description: "读取自己的背包余额（balances 为 null 时先调用它）。",
-        parameters: %{type: "object", properties: %{}, additionalProperties: false}
+          "预制件。op = place：以 micro 坐标 (x, y, z)（1 格 = #{micro} micro）为锚点、orientation 0–23 放置 definition；" <>
+            "remove：拆掉 instance；replace：把 instance 换成 definition。definition 是 64 位十六进制 id（材料单见 read_catalog prefab），" <>
+            "instance 是 inspect 的 components 行里的 [birth, occurrence]；本次 op 用不到的参数写 null。" <>
+            "涉及的格须在部署的编辑盒内，否则 out_of_bounds。",
+        done: "World 已提交（data.seq）。",
+        params: [
+          op: {:enum, %{"place" => :place, "remove" => :remove, "replace" => :replace}},
+          definition: {:nullable, :hex32},
+          x: {:nullable, :integer},
+          y: {:nullable, :integer},
+          z: {:nullable, :integer},
+          orientation: {:nullable, :integer},
+          instance: {:nullable, {:tuple, [:integer, :integer]}}
+        ],
+        build: &prefab/2
       }
     ]
   end
 
-  @doc """
-  一次工具调用译成 Body 命令；不是原子动作返回 nil。`probe` 是最近一次成功探测 `%{direction:, target:}`，
-  `things` 是最近一次 inspect 的附件身份（attachment_id => 目标）。参数取值的合法性留给 Body 判定。
-  """
-  def command(name, args, id, probe, things)
+  # 句柄规格：granularity 只取给定集合（LLM 投影不含 g5）；direction 可空。
+  defp handle(granularities),
+    do:
+      {:map,
+       [
+         granularity: {:enum, granularities},
+         micro: {:tuple, [:integer, :integer, :integer]},
+         incarnation: :integer,
+         owner: {:tuple, [:integer, :integer]},
+         material: :integer,
+         direction: {:nullable, {:tuple, [:number, :number, :number]}}
+       ]}
 
-  def command("move_to", args, id, _, _) do
-    move = %{id: id, verb: :move_to, position: {args["x"], args["z"]}, tolerance: 0.5}
-    if args["y"], do: Map.put(move, :y, args["y"]), else: move
-  end
-
-  def command("stop", _, id, _, _), do: %{id: id, verb: :stop}
-
-  def command("probe_toward", args, id, _, _),
-    do: %{id: id, verb: :probe_toward, tool_id: args["tool_id"], direction: unit(args)}
-
-  def command(name, args, id, _, _) when name in ["place", "scoop", "pour"],
+  defp target_command(verb, %{tool_id: tool, target: target}, _),
     do: %{
-      id: id,
-      verb: %{"place" => :place, "scoop" => :scoop, "pour" => :pour}[name],
-      coord: {args["x"], args["y"], args["z"]},
-      material: args["material"],
-      tool_id: args["tool_id"]
+      verb: verb,
+      tool_id: tool,
+      direction: target.direction && unit(target.direction),
+      target: Map.delete(target, :direction)
     }
 
-  def command("query_balances", _, id, _, _), do: %{id: id, verb: :query_balances}
-  def command("say", args, id, _, _), do: %{id: id, verb: :say, text: args["text"]}
-
-  # 附件按身份寻址、不经射线；direction 只需是单位向量。不在最近一次 inspect 里的 id 不构成目标。
-  def command("use_tool", %{"attachment_id" => attachment} = args, id, _, things),
+  defp production(verb, args, _),
     do: %{
-      id: id,
-      verb: :use_tool,
-      tool_id: args["tool_id"],
-      direction: {1.0, 0.0, 0.0},
-      target: Map.get(things, attachment, :unknown_attachment)
+      verb: verb,
+      coord: {args.x, args.y, args.z},
+      material: args.material,
+      tool_id: args.tool_id
     }
 
-  def command("use_tool", args, id, probe, _),
+  defp prefab(%{op: :place} = args, _),
     do: %{
-      id: id,
-      verb: :use_tool,
-      tool_id: args["tool_id"],
-      direction: probe && probe.direction,
-      target: probe && probe.target
+      verb: :prefab_place,
+      definition_id: args.definition,
+      anchor: {args.x, args.y, args.z},
+      orientation: args.orientation
     }
 
-  def command(name, args, id, _, _) when name in ["attach", "detach"],
-    do: %{
-      id: id,
-      verb: %{"attach" => :attach, "detach" => :detach}[name],
-      kind: args["kind"],
-      axis: args["axis"],
-      size: args["size"] || 1,
-      anchor: {args["x"], args["y"], args["z"]},
-      material: args["material"],
-      attachment_id: args["attachment_id"] || 0,
-      tool_id: args["tool_id"]
-    }
+  defp prefab(%{op: :remove} = args, _), do: %{verb: :prefab_remove, instance_id: args.instance}
 
-  def command("prefab", args, id, _, _),
-    do: %{
-      id: id,
-      verb:
-        %{"place" => :prefab_place, "remove" => :prefab_remove, "replace" => :prefab_replace}[
-          args["op"]
-        ],
-      definition_id: hex(args["definition"]),
-      anchor: {args["x"], args["y"], args["z"]},
-      orientation: args["orientation"],
-      instance_id: instance(args["instance"])
-    }
+  defp prefab(%{op: :replace} = args, _),
+    do: %{verb: :prefab_replace, instance_id: args.instance, definition_id: args.definition}
 
-  def command(_, _, _, _, _), do: nil
-
-  defp unit(%{"dx" => dx, "dy" => dy, "dz" => dz})
-       when is_number(dx) and is_number(dy) and is_number(dz) do
+  # 零向量原样留给 Body 判为不合法。
+  defp unit({dx, dy, dz}) do
     length = :math.sqrt(dx * dx + dy * dy + dz * dz)
     if length > 0, do: {dx / length, dy / length, dz / length}, else: {dx, dy, dz}
   end
-
-  defp unit(_), do: nil
-
-  defp hex(text) when is_binary(text) do
-    case Base.decode16(text, case: :mixed) do
-      {:ok, id} -> id
-      :error -> nil
-    end
-  end
-
-  defp hex(_), do: nil
-
-  # [birth, occurrence] → 元组；其余形状原样留给 Body 判为不合法。
-  defp instance(list) when is_list(list), do: List.to_tuple(list)
-  defp instance(other), do: other
 end

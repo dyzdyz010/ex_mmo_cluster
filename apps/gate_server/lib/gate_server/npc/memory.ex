@@ -1,65 +1,49 @@
 defmodule GateServer.Npc.Memory do
-  @moduledoc "全局系统功能：模型的持久化记忆工具；只读写 NpcMemory，不持有进程缓存，世界状态仍须现查。"
+  @moduledoc """
+  全局系统功能：长期记忆条目（remember / recall / search_memory，形状见 `GateServer.Npc.Abilities`）与执行；
+  只读写 NpcMemory，不持有进程缓存，世界状态仍须现查。
+  """
 
   @key_limit 128
   @text_limit 1500
+  # search_memory 一次最多返回的条数。
+  @matches 5
 
-  def tools do
-    key = %{type: "string", minLength: 1, maxLength: @key_limit}
-
-    [
+  @doc "记忆条目（group :memory，顺序固定）；条目形状见 `GateServer.Npc.Abilities`，长度在 `execute/4` 校验。"
+  def entries,
+    do: [
       %{
-        type: "function",
         name: "remember",
+        group: :memory,
         description:
-          "按键保存或覆盖长期记忆：计划、经历与约定。世界现状请重新查询。最多保留最近写入的 #{DataService.NpcMemory.limits().notes} 条笔记，" <>
-            "更早的会被淘汰；要长期保留的内容请合并进少数几个键。",
-        parameters: %{
-          type: "object",
-          properties: %{key: key, text: %{type: "string", minLength: 1, maxLength: @text_limit}},
-          required: ["key", "text"],
-          additionalProperties: false
-        }
+          "按键保存或覆盖长期记忆：计划、经历与约定。key 1–#{@key_limit} 字，text 1–#{@text_limit} 字。" <>
+            "最多保留最近写入的 #{DataService.NpcMemory.limits().notes} 条笔记，更早的会被淘汰；要长期保留的内容请合并进少数几个键。" <>
+            "世界现状请重新查询。",
+        done: "已写入数据库（data.key、data.body）。",
+        params: [key: :string, text: :string],
+        build: fn %{key: key, text: text}, _ -> %{verb: :remember, key: key, text: text} end
       },
       %{
-        type: "function",
         name: "recall",
-        description: "按键读取自己的长期记忆；不存在时明确返回 missing。",
-        parameters: %{
-          type: "object",
-          properties: %{key: key},
-          required: ["key"],
-          additionalProperties: false
-        }
+        group: :memory,
+        description: "按键读取自己的长期记忆（key 1–#{@key_limit} 字）；不存在时 data.missing 为 true。记忆不是世界真值。",
+        done: "data.body 是该键当前的内容。",
+        params: [key: :string],
+        build: fn %{key: key}, _ -> %{verb: :recall, key: key} end
       },
       %{
-        type: "function",
         name: "search_memory",
-        description: "搜索自己的笔记和经历，不必知道键。英文词/中文片段匹配，最多5条；换关键词可继续查。历史记忆不是当前世界真值。",
-        parameters: %{
-          type: "object",
-          properties: %{query: %{type: "string", minLength: 1, maxLength: @text_limit}},
-          required: ["query"],
-          additionalProperties: false
-        }
+        group: :memory,
+        description:
+          "搜索自己的笔记和经历，不必知道键（query 1–#{@text_limit} 字）。英文词/中文片段匹配，最多 #{@matches} 条；" <>
+            "换关键词可继续查。历史记忆不是当前世界真值。",
+        done: "data.matches 是命中的记忆（带时间）。",
+        params: [query: :string],
+        build: fn %{query: query}, _ -> %{verb: :search_memory, query: query} end
       }
     ]
-  end
 
-  def command("remember", args, id) when is_map(args),
-    do: %{id: id, verb: :remember, key: args["key"], text: args["text"]}
-
-  def command("recall", args, id) when is_map(args),
-    do: %{id: id, verb: :recall, key: args["key"]}
-
-  def command("search_memory", args, id) when is_map(args),
-    do: %{id: id, verb: :search_memory, query: args["query"]}
-
-  def command(name, _, id) when name in ["remember", "recall", "search_memory"],
-    do: command(name, %{}, id)
-
-  def command(_, _, _), do: nil
-
+  @doc "执行一条记忆命令（来自 Runtime）：长度或类型不合法回 `invalid_memory_arguments`、不写库；返回一个 Outcome。"
   def execute(memory, cid, position, %{id: id, verb: verb} = command) do
     result =
       if valid?(command),
@@ -72,6 +56,7 @@ defmodule GateServer.Npc.Memory do
     end
   end
 
+  @doc "本角色最近的经历（带时间与地点）；数据库不可用时显式返回错误。"
   def recent(memory, cid, limit \\ 5) do
     storage(fn ->
       events =
@@ -154,7 +139,7 @@ defmodule GateServer.Npc.Memory do
        %{
          query: query,
          method: :lexical_words_and_cjk_bigrams,
-         matches: Enum.map(memory.search(cid, query, 5), &dated/1)
+         matches: Enum.map(memory.search(cid, query, @matches), &dated/1)
        }}
 
   # 只转换数据库不可用；程序缺陷继续抛出，错误结果不暴露SQL或连接参数。

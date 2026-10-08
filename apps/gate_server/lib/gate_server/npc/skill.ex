@@ -4,6 +4,10 @@ defmodule GateServer.Npc.Skill do
   输入参数使用字符串键，接纳与失败语义由技能拥有。原子动作经 context.body，内部 id 为
   {:skill, context.call_id, step_id}；worker 收到的 Outcome 已由 Runtime 还原 step_id。
   返回一个终态与实际用量；任务未完成不得以空结果代替成功。取消后已提交事务不回滚。
+
+  definition/1 的 parameters 原样投影为 LLM 的 strict 工具（`GateServer.Npc.Abilities.tools/1`），必须满足 strict：
+  每个 object 都写 `additionalProperties: false`、全部属性列进 `required`，可空字段写 `type: [t, "null"]`。
+  不满足时代理拒绝整个请求，配了这个技能的 NPC 每次询问都失败。
   """
   @type result :: {:ok, map()} | {:error, term(), map()}
   @callback definition(profile :: map()) :: %{description: String.t(), parameters: map()}

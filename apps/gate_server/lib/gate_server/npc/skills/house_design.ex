@@ -11,7 +11,7 @@ defmodule GateServer.Npc.Skills.HouseDesign do
   alias VoxelRegion.Prefab.Draft
   alias SceneServer.{PrefabDesigner, Movement.Scene}
   alias SceneServer.PrefabDesigner.Check
-  alias GateServer.Npc.{Context, Memory, Perception}
+  alias GateServer.Npc.{Abilities, Context, Memory, Perception}
 
   @metrics %{
     request_count: 0,
@@ -27,7 +27,9 @@ defmodule GateServer.Npc.Skills.HouseDesign do
   @impl true
   def definition(_profile) do
     %{
-      description: "多轮设计一栋住宅：在无界面工作台组合目录部件、修改宏格、查看并检查，成功返回已发布定义 id。不会放到地图上。",
+      description:
+        "多轮设计一栋住宅：在无界面工作台组合目录部件、修改宏格、查看并检查，成功返回已发布定义 id。不会放到地图上。" <>
+          "anchor_micro 所在宏格各轴离自己不超过 #{Perception.reach()} 米，否则以 too_far 结束。",
       parameters: %{
         type: "object",
         properties:
@@ -59,8 +61,28 @@ defmodule GateServer.Npc.Skills.HouseDesign do
 
   def run(_, _, _), do: {:error, :invalid_skill_arguments, @metrics}
 
-  @doc "返回发布结果或明确失败及实际模型计量；模型请求由 context.request 注入。"
+  @doc """
+  返回发布结果或明确失败及实际模型计量；模型请求由 context.request 注入。
+  锚点宏格任一轴离自身超过 `Perception.reach/0` 时以 `:too_far` 结束：不读 site、不做检查、不发模型请求
+  （远处读世界会触发冷区域生成）。
+  """
   def run(context, args) do
+    if within_reach?(context.actor.position, args.anchor),
+      do: design(context, args),
+      else: {:error, :too_far, @metrics}
+  end
+
+  # 守卫与 site 读取共用同一个锚点宏格。
+  defp within_reach?(position, anchor) do
+    Enum.zip(anchor_cell(anchor), Tuple.to_list(position))
+    |> Enum.all?(fn {c, p} -> abs(c - p) <= Perception.reach() end)
+  end
+
+  # 锚点所在的宏格 [x, y, z]（micro 坐标向下取整到宏格）。
+  defp anchor_cell(anchor),
+    do: anchor |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1, Spatial.micro_resolution()))
+
+  defp design(context, args) do
     context =
       Map.put(
         context,
@@ -121,9 +143,7 @@ defmodule GateServer.Npc.Skills.HouseDesign do
 
   # 只报告锚点下层与起层的有限观测；未采样附件、上层或窗口外不推断为空。
   defp site(context, anchor) do
-    [x, y, z] =
-      anchor |> Tuple.to_list() |> Enum.map(&Integer.floor_div(&1, Spatial.micro_resolution()))
-
+    [x, y, z] = anchor_cell(anchor)
     cells = for yy <- (y - 1)..y, xx <- x..(x + 15), zz <- z..(z + 15), do: {xx, yy, zz}
     snapshot = World.material_snapshot(context.world, [context.actor.cid], cells, :micro)
 
@@ -164,17 +184,18 @@ defmodule GateServer.Npc.Skills.HouseDesign do
     }
   end
 
+  # 目录行的尺寸与材料单只在 Perception.prefab_row/3 计算；这里只加上设计会话用的十六进制 id 与调用方标签。
   defp catalog_rows(catalog, properties, labels) do
     for {id, compiled} <- Enum.sort(catalog) do
       hex = Base.encode16(id, case: :lower)
-      {lo, hi} = compiled.summary.bounds
+      row = Perception.prefab_row(id, compiled, properties)
 
       %{
         id: hex,
         label: Map.get(labels, hex),
-        summary: compiled.summary,
-        size_m: for(i <- 0..2, do: (elem(hi, i) - elem(lo, i)) / Spatial.micro_resolution()),
-        materials: Check.materials(compiled, properties)
+        summary: row.summary,
+        size_m: row.size_m,
+        materials: row.materials
       }
     end
   end
@@ -303,7 +324,11 @@ defmodule GateServer.Npc.Skills.HouseDesign do
 
   defp usage(_, _), do: {:error, :usage_unavailable}
 
-  @tools ~w(edit view slice check publish look inspect remember recall search_memory)
+  # 与父脑共用的工具：定义（strict）与译码都取自 Abilities；它们只读世界或读写本角色的记忆。
+  # 本会话自有的 edit / view / slice / check / publish 不改 strict（ops 的可选字段若改 nullable 是独立的契约变化）。
+  @shared ~w(look inspect remember recall search_memory)
+  @shared_profile %{groups: [:sense, :memory]}
+  @tools ~w(edit view slice check publish) ++ @shared
 
   defp call(%{"output" => output} = response) when is_list(output) do
     case GateServer.Npc.Responses.function_calls(response) do
@@ -339,33 +364,10 @@ defmodule GateServer.Npc.Skills.HouseDesign do
   defp route_summary({:ok, path}), do: %{status: :reachable, steps: length(path)}
   defp route_summary(other), do: other
 
-  defp execute(name, params, context, _, state) when name in ["look", "inspect"] do
-    with {:ok, actor} <- context.actor.refresh.(context.actor.player, context.actor.identity),
-         {_, _} = call <- Perception.prepare(actor.position, Perception.command(name, params)),
-         {:ok, data} <- Perception.read(context.world, actor.cid, call) do
-      verb = if name == "look", do: :look, else: :inspect
-      [result] = Perception.project(%{verb: verb, status: :done, data: data}, [], actor.position)
-      {:continue, %{ok: true, observation: result.data, self_position_m: actor.position}, state}
-    else
-      nil -> rejected(:invalid_perception_bounds, state)
-      {:error, reason} -> rejected(reason, state)
-    end
-  end
-
-  defp execute(name, params, context, _, state)
-       when name in ["remember", "recall", "search_memory"] do
-    with {:ok, actor} <- context.actor.refresh.(context.actor.player, context.actor.identity) do
-      outcome =
-        Memory.execute(
-          context.memory,
-          actor.cid,
-          actor.position,
-          Memory.command(name, params, state.metrics.rounds)
-        )
-
-      {:continue, %{ok: outcome.status == :done, memory: outcome}, state}
-    else
-      {:error, reason} -> rejected(reason, state)
+  defp execute(name, params, context, _, state) when name in @shared do
+    case Abilities.command(name, params, state.metrics.rounds, @shared_profile) do
+      %{verb: :invalid_tool_arguments} -> rejected(:invalid_tool_arguments, state)
+      command -> shared(command, context, state)
     end
   end
 
@@ -460,6 +462,28 @@ defmodule GateServer.Npc.Skills.HouseDesign do
     do: rejected(if(state.last_check == nil, do: :check_required, else: :check_failed), state)
 
   defp execute(_, _, _, _, state), do: rejected(:invalid_tool_arguments, state)
+
+  defp shared(%{verb: verb} = command, context, state) when verb in [:look, :inspect] do
+    with {:ok, actor} <- context.actor.refresh.(context.actor.player, context.actor.identity),
+         {_, _} = call <- Perception.prepare(actor.position, command),
+         {:ok, data} <- Perception.read(context.world, actor.cid, call) do
+      [result] = Perception.project(%{verb: verb, status: :done, data: data}, [], actor.position)
+      {:continue, %{ok: true, observation: result.data, self_position_m: actor.position}, state}
+    else
+      nil -> rejected(:invalid_perception_bounds, state)
+      {:error, reason} -> rejected(reason, state)
+    end
+  end
+
+  defp shared(command, context, state) do
+    with {:ok, actor} <- context.actor.refresh.(context.actor.player, context.actor.identity) do
+      outcome = Memory.execute(context.memory, actor.cid, actor.position, command)
+      {:continue, %{ok: outcome.status == :done, memory: outcome}, state}
+    else
+      {:error, reason} -> rejected(reason, state)
+    end
+  end
+
   defp rejected(reason, state), do: {:continue, %{ok: false, error: reason}, state}
 
   defp compile(context, draft) do
@@ -730,7 +754,7 @@ defmodule GateServer.Npc.Skills.HouseDesign do
         %{},
         []
       )
-    ] ++ Perception.tools() ++ Memory.tools()
+    ] ++ Enum.filter(Abilities.tools(@shared_profile), &(&1.name in @shared))
   end
 
   defp tool(name, description, properties, required),

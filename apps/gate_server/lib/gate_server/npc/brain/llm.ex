@@ -3,8 +3,11 @@ defmodule GateServer.Npc.Brain.Llm do
   全局系统功能：LLM 决策后端（OpenAI Responses 线格式）。回调只把事件转给自己的进程，立刻返回；
   该进程在“没有在途命令且有新情况”时问一次模型，把模型的工具调用译成命令，用 `Body.command/2` 投回。
   每次请求无状态：目标 + 当前 Observation + 最近的 Outcome + 持久化经历。模型的输出是外部输入：
-  工具与参数的译码在 `Actions` / `Perception` / `Memory` / `Skills` 各自的目录里，解析失败或未知工具在本地回报拒绝，
-  不发给 Body、也不让进程崩溃；合法性由 Body 与权威裁决。
+  工具表是 `GateServer.Npc.Abilities.tools(profile)`（strict，按 `profile.groups` 裁剪）加本地的 `wait`；
+  译码是 `Responses.function_calls/1` → `wait` 本地处理 → `Abilities.command/4`。解析失败、形状不对或未知工具在本地
+  回报拒绝（`invalid_tool_arguments` / `unknown_tool`，附原调用），不发给 Body、也不让进程崩溃；合法性由 Body 与权威裁决。
+  本模块不保存“最近一次 probe / inspect”之类的隐式目标：`use_tool` / `dismantle` / `detach` 的 target 是模型从
+  probe_toward 结果或 inspect 行里原样抄来的显式句柄。
   请求之间模型看不到自己上一次调用了什么，所以给它看的每条 Outcome 都附上当初那次调用（`command`）：
   只有 `{id, verb, status}` 时模型对不上“哪一格放好了”，实测会原地反复 look。
   `remember` / `recall` / `search_memory` 通过 NpcMemory 保存、读取与搜索长期记忆；每轮现读近期与相关内容。
@@ -16,14 +19,15 @@ defmodule GateServer.Npc.Brain.Llm do
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
         endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
-        max_requests_per_hour: 可选}
+        groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选}
 
   skills 是技能名到配置的 map；技能和记忆命令交给 Runtime，LLM 只等待最终 Outcome。
   Runtime 拥有可选中断策略、worker 与停止确认；本模块只拥有模型请求、工具解析和模型上下文。
   """
   @behaviour GateServer.Npc.Brain
   require Logger
-  alias GateServer.Npc.{Actions, Attention, Memory, Skills, Context, Perception, Responses}
+  alias GateServer.Npc.{Abilities, Memory, Context, Perception, Responses}
+  alias SceneServer.Movement.Player
 
   @history 8
   # 两次请求的最小间隔（毫秒）：连续被拒时不空转打接口。
@@ -36,26 +40,26 @@ defmodule GateServer.Npc.Brain.Llm do
   # 实体走进这个距离（米）叫醒大脑；离开 @forget_m 才算走远，边界上来回不反复叫醒。
   @notice_m 6.0
   @forget_m 8.0
+  # wait 的秒数范围（夹住模型给的值）：说明与到期计时共用。
+  @min_wait_s 1
+  @max_wait_s 300
 
   @wait %{
     type: "function",
     name: "wait",
     description:
-      "什么都不做，seconds 秒后再被询问（1–300）。目标已完成或暂时无事可做时用它，不要反复调用 stop。" <>
-        "有人走到身边 6 米内或对你说话时会提前询问。",
+      "什么都不做，seconds 秒后再被询问（#{@min_wait_s}–#{@max_wait_s}）。目标已完成或暂时无事可做时用它。" <>
+        "有人走到身边 #{@notice_m} 米内或对你说话时会提前询问。",
     parameters: %{
       type: "object",
       properties: %{seconds: %{type: "number"}},
       required: ["seconds"],
       additionalProperties: false
-    }
+    },
+    strict: true
   }
 
-  defp tools(profile),
-    do:
-      Actions.tools(profile) ++
-        [@wait] ++
-        Perception.tools() ++ Attention.tools() ++ Memory.tools() ++ Skills.tools(profile)
+  defp tools(profile), do: Abilities.tools(profile) ++ [@wait]
 
   @impl true
   def init(profile) do
@@ -70,47 +74,27 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   @doc """
-  把一次 Responses 应答里的工具调用译成命令；`probe` 是最近一次成功探测 `%{direction:, target:}`，
-  `things` 是最近一次 inspect 的附件身份（attachment_id => 目标）。
-  参数不是 JSON 对象 → `%{verb: :invalid_tool_arguments}`，没有这个工具 → `%{verb: :unknown_tool}`；
-  这两种与 `wait` 只在本 adapter 内处理，不发给 Body。
+  把一次 Responses 应答里的工具调用按出现顺序译成命令，id 从 `next_id` 起递增。
+  `wait` 在本 adapter 内处理；其余交 `Abilities.command/4`：参数不是 JSON 对象或形状不对 →
+  `%{verb: :invalid_tool_arguments}`，没有这个工具（含被 groups 裁掉的）→ `%{verb: :unknown_tool}`，这两种不发给 Body。
   """
-  def commands(
-        response,
-        probe,
-        things,
-        next_id,
-        profile \\ %{skills: %{design_house: %{}, build: %{}, wilderness: %{}}}
-      ) do
+  def commands(response, next_id, profile) do
     response
     |> Responses.function_calls()
     |> Enum.with_index(next_id)
-    |> Enum.map(fn {call, id} -> command(call, id, probe, things, profile) end)
+    |> Enum.map(fn {call, id} -> command(call, id, profile) end)
   end
 
-  defp command(%{name: name, arguments: {:error, reason}}, id, _, _, _),
+  defp command(%{name: name, arguments: {:error, reason}}, id, _),
     do: %{id: id, verb: reason, tool: name}
 
-  defp command(%{name: "wait", arguments: {:ok, args}}, id, _, _, _),
+  defp command(%{name: "wait", arguments: {:ok, args}}, id, _),
     do: %{id: id, verb: :wait, seconds: args["seconds"]}
 
-  defp command(%{name: name, arguments: {:ok, args}}, id, probe, things, profile) do
-    Actions.command(name, args, id, probe, things) ||
-      perception(name, args, id) ||
-      Attention.command(name, args, id) ||
-      Memory.command(name, args, id) ||
-      Skills.command(name, args, id, profile) ||
-      %{id: id, verb: :unknown_tool, tool: name}
-  end
+  defp command(%{name: name, arguments: {:ok, args}}, id, profile),
+    do: Abilities.command(name, args, id, profile)
 
-  defp perception(name, args, id) do
-    case Perception.command(name, args) do
-      nil -> nil
-      command -> Map.put(command, :id, id)
-    end
-  end
-
-  @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/4` 相同；Outcome 回来时附给模型看。"
+  @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/3` 相同；Outcome 回来时附给模型看。"
   def calls(response, next_id) do
     for {call, id} <- response |> Responses.function_calls() |> Enum.with_index(next_id),
         into: %{} do
@@ -137,11 +121,6 @@ defmodule GateServer.Npc.Brain.Llm do
       request: Map.get(profile, :request, &GateServer.Npc.Http.request/2),
       observation: nil,
       outcomes: [],
-      # 发出过但还没有 Outcome 的探测方向：id => direction。
-      probes: %{},
-      probe: nil,
-      # 最近一次 inspect 的附件身份：attachment_id => 目标。
-      things: %{},
       # 发出去还没有 Outcome 的调用：id => %{tool:, args:}。
       calls: %{},
       # 身边（@notice_m 内）的实体 id；有新的走近就叫醒。
@@ -206,7 +185,7 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   defp answer(state, response) do
-    all = commands(response, state.probe, state.things, state.next_id, state.profile)
+    all = commands(response, state.next_id, state.profile)
     {waits, rest} = Enum.split_with(all, &(&1.verb == :wait))
 
     {local, commands} =
@@ -215,10 +194,15 @@ defmodule GateServer.Npc.Brain.Llm do
     Logger.info("npc_llm_decision #{inspect(all, limit: :infinity)}")
     for command <- commands, do: GateServer.Npc.Body.command(state.body, command)
 
-    # 每次询问都要花钱：模型说等多久就挂起多久（夹在 1–300 秒），到点再标记有新情况。
+    # 每次询问都要花钱：模型说等多久就挂起多久（夹在 @min_wait_s–@max_wait_s 秒），到点再标记有新情况。
     for %{seconds: seconds} <- waits,
         is_number(seconds),
-        do: Process.send_after(self(), :wake, round(min(300, max(1, seconds)) * 1_000))
+        do:
+          Process.send_after(
+            self(),
+            :wake,
+            round(min(@max_wait_s, max(@min_wait_s, seconds)) * 1_000)
+          )
 
     # 没有任何工具调用（如 incomplete、代理只回了文本）：不会有 Outcome 来叫醒，必须自己按退避重问。
     if all == [] do
@@ -227,18 +211,12 @@ defmodule GateServer.Npc.Brain.Llm do
       )
     end
 
-    probes =
-      for %{verb: :probe_toward, id: id, direction: direction} <- commands,
-          into: state.probes,
-          do: {id, direction}
-
     sent = Map.take(calls(response, state.next_id), Enum.map(commands ++ local, & &1.id))
 
     state = %{
       state
       | asking: false,
         request_pid: nil,
-        probes: probes,
         calls: Map.merge(state.calls, sent),
         next_id: state.next_id + length(all),
         dirty: all == [],
@@ -262,7 +240,6 @@ defmodule GateServer.Npc.Brain.Llm do
   defp nearby(_, previous), do: previous
 
   defp record_outcome(state, outcome) do
-    state = remember_probe(state, outcome)
     position = state.observation && state.observation.self.position
     {call, calls} = Map.pop(state.calls, outcome.id)
     outcome = if call, do: Map.put(outcome, :command, call), else: outcome
@@ -274,28 +251,6 @@ defmodule GateServer.Npc.Brain.Llm do
         outcomes: Enum.take(Perception.project(outcome, state.outcomes, position), @history)
     }
   end
-
-  defp remember_probe(state, %{verb: :probe_toward, id: id} = outcome) do
-    {direction, probes} = Map.pop(state.probes, id)
-
-    probe =
-      if outcome.status == :done,
-        do: %{direction: direction, target: outcome.data},
-        else: state.probe
-
-    %{state | probes: probes, probe: probe}
-  end
-
-  defp remember_probe(state, %{verb: :inspect, status: :done, data: %{property_states: rows}}) do
-    things =
-      for %{granularity: 3, incarnation: id} = row <- rows, into: %{} do
-        {id, Map.take(row, [:granularity, :micro, :incarnation, :owner, :material])}
-      end
-
-    %{state | things: things}
-  end
-
-  defp remember_probe(state, _), do: state
 
   # 有新情况、没有在途命令、没有在途请求、过了（退避后的）间隔、且本小时还有额度，才问一次。
   defp ask(
@@ -360,16 +315,7 @@ defmodule GateServer.Npc.Brain.Llm do
   def body(profile, observation, outcomes, experiences \\ []) do
     %{
       model: profile.endpoint.model,
-      instructions:
-        "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。" <>
-          "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。" <>
-          "眼睛在 self.position 上方 0.6 米，探测与射程都从眼睛算。" <>
-          "观察位置和方向见 view 或 get_view，独立于移动和目标选择；entities 仅表示已同步，get_visible_entities 才检查视锥与遮挡。" <>
-          "get_aim 的查询范围不是技能射程；balances 是你的背包（每种 material 还能放几个整格）。" <>
-          "记忆不是世界真值；每次动手前先用 look/inspect 核对当前位置与目标。" <>
-          "experiences 是近期经历；memories 是每轮检索的相关记忆和近期笔记，带时间与来源；memory_error 表示读取失败。" <>
-          "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。" <>
-          "能力以本次 tools 参数表为准；设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。",
+      instructions: instructions(profile),
       input:
         Jason.encode!(
           %{
@@ -397,6 +343,53 @@ defmodule GateServer.Npc.Brain.Llm do
       store: false
     }
   end
+
+  # 通用说明 + 只关乎某些工具的提示：提示点名的工具都在本次工具表里才写进去，被 groups 裁掉的工具不被点名。
+  # 句柄抄写、射程见 read_catalog 等只关乎单个工具的规则写在该工具的说明里，随工具一起出现或消失。
+  defp instructions(profile) do
+    names = MapSet.new(Abilities.entries(profile), & &1.name)
+    {_, eye, _} = Player.eye_position({0.0, 0.0, 0.0})
+
+    for {needs, text} <- [
+          {[], "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。"},
+          {[], "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。"},
+          {[], "眼睛在 self.position 上方 #{eye} 米，探测与射程都从眼睛算。"},
+          {[], "观察位置和方向见 view，独立于移动和目标选择；entities 仅表示已同步，不检查视锥与遮挡。"},
+          {~w(get_visible_entities), "get_visible_entities 才检查视锥与遮挡。"},
+          {~w(get_aim), "get_aim 的查询范围不是技能射程。"},
+          {[], "balances 是你的背包（每种 material 还能放几个整格）。"},
+          {[], "entities 的 relation：#{relations()}，只表示敌我颜色，不表示能否攻击；"},
+          {[], "self.body_state 的 status：#{statuses()}（死亡期间世界动作被拒），life 0–100，null 表示还没收到。"},
+          {[], "记忆不是世界真值。"},
+          {~w(look inspect), "每次动手前先用 look/inspect 核对当前位置与目标。"},
+          {[], "experiences 是近期经历；memories 是每轮检索的相关记忆和近期笔记，带时间与来源；memory_error 表示读取失败。"},
+          {~w(remember recall search_memory),
+           "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。"},
+          {[], "能力以本次 tools 参数表为准。"},
+          {~w(design_house build), "设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。"}
+        ],
+        Enum.all?(needs, &MapSet.member?(names, &1)),
+        into: "",
+        do: text
+  end
+
+  # relation 码取自 MmoContracts.Relation（线上同一组码）。
+  defp relations,
+    do:
+      Enum.map_join(
+        [neutral: "中立", self: "自己", own: "同属", friendly: "友好", hostile: "敌对"],
+        "、",
+        fn {relation, label} -> "#{MmoContracts.Relation.code(relation)} #{label}" end
+      )
+
+  # status 码取自 SceneServer.Body.status_code/1（与玩家 HUD 的 Session.BodyState 同一张表）。
+  defp statuses,
+    do:
+      Enum.map_join(
+        [alive: "存活", dying: "濒死", dead: "死亡"],
+        "、",
+        fn {status, label} -> "#{SceneServer.Body.status_code(status)} #{label}" end
+      )
 
   defp memory_input(events) when is_list(events), do: %{experiences: Context.plain(events)}
   defp memory_input(%{} = context), do: Context.plain(context)

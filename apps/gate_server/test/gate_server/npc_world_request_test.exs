@@ -178,6 +178,17 @@ defmodule GateServer.NpcWorldRequestTest do
     end
   end
 
+  test "眼点恰在瞄准点上：没有方向，拼不出意图（Body 回 invalid_command，不在 Body 进程里除以零）" do
+    # 宏格 (60, 520, 57) = micro (480, 4160, 456)，中心 (60.5, 520.5, 57.5)：Demo 出生格心站地时的眼点。
+    handle = %{granularity: 0, micro: {480, 4160, 456}, incarnation: 0, owner: {0, 0}, material: 11}
+    eye = {60.5, 520.5, 57.5}
+
+    assert WorldRequest.aim(eye, handle) == nil
+
+    assert WorldRequest.build(%{verb: :use_tool, tool_id: 1, target: handle}, %{@context | eye: eye}) ==
+             nil
+  end
+
   test "瞄准点按粒度：g0 宏格中心、g1 / g2 micro 中心、g3 任意单位方向（手算）" do
     # 宏格 (1, 64, 0) 的中心 (1.5, 64.5, 0.5)；眼 (0.5, 64.6, 0.5) → (1, −0.1, 0) / √1.01。
     {dx, dy, dz} = WorldRequest.aim({0.5, 64.6, 0.5}, %{granularity: 0, micro: {8, 512, 0}})

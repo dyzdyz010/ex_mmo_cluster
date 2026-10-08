@@ -1,6 +1,6 @@
 defmodule GateServer.Npc.Skills do
   @moduledoc """
-  全局系统功能：已配置技能的目录与 worker 入口。技能描述、参数接纳与执行由各 Skill 实现拥有。
+  全局系统功能：已配置技能的能力条目与 worker 入口。技能描述、参数接纳与执行由各 Skill 实现拥有。
   profile.skills 的键是作者定义的原子名；内置技能可省略 module，自定义技能显式给 module。
   生命周期、内部事件路由与取消由 Runtime 维护。这里不认识决策后端或模型供应商。
   """
@@ -11,22 +11,24 @@ defmodule GateServer.Npc.Skills do
     design_house: GateServer.Npc.Skills.HouseDesign,
     wilderness: GateServer.Npc.Skills.Wilderness
   }
-  @defaults %{skills: %{build: %{}, design_house: %{}, wilderness: %{}}}
   @metrics %{request_count: 0, jev_request_count: 0}
 
-  @doc "已配置技能的能力描述；LLM 可以投影为工具，脚本可直接读取同一参数契约。"
-  def tools(profile) do
+  @doc """
+  已配置技能的能力条目（group :skill，按名字排序；形状见 `GateServer.Npc.Abilities`）。参数 schema 原样取自技能的
+  `definition/1`，参数透传给技能、由技能接纳；名字只取作者配置的原子，不把外部输入转成新原子。
+  """
+  def entries(profile) do
     for {name, config} <- Enum.sort(Map.get(profile, :skills, %{})) do
-      module = implementation(name, config)
-      Map.merge(module.definition(profile), %{type: "function", name: Atom.to_string(name)})
-    end
-  end
+      definition = implementation(name, config).definition(profile)
 
-  @doc "只从作者配置中匹配工具名，不创建外部输入原子；参数由技能接纳。"
-  def command(name, args, id, profile \\ @defaults) do
-    case Enum.find(Map.keys(Map.get(profile, :skills, %{})), &(Atom.to_string(&1) == name)) do
-      nil -> nil
-      skill -> %{id: id, verb: :skill, skill: skill, args: args}
+      %{
+        name: Atom.to_string(name),
+        group: :skill,
+        description: definition.description,
+        done: "技能运行期间不再询问；结束时只回一个终态（verb 是技能名，data 是技能结果）。",
+        params: {:skill, definition.parameters},
+        build: fn args, _ -> %{verb: :skill, skill: name, args: args} end
+      }
     end
   end
 

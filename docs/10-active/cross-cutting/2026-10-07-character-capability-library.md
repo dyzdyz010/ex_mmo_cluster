@@ -1,6 +1,6 @@
 # 角色能力函数库（决策稿）
 
-分类：**Global system**，决策稿。状态：**2026-10-08 设计定稿，I1 实施中**（见 §14）。
+分类：**Global system**，决策稿。状态：**I1 已提交（b363f122）；I2a 已实现、未实跑；I2b 已实现、已实跑（live_llm 1 次）；I2b 审查修复已实现（修复后未再跑 live）**（见 §14）。
 
 - 基线：服务端 master `f94a3d72`（worktree `ex_mmo_cluster-capabilities`，分支 `capability-library-20261007`）；Voxim `main` `b40f922c`。下文行号都按基线。
 - 上位与相邻文档：[NPC 统一接口层](2026-09-21-npc-unified-interface-design.md)、[NPC 运行层评审修复](2026-10-06-npc-runtime-review-fixes.md)、[上下文与记忆契约](2026-09-22-npc-context-memory-contract.md)、Voxim `Docs/Combat-Action-Design.md`、`Docs/Testing.md`。
@@ -126,7 +126,7 @@ flowchart TB
 | `GateServer.Npc.Body` | npc/body.ex | NPC 会话 owner；Brain 命令唯一校验点 | `command/2`、`observe/1`、`skill_context/1` 不变；I1 worker 改调 Intent（§7.6）、submit 冻结 ingress、补 `{:body,_}` 映射与 `{:npc_path, id, {:error, r}}`；I2 新动词、观察字段、S1、`start/2`；I4 施法 | I1、I2、I4 |
 | `GateServer.Npc.Perception` | npc/perception.ex | 感知范围与只读 World 入口 | 新增 `read(world, cid, {:catalog, what, definition})`；house_design 私有 `catalog_rows` 迁入，只留一份 | I2 |
 | `GateServer.Npc.Abilities`（新） | npc/abilities.ex | 决策侧能力定义门面 | `entries/1`、`tools/1`、`command/4`，见 §5 | I2 |
-| Actions / Attention / Memory / Skills / Perception 各域 | npc/*.ex | 各域条目 | `tools/*` 与 `command/*` 改为 `entries/1`；Attention 的 `@verbs` 由条目派生（消除 attention.ex:185-204 的第二份表）；Actions 暴露 `tolerance/0`（move_to 容差唯一常量） | I2 |
+| Actions / Attention / Memory / Skills / Perception 各域 | npc/*.ex | 各域条目 | `tools/*` 与 `command/*` 改为 `entries/0`（Skills 按 `profile.skills` 为 `entries/1`）；Attention 的 `@verbs` 由条目派生（消除 attention.ex:185-204 的第二份表）；Actions 暴露 `tolerance/0`（move_to 容差唯一常量） | I2 |
 | `GateServer.Npc.Brain.Llm` | npc/brain/llm.ex | LLM 适配 | 工具表与译码只走 Abilities；删除 `probes` / `probe` / `things` 隐式状态与 llm.ex:83 默认技能表 | I2 |
 | `Skills.HouseDesign` | npc/skills/house_design.ex | 设计技能 | 共享工具（look、inspect、remember、recall、search_memory）取自 Abilities；S3；目录投影改用 Perception。发布仍调 `PrefabDesigner.publish/3`（F12） | I2 |
 | `Skills.Gather`（新） | npc/skills/gather.ex | 只经 Body 原子动作从采石盒取天然格 | Skill 契约；纯函数 `candidates/3` | I3 |
@@ -158,6 +158,7 @@ flowchart TB
 ```
 
 - **一份规格两种产物**：`schema/2` 生成 strict JSON Schema（每个 object `additionalProperties: false`、全部属性进 `required`、可空写 `type: [t, "null"]`）；`decode/2` 把 JSON 参数转成定型值，形状不对返回 `:error`。`decode` 是 Abilities 唯一的形状校验，不另写通用 JSON Schema 校验器；取值合法性仍由 Body 与权威裁决。
+- **I2b 实现注记（以代码为准）**：译码只认 JSON 写法（字符串键、数组）——当前调用方（`Brain.Llm`、design_house 共享工具）都给这种形状；Elixir 写法（原子键、元组）等 I3 行为树有真实调用方时随它再加（I2b 审查）。对象里多余的键忽略，可空字段缺键视为 null；可空枚举的 `enum` 另含 `null`；元组元素同型，schema 取首元素作 `items` 并写 `minItems = maxItems`。`:belt` 只约束 schema、只出现在顶层参数，译码只要求整数（与“授予条件只是投影约束”一致）。字符串长度不写进 schema（strict 不支持 minLength / maxLength），记忆的 key / text / query 上限写在描述里、仍由 `Memory.execute/4` 校验。技能参数原样透传（JSON 形）；技能 `definition/1` 的 schema 必须满足 strict（写进 Skill 契约与 README）。描述句数：stop、13 个关注动词等只有一两句，未到上面的“≥3 句”——每条都另附 done 说明，再加句会增大每次请求的 tools 字节（Demo 分组 11 887 B），取此折中。附件的 kind / axis 在 attach 参数与 inspect 投影里是同一组名字（`face` / `edge`、`x` / `y` / `z`，`Actions.attachment_names/1`），槽地址只由 `VoxelRegion.Attachments.slot/1` 恢复。LLM instructions 只写通用约定；只关乎某些工具的提示在这些工具都投影时才写进去。
 - **授予条件只是投影约束，不是权限**：`profile.groups` 可选过滤（缺省全部）；`:belt` 条目要求 `profile.tools` 非空；技能条目要求出现在 `profile.skills`；`:magic` 要求 `profile.spells` 非空。World 受理目录里任何 tool_id（world.ex:942），G22 不在本轮。
 - **不进条目**：kind（只作下表文档）、射程 / 成本 / 冷却数值、reason 目录、`llm` 标志（只给代码用的 `cancel_skill` 归 Runtime，不是条目）。
 
@@ -179,7 +180,7 @@ flowchart TB
 |---|---|
 | Body | `too_far` / `no_path` / `stuck` / `out_of_bounds` / `invalid_command` / `invalid_session` / `session_lost`；read_catalog 的 `definition_not_found`（与 World prefab_intent 同名同义） |
 | Runtime | `skill_busy` / `skill_not_configured` / `no_active_skill` / `already_cancelling` |
-| 技能 | build：`invalid_skill_arguments` / `body_timeout`；gather：`exhausted` / `unreachable` / `invalid_skill_arguments` |
+| 技能 | build：`invalid_skill_arguments` / `body_timeout`；gather：`exhausted` / `unreachable` / `invalid_skill_arguments`；design_house：`too_far`（S3） |
 | 适配层（LLM、树） | `unknown_tool` / `invalid_tool_arguments`（本地回报，不发给 Body） |
 
 权威 reason 一律“原样来自权威”，不建枚举、提示目录，也不写把 World 与 gate_server 绑死的白名单测试。
@@ -198,7 +199,7 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | 来源 | `probe_toward` 的 done data（World 属性行 + Body worker 补的本次 `direction`）；g5 探测为 `%{granularity: 5, owner: {target_id, 0}, incarnation: target_life, micro: {0,0,0}, material: 0, direction}` 加 `public_receipt` 字段；inspect 行（LLM 投影每行附原样 `target`） |
 | 补方向 | `use_tool` / `dismantle` / `cast_spell` 收到 `direction: nil` 时 Body 用 `WorldRequest.aim(eye, handle)`：g0 瞄宏格中心（`micro + 4` micro），g1/g2 瞄该 micro 中心（`micro + 0.5`），g3 任意单位方向（按身份寻址）。`position == nil` 时这些命令回 `:invalid_session`（F11） |
 | 不作来源 | `get_aim`：它用未过滤液体的 `target_at`（world.ex:756），工具射线过滤液体，隔液体会得 `stale_target` |
-| LLM | JSON 里元组写数组，由 `decode` 还原；LLM 投影的句柄 granularity 只允许 0..3，g5 只给代码 Brain（D-13） |
+| LLM 与行为树 | JSON 里元组写数组，由 `decode` 还原。经 Abilities 构造的句柄（LLM 投影与 I3 行为树的 `act`）granularity 只允许 0..3；g5 只由直接产出规范命令的代码 Brain（Routine 式，`Body.command`）发出（D-13）。I2b 审查后按此写定（条目参数规格即 `handle([0, 1, 2, 3])`，不为树放行 g5）；树要攻击角色时作为独立变更再议 |
 
 ### 5.4 API
 
@@ -461,7 +462,7 @@ tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
 | 项 | 规则 |
 |---|---|
 | 工具表 | `Abilities.tools(profile) ++ [wait]`：通过 groups 与授予条件的条目投影为 `%{type: "function", name, description: description <> " 完成：" <> done, parameters: schema, strict: true}`，按 `entries/1` 固定顺序。schema 只依赖 profile（工具带、技能配置、groups、spells），不依赖余额等观察状态 |
-| strict（D-2） | I2 开工前对当前代理做一次 strict 工具的 live 请求（只一次）。不支持就退回 `strict: false`，schema 与本地 decode 保留，不静默降级 |
+| strict（D-2） | I2 开工前对当前代理做一次 strict 工具的 live 请求（只一次）。不支持就退回 `strict: false`，schema 与本地 decode 保留，不静默降级。**2026-10-08 已预检**：一个 strict:true 函数（字符串 / 整数枚举、`type: [t, "null"]`、定长数组 minItems·maxItems、嵌套 object）HTTP 200，代理回显 `strict: true`，模型按 schema 调用（null 处写 null）→ 投影 `strict: true` |
 | 枚举与必填 | 全部属性进 required，可空用 null；kind / axis / op / what 改字符串枚举，tool_id 用工具带整数枚举 |
 | 不投影 | `say`（stub 保留）、`cancel_skill`、g5 句柄 |
 | 数量（D-3） | Demo LLM NPC groups `[:move, :sense, :act, :build, :memory, :skill]`：16 个条目 + wait + 已配置技能，约 20；现状约 31 + 技能。Attention 13 个动词不在投影层合并，靠分组裁剪 |
@@ -488,11 +489,12 @@ Jev 只做多选一，不产参数、不操作世界（npc/README.md）。本轮
 | what | 返回 | 来源 |
 |---|---|---|
 | `"prefab"`（`definition` 必填） | `%{definition_id, materials: %{material => units}, size_m}`；无此 id 回 rejected `definition_not_found` | `World.prefab_catalog/1` 按 id 取已编译定义 + `PrefabDesigner.Check.materials/2`（check.ex:111）；作者目录与运行时发布都在内 |
-| `"prefabs"` | 最近 20 条运行时发布 `[%{definition_id, name, publisher, materials}]` + `total`，供 LLM 浏览 | `World.published_prefabs/1`（id = 字节 sha256）+ 同上 |
-| `"materials"` | `[%{material, name, edible: %{protein_g, energy_j} \| nil, recipe: %{inputs, units} \| nil}]` | `World.material_catalog/1` 的 `display_name / food / recipe_inputs / recipe_units`，与 w/production.ex:146-218 读同一组字段 |
-| `"tools"` | `[%{tool_id, action, range_m, interval_s}]` | 目录 `tools` |
+| `"prefabs"` | `%{prefabs: [%{definition_id, name, publisher, materials}], total}`：最近 20 条运行时发布（新在前）与总数，供 LLM 浏览 | `World.published_prefabs/1`（id = 字节 sha256）+ 同上 |
+| `"materials"` | `%{materials: [%{material, name, edible: %{protein_g, energy_j} \| nil, recipe: %{inputs: %{material => units}, units} \| nil}]}`：列全部材料；edible / recipe 只对生产材料给出，与进食 / 合成门一致（非 nil 时 eat / craft 不会回 `not_edible` / `unknown_recipe`） | `World.material_catalog/1` 的 `display_name / food / recipe_inputs / recipe_units` + 生产材料集合（`World.material_balances/2`，按 `production_materials` 逐项返回）；门条件同 w/production.ex:151、187 |
+| `"tools"` | `%{tools: [%{tool_id, action, range_m, interval_s}]}` | 目录 `tools` |
 
 house_design 私有的 `catalog_rows`（house_design.ex:166-179）迁到 Perception，只留一份。单位与余额相同，都是微格体积单位。
+列表一律包在 map 里（Outcome 的 `data` 是 map）；prefab 目录行（尺寸、材料单）只在 `Perception.prefab_row/3` 计算，house_design 的目录投影改调它，输出不变。
 
 ### 9.2 生成入口 `Body.start/2`
 
@@ -505,7 +507,7 @@ def start(name, opts) do
 end
 ```
 
-- 名字即永久身份，必须唯一（F16）：同名 NPC 拿到同一 cid，后起者顶替前者；同名玩家角色让 `ensure_npc` 抛 CaseClauseError。由调用方（作者 / 部署脚本）保证唯一，不加分支。
+- 名字即永久身份，必须唯一（F16）：同名 NPC 拿到同一 cid，同 cid 最后完成 claim 的 Body 留下——先起者在线时被顶替（`{:shutdown, :replaced}`）；先起者若正处于重新 claim（会话丢失后约 1 s 内或 Scene 未就绪重试中），收不到顶替，稍后自己的 claim 会反过来顶掉后起者。换掉同名 NPC 由部署脚本先停旧 Body 再 start；需要强保证时再改 Claims（不给自己发 close）+ Body（identity 为 nil 时收到 close-2 也结束），本轮不做。同名玩家角色让 `ensure_npc` 抛 CaseClauseError。由调用方（作者 / 部署脚本）保证唯一，不加分支。
 - 字段名 `faction`（Body 的 `profile` 已是运动 profile）；claim 时传 `%{id, spawn, kind: "npc", profile: faction}`（scene.ex:421 读 `:profile`）。节点重启不自动恢复（D-7）。
 
 ### 9.3 本轮不做
@@ -556,7 +558,7 @@ end
 
 **开工前**：对当前 LLM 代理做一次 strict 工具 live 请求（只一次，记录请求与应答），决定 D-2 的取值。
 
-**改动**：新建 npc/abilities.ex；actions / perception / attention / memory / skills 改为 `entries/1`；brain/llm.ex 只走 Abilities、删隐式状态与默认技能表；skills/house_design.ex 共享工具取自 Abilities、S3、目录投影迁 Perception；world_request.ex 的 craft a4、eat a5、dismantle a2 与 `aim/2`（I1 已交付，见 §14）；body.ex 加 read_catalog（craft / eat / dismantle 与 `position == nil` 时需 aim 的命令回 `invalid_session` 已随 I1 交付）、BodyState 与 EntityEnter 字段、S1、`start/2` 与 `faction`；perception.ex `read({:catalog, …})`；brain.ex moduledoc 命令表补新动词（say 保留为 stub）；npc/README.md。
+**改动**：新建 npc/abilities.ex；actions / perception / attention / memory 改为 `entries/0`、skills 改为 `entries/1`；brain/llm.ex 只走 Abilities、删隐式状态与默认技能表；skills/house_design.ex 共享工具取自 Abilities、S3、目录投影迁 Perception；world_request.ex 的 craft a4、eat a5、dismantle a2 与 `aim/2`（I1 已交付，见 §14）；body.ex 加 read_catalog（craft / eat / dismantle 与 `position == nil` 时需 aim 的命令回 `invalid_session` 已随 I1 交付）、BodyState 与 EntityEnter 字段、S1、`start/2` 与 `faction`；perception.ex `read({:catalog, …})`；brain.ex moduledoc 命令表补新动词（say 保留为 stub）；npc/README.md。
 
 | 测试 | 文件 | 内容与期望来源 | 改前 |
 |---|---|---|---|
@@ -658,7 +660,7 @@ end
 | 编号 | 决策 | 默认 |
 |---|---|---|
 | D-1 | 死亡门：`tool_context` 与施放统一回 `dead`（玩家可感知） | 是；中文文案随后续客户端资产发布，期间 HUD 显示 `dead`。NPC 侧连带：死亡期间技能无法开始、design_house 以 `dead` 结束（§7.7） |
-| D-2 | LLM strict | 开；I2 开工前 live 预检一次，代理不支持就 `strict: false`，保留本地 decode |
+| D-2 | LLM strict | 开；I2 开工前 live 预检一次，代理不支持就 `strict: false`，保留本地 decode。**已定：开**（2026-10-08 预检通过，见 §8.3） |
 | D-3 | `profile.groups` 与 Demo 分组 | 采用；缺省全部；Demo LLM NPC 取 `[:move, :sense, :act, :build, :memory, :skill]` |
 | D-4 | say | 保留 Body stub 与 `{:heard,…}` 形状，不投影给 LLM（与已批准的聊天 stub 一致） |
 | D-5 | 建设者材料来源 | Demo：作者采石盒内天然地形 + 一次性作者样本；正式服待“地形极难破坏 / 城区审批”规则确定后另议 |
@@ -669,7 +671,7 @@ end
 | D-10 | NPC 法术来源 | 作者给的 `profile.spells`，LLM 只选名字；NPC 初始能量 0 会走火，有效施法需法术带含 `energy.draw` |
 | D-11 | 0x70 / 0x78 后门 | 独立安全项，不并入本库 |
 | D-12 | 世界变化唤醒大脑 | 本轮不做；Settler 每次动工以权威结果现算 |
-| D-13 | g5（攻击角色） | 只对代码 Brain 开放，不进 LLM 投影；合法性仍只由 combat_scope 裁决，正式世界一律拒绝 |
+| D-13 | g5（攻击角色） | 只对直接产出规范命令的代码 Brain 开放；不进 LLM 投影，行为树 `act` 经 Abilities 与 LLM 同为 0..3（I2b 审查写定，主控可改）；合法性仍只由 combat_scope 裁决，正式世界一律拒绝 |
 | D-14 | 语言 | 稳定名英文 snake_case；描述中文；与 Jev 交互英文 |
 | D-15 | 执行层位置 | scene_server 的 `Movement.Intent` |
 
@@ -680,3 +682,7 @@ end
 | 2026-10-08 | 设计定稿（综合稿 + 红队修正 + 主控裁决），I1 实施中 |
 | 2026-10-08 | I1 已实现、未实跑：`Movement.Intent.run/3`、`Npc.WorldRequest`（含 `aim/2`）、Codec `intent?/1` / `prefab_remove?/1` / `prefab_replace?/1`、`tool_context` 与施放的死亡门、`ToolAction.public_receipt/1`、Dispatch in_scene 子句合并、Body 改走 Intent（受理时冻结 ingress、`{:body,_}` 映射、g5、补余额按 Intent 标志、最小退出隔离）。因 T1.2 冻结帧要覆盖 0x7D a2 与 0x7F a4/a5，WorldRequest 已含 dismantle / craft / eat 形状（Body 经同一路由即受理），I2 只剩这些动词的 Abilities 条目与 T2.5–T2.7 集成测试。测试 T1.1–T1.4 新增并转绿（另加 Body 侧反例：prefab_remove birth −1 回 invalid_command，改前 World 回 instance_not_found）；改前在同一 worktree 还原代码跑基线：gate 全量 150/211（失败 61 = T1Transport 57 + VoximSpellDispatch 4）、scene 全量 230/246（失败 16 = 8+4 项缺 E1_FIXTURE / IS_FIXTURE 环境变量 + CastActionTest 4 项夹具缺 `life_generation` 的 KeyError）；改后 gate 162/223、scene 239/251，失败名单是基线子集（CastActionTest 夹具按 Player.init 补 `life_generation` 后转绿，断言未改），world_server p0_body_world_test 3/3、mmo_contracts 146/146 与基线相同，编译无新增告警 |
 | 2026-10-08 | I1 审查修复：Body 退出隔离的判活改用节点安全的 `Player.running?/1`（Scene 在 peer 节点时 `Process.alive?/1` 会抛 `ArgumentError` 带崩 Body）；WorldRequest 对目标句柄的 micro / owner / incarnation / material / granularity 补整数型守卫（非整数会在 World 进程内的整数运算崩溃）；`character_intent` 加 `action= tool= g=`，Body 在进 Intent 前的拒绝记 `npc_intent_rejected`；§7.4 补 out_of_bounds 与 session_lost 不再补余额；§7.7 / D-1 记 NPC 技能侧的死亡连带变化；session、movement、npc README 与 Codec 谓词文档同步 |
+| 2026-10-08 | I2a（NPC 补齐，不含 Abilities 与 LLM 投影）已实现、未实跑：Body 新动词 `read_catalog`（worker → `Perception.read({:catalog, what, definition})`，prefab / prefabs / materials / tools，列表包在 map 里，§9.1 已按代码修正；prefab 目录行只在 `Perception.prefab_row/3` 计算，design_house 目录投影改调它、输出不变）；Observation 加 `self.body_state`（Session.BodyState 原样）与 entities 的 `name / relation / relation_source`（EntityEnter，Snapshot 只更新位置）；S1（`move_to` 的 y 与脚格相差 > `Perception.reach()` 立即 `too_far`）；S3（design_house 锚点宏格任一轴超距以 `too_far` 结束，不读 site、不发模型请求）；`Body.start/2` 与 `faction` 字段（claim 带 `profile:`，scene.ex:421 读该键）。测试新增 8 项：npc_body_world_test 7 项（T2.5 craft、T2.6 eat、T2.7 dismantle 与 aim（叶子 g2 退 1、宏格 g0 退 512、被挡叶子 `stale_target`、天然地形 `not_a_component`、位置未知 `invalid_session`）、T2.8 read_catalog、T2.9 名字 / 关系 / body_state、T2.10 S1、`Body.start/2` 测试库用例），npc_skill_house_design_test 1 项（T2.11）。改前为红：同一 worktree 临时换回 I1 版 body / perception / house_design 跑这 8 项，5 项失败（read_catalog 回 `invalid_command`、`Body.start/2` 未定义、Observation 无 `body_state`、S1 用例 World 冻住时 Outcome 不到、S3 用例 `request_count` 1），craft / eat / dismantle 已随 I1 受理，换成基线 f94a3d72 的 body.ex 再跑这 3 项全部回 `invalid_command`。改后 gate 全量 170/231（I1 后 162/223 + 新增 8），失败 61 项与基线名单相同（T1Transport 57 + VoximSpellDispatch 4）；scene_server prefab_designer / check 20/20；编译无新增告警。live_llm 与真实双客户端本切片未跑 |
+| 2026-10-08 | I2a 审查修复：read_catalog materials 的 edible / recipe 只对生产材料给出（集合取 `World.material_balances/2`，配方判据改用 `recipe_inputs`，与 w/production.ex:151、187 的进食 / 合成门同条件），T2.8 改为生产材料 [11, 20, 21] 并加反例：22（有 food）、23（有配方）不在其中 → 目录 edible / recipe 为 nil，eat 22 回 `not_edible`、craft 23 回 `unknown_recipe`（改前该用例红：22 的 edible 非 nil）；`Body.start/2` 文档按实际语义改为“同 cid 最后完成 claim 的 Body 留下，先起者正在重新 claim 时会反顶后起者，换人先停旧 Body”（§9.2、body.ex、README），不改 Claims；`move_to` 与 `design_house` 的 LLM 工具描述补上 too_far 上限（由 `Perception.reach()` 插值），§5.2 技能行补 `design_house：too_far`；house_design 锚点宏格换算合并为 `anchor_cell/1`（守卫与 site 读取同一格）；README 写明 Observation 新字段从 I2a 起已随 `Context.plain` 进入 LLM 请求 input，relation / status 码含义随 I2b 写进 instructions。gate 全量 170/231，失败 61 项名单与修复前逐条相同（T1Transport 57 + VoximSpellDispatch 4） |
+| 2026-10-08 | I2b（能力库 Abilities 与 LLM 投影收敛）**已实现**：开工前 strict 预检 1 次（strict:true 函数含字符串 / 整数枚举、`type: [t, "null"]`、定长数组、嵌套 object，HTTP 200、代理回显 strict、模型按 schema 调用 → D-2 定为开）；新建 `npc/abilities.ex`（`entries/1`、`tools/1`、`command/4`；一份 spec 生成 strict schema 与 JSON / Elixir 双写法译码，注记见 §5）；Actions / Perception / Attention / Memory / Skills 改为只提供条目，删掉各自的 tools / command 双份实现（Attention 动词表由条目派生；`Actions.tolerance/0`；query_balances 归 Perception 的 sense 条目；技能条目用各自 `definition/1` 的 schema）；显式目标句柄：use_tool / dismantle 的 target 抄 probe 结果或 inspect 行，detach 由 g3 句柄算 kind / axis / attachment_id，inspect 与 probe 命中的 LLM 投影各附 `target`，删 llm.ex 的 probes / probe / things 与默认技能表，g5 不进投影；`Llm.commands/3` = function_calls → wait 本地 → `Abilities.command/4`，`wait` 也标 strict；say 不投影（Body stub 保留）；描述数字由常量插值（reach、look 格数、inspect tile / 条数、NpcMemory.limits、tolerance、micro 分辨率），射程与间隔写“见 read_catalog tools”，删“镐 = 攻击”与电路安装 / 投料；instructions 补句柄规则与 relation（`Relation.code/1` 插值）/ body_state.status 码；`profile.groups` 可选（Demo 分组 16 条目 + wait = 17 个工具）；design_house 共享工具（look / inspect / remember / recall / search_memory）定义与译码取自 Abilities（strict），自有 edit / view / slice / check / publish 不改。既有期望随契约显式更新：move_to 命令恒带 `y`（可为 nil）；probe_toward 参数 dx/dy/dz → `direction` 数组；attach 的 kind / axis 改字符串枚举；prefab 坏 hex、非列表 instance、缺参数在本地回 `invalid_tool_arguments`（改前交 Body 回 `invalid_command`）；prefab 命令只带该 op 用到的键；记忆工具的长度上限从 schema 移进描述（strict 不支持 maxLength，`Memory.execute/4` 校验不变）；npc_attention / skills / memory 测试改调 Abilities。测试：新增 npc_abilities_test 9 项（T2.1）；npc_brain_llm_test 冻结 Responses 段改写为 8 项（T2.3：use_tool 显式句柄、detach g3 句柄 kind/axis 手算、未知工具 / 非对象 / 错形 / say / g5 本地拒绝、inspect 与 probe 投影带 target）；npc_body_world_test 新增 2 项（T2.2 接缝：34 个投影条目逐个交给真实 Body，无 `invalid_command`；T2.4 冻结应答 + 真实 World：probe 句柄 → use_tool × 4 挖掉石柱上格 → 放到 (14,64,12)，余额 0 → 512 → 0）。改前为红：临时还原 I2b 前代码（HEAD 版 llm / actions / attention / memory / skills，I2a 版 perception / house_design，去掉 abilities.ex）跑新测试，新单测 19 项失败、T2.2 `UndefinedFunctionError`、T2.4 的 probe_toward / use_tool 回 `invalid_command` 未挖成；旧 `Llm.commands/5` 对同一组冻结应答给出 use_tool target / direction nil、detach kind / axis nil、数组方向译不出、工具表含 say 且无 strict。改后 gate 全量 184/245（I2a 170/231 + 14），失败 61 项名单与 I2a 逐条相同（T1Transport 57 + VoximSpellDispatch 4）；编译无新增告警。**已实跑**：live_llm 挖石柱砌墙 1 次（Demo 分组、空记忆）通过：request_count 36，每次请求 tools 11 887 B（17 个工具），约 2.6 min 完成，0 次 unknown_tool / invalid_tool_arguments，use_tool 全部抄 probe 结果的 target；tools 字节对比（同一 profile、Jason 编码）：改前 31 个工具 12 293 B（无 strict、无 done 说明）；改后缺省全部组 34 个 18 850 B（审查修复时更正：原记 19 318 B 是关注动词 done 文字定稿前的测量）、Demo 分组 17 个 11 887 B。改前同一用例无 request_count 记录，审查修复时已在父状态补跑一次（见下一行）。Voxim `Docs/Gameplay/npc.exs` 的 Demo LLM NPC 还没配 `groups`（Voxim 仓库，随最终 Demo 增量改）；真实双客户端未跑 |
+| 2026-10-08 | I2b 审查修复**已实现**：① `WorldRequest.aim/2` 眼点恰在瞄准点上（长度 0）返回 nil，Body 回 `invalid_command`（改前在 Body 进程里 ArithmeticError；反例：眼 (60.5, 520.5, 57.5) 对 micro (480, 4160, 456) 的 g0 句柄）；② inspect 投影的附件 kind / axis 改为与 attach 参数同名的字符串（face / edge、x / y / z，`Actions.attachment_names/1`，与 attach 枚举同一张表），detach 的槽地址改取 `VoxelRegion.Attachments.slot/1`；③ 译码只认 JSON 写法，删掉无调用方的原子键 / 元组分支与技能参数转换（Elixir 写法随 I3 行为树的真实调用方再加），`:belt` 只看顶层；④ g5 按“经 Abilities 的 LLM 与行为树同为 0..3、g5 只由直接产出规范命令的代码 Brain 发出”写定（§5.3、D-13，主控可改）；⑤ instructions 只写通用约定，点名工具的提示在这些工具都投影时才写（Demo 分组不再点名 get_view / get_visible_entities / get_aim），句柄抄写规则只留在各工具说明；wait 的 1–300 秒与 6 米、眼高、body_state 的 status 码（新增 `SceneServer.Body.status_code/1`，`report/2` 同用）、build 技能的 micro 分辨率改由源常量插值；search_memory 说明补 query 1–1500 字；⑥ Skill 契约与 README 写明技能 schema 须满足 strict，Survey 夹具补 `additionalProperties: false`；⑦ live inspector 用例去掉“拆完说一句”与 say 断言（I2b 起 say 不投影），改为按 inspect 行的 target 拆（未实跑）；⑧ 文档：各域 `entries/0`（Skills `entries/1`）、`tolerance/0` 的实际范围（Patrol / Builder 仍是字面量，§12 独立清理）、描述句数取舍（§5 注记）。改前为红：新反例与 3 处新断言在修复前 4 项失败（ArithmeticError；Demo instructions 含 get_view；search_memory 说明无 1500；inspect 的 kind 为整数 0）。改后 NPC 相关 12 个测试文件 148 通过、7 项 live 排除；gate 全量 185/246，失败 61 项名单与 I2b 逐条相同；scene_server 全量 240/252，失败 12 项全是缺 E1_FIXTURE / IS_FIXTURE，与 I1 后相同；编译无新增告警。tools 字节：Demo 分组 11 887 → 11 948 B，缺省全部组 18 850 → 18 911 B；Demo instructions 1 529 → 1 201 B。**父状态补跑（已实跑）**：I2a 代码（actions.ex 用 HEAD 版，少 I2a 的 move_to too_far 一句，约 74 B）、同一 live 挖石柱用例与同一计数包装、未配 groups，跑 1 次：**未完成**（780 s 超时），request_count 82，每次 tools 12 219 B（31 个工具，无 strict）；40 次 use_tool 全部 `invalid_command`——模型按旧 schema 带了可选的 attachment_id，旧译码因此把它当作对“最近一次 inspect 的附件”使用，target 为 `:unknown_attachment`，一格未挖。对比 I2b：36 次、约 2.6 min 完成。修复后的描述与 instructions 未再跑 live |

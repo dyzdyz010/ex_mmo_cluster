@@ -80,7 +80,6 @@ defmodule GateServer.NpcBrainLlmTest do
     on_exit(fn -> :timer.cancel(timer) end)
   end
 
-  @target %{micro: {128, 520, 80}, incarnation: 3, owner: {0, 0}, material: 11, current_hp: 100.0}
   defp call(name, args),
     do: %{
       "type" => "function_call",
@@ -89,63 +88,95 @@ defmodule GateServer.NpcBrainLlmTest do
       "call_id" => "c"
     }
 
+  # 只测试：带工具带与 build 技能的 profile；与 Llm.body 用的是同一份 Abilities 投影。
+  @profile %{tools: %{1 => "镐", 7 => "电路开关", 9 => "点火器"}, skills: %{build: %{}}}
+
+  # 能力库 T2.3：冻结的 Responses 应答（strict 形参数）→ 规范命令。期望字面量按 Brain moduledoc 手写。
   test "function calls become commands; reasoning items are ignored; probe direction is normalised" do
     response = %{
       "output" => [
         %{"type" => "reasoning", "summary" => []},
-        call("move_to", %{x: 14, z: 10.5}),
-        call("probe_toward", %{dx: 3, dy: 0, dz: 4, tool_id: 1}),
+        call("move_to", %{x: 14, z: 10.5, y: nil}),
+        call("probe_toward", %{direction: [3, 0, 4], tool_id: 1}),
         call("move_to", %{x: 49.5, z: 64.5, y: 523})
       ]
     }
 
     assert [
-             %{id: 7, verb: :move_to, position: {14, 10.5}, tolerance: 0.5},
+             %{id: 7, verb: :move_to, position: {14, 10.5}, tolerance: 0.5, y: nil},
              %{id: 8, verb: :probe_toward, tool_id: 1, direction: {0.6, 0.0, 0.8}},
              %{id: 9, verb: :move_to, position: {49.5, 64.5}, y: 523, tolerance: 0.5}
-           ] == Llm.commands(response, nil, %{}, 7)
+           ] == Llm.commands(response, 7, @profile)
   end
 
-  test "use_tool carries the last successful probe; without one it is left for the Body to reject" do
-    probe = %{direction: {1.0, 0.0, 0.0}, target: @target}
-    response = %{"output" => [call("use_tool", %{tool_id: 1})]}
+  test "use_tool carries the explicit target handle it was given, with no earlier probe" do
+    target = %{
+      granularity: 0,
+      micro: [128, 520, 80],
+      incarnation: 3,
+      owner: [0, 0],
+      material: 11,
+      direction: [1, 0, 0]
+    }
 
-    assert [%{verb: :use_tool, direction: {1.0, 0.0, 0.0}, target: @target, tool_id: 1}] =
-             Llm.commands(response, probe, %{}, 1)
+    response = %{"output" => [call("use_tool", %{tool_id: 1, target: target})]}
 
-    assert [%{verb: :use_tool, direction: nil, target: nil}] = Llm.commands(response, nil, %{}, 1)
+    assert [
+             %{
+               id: 1,
+               verb: :use_tool,
+               tool_id: 1,
+               direction: {1.0, 0.0, 0.0},
+               target: %{
+                 granularity: 0,
+                 micro: {128, 520, 80},
+                 incarnation: 3,
+                 owner: {0, 0},
+                 material: 11
+               }
+             }
+           ] == Llm.commands(response, 1, @profile)
+
+    # 句柄不带方向（inspect 行）：direction nil，由 Body 从眼点瞄准。
+    response = %{
+      "output" => [call("use_tool", %{tool_id: 1, target: %{target | direction: nil}})]
+    }
+
+    assert [%{verb: :use_tool, direction: nil, target: %{micro: {128, 520, 80}}}] =
+             Llm.commands(response, 1, @profile)
   end
 
-  test "building verbs: cells are integer macro coords, the default tool applies unless the model names another" do
+  test "building verbs: cells are integer macro coords and tool_id is the one the model names" do
     response = %{
       "output" => [
         call("look", %{x0: 15, y0: 63, z0: 9, x1: 17, y1: 66, z1: 11}),
         call("place", %{x: 16, y: 65, z: 10, material: 11, tool_id: 1}),
-        call("scoop", %{x: 50, y: 519, z: 64, material: 21, tool_id: 11}),
-        call("pour", %{x: 50, y: 519, z: 64, material: 21, tool_id: 12}),
+        call("scoop", %{x: 50, y: 519, z: 64, material: 21, tool_id: 9}),
+        call("pour", %{x: 50, y: 519, z: 64, material: 21, tool_id: 9}),
         call("query_balances", %{}),
-        call("probe_toward", %{dx: 1, dy: 0, dz: 0, tool_id: 9})
+        call("probe_toward", %{direction: [1, 0, 0], tool_id: 9})
       ]
     }
 
     assert [
              %{id: 1, verb: :look, min: {15, 63, 9}, max: {17, 66, 11}},
              %{id: 2, verb: :place, coord: {16, 65, 10}, material: 11, tool_id: 1},
-             %{id: 3, verb: :scoop, coord: {50, 519, 64}, material: 21, tool_id: 11},
-             %{id: 4, verb: :pour, coord: {50, 519, 64}, material: 21, tool_id: 12},
+             %{id: 3, verb: :scoop, coord: {50, 519, 64}, material: 21, tool_id: 9},
+             %{id: 4, verb: :pour, coord: {50, 519, 64}, material: 21, tool_id: 9},
              %{id: 5, verb: :query_balances},
              %{id: 6, verb: :probe_toward, tool_id: 9, direction: {1.0, 0.0, 0.0}}
-           ] == Llm.commands(response, nil, %{}, 1)
+           ] == Llm.commands(response, 1, @profile)
   end
 
-  test "attachment and prefab tools: hex definition ids become 32-byte binaries, a bad one is left for the Body to reject" do
+  test "attachment and prefab tools: string enums become codes, hex ids 32-byte binaries; a bad hex is rejected locally" do
     id = String.duplicate("2a", 32)
+    blank = %{x: nil, y: nil, z: nil, orientation: nil}
 
     response = %{
       "output" => [
         call("attach", %{
-          kind: 0,
-          axis: 1,
+          kind: "face",
+          axis: "y",
           size: 8,
           x: 120,
           y: 512,
@@ -153,48 +184,126 @@ defmodule GateServer.NpcBrainLlmTest do
           material: 11,
           tool_id: 1
         }),
-        call("detach", %{
-          kind: 0,
-          axis: 1,
-          x: 120,
-          y: 512,
-          z: 80,
-          material: 11,
-          attachment_id: 7,
-          tool_id: 3
-        }),
-        call("prefab", %{op: "place", definition: id, x: 15, y: 64, z: 12, orientation: 5}),
-        call("prefab", %{op: "remove", instance: [10, 0]}),
-        call("prefab", %{op: "replace", instance: [10, 0], definition: "zz"})
+        call(
+          "prefab",
+          Map.merge(blank, %{
+            op: "place",
+            definition: id,
+            x: 15,
+            y: 64,
+            z: 12,
+            orientation: 5,
+            instance: nil
+          })
+        ),
+        call("prefab", Map.merge(blank, %{op: "remove", definition: nil, instance: [10, 0]})),
+        call("prefab", Map.merge(blank, %{op: "replace", instance: [10, 0], definition: "zz"}))
       ]
     }
 
     assert [
              %{
+               id: 1,
                verb: :attach,
                kind: 0,
                axis: 1,
                size: 8,
                anchor: {120, 512, 80},
                material: 11,
-               attachment_id: 0,
                tool_id: 1
              },
-             %{verb: :detach, size: 1, attachment_id: 7, tool_id: 3},
              %{
+               id: 2,
                verb: :prefab_place,
-               definition_id: definition,
+               definition_id: :binary.copy(<<42>>, 32),
                anchor: {15, 64, 12},
                orientation: 5
              },
-             %{verb: :prefab_remove, instance_id: {10, 0}},
-             %{verb: :prefab_replace, instance_id: {10, 0}, definition_id: nil}
-           ] = Llm.commands(response, nil, %{}, 1)
-
-    assert :binary.copy(<<42>>, 32) == definition
+             %{id: 3, verb: :prefab_remove, instance_id: {10, 0}},
+             %{id: 4, verb: :invalid_tool_arguments, tool: "prefab"}
+           ] == Llm.commands(response, 1, @profile)
   end
 
-  test "inspect: attachments become addressable targets for use_tool, and the model sees ids, not raw rows" do
+  test "detach takes an inspect g3 handle: kind and axis come from its owner, the id from its incarnation" do
+    # owner {41, 1}：kind = div(1, 3) = 0（面片），axis = rem(1, 3) = 1（Y）；{41, 5} → kind 1（棱条）、axis 2（Z）。
+    handle = fn type ->
+      %{
+        granularity: 3,
+        micro: [120, 512, 80],
+        incarnation: 41,
+        owner: [41, type],
+        material: 11,
+        direction: nil
+      }
+    end
+
+    response = %{
+      "output" => [
+        call("detach", %{tool_id: 1, target: handle.(1)}),
+        call("detach", %{tool_id: 1, target: handle.(5)})
+      ]
+    }
+
+    assert [
+             %{
+               id: 1,
+               verb: :detach,
+               kind: 0,
+               axis: 1,
+               size: 1,
+               anchor: {120, 512, 80},
+               material: 11,
+               attachment_id: 41,
+               tool_id: 1
+             },
+             %{
+               id: 2,
+               verb: :detach,
+               kind: 1,
+               axis: 2,
+               size: 1,
+               anchor: {120, 512, 80},
+               material: 11,
+               attachment_id: 41,
+               tool_id: 1
+             }
+           ] == Llm.commands(response, 1, @profile)
+  end
+
+  test "unknown tools, non-object arguments, wrong shapes and say are rejected locally" do
+    response = %{
+      "output" => [
+        %{"type" => "function_call", "name" => "place", "arguments" => "[1,2]"},
+        %{"type" => "function_call", "name" => "place", "arguments" => "{not json"},
+        call("dance", %{style: "waltz"}),
+        call("say", %{text: "墙砌好了"}),
+        call("move_to", %{x: 1}),
+        # 人物句柄（g5）不在 LLM 投影里（D-13）。
+        call("use_tool", %{
+          tool_id: 1,
+          target: %{
+            granularity: 5,
+            micro: [0, 0, 0],
+            incarnation: 2,
+            owner: [77, 0],
+            material: 0,
+            direction: nil
+          }
+        })
+      ]
+    }
+
+    assert [
+             %{id: 1, verb: :invalid_tool_arguments, tool: "place"},
+             %{id: 2, verb: :invalid_tool_arguments, tool: "place"},
+             %{id: 3, verb: :unknown_tool, tool: "dance"},
+             %{id: 4, verb: :unknown_tool, tool: "say"},
+             %{id: 5, verb: :invalid_tool_arguments, tool: "move_to"},
+             %{id: 6, verb: :invalid_tool_arguments, tool: "use_tool"}
+           ] == Llm.commands(response, 1, @profile)
+  end
+
+  test "inspect: every row the model sees carries its target handle verbatim, and that handle drives use_tool" do
     row = %{
       granularity: 3,
       micro: {120, 512, 80},
@@ -224,23 +333,54 @@ defmodule GateServer.NpcBrainLlmTest do
       data: %{seq: 9, property_states: [row, part]}
     }
 
+    # owner {41, 1}：kind 码 div(1, 3) = 0、axis 码 rem(1, 3) = 1；模型看到的是 attach 参数里的同名字符串
+    # （Codec 0x81：kind 0 = face、1 = edge；axis 0/1/2 = x/y/z），可以直接照抄去贴一件同向的。
     assert [
              %{
                data: %{
                  attachments: [
                    %{
                      attachment_id: 41,
-                     kind: 0,
-                     axis: 1,
+                     kind: "face",
+                     axis: "y",
                      micro: {120, 512, 80},
                      material: 11,
-                     hp: 0.19
+                     hp: 0.19,
+                     target:
+                       %{
+                         granularity: 3,
+                         micro: {120, 512, 80},
+                         incarnation: 41,
+                         owner: {41, 1},
+                         material: 11,
+                         direction: nil
+                       } = thing
                    }
                  ],
-                 components: [%{instance: [10, 0], material: 3, cells: [{1, 1, 1}]}]
+                 components: [
+                   %{
+                     instance: [10, 0],
+                     material: 3,
+                     cells: [{1, 1, 1}],
+                     target: %{
+                       granularity: 2,
+                       micro: {8, 8, 8},
+                       incarnation: 10,
+                       owner: {10, 0},
+                       material: 3,
+                       direction: nil
+                     }
+                   }
+                 ]
                }
              }
            ] = GateServer.Npc.Perception.project(outcome, [], {15.0, 64.9, 10.0})
+
+    # owner {41, 5}：kind 码 1（棱条）、axis 码 2 → "edge"、"z"。
+    edge = %{outcome | data: %{seq: 9, property_states: [%{row | owner: {41, 5}}]}}
+
+    assert [%{data: %{attachments: [%{kind: "edge", axis: "z"}]}}] =
+             GateServer.Npc.Perception.project(edge, [], {15.0, 64.9, 10.0})
 
     # 建成区能有几百件：只给模型最近的 24 件，总数另报。
     # 第 i 件在 x = 10i 米；自己在 x = 12 → 最近的是第 1 件（2 米），第 24 件之后的被裁掉。
@@ -253,26 +393,59 @@ defmodule GateServer.NpcBrainLlmTest do
     assert Enum.to_list(1..24) == Enum.map(listed, & &1.attachment_id) |> Enum.sort()
     assert 1 == hd(listed).attachment_id
 
-    things = %{41 => Map.take(row, [:granularity, :micro, :incarnation, :owner, :material])}
+    # 模型看到的是 JSON（Context.plain：元组 → 数组）；原样抄回 target 就得到对这件附件的命令。
+    copied = GateServer.Npc.Context.plain(thing)
 
     response = %{
-      "output" => [
-        call("use_tool", %{tool_id: 7, attachment_id: 41}),
-        call("inspect", %{}),
-        call("say", %{text: "墙砌好了"})
-      ]
+      "output" => [call("use_tool", %{tool_id: 7, target: copied}), call("inspect", %{})]
     }
 
     assert [
              %{
+               id: 1,
                verb: :use_tool,
                tool_id: 7,
-               direction: {1.0, 0.0, 0.0},
-               target: %{granularity: 3, incarnation: 41, owner: {41, 1}}
+               direction: nil,
+               target: %{
+                 granularity: 3,
+                 micro: {120, 512, 80},
+                 incarnation: 41,
+                 owner: {41, 1},
+                 material: 11
+               }
              },
-             %{id: 2, verb: :inspect},
-             %{id: 3, verb: :say, text: "墙砌好了"}
-           ] = Llm.commands(response, nil, things, 1)
+             %{id: 2, verb: :inspect}
+           ] == Llm.commands(response, 1, @profile)
+  end
+
+  test "a probe hit the model sees carries a target handle with the probe's direction" do
+    hit = %{
+      granularity: 0,
+      micro: {128, 520, 80},
+      incarnation: 3,
+      owner: {0, 0},
+      material: 11,
+      current_hp: 100.0,
+      direction: {1.0, 0.0, 0.0}
+    }
+
+    outcome = %{id: 2, verb: :probe_toward, status: :done, reason: nil, data: hit}
+
+    assert [
+             %{
+               data: %{
+                 current_hp: 100.0,
+                 target: %{
+                   granularity: 0,
+                   micro: {128, 520, 80},
+                   incarnation: 3,
+                   owner: {0, 0},
+                   material: 11,
+                   direction: {1.0, 0.0, 0.0}
+                 }
+               }
+             }
+           ] = GateServer.Npc.Perception.project(outcome, [], nil)
   end
 
   test "a look outcome is kept as solid columns only, and only the latest look keeps its data" do
@@ -378,8 +551,11 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
 
-    assert ~w(attach clear_targets cycle_focus detach get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances recall remember remove_focus remove_target say scoop search_memory select_target set_focus stop toggle_mark use_tool wait) ==
+    # 能力库 I2b：工具表 = Abilities 全部组（未配置 groups、无技能）+ wait；say 不投影，新增 dismantle / craft / eat / read_catalog。
+    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target scoop search_memory select_target set_focus stop toggle_mark use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
+
+    assert Enum.all?(body.tools, &(&1.strict == true))
 
     enriched =
       Map.merge(observation, %{
@@ -835,9 +1011,11 @@ defmodule GateServer.NpcBrainLlmTest do
     assert Process.alive?(brain)
   end
 
-  test "a prefab instance that is not a list is passed on for Body to reject, not a crash" do
+  test "a prefab instance that is not a list is rejected locally, not passed on and not a crash" do
     response = %{"output" => [call("prefab", %{op: "remove", instance: "abc"})]}
-    assert [%{verb: :prefab_remove, instance_id: "abc"}] = Llm.commands(response, nil, %{}, 1)
+
+    assert [%{id: 1, verb: :invalid_tool_arguments, tool: "prefab"}] ==
+             Llm.commands(response, 1, @profile)
   end
 
   test "asks are capped per hour: after the budget is used the brain stays quiet" do

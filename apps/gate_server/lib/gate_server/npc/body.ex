@@ -14,6 +14,10 @@ defmodule GateServer.Npc.Body do
   `:invalid_command`）。只读感知走 `material_snapshot/3` 与 `simulation_snapshot/3`，余额读 `material_balances/2`。
   所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:gate_server, :quic` 的 `bounds`）内，
   与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。聊天在正式栈里还不存在：`say` 只占位。
+  目录读取（`read_catalog`）经 `GateServer.Npc.Perception.read/3` 读 World 的公共只读目录。
+
+  正式生成入口是 `start/2`：名字即 NPC 的永久身份（同名永远同一 cid，同 cid 最后完成 claim 的 Body 留下），阵营档案取
+  `DataService.Orgs.profile/1`（与玩家登录同一函数），claim 时作为 `profile` 交给 Scene，别人看到的名牌与关系由它算出。
   调用可能长时间阻塞，由本进程旁的 FIFO 执行进程承担，Body 继续送帧；意图的到达时刻（`received_us`）在受理命令时冻结。
   执行进程对世界调用的退出只判一件事：会话的 Player 已退出 → `:session_lost`；否则照常退出，由监督者重启 Body。
   余额的真值在 World，这里按 Intent 的补发规则（与 Gate 给玩家补发余额同一条）在世界事务之后重取一份。
@@ -60,6 +64,25 @@ defmodule GateServer.Npc.Body do
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
+  @doc """
+  正式生成入口：在 `GateServer.NpcSup` 下起一个 NPC。`name` 即永久身份：`DataService.CharacterStore.ensure_npc/1`
+  对同名永远返回同一 cid；名字已属于玩家角色时崩溃。名字唯一由调用方（作者 / 部署脚本）保证。
+  同 cid 最后完成 claim 的 Body 留下：先起的 Body 持有会话时被顶替、以 `{:shutdown, :replaced}` 结束；它若正处于
+  重新 claim（会话丢失后约 1 秒内，或 Scene 未就绪时的重试中），收不到顶替，稍后自己的 claim 反过来顶掉后起的。
+  要换掉同名 NPC，先停旧 Body 再 start（由部署脚本保证顺序）。阵营档案 = `DataService.Orgs.profile/1`。
+  `opts` 同 `start_link/1`（`scene_id`、`spawn`、`brain` 等），`cid` 与 `faction` 由这里填。
+  """
+  def start(name, opts) do
+    with {:ok, character} <- DataService.CharacterStore.ensure_npc(name) do
+      faction = DataService.Orgs.profile(character)
+
+      DynamicSupervisor.start_child(
+        GateServer.NpcSup,
+        {__MODULE__, Keyword.merge(opts, cid: character.id, faction: faction)}
+      )
+    end
+  end
+
   @doc "进程外 / 慢 Brain 异步投回命令；形状见 `GateServer.Npc.Brain`。"
   def command(body, command), do: GenServer.cast(body, {:command, command})
 
@@ -102,6 +125,8 @@ defmodule GateServer.Npc.Body do
        cid: Keyword.fetch!(opts, :cid),
        # 显式出生点：不占玩家 probe 名额。
        spawn: Keyword.fetch!(opts, :spawn),
+       # 阵营档案（`MmoContracts.Relation` 形状，见 start/2）；nil = 无组织、无名字，Scene 按空档案处理。
+       faction: Keyword.get(opts, :faction),
        claims: Keyword.get(opts, :claims, GateServer.Session.Claims),
        scene: Keyword.get(opts, :scene_module, SceneServer.Movement.Scene),
        router: Keyword.get(opts, :route_module, WorldServer.Movement),
@@ -126,6 +151,8 @@ defmodule GateServer.Npc.Body do
        inflight: [],
        tick: 0,
        processed: 0,
+       # 本人身体的推导视图（Session.BodyState 原样，转成普通 map）；nil = 本会话还没收到。
+       body_state: nil,
        entities: %{},
        attention: Attention.new(),
        # 在途移动命令：%{id, verb, target, tolerance, zero_from, path, from, mark}；zero_from = 首个零输入帧的序号，
@@ -152,7 +179,7 @@ defmodule GateServer.Npc.Body do
            GenServer.call(
              state.claims,
              {:claim, state.scene, Map.put(route, :scene_id, state.scene_id),
-              %{id: state.cid, spawn: state.spawn, kind: "npc"}}
+              %{id: state.cid, spawn: state.spawn, kind: "npc", profile: state.faction}}
            ) do
       # 只用于置 clock_ready；送帧不依赖本地时钟映射。
       Player.time_probe(player, identity, %Session.TimeProbe{request_id: 1, client_send_us: 0})
@@ -196,6 +223,8 @@ defmodule GateServer.Npc.Body do
         velocity: {0.0, 0.0, 0.0},
         inflight: [],
         processed: 0,
+        # 新会话的 Player 入场时会再发一份。
+        body_state: nil,
         # 重新入场后实体代次可能已变：关注随已同步实体一起清空，与换场景相同。
         entities: %{},
         attention: Attention.new()
@@ -292,6 +321,19 @@ defmodule GateServer.Npc.Body do
       else: {:noreply, feed(state, ack.state, ack.server_tick, ack.processed_input_seq)}
   end
 
+  # 本人身体的推导视图（与玩家 HUD 同一条下行）：字段原样，结构体转成普通 map 进 Observation。
+  def handle_info(
+        {:mmo_reliable, identity, 1, %Session.BodyState{} = s},
+        %{identity: identity} = state
+      ) do
+    body_state =
+      Map.take(s, [:life, :recoverable, :status, :core_k, :skin_k, :protein_g])
+      |> Map.put(:injuries, Enum.map(s.injuries, &Map.from_struct/1))
+
+    {:noreply, %{state | body_state: body_state}}
+  end
+
+  # 名字与关系（按本角色这个观察者算）只随 EntityEnter 来，保留到 Leave 或换代；Snapshot 只更新位置。
   def handle_info(
         {:mmo_reliable, identity, 1, %Session.EntityEnter{} = e},
         %{identity: identity} = state
@@ -299,6 +341,9 @@ defmodule GateServer.Npc.Body do
     entity = %{
       entity_epoch: e.entity_epoch,
       kind: e.kind,
+      name: e.name,
+      relation: e.relation,
+      relation_source: e.relation_source,
       tick: e.server_tick,
       position: e.state.position
     }
@@ -486,7 +531,8 @@ defmodule GateServer.Npc.Body do
         position: session.position,
         yaw: session.yaw,
         grounded: session.grounded,
-        processed_input_seq: state.processed
+        processed_input_seq: state.processed,
+        body_state: state.body_state
       },
       entities: for({id, e} <- state.entities, do: Map.put(e, :entity_id, id)),
       view: Attention.view(state.attention, Player.eye_position(state.position)),
@@ -716,17 +762,19 @@ defmodule GateServer.Npc.Body do
       mark: nil
     }
 
+    # position 是胶囊中心；脚所在的格 = 中心下移半高（+0.5 容忍贴地的 skin / snap）。
+    {_, foot_y, _} = start = {floor(px), floor(py - profile.half_height + 0.5), floor(pz)}
+
     cond do
       not (goal_y == nil or is_integer(goal_y)) ->
         invalid(state, command)
 
-      abs(x - px) > @look_reach or abs(z - pz) > @look_reach ->
+      # 取盒按起终点包围盒整批交 World：水平与竖直（y 相对脚格）都限在感知距离内，超出不访问 World。
+      abs(x - px) > @look_reach or abs(z - pz) > @look_reach or
+          (goal_y != nil and abs(goal_y - foot_y) > @look_reach) ->
         emit(state, %{id: id, verb: :move_to, status: :rejected, reason: :too_far, data: nil})
 
       true ->
-        # position 是胶囊中心；脚所在的格 = 中心下移半高（+0.5 容忍贴地的 skin / snap）。
-        start = {floor(px), floor(py - profile.half_height + 0.5), floor(pz)}
-
         plan = %{
           start: start,
           from: {px, pz},
@@ -778,7 +826,7 @@ defmodule GateServer.Npc.Body do
   end
 
   defp apply_command(state, %{id: id, verb: verb} = command)
-       when verb in [:query_balances, :look, :inspect] do
+       when verb in [:query_balances, :look, :inspect, :read_catalog] do
     case read_call(state, command) do
       nil ->
         invalid(state, command)
@@ -826,7 +874,7 @@ defmodule GateServer.Npc.Body do
       })
 
   # 只读请求：余额与 Gate 一样直接读 material_balances；look / inspect 的 macro 格限制在自己周围
-  # （玩家也只看得到流送到身边的世界）。nil = 命令不合法。
+  # （玩家也只看得到流送到身边的世界）；read_catalog 读目录，与位置无关。nil = 命令不合法。
   defp read_call(_state, %{verb: :query_balances}), do: :balances
 
   defp read_call(%{position: position}, command),
@@ -938,7 +986,7 @@ defmodule GateServer.Npc.Body do
 
   defp execute(session, {:sight, query}, _ingress), do: {Sight.read(session.world_ref, query), nil}
 
-  defp execute(session, {kind, _} = call, _ingress) when kind in [:look, :inspect],
+  defp execute(session, call, _ingress) when elem(call, 0) in [:look, :inspect, :catalog],
     do: {GateServer.Npc.Perception.read(session.world_ref, session.cid, call), nil}
 
   # 世界写意图：与玩家同一入口；补余额按 Intent 的唯一规则（回执先、余额后，同 Gate）。

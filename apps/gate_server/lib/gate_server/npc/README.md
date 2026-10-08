@@ -8,12 +8,17 @@
 ## 模块
 
 - `Body` 接正式 Session/Player，产生观察并把动作交给 authority；自己维护会话（丢失后重新 claim）。
+  正式生成入口 `Body.start/2`：名字即永久身份（`CharacterStore.ensure_npc/1`），阵营档案取 `Orgs.profile/1`。
 - `WorldRequest` 把世界写命令拼成与玩家线帧解码（`Codec.decode/1`）同形的 `{kind, request}`，取值约束与线解码共用
   `Codec.intent?/1`；Body 把它交给与玩家同一个入口 `SceneServer.Movement.Intent.run/3`。
 - `Runtime` 组合任意 Brain，统一命令路由、记忆调用、技能 worker、中断、取消结算与终态记录。
-- `Actions` 原子动作目录：工具 schema 与“工具调用 → Body 命令”的译码只在这里定义。
-  `Perception`（look / inspect）、`Attention`（观察方向与敌／友目标组）、`Memory`（记忆工具）、
-  `Skills`（长技能）各自拥有自己的目录。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
+- `Abilities` 是决策侧唯一的能力定义（角色能力函数库）：组合各域条目 `%{name, group, done, description, params, build}`，
+  一份参数规格同时生成 strict JSON Schema（`tools/1`，LLM 工具表）与 JSON 形参数的译码（`command/4`）。
+  各域只提供条目：`Actions`（移动、工具、建造、液体、背包；经 Abilities 构造的 move_to 都用 `tolerance/0` 的容差，
+  Patrol / Builder 仍各写 0.5，改为引用它是设计稿 §12 的独立清理；附件 kind / axis 名字表 `attachment_names/1`）、
+  `Perception`（look / inspect / query_balances / read_catalog，另有范围校验、World 只读入口与模型投影；prefab 目录行只在
+  `prefab_row/3` 计算）、`Attention`（观察方向与敌／友目标组，Body 用的动词表由条目派生）、`Memory`（记忆）、
+  `Skills`（已配置的长技能，schema 原样取自技能的 `definition/1`）。`Sight` 把视野与瞄准查询投影到 World 的只读射线。
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是共享 JSON 出站。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
@@ -71,11 +76,26 @@ flowchart LR
   荒野施工内部分诊用的 `scheduler` endpoint 是另一项职责，配置它不会开启中断检查。
   Jev 实现只在有把握（置信度 ≥ 0.85）地选了非继续选项时中断，拿不准等同继续。
 - **观察**：Runtime 只把 Observation 转给声明 `observations?/0` 为 true 的技能（目前是 wilderness），
-  其余 worker 邮箱不堆积观察。
+  其余 worker 邮箱不堆积观察。Observation 的 `self.body_state` 是本人 Session.BodyState 下行的原样投影
+  （生命、可恢复生命、状态码、核心 / 皮肤温度、蛋白质、伤病；nil = 本会话还没收到），`entities` 带 EntityEnter 的
+  `name`、`relation`（`MmoContracts.Relation.code/1`，按本角色这个观察者算）与 `relation_source`，Snapshot 只更新位置。
+  这些都是派生缓存，真值在 Scene 的身体 owner 与阵营档案；关系只回答敌我颜色，不回答能否攻击。
+- **目录读取**：`read_catalog`（`what: :prefab | :prefabs | :materials | :tools`）经 `Perception.read/3` 读 World 的
+  公共只读目录：prefab 定义的材料单与尺寸（作者目录与运行时发布都查得到，没有这个 id 回 `definition_not_found`）、
+  最近 20 条运行时发布、材料的名称 / 可食 / 配方（可食与配方只对生产材料给出，与 World 进食 / 合成门一致）、
+  工具的动作 / 射程 / 间隔。不缓存，不经 Intent。
+- **感知距离护栏**：`move_to` 的水平目标与给出的 `y`（相对脚所在格）都不超过 `Perception.reach()`，否则 `too_far`、
+  不访问 World；`design_house` 的锚点宏格各轴离自身超过它时技能以 `too_far` 结束，不读 site、不发模型请求。
+  两段 LLM 工具描述（`move_to`、`design_house`）都写了这条上限，数字由 `Perception.reach()` 插值。
 - **LLM 询问**：有新情况才问——新 Outcome、听到说话、`wait` 到期、或有实体走进 6 米（离开 8 米才算走远）。
   两次询问至少隔 1 秒；应答没有工具调用或请求失败按 1、2、4…60 秒退避；
   每 NPC 每小时最多 `max_requests_per_hour`（缺省 600）次，用完记 `npc_llm_budget_exhausted`。
-  参数不是 JSON 对象或工具不存在时，在本地回报 `invalid_tool_arguments` / `unknown_tool` 给模型，不发给 Body。
+  工具表 = `Abilities.tools(profile) ++ [wait]`，全部 `strict: true`（2026-10-08 对当前代理 live 预检通过，设计稿 D-2）；
+  `profile.groups` 可选裁剪（缺省全部组；Demo LLM NPC 取 `[:move, :sense, :act, :build, :memory, :skill]`，16 个条目 + wait）。
+  参数不是 JSON 对象、形状不对或工具不存在（含被 groups 裁掉的）时，在本地回报 `invalid_tool_arguments` / `unknown_tool`
+  给模型并附原调用，不发给 Body。目标是显式句柄：`use_tool` / `dismantle` / `detach` 的 `target` 由模型从 probe_toward
+  结果或 inspect 行里原样抄来（投影时每行附 `target`），Brain 不保存“最近一次 probe / inspect”；人物句柄（g5）不进 LLM 投影。
+  `say` 是聊天占位，Body 照常受理（恒拒 `chat_unavailable`），但不投影给 LLM。
 - **观察与目标**：Body 拥有独立观察方向和敌／友目标组，各组一个焦点；目标身份是 `entity_id + entity_epoch`。
   选择、观察转向、移动与攻击正交；本地组不是阵营或团队真值，目标 epoch 是观察身份，不能用来绕过攻击裁决。
   实体离开 AOI、更换代次、换场景、会话丢失后重新入场时清理关注，旧身份的选择以 `stale_target` 拒绝，
@@ -90,7 +110,11 @@ flowchart LR
 
 ## 接入方式
 
-`Body.start_link(..., brain: {模块, profile})`；Body 自动组合 Runtime。
+正式运行时用 `Body.start(name, scene_id: …, spawn: …, brain: {模块, profile})`：在 `GateServer.NpcSup` 下起 Body，
+名字即永久身份（同名永远同一 cid，同 cid 最后完成 claim 的 Body 留下：先起的在线时被顶替；它若正在重新 claim，
+稍后会反过来顶掉后起的，所以换掉同名 NPC 要先停旧 Body 再 start；名字唯一由作者 / 部署脚本保证，节点重启不自动恢复），
+阵营档案取 `DataService.Orgs.profile/1` 随 claim 交给 Scene（别人看到的名牌与关系由它算出）。
+测试与夹具可直接 `Body.start_link(..., cid: …, faction: 档案 | nil, brain: {模块, profile})`。Body 自动组合 Runtime。
 同步后端实现 Brain 的两个回调；慢后端在 init 时保存 self()，异步命令投回这个 Runtime 接收端。
 角色的世界操作仍经 Body / Player / World，不把技能内部命令、HTTP 或 worker 生命周期交给后端重写。
 
@@ -106,8 +130,10 @@ brain: {GateServer.Npc.Brain.Routine, %{
 
 - 添加技能：实现 `GateServer.Npc.Skill`，配置 `skills: %{名字: %{module: 实现模块, ...}}`。
   `definition/1` 拥有参数说明，`run/3` 在 worker 内接纳输入并返回一个终态；无需改 Llm / Runtime 分派。
+  `definition/1` 的 `parameters` 原样成为 LLM 的 strict 工具：每个 object 都写 `additionalProperties: false`、
+  全部属性列进 `required`，可空字段写 `type: [t, "null"]`；不满足时代理拒绝整个请求（NPC 会一直退避重试）。
   逐帧需要位置的技能实现 `observations?/0` 返回 true。字符串工具名只在已配置名字中匹配，不把模型输出转成新原子。
-- 观察与目标：`Attention.tools/0` 是 13 个命令的唯一目录（LLM 直接使用），脚本 / 行为树返回同样的命令：
+- 观察与目标：`Attention.entries/0` 是 13 个命令的唯一条目（经 `Abilities` 投影给 LLM），脚本 / 行为树返回同样的命令：
 
   ```elixir
   # target 来自本角色 observation.entities 或 get_visible_entities 的结果。
@@ -122,7 +148,9 @@ brain: {GateServer.Npc.Brain.Routine, %{
   方块带 properties、角色带采样 tick 与粗部位；`get_visible_entities` 标明 center 采样与已同步实体来源。
 - 添加中断策略：实现 `GateServer.Npc.Scheduler.decide/2`，配置 `interrupt_policy: {实现模块, 配置}`。
   Jev 的配置为 `%{scheduler: endpoint, activities: 活动 profile, continue_activity: 选项, request: 可选}`。
-- 查看：`Skills.tools(profile)` 与 `Actions.tools(profile)` 返回能力及参数；`Body.observe(body).outcomes`
+- 查看：`Abilities.entries(profile)` / `Abilities.tools(profile)` 返回能力条目及 strict 参数；
+  JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
+  `Body.observe(body).outcomes`
   含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`。
 
@@ -144,6 +172,10 @@ brain: {GateServer.Npc.Brain.Routine, %{
 
 脚本是真实非 LLM 调用方，尚未有通用行为树引擎。世界意图入口已与玩家对齐（能力库 I1，见
 [角色能力函数库](../../../../../docs/10-active/cross-cutting/2026-10-07-character-capability-library.md)）；
-NPC 施法、能力库与 LLM 投影收敛、正式聊天、gather、住宅以外的设计技能、世界变化（如自己的建筑被拆）唤醒大脑，
+NPC 的合成、进食、拆解、目录读取、身体视图与名牌、`Body.start/2` 已随 I2a 接上；I2b 起能力库 `Abilities` 是 LLM 工具表与
+design_house 共享工具的唯一来源，这些动词随之投影（strict、显式句柄）。Observation 的新字段（`self.body_state`、entities 的
+`name / relation / relation_source`）随 `Context.plain` 原样进入每次 LLM 请求的 input，relation 码与 body_state.status 码的含义
+写在 instructions 里（relation 码由 `MmoContracts.Relation.code/1` 插值）。
+NPC 施法、行为树 Brain 与 gather、正式聊天、住宅以外的设计技能、世界变化（如自己的建筑被拆）唤醒大脑，
 都是后续独立功能增量。
 测试入口在 `apps/gate_server/test/gate_server/npc_*`；真实模型用例必须显式选择 `live_llm`。

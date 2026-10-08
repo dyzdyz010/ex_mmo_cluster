@@ -244,6 +244,8 @@ defmodule SceneServer.Body do
             daze_s: 0.0
 
   @type status :: :alive | :dying | :dead
+  # 下行状态码（Session.BodyState.status）：玩家 HUD 与 NPC 的模型说明共用这一张表。
+  @status_codes %{alive: 0, dying: 1, dead: 2}
   @type t :: %__MODULE__{
           core_k: float(),
           trunk_muscle_k: float(),
@@ -577,6 +579,10 @@ defmodule SceneServer.Body do
     %{body | lethal_s: lethal_s, status: status}
   end
 
+  @doc "存活状态 → 下行状态码（0 存活 / 1 濒死 / 2 死亡），`report/2` 与 NPC 的模型说明共用。"
+  @spec status_code(status()) :: 0..2
+  def status_code(status), do: Map.fetch!(@status_codes, status)
+
   @doc """
   下行视图（Session.BodyState）：生命、可恢复生命（`recoverable_life/1`）、状态码（0 存活 / 1 濒死 / 2 死亡）、核心与皮肤温度、
   伤病 `{标签, 严重度, 愈合进度 %, 剩余秒数}`（进度 = ⌊heal × 100⌋，0..99；伤口剩余 = `remaining_s/3`，含停止负值；
@@ -614,7 +620,7 @@ defmodule SceneServer.Body do
         {i.tag, i.severity, floor(i.heal * 100), remaining}
       end
 
-    status = %{alive: 0, dying: 1, dead: 2}[body.status]
+    status = status_code(body.status)
     life = life(body)
     recoverable = recoverable_life(body)
 

@@ -363,6 +363,22 @@ defmodule GateServer.NpcSkillDesignTest do
     assert [%{units: 0}] = World.material_snapshot(c.world, [1001], []).material_balances
   end
 
+  # 能力库设计稿 T2.11（S3）：自身在 x=10.5，锚点 micro x 1680 → 宏格 210，相差 199.5 m > Perception.reach()（32）。
+  # 技能以 too_far 结束：不读 site（远处 region 不被 prepare）、不发模型请求。改前 site 照读、照常问模型。
+  @tag :design_skill
+  test "an anchor beyond perception reach ends the skill as too_far before any World read or model request",
+       c do
+    context = %{c | budget: %{rounds: 1, tokens: 100, max_output_tokens: 30}}
+    far = %{args() | anchor: {1680, 8, 80}}
+
+    assert {:error, :too_far, %{request_count: 0}} =
+             Design.run(script(context, [answer(1, "view", %{})]), far)
+
+    refute_received {:model_request, _}
+    # 宏格 (210, 1, 10) 所在 region {3, 0, 0}：Source.ensure 在 prepare 时向 observer（本进程）报 {:prepared, level, region}。
+    refute_received {:prepared, _, {3, _, _}}
+  end
+
   @tag :design_skill
   test "round and cumulative usage budgets stop exactly without publishing", c do
     context = %{c | budget: %{rounds: 1, tokens: 100, max_output_tokens: 40}}

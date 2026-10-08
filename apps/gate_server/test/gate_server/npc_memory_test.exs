@@ -1,7 +1,7 @@
 defmodule GateServer.NpcMemoryTest do
   @moduledoc "只测试：模型记忆工具边界与真实 npc_memories 持久化；不调用模型或在线 Body。"
   use ExUnit.Case, async: false
-  alias GateServer.Npc.Memory
+  alias GateServer.Npc.{Abilities, Memory}
   alias DataService.NpcMemory
 
   setup_all do
@@ -32,28 +32,33 @@ defmodule GateServer.NpcMemoryTest do
       do: raise(DBConnection.ConnectionError, message: "private database parameters")
   end
 
+  # 能力库 I2b：记忆工具的 schema 与译码来自 Abilities 条目；长度上限不写进 strict schema（strict 不支持
+  # minLength / maxLength），写在说明里并由 execute/4 校验（见下方长度用例）。
   test "tool schemas require every declared argument and commands retain explicit identity" do
-    [remember, recall, search] = Memory.tools()
+    [remember, recall, search] = Abilities.tools(%{groups: [:memory]})
     assert search.name == "search_memory" and search.parameters.required == ["query"]
-    assert remember.type == "function" and remember.name == "remember"
+    assert remember.type == "function" and remember.name == "remember" and remember.strict
     assert remember.parameters.required == ["key", "text"]
     assert remember.parameters.additionalProperties == false
-    assert remember.parameters.properties.key.maxLength == 128
-    assert remember.parameters.properties.text.maxLength == 1500
+    assert remember.description =~ "128" and remember.description =~ "1500"
+    # search_memory 的 query 同样按 1500 字校验（execute/4），上限也写进说明。
+    assert search.description =~ "1500"
     assert recall.name == "recall" and recall.parameters.required == ["key"]
 
-    assert Memory.command("remember", %{"key" => "route", "text" => "Use the west door"}, 41) ==
+    assert command("remember", %{"key" => "route", "text" => "Use the west door"}, 41) ==
              %{id: 41, verb: :remember, key: "route", text: "Use the west door"}
 
-    assert Memory.command("recall", %{"key" => "route"}, 42) == %{
+    assert command("recall", %{"key" => "route"}, 42) == %{
              id: 42,
              verb: :recall,
              key: "route"
            }
   end
 
+  defp command(name, args, id), do: Abilities.command(name, args, id, %{})
+
   test "remember and recall use one durable note per cid and key without process caches" do
-    a = Memory.command("remember", %{"key" => "plan", "text" => "Build west"}, 1)
+    a = command("remember", %{"key" => "plan", "text" => "Build west"}, 1)
 
     assert Memory.execute(NpcMemory, 701, {-3, 5, 7}, a) == %{
              id: 1,
@@ -72,7 +77,7 @@ defmodule GateServer.NpcMemoryTest do
              Memory.execute(NpcMemory, 701, {-1, 2, 3}, %{a | text: "West complete"})
 
     assert DataService.Repo.aggregate("npc_memories", :count) == 2
-    recall = Memory.command("recall", %{"key" => "plan"}, 2)
+    recall = command("recall", %{"key" => "plan"}, 2)
     # 新进程读取同一数据库；停止写入者不能丢失或串用角色记忆。
     outcome =
       Task.async(fn -> Memory.execute(NpcMemory, 701, {0, 0, 0}, recall) end) |> Task.await()
@@ -122,13 +127,15 @@ defmodule GateServer.NpcMemoryTest do
           %{valid | key: ""},
           %{valid | text: ""},
           %{valid | key: 123},
-          %{valid | text: nil},
-          Memory.command("remember", %{}, 8),
-          Memory.command("recall", %{"key" => nil}, 9),
-          Memory.command("remember", [], 10)
+          %{valid | text: nil}
         ] do
       assert %{status: :rejected, reason: :invalid_memory_arguments, data: nil} =
                Memory.execute(NpcMemory, 701, {0, 0, 0}, command)
+    end
+
+    # 缺参数、类型不对、不是对象：在适配层就被本地拒绝，不到 execute、不写库。
+    for {name, args} <- [{"remember", %{}}, {"recall", %{"key" => nil}}, {"remember", []}] do
+      assert %{verb: :invalid_tool_arguments, tool: ^name} = command(name, args, 8)
     end
 
     assert DataService.Repo.aggregate("npc_memories", :count) == 1
@@ -146,12 +153,12 @@ defmodule GateServer.NpcMemoryTest do
   end
 
   test "storage errors remain explicit outcomes and recent failures do not masquerade as empty history" do
-    remember = Memory.command("remember", %{"key" => "plan", "text" => "later"}, 1)
+    remember = command("remember", %{"key" => "plan", "text" => "later"}, 1)
 
     assert %{status: :rejected, reason: {:memory_unavailable, :write_denied}} =
              Memory.execute(FailedStore, 701, {0, 0, 0}, remember)
 
-    recall = Memory.command("recall", %{"key" => "plan"}, 2)
+    recall = command("recall", %{"key" => "plan"}, 2)
 
     assert %{status: :rejected, reason: {:memory_unavailable, DBConnection.ConnectionError}} =
              Memory.execute(FailedStore, 701, {0, 0, 0}, recall)
@@ -161,7 +168,7 @@ defmodule GateServer.NpcMemoryTest do
     assert %{memory_error: {:memory_unavailable, DBConnection.ConnectionError}} =
              Memory.context(FailedSearch, 701, "door")
 
-    search = Memory.command("search_memory", %{"query" => "door"}, 3)
+    search = command("search_memory", %{"query" => "door"}, 3)
 
     assert %{status: :rejected, reason: {:memory_unavailable, DBConnection.ConnectionError}} =
              Memory.execute(FailedSearch, 701, {0, 0, 0}, search)

@@ -1,7 +1,7 @@
 defmodule GateServer.NpcSkillsTest do
   @moduledoc "只测试：技能调用只产生一次最终结果，内部命令仍走 Body；这里的 Body 替身只手排事件。"
   use ExUnit.Case, async: false
-  alias GateServer.Npc.Skills
+  alias GateServer.Npc.{Abilities, Skills}
 
   # 只测试：独立技能验证配置注册，不替代被测运行器或任何世界裁决。
   defmodule Survey do
@@ -12,7 +12,9 @@ defmodule GateServer.NpcSkillsTest do
         parameters: %{
           type: "object",
           properties: %{sample: %{type: "integer"}},
-          required: ["sample"]
+          required: ["sample"],
+          # 技能 schema 原样投影为 strict 工具（Skill 契约）。
+          additionalProperties: false
         }
       }
 
@@ -22,11 +24,14 @@ defmodule GateServer.NpcSkillsTest do
 
   test "a configured skill module supplies its contract and executes without changing dispatch" do
     profile = %{skills: %{survey: %{module: Survey}}}
-    assert [%{name: "survey", parameters: %{required: ["sample"]}}] = Skills.tools(profile)
-    command = Skills.command("survey", %{"sample" => 17}, 3, profile)
+
+    assert [%{name: "survey", parameters: %{required: ["sample"]}}] =
+             Abilities.tools(Map.put(profile, :groups, [:skill]))
+
+    command = Abilities.command("survey", %{"sample" => 17}, 3, profile)
     assert %{id: 3, skill: :survey} = command
     assert {:ok, %{sample: 17}} = Skills.run(%{profile: profile}, command)
-    assert Skills.command("unconfigured", %{}, 4, profile) == nil
+    assert %{verb: :unknown_tool} = Abilities.command("unconfigured", %{}, 4, profile)
 
     response = %{
       "output" => [
@@ -35,10 +40,10 @@ defmodule GateServer.NpcSkillsTest do
     }
 
     assert [%{id: 3, verb: :skill, skill: :survey, args: %{"sample" => 17}}] =
-             GateServer.Npc.Brain.Llm.commands(response, nil, %{}, 3, profile)
+             GateServer.Npc.Brain.Llm.commands(response, 3, profile)
 
     assert [%{id: 3, verb: :unknown_tool}] =
-             GateServer.Npc.Brain.Llm.commands(response, nil, %{}, 3, %{skills: %{}})
+             GateServer.Npc.Brain.Llm.commands(response, 3, %{skills: %{}})
   end
 
   defmodule Body do
@@ -64,10 +69,11 @@ defmodule GateServer.NpcSkillsTest do
     profile = %{skills: %{build: %{}}, endpoint: %{model: "test"}}
 
     command =
-      Skills.command(
+      Abilities.command(
         "build",
         %{"definition" => id, "anchor_micro" => [8, 16, 24], "orientation" => 3},
-        77
+        77,
+        profile
       )
 
     active = Skills.start(body, command, profile, %{self: %{entity_id: 71}})
@@ -107,14 +113,15 @@ defmodule GateServer.NpcSkillsTest do
     profile = %{skills: %{build: %{}}, endpoint: %{model: "test"}}
 
     command =
-      Skills.command(
+      Abilities.command(
         "build",
         %{
           "definition" => String.duplicate("11", 32),
           "anchor_micro" => [0, 0, 0],
           "orientation" => 0
         },
-        3
+        3,
+        profile
       )
 
     active = Skills.start(body, command, profile, %{})
@@ -134,7 +141,13 @@ defmodule GateServer.NpcSkillsTest do
   end
 
   test "configured skill tools require all placement fields and reject unknown configuration" do
-    tools = Skills.tools(%{tools: %{7 => "place"}, skills: %{build: %{}, wilderness: %{}}})
+    tools =
+      Abilities.tools(%{
+        groups: [:skill],
+        tools: %{7 => "place"},
+        skills: %{build: %{}, wilderness: %{}}
+      })
+
     assert Enum.sort(Enum.map(tools, & &1.name)) == ["build", "wilderness"]
 
     assert Enum.find(tools, &(&1.name == "build")).parameters.required == [
@@ -144,7 +157,7 @@ defmodule GateServer.NpcSkillsTest do
            ]
 
     assert Enum.find(tools, &(&1.name == "wilderness")).parameters.properties.tool_id.enum == [7]
-    assert Skills.tools(%{}) == []
-    assert Skills.command("invent_skill", %{}, 1) == nil
+    assert Abilities.tools(%{groups: [:skill]}) == []
+    assert %{verb: :unknown_tool} = Abilities.command("invent_skill", %{}, 1, %{})
   end
 end

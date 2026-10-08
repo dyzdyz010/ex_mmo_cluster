@@ -21,7 +21,7 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :recall, key:}
       %{id:, verb: :search_memory, query:}
 
-  参数契约由 Skills.tools(profile) 给出；Skills 的每个模块实现 Skill behaviour。
+  参数契约由 `GateServer.Npc.Abilities` 给出（技能条目的 schema 原样取自技能的 `definition/1`）；Skills 的每个模块实现 Skill behaviour。
   技能终态的 verb 是所调用的技能名。取消命令有自己的 Outcome：受理为 done（data.call），没有对应在途技能为
   no_active_skill；被取消的技能仍以原调用号回终态。取消等待 worker DOWN，再等带 settle 的 Body.stop：
   移动停稳且该调用已投递的世界调用都有了结果；期间落定的结果放在终态 data.settled，已提交事务不撤销，
@@ -32,8 +32,8 @@ defmodule GateServer.Npc.Brain do
 
   ## Observation（每个 OwnerAck 一次，20 Hz）
 
-      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:, body:},
-        entities: [%{entity_id:, entity_epoch:, kind:, tick:, position:}],   # kind 0 = 玩家、1 = NPC；各自的 tick
+      %{self: %{entity_id:, tick:, position: {x, y, z}, yaw:, grounded:, processed_input_seq:, body:, body_state:},
+        entities: [%{entity_id:, entity_epoch:, kind:, name:, relation:, relation_source:, tick:, position:}],
         balances: [%{material:, balance:, cost:, seq:}] | nil,        # 自己的背包；nil = 还没取过
         pending: [%{id:, verb:}]}
 
@@ -41,10 +41,20 @@ defmodule GateServer.Npc.Brain do
   要花的单位数。地形不进 Observation，要看就发 `look`。
   `self.body` 由权威 Session profile 经 Context.body/1 投影：完整身高、半高、半径、直径、速度、
   加减速与台阶高度，字段显式标注米/秒；设计净空与 Body 宏格寻路限制分别列出。
+  `self.body_state` 是本人身体的推导视图（与玩家 HUD 同一条 Session.BodyState 下行，字段原样）：
+  `%{life:, recoverable:, status:, core_k:, skin_k:, protein_g:, injuries: [%{tag:, severity:, heal:, remaining_s:}]}`，
+  life / recoverable 0..100，status 0 存活 / 1 濒死 / 2 死亡；nil = 本会话还没收到（会话丢失后重新入场前也是 nil）。
+  真值在 Scene 的身体 owner，这里是派生缓存；无热环境的世界不推进身体，只在入场与受伤时更新。
+  `entities` 的 kind 0 = 玩家、1 = NPC，各自带 tick；`name`（无名为空串）、`relation`（`MmoContracts.Relation.code/1`：
+  0 中立、1 自己、2 同属、3 友好、4 敌对，按本角色这个观察者算）、`relation_source`（来源文字，与玩家名牌悬停相同）
+  取自 EntityEnter，保留到 Leave 或换代；Snapshot 只更新位置。关系只回答敌我颜色，不回答能否攻击。
 
   ## Command（`id` 由 Brain 给，Outcome 用它对应）
 
-  观察与目标目录：`Attention.tools/0`；同一组命令供所有后端调用。
+  下面是 Body / Runtime 受理的规范命令，形状只在这里定义。JSON 形参数的后端（LLM、design_house 的共享工具、行为树）
+  经 `GateServer.Npc.Abilities.command/4` 构造这些命令（一份参数规格同时生成 strict schema 与译码）；代码写的后端直接产出。
+
+  观察与目标的能力条目在 `Attention.entries/0`（经 Abilities 投影）；同一组命令供所有后端调用。
   Observation 的 `view` 给出眼点、独立观察方向、最远距离和视锥半角；`targets` 给出 enemy/friendly 组与 mark。
   `get_view` / `look_at` / `get_aim` / `get_visible_entities` / `get_target_status` 与
   `select_target` / `remove_target` / `get_targets` / `set_focus` / `cycle_focus` / `remove_focus` /
@@ -72,10 +82,12 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :query_balances}
       %{id:, verb: :look, min: {x, y, z}, max: {x, y, z}}       # macro 格闭区间，≤ 512 格，各边离自己 ≤ 32 m
       %{id:, verb: :inspect}                                     # 周围 3×3×3 个 tile 内的附件与 prefab 构件
-      %{id:, verb: :say, text:}                                  # 聊天占位：正式栈还没有聊天，恒被拒 :chat_unavailable
+      %{id:, verb: :read_catalog, what: :prefab | :prefabs | :materials | :tools, definition: <<32 字节>> | nil}
+                                                                 # 读目录；:prefab 必须给 definition，其余为 nil
+      %{id:, verb: :say, text:}                                  # 聊天占位：恒被拒 :chat_unavailable；不投影给 LLM
 
-  工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路安装 / 投料 / 开关都是
-  `use_tool` 换一个 `tool_id`，不是各自的动词。电路工具的目标是附件：`target` 给
+  工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路开关都是
+  `use_tool` 换一个 `tool_id`，不是各自的动词。电路开关的目标是附件：`target` 给
   `%{granularity: 3, micro: anchor, incarnation: id, owner: {id, kind * 3 + axis}, material:}`，按身份寻址、不经射线。
   `coord` / `look` 是 canonical macro 格（1 格 = 1 m，Y 向上）；附件与 prefab 的 `anchor` 是 micro 坐标（1 格 = 8 micro），
   与玩家的线请求相同。世界写命令由 `GateServer.Npc.WorldRequest` 拼成玩家线帧的同形请求，经与玩家相同的
@@ -90,7 +102,8 @@ defmodule GateServer.Npc.Brain do
 
   `move_to` 起步时 Body 经 `World.material_snapshot/3` 取一盒地形（起终点包围盒外扩 6 格），交给纯模块
   `SceneServer.Movement.Path`：4 邻接、平走 / 上 `step_height` 以内的台阶 / 下落任意高度、不起跳、液体与细化格不可过；
-  同层净空的路段拉直。算完即弃，不留体素副本。单程水平超过 32 m → `:too_far`（不问 World）；盒内无路 → `:no_path`；
+  同层净空的路段拉直。算完即弃，不留体素副本。单程水平超过 32 m，或给了 `y` 且与脚所在格相差超过 32 格
+  → `:too_far`（不问 World）；盒内无路 → `:no_path`；
   路是起步那一刻的世界算的，途中 3 秒挪不动 → `:stuck`。三者都是 `:rejected`，Body 不重试，由 Brain 决定（再发一次
   `move_to` 就按当时的世界重算）。同一列有多层可站时用 `y`（脚所在的空气格）选层，不给则取最先到达的那层。
   拐弯、换层和到达前 Body 会夹零输入帧限速，所以走楼梯比走平地慢。
@@ -111,6 +124,15 @@ defmodule GateServer.Npc.Brain do
   感知额外返回采样边界与版本；窗口外未知、未采样附件不是空。`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。
+  `read_catalog` 只读 World 的公共目录（单位与余额相同，都是微格体积单位）：
+  `:prefab` 是 `%{definition_id:, materials: %{material => units}, size_m: [x, y, z]}`（作者目录与运行时发布都查得到，
+  没有这个 id 回 `definition_not_found`）；`:prefabs` 是 `%{prefabs: [%{definition_id:, name:, publisher:, materials:}], total:}`
+  （最近 20 条运行时发布，新在前；不含作者目录）；`:materials` 是
+  `%{materials: [%{material:, name:, edible: %{protein_g:, energy_j:} | nil, recipe: %{inputs: %{material => units}, units:} | nil}]}`
+  （列全部材料；edible 是一株 = 一次 `eat` 的营养，recipe 是一次 `craft` 扣的输入与得到的产物单位，两者只对本世界的
+  生产材料给出，与 World 进食 / 合成门一致：非 nil 时 `eat` / `craft` 不会因 `not_edible` / `unknown_recipe` 被拒，
+  余额不足照常回 `insufficient_material`）；`:tools` 是
+  `%{tools: [%{tool_id:, action:, range_m:, interval_s:}]}`。
 
   ## 聊天（占位）
 

@@ -1,3 +1,6 @@
+# 只测试：另一角色运行时发布 prefab 用 World 单元测试的角色替身（VoxelRegion.TestSupport.Actor）。
+Code.require_file("../../../voxel_region/test/support/world_fixtures.exs", __DIR__)
+
 defmodule GateServer.NpcBodyWorldTest do
   @moduledoc """
   只测试：NPC Body 第二片。真实 VoxelRegion.World（文件世界 + 属性目录）、真实 Scene / Player / P1 NIF、真实 Session.Claims。
@@ -6,10 +9,11 @@ defmodule GateServer.NpcBodyWorldTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
   require Logger
-  alias GateServer.Npc.Body
+  alias GateServer.Npc.{Abilities, Body}
   alias MmoContracts.Voxel.Codec
-  alias SceneServer.Movement.Scene
-  alias VoxelRegion.{FileStore, World}
+  alias SceneServer.Movement.{Player, Scene}
+  alias VoxelRegion.{FileStore, Prefab, World}
+  alias VoxelRegion.TestSupport.Actor
 
   @cv 0x1122_3344_5566_7788
   @npc 9101
@@ -51,6 +55,32 @@ defmodule GateServer.NpcBodyWorldTest do
            world_ref: Process.whereis(:npc_world),
            scene_epoch: 7
          }}
+  end
+
+  # 只测试：把每份 Observation 原样转给测试进程，验证 Body 交给 Brain 的观察本身；不发命令。
+  defmodule Spy do
+    @behaviour GateServer.Npc.Brain
+    def init(%{owner: owner}), do: owner
+
+    def handle_event({:observation, observation}, owner) do
+      send(owner, {:spy_observation, observation})
+      {[], owner}
+    end
+
+    def handle_event(_event, owner), do: {[], owner}
+  end
+
+  # 只测试：把 Runtime 交给 Brain 的每个 Outcome 原样转给测试进程（接缝用例按 id 收结果）；自己不发命令。
+  defmodule Outcomes do
+    @behaviour GateServer.Npc.Brain
+    def init(%{owner: owner}), do: owner
+
+    def handle_event({:outcome, outcome}, owner) do
+      send(owner, {:seam_outcome, outcome})
+      {[], owner}
+    end
+
+    def handle_event(_event, owner), do: {[], owner}
   end
 
   # 只测试：正式 build 已完成后暂停技能终态，控制取消与世界提交的顺序。
@@ -132,15 +162,20 @@ defmodule GateServer.NpcBodyWorldTest do
       end
     end
 
+    # 只测试：material_rows 给个别材料行补目录字段（名称、可食、配方），其余行同一份基础属性。
     materials =
       for id <- 0..23,
-          do: %{
-            material_id: id,
-            max_hp_per_macro: if(id == 0, do: 0.0, else: 100.0),
-            defense: 2.0,
-            tags: [],
-            responses: [%{action: "damage", multiplier: 1.0}]
-          }
+          do:
+            Map.merge(
+              %{
+                material_id: id,
+                max_hp_per_macro: if(id == 0, do: 0.0, else: 100.0),
+                defense: 2.0,
+                tags: [],
+                responses: [%{action: "damage", multiplier: 1.0}]
+              },
+              Map.get(context[:material_rows] || %{}, id, %{})
+            )
 
     catalog = Path.join(root, "properties.json")
 
@@ -302,7 +337,7 @@ defmodule GateServer.NpcBodyWorldTest do
     claims = start_supervised!({GateServer.Session.Claims, route_module: router})
 
     if context[:builder_live] || context[:wilderness_skill] ||
-         context[:runtime_build],
+         context[:runtime_build] || context[:seam] || context[:frozen_llm] || context[:builder],
        do: start_supervised!(%{id: Memory, start: {Memory, :start, []}})
 
     body =
@@ -314,6 +349,7 @@ defmodule GateServer.NpcBodyWorldTest do
          cid: @npc,
          bounds: {{-60, 40, -60}, {60, 120, 60}},
          spawn: {4.0, 66.0, 10.0},
+         faction: context[:faction],
          brain: brain(context)},
         restart: :temporary
       )
@@ -376,15 +412,77 @@ defmodule GateServer.NpcBodyWorldTest do
     do: {GateServer.Npc.Brain.Routine, %{steps: [%{verb: :query_balances}]}}
 
   defp brain(%{builder: true}) do
+    test = self()
+
+    # 只测试：发送函数外包一层计数，每次请求报给测试进程 tools 的 JSON 字节数；请求本身照常发给真实接口。
+    request = fn endpoint, body ->
+      send(test, {:llm_request, byte_size(Jason.encode!(body.tools)), length(body.tools)})
+      GateServer.Npc.Http.request(endpoint, body)
+    end
+
     {GateServer.Npc.Brain.Llm,
      %{
        goal:
          "你在 x=4, z=10 附近的平地上。x=16, z=10 处立着一根石柱。去把它整根挖下来，" <>
            "再用挖到的材料在 z=13 这一排、x=10 到 x=11 砌一段一格高的墙。砌完以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体，射程 6 米"},
+       # 与 Demo LLM NPC 同一分组（设计稿 D-3）；每轮空记忆（Agent 替身）。
+       groups: [:move, :sense, :act, :build, :memory, :skill],
+       memory: Memory,
+       request: request,
        endpoint: endpoint()
      }}
   end
+
+  # 能力库 T2.4：冻结应答脚本（按询问次数），use_tool 的 target 取自 input 里最近一次成功探测的 data.target。
+  defp brain(%{frozen_llm: true}) do
+    count = :counters.new(1, [])
+
+    request = fn _endpoint, body ->
+      :counters.add(count, 1, 1)
+      outcomes = Jason.decode!(body.input)["outcomes"]
+
+      probe =
+        Enum.find(
+          Enum.reverse(outcomes),
+          &(&1["verb"] == "probe_toward" and &1["status"] == "done")
+        )
+
+      {name, args} =
+        case :counters.get(count, 1) do
+          n when n in [1, 3] -> {"probe_toward", %{direction: [1, 0, 0], tool_id: 1}}
+          2 -> {"move_to", %{x: 14.0, z: 10.0, y: nil}}
+          n when n in 4..7 -> {"use_tool", %{tool_id: 1, target: probe["data"]["target"]}}
+          8 -> {"place", %{x: 14, y: 64, z: 12, material: @stone, tool_id: 1}}
+          _ -> {"wait", %{seconds: 300}}
+        end
+
+      {:ok,
+       %{
+         "output" => [
+           %{
+             "type" => "function_call",
+             "name" => name,
+             "arguments" => Jason.encode!(args),
+             "call_id" => "c"
+           }
+         ]
+       }}
+    end
+
+    {GateServer.Npc.Brain.Llm,
+     %{
+       goal: "冻结应答",
+       tools: %{1 => "镐"},
+       groups: [:move, :sense, :act, :build, :memory, :skill],
+       memory: Memory,
+       request: request,
+       endpoint: %{model: "frozen"}
+     }}
+  end
+
+  defp brain(%{seam: true}),
+    do: {Outcomes, %{owner: self(), memory: Memory, skills: %{build: %{}}}}
 
   # 同一通用大脑只调用一次荒野技能；技能内部仍用原规划者与施工状态机。
   defp brain(%{wilderness_skill: true}) do
@@ -541,7 +639,7 @@ defmodule GateServer.NpcBodyWorldTest do
        goal:
          "你站在 x=4, z=10 附近的平地上，地面最上一层实心格是 y=63，背包里有一点石料（material 11）。" <>
            "在格 (6, 63, 10) 的顶面贴一件最小的面片附件；然后用 inspect 找到它，用镐对这件附件敲一下，" <>
-           "再按它的 id 把它拆下来，拆完说一句“拆好了”。之后每次都调用 wait 等 300 秒。",
+           "再用 inspect 行里它的 target 把它拆下来。拆完以后每次都调用 wait 等 300 秒。",
        tools: %{1 => "镐：挖掘固体、贴 / 拆附件，射程 6 米"},
        endpoint: endpoint()
      }}
@@ -1559,6 +1657,610 @@ defmodule GateServer.NpcBodyWorldTest do
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 2, 30_000)
   end
 
+  # —— 能力库 I2a（docs/10-active/cross-cutting/2026-10-07-character-capability-library.md T2.5–T2.10、§9.2）——
+  # 期望值按本文件的夹具目录手算；有限样本只经 setup 的 material_supply 作者入口一次供给并记账。
+
+  # 只测试：可食材料 20（一株 = place_units 64 单位）与配方产物 21（1024 石 → 8 单位）。
+  @inventory_rows %{
+    20 => %{display_name: "浆果", food: %{protein_g: 0.5, energy_j: 2000.0}, place_units: 64},
+    21 => %{
+      display_name: "石砖",
+      recipe_inputs: [%{material_id: 11, units: 1024}],
+      recipe_units: 8
+    }
+  }
+
+  @builder %{name: "建设者", guild: %{id: 77, name: "石匠会"}, nation: nil, standings: []}
+
+  defp request(body, id, command) do
+    Body.command(body, Map.put(command, :id, id))
+    outcome(body, id, 10_000)
+  end
+
+  defp units(world, material),
+    do: Enum.find(World.material_balances(world, @npc), &(&1.material == material)).balance
+
+  # 收 Spy 转来的 Observation，直到 fun 返回真值（返回该值）；超时即失败。
+  defp spied(fun, deadline \\ System.monotonic_time(:millisecond) + 10_000) do
+    receive do
+      {:spy_observation, observation} -> fun.(observation) || spied(fun, deadline)
+    after
+      max(0, deadline - System.monotonic_time(:millisecond)) -> flunk("observation not reached")
+    end
+  end
+
+  # T2.5：合成走与玩家背包合成同一条生产意图（0x7F action 4）。改前（I1 之前）Body 没有 craft 动词，回 invalid_command。
+  @tag :idle
+  @tag materials: [11, 20, 21]
+  @tag material_rows: @inventory_rows
+  @tag supply: %{11 => 1500, 20 => 128}
+  test "craft spends the recipe inputs, credits the product and is recorded in the World craft ledger",
+       %{world: world, body: body} do
+    ready(body)
+    assert %{} == World.material_snapshot(world, [@npc], []).craft_ledger
+
+    assert %{verb: :craft, status: :done, data: %{seq: seq}} =
+             request(body, :craft, %{verb: :craft, material: 21})
+
+    assert is_integer(seq)
+    # 石 1500 − 1024 = 476；砖 0 + 8 = 8。合成账记各材料累计净变化。
+    assert {476, 8} == {units(world, 11), units(world, 21)}
+    assert %{11 => -1024, 21 => 8} == World.material_snapshot(world, [@npc], []).craft_ledger
+
+    # 余下 476 < 1024：权威按余额拒绝，原因原样回到 Body，余额与账都不变。
+    assert %{status: :rejected, reason: :insufficient_material} =
+             request(body, :again, %{verb: :craft, material: 21})
+
+    assert {476, 8} == {units(world, 11), units(world, 21)}
+    assert %{11 => -1024, 21 => 8} == World.material_snapshot(world, [@npc], []).craft_ledger
+  end
+
+  # T2.6：进食走生产意图 action 5，一次吃一株（夹具 place_units = 64）。本夹具世界没有 climate：只证明事务
+  # （余额与进食账）；营养经本角色 Player 消费收据进身体的那一段不在覆盖范围。改前 Body 没有 eat 动词。
+  @tag :idle
+  @tag materials: [11, 20, 21]
+  @tag material_rows: @inventory_rows
+  @tag supply: %{11 => 1500, 20 => 128}
+  test "eat consumes one serving into the World food ledger; a material without food is refused",
+       %{world: world, body: body} do
+    ready(body)
+
+    assert %{verb: :eat, status: :done, data: %{seq: _}} =
+             request(body, :eat, %{verb: :eat, material: 20})
+
+    # 128 − 64 = 64。
+    assert 64 == units(world, 20)
+    assert %{20 => 64} == World.material_snapshot(world, [@npc], []).food_ledger
+
+    assert %{status: :rejected, reason: :not_edible} =
+             request(body, :stone, %{verb: :eat, material: 11})
+
+    assert 1500 == units(world, 11)
+    assert %{20 => 64} == World.material_snapshot(world, [@npc], []).food_ledger
+  end
+
+  # T2.7：拆解（0x7D action 2）按目标句柄瞄准（WorldRequest.aim/2）。NPC 站在出生点 (4, 64, 10)，眼点 (4, 65.5, 10)。
+  # 作者目录两份定义：石 macro（512 单位）、石 micro（1 单位）。放三件：macro 在格 (6,64,10)；micro 在 (7,64,10)
+  # （从眼点看被那个 macro 挡住）与 (6,64,8)（视线畅通）。供给 514 = 512 + 1 + 1，放完余额为 0。
+  @tag :prefab_access
+  @tag supply: %{11 => 514}
+  test "dismantle aims at inspect handles: leaf and owned macro refund in full, an occluded leaf is stale, terrain is not a component",
+       %{world: world, body: body, root: root, claims: claims} do
+    [block_id, micro_id] =
+      for draft <- [
+            %{cells: [], macro_cells: [{{0, 0, 0}, @stone}]},
+            %{cells: [{{0, 0, 0}, @stone}], macro_cells: []}
+          ] do
+        bytes = Prefab.encode(Map.merge(draft, %{children: [], attachments: []}))
+        id = :crypto.hash(:sha256, bytes)
+        File.write!(Path.join([root, "prefabs", Base.encode16(id) <> ".vxpd"]), bytes)
+        id
+      end
+
+    :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+    ready(body)
+
+    place = fn id, definition, anchor ->
+      request(body, id, %{
+        verb: :prefab_place,
+        definition_id: definition,
+        anchor: anchor,
+        orientation: 0
+      })
+    end
+
+    assert %{status: :done, data: %{seq: block}} = place.(:block, block_id, {48, 512, 80})
+    assert %{status: :done, data: %{seq: hidden}} = place.(:hidden, micro_id, {56, 512, 80})
+    assert %{status: :done, data: %{seq: open}} = place.(:open, micro_id, {48, 512, 64})
+    assert 0 == balance(world)
+
+    # inspect 的身份行：构件 g2（owner = {birth, 0}）；prefab 宏格 g0，micro = 宏格角点 = 格 × 8（设计稿 F22）。
+    assert %{status: :done, data: %{property_states: rows}} =
+             request(body, :inspect, %{verb: :inspect})
+
+    row = fn g, owner -> Enum.find(rows, &(&1.granularity == g and &1.owner == owner)) end
+    assert %{micro: {48, 512, 80}} = block_row = row.(0, {block, 0})
+    assert %{micro: {56, 512, 80}} = hidden_row = row.(2, {hidden, 0})
+    assert %{micro: {48, 512, 64}} = open_row = row.(2, {open, 0})
+
+    dismantle = fn id, target ->
+      request(body, id, %{verb: :dismantle, tool_id: 1, target: target})
+    end
+
+    # 天然地形：句柄取自权威探测（朝下打到 (5,63,10) 顶面）；不是构件，拒绝且不进 GCRA。
+    assert %{status: :done, data: ground} =
+             request(body, :ground, %{verb: :probe_toward, direction: {0.6, -0.8, 0.0}, tool_id: 1})
+
+    assert %{granularity: 0, owner: {0, 0}, micro: {40, 504, 80}} = ground
+    assert %{status: :rejected, reason: :not_a_component} = dismantle.(:terrain, ground)
+
+    # 叶子构件、不给方向：Body 瞄它的 micro 中心；石料没有燃料，按满燃料全额退 1 单位。
+    assert %{status: :done, data: %{seq: _}} = dismantle.(:leaf, open_row)
+    assert 1 == balance(world)
+    # 被挡住的叶子：权威射线先命中那个 macro，身份不符，原样 stale_target（在 GCRA 之前）。
+    assert %{status: :rejected, reason: :stale_target} = dismantle.(:occluded, hidden_row)
+
+    # 镐的间隔 0.5 s（夹具 interval_seconds）：等权威推进 36 tick（0.6 s）再拆下一件。
+    tick = Body.observe(body).tick
+
+    await(
+      fn -> Body.observe(body).tick >= tick + 36 || nil end,
+      System.monotonic_time(:millisecond) + 5_000
+    )
+
+    # prefab 宏格（g0、owner 不是 {0,0}）：瞄宏格中心，全额退 8³ = 512 单位。
+    assert %{status: :done, data: %{seq: _}} = dismantle.(:macro, block_row)
+    assert 513 == balance(world)
+
+    assert [
+             %{material: 0, refined: false},
+             %{material: 0, refined: false, slots: []},
+             %{refined: true, slots: [%{material: @stone, instance: [^hidden, 0], count: 1}]}
+           ] =
+             World.material_snapshot(world, [], [{6, 64, 10}, {6, 64, 8}, {7, 64, 10}]).probe_occupancy
+
+    # 位置未知（claim 之后、首个 ACK 之前；Body 先完成 claim 才处理邮箱）：要按眼点补方向的命令回 invalid_session，不进 Intent。
+    log =
+      capture_log(fn ->
+        early =
+          start_supervised!(
+            {Body,
+             claims: claims,
+             route_module: Route,
+             scene_id: 1,
+             cid: @npc + 2,
+             bounds: {{-60, 40, -60}, {60, 120, 60}},
+             spawn: {8.0, 66.0, 12.0},
+             brain: {GateServer.Npc.Brain.Routine, %{steps: []}}},
+            id: :early,
+            restart: :temporary
+          )
+
+        Body.command(early, %{id: :early, verb: :dismantle, tool_id: 1, target: hidden_row})
+        assert %{status: :rejected, reason: :invalid_session} = outcome(early, :early, 5_000)
+      end)
+
+    assert log =~
+             "npc_intent_rejected cid=#{@npc + 2} id=:early verb=dismantle reason=:invalid_session"
+  end
+
+  # T2.8：目录读取。作者目录一份定义（石、木各一个 micro），另一角色运行时发布一份（一个石 macro，名称“石凳”）；
+  # 单位按正式库存精度手算：micro 1、macro 8³ = 512；尺寸 = 包围盒 micro / 8。改前 Body 没有 read_catalog 动词。
+  # 生产材料 = [11, 20, 21]；22（有 food）与 23（有配方）不在其中：World 进食 / 合成门回 not_edible / unknown_recipe
+  # （w/production.ex:151、187），目录据此对它们给 edible / recipe = nil。
+  @tag :idle
+  @tag materials: [11, 20, 21]
+  @tag material_rows:
+         Map.merge(@inventory_rows, %{
+           22 => %{
+             display_name: "野果",
+             food: %{protein_g: 0.25, energy_j: 1000.0},
+             place_units: 64
+           },
+           23 => %{
+             display_name: "陶片",
+             recipe_inputs: [%{material_id: 11, units: 512}],
+             recipe_units: 4
+           }
+         })
+  test "read_catalog answers bills for author and runtime definitions, recent publications, materials and tools",
+       %{world: world, body: body, root: root} do
+    author_bytes =
+      Prefab.encode(%{
+        cells: [{{0, 0, 0}, @stone}, {{1, 0, 0}, 19}],
+        macro_cells: [],
+        children: [],
+        attachments: []
+      })
+
+    author = :crypto.hash(:sha256, author_bytes)
+    File.write!(Path.join([root, "prefabs", Base.encode16(author) <> ".vxpd"]), author_bytes)
+    :ok = World.publish_prefabs(world, Path.join(root, "prefabs"))
+
+    # 发布者 cid 4242 用 World 单元测试的角色替身（发布者不是被测主体）。
+    publisher = %{
+      cid: 4242,
+      gate: self(),
+      identity: :publisher,
+      refresh: &Actor.tool_context/2,
+      eye: {0.0, 0.0, 0.0},
+      tick_us: 16_667
+    }
+
+    publisher = Map.put(publisher, :player, start_supervised!({Actor, publisher}))
+
+    bench_bytes =
+      Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, @stone}], children: [], attachments: []})
+
+    assert {:ok, bench} = World.publish_prefab(world, publisher, bench_bytes, "石凳")
+    ready(body)
+
+    read = fn id, what, definition ->
+      request(body, id, %{verb: :read_catalog, what: what, definition: definition})
+    end
+
+    assert %{
+             verb: :read_catalog,
+             status: :done,
+             data: %{
+               definition_id: ^author,
+               materials: %{11 => 1, 19 => 1},
+               size_m: [0.25, 0.125, 0.125]
+             }
+           } = read.(:author, :prefab, author)
+
+    assert %{
+             status: :done,
+             data: %{definition_id: ^bench, materials: %{11 => 512}, size_m: [1.0, 1.0, 1.0]}
+           } = read.(:bench, :prefab, bench)
+
+    assert %{status: :rejected, reason: :definition_not_found} =
+             read.(:unknown, :prefab, :binary.copy(<<7>>, 32))
+
+    # 只列运行时发布（作者目录不在其中，设计稿 F21）。
+    assert %{
+             status: :done,
+             data: %{
+               prefabs: [
+                 %{definition_id: ^bench, name: "石凳", publisher: 4242, materials: %{11 => 512}}
+               ],
+               total: 1
+             }
+           } = read.(:recent, :prefabs, nil)
+
+    assert %{status: :done, data: %{materials: rows}} = read.(:materials, :materials, nil)
+    assert 24 == length(rows)
+    material = fn id -> Enum.find(rows, &(&1.material == id)) end
+
+    assert %{material: 20, name: "浆果", edible: %{protein_g: 0.5, energy_j: 2000.0}, recipe: nil} ==
+             material.(20)
+
+    assert %{material: 21, name: "石砖", edible: nil, recipe: %{inputs: %{11 => 1024}, units: 8}} ==
+             material.(21)
+
+    assert %{material: 11, name: nil, edible: nil, recipe: nil} == material.(11)
+
+    # 不在生产材料里：行照列（名字供 look 结果对照），但不宣称能吃 / 能合成；权威对它们的拒绝与此一致。
+    assert %{material: 22, name: "野果", edible: nil, recipe: nil} == material.(22)
+    assert %{material: 23, name: "陶片", edible: nil, recipe: nil} == material.(23)
+
+    assert %{status: :rejected, reason: :not_edible} =
+             request(body, :wild_fruit, %{verb: :eat, material: 22})
+
+    assert %{status: :rejected, reason: :unknown_recipe} =
+             request(body, :shard, %{verb: :craft, material: 23})
+
+    assert %{
+             status: :done,
+             data: %{tools: [%{tool_id: 1, action: "damage", range_m: 6.0, interval_s: 0.5}]}
+           } = read.(:tools, :tools, nil)
+
+    # Body 的类型守卫：prefab 必须给 32 字节 id，其余种类不带 definition，未知种类不认。
+    for {id, what, definition} <- [
+          {:no_id, :prefab, nil},
+          {:short, :prefab, <<1, 2>>},
+          {:extra, :tools, author},
+          {:bogus, :recipes, nil}
+        ],
+        do: assert(%{status: :rejected, reason: :invalid_command} = read.(id, what, definition))
+  end
+
+  # T2.9：名字与关系取自 EntityEnter（Scene 按观察者算：同公会 → own，code 2，来源“同属石匠会”，Voxim Docs/Factions.md §3），
+  # 身体视图取自 Session.BodyState（与玩家 HUD 同一条下行）。A 是 setup 的 NPC（档案“建设者”），B 是“采石者”。
+  @tag :idle
+  @tag :combat
+  @tag faction: @builder
+  test "an NPC observes names, relations and its own body_state from the downlinks a player gets",
+       %{body: a, claims: claims} do
+    b =
+      start_supervised!(
+        {Body,
+         claims: claims,
+         route_module: Route,
+         scene_id: 1,
+         cid: @npc + 1,
+         bounds: {{-60, 40, -60}, {60, 120, 60}},
+         spawn: {6.0, 66.0, 10.0},
+         faction: %{@builder | name: "采石者"},
+         brain: {Spy, %{owner: self()}}},
+        id: :npc_b,
+        restart: :temporary
+      )
+
+    # 入场时权威发一份身体视图：满生命、存活（status 0）。
+    assert %{life: 100, status: 0} = spied(fn o -> o.self.body_state end)
+
+    assert %{name: "建设者", kind: 1, relation: 2, relation_source: "同属石匠会"} =
+             spied(fn o -> Enum.find(o.entities, &(&1.entity_id == @npc)) end)
+
+    assert %{name: "采石者", relation: 2, relation_source: "同属石匠会"} =
+             await(
+               fn -> Body.observe(a).entities[@npc + 1] end,
+               System.monotonic_time(:millisecond) + 10_000
+             )
+
+    # A 打 B 一下（同 T1.4）：两者落地站稳后按权威位置瞄准 B 的胶囊中心。
+    landed = fn body ->
+      await(
+        fn ->
+          with %{player: player} when player != nil <- :sys.get_state(body),
+               {:ok, %{velocity: {_, vy, _}, position: {_, y, _}} = hit}
+               when vy == 0.0 and y < 65.5 <- Player.hit_context(player) do
+            {player, hit}
+          else
+            _ -> nil
+          end
+        end,
+        System.monotonic_time(:millisecond) + 10_000
+      )
+    end
+
+    {_, %{position: pa}} = landed.(a)
+    {b_player, %{position: {bx, by, bz}}} = landed.(b)
+    {ex, ey, ez} = Player.eye_position(pa)
+    length = :math.sqrt((bx - ex) ** 2 + (by - ey) ** 2 + (bz - ez) ** 2)
+    direction = {(bx - ex) / length, (by - ey) / length, (bz - ez) / length}
+
+    assert %{status: :done, data: handle} =
+             request(a, :probe, %{
+               verb: :probe_toward,
+               direction: direction,
+               tool_id: 1,
+               target: %{granularity: 5, owner: {@npc + 1, 0}}
+             })
+
+    assert %{status: :done, data: %{life: 80, part: part}} =
+             request(a, :hit, %{verb: :use_tool, tool_id: 1, target: handle})
+
+    # 新伤口按目录 depth 0.2 取满：生命 100 × (1 − 0.2) = 80；B 的 Observation 随下行更新，名字仍在（Snapshot 只改位置）。
+    wounded = spied(fn o -> match?(%{life: 80}, o.self.body_state) && o end)
+    snapshot = Player.body_snapshot(b_player).body
+    assert wounded.self.body_state.life == SceneServer.Body.life(snapshot)
+    assert {0, :alive} == {wounded.self.body_state.status, snapshot.status}
+    assert ["trauma.mechanical.#{part}"] == Enum.map(wounded.self.body_state.injuries, & &1.tag)
+    assert %{name: "建设者"} = Enum.find(wounded.entities, &(&1.entity_id == @npc))
+  end
+
+  # T2.10（S1）：move_to 的 y 与脚所在格（站在 y=63 顶面上 = 64）相差超过 Perception.reach()（32）立即 too_far，
+  # 执行进程不取盒、不访问 World。冻住 World 来证明：改前取盒会卡在 World 前，Outcome 到不了。恰好 32 格仍交给寻路。
+  @tag :idle
+  test "move_to with a y beyond reach of the feet is too_far without asking the World; exactly reach still plans",
+       %{world: world, body: body} do
+    ready(body)
+    worker = :sys.get_state(body).worker
+    :sys.suspend(world)
+
+    try do
+      for {id, y} <- [{:up, 64 + 1000}, {:down, 64 - 1000}, {:edge, 64 + 33}] do
+        Body.command(body, %{id: id, verb: :move_to, position: {5.5, 10.5}, y: y, tolerance: 0.5})
+        assert %{status: :rejected, reason: :too_far} = outcome(body, id, 5_000)
+      end
+
+      {:messages, messages} = Process.info(world, :messages)
+      refute Enum.any?(messages, &match?({:"$gen_call", {^worker, _}, _}, &1))
+    after
+      :sys.resume(world)
+    end
+
+    # 边界内：照常取盒寻路，那一层是半空、没有可站的格 → no_path（来自寻路，不是 too_far）。
+    Body.command(body, %{
+      id: :reach,
+      verb: :move_to,
+      position: {5.5, 10.5},
+      y: 64 + 32,
+      tolerance: 0.5
+    })
+
+    assert %{status: :rejected, reason: :no_path} = outcome(body, :reach, 10_000)
+  end
+
+  # 正式生成入口（§9.2）：名字 → characters 表的 NPC 行（永久 cid）→ Orgs 档案 → claim 的 profile → 别人看到的名牌。
+  # 同名再起一个：同一 cid，先起的 Body 被顶替后正常结束。数据库是 data_service 的测试库（本 VM 独占）。
+  @tag :idle
+  test "Body.start/2 makes the name the permanent identity and the nameplate others see",
+       %{body: observer, claims: claims, scene: scene} do
+    MmoTest.Database.start!()
+    start_supervised!({DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one})
+    name = "建设者#{System.unique_integer([:positive])}"
+
+    opts = [
+      claims: claims,
+      route_module: Route,
+      scene_id: 1,
+      spawn: {6.0, 66.0, 10.0},
+      brain: {GateServer.Npc.Brain.Routine, %{steps: []}}
+    ]
+
+    assert {:ok, first} = Body.start(name, opts)
+    # 独立读口：characters 表里这个名字的行。
+    assert %{id: cid, kind: "npc"} =
+             DataService.Repo.get_by!(DataService.Schema.Character, name: name)
+
+    assert %{name: ^name, kind: 1} =
+             await(
+               fn -> Body.observe(observer).entities[cid] end,
+               System.monotonic_time(:millisecond) + 10_000
+             )
+
+    monitor = Process.monitor(first)
+    assert {:ok, second} = Body.start(name, opts)
+    assert second != first
+    assert_receive {:DOWN, ^monitor, :process, ^first, {:shutdown, :replaced}}, 5_000
+
+    await(
+      fn ->
+        match?([_], for(c <- Scene.observe(scene).characters, c.entity_id == cid, do: c)) || nil
+      end,
+      System.monotonic_time(:millisecond) + 5_000
+    )
+  end
+
+  # 能力库 T2.2 接缝：投影给 LLM 的每个条目（工具带 + build 技能的 profile），其 build 输出交给真实 Body
+  # （真实 World / Scene / Player / Runtime；记忆用本文件的 Agent 替身，替身范围只到长期记忆存储），
+  # Body 的类型守卫不得回 invalid_command。各条目的权威结果不在这里断言（原样来自 World，见各自的用例）。
+  @tag :seam
+  @tag supply: %{11 => 2048}
+  test "every entry projected to the LLM builds a command the real Body accepts (never invalid_command)",
+       %{body: body} do
+    ready(body)
+    profile = %{tools: %{1 => "镐"}, skills: %{build: %{}}}
+    hex = String.duplicate("2a", 32)
+    entity = %{"entity_id" => 424_242, "entity_epoch" => 1}
+    blank = %{"x" => nil, "y" => nil, "z" => nil, "orientation" => nil}
+
+    handle = fn g, micro, owner ->
+      %{
+        "granularity" => g,
+        "micro" => micro,
+        "incarnation" => 1,
+        "owner" => owner,
+        "material" => @stone,
+        "direction" => nil
+      }
+    end
+
+    pillar = handle.(0, [128, 520, 80], [0, 0])
+    cell = %{"x" => 6, "y" => 64, "z" => 12, "material" => @stone, "tool_id" => 1}
+
+    args = %{
+      "move_to" => %{"x" => 6.5, "z" => 10.5, "y" => nil},
+      "stop" => %{},
+      "probe_toward" => %{"direction" => [1, 0, 0], "tool_id" => 1},
+      "use_tool" => %{"tool_id" => 1, "target" => pillar},
+      "dismantle" => %{"tool_id" => 1, "target" => pillar},
+      "place" => cell,
+      "scoop" => cell,
+      "pour" => cell,
+      "craft" => %{"material" => @stone},
+      "eat" => %{"material" => @stone},
+      "attach" =>
+        Map.merge(cell, %{
+          "kind" => "face",
+          "axis" => "y",
+          "size" => 1,
+          "x" => 40,
+          "y" => 512,
+          "z" => 80
+        }),
+      "detach" => %{"tool_id" => 1, "target" => handle.(3, [40, 512, 80], [1, 1])},
+      "prefab" =>
+        Map.merge(blank, %{
+          "op" => "place",
+          "definition" => hex,
+          "x" => 40,
+          "y" => 512,
+          "z" => 120,
+          "orientation" => 0,
+          "instance" => nil
+        }),
+      "look" => %{"x0" => 3, "y0" => 63, "z0" => 9, "x1" => 5, "y1" => 65, "z1" => 11},
+      "inspect" => %{},
+      "query_balances" => %{},
+      "read_catalog" => %{"what" => "tools", "definition" => nil},
+      "get_view" => %{},
+      "look_at" => %{
+        "entity_id" => nil,
+        "entity_epoch" => nil,
+        "x" => 10.0,
+        "y" => 66.0,
+        "z" => 10.0
+      },
+      "get_aim" => %{},
+      "get_visible_entities" => %{},
+      "get_target_status" => entity,
+      "select_target" => Map.put(entity, "group", "enemy"),
+      "remove_target" => entity,
+      "get_targets" => %{},
+      "set_focus" => Map.put(entity, "group", "enemy"),
+      "cycle_focus" => %{"group" => "enemy", "direction" => 1},
+      "remove_focus" => %{"group" => "enemy"},
+      "clear_targets" => %{},
+      "toggle_mark" => %{},
+      "remember" => %{"key" => "seam", "text" => "接缝"},
+      "recall" => %{"key" => "seam"},
+      "search_memory" => %{"query" => "接缝"},
+      "build" => %{"definition" => hex, "anchor_micro" => [40, 512, 120], "orientation" => 0}
+    }
+
+    names = Enum.map(Abilities.tools(profile), & &1.name)
+    # 投影里的每个条目都要过一遍接缝；新增条目必须在这里补一组参数。
+    assert Enum.sort(names) == Enum.sort(Map.keys(args))
+
+    for {name, id} <- Enum.with_index(names, 1) do
+      command = Abilities.command(name, Map.fetch!(args, name), id, profile)
+      refute command.verb in [:invalid_tool_arguments, :unknown_tool], name
+      Body.command(body, command)
+      assert_receive {:seam_outcome, %{id: ^id} = outcome}, 15_000
+      refute outcome.reason == :invalid_command, inspect({name, command, outcome})
+    end
+  end
+
+  # 能力库 T2.4：真实 World + 冻结的 Responses 应答走完整条 LLM 链路。冻结脚本像模型一样只读请求 input：
+  # 出生点探测（石柱 12 m 外、镐射程 6 m）→ 走到 x=14 → 探测命中石柱上格 → 把那次结果里的 target 原样抄进
+  # use_tool（显式句柄，没有隐式“最近一次 probe”）× 4（HP 100、每击 30−2=28）→ 在 (14,64,12) 放回一格。
+  # 余额：0 → 挖下一个宏格 +512 → 放一格 −512 = 0（夹具目录 cost 512，同上面挖掘用例的手算）。
+  @tag :frozen_llm
+  test "a frozen LLM answer mines with the probe's target handle and places what it mined", %{
+    world: world,
+    body: body
+  } do
+    placed = {14, 64, 12}
+
+    material = fn coord ->
+      hd(World.material_snapshot(world, [@npc], [coord]).probe_occupancy).material
+    end
+
+    await(
+      fn -> if material.(placed) == @stone, do: true end,
+      System.monotonic_time(:millisecond) + 40_000
+    )
+
+    assert {0, @stone, 0} == {cell(world), material.({16, 64, 10}), balance(world)}
+
+    outcomes = Enum.reverse(Body.observe(body).outcomes)
+
+    assert [
+             %{verb: :probe_toward, status: :rejected, reason: :no_target},
+             %{verb: :move_to, status: :done},
+             %{verb: :probe_toward, status: :done, data: %{micro: {128, 520, 80}}}
+             | rest
+           ] = outcomes
+
+    assert [:use_tool, :use_tool, :use_tool, :use_tool, :place] ==
+             Enum.map(Enum.take(rest, 5), & &1.verb)
+
+    assert Enum.all?(Enum.take(rest, 5), &match?(%{status: :done, data: %{seq: _}}, &1))
+  end
+
+  # 取走邮箱里某一类消息（不等待）。
+  defp collect(tag) do
+    receive do
+      message when elem(message, 0) == tag -> [message | collect(tag)]
+    after
+      0 -> []
+    end
+  end
+
   @tag :live_llm
   @tag :builder
   @tag timeout: 900_000
@@ -1582,6 +2284,12 @@ defmodule GateServer.NpcBodyWorldTest do
         ),
         label: "llm_builder_outcomes",
         limit: :infinity
+      )
+
+      requests = for {:llm_request, bytes, count} <- collect(:llm_request), do: {bytes, count}
+
+      IO.puts(
+        "llm_builder_requests request_count=#{length(requests)} tools_bytes=#{inspect(Enum.map(requests, &elem(&1, 0)))} tools_count=#{inspect(Enum.uniq(Enum.map(requests, &elem(&1, 1))))}"
       )
     end
 
@@ -1776,7 +2484,7 @@ defmodule GateServer.NpcBodyWorldTest do
   @tag :inspector
   @tag supply: %{11 => 8}
   @tag timeout: 600_000
-  test "a real LLM attaches a face, finds it with inspect and detaches it by id: world and balance checked through World",
+  test "a real LLM attaches a face, finds it with inspect and detaches it by the inspect row's target: world and balance checked through World",
        %{world: world, body: body} do
     attachments = fn ->
       Enum.filter(
@@ -1817,18 +2525,19 @@ defmodule GateServer.NpcBodyWorldTest do
       )
     end
 
-    # 模型确实走了 inspect → 按 id 对附件用工具 → 按 id 拆：权威确认的 Outcome 里都有；say 在正式栈接入聊天前恒被拒。
+    # 模型确实走了 inspect → 按 inspect 行的 target 对附件用工具 → 按同一句柄拆：权威确认的 Outcome 里都有。
+    # （能力库 I2b 起 say 不投影给 LLM，原先“拆完说一句”的核对随之删去。）
     outcomes =
       await(
-        fn -> if Enum.any?(o = Body.observe(body).outcomes, &(&1.verb == :say)), do: o end,
+        fn ->
+          o = Body.observe(body).outcomes
+          if Enum.any?(o, &match?(%{verb: :detach, status: :done}, &1)), do: o
+        end,
         System.monotonic_time(:millisecond) + 60_000
       )
 
     done = for %{status: :done, verb: verb} <- outcomes, do: verb
     assert :inspect in done and :use_tool in done and :detach in done
-
-    assert %{status: :rejected, reason: :chat_unavailable} =
-             Enum.find(outcomes, &(&1.verb == :say))
 
     IO.inspect(Enum.reverse(for o <- outcomes, do: {o.id, o.verb, o.status, o.reason}),
       label: "llm_inspector_final"

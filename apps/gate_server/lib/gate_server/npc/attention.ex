@@ -1,24 +1,12 @@
 defmodule GateServer.Npc.Attention do
-  @moduledoc "全局系统功能：NPC 本地关注与观察方向。无世界副本，不改变移动、阵营或攻击。"
-  @verbs [
-    :get_view,
-    :look_at,
-    :get_aim,
-    :get_visible_entities,
-    :get_target_status,
-    :select_target,
-    :remove_target,
-    :get_targets,
-    :set_focus,
-    :cycle_focus,
-    :remove_focus,
-    :clear_targets,
-    :toggle_mark
-  ]
+  @moduledoc """
+  全局系统功能：NPC 本地关注与观察方向。无世界副本，不改变移动、阵营或攻击。
+  13 个关注动词的能力条目（group :attend，形状见 `GateServer.Npc.Abilities`）也在这里，动词表由条目派生。
+  """
   @groups [:enemy, :friendly]
   @reach GateServer.Npc.Perception.reach()
-  @doc "共用命令目录。"
-  def verbs, do: @verbs
+  @doc "关注动词（由条目名派生；Body 据此把命令交给本模块）。"
+  def verbs, do: for(entry <- entries(), do: String.to_atom(entry.name))
   @doc "初始观察朝 +X；各组独立焦点，本地标记独立于清空选择。"
   def new,
     do: %{
@@ -177,73 +165,50 @@ defmodule GateServer.Npc.Attention do
   def apply(_, _, _, _), do: {:error, :invalid_command}
   defp done(a), do: {:ok, a, Map.take(a, [:enemy, :friendly, :mark])}
 
-  @doc "各后端共用的参数描述；LLM 使用此目录，不另抄一份。"
-  def tools do
-    target = %{entity_id: %{type: "integer"}, entity_epoch: %{type: "integer"}}
-    group = %{group: %{type: "string", enum: ["enemy", "friendly"]}}
+  @doc "关注条目（顺序固定）：目标参数是 entity_id + entity_epoch，group 是 enemy / friendly。"
+  def entries do
+    target = [entity_id: :integer, entity_epoch: :integer]
+    group = [group: {:enum, %{"enemy" => :enemy, "friendly" => :friendly}}]
+    nullable = fn fields -> for {key, spec} <- fields, do: {key, {:nullable, spec}} end
 
-    for {verb, description, fields, required} <- [
-          {:get_view, "获取观察位置、方向、距离与视角；独立于移动朝向。", %{}, []},
-          {:look_at, "看向坐标或当前角色；提供完整 x/y/z 或 entity_id/entity_epoch，不改变选择、不攻击。",
-           Map.merge(target, %{x: %{type: "number"}, y: %{type: "number"}, z: %{type: "number"}}),
-           []},
-          {:get_aim, "获取当前观察射线最近的角色或方块/构件；范围不代表攻击可达，附件未采样。", %{}, []},
-          {:get_visible_entities, "获取已同步角色中，中心点位于视锥内且无遮挡的角色；不枚举全部地形。", %{}, []},
-          {:get_target_status, "查询角色有效性、距离与中心点可见状态，不裁决技能射程。", target, Map.keys(target)},
-          {:select_target, "加入指定本地组并聚焦；不转向、不攻击，不改变真实阵营。", Map.merge(target, group),
-           Map.keys(target) ++ [:group]},
-          {:remove_target, "从选中组移除角色；本地标记独立。", target, Map.keys(target)},
-          {:get_targets, "获取敌友两组、各组焦点及本地标记。", %{}, []},
-          {:set_focus, "在已选组中指定焦点，不增加成员。", Map.merge(target, group),
-           Map.keys(target) ++ [:group]},
-          {:cycle_focus, "仅轮换已选组，direction 为 1 或 -1。",
-           Map.put(group, :direction, %{type: "integer", enum: [-1, 1]}), [:group, :direction]},
-          {:remove_focus, "移除指定组当前焦点，首个剩余成员成为焦点。", group, [:group]},
-          {:clear_targets, "清空两组，保留独立本地标记。", %{}, []},
-          {:toggle_mark, "切换敌方焦点的本地标记，不向团队广播。", %{}, []}
+    for {verb, description, params} <- [
+          {:get_view, "获取观察位置、方向、距离与视角；独立于移动朝向。", []},
+          {:look_at,
+           "看向坐标或当前角色：给完整 x/y/z（entity_id、entity_epoch 写 null），或给 entity_id/entity_epoch（x/y/z 写 null）；" <>
+             "不改变选择、不攻击。", nullable.(target ++ [x: :number, y: :number, z: :number])},
+          {:get_aim, "获取当前观察射线最近的角色或方块/构件；范围不代表攻击可达，附件未采样。", []},
+          {:get_visible_entities, "获取已同步角色中，中心点位于视锥内且无遮挡的角色；不枚举全部地形。", []},
+          {:get_target_status, "查询角色有效性、距离与中心点可见状态，不裁决技能射程。", target},
+          {:select_target, "加入指定本地组并聚焦；不转向、不攻击，不改变真实阵营。", target ++ group},
+          {:remove_target, "从选中组移除角色；本地标记独立。", target},
+          {:get_targets, "获取敌友两组、各组焦点及本地标记。", []},
+          {:set_focus, "在已选组中指定焦点，不增加成员。", target ++ group},
+          {:cycle_focus, "仅轮换已选组，direction 为 1 或 -1。", group ++ [direction: {:enum, [-1, 1]}]},
+          {:remove_focus, "移除指定组当前焦点，首个剩余成员成为焦点。", group},
+          {:clear_targets, "清空两组，保留独立本地标记。", []},
+          {:toggle_mark, "切换敌方焦点的本地标记，不向团队广播。", []}
         ],
         do: %{
-          type: "function",
           name: Atom.to_string(verb),
+          group: :attend,
           description: description,
-          parameters: %{
-            type: "object",
-            properties: fields,
-            required: Enum.map(required, &Atom.to_string/1),
-            additionalProperties: false
-          }
+          done: "立即返回（带 self_tick 采样版本），只改本地关注状态。",
+          params: params,
+          build: fn args, _ -> command(verb, args) end
         }
   end
 
-  @doc "模型纯数据转共用命令；仅从固定目录匹配，未知名字返回 nil。"
-  def command(name, args, id) do
-    case Enum.find(@verbs, &(Atom.to_string(&1) == name)) do
-      nil ->
-        nil
-
-      verb ->
-        c = %{id: id, verb: verb}
-
-        c =
-          if Map.has_key?(args, "entity_id"),
-            do:
-              Map.put(c, :target, %{
-                entity_id: args["entity_id"],
-                entity_epoch: args["entity_epoch"]
-              }),
-            else: c
-
-        c =
-          if Map.has_key?(args, "x"),
-            do: Map.put(c, :position, {args["x"], args["y"], args["z"]}),
-            else: c
-
-        c =
-          if Map.has_key?(args, "group"),
-            do: Map.put(c, :group, %{"enemy" => :enemy, "friendly" => :friendly}[args["group"]]),
-            else: c
-
-        if Map.has_key?(args, "direction"), do: Map.put(c, :direction, args["direction"]), else: c
-    end
+  # 定型参数 → 规范命令：entity_id 非空才带 target，x 非空才带 position。
+  defp command(verb, args) do
+    %{verb: verb}
+    |> put_if(Map.get(args, :entity_id) != nil, :target, fn ->
+      %{entity_id: args.entity_id, entity_epoch: args.entity_epoch}
+    end)
+    |> put_if(Map.get(args, :x) != nil, :position, fn -> {args.x, args.y, args.z} end)
+    |> put_if(Map.has_key?(args, :group), :group, fn -> args.group end)
+    |> put_if(Map.has_key?(args, :direction), :direction, fn -> args.direction end)
   end
+
+  defp put_if(command, true, key, value), do: Map.put(command, key, value.())
+  defp put_if(command, false, _key, _value), do: command
 end

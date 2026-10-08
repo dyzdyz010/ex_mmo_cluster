@@ -88,15 +88,18 @@ defmodule GateServer.NpcAttentionTest do
             }
           ]
         },
-        nil,
-        %{},
         1,
         %{skills: %{}}
       )
 
     assert c == cmd(:select_target, %{target: target(7, 9), group: :enemy})
-    assert Enum.any?(Attention.tools(), &(&1.name == "get_view"))
-    assert Attention.command("missing", %{}, 1) == nil
+    # 13 个关注动词的条目经 Abilities 投影；Body 用的动词表由条目名派生。
+    names = Enum.map(GateServer.Npc.Abilities.tools(%{}), & &1.name)
+    assert Enum.all?(Attention.verbs(), &(Atom.to_string(&1) in names))
+    assert 13 == length(Attention.verbs())
+
+    assert %{verb: :unknown_tool, tool: "missing"} =
+             GateServer.Npc.Abilities.command("missing", %{}, 1, %{})
   end
 
   test "独立标记保留到实体失效；移除焦点确定地选首个剩余成员" do
