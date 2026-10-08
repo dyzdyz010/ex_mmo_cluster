@@ -41,15 +41,16 @@ defmodule GateServer.Npc.Brain.Llm do
   # 实体走进这个距离（米）叫醒大脑；离开 @forget_m 才算走远，边界上来回不反复叫醒。
   @notice_m 6.0
   @forget_m 8.0
-  # wait 的秒数范围（夹住模型给的值）：说明与到期计时共用。
+  # wait 的秒数范围（夹住模型给的值）：说明与到期计时共用。上限 1 小时：目标已完成的住民原先每 5 分钟（旧上限 300 s）
+  # 被问一次，长期空闲约每小时 12 次请求（2026-10-08 机制实跑 run02）；有人走近、说话或有新 Outcome 时仍提前询问。
   @min_wait_s 1
-  @max_wait_s 300
+  @max_wait_s 3600
 
   @wait %{
     type: "function",
     name: "wait",
     description:
-      "什么都不做，seconds 秒后再被询问（#{@min_wait_s}–#{@max_wait_s}）。目标已完成或暂时无事可做时用它。" <>
+      "什么都不做，seconds 秒后再被询问（#{@min_wait_s}–#{@max_wait_s}）。目标已完成或暂时无事可做时用它；已经无事可做就等久一点（每次询问都要花费）。" <>
         "有人走到身边 #{@notice_m} 米内或对你说话时会提前询问。",
     parameters: %{
       type: "object",
