@@ -4,7 +4,9 @@ defmodule GateServer.VoximSpellDispatchTest do
   @moduledoc """
   只测试：魔法增量 1 的 Gate 胶合——0x82 经正式解码与 Dispatch 进入真实 World；报价只回 0x83，
   施放（含走火）先回 0x83 再回 0x68 accepted，拒绝回 0x68 rejected；QUIC 接纳 0x76 后的施法者状态请求回 0x83（request_id 0）。
-  World 用 Test-only 魔法目录 ff15757b… 与材料目录 b1aca503…；施法者能量 0（新角色），走火扣 0。
+  World 用 Test-only 魔法目录 19c513f9…（版本 4）与材料目录 b1aca503…；施法者能量 0（新角色），走火扣 0。
+  夹具更新（能力库 I4）：原目录 ff15757b… 是版本 2，现行 `VoxelRegion.Magic.Catalog` 只收版本 4，World 启动即失败；
+  换成同一组常数的 v4 目录 19c513f9…（release_lead_s 0、rest_pose 全 0），断言语义与期望数值不变，数值按新夹具重算见下。
   施放前摇（Voxim Docs/Magic.md §13.6）：施放的回执在前摇结束后才到（真实定时器，点火前摇 0.892 s），
   Dispatch 立即返回；前摇中再施放立即回 0x68 rejected cast_too_soon。
   """
@@ -100,7 +102,7 @@ defmodule GateServer.VoximSpellDispatchTest do
     defp actor(state), do: Map.put(state.actor, :player, self())
   end
 
-  @magic "ff15757b8a7bfc20954ffde9370f04f0bc22b8a0b93fe31e03eb893165c7e9b1"
+  @magic "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"
 
   setup do
     root = Path.join(System.tmp_dir!(), "magic_dispatch_#{System.unique_integer([:positive])}")
@@ -183,6 +185,10 @@ defmodule GateServer.VoximSpellDispatchTest do
 
     # 报价：0.4 MJ + E_loss 2292.5445548 J（前摇契约 §2 手算表“远程点火”）= 402 292.5445548 J；能量 0、容量 5 MJ、相干度 4、支出 0；
     # Hello 28 末尾前摇 = 构型调整 0.49198349452 s + 注能 0.4 s = 0.89198349452 s。
+    # 按 v4 夹具 19c513f9… 重算（Voxim Docs/Magic.md §13.6 公式，不调 Magic.Cost）：rest_pose 全 0 → act.heat 姿态
+    # [45, −90, 90, −90, 0, 0]°，d = √26 325° = 2.8317933498 rad；b = b0·(S + H/E_ref)^α = 1000·(1 + 0.4)^1.5 = 1656.5023393 W；
+    # 调整 d·√(η/b) = 0.4919834945 s，注能 E/P_max = 400 000/10⁶ = 0.4 s（与程序的 power_w 无关），release_lead_s 0；
+    # E_loss = 2·d·√(η·b) + b·0.4 = 1629.9436191 + 662.6009357 = 2292.5445548 J。容量 5e6、相干度 4.0 取自同一 JSON 的 caster 段。
     assert_receive {:mmo_voxel_bytes, :session,
                     <<0x83, 7::64, 1::64, +0.0::float-64, 5.0e6::float-64, 4.0::float-64,
                       quote::float-64, 1.0::float-64, +0.0::float-64, windup::float-64>>}
