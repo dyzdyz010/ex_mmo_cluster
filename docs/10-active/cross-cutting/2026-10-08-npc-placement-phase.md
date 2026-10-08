@@ -68,7 +68,7 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
   `brain/2` 解析一次（持久化加载也是信任边界）。校验 = 解析本身（必填键、类型守卫）+ 与运行时同一个构造函数
   （settler 调 `Brain.Tree.init/1` 建树、llm 调 `Abilities.tools/1` 投影、patrol 调 `Brain.Patrol.init/1`）；任一 raise →
   `{:error, {:invalid_params, 说明}}`。
-- llm 的 `skills` 是名字列表，只收不需要配置的 `build` / `gather`（design_house / wilderness 的配置没有 JSON 形，仍用代码起）；
+- llm 的 `skills` 是名字列表：`build` / `gather` 无配置；`design_house` 的配置只有会话预算 `design_budget`（缺省 12 轮 / 240 000 token / 每轮输出 4096，同 D2 验收配置），模型接口与大脑同一个 endpoint（2026-10-08 补，AI 住民要能自己设计再建）；wilderness 需要调度器端点，仍用代码起；
   `groups` 只收本 profile 条目里出现的组（没授予创世就不能要 `genesis` 组）；工具带与采石盒的 JSON 键是字符串化的整数。
 - 每行启动记 `npc_registry_start name= cid= brain= result=`（失败为 error 级），一行失败不影响其余行。
 
@@ -129,3 +129,4 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 2026-10-08 | 决策稿；M1–M3 实施中 |
 | 2026-10-08 | M1、M2 实现（worktree `ex_mmo_cluster-capabilities`，未提交，待复核）：`npc_specs` 迁移 + `DataService.NpcSpecs`；`GateServer.Npc.Registry`（put / remove / list / start_all / brain）、`GateServer.NpcNames` 与启动 Task；`GateServer.Npc.Genesis` + Body 动词 `genesis_edit`（`not_permitted` 为 Body 层新原因）+ Abilities `{:list, spec}`。新测试改前红（表不存在 / 模块未定义 / genesis_edit 回 invalid_command）、改后绿；gate_server 全量与基线比对见复核记录。偏差与补全见 §2、§3 的实现注记 |
 | 2026-10-08 | M3 **已实现、已实跑（scene / gate 集成与 180 s 浸泡，非真实客户端）**（690369e0，合并 3e3b8863）：Player 在碰撞基线前的 timeline 只推进 tick；新增 scene 回归“join before the initial snapshot”（改前 KeyError、会话按 3 关闭；改后 22/22）；改前 180 s Settler 浸泡 1 次同栈崩溃，改后 0 次。scene 全量 243/255（12 项缺 E1/IS 夹具，补设本地夹具后 12/12）；gate 全量 223/280（57 项 T1Transport）；world_server 相关 8/8；voxel_region world_test 21/21。浸泡判据补 `player_crashes == 0` |
+| 2026-10-08 | 注册表 llm 大脑可登记 `design_house`（会话预算 `design_budget`，缺省同 D2 验收配置）：新用例 registry 10/10（改前注册表 `@skills` 没有 design_house，`Map.fetch!` KeyError）；原“design_house 不经注册表”的拒绝行按契约变化改为 wilderness |

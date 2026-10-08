@@ -14,7 +14,7 @@ defmodule GateServer.Npc.Registry do
   | brain | 模块 | params（JSON） |
   |---|---|---|
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`；技能固定 build / gather |
-  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（只登记无配置的 build / gather）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE`（可选） |
+  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE`（可选） |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`GateServer.Npc.Genesis`）只来自 llm 行的
@@ -29,8 +29,10 @@ defmodule GateServer.Npc.Registry do
   alias GateServer.Npc.{Abilities, Body, Brain, Trees}
 
   @names GateServer.NpcNames
-  # 注册表只登记不需要配置的技能（带配置的 design_house / wilderness 没有 JSON 形配置，仍用代码起）。
-  @skills %{"build" => :build, "gather" => :gather}
+  # 注册表可登记的技能：build / gather 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
+  # D2 验收配置），模型接口与大脑同一个 endpoint。wilderness 需要调度器端点，没有 JSON 形配置，仍用代码起。
+  @skills %{"build" => :build, "gather" => :gather, "design_house" => :design_house}
+  @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
 
   @type spec :: %{
           scene_id: non_neg_integer(),
@@ -132,7 +134,7 @@ defmodule GateServer.Npc.Registry do
         goal: goal,
         tools: belt(tools),
         endpoint: endpoint(),
-        skills: Map.new(Map.get(params, "skills", []), &{Map.fetch!(@skills, &1), %{}}),
+        skills: Map.new(Map.get(params, "skills", []), &skill(&1, params)),
         spells: Map.new(Map.get(params, "spells", %{}), &spell/1),
         genesis: flag(Map.get(params, "genesis", false)),
         groups: nil
@@ -182,6 +184,20 @@ defmodule GateServer.Npc.Registry do
   defp stop(cid) do
     for pid <- running(cid), do: DynamicSupervisor.terminate_child(GateServer.NpcSup, pid)
     :ok
+  end
+
+  defp skill("design_house", params),
+    do: {:design_house, %{budget: design_budget(Map.get(params, "design_budget", %{}))}}
+
+  defp skill(name, _params), do: {Map.fetch!(@skills, name), %{}}
+
+  # 会话预算：给了的键覆盖缺省，每项必须是正整数。
+  defp design_budget(budget) when is_map(budget) do
+    Map.new(@design_budget, fn {key, default} ->
+      value = Map.get(budget, Atom.to_string(key), default)
+      true = is_integer(value) and value > 0
+      {key, value}
+    end)
   end
 
   # 重复键 Registry 的条目在进程退出后异步清理：只算还活着的（Body 都在本节点的 NpcSup 下）。

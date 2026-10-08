@@ -111,6 +111,29 @@ defmodule GateServer.NpcRegistryTest do
       end)
     end
 
+    # design_house 的配置只有会话预算：给了的键覆盖缺省（D2 验收配置 12 轮 / 240 000 token / 每轮输出 4096），
+    # 模型接口与大脑同一个 endpoint；配置齐全时技能条目投影给 LLM。
+    test "llm: design_house is registered with a session budget; bad budgets are rejected" do
+      with_env(@llm_env, fn ->
+        params = %{"goal" => "g", "tools" => %{"1" => "镐"}, "skills" => ["design_house", "build"]}
+
+        assert {Brain.Llm, %{skills: %{build: %{}, design_house: %{budget: budget}}} = profile} =
+                 NpcRegistry.brain("llm", Map.put(params, "design_budget", %{"rounds" => 3}))
+
+        assert budget == %{rounds: 3, tokens: 240_000, max_output_tokens: 4096}
+        assert "design_house" in Enum.map(GateServer.Npc.Abilities.tools(profile), & &1.name)
+
+        assert {Brain.Llm, %{skills: %{design_house: %{budget: %{rounds: 12}}}}} =
+                 NpcRegistry.brain("llm", params)
+
+        for bad <- [%{"rounds" => 0}, %{"tokens" => "many"}] do
+          assert_raise MatchError, fn ->
+            NpcRegistry.brain("llm", Map.put(params, "design_budget", bad))
+          end
+        end
+      end)
+    end
+
     test "patrol: route points and the optional dig" do
       assert {Brain.Patrol, %{route: [{4.0, 10.0}, {8.0, 10.0}], dig: nil}} ==
                NpcRegistry.brain("patrol", @patrol)
@@ -140,8 +163,9 @@ defmodule GateServer.NpcRegistryTest do
               {"patrol", %{"route" => [[4.0, 10.0]]}},
               {"llm", %{"tools" => %{}}},
               {"llm", %{"goal" => "g", "tools" => %{"pickaxe" => "镐"}}},
-              # 带配置的技能（design_house / wilderness）不经注册表；没有的组名、未授予时请求 genesis 组。
-              {"llm", %{"goal" => "g", "tools" => %{}, "skills" => ["design_house"]}},
+              # wilderness 需要调度器端点，没有 JSON 形配置，不经注册表（design_house 已可登记，见上一个用例）；
+              # 没有的组名、未授予时请求 genesis 组。
+              {"llm", %{"goal" => "g", "tools" => %{}, "skills" => ["wilderness"]}},
               {"llm", %{"goal" => "g", "tools" => %{}, "groups" => ["dance"]}},
               {"llm", %{"goal" => "g", "tools" => %{}, "groups" => ["genesis"]}},
               {"llm", %{"goal" => "g", "tools" => %{}, "genesis" => "yes"}},
