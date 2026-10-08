@@ -13,7 +13,7 @@ defmodule GateServer.Npc.Trees do
         quarries: %{material_id => %{box: [[x0, y0, z0], [x1, y1, z1]], tool_id: t}},   # 可缺省（只用现有余额）
         revisit_ticks: 36_000,                                # 一轮巡完后休息多久（tick，60 Hz）
         expansion: %{region: [[x0, z0], [x1, z1]], spacing: n, tool_id: t},   # 可缺省；配了 skills 要有 expand
-        tools: %{t => 说明}, skills: %{build: %{}, gather: %{}}}
+        tools: %{t => 说明}, skills: %{build: %{}, gather: %{}, travel: %{}}}
 
   每轮：`read_catalog what: "prefab"` 取材料单，按顺序走每个工地：到站位 → `build`；建成即这个工地完成。
   `build` 回 `insufficient_material` → `query_balances` → 取第一种缺料且配了采石盒的材料，`gather` 缺额
@@ -43,7 +43,8 @@ defmodule GateServer.Npc.Trees do
 
   @doc "Settler 树与黑板初值（`definition`、`sites`、`quarries`、`expansion`）；形状见 moduledoc。"
   def settler(profile) do
-    stand = {:act, "move_to", &stand_args/1}
+    # 回工地站位走 travel（分段 move_to）：扩张出来的工地可以离得比单程上限远（放置阶段决策稿 §7）。
+    stand = {:act, "travel", &stand_args/1}
     build = {:act, "build", &build_args/1}
 
     attempt =
@@ -117,7 +118,7 @@ defmodule GateServer.Npc.Trees do
   # expand 的 done data 里只有这三项是工地（另有 site_cell / seq / skipped 与 Runtime 加的 metrics）。
   defp new_site(data), do: Map.take(data, [:anchor_micro, :orientation, :stand])
 
-  defp stand_args(%{site: %{stand: [x, z]}}), do: %{"x" => x, "z" => z, "y" => nil}
+  defp stand_args(%{site: %{stand: [x, z]}}), do: %{"x" => x, "z" => z}
 
   defp build_args(%{site: site, definition: definition}),
     do: %{

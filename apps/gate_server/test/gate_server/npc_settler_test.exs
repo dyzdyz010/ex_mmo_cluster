@@ -31,7 +31,7 @@ defmodule GateServer.NpcSettlerTest do
             quarries: @quarry,
             revisit_ticks: 600,
             tools: %{1 => "镐"},
-            skills: %{build: %{}, gather: %{}}
+            skills: %{build: %{}, gather: %{}, travel: %{}}
           },
           extra
         )
@@ -47,8 +47,9 @@ defmodule GateServer.NpcSettlerTest do
 
   defp read(id), do: %{id: id, verb: :read_catalog, what: :prefab, definition: @id}
 
+  # 回工地站位走 travel 技能（分段 move_to）：扩张出来的工地可以离得比单程上限远。
   defp walk(id, %{stand: [x, z]}),
-    do: %{id: id, verb: :move_to, position: {x, z}, tolerance: 0.5, y: nil}
+    do: %{id: id, verb: :skill, skill: :travel, args: %{"x" => x, "z" => z}}
 
   defp build(id, site),
     do: %{
@@ -314,7 +315,7 @@ defmodule GateServer.NpcSettlerTest do
 
     log =
       info(fn ->
-        settler(%{sites: [@a], expansion: @expansion, skills: %{build: %{}, gather: %{}, expand: %{}}})
+        settler(%{sites: [@a], expansion: @expansion, skills: %{build: %{}, gather: %{}, travel: %{}, expand: %{}}})
         |> script([
           {obs(0), [read(1)]},
           {done(1, :read_catalog, bill(%{11 => 1024})), [walk(2, @a)]},
@@ -377,7 +378,7 @@ defmodule GateServer.NpcSettlerTest do
          quarries: @quarry,
          revisit_ticks: revisit_ticks,
          tools: %{1 => "镐"},
-         skills: %{build: %{}, gather: %{}},
+         skills: %{build: %{}, gather: %{}, travel: %{}},
          memory: NpcWorld.Memory
        }}
 
@@ -504,7 +505,7 @@ defmodule GateServer.NpcSettlerTest do
          quarries: %{},
          revisit_ticks: 60,
          tools: %{1 => "镐"},
-         skills: %{build: %{}, gather: %{}, expand: %{}},
+         skills: %{build: %{}, gather: %{}, travel: %{}, expand: %{}},
          expansion: @expansion,
          memory: NpcWorld.Memory
        }}

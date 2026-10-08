@@ -13,8 +13,8 @@ defmodule GateServer.Npc.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather，配了 expansion 再加 expand |
-  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
+  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
+  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`GateServer.Npc.Genesis`）只来自 llm 行的
@@ -29,12 +29,13 @@ defmodule GateServer.Npc.Registry do
   alias GateServer.Npc.{Abilities, Body, Brain, Trees}
 
   @names GateServer.NpcNames
-  # 注册表可登记的技能：build / gather / expand 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
+  # 注册表可登记的技能：build / gather / expand / travel 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
   # D2 验收配置），模型接口与大脑同一个 endpoint。wilderness 需要调度器端点，没有 JSON 形配置，仍用代码起。
   @skills %{
     "build" => :build,
     "gather" => :gather,
     "expand" => :expand,
+    "travel" => :travel,
     "design_house" => :design_house
   }
   @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
@@ -125,7 +126,7 @@ defmodule GateServer.Npc.Registry do
       quarries: Map.new(Map.get(params, "quarries", %{}), &quarry/1),
       revisit_ticks: revisit,
       tools: belt(tools),
-      skills: %{build: %{}, gather: %{}}
+      skills: %{build: %{}, gather: %{}, travel: %{}}
     }
 
     # 可选的扩张区域（放置阶段决策稿 §7）：配了才有 expansion 与 expand 技能，Settler 树才多一步扩张。

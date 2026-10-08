@@ -244,6 +244,7 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 | build | skill | `{definition, anchor_micro, orientation}` | `%{seq, metrics}` | long | 无（玩家直接 0x7A） | `Skills.Build` → Body prefab_place | skills | 已有 |
 | gather | skill | `{box:[[x0,y0,z0],[x1,y1,z1]], material:int, units:int, tool_id: belt}`（全部必填） | `%{mined, gained, skipped}` | long | 无（玩家逐格挖） | `Skills.Gather` → 只经 Body：move_to / look / query_balances / probe_toward / use_tool | skills | I3 |
 | expand | skill | `{definition: hex, region:[[x0,z0],[x1,z1]], tool_id: belt, spacing: int ≥ 0}`（全部必填） | `%{anchor_micro, orientation: 0, stand, site_cell, seq, skipped}`；找不到空地 `no_site`，采不够 `insufficient_material` | long | 无（玩家自己选址、挖、0x7A 放） | `Skills.Expand` → 只经 Body：read_catalog / move_to / look / query_balances / prefab_place，采石调 `Skills.Gather.run/3`（步号命名空间 `{:gather, n}`）；选址 / 网格 / 分段 / 采石候选是纯函数；`region` 是唯一护栏，不拆已有放置 | skills；Settler 配 `expansion` 时每轮调一次 | 放置 §7 |
+| travel | skill | `{x:number, z:number}` | `%{position, legs}`；任一段 no_path / stuck / too_far 原样结束 | long | 无（玩家自己走） | `Skills.Travel` → 只经 Body：逐段 move_to（直线等分、每段 ≤ reach − 2 米，`Travel.waypoints/3` 纯函数）；expand 与 Settler 回站位共用 `Travel.walk/2` | skills；Settler 固定带 | 放置 §7 |
 | design_house | skill | 现有 | `%{definition_id, summary, check, metrics}` | long | 无（D3 编辑器） | `Skills.HouseDesign` | skills | I2：S3、共享工具 |
 | wilderness | skill | 现有 | 现有 | long | 无 | Builder → 逐格 place | skills | 不加码 |
 

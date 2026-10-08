@@ -11,6 +11,7 @@ defmodule GateServer.Npc.Skills do
     design_house: GateServer.Npc.Skills.HouseDesign,
     expand: GateServer.Npc.Skills.Expand,
     gather: GateServer.Npc.Skills.Gather,
+    travel: GateServer.Npc.Skills.Travel,
     wilderness: GateServer.Npc.Skills.Wilderness
   }
   @metrics %{request_count: 0, jev_request_count: 0}

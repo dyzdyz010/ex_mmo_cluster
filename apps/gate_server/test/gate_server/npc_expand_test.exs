@@ -12,7 +12,7 @@ defmodule GateServer.NpcExpandTest do
   """
   use ExUnit.Case, async: false
   alias GateServer.Npc.{Abilities, Body}
-  alias GateServer.Npc.Skills.Expand
+  alias GateServer.Npc.Skills.{Expand, Travel}
   alias GateServer.NpcWorld
   alias VoxelRegion.{Prefab, World}
 
@@ -170,11 +170,11 @@ defmodule GateServer.NpcExpandTest do
     test "waypoints: equal legs no longer than the limit along the straight line" do
       # 距离 100，上限 30 → 4 段，每段 25。
       assert [{15.0, 20.0}, {30.0, 40.0}, {45.0, 60.0}, {60.0, 80.0}] ==
-               Expand.waypoints({0.0, 0.0}, {60.0, 80.0}, 30)
+               Travel.waypoints({0.0, 0.0}, {60.0, 80.0}, 30)
 
       # 不超过上限：一段直达。
-      assert [{4.0, 6.0}] == Expand.waypoints({1.0, 2.0}, {4.0, 6.0}, 30)
-      assert [{30.0, 0.0}] == Expand.waypoints({0.0, 0.0}, {30.0, 0.0}, 30)
+      assert [{4.0, 6.0}] == Travel.waypoints({1.0, 2.0}, {4.0, 6.0}, 30)
+      assert [{30.0, 0.0}] == Travel.waypoints({0.0, 0.0}, {30.0, 0.0}, 30)
     end
 
     test "chunks: whole x slabs within the look limit; z strips when one slab is too big" do
@@ -297,6 +297,35 @@ defmodule GateServer.NpcExpandTest do
     })
 
     NpcWorld.await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == id)) end, 240_000)
+  end
+
+  # travel：单程 move_to 水平上限 32 m（Body 寻路取盒），一次 travel 从 (4, 10) 走到 (−50.5, −40.5)：直线
+  # √(54.5² + 50.5²) ≈ 74.3 m，分成 ⌈74.3 / 30⌉ = 3 段（目标留在夹具 Scene 的活动范围 x、z ∈ [−60, 60) 内），
+  # 每段仍由 Body 寻路；到了 done 带权威位置与段数。改前没有 travel 技能（单个 move_to 同样的目标回 too_far）。
+  @tag timeout: 300_000
+  test "travel walks far beyond one move_to in legs; a single move_to of the same distance is too_far" do
+    fixture = NpcWorld.start([])
+    profile = %{steps: [], tools: %{1 => "镐"}, skills: %{travel: %{}}, memory: NpcWorld.Memory}
+    %{body: body} = NpcWorld.body(fixture, {GateServer.Npc.Brain.Routine, profile})
+
+    assert {4.0, _, 10.0} =
+             NpcWorld.await(fn ->
+               with {_, y, _} = position <- Body.observe(body).position,
+                    true <- abs(y - 64.9) < 0.05,
+                    do: position
+             end)
+
+    Body.command(body, %{id: 1, verb: :move_to, position: {-50.5, -40.5}, tolerance: 0.5})
+
+    assert %{status: :rejected, reason: :too_far} =
+             NpcWorld.await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 1)) end, 10_000)
+
+    Body.command(body, %{id: 2, verb: :skill, skill: :travel, args: %{"x" => -50.5, "z" => -40.5}})
+
+    assert %{verb: :travel, status: :done, data: %{position: {x, _, z}, legs: 3}} =
+             NpcWorld.await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == 2)) end, 120_000)
+
+    assert abs(x + 50.5) <= 0.5 and abs(z + 40.5) <= 0.5
   end
 
   @tag timeout: 600_000

@@ -64,7 +64,7 @@ defmodule GateServer.NpcSettlerSoakTest do
          quarries: @quarry,
          revisit_ticks: 1_800,
          tools: %{1 => "镐"},
-         skills: %{build: %{}, gather: %{}},
+         skills: %{build: %{}, gather: %{}, travel: %{}},
          memory: NpcWorld.Memory,
          request: fn _endpoint, _body ->
            :counters.add(llm, 1, 1)

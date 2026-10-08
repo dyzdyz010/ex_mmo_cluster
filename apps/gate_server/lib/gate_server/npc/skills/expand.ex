@@ -5,7 +5,7 @@ defmodule GateServer.Npc.Skills.Expand do
   新工地 `%{anchor_micro, orientation, stand, site_cell}`（另带事务号 `seq` 与按原因计数的跳过候选 `skipped`），Settler 把它
   追加进工地列表。技能壳只经 Body 原子动作 `read_catalog` / `move_to` / `look` / `query_balances` / `prefab_place`；采石调
   `Skills.Gather.run/3`（同一套 `move_to` / `look` / `probe_toward` / `use_tool`，步号在本调用号下另起命名空间 `{:gather, n}`，
-  见 `GateServer.Npc.Skill.call/2`），不复制采石逻辑、不直接写 World。选址 `site/5`、候选地块 `plots/3`、分段 `waypoints/3`、
+  见 `GateServer.Npc.Skill.call/2`），不复制采石逻辑、不直接写 World。选址 `site/5`、候选地块 `plots/3`、分段（`Travel.waypoints/3`）、
   分块 `chunks/2`、采石候选 `quarry/3` 都是纯函数。
 
   流程：
@@ -17,7 +17,7 @@ defmodule GateServer.Npc.Skills.Expand do
      坐标）。网格让相邻地块之间恰好留出 spacing，自己建过的地块下次仍在网格上（重启后被拆的扩张建筑会在原地重建）；代价是
      网格位上有障碍的地块整个跳过，不左右挪动找位置；
   3. 逐个候选：看窗口（足迹水平外扩 max(spacing, 2) 格，竖直为自己脚下地面上下 4 格到其上建筑高度与站位净空）不在 look
-     范围内就先分段走到地块最近的站位（`waypoints/3`，每段 ≤ reach − 2 米，每段 `move_to` 仍由 Body 寻路），再分块 look
+     范围内就先分段走到地块最近的站位（`Travel.walk/2`，每段 ≤ reach − 2 米，每段 `move_to` 仍由 Body 寻路），再分块 look
      （`chunks/2`，每块 ≤ `Perception.look_cells/0` 格）后由 `site/5` 判定；
   4. 走到站位 → `query_balances` 按材料单算缺额 → 对缺的材料在站位周围 look（区域内、各轴离自己 ≤ 14 格），按 `quarry/3`
      取地表天然格（层自上而下，先挖地表以上的料堆），逐格交给 gather，每次之后重取余额，直到不缺；候选用尽 →
@@ -39,8 +39,8 @@ defmodule GateServer.Npc.Skills.Expand do
   """
   @behaviour GateServer.Npc.Skill
   require Logger
-  alias GateServer.Npc.{Abilities, Actions, Blueprint, Perception, Skill}
-  alias GateServer.Npc.Skills.Gather
+  alias GateServer.Npc.{Abilities, Blueprint, Perception, Skill}
+  alias GateServer.Npc.Skills.{Gather, Travel}
   alias MmoContracts.VoxelMaterialCatalog
   alias VoxelRegion.{Phase, Spatial}
 
@@ -56,8 +56,6 @@ defmodule GateServer.Npc.Skills.Expand do
   # 采石范围（各轴离自己的格数）：范围内任两格各轴相距 ≤ 28，加 gather 站位离格 1.5 米仍 < 32 米，所以 gather 的每个站位与
   # 采完回地块站位都是单程 move_to（`Perception.reach/0` 是 move_to 的单程上限）。
   @quarry div(Perception.reach(), 2) - 2
-  # 分段行走每段的上限：比单程上限少 2 米，留给上一段停下时的偏差。
-  @leg Perception.reach() - 2
 
   @impl true
   def definition(profile) do
@@ -238,14 +236,6 @@ defmodule GateServer.Npc.Skills.Expand do
   end
 
   @doc """
-  分段路点（纯函数）：从 `from` 到 `to`（水平 `{x, z}`）的直线等分成 n = ⌈距离 / leg⌉（至少 1）段，返回各段终点，最后一个恰是 `to`。
-  """
-  def waypoints({x0, z0}, {x1, z1} = to, leg) do
-    n = max(1, ceil(:math.sqrt((x1 - x0) ** 2 + (z1 - z0) ** 2) / leg))
-    for k <- 1..n, do: if(k == n, do: to, else: {x0 + (x1 - x0) * k / n, z0 + (z1 - z0) * k / n})
-  end
-
-  @doc """
   分块（纯函数）：把整数格闭区间盒切成每块不超过 `limit` 格的盒，按 x、再按 z 排列。一片 x（高 × 宽 z）放得下时每块取整数片
   x；放不下时每片再按 z 切条。高度不会超过 `limit`（看窗口的高由 look 的竖直范围限住）。
   """
@@ -361,18 +351,12 @@ defmodule GateServer.Npc.Skills.Expand do
     end
   end
 
-  # 分段走到 target（水平 {x, z}）：每段一个 move_to，位置取 done data；去不了 → 跳过这个候选。
+  # 分段走到 target（水平 {x, z}，与 travel 技能同一个 Travel.walk/2）；去不了 → 跳过这个候选。
   defp walk(state, target) do
-    state.position
-    |> horizontal()
-    |> waypoints(target, @leg)
-    |> Enum.reduce_while({:ok, state}, fn point, {:ok, state} ->
-      case Skill.call(state, %{verb: :move_to, position: point, tolerance: Actions.tolerance()}) do
-        {:ok, %{position: position}, state} -> {:cont, {:ok, %{state | position: position}}}
-        {:error, reason, state} when reason in @unreachable -> {:halt, {:skip, reason, state}}
-        error -> {:halt, error}
-      end
-    end)
+    case Travel.walk(state, target) do
+      {:error, reason, state} when reason in @unreachable -> {:skip, reason, state}
+      other -> other
+    end
   end
 
   # 补料：按材料号取第一种缺料，采够后重取余额再看下一种；都不缺 → :ok。

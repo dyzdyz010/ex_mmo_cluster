@@ -51,7 +51,7 @@ defmodule GateServer.NpcRegistryTest do
                 quarries: %{11 => %{box: [[10, 64, 4], [13, 64, 6]], tool_id: 1}},
                 revisit_ticks: 36_000,
                 tools: %{1 => "镐"},
-                skills: %{build: %{}, gather: %{}}
+                skills: %{build: %{}, gather: %{}, travel: %{}}
               }} == NpcRegistry.brain("settler", params)
 
       # 采石盒可缺省（只用现有余额）。
@@ -77,7 +77,7 @@ defmodule GateServer.NpcRegistryTest do
                 quarries: %{},
                 revisit_ticks: 600,
                 tools: %{1 => "镐"},
-                skills: %{build: %{}, gather: %{}, expand: %{}},
+                skills: %{build: %{}, gather: %{}, travel: %{}, expand: %{}},
                 expansion: %{region: [[6, 8], [16, 10]], spacing: 2, tool_id: 1}
               }} == NpcRegistry.brain("settler", params)
 

@@ -139,6 +139,8 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 2026-10-08 | LLM 额度改为滑动窗口（`Brain.Llm.recent_asks/2`）：任意连续一小时不超过 `max_requests_per_hour`；手算小例（第 45–70 分钟 26 次：第 71 分钟 26、第 106 分钟 24、第 112 分钟 18） |
 | 2026-10-08 | run04 观察：建设者每次回访的技能终态都写一条经历，约 3 h 写满 1000 条上限后逐条裁旧（`npc_memory_trimmed`）。**用户决定：照常记**——现有记忆只是过渡，后期接入更完善的独立记忆系统，与 NPC 完全解耦；本阶段不为经历写入加过滤或节流 |
 | 2026-10-08 | **M5 持续扩张已实现、测试通过（未实跑、未提交，待复核）**（§7）：新技能 `expand`（`Skills.Expand`，选址 / 网格 / 分段 / 分块 / 采石候选纯函数，采石复用 `Gather.run/3`，步号命名空间经新的 `Skill.call/2`）；`read_catalog prefab` 加 `bounds_micro`；`Brain.Tree` 的 act 加 `append:`；Settler 可选 `expansion`；注册表 settler 行 `expansion`、llm `skills` 可登记 `expand`。改前红：新用例 10/10 纯函数 `UndefinedFunctionError`；注册表 settler 行带 expansion 时旧代码静默丢掉（profile 无 expansion、技能无 expand），llm `"expand"` KeyError，Settler 脚本用例 KeyError。改后：npc_expand 11/11（含真实 World：余额 0 → 地块 A 先采石堆 2 格、地块 B 跳过 A、第三次 no_site）、npc_settler 11/11（含多轮：建 A → 维护 A 建 B → no_site；拆 A 后原锚点重建、此后只维护）、npc_registry 12/12；gate 全量 254/311，失败只有 T1Transport 57（与基线同）。日志在主控 scratchpad `phase3/logs/`（red-expand-pure、red-settler-registry、gate-full-1、green-final） |
+| 2026-10-08 | **长跑 run04 收尾（已实跑）**：实际 4 h 52 min（用户同意提前结束）。Body 重启 0、Player 异常 0、session_lost / claim_failed / error 行 0；BEAM 内存开跑 195 MB，峰值 252 MB（LLM 活跃），10:14 起 202–217 MB 无上涨，进程 592 → 575。建设者：拆 9 次重建 9 次（21–34 s），自采 2 次，idle 0，occupied 1 665；创世者 15 次决策（look 7 / fill_box 3 / wait 5），1 200 格核对违规 0；住民撤下前建成 2 座、design_house 6 次 2 成（根因见上，已由 65cecb84 修复）；npc_memory_trimmed 681（用户决定照常记）。双客户端观察第 2 次 O1–O5 全过（第 1 次 A 离房子太近镜头被坡挤住），14 张截图已看。证据 Voxim `Saved/CapabilityLibrary-20261008/run04/`、`Captures/CapabilityLibrary/2026-10-08/run04/` |
+| 2026-10-08 | `travel` 技能（长途分段行走）：Settler 回站位与 expand 共用 `Travel.walk/2`；llm 可登记。真实 World 用例：单个 move_to 到 74.3 m 外回 too_far，travel 分 3 段到达（改前无此技能）；Settler 纯函数用例的站位命令按契约改为 travel 技能 |
 
 ## 7 持续扩张（M5）
 
@@ -171,8 +173,7 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 - 扩张出来的工地只在黑板里，不存档、不写记忆（记忆将来换成独立系统，现在不依赖它）：重启后扩张从世界现状继续（已建地块因
   间隔带里有放置记录不再是候选），代价只是重启前扩张出来的建筑不再被维护；它们被拆后地块空出，又会被扩张在网格原位重建。
 - Settler 的 `expansion` 带 `tool_id`（挖掘工具）：工具带可有多把工具、采石盒的 tool_id 按材料各配，没有唯一来源，显式配置。
-- Settler 维护工地仍是单程 move_to：扩张区域（含外扩 2 格的站位）也要满足能力库设计稿 §8.2 “各站位两两水平距离 ≤ reach”，否则远处的扩张
-  工地在维护时 `too_far`、本轮跳过（日志可见）。expand 自己找地时分段走；维护也分段需要让树的 act 参数读到观察，是独立增量。
+- Settler 回工地站位改走 `travel` 技能（`Skills.Travel`，与 expand 走向地块同一个 `Travel.walk/2`）：扩张出去超过单程上限的工地也能回去维护（2026-10-08 补，原先单程 move_to 会 too_far）。
 - 每轮最多新建一座（扩张接在每轮维护之后）；候选都不成立时每轮多一次勘察（区域别太大：耗时与地块数成正比）。
 
 **依据**：

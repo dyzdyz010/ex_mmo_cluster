@@ -32,7 +32,7 @@
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
 - `Skill` 定义 `definition/1`、`run/3` 与可选 `observations?/0`；`Skills` 按 profile 注册。
   内置 `build`（放已发布定义）、`design_house`（住宅设计会话，`Skills.HouseDesign`）、
-  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`expand`（在作者划定的区域里找空地、缺料自己采、放下已发布定义，
+  `gather`（从作者给定的采石盒取天然格，`Skills.Gather`）、`travel`（长途行走：直线分成每段 ≤ reach − 2 米、每段一个 Body move_to，`Skills.Travel`；Settler 回工地站位与 expand 走向地块都用它）、`expand`（在作者划定的区域里找空地、缺料自己采、放下已发布定义，
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
   `Skill.call/2`（编步号、等 Outcome）；一个技能组合另一个技能（expand 调 gather 的 `run/3`）时给被组合的那次一个步号命名空间。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
@@ -194,7 +194,7 @@ GateServer.Npc.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}
     "sites" => [%{"anchor_micro" => [64, 512, 112], "orientation" => 0, "stand" => [8.5, 11.5]}],
     "quarries" => %{"11" => %{"box" => [[10, 64, 4], [13, 64, 6]], "tool_id" => 1}},
     "expansion" => %{"region" => [[6, 8], [24, 24]], "spacing" => 2, "tool_id" => 1}}})
-# LLM 住民：goal、tools 必填；groups / skills（build、gather、expand、design_house）/ spells / max_requests_per_hour / genesis 可选。
+# LLM 住民：goal、tools 必填；groups / skills（build、gather、expand、travel、design_house）/ spells / max_requests_per_hour / genesis 可选。
 # 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE。
 GateServer.Npc.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
@@ -258,7 +258,7 @@ end
   建树时不校验，由技能运行时以 `invalid_skill_arguments` 拒绝。`{:act, 名字, 参数}` 即 opts 为 `[]`。经 Abilities 的目标句柄
   只允许 granularity 0..3，打人（g5）只由直接产出规范命令的代码 Brain 发出。
 - **常用能力名**：`move_to`、`stop`、`look`、`inspect`、`query_balances`、`read_catalog`、`probe_toward`、`use_tool`、`dismantle`、
-  `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`expand`、`design_house`、`wilderness`）；
+  `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`expand`、`travel`、`design_house`、`wilderness`）；
   每个名字的参数与 done 含义见 `Abilities.tools(profile)`。
 - **黑板**：`store: 键` 把 done 的 `data` 写进黑板；`append: {键, fun}` 把 `fun.(data)` 追加到黑板 `键` 的列表末尾（`each`
   开始时取一次列表，追加的项下一次遍历才出现）；`each` 把当前项写进 `as`；任一 `act` 失败写
@@ -303,7 +303,7 @@ brain: {GateServer.Npc.Brain.Tree, %{
   tree: &GateServer.Npc.Trees.settler/1,
   definition: definition_hex, sites: [], quarries: %{}, revisit_ticks: 36_000,
   expansion: %{region: [[6, 8], [24, 24]], spacing: 2, tool_id: 1},
-  tools: %{1 => "镐"}, skills: %{build: %{}, gather: %{}, expand: %{}}
+  tools: %{1 => "镐"}, skills: %{build: %{}, gather: %{}, travel: %{}, expand: %{}}
 }}
 # LLM 住民同一个技能：skills: %{expand: %{}}，模型调用 expand{definition, region, tool_id, spacing}。
 ```
