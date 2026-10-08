@@ -179,6 +179,27 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
       {:reply, :ok, %{state | hold: false}}
     end
 
+    # 只测试：按 World 经同一发送进程的次序，先发被扣住的初始快照，再发其后提交的事务；
+    # 之后的快照请求（入场 marker）在本进程串行答复，必然排在该事务之后、且带新 seq。
+    def handle_call({:release_then_delta, delta}, _, state) do
+      [{subscriber, _} | _] = state.held
+
+      for {subscriber, ref} <- state.held do
+        send(subscriber, {:canonical_snapshot, ref, state.snapshot})
+        send(state.owner, {:snapshot_sent, ref})
+      end
+
+      send(subscriber, {:canonical_delta, delta})
+
+      {:reply, :ok,
+       %{
+         state
+         | hold: false,
+           snapshot: %{state.snapshot | transaction_seq: delta.transaction_seq}
+       }
+       |> Map.put(:subscriber, subscriber)}
+    end
+
     def handle_call({:snapshot, _, subscriber, ref}, _, state) do
       send(subscriber, {:canonical_snapshot, ref, state.snapshot})
       send(state.owner, {:snapshot_sent, ref})
@@ -1097,6 +1118,148 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     send(scene, :tick)
     await(scene, &(&1.tick == 1))
     assert_receive {:reliable, _, :control, %Session.SessionStart{server_tick: 1}}
+  end
+
+  # 回归（2026-10-08 NPC 浸泡里 Player 崩溃 {:badkey, 1}）：非流送 Scene 在初始快照前接纳的 Player 只拿到未初始化的
+  # CollisionUpdates 模板；初始化之后、它的 anchor 之前若已发布含 chunk 的事务，旧实现把这条 timeline 摄入模板，
+  # record_artifact 取 artifacts[1] 失败，Player 崩溃、会话按 3 关闭。契约：anchor 携带 Scene 同一 tick 的完整派生碰撞
+  # （含此前全部事务），anchor 之前的 timeline 只推进公共 tick。
+  test "join before the initial snapshot: a transaction published before the anchor is carried by the anchor",
+       ctx do
+    source =
+      start_supervised!(
+        Supervisor.child_spec({Source, %{snapshot: snapshot(), owner: self(), hold: true}},
+          id: :held_source
+        )
+      )
+
+    clock = :atomics.new(1, signed: true)
+
+    scene =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Scene,
+           [
+             body_store: {MmoTest.BodyStore, store: ctx.body_store},
+             scene_id: 1,
+             scene_epoch: 7,
+             world_ref: source,
+             config: config(),
+             clock: {Clock, clock},
+             sink: Sink,
+             world_api: Source
+           ]},
+          id: :held_scene
+        )
+      )
+
+    assert_receive {:snapshot_held, _}
+    {:ok, player} = Scene.join(scene, identity(), %{id: 1}, self())
+    refute observe(scene).initialized
+
+    # 出生探针 (40, 558, 40) 下的地面 chunk：快照只有 y=500 一层，seq 1 再加 y=501 一层（支撑顶面抬高 1 m）。
+    floor = Enum.find(snapshot().chunks, &(&1.coord == {2, 31, 2}))
+
+    raised = %{
+      floor
+      | cells:
+          for(
+            _z <- 0..15,
+            cy <- 0..15,
+            _x <- 0..15,
+            into: <<>>,
+            do: <<if(cy in [4, 5], do: 1, else: 0)>>
+          )
+    }
+
+    delta = %Voxel.CanonicalDelta{
+      transaction_seq: 1,
+      transaction: %{seq: 1, entries: [], coarse: []},
+      chunks: [raised]
+    }
+
+    :atomics.put(clock, 1, 100_000)
+    :ok = GenServer.call(source, {:release_then_delta, delta})
+    assert_receive {:snapshot_sent, _}
+    assert_receive {:snapshot_sent, _}
+    # Scene 的 FIFO：seq 1 事务在入场 marker 之前。
+    await(scene, &(&1.initialized and &1.queue_length == 2))
+
+    # 同一公共 tick 先装 seq 1（R2）再遇入场 marker：Player 先收到带 chunk 的 timeline，后收到 anchor。
+    :atomics.put(clock, 1, 116_667)
+    send(scene, :tick)
+    await(scene, &(&1.tick == 1 and &1.collision_revision == 2))
+
+    assert {:reliable, _, :control,
+            %Session.SessionStart{
+              server_tick: 1,
+              baseline_transaction_seq: 1,
+              collision_revision: 2
+            } = start} = next_reliable()
+
+    assert {:reliable, _, :voxel,
+            %Voxel.CanonicalBootstrap{transaction_seq: 1, collision_revision: 2}} =
+             next_reliable()
+
+    assert {:reliable, _, :voxel,
+            %Voxel.TimelineFence{server_tick: 1, transaction_seq: 1, collision_revision: 2}} =
+             next_reliable()
+
+    assert {:reliable, _, :control, %Session.BodyState{}} = next_reliable()
+    # seq 1 已含在 bootstrap 内，不再另发日志或 CollisionApplied；会话未关闭。
+    refute_received {:reliable, _, :voxel, _}
+    refute_received {:closed, _, _}
+
+    # 出生点的独立依据：真实 P1 在“快照 + seq 1”世界里的落点，且恰比只有快照时高 1 m（证明用到了 seq 1）。
+    native = SceneServer.Native.VoximMovement
+    <<bytes::binary-size(120), 60::16>> = Session.Codec.encode_profile(start.profile)
+    profile = for(<<v::float-64 <- bytes>>, do: v) |> List.to_tuple()
+    operations = &SceneServer.Movement.CollisionUpdates.operations/1
+    base = native.set_chunks(native.new_world(), operations.(snapshot().chunks))
+    edited = native.set_chunks(base, operations.([raised]))
+    {:ok, {before_position, _, _}} = native.find_spawn(base, profile, {40.0, 558.0, 40.0}, 464.0)
+    {:ok, {after_position, _, _}} = native.find_spawn(edited, profile, {40.0, 558.0, 40.0}, 464.0)
+    assert elem(after_position, 1) - elem(before_position, 1) == 1.0
+    assert start.state.position == after_position
+
+    # anchor 之后照常：Ready 确认 seq 1 / R2，InputStart 沿用该基线；之后的事务按 R3 正常交付。
+    Player.time_probe(player, identity(), %Session.TimeProbe{request_id: 1, client_send_us: 10})
+    assert_receive {:reliable, _, :control, %Session.TimeReply{}}
+    Player.ready(player, identity(), 1, 2)
+    at = fn tick -> 100_000 + div(tick * 1_000_000 + 59, 60) end
+    :atomics.put(clock, 1, at.(2))
+    send(scene, :tick)
+    await(scene, &(&1.tick == 2))
+
+    assert_receive {:reliable, _, :control,
+                    %Session.InputStart{transaction_seq: 1, collision_revision: 2}}
+
+    :ok =
+      GenServer.call(
+        source,
+        {:delta,
+         %Voxel.CanonicalDelta{
+           transaction_seq: 2,
+           transaction: %{seq: 2, entries: [], coarse: []},
+           chunks: [floor]
+         }}
+      )
+
+    await(scene, &(&1.queue_length == 1))
+    :atomics.put(clock, 1, at.(3))
+    send(scene, :tick)
+    await(scene, &(&1.tick == 3))
+
+    assert_receive {:reliable, _, :voxel,
+                    %Voxel.CollisionApplied{
+                      transaction_seq: 2,
+                      collision_revision: 3,
+                      apply_tick: 3,
+                      changed_chunks: [{2, 31, 2}]
+                    }}
+
+    assert [%{collision_revision: 3}] = observe(scene).characters
+    refute_received {:closed, _, _}
   end
 
   @tag timeout: 120_000
