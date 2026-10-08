@@ -12,6 +12,8 @@ defmodule GateServer.Npc.Perception do
   alias SceneServer.PrefabDesigner.Check
   alias VoxelRegion.{Spatial, World}
   @cells 512
+  # 给模型的历史里保留内容的 look 次数（更早的只留结论）。
+  @kept_looks 3
   @reach 32
   # inspect 的窗口：自己所在的 tile（米）及相邻 tile。
   @tile 64
@@ -229,7 +231,10 @@ defmodule GateServer.Npc.Perception do
     }
   end
 
-  @doc "Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；更早的 look 只留结论。"
+  @doc """
+  Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；最近 #{@kept_looks} 次 look 保留内容，
+  更早的只留结论。
+  """
   def project(
         %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome,
         outcomes,
@@ -244,7 +249,14 @@ defmodule GateServer.Npc.Perception do
       )
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
-    older = for o <- outcomes, do: if(o.verb == :look, do: %{o | data: nil}, else: o)
+    # 一次 look 最多 512 格（@cells）：核对更大的区域要分几次看，只留最新一次时模型每次只看得到一部分，会回头反复看
+    # （2026-10-08 长跑 run03：创世者核对 1200 格平台时交替 look 两半，一小时额度全耗在这上面）。
+    {older, _} =
+      Enum.map_reduce(outcomes, @kept_looks - 1, fn
+        %{verb: :look, data: data} = o, kept when data != nil and kept > 0 -> {o, kept - 1}
+        %{verb: :look} = o, kept -> {%{o | data: nil}, kept}
+        o, kept -> {o, kept}
+      end)
 
     data =
       Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])

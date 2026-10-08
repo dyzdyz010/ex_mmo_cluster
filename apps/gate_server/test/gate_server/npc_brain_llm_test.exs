@@ -448,7 +448,7 @@ defmodule GateServer.NpcBrainLlmTest do
            ] = GateServer.Npc.Perception.project(outcome, [], nil)
   end
 
-  test "a look outcome is kept as solid columns only, and only the latest look keeps its data" do
+  test "a look outcome is kept as solid columns only, and only the latest three looks keep their data" do
     cell = fn coord, material -> %{cell: coord, material: material, refined: false, slots: []} end
 
     look = fn id, cells ->
@@ -466,6 +466,8 @@ defmodule GateServer.NpcBrainLlmTest do
       cell.([15, 63, 10], 11)
     ]
 
+    second = GateServer.Npc.Perception.project(look.(2, cells), first, nil)
+
     assert [
              %{
                id: 2,
@@ -473,10 +475,22 @@ defmodule GateServer.NpcBrainLlmTest do
                  solid: %{"16,10" => [[63, 11], [64, 11, 9101]], "15,10" => [[63, 11]]} = solid
                }
              },
-             %{id: 1, verb: :look, data: nil}
-           ] = GateServer.Npc.Perception.project(look.(2, cells), first, nil)
+             %{id: 1, verb: :look, data: %{solid: %{"16,10" => [[64, 11]]}}}
+           ] = second
 
     assert 2 == map_size(solid)
+
+    # 契约（2026-10-08 起）：最近三次 look 保留内容，第四次时最早那次只留结论——大于一次 look 上限的区域分几次看，
+    # 模型要同时看得到几部分才不会回头反复看。
+    fourth =
+      GateServer.Npc.Perception.project(
+        look.(4, [cell.([20, 64, 10], 11)]),
+        GateServer.Npc.Perception.project(look.(3, [cell.([18, 64, 10], 11)]), second, nil),
+        nil
+      )
+
+    assert [%{id: 4, data: %{}}, %{id: 3, data: %{}}, %{id: 2, data: %{}}, %{id: 1, data: nil}] = fourth
+    assert Enum.all?(Enum.take(fourth, 3), &(&1.data != nil))
   end
 
   test "look never reports a refined occupied macro as air" do

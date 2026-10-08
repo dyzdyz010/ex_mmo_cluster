@@ -48,6 +48,7 @@ defmodule GateServer.Npc.Body do
   alias MmoContracts.{Movement, Session}
   alias GateServer.Session.Dispatch
   alias SceneServer.Movement.{Intent, Path, Player, ToolAction}
+  alias MmoContracts.VoxelMaterialCatalog
   alias VoxelRegion.Phase
   alias VoxelRegion.World
   alias GateServer.Npc.{Attention, Genesis, Sight, WorldRequest}
@@ -1146,13 +1147,20 @@ defmodule GateServer.Npc.Body do
           z <- (min(sz, gz) - @path_margin)..(max(sz, gz) + @path_margin),
           do: {x, y, z}
 
-    # 细化格（含 micro 内容）一律当作占满；液体不进表：不能踩也不能穿过。
+    # 可否穿过与碰撞同一判据（`VoxelMaterialCatalog.blocks_movement?/1`，collision_source.ex 用它建碰撞）：空气与花草
+    # 等非阻挡材料可穿过、不能踩；细化格（含 micro 内容）一律当作占满；液体不进表：不能踩也不能穿过。
+    # 原先只有空气算 :open，站进草 / 蕨格的 NPC 起点就是实心，任何目标都 no_path（2026-10-08 长跑 run03）。
     grid =
       for %{cell: [x, y, z], material: material, refined: refined} <-
             World.material_snapshot(session.world_ref, [session.cid], cells).probe_occupancy,
           not Phase.liquid?(material),
           into: %{},
-          do: {{x, y, z}, if(material == 0 and not refined, do: :open, else: :solid)}
+          do:
+            {{x, y, z},
+             if(not refined and not VoxelMaterialCatalog.blocks_movement?(material),
+               do: :open,
+               else: :solid
+             )}
 
     with {:ok, cells} <- Path.find(grid, start, goal, goal_y, plan.step, plan.height),
          do: {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}

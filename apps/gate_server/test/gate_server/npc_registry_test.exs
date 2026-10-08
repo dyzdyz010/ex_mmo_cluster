@@ -27,7 +27,8 @@ defmodule GateServer.NpcRegistryTest do
     "NPC_LLM_KEY" => "test-key",
     "NPC_LLM_MODEL" => "test-model",
     "NPC_LLM_EFFORT" => nil,
-    "NPC_LLM_CACERTFILE" => nil
+    "NPC_LLM_CACERTFILE" => nil,
+    "NPC_LLM_TIMEOUT_MS" => nil
   }
 
   describe "brain/2" do
@@ -63,7 +64,8 @@ defmodule GateServer.NpcRegistryTest do
         @llm_env
         | "NPC_LLM_URL" => "https://llm.example/v1/responses",
           "NPC_LLM_EFFORT" => "high",
-          "NPC_LLM_CACERTFILE" => "/etc/ca.pem"
+          "NPC_LLM_CACERTFILE" => "/etc/ca.pem",
+          "NPC_LLM_TIMEOUT_MS" => "300000"
       }
 
       params = %{
@@ -91,7 +93,8 @@ defmodule GateServer.NpcRegistryTest do
                     key: "test-key",
                     model: "test-model",
                     effort: "high",
-                    cacertfile: "/etc/ca.pem"
+                    cacertfile: "/etc/ca.pem",
+                    timeout_ms: 300_000
                   }
                 }} == NpcRegistry.brain("llm", params)
 

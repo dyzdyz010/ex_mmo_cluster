@@ -162,9 +162,10 @@ defmodule GateServer.NpcBodyWorldTest do
       end
     end
 
-    # 只测试：material_rows 给个别材料行补目录字段（名称、可食、配方），其余行同一份基础属性。
+    # 只测试：material_rows 给个别材料行补目录字段（名称、可食、配方），其余行同一份基础属性；
+    # 0..23 之外的 id（如花草 32）列在 material_rows 里才进目录。
     materials =
-      for id <- 0..23,
+      for id <- Enum.uniq(Enum.to_list(0..23) ++ Map.keys(context[:material_rows] || %{})),
           do:
             Map.merge(
               %{
@@ -1177,6 +1178,23 @@ defmodule GateServer.NpcBodyWorldTest do
     assert_in_delta x, x2, 0.01
     assert_in_delta y, y2, 0.01
     assert_in_delta z, z2, 0.01
+  end
+
+  # 站在花草格里（材料 32 矮草：不阻挡移动，碰撞里不存在）也能寻路，路上的花草格可以穿过。改前寻路网格只有空气算
+  # 可穿过，起点格就是实心，任何目标都 no_path（2026-10-08 长跑 run03：住民出生落在矮草格、后来又走进蕨格后卡死）。
+  @tag :idle
+  @tag material_rows: %{32 => %{}}
+  @tag edits: for(x <- 3..7, do: {{x, 64, 10}, 32})
+  test "move_to starts from and walks through flora cells (they do not block movement)", %{body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {9.5, 10.5}, tolerance: 0.5})
+
+    assert %{status: :done, data: %{within_tolerance: true, position: {x, y, _}}} =
+             outcome(body, 1, 30_000)
+
+    assert abs(x - 9.5) <= 0.5
+    # 仍站在地面上（顶面 y = 64），没有被当成踩在草上。
+    assert_in_delta 64.9, y, 0.05
   end
 
   # 一格一级的台阶上到三格高的平台；平台另一侧同一列没有别的站立层。

@@ -14,7 +14,7 @@ defmodule GateServer.Npc.Registry do
   | brain | 模块 | params（JSON） |
   |---|---|---|
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`；技能固定 build / gather |
-  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE`（可选） |
+  | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`GateServer.Npc.Genesis`）只来自 llm 行的
@@ -211,13 +211,20 @@ defmodule GateServer.Npc.Registry do
           into: %{},
           do: {key, value}
 
+    # 可选的单次请求超时（毫秒，正整数），缺省用 `GateServer.Npc.Http` 的值。
+    timeout =
+      case System.get_env("NPC_LLM_TIMEOUT_MS") do
+        nil -> %{}
+        text -> %{timeout_ms: String.to_integer(text) |> tap(&(true = &1 > 0))}
+      end
+
     Map.merge(
       %{
         url: System.fetch_env!("NPC_LLM_URL"),
         key: System.fetch_env!("NPC_LLM_KEY"),
         model: System.fetch_env!("NPC_LLM_MODEL")
       },
-      optional
+      Map.merge(optional, timeout)
     )
   end
 
