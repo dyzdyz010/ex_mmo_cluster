@@ -123,15 +123,16 @@ defmodule GateServer.Npc.Brain do
 
       %{id:, verb:, status: :done | :rejected | :superseded, reason: term | nil, data: map | nil}
 
-  `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理，`data` 带同一份 ACK 的 `position` 与
-  `within_tolerance`；不代表已停稳。`reason` 是权威返回的原样，Body 不翻译、不重试。
+  `move_to` / `stop` 的 `:done` = 首个零输入帧已被权威处理且身体停稳（权威速度 ≤ 0.05 m/s，含落地；最多再等 1 秒），
+  `data` 带同一份 ACK 的 `position`、`within_tolerance` 与 `settled`（false = 1 秒内没停稳，如在坡上被推着）。`reason` 是权威返回的原样，Body 不翻译、不重试。
   世界事务的 `data`：`probe_toward` 是目标身份加本次 `direction`（原样可作 `use_tool` 的 `target`）；探测人物（g5）时是
   `%{granularity: 5, owner: {cid, 0}, incarnation: 目标生命代次, micro: {0,0,0}, material: 0, direction:}` 加人物回执字段
   （`source_id`、`target_id`、`target_life`、`part`、`life`、`recoverable` 等，与玩家下行 ToolState 同一投影）；
   对人物 `use_tool` 的 `data` 是同一份人物回执；其余 `use_tool` 与各建造动词是 `%{seq:}`，
   `query_balances` 是 `%{balances:}`，`look` 是 `World.material_snapshot/4` 的精确投影（`probe_occupancy` 逐格
   `%{cell:, material:, refined:, slots:, placed_by:}`，material 0 且 refined=false 才是空气；`placed_by` = 花材料放下这一格的角色 cid，
-  天然地形、作者写入的格、被别的编辑改过的格是 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属。
+  天然地形、作者写入的格、被别的编辑改过的格是 nil；`slots` 逐个 prefab 实例 `%{material:, instance:, count:, placed_by:}`，
+  `placed_by` 是放下这个实例的角色，作者放置与旧实例为 nil）；细化行额外给 `micro_cells` 精确世界 micro 坐标、材质与归属。
   感知额外返回采样边界与版本；窗口外未知、未采样附件不是空。`inspect` 是 `%{seq:, property_states:}`，取自
   `World.simulation_snapshot/3`：granularity 3 的行是附件（原样可作 `use_tool` 的 `target`，`incarnation` 即 `detach` 的
   `attachment_id`），granularity 2 的行是 prefab 构件（`owner` 即 `instance_id`）。

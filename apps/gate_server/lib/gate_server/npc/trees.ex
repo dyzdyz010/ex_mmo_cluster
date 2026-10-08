@@ -16,7 +16,7 @@ defmodule GateServer.Npc.Trees do
 
   每轮：`read_catalog what: "prefab"` 取材料单，按顺序走每个工地：到站位 → `build`；建成即这个工地完成。
   `build` 回 `insufficient_material` → `query_balances` → 取第一种缺料且配了采石盒的材料，`gather` 缺额
-  （units = 材料单 − 余额）→ 回站位 → 再 `build` 一次。`build` 回 `occupied` → `look` 锚点格：`placed_by` 是自己 →
+  （units = 材料单 − 余额）→ 回站位 → 再 `build` 一次。`build` 回 `occupied` → `look` 锚点格：整格或格内构件实例的 `placed_by` 是自己 →
   视为已建成，否则跳过。其余拒绝（protected_region、out_of_reach、no_path、stuck、out_of_bounds、exhausted、
   unreachable…）这个工地本轮放弃，换下一个。一轮巡完等 `revisit_ticks` 再巡。
 
@@ -27,7 +27,7 @@ defmodule GateServer.Npc.Trees do
   | 停因日志 | 工地放弃记一行 `npc_settler_idle entity= act= reason= context=<工地>`；材料单取不到（`definition_not_found`）本轮放弃，记 `npc_settler_idle entity= act=read_catalog reason=…`，休息后再试 |
   | 进度 | 不存档，以权威为准：重启后从头巡，已建好的工地表现为 occupied → 自家锚点 → 跳过，不重复建 |
 
-  作者保证：定义的宏格占着锚点格（`anchor_micro` 所在的 macro 格，否则 occupied 时认不出是自家）；各站位与采石盒站位
+  作者保证：定义（宏格或 micro 构件均可）占着锚点格（`anchor_micro` 所在的 macro 格，否则 occupied 时认不出是自家）；各站位与采石盒站位
   两两水平距离不超过 `Perception.reach()`（不做分段与长途寻路）；站位离锚点格在工具射程内。被占一律跳过、不清场。
   """
 
@@ -62,7 +62,7 @@ defmodule GateServer.Npc.Trees do
              [
                {:cond, &last?(&1, &2, :occupied)},
                {:act, "look", &anchor_cell/1, store: :anchor},
-               # 锚点格 placed_by == 自己 → 视为已建成。
+               # 锚点格（或格内构件实例）placed_by == 自己 → 视为已建成。
                {:cond, &own_anchor?/2}
              ]}
           ]}
@@ -136,6 +136,7 @@ defmodule GateServer.Npc.Trees do
     end)
   end
 
-  defp own_anchor?(%{anchor: %{probe_occupancy: [%{placed_by: by}]}}, %{self: %{entity_id: cid}}),
-    do: by == cid
+  # 锚点格由自己放下：整格的 placed_by，或格内 micro 构件所属实例的 placed_by（prefab 只含 micro 格时宏格没有放置记录）。
+  defp own_anchor?(%{anchor: %{probe_occupancy: [row]}}, %{self: %{entity_id: cid}}),
+    do: row.placed_by == cid or Enum.any?(row.slots, &(Map.get(&1, :placed_by) == cid))
 end

@@ -51,7 +51,7 @@ defmodule GateServer.Npc.Actions do
             "y 与脚所在格相差不超过 #{reach} 格，不指定写 null。超出这些距离回 too_far；走不通会被拒绝：no_path = 现在没有路，" <>
             "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。",
         done:
-          "走到 #{@tolerance} 米内且首个零输入帧被权威处理（data.position、within_tolerance），不代表已停稳；到达或被拒后才会再次询问。",
+          "走到 #{@tolerance} 米内、零输入帧已被权威处理且身体停稳（含落地；data.position、within_tolerance、settled）；到达或被拒后才会再次询问。",
         params: [x: :number, z: :number, y: {:nullable, :integer}],
         build: fn %{x: x, z: z, y: y}, _ ->
           %{verb: :move_to, position: {x, z}, tolerance: @tolerance, y: y}
@@ -61,7 +61,7 @@ defmodule GateServer.Npc.Actions do
         name: "stop",
         group: :move,
         description: "停下，顶替正在进行的移动。目标已完成或暂时无事可做时用 wait，不要反复调用 stop。",
-        done: "首个零输入帧被权威处理（data.position）。",
+        done: "零输入帧已被权威处理且身体停稳（data.position、settled）。",
         params: [],
         build: fn _, _ -> %{verb: :stop} end
       },

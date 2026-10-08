@@ -155,6 +155,39 @@ defmodule GateServer.NpcSettlerTest do
     assert line =~ "act=build reason=occupied context=#{inspect(@b)}"
   end
 
+  # 只含 micro 构件的定义：锚点宏格本身没有放置记录（placed_by nil、refined），放置者记在格内构件所属实例上。
+  # 改前只看整格的 placed_by，自家建成的 micro 构件每轮都被当成“被占”记一行 idle（2026-10-08 Demo 实跑）。
+  test "occupied by its own micro-only prefab: the slot's instance placer counts as built" do
+    micro = fn cell, by ->
+      %{
+        probe_occupancy: [
+          %{cell: cell, material: 0, refined: true, placed_by: nil,
+            slots: [%{material: 11, instance: [35, 0], count: 4, placed_by: by}]}
+        ]
+      }
+    end
+
+    log =
+      info(fn ->
+        settler()
+        |> script([
+          {obs(0), [read(1)]},
+          {done(1, :read_catalog, bill(%{11 => 1024})), [walk(2, @a)]},
+          {done(2, :move_to), [build(3, @a)]},
+          {rejected(3, :build, :occupied),
+           [%{id: 4, verb: :look, min: {8, 64, 14}, max: {8, 64, 14}}]},
+          {done(4, :look, micro.([8, 64, 14], 7)), [walk(5, @b)]},
+          {done(5, :move_to), [build(6, @b)]},
+          {rejected(6, :build, :occupied),
+           [%{id: 7, verb: :look, min: {12, 64, 14}, max: {12, 64, 14}}]},
+          {done(7, :look, micro.([12, 64, 14], 4242)), []}
+        ])
+      end)
+
+    assert [line] = idle(log)
+    assert line =~ "act=build reason=occupied context=#{inspect(@b)}"
+  end
+
   test "no quarry for the missing material and an exhausted quarry both end the site; the next site goes on" do
     log =
       info(fn ->

@@ -780,8 +780,10 @@ defmodule VoxelRegion.World do
       {:ok, {material, _}, s} = cell_value(s, 0, cell)
       refined = Map.get(s.refined, cell, %{})
       slots = refined |> Map.values() |> Enum.group_by(fn {m, owner} -> {m, owner} end)
-        |> Enum.map(fn {{m, {birth, occurrence}}, values} ->
-          %{material: m, instance: [birth, occurrence], count: length(values)}
+        |> Enum.map(fn {{m, {birth, occurrence} = owner}, values} ->
+          # placed_by：放下这个实例的角色 cid（实例记录里的同一份溯源；作者放置或旧实例为 nil）。
+          %{material: m, instance: [birth, occurrence], count: length(values),
+            placed_by: Map.get(Map.get(s.instances, owner, %{}), :placed_by)}
         end)
       row = %{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots,
          placed_by: Map.get(s.placed_by, cell)}

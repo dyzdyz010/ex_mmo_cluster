@@ -55,6 +55,44 @@ defmodule GateServer.NpcGatherTest do
     assert [] == Gather.candidates(rows, %{box | material: 0}, {0.0, 0.0})
   end
 
+  # 声明范围的替身：测试进程扮演 Body（按步回 Outcome）与 World（只回工具定义），被测的是 gather 自己的判定。
+  # 一击之后再探测命中变了，但这一格仍是石头（眼点挪开或别的东西挡进射线）：不能算挖掉。改前 gather 把“命中变了”
+  # 当作挖掉、立即去核对余额（2026-10-08 Demo 实跑首轮：hp 56 的半截格被算作已挖，最终 exhausted）。
+  test "a changed probe hit is not a mined cell: gather looks at the cell and keeps it for another stand" do
+    world =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:tool_definition, 1}} ->
+            GenServer.reply(from, {:ok, %{"interval_seconds" => 0.0}})
+        end
+      end)
+
+    me = self()
+    context = %{body: me, call_id: 7, world: world, observation: %{self: %{position: {0.5, 65.0, -2.5}}}}
+    args = %{"box" => [[0, 64, 0], [0, 64, 0]], "material" => @stone, "units" => 512, "tool_id" => 1}
+    task = Task.async(fn -> Gather.run(context, args, %{}) end)
+
+    step = fn verb, data ->
+      assert_receive {:"$gen_cast", {:command, %{id: {:skill, 7, id}, verb: ^verb} = command}}, 2_000
+      send(task.pid, {:outcome, %{id: id, verb: verb, status: :done, reason: nil, data: data}})
+      command
+    end
+
+    stone = %{granularity: 0, micro: {0, 512, 0}, incarnation: 0, owner: {0, 0}, material: @stone}
+    step.(:query_balances, %{balances: [%{material: @stone, balance: 0, cost: 512, seq: 0}]})
+    step.(:move_to, %{position: {0.5, 64.9, -1.5}, within_tolerance: true, settled: true})
+    step.(:look, %{probe_occupancy: [row([0, 64, 0], @stone)]})
+    step.(:probe_toward, stone)
+    step.(:use_tool, %{seq: 1})
+    # 再探测命中了相邻格：身份变了。
+    step.(:probe_toward, %{stone | micro: {8, 512, 0}})
+    # 这一格的权威内容仍是石头 → 不算挖掉。
+    assert %{min: {0, 64, 0}, max: {0, 64, 0}} = step.(:look, %{probe_occupancy: [row([0, 64, 0], @stone)]})
+    # 留给下一个站位：去下一个站位，而不是核对余额。
+    assert %{verb: :move_to} = step.(:move_to, %{position: {2.5, 64.9, 0.5}, within_tolerance: true, settled: true})
+    Task.shutdown(task, :brutal_kill)
+  end
+
   test "the gather tool schema is strict and lists the belt; every argument is required" do
     [tool] = Abilities.tools(%{groups: [:skill], tools: %{3 => "镐", 1 => "铲"}, skills: %{gather: %{}}})
 

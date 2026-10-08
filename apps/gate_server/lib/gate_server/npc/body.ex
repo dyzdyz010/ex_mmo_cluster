@@ -70,6 +70,9 @@ defmodule GateServer.Npc.Body do
   # 拐弯、换层与到达前的限速（m/s）：输入没有模拟量（权威把方向归一化），已送出的 @lead 帧也改不了，
   # 全速 8 m/s 下一次转向要滞后 1 米多，会绕着路点打转。限速靠夹零输入帧实现，与玩家点按方向键同理。
   @corner_speed 2.0
+  # 移动完成要等身体停稳：权威速度（m/s）不超过这个值；零输入帧处理后最多再等这么多 tick（60 Hz，1 秒）。
+  @settled_speed 0.05
+  @settle_ticks 60
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
@@ -604,20 +607,32 @@ defmodule GateServer.Npc.Body do
     }
   end
 
-  # 首个零输入帧已被权威处理 → 移动命令完成；position 与 within_tolerance 取自同一份 ACK。
+  # 首个零输入帧已被权威处理、且身体停稳（权威速度 ≤ @settled_speed）→ 移动命令完成；position、within_tolerance
+  # 与 settled 取自同一份 ACK。零输入后身体还会按刹车 / 摩擦滑行一段：在那之前报完成，紧接着按 done 位置瞄准的
+  # 探测 / 工具会从已经挪开的眼点出发打到别的格（2026-10-08 Demo 实跑 gather 首轮 stale_target）。
+  # 最多再等 @settle_ticks：坡上 / 被推着时可能停不稳，此时照样完成，settled 为 false。
   # 带 settle 的 stop（取消技能）还要等该技能已投递的世界调用全部有了结果，之后不会再有它引起的世界变化。
   defp finish_move(%{move: %{zero_from: zero} = move, processed: processed} = state)
        when zero != nil and processed >= zero do
+    move = Map.put_new(move, :zero_tick, state.tick)
     call = Map.get(move, :settle)
+    settled = speed(state.velocity) <= @settled_speed
 
-    if call != nil and Enum.any?(Map.keys(state.world), &match?({:skill, ^call, _}, &1)),
-      do: state,
-      else: finish_settled_move(state, move)
+    cond do
+      call != nil and Enum.any?(Map.keys(state.world), &match?({:skill, ^call, _}, &1)) ->
+        %{state | move: move}
+
+      settled or state.tick - move.zero_tick >= @settle_ticks ->
+        finish_settled_move(state, move, settled)
+
+      true ->
+        %{state | move: move}
+    end
   end
 
   defp finish_move(state), do: state
 
-  defp finish_settled_move(state, move) do
+  defp finish_settled_move(state, move, settled) do
     within = move.target == nil or distance(state.position, move.target) <= move.tolerance
 
     emit(%{state | move: nil}, %{
@@ -625,9 +640,11 @@ defmodule GateServer.Npc.Body do
       verb: move.verb,
       status: :done,
       reason: nil,
-      data: %{position: state.position, within_tolerance: within}
+      data: %{position: state.position, within_tolerance: within, settled: settled}
     })
   end
+
+  defp speed({vx, vy, vz}), do: :math.sqrt(vx * vx + vy * vy + vz * vz)
 
   defp steering(%{move: %{zero_from: nil, path: :planning}} = state, _due),
     do: {state, {0, 0, state.yaw}, 0.0}

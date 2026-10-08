@@ -13,8 +13,8 @@ defmodule GateServer.Npc.Skills.Gather do
   4. 每到一个站位 `look` 整盒（被拒原样作为终态，不另做盒大小预检），`candidates/3` 取候选并排序；
   5. 逐格：沿眼点 → 格心（`GateServer.Npc.WorldRequest.aim/2` 的 g0 瞄准点）`probe_toward`，命中恰是这一格的天然宏格
      （`granularity == 0`、`micro == 格 × 8`、`owner == {0, 0}`）才对这个句柄 `use_tool`，每击之后再探测，
-     命中变了或 `no_target` 即这一格已挖掉。命中别的东西、探测 `no_target`（射程外）、`out_of_reach` / `occluded`
-     留给下一个站位；
+     命中变了或 `no_target` 时 `look` 这一格：已是空气才算挖掉，否则留给下一个站位。命中别的东西、探测 `no_target`
+     （射程外）、`out_of_reach` / `occluded` 也留给下一个站位；
      命中这一格但 owner 不是 `{0, 0}`（作者 prefab 宏格）永久跳过；`tool_cooldown` 等一个间隔再击，
      `stale_target` 重新探测；
   6. 按 `cost` 估算要挖的格数，估算挖够后 `query_balances` 核对，不足按差额继续。增量 ≥ units → done
@@ -242,7 +242,7 @@ defmodule GateServer.Npc.Skills.Gather do
     direction = WorldRequest.aim(eye, %{granularity: 0, micro: micro})
 
     case probe(state, direction) do
-      {:ok, %{granularity: 0, micro: ^micro, owner: {0, 0}} = hit, state} -> strike(hit, direction, state)
+      {:ok, %{granularity: 0, micro: ^micro, owner: {0, 0}} = hit, state} -> strike(cell, hit, direction, state)
       {:ok, %{granularity: 0, micro: ^micro}, state} -> {:foreign, state}
       {:ok, _other, state} -> {:blocked, state}
       {:error, :no_target, state} -> {:blocked, state}
@@ -250,31 +250,41 @@ defmodule GateServer.Npc.Skills.Gather do
     end
   end
 
-  defp strike(hit, direction, state) do
+  defp strike(cell, hit, direction, state) do
     state = pace(state)
 
     case call(state, %{verb: :use_tool, tool_id: state.tool, direction: direction, target: hit}) do
-      {:ok, _, state} -> again(hit, direction, state)
-      {:error, :tool_cooldown, state} -> strike(hit, direction, state)
-      {:error, :stale_target, state} -> again(hit, direction, state)
+      {:ok, _, state} -> again(cell, hit, direction, state)
+      {:error, :tool_cooldown, state} -> strike(cell, hit, direction, state)
+      {:error, :stale_target, state} -> again(cell, hit, direction, state)
       {:error, reason, state} when reason in @blocked -> {:blocked, state}
       {:error, _, _} = error -> error
     end
   end
 
-  # 每击之后再探测：仍是同一身份就再击；命中变了或 no_target = 这一格已挖掉。
-  defp again(hit, direction, state) do
+  # 每击之后再探测：仍是同一身份就再击；命中变了或 no_target 时，以这一格的权威内容判定是否挖掉
+  # （命中变了不等于挖掉：眼点挪动、别的东西挡进射线也会让命中变化）。
+  defp again(cell, hit, direction, state) do
     case probe(state, direction) do
       {:ok, next, state} ->
         if identity(next) == identity(hit),
-          do: strike(next, direction, state),
-          else: {:mined, state}
+          do: strike(cell, next, direction, state),
+          else: settled(cell, state)
 
       {:error, :no_target, state} ->
-        {:mined, state}
+        settled(cell, state)
 
       {:error, _, _} = error ->
         error
+    end
+  end
+
+  # 这一格已是空气 = 挖掉；否则这次没打到它，留给下一个站位。
+  defp settled(cell, state) do
+    case call(state, %{verb: :look, min: cell, max: cell}) do
+      {:ok, %{probe_occupancy: [%{material: 0, refined: false}]}, state} -> {:mined, state}
+      {:ok, _, state} -> {:blocked, state}
+      {:error, _, _} = error -> error
     end
   end
 

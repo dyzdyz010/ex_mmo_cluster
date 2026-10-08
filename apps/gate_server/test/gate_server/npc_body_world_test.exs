@@ -1149,6 +1149,35 @@ defmodule GateServer.NpcBodyWorldTest do
     assert_in_delta 64.9, y, 0.05
   end
 
+  # move_to 的 done 要等身体停稳：之后的 ACK 不再挪动它。台阶上到三格高的平台，再走下平台东沿（x = 13 处落差 3 m）：
+  # 水平进入容差时身体可能还在下落。改前 done 在首个零输入帧被处理时就发，此后眼点仍在下降，按 done 位置瞄准的
+  # 探测 / 工具会从挪开的眼点出发打到别的格（2026-10-08 Demo 实跑：建设者从工地站位下到采石盒边，gather 首轮 stale_target）。
+  @tag :idle
+  @tag edits:
+         for(
+           z <- 9..11,
+           {x, top} <- [{8, 64}, {9, 65}, {10, 66}, {11, 66}, {12, 66}],
+           y <- 64..top,
+           do: {{x, y, z}, 11}
+         )
+  test "move_to is done only once the body has stopped: after a drop, later ACKs no longer move it",
+       %{body: body} do
+    ready(body)
+    Body.command(body, %{id: 1, verb: :move_to, position: {11.5, 10.5}, tolerance: 0.5})
+    assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 1, 30_000)
+    Body.command(body, %{id: 2, verb: :move_to, position: {14.0, 10.5}, tolerance: 0.5})
+
+    assert %{status: :done, data: %{settled: true, position: {x, y, z}}} = outcome(body, 2, 30_000)
+    # 落回地面（顶面 y = 64，胶囊半高 0.9）。
+    assert_in_delta 64.9, y, 0.05
+    tick = Body.observe(body).tick
+    await(fn -> Body.observe(body).tick >= tick + 30 || nil end, System.monotonic_time(:millisecond) + 5_000)
+    {x2, y2, z2} = Body.observe(body).position
+    assert_in_delta x, x2, 0.01
+    assert_in_delta y, y2, 0.01
+    assert_in_delta z, z2, 0.01
+  end
+
   # 一格一级的台阶上到三格高的平台；平台另一侧同一列没有别的站立层。
   @tag :idle
   @tag edits:

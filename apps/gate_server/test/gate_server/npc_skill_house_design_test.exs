@@ -699,7 +699,8 @@ defmodule GateServer.NpcSkillDesignTest do
       "material" => 0,
       "placed_by" => nil,
       "refined" => true,
-      "slots" => [%{"material" => 11, "instance" => [3, 0], "count" => 1}]
+      # 格内构件所属实例的放置者 = 放下它的 c.actor（cid 1001，与上层宏格行的 placed_by 同一个角色）。
+      "slots" => [%{"material" => 11, "instance" => [3, 0], "count" => 1, "placed_by" => 1001}]
     }
 
     assert upper["refined"] == [

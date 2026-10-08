@@ -106,7 +106,7 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     assert balance(c,11) == 0 and balance(c,19) == 0
     assert {:ok,%{granularity: 0,owner: {2,0},material: 11,hp: 100.0}} = query(c)
     rows = snapshot(c,[{1,1,2},{2,1,2},{3,1,2}]).probe_occupancy
-    assert [%{material: 11,placed_by: 1001},%{material: 19,placed_by: 1001},%{material: 0,slots: [%{count: 1}]}] = rows
+    assert [%{material: 11,placed_by: 1001},%{material: 19,placed_by: 1001},%{material: 0,slots: [%{count: 1,placed_by: 1001}]}] = rows
     assert {:ok,cells} = World.instance_cells(c.world,{2,0})
     assert Enum.sort(cells) == [{1,1,2},{2,1,2},{3,1,2}]
     assert World.stats(c.world).instances == 1
