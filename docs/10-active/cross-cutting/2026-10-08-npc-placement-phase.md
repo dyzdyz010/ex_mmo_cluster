@@ -268,10 +268,24 @@ run07 容器保持停止，本轮未修改 Voxim 主树产品代码、未推送�
 长跑于 **2026-10-09 06:50:28.167014 UTC** 开始，严格终点 **12:50:28.167014 UTC**（北京时间 14:50:28–20:50:28）。
 容器 `voxim-caplib-20261009-run08`、库 `voxim_caplib_run08`，启动时 seq0、注册表空；三个 NPC 注册文件与 C/R/S 初始副本在 `run08/`。
 采样进程 PID175312，命令 `python .demo/observe/npc-run08/run.py sample --mode soak`，首样本 elapsed0.2min。
-独立收尾进程 PID167236 执行 `.demo/observe/npc-run08/finish.py`：到时取 C/R/S 与权威汇总，停止并保留容器，归档严格窗口日志与请求，
+独立收尾进程现为 PID178984（仅报告修正替换了原 PID167236）执行 `.demo/observe/npc-run08/finish.py`：到时取 C/R/S 与权威汇总，停止并保留容器，归档严格窗口日志与请求，
 复用 run07 统计脚本生成 `summary-6h.json` / `audit-6h.json`；自动收尾状态在 `finish-result.json`，**验收仍须复核实际增量，不能把自动收尾成功当通过**。
 收尾脚本的严格结束边界与内存脱敏已用合成数据验证；日志在本 worktree `.demo/observe/npc-run08/{sampler,finish}.{stdout,stderr}.log`。
 当前六小时仍在进行，24 h 尚未进入。
+
+**08:44 UTC 途中核对**：权威 seq1014，建设者 83 面板、住民 5 屋、创世者 3/16 块。两 LLM 已达每小时 20 次决策上限；
+创世者 07:56 的记忆明确记录前三块完成、下一块第四块，随后耗尽本小时额度；不能把这一段等待直接判作遗忘或卡死。
+截至 08:35 采样状态，无请求失败／成本撤下／Body 重启，采样与结束时间不变。
+
+途中发现并修正**报告计数**：`World.stats.instances` 是所有实例记录数（`world.ex:1137`），含房屋子构件，不能用总数减面板数表示房屋；
+原 `resident.instances` 又只从细化格 slots 去重，会漏纯宏格房屋（run07 该数为 0，但实际 7 屋）。最终报告统一复用
+`scripts/npc_run07_observe.py:read_instances/1` 的已接纳放置 seq 与 `World.instance_cells({birth, 0})` 根实例占用；
+时间序列按 `birth <= sample.seq` 统计累计接纳的建筑放置，终点另外确认根实例占用。原始日志、采样、运行中的 NPC 均不改。
+实际反例：08:38 样本旧算法报 225 屋，根实例实际 5；纯宏格 run07 根实例仍正确为 7。
+最小测试：`python .demo/observe/npc-run08/test_report_counts.py`（2 项，子构件不放大、纯宏格不漏计、未来 seq 不提前算）；
+`python -m unittest discover -s scripts -p test_npc_run07_observe.py`（2 项，既有站位语义）。
+本轮只读取证在 `run08/status-check-0845/`，调度记录 `finish-scheduled-v3.json`，新收尾日志 `.demo/observe/npc-run08/finish-v3.{stdout,stderr}.log`；
+前两版调度记录保留，均未执行终点动作。最终报告仍待六小时结束后复核。
 
 ## 7 持续扩张（M5）
 

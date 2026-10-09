@@ -36,10 +36,11 @@ def load():
 driver.load = load
 
 
-def read_instances():
-    """从已接纳的住民放置事务定位实例，再读取权威的宏格占用集合。"""
+def read_instances(value=None):
+    """从已接纳的住民放置事务定位实例；可传入已有权威摘要，再读取根实例占用。"""
     from rpc import rpc, CONTAINER
-    value = json.loads((driver.RUN / 'observe-world.json').read_text(encoding='utf-8'))
+    if value is None:
+        value = json.loads((driver.RUN / 'observe-world.json').read_text(encoding='utf-8'))
     resident = next(n['cid'] for n in value['npcs'] if n['name'] == '住民')
     raw = subprocess.run(['docker', 'logs', '--timestamps', CONTAINER], check=True,
                          capture_output=True, timeout=60)
