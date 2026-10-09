@@ -2,6 +2,8 @@
 
 分类：Global system 工作交接。用户 2026-10-09 要求把工作移交给 Codex。面向用户的回复一律中文。
 
+> **Codex 收尾状态（2026-10-09）**：run07 六小时与一次短双端观察已完成取证，验收未通过；结论和证据唯一正文见[放 NPC 阶段决策稿 §6.1](2026-10-08-npc-placement-phase.md)。Demo 已停止并保留，采样器已结束；不要再按旧移交状态重启本轮。后续问题须先与用户确认。
+
 ## 1 用户目标与已拍板事项
 
 - 目标：统一函数库（玩家操控 / 行为树 / LLM / Jev 复用同一套能力定义与同一裁决入口），然后往世界里放 AI NPC 持续开拓改造世界（“24 小时搞建设”）。
@@ -30,17 +32,18 @@
 - 已知基线失败（与本工作无关，不得据此改测试）：gate_server `T1TransportTest` 57 项（quicer 只在 Linux）；scene_server 12 项缺 E1_FIXTURE / IS_FIXTURE；voxel_region BodyContactWorldTest 10 项（魔法夹具 v2）与 ThermalDomainEquivalenceTest 1 项（HEAD 上就红）。
   c3e76aff 时：gate_server 268/325（失败只有那 57 项），scene_server 249/261。
 
-## 5 进行中：长跑 run07（持续扩展，6 h）
+## 5 长跑 run07（已收尾；以下保留移交背景）
 
-- 本地 Demo 容器 `voxim-caplib-20261008`（镜像 `voxim-server:20261008-caplib-c3e76aff`，HTTP 26761 / QUIC 26763，PG 容器 `voxim-pg-caplib-20261008` 库 `voxim_caplib_run07`）**仍在运行**，三个 NPC 经注册表登记，21:09:09 UTC 开跑，计划到约 03:09 UTC。
+- 本地 Demo 容器 `voxim-caplib-20261008`（镜像 `voxim-server:20261008-caplib-c3e76aff`，HTTP 26761 / QUIC 26763，PG 容器 `voxim-pg-caplib-20261008` 库 `voxim_caplib_run07`）移交时仍在运行；严格六小时为 21:09:09–03:09:09 UTC，观察后于 03:14:20 UTC 正常停止，容器未删除。
 - 设施与证据：Voxim `Saved/CapabilityLibrary-20261008/`：`deploy.py`、`reg7.py`、`sampler7.py`、`observe07.py`、`rpc.py`；`run07/notes.md`（时间线、坐标、每小时数字）、`run07/samples.jsonl`。
-  **采样器 sampler7.py 已随前一个值守代理停止**（最后一条样本 00:11:44 UTC，elapsed 182.6 min，seq 2187，实例 114）。接手时用 `sampler7.py --hours <剩余小时>` 后台重启（先读它的头部与 run07/notes.md 的启动方式）。
+  移交时采样器 sampler7.py 已随前一个值守代理停止（最后一条样本 00:11:44 UTC，elapsed 182.6 min，seq 2187，实例 114）。Codex 于 00:41:03 UTC 用 `sampler7.py --hours 6` 恢复，03:10:00 自行结束。**更正：--hours 是从 register_utc 起的总时长，不能传剩余小时。** 约 29 min 20 s 的权威采样空档及其限制见阶段稿 §6.1。
 - 至 23:10 的数字（run07/notes.md）：建设者 56 → 87 块面板（第 2 小时 +31），住民 3 座房子（设计会话 18–23 万 token / 座，平整出现 uneven 跳过），创世者 7 块（729 列）整平且改用 survey 核对；成本保护 0；BEAM 407–490 MB 无上涨；Body 重启 / Player 异常 0。
-- 剩下要做：重启采样器值守到 6 h；结束后一次 ≤ 10 min 双客户端观察（observe07.py，截图存 Voxim `Captures/CapabilityLibrary/2026-10-09/run07/`，必须打开查看并描述）；`docker stop` 容器（不删）；把结论写进放置阶段决策稿 §6；向用户按“新增可操作行为 / 真实验证场景 / 剩余问题”汇报。
+- 收尾已完成：恢复采样并值守至终点；一次双端观察 198.545 s，O1–O3 通过、O4/O5 未通过；14 张实际截图均已查看，存 Voxim `Captures/CapabilityLibrary/2026-10-09/run07/`；Demo stop 保留。执行细节、限制及剩余问题统一见阶段稿 §6.1。
 - LLM key 在 `C:/Users/DYZ/Documents/dev/hemifuture/ex_mmo_cluster/.env`，**不得写进任何文件、日志、报告**；容器创建时用 `docker create -e NPC_LLM_KEY` 从进程环境继承。
 
 ## 6 已知未完成 / 后续
 
+- run07 新发现：创世者第 6 小时重复处理已完成地块，没有新增整平；B 端观察站位的原生碰撞查询 not_found，回放未完成。后续诊断 / 修复先与用户确认，不自动重启长跑。
 - 住民补料：东北坡陡坡站位常 no_path / stuck，gather 多次失败后改去别处；设计会话 token 接近 24 万会话预算（每轮重发全部历史）。
 - expand 平整不是事务；细化格按整格保守处理；离 NPC 竖直 > 32 m 的地块归为 region_full 一类（见 §7 取舍）。
 - M4 客户端 `dead` 中文文案推迟到下次客户端发版（UE 资产，经 MCP）。

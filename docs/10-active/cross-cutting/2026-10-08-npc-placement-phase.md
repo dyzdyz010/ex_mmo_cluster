@@ -18,8 +18,8 @@
 | M2 | 创世能力组 `:genesis`（`fill_box` / `set_cells`，底层 `World.apply_edits`，只授予注册表标了 genesis 的 NPC） | 已实现、测试通过，待复核提交（§6） |
 | M3 | scene_server：非流送 Scene 里 Player 在碰撞基线装好前收到 timeline 时 `CollisionUpdates.record_artifact/3` KeyError 崩溃 | 待做 |
 | M4 | 客户端 `dead` 中文文案（Voxim 资产，随客户端一起） | 待做 |
-| M5 | 持续扩张：技能 `expand`（区域内选址、缺料自采、放置）+ Settler 可选 `expansion`（每轮维护完再建一座） | 已实现、测试通过，待复核提交（§7） |
-| L | 长跑验收（建设者 / LLM 住民 / 创世 NPC，服务端浸泡 + 短双客户端） | 最后 |
+| M5 | 持续扩张：技能 `expand`（区域内选址、缺料自采、放置）+ Settler 可选 `expansion`（每轮维护完再建一座） | 已实现并提交；run07 持续扩展验收未通过（§6.1、§7） |
+| L | 长跑验收（建设者 / LLM 住民 / 创世 NPC，服务端浸泡 + 短双客户端） | run07 六小时与一次双端观察已收尾；持续扩展、双端完整观察均未通过，未进入 24 h（§6.1） |
 
 ## 2 M1 注册表
 
@@ -142,6 +142,50 @@ claim 失败 1 秒后重试（npc/README 会话契约）。测试构建不起它
 | 2026-10-08 | **长跑 run04 收尾（已实跑）**：实际 4 h 52 min（用户同意提前结束）。Body 重启 0、Player 异常 0、session_lost / claim_failed / error 行 0；BEAM 内存开跑 195 MB，峰值 252 MB（LLM 活跃），10:14 起 202–217 MB 无上涨，进程 592 → 575。建设者：拆 9 次重建 9 次（21–34 s），自采 2 次，idle 0，occupied 1 665；创世者 15 次决策（look 7 / fill_box 3 / wait 5），1 200 格核对违规 0；住民撤下前建成 2 座、design_house 6 次 2 成（根因见上，已由 65cecb84 修复）；npc_memory_trimmed 681（用户决定照常记）。双客户端观察第 2 次 O1–O5 全过（第 1 次 A 离房子太近镜头被坡挤住），14 张截图已看。证据 Voxim `Saved/CapabilityLibrary-20261008/run04/`、`Captures/CapabilityLibrary/2026-10-08/run04/` |
 | 2026-10-08 | `travel` 技能（长途分段行走）：Settler 回站位与 expand 共用 `Travel.walk/2`；llm 可登记。真实 World 用例：单个 move_to 到 74.3 m 外回 too_far，travel 分 3 段到达（改前无此技能）；Settler 纯函数用例的站位命令按契约改为 travel 技能 |
 | 2026-10-09 | **“持续扩展”长跑 run06 的机制缺陷与修复（已实现、测试通过，未实跑、未提交，待复核）**。run06（镜像 a8a8e1c7，证据 Voxim `Saved/CapabilityLibrary-20261008/run06/notes.md`）三个 NPC 都停在机制问题上，rpc 只读复现的根因：① **寻路与碰撞对细化格不一致**——Body 网格把细化格当作占满、可踩，规划让建设者踩 1/8 米面板顶（`[{55,420,-520}, …]`），身体落进面板格空着的 7/8 后起点不可站，对任何目标 no_path（15:23、19:08 两次永久卡死）→ 细化格既不能穿过也不能站（`Perception.walk_kind/1` 一个判据，不进网格），起点是身体的权威位置（`Path.find/7` 新选项 `trusted_start`，冻结样例 +6）；② **长途寻路的竖直范围**——`goal_y` 为 nil 时取盒竖直只到起点 ±6，travel / expand 的分段不带 y，高差 > 6 m 的段全部 no_path（住民从北坡去建房区）→ travel 每段先 survey 段终点列、取离脚下最近的可站层带 y 走（`Travel.stand_y/2`），move_to 说明写明不给 y 只看脚下 ±6；③ **expand 的失败处理**——走不到记为跳过、候选用尽回 `no_site`，与放满同一结果（住民按“放满了”每小时 wait，还写进了长期记忆）；缺料是依地块而定的，却作为终态（建设者 18:15 起每 90 s 同一拒绝）→ 走不到 / 够不着 / 附近采不到料都跳过换下一块，终态分 `region_full` 与 `no_reachable_site`；④ **选址要求逐列同高、地面只在脚下 ±4 找**——勘察结论“完全同高的 4×4 位置 0 个”，自然地形放不下房子；创世者核对整平要分 5 层 look、历史只留 3 次，永远“看不全” → 新感知原语 `survey`（地表高度图，一次 ≤ 32×32 列），expand 按每个候选自己的地表选址，高差 ≤ 2 格先平整到下中位数（挖天然格入账、填石花余额）。创世者被成本保护撤下是采样器墙钟 / 大脑单调钟 0.46 s 的口径误报（采样器已改，服务端不改）。改前红（同一 worktree 换回 HEAD 的 lib 跑新用例，日志 `phase4/logs/red-path.log`、`red-gate.log`）：面板旁的规划路点 `[{5.5,10.5},{6.5,10.5},…]` 经过面板格、站在面板格里 move_to `no_path`、8 m 台地 travel `no_path`、起伏 1–2 格的地块 `no_site`、缺料地块 `insufficient_material` 终态、Path 冻结样例 2 项 `no_path`、其余新纯函数 UndefinedFunctionError；改后全绿。scene 全量 249/261（失败只有 E1/IS 夹具 12 项）；gate 全量 266/324，失败 58 = T1Transport 57 + npc_brain_llm_test 一张手写工具表缺 survey（按契约补上后该文件 32/32），与基线同。编译无新增告警 |
+
+### 6.1 run07 六小时收尾（2026-10-09，Codex）
+
+**结论：完成本轮取证与停机，验收未通过。** 建设者持续扩展至区域候选用尽，住民设计失败后恢复建房；创世者第 6 小时仍重复处理已完成的第 10 块，没有新增整平范围。一次真实双客户端观察完成了鉴权、NPC 名称同步和世界版本检查，但 B 端最后一个站位请求失败，不能写成双端全通过，也不进入 24 h 验收。
+
+**范围与时间**：服务端镜像 `voxim-server:20261008-caplib-c3e76aff`，源码 `c3e76aff`；本次只做 Test-only 取证与文档收尾。严格统计窗口是 `2026-10-08 21:09:09.094488` 至 `2026-10-09 03:09:09.094488 UTC`（末端不含）。终点副本在 `03:09:09.178–03:09:19.119` 串行读取，C / R / S 均为 seq 3302。`voxim-caplib-20261008` 于 `03:14:20.384 UTC` 停止，`exited / exit=0 / RestartCount=0`，容器保留；PG 与其他会话未停止。
+
+**实际扩展**（小时从 register_utc 起算，面板 / 房屋以已接受的 prefab 放置及 expand 完成日志交叉核对；旧 notes 的跨小时快照不作精确小时计数）：
+
+| 指标 | h1 | h2 | h3 | h4 | h5 | h6 | 终点 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 建设者新增面板 | 55 | 31 | 23 | 19 | 16 | 5 | 149 个实例 |
+| 住民新增房屋 | 1 | 1 | 2 | 1 | 0 | 2 | 7 个实例 |
+| 创世者：每小时内最后一条权威样本的完整 10×10 块数 | 3 | 5 | 7 | 9 | 10 | 10 | 10/16 块，1028/1600 列满足目标（含原本满足的列） |
+
+- 建设者最后一次建成在 `02:26:07`；`02:30:29` 首次返回 `region_full`，`skipped %{crowded: 149, no_stand: 1}`，之后继续维护与检查。六小时内共 9 次 region_full，未出现 no_reachable_site；挖石净减少 18 格，记忆仍按用户决定照常写入、裁旧。
+- 住民 design_house 共 9 次，7 成 2 败。第 5 小时两次失败分别用 244813 / 250694 token，最后检查都为 `[:placement]`；已保存的第 6 次终态记忆明确为 `:token_budget`。第 6 小时两次设计以 6 轮、127159 / 124204 token 成功，`02:10:46`、`02:27:51` 实际建成第 6 / 7 座。补料仍有 gather 18 次 rejected、3 次 done；住民移动 no_path 30、stuck 3，建设者 stuck 1，均照实保留。
+- 创世者第 6 小时 20 次决策 = 18 次 look + 2 次 genesis_edit，仍针对已完成的第 10 块（x10..19、z-556..-547）；本轮最长连续 look 为 16 次。两次 edit 返回成功不等于新增范围：最后一小时的权威样本和终点逐格核对均仍为 10 块 / 1028 列，尚有 6 块未完成。采样器 / 原 summary 的 last_ok 含只读 probe，不能用其“最近成功”代替实际扩展。
+
+**运行与成本证据**：严格六小时日志 error 行、session_lost、claim_failed 均 0；三个 Body 的观测 PID 始终各 1 个，成本保护撤下 0。两个 LLM NPC 每个运行小时各 20 次主决策；请求 trace 为主请求 240 次 / 3032252 token、设计请求 82 次 / 1737147 token，合计 4769399 token，322 次均 ok，最长请求 108.8 s。34 条窗口内权威样本的 BEAM 内存为 347.2–552.9 MB，首条 351.5、末条 552.9 MB，进程 582–592；不据此宣称内存无增长或已排除泄漏。
+
+采样器在 `00:41:03 UTC` 以 `sampler7.py --hours 6` 恢复，`03:10:00` 自行结束。`--hours` 是从 register_utc 起的**总时长**，不是剩余时长。`00:11:44.553 → 00:41:04.296` 存在 1759.743 s（约 29 min 20 s）的权威采样空档；日志与 trace 已按游标补读，但缺失的 World / 内存快照及当时的实时保护不能补回。六小时后的采样、观察期新增动作均不计入上述扩展与请求数字。
+
+**创世区边界核对限制**：C 取证盒内、目标完整 XYZ 体积外有 9 个砾石格从 6 变为 0，坐标在 x40..41、y430..434、z-555..-551。原 check_c 也报告 outside=9，未抹去。住民 `01:14:14` 的 gather 盒 `[[40,428,-558],[47,435,-551]]` 包含这 9 格，提供了另一动作来源的旁证；这是推断，不能当作逐事务归因。查询时保留日志前缀已压实（最早 seq 3579），无法从该接口复原这些格的改动者。本轮不宣称“创世者越界”，也不宣称“边界核对 0 违规”。
+
+**一次真实双客户端观察**：`03:10:09.013–03:13:27.558 UTC`，198.545 s（约 3 min 19 s，含启动与关闭），客户端 `/Game/Voxel/Gameplay/L_GameplayDemo` 正式组合根、Voxim HEAD `b40f922c`，二进制 digest 见 record。复用原 `observe07.py` 的回放与 O1–O5 判定；原夹具在平台变大、宏格房屋聚组后两次离线 no stand，故在本 worktree 加 Test-only 适配器：平台聚焦首个完整 10×10 块，房屋用成功放置 seq + `World.instance_cells/2` 区分实例，完整几何副本不改。8 项反例自检通过；最终 plan/dry 重新读取 seq 3302，7 座房屋、149 块面板。`@place` 与 `@look_settled` 是站位 / 相机夹具，本轮不证明真实步行到达。
+
+| 检查 | 实际结果 |
+|---|---|
+| O1 鉴权角色 / 单会话 | 两端通过 |
+| O2 三个 NPC 的 cid 与名称 remote_enter | 两端通过 |
+| O3 世界版本至少达到副本 seq 3302 | 两端通过（最小 have_seq 均 3449） |
+| O4 平台、房屋、面板准星目标 | 11/12；A 6/6、B 5/6，B 面板目标 `[67,415,-514]` 缺失 |
+| O5 回放完成 | A success，B fail |
+
+B 在最后的 `@place 67.5 416.91 -510.5` 失败：原生 `find_spawn` 返回 `:not_found`，Test-only `:sys.replace_state` 回调匹配失败，随后回放显式 fail；更深的碰撞 / 站位原因尚未定位。保留 `placements.jsonl` 与 client.log，没有改判据、重跑或重启容器。
+
+**截图已逐张查看**：实际 14 张（A 8、B 6；原计划 16），均非黑帧。两端可见整平台面、房屋墙面与准星框选；A 可见门洞及近距离面板，B 可见创世者，A 可见建设者名称与部分身体。住民方向被地形 / 树木遮挡，不能证明住民名称的视觉呈现通过；B 缺建设者 / 面板两张，B 房屋检查图还有“目标已失效或不允许攻击”提示（原因未定位）。没有把单栋房屋画面当作七栋全景，名称同步的日志结果与视觉结果分别记录。
+
+**可复现产物**：以同级 Voxim 为根，`Saved/CapabilityLibrary-20261008/run07/` 中的 `boundary-manifest.json`、`{C,R,S}-at-6h.json`、`creator-check-at-6h.json`、`authority-at-6h.json`、`server-soak.log`、`llm-requests-soak.jsonl`、`summary-6h.json`、`audit-6h.json`、`archive-manifest.json`；观察为 `observe-{world,house-instances,plan}.json`、`dry/`、`scene/{record,judge}.json`、`scene/session/{a,b}/`、`observation-failure.json`、`visual-review.json`。截图在 `Captures/CapabilityLibrary/2026-10-09/run07/`。`closeout-tools/` 保留本 worktree `.demo/observe/npc-run07-closeout/` 的脚本源副本及离线失败证据（源副本用于追溯，原路径是执行入口）。日志 / trace 归档前在内存检查 LLM key，未发现密钥字节；没有读取或写入主树 .env。
+
+本轮执行入口依次为 `evidence.py boundary`、`observe07_closeout.py fetch / plan / dry / run`（out 为 run07/scene、captures 为上述截图目录）、`docker stop --time 30 voxim-caplib-20261008`、`evidence.py archive`、原 `run07/summary.py --log run07/server-soak.log --trace run07/llm-requests-soak.jsonl --out run07/summary-6h.json` 与 `analyze.py`；完整工作目录 / 参数见 run07/notes.md。原 summary 的样本序列含窗口后的记录，严格窗口内内存与采样空档以 audit-6h.json 为准。未改产品代码，因此没有重复运行无关 mix / UE suite。
+
+**后续须用户确认**：优先待定的是创世者重复查看 / 不再扩展，以及 B 端站位失败；住民补料与设计预算余量、M4 dead 文案、后续复验 / 24 h、合并决定仍待确认。本轮只提交本 worktree 文档，不 push、不合并 master。
 
 ## 7 持续扩张（M5）
 
