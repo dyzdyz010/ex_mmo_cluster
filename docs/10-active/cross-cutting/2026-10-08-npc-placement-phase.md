@@ -244,6 +244,35 @@ y422..426。`Perception.project/3` 在第四次 look 时清空第一份内容，
 下一步：新版正式镜像上的短双端复验，再安排六小时持续扩展复验；通过后才进入 24 h。
 run07 容器保持停止，本轮未修改 Voxim 主树产品代码、未推送／合并／公网部署。
 
+### 6.3 run08 执行（2026-10-09）
+
+用户明确要求开始执行：先新版真实双端短回归，再六小时持续扩展。源码 `74e9ca3b`，镜像
+`voxim-server:20261009-caplib-74e9ca3b`（`sha256:8de278ee97640e3c67d349d7ebb877e29fbfa482ad5ed61a99860b120d4ca866`）。
+客户端 Voxim `b40f922c`，协议 39，正式 `/Game/Voxel/Gameplay/L_GameplayDemo` 入口。
+
+- 本轮编排：本 worktree `.demo/observe/npc-run08/run.py`；参数 `prepare/start/fetch/plan/dry/scene --mode smoke`，
+  复用既有部署与修正后的观察驱动。构建日志在同目录 `image-build.log`。不改上轮驱动与失败证据。
+- 短场景环境：`voxim-caplib-20261009-smoke08`、库 `voxim_caplib_smoke08`，从已停止 run07 的完整世界与数据库复制，
+  新可写目录 `Voxim/Saved/CapabilityLibrary-20261008/server-smoke08/`；这是明确 checkpoint 的回归副本，不是全新世界验收。
+  权威副本 seq3660，7 屋 / 149 面板；O1–O5 判据沿用，8 项反例自检通过。产物 `smoke08/`，截图 `Captures/CapabilityLibrary/2026-10-09/smoke08/`。
+- 长跑必须用独立全新库／世界（`--mode soak`，`run08/`），目标、三类大脑、每小时 20 次决策与一次木料作者样本沿用 run07。
+  不修改记忆策略。采样器每分钟读日志并执行既有成本保护、每五分钟取权威快照；从 `register_utc` 起满六小时。
+  首末边界另取权威结果，报告真实扩展／已完成区域、运行错误、请求与成本；缺样照实记录，不把存活当作持续扩展。
+
+短回归结果（06:42:16–06:45:57 UTC，220.564 s）：O1–O5 全部通过，12/12 目标命中、两端 replay success 且正常退出，
+22/22 权威站位成功；B 端最终站位为 `(66.5,415.91,-510.5)`，不再踩薄面板顶。16 张截图全部人工查看：平台、房墙与薄面板呈现可见，
+三 NPC 名牌可见，住民／建设者身体部分被树木遮挡，不声称三者身体均清楚可见；部分帧显示查询拒绝提示，本场景不包含攻击验收。
+判据原件 `smoke08/scene/judge.json`，站位 `scene/session/{a,b}/placements.jsonl`，视觉记录在本 worktree
+`.demo/observe/npc-run08/visual-review.json`。短场景容器已停止并保留。
+
+长跑于 **2026-10-09 06:50:28.167014 UTC** 开始，严格终点 **12:50:28.167014 UTC**（北京时间 14:50:28–20:50:28）。
+容器 `voxim-caplib-20261009-run08`、库 `voxim_caplib_run08`，启动时 seq0、注册表空；三个 NPC 注册文件与 C/R/S 初始副本在 `run08/`。
+采样进程 PID175312，命令 `python .demo/observe/npc-run08/run.py sample --mode soak`，首样本 elapsed0.2min。
+独立收尾进程 PID167236 执行 `.demo/observe/npc-run08/finish.py`：到时取 C/R/S 与权威汇总，停止并保留容器，归档严格窗口日志与请求，
+复用 run07 统计脚本生成 `summary-6h.json` / `audit-6h.json`；自动收尾状态在 `finish-result.json`，**验收仍须复核实际增量，不能把自动收尾成功当通过**。
+收尾脚本的严格结束边界与内存脱敏已用合成数据验证；日志在本 worktree `.demo/observe/npc-run08/{sampler,finish}.{stdout,stderr}.log`。
+当前六小时仍在进行，24 h 尚未进入。
+
 ## 7 持续扩张（M5）
 
 用户 2026-10-08 问“建设者为什么不一直盖新房子”：Settler 只维护作者给定的工地清单，建完就只会被拆重建。要让它在作者划定的扩展

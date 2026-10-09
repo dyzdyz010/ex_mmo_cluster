@@ -2,7 +2,7 @@
 
 分类：Global system 工作交接。用户 2026-10-09 要求把工作移交给 Codex。面向用户的回复一律中文。
 
-> **Codex 续接状态（2026-10-09）**：用户已要求继续。run07 六小时与一次短双端观察的失败结论保留；已修复观察上下文过早清空与细化面板站位夹具两个阻塞，局部测试、离线规划和一次真实模型短探针通过，详见[放 NPC 阶段决策稿 §6.2](2026-10-08-npc-placement-phase.md)。Demo 仍停止；下一步为新版短双端与六小时复验，不要把局部通过当成长跑已验收。
+> **Codex 续接状态（2026-10-09）**：两个阻塞修复已提交 `74e9ca3b`；新版短双端 smoke08 已完成，O1–O5、12/12 目标、22/22 站位与两端回放通过。全新 run08 六小时已于 **06:50:28 UTC** 启动，终点 **12:50:28 UTC**（北京时间 **20:50:28**），详见[放 NPC 阶段决策稿 §6.3](2026-10-08-npc-placement-phase.md)。采样 PID175312、到时收尾 PID167236；源码与日志在本 worktree `.demo/observe/npc-run08/`，权威证据在 Voxim `Saved/CapabilityLibrary-20261008/run08/`。收尾将自动停止并保留新容器，验收结论仍待终点证据复核。run07 失败证据保留，24 h 未进入。
 
 ## 1 用户目标与已拍板事项
 
@@ -43,7 +43,7 @@
 
 ## 6 已知未完成 / 后续
 
-- run07 两个阻塞已局部修复：保留大脑八条历史中的完整 look / survey；离线规划不把细化格当完整地面。新增观察入口 `scripts/npc_run07_observe.py`，依赖旧 run07 驱动、必须给新输出目录。局部证据在本 worktree `.demo/observe/npc-run07-fixes/`，详细命令与限制见阶段稿 §6.2。新版真实双端／六小时复验尚未执行，24 h 仍以六小时通过为前提。
+- run07 两个阻塞已局部修复：保留大脑八条历史中的完整 look / survey；离线规划不把细化格当完整地面。新增观察入口 `scripts/npc_run07_observe.py`，依赖旧 run07 驱动、必须给新输出目录。局部证据在本 worktree `.demo/observe/npc-run07-fixes/`，详细命令与限制见阶段稿 §6.2。新版短双端已通过，run08 六小时正在执行，终点后先核对 `finish-result.json`、`creator-check-at-6h.json`、`summary-6h.json` 与 `audit-6h.json`；24 h 仍以六小时通过为前提。
 - 住民补料：东北坡陡坡站位常 no_path / stuck，gather 多次失败后改去别处；设计会话 token 接近 24 万会话预算（每轮重发全部历史）。
 - expand 平整不是事务；细化格按整格保守处理；离 NPC 竖直 > 32 m 的地块归为 region_full 一类（见 §7 取舍）。
 - M4 客户端 `dead` 中文文案推迟到下次客户端发版（UE 资产，经 MCP）。
