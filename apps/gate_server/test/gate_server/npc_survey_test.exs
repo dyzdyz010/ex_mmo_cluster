@@ -29,8 +29,7 @@ defmodule GateServer.NpcSurveyTest do
 
   # 平地一列：y ≤ 63 石料，其上空气；edits 按 y 覆盖。
   defp ground(at, edits \\ %{}),
-    do:
-      column(at, fn y -> Map.get_lazy(edits, y, fn -> if y <= 63, do: @stone, else: 0 end) end)
+    do: column(at, fn y -> Map.get_lazy(edits, y, fn -> if y <= 63, do: @stone, else: 0 end) end)
 
   defp surface(column, floors, y, material, placed_by \\ nil, refined \\ false),
     do: %{
@@ -47,6 +46,7 @@ defmodule GateServer.NpcSurveyTest do
     assert :open == Perception.walk_kind(%{material: 0, refined: false})
     assert :open == Perception.walk_kind(%{material: @grass, refined: false})
     assert nil == Perception.walk_kind(%{material: @water, refined: false})
+
     # 细化格（含 micro 内容，宏格材料常为 0）：碰撞按 micro，宏格网格整格挡住，也不能站在上面。
     assert nil == Perception.walk_kind(%{material: 0, refined: true})
     assert nil == Perception.walk_kind(%{material: @stone, refined: true})
@@ -90,6 +90,7 @@ defmodule GateServer.NpcSurveyTest do
     # 身高 3 格：(4,0) 的 63 上面只有 64、65 两格空；66 的净空要到 69，伸出扫描范围（68 之上未知）→ 都不算。
     assert [63, 66] == Perception.floors(ground({4, 0}, %{66 => @stone}), 2)
     assert [] == Perception.floors(ground({4, 0}, %{66 => @stone}), 3)
+
     # 同一列下移悬空格（65 之下留 64 一格）：身高 1 格时 63 与 65 都站得下。
     assert [63, 65] == Perception.floors(ground({4, 0}, %{65 => @stone}), 1)
   end
@@ -107,7 +108,7 @@ defmodule GateServer.NpcSurveyTest do
     assert nil == Perception.prepare(at, %{verb: :survey, min: {5, 0}, max: {4, 0}}, 2)
   end
 
-  test "project: rows of [y, material] by z then x, placed and refined listed apart; only the latest three surveys keep data" do
+  test "project: height rows, placed and refined stay available across successive surveys" do
     columns =
       Perception.surfaces(
         ground({0, 0}) ++
@@ -151,7 +152,7 @@ defmodule GateServer.NpcSurveyTest do
       Enum.reduce(1..4, [], fn id, history -> Perception.project(survey.(id), history, nil) end)
 
     assert [4, 3, 2, 1] == Enum.map(history, & &1.id)
-    assert [true, true, true, false] == Enum.map(history, &(&1.data != nil))
+    assert [true, true, true, true] == Enum.map(history, &(&1.data != nil))
   end
 
   test "stand_y: the floor nearest the feet becomes the standing cell; a tie takes the lower; no floor is nil" do

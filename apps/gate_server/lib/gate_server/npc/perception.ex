@@ -18,8 +18,7 @@ defmodule GateServer.Npc.Perception do
   @cells 512
   # 一次 survey 每边最多的列数。
   @columns 32
-  # 给模型的历史里保留内容的 look 次数（更早的只留结论）。
-  @kept_looks 3
+  # 感知与移动目标相对身体的单轴距离上限（米）。
   @reach 32
   # inspect 的窗口：自己所在的 tile（米）及相邻 tile。
   @tile 64
@@ -187,8 +186,11 @@ defmodule GateServer.Npc.Perception do
     |> Enum.map(&{&1.cell, walk_kind(&1)})
     |> Enum.chunk_every(clearance + 1, 1, :discard)
     |> Enum.flat_map(fn
-      [{[_, y, _], :solid} | above] -> if Enum.all?(above, &(elem(&1, 1) == :open)), do: [y], else: []
-      _ -> []
+      [{[_, y, _], :solid} | above] ->
+        if Enum.all?(above, &(elem(&1, 1) == :open)), do: [y], else: []
+
+      _ ->
+        []
     end)
   end
 
@@ -234,7 +236,11 @@ defmodule GateServer.Npc.Perception do
 
   # survey：按 x 分片（一片 = 这一个 x 的全部 z × 竖直范围，≤ 32 × 65 格），与 look 同一个只读入口；片与片之间可能有别人的
   # 事务，所以 seq 给 [首片, 末片]。不一次取整片：那会让 World 进程一口气逐格求值六万多格。
-  def read(world, _cid, {:survey, %{columns: {{x0, z0}, {x1, z1}}, y: {y0, y1}, clearance: clearance}}) do
+  def read(
+        world,
+        _cid,
+        {:survey, %{columns: {{x0, z0}, {x1, z1}}, y: {y0, y1}, clearance: clearance}}
+      ) do
     snapshots =
       for x <- x0..x1,
           do: World.material_snapshot(world, [], for(z <- z0..z1, y <- y0..y1, do: {x, y, z}))
@@ -405,7 +411,7 @@ defmodule GateServer.Npc.Perception do
 
   @doc """
   Outcome 进历史（新在前）。look 将普通非空气格按列压缩，保留细化格的占用与归属；survey 换成按行的地表高度图（放置者与
-  细化格另列）；look 与 survey 各自最近 #{@kept_looks} 次保留内容，更早的只留结论。
+  细化格另列）。look / survey 保留各次观察的版本、范围与内容，历史长度由大脑统一控制，避免分段核对尚未完成就丢失前段。
   """
   def project(
         %{verb: :look, status: :done, data: %{probe_occupancy: cells}} = outcome,
@@ -425,7 +431,7 @@ defmodule GateServer.Npc.Perception do
       Map.take(outcome.data, [:seq, :bounds_macro_inclusive, :outside, :attachments])
       |> Map.merge(%{solid: columns, refined: for(c <- cells, c.refined, do: compact_refined(c))})
 
-    [%{outcome | data: data} | retain(outcomes, :look)]
+    [%{outcome | data: data} | outcomes]
   end
 
   # survey：地表高度图按行（z）给出，每行按 x：[y, material] 或 null；放置者与细化格另列（多数列没有，不逐列重复）。
@@ -445,7 +451,7 @@ defmodule GateServer.Npc.Perception do
         refined: for(%{refined: true, column: column} <- columns, do: column)
       })
 
-    [%{outcome | data: data} | retain(outcomes, :survey)]
+    [%{outcome | data: data} | outcomes]
   end
 
   # inspect 同理：只留模型用得上的身份与状态，更早的 inspect 只留结论。每行附原样目标句柄 target，
@@ -505,20 +511,6 @@ defmodule GateServer.Npc.Perception do
       do: [%{outcome | data: Map.put(data, :target, target(data))} | outcomes]
 
   def project(outcome, outcomes, _position), do: [outcome | outcomes]
-
-  # 给模型的历史里同一种观察（look / survey）只有最近 @kept_looks 次保留内容，更早的只留结论。一次 look 最多 512 格（@cells）：
-  # 核对更大的区域要分几次看，只留最新一次时模型每次只看得到一部分，会回头反复看（2026-10-08 长跑 run03：创世者核对 1200 格
-  # 平台时交替 look 两半，一小时额度全耗在这上面）。
-  defp retain(outcomes, verb) do
-    {older, _} =
-      Enum.map_reduce(outcomes, @kept_looks - 1, fn
-        %{verb: ^verb, data: data} = o, kept when data != nil and kept > 0 -> {o, kept - 1}
-        %{verb: ^verb} = o, kept -> {%{o | data: nil}, kept}
-        o, kept -> {o, kept}
-      end)
-
-    older
-  end
 
   defp height(%{y: nil}), do: nil
   defp height(%{y: y, material: material}), do: [y, material]

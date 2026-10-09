@@ -451,21 +451,45 @@ defmodule GateServer.NpcBrainLlmTest do
   # 给模型的细化行：逐个 micro 换成按材质合并的闭区间盒，并起来恰好等于原占用（手算小例）。
   test "refined rows reach the model as per-material micro boxes whose union is exactly the occupied micro cells" do
     micro = fn x, y, z, m -> %{micro: {x, y, z}, material: m, instance: [3, 0]} end
+
     # 宏格 (1,0,0)：x = 8 这一面 8×8 石（材料 11）+ 一个木 micro（材料 19）在 (15,0,0)。
     face = for y <- 0..7, z <- 0..7, do: micro.(8, y, z, 11)
-    row = %{cell: [1, 0, 0], material: 0, refined: true, slots: [], placed_by: nil, micro_cells: [micro.(15, 0, 0, 19) | face]}
 
-    assert %{micro_boxes: [%{material: 11, box: [8, 0, 0, 8, 7, 7]}, %{material: 19, box: [15, 0, 0, 15, 0, 0]}]} =
+    row = %{
+      cell: [1, 0, 0],
+      material: 0,
+      refined: true,
+      slots: [],
+      placed_by: nil,
+      micro_cells: [micro.(15, 0, 0, 19) | face]
+    }
+
+    assert %{
+             micro_boxes: [
+               %{material: 11, box: [8, 0, 0, 8, 7, 7]},
+               %{material: 19, box: [15, 0, 0, 15, 0, 0]}
+             ]
+           } =
              compact = GateServer.Npc.Perception.compact_refined(row)
 
     refute Map.has_key?(compact, :micro_cells)
 
     # L 形（不能一个盒装下）：盒互不重叠、并起来等于原集合。
     l = [{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {0, 1, 0}, {0, 2, 0}]
-    %{micro_boxes: boxes} =
-      GateServer.Npc.Perception.compact_refined(%{row | micro_cells: for({x, y, z} <- l, do: micro.(x, y, z, 11))})
 
-    covered = for %{box: [x0, y0, z0, x1, y1, z1]} <- boxes, x <- x0..x1, y <- y0..y1, z <- z0..z1, do: {x, y, z}
+    %{micro_boxes: boxes} =
+      GateServer.Npc.Perception.compact_refined(%{
+        row
+        | micro_cells: for({x, y, z} <- l, do: micro.(x, y, z, 11))
+      })
+
+    covered =
+      for %{box: [x0, y0, z0, x1, y1, z1]} <- boxes,
+          x <- x0..x1,
+          y <- y0..y1,
+          z <- z0..z1,
+          do: {x, y, z}
+
     assert Enum.sort(covered) == Enum.sort(l)
     assert length(covered) == length(Enum.uniq(covered))
 
@@ -474,7 +498,7 @@ defmodule GateServer.NpcBrainLlmTest do
     assert plain == GateServer.Npc.Perception.compact_refined(plain)
   end
 
-  test "a look outcome is kept as solid columns only, and only the latest three looks keep their data" do
+  test "look projects solid columns without erasing earlier observations" do
     cell = fn coord, material -> %{cell: coord, material: material, refined: false, slots: []} end
 
     look = fn id, cells ->
@@ -506,8 +530,7 @@ defmodule GateServer.NpcBrainLlmTest do
 
     assert 2 == map_size(solid)
 
-    # 契约（2026-10-08 起）：最近三次 look 保留内容，第四次时最早那次只留结论——大于一次 look 上限的区域分几次看，
-    # 模型要同时看得到几部分才不会回头反复看。
+    # 历史长度由大脑维护；分段查询的后续结果不能清掉前段的内容。
     fourth =
       GateServer.Npc.Perception.project(
         look.(4, [cell.([20, 64, 10], 11)]),
@@ -515,8 +538,115 @@ defmodule GateServer.NpcBrainLlmTest do
         nil
       )
 
-    assert [%{id: 4, data: %{}}, %{id: 3, data: %{}}, %{id: 2, data: %{}}, %{id: 1, data: nil}] = fourth
-    assert Enum.all?(Enum.take(fourth, 3), &(&1.data != nil))
+    assert [%{id: 4, data: %{}}, %{id: 3, data: %{}}, %{id: 2, data: %{}}, %{id: 1, data: %{}}] =
+             fourth
+
+    assert Enum.drop(fourth, 2) == second
+  end
+
+  test "the bounded brain history preserves all six vertical slices needed to check a completed plot" do
+    test = self()
+
+    request = fn _endpoint, body ->
+      send(test, {:plot_context, Jason.decode!(body.input)["outcomes"]})
+      {:ok, %{"output" => [call("wait", %{seconds: 3600})]}}
+    end
+
+    brain = brain(%{goal: "核对地块的完整竖直范围", tools: %{}, endpoint: %{model: "m"}, request: request})
+
+    # 只测试：冻结 run07 的六段高度，缩成一列；前三条是无关的更早观察。
+    # 通过公开事件入口让真实大脑构造请求；不注入其内部状态，也不请求真实模型。
+    ranges = [
+      {407, 411},
+      {412, 416},
+      {417, 421},
+      {422, 426},
+      {427, 431},
+      {432, 436},
+      {437, 441},
+      {442, 446},
+      {447, 450}
+    ]
+
+    for {{lo, hi}, id} <- Enum.with_index(ranges, 1) do
+      cells =
+        for y <- lo..hi do
+          %{
+            cell: [10, y, -556],
+            material: if(y <= 429, do: 11, else: 0),
+            refined: false,
+            slots: []
+          }
+        end
+
+      Llm.handle_event(
+        {:outcome,
+         %{
+           id: id,
+           verb: :look,
+           status: :done,
+           reason: nil,
+           data: %{
+             seq: 3302,
+             bounds_macro_inclusive: [[10, lo, -556], [10, hi, -556]],
+             outside: :unknown,
+             probe_occupancy: cells
+           }
+         }},
+        brain
+      )
+    end
+
+    Llm.handle_event({:observation, idle()}, brain)
+    assert_receive {:plot_context, outcomes}
+    assert Enum.map(outcomes, & &1["id"]) == [2, 3, 4, 5, 6, 7, 8, 9]
+
+    slices = Enum.take(outcomes, -6)
+
+    assert Enum.map(slices, & &1["data"]) == [
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 422, -556], [10, 426, -556]],
+               "outside" => "unknown",
+               "solid" => %{"10,-556" => [[422, 11], [423, 11], [424, 11], [425, 11], [426, 11]]},
+               "refined" => []
+             },
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 427, -556], [10, 431, -556]],
+               "outside" => "unknown",
+               "solid" => %{"10,-556" => [[427, 11], [428, 11], [429, 11]]},
+               "refined" => []
+             },
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 432, -556], [10, 436, -556]],
+               "outside" => "unknown",
+               "solid" => %{},
+               "refined" => []
+             },
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 437, -556], [10, 441, -556]],
+               "outside" => "unknown",
+               "solid" => %{},
+               "refined" => []
+             },
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 442, -556], [10, 446, -556]],
+               "outside" => "unknown",
+               "solid" => %{},
+               "refined" => []
+             },
+             %{
+               "seq" => 3302,
+               "bounds_macro_inclusive" => [[10, 447, -556], [10, 450, -556]],
+               "outside" => "unknown",
+               "solid" => %{},
+               "refined" => []
+             }
+           ]
   end
 
   test "look never reports a refined occupied macro as air" do
@@ -1069,6 +1199,7 @@ defmodule GateServer.NpcBrainLlmTest do
     assert length(Llm.recent_asks(asks, 71 * min)) == 26
     # 第 106 分钟：恰好一小时前（第 46 分钟）及更早的都滑出。
     assert length(Llm.recent_asks(asks, 106 * min)) == 24
+
     # 第 112 分钟：第 52 分钟及以前滑出，剩第 53–70 分钟的 18 次，额度 20 放行。
     assert length(Llm.recent_asks(asks, 112 * min)) == 18
   end

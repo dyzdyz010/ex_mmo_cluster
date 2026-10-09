@@ -14,9 +14,9 @@
 
 | # | 内容 | 状态 |
 |---|---|---|
-| M1 | NPC 注册表 + 节点重启自动恢复（`npc_specs` 表、`GateServer.Npc.Registry`、启动时拉起） | 已实现、测试通过，待复核提交（§6） |
-| M2 | 创世能力组 `:genesis`（`fill_box` / `set_cells`，底层 `World.apply_edits`，只授予注册表标了 genesis 的 NPC） | 已实现、测试通过，待复核提交（§6） |
-| M3 | scene_server：非流送 Scene 里 Player 在碰撞基线装好前收到 timeline 时 `CollisionUpdates.record_artifact/3` KeyError 崩溃 | 待做 |
+| M1 | NPC 注册表 + 节点重启自动恢复（`npc_specs` 表、`GateServer.Npc.Registry`、启动时拉起） | 已提交，run02 机制验收通过（§6） |
+| M2 | 创世能力组 `:genesis`（`fill_box` / `set_cells`，底层 `World.apply_edits`，只授予注册表标了 genesis 的 NPC） | 已提交，run02 机制验收通过（§6） |
+| M3 | scene_server：非流送 Scene 里 Player 在碰撞基线装好前收到 timeline 时 `CollisionUpdates.record_artifact/3` KeyError 崩溃 | 已修复、已提交，验证见 §4 / §6 |
 | M4 | 客户端 `dead` 中文文案（Voxim 资产，随客户端一起） | 待做 |
 | M5 | 持续扩张：技能 `expand`（区域内选址、缺料自采、放置）+ Settler 可选 `expansion`（每轮维护完再建一座） | 已实现并提交；run07 持续扩展验收未通过（§6.1、§7） |
 | L | 长跑验收（建设者 / LLM 住民 / 创世 NPC，服务端浸泡 + 短双客户端） | run07 六小时与一次双端观察已收尾；持续扩展、双端完整观察均未通过，未进入 24 h（§6.1） |
@@ -187,6 +187,63 @@ B 在最后的 `@place 67.5 416.91 -510.5` 失败：原生 `find_spawn` 返回 `
 
 **后续须用户确认**：优先待定的是创世者重复查看 / 不再扩展，以及 B 端站位失败；住民补料与设计预算余量、M4 dead 文案、后续复验 / 24 h、合并决定仍待确认。本轮只提交本 worktree 文档，不 push、不合并 master。
 
+### 6.2 run07 阻塞项修复（2026-10-09，续接）
+
+用户要求继续 NPC 工作；本轮先诊断并修复持续扩展与观察夹具的已知阻塞，原 run07 失败证据保留。
+
+**创世者上下文根因与方案**：日志中调用 98–103 用六次 look 核对第 10 块的 y422..450，104 起又回到
+y422..426。`Perception.project/3` 在第四次 look 时清空第一份内容，`Brain.Llm` 本来另有最近八条 Outcome 上限；
+在整块核对完成前，三份下层观察已丢失。survey 只描述可站地表，不能证明完整地下实心／上方空气体积。
+删除 look / survey 投影层的三次裁剪，保留既有的有界 Outcome 窗口；每项仍带自己的 seq、XYZ 范围及结果，
+不合成原子快照、不持有第二份世界状态、不新增进度缓存。持久记忆写入与预算不变。
+
+依据：[Anthropic 的上下文工程实践](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+建议先保证必要信息的召回，再去除冗余；过早清除工具结果可能丢失关键上下文。本项目已按单次查询限量和
+大脑历史限长，因此删除重复且破坏同一轮核对的裁剪。取舍：最近八条里可能携带更多观察内容；这修复已证实的
+信息丢失，不承诺任意大的工程都能放进八条上下文，更不把模型下一步必然扩展当作纯测试能证明的事实。
+
+**最小测试计划**：纯投影验证后续 look / survey 不清空先前结果；真实 Llm 事件入口接收九份观察，捕获请求，
+核对只留最近八份、六段 XYZ 数据与版本都在。模型 HTTP 和持久记忆使用既有替身，不起 World / 数据库／客户端，
+因为本次变更只涉及从权威 Outcome 到请求的投影。再跑两个投影测试文件与共享投影调用方 HouseDesign 的相关测试；
+不重跑无关 suite。命令从 `apps/gate_server` 执行 `mix.bat test --no-start` 加上述文件，证据写入
+本 worktree `.demo/observe/npc-run07-fixes/`。双端夹具另按其碰撞原因选择回归，不以本测试代替。
+
+**观察夹具根因与方案**：失败脚格 `(67,416,-511)` 下方是建设者实例 2060 的细化面板（宏格材料 0，
+64/512 micro，原 `observe-world.json` 的 rows / refined_faces 可核对）。旧 `observe07.load` 用 `r[3] or 1`
+把它当完整宏格，`smelting_plan.stand_ok` 因而接受。原生 `find_spawn` 在同一要求高度返回 `not_found`；
+最小碰撞副本复现：完整格落点 y416.91、薄面板同高度 not_found、下探后天然地面 y415.91。
+修复入口为仓库 `scripts/npc_run07_observe.py`：复用既有驱动及判定器，细化格在离线投影记为部分占用（-1，
+不是材料 id），仍遮挡射线／净空，但不满足完整宏格地面条件。依据是共享原生运动内核的实际几何查询及
+既有 Body 寻路的保守细化格契约，未改变生产碰撞／站位入口。该脚本只适配 run07 观察，依赖同级 Voxim 的
+`Saved/CapabilityLibrary-20261008/observe07.py`、`observe_short.py` 及 `Docs/Gameplay`、`Docs/R7` 现有工具，
+不是第二条生产运行路径。`--run-dir` 必填；输出用新目录，原 run07 不覆盖。
+
+**验证结果**（当前是已实现、局部验证通过，未完成新版长跑／真实双端复验）：
+
+- 上下文回归改前 3/3 失败，准确呈现旧观察被置 nil；改后相关 50 项通过。完整命令：在 `apps/gate_server`，
+  环境 `MIX_ENV=test MMO_DB_PORT=26909 MMO_DB_PASSWORD=p0_body_test_only`，执行
+  `mix.bat test --no-start test/gate_server/npc_brain_llm_test.exs test/gate_server/npc_survey_test.exs test/gate_server/npc_skill_house_design_test.exs`。
+  前两文件的新增／修改用例不启动 World / DB，HouseDesign 文件沿其原有真实 World / DB 夹具验证共享调用方。
+  日志 `red-context.log`、`green-context.log`；编译输出仍有既有未修改模块告警。
+- `python scripts/test_npc_run07_observe.py`：站位反例改前失败、改后通过；独立审查发现的共享函数改写已删除，
+  补普通 World 不受导入影响的反例（改前 AttributeError），最终 2/2 通过。日志 `red-stand.log`、
+  `red-shared-planner.log`、`green-stand-final.log`；复核无重要遗留发现。原生复现入口：根目录
+  `MIX_ENV=test mix.bat run --no-start .demo/observe/npc-run07-fixes/stand_probe.exs`，见 `native-stand.log`。
+- 把原 run07 的 `observe-world.json` / `observe-house-instances.json` 复制到新目录
+  `.demo/observe/npc-run07-fixes/replan-final/`，执行
+  `python scripts/npc_run07_observe.py plan --run-dir .demo/observe/npc-run07-fixes/replan-final`，再执行
+  `python scripts/npc_run07_observe.py dry --run-dir .demo/observe/npc-run07-fixes/replan-final --out .demo/observe/npc-run07-fixes/replan-final/dry`。
+  A/B 为 54/58 步、计划 121.98/135.98 秒；原 O1–O5 的 8 项反例自检通过。B 面板新站位脚格为 `(66,415,-511)`，
+  其下是完整天然地面。只有离线检查通过，没有把它写成双端已经通过。
+- 一次真实模型短探针：根目录 `python .demo/observe/npc-run07-fixes/live_probe.py`，从原任务已停止容器读取
+  模型环境到内存（不落密钥），以 C-at-6h 的 seq3302 第 10 块完整六段观察加固定进度笔记发一次请求。
+  `gpt-6.1-sol/high`、输入 8281 / 输出 121 / 合计 8402 token；模型调用 remember，明确第 10 块已完成、
+  下一块为第 11 块，没有再次 look。`live-context-request.json` / `live-context-response.json` / `live-context.log`
+  保存输入与返回；这是固定副本上的单次决策，不证明在线世界持续扩展，也不评价记忆检索或绕过六小时验收。
+
+下一步：新版正式镜像上的短双端复验，再安排六小时持续扩展复验；通过后才进入 24 h。
+run07 容器保持停止，本轮未修改 Voxim 主树产品代码、未推送／合并／公网部署。
+
 ## 7 持续扩张（M5）
 
 用户 2026-10-08 问“建设者为什么不一直盖新房子”：Settler 只维护作者给定的工地清单，建完就只会被拆重建。要让它在作者划定的扩展
@@ -198,7 +255,7 @@ B 在最后的 `@place 67.5 416.91 -510.5` 失败：原生 `find_spawn` 返回 `
 |---|---|
 | 技能 | `expand{definition: hex64, region: [[x0, z0], [x1, z1]]（整数格水平闭区间）, tool_id, spacing ≥ 0}`，内置技能（`Skills` 的 `@builtins`），strict schema。只经 Body 原子动作：`read_catalog` / `move_to` / `look` / `query_balances` / `prefab_place`；采石调 `Skills.Gather.run/3`（同一套原子动作，不复制采石逻辑；步号在本调用号下另起命名空间 `{:gather, n}`，技能内部一步统一由新的 `Skill.call/2` 发出） |
 | 步行网格 | Body 的寻路网格只用 `Perception.walk_kind/1`：挡路、非液体、非细化 = 能踩；不挡路（空气、花草）= 能穿过；液体与**细化格既不能穿过也不能站**（不进网格）。起点是身体的权威位置：`Path.find/7` 的 `trusted_start: true` 让落不到站立格的起点（站在细化格空着的部分或其上）照常出发；草稿检查（`PrefabDesigner.Check`）的假设入口点不受影响。冻结样例新增 `blocked` / `trusted_start` 两个键与 6 例（2026-10-09，run06 根因 ①） |
-| 勘察 | 新感知原语 `survey{x0, z0, x1, z1}`（`:sense` 组，strict，描述数字由源常量插值）：列闭区间每边 ≤ 32 列、各边离自己 ≤ reach，竖直取自己所在高度上下 reach（与 look 同一距离护栏），按 x 分片经 `World.material_snapshot/3` 读，`seq` 给 [首片, 末片]。每列 `floors`（站得下的地面层：能踩、其上身高格数都能穿过且在范围内，`Perception.floors/2`）、地表 `y`（最高一层）及其材质 / `placed_by`、`refined`（这一列有细化格）；LLM 投影为按行的 `[y, material]` 高度图 + placed / refined 稀疏表，与 look 一样只留最近 3 次。创世者核对整平、expand 选址、travel 找落脚共用这一份列扫描规则（run06 根因 ②④） |
+| 勘察 | 新感知原语 `survey{x0, z0, x1, z1}`（`:sense` 组，strict，描述数字由源常量插值）：列闭区间每边 ≤ 32 列、各边离自己 ≤ reach，竖直取自己所在高度上下 reach（与 look 同一距离护栏），按 x 分片经 `World.material_snapshot/3` 读，`seq` 给 [首片, 末片]。每列 `floors`（站得下的地面层：能踩、其上身高格数都能穿过且在范围内，`Perception.floors/2`）、地表 `y`（最高一层）及其材质 / `placed_by`、`refined`（这一列有细化格）；LLM 投影为按行的 `[y, material]` 高度图 + placed / refined 稀疏表，与 look 一样随大脑最近 8 条 Outcome 保留和淘汰（§6.2）。创世者核对整平、expand 选址、travel 找落脚共用这一份列扫描规则（run06 根因 ②④） |
 | 选址 | `read_catalog prefab` 新增 `bounds_micro`（朝向 0 时相对锚点的 micro 半开包围盒）→ 足迹；只用朝向 0。候选地块 = 区域内从 (x0, z0) 起、间距“足迹宽 + spacing”的网格，按地块中心离自己由近到远。逐个 survey 勘察窗口（足迹外扩 max(spacing, 2) 列），地面取**每个候选自己的地表**（原先只在自己脚下 ±4 格找）。判定（纯函数 `site/4`，依次）：足迹外扩 spacing 的列里地表有放置记录或有细化格（`crowded`）→ 足迹每列都有可站的地面（`no_ground`）→ 足迹各列地表高差 ≤ 2 格（`uneven`，原先要求逐列同高）→ 四个边中点站位里有一个离目标地面 ≤ 2 格、站得下（`no_stand`）。锚点在宏格角上（满足对齐门），底层落在目标地面 + 1 |
 | 平整 | 目标地面 g = 足迹各列地表的**下中位数**（规则与依据见下文取舍）。分块 look 平整体积（足迹各列从最低地表到 g + 建筑高度，纯函数 `level/2`）：g 以上的非空气天然格（含花草）挖掉，g 及以下的空位（空气或花草，放置会直接覆盖花草）填石；要动的格有放置记录 / 细化 / 液体 → `blocked`（依据 w/prefabs.ex `place_aligned_tree`：prefab 只放进格值 `{0, _}`）。到站位后逐格挖（`Gather.mine/3`，与 gather 同一套探测与逐击；材料照常入账；命中作者 prefab 宏格 → `blocked`，这次打不到 → `out_of_reach`），补料后自下而上 `place` 填石（与玩家同一入口、花自己的余额，石料 id 取材质契约的 stone）。只动足迹内的格，站位不动 |
 | 行走 | 勘察窗口不在 survey 范围内时，先 travel 走到地块最近的站位（`Travel.walk/2`：直线分段、每段 ≤ reach − 2，每段先 survey 段终点列、取离脚下最近的可站层带 y 走）；某段 no_path / stuck / too_far → 跳过这块地 |
