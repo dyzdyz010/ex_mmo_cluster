@@ -318,6 +318,43 @@ BEAM 离散样本范围 311.5–695.8 MB，进程 568–593；不据此宣称无
 终点后的最后一次采样与停机重叠，发生一次 World RPC `shutdown`，已记入 samples/stderr；不影响之前完成的 seq1856 终点副本，不把它隐去或计为运行期崩溃。
 剩余工作：查明旧保护“应答时间计数”与大脑“请求开始时间滑窗”的差异；按已批准 60 次额度重新定义相容的观测／成本预算，再从新环境做连续验收。
 
+### 6.4 run09：200 万设计 token 额度重跑（2026-10-10）
+
+用户明确要求「token 放宽至 200 万，重跑」。沿用每个 LLM NPC 每滚动小时 60 次主请求，
+把住民设计保护从每滚动小时 150 万提高到 **200 万 token**；单次设计仍为 12 轮／24 万 token。
+本轮从全新数据库与 baseline 开始跑六小时，仍使用 `74e9ca3b` 的同一正式镜像、协议 39、相同目标与一次性木料样本。
+run08 的全部中断和失败证据保留。此次只改测试保护与取证，不改产品运行时，已通过的 smoke08 双端回归不重复。
+
+**保护计数根因与修正**：旧采样器按应答完成时间统计，生产 Llm owner 按请求开始的单调时间限额。
+run08 创世者撤下窗口实际有 21 次完成、20 次开始；因此不能用完成数证明主请求超额。
+测试 trace 新增主请求的 canonical `self.entity_id` 与同一 VM 的单调时钟起点 `m0_us`，
+采样器向该 VM 读取当前单调时间后按 NPC 计数；完成数继续保留为观测。
+沿用辅助保护的 5 秒时钟／调度容差（3595 秒观测窗口），生产 owner 的 3600 秒／60 次契约不变。
+trace 仅在请求完成后落盘，所以该辅助检查不计尚未完成的请求；它不替代生产 owner 的准入限制。
+设计 token 仍复用原 trace／Outcome 两路用量取较大值的保护；连续失败保护不变。
+
+依据：[Erlang/OTP 27 时间修正文档](https://www.erlang.org/docs/27/apps/erts/time_correction.html)
+要求以单调时钟差度量持续时间；本仓 `Brain.Llm` 的额度窗口也使用单调时钟。
+这里采用同 VM 时钟避免主机 UTC 与 VM 持续时间混用，保留原取证生命周期，不新增生产额度 owner。
+
+最小验证：`python scripts/test_npc_soak_sampler.py`，4 项覆盖跨窗口完成不得误撤、真实超额应撤、
+不同 NPC／设计请求不混计与窗口边界、200 万允许而超一 token 撤下。
+旧实现 1 项失败，新实现 4 项通过，证据 `.demo/observe/npc-run09/guard-{red,green}.log`。
+新入口为 `scripts/npc_soak_sampler.py`、`scripts/npc_soak_trace.exs`；依赖冻结的 run07 采样工具，明确只供此次测试。
+编排 `.demo/observe/npc-run09/run.py`，自动收尾 `.demo/observe/npc-run09/finish.py`；
+产物写入 `Voxim/Saved/CapabilityLibrary-20261008/run09/`，运行数据写入 `server-run09/`。
+到六小时取证并停止容器；自动报告标为 `pending_review`，按真实扩展、完成区域和异常复核后才判验收。
+
+**启动核验**：`prepare/start/register --mode soak` 顺序执行；库 `voxim_caplib_run09`、容器
+`voxim-caplib-20261010-run09`，启动 seq0、注册表空、协议 39、镜像 ID 与 run08 相同。
+严格窗口为 **2026-10-09 16:58:31.973853—22:58:31.973853 UTC**，
+即北京时间 **10 月 10 日 00:58:32—06:58:32**。
+后台采样 PID137308，自动收尾 PID147160；命令分别为
+`python .demo/observe/npc-run09/run.py sample --mode soak` 与 `python .demo/observe/npc-run09/finish.py`。
+首样本 seq9、建设者 1 面板、三个 NPC 均运行、trace 存活，两份主请求记录身份与单调起点齐全。
+`request-budget-samples.jsonl` 确认 60／2000000 已生效；`finish-scheduled.json` 已记录严格终点。
+此刻只证明启动和观测接通，六小时持续扩展仍待终点复核。
+
 ## 7 持续扩张（M5）
 
 用户 2026-10-08 问“建设者为什么不一直盖新房子”：Settler 只维护作者给定的工地清单，建完就只会被拆重建。要让它在作者划定的扩展
