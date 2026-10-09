@@ -267,8 +267,8 @@ run07 容器保持停止，本轮未修改 Voxim 主树产品代码、未推送�
 
 长跑于 **2026-10-09 06:50:28.167014 UTC** 开始，严格终点 **12:50:28.167014 UTC**（北京时间 14:50:28–20:50:28）。
 容器 `voxim-caplib-20261009-run08`、库 `voxim_caplib_run08`，启动时 seq0、注册表空；三个 NPC 注册文件与 C/R/S 初始副本在 `run08/`。
-采样进程 PID175312，命令 `python .demo/observe/npc-run08/run.py sample --mode soak`，首样本 elapsed0.2min。
-独立收尾进程现为 PID178984（仅报告修正替换了原 PID167236）执行 `.demo/observe/npc-run08/finish.py`：到时取 C/R/S 与权威汇总，停止并保留容器，归档严格窗口日志与请求，
+原采样进程 PID175312（20 次阶段；现已替换，见下），命令 `python .demo/observe/npc-run08/run.py sample --mode soak`，首样本 elapsed0.2min。
+独立收尾曾为 PID178984（报告修正阶段；现已替换，见下）执行 `.demo/observe/npc-run08/finish.py`：到时取 C/R/S 与权威汇总，停止并保留容器，归档严格窗口日志与请求，
 复用 run07 统计脚本生成 `summary-6h.json` / `audit-6h.json`；自动收尾状态在 `finish-result.json`，**验收仍须复核实际增量，不能把自动收尾成功当通过**。
 收尾脚本的严格结束边界与内存脱敏已用合成数据验证；日志在本 worktree `.demo/observe/npc-run08/{sampler,finish}.{stdout,stderr}.log`。
 当前六小时仍在进行，24 h 尚未进入。
@@ -286,6 +286,21 @@ run07 容器保持停止，本轮未修改 Voxim 主树产品代码、未推送�
 `python -m unittest discover -s scripts -p test_npc_run07_observe.py`（2 项，既有站位语义）。
 本轮只读取证在 `run08/status-check-0845/`，调度记录 `finish-scheduled-v3.json`，新收尾日志 `.demo/observe/npc-run08/finish-v3.{stdout,stderr}.log`；
 前两版调度记录保留，均未执行终点动作。最终报告仍待六小时结束后复核。
+
+**12:08 UTC 用户调整额度并恢复运行**：用户明确要求“额度放宽至60次”，现行值为**每个 LLM NPC 每滑动小时 60 次**。
+核对时发现住民已于 08:51:10 UTC、创世者已于 09:51:06 UTC 被旧采样器以“窗口内 21 次决策”撤下，原记录在 `run08/guards.jsonl`；
+因此原六小时三者持续扩展已中断，后续恢复不改变这一结论。21 次应答计数与大脑请求起点窗口的差异仍待专项核对，不据此断言服务端额度失效。
+
+通过现有 `GateServer.Npc.Registry.put/2` 于 **12:08:14.398345 UTC** 恢复两者，仅改持久参数 `max_requests_per_hour: 20 → 60`。
+这是注册表规定的重启生效路径（`registry.ex` / `NpcSpecs` 的公开契约），原 cid、世界、余额与持久记忆保留；Body 从登记出生点重新入场、短期历史重建。
+观察到创世者 `recall work_blocks` 后继续编辑，住民重新勘察／采料。建设者未重启。
+本轮编排 `run.py` 的 `LLM_REQUESTS_PER_HOUR = 60` 同时用于后续登记与采样器 `DECISION_LIMIT`，旧 run07 脚本不改；
+旧采样状态及两次保护事件在 `run08/quota60/` 保留后，显式解除已恢复角色的撤下锁存，保护规则继续生效。
+持久值、`Registry.brain/2` 解析值均为 60、两者 enabled/running、相同 cid 已实查；证据 `quota60/{before,applied,verified}.json`。
+
+现采样 PID40800，日志 `sampler-quota60.*.log`；收尾 PID173916，记录 `finish-scheduled-v4.json`、日志 `finish-v4.*.log`。
+**终点仍为 12:50:28 UTC（北京时间 20:50:28）**，不重新计六小时。`operator-events.jsonl` 记载人工调整；
+最终 summary/audit/finish 都保留全部 guard 事件并标记 `original_uninterrupted_soak_not_passed`，只能作为中断前后分段观察，不能宣称完成六小时 60 次额度验收。
 
 ## 7 持续扩张（M5）
 
