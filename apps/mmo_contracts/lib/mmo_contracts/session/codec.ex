@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 39
+  @protocol_version 40
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -130,7 +130,14 @@ defmodule MmoContracts.Session.Codec do
        ]},
     14 => {Session.ProjectileHit, [identity: :identity, world_seq: :u64,
       projectile_seq: :u64, projectile_n: :u32, source_id: :u64, source_life: :u64,
-      target_id: :u64, target_life: :u64, q_j: :f64, position: :vec3]}
+      target_id: :u64, target_life: :u64, q_j: :f64, position: :vec3]},
+    15 => {Session.Say, [identity: :identity, request_id: :u64, target_id: :u64,
+      conversation_id: :u64, text: :utf8]},
+    16 => {Session.Speech, [identity: :identity, conversation_id: :u64, turn: :u32,
+      speaker_id: :u64, speaker_epoch: :u64, speaker_kind: :u8, speaker_name: :utf8,
+      target_id: :u64, at_ms: :u64, text: :utf8]},
+    17 => {Session.SayResult, [identity: :identity, request_id: :u64,
+      conversation_id: :u64, turn: :u32, reason: :utf8]}
   }
 
   @moduledoc "现行认证、入场、心跳的纯字节契约；大端，入场位置仍为旧 UE/cm，不是 canonical 米。"

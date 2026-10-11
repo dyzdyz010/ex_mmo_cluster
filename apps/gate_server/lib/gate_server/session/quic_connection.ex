@@ -603,6 +603,8 @@ defmodule GateServer.Session.QuicConnection do
       voxim_overlay: true,
       world_ref: state.route.world_ref,
       player: state.player,
+      scene: state.scene,
+      scene_ref: state.route.scene_ref,
       identity: state.identity,
       cid: state.cid,
       received_us: queued_at,
@@ -623,7 +625,7 @@ defmodule GateServer.Session.QuicConnection do
         elapsed = System.monotonic_time(:microsecond) - started
 
         Logger.info(
-          "mmo_edit_completed kind=#{kind} request_id=#{request.request_id} scene_id=#{request.logical_scene_id} queue_wait_us=#{started - queued_at} worker_us=#{elapsed}"
+          "mmo_edit_completed kind=#{kind} request_id=#{request.request_id} scene_id=#{Map.get(request, :logical_scene_id, ctx.identity.scene_id)} queue_wait_us=#{started - queued_at} worker_us=#{elapsed}"
         )
 
         send(gate, {:mmo_edit_finished, ref, started - queued_at, elapsed})
@@ -731,6 +733,22 @@ defmodule GateServer.Session.QuicConnection do
        when identity != nil do
     SceneServer.Movement.Player.time_probe(state.player, identity, probe)
     state
+  end
+
+  defp control(%{identity: identity} = state, %Session.Say{} = request)
+       when identity != nil do
+    reason = cond do
+      request.identity != identity -> "invalid_session"
+      state.pending_transfer != nil -> "transfer_in_progress"
+      true -> nil
+    end
+
+    if reason do
+      send_message(state, 1, %Session.SayResult{identity: identity,
+        request_id: request.request_id, conversation_id: 0, turn: 0, reason: reason})
+    else
+      enqueue_edit(state, {:say, request})
+    end
   end
 
   defp control(%{identity: identity} = state, %Session.SessionEnd{identity: identity, reason: 1})

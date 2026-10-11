@@ -3,6 +3,12 @@
 本目录定义 Voxim QUIC 会话：`quic_connection.ex` 负责鉴权、入场、输入与出站字节，体素意图经连接懒启动的一个
 linked 编辑 worker 串行执行。
 
+Hello40 追加附近对话 `Session.Say` / `Speech` / `SayResult`，详见
+[对话契约](../../../../../docs/10-active/cross-cutting/2026-10-11-npc-dialogue.md)。
+已鉴权且未移交的 Say 复用同一串行动作 worker；Dispatch 仅调 Scene.say，结果经可靠 control 流返回。
+Scene 决定发言人与听众，Gate 不解释台词、调用模型或等待记忆。超时回 `delivery_unknown`，
+表示是否已送达未知，不能显示为权威拒绝，也不自动重发。旧身份和移交中的请求在 Gate 显式拒绝。
+
 | 模块 | 职责 |
 |---|---|
 | `quic_connection.ex` | QUIC 连接进程：按通道选 codec 解码，路由移动输入与体素意图 |

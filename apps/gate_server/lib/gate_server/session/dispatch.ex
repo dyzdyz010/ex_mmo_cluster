@@ -87,6 +87,33 @@ defmodule GateServer.Session.Dispatch do
   @spec handle(term(), state()) :: {:ok, state()}
   def handle(message, state)
 
+  # 对话复用串行动作 worker；Scene 只处理权威发言，不等待听者模型或记忆写入。
+  def handle({:say, request}, %{status: :in_scene} = state) do
+    result =
+      try do
+        state.scene.say(state.scene_ref, state.identity, request)
+      catch
+        :exit, reason ->
+          Logger.warning("dialogue_delivery_unknown request_id=#{request.request_id} reason=#{inspect(reason)}")
+          {:error, :delivery_unknown}
+      end
+
+    {conversation, turn, reason} =
+      case result do
+        {:ok, speech} -> {speech.conversation_id, speech.turn, "ok"}
+        {:error, reason} -> {0, 0, to_string(reason)}
+      end
+
+    {gate, _} = state.sink.ref
+    Sink.reliable(gate, state.identity, :control, %MmoContracts.Session.SayResult{
+      identity: state.identity, request_id: request.request_id,
+      conversation_id: conversation, turn: turn, reason: reason
+    })
+    emit(state, "dialogue.result", %{request_id: request.request_id,
+      conversation_id: conversation, turn: turn, reason: reason})
+    {:ok, state}
+  end
+
   # 只读余额取已鉴权的角色身份，不依赖移动 Ready 握手。
   def handle(
         {:voxel_production_intent, %{action: 0} = request},

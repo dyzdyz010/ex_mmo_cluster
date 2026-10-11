@@ -181,3 +181,22 @@ defmodule MmoContracts.Session.ToolState do
   ]
   defstruct @enforce_keys
 end
+
+defmodule MmoContracts.Session.Say do
+  @moduledoc "全局对话 Hello40：已鉴权角色的发言意图；0 目标为附近公开，0 会话为新话题。"
+  @enforce_keys [:identity, :request_id, :target_id, :conversation_id, :text]
+  defstruct @enforce_keys
+end
+
+defmodule MmoContracts.Session.Speech do
+  @moduledoc "全局对话 Hello40：权威发言；identity 是接收者，conversation_id/turn 是事件唯一键。"
+  @enforce_keys [:identity, :conversation_id, :turn, :speaker_id, :speaker_epoch,
+    :speaker_kind, :speaker_name, :target_id, :at_ms, :text]
+  defstruct @enforce_keys
+end
+
+defmodule MmoContracts.Session.SayResult do
+  @moduledoc "全局对话 Hello40：request_id 关联受理回执；reason=ok 表示排入当时听众的可靠出口。"
+  @enforce_keys [:identity, :request_id, :conversation_id, :turn, :reason]
+  defstruct @enforce_keys
+end
