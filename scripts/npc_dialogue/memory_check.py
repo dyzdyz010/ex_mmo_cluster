@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 import time
 import unittest
 from datetime import datetime
@@ -144,7 +145,8 @@ def semantic_audit(bundle, review):
         assert all(item.get(k) is True for k in ('content_supported', 'speaker_correct', 'statement_not_world_fact')), 'semantic review did not pass'
         assert item.get('note'), 'review must explain the actual fact/source correspondence'
     assert bundle['usage']['within_budget'], 'token cap exceeded'
-    return dict(accepted=True, source_provenance_passed=True, semantic_review_passed=True,
+    return dict(accepted=True, scope='memory_only', source=bundle.get('source'),
+                source_provenance_passed=True, semantic_review_passed=True,
                 canonical_preserved=True, evidence_sha256=digest(bundle), usage=bundle['usage'])
 
 
@@ -153,9 +155,9 @@ def source_plan(source):
     fixtures = read(source / 'fixtures.json')
     assert len(fixtures['npcs']) == len(set(fixtures['npcs'])) == 2, 'two distinct NPCs required'
     assert BASELINE <= fixtures['cumulative_tokens_before'] < CAP and fixtures['cumulative_token_cap'] == CAP, 'invalid cumulative ledger/cap'
-    assert fixtures['decision_guard'] == DECISION_GUARD and fixtures['npc_request_limits'] == [16, 16]
-    assert read(source / 'verdict.json')['accepted'] is True, 'live dialogue acceptance required'
-    assert read(source / 'errors.json') == [], 'live run had unresolved errors'
+    assert fixtures['decision_guard'] == DECISION_GUARD, 'unexpected decision observation guard'
+    errors = read(source / 'errors.json')
+    clients = read(source / 'clients.json')
     rows = read(source / 'scene.json')
     verified = verify.authority_events(rows)
     authority = []
@@ -174,21 +176,45 @@ def source_plan(source):
             pair = [opening, min(answers, key=lambda s: s['turn'])]
             break
     assert pair and all(set(fixtures['npcs']) <= set(s['recipients']) for s in pair), 'reciprocal NPC sources missing'
+    receipts = {}
+    for cid in fixtures['npcs']:
+        observed = read(source / f'before-restore-{cid}.json')
+        assert observed['life']['cid'] == cid, 'NPC observation identity mismatch'
+        heard = observed['body']['dialogue']
+        receipts[str(cid)] = []
+        for speech in pair:
+            received = [r for r in heard if key(r) == key(speech)]
+            assert len(received) == 1 and all(received[0][f] == speech[f] for f in FIELDS), 'NPC did not receive the authoritative sample'
+            receipts[str(cid)].append(received[0])
     requests, started = read(source / 'requests.json'), read(source / 'started.json')
     completed_ids = {(r['pid'], r['at_ms']) for r in requests}
     started_ids = {(r['pid'], r['at_ms']) for r in started}
     assert len(completed_ids) == len(requests) and len(started_ids) == len(started), 'duplicate decision trace identity'
     assert completed_ids == started_ids, 'unfinished decision token accounting'
     counts = {cid: 0 for cid in fixtures['npcs']}
+    calls = {cid: [] for cid in fixtures['npcs']}
     decision_tokens = 0
     for row in requests:
         cid = json.loads(row['request']['input'])['self']['entity_id']
         assert cid in counts and row['status'] == 'ok', 'unexpected/failed decision request'
         counts[cid] += 1
         decision_tokens += row['usage']['total_tokens']
-    assert all(0 < count <= 16 for count in counts.values()) and decision_tokens < DECISION_GUARD
+        calls[cid].extend(json.loads(call['arguments']) for call in row['calls'] if call['name'] == 'say')
+    assert all(0 < count <= 16 for count in counts.values()), 'per-NPC model request cap exceeded'
+    for speech in pair:
+        assert any(call['text'].strip() == speech['text'] and call['target_id'] == speech['target_id'] and
+                   call.get('conversation_id') in (None, 0, speech['conversation_id'])
+                   for call in calls[speech['speaker_id']]), 'speech lacks independent speaker model source'
     baselines = {str(cid): read(source / f'memory-before-{cid}.json') for cid in fixtures['npcs']}
-    return dict(fixtures=fixtures, authority=authority, expected=pair, baselines=baselines,
+    minimum_usage = usage_report(fixtures, decision_tokens, baselines, baselines)
+    assert minimum_usage['within_budget'], 'cumulative token cap exceeded before memory verification'
+    provenance = dict(path=str(source), errors=errors,
+                      client_replay={role: {k: row[k] for k in ('replay', 'exit_code', 'started_utc', 'ended_utc') if k in row}
+                                     for role, row in clients.items()},
+                      budget_stop=decision_tokens >= fixtures['decision_guard'],
+                      decision_guard=fixtures['decision_guard'])
+    return dict(scope='memory_only', source=provenance, fixtures=fixtures, authority=authority,
+                expected=pair, npc_receipts=receipts, baselines=baselines, minimum_usage=minimum_usage,
                 decision_tokens=decision_tokens, decision_counts=counts)
 
 
@@ -207,7 +233,7 @@ def execute(source, out, timeout):
     service.preflight(required=True)
     plan = source_plan(source)
     fixtures, npcs = plan['fixtures'], plan['fixtures']['npcs']
-    save(out / 'plan.json', dict(plan, source=str(source), classification='Test-only'))
+    save(out / 'plan.json', dict(plan, classification='Test-only'))
     version = api_get('/version')
     save(out / 'hindsight-version.json', version)
     assert version['api_version'] == '0.10.3' and version['features']['store_document_text']
@@ -307,7 +333,7 @@ def execute(source, out, timeout):
     save(out / 'final.json', final)
     for cid in npcs:
         assert checkpoint(final['snapshots'][str(cid)], cid) == checkpoint(retained['snapshots'][str(cid)], cid), 'recall changed canonical mind/World cursor'
-    bundle = dict(expected=plan['expected'], authority=plan['authority'], proofs=proofs,
+    bundle = dict(scope='memory_only', source=plan['source'], expected=plan['expected'], authority=plan['authority'], proofs=proofs,
                   recalls=recalls, documents=documents, usage=final['usage'],
                   canonical={str(cid): checkpoint(retained['snapshots'][str(cid)], cid) for cid in npcs})
     save(out / 'evidence.json', bundle)
@@ -315,7 +341,8 @@ def execute(source, out, timeout):
         dict(cid=p['cid'], source=m['source'], speaker_id=m['speaker_id'], fact_id=None,
              candidate_fact_ids=m['fact_ids'], content_supported=False, speaker_correct=False,
              statement_not_world_fact=False, note='') for p in proofs for m in p['matches']]))
-    result = dict(accepted=False, source_provenance_passed=True, canonical_preserved=True,
+    result = dict(accepted=False, scope='memory_only', source=plan['source'],
+                  source_provenance_passed=True, canonical_preserved=True,
                   semantic_review_pending=True, usage=final['usage'], evidence_sha256=digest(bundle))
     save(out / 'verdict.json', result)
     return result
@@ -436,6 +463,56 @@ class MemoryCheckTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 checkpoint(bad, 21)
 
+    def source_fixture(self, directory):
+        source = Path(directory)
+        speeches = [self.speech, dict(self.speech, turn=2, speaker_id=21, speaker_name='乙',
+                                     target_id=20, text='我愿意先观察。', at_ms=2000)]
+        fixtures = dict(npcs=[20, 21], cumulative_tokens_before=BASELINE,
+                        cumulative_token_cap=CAP, decision_guard=DECISION_GUARD)
+        save(source / 'fixtures.json', fixtures)
+        save(source / 'errors.json', ["RuntimeError('decision token guard')"])
+        save(source / 'clients.json', {role: dict(replay='interrupted', exit_code=0) for role in ('a', 'b')})
+        rows = []
+        requests = []
+        for speech in speeches:
+            rows.append(dict(speech, event='dialogue.result', reason='ok', recipients=2))
+            rows.extend(dict(speech, event='dialogue.speech', receiver_id=cid) for cid in fixtures['npcs'])
+            requests.append(dict(pid=str(speech['speaker_id']), at_ms=speech['at_ms'] - 500,
+                                 status='ok', request=dict(input=json.dumps(dict(self=dict(entity_id=speech['speaker_id'])))),
+                                 usage=dict(total_tokens=185_831), calls=[dict(name='say', arguments=json.dumps(
+                                     dict(text=speech['text'], target_id=speech['target_id'], conversation_id=100)))]))
+        save(source / 'scene.json', rows)
+        save(source / 'requests.json', requests)
+        save(source / 'started.json', [dict(pid=r['pid'], at_ms=r['at_ms']) for r in requests])
+        for cid in fixtures['npcs']:
+            save(source / f'before-restore-{cid}.json', dict(life=dict(cid=cid), body=dict(dialogue=speeches)))
+            save(source / f'memory-before-{cid}.json', dict(
+                stats=dict(bank_id=f'npc-life-{cid}', failed_operations=0, failed_consolidation=0), usage={}))
+        return source
+
+    def test_paid_stop_can_verify_existing_memory_without_green_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan = source_plan(self.source_fixture(directory))
+            self.assertEqual(plan['scope'], 'memory_only')
+            self.assertEqual(plan['decision_tokens'], 371_662)
+            self.assertTrue(plan['source']['budget_stop'])
+            self.assertEqual(plan['source']['client_replay']['a']['replay'], 'interrupted')
+            self.assertEqual(plan['source']['errors'], ["RuntimeError('decision token guard')"])
+
+    def test_incomplete_model_accounting_and_total_cap_still_reject(self):
+        for failure in ('unfinished', 'cap'):
+            with tempfile.TemporaryDirectory() as directory:
+                source = self.source_fixture(directory)
+                if failure == 'unfinished':
+                    path = source / 'started.json'
+                    value = read(path) + [dict(pid='new', at_ms=3000)]
+                else:
+                    path = source / 'fixtures.json'
+                    value = dict(read(path), cumulative_tokens_before=CAP - 100)
+                path.write_text(json.dumps(value), encoding='utf-8')
+                with self.assertRaisesRegex(AssertionError, 'unfinished decision|cumulative token cap'):
+                    source_plan(source)
+
 
 def self_test():
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(MemoryCheckTests))
@@ -475,7 +552,7 @@ def main():
         return 0
     except BaseException as error:
         # 只保留本脚本静态断言文字；外部异常不输出请求体、环境或凭证。
-        result = dict(accepted=False, error_type=type(error).__name__,
+        result = dict(accepted=False, scope='memory_only', error_type=type(error).__name__,
                       reason=str(error) if isinstance(error, (AssertionError, TimeoutError)) else 'operation failed; see preserved evidence')
         save(args.out / 'failure.json', result)
         if args.mode == 'run':
