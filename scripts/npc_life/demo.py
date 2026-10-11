@@ -164,7 +164,7 @@ def plan(cycles=6, fresh=False, pending_repair=False):
     return {'a': a.steps, 'b': b.steps}, marks
 
 
-def verdict(rows, cid, actors, cycles):
+def verdict(rows, cid, actors, cycles, fixture_windows=None):
     last = rows[-1]
     state = last['life']['state']
     errors = []
@@ -183,7 +183,7 @@ def verdict(rows, cid, actors, cycles):
         choice = decision.get('choice') or decision.get('social') or {}
         if choice:
             seen.setdefault(str(choice), []).append(row['body']['position'])
-    behavior = behavior_evidence(rows, actors)
+    behavior = behavior_evidence(rows, actors, fixture_windows)
     behavior_ok = all(sum(p['accepted'] for p in behavior if p['mode'] == mode) >= 2 for mode in ('avoid','thank'))
     return {'accepted': not errors and behavior_ok, 'authority_accepted': not errors, 'behavior_accepted': behavior_ok, 'errors': errors, 'counts': state['evidence'],
             'traits': state['traits'], 'relationships': state['relationships'],
@@ -195,7 +195,7 @@ def distance(a, b):
     return math.sqrt(sum((x-y)**2 for x,y in zip(a,b)))
 
 
-def behavior_evidence(rows, actors):
+def behavior_evidence(rows, actors, fixture_windows=None):
     # 只按同一社会来源与实际终态归因；计数、枚举或回放成功均不能替代位移。
     groups = []
     previous = None
@@ -209,7 +209,7 @@ def behavior_evidence(rows, actors):
             previous = key
         else:
             previous = None
-    result = []
+    result, used_terminals = [], set()
     for (mode,seq,actor), indices in groups:
         first = rows[indices[0]]
         social = first['life']['decision']['social']
@@ -221,29 +221,52 @@ def behavior_evidence(rows, actors):
         terminals = []
         prior = (first['life'].get('decision') or {}).get('last_outcome')
         prior_id = prior and prior.get('id')
-        for r in rows[indices[0]:]:
-            subsequent = (r['life'].get('decision') or {}).get('social')
-            if subsequent and (subsequent['mode'],subsequent['source_seq'],subsequent['actor']) != (mode,seq,actor):
-                break
+        # 连续机会只含本组；正常 thank 的 done 可随紧邻的 social=nil 释放行发布。
+        candidates = rows[indices[0]:indices[-1]+1]
+        released = indices[-1]+1
+        if released<len(rows) and not (rows[released]['life'].get('decision') or {}).get('social'):
+            candidates = candidates+[rows[released]]
+        for r in candidates:
             outcome = (r['life'].get('decision') or {}).get('last_outcome')
             if outcome and outcome['status'] == 'done' and outcome['verb'] == 'move_to' and target:
                 if prior_id is not None and outcome.get('id') == prior_id:
                     continue
+                terminal_id = json.dumps(outcome['id'])
+                if terminal_id in used_terminals:
+                    continue
                 p = (outcome.get('data') or {}).get('position')
                 if p and outcome['data'].get('settled') and math.hypot(p[0]-target[0],p[2]-target[2]) < 1.2:
                     terminals.append((r,p,outcome))
+                    used_terminals.add(terminal_id)
                     break
         start = distance(first['body']['position'],entity['position']) if entity else None
         end = distance(terminals[0][1],entity['position']) if entity and terminals else None
         changed = start is not None and end is not None and ((end-start > .25) if mode == 'avoid' else (start-end > .25))
+        window = next(((lo,hi) for lo,hi in (fixture_windows or {}).get(mode,[]) if lo<=first['at_ms']<hi),None)
+        terminal_at = terminals[0][0]['at_ms'] if terminals else None
+        window_ok = fixture_windows is None or window is not None
+        terminal_window_ok = bool(terminals and (fixture_windows is None or window and window[0]<=terminal_at<window[1]))
         result.append({'mode': mode,'source_seq': seq,'actor': actor,'start_distance': start,'end_distance': end,
+                       'opportunity_id': [mode,seq,actor,first.get('at_ms')],
                        'observed_at_ms': first.get('at_ms'),'source_age_ms': first.get('at_ms',0)-source.get('at_ms',0) if source else None,
                        'initial_position': first['body']['position'],'target': target,
                        'terminal': terminals[0][2] if terminals else None,
+                       'terminal_at_ms': terminal_at,'approach_window': window,
+                       'terminal_in_approach_window': terminal_window_ok,
                        'target_tolerance_accepted': bool(terminals and terminals[0][2]['data'].get('within_tolerance')),
-                       'contract': 'settled approach/avoidance with actual distance change; exact destination tolerance reported separately',
-                       'accepted': actor == expected_actor and event_ok and changed})
+                       'contract': 'unique terminal in the same continuous social opportunity and declared approach window; actual distance change required; exact target tolerance separate',
+                       'accepted': actor == expected_actor and event_ok and changed and window_ok and terminal_window_ok})
     return result
+
+
+def declared_approach_windows(role_events):
+    windows = {'avoid':[],'thank':[]}
+    for role,values in role_events.items():
+        places = [e for e in values if e['event']=='replay.command' and e['command'].startswith('@place ')]
+        for i,event in enumerate(places[:-1]):
+            if event['command']=='@place '+NEAR:
+                windows['avoid' if role=='a' else 'thank'].append((event['_log_utc_seconds']*1000,places[i+1]['_log_utc_seconds']*1000))
+    return windows
 
 
 def social(cid, out, cycles=6, fresh=False, custom_steps=None):
@@ -295,7 +318,8 @@ def social(cid, out, cycles=6, fresh=False, custom_steps=None):
     save(out / 'clients.json', replay)
     save(out / 'final.json', observe(cid))
     if not fresh:
-        save(out / 'verdict.json', verdict(rows, cid, actors, cycles))
+        windows = declared_approach_windows({r:events.read(out/r/'client.log') for r in ('a','b')})
+        save(out / 'verdict.json', verdict(rows, cid, actors, cycles, windows))
     return replay
 
 
@@ -474,7 +498,7 @@ def approach_evidence(rows, actor, point, at_ms, end_ms, baseline=False, old_dis
     initial = distance(before['body']['position'],point)
     previous = (before['life'].get('decision') or {}).get('last_outcome')
     previous_id = previous and previous.get('id')
-    terminal = None
+    terminal, terminal_at = None, None
     choices = []
     for row in window:
         decision = row['life'].get('decision') or {}
@@ -485,6 +509,7 @@ def approach_evidence(rows, actor, point, at_ms, end_ms, baseline=False, old_dis
         target = choices[-1].get('target') if choices else None
         if choices and outcome and outcome.get('id')!=previous_id and outcome['status']=='done' and outcome['verb']=='move_to' and outcome['data'].get('settled') and target and math.hypot(outcome['data']['position'][0]-target[0],outcome['data']['position'][2]-target[2])<1.2:
             terminal = outcome
+            terminal_at = row['at_ms']
             break
     no_relation = str(actor) not in before['life']['state']['relationships']
     # 对照必须在旧安全距离之外、新谨慎距离之内；名义选点不是额外生产规则。
@@ -500,18 +525,23 @@ def approach_evidence(rows, actor, point, at_ms, end_ms, baseline=False, old_dis
             'initial_position':before['body']['position'],'player_fixture_position':point,'initial_xyz_distance':initial,
             'matching_distance_accepted':matched,'relationship_absent':no_relation,'social_choices':choices,
             'causal_interval':{'old_safe_distance':old_distance,'new_cautious_distance':new_distance},
-            'terminal':terminal,'actual_xyz_displacement':movement,'accepted':accepted}
+            'terminal':terminal,'terminal_at_ms':terminal_at,'actual_xyz_displacement':movement,'accepted':accepted}
 
 
-def fresh_judge(out):
+def fresh_judge(out, policy_source=None):
     result = []
     # 阈值调用唯一纯规则 owner，从本轮前后 canonical 状态派生，不复制行为公式。
-    states = [json.loads(path.read_text())['life']['state'] for path in (BASE/'pre-social-01/observe.json',BASE/'fresh-matched-01/final.json')]
-    distances = []
-    for state in states:
-        payload = json.dumps(json.dumps(state))
-        choice = rpc(f'GateServer.Npc.Life.State.behavior(Jason.decode!({payload}),%{{self: %{{position: {{0.0,0.0,0.0}}}},entities: [%{{entity_id: 106220752897,position: {{3.4,0.0,0.0}}}}]}},{state["last_at_ms"]})')
-        distances.append(choice['distance'])
+    if policy_source is not None:
+        # 离线复审借用已由公开 State 生成的原判定产物，不请求服务或复制规则。
+        distances = json.loads(policy_source.read_text())
+        save(out/'public-policy-source.json',{'source':str(policy_source),'sha256':hashlib.sha256(policy_source.read_bytes()).hexdigest()})
+    else:
+        states = [json.loads(path.read_text())['life']['state'] for path in (BASE/'pre-social-01/observe.json',BASE/'fresh-matched-01/final.json')]
+        distances = []
+        for state in states:
+            payload = json.dumps(json.dumps(state))
+            choice = rpc(f'GateServer.Npc.Life.State.behavior(Jason.decode!({payload}),%{{self: %{{position: {{0.0,0.0,0.0}}}},entities: [%{{entity_id: 106220752897,position: {{3.4,0.0,0.0}}}}]}},{state["last_at_ms"]})')
+            distances.append(choice['distance'])
     save(out/'public-policy-distances.json',distances)
     for name,baseline in [('social-02',True),('fresh-01',False),('fresh-matched-01',False)]:
         source = BASE/name
@@ -564,11 +594,8 @@ def judge(sources, out, cid, cycles):
             continue
         actors = json.loads((source / 'plan.json').read_text())['actors']
         roles = {r: {'events': events.read(source/r/'client.log'), 'lines': events.lines(source/r/'client.log')} for r in ('a','b')}
-        for role,data in roles.items():
-            places = [e for e in data['events'] if e['event']=='replay.command' and e['command'].startswith('@place ')]
-            for i,event in enumerate(places[:-1]):
-                if event['command']=='@place '+NEAR:
-                    fixture_windows['avoid' if role=='a' else 'thank'].append((event['_log_utc_seconds']*1000,places[i+1]['_log_utc_seconds']*1000))
+        for mode,windows in declared_approach_windows({r:d['events'] for r,d in roles.items()}).items():
+            fixture_windows[mode].extend(windows)
         report = {'source': str(source.relative_to(BASE)), 'checks': {}, 'errors': []}
         replay = json.loads((source/'clients.json').read_text())
         report['replays'] = {r:replay[r]['replay'] for r in ('a','b')}
@@ -599,7 +626,7 @@ def judge(sources, out, cid, cycles):
                 report['errors'].append({'failure':str(e)})
         client_reports.append(report)
     rows.sort(key=lambda r:r['at_ms'])
-    result = verdict(rows,cid,actors,cycles)
+    result = verdict(rows,cid,actors,cycles,fixture_windows)
     for item in result['behavior']:
         window = next(((start,end) for start,end in fixture_windows[item['mode']] if start<=item['observed_at_ms']<end),None)
         item['declared_approach_window'] = window is not None

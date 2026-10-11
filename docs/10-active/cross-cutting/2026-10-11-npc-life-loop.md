@@ -156,3 +156,5 @@ flowchart LR
 Task5最小判定器8项通过，日志`validation/task-5-python.log`；最新判定完整重跑，证据路径均在`.demo/observe/npc-life-20261011/`。首次路径/有限材料/瞄准/时间污染/失配/部署wrapper用户readiness失败全部保留，不能称整次无失败。总manifest `final-01/manifest.json`、实际时长`final-01/client-durations.json`、详细报告`validation/task-5-report.md`。Task5不修改生产模块、不force-add观察或scratch、不merge/push；最终整段独立审查由控制器收口。
 
 当前状态：**已实现**正式人生组合与Test-only验收脚本；**已实跑**真实双端、唯一server/Hindsight冷重启、正确记忆及受限LLM；**已验收**权威/受控社会行为/重启后人格/模型语义/上下文接线，保留LLM因果未证明、目标时长未达与全部失败记录。最终分支审查尚待控制器完成。
+
+- 2026-10-11（Task5复审I1）：旧判定器跨取消/释放机会复用终态且未约束终态靠近窗口，两个最小反例RED为8/10、2失败（`validation/task-5-i1-red.log`）；修复为同次连续机会/紧邻nil释放行、唯一terminal身份与terminal_at_ms，起始和终态须同声明窗口，thank完成nil形状保留。11项GREEN（`validation/task-5-i1-green.log`），仅原始产物离线重判：`primary-judge-06/`原3回避/5接近、8互异终态全部仍有效；`fresh-judge-03/`两control/两有效post通过、2.684m失配拒绝，距离采用原公开State产物且记录来源/hash，无服务请求。原8项仅有GREEN、RED证据缺失明确承认。`final-02/manifest.json`更新判定证据引用，16.109分钟历史时长及未达false不变；尚无已实跑全部门槛通过的约10分钟短正常路径。未重跑客户端/LLM/服务，详细append报告在`validation/task-5-report.md`，待控制器窄复审。
