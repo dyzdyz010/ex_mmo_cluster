@@ -40,6 +40,8 @@ flowchart LR
 
 情绪：愤怒 anger（回避伤害者）、感激 gratitude（接近帮助者）；按真实经过秒数指数衰减，离线时间同样计算，负时间差不倒流。人格：谨慎 caution，初值 0.2，前两次伤害不漂移，第 3 次起每次最多 +0.05，上界 1；多次帮助后可小幅降低。谨慎影响陌生人的期望社交距离（2 + 6*caution 米）。这一个人格维度足以本轮证伪慢变化，暂不加入没有行为用途的维度。
 
+情绪唯一持久值锚定最近一次评价事件的时刻；当前时间的衰减只从该锚派生展示，不把轮询时刻写回锚。否则延迟事件与饱和上界会使同一事件序列按不同传输批次产生不同情绪。连续击打到同格被毁只算一次显著伤害，原材料修复后才开始下一轮；自己修复清除损坏标记但没有正向奖励。
+
 关系 trust 按 actor 保存，伤害降低、帮助提高；它是 NPC 对该人的主观关系，不是阵营真值。伤害定义：别人破坏 NPC 放置的物体，或它已经记住并关心的同一施工位置。帮助定义：别人把曾被破坏的施工格按原材料修复；不把陌生人随便放块算帮助。自己操作、无效/失败 intent、无主自然地形改动不改变人格/情绪。
 
 观察输出必须包含 cid、world_id、事务游标、来源 seq、actor、分类、情绪、人格、关系、选择动作及原因、目标位置、最终 Outcome；Hindsight 输出 pending/retained/facts/refresh 状态、召回耗时和各操作 token。数值只在 observe/log 中，不加玩家 UI。
@@ -76,6 +78,7 @@ flowchart LR
 
 **Interfaces:** `GateServer.Npc.Life.State.new(cid, world_id, cursor, now_ms)` 返回纯 JSON 兼容字符串键 map；`advance(state, events, cursor, now_ms)` 返回 `{state, episodes}`。event 消费 Task 1 形状，重复 seq 不再评价；一次 batch 与逐条推进的规则语义相同。
 - `view(state, now_ms)` 返回衰减后 JSON map（不写库）；`behavior(state, observation, now_ms)` 返回 `%{mode: :work | :avoid | :thank | :cautious, actor: cid | nil, distance: float, source_seq: integer | nil}`。决定动作模式不做 World 查询或实际移动。
+- `advance` 返回可持久的 canonical 事件态，不能把 `view` 返回的当前时间投影传回 `advance` 或覆盖它；同一排序事件序列分批与整批必须得出相同 canonical 状态，包含饱和情况。
 - episodes 是英文 `%{"id" => world_id <> ":" <> seq, "text" => text, "at_ms" => ms, "seq" => seq}`，只含事实与明确主观反应，不虚构 actor 名字/对话。
 - state 带 cid/world_id/cursor/last_at_ms/emotions/traits/relationships/concerns/evidence。不同 world_id 的拒绝在集成边界。
 
@@ -106,6 +109,7 @@ flowchart LR
 - Registry settler/llm 可选 `life` 参数，缺省关闭。social Brain 组合已有 Tree：情绪触发回避/感谢、谨慎保持陌生人距离；移动仍走 Body 的 move_to/stop；在途技能经既有 halt/cancel settle，不能插入第二动作 owner。
 - observation 增加心智派生视图供 Brain；LLM 决策启用 life 时用缓存 mental models + 一次 recall；错误可诊断，不当空记忆。
 - 片段积累约3000字符或显著事件边界后台批写；重大事件允许立刻flush，同一批已接受事件不被并发完成回写覆盖。
+- `State` 的短 episode 是事实单元；Life 将多条短经历合成一个约3000字符片段（稳定首/尾seq文档id），再交 HTTP retain，手动 flush 可收尾未满片段。一次 HTTP items 批请求可能有多次模型抽取，不能把每次镐击各写一份文档。后台完成按已发送的episode id移除pending，不拿旧状态覆盖当前状态。
 
 1. 写失败集成测试：真实 World 操作流进 Life；持久失败不推进游标；Hindsight 慢/失败 Body 仍持续；重复启动/重启不重复评价；取消技能后社交动作才开始；原有 life 关闭 NPC 不变。
 2. 实现接线、最小调试 API、文档；跑这些边界的最小集及现有直接关联 Runtime/Tree 测试。
