@@ -18,6 +18,21 @@ SPEC.loader.exec_module(service)
 
 
 class ServiceLifecycleTest(unittest.TestCase):
+    def test_pinned_same_image_can_stop_but_another_digest_cannot(self):
+        for actual in ['sha256:probe', 'sha256:other']:
+            calls, original = self.docker()
+            def run(command, **kwargs):
+                if command[:3] == ['docker', 'image', 'inspect']:
+                    return SimpleNamespace(returncode=0, stdout='sha256:probe')
+                if command[:4] == ['docker', 'inspect', '--format', '{{.Config.Image}}']:
+                    return SimpleNamespace(returncode=0, stdout=actual)
+                return original(command, **kwargs)
+            with patch.object(service.subprocess, 'run', side_effect=run):
+                if actual == 'sha256:probe':service.stop()
+                else:
+                    with self.assertRaisesRegex(SystemExit, 'image mismatch'):service.stop()
+            self.assertEqual(self.mutations(calls), [['docker', 'stop', service.NAME]] if actual == 'sha256:probe' else [])
+
     def docker(self, port='18908', pg=None, network=False):
         calls = []
         fields = {

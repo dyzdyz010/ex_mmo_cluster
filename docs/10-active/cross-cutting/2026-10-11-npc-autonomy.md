@@ -60,9 +60,37 @@ flowchart LR
 
 记录源码/镜像/加载身份、cid/world/bank、goal/current_plan/recent_failures、每次模型工具及usage、权威Outcome/seq/material balance、Life canonical/evidence、时间控制/墙钟分列。新产物统一 `.demo/observe/npc-autonomy-20261011/`，旧证据不改写。真实模型总预算继续累计，先给本轮最多450,000 token，余量覆盖后台写入/刷新；预测无法容纳时显式停在发请求前。key不落盘。
 
-Review Focus：失败历史不能成为当前World真值；采材必须通过真实工具意图；地表/脚层坐标不可混用；迁移不能重评价旧事件；首次失败、错误与未执行阶段必须进入结论。最小充分回归只扩大到修改的跨owner接缝。聊天保持未完成，不纳入本轮成功声明。
+Review Focus：失败历史不能成为当前World真值；采材必须通过真实工具意图；地表/脚层坐标不可混用；迁移不能重评价旧事件；首次失败、错误与未执行阶段必须进入结论。最小充分回归只扩大到修改的跨owner接缝。首次设计时聊天未完成；当前对话成果与后续验证见下节，不把旧占位当现状。
 
 ## 执行日志
+
+### 对话合入后续接（当前）
+
+用户明确要求继续自主生活并将聊天加入能力库；核对 `8eac2696` 后确认 `Dialogue.entries → Abilities.entries/tools/command → Body.say → Scene.say → heard` 已经是正式共用路径，默认人生能力含 say，不重复建聊天适配器。现有两NPC由各自模型生成8条指定发言，用户提示开场；本轮需补无玩家开场、与生活能力共存的验证，而非重跑旧玩家UI事实。
+
+用户追加1000000外部token：总上限3000000，已有2010947（含旧超额10947）继续计入，可用989053。旧付费停止账本和失败证据保留；新增统一请求账本继承该基线，不按角色、后端或重启清零。
+
+实施使用已有隔离worktree，沿用设计/计划/TDD流程，不新增开工审批。以下为本次小闭环及文件边界：
+
+- [ ] 请求预算：`scripts/npc_life/budget_proxy.py` 为 Test-only 唯一付费出口，SQLite持久账本先原子预留、后结算；所有NPC决策及独立18908 Hindsight的retain/reflect/consolidation共享。模型请求体/凭证不落账本。准备只改本任务容器配置并保留数据；不改生产能力、Scene或协议。`test_budget_proxy.py`先证明并发不能各自借同一余额、崩溃预留不释放、费用未知不记零、count失败不调用模型。经本地HTTP替身验证真实转发边界后再接现场。
+- [x] 能力组合：复用现有say定义，检查默认life profile同一工具表含say/gather/move_to；两个真实Body/Runtime/Llm通过Scene交谈，模型与Hindsight使用明确替身，证明每个大脑自己的heard与自己的工具输出能完成往返。无玩家消息作为触发；该测试不证明语言生成或真实自主意愿。
+- [ ] 正式有限实验：先同版本只读场景干跑，再单次约10分钟以内的同世界两NPC/双端观察。先无玩家开场的短交谈，再有限材料自主维修；阶段首失败停止后续，不把台词当履约或World真值。两模型均使用原缓存四模型+一次召回。总费用由出口账本覆盖记忆后台；结束关闭出口、退出life且保留持久尾部，汇总已用与未决预留。
+
+预算依据与适用条件：OpenAI官方 [token counting](https://developers.openai.com/api/docs/guides/token-counting) 与 [input_tokens](https://developers.openai.com/api/reference/resources/responses/subresources/input_tokens/methods/count) 提供完整Responses输入计数；`max_output_tokens`覆盖可见输出及推理token。当前兼容服务 `/responses/input_tokens` 已实查返回 `object=response.input_tokens,input_tokens=6`、无usage/模型生成，证据 `resume-01/token-count-preflight.json`。因此不凭字数猜费用：计数与实际请求共享同一输入/模型/工具，输出上限8192；不支持计数、stream/background、隐式服务端会话或缺失usage时显式停止，不另造估算回退。SQLite事务将所有并发预留串行化；启动遗留预留按未知费用保留，实际token超出预留作为契约违反关闭出口。这里只有预算与外部传输职责，不拥有NPC动作/记忆真值。
+
+验收命令与范围：`python -B -m unittest discover -s scripts/npc_life -p test_budget_proxy.py`；NPC组合只跑新增接缝及既有Dialogue/Abilities直接回归。预算异常、输出截断、网络失败均为当轮失败，不让第三方重试绕过出口。尚未启动付费实验，准备进度不得冒充自主生活验收。
+
+**实查否证与当前停止边界**：`resume-01/frozen-count-preflight.json`首次完整输入返回502，`count-diagnosis.json`保留最小输入502和去掉reasoning后的计数；最后`frozen-count-exact-02.json`以原有全部计数字段（含reasoning）返回11694，原决策真实usage为10294。最初“hello计数6”不足以验证完整模型契约，当前不能宣称兼容供应方实现了官方精确计数。没有发生成请求来赌误差，也没有部署代理或改现场；准备脚本先核验该反例，再允许任何容器生命周期动作。外部原因尚未查明，不以输出余量掩盖输入计数不一致，不猜固定补偿常量。
+
+本地预算出口15项通过（`budget-final-green.log`）：并发共享余额、重启持有未知费用、输入计数/usage违约、截断、传输/结算失败、下游回传丢失和重复serve端口占用。审查追加反例先RED（`budget-review-red.log`、`serve-red.log`）再修复；初轮Windows连接未关闭与测试替身类型错误均保留，不混称产品行为失败。依据为 [SQLite BEGIN IMMEDIATE](https://www.sqlite.org/lang_transaction.html) 的串行写事务与 [Python连接上下文](https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager) 不负责关闭连接的明确契约；连接显式关闭。固定单容器/端口取得绑定后才恢复旧预留，数据文件不能由第二个serve共享。
+
+Hindsight配置依据：[官方配置](https://hindsight.vectorize.io/developer/configuration)、[多语言说明](https://hindsight.vectorize.io/developer/multilingual)与固定镜像`engine/prompt_utils.py`/`engine/retain/fact_extraction.py`源码共同确认 `LLM_OUTPUT_LANGUAGE=English` 会替换“保留源语言”规则，作用于抽取/巩固/反思；原话仍在服务端Speech与经历文档可追溯。计划使用此现有选项匹配BGE-small/flashrank英文约束，不引入翻译模型、不重写旧事实。上游count30秒/生成120秒，NPC和Hindsight请求180秒、Hindsight SDK/包装重试0；异常由统一出口关闸。以上部署配置尚未生效，既有语义失败未因此消失。
+
+`npc_life_registry_test`与`npc_dialogue_world_test`合计11项通过（`chat-library-01.log`），新增的是共享能力与真实运行时接线证据，因现有产品已经支持say而为GREEN基线，不伪称改前RED。原玩家UI/Session/Scene的冻结事实不重复实跑。新固定场景脚本`live_autonomy.py`及负例检查已保存，真实自主交谈/修复仍未执行；累计外部模型2010947/3000000，余989053。
+
+最终离线检查：`python -B -m unittest discover -s scripts/npc_life -p 'test_budget*.py'` 17项，`-p test_service.py` 5项，`-p test_live_autonomy.py` 5项通过，分别为`budget-suite-final.log`、`service-final.log`、`live-review-green.log`。新增双端零投递反例先RED后GREEN；关闸/结算查询失败时各NPC恢复/停用与trace停止独立执行。`git diff --check`通过；Python只作AST解析，不跨树写pycache。未扩大到旧协议或玩家UI回归。
+
+当前接管manifest为`resume-01/manifest.json`：两NPC均settler/no-life、无本轮trace，World seq48；两bank累计usage仍893288/182925且后台待办为0。真实兼容计数差异是尚未解除的外部阻塞，不是额度不足；本轮不继续昂贵阶段，也不把准备阶段或替身测试记成完整自主生活成功。
 
 - **2026-10-11 20:16优先级切换**：用户明确要求先实现玩家↔NPC与NPC↔NPC聊天，由原会话接管 say/heard。自主生活已保存，暂停正式模型/双端/配对实验，不再升级共享Demo或切换后端；占用及运行预算真值已同步 `2026-10-11-npc-next-session.md` 页首。真实自主修复尚未验收，不能把下面组件通过扩大成完整目标完成。
 

@@ -62,7 +62,11 @@ def preflight(required=False):
             raise SystemExit('owned container not found')
         return False
     if found.stdout.strip() != IMAGE:
-        raise SystemExit('owned container image mismatch')
+        # 预算接线按不可变ID重建同一镜像；仍核对固定0.10.3镜像身份，不接受任意sha。
+        expected = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', IMAGE],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        if not expected or found.stdout.strip() != expected:
+            raise SystemExit('owned container image mismatch')
     ports = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .HostConfig.PortBindings}}', NAME],
                                      check=True, capture_output=True, text=True).stdout)
     mounts = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .Mounts}}', NAME],

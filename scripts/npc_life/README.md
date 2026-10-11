@@ -68,6 +68,14 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 独立 `contract-probe-20261011` 的真实后台验证：巩固新增 5 observations，输入 12,789 / 输出 374 token；四模型显式刷新共 16 次 reflect 工具调用，输入 136,106 / 输出 1,577 token。人工核对 relationships 的 Brann 破坏/Mara 修复因果正确，world 未捏造坐标，commitments 如实说明无承诺。初始化空库四模型的 completed 操作未产生 LLM 请求（0 token）；这只证明当前固定镜像空事实的短路行为，不能推广到有历史事实的 ensure。探针与真实NPC费用分别列于 `final-01/cost-summary.json`，未提供模型计费单价，不虚构美元费用。
 # 长期自洽续验
 
+**当前预算/自主对话入口（2026-10-11）**：正式 `say` 已进入共同能力库，默认life档案可与生活工具一起选择。
+`budget_proxy.py` 为 Test-only 决策/记忆统一出口，账本基线2010947、追加授权后的总上限3000000；不含凭证或请求正文。
+`budget_service.py setup` 先用已保存的真实请求/usage核验兼容服务的精确计数契约，再按原镜像ID重建本任务容器接入出口。
+当前预检失败（实际10294、count11694，另有502），所以未部署、未切换NPC，不得把本地预算单测通过当作已接通付费门禁。
+`live_autonomy.py --out <新运行ID> --seconds 560` 为准备中的单次两NPC/双端交談→两轮有限材料修复驱动，仅使用Hello40隔离客户端；
+首个阶段失败关闭出口并停止后续，结束恢复原settler登记且不启用life后台。旧驱动 `autonomy.py`/`long_horizon.py live` 的软预算路径不是当前付费验收入口。
+只读核验与失败证据在 `.demo/observe/npc-autonomy-20261011/resume-01/`；后续先解决计数契约，禁止删库、改基线或重采样覆盖失败。
+
 当前阶段成果使用独立登记名 `brain: "life"`；下面的 freeze/pairs/live 入口均使用该组合，原始实跑证据保持原提交身份。接入说明见生产 `apps/gate_server/lib/gate_server/npc/README.md`。
 
 `long_horizon.py freeze --out pairs-input-01` 固定真实 Life 缓存与一次召回；
