@@ -1,6 +1,6 @@
 # 一个 NPC 的经历、记忆、情绪与人格最小闭环
 
-> 全局系统功能 + Test-only 验收场景。状态：设计已定，实施中，尚未实跑/验收。
+> 全局系统功能 + Test-only 验收场景。状态：已实现、已实跑；已验收范围与限制见底部结果，最终整段独立审查待完成。
 > For agentic workers: REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 > 唯一产品规格：[NextLoop](../../../../Voxim/Docs/Gameplay/NpcEvolve/NextLoop.md)。用户 2026-10-11 授权自主推进到真实 Demo；本文细化工程接口，不改变交接结论。
 
