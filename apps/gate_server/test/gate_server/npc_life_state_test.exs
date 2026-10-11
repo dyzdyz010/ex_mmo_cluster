@@ -8,6 +8,47 @@ defmodule GateServer.NpcLifeStateTest do
 
   defp new, do: State.new(7, "world-a", 0, 0)
 
+  test "亲和倾向第三次经历才慢变，来源明确，安静时间和JSON恢复不漂移" do
+    events =
+      for seq <- 1..6,
+          do:
+            event(
+              seq,
+              if(rem(seq, 2) == 1, do: :destroy, else: :build),
+              if(rem(seq, 2) == 1, do: 11, else: 12)
+            )
+
+    {twice, _} = State.advance(new(), Enum.take(events, 4), 4, 0)
+    assert twice["traits"]["sociability"] == 0.5
+    {third, _} = State.advance(twice, Enum.drop(events, 4), 6, 0)
+    assert_in_delta third["traits"]["sociability"], 0.54, 1.0e-12
+    assert third["evidence"]["sociability"] == %{"actor" => 12, "seq" => 6}
+    {batch, _} = State.advance(new(), events, 6, 0)
+    assert batch == third
+    restored = third |> Jason.encode!() |> Jason.decode!()
+    assert State.view(restored, 30 * 86_400_000)["traits"] == third["traits"]
+    assert {^restored, []} = State.advance(restored, events, 6, 30 * 86_400_000)
+  end
+
+  test "仅亲和不同改变感谢接近幅度，不改变陌生人谨慎距离" do
+    {state, _} = State.advance(new(), [event(1, :destroy, 11), event(2, :build, 12)], 2, 0)
+    low = put_in(state, ["traits", "sociability"], 0.0)
+    high = put_in(state, ["traits", "sociability"], 1.0)
+    helper = observation([%{entity_id: 12, position: {8.0, 0.0, 0.0}}])
+    assert State.behavior(low, helper, 0).distance > State.behavior(high, helper, 0).distance
+    assert State.behavior(low, helper, 0).mode == :thank
+    stranger = observation([%{entity_id: 99, position: {2.0, 0.0, 0.0}}])
+    assert State.behavior(low, stranger, 0) == State.behavior(high, stranger, 0)
+  end
+
+  test "旧合法心智仅补亲和初值，不追算历史，不修改已有认识或证据" do
+    old = new() |> update_in(["traits"], &Map.delete(&1, "sociability"))
+    migrated = State.upgrade(old)
+    assert migrated["traits"]["sociability"] == 0.5
+    assert update_in(migrated, ["traits"], &Map.delete(&1, "sociability")) == old
+    assert State.upgrade(migrated) == migrated
+  end
+
   defp event(seq, kind, actor, opts \\ []) do
     Map.merge(
       %{seq: seq, at_ms: 0, actor: actor, kind: kind, cell: {1, 2, 3}, material: 4, placed_by: 7},

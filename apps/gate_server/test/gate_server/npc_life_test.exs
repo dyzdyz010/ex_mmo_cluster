@@ -86,6 +86,43 @@ defmodule GateServer.NpcLifeTest do
     :ok
   end
 
+  test "旧持久行在Life加载边界补亲和初值且保存，不追溯改变旧人格" do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 100_000
+    {:ok, events} = World.interactions_since(fixture.world, nil)
+
+    old =
+      Life.State.new(cid, events.world_id, events.cursor, 0)
+      |> update_in(["traits"], &Map.delete(&1, "sociability"))
+
+    row = %{
+      "state" => old,
+      "pending" => [],
+      "fragments" => [],
+      "cache" => nil,
+      "retained" => 0,
+      "dirty" => false,
+      "refresh_at_ms" => nil,
+      "thanked_seq" => 0
+    }
+
+    :ok = DataService.NpcMemory.put(cid, "life", "state", row)
+
+    profile = %{
+      owner: self(),
+      life: %{hindsight: Hindsight, owner: self(), poll_ms: 30, url: "http://life.test.invalid"}
+    }
+
+    NpcWorld.body(fixture, {Spy, profile}, cid: cid)
+
+    NpcWorld.await(fn ->
+      match?({:ok, %{state: %{"traits" => %{"sociability" => 0.5}}}}, Life.observe(cid))
+    end)
+
+    stored = DataService.NpcMemory.get(cid, "life", "state")["state"]
+    assert update_in(stored, ["traits"], &Map.delete(&1, "sociability")) == old
+  end
+
   test "Life Llm 的真实路径拒绝进入下一轮和重启后的失败历史" do
     fixture = NpcWorld.start()
     cid = System.unique_integer([:positive]) + 100_000

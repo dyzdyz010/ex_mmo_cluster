@@ -401,6 +401,8 @@ defmodule GateServer.Npc.Brain.Llm do
           {[], "entities 的 relation：#{relations()}，只表示敌我颜色，不表示能否攻击；"},
           {[], "self.body_state 的 status：#{statuses()}（死亡期间世界动作被拒），life 0–100，null 表示还没收到。"},
           {[], "记忆不是世界真值。"},
+          {[],
+           "mind.traits 的 caution 是缓慢变化的谨慎倾向，影响对陌生人的安全距离；sociability 是缓慢变化的亲和倾向，影响感谢时主动接近的程度。它们不同于随时间衰减的 anger/gratitude，也不替代当前处境判断。"},
           {~w(look inspect), "每次动手前先用 look/inspect 核对当前位置与目标。"},
           {[],
            "experiences 是近期经历；memories 是检索记忆，recent_notes 是近期自记笔记；mental_models 是从经历形成的认识，mind 是自己的当前情绪、人格与关系。这些用于解释选择，不是当前世界事实。memory_error/working_memory_error 表示读取失败，不能当作没有经历或计划。"},

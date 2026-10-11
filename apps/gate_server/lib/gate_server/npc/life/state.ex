@@ -19,12 +19,15 @@ defmodule GateServer.Npc.Life.State do
       "cursor" => cursor,
       "last_at_ms" => now_ms,
       "emotions" => %{"anger" => 0.0, "gratitude" => 0.0},
-      "traits" => %{"caution" => 0.2},
+      "traits" => %{"caution" => 0.2, "sociability" => 0.5},
       "relationships" => %{},
       "concerns" => %{},
       "evidence" => %{"damage_count" => 0, "help_count" => 0, "anger" => nil, "gratitude" => nil}
     }
   end
+
+  @doc "升级旧合法持久心智：只补亲和初值，不重放旧事件，不推算历史增益。仅在加载边界调用。"
+  def upgrade(state), do: update_in(state, ["traits"], &Map.put_new(&1, "sociability", 0.5))
 
   @doc """
   按权威顺序消费新操作，返回 canonical 事件态和可批量写入记忆的英文经历。
@@ -86,7 +89,13 @@ defmodule GateServer.Npc.Life.State do
              )}
 
           source?(state, "gratitude", entity.entity_id) ->
-            desired = max(1.0, distance - 3.0 * state["emotions"]["gratitude"])
+            desired =
+              max(
+                1.0,
+                distance -
+                  3.0 * state["emotions"]["gratitude"] * (0.5 + state["traits"]["sociability"])
+              )
+
             mode = if actual > desired, do: :thank, else: :work
             priority = if mode == :thank, do: 1, else: 3
 
@@ -182,6 +191,15 @@ defmodule GateServer.Npc.Life.State do
         state
         |> put_in(["traits", "caution"], bound(state["traits"]["caution"] + drift, 0.0, 1.0))
         |> put_in(["evidence", "caution"], source)
+        |> put_in(
+          ["traits", "sociability"],
+          bound(
+            state["traits"]["sociability"] + if(reaction == :help, do: 0.05, else: -0.01),
+            0.0,
+            1.0
+          )
+        )
+        |> put_in(["evidence", "sociability"], source)
       else
         state
       end

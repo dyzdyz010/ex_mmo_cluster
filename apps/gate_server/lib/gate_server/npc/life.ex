@@ -230,8 +230,13 @@ defmodule GateServer.Npc.Life do
              {:ok, initial(context.cid, events, now)}
 
            %{"state" => %{"world_id" => world}} when world == events.world_id ->
+             canonical = if row, do: loaded["state"], else: State.upgrade(loaded["state"])
+
+             if canonical != loaded["state"],
+               do: Logger.info("npc_life_state_upgraded cid=#{context.cid} added=sociability")
+
              {canonical, episodes} =
-               State.advance(loaded["state"], events.events, events.cursor, now)
+               State.advance(canonical, events.events, events.cursor, now)
 
              {:ok, %{loaded | "state" => canonical, "pending" => loaded["pending"] ++ episodes}}
 

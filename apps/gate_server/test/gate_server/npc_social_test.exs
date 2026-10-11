@@ -4,6 +4,47 @@ defmodule GateServer.NpcSocialTest do
   alias GateServer.Npc.Brain.Social
   alias GateServer.Npc.Life.State
 
+  test "相同帮助和环境下亲和倾向独立改变实际发出的接近目标" do
+    events = [
+      %{
+        seq: 1,
+        at_ms: 1000,
+        actor: 3,
+        kind: :damage,
+        cell: {0, 64, 1},
+        material: 11,
+        placed_by: 1
+      },
+      %{
+        seq: 2,
+        at_ms: 1000,
+        actor: 2,
+        kind: :build,
+        cell: {0, 64, 1},
+        material: 11,
+        placed_by: nil
+      }
+    ]
+
+    {state, _} = State.advance(State.new(1, "world", 0, 0), events, 2, 1000)
+
+    [low, high] =
+      for value <- [0.0, 1.0] do
+        canonical = put_in(state, ["traits", "sociability"], value)
+
+        {[command], _} =
+          Social.handle_event(
+            {:observation, observation(canonical, {0.0, 64.0, 0.0}, {8.0, 64.0, 0.0})},
+            mind()
+          )
+
+        assert command.verb == :move_to
+        elem(command.position, 0)
+      end
+
+    assert high > low
+  end
+
   defp observation(state, position \\ {0.0, 64.0, 0.0}, actor \\ {1.0, 64.0, 0.0}) do
     %{
       self: %{entity_id: 1, tick: 1, position: position},
