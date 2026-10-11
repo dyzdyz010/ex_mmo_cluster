@@ -136,3 +136,8 @@ flowchart LR
 ## 进度与结果
 
 - 2026-10-11：完整读交接/实验 README/共同测试规则；确认工作分支 `capability-library-20261007`，基点 `9daa5e47`。尚未开始产品实现，尚无本轮实跑结论。
+- 2026-10-11（实现阶段）：World 提交历史、纯心智状态和 Hindsight HTTP/隔离服务已实现，并完成分项审查修复。World 覆盖 File/DB/cold-VM 持久边界；State 18 项测试通过；Hindsight 10 项 HTTP 契约测试、服务隔离 4 项测试通过。真实独立探针 bank 的 2 个文档得到 5 条事实、5 条巩固认识，召回 63 ms，四份 mental models 已刷新；这是记忆服务契约验证，**不是 NPC 行为验收**。
+- 2026-10-11（组合阶段）：`ef199540` 接入 Life owner、并发片段写入、Social、Registry 与 LLM 请求 worker。核心 16 项、直接影响回归 86 项、最终 Body/World 接缝 62 项通过（另有 7 项排除）；新模块未新增编译警告，原依赖警告不作通过的新证据。分项独立复审进行中，真实双端、整系统重启与行为对照仍待实跑。
+- 2026-10-11（部署准备）：从冻结的 `cf4f19e0` 构建正式 `voxim_server` release，镜像 `voxim-server:20261011-npc-life-cf4f19e0`；隔离实例 `voxim-npc-life-demo-20261011` 使用新数据库 `voxim_npc_life_20261011`，HTTP 27361 / QUIC 27363，Hello 39、初始 World 游标 0。Hindsight 独立实例仍为 18908。部署、构建与已加载 NPC BEAM 摘要在 `.demo/observe/npc-life-20261011/{build-cf4f19e0.json,formal-start.json,formal-preflight.json}`；只读规划旧镜像已经停止，规划产物不算新功能验收。
+
+当前状态：**已实现**至 NPC 组合；**已实跑**至真实 Hindsight 服务及新 release 启动；**已验收**尚不包含真实 Demo 行为闭环。后续结果应在本页续记，不从单模块通过推导整系统完成。
