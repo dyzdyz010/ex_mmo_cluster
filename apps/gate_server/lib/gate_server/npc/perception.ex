@@ -435,7 +435,7 @@ defmodule GateServer.Npc.Perception do
     [%{outcome | data: data} | outcomes]
   end
 
-  # survey：地表高度图按行（z）给出，每行按 x：[y, material] 或 null；放置者与细化格另列（多数列没有，不逐列重复）。
+  # survey：地表高度图按行（z）给出，每行按 x：[ground_y, material, move_to_y] 或 null；放置者与细化格另列。
   def project(
         %{verb: :survey, status: :done, data: %{columns: columns}} = outcome,
         outcomes,

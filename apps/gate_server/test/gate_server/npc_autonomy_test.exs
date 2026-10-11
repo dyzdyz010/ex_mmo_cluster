@@ -29,6 +29,8 @@ defmodule GateServer.NpcAutonomyTest do
     assert NpcWorld.balance(fixture.world, cid) == 0
 
     for {cell, round} <- Enum.with_index(samples, 1) do
+      {:ok, %{cursor: before_gather}} = World.interactions_since(fixture.world, 0)
+
       assert %{status: :done, data: %{mined: 1, gained: 512}} =
                command(body, round * 10, %{
                  verb: :skill,
@@ -42,6 +44,15 @@ defmodule GateServer.NpcAutonomyTest do
                })
 
       assert NpcWorld.balance(fixture.world, cid) == 512
+      {:ok, gathered} = World.interactions_since(fixture.world, before_gather)
+      assert gathered.events != []
+      assert Enum.all?(gathered.events, &(&1.actor == cid and &1.cell == cell))
+
+      assert [%{kind: :destroy, seq: gather_seq}] =
+               Enum.filter(gathered.events, &(&1.kind == :destroy))
+
+      assert gather_seq > before_gather
+      assert length(Enum.uniq_by(gathered.events, & &1.seq)) == length(gathered.events)
 
       assert %{status: :done, data: %{seq: seq}} =
                command(body, round * 10 + 1, %{
