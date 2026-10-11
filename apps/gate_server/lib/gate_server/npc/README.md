@@ -460,6 +460,10 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 `Dialogue.entries/0` 提供 `say{text,target_id,conversation_id}`，地址可空并译为0；范围、文本长度与发言间隔直接取
 `SceneServer.Dialogue.limits/0`。Body 复用原 FIFO 执行进程调用 `Movement.Scene.say/3`，不会等待接纳而停止移动输入。
 Body 自己分配递增请求号，不把任意 term 命令 id 当线序号。拒绝回统一 Outcome；未接纳的文字不进入对话或 Life。
+Scene 公共调用超时/退出在 say 边界回 `rejected/delivery_unknown`，表示调用未获确认、可能已接纳，不表示权威拒绝。
+Body 不自动重试，不因这次调用丢失而退出；如果权威 Speech 已收到，仍照常记录已发生的台词。Llm 的 outcomes/recent_failures
+均将该原因解释为未知，先参考 heard 与上下文，不能盲目重发。该异常语义采用 [GenServer.call/3 官方契约](https://hexdocs.pm/elixir/GenServer.html#call/3)：
+超时结束调用者等待，并不证明服务端没有处理请求；保留原世界动作的通用退出规则，仅修正说话调用的边界。
 
 ```mermaid
 flowchart LR
@@ -474,6 +478,7 @@ flowchart LR
 
 Runtime 按权威接收顺序保留最近24句（含本人回声），经 `dialogue` 事件与 `Observation.heard` 投影；技能开始/结束不清空。
 本人回声与旁听不唤醒，不强制取消工作；Routine、Patrol、Tree、Social 忽略语言事件，保留在途动作。
+Jev 中断检查以旧→新顺序呈现同一尾部，明确本人/旁听/直接对象与不可信声明性质，不把整份尾部标成玩家正在叫本角色。
 Llm 的独立 `input.heard` 保留 speaker/target/conversation/turn/time/原话，台词不进入 instructions；提示明确台词是
 不可信角色声明。最新直接叫到本角色的话并入原检索查询，Life 模式仍仅一次 Hindsight recall，请求在途的新话仍留到下轮。
 
@@ -491,6 +496,7 @@ Hindsight 仍固定0.10.3/flashrank及原批量封存/refresh规则，本轮没�
 最小验证：`npc_dialogue_test` 用真实 Runtime/Llm、模型与检索替身验证在途直接话不丢、旁听/本人不唤醒、24句尾部及不可信输入；
 `npc_dialogue_life_test` 是纯回调并发/存储拒绝反例；`npc_dialogue_world_test` 用正常 claim/Ready、真实 Scene/Body/Life/
 VM独占PostgreSQL验证真实说/听、Routine不崩溃、拒绝不记成功、慢retain期间新话保留与进程重启恢复。Hindsight替身仅控制HTTP完成时序。
+`delivery_unknown` 反例让真实 Scene 先接纳，再由传输替身扣住回复，覆盖 Player 仍在/已离场：唯一 Speech、未知 Outcome、Body存活且不重发。
 技能中断/完成/下一次开始的尾部回归在 `npc_skill_brain_test`；共享能力/Llm旧测试因新增工具一起回归。
 从 `apps/gate_server` 运行 `mix test --no-start test/gate_server/npc_dialogue_test.exs test/gate_server/npc_dialogue_life_test.exs test/gate_server/npc_dialogue_world_test.exs`；
 数据库按现有 `MmoTest.Database` 入口配置。证据在 `.demo/observe/npc-dialogue-20261011/npc/`。

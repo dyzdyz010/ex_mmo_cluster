@@ -31,9 +31,77 @@ defmodule GateServer.NpcDialogueWorldTest do
     end
   end
 
+  defmodule MissingSpeechReply do
+    @moduledoc "只测试：真实 Scene 先接纳发言，传输替身随后扣住回复，让 GenServer.call 真实超时。"
+    use GenServer
+    alias SceneServer.Movement.Scene
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    def init(opts), do: {:ok, opts}
+    defdelegate join(scene, identity, character, gate), to: Scene
+    defdelegate leave(scene, identity, reason), to: Scene
+
+    def say(scene, identity, request),
+      do: GenServer.call(__MODULE__, {:say, scene, identity, request}, 100)
+
+    def handle_call({:say, scene, identity, request}, _from, opts) do
+      {:ok, speech} = Scene.say(scene, identity, request)
+      if opts.leave, do: :ok = Scene.leave(scene, identity, 1)
+      send(opts.owner, {:accepted_before_timeout, speech})
+      {:noreply, opts}
+    end
+  end
+
   setup_all do
     MmoTest.Database.start!()
     :ok
+  end
+
+  for leave <- [false, true] do
+    @leave leave
+    @tag :delivery_unknown
+    test "accepted speech with a lost reply is unknown and keeps Body alive; player left=#{leave}" do
+      fixture = NpcWorld.start()
+      cid = System.unique_integer([:positive]) + 500_000
+      start_supervised!({MissingSpeechReply, %{owner: self(), leave: @leave}})
+
+      body =
+        start_supervised!(
+          {Body,
+           [
+             cid: cid,
+             scene_id: 1,
+             spawn: {4.0, 66.0, 10.0},
+             claims: fixture.claims,
+             route_module: NpcWorld.Route,
+             scene_module: MissingSpeechReply,
+             brain: {Spy, %{owner: self(), cid: cid}}
+           ]}
+        )
+
+      NpcWorld.await(fn -> Body.observe(body).position != nil end)
+      monitor = Process.monitor(body)
+
+      Body.command(body, %{
+        id: :lost_reply,
+        verb: :say,
+        text: "这句话已经发生",
+        target_id: 0,
+        conversation_id: 0
+      })
+
+      assert_receive {:accepted_before_timeout, speech}, 2000
+
+      assert_receive {:brain, ^cid,
+                      {:outcome, %{id: :lost_reply, status: :rejected, reason: :delivery_unknown}}},
+                     2000
+
+      refute_received {:DOWN, ^monitor, :process, ^body, _}
+      assert Process.alive?(body)
+      assert [received] = Body.observe(body).dialogue
+      assert {received.conversation_id, received.turn} == {speech.conversation_id, speech.turn}
+      assert [%{id: :lost_reply, reason: :delivery_unknown}] = Body.observe(body).outcomes
+      refute_receive {:accepted_before_timeout, _}, 150
+    end
   end
 
   test "Routine bodies receive real Speech and own echo without crashing or restarting" do

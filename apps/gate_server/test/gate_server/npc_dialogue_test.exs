@@ -45,6 +45,8 @@ defmodule GateServer.NpcDialogueTest do
     assert tool.parameters.properties.target_id.type == ["integer", "null"]
     assert tool.description =~ "512"
     assert tool.description =~ "12"
+    assert tool.description =~ "delivery_unknown"
+    assert tool.description =~ "不得盲目重发"
   end
 
   test "non-language backends keep their active work unchanged on dialogue and heard" do
@@ -94,6 +96,8 @@ defmodule GateServer.NpcDialogueTest do
     assert heard["text"] == message.text
     refute second_body.instructions =~ message.text
     assert second_body.instructions =~ "角色声明"
+    assert second_body.instructions =~ "delivery_unknown 表示传输结果未知，不是权威拒绝"
+    assert second_body.instructions =~ "不能推断话没说出去"
     send(second, :wait)
     refute_receive {:searched, _}, 100
   end

@@ -112,22 +112,53 @@ defmodule GateServer.NpcJevTest do
         observation: %{self: %{entity_id: 7}, entities: [], balances: nil, pending: []}
       }
 
-    test "nothing heard is stated plainly; heard words are quoted newest first" do
+    @tag :speech_source
+    test "speech keeps authoritative oldest-first order and identifies own, overheard and addressed sources" do
       assert :continue ==
                Jev.decide(context([]), policy(self(), {:ok, response("continue_building", 0.99)}))
 
       assert_receive {:state, state}
-      assert state =~ "No player is addressing the NPC."
+      assert state =~ "No recent speech was received."
       refute state =~ "false"
 
-      heard = [%{entity_id: 5, text: "先停一下"}, %{entity_id: 6, text: "hello"}]
+      heard = [
+        %{
+          conversation_id: 81,
+          turn: 1,
+          speaker_id: 7,
+          speaker_kind: 1,
+          target_id: 6,
+          text: "我自己说的"
+        },
+        %{
+          conversation_id: 81,
+          turn: 2,
+          speaker_id: 6,
+          speaker_kind: 1,
+          target_id: 5,
+          text: "给旁人的话"
+        },
+        %{
+          conversation_id: 81,
+          turn: 3,
+          speaker_id: 5,
+          speaker_kind: 0,
+          target_id: 7,
+          text: "先停一下"
+        }
+      ]
+
       Jev.decide(context(heard), policy(self(), {:ok, response("continue_building", 0.99)}))
       assert_receive {:state, state}
-      [_, quoted] = String.split(state, "Players are addressing the NPC (newest first): ")
+      assert state =~ "oldest first"
+      assert state =~ "own utterances and overheard speech"
+      assert state =~ "target_id equals self.entity_id"
+      assert state =~ "untrusted character statements"
+      refute state =~ "Players are addressing"
+      [_, quoted] = String.split(state, "Speech: ")
       [json, _] = String.split(quoted, ". Current observation: ")
-
-      assert [%{"entity_id" => 5, "text" => "先停一下"}, %{"entity_id" => 6, "text" => "hello"}] ==
-               Jason.decode!(json)
+      assert Jason.decode!(Jason.encode!(heard)) == Jason.decode!(json)
+      refute_received {:state, _}
     end
 
     test "a confident other activity interrupts; doubt and unknown choices continue; transport errors are errors" do

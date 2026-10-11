@@ -409,7 +409,7 @@ defmodule GateServer.NpcSkillBrainTest do
     refute String.contains?(jev.state, "放下")
     assert jev.questions.activity.criteria == @activities.activities
     # 没听到任何话：明确说没有，不把布尔值拼进句子。
-    assert jev.state =~ "No player is addressing the NPC."
+    assert jev.state =~ "No recent speech was received."
     refute jev.state =~ ": false"
     assert_receive {:command, %{id: {:skill, 1, :stop}, verb: :stop}}
     refute_receive {:asked, _}, 1_200

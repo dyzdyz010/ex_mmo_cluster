@@ -402,7 +402,8 @@ defmodule GateServer.Npc.Brain.Llm do
 
     for {needs, text} <- [
           {[], "你控制体素世界里的一个 NPC。每次只调用一个工具来推进目标；不要输出文字。"},
-          {[], "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示权威拒绝，reason 是原因。"},
+          {[],
+           "坐标单位米，Y 向上，水平面是 X/Z。上一步的结果在 outcomes 里：status=rejected 表示本次调用未获成功确认，reason 是原因；其中 delivery_unknown 表示传输结果未知，不是权威拒绝，也不能证明发言未发生。"},
           {[], "眼睛在 self.position 上方 #{eye} 米，探测与射程都从眼睛算。"},
           {[], "观察位置和方向见 view，独立于移动和目标选择；entities 仅表示已同步，不检查视锥与遮挡。"},
           {~w(get_visible_entities), "get_visible_entities 才检查视锥与遮挡。"},
@@ -423,9 +424,9 @@ defmodule GateServer.Npc.Brain.Llm do
           {~w(remember recall search_memory),
            "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。"},
           {~w(set_plan),
-           "current_plan 是你跨轮次保留的当前意图。用 set_plan 自行制定或修订可继续推进的计划；遇到新观察与旧假设冲突时调整，保留尚有效的长期目的。只有权威 Outcome 才能证明动作完成；完成或放弃后更新或清除旧计划，勿反复执行已完成步骤。"},
+           "current_plan 是你跨轮次保留的当前意图。用 set_plan 自行制定或修订可继续推进的计划；遇到新观察与旧假设冲突时调整，保留尚有效的长期目的。动作完成以权威 Outcome 为据，已收到的权威 Speech 也证明该句发言已发生；完成或放弃后更新或清除旧计划，勿反复执行已完成步骤。"},
           {[],
-           "recent_failures 是跨轮次保留的最近被拒调用与当时原因，不是当前禁令或世界真值。不要原样重复已失败的调用；先观察原因涉及的前提，只有它已改变或调用参数已纠正才再尝试。无法推进时保留目的并记录阻塞原因、等待条件，不空转查询。"},
+           "recent_failures 是跨轮次保留的最近未获成功确认的调用与当时原因，不是当前禁令或世界真值；其中 delivery_unknown 仍仅表示未获确认，不能推断话没说出去，先结合 heard 与上下文判断，不得盲目重发。其他失败先观察原因涉及的前提，只有它已改变或调用参数已纠正才再尝试。无法推进时保留目的并记录阻塞原因、等待条件，不空转查询。"},
           {[], "能力以本次 tools 参数表为准。"},
           {~w(design_house build), "设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。"}
         ],

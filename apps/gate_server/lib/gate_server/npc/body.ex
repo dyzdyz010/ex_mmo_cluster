@@ -1251,8 +1251,19 @@ defmodule GateServer.Npc.Body do
     )
 
     result =
-      with {:ok, route} <- session.router.route(session.scene_id),
-           do: session.scene.say(route.scene_ref, session.identity, request)
+      with {:ok, route} <- session.router.route(session.scene_id) do
+        # 调用退出不能证明 Scene 未接纳；只处理公共调用的退出，代码异常仍按原监督语义暴露。
+        try do
+          session.scene.say(route.scene_ref, session.identity, request)
+        catch
+          :exit, {reason, {GenServer, :call, _}} ->
+            Logger.warning(
+              "dialogue.delivery_unknown speaker=#{session.cid} request_id=#{request.request_id} reason=#{inspect(reason)}"
+            )
+
+            {:error, :delivery_unknown}
+        end
+      end
 
     reason =
       case result do

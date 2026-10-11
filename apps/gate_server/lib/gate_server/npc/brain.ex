@@ -171,6 +171,8 @@ defmodule GateServer.Npc.Brain do
 
   `say` 经 Body 的异步 FIFO 执行进程调用 `Scene.say/3`，统一 Outcome；done 只代表权威接纳并排入可靠出口，
   不表示听者理解、答应或已持久记住。`request_id` 由 Body 单调分配，与任意 term 的命令 id 无关，不自动重试。
+  Scene 公共调用超时或退出回 `status: :rejected, reason: :delivery_unknown`：这里只表示调用未获成功确认，
+  不能当作 Scene 已裁定拒绝，也不保证未产生 Speech；Body 不重发或退出，已收到的权威 Speech 仍如实进入上下文/记忆。
   target_id=0 向附近公开说；指定对象仍会被附近其他角色听到；conversation_id=0 开新话题，否则引用实际收到的会话。
 
   Runtime 的 `{:dialogue, [speech]}` 和 Observation.heard 是按权威接收顺序排列的最近 24 句，含本人回声；

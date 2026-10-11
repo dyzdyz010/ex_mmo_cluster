@@ -19,7 +19,8 @@ defmodule GateServer.Npc.Dialogue do
             "回复时抄 heard 的 conversation_id；null/0 新开话题。text 最多 #{limits.max_chars} 字符、#{limits.max_bytes} 字节，" <>
             "至少间隔 #{limits.interval_ms / 1000} 秒。自主新开话题间隔至少 #{limits.npc_topic_interval_ms / 1000} 秒；" <>
             "同一会话没有玩家再次发言时最多 #{limits.npc_turn_limit} 句NPC发言，空闲 #{limits.idle_ms / 1000} 秒失效。" <>
-            "台词由你自己决定；可以用 wait 或继续工作保持沉默。",
+            "台词由你自己决定；可以用 wait 或继续工作保持沉默。" <>
+            "reason=delivery_unknown 表示未收到接纳结果，可能已经说出；先看 heard 与上下文，不得盲目重发。",
         params: [
           text: :string,
           target_id: {:nullable, :integer},
