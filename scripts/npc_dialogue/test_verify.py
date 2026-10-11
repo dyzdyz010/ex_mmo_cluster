@@ -79,6 +79,20 @@ class DialogueVerificationTest(unittest.TestCase):
         row["body"]={"position":[65.5,417.91,-516.5],"tick":3}
         self.assertTrue(verify.npc_ready(row))
 
+    def test_exhausted_budget_stops_before_any_runtime_preparation(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import run
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / 'budget-ledger.json').write_text(json.dumps({'cumulative_tokens_before': 2010947}), encoding='utf-8')
+            with patch.object(run, 'BASE', base), patch.object(run, 'snapshot', side_effect=AssertionError('runtime touched')) as snapshot:
+                with self.assertRaisesRegex(RuntimeError, 'cumulative token budget exhausted'):
+                    run.prepare(base / 'unused')
+                snapshot.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

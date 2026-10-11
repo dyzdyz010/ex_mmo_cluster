@@ -1,6 +1,6 @@
 # NPC 对话：玩家与 NPC、NPC 与 NPC
 
-分类：全局系统功能；Demo 与驱动为 Test-only。2026-10-11 用户将对话提为首要增量，明确要求两种参与组合。当前是设计/实施记录，勾选验收前不代表聊天已完成。
+分类：全局系统功能；Demo 与驱动为 Test-only。2026-10-11 用户将对话提为首要增量，明确要求两种参与组合，并选择“附近公开交谈，可指定对象”。第一版已实现并跑通真实玩家与两个独立模型 NPC 的交谈；分层验收结果及尚未完成的持久记忆闭环见文末，不声明整轮验收全通过。
 
 ## 契约与范围
 
@@ -85,11 +85,11 @@ CLI 和 UMG 共用 `Say` 调用；日志 `dialogue.request/result/speech` 包含
 
 按仓库 `AGENTS.md` 与 `Voxim/Docs/Testing.md`，已授权范围自主推进，无额外逐文件审批。服务端在当前 worktree；客户端另建隔离 worktree，不动主树。旧自主生活会话已保存并让出共享产品文件和 Demo。
 
-- [ ] 1. 纯协议与 Scene：`session/types.ex`、`session/codec.ex`、`scene_server/dialogue.ex`、`movement/scene.ex`；先红再绿。证明中文 golden、未知版本/截断、完整 XYZ 范围、身份冒用、离开/重连、重复请求不重播、会话过期/轮次限制。纯规则受控时钟；真实 Scene 测试经正常 join/Ready 建立角色。
-- [ ] 2. NPC：`npc/dialogue.ex` 能力定义、Abilities、Body、Runtime、Brain.Llm、Brain 文档、Life。工具 `say{text,target_id,conversation_id}` 的 target_id/conversation_id 可空、译码为0；统一 Outcome。证明每个大脑只见实际听见的消息、在途不丢新话、旁听不群体唤醒、记忆来源与 World cursor 不串、重启恢复及出站失败不被记成成功。
-- [ ] 3. Gate 与客户端：控制流 Say 转发、SayResult/Speech 解码与 identity 隔离，Hello40；Voxim 网络类型、M1数据桥、PlayerController、authored UMG、CLI、自动化与现有生产根接线。为双方共用固定 golden，不复制裁决规则。
+- [x] 1. 纯协议与 Scene：`session/types.ex`、`session/codec.ex`、`scene_server/dialogue.ex`、`movement/scene.ex`；先红再绿。证明中文 golden、未知版本/截断、完整 XYZ 范围、身份冒用、离开/重连、重复请求不重播、会话过期/轮次限制。纯规则受控时钟；真实 Scene 测试经正常 join/Ready 建立角色。
+- [x] 2. NPC：`npc/dialogue.ex` 能力定义、Abilities、Body、Runtime、Brain.Llm、Brain 文档、Life。工具 `say{text,target_id,conversation_id}` 的 target_id/conversation_id 可空、译码为0；统一 Outcome。证明每个大脑只见实际听见的消息、在途不丢新话、旁听不群体唤醒、记忆来源与 World cursor 不串、重启恢复及出站失败不被记成成功。
+- [x] 3. Gate 与客户端：控制流 Say 转发、SayResult/Speech 解码与 identity 隔离，Hello40；Voxim 网络类型、M1数据桥、PlayerController、authored UMG、CLI、自动化与现有生产根接线。为双方共用固定 golden，不复制裁决规则。
 - [ ] 4. 正式 Demo：冻结代码/两端/镜像版本；沿用独立18908记忆实例，不碰18888/18898、不落盘key。先驱动干跑与反例，再约10分钟真实双端，两个独立 LLM NPC、附近旁听玩家、远距负例；核对每个确认事件。然后服务端重启读取持久对话记忆；长时间规则在受控时钟测试。
-- [ ] 5. 审查本次边界、修复、复核最小相关回归，更新 NPC README 与此处证据。分别报告已实现/已实跑/已验收。
+- [x] 5. 审查本次边界、修复、复核最小相关回归，更新 NPC README 与此处证据。分别报告已实现/已实跑/已验收。
 
 ## 验收与风险
 
@@ -103,7 +103,33 @@ CLI 和 UMG 共用 `Say` 调用；日志 `dialogue.request/result/speech` 包含
 - 已协调原自主生活会话冻结共享产品文件和 Demo；当前 release 为5b4cd58e，模型本轮未发起，累计外部 token1,243,611/2,000,000。
 - 用户已明确选择“附近公开交谈，可指定对象”。服务端首轮实现提交381f5388/6303a114/530c91c0；客户端隔离工作树 `C:/Users/DYZ/orca/workspaces/Voxim/npc-dialogue-20261011`，提交3594478a；尚未合并主树。
 - 分层证据：纯合同151项通过；Scene新规则与真实模块回归40项通过；NPC相关8文件88项通过；客户端独立构建及16项Session/Hello/对话边界测试通过。各自替身与覆盖边界见 `.demo/observe/npc-dialogue-20261011/{scene,npc}/` 与客户端 `Saved/Dialogue/`。这些不等于真实QUIC/模型/UMG完成。
-- 独立审查发现NPC说话调用超时的身体退出与技能中断提示来源漂移，两项正在用最小反例修复。用户端超时为 `delivery_unknown`；NPC沿用既有 `Outcome.status=rejected` 表示本次调用未获确认，必须看reason，不能把 `delivery_unknown` 当成Scene权威拒绝。未新增全局Outcome状态集合。
+- 独立审查发现NPC说话调用超时的身体退出与技能中断提示来源漂移，两项已在954528c1修复：真实Scene已经接纳、回复丢失时Body仍存活且报告未知；Jev明确自己的话、旁听、直接叫到及接收顺序。最小反例先红，5个直接相关文件最终63通过、2排除，证据 `npc/review-verification.json`。用户端超时为 `delivery_unknown`；NPC沿用既有 `Outcome.status=rejected` 表示本次调用未获确认，必须看reason，不能把 `delivery_unknown` 当成Scene权威拒绝。未新增全局Outcome状态集合。
 - 双端驱动 `scripts/npc_dialogue/run.py`：保留本任务独占的长期世界与LifeBuilder历史，合法登记第二个NPC“松岚”，不改心智。两端使用正式登录、QUIC、生产地图与UMG；玩家只提出话题，两个life大脑各自决策，每个最多16请求。本轮模型使用量另加至1243611/2000000累计额度。初次UMG发言双端确认前，后续阶段与模型不启动；结束恢复无模型的settler后端。
 - 判定器先过8个离线最小用例，包含漏一笔、重复、错误角色/文本/收件人、超范围仍收到、错误request关联和缺失服务端收件人记录；不能以共有一条消息或回放退出成功当完整复制。
-- 本节最后更新时尚未启动真实模型与双端，正式Hindsight持久对话与重启验收仍待运行。
+- 上述未运行状态是第一次集成前的历史检查点。下面收口记录覆盖运行状态；不修改失败轮证据。
+
+### 真实运行收口（2026-10-11）
+
+- 正式服务端为源码954528c1、镜像 `voxim-server:20261011-npc-life-954528c1`，image ID `sha256:ba82b37a4bf592b9f1eaf88ceddc37eb6dac4229eac91b2ecf3d22b592695093`。已有长期世界、两玩家账号、LifeBuilder历史保留；新增“松岚”cid51107598336。HTTP27361/QUIC27363，Hindsight18908；未触碰18888/18898。实际身份在 `release-954528c1/`、各运行 `execution.json`。
+- `dual-01` 准备失败：新NPC出生探针位于地面实心格，只查缓存就绪会放行没有Body位置的NPC。已发生2次决策21230token计费；保留失败。修复测试夹具从实查有净空的位置经正式出生入口下扫，并要求身体入场，最小反例先红后绿；没有修改碰撞规则。
+- `dual-02` 使用客户端3594478a、真实QUIC、UMG输入与两个独立life大脑。权威接纳14条发言，A完整收到14条，B完整收到应收到的13条；远距那一条未投递给B，B远处指定NPC的请求返回 `target_out_of_range`。其中8条NPC向对方指定发言，全部逐句对应本人的真实模型say调用。玩家B通过UMG加入；取消输入未产生发言。`python -B scripts/npc_dialogue/run.py check --run dual-02` 与 `functional-verdict.json` 只证明这些已经完成的行为。
+- 真实内容：松岚选择“先做观察和记录，暂不承担修复”，并调用World核对木方块；它明确损坏与修复历史来自LifeBuilder讲述、自己未亲历。LifeBuilder在最后对玩家A的回答中保留对过去破坏的谨慎，明确不把“青石约定”提议当作已达成承诺。这证明本次短场景有独立立场和来源区分，不能推广为长期永不受诱导或人格永远一致。
+- `dual-02` 完整回放未通过：350000决策软门槛触发后停止，31次请求已全部结束（两NPC分别15/16次），实际371662token；尾部300秒Status步骤未完成。`errors.json` 和两端 `interrupted` 保留，不能把 `functional-verdict.accepted=true` 写成整轮通过。
+- 初次画面底左聊天遮住身体/建造HUD；客户端bb2c4403将阅读区移右上、输入区在其左侧展开。`ui-01` 使用该资产与原DLL，不启用任何LLM/Life后台：准星O选择实际NPC、当前目标按钮、UMG中文发送、取消、CLI Status全部通过；客户端正常回放退出0，约4分44秒。运行960×720画面 `Captures/Dialogue/20261011/live-ui-01.png` 已查看，阅读区与身体/建造区域分开、文本可读；不代表所有分辨率/文字缩放验收。
+- 系统微软拼音通过原生按键验证：出现 `ni` 候选窗口，第一次Enter只结束组字并保留输入面板，日志请求数仍1；随后空格选“你”、Enter发送，权威回执为ok。`ui-01/ime-first-enter.json`、`ime-verdict.json`及客户端 `ime-candidates.png`、`ime-enter-keeps-composer.png`、`ime-chinese-committed.png`留证。不是用 `@type` 冒充系统IME；输入区域切换依据 [WM_INPUTLANGCHANGEREQUEST](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-inputlangchangerequest)，只改变测试窗口当前输入布局。
+
+### 预算与当前可运行状态
+
+截至 `paid-quiesce/`，历史及失败轮1264841 + 本轮决策371662 + 两bank新增记忆处理374444 = **2010947 token**，超用户2000000上限 **10947**。决策软门槛漏计同时发生的retain/reflect/consolidation以及在途调用，预留不足；这是执行预算控制失败，不能以“都在途”免计。已通知用户。
+
+两NPC现均为settler且**移除life参数**，因此决策与记忆后台均关闭；两个 `Life.observe` 为 `life_not_running`，Hindsight待操作/待巩固均0。保留人物、World和所有存档，不清空用量。费用账本为 `.demo/observe/npc-dialogue-20261011/budget-ledger.json`；live入口新增耗尽账本在任何运行准备之前拒绝的反例，最终10项判定器测试通过。这个入口检查不等于已实现逐请求的硬token上限，未获新预算且未收口总费用预算控制前不再启动付费实验。
+
+尚未完整验收：所有尾部对话封存到Hindsight后的Life恢复/决策回忆、全分辨率/缩放UI及打包客户端；连续自主生活、自给自足与长期人格模型仍属下一阶段。尾部持久性与现存记忆的无付费只读结果另记，不通过跳过尾部刷新把记忆全链路标绿。
+
+### 无付费存档与记忆检查
+
+`memory-readonly-01` 经正常正式容器冷重启，DataService中两NPC的完整Life存储行逐项相等；Life始终关闭。各bank恰好一次生产 `Hindsight.recall`，使用已查证的本地ONNX/flashrank路径；所有scope用量前后完全相等，新增付费0。实际fact引用的文档保留双方首轮两句的完整身份、时间、原话和本人/听见视角，来源链可追溯。两NPC各4条尾部仍在SQL持久pending，未调用retain/refresh。
+
+语义复核没有通过完整预选两句召回门槛：返回事实更偏向后续“先观察、暂不修复”的内容，自我介绍、询问和条件未完整保留；不能因命中了包含首句的长文档就声称首句被准确召回。部分摘要把意愿简成“负责”，甚至把讨论写为“约定”，不能据此创建真实承诺或修改World。另一个实证缺口是：英文经历包装中的中文原话使本轮抽取事实仍为中文，与flashrank英文模型的既定使用条件不符；不能声称英文记忆约束已满足。后续记忆增量须保持中文原话可追溯，同时验证英文提取与提议/承诺归因，不能靠再次查询挑结果修饰本轮失败。
+
+证据 `memory-readonly-01/verdict.json`、`semantic-review.json` 明确 `scope=memory_readonly_partial`、`accepted=false`、`paid_budget_passed=false`；存储/重启/已有来源通过与完整记忆语义未通过分别保留。这些不替代启用Life后由NPC决策重新使用记忆的完整恢复链路。

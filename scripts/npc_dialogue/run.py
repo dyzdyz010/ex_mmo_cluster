@@ -48,6 +48,9 @@ def tokens(value):
 
 
 def prepare(out):
+    ledger=json.loads((BASE/'budget-ledger.json').read_text(encoding='utf-8'))
+    if ledger['cumulative_tokens_before'] >= 2000000:
+        raise RuntimeError('cumulative token budget exhausted; paid preparation is disabled')
     before = snapshot(FIRST)
     demo.save(out / 'first-before.json', before)
     assert verify.npc_ready(before), 'first NPC not entered'
@@ -67,7 +70,6 @@ def prepare(out):
         if row['life']['error'] or time.monotonic() > deadline:
             raise RuntimeError('new Life memory initialization failed')
         time.sleep(2)
-    ledger=json.loads((BASE/'budget-ledger.json').read_text(encoding='utf-8'))
     demo.save(out / 'fixtures.json', {'classification':'Test-only', 'npcs':[FIRST,second], 'actors':ACTORS,
         'second_settler_params':params, 'npc_request_limits':[LIMIT,LIMIT],
         **ledger, 'cumulative_token_cap':2000000,
