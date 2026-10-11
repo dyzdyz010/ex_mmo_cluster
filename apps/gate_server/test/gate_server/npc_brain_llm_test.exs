@@ -1239,6 +1239,54 @@ defmodule GateServer.NpcBrainLlmTest do
     refute_receive {:asked, 3, _}, 2_500
   end
 
+  for moment <- [:waiting, :in_flight] do
+    @tag long_horizon: true
+    test "new authority appraisal wakes #{moment} decisions but elapsed emotion alone does not" do
+      owner = self()
+
+      request = fn _, body ->
+        send(owner, {:appraisal_request, self(), Jason.decode!(body.input)})
+
+        receive do
+          :answer -> {:ok, %{"output" => [call("wait", %{seconds: 3600})]}}
+        end
+      end
+
+      pid =
+        brain(%{goal: "care for my home", tools: %{}, endpoint: %{model: "m"}, request: request})
+
+      initial = Map.put(idle(), :mind, GateServer.Npc.Life.State.new(77, "test", 0, 0))
+      {:ok, initial_ticker} = :timer.send_interval(50, pid, {:observation, initial})
+      on_exit(fn -> :timer.cancel(initial_ticker) end)
+      assert_receive {:appraisal_request, first, _}, 2000
+
+      if unquote(moment) == :waiting do
+        send(first, :answer)
+        refute_receive {:appraisal_request, _, _}, 1200
+      end
+
+      changed = put_in(initial, [:mind, "evidence", "damage_count"], 1)
+      :timer.cancel(initial_ticker)
+      # 测试改为持续传新观察，防止旧 ticker 人工倒转被观察状态。
+      {:ok, ticker} = :timer.send_interval(50, pid, {:observation, changed})
+      on_exit(fn -> :timer.cancel(ticker) end)
+      Llm.handle_event({:observation, changed}, pid)
+
+      if unquote(moment) == :in_flight do
+        refute_receive {:appraisal_request, _, _}, 100
+        send(first, :answer)
+      end
+
+      assert_receive {:appraisal_request, second, input}, 2500
+      assert input["mind"]["evidence"]["damage_count"] == 1
+      send(second, :answer)
+      :timer.cancel(ticker)
+      faded = put_in(changed, [:mind, "emotions", "anger"], 0.05)
+      observations(pid, faded)
+      refute_receive {:appraisal_request, _, _}, 1200
+    end
+  end
+
   test "someone walking up wakes a waiting brain; someone far away does not" do
     request = scripted([{:ok, %{"output" => [call("wait", %{seconds: 300})]}}])
     brain = brain(%{goal: "g", tools: %{1 => "镐"}, endpoint: %{model: "m"}, request: request})

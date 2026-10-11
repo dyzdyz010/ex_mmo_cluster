@@ -151,7 +151,10 @@ defmodule GateServer.Npc.Brain.Llm do
             state
             | observation: observation,
               nearby: nearby,
-              dirty: state.dirty or not MapSet.subset?(nearby, state.nearby)
+              dirty:
+                state.dirty or not MapSet.subset?(nearby, state.nearby) or
+                  get_in(observation, [:mind, "evidence"]) !=
+                    get_in(state.observation, [:mind, "evidence"])
           }
 
         {:outcome, outcome} ->
@@ -222,7 +225,8 @@ defmodule GateServer.Npc.Brain.Llm do
         request_pid: nil,
         calls: Map.merge(state.calls, sent),
         next_id: state.next_id + length(all),
-        dirty: all == [],
+        # 请求发出后到达的新经历仍待处理，旧响应不能清除这项义务。
+        dirty: state.dirty or all == [],
         failures: if(all == [], do: state.failures + 1, else: 0)
     }
 
