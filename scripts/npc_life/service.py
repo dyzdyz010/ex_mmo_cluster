@@ -54,12 +54,31 @@ def ready(timeout):
     raise SystemExit('NPC life Hindsight readiness timeout')
 
 
-def start(timeout):
-    cfg = config()
+def preflight(required=False):
+    # 所有生命周期动作共用这一接纳入口；只检查公开元数据，绝不读取完整环境。
     found = subprocess.run(['docker', 'inspect', '--format', '{{.Config.Image}}', NAME], capture_output=True, text=True)
-    if found.returncode == 0:
-        if found.stdout.strip() != IMAGE:
-            raise SystemExit('owned container image mismatch')
+    if found.returncode != 0:
+        if required:
+            raise SystemExit('owned container not found')
+        return False
+    if found.stdout.strip() != IMAGE:
+        raise SystemExit('owned container image mismatch')
+    ports = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .HostConfig.PortBindings}}', NAME],
+                                     check=True, capture_output=True, text=True).stdout)
+    mounts = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .Mounts}}', NAME],
+                                      check=True, capture_output=True, text=True).stdout)
+    expected_ports = {'8888/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '18908'}]}
+    expected_mounts = {NAME + '-pg': '/home/hindsight/.pg0', NAME + '-hf': '/home/hindsight/.cache/huggingface'}
+    actual_mounts = {m.get('Name'): m['Destination'] for m in mounts if m['Type'] == 'volume'}
+    if ports != expected_ports or len(mounts) != 2 or actual_mounts != expected_mounts:
+        raise SystemExit('owned container isolation mismatch')
+    return True
+
+
+def start(timeout):
+    exists = preflight()
+    cfg = config()
+    if exists:
         subprocess.run(['docker', 'start', NAME], check=True, capture_output=True)
     else:
         subprocess.run(['docker', 'run', '--rm', '--user', '0', '-v', NAME + '-hf:/cache',
@@ -78,15 +97,6 @@ def start(timeout):
                               check=True, capture_output=True, text=True)
     if NETWORK not in json.loads(attached.stdout):
         subprocess.run(['docker', 'network', 'connect', NETWORK, NAME], check=True, capture_output=True)
-    # 只检查公开隔离元数据，不读取或打印完整 inspect / 环境。
-    ports = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .HostConfig.PortBindings}}', NAME],
-                                     check=True, capture_output=True, text=True).stdout)
-    mounts = json.loads(subprocess.run(['docker', 'inspect', '--format', '{{json .Mounts}}', NAME],
-                                      check=True, capture_output=True, text=True).stdout)
-    expected_mounts = {NAME + '-pg': '/home/hindsight/.pg0', NAME + '-hf': '/home/hindsight/.cache/huggingface'}
-    actual_mounts = {m.get('Name'): m['Destination'] for m in mounts if m['Type'] == 'volume'}
-    if ports.get('8888/tcp') != [{'HostIp': '127.0.0.1', 'HostPort': '18908'}] or actual_mounts != expected_mounts:
-        raise SystemExit('owned container isolation mismatch')
     ready(timeout)
     identity = subprocess.run(['docker', 'inspect', '--format', '{{.Image}}', NAME],
                               check=True, capture_output=True, text=True).stdout.strip()
@@ -98,12 +108,17 @@ def start(timeout):
     print(json.dumps(manifest))
 
 
+def stop():
+    preflight(required=True)
+    subprocess.run(['docker', 'stop', NAME], check=True, capture_output=True)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['start', 'stop', 'restart'])
     parser.add_argument('--timeout', type=int, default=600)
     args = parser.parse_args()
     if args.command in ('stop', 'restart'):
-        subprocess.run(['docker', 'stop', NAME], check=True, capture_output=True)
+        stop()
     if args.command in ('start', 'restart'):
         start(args.timeout)
