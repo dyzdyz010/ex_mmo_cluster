@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 
 sys.dont_write_bytecode = True
@@ -130,17 +131,22 @@ def live(cid, out, seconds):
     if trace.exists():
         raise RuntimeError('prior live evidence exists; refusing to overwrite or silently restart request budget')
     code = (Path(__file__).parent / 'decision_trace.exs').read_text(encoding='utf-8')
-    demo.save(out / 'trace-start.json', demo.server.rpc(demo.SERVER, demo.CONTAINER, code))
-    before = demo.observe(cid)
-    demo.save(out / 'before.json', before)
-    position = before['body']['position']
-    spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "llm",params: {packed(profile_params(LIVE_GOAL))}}}'
     started = time.time()
+    position, registered, original_error = None, False, None
     try:
-        demo.save(out / 'registration.json', demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end'))
+        demo.save(out / 'trace-start.json', demo.server.rpc(demo.SERVER, demo.CONTAINER, code))
+        before = demo.observe(cid)
+        demo.save(out / 'before.json', before)
+        position = before['body']['position']
+        spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "llm",params: {packed(profile_params(LIVE_GOAL))}}}'
+        registered = True  # 登记失败也可能已经落库，仍承担恢复义务。
+        result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
+        demo.save(out / 'registration.json', result)
+        assert result == {'cid': cid}, 'LLM registration failed'
         with (out / 'authority.jsonl').open('w', encoding='utf-8') as stream:
             while time.time()-started < seconds:
                 row = demo.observe(cid)
+                position = row['body']['position']
                 row['working'] = demo.rpc(f'GateServer.Npc.Memory.working_context(DataService.NpcMemory,{cid})')
                 stream.write(json.dumps(row, ensure_ascii=False)+'\n')
                 stream.flush()
@@ -152,22 +158,110 @@ def live(cid, out, seconds):
                     if len(records) > 24:
                         raise RuntimeError('request budget violated')
                 time.sleep(2)
+    except BaseException as error:
+        original_error = error
+        raise
     finally:
-        # 恢复已批准的常驻后端，保留模型自主形成的意图与真实经历。
-        final = demo.observe(cid)
-        demo.save(out / 'before-restore.json', final)
-        demo.save(out / 'restore.json', demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{demo.spec("settler", final["body"]["position"])}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end'))
-        demo.save(out / 'trace-stop.json', demo.rpc('''
-          :erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global])
-          :erlang.trace(:all,false,[:call])
-          if p = Process.whereis(:npc_long_horizon_trace), do: Process.exit(p,:kill)
-          %{stopped: true}'''))
-        if trace.exists():
-            demo.save(out / 'requests.json', [json.loads(s) for s in trace.read_text(encoding='utf-8').splitlines()])
-        started_path = demo.SERVER / 'long-horizon-started.jsonl'
-        if started_path.exists():
-            demo.save(out / 'started.json', [json.loads(s) for s in started_path.read_text(encoding='utf-8').splitlines()])
+        errors = {}
+        # 观察、恢复、停止探针互不依赖；使用最后已观察的位置恢复，不读取 Life 才能清理。
+        try:
+            final = demo.observe(cid)
+            position = final['body']['position']
+            demo.save(out / 'before-restore.json', final)
+        except Exception as error:
+            errors['observe'] = type(error).__name__
+        if registered:
+            try:
+                result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{demo.spec("settler", position)}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
+                demo.save(out / 'restore.json', result)
+                assert result == {'cid': cid}, 'settler restoration failed'
+            except Exception as error:
+                errors['restore'] = type(error).__name__
+                # 已验证的恢复失败模型：停用本任务登记，显式保留失败，不能留下持续付费后端。
+                try:
+                    disabled = demo.rpc(f'GateServer.Npc.Registry.remove("{demo.NAME}")')
+                    demo.save(out / 'disabled-after-restore-error.json', disabled)
+                    assert disabled == 'ok', 'failed to disable LLM registration'
+                except Exception as disable_error:
+                    errors['disable'] = type(disable_error).__name__
+        try:
+            demo.save(out / 'trace-stop.json', demo.rpc('''
+              :erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global])
+              :erlang.trace(:all,false,[:call])
+              if p = Process.whereis(:npc_long_horizon_trace), do: Process.exit(p,:kill)
+              %{stopped: true}'''))
+        except Exception as error:
+            errors['trace_stop'] = type(error).__name__
+        for source, target in [(trace, 'requests.json'), (demo.SERVER / 'long-horizon-started.jsonl', 'started.json')]:
+            try:
+                if source.exists():
+                    demo.save(out / target, [json.loads(s) for s in source.read_text(encoding='utf-8').splitlines()])
+            except Exception as error:
+                errors[target] = type(error).__name__
+        demo.save(out / 'cleanup-errors.json', errors)
         demo.save(out / 'duration.json', {'wall_s': time.time()-started, 'limit_s': seconds})
+        if errors and original_error is None:
+            raise RuntimeError('live cleanup failed: ' + ','.join(errors))
+
+
+def confirmed_stage(client_events, world, baseline, actor, count, terminal):
+    """只判本轮真实意图到同角色、同格、同事务的 World 结果，不借旧历史。"""
+    sent = [e for e in client_events if e['event'] == 'intent.sent']
+    returned = {e['client_seq']: e for e in client_events if e['event'] == 'intent.result'}
+    assert len(sent) == count, 'unexpected intent count'
+    matched = []
+    for event in sent:
+        assert event['coord'] == demo.CELL, 'wrong intended cell'
+        result = returned.get(event['client_seq'])
+        assert result and result['result'] == 0, 'intent rejected or missing result'
+        item = next((e for e in world if e['seq'] == result['txn']), None)
+        assert item and item['seq'] > baseline, 'no new World event for this intent'
+        assert item['actor'] == actor and item['cell'] == demo.CELL, 'World actor/cell mismatch'
+        matched.append(item)
+    assert len({e['seq'] for e in matched}) == count, 'duplicate authority transaction'
+    expected = ['damage'] * (count-1) + [terminal]
+    assert [e['kind'] for e in matched] == expected, 'required terminal state not reached'
+    return matched
+
+
+def release_damage(out, client_events, world, baseline):
+    matched = confirmed_stage(client_events, world, baseline, ACTORS[0], 3, 'destroy')
+    demo.save(out / 'damage-gate.json', matched)
+    (out / 'a').mkdir(parents=True, exist_ok=True)
+    (out / 'a/replay.done').write_text('harm-confirmed\n', encoding='utf-8')
+    return matched
+
+
+def monitor_stages(out, baseline, stop, failures, timeout):
+    """复用 R7 命名 peer gate；确认伤害才放行帮助，确认帮助才结束 A。"""
+    deadline = time.monotonic() + timeout
+    try:
+        for role, count in [('a', 3), ('b', 1)]:
+            while not stop.is_set():
+                path = out / role / 'client.log'
+                records = demo.events.read(path) if path.exists() else []
+                results = [e for e in records if e['event'] == 'intent.result']
+                assert all(e['result'] == 0 for e in results), 'authoritative intent rejection'
+                if len(results) >= count:
+                    lines = demo.events.lines(path)
+                    demo.checks.character_identity(lines, ACTORS[0 if role == 'a' else 1], expected_sessions=1)
+                    world = demo.ok(demo.rpc('VoxelRegion.World.interactions_since(VoxelRegion.World,0)'))['events']
+                    if role == 'a':
+                        release_damage(out, records, world, baseline)
+                    else:
+                        matched = confirmed_stage(records, world, baseline, ACTORS[1], 1, 'build')
+                        demo.save(out / 'repair-gate.json', matched)
+                        (out / 'b/replay.done').write_text('repair-confirmed\n', encoding='utf-8')
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('stage authority result deadline')
+                stop.wait(.25)
+            if stop.is_set():
+                raise RuntimeError('clients ended before authority gate completed')
+    except Exception as error:
+        failures.append({'type': type(error).__name__, 'reason': str(error)})
+        demo.save(out / 'stage-failures.json', failures)
+        (out / 'abort').write_text('authority stage failed\n', encoding='utf-8')
 
 
 def clients(out):
@@ -185,6 +279,8 @@ def clients(out):
         a.hit(70 + 1.2*i)
     a.add(75, '@await_intents')
     a.add(90, '@place ' + demo.FAR)
+    a.add(91, '@await_peer repair-confirmed')
+    b.add(104, '@await_peer harm-confirmed')
     b.add(105, '@place ' + demo.NEAR)
     b.add(125, '@aim_build 61.5 416.01 -516.5')
     b.click(127, 'RightMouseButton')
@@ -203,8 +299,21 @@ def clients(out):
         demo.save(inputs[role], {'classification': 'Test-only', 'steps': values})
     scenario = {'level': '/Game/Voxel/Gameplay/L_GameplayDemo', 'roles': {r: {'user': u} for r, u in users.items()},
         'server': {'container': demo.CONTAINER}, 'measurement': {'seconds': .6}}
-    result = demo.clients.run(scenario, out, demo.SERVER, inputs, max(demo.clients.timeout_estimate(v) for v in steps.values()))
+    baseline = demo.ok(demo.rpc('VoxelRegion.World.interactions_since(VoxelRegion.World,0)'))['cursor']
+    demo.save(out / 'baseline.json', {'cursor': baseline})
+    stop, failures = threading.Event(), []
+    timeout = max(demo.clients.timeout_estimate(v) for v in steps.values())
+    monitor = threading.Thread(target=monitor_stages, args=(out, baseline, stop, failures, timeout), daemon=True)
+    monitor.start()
+    try:
+        result = demo.clients.run(scenario, out, demo.SERVER, inputs, timeout)
+    finally:
+        stop.set()
+        monitor.join(timeout=30)
+    assert not monitor.is_alive(), 'authority monitor did not stop'
     demo.save(out / 'clients.json', result)
+    assert not failures, failures
+    assert all(row['replay'] == 'success' for row in result.values()), 'client replay failed'
     print(json.dumps(result), flush=True)
 
 

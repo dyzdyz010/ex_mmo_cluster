@@ -72,6 +72,8 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 `pairs --source pairs-input-01 --out pairs-results-01` 按预登记的六组自传身份互换运行12请求，不执行结果，不写回真实记忆。
 `live --out live-01 --seconds 420` 在正式 Brain/Body 运行同一 NPC，最多24请求，结束恢复 settler 并保留自主意图；
 `clients --out clients-01` 是同时运行的一次真实双端伤害/修复短场景（170秒输入）。
+驱动复用命名 `@await_peer`：核对 A 本轮3笔成功意图与同角色/格/事务的 World damage/destroy 后才放行 B，B 的 build 确认后才结束 A；首次拒绝、证据错配或超时写 abort，原日志保留。`live` 的恢复不依赖最终 Life/World 观察成功；恢复失败写错误并停用本任务登记，trace/尾部取证仍独立执行，异常不伪装成功。
+离线反例及驱动接线验证：`python -B -m unittest discover -s scripts/npc_life -p test_long_horizon.py`（进程、网络替身，无真实模型调用）。
 只能在已由 `demo.py` 建立的本轮独立服务运行，输出在 `.demo/observe/npc-long-horizon-20261011/`，拒绝覆盖旧运行。
 `decision_trace.exs` 只保存无凭证请求体、工具响应和 usage；key 始终留在进程环境。
 验收边界及失败保留见 `docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md`。
