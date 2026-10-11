@@ -116,6 +116,31 @@ defmodule GateServer.NpcMemoryTest do
              Memory.working_context(FailedStore, 701)
   end
 
+  @tag long_horizon: true
+  test "actual database rejection preserves the last accepted intention" do
+    plan = command("set_plan", %{"text" => "Keep west"}, 83)
+    assert %{status: :done} = Memory.execute(NpcMemory, 701, {0, 0, 0}, plan)
+
+    Ecto.Adapters.SQL.query!(
+      DataService.Repo,
+      "ALTER TABLE npc_memories ADD CONSTRAINT reject_intention CHECK (cid <> 701 OR kind <> 'intention' OR body->>'text' = 'Keep west')",
+      []
+    )
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.query!(
+        DataService.Repo,
+        "ALTER TABLE npc_memories DROP CONSTRAINT reject_intention",
+        []
+      )
+    end)
+
+    assert %{status: :rejected, reason: {:memory_unavailable, Postgrex.Error}} =
+             Memory.execute(NpcMemory, 701, {0, 0, 0}, %{plan | text: "Move east"})
+
+    assert Memory.working_context(NpcMemory, 701).current_plan["text"] == "Keep west"
+  end
+
   test "remember and recall use one durable note per cid and key without process caches" do
     a = command("remember", %{"key" => "plan", "text" => "Build west"}, 1)
 

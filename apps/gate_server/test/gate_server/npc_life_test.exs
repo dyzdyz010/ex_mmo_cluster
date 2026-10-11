@@ -33,11 +33,15 @@ defmodule GateServer.NpcLifeTest do
   end
 
   defmodule Spy do
-    def init(profile), do: %{owner: profile.owner}
+    def init(profile) do
+      send(profile.owner, {:life_runtime, self()})
+      %{owner: profile.owner, ready: false}
+    end
 
     def handle_event({:observation, observation}, %{owner: owner} = state) do
+      unless state.ready, do: send(owner, {:life_runtime_ready, self()})
       send(owner, {:life_observation, observation})
-      {[], state}
+      {[], %{state | ready: true}}
     end
 
     def handle_event({:outcome, outcome}, %{owner: owner} = state) do
@@ -154,6 +158,133 @@ defmodule GateServer.NpcLifeTest do
     actor = Process.get({:life_actor, cid}) || NpcWorld.actor(cid, {4.5, 65.5, 8.5})
     Process.put({:life_actor, cid}, actor)
     actor
+  end
+
+  @tag long_horizon: true
+  test "thirty controlled days and owner restart preserve intention and authority personality without revived emotion" do
+    clock = start_supervised!({Agent, fn -> System.system_time(:millisecond) end})
+
+    {fixture, body, cid} =
+      start(DataService.NpcMemory, %{clock: fn -> Agent.get(clock, & &1) end})
+
+    assert_receive {:life_runtime, runtime}
+    assert_receive {:life_runtime_ready, ^runtime}, 5000
+
+    Body.command(runtime, %{
+      id: :plan_before,
+      verb: :set_plan,
+      text: "Check the construction after returning; repair only actual damage"
+    })
+
+    assert_receive {:life_outcome, %{id: :plan_before, status: :done}}, 5000
+
+    for {cell, seq} <- Enum.with_index([{4, 64, 8}, {5, 64, 8}, {4, 64, 9}], 1),
+        do: damage(fixture.world, cid, seq, cell)
+
+    # 已有第一次伤害；继续真实工具击打至破坏，再由另一角色真实补回同材料。
+    attacker = actor(cid + 10)
+
+    for seq <- 101..103 do
+      query = %{
+        request_id: seq,
+        client_intent_seq: seq,
+        logical_scene_id: 1,
+        action: 0,
+        tool_id: 1,
+        direction: {0.0, -1.0, 0.0},
+        micro: {0, 0, 0},
+        granularity: 0,
+        incarnation: 0,
+        owner: {0, 0},
+        material: 0
+      }
+
+      {:ok, target} = World.tool_intent(fixture.world, attacker, query)
+
+      {:ok, _} =
+        World.tool_intent(
+          fixture.world,
+          Map.merge(attacker, %{received_us: seq * 1_000_000, clock_node: node()}),
+          Map.merge(
+            query,
+            Map.take(target, [:micro, :granularity, :incarnation, :owner, :material])
+          )
+          |> Map.put(:action, 1)
+        )
+    end
+
+    {:ok, _} = World.material_supply(fixture.world, cid + 20, "long-horizon-helper", %{11 => 512})
+
+    {:ok, _} =
+      World.production_intent(fixture.world, actor(cid + 20), %{
+        request_id: 201,
+        client_intent_seq: 201,
+        logical_scene_id: 1,
+        action: 1,
+        coord: {4, 64, 8},
+        tool_id: 1,
+        material: 11
+      })
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.state["evidence"]["damage_count"] == 3 and s.state["evidence"]["help_count"] == 1
+    end)
+
+    {:ok, before} = Life.observe(cid)
+    plan = GateServer.Npc.Memory.working_context(DataService.NpcMemory, cid).current_plan
+    assert before.state["traits"]["caution"] == 0.25
+    assert before.state["relationships"][to_string(cid + 10)]["trust"] == -1.0
+    assert before.state["relationships"][to_string(cid + 20)]["trust"] == 0.25
+
+    for day <- [1, 7, 30] do
+      Agent.update(clock, fn _ -> before.state["last_at_ms"] + day * 86_400_000 end)
+      {:ok, aged} = Life.observe(cid)
+      assert aged.state == before.state
+      assert aged.mind["emotions"]["anger"] < 1.0e-50
+      assert aged.mind["emotions"]["gratitude"] < 1.0e-50
+
+      assert GateServer.Npc.Memory.working_context(DataService.NpcMemory, cid).current_plan ==
+               plan
+    end
+
+    old_life = :global.whereis_name({Life, node(), cid})
+    life_ref = Process.monitor(old_life)
+    Process.exit(body, :kill)
+    assert_receive {:DOWN, ^life_ref, _, _, _}, 5000
+    assert_receive {:life_runtime, restarted_runtime}, 5000
+    assert restarted_runtime != runtime
+
+    NpcWorld.await(fn ->
+      case Life.observe(cid) do
+        {:ok, %{state: state, cache: cache}} -> state == before.state and cache != nil
+        _ -> false
+      end
+    end)
+
+    {:ok, restored} = Life.observe(cid)
+    assert restored.mind["emotions"]["anger"] == 0.0
+    assert restored.mind["emotions"]["gratitude"] == 0.0
+    assert GateServer.Npc.Memory.working_context(DataService.NpcMemory, cid).current_plan == plan
+    {:ok, history} = World.interactions_since(fixture.world, 0)
+
+    assert {restored.state, []} ==
+             Life.State.advance(
+               restored.state,
+               history.events,
+               history.cursor,
+               Agent.get(clock, & &1)
+             )
+
+    # 明确等新 Runtime 的正式观察：不向内部状态注入当前世界或心智。
+    assert_receive {:life_runtime_ready, ^restarted_runtime}, 5000
+
+    for {id, text} <- [{:replan, "Inspect another site before resuming"}, {:clear, ""}] do
+      Body.command(restarted_runtime, %{id: id, verb: :set_plan, text: text})
+      assert_receive {:life_outcome, %{id: ^id, status: :done}}, 5000
+      current = GateServer.Npc.Memory.working_context(DataService.NpcMemory, cid).current_plan
+      if text == "", do: assert(current == nil), else: assert(current["text"] == text)
+    end
   end
 
   @tag :final_fix
