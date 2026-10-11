@@ -71,6 +71,9 @@ defmodule GateServer.NpcLifeTest do
 
   defmodule NoLexical do
     def recent(_, _), do: raise("life decision must not perform lexical retrieval")
+    def search(_, _, _), do: raise("life decision must not perform lexical retrieval")
+    defdelegate get(cid, kind, key), to: DataService.NpcMemory
+    defdelegate recent_notes(cid, limit), to: DataService.NpcMemory
   end
 
   setup_all do
@@ -259,9 +262,12 @@ defmodule GateServer.NpcLifeTest do
     assert context.mental_models["self"] == "builder"
     assert_receive {:recall_called, "Who hurt me?"}
     refute_receive {:recall_called, _}
+    old_life = :global.whereis_name({Life, node(), cid})
+    life_ref = Process.monitor(old_life)
     ref = Process.monitor(body)
     Process.exit(body, :kill)
     assert_receive {:DOWN, ^ref, _, _, _}
+    assert_receive {:DOWN, ^life_ref, _, _, _}, 5000
 
     NpcWorld.await(fn ->
       case Life.observe(cid) do
@@ -396,8 +402,24 @@ defmodule GateServer.NpcLifeTest do
            }
   end
 
-  test "production Llm decision uses current mind, cached models and exactly one recall without lexical retrieval" do
+  @tag long_horizon: true
+  test "production Llm decision uses durable intentions, notes, mind, cached models and exactly one recall" do
     {_fixture, _body, cid} = start()
+
+    :ok =
+      DataService.NpcMemory.put(cid, "intention", "current", %{
+        "text" => "Inspect the western wall; repair only verified damage",
+        "position" => [4, 64, 10]
+      })
+
+    assert %{status: :done} =
+             GateServer.Npc.Memory.execute(DataService.NpcMemory, cid, {4, 64, 10}, %{
+               id: 72,
+               verb: :remember,
+               key: "agreement",
+               text: "Leave the eastern passage clear"
+             })
+
     owner = self()
 
     profile = %{
@@ -444,6 +466,15 @@ defmodule GateServer.NpcLifeTest do
     assert input["mind"]["cid"] == cid
     assert input["memory_retrieval"] == "hindsight_once"
     assert input["memories"] == [%{"text" => "remembered"}]
+
+    assert Enum.any?(
+             input["recent_notes"],
+             &(&1["body"]["text"] == "Leave the eastern passage clear")
+           )
+
+    assert input["current_plan"]["text"] ==
+             "Inspect the western wall; repair only verified damage"
+
     refute_receive {:recall_called, _}, 100
     refute_receive :refresh_called, 100
   end

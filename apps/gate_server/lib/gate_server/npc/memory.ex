@@ -40,6 +40,16 @@ defmodule GateServer.Npc.Memory do
         done: "data.matches 是命中的记忆（带时间）。",
         params: [query: :string],
         build: fn %{query: query}, _ -> %{verb: :search_memory, query: query} end
+      },
+      %{
+        name: "set_plan",
+        group: :memory,
+        description:
+          "保存或替换当前计划（最多 #{@text_limit} 字，空文本清除）。它每轮决策都会出现，跨重启保留，不被普通笔记淘汰。" <>
+            "只写你打算做什么及原因；计划不是已完成事实，当前进度、材料和目标状况必须查世界。环境变化后可自行修改。",
+        done: "data.current_plan 是保存的意图，null 表示清除；这不表示世界动作完成。",
+        params: [text: :string],
+        build: fn %{text: text}, _ -> %{verb: :set_plan, text: text} end
       }
     ]
 
@@ -75,24 +85,50 @@ defmodule GateServer.Npc.Memory do
   @doc "每轮现读近期经历、近期笔记与相关记忆；不缓存、不把查询失败当空记忆。"
   def context(memory, cid, query) do
     with {:ok, events} <- recent(memory, cid) do
-      case storage(fn ->
-             notes = memory.recent_notes(cid, 5)
-             related = memory.search(cid, query, 5)
-             {:ok, Enum.map(Enum.uniq_by(related ++ notes, & &1.id), &dated/1)}
-           end) do
+      working = working_context(memory, cid)
+
+      case if(Map.has_key?(working, :working_memory_error),
+             do: {:error, working.working_memory_error},
+             else:
+               storage(fn ->
+                 notes = working.recent_notes
+                 related = Enum.map(memory.search(cid, query, 5), &dated/1)
+                 {:ok, Enum.uniq_by(related ++ notes, & &1.id)}
+               end)
+           ) do
         {:ok, records} ->
-          %{
+          Map.merge(working, %{
             experiences: events,
             memories: records,
             memory_query: query,
             memory_retrieval: :lexical_words_and_cjk_bigrams
-          }
+          })
 
         {:error, reason} ->
           %{experiences: events, memory_error: reason}
       end
     else
       {:error, reason} -> %{memory_error: reason}
+    end
+  end
+
+  @doc "现读唯一当前意图及五条近期笔记，不做相关性检索；读取失败不冒充没有计划。"
+  def working_context(memory, cid) do
+    case storage(fn ->
+           case memory.get(cid, "intention", "current") do
+             {:error, reason} ->
+               {:error, {:memory_unavailable, reason}}
+
+             plan ->
+               {:ok,
+                %{
+                  current_plan: plan,
+                  recent_notes: Enum.map(memory.recent_notes(cid, 5), &dated/1)
+                }}
+           end
+         end) do
+      {:ok, context} -> context
+      {:error, reason} -> %{working_memory_error: reason}
     end
   end
 
@@ -133,8 +169,33 @@ defmodule GateServer.Npc.Memory do
 
   defp valid?(%{verb: :recall, key: key}), do: text?(key, @key_limit)
   defp valid?(%{verb: :search_memory, query: query}), do: text?(query, @text_limit)
+
+  defp valid?(%{verb: :set_plan, text: text}),
+    do: is_binary(text) and String.length(text) <= @text_limit
+
   defp valid?(_), do: false
   defp text?(text, limit), do: is_binary(text) and String.length(text) in 1..limit
+
+  defp perform(memory, cid, position, %{verb: :set_plan, text: text}) do
+    plan =
+      if text == "",
+        do: nil,
+        else: %{
+          "text" => text,
+          "position" => Tuple.to_list(position),
+          "at" => DateTime.to_iso8601(DateTime.utc_now())
+        }
+
+    result =
+      if plan,
+        do: memory.put(cid, "intention", "current", plan),
+        else: memory.delete(cid, "intention", "current")
+
+    case result do
+      :ok -> {:ok, %{current_plan: plan}}
+      {:error, reason} -> {:error, {:memory_unavailable, reason}}
+    end
+  end
 
   defp perform(memory, cid, position, %{verb: :remember, key: key, text: text}) do
     body = %{"text" => text, "position" => Tuple.to_list(position)}

@@ -54,6 +54,9 @@ defmodule GateServer.NpcBrainLlmTest do
   end
 
   defmodule UnavailableStore do
+    def get(_, _, _),
+      do: raise(DBConnection.ConnectionError, message: "private connection details")
+
     def recent(_, _),
       do: raise(DBConnection.ConnectionError, message: "private connection details")
   end
@@ -723,7 +726,7 @@ defmodule GateServer.NpcBrainLlmTest do
 
     # 能力库 I2b：工具表 = Abilities 全部组（未配置 groups、无技能）+ wait；say 不投影，新增 dismantle / craft / eat / read_catalog。
     # 放置阶段 §7（2026-10-09）：感知组新增 survey。
-    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target scoop search_memory select_target set_focus stop survey toggle_mark use_tool wait) ==
+    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target scoop search_memory select_target set_focus set_plan stop survey toggle_mark use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
 
     assert Enum.all?(body.tools, &(&1.strict == true))

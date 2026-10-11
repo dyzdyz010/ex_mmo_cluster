@@ -181,7 +181,7 @@ defmodule GateServer.Npc.Runtime do
 
   # 公共命令入口尚未收到正式观察时，没有可用的身份/位置上下文。
   defp execute(%{observation: nil} = state, %{verb: verb} = command)
-       when verb in [:skill, :remember, :recall, :search_memory] do
+       when verb in [:skill, :remember, :recall, :search_memory, :set_plan] do
     emit(state, %{
       id: command.id,
       verb: Map.get(command, :skill, verb),
@@ -230,7 +230,7 @@ defmodule GateServer.Npc.Runtime do
   end
 
   defp execute(state, %{verb: verb} = command)
-       when verb in [:remember, :recall, :search_memory] do
+       when verb in [:remember, :recall, :search_memory, :set_plan] do
     actor = state.observation.self
     emit(state, Memory.execute(state.memory, actor.entity_id, actor.position, command))
   end

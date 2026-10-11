@@ -16,6 +16,7 @@ defmodule GateServer.NpcMemoryTest do
 
   defmodule FailedStore do
     def put(_, _, _, _), do: {:error, :write_denied}
+    def delete(_, _, _), do: {:error, :write_denied}
     def get(_, _, _), do: raise(DBConnection.ConnectionError, message: "read unavailable")
     def recent(_, _), do: exit(:database_down)
   end
@@ -25,6 +26,7 @@ defmodule GateServer.NpcMemoryTest do
   end
 
   defmodule FailedSearch do
+    def get(_, _, _), do: nil
     def recent(_, _), do: []
     def recent_notes(_, _), do: []
 
@@ -35,7 +37,8 @@ defmodule GateServer.NpcMemoryTest do
   # 能力库 I2b：记忆工具的 schema 与译码来自 Abilities 条目；长度上限不写进 strict schema（strict 不支持
   # minLength / maxLength），写在说明里并由 execute/4 校验（见下方长度用例）。
   test "tool schemas require every declared argument and commands retain explicit identity" do
-    [remember, recall, search] = Abilities.tools(%{groups: [:memory]})
+    [remember, recall, search, plan] = Abilities.tools(%{groups: [:memory]})
+    assert plan.name == "set_plan" and plan.parameters.required == ["text"]
     assert search.name == "search_memory" and search.parameters.required == ["query"]
     assert remember.type == "function" and remember.name == "remember" and remember.strict
     assert remember.parameters.required == ["key", "text"]
@@ -56,6 +59,62 @@ defmodule GateServer.NpcMemoryTest do
   end
 
   defp command(name, args, id), do: Abilities.command(name, args, id, %{})
+
+  @tag long_horizon: true
+  test "current intention survives note eviction and new readers, is replaced or cleared per cid" do
+    blueprint = %{"goal" => "pave a path", "ops" => [[1, 2, 3, 11]]}
+    :ok = NpcMemory.put(701, "plan", "current", blueprint)
+    assert Memory.working_context(NpcMemory, 701).current_plan == nil
+    plan = command("set_plan", %{"text" => "Inspect the west wall before deciding repairs"}, 81)
+
+    assert %{id: 81, verb: :set_plan, status: :done} =
+             Memory.execute(NpcMemory, 701, {1, 2, 3}, plan)
+
+    for n <- 1..201,
+        do: :ok = NpcMemory.put(701, "note", "note#{n}", %{"text" => "passing observation #{n}"})
+
+    context = Task.async(fn -> Memory.working_context(NpcMemory, 701) end) |> Task.await()
+    assert context.current_plan["text"] == "Inspect the west wall before deciding repairs"
+    assert length(context.recent_notes) == 5
+    assert hd(context.recent_notes).key == "note201"
+    assert Memory.working_context(NpcMemory, 702).current_plan == nil
+
+    assert %{status: :done} =
+             Memory.execute(NpcMemory, 701, {2, 3, 4}, %{
+               plan
+               | text: "Wall is occupied; inspect the east site instead"
+             })
+
+    assert Memory.working_context(NpcMemory, 701).current_plan["text"] ==
+             "Wall is occupied; inspect the east site instead"
+
+    assert %{status: :rejected, reason: :invalid_memory_arguments} =
+             Memory.execute(NpcMemory, 701, {0, 0, 0}, %{plan | text: String.duplicate("x", 1501)})
+
+    assert %{status: :rejected, reason: :invalid_memory_arguments} =
+             Memory.execute(NpcMemory, 701, {0, 0, 0}, %{plan | text: nil})
+
+    assert Memory.working_context(NpcMemory, 701).current_plan["text"] ==
+             "Wall is occupied; inspect the east site instead"
+
+    assert %{status: :done} = Memory.execute(NpcMemory, 701, {0, 0, 0}, %{plan | text: ""})
+    assert Memory.working_context(NpcMemory, 701).current_plan == nil
+    assert NpcMemory.get(701, "plan", "current") == blueprint
+  end
+
+  @tag long_horizon: true
+  test "plan storage failures stay explicit rather than losing the intention silently" do
+    plan = command("set_plan", %{"text" => "Inspect first"}, 82)
+
+    assert %{status: :rejected, reason: {:memory_unavailable, :write_denied}} =
+             Memory.execute(FailedStore, 701, {0, 0, 0}, plan)
+
+    assert %{status: :rejected, reason: {:memory_unavailable, :write_denied}} =
+             Memory.execute(FailedStore, 701, {0, 0, 0}, %{plan | text: ""})
+
+    assert %{working_memory_error: {:memory_unavailable, DBConnection.ConnectionError}} =
+             Memory.working_context(FailedStore, 701)
+  end
 
   test "remember and recall use one durable note per cid and key without process caches" do
     a = command("remember", %{"key" => "plan", "text" => "Build west"}, 1)

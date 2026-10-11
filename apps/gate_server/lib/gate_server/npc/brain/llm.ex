@@ -264,7 +264,11 @@ defmodule GateServer.Npc.Brain.Llm do
     now = System.monotonic_time(:millisecond)
     limit = Map.get(state.profile, :max_requests_per_hour, @max_requests_per_hour)
     asks = recent_asks(state.asks, now)
-    state = if length(asks) < limit, do: %{state | asks: asks, budget_logged: false}, else: %{state | asks: asks}
+
+    state =
+      if length(asks) < limit,
+        do: %{state | asks: asks, budget_logged: false},
+        else: %{state | asks: asks}
 
     cond do
       now - state.asked_ms < gap(state.failures) ->
@@ -294,6 +298,7 @@ defmodule GateServer.Npc.Brain.Llm do
                   {:ok, context} -> context
                   {:error, reason} -> %{memory_error: reason}
                 end
+                |> Map.merge(Memory.working_context(state.memory, observation.self.entity_id))
               else
                 Memory.context(state.memory, observation.self.entity_id, query)
               end
@@ -376,9 +381,12 @@ defmodule GateServer.Npc.Brain.Llm do
           {[], "self.body_state 的 status：#{statuses()}（死亡期间世界动作被拒），life 0–100，null 表示还没收到。"},
           {[], "记忆不是世界真值。"},
           {~w(look inspect), "每次动手前先用 look/inspect 核对当前位置与目标。"},
-          {[], "experiences 是近期经历；memories 是每轮检索的相关记忆和近期笔记，带时间与来源；memory_error 表示读取失败。"},
+          {[],
+           "experiences 是近期经历；memories 是检索记忆，recent_notes 是近期自记笔记；mental_models 是从经历形成的认识，mind 是自己的当前情绪、人格与关系。这些用于解释选择，不是当前世界事实。memory_error/working_memory_error 表示读取失败，不能当作没有经历或计划。"},
           {~w(remember recall search_memory),
            "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。"},
+          {~w(set_plan),
+           "current_plan 是你跨轮次保留的当前意图。用 set_plan 自行制定或修订可继续推进的计划；遇到新观察与旧假设冲突时调整，保留尚有效的长期目的。只有权威 Outcome 才能证明动作完成；完成或放弃后更新或清除旧计划，勿反复执行已完成步骤。"},
           {[], "能力以本次 tools 参数表为准。"},
           {~w(design_house build), "设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。"}
         ],

@@ -43,6 +43,8 @@ defmodule GateServer.NpcSkillBrainTest do
     def search(_, _, _), do: []
     def journal(_, _, _), do: :ok
 
+    def get(_, "intention", "current"), do: nil
+
     def get(_, _, _) do
       %{owner: owner, body: body} = Agent.get(__MODULE__, & &1)
       Process.flag(:trap_exit, true)
