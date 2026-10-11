@@ -59,6 +59,9 @@ defmodule GateServer.Npc.Brain.Patrol do
 
   def handle_event({:outcome, _}, state), do: {[], state}
 
+  # 巡逻没有语言决策；对话事件不改当前路点、攻击或冷却。
+  def handle_event({kind, _}, state) when kind in [:dialogue, :heard], do: {[], state}
+
   defp identity(target), do: Map.take(target, [:micro, :incarnation, :owner, :material])
   defp next(%{route: [head | rest]} = state), do: %{state | route: rest ++ [head]}
 

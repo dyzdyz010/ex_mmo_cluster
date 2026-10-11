@@ -444,10 +444,11 @@ defmodule GateServer.NpcLifeTest do
       config: %{owner: self()},
       now: fn -> 1000 end,
       poll_ms: 600_000,
-      status: nil
+      status: nil,
+      speech_pending: []
     }
 
-    {:noreply, s} = Life.handle_info({:result, :poll, {:ok, loaded}}, s)
+    {:noreply, s} = Life.handle_info({:result, :poll, {:ok, %{row: loaded, episodes: []}}}, s)
     assert_receive {:result, :job, retained}, 5000
     {:noreply, s} = Life.handle_info({:result, :job, retained}, s)
     assert s.row["retained"] == 1 and s.row["dirty"]

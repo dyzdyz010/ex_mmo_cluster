@@ -8,11 +8,10 @@ defmodule GateServer.Npc.Runtime do
   中断策略只来自 `profile.interrupt_policy`；策略失败只记一笔，不中断正在进行的技能。
   """
   require Logger
-  alias GateServer.Npc.{Body, Memory, Skills, Scheduler}
+  alias GateServer.Npc.{Body, Dialogue, Memory, Skills, Scheduler}
 
-  # 中断检查间隔；技能进行中保留最近这么多句玩家话语交给中断策略。
+  # 中断检查间隔；对话尾部不属于技能生命周期。
   @check_ms 10_000
-  @heard 5
   @unknown_metrics %{request_count: nil, jev_request_count: nil}
 
   @doc "在 Body 内建立运行进程；后端 init/1 的 self() 是共用命令接收端。"
@@ -42,7 +41,7 @@ defmodule GateServer.Npc.Runtime do
         policy: Scheduler.configured(profile),
         observation: nil,
         skill: nil,
-        # 当前技能开始后听到的话（新在前），只交给中断策略；技能结束即清空。
+        # 按权威接收顺序保留本人、直接与旁听发言。
         heard: []
       })
     end)
@@ -54,10 +53,14 @@ defmodule GateServer.Npc.Runtime do
     {[], runtime}
   end
 
+  @doc "读取近期对话和正在进行的技能；不触发决策或外部调用。"
+  def observe(runtime), do: GenServer.call(runtime, :observe)
+
   defp loop(state) do
     next =
       receive do
         {:observation, observation} ->
+          observation = Map.put(observation, :heard, state.heard)
           if state.life, do: GateServer.Npc.Life.observation(state.life, observation)
 
           observation =
@@ -103,9 +106,26 @@ defmodule GateServer.Npc.Runtime do
         {:outcome, outcome} ->
           deliver(state, {:outcome, outcome})
 
-        {:heard, message} = event ->
-          if state.skill, do: send(self(), {:skill_check, state.skill.command.id})
-          deliver(%{state | heard: Enum.take([message | state.heard], @heard)}, event)
+        {kind, message} when kind in [:heard, :said] ->
+          if state.life, do: GateServer.Npc.Life.speech(state.life, message)
+          heard = Dialogue.append(state.heard, message)
+          state = deliver(%{state | heard: heard}, {:dialogue, heard})
+          cid = state.observation && state.observation.self.entity_id
+
+          if kind == :heard and Dialogue.direct?(message, cid) do
+            if state.skill, do: send(self(), {:skill_check, state.skill.command.id})
+            deliver(state, {:heard, message})
+          else
+            state
+          end
+
+        {:"$gen_call", from, :observe} ->
+          GenServer.reply(from, %{heard: state.heard, skill: state.skill && state.skill.command})
+          state
+
+        {:observe_body, from, snapshot} ->
+          GenServer.reply(from, Map.put(snapshot, :dialogue, state.heard))
+          state
 
         {:"$gen_cast", {:command, command}} ->
           execute(state, command)
@@ -256,8 +276,7 @@ defmodule GateServer.Npc.Runtime do
 
     %{
       state
-      | heard: [],
-        skill:
+      | skill:
           Map.merge(active, %{
             timer: schedule(state, command.id),
             cancelling: nil,
@@ -414,7 +433,7 @@ defmodule GateServer.Npc.Runtime do
       "npc_skill_outcome skill=#{active.command.skill} status=#{status} metrics=#{inspect(metrics)}"
     )
 
-    emit(%{state | skill: nil, heard: []}, %{
+    emit(%{state | skill: nil}, %{
       id: active.command.id,
       verb: active.command.skill,
       status: status,

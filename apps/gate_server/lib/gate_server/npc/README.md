@@ -93,8 +93,8 @@ flowchart LR
   进行中的 `design_house` 的 look / inspect / 记忆工具回 `error: dead`，下一轮模型请求前以 `dead` 结束。
   `design_house` 的发布直接调 `PrefabDesigner.publish/3`（死亡门、施法门经 World 内的 `actor.refresh` 生效），
   不产生 `character_intent` 行。
-- **中断策略**：只由 `interrupt_policy: {模块, 配置}` 开启，每 10 秒及听到说话时检查。
-  context 含 `skill`、`observation`、`heard`（技能开始后听到的话，新在前，最多 5 句）。
+- **中断策略**：只由 `interrupt_policy: {模块, 配置}` 开启，每 10 秒及被他人直接叫到时检查。
+  context 含 `skill`、`observation`、`heard`（最近 24 句，按权威接收顺序，包含旁听与本人发言；技能开始/结束不清空）。
   `{:error, _}` 或策略进程崩溃只记一笔（终态 `metrics.scheduler_error_count`）并继续技能。
   荒野施工内部分诊用的 `scheduler` endpoint 是另一项职责，配置它不会开启中断检查。
   Jev 实现只在有把握（置信度 ≥ 0.85）地选了非继续选项时中断，拿不准等同继续。
@@ -121,7 +121,7 @@ flowchart LR
 - **感知距离护栏**：`move_to` 的水平目标与给出的 `y`（相对脚所在格）都不超过 `Perception.reach()`，否则 `too_far`、
   不访问 World；`design_house` 的锚点宏格各轴离自身超过它时技能以 `too_far` 结束，不读 site、不发模型请求。
   两段 LLM 工具描述（`move_to`、`design_house`）都写了这条上限，数字由 `Perception.reach()` 插值。
-- **LLM 询问**：有新情况才问——新 Outcome、听到说话、`wait` 到期、或有实体走进 6 米（离开 8 米才算走远）。
+- **LLM 询问**：有新情况才问——新 Outcome、被他人直接叫到、`wait` 到期、或有实体走进 6 米（离开 8 米才算走远）。
   Life 新权威评价（`mind.evidence` 变化）也唤醒；单纯情绪衰减/观察时间变化不唤醒。
   请求期间到达的新情况保留至下一轮，旧响应不能把它清掉；仍受在途命令与滑动额度约束。
   两次询问至少隔 1 秒；应答没有工具调用或请求失败按 1、2、4…60 秒退避；
@@ -131,7 +131,7 @@ flowchart LR
   参数不是 JSON 对象、形状不对或工具不存在（含被 groups 裁掉的）时，在本地回报 `invalid_tool_arguments` / `unknown_tool`
   给模型并附原调用，不发给 Body。目标是显式句柄：`use_tool` / `dismantle` / `detach` / `cast_spell`（g0–g2）的 `target` 由模型从 probe_toward
   结果或 inspect 行里原样抄来（投影时每行附 `target`），Brain 不保存“最近一次 probe / inspect”；人物句柄（g5）不进 LLM 投影。
-  `say` 是聊天占位，Body 照常受理（恒拒 `chat_unavailable`），但不投影给 LLM。
+  `say` 在独立 `:dialogue` 组投影；显式裁剪组的档案须纳入该组才能让模型说话。
 - **观察与目标**：Body 拥有独立观察方向和敌／友目标组，各组一个焦点；目标身份是 `entity_id + entity_epoch`。
   选择、观察转向、移动与攻击正交；本地组不是阵营或团队真值，目标 epoch 是观察身份，不能用来绕过攻击裁决。
   实体离开 AOI、更换代次、换场景、会话丢失后重新入场时清理关注，旧身份的选择以 `stale_target` 拒绝，
@@ -383,7 +383,7 @@ NPC 的合成、进食、拆解、目录读取、身体视图与名牌、`Body.s
 design_house 共享工具的唯一来源，这些动词随之投影（strict、显式句柄）。Observation 的新字段（`self.body_state`、I4 起的
 `self.caster`、entities 的 `name / relation / relation_source`）随 `Context.plain` 原样进入每次 LLM 请求的 input，relation 码与 body_state.status 码的含义
 写在 instructions 里（relation 码由 `MmoContracts.Relation.code/1` 插值）。
-NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行为树 Brain、gather 与 Settler 随 I3 接上。正式聊天、住宅以外的设计技能
+NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行为树 Brain、gather 与 Settler 随 I3 接上。对话的 NPC 接缝见下节；住宅以外的设计技能
 仍是后续独立功能增量；Life 关注的建筑伤害/帮助评价已经能够唤醒等待或请求在途的大脑。NPC 注册表与节点重启恢复、创世能力组随放置阶段 M1 / M2 接上
 （[决策稿](../../../../../docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md)）。
 测试入口在 `apps/gate_server/test/gate_server/npc_*`；真实模型用例必须显式选择 `live_llm`。
@@ -401,7 +401,7 @@ GateServer.Npc.Registry.put("LifeBuilder", %{
 })
 ```
 
-示例坐标仅是部署选点；操作既有NPC时沿用其当前地点与姓名。登记到正式根后由 Registry 负责重启恢复；endpoint/key只来自环境，不能写入参数。`Registry.list/0` 可读到独立的 `brain="life"`，`Life.observe/1` 与 `Memory.working_context/2` 继续提供原调试面。聊天目前仍是 `chat_unavailable` 占位，并未随人生后端完成。
+示例坐标仅是部署选点；操作既有NPC时沿用其当前地点与姓名。登记到正式根后由 Registry 负责重启恢复；endpoint/key只来自环境，不能写入参数。`Registry.list/0` 可读到独立的 `brain="life"`，`Life.observe/1` 与 `Memory.working_context/2` 继续提供原调试面。聊天由独立 `:dialogue` 能力接入同一个 Llm 后端。
 
 注册参数默认没有 `life`。`settler` 加 `"life" => %{"url" => "http://hindsight:8888"}` 后只把原 Tree 包在
 `Brain.Social` 中；不询问决策模型。`llm` 加同一参数后保留原 Llm，用当前心智、缓存认识和一次情境召回替代决策前的
@@ -428,7 +428,7 @@ Runtime 初始化收到 Body 的永久 cid、scene_id 与路由模块。Life 与
 世界身份不符、操作历史 gap 和存储错误都显式报告。游标、canonical 事件态、短经历尾部、封存片段、感谢确认序号和认识缓存
 原子写在同一行。`State.view/2` 的衰减视图只进入观察和模型输入，永不覆盖 canonical 状态。
 
-短经历积累约 3000 字后封成一个不可变片段，文档 id 含世界身份和首/尾事务号；手动 flush 可以封存不足长度的尾片段。
+短经历积累约 3000 字后封成一个不可变片段，文档 id 由首尾经历本身的唯一 id 构成；手动 flush 可以封存不足长度的尾片段。
 retain 完成只从当前行删除已发送的片段 id，不以发送前快照覆盖期间的新事件。HTTP 失败保留原片段与诊断，由显式 flush
 重试相同 id；同一身份在外部服务重复抽取的语义依赖 Hindsight 的 document_id 接口，不能承诺跨系统事务的 exactly-once。
 首次 retain 成功后刷新认识，后续新事实使缓存 dirty，最多每 10 分钟后台刷新；CLI refresh 可显式提前刷新。
@@ -454,6 +454,51 @@ observe 返回 `{:ok, map}`：state 是持久 canonical，mind 是当前衰减�
 retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight facts/operations/usage、召回耗时及 Social 目标/真实终态。
 需 JSON 时用 `GateServer.Npc.Context.plain(map) |> Jason.encode!()`。flush/refresh 立即返回 started/busy/empty，随后用 observe
 等待真实完成；context 在调用者中执行一次网络召回，返回 `{:ok, context}` 或显式错误，Llm 只在自己的请求 worker 中调用。
+
+## 附近对话（2026-10-11）
+
+`Dialogue.entries/0` 提供 `say{text,target_id,conversation_id}`，地址可空并译为0；范围、文本长度与发言间隔直接取
+`SceneServer.Dialogue.limits/0`。Body 复用原 FIFO 执行进程调用 `Movement.Scene.say/3`，不会等待接纳而停止移动输入。
+Body 自己分配递增请求号，不把任意 term 命令 id 当线序号。拒绝回统一 Outcome；未接纳的文字不进入对话或 Life。
+
+```mermaid
+flowchart LR
+  Brain[同一个人生 Brain] -->|say| Body
+  Body -->|异步 Scene.say| Scene[Scene 权威听众与会话顺序]
+  Scene -->|Speech| Body
+  Body --> Runtime[Runtime 最近24句]
+  Runtime -->|尾部更新| Brain
+  Runtime -->|他人直接叫到| Wake[唤醒与既有技能中断策略]
+  Runtime --> Life[Life 来源经历与原 outbox]
+```
+
+Runtime 按权威接收顺序保留最近24句（含本人回声），经 `dialogue` 事件与 `Observation.heard` 投影；技能开始/结束不清空。
+本人回声与旁听不唤醒，不强制取消工作；Routine、Patrol、Tree、Social 忽略语言事件，保留在途动作。
+Llm 的独立 `input.heard` 保留 speaker/target/conversation/turn/time/原话，台词不进入 instructions；提示明确台词是
+不可信角色声明。最新直接叫到本角色的话并入原检索查询，Life 模式仍仅一次 Hindsight recall，请求在途的新话仍留到下轮。
+
+Life 只消费 Body 收到的已确认 Speech，经历 id 为 `speech:<conversation_id>:<turn>`；原话标明“I said/I heard”及发言人、
+对象和时间，不改 World cursor、人格、情绪或关系。慢 World poll 只返回本轮新增 World 经历，owner 合并进当前 outbox，
+不会复制旧对话或覆盖同时到达的新话；retain 完成仍只删除实际发送的片段。初次加载与数据库写失败期间的输入保留在
+`unsaved_speech`，失败通过 `error` 可见；尚未成功落盘不能声称重启记得。Scene 已保证一次权威投递，Life 不复制第二套会话去重表。
+Hindsight 仍固定0.10.3/flashrank及原批量封存/refresh规则，本轮没有逐句 retain 或第二记忆检索路径。
+
+可操作入口：`Body.command(pid, %{id: :hello, verb: :say, text: "你好", target_id: 0, conversation_id: 0})`；
+`Body.observe(pid).dialogue` 读近期尾部，`Life.observe(cid)` 读持久状态/未落盘数；`Life.flush(cid)` 封存短尾部。
+日志 `dialogue.request/result/speech` 带请求、会话、轮次、发言人、对象与接收者。Body.observe 将尾部读取异步交给 Runtime，
+不阻塞 Body 的输入循环。真实玩家入口与双端 Demo 的验收状态见[阶段记录](../../../../../docs/10-active/cross-cutting/2026-10-11-npc-dialogue.md)。
+
+最小验证：`npc_dialogue_test` 用真实 Runtime/Llm、模型与检索替身验证在途直接话不丢、旁听/本人不唤醒、24句尾部及不可信输入；
+`npc_dialogue_life_test` 是纯回调并发/存储拒绝反例；`npc_dialogue_world_test` 用正常 claim/Ready、真实 Scene/Body/Life/
+VM独占PostgreSQL验证真实说/听、Routine不崩溃、拒绝不记成功、慢retain期间新话保留与进程重启恢复。Hindsight替身仅控制HTTP完成时序。
+技能中断/完成/下一次开始的尾部回归在 `npc_skill_brain_test`；共享能力/Llm旧测试因新增工具一起回归。
+从 `apps/gate_server` 运行 `mix test --no-start test/gate_server/npc_dialogue_test.exs test/gate_server/npc_dialogue_life_test.exs test/gate_server/npc_dialogue_world_test.exs`；
+数据库按现有 `MmoTest.Database` 入口配置。证据在 `.demo/observe/npc-dialogue-20261011/npc/`。
+这些通过只证明NPC接缝，不替代真实模型自主对话、真实客户端操作或语言长期一致性验收。
+
+上述并发边界依据 [Erlang 进程信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html)：Scene统一排序后按自然事件流消费，
+慢worker只返回自己负责的增量，持久owner不被过期快照覆盖；片段身份/时间延续 [Hindsight retain](https://hindsight.vectorize.io/developer/api/retain)
+及仓库固定版本适配器，不假定跨HTTP与数据库原子提交。
 
 验证边界：`npc_life_test` 通过真实 World、Scene、Body 与 VM 独占 PostgreSQL 验证持久游标/并发 outbox/重启；Hindsight 替身
 只控制慢写入与失败时序；nil-cache 恢复反例单独按合法持久行形状驱动 Life 完成回调、真实 worker 和真实 NpcMemory，

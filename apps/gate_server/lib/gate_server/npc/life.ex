@@ -3,11 +3,13 @@ defmodule GateServer.Npc.Life do
   NPC 人生状态唯一 owner，跟随 Runtime 生命周期。canonical 心智、World 游标、待写经历与认识缓存
   原子保存在 NpcMemory 的 life/state 行；观察只派生衰减视图。World 读取与 Hindsight 使用独立 worker，
   慢记忆写入期间继续接纳权威事件。短经历先封成约 3000 字片段，失败重用原片段 id。
+  对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
+  初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
   """
   use GenServer
   require Logger
-  alias GateServer.Npc.{Memory, Life.State, Life.Hindsight}
+  alias GateServer.Npc.{Dialogue, Memory, Life.State, Life.Hindsight}
   @fragment_chars 3000
   @refresh_ms 600_000
 
@@ -72,6 +74,9 @@ defmodule GateServer.Npc.Life do
   @doc "记录社交决策及实际权威终态，并持久确认已完成的感谢来源。"
   def decision(pid, data), do: GenServer.cast(pid, {:decision, data})
 
+  @doc "接纳 Body 实际收到的权威 Speech；只保存主观经历，不推进 World 游标或修改心智。"
+  def speech(pid, message), do: GenServer.cast(pid, {:speech, message})
+
   defp name(cid), do: {:global, {__MODULE__, node(), cid}}
 
   defp call(cid, request) do
@@ -113,7 +118,8 @@ defmodule GateServer.Npc.Life do
        decision: nil,
        recall: nil,
        status: nil,
-       job_error: nil
+       job_error: nil,
+       speech_pending: []
      }}
   end
 
@@ -141,7 +147,8 @@ defmodule GateServer.Npc.Life do
         error: s.error || s.job_error,
         hindsight: s.status,
         recall: s.recall,
-        decision: s.decision
+        decision: s.decision,
+        unsaved_speech: length(s.speech_pending)
       }}, s}
   end
 
@@ -209,6 +216,11 @@ defmodule GateServer.Npc.Life do
 
   def handle_cast({:recall, data}, s), do: {:noreply, %{s | recall: data}}
 
+  def handle_cast({:speech, message}, s) do
+    s = %{s | speech_pending: s.speech_pending ++ [message]}
+    {:noreply, save_speech(s)}
+  end
+
   @impl true
   def handle_info(:poll, %{poll: nil} = s) do
     memory = s.memory
@@ -227,7 +239,7 @@ defmodule GateServer.Npc.Life do
               ) do
          case loaded do
            nil ->
-             {:ok, initial(context.cid, events, now)}
+             {:ok, %{row: initial(context.cid, events, now), episodes: []}}
 
            %{"state" => %{"world_id" => world}} when world == events.world_id ->
              canonical = if row, do: loaded["state"], else: State.upgrade(loaded["state"])
@@ -238,7 +250,7 @@ defmodule GateServer.Npc.Life do
              {canonical, episodes} =
                State.advance(canonical, events.events, events.cursor, now)
 
-             {:ok, %{loaded | "state" => canonical, "pending" => loaded["pending"] ++ episodes}}
+             {:ok, %{row: %{loaded | "state" => canonical}, episodes: episodes}}
 
            _ ->
              {:error, :life_world_identity_mismatch}
@@ -254,23 +266,15 @@ defmodule GateServer.Npc.Life do
 
     s =
       case result do
-        {:ok, candidate} ->
-          # 慢轮询期间批写完成可能更新 outbox；轮询只接纳其新游标与尾经历。
-          candidate =
-            if s.row,
-              do: %{
-                s.row
-                | "state" => candidate["state"],
-                  "pending" =>
-                    s.row["pending"] ++
-                      Enum.filter(candidate["pending"], &(&1["seq"] > s.row["state"]["cursor"]))
-              },
-              else: candidate
+        {:ok, %{row: loaded, episodes: episodes}} ->
+          # worker 只返回本轮 World 增量；当前 outbox 与同时接纳的 Speech 始终归 owner。
+          row = s.row || loaded
+          candidate = %{row | "state" => loaded["state"], "pending" => row["pending"] ++ episodes}
 
           case save(s, seal(candidate, false)) do
             {:ok, s} ->
               publish(s)
-              automatic(s)
+              s |> save_speech() |> automatic()
 
             {:error, s} ->
               s
@@ -365,6 +369,21 @@ defmodule GateServer.Npc.Life do
       "thanked_seq" => 0
     }
 
+  # 首次 World 身份尚未加载或写入失败时保留未落盘输入；既有轮询继续尝试，观察显式报告 unsaved_speech/error。
+  defp save_speech(%{row: nil} = s), do: s
+  defp save_speech(%{speech_pending: []} = s), do: s
+
+  defp save_speech(s) do
+    # Scene 已保证一次权威投递；存储失败不提交 row，不清空输入，原 outbox 重试无需第二套去重状态。
+    episodes = Enum.map(s.speech_pending, &Dialogue.episode(&1, s.context.cid))
+    row = Map.update!(s.row, "pending", &(&1 ++ episodes))
+
+    case save(s, seal(row, false)) do
+      {:ok, s} -> automatic(%{s | speech_pending: []})
+      {:error, s} -> s
+    end
+  end
+
   defp seal(row, force) do
     {fragments, tail} = fragments(row["pending"], force, [])
     %{row | "pending" => tail, "fragments" => row["fragments"] ++ fragments}
@@ -378,7 +397,7 @@ defmodule GateServer.Npc.Life do
     if force or Enum.sum(Enum.map(chunk, &String.length(&1["text"]))) >= @fragment_chars do
       first = hd(chunk)
       last = List.last(chunk)
-      id = first["id"] <> ":fragment:" <> to_string(first["seq"]) <> "-" <> to_string(last["seq"])
+      id = first["id"] <> ":fragment:" <> last["id"]
 
       fragment = %{
         "id" => id,

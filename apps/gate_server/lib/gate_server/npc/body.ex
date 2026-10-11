@@ -13,7 +13,7 @@ defmodule GateServer.Npc.Body do
   Body 不复刻任何权威门；它自己的信任边界只有命令的模式匹配与类型守卫（`WorldRequest.build/2` 返回 nil →
   `:invalid_command`）。只读感知（look / survey / inspect）走 `material_snapshot/3` 与 `simulation_snapshot/3`，余额读 `material_balances/2`。
   所有角色都可放置 prefab，与玩家过同一道部署门：涉及的格在编辑盒（`:gate_server, :quic` 的 `bounds`）内，
-  与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。聊天在正式栈里还不存在：`say` 只占位。
+  与玩家连接共用 `Dispatch.prefab_within?/4`，越界回 `:out_of_bounds`。`say` 经同一执行进程调用 Scene.say；台词只认权威 Speech 回声。
   目录读取（`read_catalog`）经 `GateServer.Npc.Perception.read/3` 读 World 的公共只读目录。
   创世编辑（`genesis_edit`，能力组 `:genesis`，见 `GateServer.Npc.Genesis`）只在启动选项 `genesis: true` 时受理，否则
   `:not_permitted`；`Genesis.prepare/3` 校验后由执行进程交给 `World.apply_edits/2`（与 0x78 原始编辑后门同一入口、同一语义）。
@@ -206,6 +206,8 @@ defmodule GateServer.Npc.Body do
        # 最近一次施法回复里的施法者状态 %{energy_j, capacity_j, coherence}；nil = 还没施过法。派生缓存，真值在 World。
        caster: nil,
        request_seq: 0,
+       # 对话请求号独立于 Brain 的任意 term 命令 id；不自动重发。
+       speech_seq: 0,
        # World 返回的余额表原样；nil = 还没取过（`query_balances` 或任一次世界事务之后才有）。
        balances: nil,
        outcomes: []
@@ -296,19 +298,23 @@ defmodule GateServer.Npc.Body do
   end
 
   @impl true
-  def handle_call(:observe, _, state),
-    do:
-      {:reply,
-       Map.take(state, [
-         :position,
-         :tick,
-         :move,
-         :world,
-         :entities,
-         :attention,
-         :balances,
-         :outcomes
-       ]), state}
+  def handle_call(:observe, from, state) do
+    snapshot =
+      Map.take(state, [
+        :position,
+        :tick,
+        :move,
+        :world,
+        :entities,
+        :attention,
+        :balances,
+        :outcomes
+      ])
+
+    # Runtime 补自己的对话尾部后直接回复调用者，Body 不等待心智/记忆处理。
+    send(state.mind, {:observe_body, from, snapshot})
+    {:noreply, state}
+  end
 
   def handle_call(
         :skill_context,
@@ -381,6 +387,21 @@ defmodule GateServer.Npc.Body do
       |> Map.put(:injuries, Enum.map(s.injuries, &Map.from_struct/1))
 
     {:noreply, %{state | body_state: body_state}}
+  end
+
+  # 台词自带权威发言人身份，不依赖 EntityEnter 的到达顺序；本人回声不作为外界唤醒。
+  def handle_info(
+        {:mmo_reliable, identity, 1, %Session.Speech{} = speech},
+        %{identity: identity} = state
+      ) do
+    message = speech |> Map.from_struct() |> Map.delete(:identity)
+    event = if speech.speaker_id == state.cid, do: :said, else: :heard
+
+    Logger.info(
+      "dialogue.speech receiver=#{state.cid} conversation_id=#{speech.conversation_id} turn=#{speech.turn} speaker=#{speech.speaker_id} target=#{speech.target_id}"
+    )
+
+    {:noreply, think(state, {event, message})}
   end
 
   # 名字与关系（按本角色这个观察者算）只随 EntityEnter 来，保留到 Leave 或换代；Snapshot 只更新位置。
@@ -986,10 +1007,20 @@ defmodule GateServer.Npc.Body do
     end
   end
 
-  # 聊天占位：正式栈有玩家聊天后接同一条通道，届时收到的话以 `{:heard, ...}` 事件给 Brain。
-  defp apply_command(state, %{id: id, verb: :say, text: text}) when is_binary(text),
-    do:
-      emit(state, %{id: id, verb: :say, status: :rejected, reason: :chat_unavailable, data: nil})
+  # 只译形状与分配请求号；文本、范围、频率、会话及听众只由 Scene 接纳。
+  defp apply_command(state, %{id: id, verb: :say, text: text} = command) when is_binary(text) do
+    target = Map.get(command, :target_id, 0)
+    conversation = Map.get(command, :conversation_id, 0)
+
+    if is_integer(target) and is_integer(conversation) do
+      seq = state.speech_seq + 1
+      request = %{request_id: seq, target_id: target, conversation_id: conversation, text: text}
+      submit(state, id, {:say, request})
+      %{state | speech_seq: seq, world: Map.put(state.world, id, :say)}
+    else
+      invalid(state, command)
+    end
+  end
 
   # Brain 是可插拔的外部输入（含 LLM）：不合法的命令回报为拒绝，不让 Body 崩溃。
   defp apply_command(state, command), do: invalid(state, command)
@@ -1038,8 +1069,17 @@ defmodule GateServer.Npc.Body do
     do:
       send(
         state.worker,
-        {:call, self(), id, Map.take(state, [:player, :identity, :world_ref, :cid, :bounds]),
-         call, %{received_us: System.monotonic_time(:microsecond), clock_node: node()}}
+        {:call, self(), id,
+         Map.take(state, [
+           :player,
+           :identity,
+           :world_ref,
+           :cid,
+           :bounds,
+           :scene,
+           :scene_id,
+           :router
+         ]), call, %{received_us: System.monotonic_time(:microsecond), clock_node: node()}}
       )
 
   defp reject_genesis(state, id, reason) do
@@ -1205,6 +1245,28 @@ defmodule GateServer.Npc.Body do
   end
 
   # 返回 {结果, 余额}；余额 nil = 这次不重取。
+  defp execute(session, {:say, request}, _ingress) do
+    Logger.info(
+      "dialogue.request speaker=#{session.cid} request_id=#{request.request_id} conversation_id=#{request.conversation_id} target=#{request.target_id}"
+    )
+
+    result =
+      with {:ok, route} <- session.router.route(session.scene_id),
+           do: session.scene.say(route.scene_ref, session.identity, request)
+
+    reason =
+      case result do
+        {:ok, _} -> :ok
+        {:error, reason} -> reason
+      end
+
+    Logger.info(
+      "dialogue.result speaker=#{session.cid} request_id=#{request.request_id} reason=#{inspect(reason)}"
+    )
+
+    {result, nil}
+  end
+
   defp execute(session, :balances, _ingress) do
     balances = World.material_balances(session.world_ref, session.cid)
     {{:ok, %{balances: balances}}, balances}

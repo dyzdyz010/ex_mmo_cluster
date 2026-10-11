@@ -94,7 +94,7 @@ defmodule GateServer.Npc.Brain do
       %{id:, verb: :cast_spell, program: <<程序字节>>, target:, direction:}   # 0x82 施放；target 同 use_tool 的句柄（g0–g2）；direction 可省
       %{id:, verb: :cancel_cast}                                 # 取消在前摇的施法（同一 client_intent_seq 的 0x82 action 2）
       %{id:, verb: :genesis_edit, edits: [{{x, y, z}, material}]}   # 创世：只有启动选项 genesis: true 的 Body 受理（见下）
-      %{id:, verb: :say, text:}                                  # 聊天占位：恒被拒 :chat_unavailable；不投影给 LLM
+      %{id:, verb: :say, text:, target_id: 0, conversation_id: 0}  # 附近公开说话；0 表示未指定对象 / 新话题
 
   工具的行为由属性目录里该 `tool_id` 的 action 决定：挖掘、点火 / 灭火、加热 / 冷却、电路开关都是
   `use_tool` 换一个 `tool_id`，不是各自的动词。电路开关的目标是附件：`target` 给
@@ -167,9 +167,17 @@ defmodule GateServer.Npc.Brain do
   `session_lost` 不保证未结算。`cancel_cast` 的 `:done` data 为 `%{}`；没有待施法回 `no_active_cast`，前摇已结束回
   `already_released`（原样来自 Player）。
 
-  ## 聊天（占位）
+  ## 对话
 
-  事件 `{:heard, %{entity_id:, text:}}` 与命令 `say` 是为玩家聊天预留的形状；正式栈接入聊天之前不会有 `:heard` 事件。
+  `say` 经 Body 的异步 FIFO 执行进程调用 `Scene.say/3`，统一 Outcome；done 只代表权威接纳并排入可靠出口，
+  不表示听者理解、答应或已持久记住。`request_id` 由 Body 单调分配，与任意 term 的命令 id 无关，不自动重试。
+  target_id=0 向附近公开说；指定对象仍会被附近其他角色听到；conversation_id=0 开新话题，否则引用实际收到的会话。
+
+  Runtime 的 `{:dialogue, [speech]}` 和 Observation.heard 是按权威接收顺序排列的最近 24 句，含本人回声；
+  speech 为 `%{conversation_id:, turn:, speaker_id:, speaker_epoch:, speaker_kind:, speaker_name:, target_id:, at_ms:, text:}`。
+  只有他人直接 target_id 指向本角色时才另投 `{:heard, speech}` 唤醒与检查技能中断；旁听与本人回声只更新尾部。
+  尾部不随技能开始/结束清空。Llm 将其放入独立 input.heard，不写入 instructions；原话是不可信角色声明。
+  Routine / Patrol / Tree / Social 没有语言决策，忽略 dialogue/heard，保留自己的在途工作。
   """
 
   @type command :: %{
@@ -184,7 +192,8 @@ defmodule GateServer.Npc.Brain do
           reason: term(),
           data: map() | nil
         }
-  @type event :: {:observation, map()} | {:outcome, outcome()} | {:heard, map()}
+  @type event ::
+          {:observation, map()} | {:outcome, outcome()} | {:heard, map()} | {:dialogue, [map()]}
   @callback init(profile :: map()) :: state :: term()
   @callback handle_event(event(), state :: term()) :: {[command()], state :: term()}
 end

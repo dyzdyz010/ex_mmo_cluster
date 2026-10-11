@@ -37,7 +37,7 @@ defmodule GateServer.Npc.Brain.Tree do
   `each` 在开始时取一次列表，遍历途中追加的项下一次遍历才出现。
 
   事件：`{:observation, o}` 更新最新观察并 tick 根（推进 wait 与 retry）；`{:outcome, o}` 只交给 id 匹配的 RUNNING 叶子，
-  然后 tick 根；`{:heard, _}` 忽略。首个 Observation 到达后才 tick 根；根结束后不再发命令。
+  然后 tick 根；`{:heard, _}` / `{:dialogue, _}` 忽略。首个 Observation 到达后才 tick 根；根结束后不再发命令。
 
   halt（`halt/1`）：放弃整棵树在途的叶子——RUNNING 的技能叶子发 `%{verb: :cancel_skill, call: 叶子 id}`，RUNNING 的移动叶子
   发 `%{verb: :stop}`，RUNNING 的世界事务不撤销（已提交不可顶替）；被 halt 的 id 进入 draining，其 Outcome 丢弃；
@@ -89,9 +89,14 @@ defmodule GateServer.Npc.Brain.Tree do
 
   def handle_event({:outcome, %{id: id} = outcome}, state) do
     cond do
-      Map.has_key?(state.pending, id) -> run(state, outcome)
-      Map.has_key?(state.draining, id) -> {[], %{state | draining: Map.delete(state.draining, id)}}
-      true -> {[], state}
+      Map.has_key?(state.pending, id) ->
+        run(state, outcome)
+
+      Map.has_key?(state.draining, id) ->
+        {[], %{state | draining: Map.delete(state.draining, id)}}
+
+      true ->
+        {[], state}
     end
   end
 
@@ -207,8 +212,11 @@ defmodule GateServer.Npc.Brain.Tree do
     args = if is_function(args, 1), do: args.(ctx.blackboard), else: args
 
     case Abilities.command(name, args, ctx.next_id, ctx.profile) do
-      %{verb: verb} when verb in [:unknown_tool, :invalid_tool_arguments] -> failed(name, verb, ctx)
-      command -> start(Map.delete(command, :id), nil, ctx)
+      %{verb: verb} when verb in [:unknown_tool, :invalid_tool_arguments] ->
+        failed(name, verb, ctx)
+
+      command ->
+        start(Map.delete(command, :id), nil, ctx)
     end
   end
 
@@ -218,7 +226,8 @@ defmodule GateServer.Npc.Brain.Tree do
 
     cond do
       outcome.status == :done ->
-        {:success, nil, ctx |> store(opts[:store], outcome.data) |> append(opts[:append], outcome.data)}
+        {:success, nil,
+         ctx |> store(opts[:store], outcome.data) |> append(opts[:append], outcome.data)}
 
       outcome.status == :rejected and outcome.reason in @transient and opts[:retry] != nil ->
         {:running, %{retry_at: ctx.tick + opts[:retry], command: leaf.command}, ctx}
@@ -316,11 +325,16 @@ defmodule GateServer.Npc.Brain.Tree do
   defp check!({kind, children}, names, profile) when kind in [:seq, :sel] and is_list(children),
     do: Enum.each(children, &check!(&1, names, profile))
 
-  defp check!({:act, name, args}, names, profile), do: check!({:act, name, args, []}, names, profile)
+  defp check!({:act, name, args}, names, profile),
+    do: check!({:act, name, args, []}, names, profile)
 
   defp check!({:act, name, args, opts}, names, profile) when is_list(opts) do
     unless MapSet.member?(names, name),
-      do: raise(ArgumentError, "behaviour tree act #{inspect(name)} is not an ability of this profile")
+      do:
+        raise(
+          ArgumentError,
+          "behaviour tree act #{inspect(name)} is not an ability of this profile"
+        )
 
     cond do
       is_function(args, 1) ->
@@ -329,14 +343,16 @@ defmodule GateServer.Npc.Brain.Tree do
       is_map(args) ->
         case Abilities.command(name, args, 0, profile) do
           %{verb: :invalid_tool_arguments} ->
-            raise ArgumentError, "behaviour tree act #{inspect(name)} has invalid arguments #{inspect(args)}"
+            raise ArgumentError,
+                  "behaviour tree act #{inspect(name)} has invalid arguments #{inspect(args)}"
 
           _ ->
             :ok
         end
 
       true ->
-        raise ArgumentError, "behaviour tree act #{inspect(name)} arguments must be a map or a 1-arity function"
+        raise ArgumentError,
+              "behaviour tree act #{inspect(name)} arguments must be a map or a 1-arity function"
     end
   end
 
@@ -356,5 +372,6 @@ defmodule GateServer.Npc.Brain.Tree do
 
   defp check!({:fail, child}, names, profile), do: check!(child, names, profile)
 
-  defp check!(node, _, _), do: raise(ArgumentError, "unknown behaviour tree node #{inspect(node)}")
+  defp check!(node, _, _),
+    do: raise(ArgumentError, "unknown behaviour tree node #{inspect(node)}")
 end

@@ -43,7 +43,7 @@ defmodule GateServer.NpcSkillBrainTest do
     def search(_, _, _), do: []
     def journal(_, _, _), do: :ok
 
-    def get(_, "intention", "current"), do: nil
+    def get(_, "intention", _key), do: nil
 
     def get(_, _, _) do
       %{owner: owner, body: body} = Agent.get(__MODULE__, & &1)
@@ -715,11 +715,40 @@ defmodule GateServer.NpcSkillBrainTest do
                     }}
   end
 
-  test "the interruption policy receives what was heard during the skill, newest first" do
-    {_body, runtime} = script_body(%{interrupt_policy: {RecordPolicy, %{owner: self()}}})
-    send(runtime, {:heard, %{entity_id: 5, text: "先停一下"}})
+  test "direct speech alone checks interruption; the ordered tail survives skill completion and the next start" do
+    {body, runtime} = script_body(%{interrupt_policy: {RecordPolicy, %{owner: self()}}})
+    overheard = %{speaker_id: 5, target_id: 8, text: "说给邻居听"}
+    direct = %{speaker_id: 5, target_id: 7, text: "先停一下"}
+    send(runtime, {:heard, overheard})
+    refute_receive {:policy_context, _}, 100
+    send(runtime, {:heard, direct})
+    assert_receive {:policy_context, %{heard: [^overheard, ^direct]}}
+    refute_receive {:command, %{verb: :stop}}, 50
 
-    assert_receive {:policy_context, %{heard: [%{entity_id: 5, text: "先停一下"}]}}
+    body_outcome(body, %{
+      id: {:skill, 1, 1},
+      verb: :prefab_place,
+      status: :done,
+      reason: nil,
+      data: %{seq: 41}
+    })
+
+    assert_receive {:script_outcome, %{id: 1, status: :done}}
+    assert GateServer.Npc.Runtime.observe(runtime).heard == [overheard, direct]
+
+    GateServer.Npc.Body.command(runtime, %{
+      id: 2,
+      verb: :skill,
+      skill: :build,
+      args: %{
+        "definition" => String.duplicate("11", 32),
+        "anchor_micro" => [8, 8, 8],
+        "orientation" => 0
+      }
+    })
+
+    assert_receive {:command, %{id: {:skill, 2, 1}}}
+    assert GateServer.Npc.Runtime.observe(runtime).heard == [overheard, direct]
   end
 
   test "a scheduler endpoint alone (wilderness triage) does not turn on interruption checks" do

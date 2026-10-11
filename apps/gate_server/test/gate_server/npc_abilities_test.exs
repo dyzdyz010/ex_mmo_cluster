@@ -183,10 +183,13 @@ defmodule GateServer.NpcAbilitiesTest do
       {"remove_focus", %{"group" => "friendly"}, %{verb: :remove_focus, group: :friendly}},
       {"clear_targets", %{}, %{verb: :clear_targets}},
       {"toggle_mark", %{}, %{verb: :toggle_mark}},
+      {"say", %{"text" => "你好", "target_id" => 7, "conversation_id" => 81},
+       %{verb: :say, text: "你好", target_id: 7, conversation_id: 81}},
       {"remember", %{"key" => "plan", "text" => "先挖后砌"},
        %{verb: :remember, key: "plan", text: "先挖后砌"}},
       {"recall", %{"key" => "plan"}, %{verb: :recall, key: "plan"}},
       {"search_memory", %{"query" => "西门"}, %{verb: :search_memory, query: "西门"}},
+      {"set_plan", %{"text" => "先修西门"}, %{verb: :set_plan, text: "先修西门"}},
       {"build", %{"definition" => @hex, "anchor_micro" => [8, 16, 24], "orientation" => 3},
        %{
          verb: :skill,
@@ -331,7 +334,7 @@ defmodule GateServer.NpcAbilitiesTest do
              inspect({name, args})
     end
 
-    for name <- ["say", "dance", "cancel_skill", "wait", "design_house"],
+    for name <- ["dance", "cancel_skill", "wait", "design_house"],
         do:
           assert(
             %{id: 1, verb: :unknown_tool, tool: name} ==
@@ -416,8 +419,8 @@ defmodule GateServer.NpcAbilitiesTest do
     end
   end
 
-  test "the Demo LLM profile projects exactly the hand-listed tools, and say is in no projection" do
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory) ==
+  test "the Demo LLM profile projects exactly the hand-listed tools; dialogue follows its own group" do
+    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan) ==
              Enum.map(Abilities.tools(@demo), & &1.name)
 
     llm = %{goal: "g", endpoint: %{model: "m"}} |> Map.merge(@demo)
@@ -428,7 +431,7 @@ defmodule GateServer.NpcAbilitiesTest do
       balances: nil
     }
 
-    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory wait) ==
+    assert ~w(move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan wait) ==
              Enum.map(GateServer.Npc.Brain.Llm.body(llm, observation, []).tools, & &1.name)
 
     # instructions 只依赖 profile 的工具表：不点名被 groups 裁掉的工具（Demo 没有 :attend 组，也没配技能）。
@@ -437,7 +440,7 @@ defmodule GateServer.NpcAbilitiesTest do
     pruned =
       Enum.map(Abilities.entries(@full), & &1.name) --
         String.split(
-          "move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory"
+          "move_to stop probe_toward use_tool dismantle place attach detach prefab look survey inspect query_balances read_catalog remember recall search_memory set_plan"
         )
 
     assert "get_aim" in pruned and "design_house" in pruned
@@ -450,9 +453,11 @@ defmodule GateServer.NpcAbilitiesTest do
     instructions = GateServer.Npc.Brain.Llm.body(full, observation, []).instructions
     assert instructions =~ "get_visible_entities" and instructions =~ "get_aim"
 
-    for profile <- [@full, @profile, @demo, %{}] do
-      refute "say" in Enum.map(Abilities.tools(profile), & &1.name)
+    for profile <- [@full, @profile, %{}] do
+      assert "say" in Enum.map(Abilities.tools(profile), & &1.name)
     end
+
+    refute "say" in Enum.map(Abilities.tools(@demo), & &1.name)
   end
 
   test "descriptions no longer carry the retired circuit install / feed wording or 'pickaxe = attack'" do

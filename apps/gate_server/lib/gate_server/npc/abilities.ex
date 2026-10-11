@@ -9,7 +9,7 @@ defmodule GateServer.Npc.Abilities do
   `%{name, group, done, description, params, build}`：
 
   - `name`：稳定 snake_case 英文，即 LLM 工具名、行为树 act 名、技能名；
-  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :memory | :skill`，供 `profile.groups` 裁剪；
+  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :dialogue | :memory | :skill`，供 `profile.groups` 裁剪；
   - `done`：done 的确切含义（一句话），`description`：给模型看的说明，数字由各域的源常量插值；
   - `params`：一份手写参数规格，同时生成 strict JSON Schema（`tools/1`）与参数译码（`command/4`）；
     技能是 `{:skill, schema}`，schema 原样取自技能的 `definition/1`，参数透传给技能；
@@ -36,12 +36,13 @@ defmodule GateServer.Npc.Abilities do
   为真（唯一来源是注册表行，Body 另凭同源的启动选项受理）。schema 只依赖 profile，
   不随余额等观察状态增删（保护提示缓存）。
 
-  不进条目：`say`（聊天占位，Body 的 stub 保留、不投影）、`cancel_skill`（Runtime 命令）、`wait`（LLM 适配器本地）、
+  `Dialogue` 提供 `say`（`:dialogue` 组），与工作能力由同一个 Brain 选择。
+  不进条目：`cancel_skill`（Runtime 命令）、`wait`（LLM 适配器本地）、
   人物目标 g5 句柄（D-13）。调用方是 JSON 形参数的适配层：`Brain.Llm`、`design_house` 的共享工具、行为树 `Brain.Tree`
   的 `act` 叶子（与 LLM 共用同一组规格，句柄 granularity 0..3；静态参数在建树时经 `command/4` 译码一次）。g5 只由直接产出
   规范命令的代码 Brain（如 Routine）发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
   """
-  alias GateServer.Npc.{Actions, Attention, Genesis, Memory, Perception, Skills}
+  alias GateServer.Npc.{Actions, Attention, Dialogue, Genesis, Memory, Perception, Skills}
 
   # D-2：2026-10-08 对当前代理做过一次 strict 工具 live 请求（enum、nullable、定长数组、嵌套对象），代理接受并按 schema 调用。
   @strict true
@@ -57,6 +58,7 @@ defmodule GateServer.Npc.Abilities do
           | :magic
           | :genesis
           | :memory
+          | :dialogue
           | :skill
   @type spec ::
           :integer
@@ -78,7 +80,7 @@ defmodule GateServer.Npc.Abilities do
           build: (map(), map() -> map())
         }
 
-  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Memory、Skills）。"
+  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Dialogue、Memory、Skills）。"
   @spec entries(map()) :: [entry()]
   def entries(profile) do
     groups = Map.get(profile, :groups)
@@ -89,7 +91,8 @@ defmodule GateServer.Npc.Abilities do
             Actions.spells(profile) ++
             Genesis.entries(profile) ++
             Perception.entries() ++
-            Attention.entries() ++ Memory.entries() ++ Skills.entries(profile),
+            Attention.entries() ++
+            Dialogue.entries() ++ Memory.entries() ++ Skills.entries(profile),
         groups == nil or entry.group in groups,
         map_size(belt) > 0 or not belt?(entry.params),
         do: entry

@@ -36,4 +36,7 @@ defmodule GateServer.Npc.Brain.Routine do
   end
 
   def handle_event({:outcome, _}, state), do: {[], state}
+
+  # 固定脚本不响应对话；等待中的动作与下一个步骤保持不变。
+  def handle_event({kind, _}, state) when kind in [:dialogue, :heard], do: {[], state}
 end

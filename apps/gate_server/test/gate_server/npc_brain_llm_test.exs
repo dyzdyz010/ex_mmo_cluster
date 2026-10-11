@@ -273,7 +273,7 @@ defmodule GateServer.NpcBrainLlmTest do
            ] == Llm.commands(response, 1, @profile)
   end
 
-  test "unknown tools, non-object arguments, wrong shapes and say are rejected locally" do
+  test "unknown tools and wrong shapes are rejected locally; say uses the shared dialogue capability" do
     response = %{
       "output" => [
         %{"type" => "function_call", "name" => "place", "arguments" => "[1,2]"},
@@ -300,7 +300,7 @@ defmodule GateServer.NpcBrainLlmTest do
              %{id: 1, verb: :invalid_tool_arguments, tool: "place"},
              %{id: 2, verb: :invalid_tool_arguments, tool: "place"},
              %{id: 3, verb: :unknown_tool, tool: "dance"},
-             %{id: 4, verb: :unknown_tool, tool: "say"},
+             %{id: 4, verb: :say, text: "墙砌好了", target_id: 0, conversation_id: 0},
              %{id: 5, verb: :invalid_tool_arguments, tool: "move_to"},
              %{id: 6, verb: :invalid_tool_arguments, tool: "use_tool"}
            ] == Llm.commands(response, 1, @profile)
@@ -724,9 +724,9 @@ defmodule GateServer.NpcBrainLlmTest do
     assert [1, 9] == probe.properties.tool_id.enum
     assert "tool_id" in probe.required
 
-    # 能力库 I2b：工具表 = Abilities 全部组（未配置 groups、无技能）+ wait；say 不投影，新增 dismantle / craft / eat / read_catalog。
+    # 工具表 = Abilities 全部组（未配置 groups、无技能）+ wait；say 与世界动作同一决策入口。
     # 放置阶段 §7（2026-10-09）：感知组新增 survey。
-    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target scoop search_memory select_target set_focus set_plan stop survey toggle_mark use_tool wait) ==
+    assert ~w(attach clear_targets craft cycle_focus detach dismantle eat get_aim get_target_status get_targets get_view get_visible_entities inspect look look_at move_to place pour prefab probe_toward query_balances read_catalog recall remember remove_focus remove_target say scoop search_memory select_target set_focus set_plan stop survey toggle_mark use_tool wait) ==
              body.tools |> Enum.map(& &1.name) |> Enum.sort()
 
     assert Enum.all?(body.tools, &(&1.strict == true))
