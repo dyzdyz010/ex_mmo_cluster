@@ -3,6 +3,12 @@
 FIELDS = ("conversation_id", "turn", "speaker_id", "target_id", "text")
 
 
+def npc_ready(row):
+    """夹具就绪必须有正式 Body 的权威位置，缓存准备好不等于入场成功。"""
+    return bool(row['body']['position'] is not None and row['body']['tick'] > 0 and
+                row['life']['state'] and row['life']['cache'] and row['life']['error'] is None)
+
+
 def authority_events(rows):
     """保留 Scene 本轮完整接纳/投递证据；不能静默丢重复或漏掉收件人。"""
     speeches, results = {}, {}

@@ -73,6 +73,12 @@ class DialogueVerificationTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "duplicate recipient"):
             verify.authority_events(rows)
 
+    def test_memory_ready_does_not_mean_body_entered_world(self):
+        row = {"body":{"position":None,"tick":0},"life":{"state":{"cid":20},"cache":{"models":[]},"error":None}}
+        self.assertFalse(verify.npc_ready(row))
+        row["body"]={"position":[65.5,417.91,-516.5],"tick":3}
+        self.assertTrue(verify.npc_ready(row))
+
 
 if __name__ == "__main__":
     unittest.main()

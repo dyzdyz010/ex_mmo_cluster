@@ -50,22 +50,28 @@ def tokens(value):
 def prepare(out):
     before = snapshot(FIRST)
     demo.save(out / 'first-before.json', before)
+    assert verify.npc_ready(before), 'first NPC not entered'
     params = {'definition': demo.DEFINITION, 'sites': [{'anchor_micro': [488,3328,-4136], 'orientation': 0,
         'stand': [63.5,-516.5]}], 'revisit_ticks': 36000, 'tools': {'1':'镐'}, 'life': {'url':demo.URL}}
-    second = registry(SECOND_NAME, 'settler', params, [65.5,416.91,-516.5])
+    # 原探针416.91落在新列实心格内部；World实查416为地面、417以上空气，从其上方合法下扫出生点。
+    column=demo.rpc('cells = for y <- 415..421, do: {65,y,-517}; VoxelRegion.World.material_snapshot(VoxelRegion.World,[],cells)')
+    demo.save(out/'spawn-column.json',column)
+    assert all(c['material']==0 for c in column['probe_occupancy'] if c['cell'][1]>=417), 'spawn clearance changed'
+    second = registry(SECOND_NAME, 'settler', params, [65.5,420.0,-516.5])
     deadline = time.monotonic() + 120
     while True:
         row = snapshot(second)
         demo.save(out / 'second-before.json', row)
-        if row['life']['state'] and row['life']['cache']:
+        if verify.npc_ready(row):
             break
         if row['life']['error'] or time.monotonic() > deadline:
             raise RuntimeError('new Life memory initialization failed')
         time.sleep(2)
+    ledger=json.loads((BASE/'budget-ledger.json').read_text(encoding='utf-8'))
     demo.save(out / 'fixtures.json', {'classification':'Test-only', 'npcs':[FIRST,second], 'actors':ACTORS,
         'second_settler_params':params, 'npc_request_limits':[LIMIT,LIMIT],
-        'cumulative_tokens_before':1243611, 'cumulative_token_cap':2000000,
-        'decision_guard':350000, 'reserved_inflight_and_memory_tokens':406389})
+        **ledger, 'cumulative_token_cap':2000000,
+        'decision_guard':350000, 'reserved_inflight_and_memory_tokens':2000000-ledger['cumulative_tokens_before']-350000})
     for cid in [FIRST,second]:
         demo.save(out / f'memory-before-{cid}.json', status(cid))
     return second, params
@@ -231,9 +237,15 @@ def live(out):
                 errors.append('model drain timeout; unfinished usage remains unknown');break
             time.sleep(.25)
         for cid,name in [(FIRST,demo.NAME),(second,SECOND_NAME)]:
-            row=snapshot(cid);demo.save(out/f'before-restore-{cid}.json',row)
-            assert registry(name,'settler',idle_params,row['body']['position'])==cid
-            demo.save(out/f'after-restore-{cid}.json',snapshot(cid))
+            try:
+                row=snapshot(cid);demo.save(out/f'before-restore-{cid}.json',row)
+                if row['body']['position'] is None:raise RuntimeError('NPC has no entered position')
+                assert registry(name,'settler',idle_params,row['body']['position'])==cid
+                demo.save(out/f'after-restore-{cid}.json',snapshot(cid))
+            except Exception as error:
+                errors.append('restore '+str(cid)+': '+repr(error))
+                # 已复现的准备失败：不能用空位置恢复，停用本人登记且保留记忆；其余清理仍必须执行。
+                demo.save(out/f'disabled-{cid}.json',demo.rpc(f'GateServer.Npc.Registry.remove({packed(name)})'))
         demo.save(out/'trace-stop.json',demo.rpc(':erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok'))
         if trace.exists():demo.save(out/'requests.json',[json.loads(s) for s in trace.read_text(encoding='utf-8').splitlines()])
         if starts.exists():demo.save(out/'started.json',[json.loads(s) for s in starts.read_text(encoding='utf-8').splitlines()])
