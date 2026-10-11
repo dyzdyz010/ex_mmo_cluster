@@ -126,11 +126,23 @@ def pairs(cid, source, out):
     demo.save(out / 'usage.json', {'requests': len(cases), 'total_tokens': total})
 
 
-def live(cid, out, seconds):
-    trace = demo.SERVER / 'long-horizon-requests.jsonl'
-    if trace.exists():
+def last_action_done(records, outcomes):
+    """请求序号包含本地 wait；HTTP 返回不等于 Body 命令完成。"""
+    calls = [call for record in records for call in record['calls']]
+    return not calls or calls[-1]['name'] == 'wait' or any(
+        o['id'] == len(calls) and o['status'] in ('done', 'rejected') for o in outcomes)
+
+
+def live(cid, out, seconds, *, run_id='long-horizon', params=None, stop=None, token_limit=None):
+    assert run_id and all(c.isalnum() or c == '-' for c in run_id)
+    params = params or profile_params(LIVE_GOAL)
+    limit = params['max_requests_per_hour']
+    trace = demo.SERVER / (run_id + '-requests.jsonl')
+    starts = demo.SERVER / (run_id + '-started.jsonl')
+    if trace.exists() or starts.exists():
         raise RuntimeError('prior live evidence exists; refusing to overwrite or silently restart request budget')
     code = (Path(__file__).parent / 'decision_trace.exs').read_text(encoding='utf-8')
+    code = code.replace('/demo/long-horizon-', '/demo/' + run_id + '-')
     started = time.time()
     position, registered, original_error = None, False, None
     try:
@@ -138,7 +150,7 @@ def live(cid, out, seconds):
         before = demo.observe(cid)
         demo.save(out / 'before.json', before)
         position = before['body']['position']
-        spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "life",params: {packed(profile_params(LIVE_GOAL))}}}'
+        spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "life",params: {packed(params)}}}'
         registered = True  # 登记失败也可能已经落库，仍承担恢复义务。
         result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
         demo.save(out / 'registration.json', result)
@@ -155,13 +167,30 @@ def live(cid, out, seconds):
                 if trace.exists():
                     records = [json.loads(s) for s in trace.read_text(encoding='utf-8').splitlines()]
                     demo.save(out / 'requests.json', records)
-                    if len(records) > 24:
+                    if len(records) > limit:
                         raise RuntimeError('request budget violated')
+                    if token_limit is not None:
+                        if any(r['status'] != 'ok' for r in records):
+                            raise RuntimeError('request failed; preserve first failure without retry')
+                        used = sum(r['usage']['total_tokens'] for r in records)
+                        demo.save(out / 'decision-usage.json', {'tokens': used, 'limit': token_limit})
+                        if used >= token_limit:
+                            raise RuntimeError('decision token guard reached; reserved budget covers in-flight and memory work')
+                else:
+                    records = []
+                begun = starts.read_text(encoding='utf-8').splitlines() if starts.exists() else []
+                # 不在已知在途请求中途拆除 trace；硬时限后的缺口另存，不假称零成本。
+                if (len(begun) == len(records) and (len(records) == limit or (stop and stop.is_set()))
+                        and last_action_done(records, row['body'].get('outcomes', []))):
+                    break
                 time.sleep(2)
     except BaseException as error:
         original_error = error
         raise
     finally:
+        # 接受窗口先关闭，随后恢复同 cid 的其他后端；其动作绝不算本轮模型自主成果。
+        if stop:
+            stop.set()
         errors = {}
         # 观察、恢复、停止探针互不依赖；使用最后已观察的位置恢复，不读取 Life 才能清理。
         try:
@@ -192,7 +221,7 @@ def live(cid, out, seconds):
               %{stopped: true}'''))
         except Exception as error:
             errors['trace_stop'] = type(error).__name__
-        for source, target in [(trace, 'requests.json'), (demo.SERVER / 'long-horizon-started.jsonl', 'started.json')]:
+        for source, target in [(trace, 'requests.json'), (starts, 'started.json')]:
             try:
                 if source.exists():
                     demo.save(out / target, [json.loads(s) for s in source.read_text(encoding='utf-8').splitlines()])

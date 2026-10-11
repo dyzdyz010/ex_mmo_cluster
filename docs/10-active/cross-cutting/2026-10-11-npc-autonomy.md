@@ -64,8 +64,14 @@ Review Focus：失败历史不能成为当前World真值；采材必须通过真
 
 ## 执行日志
 
+- **2026-10-11 20:16优先级切换**：用户明确要求先实现玩家↔NPC与NPC↔NPC聊天，由原会话接管 say/heard。自主生活已保存，暂停正式模型/双端/配对实验，不再升级共享Demo或切换后端；占用及运行预算真值已同步 `2026-10-11-npc-next-session.md` 页首。真实自主修复尚未验收，不能把下面组件通过扩大成完整目标完成。
+
 - 2026-10-11：完成接管和两次no_path只读复演；尚未产品实现或新行为验收。
 - Task1：survey投影、失败历史、Body诊断分别取得RED；Life真实Body拒绝到LLM下一轮的接线RED为 `recent_failures=[]`，实现后包含同次seq/目标诊断并跨Body/Life重启保留。直接回归54/55，唯一失败是测试中嵌套模块前向别名未解析，修正并用真实旧行+拒绝写替身验证，Memory10项通过。环境5432不可达、测试端口26769缺省凭证错误、首次Body观察未就绪均保留，不冒充产品RED。持久失败事实由LLM单个进程顺序提交Memory，无新进程/重试门。
 - 预算接管审计：从上轮最后请求完成到恢复settler，服务日志新增决策0、请求失败0；Hindsight末次写入仍为08:52、末次刷新08:53，费用无新增。基线仍1,243,611。
 - Task2组件：一次作者样本两格、NPC零余额，正常gather每轮入账512再place扣至0；第一次建造被测试Actor正常工具打毁后，NPC第二轮采集恢复、placed_by仍为NPC；最后exhausted且余额0、建筑保持。`resource-01.log` 1项通过（6.5秒），已有生产资源入口无需修改。这是确定动作的真实组件测试，不称自主选择。
 - Task3先于昂贵正式部署完成，以一次镜像组合全部生产增量。3个纯规则反例RED（19/22）→32项State/Social GREEN；新增Social实际命令目标对照与旧存档加载后持久补值。组合Life/State/Social/资源共45项通过，`combined-green.log`。旧人格与四模型不重置，不回算历史；正式Demo与真实模型尚未执行。
+- 后续部署事实：审查无确定产品Critical/Important；补采集逐笔actor/seq检查和survey注释后，资源/Survey/Memory/LLM直接回归17项通过，`review-green.log`。正式镜像源码 `5b4cd58e` 构建103.92秒、exit0；在用户新优先级消息之前已完成冷升级，`upgrade-01/`证明旧canonical仅补亲和初值，其余严格相等。此前“尚未执行Demo”是当时进度，不是当前运行版本。
+- Test-only新场景：六格天然木材、NPC零余额，无玩家修复或中途补料。只读快照副本上四个技能站位均可寻路，`dry-01/frozen-path-copy.json`；这不是实际身体移动。准备查询时出现嵌套for语法、material_snapshot误认返回形状、skill_context漏解{:ok,...}三类只读脚本错误，均未改变World或发模型请求，不计产品RED。
+- 新驱动的公开接口接线与双端逐事务门禁审查发现缺陷，均在实跑前修复；新增末动作终态、验收窗口先于settler恢复两个反例RED→GREEN，`last-action-red.log`、`lifecycle-red.log`、`driver-green.log`（17项）。判定器最初只有GREEN证据，不伪称这部分有改前RED。真实实验尚未启动；350000决策usage轮询+100000余量不能称逐请求硬预算门禁，错误后停止的轮询与生产重试仍需在下一次实际实验前收口。
+- 最新外部费用复核：`chat-priority-handoff-01/manifest.json`；当前settler、trace关闭、Life无错误、world cursor48；升级后无模型请求，Hindsight usage不变且无后台待办。累计1243611/2000000，余756389。本轮未跑人格配对，也未把安静时间或玩家旧修复算自主活动。

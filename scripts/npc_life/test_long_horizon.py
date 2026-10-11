@@ -34,14 +34,49 @@ class PairingTest(unittest.TestCase):
 
 class LiveCleanupTest(unittest.TestCase):
     """离线外部替身：运行观察失败也必须恢复后端，且清理失败不能覆盖首因。"""
+    def test_http_completion_does_not_complete_last_action(self):
+        records = [{'calls': [{'name': 'wait'}]}, {'calls': [{'name': 'gather'}]}]
+        self.assertFalse(subject.last_action_done(records, [{'id': 1, 'status': 'done'}]))
+        self.assertTrue(subject.last_action_done(records, [{'id': 2, 'status': 'done'}]))
+        self.assertTrue(subject.last_action_done(records[:1], []))
+
+    def test_unique_run_keeps_old_evidence_and_uses_declared_profile(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            server_dir = out / 'server'
+            server_dir.mkdir()
+            old = server_dir / 'long-horizon-requests.jsonl'
+            old.write_text('old evidence', encoding='utf8')
+            stopped = threading.Event()
+            stopped.set()
+            observation = {'body': {'position': [1, 2, 3]}, 'life': {'error': None}}
+            def rpc(code):
+                return {'cid': 7} if 'Registry.put' in code else {}
+            with patch.object(subject.demo, 'SERVER', server_dir), \
+                 patch.object(subject.demo.server, 'rpc', return_value={}) as trace, \
+                 patch.object(subject.demo, 'rpc', side_effect=rpc) as calls, \
+                 patch.object(subject.demo, 'observe', return_value=observation):
+                subject.live(7, out, 1, run_id='autonomy-01',
+                             params=subject.profile_params('A declared goal', 30), stop=stopped)
+            self.assertIn('/demo/autonomy-01-requests.jsonl', trace.call_args.args[2])
+            self.assertEqual(old.read_text(), 'old evidence')
+            registration = next(c.args[0] for c in calls.call_args_list if 'brain: "life"' in c.args[0])
+            self.assertIn(subject.packed(subject.profile_params('A declared goal', 30)), registration)
+            self.assertTrue((out / 'restore.json').exists())
+
     def run_failure(self, restore_error=False):
+        import threading
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             initial = {'body': {'position': [1, 2, 3]}}
             calls = []
+            stopped = threading.Event()
             def rpc(code):
                 calls.append(code)
                 if 'Registry.put' in code:
+                    if 'settler' in code:
+                        self.assertTrue(stopped.is_set(), 'acceptance window must close before backend restoration')
                     return ['error', 'restore_failed'] if restore_error and 'settler' in code else {'cid': 7}
                 if 'Registry.remove' in code:
                     return 'ok'
@@ -51,7 +86,7 @@ class LiveCleanupTest(unittest.TestCase):
                  patch.object(subject.demo, 'rpc', side_effect=rpc), \
                  patch.object(subject.demo, 'observe', side_effect=[initial, RuntimeError('Life unavailable'), ValueError('final observation failed')]):
                 with self.assertRaisesRegex(RuntimeError, 'Life unavailable'):
-                    subject.live(7, out, 1)
+                    subject.live(7, out, 1, stop=stopped)
             self.assertTrue(any('settler' in code for code in calls), calls)
             self.assertTrue(any('brain: "life"' in code for code in calls), 'live must use the standalone life backend')
             self.assertTrue(any('trace_pattern' in code for code in calls), calls)

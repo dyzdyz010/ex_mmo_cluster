@@ -2,6 +2,21 @@
 
 用户于2026-10-11明确要求：“这是阶段性成果，请你先做成单独后端接入npc，然后新开一个会话继续做跨越连续自主生活以及自给自足和人格模型。话说npc的聊天功能做完了没有？”这是续接同一目标的执行授权。先完成独立后端与交接，新会话接管后继续实施和验证，不只给方案。
 
+## 2026-10-11 20:16（UTC+8）优先级与并发交接——当前状态
+
+**用户最新要求：先做对话，必须同时支持玩家↔NPC、NPC↔NPC。** 原会话接管正式 say/heard 设计与实现；本续接会话保存自主生活阶段，冻结共享 Demo 升级与 NPC 后端切换。以下当前状态覆盖本文后面首次交接时的 life/1h 描述；后面的旧阶段证据仍保留。
+
+- **文件占用**：自主生活产品代码已提交，不再占用或修改 `apps/gate_server/lib/gate_server/npc/{brain/llm.ex,runtime.ex,body.ex,abilities.ex,README.md}`，也不修改 Session/Scene/客户端对话接入边界。后续自主生活工作限 `scripts/npc_life/{autonomy.py,test_autonomy.py,long_horizon.py,test_long_horizon.py,demo.py}` 及本页、`2026-10-11-npc-autonomy.md`；本次保存完成后无在途写入。对话会话可以基于当前提交修改上述产品文件。
+- **代码基线**：`0ceeb544` 保存 Life 最近八种失败调用、跨轮/重启可见，并给 survey 显式脚层、no_path 同快照诊断；`d90fafd9` 加入 sociability 及有限材料组件闭环；`5b4cd58e` 补采集 actor/seq 对账与注释。产品全部在本分支，未合并/推送。
+- **Demo 当前实际版本**：正式 release 源码 `5b4cd58ed6e5436c1e9fab18c9c6e11f6bba922d`，镜像 `voxim-server:20261011-npc-life-5b4cd58e`，image ID `sha256:999c33b462ff68817badd99def129c96608880d819b6ad52426a6813f1cba6fa`。这是最新优先级消息到达**之前**已经完成的一次升级；之后未升级或切后端。旧 canonical 只新增 sociability=0.5，其余字段逐项相等；缓存/原历史未重算。证据 `npc-autonomy-20261011/upgrade-01/`。
+- **运行生命周期**：Demo 容器和18908 Hindsight仍运行；LifeBuilder/cid607440080896 当前持久登记为 **settler**，保留 Life sidecar；`Life.error=null`，world cursor48。无本续接会话启动的 UE 双端进程、LLM 请求或 trace，无待完成 Hindsight 操作/巩固。切回 settler 发生在接管开头并有 `takeover-01/` 记录，不是为重复获取请求额度。请勿按后文旧 life/1h 描述重复恢复或登记。
+- **累计预算**：截至 `2026-10-11T12:16:52Z`，本会话外部模型新增 **0**；累计仍 **1,243,611 / 2,000,000**，余 **756,389**。升级后服务日志无 LLM decision/request_failed；NPC bank usage 与接管快照相等，pending_operations/pending_consolidation均0。预算没有重置。只读核查和完整登记状态见 `.demo/observe/npc-autonomy-20261011/chat-priority-handoff-01/manifest.json`、`runtime.json`、`hindsight-status.json`。
+- **已经验证**：旧两次 no_path 是把实心地表417当脚层；同世界只读复演，418均可达，未改碰撞算法。组件 Life/State/Social/资源45项通过；补审后的资源/Survey/Memory/LLM直接回归17项通过；新驱动17项离线测试通过（数字属于不同命令，不相加充当独立总数）。真实 World/Scene/Body 两轮有限材料采集→消费→破坏后恢复通过，但动作由测试安排，**不能称模型自主重建成功**。
+- **未执行/未证明**：本轮真实 LLM 自主采材/两次重建、两端复制验收、人格模型配对均未启动；未证明长期自主活动，更未证明30天自主生活。聊天仍由对话会话完成和验收，旧 say/heard 接缝不是聊天完成。
+- **驱动待收口**：新增 `autonomy.py` 已有玩家仅破坏、两轮资源收据、每轮两端事务门禁；新运行ID拒绝覆盖旧trace；最后HTTP返回不等于动作终态，恢复settler前先关闭验收窗口。审查发现的角色查询API、提前放行、取消末动作与后端归属漏洞已修并有离线反例。**预算目前仅350000决策usage轮询门禁+100000在途/记忆预留，尚无逐请求发出前的硬token门禁；错误响应的轮询停止也未严格排除生产退避重试竞态。不得把驱动称作已完成正式验收或在未收口前启动昂贵实验。**
+
+详细契约、依据、失败日志与剩余项见 [自主生活阶段](2026-10-11-npc-autonomy.md)。当前对话工作无需重新验证上轮冻结的全部事实，按自己的变化边界选择最小充分测试。
+
 ## 工作区与不可变约束
 
 - 当前worktree：`C:/Users/DYZ/Documents/dev/hemifuture/ex_mmo_cluster-capabilities`，分支 `capability-library-20261007`；继续在此工作，不动主树 `../ex_mmo_cluster`。新会话复用此worktree，不新建一个丢失阶段成果的checkout。交接后原会话停止写入。
@@ -26,7 +41,7 @@
 
 生产入口与CLI例子见 `apps/gate_server/lib/gate_server/npc/README.md`；续验的`long_horizon.py freeze/pairs/live`已改用life入口。Registry配置新反例先RED，LifeRegistry+Registry17项通过，驱动入口10项通过。正式release源码`9b52cde9`已构建部署，image `voxim-server:20261011-npc-life-9b52cde9`。同一个LifeBuilder已持久登记为life，真实首轮look返回Body done；旧计划、笔记进入首轮上下文，canonical/cache保留。后端结果在 `.demo/observe/npc-life-backend-20261011/manifest.json`。
 
-**交接时NPC正在life后端，临时限1请求/小时，首个请求已用；trace已停。** 接收会话先管理生命周期与累计预算，再展开实验，不能因重新登记而重复获得新额度。不是已恢复settler的旧状态。若长时间规划而不需模型活动，可用既有登记入口恢复settler，明确记录；开始下一实验再按总体预算配置life。
+**首次交接的历史状态（已被页首20:16状态覆盖）：当时NPC正在life后端，临时限1请求/小时，首个请求已用；trace已停。** 接收会话随后已按授权恢复settler并记录；不能因重新登记而重复获得新额度。
 
 ## 运行资产与预算
 
@@ -43,6 +58,6 @@
 2. 连续自主生活：跨多轮目标/计划/环境变化继续推进，明确阻塞、失败、完成、放弃与新目的之间的选择依据；验证安静期、离线/重启、实际受拒之后不会遗忘目的、反复同一失败或空转耗费。不要以无限期挂机代替测试，也不要强塞固定动作序列假装自主。
 3. 自给自足：从有限合法初始资源出发，查World身体/背包/资源，自己取得需要的材料或食物、消费/恢复并继续生活；优先排查已实跑两次no_path的具体原因。先证实身体需求/资源闭环的现有owner和正常接口，不能创建第二真值或靠直接补余额做成成功。
 4. 人格模型：在现有谨慎慢变量上，按用户可感知行为选最小必要维度；查询一手依据，明确稳定性、受经历缓慢改变与短时情绪的不同时间尺度。每个新增维度有行为对照和事件溯源，持久化/重启/时间测试；不盲目照搬心理学模型。
-5. 聊天状态：**未完成**。`Body`的`say`恒拒`chat_unavailable`，能力库不投影say；Runtime/Brain虽有heard接缝，但真实玩家↔NPC对话、回复呈现及对话经历闭环没有验收。用户本次是询问状态，尚未明确要求在本轮把聊天单独做完；若下一阶段需要它，应明确列为独立增量并沿同一正式玩家聊天链路接入，不能用已有占位谎报完成。
+5. 聊天状态：**未完成，且用户现已明确升为首要任务，要求玩家↔NPC与NPC↔NPC同时支持**。旧`Body.say`恒拒`chat_unavailable`、Runtime/Brain只有heard接缝；由原会话负责正式通道，不把已有占位或heard接缝当成完整聊天。本自主生活续接会话按页首分工避开对应文件和运行生命周期。
 
 按最小充分测试先反例后实现；必要的真实模型实验固定样本/预算/失败判据，不重采样掩盖失败。最终继续在本分支提交代码、文档和可复现证据，未获授权不合并或推送。

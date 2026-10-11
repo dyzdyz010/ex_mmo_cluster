@@ -323,7 +323,7 @@ def social(cid, out, cycles=6, fresh=False, custom_steps=None):
     return replay
 
 
-def upgrade(cid, out, image):
+def upgrade(cid, out, image, *, migrate_sociability=False):
     # 镜像必须来自根已审查的本轮构建；只替换拥有的容器，世界与数据库不重建。
     import service
     manifest = json.loads((BASE / ('build-' + image.rsplit('-', 1)[-1] + '.json')).read_text())
@@ -356,7 +356,12 @@ def upgrade(cid, out, image):
     save(SERVER/'version.json',manifest)
     after = observe(cid)
     save(out/'after.json',after)
-    assert json.loads((out/'before.json').read_text())['life']['state'] == after['life']['state']
+    expected = json.loads((out/'before.json').read_text())['life']['state']
+    # 本轮显式允许的旧存档迁移；其它字段仍逐项严格比较，不按新实现重算预期。
+    if migrate_sociability:
+        assert 'sociability' not in expected['traits']
+        expected['traits']['sociability'] = .5
+    assert expected == after['life']['state']
     identity = server.execution_identity(SERVER,CONTAINER)
     identity['npc_loaded_beam_md5'] = rpc(NPC_MD5)
     save(out/'execution.json',identity)
