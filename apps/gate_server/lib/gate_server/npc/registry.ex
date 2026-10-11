@@ -15,9 +15,10 @@ defmodule GateServer.Npc.Registry do
   |---|---|---|
   | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
+  | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
 
-  JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`GateServer.Npc.Genesis`）只来自 llm 行的
+  JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`GateServer.Npc.Genesis`）只来自 llm / life 行的
   `genesis: true`：它同时成为 `profile.genesis`（投影创世条目）与 Body 启动选项 `genesis`（Body 受理 `genesis_edit`）。
 
   在跑的 Body 按 cid 登记在 `GateServer.NpcNames`（`Body.start/2` 填）。同名再登记先停旧 Body 再起新的：不能只靠 claim 顶替，
@@ -145,6 +146,14 @@ defmodule GateServer.Npc.Registry do
     Brain.Tree.init(profile)
     profile = with_life(profile, params)
     {if(Map.has_key?(profile, :life), do: Brain.Social, else: Brain.Tree), profile}
+  end
+
+  # 独立登记名只负责强制组成完整人生能力；决策、记忆与预算规则继续由原 owner 维护。
+  def brain("life", params) when is_map(params) do
+    if Map.get(params, "life") == false,
+      do: raise(ArgumentError, "life 后端不能配置 life=false")
+
+    brain("llm", Map.put_new(params, "life", true))
   end
 
   def brain("llm", %{"goal" => goal, "tools" => tools} = params) when is_binary(goal) do

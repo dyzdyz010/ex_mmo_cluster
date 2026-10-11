@@ -63,7 +63,7 @@ def profile_params(goal, limit=24):
 
 def freeze_pairs(cid, out):
     record = demo.rpc(f'''
-      {{_, profile}} = GateServer.Npc.Registry.brain("llm", {packed(profile_params(GOALS[0]))})
+      {{_, profile}} = GateServer.Npc.Registry.brain("life", {packed(profile_params(GOALS[0]))})
       [{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
       b = GateServer.Npc.Body.observe(pid)
       observation = %{{self: %{{entity_id: {cid},position: b.position,tick: b.tick}},
@@ -112,7 +112,7 @@ def pairs(cid, source, out):
             demo.save(body_path, case['body'])
         started = time.time()
         response = demo.rpc(f'''
-          {{_,p}} = GateServer.Npc.Registry.brain("llm",{packed(profile_params('paired inference'))})
+          {{_,p}} = GateServer.Npc.Registry.brain("life",{packed(profile_params('paired inference'))})
           body = File.read!("/demo/{body_name}") |> Jason.decode!()
           case GateServer.Npc.Http.request(p.endpoint,body) do
             {{:ok,r}} -> %{{status: "ok",usage: r["usage"],output: Enum.filter(r["output"] || [], &(&1["type"] == "function_call"))}}
@@ -138,7 +138,7 @@ def live(cid, out, seconds):
         before = demo.observe(cid)
         demo.save(out / 'before.json', before)
         position = before['body']['position']
-        spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "llm",params: {packed(profile_params(LIVE_GOAL))}}}'
+        spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "life",params: {packed(profile_params(LIVE_GOAL))}}}'
         registered = True  # 登记失败也可能已经落库，仍承担恢复义务。
         result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
         demo.save(out / 'registration.json', result)

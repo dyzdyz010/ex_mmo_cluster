@@ -53,6 +53,7 @@ class LiveCleanupTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'Life unavailable'):
                     subject.live(7, out, 1)
             self.assertTrue(any('settler' in code for code in calls), calls)
+            self.assertTrue(any('brain: "life"' in code for code in calls), 'live must use the standalone life backend')
             self.assertTrue(any('trace_pattern' in code for code in calls), calls)
             errors = json.loads((out / 'cleanup-errors.json').read_text(encoding='utf8'))
             self.assertEqual('restore' in errors, restore_error)

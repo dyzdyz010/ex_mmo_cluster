@@ -68,6 +68,8 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 独立 `contract-probe-20261011` 的真实后台验证：巩固新增 5 observations，输入 12,789 / 输出 374 token；四模型显式刷新共 16 次 reflect 工具调用，输入 136,106 / 输出 1,577 token。人工核对 relationships 的 Brann 破坏/Mara 修复因果正确，world 未捏造坐标，commitments 如实说明无承诺。初始化空库四模型的 completed 操作未产生 LLM 请求（0 token）；这只证明当前固定镜像空事实的短路行为，不能推广到有历史事实的 ensure。探针与真实NPC费用分别列于 `final-01/cost-summary.json`，未提供模型计费单价，不虚构美元费用。
 # 长期自洽续验
 
+当前阶段成果使用独立登记名 `brain: "life"`；下面的 freeze/pairs/live 入口均使用该组合，原始实跑证据保持原提交身份。接入说明见生产 `apps/gate_server/lib/gate_server/npc/README.md`。
+
 `long_horizon.py freeze --out pairs-input-01` 固定真实 Life 缓存与一次召回；
 `pairs --source pairs-input-01 --out pairs-results-01` 按预登记的六组自传身份互换运行12请求，不执行结果，不写回真实记忆。
 `live --out live-01 --seconds 420` 在正式 Brain/Body 运行同一 NPC，最多24请求，结束恢复 settler 并保留自主意图；

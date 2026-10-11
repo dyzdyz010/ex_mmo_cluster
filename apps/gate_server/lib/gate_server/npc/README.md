@@ -378,12 +378,25 @@ NPC 的合成、进食、拆解、目录读取、身体视图与名牌、`Body.s
 design_house 共享工具的唯一来源，这些动词随之投影（strict、显式句柄）。Observation 的新字段（`self.body_state`、I4 起的
 `self.caster`、entities 的 `name / relation / relation_source`）随 `Context.plain` 原样进入每次 LLM 请求的 input，relation 码与 body_state.status 码的含义
 写在 instructions 里（relation 码由 `MmoContracts.Relation.code/1` 插值）。
-NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行为树 Brain、gather 与 Settler 随 I3 接上。正式聊天、住宅以外的设计技能、
-世界变化（如自己的建筑被拆）唤醒大脑，都是后续独立功能增量。NPC 注册表与节点重启恢复、创世能力组随放置阶段 M1 / M2 接上
+NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行为树 Brain、gather 与 Settler 随 I3 接上。正式聊天、住宅以外的设计技能
+仍是后续独立功能增量；Life 关注的建筑伤害/帮助评价已经能够唤醒等待或请求在途的大脑。NPC 注册表与节点重启恢复、创世能力组随放置阶段 M1 / M2 接上
 （[决策稿](../../../../../docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md)）。
 测试入口在 `apps/gate_server/test/gate_server/npc_*`；真实模型用例必须显式选择 `live_llm`。
 
 ## 可选人生闭环（Life）
+
+阶段成果的独立登记入口为 `brain: "life"`。这是可选择、可持久化的后端组合名：决策复用 `Brain.Llm`，心智由 `Life`、当前意图/笔记由 `Memory`、世界动作由 `Body` 拥有，没有复制第二套决策器或世界入口。
+它要求 `goal` 和 `tools`，其余参数沿用 `llm`；省略 `life` 等于启用，服务地址来自 `NPC_LIFE_HINDSIGHT_URL`，也可显式提供 `%{"url" => ...}`。禁止 `life=false`，默认每小时60次，显式额度1..60。
+
+```elixir
+GateServer.Npc.Registry.put("LifeBuilder", %{
+  scene_id: 1, spawn: {63.5, 416.91, -516.5}, brain: "life",
+  params: %{"goal" => "照料珍视的构件，依据经历自行安排生活；新事实出现时修订计划。",
+            "tools" => %{"1" => "镐"}, "max_requests_per_hour" => 60}
+})
+```
+
+示例坐标仅是部署选点；操作既有NPC时沿用其当前地点与姓名。登记到正式根后由 Registry 负责重启恢复；endpoint/key只来自环境，不能写入参数。`Registry.list/0` 可读到独立的 `brain="life"`，`Life.observe/1` 与 `Memory.working_context/2` 继续提供原调试面。聊天目前仍是 `chat_unavailable` 占位，并未随人生后端完成。
 
 注册参数默认没有 `life`。`settler` 加 `"life" => %{"url" => "http://hindsight:8888"}` 后只把原 Tree 包在
 `Brain.Social` 中；不询问决策模型。`llm` 加同一参数后保留原 Llm，用当前心智、缓存认识和一次情境召回替代决策前的

@@ -3,6 +3,41 @@ defmodule GateServer.NpcLifeRegistryTest do
   use ExUnit.Case, async: false
   alias GateServer.Npc.{Registry, Brain}
 
+  test "life is a separately selectable backend with the already verified runtime composition" do
+    llm_env()
+    params = %{"goal" => "继续生活", "tools" => %{}, "life" => %{"url" => "http://life.test.invalid"}}
+
+    assert {Brain.Llm, profile} = Registry.brain("life", params)
+    assert profile.life == %{url: "http://life.test.invalid"}
+    assert profile.max_requests_per_hour == 60
+    assert "set_plan" in Enum.map(GateServer.Npc.Abilities.tools(profile), & &1.name)
+    assert Registry.brain("llm", params) == {Brain.Llm, profile}
+
+    assert_raise ArgumentError, ~r/1\.\.60/, fn ->
+      Registry.brain("life", Map.put(params, "max_requests_per_hour", 61))
+    end
+  end
+
+  test "life requires its memory service and cannot be silently disabled" do
+    llm_env()
+    params = %{"goal" => "继续生活", "tools" => %{}}
+    previous = System.get_env("NPC_LIFE_HINDSIGHT_URL")
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("NPC_LIFE_HINDSIGHT_URL", previous),
+        else: System.delete_env("NPC_LIFE_HINDSIGHT_URL")
+    end)
+
+    System.delete_env("NPC_LIFE_HINDSIGHT_URL")
+    assert_raise System.EnvError, fn -> Registry.brain("life", params) end
+    System.put_env("NPC_LIFE_HINDSIGHT_URL", "http://life.test.invalid")
+    assert {Brain.Llm, %{life: %{url: "http://life.test.invalid"}}} = Registry.brain("life", params)
+
+    assert_raise ArgumentError, ~r/life.*false/, fn ->
+      Registry.brain("life", Map.put(params, "life", false))
+    end
+  end
+
   test "life without explicit service URL is a configuration error" do
     previous = System.get_env("NPC_LIFE_HINDSIGHT_URL")
     System.delete_env("NPC_LIFE_HINDSIGHT_URL")
