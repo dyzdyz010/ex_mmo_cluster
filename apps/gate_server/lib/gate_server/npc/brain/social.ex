@@ -111,7 +111,9 @@ defmodule GateServer.Npc.Brain.Social do
 
   defp begin_social(s, choice, o) do
     {commands, tree} = Tree.halt(s.tree)
-    stops = MapSet.new(for %{id: id, verb: :stop} <- commands, do: id)
+
+    # 目标更新不结束已有停止交接；旧动作 superseded 与 stop 终态是独立结果。
+    stops = MapSet.union(s.stops, MapSet.new(for %{id: id, verb: :stop} <- commands, do: id))
     s = %{s | tree: tree, social: Map.merge(choice, %{issued: false, target: nil}), stops: stops}
     if commands == [] and drained?(s), do: advance_social(s, o), else: {commands, s}
   end

@@ -140,6 +140,67 @@ defmodule GateServer.NpcSocialTest do
     assert {[], _} = Social.handle_event({:observation, observation(angry())}, mind)
   end
 
+  defp retarget_before_stop_terminal do
+    profile = %{
+      tree: fn _ -> {{:act, "move_to", %{"x" => 10, "z" => 0, "y" => nil}}, %{}} end,
+      tools: %{}
+    }
+
+    {[%{verb: :move_to, id: old}], mind} =
+      Social.handle_event(
+        {:observation, %{observation(State.new(1, "world", 0, 0)) | entities: []}},
+        Social.init(profile)
+      )
+
+    {[%{verb: :stop, id: stop}], mind} =
+      Social.handle_event({:observation, observation(angry())}, mind)
+
+    {[], mind} =
+      Social.handle_event({:outcome, %{id: old, status: :superseded, reason: :superseded}}, mind)
+
+    {state, [_episode]} =
+      State.advance(
+        angry(),
+        [
+          %{
+            seq: 2,
+            at_ms: 1000,
+            actor: 2,
+            kind: :damage,
+            cell: {1, 64, 1},
+            material: 11,
+            placed_by: 1
+          }
+        ],
+        2,
+        1000
+      )
+
+    obs = observation(state)
+    {commands, mind} = Social.handle_event({:observation, obs}, mind)
+    assert mind.social.source_seq == 2
+    assert commands == []
+    assert MapSet.member?(mind.stops, stop)
+    {mind, stop, obs}
+  end
+
+  test "new damage source waits for the original halt stop to succeed before social movement" do
+    {mind, stop, obs} = retarget_before_stop_terminal()
+    {[], mind} = Social.handle_event({:observation, obs}, mind)
+    {[], mind} = Social.handle_event({:outcome, %{id: stop, status: :done, reason: nil}}, mind)
+    assert mind.stops == MapSet.new()
+    {[%{id: {:social, _}, verb: :move_to}], _} = Social.handle_event({:observation, obs}, mind)
+  end
+
+  test "new damage source preserves a late halt stop rejection and blocks social movement" do
+    {mind, stop, obs} = retarget_before_stop_terminal()
+    outcome = %{id: stop, status: :rejected, reason: :session_lost}
+    {[], mind} = Social.handle_event({:outcome, outcome}, mind)
+    assert mind.blocked
+    assert mind.last_outcome == outcome
+    assert {[], _} = Social.handle_event({:observation, obs}, mind)
+  end
+
   test "gratitude already within range is acknowledged before work later moves away" do
     {state, _} =
       State.advance(
