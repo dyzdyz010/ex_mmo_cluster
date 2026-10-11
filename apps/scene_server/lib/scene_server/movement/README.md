@@ -278,3 +278,53 @@ chunk 的事务（夹具在 Body 入场前写入作者样本即可触发），`r
 Player 崩溃、会话按原因 3 关闭。流送 Scene（正式 Demo / 青岚，`collision_window_radius_tiles` = 1）原本就在基线前只推进
 tick，且其 FIFO 由首个窗口 `initialize_stream/2` 初始化，不受影响。回归：`voxim_scene_test.exs`
 “join before the initial snapshot: a transaction published before the anchor is carried by the anchor”。
+
+## 2026-10-11 附近公开对话（Hello40）
+
+Global system：`Scene.say(scene, identity, request)` 是玩家与 NPC 共用的接纳入口，返回
+`{:ok, speech_map}` / `{:error, reason}`。`SceneServer.Dialogue` 只拥有纯状态规则，状态仍放在
+现有 Scene，不新增进程根。参数唯一来源为 `Dialogue.limits/0`：完整 XYZ 的 12 米听觉范围、
+最多 512 个 Unicode 字符 / 2048 字节、2 秒间隔、NPC 新话题 5 分钟、连续 NPC 8 句与会话空闲 120 秒。
+正文规则及其他模块进度见 [对话设计稿](../../../../../docs/10-active/cross-cutting/2026-10-11-npc-dialogue.md)。
+
+Scene 使用已收到的权威 observation，不向 Player 同步查询坐标；`dialogue_available` 由 Player
+投影 Ready、移交、失败与位置状态，不复用只服务 AOI 的 `active`。kind / name 从鉴权角色的
+kind / profile 一次保存，随正式移交 cut 保留。每次发言重算听众并检查指定目标；会话参与资格按
+完整会话 identity 记录，离场删除，重连不可使用旧会话的听见资格。NPC 新起冷却按 cid 保留至到期，
+同 Scene 重连不能绕过。Scene 重启及跨 Scene 移交不携带历史对话状态；旧会话号在目标 Scene 明确失效。
+
+同身份只缓存最近一次请求及结果，同时保留请求高水位。同号不同内容拒绝，旧号拒绝；原结果重放
+不广播、不产生新轮次。去重在角色身份接纳后执行，Ready 等业务拒绝也会缓存，因此调用方再次发言
+必须分配新 request_id。只有服务端创建的 Speech 发往所有当前听众（含本人）的可靠 control 出口，
+事件内接收者 identity 各自设置，Scene 不编码 wire。
+
+依据 [Erlang 信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html)，不同发送者的请求
+由一个 Scene 串行生成会话内 turn，随后由同一 Scene 按此顺序发给各听众；不承诺 LLM 理解或答应。
+空闲退休使用 OTP [定时器](https://www.erlang.org/doc/apps/erts/erlang.html#start_timer/3)，以单调时钟
+算期限；带 timer ref 的到期消息避免已取消计时器的迟到消息替换当前计时器。系统时间只作为
+Speech 的 `at_ms` 展示时间。定时器不依赖下一条发言或移动 tick，Scene 自行维护其生命周期。
+
+```mermaid
+flowchart LR
+  Player[Player 权威观察] --> Scene[Scene 成员与 Dialogue 状态]
+  Gate[玩家 Gate / NPC Body] -->|say| Scene
+  Scene -->|Speech 有序可靠 control| Listeners[本次 XYZ 范围听众]
+  Timer[Scene 自有到期消息] --> Scene
+```
+
+观察：`Scene.observe/1` 的 `dialogue` 包含 `active_conversations/accepted/rejected/replayed`。
+`voxim-scene-v1` 结构化日志的 `dialogue.result` 包含 request、speaker、target、结果和听众数量；
+`dialogue.speech` 每名听众一行，包含完整 Speech、receiver_id/receiver_epoch、request_id、
+speaker_observation_tick，以及 Scene 的 server_tick 裁决水位，可逐笔核对发送与接收。
+
+Test-only：`dialogue_test.exs` 用受控时钟证明文本、三维距离、限频、轮次、身份、去重及到期边界。
+`dialogue_scene_test.exs` 用真实 Scene/Player/NIF、公开 join/Ready/移动输入与正式 Outbound，
+证明近远听众、并发顺序、离场重连、移交拒绝和无后续发言的主动退休；canonical 快照与 BodyStore
+是每次测试独占替身，计时器测试仅读取真实 timer ref 并提前交付到期信号，不注入角色/对话状态。
+这些测试不证明 QUIC、真实模型或客户端 UI。扩大到既有 Scene/Player 两个测试文件的理由是新增了
+共享 observation 投影与 Scene 生命周期状态，需要检测移动/Ready/重连行为受到的直接影响。
+
+根目录命令：
+`mix test --no-start apps/scene_server/test/scene_server/dialogue_test.exs apps/scene_server/test/scene_server/movement/dialogue_scene_test.exs apps/scene_server/test/scene_server/movement/voxim_scene_test.exs apps/scene_server/test/scene_server/movement/voxim_player_test.exs`。
+本次红/绿原始日志位于 `.demo/observe/npc-dialogue-20261011/scene/`；当前结果 40 项通过，其中新增
+9 项。客户端与真实 NPC 自主交谈的验收仍由总体设计稿记录，不能以这些组件测试代替。

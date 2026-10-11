@@ -1776,6 +1776,8 @@ defmodule SceneServer.Movement.Player do
       pending_inputs: if(state.slots, do: map_size(state.slots.pending), else: 0),
       processed_input_seq: if(state.slots, do: state.slots.processed_input_seq, else: 0),
       active: active?(state),
+      dialogue_available:
+        state.ready and state.transfer == nil and state.failure == nil and state.state != nil,
       published_tick: state.tick,
       physics_steps: state.physics_steps,
       step_us: state.step_us,

@@ -3,6 +3,7 @@ defmodule SceneServer.Movement.Scene do
   use GenServer
   require Logger
   alias MmoContracts.{Session, Voxel}
+  alias SceneServer.Dialogue
   alias SceneServer.Movement.{Player, CollisionUpdates, Replication, Clock}
 
   @doc "从明确的 route 和资产导出启动唯一 writer。"
@@ -15,6 +16,8 @@ defmodule SceneServer.Movement.Scene do
   def leave(scene, identity, reason \\ 1), do: GenServer.call(scene, {:leave, identity, reason})
   @doc "只读标量统计与角色状态，不暴露可变 NIF resource。"
   def observe(scene), do: GenServer.call(scene, :observe)
+  @doc "玩家与 NPC 共用的附近发言入口；只以本 Scene 最新权威观察接纳并可靠投递。"
+  def say(scene, identity, request), do: GenServer.call(scene, {:say, identity, request})
   @doc "从本场景的实际移动与出生配置提供只读设计上下文。"
   def design_context(scene), do: GenServer.call(scene, :design_context)
   @doc "公共水位与20Hz玩家事实缓存；不调用玩家或扫描AOI关系。"
@@ -147,6 +150,8 @@ defmodule SceneServer.Movement.Scene do
       failure: nil,
       content_version: nil,
       characters: %{},
+      dialogue: Dialogue.new(),
+      dialogue_timer: nil,
       requests: %{},
       workers: %{},
       tick: 0,
@@ -207,6 +212,93 @@ defmodule SceneServer.Movement.Scene do
       end)
 
     {:reply, owner, state}
+  end
+
+  def handle_call({:say, identity, request}, _, state) do
+    monotonic_ms = div(now(state), 1000)
+    {time_us, _} = Clock.sample(state)
+
+    roster =
+      Map.new(state.characters, fn {identity, c} ->
+        observation = c.observation
+
+        {identity,
+         %{
+           id: c.id,
+           epoch: c.epoch,
+           kind: c.kind,
+           name: c.name,
+           available:
+             observation != nil and observation.dialogue_available and state.failure == nil,
+           position: if(observation && observation.state, do: observation.state.position)
+         }}
+      end)
+
+    {dialogue, result, recipients} =
+      Dialogue.say(
+        state.dialogue,
+        identity,
+        request,
+        roster,
+        monotonic_ms,
+        div(time_us, 1000),
+        new_conversation_id(state.dialogue)
+      )
+
+    state = %{state | dialogue: dialogue} |> schedule_dialogue()
+
+    runtime_event(state, :"dialogue.result", %{
+      request_id: Map.get(request, :request_id),
+      speaker_id: if(roster[identity], do: roster[identity].id),
+      target_id: Map.get(request, :target_id),
+      session_epoch: identity.session_epoch,
+      conversation_id:
+        case result do
+          {:ok, speech} -> speech.conversation_id
+          _ -> 0
+        end,
+      turn:
+        case result do
+          {:ok, speech} -> speech.turn
+          _ -> 0
+        end,
+      reason:
+        case result do
+          {:ok, _} -> :ok
+          {:error, reason} -> reason
+        end,
+      recipients: length(recipients)
+    })
+
+    case result do
+      {:ok, speech} ->
+        for recipient <- recipients do
+          c = Map.fetch!(state.characters, recipient)
+
+          state.sink.reliable(
+            c.gate,
+            recipient,
+            :control,
+            struct!(Session.Speech, Map.put(speech, :identity, recipient))
+          )
+
+          runtime_event(
+            state,
+            :"dialogue.speech",
+            Map.merge(speech, %{
+              request_id: request.request_id,
+              receiver_id: c.id,
+              receiver_epoch: recipient.session_epoch,
+              speaker_observation_tick: state.characters[identity].observation.simulation_tick
+            })
+          )
+        end
+
+      {:error, _} ->
+        :ok
+    end
+
+    {:reply, result, state}
   end
 
   def handle_call({:connect_neighbour, peer, offset}, _, state) do
@@ -323,6 +415,8 @@ defmodule SceneServer.Movement.Scene do
         id: cut.id,
         identity: identity,
         epoch: cut.epoch,
+        kind: cut.kind,
+        name: cut.profile.name || "",
         slot: nil,
         gate: gate,
         player: player,
@@ -347,7 +441,9 @@ defmodule SceneServer.Movement.Scene do
         :ok = Replication.handoff(state.replication, old, next, next.scene_id)
         Process.demonitor(c.monitor, [:flush])
         :ok = DynamicSupervisor.terminate_child(state.players, c.player)
-        {:reply, {:ok, observer}, %{state | characters: characters}}
+
+        {:reply, {:ok, observer},
+         %{state | characters: characters, dialogue: Dialogue.leave(state.dialogue, old)}}
     end
   end
 
@@ -445,6 +541,8 @@ defmodule SceneServer.Movement.Scene do
           id: cid,
           identity: identity,
           epoch: identity.session_epoch,
+          kind: Keyword.fetch!(opts, :kind),
+          name: Keyword.fetch!(opts, :profile).name || "",
           slot: slot,
           gate: gate,
           player: player,
@@ -494,6 +592,7 @@ defmodule SceneServer.Movement.Scene do
     info =
       Map.merge(info, %{
         character_count: map_size(state.characters),
+        dialogue: Dialogue.observe(state.dialogue),
         replication_pid: state.replication,
         player_supervisor_pid: state.players,
         mailbox: mailbox,
@@ -516,6 +615,7 @@ defmodule SceneServer.Movement.Scene do
                 simulation_tick: 0,
                 pending_inputs: 0,
                 active: false,
+                dialogue_available: false,
                 processed_input_seq: 0,
                 collision_revision: 0,
                 physics_steps: 0,
@@ -534,6 +634,13 @@ defmodule SceneServer.Movement.Scene do
     do: {:noreply, drop(state, identity, reason)}
 
   @impl true
+  def handle_info({:timeout, timer, :dialogue_expire}, %{dialogue_timer: {timer, _}} = state) do
+    dialogue = Dialogue.expire(state.dialogue, div(now(state), 1000))
+    {:noreply, schedule_dialogue(%{state | dialogue: dialogue, dialogue_timer: nil})}
+  end
+
+  def handle_info({:timeout, _, :dialogue_expire}, state), do: {:noreply, state}
+
   def handle_info({:projectile_receipt, id, identity, life, hit, seq}, state) do
     case Map.get(state.characters, identity) do
       %{id: ^id, player: player} -> send(player, {:projectile_receipt, identity, life, hit, seq})
@@ -840,11 +947,38 @@ defmodule SceneServer.Movement.Scene do
         close_sink(state, c.gate, identity, reason)
         :ok = Player.stop(c.player)
         Replication.leave(state.replication, identity, c.id, c.epoch, state.tick)
-        %{state | characters: characters}
+        %{state | characters: characters, dialogue: Dialogue.leave(state.dialogue, identity)}
     end
   end
 
   defp close_sink(state, gate, identity, reason), do: state.sink.close(gate, identity, reason)
+
+  defp schedule_dialogue(state) do
+    if state.dialogue_timer, do: Process.cancel_timer(elem(state.dialogue_timer, 0))
+
+    timer =
+      case Dialogue.next_expiry(state.dialogue) do
+        nil ->
+          nil
+
+        deadline ->
+          {:erlang.start_timer(
+             max(0, deadline - div(now(state), 1000)),
+             self(),
+             :dialogue_expire
+           ), deadline}
+      end
+
+    %{state | dialogue_timer: timer}
+  end
+
+  defp new_conversation_id(dialogue) do
+    <<id::unsigned-64>> = :crypto.strong_rand_bytes(8)
+
+    if id == 0 or Map.has_key?(dialogue.conversations, id),
+      do: new_conversation_id(dialogue),
+      else: id
+  end
 
   defp now(state), do: Clock.monotonic(state)
 
