@@ -33,4 +33,32 @@ flowchart LR
 
 本次可复现 probe 与原始证据位于 `.demo/observe/npc-life-20261011/hindsight/`：`contract_probe.exs`、`refresh_probe.exs`、`service.json`、`providers.log`、`version.json`、`openapi.json`、retain/recall/status JSON 与刷新产物。复跑真实抽取请使用新 bank 和新输出目录，不覆盖既有证据。
 
+## 单 NPC 双端人生 Demo（只测试）
+
+`demo.py` 绑定本轮唯一正式组合：`voxim-npc-life-demo-20261011`、`server/` 挂载、同一 `LifeBuilder` cid 与独立 bank。只读 import 同级 Voxim 的 R7 `harness`，通过真实认证的两端 `ReplayInputs` 发普通鼠标/键盘意图；`@place` 只摆放测试玩家。输出目录必须为新目录，入口先转绝对路径，避免 Voxim 子进程工作目录改变产物位置。脚本不会伪造情绪、关系、计数或施工方块；初始有限材料走 `World.material_supply`，施工必须由 NPC 自己完成。
+
+```powershell
+python -B -m unittest discover -s scripts/npc_life -p test_demo.py
+python -B scripts/npc_life/demo.py dry --out .demo/observe/npc-life-20261011/dry-new
+python -B scripts/npc_life/demo.py social --out .demo/observe/npc-life-20261011/social-new
+python -B scripts/npc_life/demo.py memory --out .demo/observe/npc-life-20261011/memory-new
+python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011/restart-new
+```
+
+这些命令是已经准备好的本轮世界的测试入口，不是通用生产部署。`prepare` 只允许尚未登记 NPC 的世界；`initial-correction` 是本轮首次材料夹具不足的显式纠正入口，不能用它重置已开始的人生。宏木块需要 2,097,152 材料单位。修复的 `@aim_build` 应落在目标空格内部（Y416.01），普通瞄准地表与建造空格不是同一契约。
+
+`judge --sources ... --out ...` 把真实 World seq、actor、格子、两端意图结果与 canonical_applied 相对照。行为还要求同来源实际 XYZ 距离变化与新终态 Outcome，且发生在声明的玩家靠近窗口；加载期的 AOI 触发作为混杂保留，不计控制样本。`authority_accepted`、`behavior_accepted`、`client_authority_accepted` 与 `all_replays_completed` 分开报告。伤害后移动与玩家带旧伤害来源再次靠近后的移动分别标注；done/settled 但 within_tolerance=false 只证明实际接近，不能宣称精确到点。
+
+`matched-fresh` 先等 NPC 自然停稳，按完整 XYZ 生成玩家距离，再用既有客户端入口靠近一次；末尾东侧相机窗口是独立展示阶段。`fresh-judge` 审计本轮固定前后阶段，从公开 `State.behavior` 派生旧/新距离，要求对照均在旧安全距离外、新谨慎距离内，且后测比前测更远；不能拿 2.684m 的近距离混杂样本冒充人格改变。名义 3.3–3.5m 是选点近似，不是新增生产阈值。
+
+`upgrade --image ...` 仅接受本轮通过构建的 manifest/image ID，检查已有容器挂载与端口，保留 DB/world/bind。测试 wrapper 保持原有 `--user 0:0` 写 readiness/log；生产 `/app/bin/server` 入口不改。`repair-memory` 调用公开纯 State 从同一 World 历史重建文字，确认重建 canonical 相等，替换原来两个相同 document ID，等事实巩固后刷新 Life 缓存；不会把重建心智写回 Life，也不重放状态增量。
+
+依据：UTC 文本使用 [Elixir DateTime.from_unix/3](https://elixir.hexdocs.pm/DateTime.html#from_unix/3) 与 [to_iso8601/3](https://elixir.hexdocs.pm/DateTime.html#to_iso8601/3)，原始 World `at_ms` 保持毫秒精度。固定 Hindsight 0.10.3 镜像源码 `engine/retain/fact_storage.py:205–318` 在替换前删除旧事实衍生 observations；`engine/memories/pg/writes.py:242–330` 清理旧来源关联并将其它 surviving 来源重新排队巩固；`engine/memories/pg/retain.py:217–246` 删除该文档所有 memory units（含 chunk_id=NULL）后同 ID 写回，保留 created_at。相同 hash 是去重，UTC ISO 文本改变 hash 后才真正重新抽取。本轮最终仍只有两个文档，没有新建另一 bank 或重置心智。
+
+`llm` 是同 cid 的单次正式接线检查，目标为自然维护施工，保留全部真实能力组，预算 1/h。复用 `scripts/npc_soak_trace.exs` 的既有脱敏 trace，只增加模型哈希、召回摘要与工具/用量，不保存 endpoint/key。请求完成后停止探针，`restore` 恢复建设者；不以请求成功宣称记忆产生了行为因果。
+
+本轮实跑：六次损害评价、六次修复帮助；三个受控回避和五个实际接近样本，两次无伤害控制、两次重启后陌生人谨慎移动。首次相对路径、材料不足、修复瞄准失败、模型时间污染、第二次陌生人距离失配与部署 wrapper 用户失败全部保留。更正后的四模型已人工复核，Hindsight 的帮助事实范围仍存在 +10ms 派生偏差；权威原事件/ISO经历不偏移。唯一 LLM 请求选择 look 并完成，输入8303/输出45 token；上下文接线通过，LLM 记忆行为因果未证明。
+
+最终证据位于 `.demo/observe/npc-life-20261011/` 的 `primary-judge-05/`、`fresh-judge-02/`、`restart-01/`、`memory-corrected-01/`、`llm-01/`、`restore-01/` 与 `final-01/`，详细阶段报告及验证日志在 `validation/`。真实截图 `fresh-matched-01/shots/npc-life.001.png` 显示完整 LifeBuilder。五轮双端进程场景共约16.11分钟（两进程时长之和约32.06分钟），超出约10分钟目标，原因是失败重试与一次最小补验；成功原主循环与首轮陌生人场景共约8.86分钟，没有客户端长跑或小时级 soak。
+
 真实后台验证已完成：巩固新增 5 observations，输入 12,789 / 输出 374 token；四模型显式刷新共 16 次 reflect 工具调用，输入 136,106 / 输出 1,577 token。人工核对 relationships 的 Brann 破坏/Mara 修复因果正确，world 未捏造坐标，commitments 如实说明无承诺。初始化空库四模型的 completed 操作未产生 LLM 请求（0 token）；这只证明当前固定镜像空事实的短路行为，不能推广到有历史事实的 ensure。分项在 `cost-summary.json`，未提供模型计费单价，不虚构美元费用。

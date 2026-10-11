@@ -140,4 +140,19 @@ flowchart LR
 - 2026-10-11（组合阶段）：`ef199540` 接入 Life owner、并发片段写入、Social、Registry 与 LLM 请求 worker。核心 16 项、直接影响回归 86 项、最终 Body/World 接缝 62 项通过（另有 7 项排除）；新模块未新增编译警告，原依赖警告不作通过的新证据。分项独立复审进行中，真实双端、整系统重启与行为对照仍待实跑。
 - 2026-10-11（部署准备）：从冻结的 `cf4f19e0` 构建正式 `voxim_server` release，镜像 `voxim-server:20261011-npc-life-cf4f19e0`；隔离实例 `voxim-npc-life-demo-20261011` 使用新数据库 `voxim_npc_life_20261011`，HTTP 27361 / QUIC 27363，Hello 39、初始 World 游标 0。Hindsight 独立实例仍为 18908。部署、构建与已加载 NPC BEAM 摘要在 `.demo/observe/npc-life-20261011/{build-cf4f19e0.json,formal-start.json,formal-preflight.json}`；只读规划旧镜像已经停止，规划产物不算新功能验收。
 
-当前状态：**已实现**至 NPC 组合；**已实跑**至真实 Hindsight 服务及新 release 启动；**已验收**尚不包含真实 Demo 行为闭环。后续结果应在本页续记，不从单模块通过推导整系统完成。
+- 2026-10-11（真实 Demo）：唯一 `LifeBuilder` cid607440080896，A1132722130946、B1133355470852，经真实双端鼠标意图完成6次损害评价/6次修复；无直接编辑测试方块或心智、无测量期NPC搬运。主判定 `primary-judge-05/verdict.json` 的 authority/controlled behavior/dual-client authority通过：新damage6伤后走远、旧damage12/18在A再靠近时走远，5次帮助后实际接近并停稳；加载期混杂不计受控样本。thanks 的目的地容差false原样保留，不把done称精确到点。social02瞄准失败、social03同cid恢复后的完整Replay及两端权威事务确认分别记录。
+- 2026-10-11（持久与人格）：`restart-01/` 真正重启本轮server/Hindsight，同DB/world/bank/cid，canonical/cache严格相等，情绪按34596ms真实elapsed衰减。两次无伤害baseline距离均3.29297m、心智不变/位移0；重启后陌生人两有效初始距离3.44168/3.41307m，均实际cautious移动约1.388m并done/settled/within=true。`fresh-judge-02/` 从公开State派生旧3.2/新4.16m：前后均在旧安全距离外、新谨慎距离内，后测反而更远，排除“只是靠得更近”；另一2.684m失配明确拒绝，不增设事后容差。
+- 2026-10-11（模型错误与更正）：人工发现首retain将真实06点经历误记08点，原件保留`memory-01/`、`time-audit-01/`。owner窄修复`a8e6a5a8`在唯一State经历构造处用官方[DateTime.from_unix!/3](https://elixir.hexdocs.pm/DateTime.html#from_unix!/3)/[to_iso8601/3](https://elixir.hexdocs.pm/DateTime.html#to_iso8601/3)格式化每条UTC ISO原时刻，19项State红绿证据复制至`validation/task-2-time-fix-{red,green}.log`。新release `voxim-server:20261011-npc-life-a8e6a5a8` image383838bc…已实际切换，State MD5bdd99396ca347c4d6691b23ef4ea3cf8；同World公开纯State重建12条文字、canonical严格相等，仅替换原2个documentID，等待巩固并refresh。固定0.10.3源码`engine/retain/fact_storage.py:205–318`及`engine/memories/pg/{writes.py:242–330,retain.py:217–246}`证明替换清理旧facts及其observations、保留created_at并重巩固其它来源。`memory-corrected-01/controller-human-review.md`复核四模型/实际召回通过，无08点污染或虚构承诺；Hindsight帮助事实范围仍有+10ms偏差，World与12条ISO毫秒严格正确，不称外部派生事实毫秒权威。
+- 2026-10-11（LLM与收尾）：同cid自然维护目标、35真实tools、budget1/h，唯一正式请求带4份正确cache模型（hash一致）+6条memory、恰好一次召回110ms，8303输入/45输出token，选择look并由Body完成World seq41权威感知；只证明接线，未证明记忆改变该次决策。探针停止，restore为settler，canonical/cache相等、error=nil。截图`fresh-matched-01/shots/npc-life.001.png`是marker后实际清晰完整LifeBuilder。实际NPC bank累计含错误提取/纠正：retain4次42028/1898，巩固3次38201/862，reflect工具49次432268/5637，reflect1次10695/735；contract-probe另bank单列于`final-01/cost-summary.json`，无报价不折算金额。
+
+| 范围 | 已实现 | 已实跑 | 已验收 |
+|---|---|---|---|
+| 正式组合/真实双端行为 | 是 | 6伤害/6帮助、3受控回避/5接近 | 权威与行为通过；失败Replay前缀/容差局限保留 |
+| 冷重启与人格对照 | 是 | 同cid重启、2control/2有效陌生人移动 | canonical持久/elapsed衰减/重启后行为通过；2.684m失配拒绝 |
+| 模型与召回 | 是 | 原错误抽取+同ID更正+4models | 人工秒级事件语义通过；外部帮助facts+10ms限制 |
+| 单次自然LLM | 是 | 1请求/look done/restore | 接线通过；LLM记忆行为因果未证明 |
+| 客户端约10分钟目标 | 有界场景 | 五轮联合wall16.109min；进程累计32.063min | 未达，失败重试与一次最小补验导致超时；没有长跑 |
+
+Task5最小判定器8项通过，日志`validation/task-5-python.log`；最新判定完整重跑，证据路径均在`.demo/observe/npc-life-20261011/`。首次路径/有限材料/瞄准/时间污染/失配/部署wrapper用户readiness失败全部保留，不能称整次无失败。总manifest `final-01/manifest.json`、实际时长`final-01/client-durations.json`、详细报告`validation/task-5-report.md`。Task5不修改生产模块、不force-add观察或scratch、不merge/push；最终整段独立审查由控制器收口。
+
+当前状态：**已实现**正式人生组合与Test-only验收脚本；**已实跑**真实双端、唯一server/Hindsight冷重启、正确记忆及受限LLM；**已验收**权威/受控社会行为/重启后人格/模型语义/上下文接线，保留LLM因果未证明、目标时长未达与全部失败记录。最终分支审查尚待控制器完成。
