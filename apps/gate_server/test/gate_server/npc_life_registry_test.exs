@@ -3,6 +3,30 @@ defmodule GateServer.NpcLifeRegistryTest do
   use ExUnit.Case, async: false
   alias GateServer.Npc.{Registry, Brain}
 
+  test "life exposes one shared library for dialogue and daily work" do
+    llm_env()
+
+    params = %{
+      "goal" => "照顾家园，也可以主动和邻居交谈",
+      "tools" => %{"1" => "镐"},
+      "skills" => ["gather", "travel"],
+      "life" => %{"url" => "http://life.test.invalid"}
+    }
+
+    assert {Brain.Llm, profile} = Registry.brain("life", params)
+    names = Enum.map(GateServer.Npc.Abilities.tools(profile), & &1.name)
+    assert Enum.all?(~w(say move_to gather travel query_balances set_plan), &(&1 in names))
+    assert Enum.count(names, &(&1 == "say")) == 1
+
+    assert %{id: :greet, verb: :say, target_id: 42, conversation_id: 0, text: "今天一起看看工坊吗？"} =
+             GateServer.Npc.Abilities.command(
+               "say",
+               %{"text" => "今天一起看看工坊吗？", "target_id" => 42, "conversation_id" => nil},
+               :greet,
+               profile
+             )
+  end
+
   test "life is a separately selectable backend with the already verified runtime composition" do
     llm_env()
     params = %{"goal" => "继续生活", "tools" => %{}, "life" => %{"url" => "http://life.test.invalid"}}
@@ -22,6 +46,7 @@ defmodule GateServer.NpcLifeRegistryTest do
     llm_env()
     params = %{"goal" => "继续生活", "tools" => %{}}
     previous = System.get_env("NPC_LIFE_HINDSIGHT_URL")
+
     on_exit(fn ->
       if previous,
         do: System.put_env("NPC_LIFE_HINDSIGHT_URL", previous),
@@ -31,7 +56,9 @@ defmodule GateServer.NpcLifeRegistryTest do
     System.delete_env("NPC_LIFE_HINDSIGHT_URL")
     assert_raise System.EnvError, fn -> Registry.brain("life", params) end
     System.put_env("NPC_LIFE_HINDSIGHT_URL", "http://life.test.invalid")
-    assert {Brain.Llm, %{life: %{url: "http://life.test.invalid"}}} = Registry.brain("life", params)
+
+    assert {Brain.Llm, %{life: %{url: "http://life.test.invalid"}}} =
+             Registry.brain("life", params)
 
     assert_raise ArgumentError, ~r/life.*false/, fn ->
       Registry.brain("life", Map.put(params, "life", false))

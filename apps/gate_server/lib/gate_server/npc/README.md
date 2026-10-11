@@ -457,6 +457,16 @@ retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight f
 
 ## 附近对话（2026-10-11）
 
+`say` 已在统一函数库内，`life` 默认全部能力组同时包含对话、移动、材料与计划工具，不需要第二个聊天后端。
+若已有NPC通过 `groups` 限制工具，向它原来的组列表追加 `"dialogue"`；不要把列表替换成只剩对话。
+模型经 `Abilities.command/4` 选择 `say`，树用同名 `act` 叶子；工具 schema 与完成语义以 `Dialogue.entries/0` 为唯一正文。
+例如模型调用 `say({"text":"你好，今天有什么打算？","target_id":51107598336,"conversation_id":null})` 开新话题；
+回复使用收到的真实 `conversation_id` 与对方身份，目标必须在权威可听范围内。NPC不需玩家先发话才可选择该能力。
+
+新增最小组合验证：`mix test --no-start test/gate_server/npc_life_registry_test.exs test/gate_server/npc_dialogue_world_test.exs`。
+它检查同一life工具表中的say/gather/move_to，并用两个真实Body/Runtime/Llm经Scene开场、回复、回到工作；
+模型与Hindsight为显式替身，因此这是接线证据，不冒充真实语言生成实验。累计预算与新实跑状态见[自主生活阶段](../../../../../docs/10-active/cross-cutting/2026-10-11-npc-autonomy.md)。
+
 `Dialogue.entries/0` 提供 `say{text,target_id,conversation_id}`，地址可空并译为0；范围、文本长度与发言间隔直接取
 `SceneServer.Dialogue.limits/0`。Body 复用原 FIFO 执行进程调用 `Movement.Scene.say/3`，不会等待接纳而停止移动输入。
 Body 自己分配递增请求号，不把任意 term 命令 id 当线序号。拒绝回统一 Outcome；未接纳的文字不进入对话或 Life。

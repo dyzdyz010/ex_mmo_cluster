@@ -6,6 +6,142 @@ defmodule GateServer.NpcDialogueWorldTest do
   alias GateServer.Npc.{Body, Life, Memory}
   alias GateServer.NpcWorld
 
+  defmodule CachedHindsight do
+    @moduledoc "只测试：四份缓存与一次召回替身；不向外部服务发送请求。"
+    def ensure(_, _), do: {:ok, %{}}
+
+    def models(_),
+      do:
+        {:ok,
+         %{
+           models: Map.new(~w(self relationships world commitments), &{&1, "test memory"}),
+           metadata: %{}
+         }}
+
+    def refresh(config), do: models(config)
+    def status(_), do: {:ok, %{stats: %{}, usage: %{}}}
+    def recall(_, _, _), do: {:ok, %{results: [], latency_ms: 0}}
+    def retain(_, fragments), do: {:ok, %{retained: length(fragments)}}
+  end
+
+  @tag timeout: 30_000
+  test "two life brains can initiate and reply through say without a player and return to work" do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 700_000
+    peer = cid + 1
+    owner = self()
+
+    profile = fn limit ->
+      %{
+        goal: "照料家园，可以主动与邻居交谈，也可以继续工作或保持沉默",
+        tools: %{1 => "镐"},
+        skills: %{gather: %{}, travel: %{}},
+        life: %{hindsight: CachedHindsight, poll_ms: 30, url: "http://memory.test.invalid"},
+        endpoint: %{model: "test"},
+        max_requests_per_hour: limit,
+        request: fn _, body ->
+          speaker = Jason.decode!(body.input)["self"]["entity_id"]
+          send(owner, {:decision, speaker, self(), body})
+
+          receive do
+            {:answer, tool, args} ->
+              {:ok,
+               %{
+                 "output" => [
+                   %{
+                     "type" => "function_call",
+                     "name" => tool,
+                     "arguments" => Jason.encode!(args)
+                   }
+                 ]
+               }}
+          end
+        end
+      }
+    end
+
+    %{body: first, sup: sup} =
+      NpcWorld.body(fixture, {GateServer.Npc.Brain.Llm, profile.(3)}, cid: cid)
+
+    {:ok, second} =
+      DynamicSupervisor.start_child(
+        sup,
+        {Body,
+         [
+           cid: peer,
+           scene_id: 1,
+           spawn: {6.0, 66.0, 10.0},
+           claims: fixture.claims,
+           route_module: NpcWorld.Route,
+           brain: {GateServer.Npc.Brain.Llm, profile.(2)}
+         ]}
+      )
+
+    NpcWorld.await(fn ->
+      Body.observe(first).position != nil and Body.observe(second).position != nil
+    end)
+
+    assert_receive {:decision, ^cid, ask_first, input_first}, 3000
+    assert_receive {:decision, ^peer, ask_peer, _}, 3000
+    assert Jason.decode!(input_first.input)["heard"] == []
+
+    assert Enum.all?(
+             ~w(say gather move_to),
+             &(&1 in Enum.map(input_first.tools, fn t -> t.name end))
+           )
+
+    send(ask_peer, {:answer, "wait", %{"seconds" => 120}})
+
+    send(
+      ask_first,
+      {:answer, "say",
+       %{"text" => "我准备检查材料，你有什么想法？", "target_id" => peer, "conversation_id" => nil}}
+    )
+
+    assert_receive {:decision, ^peer, reply_peer, input_peer}, 4000
+
+    assert [%{"speaker_id" => ^cid, "target_id" => ^peer, "conversation_id" => conversation}] =
+             Jason.decode!(input_peer.input)["heard"]
+
+    send(
+      reply_peer,
+      {:answer, "say",
+       %{"text" => "先核对库存，再决定采多少。", "target_id" => cid, "conversation_id" => conversation}}
+    )
+
+    NpcWorld.await(fn ->
+      length(Body.observe(first).dialogue) == 2 and length(Body.observe(second).dialogue) == 2
+    end)
+
+    spoken = Body.observe(first).dialogue
+    assert [{^cid, 1}, {^peer, 2}] = Enum.map(spoken, &{&1.speaker_id, &1.turn})
+    assert Enum.all?(spoken, &(&1.conversation_id == conversation and &1.speaker_kind == 1))
+    assert Body.observe(second).dialogue == spoken
+
+    assert Enum.any?(
+             Body.observe(first).outcomes,
+             &match?(%{id: 1, verb: :say, status: :done}, &1)
+           )
+
+    assert Enum.any?(
+             Body.observe(second).outcomes,
+             &match?(%{id: 2, verb: :say, status: :done}, &1)
+           )
+
+    assert_receive {:decision, ^cid, after_saying, _}, 3000
+    send(after_saying, {:answer, "wait", %{"seconds" => 120}})
+    assert_receive {:decision, ^cid, back_to_work, input_work}, 4000
+    assert Enum.any?(Jason.decode!(input_work.input)["heard"], &(&1["speaker_id"] == peer))
+    send(back_to_work, {:answer, "query_balances", %{}})
+
+    NpcWorld.await(fn ->
+      Enum.any?(
+        Body.observe(first).outcomes,
+        &match?(%{id: 3, verb: :query_balances, status: :done}, &1)
+      )
+    end)
+  end
+
   defmodule Spy do
     def init(profile), do: profile
 

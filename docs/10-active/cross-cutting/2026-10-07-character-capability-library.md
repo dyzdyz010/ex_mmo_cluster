@@ -1,5 +1,7 @@
 # 角色能力函数库（决策稿）
 
+**2026-10-11 当前增量**：`say` 已成为 `Dialogue.entries/0` 的正式 `:dialogue` 条目，统一并入 `Abilities.entries/tools/command`，由 LLM 与行为树共用，玩家/NPC在同一 Scene 权威通道发言。默认 `life` 档案同时获得说话与生活能力；显式配置 `groups` 时须包含 `"dialogue"`。本稿 I2 的 stub、不投影与 Hello39 描述保留为当时范围，当前聊天/Hello40事实见[对话阶段](2026-10-11-npc-dialogue.md)，新的无玩家触发双脑接线验证见[自主生活阶段](2026-10-11-npc-autonomy.md)。
+
 分类：**Global system**，决策稿。状态：**I1–I4 已实现并提交（b363f122、33377ad2、60f01c75、c727418f，合并 6b95d110）；最终实跑已做（本地 Demo + 真实双客户端，判据 6/6，见 §14）；实跑暴露的三处缺陷已修复并有红绿回归；24 h 长跑未做；“往世界里放 NPC”阶段见 [放置阶段决策稿](2026-10-08-npc-placement-phase.md)（NPC 注册表与重启恢复 M1、创世能力组 `:genesis` M2 已实现待提交；正式服取料规则未定）**。
 
 - 基线：服务端 master `f94a3d72`（worktree `ex_mmo_cluster-capabilities`，分支 `capability-library-20261007`）；Voxim `main` `b40f922c`。下文行号都按基线。
@@ -253,7 +255,6 @@ handle :: %{granularity: 0..3 | 5, micro: {x, y, z}, incarnation: non_neg_intege
 
 | 能力 | 原因 |
 |---|---|
-| say | 用户已批准的聊天 stub（F14）：Body 的命令与 `{:heard,…}` 形状保留，只是不投影给 LLM、不成为条目 |
 | publish_prefab | 玩家经 0x71 → Intent；NPC 只在 design_house 内经 `PrefabDesigner.publish/3`，门禁经 refresh 生效（F12），没有 Body 动词 |
 | cancel_skill | Runtime 命令，不经 Abilities；技能执行期间 LLM 不被询问（llm.ex:301-305） |
 | wait | 只在 LLM 适配器内（本地计时）；树有自己的 `wait` 节点 |
@@ -473,7 +474,7 @@ tree  = {:repeat, :forever, {:seq, [{:succeed, round, log: "npc_settler_idle"},
 | 工具表 | `Abilities.tools(profile) ++ [wait]`：通过 groups 与授予条件的条目投影为 `%{type: "function", name, description: description <> " 完成：" <> done, parameters: schema, strict: true}`，按 `entries/1` 固定顺序。schema 只依赖 profile（工具带、技能配置、groups、spells），不依赖余额等观察状态 |
 | strict（D-2） | I2 开工前对当前代理做一次 strict 工具的 live 请求（只一次）。不支持就退回 `strict: false`，schema 与本地 decode 保留，不静默降级。**2026-10-08 已预检**：一个 strict:true 函数（字符串 / 整数枚举、`type: [t, "null"]`、定长数组 minItems·maxItems、嵌套 object）HTTP 200，代理回显 `strict: true`，模型按 schema 调用（null 处写 null）→ 投影 `strict: true` |
 | 枚举与必填 | 全部属性进 required，可空用 null；kind / axis / op / what 改字符串枚举，tool_id 用工具带整数枚举 |
-| 不投影 | `say`（stub 保留）、`cancel_skill`、g5 句柄 |
+| 不投影 | `cancel_skill`、g5 句柄；`say` 已于2026-10-11纳入 `:dialogue`（见页首） |
 | 数量（D-3） | Demo LLM NPC groups `[:move, :sense, :act, :build, :memory, :skill]`：16 个条目 + wait + 已配置技能，约 20；现状约 31 + 技能。Attention 13 个动词不在投影层合并，靠分组裁剪 |
 | 译码 | `Responses.function_calls/1` → wait 本地处理 → `Abilities.command/4`；`unknown_tool` / `invalid_tool_arguments` 本地回报并附原调用，不发给 Body |
 | 描述 | 数字由常量插值：`Perception.reach/0`、Perception 的 `@cells`、`NpcMemory.limits/0`、`Actions.tolerance/0`；射程与间隔写“见 read_catalog tools”。删除“镐 = 攻击”与已退役电路安装 / 投料说明（actions.ex:56-57、brain.ex:74-75；w/tools.ex:150-152 已回 `:retired_tool`） |
@@ -649,7 +650,7 @@ end
 
 | 项 | 原因 |
 |---|---|
-| 正式聊天与 say 投影（G14） | 先做玩家正式版，NPC 再接同一通道；stub 保留不投影 |
+| 正式聊天与 say 投影（G14，已退出“不做”范围） | 2026-10-11已由对话阶段交付玩家/NPC公共通道与函数库条目，见页首；原I2不承担该工作 |
 | 技能发布改走 Body、`publish_prefab` 动词、删 `PrefabDesigner.publish/3` | 门禁已经由 refresh 生效（F4、F12）；唯一收益是 settle，发布无 seq、不扣料 |
 | 退出原因分类、`world_call_failed`、故障注入 | 没有复现；长跑证明重启有害再加 |
 | reactive / parallel 节点、通用 BT 编辑器、GOAP、Utility 打分、Smart Object 预约 | 当前唯一树 Settler 不需要；多 NPC 抢工地真实复现后再做预约 |
