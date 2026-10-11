@@ -4,6 +4,11 @@ defmodule GateServer.NpcMemoryTest do
   alias GateServer.Npc.{Abilities, Memory}
   alias DataService.NpcMemory
 
+  defmodule RejectedWrite do
+    defdelegate get(cid, kind, key), to: DataService.NpcMemory
+    def put(_, _, _, _), do: {:error, :write_denied}
+  end
+
   setup_all do
     MmoTest.Database.start!()
     :ok
@@ -12,6 +17,56 @@ defmodule GateServer.NpcMemoryTest do
   setup do
     DataService.Repo.delete_all("npc_memories")
     :ok
+  end
+
+  test "失败调用跨进程保留且不被感知和普通笔记淘汰，同调用覆盖、角色隔离" do
+    rejected = %{
+      id: 16,
+      verb: :move_to,
+      status: :rejected,
+      reason: :no_path,
+      data: %{seq: 46},
+      command: %{name: "move_to", arguments: %{"x" => 69.5, "y" => 417, "z" => -516.5}}
+    }
+
+    assert :ok = Memory.record_failure(NpcMemory, 701, rejected)
+    assert :ok = Memory.record_failure(NpcMemory, 701, %{rejected | id: 18, data: %{seq: 48}})
+    for n <- 1..201, do: NpcMemory.put(701, "note", "passing#{n}", %{"text" => "observation"})
+    context = Task.async(fn -> Memory.working_context(NpcMemory, 701) end) |> Task.await()
+    assert [failure] = context.recent_failures
+    assert failure["reason"] == "no_path"
+    assert failure["data"] == %{"seq" => 48}
+    assert failure["command"]["arguments"]["y"] == 417
+    assert failure["at"] != nil
+    refute Map.has_key?(failure, "id")
+    assert Memory.working_context(NpcMemory, 702).recent_failures == []
+    assert :ok = Memory.record_failure(NpcMemory, 701, %{rejected | status: :done, reason: nil})
+    assert Memory.working_context(NpcMemory, 701).recent_failures == [failure]
+  end
+
+  test "失败历史最多八种调用，写失败显式且不抹掉旧记录" do
+    for x <- 1..9 do
+      assert :ok =
+               Memory.record_failure(NpcMemory, 701, %{
+                 status: :rejected,
+                 reason: :no_path,
+                 command: %{name: "move_to", arguments: %{"x" => x}},
+                 data: nil
+               })
+    end
+
+    failures = Memory.working_context(NpcMemory, 701).recent_failures
+    assert Enum.map(failures, & &1["command"]["arguments"]["x"]) == Enum.to_list(9..2)
+
+    assert {:error, {:memory_unavailable, :write_denied}} =
+             Memory.record_failure(RejectedWrite, 701, %{
+               status: :rejected,
+               command: %{name: "move_to"},
+               reason: :no_path,
+               data: nil
+             })
+
+    assert Memory.working_context(NpcMemory, 701).recent_failures == failures
   end
 
   defmodule FailedStore do

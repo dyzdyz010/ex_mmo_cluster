@@ -8,6 +8,7 @@ defmodule GateServer.Npc.Memory do
   @text_limit 1500
   # search_memory 一次最多返回的条数。
   @matches 5
+  @failures 8
 
   @doc "记忆条目（group :memory，顺序固定）；条目形状见 `GateServer.Npc.Abilities`，长度在 `execute/4` 校验。"
   def entries,
@@ -115,20 +116,57 @@ defmodule GateServer.Npc.Memory do
   @doc "现读唯一当前意图及五条近期笔记，不做相关性检索；读取失败不冒充没有计划。"
   def working_context(memory, cid) do
     case storage(fn ->
-           case memory.get(cid, "intention", "current") do
-             {:error, reason} ->
-               {:error, {:memory_unavailable, reason}}
-
-             plan ->
-               {:ok,
-                %{
-                  current_plan: plan,
-                  recent_notes: Enum.map(memory.recent_notes(cid, 5), &dated/1)
-                }}
+           with {:ok, plan} <- get(memory, cid, "current"),
+                {:ok, failures} <- get(memory, cid, "failures") do
+             {:ok,
+              %{
+                current_plan: plan,
+                recent_failures: failure_entries(failures),
+                recent_notes: Enum.map(memory.recent_notes(cid, 5), &dated/1)
+              }}
            end
          end) do
       {:ok, context} -> context
       {:error, reason} -> %{working_memory_error: reason}
+    end
+  end
+
+  @doc "保存最近八种被拒调用的历史证据；不限制未来动作、不把过去失败当作当前世界真值。"
+  def record_failure(memory, cid, %{status: :rejected, command: _} = outcome) do
+    storage(fn ->
+      with {:ok, previous} <- get(memory, cid, "failures") do
+        failure =
+          outcome
+          |> Map.take([:command, :reason, :data])
+          |> Map.put(:at, DateTime.to_iso8601(DateTime.utc_now()))
+          |> GateServer.Npc.Context.plain()
+          |> Jason.encode!()
+          |> Jason.decode!()
+
+        # command 是 Llm 在发出时保存的工具与实参，不包含本次进程的调用号。
+        failures = [
+          failure | Enum.reject(failure_entries(previous), &(&1["command"] == failure["command"]))
+        ]
+
+        case memory.put(cid, "intention", "failures", %{
+               "entries" => Enum.take(failures, @failures)
+             }) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:memory_unavailable, reason}}
+        end
+      end
+    end)
+  end
+
+  def record_failure(_memory, _cid, _outcome), do: :ok
+
+  defp failure_entries(nil), do: []
+  defp failure_entries(%{"entries" => entries}), do: entries
+
+  defp get(memory, cid, key) do
+    case memory.get(cid, "intention", key) do
+      {:error, reason} -> {:error, {:memory_unavailable, reason}}
+      value -> {:ok, value}
     end
   end
 

@@ -61,7 +61,8 @@ defmodule GateServer.Npc.Perception do
         description:
           "勘察一片地的高低（地表高度图）：整数列闭区间 (x0,z0)–(x1,z1)，1 列 = 1×1 米，每边最多 #{@columns} 列、各边离自己不超过 #{@reach} 米；" <>
             "竖直只看自己所在高度上下 #{@reach} 米。每列的地表 = 扫描范围里最高的、上面站得下自己的实心格 y（站在上面时脚所在的格是 y + 1；" <>
-            "花草、液体、细化格都不是地面，花草长在地面上方）。rows 按 z 从 z0 到 z1 排，每行按 x 从 x0 到 x1：[y, material]，" <>
+            "花草、液体、细化格都不是地面，花草长在地面上方）。rows 按 z 从 z0 到 z1 排，每行按 x 从 x0 到 x1：[ground_y, material, move_to_y]，" <>
+            "移动时直接使用第三项 move_to_y，不要把第一项实心地表当作脚所在空气格；" <>
             "null = 扫描范围里这一列没有站得下的地面（水面、被细化格或悬空物压着、整列空气或实心、在范围外）。" <>
             "placed 列出地表格有放置者的列 [x, z, 放置者 entity_id]，refined 列出扫描范围里含细化格（micro 构件，多半是谁的建筑）的列 [x, z]。" <>
             "看地势、核对整平、找落脚点用它：一次看整片，比分层 look 省；要知道某几格具体是什么再用 look。",
@@ -446,6 +447,7 @@ defmodule GateServer.Npc.Perception do
     data =
       Map.take(outcome.data, [:seq, :bounds_columns_inclusive, :scanned_y, :outside])
       |> Map.merge(%{
+        row_fields: [:ground_y, :material, :move_to_y],
         rows: for(z <- z0..z1, do: for(x <- x0..x1, do: height(at[{x, z}]))),
         placed: for(%{placed_by: by, column: column} <- columns, by != nil, do: column ++ [by]),
         refined: for(%{refined: true, column: column} <- columns, do: column)
@@ -513,7 +515,7 @@ defmodule GateServer.Npc.Perception do
   def project(outcome, outcomes, _position), do: [outcome | outcomes]
 
   defp height(%{y: nil}), do: nil
-  defp height(%{y: y, material: material}), do: [y, material]
+  defp height(%{y: y, material: material}), do: [y, material, y + 1]
 
   # 目标句柄：0x7D 的身份字段 + 方向（inspect 行没有方向，为 nil，Body 按句柄从眼点瞄准）。
   defp target(row),

@@ -498,8 +498,8 @@ defmodule GateServer.Npc.Body do
              }
          }}
 
-      :no_path ->
-        {:noreply, reject_move(state, :no_path)}
+      {:no_path, diagnostic} ->
+        {:noreply, reject_move(state, :no_path, diagnostic)}
 
       # 取盒时会话的 Player 已退出（执行进程的退出规则）。
       {:error, reason} ->
@@ -891,7 +891,11 @@ defmodule GateServer.Npc.Body do
           radius: profile.radius
         }
 
-        send(state.worker, {:plan, self(), id, Map.take(state, [:player, :world_ref, :cid]), plan})
+        send(
+          state.worker,
+          {:plan, self(), id, Map.take(state, [:player, :world_ref, :cid]), plan}
+        )
+
         move(state, move)
     end
   end
@@ -1076,7 +1080,7 @@ defmodule GateServer.Npc.Body do
     end)
   end
 
-  defp reject_move(%{move: move} = state, reason) do
+  defp reject_move(%{move: move} = state, reason, data \\ nil) do
     Logger.warning(
       "npc_move_rejected cid=#{state.cid} reason=#{reason} position=#{inspect(state.position)} target=#{inspect(move.target)} path=#{inspect(move.path)}"
     )
@@ -1086,7 +1090,7 @@ defmodule GateServer.Npc.Body do
       verb: move.verb,
       status: :rejected,
       reason: reason,
-      data: nil
+      data: data
     })
   end
 
@@ -1135,7 +1139,9 @@ defmodule GateServer.Npc.Body do
         world_calls()
 
       {:plan, body, id, session, plan} ->
-        result = session_call(session, {:error, :session_lost}, fn -> plan_path(session, plan) end)
+        result =
+          session_call(session, {:error, :session_lost}, fn -> plan_path(session, plan) end)
+
         send(body, {:npc_path, id, result})
         world_calls()
     end
@@ -1167,8 +1173,10 @@ defmodule GateServer.Npc.Body do
     # 能踩（:solid）、能穿过（:open）只用 Perception.walk_kind/1 一个判据（与碰撞同源）；既不能踩也不能穿过的格（液体、
     # 细化格）不进表。原先只有空气算 :open，站进草 / 蕨格的 NPC 起点就是实心（2026-10-08 run03）；细化格原先当作占满、
     # 可踩：建设者被规划去踩 1/8 米的面板顶，落进面板格里（2026-10-08 run06）。
+    snapshot = World.material_snapshot(session.world_ref, [session.cid], cells)
+
     grid =
-      for row <- World.material_snapshot(session.world_ref, [session.cid], cells).probe_occupancy,
+      for row <- snapshot.probe_occupancy,
           kind <- [Perception.walk_kind(row)],
           kind != nil,
           into: %{},
@@ -1176,9 +1184,24 @@ defmodule GateServer.Npc.Body do
 
     # 起点是身体的权威位置：落不到站立格（站在细化格空着的部分或它上面）也从这里出发，不因网格保守而判成哪儿都去不了
     # （run06：起点是自己放的面板格，对任何目标 no_path，建设者两次永久卡死）。
-    with {:ok, cells} <-
-           Path.find(grid, start, goal, goal_y, plan.step, plan.height, trusted_start: true),
-         do: {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
+    case Path.find(grid, start, goal, goal_y, plan.step, plan.height, trusted_start: true) do
+      {:ok, cells} ->
+        {:ok, Path.smooth(grid, plan.from, sy, cells, target, plan.radius, plan.height)}
+
+      :no_path ->
+        # 只用本次寻路快照解释拒绝，不重查世界、不另算一条替代路径。
+        {:no_path,
+         %{
+           seq: snapshot.seq,
+           start: start,
+           goal: {gx, goal_y, gz},
+           goal_position:
+             if(goal_y != nil, do: Path.position(grid, {gx, goal_y, gz}, plan.height))
+         }}
+
+      error ->
+        error
+    end
   end
 
   # 返回 {结果, 余额}；余额 nil = 这次不重取。
@@ -1187,7 +1210,8 @@ defmodule GateServer.Npc.Body do
     {{:ok, %{balances: balances}}, balances}
   end
 
-  defp execute(session, {:sight, query}, _ingress), do: {Sight.read(session.world_ref, query), nil}
+  defp execute(session, {:sight, query}, _ingress),
+    do: {Sight.read(session.world_ref, query), nil}
 
   # 创世编辑：与 0x78 后门同一个 World 入口（不扣料、不记 placed_by），余额不变、不重取。
   defp execute(session, {:genesis, edits}, _ingress) do
@@ -1200,8 +1224,9 @@ defmodule GateServer.Npc.Body do
     {result, nil}
   end
 
-  defp execute(session, call, _ingress) when elem(call, 0) in [:look, :survey, :inspect, :catalog],
-    do: {Perception.read(session.world_ref, session.cid, call), nil}
+  defp execute(session, call, _ingress)
+       when elem(call, 0) in [:look, :survey, :inspect, :catalog],
+       do: {Perception.read(session.world_ref, session.cid, call), nil}
 
   # 取消前摇（0x82 action 2）：与玩家同一个同步入口 Player.spell/4，角色 owner 撤销后回 :controlled。
   defp execute(session, {:voxel_spell_intent, request}, ingress) do

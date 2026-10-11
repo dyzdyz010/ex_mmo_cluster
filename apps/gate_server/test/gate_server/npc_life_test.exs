@@ -78,11 +78,93 @@ defmodule GateServer.NpcLifeTest do
     def search(_, _, _), do: raise("life decision must not perform lexical retrieval")
     defdelegate get(cid, kind, key), to: DataService.NpcMemory
     defdelegate recent_notes(cid, limit), to: DataService.NpcMemory
+    defdelegate put(cid, kind, key, value), to: DataService.NpcMemory
   end
 
   setup_all do
     MmoTest.Database.start!()
     :ok
+  end
+
+  test "Life Llm 的真实路径拒绝进入下一轮和重启后的失败历史" do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 100_000
+    owner = self()
+
+    profile = %{
+      goal: "care for construction",
+      tools: %{},
+      memory: NoLexical,
+      life: %{hindsight: Hindsight, owner: owner, poll_ms: 30, url: "http://life.test.invalid"},
+      endpoint: %{model: "test"},
+      max_requests_per_hour: 2,
+      request: fn _, body ->
+        send(owner, {:failure_context, self(), Jason.decode!(body.input)})
+
+        receive do
+          {:reply, name, args} ->
+            {:ok,
+             %{
+               "output" => [
+                 %{"type" => "function_call", "name" => name, "arguments" => Jason.encode!(args)}
+               ]
+             }}
+        end
+      end
+    }
+
+    %{body: body} = NpcWorld.body(fixture, {GateServer.Npc.Brain.Llm, profile}, cid: cid)
+    assert_receive {:failure_context, first, _}, 10_000
+    send(first, {:reply, "move_to", %{x: 7.5, z: 10.5, y: 63}})
+    assert_receive {:failure_context, second, input}, 10_000
+    assert [failure] = input["recent_failures"]
+
+    assert failure["command"] == %{
+             "tool" => "move_to",
+             "args" => %{"x" => 7.5, "z" => 10.5, "y" => 63}
+           }
+
+    assert failure["reason"] == "no_path"
+    assert failure["data"]["goal_position"]["standable"] == false
+    send(second, {:reply, "wait", %{seconds: 3600}})
+    old_life = :global.whereis_name({Life, node(), cid})
+    ref = Process.monitor(old_life)
+    Process.exit(body, :kill)
+    assert_receive {:DOWN, ^ref, _, _, _}, 5000
+    assert_receive {:failure_context, restored, input}, 10_000
+    assert input["recent_failures"] == [failure]
+    send(restored, {:reply, "wait", %{seconds: 3600}})
+  end
+
+  test "地表格误用为脚层时返回同次寻路诊断，正确脚层仍可抵达" do
+    {_fixture, body, _cid} = start()
+
+    NpcWorld.await(fn ->
+      case Body.observe(body).position do
+        {_, y, _} -> abs(y - 64.91) < 0.02
+        _ -> false
+      end
+    end)
+
+    Body.command(body, %{
+      id: :ground,
+      verb: :move_to,
+      position: {7.5, 10.5},
+      y: 63,
+      tolerance: 0.5
+    })
+
+    rejected =
+      NpcWorld.await(fn -> Enum.find(Body.observe(body).outcomes, &(&1.id == :ground)) end)
+
+    assert %{status: :rejected, reason: :no_path, data: data} = rejected
+    assert data.goal == {7, 63, 10}
+    assert data.goal_position == %{standable: false, landed: nil}
+    assert is_integer(data.seq)
+
+    Body.command(body, %{id: :above, verb: :move_to, position: {7.5, 10.5}, y: 64, tolerance: 0.5})
+
+    assert_receive {:life_outcome, %{id: :above, status: :done, data: %{settled: true}}}, 10_000
   end
 
   defp start(memory \\ DataService.NpcMemory, options \\ %{}) do

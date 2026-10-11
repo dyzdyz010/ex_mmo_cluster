@@ -141,7 +141,8 @@ defmodule GateServer.NpcSurveyTest do
                  bounds_columns_inclusive: [[0, 0], [1, 1]],
                  scanned_y: [60, 68],
                  outside: :unknown,
-                 rows: [[[63, @stone], [64, @stone]], [nil, nil]],
+                 row_fields: [:ground_y, :material, :move_to_y],
+                 rows: [[[63, @stone, 64], [64, @stone, 65]], [nil, nil]],
                  placed: [[1, 0, 7]],
                  refined: [[0, 1]]
                }

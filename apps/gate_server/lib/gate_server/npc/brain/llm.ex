@@ -251,6 +251,23 @@ defmodule GateServer.Npc.Brain.Llm do
     {call, calls} = Map.pop(state.calls, outcome.id)
     outcome = if call, do: Map.put(outcome, :command, call), else: outcome
 
+    outcome =
+      if Map.has_key?(state.profile, :life) and state.observation != nil do
+        case Memory.record_failure(state.memory, state.observation.self.entity_id, outcome) do
+          :ok ->
+            outcome
+
+          {:error, reason} ->
+            Logger.warning(
+              "npc_failure_memory_failed cid=#{state.observation.self.entity_id} reason=#{inspect(reason)}"
+            )
+
+            Map.put(outcome, :memory_error, reason)
+        end
+      else
+        outcome
+      end
+
     %{
       state
       | calls: calls,
@@ -391,6 +408,8 @@ defmodule GateServer.Npc.Brain.Llm do
            "新获知的约定、计划、重要经验用 remember 保存或更新；recall 按键读，search_memory 按内容找，中文可换短关键词。"},
           {~w(set_plan),
            "current_plan 是你跨轮次保留的当前意图。用 set_plan 自行制定或修订可继续推进的计划；遇到新观察与旧假设冲突时调整，保留尚有效的长期目的。只有权威 Outcome 才能证明动作完成；完成或放弃后更新或清除旧计划，勿反复执行已完成步骤。"},
+          {[],
+           "recent_failures 是跨轮次保留的最近被拒调用与当时原因，不是当前禁令或世界真值。不要原样重复已失败的调用；先观察原因涉及的前提，只有它已改变或调用参数已纠正才再尝试。无法推进时保留目的并记录阻塞原因、等待条件，不空转查询。"},
           {[], "能力以本次 tools 参数表为准。"},
           {~w(design_house build), "设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。"}
         ],

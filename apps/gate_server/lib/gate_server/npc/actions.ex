@@ -49,7 +49,7 @@ defmodule GateServer.Npc.Actions do
           "走到水平坐标 (x, z)，自动寻路：会绕开障碍、按 self.body.move_to.max_step_macro 上台阶、从高处落下，但不会跳，也不进液体；" <>
             "单程水平不超过 #{reach} 米。同一处上下有几层能站时用 y 指定站立格（脚所在的那个空气格，整数），" <>
             "y 与脚所在格相差不超过 #{reach} 格，不指定写 null；不指定时只在脚下上下 #{GateServer.Npc.Body.path_margin()} 格内找路，" <>
-            "目标比这更高或更低就给 y（用 survey 看目标列的地表 y，站立格是 y + 1）。" <>
+            "目标比这更高或更低就给 y（直接用 survey 的 move_to_y，勿用 ground_y）。" <>
             "超出这些距离回 too_far；走不通会被拒绝：no_path = 现在没有路，" <>
             "stuck = 路上被堵住了，再调用一次会按现在的世界重新找路。",
         done:
