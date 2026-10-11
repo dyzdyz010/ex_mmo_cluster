@@ -77,3 +77,5 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 只能在已由 `demo.py` 建立的本轮独立服务运行，输出在 `.demo/observe/npc-long-horizon-20261011/`，拒绝覆盖旧运行。
 `decision_trace.exs` 只保存无凭证请求体、工具响应和 usage；key 始终留在进程环境。
 验收边界及失败保留见 `docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md`。
+
+续验最终证据：`.demo/observe/npc-long-horizon-20261011/final-01/manifest.json`。原驱动`0843fa0e`的真实22决策（13个Body done、2个no_path、7个本地wait）、双端4笔事务及计划修订可用`audit-01/verify.py`离线对账。6组配对只证明组合自传上下文影响合作意向，未执行合作动作；30天只用受控服务端时钟，非连续模型挂机。模型自写计划/笔记及心智在完整服务冷重启后严格保留。失败门禁修复`4b06b564`只做离线反例与驱动接线验证，实跑证据版本不改写。
