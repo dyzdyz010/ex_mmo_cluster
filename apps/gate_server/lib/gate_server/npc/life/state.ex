@@ -29,6 +29,7 @@ defmodule GateServer.Npc.Life.State do
   @doc """
   按权威顺序消费新操作，返回 canonical 事件态和可批量写入记忆的英文经历。
   重复序号不评价；情绪在事件时刻衰减与饱和，消费分批方式不影响结果。
+  每条经历直接标注权威 at_ms 对应的 UTC ISO8601 毫秒时刻，原始事件身份与时间不变。
   now_ms 保留调用接口，但轮询时刻不写回事件锚；当前情绪请读取 view(state, now_ms)。
   """
   def advance(state, events, cursor, _now_ms) do
@@ -188,13 +189,14 @@ defmodule GateServer.Npc.Life.State do
     verb = if reaction == :damage, do: "damaged", else: "repaired"
     feeling = if reaction == :damage, do: "angry", else: "grateful"
     {x, y, z} = event.cell
+    at_utc = event.at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
 
     episode = %{
       "id" => state["world_id"] <> ":" <> to_string(event.seq),
       "seq" => event.seq,
       "at_ms" => event.at_ms,
       "text" =>
-        "At #{event.at_ms} ms, Actor #{event.actor} #{verb} construction I care about " <>
+        "At #{at_utc} (UTC), Actor #{event.actor} #{verb} construction I care about " <>
           "at (#{x}, #{y}, #{z}), material #{event.material}, in world #{state["world_id"]} " <>
           "(transaction #{event.seq}). I feel #{feeling} toward this actor; my trust changed."
     }

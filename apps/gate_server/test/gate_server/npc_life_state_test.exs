@@ -21,6 +21,26 @@ defmodule GateServer.NpcLifeStateTest do
     %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
   end
 
+  test "每条伤害与帮助经历直接给出权威 UTC 毫秒时刻并保留事件身份" do
+    events = [
+      event(6, :damage, 11, at_ms: 1_791_698_780_067),
+      event(22, :build, 12, at_ms: 1_791_699_081_234, placed_by: nil)
+    ]
+
+    {_, [damage, help]} = State.advance(new(), events, 22, 1_791_699_120_000)
+
+    assert damage["text"] =~ "2026-10-11T06:06:20.067Z (UTC)"
+    assert help["text"] =~ "2026-10-11T06:11:21.234Z (UTC)"
+    refute damage["text"] =~ "1791698780067 ms"
+    refute help["text"] =~ "1791699081234 ms"
+
+    assert Map.take(damage, ["id", "seq", "at_ms"]) ==
+             %{"id" => "world-a:6", "seq" => 6, "at_ms" => 1_791_698_780_067}
+
+    assert Map.take(help, ["id", "seq", "at_ms"]) ==
+             %{"id" => "world-a:22", "seq" => 22, "at_ms" => 1_791_699_081_234}
+  end
+
   test "伤害、修复、再次伤害分别归因，第三轮才缓慢漂移" do
     events = [
       event(1, :destroy, 11),
