@@ -5,6 +5,8 @@ defmodule GateServer.Npc.Life.State do
   输入消费 World 已排序的权威操作；状态全部使用 JSON 字符串键。关心格只是记忆，
   不作为当前几何真值。一次毁坏过程只评价首个 damage/destroy，同材料修复后重新计数。
   情绪按经过时间衰减，关系与谨慎不随时间恢复；各数值系数是本轮游戏设计参数。
+  canonical 状态只保留最近评价事件的情绪时刻锚，轮询时间不改锚。
+  当前衰减值由 view/2 派生，调用方不可将视图覆盖持久 canonical 状态。
   """
   @half_life_ms 120_000
   @emotion_threshold 0.1
@@ -24,24 +26,27 @@ defmodule GateServer.Npc.Life.State do
     }
   end
 
-  @doc "按权威顺序消费新操作，返回下一状态和可批量写入记忆的英文经历。重复序号不评价。"
-  def advance(state, events, cursor, now_ms) do
+  @doc """
+  按权威顺序消费新操作，返回 canonical 事件态和可批量写入记忆的英文经历。
+  重复序号不评价；情绪在事件时刻衰减与饱和，消费分批方式不影响结果。
+  now_ms 保留调用接口，但轮询时刻不写回事件锚；当前情绪请读取 view(state, now_ms)。
+  """
+  def advance(state, events, cursor, _now_ms) do
     {state, episodes} =
       Enum.reduce(events, {state, []}, fn event, {state, episodes} ->
         if event.seq <= state["cursor"] do
           {state, episodes}
         else
-          state = state |> view(event.at_ms) |> Map.put("cursor", event.seq)
+          state = Map.put(state, "cursor", event.seq)
           {state, episode} = appraise(state, event)
           {state, if(episode, do: [episode | episodes], else: episodes)}
         end
       end)
 
-    {state |> Map.put("cursor", max(cursor, state["cursor"])) |> view(now_ms),
-     Enum.reverse(episodes)}
+    {Map.put(state, "cursor", max(cursor, state["cursor"])), Enum.reverse(episodes)}
   end
 
-  @doc "按真实经过时间返回衰减视图；负时间差保持状态，不修改源状态或持久层。"
+  @doc "按真实经过时间返回衰减视图；负时间差不倒流。视图不修改源，不能回写为 canonical 状态。"
   def view(state, now_ms) do
     elapsed = max(0, now_ms - state["last_at_ms"])
     factor = :math.pow(0.5, elapsed / @half_life_ms)
@@ -82,8 +87,9 @@ defmodule GateServer.Npc.Life.State do
           source?(state, "gratitude", entity.entity_id) ->
             desired = max(1.0, distance - 3.0 * state["emotions"]["gratitude"])
             mode = if actual > desired, do: :thank, else: :work
+            priority = if mode == :thank, do: 1, else: 3
 
-            {1, -state["emotions"]["gratitude"], entity.entity_id,
+            {priority, -state["emotions"]["gratitude"], entity.entity_id,
              choice(mode, entity.entity_id, desired, state["evidence"]["gratitude"]["seq"])}
 
           actual < distance ->
@@ -146,6 +152,8 @@ defmodule GateServer.Npc.Life.State do
   end
 
   defp react(state, event, reaction) do
+    state = view(state, event.at_ms)
+
     {emotion, count_key, trust_change, drift} =
       case reaction do
         :damage -> {"anger", "damage_count", -0.35, 0.05}

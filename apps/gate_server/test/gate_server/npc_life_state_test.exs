@@ -241,4 +241,59 @@ defmodule GateServer.NpcLifeStateTest do
     assert helped["traits"]["caution"] == 0.0
     assert helped["relationships"]["12"]["trust"] == 1.0
   end
+
+  test "感谢已达距离不能遮蔽更近陌生人的谨慎动作" do
+    state =
+      new()
+      |> put_in(["emotions", "gratitude"], 0.6)
+      |> put_in(["evidence", "gratitude"], %{"actor" => 12, "seq" => 2})
+
+    mixed =
+      observation([
+        %{entity_id: 12, position: {1.0, 0.0, 0.0}},
+        %{entity_id: 13, position: {0.5, 0.0, 0.0}}
+      ])
+
+    choice = State.behavior(state, mixed, 0)
+    assert choice.mode == :cautious
+    assert choice.actor == 13
+    assert choice == State.behavior(state, %{mixed | entities: Enum.reverse(mixed.entities)}, 0)
+  end
+
+  test "相同延迟观察时刻消费历史batch和逐条消费状态与片段相同" do
+    first = event(1, :destroy, 11)
+    second = event(2, :destroy, 11, at_ms: 120_000, cell: {2, 2, 3})
+    {batch, episodes} = State.advance(new(), [first, second], 2, 240_000)
+    {partial, first_episodes} = State.advance(new(), [first], 1, 240_000)
+    {linear, second_episodes} = State.advance(partial, [second], 2, 240_000)
+    assert_in_delta State.view(batch, 240_000)["emotions"]["anger"], 0.45, 1.0e-12
+    assert_in_delta State.view(linear, 240_000)["emotions"]["anger"], 0.45, 1.0e-12
+    assert batch == linear
+    assert episodes == first_episodes ++ second_episodes
+  end
+
+  test "空轮询推进时间后旧事件不能被当作新鲜情绪" do
+    historical = event(1, :destroy, 11)
+    {idle, []} = State.advance(new(), [], 0, 120_000)
+    assert idle == new()
+    {late, late_episodes} = State.advance(idle, [historical], 1, 120_000)
+    {direct, direct_episodes} = State.advance(new(), [historical], 1, 120_000)
+    assert_in_delta State.view(late, 120_000)["emotions"]["anger"], 0.3, 1.0e-12
+    assert late == direct
+    assert late_episodes == direct_episodes
+  end
+
+  test "事件时刻饱和不依赖分批，轮询视图不回写canonical锚" do
+    first = event(1, :destroy, 11)
+    second = event(2, :destroy, 11, cell: {2, 2, 3})
+    {batch, episodes} = State.advance(new(), [first, second], 2, 120_000)
+    {partial, first_episodes} = State.advance(new(), [first], 1, 120_000)
+    {linear, second_episodes} = State.advance(partial, [second], 2, 120_000)
+    assert_in_delta State.view(batch, 120_000)["emotions"]["anger"], 0.5, 1.0e-12
+    assert_in_delta State.view(linear, 120_000)["emotions"]["anger"], 0.5, 1.0e-12
+    assert batch == linear
+    assert batch["last_at_ms"] == 0
+    assert batch["emotions"]["anger"] == 1.0
+    assert episodes == first_episodes ++ second_episodes
+  end
 end
