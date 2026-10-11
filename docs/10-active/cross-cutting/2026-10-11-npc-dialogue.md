@@ -55,7 +55,7 @@ flowchart LR
 7. 每个身份只缓存最近一次请求与结果，并维护请求高水位。相同 request_id/同内容返回原结果、不二次广播；同号不同内容拒绝 `request_conflict`；更旧号拒绝 `stale_request`。玩家/Body 不自动重试发言。会话重连即新身份。
 8. 沉默是合法选择：现有 wait/继续工作即可。没有台词即没有 Speech。结束由沉默、离开或轮数上限自然产生，不额外强制生成告别词。人格/情绪影响是否接近、接话与措辞；不能用一句赞美就改写既有伤害证据。
 
-## 线协议（待实现）
+## 线协议（已实现）
 
 复用 Session 的 M1 envelope（大端、domain=1），在既有 kind 14 后追加，不改变任何旧消息字段。新增 Hello 40，在两端与构建清单同步，旧 Hello 显式拒绝。
 
@@ -101,4 +101,9 @@ CLI 和 UMG 共用 `Say` 调用；日志 `dialogue.request/result/speech` 包含
 
 - 设计前已核对：旧 Body.say 恒拒 `chat_unavailable`；Abilities 不投影；Llm.heard 只置 dirty、不保留文本；无当前正式 UI/QUIC 对话契约。不能复用旧归档客户端聊天当完成品。
 - 已协调原自主生活会话冻结共享产品文件和 Demo；当前 release 为5b4cd58e，模型本轮未发起，累计外部 token1,243,611/2,000,000。
-- 本文目前仅设计完成；实现、真实模型、双端、持久记忆验收均未完成。
+- 用户已明确选择“附近公开交谈，可指定对象”。服务端首轮实现提交381f5388/6303a114/530c91c0；客户端隔离工作树 `C:/Users/DYZ/orca/workspaces/Voxim/npc-dialogue-20261011`，提交3594478a；尚未合并主树。
+- 分层证据：纯合同151项通过；Scene新规则与真实模块回归40项通过；NPC相关8文件88项通过；客户端独立构建及16项Session/Hello/对话边界测试通过。各自替身与覆盖边界见 `.demo/observe/npc-dialogue-20261011/{scene,npc}/` 与客户端 `Saved/Dialogue/`。这些不等于真实QUIC/模型/UMG完成。
+- 独立审查发现NPC说话调用超时的身体退出与技能中断提示来源漂移，两项正在用最小反例修复。用户端超时为 `delivery_unknown`；NPC沿用既有 `Outcome.status=rejected` 表示本次调用未获确认，必须看reason，不能把 `delivery_unknown` 当成Scene权威拒绝。未新增全局Outcome状态集合。
+- 双端驱动 `scripts/npc_dialogue/run.py`：保留本任务独占的长期世界与LifeBuilder历史，合法登记第二个NPC“松岚”，不改心智。两端使用正式登录、QUIC、生产地图与UMG；玩家只提出话题，两个life大脑各自决策，每个最多16请求。本轮模型使用量另加至1243611/2000000累计额度。初次UMG发言双端确认前，后续阶段与模型不启动；结束恢复无模型的settler后端。
+- 判定器先过8个离线最小用例，包含漏一笔、重复、错误角色/文本/收件人、超范围仍收到、错误request关联和缺失服务端收件人记录；不能以共有一条消息或回放退出成功当完整复制。
+- 本节最后更新时尚未启动真实模型与双端，正式Hindsight持久对话与重启验收仍待运行。
