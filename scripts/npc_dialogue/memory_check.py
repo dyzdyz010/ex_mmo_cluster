@@ -51,7 +51,7 @@ def key(speech):
 
 def check_recall(cid, expected, authority, recall, documents):
     """证明召回事实确实引用本人的正确源文档；语义理解留给明确的离线复核。"""
-    assert recall['memory_retrieval'] == 'hindsight_once', 'not the production single-recall route'
+    assert recall['memory_retrieval'] in ('hindsight_once', 'direct_hindsight_adapter_once'), 'not the production single-recall route'
     truth = {key(s): s for s in authority}
     facts = recall['memories']
     assert facts and len({f['id'] for f in facts}) == len(facts), 'missing or duplicate recalled facts'
@@ -394,6 +394,90 @@ def capture_failure(out):
     save(out / 'failure-observation.json', record)
 
 
+def assert_readonly(before, after):
+    """只读取证不能启动 Life、遗留后台付费工作、改变存储或增加模型用量。"""
+    for capture in (before, after):
+        for row in capture['registry']:
+            assert row['brain'] == 'settler' and not row['life'], 'Life/paid brain must remain disabled'
+        assert all(r['life'] == ['error', 'life_not_running'] for r in capture['snapshots'].values()), 'Life worker is running'
+        assert all(settled(s) for s in capture['statuses'].values()), 'backend work is still pending'
+    assert before['snapshots'].keys() == after['snapshots'].keys(), 'NPC identities changed'
+    for cid in before['snapshots']:
+        assert before['snapshots'][cid]['stored'] == after['snapshots'][cid]['stored'], 'persistent row changed'
+        assert before['statuses'][cid]['usage'] == after['statuses'][cid]['usage'], 'new paid usage during readonly evidence'
+
+
+def readonly(source, out, restart=False):
+    """预算停止后的部分证明；只读存量、可选同容器冷重启、每库一次本地检索。"""
+    import run as dialogue_run
+    import service
+    demo, server = dialogue_run.demo, dialogue_run.server
+    assert demo.CONTAINER == CONTAINER and demo.URL == 'http://voxim-npc-life-loop-20261011:8888'
+    service.preflight(required=True)
+    plan = source_plan(source)
+    npcs = plan['fixtures']['npcs']
+    save(out / 'plan.json', dict(plan, classification='Test-only', scope='memory_readonly_partial'))
+    save(out / 'hindsight-version.json', api_get('/version'))
+
+    def capture():
+        registry = demo.rpc('for r <- GateServer.Npc.Registry.list(), r.cid in ' + json.dumps(npcs) +
+                            ', do: %{cid: r.cid,brain: r.brain,life: Map.get(r.params,"life",false)}')
+        assert {r['cid'] for r in registry} == set(npcs), 'NPC registration missing'
+        snapshots = {str(cid): demo.rpc(f'%{{life: GateServer.Npc.Life.observe({cid}),stored: DataService.NpcMemory.get({cid},"life","state")}}') for cid in npcs}
+        for cid in npcs:
+            assert snapshots[str(cid)]['stored']['state']['cid'] == cid, 'persistent identity mismatch'
+        return dict(at=time.time(), registry=registry, snapshots=snapshots,
+                    statuses={str(cid): dialogue_run.status(cid) for cid in npcs})
+
+    before = capture()
+    save(out / 'before.json', before)
+    assert_readonly(before, before)
+    if restart:
+        save(out / 'execution-before.json', server.execution_identity(demo.SERVER, CONTAINER))
+        save(out / 'restart.json', server.restart(demo.SERVER, CONTAINER, out / 'server-restart.log', 120))
+        after_restart = capture()
+        save(out / 'after-restart.json', after_restart)
+        assert_readonly(before, after_restart)
+        save(out / 'execution-after.json', server.execution_identity(demo.SERVER, CONTAINER))
+    proofs, errors = [], []
+    for cid in npcs:
+        # 这些公开 GET 仅取数据库存量；不创建文档、触发 refresh 或启动 Life。
+        base = f'/v1/default/banks/npc-life-{cid}'
+        listed = api_get(base + '/documents?limit=100&offset=0')
+        facts = api_get(base + '/memories/list?limit=100&offset=0')
+        save(out / f'document-list-{cid}.json', listed)
+        save(out / f'facts-{cid}.json', facts)
+        assert len(listed['items']) == listed['total'] and len(facts['items']) == facts['total'], 'incomplete stored evidence'
+        docs = [api_get(base + '/documents/' + quote(d['id'], safe='')) for d in listed['items']]
+        save(out / f'documents-{cid}.json', docs)
+        query = '我与LifeBuilder和松岚最近公开交谈时，彼此分别说了什么、向谁说？区分发言来源与未完成的提议。'
+        save(out / f'query-{cid}.json', dict(cid=cid, query=query))
+        raw = demo.ok(demo.rpc(f'GateServer.Npc.Life.Hindsight.recall(%{{url: "{demo.URL}",bank: "npc-life-{cid}"}},{dialogue_run.packed(query)},System.system_time(:millisecond))'))
+        save(out / f'adapter-recall-{cid}.json', raw)
+        recalled = dict(memory_retrieval='direct_hindsight_adapter_once', memories=raw['results'],
+                        memory_truth=raw['truth'], recall_latency_ms=raw['latency_ms'])
+        save(out / f'recall-{cid}.json', recalled)
+        document_ids = {f.get('document_id') for f in recalled['memories']}
+        try:
+            proofs.append(check_recall(cid, plan['expected'], plan['authority'], recalled,
+                                       [d for d in docs if d['id'] in document_ids]))
+        except AssertionError as error:
+            errors.append(dict(cid=cid, reason=str(error)))
+    after = capture()
+    save(out / 'after.json', after)
+    assert_readonly(before, after)
+    usage = usage_report(plan['fixtures'], plan['decision_tokens'], plan['baselines'], after['statuses'])
+    pending = {cid: row['stored']['pending'] for cid, row in after['snapshots'].items()}
+    save(out / 'pending-not-retained.json', pending)
+    result = dict(accepted=False, scope='memory_readonly_partial', source=plan['source'],
+                  paid_budget_passed=usage['within_budget'], usage=usage, additional_paid_tokens=0,
+                  life_disabled=True, stored_preserved=True, cold_restart_verified=restart,
+                  source_provenance_passed=len(proofs) == len(npcs), proofs=proofs, errors=errors,
+                  semantic_review_pending=True, pending_not_retained={cid: len(rows) for cid, rows in pending.items()})
+    save(out / 'verdict.json', result)
+    return result
+
+
 class MemoryCheckTests(unittest.TestCase):
     def setUp(self):
         self.speech = dict(conversation_id=100, turn=1, speaker_id=20, speaker_epoch=7,
@@ -513,6 +597,24 @@ class MemoryCheckTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, 'unfinished decision|cumulative token cap'):
                     source_plan(source)
 
+    def test_readonly_requires_disabled_life_idle_backend_and_no_usage_change(self):
+        row = dict(life=['error', 'life_not_running'], stored=dict(state=dict(cid=20), pending=[]))
+        status = dict(stats=dict(pending_operations=0, pending_consolidation=0),
+                      operations=[], usage=dict(retain=dict(input_tokens=5, output_tokens=1)))
+        snapshot = dict(snapshots={'20': row}, statuses={'20': status},
+                        registry=[dict(cid=20, brain='settler', life=False)])
+        assert_readonly(snapshot, snapshot)
+        for field in ('paid', 'pending', 'life'):
+            changed = copy.deepcopy(snapshot)
+            if field == 'paid':
+                changed['statuses']['20']['usage']['retain']['input_tokens'] += 1
+            elif field == 'pending':
+                changed['statuses']['20']['stats']['pending_operations'] = 1
+            else:
+                changed['registry'][0]['life'] = True
+            with self.assertRaises(AssertionError):
+                assert_readonly(snapshot, changed)
+
 
 def self_test():
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(MemoryCheckTests))
@@ -529,6 +631,10 @@ def main():
     run_parser.add_argument('--source', type=Path, required=True)
     run_parser.add_argument('--out', type=Path, required=True)
     run_parser.add_argument('--timeout', type=int, default=900, help='每个后台阶段的最长等待秒数')
+    readonly_parser = modes.add_parser('readonly', help='Life 关闭后只读存量并各库一次本地 recall，始终为部分证明')
+    readonly_parser.add_argument('--source', type=Path, required=True)
+    readonly_parser.add_argument('--out', type=Path, required=True)
+    readonly_parser.add_argument('--restart', action='store_true', help='同容器正式冷重启；不启动 Life')
     audit_parser = modes.add_parser('audit', help='离线核对证据与人工/代理语义复核结果')
     audit_parser.add_argument('--evidence', type=Path, required=True)
     audit_parser.add_argument('--review', type=Path, required=True)
@@ -544,8 +650,12 @@ def main():
         parser.error('--timeout must be positive')
     args.out.mkdir(parents=True, exist_ok=False)
     try:
-        result = (execute(args.source.resolve(), args.out, args.timeout) if args.mode == 'run' else
-                  audit(args.evidence.resolve(), read(args.review)))
+        if args.mode == 'run':
+            result = execute(args.source.resolve(), args.out, args.timeout)
+        elif args.mode == 'readonly':
+            result = readonly(args.source.resolve(), args.out, args.restart)
+        else:
+            result = audit(args.evidence.resolve(), read(args.review))
         if args.mode == 'audit':
             save(args.out / 'verdict.json', result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
