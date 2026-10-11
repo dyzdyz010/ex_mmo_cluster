@@ -1,6 +1,6 @@
 # 一个 NPC 的经历、记忆、情绪与人格最小闭环
 
-> 全局系统功能 + Test-only 验收场景。状态：已实现、已实跑；已验收范围与限制见底部结果，最终整段独立审查待完成。
+> 全局系统功能 + Test-only 验收场景。状态：已实现、已实跑，最终代码审查修复已接入本轮 Demo；有限验收范围见末尾收口。约10分钟目标未达，不能称完整规格全部通过。
 > For agentic workers: REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 > 唯一产品规格：[NextLoop](../../../../Voxim/Docs/Gameplay/NpcEvolve/NextLoop.md)。用户 2026-10-11 授权自主推进到真实 Demo；本文细化工程接口，不改变交接结论。
 
@@ -155,7 +155,7 @@ flowchart LR
 
 Task5最小判定器8项通过，日志`validation/task-5-python.log`；最新判定完整重跑，证据路径均在`.demo/observe/npc-life-20261011/`。首次路径/有限材料/瞄准/时间污染/失配/部署wrapper用户readiness失败全部保留，不能称整次无失败。总manifest `final-01/manifest.json`、实际时长`final-01/client-durations.json`、详细报告`validation/task-5-report.md`。Task5不修改生产模块、不force-add观察或scratch、不merge/push；最终整段独立审查由控制器收口。
 
-当前状态：**已实现**正式人生组合与Test-only验收脚本；**已实跑**真实双端、唯一server/Hindsight冷重启、正确记忆及受限LLM；**已验收**权威/受控社会行为/重启后人格/模型语义/上下文接线，保留LLM因果未证明、目标时长未达与全部失败记录。最终分支审查尚待控制器完成。
+最终审查前的阶段状态：**已实现**正式人生组合与Test-only验收脚本；**已实跑**真实双端、唯一server/Hindsight冷重启、正确记忆及受限LLM；**有限验收**权威/受控社会行为/重启后人格/模型语义/上下文接线，保留LLM因果未证明、目标时长未达与全部失败记录。后续审查和运行版本以末尾收口为准。
 
 ### 最终审查 I1/I2 修复契约与验证范围
 
@@ -164,3 +164,17 @@ I2 的 owner 是 Registry：启用 Life 的 LLM 显式预算只接受整数 1..6
 最小反例分别走真实 Life 完成回调与真实 NpcMemory（测试 VM 独占 PostgreSQL）以及纯 Registry.brain/2；Hindsight 替身提供不同的旧/刷新认识并挂起 refresh，不启动 World/Body 或任何真实 HTTP/LLM。I1 从合法持久行形状加载，不经旧 helper 等待缓存；接纳 retain、models、refresh worker 结果并读回新缓存。回归只扩大到 Life 的并发 outbox/刷新节奏/失败诊断及 Registry 关闭档案精确期望，命令和原始输出保留 `validation/final-fix-*`。这些证据不等于正式镜像或客户端验收，历史 16.109 分钟未达及两个 Minor 保留。
 
 - 2026-10-11（Task5复审I1）：旧判定器跨取消/释放机会复用终态且未约束终态靠近窗口，两个最小反例RED为8/10、2失败（`validation/task-5-i1-red.log`）；修复为同次连续机会/紧邻nil释放行、唯一terminal身份与terminal_at_ms，起始和终态须同声明窗口，thank完成nil形状保留。11项GREEN（`validation/task-5-i1-green.log`），仅原始产物离线重判：`primary-judge-06/`原3回避/5接近、8互异终态全部仍有效；`fresh-judge-03/`两control/两有效post通过、2.684m失配拒绝，距离采用原公开State产物且记录来源/hash，无服务请求。原8项仅有GREEN、RED证据缺失明确承认。`final-02/manifest.json`更新判定证据引用，16.109分钟历史时长及未达false不变；尚无已实跑全部门槛通过的约10分钟短正常路径。未重跑客户端/LLM/服务，详细append报告在`validation/task-5-report.md`，待控制器窄复审。
+
+### 2026-10-11 最终收口
+
+最终整段审查发现两个 Important：nil-cache 恢复后只读旧模型错误清除待刷新义务，以及 Life 显式预算可超过60。`6b6662b5` 修复，两个精确反例由0/2通过变为2通过，Life/LifeRegistry/原Registry直接覆盖22项通过；唯一窄复审确认两项均已解决，修复没有新增问题。已有测试集合重叠，不相加为独立覆盖数，也没有为收尾跑无关全仓测试。
+
+冻结该提交构建 `voxim-server:20261011-npc-life-6b6662b5`，106.01秒成功，image `sha256:625ced45448026c97d49f25a5b2bafc423f9b9febff693182ed51db225a7af42`。已替换本轮唯一 Demo 容器，保留原DB/world/cid/bank；`upgrade-final-01/` 前后 canonical 和缓存严格相等，Life error=nil、pending episodes/fragments=0、job=nil、dirty=false。已加载 Life MD5 `b3b9309834faca6957fb2de7907b3202`、Registry `4db823bab67a78f3f75fb85f4ad9e4d3`；State/Social 与已验真实行为版本相同。该次只验证修复后的正式组合接入与状态延续，没有追加双端/LLM，也不冒充新一轮完整GUI验收。
+
+最新索引是 `.demo/observe/npc-life-20261011/final-04/manifest.json`。`primary-judge-07/{verdict,provenance}.json` 绑定最终判定器及完整 social-02/social-03/social-fast-01 三源哈希/命令，仍为3受控回避、5帮助后接近；`fresh-judge-03/` 保留两control/两有效post。报告和原始验证位于 `validation/`，包括 `final-review.md`、`final-fix-report.md`、`final-rereview.md`。本轮审查临时工作目录清理前已把记录复制到该观察目录。
+
+仍未通过或未证明：双端联合wall16.109分钟超过约10分钟；单次自然look只证明LLM缓存+一次召回接线，未证明记忆导致选择；Hindsight帮助facts有+10ms派生精度偏差。两项非阻塞Minor保留：信任饱和后经历文字仍写“changed”，以及预期失败测试诊断日志噪音。所有历史失败和无效样本保留；不声称24小时/完整人生、多NPC、性能、聊天或正式服能力。更正模型没有再次完整重启Hindsight，本次新release重启证明的是相同缓存与canonical的恢复。
+
+控制器裁定记录：同格连续击打到破坏算一次显著经历，修复后重新计数（若不合适，需重调经历/玩法节奏）；canonical情绪锚只随评价事件推进，view不回写（若契约不合适，需修调用方）；人格对照按已测旧3.2/新4.16m行为区域接受较远post、拒绝2.684m失配（若因果判断不成立，需补匹配对照）；历史超时保持未达并停止追加客户端（若必须补短完整路径，需单独设计并安排预算，不能消除本次超时）。
+
+代码与文档保留在 `capability-library-20261007` worktree 分支。未合并或推送；本轮 server 与18908 Hindsight 保留可观察，NPC已恢复settler，决策LLM关闭。
