@@ -66,3 +66,12 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 时间限制保持未达。已有默认 social/fresh 定长复跑入口，但默认 fresh 的第二次短间隔曾失配，尚无完整通过全部重复门槛且约10分钟的已实跑短路径；8.86分钟的局部成功不包含第二有效人格样本。本轮复审只离线判定，不用追加运行抵消历史超时。
 
 独立 `contract-probe-20261011` 的真实后台验证：巩固新增 5 observations，输入 12,789 / 输出 374 token；四模型显式刷新共 16 次 reflect 工具调用，输入 136,106 / 输出 1,577 token。人工核对 relationships 的 Brann 破坏/Mara 修复因果正确，world 未捏造坐标，commitments 如实说明无承诺。初始化空库四模型的 completed 操作未产生 LLM 请求（0 token）；这只证明当前固定镜像空事实的短路行为，不能推广到有历史事实的 ensure。探针与真实NPC费用分别列于 `final-01/cost-summary.json`，未提供模型计费单价，不虚构美元费用。
+# 长期自洽续验
+
+`long_horizon.py freeze --out pairs-input-01` 固定真实 Life 缓存与一次召回；
+`pairs --source pairs-input-01 --out pairs-results-01` 按预登记的六组自传身份互换运行12请求，不执行结果，不写回真实记忆。
+`live --out live-01 --seconds 420` 在正式 Brain/Body 运行同一 NPC，最多24请求，结束恢复 settler 并保留自主意图；
+`clients --out clients-01` 是同时运行的一次真实双端伤害/修复短场景（170秒输入）。
+只能在已由 `demo.py` 建立的本轮独立服务运行，输出在 `.demo/observe/npc-long-horizon-20261011/`，拒绝覆盖旧运行。
+`decision_trace.exs` 只保存无凭证请求体、工具响应和 usage；key 始终留在进程环境。
+验收边界及失败保留见 `docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md`。
