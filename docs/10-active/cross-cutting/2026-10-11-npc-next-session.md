@@ -24,7 +24,9 @@
 
 新增正式登记名 `brain: "life"`。它复用 `Brain.Llm`、`Life`、`Memory`、`Body`，不是另造LLM循环。`goal`/`tools`必填，`life`省略时使用环境`NPC_LIFE_HINDSIGHT_URL`；可显式传`%{"url" => ...}`，禁止`life=false`；默认60/h，显式1..60。旧llm/settler可选Life方式保留。
 
-生产入口与CLI例子见 `apps/gate_server/lib/gate_server/npc/README.md`；续验的`long_horizon.py freeze/pairs/live`已改用life入口。Registry配置新反例先RED，LifeRegistry+Registry17项通过，驱动入口10项通过。后端构建/现场接入结果记录在 `.demo/observe/npc-life-backend-20261011/`；交接时应先读该目录最终manifest确认执行版本和当前NPC后端，不猜它在跑什么。
+生产入口与CLI例子见 `apps/gate_server/lib/gate_server/npc/README.md`；续验的`long_horizon.py freeze/pairs/live`已改用life入口。Registry配置新反例先RED，LifeRegistry+Registry17项通过，驱动入口10项通过。正式release源码`9b52cde9`已构建部署，image `voxim-server:20261011-npc-life-9b52cde9`。同一个LifeBuilder已持久登记为life，真实首轮look返回Body done；旧计划、笔记进入首轮上下文，canonical/cache保留。后端结果在 `.demo/observe/npc-life-backend-20261011/manifest.json`。
+
+**交接时NPC正在life后端，临时限1请求/小时，首个请求已用；trace已停。** 接收会话先管理生命周期与累计预算，再展开实验，不能因重新登记而重复获得新额度。不是已恢复settler的旧状态。若长时间规划而不需模型活动，可用既有登记入口恢复settler，明确记录；开始下一实验再按总体预算配置life。
 
 ## 运行资产与预算
 
@@ -33,7 +35,7 @@
 - Hindsight容器 `voxim-npc-life-loop-20261011`，host18908→8888，network `caplib-20261008-net`，容器内服务地址 `http://voxim-npc-life-loop-20261011:8888`。
 - 辅助工具：`scripts/npc_life/demo.py`（rpc/observe/upgrade），`service.py`（只管理独立记忆实例），`long_horizon.py`（固定模型与双端驱动）；只读导入Voxim R7 harness，`sys.dont_write_bytecode=True`，不得向主客户端目录写pycache。
 - 关注格 `[61,416,-517]` material19。历史A=`1132722130946`，B=`1133355470852`；后续动作必须走正常玩家/NPC入口，不能借旧事件冒充新样本。
-- 上阶段累计外部模型token **1,233,856 / 2,000,000**；后端现场接入如有新增请求，读本轮manifest更新余量。决策60/h与后台Hindsight成本分别记录。代理自身token不等于上述外部模型用量。新会话不是预算重置。
+- 上阶段1,233,856 + 后端接入9,755 = 累计外部模型token **1,243,611 / 2,000,000**，余 **756,389**。决策60/h与后台Hindsight成本分别记录。代理自身token不等于上述外部模型用量。新会话不是预算重置。
 
 ## 新会话任务
 

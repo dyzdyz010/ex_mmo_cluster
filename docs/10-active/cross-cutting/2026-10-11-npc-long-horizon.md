@@ -127,4 +127,4 @@ flowchart LR
 
 观察面：`Registry.list/0` 的brain必须是life；`Life.observe/1`有同cid/bank/state/cache；`Memory.working_context/2`保留计划和笔记。最小验证为新登记名/缺配置/禁止关闭/额度/等价profile反例，原Registry真实PG/Body集成回归，以及正式release内同NPC接入。聊天经代码和既有测试核实仍为stub（`say -> chat_unavailable`，LLM不投影）；曾有npc-dialogue-rag工作树也仍是相同占位，不能宣称聊天已经完成。
 
-验证产物：`.demo/observe/npc-life-backend-20261011/`。配置RED5项中2项因life入口不存在失败；实现后LifeRegistry+Registry共17项通过。现场驱动切换独立life登记名，入口反例先RED10项2失败，修复后结果续记。下一会话交接见 [NPC 连续生活接力](2026-10-11-npc-next-session.md)。
+验证产物：`.demo/observe/npc-life-backend-20261011/manifest.json`。配置RED5项中2项因life入口不存在失败；实现后LifeRegistry+Registry共17项通过。现场驱动切换独立life登记名，入口反例先RED10项2失败，修复后10项通过。正式release源码9b52cde9构建104.15秒后升级同Demo，canonical不变；LifeBuilder已登记life，实际首轮look/Body done，旧计划与笔记进入首轮上下文。新增9,755 token，累计1,243,611；目前life临时1/h，后续生命周期交接新会话。下一会话交接见 [NPC 连续生活接力](2026-10-11-npc-next-session.md)。
