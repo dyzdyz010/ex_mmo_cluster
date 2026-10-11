@@ -39,6 +39,7 @@ defmodule GateServer.Npc.Registry do
     "design_house" => :design_house
   }
   @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
+  @life_llm_limit 60
 
   @type spec :: %{
           scene_id: non_neg_integer(),
@@ -171,9 +172,20 @@ defmodule GateServer.Npc.Registry do
     profile = with_life(profile, params)
 
     profile =
-      if Map.has_key?(profile, :life),
-        do: Map.put_new(profile, :max_requests_per_hour, 60),
-        else: profile
+      if Map.has_key?(profile, :life) do
+        limit = Map.get(profile, :max_requests_per_hour, @life_llm_limit)
+
+        if limit > @life_llm_limit,
+          do:
+            raise(
+              ArgumentError,
+              "启用 Life 时 max_requests_per_hour 必须在 1..#{@life_llm_limit}，收到 #{limit}"
+            )
+
+        Map.put(profile, :max_requests_per_hour, limit)
+      else
+        profile
+      end
 
     {Brain.Llm, profile}
   end

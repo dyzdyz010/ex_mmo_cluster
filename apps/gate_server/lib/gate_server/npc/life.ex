@@ -300,7 +300,7 @@ defmodule GateServer.Npc.Life do
                 %{
                   s.row
                   | "cache" => json(Map.put(result.models, :at_ms, s.now.())),
-                    "dirty" => false,
+                    "dirty" => if(job.kind == :refresh, do: false, else: s.row["dirty"]),
                     "refresh_at_ms" =>
                       if(job.kind == :refresh, do: s.now.(), else: s.row["refresh_at_ms"])
                 }

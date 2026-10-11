@@ -157,4 +157,10 @@ Task5最小判定器8项通过，日志`validation/task-5-python.log`；最新�
 
 当前状态：**已实现**正式人生组合与Test-only验收脚本；**已实跑**真实双端、唯一server/Hindsight冷重启、正确记忆及受限LLM；**已验收**权威/受控社会行为/重启后人格/模型语义/上下文接线，保留LLM因果未证明、目标时长未达与全部失败记录。最终分支审查尚待控制器完成。
 
+### 最终审查 I1/I2 修复契约与验证范围
+
+I1 的 owner 是 Life：合法恢复行包含封存片段且 cache=nil 时，retain 产生的 dirty 义务必须穿过只读 models，只有成功 refresh 才可清除；新认识与现有游标/outbox 同行保存。依据是本阶段 Task3 的固定 0.10.3 契约及 `Life.Hindsight.models/1`（只读）/`refresh/1`（等待真实 operation 完成后读取）的现有实现，不引入重试或第二缓存真值。
+I2 的 owner 是 Registry：启用 Life 的 LLM 显式预算只接受整数 1..60，缺省 60，61/600 显式报配置错误；关闭 Life 保留原缺省 600 与显式预算。它落实 NextLoop 及本页已有费用边界，不在 Llm 下游复制校验。
+最小反例分别走真实 Life 完成回调与真实 NpcMemory（测试 VM 独占 PostgreSQL）以及纯 Registry.brain/2；Hindsight 替身提供不同的旧/刷新认识并挂起 refresh，不启动 World/Body 或任何真实 HTTP/LLM。I1 从合法持久行形状加载，不经旧 helper 等待缓存；接纳 retain、models、refresh worker 结果并读回新缓存。回归只扩大到 Life 的并发 outbox/刷新节奏/失败诊断及 Registry 关闭档案精确期望，命令和原始输出保留 `validation/final-fix-*`。这些证据不等于正式镜像或客户端验收，历史 16.109 分钟未达及两个 Minor 保留。
+
 - 2026-10-11（Task5复审I1）：旧判定器跨取消/释放机会复用终态且未约束终态靠近窗口，两个最小反例RED为8/10、2失败（`validation/task-5-i1-red.log`）；修复为同次连续机会/紧邻nil释放行、唯一terminal身份与terminal_at_ms，起始和终态须同声明窗口，thank完成nil形状保留。11项GREEN（`validation/task-5-i1-green.log`），仅原始产物离线重判：`primary-judge-06/`原3回避/5接近、8互异终态全部仍有效；`fresh-judge-03/`两control/两有效post通过、2.684m失配拒绝，距离采用原公开State产物且记录来源/hash，无服务请求。原8项仅有GREEN、RED证据缺失明确承认。`final-02/manifest.json`更新判定证据引用，16.109分钟历史时长及未达false不变；尚无已实跑全部门槛通过的约10分钟短正常路径。未重跑客户端/LLM/服务，详细append报告在`validation/task-5-report.md`，待控制器窄复审。

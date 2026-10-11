@@ -48,6 +48,22 @@ defmodule GateServer.NpcLifeTest do
     def handle_event(_, state), do: {[], state}
   end
 
+  defmodule RestoredHindsight do
+    @moduledoc "只测试：旧模型只读；刷新替身被挂起，以观察 Life 的待刷新义务与持久缓存。"
+    def ensure(_, _), do: {:ok, %{}}
+    def retain(_, fragments), do: {:ok, %{retained: length(fragments), facts: 1}}
+    def models(_), do: {:ok, %{models: %{"self" => "old model"}, metadata: %{}}}
+    def status(_), do: {:ok, %{stats: %{"memory_unit_count" => 1}, usage: %{}}}
+
+    def refresh(config) do
+      send(config.owner, {:restored_refresh_started, self()})
+
+      receive do
+        :complete -> {:ok, %{models: %{"self" => "current model"}, metadata: %{}}}
+      end
+    end
+  end
+
   defmodule FailingStore do
     def get(_, _, _), do: nil
     def put(_, _, _, _), do: {:error, :write_denied}
@@ -135,6 +151,71 @@ defmodule GateServer.NpcLifeTest do
     actor = Process.get({:life_actor, cid}) || NpcWorld.actor(cid, {4.5, 65.5, 8.5})
     Process.put({:life_actor, cid}, actor)
     actor
+  end
+
+  @tag :final_fix
+  test "restored fragments with no cache keep refresh obligation through read-only models and save refreshed cache" do
+    # 纯回调故障恢复测试：合法持久行形状，真实 NpcMemory；不启动 World/Body，不先等待缓存就绪。
+    cid = System.unique_integer([:positive]) + 100_000
+
+    row = %{
+      "state" => Life.State.new(cid, "restored-world", 3, 0),
+      "pending" => [],
+      "fragments" => [
+        %{
+          "id" => "restored-world:#{cid}:fragment:1-3",
+          "at_ms" => 0,
+          "text" => "Actor 2 damaged my construction."
+        }
+      ],
+      "cache" => nil,
+      "retained" => 0,
+      "dirty" => false,
+      "refresh_at_ms" => nil,
+      "thanked_seq" => 0
+    }
+
+    :ok = DataService.NpcMemory.put(cid, "life", "state", row)
+    assert {:ok, loaded} = GateServer.Npc.Memory.life_load(DataService.NpcMemory, cid)
+
+    s = %{
+      row: nil,
+      poll: %{ref: make_ref()},
+      job: nil,
+      job_error: nil,
+      error: nil,
+      memory: DataService.NpcMemory,
+      context: %{cid: cid},
+      owner: self(),
+      adapter: RestoredHindsight,
+      config: %{owner: self()},
+      now: fn -> 1000 end,
+      poll_ms: 600_000,
+      status: nil
+    }
+
+    {:noreply, s} = Life.handle_info({:result, :poll, {:ok, loaded}}, s)
+    assert_receive {:result, :job, retained}, 5000
+    {:noreply, s} = Life.handle_info({:result, :job, retained}, s)
+    assert s.row["retained"] == 1 and s.row["dirty"]
+    assert s.row["fragments"] == [] and s.row["cache"] == nil
+
+    assert_receive {:result, :job, models}, 5000
+    {:noreply, s} = Life.handle_info({:result, :job, models}, s)
+    cached = DataService.NpcMemory.get(cid, "life", "state")
+    assert cached["cache"]["models"] == %{"self" => "old model"}
+    assert cached["dirty"]
+    assert_receive {:restored_refresh_started, worker}, 5000
+    assert s.job.kind == :refresh
+    send(worker, :complete)
+
+    assert_receive {:result, :job, refreshed}, 5000
+    {:noreply, s} = Life.handle_info({:result, :job, refreshed}, s)
+    assert s.job == nil
+    saved = DataService.NpcMemory.get(cid, "life", "state")
+    assert saved["cache"]["models"] == %{"self" => "current model"}
+    refute saved["dirty"]
+    assert saved["refresh_at_ms"] == 1000
   end
 
   @tag timeout: 120_000
