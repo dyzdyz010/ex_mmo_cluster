@@ -1,0 +1,424 @@
+Code.require_file("../support/npc_world.exs", __DIR__)
+
+defmodule GateServer.NpcLifeTest do
+  @moduledoc "只测试：真实 World/Scene/Body/NpcMemory；Hindsight 替身控制慢请求和失败，验证 owner 接缝。"
+  use ExUnit.Case, async: false
+  alias GateServer.Npc.{Body, Life}
+  alias GateServer.NpcWorld
+  alias VoxelRegion.World
+
+  defmodule Hindsight do
+    def ensure(_, _), do: {:ok, %{}}
+    def models(_), do: {:ok, %{models: %{"self" => "builder"}, metadata: %{}}}
+    def status(_), do: {:ok, %{stats: %{"memory_unit_count" => 1}, usage: %{}}}
+
+    def refresh(config) do
+      send(config.owner, :refresh_called)
+      models(config)
+    end
+
+    def recall(config, query, _) do
+      send(config.owner, {:recall_called, query})
+      {:ok, %{results: [%{"text" => "remembered"}], latency_ms: 1}}
+    end
+
+    def retain(config, fragments) do
+      send(config.owner, {:retain_started, self(), fragments})
+
+      receive do
+        :complete -> {:ok, %{retained: length(fragments), facts: 1}}
+        :fail -> {:error, :service_failed}
+      end
+    end
+  end
+
+  defmodule Spy do
+    def init(profile), do: %{owner: profile.owner}
+
+    def handle_event({:observation, observation}, %{owner: owner} = state) do
+      send(owner, {:life_observation, observation})
+      {[], state}
+    end
+
+    def handle_event({:outcome, outcome}, %{owner: owner} = state) do
+      send(owner, {:life_outcome, outcome})
+      {[], state}
+    end
+
+    def handle_event(_, state), do: {[], state}
+  end
+
+  defmodule FailingStore do
+    def get(_, _, _), do: nil
+    def put(_, _, _, _), do: {:error, :write_denied}
+  end
+
+  defmodule NoLexical do
+    def recent(_, _), do: raise("life decision must not perform lexical retrieval")
+  end
+
+  setup_all do
+    MmoTest.Database.start!()
+    :ok
+  end
+
+  defp start(memory \\ DataService.NpcMemory, options \\ %{}) do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 100_000
+
+    profile = %{
+      owner: self(),
+      memory: memory,
+      life:
+        Map.merge(
+          %{hindsight: Hindsight, owner: self(), poll_ms: 30, url: "http://life.test.invalid"},
+          options
+        )
+    }
+
+    body = NpcWorld.body(fixture, {Spy, profile}, cid: cid).body
+
+    NpcWorld.await(fn ->
+      match?({:ok, %{state: %{"cursor" => _}, cache: %{}, job: nil}}, Life.observe(cid))
+    end)
+
+    {fixture, body, cid}
+  end
+
+  defp damage(world, npc, seq, cell) do
+    {:ok, _} = World.material_supply(world, npc, "life-supply-#{seq}", %{11 => 512})
+    actor = actor(npc)
+
+    {:ok, _} =
+      World.production_intent(world, actor, %{
+        request_id: seq,
+        client_intent_seq: seq,
+        logical_scene_id: 1,
+        action: 1,
+        coord: cell,
+        tool_id: 1,
+        material: 11
+      })
+
+    attacker = actor(npc + 10)
+    {x, y, z} = cell
+
+    query = %{
+      request_id: seq,
+      client_intent_seq: seq,
+      logical_scene_id: 1,
+      action: 0,
+      tool_id: 1,
+      direction: {x + 0.5 - 4.5, y + 0.5 - 65.5, z + 0.5 - 8.5},
+      micro: {0, 0, 0},
+      granularity: 0,
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0
+    }
+
+    {:ok, target} = World.tool_intent(world, attacker, query)
+
+    {:ok, _} =
+      World.tool_intent(
+        world,
+        Map.merge(attacker, %{received_us: seq * 1_000_000, clock_node: node()}),
+        Map.merge(
+          query,
+          Map.take(target, [:micro, :granularity, :incarnation, :owner, :material])
+        )
+        |> Map.put(:action, 1)
+      )
+  end
+
+  defp actor(cid) do
+    actor = Process.get({:life_actor, cid}) || NpcWorld.actor(cid, {4.5, 65.5, 8.5})
+    Process.put({:life_actor, cid}, actor)
+    actor
+  end
+
+  @tag timeout: 120_000
+  test "durable authority appraisal progresses during slow retain; completion removes only sent fragments" do
+    {fixture, body, cid} = start()
+    damage(fixture.world, cid, 1, {4, 64, 8})
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.state["evidence"]["damage_count"] == 1
+    end)
+
+    assert {:ok, %{status: :started}} = Life.flush(cid)
+    assert_receive {:retain_started, worker, [fragment]}, 5000
+    assert fragment["id"] =~ "fragment:"
+    damage(fixture.world, cid, 2, {5, 64, 8})
+
+    NpcWorld.await(fn ->
+      case Life.observe(cid) do
+        {:ok, %{state: %{} = canonical}} -> canonical["evidence"]["damage_count"] == 2
+        _ -> false
+      end
+    end)
+
+    Body.command(body, %{id: :responsive, verb: :stop})
+    assert_receive {:life_outcome, %{id: :responsive}}, 5000
+    send(worker, :complete)
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.retained == 1
+    end)
+
+    {:ok, s} = Life.observe(cid)
+    assert s.pending_episodes == 1
+
+    assert DataService.NpcMemory.get(cid, "life", "state")["state"]["evidence"]["damage_count"] ==
+             2
+
+    assert {:ok, context} = Life.context(cid, "Who hurt me?")
+    assert context.mental_models["self"] == "builder"
+    assert_receive {:recall_called, "Who hurt me?"}
+    refute_receive {:recall_called, _}
+    ref = Process.monitor(body)
+    Process.exit(body, :kill)
+    assert_receive {:DOWN, ^ref, _, _, _}
+
+    NpcWorld.await(fn ->
+      case Life.observe(cid) do
+        {:ok, %{state: %{} = canonical}} -> canonical["evidence"]["damage_count"] == 2
+        _ -> false
+      end
+    end)
+
+    {:ok, restored} = Life.observe(cid)
+    assert restored.state == s.state
+    assert restored.pending_episodes == 1
+  end
+
+  test "failed durable initialization is explicit and does not publish a cursor" do
+    fixture = NpcWorld.start()
+    cid = System.unique_integer([:positive]) + 100_000
+
+    NpcWorld.body(
+      fixture,
+      {Spy,
+       %{
+         owner: self(),
+         memory: FailingStore,
+         life: %{
+           hindsight: Hindsight,
+           owner: self(),
+           poll_ms: 30,
+           url: "http://life.test.invalid"
+         }
+       }},
+      cid: cid
+    )
+
+    NpcWorld.await(fn ->
+      match?({:ok, %{error: {:memory_unavailable, :write_denied}}}, Life.observe(cid))
+    end)
+
+    assert {:ok, %{state: nil}} = Life.observe(cid)
+  end
+
+  test "failed retain preserves sealed identity and stays diagnostic while Body continues" do
+    {fixture, body, cid} = start()
+    damage(fixture.world, cid, 1, {4, 64, 8})
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.pending_episodes == 1
+    end)
+
+    assert {:ok, %{status: :started}} = Life.flush(cid)
+    assert_receive {:retain_started, worker, [fragment]}, 5000
+    send(worker, :fail)
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.error == :service_failed
+    end)
+
+    {:ok, s} = Life.observe(cid)
+    assert s.pending_fragments == 1 and s.retained == 0
+    assert DataService.NpcMemory.get(cid, "life", "state")["fragments"] == [fragment]
+    Body.command(body, %{id: :after_failure, verb: :stop})
+    assert_receive {:life_outcome, %{id: :after_failure}}, 5000
+    refute_receive {:retain_started, _, _}, 100
+    assert {:ok, %{status: :started}} = Life.flush(cid)
+    assert_receive {:retain_started, retry, [^fragment]}, 5000
+    send(retry, :complete)
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.retained == 1
+    end)
+  end
+
+  test "short facts form one fragment; models refresh after first retain and dirty cadence, never on context" do
+    clock = start_supervised!({Agent, fn -> System.system_time(:millisecond) end})
+
+    {fixture, _body, cid} =
+      start(DataService.NpcMemory, %{clock: fn -> Agent.get(clock, & &1) end})
+
+    damage(fixture.world, cid, 1, {4, 64, 8})
+    damage(fixture.world, cid, 2, {5, 64, 8})
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.pending_episodes == 2
+    end)
+
+    refute_receive {:retain_started, _, _}, 100
+    {:ok, %{status: :started}} = Life.flush(cid)
+    assert_receive {:retain_started, worker, [fragment]}, 5000
+    assert fragment["text"] =~ "transaction 3"
+    assert fragment["text"] =~ "transaction 6"
+    send(worker, :complete)
+    assert_receive :refresh_called, 5000
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.job == nil
+    end)
+
+    {:ok, _} = Life.context(cid, "construction")
+    assert_receive {:recall_called, "construction"}
+    refute_receive :refresh_called, 100
+    damage(fixture.world, cid, 3, {4, 64, 9})
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.pending_episodes == 1
+    end)
+
+    {:ok, _} = Life.flush(cid)
+    assert_receive {:retain_started, worker, _}, 5000
+    send(worker, :complete)
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.retained == 2
+    end)
+
+    refute_receive :refresh_called, 100
+    Agent.update(clock, &(&1 + 600_001))
+    assert_receive :refresh_called, 5000
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.job == nil and not s.cache_dirty
+    end)
+
+    assert DataService.NpcMemory.get(cid, "life", "state")["cache"]["models"] == %{
+             "self" => "builder"
+           }
+  end
+
+  test "production Llm decision uses current mind, cached models and exactly one recall without lexical retrieval" do
+    {_fixture, _body, cid} = start()
+    owner = self()
+
+    profile = %{
+      goal: "build carefully",
+      tools: %{},
+      life: %{},
+      memory: NoLexical,
+      endpoint: %{model: "test"},
+      max_requests_per_hour: 1,
+      request: fn _, body ->
+        send(owner, {:llm_context, Jason.decode!(body.input)})
+
+        {:ok,
+         %{
+           "output" => [
+             %{"type" => "function_call", "name" => "wait", "arguments" => "{\"seconds\":3600}"}
+           ]
+         }}
+      end
+    }
+
+    llm = GateServer.Npc.Brain.Llm.init(profile)
+
+    on_exit(fn ->
+      Process.unlink(llm)
+      Process.exit(llm, :kill)
+    end)
+
+    GateServer.Npc.Brain.Llm.handle_event(
+      {:observation,
+       %{
+         self: %{entity_id: cid, position: {4.0, 64.0, 10.0}},
+         entities: [],
+         pending: [],
+         balances: nil
+       }},
+      llm
+    )
+
+    assert_receive {:recall_called, query}, 5000
+    assert query =~ "build carefully"
+    assert_receive {:llm_context, input}, 5000
+    assert input["mental_models"]["self"] == "builder"
+    assert input["mind"]["cid"] == cid
+    assert input["memory_retrieval"] == "hindsight_once"
+    assert input["memories"] == [%{"text" => "remembered"}]
+    refute_receive {:recall_called, _}, 100
+    refute_receive :refresh_called, 100
+  end
+
+  test "real database rejection keeps canonical cursor and pending atomic until storage accepts the World event" do
+    {fixture, _body, cid} = start()
+    {:ok, before} = Life.observe(cid)
+    function = "reject_life_#{cid}"
+
+    Ecto.Adapters.SQL.query!(
+      DataService.Repo,
+      """
+      CREATE FUNCTION #{function}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.cid = #{cid} AND NEW.kind = 'life' THEN RAISE EXCEPTION 'test write unavailable'; END IF;
+        RETURN NEW;
+      END $$
+      """,
+      []
+    )
+
+    Ecto.Adapters.SQL.query!(
+      DataService.Repo,
+      "CREATE TRIGGER #{function} BEFORE INSERT ON npc_memories FOR EACH ROW EXECUTE FUNCTION #{function}()",
+      []
+    )
+
+    on_exit(fn ->
+      Ecto.Adapters.SQL.query!(
+        DataService.Repo,
+        "DROP TRIGGER IF EXISTS #{function} ON npc_memories",
+        []
+      )
+
+      Ecto.Adapters.SQL.query!(DataService.Repo, "DROP FUNCTION IF EXISTS #{function}()", [])
+    end)
+
+    damage(fixture.world, cid, 1, {4, 64, 8})
+
+    NpcWorld.await(fn ->
+      match?({:ok, %{error: {:memory_unavailable, Postgrex.Error}}}, Life.observe(cid))
+    end)
+
+    {:ok, failed} = Life.observe(cid)
+    assert failed.state == before.state
+    assert failed.pending_episodes == 0
+    assert DataService.NpcMemory.get(cid, "life", "state")["state"] == before.state
+    Ecto.Adapters.SQL.query!(DataService.Repo, "DROP TRIGGER #{function} ON npc_memories", [])
+
+    NpcWorld.await(fn ->
+      {:ok, s} = Life.observe(cid)
+      s.state["evidence"]["damage_count"] == 1
+    end)
+
+    {:ok, accepted} = Life.observe(cid)
+    assert accepted.state["cursor"] > before.state["cursor"]
+    assert accepted.pending_episodes == 1
+  end
+end

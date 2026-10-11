@@ -16,16 +16,27 @@ defmodule GateServer.Npc.Runtime do
   @unknown_metrics %{request_count: nil, jev_request_count: nil}
 
   @doc "在 Body 内建立运行进程；后端 init/1 的 self() 是共用命令接收端。"
-  def init({backend, profile}) do
+  def init(brain, context \\ nil)
+
+  def init({backend, profile}, context) do
     body = self()
 
     spawn_link(fn ->
       Process.flag(:trap_exit, true)
 
+      life =
+        if Map.has_key?(profile, :life) do
+          {:ok, life} = GateServer.Npc.Life.start_link(self(), context, profile)
+          life
+        end
+
       loop(%{
         body: body,
         backend: backend,
         mind: backend.init(profile),
+        life: life,
+        life_state: nil,
+        life_thanks: 0,
         profile: profile,
         memory: Map.get(profile, :memory, DataService.NpcMemory),
         policy: Scheduler.configured(profile),
@@ -47,6 +58,19 @@ defmodule GateServer.Npc.Runtime do
     next =
       receive do
         {:observation, observation} ->
+          if state.life, do: GateServer.Npc.Life.observation(state.life, observation)
+
+          observation =
+            if state.life_state do
+              now = System.system_time(:millisecond)
+
+              observation
+              |> Map.put(:life, %{state: state.life_state, now_ms: now, thanks: state.life_thanks})
+              |> Map.put(:mind, GateServer.Npc.Life.State.view(state.life_state, now))
+            else
+              observation
+            end
+
           # 只给声明要逐帧观察的技能转发；其余技能不读邮箱里的观察，转发只会堆积。
           case state.skill do
             %{cancelling: nil, observes: true, pid: pid} -> send(pid, {:observation, observation})
@@ -54,6 +78,9 @@ defmodule GateServer.Npc.Runtime do
           end
 
           deliver(%{state | observation: observation}, {:observation, observation})
+
+        {:life_state, canonical, thanks} ->
+          %{state | life_state: canonical, life_thanks: thanks}
 
         {:outcome, %{id: {:skill, id, step}} = outcome} ->
           case state.skill do
@@ -121,11 +148,15 @@ defmodule GateServer.Npc.Runtime do
           end
 
         {:EXIT, body, _} when body == state.body ->
+          if state.life, do: Process.exit(state.life, :shutdown)
           if state.skill, do: Process.exit(state.skill.pid, :shutdown)
           if is_pid(state.mind), do: Process.exit(state.mind, :shutdown)
           exit(:shutdown)
 
         {:EXIT, backend, reason} when backend == state.mind ->
+          exit(reason)
+
+        {:EXIT, life, reason} when life == state.life ->
           exit(reason)
 
         {:EXIT, _, _} ->
@@ -137,6 +168,14 @@ defmodule GateServer.Npc.Runtime do
 
   defp deliver(state, event) do
     {commands, mind} = state.backend.handle_event(event, state.mind)
+
+    if state.life != nil and state.backend == GateServer.Npc.Brain.Social,
+      do:
+        GateServer.Npc.Life.decision(
+          state.life,
+          Map.take(mind, [:social, :last_outcome, :thanks])
+        )
+
     Enum.reduce(commands, %{state | mind: mind}, &execute(&2, &1))
   end
 

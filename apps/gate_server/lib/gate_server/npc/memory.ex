@@ -108,6 +108,26 @@ defmodule GateServer.Npc.Memory do
     end)
   end
 
+  @doc "读取 Life 的单行持久 owner 状态；失败不冒充首次启动。"
+  def life_load(memory, cid) do
+    storage(fn ->
+      case memory.get(cid, "life", "state") do
+        {:error, reason} -> {:error, {:memory_unavailable, reason}}
+        row -> {:ok, row}
+      end
+    end)
+  end
+
+  @doc "原子保存 canonical 心智、游标与 outbox；只由 Life owner 调用。"
+  def life_save(memory, cid, row) do
+    storage(fn ->
+      case memory.put(cid, "life", "state", row) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:memory_unavailable, reason}}
+      end
+    end)
+  end
+
   defp valid?(%{verb: :remember, key: key, text: text}),
     do: text?(key, @key_limit) and text?(text, @text_limit)
 

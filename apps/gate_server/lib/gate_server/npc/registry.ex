@@ -142,7 +142,8 @@ defmodule GateServer.Npc.Registry do
 
     # 建树即校验：能力名、静态参数（如 read_catalog 的定义 id）与节点形状，不合法 raise（与 Body 起树同一个函数）。
     Brain.Tree.init(profile)
-    {Brain.Tree, profile}
+    profile = with_life(profile, params)
+    {if(Map.has_key?(profile, :life), do: Brain.Social, else: Brain.Tree), profile}
   end
 
   def brain("llm", %{"goal" => goal, "tools" => tools} = params) when is_binary(goal) do
@@ -167,6 +168,13 @@ defmodule GateServer.Npc.Registry do
 
     # 投影一次即校验技能与法术（与每次模型请求的工具表同一个函数）。
     Abilities.tools(profile)
+    profile = with_life(profile, params)
+
+    profile =
+      if Map.has_key?(profile, :life),
+        do: Map.put_new(profile, :max_requests_per_hour, 60),
+        else: profile
+
     {Brain.Llm, profile}
   end
 
@@ -183,6 +191,26 @@ defmodule GateServer.Npc.Registry do
     {:ok, json, brain(brain, json)}
   rescue
     error -> {:error, {:invalid_params, Exception.message(error)}}
+  end
+
+  # 缺省关闭；登记边界只接受正式可配置 URL，不把测试依赖写进 JSON 档案。
+  defp with_life(profile, params) do
+    case Map.get(params, "life", false) do
+      false ->
+        profile
+
+      true ->
+        Map.put(profile, :life, %{url: life_url!(System.fetch_env!("NPC_LIFE_HINDSIGHT_URL"))})
+
+      %{"url" => url} = options when map_size(options) == 1 ->
+        Map.put(profile, :life, %{url: life_url!(url)})
+    end
+  end
+
+  defp life_url!(url) when is_binary(url) do
+    uri = URI.parse(url)
+    true = uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.userinfo == nil
+    url
   end
 
   defp restart(name, cid, scene_id, spawn, {module, profile}) do

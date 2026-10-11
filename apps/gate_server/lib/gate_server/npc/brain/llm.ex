@@ -286,11 +286,19 @@ defmodule GateServer.Npc.Brain.Llm do
           state.profile.goal <>
             " " <> inspect(Enum.take(state.outcomes, 1), limit: 20, printable_limit: 300)
 
-        experiences = Memory.context(state.memory, observation.self.entity_id, query)
-        body = body(state.profile, observation, state.outcomes, experiences)
-
         pid =
           spawn_link(fn ->
+            experiences =
+              if Map.has_key?(state.profile, :life) do
+                case GateServer.Npc.Life.context(observation.self.entity_id, query) do
+                  {:ok, context} -> context
+                  {:error, reason} -> %{memory_error: reason}
+                end
+              else
+                Memory.context(state.memory, observation.self.entity_id, query)
+              end
+
+            body = body(state.profile, observation, state.outcomes, experiences)
             send(owner, {:answer, state.request.(state.profile.endpoint, body)})
           end)
 
@@ -339,6 +347,7 @@ defmodule GateServer.Npc.Brain.Llm do
             outcomes: outcomes |> Enum.reverse() |> Enum.map(&Context.plain/1)
           }
           |> Map.merge(Context.plain(Map.take(observation, [:view, :targets])))
+          |> Map.merge(Context.plain(Map.take(observation, [:mind])))
           |> Map.merge(memory_input(experiences))
         ),
       tools: tools(profile),

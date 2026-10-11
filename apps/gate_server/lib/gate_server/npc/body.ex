@@ -165,7 +165,12 @@ defmodule GateServer.Npc.Body do
        bounds: Keyword.get(opts, :bounds, Application.get_env(:gate_server, :quic, [])[:bounds]),
        # 创世授予（GateServer.Npc.Genesis）：唯一来源是注册表行，与 Brain 的 profile.genesis 同源。
        genesis: Keyword.get(opts, :genesis, false) == true,
-       mind: GateServer.Npc.Runtime.init({brain, profile}),
+       mind:
+         GateServer.Npc.Runtime.init({brain, profile}, %{
+           cid: Keyword.fetch!(opts, :cid),
+           scene_id: Keyword.fetch!(opts, :scene_id),
+           router: Keyword.get(opts, :route_module, WorldServer.Movement)
+         }),
        # 世界调用的 FIFO 执行进程跨会话保留：在途调用总会有结果，不因重新 claim 丢失。
        worker: spawn_link(&world_calls/0),
        identity: nil,
@@ -608,6 +613,7 @@ defmodule GateServer.Npc.Body do
     %{
       self: %{
         entity_id: state.cid,
+        scene_id: state.scene_id,
         body: GateServer.Npc.Context.body(state.profile),
         tick: state.tick,
         position: session.position,

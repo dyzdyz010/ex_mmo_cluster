@@ -376,3 +376,63 @@ NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行�
 世界变化（如自己的建筑被拆）唤醒大脑，都是后续独立功能增量。NPC 注册表与节点重启恢复、创世能力组随放置阶段 M1 / M2 接上
 （[决策稿](../../../../../docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md)）。
 测试入口在 `apps/gate_server/test/gate_server/npc_*`；真实模型用例必须显式选择 `live_llm`。
+
+## 可选人生闭环（Life）
+
+注册参数默认没有 `life`。`settler` 加 `"life" => %{"url" => "http://hindsight:8888"}` 后只把原 Tree 包在
+`Brain.Social` 中；不询问决策模型。`llm` 加同一参数后保留原 Llm，用当前心智、缓存认识和一次情境召回替代决策前的
+词法检索；其默认滑动预算为 60 次/小时，显式 `max_requests_per_hour` 仍可收紧。关闭 Life 的原有解析档案不变。
+也可写 `"life" => true`，但此时必须部署 `NPC_LIFE_HINDSIGHT_URL`；没有配置会明确拒绝登记。
+全局实现没有实验实例名、端口或测试服务默认值。
+
+```mermaid
+flowchart LR
+  World[World 权威操作序列] --> Poll[路由与读取 worker]
+  Poll --> Life[Life 单一持久 owner]
+  Life --> DB[NpcMemory life/state 单行]
+  Life --> H[独立 Hindsight worker]
+  Life --> Runtime[Runtime canonical 心智 + 派生观察]
+  Runtime --> Social[Social / 原 Tree]
+  Social --> Body[唯一 Body 动作 owner]
+  H --> Cache[四份认识缓存]
+  Cache --> Llm[Llm 请求 worker: 一次 recall]
+```
+
+Runtime 初始化收到 Body 的永久 cid、scene_id 与路由模块。Life 与 Runtime 关联退出；Body 替换先等旧 Life 真正退出，
+同 cid 不复用旧 owner。启动、World 读取、HTTP 与数据库不会占用 Body 输入循环。Life 经当前 Scene 路由重新查询 World；
+世界身份不符、操作历史 gap 和存储错误都显式报告。游标、canonical 事件态、短经历尾部、封存片段、感谢确认序号和认识缓存
+原子写在同一行。`State.view/2` 的衰减视图只进入观察和模型输入，永不覆盖 canonical 状态。
+
+短经历积累约 3000 字后封成一个不可变片段，文档 id 含世界身份和首/尾事务号；手动 flush 可以封存不足长度的尾片段。
+retain 完成只从当前行删除已发送的片段 id，不以发送前快照覆盖期间的新事件。HTTP 失败保留原片段与诊断，由显式 flush
+重试相同 id；同一身份在外部服务重复抽取的语义依赖 Hindsight 的 document_id 接口，不能承诺跨系统事务的 exactly-once。
+首次 retain 成功后刷新认识，后续新事实使缓存 dirty，最多每 10 分钟后台刷新；CLI refresh 可显式提前刷新。
+决策调用没有 refresh，也没有 Hindsight + 词法双重检索；失败进入 `memory_error`，不冒充空记忆。
+
+Social 先调用 Tree.halt，继续消费 draining 的技能/世界事务 Outcome，并等移动 stop 权威终态，之后才投递社交 move_to。
+目标省略 `y`，由 Body 的权威导航决定目的地可站层；距离评价仍用完整 XYZ。回避与谨慎在来源角色仍可见时保持站位，
+来源离开观察后恢复工作，防止原 Tree 再走回其身旁。感谢到达或已在期望范围内后按来源事务号持久确认，工作离开和重启不会
+再次接近同一感谢事件。移动被拒保留原 Outcome 并保持该目标不重投；halt/settle stop 失败冻结 Social，需运维修复后重启。
+
+本节点 release RPC 可直接调用：
+
+```elixir
+GateServer.Npc.Life.observe(cid)
+GateServer.Npc.Life.flush(cid)
+GateServer.Npc.Life.refresh(cid)
+GateServer.Npc.Life.context(cid, "Who damaged or repaired my construction?")
+```
+
+observe 返回 `{:ok, map}`：state 是持久 canonical，mind 是当前衰减视图；还包括 bank（`npc-life-<cid>`）、pending 数、
+retained 片段数、cache/metadata/age/dirty、后台 job、error、Hindsight facts/operations/usage、召回耗时及 Social 目标/真实终态。
+需 JSON 时用 `GateServer.Npc.Context.plain(map) |> Jason.encode!()`。flush/refresh 立即返回 started/busy/empty，随后用 observe
+等待真实完成；context 在调用者中执行一次网络召回，返回 `{:ok, context}` 或显式错误，Llm 只在自己的请求 worker 中调用。
+
+验证边界：`npc_life_test` 通过真实 World、Scene、Body 与 VM 独占 PostgreSQL 验证持久游标/并发 outbox/重启；Hindsight 替身
+只控制慢写入与失败时序。`npc_social_test` 是纯 Tree 接缝与权威 Outcome 反例；`npc_life_registry_test` 验证可选配置与预算。
+真实 Hindsight HTTP 语义由 `npc_hindsight_test` 覆盖；真实双端 Demo 和成本/认识内容核对属于阶段验收，不能由这些用例替代。
+
+关联进程、动态名字与 monitor 完成顺序采用 [Elixir GenServer 官方契约](https://hexdocs.pm/elixir/GenServer.html)
+和 [Process 官方契约](https://hexdocs.pm/elixir/Process.html)：消息发送与慢任务分离，名字随 owner 退出清理，monitor 等待真实终态。
+本项目不另起监督根，Life 只跟随既有 Body → Runtime 生命周期；规则评价及 Hindsight API 的依据见
+[人生阶段决策稿](../../../../../docs/10-active/cross-cutting/2026-10-11-npc-life-loop.md)。
