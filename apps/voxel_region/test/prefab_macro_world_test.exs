@@ -268,11 +268,14 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
   test "replacement settles macro and micro costs from the actual old tree", c do
     macro = define(c,[{{0,0,0},11}])
     micro = define(c,[],[{{0,0,0},19}],[],1)
+    shifted_micro = define(c,[],[{{1,0,0},19}],[],1)
     assert :ok = publish(c)
     assert {:ok,1} = World.material_supply(c.world,1001,"replace",%{11=>512,19=>1})
     assert {:ok,2} = place(c,macro)
     assert {:ok,3} = World.prefab_intent(c.world,c.actor,:voxel_prefab_replace_v1,
       %{instance_id: {2,0},definition_id: micro,client_intent_seq: 2})
+    assert {:ok, %{events: [%{seq: 3, actor: 1001, kind: :build, cell: {1,1,2}, placed_by: 1001}]}} =
+      World.interactions_since(c.world,2)
     assert balance(c,11) == 512 and balance(c,19) == 0
     assert [%{material: 0,slots: [%{material: 19,count: 1}]}] = snapshot(c,[{1,1,2}]).probe_occupancy
     assert {:ok,4} = World.prefab_intent(c.world,c.actor,:voxel_prefab_replace_v1,
@@ -282,6 +285,13 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     assert {:error,:instance_not_found} = World.instance_cells(c.world,{2,0})
     assert {:error,:instance_not_found} = World.instance_cells(c.world,{3,0})
     assert World.stats(c.world).instances == 1
+    assert {:ok,5} = World.prefab_intent(c.world,c.actor,:voxel_prefab_replace_v1,
+      %{instance_id: {4,0},definition_id: shifted_micro,client_intent_seq: 4})
+    assert {:ok,6} = World.prefab_intent(c.world,c.actor,:voxel_prefab_replace_v1,
+      %{instance_id: {5,0},definition_id: micro,client_intent_seq: 5})
+    # 旧实例在同一宏格的另一 slot 有主，但这次实际目标 slot 提交前为空，不能借整树归属。
+    assert {:ok, %{events: [%{seq: 6, kind: :build, cell: {1,1,2}, placed_by: nil}]}} =
+      World.interactions_since(c.world,5)
   end
 
 

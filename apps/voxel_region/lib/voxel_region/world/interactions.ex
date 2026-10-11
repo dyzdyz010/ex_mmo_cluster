@@ -20,9 +20,16 @@ defmodule VoxelRegion.World.Interactions do
   defp placed_by(state, %{granularity: 2, micro: micro}) do
     {cell, slot} = Prefab.macro_slot(micro)
 
-    case get_in(state.refined, [cell, slot]) do
-      {_material, owner} -> Map.get(Map.get(state.instances, owner, %{}), :placed_by)
-      nil -> nil
+    # 替换后的目标粒度不表示提交前粒度；旧表示是宏格时用其唯一溯源，细化空槽仍然无主。
+    case Map.fetch(state.refined, cell) do
+      {:ok, slots} ->
+        case Map.get(slots, slot) do
+          {_material, owner} -> Map.get(Map.get(state.instances, owner, %{}), :placed_by)
+          nil -> nil
+        end
+
+      :error ->
+        Map.get(state.placed_by, cell)
     end
   end
 
