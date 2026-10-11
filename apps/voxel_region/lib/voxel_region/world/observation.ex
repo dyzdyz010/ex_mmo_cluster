@@ -16,6 +16,11 @@ defmodule VoxelRegion.World.Observation do
 
   # ---- 订阅
 
+  @doc "同一实际操作同时构造既有反馈和内部经历；经历仅在日志提交成功后接纳。"
+  def operation_metadata(state, actor, request, kind, target),
+    do: %{operation: operation(actor, request, kind, target),
+      interaction: VoxelRegion.World.Interactions.capture(state, actor, kind, target)}
+
   # Global system: the committing player path supplies the fact; no geometry inference.
   def operation(actor, request, kind, %{material: material} = target) do
     micro = if Map.get(target,:granularity) == 0,
@@ -258,6 +263,7 @@ defmodule VoxelRegion.World.Observation do
       end)
 
     Map.merge(txn, %{property_states: rows, property_context: property_context(state)})
+    |> Map.drop([:interaction, :interaction_history, :interaction_floor])
     |> public_properties()
   end
 

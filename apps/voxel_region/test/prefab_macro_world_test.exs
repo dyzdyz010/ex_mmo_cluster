@@ -75,6 +75,8 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     assert {:ok,_} = World.tool_intent(c.world,actor,request)
     assert_receive {:canonical_delta,removed}
     assert removed.transaction.operation == %{character: 1001,client_seq: 2,kind: 1,material: 11,micro: {20,12,20}}
+    assert {:ok, %{events: [%{kind: :build, cell: {2,1,2}, placed_by: nil},
+      %{kind: :destroy, cell: {2,1,2}, placed_by: 1001}]}} = World.interactions_since(c.world,0)
     refute_received {:canonical_delta,_}
     stop_supervised!(World)
     world = start_supervised!({World,c.opts})
@@ -190,6 +192,7 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
         client_intent_seq: 9,logical_scene_id: 1,action: unquote(action),direction: {0.0,0.0,1.0},tool_id: 1})
       actor = Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
       assert {:ok,3} = World.tool_intent(c.world,actor,request)
+      assert {:ok, %{events: [%{kind: :destroy, cell: {2,1,2}, placed_by: 1001}]}} = World.interactions_since(c.world,2)
       assert balance(c,11) == 0 and balance(c,19) == 1
       assert [%{material: 11,placed_by: 1001},%{material: 0,slots: []}] = snapshot(c,[{1,1,2},{2,1,2}]).probe_occupancy
       assert {:ok,[{1,1,2}]} = World.instance_cells(c.world,{2,0})

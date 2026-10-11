@@ -234,7 +234,7 @@ defmodule VoxelRegion.World.Prefabs do
           {s, Map.merge(b, paid.material_balances)}
         end)
 
-      {:ok, next, Map.merge(phase,%{material_balances: balances,operation: prefab_operation(before,state,cells,actor)})}
+      {:ok, next, phase |> Map.put(:material_balances, balances) |> Map.merge(prefab_operation(before,state,cells,actor))}
     else
       {:error, _} = error -> error
     end
@@ -255,18 +255,20 @@ defmodule VoxelRegion.World.Prefabs do
       Map.put(settlement,:prefab_phase_values,values)}
   end
 
-  # Select one actual committed footprint element after support pruning, not the template anchor.
+  # 在支撑裁剪后的实际提交 footprint 里选同一个反馈目标；经历归属使用其真实身份。
   defp prefab_operation(before, state, cells, actor) do
     {source, other} = if actor.operation_kind == 1, do: {before,state}, else: {state,before}
     macro = for {cell,material} <- changed_prefab_macros(source,other,cells),
-      do: {Observation.center_micro(cell),material}
-    micro = for cell <- cells, {slot,{material,_}=value} <- Map.get(source.refined,cell,%{}),
+      do: {Observation.center_micro(cell),material,%{micro: Observation.center_micro(cell),material: material,granularity: 0}}
+    micro = for cell <- cells, {slot,{material,owner}=value} <- Map.get(source.refined,cell,%{}),
       Map.get(Map.get(other.refined,cell,%{}),slot) != value,
-      do: {Prefab.micro_coord(cell,slot),material}
-    attachments = for {{_,_,micro}=slot,{_,material}=value} <- source.attachments,
-      Map.get(other.attachments,slot) != value, do: {micro,material}
-    {micro,material} = Enum.min(macro ++ micro ++ attachments)
-    Observation.operation(actor,actor.operation_request,actor.operation_kind,%{micro: micro,material: material})
+      do: {Prefab.micro_coord(cell,slot),material,%{micro: Prefab.micro_coord(cell,slot),material: material,granularity: 2,owner: owner}}
+    attachments = for {{_,_,micro}=slot,{id,material}=value} <- source.attachments,
+      Map.get(other.attachments,slot) != value, do: {micro,material,%{micro: micro,material: material,granularity: 3,incarnation: id,slot: slot}}
+    {_micro,_material,target} = Enum.min(macro ++ micro ++ attachments)
+    # operation 原有 prefab 坐标保持 footprint 微格，不按宏格居中改写。
+    %{operation: Observation.operation(actor,actor.operation_request,actor.operation_kind,Map.drop(target,[:granularity])),
+      interaction: VoxelRegion.World.Interactions.capture(before,actor,actor.operation_kind,target)}
   end
 
   def changed_prefab_macros(state, other, cells) do

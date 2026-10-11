@@ -48,6 +48,8 @@ defmodule VoxelRegion.World do
 
   def content_version(server \\ @name), do: GenServer.call(server, :content_version)
   def seq(server \\ @name), do: GenServer.call(server, :seq)
+  @doc "读取最近 512 个已提交操作；nil 建立当前起点，过旧游标返回显式缺口。"
+  def interactions_since(server, cursor), do: GenServer.call(server, {:interactions_since, cursor})
   def liquid_activity(server), do: GenServer.call(server, :liquid_activity)
 
   @doc "唯一 canonical authority 的 PID，供区域视图共享世界身份。"
@@ -550,6 +552,8 @@ defmodule VoxelRegion.World do
             ),
           overlay_regions: %{},
           seq: 0,
+          interaction_history: [],
+          interaction_floor: 0,
           entries: %{},
           checkpoint_timer: nil,
           # nil、等待现有热提交边界（task=nil）、单个前缀计算任务；只由World持久化与应用结果。
@@ -598,7 +602,7 @@ defmodule VoxelRegion.World do
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
-  @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact]
+  @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since]
 
   def handle_call(message, from, %{thermal_work: %{domain: %{pending: true}}} = state)
       when not (is_tuple(message) and elem(message, 0) in @unflushed) and message not in @unflushed,
@@ -606,6 +610,8 @@ defmodule VoxelRegion.World do
 
   def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
   def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
+  def handle_call({:interactions_since, cursor}, _from, state),
+    do: {:reply, VoxelRegion.World.Interactions.since(state, cursor), state}
   def handle_call(:liquid_activity, _from, state), do:
     {:reply, %{active_cells: MapSet.size(state.liquid_active), scheduled: state.liquid_timer != nil}, state}
   def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}

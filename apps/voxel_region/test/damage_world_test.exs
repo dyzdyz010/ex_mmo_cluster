@@ -88,6 +88,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,seq} = World.tool_intent(c.w,actor,request)
     assert_receive {:canonical_delta,%{transaction_seq: ^seq}=delta}
     assert delta.transaction.operation == %{character: 1001,client_seq: 1,kind: 0,material: 19,micro: {12,12,20}}
+    refute Map.has_key?(delta.transaction, :interaction)
     assert [retained] = VoxelRegion.Replica.canonical_deltas_after(replica,snapshot.transaction_seq)
     refute Map.has_key?(retained.transaction,:operation)
   end
@@ -138,6 +139,8 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,seq} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,remove)
     assert_receive {:canonical_delta,removed}
     assert removed.transaction.operation == %{character: 1001,client_seq: 22,kind: 1,material: 11,micro: {8,8,16}}
+    assert {:ok, %{events: [%{kind: :build, placed_by: nil}, %{kind: :build, placed_by: 1001},
+      %{kind: :destroy, placed_by: 1001}]}} = World.interactions_since(c.w,0)
     assert {:ok,^seq} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,remove)
     refute_received {:canonical_delta,_}
     assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))

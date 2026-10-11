@@ -1,5 +1,33 @@
 # Voxim Region 真值
 
+2026-10-11 NPC 经历操作序列（Global system；测试为 Test-only）：
+`World.interactions_since(server, cursor)` 从同一 World 提交点读取最近 512 个有操作者的 build/damage/destroy。
+`nil` 返回当前事务游标与空事件；非负游标返回其后的事件和当前游标，已淘汰事件前的游标显式返回
+`{:error, {:interaction_gap, oldest_seq}}`。负数或超过当前事务的游标返回 `:invalid_interaction_cursor`。
+`world_id` 是既有 content_version 的 `FileStore.hex/1`；事件含 `seq/at_ms/actor/kind/cell/material/placed_by`，
+`cell` 是完整 XYZ 宏格，`at_ms` 是服务端系统毫秒时钟。沿用已有 operation 选取的实际目标，每笔操作只产生一个经历。
+操作构造时冻结提交前溯源：宏格取 `placed_by`、微格取实际 slot 的实例记录、prefab 附件经 attachment owner 取实例记录；
+没有既有放置者事实的作者样本、自然地形和独立附件返回 nil，不从宿主猜测。prefab 替换取同一实际位置的旧归属。
+`World.Interactions` 只维护有界操作序列，几何与放置者事实仍由原 owner 持有；它不评价 NPC 的情绪或人格。
+
+```mermaid
+flowchart LR
+  Intent[正式操作裁决] --> Metadata[既有 operation + 内部 interaction]
+  Metadata --> Log[同笔 World 日志提交]
+  Log -->|成功| History[512 个已提交经历]
+  History --> Read[interactions_since 只读入口]
+  History --> Checkpoint[检查点历史与淘汰边界]
+  Checkpoint --> Replay[冷回放同一序列]
+```
+
+提交失败与非操作事务不增加经历；重复请求仍遵守既有会话去重。File 与正式 Db 的元数据都保存单笔经历，
+检查点保存有界历史和最后淘汰序号，冻结前缀的异步压实保留期间追加的后缀。内部经历不进入 canonical 广播，
+既有 operation wire 字段与字节不变。使用现有原子追加/检查点契约（`OverlayLog` 与正式 `OverlayLogStore`），
+让操作与几何/属性同成功或同失败，不建立第二持久出口。
+最小验证：`cd apps/voxel_region && mix test --no-start test/world_interactions_test.exs`；
+真实 World + 空气源/角色上下文替身，公开意图、真实 File 日志、Db metadata rows roundtrip 和全新 Elixir VM 冷回放，
+覆盖失败不产事件、身份归属、重读、压实、512 上限及缺口；真实玩家双端链路由 NPC life loop 场景另验。
+
 2026-09-30 大火热模拟：分步提交与常驻原生拓扑（Global system；基准、回放与等价性测试为 Test-only）：
 Demo 林火（约 1.2 万热格、2 万内核节点）里 World 每 0.5 模拟秒要连续跑约 10 个内核步、共约 1.8 s，
 玩家挖放在 World 邮箱里排 5–8 s。一，定时提交改为逐步消息（`:thermal_tick` 开始、`{:thermal_step, ref}` 每条一步），

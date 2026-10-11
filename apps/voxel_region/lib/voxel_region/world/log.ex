@@ -30,6 +30,7 @@ defmodule VoxelRegion.World.Log do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   def remember_entry(state, full) do
+    state = VoxelRegion.World.Interactions.apply(state, full)
     state = retain_entry(state, full)
     # 每笔事务都是热提交的唤醒事件（R8-05）：记下改写的属性行供热行增量重判，休眠中的热模拟排一拍。
     state = VoxelRegion.World.Thermal.touch(state, Map.get(full, :property_states, []))
@@ -41,7 +42,7 @@ defmodule VoxelRegion.World.Log do
     # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
     txn = if match?(%{entries: [], coarse: []}, full),
       do: Map.take(full, [:seq, :entries, :coarse]),
-      else: Map.drop(full, [:liquid_falls, :casts, :operation])
+      else: Map.drop(full, [:liquid_falls, :casts, :operation, :interaction, :interaction_history, :interaction_floor])
     %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
   end
@@ -256,6 +257,7 @@ defmodule VoxelRegion.World.Log do
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
       :payloads, :decoded, :lru, :lru_ticks, :tick, :lru_bytes, :resident_bytes, :cache_limit,
       :cache_stats])
+    |> Map.merge(Map.take(state, [:interaction_history, :interaction_floor]))
     |> Map.put(:retained_before, map_size(state.entries))
   end
 
@@ -296,6 +298,7 @@ defmodule VoxelRegion.World.Log do
         phase_inventory: state.phase_inventory,
         thermal: state.thermal
       })
+      |> Map.merge(Map.take(state, [:interaction_history, :interaction_floor]))
 
     %{transaction: attachment_metadata(state, txn), retained_before: state.retained_before, regions: length(extra),
       select_us: selected - started, image_us: imaged - selected}

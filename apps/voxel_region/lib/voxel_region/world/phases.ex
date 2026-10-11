@@ -179,7 +179,7 @@ defmodule VoxelRegion.World.Phases do
       {state,%{cell=>q},%{phase_values: values}}
     end
     {state,changes,settlement}=settlement
-    settlement=Map.put(settlement,:operation,Observation.operation(actor,request,if(request.action==2 or target.hp==0.0,do: 1,else: 0),target))
+    settlement=Map.merge(settlement,Observation.operation_metadata(before,actor,request,if(request.action==2 or target.hp==0.0,do: 1,else: 0),target))
     case Liquids.commit_liquid(state,changes,settlement) do
       {:ok,next}->{:reply,{:ok,next.seq},next}
       {:error,reason}->{:reply,{:error,reason},before}

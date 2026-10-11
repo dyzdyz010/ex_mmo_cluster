@@ -30,8 +30,9 @@ defmodule VoxelRegion.World.AttachmentOps do
                :ok <- Claims.attachment_protection(before, actor, request),
                :ok <- attachment_reach(before, actor, request, tool),
                {:ok, state, slots, settlement} <- attachment_change(before, actor, request) do
-            operation = Observation.operation(actor,request,if(request.action == 0,do: 2,else: 1),%{material: request.material,micro: request.anchor})
-            commit_attachment(before, state, slots, Map.put(settlement,:operation,operation))
+            target = %{material: request.material, micro: request.anchor, granularity: 3, incarnation: request.id}
+            metadata = Observation.operation_metadata(before,actor,request,if(request.action == 0,do: 2,else: 1),target)
+            commit_attachment(before, state, slots, Map.merge(settlement,metadata))
           else
             :error -> {:error, :invalid_tool}
             error -> error
@@ -74,7 +75,7 @@ defmodule VoxelRegion.World.AttachmentOps do
            before,
            state,
            slots,
-           Map.merge(settlement, %{property_states: [tombstone],operation: Observation.operation(actor,request,1,target)})
+           settlement |> Map.put(:property_states, [tombstone]) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
          ) do
       {:ok, next} -> {:reply, {:ok, next.seq}, next}
       {:error, reason} -> {:reply, {:error, reason}, before}

@@ -204,7 +204,7 @@ defmodule VoxelRegion.World.Tools do
                   before,
                   %{state | damage: Map.put(state.damage, Damage.key(target), target)},
                   target,
-                  Map.merge(settlement, %{recovery_cid: actor.cid, operation: Observation.operation(actor,request,1,target)})
+                  settlement |> Map.put(:recovery_cid, actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
                 )
 
               true ->
@@ -219,9 +219,9 @@ defmodule VoxelRegion.World.Tools do
                   entries: [],
                   coarse: [],
                   property_states: [target],
-                  operation: Observation.operation(actor,request,0,target),
                   epochs: %{}
                 }
+                |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
 
                 case Log.append_log(state, txn) do
                   :ok ->
@@ -416,7 +416,7 @@ defmodule VoxelRegion.World.Tools do
   def dismantle_target(before, state, actor, request, %{granularity: 0} = target) do
     units = recover_units(state,target,@micro*@micro*@micro*state.material_units_per_micro)
     {state,settlement} = Production.settle_material(state,actor.cid,target.material,units)
-    destroy_target(before,state,target,Map.merge(settlement,%{recovery_cid: actor.cid,operation: Observation.operation(actor,request,1,target)}))
+    destroy_target(before,state,target,settlement |> Map.put(:recovery_cid,actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target)))
   end
 
   def dismantle_target(before, state, actor, request, target) do
@@ -439,7 +439,8 @@ defmodule VoxelRegion.World.Tools do
         {s,Map.merge(balances,settlement.material_balances)}
       end)
 
-      settlement = %{material_balances: balances, recovery_cid: actor.cid,operation: Observation.operation(actor,request,1,target)}
+      settlement = %{material_balances: balances, recovery_cid: actor.cid}
+        |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
       # Include a tombstone even when a small leaf dies on its first hit.
       damaged = %{before | damage: Map.put(before.damage, Damage.key(target), target)}
 
