@@ -63,14 +63,14 @@ def profile_params(goal, limit=24):
 
 def freeze_pairs(cid, out):
     record = demo.rpc(f'''
-      {{_, profile}} = GateServer.Npc.Registry.brain("life", {packed(profile_params(GOALS[0]))})
-      [{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
-      b = GateServer.Npc.Body.observe(pid)
+      {{_, profile}} = NpcServer.Registry.brain("life", {packed(profile_params(GOALS[0]))})
+      [{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
+      b = NpcServer.Body.observe(pid)
       observation = %{{self: %{{entity_id: {cid},position: b.position,tick: b.tick}},
         entities: Map.values(b.entities),pending: [],balances: b.balances}}
-      {{:ok, context}} = GateServer.Npc.Life.context({cid}, "Who has helped or damaged my construction? What relationships and experiences should guide future collaboration?")
-      context = Map.merge(context, GateServer.Npc.Memory.working_context(DataService.NpcMemory,{cid}))
-      %{{body: GateServer.Npc.Brain.Llm.body(profile,observation,[],context),at_ms: System.system_time(:millisecond)}}''')
+      {{:ok, context}} = NpcServer.Life.context({cid}, "Who has helped or damaged my construction? What relationships and experiences should guide future collaboration?")
+      context = Map.merge(context, NpcServer.Memory.working_context(DataService.NpcMemory,{cid}))
+      %{{body: NpcServer.Brain.Llm.body(profile,observation,[],context),at_ms: System.system_time(:millisecond)}}''')
     demo.save(out / 'source.json', record)
     demo.save(out / 'authority.json', demo.observe(cid))
     cases = []
@@ -112,9 +112,9 @@ def pairs(cid, source, out):
             demo.save(body_path, case['body'])
         started = time.time()
         response = demo.rpc(f'''
-          {{_,p}} = GateServer.Npc.Registry.brain("life",{packed(profile_params('paired inference'))})
+          {{_,p}} = NpcServer.Registry.brain("life",{packed(profile_params('paired inference'))})
           body = File.read!("/demo/{body_name}") |> Jason.decode!()
-          case GateServer.Npc.Http.request(p.endpoint,body) do
+          case NpcServer.Http.request(p.endpoint,body) do
             {{:ok,r}} -> %{{status: "ok",usage: r["usage"],output: Enum.filter(r["output"] || [], &(&1["type"] == "function_call"))}}
             {{:error,_}} -> %{{status: "error"}}
           end''')
@@ -152,14 +152,14 @@ def live(cid, out, seconds, *, run_id='long-horizon', params=None, stop=None, to
         position = before['body']['position']
         spec = f'%{{scene_id: 1,spawn: {{{",".join(map(str,position))}}},brain: "life",params: {packed(params)}}}'
         registered = True  # 登记失败也可能已经落库，仍承担恢复义务。
-        result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
+        result = demo.rpc(f'case NpcServer.Registry.put("{demo.NAME}",{spec}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
         demo.save(out / 'registration.json', result)
         assert result == {'cid': cid}, 'LLM registration failed'
         with (out / 'authority.jsonl').open('w', encoding='utf-8') as stream:
             while time.time()-started < seconds:
                 row = demo.observe(cid)
                 position = row['body']['position']
-                row['working'] = demo.rpc(f'GateServer.Npc.Memory.working_context(DataService.NpcMemory,{cid})')
+                row['working'] = demo.rpc(f'NpcServer.Memory.working_context(DataService.NpcMemory,{cid})')
                 stream.write(json.dumps(row, ensure_ascii=False)+'\n')
                 stream.flush()
                 if row['life']['error']:
@@ -201,21 +201,21 @@ def live(cid, out, seconds, *, run_id='long-horizon', params=None, stop=None, to
             errors['observe'] = type(error).__name__
         if registered:
             try:
-                result = demo.rpc(f'case GateServer.Npc.Registry.put("{demo.NAME}",{demo.spec("settler", position)}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
+                result = demo.rpc(f'case NpcServer.Registry.put("{demo.NAME}",{demo.spec("settler", position)}) do {{:ok,r}} -> Map.take(r,[:cid]); e -> e end')
                 demo.save(out / 'restore.json', result)
                 assert result == {'cid': cid}, 'settler restoration failed'
             except Exception as error:
                 errors['restore'] = type(error).__name__
                 # 已验证的恢复失败模型：停用本任务登记，显式保留失败，不能留下持续付费后端。
                 try:
-                    disabled = demo.rpc(f'GateServer.Npc.Registry.remove("{demo.NAME}")')
+                    disabled = demo.rpc(f'NpcServer.Registry.remove("{demo.NAME}")')
                     demo.save(out / 'disabled-after-restore-error.json', disabled)
                     assert disabled == 'ok', 'failed to disable LLM registration'
                 except Exception as disable_error:
                     errors['disable'] = type(disable_error).__name__
         try:
             demo.save(out / 'trace-stop.json', demo.rpc('''
-              :erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global])
+              :erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global])
               :erlang.trace(:all,false,[:call])
               if p = Process.whereis(:npc_long_horizon_trace), do: Process.exit(p,:kill)
               %{stopped: true}'''))

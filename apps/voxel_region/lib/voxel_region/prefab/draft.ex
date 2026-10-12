@@ -6,6 +6,8 @@ defmodule VoxelRegion.Prefab.Draft do
   """
   alias MmoContracts.VoxelMaterialCatalog
   alias VoxelRegion.Prefab
+  # 编辑中间态的操作预算，独立于蓝图的空间范围；沿用原有 4096 格预算。
+  @scratch_cells 4096
 
   @doc "新建可编辑的空定义。"
   def new, do: %{cells: [], macro_cells: [], children: [], attachments: []}
@@ -22,12 +24,10 @@ defmodule VoxelRegion.Prefab.Draft do
   def edit(_, _), do: {:error, :invalid_edit}
 
   defp operation(d, %{"op" => op, "min" => lo, "max" => hi} = box) when op in ["fill","walls","clear"] do
-    extent = div(Prefab.limits().extent_micro, VoxelRegion.Spatial.micro_resolution())
-    scratch_cells = extent * extent * extent
     with true <- coord?(lo) and coord?(hi),
          true <- op == "clear" or material?(box["material"]),
-         {:ok, cells} <- VoxelRegion.Blueprint.edit(Map.new(d.macro_cells), box, scratch_cells),
-         true <- map_size(cells) <= scratch_cells do
+         {:ok, cells} <- VoxelRegion.Blueprint.edit(Map.new(d.macro_cells), box, @scratch_cells),
+         true <- map_size(cells) <= @scratch_cells do
       {:ok, %{d | macro_cells: Enum.sort(cells)}}
     else
       _ -> {:error, :invalid_edit}

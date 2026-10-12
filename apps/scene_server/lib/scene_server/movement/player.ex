@@ -56,7 +56,7 @@ defmodule SceneServer.Movement.Player do
   @doc """
   非工具世界写意图（生产、附件、prefab、发布）与 World refresh 的角色 owner 接纳：同一 identity、已 ready、
   不在移交或失败中，再依次拒绝施法中（`:casting`）与死亡（`:dead`）；通过时返回当前 actor。
-  它也是 NPC 技能上下文（`GateServer.Npc.Body.skill_context/1`）与 `design_house` 每轮请求、look / inspect、
+  它也是 NPC 技能上下文（`NpcServer.Body.skill_context/1`）与 `design_house` 每轮请求、look / inspect、
   记忆工具前刷新 actor 的来源：死亡期间技能无法开始（`:dead`）；进行中的 `design_house` 的这些工具回
   `error: dead`，下一轮模型请求前以 `dead` 结束。
   """

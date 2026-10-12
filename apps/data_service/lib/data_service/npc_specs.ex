@@ -4,7 +4,7 @@ defmodule DataService.NpcSpecs do
 
   一行 = 一个随节点启动的 NPC：`character_id` 是 characters 表的 NPC 行（`CharacterStore.ensure_npc/1`，名字即永久身份），
   `scene_id` / `spawn` 是入场 Scene 与出生点（米），`brain` 与 `params` 是大脑名与它的 JSON 形参数（字符串键），`enabled`
-  决定是否随节点启动。参数的含义与校验只在 `GateServer.Npc.Registry`（登记时校验一次，非法不落库）；这里只存取，不解释。
+  决定是否随节点启动。参数的含义与校验只在 `NpcServer.Registry`（登记时校验一次，非法不落库）；这里只存取，不解释。
   位置不持久化：每次入场从 spawn 开始。
 
   与 `DataService.NpcMemory` 同范式：直接走 `DataService.Repo` 的模块函数。

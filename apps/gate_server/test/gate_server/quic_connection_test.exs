@@ -1,10 +1,12 @@
 defmodule T1Auth do
-  def join(join,_hello) do
-    with {:ok,claims} <- verify_token(join.token),
-         :ok <- validate_username(claims,join.username),
-         :ok <- authorize_cid(claims,join.cid),
-         {:ok,character} <- fetch_authorized_character(claims,join.cid),do: {:ok,character,nil}
+  def join(join, _hello) do
+    with {:ok, claims} <- verify_token(join.token),
+         :ok <- validate_username(claims, join.username),
+         :ok <- authorize_cid(claims, join.cid),
+         {:ok, character} <- fetch_authorized_character(claims, join.cid),
+         do: {:ok, character, nil}
   end
+
   def verify_token("valid"), do: {:ok, %{username: "one", cid: 101}}
   def verify_token(_), do: {:error, :mismatch}
   def validate_username(%{username: username}, username), do: :ok
@@ -43,6 +45,7 @@ end
 defmodule T1TransportTest do
   @moduledoc "只测试：真实 QUIC 传输配合显式 Auth/Scene 替身；协商上限和调度顺序注入属于传输故障模型，不修改会话身份或世界真值。"
   use ExUnit.Case, async: false
+  @moduletag :quic_transport
 
   alias MmoContracts.Session
   alias MmoContracts.Movement
@@ -61,11 +64,13 @@ defmodule T1TransportTest do
     # 只测试：允许避开同机在线 Demo 已占用的端口；监听与所有连接共用同一值。
     port = System.get_env("VOXIM_TEST_QUIC_PORT", "25443") |> String.to_integer()
     start_supervised!({T1Scene, self()})
+    claims = start_supervised!({WorldServer.Session, route_module: T1Route})
 
     listener =
       start_supervised!(
         {GateServer.Transport.QuicListener,
          [
+           claims: claims,
            port: port,
            certfile: certs <> "server.pem",
            keyfile: certs <> "server.key",
@@ -867,7 +872,7 @@ defmodule M4aGateTransferTest do
   @moduletag :m4a_transfer
 
   alias GateServer.Session.QuicConnection
-  alias GateServer.Session.Claims
+  alias WorldServer.Session, as: Claims
   alias MmoContracts.{Session, Movement}
 
   defmodule BlockingEditStore do

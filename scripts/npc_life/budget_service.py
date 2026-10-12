@@ -63,7 +63,7 @@ def setup(out):
     mounts = game['Mounts']
     assert len(mounts)==1 and Path(mounts[0]['Source']).resolve()==demo.SERVER.resolve() and mounts[0]['Destination']=='/demo'
     assert game['Config']['Cmd']==['sh','/demo/start.sh'] and game['Config']['User']=='0:0'
-    registry = demo.rpc('GateServer.Npc.Registry.list()')
+    registry = demo.rpc('NpcServer.Registry.list()')
     assert {r['cid'] for r in registry} == set(CIDS)
     assert all(r['brain']=='settler' and 'life' not in r['params'] for r in registry), 'paid owner still running'
     demo.save(out/'registry-before.json', registry)

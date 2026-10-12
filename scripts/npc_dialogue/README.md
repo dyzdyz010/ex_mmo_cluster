@@ -49,7 +49,7 @@ python -B scripts/npc_dialogue/memory_check.py run --source .demo/observe/npc-di
 4. 等正式 readiness、注册表恢复、Life 加载及后台任务完成，记录 `after.json`。两个 NPC 的完整 canonical state（含 World 身份和 cursor）必须与重启前严格一致，retained 数量保持。若静默窗口发生新的真实 World 活动，严格比较会失败；保留证据，不能通过忽略游标或补写状态消除失败。
 5. 每 NPC 恰好调用一次生产 `Life.context`，以角色名和一般对话查询召回，不向查询注入待验证原话。保存 `query-{cid}.json`、`recall-{cid}.json`，只读实际 recalled facts 引用的原文档，保存 `documents-{cid}.json`。最终再核对 canonical state、后台完成状态和 token，保存 `final.json`、`evidence.json`。
 
-依据为当前固定 **Hindsight 0.10.3** 实例的公开 `/openapi.json`（本地证据 `.demo/observe/npc-life-20261011/hindsight/openapi.json`）、[生产适配器](../../apps/gate_server/lib/gate_server/npc/life/hindsight.ex) 和 [Speech 经历投影](../../apps/gate_server/lib/gate_server/npc/dialogue.ex)。宿主只读 API 固定 `http://127.0.0.1:18908`，生产 Life 使用同一容器 `http://voxim-npc-life-loop-20261011:8888`；版本、端口、镜像与数据卷通过既有 `service.preflight` 检查。只保存公开的统计、来源文档和脱敏观察，不读取环境凭证、私有 endpoint 或原始 LLM trace。
+依据为当前固定 **Hindsight 0.10.3** 实例的公开 `/openapi.json`（本地证据 `.demo/observe/npc-life-20261011/hindsight/openapi.json`）、[生产适配器](../../apps/npc_server/lib/npc_server/life/hindsight.ex) 和 [Speech 经历投影](../../apps/npc_server/lib/npc_server/dialogue.ex)。宿主只读 API 固定 `http://127.0.0.1:18908`，生产 Life 使用同一容器 `http://voxim-npc-life-loop-20261011:8888`；版本、端口、镜像与数据卷通过既有 `service.preflight` 检查。只保存公开的统计、来源文档和脱敏观察，不读取环境凭证、私有 endpoint 或原始 LLM trace。
 
 ## 来源与语义结论分开
 

@@ -12,6 +12,7 @@ defmodule WorldServer.Application do
         path -> [{WorldServer.Topology, path}]
       end
 
+    children = [{WorldServer.Session, name: WorldServer.Session} | children]
     Supervisor.start_link(children, strategy: :one_for_one, name: WorldServer.Supervisor)
   end
 end

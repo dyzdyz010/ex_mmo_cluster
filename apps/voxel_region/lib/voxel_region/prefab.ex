@@ -5,11 +5,11 @@ defmodule VoxelRegion.Prefab do
     nodes: {64,:node_limit},depth: {8,:depth_limit},attachment_slots: {8192,:attachment_slot_limit}]
   @runtime_bytes 24 + 14*(elem(@runtime_limits[:macro_cells],0)+elem(@runtime_limits[:micro_cells],0)) +
     49*(elem(@runtime_limits[:nodes],0)-1) + 21*elem(@runtime_limits[:attachment_slots],0)
-  @runtime_extent 16 * VoxelRegion.Spatial.micro_resolution()
+  @runtime_height 64 * VoxelRegion.Spatial.micro_resolution()
 
   @doc "工作台与发布入口共用的运行时预算；作者目录不受这些预算限制。"
   def limits, do: Map.new(@runtime_limits,fn {key,{limit,_}} -> {key,limit} end)
-    |> Map.merge(%{extent_micro: @runtime_extent,bytes: @runtime_bytes})
+    |> Map.merge(%{height_micro: @runtime_height,bytes: @runtime_bytes})
 
   @doc "已编译完整几何包围盒转到目标坐标；含全部子件与附件，沿用正交旋转的八角点变换。"
   def bounds(compiled,anchor,orientation), do: transform_bounds(compiled.summary.bounds,anchor,orientation)
@@ -186,7 +186,7 @@ defmodule VoxelRegion.Prefab do
       end
     end)
     case {result,summary.bounds} do
-      {:ok,{lo,hi}} -> if Enum.all?(0..2,&(elem(hi,&1)-elem(lo,&1)<=@runtime_extent)),do: :ok,else: {:error,:bounds_limit}
+      {:ok,{lo,hi}} -> if elem(hi,1)-elem(lo,1)<=@runtime_height,do: :ok,else: {:error,:bounds_limit}
       _ -> result
     end
   end

@@ -1,0 +1,60 @@
+defmodule NpcServer.Context do
+  @moduledoc "全局系统功能：父脑与技能共享的模型输入投影；参数由权威 profile 提供，不拥有世界状态。"
+
+  @doc "身体尺寸与运动能力，字段显式标注单位；不把模拟器参数当作已开放动作。"
+  def body(profile) do
+    %{
+      height_m: 2 * profile.half_height,
+      half_height_m: profile.half_height,
+      radius_m: profile.radius,
+      diameter_m: 2 * profile.radius,
+      walk_speed_m_s: profile.speed,
+      acceleration_m_s2: profile.acceleration,
+      braking_m_s2: profile.braking,
+      step_height_m: profile.step_height,
+      design_clearance_micro:
+        ceil(2 * profile.half_height * VoxelRegion.Spatial.micro_resolution()),
+      move_to: %{
+        can_jump: false,
+        enters_liquid: false,
+        max_step_macro: floor(profile.step_height),
+        clearance_macro: clearance(profile),
+        refined_cells: :blocked_by_current_macro_navigation
+      }
+    }
+  end
+
+  @doc "身高占的宏格数（寻路的净空、survey 与扩张判“站得下”都用它）：完整身高向上取整。"
+  def clearance(profile), do: ceil(2 * profile.half_height)
+
+  @doc "所有决策入口共用的坐标约定。"
+  def coordinates do
+    %{
+      up: :Y,
+      horizontal: [:X, :Z],
+      position_unit: :metre,
+      position_origin: :body_center,
+      micro_per_metre: VoxelRegion.Spatial.micro_resolution(),
+      check_points: :world_micro_feet,
+      draft_cells: :local_coordinates,
+      feet_y: "position.y - body.half_height_m"
+    }
+  end
+
+  @doc "将不可变观察转换为模型传输数据；不读取或改变世界。"
+  # 元组 → 列表，其余原样；权威返回的 reason / data 可能含元组与原子。
+  def plain(%{} = map),
+    do:
+      Map.new(map, fn
+        {:definition_id, <<_::256>> = id} -> {:definition_id, Base.encode16(id, case: :lower)}
+        {k, v} -> {k, plain(v)}
+      end)
+
+  def plain(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> Enum.map(&plain/1)
+  def plain(list) when is_list(list), do: Enum.map(list, &plain/1)
+
+  def plain(binary) when is_binary(binary),
+    do: if(String.valid?(binary), do: binary, else: Base.encode16(binary))
+
+  def plain(other), do: other
+end

@@ -8,6 +8,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 APP_JOBS = {
     "gate_server": "test-gate-server",
+    "npc_server": "test-npc-server",
     "data_service": "test-data-service", "scene_server": "test-scene-server",
     "world_server": "test-standalone", "auth_server": "test-auth-server",
     "voxel_region": "test-voxel-region",
@@ -37,11 +38,13 @@ def select(paths):
             if app not in graph:
                 raise ValueError("未映射 app：" + name)
             if name == "apps/data_service/test/support/database.exs":
-                jobs.update(APP_JOBS[a] for a in ("data_service", "gate_server", "scene_server", "world_server", "voxel_region"))
+                jobs.update(APP_JOBS[a] for a in ("data_service", "gate_server", "npc_server", "scene_server", "world_server", "voxel_region"))
             elif name == "apps/voxel_region/test/support/prefab_fixture.exs":
                 jobs.update(("test-voxel-region", "test-scene-server"))
             elif name == "apps/voxel_region/test/support/world_fixtures.exs":
-                jobs.update(("test-voxel-region", "test-scene-server", "test-gate-server"))
+                jobs.update(("test-voxel-region", "test-scene-server", "test-gate-server", "test-npc-server"))
+            elif name == "apps/scene_server/test/support/body_store.exs":
+                jobs.update(("test-scene-server", "test-gate-server", "test-npc-server", "test-standalone"))
             elif "/test/" in name and app in APP_JOBS:
                 jobs.add(APP_JOBS[app])
             elif app == "voxel_region" and path.name in local_voxel:

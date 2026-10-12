@@ -1,7 +1,7 @@
 defmodule DataService.NpcSpecsTest do
   @moduledoc """
   只测试：NPC 注册表的存储层（`npc_specs` 表，放置阶段决策稿 docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md §2）。
-  DB-backed；期望值是手写字面量。参数的解析与校验不在这一层（`GateServer.Npc.Registry`）。
+  DB-backed；期望值是手写字面量。参数的解析与校验不在这一层（`NpcServer.Registry`）。
   """
   use ExUnit.Case, async: false
   alias DataService.{CharacterStore, NpcSpecs, Repo}

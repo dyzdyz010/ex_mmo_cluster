@@ -60,10 +60,10 @@ def addressed_since(cid, heard):
     """是否有新直接发言由正式 Dialogue 契约判定，不把旁听或本人回声当唤醒。"""
     import demo
     from long_horizon import packed
-    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
+    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
       seen = {packed(heard)}
-      Enum.any?(GateServer.Npc.Body.observe(pid).dialogue,fn speech ->
-        GateServer.Npc.Dialogue.direct?(speech,{cid}) and
+      Enum.any?(NpcServer.Body.observe(pid).dialogue,fn speech ->
+        NpcServer.Dialogue.direct?(speech,{cid}) and
           (speech |> Jason.encode!() |> Jason.decode!()) not in seen end)''')
 
 
@@ -144,15 +144,15 @@ def now():
 
 def runtime(cid):
     import demo
-    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
-      {{:ok,life}} = GateServer.Npc.Life.observe({cid})
-      %{{body: GateServer.Npc.Body.observe(pid), life: Map.drop(life,[:cache,:hindsight])}}''')
+    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
+      {{:ok,life}} = NpcServer.Life.observe({cid})
+      %{{body: NpcServer.Body.observe(pid), life: Map.drop(life,[:cache,:hindsight])}}''')
 
 
 def register(row, brain, params, position):
     import demo
     from long_horizon import packed
-    result = demo.ok(demo.rpc(f'''case GateServer.Npc.Registry.put({packed(row['name'])},
+    result = demo.ok(demo.rpc(f'''case NpcServer.Registry.put({packed(row['name'])},
       %{{scene_id: {row['scene_id']}, spawn: List.to_tuple({packed(position)}),
          brain: {packed(brain)}, params: {packed(params)}}}) do
         {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'''))
@@ -169,9 +169,9 @@ def step(cid, hour, out, origin, on_response=lambda _answer: None, sequence=1, c
                    'simulated_calendar': (origin + timedelta(hours=hour-1)).isoformat(),
                    'time_semantics': TIME_SEMANTICS}
     # observer 为本次 RPC 进程；关联 tag 不可复用，HTTP 错误不重试或自动重新发许可。
-    answer = demo.rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
+    answer = demo.rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
       tag = {packed(tag)}
-      case GateServer.Npc.Body.step(pid,self(),tag,{packed(context)}) do
+      case NpcServer.Body.step(pid,self(),tag,{packed(context)}) do
         :ok -> receive do
           {{:npc_llm_step,^tag,result}} -> %{{tag: tag, result: result}}
         after 240000 -> %{{tag: tag, result: {{:error,:step_result_timeout}}}} end
@@ -205,7 +205,7 @@ def step(cid, hour, out, origin, on_response=lambda _answer: None, sequence=1, c
 def memory_usage(cids):
     import demo
     state = demo.rpc('''Map.new(CID_LIST, fn cid ->
-      {:ok,memory} = GateServer.Npc.Life.Hindsight.status(%{url: "http://voxim-npc-life-loop-20261011:8888",bank: "npc-life-#{cid}"})
+      {:ok,memory} = NpcServer.Life.Hindsight.status(%{url: "http://voxim-npc-life-loop-20261011:8888",bank: "npc-life-#{cid}"})
       {cid,memory} end)'''.replace('CID_LIST', json.dumps(cids)))
     return sum(v['input_tokens'] + v['output_tokens'] for row in state.values() for v in row['usage'].values()), state
 
@@ -214,7 +214,7 @@ def checkpoint(out, hour, cids, *, flush=False, suffix=''):
     import demo
     if flush:
         for cid in cids:
-            demo.ok(demo.rpc(f'GateServer.Npc.Life.flush({cid})'))
+            demo.ok(demo.rpc(f'NpcServer.Life.flush({cid})'))
         deadline = time.monotonic() + 600
         while True:
             rows = [runtime(cid)['life'] for cid in cids]
@@ -226,9 +226,9 @@ def checkpoint(out, hour, cids, *, flush=False, suffix=''):
                 raise TimeoutError('memory checkpoint did not drain')
             time.sleep(2)
     code = '''Map.new(CID_LIST, fn cid ->
-      {:ok,life} = GateServer.Npc.Life.observe(cid)
-      {:ok,memory} = GateServer.Npc.Life.Hindsight.status(%{url: "http://voxim-npc-life-loop-20261011:8888",bank: "npc-life-#{cid}"})
-      {cid,%{life: life,memory: memory,working: GateServer.Npc.Memory.working_context(DataService.NpcMemory,cid)}} end)'''
+      {:ok,life} = NpcServer.Life.observe(cid)
+      {:ok,memory} = NpcServer.Life.Hindsight.status(%{url: "http://voxim-npc-life-loop-20261011:8888",bank: "npc-life-#{cid}"})
+      {cid,%{life: life,memory: memory,working: NpcServer.Memory.working_context(DataService.NpcMemory,cid)}} end)'''
     state = demo.rpc(code.replace('CID_LIST', json.dumps(cids)))
     world = demo.rpc('VoxelRegion.World.material_snapshot(VoxelRegion.World,' + json.dumps(cids) + ',[{61,416,-517}])')
     destination = out/f'checkpoint-{hour:05d}{suffix}.json'
@@ -254,7 +254,7 @@ def run(out, hours=8760):
                 'model_preflight_tokens': 0, 'completed_decision_rounds': 0,
                 'decision_tokens': 0, 'memory_tokens_since_start': 0}
     atomic_json(out/'progress.json', progress)
-    rows = demo.rpc('GateServer.Npc.Registry.list()')
+    rows = demo.rpc('NpcServer.Registry.list()')
     if {r['name'] for r in rows} != set(ROLES) or any('life' in r['params'] or
             (r['brain'] != 'settler' and not (r['name'] == '知衡' and r['brain'] == 'llm' and r['params'].get('cadence') == 'manual')) for r in rows):
         raise RuntimeError('expected three quiescent owned NPC registrations')
@@ -262,7 +262,7 @@ def run(out, hours=8760):
     cids = [row['cid'] for row in rows]
     goals = goals_for(rows)
     demo.save(out/'registry-before.json', rows)
-    positions = demo.rpc('Map.new(' + json.dumps(cids) + ',fn cid -> [{pid,_}]=Registry.lookup(GateServer.NpcNames,cid);{cid,GateServer.Npc.Body.observe(pid).position} end)')
+    positions = demo.rpc('Map.new(' + json.dumps(cids) + ',fn cid -> [{pid,_}]=Registry.lookup(NpcServer.Names,cid);{cid,NpcServer.Body.observe(pid).position} end)')
     demo.save(out/'positions-before.json', positions)
     effective = demo.rpc('Map.new(["NPC_LLM_MODEL","NPC_LLM_EFFORT"],fn k -> {k,System.get_env(k)} end)')
     if effective != {'NPC_LLM_MODEL': MODEL, 'NPC_LLM_EFFORT': EFFORT}:
@@ -385,12 +385,12 @@ def run(out, hours=8760):
             except BaseException as error:
                 errors.append({'type': 'restore', 'cid': row['cid'], 'message': type(error).__name__})
                 try:
-                    demo.rpc(f'GateServer.Npc.Registry.remove({packed(row["name"])})')
+                    demo.rpc(f'NpcServer.Registry.remove({packed(row["name"])})')
                 except BaseException as disabled:
                     errors.append({'type': 'disable', 'message': type(disabled).__name__})
         if trace_started:
             try:
-                demo.rpc(':erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok')
+                demo.rpc(':erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok')
             except BaseException as error:
                 errors.append({'type': 'trace_stop', 'message': type(error).__name__})
         if errors and progress['status'] == 'completed':

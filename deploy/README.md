@@ -102,3 +102,10 @@ L1–L5 baseline before anything listens) → Scenes (topology) → Auth + Gate.
   1.4–1.7 GB, so 8 GB hosts use `4000m`; keep `VOXEL_REGION_PAYLOAD_CACHE_MB` and generation concurrency small.
 - Host networking is required when the host routes traffic through a TUN proxy (bridged container UDP replies are lost).
 - UE's default `HttpActivityTimeout` (30 s) is shorter than a cold region request; the client sets 120–180 s.
+
+## NPC 常驻应用
+
+同一 `voxim_server` release 包含平级的 Gate 和 NPC 应用。NPC 登记、模型配置与持久化表保持原语义，
+运维 RPC 入口改为 `NpcServer.Registry`，状态读 `NpcServer.Bootstrap.status()`。
+Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 enabled 登记。
+详见 [NPC 应用说明](../apps/npc_server/README.md)。升级请重启 release，旧 `GateServer.Npc.*` 名称不保留兼容转发。

@@ -26,7 +26,7 @@ DEFINITION = 'ecbed49e267852ff5f55c1f220e094efa8544a70599434d096c5bd9dee857e2a'
 FAR = '22.5 419.91 -517.5'
 NEAR = '59.5 416.91 -516.5'
 URL = 'http://voxim-npc-life-loop-20261011:8888'
-NPC_MD5 = 'for {m,_} <- :code.all_loaded(), String.starts_with?(Atom.to_string(m),"Elixir.GateServer.Npc."), into: %{}, do: {Atom.to_string(m),Base.encode16(m.module_info(:md5),case: :lower)}'
+NPC_MD5 = 'for {m,_} <- :code.all_loaded(), String.starts_with?(Atom.to_string(m),"Elixir.NpcServer."), into: %{}, do: {Atom.to_string(m),Base.encode16(m.module_info(:md5),case: :lower)}'
 
 
 def save(path, value):
@@ -35,7 +35,7 @@ def save(path, value):
 
 
 def rpc(code):
-    return server.rpc(SERVER, CONTAINER, '(fn ->\n' + code + '\nend).() |> GateServer.Npc.Context.plain() |> Jason.encode!()')
+    return server.rpc(SERVER, CONTAINER, '(fn ->\n' + code + '\nend).() |> NpcServer.Context.plain() |> Jason.encode!()')
 
 
 def ok(value):
@@ -57,9 +57,9 @@ def spec(brain='settler', spawn=(63.5, 416.91, -516.5)):
 
 
 def observe(cid):
-    return rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
-    body = GateServer.Npc.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes])
-    {{:ok,life}} = GateServer.Npc.Life.observe({cid})
+    return rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
+    body = NpcServer.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes])
+    {{:ok,life}} = NpcServer.Life.observe({cid})
     {{:ok,events}} = VoxelRegion.World.interactions_since(VoxelRegion.World,0)
     material = VoxelRegion.World.material_snapshot(VoxelRegion.World,[{cid}],[{{61,416,-517}}])
     %{{at_ms: System.system_time(:millisecond),body: body,life: life,interactions: events,material: material}}''')
@@ -79,14 +79,14 @@ def wait_for(cid, predicate, out, timeout=60):
 
 
 def prepare(out, correction=False):
-    rows = rpc('GateServer.Npc.Registry.list()')
+    rows = rpc('NpcServer.Registry.list()')
     if rows and not correction:
         raise RuntimeError('fresh preparation refuses existing NPC registration')
     cid = ok(rpc(f'case DataService.CharacterStore.ensure_npc({json.dumps(NAME)}) do {{:ok,r}} -> {{:ok,Map.take(r,[:id])}}; e -> e end'))['id']
     units = 2097152 - 512 if correction else 2097152
     supply_id = 'npc-life-initial-correction' if correction else 'npc-life-initial'
     supply = rpc(f'VoxelRegion.World.material_supply(VoxelRegion.World,{cid},"{supply_id}",%{{19 => {units}}})')
-    registered = rpc(f'case GateServer.Npc.Registry.put({json.dumps(NAME)},{spec()}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end')
+    registered = rpc(f'case NpcServer.Registry.put({json.dumps(NAME)},{spec()}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end')
     assert ok(registered)['cid'] == cid
     save(out / 'fixtures.json', {'classification': 'Test-only', 'cid': cid, 'supply': supply, 'registry': registered,
                               'author_cadence_ticks': 36000, 'scope': 'initial finite material; NPC builds own cube'})
@@ -296,7 +296,7 @@ def social(cid, out, cycles=6, fresh=False, custom_steps=None):
                     stream.write(json.dumps(row, ensure_ascii=False) + '\n')
                     stream.flush()
                     if not fresh and not flushed and row['life']['state']['evidence']['help_count'] >= 2 and row['life']['job'] is None:
-                        save(out / 'phase-two-flush.json', rpc(f'GateServer.Npc.Life.flush({cid})'))
+                        save(out / 'phase-two-flush.json', rpc(f'NpcServer.Life.flush({cid})'))
                         flushed = True
                     if row['life']['error']:
                         (out / 'abort').write_text('Life authority failure\n')
@@ -375,8 +375,8 @@ def repair_memory(cid, out):
     ranges = [{'id':d['id'],'first':int(d['id'].rsplit(':',1)[-1].split('-')[0]),
                'last':int(d['id'].rsplit('-',1)[-1])} for d in documents]
     rebuilt = rpc(f'''{{:ok,history}} = VoxelRegion.World.interactions_since(VoxelRegion.World,0)
-      state = GateServer.Npc.Life.State.new({cid},"{before['life']['state']['world_id']}",0,0)
-      {{state,episodes}} = GateServer.Npc.Life.State.advance(state,history.events,history.cursor,0)
+      state = NpcServer.Life.State.new({cid},"{before['life']['state']['world_id']}",0,0)
+      {{state,episodes}} = NpcServer.Life.State.advance(state,history.events,history.cursor,0)
       docs = Jason.decode!({json.dumps(json.dumps(ranges))})
       fragments = Enum.map(docs,fn d ->
         chosen = Enum.filter(episodes,&(&1["seq"] >= d["first"] and &1["seq"] <= d["last"]))
@@ -387,12 +387,12 @@ def repair_memory(cid, out):
     assert rebuilt['rebuilt_state'] == before['life']['state']
     assert len(rebuilt['episodes']) == 12 and len(rebuilt['fragments']) == 2
     payload = json.dumps(json.dumps(rebuilt['fragments'],ensure_ascii=False),ensure_ascii=False)
-    result = rpc(f'GateServer.Npc.Life.Hindsight.retain(%{{url: "{URL}",bank: "npc-life-{cid}"}},Jason.decode!({payload}))')
+    result = rpc(f'NpcServer.Life.Hindsight.retain(%{{url: "{URL}",bank: "npc-life-{cid}"}},Jason.decode!({payload}))')
     save(out/'replace-retain.json',result)
     ok(result)
     deadline = time.monotonic()+600
     while True:
-        status = ok(rpc(f'GateServer.Npc.Life.Hindsight.status(%{{url: "{URL}",bank: "npc-life-{cid}"}})'))
+        status = ok(rpc(f'NpcServer.Life.Hindsight.status(%{{url: "{URL}",bank: "npc-life-{cid}"}})'))
         save(out/'hindsight-status.json',status)
         pending = [o for o in status['operations'] if o['status'] in ('pending','processing')]
         if not pending and status['stats']['pending_operations'] == 0 and status['stats']['pending_consolidation'] == 0:
@@ -465,7 +465,7 @@ def limited_llm(cid, out):
     started = time.time()
     try:
         position = before['body']['position']
-        result = rpc(f'case GateServer.Npc.Registry.put("{NAME}",{spec("llm",position)}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end')
+        result = rpc(f'case NpcServer.Registry.put("{NAME}",{spec("llm",position)}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end')
         assert ok(result)['cid'] == cid
         save(out/'registration.json',result)
         deadline = time.monotonic()+360
@@ -491,7 +491,7 @@ def limited_llm(cid, out):
         logs = subprocess.check_output(['docker','logs','--since',str(int(started)),CONTAINER],stderr=subprocess.STDOUT,text=True,encoding='utf-8')
         (out/'decision.log').write_text('\n'.join(l for l in logs.splitlines() if 'npc_llm_' in l),encoding='utf-8')
     finally:
-        save(out/'trace-stop.json',rpc(''' :erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global])
+        save(out/'trace-stop.json',rpc(''' :erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global])
           :erlang.trace(:all,false,[:call])
           if pid = Process.whereis(:run07_llm_tracer), do: Process.exit(pid,:kill)
           %{stopped: true}'''))
@@ -545,7 +545,7 @@ def fresh_judge(out, policy_source=None):
         distances = []
         for state in states:
             payload = json.dumps(json.dumps(state))
-            choice = rpc(f'GateServer.Npc.Life.State.behavior(Jason.decode!({payload}),%{{self: %{{position: {{0.0,0.0,0.0}}}},entities: [%{{entity_id: 106220752897,position: {{3.4,0.0,0.0}}}}]}},{state["last_at_ms"]})')
+            choice = rpc(f'NpcServer.Life.State.behavior(Jason.decode!({payload}),%{{self: %{{position: {{0.0,0.0,0.0}}}},entities: [%{{entity_id: 106220752897,position: {{3.4,0.0,0.0}}}}]}},{state["last_at_ms"]})')
             distances.append(choice['distance'])
     save(out/'public-policy-distances.json',distances)
     for name,baseline in [('social-02',True),('fresh-01',False),('fresh-matched-01',False)]:
@@ -576,14 +576,14 @@ def fresh_judge(out, policy_source=None):
 
 
 def memory(cid, out, timeout=900):
-    save(out / 'flush.json', rpc(f'GateServer.Npc.Life.flush({cid})'))
+    save(out / 'flush.json', rpc(f'NpcServer.Life.flush({cid})'))
     wait_for(cid, lambda r: r['life']['job'] is None and r['life']['pending_fragments'] == 0 and r['life']['retained'] > 0,
              out / 'retain-ready.json', timeout)
-    save(out / 'refresh.json', rpc(f'GateServer.Npc.Life.refresh({cid})'))
+    save(out / 'refresh.json', rpc(f'NpcServer.Life.refresh({cid})'))
     row = wait_for(cid, lambda r: r['life']['job'] is None and not r['life']['cache_dirty'] and
                    r['life']['cache'] is not None and all(r['life']['cache']['models'].values()),out / 'memory-ready.json',timeout)
-    save(out / 'context.json', rpc(f'GateServer.Npc.Life.context({cid},"Who helped or harmed my construction, at which place and times?")'))
-    save(out / 'hindsight-status.json', rpc(f'GateServer.Npc.Life.Hindsight.status(%{{url: "{URL}",bank: "npc-life-{cid}"}})'))
+    save(out / 'context.json', rpc(f'NpcServer.Life.context({cid},"Who helped or harmed my construction, at which place and times?")'))
+    save(out / 'hindsight-status.json', rpc(f'NpcServer.Life.Hindsight.status(%{{url: "{URL}",bank: "npc-life-{cid}"}})'))
     return row
 
 
@@ -693,7 +693,7 @@ def main():
         memory(cid,args.out)
         print('actual retain/cache/recall finished')
     elif args.command == 'flush':
-        save(args.out / 'flush.json', rpc(f'GateServer.Npc.Life.flush({cid})'))
+        save(args.out / 'flush.json', rpc(f'NpcServer.Life.flush({cid})'))
     elif args.command == 'watch':
         deadline = time.monotonic() + args.seconds
         with (args.out / 'authority.jsonl').open('w',encoding='utf-8') as stream:
@@ -708,14 +708,14 @@ def main():
         service.start(600)
         save(args.out / 'restart.json', server.restart(SERVER,CONTAINER,args.out / 'server-restart.log',120))
         wait_for(cid, lambda r: r['life']['state'] is not None,args.out / 'after.json',90)
-        save(args.out / 'context.json', rpc(f'GateServer.Npc.Life.context({cid},"Who repaired or damaged my construction?")'))
+        save(args.out / 'context.json', rpc(f'NpcServer.Life.context({cid},"Who repaired or damaged my construction?")'))
     elif args.command == 'llm':
         limited_llm(cid,args.out)
         print('one production LLM request observed; inspect actual action and limitation')
     elif args.command == 'restore':
         position = observe(cid)['body']['position']
         save(args.out / 'before.json', observe(cid))
-        save(args.out / 'registration.json', rpc(f'case GateServer.Npc.Registry.put("{NAME}",{spec("llm" if args.command == "llm" else "settler",position)}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))
+        save(args.out / 'registration.json', rpc(f'case NpcServer.Registry.put("{NAME}",{spec("llm" if args.command == "llm" else "settler",position)}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))
         for i in range(30):
             save(args.out / f'sample-{i:02d}.json', observe(cid))
             time.sleep(2)

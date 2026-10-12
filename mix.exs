@@ -18,7 +18,7 @@ defmodule Cluster.MixProject do
     []
   end
 
-  # Voxim 服务端唯一发布：单节点运行 World / Scene / Auth / Gate，多 Scene 拓扑由 `VOXIM_TOPOLOGY` 在本节点旁起
+  # Voxim 服务端唯一发布：单节点运行 World / Scene / Auth / Gate / NPC，多 Scene 拓扑由 `VOXIM_TOPOLOGY` 在本节点旁起
   # peer 节点。启动顺序由各 app 的运行时依赖决定（data_service → voxel_region → scene_server → world_server →
   # auth_server / gate_server）；`rel/overlays/bin/server` 先迁移数据库再启动。
   defp releases do
@@ -32,7 +32,8 @@ defmodule Cluster.MixProject do
           scene_server: :permanent,
           world_server: :permanent,
           auth_server: :permanent,
-          gate_server: :permanent
+          gate_server: :permanent,
+          npc_server: :permanent
         ]
       ]
     ]

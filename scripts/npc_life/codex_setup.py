@@ -29,7 +29,7 @@ def setup(out, cli, resume=False):
     else:
         out.mkdir(parents=True, exist_ok=False)
         service.preflight(required=True)
-        rows = demo.rpc('GateServer.Npc.Registry.list()')
+        rows = demo.rpc('NpcServer.Registry.list()')
         if {row['cid'] for row in rows} != {607440080896, 51107598336} or any(row['brain'] != 'settler' or 'life' in row['params'] for row in rows):
             raise RuntimeError('owned Demo registrations are not quiescent')
         demo.save(out/'registry-before.json', rows)
@@ -77,9 +77,9 @@ def setup(out, cli, resume=False):
         service.ready(180)
     bank = 'codex-preflight-facts03-'+out.name
     code = f'''config = %{{url: "{demo.URL}", bank: "{bank}"}}
-      {{:ok,_}} = GateServer.Npc.Life.Hindsight.ensure(config,"CLI transport probe")
-      retained = GateServer.Npc.Life.Hindsight.retain(config,[%{{"id" => "transport-probe", "text" => "On October 12, 2026, Mara visited the North library and borrowed a blue atlas from librarian Ivo. Mara promised Ivo to return the atlas tomorrow.", "at_ms" => System.system_time(:millisecond)}}])
-      %{{retained: retained, status: GateServer.Npc.Life.Hindsight.status(config)}}'''
+      {{:ok,_}} = NpcServer.Life.Hindsight.ensure(config,"CLI transport probe")
+      retained = NpcServer.Life.Hindsight.retain(config,[%{{"id" => "transport-probe", "text" => "On October 12, 2026, Mara visited the North library and borrowed a blue atlas from librarian Ivo. Mara promised Ivo to return the atlas tomorrow.", "at_ms" => System.system_time(:millisecond)}}])
+      %{{retained: retained, status: NpcServer.Life.Hindsight.status(config)}}'''
     result = demo.rpc(code)
     demo.save(out/'hindsight-preflight-facts03.json', result)
     if result['retained'][0] != 'ok':
@@ -101,10 +101,10 @@ def setup(out, cli, resume=False):
     assert before == after, 'stored Life state changed during endpoint wiring'
     params = {'goal': '我是知衡，学者。'+LIFE_GOAL, 'tools': {'1': '镐'},
               'cadence': 'manual', 'max_requests_per_hour': 'unlimited', 'skills': ['gather', 'travel', 'build']}
-    scholar = demo.ok(demo.rpc(f'''case GateServer.Npc.Registry.put("知衡",%{{scene_id: 1, spawn: {{64.5,418.0,-516.5}}, brain: "llm",params: {packed(params)}}}) do
+    scholar = demo.ok(demo.rpc(f'''case NpcServer.Registry.put("知衡",%{{scene_id: 1, spawn: {{64.5,418.0,-516.5}}, brain: "llm",params: {packed(params)}}}) do
       {{:ok,row}} -> {{:ok,Map.take(row,[:cid])}}; error -> error end'''))
     demo.save(out/'scholar.json', scholar)
-    demo.save(out/'registry-after.json', demo.rpc('GateServer.Npc.Registry.list()'))
+    demo.save(out/'registry-after.json', demo.rpc('NpcServer.Registry.list()'))
     demo.save(out/'manifest.json', {'status': 'wired', 'model': MODEL, 'effort': EFFORT,
                                   'bridge_pid': process.pid, 'roles': ROLES, 'scholar_cid': scholar['cid'],
                                   'game_image_id': game['Image'], 'memory_image_id': memory['Image']})

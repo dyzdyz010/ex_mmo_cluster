@@ -12,6 +12,8 @@
 
 - `apps/voxel_region/lib/voxel_region/`：canonical World owner、GeneratedStore、OverlayLog 与只读 Replica。
 - `apps/scene_server/lib/scene_server/movement/`：Scene/Player、bootstrap/Ready、历史碰撞与 Replication/AOI。
+- `apps/npc_server/lib/npc_server/application.ex`：常驻 NPC 正式组合根；感知、决策、技能、情绪与记忆由独立 NPC 应用拥有。
+- `apps/world_server/lib/world_server/session.ex`：玩家与 NPC 共用的会话占用及移交 owner。
 - `apps/gate_server/lib/gate_server/transport/quic_listener.ex`、`session/quic_connection.ex`：正式 QUIC 入口。
 - `apps/mmo_contracts/lib/mmo_contracts/{session,movement,voxel}/`：现行字节契约。
 

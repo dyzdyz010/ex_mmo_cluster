@@ -24,12 +24,12 @@ OUT = demo.ROOT/'.demo/observe/npc-autonomy-20261011'
 
 
 def body(cid):
-    return demo.rpc(f'[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid}); GateServer.Npc.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue])')
+    return demo.rpc(f'[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid}); NpcServer.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue])')
 
 
 def register(row, brain, params, position):
     spec='%{scene_id: 1, spawn: {'+','.join(map(str,position))+'}, brain: '+packed(brain)+', params: '+packed(params)+'}'
-    result=demo.ok(demo.rpc(f'case GateServer.Npc.Registry.put({packed(row["name"])},{spec}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))
+    result=demo.ok(demo.rpc(f'case NpcServer.Registry.put({packed(row["name"])},{spec}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))
     assert result['cid']==row['cid']
 
 
@@ -113,11 +113,11 @@ def shutdown(out, rows, enabled, errors):
         except Exception as error:
             errors.append('restore: '+repr(error))
             try:
-                demo.save(out/f'disabled-{row["cid"]}.json',demo.rpc(f'GateServer.Npc.Registry.remove({packed(row["name"])})'))
+                demo.save(out/f'disabled-{row["cid"]}.json',demo.rpc(f'NpcServer.Registry.remove({packed(row["name"])})'))
             except Exception as disabled:
                 errors.append('disable: '+repr(disabled))
     try:
-        demo.save(out/'trace-stop.json',demo.rpc(':erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok'))
+        demo.save(out/'trace-stop.json',demo.rpc(':erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok'))
     except Exception as error:
         errors.append('trace stop: '+repr(error))
 
@@ -125,7 +125,7 @@ def shutdown(out, rows, enabled, errors):
 def run(out, seconds=560):
     out.mkdir(parents=True,exist_ok=False)
     assert clients.ROOT==CLIENT, 'Hello40 isolated client required'
-    rows=demo.rpc('GateServer.Npc.Registry.list()')
+    rows=demo.rpc('NpcServer.Registry.list()')
     assert {r['cid'] for r in rows}==set(CIDS) and all(r['brain']=='settler' and 'life' not in r['params'] for r in rows)
     initial=demo.rpc('VoxelRegion.World.material_snapshot(VoxelRegion.World,[607440080896],[{61,416,-517}])')
     assert initial['probe_occupancy'][0]['material']==19 and initial['material_balances'][0]['units']==0

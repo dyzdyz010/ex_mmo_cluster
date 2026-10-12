@@ -29,24 +29,44 @@ config :auth_server, :playtest_access_file, System.get_env("VOXIM_PLAYTEST_ACCES
 # 全局系统功能：阿里云 DirectMail 使用对应地域 SMTP/465；仅本机邮件捕获器允许明文回环。
 if mail_host = System.get_env("VOXIM_MAIL_HOST") do
   local_mail = mail_host in ["127.0.0.1", "localhost"]
+
   smtp = [
     relay: String.to_charlist(mail_host),
     from: System.fetch_env!("VOXIM_MAIL_FROM"),
-    port: String.to_integer(System.get_env("VOXIM_MAIL_PORT",if(local_mail,do: "27025",else: "465"))),
-    ssl: not local_mail, tls: :never, no_mx_lookups: true, retries: 0, timeout: 10_000,
-    auth: if(local_mail,do: :never,else: :always)
+    port:
+      String.to_integer(
+        System.get_env("VOXIM_MAIL_PORT", if(local_mail, do: "27025", else: "465"))
+      ),
+    ssl: not local_mail,
+    tls: :never,
+    no_mx_lookups: true,
+    retries: 0,
+    timeout: 10_000,
+    auth: if(local_mail, do: :never, else: :always)
   ]
-  smtp = if local_mail do
-    smtp
-  else
-    smtp ++ [username: String.to_charlist(System.fetch_env!("VOXIM_MAIL_USER")),
-      password: String.to_charlist(System.fetch_env!("VOXIM_MAIL_PASSWORD")),
-      # gen_smtp 默认 depth 0（只接受根证书直签），公共 SMTP 证书都带中间证书，必须放宽链深度。
-      sockopts: [verify: :verify_peer, depth: 4, cacerts: :public_key.cacerts_get(),
-        server_name_indication: String.to_charlist(mail_host),
-        customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]]]
-  end
-  config :auth_server,:smtp,smtp
+
+  smtp =
+    if local_mail do
+      smtp
+    else
+      smtp ++
+        [
+          username: String.to_charlist(System.fetch_env!("VOXIM_MAIL_USER")),
+          password: String.to_charlist(System.fetch_env!("VOXIM_MAIL_PASSWORD")),
+          # gen_smtp 默认 depth 0（只接受根证书直签），公共 SMTP 证书都带中间证书，必须放宽链深度。
+          sockopts: [
+            verify: :verify_peer,
+            depth: 4,
+            cacerts: :public_key.cacerts_get(),
+            server_name_indication: String.to_charlist(mail_host),
+            customize_hostname_check: [
+              match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+            ]
+          ]
+        ]
+    end
+
+  config :auth_server, :smtp, smtp
 end
 
 # Voxim R6 S4: 在线生成 baseline cache 与 overlay 日志根。非空时必须同时提供显式生成 manifest。
@@ -103,10 +123,10 @@ if cert = System.get_env("VOXIM_QUIC_CERT") do
       )
 end
 
-# `VOXIM_M1_CONFIG` 是主 Scene（scene 1）的配置：Gate 的入场范围取自它。
+# `VOXIM_M1_CONFIG` 是主 Scene（scene 1）的配置：玩家与 NPC 的部署编辑范围取自它。
 # 单 Scene 部署由 scene_server 按它直接启动；设了 `VOXIM_TOPOLOGY` 时改由 `WorldServer.Topology` 按拓扑文件启动全部 Scene。
 if config_path = System.get_env("VOXIM_M1_CONFIG") do
-  config :gate_server, :quic, bounds: SceneServer.Movement.Scene.load_config!(config_path).bounds
+  config :voxel_region, :edit_bounds, SceneServer.Movement.Scene.load_config!(config_path).bounds
 
   if topology = System.get_env("VOXIM_TOPOLOGY") do
     config :world_server, :topology, topology
@@ -171,7 +191,8 @@ if config_env() == :prod do
 
   # 发布容器使用 host 网络，HTTP 只由同机 nginx 转发；默认只监听回环，避免明文端口直接暴露公网。
   # 桥接网络（端口发布）部署需设 AUTH_BIND_IP=0.0.0.0。
-  {:ok, bind_ip} = System.get_env("AUTH_BIND_IP", "127.0.0.1") |> String.to_charlist() |> :inet.parse_address()
+  {:ok, bind_ip} =
+    System.get_env("AUTH_BIND_IP", "127.0.0.1") |> String.to_charlist() |> :inet.parse_address()
 
   config :auth_server, AuthServerWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

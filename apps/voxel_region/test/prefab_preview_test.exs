@@ -78,7 +78,7 @@ defmodule VoxelRegion.PrefabPreviewTest do
       {Prefab.encode(definition(macro_cells: for(n<-0..512,do: {{rem(n,16),rem(div(n,16),16),div(n,256)},11}))),:macro_cell_limit},
       {Prefab.encode(definition(cells: for(n<-0..8192,do: {{rem(n,128),div(n,128),0},11}))),:micro_cell_limit},
       {Prefab.encode(definition(children: for(n<-0..63,do: child(id,n)))),:node_limit},
-      {Prefab.encode(definition(cells: [{{0,0,0},11},{{128,0,0},11}])),:bounds_limit}] do
+      {Prefab.encode(definition(cells: [{{0,0,0},11},{{0,512,0},11}])),:bounds_limit}] do
       assert {:error,^error}=Prefab.preview(bytes,%{id=>leaf})
       assert {:error,^error}=Prefab.compile(bytes,%{id=>leaf})
     end

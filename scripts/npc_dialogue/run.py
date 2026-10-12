@@ -29,18 +29,18 @@ LIMIT = 16
 
 def registry(name, brain, params, position):
     spec = '%{scene_id: 1, spawn: {' + ','.join(map(str, position)) + '}, brain: "' + brain + '", params: ' + packed(params) + '}'
-    return demo.ok(demo.rpc(f'case GateServer.Npc.Registry.put({packed(name)},{spec}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))['cid']
+    return demo.ok(demo.rpc(f'case NpcServer.Registry.put({packed(name)},{spec}) do {{:ok,r}} -> {{:ok,Map.take(r,[:cid])}}; e -> e end'))['cid']
 
 
 def snapshot(cid):
-    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{cid})
-      {{:ok,life}} = GateServer.Npc.Life.observe({cid})
-      %{{at_ms: System.system_time(:millisecond),body: GateServer.Npc.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue]),
+    return demo.rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{cid})
+      {{:ok,life}} = NpcServer.Life.observe({cid})
+      %{{at_ms: System.system_time(:millisecond),body: NpcServer.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue]),
         life: life, stored: DataService.NpcMemory.get({cid},"life","state")}}''')
 
 
 def status(cid):
-    return demo.ok(demo.rpc(f'GateServer.Npc.Life.Hindsight.status(%{{url: "{demo.URL}",bank: "npc-life-{cid}"}})'))
+    return demo.ok(demo.rpc(f'NpcServer.Life.Hindsight.status(%{{url: "{demo.URL}",bank: "npc-life-{cid}"}})'))
 
 
 def tokens(value):
@@ -247,8 +247,8 @@ def live(out):
             except Exception as error:
                 errors.append('restore '+str(cid)+': '+repr(error))
                 # 已复现的准备失败：不能用空位置恢复，停用本人登记且保留记忆；其余清理仍必须执行。
-                demo.save(out/f'disabled-{cid}.json',demo.rpc(f'GateServer.Npc.Registry.remove({packed(name)})'))
-        demo.save(out/'trace-stop.json',demo.rpc(':erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok'))
+                demo.save(out/f'disabled-{cid}.json',demo.rpc(f'NpcServer.Registry.remove({packed(name)})'))
+        demo.save(out/'trace-stop.json',demo.rpc(':erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok'))
         if trace.exists():demo.save(out/'requests.json',[json.loads(s) for s in trace.read_text(encoding='utf-8').splitlines()])
         if starts.exists():demo.save(out/'started.json',[json.loads(s) for s in starts.read_text(encoding='utf-8').splitlines()])
         demo.save(out/'scene.json',scene_rows(started,out/'server.log'))

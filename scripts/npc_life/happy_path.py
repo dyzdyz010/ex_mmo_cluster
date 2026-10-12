@@ -32,13 +32,13 @@ def run(out, phase_seconds=600, phase_steps=24):
                 'phase': 0, 'completed_steps': 0, 'decision_tokens': 0,
                 'phase_seconds': phase_seconds, 'phase_steps': phase_steps}
     life.atomic_json(out/'progress.json', progress)
-    rows = demo.rpc('GateServer.Npc.Registry.list()')
+    rows = demo.rpc('NpcServer.Registry.list()')
     rows = sorted([r for r in rows if r['name'] in life.ROLES], key=lambda r: list(life.ROLES).index(r['name']))
     if len(rows) != 3 or any('life' in r['params'] for r in rows):
         raise RuntimeError('expected three existing quiescent experiment NPCs')
     cids = [r['cid'] for r in rows]
     demo.save(out/'registry-before.json', rows)
-    positions = demo.rpc('Map.new(' + json.dumps(cids) + ',fn cid -> [{pid,_}]=Registry.lookup(GateServer.NpcNames,cid);{cid,GateServer.Npc.Body.observe(pid).position} end)')
+    positions = demo.rpc('Map.new(' + json.dumps(cids) + ',fn cid -> [{pid,_}]=Registry.lookup(NpcServer.Names,cid);{cid,NpcServer.Body.observe(pid).position} end)')
     demo.save(out/'positions-before.json', positions)
     demo.save(out/'execution.json', {
         **demo.server.execution_identity(demo.SERVER, demo.CONTAINER),
@@ -148,7 +148,7 @@ def run(out, phase_seconds=600, phase_steps=24):
                 errors.append({'type': 'restore', 'cid': row['cid'], 'message': str(error)})
         if trace_started:
             try:
-                demo.rpc(':erlang.trace_pattern({GateServer.Npc.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok')
+                demo.rpc(':erlang.trace_pattern({NpcServer.Http,:request,2},false,[:global]); :erlang.trace(:all,false,[:call]); if pid=Process.whereis(:npc_long_horizon_trace),do: Process.exit(pid,:kill); :ok')
             except Exception as error:
                 errors.append({'type': 'trace_stop', 'message': str(error)})
         progress.update(errors=errors, finished_at=life.now(), bridge_pid=health['pid'],

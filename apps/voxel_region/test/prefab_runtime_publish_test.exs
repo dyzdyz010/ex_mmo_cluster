@@ -56,17 +56,14 @@ defmodule VoxelRegion.PrefabRuntimeCompileTest do
     assert {:error,:depth_limit} = compile(definition(children: [child(id,1)]),catalog)
   end
 
-  test "bounding box includes volume endpoints on all axes and rotated child bounds" do
-    for axis <- 0..2 do
-      d = definition(cells: [{put_elem({0,0,0},axis,-64),11},{put_elem({0,0,0},axis,63),11}])
-      assert {:ok,id,compiled} = compile(d)
-      assert {:error,:bounds_limit} = compile(%{d | cells: [{put_elem({0,0,0},axis,-64),11},{put_elem({0,0,0},axis,64),11}]})
-      if axis == 0 do
-        assert {:ok,_,rotated} = compile(definition(children: [child(id,1,{0,0,0},1)]),%{id=>compiled})
-        assert rotated.summary.bounds == {{-1,0,-64},{0,1,64}}
-        assert {:error,:bounds_limit} = compile(definition(cells: [{{-1,0,64},19}],children: [child(id,1,{0,0,0},1)]),%{id=>compiled})
-      end
-    end
+  test "horizontal span is unbounded and height includes rotated child endpoints" do
+    # 水平可跨负坐标和多个 tile；64m 高度按完整体积端点计算。
+    d = definition(macro_cells: [{{-104,0,96},11},{{116,63,-114},19}])
+    assert {:ok,id,compiled} = compile(d)
+    assert compiled.summary.bounds == {{-832,0,-912},{936,512,776}}
+    assert {:ok,_,_} = compile(definition(children: [child(id,1,{0,0,0},1)]),%{id=>compiled})
+    assert {:error,:bounds_limit} = compile(%{d | macro_cells: [{{-104,0,96},11},{{116,64,-114},19}]})
+    assert {:error,:bounds_limit} = compile(definition(cells: [{{0,512,0},11}],children: [child(id,1)]),%{id=>compiled})
   end
 
   test "attachment budget counts size-eight face expansion rather than group count" do

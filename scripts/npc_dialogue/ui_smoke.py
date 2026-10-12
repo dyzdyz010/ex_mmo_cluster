@@ -10,11 +10,11 @@ import run
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--run',default='ui-01');args=parser.parse_args()
     out=run.BASE/args.run;out.mkdir(parents=True,exist_ok=False);(out/'b').mkdir()
-    registrations=run.demo.rpc('GateServer.Npc.Registry.list()')
+    registrations=run.demo.rpc('NpcServer.Registry.list()')
     assert not any(r['enabled'] and r['brain'] in ('life','llm') for r in registrations),'paid models must be stopped'
     assert not any(r['enabled'] and 'life' in r['params'] for r in registrations),'paid memory workers must be stopped'
-    npc=run.demo.rpc(f'''[{{pid,_}}] = Registry.lookup(GateServer.NpcNames,{run.FIRST})
-      %{{body: GateServer.Npc.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue])}}''')
+    npc=run.demo.rpc(f'''[{{pid,_}}] = Registry.lookup(NpcServer.Names,{run.FIRST})
+      %{{body: NpcServer.Body.observe(pid) |> Map.take([:position,:tick,:entities,:outcomes,:dialogue])}}''')
     assert npc['body']['position'] is not None,'first NPC not entered'
     run.demo.save(out/'before.json',npc)
     position=npc['body']['position'];aim=[position[0],position[1]+.4,position[2]]

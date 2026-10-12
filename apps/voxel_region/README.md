@@ -1,5 +1,7 @@
 # Voxim Region 真值
 
+`VoxelRegion.EditBounds` 提供玩家和 NPC 共用的部署编辑盒判定；配置为 `:voxel_region, :edit_bounds`，来自 `VOXIM_M1_CONFIG`。世界事务合法性仍由 World 裁决。
+
 2026-10-11 NPC 经历操作序列（Global system；测试为 Test-only）：
 `World.interactions_since(server, cursor)` 从同一 World 提交点读取最近 512 个有操作者的 build/damage/destroy。
 `nil` 返回当前事务游标与空事件；非负游标返回其后的事件和当前游标，已淘汰事件前的游标显式返回

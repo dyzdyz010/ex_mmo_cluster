@@ -109,13 +109,13 @@ python -B -m unittest discover -s scripts/npc_life -p test_hourly_year.py
 python -B scripts/npc_life/service.py start
 python -B scripts/npc_life/service.py restart
 python -B scripts/npc_life/service.py stop
-cd apps/gate_server
-mix test --no-start test/gate_server/npc_hindsight_test.exs
+cd apps/npc_server
+mix test --no-start test/npc_server/npc_hindsight_test.exs
 ```
 
 凭证读取同级主树 `../ex_mmo_cluster/.env` 的 `NPC_LLM_URL` / `NPC_LLM_KEY`，只经子进程环境与 `docker -e NAME` 传入；manifest 不含上游地址与密钥。复用固定镜像 `voxim-npc-evolve-hindsight:0.10.3-flashrank`，BGE-small ONNX 的 CLS 与查询前缀以及 FlashRank 配置来自已实跑的 [NpcEvolve/service.py](../../../Voxim/Docs/Gameplay/NpcEvolve/service.py)。新 mutable 数据完全隔离。
 
-HTTP 适配器为 `GateServer.Npc.Life.Hindsight`，config 是 `%{url: root_url, bank: bank_id}`。`ensure/2` 建立独立 bank 与缺失的 self/relationships/world/commitments；已有模型不覆盖。`retain/2` 接受 `%{"id" => stable_id, "text" => english_episode, "at_ms" => unix_ms}` 列表，边界一次映射到第三方文档字段，同步批请求后检查每个文档的 `memory_unit_count > 0`。它报告最近 100 个后台操作；抽取完成与巩固完成是两项事实。`models/1` 只读缓存内容；`refresh/1` 是显式后台运维调用，逐模型等待自己的 operation。`recall/3` 恰好一次 mid-budget、带 query_timestamp 的情境召回。`status/1` 返回 stats、最近操作及按操作聚合的 token，丢弃原始 LLM trace。
+HTTP 适配器为 `NpcServer.Life.Hindsight`，config 是 `%{url: root_url, bank: bank_id}`。`ensure/2` 建立独立 bank 与缺失的 self/relationships/world/commitments；已有模型不覆盖。`retain/2` 接受 `%{"id" => stable_id, "text" => english_episode, "at_ms" => unix_ms}` 列表，边界一次映射到第三方文档字段，同步批请求后检查每个文档的 `memory_unit_count > 0`。它报告最近 100 个后台操作；抽取完成与巩固完成是两项事实。`models/1` 只读缓存内容；`refresh/1` 是显式后台运维调用，逐模型等待自己的 operation。`recall/3` 恰好一次 mid-budget、带 query_timestamp 的情境召回。`status/1` 返回 stats、最近操作及按操作聚合的 token，丢弃原始 LLM trace。
 
 单 HTTP 请求缺省 300 秒；每个后台 operation 的总预算缺省 600 秒，轮询请求也受剩余预算约束。错误只返回可诊断分类，不返回外部错误体或私有 URL。所有模型/召回输出标记为主观记忆，不是 World 当前数值真值。
 
@@ -179,7 +179,7 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 首个阶段失败关闭出口并停止后续，结束恢复原settler登记且不启用life后台。旧驱动 `autonomy.py`/`long_horizon.py live` 的软预算路径不是当前付费验收入口。
 只读核验与失败证据在 `.demo/observe/npc-autonomy-20261011/resume-01/`；后续先解决计数契约，禁止删库、改基线或重采样覆盖失败。
 
-当前阶段成果使用独立登记名 `brain: "life"`；下面的 freeze/pairs/live 入口均使用该组合，原始实跑证据保持原提交身份。接入说明见生产 `apps/gate_server/lib/gate_server/npc/README.md`。
+当前阶段成果使用独立登记名 `brain: "life"`；下面的 freeze/pairs/live 入口均使用该组合，原始实跑证据保持原提交身份。接入说明见生产 `apps/npc_server/lib/npc_server/README.md`。
 
 `long_horizon.py freeze --out pairs-input-01` 固定真实 Life 缓存与一次召回；
 `pairs --source pairs-input-01 --out pairs-results-01` 按预登记的六组自传身份互换运行12请求，不执行结果，不写回真实记忆。

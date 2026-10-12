@@ -1,5 +1,5 @@
 defmodule GateServer.Transport.QuicListener do
-  @moduledoc "全局系统功能：Voxim 的单一 QUIC 接入点；连接进程接管后才握手。会话占用登记在 `GateServer.Session.Claims`。"
+  @moduledoc "全局系统功能：Voxim 的单一 QUIC 接入点；连接进程接管后才握手。会话占用登记在 `WorldServer.Session`。"
   use GenServer
   require Logger
 
@@ -7,7 +7,7 @@ defmodule GateServer.Transport.QuicListener do
   # 可靠流由 QUIC 分包，DATAGRAM 队列继续服从协商得到的 dgram_max_len。
   @maximum_mtu 1252
 
-  alias GateServer.Session.{Claims, QuicConnection}
+  alias GateServer.Session.QuicConnection
 
   @doc "启动监听与其连接监督树。证书及 Hello 身份必须由部署显式提供。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
@@ -17,12 +17,8 @@ defmodule GateServer.Transport.QuicListener do
     Process.flag(:trap_exit, true)
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
-    # 会话占用登记与传输无关；部署传入共享登记处（NPC Body 也用它），单独启动的 listener 自带一个。
-    claims =
-      Keyword.get_lazy(opts, :claims, fn ->
-        {:ok, pid} = Claims.start_link(Keyword.take(opts, [:route_module]))
-        pid
-      end)
+    # 默认使用 World 唯一登记处；独立测试可显式传入夹具，不在传输层另建 owner。
+    claims = Keyword.get(opts, :claims, WorldServer.Session)
 
     {:ok, listener} =
       :quicer.listen(Keyword.fetch!(opts, :port),

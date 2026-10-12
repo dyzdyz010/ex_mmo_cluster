@@ -15,7 +15,7 @@ class CleanupTest(unittest.TestCase):
                 for cid, name in enumerate(subject.life.ROLES, 1)]
 
         def rpc(code):
-            if code == 'GateServer.Npc.Registry.list()':
+            if code == 'NpcServer.Registry.list()':
                 return rows
             if 'Body.observe(pid).position' in code:
                 return {str(cid): [0, 1, 0] for cid in [1, 2, 3]}

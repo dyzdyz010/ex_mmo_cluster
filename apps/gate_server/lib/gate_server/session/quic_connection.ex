@@ -134,8 +134,9 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   @impl true
-  def handle_info({:DOWN,ref,:process,_,_},%{auth_monitor: ref}=state) when is_reference(ref),
-    do: {:stop,:normal,close(state,13)}
+  def handle_info({:DOWN, ref, :process, _, _}, %{auth_monitor: ref} = state)
+      when is_reference(ref),
+      do: {:stop, :normal, close(state, 13)}
 
   def handle_info({:quic, :new_stream, stream, %{flags: flags}}, state) do
     if flags == 0 and map_size(state.streams) < 2 do
@@ -197,9 +198,11 @@ defmodule GateServer.Session.QuicConnection do
     # seal 与此前输入由同一个 Gate 发送，源处理完该输入前缀后才能交出 artifact。
     with {:ok, artifact} <- SceneServer.Movement.Player.seal(player, identity),
          {:ok, fresh, route, target} <-
-           GenServer.call(
+           WorldServer.Session.prepare_transfer(
              state.listener,
-             {:prepare_transfer, identity, target_scene_id, artifact}
+             identity,
+             target_scene_id,
+             artifact
            ) do
       pending = %{
         identity: fresh,
@@ -252,11 +255,31 @@ defmodule GateServer.Session.QuicConnection do
 
   # 编辑回执属于接纳它的连接；正常 Scene 移交不改变此引用，重连则创建新引用。
   # World 是施法成功状态和身体状态的唯一发送者；在此按邮箱顺序编码，0x83 与成功 0x68 不再绕行 Dispatch。
-  def handle_info({:mmo_spell_reply, ref, request, reply}, %{edit_ref: ref, closing: false} = state) do
-    state = send_message(state, 2, {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)})
-    state = if request.action == 1,
-      do: send_message(state, 2, GateServer.Voxel.ResultFrame.accepted(request, reply.seq, Atom.to_string(reply.outcome || :ok))),
-      else: state
+  def handle_info(
+        {:mmo_spell_reply, ref, request, reply},
+        %{edit_ref: ref, closing: false} = state
+      ) do
+    state =
+      send_message(
+        state,
+        2,
+        {:voxel_caster_state, Map.put(reply.caster, :request_id, request.request_id)}
+      )
+
+    state =
+      if request.action == 1,
+        do:
+          send_message(
+            state,
+            2,
+            GateServer.Voxel.ResultFrame.accepted(
+              request,
+              reply.seq,
+              Atom.to_string(reply.outcome || :ok)
+            )
+          ),
+        else: state
+
     {:noreply, state}
   end
 
@@ -550,7 +573,7 @@ defmodule GateServer.Session.QuicConnection do
       when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] and
              state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id) and
-             GateServer.Session.Dispatch.prefab_within?(
+             VoxelRegion.EditBounds.prefab_within?(
                state.route.world_ref,
                kind,
                request,
@@ -564,7 +587,7 @@ defmodule GateServer.Session.QuicConnection do
         coords = GateServer.Session.Dispatch.voxim_edit_coords(message)
 
         if edit_scene?(state, request.logical_scene_id) and
-             Enum.all?(coords, &within?(&1, state.bounds)) do
+             Enum.all?(coords, &VoxelRegion.EditBounds.within?(&1, state.bounds)) do
           enqueue_edit(state, message)
         else
           close(state, 4)
@@ -633,9 +656,6 @@ defmodule GateServer.Session.QuicConnection do
     end
   end
 
-  defp within?({x, y, z}, {{a, b, c}, {d, e, f}}),
-    do: x >= a and y >= b and z >= c and x < d and y < e and z < f
-
   defp control(%{hello_seen: false} = state, %Session.Hello{} = hello) do
     if hello == state.hello do
       send_message(%{state | hello_seen: true}, 1, hello)
@@ -645,13 +665,15 @@ defmodule GateServer.Session.QuicConnection do
   end
 
   defp control(%{hello_seen: true, identity: nil} = state, %Session.Join{} = join) do
-    with {:ok, character, auth_monitor} <- state.auth.join(join,state.hello) do
+    with {:ok, character, auth_monitor} <- state.auth.join(join, state.hello) do
       case state.router.route(join.scene_id) do
         {:ok, route} ->
           {identity, result} =
-            GenServer.call(
+            WorldServer.Session.claim(
               state.listener,
-              {:claim, state.scene, Map.put(route, :scene_id, join.scene_id), character}
+              state.scene,
+              Map.put(route, :scene_id, join.scene_id),
+              character
             )
 
           state = %{
@@ -680,9 +702,11 @@ defmodule GateServer.Session.QuicConnection do
     if ready.identity == pending.identity and
          ready.baseline_transaction_seq == pending.transaction_seq and
          ready.collision_revision == pending.collision_revision do
-      case GenServer.call(
+      case WorldServer.Session.commit_transfer(
              state.listener,
-             {:commit_transfer, state.identity, pending.identity, pending.cid}
+             state.identity,
+             pending.identity,
+             pending.cid
            ) do
         :ok ->
           now = System.monotonic_time(:microsecond)
@@ -737,15 +761,21 @@ defmodule GateServer.Session.QuicConnection do
 
   defp control(%{identity: identity} = state, %Session.Say{} = request)
        when identity != nil do
-    reason = cond do
-      request.identity != identity -> "invalid_session"
-      state.pending_transfer != nil -> "transfer_in_progress"
-      true -> nil
-    end
+    reason =
+      cond do
+        request.identity != identity -> "invalid_session"
+        state.pending_transfer != nil -> "transfer_in_progress"
+        true -> nil
+      end
 
     if reason do
-      send_message(state, 1, %Session.SayResult{identity: identity,
-        request_id: request.request_id, conversation_id: 0, turn: 0, reason: reason})
+      send_message(state, 1, %Session.SayResult{
+        identity: identity,
+        request_id: request.request_id,
+        conversation_id: 0,
+        turn: 0,
+        reason: reason
+      })
     else
       enqueue_edit(state, {:say, request})
     end

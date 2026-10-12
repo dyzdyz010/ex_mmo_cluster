@@ -20,8 +20,7 @@ defmodule GateServer.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      # :inets / :ssl：NPC 的 LLM 决策后端用 :httpc 出站。
-      extra_applications: [:logger, :observer_cli, :inets, :ssl],
+      extra_applications: [:logger, :observer_cli],
       mod: {GateServer.Application, []}
     ]
   end

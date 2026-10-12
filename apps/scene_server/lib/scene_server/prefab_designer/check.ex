@@ -19,6 +19,8 @@ defmodule SceneServer.PrefabDesigner.Check do
   alias VoxelRegion.{Attachments, Damage, Prefab}
   alias MmoContracts.VoxelMaterialCatalog, as: Materials
   @micro VoxelRegion.Spatial.micro_resolution()
+  # 文本切面的输出预算，不限制蓝图本身的水平跨度。
+  @max_slice_cells 16384
 
   @doc "独立查看已编译草稿的局部几何；不猜测房间、脚点或地面。"
   def view(%{summary: %{bounds: nil}}), do: {:error, :empty_draft}
@@ -51,7 +53,7 @@ defmodule SceneServer.PrefabDesigner.Check do
       at < elem(lo, axis) or at >= elem(hi, axis) ->
         {:error, :outside_view}
 
-      width * height > Prefab.limits().extent_micro ** 2 ->
+      width * height > @max_slice_cells ->
         {:error, :view_budget}
 
       true ->

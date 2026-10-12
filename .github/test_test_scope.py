@@ -12,6 +12,17 @@ class ScopeTests(unittest.TestCase):
     def test_docs_do_not_start_runtime(self):
         self.assertEqual(scope.select(["docs/README.md"]), [])
 
+    def test_npc_is_independent_of_gate(self):
+        jobs = scope.select(["apps/npc_server/lib/npc_server/body.ex"])
+        self.assertIn("test-npc-server", jobs)
+        self.assertNotIn("test-gate-server", jobs)
+        self.assertEqual(scope.select(["apps/npc_server/test/npc_server/npc_body_test.exs"]),
+                         ["format", "test-npc-server"])
+
+    def test_shared_session_selects_both_controllers(self):
+        jobs = scope.select(["apps/world_server/lib/world_server/session.ex"])
+        self.assertTrue({"test-standalone", "test-gate-server", "test-npc-server"} <= set(jobs))
+
     def test_phase_does_not_require_auth(self):
         jobs = scope.select(["apps/voxel_region/lib/voxel_region/phase.ex"])
         self.assertIn("test-voxel-region", jobs)
@@ -33,7 +44,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_world_fixture_selects_gate_route_consumer(self):
         self.assertEqual(scope.select(["apps/voxel_region/test/support/world_fixtures.exs"]),
-                         ["format", "test-gate-server", "test-scene-server", "test-voxel-region"])
+                         ["format", "test-gate-server", "test-npc-server", "test-scene-server", "test-voxel-region"])
 
     def test_moved_tests_select_their_owning_apps(self):
         self.assertEqual(scope.select(["apps/gate_server/test/movement_route_test.exs"]),

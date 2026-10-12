@@ -10,6 +10,7 @@
 
 - `VoxelRegion.Application` 在配置 root/manifest 后先完成 Bake，再启动唯一 `VoxelRegion.World`。canonical 真值来自 GeneratedStore 的显式生成基底与 OverlayLog 持久化事务；World 拥有材料、库存、损伤、热、燃烧、相变与电路的读取和提交。只读 `Replica` 消费权威结果，缺失不能变为第二真值。
 - `WorldServer` 提供 Scene/World 路由与受控移交编排；`SceneServer.Movement.Scene`、`Player` 与 `Replication` 分别维护场景成员、每玩家移动/碰撞历史与 AOI。它们从 canonical World 或本地只读副本构建碰撞派生物，不拥有第二份可写体素世界。
+- `NpcServer.Application` 是与 Gate 平级的常驻自治行为组合根，包含感知、决策、技能、情绪与记忆；随唯一 `voxim_server` release 启停。玩家与 NPC 共用 `WorldServer.Session` 的会话占用与移交，编辑边界共用 `VoxelRegion.EditBounds`；NPC 不依赖 Gate 进程生命周期。详见 [NPC 应用](../../../../apps/npc_server/README.md)。
 - `GateServer.Transport.QuicListener` 与 `Session.QuicConnection` 是当前正式网络入口。Hello/Join、鉴权、身份 epoch、Ready、可靠流与 DATAGRAM 都已有实现；`config/runtime.exs` 默认 `VOXIM_TRANSPORT=voxim_quic`，旧 TCP/WS 必须显式选择 `legacy_reference`，没有自动降级。
 - `MmoContracts.Session`、`Movement` 与 `Voxel` 是当前字节契约。CanonicalBootstrap 的完整 L0 payload 进入客户端既有 canonical 管线；规定 L0 驻留、初始 collider 和同 T/N/R 的 TimelineFence 接纳完成后才发 Ready。
 
@@ -17,6 +18,10 @@
 flowchart LR
   Client[Voxim canonical mirror] <-->|QUIC| Gate[Gate 鉴权与传输]
   Gate --> Route[WorldServer 路由与移交]
+  Gate --> Session[WorldServer.Session 共享会话]
+  NPC[NpcServer 常驻自治行为] --> Session
+  NPC --> Movement
+  Session --> Movement
   Gate --> Movement[Scene / Player / AOI]
   Route --> Authority[VoxelRegion.World]
   Movement -->|只读碰撞与历史| Authority
@@ -115,7 +120,7 @@ flowchart LR
 
 ## 证据源与验收边界
 
-- 源码组合配置：根 `config/runtime.exs`；`voxel_region`、`scene_server`、`gate_server` 各自 `Application`。分发包装组合这些全局系统，测试入口不成为运行时依赖。
+- 源码组合配置：根 `config/runtime.exs`；`voxel_region`、`scene_server`、`world_server`、`gate_server`、`npc_server` 各自 `Application`。分发包装组合这些全局系统，测试入口不成为运行时依赖。
 - [M1 路线与验收入口](../../../../../Voxim/Docs/M1/plan.md)：bootstrap/Ready、移动与真实双客户端已实施；早期 G1 只抽字节 owner 的“待实施”记录不代表当前运行时。
 - [M4a 验收](../../../../../Voxim/Docs/M4a/acceptance.md)：两 Scene、本地 Replica、并发编辑历史与真实双端受控移交已验收。同主机多 VM 的结果不能扩为跨主机时钟与故障接管验收。
 - [R7 工程审计](../../../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)：本轮整改、测试、Linux/CI 与分发剩余事项。单测、已有 Demo 与当前版本分发验收分别记录。

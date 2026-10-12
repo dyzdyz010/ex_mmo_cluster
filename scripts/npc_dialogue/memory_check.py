@@ -239,7 +239,7 @@ def execute(source, out, timeout):
     assert version['api_version'] == '0.10.3' and version['features']['store_document_text']
 
     def registrations():
-        records = demo.rpc('for r <- GateServer.Npc.Registry.list(), do: %{cid: r.cid, name: r.name, brain: r.brain, enabled: r.enabled, running: r.running, life_url: get_in(r.params,["life","url"])}')
+        records = demo.rpc('for r <- NpcServer.Registry.list(), do: %{cid: r.cid, name: r.name, brain: r.brain, enabled: r.enabled, running: r.running, life_url: get_in(r.params,["life","url"])}')
         by_id = {r['cid']: r for r in records}
         for cid in npcs:
             r = by_id[cid]
@@ -279,7 +279,7 @@ def execute(source, out, timeout):
     save(out / 'before.json', before)
     for cid in npcs:
         sample(f'budget-before-flush-{cid}')
-        result = demo.ok(demo.rpc(f'GateServer.Npc.Life.flush({cid})'))
+        result = demo.ok(demo.rpc(f'NpcServer.Life.flush({cid})'))
         save(out / f'flush-{cid}.json', result)
         assert result['status'] in ('started', 'empty'), 'flush did not execute'
         wait_idle(f'after-flush-{cid}')
@@ -297,8 +297,8 @@ def execute(source, out, timeout):
     # 容器正式readiness后，等待注册表自动恢复与Life持久加载；不替换脑、不补写任何心智。
     deadline = time.monotonic() + timeout
     while True:
-        available = demo.rpc('for r <- GateServer.Npc.Registry.list(), do: %{cid: r.cid,running: r.running}')
-        ready = demo.rpc('Enum.map(' + json.dumps(npcs) + ',fn cid -> case GateServer.Npc.Life.observe(cid) do {:ok,%{state: s}} -> %{cid: cid,ready: s != nil}; _ -> %{cid: cid,ready: false} end end)')
+        available = demo.rpc('for r <- NpcServer.Registry.list(), do: %{cid: r.cid,running: r.running}')
+        ready = demo.rpc('Enum.map(' + json.dumps(npcs) + ',fn cid -> case NpcServer.Life.observe(cid) do {:ok,%{state: s}} -> %{cid: cid,ready: s != nil}; _ -> %{cid: cid,ready: false} end end)')
         if all(any(r['cid'] == cid and r['running'] for r in available) for cid in npcs) and all(r['ready'] for r in ready):
             break
         if time.monotonic() >= deadline:
@@ -320,7 +320,7 @@ def execute(source, out, timeout):
         names = '、'.join(s['speaker_name'] for s in plan['expected'])
         query = f'我刚才与{names}在附近公开交谈时，彼此分别说了什么、向谁说？召回带发言人来源的具体对话；角色说过的话不等于事情已完成。'
         save(out / f'query-{cid}.json', dict(cid=cid, query=query))
-        recalled = demo.ok(demo.rpc(f'GateServer.Npc.Life.context({cid},{dialogue_run.packed(query)})'))
+        recalled = demo.ok(demo.rpc(f'NpcServer.Life.context({cid},{dialogue_run.packed(query)})'))
         save(out / f'recall-{cid}.json', recalled)
         docs = []
         for document_id in sorted({r['document_id'] for r in recalled['memories'] if r.get('document_id')}):
@@ -420,10 +420,10 @@ def readonly(source, out, restart=False):
     save(out / 'hindsight-version.json', api_get('/version'))
 
     def capture():
-        registry = demo.rpc('for r <- GateServer.Npc.Registry.list(), r.cid in ' + json.dumps(npcs) +
+        registry = demo.rpc('for r <- NpcServer.Registry.list(), r.cid in ' + json.dumps(npcs) +
                             ', do: %{cid: r.cid,brain: r.brain,life: Map.get(r.params,"life",false)}')
         assert {r['cid'] for r in registry} == set(npcs), 'NPC registration missing'
-        snapshots = {str(cid): demo.rpc(f'%{{life: GateServer.Npc.Life.observe({cid}),stored: DataService.NpcMemory.get({cid},"life","state")}}') for cid in npcs}
+        snapshots = {str(cid): demo.rpc(f'%{{life: NpcServer.Life.observe({cid}),stored: DataService.NpcMemory.get({cid},"life","state")}}') for cid in npcs}
         for cid in npcs:
             assert snapshots[str(cid)]['stored']['state']['cid'] == cid, 'persistent identity mismatch'
         return dict(at=time.time(), registry=registry, snapshots=snapshots,
@@ -452,7 +452,7 @@ def readonly(source, out, restart=False):
         save(out / f'documents-{cid}.json', docs)
         query = '我与LifeBuilder和松岚最近公开交谈时，彼此分别说了什么、向谁说？区分发言来源与未完成的提议。'
         save(out / f'query-{cid}.json', dict(cid=cid, query=query))
-        raw = demo.ok(demo.rpc(f'GateServer.Npc.Life.Hindsight.recall(%{{url: "{demo.URL}",bank: "npc-life-{cid}"}},{dialogue_run.packed(query)},System.system_time(:millisecond))'))
+        raw = demo.ok(demo.rpc(f'NpcServer.Life.Hindsight.recall(%{{url: "{demo.URL}",bank: "npc-life-{cid}"}},{dialogue_run.packed(query)},System.system_time(:millisecond))'))
         save(out / f'adapter-recall-{cid}.json', raw)
         recalled = dict(memory_retrieval='direct_hindsight_adapter_once', memories=raw['results'],
                         memory_truth=raw['truth'], recall_latency_ms=raw['latency_ms'])

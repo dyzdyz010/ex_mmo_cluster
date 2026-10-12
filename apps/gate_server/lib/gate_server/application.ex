@@ -1,28 +1,8 @@
 defmodule GateServer.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
-  @moduledoc """
-  Boots the gateway/control-plane runtime.
-
-  The gate owns:
-
-  - the Voxim QUIC listener and per-connection supervision
-  - Gate-owned authenticated session identities
-  - the NPC body supervisor, the NPC name registry and the one-shot start of registered NPCs
-
-  It does **not** own authoritative gameplay simulation; instead it forwards
-  authenticated requests to scene/auth services and encodes their replies for
-  clients.
-
-  See `apps/gate_server/lib/gate_server/README.md` for the current supervisor
-  tree and worker relationships.
-  """
-
+  @moduledoc "玩家 QUIC 连接入口。会话登记由 WorldServer 拥有，NPC 由独立 NpcServer 应用监督。"
   use Application
 
-  # Capture the build-time env so the release (where `Mix` is not loaded) can
-  # still answer "are we in :test?" — module attributes are evaluated at compile
-  # time, so this becomes a literal `false` in the prod release.
+  # 测试显式启动所需连接夹具，避免自动监听真实 QUIC 端口。
   @is_test_build Mix.env() == :test
 
   @impl true
@@ -31,19 +11,14 @@ defmodule GateServer.Application do
       if @is_test_build do
         []
       else
-        [
-          {GateServer.Session.Claims, name: GateServer.Session.Claims},
-          {GateServer.Transport.QuicListener,
-           [claims: GateServer.Session.Claims] ++ Application.fetch_env!(:gate_server, :quic)},
-          # 在跑的 NPC Body 按 cid 登记（Body.start/2 填），注册表据此找到它们。
-          {Registry, keys: :duplicate, name: GateServer.NpcNames},
-          {DynamicSupervisor, name: GateServer.NpcSup, strategy: :one_for_one},
-          # 注册表里 enabled 的 NPC 随节点启动：一次性（Task 缺省 restart: :temporary），Scene 还没就绪时 Body 自己重试 claim。
-          {Task, &GateServer.Npc.Registry.start_all/0}
-        ]
+        quic =
+          Application.fetch_env!(:gate_server, :quic)
+          |> Keyword.put(:claims, WorldServer.Session)
+          |> Keyword.put(:bounds, Application.fetch_env!(:voxel_region, :edit_bounds))
+
+        [{GateServer.Transport.QuicListener, quic}]
       end
 
-    opts = [strategy: :one_for_one, name: GateServer.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children, strategy: :one_for_one, name: GateServer.Supervisor)
   end
 end

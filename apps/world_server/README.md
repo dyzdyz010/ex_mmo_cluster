@@ -13,8 +13,11 @@
 
 ## 运行时边界
 
+`WorldServer.Session` 是玩家和 NPC 共用的角色会话占用 owner，由本应用常驻监督。
+控制器通过 `claim/4`、`prepare_transfer/4`、`commit_transfer/4` 协作，原调用进程是被监视的 owner；Gate 停止不撤销 NPC 会话。
+
 `WorldServer.Movement` 按 `:movement_routes` 把 scene_id 解析到 Scene 与 canonical `VoxelRegion.World`，并在控制面连接相邻 Scene。
 配置了拓扑文件（`VOXIM_TOPOLOGY` → `:world_server, :topology`）时，`WorldServer.Application` 启动 `WorldServer.Topology`：
 按文件在本节点起本地 Scene（可经本地 Replica）、用 `:peer` 在本机起 Scene 节点，写路由、连接相邻 Scene，全部就绪后应用才启动完毕，
-Auth / Gate 因运行时依赖排在其后。拓扑格式与部署见仓库根 `deploy/README.md`；测试 `test/world_server/topology_test.exs`。
+Auth / Gate / NPC 因运行时依赖排在其后。拓扑格式与部署见仓库根 `deploy/README.md`；测试 `test/world_server/topology_test.exs`。
 旧的区域租约、跨 chunk 事务协调与 world pack 链路（MapLedger、TransactionCoordinator 等）已于 2026-09-30 随旧客户端删除。
