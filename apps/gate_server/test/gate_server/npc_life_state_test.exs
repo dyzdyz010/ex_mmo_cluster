@@ -8,6 +8,26 @@ defmodule GateServer.NpcLifeStateTest do
 
   defp new, do: State.new(7, "world-a", 0, 0)
 
+  test "模型路径的建设事件仍更新关系，但不会预先施加规则情绪" do
+    {state, [episode]} = State.advance(new(), [event(1, :damage, 11)], 1, 0, :model)
+    assert state["relationships"]["11"]["trust"] == -0.35
+    assert state["emotions"]["anger"] == 0.0
+    assert state["evidence"]["anger"] == nil
+    assert episode["actor"] == 11
+    assert episode["text"] =~ "emotional appraisal is pending"
+  end
+
+  test "Social 兼容策略不会把模型评价序号当作 World 感谢事务号" do
+    state =
+      new()
+      |> put_in(["emotions", "gratitude"], 0.9)
+      |> put_in(["evidence", "gratitude"], %{"kind" => "appraisal", "actor" => 12, "seq" => 999})
+
+    choice = State.behavior(state, observation([%{entity_id: 12, position: {2.0, 0.0, 0.0}}]), 0)
+    refute choice.acknowledge
+    refute choice.source_seq == 999
+  end
+
   test "亲和倾向第三次经历才慢变，来源明确，安静时间和JSON恢复不漂移" do
     events =
       for seq <- 1..6,

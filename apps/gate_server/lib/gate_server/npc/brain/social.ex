@@ -64,13 +64,11 @@ defmodule GateServer.Npc.Brain.Social do
   def handle_event({:observation, %{life: %{state: canonical, now_ms: now}} = o} = event, s) do
     s = %{s | thanks: max(s.thanks, Map.get(o.life, :thanks, 0))}
     choice = State.behavior(canonical, o, now)
-    gratitude = canonical["evidence"]["gratitude"]
 
     s =
-      if choice.mode == :work and gratitude != nil and choice.source_seq == gratitude["seq"] and
-           choice.actor == gratitude["actor"],
-         do: %{s | thanks: max(s.thanks, choice.source_seq)},
-         else: s
+      if choice.acknowledge,
+        do: %{s | thanks: max(s.thanks, choice.source_seq)},
+        else: s
 
     choice =
       if choice.mode == :thank and choice.source_seq <= s.thanks,

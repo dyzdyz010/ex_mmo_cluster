@@ -25,7 +25,10 @@ defmodule GateServer.Npc.Runtime do
 
       life =
         if Map.has_key?(profile, :life) do
-          {:ok, life} = GateServer.Npc.Life.start_link(self(), context, profile)
+          life_profile =
+            update_in(profile.life, &Map.put(&1, :appraise, backend == GateServer.Npc.Brain.Llm))
+
+          {:ok, life} = GateServer.Npc.Life.start_link(self(), context, life_profile)
           life
         end
 
@@ -201,6 +204,13 @@ defmodule GateServer.Npc.Runtime do
   defp step(_, _, _, _), do: {:error, :unsupported_backend}
 
   defp deliver(state, event) do
+    if state.life do
+      case event do
+        {:outcome, outcome} -> GateServer.Npc.Life.experience(state.life, outcome)
+        _ -> :ok
+      end
+    end
+
     {commands, mind} = state.backend.handle_event(event, state.mind)
 
     if state.life != nil and state.backend == GateServer.Npc.Brain.Social,

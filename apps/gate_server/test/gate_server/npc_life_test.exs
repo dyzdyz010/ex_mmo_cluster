@@ -143,7 +143,11 @@ defmodule GateServer.NpcLifeTest do
             {:ok,
              %{
                "output" => [
-                 %{"type" => "function_call", "name" => name, "arguments" => Jason.encode!(args)}
+                 %{
+                   "type" => "function_call",
+                   "name" => name,
+                   "arguments" => Jason.encode!(Map.put(args, :appraisal, []))
+                 }
                ]
              }}
         end
@@ -445,10 +449,19 @@ defmodule GateServer.NpcLifeTest do
       now: fn -> 1000 end,
       poll_ms: 600_000,
       status: nil,
-      speech_pending: []
+      speech_pending: [],
+      appraise: false,
+      observation: nil,
+      experience_pending: []
     }
 
-    {:noreply, s} = Life.handle_info({:result, :poll, {:ok, %{row: loaded, episodes: []}}}, s)
+    {:noreply, s} =
+      Life.handle_info(
+        {:result, :poll,
+         {:ok, %{row: loaded, events: %{world_id: "restored-world", cursor: 3, events: []}}}},
+        s
+      )
+
     assert_receive {:result, :job, retained}, 5000
     {:noreply, s} = Life.handle_info({:result, :job, retained}, s)
     assert s.row["retained"] == 1 and s.row["dirty"]

@@ -51,7 +51,7 @@ defmodule GateServer.NpcDialogueWorldTest do
                    %{
                      "type" => "function_call",
                      "name" => tool,
-                     "arguments" => Jason.encode!(args)
+                     "arguments" => Jason.encode!(Map.put(args, "appraisal", []))
                    }
                  ]
                }}
@@ -103,6 +103,10 @@ defmodule GateServer.NpcDialogueWorldTest do
     assert [%{"speaker_id" => ^cid, "target_id" => ^peer, "conversation_id" => conversation}] =
              Jason.decode!(input_peer.input)["heard"]
 
+    # 先完成开场后的决策，再让邻居回复；否则回复可能已被同一请求消费，不能要求多问一次。
+    assert_receive {:decision, ^cid, after_saying, _}, 3000
+    send(after_saying, {:answer, "wait", %{"seconds" => 120}})
+
     send(
       reply_peer,
       {:answer, "say",
@@ -128,8 +132,6 @@ defmodule GateServer.NpcDialogueWorldTest do
              &match?(%{id: 2, verb: :say, status: :done}, &1)
            )
 
-    assert_receive {:decision, ^cid, after_saying, _}, 3000
-    send(after_saying, {:answer, "wait", %{"seconds" => 120}})
     assert_receive {:decision, ^cid, back_to_work, input_work}, 4000
     assert Enum.any?(Jason.decode!(input_work.input)["heard"], &(&1["speaker_id"] == peer))
     send(back_to_work, {:answer, "query_balances", %{}})

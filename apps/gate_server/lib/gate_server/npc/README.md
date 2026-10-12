@@ -142,7 +142,7 @@ flowchart LR
   不访问 World；`design_house` 的锚点宏格各轴离自身超过它时技能以 `too_far` 结束，不读 site、不发模型请求。
   两段 LLM 工具描述（`move_to`、`design_house`）都写了这条上限，数字由 `Perception.reach()` 插值。
 - **LLM 询问**：有新情况才问——新 Outcome、被他人直接叫到、`wait` 到期、或有实体走进 6 米（离开 8 米才算走远）。
-  Life 新权威评价（`mind.evidence` 变化）也唤醒；单纯情绪衰减/观察时间变化不唤醒。
+  Life 新接纳经历（`mind.affect.next_seq` 变化）也唤醒；旧规则模式按 `mind.evidence`，单纯情绪提交、衰减/观察时间变化不唤醒。
   请求期间到达的新情况保留至下一轮，旧响应不能把它清掉；仍受在途命令与滑动额度约束。
   两次询问至少隔 1 秒；应答没有工具调用或请求失败按 1、2、4…60 秒退避；
   每 NPC 每小时最多 `max_requests_per_hour`（缺省 600）次，用完记 `npc_llm_budget_exhausted`。
@@ -411,6 +411,48 @@ NPC 施法（`cast_spell` / `cancel_cast`、`self.caster`）随 I4 接上，行�
 
 ## 可选人生闭环（Life）
 
+### OCC 情绪（2026-10-12）
+
+`life` / Llm + Life 使用 `life/emotion_vocabulary.ex` 的 `occ22-v1` 词表。`life/appraisal.ex` 负责释义投影、
+评价契约和状态更新；Body、World 与能力表不依赖类别。初始情境、实际动作终态、权威 Speech、既有建设关注事件
+进入 Life 的持久 `affect.pending`；每轮按来源顺序取最多 16 项，`through` 只指向本轮末项，后缀留在原队列。
+16 是运输预算，不是情绪阈值，不合并或丢弃自然经历。普通观察帧不反复生成来源。
+自动模式在消费游标推进后若仍有后缀，继续处理原待办；最后一次提交不自行唤醒。该条件不绕过已有请求节流与额度。
+Brain 只保留本次 Life 成功提交的消费回执 `appraised_through`，与观察里的 cursor 取较大值后判断是否还有来源。
+它不是第二份情绪状态；用于防止 Life 快照领先于 Body 投影时，把已处理来源再次积累为 dirty。
+
+同一次 LLM 请求在已有工具参数中返回 `appraisal` 数组（没有激发时为 `[]`）。每项包含
+`emotion/intensity/source_seq/target_id/reason`；Life 校验所选词表、强度、来源和对象，保存成功后才执行原工具。
+拒绝会记录 `npc_emotion_rejected` / `npc_llm_appraisal_failed`，不执行该次动作；Life 上下文缺失时不调用模型。
+模型当轮综合当前状态与新评价选行动；之后的请求读取已持久化且按时间衰减的情绪。该过程不保证情绪必然改变动作。
+
+`life/emotions.ex` 拥有对象化数值状态与衰减。schema 2 的 canonical `feelings` 按 emotion/object 独立保存
+intensity/at_ms/evidence；人物对象 `{kind: actor, id: cid}`，无人物评价引用 `{kind: event, id: source_seq}`，
+包括该事件引出的具体前景。同一来源可分别对不同对象评价；只拒绝 source/emotion/target 三者相同的重复项。
+同类同对象取衰减后旧值与新值的较大者，保留获胜来源；不同对象互不覆盖，弱评价仍记入最后一次评价。
+继续采用既有 120 秒半衰期；这是工程参数。加载旧状态一次迁移到 feelings，保留原来源、时间、人格、关系和待办；
+没有来源的旧情绪显式标为 legacy。canonical 不再持有 emotions 摘要，观察时从 feelings 派生。
+未知词表/schema 版本显式拒绝，替换时须写明确迁移。LLM 路径不再重复施加建设情绪规则，关系/人格规则保持独立。
+非 LLM 的 Social 仍是建设规则兼容策略，只认 World 来源，不把模型评价序号用于旧感谢确认。
+模型 Life 的持久状态不能直接改由规则 owner 接管；加载返回 `emotion_owner_mismatch` 并保留原数据，禁止把规则更新写入派生摘要后静默丢弃。
+
+CLI：`Life.observe(cid)` 的 `state.affect` 给出词表/schema、消费游标、待评价来源与最后评价；`state.feelings` 是持久原值，
+`mind.feelings` 给出各对象当前衰减值，`mind.emotions/evidence` 是每类最强项的展示摘要；`unsaved_experiences/unsaved_speech/error` 显示未落盘输入与错误。
+World worker 只读取事件，Life owner 在最新状态上推进，避免在途旧快照覆盖模型刚提交的情绪。
+
+移动仍由 Brain 根据完整 feelings、任务和已同步人物位置选择 move_to/stop/wait；Body 寻路与 Scene 权威执行不读取情绪类别。
+恐惧/感激/愤怒只作为情境相关倾向，不固定映射动作，不改变移动速度；离场人物不能从情绪证据猜当前位置。
+当前在动作完成后再决策，不提供移动中的即时情绪中断；人物攻击另行设计。
+`npc_emotion_movement_test.exs` 的干跑覆盖双人物混合情绪持久化、Body 重启、下一轮输入与真实移动终态；
+显式 live_llm 场景经真实 Speech 激发情绪并执行移动，Hindsight 为替身。`npc_emotion_probe_test.exs` 的移动对照只交换既有情绪对象，属于纯输入模型探针。
+
+最小回归见 `npc_appraisal_test`、`npc_emotion_life_test` 及 Life/Llm/Social 原测试；实际模型模拟是显式 `:live_llm` 的
+`npc_emotion_simulation_test.exs`。模拟使用正式 `Registry.brain` → `Body.start` → Runtime/Life/Llm，
+有限真实 World/Scene、独占测试 PG、真实模型和 Hindsight；只测试 NPC 闭环，不代表 UE 双端或 release 验收。
+角色卡 JSON 加载仍待实施；当前角色差异由已有 `goal` 输入。
+
+### 组合与操作
+
 阶段成果的独立登记入口为 `brain: "life"`。这是可选择、可持久化的后端组合名：决策复用 `Brain.Llm`，心智由 `Life`、当前意图/笔记由 `Memory`、世界动作由 `Body` 拥有，没有复制第二套决策器或世界入口。
 它要求 `goal` 和 `tools`，其余参数沿用 `llm`；省略 `life` 等于启用，服务地址来自 `NPC_LIFE_HINDSIGHT_URL`，也可显式提供 `%{"url" => ...}`。禁止 `life=false`，默认每小时60次，显式额度1..60。
 
@@ -447,7 +489,7 @@ flowchart LR
 Runtime 初始化收到 Body 的永久 cid、scene_id 与路由模块。Life 与 Runtime 关联退出；Body 替换先等旧 Life 真正退出，
 同 cid 不复用旧 owner。启动、World 读取、HTTP 与数据库不会占用 Body 输入循环。Life 经当前 Scene 路由重新查询 World；
 世界身份不符、操作历史 gap 和存储错误都显式报告。游标、canonical 事件态、短经历尾部、封存片段、感谢确认序号和认识缓存
-原子写在同一行。`State.view/2` 的衰减视图只进入观察和模型输入，永不覆盖 canonical 状态。
+原子写在同一行。`State.view/2` 的只读衰减视图进入观察和模型输入；接纳新评价时先衰减再写 canonical，纯观察不落盘。
 
 短经历积累约 3000 字后封成一个不可变片段，文档 id 由首尾经历本身的唯一 id 构成；手动 flush 可以封存不足长度的尾片段。
 retain 完成只从当前行删除已发送的片段 id，不以发送前快照覆盖期间的新事件。HTTP 失败保留原片段与诊断，由显式 flush

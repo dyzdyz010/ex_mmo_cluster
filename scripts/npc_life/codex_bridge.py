@@ -95,7 +95,7 @@ class Bridge:
         return answer
 
 
-def serve(out, cli, port):
+def serve(out, cli, port, host):
     bridge = Bridge(out, cli)
     key = os.environ['NPC_CODEX_BRIDGE_KEY']
 
@@ -127,7 +127,7 @@ def serve(out, cli, port):
             except Exception as error:
                 self.reply(503, {'error': {'message': str(error), 'type': type(error).__name__}})
 
-    ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 if __name__ == '__main__':
@@ -135,5 +135,6 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--cli', required=True)
     parser.add_argument('--port', type=int, default=27365)
+    parser.add_argument('--host', default='0.0.0.0')
     args = parser.parse_args()
-    serve(args.out, args.cli, args.port)
+    serve(args.out, args.cli, args.port, args.host)

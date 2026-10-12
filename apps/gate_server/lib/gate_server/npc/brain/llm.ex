@@ -33,6 +33,7 @@ defmodule GateServer.Npc.Brain.Llm do
   @behaviour GateServer.Npc.Brain
   require Logger
   alias GateServer.Npc.{Abilities, Dialogue, Memory, Context, Perception, Responses}
+  alias GateServer.Npc.Life.Appraisal
   alias SceneServer.Movement.Player
 
   @history 8
@@ -66,7 +67,10 @@ defmodule GateServer.Npc.Brain.Llm do
     strict: true
   }
 
-  defp tools(profile), do: Abilities.tools(profile) ++ [@wait]
+  defp tools(profile) do
+    tools = Abilities.tools(profile) ++ [@wait]
+    if Map.has_key?(profile, :life), do: Appraisal.tools(tools), else: tools
+  end
 
   @impl true
   def init(profile) do
@@ -103,7 +107,7 @@ defmodule GateServer.Npc.Brain.Llm do
     do: %{id: id, verb: :wait, seconds: args["seconds"]}
 
   defp command(%{name: name, arguments: {:ok, args}}, id, profile),
-    do: Abilities.command(name, args, id, profile)
+    do: Abilities.command(name, Map.delete(args, "appraisal"), id, profile)
 
   @doc "一次应答里的工具调用原样（id => %{tool:, args:}），编号方式与 `commands/3` 相同；Outcome 回来时附给模型看。"
   def calls(response, next_id) do
@@ -111,7 +115,7 @@ defmodule GateServer.Npc.Brain.Llm do
         into: %{} do
       args =
         case call.arguments do
-          {:ok, args} -> args
+          {:ok, args} -> Map.delete(args, "appraisal")
           {:error, reason} -> reason
         end
 
@@ -138,6 +142,8 @@ defmodule GateServer.Npc.Brain.Llm do
       # 身边（@notice_m 内）的实体 id；有新的走近就叫醒。
       nearby: MapSet.new(),
       dirty: true,
+      # 本请求已由 Life 确认消费的位置；仅作消费者回执，canonical 仍在 Life。
+      appraised_through: 0,
       asking: false,
       request_pid: nil,
       step: nil,
@@ -179,8 +185,7 @@ defmodule GateServer.Npc.Brain.Llm do
               nearby: nearby,
               dirty:
                 state.dirty or not MapSet.subset?(nearby, state.nearby) or
-                  get_in(observation, [:mind, "evidence"]) !=
-                    get_in(state.observation, [:mind, "evidence"])
+                  stimulus(observation) != stimulus(state.observation)
           }
 
         {:outcome, outcome} ->
@@ -203,6 +208,17 @@ defmodule GateServer.Npc.Brain.Llm do
 
         {:answer, {:ok, response}} ->
           answer(state, response)
+
+        {:answer, {:ok, response, through}} ->
+          answer(%{state | appraised_through: through}, response)
+
+        {:answer, {:error, reason, response}} ->
+          Logger.warning("npc_llm_appraisal_failed reason=#{inspect(reason)}")
+
+          finish_step(
+            %{state | asking: false, request_pid: nil, dirty: true, failures: state.failures + 1},
+            {:error, reason, response}
+          )
 
         :wake ->
           %{state | dirty: true}
@@ -283,6 +299,17 @@ defmodule GateServer.Npc.Brain.Llm do
     )
   end
 
+  # 模型情绪的待办由消费位置直接派生，不累积到旧观察驱动的 dirty 标志。
+  defp stimulus(%{mind: %{"affect" => _}}), do: nil
+  defp stimulus(observation), do: get_in(observation, [:mind, "evidence"])
+
+  # Life 快照可能领先于 Body 观察；成功接纳回执防止迟到投影重复唤醒，后缀仍继续处理。
+  defp appraisal_pending?(%{observation: %{mind: %{"affect" => affect}}} = state) do
+    affect["next_seq"] > max(affect["cursor"], state.appraised_through)
+  end
+
+  defp appraisal_pending?(_), do: false
+
   defp finish_step(%{step: {observer, tag, _context}} = state, result) do
     send(observer, {:npc_llm_step, tag, result})
     %{state | step: nil}
@@ -338,7 +365,7 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   defp ask_ready(
-         %{dirty: true, asking: false, calls: calls, observation: %{pending: []} = observation} =
+         %{asking: false, calls: calls, observation: %{pending: []} = observation} =
            state
        )
        when map_size(calls) == 0 do
@@ -352,6 +379,9 @@ defmodule GateServer.Npc.Brain.Llm do
         else: %{state | asks: asks}
 
     cond do
+      not state.dirty and not appraisal_pending?(state) ->
+        state
+
       now - state.asked_ms < if(state.step, do: @min_gap_ms, else: gap(state.failures)) ->
         state
 
@@ -387,16 +417,24 @@ defmodule GateServer.Npc.Brain.Llm do
                 Memory.context(state.memory, observation.self.entity_id, query)
               end
 
-            # 记忆 owner 已返回显式失败；手动实验停止本次许可，不付费请求或重试。
+            # 记忆 owner 已返回显式失败；没有合法上下文的请求不能接纳评价，不调用模型。
             reason = experiences[:memory_error] || experiences[:working_memory_error]
 
             result =
-              if state.step != nil and reason != nil do
+              if reason != nil and (state.step != nil or Map.has_key?(state.profile, :life)) do
                 {:error, {:memory_context_unavailable, reason}}
               else
                 context = if state.step, do: elem(state.step, 2)
                 body = body(state.profile, observation, state.outcomes, experiences, context)
-                state.request.(state.profile.endpoint, body)
+
+                with {:ok, response} <- state.request.(state.profile.endpoint, body) do
+                  commit_appraisal(
+                    state.profile,
+                    observation.self.entity_id,
+                    experiences,
+                    response
+                  )
+                end
               end
 
             send(owner, {:answer, result})
@@ -415,6 +453,27 @@ defmodule GateServer.Npc.Brain.Llm do
 
   defp ask_ready(state), do: state
 
+  defp commit_appraisal(profile, cid, experiences, response) do
+    if Map.has_key?(profile, :life) do
+      result =
+        with %{emotion_context: %{through: through}} <- experiences,
+             [%{name: name, arguments: {:ok, %{"appraisal" => entries}}}] <-
+               Responses.function_calls(response),
+             true <- Enum.any?(tools(profile), &(&1.name == name)) do
+          GateServer.Npc.Life.appraise(cid, through, entries)
+        else
+          _ -> {:error, :missing_appraisal}
+        end
+
+      case result do
+        :ok -> {:ok, response, experiences.emotion_context.through}
+        {:error, reason} -> {:error, {:emotion_appraisal_failed, reason}, response}
+      end
+    else
+      {:ok, response}
+    end
+  end
+
   defp gap(failures), do: min(@max_gap_ms, @min_gap_ms * Integer.pow(2, failures))
 
   @doc """
@@ -428,7 +487,9 @@ defmodule GateServer.Npc.Brain.Llm do
   def body(profile, observation, outcomes, experiences \\ [], step_context \\ nil) do
     %{
       model: profile.endpoint.model,
-      instructions: instructions(profile),
+      instructions:
+        instructions(profile) <>
+          if(Map.has_key?(profile, :life), do: Appraisal.instructions(), else: ""),
       input:
         Jason.encode!(
           %{
@@ -483,7 +544,7 @@ defmodule GateServer.Npc.Brain.Llm do
           {~w(say),
            "说话通过 say 工具；target_id 是你叫到的角色，回复引用原 conversation_id。旁听可以下次自主加入，没有回答义务；沉默或继续工作都是合法选择。"},
           {[],
-           "mind.traits 的 caution 是缓慢变化的谨慎倾向，影响对陌生人的安全距离；sociability 是缓慢变化的亲和倾向，影响感谢时主动接近的程度。它们不同于随时间衰减的 anger/gratitude，也不替代当前处境判断。"},
+           "mind.traits 的 caution 是缓慢变化的谨慎倾向，sociability 是缓慢变化的亲和倾向。它们不同于随时间衰减的 emotions，也不替代当前处境判断。"},
           {~w(look inspect), "每次动手前先用 look/inspect 核对当前位置与目标。"},
           {[],
            "experiences 是近期经历；memories 是检索记忆，recent_notes 是近期自记笔记；mental_models 是从经历形成的认识，mind 是自己的当前情绪、人格与关系。这些用于解释选择，不是当前世界事实。memory_error/working_memory_error 表示读取失败，不能当作没有经历或计划。"},
@@ -494,6 +555,10 @@ defmodule GateServer.Npc.Brain.Llm do
           {[],
            "recent_failures 是跨轮次保留的最近未获成功确认的调用与当时原因，不是当前禁令或世界真值；其中 delivery_unknown 仍仅表示未获确认，不能推断话没说出去，先结合 heard 与上下文判断，不得盲目重发。其他失败先观察原因涉及的前提，只有它已改变或调用参数已纠正才再尝试。无法推进时保留目的并记录阻塞原因、等待条件，不空转查询。"},
           {[], "能力以本次 tools 参数表为准。"},
+          {~w(move_to),
+           "选择移动时，结合 mind.feelings 中对各对象的情绪、人格、任务与当前处境：恐惧可促使拉开距离或寻找退路，感激可促使接近帮助者，愤怒可促使接近交涉或避开。" <>
+             "这些是行动倾向，不是固定命令；同一对象的愤怒与恐惧可以并存。自行选择目的地、停留或等待，不为展示情绪无故往返。" <>
+             "人物当前位置只能取当前 entities；情绪来源和记忆里的旧坐标不是当前位置，已离场对象不能靠猜测位置追踪。"},
           {~w(design_house build), "设计技能可自行 look/inspect 和读写记忆，发布后用 build 才会改变世界。"}
         ],
         Enum.all?(needs, &MapSet.member?(names, &1)),

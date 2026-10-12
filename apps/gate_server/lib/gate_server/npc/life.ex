@@ -10,6 +10,7 @@ defmodule GateServer.Npc.Life do
   use GenServer
   require Logger
   alias GateServer.Npc.{Dialogue, Memory, Life.State, Life.Hindsight}
+  alias GateServer.Npc.Life.Appraisal
   @fragment_chars 3000
   @refresh_ms 600_000
 
@@ -52,7 +53,7 @@ defmodule GateServer.Npc.Life do
 
           {:ok,
            %{
-             mind: snapshot.mind,
+             mind: Appraisal.mind(snapshot.mind),
              mental_models: snapshot.cache["models"],
              model_metadata: snapshot.cache["metadata"],
              model_cached_at_ms: snapshot.cache["at_ms"],
@@ -61,6 +62,13 @@ defmodule GateServer.Npc.Life do
              memory_retrieval: :hindsight_once,
              memory_truth: "Subjective memory; not current numeric world truth."
            }}
+          |> then(fn {:ok, context} ->
+            {:ok,
+             if(snapshot.mind["affect"],
+               do: Map.put(context, :emotion_context, Appraisal.context(snapshot.mind)),
+               else: context
+             )}
+          end)
 
         {:error, reason} ->
           GenServer.cast(name(cid), {:recall, %{status: :failed, error: reason}})
@@ -76,6 +84,12 @@ defmodule GateServer.Npc.Life do
 
   @doc "接纳 Body 实际收到的权威 Speech；只保存主观经历，不推进 World 游标或修改心智。"
   def speech(pid, message), do: GenServer.cast(pid, {:speech, message})
+
+  @doc "接纳真实 Runtime 的动作终态，供下一次情绪评价引用。"
+  def experience(pid, outcome), do: GenServer.cast(pid, {:experience, outcome})
+
+  @doc "提交本次模型情绪评价；持久化完成才返回成功，调用方随后才执行动作。"
+  def appraise(cid, through, entries), do: call(cid, {:appraise, through, entries})
 
   defp name(cid), do: {:global, {__MODULE__, node(), cid}}
 
@@ -115,6 +129,8 @@ defmodule GateServer.Npc.Life do
        job: nil,
        error: nil,
        observation: nil,
+       appraise: Map.get(options, :appraise, false),
+       experience_pending: [],
        decision: nil,
        recall: nil,
        status: nil,
@@ -148,7 +164,9 @@ defmodule GateServer.Npc.Life do
         hindsight: s.status,
         recall: s.recall,
         decision: s.decision,
-        unsaved_speech: length(s.speech_pending)
+        unsaved_speech: length(s.speech_pending),
+        unsaved_experiences: length(s.experience_pending),
+        emotion_owner: if(s.appraise, do: :model, else: :construction_rules)
       }}, s}
   end
 
@@ -191,10 +209,52 @@ defmodule GateServer.Npc.Life do
   def handle_call(:refresh, _, s),
     do: {:reply, {:ok, %{status: :started}}, start_job(s, :refresh)}
 
+  def handle_call({:appraise, _, _}, _, %{row: nil} = s),
+    do: {:reply, {:error, :life_not_ready}, s}
+
+  def handle_call({:appraise, through, entries}, _, s) do
+    case Appraisal.apply(s.row["state"], through, entries, s.now.()) do
+      {:ok, canonical} ->
+        case save(s, %{s.row | "state" => canonical}) do
+          {:ok, s} ->
+            publish(s)
+
+            Logger.info(
+              "npc_emotion_appraised cid=#{s.context.cid} through=#{through} count=#{length(entries)}"
+            )
+
+            {:reply, :ok, s}
+
+          {:error, s} ->
+            {:reply, {:error, s.error}, s}
+        end
+
+      {:error, reason} ->
+        Logger.warning("npc_emotion_rejected cid=#{s.context.cid} reason=#{reason}")
+        {:reply, {:error, reason}, s}
+    end
+  end
+
   @impl true
   def handle_cast({:observation, o}, s) do
     context = %{s.context | scene_id: Map.get(o.self, :scene_id, s.context.scene_id)}
-    {:noreply, %{s | observation: o, context: context}}
+    s = %{s | observation: o, context: context}
+
+    s =
+      if s.appraise and s.row != nil and s.row["state"]["affect"]["next_seq"] == 0 and
+           not Enum.any?(s.experience_pending, fn {kind, _, _, _} -> kind == "situation" end) do
+        enqueue_experience(s, "situation", %{self: o.self, entities: o.entities})
+      else
+        s
+      end
+
+    {:noreply, s}
+  end
+
+  def handle_cast({:experience, outcome}, s) do
+    position = s.observation && s.observation.self.position
+    [projected] = GateServer.Npc.Perception.project(outcome, [], position)
+    {:noreply, enqueue_experience(s, "outcome", projected)}
   end
 
   def handle_cast({:decision, data}, s) do
@@ -226,7 +286,6 @@ defmodule GateServer.Npc.Life do
     memory = s.memory
     context = s.context
     row = s.row
-    now = s.now.()
 
     {:noreply,
      worker(s, :poll, fn ->
@@ -237,24 +296,7 @@ defmodule GateServer.Npc.Life do
                 route.world_ref,
                 loaded && loaded["state"]["cursor"]
               ) do
-         case loaded do
-           nil ->
-             {:ok, %{row: initial(context.cid, events, now), episodes: []}}
-
-           %{"state" => %{"world_id" => world}} when world == events.world_id ->
-             canonical = if row, do: loaded["state"], else: State.upgrade(loaded["state"])
-
-             if canonical != loaded["state"],
-               do: Logger.info("npc_life_state_upgraded cid=#{context.cid} added=sociability")
-
-             {canonical, episodes} =
-               State.advance(canonical, events.events, events.cursor, now)
-
-             {:ok, %{row: %{loaded | "state" => canonical}, episodes: episodes}}
-
-           _ ->
-             {:error, :life_world_identity_mismatch}
-         end
+         {:ok, %{row: loaded, events: events}}
        end
      end)}
   end
@@ -266,19 +308,8 @@ defmodule GateServer.Npc.Life do
 
     s =
       case result do
-        {:ok, %{row: loaded, episodes: episodes}} ->
-          # worker 只返回本轮 World 增量；当前 outbox 与同时接纳的 Speech 始终归 owner。
-          row = s.row || loaded
-          candidate = %{row | "state" => loaded["state"], "pending" => row["pending"] ++ episodes}
-
-          case save(s, seal(candidate, false)) do
-            {:ok, s} ->
-              publish(s)
-              s |> save_speech() |> automatic()
-
-            {:error, s} ->
-              s
-          end
+        {:ok, %{row: loaded, events: events}} ->
+          accept_world(s, loaded, events)
 
         {:error, reason} ->
           error(s, reason)
@@ -369,6 +400,98 @@ defmodule GateServer.Npc.Life do
       "thanked_seq" => 0
     }
 
+  # 只有 owner 推进当前 canonical；在途 World 读取不能覆盖模型刚提交的情绪。
+  defp accept_world(s, loaded, events) do
+    row = s.row || loaded || initial(s.context.cid, events, s.now.())
+
+    if row["state"]["world_id"] != events.world_id do
+      error(s, :life_world_identity_mismatch)
+    else
+      canonical = State.upgrade(row["state"])
+
+      canonical =
+        cond do
+          s.appraise -> Appraisal.enable(canonical)
+          Map.has_key?(canonical, "affect") -> {:error, :emotion_owner_mismatch}
+          true -> canonical
+        end
+
+      case canonical do
+        {:error, reason} -> error(s, reason)
+        canonical -> advance_world(s, row, canonical, events)
+      end
+    end
+  end
+
+  defp advance_world(s, row, canonical, events) do
+    {canonical, episodes} =
+      State.advance(
+        canonical,
+        events.events,
+        events.cursor,
+        s.now.(),
+        if(s.appraise, do: :model, else: :rules)
+      )
+
+    canonical =
+      if s.appraise do
+        Enum.reduce(episodes, canonical, fn episode, state ->
+          Appraisal.enqueue(
+            state,
+            "world",
+            episode,
+            [episode["actor"] | targets(s)],
+            episode["at_ms"]
+          )
+        end)
+      else
+        canonical
+      end
+
+    candidate = %{row | "state" => canonical, "pending" => row["pending"] ++ episodes}
+
+    case save(s, seal(candidate, false)) do
+      {:ok, s} ->
+        s = s |> save_experiences() |> save_speech()
+        publish(s)
+        automatic(s)
+
+      {:error, s} ->
+        s
+    end
+  end
+
+  defp targets(%{observation: nil, context: context}), do: [context.cid]
+
+  defp targets(s),
+    do: Enum.uniq([s.context.cid | Enum.map(s.observation.entities, & &1.entity_id)])
+
+  defp enqueue_experience(%{appraise: false} = s, _, _), do: s
+
+  defp enqueue_experience(s, kind, data) do
+    source = {kind, json(GateServer.Npc.Context.plain(data)), targets(s), s.now.()}
+    save_experiences(%{s | experience_pending: s.experience_pending ++ [source]})
+  end
+
+  defp save_experiences(%{row: nil} = s), do: s
+  defp save_experiences(%{experience_pending: []} = s), do: s
+
+  defp save_experiences(s) do
+    canonical =
+      Enum.reduce(s.experience_pending, s.row["state"], fn {kind, data, ids, at}, state ->
+        Appraisal.enqueue(state, kind, data, ids, at)
+      end)
+
+    case save(s, %{s.row | "state" => canonical}) do
+      {:ok, s} ->
+        publish(s)
+        %{s | experience_pending: []}
+
+      {:error, s} ->
+        s
+    end
+  end
+
   # 首次 World 身份尚未加载或写入失败时保留未落盘输入；既有轮询继续尝试，观察显式报告 unsaved_speech/error。
   defp save_speech(%{row: nil} = s), do: s
   defp save_speech(%{speech_pending: []} = s), do: s
@@ -378,9 +501,30 @@ defmodule GateServer.Npc.Life do
     episodes = Enum.map(s.speech_pending, &Dialogue.episode(&1, s.context.cid))
     row = Map.update!(s.row, "pending", &(&1 ++ episodes))
 
+    canonical =
+      if s.appraise do
+        Enum.reduce(s.speech_pending, row["state"], fn message, state ->
+          Appraisal.enqueue(
+            state,
+            "speech",
+            json(message),
+            Enum.uniq([message.speaker_id | targets(s)]),
+            message.at_ms
+          )
+        end)
+      else
+        row["state"]
+      end
+
+    row = %{row | "state" => canonical}
+
     case save(s, seal(row, false)) do
-      {:ok, s} -> automatic(%{s | speech_pending: []})
-      {:error, s} -> s
+      {:ok, s} ->
+        publish(s)
+        automatic(%{s | speech_pending: []})
+
+      {:error, s} ->
+        s
     end
   end
 

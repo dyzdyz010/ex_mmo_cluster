@@ -6,9 +6,9 @@ defmodule GateServer.Npc.Life.State do
   不作为当前几何真值。一次毁坏过程只评价首个 damage/destroy，同材料修复后重新计数。
   情绪按经过时间衰减，关系与谨慎不随时间恢复；各数值系数是本轮游戏设计参数。
   canonical 状态只保留最近评价事件的情绪时刻锚，轮询时间不改锚。
-  当前衰减值由 view/2 派生，调用方不可将视图覆盖持久 canonical 状态。
+  当前衰减值由 view/2 派生；观察不得回写，只有新评价接纳时先衰减再更新 canonical。
   """
-  @half_life_ms 120_000
+  alias GateServer.Npc.Life.Emotions
   @emotion_threshold 0.1
 
   @doc "建立新的心智，以调用方提供的游标和时间为起点。"
@@ -35,14 +35,14 @@ defmodule GateServer.Npc.Life.State do
   每条经历直接标注权威 at_ms 对应的 UTC ISO8601 毫秒时刻，原始事件身份与时间不变。
   now_ms 保留调用接口，但轮询时刻不写回事件锚；当前情绪请读取 view(state, now_ms)。
   """
-  def advance(state, events, cursor, _now_ms) do
+  def advance(state, events, cursor, _now_ms, emotion_owner \\ :rules) do
     {state, episodes} =
       Enum.reduce(events, {state, []}, fn event, {state, episodes} ->
         if event.seq <= state["cursor"] do
           {state, episodes}
         else
           state = Map.put(state, "cursor", event.seq)
-          {state, episode} = appraise(state, event)
+          {state, episode} = appraise(state, event, emotion_owner)
           {state, if(episode, do: [episode | episodes], else: episodes)}
         end
       end)
@@ -50,11 +50,15 @@ defmodule GateServer.Npc.Life.State do
     {Map.put(state, "cursor", max(cursor, state["cursor"])), Enum.reverse(episodes)}
   end
 
-  @doc "按真实经过时间返回衰减视图；负时间差不倒流。视图不修改源，不能回写为 canonical 状态。"
+  @doc "按真实经过时间返回衰减视图；负时间差不倒流。纯观察不回写；接纳新评价时用它作为更新起点。"
+  def view(%{"feelings" => _} = state, now_ms), do: Emotions.view(state, now_ms)
+
   def view(state, now_ms) do
     elapsed = max(0, now_ms - state["last_at_ms"])
-    factor = :math.pow(0.5, elapsed / @half_life_ms)
-    emotions = Map.new(state["emotions"], fn {name, value} -> {name, value * factor} end)
+
+    emotions =
+      Map.new(state["emotions"], fn {name, value} -> {name, Emotions.decay(value, elapsed)} end)
+
     %{state | "last_at_ms" => max(now_ms, state["last_at_ms"]), "emotions" => emotions}
   end
 
@@ -100,7 +104,11 @@ defmodule GateServer.Npc.Life.State do
             priority = if mode == :thank, do: 1, else: 3
 
             {priority, -state["emotions"]["gratitude"], entity.entity_id,
-             choice(mode, entity.entity_id, desired, state["evidence"]["gratitude"]["seq"])}
+             Map.put(
+               choice(mode, entity.entity_id, desired, state["evidence"]["gratitude"]["seq"]),
+               :acknowledge,
+               mode == :work
+             )}
 
           actual < distance ->
             {2, actual - distance, entity.entity_id,
@@ -119,7 +127,7 @@ defmodule GateServer.Npc.Life.State do
   end
 
   defp choice(mode, actor, distance, seq),
-    do: %{mode: mode, actor: actor, distance: distance, source_seq: seq}
+    do: %{mode: mode, actor: actor, distance: distance, source_seq: seq, acknowledge: false}
 
   defp distance_source(state, relation) do
     caution = state["evidence"]["caution"]
@@ -132,14 +140,16 @@ defmodule GateServer.Npc.Life.State do
   end
 
   defp source?(state, emotion, actor) do
+    # 兼容 Social 只消费 World 规则来源；模型评价有独立序号，不参与旧感谢确认。
     state["emotions"][emotion] > @emotion_threshold and
-      match?(%{"actor" => ^actor}, state["evidence"][emotion])
+      match?(%{"actor" => ^actor}, state["evidence"][emotion]) and
+      state["evidence"][emotion]["kind"] != "appraisal"
   end
 
   defp distance({x, y, z}, {ex, ey, ez}),
     do: :math.sqrt((x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2)
 
-  defp appraise(state, event) do
+  defp appraise(state, event, emotion_owner) do
     key = cell_key(event.cell)
     concern = state["concerns"][key]
 
@@ -147,22 +157,25 @@ defmodule GateServer.Npc.Life.State do
       event.kind == :build and concern != nil and concern["damaged"] and
           event.material == concern["material"] ->
         state = put_in(state, ["concerns", key, "damaged"], false)
-        if event.actor == state["cid"], do: {state, nil}, else: react(state, event, :help)
+
+        if event.actor == state["cid"],
+          do: {state, nil},
+          else: react(state, event, :help, emotion_owner)
 
       event.actor != state["cid"] and event.kind in [:damage, :destroy] and
         (event.placed_by == state["cid"] or concern != nil) and
           (concern == nil or not concern["damaged"]) ->
         concern = concern || %{"cell" => Tuple.to_list(event.cell), "material" => event.material}
         state = put_in(state, ["concerns", key], Map.put(concern, "damaged", true))
-        react(state, event, :damage)
+        react(state, event, :damage, emotion_owner)
 
       true ->
         {state, nil}
     end
   end
 
-  defp react(state, event, reaction) do
-    state = view(state, event.at_ms)
+  defp react(state, event, reaction, emotion_owner) do
+    state = if emotion_owner == :model, do: state, else: view(state, event.at_ms)
 
     {emotion, count_key, trust_change, drift} =
       case reaction do
@@ -176,11 +189,18 @@ defmodule GateServer.Npc.Life.State do
     trust = if previous, do: previous["trust"], else: 0.0
     source = %{"actor" => event.actor, "seq" => event.seq}
 
+    # 模型 Life 的情绪只由 Appraisal 接纳；旧 Social 保留建设规则，关系与人格仍独立评价。
+    state =
+      if emotion_owner == :model,
+        do: state,
+        else:
+          state
+          |> put_in(["emotions", emotion], bound(state["emotions"][emotion] + 0.6, 0.0, 1.0))
+          |> put_in(["evidence", emotion], source)
+
     state =
       state
-      |> put_in(["emotions", emotion], bound(state["emotions"][emotion] + 0.6, 0.0, 1.0))
       |> put_in(["evidence", count_key], count)
-      |> put_in(["evidence", emotion], source)
       |> put_in(["relationships", actor_key], %{
         "trust" => bound(trust + trust_change, -1.0, 1.0),
         "source_seq" => event.seq
@@ -213,10 +233,15 @@ defmodule GateServer.Npc.Life.State do
       "id" => state["world_id"] <> ":" <> to_string(event.seq),
       "seq" => event.seq,
       "at_ms" => event.at_ms,
+      "actor" => event.actor,
       "text" =>
         "At #{at_utc} (UTC), Actor #{event.actor} #{verb} construction I care about " <>
           "at (#{x}, #{y}, #{z}), material #{event.material}, in world #{state["world_id"]} " <>
-          "(transaction #{event.seq}). I feel #{feeling} toward this actor; my trust changed."
+          "(transaction #{event.seq}). " <>
+          if(emotion_owner == :model,
+            do: "My trust changed; emotional appraisal is pending.",
+            else: "I feel #{feeling} toward this actor; my trust changed."
+          )
     }
 
     {state, episode}

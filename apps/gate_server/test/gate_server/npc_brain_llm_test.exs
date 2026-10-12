@@ -87,6 +87,88 @@ defmodule GateServer.NpcBrainLlmTest do
     def recall(_, _, _), do: {:ok, %{results: [], latency_ms: 0}}
   end
 
+  defmodule AppraisingContext do
+    @moduledoc "只测试：Life 接纳边界替身，故意让 canonical 领先于 Brain 的观察投影。"
+    use GenServer
+    alias GateServer.Npc.Life.{State, Appraisal}
+
+    def start_link({cid, owner}),
+      do:
+        GenServer.start_link(__MODULE__, {cid, owner},
+          name: {:global, {GateServer.Npc.Life, node(), cid}}
+        )
+
+    def init({cid, owner}) do
+      state =
+        State.new(cid, "test", 0, 0)
+        |> Appraisal.enable()
+        |> Appraisal.enqueue("speech", %{}, [], 0)
+
+      {:ok, %{owner: owner, state: state}}
+    end
+
+    def handle_call(:context, _, s),
+      do:
+        {:reply,
+         {:ok,
+          %{
+            adapter: __MODULE__,
+            config: %{},
+            now_ms: 0,
+            mind: s.state,
+            cache: %{"models" => %{}, "metadata" => %{}, "at_ms" => 0}
+          }}, s}
+
+    def handle_call({:appraise, through, entries}, _, s) do
+      {:ok, state} = Appraisal.apply(s.state, through, entries, 0)
+      send(s.owner, {:committed, through})
+      {:reply, :ok, %{s | state: state}}
+    end
+
+    def handle_cast({:recall, _}, s), do: {:noreply, s}
+    def recall(_, _, _), do: {:ok, %{results: [], latency_ms: 0}}
+  end
+
+  for projection <- [:absent, :behind] do
+    test "Life快照已含新来源时，#{projection} 的迟到观察不能把已消费经历再次唤醒" do
+      cid = System.unique_integer([:positive]) + 800_000
+      start_supervised!({AppraisingContext, {cid, self()}})
+      owner = self()
+
+      pid =
+        Llm.init(%{
+          goal: "g",
+          tools: %{},
+          memory: Store,
+          life: %{},
+          endpoint: %{model: "m"},
+          request: fn _, body ->
+            send(owner, {:request_ahead, self(), Jason.decode!(body.input)})
+
+            receive do
+              :answer -> {:ok, %{"output" => [call("wait", %{seconds: 3600, appraisal: []})]}}
+            end
+          end
+        })
+
+      on_exit(fn -> stop_brain(pid) end)
+
+      canonical =
+        GateServer.Npc.Life.State.new(cid, "test", 0, 0) |> GateServer.Npc.Life.Appraisal.enable()
+
+      base = idle() |> put_in([:self, :entity_id], cid)
+      old = if unquote(projection) == :absent, do: base, else: Map.put(base, :mind, canonical)
+      Llm.handle_event({:observation, old}, pid)
+      assert_receive {:request_ahead, worker, input}
+      assert input["emotion_context"]["through"] == 1
+      delayed = Map.put(base, :mind, put_in(canonical, ["affect", "next_seq"], 1))
+      observations(pid, delayed)
+      send(worker, :answer)
+      assert_receive {:committed, 1}
+      refute_receive {:request_ahead, _, _}, 1_500
+    end
+  end
+
   test "manual step rejects unavailable Life recall before making a paid model request" do
     owner = self()
 
@@ -112,6 +194,32 @@ defmodule GateServer.NpcBrainLlmTest do
                     {:error, {:memory_context_unavailable, :life_not_running}}}
 
     refute_receive :paid_request, 100
+  end
+
+  test "automatic cadence rejects unavailable Life before making a paid model request" do
+    owner = self()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        pid =
+          Llm.init(%{
+            goal: "g",
+            tools: %{},
+            memory: Store,
+            life: %{},
+            endpoint: %{model: "m"},
+            request: fn _, _ ->
+              send(owner, :paid_request)
+              {:ok, %{"output" => []}}
+            end
+          })
+
+        on_exit(fn -> stop_brain(pid) end)
+        observations(pid, idle())
+        refute_receive :paid_request, 300
+      end)
+
+    assert log =~ "memory_context_unavailable"
   end
 
   test "manual step rejects unavailable working memory after successful recall without paying model" do
