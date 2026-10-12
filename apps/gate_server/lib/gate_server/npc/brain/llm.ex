@@ -17,11 +17,14 @@ defmodule GateServer.Npc.Brain.Llm do
   最新直接发言加入原有检索查询，Life 模式每轮仍恰好一次 Hindsight recall；没有第二个聊天大脑。
   询问节流：两次询问至少隔 1 秒；应答没有工具调用或请求失败时按 1、2、4…60 秒退避，拿到工具调用即清零；
   每个 NPC 任意连续一小时内最多 `max_requests_per_hour` 次（缺省 600，滑动窗口），用完记一条日志，等最早那次滑出一小时。
+  显式 `:infinity` 不保存额度时间序列；`cadence: :manual` 只消费 `step/4` 的单次许可，仍保持最小请求间隔。
+  手动模式要求受理后的新空闲观察；不会因事件或失败自行重问，结果一次发送给 observer。
 
   profile:
       %{goal: "自然语言目标", tools: %{tool_id => "用途"},   # 这个 NPC 带着的工具；模型只能从中选
         endpoint: %{url:, key:, model:, effort: 可选（思考强度，接口认的 "low" / "medium" / "high" 等，缺省 "low"）, cacertfile: 可选},
-        groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选,
+        groups: 可选（能力组，缺省全部；见 Abilities），max_requests_per_hour: 可选（正整数 / :infinity），
+        cadence: 可选（:automatic / :manual，缺省 :automatic），
         spells: 可选（作者法术带 %{名字 => 程序字节}，非空时投影 cast_spell / cancel_cast；见 Abilities）}
 
   skills 是技能名到配置的 map；技能和记忆命令交给 Runtime，LLM 只等待最终 Outcome。
@@ -76,6 +79,10 @@ defmodule GateServer.Npc.Brain.Llm do
     send(pid, event)
     {[], pid}
   end
+
+  @doc "受理一次手动决策许可；等待受理后的空闲观察，结果仅一次发送给 observer，context 只进入本轮输入。"
+  def step(pid, observer, tag, context \\ %{}) when is_pid(observer) and is_map(context),
+    do: GenServer.call(pid, {:step, observer, tag, context})
 
   @doc """
   把一次 Responses 应答里的工具调用按出现顺序译成命令，id 从 `next_id` 起递增。
@@ -133,6 +140,7 @@ defmodule GateServer.Npc.Brain.Llm do
       dirty: true,
       asking: false,
       request_pid: nil,
+      step: nil,
       # 连续“没有可用应答”的次数，决定退避间隔。
       failures: 0,
       # monotonic_time 可以为负，不能用 0 当“很久以前”。
@@ -147,6 +155,21 @@ defmodule GateServer.Npc.Brain.Llm do
   defp loop(state) do
     state =
       receive do
+        {:"$gen_call", from, {:step, observer, tag, context}} ->
+          cond do
+            Map.get(state.profile, :cadence, :automatic) != :manual ->
+              GenServer.reply(from, {:error, :automatic_cadence})
+              state
+
+            state.step != nil or state.asking or map_size(state.calls) != 0 ->
+              GenServer.reply(from, {:error, :busy})
+              state
+
+            true ->
+              GenServer.reply(from, :ok)
+              %{state | step: {observer, tag, context}, observation: nil, dirty: true}
+          end
+
         {:observation, observation} ->
           nearby = nearby(observation, state.nearby)
 
@@ -189,7 +212,10 @@ defmodule GateServer.Npc.Brain.Llm do
             "npc_llm_request_failed reason=#{inspect(reason)} failures=#{state.failures + 1}"
           )
 
-          %{state | asking: false, request_pid: nil, dirty: true, failures: state.failures + 1}
+          finish_step(
+            %{state | asking: false, request_pid: nil, dirty: true, failures: state.failures + 1},
+            {:error, reason}
+          )
       end
 
     loop(ask(state))
@@ -237,10 +263,32 @@ defmodule GateServer.Npc.Brain.Llm do
     }
 
     # 解析失败与未知工具不经 Body，直接作为被拒绝的 Outcome 给模型看（附原调用）。
-    Enum.reduce(local, state, fn %{id: id, verb: reason}, state ->
-      record_outcome(state, %{id: id, verb: reason, status: :rejected, reason: reason, data: nil})
-    end)
+    state =
+      Enum.reduce(local, state, fn %{id: id, verb: reason}, state ->
+        record_outcome(state, %{
+          id: id,
+          verb: reason,
+          status: :rejected,
+          reason: reason,
+          data: nil
+        })
+      end)
+
+    finish_step(
+      state,
+      if(all == [],
+        do: {:error, :no_tool_call, response},
+        else: {:ok, response, Enum.map(commands, & &1.id)}
+      )
+    )
   end
+
+  defp finish_step(%{step: {observer, tag, _context}} = state, result) do
+    send(observer, {:npc_llm_step, tag, result})
+    %{state | step: nil}
+  end
+
+  defp finish_step(state, _result), do: state
 
   defp nearby(%{self: %{position: {x, y, z}}, entities: entities}, previous) do
     for %{entity_id: id, position: {ex, ey, ez}} <- entities,
@@ -283,25 +331,31 @@ defmodule GateServer.Npc.Brain.Llm do
   end
 
   # 有新情况、没有在途命令、没有在途请求、过了（退避后的）间隔、且本小时还有额度，才问一次。
-  defp ask(
+  defp ask(state) do
+    if Map.get(state.profile, :cadence, :automatic) == :manual and state.step == nil,
+      do: state,
+      else: ask_ready(state)
+  end
+
+  defp ask_ready(
          %{dirty: true, asking: false, calls: calls, observation: %{pending: []} = observation} =
            state
        )
        when map_size(calls) == 0 do
     now = System.monotonic_time(:millisecond)
     limit = Map.get(state.profile, :max_requests_per_hour, @max_requests_per_hour)
-    asks = recent_asks(state.asks, now)
+    asks = if limit == :infinity, do: [], else: recent_asks(state.asks, now)
 
     state =
-      if length(asks) < limit,
+      if limit == :infinity or length(asks) < limit,
         do: %{state | asks: asks, budget_logged: false},
         else: %{state | asks: asks}
 
     cond do
-      now - state.asked_ms < gap(state.failures) ->
+      now - state.asked_ms < if(state.step, do: @min_gap_ms, else: gap(state.failures)) ->
         state
 
-      length(asks) >= limit ->
+      limit != :infinity and length(asks) >= limit ->
         unless state.budget_logged,
           do:
             Logger.warning(
@@ -333,8 +387,19 @@ defmodule GateServer.Npc.Brain.Llm do
                 Memory.context(state.memory, observation.self.entity_id, query)
               end
 
-            body = body(state.profile, observation, state.outcomes, experiences)
-            send(owner, {:answer, state.request.(state.profile.endpoint, body)})
+            # 记忆 owner 已返回显式失败；手动实验停止本次许可，不付费请求或重试。
+            reason = experiences[:memory_error] || experiences[:working_memory_error]
+
+            result =
+              if state.step != nil and reason != nil do
+                {:error, {:memory_context_unavailable, reason}}
+              else
+                context = if state.step, do: elem(state.step, 2)
+                body = body(state.profile, observation, state.outcomes, experiences, context)
+                state.request.(state.profile.endpoint, body)
+              end
+
+            send(owner, {:answer, result})
           end)
 
         %{
@@ -343,12 +408,12 @@ defmodule GateServer.Npc.Brain.Llm do
             asking: true,
             request_pid: pid,
             asked_ms: now,
-            asks: [now | asks]
+            asks: if(limit == :infinity, do: [], else: [now | asks])
         }
     end
   end
 
-  defp ask(state), do: state
+  defp ask_ready(state), do: state
 
   defp gap(failures), do: min(@max_gap_ms, @min_gap_ms * Integer.pow(2, failures))
 
@@ -360,7 +425,7 @@ defmodule GateServer.Npc.Brain.Llm do
   def recent_asks(asks, now), do: Enum.take_while(asks, &(now - &1 < @hour_ms))
 
   @doc "一次请求体：目标、当前 Observation、最近 Outcome（旧在前），要求恰好一次工具调用。"
-  def body(profile, observation, outcomes, experiences \\ []) do
+  def body(profile, observation, outcomes, experiences \\ [], step_context \\ nil) do
     %{
       model: profile.endpoint.model,
       instructions: instructions(profile),
@@ -385,6 +450,7 @@ defmodule GateServer.Npc.Brain.Llm do
           |> Map.merge(Context.plain(Map.take(observation, [:view, :targets])))
           |> Map.merge(Context.plain(Map.take(observation, [:mind])))
           |> Map.merge(memory_input(experiences))
+          |> Map.merge(if(step_context, do: %{step_context: step_context}, else: %{}))
         ),
       tools: tools(profile),
       tool_choice: "required",

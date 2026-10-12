@@ -59,6 +59,14 @@ defmodule GateServer.Npc.Runtime do
   defp loop(state) do
     next =
       receive do
+        {:"$gen_call", from, {:step, observer, tag, context}} ->
+          GenServer.reply(from, step(state, observer, tag, context))
+          state
+
+        {:step_body, from, observer, tag, context} ->
+          GenServer.reply(from, step(state, observer, tag, context))
+          state
+
         {:observation, observation} ->
           observation = Map.put(observation, :heard, state.heard)
           if state.life, do: GateServer.Npc.Life.observation(state.life, observation)
@@ -185,6 +193,12 @@ defmodule GateServer.Npc.Runtime do
 
     loop(next)
   end
+
+  # 只转发许可；在途模型与命令仍由同一个 Brain owner 管理。
+  defp step(%{backend: GateServer.Npc.Brain.Llm, mind: mind}, observer, tag, context),
+    do: GateServer.Npc.Brain.Llm.step(mind, observer, tag, context)
+
+  defp step(_, _, _, _), do: {:error, :unsupported_backend}
 
   defp deliver(state, event) do
     {commands, mind} = state.backend.handle_event(event, state.mind)

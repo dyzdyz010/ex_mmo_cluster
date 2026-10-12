@@ -946,8 +946,12 @@ defmodule GateServer.NpcBodyWorldTest do
     # 附件：一个 micro 面片花 1 单位；拆除要带对那件附件的 id，错的被权威拒绝。
     assert %{verb: :attach, status: :done} = attach
     assert %{verb: :detach, status: :rejected, reason: :stale_target} = detach
-    # 正式栈还没有聊天：say 只占位。
-    assert %{verb: :say, status: :rejected, reason: :chat_unavailable} = say
+    # 正式 Scene 对话已经接入：按本角色与原文核对权威接纳结果。
+    assert %{
+             verb: :say,
+             status: :done,
+             data: %{speaker_id: @npc, text: "墙砌好了", target_id: 0, turn: 1}
+           } = say
 
     # inspect 给出那件附件的权威身份；拿它就能对附件用工具、再把它拆下来（材料退回）。
     assert %{verb: :inspect, status: :done, data: %{property_states: [thing]}} = inspect
@@ -1169,11 +1173,18 @@ defmodule GateServer.NpcBodyWorldTest do
     assert %{status: :done, data: %{within_tolerance: true}} = outcome(body, 1, 30_000)
     Body.command(body, %{id: 2, verb: :move_to, position: {14.0, 10.5}, tolerance: 0.5})
 
-    assert %{status: :done, data: %{settled: true, position: {x, y, z}}} = outcome(body, 2, 30_000)
+    assert %{status: :done, data: %{settled: true, position: {x, y, z}}} =
+             outcome(body, 2, 30_000)
+
     # 落回地面（顶面 y = 64，胶囊半高 0.9）。
     assert_in_delta 64.9, y, 0.05
     tick = Body.observe(body).tick
-    await(fn -> Body.observe(body).tick >= tick + 30 || nil end, System.monotonic_time(:millisecond) + 5_000)
+
+    await(
+      fn -> Body.observe(body).tick >= tick + 30 || nil end,
+      System.monotonic_time(:millisecond) + 5_000
+    )
+
     {x2, y2, z2} = Body.observe(body).position
     assert_in_delta x, x2, 0.01
     assert_in_delta y, y2, 0.01
@@ -1185,7 +1196,9 @@ defmodule GateServer.NpcBodyWorldTest do
   @tag :idle
   @tag material_rows: %{32 => %{}}
   @tag edits: for(x <- 3..7, do: {{x, 64, 10}, 32})
-  test "move_to starts from and walks through flora cells (they do not block movement)", %{body: body} do
+  test "move_to starts from and walks through flora cells (they do not block movement)", %{
+    body: body
+  } do
     ready(body)
     Body.command(body, %{id: 1, verb: :move_to, position: {9.5, 10.5}, tolerance: 0.5})
 
@@ -1685,6 +1698,7 @@ defmodule GateServer.NpcBodyWorldTest do
     # 句柄原样作目标、不给方向：g5 句柄自带探测方向。
     Body.command(a, %{id: :hit, verb: :use_tool, tool_id: 1, target: handle})
     assert %{status: :done, data: receipt} = outcome(a, :hit, 5_000)
+
     # 新伤口按目录 depth 0.2 取满：生命 = 100 × (1 − 0.2)（同 tool_action_test 的手算）。
     assert %{source_id: @npc, target_id: ^target, target_life: ^life, life: 80, part: part} =
              receipt
@@ -1920,7 +1934,11 @@ defmodule GateServer.NpcBodyWorldTest do
 
     # 天然地形：句柄取自权威探测（朝下打到 (5,63,10) 顶面）；不是构件，拒绝且不进 GCRA。
     assert %{status: :done, data: ground} =
-             request(body, :ground, %{verb: :probe_toward, direction: {0.6, -0.8, 0.0}, tool_id: 1})
+             request(body, :ground, %{
+               verb: :probe_toward,
+               direction: {0.6, -0.8, 0.0},
+               tool_id: 1
+             })
 
     assert %{granularity: 0, owner: {0, 0}, micro: {40, 504, 80}} = ground
     assert %{status: :rejected, reason: :not_a_component} = dismantle.(:terrain, ground)
@@ -1928,6 +1946,7 @@ defmodule GateServer.NpcBodyWorldTest do
     # 叶子构件、不给方向：Body 瞄它的 micro 中心；石料没有燃料，按满燃料全额退 1 单位。
     assert %{status: :done, data: %{seq: _}} = dismantle.(:leaf, open_row)
     assert 1 == balance(world)
+
     # 被挡住的叶子：权威射线先命中那个 macro，身份不符，原样 stale_target（在 GCRA 之前）。
     assert %{status: :rejected, reason: :stale_target} = dismantle.(:occluded, hidden_row)
 
@@ -2021,7 +2040,12 @@ defmodule GateServer.NpcBodyWorldTest do
     publisher = Map.put(publisher, :player, start_supervised!({Actor, publisher}))
 
     bench_bytes =
-      Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, @stone}], children: [], attachments: []})
+      Prefab.encode(%{
+        cells: [],
+        macro_cells: [{{0, 0, 0}, @stone}],
+        children: [],
+        attachments: []
+      })
 
     assert {:ok, bench} = World.publish_prefab(world, publisher, bench_bytes, "石凳")
     ready(body)
@@ -2440,10 +2464,13 @@ defmodule GateServer.NpcBodyWorldTest do
       "remember" => %{"key" => "seam", "text" => "接缝"},
       "recall" => %{"key" => "seam"},
       "search_memory" => %{"query" => "接缝"},
+      "set_plan" => %{"text" => "接缝之后继续观察"},
+      "say" => %{"text" => "我在检查周围。", "target_id" => nil, "conversation_id" => nil},
       "build" => %{"definition" => hex, "anchor_micro" => [40, 512, 120], "orientation" => 0}
     }
 
     names = Enum.map(Abilities.tools(profile), & &1.name)
+
     # 投影里的每个条目都要过一遍接缝；新增条目必须在这里补一组参数。
     assert Enum.sort(names) == Enum.sort(Map.keys(args))
 
@@ -2453,6 +2480,13 @@ defmodule GateServer.NpcBodyWorldTest do
       Body.command(body, command)
       assert_receive {:seam_outcome, %{id: ^id} = outcome}, 15_000
       refute outcome.reason == :invalid_command, inspect({name, command, outcome})
+
+      if name == "set_plan" do
+        assert %{status: :done, data: %{current_plan: %{"text" => "接缝之后继续观察"}}} =
+                 outcome
+
+        assert %{"text" => "接缝之后继续观察"} = Memory.get(@npc, "intention", "current")
+      end
     end
   end
 

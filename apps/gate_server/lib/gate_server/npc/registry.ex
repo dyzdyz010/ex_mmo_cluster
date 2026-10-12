@@ -165,12 +165,22 @@ defmodule GateServer.Npc.Registry do
         skills: Map.new(Map.get(params, "skills", []), &skill(&1, params)),
         spells: Map.new(Map.get(params, "spells", %{}), &spell/1),
         genesis: flag(Map.get(params, "genesis", false)),
+        cadence: cadence(Map.get(params, "cadence", "automatic")),
         groups: nil
       }
       |> Map.merge(
         case Map.fetch(params, "max_requests_per_hour") do
-          {:ok, limit} when is_integer(limit) and limit > 0 -> %{max_requests_per_hour: limit}
-          :error -> %{}
+          {:ok, "unlimited"} ->
+            %{max_requests_per_hour: :infinity}
+
+          {:ok, limit} when is_integer(limit) and limit > 0 ->
+            %{max_requests_per_hour: limit}
+
+          :error ->
+            %{}
+
+          {:ok, value} ->
+            raise ArgumentError, "max_requests_per_hour 必须是正整数或 unlimited，收到 #{inspect(value)}"
         end
       )
 
@@ -184,7 +194,7 @@ defmodule GateServer.Npc.Registry do
       if Map.has_key?(profile, :life) do
         limit = Map.get(profile, :max_requests_per_hour, @life_llm_limit)
 
-        if limit > @life_llm_limit,
+        if limit != :infinity and limit > @life_llm_limit,
           do:
             raise(
               ArgumentError,
@@ -205,6 +215,12 @@ defmodule GateServer.Npc.Registry do
     Brain.Patrol.init(profile)
     {Brain.Patrol, profile}
   end
+
+  defp cadence("automatic"), do: :automatic
+  defp cadence("manual"), do: :manual
+
+  defp cadence(value),
+    do: raise(ArgumentError, "cadence 必须是 automatic 或 manual，收到 #{inspect(value)}")
 
   # JSON 规范化 + 解析；任何一步 raise 都是参数不合法（登记被拒，或 start_all 跳过这一行）。
   defp parse(brain, params) do
@@ -326,7 +342,11 @@ defmodule GateServer.Npc.Registry do
        when is_integer(tool),
        do: {String.to_integer(material), %{box: box, tool_id: tool}}
 
-  defp expansion(%{"region" => [[x0, z0], [x1, z1]] = region, "spacing" => spacing, "tool_id" => tool})
+  defp expansion(%{
+         "region" => [[x0, z0], [x1, z1]] = region,
+         "spacing" => spacing,
+         "tool_id" => tool
+       })
        when is_integer(x0) and is_integer(z0) and is_integer(x1) and is_integer(z1) and
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}

@@ -1,5 +1,108 @@
 # NPC life 的独立 Hindsight 服务（只测试）
 
+## 2026-10-12 收口状态（当前）
+
+所有本轮驱动已停止，三人已恢复原登记。最后的`npc-happy-path-20261012/run-02`完成30次决策，
+三人均实走、观察、交流并记事；最终状态为`failed_cleanup`，原因是记忆检查点等待超时。
+松岚仍有6条经历持久保存在Life pending、尚未送入Hindsight；flush busy与刷新完成条件的缺口已记录，未在本轮修复。
+因此以下短实验/年度驱动是Test-only实验工具，不能作为“记忆已全部归档”或全年生活完成的证明。
+最新证据、角色卡与共享模板设计、后续修复入口统一见
+[交接记录](../../docs/10-active/cross-cutting/2026-10-11-npc-next-session.md)和
+[设计稿](../../docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md)。
+本轮不再启动模型调用或补跑长期实验；本地`.demo/observe/`保留原始产物，不纳入Git。
+
+合并审查的两项修正只处理已有错误契约：依据正式`Runtime.finish_skill`的`outcome.data.memory_error`，
+技能完成但经历写入失败时停止驱动；沿用年度驱动已有的收尾方式，将`trace_stop`失败记入最终`progress.json`，不重试。
+最小反例分别以真实技能结果形状调用`step_complete`，以及在临时目录运行零行动场景、令最终checkpoint和trace停止失败，
+检查最终`failed_cleanup`及两项原始错误均落盘。外部RPC、模型、记忆服务使用替身；只证明驱动判定和报告，不证明真实归档成功。
+复现：`python -B -X utf8 -m unittest discover -s scripts/npc_life -p 'test_*.py'`。
+
+## 2026-10-12 三角色新轮（历史运行记录）
+
+历史上曾恢复为 `run-05`（PID209764，桥接PID209360），该轮已于14:17结束。此前run-04实际完成32步：
+7次say尝试中5次接纳、2次conversation_expired拒绝；7次move_to中6次done、1次no_path拒绝，
+另有4次survey、6次look、4次remember、3次set_plan、1次inspect，未采集或建造。
+其中一次CLI发生TLS断线后重连并返回turn.completed，但桥接把中途error误判为最终失败，run-04于10:46停止。
+桥接已修正为以终态判断；恢复重连反例RED→GREEN，失败或缺完成/usage仍拒绝。
+该次真实生成36080 token已对账，未交付NPC，未重放；run-04失败记录保持原样。
+当时已知历史62960075 token继续纳入基线，旧1次未知usage保留；该轮结果保留在run-05的progress。
+
+当前入口仍是 `hourly_year.py`，角色配置为 `ROLES`，共同提示词唯一正文为 `LIFE_GOAL`。
+LifeBuilder / 建设者（607440080896）、松岚 / 探索者（51107598336）、知衡 / 学者（10938748928）
+均经正式 Registry → Body → Runtime → Llm → World；每人独立 `npc-life-{cid}` bank。
+原两人的存档、库存、关系与旧计划保留，由模型自主修订计划；不写入虚构完成经历。
+
+`codex_bridge.py` 在本机用官方 `codex exec --ignore-user-config --ephemeral --json --output-schema`，
+指定 `gpt-6.1-sol / medium`，复用 CLI 自己读取的现有登录，不提取登录令牌。
+它适配既有 Responses 消费格式，模型字段是本机 CLI 的指定执行配置，不是 CLI 返回的独立服务器身份字段。
+决策与记忆分别走 `/decision/v1/responses`、`/memory/v1/responses`；只使用随机本地桥接凭据，
+没有旧付费端点 fallback。CLI 每次无共享聊天上下文，游戏上下文仍由正式 NPC/记忆 owner 提供。
+桥接与 Hindsight 不主动重发失败请求；官方 CLI 内部传输行为沿用自身默认，不能声称其内部重试已关闭。
+所有 CLI 完成事件及实际 usage（包括 reasoning output）保存于桥接 `calls.jsonl`。
+
+时间按**真实小时统计，小时内连续决策**：非wait动作取得同调用号终态后继续三人轮转，
+只有模型自己选择wait才推迟该人的下一次许可；新直接发言由正式 `Dialogue.direct?/2` 判定并提前唤醒。
+同小时每次调用均有独立sequence/tag。小时不是动作限额，完整经过3600秒才计入一个完成小时。
+World、Scene 身体与 Life 情绪继续各自已有的权威实时时钟，不注入第二套模拟状态。
+因此 8760 小时需要约 365 天持续在线；身体营养当前只在伤口修复时消耗，仍不是完整饥饿生存模型。
+`completed_decision_rounds` 与 `completed_hours` 分开，等待期间每分钟更新心跳并检查 Life 错误。
+停机后没有自动续跑保证；用户休眠、关机、服务退出或模型限额都可能使全年目标无法完成。
+
+该轮产物：`.demo/observe/npc-three-life-20261012/run-05/`；接线证据：
+`.demo/observe/npc-codex-20261012/wiring-01/`。`run-01` trace 名冲突、`run-02` 新 bank
+在 Life 初始化前查询失败均保留，二者未执行 NPC 决策。当前 trace 包含实验目录与运行目录，避免旧轮命名冲突。
+零事实的首份记忆样本及错误 CLI 配置失败也保留；后续明确事件样本产生 2 条 facts 后才启动 NPC。
+`run-03`三人首轮各自保存计划后，被错误的每小时一次调度挡住后续行动；用户指出后正式停止，
+保留3步、三人的新计划和费用。`run-04`加载同一持久计划与独立记忆，放开连续思考与行动，
+建设者已自主调用survey并获done。已知先前成本61577588 token纳入新轮基线，旧未知usage失败保留。
+
+```powershell
+python -B -X utf8 scripts/npc_life/hourly_year.py status --out .demo/observe/npc-three-life-20261012/run-05
+python -B -X utf8 scripts/npc_life/hourly_year.py stop --out .demo/observe/npc-three-life-20261012/run-05
+python -B -X utf8 -m unittest discover -s scripts/npc_life -p test_hourly_year.py
+python -B -X utf8 -m unittest discover -s scripts/npc_life -p test_codex_bridge.py
+```
+
+验证范围：CLI 指定模型真实预检、真实 Hindsight 抽取、三人正式登记/独立记忆初始化与同命令终态；
+11 项驱动测试（模型/终态错误、三人轮转、缺人、跨实验命名、新bank readiness顺序，
+保存计划后同小时仍继续三人轮转、只有wait暂停、同小时多调用身份独立），
+4 项 CLI 响应边界测试（真实usage、失败/缺终态、记忆JSON文本、重连后成功终态）。
+实际NPC对话已有5次接纳含同conversation_id往返；不能据此宣称建设、全年生活或客户端复制完成。
+依据：[官方非交互 CLI](https://learn.chatgpt.com/docs/non-interactive-mode)、
+[官方登录说明](https://learn.chatgpt.com/docs/auth)、固定 Hindsight 0.10.3
+`openai_responses_llm.py`（实际容器源码），及 Scene `Movement.Player` 1 Hz 身体推进契约。
+
+## 8,760 小时自主生活采样（2026-10-11 历史设计，调度已被上文取代）
+
+用户本轮明确指定 `gpt-6.1-sol / medium`、至少一年、按小时推进，并解除总 token 上限。
+新入口 `hourly_year.py` 使用正式登记 `life`，`cadence=manual`、`max_requests_per_hour=unlimited`；
+每小时两个 NPC 各一次真实决策，先手交替，Body 同调用号终态确认后推进，日检查点封存真实经历。
+旧 2,010,947 token 历史与旧计数预检失败保留。原 3,000,000 上限和计数预检不是本轮启动门槛。
+对话、决策和 Hindsight 所有生成模型统一到指定配置，实际 usage 持续记账。
+
+模拟日历是决策采样时间：World 物理、权威事件时间与情绪衰减仍走真实时钟，不据此宣称完成全年物理生存。
+没有玩家开场、补料或脚本代答；模型自由等待或执行正常能力。HTTP/记忆基础设施失败停后续，普通玩法拒绝保留为经历。
+默认自动模式不变；产物包括 `progress.json`、`model-results.jsonl`、`steps.jsonl`、每日检查点与正式请求 trace。
+当前进度只能读取本轮 `progress.json`；目标 8,760 不能写作已经完成。
+
+**目标提示词（2026-10-12 更新）**：三名 NPC 的共同长期目标在
+[`hourly_year.py`](hourly_year.py) 的 `LIFE_GOAL`，身份描述在 `ROLES`，由`goals_for`组合。
+按用户要求改为探索和了解世界、生活、建设、学习，以“为了美好而建设”为方向；
+允许自主修订旧守望/休息计划，在完成或休息后选择下一步。修改会在下次 `run` 登记时加载，
+不会自动改写已有 NPC 计划、记忆或历史请求。旧 `run-01` 已停止，本次只改目标配置，未重新启动实验。
+
+```powershell
+python -B scripts/npc_life/hourly_year.py run --out .demo/observe/npc-year-20261011/run-01 --hours 8760
+python -B scripts/npc_life/hourly_year.py status --out .demo/observe/npc-year-20261011/run-01
+python -B scripts/npc_life/hourly_year.py stop --out .demo/observe/npc-year-20261011/run-01
+python -B -m unittest discover -s scripts/npc_life -p test_hourly_year.py
+```
+
+`run` 拒绝覆盖已有目录；`stop` 让当前请求/动作结算后恢复原登记，不发后续小时。
+节点重启后 manual NPC 不自行请求模型；本轮不自动重放结果未知的小时，必须先对账已有 trace 与状态。
+部署前必须核对同一隔离容器、固定镜像身份、模型实际配置和存档不变，见
+[本轮契约与记录](../../docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md)。
+
 `service.py` 只管理 `voxim-npc-life-loop-20261011`，宿主端口 `18908`，数据卷与模型缓存卷分别为同名前缀的 `-pg` / `-hf`；不操作其它实验服务。容器加入既有 `caplib-20261008-net`，Demo 服务端使用 `http://voxim-npc-life-loop-20261011:8888`；宿主使用 `http://127.0.0.1:18908`。这不是正式生产部署。
 
 ```powershell
@@ -89,3 +192,11 @@ python -B scripts/npc_life/demo.py restart --out .demo/observe/npc-life-20261011
 验收边界及失败保留见 `docs/10-active/cross-cutting/2026-10-11-npc-long-horizon.md`。
 
 续验最终证据：`.demo/observe/npc-long-horizon-20261011/final-01/manifest.json`。原驱动`0843fa0e`的真实22决策（13个Body done、2个no_path、7个本地wait）、双端4笔事务及计划修订可用`audit-01/verify.py`离线对账。6组配对只证明组合自传上下文影响合作意向，未执行合作动作；30天只用受控服务端时钟，非连续模型挂机。模型自写计划/笔记及心智在完整服务冷重启后严格保留。失败门禁修复`4b06b564`只做离线反例与驱动接线验证，实跑证据版本不改写。
+# 邻里植物散步 happy path（2026-10-12）
+
+`happy_path.py --out <新目录>` 复用三名现有角色，运行“发现并分享植物点 → 访问邻居介绍的点”两段短场景。
+每段600秒内最多发起24次决策，已发动作等正常终态；记录真实动作、对话、笔记，结束恢复原登记。
+前提是本任务三角色处于非Life登记、已有持久认识缓存、本机27365桥接已运行，独立Demo与Hindsight沿用原配置。
+不注入故障、不补资源、不改写记忆；模型/基础设施错误停止，不自动重试或切模型。
+`hourly_year.step`接受可选`context`，短场景传自己的目标，旧年度入口默认上下文保持原样。
+实验期间写`<新目录>/STOP`可在当前动作结算后停止；进度、两阶段检查点与模型usage保存在输出目录。

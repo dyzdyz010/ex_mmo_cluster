@@ -61,9 +61,228 @@ defmodule GateServer.NpcBrainLlmTest do
       do: raise(DBConnection.ConnectionError, message: "private connection details")
   end
 
+  # 只测试：替代 Life owner 的上下文快照与 recall 接口，使工作记忆故障可独立观察。
+  defmodule LifeContext do
+    use GenServer
+
+    def start_link(cid),
+      do:
+        GenServer.start_link(__MODULE__, nil, name: {:global, {GateServer.Npc.Life, node(), cid}})
+
+    def init(_), do: {:ok, nil}
+
+    def handle_call(:context, _, state),
+      do:
+        {:reply,
+         {:ok,
+          %{
+            adapter: __MODULE__,
+            config: %{},
+            now_ms: 0,
+            mind: %{},
+            cache: %{"models" => %{}, "metadata" => %{}, "at_ms" => 0}
+          }}, state}
+
+    def handle_cast({:recall, _}, state), do: {:noreply, state}
+    def recall(_, _, _), do: {:ok, %{results: [], latency_ms: 0}}
+  end
+
+  test "manual step rejects unavailable Life recall before making a paid model request" do
+    owner = self()
+
+    pid =
+      Llm.init(%{
+        goal: "g",
+        tools: %{},
+        memory: Store,
+        life: %{},
+        cadence: :manual,
+        endpoint: %{model: "m"},
+        request: fn _, _ ->
+          send(owner, :paid_request)
+          {:ok, %{"output" => []}}
+        end
+      })
+
+    on_exit(fn -> stop_brain(pid) end)
+    assert :ok == Llm.step(pid, self(), :recall_failure)
+    observations(pid, idle())
+
+    assert_receive {:npc_llm_step, :recall_failure,
+                    {:error, {:memory_context_unavailable, :life_not_running}}}
+
+    refute_receive :paid_request, 100
+  end
+
+  test "manual step rejects unavailable working memory after successful recall without paying model" do
+    cid = System.unique_integer([:positive]) + 100_000
+    start_supervised!({LifeContext, cid})
+    owner = self()
+
+    pid =
+      Llm.init(%{
+        goal: "g",
+        tools: %{},
+        memory: UnavailableStore,
+        life: %{},
+        cadence: :manual,
+        endpoint: %{model: "m"},
+        request: fn _, _ ->
+          send(owner, :paid_request)
+          {:ok, %{"output" => []}}
+        end
+      })
+
+    on_exit(fn -> stop_brain(pid) end)
+    assert :ok == Llm.step(pid, self(), :working_failure)
+    observations(pid, put_in(idle(), [:self, :entity_id], cid))
+
+    assert_receive {:npc_llm_step, :working_failure,
+                    {:error,
+                     {:memory_context_unavailable,
+                      {:memory_unavailable, DBConnection.ConnectionError}}}}
+
+    refute_receive :paid_request, 100
+  end
+
   setup do
     start_supervised!({Store, self()})
     :ok
+  end
+
+  # 只测试：真实 Brain 进程与公共步进入口；HTTP 和持久化以本文件替身隔离，不启动 World / PG。
+  test "manual cadence permits exactly one fresh idle decision and rejects overlapping steps" do
+    owner = self()
+
+    pid =
+      Llm.init(%{
+        goal: "g",
+        tools: %{},
+        memory: Store,
+        cadence: :manual,
+        max_requests_per_hour: :infinity,
+        endpoint: %{model: "m"},
+        request: fn _, _ ->
+          send(owner, {:manual_request, self()})
+
+          receive do
+            :answer -> {:ok, %{"output" => [call("stop", %{})]}}
+          end
+        end
+      })
+
+    on_exit(fn -> stop_brain(pid) end)
+    Llm.handle_event({:observation, idle()}, pid)
+    refute_receive {:manual_request, _}, 100
+    assert :ok == Llm.step(pid, self(), :first)
+    assert {:error, :busy} == Llm.step(pid, self(), :duplicate)
+    refute_receive {:manual_request, _}, 100
+    Llm.handle_event({:observation, %{idle() | pending: [%{id: 8}]}}, pid)
+    refute_receive {:manual_request, _}, 100
+    Llm.handle_event({:observation, idle()}, pid)
+    assert_receive {:manual_request, request}
+    assert {:error, :busy} == Llm.step(pid, self(), :in_flight)
+    send(request, :answer)
+    assert_receive {:npc_llm_step, :first, {:ok, %{"output" => [_]}, [1]}}
+    assert_receive {:"$gen_cast", {:command, %{id: 1, verb: :stop}}}
+    assert {:error, :busy} == Llm.step(pid, self(), :pending_command)
+
+    Llm.handle_event(
+      {:outcome, %{id: 1, verb: :stop, status: :done, reason: nil, data: nil}},
+      pid
+    )
+
+    Llm.handle_event({:heard, %{}}, pid)
+    send(pid, :wake)
+    Llm.handle_event({:observation, idle()}, pid)
+    refute_receive {:manual_request, _}, 1100
+    refute_receive {:npc_llm_step, :first, _}, 100
+  end
+
+  test "Body forwards manual step context through the shared Runtime and rejects unsupported backends" do
+    owner = self()
+
+    runtime =
+      GateServer.Npc.Runtime.init(
+        {Llm,
+         %{
+           goal: "g",
+           tools: %{},
+           memory: Store,
+           cadence: :manual,
+           endpoint: %{model: "m"},
+           request: fn _, body ->
+             send(owner, {:step_input, Jason.decode!(body.input)})
+             {:ok, %{"output" => [call("wait", %{seconds: 3600})]}}
+           end
+         }}
+      )
+
+    on_exit(fn -> stop_brain(runtime) end)
+    context = %{simulated_hour: 12}
+
+    # 只测试：回调接缝；不启动 Session，真实 Body PID 链路由长期实验首步验证。
+    from = {self(), :body_step_ack}
+
+    assert {:noreply, %{mind: ^runtime}} =
+             GateServer.Npc.Body.handle_call({:step, self(), :hour12, context}, from, %{
+               mind: runtime
+             })
+
+    assert_receive {:body_step_ack, :ok}
+    GateServer.Npc.Runtime.handle_event({:observation, idle()}, runtime)
+    assert_receive {:step_input, %{"step_context" => %{"simulated_hour" => 12}}}
+    assert_receive {:npc_llm_step, :hour12, {:ok, _, []}}
+    assert :ok == GenServer.call(runtime, {:step, self(), :hour13, %{}})
+    observations(runtime, idle())
+    refute_receive {:step_input, _}, 500
+    assert_receive {:step_input, %{"step_context" => %{}}}, 2000
+    assert_receive {:npc_llm_step, :hour13, {:ok, _, []}}
+
+    patrol =
+      GateServer.Npc.Runtime.init({GateServer.Npc.Brain.Patrol, %{route: [{0, 0}, {1, 1}]}})
+
+    on_exit(fn -> stop_brain(patrol) end)
+    assert {:error, :unsupported_backend} == GenServer.call(patrol, {:step, self(), :x, %{}})
+  end
+
+  for {answer, reason} <- [
+        {{:error, :offline}, :offline},
+        {{:ok, %{"output" => [], "usage" => %{"total_tokens" => 17}}}, :no_tool_call}
+      ] do
+    test "manual decision #{inspect(reason)} reports failure once without automatic retries" do
+      owner = self()
+
+      pid =
+        Llm.init(%{
+          goal: "g",
+          tools: %{},
+          memory: Store,
+          cadence: :manual,
+          endpoint: %{model: "m"},
+          request: fn _, _ ->
+            send(owner, :manual_asked)
+            unquote(Macro.escape(answer))
+          end
+        })
+
+      on_exit(fn -> stop_brain(pid) end)
+      assert :ok == Llm.step(pid, self(), :failure)
+      observations(pid, idle())
+      assert_receive :manual_asked
+
+      if unquote(reason) == :no_tool_call do
+        assert_receive {:npc_llm_step, :failure,
+                        {:error, :no_tool_call,
+                         %{"output" => [], "usage" => %{"total_tokens" => 17}}}}
+      else
+        assert_receive {:npc_llm_step, :failure, {:error, unquote(reason)}}
+      end
+
+      send(pid, :wake)
+      refute_receive :manual_asked, 2200
+      refute_receive {:npc_llm_step, :failure, _}, 100
+    end
   end
 
   defp brain(profile) do

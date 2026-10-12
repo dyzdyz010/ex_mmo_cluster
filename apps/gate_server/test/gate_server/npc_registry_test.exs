@@ -136,6 +136,7 @@ defmodule GateServer.NpcRegistryTest do
                   skills: %{build: %{}},
                   spells: %{"ignite" => "{}"},
                   max_requests_per_hour: 60,
+                  cadence: :automatic,
                   genesis: true,
                   endpoint: %{
                     url: "https://llm.example/v1/responses",

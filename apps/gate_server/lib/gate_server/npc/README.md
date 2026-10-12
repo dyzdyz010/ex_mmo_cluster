@@ -27,6 +27,26 @@
 - `Responses` 是 Responses 应答里工具调用的唯一解析处；`Http` 是共享 JSON 出站。
 - `Context` 从权威 profile 派生身体说明与坐标约定。
 - `Brain.Llm` 组合观察、近期结果和逐轮检索记忆，只负责询问时机、模型请求与上下文。
+  注册表 JSON `cadence` 默认 `"automatic"`；显式 `"manual"` 后仅由
+  `Body.step(body, observer, tag, context \\ %{})` 受理单次决策许可，返回 `:ok` 或
+  `{:error, :busy | :automatic_cadence | :unsupported_backend}`。Body 将受理回复交由既有 Runtime 转发，
+  不等待模型；许可需下一次新 Observation 且无在途命令、`pending=[]` 才启动，仍遵守两次请求最少隔 1 秒。
+  本轮 `context` 只进入 JSON `input.step_context`；结果恰好一次发给 observer：
+  `{:npc_llm_step, tag, {:ok, raw_response, body_command_ids} | {:error, reason}}`。
+  空工具应答为 `{:error, :no_tool_call, raw_response}`，保留已付费的 usage；
+  手动步进遇到上下文的 `memory_error` / `working_memory_error` 时，在 HTTP 请求前返回
+  `{:error, {:memory_context_unavailable, reason}}`，不把读取失败当空记忆继续付费。自动模式维持原语义。
+  IDs 只含投给 Runtime / Body 的命令；`wait` 只完成决策，IDs 为 `[]`。模型错误与空工具应答显式失败，
+  不自动重问；观察、对话、结果和 wake 均不产生新的许可。等待动作仍由原 Runtime / Body 执行。
+  `max_requests_per_hour` 正整数保持原滑动小时预算；Life 仍默认 60 且有限值只接受 1..60。
+  只有显式 JSON `"unlimited"` 解析为 `:infinity`，不保存询问时刻列表，也不绕过最小请求间隔。
+  同步受理与异步结果分开依据 [Elixir GenServer 官方调用契约](https://hexdocs.pm/elixir/GenServer.html#call/3)，
+  应用于已有 Brain receive-loop，保持唯一请求 owner，不新建 Brain 或监督分支。
+  验证采用真实 Brain / Runtime 进程、公开 step 与事件入口；HTTP 和记忆用冻结应答与 Store 替身隔离。
+  Body 转发另测回调接缝，不把它称为真实会话验收；实验首步须验证正式 Body PID。
+  最小命令：`cd apps/gate_server && mix test --no-start test/gate_server/npc_brain_llm_test.exs test/gate_server/npc_life_registry_test.exs`；
+  本轮日志在 `.demo/observe/npc-year-20261011/validation/`，覆盖单许可、fresh/pending、重复受理拒绝、一次结果、
+  context 隔离、无限额度解析及错误不重试；不启动 PG、World 或 UE。
   `Brain.Routine`（作者脚本）、`Brain.Patrol`（巡逻决策树）是非 LLM 后端，直接产出规范命令。
   `Brain.Tree` 是最小行为树后端（纯函数，叶子 `act` 经 `Abilities.command/4` 构造命令，与 LLM 共用同一份能力定义）；
   树定义在 `Trees`，首个是建设者 `Trees.settler/1`。
@@ -146,6 +166,7 @@ flowchart LR
   当前意图用 `set_plan(text)` 保存，最多1500字、空文本清除；唯一 `kind=intention/key=current` 工作行按永久 cid 覆盖，
   不受普通笔记淘汰影响。每轮决策现读 `current_plan` 和最近五条 `recent_notes`，无进程缓存；读取失败显式给出
   `working_memory_error`。计划仅表示 NPC 的主观打算；完成与否、坐标、材料仍查 World 和权威 Outcome。
+  公共 `Body.command/2` 与 Brain 命令都交由同一 Runtime → Memory 执行；Body 不另存计划。
   Life 模式保留四份模型缓存与一次 Hindsight recall，不再遗漏自记笔记，也不另做词法召回。
   Life 的 Llm 将已配对原调用的拒绝保存在 `intention/failures`，最近八种不同调用跨感知轮次与重启进入 `recent_failures`；同调用覆盖。
   这是带时刻的历史证据，不是禁令或当前世界状态。保存失败记 `npc_failure_memory_failed`，当前 Outcome 带 `memory_error`。

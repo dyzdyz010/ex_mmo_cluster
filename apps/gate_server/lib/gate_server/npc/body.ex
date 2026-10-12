@@ -107,6 +107,10 @@ defmodule GateServer.Npc.Body do
   @doc "派生缓存、在途命令与最近的 Outcome（新在前）；不是世界真值。"
   def observe(body), do: GenServer.call(body, :observe)
 
+  @doc "通过既有 Runtime 受理一次手动 LLM 决策；结果异步发送给 observer，Body 不等待模型请求。"
+  def step(body, observer, tag, context \\ %{}) when is_pid(observer) and is_map(context),
+    do: GenServer.call(body, {:step, observer, tag, context})
+
   @doc "慢技能取得当前正式会话上下文；不暴露 Body 或 World 的可变状态。"
   def skill_context(body), do: GenServer.call(body, :skill_context)
 
@@ -298,6 +302,11 @@ defmodule GateServer.Npc.Body do
   end
 
   @impl true
+  def handle_call({:step, observer, tag, context}, from, state) do
+    send(state.mind, {:step_body, from, observer, tag, context})
+    {:noreply, state}
+  end
+
   def handle_call(:observe, from, state) do
     snapshot =
       Map.take(state, [
@@ -859,7 +868,7 @@ defmodule GateServer.Npc.Body do
       )
 
   defp apply_command(state, %{verb: verb} = command)
-       when verb in [:skill, :cancel_skill, :remember, :recall, :search_memory] do
+       when verb in [:skill, :cancel_skill, :remember, :recall, :search_memory, :set_plan] do
     command(state.mind, command)
     state
   end

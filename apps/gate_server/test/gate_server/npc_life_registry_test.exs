@@ -3,6 +3,30 @@ defmodule GateServer.NpcLifeRegistryTest do
   use ExUnit.Case, async: false
   alias GateServer.Npc.{Registry, Brain}
 
+  test "explicit unlimited is accepted for life and llm while manual cadence stays explicit" do
+    llm_env()
+
+    params = %{
+      "goal" => "继续生活",
+      "tools" => %{},
+      "life" => %{"url" => "http://life.test.invalid"},
+      "max_requests_per_hour" => "unlimited",
+      "cadence" => "manual"
+    }
+
+    for backend <- ["life", "llm"] do
+      assert {Brain.Llm, %{max_requests_per_hour: :infinity, cadence: :manual}} =
+               Registry.brain(backend, params)
+    end
+
+    assert {Brain.Llm, %{cadence: :automatic, max_requests_per_hour: 60}} =
+             Registry.brain("life", Map.drop(params, ["max_requests_per_hour", "cadence"]))
+
+    assert_raise ArgumentError, fn ->
+      Registry.brain("llm", Map.put(params, "cadence", "typo"))
+    end
+  end
+
   test "life exposes one shared library for dialogue and daily work" do
     llm_env()
 
