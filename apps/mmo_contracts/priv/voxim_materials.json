@@ -228,5 +228,60 @@
     "id": 45,
     "name": "thermistor_ceramic",
     "blocks_movement": true
+  },
+  {
+    "id": 46,
+    "name": "masonry",
+    "blocks_movement": true
+  },
+  {
+    "id": 47,
+    "name": "dressed_stone",
+    "blocks_movement": true
+  },
+  {
+    "id": 48,
+    "name": "roof_tile",
+    "blocks_movement": true
+  },
+  {
+    "id": 49,
+    "name": "timber_boards",
+    "blocks_movement": true
+  },
+  {
+    "id": 50,
+    "name": "stained_glass",
+    "blocks_movement": true
+  },
+  {
+    "id": 51,
+    "name": "gilded_stone",
+    "blocks_movement": true
+  },
+  {
+    "id": 52,
+    "name": "fired_clay_roof_tile",
+    "blocks_movement": true
+  },
+  {
+    "id": 53,
+    "name": "imperial_floor_brick",
+    "blocks_movement": true
+  },
+  {
+    "id": 54,
+    "name": "famille_rose_porcelain",
+    "blocks_movement": true
+  },
+  {
+    "id": 55,
+    "name": "fired_clay_wall_brick",
+    "blocks_movement": true
+  },
+  {
+    "id": 56,
+    "name": "taihu_stone",
+    "blocks_movement": true
   }
 ]
