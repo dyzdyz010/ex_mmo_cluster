@@ -3,7 +3,7 @@ defmodule SceneServer.Movement.Player do
   use GenServer, restart: :temporary
   require Logger
   alias MmoContracts.{Session, Movement, Voxel}
-  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock}
+  alias SceneServer.Movement.{InputSlots, CollisionUpdates, Replication, Clock, Harm}
   alias VoxelRegion.CollisionStream
   alias SceneServer.Body
   alias SceneServer.Body.Snapshot
@@ -83,11 +83,11 @@ defmodule SceneServer.Movement.Player do
   def finish_tool(player, key, result), do: GenServer.call(player, {:finish_tool, key, result})
   @doc "只读身体命中快照，生命代次与连接 epoch 分开。"
   def hit_context(player, body_for \\ nil), do: target_call(player, {:hit_context, body_for})
-  @doc "接收 World 已授权的机械作用，目标 owner 去重并复核生命。"
-  def receive_hit(player, hit), do: target_call(player, {:receive_hit, hit})
-
-  @doc "接纳 World 已冻结的投射物热转移；身体与去重收据同笔存档。"
-  def receive_projectile(player, hit), do: target_call(player, {:receive_projectile, hit})
+  @doc """
+  离散作用的唯一投递入口（Voxim `Docs/Combat-Action-Design.md` §1.1）：工具冲击与投射物热。
+  目标 owner 统一去重、复核生命／身份／owner 状态与作用许可，回执与身体同笔存档。
+  """
+  def receive_effect(player, effect), do: target_call(player, {:receive_effect, effect})
 
   # 目标可在 Scene 候选采样后离场；目标 owner 退出是明确拒绝，不断开攻击者的请求 worker。
   defp target_call(player, request) do
@@ -156,8 +156,8 @@ defmodule SceneServer.Movement.Player do
         action_seq: 0,
         tool_action: nil,
         life_generation: System.unique_integer([:positive, :monotonic]),
-        body_hits: %{},
-        projectile_hits: %{},
+        # 已接纳离散作用的回执（工具冲击、投射物热），按作用 key 去重；随身体存档与 Scene 移交，复活不清空。
+        effect_receipts: %{},
         # 身体闭环 H2：复活瞬移进度。nil 无；:pending 待请求出生点窗口（流送）；:window 已请求、等窗口安装；
         # {tick, state} 在模拟 tick 之前把状态换成出生点（`relocated/1`）。
         revive: nil,
@@ -198,8 +198,7 @@ defmodule SceneServer.Movement.Player do
               :revive,
               :movement_scales,
               :life_generation,
-              :body_hits,
-              :projectile_hits,
+              :effect_receipts,
               :tool_action
             ])
           )
@@ -413,91 +412,39 @@ defmodule SceneServer.Movement.Player do
 
   def handle_call({:hit_context, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
 
-  def handle_call({:receive_projectile, hit}, _, state) do
-    hits = state.projectile_hits
+  def handle_call({:receive_effect, effect}, _, state) do
+    receipts = state.effect_receipts
 
     cond do
-      Map.has_key?(hits, hit.key) ->
-        {:reply, {:ok, Map.fetch!(hits, hit.key)}, state}
-      state.life_generation != hit.target.life_generation or state.body.status == :dead ->
+      Map.has_key?(receipts, effect.key) ->
+        {:reply, {:ok, Map.fetch!(receipts, effect.key)}, state}
+
+      state.life_generation != effect.target.life_generation or state.body.status == :dead ->
         {:reply, {:error, :stale_life}, state}
-      state.identity != hit.target.identity or state.id != hit.target.id ->
+
+      state.identity != effect.target.identity or state.id != effect.target.id ->
         {:reply, {:error, :stale_owner}, state}
+
       not state.ready or state.transfer != nil or state.failure != nil ->
         {:reply, {:error, :invalid_state}, state}
-      not SceneServer.Movement.ToolHit.permitted?(Map.get(state.config, :combat_scope), hit.actor.position, state.state.position) ->
-        {:reply, {:error, :combat_not_permitted}, state}
-      true ->
-        heat = %{state.body_heat | q_j: state.body_heat.q_j + hit.q_j, tissue_j: state.body_heat.tissue_j + hit.q_j}
-        receipt = Map.take(hit, [:key, :q_j, :position, :target, :actor])
-        next = %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + hit.q_j,
-          projectile_hits: Map.put(hits, hit.key, receipt)} |> persist_body()
-        character_event(next, next, :projectile_heat, %{projectile: inspect(hit.key), source_id: hit.actor.cid,
-          target_id: state.id, target_life: state.life_generation, q_j: hit.q_j, tissue_j: hit.q_j})
-        {:reply, {:ok, receipt}, next}
-    end
-  end
 
-  def handle_call({:receive_hit, hit}, _, state) do
-    alias SceneServer.Movement.ToolHit
-
-    cond do
-      state.life_generation != hit.target.life_generation or state.body.status == :dead ->
-        {:reply, {:error, :stale_life}, state}
-
-      Map.has_key?(state.body_hits, hit.key) ->
-        {:reply, {:ok, state.body_hits[hit.key]}, state}
-
-      state.transfer != nil or state.failure != nil ->
-        {:reply, {:error, :invalid_state}, state}
-
-      not ToolHit.permitted?(
+      not Harm.permitted?(
         Map.get(state.config, :combat_scope),
-        hit.actor.position,
+        effect.actor.position,
         state.state.position
       ) ->
         {:reply, {:error, :combat_not_permitted}, state}
 
       true ->
-        # 即时工具使用本次 live owner 采样的命中几何；采样后继续移动不撤回该作用。
+        # 即时作用使用本次 live owner 采样的命中几何；采样后继续移动不撤回该作用。
         # 提交仍复核生命、存活和当前战斗范围，不能把等待 World 的时间当成“必须站定”。
-        body = Body.trauma(state.body, hit.part, hit.impact)
-        report = Body.report(body, 1.0)
-
-        receipt = %{
-          source_id: hit.actor.cid,
-          source_life: hit.actor.life_generation,
-          source_session: hit.actor.identity.session_epoch,
-          action_seq: elem(hit.key, 1),
-          target_id: state.id,
-          target_life: state.life_generation,
-          part: hit.part,
-          body: report
-        }
-
-        character_event(
-          state,
-          state,
-          :tool_hit,
-          Map.drop(receipt, [:body])
-          |> Map.merge(%{
-            life_before: Body.life(state.body),
-            life: report.life,
-            recoverable: report.recoverable
-          })
-        )
+        {receipt, next} = apply_effect(state, effect)
 
         next =
-          %{state | body: body, body_hits: Map.put(state.body_hits, hit.key, receipt)}
+          %{next | effect_receipts: Map.put(receipts, effect.key, receipt)}
           |> persist_body()
 
-        reliable(
-          state,
-          :control,
-          SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id)
-        )
-
-        {:reply, {:ok, receipt}, publish_body(next, report)}
+        {:reply, {:ok, receipt}, publish_effect(next, effect, receipt)}
     end
   end
 
@@ -837,13 +784,12 @@ defmodule SceneServer.Movement.Player do
         {:body_heat, %{q_j: q, max_contact_k: max_k, sole_k: sole_k, immersed: immersed} = step},
         state
       ) do
-    heat = state.body_heat
+    next = absorb_heat(state, q, step.tissue_j)
+    heat = next.body_heat
 
     heat = %{
       heat
-      | q_j: heat.q_j + q,
-        tissue_j: heat.tissue_j + step.tissue_j,
-        immersed: immersed,
+      | immersed: immersed,
         max_contact_k: highest(heat.max_contact_k, max_k),
         sole_k: highest(heat.sole_k, sole_k)
     }
@@ -852,11 +798,10 @@ defmodule SceneServer.Movement.Player do
       state,
       state,
       :body_heat,
-      Map.merge(step, %{world_seq: step.seq, body_exchange_j: state.body_exchange_j + q})
+      Map.merge(step, %{world_seq: step.seq, body_exchange_j: next.body_exchange_j})
     )
 
-    {:noreply,
-     persist_body(%{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q})}
+    {:noreply, persist_body(%{next | body_heat: heat})}
   end
 
   def handle_info({:projectile_receipt, identity, life, hit, seq}, %{identity: identity, life_generation: life} = state) do
@@ -972,8 +917,7 @@ defmodule SceneServer.Movement.Player do
         :body_heat,
         :food_cursors,
         :life_generation,
-        :body_hits,
-        :projectile_hits,
+        :effect_receipts,
         :tool_action,
         :body_exchange_j,
         :movement_scales,
@@ -995,6 +939,71 @@ defmodule SceneServer.Movement.Player do
     })
 
     {{:ok, cut}, %{state | transfer: :sealed}}
+  end
+
+  # 作用按类型结算（§1.1 响应各一处）：工具冲击 → 部位外伤；投射物热 → 局部组织待吸收热。
+  defp apply_effect(state, %{impact: impact} = hit) do
+    body = Body.trauma(state.body, hit.part, impact)
+    report = Body.report(body, 1.0)
+
+    receipt = %{
+      source_id: hit.actor.cid,
+      source_life: hit.actor.life_generation,
+      source_session: hit.actor.identity.session_epoch,
+      action_seq: elem(hit.key, 1),
+      target_id: state.id,
+      target_life: state.life_generation,
+      part: hit.part,
+      body: report
+    }
+
+    character_event(
+      state,
+      state,
+      :tool_hit,
+      Map.drop(receipt, [:body])
+      |> Map.merge(%{
+        life_before: Body.life(state.body),
+        life: report.life,
+        recoverable: report.recoverable
+      })
+    )
+
+    {receipt, %{state | body: body}}
+  end
+
+  defp apply_effect(state, %{q_j: q} = hit) do
+    next = absorb_heat(state, q, q)
+
+    character_event(next, next, :projectile_heat, %{
+      projectile: inspect(hit.key),
+      source_id: hit.actor.cid,
+      target_id: state.id,
+      target_life: state.life_generation,
+      q_j: q,
+      tissue_j: q
+    })
+
+    {Map.take(hit, [:key, :q_j, :position, :target, :actor]), next}
+  end
+
+  # 工具回执即时下发双方并发布身体；投射物收据由 World 事务提交后经 `{:projectile_receipt}` 下发。
+  defp publish_effect(state, %{impact: _} = hit, receipt) do
+    reliable(
+      state,
+      :control,
+      SceneServer.Movement.ToolAction.message(receipt, state.identity, hit.request_id)
+    )
+
+    publish_body(state, receipt.body)
+  end
+
+  defp publish_effect(state, %{q_j: _}, _), do: state
+
+  # 进入身体的热（J）只在这里累计：投射物命中与 World 接触热共用，下一次 1 Hz 推进时吃进 Body。
+  defp absorb_heat(state, q_j, tissue_j) do
+    heat = %{state.body_heat | q_j: state.body_heat.q_j + q_j, tissue_j: state.body_heat.tissue_j + tissue_j}
+    %{state | body_heat: heat, body_exchange_j: state.body_exchange_j + q_j}
   end
 
   defp restore_body(state) do
@@ -1277,7 +1286,7 @@ defmodule SceneServer.Movement.Player do
 
   defp revive(state) do
     character_event(state, state, :body_revived, %{position: Tuple.to_list(state.state.position)})
-    %{state | body: Body.revive(), life_generation: state.life_generation + 1, body_hits: %{}}
+    %{state | body: Body.revive(), life_generation: state.life_generation + 1}
   end
 
   # 回会话出生点：出生柱（`probe`）上按入场同一规则重找落脚点（世界可能已变）。非流送会话世界固定，下一个模拟 tick 即换；

@@ -200,7 +200,7 @@ defmodule SceneServer.Movement.Scene do
   def handle_call(:neighbour_endpoint, _, state), do: {:reply, {:error, :scene_not_ready}, state}
 
   def handle_call(:tool_candidates, _, state) do
-    if state.config.combat_scope == nil,
+    if not SceneServer.Movement.Harm.open?(state.config.combat_scope),
       do: {:reply, {:error, :combat_not_permitted}, state},
       else: {:reply, {:ok, for({_, c} <- state.characters, do: c.player)}, state}
   end

@@ -236,7 +236,7 @@ Test-only：只有显式配置 `test_combat_bounds_m` 的场景允许范围内�
 
 ## 2026-10-05 投射物身体热交付（Hello37）
 
-Global system：World 的触散飞行每轮经 WorldServer 查询当前 Player 胶囊，ToolHit 复用球半径膨胀胶囊求交。World 冻结命中与焦耳，Player 接纳后把焦耳送进原 Body 局部组织 pending 热；没有新 HP、机械伤或击退。`projectile_hits` 与完整身体同笔持久化并随 Scene 移交，新 owner 重投已入账命中只返回原收据；旧会话/生命的新命中拒绝。Session ProjectileHit 供双方关联同一球、事务、人物生命与金额；本人承伤继续从正常 BodyState 推导。完整边界、测试与实际镜像见 `docs/10-active/magic/cast-phases-2026-10-05.md`；正式双客户端验收由 Voxim `Docs/Magic/CombatProjectile-plan.md` 记录。
+Global system：World 的触散飞行每轮经 WorldServer 查询当前 Player 胶囊，ToolHit 复用球半径膨胀胶囊求交。World 冻结命中与焦耳，Player 接纳后把焦耳送进原 Body 局部组织 pending 热；没有新 HP、机械伤或击退。命中经 `Player.receive_effect/2` 投递，收据记入 `effect_receipts`，与完整身体同笔持久化并随 Scene 移交，新 owner 重投已入账命中只返回原收据；旧会话/生命的新命中拒绝。Session ProjectileHit 供双方关联同一球、事务、人物生命与金额；本人承伤继续从正常 BodyState 推导。完整边界、测试与实际镜像见 `docs/10-active/magic/cast-phases-2026-10-05.md`；正式双客户端验收由 Voxim `Docs/Magic/CombatProjectile-plan.md` 记录。
 
 ## 2026-10-08 角色世界意图唯一入口（能力库 I1）
 
@@ -328,3 +328,7 @@ Test-only：`dialogue_test.exs` 用受控时钟证明文本、三维距离、限
 `mix test --no-start apps/scene_server/test/scene_server/dialogue_test.exs apps/scene_server/test/scene_server/movement/dialogue_scene_test.exs apps/scene_server/test/scene_server/movement/voxim_scene_test.exs apps/scene_server/test/scene_server/movement/voxim_player_test.exs`。
 本次红/绿原始日志位于 `.demo/observe/npc-dialogue-20261011/scene/`；当前结果 40 项通过，其中新增
 9 项。客户端与真实 NPC 自主交谈的验收仍由总体设计稿记录，不能以这些组件测试代替。
+
+## 角色作用的投递与许可（2026-10-15）
+
+Global system：工具冲击与投射物热经同一入口 `Player.receive_effect/2`，目标 owner 统一去重、复核生命代次／会话身份／owner 状态与作用许可，回执 `effect_receipts` 随身体存档（版本 3，兼容读取版本 2 的投射物收据）与 Scene 移交，复活不清空。作用许可只在 `SceneServer.Movement.Harm` 判断，候选筛选、投射物扫掠和目标提交共用；当前语义仍是显式战斗范围。进入身体的热只经 `absorb_heat` 累计，投射物与 World 接触热共用。分层依据见 Voxim `Docs/Combat-Action-Design.md` §1.1；接触热仍走 World 的 `{:body_heat}` 通量路径，未带来源、不查许可。

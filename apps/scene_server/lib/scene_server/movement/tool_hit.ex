@@ -68,13 +68,4 @@ defmodule SceneServer.Movement.ToolHit do
       do: [],
       else: [(-b - :math.sqrt(discriminant)) / a, (-b + :math.sqrt(discriminant)) / a]
   end
-
-  @doc "双方中心均在显式战斗范围内才允许；未配置范围的正式世界拒绝。"
-  def permitted?(nil, _, _), do: false
-
-  def permitted?({low, high}, a, b),
-    do:
-      Enum.all?([a, b], fn p ->
-        Enum.all?(0..2, &(elem(p, &1) >= elem(low, &1) and elem(p, &1) < elem(high, &1)))
-      end)
 end

@@ -109,7 +109,7 @@ defmodule SceneServer.Movement.P0BodyLifecycleTest do
       actor: %{position: target.position, cid: 999, life_generation: 1, identity: identity}
     }
 
-    assert {:ok, receipt} = Player.receive_hit(player, hit)
+    assert {:ok, receipt} = Player.receive_effect(player, hit)
     receipt
   end
 

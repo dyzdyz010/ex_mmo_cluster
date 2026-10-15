@@ -3,7 +3,7 @@ defmodule SceneServer.Movement.ToolAction do
   Global system：角色工具编排，只由 `SceneServer.Movement.Intent` 调用（玩家 Gate 编辑 worker 与 NPC Body 共用）。
   Player 授权身份，World 判遮挡和频率，目标 Player 唯一提交 Body。
   """
-  alias SceneServer.Movement.{Player, Scene, ToolHit}
+  alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
   alias VoxelRegion.World
 
   @doc "经当前角色 owner 登记后执行一次；重复请求读原结果。调用方只有 `SceneServer.Movement.Intent.run/3`。"
@@ -42,7 +42,7 @@ defmodule SceneServer.Movement.ToolAction do
              if(request.action == 0, do: target_id, else: nil)
            ),
          true <- target.id == target_id,
-         true <- ToolHit.permitted?(target.scope, actor.position, target.position),
+         true <- Harm.permitted?(target.scope, actor.position, target.position),
          true <- request.action == 0 or target.life_generation == request.incarnation,
          :ok <- World.body_tool(world, actor, request, distance) do
       if request.action == 0 do
@@ -71,7 +71,7 @@ defmodule SceneServer.Movement.ToolAction do
           }
         }
 
-        case Player.receive_hit(target.player, hit) do
+        case Player.receive_effect(target.player, hit) do
           {:ok, receipt} -> {:body, receipt}
           error -> error
         end
