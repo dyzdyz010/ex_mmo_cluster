@@ -1,7 +1,7 @@
 # Voxim 体素数据链路：Region 载荷 + Overlay 日志 + 客户端分层缓存 — 决策稿
 
 - **日期**：2026-09-02 成稿；**2026-09-03 第一次修订**（R6 前置研究：实测数字 + D-1..D-8 推荐 + 新增 D-9..D-13）
-- **状态**：`active` 决策稿。**2026-09-03 用户拍板：D-1..D-13 全部按推荐值**（Lasset = 4、服务端 WorldGen 换成 Voxim kernel、材质表用 Voxim 调色板、不预测、zlib、字节规则、不周期重发、`result_ref` = seq）。尚未实施，从 `Voxim/Docs/R6-Eval.md` §5 的 S1 开始
+- **状态**：`active` 决策稿。**2026-09-03 用户拍板：D-1..D-13 全部按推荐值**（Lasset = 4、服务端 WorldGen 换成 Voxim kernel、材质表用 Voxim 调色板、不预测、zlib、字节规则、不周期重发、`result_ref` = seq）。已实施：R6 S1–S4 完成，2026-09-07 有条件收口（见 `Voxim/Docs/R6.md`）；overlay 日志落在 `apps/voxel_region/lib/voxel_region/overlay_log.ex` 与 DataService `voxel/overlay_log_store.ex`、迁移 `20260907000001_create_voxel_overlay_log.exs`（`0ad70fdf`）
 - **服务对象**：`../../../../Voxim`（UE 5.8 第二代客户端，`starter.md` 的 R6 "MMO Authority Integration" 阶段）。Voxia 的现役链路不受影响，本稿新增的 opcode / endpoint 按"只追加不破坏"铁律并列存在
 - **上位裁决**：沿用 [`2026-07-06 投影路线终态裁决`](../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)——truth 只在服务端，客户端对 WorldGen 零知识、snapshot-only。本稿**不改变路线**，只修订三处具体形状（§1.2）
 - **影响范围**：scene_server / world_server 的 mip 维护与载荷缓存、gate_server 新 opcode、auth_server 新 HTTP endpoint、DataService 的 overlay 日志持久化、Voxim 客户端 R6 的数据源与磁盘缓存

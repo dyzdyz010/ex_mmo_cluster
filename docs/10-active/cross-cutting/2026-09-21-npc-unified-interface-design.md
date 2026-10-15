@@ -18,7 +18,8 @@ Brain 从 `probe_toward` 的 data 带回，Body 不记“上一次探测”；(3
 外部分类模型 Jev（TypeSafe 的 System One 模型：输入一段 state + 若干类型化问题 noul / choice / score，返回带概率的决定，
 70–500 ms，不产生参数）与本接口的对应：adapter 把 Observation 写成 state，把**候选命令**（参数由 adapter 预先填好）列为一个 `choice`
 问题的选项，选中的那条作为命令返回；低置信度时不发命令（= 保持当前动作）。它不需要接口改动，但决定了“命令必须可被枚举为离散候选”
-这一约束落在 adapter 而不是 Body。未实现（没有 TypeSafe 的 key）。
+这一约束落在 adapter 而不是 Body。未实现（没有 TypeSafe 的 key）。（2026-10-15 更正：Jev 已于 09-21 起实现为调度层分类模型，`f03ded11`，现为 `apps/npc_server/lib/npc_server/jev.ex`；
+实际用法是活动多选一加 harm 护栏、置信度 < 0.85 交回大脑，不是逐条候选命令选择。）
 
 第二片落点：`Body` 到路点后经旁路 FIFO 执行进程调 `Player.tool_context/2` + `World.tool_intent/3`（探测 action 0 → 攻击 action 1 →
 冷却后重新探测，目标身份不变才继续）；请求合法性与 0x7D 线解码共用 `Voxel.Codec.tool_intent?/1`；结果原样记入 `Body.observe/1`。
@@ -90,7 +91,7 @@ NPC 是世界里的**原住民**：不限制它做什么，玩家能做的它都
    实跑：本机真实 World，真实 LLM（gpt-5.6-terra high）+ 真实 Jev，一句目标 → 80 格的屋（石墙、木屋顶、门、两窗），1 次 LLM 请求、61 秒
    （此前逐格问：22 格 28 次）。统一 Demo（镜像 `voxim-gameplay:npc-builder-0dfa86a`，记录 `Voxim/Saved/Gameplay/upgrade-20260921-npc-builder2/`）：
    (58..63, 519..522, 69..72) 68 格的屋，盖到 24 格时杀掉 Body、从记忆表续建，1 次 LLM 请求；材料守恒；截图在 `cottage-real/shots/`。
-   途中撞到并修掉的：蓝图的“空心盒”操作会让规划者白砌一层石地板和石天花板（改成 `walls`）；缺料 → Jev 判“去采料”→ 记一笔停工（采集尚未实现）。
+   途中撞到并修掉的：蓝图的“空心盒”操作会让规划者白砌一层石地板和石天花板（改成 `walls`）；缺料 → Jev 判“去采料”→ 记一笔停工（采集尚未实现；2026-10-15 更正：能力库 I3 已加 gather 技能，`60f01c75`）。
    教训：第一次把屋盖在了玩家出生探测点 (42,520,60) 上，第二个玩家一进来就被拒（reason 10）；NPC 把屋逐格挖回背包后恢复。
    **选址要避开出生探测点**——这条现在只写在目标里，世界本身不拦（玩家在出生点上放方块同样会把别人挡在门外，是既有的产品缺口）。
 
