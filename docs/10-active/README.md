@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **52** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **53** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -48,6 +48,7 @@
 - [`2026-05-16-phase7-local-field-runtime-roadmap.md`](field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)
 - [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](field-emergence/2026-05-16-phase8-physical-phenomenon-system-architecture.md)
 - [`2026-05-19-prefab-field-participant-projection.md`](field-emergence/2026-05-19-prefab-field-participant-projection.md)
+- [`2026-10-16-structural-stress-and-collapse-direction.md`](field-emergence/2026-10-16-structural-stress-and-collapse-direction.md) — 结构应力与建筑/地形塌方、蓝图结构约束；方向稿，全局最低优先级，未实施
 
 ### infra
 
