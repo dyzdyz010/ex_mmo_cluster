@@ -410,6 +410,30 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert map_size(flowing) > 1
   end
 
+  # 只测试作者注水的相态账：库存焓随量平均分给每格（每格 = E₀ × 容量 / B₀，手算），库存归零，冷恢复逐行相等。
+  test "liquid_fill carries inventory enthalpy with the water and replays it", c do
+    assert {:ok, _} = World.material_supply(c.w, 1001, "fill-phase", %{21 => 11 * @capacity})
+    before = observe(c.w)
+    {e0, _} = before.phase_inventory[{1001,21}]
+    b0 = before.material_balances[{1001,21}]
+    assert b0 == 12 * @capacity
+    cells = for x <- 62..65, z <- 1..3, do: {x,0,z}
+    assert {:ok, %{units: units, cells: 12}} = World.liquid_fill(c.w, 1001, "phase", 21, {63,0,2}, 0)
+    assert units == 12 * @capacity
+    filled = observe(c.w)
+    assert filled.material_balances[{1001,21}] == 0
+    assert filled.liquid_units == Map.new(cells, &{&1, @capacity})
+    for cell <- cells, do: assert_in_delta(row(c.w, cell).phase_energy_j, e0 * @capacity / b0, 1.0e-3)
+    {e1, i1} = filled.phase_inventory[{1001,21}]
+    assert_in_delta e1, 0.0, 1.0e-3
+    assert_in_delta i1, 0.0, 1.0e-6
+    rows = Map.new(cells, &{&1, row(c.w, &1)})
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    assert observe(w).liquid_units == filled.liquid_units
+    assert Map.new(cells, &{&1, row(w, &1)}) == rows
+  end
+
   test "blocked displacement and journal rejection leave quantity, properties and inventory unchanged", c do
     assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
     cell = {63,1,2}

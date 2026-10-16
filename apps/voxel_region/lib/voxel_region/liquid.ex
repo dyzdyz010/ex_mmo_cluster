@@ -1,8 +1,15 @@
 defmodule VoxelRegion.Liquid do
   @moduledoc """
   Global system：单一流动材料（液体，或 R8-07 可倾倒散体）的有限宏格数量计算，不持有世界或库存状态。
-  World 按材料分组逐种调用同一内核；散体与液体的唯一区别是侧向阈值（散体取目录 loose_threshold_units）：
-  静止时同层相邻格数量差不超过阈值（+7 量子截断），即休止角的离散版本。
+  World 按材料分组逐种调用同一内核；散体与液体只在侧向阈值的适用范围上不同：
+  - 散体 `{:repose, t}`（目录 loose_threshold_units）：每对同层相邻格都只流超出 t 的部分，静止时数量差不超过
+    t（+7 量子截断），即休止角的离散版本。
+  - 液体 `{:wetting, t}`（液体参数 side_threshold_units）：t 只是润湿门槛——流向干格（该阶段数量为 0）须超出 t，
+    两格都已有水时不设门槛，按差值/8 平衡到相邻差不足 8 量子为止。连通水面因此在有限步内摊平；
+    平地上的薄水仍在边缘厚度不超过 t（+7）时停止扩张，不会铺成无限薄膜。
+    依据：浅水模型的干湿判别阈值（只在湿/干界面设最小水深，湿区内部按静水平衡），见 Medeiros & Hagen,
+    "Review of wetting and drying algorithms for numerical tidal flow models", IJNMF 71(4), 2013。
+  整数通量满足 flow ≤ 差值/8，每次非零侧流都使 Σq² 严格下降、重力使 Σq·y 严格下降，故任何输入都在有限步内静止。
 
   输入为 canonical Y-up 宏格坐标到正整数库存量子的稀疏表。容量、单步下落和
   侧向流量上限由已发布参数换算后传入，不能从显示高度反推水量。
@@ -26,6 +33,7 @@ defmodule VoxelRegion.Liquid do
   end
 
   # Global system: expose the actual fluxes for thermal/integrity advection.
+  # threshold：整数或 `{:repose, t}` 为休止角阈值，`{:wetting, t}` 为液体润湿门槛（见模块说明）。
   # connected?(a, b)：同层两格之间是否允许侧流（受保护区域边界为 false）；nil 表示全部连通。
   def step_transfers(water, bounds, capacity, gravity_limit, side_limit, open?, threshold \\ 0, active \\ nil, connected? \\ nil) do
     sources = if active == nil, do: water, else: Map.take(water, Enum.to_list(active))
@@ -56,8 +64,10 @@ defmodule VoxelRegion.Liquid do
       |> Enum.reduce({%{}, []}, fn {a, b}, {deltas, flows} ->
         if available?(a, bounds, open?) and available?(b, bounds, open?) and
              (connected? == nil or connected?.(a, b)) do
-          difference = Map.get(fallen, a, 0) - Map.get(fallen, b, 0)
-          flow = min(div(max(abs(difference) - threshold, 0), 8), side_limit)
+          qa = Map.get(fallen, a, 0)
+          qb = Map.get(fallen, b, 0)
+          difference = qa - qb
+          flow = min(div(max(abs(difference) - head(threshold, qa, qb), 0), 8), side_limit)
           {from,to} = if difference > 0, do: {a,b}, else: {b,a}
           {flux(deltas,from,to,flow), transfer(flows,from,to,flow)}
         else
@@ -128,6 +138,11 @@ defmodule VoxelRegion.Liquid do
       end)
     if remaining == 0, do: {:ok,changes,Enum.reverse(flows)}, else: {:error,:occupied}
   end
+
+  # 一对同层相邻格的侧流门槛：休止角对所有格对生效；润湿门槛只挡流向干格。
+  defp head({:wetting, _t}, qa, qb) when qa > 0 and qb > 0, do: 0
+  defp head({_rule, t}, _qa, _qb), do: t
+  defp head(t, _qa, _qb), do: t
 
   defp result(cell, quantity, balance, moved),
     do: %{changes: if(moved == 0, do: %{}, else: %{cell => quantity}), balance: balance, transferred_units: moved}

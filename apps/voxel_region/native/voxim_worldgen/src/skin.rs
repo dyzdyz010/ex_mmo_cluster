@@ -70,7 +70,7 @@ fn mode<T: Copy + Into<u16>>(values: &[T]) -> u16 {
     best
 }
 fn is_trunk(material: u16) -> bool {
-    material == 19 || (25..=27).contains(&material)
+    material == 19 || (25..=27).contains(&material) || matches!(material, 57 | 59 | 61 | 63)
 }
 /// 地面花草（32..=39）只存在于精确 L0：进 L1 的投票前当空气，材质与表皮都不带上去。
 pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
@@ -297,6 +297,11 @@ mod tests {
         // 竖直树干：octant = x + 2y + 4z，(0,0,0) 与 (0,1,0) 是 0 和 2。
         assert_eq!(reduce(&cell([25, 0, 25, 0, 0, 0, 0, 0]), 1).material, 25);
         assert_eq!(reduce(&cell([25, 0, 25, 0, 0, 0, 0, 0]), 2).material, 0);
+        for trunk in [57, 59, 61, 63] {
+            assert_eq!(reduce(&cell([trunk, 0, trunk, 0, 0, 0, 0, 0]), 1).material, trunk);
+            assert_eq!(reduce(&cell([trunk, 0, trunk, 0, 0, 0, 0, 0]), 2).material, 0);
+            assert_eq!(reduce(&cell([1, 1, 1, 1, trunk, 0, trunk, 0]), 1).material, 1);
+        }
         // 单独一格木头不够；树干与花草同格时花草先当空气。
         assert_eq!(reduce(&cell([19, 0, 0, 0, 0, 0, 0, 0]), 1).material, 0);
         assert_eq!(reduce(&cell([19, 35, 19, 32, 0, 0, 0, 0]), 1).material, 19);

@@ -22,6 +22,19 @@ defmodule VoxelRegion.CollisionStream do
      List.to_tuple(Enum.map(center, &(&1 + radius + 1)))}
   end
 
+  @doc "沿用当前中心 tile 外扩四分之一 tile 的滞回带，避免边界往返触发全量快照。"
+  def box(position, radius, {min, _max} = current) do
+    extent = MmoContracts.Voxel.Payload.extent() - 2
+
+    inside = Enum.all?(0..2, fn axis ->
+      center_min = (elem(min, axis) + radius) * extent
+      value = elem(position, axis)
+      value >= center_min - extent / 4 and value < center_min + extent * 5 / 4
+    end)
+
+    if inside, do: current, else: box(position, radius)
+  end
+
   @impl true
   def init({authority, gate, owner, box}) do
     gate_monitor = Process.monitor(gate)

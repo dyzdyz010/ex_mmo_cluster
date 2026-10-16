@@ -10,10 +10,73 @@ defmodule VoxelRegion.World.Canonical do
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
-  @doc "持有给定部件身份微格的 refined 宏格。"
-  def micro_owner_cells(state,ids) do
-    for {cell,slots} <- state.refined,
-      Enum.any?(slots,fn {_,{_,owner}} -> MapSet.member?(ids,owner) end),do: cell
+  @doc "持有给定部件身份微格的 refined 宏格，按全量遍历 `state.refined` 的次序。"
+  def micro_owner_cells(state,ids), do: for({cell, _} <- owner_refined(state, ids), do: cell)
+
+  @doc "含这些部件身份微格的 `{cell, slots}`（部件索引），次序同全量遍历 `state.refined`。"
+  def owner_refined(state, ids),
+    do: in_refined_order(state,
+      Enum.reduce(ids, MapSet.new(), &MapSet.union(&2, Map.get(state.refined_owners, &1, MapSet.new()))))
+
+  # ---- refined 的派生索引（可由 refined 重建，不持久化、不是第二真值）
+  #
+  # refined_owners：部件身份 => 含其微格的宏格集合；refined_regions：L0 区域 => 区域内的 refined 宏格集合。
+  # 两者只由 put_refined/3 与 index_refined/1 写，随 refined 的每次写入同步更新，让按部件或按区域的读取只碰相关的格，
+  # 不再随世界的细化格总数线性扫描。
+
+  @doc "按 refined 整表重建派生索引；在线与重放都由 put_refined/3 增量维护，这里供核对增量结果（单测、等价对照）。"
+  def index_refined(state) do
+    {owners, regions} =
+      Enum.reduce(state.refined, {%{}, %{}}, fn {cell, slots}, {owners, regions} ->
+        {index_owners(owners, cell, slot_owners(slots), MapSet.new()), index_cell(regions, region_of(cell), cell, true)}
+      end)
+
+    Map.merge(state, %{refined_owners: owners, refined_regions: regions, refined_encoded: %{}})
+  end
+
+  @doc "写一个宏格的细化槽（空 map 即删除），同步维护派生索引。"
+  def put_refined(state, cell, slots) do
+    old = slot_owners(Map.get(state.refined, cell, %{}))
+    new = slot_owners(slots)
+    refined = if map_size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
+
+    %{state | refined: refined,
+      refined_owners: state.refined_owners |> index_owners(cell, MapSet.difference(new, old), MapSet.new())
+        |> index_owners(cell, MapSet.new(), MapSet.difference(old, new)),
+      refined_regions: index_cell(state.refined_regions, region_of(cell), cell, map_size(slots) > 0),
+      refined_encoded: Map.delete(state.refined_encoded, cell)}
+  end
+
+  @doc "这些 L0 区域内的 refined 宏格。"
+  def refined_in_regions(state, regions),
+    do: Enum.reduce(regions, MapSet.new(), &MapSet.union(&2, Map.get(state.refined_regions, &1, MapSet.new())))
+
+  @doc """
+  refined 中这些宏格的 `{cell, slots}`，按全量遍历 `state.refined` 的次序：按部件累加（浮点 HP 求和、代表格、
+  观察格列表）与逐格扫描整表的结果逐项相同。只走宏格层（不展开槽），代价随 refined 宏格数而非槽数。
+  （实测子 map 的遍历次序与整表的相对次序并不总一致，所以不另建子 map 遍历。）
+  """
+  def in_refined_order(state, cells),
+    do: for({cell, slots} <- state.refined, MapSet.member?(cells, cell), do: {cell, slots})
+
+  defp slot_owners(slots), do: for({_, {_, owner}} <- slots, into: MapSet.new(), do: owner)
+
+  defp index_owners(index, cell, added, removed) do
+    index = Enum.reduce(added, index, fn owner, index -> index_cell(index, owner, cell, true) end)
+    Enum.reduce(removed, index, fn owner, index -> index_cell(index, owner, cell, false) end)
+  end
+
+  defp index_cell(index, key, cell, true), do: Map.update(index, key, MapSet.new([cell]), &MapSet.put(&1, cell))
+
+  defp index_cell(index, key, cell, false) do
+    case Map.fetch(index, key) do
+      {:ok, cells} ->
+        cells = MapSet.delete(cells, cell)
+        if MapSet.size(cells) == 0, do: Map.delete(index, key), else: Map.put(index, key, cells)
+
+      :error ->
+        index
+    end
   end
 
   @doc "区域基底或 baseline source 的已解码载荷；读 source 时把解码结果缓存进 state。"
@@ -126,7 +189,7 @@ defmodule VoxelRegion.World.Canonical do
                 if is_nil(component_hp), do: component_max_hp(state, target.owner), else: component_hp
 
               3 ->
-                attachment_max_hp(state, target)
+                if is_nil(component_hp), do: attachment_max_hp(state, target), else: component_hp
 
               4 ->
                 m["max_hp_per_macro"] *
@@ -178,11 +241,11 @@ defmodule VoxelRegion.World.Canonical do
   @doc "同一附件实例占用的全部槽。"
   def attachment_slots(state, id), do: for({slot, {^id, _}} <- state.attachments, do: slot)
 
-  @doc "附件整件最大 HP，按实例槽的材料量折算。"
-  def attachment_max_hp(state, target),
+  @doc "附件整件最大 HP，按实例槽的材料量折算；slots 缺省为该实例当前全部槽。"
+  def attachment_max_hp(state, target, slots \\ nil),
     do:
       state.properties.materials[target.material]["max_hp_per_macro"] *
-        Attachments.units(attachment_slots(state, target.incarnation), state.properties) /
+        Attachments.units(slots || attachment_slots(state, target.incarnation), state.properties) /
         (@micro * @micro * @micro * state.material_units_per_micro)
 
   @doc "两个目标是否为同一实占用身份（坐标、实例、归属、材质）。"

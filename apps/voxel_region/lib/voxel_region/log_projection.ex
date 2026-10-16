@@ -13,7 +13,7 @@ defmodule VoxelRegion.LogProjection do
   end
 
   @doc "从已提交事务派生区域序号索引；只存序号，不复制正文或形成世界真值。"
-  def index(index, %{entries: entries, coarse: coarse, seq: seq}) do
+  def index(index, %{entries: entries, coarse: coarse, seq: seq} = txn) do
     keys = Enum.flat_map(entries, fn
       %{payload: bytes} ->
         {:ok, h} = Codec.decode_payload_header(bytes)
@@ -21,7 +21,7 @@ defmodule VoxelRegion.LogProjection do
         for dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {h.level, {x+dx, y+dy, z+dz}}
       %{structure: _, level: level, cell: cell} -> region_keys([{level, cell}])
       %{coord: cell} -> region_keys([{0, cell}])
-    end) ++ region_keys(Enum.map(coarse, &{&1.level, &1.cell}))
+    end) ++ region_keys(Enum.map(coarse, &{&1.level, &1.cell})) ++ liquid_keys(txn)
 
     Enum.reduce(Enum.uniq(keys), index, fn key, acc ->
       Map.update(acc, key, :gb_trees.enter(seq, nil, :gb_trees.empty()),
@@ -130,8 +130,10 @@ defmodule VoxelRegion.LogProjection do
 
         _ ->
           false
-      end)
+      end) or
+        (level == 0 and Enum.any?(Map.keys(Map.get(txn, :liquid_units, %{})), &Payload.in_span?(Payload.local(region, &1))))
 
+    # 日志回放的液体数量增量没有线格式条目：触及的区域只能整区补发。
     if replacement do
       :region
     else
@@ -157,6 +159,8 @@ defmodule VoxelRegion.LogProjection do
       region
     )
   end
+
+  defp liquid_keys(txn), do: region_keys(Enum.map(Map.keys(Map.get(txn, :liquid_units, %{})), &{0, &1}))
 
   defp region_of({x, y, z}), do: {floor_div(x, 64), floor_div(y, 64), floor_div(z, 64)}
   defp floor_div(a, b), do: div(a - rem(rem(a, b) + b, b), b)

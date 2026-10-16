@@ -150,6 +150,10 @@ for {env, key} <- [
     value != nil,
     do: config(:voxel_region, key, value)
 
+# 只测试 GM 施工工具（VoxelRegion.World.Gm、SceneServer.Movement.Player.gm_teleport）：只有部署显式设
+# VOXIM_GM_TOOLS=1 才开启；分发配置不设，默认关闭。
+config :voxel_region, :gm_tools, System.get_env("VOXIM_GM_TOOLS") == "1"
+
 # 有限液体只在这个宏格盒内模拟（"x0,y0,z0,x1,y1,z1"）；不设即关闭液体。
 if bounds = System.get_env("VOXIM_LIQUID_BOUNDS") do
   [x0, y0, z0, x1, y1, z1] =

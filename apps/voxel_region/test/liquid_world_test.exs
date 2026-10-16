@@ -30,7 +30,8 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   setup context do
-    if context[:database], do: MmoTest.Database.start!()
+    # 数据库用例共享本 VM 的测试库，同一内容版本的日志按用例清空，各自从空世界开始。
+    if context[:database], do: (MmoTest.Database.start!(); DataService.Voxel.OverlayLogStore.reset())
     root=Path.join(System.tmp_dir!(),"b7_world_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     catalog=Path.join(root,"catalog.json")
@@ -120,6 +121,102 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert World.seq(w) == before + 1
     assert Enum.all?(World.entries_after(w, 0), &(not Map.has_key?(&1, :liquid_falls)))
     assert World.liquid_activity(w) == %{active_cells: 0, scheduled: false}
+  end
+
+  # 只测试：真实 World + DataService 日志表。沉降步的持久日志只记变化格（材料走 kind0 格条目、数量走 liquid_units 增量），
+  # 不再写整区后像；在线广播仍是后像。回放与压实后区域载荷（去掉 seq 戳）与在线逐字段相等。
+  defp region_images(w),do: Map.new([{0,0,0},{1,0,0}],fn r->{r,%{VoxelRegion.TestSupport.payload(w,0,r) | seq: 0}} end)
+  defp journal_rows(w),do: DataService.Voxel.OverlayLogStore.read_all(World.content_version(w)) |> Enum.group_by(& &1.seq)
+
+  @tag :empty_inventory
+  @tag :database
+  @tag head: div(@capacity,8)
+  test "settling steps journal only changed cells; replay and compact reproduce the live regions",c do
+    # 封闭计算域 {62..65}×{0}×{1..3} 的底层，跨 region 边界（x 63|64）；没有任何非液体提交，
+    # 区域从未以整区载荷入日志，回放必须自己把液体区域恢复为完整快照，压实才保得住数量。
+    supply=Path.join(c.root,"journal-source.json")
+    File.write!(supply,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,0,2],material: 21}]}))
+    assert {:ok,_}=World.liquid_experiment(c.w,supply)
+    first=World.seq(c.w)
+    for _<-1..6, do: tick(c.w)
+    live=World.entries_after(c.w,first)
+    assert length(live)==6
+    rows=journal_rows(c.w)
+    for txn<-live do
+      journal=rows[txn.seq]
+      changed=map_size(Enum.find(journal,&(&1.kind==3)) |> Map.fetch!(:payload) |> :erlang.binary_to_term() |> Map.fetch!(:liquid_units))
+      bytes=Enum.sum(Enum.map(journal,&byte_size(&1.payload)))
+      # 旧日志：在线后像整区入表（kind 1）。新日志：无区域行，体积 ≤ 512 B 定额 + 每变化格 128 B
+      # （kind0 格条目 24 B、数量与活跃集合各十余字节）+ 每个粗格行 128 B；粗格只随材料变化格出现，每格至多 L1–L5 五层。
+      assert Enum.any?(txn.entries,&Map.has_key?(&1,:payload))
+      refute Enum.any?(journal,&(&1.kind==1))
+      {cells,coarse}={Enum.count(journal,&(&1.kind==0)),Enum.count(journal,&(&1.kind==2))}
+      assert changed > 0 and cells <= changed and coarse <= 5*cells
+      assert bytes <= 512+128*changed+128*coarse
+    end
+    saved={quantities(c.w),region_images(c.w)}
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert {quantities(w),region_images(w)}==saved
+    # 回放后直接压实（期间没有在线后像重新标记快照），再冷启动。
+    assert :ok=World.compact(w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert {quantities(w),region_images(w)}==saved
+    for _<-1..3, do: tick(w)
+    saved={quantities(w),region_images(w)}
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert {quantities(w),region_images(w)}==saved
+    assert Enum.sum(Map.values(quantities(w)))==@capacity
+  end
+
+  # 只测试作者注水：真实 World 洪泛、扣量、防重、拒绝与冷恢复。槽 = 墙围出的 x 63..64、z 2、y 1..2 四格，
+  # y 3 是计算域顶层（12 格、无墙）。库存：setup 舀回 1 m³，再经 material_supply 记 2 m³，共 3 m³。
+  defp basin(c) do
+    walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
+    assert {:ok,_}=World.apply_edits(c.w,walls)
+    assert {:ok,_}=World.material_supply(c.w,1001,"fill-test",%{21=>2*@capacity})
+  end
+
+  test "liquid_fill floods open cells up to the level, charges the actual amount once and survives replay",c do
+    basin(c)
+    assert balance(c.w)==3*@capacity
+    seq=World.seq(c.w)
+    # y ≤ 1：只有槽底两格；墙与 y 2 不进。
+    assert {:ok,%{seq: s1,units: units,cells: 2,material: 21}=receipt}=World.liquid_fill(c.w,1001,"k1",21,{63,1,2},1)
+    assert s1==seq+1 and units==2*@capacity
+    assert quantities(c.w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
+    assert balance(c.w)==@capacity and total(c.w)==3*@capacity
+    # 同 key 不重复执行：原回执、无新事务。
+    assert {:ok,^receipt}=World.liquid_fill(c.w,1001,"k1",21,{63,1,2},1)
+    assert World.seq(c.w)==s1 and balance(c.w)==@capacity
+    # y ≤ 2：已满的槽底不再计量，y 2 两格需 2 m³ > 余 1 m³，整笔拒绝，世界与余额不动。
+    assert {:error,:insufficient_material}=World.liquid_fill(c.w,1001,"k2",21,{63,2,2},2)
+    # y ≤ 3：向上进入无墙顶层，4 + 12 = 16 格 > 上限 10，拒绝。
+    assert {:error,:liquid_fill_too_large}=World.liquid_fill(c.w,1001,"k3",21,{63,1,2},3,max_cells: 10)
+    assert {:error,:occupied}=World.liquid_fill(c.w,1001,"k4",21,{62,1,2},1)
+    assert {:error,:invalid_liquid_fill}=World.liquid_fill(c.w,1001,"k5",21,{63,2,2},1)
+    assert World.seq(c.w)==s1 and balance(c.w)==@capacity
+    assert quantities(c.w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
+    for _<-1..3, do: tick(c.w)
+    assert quantities(c.w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert quantities(w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
+    assert balance(w)==@capacity
+    assert {:ok,^receipt}=World.liquid_fill(w,1001,"k1",21,{63,1,2},1)
+    assert World.seq(w)==s1
+  end
+
+  test "liquid_fill stops at a protected-region holder boundary and rejects a seed the actor may not build in",c do
+    basin(c)
+    assert {:ok,_}=World.author_regions(c.w,[%{holder: {:character,2002},min: {64,2},max: {64,2}}])
+    assert {:ok,%{units: @capacity,cells: 1}}=World.liquid_fill(c.w,1001,"p1",21,{63,1,2},1)
+    assert quantities(c.w)==%{{63,1,2}=>@capacity}
+    assert {:error,:protected_region}=World.liquid_fill(c.w,1001,"p2",21,{64,1,2},1)
+    assert quantities(c.w)==%{{63,1,2}=>@capacity}
+    assert balance(c.w)==2*@capacity
   end
 
   @tag :empty_inventory

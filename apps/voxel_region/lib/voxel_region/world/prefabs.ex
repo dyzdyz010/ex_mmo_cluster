@@ -79,17 +79,14 @@ defmodule VoxelRegion.World.Prefabs do
           Map.get(s.refined, cell, %{})
           |> Map.reject(fn {_, {_, owner}} -> MapSet.member?(ids, owner) end)
 
-        refined =
-          if map_size(slots) == 0,
-            do: Map.delete(s.refined, cell),
-            else: Map.put(s.refined, cell, slots)
+        s = put_refined(s, cell, slots)
 
-        Edits.put_overlay(%{s | refined: refined, macro_owners: Map.delete(s.macro_owners,cell),
+        Edits.put_overlay(%{s | macro_owners: Map.delete(s.macro_owners,cell),
           placed_by: Map.delete(s.placed_by,cell), liquid_units: Map.delete(s.liquid_units,cell)},
           0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})
       end)
 
-    live = Payloads.live_instance_ids(next.refined,next.instances,next.macro_owners) |> MapSet.new()
+    live = Payloads.live_instance_ids(next) |> MapSet.new()
     dead = MapSet.difference(ids,live)
     owned =
       Map.filter(next.attachment_owners, fn {_, {owner, _}} -> MapSet.member?(dead, owner) end)
@@ -149,9 +146,10 @@ defmodule VoxelRegion.World.Prefabs do
     end
   end
 
-  def prefab_settle(before, state, cells, nil), do: prefab_reply(before, state, cells)
+  def prefab_settle(before, state, cells, actor, settlement \\ %{})
+  def prefab_settle(before, state, cells, nil, settlement), do: prefab_reply(before, state, cells, settlement)
 
-  def prefab_settle(before, state, cells, actor) do
+  def prefab_settle(before, state, cells, actor, _settlement) do
     case prefab_reach(state, actor, cells) do
       :ok -> prefab_reply(before, state, cells, %{prefab_actor: actor})
       {:error, reason} -> {:reply, {:error, reason}, before}
@@ -378,15 +376,17 @@ defmodule VoxelRegion.World.Prefabs do
          parent,
          slot,
          changed,
-         actor \\ nil
+         actor \\ nil,
+         settlement \\ %{}
        ) do
+    # settlement 只给无玩家的作者／GM 放置随带事务元数据（如 GM 审计回执）；玩家放置的结算在 prefab_payment。
     case prefab_alignment(definition, anchor) do
-      :ok -> place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor)
+      :ok -> place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor,settlement)
       {:error,reason} -> {:reply,{:error,reason},before}
     end
   end
 
-  def place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor) do
+  def place_aligned_tree(before,state,definition,anchor,orientation,parent,slot,changed,actor,settlement) do
     nodes = Prefab.occurrences(definition, anchor, orientation, before.seq + 1, parent, slot)
     macro_nodes = Prefab.macro_occurrences(definition, anchor, orientation, before.seq + 1, parent, slot)
     macro_additions = for {owner,_,cells} <- macro_nodes, {cell,m} <- cells, into: %{}, do: {cell,{m,owner}}
@@ -428,7 +428,7 @@ defmodule VoxelRegion.World.Prefabs do
               if Enum.any?(added, fn {slot, _} -> Map.has_key?(slots, slot) end) do
                 {:halt, {:error, :occupied}}
               else
-                s = %{s | refined: Map.put(s.refined, cell, Map.merge(slots, added))}
+                s = put_refined(s, cell, Map.merge(slots, added))
                 {:cont, {:ok, Edits.put_overlay(s, 0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})}}
               end
 
@@ -473,7 +473,8 @@ defmodule VoxelRegion.World.Prefabs do
             before,
             next,
             Enum.uniq(Map.keys(additions) ++ Map.keys(macro_additions) ++ changed ++ Attachments.macros(slots)),
-            actor
+            actor,
+            settlement
           )
         end
 
@@ -490,7 +491,7 @@ defmodule VoxelRegion.World.Prefabs do
     state = %{
       state
       | seq: before.seq + 1,
-        instances: Map.take(state.instances, Payloads.live_instance_ids(state.refined, state.instances, state.macro_owners))
+        instances: Map.take(state.instances, Payloads.live_instance_ids(state))
     }
 
     macro_changes = Enum.filter(cells, fn cell ->
@@ -532,7 +533,7 @@ defmodule VoxelRegion.World.Prefabs do
       {:ok, coarse, state, _} = Edits.reduce_batch(state, AttachmentOps.attachment_dirty(state, cells), 1, [], 0)
       {coarse_txn, state} = Log.select_transaction(state, coarse)
       macro_dirty = Enum.map(macro_changes,&{0,&1})
-      state = Edits.refresh_macro_payloads(before,state,macro_dirty)
+      # 宏格所在区域全都随本笔重编 L0 后像（l0_keys ⊇ 这些格的区域），后像直接在提交前缓存上改格，不先刷一遍地形缓存。
       terrain_payloads = Map.merge(before.payloads,state.payloads)
       {state, structure_keys, structure_cells} = Payloads.refresh_structure(state, cells)
       structure_done = System.monotonic_time(:microsecond)

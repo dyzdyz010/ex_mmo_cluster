@@ -110,7 +110,7 @@ defmodule VoxelRegion.World.Edits do
         else:
           Prefabs.clear_subtree(state, removed_owners, removed_cells)
           |> then(fn s ->
-            %{s | instances: Map.take(s.instances, Payloads.live_instance_ids(s.refined, s.instances, s.macro_owners))}
+            %{s | instances: Map.take(s.instances, Payloads.live_instance_ids(s))}
           end)
 
     # 地面花草失去支撑即消失：下方格变成不挡移动的材质（挖空、液体、花草）时，同一事务里清掉上面的花草。
@@ -204,7 +204,7 @@ defmodule VoxelRegion.World.Edits do
         end
 
       {geometry_changed, state} ->
-        state = %{state | instances: Map.take(state.instances,Payloads.live_instance_ids(state.refined,state.instances,state.macro_owners))}
+        state = %{state | instances: Map.take(state.instances, Payloads.live_instance_ids(state))}
         # 换了材料却没有随笔数量的格（挖掉、热毁、作者覆盖）不再是那份有限量：删除其数量记录（R8-07）。
         stale = for {0, cell} <- geometry_changed, not Map.has_key?(liquid_changes, cell),
           Map.has_key?(state.liquid_units, cell), do: cell
@@ -233,8 +233,15 @@ defmodule VoxelRegion.World.Edits do
             {state, attachment_keys, settlement} =
               AttachmentOps.prune_attachments(before, state, Enum.map(geometry_changed, &elem(&1, 1)), settlement)
 
+            afterimage_keys =
+              Enum.uniq(
+                attachment_keys ++
+                  Payloads.region_keys(Enum.map(removed_cells, &{0, &1})) ++ Payloads.region_keys(liquid_dirty)
+              )
+
             state = %{state | seq: state.seq + 1}
-            state = refresh_macro_payloads(before, state, geometry_changed)
+            # 要整区重编后像的区域由后像在提交前缓存上改格，这里只刷其余区域的地形缓存。
+            state = refresh_macro_payloads(before, state, geometry_changed, MapSet.new(afterimage_keys))
             cached = System.monotonic_time(:microsecond)
             terrain_payloads = Map.merge(before.payloads, state.payloads)
 
@@ -242,12 +249,6 @@ defmodule VoxelRegion.World.Edits do
               Payloads.refresh_structure(
                 state,
                 Enum.uniq(Enum.map(geometry_changed, &elem(&1, 1)) ++ Attachments.macros(removed_slots))
-              )
-
-            afterimage_keys =
-              Enum.uniq(
-                attachment_keys ++
-                  Payloads.region_keys(Enum.map(removed_cells, &{0, &1})) ++ Payloads.region_keys(liquid_dirty)
               )
 
             structured = System.monotonic_time(:microsecond)
@@ -276,14 +277,14 @@ defmodule VoxelRegion.World.Edits do
                 Log.select_transaction(state, sparse)
               end
 
-            {txn, state} =
+            {txn, state, afterimages} =
               if legacy do
-                {txn, state}
+                {txn, state, []}
               else
                 {afterimages, state} =
                   Payloads.region_afterimages(state, afterimage_keys, terrain_payloads, all)
 
-                {%{txn | entries: txn.entries ++ afterimages ++ Payloads.structure_entries(state, structure_cells)}, state}
+                {%{txn | entries: txn.entries ++ afterimages ++ Payloads.structure_entries(state, structure_cells)}, state, afterimages}
               end
 
             # 随笔搬运值覆盖的有限宏格：其热与燃料已随数量搬走或结算，清空时不再记为移除。
@@ -295,7 +296,12 @@ defmodule VoxelRegion.World.Edits do
 
             {state, phase_rows} = Phases.put_phase_values(state, phase_values)
             metadata = Map.update!(metadata, :property_states, &(&1 ++ phase_rows))
-            if_phase_dirty = Map.keys(phase_values) |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)])
+              # 通量中转格可净数量不变：温度/焓由原生域 reload，同材质同数量不改变接触几何。
+              # 首次相态记录也须失效（未记录的非环境平衡相态可能原本不在热节点域内）。
+              phase_dirty = for {cell, _} <- phase_values,
+                Map.get(before.liquid_units, cell) != Map.get(state.liquid_units, cell), do: cell
+              fresh_phase = for row <- phase_rows, not Map.has_key?(before.damage, Damage.key(row)), do: Damage.macro(row)
+              if_phase_dirty = (phase_dirty ++ fresh_phase) |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)])
             state = Thermal.drop_geometry(state, if_phase_dirty)
             metadata = if state.thermal, do: Map.put(metadata,:thermal,state.thermal), else: metadata
             imaged = System.monotonic_time(:microsecond)
@@ -321,7 +327,7 @@ defmodule VoxelRegion.World.Edits do
                      {:ok,{m,_},_}=cell_value(state,0,c); MmoContracts.VoxelMaterialCatalog.blocks_movement?(m)
                    end))),
                  collided = System.monotonic_time(:microsecond),
-                 :ok <- Log.append_log(state, txn) do
+                 :ok <- append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells) do
               appended = System.monotonic_time(:microsecond)
               state = Log.remember_entry(state, txn)
               Observation.fanout(state, txn)
@@ -351,12 +357,30 @@ defmodule VoxelRegion.World.Edits do
     end
   end
 
+  # 持久日志的表示：区域后像只因液体数量变化而产生（无附件、实例、细化、移除）时，日志改记变化格——
+  # 材料用既有 0x77 kind0 格条目，数量用 `liquid_units` 增量（0 = 删除），回放标记同一批区域为完整快照。
+  # 日志体积随变化格数增长，不随区域大小；在线广播、订阅与 Replica 仍消费含后像的原事务。
+  defp append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells) do
+    if afterimages != [] and attachment_keys == [] and removed_cells == [] and state.instances == before.instances and
+         state.attachment_owners == before.attachment_owners and state.refined == before.refined do
+      covered = MapSet.new(Payloads.region_keys(liquid_dirty))
+      cells =
+        for {0, cell} <- Enum.sort(all), MapSet.member?(covered, {0, region_of(cell)}),
+          do: %{seq: state.seq, coord: cell, material: elem(Map.fetch!(state.overlay, {0, cell}), 0), coarse: []}
+      units = Map.new(liquid_dirty, fn {0, cell} -> {cell, Map.get(state.liquid_units, cell, 0)} end)
+      Log.append_journal(state, %{Log.liquid_journal(state, txn) | entries: (txn.entries -- afterimages) ++ cells}
+        |> Map.put(:liquid_units, units))
+    else
+      Log.append_log(state, txn)
+    end
+  end
+
   def needs_source?(state, key),
     do: not Map.has_key?(state.region_bases, key) and not Map.has_key?(state.decoded, key)
 
   # 宏格编辑已排除refined cell，故L0细节后缀未变；仅更新已有热缓存，冷缺失仍由真值物化。
-  def refresh_macro_payloads(before, state, changed) do
-    Enum.reduce(Enum.uniq(Payloads.region_keys(changed)), state, fn {0, region} = key, s ->
+  def refresh_macro_payloads(before, state, changed, skip) do
+    Enum.reduce(Enum.uniq(Payloads.region_keys(changed)) |> Enum.reject(&MapSet.member?(skip, &1)), state, fn {0, region} = key, s ->
       case Map.fetch(before.payloads, key) do
         {:ok, {prior, _}} ->
           materials =

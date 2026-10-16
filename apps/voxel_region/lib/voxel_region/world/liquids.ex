@@ -32,6 +32,7 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
   def liquid_inside?({x,y,z}, {{lx,ly,lz},{hx,hy,hz}}), do: x>=lx and x<hx and y>=ly and y<hy and z>=lz and z<hz
+  defp in_box?(cell, lo, hi), do: liquid_inside?(cell, {lo, hi})
 
   def enable_liquid(before, state) do
     if not liquid_enabled?(before) and liquid_enabled?(state) do
@@ -57,15 +58,16 @@ defmodule VoxelRegion.World.Liquids do
     {ax,ay,az}=lo
     {bx,by,bz}=hi
     if ax<bx and ay<by and az<bz do
-      with {:ok,bytes,_,state} <- Payloads.payload_bytes(state,0,region),
-           {:ok,payload} <- Payload.decode(bytes) do
-        cells=if :binary.match(payload.cells,[<<21,0>>,<<22,0>>]) == :nomatch do
-          []
-        else
-          for x<-ax..(bx-1),y<-ay..(by-1),z<-az..(bz-1),
-            not Map.has_key?(state.liquid_units,{x,y,z}),
-            Phase.liquid?(Payload.material(payload,Payload.local(region,{x,y,z}))),do: {x,y,z}
-        end
+      with {:ok,bytes,_,loaded} <- Payloads.payload_bytes(state,0,region),
+           # 同一份载荷字节含本区跨度内的格与数量记录：核对过没有待接纳的液体格，字节不变就不必再解压核对。
+           {:unchecked,_} <- if(Map.get(loaded.liquid_adopted,region) == bytes, do: {:checked,loaded}, else: {:unchecked,loaded}),
+           {:ok,materials} <- Payload.decode_cells(bytes) do
+        state = loaded
+        # 液体材料只有 21／22（Phase.liquid?/1）；材料 id 是 u16 小端，只取偶数偏移处的匹配，按 x、y、z 字典序。
+        cells=for({at,_} <- :binary.matches(materials,[<<21,0>>,<<22,0>>]), rem(at,2) == 0,
+          index = div(at,2), cell = {ox+rem(index,extent),oy+rem(div(index,extent),extent),oz+div(index,extent*extent)},
+          in_box?(cell,lo,hi), not Map.has_key?(state.liquid_units,cell), do: cell) |> Enum.sort()
+        state = if cells == [], do: %{state | liquid_adopted: Map.put(state.liquid_adopted,region,bytes)}, else: state
         Enum.reduce([21,22],state,fn material,s ->
           {_open,water,s}=liquid_cells(s,cells,material)
           if map_size(water)==0 do
@@ -76,6 +78,7 @@ defmodule VoxelRegion.World.Liquids do
           end
         end)
       else
+        {:checked,loaded} -> loaded
         # 保留实际请求入口的 missing/canonical_incomplete 错误，不把缺失源当空气。
         {:error,_,state} -> state
         {:error,_} -> state
@@ -156,6 +159,97 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
 
+  # 只测试作者注水（`World.liquid_fill/7`）：洪泛、扣量、相态库存与数量同一笔提交，回执与 material_supply 共用防重表。
+  def liquid_fill_commit(before,cid,key,material,seed,level_y,max_cells) do
+    receipt_key={cid,{:liquid_fill,key}}
+    with true <- (is_integer(cid) and cid > 0 and is_binary(key) and byte_size(key) > 0) || {:error,:invalid_liquid_fill},
+         {:ok,moved,state} <- fill_plan(before,material,seed,level_y,max_cells,cid),
+         units = Enum.sum(Enum.map(moved,&elem(&1,1))),
+         balance = Production.balance_state(state,cid,material).balance,
+         true <- balance >= units || {:error,:insufficient_material} do
+      # 逐格沿正式倾倒的相态搬运（库存焓按实际量分给每格），最后一次结算余额。
+      {state,values,inventory,_}=Enum.reduce(moved,{state,%{},%{},balance},fn {cell,n},{s,values,inventory,left} ->
+        {s,carried,held,_}=Phases.transfer_phase_inventory(s,cid,cell,material,3,n,left)
+        {s,Map.merge(values,carried),Map.merge(inventory,held),left-n}
+      end)
+      {state,settlement}=Production.settle_material(state,cid,material,-units)
+      receipt=%{seq: state.seq+1,material: material,units: units,cells: length(moved)}
+      fill_commit(state,moved,receipt_key,receipt,Map.merge(settlement,%{phase_values: values,phase_inventory: inventory}))
+    else
+      {:error,_}=error -> error
+    end
+  end
+
+  # 只测试 GM 灌满（`World.Gm`）：同一洪泛与液体提交，不扣库存、不受保护区域限制；注入量按作者供给记相态焓
+  # （液相温度取 max(环境, 转变点)，计入 phase_authored 账），与 material_supply 同一口径。
+  def gm_liquid_fill(before,material,seed,level_y,max_cells,receipt_key,receipt) do
+    with {:ok,moved,state} <- fill_plan(before,material,seed,level_y,max_cells,nil) do
+      units=Enum.sum(Enum.map(moved,&elem(&1,1)))
+      {state,values}=if phase_material?(state,material) do
+        m=state.properties.materials[material]
+        energy=Phase.energy(%{material: material},units/liquid_capacity(state),m,max(Phases.phase_ambient(state),m["phase_transition_kelvin"]))
+        {values,state}=Phases.phase_values(state,Enum.map(moved,&elem(&1,0)))
+        {values,_}=Enum.reduce(moved,{values,{{energy,units*1.0},units}},fn {cell,n},{values,{carried,left}} ->
+          {e,i,b,f}=Map.fetch!(values,cell)
+          {{e,i},carried}=Phase.transfer({e,i},carried,left,n,:pour)
+          {Map.put(values,cell,{e,i,b,f}),{carried,left-n}}
+        end)
+        thermal=state.thermal |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
+          |> Map.update(:phase_authored_units,units,&(&1+units))
+        {%{state | thermal: thermal},Map.take(values,Enum.map(moved,&elem(&1,0)))}
+      else
+        {state,%{}}
+      end
+      fill_commit(state,moved,receipt_key,Map.merge(receipt,%{units: units,cells: length(moved)}),%{phase_values: values})
+    end
+  end
+
+  # 洪泛并算出每格还差多少；cid 非 nil 时洪泛不跨受保护持有者、且须可在其中建造。
+  defp fill_plan(before,material,{_,sy,_}=seed,level_y,max_cells,cid) do
+    capacity=liquid_capacity(before)
+    with true <- (liquid_enabled?(before) and Phase.liquid?(material) and material in before.production_materials and
+             is_integer(level_y) and sy <= level_y and liquid_inside?(seed,before.liquid_bounds)) || {:error,:invalid_liquid_fill},
+         {:ok,cells,state} <- flood(before,material,seed,level_y,max_cells,cid != nil),
+         true <- cid == nil or Protection.permitted?(state.protection,{:character,cid},cells) || {:error,:protected_region},
+         {_open,water,state} = liquid_cells(state,cells,material),
+         moved = for(cell <- cells, q = Map.get(water,cell,0), q < capacity, do: {cell,capacity-q}),
+         true <- moved != [] || {:error,:no_liquid_transfer} do
+      {:ok,moved,state}
+    end
+  end
+
+  defp fill_commit(state,moved,receipt_key,receipt,settlement) do
+    material=receipt.material
+    state=%{state | material_supplies: Map.put(state.material_supplies,receipt_key,receipt)}
+    settlement=Map.merge(settlement,%{liquid_material: material,material_supplies: %{receipt_key => receipt}})
+    with {:ok,next} <- commit_liquid(state,Map.new(moved,fn {cell,_}->{cell,liquid_capacity(state)} end),settlement) do
+      true=next.seq==receipt.seq
+      {:ok,receipt,next}
+    end
+  end
+
+  # 六邻洪泛：只走该液体可进入的开放格（liquid_cells 的 open?），y ≤ level_y、计算域内、不跨受保护区域持有者。
+  defp flood(state,material,seed,level_y,max_cells,protected?) do
+    {open,_,state}=liquid_cells(state,[seed],material)
+    if Map.fetch!(open,seed),
+      do: flood(state,material,[seed],MapSet.new([seed]),MapSet.new([seed]),level_y,max_cells,protected?),
+      else: {:error,:occupied}
+  end
+
+  defp flood(state,_material,[],_seen,cells,_level_y,_max_cells,_protected?),do: {:ok,Enum.sort(cells),state}
+  defp flood(state,material,frontier,seen,cells,level_y,max_cells,protected?) do
+    candidates=for {x,y,z}=from <- frontier,
+      to <- [{x-1,y,z},{x+1,y,z},{x,y-1,z},{x,y+1,z},{x,y,z-1},{x,y,z+1}],
+      elem(to,1) <= level_y, liquid_inside?(to,state.liquid_bounds), not MapSet.member?(seen,to),
+      not protected? or Protection.same_holder?(state.protection,from,to), uniq: true, do: to
+    {open,_,state}=liquid_cells(state,candidates,material)
+    reached=Enum.filter(candidates,&Map.fetch!(open,&1))
+    cells=MapSet.union(cells,MapSet.new(reached))
+    if MapSet.size(cells) > max_cells,
+      do: {:error,:liquid_fill_too_large},
+      else: flood(state,material,reached,MapSet.union(seen,MapSet.new(candidates)),cells,level_y,max_cells,protected?)
+  end
+
   def liquid_sight(state,eye,coord) do
     delta=Enum.zip_with(Tuple.to_list(coord),Tuple.to_list(eye),&(&1+0.5-&2))
     distance=:math.sqrt(Enum.sum(Enum.map(delta,&(&1*&1))))
@@ -227,7 +321,8 @@ defmodule VoxelRegion.World.Liquids do
   end
 
   # 多材料调度：活跃集合周边出现的每种流动材料（液体、带数量记录的散体）各跑一次同一个数量内核，
-  # 侧向阈值按材料取（液体用液体参数，散体用目录 loose_threshold_units，决定静止休止角 atan(t / 容量)）。
+  # 侧向阈值按材料取：散体用目录 loose_threshold_units 作休止角（atan(t / 容量)）；液体的 side_threshold_units
+  # 只作润湿门槛（流向干格须超出它），湿格之间按静水平衡摊平（`Liquid` 模块说明）。
   def advance_liquid(state, active) do
     # Two stages need the downward cell and the horizontal neighbors of both levels.
     cells=for {x,y,z} <- active, dy <- [0,-1],
@@ -247,8 +342,8 @@ defmodule VoxelRegion.World.Liquids do
   def advance_liquid(state,material,active,cells) do
     {open,water,state}=liquid_cells(state,cells,material)
     config=state.properties.liquid
-    threshold=if Phase.liquid?(material),do: Map.get(config,"side_threshold_units",0),
-      else: state.properties.materials[material]["loose_threshold_units"]
+    threshold=if Phase.liquid?(material),do: {:wetting,Map.get(config,"side_threshold_units",0)},
+      else: {:repose,state.properties.materials[material]["loose_threshold_units"]}
     # 下落留在同一列（同一持有者）；侧流不跨受保护区域边界。
     connected = if not Protection.empty?(state.protection),
       do: fn a, b -> Protection.same_holder?(state.protection, a, b) end

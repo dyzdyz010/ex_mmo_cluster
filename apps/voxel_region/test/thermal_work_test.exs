@@ -99,7 +99,7 @@ defmodule VoxelRegion.ThermalWorkTest do
     IO.puts("THERMAL_HOT_COST rows=#{map_size(damage)} hot=#{map_size(hot)} touched=#{length(keys)} full_us=#{full} incremental_us=#{incremental}")
   end
 
-  test "空气扩域和收缩保留接触图，收缩丢弃离域几何" do
+  test "空气扩域和收缩保留接触图，收缩只移出计算域而保留未变几何" do
     work = warm()
     expanded = %{work | hot: MapSet.new([{0, 0, 0}, {0, 0, 2}])}
     plan = ThermalWork.plan(expanded, %{}, %{}, %{})
@@ -112,7 +112,8 @@ defmodule VoxelRegion.ThermalWorkTest do
     cooled = %{next | hot: work.hot}
     plan = ThermalWork.plan(cooled, %{}, %{}, %{})
     {next, false} = ThermalWork.refresh(cooled, plan, plan.geometry, %{})
-    assert next.geometry == work.geometry
+    assert next.cells == work.cells
+    assert Map.take(next.geometry, MapSet.to_list(next.cells)) == work.geometry
     assert next.ordered == work.ordered
   end
 

@@ -1,5 +1,16 @@
 # Movement module map
 
+2026-10-16 圆明园坡道换窗尖峰（Global system）：旧 `floor(position / 64)` 中心在 Y=512 两侧反复切换，
+真实 W 输入回放触发 66732 行 complete 属性批，客户端单帧 46–65 ms。依据
+[Box2D 2.4 fat AABB](https://box2d.org/doc_version_2_4/classb2_dynamic_tree.html) 的“在扩展边界内移动不重建”策略，
+`CollisionStream.box/3` 在当前中心 tile 外扩 1/4 tile 内保留原窗口；首次登录与复活仍用 `box/2` 直接居中。
+只改变请求时机，不增大订阅体积、不改权威真值、协议、旧快照退休或碰撞行程盒。
+当前流送 radius>=1：最晚触发点距窗口外界至少 3/4 tile（48 m），距已有行程安全边界至少 1/2 tile（32 m）；
+慢准备时仍由既有碰撞行程限制阻止越界，不能以此承诺任意延迟下不停步。
+代价是普通换区预取比旧版晚最多 16 m；换取分区边界附近的局部往返不再请求完整窗口。
+验证：`voxel_region` 的 `collision_stream_box_test.exs` 手算正负 XYZ、两侧阈值和远距重定位，
+再在真实客户端重复坡道入亭并检查完整属性批数量；此测试不覆盖网络丢包或跨 Scene 移交。
+
 2026-09-19 工程整改：Scene 的默认消息出口改用 `MmoContracts.Session.Outbound`。
 此前引用无 Mix 依赖的 `GateServer.Session.Sink`，使复制测试只能依靠 umbrella 的额外代码路径运行。
 依据 OTP 进程消息契约，原 `mmo_reliable/mmo_datagram/mmo_close` 元组和身份语义保持原样；

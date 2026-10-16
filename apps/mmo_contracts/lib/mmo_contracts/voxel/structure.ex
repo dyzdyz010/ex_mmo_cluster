@@ -9,8 +9,6 @@ defmodule MmoContracts.Voxel.Structure do
   def resolution, do: @resolution
   @doc "结构实体标记。"
   def flag, do: @flag
-  @doc "最大后缀容量来自 region 格数和每格完整网格。"
-  def max_bytes, do: 8 + 66 * 66 * 66 * (8 + @samples * 14)
   @doc "排序写出派生后缀；只接受已构造的合法结构网格。"
   def encode(grids),
     do:

@@ -4,6 +4,11 @@
 工作台在 `L_GameplayDemo` 的摆放、回放脚本与独立旧 Demo 部署为只测试。依据 [D1](2026-09-22-prefab-designer-d1.md)。
 2026-09-23 用户选定形态：**独立编辑空间**（不是框选捕获），玩家与 NPC 共用同一发布与校验内核。
 
+2026-10-13 当前容量：运行时发布允许展开后 **1,048,576 个整块**，水平无跨度限制，高度跨度至多 64 m；小块仍为 8192。
+字节预算从同一数量预算派生，VXPD v3 格式不变。依据、客户端预检与本次验证见
+[`Voxim/Docs/Prefab/Editor-UX.md §14`](../../../../Voxim/Docs/Prefab/Editor-UX.md#14-大型建筑容量2026-10-13)。
+下文 16 m 盒、512 格及旧测试数字保留为历史阶段记录，不代表当前限制。
+
 ## 边界
 
 - **草稿在客户端**：D1 的草稿本身就是一份纯定义，服务端不保留编辑进程；编辑逐格发生在客户端，只有发布跨越信任边界。
@@ -402,6 +407,8 @@ Demo HUD 操作指南一行、smoke 与判定器为只测试。服务端未改�
 升级时 `isolated-server/entry.exs` 的协议守卫从 16 改为 17，首次启动失败记录在 `upgrade.py` 输出。
 
 ## 命令
+
+2026-10-13 高度增量（Global system）：按用户指定的最高已建成建筑、[CTBUH 哈利法塔资料](https://www.skyscrapercenter.com/building/id/3)将运行时蓝图高度跨度改为 **828 m（6624 micro）**，客户端工作台同步。复用 `Prefab.limits`、完整展开包围盒和既有 preview／compile 检查，VXPD 格式不变。此前 64 m 是历史值；当前契约、Test-only 场景与验证证据统一见 [Voxim Editor-UX §15](../../../../Voxim/Docs/Prefab/Editor-UX.md#15-最高建筑高度2026-10-13)。
 
 ```powershell
 # Voxim

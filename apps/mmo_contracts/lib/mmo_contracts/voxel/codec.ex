@@ -782,7 +782,16 @@ defmodule MmoContracts.Voxel.Codec do
   @doc "头 + zlib body → 完整载荷字节。"
   def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4)
       when is_binary(raw_body) do
+    # 写端与解码同界：超出 Payload.max_body_bytes/1 的 body 写出后读不回，显式拒绝。
+    if byte_size(raw_body) > MmoContracts.Voxel.Payload.max_body_bytes(version),
+      do:
+        raise(
+          ArgumentError,
+          "VXR#{version} raw body #{byte_size(raw_body)} B exceeds format capacity"
+        )
+
     body = :zlib.compress(raw_body)
+    # 与 compressed_prefix_bytes/1 同一 zlib 流（OTP :zlib.compress/1 = deflateInit(:default) 后一次 :finish）。
 
     magic =
       case version do
@@ -803,6 +812,23 @@ defmodule MmoContracts.Voxel.Codec do
       byte_size(body)::32-little, body::binary>>
   end
 
+  @doc """
+  encode_payload/6 的 body 若以这段 iodata 开头，其压缩流至少有多少字节：同参数 zlib 流在 Z_NO_FLUSH 下已输出的字节。
+
+  deflate 的输出只追加不回改，且与输入分段方式无关（zlib 手册 deflate()：Z_NO_FLUSH 由库自行决定何时输出；
+  输出只取决于数据、参数与 flush 序列），所以返回值是完整 body 压缩字节数的下界。
+  """
+  def compressed_prefix_bytes(prefix) do
+    z = :zlib.open()
+
+    try do
+      :ok = :zlib.deflateInit(z, :default)
+      IO.iodata_length(:zlib.deflate(z, prefix, :none))
+    after
+      :zlib.close(z)
+    end
+  end
+
   @doc "解压 body（校验 hash）。"
   def decode_payload_body(bytes) do
     with {:ok, header, raw} <- unpack_payload_body(bytes),
@@ -818,9 +844,7 @@ defmodule MmoContracts.Voxel.Codec do
     with {:ok, header} <- decode_payload_header(bytes),
          true <-
            header.encoding in [0, 1] and
-             header.raw_bytes <=
-               MmoContracts.Voxel.Payload.max_body_bytes() +
-                 if(header.version == 6, do: MmoContracts.Voxel.Structure.max_bytes(), else: 0),
+             header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(header.version),
          <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes do

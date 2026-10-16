@@ -6,7 +6,8 @@ defmodule VoxelRegion.OverlayLog do
   `VoxelRegion.OverlayLog.File`（`<world_dir>/overlay.log` ETF 帧）只给不起数据库的测试用。
 
   表里一行 = 一个条目：kind 0 `cell`（0x77 kind0 线格式）、1 `region`（完整 VXR4）、2 `coarse`（粗格线格式），
-  kind 3 为属性/余额元数据，kind 4 为结构格 afterimage（0x77 kind2）。
+  kind 3 为属性/余额元数据，kind 4 为结构格 afterimage（0x77 kind2）。纯液体数量提交不写区域行，
+  改记 kind 0 变化格与元数据里的 `liquid_units` 增量（`World.Edits` 日志表示，`World.Log.replay_liquid/2` 回放）。
   `ordinal` 保持事务内顺序；旧的单格入口 `apply_edit` 产出的裸条目 `%{seq, coord, material, coarse}` 入表时归一成事务。
   `checkpoint(handle, txn)` 原子替换截至 `txn.seq` 的前缀，保留更晚事务；World 单一写入方串行调用 append/checkpoint。
   """
@@ -62,7 +63,7 @@ defmodule VoxelRegion.OverlayLog do
         %{seq: seq, kind: 2, level: c.level, region: region_of(c.cell), payload: IO.iodata_to_binary(Codec.encode_coarse(c))}
       end)
 
-    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:caster_energy,:material_supplies,:craft_ledger,:food_ledger,:food_receipts,:placed_by,:macro_owners,:protection,:prefab_instances,:phase_inventory,:thermal,:attachment_serial,:attachment_owners,:material_units_per_micro,:liquid_active,:interaction,:interaction_history,:interaction_floor])
+    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:caster_energy,:material_supplies,:craft_ledger,:food_ledger,:food_receipts,:placed_by,:macro_owners,:protection,:prefab_instances,:phase_inventory,:thermal,:attachment_serial,:attachment_owners,:material_units_per_micro,:liquid_active,:liquid_units,:interaction,:interaction_history,:interaction_floor])
     state_rows = if map_size(metadata)>0, do: [%{seq: seq,kind: 3,level: 0,region: {0,0,0},
       # ETF 自带压缩标记，旧 binary_to_term 读方直接恢复同一元数据。
       payload: :erlang.term_to_binary(metadata,[{:compressed,1}])}],else: []

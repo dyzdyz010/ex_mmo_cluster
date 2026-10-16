@@ -30,6 +30,8 @@ defmodule MmoContracts.Voxel.Payload do
             structure: %{},
             attachments: %{},
             liquid_units: %{},
+            # 编码复用：已编好的 refined 槽记录（cell_index => Refined.slot_records/1），不进线格式、解码恒为空。
+            refined_records: %{},
             format_version: 4
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
@@ -46,11 +48,23 @@ defmodule MmoContracts.Voxel.Payload do
     min_body_bytes() + rows + count * (2 + 6 + 2)
   end
 
-  @doc "v4 格/CSR 数量和 u16 贴图索引决定的最大编码容量；不是运行时预算。"
-  def max_body_bytes,
-    do:
-      4 + @cell_count * (2 + 2 + 8 + 12) + 16 + 5 * 4 + (@extent * @extent + 1) * 4 +
-        65536 * @max_map_extent * @max_map_extent
+  # v4 地形段：格/CSR 数量和 u16 贴图索引决定的格式容量。
+  @terrain_max_body_bytes 4 + @cell_count * (2 + 2 + 8 + 12) + 16 + 5 * 4 +
+                            (@extent * @extent + 1) * 4 +
+                            65536 * @max_map_extent * @max_map_extent
+
+  # v5+ 地形之后的尾部段：refined 单段格式容量已是 4 + N×(8 + 512×16) = 2_357_467_204 B（N = 66³），
+  # 实例段 u32 计数×69/85 B 无格式上界，附件 2×3×528³ 槽×36 B、液体 4 + N×8 B、VXR6 结构
+  # N×(8 + 4096×14) B，合计都超过双端能接纳的解压字节；上限取 Voxim 解码器
+  # （VoxelRegionCodec.cpp DecodeRegionPayload，TArray int32 下标）对 v5+ 的同一界。
+  @detail_max_body_bytes 2_147_483_647
+
+  @doc """
+  按格式版本推导的解压 body 最大编码容量，读写两端共用（`Codec.encode_payload/6` 与
+  `Codec.unpack_payload_body/1`），写得出就读得回；不是运行时预算。
+  """
+  def max_body_bytes(4), do: @terrain_max_body_bytes
+  def max_body_bytes(version) when version in 5..12, do: @detail_max_body_bytes
 
   @doc "region 的 66³ 原点（level 单位）。"
   def origin({x, y, z}), do: {x * 64 - 1, y * 64 - 1, z * 64 - 1}
@@ -97,6 +111,15 @@ defmodule MmoContracts.Voxel.Payload do
        }}
     else
       false -> {:error, :invalid_payload}
+      error -> error
+    end
+  end
+
+  @doc "只解出载荷的 66³ 格材质段（u16 小端，x 最快）；不解表皮场与细节尾部。"
+  def decode_cells(bytes) do
+    case MmoContracts.Voxel.Codec.decode_payload_body(bytes) do
+      {:ok, _header, <<@cell_count::32-little, cells::binary-size(@cell_count * 2), _::binary>>} -> {:ok, cells}
+      {:ok, _header, _raw} -> {:error, :invalid_payload}
       error -> error
     end
   end
@@ -335,7 +358,26 @@ defmodule MmoContracts.Voxel.Payload do
   按 overrides（local → {material, skins}）改写后重编码成完整载荷字节（seq 换成给定值）。
   表皮记录 = 原记录（去掉被覆盖的格）∪ overrides 里非平凡的格，按 (z, y, x) 升序写 CSR；贴图池按内容去重。
   """
-  def encode(%__MODULE__{} = p, overrides, seq, content_version) do
+  def encode(%__MODULE__{} = p, overrides, seq, content_version),
+    do: encode_with_details(terrain_raw(p, overrides), p, seq, content_version)
+
+  @doc """
+  同 encode/4，但已知完整载荷不短于 `limit` 字节时返回 `:not_smaller`，不编细节尾部、不压缩完整 body。
+
+  判据是地形段（格 + CSR，body 的开头）的压缩流前缀（`Codec.compressed_prefix_bytes/1`，与
+  `Codec.encode_payload/6` 同一 zlib 流）：已输出的压缩字节只会是最终 body 的前缀，加上定长头已达 `limit`
+  即可断定完整载荷不短于它。未达到时照常完整编码返回 `{:ok, bytes}`。
+  """
+  def encode_below(%__MODULE__{} = p, overrides, seq, content_version, limit) do
+    raw = terrain_raw(p, overrides)
+
+    if MmoContracts.Voxel.Codec.payload_header_bytes() + MmoContracts.Voxel.Codec.compressed_prefix_bytes(raw) >= limit,
+      do: :not_smaller,
+      else: {:ok, encode_with_details(raw, p, seq, content_version)}
+  end
+
+  # body 的地形段：格与表皮场 CSR；细节尾部由 encode_with_details/4 接在其后。
+  defp terrain_raw(p, overrides) do
     cells = splice_cells(p.cells, overrides)
     {records, ext} = updated_records(p, overrides)
     records = Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end)
@@ -346,26 +388,23 @@ defmodule MmoContracts.Voxel.Payload do
     # 客户端写回缓存的副本按同一规则编码，hash 才能与这里物化的载荷相等（否则重启后重发 payload 而不是 unchanged）。
     {field_extent, field_map_extent} = if records == [], do: {0, 1}, else: {@extent, ext}
 
-    raw =
-      IO.iodata_to_binary([
-        <<@cell_count::32-little>>,
-        cells,
-        <<field_extent::32-little, field_extent::32-little, field_extent::32-little,
-          field_map_extent::32-little>>,
-        <<length(row_start)::32-little>>,
-        Enum.map(row_start, &<<&1::32-little>>),
-        <<length(col_x)::32-little>>,
-        Enum.map(col_x, &<<&1::16-little>>),
-        <<length(masks)::32-little>>,
-        faces,
-        Enum.map(masks, &<<&1::16-little>>),
-        <<length(fmi)::32-little>>,
-        Enum.map(fmi, &<<&1::16-little>>),
-        <<byte_size(maps)::32-little>>,
-        maps
-      ])
-
-    encode_with_details(raw, p, seq, content_version)
+    IO.iodata_to_binary([
+      <<@cell_count::32-little>>,
+      cells,
+      <<field_extent::32-little, field_extent::32-little, field_extent::32-little,
+        field_map_extent::32-little>>,
+      <<length(row_start)::32-little>>,
+      Enum.map(row_start, &<<&1::32-little>>),
+      <<length(col_x)::32-little>>,
+      Enum.map(col_x, &<<&1::16-little>>),
+      <<length(masks)::32-little>>,
+      faces,
+      Enum.map(masks, &<<&1::16-little>>),
+      <<length(fmi)::32-little>>,
+      Enum.map(fmi, &<<&1::16-little>>),
+      <<byte_size(maps)::32-little>>,
+      maps
+    ])
   end
 
   defp updated_records(p, overrides) do
@@ -492,19 +531,19 @@ defmodule MmoContracts.Voxel.Payload do
       case version do
         v when v in [9, 10, 11, 12] ->
           terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7) <>
+            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7, p.refined_records) <>
             MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)
 
         8 ->
           terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7) <>
+            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7, p.refined_records) <>
             MmoContracts.Voxel.Attachments.encode(p.attachments)
 
         6 ->
           terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
 
         v when v in [5, 7] ->
-          terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances, v)
+          terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances, v, p.refined_records)
 
         4 ->
           terrain

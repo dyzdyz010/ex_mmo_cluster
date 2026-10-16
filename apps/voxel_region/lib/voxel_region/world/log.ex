@@ -14,8 +14,15 @@ defmodule VoxelRegion.World.Log do
 
   # ---- 日志
 
-  def append_log(%{log: {backend, handle}} = state, txn),
-    do: backend.append(handle, attachment_metadata(state, Map.drop(txn, [:liquid_falls, :casts, :operation])))
+  def append_log(state, txn), do: append_journal(state, attachment_metadata(state, txn))
+
+  @doc "按已备好的日志表示追加；实时落体帧、待施放与操作反馈只随本次广播。"
+  def append_journal(%{log: {backend, handle}}, journal),
+    do: backend.append(handle, Map.drop(journal, [:liquid_falls, :casts, :operation]))
+
+  @doc "纯液体数量提交的日志元数据：实例表与附件归属未变，不再整表重复（回放沿用前值）。"
+  def liquid_journal(state, txn),
+    do: Map.drop(attachment_metadata(state, txn), [:prefab_instances, :attachment_owners])
 
   # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
   def attachment_metadata(state, txn),
@@ -41,7 +48,7 @@ defmodule VoxelRegion.World.Log do
     # 实时落体帧与待施放记录只随本次广播，不进日志、检查点与回放尾。
     # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
     txn = if match?(%{entries: [], coarse: []}, full),
-      do: Map.take(full, [:seq, :entries, :coarse]),
+      do: Map.take(full, [:seq, :entries, :coarse, :liquid_units]),
       else: Map.drop(full, [:liquid_falls, :casts, :operation, :interaction, :interaction_history, :interaction_floor])
     %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
@@ -57,7 +64,7 @@ defmodule VoxelRegion.World.Log do
 
   def replay_log(%{log: {backend, handle}} = state) do
     Enum.reduce(backend.replay(handle), state, fn txn, s ->
-      s = replay_entry(s, txn) |> replay_damage(txn)
+      s = replay_entry(s, txn) |> replay_liquid(txn) |> replay_damage(txn)
       remember_entry(%{s | seq: max(s.seq, txn.seq)}, txn)
     end)
   end
@@ -69,6 +76,16 @@ defmodule VoxelRegion.World.Log do
       Edits.put_overlay(s, e.level, e.cell, {e.material, e.skins})
     end)
   end
+
+  @doc "液体数量增量（`Edits` 的日志表示）：写入数量，并像在线后像一样把覆盖区域记为完整快照、丢弃缓存。"
+  def replay_liquid(state, %{liquid_units: units}) do
+    keys = Enum.uniq(Payloads.region_keys(Enum.map(Map.keys(units), &{0, &1})))
+    Enum.reduce(keys, %{state | liquid_units: Liquid.apply_changes(state.liquid_units, units)}, fn key, s ->
+      %{Payloads.cache_delete(s, key) | snapshots: MapSet.put(s.snapshots, key)}
+    end)
+  end
+
+  def replay_liquid(state, _txn), do: state
 
   def replay_entry(state, %{payload: bytes}) do
     {:ok, p} = Payload.decode(bytes)
@@ -86,13 +103,12 @@ defmodule VoxelRegion.World.Log do
               into: %{},
               do: {{ox + x, oy + y, oz + z}, slots}
 
-        refined =
-          state.refined
-          |> Map.reject(fn {cell, _} -> region_of(cell) == p.region end)
-          |> Map.merge(core)
+        state =
+          Enum.reduce(refined_in_regions(state, [p.region]), state, &put_refined(&2, &1, %{}))
+          |> then(&Enum.reduce(core, &1, fn {cell, slots}, s -> put_refined(s, cell, slots) end))
 
         instances = Map.merge(state.instances, p.instances)
-        ids = Payloads.live_instance_ids(refined, instances, state.macro_owners)
+        ids = Payloads.live_instance_ids(%{state | instances: instances})
 
         attachments =
           state.attachments
@@ -108,7 +124,7 @@ defmodule VoxelRegion.World.Log do
         liquid_units = state.liquid_units
           |> Map.reject(fn {cell,_} -> region_of(cell) == p.region end)
           |> Map.merge(liquid_core)
-        %{state | liquid_units: liquid_units, attachments: attachments, refined: refined, instances: Map.take(instances, ids)}
+        %{state | liquid_units: liquid_units, attachments: attachments, instances: Map.take(instances, ids)}
       else
         state
       end
@@ -251,7 +267,7 @@ defmodule VoxelRegion.World.Log do
   def checkpoint_input(state) do
     state
     |> Map.take([:seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
-      :snapshots, :refined, :instances, :structure, :macro_owners, :attachments, :liquid_units,
+      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :attachments, :liquid_units,
       :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
       :food_ledger, :food_receipts, :placed_by, :protection, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,

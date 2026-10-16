@@ -137,7 +137,7 @@ defmodule VoxelRegion.Reducer do
   # 树干保留（仅 L0→L1，与 Rust `skin::reduce`、客户端 `ReduceCellV1` 同一条）：实体不足 5 格但树干 ≥ 2 格 → 父格是树干。
   defp reduce_cell_any(children, 1) do
     materials = Enum.map(children, fn {m, _s} -> m end)
-    trunks = Enum.filter(materials, &(&1 == 19 or &1 in 25..27))
+    trunks = Enum.filter(materials, &(&1 == 19 or &1 in 25..27 or &1 in [57, 59, 61, 63]))
 
     material =
       case reduce_material(materials) do

@@ -49,6 +49,7 @@ defmodule VoxelRegion.World.Observation do
 
     with {:ok, regions, state} <- Payloads.canonical_regions(state, CollisionSource.regions(box)) do
       regions_done = System.monotonic_time(:microsecond)
+      state = prepare_component_cache(state, box)
 
       snapshot =
         %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq, l0_min: l0_min,
@@ -117,29 +118,65 @@ defmodule VoxelRegion.World.Observation do
       else: context
   end
 
-  def component_observations(%{properties: nil}, _box), do: []
+  # only：只汇总这些 owner 的叶子（nil = 全部）。每个叶子的观察只取决于它自己的格，跳过其他 owner 的格
+  # 结果与全量汇总后再按 owner 过滤逐项相同；编辑提交只需变动的 owner，不再每次两遍扫完整世界的细化格。
+  def component_observations(state, box, only \\ nil)
+  def component_observations(%{properties: nil}, _box, _only), do: []
 
-  def component_observations(state, box) do
-    # Request-local projection: each exact leaf's full geometry is scanned once.
-    # The window selects representatives, not which slots contribute to leaf HP.
-    owners = Enum.reduce(state.refined, %{}, fn {cell, slots}, owners ->
-      visible = box == nil or VoxelRegion.PropertyObservation.contains?(cell, box)
-      Enum.reduce(slots, owners, fn {slot, {material, {birth, _} = owner}}, acc ->
-        target = if visible, do: %{micro: Prefab.micro_coord(cell, slot), granularity: 2,
-          incarnation: birth, owner: owner, material: material}
-        hp = Damage.max_hp(Map.fetch!(state.properties.materials, material), 1)
-        case Map.fetch(acc, owner) do
-          :error -> Map.put(acc, owner, {target, MapSet.new([cell]), hp})
-          {:ok, {previous, cells, total}} ->
-            Map.put(acc, owner, {if(visible, do: target, else: previous), MapSet.put(cells, cell), total + hp})
-        end
-      end)
-    end)
-
-    for {_, {target, cells, hp}} <- owners, target != nil do
+  def component_observations(state, box, only) do
+    {geometry, _cache} = component_geometry(state, box, only)
+    for {_, {hp, cells, representatives}} <- geometry,
+        target = Enum.find_value(representatives, fn {cell, target} ->
+          if box == nil or VoxelRegion.PropertyObservation.contains?(cell, box), do: target
+        end), target != nil do
       property_state(state, target, hp)
       |> Map.put(:observation_cells, MapSet.to_list(cells))
     end
+  end
+
+  @doc "只准备窗口涉及的整件几何汇总；真值与目录未变时不再展开微格，当前 HP 仍由 property_state 读取。"
+  def prepare_component_cache(%{properties: nil} = state, _box), do: state
+  def prepare_component_cache(state, box) do
+    {_, cache} = component_geometry(state, box, nil)
+    Map.put(state, :component_cache, cache)
+  end
+
+  defp component_geometry(state, box, only) do
+    # 保存原整表次序：子 map 的相对次序未必相同，浮点求和与窗口代表点都不能换序。
+    order = state.refined |> Enum.with_index() |> Map.new(fn {{cell, _}, index} -> {cell, index} end)
+    cache = Map.take(Map.get(state, :component_cache, %{}), Map.keys(state.refined_owners))
+    wanted = only && MapSet.new(only)
+    Enum.reduce(state.refined_owners, {%{}, cache}, fn {owner, cells}, {rows, cache} ->
+      selected = (wanted == nil or MapSet.member?(wanted, owner)) and
+        (box == nil or Enum.any?(cells, &VoxelRegion.PropertyObservation.contains?(&1, box)))
+      if selected do
+        inputs = cells |> Enum.sort_by(&Map.fetch!(order, &1)) |> Enum.map(&{&1, Map.fetch!(state.refined, &1)})
+        tag = {state.properties.digest, inputs}
+        geometry = case Map.get(cache, owner) do
+          {^tag, geometry} -> geometry
+          _ -> component_geometry(state.properties, owner, inputs, {0.0, MapSet.new(), []})
+        end
+        {Map.put(rows, owner, geometry), Map.put(cache, owner, {tag, geometry})}
+      else
+        {rows, cache}
+      end
+    end)
+  end
+
+  defp component_geometry(catalog, {birth, _} = owner, inputs, initial) do
+    Enum.reduce(inputs, initial, fn {cell, slots}, acc ->
+      Enum.reduce(slots, acc, fn
+        {slot, {material, ^owner}}, {hp, cells, representatives} ->
+          target = %{micro: Prefab.micro_coord(cell, slot), granularity: 2,
+            incarnation: birth, owner: owner, material: material}
+          representatives = case representatives do
+            [{^cell, _} | tail] -> [{cell, target} | tail]
+            _ -> [{cell, target} | representatives]
+          end
+          {hp + Damage.max_hp(Map.fetch!(catalog.materials, material), 1), MapSet.put(cells, cell), representatives}
+        _, acc -> acc
+      end)
+    end)
   end
 
   def property_snapshot(state, box) do
@@ -163,9 +200,12 @@ defmodule VoxelRegion.World.Observation do
     |> VoxelRegion.PropertyObservation.project(box)
   end
 
-  def owned_macro_observations(%{properties: nil}, _box), do: []
-  def owned_macro_observations(state, box) do
-    for {cell,_} <- state.macro_owners,
+  # cells：只取这些宏格（nil = 全部）；提交只需 owner 或纪元变化的宏格，不再逐个物化全世界的实例宏格。
+  def owned_macro_observations(state, box, cells \\ nil)
+  def owned_macro_observations(%{properties: nil}, _box, _cells), do: []
+  def owned_macro_observations(state, box, cells) do
+    owned = if cells == nil, do: Map.keys(state.macro_owners), else: Enum.filter(cells, &Map.has_key?(state.macro_owners, &1))
+    for cell <- owned,
         micro = Prefab.micro_coord(cell,0),
         box == nil or VoxelRegion.PropertyObservation.relevant?(%{micro: micro,granularity: 0},box) do
       {target,_} = target_at(micro,state)
@@ -192,16 +232,13 @@ defmodule VoxelRegion.World.Observation do
       if MapSet.size(changed_owners) == 0,
         do: [],
         else:
-          Enum.filter(
-            component_observations(state, nil),
-            &MapSet.member?(changed_owners, &1.owner)
-          )
+          component_observations(state, nil, changed_owners)
 
     removed =
       if MapSet.size(changed_owners) == 0,
         do: [],
         else:
-          component_observations(before, nil)
+          component_observations(before, nil, changed_owners)
           |> Enum.filter(
             &(MapSet.member?(changed_owners, &1.owner) and
                 not Map.has_key?(state.instances, &1.owner))
@@ -232,30 +269,31 @@ defmodule VoxelRegion.World.Observation do
     rows = if MapSet.size(changed_macros) == 0 do
       rows
     else
-      removed = owned_macro_observations(before,nil)
-        |> Enum.filter(&MapSet.member?(changed_macros,Damage.macro(&1)))
+      removed = owned_macro_observations(before,nil,changed_macros)
         |> Enum.map(&%{&1 | seq: state.seq,hp: 0.0,flags: 1,request_id: 0})
-      fresh = owned_macro_observations(state,nil)
-        |> Enum.filter(&MapSet.member?(changed_macros,Damage.macro(&1)))
+      fresh = owned_macro_observations(state,nil,changed_macros)
       (removed ++ rows ++ fresh) |> Map.new(&{Damage.key(&1),&1}) |> Map.values()
     end
+
+    # 观察格 = 提交前后该叶子／附件实际占的宏格：各建一次 owner/id → 格索引（只含本批行涉及的身份），
+    # 不再每行各扫一遍全世界的细化格与附件槽（行数随实例子树线性增长时会变成平方级）。
+    owners = for %{granularity: 2, owner: owner} <- rows, into: MapSet.new(), do: owner
+    ids = for %{granularity: 3, incarnation: id} <- rows, into: MapSet.new(), do: id
+    {micro_before, micro_after} = {owner_cells(before, owners), owner_cells(state, owners)}
+    {slots_before, slots_after} = {id_slots(before, ids), id_slots(state, ids)}
 
     rows =
       Enum.map(rows, fn
         %{granularity: 3} = row ->
           cells =
             Attachments.macros(
-              attachment_slots(before, row.incarnation) ++
-                attachment_slots(state, row.incarnation)
+              Map.get(slots_before, row.incarnation, []) ++ Map.get(slots_after, row.incarnation, [])
             )
 
           Map.put(row, :observation_cells, cells)
 
         %{granularity: 2} = row ->
-          cells =
-            micro_owner_cells(before, MapSet.new([row.owner])) ++
-              micro_owner_cells(state, MapSet.new([row.owner]))
-
+          cells = Map.get(micro_before, row.owner, []) ++ Map.get(micro_after, row.owner, [])
           Map.put(row, :observation_cells, Enum.uniq(cells))
 
         row ->
@@ -265,6 +303,37 @@ defmodule VoxelRegion.World.Observation do
     Map.merge(txn, %{property_states: rows, property_context: property_context(state)})
     |> Map.drop([:interaction, :interaction_history, :interaction_floor])
     |> public_properties()
+  end
+
+  # owner → 含其微格的宏格（与 micro_owner_cells/2 逐 owner 的结果相同，按 refined 遍历顺序）。
+  defp owner_cells(state, owners) do
+    if MapSet.size(owners) == 0 do
+      %{}
+    else
+      state
+      |> owner_refined(owners)
+      |> Enum.reduce(%{}, fn {cell, slots}, acc ->
+        slots
+        |> Enum.reduce(MapSet.new(), fn {_, {_, owner}}, found ->
+          if MapSet.member?(owners, owner), do: MapSet.put(found, owner), else: found
+        end)
+        |> Enum.reduce(acc, fn owner, acc -> Map.update(acc, owner, [cell], &[cell | &1]) end)
+      end)
+      |> Map.new(fn {owner, cells} -> {owner, Enum.reverse(cells)} end)
+    end
+  end
+
+  # 附件 id → 槽（与 attachment_slots/2 逐 id 的结果相同）。
+  defp id_slots(state, ids) do
+    if MapSet.size(ids) == 0 do
+      %{}
+    else
+      state.attachments
+      |> Enum.reduce(%{}, fn {slot, {id, _}}, acc ->
+        if MapSet.member?(ids, id), do: Map.update(acc, id, [slot], &[slot | &1]), else: acc
+      end)
+      |> Map.new(fn {id, slots} -> {id, Enum.reverse(slots)} end)
+    end
   end
 
   # Capture both versions while the pre-commit state still exists. Never sample after fanout.
@@ -406,9 +475,11 @@ defmodule VoxelRegion.World.Observation do
 
       if box == nil or Enum.any?(cells, &VoxelRegion.PropertyObservation.contains?(&1, box)) do
         {slot, value} = Enum.min(entries)
+        identity = attachment_identity(slot, value)
 
         [
-          property_state(state, attachment_identity(slot, value))
+          # 本组即该实例的全部槽：整件 HP 直接按组折算，不再逐件回扫整张附件表。
+          property_state(state, identity, attachment_max_hp(state, identity, Enum.map(entries, &elem(&1, 0))))
           |> Map.put(:observation_cells, cells)
         ]
       else

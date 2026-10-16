@@ -94,10 +94,22 @@ defmodule VoxelRegion.World.Payloads do
                    Codec.payload_min_bytes(Payload.min_body_bytes(payload, overrides)) >= byte_limit do
                 {:not_smaller, state}
               else
-                payload = with_refined(state, payload)
-                bytes = Payload.encode(payload, overrides, state.seq, state.cv)
-                {:ok, header} = Codec.decode_payload_header(bytes)
-                {:ok, bytes, header, cache_put(state, key, bytes, header)}
+                {payload, state} = with_refined(state, payload)
+
+                # 有上限时先看地形段的压缩前缀：已不短于上限就不再编细节、压缩完整 body（结论与完整编码后比较相同）。
+                encoded =
+                  if byte_limit == :infinity,
+                    do: {:ok, Payload.encode(payload, overrides, state.seq, state.cv)},
+                    else: Payload.encode_below(payload, overrides, state.seq, state.cv, byte_limit)
+
+                case encoded do
+                  :not_smaller ->
+                    {:not_smaller, state}
+
+                  {:ok, bytes} ->
+                    {:ok, header} = Codec.decode_payload_header(bytes)
+                    {:ok, bytes, header, cache_put(state, key, bytes, header)}
+                end
               end
 
             {:error, :missing, state} ->
@@ -137,27 +149,42 @@ defmodule VoxelRegion.World.Payloads do
   def ring_axis(0), do: 1..(Payload.extent() - 2)
   def ring_axis(1), do: (Payload.extent() - 1)..(Payload.extent() - 1)
 
-  def with_refined(state, %Payload{level: 0, region: region} = payload) do
-    refined =
-      for {cell, slots} <- state.refined,
-          local = Payload.local(region, cell),
-          Payload.in_span?(local),
-          into: %{},
-          do: {Payload.cell_index(local), slots}
+  def with_refined(state, %Payload{level: 0, region: {rx, ry, rz} = region} = payload) do
+    # 载荷跨度含一圈 ring：只看本区与 26 个相邻区的 refined 宏格（区域索引），不扫全世界。
+    near = refined_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz}))
+
+    span = MapSet.filter(near, &Payload.in_span?(Payload.local(region, &1)))
+
+    # 各格槽记录按格备忘（{slots, 字节}，refined 写入时失效）：后像只重编本次变了的格。
+    {refined, records, encoded} =
+      Enum.reduce(Map.take(state.refined, MapSet.to_list(span)), {%{}, %{}, state.refined_encoded}, fn {cell, slots}, {refined, records, encoded} ->
+        index = Payload.cell_index(Payload.local(region, cell))
+
+        bin =
+          case encoded do
+            %{^cell => {^slots, bin}} -> bin
+            _ -> MmoContracts.Voxel.Refined.slot_records(slots)
+          end
+
+        {Map.put(refined, index, slots), Map.put(records, index, bin), Map.put(encoded, cell, {slots, bin})}
+      end)
 
     macro_owners = Map.filter(state.macro_owners, fn {cell, _} -> Payload.in_span?(Payload.local(region, cell)) end)
-    ids = live_instance_ids(refined, state.instances, macro_owners)
+    # 跨度内微格的持有者：部件索引里与跨度相交的身份（与逐槽扫描这些格得到的集合相同）。
+    owners = for {owner, cells} <- state.refined_owners, not MapSet.disjoint?(cells, span), do: owner
+    ids = MmoContracts.Voxel.Refined.ancestors(state.instances, Enum.uniq(owners ++ Map.values(macro_owners)))
 
-    %{
-      payload
-      | liquid_units: for({cell, units} <- state.liquid_units,
-            local = Payload.local(region, cell), Payload.in_span?(local),
-            into: %{}, do: {Payload.cell_index(local), units}),
-        attachments: Attachments.extract(state.attachments, region),
-        refined: refined,
-        instances: Map.take(state.instances, ids),
-        format_version: if(ids != [] or payload.format_version == 5, do: 5, else: 4)
-    }
+    {%{
+       payload
+       | liquid_units: for({cell, units} <- state.liquid_units,
+             local = Payload.local(region, cell), Payload.in_span?(local),
+             into: %{}, do: {Payload.cell_index(local), units}),
+         attachments: Attachments.extract(state.attachments, region),
+         refined: refined,
+         refined_records: records,
+         instances: Map.take(state.instances, ids),
+         format_version: if(ids != [] or payload.format_version == 5, do: 5, else: 4)
+     }, %{state | refined_encoded: encoded}}
   end
 
   def with_refined(state, %Payload{level: level, region: region} = payload) do
@@ -168,18 +195,13 @@ defmodule VoxelRegion.World.Payloads do
           into: %{},
           do: {Payload.cell_index(local), grid}
 
-    %{payload | structure: structure}
+    {%{payload | structure: structure}, state}
   end
 
-  def live_instance_ids(refined, instances, macro_owners) do
-    owners =
-      Enum.reduce(refined, %{}, fn {_, slots}, acc ->
-        local = Enum.reduce(slots, %{}, fn {_, {_, id}}, owners -> Map.put(owners, id, true) end)
-        Map.merge(acc, local)
-      end)
-
-    MmoContracts.Voxel.Refined.ancestors(instances, Enum.uniq(Map.keys(owners) ++ Map.values(macro_owners)))
-  end
+  @doc "整个世界仍有微格或宏格的实例及其祖先：微格持有者直接读部件索引，与逐槽扫描整表的集合相同。"
+  def live_instance_ids(state),
+    do: MmoContracts.Voxel.Refined.ancestors(state.instances,
+      Enum.uniq(Map.keys(state.refined_owners) ++ Map.values(state.macro_owners)))
 
   def region_keys(cells), do: LogProjection.region_keys(cells)
 
@@ -198,7 +220,7 @@ defmodule VoxelRegion.World.Payloads do
       {bytes, s} =
         case Map.fetch(terrain_payloads, key) do
           {:ok, {prior, _}} ->
-            details = with_refined(s, %Payload{level: level, region: region})
+            {details, s} = with_refined(s, %Payload{level: level, region: region})
 
             overrides =
               for {^level, cell} <- terrain_changes,

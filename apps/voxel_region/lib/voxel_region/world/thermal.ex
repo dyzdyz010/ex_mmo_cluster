@@ -193,7 +193,7 @@ defmodule VoxelRegion.World.Thermal do
     scanned = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_thermal_sim steps_us=#{run.busy_us} scan_us=#{scanned - stepped} damage_rows=#{map_size(state.damage)} simulated_s=0.5 max_step_ms=50 elapsed_us=#{run.busy_us + System.monotonic_time(:microsecond) - stepped} wall_us=#{System.monotonic_time(:microsecond) - run.started} kernel_steps=#{run.steps} hot=#{MapSet.size(work.hot)} candidates=#{map_size(work.geometry)} geometry_builds=#{work.builds}"
+      "voxel_thermal_sim steps_us=#{run.busy_us} scan_us=#{scanned - stepped} damage_rows=#{map_size(state.damage)} simulated_s=0.5 max_step_ms=50 elapsed_us=#{run.busy_us + System.monotonic_time(:microsecond) - stepped} wall_us=#{System.monotonic_time(:microsecond) - run.started} kernel_steps=#{run.steps} hot=#{MapSet.size(work.hot)} candidates=#{MapSet.size(work.cells)} geometry_builds=#{work.builds}"
     )
 
     # 步间编辑可能已删除记录；已被编辑改写的记录按当前值随本事务再发一次。
@@ -882,10 +882,11 @@ defmodule VoxelRegion.World.Thermal do
   defp sight_domain(state, plan, geometry) do
     {state, sights} = Enum.reduce(plan.sightless, {state, state.thermal_work.sights}, &cell_sights(&1, &2, geometry))
     extra = MapSet.difference(VoxelRegion.ThermalRadiation.partners(sights, plan.fresh), plan.cells)
-    {geometry, state} = Enum.reduce(extra, {geometry, state}, &thermal_cell/2)
+    missing = MapSet.reject(extra, &Map.has_key?(geometry, &1))
+    {geometry, state} = Enum.reduce(missing, {geometry, state}, &thermal_cell/2)
     {state, sights} = Enum.reduce(extra, {state, sights}, &cell_sights(&1, &2, geometry))
 
-    {%{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, extra),
+    {%{plan | cells: MapSet.union(plan.cells, extra), missing: MapSet.union(plan.missing, missing),
        grown: plan.grown && MapSet.union(plan.grown, extra)},
      geometry, put_in(state.thermal_work.sights, sights)}
   end

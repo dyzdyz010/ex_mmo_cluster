@@ -106,6 +106,13 @@ defmodule SceneServer.Movement.Player do
     :exit, {:normal, _} -> :ok
   end
 
+  @doc """
+  只测试 GM 瞬移（`VoxelRegion.World.Gm` 同一部署开关 VOXIM_GM_TOOLS，不进分发）：从米制 position 向下扫到第一个
+  合法站立处（同出生点的 find_spawn），只要求胶囊容得下，不要求正好落在 position；须在已送达的碰撞窗口内。
+  不写 World；输入序号、时钟与复制照常推进。返回 `{:ok, 实际位置}`。
+  """
+  def gm_teleport(player, position), do: GenServer.call(player, {:gm_teleport, position})
+
   def seal(player, identity), do: GenServer.call(player, {:seal, identity})
   def activate(player, identity), do: GenServer.call(player, {:activate, identity})
 
@@ -498,6 +505,30 @@ defmodule SceneServer.Movement.Player do
         )
 
         {:reply, {:ok, receipt}, publish_body(next, report)}
+    end
+  end
+
+  def handle_call({:gm_teleport, {x, y, z} = probe}, _, state) when is_float(x) and is_float(y) and is_float(z) do
+    cond do
+      not VoxelRegion.World.Gm.enabled?() ->
+        {:reply, {:error, :gm_disabled}, state}
+
+      not (state.ready and state.failure == nil and state.transfer == nil) ->
+        {:reply, {:error, :invalid_state}, state}
+
+      true ->
+        case find_spawn(state, probe) do
+          {:ok, {position, velocity, grounded}} ->
+            Logger.info("voxim_gm_teleport entity=#{state.id} probe=#{inspect(probe)} from=#{inspect(state.state.position)} to=#{inspect(position)}")
+            {:reply, {:ok, position},
+             %{state | state: %{state.state | position: position, velocity: velocity, grounded: grounded}}}
+
+          :outside ->
+            {:reply, {:error, :outside_collision_window}, state}
+
+          _ ->
+            {:reply, {:error, :no_room}, state}
+        end
     end
   end
 
@@ -1939,7 +1970,7 @@ defmodule SceneServer.Movement.Player do
       Enum.split_while(state.window_domains, fn {tick, _} -> tick > state.simulation_tick end)
 
     state = %{state | window_domains: newer ++ Enum.take(older, 1)}
-    box = CollisionStream.box(state.state.position, state.config.streaming_radius)
+    box = CollisionStream.box(state.state.position, state.config.streaming_radius, state.requested_window)
 
     cond do
       # 复活：等上一个窗口装好后请求覆盖出生点的窗口（即使与当前窗口相同也要一个新窗口作切点）；瞬移完成前不随位置换窗。

@@ -202,6 +202,33 @@ defmodule VoxelRegion.World do
   def material_supply(server, cid, supply_id, quantities),
     do: GenServer.call(server, {:material_supply, cid, supply_id, quantities}, 300_000)
 
+  @doc """
+  只测试作者注水入口（与 `material_supply/4` 同类，不经 Gate、不进分发）：从 seed 宏格六邻洪泛液体可进入的开放格
+  （空气、同种液体、地面花草；y ≤ level_y、液体计算域内、不跨受保护区域持有者，且角色可在其中建造），全部灌满到单格容量。
+  按实际注入量从角色库存扣 material（库存相态焓随量搬入），不足整笔拒绝 `:insufficient_material`；洪泛超过
+  `opts[:max_cells]`（默认 4096）拒绝 `:liquid_fill_too_large`。一笔正常液体提交（数量、相态、余额、日志）；
+  同角色同 key 只执行一次，重试返回原回执 `{:ok, %{seq, material, units, cells}}`。
+  """
+  def liquid_fill(server, cid, key, material, seed, level_y, opts \\ []) do
+    prepare(server, edit_keys([seed]))
+    GenServer.call(server, {:liquid_fill, cid, key, material, seed, level_y, Keyword.get(opts, :max_cells, 4096)}, 300_000)
+  end
+
+  @doc """
+  只测试 GM 施工工具（`VoxelRegion.World.Gm`，不进分发，部署显式开启才可用）：op 为 `:clear`（%{box, precision, instances}）、
+  `:fill`（%{box, material, precision}）、`:liquid_fill`（%{seed, level_y, material}）、`:move_instance`
+  （%{instance, anchor, orientation}）。每次一笔正常 World 提交；同 key 只执行一次，返回 `{:ok, 回执}`。
+  """
+  def gm(server \\ @name, key, op, args) do
+    keys = case op do
+      op when op in [:clear, :fill] -> edit_keys(VoxelRegion.World.Gm.macros(args))
+      :liquid_fill -> edit_keys([args.seed])
+      _ -> []
+    end
+    if keys != [], do: prepare(server, keys)
+    GenServer.call(server, {:gm, key, op, args}, 300_000)
+  end
+
   @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影；detail=:micro 增加细化格精确坐标，不读取热/液体模拟状态。"
   def material_snapshot(server, characters, cells, detail \\ :summary) when detail in [:summary, :micro] do
     prepare(server, Enum.uniq(Enum.map(cells, &{0, region_of(&1)})))
@@ -471,12 +498,19 @@ defmodule VoxelRegion.World do
           served_headers: %{},
           overlay: %{},
           refined: %{},
+          # refined 的派生索引（部件 => 宏格、L0 区域 => 宏格），由 Canonical.put_refined/3 随 refined 维护，不持久化。
+          refined_owners: %{},
+          refined_regions: %{},
+          # 各 refined 宏格已编好的载荷槽记录（{slots, 字节}），后像复用未变格；同上随写入失效、不持久化。
+          refined_encoded: %{},
           attachments: %{},
           attachment_serial: 0,
           attachment_owners: %{},
           # Global system: finite quantity is canonical state, never reconstructed from rendering.
           liquid_units: %{},
           liquid_active: MapSet.new(),
+          # 已核对过没有待接纳液体格的区域载荷字节（Liquids.adopt_liquid_sources/2 的派生备忘，不持久化）。
+          liquid_adopted: %{},
           liquid_falls: %{},
           liquid_timer: nil,
           # Test-only first-slice domain; the demo supplies its closed experimental bounds.
@@ -515,6 +549,8 @@ defmodule VoxelRegion.World do
           bodies: %{},
           magic: load_magic(opts),
           material_supplies: %{},
+          # 只测试 GM 工具开关（World.Gm）：部署显式开启才为 true；不持久化。
+          gm_tools: Keyword.get(opts, :gm_tools, VoxelRegion.World.Gm.enabled?()),
           # 合成账（R8-04）：材料 => 合成造成的累计净单位变化；随日志／检查点持久化。
           craft_ledger: %{},
           # 食物账（身体闭环 H1）：材料 => 被吃掉的累计单位（物质离开世界进入身体）；随日志／检查点持久化。
@@ -583,6 +619,7 @@ defmodule VoxelRegion.World do
         {state, _, _} = refresh_structure(state, Map.keys(state.refined))
         state = if map_size(state.structure) > 0, do: compact_log(state), else: state
         state = Thermal.rebuild_work(state)
+        state = prepare_component_cache(state, nil)
 
         Logger.info(
           "voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}"
@@ -811,6 +848,7 @@ defmodule VoxelRegion.World do
 
   def handle_call({:simulation_snapshot, characters, box}, _, state) do
     in_box = &VoxelRegion.PropertyObservation.contains?(&1, box)
+    state = prepare_component_cache(state, box)
     properties = property_snapshot(state, box)
     snapshot = Map.merge(properties, %{
       seq: state.seq,
@@ -930,6 +968,19 @@ defmodule VoxelRegion.World do
           supply_materials(state, key, quantities)
         else
           {:reply, {:error, :invalid_material_supply}, state}
+        end
+    end
+  end
+
+  def handle_call({:gm, key, op, args}, _, state), do: VoxelRegion.World.Gm.run(state, key, op, args)
+
+  def handle_call({:liquid_fill, cid, key, material, seed, level_y, max_cells}, _, state) do
+    case Map.fetch(state.material_supplies, {cid, {:liquid_fill, key}}) do
+      {:ok, receipt} -> {:reply, {:ok, receipt}, state}
+      :error ->
+        case liquid_fill_commit(state, cid, key, material, seed, level_y, max_cells) do
+          {:ok, receipt, next} -> {:reply, {:ok, receipt}, next}
+          {:error, reason} -> {:reply, {:error, reason}, state}
         end
     end
   end

@@ -73,12 +73,14 @@ defmodule VoxelRegion.World.HeatCommit do
     :ok = Log.append_log(state, txn)
     persisted = System.monotonic_time(:microsecond)
     state = Log.remember_entry(state, txn)
+    remembered = System.monotonic_time(:microsecond)
     Observation.fanout(state, txn)
+    fanned = System.monotonic_time(:microsecond)
     Observation.fanout_canonical(state, txn, [], [], state)
     broadcast = System.monotonic_time(:microsecond)
 
     Logger.info(
-      "voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} persist_us=#{persisted - start} broadcast_us=#{broadcast - persisted} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}"
+      "voxel_thermal_commit seq=#{state.seq} sim_s=#{state.thermal.elapsed_s} states=#{length(rows)} persist_us=#{persisted - start} broadcast_us=#{broadcast - persisted} remember_us=#{remembered - persisted} fanout_us=#{fanned - remembered} canonical_us=#{broadcast - fanned} active=#{state.thermal.active} supplied_j=#{state.thermal.supplied_j} environment_j=#{state.thermal.environment_j}"
     )
 
     state
@@ -137,8 +139,8 @@ defmodule VoxelRegion.World.HeatCommit do
             s =
               if ore.granularity == 0,
                 do: Edits.put_overlay(s, 0, cell, {product_id, MmoContracts.Voxel.Skins.uniform(product_id)}),
-                else: %{s | refined: Map.update!(s.refined, cell,
-                  &Map.update!(&1, slot, fn {_, owner} -> {product_id, owner} end))}
+                else: put_refined(s, cell,
+                  Map.update!(Map.fetch!(s.refined, cell), slot, fn {_, owner} -> {product_id, owner} end))
 
             temperature = Transform.product_temperature(ore.temperature_kelvin, material, materials[product_id],
               ambient_at(s, cell))

@@ -90,4 +90,16 @@ defmodule VoxelRegion.ReducerTest do
     assert Reducer.reduce_material([1, 1, 1, 1, 0, 0, 0, 0]) == 0
     assert Reducer.reduce_material([1, 1, 1, 1, 2, 0, 0, 0]) == 1
   end
+
+  test "Ruyuan trunks survive two-cell L1 columns but not L2 or a solid majority" do
+    cell = fn materials ->
+      Enum.map(materials, fn m -> {m, {1, List.to_tuple(List.duplicate({m, nil}, 6))}} end)
+    end
+
+    for trunk <- [57, 59, 61, 63] do
+      assert {^trunk, _} = Reducer.reduce_cell(cell.([trunk, 0, trunk, 0, 0, 0, 0, 0]), 1)
+      assert {0, _} = Reducer.reduce_cell(cell.([trunk, 0, trunk, 0, 0, 0, 0, 0]), 2)
+      assert {1, _} = Reducer.reduce_cell(cell.([1, 1, 1, 1, trunk, 0, trunk, 0]), 1)
+    end
+  end
 end

@@ -5,6 +5,21 @@
 ## 当前事实
 
 - `World.material_supply(server, cid, supply_id, %{material_id => integer_units})` 是 server-only 作者供给入口，未接 Gate。每角色/来源 ID 只授予一次，返回原 `{:ok, seq}` 的重试不会补料；来源、精确数量、相态焓与完整度和余额同笔持久化，日志重放与 compact 都保留收据。数量由作者资产/调用者指定；液相温度不低于转变点，固相不高于转变点，外部相态量/焓进入既有 `phase_authored_units` / `phase_authored_energy_j` 账。普通消费仍走原建造/工具事务。
+- **液体侧流（2026-10-15 修订）**：液体 `side_threshold_units` 只是润湿门槛（流向干格须超出它，湿格之间按 floor(差/8) 平衡到相邻差 < 8 量子），连通水面有限步摊平；散体 `loose_threshold_units` 仍是休止角。内核 `VoxelRegion.Liquid.step_transfers/9` 的阈值参数取 `{:wetting, t}`／`{:repose, t}`。依据与旧行为反例见 Voxim `Docs/R8/liquid-activity.md` 2026-10-15 修订。
+- **液体日志表示**：纯液体数量提交（无附件/实例/细化/移除变化）的持久日志不写区域后像，改记 kind 0 变化格 + 元数据 `liquid_units` 增量（`World.Edits.append_journal`、`World.Log.replay_liquid/2`），体积随变化格数增长；回放将覆盖区域记为完整快照，压实写整区。线上广播与订阅事务不变。
+- `World.liquid_fill(server, cid, key, material, seed, level_y, max_cells: N)`：只测试作者注水入口，与 `material_supply` 同类、未接 Gate。种子宏格六邻洪泛液体可进的开放格（y ≤ level_y、液体域内、不跨受保护持有者、角色可建造），全部灌满，按实际注入量扣库存（相态焓随量搬入），不足/超上限/实体种子/受保护整笔拒绝；回执 `{cid, {:liquid_fill, key}}` 存 `material_supplies`，同 key 只执行一次。一笔正常液体提交。复跑：`apps/voxel_region` 下 `MMO_DB_PORT=<port> mix test --no-start test/liquid_world_test.exs test/phase_world_test.exs test/liquid_activity_test.exs test/loose_world_test.exs test/log_projection_test.exs`。
+- **提交属性投影只算变动身份（2026-10-15）**：`Observation.property_transaction` 原先每笔改动细化格的提交都两遍全量扫描世界细化格汇总叶子（`component_observations`），再对每一行各扫一遍 `micro_owner_cells`／`attachment_slots`，全世界的 owner 宏格也逐个物化后再过滤；测试服 140 万细化槽时一次 42 块叠石移除 World 阻塞 ~9 s，引发 Player.stop／Scene.leave／Session.claim 5 s 超时连锁崩溃（seq 41129）。现只汇总变动 owner、变动宏格，观察格一次建 owner/id → 格索引；输出逐项不变（用测试服导出世界对旧实现逐项比对相等），同类移除 3.6–5.7 s → 0.55–0.9 s。剩余线性项：两遍按 owner 过滤的细化槽遍历与 owner 索引，随世界细化槽总数线性增长。
+- **World 提交热路径去全量扫描（2026-10-15 第二轮）**：上一条的剩余线性项与同类全量物化已去掉，线格式与客户端不变。
+  ① `refined` 的派生索引 `refined_owners`（部件 => 宏格）、`refined_regions`（L0 区域 => 宏格）只由
+  `Canonical.put_refined/3` 随每次写入维护（`index_refined/1` 可整表重建），存活实例、部件格、`with_refined` 的跨度格与持有者都读索引；
+  需要原遍历次序的累加（叶子 HP、代表格、观察格）仍按整表的宏格层次序走，不展开槽。② 附件整件 HP 按组折算，`attachment_observations` 不再每组回扫附件表。
+  ③ 后像按格复用已编好的 refined 槽记录（`refined_encoded`，随写入失效）；要整区重编后像的区域不再先刷一遍地形缓存。
+  ④ 每次 `prepare` 的液体接纳只解格段（`Payload.decode_cells/1`），同一份载荷字节核对过即记入 `liquid_adopted` 跳过。
+  ⑤ 粗格稀疏/整区选择先用地形段的 zlib 前缀下界（`Payload.encode_below/5`、`Codec.compressed_prefix_bytes/1`）判定整区不更小，结论与完整编码后比较相同；
+  该情形不再顺带把 L1+ 区域载荷放进可丢弃缓存（客户端请求时按当时 seq 物化）。等价：同一测试服导出世界、同一输入序列（GM 清填、液体灌注与流动、作者与玩家 prefab 放拆、微格清），
+  基线源码整族改名后与新实现同 VM 锁步逐笔比较，应答、日志事务与行字节、订阅／canonical／副本广播、每笔后真值、检查点事务与日志回放全部相等
+  （Voxim `Saved/Yuanmingyuan/20261015-perf/`）。剩余：dense 区 L0 后像的 zlib 与 refined 变化格编码、L1+ 整区下界不成立时的完整编码、碰撞增量采样，均随受影响区域而非世界增长。
+- **GM 施工工具（只测试，不进分发）**：`World.gm(server, key, op, args)`（`VoxelRegion.World.Gm`：`:clear`／`:fill`／`:liquid_fill`／`:move_instance`）与 `SceneServer.Movement.Player.gm_teleport/2`。只有部署显式设 `VOXIM_GM_TOOLS=1`（`config :voxel_region, :gm_tools`）才接受，默认关闭回 `:gm_disabled`。跳过耐久、冷却、射程视线、库存与保护区；每个操作仍是一笔正常 World 提交（`Edits.apply_batch`／`Prefabs.prefab_reply`／`Prefabs.place_tree`／`Liquids.commit_liquid`），回执 `material_supplies[{0, {:gm, key}}]` 随事务持久化、同 key 只执行一次；单次 ≤ 4096 宏格。细化微格必须有活实例 owner（VXR5），故微格填只填整格覆盖的宏格。复跑：`apps/voxel_region` 下 `mix test --no-start test/gm_world_test.exs`；`apps/scene_server` 下 `mix test --no-start test/scene_server/movement/gm_teleport_test.exs`。用法见 Voxim `Docs/Gameplay/Yuanmingyuan/construction-api.md` §10。
 - `publish_parameters` 允许修改液体 `side_threshold_units`（缺省 0），其他液体参数约束保持不变；改变阈值会唤醒现存液体并持久化工作集。发布新目录仍须将该版本作为下次启动的 `property_catalog_path`，与既有属性目录升级契约相同。即使没有属性实例，实际目录变化也追加事务。
 - 上述局部集成验证使用独立 World、真实公开供给/交易入口及文件持久化；供给恢复还经过正式数据库元数据编解码，source/player 为显式替身。复跑：在 `apps/voxel_region` 执行 `MMO_DB_PORT=5433 mix test --no-start test/phase_world_test.exs test/liquid_world_test.exs test/parameter_publication_test.exs`。它证明精确增量、消费后幂等、重启/压实及阈值唤醒，不替代 Demo 双客户端验收。
 

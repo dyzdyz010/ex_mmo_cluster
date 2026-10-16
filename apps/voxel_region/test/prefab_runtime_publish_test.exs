@@ -21,29 +21,28 @@ defmodule VoxelRegion.PrefabRuntimeCompileTest do
   end
 
   test "macro and micro counts reject the first excessive cell before expansion" do
-    macros = for n <- 0..511, do: {{rem(n,16),div(n,16),0},11}
-    # 16 x 16 x 2，所有轴均在16m内。
-    macros = Enum.map(macros,fn {{x,y,_},m} -> {{x,rem(y,16),div(y,16)},m} end)
+    # 新契约：256×64×64 = 1,048,576；仍在 64 m 高度内。
+    macros = for x <- 0..255, y <- 0..63, z <- 0..63, do: {{x,y,z},11}
     assert {:ok,_,_} = compile(definition(macro_cells: macros))
-    assert {:error,:macro_cell_limit} = compile(definition(macro_cells: [{{0,0,2},11}|macros]))
-    micro = for x <- 0..127, y <- 0..63, do: {{x,y,0},11}
+    assert {:error,:macro_cell_limit} = compile(definition(macro_cells: [{{256,0,0},11}|macros]))
+    micro = for x <- 0..127, y <- 0..255, do: {{x,y,0},11}
     assert {:ok,_,_} = compile(definition(cells: micro))
-    assert {:error,:micro_cell_limit} = compile(definition(cells: [{{0,64,0},11}|micro]))
-    assert {:ok,_} = Prefab.publish(%{author: definition(macro_cells: [{{0,0,2},11}|macros])})
+    assert {:error,:micro_cell_limit} = compile(definition(cells: [{{0,256,0},11}|micro]))
+    assert {:ok,_} = Prefab.publish(%{author: definition(cells: [{{0,256,0},11}|micro])})
   end
 
   test "expanded node and cell budgets count each occurrence of a shared definition" do
     assert {:ok,id,leaf} = compile(definition(cells: [{{0,0,0},11}]))
-    refs = for n <- 0..62, do: child(id,n,{n,0,0})
+    refs = for n <- 0..126, do: child(id,n,{n,0,0})
     assert {:ok,_,root} = compile(definition(children: refs),%{id=>leaf})
-    assert root.summary.nodes == 64 and root.summary.micro_cells == 63
-    assert {:error,:node_limit} = compile(definition(children: refs ++ [child(id,63,{63,0,0})]),%{id=>leaf})
-    big = definition(macro_cells: for(x <- 0..7,y <- 0..7,z <- 0..3,do: {{x,y,z},11}))
+    assert root.summary.nodes == 128 and root.summary.micro_cells == 127
+    assert {:error,:node_limit} = compile(definition(children: refs ++ [child(id,127,{127,0,0})]),%{id=>leaf})
+    big = definition(macro_cells: for(x <- 0..127,y <- 0..7,z <- 0..63,do: {{x,y,z},11}))
     assert {:ok,big_id,big_leaf} = compile(big)
     catalog = %{big_id=>big_leaf}
-    assert {:ok,_,two} = compile(definition(children: [child(big_id,0),child(big_id,1,{64,0,0})]),catalog)
-    assert two.summary.macro_cells == 512
-    assert {:error,:macro_cell_limit} = compile(definition(children: [child(big_id,0),child(big_id,1),child(big_id,2)]),catalog)
+    assert {:ok,_,two} = compile(definition(children: [child(big_id,0),child(big_id,1,{1024,0,0})]),catalog)
+    assert two.summary.macro_cells == 131072
+    assert {:error,:macro_cell_limit} = compile(definition(children: for(n <- 0..16,do: child(big_id,n))),catalog)
   end
 
   test "depth includes the root and fails at nine without expanding the chain" do
@@ -57,13 +56,14 @@ defmodule VoxelRegion.PrefabRuntimeCompileTest do
   end
 
   test "horizontal span is unbounded and height includes rotated child endpoints" do
-    # 水平可跨负坐标和多个 tile；64m 高度按完整体积端点计算。
-    d = definition(macro_cells: [{{-104,0,96},11},{{116,63,-114},19}])
+    # 水平可跨负坐标和多个 tile；828m = 6624 micro，按完整体积端点计算。
+    d = definition(macro_cells: [{{-104,0,96},11},{{116,827,-114},19}])
     assert {:ok,id,compiled} = compile(d)
-    assert compiled.summary.bounds == {{-832,0,-912},{936,512,776}}
+    assert compiled.summary.bounds == {{-832,0,-912},{936,6624,776}}
     assert {:ok,_,_} = compile(definition(children: [child(id,1,{0,0,0},1)]),%{id=>compiled})
-    assert {:error,:bounds_limit} = compile(%{d | macro_cells: [{{-104,0,96},11},{{116,64,-114},19}]})
-    assert {:error,:bounds_limit} = compile(definition(cells: [{{0,512,0},11}],children: [child(id,1)]),%{id=>compiled})
+    assert {:error,:bounds_limit} = compile(%{d | macro_cells: [{{-104,0,96},11},{{116,828,-114},19}]})
+    assert {:ok,_,_} = compile(definition(cells: [{{0,6623,0},11}],children: [child(id,1)]),%{id=>compiled})
+    assert {:error,:bounds_limit} = compile(definition(cells: [{{0,6624,0},11}],children: [child(id,1)]),%{id=>compiled})
   end
 
   test "attachment budget counts size-eight face expansion rather than group count" do

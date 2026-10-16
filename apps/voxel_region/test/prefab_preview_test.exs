@@ -73,21 +73,26 @@ defmodule VoxelRegion.PrefabPreviewTest do
 
   test "preview rejects bytes cell counts nodes and span before giving an artifact" do
     {id,leaf}=leaf(cells: [{{0,0,0},19}])
+    # 828 m = 6624 micro：末格的上端点恰好到上限；下一格超高。
+    assert {:ok,_,_,_}=Prefab.preview(Prefab.encode(definition(cells: [{{0,0,0},11},{{0,6623,0},11}])),%{})
     for {bytes,error}<- [
       {:binary.copy(<<0>>,Prefab.limits().bytes+1),:definition_bytes_limit},
-      {Prefab.encode(definition(macro_cells: for(n<-0..512,do: {{rem(n,16),rem(div(n,16),16),div(n,256)},11}))),:macro_cell_limit},
-      {Prefab.encode(definition(cells: for(n<-0..8192,do: {{rem(n,128),div(n,128),0},11}))),:micro_cell_limit},
-      {Prefab.encode(definition(children: for(n<-0..63,do: child(id,n)))),:node_limit},
-      {Prefab.encode(definition(cells: [{{0,0,0},11},{{0,512,0},11}])),:bounds_limit}] do
+      # 计数必须在解码格和几何展开前拒绝，因此无需构造百万个合法坐标。
+      {<<"VXPD",3::32-little,0::32-little,0::32-little,0::32-little,1_048_577::32-little,
+        :binary.copy(<<0>>,1_048_577*14)::binary>>,:macro_cell_limit},
+      {Prefab.encode(definition(cells: for(n<-0..32768,do: {{rem(n,128),div(n,128),0},11}))),:micro_cell_limit},
+      {Prefab.encode(definition(children: for(n<-0..127,do: child(id,n)))),:node_limit},
+      {Prefab.encode(definition(cells: [{{0,0,0},11},{{0,6624,0},11}])),:bounds_limit}] do
       assert {:error,^error}=Prefab.preview(bytes,%{id=>leaf})
       assert {:error,^error}=Prefab.compile(bytes,%{id=>leaf})
     end
   end
 
   test "shared reference expansion counts towards macro budget and depth" do
-    {id,leaf}=leaf(macro_cells: for(x<-0..7,y<-0..7,z<-0..3,do: {{x,y,z},11}))
-    bytes=Prefab.encode(definition(children: for(n<-0..2,do: child(id,n))))
+    {id,leaf}=leaf(macro_cells: for(x<-0..127,y<-0..7,z<-0..63,do: {{x,y,z},11}))
+    bytes=Prefab.encode(definition(children: for(n<-0..16,do: child(id,n))))
     assert {:error,:macro_cell_limit}=Prefab.preview(bytes,%{id=>leaf})
+    {id,leaf}=leaf(macro_cells: [{{0,0,0},11}])
     {id,catalog}=Enum.reduce(2..8,{id,%{id=>leaf}},fn _,{id,catalog}->
       {:ok,next,compiled}=Prefab.compile(Prefab.encode(definition(children: [child(id,0)])),catalog)
       {next,Map.put(catalog,next,compiled)}

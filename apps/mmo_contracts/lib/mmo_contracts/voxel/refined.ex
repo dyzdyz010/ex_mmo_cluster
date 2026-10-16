@@ -1,15 +1,17 @@
 defmodule MmoContracts.Voxel.Refined do
   @moduledoc "VXR5 actual occupancy and identity suffix. No definition reconstruction."
 
-  def encode(refined, instances, version \\ 5) do
+  @doc """
+  VXR5/7 refined 后缀。`records` 可给出部分格已编好的槽记录（cell_index => `slot_records/1` 的结果），
+  调用方据此复用未变格的编码；缺省时逐格现编，字节相同。
+  """
+  def encode(refined, instances, version \\ 5, records \\ %{}) do
     IO.iodata_to_binary([
       <<map_size(refined)::32-little>>,
       for {index, slots} <- Enum.sort(refined) do
         [
           <<index::32-little, map_size(slots)::32-little>>,
-          for {slot, {material, {birth, occurrence}}} <- Enum.sort(slots), into: <<>> do
-            <<slot::16-little, material::16-little, birth::64-little, occurrence::32-little>>
-          end
+          Map.get_lazy(records, index, fn -> slot_records(slots) end)
         ]
       end,
       <<map_size(instances)::32-little>>,
@@ -30,6 +32,13 @@ defmodule MmoContracts.Voxel.Refined do
         end
       end
     ])
+  end
+
+  @doc "一个宏格的槽记录（按槽号升序）：VXR5/7 refined 后缀中该格头之后的字节。"
+  def slot_records(slots) do
+    for {slot, {material, {birth, occurrence}}} <- Enum.sort(slots), into: <<>> do
+      <<slot::16-little, material::16-little, birth::64-little, occurrence::32-little>>
+    end
   end
 
   def decode(bytes, version \\ 5)

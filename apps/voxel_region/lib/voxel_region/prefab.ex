@@ -1,11 +1,11 @@
 defmodule VoxelRegion.Prefab do
   @moduledoc "全局系统功能：VXPD v1–v3 发布 DAG；micro、宏格和初始附件共用 preorder occurrence，实际状态归 World。"
   alias MmoContracts.VoxelMaterialCatalog
-  @runtime_limits [macro_cells: {512,:macro_cell_limit},micro_cells: {8192,:micro_cell_limit},
-    nodes: {64,:node_limit},depth: {8,:depth_limit},attachment_slots: {8192,:attachment_slot_limit}]
+  @runtime_limits [macro_cells: {1_048_576,:macro_cell_limit},micro_cells: {32768,:micro_cell_limit},
+    nodes: {128,:node_limit},depth: {8,:depth_limit},attachment_slots: {8192,:attachment_slot_limit}]
   @runtime_bytes 24 + 14*(elem(@runtime_limits[:macro_cells],0)+elem(@runtime_limits[:micro_cells],0)) +
     49*(elem(@runtime_limits[:nodes],0)-1) + 21*elem(@runtime_limits[:attachment_slots],0)
-  @runtime_height 64 * VoxelRegion.Spatial.micro_resolution()
+  @runtime_height 828 * VoxelRegion.Spatial.micro_resolution()
 
   @doc "工作台与发布入口共用的运行时预算；作者目录不受这些预算限制。"
   def limits, do: Map.new(@runtime_limits,fn {key,{limit,_}} -> {key,limit} end)

@@ -30,6 +30,17 @@ defmodule VoxelRegion.LogProjectionTest do
     refute Map.has_key?(LogProjection.region(txn, 0, {-1,0,0}), :liquid_falls)
   end
 
+  # 日志回放出的液体数量增量没有线格式：触及 core 或 ring 的区域按序号索引，并要求整区补发；其他区域不受影响。
+  test "replayed liquid quantity journal forces a full region for its core and ring only" do
+    txn = %{seq: 5, entries: [], coarse: [], liquid_units: %{{63, 1, 2} => 7}}
+    index = LogProjection.index(%{}, txn)
+    entries = %{5 => txn}
+    assert LogProjection.since(index, entries, 0, {0, 0, 0}, 0) == :region
+    assert LogProjection.since(index, entries, 0, {1, 0, 0}, 0) == :region
+    assert LogProjection.since(index, entries, 0, {2, 0, 0}, 0) == []
+    assert LogProjection.since(index, entries, 0, {0, 0, 0}, 5) == []
+  end
+
   test "negative corner edits reach every adjacent ring, in sequence order after the cursor" do
     older = %{seq: 2, entries: [%{coord: {-64, -64, -64}, material: 11}], coarse: []}
     newer = %{seq: 9, entries: [%{coord: {-64, -64, -64}, material: 19}], coarse: []}

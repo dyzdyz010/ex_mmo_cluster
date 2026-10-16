@@ -137,37 +137,34 @@ defmodule VoxelRegion.ThermalWork do
       |> MapSet.union(electric)
       |> MapSet.union(burning)
 
-    complete = work.exact and map_size(work.geometry) == MapSet.size(work.cells)
+    complete = work.exact and MapSet.size(missing(work.cells, work.geometry)) == 0
 
     cond do
       seeds == work.seeds ->
         cells = work.cells
-        # 几何键原本恰好覆盖旧域；编辑只删键。未变且未删键时不遍历几何。
-        reuse = map_size(work.geometry) == MapSet.size(cells)
+        absent = missing(cells, work.geometry)
 
         # 精确域内种子的视线伙伴都已在域内，只需为缺几何的格补视线。
-        {fresh, sightless} = if work.exact, do: {MapSet.new(), missing(cells, work.geometry, reuse)}, else: {seeds, cells}
+        {fresh, sightless} = if work.exact, do: {MapSet.new(), absent}, else: {seeds, cells}
 
-        %{seeds: seeds, cells: cells, missing: missing(cells, work.geometry, reuse), grown: nil,
+        %{seeds: seeds, cells: cells, missing: absent, grown: nil,
           exact: work.exact, fresh: fresh, sightless: sightless, burning: burning_rows,
-          geometry: if(reuse, do: work.geometry, else: Map.take(work.geometry, MapSet.to_list(cells)))}
+          geometry: work.geometry}
 
       complete and work.seeds != nil and MapSet.subset?(work.seeds, seeds) ->
         # 同一提交内种子只增：旧域不变，只按新增种子扩张；与整域重算得到同一集合。
         delta = MapSet.difference(seeds, work.seeds)
-        grown = expand(delta, work.sights)
-        missing = MapSet.reject(grown, &Map.has_key?(work.geometry, &1))
+        grown = MapSet.difference(expand(delta, work.sights), work.cells)
+        missing = missing(grown, work.geometry)
 
-        %{seeds: seeds, cells: MapSet.union(work.cells, grown), missing: missing, grown: missing, exact: true,
-          fresh: delta, sightless: missing, geometry: work.geometry, burning: burning_rows}
+        %{seeds: seeds, cells: MapSet.union(work.cells, grown), missing: missing, grown: grown, exact: true,
+          fresh: delta, sightless: grown, geometry: work.geometry, burning: burning_rows}
 
       true ->
         cells = expand(seeds, work.sights)
-        reuse = cells == work.cells and map_size(work.geometry) == MapSet.size(cells)
-
-        %{seeds: seeds, cells: cells, missing: missing(cells, work.geometry, reuse), grown: nil, exact: true,
+        %{seeds: seeds, cells: cells, missing: missing(cells, work.geometry), grown: nil, exact: true,
           fresh: seeds, sightless: cells, burning: burning_rows,
-          geometry: if(reuse, do: work.geometry, else: Map.take(work.geometry, MapSet.to_list(cells)))}
+          geometry: work.geometry}
     end
   end
 
@@ -178,8 +175,7 @@ defmodule VoxelRegion.ThermalWork do
     |> MapSet.union(ThermalRadiation.partners(sights, seeds))
   end
 
-  defp missing(_cells, _geometry, true), do: MapSet.new()
-  defp missing(cells, geometry, false), do: MapSet.difference(cells, MapSet.new(Map.keys(geometry)))
+  defp missing(cells, geometry), do: MapSet.reject(cells, &Map.has_key?(geometry, &1))
 
   @doc "接纳本次完整几何，返回更新的缓存和是否需要重新构造附件接触图。"
   def refresh(work, plan, geometry, attachments) do
@@ -206,7 +202,8 @@ defmodule VoxelRegion.ThermalWork do
            map_size(nodes) != map_size(work.solid_nodes) or map_size(slots) != map_size(work.thermal_slots)}
 
         true ->
-          nodes = geometry |> Map.values() |> List.flatten() |> Map.new()
+          # 缓存可含暂时离域的格；只把当前候选域装入内核，缓存不扩大物理计算域。
+          nodes = geometry |> Map.take(MapSet.to_list(plan.cells)) |> Map.values() |> List.flatten() |> Map.new()
 
           slots =
             for {slot, value, footprint} <- attachment_cells,
@@ -251,22 +248,15 @@ defmodule VoxelRegion.ThermalWork do
     %{work | burning: burning}
   end
 
-  @doc "占用编辑后丢弃受影响宏格的几何；编辑落在已缓存视线的包围盒外扩视距内时整体丢弃视线。"
+  @doc "占用编辑丢弃局部几何和六轴视距内的视线；空编辑保留派生状态。"
   def drop(work, cells, range) do
     geometry = Map.drop(work.geometry, cells)
 
-    box = if map_size(work.sights) > 0, do: box(Map.keys(work.sights), range)
-    sights = if box && Enum.any?(cells, &within?(&1, box)), do: %{}, else: work.sights
-
-    %{work | geometry: geometry, sights: sights, exact: false}
+    # 热辐射只沿面法线走轴向射线；另两轴始终留在起点宏格内。
+    affected = for cell <- cells, axis <- 0..2, delta <- -range..range,
+      into: MapSet.new(), do: put_elem(cell, axis, elem(cell, axis) + delta)
+    sights = Map.drop(work.sights, MapSet.to_list(affected))
+    if geometry == work.geometry and sights == work.sights, do: work,
+      else: %{work | geometry: geometry, sights: sights, exact: false}
   end
-
-  defp box(cells, range) do
-    for axis <- 0..2 do
-      {low, high} = cells |> Enum.map(&elem(&1, axis)) |> Enum.min_max()
-      (low - range)..(high + range)
-    end
-  end
-
-  defp within?(cell, box), do: Enum.all?(Enum.with_index(box), fn {span, axis} -> elem(cell, axis) in span end)
 end

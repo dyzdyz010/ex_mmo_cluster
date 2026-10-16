@@ -162,7 +162,8 @@ defmodule VoxelRegion.ThermalRadiationWorldTest do
     refute Enum.any?(work.sights[@source], &match?({_, :sky, _}, &1))
 
     {:ok, _} = World.apply_edit(w, {2, 2, 4}, 0)
-    assert :sys.get_state(w).thermal_work.sights == %{}
+    # 仅失效可能穿过编辑格的轴向视线；四个垂直方向的伙伴不受影响，源点必须重算。
+    assert :sys.get_state(w).thermal_work.sights == Map.take(work.sights, [{0, 2, 2}, {4, 2, 2}, {2, 0, 2}, {2, 4, 2}])
     run(w, 1.0)
     assert {_, :sky, 1.0} = Enum.find(:sys.get_state(w).thermal_work.sights[@source], &match?({_, :sky, _}, &1))
 

@@ -44,6 +44,65 @@ defmodule MmoContracts.PayloadTest do
     assert {:ok, %{records: records}} = Payload.decode(bytes)
     assert records == %{}
   end
+
+  # 回归（圆明园 seq 26807 L0 {0,7,1}）：VXR8 解压 7_992_265 B 被只算 v4 地形的上限拒绝。
+  # 手算合法 VXR8：空 CSR 地形 575_032 B + refined 902 宏格满 512 槽（4 + 902×(8 + 512×16)）
+  # + 1 个 VXR7 实例（4 + 85）+ 1 个附件（4 + 36）= 7_971_565 B，大于 v4 地形容量 7_965_948 B。
+  test "VXR8 body above the v4 terrain capacity decodes" do
+    terrain =
+      <<287_496::32-little>> <>
+        :binary.copy(<<0, 0>>, 287_496) <>
+        <<0::32, 0::32, 0::32, 1::32-little>> <> <<0::32, 0::32, 0::32, 0::32, 0::32>>
+
+    slots =
+      for slot <- 0..511, into: <<>>, do: <<slot::16-little, 7::16-little, 1::64-little, 0::32>>
+
+    refined =
+      for index <- 0..901,
+          into: <<902::32-little>>,
+          do: <<index::32-little, 512::32-little, slots::binary>>
+
+    instance =
+      <<1::32-little, 1::64-little, 0::32, :binary.copy(<<9>>, 32)::binary, 0::64, 0::64, 0::64,
+        0, 0::64, 0::32, 0::32>>
+
+    attachment =
+      <<1::32-little, 0, 0, 0::64, 3584::64-little, 512::64-little, 5::64-little, 1::16-little>>
+
+    raw = terrain <> refined <> instance <> attachment
+    assert byte_size(raw) == 7_971_565
+    assert byte_size(raw) > 7_965_948
+    body = :zlib.compress(raw)
+
+    bytes =
+      <<"VXR8", 8::32-little, 0, 0::32, 7::32-little, 1::32-little, 26_807::64-little,
+        3::64-little, Codec.body_hash(raw)::64-little, 1, byte_size(raw)::32-little,
+        byte_size(body)::32-little, body::binary>>
+
+    assert {:ok, %{raw_bytes: 7_971_565}, ^raw} = Codec.decode_payload_body(bytes)
+    assert {:ok, payload} = Payload.decode(bytes)
+    assert {payload.format_version, payload.region, payload.seq} == {8, {0, 7, 1}, 26_807}
+    assert map_size(payload.refined) == 902
+    assert payload.refined[901][511] == {7, {1, 0}}
+    assert Map.keys(payload.instances) == [{1, 0}]
+    assert payload.attachments == %{{0, 0, {0, 3584, 512}} => {5, 1}}
+  end
+
+  # VXR4 仍只有地形段，格式容量 = 4 + N×24 + 16 + 20 + (66²+1)×4 + 65536×16（N = 66³），超出即拒绝，写端同界。
+  test "VXR4 keeps its terrain capacity on decode and encode" do
+    assert Payload.max_body_bytes(4) == 7_965_948
+    over = 7_965_949
+
+    header =
+      <<"VXR4", 4::32-little, 0, 0::96, 1::64-little, 1::64-little, 0::64, 1, over::32-little,
+        2::32-little, 0, 0>>
+
+    assert Codec.decode_payload_body(header) == {:error, :invalid_payload}
+
+    assert_raise ArgumentError, fn ->
+      Codec.encode_payload(0, {0, 0, 0}, 1, 1, :binary.copy(<<0>>, over), 4)
+    end
+  end
 end
 
 defmodule MmoContracts.PayloadCanonicalEncodingTest do

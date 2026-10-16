@@ -175,9 +175,11 @@ defmodule VoxelRegion.LooseWorldTest do
 
   @tag bounds: {{0, 0, 0}, {2, 1, 3}}
   @tag eye: {1.0, 2.5, 1.5}
-  test "repose: a two-cell channel stops strictly above the material threshold and below it plus 8; water keeps its own", c do
+  test "repose: a two-cell channel stops strictly above the material threshold and below it plus 8; water levels", c do
     t = c.materials[@sand]["loose_threshold_units"]
     tw = c.data["liquid"]["side_threshold_units"]
+    # 水的阈值只是润湿门槛：首倒 1/4 格 > tw 即润湿邻格，此后两格都湿、差值/8 平衡到差 < 8 量子（不再保留 tw 的坡）。
+    assert @quarter > tw
     # 沙槽 z=0 与水槽 z=2 之间隔一排石墙，两种材料互不相邻。
     for cell <- [{0, 0, 1}, {1, 0, 1}], do: assert({:ok, _} = build(c, cell, @stone))
     for n <- 1..4 do
@@ -191,7 +193,7 @@ defmodule VoxelRegion.LooseWorldTest do
       if n * @quarter <= t, do: assert(b == 0), else: assert(a - b > t and a - b < t + 8)
       {wa, wb} = {Map.get(q, {0, 0, 2}, 0), Map.get(q, {1, 0, 2}, 0)}
       assert wa + wb == n * @quarter
-      assert wa - wb > tw and wa - wb < tw + 8
+      assert abs(wa - wb) < 8
     end
     assert material(c.w, {1, 0, 0}) == @sand and material(c.w, {1, 0, 2}) == @water
     assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
