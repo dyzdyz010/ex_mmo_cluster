@@ -89,6 +89,14 @@ defmodule VoxelRegion.BeaconWorldTest do
     result
   end
 
+  # 数据库日志后端按白名单把元数据编成行（OverlayLog.rows/1）；beacon-20261023 实跑：漏列时重启后信标目录为空。
+  test "数据库日志后端的行编码保留信标记录与调谐" do
+    txn = %{seq: 7, entries: [], coarse: [], beacons: %{"qinglan" => @qinglan}, beacon_attunements: %{@a => ["qinglan"]}}
+    [back] = txn |> VoxelRegion.OverlayLog.rows() |> VoxelRegion.OverlayLog.transactions()
+    assert back.beacons == %{"qinglan" => @qinglan}
+    assert back.beacon_attunements == %{@a => ["qinglan"]}
+  end
+
   test "维护入口只在锚心石上装、同 key 只装一次；目录给出手算的核心中心与调谐", c do
     w = c |> start() |> build()
     assert {:ok, %{beacon: "qinglan"} = receipt} = World.beacon_install(w, "q1", @qinglan)

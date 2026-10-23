@@ -531,6 +531,6 @@
     "id": 88,
     "name": "anchor_stone",
     "blocks_movement": true,
-    "supports_attachments": false
+    "supports_attachments": true
   }
 ]

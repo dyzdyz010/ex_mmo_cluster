@@ -29,7 +29,7 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
   @finishes Enum.with_index(~w(silk_gauze lined_canopy_cloth red_lacquer_wood tiger_skin_masonry gray_floor_brick pebble_paving qingbai_stone rammed_lime_earth pond_mud blue_gray_plaster green_oiled_wood natural_oiled_wood suzhou_painted_wood korean_window_paper), 74)
             |> Enum.map(fn {name, id} -> %{"id" => id, "name" => name} end)
 
-  # 传送信标锚心石（Voxim Docs/Gameplay/Beacon.md）：阻挡移动、不支撑附件。
+  # 传送信标锚心石（Voxim Docs/Gameplay/Beacon.md）：阻挡移动、支撑附件（与其他实心石材一致；客户端准星只选中可支撑材料）。
   @beacon [%{"id" => 88, "name" => "anchor_stone"}]
 
   test "Voxim 保留旧材料身份并追加正式建筑材料至87、信标锚心石88" do
@@ -102,12 +102,12 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
       end
 
     finishes = for id <- 74..87, into: <<>>, do: <<id::16-big, 1, 1>>
-    expected = <<"voxim-blocking-v2\n", 89::16-big, records::binary, finishes::binary, 88::16-big, 1, 0>>
+    expected = <<"voxim-blocking-v2\n", 89::16-big, records::binary, finishes::binary, 88::16-big, 1, 1>>
     assert VoxelMaterialCatalog.blocking_bytes() == expected
     assert VoxelMaterialCatalog.blocking_hash() == :crypto.hash(:sha256, expected)
-    # 89项；MAT2a三种木材及封闭纸窗均阻挡/支撑，锚心石88阻挡不支撑；冻结值由 Voxim 生成脚本（Python struct/hashlib）独立复算。
+    # 89项；MAT2a三种木材及封闭纸窗均阻挡/支撑，锚心石88阻挡且支撑；冻结值由 Voxim 生成脚本（Python struct/hashlib）独立复算。
     assert Base.encode16(VoxelMaterialCatalog.blocking_hash(), case: :lower) ==
-             "34b0a95a5a30a8719ed0cae05225d9449b520173f4ae9bb632a82bf1eb228c6c"
+             "8e2dcb3d4fbe3a686090150200e20a47c638f0f8926eb56c522177c1a8db24c7"
 
     IO.puts(
       "W1_MATERIAL " <>
