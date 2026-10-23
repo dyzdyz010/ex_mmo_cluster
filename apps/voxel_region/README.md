@@ -1,5 +1,11 @@
 # Voxim Region 真值
 
+2026-10-17（Global system）：附件支撑、失支撑清理、定义接纳与 L1 投影统一消费
+`VoxelMaterialCatalog.supports_attachments?/1`；移动占用仍只消费 `blocks_movement?/1`。
+65/73 保留支撑、选中和拆除，移动不阻挡；其他材料规则保持。兼容规范见 mmo_contracts README。
+Test-only 的 `prefab_macro_world_test.exs --only lotus_contract` 经公开供料／放置／工具入口验证
+宏微格无碰撞、完整 owner、拆除清附件与材料退款；使用既有 Source/Actor 替身，不证明真实玩家行走。
+
 `VoxelRegion.EditBounds` 提供玩家和 NPC 共用的部署编辑盒判定；配置为 `:voxel_region, :edit_bounds`，来自 `VOXIM_M1_CONFIG`。世界事务合法性仍由 World 裁决。
 
 2026-10-11 NPC 经历操作序列（Global system；测试为 Test-only）：
@@ -679,3 +685,7 @@ B2 显式拆卸沿用工具请求 `0x7D` 的 action=2：服务器重新射线命
 实测与验收证据在 `Voxim/Docs/R6/runtime/s3_server_*`、`s4_lean_*`（D-9 线格式）与 `s4_asset_*`（资产 + 写回），设计决策与边界见 `docs/10-active/voxel-far-field/2026-09-02-voxim-region-payload-and-overlay-log-design.md` 的 S3 记录。
 
 当前 S4 首切片只把正式 baseline 来源替换为在线 kernel，锁住生成、编辑、重启和 unchanged 闭环。DataService 日志、全 catalog 统一、LRU、L4+ 资产与完整 S4 benchmark 仍属于后续收口，不能据此宣称整个 S4 完成。
+
+通用稀疏树冠仅由VXPD4的 presentation_bindings 显式启用。World.Canopy读取现存macro_owners/instances与canonical值，派生所有LOD的同一1m锚点集合和去叶残余，不读模板重建；编辑、替换、采集、邻格变化经既有完整后像与检查点传播。详情及61项最小回归见2026-09-21-prefab-macro-cells-design.md的2026-10-17节，客户端/生产视觉验收另计。
+
+地块迁移（全局系统维护，Voxim `Docs/Playtest/terrain-transplant-design.md`）：`World.parcel_export(server, {lo, hi})` 在一个 seq 上读出半开宏格盒的完整 L0 真值——每格 `{material, skins}`（空气也是内容）、细化槽、宏格归属、有限数量、实例树、附件、相关属性行与所用定义字节；盒子切到任何实例树或附件时拒绝，不切半座建筑。`World.parcel_install(server, key, parcel, delta)` 以整米平移把目标盒整体换成地块内容，是一笔普通 `Prefabs.prefab_reply` 提交（后像、粗层、结构、碰撞、日志、广播照旧）；实例与附件取目标新身份，放置者归作者，数量与 HP 随地块，温度与相态焓按目标环境重设并计入 `phase_authored` 账；目标盒触及受保护区域或原有实例／附件越出盒界时整笔拒绝；回执 `material_supplies[{0, {:parcel, key}}]`（含安装前后材料净差）随事务持久，同 key 只装一次。缺失定义只写 `.vxpd` 进世界 prefabs 目录，不进玩家发布列表。两者只经 release rpc 在维护窗口调用，不接 Gate。回放需要回执原子在启动时存在，所以只能在含此模块的正式构建上安装（热加载模块装入的事务无法冷启动回放）。测试：`test/parcel_world_test.exs`。

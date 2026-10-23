@@ -1,5 +1,5 @@
 defmodule VoxelRegion.Prefab do
-  @moduledoc "全局系统功能：VXPD v1–v3 发布 DAG；micro、宏格和初始附件共用 preorder occurrence，实际状态归 World。"
+  @moduledoc "全局系统功能：VXPD v1–v4 发布 DAG；micro、宏格和初始附件共用 preorder occurrence，实际状态归 World。"
   alias MmoContracts.VoxelMaterialCatalog
   @runtime_limits [macro_cells: {1_048_576,:macro_cell_limit},micro_cells: {32768,:micro_cell_limit},
     nodes: {128,:node_limit},depth: {8,:depth_limit},attachment_slots: {8192,:attachment_slot_limit}]
@@ -46,25 +46,40 @@ defmodule VoxelRegion.Prefab do
     end)
   end
 
-  @doc "唯一VXPD v3编码；草稿排序后按内容寻址，不重排已发布v1/v2字节。"
+  @doc "草稿排序后按内容寻址；无绑定输出原VXPD v3，显式呈现绑定输出v4，不重排已发布字节。"
   def encode(definition) do
     cells=Enum.sort(definition.cells)
     macros=Enum.sort(Map.get(definition,:macro_cells,[]))
     children=Enum.sort_by(definition.children,& &1.slot)
     attachments=Enum.sort_by(Map.get(definition,:attachments,[]),& &1.slot)
-    IO.iodata_to_binary([<<"VXPD",3::32-little,length(cells)::32-little>>,encode_cells(cells),
+    bindings=Enum.sort(Map.get(definition,:presentation_bindings,%{}))
+    version=if bindings==[],do: 3,else: 4
+    IO.iodata_to_binary([<<"VXPD",version::32-little,length(cells)::32-little>>,encode_cells(cells),
       <<length(children)::32-little>>,
       for(%{slot: slot,definition_id: id,anchor: {x,y,z},orientation: o} <- children,
         do: <<slot::32-little,id::binary-size(32),x::signed-little-32,y::signed-little-32,z::signed-little-32,o>>),
       <<length(attachments)::32-little>>,
       for(%{slot: slot,kind: kind,axis: axis,anchor: {x,y,z},size: size,material: m} <- attachments,
         do: <<slot::32-little,kind,axis,x::signed-little-32,y::signed-little-32,z::signed-little-32,size,m::16-little>>),
-      <<length(macros)::32-little>>,encode_cells(macros)])
+      <<length(macros)::32-little>>,encode_cells(macros),
+      if(version==4,do: [<<length(bindings)::32-little>>,for({m,p}<-bindings,do: <<m::16-little,p::16-little>>)],else: [])])
   end
 
   defp encode_cells(cells),do: for({{x,y,z},m} <- cells,do: <<x::signed-little-32,y::signed-little-32,z::signed-little-32,m::16-little>>)
 
   def decode(bytes),do: decode_definition(bytes,false)
+  defp decode_definition(<<"VXPD",4::32-little,n::32-little,cells::binary-size(n*14),count::32-little,children::binary-size(count*49),a::32-little,attachments::binary-size(a*21),m::32-little,macros::binary-size(m*14),b::32-little,bindings::binary>>,bounded) when b>0 and b<=65535 and byte_size(bindings)==b*4 do
+    base=<<"VXPD",3::32-little,n::32-little,cells::binary,count::32-little,children::binary,a::32-little,attachments::binary,m::32-little,macros::binary>>
+    pairs=for <<material::16-little,presentation::16-little <- bindings>>,do: {material,presentation}
+    materials=Enum.map(pairs,&elem(&1,0))
+    with {:ok,definition} <- decode_definition(base,bounded),
+         true <- materials==Enum.sort(Enum.uniq(materials)),
+         true <- Enum.all?(pairs,fn {material,presentation}->presentation>0 and Enum.any?(definition.macro_cells,fn {_,m}->m==material end) end) do
+      {:ok,Map.put(definition,:presentation_bindings,Map.new(pairs))}
+    else
+      _ -> {:error,:invalid_definition}
+    end
+  end
   defp decode_definition(<<"VXPD",version::32-little,n::32-little,body::binary-size(n*14),count::32-little,children::binary-size(count*49),tail::binary>>,bounded) when version in [1,2,3] do
     with :ok <- count_limit(:micro_cells,n,bounded),
          :ok <- count_limit(:nodes,count+1,bounded),
@@ -315,7 +330,7 @@ defmodule VoxelRegion.Prefab do
     cond do
       length(slots)!=MapSet.size(MapSet.new(slots)) -> {:error,:overlapping_attachments}
       not Enum.all?(slots,fn slot -> Enum.any?(VoxelRegion.Attachments.neighbors(slot),
-        &VoxelMaterialCatalog.blocks_movement?(Map.get(samples,&1,Map.get(macro_samples,elem(macro_slot(&1),0),0)))) end) -> {:error,:unsupported_attachment}
+        &VoxelMaterialCatalog.supports_attachments?(Map.get(samples,&1,Map.get(macro_samples,elem(macro_slot(&1),0),0)))) end) -> {:error,:unsupported_attachment}
       true -> :ok
     end
   end

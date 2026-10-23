@@ -757,7 +757,7 @@ defmodule MmoContracts.Voxel.Codec do
              (magic == "VXR6" and version == 6) or (magic == "VXR7" and version == 7) or
              (magic == "VXR8" and version == 8) or (magic == "VXR9" and version == 9) or
              (magic == "VXRA" and version == 10) or (magic == "VXRB" and version == 11) or
-             (magic == "VXRC" and version == 12) do
+             (magic == "VXRC" and version == 12) or (magic == "VXRD" and version == 13) do
     {:ok,
      %{
        version: version,
@@ -796,6 +796,7 @@ defmodule MmoContracts.Voxel.Codec do
     magic =
       case version do
         9 -> "VXR9"
+        13 -> "VXRD"
         12 -> "VXRC"
         11 -> "VXRB"
         10 -> "VXRA"

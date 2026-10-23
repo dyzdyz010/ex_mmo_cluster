@@ -149,7 +149,13 @@ defmodule VoxelRegion.World.Payloads do
   def ring_axis(0), do: 1..(Payload.extent() - 2)
   def ring_axis(1), do: (Payload.extent() - 1)..(Payload.extent() - 1)
 
-  def with_refined(state, %Payload{level: 0, region: {rx, ry, rz} = region} = payload) do
+  def with_refined(state, %Payload{} = payload) do
+    {payload,state}=with_existing_details(state,payload)
+    {anchors,instances,residual,structure,state}=VoxelRegion.World.Canopy.project(state,payload.level,payload.region)
+    {%{payload | canopy: anchors,canopy_instances: instances,canopy_residual: residual,
+       canopy_residual_structure: structure,base_instances: nil,base_format_version: nil},state}
+  end
+  defp with_existing_details(state, %Payload{level: 0, region: {rx, ry, rz} = region} = payload) do
     # 载荷跨度含一圈 ring：只看本区与 26 个相邻区的 refined 宏格（区域索引），不扫全世界。
     near = refined_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz}))
 
@@ -187,7 +193,7 @@ defmodule VoxelRegion.World.Payloads do
      }, %{state | refined_encoded: encoded}}
   end
 
-  def with_refined(state, %Payload{level: level, region: region} = payload) do
+  defp with_existing_details(state, %Payload{level: level, region: region} = payload) do
     structure =
       for {{^level, cell}, grid} <- state.structure,
           local = Payload.local(region, cell),

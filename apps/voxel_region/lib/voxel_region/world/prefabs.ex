@@ -238,6 +238,10 @@ defmodule VoxelRegion.World.Prefabs do
     end
   end
 
+  # 地块安装（World.Parcel）：数量与相态值随地块带入，不按模板满格建立初态。
+  def prefab_payment(_before, state, _cells, %{parcel_phase_values: values} = settlement),
+    do: {:ok, state, settlement |> Map.delete(:parcel_phase_values) |> Map.put(:prefab_phase_values, values)}
+
   def prefab_payment(before, state, cells, settlement) do
     # 作者入口与既有 liquid_experiment 一样，首次给宏格建立有限相态。
     added = changed_prefab_macros(state,before,cells)
@@ -531,15 +535,17 @@ defmodule VoxelRegion.World.Prefabs do
         Map.get(before.liquid_units,cell) != Map.get(state.liquid_units,cell)
       end))
       {:ok, coarse, state, _} = Edits.reduce_batch(state, AttachmentOps.attachment_dirty(state, cells), 1, [], 0)
-      {coarse_txn, state} = Log.select_transaction(state, coarse)
+      canopy_keys = VoxelRegion.World.Canopy.affected_keys(before,state,cells)
+      covered = MapSet.new(canopy_keys)
+      {coarse_txn, state} = Log.select_transaction(state, Enum.reject(coarse,fn {level,cell}->MapSet.member?(covered,{level,region_of(cell)}) end))
       macro_dirty = Enum.map(macro_changes,&{0,&1})
       # 宏格所在区域全都随本笔重编 L0 后像（l0_keys ⊇ 这些格的区域），后像直接在提交前缓存上改格，不先刷一遍地形缓存。
       terrain_payloads = Map.merge(before.payloads,state.payloads)
       {state, structure_keys, structure_cells} = Payloads.refresh_structure(state, cells)
       structure_done = System.monotonic_time(:microsecond)
-      l0_keys = Enum.uniq(Payloads.region_keys(Enum.map(cells, &{0, &1})) ++ attachment_keys)
+      l0_keys = Enum.uniq(Payloads.region_keys(Enum.map(cells, &{0, &1})) ++ attachment_keys ++ canopy_keys)
       keys = l0_keys ++ structure_keys
-      {entries, state} = Payloads.region_afterimages(state, l0_keys, terrain_payloads,macro_dirty)
+      {entries, state} = Payloads.region_afterimages(state, l0_keys, terrain_payloads,macro_dirty ++ coarse)
       region_count = length(entries)
 
       entries = entries ++ Payloads.structure_entries(state, structure_cells)

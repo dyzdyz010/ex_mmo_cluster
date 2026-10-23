@@ -119,13 +119,16 @@ defmodule VoxelRegion.World.AttachmentOps do
   def attachment_geometry(before, state, slots) do
     dirty = Enum.map(Attachments.macros(slots), &{0, &1})
     {:ok, coarse, state, _} = Edits.reduce_batch(state, dirty, 1, [], 0)
-    {coarse_txn, state} = Log.select_transaction(state, coarse)
-    keys = Payloads.region_keys(dirty)
+    canopy_keys = VoxelRegion.World.Canopy.affected_keys(before, state, Enum.map(dirty, &elem(&1, 1)))
+    covered = MapSet.new(canopy_keys)
+    {coarse_txn, state} = Log.select_transaction(state,
+      Enum.reject(coarse, fn {level, cell} -> MapSet.member?(covered, {level, region_of(cell)}) end))
+    keys = Enum.uniq(Payloads.region_keys(dirty) ++ canopy_keys)
 
     {state, structure_keys, structure_cells} =
       Payloads.refresh_structure(state, Enum.map(dirty, &elem(&1, 1)))
 
-    {entries, state} = Payloads.region_afterimages(state, keys, before.payloads)
+    {entries, state} = Payloads.region_afterimages(state, keys, before.payloads, coarse)
     entries = entries ++ Payloads.structure_entries(state, structure_cells)
     {%{coarse_txn | entries: entries ++ coarse_txn.entries}, Enum.uniq(keys ++ structure_keys), state}
   end

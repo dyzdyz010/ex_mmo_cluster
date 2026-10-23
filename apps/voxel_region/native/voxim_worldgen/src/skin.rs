@@ -72,7 +72,14 @@ fn mode<T: Copy + Into<u16>>(values: &[T]) -> u16 {
 fn is_trunk(material: u16) -> bool {
     material == 19 || (25..=27).contains(&material) || matches!(material, 57 | 59 | 61 | 63)
 }
-/// 地面花草（32..=39）只存在于精确 L0：进 L1 的投票前当空气，材质与表皮都不带上去。
+// 与正式 VoxelMaterialCatalog.lod_dry_sheet?/1、客户端目录逐项一致：
+// 液体 21/22，透明 20/21/44/50/74/87，foliage 28..39/58/60/61/62/64，树干，装饰 65..73。
+fn is_dry_sheet(material: u16) -> bool {
+    material != 0 && !matches!(material, 20 | 21 | 22 | 44 | 50 | 74 | 87)
+        && !(28..=39).contains(&material) && !matches!(material, 58 | 60 | 61 | 62 | 64)
+        && !is_trunk(material) && !(65..=73).contains(&material)
+}
+/// 全局系统功能 ReduceCellV2：L1 花草先过滤；旧多数/树干优先，完整水平干片保留；表皮仍为 ReduceSkinsV1。
 pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
     let cleared;
     let children = if level == 1 && children.iter().any(|c| (32..=39).contains(&c.material)) {
@@ -93,6 +100,16 @@ pub(crate) fn reduce(children: &[Value; 8], level: i32) -> Value {
         let trunks: Vec<u16> = materials.iter().copied().filter(|&m| is_trunk(m)).collect();
         if trunks.len() >= 2 {
             material = mode(&trunks);
+        }
+    }
+    if material == 0 {
+        for phase in [0, 2] {
+            let sheet = [0, 1, 4, 5].map(|oct| materials[oct | phase]);
+            let other = [0, 1, 4, 5].map(|oct| materials[oct | (phase ^ 2)]);
+            if sheet.iter().all(|&m| is_dry_sheet(m)) && other.iter().all(|&m| m == 0) {
+                material = mode(&sheet);
+                break;
+            }
         }
     }
     let child_extent = map_extent(level - 1);
@@ -256,6 +273,79 @@ pub(crate) fn encode(cells: &[u16], records: &[(usize, Skins)], level: i32) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 只测试：F2a 冻结八格；期望为手算常量，不借另一实现生成。
+    #[test]
+    fn reduce_cell_v2_frozen_octants() {
+        for level in 1..=5 {
+            for (ids, expected) in [
+                ([0,0,1,1,0,0,1,1],1), ([1,1,0,0,1,1,0,0],1),
+                ([11,7,0,0,11,7,0,0],7), ([11,7,0,0,11,11,0,0],11),
+                ([1,0,0,1,0,1,1,0],0), ([1,0,1,0,1,0,1,0],0),
+                ([1,1,0,0,1,0,0,0],0), ([19,1,0,0,1,1,0,0],0),
+                ([1,0,0,0,0,0,0,0],0), ([0;8],0), ([11;8],11),
+                ([1,1,1,1,19,0,19,0],1),
+            ] {
+                assert_eq!(reduce(&ids.map(Value::uniform),level).material,expected,"L{level} {ids:?}");
+            }
+        }
+        let sheet = [19,19,0,0,19,19,0,0].map(Value::uniform);
+        assert_eq!(reduce(&sheet,1).material,19);
+        assert_eq!(reduce(&sheet,2).material,0);
+    }
+
+    #[test]
+    fn reduce_cell_v2_exclusions_and_skins() {
+        let excluded: Vec<u16> = [20,21,22,44,50,74,87,19,25,26,27].into_iter()
+            .chain(28..=39).chain(57..=73).collect();
+        for level in [1,2] {
+            for &m in &excluded {
+                for corner in [0,1,4,5] {
+                    let mut ids = [1,1,0,0,1,1,0,0];
+                    ids[corner] = m;
+                    assert_eq!(reduce(&ids.map(Value::uniform),level).material,0,"L{level} {ids:?}");
+                }
+                let expected = if level == 1 && [19,25,26,27,57,59,61,63].contains(&m) {m} else {0};
+                assert_eq!(reduce(&[m,m,0,0,m,m,0,0].map(Value::uniform),level).material,expected);
+            }
+        }
+        let flora = [1,1,32,32,1,1,32,32].map(Value::uniform);
+        let value = reduce(&flora,1);
+        assert_eq!(value.material,1);
+        for face in 0..6 { for j in 0..2 { for i in 0..2 {
+            assert!([0,1].contains(&value.skins.texel(face,i,j)));
+        }}}
+        assert_eq!(reduce(&flora,2).skins.texel(3,0,0),32);
+        let value = reduce(&[0,0,1,1,0,0,1,1].map(Value::uniform),1);
+        for face in [2,3] { for j in 0..2 { for i in 0..2 {
+            assert_eq!(value.skins.texel(face,i,j),1);
+        }}}
+        assert_eq!(reduce(&[Value {material: 0, skins: Skins::uniform(1)};8],1).material,0);
+    }
+
+    #[test]
+    fn reduce_cell_v2_recursive_sheet_phases_and_negative_xyz() {
+        for [x0,y,z0] in [[12,504,0],[12,505,0],[12,506,0],[12,507,0],[-4,-3,-4]] {
+            let canonical: HashMap<[i32;3],Value> = (z0..z0+4).flat_map(|z|
+                (x0..x0+4).map(move |x| ([x,y,z],Value::uniform(1)))).collect();
+            let mut field = canonical.clone();
+            for level in 1..=2 {
+                let parents: std::collections::HashSet<_> = field.keys().map(|p| p.map(|v| v.div_euclid(2))).collect();
+                field = parents.into_iter().map(|p| {
+                    let children = std::array::from_fn(|oct| {
+                        let c = std::array::from_fn(|axis| p[axis]*2+((oct>>axis)&1) as i32);
+                        field.get(&c).copied().unwrap_or(Value::uniform(0))
+                    });
+                    (p,reduce(&children,level))
+                }).collect();
+                let expected_count = if level == 1 {4} else {1};
+                assert_eq!(field.values().filter(|v| v.material==1).count(),expected_count);
+                assert_eq!(expected_count*(1usize<<(2*level)),16);
+                assert!(field.keys().all(|p| p[1]==y.div_euclid(1<<level)));
+            }
+            assert_eq!(canonical.len(),16);
+            assert!(canonical.iter().all(|(p,v)| p[1]==y && v.material==1));
+        }
+    }
     #[test]
     fn every_occupancy_mask_preserves_six_directional_surfaces() {
         for mask in 0u32..256 {
@@ -267,7 +357,8 @@ mod tests {
                 })
             });
             let value = reduce(&children, 1);
-            assert_eq!(value.material != 0, mask.count_ones() >= 5);
+            // V2 只在这两个完整水平 mask 增加主体；其余仍为严格多数。
+            assert_eq!(value.material != 0, mask.count_ones() >= 5 || mask == 0x33 || mask == 0xcc);
             for face in 0..6 {
                 let axis = face / 2;
                 let u = (axis + 1) % 3;

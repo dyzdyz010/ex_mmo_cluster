@@ -2,6 +2,24 @@ defmodule VoxelRegion.PrefabDefinitionTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Prefab
 
+  test "不阻挡的荷材料保持宏微支撑定义与附件身份" do
+    for material <- [65, 73], macro <- [false, true] do
+      size = if macro, do: 8, else: 1
+      face = %{slot: 7, kind: 0, axis: 1, anchor: {0, size, 0}, size: 1, material: material}
+      definition = %{cells: [], macro_cells: [], children: [], attachments: [face]}
+      field = if macro, do: :macro_cells, else: :cells
+      definition = Map.put(definition, field, [{{0, 0, 0}, material}])
+      assert {:ok, id, compiled} = Prefab.compile(Prefab.encode(definition), %{})
+      assert byte_size(id) == 32
+      assert [%{owner: {99, 0}, slot: 7, material: ^material, slots: [{0, 1, {0, ^size, 0}}]}] =
+               Prefab.attachments(compiled, {0, 0, 0}, 0, 99)
+      for invalid_support <- [21, 35] do
+        invalid = Map.put(definition, field, [{{0, 0, 0}, invalid_support}])
+        assert {:error, :unsupported_attachment} = Prefab.compile(Prefab.encode(invalid), %{})
+      end
+    end
+  end
+
   # 只测试：纯定义契约，不启动 World，不覆盖持久化、网络或渲染。
   test "v3 adds macro cells after the v2 attachment segment without changing v1 or v2" do
     cell = <<0::signed-little-32, 0::signed-little-32, 0::signed-little-32, 11::16-little>>

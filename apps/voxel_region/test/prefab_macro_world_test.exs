@@ -10,12 +10,12 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     File.mkdir_p!(Path.join(root, "prefabs"))
     properties = Path.join(root, "properties.json")
     File.write!(properties, Jason.encode!(%{schema_version: 1, tags: [%{id: "damage"}],
-      materials: for(m <- 0..23, do: %{material_id: m, max_hp_per_macro: if(m == 0, do: 0, else: 100),
+      materials: for(m <- Enum.to_list(0..23) ++ if(context[:lotus_contract], do: [65,73], else: []), do: %{material_id: m, max_hp_per_macro: if(m == 0, do: 0, else: 100),
         defense: 2, tags: [], responses: [%{action: "damage", multiplier: 1}]}),
       tools: [%{id: "pick", tool_id: 1, action: "damage", power: 30, range_macro: 6,
         interval_seconds: 0.5}], definitions: []}))
     opts = [source: Source, root: root, observer: self(), name: nil,
-      property_catalog_path: properties, prefab_catalog_path: nil, production_materials: [11,19]]
+      property_catalog_path: properties, prefab_catalog_path: nil, production_materials: [11,19] ++ if(context[:lotus_contract], do: [65,73], else: [])]
     opts = if context[:database] do
       :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
       on_exit(fn -> DataService.Voxel.OverlayLogStore.replace(123,[]) end)
@@ -331,6 +331,38 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     assert World.stats(c.world).attachment_slots == 0
     assert World.stats(c.world).instances == 0
     assert balance(c,11) == 512 and balance(c,19) == 64
+  end
+
+  for material <- [65,73], macro <- [false,true] do
+    @tag :lotus_contract
+    test "荷材料 #{material} 的 #{if macro, do: "宏", else: "微"} 支撑可拾取拆除并清附件退料", c do
+      material = unquote(material)
+      macro = unquote(macro)
+      size = if macro, do: 8, else: 1
+      cells = [{{0,0,0},material}]
+      id = define(c, if(macro,do: cells,else: []), if(macro,do: [],else: cells), [], 3,
+        [{7,0,1,{0,size,0},1,material}])
+      assert :ok = publish(c)
+      # 既有 schema1 测试规格：一微格一单位、一面槽一单位；正常供料与消费，不回填余额。
+      units = if(macro,do: 512,else: 1) + 1
+      assert {:ok,1} = World.material_supply(c.world,1001,"lotus-contract",%{material=>units})
+      assert {:ok,2} = place(c,id)
+      assert balance(c,material) == 0
+      assert World.stats(c.world).attachment_slots == 1
+      assert {:ok,target} = query(c)
+      assert target.material == material
+      assert target.owner == {2,0}
+      payload = VoxelRegion.TestSupport.payload(c.world,0,{0,0,0})
+      occupancy = VoxelRegion.CollisionSource.capture(payload,{0,0,0})
+      assert occupancy.cells == :binary.copy(<<0>>,occupancy.n*occupancy.n*occupancy.n)
+      request = Map.merge(Map.take(target,[:micro,:incarnation,:owner,:material]),%{request_id: 9,
+        client_intent_seq: 9,logical_scene_id: 1,action: 2,direction: {0.0,0.0,1.0},tool_id: 1})
+      actor = Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
+      assert {:ok,3} = World.tool_intent(c.world,actor,request)
+      assert World.stats(c.world).attachment_slots == 0
+      assert World.stats(c.world).instances == 0
+      assert balance(c,material) == units
+    end
   end
 
 

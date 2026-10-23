@@ -26,9 +26,9 @@ defmodule VoxelRegion.Attachments do
     for a <- [-1,0],b <- [-1,0],do: p |> offset(u,a) |> offset(v,b)
   end
 
-  @doc "支撑按已有阻挡目录判断，完整采样由 World 提供。"
+  @doc "支撑按独立附件资格目录判断，完整采样由 World 提供。"
   def supported?(slot,samples), do: Enum.any?(neighbors(slot),fn p ->
-    MmoContracts.VoxelMaterialCatalog.blocks_movement?(Map.fetch!(samples,p))
+    MmoContracts.VoxelMaterialCatalog.supports_attachments?(Map.fetch!(samples,p))
   end)
 
   @doc "规范槽归属区域，仅 anchor 所在 core 拥有事实。"
@@ -80,7 +80,7 @@ defmodule VoxelRegion.Attachments do
             {m,s}=sample.(host,s)
             outside=offset(host,axis,sign)
             {visible,s}=exposed(outside,axis,sign,inside,sample,s)
-            if MmoContracts.VoxelMaterialCatalog.blocks_movement?(m) and visible do
+            if MmoContracts.VoxelMaterialCatalog.supports_attachments?(m) and visible do
               u=rem(axis+1,3);v=rem(axis+2,3);face=axis*2+if(sign>0,do: 1,else: 0)
               key={face,elem(host,u)-elem(min,u),elem(host,v)-elem(min,v)}
               old=Map.get(cols,key)

@@ -1,6 +1,6 @@
 defmodule VoxelRegion.Reducer do
   @moduledoc """
-  Voxim `ReduceBlockV1` / `ReduceSkinsV1` 的逐 bit 移植（`Voxim/Source/Voxim/Voxel/Lod/VoxelLodReduce.cpp`，决策稿 §2.3）。
+  全局系统功能：Voxim `ReduceCellV2`，基础 `ReduceBlockV1` / `ReduceSkinsV1` 语义不变。
 
   值的表示：
   - 材质：0..255 的整数，0 = 空气
@@ -13,6 +13,7 @@ defmodule VoxelRegion.Reducer do
   """
 
   import Bitwise
+  alias MmoContracts.VoxelMaterialCatalog, as: Materials
 
   @max_extent 4
 
@@ -127,17 +128,16 @@ defmodule VoxelRegion.Reducer do
 
   @air_skins {1, List.to_tuple(List.duplicate({0, nil}, 6))}
 
-  @doc "`ReduceCellV1`：材质 + 表皮。地面花草（32..39）只存在于精确 L0，进 L1 前当空气（与 Rust `skin::reduce` 同一条）。"
+  @doc "`ReduceCellV2`：L1 花草过滤、旧多数/树干优先；旧主体为空时保留完整水平干实体片，表皮仍按 V1。"
   def reduce_cell(children, 1) do
-    reduce_cell_any(Enum.map(children, fn {m, s} -> if m in 32..39, do: {0, @air_skins}, else: {m, s} end), 1)
+    reduce_cell_any(Enum.map(children, fn {m, s} -> if Materials.flora?(m), do: {0, @air_skins}, else: {m, s} end), 1)
   end
 
   def reduce_cell(children, level), do: reduce_cell_any(children, level)
 
-  # 树干保留（仅 L0→L1，与 Rust `skin::reduce`、客户端 `ReduceCellV1` 同一条）：实体不足 5 格但树干 ≥ 2 格 → 父格是树干。
-  defp reduce_cell_any(children, 1) do
+  defp reduce_cell_any(children, level) do
     materials = Enum.map(children, fn {m, _s} -> m end)
-    trunks = Enum.filter(materials, &(&1 == 19 or &1 in 25..27 or &1 in [57, 59, 61, 63]))
+    trunks = if level == 1, do: Enum.filter(materials, &Materials.trunk?/1), else: []
 
     material =
       case reduce_material(materials) do
@@ -145,10 +145,19 @@ defmodule VoxelRegion.Reducer do
         other -> other
       end
 
-    {material, reduce_skins(Enum.map(children, fn {_m, s} -> s end), 1)}
+    material = if material == 0, do: reduce_dry_sheet(materials), else: material
+    {material, reduce_skins(Enum.map(children, fn {_m, s} -> s end), level)}
   end
 
-  defp reduce_cell_any(children, level) do
-    {reduce_material(Enum.map(children, fn {m, _s} -> m end)), reduce_skins(Enum.map(children, fn {_m, s} -> s end), level)}
+  defp reduce_dry_sheet(materials) do
+    # canonical Y-up；octant = x + 2*y + 4*z。四角逐一检查，另一半必须全空。
+    {low, high} = materials |> Enum.with_index() |> Enum.split_with(fn {_, oct} -> (oct &&& 2) == 0 end)
+    low = Enum.map(low, &elem(&1, 0))
+    high = Enum.map(high, &elem(&1, 0))
+    cond do
+      Enum.all?(low, &Materials.lod_dry_sheet?/1) and Enum.all?(high, &(&1 == 0)) -> mode(low)
+      Enum.all?(high, &Materials.lod_dry_sheet?/1) and Enum.all?(low, &(&1 == 0)) -> mode(high)
+      true -> 0
+    end
   end
 end

@@ -233,9 +233,10 @@ defmodule VoxelRegion.World.Edits do
             {state, attachment_keys, settlement} =
               AttachmentOps.prune_attachments(before, state, Enum.map(geometry_changed, &elem(&1, 1)), settlement)
 
+            canopy_keys = VoxelRegion.World.Canopy.affected_keys(before,state,Enum.map(geometry_changed,&elem(&1,1)))
             afterimage_keys =
               Enum.uniq(
-                attachment_keys ++
+                canopy_keys ++ attachment_keys ++
                   Payloads.region_keys(Enum.map(removed_cells, &{0, &1})) ++ Payloads.region_keys(liquid_dirty)
               )
 
@@ -327,7 +328,7 @@ defmodule VoxelRegion.World.Edits do
                      {:ok,{m,_},_}=cell_value(state,0,c); MmoContracts.VoxelMaterialCatalog.blocks_movement?(m)
                    end))),
                  collided = System.monotonic_time(:microsecond),
-                 :ok <- append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells) do
+                 :ok <- append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
               appended = System.monotonic_time(:microsecond)
               state = Log.remember_entry(state, txn)
               Observation.fanout(state, txn)
@@ -360,8 +361,8 @@ defmodule VoxelRegion.World.Edits do
   # 持久日志的表示：区域后像只因液体数量变化而产生（无附件、实例、细化、移除）时，日志改记变化格——
   # 材料用既有 0x77 kind0 格条目，数量用 `liquid_units` 增量（0 = 删除），回放标记同一批区域为完整快照。
   # 日志体积随变化格数增长，不随区域大小；在线广播、订阅与 Replica 仍消费含后像的原事务。
-  defp append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells) do
-    if afterimages != [] and attachment_keys == [] and removed_cells == [] and state.instances == before.instances and
+  defp append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
+    if canopy_keys == [] and afterimages != [] and attachment_keys == [] and removed_cells == [] and state.instances == before.instances and
          state.attachment_owners == before.attachment_owners and state.refined == before.refined do
       covered = MapSet.new(Payloads.region_keys(liquid_dirty))
       cells =
@@ -377,6 +378,13 @@ defmodule VoxelRegion.World.Edits do
 
   def needs_source?(state, key),
     do: not Map.has_key?(state.region_bases, key) and not Map.has_key?(state.decoded, key)
+
+  @doc "在 owner 回合里物化这些宏格所在的冷 L0 区域（GM 与地块维护的大批量读写用）。"
+  def ensure_sources(state, cells) do
+    for key <- Enum.uniq(Enum.map(cells, &{0, region_of(&1)})), needs_source?(state, key),
+      do: :ok = state.source.ensure(state.source_state, 0, elem(key, 1))
+    state
+  end
 
   # 宏格编辑已排除refined cell，故L0细节后缀未变；仅更新已有热缓存，冷缺失仍由真值物化。
   def refresh_macro_payloads(before, state, changed, skip) do
@@ -415,6 +423,7 @@ defmodule VoxelRegion.World.Edits do
           {:ok, children, s} ->
             case cell_value(s, level, parent) do
               {:ok, old, s} ->
+                # ReduceCellV2 与 baseline 共用占据契约；附件仍只投影表皮。
                 {material, skins} = Reducer.reduce_cell(children, level)
 
                 {skins, s} =

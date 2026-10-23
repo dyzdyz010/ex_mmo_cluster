@@ -106,3 +106,39 @@ prefab 里的一个宏格就是一个**隐式的最小叶子**：射线打到哪
 
 把 refined 真值改成盒 / 八叉树编码；为每个宏格建实例记录；迁移已放下的旧实例；图像渲染；把“笔记本”做成世界里的实体；
 整套延时建造与审批。
+
+## 2026-10-17：显式通用稀疏树冠呈现（VXPD4 / VXRD13）
+
+用户已批准按新定义启用的通用呈现扩展。旧定义、材料结算、归属、碰撞和 ReduceBlockV1 保持原合同；不按树种名或材料58启用。服务端唯一输入为现存 macro_owners、instances、定义的 presentation_bindings 以及 canonical cell_value，绝不从发布模板恢复已删占用。
+
+依据与取舍：沿用本仓 `MmoContracts.Voxel.Refined` v7的实例身份/父子关系，`VoxelRegion.Reducer.reduce_cell` 与 `VoxelRegion.Structure` 的既有归约和方向附件投影。新呈现只是在真实占用集合上派生另一份可丢弃呈现值。Epic 官方 [Instanced Static Mesh Component](https://dev.epicgames.com/documentation/en-us/unreal-engine/instanced-static-mesh-component-in-unreal-engine) 说明同网格实例可共享组件、逐实例变换而组件共用材质；客户端据 presentation id 分组，保持1m宏格锚点与scale1。ISM并不自动保证性能，密度、可见实例和边界交换须后续实测。wire只含锚点与身份，不传逐叶片几何。
+
+```mermaid
+flowchart LR
+  C[canonical宏格与现有owner] --> A[显式绑定锚点]
+  D[VXPD4材质到呈现绑定] --> A
+  A --> R[去除绑定宏格后的纯呈现归约]
+  A --> W[VXRD区域后像]
+  R --> W
+  W --> I[客户端固定尺度实例与残余表面]
+```
+
+所有整数小端。VXPD4保持v3全布局，仅version=4；宏格列表之后追加binding_count:u32，再按material严格升序的 `{material:u16,presentation:u16}`。两者非零且material必须出现在本定义macro_cells；不继承父定义绑定。无绑定的encode仍输出原v3字节，绑定进入SHA256内容身份。
+
+VXRD头magic=`VXRD`，version=13；body为原terrain段 + base_version:u32(4..12) + base_tail_length:u32 + 原base尾 + canopy段。base保留原格式语义，禁止递归wrapper。canopy段：
+
+1. canopy_version:u32=1。
+2. 原Refined v7段，refined_count固定0；instance_count:u32及85字节实例（含祖先），按既有排序；与base同ID的共享字段必须相同。解码公开实例表合并，保存base实例集合供字节往返。
+3. anchor_count:u32；按世界XYZ字典序，每条 `x:i64,y:i64,z:i64,birth:u64,occurrence:u32,material:u16,presentation:u16`，40字节。XYZ为1m真实宏格位置，负坐标按floor除法投影，范围为该LOD的66格完整三维core/ring。
+4. residual_count:u32；按local cell index严格升序，每条 `index:u32,material:u16,skin_extent:u8,face_ids:u8[6],map_mask:u8`，随后按face升序的置位面extent²个u8 texels。extent=1/2/4；extent1不得带map，mask仅低6位。残余来自将绑定宏格替换为空后的同一Reducer，保留未绑定旧叶/树干/其他主体。
+5. 现有Structure v2段：`2:u32,count:u32`与现有index/count/grid记录。空段精确8字节`2,0`。只包含受影响且原有structure的格；残余存在而该格无残余structure表示移除原呈现structure。原canonical structure保持。非空复用原结构信任边界。
+
+不因粗材质未变化而停止呈现失效：每次实际编辑或owner替换，将前后绑定宏格祖格与本次变化祖格相交，在LOD0..5及对应ring发布完整区域后像。已有payload缓存、region日志和代际顺序仍是唯一更新链路，不引入额外持久化真值。
+
+测试范围：纯协议冻结字节/坏包，纯派生两个同58粗格的5/8不同布局、负XYZ及region ring、混旧叶残余；真实World公共publish/place/tool collect/replace/remove/文件日志恢复及原材料余额。测试Source只提供空baseline，Actor只替代鉴权角色上下文；不代表真实网络/UE渲染验收。依赖只用现有Mix环境，不启动DB、线上世界或UE。服务端测试文件为canopy_test.exs、canopy_definition_test.exs、canopy_projection_test.exs、canopy_world_test.exs；阶段状态：服务端协议与World闭环已实现并通过下述最小回归；客户端互通/渲染及真实部署另行验收。
+
+服务端验证（2026-10-17）：mmo_contracts 的 canopy/payload/payload_reuse/liquid_wire/r7_prefab 共35项通过；voxel_region 的 canopy_definition/canopy_projection/canopy_world、prefab_definition/prefab_macro_world/structure/payload_candidate/prefab_runtime_publish/prefab_preview 共61项通过，2项数据库测试明确排除。命令使用 mix test --no-start --no-compile --no-deps-check（后者另加 --exclude database）。仅增量Elixir编译，未重建NIF、启动生产服务或UE。冻结检查点只携带绑定目录投影及属性参数，基底清除全部呈现派生；库存、live compact/replay及删除后恢复均走公共入口。原runtime测试的400000B过期阈值改用Prefab.limits().bytes+1，产品既有字节预算未变。
+
+互通夹具通过正常World.publish_prefab/prefab_intent生成，可用 CANOPY_FIXTURE_DIR 环境变量运行 canopy_world_test.exs 导出：负XYZ区域{-1,-1,-1}，LOD0..5，5个绑定宏格和1个未绑定微格。定义116B；L2原始body609257B、压缩body842B、完整payload896B，5锚点、1残余、1残余结构。该计数只说明小例，不代表生产密度性能。线上部署、数据库与视觉验收未执行。
+
+附件失效补充（2026-10-17）：残余蒙皮依赖附件曝光，因此 canopy 失效取编辑前后 attachment_dirty 的并集；跨父格遮挡及被裁掉的附件仍须刷新相邻树冠祖格。直接附件放置/拆除也发送 L1..5 完整残余 afterimage，覆盖所替代的 coarse 项并用当前 coarse 值更新缓存基底。新增三个回归先红后绿；canopy_projection + canopy_world 共10通过，既有 damage_world 的 b4 标签12通过（74未选），均无生产世界操作。修复未改 wire 或 fixture 字节定义。

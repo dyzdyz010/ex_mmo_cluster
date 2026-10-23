@@ -76,7 +76,7 @@ defmodule VoxelRegion.PrefabRuntimeCompileTest do
   end
 
   test "runtime rejects oversized raw bytes and still applies definition geometry rules" do
-    assert {:error,:definition_bytes_limit} = Prefab.compile(:binary.copy(<<0>>,400_000),%{})
+    assert {:error,:definition_bytes_limit} = Prefab.compile(:binary.copy(<<0>>,Prefab.limits().bytes+1),%{})
     assert {:error,:invalid_definition} = compile(definition([]))
     assert {:error,:definition_not_found} = compile(definition(children: [child(<<0::256>>,1)]))
     assert {:error,:overlapping_definition} = compile(definition(cells: [{{7,7,7},11}],macro_cells: [{{0,0,0},19}]))
@@ -111,6 +111,27 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
 
   defp draft(c), do: %{cells: [],macro_cells: [{{0,0,0},11}],attachments: [],
     children: [%{slot: 1,definition_id: c.child_id,anchor: {8,0,0},orientation: 0}]}
+
+  @tag :ruyuan_leaves
+  test "竹叶桃叶完整宏格正式发布且不能支撑附件", c do
+    for material <- [62,64] do
+      # 独立冻结的单宏格 v3 字节，避免以编码器自身生成预期。
+      bytes = <<"VXPD",3::32-little,0::32,0::32,0::32,1::32-little,
+        -1::signed-little-32,0::32,1::32-little,material::16-little>>
+      refute MmoContracts.VoxelMaterialCatalog.blocks_movement?(material)
+      refute MmoContracts.VoxelMaterialCatalog.supports_attachments?(material)
+      assert {:ok,id} = World.publish_prefab(c.world,c.actor,bytes,"如园叶宏格")
+      assert File.read!(Path.join([c.root,"prefabs",Base.encode16(id,case: :lower)<>".vxpd"])) == bytes
+      compiled = World.prefab_catalog(c.world)[id]
+      assert compiled.definition.macro_cells == [{{-1,0,1},material}]
+      assert compiled.summary.macro_cells == 1
+      unsupported = %{compiled.definition | attachments: [
+        %{slot: 0,kind: 0,axis: 1,anchor: {-8,8,8},size: 8,material: 11}]}
+      assert {:error,:unsupported_attachment} = Prefab.compile(Prefab.encode(unsupported),%{})
+    end
+    assert length(World.published_prefabs(c.world)) == 2
+    assert World.seq(c.world) == 0
+  end
 
   test "runtime publish is durable and immediately placeable with a static catalog child",c do
     bytes=Prefab.encode(draft(c))

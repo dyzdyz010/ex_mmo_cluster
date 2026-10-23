@@ -30,6 +30,12 @@ defmodule MmoContracts.Voxel.Payload do
             structure: %{},
             attachments: %{},
             liquid_units: %{},
+            canopy: %{},
+            canopy_instances: %{},
+            canopy_residual: %{},
+            canopy_residual_structure: %{},
+            base_instances: nil,
+            base_format_version: nil,
             # 编码复用：已编好的 refined 槽记录（cell_index => Refined.slot_records/1），不进线格式、解码恒为空。
             refined_records: %{},
             format_version: 4
@@ -64,7 +70,7 @@ defmodule MmoContracts.Voxel.Payload do
   `Codec.unpack_payload_body/1`），写得出就读得回；不是运行时预算。
   """
   def max_body_bytes(4), do: @terrain_max_body_bytes
-  def max_body_bytes(version) when version in 5..12, do: @detail_max_body_bytes
+  def max_body_bytes(version) when version in 5..13, do: @detail_max_body_bytes
 
   @doc "region 的 66³ 原点（level 单位）。"
   def origin({x, y, z}), do: {x * 64 - 1, y * 64 - 1, z * 64 - 1}
@@ -97,6 +103,7 @@ defmodule MmoContracts.Voxel.Payload do
              end)
            end),
          true <- header.version == payload.format_version,
+         true <- canopy_in_span?(payload, header),
          true <-
            Enum.all?(payload.refined, fn {index, _} ->
              binary_part(payload.cells, index * 2, 2) == <<0, 0>>
@@ -126,6 +133,23 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "VXR4 解压后的 CSR body 解码为不可变载荷。"
   def decode_body(raw, version \\ 4)
+
+  def decode_body(raw, 13) do
+    with {:ok,_,tail} <- terrain_sections(raw),
+         <<base::32-little,size::32-little,base_tail::binary-size(size),canopy::binary>> <- tail,
+         true <- base in 4..12,
+         terrain = binary_part(raw,0,byte_size(raw)-byte_size(tail)),
+         {:ok,payload} <- decode_body(terrain<>base_tail,base),
+         true <- payload.format_version==base,
+         {:ok,anchors,instances,residual,structure} <- MmoContracts.Voxel.Canopy.decode(canopy),
+         true <- Enum.all?(payload.instances,fn {id,value} ->
+           not Map.has_key?(instances,id) or Map.take(instances[id],Map.keys(value))==value end) do
+      {:ok,%{payload | format_version: 13,base_format_version: base,base_instances: payload.instances,
+        instances: Map.merge(payload.instances,instances),canopy: anchors,canopy_instances: instances,canopy_residual: residual,canopy_residual_structure: structure}}
+    else
+      _ -> {:error,:invalid_payload}
+    end
+  end
 
   def decode_body(raw, version) do
     with {:ok, {cells, extent, map_extent, row_start, col_x, faces, masks, fmi, maps}, tail} <-
@@ -163,6 +187,28 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   # 地形段布局只有这一处；完整解码与细节重写共用分段，不重复展开 CSR。
+  defp canopy_in_span?(%{format_version: version},_) when version != 13,do: true
+  defp canopy_in_span?(payload,header) do
+    base=payload.base_format_version
+    scale=1 <<< header.level
+    origin=origin(header.region)
+    expected=MapSet.new(payload.canopy,fn {{x,y,z},_}->
+      cell_index({Integer.floor_div(x,scale)-elem(origin,0),Integer.floor_div(y,scale)-elem(origin,1),Integer.floor_div(z,scale)-elem(origin,2)}) end)
+    header.level<=5 and (base != 6 or header.level>=1) and
+      (base not in [7,8,9,10,11,12] or header.level==0) and
+      expected==MapSet.new(Map.keys(payload.canopy_residual)) and
+      (header.level>0 or map_size(payload.canopy_residual_structure)==0) and
+      Enum.all?(payload.canopy_residual,fn {_,{_,{extent,_}}}->extent<=min(scale,4) end) and
+      Enum.all?(payload.canopy,fn {cell,{material,_,_}}->
+        in_span=Enum.all?(0..2,fn i->
+          local=elem(cell,i)-elem(origin,i)*scale
+          local>=0 and local<66*scale
+        end)
+        in_span and (header.level>0 or
+          (not Map.has_key?(payload.refined,cell_index(local(header.region,cell))) and
+            material(payload,local(header.region,cell))==material))
+      end)
+  end
   defp terrain_sections(
          <<n::32-little, cells::binary-size(n * 2), ex::32-little, ey::32-little, ez::32-little,
            map_extent::32-little, rest::binary>>
@@ -492,12 +538,13 @@ defmodule MmoContracts.Voxel.Payload do
   end
 
   defp encode_with_details(terrain, p, seq, content_version) do
+    instances = p.base_instances || p.instances
     materials =
       for {i, _} <- p.liquid_units,
           into: MapSet.new(),
           do: :binary.decode_unsigned(binary_part(terrain, 4 + i * 2, 2), :little)
 
-    version =
+    version = p.base_format_version ||
       cond do
         Enum.any?(materials, &(&1 not in [4, 13, 20, 21, 22])) ->
           12
@@ -517,10 +564,10 @@ defmodule MmoContracts.Voxel.Payload do
         map_size(p.structure) > 0 ->
           6
 
-        Enum.any?(p.instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) != {0, 0} end) ->
+        Enum.any?(instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) != {0, 0} end) ->
           7
 
-        map_size(p.refined) > 0 or map_size(p.instances) > 0 ->
+        map_size(p.refined) > 0 or map_size(instances) > 0 ->
           5
 
         true ->
@@ -531,24 +578,31 @@ defmodule MmoContracts.Voxel.Payload do
       case version do
         v when v in [9, 10, 11, 12] ->
           terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7, p.refined_records) <>
+            MmoContracts.Voxel.Refined.encode(p.refined, instances, 7, p.refined_records) <>
             MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)
 
         8 ->
           terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, p.instances, 7, p.refined_records) <>
+            MmoContracts.Voxel.Refined.encode(p.refined, instances, 7, p.refined_records) <>
             MmoContracts.Voxel.Attachments.encode(p.attachments)
 
         6 ->
           terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
 
         v when v in [5, 7] ->
-          terrain <> MmoContracts.Voxel.Refined.encode(p.refined, p.instances, v, p.refined_records)
+          terrain <> MmoContracts.Voxel.Refined.encode(p.refined, instances, v, p.refined_records)
 
         4 ->
           terrain
       end
 
+    {raw,version} = if map_size(p.canopy)>0 or map_size(p.canopy_residual)>0 do
+      base_tail=binary_part(raw,byte_size(terrain),byte_size(raw)-byte_size(terrain))
+      {terrain <> <<version::32-little,byte_size(base_tail)::32-little>> <> base_tail <>
+        MmoContracts.Voxel.Canopy.encode(p.canopy,p.canopy_instances,p.canopy_residual,p.canopy_residual_structure),13}
+    else
+      {raw,version}
+    end
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end
 

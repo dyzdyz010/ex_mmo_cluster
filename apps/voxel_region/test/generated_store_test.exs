@@ -129,7 +129,11 @@ defmodule VoxelRegion.GeneratedStoreTest do
        %{root: root, manifest_path: manifest_path} do
     {:ok, store} = GeneratedStore.open(root: root, manifest_path: manifest_path)
 
-    assert GeneratedStore.content_version(store) == 5678792257079112004
+    # 只测试：固定输入向量，避免把会随 Rust 源码变化的 identity 写死为历史世界 ID。
+    # 独立 Python hashlib/struct：MD5=d3d32a24a11856262295ceaf245810ba，前 8 字节小端。
+    frozen_kernel = "worldgen_density_v3@1+sha256:" <> String.duplicate("0", 64)
+    assert GeneratedStore.content_version(frozen_kernel, config()) == 2762422501813965779
+    assert GeneratedStore.content_version(store) == GeneratedStore.content_version(Native.kernel_identity(), config())
 
     for field <- [
           "seed",

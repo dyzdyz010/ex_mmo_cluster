@@ -1,16 +1,18 @@
 defmodule VoxelRegion.World.Gm do
   @moduledoc """
-  只测试（Test-only）GM 施工工具，不进分发：一次清空、一次填满、一次灌满、原样搬移 prefab 实例。
+  只测试（Test-only）GM 施工工具，不进分发：一次清空、一次填满、一次灌满、盒内排液、实体换料、原样搬移 prefab 实例。
 
   - **开关**：只有部署显式设 `VOXIM_GM_TOOLS=1`（`config :voxel_region, :gm_tools`，测试可用 World opt `:gm_tools`）
     时 World 才接受；分发配置不设，默认关闭，调用回 `{:error, :gm_disabled}`。不接 Gate，只经 harness rpc。
   - **跳过**：耐久与 HP、工具冷却、射程与视线、库存扣减与退料、受保护区域。
   - **保留**：每个操作是一笔正常 World 提交，复用玩家／作者编辑的同一条链路——`Edits.apply_batch`（填）、
-    `Prefabs.prefab_reply`（清，含细化格与实例）、`Prefabs.place_tree`（搬移）、`Liquids.commit_liquid`（灌）——
+    `Prefabs.prefab_reply`（清，含细化格与实例）、`Prefabs.place_tree`（搬移）、`Liquids.commit_liquid`（灌／排液）——
     日志、检查点、广播、碰撞、液体唤醒与普通编辑相同；不另造状态路径、不直写数据库。
   - **审计与防重**：回执 `material_supplies[{0, {:gm, key}}] = %{seq, op, args, ...}` 随该笔事务进日志与检查点，
     同 key 只执行一次（重试返回原回执）；每次执行另打一行 `voxel_gm` 结构化日志。
   - **规模**：单次至多 #{4096} 个宏格（清／填的盒、灌的洪泛格），超出整笔拒绝 `:gm_too_large`，由调用方分批。
+    `:drain` 单独允许盒体积 ≤ 1,048,576、目标液体格 ≤ 131,072：稀疏数量表避免展开大盒，目标格上限约束单笔日志和广播。
+    只处理已接纳的有限液体，material 可省（所有液体），固体、细化格及实例格跳过；空选择回 `:gm_noop`。
 
   坐标：canonical Y-up；`precision: :macro` 时盒为宏格闭区间，`:micro` 时为微格（1/8 m）闭区间。
   细化格的每个微格都属于某个 prefab 实例（VXR5 线格式要求 owner 是活实例），所以：微格清只清实例微格
@@ -23,6 +25,8 @@ defmodule VoxelRegion.World.Gm do
   alias VoxelRegion.World.{Edits, Liquids, Payloads, Prefabs}
 
   @max_macros 4096
+  @max_drain_volume 1_048_576
+  @max_drain_cells 131_072
   @micro VoxelRegion.Spatial.micro_resolution()
 
   @doc "部署开关（Scene 侧 GM 瞬移也读它）。"
@@ -65,6 +69,19 @@ defmodule VoxelRegion.World.Gm do
   end
 
   def macros(_), do: []
+
+  @doc "换料的宏格选择：闭区间盒或精确点集二选一；4096 格限制区域准备、日志与广播规模。点集去重后计数。"
+  def recolor_cells(%{precision: precision}) when precision != :macro, do: {:error, :invalid_gm_args}
+  def recolor_cells(%{box: _, cells: _}), do: {:error, :invalid_gm_args}
+  def recolor_cells(%{box: {lo, hi}}), do: box_macros(lo, hi, :macro)
+  def recolor_cells(%{cells: cells}) when is_list(cells) do
+    with true <- length(cells) <= @max_macros || {:error, :gm_too_large},
+         true <- Enum.all?(cells, &valid_point?/1) || {:error, :invalid_gm_args},
+         true <- Enum.all?(cells, &Edits.valid_edit_coord?/1) || {:error, :invalid_coordinate} do
+      {:ok, Enum.uniq(cells)}
+    end
+  end
+  def recolor_cells(_), do: {:error, :invalid_gm_args}
 
   defp operate(:clear, state, %{box: {lo, hi}} = args, rkey, receipt) do
     precision = Map.get(args, :precision, :macro)
@@ -136,9 +153,57 @@ defmodule VoxelRegion.World.Gm do
     end
   end
 
+  defp operate(:recolor, state, %{from: from, to: to} = args, rkey, receipt) do
+    with true <- (is_integer(from) and solid?(to) and Map.has_key?(state.properties.materials, to)) ||
+                   {:error, :invalid_gm_args},
+         {:ok, cells} <- recolor_cells(args) do
+      state = ensure(state, cells)
+      attached = state.attachments |> Map.keys() |> VoxelRegion.Attachments.macros() |> MapSet.new()
+      {targets, state} = Enum.reduce(cells, {[], state}, fn cell, {targets, s} ->
+        {:ok, {material, _}, s} = cell_value(s, 0, cell)
+        eligible = material == from and material != to and solid?(material) and
+          not Map.has_key?(s.refined, cell) and not Map.has_key?(s.macro_owners, cell) and
+          not Map.has_key?(s.placed_by, cell) and not MapSet.member?(attached, cell)
+        {if(eligible, do: [cell | targets], else: targets), s}
+      end)
+      finite? = phase_material?(state, to)
+
+      cond do
+        targets == [] -> {:error, :gm_noop}
+        finite? and not Enum.all?(targets, &Liquids.liquid_inside?(&1, state.liquid_bounds)) -> {:error, :outside_liquid_bounds}
+        true ->
+          targets = Enum.reverse(targets)
+          receipt = Map.merge(receipt, %{changed: length(targets), skipped: length(cells) - length(targets)})
+          # 与作者填／放相同的新材料初态；旧属性／数量由普通编辑链失效，邻水不参与结算。
+          {state, settlement} = if finite?, do: finite_fill(state, targets, to), else: {state, %{}}
+          settlement = Map.put(settlement, :material_supplies, %{rkey => receipt})
+          with {:ok, next} <- Edits.apply_batch(audit(state, rkey, receipt), Enum.map(targets, &{&1, to}), false, settlement),
+            do: {:ok, receipt, next}
+      end
+    end
+  end
+
   defp operate(:liquid_fill, state, %{seed: seed, level_y: level_y, material: material} = args, rkey, receipt),
     do: Liquids.gm_liquid_fill(state, material, seed, level_y, Map.get(args, :max_cells, @max_macros), rkey,
       Map.put(receipt, :material, material))
+
+  defp operate(:drain, state, %{box: {lo, hi}} = args, rkey, receipt) do
+    material = Map.get(args, :material)
+
+    with true <- (valid_point?(lo) and valid_point?(hi) and Map.get(args, :precision, :macro) == :macro and
+                   (material == nil or Phase.liquid?(material))) || {:error, :invalid_gm_args},
+         true <- Enum.all?(0..2, &(elem(lo, &1) <= elem(hi, &1))) || {:error, :invalid_gm_args},
+         true <- volume(lo, hi) <= @max_drain_volume || {:error, :gm_too_large},
+         true <- (Edits.valid_edit_coord?(lo) and Edits.valid_edit_coord?(hi)) || {:error, :invalid_coordinate},
+         {:ok, targets, _count, state} <- drain_targets(state, lo, hi, material),
+         true <- targets != [] || {:error, :gm_noop} do
+      receipt = Map.merge(receipt, %{cells: length(targets), units: Enum.sum(Enum.map(targets, &elem(&1, 1)))})
+      # 复用液体删除提交：数量归零、相态记录随格删除、边界邻格唤醒；不搬入库存。
+      with {:ok, next} <- Liquids.commit_liquid(audit(state, rkey, receipt), Map.new(targets, fn {cell, _} -> {cell, 0} end),
+             %{material_supplies: %{rkey => receipt}}),
+        do: {:ok, receipt, next}
+    end
+  end
 
   defp operate(:move_instance, state, %{instance: id, anchor: anchor, orientation: orientation}, rkey, receipt) do
     with {:ok, instance} <- Prefabs.fetch_instance(state, id),
@@ -159,6 +224,28 @@ defmodule VoxelRegion.World.Gm do
 
   defp found({:ok, v}), do: {:ok, v}
   defp found(:error), do: {:error, :definition_not_found}
+
+  # 固体占据沿用正式移动阻挡目录；额外排除液态身份，不把花草当实体池底。
+  defp solid?(material), do: MmoContracts.VoxelMaterialCatalog.valid_id?(material) and
+    not Phase.liquid?(material) and MmoContracts.VoxelMaterialCatalog.blocks_movement?(material)
+
+  defp drain_targets(state, lo, hi, material) do
+    candidates = for {cell, units} <- state.liquid_units, units > 0,
+      in_box?(cell, lo, hi, :micro), not Map.has_key?(state.refined, cell),
+      not Map.has_key?(state.macro_owners, cell), not Map.has_key?(state.placed_by, cell), do: {cell, units}
+    # 只准备数量表中候选格所在 L0 区域；commit_liquid 已按实际目标格准备各级区域，无需展开整个盒。
+    state = ensure(state, Enum.map(candidates, &elem(&1, 0)))
+    Enum.reduce_while(Enum.sort(candidates), {:ok, [], 0, state}, fn {cell, _} = target, {:ok, targets, count, s} ->
+      {:ok, {current, _}, s} = cell_value(s, 0, cell)
+      if Phase.liquid?(current) and (material == nil or material == current) do
+        if count == @max_drain_cells,
+          do: {:halt, {:error, :gm_too_large}},
+          else: {:cont, {:ok, [target | targets], count + 1, s}}
+      else
+        {:cont, {:ok, targets, count, s}}
+      end
+    end)
+  end
 
   defp reply({:reply, {:ok, _seq}, next}, receipt), do: {:ok, receipt, next}
   defp reply({:reply, {:error, reason}, _}, _receipt), do: {:error, reason}
@@ -189,11 +276,7 @@ defmodule VoxelRegion.World.Gm do
       attachment_owners: Map.drop(state.attachment_owners, MapSet.to_list(owned))}
   end
 
-  defp ensure(state, cells) do
-    for key <- Enum.uniq(Enum.map(cells, &{0, region_of(&1)})), Edits.needs_source?(state, key),
-      do: :ok = state.source.ensure(state.source_state, 0, elem(key, 1))
-    state
-  end
+  defp ensure(state, cells), do: Edits.ensure_sources(state, cells)
 
   defp box_macros(lo, hi, precision) do
     with true <- (valid_point?(lo) and valid_point?(hi) and precision in [:macro, :micro]) || {:error, :invalid_gm_args},

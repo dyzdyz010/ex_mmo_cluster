@@ -13,6 +13,15 @@ Hemifuture 体素 MMO 服务端**承重契约的单一来源**(纯库,无监督�
 
 ## 模块
 
+2026-10-17（Global system）：`priv/voxim_materials.json` 是移动阻挡与附件支撑元数据的唯一来源，
+`blocks_movement` 与 `supports_attachments` 分别消费。所有原材料的支撑资格保持原阻挡值；
+仅 65 荷花、73 荷叶改为不阻挡且仍可支撑。客户端由 `Voxim/Docs/M1/tools/generate_collision_materials.py` 生成。
+既有 `blocking_hash` 身份槽采用 `voxim-blocking-v2\n`、u16BE 项数、按 ID 排序的
+`[id:u16BE, blocks:u8, supports:u8]`；它继续进入 Session `profile_id`，任一支撑值变化也会失配。
+材料 id/name、属性发布目录、wire 40、世界 manifest 和 pinned kernel 均不变。
+Test-only 回归：本 app 的 `voxel_material_catalog_test.exs`，voxel_region 的
+`attachments_test.exs`、`prefab_definition_test.exs`、`prefab_macro_world_test.exs --only lotus_contract`。
+
 | 模块 | 职责 | 规范 |
 |------|------|------|
 | `MmoContracts.StateClass` | PERS-5 状态四分类(durable_authoritative / runtime_authoritative / derived / ephemeral)单一来源与校验 | PERS-5/6/8、AUTH-2/15 |
@@ -97,3 +106,5 @@ G0 普通测试直接调用新 owner，期望仍为同级 Voxim 的原 31 个二
 `mix test --no-start`，无需加载 sibling app 或原生 NIF。两端实际 encoder 各产 36 个 envelope 及 profile/hash，
 冻结于同级 Voxim `Docs/M1/fixtures/movement-wire/`；其中 `input-slot-scenarios.json` 仅定义供 S1 消费的事件/期望数据，
 C1 测试只检查其消息字节和值，不实现第二个槽运行时。
+
+VXRD/version13 是原terrain与版本化基础尾的显式包装，加中性的稀疏树冠身份/锚点、呈现残余及残余Structure。唯一编解码为 Voxel.Payload / Voxel.Canopy；布局与验证见 docs/10-active/cross-cutting/2026-09-21-prefab-macro-cells-design.md 的2026-10-17节。旧v4..12语义保持。

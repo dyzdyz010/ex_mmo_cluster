@@ -216,18 +216,37 @@ defmodule VoxelRegion.World do
 
   @doc """
   只测试 GM 施工工具（`VoxelRegion.World.Gm`，不进分发，部署显式开启才可用）：op 为 `:clear`（%{box, precision, instances}）、
-  `:fill`（%{box, material, precision}）、`:liquid_fill`（%{seed, level_y, material}）、`:move_instance`
-  （%{instance, anchor, orientation}）。每次一笔正常 World 提交；同 key 只执行一次，返回 `{:ok, 回执}`。
+  `:fill`（%{box, material, precision}）、`:liquid_fill`（%{seed, level_y, material}）、`:drain`（%{box, material 可省}）、`:move_instance`
+  （%{instance, anchor, orientation}）、`:recolor`（%{from, to, box 或 cells}，未细化无归属无附件的实体宏格原位换料）。
+  每次一笔正常 World 提交；同 key 只执行一次，返回 `{:ok, 回执}`。
   """
   def gm(server \\ @name, key, op, args) do
     keys = case op do
       op when op in [:clear, :fill] -> edit_keys(VoxelRegion.World.Gm.macros(args))
+      :recolor ->
+        case VoxelRegion.World.Gm.recolor_cells(args) do
+          {:ok, cells} -> edit_keys(cells)
+          {:error, _} -> []
+        end
       :liquid_fill -> edit_keys([args.seed])
       _ -> []
     end
     if keys != [], do: prepare(server, keys)
     GenServer.call(server, {:gm, key, op, args}, 300_000)
   end
+
+  @doc """
+  全局系统维护：导出半开宏格盒 `{lo, hi}` 的完整 L0 地块（`VoxelRegion.World.Parcel`）。
+  只经 release rpc 调用；返回 `{:ok, parcel}` 或拒绝原因。
+  """
+  def parcel_export(server \\ @name, box), do: GenServer.call(server, {:parcel_export, box}, :infinity)
+
+  @doc """
+  全局系统维护：把地块整体平移整米 delta 后装入本世界，一笔正常提交；同 key 只装一次，返回 `{:ok, 回执}`。
+  维护窗口内经 release rpc 调用，不接 Gate。
+  """
+  def parcel_install(server \\ @name, key, parcel, delta),
+    do: GenServer.call(server, {:parcel_install, key, parcel, delta}, :infinity)
 
   @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影；detail=:micro 增加细化格精确坐标，不读取热/液体模拟状态。"
   def material_snapshot(server, characters, cells, detail \\ :summary) when detail in [:summary, :micro] do
@@ -451,10 +470,26 @@ defmodule VoxelRegion.World do
   @doc "压实完整前缀；覆盖调用时的事务序号且落盘后才回复，期间World继续处理后缀提交。"
   def compact(server \\ @name), do: GenServer.call(server, :compact, 300_000)
 
+  @doc """
+  全局系统维护：停服后一次性重建粗层，独占数据库与新 baseline 目录。
+
+  仅供 release eval／离线工具调用；不启动 World、网络或模拟，不增加事务序号。
+  opts 与 start_link/1 的存储、目录选项一致。新 L1–L5 baseline 须预先烘齐；
+  返回重建统计。调用方必须保证没有其他 World 使用同一个日志库。
+  """
+  def rebuild_coarse(opts) do
+    Task.async(fn ->
+      {:ok, state} = restore(opts)
+      if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
+      VoxelRegion.World.CoarseRebuild.run(%{state | checkpoint_timer: nil})
+    end)
+    |> Task.await(:infinity)
+  end
+
   # ---- GenServer
 
-  @impl true
-  def init(opts) do
+  # 在线启动与离线维护共用同一个完整日志恢复入口；恢复本身不迁移真值、不唤醒模拟。
+  defp restore(opts) do
     source = Keyword.get(opts, :source, FileStore)
 
     case source.open(opts) do
@@ -603,7 +638,18 @@ defmodule VoxelRegion.World do
           log: {log, log.open(world_dir, cv)}
         }
 
-        state = replay_log(state) |> environment_tolerance(state.thermal)
+        {:ok, replay_log(state)}
+
+      {:error, :no_world} ->
+        {:stop, {:no_world, Keyword.fetch!(opts, :root)}}
+    end
+  end
+
+  @impl true
+  def init(opts) do
+    case restore(opts) do
+      {:ok, state} ->
+        state = environment_tolerance(state, load_thermal_environment(opts))
         # 施法的热只经有限热源进世界：有魔法目录的世界必须有热环境。
         true = state.magic == nil or state.thermal != nil
 
@@ -622,7 +668,7 @@ defmodule VoxelRegion.World do
         state = prepare_component_cache(state, nil)
 
         Logger.info(
-          "voxel_region world #{FileStore.hex(cv)} ready, seq=#{state.seq}, root=#{world_dir}"
+          "voxel_region world #{FileStore.hex(state.cv)} ready, seq=#{state.seq}, root=#{state.source.world_dir(state.source_state)}"
         )
 
         state = schedule_liquid(state)
@@ -630,8 +676,7 @@ defmodule VoxelRegion.World do
         state = VoxelRegion.World.Projectiles.wake(state)
         {:ok, state}
 
-      {:error, :no_world} ->
-        {:stop, {:no_world, Keyword.fetch!(opts, :root)}}
+      error -> error
     end
   end
 
@@ -973,6 +1018,14 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call({:gm, key, op, args}, _, state), do: VoxelRegion.World.Gm.run(state, key, op, args)
+
+  def handle_call({:parcel_export, box}, _, state) do
+    {result, state} = VoxelRegion.World.Parcel.export(state, box)
+    {:reply, result, state}
+  end
+
+  def handle_call({:parcel_install, key, parcel, delta}, _, state),
+    do: VoxelRegion.World.Parcel.install(state, key, parcel, delta)
 
   def handle_call({:liquid_fill, cid, key, material, seed, level_y, max_cells}, _, state) do
     case Map.fetch(state.material_supplies, {cid, {:liquid_fill, key}}) do

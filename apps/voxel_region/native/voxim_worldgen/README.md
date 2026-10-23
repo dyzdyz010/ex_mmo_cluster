@@ -1,8 +1,10 @@
 # Voxim 在线世界生成内核
 
 `world.rs` 移植 Voxim `VoxelWorldGen.cpp` 的列画像、气候、洞口、洞穴、矿脉和列聚合金字塔。
-`noise.rs` 保留整数 wrapping、浮点运算顺序和逐 octave 严格上界；`skin.rs` 保留严格多数占用、
-非零优先材质众数和六向表皮 mip，并写出既有 `SerializeRegionBody` 的 cells + CSR。
+`noise.rs` 保留整数 wrapping、浮点运算顺序和逐 octave 严格上界；`skin.rs` 实现全局系统功能 `ReduceCellV2`：
+L1 花草先过滤，旧严格多数和 L1 树干规则优先；旧主体为空时，仅保留一个完整水平干实体半层且另一半全空的薄片。
+排除液体、透明、叶/花草、树干、植物装饰，与正式 `VoxelMaterialCatalog.lod_dry_sheet?/1` 及客户端目录逐项一致。
+非零众数平局取最小 ID；六向表皮仍按 `ReduceSkinsV1`，不从表皮反推实体。写出既有 `SerializeRegionBody` 的 cells + CSR。
 数据始终为 canonical Y-up，66³ 含 ring，原点为 `(region × 64 − 1) × 2^level`。
 粗层先证明空气/均匀岩带/无洞穴与矿脉，再递归剩余子树，不展开整个 L5 体积。
 
@@ -29,3 +31,6 @@ cargo test --release --manifest-path apps/voxel_region/native/voxim_worldgen/Car
 oracle 由 UE Automation 导出，manifest 每项提供 file/config/level/coord。
 比较全部 66³ 材质，以及两侧表皮记录并集的六向 Id 和逐 texel 内容；不依赖 CSR 字典顺序或 hash。
 测试输出每个 fixture 的生成毫秒与 body 字节数。默认测试同时锁定深层基岩、全部 256 个占用组合与噪声盒上界。
+F2a 手算样本在 `skin.rs` 与 `test/reducer_v2_test.exs` 各自冻结，含两种 Y 相位、四角排除、旧规则优先级、
+Y504–507/负 XYZ 的 16 m² 递归薄片；Elixir 另经 World 编辑、payload 与文件恢复检验。旧 UE 粗 oracle 须由 V2 重新导出。
+内核源码身份会变化；pinned 世界不自动换目录，因此上线须重建 baseline/overlay 粗层及客户端派生缓存，不能只替换 NIF。

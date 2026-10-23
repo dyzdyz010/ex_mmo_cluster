@@ -188,7 +188,9 @@ defmodule VoxelRegion.World.Log do
       end)
 
     # 当前后缀由世界的 refined/instances/structure 唯一持有，基底只保留地形。
-    p = %{p | refined: %{}, instances: %{}, structure: %{}, attachments: %{}, liquid_units: %{}}
+    p = %{p | refined: %{}, instances: %{}, structure: %{}, attachments: %{}, liquid_units: %{},
+      canopy: %{}, canopy_instances: %{}, canopy_residual: %{}, canopy_residual_structure: %{},
+      base_instances: nil, base_format_version: nil}
 
     # 换基底只改变真值的表示（稀疏编辑并入基底），不改变任何区域物化出的字节：只丢弃本区域的缓存与源解码，
     # 其余区域（含以本区域为 ring 的邻区）缓存照旧有效。
@@ -268,12 +270,14 @@ defmodule VoxelRegion.World.Log do
     state
     |> Map.take([:seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
       :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :attachments, :liquid_units,
-      :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
+      :properties, :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
       :food_ledger, :food_receipts, :placed_by, :protection, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
       :payloads, :decoded, :lru, :lru_ticks, :tick, :lru_bytes, :resident_bytes, :cache_limit,
       :cache_stats])
     |> Map.merge(Map.take(state, [:interaction_history, :interaction_floor]))
+    |> Map.put(:prefabs, Map.new(state.prefabs, fn {id,compiled} ->
+      {id,%{definition: Map.take(compiled.definition,[:presentation_bindings])}} end))
     |> Map.put(:retained_before, map_size(state.entries))
   end
 

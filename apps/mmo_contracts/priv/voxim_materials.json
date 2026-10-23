@@ -2,371 +2,529 @@
   {
     "id": 0,
     "name": "air",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 1,
     "name": "grass",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 2,
     "name": "dry_grass",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 3,
     "name": "moss",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 4,
     "name": "snow",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 5,
     "name": "sand",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 6,
     "name": "gravel",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 7,
     "name": "dirt",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 8,
     "name": "clay",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 9,
     "name": "sandstone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 10,
     "name": "limestone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 11,
     "name": "stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 12,
     "name": "granite",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 13,
     "name": "basalt",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 14,
     "name": "marble",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 15,
     "name": "coal_ore",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 16,
     "name": "copper_ore",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 17,
     "name": "iron_ore",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 18,
     "name": "gold_ore",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 19,
     "name": "wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 20,
     "name": "ice",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 21,
     "name": "water",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 22,
     "name": "lava",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 23,
     "name": "glowstone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 24,
     "name": "copper",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 25,
     "name": "birch_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 26,
     "name": "maple_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 27,
     "name": "spruce_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 28,
     "name": "oak_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 29,
     "name": "birch_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 30,
     "name": "maple_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 31,
     "name": "spruce_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 32,
     "name": "short_grass",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 33,
     "name": "tall_grass",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 34,
     "name": "fern",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 35,
     "name": "poppy",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 36,
     "name": "dandelion",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 37,
     "name": "cornflower",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 38,
     "name": "daisy",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 39,
     "name": "allium",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 40,
     "name": "resistive_alloy",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 41,
     "name": "switch",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 42,
     "name": "energy_stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 43,
     "name": "thermoelectric_stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 44,
     "name": "glass",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 45,
     "name": "thermistor_ceramic",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 46,
     "name": "masonry",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 47,
     "name": "dressed_stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 48,
     "name": "roof_tile",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 49,
     "name": "timber_boards",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 50,
     "name": "stained_glass",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 51,
     "name": "gilded_stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 52,
     "name": "fired_clay_roof_tile",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 53,
     "name": "imperial_floor_brick",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 54,
     "name": "famille_rose_porcelain",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 55,
     "name": "fired_clay_wall_brick",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 56,
     "name": "taihu_stone",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 57,
     "name": "willow_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 58,
     "name": "willow_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 59,
     "name": "pine_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 60,
     "name": "pine_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 61,
     "name": "bamboo_culm",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 62,
     "name": "bamboo_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 63,
     "name": "peach_wood",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 64,
     "name": "peach_leaves",
-    "blocks_movement": false
+    "blocks_movement": false,
+    "supports_attachments": false
   },
   {
     "id": 65,
     "name": "lotus",
-    "blocks_movement": true
+    "blocks_movement": false,
+    "supports_attachments": true
   },
   {
     "id": 66,
     "name": "potted_plum",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 67,
     "name": "potted_peony",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 68,
     "name": "potted_chrysanthemum",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 69,
     "name": "potted_orchid",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 70,
     "name": "terracotta_pot",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 71,
     "name": "climbing_vine",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 72,
     "name": "rock_moss",
-    "blocks_movement": true
+    "blocks_movement": true,
+    "supports_attachments": true
   },
   {
     "id": 73,
     "name": "lotus_leaves",
-    "blocks_movement": true
+    "blocks_movement": false,
+    "supports_attachments": true
+  },
+  {
+    "id": 74,
+    "name": "silk_gauze",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 75,
+    "name": "lined_canopy_cloth",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 76,
+    "name": "red_lacquer_wood",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 77,
+    "name": "tiger_skin_masonry",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 78,
+    "name": "gray_floor_brick",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 79,
+    "name": "pebble_paving",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 80,
+    "name": "qingbai_stone",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 81,
+    "name": "rammed_lime_earth",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 82,
+    "name": "pond_mud",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 83,
+    "name": "blue_gray_plaster",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 84,
+    "name": "green_oiled_wood",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 85,
+    "name": "natural_oiled_wood",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 86,
+    "name": "suzhou_painted_wood",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 87,
+    "name": "korean_window_paper",
+    "blocks_movement": true,
+    "supports_attachments": true
   }
 ]

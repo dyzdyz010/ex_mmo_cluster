@@ -4,6 +4,34 @@ defmodule VoxelRegion.AttachmentsTest do
   @moduletag :b4
   alias MmoContracts.Voxel.{Attachments,Payload,Codec}
 
+  test "荷支撑保留面棱资格与投影，但宏微格不进入移动占用" do
+    alias VoxelRegion.Attachments, as: A
+    for material <- [65, 73] do
+      for kind <- [0, 1], axis <- 0..2 do
+        slot = {kind, axis, {-1, -2, -3}}
+        [host | _] = A.neighbors(slot)
+        samples = Map.new(A.neighbors(slot), &{&1, if(&1 == host, do: material, else: 0)})
+        assert A.supported?(slot, samples)
+        refute A.supported?(slot, Map.put(samples, host, 0))
+        refute A.supported?(slot, Map.put(samples, host, 35))
+      end
+      slots = Map.new(A.footprint(0, 2, {0, 0, 0}, 8), &{&1, {7, 73}})
+      hosts = for x <- 0..7, y <- 0..7, into: %{}, do: {{x, y, 0}, material}
+      base = MmoContracts.Voxel.Skins.uniform(material)
+      {skins, _} = A.project_l1({0, 0, 0}, base, slots, fn p, s -> {Map.get(s, p, 0), s} end, hosts)
+      assert VoxelRegion.Reducer.texel(skins, 4, 0, 0) == 73
+      assert VoxelRegion.Reducer.texel(skins, 5, 0, 0) == material
+      macro = VoxelRegion.CollisionSource.capture({-1, -1, -1}, fn _ -> {material, %{}} end)
+      assert macro.cells == :binary.copy(<<0>>, 16*16*16)
+      micro = VoxelRegion.CollisionSource.capture({-1, -1, -1}, fn
+        {-16, -16, -16} -> {0, %{0 => {material, {9, 0}}, 1 => {3, {9, 0}}, 2 => {70, {9, 0}}}}
+        _ -> {0, %{}}
+      end)
+      assert micro.n == 128
+      assert binary_part(micro.cells, 0, 4) == <<0, 1, 1, 0>>
+    end
+  end
+
   test "attachment encoder preserves signed tuple order independently of insertion and identity" do
     entries=for kind<-[0,1],axis<-0..2,x<-[-9223372036854775808,-513,-1,0,512,9223372036854775807],
       do: {{kind,axis,{x,-x-1,axis-1}},{100-kind*10-axis,19}}

@@ -176,7 +176,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       emissivity: 0.0,view_range_cells: 8,circuit_min_power_w: 1.0}))
     prefab=Path.join(root,"prefabs"); File.mkdir_p!(prefab)
     opts=[source: Source,log: if(context[:database_metadata], do: DatabaseMetadataLog, else: Log),root: root,observer: self(),property_catalog_path: catalog,
-      thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,
+      thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,gm_tools: context[:gm] == true,
       production_materials: [4,13,15,16,20,21,22],liquid_bounds: {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
     actor=%{cid: 1001,gate: self(),identity: :b7phase,refresh: &Actor.tool_context/2,eye: {63.5,1.0625,0.5},tick_us: 16_667}
@@ -1096,6 +1096,68 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert row(c.w,{63,2,2}).material==20
     :ok=GenServer.call(c.actor.player,{:eye,{62.5,2.0625,2.5}})
     assert {:error,:no_target}=World.tool_intent(c.w,c.actor,%{phase | tool_id: 1,material: 20})
+  end
+
+  @tag :gm
+  test "GM drain removes partial liquid phase state without changing outside water or inventory", c do
+    assert {:ok, _} = transfer(c, 3, 1, {63, 1, 2})
+    assert {:ok, _} = transfer(c, 3, 2, {64, 1, 2})
+    assert {:ok, _} = World.gm(c.w, "ice", :fill, %{box: {{63, 2, 2}, {63, 2, 2}}, material: 20})
+    before = observe(c.w)
+    assert before.liquid_units == %{{63, 1, 2} => 524_288, {64, 1, 2} => 524_288, {63, 2, 2} => @capacity}
+    # 1/4 m³ 水：潜热 334 MJ/m³ + 高于熔点 20 K 的显热，手算 104.4 MJ。
+    assert_in_delta row(c.w, {63, 1, 2}).phase_energy_j, 104_400_000.0, 0.001
+    outside = row(c.w, {64, 1, 2})
+    args = %{box: {{63, 1, 2}, {63, 2, 2}}}
+    assert {:ok, %{cells: 1, units: 524_288} = receipt} = World.gm(c.w, "partial-drain", :drain, args)
+    after_drain = observe(c.w)
+    assert after_drain.seq == before.seq + 1
+    assert after_drain.liquid_units == %{{64, 1, 2} => 524_288, {63, 2, 2} => @capacity}
+    assert row(c.w, {63, 1, 2}) == nil
+    assert row(c.w, {63, 2, 2}).material == 20
+    # Observation 的快照投影统一更新 seq；其余身份、数量相关属性和焓须逐字段不变。
+    assert row(c.w, {64, 1, 2}) == %{outside | seq: after_drain.seq}
+    assert after_drain.phase_inventory == before.phase_inventory
+    assert after_drain.material_balances == before.material_balances
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    assert row(w, {63, 1, 2}) == nil
+    assert observe(w).liquid_units == after_drain.liquid_units
+    assert {:ok, ^receipt} = World.gm(w, "partial-drain", :drain, args)
+  end
+
+  @tag :gm
+  @tag :recolor
+  test "GM recolor resets material phase state without touching adjacent partial water", c do
+    assert {:ok, _} = transfer(c, 3, 1, {63, 1, 2})
+    assert {:ok, _} = World.gm(c.w, "ice", :fill, %{box: {{63, 2, 2}, {63, 2, 2}}, material: 20})
+    before = observe(c.w)
+    water = row(c.w, {63, 1, 2})
+    assert row(c.w, {63, 2, 2}).material == 20
+    assert {:ok, %{changed: 1, skipped: 1}} = World.gm(c.w, "ice-to-stone", :recolor,
+      %{from: 20, to: 11, cells: [{63, 2, 2}, {63, 1, 2}]})
+    stone = observe(c.w)
+    assert stone.liquid_units == %{{63, 1, 2} => 524_288}
+    assert row(c.w, {63, 2, 2}) == nil
+    assert row(c.w, {63, 1, 2}) == %{water | seq: stone.seq}
+    assert {:ok, %{changed: 1, skipped: 0} = receipt} = World.gm(c.w, "stone-to-ice", :recolor,
+      %{from: 11, to: 20, cells: [{63, 2, 2}]})
+    ice = row(c.w, {63, 2, 2})
+    after_recolor = observe(c.w)
+    assert ice.material == 20
+    assert ice.hp == ice.max_hp
+    # 该夹具冰比热 1.93 MJ/K、环境比相变温度高 20 K：初态显热 38.6 MJ。
+    assert_in_delta ice.phase_energy_j, 38_600_000.0, 0.001
+    assert after_recolor.liquid_units == %{{63, 1, 2} => 524_288, {63, 2, 2} => @capacity}
+    assert row(c.w, {63, 1, 2}) == %{water | seq: after_recolor.seq}
+    assert after_recolor.phase_inventory == before.phase_inventory
+    assert after_recolor.material_balances == before.material_balances
+    stop_supervised!(World)
+    w = start_supervised!({World, c.opts})
+    assert row(w, {63, 2, 2}) == ice
+    assert observe(w).liquid_units == after_recolor.liquid_units
+    assert {:ok, ^receipt} = World.gm(w, "stone-to-ice", :recolor,
+      %{from: 11, to: 20, cells: [{63, 2, 2}]})
   end
 
   @tag :native_phase
