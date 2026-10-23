@@ -65,6 +65,7 @@
 
 ### voxel-authority
 
+- [`2026-10-23-world-memory-compaction.md`](voxel-authority/2026-10-23-world-memory-compaction.md) — 如园迁入后 World 常驻内存收紧（拼装件定义二进制、安装世代盒戳／协议 42、条件项 D2／D4）与实测基线
 - [`2026-08-24-worldgen-v2-3d-density-materialization.md`](voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md) — 服务端 migration WorldGen 与 Voxia 本地 Mock 的独立 canonical XYZ 材质体、首个三维 cheese-cave 切片及验收边界
 - [`2026-06-17-unit-morphology-and-surface-element-layer.md`](voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md)
 - [`2026-06-27-订阅活性根因-连接驱动正交修复设计.md`](voxel-authority/2026-06-27-订阅活性根因-连接驱动正交修复设计.md)
