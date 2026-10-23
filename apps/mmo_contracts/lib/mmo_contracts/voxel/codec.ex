@@ -225,14 +225,14 @@ defmodule MmoContracts.Voxel.Codec do
 
   # 传送信标出发（Hello 41，Voxim Docs/Gameplay/Beacon.md），大端：request_id u64、client_intent_seq u32、scene u64、
   # 出发信标 id（u8 长度 + UTF-8）、目的信标 id（同）。
-  def decode(<<0x84, rid::64, seq::32, scene::64, nf, from::binary-size(nf), nt, to::binary-size(nt)>>)
+  def decode(<<0x87, rid::64, seq::32, scene::64, nf, from::binary-size(nf), nt, to::binary-size(nt)>>)
       when nf > 0 and nt > 0 do
     {:ok,
      {:voxel_beacon_travel,
       %{request_id: rid, client_intent_seq: seq, logical_scene_id: scene, from: from, to: to}}}
   end
 
-  def decode(<<0x84, _::binary>>), do: {:error, :invalid_message}
+  def decode(<<0x87, _::binary>>), do: {:error, :invalid_message}
 
   def decode(
         <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
@@ -412,7 +412,7 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(_), do: {:error, :invalid_message}
 
   @doc "协议值编码为现行帧 iodata。"
-  # 传送信标目录（Hello 41）0x84，大端：request_id u64（登录下发为 0）、条数 u16，每条：id（u8 长度 + UTF-8）、
+  # 传送信标目录（Hello 41）0x87，大端：request_id u64（登录下发为 0）、条数 u16，每条：id（u8 长度 + UTF-8）、
   # 站名（u16 长度 + UTF-8）、核心中心 x/y/z f64（canonical 米，Y-up）、本角色已调谐 u8（0/1）。
   def encode({:voxel_beacon_directory, t}) do
     entries =
@@ -422,7 +422,7 @@ defmodule MmoContracts.Voxel.Codec do
           z::float-64, if(e.attuned, do: 1, else: 0)::8>>
       end
 
-    {:ok, IO.iodata_to_binary([<<0x84, t.request_id::64, length(t.entries)::16>> | entries])}
+    {:ok, IO.iodata_to_binary([<<0x87, t.request_id::64, length(t.entries)::16>> | entries])}
   end
 
   def encode({:voxel_material_balance, t}) do

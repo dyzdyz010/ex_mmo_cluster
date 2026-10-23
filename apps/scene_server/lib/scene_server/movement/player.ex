@@ -35,7 +35,7 @@ defmodule SceneServer.Movement.Player do
     do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
 
   @doc """
-  传送信标出发（0x84）的角色 owner 入口：异步排进，调用方不等读条。request = `%{client_intent_seq, from, to}`。
+  传送信标出发（0x87）的角色 owner 入口：异步排进，调用方不等读条。request = `%{client_intent_seq, from, to}`。
   与施法共用一个动作槽（同时只有一个读条）；World 校验开始与结束，本进程计时、移动超过 0.25 m 即打断，
   放行后瞬移到目的落点（`relocate/2`）。结果恰好一个，经 `GenServer.reply(reply_to, {:ok, 0} | {:error, reason})`。
   """

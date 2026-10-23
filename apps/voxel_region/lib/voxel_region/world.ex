@@ -256,7 +256,7 @@ defmodule VoxelRegion.World do
   def beacon_install(server \\ @name, key, record),
     do: GenServer.call(server, {:beacon_install, key, record}, 300_000)
 
-  @doc "全局系统功能：角色的信标目录（全部信标，各带是否已调谐），供 Gate 下发 0x84。"
+  @doc "全局系统功能：角色的信标目录（全部信标，各带是否已调谐），供 Gate 下发 0x87。"
   def beacon_directory(server \\ @name, cid), do: GenServer.call(server, {:beacon_directory, cid}, 300_000)
 
   @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影；detail=:micro 增加细化格精确坐标，不读取热/液体模拟状态。"
