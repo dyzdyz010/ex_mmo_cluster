@@ -6,8 +6,9 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   收到 Player 发来的 `{:prepare_beacon …}` / `{:commit_beacon …}` 后按场景回 `{:beacon_prepared …}` / `{:beacon_committed …}`。
   期望（独立依据）：
 
-  - 放行后 Player 请求覆盖落点的新窗口，下发 Relocate；落脚点 = 落点探针 x/z 不变、y 与出生点相同
-    （同一胶囊、同一层地面），回执 `{:ok, 0}` 恰好一次。
+  - 放行后落点在当前窗口里（半径 1 tile 的窗口覆盖整个 3×3 tile 世界）：不请求新窗口，Relocate 的 apply_tick =
+    放行时模拟 tick + 1；落脚点 = 落点探针 x/z 不变、y 与出生点相同（同一胶囊、同一层地面），回执 `{:ok, 0}` 恰好一次。
+    落点在窗口外时走复活同一条流送路径（`ReviveRelocationTest` 覆盖）。
   - 读条中按 +x 走，离起点超过 0.25 m 即回 `{:error, :beacon_moved}`，不发结束校验、不瞬移。
   - 结束校验拒绝（目的核心已失）照实回原因，不瞬移，动作槽释放。
   """
@@ -132,26 +133,27 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     {ref, key, request}
   end
 
-  test "放行：请求覆盖落点的窗口，Relocate 到落点柱上的地面，回执一次" do
+  test "放行：落点在当前窗口里，下一个 tick 直接 Relocate 到落点柱上的地面、不请求新窗口，回执一次" do
     {ctx, p, start} = enter()
     {ref, key, request} = depart(p)
     assert {:error, :casting} = Player.tool_context(p, identity())
 
     send(p, {:beacon_prepared, key, {:ok, 0.05}})
     assert_receive {:authority, {:commit_beacon, ^key, _, ^request}}, 2000
+    requested = :sys.get_state(p).requested_window
+    committed_at = Player.observe(p).simulation_tick
     send(p, {:beacon_committed, key, {:ok, @landing}})
     assert_receive {^ref, {:ok, 0}}, 2000
-
-    wait(fn ->
-      s = :sys.get_state(p)
-      s.revive == :window and :queue.len(s.updates.queue) > 0
-    end)
-
-    step(ctx, p, 5, 0)
-    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{state: spawned}}, 2000
+    apply_tick = committed_at + 1
+    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: ^apply_tick, state: spawned}}, 2000
     {lx, _, lz} = @landing
     {_, ground_y, _} = start.state.position
     assert spawned.position == {lx, ground_y, lz}
+    assert :sys.get_state(p).requested_window == requested
+
+    step(ctx, p, 5, 0)
+    {x, _, z} = Player.observe(p).state.position
+    assert {x, z} == {lx, lz}
     assert {:ok, _} = Player.tool_context(p, identity())
     refute_receive {^ref, _}, 50
   end

@@ -724,7 +724,7 @@ defmodule SceneServer.Movement.Player do
         })
 
         GenServer.reply(action.from, {:ok, 0})
-        {:noreply, state |> clear_cast() |> relocate(landing)}
+        {:noreply, state |> clear_cast() |> travel(landing)}
 
       {:error, reason} ->
         GenServer.reply(action.from, {:error, reason})
@@ -1425,8 +1425,23 @@ defmodule SceneServer.Movement.Player do
   # 与窗口同一 apply_tick 生效。找不到落脚点与复活同一处理（会话失败）。
   defp relocate(state, probe), do: relocate(%{state | relocate_to: probe})
 
-  defp relocate(%{stream: nil} = state) do
-    case find_spawn(state, state.relocate_to) do
+  defp relocate(%{stream: nil} = state), do: relocate_now(state, find_spawn(state, state.relocate_to))
+  defp relocate(state), do: stream_window(%{state | revive: :pending})
+
+  # 传送信标：落点在当前窗口里（且没有待装窗口）时同非流送会话下一个 tick 即换，不等新窗口；否则同复活先流送覆盖落点的窗口。
+  defp travel(%{window_pending: false} = state, landing) when state.stream != nil do
+    state = %{state | relocate_to: landing}
+
+    case find_spawn(state, landing) do
+      :outside -> relocate(state)
+      found -> relocate_now(state, found)
+    end
+  end
+
+  defp travel(state, landing), do: relocate(state, landing)
+
+  defp relocate_now(state, found) do
+    case found do
       {:ok, native} ->
         tick = state.simulation_tick + 1
         spawned = from_pod(native, state.state.yaw)
@@ -1451,8 +1466,6 @@ defmodule SceneServer.Movement.Player do
         fail(state, 10)
     end
   end
-
-  defp relocate(state), do: stream_window(%{state | revive: :pending})
 
   # 复活窗口（`revive: :window`）安装于 tick：在新窗口的世界与移动域里找出生点，返回要先于该窗口发出的 Relocate。
   defp revive_spawn(%{revive: :window} = state, domain, tick) do
