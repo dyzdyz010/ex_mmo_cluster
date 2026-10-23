@@ -252,10 +252,14 @@ defmodule VoxelRegion.ThermalWork do
   def drop(work, cells, range) do
     geometry = Map.drop(work.geometry, cells)
 
-    # 热辐射只沿面法线走轴向射线；另两轴始终留在起点宏格内。
-    affected = for cell <- cells, axis <- 0..2, delta <- -range..range,
-      into: MapSet.new(), do: put_elem(cell, axis, elem(cell, axis) + delta)
-    sights = Map.drop(work.sights, MapSet.to_list(affected))
+    # 热辐射只沿面法线走轴向射线；另两轴始终留在起点宏格内。从现有视线反查编辑格：展开 编辑格 × 3 轴 × 视距
+    # 的受影响集合在地块安装（一笔数十万格）时要几 GB，现有视线通常很少。
+    edited = MapSet.new(cells)
+    sights = Map.reject(work.sights, fn {sight, _} ->
+      Enum.any?(0..2, fn axis ->
+        Enum.any?(-range..range, &MapSet.member?(edited, put_elem(sight, axis, elem(sight, axis) + &1)))
+      end)
+    end)
     if geometry == work.geometry and sights == work.sights, do: work,
       else: %{work | geometry: geometry, sights: sights, exact: false}
   end
