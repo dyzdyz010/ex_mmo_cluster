@@ -507,12 +507,14 @@ defmodule VoxelRegion.World.Prefabs do
       Enum.filter(cells,&(Map.get(before.macro_owners,&1) != Map.get(state.macro_owners,&1))))
 
     # owner 更换仍发布完整 L0；只有实际 slot/材质变化才重建结构和碰撞。
+    # 集合查找：地块安装一笔有数十万格变化，列表 `in` 是格数 × 变化数（一条 81 万格的切片曾要 19 分钟）。
+    changed = MapSet.new(macro_changes)
     material_changes =
       Enum.filter(cells, fn cell ->
         old = Map.get(before.refined, cell, %{})
         new = Map.get(state.refined, cell, %{})
 
-        cell in macro_changes or map_size(old) != map_size(new) or
+        MapSet.member?(changed, cell) or map_size(old) != map_size(new) or
           Enum.any?(old, fn {slot, {material, _}} ->
             case Map.get(new, slot) do
               {^material, _} -> false
