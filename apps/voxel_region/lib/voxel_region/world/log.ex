@@ -271,7 +271,7 @@ defmodule VoxelRegion.World.Log do
     |> Map.take([:seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
       :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :attachments, :liquid_units,
       :properties, :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
-      :food_ledger, :food_receipts, :placed_by, :protection, :phase_inventory, :thermal,
+      :food_ledger, :food_receipts, :placed_by, :protection, :beacons, :beacon_attunements, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
       :payloads, :decoded, :lru, :lru_ticks, :tick, :lru_bytes, :resident_bytes, :cache_limit,
       :cache_stats])
@@ -315,6 +315,8 @@ defmodule VoxelRegion.World.Log do
         placed_by: state.placed_by,
         macro_owners: state.macro_owners,
         protection: state.protection.regions,
+        beacons: state.beacons,
+        beacon_attunements: state.beacon_attunements,
         phase_inventory: state.phase_inventory,
         thermal: state.thermal
       })
@@ -403,6 +405,8 @@ defmodule VoxelRegion.World.Log do
         food_receipts: Production.merge_food_receipts(state.food_receipts, Map.get(txn, :food_receipts, %{})),
         placed_by: Production.merge_placed(state.placed_by, Map.get(txn, :placed_by, %{})),
         protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
+        beacons: Map.merge(state.beacons, Map.get(txn, :beacons, %{})),
+        beacon_attunements: Map.merge(state.beacon_attunements, Map.get(txn, :beacon_attunements, %{})),
         macro_owners: Production.merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
         instances: Map.get(txn,:prefab_instances,state.instances),
         material_balances:

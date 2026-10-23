@@ -82,7 +82,7 @@ defmodule VoxelRegion.Damage do
       Enum.all?(tools, fn {id, t} ->
         id in 1..65535 and t["power"] > 0 and
           t["range_macro"] > 0 and t["interval_seconds"] > 0 and MapSet.member?(tags, t["action"]) and
-          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool protection.claim) or
+          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool protection.claim beacon.use) or
              String.starts_with?(t["action"], "damage.") or
              String.starts_with?(t["action"], "combustion."))
       end)
@@ -150,6 +150,12 @@ defmodule VoxelRegion.Damage do
             is_integer(t["region_max_count"]) and t["region_max_count"] > 0 and
               is_integer(t["region_max_area_m2"]) and t["region_max_area_m2"] > 0
 
+          # 传送信标（Voxim Docs/Gameplay/Beacon.md）：可达距离 m 与读条 = 基础 s + 每 km s，都是已发布参数。
+          "beacon.use" ->
+            is_number(t["reach_m"]) and t["reach_m"] > 0 and
+              is_number(t["windup_base_s"]) and t["windup_base_s"] > 0 and
+              is_number(t["windup_per_km_s"]) and t["windup_per_km_s"] >= 0
+
           action when action in ["combustion.extinguish", "phase.cool"] ->
             Map.has_key?(materials, t["fuel_material_id"]) and t["fuel_material_id"] != 0 and
               is_integer(t["fuel_units"]) and t["fuel_units"] > 0 and
@@ -209,6 +215,9 @@ defmodule VoxelRegion.Damage do
           (is_number(m["luminous_fraction"]) and m["luminous_fraction"] >= 0 and
              m["luminous_fraction"] <= 1 and Map.get(m, "electrical_conductivity", 0) > 0)
       end)
+
+    # 传送信标：beacon_anchor 标出锚心石（只作信标，信标核心须是它）；出现时只能为 true。
+    true = Enum.all?(materials, fn {_, m} -> Map.get(m, "beacon_anchor", true) == true end)
 
     # R8-04 增量 2 开关材料轴：circuit_switch 的格／附件闭合时按本行电导率导电，断开绝缘，只能在导体上。
     # 配方（黑盒构件的唯一来源）：产物行上 recipe_inputs（其他非空气材料、正整数单位）与 recipe_units（一次合成的产物单位）成组。

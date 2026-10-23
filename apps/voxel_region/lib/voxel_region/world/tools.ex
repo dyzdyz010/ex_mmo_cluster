@@ -147,6 +147,9 @@ defmodule VoxelRegion.World.Tools do
           tool["action"] == "circuit.toggle" ->
             toggle_switch(before, state, actor, request, target)
 
+          tool["action"] == "beacon.use" ->
+            VoxelRegion.World.Beacons.use_tool(before, state, actor, request, target, tool)
+
           # R8-04 增量 3：电源安装、补能与加热器投料退役（目录 retired_tools）。迁移前的旧目录仍可加载，其工具只被拒绝。
           tool["action"] in ["circuit.install", "circuit.feed", "heat"] ->
             {:reply, {:error, :retired_tool}, state}

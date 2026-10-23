@@ -11,7 +11,7 @@ defmodule MmoContracts.DialogueWireTest do
   @result <<255, 1::16, 1, 17, 48::32, 1::64, 2::64, 3::64, 4::64, 6::64, 1::32, 2::16, "ok">>
 
   test "Hello 40 explicitly negotiates dialogue capability" do
-    assert Session.Codec.protocol_version() == 40
+    assert Session.Codec.protocol_version() == 41
 
     assert {:error, :invalid_m1_message} =
              Session.Codec.decode(<<255, 1::16, 1, 1, 66::32, 39::16, 0::512>>)

@@ -103,6 +103,38 @@ defmodule GateServer.Session.Dispatch do
 
     reply(state, request, result)
     if refresh, do: send_material_balances(state, state.cid, request.request_id)
+    if kind == :voxel_tool_intent and request.action == 1 and match?({:ok, _}, result) and beacon_tool?(state, request),
+      do: send_beacon_directory(state, request.request_id)
+    {:ok, state}
+  end
+
+  # 传送信标出发：读条在角色 owner 里推进，回执在读条结束后才有，在独立进程里等（同施放）；放行回 0x68 accepted(0)，
+  # 拒绝与打断回 0x68 rejected（reason 同工具意图的 inspect 形式）。到达由 Voxel.Relocate 体现。
+  def handle({:voxel_beacon_travel, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    ref = make_ref()
+
+    waiter =
+      spawn(fn ->
+        monitor = Process.monitor(state.player)
+
+        receive do
+          {^ref, {:ok, _}} -> send_encoded(state, ResultFrame.accepted(request, 0))
+          {^ref, {:error, reason}} -> send_encoded(state, ResultFrame.error(request, reason))
+          {:DOWN, ^monitor, :process, _, _} -> send_encoded(state, ResultFrame.error(request, :invalid_session))
+        end
+      end)
+
+    SceneServer.Movement.Player.beacon_travel(state.player, state.identity, request, {waiter, ref})
+    {:ok, state}
+  end
+
+  def handle({:voxel_beacon_travel, request}, state) do
+    send_encoded(state, ResultFrame.error(request, :invalid_state))
+    {:ok, state}
+  end
+
+  def handle({:voxel_beacon_directory_request, request}, %{status: :in_scene, voxim_overlay: true} = state) do
+    send_beacon_directory(state, request.request_id)
     {:ok, state}
   end
 
@@ -310,6 +342,15 @@ defmodule GateServer.Session.Dispatch do
 
   defp spell_ingress(state),
     do: Map.put(Map.take(state, [:received_us, :clock_node]), :caster_recipient, state.sink.ref)
+
+  defp beacon_tool?(state, request) do
+    match?({:ok, %{"action" => "beacon.use"}}, VoxelRegion.World.tool_definition(state.world_ref, request.tool_id))
+  end
+
+  defp send_beacon_directory(state, request_id) do
+    entries = VoxelRegion.World.beacon_directory(state.world_ref, state.cid)
+    send_encoded(state, {:voxel_beacon_directory, %{request_id: request_id, entries: entries}})
+  end
 
   defp send_material_balances(state, cid, request_id) do
     for balance <- VoxelRegion.World.material_balances(state.world_ref, cid) do

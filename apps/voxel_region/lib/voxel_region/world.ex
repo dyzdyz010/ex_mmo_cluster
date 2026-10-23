@@ -248,6 +248,17 @@ defmodule VoxelRegion.World do
   def parcel_install(server \\ @name, key, parcel, delta),
     do: GenServer.call(server, {:parcel_install, key, parcel, delta}, :infinity)
 
+  @doc """
+  全局系统维护：安装一座传送信标的记录（`VoxelRegion.World.Beacons`）。record = `%{id, name, core, landing}`：
+  core 为核心内一个微格坐标、须已是锚心石；landing 为落点探针（米）。同 key 只装一次，返回 `{:ok, 回执}`。
+  信标几何经 prefab／地块入口先放好；本入口只写记录。维护窗口内经 release rpc 调用，不接 Gate。
+  """
+  def beacon_install(server \\ @name, key, record),
+    do: GenServer.call(server, {:beacon_install, key, record}, 300_000)
+
+  @doc "全局系统功能：角色的信标目录（全部信标，各带是否已调谐），供 Gate 下发 0x84。"
+  def beacon_directory(server \\ @name, cid), do: GenServer.call(server, {:beacon_directory, cid}, 300_000)
+
   @doc "全局系统功能：同一事务位置下的指定角色余额与格占用投影；detail=:micro 增加细化格精确坐标，不读取热/液体模拟状态。"
   def material_snapshot(server, characters, cells, detail \\ :summary) when detail in [:summary, :micro] do
     prepare(server, Enum.uniq(Enum.map(cells, &{0, region_of(&1)})))
@@ -596,6 +607,9 @@ defmodule VoxelRegion.World do
           macro_owners: %{},
           # 受保护区域（全局系统）：唯一真值，随日志/检查点持久化；物理边界与意图许可都只读它。
           protection: Protection.new(),
+          # 传送信标（全局系统）：信标记录与角色调谐，随日志/检查点持久化（World.Beacons）。
+          beacons: %{},
+          beacon_attunements: %{},
           # 认领工具的待定第一角（玩家适配）：按 Player 进程保存，断开即忘，不持久化。
           claim_corners: %{},
           phase_inventory: %{},
@@ -1027,6 +1041,12 @@ defmodule VoxelRegion.World do
   def handle_call({:parcel_install, key, parcel, delta}, _, state),
     do: VoxelRegion.World.Parcel.install(state, key, parcel, delta)
 
+  def handle_call({:beacon_install, key, record}, _, state),
+    do: VoxelRegion.World.Beacons.install(state, key, record)
+
+  def handle_call({:beacon_directory, cid}, _, state),
+    do: {:reply, VoxelRegion.World.Beacons.directory(state, cid), state}
+
   def handle_call({:liquid_fill, cid, key, material, seed, level_y, max_cells}, _, state) do
     case Map.fetch(state.material_supplies, {cid, {:liquid_fill, key}}) do
       {:ok, receipt} -> {:reply, {:ok, receipt}, state}
@@ -1094,8 +1114,8 @@ defmodule VoxelRegion.World do
                 not same_tool_target?(target, request) ->
                   {:reply, {:error, :stale_target}, state}
 
-                # 受保护区域许可：认领工具自身的规则在其适配里裁决。
-                tool["action"] != "protection.claim" and
+                # 受保护区域许可：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
+                tool["action"] not in ["protection.claim", "beacon.use"] and
                     not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
                   {:reply, {:error, :protected_region}, state}
 
@@ -1503,6 +1523,19 @@ defmodule VoxelRegion.World do
     end
   end
   def handle_info({:cancel_cast, key, reason}, state), do: {:noreply, cancel_pending_cast(state, key, reason)}
+
+  # 传送信标：Player 是读条 owner；World 只在开始与结束各校验一次，结果异步回给 Player（不回调 Player，避免互等）。
+  def handle_info({:prepare_beacon, key, actor, request}, state) do
+    {result, state} = VoxelRegion.World.Beacons.prepare(state, actor, request)
+    send(actor.player, {:beacon_prepared, key, result})
+    {:noreply, state}
+  end
+
+  def handle_info({:commit_beacon, key, actor, request}, state) do
+    {result, state} = VoxelRegion.World.Beacons.commit_travel(state, actor, request)
+    send(actor.player, {:beacon_committed, key, result})
+    {:noreply, state}
+  end
 
   # 定时提交按内核步分成多条消息推进，步间先处理已排队的工具、建造和查询调用；整段仍作为一笔热事务提交。
   # 无可推进的状态时休眠：不再排下一拍，直到事务或身体接触唤醒（R8-05）。

@@ -29,9 +29,12 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
   @finishes Enum.with_index(~w(silk_gauze lined_canopy_cloth red_lacquer_wood tiger_skin_masonry gray_floor_brick pebble_paving qingbai_stone rammed_lime_earth pond_mud blue_gray_plaster green_oiled_wood natural_oiled_wood suzhou_painted_wood korean_window_paper), 74)
             |> Enum.map(fn {name, id} -> %{"id" => id, "name" => name} end)
 
-  test "Voxim 保留旧材料身份并追加正式建筑材料至87" do
+  # 传送信标锚心石（Voxim Docs/Gameplay/Beacon.md）：阻挡移动、不支撑附件。
+  @beacon [%{"id" => 88, "name" => "anchor_stone"}]
+
+  test "Voxim 保留旧材料身份并追加正式建筑材料至87、信标锚心石88" do
     assert Enum.take(VoxelMaterialCatalog.table(), 57) == @table
-    assert VoxelMaterialCatalog.table() == @table ++ @plants ++ @finishes
+    assert VoxelMaterialCatalog.table() == @table ++ @plants ++ @finishes ++ @beacon
     assert Enum.map(@table, & &1["id"]) == Enum.to_list(0..56)
     assert Enum.uniq_by(@table, & &1["name"]) == @table
     assert VoxelMaterialCatalog.valid_id?(0)
@@ -56,7 +59,8 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
       assert VoxelMaterialCatalog.blocks_movement?(id)
       assert VoxelMaterialCatalog.supports_attachments?(id)
     end
-    refute VoxelMaterialCatalog.valid_id?(88)
+    assert VoxelMaterialCatalog.valid_id?(88)
+    refute VoxelMaterialCatalog.valid_id?(89)
     assert VoxelMaterialCatalog.blocks_movement?(74)
     assert VoxelMaterialCatalog.supports_attachments?(74)
     refute VoxelMaterialCatalog.valid_id?(255)
@@ -80,7 +84,7 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
     assert byte_size(expected) == 972
     plants = ",[[57,\"willow_wood\"],[58,\"willow_leaves\"],[59,\"pine_wood\"],[60,\"pine_leaves\"],[61,\"bamboo_culm\"],[62,\"bamboo_leaves\"],[63,\"peach_wood\"],[64,\"peach_leaves\"],[65,\"lotus\"],[66,\"potted_plum\"],[67,\"potted_peony\"],[68,\"potted_chrysanthemum\"],[69,\"potted_orchid\"],[70,\"terracotta_pot\"],[71,\"climbing_vine\"],[72,\"rock_moss\"],[73,\"lotus_leaves\"]]"
     old_identity = binary_part(expected, 0, byte_size(expected) - 1) <> String.replace_prefix(plants, ",[[", ",[")
-    assert VoxelMaterialCatalog.identity_bytes() == binary_part(old_identity, 0, byte_size(old_identity)-1) <> ",[74,\"silk_gauze\"],[75,\"lined_canopy_cloth\"],[76,\"red_lacquer_wood\"],[77,\"tiger_skin_masonry\"],[78,\"gray_floor_brick\"],[79,\"pebble_paving\"],[80,\"qingbai_stone\"],[81,\"rammed_lime_earth\"],[82,\"pond_mud\"],[83,\"blue_gray_plaster\"],[84,\"green_oiled_wood\"],[85,\"natural_oiled_wood\"],[86,\"suzhou_painted_wood\"],[87,\"korean_window_paper\"]]"
+    assert VoxelMaterialCatalog.identity_bytes() == binary_part(old_identity, 0, byte_size(old_identity)-1) <> ",[74,\"silk_gauze\"],[75,\"lined_canopy_cloth\"],[76,\"red_lacquer_wood\"],[77,\"tiger_skin_masonry\"],[78,\"gray_floor_brick\"],[79,\"pebble_paving\"],[80,\"qingbai_stone\"],[81,\"rammed_lime_earth\"],[82,\"pond_mud\"],[83,\"blue_gray_plaster\"],[84,\"green_oiled_wood\"],[85,\"natural_oiled_wood\"],[86,\"suzhou_painted_wood\"],[87,\"korean_window_paper\"],[88,\"anchor_stone\"]]"
   end
 
   # 2026-09-21 契约：树叶与地面花草是非实体格——可选中、可攻击，但不挡移动。
@@ -98,12 +102,12 @@ defmodule MmoContracts.VoxelMaterialCatalogTest do
       end
 
     finishes = for id <- 74..87, into: <<>>, do: <<id::16-big, 1, 1>>
-    expected = <<"voxim-blocking-v2\n", 88::16-big, records::binary, finishes::binary>>
+    expected = <<"voxim-blocking-v2\n", 89::16-big, records::binary, finishes::binary, 88::16-big, 1, 0>>
     assert VoxelMaterialCatalog.blocking_bytes() == expected
     assert VoxelMaterialCatalog.blocking_hash() == :crypto.hash(:sha256, expected)
-    # 88项；MAT2a三种木材及封闭纸窗均阻挡/支撑，冻结值由Python struct/hashlib独立复算。
+    # 89项；MAT2a三种木材及封闭纸窗均阻挡/支撑，锚心石88阻挡不支撑；冻结值由 Voxim 生成脚本（Python struct/hashlib）独立复算。
     assert Base.encode16(VoxelMaterialCatalog.blocking_hash(), case: :lower) ==
-             "d63d153b4f7779f89133c0710a4151e55953d35c99ac6341302fceac61b4211e"
+             "34b0a95a5a30a8719ed0cae05225d9449b520173f4ae9bb632a82bf1eb228c6c"
 
     IO.puts(
       "W1_MATERIAL " <>

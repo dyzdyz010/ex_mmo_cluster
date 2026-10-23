@@ -526,5 +526,11 @@
     "name": "korean_window_paper",
     "blocks_movement": true,
     "supports_attachments": true
+  },
+  {
+    "id": 88,
+    "name": "anchor_stone",
+    "blocks_movement": true,
+    "supports_attachments": false
   }
 ]
