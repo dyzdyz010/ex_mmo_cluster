@@ -3,10 +3,10 @@ defmodule VoxelRegion.World.Parcel do
   全局系统功能：地块导出与维护安装（Voxim `Docs/Playtest/terrain-transplant-design.md`）。
 
   - **导出** `export/2`：在同一个 seq 上读源世界半开宏格盒 `[lo, hi)` 的完整 L0 真值——每格 `{material, skins}`
-    （空气也是内容）、细化槽、宏格归属、有限数量、实例树、附件、相关属性行，以及实例用到的定义字节。
-    盒内每棵实例树与每个附件必须完整落在盒内，否则拒绝，不切半座建筑。
+    （空气也是内容）、细化槽、宏格归属、有限数量、实例树、附件（实例带的与玩家直接挂的无主附件）、相关属性行，
+    以及实例用到的定义字节。盒内每棵实例树与每个附件必须完整落在盒内，否则拒绝，不切半座建筑。
   - **安装** `install/4`：一笔正常 World 提交（`Prefabs.prefab_reply`：后像、粗层、结构、碰撞、日志、广播），
-    把目标盒 `[lo+Δ, hi+Δ)` 整体换成地块内容，盒外不变。Δ 为整米；实例与附件取目标世界的新身份，锚点平移 8Δ 微格，
+    把目标盒 `[lo+Δ, hi+Δ)` 整体换成地块内容，盒外不变；与当前有效值相同的格不写 overlay。Δ 为整米；实例与附件取目标世界的新身份，锚点平移 8Δ 微格，
     放置者归作者（nil）。有限数量、HP 与部件状态随地块带入；温度与相态焓按目标环境温度重设（作者初态，
     计入 phase_authored 账）。目标盒触及受保护区域、或目标原有实例／附件伸出盒外时整笔拒绝。
     同 key 只装一次：回执记在 `material_supplies[{0, {:parcel, key}}]`，随事务进日志与检查点，重试返回原回执。
@@ -34,6 +34,9 @@ defmodule VoxelRegion.World.Parcel do
 
     with {:ok, ids} <- trees(state, refined, macro_owners, inside?, :instance_crosses_boundary) do
       owned = for {aid, {owner, _}} <- state.attachment_owners, MapSet.member?(ids, owner), into: MapSet.new(), do: aid
+      # 玩家直接挂在格面上的附件没有主人：碰到盒内就随地块走（跨出盒界照样拒绝）。
+      owned = for {slot, {aid, _}} <- state.attachments, not Map.has_key?(state.attachment_owners, aid),
+        Enum.any?(Attachments.macros([slot]), inside?), into: owned, do: aid
       attachments = Map.filter(state.attachments, fn {_, {aid, _}} -> MapSet.member?(owned, aid) end)
       foreign = for {slot, {aid, _}} <- state.attachments, not MapSet.member?(owned, aid),
         Enum.any?(Attachments.macros([slot]), inside?), do: aid
@@ -93,12 +96,19 @@ defmodule VoxelRegion.World.Parcel do
       next = Enum.reduce(cells, next, fn cell, s ->
         s = %{s | macro_owners: Map.delete(s.macro_owners, cell), placed_by: Map.delete(s.placed_by, cell),
           liquid_units: Map.delete(s.liquid_units, cell)}
-        Edits.put_overlay(s, 0, cell, Map.fetch!(parcel.cells, shift(cell, neg(delta))))
+        value = Map.fetch!(parcel.cells, shift(cell, neg(delta)))
+        # 与当前有效值（含生成底图）相同的格不另写 overlay：整园迁入时高处两边同为空气、深处同为岩石，
+        # 每格一条会让目标世界白添约千万条 overlay。
+        case cell_value(s, 0, cell) do
+          {:ok, ^value, s} -> s
+          {:ok, _, s} -> Edits.put_overlay(s, 0, cell, value)
+        end
       end)
 
       ids = parcel.instances |> Map.keys() |> Enum.sort() |> Enum.with_index() |> Map.new(fn {id, n} -> {id, {seq, n}} end)
       base = max(next.attachment_serial, before.seq)
-      aids = parcel.attachment_owners |> Map.keys() |> Enum.sort() |> Enum.with_index(1) |> Map.new(fn {id, n} -> {id, base + n} end)
+      aids = for({_, {aid, _}} <- parcel.attachments, do: aid) |> Enum.uniq() |> Enum.sort() |> Enum.with_index(1)
+        |> Map.new(fn {id, n} -> {id, base + n} end)
       micro = map3(delta, &(&1 * @micro))
 
       next = Enum.reduce(parcel.refined, next, fn {cell, slots}, s ->

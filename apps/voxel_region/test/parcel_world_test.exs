@@ -136,6 +136,47 @@ defmodule VoxelRegion.ParcelWorldTest do
     assert World.seq(t.w) == seq
   end
 
+  test "a player-placed attachment inside the box travels with the parcel under a new identity", %{s: s, t: t} do
+    build_source(s)
+    # 玩家（cid 1001）在 {65,1,1} 石的顶面挂 8×8 石面：锚点微格 (520, 16, 8)，64 槽 × 64 单位。
+    actor = %{cid: 1001, gate: self(), identity: :parcel, refresh: &VoxelRegion.TestSupport.Actor.tool_context/2,
+      eye: {66.0, 2.5, 1.5}, tick_us: 16667}
+    actor = Map.put(actor, :player, start_supervised!({VoxelRegion.TestSupport.Actor, actor}))
+    {:ok, _} = World.material_supply(s.w, 1001, "parcel-face", %{11 => 4096})
+    {:ok, free} = World.attachment_intent(s.w, actor, %{request_id: 1, client_intent_seq: 1, logical_scene_id: 1, action: 0,
+      kind: 0, axis: 1, size: 8, anchor: {520, 16, 8}, id: 0, material: 11, tool_id: 1})
+
+    assert {:ok, parcel} = World.parcel_export(s.w, @box)
+    # 实例带的顶面附件与玩家附件各 64 槽；只有前者有主人。
+    assert map_size(parcel.attachments) == 128 and map_size(parcel.attachment_owners) == 1
+    assert {:ok, %{seq: seq, attachments: 2}} = World.parcel_install(t.w, "with-face", parcel, @delta)
+
+    check = fn w ->
+      observed = VoxelRegion.TestSupport.observe(w, [], @everywhere)
+      rows = for {{3, _}, row} <- observed.damage, do: {row.micro, row.incarnation}
+      # 玩家附件平移 8Δ：微格 x 520..527 → -504..-497，y 16 → -24，z 8..15 → -24..-17；新身份，不沿用源 free。
+      assert [{{x, -24, z}, id}] = for {{_, -24, _}, _} = r <- rows, do: r
+      assert x in -504..-497 and z in -24..-17 and id >= seq and id != free
+      assert length(rows) == 2
+    end
+
+    check.(t.w)
+    check.(restart(t, :target))
+  end
+
+  test "cells already equal to the target's effective value add no overlay entry", %{s: s, t: t} do
+    build_source(s)
+    {:ok, parcel} = World.parcel_export(s.w, @box)
+    # 只数 L0：安装另会写受影响的粗层格。
+    l0 = fn -> Enum.count(:sys.get_state(t.w).overlay, &match?({{0, _}, _}, &1)) end
+    overlay = l0.()
+    # 目标是全空气替身：盒内 24 格里与空气底图相同的格（源 y 3 层与细化格的宏格值）不写，只有非空气格各一条（旧做法 24 条）。
+    solid = Enum.count(parcel.cells, fn {_, {m, _}} -> m != 0 end)
+    assert solid < 24
+    {:ok, _} = World.parcel_install(t.w, "first", parcel, @delta)
+    assert l0.() == overlay + solid
+  end
+
   test "an installed parcel accepts ordinary edits afterwards", %{s: s, t: t} do
     build_source(s)
     {:ok, parcel} = World.parcel_export(s.w, @box)
