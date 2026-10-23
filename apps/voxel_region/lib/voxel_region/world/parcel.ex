@@ -86,7 +86,7 @@ defmodule VoxelRegion.World.Parcel do
          true <- unknown == [] || {:error, {:unknown_materials, unknown}},
          true <- (Edits.valid_edit_coord?(tlo) and Edits.valid_edit_coord?({x1 - 1, y1 - 1, z1 - 1})) || {:error, :invalid_coordinate},
          false <- Protection.overlaps?(state.protection, {x0, z0}, {x1 - 1, z1 - 1}) && {:error, :protected},
-         state = Edits.ensure_sources(state, cells),
+         state = Edits.ensure_sources(state, cells) |> warm(target),
          {:ok, removed} <- target_trees(state, target),
          {:ok, state} <- publish_definitions(state, Map.drop(parcel.definitions, Map.keys(state.prefabs))) do
       before = state
@@ -253,6 +253,17 @@ defmodule VoxelRegion.World.Parcel do
   end
 
   # 盒内材料量（宏格按有限数量、细化槽、附件槽）；回执记安装前后的净差，供作者安装记账。
+  # 盒内 L0 区域先解码进缓存：之后 `before`／`next` 都带着它，回执的材料差额与属性行逐格读当前值时不再每格现场生成并解码整个区域
+  # （320 万格的如园分批安装曾因此卡在 GeneratedStore.read 上）。
+  defp warm(state, box) do
+    Enum.reduce(regions(box), state, fn region, s ->
+      case decoded(s, 0, region) do
+        {:ok, _, s} -> s
+        {:error, _, s} -> s
+      end
+    end)
+  end
+
   defp units(state, cells, box) do
     capacity = liquid_capacity(state)
     acc = Enum.reduce(cells, %{}, fn cell, acc ->
