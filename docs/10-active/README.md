@@ -65,6 +65,7 @@
 
 ### voxel-authority
 
+- [`2026-10-24-world-region-paging.md`](voxel-authority/2026-10-24-world-region-paging.md) — 世界真值按 L0 区域分页（单写者、脏页检查点、只读日志后缀启动、常驻集＋ticket、去全表扫描、协议 42 只发窗口内非默认状态）；草稿待批
 - [`2026-10-23-world-memory-compaction.md`](voxel-authority/2026-10-23-world-memory-compaction.md) — 如园迁入后 World 常驻内存收紧（拼装件定义二进制、安装世代盒戳／协议 42、条件项 D2／D4）与实测基线
 - [`2026-08-24-worldgen-v2-3d-density-materialization.md`](voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md) — 服务端 migration WorldGen 与 Voxia 本地 Mock 的独立 canonical XYZ 材质体、首个三维 cheese-cave 切片及验收边界
 - [`2026-06-17-unit-morphology-and-surface-element-layer.md`](voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md)
