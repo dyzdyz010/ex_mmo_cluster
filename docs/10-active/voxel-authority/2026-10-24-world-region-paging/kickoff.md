@@ -24,7 +24,7 @@
 | 整园导出件 | Voxim `Saved/Playtest/release-20261023/Server/parcels/*.etf` |
 | 迁入青岚的演练副本 | `voxim-pg-qlry1023` 库 `voxim_qinglan_ruyuan_20261023`、容器 `voxim-qinglan-ruyuan-20261023` |
 
-离线备份（2026-10-24 09:41，`pg_restore -l` 校验通过，SHA256 见目录内 `SHA256SUMS`）：`D:\hemifuture\Backupsuyuan-20261024\`
+离线备份（2026-10-24 09:41，`pg_restore -l` 校验通过，SHA256 见目录内 `SHA256SUMS`）：`D:/hemifuture/Backups/ruyuan-20261024/`
 （两库 `-Fc` dump、源世界目录 tar、导出件 tar）。M0 需要如园数据时，从这些 dump **还原到新建的隔离库**再用，不连上述原库。
 任何需要动到上表对象的操作（包括停容器）先问用户。
 
