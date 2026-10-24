@@ -12,10 +12,26 @@
 2. `D:\hemifuture\ex_mmo_cluster\AGENTS.md`（§2.2；协议 / 事务 / 持久化改动的决策稿规则——本稿即是）、`D:\hemifuture\Voxim\AGENTS.md`、`D:\hemifuture\Voxim\Docs\Testing.md`。
 3. 调研附录 `recon-*.md`（file:line 级现状）。
 
+## 如园保护（用户 2026-10-24：“做好的如园一定保护好，不能丢”）
+
+如园的权威源与副本，**全部只读**，任何测试、迁移、基准都不得写入、重置、`docker rm`／`docker volume rm`／`docker system prune`、`pg_restore --clean` 覆盖或删除：
+
+| 对象 | 位置 |
+|---|---|
+| 如园源世界（权威） | PG 容器 `ymy-d1-20261013-task5-pg`（匿名卷 `ea67334b…`，`docker rm -v` 或 prune 会连卷删除），库 `ymy_d1_20261013_task5`（seq 495370）；同容器另有 `beacon_20261023`、`f2c2b_restore_20261020` 也不要动 |
+| 源世界服务端容器及历次快照 | `ymy-d1-20261013-task5`、`ymy-d1-20261013-task5-before-*`（已停止，保留） |
+| 源世界目录 | Voxim `Saved/Tests/ymy-d1-20261013-task5/`（含 published prefabs、配置） |
+| 整园导出件 | Voxim `Saved/Playtest/release-20261023/Server/parcels/*.etf` |
+| 迁入青岚的演练副本 | `voxim-pg-qlry1023` 库 `voxim_qinglan_ruyuan_20261023`、容器 `voxim-qinglan-ruyuan-20261023` |
+
+离线备份（2026-10-24 09:41，`pg_restore -l` 校验通过，SHA256 见目录内 `SHA256SUMS`）：`D:\hemifuture\Backupsuyuan-20261024\`
+（两库 `-Fc` dump、源世界目录 tar、导出件 tar）。M0 需要如园数据时，从这些 dump **还原到新建的隔离库**再用，不连上述原库。
+任何需要动到上表对象的操作（包括停容器）先问用户。
+
 ## 环境事实
 - 本机 32 逻辑核、31.8 GiB 内存。开发期服务端在 **Windows 原生**运行，不为日常改动构建 Docker 镜像（镜像只用于分发）。
 - 演练副本（Docker，生产镜像 ffa336c7）仍在运行：容器 `voxim-qinglan-ruyuan-20261023`（端口 26744/26745）、PG `voxim-pg-qlry1023`（库 `voxim_qinglan_ruyuan_20261023`，
-  如园 15 批已装，seq 14615）、`voxim-mail-qlry1023`。它是 M0 现成的“1 份如园”数据来源（可 pg_dump 到隔离库再用原生服务端加载）；**不要改写它**，用完是否停掉问用户。
+  如园 15 批已装，seq 14615）、`voxim-mail-qlry1023`。它是 M0 现成的“1 份如园”数据来源——用上面备份目录里的 dump 还原到隔离库；**不要改写它**，停不停问用户。
   常驻约 2.2 GB，启动峰值 VmHWM 6.5 GB——开发机上同时跑多份要先估内存。
 - 既有失败（ffa336c7 上同样失败，不计入）：body_contact_world_test 10、thermal_edit_world_test 2、thermal_domain_equivalence 1、generated_store “native returns the existing raw payload body”。
 - 旧堆探针：Voxim `Saved/Playtest/release-20261023/Server/heap_probe.ex`（`:erts_debug.flat_size` 分字段）、基线 `heap-probe.json`。
