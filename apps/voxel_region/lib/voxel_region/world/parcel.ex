@@ -185,11 +185,15 @@ defmodule VoxelRegion.World.Parcel do
 
     with {:ok, ids} <- trees(state, refined, Map.filter(state.macro_owners, fn {cell, _} -> inside?.(cell) end),
            inside?, :target_instance_crosses_boundary) do
-      kept = for {slot, {aid, _}} <- state.attachments, not MapSet.member?(ids, elem(state.attachment_owners[aid], 0)),
-        Enum.any?(Attachments.macros([slot]), inside?), do: aid
+      # 先按盒筛：独立附件（玩家所挂）没有主人记录；盒内的这类附件不随任何被清的树移除，按越界拒绝。
+      kept = for {slot, {aid, _}} <- state.attachments, Enum.any?(Attachments.macros([slot]), inside?),
+        not removed_with_tree?(state.attachment_owners[aid], ids), do: aid
       if kept == [], do: {:ok, ids}, else: {:error, {:target_attachment_crosses_boundary, hd(kept)}}
     end
   end
+
+  defp removed_with_tree?({owner, _slot}, ids), do: MapSet.member?(ids, owner)
+  defp removed_with_tree?(nil, _ids), do: false
 
   defp exported_row?(%{granularity: g} = row, inside?, _ids, _owned) when g in [0, 1], do: inside?.(Damage.macro(row))
   defp exported_row?(%{granularity: 2, owner: owner}, _inside?, ids, _owned), do: MapSet.member?(ids, owner)

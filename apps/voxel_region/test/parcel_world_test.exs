@@ -164,6 +164,23 @@ defmodule VoxelRegion.ParcelWorldTest do
     check.(restart(t, :target))
   end
 
+  # 2026-10-24 M0 复现：目标世界里已有无主人的独立附件（玩家附件只在 attachments，不在 attachment_owners）时，
+  # 目标盒检查曾对全世界附件取主人而崩溃；盒外附件与本次安装无关，安装应照常提交。
+  test "a player attachment outside the target box does not block the install", %{s: s, t: t} do
+    build_source(s)
+    build_target(t)
+    # 玩家（cid 1002）在盒外 {-62,-2,-2} 山体石顶面挂 8×8 石面：锚点微格 (-496, -8, -16)。
+    actor = %{cid: 1002, gate: self(), identity: :parcel, refresh: &VoxelRegion.TestSupport.Actor.tool_context/2,
+      eye: {-61.0, -0.5, -1.5}, tick_us: 16667}
+    actor = Map.put(actor, :player, start_supervised!({VoxelRegion.TestSupport.Actor, actor}))
+    {:ok, _} = World.material_supply(t.w, 1002, "outside-face", %{11 => 4096})
+    {:ok, _} = World.attachment_intent(t.w, actor, %{request_id: 1, client_intent_seq: 1, logical_scene_id: 1, action: 0,
+      kind: 0, axis: 1, size: 8, anchor: {-496, -8, -16}, id: 0, material: 11, tool_id: 1})
+
+    assert {:ok, parcel} = World.parcel_export(s.w, @box)
+    assert {:ok, %{cells: 24}} = World.parcel_install(t.w, "beside-face", parcel, @delta)
+  end
+
   test "cells already equal to the target's effective value add no overlay entry", %{s: s, t: t} do
     build_source(s)
     {:ok, parcel} = World.parcel_export(s.w, @box)
