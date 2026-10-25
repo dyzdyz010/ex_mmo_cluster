@@ -220,8 +220,7 @@ defmodule VoxelRegion.World.Observation do
         do: MapSet.new(),
         else:
           MapSet.new(
-            for cell <- Enum.uniq(Map.keys(before.refined) ++ Map.keys(state.refined)),
-                Map.get(before.refined, cell) != Map.get(state.refined, cell),
+            for cell <- changed_refined_cells(before, state),
                 {_, {_, owner}} <-
                   Map.to_list(Map.get(before.refined, cell, %{})) ++
                     Map.to_list(Map.get(state.refined, cell, %{})),
@@ -262,9 +261,11 @@ defmodule VoxelRegion.World.Observation do
           |> Map.new(&{Damage.key(&1), &1})
           |> Map.values()
 
-    changed_macros = Enum.uniq(Map.keys(before.macro_owners) ++ Map.keys(state.macro_owners))
-      |> Enum.filter(fn cell -> Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or
-        Map.get(before.epochs,cell) != Map.get(state.epochs,cell) end)
+    # 归属或世代变了的已归属宏格：两者的每处改动都以增量随本笔事务记录（日志回放与 Replica 只按这两份增量合并），
+    # 所以只看 txn 里的格，不再整表比较全世界的 macro_owners。
+    changed_macros = Enum.uniq(Map.keys(Map.get(txn, :macro_owners, %{})) ++ Map.keys(Map.get(txn, :epochs, %{})))
+      |> Enum.filter(fn cell -> (Map.has_key?(before.macro_owners, cell) or Map.has_key?(state.macro_owners, cell)) and
+        (Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or Map.get(before.epochs,cell) != Map.get(state.epochs,cell)) end)
       |> MapSet.new()
     rows = if MapSet.size(changed_macros) == 0 do
       rows

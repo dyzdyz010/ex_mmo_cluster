@@ -4,10 +4,10 @@ defmodule VoxelRegion.CanopyProjectionTest do
   alias MmoContracts.Voxel.Skins
   defp state(cells,bound) do
     id=:binary.copy(<<7>>,32)
-    %{macro_owners: Map.new(bound,&{&1,{1,0}}),instances: %{{1,0}=>%{definition_id: id,anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}},
-      prefabs: %{id=>%{definition: %{presentation_bindings: %{58=>2}}}},refined: %{},attachments: %{},structure: %{},
+    VoxelRegion.World.Canonical.index_macro_owners(%{macro_owners: Map.new(bound,&{&1,{1,0}}),instances: %{{1,0}=>%{definition_id: id,anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}},
+      prefabs: %{id=>%{definition: %{presentation_bindings: %{58=>2}}}},refined: %{},attachments: %{},attachment_regions: %{},structure: %{},
       overlay: Map.new(cells,fn {p,m}->{{0,p},{m,Skins.uniform(m)}} end),region_bases: %{},decoded: %{},
-      source: VoxelRegion.TestSupport.Source,source_state: %{observer: self(),root: "unused"}}
+      source: VoxelRegion.TestSupport.Source,source_state: %{observer: self(),root: "unused"}})
   end
   test "two five of eight layouts with the same coarse material retain distinct actual anchors at all LODs" do
     all=for z<- -2..-1,y<- -2..-1,x<- -2..-1,do: {x,y,z}
@@ -46,8 +46,8 @@ defmodule VoxelRegion.CanopyProjectionTest do
   end
   test "affected keys include attachment neighbors from before and after removal" do
     before=state([{{0,0,0},58},{{1,0,0},11}],[{0,0,0}])
-    before=%{before|attachments: %{{0,0,{16,0,0}}=>{2,19}}}
-    after_removal=%{before|attachments: %{}}
+    before=VoxelRegion.World.Canonical.put_attachments(before,%{{0,0,{16,0,0}}=>{2,19}})
+    after_removal=VoxelRegion.World.Canonical.drop_attachments(before,[{0,0,{16,0,0}}])
     for {a,b}<-[{before,before},{before,after_removal},{after_removal,before}] do
       assert {1,{0,0,0}} in Canopy.affected_keys(a,b,[{2,0,0}])
     end

@@ -315,6 +315,32 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
 
 
   @tag :macro_attachment_refund
+  # M1（2026-10-25）：单格编辑曾把整张实例表与附件归属写进每笔日志（4 份如园时每笔约 0.74 MB）。
+  # 未改它们的提交不再写；回放沿用前值，重启后实例、归属与附件拆除退料与重启前相同。
+  test "edits that leave instances and attachment owners alone do not log them, and restart keeps both", c do
+    id = define(c,[{{0,0,0},11}],[],[],3,[{1,0,1,{0,8,0},8,19}])
+    assert :ok = publish(c)
+    assert {:ok,1} = World.material_supply(c.world,1001,"macro-face",%{11=>512,19=>64})
+    assert {:ok,2} = place(c,id)
+    assert {:ok,3} = World.apply_edit(c.world,{40,1,2},11)
+    assert {:ok,4} = World.apply_edits(c.world,[{{41,1,2},11},{{40,1,2},0}])
+
+    txns = OverlayLog.File.replay(Path.join(c.root,"overlay.log")) |> Map.new(&{&1.seq,&1})
+    assert Map.has_key?(txns[2],:prefab_instances) and Map.has_key?(txns[2],:attachment_owners)
+    for seq <- [3,4], do: refute(Map.has_key?(txns[seq],:prefab_instances) or Map.has_key?(txns[seq],:attachment_owners))
+
+    before = World.stats(c.world)
+    stop_supervised(World)
+    w = start_supervised!({World,c.opts})
+    assert Map.take(World.stats(w),[:instances,:attachment_slots]) == Map.take(before,[:instances,:attachment_slots])
+    assert {:ok,%{owner: {2,0}} = target} = query(%{c | world: w})
+    request = Map.merge(Map.take(target,[:micro,:incarnation,:owner,:material]),%{request_id: 9,
+      client_intent_seq: 9,logical_scene_id: 1,action: 2,direction: {0.0,0.0,1.0},tool_id: 1})
+    assert {:ok,5} = World.tool_intent(w,Map.merge(c.actor,%{received_us: 500_000,clock_node: node()}),request)
+    assert World.stats(w).attachment_slots == 0
+    assert balance(%{c | world: w},19) == 64
+  end
+
   test "dismantling an owned macro refunds its unsupported initial attachment", c do
     id = define(c,[{{0,0,0},11}],[],[],3,[{1,0,1,{0,8,0},8,19}])
     assert :ok = publish(c)

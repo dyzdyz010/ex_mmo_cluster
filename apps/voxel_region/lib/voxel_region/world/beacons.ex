@@ -149,7 +149,7 @@ defmodule VoxelRegion.World.Beacons do
     next = %{next | seq: before.seq + 1}
     txn = Map.merge(%{seq: next.seq, entries: [], coarse: []}, fields)
 
-    case Log.append_log(next, txn) do
+    case Log.append_log(before, next, txn) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)

@@ -14,7 +14,17 @@ defmodule VoxelRegion.World.Log do
 
   # ---- 日志
 
-  def append_log(state, txn), do: append_journal(state, attachment_metadata(state, txn))
+  @doc """
+  追加一笔事务。本笔没有改动的实例表与附件归属不再整表写入：回放缺省即沿用前值（`replay_damage/2`，与纯液体提交同一语义），
+  所以单格编辑、热提交等每笔日志不随世界的实例／附件总数增长。真正改了它们的提交仍写整表（按键增量是 P2 的后续项）。
+  `before` 是本笔提交前的 World 状态。
+  """
+  def append_log(before, state, txn) do
+    metadata = attachment_metadata(state, txn)
+    metadata = if state.instances == before.instances, do: Map.delete(metadata, :prefab_instances), else: metadata
+    metadata = if state.attachment_owners == before.attachment_owners, do: Map.delete(metadata, :attachment_owners), else: metadata
+    append_journal(state, metadata)
+  end
 
   @doc "按已备好的日志表示追加；实时落体帧、待施放与操作反馈只随本次广播。"
   def append_journal(%{log: {backend, handle}}, journal),
@@ -80,7 +90,7 @@ defmodule VoxelRegion.World.Log do
   @doc "液体数量增量（`Edits` 的日志表示）：写入数量，并像在线后像一样把覆盖区域记为完整快照、丢弃缓存。"
   def replay_liquid(state, %{liquid_units: units}) do
     keys = Enum.uniq(Payloads.region_keys(Enum.map(Map.keys(units), &{0, &1})))
-    Enum.reduce(keys, %{state | liquid_units: Liquid.apply_changes(state.liquid_units, units)}, fn key, s ->
+    Enum.reduce(keys, put_liquid(state, units), fn key, s ->
       %{Payloads.cache_delete(s, key) | snapshots: MapSet.put(s.snapshots, key)}
     end)
   end
@@ -110,21 +120,19 @@ defmodule VoxelRegion.World.Log do
         instances = Map.merge(state.instances, p.instances)
         ids = Payloads.live_instance_ids(%{state | instances: instances})
 
-        attachments =
-          state.attachments
-          |> Map.reject(fn {slot, _} -> Attachments.region(slot) == p.region end)
-          |> Map.merge(
-            Map.filter(p.attachments, fn {slot, _} -> Attachments.region(slot) == p.region end)
-          )
+        state =
+          state
+          |> drop_attachments(attachments_in_regions(state, [p.region]))
+          |> put_attachments(Map.filter(p.attachments, fn {slot, _} -> Attachments.region(slot) == p.region end))
 
         liquid_core = for {index, units} <- p.liquid_units,
           x = rem(index,66), y = rem(div(index,66),66), z = div(index,66*66),
           x in 1..64 and y in 1..64 and z in 1..64, into: %{},
           do: {{ox+x,oy+y,oz+z}, units}
-        liquid_units = state.liquid_units
-          |> Map.reject(fn {cell,_} -> region_of(cell) == p.region end)
-          |> Map.merge(liquid_core)
-        %{state | liquid_units: liquid_units, attachments: attachments, instances: Map.take(instances, ids)}
+        state = state
+          |> put_liquid(for({cell, _} <- liquid_in_regions(state, [p.region]), do: {cell, 0}))
+          |> put_liquid(liquid_core)
+        %{state | instances: Map.take(instances, ids)}
       else
         state
       end
@@ -261,15 +269,26 @@ defmodule VoxelRegion.World.Log do
   def compact_log(%{seq: 0} = state), do: state
 
   def compact_log(state) do
-    checkpoint = state |> checkpoint_input() |> build_checkpoint()
+    input = checkpoint_input(state)
+    checkpoint = input |> build_checkpoint() |> then(&persist_checkpoint(input, &1))
     state |> finish_checkpoint(checkpoint) |> schedule_checkpoint()
+  end
+
+  @doc """
+  检查点落盘：在检查点任务里执行（不占 World 回合）。两个后端都只原子替换 ≤ P 的前缀、保留并发追加的 seq > P 行，
+  所以 World 可同时继续提交；World 收到结果后只换基底、退休已落盘前缀。
+  """
+  def persist_checkpoint(%{log: {backend, handle}}, %{transaction: txn} = checkpoint) do
+    started = System.monotonic_time(:microsecond)
+    :ok = backend.checkpoint(handle, txn)
+    Map.put(checkpoint, :persist_us, System.monotonic_time(:microsecond) - started)
   end
 
   @doc "冻结检查点所需的不可变值；不携带订阅、热域资源、在线任务或历史正文。"
   def checkpoint_input(state) do
     state
-    |> Map.take([:seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
-      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :attachments, :liquid_units,
+    |> Map.take([:log, :seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
+      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions, :liquid_units, :liquid_regions,
       :properties, :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
       :food_ledger, :food_receipts, :placed_by, :protection, :beacons, :beacon_attunements, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
@@ -328,9 +347,6 @@ defmodule VoxelRegion.World.Log do
 
   @doc "World唯一持久出口：替换已算好的前缀，保留期间提交的后缀与当前真值。"
   def finish_checkpoint(state, %{transaction: txn} = checkpoint) do
-    started = System.monotonic_time(:microsecond)
-    {backend, handle} = state.log
-    :ok = backend.checkpoint(handle, txn)
     persisted = System.monotonic_time(:microsecond)
 
     # 有并行后缀时保留当前canonical表示，绝不把冻结前缀覆盖到新overlay或缓存。
@@ -362,7 +378,7 @@ defmodule VoxelRegion.World.Log do
 
     Logger.info(
       "voxel_checkpoint seq=#{txn.seq} current_seq=#{state.seq} retained_before=#{checkpoint.retained_before} regions=#{checkpoint.regions} rebased=#{rebased} " <>
-        "select_us=#{checkpoint.select_us} image_us=#{checkpoint.image_us} persist_us=#{persisted - started} rebase_us=#{now - persisted}"
+        "select_us=#{checkpoint.select_us} image_us=#{checkpoint.image_us} persist_us=#{checkpoint.persist_us} rebase_us=#{now - persisted}"
     )
 
     state
@@ -407,11 +423,12 @@ defmodule VoxelRegion.World.Log do
         protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
         beacons: Map.merge(state.beacons, Map.get(txn, :beacons, %{})),
         beacon_attunements: Map.merge(state.beacon_attunements, Map.get(txn, :beacon_attunements, %{})),
-        macro_owners: Production.merge_placed(state.macro_owners, Map.get(txn, :macro_owners, %{})),
         instances: Map.get(txn,:prefab_instances,state.instances),
         material_balances:
           Map.merge(state.material_balances, Map.get(txn, :material_balances, %{})),
         caster_energy: Map.merge(state.caster_energy, Map.get(txn, :caster_energy, %{}))
     }
+    # 归属增量（nil = 删除，与 Production.merge_placed 同义）经 put_macro_owner 同步维护派生索引。
+    |> then(&Enum.reduce(Map.get(txn, :macro_owners, %{}), &1, fn {cell, owner}, s -> put_macro_owner(s, cell, owner) end))
   end
 end

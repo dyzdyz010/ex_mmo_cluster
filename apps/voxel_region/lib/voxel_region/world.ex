@@ -544,16 +544,20 @@ defmodule VoxelRegion.World do
           served_headers: %{},
           overlay: %{},
           refined: %{},
-          # refined 的派生索引（部件 => 宏格、L0 区域 => 宏格），由 Canonical.put_refined/3 随 refined 维护，不持久化。
+          # refined 的派生索引（部件 => 宏格、L0 区域 => 该区 refined 子表），由 Canonical.put_refined/3 随 refined 维护，不持久化。
           refined_owners: %{},
           refined_regions: %{},
           # 各 refined 宏格已编好的载荷槽记录（{slots, 字节}），后像复用未变格；同上随写入失效、不持久化。
           refined_encoded: %{},
           attachments: %{},
+          # attachments 的派生索引（L0 区域 => 锚点在该区的槽），由 Canonical.put_attachments/drop_attachments 维护，不持久化。
+          attachment_regions: %{},
           attachment_serial: 0,
           attachment_owners: %{},
           # Global system: finite quantity is canonical state, never reconstructed from rendering.
           liquid_units: %{},
+          # liquid_units 的派生索引（L0 区域 => 该区数量子表），由 Canonical.put_liquid/2 维护，不持久化。
+          liquid_regions: %{},
           liquid_active: MapSet.new(),
           # 已核对过没有待接纳液体格的区域载荷字节（Liquids.adopt_liquid_sources/2 的派生备忘，不持久化）。
           liquid_adopted: %{},
@@ -605,6 +609,9 @@ defmodule VoxelRegion.World do
           # 溯源：花材料放下的 macro 格 => 放置者 cid。作者入口写的格、天然地形、液体流动改的格都无主；格一被别的编辑改动就清掉。
           placed_by: %{},
           macro_owners: %{},
+          # macro_owners 的派生索引（L0 区域 => 该区子表、归属 => 宏格），由 Canonical.put_macro_owner/3 维护，不持久化。
+          macro_owner_regions: %{},
+          macro_owner_cells: %{},
           # 受保护区域（全局系统）：唯一真值，随日志/检查点持久化；物理边界与意图许可都只读它。
           protection: Protection.new(),
           # 传送信标（全局系统）：信标记录与角色调谐，随日志/检查点持久化（World.Beacons）。
@@ -1388,16 +1395,6 @@ defmodule VoxelRegion.World do
   end
 
   @impl true
-  def handle_continue({:checkpoint_gc, prefix}, state) do
-    # 历史已释放，下一回调再 full GC，避免旧 state 在上一调用栈继续存活。
-    started = System.monotonic_time(:microsecond)
-    :erlang.garbage_collect(self())
-    {:memory, memory} = Process.info(self(), :memory)
-    Logger.info("voxel_checkpoint_gc seq=#{prefix} current_seq=#{state.seq} gc_us=#{System.monotonic_time(:microsecond) - started} memory_bytes=#{memory}")
-    {:noreply, state}
-  end
-
-  @impl true
   # 同上：热提交自己的节拍与步消息之外，其他消息都先写回原生热域的变化。
   def handle_info(message, %{thermal_work: %{domain: %{pending: true}}} = state)
       when message != :thermal_tick and not (is_tuple(message) and elem(message, 0) in [:thermal_step | @unflushed]),
@@ -1415,7 +1412,8 @@ defmodule VoxelRegion.World do
     Enum.each(done, fn {from, _} -> GenServer.reply(from, :ok) end)
     state = %{state | checkpoint_job: if(waiting == [], do: nil, else: %{task: nil, waiters: waiting})}
     state = state |> start_checkpoint() |> schedule_checkpoint()
-    {:noreply, state, {:continue, {:checkpoint_gc, checkpoint.transaction.seq}}}
+    # 已退休的历史由常规分代 GC 回收；不再在 World 回合里做整堆 GC（大世界上一次即数百毫秒到秒级停顿）。
+    {:noreply, state}
   end
 
   def handle_info(:projectile_tick, state) do
@@ -1611,7 +1609,8 @@ defmodule VoxelRegion.World do
   defp start_checkpoint(%{checkpoint_job: %{task: nil} = job, thermal_run: nil} = state) do
     started = System.monotonic_time(:microsecond)
     input = checkpoint_input(state)
-    task = Task.async(fn -> build_checkpoint(input) end)
+    # 构建与落盘都在任务里；World 收到结果后只换基底、退休已落盘前缀（不再在 World 回合里同步写库）。
+    task = Task.async(fn -> input |> build_checkpoint() |> then(&persist_checkpoint(input, &1)) end)
     Logger.info("voxel_checkpoint_start seq=#{input.seq} worker=#{inspect(task.pid)} freeze_us=#{System.monotonic_time(:microsecond) - started}",
       checkpoint_worker: task.pid)
     %{state | checkpoint_job: %{job | task: task}}

@@ -199,7 +199,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
             "voxel_thermal_sim" -> put_in(acc.pending.sim, f)
             "voxel_thermal_commit" -> put_in(acc.pending.commit, f)
             "voxel_macro_stages" -> put_in(acc.pending.geometry, f)
-            checkpoint when checkpoint in ["voxel_checkpoint_start", "voxel_checkpoint", "voxel_checkpoint_gc"] ->
+            checkpoint when checkpoint in ["voxel_checkpoint_start", "voxel_checkpoint"] ->
               IO.puts(text)
               record = Map.put(f, "at_us", now - started)
               update_in(acc.checkpoints, &Map.update(&1, f["seq"], %{checkpoint => record}, fn stages -> Map.put(stages, checkpoint, record) end))
@@ -290,23 +290,23 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
 
   defp pending, do: %{kernel: [], prepare: [], sim: nil, commit: nil, geometry: nil}
 
-  # 后台select/image与World同步阶段必须分开；所有阶段到齐才有完整工作量，绝不把其和称为阻塞。
+  # 后台 select/image/persist 与 World 同步阶段（freeze、rebase）必须分开；所有阶段到齐才有完整工作量，绝不把其和称为阻塞。
+  # 2026-10-25 起落盘在检查点任务里、World 不再做整堆 GC，没有 gc 阶段。
   defp checkpoint_us(fields),
-    do: Enum.sum(Enum.map(~w(freeze_us select_us image_us persist_us rebase_us gc_us), &Map.fetch!(fields, &1)))
+    do: Enum.sum(Enum.map(~w(freeze_us select_us image_us persist_us rebase_us), &Map.fetch!(fields, &1)))
 
   defp checkpoint_samples(checkpoints) do
     for {seq, stages} <- Enum.sort(checkpoints) do
       start = Map.fetch!(stages, "voxel_checkpoint_start")
       finish = Map.fetch!(stages, "voxel_checkpoint")
-      gc = Map.fetch!(stages, "voxel_checkpoint_gc")
-      fields = start |> Map.merge(finish) |> Map.merge(gc)
+      fields = Map.merge(start, finish)
       total = checkpoint_us(fields)
       %{seq: seq, current_seq: Map.fetch!(finish, "current_seq"),
-        start_at_us: Map.fetch!(start, "at_us"), finish_at_us: Map.fetch!(finish, "at_us"), gc_at_us: Map.fetch!(gc, "at_us"),
+        start_at_us: Map.fetch!(start, "at_us"), finish_at_us: Map.fetch!(finish, "at_us"),
         freeze_us: fields["freeze_us"], select_us: fields["select_us"], image_us: fields["image_us"],
-        persist_us: fields["persist_us"], apply_us: fields["rebase_us"], gc_us: fields["gc_us"],
-        background_us: fields["select_us"] + fields["image_us"],
-        finish_and_gc_us: fields["persist_us"] + fields["rebase_us"] + fields["gc_us"], total_work_us: total}
+        persist_us: fields["persist_us"], apply_us: fields["rebase_us"],
+        background_us: fields["select_us"] + fields["image_us"] + fields["persist_us"],
+        world_us: fields["freeze_us"] + fields["rebase_us"], total_work_us: total}
     end
   end
 
@@ -542,22 +542,22 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   end
 
   @tag :checkpoint_timing
-  test "async checkpoint timing rejects missing freeze or GC instead of accepting four background stages" do
+  test "async checkpoint timing rejects a missing freeze or rebase stage instead of summing what arrived" do
     stages = %{"select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40}
     assert_raise KeyError, fn -> checkpoint_us(stages) end
-    assert_raise KeyError, fn -> checkpoint_us(Map.put(stages, "freeze_us", 7)) end
+    assert_raise KeyError, fn -> checkpoint_us(stages |> Map.put("freeze_us", 7) |> Map.delete("rebase_us")) end
   end
 
   @tag :checkpoint_timing
-  test "checkpoint work sums six stages while background work is distinct from World blocking" do
-    fields = %{"freeze_us" => 7, "select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40, "gc_us" => 13}
+  test "checkpoint work sums five stages while background work is distinct from World blocking" do
+    fields = %{"freeze_us" => 7, "select_us" => 11, "image_us" => 20, "persist_us" => 30, "rebase_us" => 40}
     refute Map.has_key?(fields, "elapsed_us")
-    assert checkpoint_us(fields) == 121
+    assert checkpoint_us(fields) == 108
     stages = %{4 => %{"voxel_checkpoint_start" => Map.merge(fields, %{"at_us" => 10}),
-      "voxel_checkpoint" => Map.merge(fields, %{"at_us" => 100, "current_seq" => 6}),
-      "voxel_checkpoint_gc" => Map.merge(fields, %{"at_us" => 113})}}
-    assert [%{background_us: 31, finish_and_gc_us: 83, freeze_us: 7, total_work_us: 121}] = checkpoint_samples(stages)
-    assert_raise KeyError, fn -> checkpoint_samples(%{4 => Map.delete(stages[4], "voxel_checkpoint_gc")}) end
+      "voxel_checkpoint" => Map.merge(fields, %{"at_us" => 100, "current_seq" => 6})}}
+    # 后台 = select + image + persist = 61；World 同步 = freeze + rebase = 47。
+    assert [%{background_us: 61, world_us: 47, freeze_us: 7, total_work_us: 108}] = checkpoint_samples(stages)
+    assert_raise KeyError, fn -> checkpoint_samples(%{4 => Map.delete(stages[4], "voxel_checkpoint")}) end
   end
 
   @tag :checkpoint_timing

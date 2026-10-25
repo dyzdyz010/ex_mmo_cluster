@@ -7,7 +7,7 @@ defmodule VoxelRegion.World.Canopy do
 
   @doc "区域完整XYZ跨度内的真实锚点、实例及呈现残余；返回更新后的只读来源缓存。"
   def project(state,level,region) do
-    {anchors,state}=Enum.reduce(candidates(state),{%{},state},fn {cell,owner,bindings},{acc,s}->
+    {anchors,state}=Enum.reduce(candidates(state,span_regions(level,region)),{%{},state},fn {cell,owner,bindings},{acc,s}->
       if Payload.in_span?(Payload.local(region,at_level(cell,level))) and not Map.has_key?(s.refined,cell) do
         {:ok,{material,_},s}=cell_value(s,0,cell)
         case Map.fetch(bindings,material) do
@@ -27,16 +27,19 @@ defmodule VoxelRegion.World.Canopy do
   end
 
   @doc "前后显式绑定宏格与本次编辑共享的祖格及ring；owner替换和邻格编辑都需完整后像。"
+  # 第 5 级祖格（32 宏格立方）落在一个 L0 区域（64 宏格）内：与改动格共享 0..5 级祖格的绑定格只可能在改动格所在的
+  # L0 区域，所以只取这些区域的绑定格（派生索引），结果与比较全世界绑定格相同。
   def affected_keys(before,state,cells) do
-    bound=Enum.map(candidates(before)++candidates(state),&elem(&1,0)) |> Enum.uniq()
+    # A face can change exposure across a parent boundary, including when
+    # pruning removed it. Both authoritative attachment footprints matter.
+    cells=(VoxelRegion.World.AttachmentOps.attachment_dirty(before,cells) ++
+      VoxelRegion.World.AttachmentOps.attachment_dirty(state,cells))
+      |> Enum.map(&elem(&1,1)) |> Enum.uniq()
+    regions=Enum.map(cells,&region_of/1)
+    bound=Enum.map(candidates(before,regions)++candidates(state,regions),&elem(&1,0)) |> Enum.uniq()
     if bound==[] do
       []
     else
-      # A face can change exposure across a parent boundary, including when
-      # pruning removed it. Both authoritative attachment footprints matter.
-      cells=(VoxelRegion.World.AttachmentOps.attachment_dirty(before,cells) ++
-        VoxelRegion.World.AttachmentOps.attachment_dirty(state,cells))
-        |> Enum.map(&elem(&1,1)) |> Enum.uniq()
       for level<-0..5,
           changed=MapSet.new(cells,&at_level(&1,level)),
           parent<-MapSet.new(bound,&at_level(&1,level)),
@@ -45,8 +48,15 @@ defmodule VoxelRegion.World.Canopy do
     end |> Enum.uniq() |> Enum.sort()
   end
 
-  defp candidates(state) do
-    for {cell,owner}<-state.macro_owners,
+  # 载荷区域在 level 上的跨度（含一格 ring，level 坐标 [64r−1, 64r+65)）覆盖的 L0 区域。
+  defp span_regions(level,{rx,ry,rz}) do
+    scale=1 <<< level
+    axis=fn r -> floor_div((64*r-1)*scale,64)..floor_div((64*r+65)*scale-1,64) end
+    for x<-axis.(rx),y<-axis.(ry),z<-axis.(rz),do: {x,y,z}
+  end
+
+  defp candidates(state,regions) do
+    for {cell,owner}<-macro_owners_in_regions(state,regions),
         instance=Map.fetch!(state.instances,owner),
         definition=Map.fetch!(state.prefabs,instance.definition_id).definition,
         bindings=Map.get(definition,:presentation_bindings,%{}),map_size(bindings)>0,
@@ -60,7 +70,7 @@ defmodule VoxelRegion.World.Canopy do
 
   defp reduce(state,values,grids,anchors,level,last) do
     parents=Map.keys(values) |> Enum.map(&VoxelRegion.World.Edits.parent_of/1) |> Enum.uniq()
-    faces=if level==1,do: Attachments.l1_faces(state.attachments,parents),else: %{}
+    faces=if level==1,do: Attachments.l1_faces(attachments_near_parents(state,parents),parents),else: %{}
     {next,next_grids,state}=Enum.reduce(parents,{%{},%{},state},fn parent,{next,next_grids,s}->
       children=for oct<-0..7,do: {elem(parent,0)*2+(oct &&& 1),elem(parent,1)*2+((oct >>> 1) &&& 1),elem(parent,2)*2+((oct >>> 2) &&& 1)}
       {samples,s}=Enum.map_reduce(children,s,fn cell,s->

@@ -157,7 +157,7 @@ defmodule VoxelRegion.World.Casting do
     next = %{state | seq: state.seq + 1}
     txn = %{seq: next.seq, entries: [], coarse: [], casts: casts}
 
-    with :ok <- Log.append_log(next, txn) do
+    with :ok <- Log.append_log(state, next, txn) do
       next = Log.remember_entry(next, txn)
       Observation.fanout(next, txn)
       Observation.fanout_canonical(next, txn, [], [], state)
@@ -376,7 +376,7 @@ defmodule VoxelRegion.World.Casting do
         casts: %{cid => %{live: 0, outcome: if(outcome, do: 1, else: 0)}}}
       |> Map.merge(Thermal.semblance_txn(Thermal.semblances(before), next))
 
-    case Log.append_log(next, txn) do
+    case Log.append_log(before, next, txn) do
       :ok ->
         unless previous, do: Process.monitor(actor.player)
         next = Log.remember_entry(next, txn)

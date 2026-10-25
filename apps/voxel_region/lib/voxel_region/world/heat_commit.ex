@@ -55,6 +55,7 @@ defmodule VoxelRegion.World.HeatCommit do
   end
 
   def thermal_commit(state, rows, extra \\ %{}) do
+    before = state
     state = %{
       state
       | seq: state.seq + 1,
@@ -70,7 +71,7 @@ defmodule VoxelRegion.World.HeatCommit do
     } |> Map.merge(extra)
 
     start = System.monotonic_time(:microsecond)
-    :ok = Log.append_log(state, txn)
+    :ok = Log.append_log(before, state, txn)
     persisted = System.monotonic_time(:microsecond)
     state = Log.remember_entry(state, txn)
     remembered = System.monotonic_time(:microsecond)

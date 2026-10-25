@@ -104,8 +104,7 @@ defmodule VoxelRegion.World.Gm do
               {put_refined(s, cell, kept), [cell | changed]}
 
             clear_macro? ->
-              s = %{s | macro_owners: Map.delete(s.macro_owners, cell), placed_by: Map.delete(s.placed_by, cell),
-                liquid_units: Map.delete(s.liquid_units, cell)}
+              s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: Map.delete(s.placed_by, cell)}
               {Edits.put_overlay(s, 0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)}), [cell | changed]}
 
             true ->
@@ -271,8 +270,8 @@ defmodule VoxelRegion.World.Gm do
     live = Payloads.live_instance_ids(state) |> MapSet.new()
     dead = state.instances |> Map.keys() |> MapSet.new() |> MapSet.difference(live)
     owned = for {id, {owner, _}} <- state.attachment_owners, MapSet.member?(dead, owner), into: MapSet.new(), do: id
-    %{state | instances: Map.drop(state.instances, MapSet.to_list(dead)),
-      attachments: Map.reject(state.attachments, fn {_, {id, _}} -> MapSet.member?(owned, id) end),
+    slots = if MapSet.size(owned) == 0, do: [], else: for({slot, {id, _}} <- state.attachments, MapSet.member?(owned, id), do: slot)
+    %{drop_attachments(state, slots) | instances: Map.drop(state.instances, MapSet.to_list(dead)),
       attachment_owners: Map.drop(state.attachment_owners, MapSet.to_list(owned))}
   end
 

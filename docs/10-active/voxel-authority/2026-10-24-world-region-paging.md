@@ -468,3 +468,62 @@ https://www.microsoft.com/en-us/research/publication/hyder-a-transactional-recor
     有液体 / 热 / 电路活动时主体是计算——M1 后复测若仍如此，指向分支 B。
   - **未测**：跨 Scene 移交（Windows 原生无 Gate，需 Linux 构建 + 真实客户端）；玩家聚集度（开发期无真实玩家分布数据）；“固定内容扩大世界范围”与
     “增加不同定义数”（冷内容份数轴已部分覆盖前者）。这些不阻塞 M1。
+- 2026-10-25 M1（进行中，未提交；改动见工作区 `apps/voxel_region`）：用户定“目标是定位根因并修复”。先剖析再改：
+  - **定位方法**：`bench/paging_m0/profile.ex` 只对 World 进程开 `call_time` / `call_memory` 计数（`:erlang.trace_pattern`，不带 `:local`——
+    首次误带 `:local` 让每次调用都发追踪消息、吃光开发机内存，会话内存护栏杀掉了节点，已改并在独立 erl 里验证 0 条消息），
+    4 份如园上 6 笔单格编辑排序；证据 Voxim `Saved/Playtest/paging-20261024/runs/p01..p04-*`。
+  - **根因 1（CPU 与分配的大头）**：`AttachmentOps.affected_attachments/2` 每笔多次遍历全世界附件槽、逐槽展开宏格与支撑邻格再去重
+    （4 份 ≈4 万槽；6 笔里 `Attachments.map` 840 万次、分配 4.8 亿字）。修复：`attachment_regions` 派生索引（L0 区域 => 锚点在该区的槽，
+    只由 `Canonical.put_attachments/drop_attachments/index_attachments` 写，不持久化），`affected_attachments`、`l1_faces`、区域载荷 `extract`
+    只取相关区域候选再按原判定筛；`prune_attachments` 的整表键差改为按索引区域求差。结果按槽排序（小表与原整表次序相同）。
+  - **根因 2**：`Observation.property_transaction` 每笔拼接并去重提交前后的全部 refined 键与全部 `macro_owners` 键再逐格比较。修复：
+    `refined_regions` 改存区域 refined 子表（写入即换新），`changed_refined_cells/2` 只在子表不同的区域里比较；归属 / 世代改动只看
+    `txn.macro_owners` / `txn.epochs`（两者本就是日志回放与 Replica 唯一依据的完整增量，`ownership_metadata` 覆盖全部写入路径）。
+  - **根因 3**：`Canopy.affected_keys/project`、区域载荷、`live_instance_ids` 每笔整表扫 `macro_owners`（4 份 ≈27 万格）。修复：
+    `macro_owner_regions`（区域 => 子表）与 `macro_owner_cells`（归属 => 格）派生索引，只由 `put_macro_owner/3` 写；第 5 级祖格（32 宏格）
+    落在一个 L0 区域内，所以树冠受影响键只需改动格所在区域的绑定格。区域载荷的 `liquid_units` 同样改为 `liquid_regions`（`put_liquid/2`）。
+  - **根因 4（每笔 WAL）**：kind 3 元数据每笔整表写 `prefab_instances`（4 份 7501 个）与 `attachment_owners`（5.4 万项），压缩后 741 / 760 KB。
+    修复：`Log.append_log(before, state, txn)` 在两表与提交前相同时不写；回放缺省沿用前值（`replay_damage/2` 既有语义，纯液体提交早已如此），
+    不改格式、不需迁移。真正改了实例 / 附件的提交仍写整表——按键增量（完整 P2）留待定格式版本与迁移后再做。
+  - **根因 5（检查点）**：World 回合内同步写库（4 份 `persist_us` 7.6–14 s）与检查点后的整堆 `:erlang.garbage_collect`（4 份 ≈1 s）。
+    修复：落盘移入检查点任务（`Log.persist_checkpoint/2`；Db 后端 `replace` 本就只删 ≤ P、保留并发追加的 seq > P 行；文件后端改为检查点写
+    `overlay.log.checkpoint`、回放 = 检查点 + 更晚帧，与 Db 同一契约，可与 World 追加并发），去掉整堆 GC（常规分代 GC 回收已退休历史）。
+    剩余：`freeze_us` 仍随世界增长（1 份 0.6 s、4 份 2.1 s）——`Task.async` 把整份检查点输入复制进任务进程堆，BEAM 进程不共享堆，
+    留给 M2 按页连续写回解决。
+  - 另：`apply_batch` 的 `carried` 只在有随笔搬运值时扫 damage；`edits`/`prefabs`/`gm` 的按身份删附件只在确有身份要删时才扫附件表。
+  - **验证**：新增 `world_attachment_index_test.exs`（手算区域 + 固定种子 5 组 400 槽跨正负坐标与 ±512 微格边界，`affected_attachments`、
+    `l1_faces`、`extract`、`dropped_attachments` 与整表定义逐项相同）、`world_refined_index_test.exs` 增 refined 改动格 / macro_owners / liquid 索引用例，
+    `prefab_macro_world_test.exs` 增“未改实例与归属的提交不写两表、重启后实例 / 归属 / 附件拆除退料不变”（改前红、改后绿）。
+    夹具补派生索引字段：`canopy_projection_test`、`payload_candidate_test`；检查点完成信号由 `voxel_checkpoint_gc` 改为 `voxel_checkpoint seq=`
+    （`phase_world_test`、`thermal_fire_benchmark_test` 解析器与其三条单测按新阶段：后台 = select+image+persist，World = freeze+rebase）。
+    全量 `MIX_ENV=test mix test --no-start`（voxel_region）五轮：每轮失败 = 开工说明列出的 14 项既有失败；另有两类非改动引入：
+    `world_interactions_test` 真实库用例在多文件同跑时失败（改动前的代码同组合同样失败，单独跑 4/4 通过——测试间共享真实库），
+    `thermal_switch_test` / `furnace_generator_world_test` 各一次在全量高负载下偶发（单独连跑 3 次全过，依赖真实时钟热节拍的时机）。
+  - **实测**（同 M0 装置与负载，`run_m0.py ... --steps 1,2,4,8 --step-seconds 180`；runs `r70/r71`（前两项）、`r80/r81`（全部））：
+
+    | 份数 | 版本 | 8 窗口实得 | 8 窗口提交 p50 / p99 | 4 窗口 p50 / p99 | log p50 | 8 窗口每笔 WAL | World GC 最长 | 检查点 World 内（freeze + persist） |
+    |---|---|---|---|---|---|---|---|---|
+    | 1 | M0 | 2.98 笔/s | 2.5 / 4.9 s | 598 / 3954 ms | 10 ms | 745 KB | 563 ms | 0.5 + 1–2 s |
+    | 1 | 现 | 7.87 笔/s（不饱和） | 0.40 / 1.36 s | 83 / 815 ms | 4 ms | 154 KB | 606 ms | 0.65 s + 后台 |
+    | 4 | M0 | 1.24 笔/s | 4.6 / 19.4 s | 2.5 / 16.4 s | 29 ms | 5.06 MB | 2084 ms | 1.5 + 7.9–14 s |
+    | 4 | 现 | 6.15 笔/s | 0.51 / 3.1 s | 363 / 1771 ms | 4.9 ms | 0.50 MB | 2111 ms | 2.1 s + 后台 |
+
+    每笔阶段 fanout 118 → 0.1 ms、structure 33 → 0、reduce 43 → 3.9、log 29 → 4.9（4 份）。仍随份数增长：`regions`（1 份 9 ms / 4 份 40 ms）、
+    检查点 freeze、最长 GC（停顿 ∝ 存活堆，M2/M3 缩小常驻才能根治）。`l0_cache`（如园窗口 ≈190–200 ms）与 `collision`（≈50 ms）随内容密度、
+    不随份数。冷世界斜率仍未达 10% 候选线，M1 继续。
+  - **根因 6（每笔扫全部 damage）**：`Tools.damage_geometry` 的移除筛选、`attachment_damage` 的逐槽 / 整件行、`apply_batch` 的 `carried`
+    每笔遍历全部属性行（4 份 23.5 万行；p04 剖析里 `Damage.macro` 172 万次、`Integer.floor_div` 670 万次，计时落在 `regions` 阶段）。
+    用户选定“按提交前目标反查”（不建 damage 派生索引）：`Canonical.damage_rows_in/3` 由提交前改动格上的实占目标算出键直接取行
+    （未细分格的宏格行、refined 格逐槽热节点行与部件行），读格值借用本笔已解码的源基线、不在 World 里重读；`attachment_damage`
+    只取提交前后被删 / 新增 / 改值的槽（`changed_attachments/2`；附件索引改为区域 => %{槽 => 值} 子表，未写区域与提交前同值）。
+    前提是“damage 无过期行”（行键 = 其坐标上实占目标的键；整件行最大 HP = 现存槽折算）：`test/support/damage_invariant.exs` 定义，
+    4 份如园真实数据核对 235 480 行（0/1/2/4 粒度 156 563 / 78 692 / 1 / 224）过期 0 行（`runs/s01-4x-stale`）；全量测试期间临时让每次调用
+    同时跑旧整表扫描并在候选集不同时抛错，全程 0 次（该对拍代码未保留）；`damage_world_test` 三个真实场景（宿主被挖附件失撑、热节点烧毁、
+    附件部分失撑 + 重启 + Prefab 放拆）断言无过期行，把整件行重算改成恒保留后断言即报 `%{3 => [{3, 7}]}`（反例验证后已还原）。
+    全量第 6 轮：14 项既有失败，另 `thermal_radiation_world_test` 逐位摘要一项在全量高负载下偏差（同组 `enclosed` 温度在全量与单独跑
+    不同，依赖真实时钟热节拍；单独连跑 4 次全过），非本次引入。
+  - **实测**（runs `r90-1x-m1c`、`r91-4x-m1c`，同上负载）：`regions` p50 1 份 9.3 → 3.0 ms、4 份 40 → 12.6 ms（仍随份数，待剖析）；
+    1 份 8 窗口 p99 1.36 → 0.86 s、最长 2.1 → 1.1 s；4 份 8 窗口 6.15 → 6.69 笔/s、p50 513 → 473 ms，p99 3.1 → 3.2 s 不变。
+    4 份 p99 由 World 主回收主导：每次把 5–6 GB 存活堆整份复制，停顿 1.6–2.5 s；≥1 s 的次数各轮 167 / 102 / 48 / 128（M0 / m1a / m1b / m1c）
+    随堆尺寸档位起伏，不随本次改动。根治要缩小存活堆（M2/M3）；另发现空闲时 `entries` 里唯一一条（检查点）按 `flat_size` 计 4 份 1.4 GB /
+    1 份 0.3 GB，随世界增长，待核实是否与 World 状态共享结构。

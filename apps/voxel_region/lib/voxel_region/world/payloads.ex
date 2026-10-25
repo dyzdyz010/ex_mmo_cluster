@@ -175,17 +175,18 @@ defmodule VoxelRegion.World.Payloads do
         {Map.put(refined, index, slots), Map.put(records, index, bin), Map.put(encoded, cell, {slots, bin})}
       end)
 
-    macro_owners = Map.filter(state.macro_owners, fn {cell, _} -> Payload.in_span?(Payload.local(region, cell)) end)
+    macro_owners = for {cell, _} = entry <- macro_owners_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz})),
+      Payload.in_span?(Payload.local(region, cell)), into: %{}, do: entry
     # 跨度内微格的持有者：部件索引里与跨度相交的身份（与逐槽扫描这些格得到的集合相同）。
     owners = for {owner, cells} <- state.refined_owners, not MapSet.disjoint?(cells, span), do: owner
     ids = MmoContracts.Voxel.Refined.ancestors(state.instances, Enum.uniq(owners ++ Map.values(macro_owners)))
 
     {%{
        payload
-       | liquid_units: for({cell, units} <- state.liquid_units,
+       | liquid_units: for({cell, units} <- liquid_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz})),
              local = Payload.local(region, cell), Payload.in_span?(local),
              into: %{}, do: {Payload.cell_index(local), units}),
-         attachments: Attachments.extract(state.attachments, region),
+         attachments: Attachments.extract(attachments_around_region(state, region), region),
          refined: refined,
          refined_records: records,
          instances: Map.take(state.instances, ids),
@@ -207,7 +208,7 @@ defmodule VoxelRegion.World.Payloads do
   @doc "整个世界仍有微格或宏格的实例及其祖先：微格持有者直接读部件索引，与逐槽扫描整表的集合相同。"
   def live_instance_ids(state),
     do: MmoContracts.Voxel.Refined.ancestors(state.instances,
-      Enum.uniq(Map.keys(state.refined_owners) ++ Map.values(state.macro_owners)))
+      Enum.uniq(Map.keys(state.refined_owners) ++ Map.keys(state.macro_owner_cells)))
 
   def region_keys(cells), do: LogProjection.region_keys(cells)
 
@@ -262,7 +263,8 @@ defmodule VoxelRegion.World.Payloads do
   # 结构与地形分别派生；地形 early-stop 不得截断仍会变化的局部细化。
   def refresh_structure(state, cells) do
     cells = AttachmentOps.attachment_dirty(state, cells) |> Enum.map(&elem(&1, 1))
-    faces = Attachments.l1_faces(state.attachments, Enum.map(cells, &Edits.parent_of/1))
+    parents = Enum.map(cells, &Edits.parent_of/1)
+    faces = Attachments.l1_faces(attachments_near_parents(state, parents), parents)
 
     {state, _, changed} =
       Enum.reduce(1..@max_level, {state, cells, []}, fn level, {s, dirty, changed} ->

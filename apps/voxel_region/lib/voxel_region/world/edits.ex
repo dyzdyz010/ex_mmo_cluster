@@ -9,7 +9,6 @@ defmodule VoxelRegion.World.Edits do
   import Bitwise
   alias VoxelRegion.Damage
   alias VoxelRegion.Reducer
-  alias VoxelRegion.Liquid
   alias MmoContracts.Voxel.{Codec, Payload}
   alias VoxelRegion.World.Thermal
   import VoxelRegion.World.Canonical
@@ -94,12 +93,14 @@ defmodule VoxelRegion.World.Edits do
     {placed, settlement} = Map.pop(settlement, :placed, %{})
 
     liquid_dirty = Enum.map(Map.keys(liquid_changes), &{0,&1})
-    state = %{state | liquid_units: Liquid.apply_changes(state.liquid_units, liquid_changes)}
+    state = put_liquid(state, liquid_changes)
 
+    # 只在本笔确实移除了附件身份时才按身份扫附件表（单格编辑通常没有）。
     removed_slots =
-      for {slot, {id, _}} <- state.attachments, MapSet.member?(removed_attachments, id), do: slot
+      if MapSet.size(removed_attachments) == 0, do: [],
+        else: for({slot, {id, _}} <- state.attachments, MapSet.member?(removed_attachments, id), do: slot)
 
-    state = %{state | attachments: Map.drop(state.attachments, removed_slots)}
+    state = drop_attachments(state, removed_slots)
 
     removed_cells =
       if MapSet.size(removed_owners) == 0, do: [], else: micro_owner_cells(state, removed_owners)
@@ -170,7 +171,7 @@ defmodule VoxelRegion.World.Edits do
             {:cont, {changed, s}}
 
           {:ok, _, s} ->
-            s = %{s | macro_owners: Map.delete(s.macro_owners,cell),
+            s = %{put_macro_owner(s, cell, nil) |
               placed_by: Production.merge_placed(s.placed_by,%{cell => Map.get(placed,cell)})}
             {:cont,
              {[{0, cell} | changed],
@@ -194,7 +195,7 @@ defmodule VoxelRegion.World.Edits do
           Map.has_key?(settlement, :liquid_falls) ->
             next = %{state | seq: state.seq + 1}
             txn = %{seq: next.seq, entries: [], coarse: [], liquid_falls: settlement.liquid_falls}
-            with :ok <- Log.append_log(next, txn) do
+            with :ok <- Log.append_log(before, next, txn) do
               next = Log.remember_entry(next, txn)
               Observation.fanout(next, txn)
               Observation.fanout_canonical(next, txn, [], [], before)
@@ -208,7 +209,7 @@ defmodule VoxelRegion.World.Edits do
         # 换了材料却没有随笔数量的格（挖掉、热毁、作者覆盖）不再是那份有限量：删除其数量记录（R8-07）。
         stale = for {0, cell} <- geometry_changed, not Map.has_key?(liquid_changes, cell),
           Map.has_key?(state.liquid_units, cell), do: cell
-        state = %{state | liquid_units: Map.drop(state.liquid_units, stale)}
+        state = put_liquid(state, Map.new(stale, &{&1, 0}))
         liquid_dirty = liquid_dirty ++ Enum.map(stale, &{0, &1})
         changed = Enum.uniq(geometry_changed ++ liquid_dirty)
         state = if liquid_wake, do: Liquids.wake_liquid(state, Enum.map(changed, &elem(&1,1))), else: state
@@ -289,8 +290,9 @@ defmodule VoxelRegion.World.Edits do
               end
 
             # 随笔搬运值覆盖的有限宏格：其热与燃料已随数量搬走或结算，清空时不再记为移除。
-            carried = for {key, %{granularity: 0} = t} <- before.damage,
-              Map.has_key?(phase_values, Damage.macro(t)), into: MapSet.new(), do: key
+            # 只取这些格上提交前目标的行（damage 无过期行，Canonical.damage_rows_in/3）。
+            carried = for(%{granularity: 0} = t <- damage_rows_in(before, state, MapSet.new(Map.keys(phase_values))),
+              into: MapSet.new(), do: Damage.key(t))
 
             {state, metadata} =
               Tools.damage_geometry(before, state, Enum.map(geometry_changed, &elem(&1, 1)), Enum.map(geometry_changed, &elem(&1, 1)), carried)
@@ -372,7 +374,7 @@ defmodule VoxelRegion.World.Edits do
       Log.append_journal(state, %{Log.liquid_journal(state, txn) | entries: (txn.entries -- afterimages) ++ cells}
         |> Map.put(:liquid_units, units))
     else
-      Log.append_log(state, txn)
+      Log.append_log(before, state, txn)
     end
   end
 
@@ -415,7 +417,7 @@ defmodule VoxelRegion.World.Edits do
 
   def reduce_batch(state, dirty, level, all, visits) do
     parents = dirty |> Enum.map(fn {_, c} -> parent_of(c) end) |> Enum.uniq()
-    faces = if level == 1, do: Attachments.l1_faces(state.attachments, parents), else: %{}
+    faces = if level == 1, do: Attachments.l1_faces(attachments_near_parents(state, parents), parents), else: %{}
 
     result =
       Enum.reduce_while(parents, {[], state}, fn parent, {changed, s} ->

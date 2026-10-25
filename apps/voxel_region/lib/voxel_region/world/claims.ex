@@ -101,7 +101,7 @@ defmodule VoxelRegion.World.Claims do
     next = next |> Thermal.rebuild_work() |> Liquids.wake_liquid(wet)
     txn = %{seq: next.seq, entries: [], coarse: [], protection: delta}
 
-    case Log.append_log(next, txn) do
+    case Log.append_log(before, next, txn) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)

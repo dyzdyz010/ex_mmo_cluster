@@ -67,7 +67,7 @@ defmodule VoxelRegion.World.AttachmentOps do
         Tools.attachment_recovery(state, slots)
       )
 
-    state = %{state | attachments: Map.drop(state.attachments, slots)}
+    state = drop_attachments(state, slots)
     tombstone = %{target | hp: 0.0, flags: 1, seq: before.seq + 1, request_id: 0}
     state = %{state | damage: Map.delete(state.damage, Damage.key(target))}
 
@@ -98,7 +98,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     {txn, keys, state} = attachment_geometry(before, state, slots)
     txn = Map.merge(txn, settlement)
 
-    case Log.append_log(state, txn) do
+    case Log.append_log(before, state, txn) do
       :ok ->
         state = Log.remember_entry(state, txn)
         Observation.fanout(state, txn)
@@ -193,7 +193,7 @@ defmodule VoxelRegion.World.AttachmentOps do
         slots_map = Map.new(slots, &{&1, {id, r.material}})
 
         {:ok,
-         %{state | attachment_serial: id, attachments: Map.merge(state.attachments, slots_map)},
+         put_attachments(%{state | attachment_serial: id}, slots_map),
          slots, settlement}
     end
   end
@@ -206,7 +206,7 @@ defmodule VoxelRegion.World.AttachmentOps do
         {state, settlement} =
           Production.settle_material(state, actor.cid, material, Tools.attachment_recovery(state,slots))
 
-        {:ok, %{state | attachments: Map.drop(state.attachments, slots)}, slots, settlement}
+        {:ok, drop_attachments(state, slots), slots, settlement}
 
       _ ->
         {:error, :stale_target}
@@ -227,7 +227,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     {samples, state} = attachment_samples(state, slots)
 
     removed =
-      (Map.keys(before.attachments) -- Map.keys(state.attachments)) ++
+      dropped_attachments(before, state) ++
         Enum.reject(slots, &Attachments.supported?(&1, samples))
 
     cid = Map.get(settlement, :recovery_cid)
@@ -252,14 +252,17 @@ defmodule VoxelRegion.World.AttachmentOps do
         do: Map.put(settlement, :material_balances, balances),
         else: settlement
 
-    {%{state | attachments: Map.drop(state.attachments, removed)},
+    {drop_attachments(state, removed),
      Payloads.region_keys(Enum.map(Attachments.macros(removed), &{0, &1})), settlement}
   end
 
+  # 槽涉及的宏格是锚点宏格与其支撑侧（各轴 −1 微格），所以涉及格 c 的槽锚点宏格在 c + {0,1}³ 内：
+  # 只取这些宏格所在 L0 区域的附件（派生索引）再按原判定筛，结果与整表筛选相同（按槽排序）。
   def affected_attachments(state, cells) do
     touched = MapSet.new(cells)
+    regions = for {x, y, z} <- cells, dx <- 0..1, dy <- 0..1, dz <- 0..1, do: region_of({x + dx, y + dy, z + dz})
 
-    Enum.filter(Map.keys(state.attachments), fn slot ->
+    Enum.filter(attachments_in_regions(state, regions), fn slot ->
       Enum.any?(Attachments.macros([slot]), &MapSet.member?(touched, &1))
     end)
   end

@@ -7,8 +7,8 @@ defmodule VoxelRegion.World.CoarseRebuild do
   alias VoxelRegion.{Attachments, Thermal}
   alias VoxelRegion.World.{AttachmentOps, Canonical, Edits, Log, Payloads}
 
-  @metadata [:seq, :cv, :refined, :instances, :macro_owners, :attachments,
-    :attachment_serial, :attachment_owners, :liquid_units, :liquid_active,
+  @metadata [:seq, :cv, :refined, :instances, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions,
+    :attachment_serial, :attachment_owners, :liquid_units, :liquid_regions, :liquid_active,
     :damage, :epochs, :material_balances, :caster_energy, :material_supplies,
     :craft_ledger, :food_ledger, :food_receipts, :placed_by, :protection,
     :phase_inventory, :thermal, :material_units_per_micro,
@@ -65,7 +65,8 @@ defmodule VoxelRegion.World.CoarseRebuild do
     true = before_bytes === after_bytes
     coarse_cells = Enum.count(state.overlay, fn {{level, _}, _} -> level > 0 end)
     structure_cells = map_size(state.structure)
-    checkpoint = state |> Log.checkpoint_input() |> Log.build_checkpoint()
+    input = Log.checkpoint_input(state)
+    checkpoint = input |> Log.build_checkpoint() |> then(&Log.persist_checkpoint(input, &1))
     state = Log.finish_checkpoint(state, checkpoint)
     true = Map.take(state, @metadata) === metadata
     {saved_bytes, _state} = l0_bytes(state, regions)

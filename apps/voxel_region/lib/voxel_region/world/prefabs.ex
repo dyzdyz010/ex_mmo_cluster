@@ -68,7 +68,7 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def subtree_cells(state, ids) do
-    macro = for {cell, owner} <- state.macro_owners, MapSet.member?(ids, owner), do: cell
+    macro = ids |> Enum.flat_map(&MapSet.to_list(Map.get(state.macro_owner_cells, &1, MapSet.new()))) |> Enum.sort()
     Enum.uniq(micro_owner_cells(state,ids) ++ macro)
   end
 
@@ -81,8 +81,8 @@ defmodule VoxelRegion.World.Prefabs do
 
         s = put_refined(s, cell, slots)
 
-        Edits.put_overlay(%{s | macro_owners: Map.delete(s.macro_owners,cell),
-          placed_by: Map.delete(s.placed_by,cell), liquid_units: Map.delete(s.liquid_units,cell)},
+        Edits.put_overlay(%{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) |
+          placed_by: Map.delete(s.placed_by,cell)},
           0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})
       end)
 
@@ -93,11 +93,11 @@ defmodule VoxelRegion.World.Prefabs do
       |> Map.keys()
       |> MapSet.new()
 
+    slots = if MapSet.size(owned) == 0, do: [], else: for({slot, {id, _}} <- next.attachments, MapSet.member?(owned, id), do: slot)
+
     %{
-      next
+      drop_attachments(next, slots)
       | instances: Map.drop(next.instances, MapSet.to_list(dead)),
-        attachments:
-          Map.reject(next.attachments, fn {_, {id, _}} -> MapSet.member?(owned, id) end),
         attachment_owners: Map.drop(next.attachment_owners, MapSet.to_list(owned))
     }
   end
@@ -253,7 +253,7 @@ defmodule VoxelRegion.World.Prefabs do
       thermal |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
         |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
     end)
-    {:ok,%{state | liquid_units: Liquid.apply_changes(state.liquid_units,quantities),thermal: thermal},
+    {:ok,%{put_liquid(state,quantities) | thermal: thermal},
       Map.put(settlement,:prefab_phase_values,values)}
   end
 
@@ -327,8 +327,7 @@ defmodule VoxelRegion.World.Prefabs do
     end)
     |> case do
       {:ok,inventory,_balances,values,micro_values} ->
-        {:ok,%{state | phase_inventory: Map.merge(state.phase_inventory,inventory),
-          liquid_units: Liquid.apply_changes(state.liquid_units,quantities)},
+        {:ok,%{put_liquid(state,quantities) | phase_inventory: Map.merge(state.phase_inventory,inventory)},
           %{phase_inventory: inventory,prefab_phase_values: values,prefab_phase_micro: micro_values,
             prefab_phase_preserved: MapSet.new(removed_micro,&Damage.key/1)}}
       {:error,_}=error -> error
@@ -415,7 +414,7 @@ defmodule VoxelRegion.World.Prefabs do
         Enum.reduce_while(macro_additions, {:ok,state}, fn {cell,{m,owner}}, {:ok,s} ->
           case cell_value(s,0,cell) do
             {:ok,{0,_},s} when not is_map_key(s.refined,cell) ->
-              s = %{s | macro_owners: Map.put(s.macro_owners,cell,owner),
+              s = %{put_macro_owner(s, cell, owner) |
                 placed_by: if(actor,do: Map.put(s.placed_by,cell,actor.cid),else: Map.delete(s.placed_by,cell))}
               {:cont,{:ok,Edits.put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
             {:ok,_,_} -> {:halt,{:error,:occupied}}
@@ -466,9 +465,8 @@ defmodule VoxelRegion.World.Prefabs do
               values = Map.new(g.slots, &{&1, {id, g.material}})
 
               %{
-                s
+                put_attachments(s, values)
                 | attachment_serial: id,
-                  attachments: Map.merge(s.attachments, values),
                   attachment_owners: Map.put(s.attachment_owners, id, {g.owner, g.slot})
               }
             end)
@@ -571,7 +569,7 @@ defmodule VoxelRegion.World.Prefabs do
 
       with {:ok, chunks} <- Observation.canonical_changes(before, state, Enum.map(material_changes, &{0, &1})),
            collision_done = System.monotonic_time(:microsecond),
-           :ok <- Log.append_log(state, txn) do
+           :ok <- Log.append_log(before, state, txn) do
         log_done = System.monotonic_time(:microsecond)
         state = Log.remember_entry(state, txn)
         Observation.fanout(state, txn)

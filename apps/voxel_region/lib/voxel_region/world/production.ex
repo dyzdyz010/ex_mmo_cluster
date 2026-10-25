@@ -91,7 +91,7 @@ defmodule VoxelRegion.World.Production do
       phase_inventory: Map.merge(next.phase_inventory, inventory)}
     txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances,
       material_supplies: %{key => receipt}, phase_inventory: inventory, thermal: thermal}
-    case Log.append_log(next, txn) do
+    case Log.append_log(before, next, txn) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)
@@ -164,7 +164,7 @@ defmodule VoxelRegion.World.Production do
         txn = %{seq: next.seq, entries: [], coarse: [], material_balances: paid.material_balances,
           food_ledger: ledger, food_receipts: receipts}
 
-        case Log.append_log(next, txn) do
+        case Log.append_log(before, next, txn) do
           :ok ->
             next = Log.remember_entry(next, txn)
             Observation.fanout(next, txn)
@@ -203,7 +203,7 @@ defmodule VoxelRegion.World.Production do
         next = %{state | seq: before.seq + 1, craft_ledger: ledger}
         txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances, craft_ledger: ledger}
 
-        case Log.append_log(next, txn) do
+        case Log.append_log(before, next, txn) do
           :ok ->
             next = Log.remember_entry(next, txn)
             Observation.fanout(next, txn)

@@ -94,8 +94,7 @@ defmodule VoxelRegion.World.Parcel do
       next = Prefabs.clear_subtree(state, removed, Prefabs.subtree_cells(state, removed))
 
       next = Enum.reduce(cells, next, fn cell, s ->
-        s = %{s | macro_owners: Map.delete(s.macro_owners, cell), placed_by: Map.delete(s.placed_by, cell),
-          liquid_units: Map.delete(s.liquid_units, cell)}
+        s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: Map.delete(s.placed_by, cell)}
         value = Map.fetch!(parcel.cells, shift(cell, neg(delta)))
         # 与当前有效值（含生成底图）相同的格不另写 overlay：整园迁入时高处两边同为空气、深处同为岩石，
         # 每格一条会让目标世界白添约千万条 overlay。
@@ -115,14 +114,16 @@ defmodule VoxelRegion.World.Parcel do
         put_refined(s, shift(cell, delta), Map.new(slots, fn {slot, {m, owner}} -> {slot, {m, ids[owner]}} end))
       end)
 
+      next = put_attachments(next, Map.new(parcel.attachments, fn {{kind, axis, p}, {aid, m}} ->
+        {{kind, axis, shift(p, micro)}, {aids[aid], m}}
+      end))
+
+      next = Enum.reduce(parcel.macro_owners, next, fn {cell, owner}, s -> put_macro_owner(s, shift(cell, delta), ids[owner]) end)
+      next = put_liquid(next, Map.new(parcel.liquid_units, fn {cell, q} -> {shift(cell, delta), q} end))
+
       next = %{next |
-        macro_owners: Map.merge(next.macro_owners, Map.new(parcel.macro_owners, fn {cell, owner} -> {shift(cell, delta), ids[owner]} end)),
-        liquid_units: Map.merge(next.liquid_units, Map.new(parcel.liquid_units, fn {cell, q} -> {shift(cell, delta), q} end)),
         instances: Map.merge(next.instances, Map.new(parcel.instances, fn {id, i} ->
           {ids[id], %{i | anchor: shift(i.anchor, micro), parent_id: Map.get(ids, i.parent_id, {0, 0})} |> Map.put(:placed_by, nil)}
-        end)),
-        attachments: Map.merge(next.attachments, Map.new(parcel.attachments, fn {{kind, axis, p}, {aid, m}} ->
-          {{kind, axis, shift(p, micro)}, {aids[aid], m}}
         end)),
         attachment_owners: Map.merge(next.attachment_owners, Map.new(parcel.attachment_owners, fn {aid, {owner, slot}} ->
           {aids[aid], {ids[owner], slot}}

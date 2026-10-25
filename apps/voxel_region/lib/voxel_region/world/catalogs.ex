@@ -92,7 +92,7 @@ defmodule VoxelRegion.World.Catalogs do
       tombstones = for t <- migration.tombstones,
         do: %{t | digest: catalog.digest, seq: state.seq + 1, request_id: 0, flags: 1}
       next = %{state | properties: catalog, thermal: thermal, seq: state.seq + 1, attachments: migration.attachments,
-        damage: Map.new(rows, &{Damage.key(&1), &1})} |> Thermal.rebuild_work()
+        damage: Map.new(rows, &{Damage.key(&1), &1})} |> VoxelRegion.World.Canonical.index_attachments() |> Thermal.rebuild_work()
       # 步进参数或散体休止阈值改变：全部有限格重新接受新参数的平衡（只改下一步，不改已提交数量）。
       next = if state.properties.liquid != catalog.liquid or loose_thresholds(state.properties) != loose_thresholds(catalog),
         do: Liquids.wake_liquid(next, Map.keys(next.liquid_units)), else: next
@@ -100,7 +100,7 @@ defmodule VoxelRegion.World.Catalogs do
         do: {%{seq: next.seq, entries: [], coarse: []}, [], next},
         else: AttachmentOps.attachment_geometry(state, next, migration.slots)
       txn = Map.merge(txn, %{property_states: tombstones ++ rows, thermal: thermal})
-      case Log.append_log(next, txn) do
+      case Log.append_log(state, next, txn) do
         :ok ->
           next = Log.remember_entry(next, txn)
           Observation.fanout(next, txn)

@@ -35,7 +35,8 @@ defmodule VoxelRegion.PhaseWorldTest do
           send(owner, {:checkpoint_selection, self(), emitter, String.to_integer(seq)})
           receive do :continue_checkpoint -> :ok end
 
-        String.starts_with?(text, "voxel_checkpoint_gc ") ->
+        # 检查点完成 = World 换基底并退休前缀之后打的那一行（不再有单独的整堆 GC 回调）。
+        String.starts_with?(text, "voxel_checkpoint seq=") ->
           send(owner, {:checkpoint_finished, emitter})
 
         true -> :ok

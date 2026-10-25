@@ -9,7 +9,8 @@ defmodule VoxelRegion.OverlayLog do
   kind 3 为属性/余额元数据，kind 4 为结构格 afterimage（0x77 kind2）。纯液体数量提交不写区域行，
   改记 kind 0 变化格与元数据里的 `liquid_units` 增量（`World.Edits` 日志表示，`World.Log.replay_liquid/2` 回放）。
   `ordinal` 保持事务内顺序；旧的单格入口 `apply_edit` 产出的裸条目 `%{seq, coord, material, coarse}` 入表时归一成事务。
-  `checkpoint(handle, txn)` 原子替换截至 `txn.seq` 的前缀，保留更晚事务；World 单一写入方串行调用 append/checkpoint。
+  `checkpoint(handle, txn)` 原子替换截至 `txn.seq` 的前缀，保留更晚事务。append 由 World 串行调用；checkpoint 在 World 的
+  检查点任务里执行，可与 append 并发（两个后端都只替换 ≤ seq 的前缀、保留并发追加的更晚事务）。
   """
 
   alias MmoContracts.Voxel.Codec
@@ -107,7 +108,12 @@ defmodule VoxelRegion.OverlayLog do
   end
 
   defmodule File do
-    @moduledoc "`<world_dir>/overlay.log`：`<<len::32, term_to_binary(txn)>>` 帧；只供不起数据库的测试。"
+    @moduledoc """
+    `<world_dir>/overlay.log`：`<<len::32, term_to_binary(txn)>>` 帧；只供不起数据库的测试。
+
+    检查点写到旁边的 `overlay.log.checkpoint`（临时文件写完再改名，原子替换），回放 = 检查点 + 日志里 seq 更晚的帧。
+    追加与检查点各写各的文件，检查点可在后台任务里执行而不丢 World 同时追加的帧（与 Db 后端“保留 seq > P 行”同一契约）。
+    """
     @behaviour VoxelRegion.OverlayLog
 
     @impl true
@@ -121,17 +127,24 @@ defmodule VoxelRegion.OverlayLog do
 
     @impl true
     def replay(path) do
-      case Elixir.File.read(path) do
-        {:ok, bytes} -> frames(bytes, [])
-        {:error, :enoent} -> []
+      case read_frames(path <> ".checkpoint") do
+        [checkpoint] -> [checkpoint | for(next <- read_frames(path), next.seq > checkpoint.seq, do: next)]
+        [] -> read_frames(path)
       end
     end
 
     @impl true
     def checkpoint(path, txn) do
-      suffix = for next <- replay(path), next.seq > txn.seq, do: frame(next)
-      Elixir.File.write!(path <> ".tmp", [frame(txn) | suffix])
-      Elixir.File.rename!(path <> ".tmp", path)
+      Elixir.File.mkdir_p!(Path.dirname(path))
+      Elixir.File.write!(path <> ".tmp", frame(txn))
+      Elixir.File.rename!(path <> ".tmp", path <> ".checkpoint")
+    end
+
+    defp read_frames(path) do
+      case Elixir.File.read(path) do
+        {:ok, bytes} -> frames(bytes, [])
+        {:error, :enoent} -> []
+      end
     end
 
     defp frame(txn) do

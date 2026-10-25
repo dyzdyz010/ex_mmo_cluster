@@ -74,7 +74,15 @@ defmodule VoxelRegion.World.Tools do
     live = MapSet.new(state.attachments, fn {_, {id, _}} -> id end)
     state = %{state | attachment_owners: Map.take(state.attachment_owners, MapSet.to_list(live))}
 
-    Enum.reduce(before.damage, {state, []}, fn
+    # 只看提交前后被删、新增或改值的槽（damage 无过期行）：逐槽行（4）的键由槽与提交前的值确定，
+    # 整件行（3）的键由实例 ID 确定，其余实例的槽没变、最大 HP 不变。
+    lost = changed_attachments(before, state)
+    ids = MapSet.new(lost ++ changed_attachments(state, before), fn {_, {id, _}} -> id end)
+    keys = for({slot, value} <- lost, do: Damage.key(%{Attachments.identity(slot, value) | granularity: 4})) ++ for(id <- Enum.sort(ids), do: {3, id})
+
+    keys
+    |> Enum.flat_map(fn key -> for {:ok, t} <- [Map.fetch(before.damage, key)], do: {key, t} end)
+    |> Enum.reduce({state, []}, fn
       {key, %{granularity: 4} = t}, {s, rows} ->
         if Map.get(s.attachments, Attachments.slot(t)) == {t.incarnation, t.material} do
           {s, rows}
@@ -226,7 +234,7 @@ defmodule VoxelRegion.World.Tools do
                 }
                 |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
 
-                case Log.append_log(state, txn) do
+                case Log.append_log(before, state, txn) do
                   :ok ->
                     state = Log.remember_entry(state, txn)
                     Observation.fanout(state, txn)
@@ -258,7 +266,7 @@ defmodule VoxelRegion.World.Tools do
       next = %{state | seq: state.seq + 1, damage: Map.put(state.damage, Damage.key(row), row)}
       txn = %{seq: next.seq, entries: [], coarse: [], property_states: [row], epochs: %{}}
 
-      case Log.append_log(next, txn) do
+      case Log.append_log(before, next, txn) do
         :ok ->
           next = Log.remember_entry(next, txn)
           Observation.fanout(next, txn)
@@ -392,7 +400,7 @@ defmodule VoxelRegion.World.Tools do
         settlement
       )
 
-    case Log.append_log(next, txn) do
+    case Log.append_log(before, next, txn) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)
@@ -481,9 +489,10 @@ defmodule VoxelRegion.World.Tools do
     cells = MapSet.new(cells)
     epochs = Map.new(macro_cells, &{&1, state.seq})
 
+    # 只取提交前这些格上目标的行（damage 无过期行，Canonical.damage_rows_in/3），不扫全部 damage。
     removed =
-      before.damage
-      |> Map.values()
+      before
+      |> damage_rows_in(state, cells)
       |> Enum.filter(fn t ->
         if t.granularity not in [3, 4] and MapSet.member?(cells, Damage.macro(t)) do
           {current, _} = target_at(t.micro, %{state | epochs: Map.merge(state.epochs, epochs)})

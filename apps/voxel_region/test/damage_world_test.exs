@@ -117,8 +117,10 @@ defmodule VoxelRegion.DamageWorldTest do
       assert {:ok,_} = World.tool_intent(c.w,actor,request)
       assert_receive {:canonical_delta,delta}
       assert delta.transaction.operation == %{character: 1001,client_seq: n,kind: if(n==23,do: 1,else: 0),material: 11,micro: {12,12,20}}
+      if n < 23, do: assert(Map.has_key?(current_damage(c.w), 0))
     end
     assert World.stats(c.w).attachment_slots == 0
+    current_damage(c.w)
     refute_received {:canonical_delta,_}
   end
 
@@ -679,6 +681,13 @@ defmodule VoxelRegion.DamageWorldTest do
     :ok=World.thermal_experiment(c.w,path)
   end
 
+  # damage 无过期行（每行键 = 其坐标上实占目标的键，编辑清理按此反查）；返回逐粒度行数，供调用方断言不是空查。
+  defp current_damage(w) do
+    {stale, counts} = VoxelRegion.TestSupport.DamageInvariant.stale(:sys.get_state(w))
+    assert stale == %{}
+    counts
+  end
+
   defp b3_tick(w) do
     send(w,:thermal_commit)
     observe(w)
@@ -801,6 +810,7 @@ defmodule VoxelRegion.DamageWorldTest do
     before=b3_tick(c.w)
     fine=for {_,t}<-before.damage,t.granularity==1,do: t
     assert length(fine)==2
+    assert %{1 => 2, 2 => 1} = current_damage(c.w)
     assert Enum.all?(fine,&(&1.temperature_kelvin>293.15 and &1.max_hp==100.0/512))
     assert Enum.at(fine,0).temperature_kelvin != Enum.at(fine,1).temperature_kelvin
     [leaf]=for {_,t}<-before.damage,t.granularity==2,do: t
@@ -821,6 +831,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert after_heat.thermal.removed_j>0
     assert after_heat.thermal.discarded_source_j>0
     assert not Enum.any?(after_heat.damage,fn {_,t}->t.owner==leaf.owner end)
+    current_damage(w)
     txns=World.entries_after(w,seq)
     assert length(txns)==1
     assert Enum.any?(hd(txns).property_states,&(&1.owner==leaf.owner and &1.flags==1))
@@ -1735,6 +1746,8 @@ defmodule VoxelRegion.DamageWorldTest do
       assert {:ok,_}=World.tool_intent(c.w,a,hit)
     end
     assert World.stats(c.w).attachment_slots==2
+    # 宿主拆除后整件 HP 按剩余两槽重算，仍与现存槽一致。
+    assert %{3 => 1} = current_damage(c.w)
     assert balance(c.w,1001).balance==2_097_152-128
     assert balance(c.w,1001,11).balance==2_097_152
     assert {:ok,partial}=World.tool_intent(c.w,c.actor,request)
@@ -1764,6 +1777,7 @@ defmodule VoxelRegion.DamageWorldTest do
     remove=%{request_id: 41,client_intent_seq: 41,logical_scene_id: 1,instance_id: {new_birth,0}}
     assert {:ok,_}=World.prefab_intent(w,c.actor,:voxel_prefab_remove_v1,remove)
     assert balance(w,1001).balance==2_097_152
+    current_damage(w)
   end
 
   defp b4_funded(c) do
