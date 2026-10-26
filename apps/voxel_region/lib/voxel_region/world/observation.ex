@@ -191,7 +191,7 @@ defmodule VoxelRegion.World.Observation do
       property_states:
         macros ++ component_observations(state, box) ++ attachment_observations(state, box),
       property_context: property_context(state),
-      epochs: state.epochs,
+      epochs: chunk_flat(state.epochs, box),
       protection: state.protection.regions,
       semblances: Thermal.semblances(state),
       casts: Map.new(state.pending_casts, fn {cid, pending} -> {cid, pending.record} end)
@@ -265,7 +265,7 @@ defmodule VoxelRegion.World.Observation do
     # 所以只看 txn 里的格，不再整表比较全世界的 macro_owners。
     changed_macros = Enum.uniq(Map.keys(Map.get(txn, :macro_owners, %{})) ++ Map.keys(Map.get(txn, :epochs, %{})))
       |> Enum.filter(fn cell -> (Map.has_key?(before.macro_owners, cell) or Map.has_key?(state.macro_owners, cell)) and
-        (Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or Map.get(before.epochs,cell) != Map.get(state.epochs,cell)) end)
+        (Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or chunk_get(before.epochs,cell) != chunk_get(state.epochs,cell)) end)
       |> MapSet.new()
     rows = if MapSet.size(changed_macros) == 0 do
       rows

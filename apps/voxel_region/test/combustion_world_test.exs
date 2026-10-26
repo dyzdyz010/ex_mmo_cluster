@@ -262,15 +262,13 @@ defmodule VoxelRegion.CombustionWorldTest do
   test "旧版已耗尽但保留占用的冷存档醒来结算，不虚构初始化燃料",c do
     {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
     assert {:ok,_}=operate(c,9,1)
-    assert :ok=World.compact(c.w)
-    backend=Log
     path=Log.open(c.opts[:root],World.content_version(c.w))
+    checkpoint=VoxelRegion.TestSupport.LegacySave.checkpoint(c.w)
     stop_supervised!(World)
-    [checkpoint]=backend.replay(path)
     # 只测试旧版本存档：离线制造旧格式，重启必须自行识别耗尽记录。
     rows=Enum.map(checkpoint.property_states,&Map.merge(&1,%{remaining_fuel_j: 0.0,burning: false,power_w: 0.0,temperature_kelvin: 293.15}))
     thermal=checkpoint.thermal |> Map.put(:active,false) |> Map.put(:combustion_j,90_000.0) |> Map.delete(:fuel_initialized_j)
-    assert :ok=backend.checkpoint(path,%{checkpoint | property_states: rows,thermal: thermal})
+    VoxelRegion.TestSupport.LegacySave.install(path,%{checkpoint | property_states: rows,thermal: thermal})
     w=start_supervised!({World,c.opts})
     assert observe(w).thermal.active
     saved=tick(w)

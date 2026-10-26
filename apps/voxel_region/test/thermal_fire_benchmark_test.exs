@@ -99,7 +99,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
     env = Path.join(c.root, "environment.json")
     File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), env)
     # The world's overlay log lives in the per-VM test database; nothing is replayed from an earlier run.
-    {:ok, _} = Ecto.Adapters.SQL.query(DataService.Repo, "DELETE FROM voxel_overlay_log", [])
+    :ok = DataService.Voxel.OverlayLogStore.reset()
 
     manifest = Path.join([@fixtures, "benchmark", "worldgen-manifest.json"])
     # Edits reduce into L1..L5: bake (kernel output, as the server's ready gate does) the coarse regions over the scenes.

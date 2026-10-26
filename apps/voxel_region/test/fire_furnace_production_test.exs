@@ -22,6 +22,12 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
     def replay(_), do: []
     def append(_, _), do: :ok
     def checkpoint(_, _), do: :ok
+    def prefix(_), do: nil
+    def clear_unpublished(_, _), do: :ok
+    def write_pages(_, _, _), do: :ok
+    def publish(_, _, _, _), do: :ok
+    def load(_), do: %{prefix: nil}
+    def collect(_, _, _), do: 0
   end
 
   @digest "5be2e8c79d8789a29aa17e023294c8aafbff51ff4b8c07a945035dbfcf91fe57"

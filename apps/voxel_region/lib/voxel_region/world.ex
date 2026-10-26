@@ -643,14 +643,18 @@ defmodule VoxelRegion.World do
               Path.join(world_dir, "prefabs")
             ),
           overlay_regions: %{},
+          # 页索引与攒下的脏单元（M2a，`World.Pages`），派生、不持久化。
+          pages: VoxelRegion.World.Pages.new(),
+          page_dirty: MapSet.new(),
           seq: 0,
           interaction_history: [],
           interaction_floor: 0,
           entries: %{},
+          # 只供离线粗层重建（`CoarseRebuild`）沿用旧检查点函数；在线持久化走页表切点（`page_store`）。
           checkpoint_timer: nil,
-          # nil、等待现有热提交边界（task=nil）、单个前缀计算任务；只由World持久化与应用结果。
-          checkpoint_job: nil,
           checkpoints: 0,
+          # M2a 页表切点与写回进程（`World.PageCut`）；`published` 由恢复路径填。
+          page_store: VoxelRegion.World.PageCut.new(nil, opts),
           entry_regions: %{},
           subs: %{},
           canonical_subs: %{},
@@ -659,7 +663,7 @@ defmodule VoxelRegion.World do
           log: {log, log.open(world_dir, cv)}
         }
 
-        {:ok, replay_log(state)}
+        {:ok, restore_pages(state)}
 
       {:error, :no_world} ->
         {:stop, {:no_world, Keyword.fetch!(opts, :root)}}
@@ -684,7 +688,18 @@ defmodule VoxelRegion.World do
         validate_damage_catalog(state)
         state = migrate_component_damage(state)
         {state, _, _} = refresh_structure(state, Map.keys(state.refined))
-        state = if map_size(state.structure) > 0, do: compact_log(state), else: state
+        # 未迁移 / 全新世界（尚无已发布前缀）：全部非空单元都要写，首个切点即迁移（m2a §7）。
+        # 索引在规范化（旧 g=1 行并成整件行等）之后从全量状态重建，规范化的结果随首个切点写出。
+        state =
+          if state.page_store.published == nil do
+            state = VoxelRegion.World.Pages.rebuild(state)
+            %{state | page_dirty: VoxelRegion.World.Pages.units(state), page_store: %{state.page_store | wanted: true}}
+          else
+            state
+          end
+        state = state |> VoxelRegion.World.PageCut.start_writer() |> VoxelRegion.World.PageCut.maybe_open()
+        # 重启时后缀可能已很长（上次写回卡住）：按恢复后的积压定级，接纳从第一条请求起生效。
+        state = VoxelRegion.World.PageCut.assess(state)
         state = Thermal.rebuild_work(state)
         state = prepare_component_cache(state, nil)
 
@@ -701,11 +716,25 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 积压硬上限（m2a §5.3）：会产生新提交的调用在任何裁决、扣账、创建身份或消费意图状态之前拒绝，经各入口既有的
+  # `{:error, reason}` 回执（客户端为 `ResultFrame.error`）。工具 / 施法的 action 0 只查询、不提交，照常服务。
+  # 进行中的动作（已接纳的施法、信标读条、热 / 液体步进）走到自己的提交边界；回落由写回确认恢复（`PageCut.assess/1`）。
+  @commit_calls [:apply_edit, :apply_edits, :tool_intent, :production_intent, :attachment_intent, :prefab_intent,
+    :place_prefab, :remove_prefab, :replace_prefab, :spell_intent, :material_supply, :liquid_fill, :gm, :parcel_install,
+    :beacon_install, :author_regions, :liquid_experiment, :thermal_experiment, :publish_properties, :publish_parameters]
+
+  defguardp backlog_rejects?(message, state)
+            when state.page_store.level == :hard and is_tuple(message) and elem(message, 0) in @commit_calls and
+                   not (elem(message, 0) in [:tool_intent, :spell_intent] and :erlang.map_get(:action, elem(message, 2)) == 0)
+
   @impl true
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
   @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since]
+
+  def handle_call(message, _from, state) when backlog_rejects?(message, state),
+    do: {:reply, {:error, :persist_backlog}, state}
 
   def handle_call(message, from, %{thermal_work: %{domain: %{pending: true}}} = state)
       when not (is_tuple(message) and elem(message, 0) in @unflushed) and message not in @unflushed,
@@ -895,7 +924,7 @@ defmodule VoxelRegion.World do
             placed_by: Map.get(Map.get(s.instances, owner, %{}), :placed_by)}
         end)
       row = %{cell: Tuple.to_list(cell), material: material, refined: map_size(refined) > 0, slots: slots,
-         placed_by: Map.get(s.placed_by, cell)}
+         placed_by: chunk_get(s.placed_by, cell)}
       row = if detail == :micro and map_size(refined) > 0 do
         Map.put(row, :micro_cells, for({slot,{m,owner}} <- Enum.sort(refined),
           do: %{micro: Prefab.micro_coord(cell,slot),material: m,instance: owner}))
@@ -1255,10 +1284,14 @@ defmodule VoxelRegion.World do
 
   def handle_call(:stats, _from, state) do
     stats =
-      Map.merge(state.cache_stats, %{
+      state.cache_stats
+      |> Map.merge(VoxelRegion.World.PageCut.backlog(state))
+      |> Map.merge(%{
         entries: map_size(state.payloads),
         retained_transactions: map_size(state.entries),
-        checkpoint_scheduled: state.checkpoint_timer != nil or state.checkpoint_job != nil,
+        checkpoint_scheduled: state.page_store.timer != nil or state.page_store.cut != nil or state.page_store.wanted,
+        published_seq: state.page_store.published,
+        dirty_units: MapSet.size(state.page_dirty),
         checkpoints: state.checkpoints,
         lru_bytes: state.lru_bytes,
         resident_bytes: state.resident_bytes,
@@ -1316,6 +1349,10 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 游标早于已发布前缀：其后的历史已退休，显式拒绝，调用方改走 `canonical_snapshot_and_subscribe`（m2a §6.3，评审 R6）。
+  def handle_call({:subscribe, _pid, have_seq, _box, _min_level}, _from, state) when state.page_store.published != nil and have_seq < state.page_store.published,
+    do: {:reply, {:error, :cursor_expired}, state}
+
   def handle_call({:subscribe, pid, have_seq, box, min_level}, _from, state) do
     unless Map.has_key?(state.subs, pid), do: Process.monitor(pid)
     filter = {box, min_level}
@@ -1329,6 +1366,9 @@ defmodule VoxelRegion.World do
   end
 
   # 供测试与诊断读历史：纯属性事务与检查点在内存只留投影字段，正文从持久日志补回。
+  def handle_call({:entries_after, seq}, _from, state) when state.page_store.published != nil and seq < state.page_store.published,
+    do: {:reply, {:error, :cursor_expired}, state}
+
   def handle_call({:entries_after, seq}, _from, %{log: {backend, handle}} = state) do
     retained = state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
 
@@ -1391,7 +1431,7 @@ defmodule VoxelRegion.World do
   end
 
   def handle_call(:compact, from, state) do
-    {:noreply, request_checkpoint(state, from)}
+    {:noreply, VoxelRegion.World.PageCut.compact(state, from)}
   end
 
   @impl true
@@ -1400,21 +1440,43 @@ defmodule VoxelRegion.World do
       when message != :thermal_tick and not (is_tuple(message) and elem(message, 0) in [:thermal_step | @unflushed]),
       do: handle_info(message, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
 
-  def handle_info({:timeout, ref, :checkpoint}, %{checkpoint_timer: ref} = state),
-    do: {:noreply, request_checkpoint(state, nil)}
+  def handle_info({:timeout, ref, :page_cut}, %{page_store: %{timer: ref}} = state),
+    do: {:noreply, VoxelRegion.World.PageCut.want(put_in(state.page_store.timer, nil))}
 
-  def handle_info({:timeout, _cancelled, :checkpoint}, state), do: {:noreply, state}
+  def handle_info({:timeout, _stale, :page_cut}, state), do: {:noreply, state}
 
-  def handle_info({ref, checkpoint}, %{checkpoint_job: %{task: %Task{ref: ref}} = job} = state) do
-    Process.demonitor(ref, [:flush])
-    state = finish_checkpoint(state, checkpoint)
-    {done, waiting} = Enum.split_with(job.waiters, fn {_, seq} -> seq <= checkpoint.transaction.seq end)
-    Enum.each(done, fn {from, _} -> GenServer.reply(from, :ok) end)
-    state = %{state | checkpoint_job: if(waiting == [], do: nil, else: %{task: nil, waiters: waiting})}
-    state = state |> start_checkpoint() |> schedule_checkpoint()
-    # 已退休的历史由常规分代 GC 回收；不再在 World 回合里做整堆 GC（大世界上一次即数百毫秒到秒级停顿）。
+  def handle_info({:timeout, ref, :replica_retire}, %{page_store: %{replica_timer: ref}} = state),
+    do: {:noreply, VoxelRegion.World.PageCut.retire_replicas(put_in(state.page_store.replica_timer, nil))}
+
+  # 积压中上限（m2a §5.3）：不开始新的投射物 / 液体 / 热步进（进行中的已走到提交边界）；`PageCut.assess/1` 回落时恢复调度。
+  def handle_info(:projectile_tick, state) when state.page_store.level in [:mid, :hard],
+    do: {:noreply, VoxelRegion.World.PageCut.pause(%{state | projectile_timer: nil})}
+
+  def handle_info(:liquid_commit, state) when state.page_store.level in [:mid, :hard] do
+    if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
+    {:noreply, VoxelRegion.World.PageCut.pause(%{state | liquid_timer: nil})}
+  end
+
+  def handle_info(:thermal_tick, %{thermal_run: nil} = state) when state.page_store.level in [:mid, :hard],
+    do: {:noreply, state |> Thermal.fired() |> Thermal.rest() |> VoxelRegion.World.PageCut.pause()}
+
+  # 积压硬上限：新施法、新信标读条都会产生新提交，在裁决前拒绝（同 `@commit_calls`）。死亡掉落不在此列：它是已确认死亡的后果、
+  # 不是新的玩家意图，频率有限，被拒即没有重试通道（物品永久丢失），硬上限下照常提交（m2a §5.3）。
+  def handle_info({:prepare_cast, key, actor, _request, from}, state) when state.page_store.level == :hard do
+    send(actor.player, {:cast_failed, key})
+    GenServer.reply(from, {:error, :persist_backlog})
     {:noreply, state}
   end
+
+  def handle_info({:prepare_beacon, key, actor, _request}, state) when state.page_store.level == :hard do
+    send(actor.player, {:beacon_prepared, key, {:error, :persist_backlog}})
+    {:noreply, state}
+  end
+
+  def handle_info(message, state)
+      when message == :page_pump or (is_tuple(message) and elem(message, 0) in [:page_begun, :page_ack, :page_published, :page_failed]),
+      do: {:noreply, VoxelRegion.World.PageCut.handle(state, message)}
+
 
   def handle_info(:projectile_tick, state) do
     state = drain_thermal(state)
@@ -1430,7 +1492,7 @@ defmodule VoxelRegion.World do
   def handle_info(:liquid_commit, state) do
     if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
     active = state.liquid_active
-    state = advance_liquid(%{state | liquid_active: MapSet.new(), liquid_timer: nil}, active)
+    state = advance_liquid(%{state | liquid_active: MapSet.new(), liquid_timer: nil}, active) |> commit_active()
     {:noreply, schedule_liquid(state)}
   end
 
@@ -1550,8 +1612,10 @@ defmodule VoxelRegion.World do
 
   # 直接投递的提交在本次回调内完整执行；先完成进行中的定时提交，不把两段模拟混入同一事务。
   def handle_info(:thermal_commit, state) do
-    state = state |> drain_thermal() |> Thermal.begin() |> drain_thermal()
-    {:noreply, state |> start_checkpoint() |> Thermal.wake()}
+    state = drain_thermal(state)
+    state = if VoxelRegion.World.PageCut.at_least?(state, :mid),
+      do: VoxelRegion.World.PageCut.pause(state), else: state |> Thermal.begin() |> drain_thermal()
+    {:noreply, state |> VoxelRegion.World.PageCut.maybe_open() |> Thermal.wake()}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
@@ -1581,7 +1645,7 @@ defmodule VoxelRegion.World do
   defp step_thermal(state) do
     case Thermal.tick(state) do
       {:more, state} -> send(self(), {:thermal_step, state.thermal_run.ref}); state
-      {:done, state, commit} -> state |> commit_thermal(commit) |> start_checkpoint() |> Thermal.wake()
+      {:done, state, commit} -> state |> commit_thermal(commit) |> VoxelRegion.World.PageCut.maybe_open() |> Thermal.wake()
     end
   end
 
@@ -1594,29 +1658,24 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp request_checkpoint(%{seq: 0, checkpoint_job: nil} = state, from) do
-    if from, do: GenServer.reply(from, :ok)
-    state
+  # 恢复（m2a §6.2 / §7）：有已发布前缀时装页 + 重放其后的日志；没有（未迁移或全新世界）时清掉未发布残留、按旧路径全量回放，
+  # 首个切点写出全部页。
+  defp restore_pages(%{log: {backend, handle}} = state) do
+    case backend.load(handle) do
+      %{prefix: nil} ->
+        :ok = backend.clear_unpublished(handle, nil)
+        replay_log(state)
+
+      loaded ->
+        state
+        |> VoxelRegion.World.Pages.install(loaded)
+        |> replay_txns(loaded.txns)
+        |> put_in([:page_store, :published], loaded.prefix)
+    end
   end
 
-  defp request_checkpoint(state, from) do
-    if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
-    job = state.checkpoint_job || %{task: nil, waiters: []}
-    job = if from, do: %{job | waiters: [{from, state.seq} | job.waiters]}, else: job
-    %{state | checkpoint_timer: nil, checkpoint_job: job} |> start_checkpoint()
-  end
-
-  defp start_checkpoint(%{checkpoint_job: %{task: nil} = job, thermal_run: nil} = state) do
-    started = System.monotonic_time(:microsecond)
-    input = checkpoint_input(state)
-    # 构建与落盘都在任务里；World 收到结果后只换基底、退休已落盘前缀（不再在 World 回合里同步写库）。
-    task = Task.async(fn -> input |> build_checkpoint() |> then(&persist_checkpoint(input, &1)) end)
-    Logger.info("voxel_checkpoint_start seq=#{input.seq} worker=#{inspect(task.pid)} freeze_us=#{System.monotonic_time(:microsecond) - started}",
-      checkpoint_worker: task.pid)
-    %{state | checkpoint_job: %{job | task: task}}
-  end
-
-  defp start_checkpoint(state), do: state
+  @impl true
+  def terminate(_reason, state), do: VoxelRegion.World.PageCut.stop_writer(state)
 
   @impl true
   def code_change(:region_bases, state, _extra), do: {:ok, Map.put_new(state, :region_bases, %{})}

@@ -3,6 +3,25 @@ defmodule VoxelRegion.TestSupport do
   alias MmoContracts.Voxel.{Payload, Codec}
   alias VoxelRegion.OverlayLog
 
+  defmodule LegacySave do
+    @moduledoc """
+    只测试：制造 M2a 之前的旧格式存档（单笔整世界检查点、无页表），验证冷启动经迁移路径识别旧格式。
+    检查点正文由保留的旧检查点函数（离线粗层重建仍用）从 World 当前状态生成；删掉页表后重启即走“无前缀 → 全量回放”。
+    """
+    alias VoxelRegion.World.Log
+
+    @doc "World 当前状态的旧格式检查点事务。"
+    def checkpoint(%{} = state), do: state |> Log.checkpoint_input() |> Log.build_checkpoint() |> Map.fetch!(:transaction)
+    def checkpoint(world), do: checkpoint(:sys.get_state(world))
+
+    @doc "把旧格式检查点写成文件后端的整份存档：替换检查点、清掉日志帧与页表（World 须已停）。"
+    def install(path, txn) do
+      File.rm(path)
+      File.rm(Path.join(Path.dirname(path), "pages.etf"))
+      :ok = VoxelRegion.OverlayLog.File.checkpoint(path, txn)
+    end
+  end
+
   defmodule Source do
     def open(opts), do: {:ok,%{root: Keyword.fetch!(opts,:root),observer: Keyword.fetch!(opts,:observer)}}
     def content_version(_), do: 123
@@ -41,6 +60,12 @@ defmodule VoxelRegion.TestSupport do
   defmodule Log do
     defdelegate open(path,cv),to: OverlayLog.File
     defdelegate replay(path),to: OverlayLog.File
+    defdelegate prefix(path),to: OverlayLog.File
+    defdelegate clear_unpublished(path,prefix),to: OverlayLog.File
+    defdelegate write_pages(path,cut,rows),to: OverlayLog.File
+    defdelegate publish(path,cut,rows,globals),to: OverlayLog.File
+    defdelegate load(path),to: OverlayLog.File
+    defdelegate collect(path,prefix,limit),to: OverlayLog.File
     def checkpoint(path,txn) do
       File.write!(path<>".checkpoint_calls","1",[:append])
       OverlayLog.File.checkpoint(path,txn)

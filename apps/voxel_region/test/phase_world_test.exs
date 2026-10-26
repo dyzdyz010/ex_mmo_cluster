@@ -11,6 +11,22 @@ defmodule VoxelRegion.PhaseWorldTest do
     @moduledoc "只测试：经过正式数据库行编码，再以独立文件模拟持久存储和冷恢复。"
     defdelegate open(path,version),to: Log
     defdelegate replay(path),to: Log
+    defdelegate prefix(path),to: Log
+    defdelegate clear_unpublished(path,prefix),to: Log
+    defdelegate write_pages(path,cut,rows),to: Log
+    # 只测试：登记了停点时，发布切点前把写回进程停在发布点（报 `{:holding_publish, 写回进程, 切点}`，收到 `:continue` 再发布）。
+    def publish(path,cut,rows,globals) do
+      case :persistent_term.get({__MODULE__,:hold},nil) do
+        owner when is_pid(owner) ->
+          :persistent_term.erase({__MODULE__,:hold})
+          send(owner,{:holding_publish,self(),cut})
+          receive do :continue -> :ok end
+        _ -> :ok
+      end
+      Log.publish(path,cut,rows,globals)
+    end
+    defdelegate load(path),to: Log
+    defdelegate collect(path,prefix,limit),to: Log
     def append(path,txn),do: Log.append(path,roundtrip(txn))
     def checkpoint(path,txn),do: Log.checkpoint(path,roundtrip(txn))
     defp roundtrip(txn) do
@@ -29,14 +45,8 @@ defmodule VoxelRegion.PhaseWorldTest do
           send(owner, {:thermal_kernel, self(), emitter})
           receive do :continue_thermal -> :ok end
 
-        String.starts_with?(text, "voxel_select_region ") and
-            :atomics.compare_exchange(gate, 2, 1, 0) == :ok ->
-          [_, seq] = Regex.run(~r/seq=(\d+)/, text)
-          send(owner, {:checkpoint_selection, self(), emitter, String.to_integer(seq)})
-          receive do :continue_checkpoint -> :ok end
-
-        # 检查点完成 = World 换基底并退休前缀之后打的那一行（不再有单独的整堆 GC 回调）。
-        String.starts_with?(text, "voxel_checkpoint seq=") ->
+        # 切点发布 = World 收到“已发布”、退休前缀之后打的那一行（只观察，不阻塞 World）。
+        String.starts_with?(text, "voxel_page_cut seq=") ->
           send(owner, {:checkpoint_finished, emitter})
 
         true -> :ok
@@ -62,8 +72,8 @@ defmodule VoxelRegion.PhaseWorldTest do
         emissivity: 0.0, view_range_cells: 8, power_w: 1.0, energy_j: 0.25}))
       assert :ok = World.thermal_experiment(c.w, heat)
       before = observe(c.w)
-      # 只读取得真实维护计时器身份，提前投递同一到期事件；不改写World state。
-      timer = :sys.get_state(c.w).checkpoint_timer
+      # 只读取得真实切点计时器身份，提前投递同一到期事件；不改写World state。
+      timer = :sys.get_state(c.w).page_store.timer
       assert is_reference(timer)
       gate = :atomics.new(2, signed: false)
       :atomics.put(gate, 1, 1)
@@ -88,14 +98,15 @@ defmodule VoxelRegion.PhaseWorldTest do
         :erlang.trace(caller, false, [:send])
         task
       else
-        send(world, {:timeout, timer, :checkpoint})
+        send(world, {:timeout, timer, :page_cut})
         nil
       end
+      :persistent_term.put({DatabaseMetadataLog,:hold},self())
       send(world, :continue_thermal)
-      assert_receive {:checkpoint_selection, worker, emitter, prefix}, 5_000
+      # 切点只在热提交的自然边界开；写回停在发布点期间 World 照常提交后缀。
+      assert_receive {:holding_publish, worker, prefix}, 5_000
       try do
         refute worker == world
-        assert worker == emitter
         committed = observe(world)
         assert prefix == committed.seq
         assert prefix > before.seq
@@ -113,24 +124,30 @@ defmodule VoxelRegion.PhaseWorldTest do
         assert Enum.all?(suffix, &(&1.entries == [] and &1.coarse == []))
         saved = observe(world)
         assert saved.material_balances[{1001,15}] == 7
-        send(worker, :continue_checkpoint)
+        send(worker, :continue)
         if task, do: assert(Task.await(task, 5_000) == :ok)
         assert_receive {:checkpoint_finished, ^world}, 5_000
         after_checkpoint = observe(world)
         assert Map.take(after_checkpoint, [:seq, :damage, :thermal, :phase_inventory, :material_balances]) ==
           Map.take(saved, [:seq, :damage, :thermal, :phase_inventory, :material_balances])
-        [checkpoint | tail] = World.entries_after(world, 0)
-        assert checkpoint.seq == prefix
-        assert Map.delete(checkpoint.thermal, :config) == committed.thermal
-        assert Enum.any?(checkpoint.property_states, &(&1 == heated))
-        assert tail == suffix
+        # 页表里切点 prefix 的版本就是提交边界上的值：全局热账没有半步，热过的属性行在页里；后缀留在保留历史。
+        {backend, handle} = :sys.get_state(world).log
+        loaded = backend.load(handle)
+        assert loaded.prefix == prefix
+        globals = VoxelRegion.OverlayLog.term(loaded.globals).value
+        ledger = [:elapsed_s, :supplied_j, :environment_j, :active]
+        assert Map.take(globals.thermal, ledger) == Map.take(committed.thermal, ledger)
+        paged = for row <- loaded.segments, {{:chunk, :damage, _}, rows} <- [VoxelRegion.World.Pages.unit_value(row)], {_, t} <- rows, do: t
+        assert Enum.any?(paged, &(&1 == heated))
+        assert World.entries_after(world, prefix) == suffix
         stop_supervised!(World)
         recovered = start_supervised!({World, c.opts})
         assert Map.take(observe(recovered), [:seq, :damage, :thermal, :phase_inventory, :material_balances]) ==
           Map.take(saved, [:seq, :damage, :thermal, :phase_inventory, :material_balances])
         assert {:ok, ^supply_seq} = World.material_supply(recovered, 1001, "checkpoint-suffix", %{15 => 7})
       after
-        send(worker, :continue_checkpoint)
+        send(worker, :continue)
+        :persistent_term.erase({DatabaseMetadataLog,:hold})
         :logger.remove_handler(:checkpoint_thermal)
       end
     end
@@ -939,8 +956,8 @@ defmodule VoxelRegion.PhaseWorldTest do
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     c=%{c | w: w}
-    [checkpoint]=World.entries_after(w,0)
-    assert Enum.find(checkpoint.property_states,&(&1.micro=={504,8,16})).pick_baseline_hp==100.0
+    # 采掘基准随页表持久（服务端内部字段），重启后仍在。
+    assert Enum.find(Map.values(:sys.get_state(w).damage),&(&1.micro=={504,8,16})).pick_baseline_hp==100.0
     assert :ok=World.canonical_snapshot_and_subscribe(w,{{0,0,0},{2,1,1}},self(),:restored_pick,false)
     assert_receive {:canonical_snapshot,:restored_pick,%{property_states: rows}}
     refute Enum.any?(rows,&Map.has_key?(&1,:pick_baseline_hp))

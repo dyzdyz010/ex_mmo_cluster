@@ -94,7 +94,7 @@ defmodule VoxelRegion.World.Parcel do
       next = Prefabs.clear_subtree(state, removed, Prefabs.subtree_cells(state, removed))
 
       next = Enum.reduce(cells, next, fn cell, s ->
-        s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: Map.delete(s.placed_by, cell)}
+        s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: chunk_delete(s.placed_by, cell)}
         value = Map.fetch!(parcel.cells, shift(cell, neg(delta)))
         # 与当前有效值（含生成底图）相同的格不另写 overlay：整园迁入时高处两边同为空气、深处同为岩石，
         # 每格一条会让目标世界白添约千万条 overlay。
@@ -210,7 +210,7 @@ defmodule VoxelRegion.World.Parcel do
         0 ->
           changed = elem(cell_value(before, 0, cell), 1) != elem(cell_value(next, 0, cell), 1) or
             Map.get(before.macro_owners, cell) != Map.get(next.macro_owners, cell)
-          {Map.get(next.macro_owners, cell, {0, 0}), if(changed, do: seq, else: Map.get(next.epochs, cell, 0))}
+          {Map.get(next.macro_owners, cell, {0, 0}), if(changed, do: seq, else: chunk_get(next.epochs, cell, 0))}
 
         g when g in [1, 2] ->
           {ids[row.owner], elem(ids[row.owner], 0)}

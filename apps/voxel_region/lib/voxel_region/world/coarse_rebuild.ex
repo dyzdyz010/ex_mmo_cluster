@@ -1,11 +1,13 @@
 defmodule VoxelRegion.World.CoarseRebuild do
   @moduledoc """
   全局系统维护：World 离线重建 L>0 派生物的单次状态变换。
-  只由 World.rebuild_coarse/1 在完整日志恢复后调用；没有在线开关或新持久格式。
+  只由 World.rebuild_coarse/1 在完整恢复后调用；没有在线开关或新持久格式。
+  独占维护（m2a §4.3）：重派生后提交一笔维护事务推进 seq，再同步发布覆盖它的页表切点（全部旧 / 新粗层单元与恢复后缀的脏单元）；
+  发布即成功边界，发布前失败整体重跑。
   """
   require Logger
   alias VoxelRegion.{Attachments, Thermal}
-  alias VoxelRegion.World.{AttachmentOps, Canonical, Edits, Log, Payloads}
+  alias VoxelRegion.World.{AttachmentOps, Canonical, Edits, Log, PageCut, Pages, Payloads}
 
   @metadata [:seq, :cv, :refined, :instances, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions,
     :attachment_serial, :attachment_owners, :liquid_units, :liquid_regions, :liquid_active,
@@ -32,7 +34,11 @@ defmodule VoxelRegion.World.CoarseRebuild do
     dirty = AttachmentOps.attachment_dirty(state, cells)
     regions = (regions ++ Enum.map(dirty, fn {0, c} -> Canonical.region_of(c) end)) |> Enum.uniq() |> Enum.sort()
     {before_bytes, state} = l0_bytes(state, regions)
+    # 被丢弃的旧粗层单元也要写（写成空），否则页表里的旧粗层会在恢复时复活。
+    discarded = for({level, cell} <- Map.keys(state.overlay), level > 0, do: Pages.overlay_unit(level, cell)) ++
+      for({level, _} = key <- Map.keys(state.region_bases), level > 0, do: {:page, :base, key})
     state = discard_coarse(state)
+    state = Enum.reduce(discarded, state, &Pages.mark(&2, &1))
 
     # 完整 L0 base 的 core 不能由稀疏 overlay 代表；流式展开，每批最多 4096 格。
     core_regions = Map.keys(l0_bases) |> Enum.map(&elem(&1, 1)) |> MapSet.new()
@@ -65,17 +71,20 @@ defmodule VoxelRegion.World.CoarseRebuild do
     true = before_bytes === after_bytes
     coarse_cells = Enum.count(state.overlay, fn {{level, _}, _} -> level > 0 end)
     structure_cells = map_size(state.structure)
-    input = Log.checkpoint_input(state)
-    checkpoint = input |> Log.build_checkpoint() |> then(&Log.persist_checkpoint(input, &1))
-    state = Log.finish_checkpoint(state, checkpoint)
-    true = Map.take(state, @metadata) === metadata
+    before = state
+    state = %{state | seq: state.seq + 1}
+    txn = %{seq: state.seq, entries: [], coarse: []}
+    :ok = Log.append_log(before, state, txn)
+    state = Log.remember_entry(state, txn)
+    published = PageCut.publish_now(state)
+    true = Map.delete(Map.take(state, @metadata), :seq) === Map.delete(metadata, :seq)
+    # 维护事务推进了 seq，载荷头随之盖新序号；比较去掉序号后的内容。
     {saved_bytes, _state} = l0_bytes(state, regions)
-    true = saved_bytes === before_bytes
+    true = unstamped(saved_bytes) === unstamped(before_bytes)
 
     report = %{seq: state.seq, canonical_equal: true, l0_regions: length(regions),
       l0_bases: map_size(l0_bases), coarse_cells: coarse_cells, structure_cells: structure_cells,
-      visits: visits, batches: batches, checkpoint_regions: checkpoint.regions,
-      checkpoint_entries: length(checkpoint.transaction.entries) + length(checkpoint.transaction.coarse),
+      visits: visits, batches: batches, published_units: published,
       elapsed_ms: System.monotonic_time(:millisecond) - started,
       instances: map_size(state.instances), attachments: map_size(state.attachments),
       l0_sha256: Enum.map(before_bytes, fn {region, bytes} ->
@@ -89,6 +98,9 @@ defmodule VoxelRegion.World.CoarseRebuild do
   end
 
   defp l0(map), do: Map.filter(map, fn {{level, _}, _} -> level == 0 end)
+
+  defp unstamped(regions),
+    do: Enum.map(regions, fn {region, bytes} -> {:ok, p} = MmoContracts.Voxel.Payload.decode(bytes); {region, %{p | seq: 0}} end)
 
   defp discard_coarse(state) do
     state = Enum.reduce(Map.keys(state.payloads), state, fn {level, _} = key, s ->

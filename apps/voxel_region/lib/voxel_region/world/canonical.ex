@@ -5,7 +5,8 @@ defmodule VoxelRegion.World.Canonical do
   只读 World 的权威状态（overlay、区域基底、refined、稀疏属性记录、有限数量与目录）；读取 baseline 时
   返回带解码缓存的新 state，从不写真值。World 与热模拟（`VoxelRegion.World.Thermal`）共用这一份读取语义。
   """
-  alias VoxelRegion.{Attachments, Damage, Phase, Prefab}
+  alias VoxelRegion.{Attachments, CollisionSource, Damage, Phase, Prefab}
+  alias VoxelRegion.World.Pages
   alias MmoContracts.Voxel.Payload
 
   @micro VoxelRegion.Spatial.micro_resolution()
@@ -40,7 +41,7 @@ defmodule VoxelRegion.World.Canonical do
     new = slot_owners(slots)
     refined = if map_size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
 
-    %{state | refined: refined,
+    %{Pages.mark(state, Pages.cell_unit(:refined, cell)) | refined: refined,
       refined_owners: state.refined_owners |> index_owners(cell, MapSet.difference(new, old), MapSet.new())
         |> index_owners(cell, MapSet.new(), MapSet.difference(old, new)),
       refined_regions: put_region_cell(state.refined_regions, region_of(cell), cell, slots),
@@ -60,6 +61,7 @@ defmodule VoxelRegion.World.Canonical do
   def put_liquid(state, changes) do
     Enum.reduce(changes, state, fn {cell, quantity}, s ->
       region = region_of(cell)
+      s = Pages.mark(s, Pages.cell_unit(:liquid_units, cell))
 
       if quantity == 0 do
         %{s | liquid_units: Map.delete(s.liquid_units, cell),
@@ -92,6 +94,7 @@ defmodule VoxelRegion.World.Canonical do
     old = Map.get(state.macro_owners, cell)
     region = region_of(cell)
     cells = state.macro_owner_cells |> index_cell_if(old, cell, false) |> index_cell_if(owner, cell, true)
+    state = Pages.mark(state, Pages.cell_unit(:macro_owners, cell))
 
     if owner == nil do
       %{state | macro_owners: Map.delete(state.macro_owners, cell),
@@ -124,6 +127,7 @@ defmodule VoxelRegion.World.Canonical do
 
   @doc "写入（新增或改值）附件槽，同步维护派生索引。"
   def put_attachments(state, entries) do
+    state = Enum.reduce(entries, state, fn {slot, _}, s -> Pages.mark(s, Pages.slot_unit(slot)) end)
     %{state | attachments: Map.merge(state.attachments, entries),
       attachment_regions: Enum.reduce(entries, state.attachment_regions,
         fn {slot, value}, index -> put_region_cell(index, Attachments.region(slot), slot, value) end)}
@@ -131,7 +135,8 @@ defmodule VoxelRegion.World.Canonical do
 
   @doc "删除附件槽，同步维护派生索引。"
   def drop_attachments(state, slots) do
-    %{state | attachments: Map.drop(state.attachments, slots),
+    marked = Enum.reduce(slots, state, fn slot, s -> if Map.has_key?(state.attachments, slot), do: Pages.mark(s, Pages.slot_unit(slot)), else: s end)
+    %{marked | attachments: Map.drop(state.attachments, slots),
       attachment_regions: Enum.reduce(slots, state.attachment_regions, fn slot, index ->
         if Map.has_key?(state.attachments, slot), do: drop_region_cell(index, Attachments.region(slot), slot), else: index
       end)}
@@ -205,6 +210,25 @@ defmodule VoxelRegion.World.Canonical do
         index
     end
   end
+
+  # 按 16³ 子块嵌套的宏格表（子块 => %{格 => 值}）：epochs / placed_by 的唯一表示。页按子块写回、按子块抽取（M2a），
+  # 读写只经这几个函数；日志与观察仍用平铺的 `格 => 值`。
+  @doc "嵌套宏格表里某格的值。"
+  def chunk_get(nested, cell, default \\ nil),
+    do: nested |> Map.get(CollisionSource.chunk_coord(cell), %{}) |> Map.get(cell, default)
+
+  @doc "写一格。"
+  def chunk_put(nested, cell, value), do: put_region_cell(nested, CollisionSource.chunk_coord(cell), cell, value)
+
+  @doc "删一格。"
+  def chunk_delete(nested, cell), do: drop_region_cell(nested, CollisionSource.chunk_coord(cell), cell)
+
+  @doc "并入平铺的 `格 => 值`。"
+  def chunk_merge(nested, flat), do: Enum.reduce(flat, nested, fn {cell, value}, acc -> chunk_put(acc, cell, value) end)
+
+  @doc "展开成平铺表；`box`（L0 区域坐标）给出时只取落在盒内的格，与 `PropertyObservation.contains?/2` 同一判定。"
+  def chunk_flat(nested, box \\ nil),
+    do: for({chunk, cells} <- nested, box == nil or CollisionSource.in_box?(chunk, box), kv <- cells, into: %{}, do: kv)
 
 
   @doc """
@@ -319,7 +343,7 @@ defmodule VoxelRegion.World.Canonical do
             do: %{
               micro: cell |> Tuple.to_list() |> Enum.map(&(&1 * @micro)) |> List.to_tuple(),
               granularity: 0,
-              incarnation: Map.get(state.epochs, cell, 0),
+              incarnation: chunk_get(state.epochs, cell, 0),
               owner: Map.get(state.macro_owners,cell,{0,0}),
               material: material
             }

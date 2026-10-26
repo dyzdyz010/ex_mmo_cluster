@@ -37,7 +37,8 @@ defmodule VoxelRegion.World.Payloads do
           client_version == state.cv and header.hash == have_hash and header.seq == have_seq ->
             {{:unchanged, level, region}, served}
 
-          client_version != state.cv or have_seq == 0 or not known ->
+          # 游标早于已发布前缀：其后的历史已退休（m2a §6.3），只能给整区载荷，不能用残缺的后缀冒充完整增量。
+          client_version != state.cv or have_seq == 0 or not known or expired?(state, have_seq) ->
             {{:payload, level, region, bytes}, served}
 
           true ->
@@ -211,6 +212,9 @@ defmodule VoxelRegion.World.Payloads do
       Enum.uniq(Map.keys(state.refined_owners) ++ Map.keys(state.macro_owner_cells)))
 
   def region_keys(cells), do: LogProjection.region_keys(cells)
+
+  @doc "游标早于已发布前缀（保留历史只含前缀之后的事务，m2a §6.3）。"
+  def expired?(state, seq), do: state.page_store.published != nil and seq < state.page_store.published
 
   # 全局系统功能：结构增量与地形独立；空字节删除该格，消费者同时更新 core/ring。
   def structure_entries(state, cells) do

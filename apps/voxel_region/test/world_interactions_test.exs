@@ -5,7 +5,7 @@ defmodule VoxelRegion.WorldInteractionsTest do
   alias VoxelRegion.TestSupport.{Source, Actor, Log}
 
   setup context do
-    if context[:database], do: MmoTest.Database.start!()
+    if context[:database], do: (MmoTest.Database.start!(); DataService.Voxel.OverlayLogStore.reset())
 
     root =
       Path.join(
@@ -166,8 +166,6 @@ defmodule VoxelRegion.WorldInteractionsTest do
     assert {:ok, ^expected} = World.interactions_since(c.world, 0)
     assert :ok = World.compact(c.world)
     assert {:ok, ^expected} = World.interactions_since(c.world, 0)
-    [checkpoint] = OverlayLog.File.replay(Path.join(c.root, "overlay.log"))
-    assert [^checkpoint] = checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
     # 真正新 VM：不沿用本测试进程已经加载过的元数据原子或 World state。
     paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
     expected_path = Path.join(c.root, "expected.etf")

@@ -1,6 +1,7 @@
 defmodule VoxelRegion.World.Interactions do
   @moduledoc "全局系统功能：World 已提交操作的有界经历序列，与世界事务及检查点一起持久化。"
   alias VoxelRegion.{Damage, FileStore, Prefab}
+  alias VoxelRegion.World.Canonical
 
   @limit 512
 
@@ -29,7 +30,7 @@ defmodule VoxelRegion.World.Interactions do
         end
 
       :error ->
-        Map.get(state.placed_by, cell)
+        Canonical.chunk_get(state.placed_by, cell)
     end
   end
 
@@ -51,7 +52,7 @@ defmodule VoxelRegion.World.Interactions do
   end
 
   defp placed_by(state, target),
-    do: Map.get(state.placed_by, elem(Prefab.macro_slot(target.micro), 0))
+    do: Canonical.chunk_get(state.placed_by, elem(Prefab.macro_slot(target.micro), 0))
 
   @doc "仅成功落盘后或重放同一事务时推进序列；检查点恢复完整历史与已淘汰边界。"
   def apply(state, %{interaction_history: history, interaction_floor: floor}),

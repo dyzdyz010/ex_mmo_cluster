@@ -17,8 +17,8 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     opts = [source: Source, root: root, observer: self(), name: nil,
       property_catalog_path: properties, prefab_catalog_path: nil, production_materials: [11,19] ++ if(context[:lotus_contract], do: [65,73], else: [])]
     opts = if context[:database] do
-      :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
-      on_exit(fn -> DataService.Voxel.OverlayLogStore.replace(123,[]) end)
+      :ok = DataService.Voxel.OverlayLogStore.reset_world(123)
+      on_exit(fn -> DataService.Voxel.OverlayLogStore.reset_world(123) end)
       Keyword.put(opts,:log,OverlayLog.Db)
     else
       opts
@@ -80,9 +80,11 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     refute_received {:canonical_delta,_}
     stop_supervised!(World)
     world = start_supervised!({World,c.opts})
-    assert Enum.all?(World.entries_after(world,0), &(not Map.has_key?(&1,:operation)))
+    # 保留历史只含已发布前缀之后的事务（m2a §6.3）；回放出的事务都不带实时操作字段。
+    retained = fn -> World.entries_after(world, World.stats(world).published_seq || 0) end
+    assert Enum.all?(retained.(), &(not Map.has_key?(&1,:operation)))
     assert :ok = World.compact(world)
-    assert Enum.all?(World.entries_after(world,0), &(not Map.has_key?(&1,:operation)))
+    assert Enum.all?(retained.(), &(not Map.has_key?(&1,:operation)))
   end
 
   @tag :macro_provenance
@@ -96,8 +98,10 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     stop_supervised(World)
     c = %{c | world: start_supervised!({World,c.opts})}
     assert :ok = World.compact(c.world)
-    [checkpoint] = OverlayLog.File.replay(Path.join(c.root,"overlay.log"))
-    assert get_in(checkpoint,[:prefab_instances,{2,0},:placed_by]) == 1001
+    stop_supervised(World)
+    # 实例的完整记录（含放置者）由 home 页恢复，不靠区域载荷里的投影。
+    c = %{c | world: start_supervised!({World,c.opts})}
+    assert get_in(:sys.get_state(c.world).instances,[{2,0},:placed_by]) == 1001
   end
 
   test "mixed placement pays 512 per macro plus actual micro, with one owner per node", c do
@@ -214,9 +218,9 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
       c = %{c | world: start_supervised!({World,c.opts})}
       assert {:ok,%{owner: {2,0},hp: 100.0}} = query(c)
       assert [%{material: 11,placed_by: 1001}] = snapshot(c,[{1,1,2}]).probe_occupancy
-      assert [txn] = OverlayLog.Db.replay(123) |> Enum.filter(&(&1.seq == 2))
-      assert txn.macro_owners == %{{1,1,2}=>{2,0}}
-      assert txn.prefab_instances[{2,0}].placed_by == 1001
+      restored = :sys.get_state(c.world)
+      assert restored.macro_owners == %{{1,1,2}=>{2,0}}
+      assert restored.instances[{2,0}].placed_by == 1001
       c
     end)
     assert {:ok,3} = World.apply_edit(c.world,{1,1,2},0)
@@ -396,19 +400,20 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     id = define(c,[],[{{0,0,0},11}],[],1)
     assert :ok = publish(c)
     assert {:ok,1} = World.place_prefab(c.world,id,{8,8,16},0)
-    assert :ok = World.compact(c.world)
+    checkpoint = VoxelRegion.TestSupport.LegacySave.checkpoint(c.world)
     stop_supervised(World)
     path = Path.join(c.root,"overlay.log")
-    [checkpoint] = OverlayLog.File.replay(path)
     # Freeze the historical persisted shape: instances exist solely in the unchanged region bytes.
     historical = Map.drop(checkpoint,[:macro_owners,:prefab_instances,:placed_by])
-    assert :ok = OverlayLog.File.checkpoint(path,historical)
+    VoxelRegion.TestSupport.LegacySave.install(path,historical)
     c = %{c | world: start_supervised!({World,c.opts})}
     assert {:ok,%{owner: {1,0},granularity: 2,hp: 0.1953125}} = query(c)
     assert {:ok,[{1,1,2}]} = World.instance_cells(c.world,{1,0})
     assert :ok = World.compact(c.world)
-    [rewritten] = OverlayLog.File.replay(path)
-    assert Map.get(rewritten.prefab_instances[{1,0}],:placed_by) == nil
+    stop_supervised(World)
+    c = %{c | world: start_supervised!({World,c.opts})}
+    rewritten = :sys.get_state(c.world)
+    assert Map.get(rewritten.instances[{1,0}],:placed_by) == nil
     assert rewritten.macro_owners == %{}
     assert {:ok,2} = World.remove_prefab(c.world,{1,0})
     assert World.stats(c.world).instances == 0

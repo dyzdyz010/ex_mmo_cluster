@@ -10,7 +10,7 @@ defmodule VoxelRegion.World.Log do
   alias VoxelRegion.{Liquid, Protection}
   alias MmoContracts.Voxel.{Codec, Payload}
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.World.{Payloads, Edits, Production}
+  alias VoxelRegion.World.{Pages, Payloads, Edits, Production}
 
   # ---- 日志
 
@@ -47,11 +47,12 @@ defmodule VoxelRegion.World.Log do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   def remember_entry(state, full) do
+    state = VoxelRegion.World.Pages.remember(state, full)
     state = VoxelRegion.World.Interactions.apply(state, full)
     state = retain_entry(state, full)
     # 每笔事务都是热提交的唤醒事件（R8-05）：记下改写的属性行供热行增量重判，休眠中的热模拟排一拍。
     state = VoxelRegion.World.Thermal.touch(state, Map.get(full, :property_states, []))
-    schedule_checkpoint(state)
+    VoxelRegion.World.PageCut.schedule(state)
   end
 
   # 内存里保留事务的读者（订阅补发、分区增量投影）只读这些字段：线格式只编码 seq / entries / coarse，分区增量另看 liquid_units。
@@ -73,16 +74,11 @@ defmodule VoxelRegion.World.Log do
       entry_regions: LogProjection.index(state.entry_regions, txn)}
   end
 
-  @doc "只有尚未压实的后缀且没有进行中的任务时才安排下一轮维护。"
-  def schedule_checkpoint(state) do
-    # 单个完整检查点不再生长；只有新历史出现时安排一次维护。
-    if map_size(state.entries) > 1 and state.checkpoint_timer == nil and state.checkpoint_job == nil,
-      do: %{state | checkpoint_timer: :erlang.start_timer(60_000, self(), :checkpoint)},
-      else: state
-  end
+  def replay_log(%{log: {backend, handle}} = state), do: replay_txns(state, backend.replay(handle))
 
-  def replay_log(%{log: {backend, handle}} = state) do
-    Enum.reduce(backend.replay(handle), state, fn txn, s ->
+  @doc "按 seq 重放事务（全量日志或页表前缀之后的后缀）；经 `remember_entry` 重建保留历史与脏单元。"
+  def replay_txns(state, txns) do
+    Enum.reduce(txns, state, fn txn, s ->
       s = replay_entry(s, txn) |> replay_liquid(txn) |> replay_damage(txn)
       remember_entry(%{s | seq: max(s.seq, txn.seq)}, txn)
     end)
@@ -183,6 +179,23 @@ defmodule VoxelRegion.World.Log do
     |> Enum.filter(&(region_of(&1) == region))
   end
 
+  @doc """
+  按区压实（M2a 取代检查点换基底，m2a §5.2）：core 稀疏格不少于 `min_cells` 的区域，由唯一 owner 物化当前载荷并换基底——
+  稀疏编辑并入基底，只改真值的表示，不改任何区域物化出的字节。基底页与清空的稀疏格单元经写入口标脏，随下个切点写出。
+  `compact/1` 用 1（全部压实），发布后按阈值只压实稀疏格多的区域，基底页重写摊到多次编辑上。
+  """
+  def rebase_overlay(state, min_cells) do
+    keys =
+      for {{level, region} = key, cells} <- state.overlay_regions,
+          Enum.count(cells, &(region_of(&1) == region)) >= min_cells, do: {level, key}
+
+    Enum.reduce(Enum.sort(keys), state, fn {level, {_, region}}, s ->
+      {:ok, bytes, _, s} = Payloads.payload_bytes(s, level, region)
+      {:ok, p} = Payload.decode(bytes)
+      rebase_region(s, p)
+    end)
+  end
+
   def rebase_region(state, p) do
     key = {p.level, p.region}
 
@@ -211,6 +224,8 @@ defmodule VoxelRegion.World.Log do
 
     # 换基底只改变真值的表示（稀疏编辑并入基底），不改变任何区域物化出的字节：只丢弃本区域的缓存与源解码，
     # 其余区域（含以本区域为 ring 的邻区）缓存照旧有效。
+    state = Enum.reduce(core_cells, Pages.mark(state, {:page, :base, key}), &Pages.mark(&2, Pages.overlay_unit(p.level, &1)))
+
     %{
       Payloads.cache_delete(state, key)
       | decoded: Map.delete(state.decoded, key),
@@ -275,14 +290,6 @@ defmodule VoxelRegion.World.Log do
     )
   end
 
-  def compact_log(%{seq: 0} = state), do: state
-
-  def compact_log(state) do
-    input = checkpoint_input(state)
-    checkpoint = input |> build_checkpoint() |> then(&persist_checkpoint(input, &1))
-    state |> finish_checkpoint(checkpoint) |> schedule_checkpoint()
-  end
-
   @doc """
   检查点落盘：在检查点任务里执行（不占 World 回合）。两个后端都只原子替换 ≤ P 的前缀、保留并发追加的 seq > P 行，
   所以 World 可同时继续提交；World 收到结果后只换基底、退休已落盘前缀。
@@ -335,14 +342,14 @@ defmodule VoxelRegion.World.Log do
     txn =
       Map.merge(%{txn | entries: txn.entries ++ extra}, %{
         property_states: Map.values(state.damage),
-        epochs: state.epochs,
+        epochs: chunk_flat(state.epochs),
         material_balances: state.material_balances,
         caster_energy: state.caster_energy,
         material_supplies: state.material_supplies,
         craft_ledger: state.craft_ledger,
         food_ledger: state.food_ledger,
         food_receipts: state.food_receipts,
-        placed_by: state.placed_by,
+        placed_by: chunk_flat(state.placed_by),
         macro_owners: state.macro_owners,
         protection: state.protection.regions,
         beacons: state.beacons,
@@ -417,7 +424,7 @@ defmodule VoxelRegion.World.Log do
     %{
       state
       | damage: damage,
-        epochs: Map.merge(state.epochs, Map.get(txn, :epochs, %{})),
+        epochs: chunk_merge(state.epochs, Map.get(txn, :epochs, %{})),
         attachment_serial:
           Map.get(txn, :attachment_serial, max(state.attachment_serial, txn.seq)),
         attachment_owners: Map.get(txn, :attachment_owners, state.attachment_owners),

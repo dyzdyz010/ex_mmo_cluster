@@ -12,7 +12,7 @@ defmodule VoxelRegion.World.Edits do
   alias MmoContracts.Voxel.{Codec, Payload}
   alias VoxelRegion.World.Thermal
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.World.{Payloads, Observation, Log, Prefabs, Tools, Production, Phases, Liquids, AttachmentOps}
+  alias VoxelRegion.World.{Pages, Payloads, Observation, Log, Prefabs, Tools, Production, Phases, Liquids, AttachmentOps}
 
   @max_level 5
 
@@ -65,7 +65,7 @@ defmodule VoxelRegion.World.Edits do
 
       Enum.reduce(
         regions,
-        %{state | overlay: Map.put(state.overlay, {level, cell}, value)},
+        %{Pages.mark(state, Pages.overlay_unit(level, cell)) | overlay: Map.put(state.overlay, {level, cell}, value)},
         fn key, state ->
           %{
             Payloads.cache_delete(state, key)

@@ -78,11 +78,10 @@ defmodule VoxelRegion.StructureTest do
     updated = payload(w,1,{0,0,0}).structure[Payload.cell_index({32,1,1})]
     assert sample(updated,{0,0,0}) == 19
     assert sample(updated,{15,8,8}) == 267
-    assert :ok = World.compact(w)
+    checkpoint = VoxelRegion.TestSupport.LegacySave.checkpoint(w)
     GenServer.stop(w)
-    # 故意替换合法派生缓存；恢复必须以 L0 实际占用重建，不能信任该缓存。
+    # 故意替换旧格式存档里的合法派生缓存；恢复必须以 L0 实际占用重建，不能信任该缓存（页表本就不存 structure）。
     log = VoxelRegion.OverlayLog.File.open(Path.join(root,FileStore.hex(123)),123)
-    [checkpoint] = VoxelRegion.OverlayLog.File.replay(log)
     entries = Enum.map(checkpoint.entries,fn
       %{payload: bytes}=e ->
         {:ok,p} = Payload.decode(bytes)
@@ -90,7 +89,7 @@ defmodule VoxelRegion.StructureTest do
         %{e | payload: Payload.encode(%{p | structure: structure},%{},p.seq,p.content_version)}
       e -> e
     end)
-    :ok = VoxelRegion.OverlayLog.File.checkpoint(log,%{checkpoint | entries: entries})
+    VoxelRegion.TestSupport.LegacySave.install(log,%{checkpoint | entries: entries})
     {:ok,w} = World.start_link(opts)
     assert World.content_version(w) == 123
     assert payload(w,1,{0,0,0}).structure[Payload.cell_index({32,1,1})] == updated

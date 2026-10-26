@@ -20,6 +20,20 @@ defmodule VoxelRegion.OverlayLog do
   @callback replay(handle :: term()) :: [map()]
   @callback checkpoint(handle :: term(), transaction :: map()) :: :ok
 
+  # M2a 页表（`m2a-page-store.md` §6）：段行与全局行由 `World.Pages` 编码；后端只存取。
+  @doc "已发布的安全前缀（nil = 未初始化 / 未迁移）。"
+  @callback prefix(handle :: term()) :: non_neg_integer() | nil
+  @doc "删除高于前缀（nil = 全部）的段与全局行。"
+  @callback clear_unpublished(handle :: term(), prefix :: non_neg_integer() | nil) :: :ok
+  @doc "新增切点的一批段（发布前不可见）。"
+  @callback write_pages(handle :: term(), cut_seq :: non_neg_integer(), rows :: [map()]) :: :ok
+  @doc "同一原子单位里写最后一批段、全局行并推进前缀；前缀已不低于切点时 `{:error, {:prefix, p}}`。"
+  @callback publish(handle :: term(), cut_seq :: non_neg_integer(), rows :: [map()], globals :: binary()) :: :ok | {:error, term()}
+  @doc "恢复读取：`%{prefix: nil}` 或 `%{prefix, segments, globals, txns}`（txns = 前缀之后的日志事务）。"
+  @callback load(handle :: term()) :: map()
+  @doc "按前缀渐进删除一批，返回删掉的行数（0 = 已清完）。"
+  @callback collect(handle :: term(), prefix :: non_neg_integer(), limit :: pos_integer()) :: non_neg_integer()
+
   @doc """
   已部署日志里的设备记录键与撤下的账目（R8-04 增量 2／3）。回放用 `binary_to_term(_, [:safe])`，原子须已存在；现行代码里
   只有惰性加载的迁移模块还提到其中一些（`:circuit`），回放可能早于它加载。本模块在解码前已加载，这些字面量随之进入原子表。
@@ -105,6 +119,31 @@ defmodule VoxelRegion.OverlayLog do
     @impl true
     def checkpoint(cv, txn),
       do: OverlayLogStore.replace(cv, OverlayLog.rows(txn), through_seq: txn.seq)
+
+    alias DataService.Voxel.PageStore
+
+    @impl true
+    def prefix(cv), do: PageStore.prefix(cv)
+
+    @impl true
+    def clear_unpublished(cv, prefix), do: PageStore.clear_unpublished(cv, prefix)
+
+    @impl true
+    def write_pages(cv, cut_seq, rows), do: PageStore.write(cv, cut_seq, rows)
+
+    @impl true
+    def publish(cv, cut_seq, rows, globals), do: PageStore.publish(cv, cut_seq, rows, globals)
+
+    @impl true
+    def load(cv) do
+      case PageStore.load(cv) do
+        %{prefix: nil} = none -> none
+        loaded -> loaded |> Map.put(:txns, OverlayLog.transactions(loaded.log)) |> Map.delete(:log)
+      end
+    end
+
+    @impl true
+    def collect(cv, prefix, limit), do: PageStore.collect(cv, prefix, limit)
   end
 
   defmodule File do
@@ -139,6 +178,93 @@ defmodule VoxelRegion.OverlayLog do
       Elixir.File.write!(path <> ".tmp", frame(txn))
       Elixir.File.rename!(path <> ".tmp", path <> ".checkpoint")
     end
+
+    # 页表：`<world_dir>/pages.etf` = `%{prefix, segments: %{行键 => %{cut => payload}}, globals: %{cut => payload}}`，
+    # 只由写回进程读写，整文件写临时文件再改名。日志帧不在这里删（World 并发追加），恢复只读前缀之后的帧。
+    @impl true
+    def prefix(path), do: read_pages(path).prefix
+
+    @impl true
+    def clear_unpublished(path, prefix) do
+      floor = prefix || -1
+      pages = read_pages(path)
+
+      if pages.segments == %{} and pages.globals == %{},
+        do: :ok,
+        else: write_pages_file(path, %{pages | segments: Map.new(pages.segments, fn {k, v} -> {k, Map.filter(v, fn {c, _} -> c <= floor end)} end),
+          globals: Map.filter(pages.globals, fn {c, _} -> c <= floor end)})
+    end
+
+    @impl true
+    def write_pages(path, cut_seq, rows) do
+      pages = read_pages(path)
+      write_pages_file(path, %{pages | segments: put_rows(pages.segments, cut_seq, rows)})
+    end
+
+    @impl true
+    def publish(path, cut_seq, rows, globals) do
+      pages = read_pages(path)
+
+      if pages.prefix != nil and pages.prefix >= cut_seq do
+        {:error, {:prefix, pages.prefix}}
+      else
+        write_pages_file(path, %{pages | prefix: cut_seq, segments: put_rows(pages.segments, cut_seq, rows),
+          globals: Map.put(pages.globals, cut_seq, globals)})
+      end
+    end
+
+    @impl true
+    def load(path) do
+      case read_pages(path) do
+        %{prefix: nil} -> %{prefix: nil}
+
+        %{prefix: p} = pages ->
+          visible =
+            for {key, versions} <- pages.segments, {cut, payload} = versions |> Enum.filter(&(elem(&1, 0) <= p)) |> Enum.max_by(&elem(&1, 0), fn -> {nil, nil} end),
+                cut != nil, do: Map.put(key, :payload, payload)
+
+          %{prefix: p, segments: visible, globals: Map.fetch!(pages.globals, p),
+            txns: for(txn <- read_frames(path), txn.seq > p, do: txn)}
+      end
+    end
+
+    @impl true
+    def collect(path, prefix, _limit) do
+      pages = read_pages(path)
+
+      segments =
+        Map.new(pages.segments, fn {key, versions} ->
+          keep = versions |> Map.keys() |> Enum.filter(&(&1 <= prefix)) |> Enum.max(fn -> nil end)
+          {key, Map.filter(versions, fn {c, _} -> c == keep or c > prefix end)}
+        end)
+
+      next = %{pages | segments: segments, globals: Map.filter(pages.globals, fn {c, _} -> c >= prefix end)}
+      removed = count(pages) - count(next)
+      if removed > 0, do: write_pages_file(path, next)
+      removed
+    end
+
+    defp count(pages), do: Enum.sum(Enum.map(pages.segments, fn {_, v} -> map_size(v) end)) + map_size(pages.globals)
+
+    defp put_rows(segments, cut_seq, rows),
+      do: Enum.reduce(rows, segments, fn row, acc ->
+        Map.update(acc, Map.delete(row, :payload), %{cut_seq => row.payload}, &Map.put(&1, cut_seq, row.payload))
+      end)
+
+    defp read_pages(path) do
+      case Elixir.File.read(pages_path(path)) do
+        {:ok, bytes} -> :erlang.binary_to_term(bytes)
+        {:error, :enoent} -> %{prefix: nil, segments: %{}, globals: %{}}
+      end
+    end
+
+    defp write_pages_file(path, pages) do
+      Elixir.File.mkdir_p!(Path.dirname(path))
+      Elixir.File.write!(pages_path(path) <> ".tmp", :erlang.term_to_binary(pages))
+      Elixir.File.rename!(pages_path(path) <> ".tmp", pages_path(path))
+    end
+
+    defp pages_path(path), do: Path.join(Path.dirname(path), "pages.etf")
 
     defp read_frames(path) do
       case Elixir.File.read(path) do

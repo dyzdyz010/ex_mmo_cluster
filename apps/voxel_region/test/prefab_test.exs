@@ -116,7 +116,7 @@ defmodule VoxelRegion.PrefabTest do
   @tag :database
   test "database append and checkpoint restart retain occupancy and final deletion", %{id: id, opts: opts} do
     alias DataService.Voxel.OverlayLogStore
-    :ok = OverlayLogStore.replace(123,[])
+    :ok = OverlayLogStore.reset_world(123)
     opts = Keyword.put(opts,:log,VoxelRegion.OverlayLog.Db)
     {:ok,w} = World.start_link(opts)
     assert {:ok,1} = World.apply_edit(w,{20,1,1},11)
@@ -135,9 +135,10 @@ defmodule VoxelRegion.PrefabTest do
     assert payload(w,{0,0,0}).refined == %{}
     assert payload(w,{0,0,0}).instances == %{}
     assert Payload.material(payload(w,{0,0,0}),{21,2,2}) == 11
-    assert OverlayLogStore.read_all(123) != []
+    # 压实发布页表切点：前缀之前的日志按前缀删除，状态由页表承载。
+    assert DataService.Voxel.PageStore.prefix(123) == 3
     GenServer.stop(w)
-    :ok = OverlayLogStore.replace(123,[])
+    :ok = OverlayLogStore.reset_world(123)
   end
 
   test "published golden 24 orientations", _ do
@@ -295,9 +296,9 @@ defmodule VoxelRegion.PrefabTest do
 
   @tag :database
   test "nested DB append and checkpoint preserve actual hierarchy", %{opts: opts,id: leaf} do
-    :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
+    :ok = DataService.Voxel.OverlayLogStore.reset_world(123)
     nested_scenario(Keyword.put(opts,:log,VoxelRegion.OverlayLog.Db),leaf)
-    :ok = DataService.Voxel.OverlayLogStore.replace(123,[])
+    :ok = DataService.Voxel.OverlayLogStore.reset_world(123)
   end
 
   defp nested_scenario(opts,leaf) do
@@ -367,8 +368,11 @@ defmodule VoxelRegion.PrefabTest do
     File.write!(Path.join(opts[:prefab_catalog_path],"attached.vxpd"),leaf)
     File.write!(Path.join(opts[:prefab_catalog_path],"attached-root.vxpd"),root)
     {:ok,w}=World.start_link(opts)
+    pages=VoxelRegion.TestSupport.PageInvariant.snapshot(w)
     assert {:ok,1}=World.place_prefab(w,root_id,{510,8,8},0)
     assert World.stats(w).attachment_slots==6
+    # M2a：放置跨区预制件（实例、有主附件、细化）后内容变了的页单元都在脏集里。
+    assert [] == VoxelRegion.TestSupport.PageInvariant.missed(w,pages)
     # 归属元数据属于持久化契约；网络事务只含槽 ID，直接读取本例文件日志。
     log_path=VoxelRegion.OverlayLog.File.open(Path.join(opts[:root],FileStore.hex(123)),123)
     [placed]=VoxelRegion.OverlayLog.File.replay(log_path)
@@ -384,8 +388,8 @@ defmodule VoxelRegion.PrefabTest do
     GenServer.stop(w)
     {:ok,w}=World.start_link(opts)
     assert payload(w,{1,0,0}).attachments==surviving
-    [checkpoint]=VoxelRegion.OverlayLog.File.replay(log_path)
-    assert map_size(checkpoint.attachment_owners)==3
+    # 附件归属随页表恢复（有主附件按 owner 实例的 home 页）。
+    assert map_size(:sys.get_state(w).attachment_owners)==3
     assert {:ok,3}=World.replace_prefab(w,{1,2},leaf_id)
     latest=payload(w,{1,0,0}).attachments
     assert map_size(latest)==3

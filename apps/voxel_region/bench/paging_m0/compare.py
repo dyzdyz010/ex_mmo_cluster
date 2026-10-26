@@ -37,8 +37,8 @@ def main():
         end = run / "field-heap-end.json"
         end_heap = load(end)["total_heap_mb"] if end.exists() else None
         print(f"== {run.name}: seq {fh['seq']} ready {st['ready_seconds']} s, startup peak {st['startup_peak_rss_sum'] / 1e9:.2f} GB, "
-              f"idle World heap {fh['total_heap_mb']} MB (entries {top['entries']}, refined {top['refined']}, epochs {top['epochs']}, "
-              f"component_cache {top['component_cache']}, prefabs {top['prefabs']}), epochs n={fh['epochs']}, "
+              f"idle World heap {fh['total_heap_mb']} MB (entries {top.get('entries', 0)}, refined {top.get('refined', 0)}, epochs {top.get('epochs', 0)}, "
+              f"component_cache {top.get('component_cache', 0)}, prefabs {top.get('prefabs', 0)}), epochs n={fh['epochs']}, "
               f"OS rss max {os_peak:.2f} GB, end heap {end_heap} MB, World long_gc {gc(run)}")
         for p in sorted(glob.glob(str(run / "step-*.json"))):
             s = load(p)

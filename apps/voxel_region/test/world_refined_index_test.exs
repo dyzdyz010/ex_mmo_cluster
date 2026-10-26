@@ -113,4 +113,17 @@ defmodule VoxelRegion.WorldRefinedIndexTest do
     state = Canonical.put_refined(state, cell, %{0 => {12, {5, 0}}})
     assert state.refined_encoded == %{{9, 9, 9} => {%{}, <<2>>}}
   end
+  test "chunk-nested cell tables: floor chunks, empty chunks dropped, flat view and box filter" do
+    # 手算：16³ 子块向负无穷取整，{-1, 0, 17} 在子块 {-1, 0, 1}，{15, 0, 0} 在 {0, 0, 0}。
+    a = {-1, 0, 17}
+    b = {15, 0, 0}
+    t = Canonical.chunk_merge(%{}, %{a => 7, b => 9})
+    assert t == %{{-1, 0, 1} => %{a => 7}, {0, 0, 0} => %{b => 9}}
+    assert Canonical.chunk_get(t, a) == 7 and Canonical.chunk_get(t, {0, 0, 0}, 0) == 0
+    assert Canonical.chunk_flat(t) == %{a => 7, b => 9}
+    # 盒是 L0 区域坐标、上界不含（与 PropertyObservation.contains?/2 同一判定）。
+    assert Canonical.chunk_flat(t, {{0, 0, 0}, {1, 1, 1}}) == %{b => 9}
+    assert Canonical.chunk_delete(t, a) == %{{0, 0, 0} => %{b => 9}}
+    assert Canonical.chunk_put(t, b, 10) |> Canonical.chunk_get(b) == 10
+  end
 end

@@ -11,11 +11,12 @@ defmodule VoxelRegion.World.Production do
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
-  # nil = 这一格的放置记录被清掉。
-  def merge_placed(placed_by, delta) do
-    {cleared, set} = Enum.split_with(delta, fn {_, cid} -> cid == nil end)
-    placed_by |> Map.drop(Enum.map(cleared, &elem(&1, 0))) |> Map.merge(Map.new(set))
-  end
+  # nil = 这一格的放置记录被清掉；`placed_by` 是按子块嵌套的表（`Canonical.chunk_put/3`）。
+  def merge_placed(placed_by, delta),
+    do: Enum.reduce(delta, placed_by, fn
+      {cell, nil}, acc -> chunk_delete(acc, cell)
+      {cell, cid}, acc -> chunk_put(acc, cell, cid)
+    end)
 
   # 收据按角色与 World 事务号唯一；创建、日志重放与只读 Replica 使用同一合并语义。
   def merge_food_receipts(receipts, delta),
@@ -27,7 +28,8 @@ defmodule VoxelRegion.World.Production do
     Enum.reduce([:placed_by,:macro_owners],txn,fn key,txn ->
       old = Map.fetch!(before,key)
       new = Map.fetch!(state,key)
-      delta = for cell <- cells, Map.get(old,cell) != Map.get(new,cell), into: %{}, do: {cell,Map.get(new,cell)}
+      get = if key == :placed_by, do: &chunk_get/2, else: &Map.get/2
+      delta = for cell <- cells, get.(old,cell) != get.(new,cell), into: %{}, do: {cell,get.(new,cell)}
       if map_size(delta) == 0, do: txn, else: Map.put(txn,key,delta)
     end)
   end

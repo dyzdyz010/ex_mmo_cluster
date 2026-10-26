@@ -18,6 +18,12 @@ defmodule VoxelRegion.DeviceMaterialProductionTest do
     def replay(_), do: []
     def append(_, _), do: :ok
     def checkpoint(_, _), do: :ok
+    def prefix(_), do: nil
+    def clear_unpublished(_, _), do: :ok
+    def write_pages(_, _, _), do: :ok
+    def publish(_, _, _, _), do: :ok
+    def load(_), do: %{prefix: nil}
+    def collect(_, _, _), do: 0
   end
 
   @digest "0c67824f97992de46ea7306b3e7596b6b29eea3d51e4e2a226bf947b2cf21552"

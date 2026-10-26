@@ -145,7 +145,7 @@ defmodule VoxelRegion.DamageWorldTest do
       %{kind: :destroy, placed_by: 1001}]}} = World.interactions_since(c.w,0)
     assert {:ok,^seq} = World.prefab_intent(c.w,c.actor,:voxel_prefab_remove_v1,remove)
     refute_received {:canonical_delta,_}
-    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+    assert Enum.all?(World.entries_after(c.w,World.stats(c.w).published_seq || 0), &(not Map.has_key?(&1,:operation)))
   end
 
   @tag :operation
@@ -177,9 +177,9 @@ defmodule VoxelRegion.DamageWorldTest do
     refute_received {:canonical_delta, _}
     assert {:error, :insufficient_material} = World.production_intent(c.w,c.actor,%{build | client_intent_seq: 11})
     refute_received {:canonical_delta, _}
-    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+    assert Enum.all?(World.entries_after(c.w,World.stats(c.w).published_seq || 0), &(not Map.has_key?(&1,:operation)))
     assert :ok = World.compact(c.w)
-    assert Enum.all?(World.entries_after(c.w,0), &(not Map.has_key?(&1,:operation)))
+    assert Enum.all?(World.entries_after(c.w,World.stats(c.w).published_seq || 0), &(not Map.has_key?(&1,:operation)))
   end
 
   test "a first build decodes cold L1+ sources outside World", c do
@@ -208,14 +208,15 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   # 检查点正文是整份世界的冻结副本（经任务消息复制、不与 World 状态共享）：落盘后内存只留投影，正文从持久日志读。
-  test "a finished checkpoint keeps only projection fields in memory and its body in the log", c do
+  test "a published cut retires earlier history from memory and keeps later commits", c do
     assert {:ok,1}=World.material_supply(c.w,1001,"retained",%{19=>512})
     assert {:ok,2}=World.apply_edit(c.w,{1,1,2},19)
     assert :ok=World.compact(c.w)
-    assert %{2 => retained} = :sys.get_state(c.w).entries
-    assert retained.entries != []
-    assert Map.keys(retained) -- [:seq,:entries,:coarse,:liquid_units] == []
-    assert [%{seq: 2,material_balances: %{{1001,19}=>512},epochs: %{{1,1,2}=>2}}] = World.entries_after(c.w,0)
+    # M2a：已发布前缀之前的事务不再常驻（没有整世界检查点事务），其后的提交照常保留。
+    assert World.stats(c.w).published_seq==2
+    assert :sys.get_state(c.w).entries==%{}
+    assert {:ok,3}=World.apply_edit(c.w,{1,1,3},19)
+    assert [3]==Map.keys(:sys.get_state(c.w).entries)
   end
 
   @tag :tool_combat
@@ -279,6 +280,19 @@ defmodule VoxelRegion.DamageWorldTest do
     assert World.seq(w)==6
     assert balance(w,1001).balance==0
     assert {:ok,%{material: 19,hp: 100.0}}=World.tool_intent(w,c.actor,c.request)
+  end
+
+  # M2a：编辑、镐击到破坏、付费建造（世代、属性行、放置者、余额）之后，内容变了的页单元都在脏集里（独立分组的判定器）。
+  @tag :b2
+  test "every page unit changed by edits, hits and a paid build is in the dirty set", c do
+    before = VoxelRegion.TestSupport.PageInvariant.snapshot(c.w)
+    assert {:ok,1}=World.apply_edit(c.w,{1,1,2},19)
+    assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
+    for seq <- 1..4, do: assert {:ok,_}=b2_hit(c,c.actor,target,seq)
+    build=%{request_id: 10,client_intent_seq: 10,logical_scene_id: 1,action: 1,coord: {1,1,2},tool_id: 1,material: 19}
+    assert {:ok,6}=World.production_intent(c.w,c.actor,build)
+    assert [] == VoxelRegion.TestSupport.PageInvariant.missed(c.w, before)
+    assert MapSet.member?(:sys.get_state(c.w).page_dirty, {:chunk, :placed_by, {0, 0, 0}})
   end
 
   # 溯源：花材料放下的格记着是谁放的；作者入口写的格、天然地形无主；被挖掉就清掉；重启与压实检查点之后仍在。
@@ -1035,12 +1049,11 @@ defmodule VoxelRegion.DamageWorldTest do
   test "B2 legacy holes and micro damage migrate without healing or paying already harvested slots", c do
     assert {:ok,1}=full_component(c,{8,8,16})
     assert {:ok,target}=World.tool_intent(c.w,c.actor,c.request)
-    assert :ok=World.compact(c.w)
     before=:sys.get_state(c.w)
     stop_supervised(World)
     # 只测试旧微格存档：离线修改旧格式载荷，迁移必须由 World 启动重放完成。
-    {backend,path}=before.log
-    [checkpoint]=backend.replay(path)
+    {_backend,path}=before.log
+    checkpoint=VoxelRegion.TestSupport.LegacySave.checkpoint(before)
     a=%{target | granularity: 1,micro: {8,8,16},max_hp: 100.0/512,hp: 72.0/512}
     b=%{a | micro: {9,8,16},hp: 44.0/512}
     slots=Map.delete(before.refined[{1,1,2}],2)
@@ -1056,28 +1069,26 @@ defmodule VoxelRegion.DamageWorldTest do
         end
       entry -> entry
     end)
-    assert :ok=backend.checkpoint(path,%{checkpoint | entries: entries,property_states: [a,b],material_balances: %{{1001,11}=>1}})
+    VoxelRegion.TestSupport.LegacySave.install(path,%{checkpoint | entries: entries,property_states: [a,b],material_balances: %{{1001,11}=>1}})
     before=%{before | refined: Map.put(before.refined,{1,1,2},slots),material_balances: %{{1001,11}=>1}}
     w=start_supervised!({World,c.opts})
     migrated=:sys.get_state(w)
     assert migrated.refined==before.refined
     assert Map.new(migrated.instances,fn {id,i}->{id,Map.take(i,[:definition_id,:anchor,:orientation])} end)==
       Map.new(before.instances,fn {id,i}->{id,Map.take(i,[:definition_id,:anchor,:orientation])} end)
-    assert migrated.material_balances==before.material_balances and migrated.seq==before.seq
+    # 规范化是一笔维护事务（m2a §4.3）：旧行删除与整件行同笔写日志，seq 前进一格。
+    assert migrated.material_balances==before.material_balances and migrated.seq==before.seq+1
     assert {:ok,leaf}=World.tool_intent(w,c.actor,c.request)
     assert leaf.granularity==2 and leaf.max_hp==511*100.0/512 and leaf.hp==(511*100.0-84.0)/512
     assert map_size(migrated.damage)==1
     assert :ok=World.compact(w)
-    [checkpoint]=World.entries_after(w,0)
-    assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
-    assert restored.property_states==checkpoint.property_states
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert {:ok,^leaf}=World.tool_intent(w,c.actor,c.request)
     request=Map.merge(c.request,Map.take(leaf,[:micro,:incarnation,:owner,:material])) |> Map.put(:action,2)
     actor=Map.merge(c.actor,%{received_us: 500_000,clock_node: node()})
     assert {:error,:stale_target}=World.tool_intent(w,actor,%{request | owner: {999,0}})
-    assert {:ok,2}=World.tool_intent(w,actor,request)
+    assert {:ok,3}=World.tool_intent(w,actor,request)
     assert balance(w,1001,11).balance==256 and balance(w,1001,19).balance==256
     assert :sys.get_state(w).refined==%{}
   end
@@ -1202,9 +1213,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert World.stats(c.w).refined_macros==0
     assert [%{property_states: [%{granularity: 2,flags: 1,hp: +0.0}]}]=World.entries_after(c.w,1)
     assert :ok=World.compact(c.w)
-    [checkpoint]=World.entries_after(c.w,0)
-    assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
-    assert restored.material_balances==%{{1001,19}=>1,{1001,11}=>1}
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert balance(w,1001).balance==1
@@ -1456,10 +1464,6 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,t}=World.tool_intent(c.w,c.actor,c.request)
     assert {:ok,2}=attack(c.w,c.actor,c.request,t,1)
     assert :ok=World.compact(c.w)
-    [checkpoint]=World.entries_after(c.w,0)
-    assert [restored]=checkpoint |> OverlayLog.rows() |> OverlayLog.transactions()
-    assert restored.property_states==checkpoint.property_states
-    assert restored.epochs==checkpoint.epochs
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
     assert {:ok,restored}=World.tool_intent(w,c.actor,c.request)
@@ -1591,7 +1595,9 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,t}=World.tool_intent(w,c.actor,c.request)
     assert t.material==11
     assert :ok=World.compact(w)
-    assert File.exists?(path<>".checkpoint_calls")
+    # 压实发布页表切点，不再调用整世界检查点。
+    refute File.exists?(path<>".checkpoint_calls")
+    assert World.stats(w).published_seq==2
   end
 
   @tag :interaction_latency

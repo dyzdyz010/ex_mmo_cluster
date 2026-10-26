@@ -128,6 +128,26 @@ defmodule VoxelRegion.LiquidWorldTest do
   defp region_images(w),do: Map.new([{0,0,0},{1,0,0}],fn r->{r,%{VoxelRegion.TestSupport.payload(w,0,r) | seq: 0}} end)
   defp journal_rows(w),do: DataService.Voxel.OverlayLogStore.read_all(World.content_version(w)) |> Enum.group_by(& &1.seq)
 
+  # M2a（评审 R4）：活动集在没有数量变化的步进里清空时也要提交，否则切点写出的是上一笔数量事务里的旧活动集，
+  # 重启后液体会被错误地重新排程。手算：水趋静后在线活动集为空；页表 + 后缀恢复的活动集必须同为空。
+  test "an active set that empties without a quantity change is committed and restored as empty",c do
+    basin(c)
+    assert {:ok,%{seq: filled}}=World.liquid_fill(c.w,1001,"active",21,{63,1,2},1)
+    assert :sys.get_state(c.w).liquid_active != MapSet.new()
+    for _<-1..3, do: tick(c.w)
+    # 槽满后不再流动：活动集清空、数量不变，只多一笔不带几何的活动集事务。
+    assert :sys.get_state(c.w).liquid_active==MapSet.new()
+    assert World.seq(c.w)==filled+1
+    assert [%{seq: seq,entries: [],coarse: []}]=World.entries_after(c.w,filled)
+    assert seq==filled+1
+    assert :ok=World.compact(c.w)
+    saved=quantities(c.w)
+    stop_supervised!(World)
+    w=start_supervised!({World,c.opts})
+    assert :sys.get_state(w).liquid_active==MapSet.new()
+    assert quantities(w)==saved
+  end
+
   @tag :empty_inventory
   @tag :database
   @tag head: div(@capacity,8)
@@ -201,12 +221,15 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert quantities(c.w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
     for _<-1..3, do: tick(c.w)
     assert quantities(c.w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
+    # 趋静那一拍活动集清空、数量不变：一笔不带几何的活动集事务（m2a §4.2）。
+    settled=World.seq(c.w)
+    assert settled==s1+1
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     assert quantities(w)==%{{63,1,2}=>@capacity,{64,1,2}=>@capacity}
     assert balance(w)==@capacity
     assert {:ok,^receipt}=World.liquid_fill(w,1001,"k1",21,{63,1,2},1)
-    assert World.seq(w)==s1
+    assert World.seq(w)==settled
   end
 
   test "liquid_fill stops at a protected-region holder boundary and rejects a seed the actor may not build in",c do

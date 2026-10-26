@@ -10,7 +10,7 @@ defmodule VoxelRegion.World.Liquids do
   alias VoxelRegion.{Liquid, Phase, Protection}
   alias MmoContracts.Voxel.Payload
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.World.{Payloads, Edits, Tools, Production, Phases}
+  alias VoxelRegion.World.{Payloads, Edits, Tools, Production, Phases, Log, Observation}
 
   # Global system: material21 and its finite units share the existing World commit.
   def liquid_enabled?(state), do: state.liquid_bounds != nil and state.properties != nil and Map.get(state.properties, :liquid) != nil
@@ -323,6 +323,23 @@ defmodule VoxelRegion.World.Liquids do
   # 多材料调度：活跃集合周边出现的每种流动材料（液体、带数量记录的散体）各跑一次同一个数量内核，
   # 侧向阈值按材料取：散体用目录 loose_threshold_units 作休止角（atan(t / 容量)）；液体的 side_threshold_units
   # 只作润湿门槛（流向干格须超出它），湿格之间按静水平衡摊平（`Liquid` 模块说明）。
+  @doc """
+  步进后活动集变了而没有数量变化（趋静、唤醒）时提交一笔无几何事务记下它（m2a §4.2，评审 R4）：活动集决定液体是否继续排程，
+  日志与页表里的活动集须与在线一致，恢复后不靠相邻改动重新激活。有数量变化的步进已由其事务带上活动集，与上次记住的值相同即不提交。
+  """
+  def commit_active(%{liquid_active: active, pages: %{remembered: %{liquid_active: active}}} = state), do: state
+
+  def commit_active(state) do
+    before = state
+    state = %{state | seq: state.seq + 1}
+    txn = %{seq: state.seq, entries: [], coarse: []}
+    :ok = Log.append_log(before, state, txn)
+    state = Log.remember_entry(state, txn)
+    Observation.fanout(state, txn)
+    Observation.fanout_canonical(state, txn, [], [], state)
+    state
+  end
+
   def advance_liquid(state, active) do
     # Two stages need the downward cell and the horizontal neighbors of both levels.
     cells=for {x,y,z} <- active, dy <- [0,-1],

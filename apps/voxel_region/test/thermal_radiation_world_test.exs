@@ -32,6 +32,7 @@ defmodule VoxelRegion.ThermalRadiationWorldTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(),
       property_catalog_path: catalog, thermal_environment_path: environment, name: nil,
       production_materials: [19]]}, id: name)
+    pause_clock(w)
     {:ok, _} = World.apply_edits(w, Enum.map([source | cells], &{&1, 19}))
     experiment = Path.join(root, "thermal.json")
     File.write!(experiment, Jason.encode!(%{classification: "Test-only", source_macro: Tuple.to_list(source),
@@ -39,6 +40,14 @@ defmodule VoxelRegion.ThermalRadiationWorldTest do
       emissivity: emissivity, view_range_cells: 8, power_w: 20_000.0, energy_j: energy}))
     :ok = World.thermal_experiment(w, experiment)
     w
+  end
+
+  # 只测试：取消启动时排下的 500 ms 墙钟节拍，此后只由手动投递的正式提交消息推进（同 thermal_edit_world_test）。
+  # 冷区域上的建场编辑本身可超过 500 ms；放任节拍会在热源安装前多推进一次空提交，把整条记录错后 0.5 s。
+  defp pause_clock(w) do
+    s = :sys.get_state(w)
+    assert is_integer(Process.cancel_timer(s.thermal_timer))
+    assert s.thermal_run == nil
   end
 
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [], {{-1, -1, -1}, {6, 6, 6}})

@@ -17,7 +17,7 @@ defmodule VoxelRegion.CoarseRebuildTest do
 
   test "新粗 baseline 缺失时失败，原持久前缀不被部分重建覆盖" do
     MmoTest.Database.start!()
-    :ok = DataService.Voxel.OverlayLogStore.replace(123, [])
+    :ok = DataService.Voxel.OverlayLogStore.reset_world(123)
     root = Path.join(System.tmp_dir!(), "coarse_missing_#{System.pid()}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
@@ -35,7 +35,7 @@ defmodule VoxelRegion.CoarseRebuildTest do
   @tag timeout: 300_000
   test "离线重建覆盖压实 L0、负坐标稀疏格、refined/附件，冷恢复不复活旧粗条目" do
     MmoTest.Database.start!()
-    :ok = DataService.Voxel.OverlayLogStore.replace(123, [])
+    :ok = DataService.Voxel.OverlayLogStore.reset_world(123)
     root = Path.join(System.tmp_dir!(), "coarse_rebuild_#{System.pid()}")
     File.mkdir_p!(Path.join(root, "prefabs"))
     on_exit(fn -> File.rm_rf!(root) end)
@@ -94,22 +94,29 @@ defmodule VoxelRegion.CoarseRebuildTest do
     end)
     :ok = DataService.Voxel.OverlayLogStore.replace(123,
       Enum.flat_map(legacy, &OverlayLog.rows/1))
+    # 旧粗条目先经正常恢复与切点发布进页表：重建必须把被丢弃的旧粗层单元写成空，
+    # 否则它们会从页表（而不只是日志后缀）复活（m2a §4.3）。
+    world = start_supervised!({World, opts})
+    assert :ok = World.compact(world)
+    stop_supervised!(World)
 
     assert {:ok, report} = World.rebuild_coarse(opts)
-    assert report.seq == seq
+    # 重建以一笔维护事务推进 seq，并同步发布覆盖它的页表切点（m2a §4.3）。
+    assert report.seq == seq + 1
     assert report.canonical_equal
     assert report.coarse_cells > 0 and report.l0_regions >= 2
 
     for restart <- 1..2 do
       world = start_supervised!({World, opts})
-      assert World.seq(world) == seq
+      assert World.seq(world) == seq + 1
       after_state = :sys.get_state(world)
       for field <- [:refined, :attachments, :attachment_owners, :attachment_serial, :instances,
         :macro_owners, :material_balances, :material_supplies, :placed_by, :damage, :epochs,
         :liquid_units, :phase_inventory, :thermal, :caster_energy, :craft_ledger, :food_ledger] do
         assert Map.fetch!(after_state, field) == Map.fetch!(before, field), "changed #{field} on restart #{restart}"
       end
-      for {region, expected} <- l0, do: assert(fetch(world, 0, region) == expected)
+      # 维护事务推进了 seq，载荷头随之盖新序号（m2a §4.3）；比较去掉头部 seq 后的内容。
+      for {region, expected} <- l0, do: assert(unstamped(fetch(world, 0, region)) == unstamped(expected))
       for {level, cell} <- [{1, {10, 10, 10}}, {2, {5, 5, 5}}, {1, {-2, -2, -2}}, {2, {-1, -1, -1}}] do
         region = VoxelRegion.World.Canonical.region_of(cell)
         {:ok, p} = Payload.decode(fetch(world, level, region))
@@ -126,6 +133,11 @@ defmodule VoxelRegion.CoarseRebuildTest do
       assert after_state.structure == before.structure
       stop_supervised!(World)
     end
+  end
+
+  defp unstamped(bytes) do
+    {:ok, p} = Payload.decode(bytes)
+    %{p | seq: 0}
   end
 
   defp fetch(world, level, region) do

@@ -104,7 +104,7 @@ defmodule VoxelRegion.World.Gm do
               {put_refined(s, cell, kept), [cell | changed]}
 
             clear_macro? ->
-              s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: Map.delete(s.placed_by, cell)}
+              s = %{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) | placed_by: chunk_delete(s.placed_by, cell)}
               {Edits.put_overlay(s, 0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)}), [cell | changed]}
 
             true ->
@@ -162,7 +162,7 @@ defmodule VoxelRegion.World.Gm do
         {:ok, {material, _}, s} = cell_value(s, 0, cell)
         eligible = material == from and material != to and solid?(material) and
           not Map.has_key?(s.refined, cell) and not Map.has_key?(s.macro_owners, cell) and
-          not Map.has_key?(s.placed_by, cell) and not MapSet.member?(attached, cell)
+          chunk_get(s.placed_by, cell) == nil and not MapSet.member?(attached, cell)
         {if(eligible, do: [cell | targets], else: targets), s}
       end)
       finite? = phase_material?(state, to)
@@ -231,7 +231,7 @@ defmodule VoxelRegion.World.Gm do
   defp drain_targets(state, lo, hi, material) do
     candidates = for {cell, units} <- state.liquid_units, units > 0,
       in_box?(cell, lo, hi, :micro), not Map.has_key?(state.refined, cell),
-      not Map.has_key?(state.macro_owners, cell), not Map.has_key?(state.placed_by, cell), do: {cell, units}
+      not Map.has_key?(state.macro_owners, cell), chunk_get(state.placed_by, cell) == nil, do: {cell, units}
     # 只准备数量表中候选格所在 L0 区域；commit_liquid 已按实际目标格准备各级区域，无需展开整个盒。
     state = ensure(state, Enum.map(candidates, &elem(&1, 0)))
     Enum.reduce_while(Enum.sort(candidates), {:ok, [], 0, state}, fn {cell, _} = target, {:ok, targets, count, s} ->

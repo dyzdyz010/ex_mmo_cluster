@@ -356,7 +356,14 @@ defmodule SceneServer.Movement.Scene do
         inside?(cut.state.position, state.config.authority) and
         not Enum.any?(state.characters, fn {_, c} -> c.id == cut.id end)
 
-    if compatible do
+    # 无 stream 移交要补 cut 之后的有序增量；副本已按 World 发布前缀退休了那段历史时显式拒绝本次准备
+    # （m2a §6.3），不建目标 Player：源侧按既有失败路径关闭连接，客户端重连走快照入口。
+    with true <- compatible || {:error, :incompatible_transfer},
+         tail when is_list(tail) <-
+           if(cut.stream,
+             do: [],
+             else: state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
+           ) do
       {import_us, {:ok, updates}} =
         :timer.tc(fn ->
           if cut.stream,
@@ -365,11 +372,6 @@ defmodule SceneServer.Movement.Scene do
                CollisionUpdates.import_stream_checkpoint(state.updates, cut.collision_checkpoint)},
             else: CollisionUpdates.import_checkpoint(state.updates, cut.collision_checkpoint)
         end)
-
-      tail =
-        if cut.stream,
-          do: [],
-          else: state.world_api.canonical_deltas_after(state.world_ref, cut.transaction_seq)
 
       Logger.info(
         Jason.encode!(%{
@@ -427,7 +429,21 @@ defmodule SceneServer.Movement.Scene do
       {:reply, {:ok, player},
        %{state | characters: Map.put(state.characters, identity, character)}}
     else
-      {:reply, {:error, :incompatible_transfer}, state}
+      {:error, :incompatible_transfer} ->
+        {:reply, {:error, :incompatible_transfer}, state}
+
+      {:error, reason} ->
+        Logger.warning(
+          Jason.encode!(%{
+            schema: "voxim-scene-v1",
+            event: "transfer_tail_unavailable",
+            scene_id: state.scene_id,
+            transaction_seq: cut.transaction_seq,
+            reason: inspect(reason)
+          })
+        )
+
+        {:reply, {:error, reason}, state}
     end
   end
 

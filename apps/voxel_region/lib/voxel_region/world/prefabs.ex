@@ -82,7 +82,7 @@ defmodule VoxelRegion.World.Prefabs do
         s = put_refined(s, cell, slots)
 
         Edits.put_overlay(%{s |> put_macro_owner(cell, nil) |> put_liquid(%{cell => 0}) |
-          placed_by: Map.delete(s.placed_by,cell)},
+          placed_by: chunk_delete(s.placed_by,cell)},
           0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})
       end)
 
@@ -415,7 +415,7 @@ defmodule VoxelRegion.World.Prefabs do
           case cell_value(s,0,cell) do
             {:ok,{0,_},s} when not is_map_key(s.refined,cell) ->
               s = %{put_macro_owner(s, cell, owner) |
-                placed_by: if(actor,do: Map.put(s.placed_by,cell,actor.cid),else: Map.delete(s.placed_by,cell))}
+                placed_by: if(actor,do: chunk_put(s.placed_by,cell,actor.cid),else: chunk_delete(s.placed_by,cell))}
               {:cont,{:ok,Edits.put_overlay(s,0,cell,{m,MmoContracts.Voxel.Skins.uniform(m)})}}
             {:ok,_,_} -> {:halt,{:error,:occupied}}
             {:error,reason,_} -> {:halt,{:error,reason}}

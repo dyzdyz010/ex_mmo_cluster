@@ -238,15 +238,30 @@ defmodule VoxelRegion.World.HeatCommit do
       |> Enum.filter(&(&1.granularity == 1 and not Map.has_key?(&1, :temperature_kelvin)))
       |> Enum.group_by(& &1.owner)
 
-    Enum.reduce(legacy, state, fn {owner, rows}, s ->
-      hp = component_max_hp(s, owner)
-      lost = Enum.reduce(rows, 0.0, fn t, sum -> sum + t.max_hp - t.hp end)
-      target = %{hd(rows) | granularity: 2, max_hp: hp, hp: hp - lost, seq: s.seq, request_id: 0}
+    if legacy == %{} do
+      state
+    else
+      # 规范化是一笔真实的维护事务（新 seq、写日志、经 remember 标脏）：可重放，随切点进页表（m2a §4.3，评审 R3）。
+      before = state
+      seq = state.seq + 1
 
-      damage =
-        Map.drop(s.damage, Enum.map(rows, &Damage.key/1)) |> Map.put(Damage.key(target), target)
+      {state, rows} =
+        Enum.reduce(legacy, {state, []}, fn {owner, rows}, {s, acc} ->
+          hp = component_max_hp(s, owner)
+          lost = Enum.reduce(rows, 0.0, fn t, sum -> sum + t.max_hp - t.hp end)
+          target = %{hd(rows) | granularity: 2, max_hp: hp, hp: hp - lost, seq: seq, request_id: 0}
+          removed = for t <- rows, do: %{t | hp: 0.0, flags: 1, seq: seq, request_id: 0}
 
-      %{s | damage: damage}
-    end)
+          damage =
+            Map.drop(s.damage, Enum.map(rows, &Damage.key/1)) |> Map.put(Damage.key(target), target)
+
+          {%{s | damage: damage}, acc ++ removed ++ [target]}
+        end)
+
+      state = %{state | seq: seq}
+      txn = %{seq: seq, entries: [], coarse: [], property_states: rows}
+      :ok = Log.append_log(before, state, txn)
+      Log.remember_entry(state, txn)
+    end
   end
 end

@@ -86,7 +86,7 @@ defmodule VoxelRegion.World.Claims do
     foreign = &(&1 != nil and &1 != cid)
     placer = fn id -> state.instances |> Map.get(id, %{}) |> Map.get(:placed_by) end
 
-    Enum.any?(state.placed_by, fn {cell, by} -> foreign.(by) and inside.(cell) end) or
+    Enum.any?(state.placed_by, fn {_, cells} -> Enum.any?(cells, fn {cell, by} -> foreign.(by) and inside.(cell) end) end) or
       Enum.any?(state.macro_owners, fn {cell, id} -> inside.(cell) and foreign.(placer.(id)) end) or
       Enum.any?(state.refined, fn {cell, slots} ->
         inside.(cell) and Enum.any?(slots, fn {_, {_, id}} -> foreign.(placer.(id)) end)

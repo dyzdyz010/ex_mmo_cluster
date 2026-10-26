@@ -77,7 +77,19 @@ defmodule DataService.Voxel.OverlayLogStore do
   @doc "清空（test-only）。"
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
-    Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM voxel_overlay_log", [])
+    # 日志与页表（`PageStore`）一起清：世界持久状态只由这两部分组成。
+    for table <- ~w(voxel_overlay_log voxel_page_segment voxel_world_globals voxel_safe_prefix),
+        do: Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM #{table}", [])
+
+    :ok
+  end
+
+  @doc "清空一个世界（test-only）：该 content_version 的日志与页表。"
+  @spec reset_world(non_neg_integer(), keyword()) :: :ok
+  def reset_world(content_version, opts \\ []) do
+    for table <- ~w(voxel_overlay_log voxel_page_segment voxel_world_globals voxel_safe_prefix),
+        do: Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM #{table} WHERE content_version = $1", [signed(content_version)])
+
     :ok
   end
 

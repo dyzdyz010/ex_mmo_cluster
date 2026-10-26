@@ -15,6 +15,7 @@
 | `install_copy.py` | 冷内容份数轴：经 `World.parcel_install` 把同一份如园装到远处（key 带 tag，幂等） |
 | `summarize.py` | 把 `M0Probe.snapshot()` 摘成可读表 |
 | `compare.py` | 多轮 run 目录的冷内容份数对比表（启动、空闲字段堆、各级吞吐 / 延迟 / 阶段、World long_gc、OS 峰值） |
+| `equiv.py` / `equiv.ex` | M2a 迁移等价：还原 M2a 之前的库 → 启动（旧日志全量回放，首个切点即迁移）→ 迁移切点发布前采集 A → 发布后停机 → 按页恢复再启动采集 B；比较原始真值逐字段摘要（判定器 a）与每个页存在的区域的正式读取载荷（去头部 seq，判定器 b）。自带内存看门狗 |
 | `reinstall.py` | 同页反复安装轴：同一份如园按原位再装 N 遍，每遍后重启量冷启动与空闲字段堆（`--skip` 跳过不能原位重装的批次） |
 
 ## 数据与隔离
