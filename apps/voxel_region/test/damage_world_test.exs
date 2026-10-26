@@ -207,6 +207,17 @@ defmodule VoxelRegion.DamageWorldTest do
     assert balances[{1001,19}] == 512
   end
 
+  # 检查点正文是整份世界的冻结副本（经任务消息复制、不与 World 状态共享）：落盘后内存只留投影，正文从持久日志读。
+  test "a finished checkpoint keeps only projection fields in memory and its body in the log", c do
+    assert {:ok,1}=World.material_supply(c.w,1001,"retained",%{19=>512})
+    assert {:ok,2}=World.apply_edit(c.w,{1,1,2},19)
+    assert :ok=World.compact(c.w)
+    assert %{2 => retained} = :sys.get_state(c.w).entries
+    assert retained.entries != []
+    assert Map.keys(retained) -- [:seq,:entries,:coarse,:liquid_units] == []
+    assert [%{seq: 2,material_balances: %{{1001,19}=>512},epochs: %{{1,1,2}=>2}}] = World.entries_after(c.w,0)
+  end
+
   @tag :tool_combat
   test "body ray uses canonical obstruction and reach", c do
     assert :ok = World.body_tool(c.w, c.actor, c.request, 1.0)

@@ -136,11 +136,6 @@ defmodule VoxelRegion.ThermalWorkTest do
     far = {0, 0, {800, 800, 800}}
     attachments = %{near => {1, 19}, far => {2, 19}}
 
-    work = %{
-      work
-      | attachment_cells: Enum.map(attachments, fn {s, v} -> {s, v, Attachments.macros([s])} end)
-    }
-
     expanded = %{work | hot: MapSet.put(work.hot, {0, 0, 2})}
     plan = ThermalWork.plan(expanded, %{}, %{}, %{})
     geometry = Map.merge(plan.geometry, Map.new(plan.missing, &{&1, []}))

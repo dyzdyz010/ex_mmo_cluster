@@ -21,7 +21,6 @@ defmodule VoxelRegion.ThermalWork do
       # 内核次序的节点列表 [{键, 节点}]，每次重建由 domain 给出。
       ordered: [],
       domain: ThermalDomain.new(),
-      attachment_cells: nil,
       attachment_graph: nil,
       solid_nodes: %{},
       thermal_slots: %{},
@@ -30,6 +29,8 @@ defmodule VoxelRegion.ThermalWork do
       exact: false,
       # 燃烧行键 => 足迹宏格；首次全量扫描，其后按提交内变更行与事务改写的行（`touched/3`）维护（R8-05）。
       burning: nil,
+      # 上次写回以来在原生侧熄灭、记录里仍标着燃烧的行键；写回（`World.Thermal.flush`）时清空。
+      extinguished: MapSet.new(),
       # R8-05 结算增量：上次结算以来事务改写过的行键（提交内的改写另由 visited 给出）。结算的耗尽、相变与提交后的转化
       # 只重判这些行，转化另加上次达到阈值而未转化的 `due`；nil 表示尚未派生，下次结算全量扫描。
       pending: nil,
@@ -177,11 +178,12 @@ defmodule VoxelRegion.ThermalWork do
 
   defp missing(cells, geometry), do: MapSet.reject(cells, &Map.has_key?(geometry, &1))
 
-  @doc "接纳本次完整几何，返回更新的缓存和是否需要重新构造附件接触图。"
+  @doc """
+  接纳本次完整几何，返回更新的缓存和是否需要重新构造附件接触图。`attachments` 至少含足迹与候选域相交的槽
+  （owner 按区域索引取候选域附近的槽，不传全部附件）。
+  """
   def refresh(work, plan, geometry, attachments) do
-    attachment_cells =
-      work.attachment_cells ||
-        Enum.map(attachments, fn {slot, value} -> {slot, value, Attachments.macros([slot])} end)
+    attachment_cells = Enum.map(attachments, fn {slot, value} -> {slot, value, Attachments.macros([slot])} end)
 
     {nodes, slots, rebuild?} =
       cond do
@@ -226,7 +228,6 @@ defmodule VoxelRegion.ThermalWork do
          seeds: plan.seeds,
          exact: plan.exact,
          burning: plan.burning,
-         attachment_cells: attachment_cells,
          solid_nodes: nodes,
          thermal_slots: slots,
          # 视线键恒为已有域格的子集；只有整域重算可能收缩域。

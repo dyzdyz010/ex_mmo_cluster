@@ -1328,16 +1328,16 @@ defmodule VoxelRegion.World do
     {:reply, :ok, %{state | subs: Map.put(state.subs, pid, filter)}}
   end
 
-  # 供测试与诊断读历史：纯属性事务在内存只留投影字段，正文从持久日志补回。
+  # 供测试与诊断读历史：纯属性事务与检查点在内存只留投影字段，正文从持久日志补回。
   def handle_call({:entries_after, seq}, _from, %{log: {backend, handle}} = state) do
     retained = state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
 
     bodies =
-      if Enum.any?(retained, &match?(%{entries: [], coarse: []}, &1)),
+      if Enum.any?(retained, &projection?/1),
         do: Map.new(for(txn <- backend.replay(handle), txn.seq > seq, do: {txn.seq, txn})),
         else: %{}
 
-    {:reply, Enum.map(retained, &if(match?(%{entries: [], coarse: []}, &1), do: Map.fetch!(bodies, &1.seq), else: &1)), state}
+    {:reply, Enum.map(retained, &if(projection?(&1), do: Map.fetch!(bodies, &1.seq), else: &1)), state}
   end
 
   # 区域字节与属性在 World 内按同一 seq 取好；解码与碰撞投影交给该订阅者的发送进程（CanonicalFeed），它发出快照后答复调用方。

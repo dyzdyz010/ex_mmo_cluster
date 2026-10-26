@@ -54,12 +54,21 @@ defmodule VoxelRegion.World.Log do
     schedule_checkpoint(state)
   end
 
+  # 内存里保留事务的读者（订阅补发、分区增量投影）只读这些字段：线格式只编码 seq / entries / coarse，分区增量另看 liquid_units。
+  @projection [:seq, :entries, :coarse, :liquid_units]
+
+  def projection(txn), do: Map.take(txn, @projection)
+
+  @doc "只剩投影的保留事务（纯属性事务、检查点）：正文要从持久日志读（`entries_after`）。"
+  def projection?(txn), do: Map.keys(txn) -- @projection == []
+
   defp retain_entry(state, full) do
     # 实时落体帧与待施放记录只随本次广播，不进日志、检查点与回放尾。
-    # 没有格条目的事务（热提交、镐击等纯属性变化）只留投影与订阅补发读的字段；正文在持久日志里（`entries_after`）。
-    txn = if match?(%{entries: [], coarse: []}, full),
-      do: Map.take(full, [:seq, :entries, :coarse, :liquid_units]),
-      else: Map.drop(full, [:liquid_falls, :casts, :operation, :interaction, :interaction_history, :interaction_floor])
+    # 没有格条目的事务（热提交、镐击等纯属性变化）与检查点（唯一带交互历史的事务，`Interactions.apply/2` 同一判据）只留投影；
+    # 正文在持久日志里。检查点正文是整份世界（全部世代、属性行与账本），线上检查点经任务消息复制回来、不与 World 状态共享。
+    txn = if match?(%{entries: [], coarse: []}, full) or Map.has_key?(full, :interaction_history),
+      do: projection(full),
+      else: Map.drop(full, [:liquid_falls, :casts, :operation, :interaction, :interaction_floor])
     %{state | entries: Map.put(state.entries, txn.seq, txn),
       entry_regions: LogProjection.index(state.entry_regions, txn)}
   end
@@ -278,10 +287,12 @@ defmodule VoxelRegion.World.Log do
   检查点落盘：在检查点任务里执行（不占 World 回合）。两个后端都只原子替换 ≤ P 的前缀、保留并发追加的 seq > P 行，
   所以 World 可同时继续提交；World 收到结果后只换基底、退休已落盘前缀。
   """
+  # 落盘后只把投影带回 World：检查点正文是整份世界的冻结副本（全部世代、属性行与账本），经任务消息复制回来、不与 World 状态共享，
+  # 留在保留历史里就是常驻的第二份世界（4 份如园 ≈1.3 GB），每次主回收都要整份复制。换基底与补发只读投影字段。
   def persist_checkpoint(%{log: {backend, handle}}, %{transaction: txn} = checkpoint) do
     started = System.monotonic_time(:microsecond)
     :ok = backend.checkpoint(handle, txn)
-    Map.put(checkpoint, :persist_us, System.monotonic_time(:microsecond) - started)
+    %{checkpoint | transaction: projection(txn)} |> Map.put(:persist_us, System.monotonic_time(:microsecond) - started)
   end
 
   @doc "冻结检查点所需的不可变值；不携带订阅、热域资源、在线任务或历史正文。"

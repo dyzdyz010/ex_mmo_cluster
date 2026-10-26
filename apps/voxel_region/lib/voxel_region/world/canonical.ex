@@ -156,6 +156,16 @@ defmodule VoxelRegion.World.Canonical do
     Map.take(state.attachments, attachments_in_regions(state, regions))
   end
 
+  @doc """
+  足迹（`Attachments.macros/1`：锚点宏格与负侧支撑宏格）可能落在这些宏格上的附件 `{slot, value}`：
+  取各格所在区与相邻区的槽，与逐槽比较全部附件得到的相交集合相同。
+  """
+  def attachments_touching(state, cells) do
+    regions = cells |> Enum.map(&region_of/1) |> Enum.uniq()
+    Map.take(state.attachments, attachments_in_regions(state,
+      for({rx, ry, rz} <- regions, dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz})))
+  end
+
   @doc "before 有、state 里被删或改了值的附件 `{槽, 提交前值}`（按槽排序）：只比较索引里子表不同的区域。"
   def changed_attachments(before, state) do
     for {region, slots} <- before.attachment_regions, (now = Map.get(state.attachment_regions, region, %{})) != slots,

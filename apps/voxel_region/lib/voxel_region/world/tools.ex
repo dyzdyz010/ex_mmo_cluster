@@ -71,12 +71,17 @@ defmodule VoxelRegion.World.Tools do
 
   # 附件槽改变时，同笔更新整件 HP、逐槽显热和设备剩余能源。
   def attachment_damage(before, state) do
-    live = MapSet.new(state.attachments, fn {_, {id, _}} -> id end)
-    state = %{state | attachment_owners: Map.take(state.attachment_owners, MapSet.to_list(live))}
-
     # 只看提交前后被删、新增或改值的槽（damage 无过期行）：逐槽行（4）的键由槽与提交前的值确定，
     # 整件行（3）的键由实例 ID 确定，其余实例的槽没变、最大 HP 不变。
     lost = changed_attachments(before, state)
+
+    # 只有本笔丢了槽的附件可能整件消失：同一附件的槽都在锚点一宏格内，查槽所在区与相邻区即可，不扫全部槽。
+    dead =
+      for {slot, {id, _}} <- lost, Map.has_key?(state.attachment_owners, id),
+          not Enum.any?(attachments_around_region(state, Attachments.region(slot)), &match?({_, {^id, _}}, &1)),
+          uniq: true, do: id
+
+    state = %{state | attachment_owners: Map.drop(state.attachment_owners, dead)}
     ids = MapSet.new(lost ++ changed_attachments(state, before), fn {_, {id, _}} -> id end)
     keys = for({slot, value} <- lost, do: Damage.key(%{Attachments.identity(slot, value) | granularity: 4})) ++ for(id <- Enum.sort(ids), do: {3, id})
 

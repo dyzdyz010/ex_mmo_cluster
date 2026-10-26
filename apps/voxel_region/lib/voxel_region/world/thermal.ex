@@ -393,7 +393,7 @@ defmodule VoxelRegion.World.Thermal do
 
     geometry_done = System.monotonic_time(:microsecond)
 
-    {work, rebuild?} = ThermalWork.refresh(state.thermal_work, plan, geometry, state.attachments)
+    {work, rebuild?} = ThermalWork.refresh(state.thermal_work, plan, geometry, attachments_touching(state, plan.cells))
     refreshed = System.monotonic_time(:microsecond)
 
     {work, state} =
@@ -508,9 +508,13 @@ defmodule VoxelRegion.World.Thermal do
     changed = MapSet.new(Enum.map(step.changed, record_key) ++ Enum.map(changes, &elem(&1, 0)))
     hot = work.domain.hot
 
+    # 记录里仍标着燃烧的行只可能是：计划时的燃烧行、本步点燃或改写的行，以及上次写回后在原生侧熄灭、尚未写回的行
+    # （`extinguished`，写回时清空）；只查这些行，与逐行扫描全部记录得到同一结论。
+    extinguished = Enum.into(Enum.map(step.extinguished, record_key), work.extinguished)
     active =
       map_size(sources) > 0 or MapSet.size(hot) > 0 or
-        Enum.any?(damage, fn {_, t} -> Map.get(t, :burning, false) end)
+        Enum.any?(Enum.concat([Map.keys(work.burning), extinguished, Enum.map(changes, &elem(&1, 0))]),
+          &Map.get(Map.get(damage, &1, %{}), :burning, false))
 
     # 首次点燃的燃料账：只计点燃前记录没有燃料字段的节点（同原实现的求和次序）。
     initialized = Enum.reduce(propagated, 0.0, fn {key, row}, sum ->
@@ -535,7 +539,7 @@ defmodule VoxelRegion.World.Thermal do
 
     state =
       if active,
-        do: put_in(state.thermal_work, ThermalWork.burned(state.thermal_work, burned)),
+        do: put_in(state.thermal_work, %{ThermalWork.burned(state.thermal_work, burned) | extinguished: extinguished}),
         else: %{flush(state) | thermal_work: %{ThermalWork.new() | builds: work.builds, hot_rows: work.hot_rows,
           touched: work.touched, burning: %{}, pending: work.pending, due: work.due, electric: work.electric}}
 
@@ -577,7 +581,8 @@ defmodule VoxelRegion.World.Thermal do
       end)
 
     Logger.info("voxel_thermal_flush reason=#{inspect(reason)} rows=#{map_size(rows)} us=#{System.monotonic_time(:microsecond) - started}")
-    seen(%{state | damage: Map.merge(state.damage, rows), thermal_work: %{state.thermal_work | domain: domain}})
+    seen(%{state | damage: Map.merge(state.damage, rows),
+      thermal_work: %{state.thermal_work | domain: domain, extinguished: MapSet.new()}})
   end
 
   # 记下已与原生热域一致的记录与有限数量；此后的改写都来自其他事务。
