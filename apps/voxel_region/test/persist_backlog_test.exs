@@ -21,6 +21,10 @@ defmodule VoxelRegion.PersistBacklogTest do
     defdelegate clear_unpublished(path, prefix), to: Log
     defdelegate write_pages(path, cut, rows), to: Log
     defdelegate load(path), to: Log
+    defdelegate load_head(path, code), to: Log
+    defdelegate read_pages(path, keys, fragments), to: Log
+    defdelegate locate(path, ids), to: Log
+    defdelegate page_keys(path), to: Log
     defdelegate collect(path, prefix, limit), to: Log
 
     def publish(path, cut, rows, globals) do

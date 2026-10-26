@@ -88,13 +88,17 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
 
+  @doc """
+  作者 / GM 编辑不得直接改写液体或相态格（改走液体工具）：`{:ok, state}`（带回本次读到的 baseline 解码缓存，
+  同一冷区不再逐格重读重解码，M2a 遗留项）或 `{:error, :use_liquid_tool}`。
+  """
   def raw_liquid_edit(state, edits) do
-    Enum.reduce_while(edits, :ok, fn {cell, material}, :ok ->
-      case cell_value(state, 0, cell) do
-        {:ok, {old,_}, _} ->
-          if Phase.liquid?(old) or Phase.liquid?(material) or phase_material?(state,old) or phase_material?(state,material),
-            do: {:halt, {:error,:use_liquid_tool}}, else: {:cont,:ok}
-        _ -> {:cont, :ok}
+    Enum.reduce_while(edits, {:ok, state}, fn {cell, material}, {:ok, s} ->
+      case cell_value(s, 0, cell) do
+        {:ok, {old,_}, s} ->
+          if Phase.liquid?(old) or Phase.liquid?(material) or phase_material?(s,old) or phase_material?(s,material),
+            do: {:halt, {:error,:use_liquid_tool}}, else: {:cont,{:ok,s}}
+        {:error, _, s} -> {:cont, {:ok, s}}
       end
     end)
   end
@@ -210,6 +214,8 @@ defmodule VoxelRegion.World.Liquids do
     with true <- (liquid_enabled?(before) and Phase.liquid?(material) and material in before.production_materials and
              is_integer(level_y) and sy <= level_y and liquid_inside?(seed,before.liquid_bounds)) || {:error,:invalid_liquid_fill},
          {:ok,cells,state} <- flood(before,material,seed,level_y,max_cells,cid != nil),
+         # 注入格的提交（后像 ring、逐级归约）读这些格所在页的邻页与各级粗层页：同样要已驻留。
+         [] <- closure_missing(state,cells),
          true <- cid == nil or Protection.permitted?(state.protection,{:character,cid},cells) || {:error,:protected_region},
          {_open,water,state} = liquid_cells(state,cells,material),
          moved = for(cell <- cells, q = Map.get(water,cell,0), q < capacity, do: {cell,capacity-q}),
@@ -228,6 +234,14 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
 
+  defp closure_missing(%{resident: :all},_cells), do: []
+  defp closure_missing(state,cells) do
+    case VoxelRegion.World.PageLoad.missing_keys(state,{Edits.edit_keys(cells),[],[]}) do
+      [] -> []
+      keys -> {:error,{:pages_missing,keys}}
+    end
+  end
+
   # 六邻洪泛：只走该液体可进入的开放格（liquid_cells 的 open?），y ≤ level_y、计算域内、不跨受保护区域持有者。
   defp flood(state,material,seed,level_y,max_cells,protected?) do
     {open,_,state}=liquid_cells(state,[seed],material)
@@ -242,6 +256,16 @@ defmodule VoxelRegion.World.Liquids do
       to <- [{x-1,y,z},{x+1,y,z},{x,y-1,z},{x,y+1,z},{x,y,z-1},{x,y,z+1}],
       elem(to,1) <= level_y, liquid_inside?(to,state.liquid_bounds), not MapSet.member?(seen,to),
       not protected? or Protection.same_holder?(state.protection,from,to), uniq: true, do: to
+    # 洪泛没有离 seed 的空间上界：伸进未驻留页就停下，交调用方装页后从头重新裁决（父稿 P4，评审 A2），不把冷页当空气继续。
+    cold=for cell <- candidates, key={0,region_of(cell)}, not VoxelRegion.World.Pages.resident?(state,key), uniq: true, do: key
+    if cold != [] do
+      {:error,{:pages_missing,cold}}
+    else
+      flood_step(state,material,candidates,cells,seen,level_y,max_cells,protected?)
+    end
+  end
+
+  defp flood_step(state,material,candidates,cells,seen,level_y,max_cells,protected?) do
     {open,_,state}=liquid_cells(state,candidates,material)
     reached=Enum.filter(candidates,&Map.fetch!(open,&1))
     cells=MapSet.union(cells,MapSet.new(reached))

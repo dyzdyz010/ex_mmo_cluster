@@ -74,6 +74,8 @@ defmodule VoxelRegion.Bench.M0Probe do
            total_heap_mb: Float.round(info[:total_heap_size] * words / 1_048_576, 1),
            process_memory_mb: Float.round(info[:memory] / 1_048_576, 1),
            refined_macros: map_size(s.refined),
+           # M2b 驻留页数（L0 + 粗层页键；"all" = 迁移 / 全新世界的全量内存）。
+           resident_pages: (case Map.get(s, :resident, :all) do :all -> "all"; r -> MapSet.size(r) end),
            instances: map_size(s.instances),
            epochs: map_size(s.epochs),
            damage: map_size(s.damage),

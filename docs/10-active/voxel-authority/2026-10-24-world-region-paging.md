@@ -646,3 +646,10 @@ https://www.microsoft.com/en-us/research/publication/hyder-a-transactional-recor
   在建场 `apply_edits`（冷区 `Liquids.raw_liquid_edit` 逐格读源解码约 457 ms）完成前到达，先跑一次空热提交使记录整体错后 0.5 s；今天机器偏慢越过这条线。
   修法同 `thermal_edit_world_test`：建场后取消启动节拍并断言取消成功，记录与断言不变，连跑 5 次全过。死亡掉落改为豁免积压硬上限（已确认死亡的后果，不是新意图；
   拒绝即永久丢物品），`persist_backlog_test` 新增一项并反证。全量（`t18-m2a-fixes-full.log`）677/691，失败恰为 14 项既有。另记产品性能项：`raw_liquid_edit` 冷区逐格重读重解码源，未缓存。
+- 2026-10-26 M2b（未提交；计划与偏差 [`m2b-on-demand-pages.md`](2026-10-24-world-region-paging/m2b-on-demand-pages.md)）：按需装页（World 入口过读取闭包的闸，缺页即挂起、
+  装页任务读 PG 后接纳并重放，接纳时按当前状态复核；令牌按页代数，本步不淘汰）、身份定位表 `voxel_identity_locator`（实例 / 有主 aid → 根与根 home，只插入，随切点批次写）、
+  根实例的整树覆盖页集合（home 汇总；max_hp 汇总未持久，整树随闭包装全）、L1–L5 structure 与树冠按 `(level, L0 页)` 片段持久并随提交增量维护、活动索引、
+  日志实例 / 归属改按键增量、启动只读头部 + 后缀 / 活动页（去掉全量 `refresh_structure` / `prepare_component_cache`）、部件格确定序（Q5）、`raw_liquid_edit` 冷区只读一次。
+  全量 685/699 = 14 项既有失败（`runs/t19-m2b-full.log`；修 `raw_liquid_edit` 后暴露的墙钟依赖用例已按 pause_clock 修正，见 m2b §7）。实测（runs `r100`–`r103`）：重启就绪 1 份 36.6 → 15.9 s、4 份 105.6 → 15.9 s，空闲 World 堆 1 / 4 份均 426 MB
+  （M2a 1712 / 6133 MB）；4 份 8 窗口结束驻留 2033 页（= 一份如园）、World 堆 1.9 GB、p50 / p99 / 最长 192 / 781 / 1116 ms（M2a 160 / 1899 / 2457），长回收最长 586 ms（1714）。
+  M2 交付门槛中“启动按需装页”已实跑；淘汰与预算属 M3。

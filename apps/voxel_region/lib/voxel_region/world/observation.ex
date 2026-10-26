@@ -142,15 +142,14 @@ defmodule VoxelRegion.World.Observation do
   end
 
   defp component_geometry(state, box, only) do
-    # 保存原整表次序：子 map 的相对次序未必相同，浮点求和与窗口代表点都不能换序。
-    order = state.refined |> Enum.with_index() |> Map.new(fn {{cell, _}, index} -> {cell, index} end)
+    # 按格坐标的确定序累加（父稿 Q5）：浮点求和与窗口代表点不随驻留的 refined 整表次序变化（M2b 按需装页）。
     cache = Map.take(Map.get(state, :component_cache, %{}), Map.keys(state.refined_owners))
     wanted = only && MapSet.new(only)
     Enum.reduce(state.refined_owners, {%{}, cache}, fn {owner, cells}, {rows, cache} ->
       selected = (wanted == nil or MapSet.member?(wanted, owner)) and
         (box == nil or Enum.any?(cells, &VoxelRegion.PropertyObservation.contains?(&1, box)))
       if selected do
-        inputs = cells |> Enum.sort_by(&Map.fetch!(order, &1)) |> Enum.map(&{&1, Map.fetch!(state.refined, &1)})
+        inputs = cells |> Enum.sort() |> Enum.map(&{&1, Map.fetch!(state.refined, &1)})
         tag = {state.properties.digest, inputs}
         geometry = case Map.get(cache, owner) do
           {^tag, geometry} -> geometry

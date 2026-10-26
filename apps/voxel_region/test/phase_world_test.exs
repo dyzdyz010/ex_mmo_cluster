@@ -26,6 +26,10 @@ defmodule VoxelRegion.PhaseWorldTest do
       Log.publish(path,cut,rows,globals)
     end
     defdelegate load(path),to: Log
+    defdelegate load_head(path, code), to: Log
+    defdelegate read_pages(path, keys, fragments), to: Log
+    defdelegate locate(path, ids), to: Log
+    defdelegate page_keys(path), to: Log
     defdelegate collect(path,prefix,limit),to: Log
     def append(path,txn),do: Log.append(path,roundtrip(txn))
     def checkpoint(path,txn),do: Log.checkpoint(path,roundtrip(txn))

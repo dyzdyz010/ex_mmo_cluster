@@ -65,6 +65,10 @@ defmodule VoxelRegion.TestSupport do
     defdelegate write_pages(path,cut,rows),to: OverlayLog.File
     defdelegate publish(path,cut,rows,globals),to: OverlayLog.File
     defdelegate load(path),to: OverlayLog.File
+    defdelegate load_head(path, code), to: OverlayLog.File
+    defdelegate read_pages(path, keys, fragments), to: OverlayLog.File
+    defdelegate locate(path, ids), to: OverlayLog.File
+    defdelegate page_keys(path), to: OverlayLog.File
     defdelegate collect(path,prefix,limit),to: OverlayLog.File
     def checkpoint(path,txn) do
       File.write!(path<>".checkpoint_calls","1",[:append])

@@ -23,6 +23,7 @@ defmodule VoxelRegion.DeviceMaterialProductionTest do
     def write_pages(_, _, _), do: :ok
     def publish(_, _, _, _), do: :ok
     def load(_), do: %{prefix: nil}
+    def load_head(_, _), do: %{prefix: nil}
     def collect(_, _, _), do: 0
   end
 

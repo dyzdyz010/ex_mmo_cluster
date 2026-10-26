@@ -196,12 +196,14 @@ defmodule VoxelRegion.World.Payloads do
   end
 
   defp with_existing_details(state, %Payload{level: level, region: region} = payload) do
+    # 跨度（含 ring）覆盖的 L0 页上的 structure 片段（`structure_pages`），不扫全部 structure。
     structure =
-      for {{^level, cell}, grid} <- state.structure,
+      for page <- VoxelRegion.World.Canopy.span_regions(level, region),
+          cell <- Map.get(state.structure_pages, {level, page}, MapSet.new()),
           local = Payload.local(region, cell),
           Payload.in_span?(local),
           into: %{},
-          do: {Payload.cell_index(local), grid}
+          do: {Payload.cell_index(local), Map.fetch!(state.structure, {level, cell})}
 
     {%{payload | structure: structure}, state}
   end
@@ -210,6 +212,24 @@ defmodule VoxelRegion.World.Payloads do
   def live_instance_ids(state),
     do: MmoContracts.Voxel.Refined.ancestors(state.instances,
       Enum.uniq(Map.keys(state.refined_owners) ++ Map.keys(state.macro_owner_cells)))
+
+  @doc """
+  本笔失去全部格（且没有存活后代）的实例：只在本笔碰过的身份及其祖先里裁（评审 A1 / F2）。内存里还有别的实例——
+  例如按需装页时整树尚未闭合、或别处未改动的——不因本笔与它们无关的提交被当成死实例删掉；存活判据与 `live_instance_ids/1` 相同。
+  """
+  def dead_instances(state) do
+    touched = for id <- Map.get(state, :owners_touched, MapSet.new()), not match?({:aid, _}, id), Map.has_key?(state.instances, id), do: id
+
+    if touched == [] do
+      []
+    else
+      live = MapSet.new(live_instance_ids(state))
+      for id <- MmoContracts.Voxel.Refined.ancestors(state.instances, touched), not MapSet.member?(live, id), do: id
+    end
+  end
+
+  @doc "裁掉 `dead_instances/1`。"
+  def prune_instances(state), do: Map.drop(state.instances, dead_instances(state))
 
   def region_keys(cells), do: LogProjection.region_keys(cells)
 
@@ -329,15 +349,10 @@ defmodule VoxelRegion.World.Payloads do
             if grid == Map.get(s.structure, key) do
               {s, changed}
             else
-              structure =
-                if grid == nil,
-                  do: Map.delete(s.structure, key),
-                  else: Map.put(s.structure, key, grid)
-
               keys = region_keys([key])
 
               s =
-                Enum.reduce(keys, %{s | structure: structure}, fn k, s ->
+                Enum.reduce(keys, put_structure(s, key, grid), fn k, s ->
                   %{cache_delete(s, k) | snapshots: MapSet.put(s.snapshots, k)}
                 end)
 

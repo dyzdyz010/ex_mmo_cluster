@@ -34,6 +34,16 @@ defmodule VoxelRegion.OverlayLog do
   @doc "按前缀渐进删除一批，返回删掉的行数（0 = 已清完）。"
   @callback collect(handle :: term(), prefix :: non_neg_integer(), limit :: pos_integer()) :: non_neg_integer()
 
+  # M2b 按需装页（`m2b-on-demand-pages.md`）：启动只读头部，页由装页任务按键读。
+  @doc "启动读取：`%{prefix: nil}` 或 `%{prefix, globals, txns, activity: [%{region, payload}]}`（活动索引段的可见版本）。"
+  @callback load_head(handle :: term(), activity_segment :: integer()) :: map()
+  @doc "当前前缀下这些页（`{level, region}`）的可见段行与粗层片段行：`%{prefix, rows}`。"
+  @callback read_pages(handle :: term(), keys :: [{integer(), tuple()}], fragment_segments :: [integer()]) :: map()
+  @doc "身份定位：`[{kind, a, b}]` → `%{{kind, a, b} => %{root, home}}`。"
+  @callback locate(handle :: term(), ids :: [tuple()]) :: map()
+  @doc "当前前缀下有可见段的全部 `{level, region, segment}`。"
+  @callback page_keys(handle :: term()) :: [tuple()]
+
   @doc """
   已部署日志里的设备记录键与撤下的账目（R8-04 增量 2／3）。回放用 `binary_to_term(_, [:safe])`，原子须已存在；现行代码里
   只有惰性加载的迁移模块还提到其中一些（`:circuit`），回放可能早于它加载。本模块在解码前已加载，这些字面量随之进入原子表。
@@ -78,7 +88,7 @@ defmodule VoxelRegion.OverlayLog do
         %{seq: seq, kind: 2, level: c.level, region: region_of(c.cell), payload: IO.iodata_to_binary(Codec.encode_coarse(c))}
       end)
 
-    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:caster_energy,:material_supplies,:craft_ledger,:food_ledger,:food_receipts,:placed_by,:macro_owners,:protection,:beacons,:beacon_attunements,:prefab_instances,:phase_inventory,:thermal,:attachment_serial,:attachment_owners,:material_units_per_micro,:liquid_active,:liquid_units,:interaction,:interaction_history,:interaction_floor])
+    metadata = Map.take(txn,[:property_states,:epochs,:material_balances,:caster_energy,:material_supplies,:craft_ledger,:food_ledger,:food_receipts,:placed_by,:macro_owners,:protection,:beacons,:beacon_attunements,:prefab_instances,:instances_delta,:phase_inventory,:thermal,:attachment_serial,:attachment_owners,:attachment_owners_delta,:material_units_per_micro,:liquid_active,:liquid_units,:interaction,:interaction_history,:interaction_floor])
     state_rows = if map_size(metadata)>0, do: [%{seq: seq,kind: 3,level: 0,region: {0,0,0},
       # ETF 自带压缩标记，旧 binary_to_term 读方直接恢复同一元数据。
       payload: :erlang.term_to_binary(metadata,[{:compressed,1}])}],else: []
@@ -144,6 +154,23 @@ defmodule VoxelRegion.OverlayLog do
 
     @impl true
     def collect(cv, prefix, limit), do: PageStore.collect(cv, prefix, limit)
+
+    @impl true
+    def load_head(cv, activity_segment) do
+      case PageStore.load_head(cv, activity_segment) do
+        %{prefix: nil} = none -> none
+        loaded -> loaded |> Map.put(:txns, OverlayLog.transactions(loaded.log)) |> Map.delete(:log)
+      end
+    end
+
+    @impl true
+    def read_pages(cv, keys, fragment_segments), do: PageStore.read_pages(cv, keys, fragment_segments)
+
+    @impl true
+    def locate(cv, ids), do: PageStore.locate(cv, ids)
+
+    @impl true
+    def page_keys(cv), do: PageStore.page_keys(cv)
   end
 
   defmodule File do
@@ -154,6 +181,7 @@ defmodule VoxelRegion.OverlayLog do
     追加与检查点各写各的文件，检查点可在后台任务里执行而不丢 World 同时追加的帧（与 Db 后端“保留 seq > P 行”同一契约）。
     """
     @behaviour VoxelRegion.OverlayLog
+    import Bitwise
 
     @impl true
     def open(world_dir, _cv), do: Path.join(world_dir, "overlay.log")
@@ -198,7 +226,7 @@ defmodule VoxelRegion.OverlayLog do
     @impl true
     def write_pages(path, cut_seq, rows) do
       pages = read_pages(path)
-      write_pages_file(path, %{pages | segments: put_rows(pages.segments, cut_seq, rows)})
+      write_pages_file(path, put_rows(pages, cut_seq, rows))
     end
 
     @impl true
@@ -208,8 +236,8 @@ defmodule VoxelRegion.OverlayLog do
       if pages.prefix != nil and pages.prefix >= cut_seq do
         {:error, {:prefix, pages.prefix}}
       else
-        write_pages_file(path, %{pages | prefix: cut_seq, segments: put_rows(pages.segments, cut_seq, rows),
-          globals: Map.put(pages.globals, cut_seq, globals)})
+        pages = put_rows(pages, cut_seq, rows)
+        write_pages_file(path, %{pages | prefix: cut_seq, globals: Map.put(pages.globals, cut_seq, globals)})
       end
     end
 
@@ -244,12 +272,83 @@ defmodule VoxelRegion.OverlayLog do
       removed
     end
 
+    @impl true
+    def load_head(path, activity_segment) do
+      case read_pages(path) do
+        %{prefix: nil} ->
+          %{prefix: nil}
+
+        %{prefix: p} = pages ->
+          activity =
+            for {%{level: 0, segment: ^activity_segment} = key, versions} <- pages.segments,
+                {cut, payload} = visible(versions, p), cut != nil, do: %{region: key.region, payload: payload}
+
+          %{prefix: p, globals: Map.fetch!(pages.globals, p), activity: activity,
+            txns: for(txn <- read_frames(path), txn.seq > p, do: txn)}
+      end
+    end
+
+    @impl true
+    def read_pages(path, keys, fragment_segments) do
+      pages = read_pages(path)
+      p = pages.prefix
+      wanted = MapSet.new(keys)
+
+      rows =
+        if p == nil do
+          []
+        else
+          for {key, versions} <- pages.segments, page_row?(key, wanted, fragment_segments),
+              {cut, payload} = visible(versions, p), cut != nil, do: Map.put(key, :payload, payload)
+        end
+
+      %{prefix: p, rows: rows}
+    end
+
+    @impl true
+    def locate(path, ids) do
+      locators = Map.get(read_pages(path), :locators, %{})
+      for id <- ids, {:ok, value} <- [Map.fetch(locators, id)], into: %{}, do: {id, value}
+    end
+
+    @impl true
+    def page_keys(path) do
+      case read_pages(path) do
+        %{prefix: nil} -> []
+        %{prefix: p} = pages ->
+          for {key, versions} <- pages.segments, {cut, _} = visible(versions, p), cut != nil,
+              uniq: true, do: {key.level, key.region, key.segment}
+      end
+    end
+
+    # 与 `DataService.Voxel.PageStore.read_pages/4` 同一选行规则。
+    defp page_row?(%{level: level, region: {x, y, z} = region, segment: segment}, wanted, fragments) do
+      fragment? = segment in fragments
+
+      (level == 0 and MapSet.member?(wanted, {0, region})) or
+        (fragment? and MapSet.member?(wanted, {0, region})) or
+        (not fragment? and level > 0 and MapSet.member?(wanted, {level, region})) or
+        (fragment? and MapSet.member?(wanted, {level, {Integer.floor_div(x, 1 <<< level), Integer.floor_div(y, 1 <<< level),
+          Integer.floor_div(z, 1 <<< level)}}))
+    end
+
+    defp visible(versions, p), do: versions |> Enum.filter(&(elem(&1, 0) <= p)) |> Enum.max_by(&elem(&1, 0), fn -> {nil, nil} end)
+
     defp count(pages), do: Enum.sum(Enum.map(pages.segments, fn {_, v} -> map_size(v) end)) + map_size(pages.globals)
 
-    defp put_rows(segments, cut_seq, rows),
-      do: Enum.reduce(rows, segments, fn row, acc ->
-        Map.update(acc, Map.delete(row, :payload), %{cut_seq => row.payload}, &Map.put(&1, cut_seq, row.payload))
-      end)
+    defp put_rows(pages, cut_seq, rows) do
+      {locators, rows} = Enum.split_with(rows, &Map.has_key?(&1, :locator))
+
+      segments =
+        Enum.reduce(rows, pages.segments, fn row, acc ->
+          Map.update(acc, Map.delete(row, :payload), %{cut_seq => row.payload}, &Map.put(&1, cut_seq, row.payload))
+        end)
+
+      # 定位行只插入（与 PG 的 ON CONFLICT DO NOTHING 同义）。
+      found = Map.get(pages, :locators, %{})
+      located = Enum.reduce(locators, found, fn row, acc -> Map.put_new(acc, row.locator, Map.take(row, [:root, :home])) end)
+      %{pages | segments: segments} |> Map.put(:locators, located)
+    end
 
     defp read_pages(path) do
       case Elixir.File.read(pages_path(path)) do

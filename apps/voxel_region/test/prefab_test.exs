@@ -376,7 +376,8 @@ defmodule VoxelRegion.PrefabTest do
     # 归属元数据属于持久化契约；网络事务只含槽 ID，直接读取本例文件日志。
     log_path=VoxelRegion.OverlayLog.File.open(Path.join(opts[:root],FileStore.hex(123)),123)
     [placed]=VoxelRegion.OverlayLog.File.replay(log_path)
-    first=placed.attachment_owners
+    # M2b：日志写归属的按键增量（新建 = 记录，删除 = nil），不再写整表。
+    first=placed.attachment_owners_delta
     assert map_size(first)==6
     assert Enum.sort(Map.values(first))==for(owner<-[{1,1},{1,2}],slot<-7..9,do: {owner,slot})
     assert map_size(payload(w,{0,0,0}).attachments)==6
@@ -397,7 +398,7 @@ defmodule VoxelRegion.PrefabTest do
     assert {:ok,4}=World.remove_prefab(w,{1,0})
     assert World.stats(w).attachment_slots==0
     removed=List.last(VoxelRegion.OverlayLog.File.replay(log_path))
-    assert removed.attachment_owners==%{}
+    assert map_size(removed.attachment_owners_delta)==3 and Enum.all?(Map.values(removed.attachment_owners_delta),&is_nil/1)
     assert :ok=World.compact(w)
     GenServer.stop(w)
     {:ok,w}=World.start_link(opts)

@@ -44,6 +44,24 @@ defmodule VoxelRegion.World.Thermal do
   @doc "节拍已到（World 处理 `:thermal_tick` 时调用）：不再有待到期节拍。"
   def fired(state), do: %{state | thermal_timer: nil}
 
+  @doc """
+  下一次热提交会读到的种子区域（L0 区域键；M2b 按需装页的步前检查）：热格、有限热源、上一步的计算域与身体接触格。
+  装页把每个键扩到 26 邻页，覆盖一步内的六邻扩域与视线伙伴。
+  """
+  def seed_keys(%{thermal: nil}), do: []
+
+  def seed_keys(state) do
+    work = state.thermal_work
+    contacts = for {_, b} <- state.bodies, {_, _, cell, _} <- b.contacts, do: cell
+
+    [MapSet.to_list(work.hot), Map.keys(state.thermal.sources), if(work.cells, do: MapSet.to_list(work.cells), else: []), contacts]
+    |> Enum.concat()
+    |> Enum.map(&{0, region_of(&1)})
+    |> Enum.uniq()
+    # 热提交会做几何提交（相变、热毁、转化），逐级归约读写各级粗层页：连同粗层祖页一起装（评审 A2 / F1）。
+    |> VoxelRegion.World.Pages.with_ancestors()
+  end
+
   @doc "休眠：这一拍没有需要推进的状态，不再排下一拍，直到 `wake/1`。"
   def rest(state), do: %{state | thermal_due: nil}
 

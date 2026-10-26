@@ -40,7 +40,7 @@ defmodule VoxelRegion.World.PageCut do
     prefix = backend.prefix(handle)
     true = prefix == nil or state.seq > prefix
     :ok = backend.clear_unpublished(handle, prefix)
-    rows = Enum.map(state.page_dirty, &Pages.row(&1, Pages.extract(state, &1)))
+    rows = for unit <- Pages.with_activity(MapSet.to_list(state.page_dirty)), row = Pages.row(unit, Pages.extract(state, unit)), row != nil, do: row
     :ok = backend.publish(handle, state.seq, rows, Pages.globals(state))
     length(rows)
   end
@@ -188,7 +188,8 @@ defmodule VoxelRegion.World.PageCut do
     if covered?(state, state.seq) do
       %{state | page_store: %{store | wanted: false}}
     else
-      units = MapSet.to_list(state.page_dirty)
+      # 活动单元（M2b 活动索引）按本批涉及的页补入，值在抽取时按冻结状态判。
+      units = Pages.with_activity(MapSet.to_list(state.page_dirty))
       attempt = make_ref()
       cut = %{attempt: attempt, seq: state.seq, frozen: Pages.frozen(state), units: units, todo: units, credits: @window,
         begun: false, publishing: false, started: System.monotonic_time(:microsecond), dirty_since: store.dirty_since, inflight: []}

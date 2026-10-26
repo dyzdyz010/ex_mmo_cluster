@@ -493,7 +493,7 @@ defmodule VoxelRegion.World.Prefabs do
     state = %{
       state
       | seq: before.seq + 1,
-        instances: Map.take(state.instances, Payloads.live_instance_ids(state))
+        instances: Payloads.prune_instances(state)
     }
 
     macro_changes = Enum.filter(cells, fn cell ->
@@ -542,6 +542,7 @@ defmodule VoxelRegion.World.Prefabs do
       # 宏格所在区域全都随本笔重编 L0 后像（l0_keys ⊇ 这些格的区域），后像直接在提交前缓存上改格，不先刷一遍地形缓存。
       terrain_payloads = Map.merge(before.payloads,state.payloads)
       {state, structure_keys, structure_cells} = Payloads.refresh_structure(state, cells)
+      state = VoxelRegion.World.Canopy.refresh(before, state, cells, canopy_keys)
       structure_done = System.monotonic_time(:microsecond)
       l0_keys = Enum.uniq(Payloads.region_keys(Enum.map(cells, &{0, &1})) ++ attachment_keys ++ canopy_keys)
       keys = l0_keys ++ structure_keys

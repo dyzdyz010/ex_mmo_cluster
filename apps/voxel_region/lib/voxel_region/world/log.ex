@@ -15,32 +15,36 @@ defmodule VoxelRegion.World.Log do
   # ---- 日志
 
   @doc """
-  追加一笔事务。本笔没有改动的实例表与附件归属不再整表写入：回放缺省即沿用前值（`replay_damage/2`，与纯液体提交同一语义），
-  所以单格编辑、热提交等每笔日志不随世界的实例／附件总数增长。真正改了它们的提交仍写整表（按键增量是 P2 的后续项）。
+  追加一笔事务。实例表与附件归属只写本笔的按键增量（`instances_delta` / `attachment_owners_delta`：id => 新记录或 nil = 删除；M2b）：
+  按需装页后内存里只有驻留的身份，整表不再是完整真值，回放只能按键合并。未改动时不写；每笔日志不随世界的实例／附件总数增长。
   `before` 是本笔提交前的 World 状态。
   """
   def append_log(before, state, txn) do
-    metadata = attachment_metadata(state, txn)
-    metadata = if state.instances == before.instances, do: Map.delete(metadata, :prefab_instances), else: metadata
-    metadata = if state.attachment_owners == before.attachment_owners, do: Map.delete(metadata, :attachment_owners), else: metadata
+    metadata = journal(state, txn)
+    metadata = if state.instances == before.instances, do: metadata, else: Map.put(metadata, :instances_delta, delta(before.instances, state.instances))
+    metadata = if state.attachment_owners == before.attachment_owners, do: metadata,
+      else: Map.put(metadata, :attachment_owners_delta, delta(before.attachment_owners, state.attachment_owners))
     append_journal(state, metadata)
   end
+
+  defp delta(old, now), do: for({id, _} <- Map.merge(old, now), Map.get(old, id) != Map.get(now, id), into: %{}, do: {id, Map.get(now, id)})
 
   @doc "按已备好的日志表示追加；实时落体帧、待施放与操作反馈只随本次广播。"
   def append_journal(%{log: {backend, handle}}, journal),
     do: backend.append(handle, Map.drop(journal, [:liquid_falls, :casts, :operation]))
 
-  @doc "纯液体数量提交的日志元数据：实例表与附件归属未变，不再整表重复（回放沿用前值）。"
-  def liquid_journal(state, txn),
-    do: Map.drop(attachment_metadata(state, txn), [:prefab_instances, :attachment_owners])
+  @doc "纯液体数量提交的日志元数据：实例表与附件归属未变，不写增量。"
+  def liquid_journal(state, txn), do: journal(state, txn)
 
-  # canonical 附件归属与ID分配水位随同一日志／检查点持久化；网络槽副本仍只需要全局ID。
+  @doc "旧格式整世界检查点的整表元数据（只供 `build_checkpoint/1`：检查点正文是整份世界，整表即完整真值）。"
   def attachment_metadata(state, txn),
+    do: Map.merge(journal(state, txn), %{attachment_owners: state.attachment_owners, prefab_instances: state.instances})
+
+  # 附件 ID 分配水位与活动液体集随同一日志持久化；网络槽副本仍只需要全局ID。
+  defp journal(state, txn),
     do:
       Map.merge(txn, %{
         attachment_serial: state.attachment_serial,
-        attachment_owners: state.attachment_owners,
-        prefab_instances: state.instances,
         material_units_per_micro: state.material_units_per_micro,
         liquid_active: Enum.to_list(state.liquid_active)
       })
@@ -122,8 +126,8 @@ defmodule VoxelRegion.World.Log do
           Enum.reduce(refined_in_regions(state, [p.region]), state, &put_refined(&2, &1, %{}))
           |> then(&Enum.reduce(core, &1, fn {cell, slots}, s -> put_refined(s, cell, slots) end))
 
-        instances = Map.merge(state.instances, p.instances)
-        ids = Payloads.live_instance_ids(%{state | instances: instances})
+        # 区域后像里的实例是网络投影（不带 placed_by 等），只补内存里没有的；完整记录的唯一来源是页 / 日志增量（评审 A4）。
+        instances = Map.merge(p.instances, state.instances)
 
         state =
           state
@@ -137,7 +141,8 @@ defmodule VoxelRegion.World.Log do
         state = state
           |> put_liquid(for({cell, _} <- liquid_in_regions(state, [p.region]), do: {cell, 0}))
           |> put_liquid(liquid_core)
-        %{state | instances: Map.take(instances, ids)}
+        state = %{state | instances: instances}
+        %{state | instances: Payloads.prune_instances(state)}
       else
         state
       end
@@ -148,12 +153,7 @@ defmodule VoxelRegion.World.Log do
   def replay_entry(state, %{structure: grid, level: level, cell: cell}) do
     key = {level, cell}
 
-    structure =
-      if grid == <<>>,
-        do: Map.delete(state.structure, key),
-        else: Map.put(state.structure, key, grid)
-
-    Enum.reduce(Payloads.region_keys([key]), %{state | structure: structure}, fn region, s ->
+    Enum.reduce(Payloads.region_keys([key]), put_structure(state, key, if(grid == <<>>, do: nil, else: grid)), fn region, s ->
       %{Payloads.cache_delete(s, region) | snapshots: MapSet.put(s.snapshots, region)}
     end)
   end
@@ -290,6 +290,9 @@ defmodule VoxelRegion.World.Log do
     )
   end
 
+  # ---- 旧格式整世界检查点（M2a 之前的存档格式）：只供测试夹具 `TestSupport.LegacySave` 制造旧存档、验证迁移路径。
+  #      在线持久化走页表切点（`PageCut`），不调用下面这些函数。
+
   @doc """
   检查点落盘：在检查点任务里执行（不占 World 回合）。两个后端都只原子替换 ≤ P 的前缀、保留并发追加的 seq > P 行，
   所以 World 可同时继续提交；World 收到结果后只换基底、退休已落盘前缀。
@@ -306,7 +309,7 @@ defmodule VoxelRegion.World.Log do
   def checkpoint_input(state) do
     state
     |> Map.take([:log, :seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
-      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions, :liquid_units, :liquid_regions,
+      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions, :liquid_units, :liquid_regions, :structure_pages, :canopy,
       :properties, :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
       :food_ledger, :food_receipts, :placed_by, :protection, :beacons, :beacon_attunements, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
@@ -415,6 +418,15 @@ defmodule VoxelRegion.World.Log do
 
   def region_entry(seq, bytes), do: %{seq: seq, payload: Codec.stamp_payload_seq(bytes, seq)}
 
+  # 增量（M2b）按键合并；整表（M2a 之前的日志）只在全量回放（迁移，内存即全部真值）里出现，分页重放由 `Pages.txn_needs/1` 显式拒绝。
+  defp instances_after(state, %{instances_delta: delta}), do: merge_delta(state.instances, delta)
+  defp instances_after(state, txn), do: Map.get(txn, :prefab_instances, state.instances)
+  defp owners_after(state, %{attachment_owners_delta: delta}), do: merge_delta(state.attachment_owners, delta)
+  defp owners_after(state, txn), do: Map.get(txn, :attachment_owners, state.attachment_owners)
+
+  defp merge_delta(map, delta),
+    do: Enum.reduce(delta, map, fn {id, nil}, acc -> Map.delete(acc, id); {id, value}, acc -> Map.put(acc, id, value) end)
+
   def replay_damage(state, txn) do
     damage =
       Enum.reduce(Map.get(txn, :property_states, []), state.damage, fn t, acc ->
@@ -427,7 +439,7 @@ defmodule VoxelRegion.World.Log do
         epochs: chunk_merge(state.epochs, Map.get(txn, :epochs, %{})),
         attachment_serial:
           Map.get(txn, :attachment_serial, max(state.attachment_serial, txn.seq)),
-        attachment_owners: Map.get(txn, :attachment_owners, state.attachment_owners),
+        attachment_owners: owners_after(state, txn),
         material_units_per_micro:
           Map.get(txn, :material_units_per_micro, state.material_units_per_micro),
         liquid_active: MapSet.new(Map.get(txn, :liquid_active, Liquid.neighborhood(Map.keys(state.liquid_units)))),
@@ -441,7 +453,7 @@ defmodule VoxelRegion.World.Log do
         protection: Protection.apply(state.protection, Map.get(txn, :protection, %{})),
         beacons: Map.merge(state.beacons, Map.get(txn, :beacons, %{})),
         beacon_attunements: Map.merge(state.beacon_attunements, Map.get(txn, :beacon_attunements, %{})),
-        instances: Map.get(txn,:prefab_instances,state.instances),
+        instances: instances_after(state, txn),
         material_balances:
           Map.merge(state.material_balances, Map.get(txn, :material_balances, %{})),
         caster_energy: Map.merge(state.caster_energy, Map.get(txn, :caster_energy, %{}))

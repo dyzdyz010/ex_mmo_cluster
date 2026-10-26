@@ -32,6 +32,10 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     defdelegate clear_unpublished(cv, prefix), to: Db
     defdelegate publish(cv, cut, rows, globals), to: Db
     defdelegate load(cv), to: Db
+    defdelegate load_head(cv, code), to: Db
+    defdelegate read_pages(cv, keys, fragments), to: Db
+    defdelegate locate(cv, ids), to: Db
+    defdelegate page_keys(cv), to: Db
     defdelegate collect(cv, prefix, limit), to: Db
 
     def write_pages(cv, cut, rows) do
@@ -68,6 +72,10 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     defdelegate clear_unpublished(path, prefix), to: Log
     defdelegate write_pages(path, cut, rows), to: Log
     defdelegate load(path), to: Log
+    defdelegate load_head(path, code), to: Log
+    defdelegate read_pages(path, keys, fragments), to: Log
+    defdelegate locate(path, ids), to: Log
+    defdelegate page_keys(path), to: Log
     defdelegate collect(path, prefix, limit), to: Log
 
     def publish(path, cut, rows, globals) do
@@ -127,6 +135,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     assert segments(@cv, 1) > 0
 
     w2 = start_supervised!({World, opts(c, OverlayLog.Db)})
+    touch(w2, @spread)
     same!(truth(w2), expected)
     # 提交与被杀切点无关的页，再发布：新尝试先清掉上次的残留。
     assert {:ok, 2} = World.apply_edit(w2, {40, 2, 400}, 19)
@@ -137,6 +146,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     stop_supervised!(World)
 
     w3 = start_supervised!({World, opts(c, OverlayLog.Db)})
+    touch(w3, [{{40, 2, 400}, 19} | @spread])
     same!(truth(w3), published)
     assert other_world() == c.other
   end
@@ -166,6 +176,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     same!(truth(w2), expected)
     stop_supervised!(World)
     w3 = start_supervised!({World, opts(c, OverlayLog.Db)})
+    touch(w3, @spread)
     same!(truth(w3), expected)
     assert other_world() == c.other
   end
@@ -266,6 +277,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     assert homes == [{-1, 0, 0}]
     stop_supervised!(World)
     w = start_supervised!({World, opts(c, OverlayLog.File, extra)})
+    touch(w, [{{-1, 1, 1}, 0}])
     assert Map.fetch!(:sys.get_state(w).instances, {1, 0}) == instance
   end
 
@@ -339,6 +351,9 @@ defmodule VoxelRegion.PageStoreMatrixTest do
   # ---- 辅助
 
   # 判定器 a（原始真值逐键精确）+ b（正式读取：触及区域的载荷去掉头部 seq 后的内容）。
+  # M2b：有前缀的重启只驻留启动装入的页（日志后缀与活动页）。判定前经正常读入口触及内容所在的格，装入它们的读取闭包。
+  defp touch(w, edits), do: World.material_snapshot(w, [], Enum.map(edits, &elem(&1, 0)))
+
   defp truth(w) do
     state = :sys.get_state(w)
     regions = state.overlay |> Map.keys() |> Enum.map(fn {_, cell} -> VoxelRegion.World.Canonical.region_of(cell) end)

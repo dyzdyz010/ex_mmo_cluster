@@ -65,7 +65,8 @@ defmodule VoxelRegion.World.PageWriter do
     {:noreply, state}
   end
 
-  defp rows(units), do: Enum.map(units, fn {unit, value} -> Pages.row(unit, value) end)
+  # 已删除身份的定位单元没有行（`Pages.row/2` 返回 nil）。
+  defp rows(units), do: for({unit, value} <- units, row = Pages.row(unit, value), row != nil, do: row)
 
   defp collect(backend, handle, prefix, total) do
     case backend.collect(handle, prefix, @collect_batch) do

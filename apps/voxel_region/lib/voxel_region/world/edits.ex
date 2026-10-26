@@ -111,7 +111,7 @@ defmodule VoxelRegion.World.Edits do
         else:
           Prefabs.clear_subtree(state, removed_owners, removed_cells)
           |> then(fn s ->
-            %{s | instances: Map.take(s.instances, Payloads.live_instance_ids(s))}
+            %{s | instances: Payloads.prune_instances(s)}
           end)
 
     # 地面花草失去支撑即消失：下方格变成不挡移动的材质（挖空、液体、花草）时，同一事务里清掉上面的花草。
@@ -205,7 +205,7 @@ defmodule VoxelRegion.World.Edits do
         end
 
       {geometry_changed, state} ->
-        state = %{state | instances: Map.take(state.instances, Payloads.live_instance_ids(state))}
+        state = %{state | instances: Payloads.prune_instances(state)}
         # 换了材料却没有随笔数量的格（挖掉、热毁、作者覆盖）不再是那份有限量：删除其数量记录（R8-07）。
         stale = for {0, cell} <- geometry_changed, not Map.has_key?(liquid_changes, cell),
           Map.has_key?(state.liquid_units, cell), do: cell
@@ -252,6 +252,9 @@ defmodule VoxelRegion.World.Edits do
                 state,
                 Enum.uniq(Enum.map(geometry_changed, &elem(&1, 1)) ++ Attachments.macros(removed_slots))
               )
+
+            # 树冠片段读本笔之后的 structure 与粗层值：在结构刷新之后、后像之前同笔重算（M2b）。
+            state = VoxelRegion.World.Canopy.refresh(before, state, Enum.map(geometry_changed, &elem(&1, 1)), canopy_keys)
 
             structured = System.monotonic_time(:microsecond)
             legacy = legacy and afterimage_keys == [] and structure_cells == []

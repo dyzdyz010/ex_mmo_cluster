@@ -128,6 +128,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     {state, structure_keys, structure_cells} =
       Payloads.refresh_structure(state, Enum.map(dirty, &elem(&1, 1)))
 
+    state = VoxelRegion.World.Canopy.refresh(before, state, Enum.map(dirty, &elem(&1, 1)), canopy_keys)
     {entries, state} = Payloads.region_afterimages(state, keys, before.payloads, coarse)
     entries = entries ++ Payloads.structure_entries(state, structure_cells)
     {%{coarse_txn | entries: entries ++ coarse_txn.entries}, Enum.uniq(keys ++ structure_keys), state}

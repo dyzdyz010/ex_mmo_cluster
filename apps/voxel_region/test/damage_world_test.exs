@@ -1812,6 +1812,9 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b4
+  # M2b：有前缀的重启只驻留启动装入的页；统计驻留附件前经正常读入口触及附件所在的格（页 {0,0,0}）。
+  defp touch(w), do: World.material_snapshot(w,[],[{1,1,1}])
+
   test "B4 authoritative placement, overlap, stale delete, balance and restart",c do
     r=b4_funded(c)
     assert {:ok,seq}=World.attachment_intent(c.w,c.actor,r)
@@ -1831,6 +1834,7 @@ defmodule VoxelRegion.DamageWorldTest do
     World.compact(c.w)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
+    touch(w)
     assert World.stats(w).attachment_slots==64
     assert balance(w,1001).balance==448
     remove=%{r | action: 1,id: seq,client_intent_seq: 12,request_id: 12}
@@ -1918,6 +1922,7 @@ defmodule VoxelRegion.DamageWorldTest do
     World.compact(c.w)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
+    touch(w)
     assert World.stats(w).attachment_slots==2
     GenServer.call(c.actor.player,{:eye,{1.0625,1.0625,3.0}})
     assert {:ok,_}=World.attachment_intent(w,c.actor,%{r | action: 1,id: id,client_intent_seq: 11,request_id: 11})
@@ -2003,6 +2008,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert :ok=World.compact(c.w)
     stop_supervised(World)
     w=start_supervised!({World,c.opts})
+    touch(w)
     assert World.stats(w).attachment_slots==1
     assert not Map.has_key?(payload(w).attachments,{0,2,{8,8,12}})
     replace=%{request_id: 22,client_intent_seq: 22,logical_scene_id: 1,instance_id: {birth,0},definition_id: id}

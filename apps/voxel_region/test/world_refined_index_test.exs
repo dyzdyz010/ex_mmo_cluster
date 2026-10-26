@@ -29,13 +29,17 @@ defmodule VoxelRegion.WorldRefinedIndexTest do
     assert {rebuilt.refined_owners, rebuilt.refined_regions} == {state.refined_owners, state.refined_regions}
   end
 
-  test "owner cells follow the full refined iteration order" do
+  # 父稿 Q5（用户已批准）：部件格按格坐标的确定序，不随驻留的 refined 整表遍历次序变化（M2b 按需装页后整表随装页历史不同）。
+  test "owner cells follow the deterministic cell order" do
     refined = for x <- 0..9, y <- 0..9, into: %{}, do: {{x, y, 0}, %{0 => {11, {rem(x + y, 3) + 1, 0}}}}
     state = Canonical.index_refined(Map.merge(empty(), %{refined: refined}))
     owners = MapSet.new([{1, 0}, {3, 0}])
+    expected = for x <- 0..9, y <- 0..9, rem(x + y, 3) + 1 in [1, 3], do: {x, y, 0}
 
-    assert Canonical.micro_owner_cells(state, owners) ==
-             for({cell, slots} <- refined, Enum.any?(slots, fn {_, {_, o}} -> o in owners end), do: cell)
+    assert Canonical.micro_owner_cells(state, owners) == Enum.sort(expected)
+    # 只留一部分格（另一次装页历史）时，剩下的格相对次序不变。
+    partial = Canonical.index_refined(Map.merge(empty(), %{refined: Map.take(refined, Enum.take_every(Map.keys(refined), 3))}))
+    assert Canonical.micro_owner_cells(partial, owners) == Enum.filter(Enum.sort(expected), &Map.has_key?(partial.refined, &1))
   end
 
   test "changed refined cells are exactly the cells whose slots differ" do

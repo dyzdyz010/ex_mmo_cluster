@@ -50,8 +50,33 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     %{w: start(root), root: root, a: a, digest: :crypto.hash(:sha256, File.read!(Path.join(root, "magic.json")))}
   end
 
-  defp start(root) do
-    start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
+  defmodule FailLog do
+    @moduledoc "只测试：文件日志后端，`arm/0` 后读页抛错（模拟装页读库失败；故障只注入在装页边界）。"
+    alias VoxelRegion.TestSupport.Log
+    defdelegate open(path, cv), to: Log
+    defdelegate replay(path), to: Log
+    defdelegate append(path, txn), to: Log
+    defdelegate checkpoint(path, txn), to: Log
+    defdelegate prefix(path), to: Log
+    defdelegate clear_unpublished(path, prefix), to: Log
+    defdelegate write_pages(path, cut, rows), to: Log
+    defdelegate publish(path, cut, rows, globals), to: Log
+    defdelegate load(path), to: Log
+    defdelegate load_head(path, code), to: Log
+    defdelegate locate(path, ids), to: Log
+    defdelegate page_keys(path), to: Log
+    defdelegate collect(path, prefix, limit), to: Log
+    def arm, do: :persistent_term.put(__MODULE__, true)
+    def disarm, do: :persistent_term.erase(__MODULE__)
+
+    def read_pages(path, keys, fragments) do
+      if :persistent_term.get(__MODULE__, false), do: raise("test-only page read failure")
+      Log.read_pages(path, keys, fragments)
+    end
+  end
+
+  defp start(root, log \\ Log) do
+    start_supervised!({World, [source: Source, log: log, root: root, observer: self(), name: nil,
       property_catalog_path: Path.join(root, "properties.json"),
       thermal_environment_path: Path.join(root, "environment.json"),
       magic_catalog_path: Path.join(root, "magic.json")]}, id: :world)
@@ -288,4 +313,44 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     assert elem(Process.info(c.w, :monitors), 1) == monitors
   end
 
+
+  # M2b 按需装页：有前缀的重启后施法者周围是冷页，Player 发来的前摇准备 `prepare_cast` 被挂起装页；Player 此时发的取消必须排在它后面——先处理取消会落空，准备随后建起永远等不到授权的待施放：调用方收不到回复、
+  # 施法者被卡成 cast_too_soon。期望（契约：取消不扣能、调用方收到 cast_cancelled、不留待施放）同上面的取消用例。
+  test "冷页上前摇准备被挂起装页时，同一动作的取消排在其后：调用方收到取消，不留待施放", c do
+    {actor, request} = request(c, @stone_micro, draw(), 1_000_000)
+    :ok = World.compact(c.w)
+    :ok = stop_supervised(:world)
+    w = start(c.root)
+    # 启动只装活动页（蓄能石所在页及其邻页 {-1..1}³）；施法闭包（眼周射程区域再扩邻页）伸到 x = -2 的冷页。
+    refute VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
+
+    key = {actor.identity, request.client_intent_seq}
+    ref = make_ref()
+    send(w, {:prepare_cast, key, actor, request, {self(), ref}})
+    send(w, {:cancel_cast, key, :cast_cancelled})
+    assert_receive {^ref, {:error, :cast_cancelled}}, 10_000
+    assert :sys.get_state(w).pending_casts == %{}
+
+    assert energy(%{c | w: w}) == 0.0
+  end
+
+  # 评审 A5 / F3：挂起的施法准备装页失败时，按原业务收尾——调用方收到错误、Player 收到 cast_failed（清掉 :preparing），
+  # 同序队列释放；不能只记日志丢弃，让调用方等满超时。
+  test "冷页上前摇准备装页失败：调用方收到错误、Player 收到 cast_failed，同序队列释放", c do
+    {actor, request} = request(c, @stone_micro, draw(), 1_000_000)
+    :ok = World.compact(c.w)
+    :ok = stop_supervised(:world)
+    w = start(c.root, FailLog)
+    on_exit(fn -> FailLog.disarm() end)
+    refute VoxelRegion.World.Pages.resident?(:sys.get_state(w), {0, {-2, 0, 0}})
+    FailLog.arm()
+
+    key = {actor.identity, request.client_intent_seq}
+    ref = make_ref()
+    send(w, {:prepare_cast, key, Map.put(actor, :player, self()), request, {self(), ref}})
+    assert_receive {^ref, {:error, {:page_load_failed, _}}}, 10_000
+    assert_receive {:cast_failed, ^key}, 1_000
+    s = :sys.get_state(w)
+    assert s.pending_casts == %{} and s.page_load.held == %{}
+  end
 end

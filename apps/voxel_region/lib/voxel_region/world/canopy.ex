@@ -5,7 +5,22 @@ defmodule VoxelRegion.World.Canopy do
   alias MmoContracts.Voxel.{Payload, Refined, Skins}
   alias VoxelRegion.{Attachments, Prefab, Reducer, Structure}
 
-  @doc "区域完整XYZ跨度内的真实锚点、实例及呈现残余；返回更新后的只读来源缓存。"
+  @doc """
+  区域完整XYZ跨度内的真实锚点、实例及呈现残余；返回更新后的只读来源缓存。L1–L5 由跨度覆盖的 L0 页上的树冠片段合并
+  （`fragments/2`，随提交维护、按 `(level, L0 页)` 持久；M2b），不读 L0 页；L0 照旧从驻留的 L0 数据现算。
+  """
+  def project(state,level,region) when level>0 do
+    frags=for page<-span_regions(level,region),f=Map.get(state.canopy,{level,page}),f != nil,do: f
+    in_span=&Payload.in_span?(Payload.local(region,&1))
+    anchors=for f<-frags,{cell,value}<-f.anchors,in_span.(at_level(cell,level)),into: %{},do: {cell,value}
+    instances=Enum.reduce(frags,%{},&Map.merge(&2,&1.instances))
+    ids=Refined.ancestors(instances,Enum.map(anchors,fn {_,{_,owner,_}}->owner end))
+    local=fn cell->Payload.cell_index(Payload.local(region,cell)) end
+    values=for f<-frags,{cell,value}<-f.residual,in_span.(cell),into: %{},do: {local.(cell),value}
+    grids=for f<-frags,{cell,grid}<-f.structure,in_span.(cell),into: %{},do: {local.(cell),grid}
+    {anchors,Map.take(instances,ids),values,grids,state}
+  end
+
   def project(state,level,region) do
     {anchors,state}=Enum.reduce(candidates(state,span_regions(level,region)),{%{},state},fn {cell,owner,bindings},{acc,s}->
       if Payload.in_span?(Payload.local(region,at_level(cell,level))) and not Map.has_key?(s.refined,cell) do
@@ -48,8 +63,78 @@ defmodule VoxelRegion.World.Canopy do
     end |> Enum.uniq() |> Enum.sort()
   end
 
-  # 载荷区域在 level 上的跨度（含一格 ring，level 坐标 [64r−1, 64r+65)）覆盖的 L0 区域。
-  defp span_regions(level,{rx,ry,rz}) do
+  @doc """
+  一个 L0 页的树冠片段（L1–L5，`%{level => 片段 | nil}`）：页内全部绑定锚点（不细分的归属宏格、材料在呈现绑定内）、其祖先实例记录副本、
+  逐级去叶残余与残余 structure。与 `project/3` 的 L≥1 合并规则配对：同一级格的全部锚点都在同一 L0 页（第 5 级祖格 32 宏格 < 64），
+  所以按页分片再按跨度过滤，与对整个跨度现算逐项相同。读本页、ring 邻页的附件与 0..4 级粗层值（编辑闭包已驻留）。
+  """
+  def fragments(state,page) do
+    {anchors,state}=Enum.reduce(candidates(state,[page]),{%{},state},fn {cell,owner,bindings},{acc,s}->
+      if Map.has_key?(s.refined,cell) do
+        {acc,s}
+      else
+        {:ok,{material,_},s}=cell_value(s,0,cell)
+        case Map.fetch(bindings,material) do
+          {:ok,presentation}->{Map.put(acc,cell,{material,owner,presentation}),s}
+          :error->{acc,s}
+        end
+      end
+    end)
+    if map_size(anchors)==0 do
+      {Map.new(1..5,&{&1,nil}),state}
+    else
+      instances=Map.take(state.instances,Refined.ancestors(state.instances,Enum.map(anchors,fn {_,{_,owner,_}}->owner end)))
+      values=Map.new(anchors,fn {cell,_}->{cell,{0,Skins.uniform(0)}} end)
+      {levels,_,_,state}=Enum.reduce(1..5,{%{},values,%{},state},fn level,{acc,values,grids,s}->
+        {values,grids,s}=reduce(s,values,grids,anchors,level,level)
+        {Map.put(acc,level,%{anchors: anchors,instances: instances,residual: values,structure: grids}),values,grids,s}
+      end)
+      {levels,state}
+    end
+  end
+
+  @doc """
+  提交时同笔维护树冠片段（M2b，父稿 P1“随 `Canopy.affected_keys` 同笔增量维护”）：`keys` 为本笔 `affected_keys/3` 的结果，
+  空即无锚点与改动共享祖格，片段不变；否则重算改动格所在、提交前后有绑定格的 L0 页，变了的片段判脏。
+  """
+  def refresh(_before,state,_cells,[]),do: state
+  def refresh(before,state,cells,_keys) do
+    cells=(VoxelRegion.World.AttachmentOps.attachment_dirty(before,cells) ++
+      VoxelRegion.World.AttachmentOps.attachment_dirty(state,cells)) |> Enum.map(&elem(&1,1))
+    pages=cells |> Enum.map(&region_of/1) |> Enum.uniq()
+    pages=Enum.filter(pages,fn page->candidates(before,[page]) != [] or candidates(state,[page]) != [] end)
+    Enum.reduce(pages,state,&put_fragments/2)
+  end
+
+  @doc "重算全部有绑定格的 L0 页的片段（迁移、离线粗层重建；O(世界)）。"
+  def refresh_all(state) do
+    pages=for {page,cells}<-state.macro_owner_regions,map_size(cells)>0,do: page
+    stale=for {{_,page},_}<-state.canopy,uniq: true,do: page
+    Enum.reduce(Enum.uniq(pages++stale),state,&put_fragments/2)
+  end
+
+  @doc "重算这些 L0 页的片段（启动重放日志后缀之后：片段不进日志，后缀写到的页要按重放结果重算）。"
+  def refresh_pages(state,pages) do
+    pages=Enum.filter(Enum.uniq(pages),fn page->candidates(state,[page]) != [] or
+      Enum.any?(1..5,&Map.has_key?(state.canopy,{&1,page})) end)
+    Enum.reduce(pages,state,&put_fragments/2)
+  end
+
+  defp put_fragments(page,state) do
+    {levels,state}=fragments(state,page)
+    Enum.reduce(levels,state,fn {level,fragment},s->
+      key={level,page}
+      if Map.get(s.canopy,key)==fragment do
+        s
+      else
+        canopy=if fragment==nil,do: Map.delete(s.canopy,key),else: Map.put(s.canopy,key,fragment)
+        VoxelRegion.World.Pages.mark(%{s | canopy: canopy},{:fragment,:canopy,key})
+      end
+    end)
+  end
+
+  @doc "载荷区域在 level 上的跨度（含一格 ring，level 坐标 [64r−1, 64r+65)）覆盖的 L0 区域。"
+  def span_regions(level,{rx,ry,rz}) do
     scale=1 <<< level
     axis=fn r -> floor_div((64*r-1)*scale,64)..floor_div((64*r+65)*scale-1,64) end
     for x<-axis.(rx),y<-axis.(ry),z<-axis.(rz),do: {x,y,z}
@@ -63,7 +148,8 @@ defmodule VoxelRegion.World.Canopy do
         do: {cell,owner,bindings}
   end
 
-  defp at_level({x,y,z},level) do
+  @doc "L0 宏格在 level 级的祖格。"
+  def at_level({x,y,z},level) do
     scale=1 <<< level
     {floor_div(x,scale),floor_div(y,scale),floor_div(z,scale)}
   end

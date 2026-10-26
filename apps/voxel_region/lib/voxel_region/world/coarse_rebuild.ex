@@ -64,6 +64,8 @@ defmodule VoxelRegion.World.CoarseRebuild do
       end)
 
     {state, _, _} = Payloads.refresh_structure(state, cells)
+    # 树冠片段读粗层值：粗层重派生后全部重算（变了的判脏，随同步切点写出）。
+    state = VoxelRegion.World.Canopy.refresh_all(state)
     true = Map.take(state, @metadata) === metadata
     true = l0(state.overlay) === l0_overlay
     true = l0(state.region_bases) === l0_bases
@@ -106,6 +108,9 @@ defmodule VoxelRegion.World.CoarseRebuild do
     state = Enum.reduce(Map.keys(state.payloads), state, fn {level, _} = key, s ->
       if level > 0, do: Payloads.cache_delete(s, key), else: s
     end)
+    # 丢弃的 structure 片段也要写（写成空），否则页表里的旧片段会在装页时复活。
+    state = Enum.reduce(Map.keys(state.structure_pages), state, &Pages.mark(&2, {:fragment, :structure, &1}))
+    state = %{state | structure_pages: %{}}
     %{state | overlay: l0(state.overlay), overlay_regions: l0(state.overlay_regions),
       region_bases: l0(state.region_bases), decoded: l0(state.decoded),
       snapshots: MapSet.filter(state.snapshots, fn {level, _} -> level == 0 end),

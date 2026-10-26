@@ -28,6 +28,7 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     def write_pages(_, _, _), do: :ok
     def publish(_, _, _, _), do: :ok
     def load(_), do: %{prefix: nil}
+    def load_head(_, _), do: %{prefix: nil}
     def collect(_, _, _), do: 0
   end
 
@@ -90,7 +91,14 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
 
   defp burn(c, digest, environment) do
     w = start(c, digest, environment)
+    # 只测试：参考记录里点火前已走过一次 0.5 s 提交——旧实现建场时冷区逐格重读解码 baseline（> 500 ms），启动排下的墙钟节拍
+    # 总在点火前到达。M2b 去掉重读后建场快于节拍，这个前提不再由墙钟偶然提供：取消启动节拍，建场后显式投递同一次提交
+    # （计时器与手动提交都正好推进 0.5 s），记录与断言不变（同 thermal_radiation_world_test 的 pause_clock）。
+    s = :sys.get_state(w)
+    assert is_integer(Process.cancel_timer(s.thermal_timer))
     {:ok, _} = World.apply_edits(w, (for x <- -1..7, z <- -1..7, do: {{x, 0, z}, @grass}) ++ house())
+    send(w, :thermal_commit)
+    assert World.simulation_snapshot(w, [], @box).thermal_accounting.elapsed_s == 0.5
     ignite(w)
     run(w, 600.0)
   end

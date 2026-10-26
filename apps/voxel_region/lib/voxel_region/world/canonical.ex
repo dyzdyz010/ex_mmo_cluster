@@ -11,10 +11,10 @@ defmodule VoxelRegion.World.Canonical do
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
-  @doc "持有给定部件身份微格的 refined 宏格，按全量遍历 `state.refined` 的次序。"
+  @doc "持有给定部件身份微格的 refined 宏格，按格坐标的确定序（`in_refined_order/2`）。"
   def micro_owner_cells(state,ids), do: for({cell, _} <- owner_refined(state, ids), do: cell)
 
-  @doc "含这些部件身份微格的 `{cell, slots}`（部件索引），次序同全量遍历 `state.refined`。"
+  @doc "含这些部件身份微格的 `{cell, slots}`（部件索引），按格坐标的确定序。"
   def owner_refined(state, ids),
     do: in_refined_order(state,
       Enum.reduce(ids, MapSet.new(), &MapSet.union(&2, Map.get(state.refined_owners, &1, MapSet.new()))))
@@ -40,6 +40,8 @@ defmodule VoxelRegion.World.Canonical do
     old = slot_owners(Map.get(state.refined, cell, %{}))
     new = slot_owners(slots)
     refined = if map_size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
+
+    state = Enum.reduce(MapSet.union(old, new), state, &Pages.touch(&2, &1))
 
     %{Pages.mark(state, Pages.cell_unit(:refined, cell)) | refined: refined,
       refined_owners: state.refined_owners |> index_owners(cell, MapSet.difference(new, old), MapSet.new())
@@ -95,6 +97,7 @@ defmodule VoxelRegion.World.Canonical do
     region = region_of(cell)
     cells = state.macro_owner_cells |> index_cell_if(old, cell, false) |> index_cell_if(owner, cell, true)
     state = Pages.mark(state, Pages.cell_unit(:macro_owners, cell))
+    state = Enum.reduce(Enum.reject([old, owner], &is_nil/1), state, &Pages.touch(&2, &1))
 
     if owner == nil do
       %{state | macro_owners: Map.delete(state.macro_owners, cell),
@@ -121,25 +124,73 @@ defmodule VoxelRegion.World.Canonical do
   # 让按格／按区域找附件只碰相关区域，不随世界附件总数线性扫描（M1：单格编辑每笔曾多次整表展开全部附件）。
 
   @doc "按 attachments 整表重建派生索引：载入、整体替换附件表（目录迁移、GM、维护入口）后调用，单测核对增量结果。"
-  def index_attachments(state),
-    do: Map.put(state, :attachment_regions,
+  def index_attachments(state) do
+    state
+    |> Map.put(:attachment_regions,
       Enum.reduce(state.attachments, %{}, fn {slot, value}, index -> put_region_cell(index, Attachments.region(slot), slot, value) end))
+    |> Map.put(:aid_regions, Enum.reduce(state.attachments, %{}, fn {slot, {aid, _}}, index -> count_aid(index, aid, Attachments.region(slot), 1) end))
+  end
+
+  # aid_regions（M2b 覆盖页集合用）：附件 id => %{L0 区域 => 该区里它的槽数}，只由下面三个写入口维护，不持久化。
+  # 缺字段的局部 state（单测夹具）从空表开始。
+  defp count_aid(index, aid, region, delta) do
+    counts = Map.update(Map.get(index, aid, %{}), region, delta, &(&1 + delta))
+    counts = if Map.get(counts, region) == 0, do: Map.delete(counts, region), else: counts
+    if map_size(counts) == 0, do: Map.delete(index, aid), else: Map.put(index, aid, counts)
+  end
+
+  defp aid_slots(state, slots_values, delta) do
+    Enum.reduce(slots_values, Map.get(state, :aid_regions, %{}), fn {slot, {aid, _}}, index -> count_aid(index, aid, Attachments.region(slot), delta) end)
+  end
 
   @doc "写入（新增或改值）附件槽，同步维护派生索引。"
   def put_attachments(state, entries) do
     state = Enum.reduce(entries, state, fn {slot, _}, s -> Pages.mark(s, Pages.slot_unit(slot)) end)
-    %{state | attachments: Map.merge(state.attachments, entries),
+    replaced = for {slot, _} <- entries, {:ok, old} <- [Map.fetch(state.attachments, slot)], do: {slot, old}
+    regions = aid_slots(%{aid_regions: aid_slots(state, replaced, -1)}, entries, 1)
+    state = Enum.reduce(replaced ++ Enum.to_list(entries), state, fn {_, {aid, _}}, s -> Pages.touch(s, {:aid, aid}) end)
+    Map.put(%{state | attachments: Map.merge(state.attachments, entries),
       attachment_regions: Enum.reduce(entries, state.attachment_regions,
-        fn {slot, value}, index -> put_region_cell(index, Attachments.region(slot), slot, value) end)}
+        fn {slot, value}, index -> put_region_cell(index, Attachments.region(slot), slot, value) end)}, :aid_regions, regions)
   end
 
   @doc "删除附件槽，同步维护派生索引。"
   def drop_attachments(state, slots) do
-    marked = Enum.reduce(slots, state, fn slot, s -> if Map.has_key?(state.attachments, slot), do: Pages.mark(s, Pages.slot_unit(slot)), else: s end)
-    %{marked | attachments: Map.drop(state.attachments, slots),
-      attachment_regions: Enum.reduce(slots, state.attachment_regions, fn slot, index ->
-        if Map.has_key?(state.attachments, slot), do: drop_region_cell(index, Attachments.region(slot), slot), else: index
-      end)}
+    dropped = for slot <- slots, {:ok, value} <- [Map.fetch(state.attachments, slot)], do: {slot, value}
+    marked = Enum.reduce(dropped, state, fn {slot, {aid, _}}, s -> s |> Pages.mark(Pages.slot_unit(slot)) |> Pages.touch({:aid, aid}) end)
+    Map.put(%{marked | attachments: Map.drop(state.attachments, slots),
+      attachment_regions: Enum.reduce(dropped, state.attachment_regions, fn {slot, _}, index ->
+        drop_region_cell(index, Attachments.region(slot), slot)
+      end)}, :aid_regions, aid_slots(state, dropped, -1))
+  end
+
+  # ---- structure 的片段索引（M2b，可由 structure 重建，不持久化）
+  #
+  # structure_pages：`{level, L0 页}` => 该片段里的格（level 坐标）。只由 put_structure/3 写；页按片段写回与抽取。
+
+  @doc "写一项 L1–L5 structure（nil 即删除），同步维护片段索引并判脏。缺字段的局部 state（单测夹具）也可用。"
+  def put_structure(state, {level, cell} = key, grid) do
+    page = {level, Pages.fragment_page(level, cell)}
+    index = Map.get(state, :structure_pages, %{})
+    state = Pages.mark(state, Pages.structure_unit(key))
+
+    if grid == nil do
+      Map.merge(state, %{structure: Map.delete(state.structure, key), structure_pages: unset(index, page, cell)})
+    else
+      Map.merge(state, %{structure: Map.put(state.structure, key, grid),
+        structure_pages: Map.update(index, page, MapSet.new([cell]), &MapSet.put(&1, cell))})
+    end
+  end
+
+  defp unset(index, page, cell) do
+    case Map.fetch(index, page) do
+      {:ok, cells} ->
+        rest = MapSet.delete(cells, cell)
+        if MapSet.size(rest) == 0, do: Map.delete(index, page), else: Map.put(index, page, rest)
+
+      :error ->
+        index
+    end
   end
 
   @doc "锚点在这些 L0 区域内的附件槽，按槽排序（与小表的整表遍历次序相同，大表时为确定次序）。"
@@ -232,12 +283,11 @@ defmodule VoxelRegion.World.Canonical do
 
 
   @doc """
-  refined 中这些宏格的 `{cell, slots}`，按全量遍历 `state.refined` 的次序：按部件累加（浮点 HP 求和、代表格、
-  观察格列表）与逐格扫描整表的结果逐项相同。只走宏格层（不展开槽），代价随 refined 宏格数而非槽数。
-  （实测子 map 的遍历次序与整表的相对次序并不总一致，所以不另建子 map 遍历。）
+  refined 中这些宏格的 `{cell, slots}`，按格坐标排序的确定序（父稿 Q5，用户已批准）：按部件累加（浮点 HP 求和、代表格、
+  观察格列表）不再依赖整表遍历次序——M2b 按需装页后驻留的 refined 随装页历史不同，整表次序也随之不同。
   """
   def in_refined_order(state, cells),
-    do: for({cell, slots} <- state.refined, MapSet.member?(cells, cell), do: {cell, slots})
+    do: for(cell <- Enum.sort(cells), {:ok, slots} <- [Map.fetch(state.refined, cell)], do: {cell, slots})
 
   defp slot_owners(slots), do: for({_, {_, owner}} <- slots, into: MapSet.new(), do: owner)
 

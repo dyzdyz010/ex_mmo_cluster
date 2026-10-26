@@ -15,7 +15,7 @@ defmodule VoxelRegion.PayloadCandidateTest do
       region_bases: %{{1, {1, 0, 0}} => neighbor},
       overlay_regions: %{}, overlay: %{}, snapshots: MapSet.new([{1, {0, 0, 0}}]),
       macro_owners: %{}, macro_owner_regions: %{}, macro_owner_cells: %{}, instances: %{}, prefabs: %{},
-      structure: %{}, lru: :gb_trees.empty(), lru_ticks: %{}, tick: 0,
+      structure: %{}, structure_pages: %{}, canopy: %{}, lru: :gb_trees.empty(), lru_ticks: %{}, tick: 0,
       lru_bytes: 0, resident_bytes: 0, cache_limit: 1_000_000,
       cache_stats: %{hits: 0, misses: 0, evictions: 0}
     }

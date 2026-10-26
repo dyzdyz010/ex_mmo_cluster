@@ -267,8 +267,7 @@ defmodule VoxelRegion.World.Gm do
 
   # 清掉微格后失去全部格的实例与其附件随同一笔消失（与作者移除同一规则）。
   defp prune_instances(state) do
-    live = Payloads.live_instance_ids(state) |> MapSet.new()
-    dead = state.instances |> Map.keys() |> MapSet.new() |> MapSet.difference(live)
+    dead = MapSet.new(Payloads.dead_instances(state))
     owned = for {id, {owner, _}} <- state.attachment_owners, MapSet.member?(dead, owner), into: MapSet.new(), do: id
     slots = if MapSet.size(owned) == 0, do: [], else: for({slot, {id, _}} <- state.attachments, MapSet.member?(owned, id), do: slot)
     %{drop_attachments(state, slots) | instances: Map.drop(state.instances, MapSet.to_list(dead)),

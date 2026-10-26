@@ -110,6 +110,10 @@ def main():
     deploy, out = Path(a.deploy), Path(a.out)
     out.mkdir(parents=True, exist_ok=False)
     cfg = m0.config(deploy)
+    # 内存看门狗（系统可用 < 20 GB 时只杀本脚本启动之后出现的 erl），与 equiv.py 同一实现；函数内导入避免与 equiv 循环导入。
+    from equiv import erl_pids, watchdog
+    baseline, guard, tripped = erl_pids(), threading.Event(), threading.Event()
+    threading.Thread(target=watchdog, args=(baseline, guard, tripped), daemon=True).start()
     meta = {"args": vars(a), "started_utc": time.time(),
             "git": subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip(),
             "git_dirty": subprocess.run(["git", "status", "--porcelain"], cwd=HERE, capture_output=True,
@@ -165,7 +169,11 @@ def main():
         m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.stop()")
     finally:
         stop.set()
-        (out / "stop.json").write_text(json.dumps(m0.stop(deploy), default=str))
+        guard.set()
+        if tripped.is_set():
+            (out / "memory_watchdog_tripped").write_text("1")
+        if m0.status(deploy)["running"]:
+            (out / "stop.json").write_text(json.dumps(m0.stop(deploy), default=str))
 
 
 if __name__ == "__main__":

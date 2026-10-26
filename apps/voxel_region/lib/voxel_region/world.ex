@@ -169,8 +169,9 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 读整张属性表的维护入口：有前缀时先装全部有行的页（M2b），等装页而不用 5 s 默认超时。
   def publish_properties(server, path),
-    do: GenServer.call(server, {:publish_properties, Damage.load(path)})
+    do: GenServer.call(server, {:publish_properties, Damage.load(path)}, 300_000)
 
   @doc "全局系统作者入口：从明确的旧目录升级可玩参数，保留实例存量并记录热参考重标。"
   def publish_parameters(server, path, expected_digest),
@@ -273,11 +274,11 @@ defmodule VoxelRegion.World do
   thermal_accounting 是整个世界累计结算账；做守恒比较的调用方必须独占该世界。
   """
   def simulation_snapshot(server, characters, box),
-    do: GenServer.call(server, {:simulation_snapshot, characters, box})
+    do: GenServer.call(server, {:simulation_snapshot, characters, box}, 300_000)
 
   @doc "读取一批已由感知入口限距的 canonical 射线；共享 World seq，不修改世界事务。独立附件未采样。"
   def sight_snapshot(server, origin, rays),
-    do: GenServer.call(server, {:sight_snapshot, origin, rays})
+    do: GenServer.call(server, {:sight_snapshot, origin, rays}, 300_000)
 
   @doc "普通角色查询或付费建造，复用世界事务。"
   def production_intent(server, actor, request) do
@@ -426,7 +427,8 @@ defmodule VoxelRegion.World do
   def prefab_cells(server, id, anchor, orientation),
     do: GenServer.call(server, {:prefab_cells, id, anchor, orientation})
 
-  def instance_cells(server, id), do: GenServer.call(server, {:instance_cells, id})
+  # 只带 id：内存里没有时经定位表装页（M2b），与其他装页入口同一等待时限。
+  def instance_cells(server, id), do: GenServer.call(server, {:instance_cells, id}, 300_000)
 
   defp prefab_keys(cells) do
     cells |> footprint_macros() |> Enum.map(&{0, &1}) |> region_keys() |> Enum.uniq()
@@ -491,10 +493,22 @@ defmodule VoxelRegion.World do
   def rebuild_coarse(opts) do
     Task.async(fn ->
       {:ok, state} = restore(opts)
+      # 离线重建读整个世界：有前缀时先装全部有行的页（同进程，装页入口与在线相同）。
+      state = load_all(state)
       if state.checkpoint_timer, do: Process.cancel_timer(state.checkpoint_timer)
       VoxelRegion.World.CoarseRebuild.run(%{state | checkpoint_timer: nil})
     end)
     |> Task.await(:infinity)
+  end
+
+  defp load_all(%{resident: :all} = state), do: state
+
+  defp load_all(%{log: {backend, handle}} = state) do
+    pages =
+      for {level, region, segment} <- backend.page_keys(handle), uniq: true,
+          do: if(segment in VoxelRegion.World.Pages.fragment_codes(), do: {0, region}, else: {level, region})
+
+    %{VoxelRegion.World.PageLoad.load_sync(state, [], pages, []) | resident: :all}
   end
 
   # ---- GenServer
@@ -646,6 +660,16 @@ defmodule VoxelRegion.World do
           # 页索引与攒下的脏单元（M2a，`World.Pages`），派生、不持久化。
           pages: VoxelRegion.World.Pages.new(),
           page_dirty: MapSet.new(),
+          # 本笔写入口碰过的身份（覆盖页集合按根重算，`Pages.remember/2` 取走）。
+          owners_touched: MapSet.new(),
+          # M2b 驻留集（`:all` = 内存即全部真值：迁移 / 全新世界）、页代数（装页令牌；本步不淘汰恒为 0）与装页任务。
+          resident: :all,
+          page_generation: %{},
+          page_load: VoxelRegion.World.PageLoad.new(),
+          # structure 的 `(level, L0 页)` 片段索引、L1–L5 树冠片段与附件 id 的区域计数（M2b 派生，可由驻留真值重算）。
+          structure_pages: %{},
+          canopy: %{},
+          aid_regions: %{},
           seq: 0,
           interaction_history: [],
           interaction_floor: 0,
@@ -687,11 +711,13 @@ defmodule VoxelRegion.World do
         true = state.material_units_per_micro == Damage.material_units(state.properties)
         validate_damage_catalog(state)
         state = migrate_component_damage(state)
-        {state, _, _} = refresh_structure(state, Map.keys(state.refined))
-        # 未迁移 / 全新世界（尚无已发布前缀）：全部非空单元都要写，首个切点即迁移（m2a §7）。
+        # 未迁移 / 全新世界（尚无已发布前缀，内存即全部真值）：全量派生 structure 与树冠片段，全部非空单元都要写，首个切点即迁移（m2a §7）。
         # 索引在规范化（旧 g=1 行并成整件行等）之后从全量状态重建，规范化的结果随首个切点写出。
+        # 有前缀（M2b）：structure / 树冠随页片段装入，不全量重算；整件几何汇总在窗口快照时按盒准备。
         state =
           if state.page_store.published == nil do
+            {state, _, _} = refresh_structure(state, Map.keys(state.refined))
+            state = VoxelRegion.World.Canopy.refresh_all(state)
             state = VoxelRegion.World.Pages.rebuild(state)
             %{state | page_dirty: VoxelRegion.World.Pages.units(state), page_store: %{state.page_store | wanted: true}}
           else
@@ -701,10 +727,10 @@ defmodule VoxelRegion.World do
         # 重启时后缀可能已很长（上次写回卡住）：按恢复后的积压定级，接纳从第一条请求起生效。
         state = VoxelRegion.World.PageCut.assess(state)
         state = Thermal.rebuild_work(state)
-        state = prepare_component_cache(state, nil)
 
         Logger.info(
-          "voxel_region world #{FileStore.hex(state.cv)} ready, seq=#{state.seq}, root=#{state.source.world_dir(state.source_state)}"
+          "voxel_region world #{FileStore.hex(state.cv)} ready, seq=#{state.seq}, resident=#{resident_count(state)}, " <>
+            "root=#{state.source.world_dir(state.source_state)}"
         )
 
         state = schedule_liquid(state)
@@ -727,28 +753,88 @@ defmodule VoxelRegion.World do
             when state.page_store.level == :hard and is_tuple(message) and elem(message, 0) in @commit_calls and
                    not (elem(message, 0) in [:tool_intent, :spell_intent] and :erlang.map_get(:action, elem(message, 2)) == 0)
 
-  @impl true
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
   @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since]
 
-  def handle_call(message, _from, state) when backlog_rejects?(message, state),
+  # 装页任务与 World 的往来（M2b `World.PageLoad`）：不过闸、不写回热域。
+  @page_calls [:page_need, :page_adopt, :page_stage, :page_commit, :page_yield]
+
+  @impl true
+  def handle_call(message, from, state), do: gated_call(message, from, state, 0)
+
+  # 积压硬上限先于装页（被拒的调用不必装页）；再过读取闭包的闸（M2b：缺页即挂起、装完重放）；再写回热域、分派。
+  defp gated_call(message, _from, state, _attempt) when backlog_rejects?(message, state),
     do: {:reply, {:error, :persist_backlog}, state}
 
-  def handle_call(message, from, %{thermal_work: %{domain: %{pending: true}}} = state)
+  # 同一动作 / 同一身体的消息按到达顺序处理：前一条因装页挂起时，后到的排在它后面（`PageLoad.order_key/1`），装完一起按序重放。
+  defp gated_call(message, from, state, attempt) do
+    alias VoxelRegion.World.PageLoad
+    key = PageLoad.order_key(message)
+
+    cond do
+      is_tuple(message) and elem(message, 0) in @page_calls ->
+        call(message, from, state)
+
+      attempt == 0 and PageLoad.held?(state, key) ->
+        {:noreply, PageLoad.enqueue(state, key, {:call, message, from})}
+
+      true ->
+        case PageLoad.gate(state, {:call, message, from}, attempt) do
+          {:ready, state} -> call(message, from, state)
+          {:deferred, state} -> {:noreply, PageLoad.hold(state, key)}
+        end
+    end
+  end
+
+  defp call(message, from, %{thermal_work: %{domain: %{pending: true}}} = state)
       when not (is_tuple(message) and elem(message, 0) in @unflushed) and message not in @unflushed,
-      do: handle_call(message, from, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
+      do: call(message, from, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
 
-  def handle_call(:content_version, _from, state), do: {:reply, state.cv, state}
-  def handle_call(:seq, _from, state), do: {:reply, state.seq, state}
-  def handle_call({:interactions_since, cursor}, _from, state),
+  defp call({:page_need, keys, exact, ids}, _from, state),
+    do: {:reply, VoxelRegion.World.PageLoad.need(state, keys, exact, ids), state}
+
+  defp call({:page_need, keys, exact, ids, task}, _from, state),
+    do: {:reply, VoxelRegion.World.PageLoad.need(state, keys, exact, ids, task), state}
+
+  # 分批暂存（每批一个有上界的回合）、整树闭合后一次标驻留、撞上别的任务暂存页时让出（M2b 统筹第四轮）。
+  defp call({:page_stage, task, keys, units, ready}, _from, state) do
+    started = System.monotonic_time(:microsecond)
+    {state, loaded, ready} = VoxelRegion.World.PageLoad.stage(state, task, keys, units, ready)
+    Logger.info("voxel_page_stage pages=#{length(keys)} units=#{length(units)} ready=#{length(ready)} " <>
+      "us=#{System.monotonic_time(:microsecond) - started}")
+    state = Thermal.touch(state, loaded)
+    {:reply, {:ok, length(loaded)}, if(ready == [], do: state, else: schedule_liquid(state))}
+  end
+
+  defp call({:page_commit, task}, _from, state) do
+    started = System.monotonic_time(:microsecond)
+    {reply, state} = VoxelRegion.World.PageLoad.commit(state, task)
+    Logger.info("voxel_page_commit reply=#{if reply == :ok, do: :ok, else: :more} us=#{System.monotonic_time(:microsecond) - started}")
+    {:reply, reply, schedule_liquid(state)}
+  end
+
+  defp call({:page_yield, task, other}, _from, state), do: {:reply, :ok, VoxelRegion.World.PageLoad.yield(state, task, other)}
+
+  defp call({:page_adopt, tokens, rows, located}, _from, state) do
+    started = System.monotonic_time(:microsecond)
+    {state, follow, loaded} = VoxelRegion.World.PageLoad.adopt(state, tokens, rows, located)
+    Logger.info("voxel_page_adopt pages=#{length(tokens)} rows=#{length(rows)} us=#{System.monotonic_time(:microsecond) - started}")
+    {:reply, follow, state |> Thermal.touch(loaded) |> schedule_liquid()}
+  end
+
+  defp call(:page_resident_all, _from, state), do: {:reply, :ok, %{state | resident: :all}}
+
+  defp call(:content_version, _from, state), do: {:reply, state.cv, state}
+  defp call(:seq, _from, state), do: {:reply, state.seq, state}
+  defp call({:interactions_since, cursor}, _from, state),
     do: {:reply, VoxelRegion.World.Interactions.since(state, cursor), state}
-  def handle_call(:liquid_activity, _from, state), do:
+  defp call(:liquid_activity, _from, state), do:
     {:reply, %{active_cells: MapSet.size(state.liquid_active), scheduled: state.liquid_timer != nil}, state}
-  def handle_call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
+  defp call(:source, _from, state), do: {:reply, {state.source, state.source_state}, state}
 
-  def handle_call({:prepare, keys}, {caller, _}, state) do
+  defp call({:prepare, keys}, {caller, _}, state) do
     started = System.monotonic_time(:microsecond)
     at = System.system_time(:microsecond)
     # 已物化载荷可直接供 payload_bytes 读取；预备不再重复触碰来源磁盘。
@@ -766,30 +852,30 @@ defmodule VoxelRegion.World do
     {:reply, {state.source, state.source_state, missing}, state}
   end
 
-  def handle_call({:adopt_liquid, regions}, _, state) do
+  defp call({:adopt_liquid, regions}, _, state) do
     {:reply, :ok, adopt_liquid_regions(state, regions)}
   end
 
-  def handle_call({:prepare_intent, message}, from, state) do
+  defp call({:prepare_intent, message}, from, state) do
     case intent_keys(state, message) do
       {:ok, keys} ->
         keys = Enum.uniq(keys)
         missing = Enum.filter(keys, &(needs_source?(state, &1) and not Map.has_key?(state.payloads, &1)))
         # 编辑链上的 L1+ 区域：载荷可能已缓存（供客户端），但归约读的是解码后的来源。
         undecoded = for {level, _} = key <- keys, level > 0, needs_source?(state, key), do: key
-        if missing == [] and undecoded == [], do: handle_call({:prepared_intent, keys, message, []}, from, state),
+        if missing == [] and undecoded == [], do: call({:prepared_intent, keys, message, []}, from, state),
           else: {:reply, {:prepare, state.source, state.source_state, keys, missing, undecoded}, state}
       error -> {:reply, error, state}
     end
   end
 
-  def handle_call({:prepared_intent, keys, message, decoded}, from, state) do
+  defp call({:prepared_intent, keys, message, decoded}, from, state) do
     decoded = for {key, payload} <- decoded, needs_source?(state, key), into: state.decoded, do: {key, payload}
     state = adopt_liquid_regions(%{state | decoded: decoded}, Enum.uniq(for {0, region} <- keys, do: region))
-    handle_call(message, from, state)
+    call(message, from, state)
   end
 
-  def handle_call({:publish_properties, catalog}, _, state) do
+  defp call({:publish_properties, catalog}, _, state) do
     compatible =
       Damage.material_units(catalog) == state.material_units_per_micro and
         (map_size(state.attachments) == 0 or
@@ -837,7 +923,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:publish_parameters, catalog, expected_digest}, _, state) do
+  defp call({:publish_parameters, catalog, expected_digest}, _, state) do
     cond do
       state.properties.digest != expected_digest ->
         {:reply, {:error, :property_version_mismatch}, state}
@@ -860,7 +946,7 @@ defmodule VoxelRegion.World do
   # 存量热行的显热参考按 ParameterEvolution.ambient_reference 重标进参数重标账，账仍闭合。
   # 新热源与同格未放完的热源合并（余量、功率相加），和其他有限热源一样只在放出时记入供热账。
   # 没有热环境时从空热账开始。电路零功率阈值随原环境配置继承（D1），实验文件不必再写。
-  def handle_call({:thermal_experiment, experiment}, _, state) do
+  defp call({:thermal_experiment, experiment}, _, state) do
     true = experiment["classification"] == "Test-only"
     base = state.thermal || empty_thermal(experiment)
     config = Map.merge(base.config, experiment)
@@ -894,7 +980,7 @@ defmodule VoxelRegion.World do
   end
 
   # NPC 观察射线：一次 owner 调用读同一 seq，不写事务。
-  def handle_call({:sight_snapshot, origin, rays}, _, state) do
+  defp call({:sight_snapshot, origin, rays}, _, state) do
     {hits, state} =
       Enum.map_reduce(rays, state, fn {direction, range}, s ->
         case Damage.trace(origin, direction, range, s, &target_at/2) do
@@ -910,10 +996,10 @@ defmodule VoxelRegion.World do
   end
 
   # 一次 owner 调用提供一致投影；物化缓存仍可丢弃。
-  def handle_call({:material_snapshot, characters, cells}, from, state),
-    do: handle_call({:material_snapshot, characters, cells, :summary}, from, state)
+  defp call({:material_snapshot, characters, cells}, from, state),
+    do: call({:material_snapshot, characters, cells, :summary}, from, state)
 
-  def handle_call({:material_snapshot, characters, cells, detail}, _, state) do
+  defp call({:material_snapshot, characters, cells, detail}, _, state) do
     {occupancy, state} = Enum.map_reduce(cells, state, fn cell, s ->
       {:ok, {material, _}, s} = cell_value(s, 0, cell)
       refined = Map.get(s.refined, cell, %{})
@@ -941,7 +1027,7 @@ defmodule VoxelRegion.World do
     {:reply, snapshot, state}
   end
 
-  def handle_call({:simulation_snapshot, characters, box}, _, state) do
+  defp call({:simulation_snapshot, characters, box}, _, state) do
     in_box = &VoxelRegion.PropertyObservation.contains?(&1, box)
     state = prepare_component_cache(state, box)
     properties = property_snapshot(state, box)
@@ -956,7 +1042,7 @@ defmodule VoxelRegion.World do
   end
 
   # 只测试作者供给入口；不可由 Gate 玩家消息调用。
-  def handle_call({:liquid_experiment, edits}, _, state) do
+  defp call({:liquid_experiment, edits}, _, state) do
     true = liquid_enabled?(state)
     true = Enum.all?(edits, fn {cell,_} -> valid_edit_coord?(cell) and liquid_inside?(cell,state.liquid_bounds) end)
     changes = for {cell,m} <- edits, Phase.liquid?(m) or phase_material?(state,m) or Map.has_key?(state.liquid_units,cell),
@@ -974,7 +1060,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:author_regions, regions}, _, state) do
+  defp call({:author_regions, regions}, _, state) do
     true = regions != [] and Enum.all?(regions, fn r ->
       (r.holder == :reserved or match?({:character, cid} when is_integer(cid) and cid > 0, r.holder)) and
         elem(r.min, 0) <= elem(r.max, 0) and elem(r.min, 1) <= elem(r.max, 1)
@@ -994,16 +1080,16 @@ defmodule VoxelRegion.World do
       else: commit_protection(state, state, Map.new(delta))
   end
 
-  def handle_call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
-  def handle_call(:magic_digest, _, state), do: {:reply, state.magic && state.magic.digest, state}
+  defp call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
+  defp call(:magic_digest, _, state), do: {:reply, state.magic && state.magic.digest, state}
 
-  def handle_call({:caster_state, cid}, _, state) do
+  defp call({:caster_state, cid}, _, state) do
     reply = if state.magic, do: {:ok, caster_view(state, cid, @no_quote, 0.0, 0.0)}, else: {:error, :magic_unavailable}
     {:reply, reply, state}
   end
 
-  def handle_call({:send_caster_state, cid, request_id, recipient}, from, state) do
-    {:reply, result, state} = handle_call({:caster_state, cid}, from, state)
+  defp call({:send_caster_state, cid, request_id, recipient}, from, state) do
+    {:reply, result, state} = call({:caster_state, cid}, from, state)
     case result do
       {:ok, caster} -> publish_caster_state(recipient, request_id, caster)
       {:error, _} -> :ok
@@ -1011,19 +1097,19 @@ defmodule VoxelRegion.World do
     {:reply, result, state}
   end
 
-  def handle_call({:spell_intent, actor, request}, from, state) do
+  defp call({:spell_intent, actor, request}, from, state) do
     case current_actor(actor) do
       {:ok, current} -> prepare_spell(state, from, Map.put(current, :action_key, {actor.identity, request.client_intent_seq}), request)
       error -> {:reply, error, state}
     end
   end
 
-  def handle_call({:tool_range, id}, _, state), do: {:reply, tool_range(state, id), state}
+  defp call({:tool_range, id}, _, state), do: {:reply, tool_range(state, id), state}
 
-  def handle_call({:tool_definition, id}, _, state),
+  defp call({:tool_definition, id}, _, state),
     do: {:reply, Map.fetch(state.properties.tools, id), state}
 
-  def handle_call({:body_tool, actor, request, distance}, _, state) do
+  defp call({:body_tool, actor, request, distance}, _, state) do
     tool = Map.fetch!(state.properties.tools, request.tool_id)
     previous = state.tool_sessions[actor.player]
     interval = ceil(tool["interval_seconds"] * 1_000_000)
@@ -1045,10 +1131,10 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:material_balances, cid}, _, state),
+  defp call({:material_balances, cid}, _, state),
     do: {:reply, Enum.map(state.production_materials, &balance_state(state, cid, &1)), state}
 
-  def handle_call({:material_supply, cid, supply_id, quantities}, _, state) do
+  defp call({:material_supply, cid, supply_id, quantities}, _, state) do
     key = {cid, supply_id}
     case Map.fetch(state.material_supplies, key) do
       {:ok, receipt} -> {:reply, {:ok, receipt.seq}, state}
@@ -1067,52 +1153,57 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:gm, key, op, args}, _, state), do: VoxelRegion.World.Gm.run(state, key, op, args)
+  defp call({:gm, key, op, args} = message, from, state),
+    do: VoxelRegion.World.Gm.run(state, key, op, args) |> missing_pages(message, from)
 
-  def handle_call({:parcel_export, box}, _, state) do
+  defp call({:parcel_export, box}, _, state) do
     {result, state} = VoxelRegion.World.Parcel.export(state, box)
     {:reply, result, state}
   end
 
-  def handle_call({:parcel_install, key, parcel, delta}, _, state),
+  defp call({:parcel_install, key, parcel, delta}, _, state),
     do: VoxelRegion.World.Parcel.install(state, key, parcel, delta)
 
-  def handle_call({:beacon_install, key, record}, _, state),
+  defp call({:beacon_install, key, record}, _, state),
     do: VoxelRegion.World.Beacons.install(state, key, record)
 
-  def handle_call({:beacon_directory, cid}, _, state),
+  defp call({:beacon_directory, cid}, _, state),
     do: {:reply, VoxelRegion.World.Beacons.directory(state, cid), state}
 
-  def handle_call({:liquid_fill, cid, key, material, seed, level_y, max_cells}, _, state) do
+  defp call({:liquid_fill, cid, key, material, seed, level_y, max_cells} = message, from, state) do
     case Map.fetch(state.material_supplies, {cid, {:liquid_fill, key}}) do
       {:ok, receipt} -> {:reply, {:ok, receipt}, state}
       :error ->
         case liquid_fill_commit(state, cid, key, material, seed, level_y, max_cells) do
           {:ok, receipt, next} -> {:reply, {:ok, receipt}, next}
-          {:error, reason} -> {:reply, {:error, reason}, state}
+          {:error, reason} -> {:reply, {:error, reason}, state} |> missing_pages(message, from)
         end
     end
   end
 
-  def handle_call({:production_intent, actor, request}, _, state) do
-    with {:ok, actor} <- current_actor(actor), true <- state.production_materials != [] do
-      build_target(state, actor, request)
+  defp call({:production_intent, actor, request} = message, from, state) do
+    with {:ok, current} <- current_actor(actor), true <- state.production_materials != [],
+         :ready <- posed(state, message, from, {:production_intent, current, request}) do
+      build_target(state, current, request)
     else
+      {:noreply, _} = deferred -> deferred
       false -> {:reply, {:error, :production_unavailable}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:attachment_intent, actor, request}, _, state) do
-    with {:ok, actor} <- current_actor(actor), true <- state.properties != nil do
-      attachment_target(state, actor, request)
+  defp call({:attachment_intent, actor, request} = message, from, state) do
+    with {:ok, current} <- current_actor(actor), true <- state.properties != nil,
+         :ready <- posed(state, message, from, {:attachment_intent, current, request}) do
+      attachment_target(state, current, request)
     else
+      {:noreply, _} = deferred -> deferred
       false -> {:reply, {:error, :production_unavailable}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:tool_intent, actor, request}, _, state) do
+  defp call({:tool_intent, actor, request} = message, from, state) do
     started = System.monotonic_time(:microsecond)
     before = state
     tool = Map.fetch!(state.properties.tools, request.tool_id)
@@ -1125,39 +1216,10 @@ defmodule VoxelRegion.World do
         {:ok, actor} ->
           refreshed = System.monotonic_time(:microsecond)
 
-          Logger.info(
-            "voxel_tool_owner request_id=#{request.request_id} node=#{node()} started_us=#{started} refresh_us=#{refreshed - started}"
-          )
-
-          case tool_target(state, actor, request, tool) do
-            {:error, reason, _} ->
-              {:reply, {:error, reason}, before}
-
-            {:ok, target, state} ->
-              target = property_state(state, target)
-
-              cond do
-                request.action == 0 ->
-                  {:reply, {:ok, public_property(%{target | request_id: request.request_id})}, state}
-
-                Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
-                  {:reply, {:error, :use_liquid_tool}, before}
-
-                # R8-07：散体格只能舀取（工具 11），镐采与拆解都不接受；点燃、认领等非损伤工具照常。
-                loose_cell?(state, target) and String.starts_with?(tool["action"], "damage") ->
-                  {:reply, {:error, :use_liquid_tool}, before}
-
-                not same_tool_target?(target, request) ->
-                  {:reply, {:error, :stale_target}, state}
-
-                # 受保护区域许可：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
-                tool["action"] not in ["protection.claim", "beacon.use"] and
-                    not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
-                  {:reply, {:error, :protected_region}, state}
-
-                true ->
-                  attack_target(before, state, actor, request, target, tool)
-              end
+          # 刷新后的姿态决定射线与作用格（评审 A2）：按最终姿态复核闭包，缺页即挂起原消息（装齐重放时再刷新、再复核）。
+          case posed(state, message, from, {:tool_intent, actor, request}) do
+            {:noreply, _} = deferred -> deferred
+            :ready -> tool_owner(before, state, actor, request, tool, started, refreshed)
           end
       end
 
@@ -1168,17 +1230,70 @@ defmodule VoxelRegion.World do
     result
   end
 
-  def handle_call({:publish_prefabs, catalog}, _from, state) do
+  defp tool_owner(before, state, actor, request, tool, started, refreshed) do
+    Logger.info(
+      "voxel_tool_owner request_id=#{request.request_id} node=#{node()} started_us=#{started} refresh_us=#{refreshed - started}"
+    )
+
+    case tool_target(state, actor, request, tool) do
+      {:error, reason, _} ->
+        {:reply, {:error, reason}, before}
+
+      {:ok, target, state} ->
+        target = property_state(state, target)
+
+        cond do
+          request.action == 0 ->
+            {:reply, {:ok, public_property(%{target | request_id: request.request_id})}, state}
+
+          Phase.liquid?(target.material) and tool["action"] not in ["phase.cool", "phase.heat"] ->
+            {:reply, {:error, :use_liquid_tool}, before}
+
+          # R8-07：散体格只能舀取（工具 11），镐采与拆解都不接受；点燃、认领等非损伤工具照常。
+          loose_cell?(state, target) and String.starts_with?(tool["action"], "damage") ->
+            {:reply, {:error, :use_liquid_tool}, before}
+
+          not same_tool_target?(target, request) ->
+            {:reply, {:error, :stale_target}, state}
+
+          # 受保护区域许可：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
+          tool["action"] not in ["protection.claim", "beacon.use"] and
+              not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
+            {:reply, {:error, :protected_region}, state}
+
+          true ->
+            attack_target(before, state, actor, request, target, tool)
+        end
+    end
+  end
+
+  # 裁决用的最终快照（刷新后的姿态等）的闭包复核：全部驻留即 `:ready`，否则挂起原消息装页，装齐重放（父稿 P4 接纳复核）。
+  defp posed(%{resident: :all}, _message, _from, _final), do: :ready
+
+  defp posed(state, message, from, final) do
+    case VoxelRegion.World.PageLoad.missing_keys(state, VoxelRegion.World.Closure.needs(state, final)) do
+      [] -> :ready
+      keys -> {:noreply, VoxelRegion.World.PageLoad.defer(state, {:call, message, from}, keys)}
+    end
+  end
+
+  # 裁决中途发现缺页（动态洪泛伸进冷页）：挂起原消息装页、装齐后从头重新裁决，不当空气继续（父稿 P4）。
+  defp missing_pages({:reply, {:error, {:pages_missing, keys}}, state}, message, from),
+    do: {:noreply, VoxelRegion.World.PageLoad.defer(state, {:call, message, from}, Enum.uniq(VoxelRegion.World.Pages.expand(keys)))}
+
+  defp missing_pages(reply, _message, _from), do: reply
+
+  defp call({:publish_prefabs, catalog}, _from, state) do
     {:reply, :ok, %{state | prefabs: Map.merge(state.prefabs, catalog)}}
   end
 
-  def handle_call(:prefab_catalog, _, state), do: {:reply, state.prefabs, state}
+  defp call(:prefab_catalog, _, state), do: {:reply, state.prefabs, state}
 
-  def handle_call(:published_prefabs, _, state),
+  defp call(:published_prefabs, _, state),
     do: {:reply, Enum.map(state.published, &{&1.publisher, &1.name, &1.bytes}), state}
-  def handle_call(:material_catalog, _, state), do: {:reply, state.properties, state}
+  defp call(:material_catalog, _, state), do: {:reply, state.properties, state}
 
-  def handle_call({:publish_prefab, actor, bytes, name}, _, state) do
+  defp call({:publish_prefab, actor, bytes, name}, _, state) do
     with {:ok, actor} <- current_actor(actor),
          :ok <- Prefab.check_name(name),
          {:ok, id, compiled} <- Prefab.compile(bytes, state.prefabs),
@@ -1190,7 +1305,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:prefab_cells, id, anchor, orientation}, _from, state) do
+  defp call({:prefab_cells, id, anchor, orientation}, _from, state) do
     result =
       with {:ok, cells, _macros} <- definition_cells(state, id, anchor, orientation),
            do: {:ok, cells}
@@ -1198,12 +1313,12 @@ defmodule VoxelRegion.World do
     {:reply, result, state}
   end
 
-  def handle_call({:instance_cells, id}, _from, state) do
+  defp call({:instance_cells, id}, _from, state) do
     cells = owner_cells(state, id)
     {:reply, if(cells == [], do: {:error, :instance_not_found}, else: {:ok, cells}), state}
   end
 
-  def handle_call({:replacement_cells, target, id}, _from, state) do
+  defp call({:replacement_cells, target, id}, _from, state) do
     result =
       with {:ok, instance} <- fetch_instance(state, target),
            {:ok, _cells, macros} <-
@@ -1214,11 +1329,11 @@ defmodule VoxelRegion.World do
     {:reply, result, state}
   end
 
-  def handle_call({:place_prefab, id, anchor, orientation, _cells}, _from, state) do
+  defp call({:place_prefab, id, anchor, orientation, _cells}, _from, state) do
     place_tree(state, state, Map.fetch!(state.prefabs, id), anchor, orientation, {0, 0}, 0, [])
   end
 
-  def handle_call({:prefab_intent, actor, kind, request}, _, state) do
+  defp call({:prefab_intent, actor, kind, request}, _, state) do
     with {:ok, actor} <- current_actor(actor) do
       request = Map.put(request, :prefab_operation, kind)
       previous = Map.get(state.build_sessions, actor.gate)
@@ -1250,7 +1365,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:remove_prefab, id}, _from, state) do
+  defp call({:remove_prefab, id}, _from, state) do
     ids = subtree_ids(state, id)
 
     case subtree_cells(state, ids) do
@@ -1259,7 +1374,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:replace_prefab, target, id}, _from, state) do
+  defp call({:replace_prefab, target, id}, _from, state) do
     with {:ok, instance} <- fetch_instance(state, target),
          {:ok, definition} <- Map.fetch(state.prefabs, id) do
       ids = subtree_ids(state, target)
@@ -1282,7 +1397,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call(:stats, _from, state) do
+  defp call(:stats, _from, state) do
     stats =
       state.cache_stats
       |> Map.merge(VoxelRegion.World.PageCut.backlog(state))
@@ -1293,6 +1408,8 @@ defmodule VoxelRegion.World do
         published_seq: state.page_store.published,
         dirty_units: MapSet.size(state.page_dirty),
         checkpoints: state.checkpoints,
+        resident_pages: resident_count(state),
+        page_loads: map_size(state.page_load.tasks),
         lru_bytes: state.lru_bytes,
         resident_bytes: state.resident_bytes,
         cache_limit: state.cache_limit,
@@ -1315,7 +1432,7 @@ defmodule VoxelRegion.World do
     {:reply, stats, state}
   end
 
-  def handle_call({:serve_item, client_version, item}, _from, state) do
+  defp call({:serve_item, client_version, item}, _from, state) do
     started = System.monotonic_time(:microsecond)
 
     case serve_item(state, client_version, item) do
@@ -1333,8 +1450,8 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:apply_edit, coord, material}, from, state) do
-    result = with :ok <- raw_liquid_edit(state, [{coord, material}]),
+  defp call({:apply_edit, coord, material}, from, state) do
+    result = with {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
       do: do_apply_edit(state, coord, material)
     case result do
       {:ok, :noop, state} ->
@@ -1350,10 +1467,10 @@ defmodule VoxelRegion.World do
   end
 
   # 游标早于已发布前缀：其后的历史已退休，显式拒绝，调用方改走 `canonical_snapshot_and_subscribe`（m2a §6.3，评审 R6）。
-  def handle_call({:subscribe, _pid, have_seq, _box, _min_level}, _from, state) when state.page_store.published != nil and have_seq < state.page_store.published,
+  defp call({:subscribe, _pid, have_seq, _box, _min_level}, _from, state) when state.page_store.published != nil and have_seq < state.page_store.published,
     do: {:reply, {:error, :cursor_expired}, state}
 
-  def handle_call({:subscribe, pid, have_seq, box, min_level}, _from, state) do
+  defp call({:subscribe, pid, have_seq, box, min_level}, _from, state) do
     unless Map.has_key?(state.subs, pid), do: Process.monitor(pid)
     filter = {box, min_level}
 
@@ -1366,10 +1483,10 @@ defmodule VoxelRegion.World do
   end
 
   # 供测试与诊断读历史：纯属性事务与检查点在内存只留投影字段，正文从持久日志补回。
-  def handle_call({:entries_after, seq}, _from, state) when state.page_store.published != nil and seq < state.page_store.published,
+  defp call({:entries_after, seq}, _from, state) when state.page_store.published != nil and seq < state.page_store.published,
     do: {:reply, {:error, :cursor_expired}, state}
 
-  def handle_call({:entries_after, seq}, _from, %{log: {backend, handle}} = state) do
+  defp call({:entries_after, seq}, _from, %{log: {backend, handle}} = state) do
     retained = state.entries |> Enum.filter(fn {s, _} -> s > seq end) |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
 
     bodies =
@@ -1381,7 +1498,7 @@ defmodule VoxelRegion.World do
   end
 
   # 区域字节与属性在 World 内按同一 seq 取好；解码与碰撞投影交给该订阅者的发送进程（CanonicalFeed），它发出快照后答复调用方。
-  def handle_call({:canonical_snapshot, box, pid, request, include_chunks}, from, state) do
+  defp call({:canonical_snapshot, box, pid, request, include_chunks}, from, state) do
     started = System.monotonic_time(:microsecond)
 
     Logger.info(
@@ -1406,7 +1523,7 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:replica_snapshot, box, pid}, _from, state) do
+  defp call({:replica_snapshot, box, pid}, _from, state) do
     case capture_canonical_snapshot(state, box) do
       {:ok, snapshot, state} ->
         unless Map.has_key?(state.replica_subs, pid), do: Process.monitor(pid)
@@ -1418,8 +1535,8 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call({:apply_edits, edits}, from, state) do
-    result = with :ok <- raw_liquid_edit(state, edits), do: apply_batch(state, edits)
+  defp call({:apply_edits, edits}, from, state) do
+    result = with {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, edits)
     case result do
       {:ok, next_state} ->
         if next_state.seq == state.seq, do: acknowledge_noop(next_state, from)
@@ -1430,75 +1547,216 @@ defmodule VoxelRegion.World do
     end
   end
 
-  def handle_call(:compact, from, state) do
+  defp call(:compact, from, state) do
     {:noreply, VoxelRegion.World.PageCut.compact(state, from)}
   end
 
-  @impl true
-  # 同上：热提交自己的节拍与步消息之外，其他消息都先写回原生热域的变化。
-  def handle_info(message, %{thermal_work: %{domain: %{pending: true}}} = state)
-      when message != :thermal_tick and not (is_tuple(message) and elem(message, 0) in [:thermal_step | @unflushed]),
-      do: handle_info(message, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
+  # Player / Scene 发来、要读页的异步消息（M2b）：过读取闭包的闸，缺页即挂起、装完重放。
+  # 施法授权带最终姿态，结算重新求射线：同样过闸（评审 A2）。
+  @paged_infos [:prepare_cast, :quote_cast, :authorize_cast, :prepare_beacon, :commit_beacon, :body_contact, :body_death]
 
-  def handle_info({:timeout, ref, :page_cut}, %{page_store: %{timer: ref}} = state),
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason} = message, state) do
+    case VoxelRegion.World.PageLoad.finish(state, ref, reason) do
+      :unknown -> info(message, state)
+      {entries, attempt, state} -> {:noreply, Enum.reduce(entries, state, &redo(&1, attempt, reason, &2))}
+    end
+  end
+
+  def handle_info(message, state), do: gated_info(message, state, 0)
+
+  defp gated_info(message, state, attempt) do
+    alias VoxelRegion.World.PageLoad
+    key = PageLoad.order_key(message)
+
+    cond do
+      attempt == 0 and PageLoad.held?(state, key) ->
+        {:noreply, PageLoad.enqueue(state, key, {:info, message})}
+
+      is_tuple(message) and (elem(message, 0) in @paged_infos or projectile_result?(message, state)) ->
+        case PageLoad.gate(state, {:info, message}, attempt) do
+          {:ready, state} -> info(message, state)
+          {:deferred, state} -> {:noreply, PageLoad.hold(state, key)}
+        end
+
+      true ->
+        info(message, state)
+    end
+  end
+
+  # 投射物采样结果（`Projectiles.poll/1` 的任务回复）要按飞行段读世界：同样过闸。
+  defp projectile_result?({ref, _results}, %{projectile_task: %Task{ref: ref}}), do: true
+  defp projectile_result?(_message, _state), do: false
+
+  # 装页任务结束：正常即重放挂起的消息（重新过闸），异常即对挂起的调用显式回错（不当空气）；模拟的装页唤醒调度。
+  # 模拟的装页结束：暂停在步前的热提交续步，没有进行中的提交时照常排下一拍。装页失败（评审 F4）不立即重投——否则读库持续失败时
+  # 步前检查立刻再起任务，形成紧循环——暂停的步等一个热节拍（0.5 s）后再试。
+  defp redo(:wake, _attempt, reason, state) do
+    paused = state.page_load.paused
+    state = put_in(state.page_load.paused, nil)
+
+    case {state.thermal_run, paused} do
+      {%{ref: ref}, ref} when reason == :normal -> send(self(), {:thermal_step, ref})
+      {%{ref: ref}, ref} -> Process.send_after(self(), {:thermal_step, ref}, 500)
+      _ -> :ok
+    end
+
+    state |> Thermal.wake() |> schedule_liquid() |> VoxelRegion.World.Projectiles.wake()
+  end
+
+  defp redo({_, message, _} = entry, attempt, reason, state), do: redo_ordered(entry, message, attempt, reason, state)
+  defp redo({:info, message} = entry, attempt, reason, state), do: redo_ordered(entry, message, attempt, reason, state)
+
+  # 先取下排在它后面的同序消息，再处理它本身（可能再次挂起并重新排队），然后按到达顺序重放取下的消息（遇到仍挂起的序列即重新排队）。
+  defp redo_ordered(entry, message, attempt, reason, state) do
+    {queued, state} = VoxelRegion.World.PageLoad.release(state, VoxelRegion.World.PageLoad.order_key(message))
+    state = redo_one(entry, attempt, reason, state)
+    Enum.reduce(queued, state, &replay/2)
+  end
+
+  defp redo_one({:call, message, from}, attempt, :normal, state), do: replay({:call, message, from}, state, attempt + 1)
+
+  defp redo_one({:call, _message, from}, _attempt, reason, state) do
+    GenServer.reply(from, {:error, {:page_load_failed, reason}})
+    state
+  end
+
+  defp redo_one({:info, message}, attempt, :normal, state), do: replay({:info, message}, state, attempt + 1)
+
+  # 装页失败（评审 A5 / F3）：异步业务消息按原业务的拒绝 / 收尾完成，不只记日志丢弃。
+  defp redo_one({:info, message}, _attempt, reason, state) do
+    Logger.error("voxel_page_load_failed message=#{inspect(elem(message, 0))} reason=#{inspect(reason)}")
+    page_failed(message, {:page_load_failed, reason}, state)
+  end
+
+  defp page_failed({:prepare_cast, key, actor, _request, from}, error, state) do
+    send(actor.player, {:cast_failed, key})
+    GenServer.reply(from, {:error, error})
+    state
+  end
+
+  defp page_failed({:quote_cast, _actor, _request, from}, error, state) do
+    GenServer.reply(from, {:error, error})
+    state
+  end
+
+  # 授权时待施放已建立：按取消收尾（不扣能，调用方收到错误）。
+  defp page_failed({:authorize_cast, key, _actor, _request}, error, state), do: cancel_pending_cast(state, key, error)
+
+  defp page_failed({:prepare_beacon, key, actor, _request}, error, state) do
+    send(actor.player, {:beacon_prepared, key, {:error, error}})
+    state
+  end
+
+  defp page_failed({:commit_beacon, key, actor, _request}, error, state) do
+    send(actor.player, {:beacon_committed, key, {:error, error}})
+    state
+  end
+
+  # 投射物采样：放掉这次采样（与年龄不符的旧采样同样处理），任务位清空、下一拍重新采样，不让死任务封住投射物。
+  defp page_failed({ref, _results}, _error, %{projectile_task: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    VoxelRegion.World.Projectiles.wake(%{state | projectile_task: nil})
+  end
+
+  # 死亡掉落是已确认死亡的后果，没有别的恢复渠道（m2a §5.3 同一理由豁免积压拒绝）：后果原样保持挂起，每次装页失败都 1 s 后按原消息
+  # 再投（再过闸、再装页），直到装页成功、掉落落地；不丢弃、不改后果内容。PG / 装页不可用时本分区本就无法推进，这是事故路径。
+  defp page_failed({:body_death, cid, feet} = message, error, state) do
+    Logger.error("voxel_death_drop_retry cid=#{cid} feet=#{inspect(feet)} error=#{inspect(error)} retry_ms=1000")
+    Process.send_after(self(), message, 1_000)
+    state
+  end
+
+  # 身体接触每秒续报，下一次报告即重来；其余消息不带业务回复。
+  defp page_failed(_message, _error, state), do: state
+
+  defp replay(entry, state, attempt \\ 0)
+
+  defp replay({:call, message, from}, state, attempt) do
+    case gated_call(message, from, state, attempt) do
+      {:reply, reply, state} -> GenServer.reply(from, reply); state
+      {:noreply, state} -> state
+    end
+  end
+
+  defp replay({:info, message}, state, attempt) do
+    {:noreply, state} = gated_info(message, state, attempt)
+    state
+  end
+
+  # 同上：热提交自己的节拍与步消息之外，其他消息都先写回原生热域的变化。
+  defp info(message, %{thermal_work: %{domain: %{pending: true}}} = state)
+      when message != :thermal_tick and not (is_tuple(message) and elem(message, 0) in [:thermal_step | @unflushed]),
+      do: info(message, Thermal.flush(state, if(is_tuple(message), do: elem(message, 0), else: message)))
+
+  defp info({:timeout, ref, :page_cut}, %{page_store: %{timer: ref}} = state),
     do: {:noreply, VoxelRegion.World.PageCut.want(put_in(state.page_store.timer, nil))}
 
-  def handle_info({:timeout, _stale, :page_cut}, state), do: {:noreply, state}
+  defp info({:timeout, _stale, :page_cut}, state), do: {:noreply, state}
 
-  def handle_info({:timeout, ref, :replica_retire}, %{page_store: %{replica_timer: ref}} = state),
+  defp info({:timeout, ref, :replica_retire}, %{page_store: %{replica_timer: ref}} = state),
     do: {:noreply, VoxelRegion.World.PageCut.retire_replicas(put_in(state.page_store.replica_timer, nil))}
 
   # 积压中上限（m2a §5.3）：不开始新的投射物 / 液体 / 热步进（进行中的已走到提交边界）；`PageCut.assess/1` 回落时恢复调度。
-  def handle_info(:projectile_tick, state) when state.page_store.level in [:mid, :hard],
+  defp info(:projectile_tick, state) when state.page_store.level in [:mid, :hard],
     do: {:noreply, VoxelRegion.World.PageCut.pause(%{state | projectile_timer: nil})}
 
-  def handle_info(:liquid_commit, state) when state.page_store.level in [:mid, :hard] do
+  defp info(:liquid_commit, state) when state.page_store.level in [:mid, :hard] do
     if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
     {:noreply, VoxelRegion.World.PageCut.pause(%{state | liquid_timer: nil})}
   end
 
-  def handle_info(:thermal_tick, %{thermal_run: nil} = state) when state.page_store.level in [:mid, :hard],
+  defp info(:thermal_tick, %{thermal_run: nil} = state) when state.page_store.level in [:mid, :hard],
     do: {:noreply, state |> Thermal.fired() |> Thermal.rest() |> VoxelRegion.World.PageCut.pause()}
 
   # 积压硬上限：新施法、新信标读条都会产生新提交，在裁决前拒绝（同 `@commit_calls`）。死亡掉落不在此列：它是已确认死亡的后果、
   # 不是新的玩家意图，频率有限，被拒即没有重试通道（物品永久丢失），硬上限下照常提交（m2a §5.3）。
-  def handle_info({:prepare_cast, key, actor, _request, from}, state) when state.page_store.level == :hard do
+  defp info({:prepare_cast, key, actor, _request, from}, state) when state.page_store.level == :hard do
     send(actor.player, {:cast_failed, key})
     GenServer.reply(from, {:error, :persist_backlog})
     {:noreply, state}
   end
 
-  def handle_info({:prepare_beacon, key, actor, _request}, state) when state.page_store.level == :hard do
+  defp info({:prepare_beacon, key, actor, _request}, state) when state.page_store.level == :hard do
     send(actor.player, {:beacon_prepared, key, {:error, :persist_backlog}})
     {:noreply, state}
   end
 
-  def handle_info(message, state)
+  defp info(message, state)
       when message == :page_pump or (is_tuple(message) and elem(message, 0) in [:page_begun, :page_ack, :page_published, :page_failed]),
       do: {:noreply, VoxelRegion.World.PageCut.handle(state, message)}
 
 
-  def handle_info(:projectile_tick, state) do
+  defp info(:projectile_tick, state) do
     state = drain_thermal(state)
     {:noreply, VoxelRegion.World.Projectiles.poll(%{state | projectile_timer: nil})}
   end
 
-  def handle_info({ref, results}, %{projectile_task: %Task{ref: ref}} = state) do
+  defp info({ref, results}, %{projectile_task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     state = drain_thermal(state)
     {:noreply, VoxelRegion.World.Projectiles.accept(%{state | projectile_task: nil}, results)}
   end
 
-  def handle_info(:liquid_commit, state) do
+  defp info(:liquid_commit, state) do
     if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
     active = state.liquid_active
-    state = advance_liquid(%{state | liquid_active: MapSet.new(), liquid_timer: nil}, active) |> commit_active()
-    {:noreply, schedule_liquid(state)}
+
+    # 步进读活动格的邻格（M2b）：有未驻留页时本步不推进，装完由装页任务唤醒调度（父稿 P4“该步暂停”）。
+    case VoxelRegion.World.PageLoad.request(state, fn _ ->
+           VoxelRegion.World.Pages.with_ancestors(Enum.uniq(for(cell <- active, do: {0, region_of(cell)}))) end) do
+      {:ready, state} ->
+        state = advance_liquid(%{state | liquid_active: MapSet.new(), liquid_timer: nil}, active) |> commit_active()
+        {:noreply, schedule_liquid(state)}
+
+      {:loading, state} ->
+        {:noreply, %{state | liquid_timer: nil}}
+    end
   end
 
   # 魔法增量 4：Scene 的 Player 每秒报一次身体（脚位、身高、半径、皮肤温度与热容、体表面积、局部接触组织块的温度 / 热容 /
   # 与皮肤的导热）；本次算出的接触边留到下一次热提交使用。无接触且组织块与皮肤已在容差内平衡即注销。无热环境的世界忽略。
-  def handle_info({:body_contact, cid, pid, body}, %{thermal: thermal} = state) when thermal != nil do
+  defp info({:body_contact, cid, pid, body}, %{thermal: thermal} = state) when thermal != nil do
     {contacts, immersed, sole, state} = Thermal.body_contacts(state, body)
 
     bodies =
@@ -1516,11 +1774,11 @@ defmodule VoxelRegion.World do
     {:noreply, Thermal.wake(%{state | bodies: bodies})}
   end
 
-  def handle_info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
+  defp info({:body_contact, _cid, _pid, _body}, state), do: {:noreply, state}
 
   # 全局系统功能：Scene seal/退出等待此 fence，先吸收旧 owner 已收到的热量，再交接身体。
   # 热内核每步同步回传；后续步从当前 bodies 取节点。迟到的旧 PID 不得摘掉新 Scene 的接触。
-  def handle_info({:body_detach, cid, pid, ref}, state) do
+  defp info({:body_detach, cid, pid, ref}, state) do
     bodies = case Map.get(state.bodies, cid) do
       %{pid: ^pid} -> Thermal.detach_body(state.bodies, cid)
       _ -> state.bodies
@@ -1531,7 +1789,7 @@ defmodule VoxelRegion.World do
 
   # 身体系数变化沿既有 0x83 推送本人；request 0 只刷新状态，报价与支出仍属于各自请求。
   # 会话身份交给 Gate 的既有出站边界拒旧；seal/stop 的 body_detach fence 已排在旧 owner 的消息之后。
-  def handle_info({:body_coherence, cid, factor, gate, identity}, state) do
+  defp info({:body_coherence, cid, factor, gate, identity}, state) do
     value = {identity, factor}
     changed = Map.get(state.caster_coherence, cid) != value
     state = %{state | caster_coherence: Map.put(state.caster_coherence, cid, value)}
@@ -1544,20 +1802,20 @@ defmodule VoxelRegion.World do
   end
 
   # 身体闭环 H2：角色死亡（Scene 送来脚位），按 `death_drop/3` 裁决掉落并记账。
-  def handle_info({:body_death, cid, feet}, state) do
+  defp info({:body_death, cid, feet}, state) do
     {result, state} = death_drop(state, cid, feet)
     Logger.info("voxel_death_drop " <> Enum.map_join(Map.put(result, :cid, cid), " ", fn {k, v} -> "#{k}=#{inspect(v)}" end))
     {:noreply, schedule_liquid(state)}
   end
 
   # 全局系统：Player 是唯一前摇/授权 owner，World 仅保存待支付的领域负载。
-  def handle_info({:quote_cast, actor, request, from}, state) do
+  defp info({:quote_cast, actor, request, from}, state) do
     {:reply, result, next} = prepare_spell(state, from, actor, request)
     publish_cast_reply(actor, request, result)
     GenServer.reply(from, result)
     {:noreply, next}
   end
-  def handle_info({:prepare_cast, key, actor, request, from}, state) do
+  defp info({:prepare_cast, key, actor, request, from}, state) do
     case prepare_spell(state, from, Map.put(actor, :action_key, key), request) do
       {:noreply, next} -> {:noreply, next}
       {:reply, result, next} ->
@@ -1566,7 +1824,7 @@ defmodule VoxelRegion.World do
         {:noreply, next}
     end
   end
-  def handle_info({:authorize_cast, key, actor, request}, state) do
+  defp info({:authorize_cast, key, actor, request}, state) do
     case state.pending_casts[actor.cid] do
       %{actor: %{action_key: ^key, player: player}} = pending when player == actor.player ->
         # 授权快照来自角色 owner，同一消息携带姿态与 Body；不再同步回调 Player。
@@ -1582,16 +1840,16 @@ defmodule VoxelRegion.World do
       _ -> {:noreply, state}
     end
   end
-  def handle_info({:cancel_cast, key, reason}, state), do: {:noreply, cancel_pending_cast(state, key, reason)}
+  defp info({:cancel_cast, key, reason}, state), do: {:noreply, cancel_pending_cast(state, key, reason)}
 
   # 传送信标：Player 是读条 owner；World 只在开始与结束各校验一次，结果异步回给 Player（不回调 Player，避免互等）。
-  def handle_info({:prepare_beacon, key, actor, request}, state) do
+  defp info({:prepare_beacon, key, actor, request}, state) do
     {result, state} = VoxelRegion.World.Beacons.prepare(state, actor, request)
     send(actor.player, {:beacon_prepared, key, result})
     {:noreply, state}
   end
 
-  def handle_info({:commit_beacon, key, actor, request}, state) do
+  defp info({:commit_beacon, key, actor, request}, state) do
     {result, state} = VoxelRegion.World.Beacons.commit_travel(state, actor, request)
     send(actor.player, {:beacon_committed, key, result})
     {:noreply, state}
@@ -1599,26 +1857,45 @@ defmodule VoxelRegion.World do
 
   # 定时提交按内核步分成多条消息推进，步间先处理已排队的工具、建造和查询调用；整段仍作为一笔热事务提交。
   # 无可推进的状态时休眠：不再排下一拍，直到事务或身体接触唤醒（R8-05）。
-  def handle_info(:thermal_tick, %{thermal_run: nil} = state) do
-    state = state |> Thermal.fired() |> Thermal.begin()
-    {:noreply, if(state.thermal_run, do: step_thermal(state), else: Thermal.rest(state))}
+  defp info(:thermal_tick, %{thermal_run: nil} = state) do
+    # 热域读种子格的邻格与视线伙伴（M2b）：有未驻留页时本拍不开提交，装完由装页任务唤醒（父稿 P4“该步暂停”）。
+    case VoxelRegion.World.PageLoad.request(state, &Thermal.seed_keys/1) do
+      {:ready, state} ->
+        state = state |> Thermal.fired() |> Thermal.begin()
+        {:noreply, if(state.thermal_run, do: step_thermal(state), else: Thermal.rest(state))}
+
+      {:loading, state} ->
+        {:noreply, state |> Thermal.fired() |> Thermal.rest()}
+    end
   end
 
   # 进行中的提交完成时才排下一次；此时到期的节拍不另起提交。
-  def handle_info(:thermal_tick, state), do: {:noreply, Thermal.fired(state)}
+  defp info(:thermal_tick, state), do: {:noreply, Thermal.fired(state)}
 
-  def handle_info({:thermal_step, ref}, %{thermal_run: %{ref: ref}} = state), do: {:noreply, step_thermal(state)}
-  def handle_info({:thermal_step, _ref}, state), do: {:noreply, state}
+  defp info({:thermal_step, ref}, %{thermal_run: %{ref: ref}} = state) do
+    # 同 drain_thermal：每步前查驻留，缺页即暂停在步前（运行保持进行中），装齐后由 `:wake` 续步。
+    case VoxelRegion.World.PageLoad.request(state, &Thermal.seed_keys/1) do
+      {:ready, state} -> {:noreply, step_thermal(state)}
+      {:loading, state} -> {:noreply, put_in(state.page_load.paused, ref)}
+    end
+  end
+  defp info({:thermal_step, _ref}, state), do: {:noreply, state}
 
   # 直接投递的提交在本次回调内完整执行；先完成进行中的定时提交，不把两段模拟混入同一事务。
-  def handle_info(:thermal_commit, state) do
+  defp info(:thermal_commit, state) do
     state = drain_thermal(state)
-    state = if VoxelRegion.World.PageCut.at_least?(state, :mid),
-      do: VoxelRegion.World.PageCut.pause(state), else: state |> Thermal.begin() |> drain_thermal()
+
+    state =
+      cond do
+        VoxelRegion.World.PageCut.at_least?(state, :mid) -> VoxelRegion.World.PageCut.pause(state)
+        # 进行中的提交因装页暂停：不另开一次（装齐后续完它即本次提交）。
+        state.thermal_run != nil -> state
+        true -> state |> Thermal.begin() |> drain_thermal()
+      end
     {:noreply, state |> VoxelRegion.World.PageCut.maybe_open() |> Thermal.wake()}
   end
 
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+  defp info({:DOWN, _ref, :process, pid, _reason}, state) do
     state = Enum.reduce(state.pending_casts, state, fn {_, pending}, acc ->
       if pending.actor.player == pid, do: cancel_pending_cast(acc, pending.actor.action_key, :invalid_session), else: acc
     end)
@@ -1640,7 +1917,7 @@ defmodule VoxelRegion.World do
        }}
   end
 
-  def handle_info(_msg, state), do: {:noreply, state}
+  defp info(_msg, state), do: {:noreply, state}
 
   defp step_thermal(state) do
     case Thermal.tick(state) do
@@ -1651,28 +1928,59 @@ defmodule VoxelRegion.World do
 
   defp drain_thermal(%{thermal_run: nil} = state), do: state
 
+  # 每个内核步前都按当前热域查驻留（M2b，父稿 P4“有模拟资格但未驻留的页：该步暂停、请求装页、装齐后再推进”）：
+  # 缺页即停在这一步之前，提交不结束、不写任何部分通量；装页任务结束后由 `:wake` 续步。
   defp drain_thermal(state) do
-    case Thermal.tick(state) do
-      {:more, state} -> drain_thermal(state)
-      {:done, state, commit} -> commit_thermal(state, commit)
+    case VoxelRegion.World.PageLoad.request(state, &Thermal.seed_keys/1) do
+      {:loading, state} -> put_in(state.page_load.paused, state.thermal_run.ref)
+      {:ready, state} ->
+        case Thermal.tick(state) do
+          {:more, state} -> drain_thermal(state)
+          {:done, state, commit} -> commit_thermal(state, commit)
+        end
     end
   end
 
-  # 恢复（m2a §6.2 / §7）：有已发布前缀时装页 + 重放其后的日志；没有（未迁移或全新世界）时清掉未发布残留、按旧路径全量回放，
-  # 首个切点写出全部页。
+  # 恢复（m2a §6.2 / §7，M2b §2.5）：有已发布前缀时只读全局行、日志后缀与活动索引，后缀涉及的页（与身份的整树）和活动页经装页入口装入，
+  # 再重放后缀；前缀为 0（全新世界，库里没有可见页段）时内存即全部真值。没有前缀（未迁移或全新世界）时清掉未发布残留、
+  # 按旧路径全量回放，首个切点写出全部页。
   defp restore_pages(%{log: {backend, handle}} = state) do
-    case backend.load(handle) do
+    alias VoxelRegion.World.{PageLoad, Pages}
+
+    case backend.load_head(handle, Pages.activity_code()) do
       %{prefix: nil} ->
         :ok = backend.clear_unpublished(handle, nil)
         replay_log(state)
 
-      loaded ->
+      %{prefix: 0} = head ->
         state
-        |> VoxelRegion.World.Pages.install(loaded)
-        |> replay_txns(loaded.txns)
-        |> put_in([:page_store, :published], loaded.prefix)
+        |> Pages.install_globals(head.globals)
+        |> replay_txns(head.txns)
+        |> VoxelRegion.World.Canopy.refresh_all()
+        |> put_in([:page_store, :published], 0)
+
+      head ->
+        started = System.monotonic_time(:microsecond)
+        state = %{Pages.install_globals(state, head.globals) | resident: MapSet.new()}
+        active = for %{region: region, payload: payload} <- head.activity, Pages.decode(payload), do: {0, region}
+        {keys, ids} = Enum.reduce(head.txns, {[], []}, fn txn, {k, i} -> {k2, i2} = Pages.txn_needs(txn); {k2 ++ k, i2 ++ i} end)
+        # 后缀写到的 L0 页重放后要重算树冠片段（片段不进日志）：连同粗层祖页扩 26 邻页装入（与编辑闭包相同）；活动页同样扩邻页（模拟读邻格）。
+        touched = for {0, page} <- Enum.uniq(keys), do: page
+        # 活动页同样带粗层祖页：恢复后第一步模拟提交就会逐级归约（评审 A2 / F1）。
+        seeds = Pages.with_ancestors(active ++ for(page <- touched, do: {0, page}))
+        state = PageLoad.load_sync(state, Enum.uniq(seeds), Enum.uniq(keys), Enum.uniq(ids))
+        loaded = System.monotonic_time(:microsecond)
+        state = state |> replay_txns(head.txns) |> VoxelRegion.World.Canopy.refresh_pages(touched)
+
+        Logger.info("voxel_page_restore prefix=#{head.prefix} suffix=#{length(head.txns)} active=#{length(active)} " <>
+          "resident=#{resident_count(state)} load_us=#{loaded - started} replay_us=#{System.monotonic_time(:microsecond) - loaded}")
+
+        put_in(state.page_store.published, head.prefix)
     end
   end
+
+  defp resident_count(%{resident: :all}), do: :all
+  defp resident_count(%{resident: resident}), do: MapSet.size(resident)
 
   @impl true
   def terminate(_reason, state), do: VoxelRegion.World.PageCut.stop_writer(state)
