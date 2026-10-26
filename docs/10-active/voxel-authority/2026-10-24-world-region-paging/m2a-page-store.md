@@ -1,5 +1,5 @@
 ---
-status: draft v3（吸收首轮独立评审与交叉评审；待用户确认开工）
+status: v3 已批准开工（2026-10-26）；§5.2 按实测改为 16³ 子块行
 parent: ../2026-10-24-world-region-paging.md（approved v4，本稿细化其 M2 的第一个增量；§3 对 P1 的 aid home 规则做一处显式修订）
 code: ex_mmo_cluster master acb401e7
 reviews: review-fable-m2a.md、review-astra-m2a.md（v1 独立）；review-fable-m2a-cross.md、review-astra-m2a-cross.md（v2 交叉）
@@ -39,6 +39,21 @@ reviews: review-fable-m2a.md、review-astra-m2a.md（v1 独立）；review-fable
 | 写放大无接受线（F 交叉 7） | 每页最短写回间隔 + 段级行 + 开工前先量密集页（§5.2、§8） |
 | 接纳要在扣账前、覆盖全部提交入口、恢复时唤醒调度（A4.3） | §5.3 |
 | Replica 退休通知单调、Scene 无 stream 分支未处理过期（A5.3） | §6.3 |
+
+### 实现与本稿的偏差（第 1–5 步，2026-10-26）
+
+| 本稿 | 实现 | 理由 / 代价 |
+|---|---|---|
+| §6.1 同一时刻一个写回进程，旧进程 `DOWN` 后由新进程以持久前缀收口 | 写回进程与 World **链接**：写回异常退出时 World 一起重启，启动按持久前缀装页 + 重放后缀；尝试“开始”仍读前缀（≥ C 即已发布，否则清残留） | 单写者与“以持久水位判定结果”同一保证，少一条在线重启分支；代价是写回异常 = World 整体重启（启动时长仍随世界大小，M2b 再降） |
+| §5.1 `cut_interval` 默认 10 s；§5.2 另设 `min_segment_interval` 30 s；每批按段数 / 字节 / 5 ms 预算 | 切点间隔 30 s；不单设 `min_segment_interval`（每行每个切点至多写一次，切点间隔即最短写回间隔）；每批 64 个单元 | 实测常规切点 ≈26 单元、30 ms（`r97-4x-m2a4`），按单元计数已足够；字节预算未做 |
+| §5.3 积压量含冻结存活时长、在途字节、脏段数、最老脏段年龄、日志后缀行数 | 全部进 `World.stats`；**定级只看**日志后缀事务数（`seq − P`）与攒下的脏单元数，默认 {软, 中, 硬} = {2 000, 10 000, 50 000} 笔、{2 万, 10 万, 40 万} 单元，启动选项 `persist_backlog` 可改 | 两者只随提交增长、只因发布回落，在提交与发布时重算即可，不需定时器；资源增长（后缀、保留历史、冻结与当前状态的分叉）都由提交驱动。迁移切点期间尚无前缀，不计积压 |
+| §5.3 软上限停非必要后台 | 软上限：立即排切点（200 ms）、停发布后的按区压实（当前唯一的在线整世界类维护） | — |
+| §5.3 中上限暂停热 / 液体步进 | 另暂停投射物轮询 | 投射物经热提交落账，不停会继续产生提交 |
+| §5.3 硬上限覆盖施法 / 投射物 / 身体后果等全部提交入口 | 在 World 调用入口（编辑、工具 / 生产 / 附件 / 预制件意图、施法、供料、注液、GM、地块、信标安装、作者与目录发布）与新施法前摇、新信标读条处拒绝；工具 / 施法的 action 0（只查询）照常；已接纳的施法结算、已开始的信标读条、进行中的热步进收尾走完；**死亡掉落豁免**，硬上限下照常提交 | 进行中的动作在接纳时积压尚未到硬上限；死亡掉落是已确认死亡的后果、不是新的玩家意图、频率有限，被拒即物品永久丢失（没有重试通道），2026-10-26 统筹定为豁免（`persist_backlog_test` 覆盖） |
+| §6.1 第 3 步“推进影响 0 行时重读 P” | 发布事务先 `SELECT … FOR UPDATE` 读前缀，已 ≥ C 即什么都不写、回滚报 `{:prefix, P}`；写回进程把 `P == C` 当作已发布、其余当失败 | 同切点重发若先插段会撞主键；先读前缀后两种情形都不写 |
+| §6.3 Replica 退休 | 只通知确认已满 `replica_retain_s`（默认 60）的最新前缀、单调，定时器收尾；到期通知先于 `compact` 回复发出 | 同节点调用方收到 `compact` 回复时 Replica 邮箱里已排着通知 |
+| §6.3 Scene 无 stream 移交遇过期“重新准备” | 目标 Scene 拒绝本次准备（回 `{:error, reason}`、不建 Player）；源侧沿既有失败路径关连接，客户端重连走快照入口 | 不在 Scene 内自动重试 |
+| §8 判定器 a“按 core 物化的格材料与 skins” | 原始字段逐键比较；地形的 base + 稀疏格在发布 / 回放会换基底（同一真值两种表示），表示可能不同的场合只比正式读取（整区载荷去头部 seq） | 迁移等价两侧表示相同，原始 overlay / region_bases 也逐键比较 |
 
 ## 1. 为什么先做这一步（M1 收尾实测）
 
@@ -91,7 +106,8 @@ size 8 宏格对齐、足迹沿正向 ≤ 8 微格，同一 aid 的槽都在同�
 phase_inventory、thermal（除 `sources` 外整值，含拟态等动态键）、attachment_serial、material_units_per_micro、interaction_history / floor。
 `thermal.config` 每次启动由资产覆盖（`catalogs.ex:34`），存档值不参与比较。`properties`、prefab 定义、`published` 是文件资产，不进页。
 
-存储：每页每段一行（§6.1），envelope `%{format: 1, key, segment, cut_seq, value}` 经 `term_to_binary`。
+存储：逐格段按 16³ 宏格子块（`Spatial.chunk_size`，每页 64 块）一行，`base` 每页一行；envelope `%{format: 1, key, segment, chunk, cut_seq, value}` 经 `term_to_binary(compressed: 6)`。
+页仍是归属、装入与切点的单位，子块只是存储行粒度（§5.2 实测）。
 
 ## 4. 页索引与脏页判定
 
@@ -137,8 +153,11 @@ World 新增派生字段（不持久）：
 
 - World 每个回合最多抽取一批（段数 ≤ `batch_segments`、估计字节 ≤ `batch_bytes`、耗时 ≤ 5 ms，可配），只从 `frozen` 抽取；单段 O(该段内容)。
   base 段里的大二进制是 refc，发给写回进程不复制。全局行在最后一批；它是按角色 / 历史增长的单元，单独计入字节窗口并在基准里单列，诚实标为本步的残余上界（A4.2）。
-- **写放大**（F 交叉 7）：每段一行，只重写脏段；同一页段最短写回间隔 `min_segment_interval`（默认 30 s，紧急 compact 例外），间隔内的重复改动合并。
-  开工第一步先测如园密集页各段字节（尤其 epochs 段），据此定默认值；验收看“每分钟写库字节”与现状对比（§8）。
+- **写放大**（F 交叉 7）：只重写脏的（段, 子块）行；同一行最短写回间隔 `min_segment_interval`（默认 30 s，紧急 compact 例外），间隔内的重复改动合并。
+  **实测**（1 份如园，runs `m2a-01-segments`，`:erlang.external_size` 与 `term_to_binary(compressed: 6)`）：按整页段，最密 L0 页 29 MB（refined 23 MB、epochs 3.7 MB、damage 1.8 MB），
+  单格编辑要重写 ≈5.5 MB、改细化格再加 23 MB，写放大高于现检查点；按 16³ 子块并压缩后，epochs p90 / 最大 11.9 / 13.7 KB，damage g0/1/4 2.2 / 40 KB，
+  refined 203 / 755 KB，其余段 ≤ 15 KB；base 压缩后 ≈561 KB（只在 rebase 时变）；g=2/3 行 1 条。单格编辑每次 ≈15 KB，细化编辑几十到 200 KB。验收看“每分钟写库字节”与现状对比（§8）。
+- base 只在 rebase 时变。M2a 不再有检查点触发的 rebase，L0 稀疏 overlay 会随编辑累积；本步在探针里记 overlay 格数，按需在后续加“按区压实”（单区 rebase 并标 base 脏），不预做。
 
 ### 5.3 在途窗口与接纳边界
 
@@ -150,7 +169,7 @@ World 新增派生字段（不持久）：
 
 ### 5.4 epochs 与 placed_by 改为区域嵌套存储
 
-`region => %{cell => value}` 作为唯一表示：epochs 访问点 10 处、placed_by 13 处，经访问函数读写；对外观察契约不变（`observation.ex:194` 由嵌套表展开，整表输出本身属 N1）。
+`16³ 子块 => %{cell => value}`（子块键 = `CollisionSource.chunk_coord(cell)`，与存储行同粒度，按子块抽取 O(子块)）作为唯一表示：epochs 访问点 10 处、placed_by 13 处，经访问函数读写；对外观察契约不变（`observation.ex:194` 由嵌套表展开，整表输出本身属 N1）。
 damage 保留平铺表，只加页索引。实现时实测内存与展开成本。
 
 ## 6. PG 表、写回尝试与读者
@@ -158,8 +177,8 @@ damage 保留平铺表，只加页索引。实现时实测内存与展开成本�
 ### 6.1 表与写回尝试状态机（R5）
 
 ```
-voxel_page_segment(content_version, level, rx, ry, rz, segment, cut_seq, format, payload,
-                   PRIMARY KEY (content_version, level, rx, ry, rz, segment, cut_seq))
+voxel_page_segment(content_version, level, rx, ry, rz, segment, chunk, cut_seq, format, payload,
+                   PRIMARY KEY (content_version, level, rx, ry, rz, segment, chunk, cut_seq))
 voxel_world_globals(content_version, cut_seq, format, payload, PRIMARY KEY (content_version, cut_seq))
 voxel_safe_prefix(content_version PRIMARY KEY, seq)
 ```
