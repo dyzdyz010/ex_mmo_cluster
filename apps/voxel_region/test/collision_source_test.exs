@@ -7,13 +7,21 @@ defmodule VoxelRegion.CollisionSourceTest do
 
   @box {{-1, 7, -1}, {1, 9, 1}}
 
-  # Only delays source preparation; all bytes and classification still come from GeneratedStore.
+  # 只测试：只在来源预备／读取处加闸，字节和分类仍来自真实 GeneratedStore。
   defmodule PreparingStore do
     defdelegate open(opts), to: GeneratedStore
     defdelegate content_version(store), to: GeneratedStore
     defdelegate world_dir(store), to: GeneratedStore
-    defdelegate read(store, level, region), to: GeneratedStore
     defdelegate generated(store), to: GeneratedStore
+
+    def read(store, level, region) do
+      if Application.get_env(:voxel_region, :w1_read_barrier) == {level, region} do
+        send(Application.fetch_env!(:voxel_region, :w1_prepare_observer), {:reading, self()})
+        receive do: (:continue_read -> :ok)
+      end
+
+      GeneratedStore.read(store, level, region)
+    end
 
     def ensure(store, level, region) do
       if Application.get_env(:voxel_region, :w1_prepare_barrier) == {level, region} do
@@ -58,10 +66,38 @@ defmodule VoxelRegion.CollisionSourceTest do
     on_exit(fn ->
       Application.delete_env(:voxel_region, :w1_prepare_barrier)
       Application.delete_env(:voxel_region, :w1_prepare_observer)
+      Application.delete_env(:voxel_region, :w1_read_barrier)
       File.rm_rf!(root)
     end)
 
     {:ok, world: world, root: root}
+  end
+
+  @tag :window_assembly
+  test "窗口组装被来源读取阻塞时 World 仍服务，快照与后续编辑保持切点", %{world: world} do
+    subscriber = self()
+    request = make_ref()
+    Application.put_env(:voxel_region, :w1_prepare_observer, self())
+    Application.put_env(:voxel_region, :w1_read_barrier, {0, {-1, 7, -1}})
+    join = Task.async(fn -> World.canonical_snapshot_and_subscribe(world, @box, subscriber, request) end)
+    assert_receive {:reading, reader}, 10_000
+    Application.delete_env(:voxel_region, :w1_read_barrier)
+    probe = Task.async(fn -> World.seq(world) end)
+    progress = Task.yield(probe, 1_000)
+
+    # 改前 World 卡在读源；先释放闸，确保失败本身不遗留阻塞进程。
+    if progress == nil, do: send(reader, :continue_read)
+    assert progress == {:ok, 0}
+    assert {:ok, 1} = World.apply_edits(world, [{{40, 558, 40}, 11}])
+    refute_receive {:canonical_snapshot, ^request, _}
+    send(reader, :continue_read)
+    assert :ok = Task.await(join, 300_000)
+    assert_receive {:canonical_snapshot, ^request, %CanonicalSnapshot{transaction_seq: 0} = baseline}, 10_000
+    assert occupancy_at(baseline.chunks, {40, 558, 40}) == 0
+    assert_receive {:canonical_delta, %CanonicalDelta{transaction_seq: 1, chunks: chunks}}, 10_000
+    assert occupancy_at(chunks, {40, 558, 40}) == 1
+    # 晚到的旧快照缓存不得覆盖 seq=1 的真实编辑。
+    assert Payload.material(serve(world, {0, 8, 0}), {41, 47, 41}) == 11
   end
 
   test "eight complete canonical regions and 512 chunks match actual serve cell by cell", %{
@@ -121,6 +157,50 @@ defmodule VoxelRegion.CollisionSourceTest do
           content_version: cv
         })
     )
+  end
+
+  for cause <- [:subscriber, :feed] do
+    @tag :window_assembly
+    test "窗口组装途中 #{cause} 退出会释放输入并显式结束调用", %{world: world} do
+      subscriber = spawn(fn -> receive do: (:stop -> :ok) end)
+      Application.put_env(:voxel_region, :w1_prepare_observer, self())
+      Application.put_env(:voxel_region, :w1_read_barrier, {0, {-1, 7, -1}})
+      join = Task.async(fn -> World.canonical_snapshot_and_subscribe(world, @box, subscriber, make_ref()) end)
+      assert_receive {:reading, reader}, 10_000
+      Application.delete_env(:voxel_region, :w1_read_barrier)
+      monitor = Process.monitor(reader)
+      Process.exit(if(unquote(cause) == :subscriber, do: subscriber, else: reader), :kill)
+      assert {:error, :canonical_feed_down} = Task.await(join, 10_000)
+      assert_receive {:DOWN, ^monitor, :process, ^reader, _}, 10_000
+      assert World.seq(world) == 0
+      # 只测试资源生命周期，不回填任何权威状态；禁止在真实基准节点这样取 state。
+      assert :sys.get_state(world).canonical_snapshots == %{}
+      send(subscriber, :stop)
+    end
+  end
+
+  @tag :window_assembly
+  test "World 退出会中断尚未返回的组装读取，不向存活订阅者发布旧快照", %{world: world} do
+    subscriber = self()
+    request = make_ref()
+    Application.put_env(:voxel_region, :w1_prepare_observer, self())
+    Application.put_env(:voxel_region, :w1_read_barrier, {0, {-1, 7, -1}})
+    join = Task.async(fn ->
+      try do
+        World.canonical_snapshot_and_subscribe(world, @box, subscriber, request)
+      catch
+        :exit, _ -> :authority_down
+      end
+    end)
+    assert_receive {:reading, reader}, 10_000
+    Application.delete_env(:voxel_region, :w1_read_barrier)
+    monitor = Process.monitor(reader)
+    on_exit(fn -> if Process.alive?(reader), do: Process.exit(reader, :kill) end)
+    stop_supervised!(World)
+    assert :authority_down = Task.await(join, 10_000)
+    assert_receive {:DOWN, ^monitor, :process, ^reader, _}, 1_000
+    send(reader, :continue_read)
+    refute_receive {:canonical_snapshot, ^request, _}
   end
 
   test "preparation precedes one World barrier and repeated join preserves ordered subscription",

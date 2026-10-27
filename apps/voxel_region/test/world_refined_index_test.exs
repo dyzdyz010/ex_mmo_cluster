@@ -42,6 +42,22 @@ defmodule VoxelRegion.WorldRefinedIndexTest do
     assert Canonical.micro_owner_cells(partial, owners) == Enum.filter(Enum.sort(expected), &Map.has_key?(partial.refined, &1))
   end
 
+  test "区域 owner 查询随最后一个占用宏格离开而移除，同格多个槽只算一份" do
+    state = empty()
+      |> Canonical.put_refined({0,0,0}, %{0 => {11,{5,0}}, 1 => {11,{5,0}}})
+      |> Canonical.put_refined({1,0,0}, %{0 => {11,{5,0}}})
+      |> Canonical.put_refined({-1,0,0}, %{0 => {11,{6,0}}})
+    assert Canonical.refined_owners_in_regions(state, [{0,0,0}]) == MapSet.new([{5,0}])
+    state = Canonical.put_refined(state, {0,0,0}, %{0 => {12,{6,0}}})
+    assert Canonical.refined_owners_in_regions(state, [{0,0,0}]) == MapSet.new([{5,0},{6,0}])
+    state = state |> Canonical.put_refined({1,0,0}, %{}) |> Canonical.put_refined({0,0,0}, %{0 => {13,{6,0}}})
+    assert Canonical.refined_owners_in_regions(state, [{0,0,0}]) == MapSet.new([{6,0}])
+    state = Canonical.put_refined(state, {0,0,0}, %{})
+    assert Canonical.refined_owners_in_regions(state, [{0,0,0}]) == MapSet.new()
+    assert Canonical.refined_owners_in_regions(state, [{-1,0,0}]) == MapSet.new([{6,0}])
+    assert Canonical.refined_owners_in_regions(Canonical.index_refined(state), [{-1,0,0}]) == MapSet.new([{6,0}])
+  end
+
   test "changed refined cells are exactly the cells whose slots differ" do
     a = {1, 1, 1}
     b = {70, 1, -1}
@@ -116,6 +132,15 @@ defmodule VoxelRegion.WorldRefinedIndexTest do
     state = %{state | refined_encoded: %{cell => {state.refined[cell], <<1>>}, {9, 9, 9} => {%{}, <<2>>}}}
     state = Canonical.put_refined(state, cell, %{0 => {12, {5, 0}}})
     assert state.refined_encoded == %{{9, 9, 9} => {%{}, <<2>>}}
+  end
+
+  test "最后一个微格宏格消失时释放该整件几何缓存，不等待下一次开窗" do
+    state = empty() |> Canonical.put_refined({0,0,0}, %{0 => {11,{5,0}}})
+      |> Map.put(:properties, %{digest: <<1::256>>, materials: %{11 => %{"max_hp_per_macro" => 512.0}}})
+      |> VoxelRegion.World.Observation.prepare_component_cache(nil)
+    assert Map.has_key?(state.component_cache, {5,0})
+    removed = Canonical.put_refined(state, {0,0,0}, %{})
+    refute Map.has_key?(removed.component_cache, {5,0})
   end
   test "chunk-nested cell tables: floor chunks, empty chunks dropped, flat view and box filter" do
     # 手算：16³ 子块向负无穷取整，{-1, 0, 17} 在子块 {-1, 0, 1}，{15, 0, 0} 在 {0, 0, 0}。

@@ -43,18 +43,18 @@ defmodule VoxelRegion.World.Observation do
     do: %{value | property_states: Enum.map(rows, &public_property/1)}
   def public_properties(value), do: value
 
-  # 窗口快照的 World 部分：区域字节与属性快照（同一 seq）；碰撞 chunk 由调用方另行投影。
-  def capture_canonical_snapshot(state, {l0_min, l0_max} = box) do
+  # 从同一 seq 的只读输入组装区域字节与属性；canonical 路径由 Feed 调用，Replica 旧入口仍在 World 调用。
+  def capture_canonical_snapshot(state, {l0_min, l0_max} = box, geometry \\ nil, captured \\ %{}) do
     started = System.monotonic_time(:microsecond)
 
-    with {:ok, regions, state} <- Payloads.canonical_regions(state, CollisionSource.regions(box)) do
+    with {:ok, regions, state} <- Payloads.canonical_regions(state, CollisionSource.regions(box), captured) do
       regions_done = System.monotonic_time(:microsecond)
-      state = prepare_component_cache(state, box)
+      state = if geometry == nil, do: prepare_component_cache(state, box), else: state
 
       snapshot =
         %CanonicalSnapshot{content_version: state.cv, transaction_seq: state.seq, l0_min: l0_min,
           l0_max_exclusive: l0_max, regions: regions, chunks: []}
-        |> Map.merge(property_snapshot(state, box))
+        |> Map.merge(property_snapshot(state, box, geometry))
         |> Map.put(:food_receipts, state.food_receipts)
 
       Logger.info(
@@ -125,6 +125,10 @@ defmodule VoxelRegion.World.Observation do
 
   def component_observations(state, box, only) do
     {geometry, _cache} = component_geometry(state, box, only)
+    component_rows(state, box, geometry)
+  end
+
+  defp component_rows(state, box, geometry) do
     for {_, {hp, cells, representatives}} <- geometry,
         target = Enum.find_value(representatives, fn {cell, target} ->
           if box == nil or VoxelRegion.PropertyObservation.contains?(cell, box), do: target
@@ -141,6 +145,30 @@ defmodule VoxelRegion.World.Observation do
     Map.put(state, :component_cache, cache)
   end
 
+  @doc "观察切点内仍有效的整件几何；仅返回汇总，不把缓存标签内的原始微格复制给工作进程。"
+  def cached_component_geometry(%{properties: nil}, _owners), do: %{}
+  def cached_component_geometry(state, owners) do
+    cache = Map.get(state, :component_cache, %{})
+    for owner <- owners, {:ok, {tag, geometry}} <- [Map.fetch(cache, owner)],
+      tag == component_tag(state, Map.fetch!(state.refined_owners, owner)), into: %{}, do: {owner, geometry}
+  end
+
+  @doc "从冻结的完整整件输入计算尚未命中的几何，使用原有确定序与浮点累加规则。"
+  def snapshot_component_geometry(%{properties: nil}, _box, _owners), do: %{}
+  def snapshot_component_geometry(state, box, owners), do: elem(component_geometry(state, box, owners), 0)
+
+  @doc "World 已核对观察切点与目录后回填派生几何；标签引用本进程的当前输入，不接纳工作进程的真值副本。"
+  def remember_component_geometry(state, rows) do
+    cache = Enum.reduce(rows, Map.get(state, :component_cache, %{}), fn {owner, geometry}, cache ->
+      tag = component_tag(state, Map.fetch!(state.refined_owners, owner))
+      Map.put(cache, owner, {tag, geometry})
+    end)
+    Map.put(state, :component_cache, cache)
+  end
+
+  defp component_tag(state, cells),
+    do: {state.properties.digest, cells |> Enum.sort() |> Enum.map(&{&1, Map.fetch!(state.refined, &1)})}
+
   defp component_geometry(state, box, only) do
     # 按格坐标的确定序累加（父稿 Q5）：浮点求和与窗口代表点不随驻留的 refined 整表次序变化（M2b 按需装页）。
     cache = Map.take(Map.get(state, :component_cache, %{}), Map.keys(state.refined_owners))
@@ -149,8 +177,7 @@ defmodule VoxelRegion.World.Observation do
       selected = (wanted == nil or MapSet.member?(wanted, owner)) and
         (box == nil or Enum.any?(cells, &VoxelRegion.PropertyObservation.contains?(&1, box)))
       if selected do
-        inputs = cells |> Enum.sort() |> Enum.map(&{&1, Map.fetch!(state.refined, &1)})
-        tag = {state.properties.digest, inputs}
+        {_, inputs} = tag = component_tag(state, cells)
         geometry = case Map.get(cache, owner) do
           {^tag, geometry} -> geometry
           _ -> component_geometry(state.properties, owner, inputs, {0.0, MapSet.new(), []})
@@ -178,7 +205,7 @@ defmodule VoxelRegion.World.Observation do
     end)
   end
 
-  def property_snapshot(state, box) do
+  def property_snapshot(state, box, geometry \\ nil) do
     macros =
       for {_, t} <- state.damage,
           t.granularity in [0, 1, 4],
@@ -186,9 +213,10 @@ defmodule VoxelRegion.World.Observation do
           do: %{t | seq: state.seq, request_id: 0}
 
     macros = (macros ++ owned_macro_observations(state,box)) |> Map.new(&{Damage.key(&1),&1}) |> Map.values()
+    components = if geometry == nil, do: component_observations(state, box), else: component_rows(state, box, geometry)
     %{
       property_states:
-        macros ++ component_observations(state, box) ++ attachment_observations(state, box),
+        macros ++ components ++ attachment_observations(state, box),
       property_context: property_context(state),
       epochs: chunk_flat(state.epochs, box),
       protection: state.protection.regions,

@@ -1,5 +1,15 @@
 # Voxim Region 真值
 
+2026-10-27 窗口快照组装（Global system，已实现及服务端隔离实跑，整体性能／双客户端未验收）：World 在一次回调中冻结窗口只读输入并登记 canonical 订阅；
+`World.WindowSnapshot` 按区域索引选择输入，跨窗叶子／附件保留整件数据，冻结引用留在 World 堆内。
+`CanonicalFeed` 按信用 1 分批拉取条目，在自己的进程重建派生索引、沿既有 `Payloads`／`Observation` 算法组装区域、属性与碰撞。
+它先发完整快照，再转发 World 后续的每笔增量（含空投影）。组装失败回显式错误，订阅者／Feed 退出释放冻结引用；
+旧切点的载荷缓存仅在 World 仍处于该 seq 时回填，不改权威真值。整件几何沿用 Observation 的缓存与确定序，回填另核对目录；
+命中完整载荷和几何时不搬原始微格。`refined_region_owners` 由原写入口维护，最后一格消失即退休该整件缓存。
+Replica 旧快照入口保持原路径。
+契约、取舍、测试和测量记录在 [M2b §8](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#8-交接第-1-项窗口组装移出-world2026-10-27施工中)。
+相关验证：本 app 下 `mix test --no-start test/window_snapshot_test.exs test/world_refined_index_test.exs test/canopy_projection_test.exs test/collision_source_test.exs test/damage_world_test.exs test/page_on_demand_test.exs`。
+
 2026-10-17（Global system）：附件支撑、失支撑清理、定义接纳与 L1 投影统一消费
 `VoxelMaterialCatalog.supports_attachments?/1`；移动占用仍只消费 `blocks_movement?/1`。
 65/73 保留支撑、选中和拆除，移动不阻挡；其他材料规则保持。兼容规范见 mmo_contracts README。

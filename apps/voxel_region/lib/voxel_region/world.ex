@@ -440,7 +440,7 @@ defmodule VoxelRegion.World do
 
   def entries_after(server \\ @name, seq), do: GenServer.call(server, {:entries_after, seq})
 
-  @doc "Prepare canonical L0 source, then atomically send its snapshot marker and subscribe to all subsequent transactions."
+  @doc "预备 canonical L0 来源，在同一 World 回合冻结观察切点并订阅后续全部事务；快照由发送进程组装。"
   def canonical_snapshot_and_subscribe(
         world_ref,
         l0_box,
@@ -561,6 +561,7 @@ defmodule VoxelRegion.World do
           # refined 的派生索引（部件 => 宏格、L0 区域 => 该区 refined 子表），由 Canonical.put_refined/3 随 refined 维护，不持久化。
           refined_owners: %{},
           refined_regions: %{},
+          refined_region_owners: %{},
           # 各 refined 宏格已编好的载荷槽记录（{slots, 字节}），后像复用未变格；同上随写入失效、不持久化。
           refined_encoded: %{},
           attachments: %{},
@@ -683,6 +684,7 @@ defmodule VoxelRegion.World do
           subs: %{},
           canonical_subs: %{},
           canonical_feeds: %{},
+          canonical_snapshots: %{},
           replica_subs: %{},
           log: {log, log.open(world_dir, cv)}
         }
@@ -756,10 +758,11 @@ defmodule VoxelRegion.World do
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
-  @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since]
+  @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since,
+    :window_input, :window_geometry, :window_finished]
 
   # 装页任务与 World 的往来（M2b `World.PageLoad`）：不过闸、不写回热域。
-  @page_calls [:page_need, :page_adopt, :page_stage, :page_commit, :page_yield]
+  @page_calls [:page_need, :page_adopt, :page_stage, :page_commit, :page_yield, :window_input, :window_geometry, :window_finished]
 
   @impl true
   def handle_call(message, from, state), do: gated_call(message, from, state, 0)
@@ -1497,7 +1500,7 @@ defmodule VoxelRegion.World do
     {:reply, Enum.map(retained, &if(projection?(&1), do: Map.fetch!(bodies, &1.seq), else: &1)), state}
   end
 
-  # 区域字节与属性在 World 内按同一 seq 取好；解码与碰撞投影交给该订阅者的发送进程（CanonicalFeed），它发出快照后答复调用方。
+  # 同回合冻结输入并登记订阅；编码与属性汇总均由同一个发送进程完成，后续增量排在快照标记之后。
   defp call({:canonical_snapshot, box, pid, request, include_chunks}, from, state) do
     started = System.monotonic_time(:microsecond)
 
@@ -1505,22 +1508,61 @@ defmodule VoxelRegion.World do
       "voxel_window_stage stage=world_start request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)}"
     )
 
-    case capture_canonical_snapshot(state, box) do
-      {:ok, snapshot, state} ->
-        unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
-        feed = Map.get_lazy(state.canonical_feeds, pid, fn -> VoxelRegion.CanonicalFeed.start_link(pid) end)
-        send(feed, {:snapshot, request, snapshot, include_chunks, liquid_capacity(state), from})
+    unless Map.has_key?(state.canonical_subs, pid), do: Process.monitor(pid)
+    feed = Map.get_lazy(state.canonical_feeds, pid, fn -> VoxelRegion.CanonicalFeed.start(pid, self()) end)
+    token = make_ref()
+    job = %{subscriber: pid, feed: feed, from: from, seq: state.seq, properties: state.properties,
+      cursor: VoxelRegion.World.WindowSnapshot.freeze(state, box)}
+    send(feed, {:snapshot, token, request, box, include_chunks, liquid_capacity(state)})
 
-        Logger.info(
-          "voxel_window_stage stage=world_send request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
-        )
+    Logger.info(
+      "voxel_window_stage stage=world_send request=#{inspect(request)} pid=#{inspect(self())} at_us=#{System.system_time(:microsecond)} elapsed_us=#{System.monotonic_time(:microsecond) - started}"
+    )
 
-        {:noreply, %{state | canonical_subs: Map.put(state.canonical_subs, pid, box),
-          canonical_feeds: Map.put(state.canonical_feeds, pid, feed)}}
+    {:noreply, %{state | canonical_subs: Map.put(state.canonical_subs, pid, box),
+      canonical_feeds: Map.put(state.canonical_feeds, pid, feed),
+      canonical_snapshots: Map.put(state.canonical_snapshots, token, job)}}
+  end
 
-      {:error, :canonical_incomplete} ->
-        {:reply, {:error, :canonical_incomplete}, state}
+  defp call({:window_input, token}, {feed, _}, state) do
+    # 订阅者的 DOWN 可以先于发送进程已经排入的拉取消息；取消后不能再解引用已释放的输入。
+    case Map.fetch(state.canonical_snapshots, token) do
+      :error -> {:reply, {:error, :canonical_cancelled}, state}
+      {:ok, %{feed: ^feed, cursor: cursor} = job} ->
+        case VoxelRegion.World.WindowSnapshot.next(cursor) do
+          :done ->
+            {:reply, :done, put_in(state.canonical_snapshots[token], %{job | cursor: nil})}
+          {items, cursor} ->
+            {:reply, items, put_in(state.canonical_snapshots[token], %{job | cursor: cursor})}
+        end
     end
+  end
+
+  defp call({:window_finished, token, result, payloads}, {feed, _}, state) do
+    case Map.pop(state.canonical_snapshots, token) do
+      {nil, _} -> {:reply, :ok, state}
+      {%{feed: ^feed} = job, jobs} ->
+        # 旧观察切点只用于发送，不能把缓存写回后来已变化的世界。
+        state = if result == :ok and state.seq == job.seq do
+          Enum.reduce(payloads, state, fn {key, {bytes, header}}, acc -> cache_put(acc, key, bytes, header) end)
+        else
+          state
+        end
+        state = if result == :ok, do: state, else: %{state |
+          canonical_subs: Map.delete(state.canonical_subs, job.subscriber),
+          canonical_feeds: Map.delete(state.canonical_feeds, job.subscriber)}
+        GenServer.reply(job.from, result)
+        {:reply, :ok, %{state | canonical_snapshots: jobs}}
+    end
+  end
+
+  defp call({:window_geometry, token, rows}, {feed, _}, state) do
+    state = case Map.get(state.canonical_snapshots, token) do
+      %{feed: ^feed, seq: seq, properties: properties} when seq == state.seq and properties == state.properties ->
+        VoxelRegion.World.Observation.remember_component_geometry(state, rows)
+      _ -> state
+    end
+    {:reply, :ok, state}
   end
 
   defp call({:replica_snapshot, box, pid}, _from, state) do
@@ -1896,6 +1938,14 @@ defmodule VoxelRegion.World do
   end
 
   defp info({:DOWN, _ref, :process, pid, _reason}, state) do
+    # 发送进程与订阅者都由 World 监视：退出即释放冻结引用，并让尚未完成的调用显式失败。
+    {abandoned, jobs} = Enum.split_with(state.canonical_snapshots, fn {_, job} -> job.subscriber == pid or job.feed == pid end)
+    for {_, job} <- abandoned, do: GenServer.reply(job.from, {:error, :canonical_feed_down})
+    if feed = Map.get(state.canonical_feeds, pid), do: Process.exit(feed, :shutdown)
+    failed = for {subscriber, feed} <- state.canonical_feeds, feed == pid, do: subscriber
+    for subscriber <- failed, do: send(subscriber, {:canonical_source_error, :canonical_feed_down})
+    state = %{state | canonical_snapshots: Map.new(jobs),
+      canonical_subs: Map.drop(state.canonical_subs, failed), canonical_feeds: Map.drop(state.canonical_feeds, failed)}
     state = Enum.reduce(state.pending_casts, state, fn {_, pending}, acc ->
       if pending.actor.player == pid, do: cancel_pending_cast(acc, pending.actor.action_key, :invalid_session), else: acc
     end)

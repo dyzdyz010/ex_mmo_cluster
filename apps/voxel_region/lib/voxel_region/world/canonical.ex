@@ -24,30 +24,54 @@ defmodule VoxelRegion.World.Canonical do
   # refined_owners：部件身份 => 含其微格的宏格集合；refined_regions：L0 区域 => 区域内的 refined 子表（宏格 => 槽，
   # 与 refined 共享同一槽值）。两者只由 put_refined/3 与 index_refined/1 写，随 refined 的每次写入同步更新，让按部件或
   # 按区域的读取只碰相关的格，不再随世界的细化格总数线性扫描；区域子表随写入换新，提交前后按区域比较即得改动格。
+  # refined_region_owners：区域 => %{部件 => 占用宏格数}，由同一写入口维护；开窗只定位整件，不再展开微格槽。
 
   @doc "按 refined 整表重建派生索引；在线与重放都由 put_refined/3 增量维护，这里供核对增量结果（单测、等价对照）。"
   def index_refined(state) do
-    {owners, regions} =
-      Enum.reduce(state.refined, {%{}, %{}}, fn {cell, slots}, {owners, regions} ->
-        {index_owners(owners, cell, slot_owners(slots), MapSet.new()), put_region_cell(regions, region_of(cell), cell, slots)}
+    {owners, regions, region_owners} =
+      Enum.reduce(state.refined, {%{}, %{}, %{}}, fn {cell, slots}, {owners, regions, region_owners} ->
+        present = slot_owners(slots)
+        region = region_of(cell)
+        {index_owners(owners, cell, present, MapSet.new()), put_region_cell(regions, region, cell, slots),
+          index_region_owners(region_owners, region, present, MapSet.new())}
       end)
 
-    Map.merge(state, %{refined_owners: owners, refined_regions: regions, refined_encoded: %{}})
+    Map.merge(state, %{refined_owners: owners, refined_regions: regions, refined_region_owners: region_owners, refined_encoded: %{}})
   end
 
   @doc "写一个宏格的细化槽（空 map 即删除），同步维护派生索引。"
   def put_refined(state, cell, slots) do
     old = slot_owners(Map.get(state.refined, cell, %{}))
     new = slot_owners(slots)
+    added = MapSet.difference(new, old)
+    removed = MapSet.difference(old, new)
     refined = if map_size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
 
     state = Enum.reduce(MapSet.union(old, new), state, &Pages.touch(&2, &1))
+    state = Map.put(state, :refined_region_owners,
+      index_region_owners(Map.get(state, :refined_region_owners, %{}), region_of(cell), added, removed))
+    owners = state.refined_owners |> index_owners(cell, added, MapSet.new())
+      |> index_owners(cell, MapSet.new(), removed)
+    dead = Enum.reject(old, &Map.has_key?(owners, &1))
+    # 最后一个格消失即释放派生几何及其旧输入引用，不依赖将来有人再次读取这个已经消失的部件。
+    state = if dead == [], do: state,
+      else: Map.update(state, :component_cache, %{}, &Map.drop(&1, dead))
 
     %{Pages.mark(state, Pages.cell_unit(:refined, cell)) | refined: refined,
-      refined_owners: state.refined_owners |> index_owners(cell, MapSet.difference(new, old), MapSet.new())
-        |> index_owners(cell, MapSet.new(), MapSet.difference(old, new)),
+      refined_owners: owners,
       refined_regions: put_region_cell(state.refined_regions, region_of(cell), cell, slots),
       refined_encoded: Map.delete(state.refined_encoded, cell)}
+  end
+
+  @doc "这些 L0 区域内的细化部件身份；读取随写入维护的宏格计数，不展开微格槽。"
+  def refined_owners_in_regions(state, regions) do
+    for region <- regions, owner <- Map.keys(Map.get(state.refined_region_owners, region, %{})),
+      into: MapSet.new(), do: owner
+  end
+
+  defp index_region_owners(index, region, added, removed) do
+    index = Enum.reduce(added, index, &count_member(&2, region, &1, 1))
+    Enum.reduce(removed, index, &count_member(&2, region, &1, -1))
   end
 
   # ---- liquid_units 的派生索引（可由 liquid_units 重建，不持久化、不是第二真值）
@@ -128,19 +152,19 @@ defmodule VoxelRegion.World.Canonical do
     state
     |> Map.put(:attachment_regions,
       Enum.reduce(state.attachments, %{}, fn {slot, value}, index -> put_region_cell(index, Attachments.region(slot), slot, value) end))
-    |> Map.put(:aid_regions, Enum.reduce(state.attachments, %{}, fn {slot, {aid, _}}, index -> count_aid(index, aid, Attachments.region(slot), 1) end))
+    |> Map.put(:aid_regions, Enum.reduce(state.attachments, %{}, fn {slot, {aid, _}}, index -> count_member(index, aid, Attachments.region(slot), 1) end))
   end
 
   # aid_regions（M2b 覆盖页集合用）：附件 id => %{L0 区域 => 该区里它的槽数}，只由下面三个写入口维护，不持久化。
   # 缺字段的局部 state（单测夹具）从空表开始。
-  defp count_aid(index, aid, region, delta) do
-    counts = Map.update(Map.get(index, aid, %{}), region, delta, &(&1 + delta))
-    counts = if Map.get(counts, region) == 0, do: Map.delete(counts, region), else: counts
-    if map_size(counts) == 0, do: Map.delete(index, aid), else: Map.put(index, aid, counts)
+  defp count_member(index, group, member, delta) do
+    counts = Map.update(Map.get(index, group, %{}), member, delta, &(&1 + delta))
+    counts = if Map.get(counts, member) == 0, do: Map.delete(counts, member), else: counts
+    if map_size(counts) == 0, do: Map.delete(index, group), else: Map.put(index, group, counts)
   end
 
   defp aid_slots(state, slots_values, delta) do
-    Enum.reduce(slots_values, Map.get(state, :aid_regions, %{}), fn {slot, {aid, _}}, index -> count_aid(index, aid, Attachments.region(slot), delta) end)
+    Enum.reduce(slots_values, Map.get(state, :aid_regions, %{}), fn {slot, {aid, _}}, index -> count_member(index, aid, Attachments.region(slot), delta) end)
   end
 
   @doc "写入（新增或改值）附件槽，同步维护派生索引。"

@@ -443,9 +443,14 @@ defmodule VoxelRegion.World.Payloads do
     end
   end
 
-  def canonical_regions(state, coords) do
+  @doc "组装完整区域；已经冻结的字节是本轮只读输入，不受工作进程临时 LRU 淘汰影响。"
+  def canonical_regions(state, coords, captured \\ %{}) do
     Enum.reduce_while(coords, {:ok, [], state}, fn coord, {:ok, regions, state} ->
-      case canonical_region_bytes(state, coord) do
+      result = case Map.fetch(captured, {0, coord}) do
+        {:ok, {bytes, _header}} -> {:ok, Codec.stamp_payload_seq(bytes, state.seq), state}
+        :error -> canonical_region_bytes(state, coord)
+      end
+      case result do
         {:ok, bytes, state} -> {:cont, {:ok, regions ++ [{coord, bytes}], state}}
         _ -> {:halt, {:error, :canonical_incomplete}}
       end

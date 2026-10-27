@@ -69,6 +69,7 @@ defmodule VoxelRegion.CollisionStream do
   def handle_info({:canonical_delta, delta}, state), do: {:noreply, emit(state, delta)}
   def handle_info({:source_result, :ok}, state), do: {:noreply, state}
   def handle_info({:source_result, error}, state), do: {:stop, {:canonical_source, error}, state}
+  def handle_info({:canonical_source_error, error}, state), do: {:stop, {:canonical_source, error}, state}
   def handle_info({:DOWN, monitor, :process, _, _}, %{gate_monitor: monitor} = state), do: {:stop, :normal, state}
   def handle_info({:DOWN, monitor, :process, _, reason}, state) do
     if monitor in state.lifetime or reason != :normal,
