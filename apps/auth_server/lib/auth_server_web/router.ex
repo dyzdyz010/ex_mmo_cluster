@@ -41,6 +41,7 @@ defmodule AuthServerWeb.Router do
     post "/admin/invites", AccountController, :invite_create
     delete "/admin/invites/:id", AccountController, :invite_delete
     post "/admin/invites/:id/revoke", AccountController, :invite_revoke
+    post "/admin/invites/:id/limit", AccountController, :invite_limit
   end
   scope "/game", AuthServerWeb do
     pipe_through :game_account
@@ -76,6 +77,7 @@ defmodule AuthServerWeb.Router do
     post "/invites", AccountAdminController, :create
     post "/invites/:id/delete", AccountAdminController, :delete
     post "/invites/:id/revoke", AccountAdminController, :revoke
+    post "/invites/:id/limit", AccountAdminController, :limit
   end
 
   scope "/playtest", AuthServerWeb do

@@ -1,6 +1,9 @@
 defmodule AuthServerWeb.VoxelPrefabsControllerTest do
   @moduledoc "只测试：D3-2 prefab 列表经真实 World 启动加载 .pub/.vxpd 后由 HTTP 入口原样返回冻结字节。"
   use AuthServerWeb.ConnCase, async: false
+  import ExUnit.CaptureLog
+
+  Code.require_file("../../../../data_service/test/support/database.exs", __DIR__)
 
   @content_version 0x5F84_4009_CA44_A605
 
@@ -9,6 +12,21 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
   @b "VXPD" <>
        <<3::32-little, 0::32, 0::32, 0::32, 1::32-little, 255, 255, 255, 255, 0::32, 2, 0, 0, 0,
          19, 0>>
+
+  setup_all do
+    IO.puts(
+      "prefab_http_database=" <>
+        Jason.encode!(%{
+          database: DataService.Repo.config()[:database],
+          hostname: DataService.Repo.config()[:hostname],
+          port: DataService.Repo.config()[:port],
+          owner_pid: System.pid()
+        })
+    )
+
+    MmoTest.Database.start!()
+    :ok
+  end
 
   setup do
     {:ok, _auth_started} = Application.ensure_all_started(:auth_server)
@@ -60,7 +78,7 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
       File.rm_rf!(root)
     end)
 
-    :ok
+    {:ok, prefabs: prefabs}
   end
 
   defp post_prefabs(conn, route),
@@ -82,6 +100,29 @@ defmodule AuthServerWeb.VoxelPrefabsControllerTest do
     # 正式账号部署在 PlaytestAccess 处以 404 拒绝全部旧入口（见 playtest_access_test），不再到达控制器的 403。
     Application.put_env(:auth_server, :dev_auto_login, false)
     assert post_prefabs(build_conn(), ~p"/ingame/voxel/prefabs").status == 404
+  end
+
+  test "POST /ingame/voxel/prefabs returns 503 when a cold published source disappears", %{
+    conn: conn,
+    prefabs: prefabs
+  } do
+    assert [%{id: id}, _] = VoxelRegion.World.published_prefab_metadata(:voxim_http_prefabs_test)
+
+    assert VoxelRegion.World.stats(:voxim_http_prefabs_test).shared_cache.namespaces.prefab.entries ==
+             0
+
+    # 只测试：合法启动后的冷源失效注入；不改目录、缓存或运行中的 authority 真值。
+    File.rm!(Path.join(prefabs, Base.encode16(id, case: :lower) <> ".vxpd"))
+
+    log =
+      capture_log(fn ->
+        response = post_prefabs(conn, ~p"/ingame/voxel/prefabs")
+        assert json_response(response, 503) == %{"error" => "voxel_prefabs_unavailable"}
+      end)
+
+    assert log =~ "voxel_prefabs_unavailable"
+    assert log =~ "definition_read"
+    assert log =~ "enoent"
   end
 
   test "POST /playtest/prefabs needs the invite bearer" do

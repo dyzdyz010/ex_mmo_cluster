@@ -29,11 +29,12 @@ defmodule AuthServer.IdentityTest do
     suffix = System.unique_integer([:positive])
     email = "account-#{suffix}@example.test"
     {:ok, [invite]} = AuthServer.Admin.generate_invites(1, "test-#{suffix}", nil)
-    %{email: email, invite: invite, password: "a correct long password #{suffix}"}
+    # 限流按来源计数且跨测试存活于同一 RateLimit 进程；每个测试独占一个来源，避免整套累计耗尽 mail_ip 限额。
+    %{email: email, invite: invite, password: "a correct long password #{suffix}", source: "test-source-#{suffix}"}
   end
 
-  defp proof(email, invite) do
-    assert :ok = Identity.send_registration_email(email, invite, "127.0.0.1")
+  defp proof(email, invite, source) do
+    assert :ok = Identity.send_registration_email(email, invite, source)
     assert_receive {:account_mail, ^email, :registration, code}
     code
   end
@@ -69,7 +70,7 @@ defmodule AuthServer.IdentityTest do
 
   test "register consumes one invite and records the verified account", c do
     invite = String.downcase(c.invite.code)
-    code = proof(c.email, invite)
+    code = proof(c.email, invite, c.source)
     assert {:ok, account} = Identity.register(c.email, c.password, code, invite)
     assert account.email == c.email
     assert {:ok, session} = Identity.login(c.email, c.password, false)
@@ -81,7 +82,7 @@ defmodule AuthServer.IdentityTest do
     assert {:error, :invalid_verification} = Identity.register(c.email, c.password, code, c.invite.code)
   end
 
-  test "new invitations are five unambiguous mixed characters and never reveal the full code in history" do
+  test "new invitations are five unambiguous mixed characters and retain the full code in history" do
     {:ok, invites} = AuthServer.Admin.generate_invites(100, "short-codes", nil)
     codes = Enum.map(invites, & &1.code)
     assert length(codes) == 100
@@ -90,8 +91,9 @@ defmodule AuthServer.IdentityTest do
       assert invite.code =~ ~r/\A[A-HJ-NP-Z2-9]{5}\z/
       assert invite.code =~ ~r/[A-Z]/
       assert invite.code =~ ~r/[2-9]/
-      assert String.length(invite.hint) == 3
-      refute invite.hint =~ invite.code
+      assert invite.hint == invite.code
+      [record] = AuthServer.Admin.list_invites(%{id: invite.id})
+      assert record.hint == invite.code
     end
   end
 
@@ -105,20 +107,21 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "invalid invite does not consume email proof and deleted used invite retains history", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     assert {:error, :invalid_invite} = Identity.register(c.email, c.password, code, "wrong")
     assert {:ok, account} = Identity.register(c.email, c.password, code, c.invite.code)
     assert :ok = AuthServer.Admin.delete_invite(c.invite.id)
     [record] = AuthServer.Admin.list_invites(%{id: c.invite.id, include_deleted: true})
     assert record.used_by == account.id
     assert record.deleted_at != nil
+    assert {:error, :invalid_invite} = DataService.AccountStore.admission(Identity.invite_digest(c.invite.code), Identity.now())
     assert {:ok, _} = Identity.login(c.email, c.password, false)
   end
 
   test "policy at commit rejects an old open form, opening does not consume supplied invite", c do
     :ok = AuthServer.Admin.set_invite_required(false)
     on_exit(fn -> AuthServer.Admin.set_invite_required(true) end)
-    code = proof(c.email, nil)
+    code = proof(c.email, nil, c.source)
     :ok = AuthServer.Admin.set_invite_required(true)
     assert {:error, :invite_required} = Identity.register(c.email, c.password, code, nil)
     :ok = AuthServer.Admin.set_invite_required(false)
@@ -127,20 +130,58 @@ defmodule AuthServer.IdentityTest do
     assert record.used_by == nil
   end
 
-  test "two verified emails racing for one invite create exactly one account", c do
+  test "three verified emails racing for two places never exceed the invitation limit", c do
+    {:ok, [invite]} = AuthServer.Admin.generate_invites(1, "capacity", nil, 2)
     other = "other-#{c.email}"
-    one = proof(c.email, c.invite.code)
-    two = proof(other, c.invite.code)
+    third = "third-#{c.email}"
+    one = proof(c.email, invite.code, c.source)
+    two = proof(other, invite.code, c.source)
+    three = proof(third, invite.code, c.source)
     results =
-      [{c.email, one}, {other, two}]
-      |> Enum.map(fn {email, code} -> Task.async(fn -> Identity.register(email, c.password, code, c.invite.code) end) end)
+      [{c.email, one}, {other, two}, {third, three}]
+      |> Enum.map(fn {email, code} -> Task.async(fn -> Identity.register(email, c.password, code, invite.code) end) end)
       |> Enum.map(&Task.await(&1, 15_000))
-    assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+    assert Enum.count(results, &match?({:ok, _}, &1)) == 2
     assert Enum.count(results, &(&1 == {:error, :invalid_invite})) == 1
+    [record] = AuthServer.Admin.list_invites(%{id: invite.id})
+    assert record.use_count == 2
+    assert record.max_uses == 2
+    assert AuthServerWeb.AccountAdminHTML.state(record) == "已用完"
+    assert {:error, :limit_below_usage} = AuthServer.Admin.set_invite_limit(invite.id, 1)
+    assert :ok = AuthServer.Admin.set_invite_limit(invite.id, 3)
+    assert :ok = DataService.AccountStore.admission(Identity.invite_digest(invite.code), Identity.now())
+  end
+
+  test "invitation can be reused and all registered emails remain searchable", c do
+    :ok = AuthServer.Admin.set_invite_limit(c.invite.id, 2)
+    for email <- [c.email, "next-#{c.email}"] do
+      verification = proof(email, c.invite.code, c.source)
+      assert {:ok, _} = Identity.register(email, c.password, verification, c.invite.code)
+    end
+    [record] = AuthServer.Admin.list_invites(%{search: c.email})
+    assert record.id == c.invite.id
+    assert record.use_count == 2
+    assert {:error, :invalid_invite} = DataService.AccountStore.admission(Identity.invite_digest(c.invite.code), Identity.now())
+    assert :ok = AuthServer.Admin.set_invite_limit(c.invite.id, 3)
+    assert :ok = AuthServer.Admin.execute("console", :revoke, c.invite.id)
+    assert {:error, :invalid_invite} = DataService.AccountStore.admission(Identity.invite_digest(c.invite.code), Identity.now())
+  end
+
+  test "custom invitation limits reject invalid input and expiry still applies", c do
+    for limit <- [0, -1, 1.5, "2", 2_147_483_648] do
+      assert {:error, :invalid_request} = AuthServer.Admin.generate_invites(1, "invalid-limit", nil, limit)
+      assert {:error, :invalid_request} = AuthServer.Admin.set_invite_limit(c.invite.id, limit)
+    end
+    expiry = Identity.now() + 60
+    {:ok, [invite]} = AuthServer.Admin.generate_invites(1, "expires", expiry, 4)
+    code = proof(c.email, invite.code, c.source)
+    assert {:error, :invalid_invite} = DataService.AccountStore.register(c.email, "unused-hash", Identity.proof_digest(c.email, "registration", code), Identity.invite_digest(invite.code), expiry)
+    [record] = AuthServer.Admin.list_invites(%{id: invite.id})
+    assert record.use_count == 0
   end
 
   test "refresh rotates and reuse revokes session; ordinary accounts cannot manage invitations", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     assert {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     assert {:ok, session} = Identity.login(c.email, c.password, true)
     assert {:ok, _} = Identity.authenticate(session.access_token)
@@ -152,7 +193,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "ticket is scene bound and single use, logout closes the registered connection", c do
-    code=proof(c.email,c.invite.code)
+    code=proof(c.email,c.invite.code,c.source)
     {:ok,_}=Identity.register(c.email,c.password,code,c.invite.code)
     {:ok,s}=Identity.login(c.email,c.password,false)
     hello=%MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(),kernel_id: <<1::256>>,profile_id: <<2::256>>}
@@ -169,7 +210,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "a killed connection at revocation cannot restart Auth or close another session", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     {:ok, one} = Identity.login(c.email, c.password, false)
     {:ok, other} = Identity.login(c.email, c.password, false)
@@ -198,7 +239,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "a stuck or crashing connection at revocation is forced down without restarting Auth", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     {:ok, one} = Identity.login(c.email, c.password, false)
     {:ok, other} = Identity.login(c.email, c.password, false)
@@ -220,7 +261,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "failed reset attempts by someone else cannot lock the owner's 256-bit reset code", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     assert :ok = Identity.forgot_password(c.email, "owner")
     assert_receive {:account_mail, _, :password_reset, reset}
@@ -244,7 +285,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "failed logins from one source do not lock the account for another source", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     for _ <- 1..10, do: Identity.login(c.email, "a wrong long password guess", false, source: "attacker")
     assert {:error, :rate_limited} = Identity.login(c.email, c.password, false, source: "attacker")
@@ -256,7 +297,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "a malformed game ticket request is rejected without claiming the session is invalid", c do
-    code = proof(c.email, c.invite.code)
+    code = proof(c.email, c.invite.code, c.source)
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     {:ok, s} = Identity.login(c.email, c.password, false)
     hello = %MmoContracts.Session.Hello{protocol_version: MmoContracts.Session.Codec.protocol_version(), kernel_id: <<1::256>>, profile_id: <<2::256>>}
@@ -265,7 +306,7 @@ defmodule AuthServer.IdentityTest do
   end
 
   test "password reset invalidates all sessions and proof cannot be reused", c do
-    code=proof(c.email,c.invite.code)
+    code=proof(c.email,c.invite.code,c.source)
     {:ok,_}=Identity.register(c.email,c.password,code,c.invite.code)
     {:ok,s}=Identity.login(c.email,c.password,true)
     assert :ok=Identity.forgot_password(c.email,"reset-source")
