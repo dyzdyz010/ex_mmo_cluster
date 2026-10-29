@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.HeatCommit do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：热提交的世界后果：写属性事务、液相提交、受热材料转化与部件损伤迁移。
 
@@ -141,7 +142,7 @@ defmodule VoxelRegion.World.HeatCommit do
               if ore.granularity == 0,
                 do: Edits.put_overlay(s, 0, cell, {product_id, MmoContracts.Voxel.Skins.uniform(product_id)}),
                 else: put_refined(s, cell,
-                  Map.update!(Map.fetch!(s.refined, cell), slot, fn {_, owner} -> {product_id, owner} end))
+                  Map.update!(RefinedSlots.to_map(Map.fetch!(s.refined, cell)), slot, fn {_, owner} -> {product_id, owner} end))
 
             temperature = Transform.product_temperature(ore.temperature_kelvin, material, materials[product_id],
               ambient_at(s, cell))

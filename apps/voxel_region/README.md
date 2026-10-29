@@ -1,5 +1,156 @@
 # Voxim Region 真值
 
+`RefinedSlots` 每宏格独立保存升序槽记录与原map枚举索引：普通枚举保留HP累加／代表点，
+`Payloads` 直接引用已接纳记录前缀，不再逐槽解码再编码。记录构造复用mmo_contracts的 `Refined.slot_record/1`，
+原memo生命周期与观测字段不变，旧持久和Parcel仍导出map、线上字节不变。
+内部布局变更须冷启动World，不热替换持有旧槽值的VM；依据及最小验证见 [S0执行记录](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+
+碰撞增量只物化实际变化的 new chunk：`Observation` 保留提交 owner 给出的完整变化宏格集合与订阅 XYZ 范围，
+`Payloads` 从同笔 before／after 的 canonical 地形、槽和有限数量构造读取器；`CollisionSource` 共用同一实际阻挡投影，
+旧侧只读取变化宏格，不再构造 old 的完整128³占用。只有局部阻挡或首末非空槽导致的16³／128³分辨率变化才构造new；
+owner／同阻挡材质变化和完整槽覆盖后的等价底材变化不多发碰撞更新。phase数量取整、显式空气覆盖及缺来源失败保持。
+变化计数只是本次输入的派生量，不增常驻缓存或第二dirty状态；性能仍须按同负载独立测量，不能由少一次构造宣称300ms通过。
+合同、最小红绿及真实接缝记录见 [碰撞切片](../../.superpowers/sdd/voxel-authority-sharding/task-collision-compact-fix.md)。
+
+2026-10-28 R1异步Player请求：`player_spell_request`仍解包成原quote_cast／prepare_cast的info业务，
+Admission只附原请求的等待owner，PageLoad的caller／cancel与ready队列复用这一身份；不另建请求框架或第二pin表。
+准备前Player退出／取消只退休其需求，有其它请求或模拟需求的shared reader继续；开始前摇后沿原pending_cast生命周期。
+结果经Player relay回原等待者，`page_waiters`因此包含同步公共调用和受管Player等待，不代表只统计磁盘IO。
+实现与局部证据入口见 [S0 R1执行项](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+
+2026-10-28 R5 可选写回运输预算（局部验证；R5／S0未整体验收）：启动选项 `page_write_budget: %{batch_bytes: ..., inflight_bytes: ...}`
+同时约束自然单元批次与未ACK批的未压缩ETF字节上界，仍保留64单元／4批辅助上限。`Pages.write_unit` 一次构造并计量，
+超大单元在产生端显式拒绝；PageCut只运输同一序列，FIFO ACK释放原批计量，全部ACK后才发布。最终全局行仍是现有独立压缩行，
+只在发送前核其压缩字节不超过在途窗口，构造成本与整行上界没有因此消失。默认预算仍为 `:infinity`，未启用未经大单元验证的有限默认；
+不能把ETF上界称为RSS、冻结旧版本或完整切点内存上界。`World.stats` 的 `pending_unit_bytes/write_batch_limit_bytes/write_inflight_limit_bytes`
+和原 `inflight_bytes` 报本owner事实；`voxel_page_write` 报实际 `encoded_payload_bytes` 与写回耗时。
+最小算法、产生端超限、ACK与发布失败边界及File持久化／慢写回接缝共13项通过，3项数据库测试明确排除；
+home持久max_hp、真实1x／4x Q5、长后缀与非空活动联合恢复、慢PG／60s保留内存、正式有限预算仍未验收。
+上位要求与后续范围见 [S0 R4／R5执行项](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+
+2026-10-28 完整载荷构造观测（Global system；性能仍待真实窗口测量）：`Payloads.payload_bytes` 仅实际物化的 miss 完成后记录
+`voxel_payload_materialize`，固定身份为 `pid/seq/cv/level/x/y/z`，时间为同 VM monotonic 微秒的 `start_us/terrain_end_us/encode_start_us/encode_end_us/cache_start_us/cache_end_us`
+及对应 `terrain_us/encode_us/cache_us/elapsed_us`，大小取现有 header 的 `raw_bytes/body_bytes` 和输出 `payload_bytes`。
+唯一 `with_refined` 记录 `voxel_payload_details` 的 `details_start_us/details_end_us/canopy_end_us/details_us/canopy_us`，
+并只取已经构造的 `cells/fmi/maps` binary 长度和 `records/refined/refined_records/instances/structure/attachments/liquid_units/canopy/canopy_instances/canopy_residual/canopy_residual_structure` map 大小；
+两条记录按身份和时间区间关联，details 也服务其他现有 caller，不能独自充当整次 miss 耗时。source 直通、cache hit 和失败不生成 materialize 成功记录。
+不追加遍历、编码、解压、hash 或生产门禁；时间口径沿 [OTP monotonic_time](https://www.erlang.org/doc/apps/erts/erlang.html#monotonic_time/1)，表示经过时间，包含调度／分配／GC，不能当 CPU。
+最小验证复用 `test/lazy_payload_cache_test.exs` 小 World／文件日志：完整 XYZ、固定标量与阶段顺序、原完整字节、source／hit／显式来源失败；不启动 PG／UE 或物理 suite。
+同一 L0 details 内另记 `voxel_payload_records`，身份字段相同且 `source=with_existing_details`：`memo_hits/memo_misses/slots/record_bytes`
+只在原 record reduce 内累计，`record_start_us/record_end_us/record_loop_us` 包含其原输入 `MapSet.to_list/Map.take` 与 reduce；
+`owners_start_us/owners_end_us/owners_us` 包含原 macro owner 投影、refined owner 筛选及 ancestor 闭合，不是单一全局扫描的 CPU。
+该日志仅证明这两个自然小段完成，afterimage 等既有 caller 同样记录；原 details 与 materialize 日志不变。
+最小小例经公开作者入口、真实文件日志冷恢复证明 miss，再由正常非 refined 宏格提交失效 payload 后证明 memo hit；两槽手算32B，完整值与原编码相同。
+
+2026-10-28 宏格载荷按需重建（Global system；定向验证见下述记录）：`World.Edits.put_overlay/4` 更新真值并失效完整 XYZ core/ring 的派生载荷，
+宏格提交不再为暖缓存主动解压、改写、重压整区 L0。完整读取、必要后像和 Replica 继续由既有 `Payloads` 管线物化，
+结构、树冠、collision、事务选择与旧切点回填的 seq 守卫保持原合同。`voxel_macro_stages.l0_cache_us` 保留历史字段名，
+当前量附件清理、树冠影响区、后像键和 seq 推进，不再包含主动重写 L0；其余 duration 字段不变。
+依据是 [Cache-Aside 官方模式](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside) 的改权威源后失效、首次读取重建；
+本仓由单 World 维护提交状态与失效，不引入分布式缓存或新的正确性协议。测试矩阵只含暖 L0 的单 MFA 红绿、
+Replica 同 seq 完整字节与细节后缀、边环首次后读及冷日志重放、既有树冠后像；使用小 World／文件日志，无 PG／UE。
+执行记录见 [最小修补报告](../../.superpowers/sdd/voxel-authority-sharding/task-lazy-payload-cache.md)。首次必要完整物化的耗时仍须单列实测，
+本改动不表示 300ms、默认 27 tiles、多 Scene 或整体分页目标已验收。
+
+2026-10-27 连续世界与 P6 窗口贡献（Global system；整体尚未验收）：
+`World.simulation_windows/1` 返回完整 XYZ 的窗口页并集（窗口外加一圈）、来源及页数。`World.SimulationWindows` 只由 World 写，
+来源是随 Gate 存活的流；只读装页、普通 canonical 观察和 Replica 不登记窗口贡献。Source DOWN 或显式释放立即退休贡献。
+`CollisionStream` 异步登记并在 World 回执后开始快照读取；接收 ACK 不退休旧窗，Player 实际消费后才发布退休。
+跨 Scene 仍是同一流；导出 cut 前只等流接纳既有请求，不等 World，避免同步等待环。详见
+[P6 实施记录](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/p6-simulation-scope.md)。
+
+窗口仅负责观察生命周期。有限源、燃烧、液体、接触、拟态与电路按真实活动推进，不因无人或窗口退出停止，
+未驻留页须先装齐实际依赖，不作为液体墙、导热绝热边或辐射遮挡。自然稳态仍由各物理 owner 休眠与唤醒。
+
+2026-10-28 P1 当前物理依赖投影（Global system；当前安全接线，整体未验收）：
+`World.{Thermal,Liquids,Projectiles,Casting}.residency_dependencies/1` 返回现 Closure 的三元种子，
+各 owner 附带会提交几何的粗层祖页，Residency 统一扩既有邻页及整树／附件身份。
+热区分真实 hot／有限源／身体接触／待结算与转化／本步数值域、拟态未来接触和历史可丢几何；
+液体投影与步进共用实际两层水平邻域；投射物复用原 50ms 飞行弦段至寿命端点，
+逐段以两端的 XYZ 页包围范围保留高速跨越的中间页（保守范围，不额外改变弹道或碰撞）；
+前摇一直保留到使用／取消，重新裁决的射程和脚下独立于观察窗口。
+`Thermal.release_residency/2` 仅在退休边界释放派生域与旧 seen 引用，保持 hot、pending、due 和比较基线。
+真实电动势由 `World.CircuitGraph` 沿原实体面、附件端点与保护域构造可达图：先准备冷页再交原 Circuit 求解，
+等待保留同一自然段与due，构造期间seq变化只丢弃尚未求解的准备图；图消费后仅保留真实活动读取依赖，无种子时退休旧完整图。
+真实跨冷页回路已通过首次通电、IO失败显式恢复与等待期间编辑排队／后续断路；首段新热行先由原生域写回，再生成同段电观察。
+热步前准备与驻留共用当前数值域生命周期，液体步前准备与驻留共用实际两层域内读取单元；不再因历史几何或域外唤醒格多扩一环反复装退页。
+32／33槽无源断开岛对照满足原电池／合金各项容差，但并非浮点逐位相同；原能量材料充放电、复制、重启与挖掘用例保持真实时钟和原断言通过。
+具体红绿、作用域与未覆盖项见 [P1 阶段执行记录](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+玩家新接线另由 `World.CircuitAdmission` 在提交前检查潜在连通分量，复用同一空间图，忽略开关/温度的暂时断路。
+宏格 `placed_by`、微格实例 `placed_by` 各计 1，附件按整件（同一出生 ID 的全部槽，面最多 64 槽）计 1（用户 2026-10-29 决定）；天然导体提供连接但不计人工量。
+当前默认上限为 27（实测标定在旧逐槽口径下完成，整件口径的成本风险见 D11 段 2026-10-29 记录），World opts/application env 的 `:circuit_component_limit` 只接纳正整数，stats 暴露实际值。
+超限回复 `:circuit_component_limit` 且不扣料/提交；冷页等待沿原请求重放，取消会退休请求资源。自然/已有过程不受新接线限额影响。
+直接模块证据与默认值适用范围见上述记录 D11 段；正式根准星操作与双端验收仍待 G0，不以模块绿灯代替。
+现 GeneratedStore 未发布天然活动初始化 cut，返回 `natural_activity_unregistered`，阻止无法证明安全的退休。
+天然初始化仍是未闭合依赖，不是全世界初始化／P1 已完成的凭证；其他来源也不能仅凭模块名推断天然稳态。
+最小投影／退休反例与未运行项见 [P1 活动依赖记录](../../.superpowers/sdd/voxel-authority-sharding/task-p1-activity-dependencies.md)。
+
+2026-10-28 P1 当前显式需求与表示退休（Global system；有限文件世界定向验证，完整阶段未验收）：
+`World.Residency.required/1` 合并 canonical／replica 订阅、SimulationWindows、页任务／ready／held、外部准备、四个物理 owner 的现有 Closure 种子，
+沿原 ring、粗层祖页、整树 covers 与附件归属闭合。`World.residency_status/1` 只读原因页数、持久阻塞、退休计数和 generation；
+`World.maintain_residency/1` 供 release CLI 触发相同维护。窗口变化、输入完成／取消／DOWN、模拟推进与持久发布自动请求同一维护。
+需求先由各 owner 给出结果（Thermal 优先），全部合法才展开观察／准备和整树闭包；已知阻退不再分配无用页集合。
+显式 owner 错误优先于 `:all` 与闭包投影错误，仍记录原 `voxel_page_retire_blocked` 原因；合法集合和退休规则不变。
+准备 token 只覆盖原 prepare 返回、调用方 ensure／decode、真实使用之间的间隙；原 request 超时与 caller DOWN 精确释放。
+自足 window 冻结接纳时移交准备 owner，PageCut／window 旧输入继续持有自身旧版本；迟到回填使用现有 page_generation，无第二套 serial。
+动态 defer 已发现页沿同一不可变输入运输，防止洪泛在两段冷页之间反复丢失前段；显式 `:liquid_commit`／`:thermal_commit` 过同一页闸后重放原输入，
+不将它丢成一个尚未到期的自然 due 唤醒，也不提前自然 due；装页期间到达的强制热步不并入进行中的提交（2026-10-29）。
+热 owner 在活动将继续时（`Thermal.continues?`，与开步同一判定）保有已建计算域页，提交之间不退休再重装，热域自然结束后释放。
+动态读集只在合法在途／ready阶段持页。IO失败的原死亡掉落意图退回未ready重试，既有timer自足运输完整身份与读集，
+该失败等待可释放当前页；重入同一gate后先重装、重判再读当前canonical，不新增retry表或承诺IO失败零延迟。
+
+持久资格由所有 canonical 写入口现有判脏覆盖构造：当前 dirty 与未发布 `cut.units`（按其 frozen 引用解释）都不涉及该页，
+才能退休；迁移未发布内容由同一脏／冻结单元阻止，纯不可变 source 的干净派生值无需先编辑一次。不存在第二份可写内容版本表。
+批退休只删除内存表示、页索引和最后派生引用，不走 canonical 业务删除／退款／判脏，不删除持久页或 locator。
+未闭合树的 stage 页由原装页 owner 精确登记，最后任务释放后同样退休；L0／Lk 共享 structure／canopy 直到最后表示 owner 释放。
+overlay ring 索引随其存活 core 保留。合法已编码 Cache 字节仍受原总预算与失效 owner 管理，canonical 退休不强删它们。
+refined／macro／aid／component 只更新退出页实际涉及的 owner；目前共享 fragment 选择仍扫描已驻留 fragment 索引，不能宣称严格 O(退出页)。
+
+```mermaid
+flowchart LR
+  Owners[观察／准备／输入／真实活动 owner] --> Required[现有 Closure 与整树闭包]
+  Required --> Keep[保留仍需读取的页]
+  Dirty[当前 dirty 与未发布 cut/frozen] --> Keep
+  Clean[无需求且内容可恢复的页] --> Retire[同回合表示退休并推进 generation]
+  Retire --> Load[下一正常请求按已发布页重读]
+```
+
+定向命令与所有原始失败保存在 `.demo/observe/p1-residency-20261028/`；测试入口为
+`mix test --no-start test/page_eviction_test.exs test/page_on_demand_test.exs test/closure_entries_test.exs --exclude database --seed 0`。
+11 个新生命周期例覆盖真实文件 prefix、未发布 cut、seq0 只读、准备／超时／取消、跨页树、旧 token／window 回填、无人热源／液体、
+同材料／完整 payload／collision 重读及共享粗层最后 owner；既有 attempt1 已知半树定位保留独立 callback 运输反例。
+电路读取闭包已有上述模块验证；这不证明 GeneratedStore 天然活动初始化、完整P1、真实客户端、默认 27 tiles 或 300ms／220ms，它们继续由同一阶段任务收口。
+本轮实际联合 `final-01` 为42/43通过、3排除（数据库），唯一失败是旧共享液体fixture仍等待通用 `:wake`；
+仅将该运输断言迁移为原显式液体输入并释放测试读取闸后，`final-fix-02` 同生产源码定向1/1通过，业务后半段已执行。
+不将两次证据写成单次43绿。所有批次 native退出码、护栏与自有树清理均保留；本轮没有启动PG／UE。
+
+热／液体的 due 只在原自然步完成后推进；CPU、装页或写回等待保留剩余步和时间欠账。ready 输入先完成旧到期步，
+再按固定接纳切点执行。模拟读取失败由 `PageLoad` 保存一次可诊断失败，经显式 `World.retry_simulation_io/1` 恢复同一依赖；
+取消尚未接纳的调用不撤销既有世界过程或已确认提交。
+
+World 构造参数 `clock: {module, ref}` 统一热／液体的单调毫秒、timer 创建取消、ready 切点、身体样本年龄与 lag。
+默认 `World.Clock` 直接使用 System／Process；可控测试实例只替换时间依赖，不清除 due、不改变自然步或物理内核。
+测试推进时间后须等 `stats.simulation_progress` 与 `admission_status` 的实际完成状态；取消 timer 运输不能代替暂停模拟。
+
+2026-10-28 P3 当前实现：`Prefab.Catalog` 只把身份、来源位置、摘要、呈现绑定、子 id 与材料计数留在 World；
+完整定义在请求的 `World.Definitions` 工作进程按 id 读取／编译，复用 `PageLoad` 的 caller 监控，完成／失败／取消释放 pin。
+原 VXPD 与 L0–L5 payload 共用一个 `World.Cache`，沿用组合根现有额度（当前内存对照为 96MiB），没有永久 compiled 表。
+`prefab_catalog/1` 和 `published_prefab_metadata/1` 只返回轻描述／发布元信息；`prefab_definition/2` 返回原版本原 bytes，
+`prefab_geometry/2`、`compile_prefab/2`、`preview_prefab/2` 返回本请求几何。原 `published_prefabs/1` 仍按请求提供旧 raw tuple 输出。
+`World.stats.shared_cache` 给出统一预算与 namespace 小计，旧 `entries` 仍指 payload 数；`prefab_residency` 给出目录数、准备数和输入在途字节。
+在途输入字节与结果编码大小不是 worker 去重 live heap／RSS。启动仍由短准备进程临时全目录验证／编译；本轮只证明 World 常驻与请求投影改变，
+不宣称启动峰值或全部内存目标完成。按 id 失败显式返回，已知作者定义搬运不重新套玩家发布上限，未知定义仍沿原上限。
+
+观察入口为 `World.stats/1` 的 `simulation_progress`／`simulation_io`、`World.admission_status/1`、窗口与有界模拟快照。
+定向验证与实际命令见 [P6 实施记录](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/p6-simulation-scope.md)；
+世界初始活动发现、天然雪气候、旧背景能量迁移、真实双端持续演化与性能门禁仍未闭合。
+
+2026-10-27 M2b R1（Global system；服务端定向验证）：`World.PageLoad` 在发出读取令牌时登记每页唯一 owner，后来的需求共享同一读取。
+挂起的 World 同步 caller 退出或公共 wrapper 显式报告超时后，只移除该请求；其他 caller／业务／模拟 `:wake` 仍需求的任务继续。
+独占取消释放任务与未驻留页占用，已接纳事务不回滚。`World.simulation_snapshot/4` 支持单次等待时限，默认 300 秒。
+普通 `GenServer.call` 超时本身不通知服务器；Player 直接发送的异步消息未走该同步 wrapper，其取消事实不在本轮验收内。
+所有权、Erlang 官方依据、红绿反例和日志位置见 [M2b §7 R1](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#r1-同页读取与同步调用生命周期2026-10-27服务端定向验证)。
+
 2026-10-27 窗口快照组装（Global system，已实现及服务端隔离实跑，整体性能／双客户端未验收）：World 在一次回调中冻结窗口只读输入并登记 canonical 订阅；
 `World.WindowSnapshot` 按区域索引选择输入，跨窗叶子／附件保留整件数据，冻结引用留在 World 堆内。
 `CanonicalFeed` 按信用 1 分批拉取条目，在自己的进程重建派生索引、沿既有 `Payloads`／`Observation` 算法组装区域、属性与碰撞。
@@ -49,7 +200,7 @@ flowchart LR
 2026-09-30 大火热模拟：分步提交与常驻原生拓扑（Global system；基准、回放与等价性测试为 Test-only）：
 Demo 林火（约 1.2 万热格、2 万内核节点）里 World 每 0.5 模拟秒要连续跑约 10 个内核步、共约 1.8 s，
 玩家挖放在 World 邮箱里排 5–8 s。一，定时提交改为逐步消息（`:thermal_tick` 开始、`{:thermal_step, ref}` 每条一步），
-步间先处理排队的调用，0.5 模拟秒仍作为一笔事务提交；测试的 `:thermal_commit` 仍在一次回调内完整执行。
+步间先处理排队的调用，0.5 模拟秒仍作为一笔事务提交；测试的 `:thermal_commit` 在依赖页驻留时于一次回调内完整执行，缺页时挂闸重放（见上）。
 二，热模拟移出 `world.ex`：`World.Thermal`（编排与内核步，完成时交回待提交记录）、`World.Canonical`（只读 canonical 读取），
 依赖单向 World → Thermal → Canonical。三，内核拓扑常驻原生侧：`ThermalDomain` 维护内核节点表（键 => 分区过滤后的节点与派生字段，
 遍历次序即内核次序），只把变化节点的接触与视线按整数槽位推给 NIF 资源，每轮交出下标次序与发边次序，原生侧生成边与辐射项
@@ -119,7 +270,15 @@ smoke17 双端逐笔核对、余额闭合：放置确认 0.194 s，镐击 0.031 
 
 2026-09-20 青岚全图液体接入（Global system）：`liquid_bounds` 只规定合法模拟边界，
 World 启动不枚举地图。正式 `prepare` 完成源准备后，owner 只从本次 L0 区域及 ring 的
-canonical 载荷接纳有限水／熔岩；空气覆盖阻止旧水源补充，接纳本身不唤醒静水。
+canonical 地形接纳有限水／熔岩；空气覆盖阻止旧水源补充，接纳本身不唤醒静水。
+`Payloads.terrain_materials/3` 与完整载荷共用唯一 source直通／base／overlay／ring 处理，液体仅筛材料候选，
+再由 `Canonical.cell_value` 裁决；不为材料准备扩展 refined、实例、附件或重编压缩整个网络载荷。
+纯 source 的材料解码保持临时，不新增完整 decoded 驻留；无待接纳格的备忘只保存确定性内容的 SHA256，
+不保留展开 ring map 或大材料二进制。已有合法暖载荷使用 `World.Cache.PayloadMetadata.liquid_checked`，
+检查完成后再次命中不重建 terrain／SHA；替换、页失效与 LRU 退休同一条目及其标记。
+只在无液体提交的完成边界标记当前条目，提交后不会把旧检查结论附给新条目。
+对外缓存运输仍为 `{bytes, header}`，不向协议头或跨进程输入附带检查权限；冷路径仍有瞬时指纹编码成本。
+`voxel_source_prepare_done` 分别记录 lookup／adopt／total 微秒；旧 source_prepare 的 elapsed 只覆盖接纳前的查源段。
 缺失区域仍交由原请求返回 missing／canonical_incomplete，观察接口不隐式加载区域。
 设计依据是现有 canonical owner 和区域加载链路；对照
 [Luanti 的 loaded/active block 区分](https://api.luanti.org/map-terminology-and-coordinates/)，
@@ -665,6 +824,21 @@ L0 不在门内：它按玩家位置在线生成（单块几十毫秒）。`Worl
 `World` 内有一个内存载荷缓存 `(level, region) → {bytes, header}`：source 原样字节与 overlay 物化字节都进它；L0–L3 按最近使用淘汰，字节上限
 `VOXEL_REGION_PAYLOAD_CACHE_MB`（默认 512），L4+ 常驻不计入上限；条目碰到的 region（含 ring 邻居）立即失效，region 快照重放时整个清空。命中不读盘、不解压。
 `stats` 里有 `entries / lru_bytes / resident_bytes / hits / misses / evictions`；本机可用 `elixir --sname probe --cookie <cookie> -e ':rpc.call(node, VoxelRegion.World, :stats, [])'` 读取。
+
+M2b R3 统计口径：`World.stats/1` 只观察当前 owner，不装页、不查 PG 或枚举磁盘页。
+新增 JSON 可编码的 `scope`：`canonical_data` 为 `resident_pages`（当前已接纳页）或 `loaded_persistent_state`（全部持久编辑状态已加载）；
+`cache=process_local`、`runtime=world`、`disk=not_counted`。有限驻留集即使碰巧覆盖现有磁盘页也保持 `resident_pages`，统计不猜全局覆盖。
+这只描述计数的数据覆盖，不改变 World 对未驻留内容的权威所有权，也不包括尚未物化的 procedural baseline 总量。
+
+- 受 `scope.canonical_data` 约束的内容计数是 `overlay_cells / overlay_regions / snapshot_regions / region_bases / refined_macros / attachment_slots / attachment_bytes / instances / damaged_targets / damage_state_bytes`。页冷时可能为零；不是全世界材料、实例或损伤总量，也不把缺失页解释为空气。
+- `resident_pages` 是当前已接纳驻留页数（跨 L0 与粗层），`:all` 是持久编辑状态已全部加载的哨兵，不表示整个生成世界已经物化；`page_loads` 是活动装页任务数，`page_waiters` 是 `PageLoad.callers` 索引中的同步等待调用数，含同序键排队及依赖ready后的物理接纳等待，不含异步模拟需求或 compact 等待者。
+- `World.admission_status/1` 只读当前ready输入、原arrival及本轮固定cutoff；冷页准备不占ready队列。热/液体在接纳前按最早due、同due热先液体后推进完整旧自然步，随后才执行新物理输入；PageLoad仅运输不可变上下文并复用唯一caller生命周期。此合同保持既有自然步量化，不表示亚步连续精确或跨流历史状态成立。
+- `World.stats/1` 的 `simulation_io` 明确区分idle/loading/failed，失败保留原因、原请求页及attempt；`World.retry_simulation_io/1`在依赖修复后只开始一次尝试，同一loading重复调用返回同attempt。只有完整依赖接纳并实际续原步才算恢复，调用返回loading不算成功。
+- 模拟IO持续failed期间不自动反复读取、不清due/run或假称自然稳态；普通未接纳物理请求明确返回`{:error, {:simulation_input_failed, reason}}`并退休等待。已确认死亡掉落只在原唯一context内保留/重试，不按cid覆盖、不新增outbox；这不是跨进程故障恰好一次交付的新承诺。
+- `entries / lru_bytes / resident_bytes / cache_limit / hits / misses / evictions / decoded_regions` 是进程本地派生缓存指标；其中旧名 `resident_bytes` 仅指载荷缓存常驻部分的字节，不能当权威页内存。`generated` 是 source 定义的当前生成计数，不是磁盘 region 总数。
+- `retained_transactions`、切点/积压字段（`checkpoint_scheduled / published_seq / dirty_units / checkpoints` 及 `PageCut.backlog` 字段）是该 World 的日志保留、持久进度和运行状态；`property_digest` 是全局属性目录身份。`published_seq` 是已发布全局前缀，不表示该前缀全部内容已驻留。`simulation_progress` 仍由各物理 owner 解释，不从驻留统计推断演化是否暂停。
+
+以上分类直接依据 [`World.Pages`](lib/voxel_region/world/pages.ex) 的页段/全局账归属、[`World.PageLoad`](lib/voxel_region/world/page_load.ex) 的驻留与等待 owner 和现有 stats 字段来源；保留旧字段及计算，元数据只声明覆盖。最小集成反例在 `test/resident_stats_test.exs`：正常编辑远处格 → compact → 重启 → stats 不装页 → 正常读回后驻留 base 计数增长。文件日志替代 PG，只证明上述统计边界，不证明物理或客户端流程。
 
 缓存生成先写入同目录、含 OS PID 与 BEAM 唯一值的临时文件，再用 [`File.ln/2`](https://www.erlang.org/doc/apps/kernel/file.html#make_link/2) 建立同文件系统 hardlink，完成拒绝覆盖的原子发布；目标已存在的生成者删除自己的临时文件并读取、校验胜者。文件系统不支持 hardlink 时明确返回 `cache_publish_failed`，没有 rename 或运行时生成 fallback。缓存命中会完整解压并复核 body 长度与 hash，避免截断或损坏的生成结果被永久复用；warm serve 的重复解压成本留给后续性能切片处理。
 

@@ -21,7 +21,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
   @moduletag :thermoelectric
   @moduletag timeout: 600_000
   alias VoxelRegion.World
-  alias VoxelRegion.TestSupport.{Actor, Log, Source}
+  alias VoxelRegion.TestSupport.{Actor, Log, Source, WorldClock}
 
   @fixtures Path.expand("fixtures/combustion", __DIR__)
   @catalog "b88329ab0d3652c30f67d012fce04fd30afd7fd6dcc263e5066ba0b08f90284f"
@@ -49,6 +49,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
       property_catalog_path: catalog, thermal_environment_path: env, prefab_catalog_path: Path.join(root, "prefabs"),
       production_materials: [@stone, @coal, @ice, @copper, @alloy, @te], liquid_bounds: @bounds]
     w = start_supervised!({World, opts}, id: :world)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     %{w: w, opts: opts, root: root, materials: Map.new(data["materials"], &{&1["material_id"], &1})}
   end
 
@@ -163,6 +164,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     w = start_supervised!({World, c.opts}, id: :world)
     restored = frozen(w)
     :sys.resume(w)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     {%{c | w: w}, before, restored}
   end
 
@@ -268,6 +270,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
   defp flush_trace(n \\ 0) do
     receive do
       {:trace, _, :receive, :thermal_tick} -> flush_trace(n + 1)
+      {:trace, _, :receive, {:thermal_tick, _due}} -> flush_trace(n + 1)
       {:trace, _, :receive, _} -> flush_trace(n)
     after 0 -> n
     end
@@ -363,10 +366,24 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     File.cp!(Path.join(c.root, "environment.json"), Path.join(root, "environment.json"))
     opts = Keyword.merge(c.opts, root: root, property_catalog_path: Path.join(root, "properties.json"),
       thermal_environment_path: Path.join(root, "environment.json"), prefab_catalog_path: Path.join(root, "prefabs"))
-    %{c | w: start_supervised!({World, opts}, id: :twin), root: root, opts: opts}
+    w = start_supervised!({World, opts}, id: :twin)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
+    %{c | w: w, root: root, opts: opts}
+  end
+
+  # 只测试：两个世界都持续演化（无窗口也不冻结），墙钟定时提交会在对方被逐笔驱动时各自推进，末态模拟时刻不同、
+  # 对照失去意义。改用不前进的测试时钟，两世界只经同样 600 笔显式提交推进到同一模拟时刻；不改物理与调度规则。
+  defp manual_clock(c) do
+    :ok = stop_supervised(:world)
+    clock = start_supervised!({WorldClock, 0})
+    opts = Keyword.put(c.opts, :clock, {WorldClock, clock})
+    w = start_supervised!({World, opts}, id: :world)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
+    %{c | w: w, opts: opts}
   end
 
   test "冰作冷端：整格冰的潜热按相态焓入账（显热 + 焓 − 作者焓 = 账）；冰保持 273.15 K、冷铜更冷、电动势高于无冰对照", c do
+    c = manual_clock(c)
     hearth = [{{3, 1, 2}, @stone}, {{3, 2, 2}, @stone}]
     generator(c, hearth)
     other = twin(c)
@@ -388,6 +405,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     {iced, acc} = run(c, placed, energy, fn _, _ -> false end, 600)
     {plain, _} = run(other, observe(other.w), energy, fn _, _ -> false end, 600)
     assert acc.checked > 100
+    assert iced.thermal.elapsed_s == plain.thermal.elapsed_s
     for {p, e} <- Enum.zip([{6, 2, 2}, {0, 2, 2}], e0) do
       row = cell(iced, p)
       # 仍是冰（焓未到潜热），温度钉在转变点；吸热只增加焓。
@@ -426,6 +444,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     refute Map.has_key?(migrated.thermal, :circuit_peltier_absorbed_j)
     removed = ledger(migrated, :circuit_removed_j)
 
+    :ok = VoxelRegion.TestSupport.activate_simulation(c.w, {{8,0,0},{16,4,5}})
     # 整格煤炉（z = 2，旧世界设备在 x ≤ 4）：煤 (10,3,2) 烧热铜 H (11,3,2)，热电石 (12,3,2)，冷铜 (13,3,2)；
     # 回路 H→T→C→合金 (13,2,2)→铜 (13,1,2)(12,1,2)(11,1,2)(11,2,2)→H；煤下垫石柱。
     ground = for x <- 8..15, z <- 0..4, do: {{x, 0, z}, @stone}
@@ -458,6 +477,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     w = start_supervised!({World, c.opts}, id: id)
     restored = frozen(w)
     :sys.resume(w)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{0,0,0},{16,4,5}})
     {%{c | w: w}, before, restored}
   end
 
@@ -487,6 +507,7 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     refute Map.has_key?(replayed.thermal, :circuit_peltier_absorbed_j)
     refute Map.has_key?(replayed.thermal, :circuit_peltier_released_j)
     assert cell(observe(w), {1, 3, 2}).burning
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     base = {0.0, 0.0, te_old}
 
     s = Enum.reduce_while(1..3000, nil, fn _, _ ->

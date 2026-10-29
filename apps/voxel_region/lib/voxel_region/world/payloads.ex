@@ -1,6 +1,7 @@
 defmodule VoxelRegion.World.Payloads do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
-  全局系统功能：区域载荷物化与可丢弃的载荷缓存（L0–L3 按最近使用淘汰，L4+ 常驻）、区域快照与结构条目。
+  全局系统功能：区域载荷物化与 `World.Cache` 中可丢弃的载荷条目（各级一律按最近使用淘汰）、区域快照与结构条目。
 
   由 `VoxelRegion.World` 拆出的状态函数：输入与返回都是 World 状态，真值归属与调用时机仍由 World 决定。
   """
@@ -12,8 +13,9 @@ defmodule VoxelRegion.World.Payloads do
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Log, Edits, AttachmentOps}
 
+  alias VoxelRegion.World.Cache
+
   @max_level 5
-  @resident_level 4
 
   # ---- 应答
 
@@ -72,36 +74,26 @@ defmodule VoxelRegion.World.Payloads do
         {:ok, bytes, header, state}
 
       {:miss, state} ->
-        cells = Map.get(state.overlay_regions, key, MapSet.new())
-        bases = neighboring_bases(state, level, region)
-
-        if MapSet.size(cells) == 0 and not MapSet.member?(state.snapshots, key) and bases == [] do
-          case state.source.read(state.source_state, level, region) do
-            {:ok, bytes, header} -> {:ok, bytes, header, cache_put(state, key, bytes, header)}
-            {:error, :missing} -> {:error, :missing, state}
-            {:error, reason} -> {:error, reason, state}
-          end
-        else
-          case decoded(state, level, region) do
-            {:ok, payload, state} ->
-              overrides =
-                Map.new(cells, fn cell ->
-                  {Payload.local(region, cell), Map.fetch!(state.overlay, {level, cell})}
-                end)
-
-              overrides = Map.merge(ring_overrides(bases, region), overrides)
-
+        started = System.monotonic_time(:microsecond)
+        case terrain_input(state, level, region) do
+          :source -> source_bytes(state, level, region)
+          {:terrain, cells, bases} ->
+          case terrain(state, level, region, cells, bases) do
+            {:ok, payload, overrides, state} ->
+              terrain_end = System.monotonic_time(:microsecond)
               if byte_limit != :infinity and
                    Codec.payload_min_bytes(Payload.min_body_bytes(payload, overrides)) >= byte_limit do
                 {:not_smaller, state}
               else
                 {payload, state} = with_refined(state, payload)
+                encode_start = System.monotonic_time(:microsecond)
 
                 # 有上限时先看地形段的压缩前缀：已不短于上限就不再编细节、压缩完整 body（结论与完整编码后比较相同）。
                 encoded =
                   if byte_limit == :infinity,
                     do: {:ok, Payload.encode(payload, overrides, state.seq, state.cv)},
                     else: Payload.encode_below(payload, overrides, state.seq, state.cv, byte_limit)
+                encode_end = System.monotonic_time(:microsecond)
 
                 case encoded do
                   :not_smaller ->
@@ -109,7 +101,17 @@ defmodule VoxelRegion.World.Payloads do
 
                   {:ok, bytes} ->
                     {:ok, header} = Codec.decode_payload_header(bytes)
-                    {:ok, bytes, header, cache_put(state, key, bytes, header)}
+                    cache_start = System.monotonic_time(:microsecond)
+                    state = cache_put(state, key, bytes, header)
+                    cache_end = System.monotonic_time(:microsecond)
+                    {x, y, z} = region
+                    Logger.info(fn ->
+                      "voxel_payload_materialize pid=#{:erlang.pid_to_list(self())} seq=#{state.seq} cv=#{state.cv} level=#{level} x=#{x} y=#{y} z=#{z} source=materialize " <>
+                        "start_us=#{started} terrain_end_us=#{terrain_end} encode_start_us=#{encode_start} encode_end_us=#{encode_end} cache_start_us=#{cache_start} cache_end_us=#{cache_end} " <>
+                        "terrain_us=#{terrain_end - started} encode_us=#{encode_end - encode_start} cache_us=#{cache_end - cache_start} elapsed_us=#{cache_end - started} " <>
+                        "raw_bytes=#{header.raw_bytes} body_bytes=#{header.body_bytes} payload_bytes=#{byte_size(bytes)}"
+                    end)
+                    {:ok, bytes, header, state}
                 end
               end
 
@@ -123,7 +125,54 @@ defmodule VoxelRegion.World.Payloads do
     end
   end
 
-  # ---- 载荷缓存：L0–L3 在 gb_tree {tick, key} 上按最近使用淘汰，L4+ 常驻不进树。
+  # 未改动区域沿来源字节直通；完整载荷与材料读取共用同一个物化判据。
+  defp terrain_input(state, level, region) do
+    key = {level, region}
+    cells = Map.get(state.overlay_regions, key, MapSet.new())
+    bases = neighboring_bases(state, level, region)
+    if MapSet.size(cells) == 0 and not MapSet.member?(state.snapshots, key) and bases == [],
+      do: :source, else: {:terrain, cells, bases}
+  end
+
+  defp source_bytes(state, level, region) do
+    case state.source.read(state.source_state, level, region) do
+      {:ok, bytes, header} -> {:ok, bytes, header, cache_put(state, {level, region}, bytes, header)}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  @doc "液体候选的地形材料与覆盖表；纯 source 只临时解材料段，不建立完整 decoded 驻留。"
+  def terrain_materials(state, level, region) do
+    case terrain_input(state, level, region) do
+      :source ->
+        result = case cache_fetch(state, {level, region}) do
+          {:ok, bytes, header, state} -> {:ok, bytes, header, state}
+          {:miss, state} -> source_bytes(state, level, region)
+        end
+        with {:ok, bytes, _, loaded} <- result do
+          case Payload.decode_cells(bytes) do
+            {:ok, materials} -> {:ok, materials, %{}, loaded}
+            {:error, reason} -> {:error, reason, loaded}
+          end
+        end
+      {:terrain, cells, bases} ->
+        with {:ok, payload, overrides, loaded} <- terrain(state, level, region, cells, bases),
+          do: {:ok, payload.cells, overrides, loaded}
+    end
+  end
+
+  defp terrain(state, level, region, cells, bases) do
+    case decoded(state, level, region) do
+      {:ok, payload, state} ->
+        overrides = Map.new(cells, fn cell ->
+          {Payload.local(region, cell), Map.fetch!(state.overlay, {level, cell})}
+        end)
+        {:ok, payload, Map.merge(ring_overrides(bases, payload), overrides), state}
+      error -> error
+    end
+  end
+
+  # ---- 载荷缓存：条目存于统一 `World.Cache`（见 cache_fetch/cache_put），各级一律按 LRU 淘汰。
 
   # 已提交完整区域拥有自己的 core；ring 是相邻 core 的投影，不展开成常驻逐格增量。
   def neighboring_bases(state, level, {rx, ry, rz}) do
@@ -135,52 +184,83 @@ defmodule VoxelRegion.World.Payloads do
         do: {p, {dx, dy, dz}}
   end
 
-  def ring_overrides(bases, region) do
-    {ox, oy, oz} = Payload.origin(region)
+  @doc "邻core相对当前载荷ring的实际值差额；相同值不构造覆盖，后续overlay仍优先。"
+  def ring_overrides(bases, %Payload{} = center) do
+    core = Payload.extent() - 2
 
-    for {p, {dx, dy, dz}} <- bases,
-        x <- ring_axis(dx),
-        y <- ring_axis(dy),
-        z <- ring_axis(dz),
-        into: %{},
-        do: {{x, y, z}, Payload.value(p, Payload.local(p.region, {ox + x, oy + y, oz + z}))}
+    Enum.reduce(bases, %{}, fn {p, {dx, dy, dz}}, overrides ->
+      xs = ring_axis(dx)
+      x = xs.first
+      count = xs.last - x + 1
+
+      for y <- ring_axis(dy), z <- ring_axis(dz), reduce: overrides do
+        acc ->
+          local = {x, y, z}
+          neighbor_local = {x - core * dx, y - core * dy, z - core * dz}
+          Payload.put_row_differences(center, local, p, neighbor_local, count, acc)
+      end
+    end)
   end
 
   def ring_axis(-1), do: 0..0
   def ring_axis(0), do: 1..(Payload.extent() - 2)
   def ring_axis(1), do: (Payload.extent() - 1)..(Payload.extent() - 1)
 
+  @doc "沿唯一细节与树冠构造路径补载荷，记录固定标量阶段；返回载荷与原状态契约不变。"
   def with_refined(state, %Payload{} = payload) do
+    started = System.monotonic_time(:microsecond)
     {payload,state}=with_existing_details(state,payload)
+    details_end = System.monotonic_time(:microsecond)
     {anchors,instances,residual,structure,state}=VoxelRegion.World.Canopy.project(state,payload.level,payload.region)
-    {%{payload | canopy: anchors,canopy_instances: instances,canopy_residual: residual,
-       canopy_residual_structure: structure,base_instances: nil,base_format_version: nil},state}
+    payload = %{payload | canopy: anchors,canopy_instances: instances,canopy_residual: residual,
+       canopy_residual_structure: structure,base_instances: nil,base_format_version: nil}
+    canopy_end = System.monotonic_time(:microsecond)
+    {x, y, z} = payload.region
+    # 只取已经构造的表大小与二进制长度；不为观测再遍历槽、状态或编码正文。
+    Logger.info(fn ->
+      "voxel_payload_details pid=#{:erlang.pid_to_list(self())} seq=#{state.seq} cv=#{state.cv} level=#{payload.level} x=#{x} y=#{y} z=#{z} source=with_refined " <>
+        "details_start_us=#{started} details_end_us=#{details_end} canopy_end_us=#{canopy_end} details_us=#{details_end - started} canopy_us=#{canopy_end - details_end} " <>
+        "cells_bytes=#{byte_size(payload.cells)} fmi_bytes=#{byte_size(payload.fmi)} maps_bytes=#{byte_size(payload.maps)} " <>
+        "records_entries=#{map_size(payload.records)} refined_entries=#{refined_count(payload)} refined_records_entries=#{refined_count(payload)} instances_entries=#{map_size(payload.instances)} " <>
+        "structure_entries=#{map_size(payload.structure)} attachments_entries=#{map_size(payload.attachments)} liquid_units_entries=#{map_size(payload.liquid_units)} " <>
+        "canopy_entries=#{map_size(payload.canopy)} canopy_instances_entries=#{map_size(payload.canopy_instances)} canopy_residual_entries=#{map_size(payload.canopy_residual)} canopy_residual_structure_entries=#{map_size(payload.canopy_residual_structure)}"
+    end)
+    {payload,state}
   end
+  defp refined_count(%Payload{refined_encoding: nil, refined: refined}), do: map_size(refined)
+  defp refined_count(%Payload{refined_encoding: encoding}), do: MmoContracts.Voxel.Refined.Encoding.size(encoding)
+
   defp with_existing_details(state, %Payload{level: 0, region: {rx, ry, rz} = region} = payload) do
     # 载荷跨度含一圈 ring：只看本区与 26 个相邻区的 refined 宏格（区域索引），不扫全世界。
     near = refined_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz}))
 
     span = MapSet.filter(near, &Payload.in_span?(Payload.local(region, &1)))
 
-    # 各格槽记录按格备忘（{slots, 字节}，refined 写入时失效）：后像只重编本次变了的格。
-    {refined, records, encoded} =
-      Enum.reduce(Map.take(state.refined, MapSet.to_list(span)), {%{}, %{}, state.refined_encoded}, fn {cell, slots}, {refined, records, encoded} ->
+    # 记录直接引用已接纳槽的有序前缀；该O(1)投影不再另存可写备忘。
+    record_start = System.monotonic_time(:microsecond)
+    {records, slot_count, record_bytes} =
+      Enum.reduce(Map.take(state.refined, MapSet.to_list(span)), {%{}, 0, 0}, fn {cell, slots}, {records, slot_count, record_bytes} ->
         index = Payload.cell_index(Payload.local(region, cell))
-
-        bin =
-          case encoded do
-            %{^cell => {^slots, bin}} -> bin
-            _ -> MmoContracts.Voxel.Refined.slot_records(slots)
-          end
-
-        {Map.put(refined, index, slots), Map.put(records, index, bin), Map.put(encoded, cell, {slots, bin})}
+        bin = RefinedSlots.sorted_records(slots)
+        {Map.put(records, index, {RefinedSlots.size(slots), bin}),
+         slot_count + RefinedSlots.size(slots), record_bytes + byte_size(bin)}
       end)
+    record_end = System.monotonic_time(:microsecond)
 
+    owners_start = System.monotonic_time(:microsecond)
     macro_owners = for {cell, _} = entry <- macro_owners_in_regions(state, for(dx <- -1..1, dy <- -1..1, dz <- -1..1, do: {rx + dx, ry + dy, rz + dz})),
       Payload.in_span?(Payload.local(region, cell)), into: %{}, do: entry
     # 跨度内微格的持有者：部件索引里与跨度相交的身份（与逐槽扫描这些格得到的集合相同）。
     owners = for {owner, cells} <- state.refined_owners, not MapSet.disjoint?(cells, span), do: owner
     ids = MmoContracts.Voxel.Refined.ancestors(state.instances, Enum.uniq(owners ++ Map.values(macro_owners)))
+    owners_end = System.monotonic_time(:microsecond)
+    # 原循环内只累计已访问槽与所选字节；两个时间区间分别覆盖原 record 与 owner 自然小段。
+    Logger.info(fn ->
+      "voxel_payload_records pid=#{:erlang.pid_to_list(self())} seq=#{state.seq} cv=#{state.cv} level=0 x=#{rx} y=#{ry} z=#{rz} source=with_existing_details " <>
+        "record_start_us=#{record_start} record_end_us=#{record_end} record_loop_us=#{record_end - record_start} " <>
+        "owners_start_us=#{owners_start} owners_end_us=#{owners_end} owners_us=#{owners_end - owners_start} " <>
+        "slots=#{slot_count} record_bytes=#{record_bytes}"
+    end)
 
     {%{
        payload
@@ -188,11 +268,11 @@ defmodule VoxelRegion.World.Payloads do
              local = Payload.local(region, cell), Payload.in_span?(local),
              into: %{}, do: {Payload.cell_index(local), units}),
          attachments: Attachments.extract(attachments_around_region(state, region), region),
-         refined: refined,
-         refined_records: records,
+         refined: %{},
+         refined_encoding: MmoContracts.Voxel.Refined.Encoding.new(records),
          instances: Map.take(state.instances, ids),
          format_version: if(ids != [] or payload.format_version == 5, do: 5, else: 4)
-     }, %{state | refined_encoded: encoded}}
+     }, state}
   end
 
   defp with_existing_details(state, %Payload{level: level, region: region} = payload) do
@@ -250,7 +330,7 @@ defmodule VoxelRegion.World.Payloads do
 
       {bytes, s} =
         case Map.fetch(terrain_payloads, key) do
-          {:ok, {prior, _}} ->
+          {:ok, {prior, _header}} ->
             {details, s} = with_refined(s, %Payload{level: level, region: region})
 
             overrides =
@@ -366,75 +446,74 @@ defmodule VoxelRegion.World.Payloads do
     {state, region_keys(changed), changed}
   end
 
+  @doc "读取同一共享缓存中的payload条目；header仍为纯协议头。"
   def cache_fetch(state, key) do
-    case Map.fetch(state.payloads, key) do
-      {:ok, {bytes, header}} -> {:ok, bytes, header, count(cache_touch(state, key), :hits)}
-      :error -> {:miss, count(state, :misses)}
+    case Cache.get(state.cache, {:payload, key}) do
+      {:ok, %{bytes: bytes, metadata: %Cache.PayloadMetadata{header: header}}, cache} ->
+        {:ok, bytes, header, %{state | cache: cache}}
+      {:miss, cache} -> {:miss, %{state | cache: cache}}
     end
   end
 
-  def cache_touch(state, {level, _} = key) when level < @resident_level do
-    tick = state.tick + 1
-    old = Map.fetch!(state.lru_ticks, key)
-    lru = :gb_trees.insert({tick, key}, true, :gb_trees.delete({old, key}, state.lru))
-    %{state | lru: lru, lru_ticks: Map.put(state.lru_ticks, key, tick), tick: tick}
-  end
-
-  def cache_touch(state, _key), do: state
-
-  def cache_put(state, {level, _} = key, bytes, header) do
-    state = cache_delete(state, key)
-    state = %{state | payloads: Map.put(state.payloads, key, {bytes, header})}
-
-    if level < @resident_level do
-      tick = state.tick + 1
-
-      %{
-        state
-        | lru: :gb_trees.insert({tick, key}, true, state.lru),
-          lru_ticks: Map.put(state.lru_ticks, key, tick),
-          tick: tick,
-          lru_bytes: state.lru_bytes + byte_size(bytes)
-      }
-      |> cache_evict()
-    else
-      %{state | resident_bytes: state.resident_bytes + byte_size(bytes)}
+  @doc "只读当前合法payload，不改变LRU。"
+  def cached_payload(state, key) do
+    case Cache.peek(state.cache, {:payload, key}) do
+      {:ok, %{bytes: bytes, metadata: %Cache.PayloadMetadata{header: header}}} -> {:ok, {bytes, header}}
+      :miss -> :error
     end
   end
 
-  def cache_delete(state, {level, _} = key) do
-    case Map.pop(state.payloads, key) do
-      {nil, _} ->
-        state
+  @doc "只查payload命名空间的当前键；用于定向失效与冻结，不作预算重算。"
+  def cached_keys(state), do: Enum.map(Cache.keys(state.cache, :payload), &elem(&1, 1))
 
-      {{bytes, _header}, payloads} ->
-        if level < @resident_level do
-          {tick, ticks} = Map.pop(state.lru_ticks, key)
+  @doc "对外仍投影原字节／header pair，不传播检查标记。"
+  def export_cached(state, keys \\ nil) do
+    for key <- keys || cached_keys(state), {:ok, pair} <- [cached_payload(state, key)], into: %{}, do: {key, pair}
+  end
 
-          %{
+  @doc "缓存成员判断不取正文、不修改统计。"
+  def cached?(state, key), do: Cache.peek(state.cache, {:payload, key}) != :miss
+
+  @doc "合法暖条目的检查结论随同一Cache entry退休。"
+  def checked_liquid(state, region) do
+    case Cache.peek(state.cache, {:payload, {0, region}}) do
+      {:ok, %{metadata: %Cache.PayloadMetadata{liquid_checked: true}}} ->
+        {:ok, _bytes, _header, next} = cache_fetch(state, {0, region})
+        {:checked, next}
+      _ -> :unchecked
+    end
+  end
+
+  @doc "无提交检查完成后只更新该entry元信息，不替换bytes或退休pin。"
+  def mark_liquid_checked(state, region) do
+    key = {:payload, {0, region}}
+    case Cache.peek(state.cache, key) do
+      {:ok, %{metadata: %Cache.PayloadMetadata{} = metadata}} ->
+        case Cache.update_metadata(state.cache, key, %{metadata | liquid_checked: true}) do
+          {:ok, cache} -> %{state | cache: cache}
+          {:error, reason, _} ->
+            Logger.warning("voxel_cache_metadata_rejected key=#{inspect(key)} reason=#{inspect(reason)}")
             state
-            | payloads: payloads,
-              lru: :gb_trees.delete({tick, key}, state.lru),
-              lru_ticks: ticks,
-              lru_bytes: state.lru_bytes - byte_size(bytes)
-          }
-        else
-          %{state | payloads: payloads, resident_bytes: state.resident_bytes - byte_size(bytes)}
         end
+      :miss -> state
     end
   end
 
-  def cache_evict(state) do
-    if state.lru_bytes > state.cache_limit and :gb_trees.size(state.lru) > 0 do
-      {{_tick, key}, _value, _lru} = :gb_trees.take_smallest(state.lru)
-      cache_evict(count(cache_delete(state, key), :evictions))
-    else
-      state
+  @doc "新payload只进入共享预算；缓存拒收显式记录，已生成的正常输出由请求在途owner持有。"
+  def cache_put(state, key, bytes, header) do
+    cache = Cache.delete(state.cache, {:payload, key})
+    version = {header.content_version, header.seq, header.hash}
+    metadata = %Cache.PayloadMetadata{header: header}
+    case Cache.put(cache, {:payload, key}, bytes, version, metadata) do
+      {:ok, next} -> %{state | cache: next}
+      {:error, reason, next} ->
+        Logger.warning("voxel_cache_store_rejected key=#{inspect(key)} bytes=#{byte_size(bytes)} reason=#{inspect(reason)}")
+        %{state | cache: next}
     end
   end
 
-  def count(state, field),
-    do: %{state | cache_stats: Map.update!(state.cache_stats, field, &(&1 + 1))}
+  @doc "权威失效显式退休payload；共享缓存中的prefab不受该键删除影响。"
+  def cache_delete(state, key), do: %{state | cache: Cache.delete(state.cache, {:payload, key})}
 
   # serve 与副本共用物化字节；快照头只推进到当前事务前缀。
   def canonical_region_bytes(state, coord) do
@@ -457,33 +536,40 @@ defmodule VoxelRegion.World.Payloads do
     end)
   end
 
-  def canonical_chunks(state, coords) do
-    groups = Enum.group_by(coords, &CollisionSource.region_coord/1)
+  @doc "按提交的完整宏格变化集投影碰撞；旧侧只读变化格，完整占用仅构造真实变化的 new chunk。"
+  def canonical_changed_chunks(before, after_state, changes) do
+    groups = Enum.group_by(changes, fn {coord, _cells} -> CollisionSource.region_coord(coord) end)
 
-    result =
-      Enum.reduce_while(groups, {:ok, [], state}, fn {region, coords}, {:ok, chunks, s} ->
-        case decoded(s, 0, region) do
-          {:ok, p, s} ->
-            value_at = fn cell ->
-              material =
-                case Map.fetch(s.overlay, {0, cell}) do
-                  {:ok, {material, _}} -> material
-                  :error -> Payload.material(p, Payload.local(region, cell))
-                end
-
-              {material, CollisionSource.phase_slots(material,Map.get(s.refined,cell,%{}),Map.get(s.liquid_units,cell),liquid_capacity(s))}
-            end
-
-            {:cont, {:ok, Enum.map(coords, &CollisionSource.capture(&1, value_at)) ++ chunks, s}}
-
-          _ ->
-            {:halt, {:error, :canonical_incomplete}}
-        end
-      end)
-
-    case result do
-      {:ok, chunks, _} -> {:ok, Enum.sort_by(chunks, & &1.coord)}
+    Enum.reduce_while(groups, {:ok, []}, fn {region, changes}, {:ok, chunks} ->
+      with {:ok, old_at} <- collision_reader(before, region),
+           {:ok, new_at} <- collision_reader(after_state, region) do
+        chunks = Enum.reduce(changes, chunks, fn {coord, cells}, acc ->
+          case CollisionSource.capture_changed(coord, old_at, new_at, cells) do
+            nil -> acc
+            chunk -> [chunk | acc]
+          end
+        end)
+        {:cont, {:ok, chunks}}
+      else
+        _ -> {:halt, {:error, :canonical_incomplete}}
+      end
+    end)
+    |> case do
+      {:ok, chunks} -> {:ok, Enum.sort_by(chunks, & &1.coord)}
       error -> error
+    end
+  end
+
+  defp collision_reader(state, region) do
+    with {:ok, payload, state} <- decoded(state, 0, region) do
+      {:ok, fn cell ->
+        material = case Map.fetch(state.overlay, {0, cell}) do
+          {:ok, {material, _}} -> material
+          :error -> Payload.material(payload, Payload.local(region, cell))
+        end
+        {material, CollisionSource.phase_slots(material, Map.get(state.refined, cell, RefinedSlots.empty()),
+          Map.get(state.liquid_units, cell), liquid_capacity(state))}
+      end}
     end
   end
 end

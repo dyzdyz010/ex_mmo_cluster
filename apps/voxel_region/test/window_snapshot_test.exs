@@ -1,6 +1,6 @@
 defmodule VoxelRegion.WindowSnapshotTest do
   use ExUnit.Case, async: true
-  alias VoxelRegion.World.WindowSnapshot
+  alias VoxelRegion.World.{Cache, Payloads, WindowSnapshot}
 
   @box {{0, 0, 0}, {1, 1, 1}}
 
@@ -91,11 +91,10 @@ defmodule VoxelRegion.WindowSnapshotTest do
       | macro_owner_regions: %{{0, 0, 0} => %{cell => owner}},
         instances: %{owner => %{definition_id: 7}},
         prefabs: %{
+          # 生产 prefabs 条目是 Prefab.Catalog.Descriptor：呈现绑定在顶层，summary 等无窗口消费方。
           7 => %{
-            definition: %{
-              presentation_bindings: %{58 => 2},
-              geometry: List.duplicate({cell, 58}, 1_000)
-            }
+            presentation_bindings: %{58 => 2},
+            summary: %{geometry: List.duplicate({cell, 58}, 1_000)}
           }
         },
         overlay: %{{0, cell} => {58, MmoContracts.Voxel.Skins.uniform(58)}},
@@ -123,9 +122,9 @@ defmodule VoxelRegion.WindowSnapshotTest do
         | properties: properties,
           refined: %{cell => %{0 => {11, owner}}},
           instances: %{owner => %{definition_id: 7}},
-          prefabs: %{7 => %{definition: %{}}},
-          payloads: %{{0, {0, 0, 0}} => {bytes, header}}
+          prefabs: %{7 => %{presentation_bindings: %{}}}
       }
+      |> Payloads.cache_put({0, {0, 0, 0}}, bytes, header)
       |> VoxelRegion.World.Canonical.index_refined()
       |> VoxelRegion.World.Observation.prepare_component_cache(@box)
 
@@ -136,7 +135,7 @@ defmodule VoxelRegion.WindowSnapshotTest do
     changed =
       VoxelRegion.World.Canonical.put_refined(state, cell, %{0 => {11, owner}, 1 => {11, owner}})
 
-    {edited, _} = transfer(WindowSnapshot.freeze(%{changed | payloads: %{}}, @box))
+    {edited, _} = transfer(WindowSnapshot.freeze(Payloads.cache_delete(changed, {0, {0, 0, 0}}), @box))
     assert edited.refined == changed.refined
     assert edited.snapshot_geometry == %{}
 
@@ -184,21 +183,29 @@ defmodule VoxelRegion.WindowSnapshotTest do
       end)
       |> Map.put({0, {3, 0, 0}}, {frozen, frozen_header})
 
+    put_all = fn state ->
+      Enum.reduce(cached, state, fn {key, {bytes, h}}, acc -> Payloads.cache_put(acc, key, bytes, h) end)
+    end
+
+    # 预算恰好容纳三条已缓存载荷（含 Cache 元信息权重）；组装端再生成区域 0 必然触发 LRU 淘汰。
+    limit = Cache.stats(put_all.(%{empty() | cache: Cache.new(1_073_741_824)}).cache).bytes
+
     state =
       %{
         empty()
         | source: VoxelRegion.TestSupport.Source,
           source_state: source,
           cv: header.content_version,
-          cache_limit: Enum.sum(for {_, {bytes, _}} <- cached, do: byte_size(bytes)),
-          payloads: cached,
+          cache: Cache.new(limit),
           refined: %{{192, 0, 0} => slots},
           instances: %{owner => record},
-          prefabs: %{definition => %{definition: %{}}},
+          prefabs: %{definition => %{presentation_bindings: %{}}},
           snapshots: MapSet.new([{0, {3, 0, 0}}])
       }
+      |> put_all.()
       |> VoxelRegion.World.Canonical.index_refined()
 
+    assert Enum.sort(Payloads.cached_keys(state)) == Enum.sort(Map.keys(cached))
     box = {{0, 0, 0}, {4, 1, 1}}
     {view, _} = transfer(WindowSnapshot.freeze(state, box))
     assert view.refined == %{}
@@ -216,6 +223,10 @@ defmodule VoxelRegion.WindowSnapshotTest do
       %{empty() | properties: old, seq: 1, refined: %{{0, 0, 0} => %{0 => {11, owner}}}}
       |> VoxelRegion.World.Canonical.index_refined()
       |> Map.put(:canonical_snapshots, %{token => %{feed: self(), seq: 1, properties: old}})
+      |> Map.merge(%{clock: {VoxelRegion.World.Clock, nil}, input_ready: :queue.new(),
+        input_scheduled: false, thermal_run: nil, thermal_due: nil, liquid_due: nil,
+        page_load: VoxelRegion.World.PageLoad.new(), page_store: %{level: :ok},
+        residency: VoxelRegion.World.Residency.new()})
 
     for current <- [%{state | seq: 2}, %{state | properties: %{old | digest: <<2::256>>}}] do
       assert {:reply, :ok, next} =
@@ -249,7 +260,7 @@ defmodule VoxelRegion.WindowSnapshotTest do
       seq: 0,
       source: nil,
       source_state: %{},
-      cache_limit: 1_048_576,
+      cache: Cache.new(1_048_576),
       material_units_per_micro: 1,
       properties: nil,
       food_receipts: %{},
@@ -270,7 +281,6 @@ defmodule VoxelRegion.WindowSnapshotTest do
       region_bases: %{},
       decoded: %{},
       snapshots: MapSet.new(),
-      payloads: %{},
       damage: %{},
       epochs: %{},
       thermal: nil,

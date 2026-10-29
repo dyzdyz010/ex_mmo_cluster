@@ -88,12 +88,12 @@ defmodule VoxelRegion.CanonicalFeed do
 
   defp assemble(world, token, box) do
     with {:ok, view} <- input(world, token, %{}),
-         {:ok, snapshot, %{payloads: payloads, snapshot_geometry: geometry}} <-
+         {:ok, snapshot, %{cache: _cache, snapshot_geometry: geometry} = prepared} <-
            WindowSnapshot.build(view, box) do
       for rows <- Enum.chunk_every(geometry, 16),
           do: :ok = GenServer.call(world, {:window_geometry, token, rows}, 300_000)
 
-      {:ok, snapshot, payloads}
+      {:ok, snapshot, VoxelRegion.World.Payloads.export_cached(prepared)}
     end
   end
 

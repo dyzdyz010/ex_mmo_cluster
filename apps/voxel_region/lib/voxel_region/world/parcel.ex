@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Parcel do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：地块导出与维护安装（Voxim `Docs/Playtest/terrain-transplant-design.md`）。
 
@@ -51,14 +52,15 @@ defmodule VoxelRegion.World.Parcel do
         true ->
           instances = Map.take(state.instances, MapSet.to_list(ids))
           rows = for row <- Map.values(state.damage), exported_row?(row, inside?, ids, owned), do: row
-          definitions = Map.new(Enum.uniq(for {_, i} <- instances, do: i.definition_id), &{&1, definition_bytes(state, &1)})
+          {:ok, definitions} = VoxelRegion.Prefab.Catalog.closure(state.prefabs, Enum.uniq(for {_, i} <- instances, do: i.definition_id))
 
           {{:ok, %{format: 1, cv: state.cv, seq: state.seq, units_per_micro: state.material_units_per_micro,
-              box: {lo, hi}, cells: Map.new(values), refined: refined, macro_owners: macro_owners,
+              box: {lo, hi}, cells: Map.new(values),
+              refined: Map.new(refined, fn {cell, slots} -> {cell, RefinedSlots.to_map(slots)} end), macro_owners: macro_owners,
               liquid_units: Map.filter(state.liquid_units, fn {cell, _} -> inside?.(cell) end),
               instances: instances, attachments: attachments,
               attachment_owners: Map.take(state.attachment_owners, MapSet.to_list(owned)),
-              property_rows: rows, definitions: definitions}}, state}
+              property_rows: rows, definitions: %{}}, definitions}, state}
       end
     else
       {:error, _} = error -> {error, state}
@@ -66,16 +68,25 @@ defmodule VoxelRegion.World.Parcel do
   end
 
   @doc "World 调用：同 key 防重后安装；返回 GenServer reply 三元组。"
-  def install(state, key, parcel, {_, _, _} = delta) when is_binary(key) and byte_size(key) > 0 do
+  def install(state, key, parcel, {_, _, _} = delta, definitions) when is_binary(key) and byte_size(key) > 0 do
     rkey = {0, {:parcel, key}}
 
     case Map.fetch(state.material_supplies, rkey) do
       {:ok, receipt} -> {:reply, {:ok, receipt}, state}
-      :error -> install_new(state, rkey, parcel, delta)
+      :error -> install_new(state, rkey, parcel, delta, definitions)
     end
   end
 
-  defp install_new(state, rkey, parcel, delta) do
+  @doc "准备入口复用既有回执owner；重试不能被已无关的定义读取阻断。"
+  def preparation(state, key) when is_binary(key) and byte_size(key) > 0 do
+    case Map.fetch(state.material_supplies, {0, {:parcel, key}}) do
+      {:ok, receipt} -> {:done, {:ok, receipt}}
+      :error -> :ready
+    end
+  end
+  def preparation(_state, _key), do: {:done, {:error, :invalid_parcel_key}}
+
+  defp install_new(state, rkey, parcel, delta, definitions) do
     {lo, hi} = parcel.box
     target = {shift(lo, delta), shift(hi, delta)}
     {{x0, _, z0} = tlo, {x1, y1, z1}} = target
@@ -88,7 +99,7 @@ defmodule VoxelRegion.World.Parcel do
          false <- Protection.overlaps?(state.protection, {x0, z0}, {x1 - 1, z1 - 1}) && {:error, :protected},
          state = Edits.ensure_sources(state, cells) |> warm(target),
          {:ok, removed} <- target_trees(state, target),
-         {:ok, state} <- publish_definitions(state, Map.drop(parcel.definitions, Map.keys(state.prefabs))) do
+         {:ok, state} <- publish_definitions(state, Map.drop(parcel.definitions, Map.keys(state.prefabs)), definitions) do
       before = state
       seq = before.seq + 1
       next = Prefabs.clear_subtree(state, removed, Prefabs.subtree_cells(state, removed))
@@ -210,7 +221,7 @@ defmodule VoxelRegion.World.Parcel do
         0 ->
           changed = elem(cell_value(before, 0, cell), 1) != elem(cell_value(next, 0, cell), 1) or
             Map.get(before.macro_owners, cell) != Map.get(next.macro_owners, cell)
-          {Map.get(next.macro_owners, cell, {0, 0}), if(changed, do: seq, else: chunk_get(next.epochs, cell, 0))}
+          {Map.get(next.macro_owners, cell, {0, 0}), if(changed, do: seq, else: VoxelRegion.EpochChunk.get(next.epochs, cell, 0))}
 
         g when g in [1, 2] ->
           {ids[row.owner], elem(ids[row.owner], 0)}
@@ -225,30 +236,17 @@ defmodule VoxelRegion.World.Parcel do
     if Map.has_key?(row, :temperature_kelvin), do: %{row | temperature_kelvin: ambient_at(next, cell)}, else: row
   end
 
-  # 依赖先于引用者编译；只写 .vxpd（World 重启时 Prefab.load 读取），不进玩家发布列表。
-  defp publish_definitions(state, pending) when map_size(pending) == 0, do: {:ok, state}
-
-  defp publish_definitions(state, pending) do
-    ready = for {id, bytes} <- pending, {:ok, ^id, compiled} <- [Prefab.compile(bytes, state.prefabs)], do: {id, compiled}
-
-    if ready == [] do
-      {:error, :definition_dependencies}
-    else
-      Enum.each(ready, fn {id, _} ->
-        :ok = Prefabs.write_new(Path.join(state.prefab_dir, Base.encode16(id, case: :lower) <> ".vxpd"), pending[id])
-      end)
-      publish_definitions(%{state | prefabs: Map.merge(state.prefabs, Map.new(ready))}, Map.drop(pending, Enum.map(ready, &elem(&1, 0))))
-    end
-  end
-
-  defp definition_bytes(state, id) do
-    case Enum.find(state.published, &(&1.id == id)) do
-      %{bytes: bytes} -> bytes
-      nil ->
-        bytes = Prefab.encode(state.prefabs[id].definition)
-        ^id = :crypto.hash(:sha256, bytes)
-        bytes
-    end
+  # 原字节已经由本次准备的Prefab owner验证；只持久化缺失定义并接纳轻描述，不在World里再解码编译。
+  defp publish_definitions(state, incoming, prepared) do
+    Enum.reduce_while(incoming, {:ok, state}, fn {id, bytes}, {:ok, current} ->
+      target = Path.join(current.prefab_dir, Base.encode16(id, case: :lower) <> ".vxpd")
+      case Prefabs.write_new(target, bytes) do
+        :ok ->
+          row = %{Map.fetch!(prepared, id) | source: target}
+          {:cont, {:ok, %{current | prefabs: Map.put(current.prefabs, id, row)}}}
+        error -> {:halt, error}
+      end
+    end)
   end
 
   defp materials(parcel) do
@@ -276,7 +274,7 @@ defmodule VoxelRegion.World.Parcel do
         {:ok, {0, _}, _} -> acc
         {:ok, {m, _}, _} -> Map.update(acc, m, Map.get(state.liquid_units, cell, capacity), &(&1 + Map.get(state.liquid_units, cell, capacity)))
       end
-      Enum.reduce(Map.get(state.refined, cell, %{}), acc, fn {_, {m, _}}, acc ->
+      Enum.reduce(Map.get(state.refined, cell, RefinedSlots.empty()), acc, fn {_, {m, _}}, acc ->
         Map.update(acc, m, state.material_units_per_micro, &(&1 + state.material_units_per_micro))
       end)
     end)

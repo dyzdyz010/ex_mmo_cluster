@@ -109,15 +109,32 @@ defmodule SceneServer.PrefabDesigner.Check do
 
   def slice(_, _, _), do: {:error, :invalid_view}
 
-  @doc "沿用正式材料单位和附件计价，供目录与完整检查共用。"
-  def materials(compiled, properties),
-    do:
-      materials(
-        compiled,
-        Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0)),
-        Map.new(Prefab.macro_footprint(compiled, {0, 0, 0}, 0)),
-        properties
-      )
+  @doc "沿用正式材料单位和附件计价，消费 World 轻目录或编译结果的不可变材料计数。"
+  def materials(%{material_counts: counts}, properties) do
+    quantum = Damage.material_units(properties)
+
+    rows =
+      Enum.map(counts.micro, fn {material, count} -> {material, count * quantum} end) ++
+        Enum.map(counts.macro, fn {material, count} ->
+          {material, count * quantum * @micro * @micro * @micro}
+        end) ++
+        Enum.map(counts.attachments, fn {{kind, material}, count} ->
+          {material, Attachments.units_for_counts(%{kind => count}, properties)}
+        end)
+
+    units =
+      Enum.reduce(rows, %{}, fn {material, count}, acc ->
+        Map.update(acc, material, count, &(&1 + count))
+      end)
+
+    %{
+      units: units,
+      volume_m3:
+        Map.new(units, fn {material, count} ->
+          {material, count / (quantum * @micro * @micro * @micro)}
+        end)
+    }
+  end
 
   def run(compiled, opts) do
     micros = Map.new(Prefab.footprint(compiled, {0, 0, 0}, 0))
@@ -295,24 +312,6 @@ defmodule SceneServer.PrefabDesigner.Check do
         unknown_columns: Enum.count(columns, &(&1.status == :unknown)),
         open_to_bound_columns: Enum.count(columns, &(&1.status == :open_to_bound))
       }
-    }
-  end
-
-  defp materials(compiled, micros, macros, properties) do
-    quantum = Damage.material_units(properties)
-
-    rows =
-      Enum.map(micros, fn {_, m} -> {m, quantum} end) ++
-        Enum.map(macros, fn {_, m} -> {m, quantum * @micro * @micro * @micro} end) ++
-        for node <- compiled.nodes,
-            attachment <- node.attachments,
-            do: {attachment.material, Attachments.units(attachment.slots, properties)}
-
-    units = Enum.reduce(rows, %{}, fn {m, n}, acc -> Map.update(acc, m, n, &(&1 + n)) end)
-
-    %{
-      units: units,
-      volume_m3: Map.new(units, fn {m, n} -> {m, n / (quantum * @micro * @micro * @micro)} end)
     }
   end
 

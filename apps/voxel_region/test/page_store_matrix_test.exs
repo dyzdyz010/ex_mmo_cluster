@@ -142,6 +142,8 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     assert :ok = World.compact(w2)
     assert PageStore.prefix(@cv) == 2
     assert segments(@cv, 1) == 0
+    # 发布后无需求的干净页退休（P1）：判定前与 w3 同样经正常窗口持住新编辑所在页，两侧比较同一组驻留页。
+    touch(w2, [{{40, 2, 400}, 19} | @spread])
     published = truth(w2)
     stop_supervised!(World)
 
@@ -173,6 +175,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
 
     w2 = start_supervised!({World, opts(c, OverlayLog.Db)})
     await(fn -> World.stats(w2).published_seq == 2 end)
+    touch(w2, @spread)
     same!(truth(w2), expected)
     stop_supervised!(World)
     w3 = start_supervised!({World, opts(c, OverlayLog.Db)})
@@ -226,6 +229,9 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     r = {0, 0, 0}
     q = {1, 0, 0}
     t = {2, 0, 0}
+    # 本例验证已知载荷头的游标边界；正常观察需求保留三页，避免无需求退休把头合法丢弃。
+    # README的HTTP合同：头不匹配／丢失时返回完整载荷，并不承诺任意缓存游标都走增量。
+    assert :ok = World.set_simulation_windows(w, [{{0, 0, 0}, {3, 1, 1}}])
     # 三个区域都先有提交（载荷头按当时的 seq 盖章）。
     assert {:ok, 1} = World.apply_edits(w, [{{1, 1, 1}, 11}, {{65, 2, 1}, 11}, {{129, 2, 1}, 11}])
     assert {:ok, 2} = World.apply_edit(w, {2, 1, 1}, 11)
@@ -269,16 +275,23 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     w = start_supervised!({World, opts(c, OverlayLog.File, extra)})
     # 手算：anchor 微格 x = -3 → 宏格 floor(-3/8) = -1 → L0 区域 -1（按截断除法会落到宏格 0 / 区域 0）。
     assert {:ok, 1} = World.place_prefab(w, id, {-3, 8, 8}, 0)
+    home = {-1, 0, 0}
+    assert {:ok, [{-1, 1, 1}]} = World.instance_cells(w, {1, 0})
+    assert [{:payload, 0, ^home, before_bytes}] = serve(w, home, 0, 0)
+    assert {:ok, before} = Payload.decode(before_bytes)
+    assert Map.has_key?(before.instances, {1, 0})
     assert :ok = World.compact(w)
-    instance = Map.fetch!(:sys.get_state(w).instances, {1, 0})
     loaded = OverlayLog.File.load(Path.join(c.root, "overlay.log"))
     homes = for row <- loaded.segments, {{:page, :identity, {0, region}}, value} <- [Pages.unit_value(row)],
       Map.has_key?(value.instances, {1, 0}), do: region
     assert homes == [{-1, 0, 0}]
     stop_supervised!(World)
     w = start_supervised!({World, opts(c, OverlayLog.File, extra)})
-    touch(w, [{{-1, 1, 1}, 0}])
-    assert Map.fetch!(:sys.get_state(w).instances, {1, 0}) == instance
+    assert {:ok, [{-1, 1, 1}]} = World.instance_cells(w, {1, 0})
+    assert [{:payload, 0, ^home, after_bytes}] = serve(w, home, 0, 0)
+    assert {:ok, restored} = Payload.decode(after_bytes)
+    assert restored.instances == before.instances
+    assert restored.refined == before.refined
   end
 
   # ---- 启动与切点（§8 第 1、6 项）
@@ -317,6 +330,7 @@ defmodule VoxelRegion.PageStoreMatrixTest do
   test "页段与全局行在全新 VM 里可解码", c do
     {id, extra} = prefab(c)
     w = start_supervised!({World, opts(c, OverlayLog.File, extra)})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{63, 1, 2}, {64, 2, 3}})
     assert {:ok, _} = World.apply_edit(w, {63, 1, 2}, 16)
     heat = Path.join(c.root, "heat.json")
     File.write!(heat, Jason.encode!(%{classification: "Test-only", source_macro: [63, 1, 2],
@@ -336,13 +350,15 @@ defmodule VoxelRegion.PageStoreMatrixTest do
     # 样本覆盖实例、热源、液体、属性行、世代与地形各段。
     assert [] == [:identity, :sources, :liquid_units, :liquid_active, :damage, :epochs, :overlay, :refined, :attachments, :macro_owners] -- segments
 
-    path = Path.join(c.root, "pages.etf")
+    path = Path.join(c.root, "fresh-vm-input.etf")
     File.write!(path, :erlang.term_to_binary(%{segments: loaded.segments, globals: loaded.globals}))
     paths = Enum.flat_map(:code.get_path(), &["-pa", List.to_string(&1)])
-    # 与冷重启相同：World 已加载，其余模块按需惰性加载；先全部按 :safe 解码，再与不带 :safe 的期望比较。
+    # 与冷重启相同：World 已加载，其余模块按需惰性加载；先全部按 :safe 接纳，
+    # 再经正常writer边界导出旧格式值，与原始ETF比较，不把内部紧凑类型当持久格式。
     code = ~s|{:module, _} = Code.ensure_loaded(VoxelRegion.World); | <>
       ~s|d = :erlang.binary_to_term(File.read!(#{inspect(path)})); | <>
-      ~s|safe = {Enum.map(d.segments, &VoxelRegion.World.Pages.unit_value/1), VoxelRegion.OverlayLog.term(d.globals)}; | <>
+      ~s|safe = {Enum.map(d.segments, fn row -> {unit, value} = VoxelRegion.World.Pages.unit_value(row); | <>
+      ~s|{unit, VoxelRegion.World.Pages.decode(VoxelRegion.World.Pages.row(unit, value).payload)} end), VoxelRegion.OverlayLog.term(d.globals)}; | <>
       ~s|unsafe = {Enum.map(d.segments, &{elem(VoxelRegion.World.Pages.unit_value(&1), 0), :erlang.binary_to_term(&1.payload).value}), | <>
       ~s|:erlang.binary_to_term(d.globals)}; IO.write(inspect(safe == unsafe))|
     assert {"true", 0} = System.cmd("elixir", paths ++ ["-e", code], stderr_to_stdout: true)
@@ -352,7 +368,13 @@ defmodule VoxelRegion.PageStoreMatrixTest do
 
   # 判定器 a（原始真值逐键精确）+ b（正式读取：触及区域的载荷去掉头部 seq 后的内容）。
   # M2b：有前缀的重启只驻留启动装入的页（日志后缀与活动页）。判定前经正常读入口触及内容所在的格，装入它们的读取闭包。
-  defp touch(w, edits), do: World.material_snapshot(w, [], Enum.map(edits, &elem(&1, 0)))
+  defp touch(w, edits) do
+    # material_snapshot返回即释放prepare；本例随后还读原始驻留字段，由测试进程的正常窗口持续持页。
+    boxes = edits |> Enum.map(fn {cell, _} -> VoxelRegion.World.Canonical.region_of(cell) end) |> Enum.uniq()
+      |> Enum.map(fn {x, y, z} = region -> {region, {x + 1, y + 1, z + 1}} end)
+    :ok = World.set_simulation_windows(w, boxes)
+    World.material_snapshot(w, [], Enum.map(edits, &elem(&1, 0)))
+  end
 
   defp truth(w) do
     state = :sys.get_state(w)

@@ -49,6 +49,7 @@ defmodule VoxelRegion.ThermalSwitchTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env,
       production_materials: [@stone, @copper, @alloy, @te, @thermistor]]}, id: name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-1, 0, 0}, {6, 4, 5}})
     {w, root}
   end
 

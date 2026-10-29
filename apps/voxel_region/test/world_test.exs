@@ -105,7 +105,7 @@ defmodule VoxelRegion.WorldTest do
       :erlang.trace(world, true, [:receive])
       second = Task.async(fn -> World.compact(world) end)
       second_pid = second.pid
-      assert_receive {:trace, ^world, :receive, {:"$gen_call", {^second_pid, _}, :compact}}, 1_000
+      assert_receive {:trace, ^world, :receive, {:"$gen_call", {^second_pid, _}, {:page_request, _, :compact}}}, 1_000
       :erlang.trace(world, false, [:receive])
       send(writer, :continue)
       assert Task.await(first, 5_000) == :ok
@@ -152,7 +152,7 @@ defmodule VoxelRegion.WorldTest do
     # 只测试：写回进程在发布前被杀，与 World 链接一起退出，不降级成发布成功。
     Process.exit(writer, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^world, :killed}, 5_000
-    assert {:killed, {GenServer, :call, [^world, :compact, _]}} = Task.await(compact, 5_000)
+    assert {:killed, {GenServer, :call, [^world, {:page_request, _, :compact}, _]}} = Task.await(compact, 5_000)
     assert OverlayLog.File.prefix(path) == published
     recovered = start_supervised!({World, Keyword.put(opts, :log, OverlayLog.File)})
     assert World.seq(recovered) == 1
@@ -226,13 +226,15 @@ defmodule VoxelRegion.WorldTest do
     owner = spawn(fn ->
       loop = fn loop -> receive do
         :done -> :ok
+        {:request_window, box, windows} -> CollisionStream.window(stream, box, windows); loop.(loop)
         message -> send(parent, {:forwarded, message}); loop.(loop)
       end end
       loop.(loop)
     end)
-    assert :ok = CollisionStream.attach(stream, owner, 1)
+    assert :ok = CollisionStream.synchronize(stream)
+    assert :ok = CollisionStream.attach(stream, owner, 1, [{{0,0,0},{1,1,1}}])
     assert_receive {:forwarded, {:collision_stream, ^stream, 2, ^old_delta}}
-    CollisionStream.window(stream, {{1,0,0},{2,1,1}})
+    send(owner, {:request_window, {{1,0,0},{2,1,1}}, [{{0,0,0},{1,1,1}},{{1,0,0},{2,1,1}}]})
     assert_receive {:forwarded, {:collision_stream, ^stream, 3, {:window, next}}}, 10_000
     assert next.l0_min == {1,0,0} and next.transaction_seq == 1
     CollisionStream.acknowledge(stream, 3)
@@ -281,6 +283,8 @@ defmodule VoxelRegion.WorldTest do
   test "checkpoint retains region bases without expanding core or ring into cell edits", %{root: root} do
     opts = [root: root,name: :compact_memory,payload_cache_bytes: 1]
     {:ok,w} = World.start_link(opts)
+    # 已发布的干净页在最后需求释放后退休（P1）；以观察窗口持住 region (0,0,0)，才能观察检查点换上的基底本身。
+    :ok = VoxelRegion.TestSupport.activate_simulation(w,{{0,0,0},{64,64,64}})
     edits = for x <- 0..10,y <- 53..63,z <- 0..10,do: {{x,y,z},0}
     assert {:ok,1} = World.apply_edits(w,edits)
     assert :ok = World.compact(w)
@@ -606,6 +610,8 @@ defmodule VoxelRegion.WorldTest do
     [sparse] = World.entries_after(:batch,2)
     assert [%{coord: {5,63,5},material: 11}] = sparse.entries
     # 邻区在压实前已进缓存：压实把 {0,0,0} 的编辑并入基底，邻区缓存保留（命中），且与重启后重新物化的字节相同。
+    # 已发布干净页无需求即退休、重装页会丢其 26 邻的载荷缓存（P1）；以观察窗口持住两区的完整读取闭包，才是“邻区仍被观察”的前提。
+    :ok = VoxelRegion.TestSupport.activate_simulation(:batch,{{-64,-64,-64},{128,192,128}})
     cached_ring = fetch_payload(:batch,0,{0,1,0})
     assert :ok = World.compact(:batch)
     final = fetch_payload(:batch,0,{0,0,0})
@@ -615,6 +621,8 @@ defmodule VoxelRegion.WorldTest do
     assert final_ring == cached_ring
     GenServer.stop(world)
     {:ok,_} = World.start_link(root: root, log: OverlayLog.Db, name: :batch)
+    # 观察窗口随 World 生命周期失效，重启后重新登记同一闭包。
+    :ok = VoxelRegion.TestSupport.activate_simulation(:batch,{{-64,-64,-64},{128,192,128}})
     assert fetch_payload(:batch,0,{0,0,0}) == final
     assert fetch_payload(:batch,0,{0,1,0}) == final_ring
     # 上次检查点后没有编辑的完整区域再压实时不换基底：载荷缓存保留（命中），字节不变。
@@ -771,48 +779,56 @@ defmodule VoxelRegion.WorldTest do
     refute_receive {:voxel_log_entry_payload, _}, 100
   end
 
-  test "payload cache evicts L0-L3 by least recent use within the byte limit, keeps L4+ resident and invalidates edited regions", %{root: root} do
-    # 合成 L4 (0,0,0)：全实心；只用来证明常驻层不进 LRU。
+  test "payload cache shares its declared budget across L0 and L4, evicts by recent use and invalidates edited regions", %{root: root} do
+    # 合成 L4 (0,0,0)：全实心；与 L0 竞争同一个有界 LRU。
     l4 = for _ <- 1..@cells, into: <<>>, do: <<11::16-little>>
     skins = <<@extent::32-little, @extent::32-little, @extent::32-little, 16::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little, 0::32-little>>
     File.mkdir_p!(Path.join([root, FileStore.hex(@cv), "L4"]))
     File.write!(FileStore.path(root, @cv, 4, {0, 0, 0}), Codec.encode_payload(4, {0, 0, 0}, 0, @cv, <<@cells::32-little, l4::binary, skins::binary>>))
 
-    a = fetch_size(:lru_probe, root, 0, {0, 0, 0})
-    # 上限装得下两份 L0，装不下三份。
-    {:ok, _} = World.start_link(root: root, log: OverlayLog.Db, name: :lru, payload_cache_bytes: a * 2 + 16)
+    budget = fetch_cache_budget(:lru_probe, root, [{0, {0, 0, 0}}, {4, {0, 0, 0}}, {0, {1, 0, 0}}])
+    # 声明额度容纳任意两份完整条目，包含字节和元信息；第三份必须按最近使用淘汰。
+    {:ok, _} = World.start_link(root: root, log: OverlayLog.Db, name: :lru, payload_cache_bytes: budget)
     first = fetch_payload(:lru, 0, {0, 0, 0})
-    second = fetch_payload(:lru, 0, {1, 0, 0})
-    resident = fetch_payload(:lru, 4, {0, 0, 0})
-    assert %{entries: 3, evictions: 0, hits: 0, misses: 3, lru_bytes: lru_bytes, resident_bytes: resident_bytes} = World.stats(:lru)
-    assert lru_bytes == byte_size(first) + byte_size(second) and resident_bytes == byte_size(resident)
+    high = fetch_payload(:lru, 4, {0, 0, 0})
+    assert %{entries: 2, evictions: 0, hits: 0, misses: 2, lru_bytes: lru_bytes, resident_bytes: 0,
+      shared_cache: %{bytes: declared, limit_bytes: ^budget}} = World.stats(:lru)
+    assert lru_bytes == byte_size(first) + byte_size(high)
+    assert declared > lru_bytes and declared <= budget
 
-    # 命中刷新最近使用：先摸 first，再放第三份 → 淘汰的是 second。
+    # 命中刷新最近使用：先摸 first，再放第三份，淘汰的是 L4。
     assert fetch_payload(:lru, 0, {0, 0, 0}) == first
-    third = fetch_payload(:lru, 0, {-1, 0, 0})
-    assert %{entries: 3, evictions: 1, hits: 1, misses: 4} = World.stats(:lru)
+    second = fetch_payload(:lru, 0, {1, 0, 0})
+    assert %{entries: 2, evictions: 1, hits: 1, misses: 3} = World.stats(:lru)
+    assert fetch_payload(:lru, 4, {0, 0, 0}) == high
+    assert %{entries: 2, evictions: 2, hits: 1, misses: 4} = World.stats(:lru)
+    # L4 冷重建挤掉最久未用的 first；余下两份仍按同一命中规则读取。
     assert fetch_payload(:lru, 0, {1, 0, 0}) == second
-    assert %{entries: 3, evictions: 2, hits: 1, misses: 5} = World.stats(:lru)
-    # first 是最久未用的：被挤掉；常驻 L4 仍在缓存里、命中不读盘。
-    assert fetch_payload(:lru, 4, {0, 0, 0}) == resident
-    assert %{hits: 2} = World.stats(:lru)
-    assert fetch_payload(:lru, 0, {-1, 0, 0}) == third
-    assert %{entries: 3, evictions: 2, hits: 3, misses: 5} = World.stats(:lru)
+    assert fetch_payload(:lru, 4, {0, 0, 0}) == high
+    assert %{entries: 2, evictions: 2, hits: 3, misses: 4} = World.stats(:lru)
+    assert World.stats(:lru).shared_cache.bytes <= budget
 
     # 编辑碰到的 region 立即失效：命中的物化载荷 seq=1，且再次命中不重编码。
     assert {:ok, 1} = World.apply_edit(:lru, {5, 63, 5}, 0)
     edited = fetch_payload(:lru, 0, {0, 0, 0})
     {:ok, h} = Codec.decode_payload_header(edited)
     assert h.seq == 1
+    refute edited == first
+    %{hits: before_hit} = World.stats(:lru)
     assert fetch_payload(:lru, 0, {0, 0, 0}) == edited
-    %{hits: hits} = World.stats(:lru)
-    assert hits >= 4
+    assert World.stats(:lru).hits == before_hit + 1
+    assert World.stats(:lru).shared_cache.bytes <= budget
   end
 
-  defp fetch_size(name, root, level, region) do
+  defp fetch_cache_budget(name, root, items) do
     {:ok, pid} = World.start_link(root: root, log: OverlayLog.Db, name: name)
-    size = byte_size(fetch_payload(name, level, region))
+    weights = for {level, region} <- items do
+      before = World.stats(name).shared_cache.bytes
+      fetch_payload(name, level, region)
+      World.stats(name).shared_cache.bytes - before
+    end
+    budget = Enum.sum(weights) - Enum.min(weights)
     GenServer.stop(pid)
-    size
+    budget
   end
 end

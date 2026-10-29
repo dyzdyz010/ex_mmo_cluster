@@ -32,6 +32,7 @@ defmodule VoxelRegion.LoosePourBenchmarkTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: @environment,
       prefab_catalog_path: Path.join(root, "prefabs"), production_materials: [@sand], liquid_bounds: @bounds]})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     {sx, sy, sz} = @spout
     actor = %{cid: 1001, gate: self(), identity: :bench, refresh: &Actor.tool_context/2,
       eye: {sx + 0.5, sy + 4.5, sz + 0.5}, tick_us: 16_667}

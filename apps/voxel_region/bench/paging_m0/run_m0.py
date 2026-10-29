@@ -8,6 +8,7 @@
 """
 from pathlib import Path
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -17,6 +18,35 @@ import time
 import m0
 
 HERE = Path(__file__).resolve().parent
+
+
+def source_identity():
+    """冻结直接运行的源码输入，不以HEAD加dirty文件名代替实际WIP身份。"""
+    paths = []
+    for folder in ["apps/voxel_region/lib", "apps/mmo_contracts/lib", "apps/data_service/lib",
+                   "apps/world_server/lib", "apps/scene_server/lib", "apps/voxel_region/bench/paging_m0"]:
+        paths.extend(p for p in (m0.REPO / folder).rglob("*") if p.suffix in [".ex", ".exs", ".py"])
+    paths.extend((m0.REPO / "apps/voxel_region/native").glob("*/src/*.rs"))
+    paths.extend((m0.REPO / "apps/voxel_region/native").glob("*/build.rs"))
+    paths.extend([m0.REPO / "config/runtime.exs", m0.REPO.parent / "Voxim/Source/Voxim/Voxel/VoxelSpatialConstants.h"])
+    return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(set(paths))}
+
+
+def phase(out, name, edge, **detail):
+    """记录实际观测区间，不把结束诊断的RSS峰值误标为负载峰值。"""
+    with (out / "phases.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"utc": time.time(), "phase": name, "edge": edge, **detail}) + "\n")
+
+
+def memory_summary(deploy, out, location):
+    phase(out, "memory_diagnostic", "begin", location=location)
+    try:
+        result = rpc_json(deploy, "VoxelRegion.Bench.M0Probe.field_heap()")
+    except BaseException as error:
+        phase(out, "memory_diagnostic", "error", location=location, reason=type(error).__name__)
+        raise
+    phase(out, "memory_diagnostic", "end", location=location)
+    return result
 
 # 窗口中心（canonical 米，x / z）：第一个在如园中央，其余按 spacing 网格向外。默认 256 m 互不重叠（radius 1 的盒宽 186 m）；
 # 小于 186 m 即为重叠窗口。
@@ -110,70 +140,75 @@ def main():
     deploy, out = Path(a.deploy), Path(a.out)
     out.mkdir(parents=True, exist_ok=False)
     cfg = m0.config(deploy)
-    # 内存看门狗（系统可用 < 20 GB 时只杀本脚本启动之后出现的 erl），与 equiv.py 同一实现；函数内导入避免与 equiv 循环导入。
-    from equiv import erl_pids, watchdog
-    baseline, guard, tripped = erl_pids(), threading.Event(), threading.Event()
-    threading.Thread(target=watchdog, args=(baseline, guard, tripped), daemon=True).start()
+    # 内存看门狗只处理本脚本的真实后代；函数内导入避免与 equiv 循环导入。
+    from equiv import MemoryWatchdog
     meta = {"args": vars(a), "started_utc": time.time(),
+            "source_sha256": source_identity(),
             "git": subprocess.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip(),
             "git_dirty": subprocess.run(["git", "status", "--porcelain"], cwd=HERE, capture_output=True,
                                         text=True).stdout.strip().splitlines()}
-    if a.dump:
-        meta["restored"] = restore(cfg, a.dump)
-    (out / "meta.json").write_text(json.dumps(meta, indent=2))
-
-    started = m0.start(deploy)
-    startup = Path(started["log"]).with_suffix(".startup.json")
-    (out / "startup.json").write_text(startup.read_text())
     stop = threading.Event()
-    threading.Thread(target=osmon_thread, args=(deploy, out / "os.jsonl", stop), daemon=True).start()
-    log = started["log"]
-    try:
-        probe_dir = (out / "probe").as_posix()
-        total = a.idle_seconds + len(a.steps.split(",")) * (a.step_seconds + 60) + 600
-        m0.rpc(deploy, f'Code.compile_file("{(HERE / "probe.ex").as_posix()}")\n'
-                       f'Code.compile_file("{(HERE / "load.ex").as_posix()}")\n'
-                       f'VoxelRegion.Bench.M0Probe.start("{probe_dir}", duration_s: {total})')
-        _, offset = log_lines(log, 0)
-        time.sleep(a.idle_seconds)
-        lines, offset = log_lines(log, offset)
-        idle = {"turns": rpc_json(deploy, "VoxelRegion.Bench.M0Probe.snapshot()"), "stages": stage_summary(lines),
-                "field_heap": rpc_json(deploy, "VoxelRegion.Bench.M0Probe.field_heap()"), "pg": pg_counters(cfg)}
-        (out / "idle.json").write_text(json.dumps(idle, indent=2))
-
-        for n in [int(x) for x in a.steps.split(",")]:
-            m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.reset()")
-            pg0 = pg_counters(cfg)
-            _, offset = log_lines(log, offset)
-            spec = {"windows": windows(n, a.spacing), "interval_ms": a.interval_ms, "duration_s": a.step_seconds}
-            t0 = time.time()
-            start = rpc_json(deploy, "VoxelRegion.Bench.M0Load.start(%{windows: [" +
-                             ", ".join(f"%{{id: {w['id']}, x: {w['x']}, z: {w['z']}}}" for w in spec["windows"]) +
-                             f"], interval_ms: {a.interval_ms}, duration_s: {a.step_seconds}, activity: {str(a.activity).lower()}, circuit: {str(a.circuit).lower()}}})")
-            t_load = time.time()
-            time.sleep(max(a.step_seconds + 3 - (time.time() - t_load), 0))
-            report = rpc_json(deploy, "VoxelRegion.Bench.M0Load.report()")
-            circuit = rpc_json(deploy, "VoxelRegion.Bench.M0Load.circuit_totals()") if a.circuit else None
-            turns = rpc_json(deploy, "VoxelRegion.Bench.M0Probe.snapshot()")
-            m0.rpc(deploy, "VoxelRegion.Bench.M0Load.stop()")
+    with MemoryWatchdog(out, meta) as guard:
+        try:
+            if a.dump:
+                meta["restored"] = restore(cfg, a.dump)
+            (out / "meta.json").write_text(json.dumps(meta, indent=2))
+            guard.check()
+            started = m0.start(deploy)
+            guard.check()
+            startup = Path(started["log"]).with_suffix(".startup.json")
+            (out / "startup.json").write_text(startup.read_text())
+            threading.Thread(target=osmon_thread, args=(deploy, out / "os.jsonl", stop), daemon=True).start()
+            log = started["log"]
+            probe_dir = (out / "probe").as_posix()
+            total = a.idle_seconds + len(a.steps.split(",")) * (a.step_seconds + 60) + 600
+            m0.rpc(deploy, f'Code.compile_file("{(HERE / "probe.ex").as_posix()}")\n'
+                           f'Code.compile_file("{(HERE / "load.ex").as_posix()}")\n'
+                           f'File.write!("{(out / "runtime-identity.json").as_posix()}", '
+                           f'elem(Code.eval_file("{(HERE / "runtime_identity.exs").as_posix()}"), 0))\n'
+                           f'VoxelRegion.Bench.M0Probe.start("{probe_dir}", duration_s: {total})')
+            _, offset = log_lines(log, 0)
+            time.sleep(a.idle_seconds)
             lines, offset = log_lines(log, offset)
-            pg1 = pg_counters(cfg)
-            step = {"n": n, "spec": spec, "start": start, "snapshot_phase_s": round(t_load - t0, 1),
-                    "report": report, "circuit": circuit, "turns": turns, "stages": stage_summary(lines),
-                    "pg_delta": {k: pg1[k] - pg0[k] for k in pg0}}
-            (out / f"step-{n:02d}.json").write_text(json.dumps(step, indent=2))
-            print(json.dumps({"n": n, "commits": report["commits"], "commit_us": report["commit_us"],
-                              "errors": report["error_count"]}), flush=True)
-            time.sleep(10)
-        (out / "field-heap-end.json").write_text(m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.field_heap()"))
-        m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.stop()")
-    finally:
-        stop.set()
-        guard.set()
-        if tripped.is_set():
-            (out / "memory_watchdog_tripped").write_text("1")
-        if m0.status(deploy)["running"]:
-            (out / "stop.json").write_text(json.dumps(m0.stop(deploy), default=str))
+            idle = {"turns": rpc_json(deploy, "VoxelRegion.Bench.M0Probe.snapshot()"), "stages": stage_summary(lines),
+                    "field_heap": memory_summary(deploy, out, "idle"), "pg": pg_counters(cfg)}
+            (out / "idle.json").write_text(json.dumps(idle, indent=2))
+
+            for n in [int(x) for x in a.steps.split(",")]:
+                m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.reset()")
+                pg0 = pg_counters(cfg)
+                _, offset = log_lines(log, offset)
+                spec = {"windows": windows(n, a.spacing), "interval_ms": a.interval_ms, "duration_s": a.step_seconds}
+                t0 = time.time()
+                phase(out, "load", "begin", windows=n)
+                phase(out, "snapshot", "begin", windows=n)
+                start = rpc_json(deploy, "VoxelRegion.Bench.M0Load.start(%{windows: [" +
+                                 ", ".join(f"%{{id: {w['id']}, x: {w['x']}, z: {w['z']}}}" for w in spec["windows"]) +
+                                 f"], interval_ms: {a.interval_ms}, duration_s: {a.step_seconds}, activity: {str(a.activity).lower()}, circuit: {str(a.circuit).lower()}}})")
+                t_load = time.time()
+                phase(out, "snapshot", "end", windows=n)
+                time.sleep(max(a.step_seconds + 3 - (time.time() - t_load), 0))
+                report = rpc_json(deploy, "VoxelRegion.Bench.M0Load.report()")
+                circuit = rpc_json(deploy, "VoxelRegion.Bench.M0Load.circuit_totals()") if a.circuit else None
+                turns = rpc_json(deploy, "VoxelRegion.Bench.M0Probe.snapshot()")
+                m0.rpc(deploy, "VoxelRegion.Bench.M0Load.stop()")
+                phase(out, "load", "end", windows=n)
+                lines, offset = log_lines(log, offset)
+                pg1 = pg_counters(cfg)
+                step = {"n": n, "spec": spec, "start": start, "snapshot_phase_s": round(t_load - t0, 1),
+                        "report": report, "circuit": circuit, "turns": turns, "stages": stage_summary(lines),
+                        "pg_delta": {k: pg1[k] - pg0[k] for k in pg0}}
+                (out / f"step-{n:02d}.json").write_text(json.dumps(step, indent=2))
+                print(json.dumps({"n": n, "commits": report["commits"], "commit_us": report["commit_us"],
+                                  "errors": report["error_count"]}), flush=True)
+                time.sleep(10)
+            (out / "field-heap-end.json").write_text(json.dumps(memory_summary(deploy, out, "end")))
+            m0.rpc(deploy, "VoxelRegion.Bench.M0Probe.stop()")
+        finally:
+            stop.set()
+            if m0.status(deploy)["running"]:
+                (out / "stop.json").write_text(json.dumps(m0.stop(deploy), default=str))
+            meta["source_unchanged"] = source_identity() == meta["source_sha256"]
 
 
 if __name__ == "__main__":

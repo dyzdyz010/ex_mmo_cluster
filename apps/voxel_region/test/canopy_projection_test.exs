@@ -3,9 +3,11 @@ defmodule VoxelRegion.CanopyProjectionTest do
   alias VoxelRegion.World.Canopy
   alias MmoContracts.Voxel.Skins
   defp state(cells,bound) do
-    id=:binary.copy(<<7>>,32)
+    bytes = VoxelRegion.Prefab.encode(%{cells: [], children: [], attachments: [],
+      macro_cells: [{{0,0,0},58}], presentation_bindings: %{58=>2}})
+    {:ok, id, compiled} = VoxelRegion.Prefab.compile(bytes, %{})
     VoxelRegion.World.Canonical.index_macro_owners(%{macro_owners: Map.new(bound,&{&1,{1,0}}),instances: %{{1,0}=>%{definition_id: id,anchor: {0,0,0},orientation: 0,parent_id: {0,0},component_slot: 0}},
-      prefabs: %{id=>%{definition: %{presentation_bindings: %{58=>2}}}},refined: %{},attachments: %{},attachment_regions: %{},structure: %{},canopy: %{},
+      prefabs: %{id=>compiled},refined: %{},attachments: %{},attachment_regions: %{},structure: %{},canopy: %{},
       overlay: Map.new(cells,fn {p,m}->{{0,p},{m,Skins.uniform(m)}} end),region_bases: %{},decoded: %{},
       source: VoxelRegion.TestSupport.Source,source_state: %{observer: self(),root: "unused"}})
   end
@@ -58,8 +60,8 @@ defmodule VoxelRegion.CanopyProjectionTest do
   test "mixed micro structure and directional attachment survive render-only removal" do
     s=state([{{0,0,0},58}],[{0,0,0}])
     slots=%{0=>{11,{2,0}}}
-    original=VoxelRegion.Structure.from_canonical([58,slots,0,0,0,0,0,0])
-    s=%{s | refined: %{{1,0,0}=>slots},structure: %{{1,{0,0,0}}=>original}}
+    original=VoxelRegion.Structure.from_canonical([58,VoxelRegion.RefinedSlots.from_map(slots),0,0,0,0,0,0])
+    s=%{s | refined: %{{1,0,0}=>VoxelRegion.RefinedSlots.from_map(slots)},structure: %{{1,{0,0,0}}=>original}}
     {_,_,_,structures,_}=project(s,1,{0,0,0})
     grid=structures[MmoContracts.Voxel.Payload.cell_index({1,1,1})]
     assert <<0::16-little,_::binary>>=grid

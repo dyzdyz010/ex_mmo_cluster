@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Interactions do
+  alias VoxelRegion.RefinedSlots
   @moduledoc "全局系统功能：World 已提交操作的有界经历序列，与世界事务及检查点一起持久化。"
   alias VoxelRegion.{Damage, FileStore, Prefab}
   alias VoxelRegion.World.Canonical
@@ -24,9 +25,9 @@ defmodule VoxelRegion.World.Interactions do
     # 替换后的目标粒度不表示提交前粒度；旧表示是宏格时用其唯一溯源，细化空槽仍然无主。
     case Map.fetch(state.refined, cell) do
       {:ok, slots} ->
-        case Map.get(slots, slot) do
-          {_material, owner} -> Map.get(Map.get(state.instances, owner, %{}), :placed_by)
-          nil -> nil
+        case RefinedSlots.fetch(slots, slot) do
+          {:ok, {_material, owner}} -> Map.get(Map.get(state.instances, owner, %{}), :placed_by)
+          :error -> nil
         end
 
       :error ->

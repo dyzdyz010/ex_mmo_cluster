@@ -156,11 +156,24 @@ defmodule VoxelRegion.Prefab do
       end
       # 发布目录长期不变；节点体素保存为二进制，避免每次世界 GC 扫描展开坐标。
       summary=compiled_summary(nodes)
+      material_counts=material_counts(nodes,cells,macros)
       nodes = Enum.map(nodes,fn node -> %{node | cells: :erlang.term_to_binary(node.cells),macro_cells: :erlang.term_to_binary(node.macro_cells)} end)
-      {:ok,%{nodes: nodes,has_macro_cells: macros != [],definition: Map.fetch!(definitions,id),summary: summary},
+      definition=Map.fetch!(definitions,id)
+      {:ok,%{nodes: nodes,has_macro_cells: macros != [],definition: definition,summary: summary,material_counts: material_counts,
+        child_ids: Enum.map(definition.children, &(:binary.copy(&1.definition_id))),
+        presentation_bindings: Map.get(definition,:presentation_bindings,%{})},
         %{publishable: error==nil,error: error,overlaps: overlaps}}
     end
   end
+
+  defp material_counts(nodes,cells,macros) do
+    count=fn values -> values |> Map.new() |> Map.values() |> Enum.frequencies() end
+    attachments=for node<-nodes,g<-node.attachments,{kind,_,_}<-g.slots,do: {kind,g.material}
+    %{micro: count.(cells),macro: count.(macros),attachments: Enum.frequencies(attachments)}
+  end
+
+  @doc "已接纳不可变定义闭包的指定根几何；不重新套用玩家草稿预算，不重编码改变旧版身份。"
+  def compile_id(definitions,id), do: publish_one(definitions,id)
 
   @doc "运行时单根发布边界：先按每次引用合并预算与包围盒，再展开和验证实际几何。"
   def compile(bytes,catalog) do
@@ -176,12 +189,30 @@ defmodule VoxelRegion.Prefab do
          do: {:ok,id,geometry,diagnostics}
   end
 
-  defp runtime_definition(bytes,_catalog) when is_binary(bytes) and byte_size(bytes) > @runtime_bytes,
+  @doc "玩家草稿的唯一解码接纳边界，供异步准备先确定子id闭包。"
+  def runtime_input(bytes) when is_binary(bytes) and byte_size(bytes) > @runtime_bytes,
     do: {:error,:definition_bytes_limit}
-  defp runtime_definition(bytes,catalog) when is_binary(bytes) do
+  def runtime_input(bytes) when is_binary(bytes) do
     with {:ok,definition} <- decode_definition(bytes,true),
+      do: {:ok,:crypto.hash(:sha256,bytes),definition}
+  end
+  def runtime_input(_), do: {:error,:invalid_definition}
+
+  @doc "已解码草稿与本请求子闭包沿原预算和几何判据编译。"
+  def compile_input(id, definition, descriptors, definitions, kind) when kind in [:compile, :preview] do
+    with {:ok,_summary} <- runtime_summary(definition,descriptors) do
+      definitions=Map.put(definitions,id,definition)
+      case if(kind==:compile,do: publish_one(definitions,id),else: definition_geometry(definitions,id)) do
+        {:ok,geometry} -> {:ok,id,geometry}
+        {:ok,geometry,diagnostics} -> {:ok,id,geometry,diagnostics}
+        error -> error
+      end
+    end
+  end
+
+  defp runtime_definition(bytes,catalog) when is_binary(bytes) do
+    with {:ok,id,definition} <- runtime_input(bytes),
          {:ok,_summary} <- runtime_summary(definition,catalog),
-         id = :crypto.hash(:sha256,bytes),
          definitions = Map.new(catalog,fn {key,value} -> {key,value.definition} end) |> Map.put(id,definition),
          do: {:ok,id,definitions}
   end

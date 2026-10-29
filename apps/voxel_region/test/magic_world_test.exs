@@ -24,6 +24,7 @@ defmodule VoxelRegion.MagicWorldTest do
   @leaf 28
   @battery 42
   @box {{-2, -2, -2}, {2, 2, 2}}
+  @simulation_box {{-2, 0, -2}, {9, 3, 5}}
   @cid 1001
 
   setup do
@@ -45,6 +46,7 @@ defmodule VoxelRegion.MagicWorldTest do
       property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]})
     w = start(root)
     assert battery(observe(w)).stored_j == 1.0e7
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     %{w: w, root: root, a: a, digest: Base.decode16!(@magic, case: :lower)}
   end
 
@@ -241,6 +243,7 @@ defmodule VoxelRegion.MagicWorldTest do
     c = %{c | w: w}
     assert_in_delta energy(c), 898_946.2777903, 1.0e-6
     # 未施法的角色能量为 0；多次热提交后施法者能量不变。
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     for _ <- 1..3, do: commit(w)
     assert_in_delta energy(c), 898_946.2777903, 1.0e-6
     assert {:ok, %{energy_j: +0.0}} = World.caster_state(w, 2002)

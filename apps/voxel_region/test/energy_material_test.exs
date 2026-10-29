@@ -50,6 +50,7 @@ defmodule VoxelRegion.EnergyMaterialTest do
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env, production_materials: @materials]}, id: name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-1, 0, 0}, {7, 4, 5}})
     {w, root}
   end
 
@@ -65,7 +66,13 @@ defmodule VoxelRegion.EnergyMaterialTest do
   end
   defp stamp(a, seq), do: Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()})
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], @box)
-  defp commit(w), do: (send(w, :thermal_commit); observe(w))
+  # 强制热步与定时提交同为挂闸物理输入：步前读取集有冷页（主动退页后）时暂停到装页完成再续完（M2b）。
+  # 其间到达的观察调用会先拿到提交前的一致快照，所以必须等已投递的模拟步真正处理完再观察，不能假设投递即同步完成。
+  defp commit(w) do
+    send(w, :thermal_commit)
+    true = Enum.find_value(1..500, fn _ -> VoxelRegion.TestSupport.simulation_settled?(w) || (Process.sleep(10); nil) end)
+    observe(w)
+  end
   defp commits(w, n), do: Enum.reduce(1..n, nil, fn _, _ -> commit(w) end)
   defp cell(s, {x, y, z}), do: Enum.find(Map.values(s.damage), &(&1.granularity == 0 and &1.micro == {x * 8, y * 8, z * 8}))
   defp temperature(s, c, coord), do: Map.get(cell(s, coord) || %{}, :temperature_kelvin, c.ambient)
@@ -228,6 +235,11 @@ defmodule VoxelRegion.EnergyMaterialTest do
     # 重启：储能与两个开关的开合从日志恢复，恢复后照常放电。
     before = observe(w)
     w = restart(c, :generator)
+    # 订阅观察盒使其页常驻：之后强制提交自身的冷页等待（热域粗层邻页）成为唯一异步点，
+    # 挖除后的首次提交若被提前观察即确定地读到旧灯功率，而不随两个装页任务的完成先后偶发。
+    hold = make_ref()
+    :ok = World.canonical_snapshot_and_subscribe(w, @box, self(), hold, false)
+    assert_receive {:canonical_snapshot, ^hold, _}
     restored = observe(w)
     assert battery_row(restored).stored_j == battery_row(before).stored_j
     assert Map.get(cell(restored, {4, 3, 2}), :closed) == true

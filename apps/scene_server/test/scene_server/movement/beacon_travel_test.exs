@@ -28,7 +28,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   defmodule Source do
-    use GenServer
+    use MmoTest.WorldAuthorityDouble
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
     def authority_ref(pid), do: pid
@@ -37,14 +37,16 @@ defmodule SceneServer.Movement.BeaconTravelTest do
       do: GenServer.call(pid, {:canonical_snapshot, box, subscriber, ref, true})
 
     def ensure(_state, _level, _region), do: :ok
-    def handle_call({:prepare, _keys}, _, state), do: {:reply, {__MODULE__, nil, []}, state}
-    def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
 
-    def handle_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
+    def world_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
       send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.BeaconTravelTest.snapshot(box)})
       {:reply, :ok, state}
     end
 
+    def handle_info({:simulation_windows, source, _boxes, ref}, state) do
+      send(source, {:simulation_windows_result, ref, :ok})
+      {:noreply, state}
+    end
     def handle_info(message, state) do
       send(state.owner, {:authority, message})
       {:noreply, state}

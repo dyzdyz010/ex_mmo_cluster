@@ -19,6 +19,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
   @leaf 28
   @battery 42
   @box {{-2, -2, -2}, {2, 2, 2}}
+  @simulation_box {{-2, 0, -2}, {9, 3, 5}}
   @cid 1001
   @stone_micro {20, 12, 4}
   @leaf_micro {4, 20, 28}
@@ -47,7 +48,9 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     :ok = stop_supervised(:world)
     OverlayLog.File.append(Path.join(root, "overlay.log"), %{seq: seq + 1, entries: [], coarse: [],
       property_states: [Map.merge(row, %{stored_j: 1.0e7, seq: seq + 1, request_id: 0})]})
-    %{w: start(root), root: root, a: a, digest: :crypto.hash(:sha256, File.read!(Path.join(root, "magic.json")))}
+    w = start(root)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
+    %{w: w, root: root, a: a, digest: :crypto.hash(:sha256, File.read!(Path.join(root, "magic.json")))}
   end
 
   defmodule FailLog do
@@ -271,6 +274,7 @@ defmodule VoxelRegion.MagicWindupWorldTest do
     c = %{c | w: w}
     assert observe(w).casts == %{}
     rel(energy(c), 898_946.2777903)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     {actor, request} = request(c, @leaf_micro, heat(), 3_000_000)
     assert {:ok, %{outcome: nil}} = VoxelRegion.TestSupport.spell(w, actor, request)
     rel(energy(c), 496_653.7332355)

@@ -44,8 +44,9 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
     File.cp!(Path.join(@fixtures, @digest <> ".json"), catalog)
     env = Path.join(c.root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
-    start_supervised!({World, [source: Source, log: Log, root: c.root, observer: self(), name: nil,
+    w = start_supervised!({World, [source: Source, log: Log, root: c.root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env, production_materials: @materials]})
+    w
   end
 
   defp next, do: System.unique_integer([:positive, :monotonic])
@@ -119,6 +120,7 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
   defp flush_trace(n \\ 0) do
     receive do
       {:trace, _, :receive, :thermal_tick} -> flush_trace(n + 1)
+      {:trace, _, :receive, {:thermal_tick, _due}} -> flush_trace(n + 1)
       {:trace, _, :receive, _} -> flush_trace(n)
     after 0 -> n
     end
@@ -166,6 +168,7 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
 
   test "空闲装置真正休眠、事件唤醒后按目录算术推进、断电降温后再休眠；冷却中电功率为 0 仍推进", c do
     w = start(c)
+    assert World.simulation_windows(w).source_count == 0
     generator(c, w)
     Enum.reduce_while(1..2000, observe(w), fn _, s0 -> if open_emf(s0) > 34.0, do: {:halt, s0}, else: {:cont, commit(w)} end)
     hot_invariant(w)
@@ -207,6 +210,7 @@ defmodule VoxelRegion.ThermalActivityWorldTest do
     assert_in_delta lit.source_current_a, i, i * 1.0e-8
     IO.puts("THERMAL_ACTIVITY wake current=#{lit.source_current_a} hand=#{i} stored_j=#{lit.stored_j}")
     powered = window(w, 1_000)
+    assert World.simulation_windows(w).source_count == 0
     lit_us = commit_cost(w, 5)
     IO.puts("THERMAL_ACTIVITY lit commit_us=#{lit_us} window_ms=1000 ticks=#{powered.ticks} txns=#{powered.seq} reductions=#{powered.reductions}")
     assert powered.ticks >= 2 and powered.seq >= 2

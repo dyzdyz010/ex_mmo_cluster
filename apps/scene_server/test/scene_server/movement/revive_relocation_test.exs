@@ -34,7 +34,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   # 同一进程既是 Scene 的 world_ref（初始快照）也是流送窗口的 authority（`VoxelRegion.World` 的 prepare / canonical_snapshot 调用形状）；
   # 身体消息转给测试进程。
   defmodule Source do
-    use GenServer
+    use MmoTest.WorldAuthorityDouble
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
     def authority_ref(pid), do: pid
@@ -44,10 +44,20 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
 
     def ensure(_state, _level, _region), do: :ok
 
-    def handle_call({:prepare, _keys}, _, state), do: {:reply, {__MODULE__, nil, []}, state}
-    def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
+    def world_call(:hold_windows, _, state), do: {:reply, :ok, Map.put(state, :hold, true)}
+    def world_call(:window_contributions, _, state), do: {:reply, Map.get(state, :window_contributions, %{}), state}
+    def world_call(:release_windows, _, state) do
+      for {subscriber, ref, box} <- Map.get(state, :held_windows, []),
+        do: send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.ReviveRelocationTest.snapshot(box)})
+      {:reply, :ok, Map.merge(state, %{hold: false, held_windows: []})}
+    end
 
-    def handle_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
+    def world_call({:canonical_snapshot, box, subscriber, ref, _}, _, %{hold: true} = state) do
+      send(state.owner, {:window_held, subscriber, box})
+      {:reply, :ok, Map.update(state, :held_windows, [{subscriber,ref,box}], &[{subscriber,ref,box}|&1])}
+    end
+
+    def world_call({:canonical_snapshot, box, subscriber, ref, _}, _, state) do
       send(
         subscriber,
         {:canonical_snapshot, ref, SceneServer.Movement.ReviveRelocationTest.snapshot(box)}
@@ -56,6 +66,16 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
       {:reply, :ok, state}
     end
 
+    # 只测试世界数据与接纳回执；窗口生命周期仍由真实 Player 和 CollisionStream 维护。
+    def handle_info({:simulation_windows, source, boxes, ref}, state) do
+      send(source, {:simulation_windows_result, ref, :ok})
+      {:noreply, Map.update(state, :window_contributions, %{source => boxes}, &Map.put(&1, source, boxes))}
+    end
+    def handle_info({:body_detach, _cid, player, ref}, state) do
+      send(player, {:body_detached, ref})
+      send(state.owner, {:body_detach_seen, player})
+      {:noreply, state}
+    end
     def handle_info(message, state) do
       send(state.owner, {:authority, message})
       {:noreply, state}
@@ -117,7 +137,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
 
   defp identity, do: %Session.Identity{session_epoch: 1, scene_id: 1, scene_epoch: 7}
 
-  defp setup_scene(radius) do
+  defp setup_scene(radius, overrides \\ %{}) do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{owner: self()}})
     body_store = start_supervised!({MmoTest.BodyStore, []})
@@ -129,7 +149,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
            scene_id: 1,
            scene_epoch: 7,
            world_ref: source,
-           config: config(radius),
+           config: Map.merge(config(radius), overrides),
            clock: {Clock, clock},
            sink: Sink,
            body_store: {MmoTest.BodyStore, store: body_store},
@@ -138,7 +158,7 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
       )
 
     wait(fn -> Scene.observe(scene).initialized end)
-    %{scene: scene, clock: clock, radius: radius}
+    %{scene: scene, clock: clock, radius: radius, source: source, body_store: body_store}
   end
 
   defp wait(fun, attempts \\ 4000) do
@@ -240,6 +260,93 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
 
   defp same_spot?(a, b),
     do: {a.position, a.velocity, a.grounded} == {b.position, b.velocity, b.grounded}
+
+  @tag :simulation_windows
+  test "正常跨窗保留旧窗和请求窗，收到快照仍保留，到模拟 tick 消费后才退休" do
+    {ctx, player, _} = walk(setup_scene(1))
+    old = {{-1,7,-1},{2,10,2}}
+    # X 越过滞回边界时三轴一起重新居中；站在 y≈501，故新 Y 中心是第 7 页。
+    next = {{0,6,-1},{3,9,2}}
+    contributions = fn -> GenServer.call(ctx.source, :window_contributions) |> Map.values() |> List.flatten() |> Enum.sort() end
+    assert contributions.() == [old]
+    assert :ok = GenServer.call(ctx.source, :hold_windows)
+    last = Enum.reduce_while(13..1_500, nil, fn seq, _ ->
+      step(ctx, player, seq, 32767)
+      if elem(Player.observe(player).state.position, 0) > 80.0, do: {:halt, seq}, else: {:cont, nil}
+    end)
+    assert is_integer(last)
+    assert_receive {:window_held, _stream, ^next}, 2_000
+    assert contributions.() == [old,next]
+    assert :ok = GenServer.call(ctx.source, :release_windows)
+    wait(fn -> Player.observe(player).collision_queue_length > 0 end)
+    assert Player.observe(player).simulation_windows == [old,next]
+    assert contributions.() == [old,next]
+    step(ctx, player, last+1, 0)
+    wait(fn -> contributions.() == [next] end)
+    assert Player.observe(player).simulation_windows == [next]
+  end
+
+  @tag :simulation_windows
+  @tag :simulation_handoff
+  test "真实 seal/import 保留已接纳请求，prepared Player 提前安装也不退休未消费的旧域" do
+    ctx = setup_scene(1, %{"travel_max_exclusive_m" => [80.0,624.0,112.0]})
+    target_config = Map.merge(config(1), %{"travel_min_m" => [80.0,464.0,-48.0],
+      "travel_max_exclusive_m" => [240.0,624.0,112.0], "spawn_probes_m" => [[100.0,558.0,40.0]]})
+    target = start_supervised!(Supervisor.child_spec({Scene, [scene_id: 2, scene_epoch: 7,
+      world_ref: ctx.source, config: target_config, clock: {Clock,ctx.clock}, sink: Sink,
+      body_store: {MmoTest.BodyStore, store: ctx.body_store}, world_api: Source]}, id: :scope_target_scene))
+    wait(fn -> Scene.observe(target).initialized end)
+    {:ok, endpoint} = Scene.neighbour_endpoint(target)
+    :ok = Scene.connect_neighbour(ctx.scene, endpoint.pid, 0, endpoint)
+    {ctx, player, _} = walk(ctx)
+    old = {{-1,7,-1},{2,10,2}}
+    next_box = {{0,6,-1},{3,9,2}}
+    [stream] = Map.keys(GenServer.call(ctx.source, :window_contributions))
+    :ok = GenServer.call(ctx.source, :hold_windows)
+    :sys.suspend(stream)
+    next_identity = %Session.Identity{session_epoch: 2, scene_id: 2, scene_epoch: 7}
+    {cut, imported} = try do
+      last = Enum.reduce_while(13..1_500, nil, fn seq, _ ->
+        step(ctx, player, seq, 32767)
+        if elem(Player.observe(player).state.position,0) >= 80.0, do: {:halt,seq}, else: {:cont,nil}
+      end)
+      assert is_integer(last)
+      who = identity()
+      assert_receive {:mmo_transfer_request, ^who, ^player, 2}, 2_000
+      sealing = Task.async(fn -> Player.seal(player, who) end)
+      assert_receive {:body_detach_seen, ^player}, 2_000
+      # 流尚未接纳新请求，不能提前交出声称 window_pending 的 cut。
+      assert Task.yield(sealing, 100) == nil
+      :sys.suspend(ctx.source)
+      try do
+        :sys.resume(stream)
+        assert {:ok, cut} = Task.await(sealing, 2_000)
+        assert cut.window_pending and cut.requested_window == next_box
+        assert {:ok, imported} = Scene.prepare_transfer(target, next_identity, cut, self())
+        assert Player.observe(imported).simulation_windows == [old,next_box]
+        {cut, imported}
+      after
+        :sys.resume(ctx.source)
+      end
+    after
+      :sys.resume(stream)
+    end
+    assert_receive {:window_held, ^stream, ^next_box}, 2_000
+    :ok = GenServer.call(ctx.source, :release_windows)
+    wait(fn -> Player.observe(imported).collision_queue_length > 0 end)
+    tick(%{ctx | scene: target}, cut.published_tick+1)
+    wait(fn -> Player.observe(imported).collision_queue_length == 0 end)
+    prepared = Player.observe(imported)
+    assert prepared.published_tick > prepared.simulation_tick
+    assert prepared.simulation_windows == [old,next_box]
+    assert :ok = VoxelRegion.CollisionStream.synchronize(stream)
+    assert GenServer.call(ctx.source, :window_contributions)[stream] == [old,next_box]
+    assert {:ok, observer} = Scene.detach_transfer(ctx.scene, identity(), next_identity)
+    assert :ok = Scene.activate_transfer(target, next_identity, observer)
+    wait(fn -> GenServer.call(ctx.source, :window_contributions)[stream] == [next_box] end)
+    assert Player.observe(imported).simulation_windows == [next_box]
+    assert Map.keys(GenServer.call(ctx.source, :window_contributions)) == [stream]
+  end
 
   test "非流送：死亡下发 status 2 与 Relocate（apply_tick = 死亡时模拟 tick + 1，出生点 = SessionStart），该 tick 从出生点推进；下一秒复活身体" do
     {ctx, p, start} = walk(setup_scene(0))

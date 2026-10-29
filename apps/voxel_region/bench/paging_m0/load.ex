@@ -3,13 +3,15 @@ defmodule VoxelRegion.Bench.M0Load do
   只测试（Test-only）：区域分页 M0 的负载驱动。经 `Code.compile_file/1` 编译进运行节点，只发一次。
 
   一个“活跃窗口” = 一个订阅者 + 一个编辑者：
-  - 订阅者走 Scene / CollisionStream 同一入口 `World.canonical_snapshot_and_subscribe/5`（含碰撞 chunk），
-    记录快照耗时 / 字节与每笔 `canonical_delta` 的到达时刻与字节。
+  - 长期订阅者先以自身 PID 经 `World.set_simulation_windows/2` 登记完整 XYZ 盒，收到回执后再走
+    `World.canonical_snapshot_and_subscribe/5`（含碰撞 chunk），记录快照耗时 / 字节与每笔 `canonical_delta` 的到达时刻与字节。
+    普通 canonical 订阅本身不授予模拟资格；窗口外扩由 World 负责，不在夹具里重复计算。
   - 编辑者走作者入口 `World.apply_edits/2`，在窗口中心柱地表上方一格交替放石 / 挖空（世界不随时间增长，只有世代递增），
     记录每笔调用的墙钟延迟与返回 seq。它覆盖 World 几何提交尾部（规约、后像、日志、扇出），不覆盖玩家工具会话、
     限速与扣料（那些在 Player / Tools 路径），结论只适用于提交尾部。
 
-  `start/1` 幂等（注册名 `:m0_load`）；`report/0` 返回 JSON 汇总；`stop/0` 结束全部窗口（订阅者退出即被 World 反订阅）。
+  `start/1` 幂等（注册名 `:m0_load`）；`report/0` 返回 JSON 汇总，快照行包含窗口的模拟来源 PID。
+  `stop/0` 请求结束全部窗口；订阅者在 stop／截止时间退出，World 收到 DOWN 后同时退休订阅与模拟资格。
   """
 
   alias VoxelRegion.{CollisionStream, World}
@@ -271,8 +273,10 @@ defmodule VoxelRegion.Bench.M0Load do
 
   defp subscriber(w) do
     ref = make_ref()
-    t0 = System.monotonic_time(:microsecond)
     me = self()
+    # 同一长期来源先取得资格再准备快照；登记不计入原有快照耗时，退出后由 World monitor 退休。
+    :ok = World.set_simulation_windows(World, [w.box])
+    t0 = System.monotonic_time(:microsecond)
     # 与 Scene 一样由调用方进程做 prepare，再由 World 原子发快照并登记订阅。
     :ok = call_subscribe(w.box, me, ref)
 
@@ -282,7 +286,7 @@ defmodule VoxelRegion.Bench.M0Load do
 
         :ets.insert(@table, {{:snapshot, w.id},
           %{us: t1 - t0, bytes: :erlang.external_size(snap), seq: snap.transaction_seq,
-            regions: length(snap.regions)}})
+            regions: length(snap.regions), simulation_source: inspect(me)}})
 
         send(Process.whereis(@name), {:m0_snapshot_ready, w.id})
         deltas(w)

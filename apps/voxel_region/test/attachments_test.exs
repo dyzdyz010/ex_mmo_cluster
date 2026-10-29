@@ -106,7 +106,7 @@ defmodule VoxelRegion.AttachmentsTest do
     alias MmoContracts.Voxel.Structure,as: Wire
     owner={1,0}
     cells=for x<-0..7,y<-0..7,into: %{},do: {x+8*y,{11,owner}}
-    grid=Structure.from_canonical([cells,0,0,0,0,0,0,0])
+    grid=Structure.from_canonical([VoxelRegion.RefinedSlots.from_map(cells),0,0,0,0,0,0,0])
     hosts=for x<-0..7,y<-0..7,into: %{},do: {{x,y,0},11}
     sample=fn p,s -> {Map.get(s,p,0),s} end
     slots=Map.new(VoxelRegion.Attachments.footprint(0,2,{0,0,0},8),&{&1,{2,19}})

@@ -89,8 +89,9 @@ defmodule NpcServer.NpcBodyCastTest do
   end
 
   # 执行进程投递前读目录 digest（测试进程充当 World）：返回调用方，由场景决定何时回复。
+  # `World.magic_digest/1` 经 `World.PageLoad.call/3` 包成 `{:page_request, ref, :magic_digest}`；不超时故不会收到 page_cancel。
   defp digest_call do
-    assert_receive {:"$gen_call", from, :magic_digest}
+    assert_receive {:"$gen_call", from, {:page_request, _ref, :magic_digest}}
     from
   end
 
@@ -182,7 +183,8 @@ defmodule NpcServer.NpcBodyCastTest do
 
     Body.command(body, %{id: :c, verb: :cancel_cast})
 
-    assert_receive {:player, ^player, {:"$gen_call", from, {:spell, @old, cancel, _ingress}}}
+    # `Player.spell/5` 的同步消息带本请求 ref（超时时以 `{:cancel_spell_request, ref}` 取消）。
+    assert_receive {:player, ^player, {:"$gen_call", from, {:spell_request, _ref, @old, cancel, _ingress}}}
     assert cancel.action == 2
     assert cancel.client_intent_seq == request_b.client_intent_seq
     assert cancel.request_id > request_b.request_id

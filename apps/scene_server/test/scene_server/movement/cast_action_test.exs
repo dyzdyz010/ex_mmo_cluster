@@ -29,6 +29,7 @@ defmodule SceneServer.Movement.CastActionTest do
       movement_scales: [{0, 1.0, 1.0}],
       action: nil,
       action_seq: 0,
+      spell_requests: %{},
       # Player.init 恒设生命代次（player.ex init），actor_context 读它；夹具补上同一字段。
       life_generation: 1,
       scene_id: 1,
@@ -47,7 +48,7 @@ defmodule SceneServer.Movement.CastActionTest do
   test "准备立即互斥工具；取消先于授权时旧到期消息不能释放", c do
     recipient = {self(), make_ref()}
     assert {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{caster_recipient: recipient}}, c.from, c.state)
-    assert_receive {:prepare_cast, key, %{caster_recipient: ^recipient}, _, _}
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, %{caster_recipient: ^recipient}, _, _}}
     assert {:reply, {:error, :casting}, _} = Player.handle_call({:tool_context, c.id}, c.from, s)
     assert_receive {:wire, %{input_limit: 0.35, apply_tick: 41}}
 
@@ -65,15 +66,15 @@ defmodule SceneServer.Movement.CastActionTest do
     recipient = {self(), make_ref()}
     request = %{c.request | action: 0}
     assert {:noreply, state} = Player.handle_call({:spell, c.id, request, %{caster_recipient: recipient}}, c.from, c.state)
-    assert_receive {:quote_cast, %{caster_recipient: ^recipient}, ^request, _}
+    assert_receive {:player_spell_request, _, _, {:quote_cast, %{caster_recipient: ^recipient}, ^request, _}}
     assert state.action == nil
     assert state.action_seq == 0
-    refute_received {:prepare_cast, _, _, _, _}
+    refute_received {:player_spell_request, _, _, {:prepare_cast, _, _, _, _}}
   end
 
   test "授权冻结当前位置和瞄准；重复到期不重复释放，之后取消返回已释放", c do
     {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
-    assert_receive {:prepare_cast, key, _, _, _}
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
     {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
     aim = %{c.request | action: 3, direction: {0.0, 1.0, 0.0}}
     {:reply, {:ok, :controlled}, s} = Player.handle_call({:spell, c.id, aim, %{}}, c.from, s)
@@ -111,11 +112,11 @@ defmodule SceneServer.Movement.CastActionTest do
     assert {:reply, {:error, :dead}, ^dead} =
              Player.handle_call({:spell, c.id, c.request, %{}}, c.from, dead)
 
-    refute_received {:prepare_cast, _, _, _, _}
+    refute_received {:player_spell_request, _, _, {:prepare_cast, _, _, _, _}}
 
     # 前摇中（action 非空）死亡：tool_context 仍按施法互斥回 casting，与 authorize_tool 同序。
     {:noreply, casting} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
-    assert_receive {:prepare_cast, _, _, _, _}
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, _, _, _, _}}
 
     assert {:reply, {:error, :casting}, _} =
              Player.handle_call(
@@ -127,7 +128,7 @@ defmodule SceneServer.Movement.CastActionTest do
 
   test "死亡先于授权则只取消，旧身份控制不能改变本次施法", c do
     {:noreply, s} = Player.handle_call({:spell, c.id, c.request, %{}}, c.from, c.state)
-    assert_receive {:prepare_cast, key, _, _, _}
+    assert_receive {:player_spell_request, _, _, {:prepare_cast, key, _, _, _}}
     {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
     old = %{c.id | session_epoch: 6}
 
@@ -155,12 +156,18 @@ defmodule SceneServer.Movement.CastActionTest do
     dead = %{c.state | body: %{c.state.body | status: :dead}}
     assert {:noreply, ^dead} = Player.handle_cast(message, dead)
     assert_receive {{:npc_cast, 3}, {:error, :dead}}
-    refute_received {:prepare_cast, _, _, _, _}
+    refute_received {:player_spell_request, _, _, {:prepare_cast, _, _, _, _}}
 
-    # 存活：同一条消息进入前摇准备；World 收到的 actor 带 caster_recipient，结算回复的目标就是 reply_to。
+    # 存活：World回复先回唯一Player等待owner，原reply_to只收到一次转交结果。
     assert {:noreply, s} = Player.handle_cast(message, c.state)
-    assert_receive {:prepare_cast, _key, %{caster_recipient: ^recipient}, _, ^reply_to}
+    assert_receive {:player_spell_request, ref, relay, {:prepare_cast, _key, %{caster_recipient: ^recipient}, _, relay}}
     assert %{phase: :preparing} = s.action
+    assert relay == {self(), {:spell_reply, ref}}
+    assert {:noreply, done} = Player.handle_info({{:spell_reply, ref}, {:ok, :fixture_result}}, s)
+    assert_receive {{:npc_cast, 3}, {:ok, :fixture_result}}
+    assert done.spell_requests == %{}
+    assert {:noreply, ^done} = Player.handle_info({{:spell_reply, ref}, {:ok, :fixture_result}}, done)
+    refute_receive {{:npc_cast, 3}, _}, 0
 
     assert_raise FunctionClauseError, fn ->
       Player.cast_spell(self(), c.id, c.request, %{}, reply_to)

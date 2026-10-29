@@ -6,7 +6,7 @@ defmodule VoxelRegion.World.Projectiles do
 
   @doc "有实时拟态时只排一个 50ms 节拍；没有对象即休眠。"
   def wake(state) do
-    if state.projectile_timer == nil and state.projectile_task == nil and shots(state) != [] do
+    if VoxelRegion.World.PageLoad.failure(state) == nil and state.projectile_timer == nil and state.projectile_task == nil and shots(state) != [] do
       %{state | projectile_timer: Process.send_after(self(), :projectile_tick, 50)}
     else
       state
@@ -14,6 +14,41 @@ defmodule VoxelRegion.World.Projectiles do
   end
 
   defp shots(state), do: Enum.filter(Thermal.semblances(state), fn {_, s} -> Map.has_key?(s, :projectile_source) end)
+
+  @doc """
+  活投射物未来至寿命端点的真实飞行弦段页种子。异步采样可能覆盖任一未完成段，不能按当前墙钟或窗口退休。
+  每条弦段沿现 flight_segments 的两端完整 XYZ 页包围范围，包含高速段跨越的中间页；冻结身体交付不再读取地形。
+  """
+  def residency_dependencies(state) do
+    keys = for {_id, shot} <- shots(state), not Map.has_key?(shot, :impact_delivery),
+      {_t0, _t1, a, b} <- Semblance.flight_segments(shot, shot.lifetime_s),
+      region <- segment_regions(a, b), uniq: true, do: {0, region}
+    {:ok, {VoxelRegion.World.Pages.with_ancestors(keys), [], []}}
+  end
+
+  defp segment_regions(a, b) do
+    {ax, ay, az} = VoxelRegion.World.Canonical.region_of(Semblance.macro(a))
+    {bx, by, bz} = VoxelRegion.World.Canonical.region_of(Semblance.macro(b))
+    for x <- min(ax,bx)..max(ax,bx), y <- min(ay,by)..max(ay,by), z <- min(az,bz)..max(az,bz), do: {x,y,z}
+  end
+
+  @doc "投射物原有t0/age是唯一墙钟与模型前沿；写回等待不改锚点，下一采样仍覆盖原缺口。"
+  def progress(state) do
+    now = System.system_time(:microsecond)
+    for {id, shot} <- shots(state) do
+      target = if Map.has_key?(shot, :impact_delivery), do: shot.age_s,
+        else: min(max((now - shot.t0_us) / 1.0e6, shot.age_s), shot.lifetime_s)
+      reason = cond do
+        VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
+        Map.has_key?(shot, :impact_delivery) -> :delivery
+        state.page_store.level in [:mid, :hard] -> :writeback
+        state.projectile_task != nil -> :sampling
+        true -> :timer
+      end
+      %{id: inspect(id), simulated_through_s: shot.age_s, target_through_s: target,
+        lag_s: target - shot.age_s, wait_reason: reason}
+    end
+  end
 
   @doc "同一轮只有一个异步工作；下一轮在本轮提交以后采样，不缓存人物位置。"
   def poll(%{projectile_task: nil} = state) do

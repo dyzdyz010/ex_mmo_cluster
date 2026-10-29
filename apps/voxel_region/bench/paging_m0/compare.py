@@ -11,7 +11,7 @@ from pathlib import Path
 
 def load(p):
     # field-heap-end.json 是 rpc 原样输出，前面可能有节点日志行；取最后一行 JSON。
-    text = open(p, encoding="utf-8-sig").read().strip()
+    text = Path(p).read_text(encoding="utf-8-sig").strip()
     try:
         v = json.loads(text)
     except json.JSONDecodeError:
@@ -20,7 +20,7 @@ def load(p):
 
 
 def gc(run):
-    rows = [json.loads(l) for l in open(run / "probe" / "events.jsonl")]
+    rows = [json.loads(l) for l in (run / "probe" / "events.jsonl").read_text(encoding="utf-8-sig").splitlines()]
     world = sorted(r["info"]["timeout"] for r in rows if r["kind"] == "long_gc" and r["name"] == "Elixir.VoxelRegion.World")
     if not world:
         return "-"
@@ -32,14 +32,19 @@ def main():
         run = Path(d)
         st, idle = load(run / "startup.json"), load(run / "idle.json")
         fh = load(idle["field_heap"]) if isinstance(idle["field_heap"], str) else idle["field_heap"]
-        top = fh["top_fields_mb"]
-        os_peak = max(json.loads(l)["rss_sum"] for l in open(run / "os.jsonl")) / 1e9
+        top = fh.get("top_fields_mb")
+        if top is None:
+            breakdown = fh["field_breakdown"]
+            fields = f"field breakdown {breakdown['status']}: {breakdown['reason']}"
+        else:
+            fields = ", ".join(f"{key} {top.get(key, 'unavailable')}" for key in
+                               ["entries", "refined", "epochs", "component_cache", "prefabs"])
+        os_peak = max(json.loads(l)["rss_sum"] for l in (run / "os.jsonl").read_text(encoding="utf-8-sig").splitlines()) / 1e9
         end = run / "field-heap-end.json"
         end_heap = load(end)["total_heap_mb"] if end.exists() else None
-        print(f"== {run.name}: seq {fh['seq']} ready {st['ready_seconds']} s, startup peak {st['startup_peak_rss_sum'] / 1e9:.2f} GB, "
-              f"idle World heap {fh['total_heap_mb']} MB (entries {top.get('entries', 0)}, refined {top.get('refined', 0)}, epochs {top.get('epochs', 0)}, "
-              f"component_cache {top.get('component_cache', 0)}, prefabs {top.get('prefabs', 0)}), epochs n={fh['epochs']}, "
-              f"OS rss max {os_peak:.2f} GB, end heap {end_heap} MB, World long_gc {gc(run)}")
+        print(f"== {run.name}: seq {fh.get('seq', 'unavailable')} ready {st['ready_seconds']} s, startup peak {st['startup_peak_rss_sum'] / 1e9:.2f} GB, "
+              f"idle World heap {fh['total_heap_mb']} MiB ({fields}), epochs n={fh.get('epochs', 'unavailable')}, "
+              f"OS rss max (all phases) {os_peak:.2f} GB, end heap {end_heap} MiB, World long_gc {gc(run)}")
         for p in sorted(glob.glob(str(run / "step-*.json"))):
             s = load(p)
             r, st = s["report"], s["stages"]["macro_stages"]

@@ -281,6 +281,9 @@ defmodule NpcServer.NpcCastWorldTest do
       capture_log(fn ->
         cast(body, :cast, handle)
         blocked_by_cast(body, handle)
+        # 角色 owner 已登记动作不等于 World 已开始前摇：prepare_cast 可能仍在等装页，此时取消会经 page_cancel
+        # 撤回未接纳的请求、World 不开始前摇。本例要测的是前摇中结束会话，故先等 World 的待施放记录（live 1）出现。
+        await(fn -> match?(%{live: 1}, VoxelRegion.TestSupport.observe(world, [@npc], {{0, 0, 0}, {16, 16, 16}}).casts[@npc]) || nil end, 5_000)
 
         %{player: player} = :sys.get_state(body)
         assert :ok = Player.stop(player)

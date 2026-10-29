@@ -42,6 +42,7 @@ defmodule VoxelRegion.SandGlassWorldTest do
       property_catalog_path: catalog, thermal_environment_path: env, prefab_catalog_path: Path.join(root, "prefabs"),
       production_materials: [@sand, @stone, @glass], liquid_bounds: {{0, 0, 0}, {8, 8, 8}}]
     w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, Keyword.fetch!(opts, :liquid_bounds))
     actor = %{cid: 1001, gate: self(), identity: :glass, refresh: &Actor.tool_context/2,
       eye: {4.5, 6.5, 4.5}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))

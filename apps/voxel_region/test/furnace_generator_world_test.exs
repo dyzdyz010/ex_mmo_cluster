@@ -99,6 +99,7 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
       property_catalog_path: Path.join(root, "properties.json"), thermal_environment_path: Path.join(root, "environment.json"),
       prefab_catalog_path: Path.join(root, "prefabs"), production_materials: @materials, liquid_bounds: @bounds]
     w = start_supervised!({World, opts}, id: id)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     a = %{cid: 1001, gate: self(), identity: {id, make_ref()}, refresh: &Actor.tool_context/2, eye: {3.5, 4.5, 2.5}, tick_us: 16_667}
     a = Map.put(a, :player, start_supervised!({Actor, a}, id: {id, :actor}))
     %{w: w, id: id, opts: opts, root: root, actor: a, ignition: 0.0, experiment: 0.0, materials: c.materials}
@@ -372,6 +373,7 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
   defp flush_trace(n \\ 0) do
     receive do
       {:trace, _, :receive, :thermal_tick} -> flush_trace(n + 1)
+      {:trace, _, :receive, {:thermal_tick, _due}} -> flush_trace(n + 1)
       {:trace, _, :receive, _} -> flush_trace(n)
     after 0 -> n
     end
@@ -793,6 +795,7 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     w = start_supervised!({World, f.opts}, id: f.id)
     restored = frozen(w)
     :sys.resume(w)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     {%{f | w: w}, before, restored}
   end
 end

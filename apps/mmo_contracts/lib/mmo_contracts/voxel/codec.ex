@@ -804,17 +804,19 @@ defmodule MmoContracts.Voxel.Codec do
     <<prefix::binary, seq::64-little, rest::binary>>
   end
 
-  @doc "头 + zlib body → 完整载荷字节。"
+  @doc "接纳原始body的binary或iodata，在唯一边界物化后生成头与原zlib正文。"
   def encode_payload(level, {x, y, z}, seq, content_version, raw_body, version \\ 4)
-      when is_binary(raw_body) do
+      when is_binary(raw_body) or is_list(raw_body) do
+    raw_bytes = IO.iodata_length(raw_body)
     # 写端与解码同界：超出 Payload.max_body_bytes/1 的 body 写出后读不回，显式拒绝。
-    if byte_size(raw_body) > MmoContracts.Voxel.Payload.max_body_bytes(version),
+    if raw_bytes > MmoContracts.Voxel.Payload.max_body_bytes(version),
       do:
         raise(
           ArgumentError,
-          "VXR#{version} raw body #{byte_size(raw_body)} B exceeds format capacity"
+          "VXR#{version} raw body #{raw_bytes} B exceeds format capacity"
         )
 
+    raw_body = IO.iodata_to_binary(raw_body)
     body = :zlib.compress(raw_body)
     # 与 compressed_prefix_bytes/1 同一 zlib 流（OTP :zlib.compress/1 = deflateInit(:default) 后一次 :finish）。
 
@@ -834,7 +836,7 @@ defmodule MmoContracts.Voxel.Codec do
 
     <<magic::binary, version::32-little, level::8, x::32-little-signed, y::32-little-signed,
       z::32-little-signed, seq::64-little, content_version::64-little,
-      body_hash(raw_body)::64-little, 1::8, byte_size(raw_body)::32-little,
+      body_hash(raw_body)::64-little, 1::8, raw_bytes::32-little,
       byte_size(body)::32-little, body::binary>>
   end
 

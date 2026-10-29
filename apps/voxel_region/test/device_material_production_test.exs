@@ -12,21 +12,6 @@ defmodule VoxelRegion.DeviceMaterialProductionTest do
   @moduletag :device_material
   alias VoxelRegion.World
 
-  defmodule NullLog do
-    @moduledoc "只测试：不落盘的日志替身。"
-    def open(dir, _), do: dir
-    def replay(_), do: []
-    def append(_, _), do: :ok
-    def checkpoint(_, _), do: :ok
-    def prefix(_), do: nil
-    def clear_unpublished(_, _), do: :ok
-    def write_pages(_, _, _), do: :ok
-    def publish(_, _, _, _), do: :ok
-    def load(_), do: %{prefix: nil}
-    def load_head(_, _), do: %{prefix: nil}
-    def collect(_, _, _), do: 0
-  end
-
   @digest "0c67824f97992de46ea7306b3e7596b6b29eea3d51e4e2a226bf947b2cf21552"
   @fixtures Path.expand("fixtures/combustion", __DIR__)
   @stone 11
@@ -57,9 +42,10 @@ defmodule VoxelRegion.DeviceMaterialProductionTest do
     File.cp!(c.path, catalog)
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
-    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: NullLog, root: root, observer: self(),
+    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: VoxelRegion.TestSupport.NullLog, root: root, observer: self(),
       name: nil, property_catalog_path: catalog, thermal_environment_path: env, prefab_catalog_path: prefabs,
       production_materials: [@stone, @coal, @iron_ore, @copper, @alloy, @switch]]}, id: name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{2, 0, 2}, {4, 2, 3}})
     {:ok, _} = World.material_supply(w, 1001, "fixture", %{@coal => 10_000_000, @copper => 10_000_000})
     {w, prefabs}
   end

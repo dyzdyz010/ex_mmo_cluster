@@ -91,14 +91,18 @@ defmodule VoxelRegion.GmWorldTest do
   end
 
   test "instances are left alone by default, moved atomically, refused onto occupied space and micro-cleared on request", c do
+    assert {:error, :invalid_gm_args} = World.gm(c.w, "invalid-move", :move_instance, %{})
     id = define(c)
     {:ok, birth} = World.place_prefab(c.w, id, {40, 8, 8}, 0)
     assert micros(c.w, {5, 1, 1}) == [{{40, 8, 8}, 11}, {{41, 8, 8}, 11}]
     assert {:error, :gm_noop} = World.gm(c.w, "keep", :clear, %{box: {{5, 1, 1}, {5, 1, 1}}})
     seq = World.seq(c.w)
-    assert {:ok, %{instance: moved, from: {40, 8, 8}}} =
+    assert {:ok, %{instance: moved, from: {40, 8, 8}} = receipt} =
       World.gm(c.w, "mv1", :move_instance, %{instance: {birth, 0}, anchor: {48, 8, 8}, orientation: 0})
     assert moved == {seq + 1, 0} and World.seq(c.w) == seq + 1
+    assert {:ok, ^receipt} = World.gm(c.w, "mv1", :move_instance,
+      %{instance: {birth, 0}, anchor: {48, 8, 8}, orientation: 0})
+    assert World.seq(c.w) == seq + 1
     assert micros(c.w, {5, 1, 1}) == []
     assert micros(c.w, {6, 1, 1}) == [{{48, 8, 8}, 11}, {{49, 8, 8}, 11}]
     assert {:ok, _} = World.gm(c.w, "wall", :fill, %{box: {{7, 1, 1}, {7, 1, 1}}, material: 19})

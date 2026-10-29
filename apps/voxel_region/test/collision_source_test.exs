@@ -212,7 +212,7 @@ defmodule VoxelRegion.CollisionSourceTest do
     Application.put_env(:voxel_region, :w1_prepare_barrier, {0, {-1, 7, -1}})
     # 只测试：制造真正的载荷 miss，才需要经过来源预备屏障。
     :sys.replace_state(world, fn state ->
-      %{state | payloads: Map.delete(state.payloads, {0, {-1, 7, -1}})}
+      VoxelRegion.World.Payloads.cache_delete(state, {0, {-1, 7, -1}})
     end)
     Application.put_env(:voxel_region, :w1_prepare_observer, self())
     subscriber = self()

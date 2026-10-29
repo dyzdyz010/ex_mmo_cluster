@@ -105,7 +105,7 @@ defmodule VoxelRegion.World.CoarseRebuild do
     do: Enum.map(regions, fn {region, bytes} -> {:ok, p} = MmoContracts.Voxel.Payload.decode(bytes); {region, %{p | seq: 0}} end)
 
   defp discard_coarse(state) do
-    state = Enum.reduce(Map.keys(state.payloads), state, fn {level, _} = key, s ->
+    state = Enum.reduce(Payloads.cached_keys(state), state, fn {level, _} = key, s ->
       if level > 0, do: Payloads.cache_delete(s, key), else: s
     end)
     # 丢弃的 structure 片段也要写（写成空），否则页表里的旧片段会在装页时复活。

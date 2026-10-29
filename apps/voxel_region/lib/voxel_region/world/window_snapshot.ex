@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.WindowSnapshot do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：窗口观察切点的只读输入。World 冻结引用，发送进程按信用 1 拉取条目，
   在自己的堆里重建派生索引并调用既有观察算法。运输批次不改变输入或快照语义。
@@ -31,7 +32,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
     # 完整载荷命中后不再携带它的原始几何；属性汇总只取缓存未命中的完整整件。
     payload_near =
       for {x, y, z} <- coords,
-          not Map.has_key?(state.payloads, {0, {x, y, z}}),
+          not Payloads.cached?(state, {0, {x, y, z}}),
           dx <- -1..1,
           dy <- -1..1,
           dz <- -1..1,
@@ -51,11 +52,11 @@ defmodule VoxelRegion.World.WindowSnapshot do
     cells =
       Enum.reduce(macros, cells, fn {cell, _}, cells ->
         case Map.fetch(state.refined, cell) do
-          {:ok, %{0 => {_, owner}}} ->
-            MapSet.union(MapSet.put(cells, cell), Map.fetch!(state.refined_owners, owner))
-
-          {:ok, _} ->
-            MapSet.put(cells, cell)
+          {:ok, slots} ->
+            case RefinedSlots.fetch(slots, 0) do
+              {:ok, {_, owner}} -> MapSet.union(MapSet.put(cells, cell), Map.fetch!(state.refined_owners, owner))
+              :error -> MapSet.put(cells, cell)
+            end
 
           :error ->
             cells
@@ -95,7 +96,6 @@ defmodule VoxelRegion.World.WindowSnapshot do
         :seq,
         :source,
         :source_state,
-        :cache_limit,
         :material_units_per_micro,
         :properties,
         :food_receipts
@@ -114,7 +114,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
               Enum.uniq(for id <- ids, do: state.instances[id].definition_id)
             ),
             fn {id, prefab} ->
-              {id, %{definition: Map.take(prefab.definition, [:presentation_bindings])}}
+              {id, Map.take(prefab, [:presentation_bindings])}
             end
           ),
         liquid_units: Map.new(Canonical.liquid_in_regions(state, near)),
@@ -123,9 +123,11 @@ defmodule VoxelRegion.World.WindowSnapshot do
         region_bases: Map.take(state.region_bases, keys),
         decoded: Map.take(state.decoded, keys),
         snapshots: MapSet.new(Enum.filter(keys, &MapSet.member?(state.snapshots, &1))),
-        payloads: Map.take(state.payloads, Enum.map(coords, &{0, &1})),
+        payloads: Payloads.export_cached(state, Enum.map(coords, &{0, &1})),
+        cache_limit: VoxelRegion.World.Cache.stats(state.cache).limit_bytes,
         # 热 run 的 flush 可在日志提交前增加属性行，持久页索引尚未接纳它们；冻结引用，按运输条目筛选，不能只读该索引。
         damage: state.damage,
+        # 自然chunk只运输不可变紧凑正文；发送端观察仍枚举原globalXYZ世代。
         epochs: Map.take(state.epochs, chunks),
         protection: %{regions: state.protection.regions},
         thermal: state.thermal && Map.take(state.thermal, [:config, :semblances]),
@@ -220,16 +222,11 @@ defmodule VoxelRegion.World.WindowSnapshot do
   @doc "在发送进程重建可丢弃索引，沿唯一观察算法组装快照。"
   def build(view, box) do
     cached = view.payloads
+    view = Map.drop(view, [:payloads])
 
     view =
       Map.merge(view, %{
-        payloads: %{},
-        lru: :gb_trees.empty(),
-        lru_ticks: %{},
-        tick: 0,
-        lru_bytes: 0,
-        resident_bytes: 0,
-        cache_stats: %{hits: 0, misses: 0, evictions: 0}
+        cache: VoxelRegion.World.Cache.new(view.cache_limit)
       })
 
     view =

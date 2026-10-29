@@ -36,3 +36,6 @@ Scene 通过 W1 显式 World 引用接收 canonical snapshot/delta；各 Player 
 ### `prefab_designer`
 
 无状态 prefab 设计检查，通过 `VoxelRegion.World` 正式入口发布（供 NPC 设计技能调用）。
+草稿只经 `World.compile_prefab/2` 获取当前请求的完整几何，不把 World 轻目录搬运成全量编译目录。
+`Check.materials/2` 消费轻描述与编译结果共同的 `material_counts`，材料量子取 `Damage.material_units/1`，
+附件槽计价取 `Attachments.units_for_counts/2`；目录与完整检查使用同一费用规则，XYZ 尺寸和几何切面不变。

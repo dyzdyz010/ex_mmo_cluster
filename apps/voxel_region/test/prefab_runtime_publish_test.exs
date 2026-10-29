@@ -122,10 +122,12 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
       refute MmoContracts.VoxelMaterialCatalog.supports_attachments?(material)
       assert {:ok,id} = World.publish_prefab(c.world,c.actor,bytes,"如园叶宏格")
       assert File.read!(Path.join([c.root,"prefabs",Base.encode16(id,case: :lower)<>".vxpd"])) == bytes
-      compiled = World.prefab_catalog(c.world)[id]
-      assert compiled.definition.macro_cells == [{{-1,0,1},material}]
-      assert compiled.summary.macro_cells == 1
-      unsupported = %{compiled.definition | attachments: [
+      # 公开目录只给轻描述；完整定义按 id 取回原字节解码。
+      assert {:ok,^bytes} = World.prefab_definition(c.world,id)
+      assert {:ok,definition} = Prefab.decode(bytes)
+      assert definition.macro_cells == [{{-1,0,1},material}]
+      assert World.prefab_catalog(c.world)[id].summary.macro_cells == 1
+      unsupported = %{definition | attachments: [
         %{slot: 0,kind: 0,axis: 1,anchor: {-8,8,8},size: 8,material: 11}]}
       assert {:error,:unsupported_attachment} = Prefab.compile(Prefab.encode(unsupported),%{})
     end
@@ -139,7 +141,8 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
     assert World.seq(c.world)==0
     assert id==:crypto.hash(:sha256,bytes)
     assert File.read!(Path.join([c.root,"prefabs",Base.encode16(id,case: :lower)<>".vxpd"]))==bytes
-    assert World.prefab_catalog(c.world)[id].definition==draft(c)
+    assert {:ok,^bytes}=World.prefab_definition(c.world,id)
+    assert Prefab.decode(bytes)=={:ok,draft(c)}
     assert {:ok,^id}=World.publish_prefab(c.world,c.actor,bytes)
     assert {:ok,1}=World.material_supply(c.world,1001,"runtime-publish",%{11=>512*4096,19=>4096})
     assert {:ok,2}=World.prefab_intent(c.world,c.actor,:voxel_prefab_place_v1,
@@ -226,7 +229,9 @@ defmodule VoxelRegion.PrefabRuntimePublishTest do
     assert File.read!(target)==bytes
     stop_supervised(World)
     world=start_supervised!({World,Keyword.put(c.opts,:prefab_catalog_path,nil)})
-    assert World.prefab_catalog(world)[id].definition.cells==[{{1,0,0},19}]
+    assert {:ok,^bytes}=World.prefab_definition(world,id)
+    assert {:ok,definition}=Prefab.decode(bytes)
+    assert definition.cells==[{{1,0,0},19}]
     assert World.seq(world)==0
   end
 

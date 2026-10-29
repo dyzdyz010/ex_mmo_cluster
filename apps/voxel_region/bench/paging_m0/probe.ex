@@ -8,7 +8,9 @@ defmodule VoxelRegion.Bench.M0Probe do
   - GC / 调度停顿：`:erlang.system_monitor` 的 long_gc（≥20 ms）与 long_schedule（≥50 ms）事件逐条写盘。
   - PG：`DataService.Repo` 的 telemetry 查询事件，按表汇总 queue / query 时长直方图（池等待 = queue_time）。
   - `snapshot/0` 返回当前汇总（JSON 文本）；`stop/0` 立即撤销钩子。
-  采样只读进程元信息，不复制 World 状态；字段级堆拆分另用 `field_heap/0` 在 World 进程内按需执行一次。
+  采样只读进程元信息，不复制 World 状态。历史 `field_heap/0` 入口现只读已有stats与进程元信息；
+  字段级堆拆分明确 unavailable，不将缺失当零，不使用会返回完整state的sys诊断。
+  stats的驻留／缓存／保留事务口径见 M2b R3；不是磁盘世界总量，也不是单一事务快照。
   """
 
   @name :m0_probe
@@ -49,51 +51,24 @@ defmodule VoxelRegion.Bench.M0Probe do
     Jason.encode!(%{reset: System.system_time(:millisecond)})
   end
 
-  # 在 World 进程内按字段计算 flat_size（字），沿用 10-23 heap_probe 的做法；只在少数时点调用。
+  @doc "安全的进程内存与已有stats摘要；保留历史入口名，但字段级拆分明确不可用，不复制整个World。"
   def field_heap(world \\ VoxelRegion.World) do
-    me = self()
+    stats = VoxelRegion.World.stats(world)
+    pid = GenServer.whereis(world) || raise "M0 memory target is not running"
+    info = Process.info(pid, [:total_heap_size, :memory, :message_queue_len]) || raise "M0 memory target exited"
+    words = :erlang.system_info(:wordsize)
 
-    :sys.replace_state(
-      world,
-      fn s ->
-        words = :erlang.system_info(:wordsize)
-
-        fields =
-          s
-          |> Map.delete(:__struct__)
-          |> Enum.map(fn {k, v} -> {k, Float.round(:erts_debug.flat_size(v) * words / 1_048_576, 1)} end)
-          |> Enum.sort_by(&elem(&1, 1), :desc)
-          |> Enum.take(25)
-
-        info = Process.info(self(), [:total_heap_size, :heap_size, :memory])
-
-        send(me, {:m0_field_heap,
-         %{
-           seq: s.seq,
-           top_fields_mb: Map.new(fields),
-           total_heap_mb: Float.round(info[:total_heap_size] * words / 1_048_576, 1),
-           process_memory_mb: Float.round(info[:memory] / 1_048_576, 1),
-           refined_macros: map_size(s.refined),
-           # M2b 驻留页数（L0 + 粗层页键；"all" = 迁移 / 全新世界的全量内存）。
-           resident_pages: (case Map.get(s, :resident, :all) do :all -> "all"; r -> MapSet.size(r) end),
-           instances: map_size(s.instances),
-           epochs: map_size(s.epochs),
-           damage: map_size(s.damage),
-           snapshots: MapSet.size(s.snapshots),
-           payloads: map_size(s.payloads),
-           entries: map_size(s.entries)
-         }})
-
-        s
-      end,
-      600_000
-    )
-
-    receive do
-      {:m0_field_heap, value} -> Jason.encode!(value)
-    after
-      600_000 -> raise "field heap timeout"
-    end
+    Jason.encode!(%{
+      measurement: "process_metadata_and_world_stats",
+      utc_ms: System.system_time(:millisecond),
+      total_heap_mb: Float.round(info[:total_heap_size] * words / 1_048_576, 1),
+      process_memory_mb: Float.round(info[:memory] / 1_048_576, 1),
+      mailbox: info[:message_queue_len],
+      node_memory_bytes: Map.new(:erlang.memory()),
+      stats: stats,
+      field_breakdown: %{status: :unavailable,
+        reason: "disabled: sys.replace_state returns the complete state; no replacement full-state scan"}
+    })
   end
 
   # ---- 采样进程 ----

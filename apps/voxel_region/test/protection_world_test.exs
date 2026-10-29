@@ -293,7 +293,11 @@ defmodule VoxelRegion.ProtectionWorldTest do
     defp cup(x, z), do: [{{x, 0, z}, @stone} | for({dx, dz} <- [{-1, 0}, {1, 0}, {0, -1}, {0, 1}], do: {{x + dx, 1, z + dz}, @stone})]
 
     test "拒绝一律 :protected_region 且无副作用；同一请求由持有者在自己区域、任何人在野外都成功", c do
-      w = start(c, :matrix, liquid_bounds: {{-40, 0, -10}, {40, 8, 70}})
+      # 只测试：本用例按模块合同"时间只经 :thermal_commit / :liquid_commit 推进"逐笔钉 seq；世界持续演化后墙钟定时液体步
+      # 会插进认领前后，换成不前进的测试时钟。
+      clock = start_supervised!({VoxelRegion.TestSupport.WorldClock, 0})
+      w = start(c, :matrix, liquid_bounds: {{-40, 0, -10}, {40, 8, 70}},
+        clock: {VoxelRegion.TestSupport.WorldClock, clock})
       dir = Path.join([c.root, "matrix", "prefabs"])
       wood_def = macro_prefab(dir, @wood)
       stone_def = macro_prefab(dir, @stone)
@@ -423,6 +427,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
     for claims? <- [true, false] do
       test "边界两侧相邻木头：A 点燃自己的木头烧尽#{if claims?, do: "；B 的木头与地面没有任何属性行（满血、环境温度）", else: "（对照：无区域时 60 s 内引燃 B 的木头）"}", c do
         w = start(c, :"fire_#{unquote(claims?)}")
+        :ok = VoxelRegion.TestSupport.activate_simulation(w, {{17, 0, 0}, {25, 2, 5}})
         {:ok, _} = World.apply_edits(w, for(x <- 17..24, z <- 0..4, do: {{x, 0, z}, @grass}) ++
           [{{20, 1, 2}, @wood}, {{21, 1, 2}, @wood}])
         {a, _b} = two_regions(w, unquote(claims?))
@@ -444,6 +449,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
 
       test "空气间隙辐射：A 的燃烧木头隔一格空气面对 B 的石头#{if claims?, do: "，石头不升温", else: "（对照：石头升温）"}", c do
         w = start(c, :"radiation_#{unquote(claims?)}")
+        :ok = VoxelRegion.TestSupport.activate_simulation(w, {{20, 5, 2}, {23, 6, 3}})
         {:ok, _} = World.apply_edits(w, [{{20, 5, 2}, @wood}, {{22, 5, 2}, @stone}])
         {a, _} = two_regions(w, unquote(claims?))
         ignite(w, a, {20, 5, 2})
@@ -458,7 +464,9 @@ defmodule VoxelRegion.ProtectionWorldTest do
 
     for claims? <- [true, false] do
       test "液体：野外紧贴边界倒水#{if claims?, do: "，0 单位进入 B 的区域，总量不变", else: "（对照：水流进 x=21）"}", c do
-        w = start(c, :"liquid_#{unquote(claims?)}", liquid_bounds: {{14, 0, -2}, {28, 4, 3}})
+        bounds = {{14, 0, -2}, {28, 4, 3}}
+        w = start(c, :"liquid_#{unquote(claims?)}", liquid_bounds: bounds)
+        :ok = VoxelRegion.TestSupport.activate_simulation(w, bounds)
         channel = for x <- 16..26, do: [{{x, 0, 0}, @stone}, {{x, 1, -1}, @stone}, {{x, 1, 1}, @stone}]
         {:ok, _} = World.apply_edits(w, List.flatten(channel) ++ [{{15, 1, 0}, @stone}, {{27, 1, 0}, @stone}])
         if unquote(claims?), do: {:ok, _} = World.author_regions(w, [%{holder: {:character, @b}, min: {21, -2}, max: {30, 2}}])
@@ -479,6 +487,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
 
       test "电路：A 侧的热电石经边界两侧的铜串成回路#{if claims?, do: "，跨边界不连通，电流 0", else: "（对照：有电流）"}", c do
         w = start(c, :"circuit_#{unquote(claims?)}")
+        :ok = VoxelRegion.TestSupport.activate_simulation(w, {{19, 1, 0}, {22, 4, 1}})
         # A 侧（x ≤ 20）：热铜 H (19,1,0) 带实验热源、热电石 T (20,1,0)、回程 (19,2)(19,3)(20,3)；B 侧（x ≥ 21）：
         # 冷铜 C (21,1)、(21,2)、(21,3)。回路 H→T→C→(21,2)→(21,3)→(20,3)→(19,3)→(19,2)→H 两次跨过 x = 20|21；(20,2) 是空气。
         cells = [{{19, 1, 0}, @copper}, {{20, 1, 0}, @te}, {{21, 1, 0}, @copper}, {{21, 2, 0}, @copper}, {{21, 3, 0}, @copper},
@@ -505,6 +514,7 @@ defmodule VoxelRegion.ProtectionWorldTest do
 
       test "冶炼：A 的铜矿被加热过转化温度，B 的煤紧贴#{if claims?, do: "，矿不取煤、不转化，煤无属性行", else: "（对照：转化为铜）"}", c do
         w = start(c, :"ore_#{unquote(claims?)}")
+        :ok = VoxelRegion.TestSupport.activate_simulation(w, {{20, 5, 0}, {22, 6, 1}})
         {:ok, _} = World.apply_edits(w, [{{20, 5, 0}, @ore}, {{21, 5, 0}, @coal}])
         if unquote(claims?), do: {:ok, _} = World.author_regions(w, [
           %{holder: {:character, @a}, min: {10, -5}, max: {20, 5}}, %{holder: {:character, @b}, min: {21, -5}, max: {30, 5}}])

@@ -116,10 +116,12 @@ defmodule VoxelRegion.ThermalSettleCostTest do
     data = Jason.decode!(File.read!(Path.join(@fixtures, @catalog <> ".json"))) |> put_in(["liquid", "step_seconds"], 3600)
     File.write!(Path.join(root, "properties.json"), Jason.encode!(data))
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), Path.join(root, "environment.json"))
+    bounds = {{-3, 0, -1}, {20 + side + 2, max(side, 4) + 2, 20 + side + 2}}
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: Path.join(root, "properties.json"), thermal_environment_path: Path.join(root, "environment.json"),
       prefab_catalog_path: Path.join(root, "prefabs"), production_materials: [@stone, @coal, @copper, @alloy, @battery, @te, @water],
-      liquid_bounds: {{-3, 0, -1}, {20 + side + 2, max(side, 4) + 2, 20 + side + 2}}]})
+      liquid_bounds: bounds]})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, bounds)
     a = %{cid: 1001, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2, eye: {3.5, 4.5, 2.5}, tick_us: 16_667}
     a = Map.put(a, :player, start_supervised!({Actor, a}))
 

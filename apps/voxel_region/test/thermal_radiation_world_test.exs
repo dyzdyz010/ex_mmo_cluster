@@ -33,6 +33,7 @@ defmodule VoxelRegion.ThermalRadiationWorldTest do
       property_catalog_path: catalog, thermal_environment_path: environment, name: nil,
       production_materials: [19]]}, id: name)
     pause_clock(w)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-8, -8, -8}, {13, 13, 13}})
     {:ok, _} = World.apply_edits(w, Enum.map([source | cells], &{&1, 19}))
     experiment = Path.join(root, "thermal.json")
     File.write!(experiment, Jason.encode!(%{classification: "Test-only", source_macro: Tuple.to_list(source),

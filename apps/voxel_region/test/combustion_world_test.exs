@@ -6,8 +6,12 @@ defmodule VoxelRegion.CombustionWorldTest do
   alias VoxelRegion.World.Thermal
   alias VoxelRegion.TestSupport.{Source, Actor, Log}
 
+  @simulation_box {{-6, 0, -4}, {4, 3, 5}}
+  # 观察快照的 tile 盒（L0 region 半开范围）。
+  @observe_tiles {{-1,-1,-1},{9,2,2}}
+
   # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
-  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{-1,-1,-1},{9,2,2}})
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], @observe_tiles)
 
   setup do
     root=Path.join(System.tmp_dir!(),"b6_#{System.pid()}_#{System.unique_integer([:positive])}")
@@ -24,6 +28,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     opts=[source: Source,log: Log,root: root,observer: self(),property_catalog_path: catalog,
       thermal_environment_path: env,prefab_catalog_path: prefab,name: nil,production_materials: [8,15,19,11]]
     w=start_supervised!({World,opts})
+    :ok=VoxelRegion.TestSupport.activate_simulation(w,@simulation_box)
     actor=%{cid: 1001,gate: self(),identity: :test_session,refresh: &Actor.tool_context/2,eye: {1.0625,1.0625,0.0625},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     request=%{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 0,granularity: 0,
@@ -43,8 +48,11 @@ defmodule VoxelRegion.CombustionWorldTest do
       |> Map.merge(%{action: 1,tool_id: tool,client_intent_seq: seq,request_id: seq})
     World.tool_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),r)
   end
+  # 直接投递一次完整热提交，等它真正提交后再观察。P1 下热步读到冷页会暂停等装页（观察可在此期间答复），
+  # 步前缺页的提交挂闸后重放；故等全部到达的步处理完再返回，使每次 tick 恰为一个完整自然步。
   defp tick(w) do
     send(w,:thermal_commit)
+    true=Enum.find_value(1..500,fn _ -> VoxelRegion.TestSupport.simulation_settled?(w) || (Process.sleep(10); nil) end)
     observe(w)
   end
   defp row(w,micro),do: Enum.find(Map.values(observe(w).damage),&(&1.micro==micro and &1.granularity in [0,1,4]))
@@ -61,6 +69,29 @@ defmodule VoxelRegion.CombustionWorldTest do
 
   defp wood_balance(w),do: Enum.find(World.material_balances(w,1001),&(&1.material==19)).balance
 
+  @tag :continuous_world
+  test "零窗口燃烧持续演化，真实重启后无人仍继续并保留累计账", c do
+    {:ok, _} = World.apply_edit(c.w, {1, 1, 2}, 19)
+    assert {:ok, _} = operate(c, 9, 1)
+    :ok = World.set_simulation_windows(c.w, [])
+    before = observe(c.w)
+    burning = tick(c.w)
+    assert burning.thermal.combustion_j > before.thermal.combustion_j
+    fuel = row(c.w, {8, 8, 16}).remaining_fuel_j
+    initialized = burning.thermal.fuel_initialized_j
+    assert_in_delta initialized, fuel + burning.thermal.combustion_j, 1.0e-6
+    stop_supervised!(World)
+    world = start_supervised!({World, c.opts})
+    restored = observe(world)
+    assert World.simulation_windows(world).source_count == 0
+    assert restored.thermal.combustion_j == burning.thermal.combustion_j
+    assert restored.thermal.fuel_initialized_j == initialized
+    resumed = tick(world)
+    assert resumed.thermal.combustion_j > restored.thermal.combustion_j
+    assert row(world, {8, 8, 16}).remaining_fuel_j < fuel
+    assert_in_delta initialized, row(world, {8, 8, 16}).remaining_fuel_j + resumed.thermal.combustion_j, 1.0e-6
+  end
+
   # 只测试：两份相同存档冷启动，一份按定时节拍分步推进、一份直接投递完整提交作对照。
   # 点火后首次提交里相邻木块越过容差，内核按扩域事件分成多步返回。
   test "定时热提交在内核步间先答复排队调用，完成后与完整提交逐记录相同",c do
@@ -74,11 +105,15 @@ defmodule VoxelRegion.CombustionWorldTest do
       on_exit(fn->File.rm_rf!(root) end)
       Keyword.put(c.opts,:root,root)
     end
+    # 观察页须在内核步间已驻留：P1 下冷页读取要等装页，装页期间内核步继续，查询就不能在步间答复。
+    # 两份 World 先登记同一观察窗口（覆盖 @simulation_box 的 tile，模拟输入相同），首次观察装入后由窗口引用保持驻留。
     whole=start_supervised!({World,copy.("whole")},id: :whole)
+    :ok=World.set_simulation_windows(whole,[@observe_tiles])
     start=observe(whole)
     assert start.thermal.active
     expected=tick(whole)
     stepped=start_supervised!({World,copy.("stepped")},id: :stepped)
+    :ok=World.set_simulation_windows(stepped,[@observe_tiles])
     assert observe(stepped)==start
     send(stepped,:thermal_tick)
     mid=observe(stepped)
@@ -91,9 +126,8 @@ defmodule VoxelRegion.CombustionWorldTest do
     assert done.thermal==expected.thermal
   end
 
-  # 只测试：点火后首次定时提交分多步（相邻木块越过容差）；紧跟节拍的镐击落在内核步之间。
-  # 镐击先见到原生热域写回的当前温度（不是提交开始时的记录），其 HP 改写装回热域，提交完成后的 HP 不高于镐击记录。
-  test "定时热提交进行中的镐击读到当前值，且不被热提交写回覆盖",c do
+  # 只测试：点火后首次自然步分多段；后来镐击在ready边界等完整旧步提交，再读当前温度并扣HP。
+  test "定时热步完整提交后接纳镐击，当前温度与HP不会被旧步覆盖",c do
     {:ok,_}=World.apply_edit(c.w,{1,1,2},19)
     {:ok,_}=World.apply_edit(c.w,{2,1,2},19)
     assert {:ok,_}=operate(c,9,1)
@@ -108,15 +142,18 @@ defmodule VoxelRegion.CombustionWorldTest do
     message={:tool_intent,Map.merge(c.actor,%{received_us: 2_000_000,clock_node: node()}),hit}
     # World.tool_intent/3 先经 prepare_intent 在 World 外备好来源，再以 prepared_intent 执行；这里先备好来源，
     # 执行那一次调用放进受控的邮箱次序。
-    {:prepare,_,_,keys,_,_}=GenServer.call(w,{:prepare_intent,message})
+    {:prepare,token,_,_,keys,_,_}=GenServer.call(w,{:prepare_intent,message})
     start=observe(w)
-    # 邮箱次序由测试控制：World 暂停时先放入节拍、再放入镐击调用，恢复后先走第一步、再处理镐击。
+    :ok=VoxelRegion.TestSupport.activate_simulation(w,@simulation_box)
+    # 邮箱先放节拍再放镐击；CPU内核段可让出，但物理输入只能在旧自然步完成后接纳。
     :sys.suspend(w)
     send(w,:thermal_tick)
     task=Task.async(fn -> GenServer.call(w,{:prepared_intent,keys,message,[]}) end)
     true=Enum.find_value(1..1000,fn _ -> elem(Process.info(w,:message_queue_len),1)>=2 || (Process.sleep(1); nil) end)
     :sys.resume(w)
     assert {:ok,hit_seq}=Task.await(task)
+    # 同公共 wrapper：执行后释放本次准备 token（P1 准备 pin）。
+    GenServer.cast(w,{:release_preparation,token,self()})
     done=Enum.find_value(1..500,fn _ ->
       s=observe(w); if s.thermal.elapsed_s>=start.thermal.elapsed_s+0.5,do: s,else: (Process.sleep(10); nil)
     end)
@@ -124,8 +161,13 @@ defmodule VoxelRegion.CombustionWorldTest do
     wood=Enum.find(struck.property_states,&(&1.micro=={8,8,16} and &1.granularity==0))
     before=Map.fetch!(start.damage,Damage.key(wood))
     assert struck.seq==hit_seq and wood.hp<before.hp
-    # 镐击之后才完成热提交：镐击落在提交进行中，且读到了第一步之后的温度。
-    assert done.seq>hit_seq
+    heat = World.entries_after(w,start.seq) |> Enum.find(fn txn ->
+      txn.seq < hit_seq and Map.has_key?(txn, :thermal) and txn.thermal.elapsed_s >= start.thermal.elapsed_s + 0.5
+    end)
+    assert heat != nil
+    heated = Enum.find(heat.property_states, &(&1.micro == wood.micro and &1.granularity == 0))
+    assert heated.temperature_kelvin == wood.temperature_kelvin
+    assert done.seq >= hit_seq
     refute wood.temperature_kelvin==before.temperature_kelvin
     assert Map.fetch!(done.damage,Damage.key(wood)).hp<=wood.hp
   end
@@ -194,6 +236,7 @@ defmodule VoxelRegion.CombustionWorldTest do
   test "精确微格燃尽删除所属叶子且不产生材料奖励 x=#{x}",c do
     x = unquote(x)
     micro = {x,8,16}
+    :ok=VoxelRegion.TestSupport.activate_simulation(c.w,{{div(x,8)-1,0,1},{div(x,8)+2,3,4}})
     GenServer.call(c.actor.player,{:eye,{x/8+0.0625,1.0625,0.0625}})
     short_fuel(c)
     {:ok,birth}=World.place_prefab(c.w,c.id,micro,0)
@@ -271,6 +314,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     VoxelRegion.TestSupport.LegacySave.install(path,%{checkpoint | property_states: rows,thermal: thermal})
     w=start_supervised!({World,c.opts})
     assert observe(w).thermal.active
+    :ok=VoxelRegion.TestSupport.activate_simulation(w,@simulation_box)
     saved=tick(w)
     assert [%{material: 0}]=World.material_snapshot(w,[1001],[{1,1,2}]).probe_occupancy
     assert Map.get(saved.thermal,:fuel_initialized_j,0.0)==0.0
@@ -353,6 +397,7 @@ defmodule VoxelRegion.CombustionWorldTest do
     assert observe(w).damage==saved.damage
     assert observe(w).material_balances==saved.material_balances
     assert observe(w).thermal==saved.thermal
+    :ok=VoxelRegion.TestSupport.activate_simulation(w,@simulation_box)
     assert {:ok,_}=operate(%{c | w: w},9,3)
     assert row(w,{8,8,16}).remaining_fuel_j==cooled.remaining_fuel_j
   end

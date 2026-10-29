@@ -37,7 +37,9 @@ defmodule VoxelRegion.ThermalWork do
       due: MapSet.new(),
       # 电路候选行键（`VoxelRegion.Circuit.candidate?/2`）：种子与电观察清理只在候选与本次提交改写的行里判定；
       # 每次结算按当前记录收缩。nil 表示尚未派生（`rebuild_work` 全量派生）。
-      electric: nil
+      electric: nil,
+      # 电路唯一准备图；完整图消费后仅保留下一活动段所需读取依赖。
+      circuit: nil
     }
   end
 

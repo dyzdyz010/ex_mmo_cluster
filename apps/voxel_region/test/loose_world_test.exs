@@ -46,6 +46,7 @@ defmodule VoxelRegion.LooseWorldTest do
       production_materials: [@sand, @stone, @coal, @ore, @copper, @water],
       liquid_bounds: context[:bounds] || {{0, 0, 0}, {8, 8, 8}}]
     w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, opts[:liquid_bounds])
     actor = %{cid: 1001, gate: self(), identity: :loose, refresh: &Actor.tool_context/2,
       eye: context[:eye] || {4.5, 6.5, 4.5}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))
@@ -228,6 +229,7 @@ defmodule VoxelRegion.LooseWorldTest do
     w = start_supervised!({World, c.opts})
     assert quantities(w) == q
     assert observe(w).damage == before.damage
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     settle(w)
     assert quantities(w) == q
   end

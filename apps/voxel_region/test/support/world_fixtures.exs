@@ -3,6 +3,17 @@ defmodule VoxelRegion.TestSupport do
   alias MmoContracts.Voxel.{Payload, Codec}
   alias VoxelRegion.OverlayLog
 
+  @doc "只测试：以调用进程为来源，把宏格半开 XYZ 范围登记为覆盖它的 L0 模拟窗口；World 重启后须重新登记。"
+  def activate_simulation(world, macro_box),
+    do: VoxelRegion.World.set_simulation_windows(world, [tiles(macro_box)])
+
+  @doc "只测试：宏格半开 XYZ 范围 → 覆盖它的 tile（L0 region）半开范围；`simulation_snapshot` 的 box 以 tile 计。"
+  def tiles({lo, {hx, hy, hz}}) do
+    alias VoxelRegion.World.Canonical
+    {rx, ry, rz} = Canonical.region_of({hx - 1, hy - 1, hz - 1})
+    {Canonical.region_of(lo), {rx + 1, ry + 1, rz + 1}}
+  end
+
   defmodule LegacySave do
     @moduledoc """
     只测试：制造 M2a 之前的旧格式存档（单笔整世界检查点、无页表），验证冷启动经迁移路径识别旧格式。
@@ -79,6 +90,15 @@ defmodule VoxelRegion.TestSupport do
     end
   end
 
+  @doc """
+  只测试：已到达的显式模拟步均已处理完——无装页任务（挂闸输入随任务运输）、无排队 ready 输入、无进行中的热提交。
+  直接投递 `:thermal_commit`／`:liquid_commit` 后据此等待，不以 `thermal_run == nil` 单项推断（挂闸期间 run 尚未开始）。
+  """
+  def simulation_settled?(world) do
+    state = :sys.get_state(world)
+    state.thermal_run == nil and map_size(state.page_load.tasks) == 0 and :queue.is_empty(state.input_ready)
+  end
+
   @doc "只测试：消费限定窗口/角色的只读契约；键表仅便于按目标身份断言，不读取进程 state。"
   def observe(world, characters, box) do
     snapshot = VoxelRegion.World.simulation_snapshot(world, characters, box)
@@ -89,9 +109,6 @@ defmodule VoxelRegion.TestSupport do
       material_balances: Map.new(snapshot.material_balances, &{{&1.character, &1.material}, &1.units}),
       semblances: Map.get(snapshot, :semblances, %{}), casts: Map.get(snapshot, :casts, %{})}
   end
-
-  # 覆盖测试世界全部 tile 的窗口（只用于找施法者的待施放记录）。
-  @everywhere {{-1_000, -1_000, -1_000}, {1_000, 1_000, 1_000}}
 
   @doc """
   只测试：施放意图的正式入口。施放（action 1）通过立即校验后进入前摇，调用在结算后才返回；测试不等墙钟——
@@ -105,7 +122,7 @@ defmodule VoxelRegion.TestSupport do
   defp settle(world, actor, request, task) do
     cid = actor.cid
     with nil <- Task.yield(task, 5) do
-      case observe(world, [cid], @everywhere).casts do
+      case observe(world, [cid], caster_tiles(actor)).casts do
         %{^cid => %{t0_us: _}} ->
           {:ok, current} = actor.refresh.(actor.player, actor.identity)
           send(world, {:authorize_cast, {actor.identity, request.client_intent_seq}, current, request})
@@ -117,6 +134,13 @@ defmodule VoxelRegion.TestSupport do
     else
       {:ok, result} -> result
     end
+  end
+
+  # 待施放记录按手边出发点宏格投影；出发点在眼旁不足一 tile，取眼所在 tile 及其 26 邻 tile 即可覆盖。
+  # 观察盒以 tile 计，读取闭包与盒体积成正比，不能用“覆盖全世界”的巨盒代替。
+  defp caster_tiles(%{eye: eye}) do
+    {x, y, z} = VoxelRegion.World.Canonical.region_of(Tuple.to_list(eye) |> Enum.map(&floor/1) |> List.to_tuple())
+    {{x - 1, y - 1, z - 1}, {x + 2, y + 2, z + 2}}
   end
 
   @doc "只测试：通过正式 payload 服务观察一个区域，保留协议所有者/结构和附件表示。"

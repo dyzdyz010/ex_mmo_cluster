@@ -1,11 +1,12 @@
 defmodule VoxelRegion.World.Canonical do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：`VoxelRegion.World` 状态上的 canonical 读取与材料判定。
 
   只读 World 的权威状态（overlay、区域基底、refined、稀疏属性记录、有限数量与目录）；读取 baseline 时
   返回带解码缓存的新 state，从不写真值。World 与热模拟（`VoxelRegion.World.Thermal`）共用这一份读取语义。
   """
-  alias VoxelRegion.{Attachments, CollisionSource, Damage, Phase, Prefab}
+  alias VoxelRegion.{Attachments, CollisionSource, Damage, EpochChunk, Phase, Prefab}
   alias VoxelRegion.World.Pages
   alias MmoContracts.Voxel.Payload
 
@@ -28,6 +29,7 @@ defmodule VoxelRegion.World.Canonical do
 
   @doc "按 refined 整表重建派生索引；在线与重放都由 put_refined/3 增量维护，这里供核对增量结果（单测、等价对照）。"
   def index_refined(state) do
+    state = %{state | refined: Map.new(state.refined, fn {cell, slots} -> {cell, RefinedSlots.new(slots)} end)}
     {owners, regions, region_owners} =
       Enum.reduce(state.refined, {%{}, %{}, %{}}, fn {cell, slots}, {owners, regions, region_owners} ->
         present = slot_owners(slots)
@@ -36,16 +38,17 @@ defmodule VoxelRegion.World.Canonical do
           index_region_owners(region_owners, region, present, MapSet.new())}
       end)
 
-    Map.merge(state, %{refined_owners: owners, refined_regions: regions, refined_region_owners: region_owners, refined_encoded: %{}})
+    Map.merge(state, %{refined_owners: owners, refined_regions: regions, refined_region_owners: region_owners})
   end
 
   @doc "写一个宏格的细化槽（空 map 即删除），同步维护派生索引。"
   def put_refined(state, cell, slots) do
-    old = slot_owners(Map.get(state.refined, cell, %{}))
+    slots = RefinedSlots.new(slots)
+    old = slot_owners(Map.get(state.refined, cell, RefinedSlots.empty()))
     new = slot_owners(slots)
     added = MapSet.difference(new, old)
     removed = MapSet.difference(old, new)
-    refined = if map_size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
+    refined = if RefinedSlots.size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
 
     state = Enum.reduce(MapSet.union(old, new), state, &Pages.touch(&2, &1))
     state = Map.put(state, :refined_region_owners,
@@ -59,8 +62,7 @@ defmodule VoxelRegion.World.Canonical do
 
     %{Pages.mark(state, Pages.cell_unit(:refined, cell)) | refined: refined,
       refined_owners: owners,
-      refined_regions: put_region_cell(state.refined_regions, region_of(cell), cell, slots),
-      refined_encoded: Map.delete(state.refined_encoded, cell)}
+      refined_regions: put_region_cell(state.refined_regions, region_of(cell), cell, slots)}
   end
 
   @doc "这些 L0 区域内的细化部件身份；读取随写入维护的宏格计数，不展开微格槽。"
@@ -217,9 +219,20 @@ defmodule VoxelRegion.World.Canonical do
     end
   end
 
-  @doc "锚点在这些 L0 区域内的附件槽，按槽排序（与小表的整表遍历次序相同，大表时为确定次序）。"
+  @doc "锚点在这些L0区域内的全部附件槽，按槽确定排序。"
   def attachments_in_regions(state, regions),
-    do: regions |> Enum.uniq() |> Enum.flat_map(&Map.keys(Map.get(state.attachment_regions, &1, %{}))) |> Enum.sort()
+    do: state |> attachment_region_tables(regions) |> Enum.flat_map(&Map.keys/1) |> Enum.sort()
+
+  @doc "锚点在这些L0区域内且满足条件的附件槽；先筛选再按槽确定排序。"
+  def attachments_in_regions(state, regions, keep?) do
+    for table <- attachment_region_tables(state, regions), {slot, _} <- table, keep?.(slot) do
+      slot
+    end
+    |> Enum.sort()
+  end
+
+  defp attachment_region_tables(state, regions),
+    do: for(region <- Enum.uniq(regions), do: Map.get(state.attachment_regions, region, %{}))
 
   @doc """
   锚点可能投到这些 L1 父格上的附件 `{slot, value}`（按槽排序），供 `Attachments.l1_faces/2` 只看相关区域：
@@ -272,6 +285,7 @@ defmodule VoxelRegion.World.Canonical do
         do: cell
   end
 
+  defp put_region_cell(index, region, cell, %RefinedSlots{count: 0}), do: drop_region_cell(index, region, cell)
   defp put_region_cell(index, region, cell, slots) when map_size(slots) == 0, do: drop_region_cell(index, region, cell)
   defp put_region_cell(index, region, cell, value), do: Map.update(index, region, %{cell => value}, &Map.put(&1, cell, value))
 
@@ -286,8 +300,8 @@ defmodule VoxelRegion.World.Canonical do
     end
   end
 
-  # 按 16³ 子块嵌套的宏格表（子块 => %{格 => 值}）：epochs / placed_by 的唯一表示。页按子块写回、按子块抽取（M2a），
-  # 读写只经这几个函数；日志与观察仍用平铺的 `格 => 值`。
+  # placed_by 按 16³ 子块嵌套普通map；epochs独立由EpochChunk维护紧凑正文。
+  # 放置归属读写只经这几个函数；日志与观察仍用平铺的 `格 => 值`。
   @doc "嵌套宏格表里某格的值。"
   def chunk_get(nested, cell, default \\ nil),
     do: nested |> Map.get(CollisionSource.chunk_coord(cell), %{}) |> Map.get(cell, default)
@@ -394,7 +408,7 @@ defmodule VoxelRegion.World.Canonical do
 
     case Map.fetch(state.refined, cell) do
       {:ok, slots} ->
-        case Map.fetch(slots, slot) do
+        case RefinedSlots.fetch(slots, slot) do
           {:ok, {material, {birth, _} = owner}} ->
             {%{
                micro: micro,
@@ -417,7 +431,7 @@ defmodule VoxelRegion.World.Canonical do
             do: %{
               micro: cell |> Tuple.to_list() |> Enum.map(&(&1 * @micro)) |> List.to_tuple(),
               granularity: 0,
-              incarnation: chunk_get(state.epochs, cell, 0),
+              incarnation: EpochChunk.get(state.epochs, cell, 0),
               owner: Map.get(state.macro_owners,cell,{0,0}),
               material: material
             }

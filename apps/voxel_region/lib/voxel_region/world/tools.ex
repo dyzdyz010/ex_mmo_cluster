@@ -493,6 +493,7 @@ defmodule VoxelRegion.World.Tools do
   def damage_geometry(before, state, cells, macro_cells, preserved_phase) do
     cells = MapSet.new(cells)
     epochs = Map.new(macro_cells, &{&1, state.seq})
+    updated_epochs = VoxelRegion.EpochChunk.merge(state.epochs, epochs)
 
     # 只取提交前这些格上目标的行（damage 无过期行，Canonical.damage_rows_in/3），不扫全部 damage。
     removed =
@@ -500,7 +501,7 @@ defmodule VoxelRegion.World.Tools do
       |> damage_rows_in(state, cells)
       |> Enum.filter(fn t ->
         if t.granularity not in [3, 4] and MapSet.member?(cells, Damage.macro(t)) do
-          {current, _} = target_at(t.micro, %{state | epochs: chunk_merge(state.epochs, epochs)})
+          {current, _} = target_at(t.micro, %{state | epochs: updated_epochs})
 
           current == nil or
             if t.granularity == 1,
@@ -562,7 +563,7 @@ defmodule VoxelRegion.World.Tools do
     affected = cells |> Enum.flat_map(&[&1 | VoxelRegion.Thermal.neighbors(&1)])
 
     state =
-      Thermal.drop_geometry(%{state | epochs: chunk_merge(state.epochs, epochs), thermal: thermal}, affected)
+      Thermal.drop_geometry(%{state | epochs: updated_epochs, thermal: thermal}, affected)
 
     state =
       if before.attachments == state.attachments, do: state, else: Thermal.rebuild_work(state)

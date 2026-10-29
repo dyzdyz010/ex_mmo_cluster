@@ -13,7 +13,7 @@ defmodule VoxelRegion.DeathDropWorldTest do
   """
   use ExUnit.Case, async: false
   alias VoxelRegion.World
-  alias VoxelRegion.TestSupport.{Source, Log}
+  alias VoxelRegion.TestSupport.{Source, Log, WorldClock}
 
   @fixtures Path.expand("fixtures/combustion", __DIR__)
   @loose "7b69b79f1786756e857fb8cc0c855e911ce1d015ca2a5efdb25fc76f2a52b45e"
@@ -39,10 +39,14 @@ defmodule VoxelRegion.DeathDropWorldTest do
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment.json"), env)
 
+    # 只测试：用例按 seq 判断"掉没掉"。世界持续演化，墙钟定时液体步会在作者编辑后提交活动集事务并推进 seq；
+    # 换成不前进的测试时钟，只剩死亡掉落本身产生事务。不改掉落、液体或调度规则。
+    clock = start_supervised!({WorldClock, 0})
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env,
       production_materials: [@sand, @stone, @coal, @ore, @water, @dandelion],
-      liquid_bounds: {{0, 0, 0}, {8, 8, 8}}] ++ Map.get(context, :drop, [death_drop_probability: 0.05])})
+      liquid_bounds: {{0, 0, 0}, {8, 8, 8}}, clock: {WorldClock, clock}] ++
+        Map.get(context, :drop, [death_drop_probability: 0.05])})
 
     {:ok, _} = World.apply_edits(w, for(x <- -8..15, z <- -8..15, do: {{x, 0, z}, @dirt}))
     {:ok, _} = World.material_supply(w, 1001, "death-drop",
@@ -60,7 +64,18 @@ defmodule VoxelRegion.DeathDropWorldTest do
 
   defp die(w, cid, {x, y, z}) do
     send(w, {:body_death, cid, {x + 0.5, y * 1.0, z + 0.5}})
+    # 死亡输入带页依赖（M2b）：死亡格所在页已退休时先挂起装页、装齐后才裁决。同一发送者消息有序，
+    # 准入状态查询必在死亡消息之后处理；等挂起与就绪队列都清空再读 seq。
+    await_admitted(w, 2_000)
     World.seq(w)
+  end
+
+  defp await_admitted(w, left) do
+    case World.admission_status(w) do
+      %{held_sequences: 0, ready_count: 0} -> :ok
+      _ when left > 0 -> Process.sleep(5); await_admitted(w, left - 5)
+      status -> flunk("死亡输入未在时限内完成准入：#{inspect(status)}")
+    end
   end
 
   defp balances(w, cid), do: VoxelRegion.TestSupport.observe(w, [cid], @box).material_balances

@@ -24,7 +24,7 @@ defmodule SceneServer.PrefabDesigner do
 
   def check(world, scene, actor, draft, opts) do
     with :ok <- accept_options(opts),
-         {:ok, id, compiled} <- Prefab.compile(bytes(draft), World.prefab_catalog(world)),
+         {:ok, id, compiled} <- World.compile_prefab(world, bytes(draft)),
          :ok <- alignment(compiled, Keyword.get(opts, :anchor, {0, 0, 0})) do
       context = Scene.design_context(scene)
 

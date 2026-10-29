@@ -449,6 +449,7 @@ defmodule VoxelRegion.ThermalFireBenchmarkTest do
   defp run(c, scene) do
     target = String.to_integer(System.get_env("BENCH_SECONDS", "375")) * 1.0
     w = start_world(c)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{45, 405, -540}, {148, 485, -489}})
     {:ok, _} = World.material_supply(w, 1001, "fixture", %{@coal => 10_000_000})
     subscribe(w)
 

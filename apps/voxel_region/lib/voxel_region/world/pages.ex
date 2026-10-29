@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Pages do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能（M2a 页表 + M2b 按需装页，`docs/10-active/voxel-authority/2026-10-24-world-region-paging/m2a-page-store.md`、
   `m2b-on-demand-pages.md`）：页的归属、页索引、脏单元判定与装页接纳。只派生，不持久，不是第二真值。
@@ -134,6 +135,127 @@ defmodule VoxelRegion.World.Pages do
   @doc "同级 27 邻页（含自身）：区域载荷的 core 与 ring 读这些页。"
   def expand(keys) do
     for {level, {x, y, z}} <- keys, dx <- -1..1, dy <- -1..1, dz <- -1..1, uniq: true, do: {level, {x + dx, y + dy, z + dz}}
+  end
+
+  @doc "驻留需求按既有整树/附件归属闭合；未知身份显式失败，不能把半棵树当空。"
+  def residency_closure(state, keys, ids), do: close_residency(state, MapSet.new(keys), MapSet.new(), ids)
+
+  defp close_residency(state, keys, seen, ids) do
+    fresh = MapSet.difference(keys, seen)
+    referenced = for {0, page} <- fresh,
+      id <- Enum.concat([MapSet.to_list(Map.get(state.pages.home_instances, page, MapSet.new())),
+        Map.keys(Map.get(state.refined_region_owners, page, %{})),
+        Map.values(Map.get(state.macro_owner_regions, page, %{})),
+        for({_, {aid, _}} <- Map.get(state.attachment_regions, page, %{}), Map.has_key?(state.attachment_owners, aid), do: {:aid, aid})]), do: id
+
+    roots = Enum.reduce_while(Enum.uniq(ids ++ referenced), {:ok, MapSet.new()}, fn id, {:ok, roots} ->
+      instance = case id do {:aid, aid} -> case state.attachment_owners[aid] do {owner, _} -> owner; nil -> nil end; id -> id end
+      case instance && chain_root(state.instances, instance) do
+        nil -> {:halt, {:error, {:identity_not_resident, id}}}
+        root -> {:cont, {:ok, MapSet.put(roots, root)}}
+      end
+    end)
+
+    with {:ok, roots} <- roots do
+      more = for root <- roots, page <- Map.get(state.pages.covers, root, MapSet.new()), do: {0, page}
+      keys = Enum.into(more, keys)
+      seen = MapSet.union(seen, fresh)
+      if MapSet.subset?(keys, seen), do: {:ok, keys}, else: close_residency(state, keys, seen, [])
+    end
+  end
+
+  @doc "脏/冻结单元对页的投影；共享粗层片段同时阻止两个表示owner退休。"
+  def units_pages(state, units) do
+    Enum.flat_map(units, fn
+      {:chunk, _, chunk} -> [{0, chunk_region(chunk)}]
+      {:page, _, key} -> [key]
+      {:fragment, _, {level, page}} -> [{0, page}, {level, coarse_region(level, page)}]
+      {:locator, _} = unit -> case extract(state, unit) do nil -> []; %{home: home} -> [{0, home}] end
+    end)
+    |> Enum.uniq()
+  end
+
+  @doc "全量迁移首次发布后的有限驻留页；只在:all转有限表示时枚举一次。"
+  def loaded_keys(state) do
+    units_pages(state, units(state)) ++ Map.keys(state.decoded) ++ MapSet.to_list(state.snapshots) ++
+      Map.keys(state.served_headers) ++ Enum.map(Map.keys(state.liquid_adopted), &{0, &1})
+    |> MapSet.new()
+  end
+
+  @doc "批量退休已证明可退的内存表示；不走业务删除、不判脏、不删除持久页或定位行。"
+  def retire(state, keys) do
+    resident = MapSet.difference(state.resident, keys)
+    l0 = for {0, page} <- keys, into: MapSet.new(), do: page
+    region_keys = MapSet.to_list(keys)
+    cells = for page <- l0, cell <- Map.keys(Map.get(state.refined_regions, page, %{})), into: MapSet.new(), do: cell
+    refined_ids = for page <- l0, owner <- Map.keys(Map.get(state.refined_region_owners, page, %{})), into: MapSet.new(), do: owner
+    macros = for page <- l0, cell <- Map.keys(Map.get(state.macro_owner_regions, page, %{})), into: MapSet.new(), do: cell
+    macro_ids = for page <- l0, owner <- Map.values(Map.get(state.macro_owner_regions, page, %{})), into: MapSet.new(), do: owner
+    liquids = for page <- l0, cell <- Map.keys(Map.get(state.liquid_regions, page, %{})), do: cell
+    slots = for page <- l0, slot <- Map.keys(Map.get(state.attachment_regions, page, %{})), do: slot
+    slot_aids = for slot <- slots, {aid, _} = Map.fetch!(state.attachments, slot), into: MapSet.new(), do: aid
+    instances = for page <- l0, id <- Map.get(state.pages.home_instances, page, MapSet.new()), do: id
+    aids = for page <- l0, aid <- Map.get(state.pages.home_aids, page, MapSet.new()), do: aid
+    # overlay_regions同时索引邻页ring；只退休core归本页的值，邻页索引仍由存活core拥有。
+    overlay = for {level, page} = key <- keys, cell <- Map.get(state.overlay_regions, key, MapSet.new()), region_of(cell) == page, do: {level, cell}
+    dropped_overlay = Enum.group_by(overlay, &elem(&1, 0), &elem(&1, 1)) |> Map.new(fn {level, cells} -> {level, MapSet.new(cells)} end)
+    overlay_neighbors = overlay |> Enum.map(fn {level, cell} -> {level, region_of(cell)} end) |> Enum.uniq() |> expand()
+    overlay_regions = Enum.reduce(Map.take(state.overlay_regions, overlay_neighbors), state.overlay_regions, fn {{level, _} = key, cells}, index ->
+      remaining = MapSet.difference(cells, Map.get(dropped_overlay, level, MapSet.new()))
+      if MapSet.size(remaining) == 0, do: Map.delete(index, key), else: Map.put(index, key, remaining)
+    end)
+    chunks = for {x, y, z} <- l0, dx <- 0..3, dy <- 0..3, dz <- 0..3, do: {x * 4 + dx, y * 4 + dy, z * 4 + dz}
+    damage_units = (Enum.map(chunks, &{:chunk, :damage, &1}) ++ Enum.map(l0, &{:page, :identity, {0, &1}}))
+      |> Enum.filter(&Map.has_key?(state.pages.unit_damage, &1))
+    damage = for unit <- damage_units, id <- Map.fetch!(state.pages.unit_damage, unit), do: id
+    owners = subtract_cells(state.refined_owners, cells, refined_ids)
+    macro_owners = subtract_cells(state.macro_owner_cells, macros, macro_ids)
+    aid_regions = Enum.reduce(slot_aids, state.aid_regions, fn aid, index ->
+      remaining = Map.drop(Map.fetch!(index, aid), MapSet.to_list(l0))
+      if map_size(remaining) == 0, do: Map.delete(index, aid), else: Map.put(index, aid, remaining)
+    end)
+    fragments = Map.keys(state.structure_pages) ++ Map.keys(state.canopy) |> Enum.uniq() |> Enum.filter(fn {level, page} ->
+      not MapSet.member?(resident, {0, page}) and not MapSet.member?(resident, {level, coarse_region(level, page)})
+    end)
+    structure = for {level, _} = key <- fragments, cell <- Map.get(state.structure_pages, key, MapSet.new()), do: {level, cell}
+    index = state.pages
+    remembered = index.remembered
+    index = %{index | instance_home: Map.drop(index.instance_home, instances), home_instances: Map.drop(index.home_instances, MapSet.to_list(l0)),
+      aid_home: Map.drop(index.aid_home, aids), home_aids: Map.drop(index.home_aids, MapSet.to_list(l0)),
+      children: Map.drop(index.children, instances), covers: Map.drop(index.covers, instances),
+      damage_home: Map.drop(index.damage_home, damage), unit_damage: Map.drop(index.unit_damage, damage_units),
+      remembered: %{remembered | instances: Map.drop(remembered.instances || %{}, instances),
+        attachment_owners: Map.drop(remembered.attachment_owners || %{}, aids),
+        liquid_active: MapSet.reject(remembered.liquid_active || MapSet.new(), &MapSet.member?(l0, region_of(&1))),
+        sources: Map.reject(remembered.sources || %{}, fn {cell, _} -> MapSet.member?(l0, region_of(cell)) end)}}
+    state = %{state | resident: resident,
+      page_load: %{state.page_load | staged: MapSet.difference(state.page_load.staged, keys)},
+      page_generation: Enum.reduce(keys, state.page_generation, &Map.update(&2, &1, 1, fn gen -> gen + 1 end)),
+      decoded: Map.drop(state.decoded, region_keys), region_bases: Map.drop(state.region_bases, region_keys),
+      snapshots: MapSet.difference(state.snapshots, keys), served_headers: Map.drop(state.served_headers, region_keys),
+      liquid_adopted: Map.drop(state.liquid_adopted, MapSet.to_list(l0)),
+      overlay: Map.drop(state.overlay, overlay), overlay_regions: overlay_regions,
+      refined: Map.drop(state.refined, MapSet.to_list(cells)),
+      refined_regions: Map.drop(state.refined_regions, MapSet.to_list(l0)), refined_owners: owners,
+      refined_region_owners: Map.drop(state.refined_region_owners, MapSet.to_list(l0)),
+      macro_owners: Map.drop(state.macro_owners, MapSet.to_list(macros)), macro_owner_cells: macro_owners,
+      macro_owner_regions: Map.drop(state.macro_owner_regions, MapSet.to_list(l0)),
+      liquid_units: Map.drop(state.liquid_units, liquids), liquid_regions: Map.drop(state.liquid_regions, MapSet.to_list(l0)),
+      attachments: Map.drop(state.attachments, slots), attachment_regions: Map.drop(state.attachment_regions, MapSet.to_list(l0)),
+      aid_regions: aid_regions,
+      instances: Map.drop(state.instances, instances), attachment_owners: Map.drop(state.attachment_owners, aids),
+      epochs: Map.drop(state.epochs, chunks), placed_by: Map.drop(state.placed_by, chunks), damage: Map.drop(state.damage, damage), pages: index,
+      structure: Map.drop(state.structure, structure), structure_pages: Map.drop(state.structure_pages, fragments), canopy: Map.drop(state.canopy, fragments)}
+    dead = Enum.reject(refined_ids, &Map.has_key?(owners, &1))
+    state = Map.update(state, :component_cache, %{}, &Map.drop(&1, dead))
+    state
+  end
+
+  defp subtract_cells(index, cells, owners) do
+    Enum.reduce(owners, index, fn owner, index ->
+      remaining = MapSet.difference(Map.fetch!(index, owner), cells)
+      if MapSet.size(remaining) == 0, do: Map.delete(index, owner), else: Map.put(index, owner, remaining)
+    end)
   end
 
   @doc """
@@ -446,7 +568,7 @@ defmodule VoxelRegion.World.Pages do
       :attachments -> for {slot, value} <- Map.get(state.attachment_regions, region, %{}), slot_unit(slot) == {:chunk, :attachments, chunk}, into: %{}, do: {slot, value}
       :liquid_active -> MapSet.filter(state.liquid_active, in_chunk)
       :sources -> if state.thermal, do: Map.filter(state.thermal.sources, fn {cell, _} -> in_chunk.(cell) end), else: %{}
-      :epochs -> Map.get(state.epochs, chunk, %{})
+      :epochs -> Map.get(state.epochs, chunk, VoxelRegion.EpochChunk.empty(chunk))
       :placed_by -> Map.get(state.placed_by, chunk, %{})
       :damage -> Map.take(state.damage, MapSet.to_list(Map.get(state.pages.unit_damage, {:chunk, :damage, chunk}, MapSet.new())))
     end
@@ -525,6 +647,15 @@ defmodule VoxelRegion.World.Pages do
   @doc "攒下的脏单元。"
   def dirty(state), do: Map.get(state, :page_dirty, MapSet.new())
 
+  @doc "构造一个写回自然单元并冻结其非空ETF列表上界；过大由产生端显式拒绝，不交消费者另路处理。"
+  def write_unit(state, unit, maximum) do
+    value = {unit, extract(state, unit)}
+    bytes = :erlang.external_size([value])
+    if maximum == :infinity or bytes <= maximum,
+      do: {value, bytes},
+      else: raise(ArgumentError, "voxel write unit #{inspect(unit)} exceeds declared ETF budget: #{bytes} > #{maximum}; refine the upstream natural unit")
+  end
+
   # ---- 存储行（段编码的唯一定义；后端只存取行）
 
   @segment_codes %{overlay: 1, refined: 2, attachments: 3, liquid_units: 4, liquid_active: 5, epochs: 6, placed_by: 7,
@@ -547,6 +678,16 @@ defmodule VoxelRegion.World.Pages do
     :beacons, :beacon_attunements, :phase_inventory, :attachment_serial, :material_units_per_micro, :interaction_history, :interaction_floor]
 
   @doc "单元与值 → 存储行（`term_to_binary` 压缩；空值也写，表示该单元已清空，不以缺行表示）。已删除身份的定位单元返回 nil（不写）。"
+  def row({:chunk, :refined, chunk}, value) do
+    # format2 的旧 map 只在 writer 编码边界展开；运输预算仍计实际紧凑输入的 ETF。
+    legacy = Map.new(value, fn {cell, slots} -> {cell, RefinedSlots.to_map(slots)} end)
+    %{level: 0, region: chunk_region(chunk), segment: Map.fetch!(@segment_codes, :refined), chunk: chunk, payload: encode(legacy)}
+  end
+
+  def row({:chunk, :epochs, chunk}, value),
+    do: %{level: 0, region: chunk_region(chunk), segment: Map.fetch!(@segment_codes, :epochs), chunk: chunk,
+      payload: encode(VoxelRegion.EpochChunk.to_map(value))}
+
   def row({:chunk, segment, chunk} = _unit, value),
     do: %{level: 0, region: chunk_region(chunk), segment: Map.fetch!(@segment_codes, segment), chunk: chunk, payload: encode(value)}
 
@@ -568,7 +709,13 @@ defmodule VoxelRegion.World.Pages do
         segment -> {:page, segment, {level, region}}
       end
 
-    {unit, decode(payload)}
+    value = decode(payload)
+    value = case unit do
+      {:chunk, :refined, _} -> Map.new(value, fn {cell, slots} -> {cell, RefinedSlots.from_map(slots)} end)
+      {:chunk, :epochs, chunk} -> VoxelRegion.EpochChunk.from_map(chunk, value)
+      _ -> value
+    end
+    {unit, value}
   end
 
   @doc "切点冻结的持久字段引用（同进程零拷贝；不钉住订阅、保留历史与任务，评审 A4.1）。"
@@ -603,7 +750,7 @@ defmodule VoxelRegion.World.Pages do
   # ---- 装页接纳（M2b）
 
   @doc """
-  接纳装页结果：只收令牌代数仍匹配且仍未驻留的页（父稿 P4 装页令牌；本步不淘汰，代数恒为 0）。行按 PageStore 选行规则归属到页；
+  接纳装页结果：只收令牌代数仍匹配且仍未驻留的页（父稿 P4 装页令牌；P1退休同回合推进代数）。行按 PageStore 选行规则归属到页；
   已驻留的粗层片段跳过（内存为准）。返回 `{state, {后续页, 要定位的身份}, 装入的属性行}`：后续页 = 定位到的根 home 页、
   新驻留根的覆盖页中未驻留者；要定位的 = 新页上引用、内存里没有记录的实例 / 附件 id。
   """
@@ -806,7 +953,8 @@ defmodule VoxelRegion.World.Pages do
   defp put_unit(s, {:chunk, :macro_owners, _}, cells), do: cells |> Enum.reduce(s, fn {cell, o}, s -> Canonical.put_macro_owner(s, cell, o) end) |> snapshot(Map.keys(cells))
   defp put_unit(s, {:chunk, :liquid_active, _}, cells), do: %{s | liquid_active: MapSet.union(s.liquid_active, cells)}
   defp put_unit(s, {:chunk, :sources, _}, cells), do: %{s | thermal: %{s.thermal | sources: Map.merge(s.thermal.sources, cells)}}
-  defp put_unit(s, {:chunk, :epochs, chunk}, cells) when map_size(cells) > 0, do: %{s | epochs: Map.put(s.epochs, chunk, cells)}
+  defp put_unit(s, {:chunk, :epochs, chunk}, %VoxelRegion.EpochChunk{count: count} = cells) when count > 0,
+    do: %{s | epochs: Map.put(s.epochs, chunk, cells)}
   defp put_unit(s, {:chunk, :placed_by, chunk}, cells) when map_size(cells) > 0, do: %{s | placed_by: Map.put(s.placed_by, chunk, cells)}
   defp put_unit(s, {:chunk, segment, _}, _empty) when segment in [:epochs, :placed_by], do: s
   defp put_unit(s, {:chunk, :damage, _}, rows), do: %{s | damage: Map.merge(s.damage, rows)}

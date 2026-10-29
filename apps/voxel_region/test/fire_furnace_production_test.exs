@@ -16,21 +16,6 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
   alias VoxelRegion.World
   alias VoxelRegion.TestSupport.Actor
 
-  defmodule NullLog do
-    @moduledoc "只测试：不落盘的日志替身；本测试不重启 World。"
-    def open(dir, _), do: dir
-    def replay(_), do: []
-    def append(_, _), do: :ok
-    def checkpoint(_, _), do: :ok
-    def prefix(_), do: nil
-    def clear_unpublished(_, _), do: :ok
-    def write_pages(_, _, _), do: :ok
-    def publish(_, _, _, _), do: :ok
-    def load(_), do: %{prefix: nil}
-    def load_head(_, _), do: %{prefix: nil}
-    def collect(_, _, _), do: 0
-  end
-
   @digest "5be2e8c79d8789a29aa17e023294c8aafbff51ff4b8c07a945035dbfcf91fe57"
   @fixtures Path.expand("fixtures/combustion", __DIR__)
   @grass 1
@@ -62,9 +47,10 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
     File.cp!(c.path, catalog)
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
-    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: NullLog, root: root, observer: self(),
+    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: VoxelRegion.TestSupport.NullLog, root: root, observer: self(),
       name: nil, property_catalog_path: catalog, thermal_environment_path: env,
       production_materials: Enum.uniq([@coal | production])]}, id: name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     {:ok, _} = World.material_supply(w, 1001, "fixture", %{@coal => 10_000_000})
     w
   end
@@ -84,7 +70,8 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
     {:ok, _} = World.tool_intent(w, Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()}), r)
   end
 
-  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [], @box)
+  # simulation_snapshot 的 box 以 tile（L0 region）计；@box 是宏格范围，换算成覆盖它的 tile 范围。
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [], VoxelRegion.TestSupport.tiles(@box))
   defp cell(row), do: row.micro |> Tuple.to_list() |> Enum.map(&div(&1, 8)) |> List.to_tuple()
   defp macros(s), do: for({_, r} <- s.damage, r.granularity == 0, into: %{}, do: {cell(r), r})
 

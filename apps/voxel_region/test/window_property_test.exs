@@ -4,7 +4,7 @@ defmodule VoxelRegion.WindowPropertyTest do
   alias VoxelRegion.World.{Canonical, Observation}
 
   defp fixture do
-    state = %{refined: %{}, refined_owners: %{}, refined_regions: %{}, refined_encoded: %{},
+    state = %{refined: %{}, refined_owners: %{}, refined_regions: %{},
       component_cache: %{}, properties: %{digest: <<1::256>>, materials: %{11 => %{"max_hp_per_macro" => 512, "defense" => 2}}},
       seq: 9, damage: %{}, thermal: nil}
     state

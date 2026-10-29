@@ -889,8 +889,12 @@ defmodule M4aGateTransferTest do
     def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
     def init(owner), do: {:ok, {owner, 0}}
 
+    # 公共调用经 `World.PageLoad.call/3` 包成 `{:page_request, ref, message}`；ref 只在调用方超时时用于取消，本替身立即回复。
+    def handle_call({:page_request, _ref, message}, from, state), do: handle_call(message, from, state)
+
+    # 准备作用域：回 `{token, source, source_state, missing}`，调用方结束时 cast `{:release_preparation, token, caller}`。
     def handle_call({:prepare, keys}, _, {owner, _} = state),
-      do: {:reply, {BlockingEditStore, owner, keys}, state}
+      do: {:reply, {make_ref(), BlockingEditStore, owner, keys}, state}
 
     # 冷编辑准备的既有液体接纳边界；此传输夹具没有液体源。
     def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
@@ -899,6 +903,8 @@ defmodule M4aGateTransferTest do
       send(owner, {:world_edit, edits})
       {:reply, {:ok, seq + 1}, {owner, seq + 1}}
     end
+
+    def handle_cast({:release_preparation, _token, _caller}, state), do: {:noreply, state}
   end
 
   # 只替代 QUIC 的传输资源；实际帧解码、Dispatch、World.prepare 和结果 Sink 原样执行。

@@ -184,9 +184,9 @@ defmodule NpcServer.Skills.HouseDesign do
 
   # 目录行的尺寸与材料单只在 Perception.prefab_row/3 计算；这里只加上设计会话用的十六进制 id 与调用方标签。
   defp catalog_rows(catalog, properties, labels) do
-    for {id, compiled} <- Enum.sort(catalog) do
+    for {id, descriptor} <- Enum.sort(catalog) do
       hex = Base.encode16(id, case: :lower)
-      row = Perception.prefab_row(id, compiled, properties)
+      row = Perception.prefab_row(id, descriptor, properties)
 
       %{
         id: hex,
@@ -388,7 +388,7 @@ defmodule NpcServer.Skills.HouseDesign do
   defp execute("view", params, context, _, state) when map_size(params) == 0 do
     with {:ok, bytes} <- draft_bytes(state.draft),
          {:ok, id, geometry, diagnostics} <-
-           Prefab.preview(bytes, World.prefab_catalog(context.world)),
+           World.preview_prefab(context.world, bytes),
          {:ok, views} <- Check.view(geometry) do
       {:continue,
        %{
@@ -486,7 +486,7 @@ defmodule NpcServer.Skills.HouseDesign do
 
   defp compile(context, draft) do
     with {:ok, bytes} <- draft_bytes(draft),
-         do: Prefab.compile(bytes, World.prefab_catalog(context.world))
+         do: World.compile_prefab(context.world, bytes)
   end
 
   defp draft_bytes(draft) do
@@ -498,16 +498,18 @@ defmodule NpcServer.Skills.HouseDesign do
 
   defp slice_target("draft", context, draft) do
     with {:ok, bytes} <- draft_bytes(draft),
-         {:ok, id, geometry, _} <- Prefab.preview(bytes, World.prefab_catalog(context.world)),
+         {:ok, id, geometry, _} <- World.preview_prefab(context.world, bytes),
          do: {:ok, id, geometry, :draft_local}
   end
 
   defp slice_target(target, context, _) when is_binary(target) do
-    with {:ok, <<id::binary-size(32)>>} <- Base.decode16(target, case: :mixed),
-         {:ok, compiled} <- Map.fetch(World.prefab_catalog(context.world), id) do
-      {:ok, id, compiled, :catalog_local}
-    else
-      _ -> {:error, :definition_not_found}
+    case Base.decode16(target, case: :mixed) do
+      {:ok, <<id::binary-size(32)>>} ->
+        with {:ok, compiled} <- World.prefab_geometry(context.world, id),
+             do: {:ok, id, compiled, :catalog_local}
+
+      _ ->
+        {:error, :definition_not_found}
     end
   end
 

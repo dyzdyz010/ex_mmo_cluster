@@ -124,21 +124,25 @@ defmodule VoxelRegion.World.Production do
           true -> build_material(before, actor, request)
         end
 
-        {reply, state} =
-          case result do
-            {:ok, state} -> {{:ok, state.seq}, state}
-            {:error, _} = error -> {error, before}
-          end
+        if match?({:error, {:pages_missing, _}}, result) do
+          {:reply, result, before}
+        else
+          {reply, state} =
+            case result do
+              {:ok, state} -> {{:ok, state.seq}, state}
+              {:error, _} = error -> {error, before}
+            end
 
-        unless previous != nil, do: Process.monitor(actor.gate)
+          unless previous != nil, do: Process.monitor(actor.gate)
 
-        state = %{
-          state
-          | build_sessions:
-              Map.put(state.build_sessions, actor.gate, %{request: request, result: reply})
-        }
+          state = %{
+            state
+            | build_sessions:
+                Map.put(state.build_sessions, actor.gate, %{request: request, result: reply})
+          }
 
-        {:reply, reply, state}
+          {:reply, reply, state}
+        end
     end
   end
 
@@ -334,7 +338,9 @@ defmodule VoxelRegion.World.Production do
                false <- Map.has_key?(before.refined, request.coord),
                {:ok, {old, _}, state} <- cell_value(before, 0, request.coord),
                {:ok, state} <- plant_support(state, request),
-               {:ok, state, displaced, displacement} <- displace_for_build(state, request.coord, old) do
+               {:ok, state, displaced, displacement} <- displace_for_build(state, request.coord, old),
+               :ok <- VoxelRegion.World.CircuitAdmission.macro(before, state, request.coord, request.material,
+                 actor.cid, state.circuit_component_limit) do
             {state, settlement} =
               settle_material(
                 state,

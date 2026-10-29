@@ -230,11 +230,13 @@ defmodule VoxelRegion.PrefabTest do
     session = :trace.session_create(:prefab_range_checks,self(),[])
     try do
       :trace.function(session,mfa,true,[:call_time])
-      :trace.process(session,w,true,[:call])
+      # S0：World 只交出已编译几何，足迹与坐标校验在调用方进程展开；计数挂在调用方。
+      caller = self()
+      :trace.process(session,caller,true,[:call])
       assert {:ok,footprint} = World.prefab_cells(w,id,{-8,8,8},0)
       assert length(footprint) == 512
       {:call_time,counters} = :trace.info(session,mfa,:call_time)
-      assert Enum.sum(for {^w,n,_,_} <- counters,do: n) == 1
+      assert Enum.sum(for {^caller,n,_,_} <- counters,do: n) == 1
     after
       :trace.session_destroy(session)
     end
@@ -388,6 +390,8 @@ defmodule VoxelRegion.PrefabTest do
     assert :ok=World.compact(w)
     GenServer.stop(w)
     {:ok,w}=World.start_link(opts)
+    # S0：已发布页在最后需求释放后退休；以模拟窗口（页 {0,0,0}、{1,0,0}）持有驻留，再读 state。
+    assert :ok=World.set_simulation_windows(w,[{{0,0,0},{2,1,1}}])
     assert payload(w,{1,0,0}).attachments==surviving
     # 附件归属随页表恢复（有主附件按 owner 实例的 home 页）。
     assert map_size(:sys.get_state(w).attachment_owners)==3

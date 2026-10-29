@@ -17,7 +17,7 @@ defmodule VoxelRegion.QinglanMigrationTest do
   use ExUnit.Case, async: false
   @moduletag :energy_material
   alias VoxelRegion.{World, Damage, ParameterEvolution}
-  alias VoxelRegion.TestSupport.{Actor, Log, Source}
+  alias VoxelRegion.TestSupport.{Actor, Log, Source, WorldClock}
 
   @qinglan "4b2c6abeaec3818e2203a0b95e3ee03f1cf1aed6bf796c5f33ab41001eb641ed"
   @deployed "249f2442c082edaf95cb0610b60661d5539a72caa5ca0b4fd594632c84eb4839"
@@ -56,8 +56,13 @@ defmodule VoxelRegion.QinglanMigrationTest do
     end
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@catalogs, "environment-radiation.json"), env)
+    # 只测试：世界持续演化，墙钟定时提交会插进两次取样之间，使"本笔电动势 = 上笔末温度"的逐笔断言取错样本。
+    # 测试时钟不前进，热只经显式提交推进；不改物理、步长与调度规则。
+    clock = start_supervised!({WorldClock, 0}, id: make_ref())
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
-      property_catalog_path: Path.join(root, "properties.json"), thermal_environment_path: env, production_materials: @materials]}, id: name)
+      property_catalog_path: Path.join(root, "properties.json"), thermal_environment_path: env, production_materials: @materials,
+      clock: {WorldClock, clock}]}, id: name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{0, 0, 0}, {7, 5, 5}})
     {w, root}
   end
 

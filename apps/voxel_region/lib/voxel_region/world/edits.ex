@@ -1,6 +1,6 @@
 defmodule VoxelRegion.World.Edits do
   @moduledoc """
-  全局系统功能：逐格编辑批次：overlay 写入、逐级规约与父格去重、宏格载荷刷新。
+  全局系统功能：逐格编辑批次：overlay 写入、逐级规约与父格去重、宏格载荷失效。
 
   由 `VoxelRegion.World` 拆出的状态函数：输入与返回都是 World 状态，真值归属与调用时机仍由 World 决定。
   """
@@ -9,7 +9,7 @@ defmodule VoxelRegion.World.Edits do
   import Bitwise
   alias VoxelRegion.Damage
   alias VoxelRegion.Reducer
-  alias MmoContracts.Voxel.{Codec, Payload}
+  alias MmoContracts.Voxel.Codec
   alias VoxelRegion.World.Thermal
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Pages, Payloads, Observation, Log, Prefabs, Tools, Production, Phases, Liquids, AttachmentOps}
@@ -242,10 +242,9 @@ defmodule VoxelRegion.World.Edits do
               )
 
             state = %{state | seq: state.seq + 1}
-            # 要整区重编后像的区域由后像在提交前缓存上改格，这里只刷其余区域的地形缓存。
-            state = refresh_macro_payloads(before, state, geometry_changed, MapSet.new(afterimage_keys))
+            # put_overlay 已失效完整 XYZ core/ring 载荷；完整读取沿 payload_bytes 按需重建。
             cached = System.monotonic_time(:microsecond)
-            terrain_payloads = Map.merge(before.payloads, state.payloads)
+            terrain_payloads = Map.merge(Payloads.export_cached(before), Payloads.export_cached(state))
 
             {state, _structure_keys, structure_cells} =
               Payloads.refresh_structure(
@@ -389,28 +388,6 @@ defmodule VoxelRegion.World.Edits do
     for key <- Enum.uniq(Enum.map(cells, &{0, region_of(&1)})), needs_source?(state, key),
       do: :ok = state.source.ensure(state.source_state, 0, elem(key, 1))
     state
-  end
-
-  # 宏格编辑已排除refined cell，故L0细节后缀未变；仅更新已有热缓存，冷缺失仍由真值物化。
-  def refresh_macro_payloads(before, state, changed, skip) do
-    Enum.reduce(Enum.uniq(Payloads.region_keys(changed)) |> Enum.reject(&MapSet.member?(skip, &1)), state, fn {0, region} = key, s ->
-      case Map.fetch(before.payloads, key) do
-        {:ok, {prior, _}} ->
-          materials =
-            for {0, cell} <- changed,
-                local = Payload.local(region, cell),
-                Payload.in_span?(local),
-                into: %{},
-                do: {local, elem(Map.fetch!(s.overlay, {0, cell}), 0)}
-
-          bytes = Payload.replace_uniform_cells(prior, materials, s.seq, s.cv)
-          {:ok, header} = Codec.decode_payload_header(bytes)
-          Payloads.cache_put(s, key, bytes, header)
-
-        :error ->
-          s
-      end
-    end)
   end
 
   def reduce_batch(state, [], _level, all, visits), do: {:ok, all, state, visits}

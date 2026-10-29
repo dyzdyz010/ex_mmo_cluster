@@ -29,7 +29,9 @@ defmodule VoxelRegion.World.AttachmentOps do
           with {:ok, tool} <- Map.fetch(before.properties.tools, request.tool_id),
                :ok <- Claims.attachment_protection(before, actor, request),
                :ok <- attachment_reach(before, actor, request, tool),
-               {:ok, state, slots, settlement} <- attachment_change(before, actor, request) do
+               {:ok, state, slots, settlement} <- attachment_change(before, actor, request),
+               {:ok, state} <- VoxelRegion.World.CircuitAdmission.check(before, state, [], slots,
+                 state.circuit_component_limit) do
             target = %{material: request.material, micro: request.anchor, granularity: 3, incarnation: request.id}
             metadata = Observation.operation_metadata(before,actor,request,if(request.action == 0,do: 2,else: 1),target)
             commit_attachment(before, state, slots, Map.merge(settlement,metadata))
@@ -38,21 +40,25 @@ defmodule VoxelRegion.World.AttachmentOps do
             error -> error
           end
 
-        {reply, state} =
-          case result do
-            {:ok, state} -> {{:ok, state.seq}, state}
-            {:error, _} = error -> {error, before}
-          end
+        if match?({:error, {:pages_missing, _}}, result) do
+          {:reply, result, before}
+        else
+          {reply, state} =
+            case result do
+              {:ok, state} -> {{:ok, state.seq}, state}
+              {:error, _} = error -> {error, before}
+            end
 
-        unless previous != nil, do: Process.monitor(actor.gate)
+          unless previous != nil, do: Process.monitor(actor.gate)
 
-        state = %{
-          state
-          | build_sessions:
-              Map.put(state.build_sessions, actor.gate, %{request: request, result: reply})
-        }
+          state = %{
+            state
+            | build_sessions:
+                Map.put(state.build_sessions, actor.gate, %{request: request, result: reply})
+          }
 
-        {:reply, reply, state}
+          {:reply, reply, state}
+        end
     end
   end
 
@@ -129,7 +135,7 @@ defmodule VoxelRegion.World.AttachmentOps do
       Payloads.refresh_structure(state, Enum.map(dirty, &elem(&1, 1)))
 
     state = VoxelRegion.World.Canopy.refresh(before, state, Enum.map(dirty, &elem(&1, 1)), canopy_keys)
-    {entries, state} = Payloads.region_afterimages(state, keys, before.payloads, coarse)
+    {entries, state} = Payloads.region_afterimages(state, keys, Payloads.export_cached(before), coarse)
     entries = entries ++ Payloads.structure_entries(state, structure_cells)
     {%{coarse_txn | entries: entries ++ coarse_txn.entries}, Enum.uniq(keys ++ structure_keys), state}
   end
@@ -263,9 +269,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     touched = MapSet.new(cells)
     regions = for {x, y, z} <- cells, dx <- 0..1, dy <- 0..1, dz <- 0..1, do: region_of({x + dx, y + dy, z + dz})
 
-    Enum.filter(attachments_in_regions(state, regions), fn slot ->
-      Enum.any?(Attachments.macros([slot]), &MapSet.member?(touched, &1))
-    end)
+    attachments_in_regions(state, regions, &Attachments.touches_macros?(&1, touched))
   end
 
   # 邻格遮挡／支撑改变可能跨父格；仍存活的附件也必须重算两侧表皮。

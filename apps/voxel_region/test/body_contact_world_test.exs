@@ -4,7 +4,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
   外部节点（之间一条内部边），World 把每段演进的交换热（及其中存进组织块的部分）回传给报告者（这里测试进程扮演 Scene 的
   Player），两端各记一笔、同值。
 
-  目录：材料 `b1aca503…`（石 11 k 25、木 19 k 150 燃点 573.15 K、水 21、蓄能石 42），魔法 `1ff967d7…`（拟态 k_s 400）；
+  目录：材料 `b1aca503…`（石 11 k 25、木 19 k 150 燃点 573.15 K、水 21、蓄能石 42），魔法 `61bd33c6…`（拟态 k_s 400）；
   热环境 = 生产 ε 0.9、环境 293.15 K、容差 1 K。地面石 11 铺 y = 0；身体脚 y = 1.0、身高 1.8 m、半径 0.3 m、
   皮肤 307.15 K（34 °C）、皮肤热容 24430 J/K、体表 1.8 m²；组织块 307.15 K、热容 209.4 J/K、组织块-皮肤导热
   0.378207 W/K（0.03 m² × 调定点 K_cs 12.6069）。热初态（600 K 的石 / 木、10 MJ 蓄能石）作为作者初态经持久化
@@ -22,7 +22,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
   alias VoxelRegion.TestSupport.{Actor, Log, Source}
 
   @catalog "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
-  @magic "1ff967d746cd0f1064924292011ce5227dcb6db03d99d45a9befa98a89908075"
+  @magic "61bd33c6e9cb6e07ddb1ca5fd90eef70a83f874f9e924e955a7b3d17630796ec"
   @fixtures Path.expand("fixtures", __DIR__)
   @stone 11
   @wood 19
@@ -42,7 +42,7 @@ defmodule VoxelRegion.BodyContactWorldTest do
     on_exit(fn -> File.rm_rf!(root) end)
     File.cp!(Path.join([@fixtures, "combustion", @catalog <> ".json"]), Path.join(root, "properties.json"))
     File.cp!(Path.join([@fixtures, "combustion", "environment-radiation.json"]), Path.join(root, "environment.json"))
-    File.cp!(Path.join([@fixtures, "magic", @magic <> ".json"]), Path.join(root, "magic.json"))
+    File.cp!(Path.join([@fixtures, "body_contact", @magic <> ".json"]), Path.join(root, "magic.json"))
     w = start(root)
     ground = for x <- -2..8, z <- -2..8, do: {{x, 0, z}, @stone}
     # 水坑 (6, 1..2, 6) 的四面石墙；木 (0,0,6) 替换地面；蓄能石 (2,1,0)。
@@ -54,10 +54,12 @@ defmodule VoxelRegion.BodyContactWorldTest do
   end
 
   defp start(root) do
-    start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
+    w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: Path.join(root, "properties.json"),
       thermal_environment_path: Path.join(root, "environment.json"),
       magic_catalog_path: Path.join(root, "magic.json"), liquid_bounds: {{0, 0, 0}, {8, 8, 8}}]}, id: :world)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-2, 0, -2}, {9, 4, 9}})
+    w
   end
 
   defp restart(c), do: (:ok = stop_supervised(:world); start(c.root))

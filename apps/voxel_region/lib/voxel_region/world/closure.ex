@@ -5,11 +5,47 @@ defmodule VoxelRegion.World.Closure do
   `needs(state, message)` 只按当前状态与消息求“种子”——区域键（`{level, region}`，装页时各扩同级 26 邻页）与只带 id 的身份；
   整棵实例树由装页接纳（`Pages.adopt/4`）按驻留闭合补齐，不在这里展开。返回 `:none`（不读页）、`:all`（读整表的维护入口）
   或 `{keys, ids}`。键沿用各入口既有的预备键（`edit_keys`、`tool_regions`、`intent_keys`、prefab 足迹、窗口盒），只是改在 World 内求，
-  这样接纳时按当前状态重算即是父稿 P4 的“按依赖版本复核”（本步不淘汰：已驻留即 pin）。
+  这样接纳时按当前状态重算即是父稿 P4 的“按依赖版本复核”；P1仅按仍有owner的需求保留驻留。
   """
   alias VoxelRegion.{Attachments, CollisionSource}
   alias VoxelRegion.World.{Edits, Pages, Prefabs, Tools}
   import VoxelRegion.World.Canonical, only: [region_of: 1]
+
+  @doc "开发期登记的 World 消息形状，区分页需求与显式无页；原子长度为 0，任务引用为 `:reference`。"
+  def registered_entries do
+    page = [
+      {:prepare, 2}, {:adopt_liquid, 2}, {:prepare_intent, 2}, {:prepared_intent, 4},
+      {:publish_properties, 2}, {:publish_parameters, 3}, {:thermal_experiment, 2},
+      {:sight_snapshot, 3}, {:material_snapshot, 3}, {:material_snapshot, 4}, {:simulation_snapshot, 3},
+      {:liquid_experiment, 2}, {:spell_intent, 3}, {:body_tool, 4}, {:gm, 4}, {:gm, 5},
+      {:parcel_export, 2}, {:parcel_install, 5}, {:beacon_install, 3}, {:liquid_fill, 7},
+      {:production_intent, 3}, {:attachment_intent, 3}, {:tool_intent, 3}, {:instance_cells, 2}, {:gm_prepare, 3},
+      {:replacement_cells, 3}, {:place_prefab, 5}, {:prefab_intent, 5}, {:remove_prefab, 2},
+      {:replace_prefab, 3}, {:serve_item, 3}, {:apply_edit, 3}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
+      {:replica_snapshot, 3}, {:apply_edits, 2}, {:reference, 2}, {:body_contact, 4},
+      {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4},
+      {:prepare_beacon, 4}, {:commit_beacon, 4}, {:liquid_commit, 0}, {:thermal_commit, 0}
+    ]
+
+    none = [
+      {:page_need, 4}, {:page_need, 5}, {:page_stage, 5}, {:page_commit, 2},
+      {:page_yield, 3}, {:page_adopt, 4}, {:page_resident_all, 0}, {:content_version, 0},
+      {:seq, 0}, {:simulation_windows, 0}, {:simulation_windows, 2}, {:interactions_since, 2}, {:admission_status, 0}, {:retry_simulation_io, 0},
+      {:liquid_activity, 0}, {:source, 0}, {:author_regions, 2}, {:magic_range, 0},
+      {:magic_digest, 0}, {:caster_state, 2}, {:send_caster_state, 4}, {:tool_range, 2},
+      {:tool_definition, 2}, {:material_balances, 2}, {:material_supply, 4}, {:beacon_directory, 2},
+      {:publish_prefabs, 2}, {:prefab_catalog, 0}, {:published_prefab_metadata, 0}, {:material_catalog, 0},
+      {:parcel_prepare, 2}, {:prefab_request, 2}, {:prefab_inputs, 3}, {:prefab_loaded, 4}, {:prefab_ready, 3}, {:prefab_known, 3},
+      {:publish_prefab, 4}, {:stats, 0}, {:residency_status, 0}, {:maintain_residency, 0}, {:subscribe, 5},
+      {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3},
+      {:compact, 0}, {:timeout, 3}, {:projectile_tick, 0}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
+      {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5},
+      {:cancel_cast, 3}, {:thermal_step, 2}, {:DOWN, 5},
+      {:simulation_windows, 4}
+    ]
+
+    %{page: page, none: none}
+  end
 
   @doc "消息的读取闭包种子：`:none`、`:all` 或 `{扩 26 邻页的区域键, 只装本页的区域键, 身份}`。"
   def needs(state, message) do
@@ -30,11 +66,18 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(_state, {:prepared_intent, keys, _message, _decoded}), do: {keys, []}
   defp seeds(_state, {:serve_item, _version, %{level: level, region: region}}), do: {[{level, region}], []}
   defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks}), do: box(box)
+  defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks, _token}), do: box(box)
   defp seeds(_state, {:replica_snapshot, box, _pid}), do: box(box)
   defp seeds(_state, {:apply_edit, coord, _material}), do: {Edits.edit_keys([coord]), []}
   defp seeds(_state, {:apply_edits, edits}), do: {Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), []}
   defp seeds(_state, {:liquid_experiment, edits}), do: {Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), []}
   defp seeds(_state, {:liquid_fill, _cid, _key, _material, seed, _level, _max}), do: {Edits.edit_keys([seed]), []}
+  defp seeds(state, :liquid_commit) do
+    {:ok, needs} = VoxelRegion.World.Liquids.residency_dependencies(state)
+    needs
+  end
+  # 显式热步与液体步同为已到达的物理输入：步前读取集即热 owner 的唯一种子投影（含祖页），缺页挂闸后重放。
+  defp seeds(state, :thermal_commit), do: {VoxelRegion.World.Thermal.seed_keys(state), []}
   # 只读快照不物化区域载荷（不读 ring）：只要盒 / 格 / 射线范围内的页本身。
   defp seeds(_state, {:material_snapshot, _characters, cells}), do: exact(cells(cells))
   defp seeds(_state, {:material_snapshot, _characters, cells, _detail}), do: exact(cells(cells))
@@ -59,15 +102,27 @@ defmodule VoxelRegion.World.Closure do
 
   defp seeds(_state, {:body_tool, actor, _request, distance}), do: {Tools.tool_regions(actor, distance), []}
   defp seeds(state, {:spell_intent, actor, %{action: 1}}), do: magic(state, actor)
-  defp seeds(_state, {:place_prefab, _id, _anchor, _orientation, cells}), do: {footprint(cells), []}
+  defp seeds(state, {:place_prefab, _id, anchor, orientation, geometry}), do: definition(state, geometry, anchor, orientation)
 
-  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_place_v1, r}), do: definition(state, r.definition_id, r.anchor, r.orientation)
-  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_remove_v1, r}), do: tree(state, r.instance_id)
-  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_replace_v1, r}), do: replacement(state, r.instance_id, r.definition_id)
+  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_place_v1, r, geometry}), do: definition(state, geometry, r.anchor, r.orientation)
+  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_remove_v1, r, _geometry}), do: tree(state, r.instance_id)
+  defp seeds(state, {:prefab_intent, _actor, :voxel_prefab_replace_v1, r, geometry}), do: replacement(state, r.instance_id, geometry)
   defp seeds(state, {:remove_prefab, id}), do: tree(state, id)
   defp seeds(state, {:replace_prefab, id, definition}), do: replacement(state, id, definition)
   defp seeds(state, {:instance_cells, id}), do: tree(state, id)
+  defp seeds(state, {:gm_prepare, key, args}) do
+    with :ready <- VoxelRegion.World.Gm.preflight(state, key),
+         {:ok, id} <- VoxelRegion.World.Gm.move_reference(args), do: tree(state, id), else: (_ -> :none)
+  end
   defp seeds(state, {:replacement_cells, id, definition}), do: replacement(state, id, definition)
+
+  defp seeds(state, {:gm, _key, :move_instance, args, geometry}) do
+    {keys, ids} = tree(state, args.instance)
+    case definition(state, geometry, args.anchor, args.orientation) do
+      {more, _} -> {keys ++ more, ids}
+      :none -> {keys, ids}
+    end
+  end
 
   defp seeds(state, {:gm, _key, op, args}) do
     case op do
@@ -80,24 +135,13 @@ defmodule VoxelRegion.World.Closure do
           {:error, _} -> :none
         end
 
-      :move_instance ->
-        {keys, ids} = tree(state, args.instance)
-        case Map.fetch(state.instances, args.instance) do
-          {:ok, instance} ->
-            {more, _} = definition(state, instance.definition_id, args.anchor, args.orientation)
-            {keys ++ more, ids}
-
-          :error ->
-            {keys, ids}
-        end
-
       _ -> :none
     end
   end
 
   defp seeds(_state, {:parcel_export, box}), do: box_macros(box)
 
-  defp seeds(_state, {:parcel_install, _key, %{box: {lo, hi}}, delta}),
+  defp seeds(_state, {:parcel_install, _key, %{box: {lo, hi}}, delta, _definitions}),
     do: box_macros({shift(lo, delta), shift(hi, delta)})
 
   defp seeds(state, {:beacon_install, _key, %{core: core}}), do: micro(state, [core])
@@ -109,7 +153,11 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(state, {:commit_beacon, _key, _actor, %{to: to}}), do: beacons(state, [to])
   defp seeds(_state, {:body_contact, _cid, _pid, %{feet: feet}}), do: {[{0, region_of(meters(feet))}], []}
   defp seeds(_state, {:body_death, _cid, feet}), do: {Edits.edit_keys([meters(feet)]), []}
-  defp seeds(state, {:authorize_cast, _key, actor, _request}), do: magic(state, actor)
+  # 已取消 / 已结算的旧授权在入口是空操作，不读页；否则前摇取消后施法区域已退休，旧授权会白白起一个冷装页任务。
+  # 同序排队先于闭包（`PageLoad.held?/2`），挂起中的准备之后到达的授权仍排在其后，不会因这里返回 :none 越过它。
+  defp seeds(state, {:authorize_cast, key, actor, _request}) do
+    if VoxelRegion.World.Casting.authorized_pending(state, key, actor), do: magic(state, actor), else: :none
+  end
 
   # 投射物采样结果：飞行段两端所在区域（`Projectiles.apply_result/4` 沿段求交）。
   defp seeds(state, {ref, results}) when is_reference(ref) do
@@ -161,8 +209,8 @@ defmodule VoxelRegion.World.Closure do
 
   defp shift({x, y, z}, {dx, dy, dz}), do: {x + dx, y + dy, z + dz}
 
-  defp definition(state, id, anchor, orientation) do
-    case Prefabs.definition_cells(state, id, anchor, orientation) do
+  defp definition(_state, geometry, anchor, orientation) do
+    case Prefabs.definition_cells(geometry, anchor, orientation) do
       {:ok, _cells, macros} -> {Edits.edit_keys(macros), []}
       _ -> :none
     end

@@ -98,7 +98,7 @@ defmodule VoxelRegion.PhaseWorldTest do
         caller = task.pid
         :erlang.trace(caller, true, [:send])
         send(caller, :start)
-        assert_receive {:trace, ^caller, :send, {:"$gen_call", _, :compact}, ^world}, 1_000
+        assert_receive {:trace, ^caller, :send, {:"$gen_call", _, {:page_request, _, :compact}}, ^world}, 1_000
         :erlang.trace(caller, false, [:send])
         task
       else
@@ -201,6 +201,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       thermal_environment_path: environment,prefab_catalog_path: prefab,name: nil,gm_tools: context[:gm] == true,
       production_materials: [4,13,15,16,20,21,22],liquid_bounds: {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, opts[:liquid_bounds])
     actor=%{cid: 1001,gate: self(),identity: :b7phase,refresh: &Actor.tool_context/2,eye: {63.5,1.0625,0.5},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     # 只测试：一格作者水样，经正常舀取入账；余量由另一个角色收走。
@@ -424,6 +425,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert observe(w).liquid_units == after_build.liquid_units
     assert observe(w).material_balances == after_build.material_balances
     assert_in_delta row(w, {63,0,2}).phase_energy_j, moved.phase_energy_j, 0.001
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     send(w, :liquid_commit)
     World.seq(w)
     flowing = observe(w).liquid_units

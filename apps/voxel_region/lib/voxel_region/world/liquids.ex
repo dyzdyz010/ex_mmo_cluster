@@ -4,6 +4,7 @@ defmodule VoxelRegion.World.Liquids do
 
   由 `VoxelRegion.World` 拆出的状态函数：输入与返回都是 World 状态，真值归属与调用时机仍由 World 决定。
   """
+  alias VoxelRegion.World.Clock
   require Logger
   alias VoxelRegion.Damage
   alias VoxelRegion.Prefab
@@ -14,13 +15,69 @@ defmodule VoxelRegion.World.Liquids do
 
   # Global system: material21 and its finite units share the existing World commit.
   def liquid_enabled?(state), do: state.liquid_bounds != nil and state.properties != nil and Map.get(state.properties, :liquid) != nil
+
+  @doc "当前活动下一自然步会读取的完整 XYZ 两层邻域；due／装页失败不释放原活动需求。"
+  def residency_dependencies(state), do: {:ok, {seed_keys(state), [], []}}
+
+  @doc "步前装页与驻留共用实际读取种子；域外唤醒格只参与原活动调度，不额外要求其邻页。"
+  def seed_keys(state) do
+    state.liquid_active |> step_cells(state.liquid_bounds)
+      |> Enum.map(&{0, region_of(&1)}) |> Enum.uniq() |> VoxelRegion.World.Pages.with_ancestors()
+  end
+
+  # 活动步与驻留投影共用实际读取单元，不各自维护一套邻域。
+  defp step_cells(active, bounds) do
+    for {x,y,z} <- active, dy <- [0,-1],
+      {dx,dz} <- [{0,0},{-1,0},{1,0},{0,-1},{0,1}],
+      cell={x+dx,y+dy,z+dz}, liquid_inside?(cell,bounds), uniq: true, do: cell
+  end
+  @doc "按世界活动前沿或上一拍下落帧排程；自然达稳态且清帧后休眠，与玩家窗口无关。"
+  def schedule_liquid(%{page_load: %{sim: %{status: :failed}}} = state) do
+    if state.liquid_timer, do: Clock.cancel_timer(state, state.liquid_timer)
+    %{state | liquid_timer: nil}
+  end
   def schedule_liquid(state) do
-    if liquid_enabled?(state) and state.liquid_timer == nil and MapSet.size(state.liquid_active) > 0 do
-      %{state | liquid_timer: Process.send_after(self(), :liquid_commit,
-        max(1, round(state.properties.liquid["step_seconds"] * 1000)))}
-    else
-      state
+    pending = liquid_enabled?(state) and
+      (MapSet.size(state.liquid_active) > 0 or Enum.any?(state.liquid_falls, fn {_, falls} -> falls != [] end))
+    cond do
+      pending and state.liquid_timer == nil ->
+        now = Clock.monotonic(state)
+        due = state.liquid_due || now + interval_ms(state)
+        %{state | liquid_due: due, liquid_timer: Clock.send_after(state, self(), {:liquid_tick, due}, max(due - now, 0))}
+      not pending ->
+        if state.liquid_timer, do: Clock.cancel_timer(state, state.liquid_timer)
+        %{state | liquid_timer: nil, liquid_due: nil}
+      true -> state
     end
+  end
+
+  @doc "液体目录所定义的自然步时长；投递与完成进度使用同一值。"
+  def interval_ms(state), do: max(1, round(state.properties.liquid["step_seconds"] * 1000))
+
+  @doc "自然步提交完成后消费该到期事件；显式强制步不消费未来定时事件。"
+  def completed(state, scheduled_due) do
+    if state.liquid_timer, do: Clock.cancel_timer(state, state.liquid_timer)
+    due = if scheduled_due, do: scheduled_due + interval_ms(state), else: state.liquid_due
+    %{state | liquid_due: due, liquid_timer: nil} |> schedule_liquid()
+  end
+
+  @doc "只读液体调度前沿与欠账，不代表历史世界状态；单调毫秒仅同VM可比，自然稳态无待推进时间。"
+  def progress(state) do
+    due = state.liquid_due
+    now = Clock.monotonic(state)
+    interval = if due, do: interval_ms(state), else: 0
+    through = if due, do: due - interval
+    reason = cond do
+      VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
+      due == nil -> :rest
+      state.page_store.level in [:mid, :hard] -> :writeback
+      state.page_load.sim != nil -> :page_io
+      true -> :timer
+    end
+    %{next_due_ms: due, simulated_through_ms: through, target_through_ms: if(due, do: now),
+      lag_ms: if(through, do: max(now - through, 0), else: 0),
+      pending_steps: if(due && now >= due, do: div(now - due, interval) + 1, else: 0),
+      wait_reason: reason, active_cells: MapSet.size(state.liquid_active)}
   end
 
   def wake_liquid(state, cells) do
@@ -48,8 +105,15 @@ defmodule VoxelRegion.World.Liquids do
   end
 
   def adopt_liquid_sources(state, region) do
+    case Payloads.checked_liquid(state, region) do
+      {:checked, state} -> state
+      :unchecked -> check_liquid_sources(state, region)
+    end
+  end
+
+  defp check_liquid_sources(state, region) do
     # 全局系统：只接纳本次加载区域（含 ring）的有限液体；地图边界不是启动扫描任务。
-    # 从当前 canonical 载荷筛选，再按 owner core 读取，已耗尽源的空气覆盖不会补水。
+    # 地形只给保守候选，最终仍按 canonical owner core 读取；不为筛材质编完整 refined 载荷。
     {{lx,ly,lz},{hx,hy,hz}}=state.liquid_bounds
     {ox,oy,oz}=Payload.origin(region)
     extent=Payload.extent()
@@ -58,16 +122,29 @@ defmodule VoxelRegion.World.Liquids do
     {ax,ay,az}=lo
     {bx,by,bz}=hi
     if ax<bx and ay<by and az<bz do
-      with {:ok,bytes,_,loaded} <- Payloads.payload_bytes(state,0,region),
-           # 同一份载荷字节含本区跨度内的格与数量记录：核对过没有待接纳的液体格，字节不变就不必再解压核对。
-           {:unchecked,_} <- if(Map.get(loaded.liquid_adopted,region) == bytes, do: {:checked,loaded}, else: {:unchecked,loaded}),
-           {:ok,materials} <- Payload.decode_cells(bytes) do
+      with {:ok,materials,overrides,loaded} <- Payloads.terrain_materials(state,0,region),
+           # 完整内容身份仅保留32字节；不能持有展开的ring map或源材料段的大父二进制。
+           # 材料平面长度由Payload合同固定；分段喂同一摘要，不为指纹再复制整段材料到ETF。
+           terrain = :crypto.hash_init(:sha256)
+             |> :crypto.hash_update(materials)
+             |> :crypto.hash_update(:erlang.term_to_binary(overrides, [:deterministic]))
+             |> :crypto.hash_final(),
+           {:unchecked,_} <- if(Map.get(loaded.liquid_adopted,region) == terrain, do: {:checked,loaded}, else: {:unchecked,loaded}) do
         state = loaded
+        pending = fn cell -> in_box?(cell,lo,hi) and not Map.has_key?(state.liquid_units,cell) end
         # 液体材料只有 21／22（Phase.liquid?/1）；材料 id 是 u16 小端，只取偶数偏移处的匹配，按 x、y、z 字典序。
-        cells=for({at,_} <- :binary.matches(materials,[<<21,0>>,<<22,0>>]), rem(at,2) == 0,
+        baseline=for({at,_} <- :binary.matches(materials,[<<21,0>>,<<22,0>>]), rem(at,2) == 0,
           index = div(at,2), cell = {ox+rem(index,extent),oy+rem(div(index,extent),extent),oz+div(index,extent*extent)},
-          in_box?(cell,lo,hi), not Map.has_key?(state.liquid_units,cell), do: cell) |> Enum.sort()
-        state = if cells == [], do: %{state | liquid_adopted: Map.put(state.liquid_adopted,region,bytes)}, else: state
+          pending.(cell), do: cell)
+        changed=for {{x,y,z},{material,_}} <- overrides, Phase.liquid?(material),
+          cell={ox+x,oy+y,oz+z}, pending.(cell), do: cell
+        cells=(baseline ++ changed) |> Enum.uniq() |> Enum.sort()
+        state = if cells == [] do
+          %{state | liquid_adopted: Map.put(state.liquid_adopted,region,terrain)}
+          |> Payloads.mark_liquid_checked(region)
+        else
+          state
+        end
         Enum.reduce([21,22],state,fn material,s ->
           {_open,water,s}=liquid_cells(s,cells,material)
           if map_size(water)==0 do
@@ -78,7 +155,7 @@ defmodule VoxelRegion.World.Liquids do
           end
         end)
       else
-        {:checked,loaded} -> loaded
+        {:checked,loaded} -> Payloads.mark_liquid_checked(loaded, region)
         # 保留实际请求入口的 missing/canonical_incomplete 错误，不把缺失源当空气。
         {:error,_,state} -> state
         {:error,_} -> state
@@ -364,12 +441,10 @@ defmodule VoxelRegion.World.Liquids do
     state
   end
 
+  @doc "从实际活动前沿的物理邻域构造输入；空活动集仍清除上一拍下落帧。"
   def advance_liquid(state, active) do
-    # Two stages need the downward cell and the horizontal neighbors of both levels.
-    cells=for {x,y,z} <- active, dy <- [0,-1],
-      {dx,dz} <- [{0,0},{-1,0},{1,0},{0,-1},{0,1}],
-      cell={x+dx,y+dy,z+dz}, liquid_inside?(cell,state.liquid_bounds), do: cell
-    cells=Enum.uniq(cells)
+    # 两阶段读取下层以及两层的水平邻格，与驻留依赖共用同一足迹。
+    cells=step_cells(active,state.liquid_bounds)
     falling=for {m,[_|_]} <- state.liquid_falls, into: MapSet.new(), do: m
     {kinds,state}=Enum.reduce(cells,{falling,state},fn cell,{kinds,s} ->
       if Edits.needs_source?(s,{0,region_of(cell)}), do: :ok=s.source.ensure(s.source_state,0,region_of(cell))

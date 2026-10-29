@@ -88,6 +88,7 @@ defmodule VoxelRegion.ProtectionIdentityTest do
 
   defp fire(c, name, far?) do
     w = start(c, name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{0, 0, 0}, {6, 2, 5}})
     far(w, far?)
     {:ok, _} = World.apply_edits(w, (for x <- 0..5, z <- 0..4, do: {{x, 0, z}, 1}) ++ [{{2, 1, 2}, 19}, {{3, 1, 2}, 19}])
     a = actor({2.5, 3.5, 2.5})
@@ -101,7 +102,9 @@ defmodule VoxelRegion.ProtectionIdentityTest do
   end
 
   defp liquid(c, name, far?) do
-    w = start(c, name, liquid_bounds: {{14, 0, -2}, {28, 4, 3}})
+    bounds = {{14, 0, -2}, {28, 4, 3}}
+    w = start(c, name, liquid_bounds: bounds)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, bounds)
     far(w, far?)
     channel = for x <- 16..26, do: [{{x, 0, 0}, 11}, {{x, 1, -1}, 11}, {{x, 1, 1}, 11}]
     {:ok, _} = World.apply_edits(w, List.flatten(channel) ++ [{{15, 1, 0}, 11}, {{27, 1, 0}, 11}])
@@ -118,6 +121,7 @@ defmodule VoxelRegion.ProtectionIdentityTest do
 
   defp ore(c, name, far?) do
     w = start(c, name)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{20, 5, 0}, {22, 6, 1}})
     far(w, far?)
     {:ok, _} = World.apply_edits(w, [{{20, 5, 0}, 16}, {{21, 5, 0}, 15}])
     path = Path.join(c.root, "heat_#{name}.json")

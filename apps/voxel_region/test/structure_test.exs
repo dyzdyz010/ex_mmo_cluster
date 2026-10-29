@@ -10,7 +10,7 @@ defmodule VoxelRegion.StructureTest do
         wx = x+8*(oct &&& 1), wy = y+8*((oct >>> 1) &&& 1), wz = z+8*((oct >>> 2) &&& 1),
         wz == 0 and (wx < 4 or wx >= 12 or wy >= 12), into: %{}, do: {x+8*(y+8*z),{11,{1,0}}}
     end
-    l1 = VoxelRegion.Structure.from_canonical(children)
+    l1 = VoxelRegion.Structure.from_canonical(Enum.map(children, &VoxelRegion.RefinedSlots.from_map/1))
     l2 = VoxelRegion.Structure.reduce([l1,0,0,0,0,0,0,0])
     l3 = VoxelRegion.Structure.reduce([l2,0,0,0,0,0,0,0])
     for {grid,opening} <- [{l1,{8,4,0}},{l2,{4,2,0}},{l3,{2,1,0}}] do

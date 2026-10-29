@@ -14,6 +14,21 @@ defmodule VoxelRegion.World.Casting do
 
   @hand_reach 0.5
 
+  @doc "前摇到使用／取消之间仍会重新裁决的射程、脚下与驱散释放依赖；不以定时租约或观察窗口替代。"
+  def residency_dependencies(%{pending_casts: casts}) when map_size(casts) == 0,
+    do: {:ok, {[], [], []}}
+  def residency_dependencies(%{magic: nil}), do: {:error, :pending_cast_without_magic_catalog}
+  def residency_dependencies(state) do
+    {keys, exact, ids} = Enum.reduce(state.pending_casts, {[], [], []}, fn {_cid, pending}, {keys, exact, ids} ->
+      {more, precise, identities} = VoxelRegion.World.Closure.needs(state, {:spell_intent, pending.actor, pending.request})
+      {fx, fy, fz} = pending.actor.feet
+      foot = {floor(fx), floor(fy + 0.5) - 1, floor(fz)}
+      foot_keys = VoxelRegion.World.Pages.with_ancestors([{0, region_of(foot)}])
+      {keys ++ more ++ foot_keys, exact ++ precise, ids ++ identities}
+    end)
+    {:ok, {Enum.uniq(keys), Enum.uniq(exact), Enum.uniq(ids)}}
+  end
+
   # ---- 魔法增量 1：施放（Voxim Docs/Magic.md §4、§10）
   # 施法者能量与蓄能石 stored_j 在同一笔事务里原子改变；施法的热只经 thermal.sources 有限热源进世界，
   # 由热内核按守恒结算。校验失败（间隔、射线、施法域、目标、脚下、权限、目标已有热源）不扣能量、不改世界。
@@ -119,6 +134,14 @@ defmodule VoxelRegion.World.Casting do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+    end
+  end
+
+  @doc "授权所指的仍在前摇的待施放：同一动作、同一 Player；已取消 / 已结算的旧授权返回 nil（结算入口与读取闭包共用此判定）。"
+  def authorized_pending(state, key, actor) do
+    case state.pending_casts[actor.cid] do
+      %{actor: %{action_key: ^key, player: player}} = pending when player == actor.player -> pending
+      _ -> nil
     end
   end
 

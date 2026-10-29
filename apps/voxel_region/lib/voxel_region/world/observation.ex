@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Observation do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：订阅者看到的世界：窗口快照的属性部分、属性事务投影、canonical 增量与下发。
 
@@ -218,7 +219,7 @@ defmodule VoxelRegion.World.Observation do
       property_states:
         macros ++ components ++ attachment_observations(state, box),
       property_context: property_context(state),
-      epochs: chunk_flat(state.epochs, box),
+      epochs: VoxelRegion.EpochChunk.flat(state.epochs, box),
       protection: state.protection.regions,
       semblances: Thermal.semblances(state),
       casts: Map.new(state.pending_casts, fn {cid, pending} -> {cid, pending.record} end)
@@ -249,8 +250,8 @@ defmodule VoxelRegion.World.Observation do
           MapSet.new(
             for cell <- changed_refined_cells(before, state),
                 {_, {_, owner}} <-
-                  Map.to_list(Map.get(before.refined, cell, %{})) ++
-                    Map.to_list(Map.get(state.refined, cell, %{})),
+                  Enum.to_list(Map.get(before.refined, cell, RefinedSlots.empty())) ++
+                    Enum.to_list(Map.get(state.refined, cell, RefinedSlots.empty())),
                 do: owner
           )
 
@@ -292,7 +293,7 @@ defmodule VoxelRegion.World.Observation do
     # 所以只看 txn 里的格，不再整表比较全世界的 macro_owners。
     changed_macros = Enum.uniq(Map.keys(Map.get(txn, :macro_owners, %{})) ++ Map.keys(Map.get(txn, :epochs, %{})))
       |> Enum.filter(fn cell -> (Map.has_key?(before.macro_owners, cell) or Map.has_key?(state.macro_owners, cell)) and
-        (Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or chunk_get(before.epochs,cell) != chunk_get(state.epochs,cell)) end)
+        (Map.get(before.macro_owners,cell) != Map.get(state.macro_owners,cell) or VoxelRegion.EpochChunk.get(before.epochs,cell) != VoxelRegion.EpochChunk.get(state.epochs,cell)) end)
       |> MapSet.new()
     rows = if MapSet.size(changed_macros) == 0 do
       rows
@@ -364,7 +365,7 @@ defmodule VoxelRegion.World.Observation do
     end
   end
 
-  # Capture both versions while the pre-commit state still exists. Never sample after fanout.
+  # 提交前后状态同在时按完整变化宏格比较占用；广播后不再重新取样。
   def canonical_changes(%{canonical_subs: subs, replica_subs: replicas}, _after, _changed)
        when map_size(subs) == 0 and map_size(replicas) == 0, do: {:ok, []}
 
@@ -372,19 +373,14 @@ defmodule VoxelRegion.World.Observation do
     started = System.monotonic_time(:microsecond)
     boxes = (Map.values(before.canonical_subs) ++ Map.values(before.replica_subs)) |> Enum.uniq()
 
-    coords =
+    changes =
       changed
-      |> Enum.map(fn {0, cell} -> CollisionSource.chunk_coord(cell) end)
+      |> Enum.map(fn {0, cell} -> cell end)
       |> Enum.uniq()
-      |> Enum.filter(fn coord -> Enum.any?(boxes, &CollisionSource.in_box?(coord, &1)) end)
-      |> Enum.sort()
+      |> Enum.group_by(&CollisionSource.chunk_coord/1)
+      |> Enum.filter(fn {coord, _cells} -> Enum.any?(boxes, &CollisionSource.in_box?(coord, &1)) end)
 
-    with {:ok, old} <- Payloads.canonical_chunks(before, coords),
-         {:ok, new} <- Payloads.canonical_chunks(after_state, coords) do
-      chunks =
-        Enum.zip(old, new)
-        |> Enum.flat_map(fn {a, b} -> if a.cells == b.cells, do: [], else: [b] end)
-
+    with {:ok, chunks} <- Payloads.canonical_changed_chunks(before, after_state, changes) do
       Logger.info(
         "voxel_region canonical_delta seq=#{after_state.seq} chunks=#{length(chunks)} occupancy_bytes=#{Enum.sum(Enum.map(chunks, &byte_size(&1.cells)))} capture_us=#{System.monotonic_time(:microsecond) - started}"
       )

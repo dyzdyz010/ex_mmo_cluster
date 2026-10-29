@@ -78,7 +78,9 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   end
 
   defp zone({x0, z0}, {x1, z1}, k), do: %{min: [x0, z0], max: [x1, z1], ambient_kelvin: k}
-  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [], @box)
+  # @box 以宏格计（模拟窗口）；观察快照的 box 以 tile 计，取覆盖 @box 的 tile 范围。
+  defp tiles, do: VoxelRegion.TestSupport.tiles(@box)
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [], tiles())
   defp rows(s), do: Map.values(s.damage)
   defp at(s, cell), do: Enum.find(rows(s), &(&1.granularity == 0 and Damage.macro(&1) == cell))
 
@@ -117,6 +119,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   defp slab_pulse(c, name, extra) do
     natural = (for x <- 5..11, z <- 5..11, do: {{x, 4, z}, @stone}) ++ [{{7, 5, 8}, @wood}, {{9, 5, 8}, @ice}]
     w = start(c, name, natural)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     env = Map.merge(%{source_macro: [8, 4, 8], power_w: 20_000.0, energy_j: 200_000.0}, extra)
     :ok = World.thermal_experiment(w, pulse(c, name, env))
     {settled, _} = run_until(w, 20_000.0)
@@ -141,6 +144,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   # t* = 10 + 356·ln(ΔT(10)/0.01) = 1374.27 s。若空气换热误用全局 293.15 K，石格会向 +45 K 漂移，模型整体不成立。
   test "寒区孤立石格：从区温 248.15 K 起热，按手算指数律回落到区温并在 t* 落定；热账相对区温闭合", c do
     w = start(c, :lumped, [{{8, 8, 8}, @stone}])
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     env = %{tolerance_kelvin: 0.01, emissivity: 0.0, source_macro: [8, 8, 8], power_w: 1000.0, energy_j: 10_000.0,
       climate_zones: [zone({0, 0}, {63, 63}, @cold)]}
     :ok = World.thermal_experiment(w, pulse(c, :lumped, env))
@@ -171,6 +175,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
     natural = (for x <- 5..11, z <- 5..11, do: {{x, 4, z}, @stone}) ++
       [{{8, 5, 8}, @ice}, {{9, 5, 8}, @ice}, {{11, 5, 11}, @ice}]
     w = start(c, :ice, natural)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     env = %{source_macro: [8, 4, 8], power_w: 20_000.0, energy_j: 200_000.0,
       climate_zones: [zone({0, 0}, {63, 63}, @cold)]}
     :ok = World.thermal_experiment(w, pulse(c, :ice, env))
@@ -206,6 +211,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   test "寒区边界不热失控：暖侧脉冲不跨界导热，寒侧格始终无属性行；暖侧邻格升温；脉冲落定后活动集合清空", c do
     natural = for x <- 4..12, do: {{x, 4, 8}, @stone}
     w = start(c, :boundary, natural)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     env = %{source_macro: [8, 4, 8], power_w: 20_000.0, energy_j: 200_000.0,
       climate_zones: [zone({0, 0}, {7, 63}, @cold)]}
     :ok = World.thermal_experiment(w, pulse(c, :boundary, env))
@@ -220,6 +226,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
   test "寒区边界不跨辐射：暖侧热石隔一格空气面对寒区石头，寒区石头无属性行；对照：暖侧同距石头被辐射加热", c do
     natural = [{{6, 8, 8}, @stone}, {{8, 8, 8}, @stone}, {{10, 8, 8}, @stone}]
     w = start(c, :radiation, natural)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     env = %{source_macro: [8, 8, 8], power_w: 50_000.0, energy_j: 1_000_000.0,
       climate_zones: [zone({0, 0}, {7, 63}, @cold)]}
     :ok = World.thermal_experiment(w, pulse(c, :radiation, env))
@@ -238,10 +245,11 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
       tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, circuit_min_power_w: 1.0, climate_zones: zones}))
     natural = for x <- 4..12, z <- 6..10, do: {{x, 4, z}, @stone}
     w = start(c, :asset, natural, thermal_environment_path: env)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
 
     assert_in_delta query(w, {6, 4, 8}).temperature_kelvin, @cold, 1.0e-9
     assert_in_delta query(w, {9, 4, 8}).temperature_kelvin, @warm, 1.0e-9
-    assert World.simulation_snapshot(w, [], @box).property_context.climate_zones == zones
+    assert World.simulation_snapshot(w, [], tiles()).property_context.climate_zones == zones
 
     # 身体脚踩寒区石（区温 248.15 K）：与环境无温差，不进内核；若按全局 293.15 K 判据会是 45 K 温差的接触。
     send(w, {:body_contact, 1001, self(), %{feet: {6.5, 5.0, 8.5}, height: 1.8, radius: 0.3, skin_k: 307.15,
@@ -255,7 +263,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
       tolerance_kelvin: 1, emissivity: 0.9, view_range_cells: 8, circuit_min_power_w: 1.0}))
     w = start(c, :asset, natural, thermal_environment_path: env)
     assert_in_delta query(w, {6, 4, 8}).temperature_kelvin, @warm, 1.0e-9
-    refute Map.has_key?(World.simulation_snapshot(w, [], @box).property_context, :climate_zones)
+    refute Map.has_key?(World.simulation_snapshot(w, [], tiles()).property_context, :climate_zones)
   end
 
   # 气候变化通知（VoxelRegion.Climate 契约 2 / 4）：暖世界里热脉冲落定后，石板留下在 293.15 K ± 1 K 的温度行、热模拟静止；
@@ -268,6 +276,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
     File.write!(env, Jason.encode!(base))
     natural = for x <- 5..11, z <- 5..11, do: {{x, 4, z}, @stone}
     w = start(c, :restart, natural, thermal_environment_path: env)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     :ok = World.thermal_experiment(w, pulse(c, :restart, %{source_macro: [8, 4, 8], power_w: 20_000.0,
       energy_j: 200_000.0}))
     {warm, _} = run_until(w, 20_000.0)
@@ -281,6 +290,7 @@ defmodule VoxelRegion.ClimateZoneWorldTest do
     w = start(c, :restart, natural, thermal_environment_path: env)
     restarted = observe(w)
     assert restarted.thermal.active
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
 
     {settled, _} = run_until(w, 200_000.0)
     refute settled.thermal.active

@@ -1,5 +1,13 @@
 # Movement module map
 
+2026-10-27 P6 窗口贡献（Global system，尚未启用物理边界）：Player 从现有 `window_domains` 与 `requested_window` 派生完整盒集合，
+由 `CollisionStream` 转交 World；域保留来源 `l0_box`，不从浮点 bounds 反推。事件 ACK 仅释放缓冲，private tick 提前安装未来域也不退休旧域，
+只在 `simulation_tick` 消费后的现有裁剪点发布退休。`Player.observe/1` 增加 `simulation_windows`、`collision_queue_length`。
+seal 导出 cut 前调用流接纳屏障，目标 attach 接续完整集合并拒绝旧 owner 的迟到发布；流异步等 World 登记回执，不把等待环带回 Player。
+真实 Scene／Player 的跨窗、prepared 提前安装和 seal/import 验证在 `revive_relocation_test.exs` 的 `simulation_windows` 标签；
+替身只提供世界数据、可控时钟和身体存储，不代表真实网络／双客户端验收。完整范围见
+[P6 实施记录](../../../../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/p6-simulation-scope.md)。
+
 2026-10-16 圆明园坡道换窗尖峰（Global system）：旧 `floor(position / 64)` 中心在 Y=512 两侧反复切换，
 真实 W 输入回放触发 66732 行 complete 属性批，客户端单帧 46–65 ms。依据
 [Box2D 2.4 fat AABB](https://box2d.org/doc_version_2_4/classb2_dynamic_tree.html) 的“在扩展边界内移动不重建”策略，
@@ -276,6 +284,13 @@ Global system：`Player.cast_spell/5` 是施放（0x82 action 1）的角色 owne
 调用方，成功结算的施法者状态由 World 先发 `{:mmo_spell_reply, ref, request, reply}` 给 caster_recipient。施法不经
 `Intent.run/3`（同步入口会让调用方等前摇）。报价 action 0、取消 2、改向 3 仍同步走 `spell/4`。只在流送 Scene
 （`authority_ref` 非 nil）可用。
+
+2026-10-28：Player用同一个`spell_requests`拥有quote／cast等待者；World结果经Player本请求relay转交原from／reply_to一次。
+waiter退出、公共`spell/5`显式等待超时或正常准备前取消会携原请求身份取消World等待，再沿原cast取消已开始的业务；
+`spell/4`默认仍300秒，超时仍是原exit／已接纳结果未知，不回滚确认事务。World只在PageLoad／Admission等待期监视Player，
+前摇开始后移交原pending_cast监视；Player突然退出不依赖terminate清理。共享reader仍为其它caller或模拟继续。
+`Player.observe.pending_spell_requests`及`voxel_player_spell_wait request/status/reason`报告等待生命周期，World的page_waiters包含受管Player请求。
+真实Player＋File World六例和原动作回调七例覆盖冷页取消、quote、活caller超时、准备前退出与已接纳取消；不是鉴权／QUIC／UE验收。
 
 ## 2026-10-08 碰撞基线前的 timeline（NPC 落位 M3）
 

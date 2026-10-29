@@ -26,6 +26,7 @@ defmodule DataService.Voxel.OverlayLogStore do
   # 一次 INSERT 多行：检查点可有上千行，逐行 round trip 实测占了稠密事务的大头。Postgres 参数上限 65535，9 列 → 每批 500 行。
   @columns 9
   @batch 500
+  @world_tables ~w(voxel_overlay_log voxel_page_segment voxel_world_globals voxel_safe_prefix voxel_identity_locator)
 
   @spec append(non_neg_integer(), [row()], keyword()) :: :ok
   def append(content_version, rows, opts \\ []) do
@@ -74,20 +75,20 @@ defmodule DataService.Voxel.OverlayLogStore do
     end)
   end
 
-  @doc "清空（test-only）。"
+  @doc "清空全部测试世界的日志、页、发布前缀与身份定位（test-only）。"
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
-    # 日志与页表（`PageStore`）一起清：世界持久状态只由这两部分组成。
-    for table <- ~w(voxel_overlay_log voxel_page_segment voxel_world_globals voxel_safe_prefix),
+    # 定位行虽不随身份删除而清除，测试世界重建时仍须与页和前缀一起退休。
+    for table <- @world_tables,
         do: Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM #{table}", [])
 
     :ok
   end
 
-  @doc "清空一个世界（test-only）：该 content_version 的日志与页表。"
+  @doc "清空一个测试世界的日志、页、发布前缀与身份定位；保留其他 content_version（test-only）。"
   @spec reset_world(non_neg_integer(), keyword()) :: :ok
   def reset_world(content_version, opts \\ []) do
-    for table <- ~w(voxel_overlay_log voxel_page_segment voxel_world_globals voxel_safe_prefix),
+    for table <- @world_tables,
         do: Ecto.Adapters.SQL.query!(repo(opts), "DELETE FROM #{table} WHERE content_version = $1", [signed(content_version)])
 
     :ok

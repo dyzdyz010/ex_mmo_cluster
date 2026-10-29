@@ -51,7 +51,11 @@ defmodule VoxelRegion.TransformWorldTest do
     %{root: root, opts: opts, prefabs: prefabs, materials: materials, macro_units: macro_units, data: data}
   end
 
-  defp start(c), do: start_supervised!({World, c.opts})
+  defp start(c) do
+    w = start_supervised!({World, c.opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{1, 1, 1}, {9, 2, 9}})
+    w
+  end
 
   defp heat(c, w, cell, power, energy) do
     path = Path.join(c.root, "thermal.json")
@@ -347,6 +351,7 @@ defmodule VoxelRegion.TransformWorldTest do
     plain = Path.join(c.root, "plain.json")
     File.cp!(Path.join(@fixtures, @digest <> ".json"), plain)
     w = start_supervised!({World, Keyword.put(c.opts, :property_catalog_path, plain)})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{2, 1, 2}, {4, 2, 3}})
     {:ok, _} = World.apply_edits(w, [{@ore_cell, @ore}, {@coal_cell, @coal}])
     heat(c, w, @ore_cell, 20_000.0, 4.0e6)
     run_until(w, &(node(&1, micro(@ore_cell)).temperature_kelvin >= @x + 5))

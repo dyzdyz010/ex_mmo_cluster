@@ -309,15 +309,14 @@ defmodule VoxelRegion.World.Log do
   def checkpoint_input(state) do
     state
     |> Map.take([:log, :seq, :cv, :source, :source_state, :region_bases, :overlay, :overlay_regions,
-      :snapshots, :refined, :refined_owners, :refined_regions, :refined_encoded, :instances, :structure, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions, :liquid_units, :liquid_regions, :structure_pages, :canopy,
+      :snapshots, :refined, :refined_owners, :refined_regions, :instances, :structure, :macro_owners, :macro_owner_regions, :macro_owner_cells, :attachments, :attachment_regions, :liquid_units, :liquid_regions, :structure_pages, :canopy,
       :properties, :damage, :epochs, :material_balances, :caster_energy, :material_supplies, :craft_ledger,
       :food_ledger, :food_receipts, :placed_by, :protection, :beacons, :beacon_attunements, :phase_inventory, :thermal,
       :attachment_serial, :attachment_owners, :material_units_per_micro, :liquid_active,
-      :payloads, :decoded, :lru, :lru_ticks, :tick, :lru_bytes, :resident_bytes, :cache_limit,
-      :cache_stats])
+      :cache, :decoded])
     |> Map.merge(Map.take(state, [:interaction_history, :interaction_floor]))
     |> Map.put(:prefabs, Map.new(state.prefabs, fn {id,compiled} ->
-      {id,%{definition: Map.take(compiled.definition,[:presentation_bindings])}} end))
+      {id,Map.take(compiled,[:presentation_bindings])} end))
     |> Map.put(:retained_before, map_size(state.entries))
   end
 
@@ -345,7 +344,7 @@ defmodule VoxelRegion.World.Log do
     txn =
       Map.merge(%{txn | entries: txn.entries ++ extra}, %{
         property_states: Map.values(state.damage),
-        epochs: chunk_flat(state.epochs),
+        epochs: VoxelRegion.EpochChunk.flat(state.epochs),
         material_balances: state.material_balances,
         caster_energy: state.caster_energy,
         material_supplies: state.material_supplies,
@@ -436,7 +435,7 @@ defmodule VoxelRegion.World.Log do
     %{
       state
       | damage: damage,
-        epochs: chunk_merge(state.epochs, Map.get(txn, :epochs, %{})),
+        epochs: VoxelRegion.EpochChunk.merge(state.epochs, Map.get(txn, :epochs, %{})),
         attachment_serial:
           Map.get(txn, :attachment_serial, max(state.attachment_serial, txn.seq)),
         attachment_owners: owners_after(state, txn),

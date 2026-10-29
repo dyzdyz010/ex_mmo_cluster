@@ -80,6 +80,7 @@ defmodule VoxelRegion.ThermalStaticPhaseTest do
     opts = [source: NaturalSource, log: VoxelRegion.TestSupport.Log, root: root, observer: self(),
       property_catalog_path: catalog, prefab_catalog_path: prefab, name: nil]
     w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{0, 0, 0}, {5, 2, 5}})
     on_exit(fn -> File.rm_rf!(root) end)
     %{w: w, pulse: pulse}
   end

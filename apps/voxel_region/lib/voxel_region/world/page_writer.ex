@@ -40,7 +40,11 @@ defmodule VoxelRegion.World.PageWriter do
   end
 
   defp run({:batch, attempt, cut_seq, units}, %{log: {backend, handle}} = state) do
-    :ok = backend.write_pages(handle, cut_seq, rows(units))
+    started = System.monotonic_time(:microsecond)
+    rows = rows(units)
+    payload_bytes = Enum.reduce(rows, 0, fn row, bytes -> bytes + if(Map.has_key?(row, :payload), do: byte_size(row.payload), else: 0) end)
+    :ok = backend.write_pages(handle, cut_seq, rows)
+    Logger.info("voxel_page_write seq=#{cut_seq} units=#{length(units)} rows=#{length(rows)} encoded_payload_bytes=#{payload_bytes} elapsed_us=#{System.monotonic_time(:microsecond) - started}")
     send(state.world, {:page_ack, attempt})
     {:noreply, state}
   end

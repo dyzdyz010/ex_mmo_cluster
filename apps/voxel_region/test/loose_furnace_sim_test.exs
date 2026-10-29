@@ -23,6 +23,7 @@ defmodule VoxelRegion.LooseFurnaceSimTest do
   @ores [{16, {1, 2, 1}}, {17, {3, 2, 1}}, {23, {1, 2, 3}}, {9, {3, 2, 3}}]
   @limit_s 3600.0
   @after_s 300.0
+  @bounds {{-4, 0, -4}, {9, 8, 9}}
 
   test "loose furnace: coal floor above 7/8, four 0.25 m³ ore piles, ignition, sealed" do
     root = Path.join(System.tmp_dir!(), "loose_furnace_#{System.unique_integer([:positive])}")
@@ -38,7 +39,8 @@ defmodule VoxelRegion.LooseFurnaceSimTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: @environment,
       prefab_catalog_path: Path.join(root, "prefabs"), production_materials: [@stone, @coal | ores],
-      liquid_bounds: {{-4, 0, -4}, {9, 8, 9}}]})
+      liquid_bounds: @bounds]})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     actor = %{cid: 1001, gate: self(), identity: :furnace, refresh: &Actor.tool_context/2, eye: {2.5, 6.5, 2.5}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))
     {:ok, _} = World.material_supply(w, 1001, "furnace", Map.new([{@stone, 90 * @cap}, {@coal, 14 * @cap} | Enum.map(ores, &{&1, @cap})]))

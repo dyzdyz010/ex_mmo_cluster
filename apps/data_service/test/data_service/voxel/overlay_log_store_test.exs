@@ -6,7 +6,7 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
     :ok
   end
 
-  alias DataService.Voxel.OverlayLogStore
+  alias DataService.Voxel.{OverlayLogStore, PageStore}
 
   @cv 0xF1E2_D3C4_B5A6_9788
   @other 0x0000_0000_0000_0001
@@ -18,6 +18,53 @@ defmodule DataService.Voxel.OverlayLogStoreTest do
 
   defp row(seq, ordinal, kind, level, region, payload),
     do: %{seq: seq, ordinal: ordinal, kind: kind, level: level, region: region, payload: payload}
+
+  test "reset_world clears locators and pages together while preserving the other world" do
+    ids = [{1, 71, 2}, {2, 81, 0}]
+    seed_pages(@cv, ids, {-1, 2, -3})
+    seed_pages(@other, ids, {4, -5, 6})
+    other_pages = PageStore.load(@other)
+    other_locators = PageStore.locate(@other, ids)
+    assert map_size(PageStore.locate(@cv, ids)) == 2
+
+    assert :ok = OverlayLogStore.reset_world(@cv)
+    assert PageStore.locate(@cv, ids) == %{}
+    assert PageStore.load(@cv) == %{prefix: nil}
+    assert PageStore.page_keys(@cv) == []
+    assert OverlayLogStore.read_all(@cv) == []
+    assert PageStore.load(@other) == other_pages
+    assert PageStore.locate(@other, ids) == other_locators
+
+    # 同世界同身份重建必须指向新 home，不能被只插入定位表的旧行挡住。
+    seed_pages(@cv, ids, {9, -8, 7})
+    assert PageStore.locate(@cv, ids) ==
+             Map.new(ids, &{&1, %{root: {71, 2}, home: {9, -8, 7}}})
+  end
+
+  test "reset clears published and unpublished locators across all test worlds" do
+    ids = [{1, 91, 3}, {2, 101, 0}]
+    seed_pages(@cv, ids, {-4, 5, 6})
+    seed_pages(@other, ids, {7, 8, -9})
+    pending = %{locator: {1, 111, 4}, root: {111, 4}, home: {-10, 11, 12}}
+    assert :ok = PageStore.write(@other, 9, [pending])
+    assert map_size(PageStore.locate(@other, ids ++ [pending.locator])) == 3
+
+    assert :ok = OverlayLogStore.reset()
+
+    for cv <- [@cv, @other] do
+      assert PageStore.locate(cv, ids ++ [pending.locator]) == %{}
+      assert PageStore.load(cv) == %{prefix: nil}
+      assert PageStore.page_keys(cv) == []
+      assert OverlayLogStore.read_all(cv) == []
+    end
+  end
+
+  defp seed_pages(cv, ids, home) do
+    segment = %{level: 0, region: home, segment: 0, chunk: {0, 0, 0}, payload: "page"}
+    locators = Enum.map(ids, &%{locator: &1, root: {elem(hd(ids), 1), elem(hd(ids), 2)}, home: home})
+    assert :ok = PageStore.publish(cv, 7, [segment | locators], "globals")
+    assert :ok = OverlayLogStore.append(cv, [row(8, 0, 0, 0, home, "tail")])
+  end
 
   test "rows come back per world in (seq, ordinal) order; replace swaps the whole world atomically" do
     # u64 content_version（最高位为 1）按补码存 bigint，读回原值。
