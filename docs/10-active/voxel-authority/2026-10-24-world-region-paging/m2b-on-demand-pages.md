@@ -39,6 +39,8 @@ code: ex_mmo_cluster master 3d0668e5（M2a）
 - 区域型：沿用各入口现有键（`edit_keys`、`tool_regions`、`intent_keys`、prefab 足迹、窗口盒、射线盒），扩 26 邻页。
 - 身份型（`remove_prefab`、prefab 拆 / 换、`replace_prefab`、`instance_cells`、`replacement_cells`、GM 搬移）：id 不在内存即查定位表 → 根 home 页 → 根记录的覆盖页集合。
 
+**R2 登记测试设计**：Closure 持有入口形状及页需求分类，测试解析真实 World 的 `call/3`、`info/2` 具体消息模式，与登记形状求差，并核对异步过闸列表。新增未登记页消息是反例：旧兜底返回 `:none`，差集必须包含它；显式无页入口允许 `:none`。GM 子操作与引用任务结果各测真实闭包，不改变正常入口语义。仅启动纯模块，无数据库；测试不执行拼接源码，不在生产调用时扫描。Elixir 官方 [GenServer 回调](https://hexdocs.pm/elixir/GenServer.html)定义 call/info 消息边界，[Code.string_to_quoted!/2](https://hexdocs.pm/elixir/Code.html#string_to_quoted!/2)提供源代码 AST 解析；适用于当前 World 集中分派，分派结构变化需同步维护提取器。运行 `cd apps/voxel_region && mix test --no-start test/closure_entries_test.exs`；此测试不验证物理演化或跨系统运行。
+
 ### 2.3 定位表与 home 汇总
 - 表 `voxel_identity_locator(cv, kind, a, b, root_a, root_b, home_x/y/z)`，主键 `(cv, kind, a, b)`；只插入（`ON CONFLICT DO NOTHING`）：根与根 home 自创建起不变（父 id 与 anchor 不变；搬移 / 替换产生新身份）。随切点批次与页段同一 PG 事务写入；删除的身份不删行（查到后装根页发现不存在 = `instance_not_found`）。
 - **home 汇总的偏差**：父稿要 home 记录带“覆盖页集合 + 整件 max_hp 汇总”以免装全部覆盖页。本步只持久“根实例的整树覆盖页集合”（新段 `covers`，在根 home 页），闭包据此装全整棵树；不持久 max_hp 汇总——整件汇总照旧在内存算，结果与 M2a 逐项相同。代价是触及一棵树要装它覆盖的全部页（树的空间尺度有限）。按覆盖页汇总改造观察层属 N 系列 / 协议 42。
@@ -224,8 +226,56 @@ data_service 51 项全过。`protection_world_test`“许可…”单独连跑 3
 
 另：开热提交前暂停的既有用例改名并写明证明范围（只覆盖开提交前，夹具只删驻留标记）。
 
-**待办（统筹定为本轮不做）**：测试 reset 未清定位表（`OverlayLogStore.reset_world` 只清旧四表）；同页在途读取合并（父稿 P4“每页至多一请求”，现为每挂起入口一任务）；
-看门狗按脚本进程树限定（现为“启动后新出现的全部 erl”）；挂起 caller 超时 / 退出后的取消语义；`Closure` 兜底 `:none` 改为入口登记差集测试；`stats` 整表统计只数驻留的口径说明。
+**欠账补齐（2026-10-27；未提交／推送）**：
+- `OverlayLogStore.reset/reset_world` 共用五表清单，补清 `voxel_identity_locator`；世界存续期间定位仍只增不删，
+  测试世界整体退休才删，迁移文件仅澄清该事实。两个真实 PG 反例经 `PageStore.publish/write` 构造页／定位与后缀，
+  证明定向清理不影响另一个世界、同世界同身份可重建到新 home、全清包含未发布定位；含负 XYZ 和 u64 高位世界号。
+  改前 3/5（两个新增断言红），改后 5/5；`MIX_ENV=test mix test --no-start test/data_service/voxel/overlay_log_store_test.exs`，本 app 执行。
+  只用获准的隔离 PG 26810 新建 VM 独占测试库，结束后已删测试库并停容器；未写基准库和保护库。
+- 三个基准入口的同一个 `equiv.watchdog` 改从当前 Python 编排进程的真实后代中选 erl，直接用枚举得到的进程对象结束，
+  不再全机扫描“启动后新增 erl”；阈值仍 `< 20 × 2³⁰` 字节。启动前尚无 BEAM 时继续监视，`run_m0` 启动失败也保留原护栏标记。
+  纯测试先复现“无关新 erl 被杀”和“启动失败丢护栏标记”，修改后 6/6；根目录命令
+  `python -m unittest discover -s apps/voxel_region/bench/paging_m0 -p test_watchdog.py -v`。
+  无真实进程终止、无基准重跑，原失败与性能结果保持原样。
+- 依据与适用条件分别记在最近的 DataService voxel README 和 paging_m0 README：PostgreSQL `DELETE ... WHERE` 世界隔离语义、
+  psutil 官方 `children(recursive=True)` 与 `Process.kill()` 的 PID 复用校验；沿用现有入口，不加生产路径或一般化框架。
+  原始红／绿日志在 `.demo/observe/m2b-hardening-20261027/`；首次错误口令导致的环境准备失败独立保留，未计作行为红灯或通过。
+
+### R1 同页读取与同步调用生命周期（2026-10-27，服务端定向验证）
+
+`page_need` 发令牌的同一 World 回合通过 `PageLoad.reserve/3` 登记既有 `pending` 的页 owner；读取与暂存共用该事实源。
+后来的已知页需求在入闸时直接挂到 owner，运行中才发现闭包冲突的任务仍沿既有 `yield` 让出；重放各请求自身闭包。
+维护入口 `:all` 也走同一读取、暂存与闭合循环，不另发重复读取。平凡页随批驻留，整树页保持闭合后驻留。
+
+所有 World 公共同步调用经 `PageLoad.call/3`：调用仍挂起时才记录 caller monitor 与请求引用；caller DOWN 或 wrapper 捕获超时后
+显式发送的取消事实只移除该请求。其他 caller、异步业务或 `:wake` 仍使用的任务继续；无人需求的任务、未驻留页占用和等待引用释放。
+跨入业务裁决即释放装页 caller 引用；动态再次缺页沿同一请求身份重新挂起。已接纳事务不回滚，原超时仍表示结果未知。
+`World.simulation_snapshot/4` 的可选 `timeout` 只控制本次等待，默认仍 300 秒。
+
+依据：[Erlang gen_server call](https://www.erlang.org/doc/apps/stdlib/gen_server.html#call/3) 和
+[进程 monitor／alias](https://www.erlang.org/doc/system/ref_man_processes.html#monitors)：monitor 观察进程退出，超时后 alias 丢弃迟到回复不等于服务器取消。
+因此取消事实由真实同步 wrapper 发送，World 在原串行接纳边界裁定是否仍挂起；不轮询 alias，不重试业务，不建立第二页真值。
+
+测试使用真实 World、File 持久化和仅在 `read_pages` 阻塞的依赖替身，数据经正常写入／压实／重启产生。
+初始两个反例为重复冷页读取、caller 退出后等待引用不消失（0/2）；修复后四个新场景与三个既有树闭合／平凡页／半树重放场景 7/7。
+新场景包括两个公共请求完整成功、共享与独占 caller 退出、活 caller 捕获公共 World 超时、已接纳编辑不撤销，以及零窗口真实液体从 Y=3
+跨到 Y=2 后需要冷邻页 Y=1；caller 退出后共享的模拟读取继续，实际落水提交 seq 增长。
+删除 wrapper 显式取消的一行反证 0/1（原生退出码 2），恢复后 7/7（退出码 0）。
+命令：本 app `MIX_ENV=test ERL_FLAGS='+S 4:4' mix.bat test --no-start test/page_on_demand_test.exs:138 test/page_on_demand_test.exs:156 test/page_on_demand_test.exs:189 test/page_on_demand_test.exs:226 test/page_on_demand_test.exs:530 test/page_on_demand_test.exs:566 test/page_on_demand_test.exs:599`。
+证据：`.demo/observe/r1-pageload-seven-green.log`、`r1-pageload-timeout-counterexample.log`；未启动 PG／基准／UE。
+随后为 `:all` 维护共享循环和窗口异步回复接缝运行 `mix.bat test --no-start test/page_on_demand_test.exs test/window_snapshot_test.exs --exclude database`：
+31 passed、3 个数据库场景排除、退出码 0；`.demo/observe/r1-pageload-window-regression.log`。排除项不计为通过。
+独立审查随后确认该 31 项本身没有实际证明三个接缝，已另补公共入口专项：冷世界 `publish_properties(:all)` 与普通读取共享；
+洪泛经过两轮动态 defer 后活 caller 真实 timeout（`liquid_fill` 既有 opts 增加 `:timeout`，默认仍 300 秒）；
+公共 canonical 快照从冷页等待进入真实 feed 组装后回复／caller 退出，独立 subscriber 保持并最终退出清理。
+这 3 例恢复代码后 3/3、退出码 0，`.demo/observe/r1-coverage-restored-green.log`；提前全驻留、丢取消身份、不清 caller 三种对应变异各 0/1、退出码 2，
+见 `r1-coverage-mutation-{all-early,defer-request,caller-release}.log`。原 7／31 项不因此扩大证明范围；Player 异步最小契约列在
+`.superpowers/sdd/voxel-authority-sharding/task-pageload-report.md`，尚未实施。
+
+边界：直接使用原始 `GenServer.call` 的 caller 超时没有取消事实；Player 直接 `send` 的 `prepare_cast/quote_cast` 是异步业务生命周期，
+未经过本同步 wrapper，不能把本轮证据宣称为该链路超时取消已验收。页尚不淘汰，pin 仍等价于驻留；取消不会撤销已驻留事实。
+
+**仍待办**：Player 转交的异步等待取消事实需沿该 owner 明确；`Closure` 兜底 `:none` 改为入口登记差集测试；`stats` 整表统计只数驻留的口径说明。
 
 **5 s 超时排查**：会过闸的入口里，窗口快照（`canonical_snapshot_and_subscribe`，含 CollisionStream）、Replica 快照、区域取数 `serve`（预备 300 s、
 逐区 60 s）、工具 / 生产 / 附件 / prefab 意图（300 s）、施法与信标（Player 异步消息，Gate→Player 300 s）、`material_snapshot`（300 s）原本就不是 5 s。

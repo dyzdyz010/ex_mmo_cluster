@@ -11,7 +11,7 @@
 
 > 体素主线阶段总览见 [`cross-cutting/voxel-server-authority-phase-overview.md`](cross-cutting/voxel-server-authority-phase-overview.md)。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **52** 篇（不含本索引，按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。本层共 **53** 篇（不含本索引，按子系统分组）。
 
 ## 索引
 
@@ -41,6 +41,7 @@
 - [`2026-09-21-npc-unified-interface-design.md`](cross-cutting/2026-09-21-npc-unified-interface-design.md) — NPC 统一接口层（Body/Brain、全部动词、寻路、跨 Scene 移交、长期记忆、Jev 调度、放置溯源）；已实施，现状与后续见 §0
 - [`2026-09-21-prefab-macro-cells-design.md`](cross-cutting/2026-09-21-prefab-macro-cells-design.md) — Prefab 里的宏格（VXPD v3，宏格 = 隐式叶子、归属表、对齐、造价与溯源）与 Prefab Designer 内核；已定方向，未实施
 - [`2026-10-07-character-capability-library.md`](cross-cutting/2026-10-07-character-capability-library.md) — 角色能力函数库（统一执行入口 Intent、能力库 Abilities 与 LLM / 行为树投影、NPC 补齐、gather + Settler 行为树、NPC 施法）；2026-10-08 设计定稿，I1 实施中
+- [`2026-10-29-npc-motion-hast-sec-evaluation.md`](cross-cutting/2026-10-29-npc-motion-hast-sec-evaluation.md) — NPC 动作表现调研：HAST-SEC 实为动捕片段检索、不引入；会商业化、先走跑后交互；Motion Matching 走跑进入隔离 probe，Control Rig IK 交互与离线生成未批准
 
 ### field-emergence
 
