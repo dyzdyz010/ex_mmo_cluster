@@ -23,6 +23,28 @@ defmodule MmoContracts.PayloadReuseTest do
 
     assert Refined.encode(%{7 => slots}, %{}, 5) ==
              <<1::32-little, 7::32-little, 2::32-little>> <> Refined.slot_records(slots) <> <<0::32-little>>
+    projected = Refined.Encoding.new(%{7 => {2, <<1::16-little, 2::16-little, 5::64-little,
+      0::32-little, 3::16-little, 11::16-little, 5::64-little, 1::32-little>>}})
+    assert Refined.encode(projected, %{}, 5) == <<1::32-little, 7::32-little, 2::32-little,
+      1::16-little, 2::16-little, 5::64-little, 0::32-little, 3::16-little, 11::16-little,
+      5::64-little, 1::32-little, 0::32-little>>
+  end
+
+  test "编码投影拒绝计数字节不匹配，Payload 不接受两份 refined 输入" do
+    assert_raise ArgumentError, fn -> Refined.Encoding.new(%{0 => {2, <<0::128>>}}) end
+    projection = Refined.Encoding.new(%{0 => {1, <<0::16, 11::little-16, 1::little-64, 0::32>>}})
+    payload = %Payload{cells: :binary.copy(<<0, 0>>, @cells), refined: %{0 => %{0 => {11, {1, 0}}}},
+      refined_encoding: projection}
+    assert_raise ArgumentError, fn -> Payload.encode(payload, %{}, 0, 1) end
+  end
+
+  test "decoded refined 只接纳普通槽 map；可枚举的紧凑结构体显式失败而不写出错计数" do
+    # MapSet 与 voxel_region 的 RefinedSlots 同为“可按槽行枚举、map_size 不是槽数”的结构体；
+    # 紧凑记录须经 Refined.Encoding 投影进入编码。
+    compact = MapSet.new([{0, {11, {1, 0}}}, {1, {11, {1, 0}}}])
+    payload = %Payload{cells: :binary.copy(<<0, 0>>, @cells), refined: %{0 => compact},
+      instances: %{{1, 0} => %{definition_id: <<1::256>>, anchor: {0, 0, 0}, orientation: 0}}}
+    assert_raise ArgumentError, ~r/slot map/, fn -> Payload.encode(payload, %{}, 0, 1) end
   end
 
   test "given slot records reproduce the same refined suffix bytes" do
@@ -31,7 +53,7 @@ defmodule MmoContracts.PayloadReuseTest do
     instances = %{{5, 0} => %{definition_id: <<1::256>>, anchor: {0, 0, 0}, orientation: 0},
       {6, 0} => %{definition_id: <<2::256>>, anchor: {8, 0, 0}, orientation: 1}}
 
-    assert Refined.encode(%{3 => a, 9 => b}, instances, 7, %{9 => Refined.slot_records(b)}) ==
+    assert Refined.encode(Refined.Encoding.new(%{3 => {2, Refined.slot_records(a)}, 9 => {41, Refined.slot_records(b)}}), instances, 7) ==
              Refined.encode(%{3 => a, 9 => b}, instances, 7)
   end
 

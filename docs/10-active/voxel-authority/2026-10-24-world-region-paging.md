@@ -1,5 +1,7 @@
 # 2026-10-24 世界真值按区域分页（第一阶段：单写者、数据分页）
 
+> **2026-10-27 最新用户语义覆盖**：“模拟是世界的一部分，不能暂停……后台的演化不能停。”下方 approved v4 保留历史；旧 P6/Q1 的无人冻结、窗口外墙/绝热/遮挡、预算 ticket 冻结及其验收不再是当前目标。自然稳态可休眠，持续演化与唤醒不依赖渲染；预算限制调度/容量，不得抹去未完成时间。见 [持续世界决策稿](2026-10-24-world-region-paging/continuous-world-decision.md)（产品原则已定，新的工程组合待审）与 [修订执行计划](2026-10-24-world-region-paging/execution-plan.md)。页存储、M2b、快照外移等不冲突工作继续；S0/P5/多分区依赖按新稿重审。
+
 ---
 status: approved v4（2026-10-24 用户批准；经 Fable 5.1 high 与 Codex astra xhigh 三轮独立 + 交叉评审；Q6 留第二阶段）
 owner: VoxelRegion.World（canonical 体素、实例、附件、属性行、液体、世代）；持久化 owner DataService.Voxel；协议字段 owner mmo_contracts Voxel.Codec

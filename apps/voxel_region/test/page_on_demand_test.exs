@@ -34,11 +34,20 @@ defmodule VoxelRegion.PageOnDemandTest do
     defdelegate collect(path, prefix, limit), to: Log
 
     def hold(owner, key), do: :persistent_term.put(__MODULE__, {:hold, owner, key})
+    def shared(owner, key), do: :persistent_term.put(__MODULE__, {:shared, owner, key})
     def fail(owner, times \\ :infinity), do: :persistent_term.put(__MODULE__, {:fail, owner, times})
     def clear, do: :persistent_term.erase(__MODULE__)
 
     def read_pages(path, keys, fragments) do
       case :persistent_term.get(__MODULE__, nil) do
+        {:shared, owner, key} ->
+          if key in keys do
+            send(owner, {:shared_read, self(), key})
+            receive do
+              :continue -> :ok
+            end
+          end
+
         {:hold, owner, key} ->
           if key in keys do
             :persistent_term.erase(__MODULE__)
@@ -62,6 +71,28 @@ defmodule VoxelRegion.PageOnDemandTest do
     end
   end
 
+  defmodule GateSource do
+    @moduledoc "只测试：仅阻塞 World 外发送进程的真实 source 读取，World 仍能处理生命周期消息。"
+    defdelegate open(opts), to: VoxelRegion.TestSupport.Source
+    defdelegate content_version(state), to: VoxelRegion.TestSupport.Source
+    defdelegate world_dir(state), to: VoxelRegion.TestSupport.Source
+    defdelegate generated(state), to: VoxelRegion.TestSupport.Source
+    defdelegate ensure(state, level, region), to: VoxelRegion.TestSupport.Source
+    def hold(observer, world), do: :persistent_term.put(__MODULE__, {observer, world})
+    def clear, do: :persistent_term.erase(__MODULE__)
+
+    def read(state, level, region) do
+      case :persistent_term.get(__MODULE__, nil) do
+        {observer, world} when world != self() ->
+          :persistent_term.erase(__MODULE__)
+          send(observer, {:holding_source, self()})
+          receive do: (:continue -> :ok)
+        _ -> :ok
+      end
+      VoxelRegion.TestSupport.Source.read(state, level, region)
+    end
+  end
+
   setup context do
     root = Path.join(System.tmp_dir!(), "page_on_demand_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "prefabs"))
@@ -78,6 +109,7 @@ defmodule VoxelRegion.PageOnDemandTest do
       end
 
     on_exit(fn -> GateRead.clear() end)
+    on_exit(fn -> GateSource.clear() end)
 
     opts = [source: Source, root: root, observer: self(), name: nil, log: log, production_materials: [11, 19],
       prefab_catalog_path: Path.join(root, "prefabs")]
@@ -113,7 +145,8 @@ defmodule VoxelRegion.PageOnDemandTest do
       else
         opts
       end
-    %{root: root, opts: opts, world: start_supervised!({World, opts})}
+    world = start_supervised!({World, opts})
+    %{root: root, opts: opts, world: world}
   end
 
   defp restart(c) do
@@ -123,7 +156,260 @@ defmodule VoxelRegion.PageOnDemandTest do
 
   defp resident?(w, key), do: Pages.resident?(:sys.get_state(w), key)
 
+  # 读取闸属于持久化依赖替身；内容、并发请求与取消都经过正式 World 入口。
+  @tag log: GateRead
+  test "同一冷页重叠读取只发一次，两个公共请求都得到完整材料", c do
+    assert {:ok, _} = World.apply_edits(c.world, [{{2, 1, 2}, 19}])
+    assert :ok = World.compact(c.world)
+    w = restart(c)
+    key = {0, {0, 0, 0}}
+    GateRead.shared(self(), key)
+    a = Task.async(fn -> World.material_snapshot(w, [], [{2, 1, 2}]) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    b = Task.async(fn -> World.material_snapshot(w, [], [{2, 1, 2}]) end)
+    refute_receive {:shared_read, _, ^key}, 300
+    send(reader, :continue)
+    assert [%{material: 19}] = Task.await(a, 5_000).probe_occupancy
+    assert [%{material: 19}] = Task.await(b, 5_000).probe_occupancy
+    await(fn -> :sys.get_state(w).page_load.tasks == %{} end)
+    assert :sys.get_state(w).page_load.pending == %{}
+  end
+
+  @tag log: GateRead
+  test "共享装页的一个 caller 退出不取消剩余调用，独占 caller 退出释放任务", c do
+    assert {:ok, _} = World.apply_edits(c.world, [{{2, 1, 2}, 19}])
+    assert :ok = World.compact(c.world)
+    w = restart(c)
+    key = {0, {0, 0, 0}}
+    GateRead.shared(self(), key)
+    a = spawn(fn -> World.material_snapshot(w, [], [{2, 1, 2}]) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    b = Task.async(fn -> World.material_snapshot(w, [], [{2, 1, 2}]) end)
+    await(fn -> Enum.sum(for {_, t} <- :sys.get_state(w).page_load.tasks, do: length(t.entries)) == 2 end)
+    Process.exit(a, :kill)
+    await(fn -> Enum.sum(for {_, t} <- :sys.get_state(w).page_load.tasks, do: length(t.entries)) == 1 end)
+    refute_receive {:shared_read, _, ^key}, 100
+    send(reader, :continue)
+    assert [%{material: 19}] = Task.await(b, 5_000).probe_occupancy
+
+    w = restart(c)
+    GateRead.shared(self(), key)
+    caller = spawn(fn -> World.apply_edits(w, [{{2, 1, 2}, 11}]) end)
+    assert_receive {:shared_read, abandoned, ^key}, 5_000
+    monitor = Process.monitor(abandoned)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^abandoned, _}, 5_000
+    await(fn -> :sys.get_state(w).page_load.tasks == %{} end)
+    assert :sys.get_state(w).page_load.pending == %{}
+    assert :sys.get_state(w).page_load.held == %{}
+    GateRead.clear()
+    assert materials(w, [{2, 1, 2}]) == [19]
+  end
+
   defp materials(w, cells), do: Enum.map(World.material_snapshot(w, [], cells).probe_occupancy, & &1.material)
+
+  @tag log: GateRead
+  test "冷世界维护all与普通调用共享读取，完整装齐才接纳且不授予永久驻留", c do
+    stop_supervised!(World)
+    opts = Keyword.put(c.opts, :property_catalog_path, VoxelRegion.TestSupport.catalog())
+    c = %{c | opts: opts, world: start_supervised!({World, opts})}
+    assert {:ok, _} = World.apply_edits(c.world, [{{2, 1, 2}, 19}, {{258, 1, 2}, 11}])
+    assert :ok = World.compact(c.world)
+    w = restart(c)
+    refute :sys.get_state(w).resident == :all
+    key = {0, {0, 0, 0}}
+    GateRead.shared(self(), key)
+    ordinary = Task.async(fn -> World.material_snapshot(w, [], [{2, 1, 2}]) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    maintenance = Task.async(fn -> World.publish_properties(w, VoxelRegion.TestSupport.catalog()) end)
+    await(fn -> Enum.sum(for {_, t} <- :sys.get_state(w).page_load.tasks, do: length(t.entries)) == 2 end)
+    refute :sys.get_state(w).resident == :all
+    refute_receive {:shared_read, _, ^key}, 100
+    send(reader, :continue)
+    assert [%{material: 19}] = Task.await(ordinary, 5_000).probe_occupancy
+    assert :ok = Task.await(maintenance, 5_000)
+    GateRead.clear()
+    assert World.maintain_residency(w).status == :ready
+    assert materials(w, [{2, 1, 2}, {258, 1, 2}]) == [19, 11]
+    load = :sys.get_state(w).page_load
+    assert load.tasks == %{} and load.pending == %{} and load.callers == %{}
+  end
+
+  @tag log: GateRead, liquid: true
+  test "公共洪泛在第二次动态defer时活caller超时，取消身份没有在重放中丢失", c do
+    stop_supervised!(World)
+    opts = Keyword.put(c.opts, :liquid_bounds, {{0, 0, 0}, {384, 1, 1}})
+    c = %{c | opts: opts}
+    w = start_supervised!({World, opts})
+    capacity = 2_097_152
+    assert {:ok, _} = World.apply_edits(w, [{{320, 0, 0}, 19}])
+    assert {:ok, _} = World.material_supply(w, 1001, "water", %{21 => 384 * capacity})
+    send(w, :liquid_commit)
+    await(fn -> World.liquid_activity(w).active_cells == 0 end)
+    assert :ok = World.compact(w)
+    w = restart(c)
+    refute resident?(w, {0, {2, 0, 0}})
+    refute resident?(w, {0, {5, 0, 0}})
+    seq = World.seq(w)
+    key = {0, {5, 0, 0}}
+    GateRead.shared(self(), key)
+    parent = self()
+    caller = spawn(fn ->
+      result = catch_exit(World.liquid_fill(w, 1001, "timed-fill", 21, {0, 0, 0}, 0, timeout: 1_000))
+      send(parent, {:defer_timeout, self(), result})
+      receive do: (:stop -> :ok)
+    end)
+    on_exit(fn -> Process.exit(caller, :kill) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    assert resident?(w, {0, {2, 0, 0}})
+    refute resident?(w, key)
+    assert World.seq(w) == seq
+    monitor = Process.monitor(reader)
+    assert_receive {:defer_timeout, ^caller, {:timeout, _}}, 2_000
+    assert Process.alive?(caller)
+    assert_receive {:DOWN, ^monitor, :process, ^reader, _}, 2_000
+    load = :sys.get_state(w).page_load
+    assert load.tasks == %{} and load.pending == %{} and load.callers == %{}
+    assert World.seq(w) == seq
+    GateRead.clear()
+    assert Enum.find(World.material_balances(w, 1001), &(&1.material == 21)).balance == 384 * capacity
+    assert materials(w, [{0, 0, 0}, {128, 0, 0}, {320, 0, 0}]) == [0, 0, 19]
+    send(caller, :stop)
+  end
+
+  @tag log: GateRead
+  test "公共canonical快照装页后由真实feed完成，接纳后的caller退出不撤销订阅", c do
+    stop_supervised!(World)
+    opts = Keyword.put(c.opts, :source, GateSource)
+    c = %{c | opts: opts}
+    w = start_supervised!({World, opts})
+    assert {:ok, _} = World.apply_edits(w, [{{2, 1, 2}, 19}])
+    assert :ok = World.compact(w)
+    parent = self()
+
+    for mode <- [:reply, :caller_exit] do
+      w = restart(c)
+      request = make_ref()
+      key = {0, {0, 0, 0}}
+      GateRead.shared(self(), key)
+      subscriber = spawn(fn ->
+        receive do
+          {:canonical_snapshot, ^request, snapshot} ->
+            send(parent, {:received_snapshot, request, snapshot})
+            receive do: (:stop -> :ok)
+        end
+      end)
+      caller = spawn(fn ->
+        result = World.canonical_snapshot_and_subscribe(w, {{0, 0, 0}, {2, 1, 1}}, subscriber, request, false)
+        send(parent, {:snapshot_reply, request, result})
+        receive do: (:stop -> :ok)
+      end)
+      on_exit(fn -> Process.exit(caller, :kill); Process.exit(subscriber, :kill) end)
+      assert_receive {:shared_read, reader, ^key}, 5_000
+      assert Enum.any?(:sys.get_state(w).page_load.callers, fn {{pid, _}, _} -> pid == caller end)
+      # 首页读取闸确保请求尚未接纳；source闸随后只阻塞真正发送进程。
+      GateSource.hold(self(), w)
+      send(reader, :continue)
+      assert_receive {:holding_source, feed}, 5_000
+      state = :sys.get_state(w)
+      assert state.page_load.tasks == %{} and state.page_load.callers == %{}
+      assert map_size(state.canonical_snapshots) == 1
+      assert state.canonical_feeds[subscriber] == feed
+      if mode == :caller_exit, do: Process.exit(caller, :kill)
+      send(feed, :continue)
+      assert_receive {:received_snapshot, ^request, snapshot}, 5_000
+      assert snapshot.transaction_seq == World.seq(w)
+      if mode == :reply do
+        assert_receive {:snapshot_reply, ^request, :ok}, 5_000
+        Process.exit(caller, :kill)
+      end
+      await(fn -> :sys.get_state(w).canonical_snapshots == %{} end)
+      assert Map.has_key?(:sys.get_state(w).canonical_subs, subscriber)
+      assert Process.alive?(feed)
+      monitor = Process.monitor(feed)
+      send(subscriber, :stop)
+      assert_receive {:DOWN, ^monitor, :process, ^feed, _}, 5_000
+      await(fn -> :sys.get_state(w).canonical_feeds == %{} end)
+      assert :sys.get_state(w).page_load.callers == %{}
+    end
+  end
+
+  @tag log: GateRead
+  test "真实公共call包装超时但caller仍活着：取消独占装页，已接纳事务不撤销", c do
+    assert {:ok, _} = World.apply_edits(c.world, [{{2, 1, 2}, 19}])
+    assert :ok = World.compact(c.world)
+    w = restart(c)
+    key = {0, {0, 0, 0}}
+    GateRead.shared(self(), key)
+    parent = self()
+    caller = spawn(fn ->
+      # 正常 World 公共入口只缩短本次等待时限；caller 捕获超时后继续存活。
+      result = catch_exit(World.simulation_snapshot(w, [], {{0, 0, 0}, {1, 1, 1}}, 150))
+      send(parent, {:call_timeout, self(), result})
+      receive do: (:stop -> :ok)
+    end)
+    on_exit(fn -> Process.exit(caller, :kill) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    monitor = Process.monitor(reader)
+    assert_receive {:call_timeout, ^caller, {:timeout, _}}, 5_000
+    assert Process.alive?(caller)
+    assert_receive {:DOWN, ^monitor, :process, ^reader, _}, 5_000
+    await(fn -> :sys.get_state(w).page_load.tasks == %{} end)
+    load = :sys.get_state(w).page_load
+    assert load.callers == %{} and load.pending == %{} and load.held == %{}
+    GateRead.clear()
+    assert materials(w, [{2, 1, 2}]) == [19]
+    send(caller, :stop)
+
+    accepted = spawn(fn ->
+      send(parent, {:accepted_edit, World.apply_edits(w, [{{2, 1, 2}, 11}])})
+      receive do: (:stop -> :ok)
+    end)
+    assert_receive {:accepted_edit, {:ok, _}}, 5_000
+    Process.exit(accepted, :kill)
+    assert materials(w, [{2, 1, 2}]) == [11]
+    assert :sys.get_state(w).page_load.callers == %{}
+  end
+
+  @tag log: GateRead, liquid: true
+  test "真实液体前沿与caller共享冷页：caller退出后模拟需求仍完成并继续落水", c do
+    stop_supervised!(World)
+    opts = Keyword.put(c.opts, :liquid_bounds, {{62, 0, 1}, {66, 196, 4}})
+    w = start_supervised!({World, opts})
+    c = %{c | opts: opts}
+    supply = Path.join(c.root, "high-water.json")
+    File.write!(supply, Jason.encode!(%{classification: "Test-only", deposits: [%{macro: [64, 193, 2], material: 21}]}))
+    assert {:ok, _} = World.liquid_experiment(w, supply)
+    assert :ok = World.compact(w)
+    w = restart(c)
+    key = {0, {1, 1, 0}}
+    refute resident?(w, key)
+    assert World.simulation_windows(w).source_count == 0
+    # 初始活动页Y=3只载入邻页2..4；落水进入Y=2后，模拟自然需要仍冷的Y=1。
+    send(w, :liquid_commit)
+    _ = World.seq(w)
+    GateRead.shared(self(), key)
+    caller = spawn(fn -> World.material_snapshot(w, [], [{63, 128, 2}, {64, 128, 2}]) end)
+    assert_receive {:shared_read, reader, ^key}, 5_000
+    send(w, :liquid_commit)
+    await(fn -> Enum.any?(:sys.get_state(w).page_load.tasks, fn {_, task} ->
+      Enum.any?(task.entries, &match?({:input, _, {:info, :liquid_commit}}, &1))
+    end) end)
+    Process.exit(caller, :kill)
+    await(fn -> :sys.get_state(w).page_load.callers == %{} end)
+    assert Process.alive?(reader)
+    refute_receive {:shared_read, _, ^key}, 100
+    seq = World.seq(w)
+    GateRead.clear()
+    send(reader, :continue)
+    await(fn -> :sys.get_state(w).page_load.tasks == %{} end)
+    # 测试调度正式液体消息，不等待生产1小时间隔；实际内核与提交路径不替换。
+    send(w, :liquid_commit)
+    assert World.seq(w) > seq
+    assert resident?(w, key)
+    assert World.liquid_activity(w).active_cells > 0
+    assert :sys.get_state(w).page_load.pending == %{}
+  end
 
   defp fetch(w, level, region) do
     request = Codec.encode_request(@cv, [%{level: level, region: region, have_seq: 0, have_hash: 0}]) |> IO.iodata_to_binary()
@@ -153,6 +439,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     w = restart(c)
     # 后缀为空、无活动页：启动不装任何页（M2a 启动装全部页）。
     assert World.stats(w).resident_pages == 0
+    assert :ok = World.set_simulation_windows(w, [{{0, 0, 0}, {1, 1, 1}}])
     assert {:ok, _} = World.apply_edits(w, [{{11, 2, 10}, 19}])
     assert resident?(w, {0, {0, 0, 0}}) and resident?(w, {0, {1, 1, 1}})
     refute resident?(w, {0, {0, 0, 5}})
@@ -171,9 +458,11 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert :ok = World.compact(c.world)
 
     w = restart(c)
+    {token, _, _, _} = VoxelRegion.World.PageLoad.call(w, {:prepare, for(level <- 1..5, do: {level, {0, 0, 0}})})
     assert (for level <- 1..5, do: fetch(w, level, {0, 0, 0})) == before
     refute resident?(w, {0, {0, 0, 0}})
     assert resident?(w, {5, {0, 0, 0}})
+    GenServer.cast(w, {:release_preparation, token, self()})
   end
 
   for backend <- [:file, :database] do
@@ -238,14 +527,14 @@ defmodule VoxelRegion.PageOnDemandTest do
   end
 
   @tag :liquid
-  test "活动索引：液体流动中发布并重启，不触碰该区也继续推进", c do
+  test "活动索引：液体流动中发布并重启，零窗口且不触碰该区仍继续推进", c do
     # 全空气 baseline 上 y = 3 的一格水：每步下落，至少两步仍在流动。
     supply = Path.join(c.root, "water.json")
     File.write!(supply, Jason.encode!(%{classification: "Test-only", deposits: [%{macro: [64, 3, 2], material: 21}]}))
     assert {:ok, _} = World.liquid_experiment(c.world, supply)
     seq = World.seq(c.world)
     send(c.world, :liquid_commit)
-    assert World.seq(c.world) > seq
+    await(fn -> World.seq(c.world) > seq end)
     assert World.liquid_activity(c.world).active_cells > 0
     assert :ok = World.compact(c.world)
 
@@ -253,9 +542,10 @@ defmodule VoxelRegion.PageOnDemandTest do
     # 启动只按活动索引装入水所在页（扩 26 邻页），活动集随页恢复；不经任何读写请求。
     assert World.liquid_activity(w).active_cells > 0
     assert resident?(w, {0, {1, 0, 0}})
+    assert World.simulation_windows(w).source_count == 0
     seq = World.seq(w)
     send(w, :liquid_commit)
-    assert World.seq(w) > seq
+    await(fn -> World.seq(w) > seq end)
   end
 
   # M2a 遗留（按需装页后冷区更常见）：作者编辑先逐格判液体，曾每格丢掉解码缓存、重读重解码整区 baseline。
@@ -307,7 +597,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     # 这一拍：未开提交、未推进模拟时间、无新事务，已起装页；World 照常响应。
     s = :sys.get_state(w)
     assert s.thermal_run == nil and s.thermal.elapsed_s == elapsed and World.seq(w) == seq
-    assert s.page_load.sim == :loading or Pages.resident?(s, {0, {1, 0, 0}})
+    assert match?(%{status: :loading}, s.page_load.sim) or Pages.resident?(s, {0, {1, 0, 0}})
     # 装齐后由装页任务唤醒：推进一次 0.5 s。
     await(fn -> :sys.get_state(w).thermal.elapsed_s == elapsed + 0.5 end)
     assert resident?(w, {0, {1, 0, 0}})
@@ -341,6 +631,7 @@ defmodule VoxelRegion.PageOnDemandTest do
 
     setup_world.(c.world)
     w = restart(c)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     seq = World.seq(w)
     send(w, :liquid_commit)
     assert World.seq(w) > seq
@@ -354,6 +645,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     File.mkdir_p!(Path.join(root, "prefabs"))
     on_exit(fn -> File.rm_rf!(root) end)
     ref = start_supervised!({World, Keyword.put(c.opts, :root, root)})
+    :ok = VoxelRegion.TestSupport.activate_simulation(ref, c.opts[:liquid_bounds])
     setup_world.(ref)
     send(ref, :liquid_commit)
     _ = World.seq(ref)
@@ -374,11 +666,12 @@ defmodule VoxelRegion.PageOnDemandTest do
     opts = Keyword.merge(c.opts, property_catalog_path: catalog, production_materials: [19, 21], liquid_bounds: {{0, 0, 0}, {192, 1, 1}})
     c = %{c | opts: opts}
     w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, opts[:liquid_bounds])
     assert {:ok, _} = World.apply_edits(w, [{{128, 0, 0}, 19}])
     assert {:ok, _} = World.material_supply(w, 1001, "water", %{21 => 192 * 2_097_152})
     # 编辑唤醒的液体活动集（墙周围，此时还没有水）走一步即趋静，墙页不会作为活动页在启动时装入。
     send(w, :liquid_commit)
-    assert World.liquid_activity(w).active_cells == 0
+    await(fn -> World.liquid_activity(w).active_cells == 0 end)
     assert :ok = World.compact(w)
 
     w = restart(c)
@@ -398,6 +691,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert :ok = World.compact(c.world)
 
     w = restart(c)
+    assert :ok = World.set_simulation_windows(w, [{{0, 0, 0}, {1, 1, 1}}])
     # 只触及 home 页 {0,0,0} 的一格（只装本页）；树的另一部分在页 {2,0,0}，读它时卡住。
     GateRead.hold(self(), {0, {2, 0, 0}})
     reader = Task.async(fn -> World.material_snapshot(w, [], [{60, 2, 10}]) end)
@@ -418,6 +712,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert materials(w, cells) == List.duplicate(11, 8)
 
     w = restart(c)
+    assert :ok = World.set_simulation_windows(w, [{{0, 0, 0}, {1, 1, 1}}])
     assert materials(w, cells) == List.duplicate(11, 8)
     assert Map.has_key?(:sys.get_state(w).instances, instance)
   end
@@ -455,10 +750,9 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert materials(w, cells ++ [{61, 3, 10}, {10, 2, 330}]) == List.duplicate(11, 8) ++ [19, 19]
   end
 
-  # 评审 Fable §2.3：让出 / 撤销暂存后，身份记录已在内存而树未闭合；该条目随别的任务（不含这棵树）正常结束、以 attempt > 0 重放时，
-  # 仍要定位补根、等 home 页与覆盖页闭合，不能按内存里的半棵树作答。
+  # P1：失败任务没有最后需求时退休半树；新的正常请求仍从持久locator恢复完整树，不把退休当业务删除。
   @tag log: GateRead
-  test "让出后以 attempt > 0 重放：内存里有记录而树未闭合的身份继续定位，不按半棵树作答", c do
+  test "装页失败暂存被退休后，下一正常请求仍通过locator恢复整树", c do
     offsets = Enum.to_list(0..3) ++ Enum.to_list(70..73)
     cells = for dx <- offsets, do: {60 + dx, 2, 10}
     id = define(c, %{macro_cells: for(dx <- offsets, do: {{dx, 0, 0}, 11})})
@@ -471,31 +765,32 @@ defmodule VoxelRegion.PageOnDemandTest do
     GateRead.hold(self(), {0, {2, 0, 0}})
     killed = Task.async(fn -> World.instance_cells(w, instance) end)
     assert_receive {:holding_read, task, {0, {2, 0, 0}}}, 10_000
+    # 只测试callback运输：合法且仍有原任务需求的半树副本，以attempt1过同一gate；不回填运行authority。
+    # 删除gate对“已知但未闭合身份”的定位例外，会错误返回:ready，不能拿退休后的attempt0恢复替代这一合同。
+    partial = :sys.get_state(w)
+    probe_from = {self(), make_ref()}
+    assert {:deferred, probe} = VoxelRegion.World.PageLoad.gate(partial, {:call, {:instance_cells, instance}, probe_from}, 1)
+    assert_receive {:"$gen_call", {probe_pid, _} = reply_to, {:page_need, [], [], [^instance], probe_pid}}, 1_000
+    probe_ref = Enum.find_value(probe.page_load.tasks, fn {ref, entry} -> entry.pid == probe_pid and ref end)
+    GenServer.reply(reply_to, :ready)
+    assert_receive {:DOWN, ^probe_ref, :process, ^probe_pid, :normal}, 1_000
+    _ = VoxelRegion.World.PageLoad.accepted(probe, probe_from)
     Process.exit(task, :kill)
     assert {:error, {:page_load_failed, :killed}} = Task.await(killed, 10_000)
     state = :sys.get_state(w)
-    assert Map.has_key?(state.instances, instance)
+    refute Map.has_key?(state.instances, instance)
     refute Pages.tree_complete?(state, instance)
     refute Pages.resident?(state, {0, {0, 0, 0}})
 
-    # 只测试夹具：把一条 `instance_cells` 交给一个不含这棵树、正常结束的装页任务（等同让出给已结束 / 只装别处的任务），
-    # 经 World 的正常 DOWN → 重放路径以 attempt 1 过闸。
-    {me, tag} = {self(), make_ref()}
-    stub = spawn(fn -> receive do: (:go -> :ok) end)
-    :sys.replace_state(w, fn s ->
-      ref = Process.monitor(stub)
-      put_in(s.page_load.tasks[ref], %{pid: stub, entries: [{:call, {:instance_cells, instance}, {me, tag}}], attempt: 0,
-        started: System.monotonic_time(:microsecond)})
-    end)
-    send(stub, :go)
-    assert_receive {^tag, {:ok, tree}}, 10_000
+    assert :ok = World.set_simulation_windows(w, [{{0, 0, 0}, {1, 1, 1}}])
+    assert {:ok, tree} = World.instance_cells(w, instance)
     # 手算：整树 8 格（home 页 4 格 + 覆盖页 4 格）；半棵树只有 4 格。
     assert Enum.sort(tree) == Enum.sort(cells)
     assert resident?(w, {0, {0, 0, 0}}) and resident?(w, {0, {2, 0, 0}})
   end
 
   # 评审 A1 / F2：裁剪只作用于本笔碰过的身份。即使某次接纳只带来树的 home（身份已装、格未装），别处提交也不删它。
-  test "别处提交不把内存里格未装的实例当死实例删除", c do
+  test "别处提交可退休无需求的装入表示，持久实例仍能正常定位", c do
     # 手算：anchor 宏格 (60,2,10) → home 页 {0,0,0}；全部宏格在 x 130..133（页 {2,0,0}），home 页上没有它的格。
     id = define(c, %{macro_cells: for(dx <- 70..73, do: {{dx, 0, 0}, 11})})
     assert {:ok, _} = World.place_prefab(c.world, id, {480, 16, 80}, 0)
@@ -509,7 +804,9 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert {_, _} = GenServer.call(w, {:page_adopt, [{key, 0}], rows, %{}})
     assert Map.has_key?(:sys.get_state(w).instances, instance)
     assert {:ok, _} = World.apply_edits(w, [{{10, 2, 330}, 19}])
-    assert Map.has_key?(:sys.get_state(w).instances, instance)
+    refute Map.has_key?(:sys.get_state(w).instances, instance)
+    assert {:ok, restored} = World.instance_cells(w, instance)
+    assert Enum.sort(restored) == for(x <- 130..133, do: {x, 2, 10})
   end
 
   # 评审 A4：后缀里区域后像带的是实例的网络投影（无 placed_by）；回放不得用它覆盖页里装回的完整记录。
@@ -575,6 +872,7 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert :ok = World.compact(c.world)
     w = restart(c)
     _ = materials(w, [{10, 1, 10}])
+    assert World.simulation_windows(w).source_count == 0
     send(w, :thermal_commit)
     _ = World.seq(w)
     assert :ok = World.compact(w)
@@ -584,10 +882,11 @@ defmodule VoxelRegion.PageOnDemandTest do
     assert sources[{10, 1, 330}].remaining_j < 1.0e9
   end
 
-  # 评审 F4：装页任务异常退出时不立即重投热步——读库持续失败时不形成紧循环，等下一拍再试。
+  # 装页失败保持原due；显式修复/恢复后才续步，不再按墙钟无限自动重试。步前读取集缺页时不开run（无部分推进）；
+  # 失败期间到达的显式强制步与 `:liquid_commit` 同经输入闸显式拒绝，不另起读取或绕过失败闸。
   @tag :thermal
   @tag log: GateRead
-  test "热步前装页失败：不紧循环重试", c do
+  test "热步前装页失败：原due显式等待，强制步不绕过，一次恢复后继续", c do
     assert {:ok, _} = World.apply_edits(c.world, [{{63, 1, 10}, 19}, {{64, 1, 10}, 19}])
     experiment = Path.join(c.root, "thermal.json")
     File.write!(experiment, Jason.encode!(%{classification: "Test-only", source_macro: [63, 1, 10], ambient_kelvin: 293.15,
@@ -595,28 +894,29 @@ defmodule VoxelRegion.PageOnDemandTest do
     :ok = World.thermal_experiment(c.world, experiment)
     assert :ok = World.compact(c.world)
     w = restart(c)
-    # 只测试夹具：停掉墙钟节拍，把热源邻页 {1,0,0} 记为未驻留，并让读页失败。
-    :sys.replace_state(w, fn s ->
-      if s.thermal_timer, do: Process.cancel_timer(s.thermal_timer)
-      %{s | thermal_timer: nil, resident: MapSet.delete(s.resident, {0, {1, 0, 0}})}
-    end)
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{63, 1, 10}, {65, 2, 11}})
+    # 只测试夹具：把热源邻页 {1,0,0} 记为未驻留，并让读页失败；到期自然步在步前读取。
+    :sys.replace_state(w, fn s -> %{s | resident: MapSet.delete(s.resident, {0, {1, 0, 0}})} end)
     GateRead.fail(self())
-    # 直接投递的热提交：开出提交后在第一个内核步前因缺页暂停（同步收尾路径）。
-    send(w, :thermal_commit)
-    # 1 s 内：失败后只在半秒节拍上再试（≤ 3 次），不是每次任务退出立刻重来。
-    Process.sleep(1_000)
-    GateRead.clear()
-    failures = count_failures(0)
-    assert failures >= 1 and failures <= 3
-    assert Process.alive?(w)
-  end
-
-  defp count_failures(n) do
-    receive do
-      {:read_failed, _} -> count_failures(n + 1)
+    assert_receive {:read_failed, _}, 1_000
+    try do
+      await(fn -> World.stats(w).simulation_io.status == :failed end)
+      failed = World.stats(w).simulation_progress.thermal
+      refute_receive {:read_failed, _}, 600
+      assert failed.wait_reason == :page_io_failed
+      assert :sys.get_state(w).thermal_run == nil
+      assert World.stats(w).simulation_progress.thermal.next_due_ms == failed.next_due_ms
+      send(w, :thermal_commit)
+      World.seq(w)
+      refute_receive {:read_failed, _}, 100
+      assert World.stats(w).simulation_progress.thermal.model_elapsed_s == failed.model_elapsed_s
+      GateRead.clear()
+      assert {:loading, _attempt} = World.retry_simulation_io(w)
+      await(fn -> World.stats(w).simulation_progress.thermal.model_elapsed_s > failed.model_elapsed_s end)
     after
-      0 -> n
+      GateRead.clear()
     end
+    assert Process.alive?(w)
   end
 
   # 统筹跟进：窗口预备带上百个粗层页键，逐键查询让首次装页从中位 74 ms 退化到 1.2 s。粗层页按级合并读取：查询数不随页键数增长。
@@ -673,6 +973,7 @@ defmodule VoxelRegion.PageOnDemandTest do
       liquid_bounds: {{0, 0, 0}, {8, 8, 8}}, death_drop_probability: 1.0)
     c = %{c | opts: opts}
     w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, opts[:liquid_bounds])
     {:ok, _} = World.apply_edits(w, for(x <- 0..7, z <- 0..7, do: {{x, 0, z}, 7}))
     {:ok, _} = World.material_supply(w, 1001, "death-drop", %{sand => 8 * capacity})
     send(w, :liquid_commit)

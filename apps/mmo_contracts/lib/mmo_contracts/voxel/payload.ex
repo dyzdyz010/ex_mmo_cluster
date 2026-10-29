@@ -36,8 +36,8 @@ defmodule MmoContracts.Voxel.Payload do
             canopy_residual_structure: %{},
             base_instances: nil,
             base_format_version: nil,
-            # 编码复用：已编好的 refined 槽记录（cell_index => Refined.slot_records/1），不进线格式、解码恒为空。
-            refined_records: %{},
+            # 唯一编码投影，与 decoded refined map 互斥；不进线格式，解码恒为 nil。
+            refined_encoding: nil,
             format_version: 4
 
   @doc "region 载荷每轴 cell 数（含边缘）。"
@@ -400,6 +400,37 @@ defmodule MmoContracts.Voxel.Payload do
     {m, skins(p, local, m)}
   end
 
+  @doc "两个已接纳地形格的规范值是否相同；同材质且都无表皮记录时不构造均匀六面值。"
+  def same_value?(%__MODULE__{} = left, left_local, %__MODULE__{} = right, right_local) do
+    left_material = material(left, left_local)
+    right_material = material(right, right_local)
+    left_material == right_material and
+      ((not Map.has_key?(left.records, left_local) and not Map.has_key?(right.records, right_local)) or
+        skins(left, left_local, left_material) == skins(right, right_local, right_material))
+  end
+
+  @doc "将两份已接纳载荷的连续X行差额写入覆盖表；键沿左侧local，值取右侧规范材料与表皮。"
+  def put_row_differences(%__MODULE__{} = left, left_local, %__MODULE__{} = right, right_local, count, overrides) do
+    left_cells = binary_part(left.cells, cell_index(left_local) * 2, count * 2)
+    right_cells = binary_part(right.cells, cell_index(right_local) * 2, count * 2)
+
+    # 完整x行相等且没有表皮记录时无需构造逐格值；非空records仍逐格查键，不按行扫描整表。
+    if map_size(left.records) == 0 and map_size(right.records) == 0 and left_cells == right_cells,
+      do: overrides,
+      else: row_differences(left_cells, right_cells, left, right, left_local, right_local, overrides)
+  end
+
+  defp row_differences(<<>>, <<>>, _left, _right, _left_local, _right_local, overrides), do: overrides
+
+  defp row_differences(<<material::16-little, left_cells::binary>>, <<other::16-little, right_cells::binary>>,
+         left, right, {x, y, z} = left_local, {rx, ry, rz} = right_local, overrides) do
+    changed = material != other or
+      ((Map.has_key?(left.records, left_local) or Map.has_key?(right.records, right_local)) and
+        not same_value?(left, left_local, right, right_local))
+    overrides = if changed, do: Map.put(overrides, left_local, value(right, right_local)), else: overrides
+    row_differences(left_cells, right_cells, left, right, {x + 1, y, z}, {rx + 1, ry, rz}, overrides)
+  end
+
   @doc """
   按 overrides（local → {material, skins}）改写后重编码成完整载荷字节（seq 换成给定值）。
   表皮记录 = 原记录（去掉被覆盖的格）∪ overrides 里非平凡的格，按 (z, y, x) 升序写 CSR；贴图池按内容去重。
@@ -537,8 +568,16 @@ defmodule MmoContracts.Voxel.Payload do
     end
   end
 
+  defp refined_input(%{refined_encoding: nil, refined: refined}), do: refined
+  defp refined_input(%{refined_encoding: %MmoContracts.Voxel.Refined.Encoding{} = encoding, refined: refined})
+       when map_size(refined) == 0, do: encoding
+  defp refined_input(_), do: raise(ArgumentError, "conflicting refined encoding inputs")
+  defp refined_count(%MmoContracts.Voxel.Refined.Encoding{} = encoding), do: MmoContracts.Voxel.Refined.Encoding.size(encoding)
+  defp refined_count(refined), do: map_size(refined)
+
   defp encode_with_details(terrain, p, seq, content_version) do
     instances = p.base_instances || p.instances
+    refined = refined_input(p)
     materials =
       for {i, _} <- p.liquid_units,
           into: MapSet.new(),
@@ -567,41 +606,40 @@ defmodule MmoContracts.Voxel.Payload do
         Enum.any?(instances, fn {_, i} -> Map.get(i, :parent_id, {0, 0}) != {0, 0} end) ->
           7
 
-        map_size(p.refined) > 0 or map_size(instances) > 0 ->
+        refined_count(refined) > 0 or map_size(instances) > 0 ->
           5
 
         true ->
           4
       end
 
-    raw =
+    # 尾段保留有序片段；VXRD直接包裹同一尾段，不先构造完整base再切出重拼。
+    tail =
       case version do
         v when v in [9, 10, 11, 12] ->
-          terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, instances, 7, p.refined_records) <>
-            MmoContracts.Voxel.Attachments.encode(p.attachments) <> encode_liquid(p.liquid_units)
+          [MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
+           MmoContracts.Voxel.Attachments.encode(p.attachments), encode_liquid(p.liquid_units)]
 
         8 ->
-          terrain <>
-            MmoContracts.Voxel.Refined.encode(p.refined, instances, 7, p.refined_records) <>
-            MmoContracts.Voxel.Attachments.encode(p.attachments)
+          [MmoContracts.Voxel.Refined.encode_iodata(refined, instances, 7),
+           MmoContracts.Voxel.Attachments.encode(p.attachments)]
 
         6 ->
-          terrain <> MmoContracts.Voxel.Structure.encode(p.structure)
+          MmoContracts.Voxel.Structure.encode(p.structure)
 
         v when v in [5, 7] ->
-          terrain <> MmoContracts.Voxel.Refined.encode(p.refined, instances, v, p.refined_records)
+          MmoContracts.Voxel.Refined.encode_iodata(refined, instances, v)
 
         4 ->
-          terrain
+          []
       end
 
-    {raw,version} = if map_size(p.canopy)>0 or map_size(p.canopy_residual)>0 do
-      base_tail=binary_part(raw,byte_size(terrain),byte_size(raw)-byte_size(terrain))
-      {terrain <> <<version::32-little,byte_size(base_tail)::32-little>> <> base_tail <>
-        MmoContracts.Voxel.Canopy.encode(p.canopy,p.canopy_instances,p.canopy_residual,p.canopy_residual_structure),13}
+    {raw, version} = if map_size(p.canopy) > 0 or map_size(p.canopy_residual) > 0 do
+      {[terrain, <<version::32-little, IO.iodata_length(tail)::32-little>>, tail,
+        MmoContracts.Voxel.Canopy.encode(p.canopy, p.canopy_instances,
+          p.canopy_residual, p.canopy_residual_structure)], 13}
     else
-      {raw,version}
+      {[terrain, tail], version}
     end
     MmoContracts.Voxel.Codec.encode_payload(p.level, p.region, seq, content_version, raw, version)
   end

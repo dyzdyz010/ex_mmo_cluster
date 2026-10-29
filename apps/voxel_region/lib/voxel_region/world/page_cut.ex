@@ -10,7 +10,7 @@ defmodule VoxelRegion.World.PageCut do
   - **积压接纳**（§5.3）：积压量 = 日志后缀事务数（`seq − 已发布前缀`）与攒下的脏单元数，二者都只随提交增长、只因发布回落，
     所以只在提交与发布时重算级别。软上限：立即排切点、停发布后的按区压实；中上限：不开始新的热 / 液体 / 投射物步进
     （进行中的走到提交边界）；硬上限：World 在会产生新提交的入口处拒绝（`{:error, :persist_backlog}`）。
-    回落到中上限以下时由本模块恢复被暂停的调度，不等新输入。
+    回落到中上限以下时由本模块恢复被延后的调度，不等新输入；各物理owner的due与剩余步始终保留。
   - **Replica 退休**（§6.3）：只通知单调推进、确认已满 `replica_retain_s` 的最新前缀，无新切点时由定时器收尾。
   """
   require Logger
@@ -25,6 +25,8 @@ defmodule VoxelRegion.World.PageCut do
   @retry_ms 200
   @batch 64
   @window 4
+  # 非空proper list的ETF外壳：版本1字节、LIST_EXT头5字节、NIL_EXT尾1字节。
+  @list_bytes 7
 
   # 积压三级上限 {软, 中, 硬}，按 M0 负载保守取值（m2a §5.3）：4 份如园 8 窗口约 8 笔/s、常规切点 30 s 一次，
   # 后缀常态几百笔、脏单元几十；迁移切点期间尚无前缀，不计积压。
@@ -52,11 +54,19 @@ defmodule VoxelRegion.World.PageCut do
   def new(published, opts \\ []) do
     limits = Map.merge(@limits, Keyword.get(opts, :persist_backlog, Application.get_env(:voxel_region, :persist_backlog, %{})))
     retain_s = Keyword.get(opts, :replica_retain_s, Application.get_env(:voxel_region, :replica_retain_s, @replica_retain_s))
+    budget = write_budget(Keyword.get(opts, :page_write_budget, Application.get_env(:voxel_region, :page_write_budget)))
 
     %{writer: nil, published: published, cut: nil, waiters: [], timer: nil, wanted: false,
-      limits: limits, level: :ok, paused: false, dirty_since: nil,
+      limits: limits, level: :ok, paused: false, dirty_since: nil, write_budget: budget,
       replica_retain_ms: round(retain_s * 1000), replica_pending: [], replica_sent: nil, replica_timer: nil}
   end
+
+  # 现格式尚有未划分的大自然单元；没有已批准的生产字节默认，不能暗设会拒绝合法旧内容的数值。
+  defp write_budget(nil), do: %{batch_bytes: :infinity, inflight_bytes: :infinity}
+  defp write_budget(%{batch_bytes: batch, inflight_bytes: inflight} = budget)
+       when is_integer(batch) and batch >= @list_bytes and is_integer(inflight) and inflight >= @list_bytes,
+       do: Map.take(budget, [:batch_bytes, :inflight_bytes])
+  defp write_budget(other), do: raise(ArgumentError, "invalid page_write_budget: #{inspect(other)}")
 
   @doc "启动写回进程（与 World 链接）。"
   def start_writer(state) do
@@ -133,8 +143,13 @@ defmodule VoxelRegion.World.PageCut do
   def at_least?(%{page_store: %{level: level}}, floor), do: at_least?(level, floor)
   def at_least?(level, floor), do: Enum.find_index(@levels, &(&1 == level)) >= Enum.find_index(@levels, &(&1 == floor))
 
-  @doc "中上限下跳过了一次热 / 液体 / 投射物步进：记下，回落时由 `assess/1` 恢复调度。"
-  def pause(state), do: put_in(state.page_store.paused, true)
+  @doc "写回使自然步暂不能开始；只记录等待事实，不清物理进度，回落时由assess恢复原欠账。"
+  def pause(state) do
+    if not state.page_store.paused do
+      Logger.warning("voxel_simulation_wait reason=writeback seq=#{state.seq} thermal_due_ms=#{inspect(state.thermal_due)} liquid_due_ms=#{inspect(state.liquid_due)}")
+    end
+    put_in(state.page_store.paused, true)
+  end
 
   @doc "积压计量（`World.stats`）：级别、后缀事务数、脏单元数、冻结存活、在途批与字节、最老未持久提交的年龄。"
   def backlog(%{page_store: store} = state) do
@@ -145,10 +160,13 @@ defmodule VoxelRegion.World.PageCut do
     %{persist_level: store.level, persist_paused: store.paused,
       suffix_txns: if(store.published, do: state.seq - store.published, else: state.seq),
       dirty_units: MapSet.size(state.page_dirty),
-      cut_units_left: if(cut, do: length(cut.todo), else: 0),
+      cut_units_left: if(cut, do: length(cut.todo) + if(cut.next, do: 1, else: 0), else: 0),
       frozen_ms: if(cut, do: div(System.monotonic_time(:microsecond) - cut.started, 1000), else: 0),
       inflight_batches: if(cut, do: length(cut.inflight), else: 0),
       inflight_bytes: if(cut, do: Enum.sum(cut.inflight), else: 0),
+      pending_unit_bytes: if(cut && cut.next, do: elem(cut.next, 1), else: 0),
+      write_batch_limit_bytes: store.write_budget.batch_bytes,
+      write_inflight_limit_bytes: store.write_budget.inflight_bytes,
       oldest_dirty_ms: if(since, do: now - since, else: 0)}
   end
 
@@ -191,7 +209,7 @@ defmodule VoxelRegion.World.PageCut do
       # 活动单元（M2b 活动索引）按本批涉及的页补入，值在抽取时按冻结状态判。
       units = Pages.with_activity(MapSet.to_list(state.page_dirty))
       attempt = make_ref()
-      cut = %{attempt: attempt, seq: state.seq, frozen: Pages.frozen(state), units: units, todo: units, credits: @window,
+      cut = %{attempt: attempt, seq: state.seq, frozen: Pages.frozen(state), units: units, todo: units, next: nil, credits: @window,
         begun: false, publishing: false, started: System.monotonic_time(:microsecond), dirty_since: store.dirty_since, inflight: []}
       GenServer.cast(store.writer, {:begin, attempt, state.seq})
       %{state | page_dirty: MapSet.new(), page_store: %{store | cut: cut, wanted: false, dirty_since: nil}}
@@ -234,16 +252,24 @@ defmodule VoxelRegion.World.PageCut do
       cut.publishing ->
         state
 
-      cut.todo != [] and cut.credits > 0 ->
-        {batch, todo} = Enum.split(cut.todo, @batch)
-        units = Enum.map(batch, &{&1, Pages.extract(cut.frozen, &1)})
-        GenServer.cast(state.page_store.writer, {:batch, cut.attempt, cut.seq, units})
-        # 每个回合一批：其余批经自发消息排在其他提交之后。
-        if todo != [], do: send(self(), :page_pump)
-        put_in(state.page_store.cut, %{cut | todo: todo, credits: cut.credits - 1, inflight: cut.inflight ++ [:erlang.external_size(units)]})
+      (cut.todo != [] or cut.next != nil) and cut.credits > 0 ->
+        budget = state.page_store.write_budget
+        available = remaining(budget.inflight_bytes, Enum.sum(cut.inflight))
+        maximum = lesser(budget.batch_bytes, budget.inflight_bytes)
+        {units, bytes, cut} = take_batch(cut, lesser(budget.batch_bytes, available), maximum, [], @list_bytes, 0)
+        if units == [] do
+          put_in(state.page_store.cut, cut)
+        else
+          GenServer.cast(state.page_store.writer, {:batch, cut.attempt, cut.seq, units})
+          # 每个回合一批；字节不足时等原ACK，不排空转消息或增加第二运输路径。
+          if cut.todo != [] or cut.next != nil, do: send(self(), :page_pump)
+          put_in(state.page_store.cut, %{cut | credits: cut.credits - 1, inflight: cut.inflight ++ [bytes]})
+        end
 
-      cut.todo == [] and cut.credits == @window ->
+      cut.todo == [] and cut.next == nil and cut.credits == @window ->
         globals = Pages.globals(cut.frozen)
+        if not fits?(byte_size(globals), state.page_store.write_budget.inflight_bytes),
+          do: raise(ArgumentError, "voxel globals exceed declared write inflight budget; refine the upstream globals unit")
         GenServer.cast(state.page_store.writer, {:publish, cut.attempt, cut.seq, [], globals})
         put_in(state.page_store.cut, %{cut | publishing: true, inflight: [byte_size(globals)]})
 
@@ -251,6 +277,28 @@ defmodule VoxelRegion.World.PageCut do
         state
     end
   end
+
+  defp take_batch(cut, _available, _maximum, units, bytes, @batch), do: {Enum.reverse(units), bytes, cut}
+  defp take_batch(%{todo: [], next: nil} = cut, _available, _maximum, units, bytes, _count),
+    do: {Enum.reverse(units), bytes, cut}
+  defp take_batch(%{next: nil, todo: [unit | rest]} = cut, available, maximum, units, bytes, count) do
+    next = Pages.write_unit(cut.frozen, unit, maximum)
+    take_batch(%{cut | next: next, todo: rest}, available, maximum, units, bytes, count)
+  end
+  defp take_batch(%{next: {unit, single_bytes}} = cut, available, maximum, units, bytes, count) do
+    total = bytes + single_bytes - @list_bytes
+    if fits?(total, available),
+      do: take_batch(%{cut | next: nil}, available, maximum, [unit | units], total, count + 1),
+      else: {Enum.reverse(units), bytes, cut}
+  end
+
+  defp fits?(_bytes, :infinity), do: true
+  defp fits?(bytes, maximum), do: bytes <= maximum
+  defp lesser(:infinity, right), do: right
+  defp lesser(left, :infinity), do: left
+  defp lesser(left, right), do: min(left, right)
+  defp remaining(:infinity, _used), do: :infinity
+  defp remaining(limit, used), do: limit - used
 
   defp published(state, cut, seq) do
     store = state.page_store
@@ -276,7 +324,8 @@ defmodule VoxelRegion.World.PageCut do
     # 按区压实是非必要的后台维护：超软上限时不做（§5.3）。
     state = if at_least?(state, :soft), do: state, else: Log.rebase_overlay(state, @rebase_cells)
     state = maybe_open(state)
-    if state.seq > seq, do: schedule(state), else: state
+    state = if state.seq > seq, do: schedule(state), else: state
+    VoxelRegion.World.Residency.request(state)
   end
 
   @doc """

@@ -4,6 +4,7 @@ defmodule VoxelRegion.DamageWorldTest do
   alias MmoContracts.Voxel.{Payload,Codec}
 
   alias VoxelRegion.TestSupport.{Source, Actor, Log}
+  alias VoxelRegion.World.Payloads
 
   # 只测试：每例独占 World；窗口覆盖作者样本与热/液体传播区，角色仅 1001。
   defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], {{-1,-1,-1},{9,2,2}})
@@ -191,7 +192,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert {:ok,2}=World.production_intent(c.w,c.actor,build)
     ref=:erlang.trace_delivered(c.w)
     assert_receive {:trace_delivered,_,^ref}
-    assert_received {:trace,_,:receive,{:"$gen_call",_,{:prepared_intent,_,{:production_intent,_,_},decoded}}}
+    assert_received {:trace,_,:receive,{:"$gen_call",_,{:page_request,_,{:prepared_intent,_,{:production_intent,_,_},decoded}}}}
     assert decoded |> Enum.map(fn {{level,_},_} -> level end) |> Enum.sort() == [1,2,3,4,5]
     levels=Stream.repeatedly(fn -> receive do {:trace,_,:call,{VoxelRegion.TestSupport.Source,:read,[_,level,_]}} -> level after 0 -> nil end end)
       |> Enum.take_while(& &1)
@@ -239,11 +240,11 @@ defmodule VoxelRegion.DamageWorldTest do
     # 同发送者的 trace fence 保证检查时接收跟踪已经全部投递。
     ref = :erlang.trace_delivered(c.w)
     assert_receive {:trace_delivered, _, ^ref}
-    assert_receive {:trace, _, :receive, {:"$gen_call", _, {:prepare_intent, {:tool_intent, _, _}}}}
-    refute_received {:trace, _, :receive, {:"$gen_call", _, {:prepare, _}}}
-    refute_received {:trace, _, :receive, {:"$gen_call", _, {:tool_range, _}}}
-    refute_received {:trace, _, :receive, {:"$gen_call", _, {:tool_intent, _, _}}}
-    refute_received {:trace, _, :receive, {:"$gen_call", _, {:adopt_liquid, _}}}
+    assert_receive {:trace, _, :receive, {:"$gen_call", _, {:page_request, _, {:prepare_intent, {:tool_intent, _, _}}}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:page_request, _, {:prepare, _}}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:page_request, _, {:tool_range, _}}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:page_request, _, {:tool_intent, _, _}}}}
+    refute_received {:trace, _, :receive, {:"$gen_call", _, {:page_request, _, {:adopt_liquid, _}}}}
   end
 
   @tag :tool_combat
@@ -635,7 +636,9 @@ defmodule VoxelRegion.DamageWorldTest do
     refute_received {:prepared,_,_}
 
     # 只测试：丢弃派生载荷，不改 baseline、overlay 或持久历史。
-    :sys.replace_state(world,fn state -> %{state | payloads: %{}} end)
+    :sys.replace_state(world,fn state ->
+      Enum.reduce(Payloads.cached_keys(state),state,&Payloads.cache_delete(&2,&1))
+    end)
     third = make_ref()
     :ok = World.canonical_snapshot_and_subscribe(world,box,self(),third)
     assert_receive {:prepared,0,{0,0,0}}
@@ -660,6 +663,7 @@ defmodule VoxelRegion.DamageWorldTest do
 
   @tag :b3
   test "B3 authority contact heating persists temperature with the B1 target and HP", c do
+    :ok = VoxelRegion.TestSupport.activate_simulation(c.w, {{1,1,2},{5,2,3}})
     data=Jason.decode!(File.read!(c.catalog))
     materials=Enum.map(data["materials"],fn m ->
       if m["material_id"]==19,do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>294.0}),else: m
@@ -693,6 +697,8 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   defp b3_experiment(c,energy,power,cell \\ {1,1,2}) do
+    {x,y,z}=cell
+    :ok = VoxelRegion.TestSupport.activate_simulation(c.w, {{x,y,z},{x+6,y+1,z+1}})
     data=Jason.decode!(File.read!(c.catalog))
     materials=Enum.map(data["materials"],fn m ->
       if m["material_id"]==19,do: Map.merge(m,%{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>1000.0,"heat_resistance_kelvin"=>294.0}),else: m
@@ -845,6 +851,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert observe(w).damage==before.damage
     assert observe(w).thermal==before.thermal
     # 只测试：提高热输入使同一正常结算路径到达叶子归零，不逐微格删占用。
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{1,1,2},{3,2,3}})
     path=Path.join(c.opts[:root],"strong-heat.json")
     config=Jason.decode!(File.read!(Path.join(c.opts[:root],"thermal.json"))) |> Map.merge(%{"power_w"=>1.0e8,"energy_j"=>1.0e8})
     File.write!(path,Jason.encode!(config))
@@ -897,6 +904,8 @@ defmodule VoxelRegion.DamageWorldTest do
     warm_world=start_supervised!({World,c.opts})
     cold_world=start_supervised!(Supervisor.child_spec(
       {World,Keyword.put(c.opts,:root,cold_root)},id: :cold_world))
+    :ok = VoxelRegion.TestSupport.activate_simulation(warm_world, {{63,1,2},{69,2,3}})
+    :ok = VoxelRegion.TestSupport.activate_simulation(cold_world, {{63,1,2},{69,2,3}})
     for _ <- 1..8 do
       :sys.replace_state(cold_world,fn s -> put_in(s.thermal_work.geometry,%{}) end)
       warm=b3_tick(warm_world)
@@ -918,6 +927,7 @@ defmodule VoxelRegion.DamageWorldTest do
     assert recovered.damage==before.damage
     assert recovered.thermal_work.hot==before.thermal_work.hot
     assert recovered.thermal_work.geometry==%{}
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{1,1,2},{2,2,3}})
     assert cache_tick(w).thermal_work.builds>0
   end
 
@@ -1056,7 +1066,8 @@ defmodule VoxelRegion.DamageWorldTest do
     checkpoint=VoxelRegion.TestSupport.LegacySave.checkpoint(before)
     a=%{target | granularity: 1,micro: {8,8,16},max_hp: 100.0/512,hp: 72.0/512}
     b=%{a | micro: {9,8,16},hp: 44.0/512}
-    slots=Map.delete(before.refined[{1,1,2}],2)
+    # canonical 细化槽是已冻结的 RefinedSlots；离线改旧载荷时导出为旧格式 map，比较时再按同一构造入口冻结。
+    slots=VoxelRegion.RefinedSlots.to_map(before.refined[{1,1,2}]) |> Map.delete(2)
     entries=Enum.map(checkpoint.entries,fn
       %{payload: bytes}=entry ->
         {:ok,p}=Payload.decode(bytes)
@@ -1070,7 +1081,7 @@ defmodule VoxelRegion.DamageWorldTest do
       entry -> entry
     end)
     VoxelRegion.TestSupport.LegacySave.install(path,%{checkpoint | entries: entries,property_states: [a,b],material_balances: %{{1001,11}=>1}})
-    before=%{before | refined: Map.put(before.refined,{1,1,2},slots),material_balances: %{{1001,11}=>1}}
+    before=%{before | refined: Map.put(before.refined,{1,1,2},VoxelRegion.RefinedSlots.from_map(slots)),material_balances: %{{1001,11}=>1}}
     w=start_supervised!({World,c.opts})
     migrated=:sys.get_state(w)
     assert migrated.refined==before.refined
@@ -1649,12 +1660,30 @@ defmodule VoxelRegion.DamageWorldTest do
   # 只测试白盒：物化缓存冷重建逐字节等价。
   test "cached macro afterimages equal cold canonical materialization across region rings", c do
     assert {:ok,1}=World.place_prefab(c.w,c.id,{8,504,16},0)
+    l0_regions = [{0,0,0},{0,1,0}]
+    details = Map.new(l0_regions,fn region ->
+      p = VoxelRegion.TestSupport.payload(c.w,0,region)
+      assert map_size(p.refined)>0 and map_size(p.instances)>0
+      {region,{p.refined,p.instances}}
+    end)
     assert {:ok,2}=World.apply_edit(c.w,{1,63,3},11)
     assert {:ok,3}=World.apply_edit(c.w,{1,64,3},19)
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{1,1,1}},self(),:lazy_ring,false)
+    assert_receive {:canonical_snapshot,:lazy_ring,%{transaction_seq: 3}}
     assert {:ok,4}=World.apply_edit(c.w,{1,63,3},0)
+    assert_receive {:canonical_delta,%{transaction_seq: 4,chunks: [chunk]}}
+    assert %{coord: {0,3,0},n: 128,cells: occupancy} = chunk
+    assert :binary.at(occupancy,8+128*(120+128*24))==0
     [txn]=World.entries_after(c.w,3)
+    # 懒失效后必须明确读入两个 L0；不能靠现有 cache keys 恰好仍含它们而少验。
+    for region <- l0_regions do
+      p = VoxelRegion.TestSupport.payload(c.w,0,region)
+      assert Payload.material(p,Payload.local(region,{1,63,3}))==0
+      assert Payload.material(p,Payload.local(region,{1,64,3}))==19
+      assert {p.refined,p.instances}==Map.fetch!(details,region)
+    end
     # 包含选择器/Replica共用的热L0缓存，而不只检查事务中的粗层afterimage。
-    expected = Map.new(:sys.get_state(c.w).payloads,fn {key,{bytes,_}} ->
+    expected = Map.new(Payloads.export_cached(:sys.get_state(c.w)),fn {key,{bytes,_header}} ->
       {key,Codec.stamp_payload_seq(bytes,4)}
     end)
     afterimages = for %{payload: bytes} <- txn.entries,into: %{} do
@@ -1678,8 +1707,9 @@ defmodule VoxelRegion.DamageWorldTest do
       Map.put(acc,key,bytes)
     end)
     # 可丢弃缓存不得改变世界；强制冷物化须与增量构造逐字节相同。
-    :sys.replace_state(c.w,fn s -> %{s | payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},
-      lru_bytes: 0,resident_bytes: 0} end)
+    :sys.replace_state(c.w,fn state ->
+      Enum.reduce(Payloads.cached_keys(state),state,&Payloads.cache_delete(&2,&1))
+    end)
     for {{level,region},bytes} <- expected do
       request=Codec.encode_request(0,[%{level: level,region: region,have_seq: 0,have_hash: 0}])
         |> IO.iodata_to_binary()
@@ -1812,8 +1842,12 @@ defmodule VoxelRegion.DamageWorldTest do
   end
 
   @tag :b4
-  # M2b：有前缀的重启只驻留启动装入的页；统计驻留附件前经正常读入口触及附件所在的格（页 {0,0,0}）。
-  defp touch(w), do: World.material_snapshot(w,[],[{1,1,1}])
+  # M2b：有前缀的重启只驻留启动装入的页；P1：已发布干净页在最后需求释放后退休，一次性读取不再留住页。
+  # 统计驻留附件前以正常观察订阅持有附件所在页 {0,0,0} 的需求（订阅随测试进程结束释放）。
+  defp touch(w) do
+    assert :ok = World.canonical_snapshot_and_subscribe(w,{{0,0,0},{1,1,1}},self(),:b4_resident,false)
+    assert_receive {:canonical_snapshot,:b4_resident,_}
+  end
 
   test "B4 authoritative placement, overlap, stale delete, balance and restart",c do
     r=b4_funded(c)
@@ -2065,6 +2099,7 @@ defmodule VoxelRegion.DamageWorldTest do
   @tag :b5
   @tag :physical_units
   test "附件过热只归零自己的共享 HP，删除温度同笔保存且不发采矿奖励",c do
+    :ok = VoxelRegion.TestSupport.activate_simulation(c.w, {{1,1,1},{2,2,3}})
     r=b4_funded(c)
     assert {:ok,id}=World.attachment_intent(c.w,c.actor,%{r | kind: 1,axis: 1})
     # 只测试：耐热石材支撑持有有限作者热源，附件经真实接触升温后归零。

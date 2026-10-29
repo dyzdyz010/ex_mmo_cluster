@@ -30,9 +30,17 @@ defmodule SceneServer.Movement.Player do
 
   @doc "单个 owner 的即时事实；常态全场观测使用 Scene 的低频缓存。"
   def observe(player), do: GenServer.call(player, :observe)
-  @doc "角色 owner 排序施法请求（报价 action 0、取消 2、改向 3 同步回复）；World 异步准备与结算。"
-  def spell(player, identity, request, ingress),
-    do: GenServer.call(player, {:spell, identity, request, ingress}, 300_000)
+  @doc "角色owner排序施法请求；默认等待300秒，超时显式取消本请求，已接纳结果仍未知且不回滚。"
+  def spell(player, identity, request, ingress, timeout \\ 300_000) do
+    ref = make_ref()
+    try do
+      GenServer.call(player, {:spell_request, ref, identity, request, ingress}, timeout)
+    catch
+      :exit, {:timeout, _} = reason ->
+        GenServer.cast(player, {:cancel_spell_request, ref})
+        exit(reason)
+    end
+  end
 
   @doc """
   传送信标出发（0x87）的角色 owner 入口：异步排进，调用方不等读条。request = `%{client_intent_seq, from, to}`。
@@ -44,7 +52,7 @@ defmodule SceneServer.Movement.Player do
 
   @doc """
   施放（0x82 action 1）的角色 owner 入口：异步排进与 `spell/4` 同一处理，调用方不等前摇。前摇与授权由本进程推进，
-  World 结算后以 `GenServer.reply(reply_to, 结果)` 回 `{tag, {:ok, %{seq, outcome, caster}} | {:error, reason}}`；
+  World结算先回Player的本请求relay，再向原reply_to转交一次 `{tag, {:ok, %{seq, outcome, caster}} | {:error, reason}}`；
   立即拒绝（`cast_too_soon`、`dead`、`invalid_state` 等）、取消（`cast_cancelled`）与会话结束（`invalid_session`）
   经同一 `reply_to`，本进程处理到的每次施放恰好一个回复；处理前本进程已退出则没有回复，调用方以本进程的 DOWN 收尾
   （Dispatch 的等待进程与 Body 都监视它）。成功结算的施法者状态由 World 先发往 `ingress.caster_recipient`
@@ -169,6 +177,8 @@ defmodule SceneServer.Movement.Player do
         movement_scales: [{0, 1.0, 1.0}],
         action: nil,
         action_seq: 0,
+        # 只持有本Player转交的施法/报价等待；World接纳和支付真值仍由原owner维护。
+        spell_requests: %{},
         tool_action: nil,
         life_generation: System.unique_integer([:positive, :monotonic]),
         body_hits: %{},
@@ -241,7 +251,7 @@ defmodule SceneServer.Movement.Player do
             )
 
           Process.monitor(stream)
-          :ok = CollisionStream.attach(stream, self(), cut.stream_cursor)
+          :ok = CollisionStream.attach(stream, self(), cut.stream_cursor, simulation_windows(state))
           state
 
         nil ->
@@ -288,51 +298,12 @@ defmodule SceneServer.Movement.Player do
   end
 
   @impl true
-  def handle_call(
-        {:spell, identity, request, ingress},
-        from,
-        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
-      ) do
-    key = MmoContracts.Action.key(identity, request.client_intent_seq)
+  def handle_call({:spell_request, ref, identity, request, ingress}, from, state),
+    do: handle_spell(identity, request, ingress, from, ref, state)
 
-    case {request.action, state.action} do
-      {0, _} ->
-        send(state.authority_ref, {:quote_cast, Map.merge(actor_context(state), ingress), request, from})
-        {:noreply, state}
-
-      # 死亡统一拒绝为 dead（与 tool_context 同一原因），不再混作 cast_too_soon。
-      {1, _} when state.body.status == :dead ->
-        {:reply, {:error, :dead}, state}
-
-      {1, nil} when request.client_intent_seq > state.action_seq ->
-        actor = Map.merge(actor_context(state), ingress)
-        send(state.authority_ref, {:prepare_cast, key, actor, request, from})
-
-        next = %{
-          state
-          | action: %{key: key, request: request, phase: :preparing, timer: nil},
-            action_seq: request.client_intent_seq
-        }
-
-        {:noreply, publish_movement_scale(next, next.body)}
-
-      {1, _} ->
-        {:reply, {:error, :cast_too_soon}, state}
-
-      {2, %{key: ^key}} ->
-        {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
-
-      {3, %{key: ^key} = action} ->
-        # 控制请求只更新当前动作的方向，不替换程序和目标。
-        next = %{action | request: %{action.request | direction: request.direction}}
-        {:reply, {:ok, :controlled}, %{state | action: next}}
-
-      {_, _} ->
-        {:reply, {:error, :already_released}, state}
-    end
-  end
-
-  def handle_call({:spell, _, _, _}, _, state), do: {:reply, {:error, :invalid_state}, state}
+  # 现有直接调用方仍可用原消息；公共wrapper另带显式超时取消身份。
+  def handle_call({:spell, identity, request, ingress}, from, state),
+    do: handle_spell(identity, request, ingress, from, make_ref(), state)
 
   def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state)
       when action != nil,
@@ -568,6 +539,9 @@ defmodule SceneServer.Movement.Player do
 
   # `cast_spell/5` 的异步形：与同步施法同一处理，立即回复改由 GenServer.reply 发给调用方给的 reply_to。
   @impl true
+  def handle_cast({:cancel_spell_request, ref}, state),
+    do: {:noreply, cancel_spell_request(state, ref, :cast_cancelled)}
+
   def handle_cast({:spell, identity, request, ingress, from}, state) do
     case handle_call({:spell, identity, request, ingress}, from, state) do
       {:reply, reply, next} ->
@@ -666,6 +640,17 @@ defmodule SceneServer.Movement.Player do
   def handle_cast(_, state), do: {:noreply, %{state | old_identity: state.old_identity + 1}}
 
   @impl true
+  def handle_info({{:spell_reply, ref}, reply}, state) do
+    case Map.pop(state.spell_requests, ref) do
+      {nil, _} -> {:noreply, state}
+      {request, pending} ->
+        Process.demonitor(request.monitor, [:flush])
+        GenServer.reply(request.from, reply)
+        Logger.info("voxel_player_spell_wait request=#{inspect(ref)} status=completed")
+        {:noreply, %{state | spell_requests: pending}}
+    end
+  end
+
   def handle_info(
         {:cast_prepared, key, windup_s},
         %{action: %{key: key, phase: :preparing} = action} = state
@@ -1024,7 +1009,12 @@ defmodule SceneServer.Movement.Player do
   def handle_info({:DOWN, _, :process, _, _}, %{body_fence: fence} = state) when fence != nil,
     do: {:noreply, state}
 
-  def handle_info({:DOWN, _, :process, _, _}, state), do: begin_body_detach(state, :stop, nil)
+  def handle_info({:DOWN, monitor, :process, _, _}, state) do
+    case Enum.find(state.spell_requests, fn {_, request} -> request.monitor == monitor end) do
+      {ref, _} -> {:noreply, cancel_spell_request(state, ref, :cast_cancelled)}
+      nil -> begin_body_detach(state, :stop, nil)
+    end
+  end
 
   # World 先停止旧 PID 接触，再由同一发送者返回 fence；等待期间仍处理此前的热消息。
   defp begin_body_detach(%{body_fence: {ref, monitor, previous, waiters}} = state, action, from) do
@@ -1037,6 +1027,7 @@ defmodule SceneServer.Movement.Player do
        do: complete_body_detach(state, :stop, [{:stop, from}])
 
   defp begin_body_detach(state, action, from) do
+    state = Enum.reduce(Map.keys(state.spell_requests), state, &cancel_spell_request(&2, &1, :cast_cancelled))
     state = cancel_cast(state, :cast_cancelled)
     state = if action == :stop, do: %{state | transfer: :stopping}, else: state
 
@@ -1067,6 +1058,8 @@ defmodule SceneServer.Movement.Player do
   end
 
   defp seal_body(state) do
+    # 同一发送者到流的屏障：cut 中的在途窗口请求必须已经被流接纳；不等待 World 或快照完成。
+    if state.stream, do: :ok = CollisionStream.synchronize(state.stream)
     state = persist_body(state)
     fence(state)
 
@@ -1327,8 +1320,80 @@ defmodule SceneServer.Movement.Player do
     }
   end
 
-  defp cancel_cast(%{action: nil} = state, _), do: state
+  defp handle_spell(
+        identity, request, ingress, from, ref,
+        %{identity: identity, ready: true, transfer: nil, failure: nil} = state
+      ) do
+    key = MmoContracts.Action.key(identity, request.client_intent_seq)
 
+    case {request.action, state.action} do
+      {0, _} ->
+        {state, reply_to} = track_spell(state, ref, from, nil)
+        send(state.authority_ref, {:player_spell_request, ref, reply_to,
+          {:quote_cast, Map.merge(actor_context(state), ingress), request, reply_to}})
+        {:noreply, state}
+
+      # 死亡统一拒绝为 dead（与 tool_context 同一原因），不再混作 cast_too_soon。
+      {1, _} when state.body.status == :dead ->
+        {:reply, {:error, :dead}, state}
+
+      {1, nil} when request.client_intent_seq > state.action_seq ->
+        actor = Map.merge(actor_context(state), ingress)
+        {state, reply_to} = track_spell(state, ref, from, key)
+        send(state.authority_ref, {:player_spell_request, ref, reply_to,
+          {:prepare_cast, key, actor, request, reply_to}})
+
+        next = %{
+          state
+          | action: %{key: key, request: request, phase: :preparing, timer: nil},
+            action_seq: request.client_intent_seq
+        }
+
+        {:noreply, publish_movement_scale(next, next.body)}
+
+      {1, _} ->
+        {:reply, {:error, :cast_too_soon}, state}
+
+      {2, %{key: ^key}} ->
+        {:reply, {:ok, :controlled}, cancel_cast(state, :cast_cancelled)}
+
+      {3, %{key: ^key} = action} ->
+        # 控制请求只更新当前动作的方向，不替换程序和目标。
+        next = %{action | request: %{action.request | direction: request.direction}}
+        {:reply, {:ok, :controlled}, %{state | action: next}}
+
+      {_, _} ->
+        {:reply, {:error, :already_released}, state}
+    end
+  end
+
+  defp handle_spell(_, _, _, _, _, state), do: {:reply, {:error, :invalid_state}, state}
+
+  # Scene只监视原waiter，World只在准备/ready期间监视作为请求owner的Player。
+  # 前摇接纳后World沿原pending_cast监视Player；两个阶段不复制等待真值。
+  defp track_spell(state, ref, {waiter, _} = from, key) do
+    pending = Map.put(state.spell_requests, ref, %{from: from, monitor: Process.monitor(waiter), key: key})
+    Logger.info("voxel_player_spell_wait request=#{inspect(ref)} status=waiting kind=#{if key, do: :cast, else: :quote}")
+    {%{state | spell_requests: pending}, {self(), {:spell_reply, ref}}}
+  end
+
+  defp cancel_spell_request(state, ref, reason) do
+    case Map.pop(state.spell_requests, ref) do
+      {nil, _} -> state
+      {request, pending} ->
+        Process.demonitor(request.monitor, [:flush])
+        GenServer.cast(state.authority_ref, {:page_cancel, ref})
+        if request.key, do: send(state.authority_ref, {:cancel_cast, request.key, reason})
+        GenServer.reply(request.from, {:error, reason})
+        state = %{state | spell_requests: pending}
+        state = if request.key && match?(%{key: key} when key == request.key, state.action),
+          do: clear_cast(state), else: state
+        Logger.info("voxel_player_spell_wait request=#{inspect(ref)} status=cancelled reason=#{reason}")
+        state
+    end
+  end
+
+  defp cancel_cast(%{action: nil} = state, _), do: state
   defp cancel_cast(state, reason) do
     character_event(state, state, :cast_cancelled, %{
       client_intent_seq: state.action.request.client_intent_seq,
@@ -1336,11 +1401,17 @@ defmodule SceneServer.Movement.Player do
     })
 
     case state.action do
-      %{kind: :beacon, from: from} -> GenServer.reply(from, {:error, reason})
-      %{key: key} -> send(state.authority_ref, {:cancel_cast, key, reason})
+      %{kind: :beacon, from: from} ->
+        GenServer.reply(from, {:error, reason})
+        clear_cast(state)
+      %{key: key} ->
+        case Enum.find(state.spell_requests, fn {_, request} -> request.key == key end) do
+          {ref, _} -> cancel_spell_request(state, ref, reason)
+          nil ->
+            send(state.authority_ref, {:cancel_cast, key, reason})
+            clear_cast(state)
+        end
     end
-
-    clear_cast(state)
   end
 
   # 传送信标读条中离开起点超过 0.25 m 即打断（Voxim Docs/Gameplay/Beacon.md §3）。
@@ -1930,6 +2001,7 @@ defmodule SceneServer.Movement.Player do
       movement_speed: elem(state.config.profile_tuple, 2) * movement_factor,
       collision_revision: state.simulation_revision,
       pending_inputs: if(state.slots, do: map_size(state.slots.pending), else: 0),
+      pending_spell_requests: map_size(state.spell_requests),
       processed_input_seq: if(state.slots, do: state.slots.processed_input_seq, else: 0),
       active: active?(state),
       dialogue_available:
@@ -1941,6 +2013,8 @@ defmodule SceneServer.Movement.Player do
       old_identity: state.old_identity,
       substitutions: state.substitutions,
       mailbox: mailbox,
+      collision_queue_length: :queue.len(state.updates.queue),
+      simulation_windows: simulation_windows(state),
       retained_versions: length(state.updates.revisions)
     }
   end
@@ -2080,6 +2154,7 @@ defmodule SceneServer.Movement.Player do
       |> List.to_tuple()
 
     %{
+      l0_box: {snapshot.l0_min, snapshot.l0_max_exclusive},
       bounds: {min, max},
       travel: {
         min |> Tuple.to_list() |> Enum.map(&(&1 + extent / 4)) |> List.to_tuple(),
@@ -2091,6 +2166,7 @@ defmodule SceneServer.Movement.Player do
   defp stream_window(%{stream: nil} = state), do: state
 
   defp stream_window(state) do
+    before = state
     {newer, older} =
       Enum.split_while(state.window_domains, fn {tick, _} -> tick > state.simulation_tick end)
 
@@ -2105,14 +2181,11 @@ defmodule SceneServer.Movement.Player do
           | revive: :window
         }
 
-      state.revive != nil ->
-        state
-
-      not state.window_pending and box != state.requested_window ->
+      state.revive == nil and not state.window_pending and box != state.requested_window ->
         request_window(state, box)
 
       true ->
-        state
+        publish_simulation_windows(before, state)
     end
   end
 
@@ -2123,8 +2196,22 @@ defmodule SceneServer.Movement.Player do
       server_time_us: System.system_time(:microsecond)
     })
 
-    CollisionStream.window(state.stream, box)
-    %{state | requested_window: box, window_pending: true}
+    state = %{state | requested_window: box, window_pending: true}
+    CollisionStream.window(state.stream, box, simulation_windows(state))
+    state
+  end
+
+  # 唯一来源是现有窗口序列与请求盒；收到事件的 ACK、private tick 的提前安装都不另造退休事实。
+  defp simulation_windows(%{stream: nil}), do: []
+  defp simulation_windows(state) do
+    (Enum.map(state.window_domains, fn {_, domain} -> domain.l0_box end) ++ List.wrap(state.requested_window))
+    |> Enum.uniq() |> Enum.sort()
+  end
+
+  defp publish_simulation_windows(before, state) do
+    windows = simulation_windows(state)
+    if windows != simulation_windows(before), do: CollisionStream.set_simulation_windows(state.stream, windows)
+    state
   end
 
   defp pod(state), do: {state.position, state.velocity, state.grounded}

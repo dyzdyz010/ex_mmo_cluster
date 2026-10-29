@@ -76,6 +76,7 @@ defmodule VoxelRegion.ThermoelectricFurnaceSimTest do
     w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env, prefab_catalog_path: Path.join(root, "prefabs"),
       production_materials: [@stone, @coal, @ice, @copper, @alloy, @te], liquid_bounds: @bounds]})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @bounds)
     actor = %{cid: 1001, gate: self(), identity: :furnace, refresh: &Actor.tool_context/2, eye: {3.5, 4.5, 2.5}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))
     c = %{w: w, actor: actor, materials: materials, v: v}

@@ -82,7 +82,7 @@ defmodule VoxelRegion.StructurePublishedTest do
       parents = children |> Map.keys() |> Enum.map(&divide(&1,2)) |> Enum.uniq()
       grids = Map.new(parents,fn {x,y,z}=parent ->
         inputs = for dz <- 0..1,dy <- 0..1,dx <- 0..1,do: Map.get(children,{x*2+dx,y*2+dy,z*2+dz},0)
-        grid = if level == 1,do: Structure.from_canonical(inputs),else: Structure.reduce(inputs)
+        grid = if level == 1,do: Structure.from_canonical(Enum.map(inputs, fn value -> if is_map(value), do: VoxelRegion.RefinedSlots.from_map(value), else: value end)),else: Structure.reduce(inputs)
         {parent,grid}
       end)
       {grids,Map.put(all,level,grids)}

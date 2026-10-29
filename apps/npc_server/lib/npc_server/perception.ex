@@ -7,7 +7,7 @@ defmodule NpcServer.Perception do
   `floors/2`（一列里哪些格站得下自己）。survey 的地表（`surfaces/2`）、travel 的段终点站立层、expand 的地面都从它取。
 
   目录读取（Body 动词 `read_catalog`）也在这里：prefab 定义的材料单与尺寸、最近的运行时发布、材料表、工具表，
-  全部取自 World 的公共只读目录（`prefab_catalog/1`、`published_prefabs/1`、`material_catalog/1`），不缓存。
+  全部取自 World 的公共只读目录（`prefab_catalog/1`、`published_prefab_metadata/1`、`material_catalog/1`），不缓存。
   材料表的可食 / 配方只对生产材料给出（集合取自 `material_balances/2`），与 World 进食、合成门受理的材料一致。
   prefab 目录行（尺寸、材料单）只在 `prefab_row/3` 计算一次，`design_house` 的目录投影也用它。
   """
@@ -267,8 +267,8 @@ defmodule NpcServer.Perception do
   # 目录：作者目录与运行时发布都在 prefab_catalog 里（F21）；单位与余额相同，都是微格体积单位。
   def read(world, _cid, {:catalog, :prefab, id}) do
     case Map.fetch(World.prefab_catalog(world), id) do
-      {:ok, compiled} ->
-        row = prefab_row(id, compiled, World.material_catalog(world))
+      {:ok, descriptor} ->
+        row = prefab_row(id, descriptor, World.material_catalog(world))
         {lo, hi} = row.summary.bounds
 
         {:ok,
@@ -284,16 +284,15 @@ defmodule NpcServer.Perception do
     end
   end
 
-  # 最近的运行时发布在前；id = 定义字节的 sha256（与 World 目录同一键）。
+  # 最近的运行时发布在前；身份取自 World 发布元信息，不为目录读取任何定义正文。
   def read(world, _cid, {:catalog, :prefabs, nil}) do
-    published = World.published_prefabs(world)
+    published = World.published_prefab_metadata(world)
     catalog = World.prefab_catalog(world)
     properties = World.material_catalog(world)
 
     rows =
-      for {publisher, name, bytes} <- published |> Enum.reverse() |> Enum.take(@recent) do
-        id = :crypto.hash(:sha256, bytes)
-
+      for %{id: id, publisher: publisher, name: name} <-
+            published |> Enum.reverse() |> Enum.take(@recent) do
         %{
           definition_id: id,
           name: name,
@@ -350,17 +349,17 @@ defmodule NpcServer.Perception do
   end
 
   @doc """
-  一条 prefab 目录行：定义 id、编译摘要、包围盒尺寸（米）与材料单（`PrefabDesigner.Check.materials/2`：
+  一条 World 轻描述的 prefab 目录行：定义 id、摘要、包围盒尺寸（米）与材料单（`PrefabDesigner.Check.materials/2`：
   `units` 与 `volume_m3`，与完整检查同一计价）。`read_catalog` 与 `design_house` 的目录投影共用这一份计算。
   """
-  def prefab_row(id, compiled, properties) do
-    {lo, hi} = compiled.summary.bounds
+  def prefab_row(id, descriptor, properties) do
+    {lo, hi} = descriptor.summary.bounds
 
     %{
       definition_id: id,
-      summary: compiled.summary,
+      summary: descriptor.summary,
       size_m: for(i <- 0..2, do: (elem(hi, i) - elem(lo, i)) / Spatial.micro_resolution()),
-      materials: Check.materials(compiled, properties)
+      materials: Check.materials(descriptor, properties)
     }
   end
 

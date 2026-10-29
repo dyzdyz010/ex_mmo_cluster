@@ -40,7 +40,7 @@ defmodule VoxelRegion.Application do
           source: VoxelRegion.GeneratedStore,
           root: root,
           manifest_path: manifest_path,
-          log: VoxelRegion.OverlayLog.Db
+          log: Application.get_env(:voxel_region, :log_backend, VoxelRegion.OverlayLog.Db)
         ]
 
         {:ok, store} = VoxelRegion.GeneratedStore.open(opts)

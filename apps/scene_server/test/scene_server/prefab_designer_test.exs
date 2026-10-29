@@ -18,7 +18,7 @@ defmodule SceneServer.PrefabDesignerTest do
     def start_link(state), do: GenServer.start_link(__MODULE__, state)
     def init(state), do: {:ok, state}
 
-    def handle_call({:material_snapshot, _, _} = request, _, state) do
+    def handle_call({:page_request, _ref, {:material_snapshot, _, _}} = request, _, state) do
       snapshot = GenServer.call(state.world, request)
 
       assert_result =
@@ -33,6 +33,12 @@ defmodule SceneServer.PrefabDesignerTest do
 
     def handle_call(request, _, state),
       do: {:reply, GenServer.call(state.world, request, 300_000), state}
+
+    # 准备作用域释放与超时取消同样原样转给真实 World，代理不持有任何协议状态。
+    def handle_cast(request, state) do
+      GenServer.cast(state.world, request)
+      {:noreply, state}
+    end
   end
 
   setup do
@@ -146,6 +152,29 @@ defmodule SceneServer.PrefabDesignerTest do
         ],
         extra
       )
+
+  @tag :prefab_designer
+  test "child drafts compile on demand while the public catalog stays lightweight", c do
+    assert {:ok, child} =
+             PrefabDesigner.publish(c.world, c.actor, draft([], [{{0, 0, 0}, 19}]))
+
+    design = %{
+      draft([])
+      | children: [%{slot: 4, definition_id: child, anchor: {8, 8, 8}, orientation: 0}]
+    }
+
+    descriptor = Map.fetch!(World.prefab_catalog(c.world), child)
+    refute Map.has_key?(descriptor, :nodes)
+    refute Map.has_key?(descriptor, :definition)
+
+    assert {:ok, report} =
+             PrefabDesigner.check(c.world, c.scene, c.actor, design, options(interiors: []))
+
+    assert report.definition_id == :crypto.hash(:sha256, Prefab.encode(design))
+    assert report.geometry_bounds == {{8, 8, 8}, {9, 9, 9}}
+    assert report.materials.units == %{19 => 1}
+    assert report.materials.shortages == %{19 => 1}
+  end
 
   @tag :prefab_designer
   @tag :world_ground

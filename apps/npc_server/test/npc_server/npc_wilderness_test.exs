@@ -18,7 +18,10 @@ defmodule NpcServer.NpcWildernessTest do
     use GenServer
     def start_link(state), do: GenServer.start_link(__MODULE__, state)
     def init(state), do: {:ok, state}
-    def handle_call({:prepare, _}, _, state), do: {:reply, {nil, nil, []}, state}
+    # 公共调用经 `World.PageLoad.call/3` 包成 `{:page_request, ref, message}`；ref 只在调用方超时时用于取消，本替身立即回复。
+    def handle_call({:page_request, _ref, message}, from, state), do: handle_call(message, from, state)
+    # 准备作用域：全驻留（missing 为空），调用方结束时 cast `{:release_preparation, token, caller}`。
+    def handle_call({:prepare, _}, _, state), do: {:reply, {make_ref(), nil, nil, []}, state}
     def handle_call({:adopt_liquid, _}, _, state), do: {:reply, :ok, state}
 
     def handle_call({:material_snapshot, [91], cells}, _, {test, materials} = state) do
@@ -33,6 +36,8 @@ defmodule NpcServer.NpcWildernessTest do
            )
        }, state}
     end
+
+    def handle_cast({:release_preparation, _token, _caller}, state), do: {:noreply, state}
   end
 
   defp start_run(opts \\ []) do

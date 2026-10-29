@@ -22,8 +22,12 @@ defmodule VoxelRegion.Circuit do
   缺省（没有行或未闭合）断开、绝缘；格用自身行（微格用 granularity 1 热行），附件用整件行。
   温敏电导（R8-10，目录 `electrical_cutoff_kelvin`）：目标此刻温度（`temperature/3`）达到截止温度即绝缘，
   低于时按目录值导电；只读温度，行上不存导通状态。
+  `:potential`只用于新接线接纳，直接使用目录电导率，忽略开关与温度；实际求解默认`:actual`。
   """
-  def sigma(catalog,damage,environment,target) do
+  def sigma(catalog, damage, environment, target, mode \\ :actual)
+  def sigma(catalog, _damage, _environment, target, :potential),
+    do: Map.get(catalog.materials[target.material], "electrical_conductivity", 0.0)
+  def sigma(catalog,damage,environment,target, :actual) do
     m=catalog.materials[target.material]
     cond do
       Map.get(m,"circuit_switch",false) and not Map.get(Map.get(damage,Damage.key(target),%{}),:closed,false) -> 0.0
@@ -81,7 +85,7 @@ defmodule VoxelRegion.Circuit do
   def prepare(slots,damage,catalog,duration,environment,domain \\ nil) do
     started=System.monotonic_time(:microsecond)
     section=catalog.attachments["line_section_m2"]
-    {edges,luminous}=Enum.reduce(slots,{[],%{}},fn {slot={kind,axis,p},{id,material}},{edges,luminous}->
+    {edges,luminous}=Enum.reduce(slots,{[],%{}},fn {slot={kind,_,_},{id,material}},{edges,luminous}->
       sigma=sigma(catalog,damage,environment,Attachments.identity(slot,{id,material}))
       if sigma>0 do
         key=VoxelRegion.ThermalAttachments.key(slot)
@@ -90,10 +94,10 @@ defmodule VoxelRegion.Circuit do
         luminous=if lum>0,do: Map.put(luminous,key,Attachments.identity(slot,{id,material}) |> Map.put(:granularity,4)),else: luminous
         o=domain && domain.(slot)
         edges=if kind==1 do
-          [edge(node(p,domain,o),node(offset(p,axis,1),domain,o),@length/(sigma*section),heat)|edges]
+          [a,b]=Attachments.vertices(slot)
+          [edge(node(a,domain,o),node(b,domain,o),@length/(sigma*section),heat)|edges]
         else
-          [u,v]=Enum.reject(0..2,&(&1==axis))
-          corners=[p,offset(p,u,1),offset(p,v,1),p |> offset(u,1) |> offset(v,1)]
+          corners=Attachments.vertices(slot)
           r=2.0/(sigma*catalog.attachments["face_thickness_m"])
           for {a,b}<-[{0,1},{0,2},{1,3},{2,3}],reduce: edges do
             acc->[edge(node(Enum.at(corners,a),domain,o),node(Enum.at(corners,b),domain,o),r,heat)|acc]
@@ -111,14 +115,20 @@ defmodule VoxelRegion.Circuit do
   @doc "需要接入实体导体的端点节点（`{:point, p}` 或带持有者的 `{:point, p, holder}`）；保持原边顺序。"
   def points(input), do: input.edges |> Enum.flat_map(&[&1.a,&1.b]) |> Enum.uniq()
 
+  @doc "无保护域的规范端点；没有持有者字段。"
+  def point(p), do: {:point,p}
+
+  @doc "有保护域的规范端点；持有者原样保留，包括显式nil，不与无域身份合并。"
+  def point(p,holder), do: {:point,p,holder}
+
   @doc "端点节点周围的八个 canonical 微格采样点。"
   def near_points(point), do: for(x<-[-1,0],y<-[-1,0],z<-[-1,0],do: add(elem(point,1),{x,y,z}))
 
   @doc "线端点的宿主：按首次命中身份保留此刻导电的真实导体（断开的开关、只经 ±Y 面导电的蓄能石不算），微格使用独立热身份。"
-  def conductors(targets,catalog,damage,environment) do
+  def conductors(targets,catalog,damage,environment,mode \\ :actual) do
     targets |> Enum.reject(&is_nil/1) |> Enum.map(&thermal_target/1)
       |> Enum.uniq_by(&ThermalGeometry.key/1)
-      |> Enum.filter(&(sigma(catalog,damage,environment,&1)>0 and not battery?(catalog.materials[&1.material])))
+      |> Enum.filter(&(sigma(catalog,damage,environment,&1,mode)>0 and not battery?(catalog.materials[&1.material])))
   end
 
   @doc """
@@ -139,16 +149,22 @@ defmodule VoxelRegion.Circuit do
   采样以 `{目标, 点数}` 成段给出（同一相邻宏格的一整面是一段）；每点面积 1/64 m²，段面积 = 点数 × 1/64，
   与逐点累加的二进制值相同（全是 1/64 的整数倍）。
   """
-  def solid_contacts(runs,catalog,damage,environment) do
+  def solid_contacts(runs,catalog,damage,environment,mode \\ :actual) do
     Enum.reduce(runs,%{},fn {target,count},contacts ->
       target=target && thermal_target(target)
-      if target && sigma(catalog,damage,environment,target)>0 do
+      if target && sigma(catalog,damage,environment,target,mode)>0 do
         key=ThermalGeometry.key(target)
         Map.update(contacts,key,{target,count*@length*@length},fn {other,area}->{other,area+count*@length*@length} end)
       else
         contacts
       end
     end)
+  end
+
+  @doc "已共面接触的两个实体导体是否能连边：目录声明的蓄能石仅允许正负Y面；其它导体保持原接触。"
+  def contact_allowed?(target,other,catalog) do
+    {axis,_side}=side(target,other)
+    not ((battery?(catalog.materials[target.material]) or battery?(catalog.materials[other.material])) and axis != 1)
   end
 
   @doc """
@@ -182,7 +198,7 @@ defmodule VoxelRegion.Circuit do
     {contact_edges,{luminous,cells}}=Enum.flat_map_reduce(contacts,{luminous,%{}},fn {target,other,area},{luminous,cells} ->
       ma=catalog.materials[target.material]; mb=catalog.materials[other.material]
       {axis,side}=side(target,other)
-      if (battery?(ma) or battery?(mb)) and axis != 1 do
+      if not contact_allowed?(target,other,catalog) do
         {[],{luminous,cells}}
       else
         a=ThermalGeometry.key(target); b=ThermalGeometry.key(other)
@@ -361,13 +377,14 @@ defmodule VoxelRegion.Circuit do
   end
 
   defp emf(material,target),do: material["battery_volts_per_m"]*size(target)
-  defp node(p,nil,_),do: {:point,p}
-  defp node(p,_domain,holder),do: {:point,p,holder}
+  defp node(p,nil,_),do: point(p)
+  defp node(p,_domain,holder),do: point(p,holder)
   defp edge(a,b,r,heat),do: %{a: a,b: b,r: r,emf: 0.0,heat: heat,te: 0.0,te_parts: [],peltier: 0.0,batteries: [],sides: []}
   defp luminous_fraction(catalog,material),do: Map.get(catalog.materials[material],"luminous_fraction",0.0)
   defp glowing(luminous,key,target,lum),do: if(lum>0,do: Map.put(luminous,key,target),else: luminous)
-  defp thermal_target(%{granularity: 2}=t),do: %{t | granularity: 1}
-  defp thermal_target(t),do: t
+  @doc "组件微格在电路中使用其独立热节点身份；宏格与附件身份不变。"
+  def thermal_target(%{granularity: 2}=t),do: %{t | granularity: 1}
+  def thermal_target(t),do: t
   defp size(%{granularity: 0}),do: 1.0
   defp size(_),do: @length
   defp offset(p,axis,n),do: put_elem(p,axis,elem(p,axis)+n)

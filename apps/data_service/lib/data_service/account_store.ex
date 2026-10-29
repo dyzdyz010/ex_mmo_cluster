@@ -50,14 +50,14 @@ defmodule DataService.AccountStore do
     end) |> done()
   end
 
-  @doc "保存一批随机邀请码的摘要，原码由 Auth 仅交付一次。"
-  def create_invites(records, actor, batch, expires_at, now) do
+  @doc "保存邀请码摘要和展示值；新码的 hint 保存完整原码，历史记录可能仅有掩码。"
+  def create_invites(records, actor, batch, expires_at, now, max_uses \\ 1) do
     transaction(fn ->
       Enum.each(records, fn r ->
-        result = sql("INSERT INTO auth_invites(id,digest,hint,batch,created_by,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(digest) DO NOTHING",
-          [uuid(r.id), r.digest, r.hint, batch, actor, now, expires_at])
+        result = sql("INSERT INTO auth_invites(id,digest,hint,batch,created_by,created_at,expires_at,max_uses) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(digest) DO NOTHING",
+          [uuid(r.id), r.digest, r.hint, batch, actor, now, expires_at, max_uses])
         if result.num_rows == 0, do: Repo.rollback(:invite_collision)
-        audit(actor, "invite_created", r.id, %{batch: batch, expires_at: expires_at}, now)
+        audit(actor, "invite_created", r.id, %{batch: batch, expires_at: expires_at, max_uses: max_uses}, now)
       end)
       :ok
     end) |> done()
@@ -67,14 +67,31 @@ defmodule DataService.AccountStore do
   def invites(filters) do
     rows("""
     SELECT i.id::text, i.hint, i.batch, i.created_by, i.created_at, i.expires_at,
-           i.revoked_at, i.deleted_at, i.used_by, i.used_at, a.email,
-           (SELECT c.name FROM characters c WHERE c.account=i.used_by ORDER BY c.id LIMIT 1) AS character
-    FROM auth_invites i LEFT JOIN accounts a ON a.id=i.used_by
+           i.revoked_at, i.deleted_at, i.max_uses,
+           (SELECT count(*) FROM auth_invite_uses u WHERE u.invite_id=i.id) AS use_count,
+           recent.account_id AS used_by, recent.used_at, a.email,
+           (SELECT c.name FROM characters c WHERE c.account=recent.account_id ORDER BY c.id LIMIT 1) AS character
+    FROM auth_invites i
+    LEFT JOIN LATERAL (SELECT account_id,used_at FROM auth_invite_uses WHERE invite_id=i.id ORDER BY used_at DESC,account_id DESC LIMIT 1) recent ON true
+    LEFT JOIN accounts a ON a.id=recent.account_id
     WHERE ($1::uuid IS NULL OR i.id=$1) AND ($2 OR i.deleted_at IS NULL)
-      AND ($3::text IS NULL OR i.batch ILIKE $3 OR i.hint ILIKE $3 OR a.email ILIKE $3 OR i.used_by::text=$4)
+      AND ($3::text IS NULL OR i.batch ILIKE $3 OR i.hint ILIKE $3 OR EXISTS(
+        SELECT 1 FROM auth_invite_uses u JOIN accounts used_account ON used_account.id=u.account_id
+        WHERE u.invite_id=i.id AND (used_account.email ILIKE $3 OR u.account_id::text=$4)))
     ORDER BY i.created_at DESC, i.id LIMIT 100 OFFSET $5
     """, [if(filters[:id], do: uuid(filters.id)), filters[:include_deleted] == true,
       if(filters[:search], do: "%#{filters.search}%"), filters[:search], max(filters[:offset] || 0, 0)])
+  end
+
+  @doc "调整邀请码人数上限；与注册共用行锁，不能低于已使用人数。"
+  def set_invite_limit(id, max_uses, actor, now) do
+    transaction(fn ->
+      one("SELECT id FROM auth_invites WHERE id=$1 FOR UPDATE", [uuid(id)]) || Repo.rollback(:not_found)
+      if invite_use_count(uuid(id)) > max_uses, do: Repo.rollback(:limit_below_usage)
+      sql("UPDATE auth_invites SET max_uses=$2 WHERE id=$1", [uuid(id), max_uses])
+      audit(actor, "invite_limit", id, %{max_uses: max_uses}, now)
+      :ok
+    end) |> done()
   end
 
   @doc "停用或逻辑删除；兑换共用同一行锁，不影响已经创建的账号。"
@@ -121,7 +138,7 @@ defmodule DataService.AccountStore do
     :ok
   end
 
-  @doc "注册时原子消费邮箱证明、必要的邀请码，并创建唯一账号与角色。"
+  @doc "注册时原子消费邮箱证明、占用一个邀请名额，并创建唯一账号与角色。"
   def register(email, hash, proof, invite, now) do
     transaction(fn ->
       required = one("SELECT invite_required FROM auth_registration_policy WHERE id=1 FOR SHARE", []).invite_required
@@ -137,7 +154,7 @@ defmodule DataService.AccountStore do
       cid = one("SELECT nextval('auth_character_ids') AS id", []).id
       Repo.insert!(%Character{id: cid, account: id, name: "旅人_#{cid}", title: "", base_attrs: %{}, battle_attrs: %{},
         position: %{"x" => 750.0, "y" => 750.0, "z" => 185.0}, hp: 500, sp: 100, mp: 100},log: false)
-      if redeemed, do: sql("UPDATE auth_invites SET used_by=$2,used_at=$3 WHERE id=$1", [redeemed.id,id,now])
+      if redeemed, do: sql("INSERT INTO auth_invite_uses(invite_id,account_id,used_at) VALUES($1,$2,$3)", [redeemed.id,id,now])
       sql("DELETE FROM auth_challenges WHERE email=$1 AND purpose='registration'", [email])
       account
     end)
@@ -278,8 +295,11 @@ defmodule DataService.AccountStore do
   end
 
   defp valid_invite(digest, now, lock) do
-    one("SELECT id FROM auth_invites WHERE digest=$1 AND used_by IS NULL AND revoked_at IS NULL AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>$2)" <> if(lock,do: " FOR UPDATE",else: ""), [digest,now])
+    invite = one("SELECT id,max_uses FROM auth_invites WHERE digest=$1 AND revoked_at IS NULL AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at>$2)" <> if(lock,do: " FOR UPDATE",else: ""), [digest,now])
+    # 等待行锁之后再发起查询，读取前一个注册事务刚提交的使用记录。
+    if invite && invite_use_count(invite.id) < invite.max_uses, do: invite
   end
+  defp invite_use_count(id), do: one("SELECT count(*) AS count FROM auth_invite_uses WHERE invite_id=$1", [id]).count
   defp challenge!(email,purpose,digest,now) do
     row = one("SELECT digest,expires_at,attempts FROM auth_challenges WHERE email=$1 AND purpose=$2 FOR UPDATE", [email,purpose])
     if is_nil(row) or row.expires_at <= now or row.attempts > 5 or not :crypto.hash_equals(row.digest,digest), do: Repo.rollback(:invalid_verification)

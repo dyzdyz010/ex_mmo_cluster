@@ -39,6 +39,8 @@ code: ex_mmo_cluster master 3d0668e5（M2a）
 - 区域型：沿用各入口现有键（`edit_keys`、`tool_regions`、`intent_keys`、prefab 足迹、窗口盒、射线盒），扩 26 邻页。
 - 身份型（`remove_prefab`、prefab 拆 / 换、`replace_prefab`、`instance_cells`、`replacement_cells`、GM 搬移）：id 不在内存即查定位表 → 根 home 页 → 根记录的覆盖页集合。
 
+**R2 登记测试设计**：Closure 持有入口形状及页需求分类，测试解析真实 World 的 `call/3`、`info/2` 具体消息模式，与登记形状求差，并核对异步过闸列表。新增未登记页消息是反例：旧兜底返回 `:none`，差集必须包含它；显式无页入口允许 `:none`。GM 子操作与引用任务结果各测真实闭包，不改变正常入口语义。仅启动纯模块，无数据库；测试不执行拼接源码，不在生产调用时扫描。Elixir 官方 [GenServer 回调](https://hexdocs.pm/elixir/GenServer.html)定义 call/info 消息边界，[Code.string_to_quoted!/2](https://hexdocs.pm/elixir/Code.html#string_to_quoted!/2)提供源代码 AST 解析；适用于当前 World 集中分派，分派结构变化需同步维护提取器。运行 `cd apps/voxel_region && mix test --no-start test/closure_entries_test.exs`；此测试不验证物理演化或跨系统运行。
+
 ### 2.3 定位表与 home 汇总
 - 表 `voxel_identity_locator(cv, kind, a, b, root_a, root_b, home_x/y/z)`，主键 `(cv, kind, a, b)`；只插入（`ON CONFLICT DO NOTHING`）：根与根 home 自创建起不变（父 id 与 anchor 不变；搬移 / 替换产生新身份）。随切点批次与页段同一 PG 事务写入；删除的身份不删行（查到后装根页发现不存在 = `instance_not_found`）。
 - **home 汇总的偏差**：父稿要 home 记录带“覆盖页集合 + 整件 max_hp 汇总”以免装全部覆盖页。本步只持久“根实例的整树覆盖页集合”（新段 `covers`，在根 home 页），闭包据此装全整棵树；不持久 max_hp 汇总——整件汇总照旧在内存算，结果与 M2a 逐项相同。代价是触及一棵树要装它覆盖的全部页（树的空间尺度有限）。按覆盖页汇总改造观察层属 N 系列 / 协议 42。
@@ -224,8 +226,56 @@ data_service 51 项全过。`protection_world_test`“许可…”单独连跑 3
 
 另：开热提交前暂停的既有用例改名并写明证明范围（只覆盖开提交前，夹具只删驻留标记）。
 
-**待办（统筹定为本轮不做）**：测试 reset 未清定位表（`OverlayLogStore.reset_world` 只清旧四表）；同页在途读取合并（父稿 P4“每页至多一请求”，现为每挂起入口一任务）；
-看门狗按脚本进程树限定（现为“启动后新出现的全部 erl”）；挂起 caller 超时 / 退出后的取消语义；`Closure` 兜底 `:none` 改为入口登记差集测试；`stats` 整表统计只数驻留的口径说明。
+**欠账补齐（2026-10-27；未提交／推送）**：
+- `OverlayLogStore.reset/reset_world` 共用五表清单，补清 `voxel_identity_locator`；世界存续期间定位仍只增不删，
+  测试世界整体退休才删，迁移文件仅澄清该事实。两个真实 PG 反例经 `PageStore.publish/write` 构造页／定位与后缀，
+  证明定向清理不影响另一个世界、同世界同身份可重建到新 home、全清包含未发布定位；含负 XYZ 和 u64 高位世界号。
+  改前 3/5（两个新增断言红），改后 5/5；`MIX_ENV=test mix test --no-start test/data_service/voxel/overlay_log_store_test.exs`，本 app 执行。
+  只用获准的隔离 PG 26810 新建 VM 独占测试库，结束后已删测试库并停容器；未写基准库和保护库。
+- 三个基准入口的同一个 `equiv.watchdog` 改从当前 Python 编排进程的真实后代中选 erl，直接用枚举得到的进程对象结束，
+  不再全机扫描“启动后新增 erl”；阈值仍 `< 20 × 2³⁰` 字节。启动前尚无 BEAM 时继续监视，`run_m0` 启动失败也保留原护栏标记。
+  纯测试先复现“无关新 erl 被杀”和“启动失败丢护栏标记”，修改后 6/6；根目录命令
+  `python -m unittest discover -s apps/voxel_region/bench/paging_m0 -p test_watchdog.py -v`。
+  无真实进程终止、无基准重跑，原失败与性能结果保持原样。
+- 依据与适用条件分别记在最近的 DataService voxel README 和 paging_m0 README：PostgreSQL `DELETE ... WHERE` 世界隔离语义、
+  psutil 官方 `children(recursive=True)` 与 `Process.kill()` 的 PID 复用校验；沿用现有入口，不加生产路径或一般化框架。
+  原始红／绿日志在 `.demo/observe/m2b-hardening-20261027/`；首次错误口令导致的环境准备失败独立保留，未计作行为红灯或通过。
+
+### R1 同页读取与同步调用生命周期（2026-10-27，服务端定向验证）
+
+`page_need` 发令牌的同一 World 回合通过 `PageLoad.reserve/3` 登记既有 `pending` 的页 owner；读取与暂存共用该事实源。
+后来的已知页需求在入闸时直接挂到 owner，运行中才发现闭包冲突的任务仍沿既有 `yield` 让出；重放各请求自身闭包。
+维护入口 `:all` 也走同一读取、暂存与闭合循环，不另发重复读取。平凡页随批驻留，整树页保持闭合后驻留。
+
+所有 World 公共同步调用经 `PageLoad.call/3`：调用仍挂起时才记录 caller monitor 与请求引用；caller DOWN 或 wrapper 捕获超时后
+显式发送的取消事实只移除该请求。其他 caller、异步业务或 `:wake` 仍使用的任务继续；无人需求的任务、未驻留页占用和等待引用释放。
+跨入业务裁决即释放装页 caller 引用；动态再次缺页沿同一请求身份重新挂起。已接纳事务不回滚，原超时仍表示结果未知。
+`World.simulation_snapshot/4` 的可选 `timeout` 只控制本次等待，默认仍 300 秒。
+
+依据：[Erlang gen_server call](https://www.erlang.org/doc/apps/stdlib/gen_server.html#call/3) 和
+[进程 monitor／alias](https://www.erlang.org/doc/system/ref_man_processes.html#monitors)：monitor 观察进程退出，超时后 alias 丢弃迟到回复不等于服务器取消。
+因此取消事实由真实同步 wrapper 发送，World 在原串行接纳边界裁定是否仍挂起；不轮询 alias，不重试业务，不建立第二页真值。
+
+测试使用真实 World、File 持久化和仅在 `read_pages` 阻塞的依赖替身，数据经正常写入／压实／重启产生。
+初始两个反例为重复冷页读取、caller 退出后等待引用不消失（0/2）；修复后四个新场景与三个既有树闭合／平凡页／半树重放场景 7/7。
+新场景包括两个公共请求完整成功、共享与独占 caller 退出、活 caller 捕获公共 World 超时、已接纳编辑不撤销，以及零窗口真实液体从 Y=3
+跨到 Y=2 后需要冷邻页 Y=1；caller 退出后共享的模拟读取继续，实际落水提交 seq 增长。
+删除 wrapper 显式取消的一行反证 0/1（原生退出码 2），恢复后 7/7（退出码 0）。
+命令：本 app `MIX_ENV=test ERL_FLAGS='+S 4:4' mix.bat test --no-start test/page_on_demand_test.exs:138 test/page_on_demand_test.exs:156 test/page_on_demand_test.exs:189 test/page_on_demand_test.exs:226 test/page_on_demand_test.exs:530 test/page_on_demand_test.exs:566 test/page_on_demand_test.exs:599`。
+证据：`.demo/observe/r1-pageload-seven-green.log`、`r1-pageload-timeout-counterexample.log`；未启动 PG／基准／UE。
+随后为 `:all` 维护共享循环和窗口异步回复接缝运行 `mix.bat test --no-start test/page_on_demand_test.exs test/window_snapshot_test.exs --exclude database`：
+31 passed、3 个数据库场景排除、退出码 0；`.demo/observe/r1-pageload-window-regression.log`。排除项不计为通过。
+独立审查随后确认该 31 项本身没有实际证明三个接缝，已另补公共入口专项：冷世界 `publish_properties(:all)` 与普通读取共享；
+洪泛经过两轮动态 defer 后活 caller 真实 timeout（`liquid_fill` 既有 opts 增加 `:timeout`，默认仍 300 秒）；
+公共 canonical 快照从冷页等待进入真实 feed 组装后回复／caller 退出，独立 subscriber 保持并最终退出清理。
+这 3 例恢复代码后 3/3、退出码 0，`.demo/observe/r1-coverage-restored-green.log`；提前全驻留、丢取消身份、不清 caller 三种对应变异各 0/1、退出码 2，
+见 `r1-coverage-mutation-{all-early,defer-request,caller-release}.log`。原 7／31 项不因此扩大证明范围；Player 异步最小契约列在
+`.superpowers/sdd/voxel-authority-sharding/task-pageload-report.md`，尚未实施。
+
+边界：直接使用原始 `GenServer.call` 的 caller 超时没有取消事实；Player 直接 `send` 的 `prepare_cast/quote_cast` 是异步业务生命周期，
+未经过本同步 wrapper，不能把本轮证据宣称为该链路超时取消已验收。页尚不淘汰，pin 仍等价于驻留；取消不会撤销已驻留事实。
+
+**仍待办**：Player 转交的异步等待取消事实需沿该 owner 明确；`Closure` 兜底 `:none` 改为入口登记差集测试；`stats` 整表统计只数驻留的口径说明。
 
 **5 s 超时排查**：会过闸的入口里，窗口快照（`canonical_snapshot_and_subscribe`，含 CollisionStream）、Replica 快照、区域取数 `serve`（预备 300 s、
 逐区 60 s）、工具 / 生产 / 附件 / prefab 意图（300 s）、施法与信标（Player 异步消息，Gate→Player 300 s）、`material_snapshot`（300 s）原本就不是 5 s。
@@ -234,3 +284,121 @@ data_service 51 项全过。`protection_world_test`“许可…”单独连跑 3
 
 **剩余风险 / 未覆盖**：电路只在驻留页上求解；维护入口（目录 / 参数发布、热实验、离线粗层重建）装全部页；定位行只增不删；页不淘汰（M3）；
 活动恢复只在单测验证，如园库两轮活动页为 0；max_hp 汇总未持久（§2.3），整件按格确定序重算的末位差异未逐项列出（Q5）。
+
+## 8. 交接第 1 项：窗口组装移出 World（2026-10-27，施工中）
+
+契约：沿用父稿分支 B 的只读投影与 v7 §3.6 的精确观察切点。World 在同一回调冻结已驻留窗口的不可变输入并登记订阅，
+`CanonicalFeed` 在 World 外沿既有 `Payloads` / `Observation` 路径组装区域、完整整件属性及碰撞，先发快照再逐笔发送增量（含空投影）。
+所有字段仍取同一 seq；跨窗口的叶子与附件必须保留完整整件输入；来源损坏显式失败，不发送部分快照。
+
+工程选择：冻结窗口相关引用留在 World 堆内，发送进程逐批拉取 map 条目，信用为 1；不把整份 World 捕获进闭包／任务。
+传输批次只搬运已经冻结的值，不产生第二真值或按批次改变单元语义。组装后的载荷仅作派生缓存回填，切点后发生提交则丢弃该回填，
+确认态仍由 World 唯一写入。冻结输入在传输结束、订阅者或发送进程退出时释放；不保留持久快照副本。
+依据：[Erlang 消息复制规则](https://www.erlang.org/doc/system/eff_guide_processes.html#sending-messages)
+明确普通消息数据会复制（同节点 refc binary／literal 例外）；仓内 `PageCut` 已采用同进程冻结引用与有界传输。
+[Erlang 同源信号顺序](https://www.erlang.org/doc/system/ref_man_processes.html#signals)适用于 World→Feed→订阅者的单一 FIFO。
+代价：组装期间保留旧引用、增加本地往返。几何缓存只回填汇总；World 在切点与目录仍匹配时用自身引用构造原有缓存标签，
+不复制工作进程标签里的原始微格。实测必须同时看复制／GC 与总准备时间，不能只看编码移走。
+
+```mermaid
+sequenceDiagram
+  participant W as World（唯一真值）
+  participant F as CanonicalFeed
+  participant C as 订阅者
+  W->>W: 同回合冻结 seq=N 输入并登记
+  W->>F: 快照标记
+  loop 有界拉取冻结条目
+    F->>W: 拉取下一批
+    W->>F: 不可变输入
+  end
+  W->>F: N+1 等增量（排在标记之后）
+  F->>C: 完整 N 快照
+  F->>C: N+1 等逐笔增量
+```
+
+最小验证：真实 World + 既有 GeneratedStore（测试仅在读取接缝加闸），暂停组装时 `World.seq` 与远处编辑仍完成；
+放行后快照保持旧 seq／内容、后续事务连续；复用现有损坏来源、跨区整件属性、重复订阅与缓存失效测试。
+仅启动本模块必要依赖、每例临时目录；不启动 PG／UE。再用既有 `run_m0.py` 与隔离 PG 对齐 r118 的 1/2/4/8 窗口、180 s，
+记录单回合、首次装页、准备时长、提交 p99、GC 与内存（20 GB 护栏不变）。这不是玩家入口或双客户端验收。
+
+施工顺序与记录（本节兼作执行记录，不另建平行计划）：
+- [x] `collision_source_test` 最小受控并发反例：改前失败、改后通过。
+- [x] `World` / `CanonicalFeed` / 相邻只读输入模块接入冻结、分批传输、失败与释放；同步 README。
+- [x] 最小相关集成回归与隔离库实测，原始证据接续 `runs/t29`、`runs/r119`；最终 `t50` / `r130`。
+- [x] 一轮独立代码评审与针对修补核对；后续实测驱动的性能修正由反例与相关回归验证，未反复重开评审。
+- [x] 用户 2026-10-27 授权提交当前实现检查点，并要求保留性能回退和未验收记录；该授权不表示全面验收通过。
+- [ ] 推送单独等待用户同意。
+
+范围：本步不改协议、不实施 P6／迁移、不处理首笔编辑或液体接纳的大回合；Replica 旧入口暂保持原行为。
+2026-10-27：完整读取交接、approved v7、§7 与两仓测试规则；当前分支 `paging-window-snapshot`，保留用户既有 D11 改动。
+
+**独立评审与修补核对（同日，一轮评审 + 一次针对核对）**：
+- 冻结全表扫描：叶子改从窗口 `refined_regions` 找 owner，再经 `refined_owners` 扩完整叶子；附件经 `aid_regions` 找完整槽；
+  epochs 按窗口 chunk 键取。反例固定一窗、加入 2,000 个远处叶子：改前冻结 reductions 138,081 对小样本阈值 7,802，失败（`t34`）；修补后通过。
+- **裁定**：不采用只从 `pages.unit_damage` 读属性的建议。`Thermal.flush` 可在提交前新增 damage，该持久索引尚未更新；只读它会漏观察。
+  保留原始 damage 的冻结引用，在每次运输中最多检查 16 条，再按窗口／owner／aid 选择。单回合不整表过滤，但总读取工作仍随驻留属性记录数增长。
+- 嵌套表：保护查询 index 不供观察使用，不运输；`protection.regions`、`thermal.semblances`、真实来源形状 `source_state.index.bounds`
+  按自然记录运输。保护表反例 `t34`、来源 bounds 反例 `t36` 均先红；bounds 原先的单批 9,837 words 大于半张表的 4,859 words。
+  没有添加通用递归序列化器；区域基底／prefab 单记录的成本仍须由实测检查，不据 16 条的计数直接宣称字节有界。
+- World 退出：旧 Feed 忙于读取／组装而不能消费 DOWN，反例 `t33` 等不到 Feed DOWN。增加独立生命周期监视者，
+  只链接 Feed、不链接 World；World／订阅者退出会中断阻塞组装，Feed 正常退出也回收监视者。反例修补后通过。
+- `t29`：主并发反例改前红；`t30`：改后绿；`t31`：原三组接缝 122 项通过；`t32`：3 项退出／阻塞用例通过；
+  `t35`：窗口纯算法、来源、属性、按需装页共 125 项通过。命令均在本 app 下 `MIX_ENV=test`、`ERL_FLAGS=+S 4:4`、`mix test --no-start`。
+  日志中 `test-only page read failure`、损坏来源和前缀冲突来自既有故障用例；不将这些预期日志当作测试失败。
+- `r119-window-migrate`：仅隔离库还原与迁移发布，seq 14615，67.1 s 就绪，峰值 3.13 GB，护栏未触发，正常停机。
+  `r120-window-snapshot`：针对核对发现真实来源的 bounds 嵌套未拆完后主动停止；未形成完整性能结论。
+  保留启动、空闲、部分运行日志及 `interrupted.json`；手动正常停机与运行器收尾交错触发 `psutil.NoSuchProcess`，非产品失败，未重试 RPC。
+
+**性能反证与直接修正**：
+- `t37` 最终相关回归 126 项通过。`r121` 重新还原隔离库并发布同一 seq 14615；`r122` 按 r118 参数开始实测，
+  首窗 `world_send.elapsed_us = 1,923,276`，仍不满足 300 ms 目标；`feed_sent` 19.1 s。停止本轮负载、正常停止节点，保留失败证据；
+  未触发内存护栏。不能以单测通过或编码已外移声称本步完成。
+- 定位到冻结为找 owner 扫描稠密微格。`t38` 的 64 个相同宏格（每格 1 / 512 槽、同一 owner）反例：稠密输入 709,378 reductions，
+  稀疏输入派生阈值 14,940，失败。修正为 `Canonical.put_refined/index_refined` 维护
+  `refined_region_owners = 区域 → %{owner → 占用宏格数}`；同格同 owner 多槽只计一次，最后一个宏格离开即移除。
+  `WindowSnapshot.freeze` 只读该索引再经原 `refined_owners` 找完整整件，不再展开槽。派生索引不持久、无第二 owner，恢复由既有写入／重建路径维护。
+  计数更新复用同模块附件计数的相同规则；对应手算反例覆盖重写、同区多格、最后一格移除、负区域与重建。
+  [PostgreSQL 索引文档](https://www.postgresql.org/docs/current/indexes-intro.html)说明索引随数据修改维护以免查询全扫，代价是写入成本；
+  此处只借用该维护原则，实现延续仓内已有的 Canonical 派生索引，不引入数据库索引或外部缓存。
+- `t39`：窗口抽取、派生索引、来源、属性、按需装页 135 项通过。新增索引触及共享写入口，所以扩大到 `world_refined_index_test.exs`，
+  具体抓取“某 owner 仍占同区另一格却被过早删掉”及“重写同归属多计一次”两类破坏。
+
+**总准备时间回归与缓存接续**：
+- `r123` 短探针：首窗冻结 33.5 ms；输入回合最长 439 ms 与同时间 World 439 ms GC 对应，不能声称所有回合都低于 300 ms。
+  30 笔提交无错误，OS RSS 峰值 4.65 GB。`r124` 重新迁移；`r125` 完整 1/2/4/8 × 180 s 已正常完成并停机（未中断）：
+  178/357/714/1428 笔提交、零错误；准备 26.2/17.1/19.8/18.4 s，明显慢于 r118 的 19.6/8.8/9.9/9.3 s，故没有作为验收通过。
+  冻结回合最长 375/40/39/43 ms（首窗含同时间 338 ms GC）；8 窗口 p50/p99 187/788 ms，OS 峰值 4.83 GB，重启就绪 13.9 s。
+- 相邻读取表明快照仅消费 prefab 的 `definition.presentation_bindings`，而目录堆统计约 239 MB；删除运输中的模板几何。
+  组装函数返回后先在 Feed 回收已用完的输入，再投影碰撞（World 不做这次 GC）；增加 `feed_input_released` 日志。
+  `t40` 模板输入反例先红，`t41` 141 项通过；`r126` 短探针准备仍为 25.9/16.1 s，说明裁剪本身不足以修复回退。
+- 进一步恢复原有 `Observation.component_cache` 语义：冻结时只取标签仍匹配的几何汇总，载荷与汇总均命中的区域不运输原始微格；
+  未命中整件仍取完整输入，在 Feed 用唯一算法、原确定序计算，按每批最多 16 个 owner 回填。World 仅在 `seq` 与目录仍相同才接纳，
+  标签由当前 World 自身引用构造。缓存是可丢弃派生物，不产生事务、不替换真值；多批失败时已回填的合法缓存仍可用，批次不承担正确性语义。
+- 原始微格省略后，已冻结载荷必须作为本轮不可变输入保留，不能再受工作进程临时 LRU 淘汰支配。`t44` 四区域、小缓存反例确实丢失末区字节；
+  `Payloads.canonical_regions` 显式接收冻结字节，其余区域仍用同一物化算法。`t42` 缓存命中反例、`t44` 淘汰反例、`t46` 去掉切点／目录守卫的变异反例均为红；
+  `t43` 142 项、`t45` 143 项通过。新增验证覆盖几何修改与目录修改后缓存失效、跨页完整整件及过期结果拒绝。
+- `t47` 144 项通过；`r127` 短探针准备 27.0/11.4 s，缓存接续降低重复开窗成本。r125 的 8 窗运输回合最长 20.8 ms，4 窗除 GC 外的直方图上界为 32.8 ms，
+  因此把输入批次从 16 条改为 64 条以减少同步往返（几何回填仍每批 16 个 owner）；每条均为同一冻结输入，未改 20 GB 护栏或验收目标。
+  `t48` 针对运输／来源的 21 项通过；`r128` 短探针准备 23.7/11.0 s，零错误，输入回合最长 8.1/6.7 ms。
+  总读取 work 的限制不变：damage 按每批最多 64 条筛选，source bounds／全局回执按自然记录传输，仍未实现 P5 的长期驻留预算。
+- 缓存接续后由 `Canonical.put_refined` 在部件最后一格消失时立即释放其缓存，不能依赖下一次开窗清理已消失的 owner。
+  `t49` 退休反例先红；`t50` 最终六文件 145 项通过。当前代码以此冻结，后续最终验收只使用 `r129` 干净还原后的 `r130`。
+
+**最终实跑与判定（`r130-window-release-final`）**：
+- 版本：基于 `0fe6c0fc` 的当前未提交改动，分支 `paging-window-snapshot`；运行前保存 `source.json`，运行后核对 10 个改动源码／测试文件 SHA-256 全部相同。
+  Windows 原生、16:16 调度器、隔离 PG `voxim-pg-paging1024` / `paging_ruyuan_1x`；r129 从同一 `/tmp/backup.dump` 还原并发布 seq 14615，
+  r130 重启，空闲 120 s，1/2/4/8 窗口各 180 s、间隔 1000 ms、spacing 256；与 r118 同负载。跨日期机器状态不同，细小差异不作因果归因。
+- 新增可操作行为：窗口组装期间 World 可继续响应和提交，订阅保持精确切点与同源 FIFO；来源损坏、Feed／订阅者／World 退出均显式结束，
+  不发部分快照。六文件命令见 app README，`t50-window-final.log` **145 项通过、退出码 0**。
+- 性能主目标的证据：首次装页 17 次，中位 **1104.4 → 45.4 ms**，达到原中位 ≤220 ms 目标；最大 **6117.8 → 6687.2 ms**，如园大闭包尾部仍在。
+  快照冻结回合在 1/2/4/8 档最长为 **396.9 / 38.4 / 37.2 / 42.9 ms**；首窗同回合包含 361 ms World GC。
+  冻结原先对应 **2187.4 / 1177.4 / 2051.6 / 1243.9 ms**。输入传输回合全轮最长 **17.7 ms**，几何回填最长 **0.82 ms**。
+- 实跑完整性：四档分别 **178 / 357 / 714 / 1428** 笔提交，错误全部为 0；8 窗提交 p50/p99 **221.9 / 791.8 ms**（r118：53.9 / 677.1 ms）。
+  总准备时间 **27.4 / 11.3 / 12.5 / 11.9 s**（r118：19.6 / 8.8 / 9.9 / 9.3 s），OS RSS 峰值 **6.04 GB**（r118：5.04 GB）。
+  重启就绪 14.9 s；r118 的 30.1 s 含当时编译／其他应用启动差异，不据此宣称快照优化加快启动。
+- **结论与范围**：窗口编码／属性汇总已移出 World，其他页请求的排队中位明显下降；**不宣称整体性能验收通过**。
+  总准备时间、RSS 与本轮提交尾延迟均高于对照，完整冷输入的跨进程复制／重建仍有成本；World 全轮长 GC 最长 414 ms，不能宣称所有回合 <300 ms。
+  首笔编辑、液体接纳及其他已有大回合未在本步修改。未做真实双客户端验收，未推进 P6／迁移；第 3 项 caller 取消等欠账仍按交接清单保留。
+- 证据：`runs/r130-window-release-final/{source.json,comparison.json,step-*.json,probe/,os.jsonl,startup.json,stop.json,cleanup.json}` 与 startup 所指原始服务端日志。
+  `comparison.json` 从两轮同名结构化字段生成，包含原始失败／代价，没有改阈值；`field-heap-end.json` 开头可能含 hosts 解析日志，读取时只取其最后一行 JSON，原文件未改。
+  运行器退出码 0，20 GB 护栏未触发。已正常停节点、停隔离 PG（只停不删），最终无残留 erl；如园保护范围未写入，D11 原有文档改动保留，未提交／推送。

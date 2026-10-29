@@ -102,7 +102,9 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     stop_supervised(World)
     # 实例的完整记录（含放置者）由 home 页恢复，不靠区域载荷里的投影。
     c = %{c | world: start_supervised!({World,c.opts})}
-    # M2b：有前缀的重启只驻留启动装入的页；经正常读入口触及实例所在格后再读。
+    # M2b：有前缀的重启只驻留启动装入的页；S0：已发布页在最后需求释放后退休。
+    # 以模拟窗口（页 {0,0,0}）持有驻留，再经正常读入口触及实例所在格后读 state。
+    assert :ok = World.set_simulation_windows(c.world, [{{0,0,0},{1,1,1}}])
     _ = snapshot(c,[{1,1,2}])
     assert get_in(:sys.get_state(c.world).instances,[{2,0},:placed_by]) == 1001
   end
@@ -219,6 +221,8 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
       if compact, do: assert(:ok == World.compact(c.world))
       stop_supervised(World)
       c = %{c | world: start_supervised!({World,c.opts})}
+      # S0：已发布页在最后需求释放后退休；以模拟窗口（页 {0,0,0}）持有驻留，再经正常读入口触及并读 state。
+      assert :ok = World.set_simulation_windows(c.world, [{{0,0,0},{1,1,1}}])
       assert {:ok,%{owner: {2,0},hp: 100.0}} = query(c)
       assert [%{material: 11,placed_by: 1001}] = snapshot(c,[{1,1,2}]).probe_occupancy
       restored = :sys.get_state(c.world)
@@ -417,6 +421,8 @@ defmodule VoxelRegion.PrefabMacroWorldTest do
     assert :ok = World.compact(c.world)
     stop_supervised(World)
     c = %{c | world: start_supervised!({World,c.opts})}
+    # S0：已发布页在最后需求释放后退休；以模拟窗口（页 {0,0,0}）持有驻留，再经正常读入口触及并读 state。
+    assert :ok = World.set_simulation_windows(c.world, [{{0,0,0},{1,1,1}}])
     _ = snapshot(c,[{1,1,2}])
     rewritten = :sys.get_state(c.world)
     assert Map.get(rewritten.instances[{1,0}],:placed_by) == nil

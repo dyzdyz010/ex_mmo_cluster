@@ -16,7 +16,18 @@ defmodule SceneServer.PrefabDesigner.CheckTest do
           macro_cells: :erlang.term_to_binary(macros),
           attachments: attachments
         }
-      ]
+      ],
+      material_counts: %{
+        micro: micros |> Map.new() |> Map.values() |> Enum.frequencies(),
+        macro: macros |> Map.new() |> Map.values() |> Enum.frequencies(),
+        attachments:
+          for(
+            attachment <- attachments,
+            {kind, _, _} <- attachment.slots,
+            do: {kind, attachment.material}
+          )
+          |> Enum.frequencies()
+      }
     }
   end
 

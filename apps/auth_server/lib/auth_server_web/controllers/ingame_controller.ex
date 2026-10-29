@@ -104,15 +104,26 @@ defmodule AuthServerWeb.IngameController do
   end
 
   defp do_voxel_prefabs(conn) do
-    {:ok, %{world_ref: world_ref}} =
-      WorldServer.Movement.route(Application.fetch_env!(:auth_server, :voxel_scene_id))
+    scene_id = Application.fetch_env!(:auth_server, :voxel_scene_id)
 
-    conn
-    |> put_resp_content_type("application/octet-stream")
-    |> send_resp(
-      200,
-      MmoContracts.Voxel.Codec.encode_prefab_list(VoxelRegion.World.published_prefabs(world_ref))
-    )
+    result =
+      with {:ok, %{world_ref: world_ref}} <- WorldServer.Movement.route(scene_id) do
+        VoxelRegion.World.published_prefabs(world_ref)
+      end
+
+    case result do
+      rows when is_list(rows) ->
+        conn
+        |> put_resp_content_type("application/octet-stream")
+        |> send_resp(200, MmoContracts.Voxel.Codec.encode_prefab_list(rows))
+
+      {:error, reason} ->
+        Logger.warning(%{event: :voxel_prefabs_unavailable, scene_id: scene_id, reason: reason})
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "voxel_prefabs_unavailable"})
+    end
   end
 
   defp do_voxel_regions(conn) do

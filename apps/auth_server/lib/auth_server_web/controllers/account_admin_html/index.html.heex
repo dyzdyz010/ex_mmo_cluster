@@ -27,7 +27,7 @@
       <section class="ac-card ac-card--violet" aria-labelledby="generate-title">
         <p class="ac-eyebrow">Generate</p>
         <h2 id="generate-title" class="ac-h2">生成邀请码</h2>
-        <p class="ac-text">5 位字母＋数字，不区分大小写，不使用易混淆的 0、1、I、O。每码仅限一个账号注册。</p>
+        <p class="ac-text">5 位字母＋数字，不区分大小写，不使用易混淆的 0、1、I、O。每码可供多人注册，人数上限由你设置。</p>
         <.form for={%{}} action="/admin/invites" class="ac-form">
           <div class="ac-form-grid">
             <div class="ac-field">
@@ -37,6 +37,10 @@
             <div class="ac-field">
               <label class="ac-label" for="days">有效天数</label>
               <input id="days" name="days" type="number" class="ac-input" min="1" placeholder="留空为不限期" />
+            </div>
+            <div class="ac-field">
+              <label class="ac-label" for="max_uses">每码可注册人数</label>
+              <input id="max_uses" name="max_uses" type="number" class="ac-input" min="1" max="2147483647" step="1" placeholder="输入自定义人数" required />
             </div>
             <div class="ac-field ac-field--wide">
               <label class="ac-label" for="batch">批次备注</label>
@@ -59,9 +63,9 @@
     <section class="ac-card ac-gap-top" aria-labelledby="records-title">
       <p class="ac-eyebrow">Records</p>
       <h2 id="records-title" class="ac-h2">邀请码与使用记录</h2>
-      <p class="ac-text">删除后邀请码立即失效，使用记录保留；原码只在生成时显示，列表仅保留掩码。</p>
+      <p class="ac-text">删除后邀请码立即失效，使用记录保留。新生成的邀请码完整显示；历史掩码记录未保存原码，需要时请重新生成。</p>
       <form method="get" action="/admin" class="ac-toolbar" role="search">
-        <input name="search" class="ac-input" value={@filters.search} placeholder="批次、掩码、邮箱或账号 ID" aria-label="搜索邀请码" />
+        <input name="search" class="ac-input" value={@filters.search} placeholder="批次、邀请码、邮箱或账号 ID" aria-label="搜索邀请码" />
         <label class="ac-check">
           <input type="checkbox" name="include_deleted" value="true" checked={@filters.include_deleted} />包含已删除
         </label>
@@ -71,7 +75,7 @@
         <table class="ac-table">
           <thead>
             <tr>
-              <th>邀请码／批次</th><th>状态</th><th>生成／有效期</th><th>使用者／时间</th>
+              <th>邀请码／批次</th><th>状态／已用人数</th><th>生成／有效期</th><th>最近使用者／时间</th>
               <th><span class="sk-visually-hidden">操作</span></th>
             </tr>
           </thead>
@@ -82,7 +86,10 @@
                 <span class="ac-sub">{i.batch}</span>
                 <span class="ac-sub ac-mono">{i.id}</span>
               </td>
-              <td data-label="状态"><UI.badge tone={tone(state(i))}>{state(i)}</UI.badge></td>
+              <td data-label="状态">
+                <UI.badge tone={tone(state(i))}>{state(i)}</UI.badge>
+                <span class="ac-sub">{i.use_count} / {i.max_uses} 人</span>
+              </td>
               <td data-label="生成">
                 <span class="ac-strong"><.time at={i.created_at} /></span>
                 <span class="ac-sub">有效期至 <.time at={i.expires_at} /></span>
@@ -99,7 +106,12 @@
               </td>
               <td data-label="操作">
                 <div class="ac-actions">
-                  <.form :if={!i.deleted_at && !i.revoked_at && !i.used_at} for={%{}} action={"/admin/invites/#{i.id}/revoke"}>
+                  <.form :if={!i.deleted_at && !i.revoked_at} for={%{}} action={"/admin/invites/#{i.id}/limit"}>
+                    <label class="ac-label" for={"limit-#{i.id}"}>人数上限</label>
+                    <input id={"limit-#{i.id}"} name="max_uses" type="number" class="ac-input" value={i.max_uses} min={max(1, i.use_count)} max="2147483647" step="1" required />
+                    <button class="ac-btn ac-btn--sm">保存上限</button>
+                  </.form>
+                  <.form :if={!i.deleted_at && !i.revoked_at} for={%{}} action={"/admin/invites/#{i.id}/revoke"}>
                     <button class="ac-btn ac-btn--sm" data-confirm="确认停用">停用</button>
                   </.form>
                   <.form :if={!i.deleted_at} for={%{}} action={"/admin/invites/#{i.id}/delete"}>

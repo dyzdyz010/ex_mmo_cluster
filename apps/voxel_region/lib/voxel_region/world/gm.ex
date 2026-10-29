@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Gm do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   只测试（Test-only）GM 施工工具，不进分发：一次清空、一次填满、一次灌满、盒内排液、实体换料、原样搬移 prefab 实例。
 
@@ -32,25 +33,45 @@ defmodule VoxelRegion.World.Gm do
   @doc "部署开关（Scene 侧 GM 瞬移也读它）。"
   def enabled?, do: Application.get_env(:voxel_region, :gm_tools, false) == true
 
-  @doc "World 调用：key 防重后执行一个操作；返回 GenServer reply 三元组。"
-  def run(%{gm_tools: false} = state, _key, _op, _args), do: {:reply, {:error, :gm_disabled}, state}
+  @doc "GM唯一前置裁决：开关、key与既有回执；准备和最终执行共用，不读取已退休实例来重做回执。"
+  def preflight(%{gm_tools: false}, _key), do: {:done, {:error, :gm_disabled}}
+  def preflight(state, key) when is_binary(key) and byte_size(key) > 0 do
+    case Map.fetch(state.material_supplies, {0, {:gm, key}}) do
+      {:ok, receipt} -> {:done, {:ok, receipt}}
+      :error -> :ready
+    end
+  end
+  def preflight(_state, _key), do: {:done, {:error, :invalid_gm_args}}
 
-  def run(state, key, op, args) when is_binary(key) and byte_size(key) > 0 do
-    receipt_key = {0, {:gm, key}}
+  @doc "移动的合法实例引用，供准备闭包与最终裁决共用。"
+  def move_reference(%{instance: id, anchor: {x,y,z}, orientation: o})
+      when is_integer(x) and is_integer(y) and is_integer(z) and o in 0..3, do: {:ok, id}
+  def move_reference(_), do: {:error, :invalid_gm_args}
 
-    case Map.fetch(state.material_supplies, receipt_key) do
-      {:ok, receipt} ->
-        {:reply, {:ok, receipt}, state}
+  @doc "只在无既有回执且移动参数合法时要求按id准备几何。"
+  def prepare_move(state, key, args) do
+    case preflight(state, key) do
+      {:done, _} = done -> done
+      :ready ->
+        case move_input(state, args) do
+          {:ok, instance} -> {:ready, instance.definition_id}
+          error -> {:done, error}
+        end
+    end
+  end
 
-      :error ->
+  @doc "World唯一GM执行入口；准备后再次沿同一前置owner裁决，保留同key幂等。"
+  def run(state, key, op, args, geometry \\ nil) do
+    case preflight(state, key) do
+      {:done, result} -> {:reply, result, state}
+      :ready ->
+        receipt_key = {0, {:gm, key}}
         receipt = %{seq: state.seq + 1, op: op, args: args}
-
-        case operate(op, state, args, receipt_key, receipt) do
+        case (if op == :move_instance, do: move_instance(state, args, receipt_key, receipt, geometry), else: operate(op, state, args, receipt_key, receipt)) do
           {:ok, receipt, next} ->
             true = next.seq == receipt.seq
             Logger.info("voxel_gm key=#{inspect(key)} op=#{op} seq=#{receipt.seq} receipt=#{inspect(Map.delete(receipt, :args))} args=#{inspect(args)}")
             {:reply, {:ok, receipt}, next}
-
           {:error, reason} ->
             Logger.info("voxel_gm key=#{inspect(key)} op=#{op} rejected=#{inspect(reason)} args=#{inspect(args)}")
             {:reply, {:error, reason}, state}
@@ -58,7 +79,11 @@ defmodule VoxelRegion.World.Gm do
     end
   end
 
-  def run(state, _key, _op, _args), do: {:reply, {:error, :invalid_gm_args}, state}
+  defp move_input(state, args) do
+    with {:ok, id} <- move_reference(args),
+         {:ok, instance} <- Prefabs.fetch_instance(state, id),
+         true <- Map.get(instance, :parent_id, {0,0}) == {0,0} || {:error, :not_top_level}, do: {:ok, instance}
+  end
 
   @doc "清／填涉及的宏格（供 World 在调用前准备来源区域）；参数非法返回 []。"
   def macros(%{box: {{_, _, _} = lo, {_, _, _} = hi}} = args) do
@@ -91,7 +116,7 @@ defmodule VoxelRegion.World.Gm do
       state = ensure(state, cells)
       {next, changed} =
         Enum.reduce(cells, {state, []}, fn cell, {s, changed} ->
-          slots = Map.get(s.refined, cell, %{})
+          slots = Map.get(s.refined, cell, RefinedSlots.empty()) |> RefinedSlots.to_map()
           kept = if instances?,
             do: Map.reject(slots, fn {slot, _} -> in_box?(Prefab.micro_coord(cell, slot), lo, hi, precision) end),
             else: slots
@@ -204,11 +229,8 @@ defmodule VoxelRegion.World.Gm do
     end
   end
 
-  defp operate(:move_instance, state, %{instance: id, anchor: anchor, orientation: orientation}, rkey, receipt) do
-    with {:ok, instance} <- Prefabs.fetch_instance(state, id),
-         true <- Map.get(instance, :parent_id, {0, 0}) == {0, 0} || {:error, :not_top_level},
-         true <- orientation in 0..3 || {:error, :invalid_gm_args},
-         {:ok, definition} <- Map.fetch(state.prefabs, instance.definition_id) |> found() do
+  defp move_instance(state, %{instance: id, anchor: anchor, orientation: orientation}, rkey, receipt, definition) do
+    with {:ok, instance} <- move_input(state, %{instance: id, anchor: anchor, orientation: orientation}) do
       ids = Prefabs.subtree_ids(state, id)
       cells = Prefabs.subtree_cells(state, ids)
       receipt = Map.merge(receipt, %{instance: {state.seq + 1, 0}, from: instance.anchor, from_orientation: instance.orientation})
@@ -220,9 +242,6 @@ defmodule VoxelRegion.World.Gm do
   end
 
   defp operate(_op, _state, _args, _rkey, _receipt), do: {:error, :invalid_gm_args}
-
-  defp found({:ok, v}), do: {:ok, v}
-  defp found(:error), do: {:error, :definition_not_found}
 
   # 固体占据沿用正式移动阻挡目录；额外排除液态身份，不把花草当实体池底。
   defp solid?(material), do: MmoContracts.VoxelMaterialCatalog.valid_id?(material) and

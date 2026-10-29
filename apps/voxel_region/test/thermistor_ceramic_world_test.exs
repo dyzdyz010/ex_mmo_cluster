@@ -57,6 +57,7 @@ defmodule VoxelRegion.ThermistorCeramicWorldTest do
 
   defp start(c) do
     w = start_supervised!({World, c.opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, Keyword.fetch!(c.opts, :liquid_bounds))
     actor = %{cid: 1001, gate: self(), identity: :thermistor, refresh: &Actor.tool_context/2,
       eye: {4.5, 6.5, 4.5}, tick_us: 16_667}
     actor = Map.put(actor, :player, start_supervised!({Actor, actor}))
@@ -104,7 +105,8 @@ defmodule VoxelRegion.ThermistorCeramicWorldTest do
     end
   end
 
-  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], @box)
+  # @box 以宏格计；观察快照的 box 以 tile 计，取覆盖 @box 的 tile 范围。
+  defp observe(w), do: VoxelRegion.TestSupport.observe(w, [1001], VoxelRegion.TestSupport.tiles(@box))
   defp micro({x, y, z}), do: {x * 8, y * 8, z * 8}
   defp row(s, cell), do: Enum.find(Map.values(s.damage), &(&1.granularity == 0 and &1.micro == micro(cell)))
   defp material_of(s, cell), do: (r = row(s, cell)) && r.material

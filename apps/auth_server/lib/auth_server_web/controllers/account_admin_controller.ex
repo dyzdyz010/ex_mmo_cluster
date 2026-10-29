@@ -30,13 +30,14 @@ defmodule AuthServerWeb.AccountAdminController do
   def create(conn,p) do
     count=integer(p["count"])
     expiry=if p["days"] in [nil,""],do: nil,else: Identity.now()+integer(p["days"])*86400
-    case Identity.administer(get_session(conn,:account_access),:generate,{count,p["batch"] || "",expiry}) do
-      {:ok,codes} -> page(conn,%{},{:warn,"请现在复制这些邀请码；离开本页后无法再次查看原码。"},codes)
+    case Identity.administer(get_session(conn,:account_access),:generate,{count,p["batch"] || "",expiry,integer(p["max_uses"])}) do
+      {:ok,codes} -> page(conn,%{},{:info,"邀请码已生成，可随时在下方列表查看完整邀请码。"},codes)
       error -> denied_or_page(conn,error)
     end
   end
   def delete(conn,%{"id"=>id}), do: change(conn,:delete,id)
   def revoke(conn,%{"id"=>id}), do: change(conn,:revoke,id)
+  def limit(conn,%{"id"=>id}=p), do: change(conn,:limit,{id,integer(p["max_uses"])})
   defp change(conn,op,args) do
     case Identity.administer(get_session(conn,:account_access),op,args) do
       :ok -> redirect(conn,to: "/admin")
@@ -53,6 +54,7 @@ defmodule AuthServerWeb.AccountAdminController do
   # 普通玩家的网页登录仍有效，只说明没有管理权限，不清掉其账号中心会话。
   defp denied_or_page(conn,{:error,:forbidden}), do: conn |> put_status(403) |> render(:login,error: "当前登录的账号没有管理权限，请使用管理员账号登录。")
   defp denied_or_page(conn,{:error,:invalid_session}), do: conn |> configure_session(drop: true) |> redirect(to: "/admin/login")
+  defp denied_or_page(conn,{:error,:limit_below_usage}), do: page(put_status(conn,400),%{},{:error,"人数上限不能低于已注册人数。"},[])
   defp denied_or_page(conn,{:error,r}), do: page(put_status(conn,400),%{},{:error,"操作失败：#{r}"},[])
   defp integer(v) when is_binary(v) do
     case Integer.parse(v) do

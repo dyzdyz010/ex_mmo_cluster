@@ -39,8 +39,10 @@ defmodule VoxelRegion.ParcelWorldTest do
   defp material(w, cell), do: hd(World.material_snapshot(w, [], [cell]).probe_occupancy).material
   defp micros(w, cell),
     do: hd(World.material_snapshot(w, [], [cell], :micro).probe_occupancy) |> Map.get(:micro_cells, []) |> Enum.map(&{&1.micro, &1.material})
-  # 观察窗口是 chunk 坐标；覆盖两个测试世界的全部内容。
-  @everywhere {{-100, -100, -100}, {100, 100, 100}}
+  # 只测试：setup 两个世界的样本宏格范围并集为 [-70,70)×[-8,8)×[-8,8)，包含盒外断言点。
+  # simulation_snapshot 消费完整 XYZ L0 region 半开盒；用现空间合同转换，不能把宏格范围当成页范围。
+  @everywhere {VoxelRegion.World.Canonical.region_of({-70, -8, -8}),
+    VoxelRegion.World.Canonical.region_of({69, 7, 7}) |> Tuple.to_list() |> Enum.map(&(&1 + 1)) |> List.to_tuple()}
   defp quantities(w), do: World.simulation_snapshot(w, [], @everywhere).liquid_quantities
   defp restart(world, id), do: (stop_supervised!(id); start_supervised!({World, world.opts}, id: id))
 
@@ -73,6 +75,29 @@ defmodule VoxelRegion.ParcelWorldTest do
     {:ok, outside} = World.place_prefab(t.w, id, {-488, -24, -24}, 0)
     {:ok, _} = World.gm(t.w, "mountain", :fill, %{box: {{-67, -4, -3}, {-62, -2, -2}}, material: 11})
     {inside, outside}
+  end
+
+  test "旧v1/v2定义经过导出安装与冷重启仍保留原字节和id", %{s: s, t: t} do
+    cell = <<0::signed-little-32, 0::signed-little-32, 0::signed-little-32, 19::16-little>>
+    originals = for version <- [1, 2], into: %{} do
+      bytes = <<"VXPD", version::32-little, 1::32-little, cell::binary, 0::32-little>>
+      bytes = if version == 2, do: bytes <> <<0::32-little>>, else: bytes
+      id = :crypto.hash(:sha256, bytes)
+      File.write!(Path.join([s.root, "prefabs", "v#{version}.vxpd"]), bytes)
+      {id, bytes}
+    end
+    assert :ok = World.publish_prefabs(s.w, Path.join(s.root, "prefabs"))
+    for {{id, _}, index} <- Enum.with_index(originals),
+      do: assert({:ok, _} = World.place_prefab(s.w, id, {496 + index * 8, 8, 8}, 0))
+    assert {:ok, parcel} = World.parcel_export(s.w, @box)
+    assert parcel.definitions == originals
+    assert {:ok, _} = World.parcel_install(t.w, "old-bytes", parcel, @delta)
+    target = restart(t, :target)
+    for {id, bytes} <- originals, do: assert({:ok, ^bytes} = World.prefab_definition(target, id))
+    {lo, hi} = @box
+    shift = fn p -> List.to_tuple(for axis <- 0..2, do: elem(p, axis) + elem(@delta, axis)) end
+    assert {:ok, again} = World.parcel_export(target, {shift.(lo), shift.(hi)})
+    assert again.definitions == originals
   end
 
   test "a parcel replaces exactly the shifted box, carries content with new identities and replays", %{s: s, t: t} do

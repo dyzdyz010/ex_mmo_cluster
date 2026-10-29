@@ -3,6 +3,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   use ExUnit.Case, async: false
   @moduletag :b7
   alias VoxelRegion.World
+  alias VoxelRegion.World.Payloads
   alias VoxelRegion.TestSupport.{Source,Actor,Log}
   alias MmoContracts.Voxel.Payload
   @capacity 2_097_152
@@ -46,6 +47,9 @@ defmodule VoxelRegion.LiquidWorldTest do
     opts=[source: if(context[:legacy_water],do: LegacySource,else: Source),missing: context[:missing] || false,log: if(context[:database], do: VoxelRegion.OverlayLog.Db, else: Log),root: root,observer: self(),property_catalog_path: catalog,
       prefab_catalog_path: prefab,name: nil,production_materials: [19,21],liquid_bounds: context[:bounds] || {{62,0,1},{66,4,4}}]
     w=start_supervised!({World,opts})
+    if context[:simulation] do
+      :ok = VoxelRegion.TestSupport.activate_simulation(w, opts[:liquid_bounds])
+    end
     actor=%{cid: 1001,gate: self(),identity: :b7,refresh: &Actor.tool_context/2,eye: {63.5,1.5,0.5},tick_us: 16_667}
     actor=Map.put(actor,:player,start_supervised!({Actor,actor}))
     unless context[:empty_inventory] do
@@ -81,6 +85,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   @tag :empty_inventory
   @tag head: @capacity
   @tag :database
+  @tag :simulation
   test "committed falling frames clear exactly once, conserve quantity and never replay", c do
     supply = Path.join(c.root, "fall-source.json")
     File.write!(supply, Jason.encode!(%{classification: "Test-only", deposits: [%{macro: [63,1,2], material: 21}]}))
@@ -130,6 +135,7 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   # M2a（评审 R4）：活动集在没有数量变化的步进里清空时也要提交，否则切点写出的是上一笔数量事务里的旧活动集，
   # 重启后液体会被错误地重新排程。手算：水趋静后在线活动集为空；页表 + 后缀恢复的活动集必须同为空。
+  @tag :simulation
   test "an active set that empties without a quantity change is committed and restored as empty",c do
     basin(c)
     assert {:ok,%{seq: filled}}=World.liquid_fill(c.w,1001,"active",21,{63,1,2},1)
@@ -151,6 +157,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   @tag :empty_inventory
   @tag :database
   @tag head: div(@capacity,8)
+  @tag :simulation
   test "settling steps journal only changed cells; replay and compact reproduce the live regions",c do
     # 封闭计算域 {62..65}×{0}×{1..3} 的底层，跨 region 边界（x 63|64）；没有任何非液体提交，
     # 区域从未以整区载荷入日志，回放必须自己把液体区域恢复为完整快照，压实才保得住数量。
@@ -183,6 +190,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
     assert {quantities(w),region_images(w)}==saved
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     for _<-1..3, do: tick(w)
     saved={quantities(w),region_images(w)}
     stop_supervised!(World)
@@ -199,6 +207,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert {:ok,_}=World.material_supply(c.w,1001,"fill-test",%{21=>2*@capacity})
   end
 
+  @tag :simulation
   test "liquid_fill floods open cells up to the level, charges the actual amount once and survives replay",c do
     basin(c)
     assert balance(c.w)==3*@capacity
@@ -244,13 +253,15 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   @tag :empty_inventory
   @tag cadence: 0.01
+  @tag :simulation
   test "an actual scheduled liquid tick retires and is not periodically requeued",c do
     :erlang.trace(c.w,true,[:receive])
     assert {:ok,_}=World.apply_edits(c.w,[{{63,0,2},19}])
     pid=c.w
-    assert_receive {:trace,^pid,:receive,:liquid_commit},1000
+    # 定时液体步由唯一到期进度 owner 投递 `{:liquid_tick, due}`（CW2）；`:liquid_commit` 只是显式强制步。
+    assert_receive {:trace,^pid,:receive,{:liquid_tick,_due}},1000
     assert World.liquid_activity(c.w)==%{active_cells: 0,scheduled: false}
-    refute_receive {:trace,^pid,:receive,:liquid_commit},100
+    refute_receive {:trace,^pid,:receive,{:liquid_tick,_}},100
     :erlang.trace(c.w,false,[:receive])
   end
 
@@ -294,6 +305,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   @tag :empty_inventory
+  @tag :simulation
   test "idle world has no liquid timer; geometry and finite author input wake it and a settled basin sleeps", c do
     assert World.liquid_activity(c.w) == %{active_cells: 0, scheduled: false}
     walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
@@ -315,12 +327,14 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert :ok=World.compact(c.w)
     stop_supervised!(World)
     w=start_supervised!({World,c.opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     assert World.liquid_activity(w).scheduled
   end
 
   # 只测试：隔离水槽中的在线参数发布；真实 World 数量、休眠/唤醒与日志回放，
   # 仅世界基底和玩家使用替身。
   @tag head: @capacity
+  @tag :simulation
   test "lowering the published side threshold wakes sleeping liquid and survives compact",c do
     walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
     assert {:ok,_}=World.apply_edits(c.w,walls)
@@ -341,6 +355,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     stop_supervised!(World)
     File.cp!(next,catalog)
     w=start_supervised!({World,c.opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     assert World.liquid_activity(w).scheduled
     before=quantities(w)
     tick(w)
@@ -403,7 +418,10 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{1,0,0},{2,1,1}},self(),:warm,false)
     assert_receive {:canonical_snapshot,:warm,warm}
     # 只测试缓存失效：丢弃可重建载荷，不改变水量、身份或余额。
-    :sys.replace_state(c.w,fn s->%{s | payloads: %{},lru: :gb_trees.empty(),lru_ticks: %{},lru_bytes: 0,resident_bytes: 0,decoded: %{}} end)
+    :sys.replace_state(c.w,fn state ->
+      state=Enum.reduce(Payloads.cached_keys(state),state,&Payloads.cache_delete(&2,&1))
+      %{state | decoded: %{}}
+    end)
     assert :ok=World.canonical_snapshot_and_subscribe(c.w,{{1,0,0},{2,1,1}},self(),:cold,false)
     assert_receive {:canonical_snapshot,:cold,cold}
     assert cold.regions==warm.regions
@@ -418,6 +436,7 @@ defmodule VoxelRegion.LiquidWorldTest do
 
   @tag :legacy_water
   @tag :empty_inventory
+  @tag :simulation
   test "admitted legacy source flows immediately and never refills emptied source after replay",c do
     # 只测试：仅由 legacy source 提供世界水，角色初始库存为空。
     VoxelRegion.TestSupport.payload(c.w,0,{0,0,0})
@@ -430,11 +449,13 @@ defmodule VoxelRegion.LiquidWorldTest do
     VoxelRegion.TestSupport.payload(w,0,{0,0,0})
     assert quantities(w)==%{}
     assert balance(w)==@capacity
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     tick(w)
     assert quantities(w)==%{}
     assert total(w)==@capacity
   end
 
+  @tag :simulation
   test "gravity and cross-region lateral flow conserve every quantum; walls contain then leak",c do
     # A one-cell-wide channel spans owner cores63/64; closed experimental boundaries are explicit.
     walls=for x<-62..65,y<-0..2,z<-1..3, y==0 or z != 2 or x in [62,65],do: {{x,y,z},19}
@@ -458,6 +479,7 @@ defmodule VoxelRegion.LiquidWorldTest do
   end
 
   @tag :empty_inventory
+  @tag :simulation
   test "MCP-authored Test-only two-cubic-metre supply installs atomically and flows without a player pour",c do
     fixture=Path.join(c.root,"basin.json")
     rows=for {coord,m} <- [{{63,2,2},21},{{64,2,2},21},{{63,0,2},11},{{64,0,2},11}],

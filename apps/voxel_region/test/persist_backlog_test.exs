@@ -60,6 +60,7 @@ defmodule VoxelRegion.PersistBacklogTest do
 
   test "受控慢写回：中上限暂停热 / 液体步进，硬上限在扣账前拒绝提交，写回恢复后无新输入也恢复调度", c do
     w = start_supervised!({World, c.opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, c.opts[:liquid_bounds])
     # 全新世界的首个切点发布 P = 0；之后的下一次发布停在发布点。
     assert :ok = World.compact(w)
     :persistent_term.put({HoldLog, Path.join(c.root, "overlay.log")}, self())
@@ -72,6 +73,7 @@ defmodule VoxelRegion.PersistBacklogTest do
       ambient_kelvin: 293.15, environment_w_per_m2_k: 0.01, tolerance_kelvin: 1.0,
       emissivity: 0.0, view_range_cells: 8, power_w: 1.0, energy_j: 100.0}))
     assert :ok = World.thermal_experiment(w, heat)
+    thermal_due = :sys.get_state(w).thermal_due
     water = Path.join(c.root, "water.json")
     File.write!(water, Jason.encode!(%{classification: "Test-only", deposits: [%{macro: [65, 3, 3], material: 21}]}))
     assert {:ok, _} = World.liquid_experiment(w, water)
@@ -93,6 +95,17 @@ defmodule VoxelRegion.PersistBacklogTest do
       assert paused.active_cells > 0 and not paused.scheduled
       paused_at = observe(w)
       assert paused_at.thermal.active
+      # 等待写回不是自然休眠：未开始的热步到期时刻不能被清掉。
+      assert :sys.get_state(w).thermal_due == thermal_due
+      Process.send_after(self(), :release_writeback_window,
+        max(thermal_due + 1_100 - System.monotonic_time(:millisecond), 0))
+      assert_receive :release_writeback_window, 2_000
+      progress = World.stats(w).simulation_progress
+      assert progress.thermal.next_due_ms == thermal_due
+      assert progress.thermal.pending_steps >= 3
+      assert progress.thermal.wait_reason == :writeback
+      assert progress.liquid.pending_steps > 0
+      assert progress.liquid.wait_reason == :writeback
 
       # 正常提交继续被接纳，直到硬上限。
       Enum.reduce_while(1..20, nil, fn i, _ ->
@@ -125,6 +138,9 @@ defmodule VoxelRegion.PersistBacklogTest do
         (now.liquid_units != resumed.liquid_units or World.liquid_activity(w).active_cells != paused.active_cells)
     end)
     assert {:ok, _} = World.material_supply(w, 1001, "after", %{19 => 5})
+    clock = :sys.get_state(w)
+    partial = if clock.thermal_run, do: 0.5 - clock.thermal_run.remaining, else: 0.0
+    assert clock.thermal_due == thermal_due + round((clock.thermal.elapsed_s - partial) * 1_000)
   end
 
   # 死亡掉落是已确认死亡的后果、不是新意图：硬上限下照常提交（m2a §5.3），被拒即物品永久丢失。

@@ -6,9 +6,11 @@ defmodule VoxelRegion.World.Thermal do
   `VoxelRegion.World.Canonical` 读取 canonical 占用，派生工作集在 `VoxelRegion.ThermalWork`。
   一次提交完成时把待提交的记录交回 World，由 World 写日志、下发与处理几何后果。
   """
-  alias VoxelRegion.{Attachments, Combustion, Damage, Magic, Phase, Prefab, Protection, ThermalDomain, ThermalRecord,
+  alias VoxelRegion.{Combustion, Damage, Magic, Phase, Prefab, Protection, ThermalDomain, ThermalRecord,
     ThermalWork}
   import VoxelRegion.World.Canonical
+  alias VoxelRegion.World.Clock
+  alias VoxelRegion.World.{CircuitGraph, Pages}
   require Logger
 
   @micro VoxelRegion.Spatial.micro_resolution()
@@ -16,14 +18,14 @@ defmodule VoxelRegion.World.Thermal do
   @deposit_seconds 0.5
 
   @doc """
-  排下一次定时热提交：固定 500 ms 墙钟节拍，下一次到期 = 上次到期 + 500 ms，回调耗时不拉长周期；
-  落后时立即开始、不积压补跑。任何时刻至多一个待到期节拍（新排程取消旧的）。
+  投递下一尚未完成的500ms自然步；due只在该自然步完成时推进。过期时投递一次续行，不堆积tick或扩大dt。
+  装页失败由PageLoad明确保持failed，只有显式恢复后才重新投递。
   """
   def schedule(state) do
-    if state.thermal_timer, do: Process.cancel_timer(state.thermal_timer)
-    now = System.monotonic_time(:millisecond)
-    due = max((state.thermal_due || now) + 500, now)
-    %{state | thermal_due: due, thermal_timer: Process.send_after(self(), :thermal_tick, due - now)}
+    if state.thermal_timer, do: Clock.cancel_timer(state, state.thermal_timer)
+    now = Clock.monotonic(state)
+    due = state.thermal_due || now + 500
+    %{state | thermal_due: due, thermal_timer: Clock.send_after(state, self(), {:thermal_tick, due}, max(due - now, 0))}
   end
 
   @doc """
@@ -31,7 +33,8 @@ defmodule VoxelRegion.World.Thermal do
   `touch/2`（每笔事务，含热提交自己的事务）调用它；是否真的推进由下一拍的 `begin/1` 判定。
   """
   def wake(%{thermal: nil} = state), do: state
-  def wake(%{thermal_timer: nil, thermal_run: nil} = state), do: schedule(state)
+  def wake(%{thermal_timer: nil, thermal_run: nil} = state),
+    do: if(VoxelRegion.World.PageLoad.failure(state), do: state, else: schedule(state))
   def wake(state), do: state
 
   @doc """
@@ -45,7 +48,7 @@ defmodule VoxelRegion.World.Thermal do
   def fired(state), do: %{state | thermal_timer: nil}
 
   @doc """
-  下一次热提交会读到的种子区域（L0 区域键；M2b 按需装页的步前检查）：热格、有限热源、上一步的计算域与身体接触格。
+  下一次热提交会读到的种子区域（L0 区域键；M2b 按需装页的步前检查）：热格、有限热源、当前未完成数值域与身体接触格。
   装页把每个键扩到 26 邻页，覆盖一步内的六邻扩域与视线伙伴。
   """
   def seed_keys(%{thermal: nil}), do: []
@@ -54,12 +57,101 @@ defmodule VoxelRegion.World.Thermal do
     work = state.thermal_work
     contacts = for {_, b} <- state.bodies, {_, _, cell, _} <- b.contacts, do: cell
 
-    [MapSet.to_list(work.hot), Map.keys(state.thermal.sources), if(work.cells, do: MapSet.to_list(work.cells), else: []), contacts]
+    [MapSet.to_list(work.hot), Map.keys(state.thermal.sources), current_cells(state), contacts]
     |> Enum.concat()
     |> Enum.map(&{0, region_of(&1)})
     |> Enum.uniq()
     # 热提交会做几何提交（相变、热毁、转化），逐级归约读写各级粗层页：连同粗层祖页一起装（评审 A2 / F1）。
     |> VoxelRegion.World.Pages.with_ancestors()
+  end
+
+  @doc """
+  当前热步、下一步与已承诺未来结算的页种子。活动继续时已建计算域由本 owner 保有到热域自然结束，结束后的历史几何不构成活动；
+  未发布的天然活动或未冻结的电路读取闭包显式阻止退休。
+  返回值沿用 Closure 的 `{扩邻页键, 精确页键, locator身份}`，会提交几何的 L0 种子附带既有粗层祖页。
+  """
+  def residency_dependencies(%{thermal: nil}), do: {:ok, {[], [], []}}
+  def residency_dependencies(%{source: VoxelRegion.GeneratedStore}),
+    do: {:error, {:natural_activity_unregistered, VoxelRegion.GeneratedStore}}
+  def residency_dependencies(state) do
+    work = state.thermal_work
+    visited = if state.thermal_run, do: state.thermal_run.visited, else: MapSet.new()
+    electric = if work.electric, do: Enum.into(visited, work.electric), else: Map.keys(state.damage)
+      # nil 是 owner 尚未派生的待判集合，下一次真实结算仍要读取当前全部属性行。
+      pending = ThermalWork.transform_keys(visited, work.pending, work.due, state.damage)
+      rows = Enum.uniq(Enum.concat([pending, work.touched, electric]))
+        |> Enum.flat_map(fn key -> case Map.fetch(state.damage, key) do {:ok, row} -> [row]; :error -> [] end end)
+      burning = work.burning || for({key, row} <- state.damage, Map.get(row, :burning, false), into: %{}, do: {key, ThermalWork.cells(row)})
+      bodies = for {_, body} <- state.bodies, {kind, _, cell, _} <- body.contacts, kind in [:node, :wet], do: cell
+      fixed = for {_, s} <- semblances(state), not Map.has_key?(s, :projectile_source), cell <- Magic.Semblance.span(s), do: cell
+      contacts = for {_, %{contact: %{target: target}}} <- semblances(state), do: target
+      cells = Enum.concat([work.hot, Map.keys(state.thermal.sources), bodies, fixed, held_cells(state),
+        Enum.flat_map(burning, &elem(&1, 1)), Enum.flat_map(rows ++ contacts, &ThermalWork.cells/1)])
+      keys = cells |> Enum.map(&{0, region_of(&1)}) |> Enum.uniq() |> Pages.with_ancestors()
+      ids = Enum.flat_map(rows ++ contacts, &residency_id(state, &1)) |> Enum.uniq()
+      graph = Map.get(work, :circuit)
+      circuit = VoxelRegion.Circuit.seeds(state.damage, state.properties, electric) |> Enum.reject(&loose_cell?(state, &1))
+      graph = if match?(%{status: :complete}, graph) and circuit == [],
+        do: nil, else: graph
+      {:ok, {Enum.uniq(keys ++ CircuitGraph.dependencies(graph)), [], ids}}
+  end
+
+  # 步前准备只读进行中 run 或原生未写回值的数值域；已结束提交的历史几何不在下一步开始前装入（单内核步提交不读其外环）。
+  defp current_cells(state) do
+    work = state.thermal_work
+    if state.thermal_run != nil or work.domain.pending, do: domain_cells(work), else: []
+  end
+
+  # 驻留需求比步前准备多保有一项：活动仍会继续（`continues?/1`）时，下一提交的内核步续行检查会按同一计算域再读取，
+  # 已装入的计算域页由本 owner 保有到热域自然结束，不在提交之间退休再重装；从未装入的页不因此被读取。
+  defp held_cells(state), do: if(continues?(state), do: domain_cells(state.thermal_work), else: current_cells(state))
+
+  defp domain_cells(work), do: Enum.concat(work.cells, Map.keys(Map.get(work.domain, :cells, %{})))
+
+  # 下一次定时提交是否会真正开始（`begin/1` 的唯一判定）：热活动、拟态、身体接触，或自上次零功率提交后有新事务的电路种子。
+  defp continues?(state) do
+    state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
+      (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != [])
+  end
+
+  defp residency_id(_state, %{granularity: 2, owner: owner}) when owner != {0, 0}, do: [owner]
+  defp residency_id(state, %{granularity: g, incarnation: aid}) when g in [3, 4],
+    do: if(Map.has_key?(Map.get(state, :attachment_owners, %{}), aid), do: [{:aid, aid}], else: [])
+  defp residency_id(_state, %{owner: owner}) when owner != {0, 0}, do: [owner]
+  defp residency_id(_state, _target), do: []
+
+  @doc """
+  Residency 已证明页无活动／读取需求并退休 canonical 后，释放这些页的最后派生热引用。
+  未写回原生值或进行中的步由依赖投影保留；仍存活域的 seen 只裁剪到它实际读取的记录，不清空变更比较基线。
+  """
+  def release_residency(%{thermal: nil} = state, _keys), do: state
+  def release_residency(state, keys) do
+    regions = for {0, region} <- keys, into: MapSet.new(), do: region
+    if MapSet.size(regions) == 0 do
+      state
+    else
+      work = state.thermal_work
+      retired? = &MapSet.member?(regions, region_of(&1))
+      affected = Enum.any?(work.cells, retired?) or Enum.any?(Map.keys(Map.get(work.domain, :cells, %{})), retired?)
+      if affected and state.thermal_run == nil and not work.domain.pending do
+        # 整域已无数值欠账，可丢派生域；活动前沿与增量待判集合保持原 owner 的值。
+        fresh = ThermalWork.new()
+        work = Map.merge(fresh, Map.take(work, [:hot, :hot_rows, :touched, :burning, :pending, :due, :electric, :circuit]))
+        %{state | thermal_work: work}
+      else
+        cells = for {cell, _} <- work.geometry, retired?.(cell), do: cell
+        work = ThermalWork.drop(work, cells, state.thermal.config["view_range_cells"])
+        domain = work.domain
+        seen = case domain.seen do
+          nil -> nil
+          {damage, liquid} ->
+            row_keys = for {_, node} <- domain.table, do: node.damage_key
+            finite_cells = for {key, node} <- domain.table, MapSet.member?(domain.finite, key), do: node.cell
+            {Map.take(damage, row_keys), Map.take(liquid, finite_cells)}
+        end
+        %{state | thermal_work: %{work | domain: %{domain | seen: seen}}}
+      end
+    end
   end
 
   @doc "休眠：这一拍没有需要推进的状态，不再排下一拍，直到 `wake/1`。"
@@ -95,17 +187,17 @@ defmodule VoxelRegion.World.Thermal do
   开始一次 0.5 模拟秒的定时提交：先移除 2.5 s 未更新的身体接触；无热活动、拟态、身体接触，且电路要么没有种子、
   要么自上次零功率提交以来没有新事务（`thermal_quiet_seq`）时不开提交（`thermal_run` 仍为 nil）。
   电路种子（有储能的蓄能石、带温度记录的热电石）本身不推进：零功率网络的解只随事务（开关、编辑、温度写回）变化。
+  scheduled_due只由到期事件传入；既有显式强制提交省略它，同一内核推进但不消费未来定时事件。
   """
-  def begin(state) do
-    now = System.monotonic_time(:millisecond)
+  def begin(state, scheduled_due \\ nil) do
+    now = scheduled_due || Clock.monotonic(state)
     bodies = Enum.reduce(state.bodies, state.bodies, fn {cid, body}, bodies ->
       if now - body.at > 2_500, do: detach_body(bodies, cid), else: bodies
     end)
     state = %{state | bodies: bodies}
 
-    if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
-         (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != []) do
-      run = %{ref: make_ref(), damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
+    if continues?(state) do
+      run = %{ref: make_ref(), scheduled_due: scheduled_due, damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
         remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0, impacts: %{},
         started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
@@ -132,11 +224,22 @@ defmodule VoxelRegion.World.Thermal do
       do: {%{state | thermal_work: %{state.thermal_work |
         burning: ThermalWork.live_burning(state.thermal_work.burning, state.damage)}}, %{run | disturbed: true}},
       else: {state, run}
-    {state, run} = advance_run(state, run)
+    case advance_run(state, run) do
+      {:needs_pages, keys, state} ->
+        run = %{run | busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
+        {:needs_pages, keys, %{state | thermal_run: run}}
+
+      {state, run} -> finish_tick(state, run, started)
+    end
+  end
+
+  defp finish_tick(state, run, started) do
     run = %{run | seq: state.seq, steps: run.steps + 1, impacts: state.thermal_run.impacts,
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
 
     if run.remaining < 1.0e-12 do
+      # 显式强制步与到期步共用内核；只有到期步完成才消费相应墙钟事件。
+      state = if run.scheduled_due, do: %{state | thermal_due: run.scheduled_due + 500}, else: state
       {state, commit} = settle_run(%{state | thermal_run: nil}, run)
       {:done, state, commit}
     else
@@ -148,12 +251,22 @@ defmodule VoxelRegion.World.Thermal do
   defp advance_run(state, %{segment: nil} = run) do
     case circuit_seeds(state, run.visited) do
       [] ->
+        state = case Map.get(state.thermal_work, :circuit) do
+          %{status: :complete} -> put_in(state.thermal_work.circuit, nil)
+          %{status: :preparing, seq: seq} when seq != state.seq -> put_in(state.thermal_work.circuit, nil)
+          _ -> state
+        end
         advance_run(state, %{run | segment: run.remaining})
 
       _seeds ->
-        # 电路求解读取记录里的温度与储能：先写回原生热域；段末的发光与电源观察行由这里直接写记录。
-        {state, visited, duration, powered} = circuit_segment(flush(state), run.remaining, run.visited)
-        {seen(state), %{run | visited: visited, remaining: run.remaining - duration, powered: run.powered or powered}}
+        # 图完整前不求解或消费时间；先flush使电导温度与唯一属性记录一致，缺页续行保留该后继。
+        state = flush(state)
+        case prepare_circuit(state, run.visited) do
+          {:needs_pages, keys, state} -> {:needs_pages, keys, state}
+          {:ready, graph, state} ->
+            {state, visited, duration, powered} = circuit_segment(state, graph, run.remaining, run.visited)
+            {seen(state), %{run | visited: visited, remaining: run.remaining - duration, powered: run.powered or powered}}
+        end
     end
   end
 
@@ -234,37 +347,41 @@ defmodule VoxelRegion.World.Thermal do
 
     # 零功率、步间无其他事务、本次没有改写任何记录：下一次求解的输入与本次相同，电路不再自行推进。
     # `settled`：交给提交后的转化重判的行键。
+    quiet = not run.powered and not run.disturbed and rows == [] and phase_changes == %{}
+    state = if quiet, do: put_in(state.thermal_work.circuit, nil), else: state
     {state, %{rows: rows, phase_changes: phase_changes, settled: settled,
-      quiet: not run.powered and not run.disturbed and rows == [] and phase_changes == %{},
+      quiet: quiet,
       dead: Enum.filter(rows, &(&1.hp == 0.0 and not phase_target?(state, &1))),
       semblances: semblance_txn(run.semblances, state, run.impacts),
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - stepped, started: run.started, steps: run.steps}}
   end
 
   # 一个电路段：按段起点求解功率，段内内核步连续执行，段末写入发光与电源观察行；另返回本段是否有非零功率。
-  defp circuit_segment(state, remaining, visited) do
-    seeds = circuit_seeds(state, visited)
+  @doc "准备当前自然段的真实可达电路图；装页或并发提交不消费原remaining/due，旧seq图只作为可丢派生输入退休。"
+  def prepare_circuit(state, visited \\ MapSet.new()) do
+    previous = Map.get(state.thermal_work, :circuit)
+    graph = case previous do
+      %{status: :preparing, seq: seq} = graph when seq == state.seq -> graph
+      _ ->
+        CircuitGraph.new(state.seq, circuit_seeds(state, visited),
+          CircuitGraph.protection_domain(state.protection), previous)
+    end
+    case CircuitGraph.advance(state, graph) do
+      {:needs_pages, keys, graph, state} ->
+        Logger.info("voxel_circuit_prepare status=page_io seq=#{graph.seq} read_pages=#{MapSet.size(graph.keys)} required_pages=#{length(keys)}")
+        {:needs_pages, keys, put_in(state.thermal_work.circuit, graph)}
+      {:ready, graph, state} -> {:ready, graph, put_in(state.thermal_work.circuit, graph)}
+    end
+  end
 
-    # 受保护区域：导线端点按槽的持有者分开，端点只接同一持有者的实体导体。
-    protection = state.protection
-    domain = if not Protection.empty?(protection),
-      do: fn slot -> cells_holder(protection, Attachments.macros([slot]), slot) end
-    input = VoxelRegion.Circuit.prepare(state.attachments, state.damage, state.properties, remaining,
-      state.thermal.config, domain)
-    {hosts, state} = Enum.map_reduce(VoxelRegion.Circuit.points(input), state, fn point, s ->
-      {targets, s} = Enum.map_reduce(VoxelRegion.Circuit.near_points(point), s, &circuit_target/2)
-      conductors = VoxelRegion.Circuit.conductors(targets, s.properties, s.damage, s.thermal.config)
-      conductors = if domain,
-        do: Enum.filter(conductors, &({:holder, Protection.holder(protection, Damage.macro(&1))} == elem(point, 2))),
-        else: conductors
-      {{point, conductors}, s}
-    end)
-    # 导体图从线端点的宿主与电动势种子（有储能的蓄能石、带温度的热电石）两头按实接触扩张。
-    solids = for target <- seeds ++ for({_point, targets} <- hosts, target <- targets, do: target), into: %{},
-      do: {VoxelRegion.ThermalGeometry.key(target), target}
-    {contacts, state} = circuit_contacts(Map.values(solids), MapSet.new(), [], state)
-    plan = VoxelRegion.Circuit.plan(input, Map.new(hosts), contacts)
+  defp circuit_segment(state, graph, remaining, visited) do
+    input = VoxelRegion.Circuit.prepare(graph.slots, state.damage, state.properties, remaining,
+      state.thermal.config, graph.domain)
+    plan = VoxelRegion.Circuit.plan(input, graph.hosts, graph.contacts)
+    state = put_in(state.thermal_work.circuit, CircuitGraph.completed(graph))
     {state, visited} = thermal_steps(state, plan.duration, visited, plan.powers)
+    # 本段新热行先由原生工作副本交回属性真值，再给同一行投影本段电观察。
+    state = flush(state, :circuit_segment)
     candidates = electric_candidates(state, visited)
     {damage, visited} = electric_rows(state.damage, visited, plan.electric, candidates)
     {damage, visited} = source_rows(state, damage, visited, plan.sources, candidates)
@@ -335,45 +452,6 @@ defmodule VoxelRegion.World.Thermal do
 
   # 可能带电观察字段或是种子的行键：上次结算后的候选、此后事务改写（touch 已并入）与本次提交改写过的行。
   defp electric_candidates(state, visited), do: Enum.into(visited, state.thermal_work.electric)
-
-  defp circuit_target(point, state) do
-    {target, state} = target_at(point, state)
-    {if(target && loose_cell?(state, target), do: nil, else: target), state}
-  end
-
-  # 按实际连通导体扩张 canonical 读取；不预读全世界，也不把 owner 交给计算模块。
-  defp circuit_contacts([], _seen, contacts, state), do: {contacts, state}
-
-  defp circuit_contacts([target | queue], seen, contacts, state) do
-    key = VoxelRegion.ThermalGeometry.key(target)
-    if MapSet.member?(seen, key) do
-      circuit_contacts(queue, seen, contacts, state)
-    else
-      seen = MapSet.put(seen, key)
-      {targets, state} = Enum.flat_map_reduce(VoxelRegion.Circuit.solid_faces(target), state, &face_targets/2)
-      {queue, contacts} = Enum.reduce(VoxelRegion.Circuit.solid_contacts(targets, state.properties, state.damage,
-          state.thermal.config),
-        {queue, contacts}, fn {other_key, {other, area}}, {queue, contacts} ->
-          if MapSet.member?(seen, other_key) or
-               not Protection.same_holder?(state.protection, Damage.macro(target), Damage.macro(other)),
-            do: {queue, contacts},
-            else: {[other | queue], [{target, other, area} | contacts]}
-        end)
-      circuit_contacts(queue, seen, contacts, state)
-    end
-  end
-
-  # 一个面的全部采样点都在同一个相邻宏格里时：该格未细分、没有液位（液位让同一格按高度部分为空）就对每个点给出
-  # 同一个目标，只读一次（原先宏格导体每面逐点 64 次）；否则逐点读取，每点一段。
-  defp face_targets([point | _] = points, state) do
-    {cell, _} = Prefab.macro_slot(point)
-    if length(points) > 1 and not Map.has_key?(state.refined, cell) and not Map.has_key?(state.liquid_units, cell) do
-      {target, state} = circuit_target(point, state)
-      {[{target, length(points)}], state}
-    else
-      Enum.map_reduce(points, state, fn p, s -> {t, s} = circuit_target(p, s); {{t, 1}, s} end)
-    end
-  end
 
   defp thermal_steps(state, remaining, visited, _powers) when remaining < 1.0e-12,
     do: {state, visited}
@@ -559,7 +637,8 @@ defmodule VoxelRegion.World.Thermal do
       if active,
         do: put_in(state.thermal_work, %{ThermalWork.burned(state.thermal_work, burned) | extinguished: extinguished}),
         else: %{flush(state) | thermal_work: %{ThermalWork.new() | builds: work.builds, hot_rows: work.hot_rows,
-          touched: work.touched, burning: %{}, pending: work.pending, due: work.due, electric: work.electric}}
+          touched: work.touched, burning: %{}, pending: work.pending, due: work.due, electric: work.electric,
+          circuit: work.circuit}}
 
     state = advance_semblances(state, semblances, semblance_result, done)
     temperatures = Map.new(Enum.zip(requested, step.temperatures) ++
@@ -1048,14 +1127,6 @@ defmodule VoxelRegion.World.Thermal do
 
   # ---- 受保护区域：物理边界（理想绝热镜面）；无区域时全部原样返回。
 
-  # 节点所在持有者；附件足迹跨持有者时自成一域，与两侧都不接触。
-  defp cells_holder(p, cells, key) do
-    case cells |> Enum.map(&Protection.holder(p, &1)) |> Enum.uniq() do
-      [holder] -> {:holder, holder}
-      _ -> {:mixed, key}
-    end
-  end
-
   # 热分区 = 受保护区域持有者 × 气候区：分区不同即理想绝热镜面（导热、辐射视线、拟态接触都不跨）。
   # 气候区是大气边界，两侧未记录格各在自己的环境温度静止；若允许跨区导热，边界两侧会在两个无限热库之间
   # 持续传热、不断偏离各自环境而被拉入活动集合（与“埋雪吞并”同类）。无区域且无气候区时原样返回。
@@ -1077,5 +1148,28 @@ defmodule VoxelRegion.World.Thermal do
     emissivity = if VoxelRegion.ThermalRadiation.enabled?(config), do: config["emissivity"], else: 0.0
     {domain, ordered} = ThermalDomain.index(work.domain, emissivity)
     %{work | domain: domain, ordered: ordered}
+  end
+
+  @doc "只读本地调度进度：lag从due和run剩余量派生，不是历史世界状态成立的承诺；单调毫秒不能跨重启比较。"
+  def progress(state) do
+    now = Clock.monotonic(state)
+    due = state.thermal_due
+    run = state.thermal_run
+    remaining = if run && run.scheduled_due != nil, do: run.segment || run.remaining, else: 0.5
+    through = if due, do: due - round(remaining * 1000)
+    reason = cond do
+      VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
+      due == nil -> :rest
+      state.page_store.level in [:mid, :hard] and run == nil -> :writeback
+      state.page_load.sim != nil -> :page_io
+      run != nil -> :cpu
+      true -> :timer
+    end
+    %{next_due_ms: due, simulated_through_ms: through, target_through_ms: if(due, do: now),
+      lag_ms: if(through, do: max(now - through, 0), else: 0),
+      pending_steps: if(due && now >= due, do: div(now - due, 500) + 1, else: 0),
+      remaining_s: if(run, do: run.segment || run.remaining, else: 0.0), wait_reason: reason,
+      model_elapsed_s: if(state.thermal, do: state.thermal.elapsed_s, else: 0.0),
+      circuit: CircuitGraph.observe(Map.get(state.thermal_work, :circuit))}
   end
 end

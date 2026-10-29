@@ -19,6 +19,32 @@ defmodule VoxelRegion.Attachments do
     end
   end
 
+  @doc "规范槽的顶点：线按起点、终点；面按锚点、第一切向、第二切向、对角的既有电路顺序。"
+  def vertices({1, axis, point}), do: [point, offset(point, axis, 1)]
+  def vertices({0, axis, point}) do
+    [u, v] = Enum.reject(0..2, &(&1 == axis))
+    [point, offset(point, u, 1), offset(point, v, 1), point |> offset(u, 1) |> offset(v, 1)]
+  end
+
+  @doc "一个顶点关联的全部规范槽：各轴两条线、各法向四个面；只给地址，不判断槽是否存在或导电。"
+  def incident_slots(point) do
+    for {kind, axis, {xs, ys, zs}} <- incident_ranges(point, point), x <- xs, y <- ys, z <- zs,
+      do: {kind, axis, {x, y, z}}
+  end
+
+  @doc """
+  至少一个顶点落在完整XYZ闭盒 `[lo, hi]` 内的全部规范槽，按种类／轴给出锚点范围（各轴线、各法向面各一盒，互不重叠）：
+  线锚点沿本轴向负方向多一格，面锚点沿两切向负方向多一格。单点盒逐盒展开即 `incident_slots/1` 的既有顺序。
+  """
+  def incident_ranges(lo, hi) do
+    lines = for axis <- 0..2, do: {1, axis, anchor_ranges(lo, hi, [axis])}
+    faces = for axis <- 0..2, do: {0, axis, anchor_ranges(lo, hi, Enum.reject(0..2, &(&1 == axis)))}
+    lines ++ faces
+  end
+
+  defp anchor_ranges(lo, hi, widened),
+    do: List.to_tuple(for(i <- 0..2, do: (elem(lo, i) - if(i in widened, do: 1, else: 0))..elem(hi, i)//1))
+
   @doc "面两侧／棱四周候选支撑。"
   def neighbors({0,axis,p}), do: [p,offset(p,axis,-1)]
   def neighbors({1,axis,p}) do
@@ -59,14 +85,28 @@ defmodule VoxelRegion.Attachments do
   end
   @doc "足迹实际涉及的宏格，包括支撑侧。"
   def macros(slots), do: slots |> Enum.flat_map(fn slot -> [elem(slot,2)|neighbors(slot)] end)
-    |> Enum.map(&map(&1,fn x -> Integer.floor_div(x,@micro) end)) |> Enum.uniq()
+    |> Enum.map(&macro_coord/1) |> Enum.uniq()
+
+  @doc "附件足迹是否与给定完整XYZ宏格集合相交；只求存在性，不构造去重足迹表。"
+  def touches_macros?(slot, cells) do
+    Enum.any?([elem(slot, 2) | neighbors(slot)], &MapSet.member?(cells, macro_coord(&1)))
+  end
+
+  defp macro_coord(point), do: map(point, &Integer.floor_div(&1, @micro))
   @doc "实际规范槽按发布厚度/截面结算整数材料量，显示宽度不参与。旧目录仅用于历史测试。"
-  def units(slots,%{attachments: %{}=specification}) do
+  def units(slots,properties) do
     Enum.reduce(slots,0,fn {kind,_,_},sum ->
-      sum+Map.fetch!(specification,if(kind==0,do: "face_units",else: "edge_units"))
+      sum+unit(kind,properties)
     end)
   end
-  def units(slots,_),do: length(slots)
+
+  @doc "按种类聚合的规范槽数复用实际槽的同一材料量，不展开几何或复制厚度规则。"
+  def units_for_counts(counts,properties),do:
+    Enum.reduce(counts,0,fn {kind,count},sum -> sum+count*unit(kind,properties) end)
+
+  defp unit(kind,%{attachments: %{}=specification}),do:
+    Map.fetch!(specification,if(kind==0,do: "face_units",else: "edge_units"))
+  defp unit(_,_),do: 1
 
   @doc "L1 外露面按微面积投票到既有表皮；更粗层继续使用同一个 Reducer。不改变占用。"
   def project_l1(cell,base,slots,sample,state) do

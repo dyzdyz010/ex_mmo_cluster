@@ -1,42 +1,29 @@
+Code.require_file("support/thermal_reference.exs", __DIR__)
+
 defmodule VoxelRegion.ThermalDomainEquivalenceTest do
   @moduledoc """
-  Test-only: the incrementally maintained thermal domain (grown seeds, cached node defaults) and the fixed
-  wall-clock commit cadence must leave the physics bit-identical. A 118-cell wooden house burns on open grass
-  through the real World commit path, once on the radiation-tuned catalog 5be2e8c7 with the Test-only radiation
-  environment (eps 0.9) and once on the earlier catalog fbd4f301 with the eps 0 environment (where the house also
-  overheats and is removed by heat damage). Every observed commit's state digest (all property rows' temperature,
-  HP, fuel and burning flag, plus the energy ledger) must equal the digest recorded on master 2c4038e7 before the
-  change, which rebuilt the domain from scratch in every kernel round.
+  只测试：118 格木屋经真实 World 提交燃烧，增量热域必须保持对应环境的全量重建历史参考。
+  温度、HP、燃料、燃烧标志与选定热账继续逐位比较；不要求不同 OS/工具链共享同一浮点摘要。
+  ε0.9 的 Windows 参考来自 725455d9 原表，Linux 参考来自 af180c98 既存表，均记录原 2c4038e7
+  全量重建行为；依据及原始失败见 task-s0-thermal-reconcile.md。ε0 原表不变。
+  参照在建场前按已支持的 OS 选定，未知平台显式拒绝；不得按本轮输出尝试匹配任一历史表。
   """
   use ExUnit.Case, async: false
   alias VoxelRegion.World
-  alias VoxelRegion.TestSupport.Actor
+  alias VoxelRegion.TestSupport.{Actor, WorldClock}
+  alias VoxelRegion.TestSupport.ThermalReference
 
   @fixtures Path.expand("fixtures/combustion", __DIR__)
   @grass 1
   @wood 19
   @box {{-2, -2, -2}, {10, 8, 10}}
 
-  defmodule NullLog do
-    @moduledoc "Test-only: log stand-in that keeps nothing; this test never restarts the World."
-    def open(dir, _), do: dir
-    def replay(_), do: []
-    def append(_, _), do: :ok
-    def checkpoint(_, _), do: :ok
-    def prefix(_), do: nil
-    def clear_unpublished(_, _), do: :ok
-    def write_pages(_, _, _), do: :ok
-    def publish(_, _, _, _), do: :ok
-    def load(_), do: %{prefix: nil}
-    def load_head(_, _), do: %{prefix: nil}
-    def collect(_, _, _), do: 0
-  end
-
   setup do
     root = Path.join(System.tmp_dir!(), "thermal_equivalence_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
-    %{root: root}
+    clock = start_supervised!({WorldClock, 10_000})
+    %{root: root, clock: clock}
   end
 
   defp start(c, digest, environment) do
@@ -44,8 +31,9 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     File.cp!(Path.join(@fixtures, digest <> ".json"), catalog)
     env = Path.join(c.root, "environment.json")
     File.cp!(Path.join(@fixtures, environment), env)
-    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: NullLog, root: c.root, observer: self(),
-      name: nil, property_catalog_path: catalog, thermal_environment_path: env, production_materials: [15, @wood]]})
+    w = start_supervised!({World, [source: VoxelRegion.TestSupport.Source, log: VoxelRegion.TestSupport.NullLog, root: c.root, observer: self(),
+      name: nil, property_catalog_path: catalog, thermal_environment_path: env, production_materials: [15, @wood],
+      clock: {WorldClock, c.clock}]})
     {:ok, _} = World.material_supply(w, 1001, "fixture", %{15 => 10_000_000})
     w
   end
@@ -81,39 +69,76 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     :crypto.hash(:sha256, :erlang.term_to_binary({rows, Enum.sort(ledger)})) |> Base.encode16(case: :lower)
   end
 
-  # Timer and manual commits both advance exactly 0.5 s; every observed post-commit state is keyed by elapsed time.
-  defp run(w, until, trace \\ %{}) do
+  # 只测试：调度时钟固定，显式提交仍走正式内核；每次公共观察必须对应完成的一笔 0.5 s。
+  defp run(w, until, trace \\ %{}, previous \\ 0.5) do
     send(w, :thermal_commit)
+    await_step(w, previous + 0.5, System.monotonic_time(:millisecond) + 5_000)
     s = VoxelRegion.TestSupport.observe(w, [], @box)
+    assert_in_delta s.thermal.elapsed_s - previous, 0.5, 1.0e-9
+    capture_raw(:step, s)
     trace = Map.put(trace, s.thermal.elapsed_s, digest(s))
-    if s.thermal.elapsed_s >= until or not s.thermal.active, do: trace, else: run(w, until, trace)
+    if s.thermal.elapsed_s >= until or not s.thermal.active,
+      do: trace, else: run(w, until, trace, s.thermal.elapsed_s)
+  end
+
+  # 强制提交遇冷页会保留同一thermal_run跨消息完成；只等待这次目标，不补发第二次commit。
+  defp await_step(w, target, deadline, waiting \\ false) do
+    stats = World.stats(w)
+    progress = stats.simulation_progress.thermal
+    assert stats.simulation_io.status != :failed, "thermal page IO failed: #{inspect(stats.simulation_io)}"
+    assert progress.model_elapsed_s <= target + 1.0e-9,
+      "thermal advanced beyond requested step: #{inspect(progress)} target=#{target}"
+
+    if abs(progress.model_elapsed_s - target) <= 1.0e-9 and progress.remaining_s == 0.0 do
+      if waiting, do: record_wait(:complete, target, progress, stats.simulation_io)
+      :ok
+    else
+      unless waiting, do: record_wait(:waiting, target, progress, stats.simulation_io)
+      assert progress.wait_reason != :rest, "thermal rested before requested step: #{inspect(progress)}"
+      assert System.monotonic_time(:millisecond) < deadline,
+        "thermal step incomplete: #{inspect(progress)} io=#{inspect(stats.simulation_io)} target=#{target}"
+      receive do after 5 -> :ok end
+      await_step(w, target, deadline, true)
+    end
+  end
+
+  defp record_wait(stage, target, progress, io) do
+    if path = System.get_env("THERMAL_DOMAIN_CAPTURE") do
+      File.write!(path <> ".progress.jsonl", Jason.encode!(%{stage: stage, target: target,
+        progress: progress, simulation_io: io}) <> "\n", [:append])
+    end
   end
 
   defp burn(c, digest, environment) do
     w = start(c, digest, environment)
-    # 只测试：参考记录里点火前已走过一次 0.5 s 提交——旧实现建场时冷区逐格重读解码 baseline（> 500 ms），启动排下的墙钟节拍
-    # 总在点火前到达。M2b 去掉重读后建场快于节拍，这个前提不再由墙钟偶然提供：取消启动节拍，建场后显式投递同一次提交
-    # （计时器与手动提交都正好推进 0.5 s），记录与断言不变（同 thermal_radiation_world_test 的 pause_clock）。
-    s = :sys.get_state(w)
-    assert is_integer(Process.cancel_timer(s.thermal_timer))
+    # 只测试：参考记录点火前已有一次 0.5 s；由公开强制提交建立，不再借用建场耗时触发真实 timer。
+    # 独占调度时钟不前进，因此读取和记录 raw 都不会插入额外自然 due；原物理参数及冻结表保持。
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @box)
     {:ok, _} = World.apply_edits(w, (for x <- -1..7, z <- -1..7, do: {{x, 0, z}, @grass}) ++ house())
     send(w, :thermal_commit)
-    assert World.simulation_snapshot(w, [], @box).thermal_accounting.elapsed_s == 0.5
+    initial = World.simulation_snapshot(w, [], @box)
+    assert initial.thermal_accounting.elapsed_s == 0.5
+    capture_raw(:before_ignition, initial)
     ignite(w)
     run(w, 600.0)
   end
 
-  defp assert_recorded(trace, recorded, label) do
-    observed = for {elapsed, digest} <- trace, Map.has_key?(recorded, elapsed), do: {elapsed, digest}
-    for {elapsed, digest} <- Enum.sort(trace), rem(trunc(elapsed * 2), 20) == 0,
-      do: IO.puts("THERMAL_DIGEST #{label} #{inspect(elapsed)} #{digest}")
-    assert length(observed) >= div(map_size(recorded), 2)
-    for {elapsed, digest} <- observed, do: assert({elapsed, digest} == {elapsed, recorded[elapsed]})
+  # 只读取证：长度前缀 ETF 保留每笔公开观察；中途失败仍保留已有前缀，不改原摘要投影或 expected。
+  defp capture_raw(kind, snapshot) do
+    if path = System.get_env("THERMAL_DOMAIN_CAPTURE") do
+      bytes = :erlang.term_to_binary({kind, snapshot})
+      File.write!(path, <<byte_size(bytes)::unsigned-big-32, bytes::binary>>, [:append])
+    end
   end
 
-  # Full-domain-rebuild reference (master 2c4038e7), every 10 s of simulated time.
-  # 2026-09-30 重录：旧表复现不出——2c4038e7 自身在 Linux（WSL，Elixir 1.18 / OTP 27）于 10–30 s 与 420 s 起就与旧表不符，
-  # GitHub CI 上的实现在 510 s 也得到本表同一摘要。本表即 2c4038e7 代码在该环境逐 10 s 的输出，当前增量实现与之逐点相同。
+  defp assert_recorded(trace, recorded, label) do
+    for {elapsed, digest} <- Enum.sort(trace), rem(trunc(elapsed * 2), 20) == 0,
+      do: IO.puts("THERMAL_DIGEST #{label} #{inspect(elapsed)} #{digest}")
+    assert :ok == ThermalReference.compare(trace, recorded)
+  end
+
+  # Linux 历史参考：af180c98c9ba9b436f353093676fbd583ce3743e 的原 31 点，不重录。
+  # 原 Linux CI 与本轮冻结 Linux 单例均 31/31 命中；不同环境的微小数值差不等于已确诊某个数学函数。
   @radiation %{
     10.0 => "d600c5a7ecb73413ab90086009f1ab04bbb84a5573af59e5ea8fde107d8500bd",
     20.0 => "cbdde38d3d66fa83d4302e08463dd1719e6f0ed4f763ef04d2a864a30953fb3f",
@@ -148,6 +173,42 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     600.0000000000002 => "2b61e10f75a897a4b458429286280b830209b7847e03fd699a950cae686fcefc"
   }
 
+  # Windows 历史参考：725455d9f4d2b2964fd1772a68deb5a7a5f3913c 的原 31 点，不采集当前值。
+  # 原文件 SHA256=d373fe794fd163913fdf5966a49a056deec3483b907338ef2969fe847cfa53a6；受控 Windows 31/31 命中。
+  @radiation_windows %{
+    10.0 => "77aaec307398b91b44cc8a5ddd7399b9f5fcd1716f895f137499e61a7a22e6bf",
+    20.0 => "ded51dff4ea6c442cde7bcf26526385356cc07459a8e22fb2f010be253fb398c",
+    30.000000000000004 => "a75dec7ba61d80459ac5ce7b9aae28ada7dec11363b90fcbb2103ae14e8f64a4",
+    40.00000000000001 => "4281bdf1a903ba6a114f171f9337f6bb61bbc1d4b097cb7b5b5881987f141749",
+    50.000000000000014 => "986efc0ab0369e54e0ccd0bbbe0ba4839af42283928c2240544ee1090f5a818b",
+    60.000000000000014 => "c952742635d6f3368e7b82e20d745b0a1a11b312261236846e8e231192abb104",
+    70.00000000000001 => "7ec0fdb56429cdb20a287bdc423a612547c08a9d4b1f257a5d52ac623fa856ef",
+    80.0 => "f1c0bd6603c8f23bfaf41a0c56364a884754a623402e96011b27779b498f1faf",
+    90.49999999999999 => "e53dccbe9f519e54d1267cd52f72f650fa9b181bb6f5fc28126a60aa953ac7b2",
+    100.49999999999999 => "366059b2eeb346793843992490782c153b4b66eeeadb2388aeada98f3fdd91e6",
+    110.49999999999999 => "fa794a1b907653b6d945ed580d0c94b0a7a87221d559f3a3931cf730a365f509",
+    120.49999999999997 => "ac19b946d5aa049f4447980666da29f6f987af88796688202753a2cf048adde3",
+    130.49999999999991 => "f8de70498c002030268aed9a9018801a40410a0578757ae9a86e5fb8ed78aae0",
+    420.0000000000002 => "7acffc9c6acdf5fed029b7d0ecf5ffcce40d541b2bc63402294b7fb026e91a04",
+    430.0000000000002 => "8f644516f8c1b658bab50f5fba658b94d48f6ff2ff54f23d6091643b0289de77",
+    440.0000000000002 => "0e6cfb5ee0f7d4729c947318b711125cf06742226c5000d453db5d56fc386aa3",
+    450.0000000000002 => "617df71fe40b4db8d5a3689b79e1e43e144b3c3177f1b1c475e539e7c04fb376",
+    460.0000000000002 => "1d7c030363d75d8aa0523fb7c1634a78db209967307654194530dd7bad92d4b0",
+    470.0000000000002 => "6742e1926682a69ee52c482023686d3df75c30e9cfde1376c16e26bd6399ded6",
+    480.0000000000002 => "abf26354f9e9ef80af2b61fb22186351bac392f36888f82ab3670ec9e67f36cb",
+    490.0000000000002 => "dc9519a312aca067a52688c8f5627313e161b6beafb55caf0cc26dbdaab1aa57",
+    500.0000000000002 => "368bdfc0d8747e99409f2f6c93d62deb8121700e6796be6b5f7ab49991d61f77",
+    510.0000000000002 => "557a1937fc67bdee245334823ca09b112c87d72fcda66b175a4d49e0edee212c",
+    520.0000000000002 => "e133c177241e06692c44f27353fe6e986cdbcdac79d8f8522a512ba1e4fd9d5c",
+    530.0000000000002 => "e38ed7649be2372516965ad3c04b60963cbc15bedc6a83ad1280a4c1c237df67",
+    540.0000000000002 => "57c508039ef0f939a142859c9d7854391bffcb294d4879b102039e24f5d1be5b",
+    550.0000000000002 => "f455b3c559912670ea3fc59352566c5f0661941325c6e57289257ff4b7eb4b48",
+    560.0000000000002 => "50e6462b3be369e37ca7a2e8a5f516194d1787fdb649724dcb8a7419f2c63595",
+    570.0000000000002 => "9cedcdca5cf50d9e79af65fa6e09ddf25ca93d7cfeda5d713af80fdaccca1288",
+    590.0000000000002 => "38fe1e69686847936f41fce5d75aa57d71da17694e7988521a05694082094b91",
+    600.0000000000002 => "9e8c56ec909fd9a08f5cc1f863a2057bb553fca8b7af9a0de84d0e5b9db0ffc5"
+  }
+
   @zero %{
     10.000000000000002 => "cf6e4841e6f06b9089c512ec5c2c4b10a72d62e75a8c5f8cec99dd62c5e458c9",
     20.000000000000004 => "d7cfc60a906d5172d83ea7b5c7f8d8b8650cb3e1b5e75c164d4fbe3180df52cd",
@@ -172,8 +233,11 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
   }
 
   test "radiation catalog, eps 0.9: a burning house matches the full-rebuild digests commit by commit", c do
+    os = :os.type()
+    assert {:ok, reference} = ThermalReference.radiation(os, @radiation_windows, @radiation)
+    IO.puts("THERMAL_REFERENCE profile=#{reference.profile} origin=#{reference.origin} os=#{inspect(os)} elixir=#{System.version()} otp=#{:erlang.system_info(:otp_release)}")
     trace = burn(c, "5be2e8c79d8789a29aa17e023294c8aafbff51ff4b8c07a945035dbfcf91fe57", "environment-radiation.json")
-    assert_recorded(trace, @radiation, :radiation)
+    assert_recorded(trace, reference.recorded, :radiation)
   end
 
   test "earlier catalog, eps 0: a burning house matches the full-rebuild digests commit by commit", c do

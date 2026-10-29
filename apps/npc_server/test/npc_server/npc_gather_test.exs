@@ -62,7 +62,8 @@ defmodule NpcServer.NpcGatherTest do
     world =
       spawn_link(fn ->
         receive do
-          {:"$gen_call", from, {:tool_definition, 1}} ->
+          # `World.tool_definition/2` 经 `World.PageLoad.call/3` 包成 `{:page_request, ref, message}`。
+          {:"$gen_call", from, {:page_request, _ref, {:tool_definition, 1}}} ->
             GenServer.reply(from, {:ok, %{"interval_seconds" => 0.0}})
         end
       end)

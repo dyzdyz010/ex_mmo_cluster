@@ -10,8 +10,12 @@ defmodule AuthServer.Admin do
     Store.import_legacy(records,Identity.now())
   end
 
-  @doc "运维控制台签发邀请码，原码仅在返回值出现一次。"
+  @doc "运维控制台签发邀请码，完整原码保留在管理列表的展示字段中。"
   def generate_invites(count,batch,expiry), do: execute("console",:generate,{count,batch,expiry})
+  @doc "签发自定义人数上限的邀请码。"
+  def generate_invites(count,batch,expiry,max_uses), do: execute("console",:generate,{count,batch,expiry,max_uses})
+  @doc "修改人数上限，不能小于已成功注册的人数。"
+  def set_invite_limit(id,max_uses), do: execute("console",:limit,{id,max_uses})
   @doc "运维控制台读取邀请历史。"
   def list_invites(filters \\ %{}), do: Store.invites(filters)
   @doc "运维控制台切换注册策略。"
@@ -28,15 +32,16 @@ defmodule AuthServer.Admin do
   end
 
   @doc false
-  def execute(actor,:generate,{count,batch,expiry}) when is_integer(count) and count in 1..100 and is_binary(batch) and byte_size(batch) <= 160 do
+  def execute(actor,:generate,{count,batch,expiry}), do: execute(actor,:generate,{count,batch,expiry,1})
+  def execute(actor,:generate,{count,batch,expiry,max_uses}) when is_integer(count) and count in 1..100 and is_binary(batch) and byte_size(batch) <= 160 and is_integer(max_uses) and max_uses in 1..2_147_483_647 do
     if is_nil(expiry) or (is_integer(expiry) and expiry > Identity.now()) do
       records = for _ <- 1..count do
         code = invitation_code()
-        %{id: Ecto.UUID.generate(),code: code,digest: Identity.invite_digest(code),hint: String.first(code) <> "…" <> String.last(code)}
+        %{id: Ecto.UUID.generate(),code: code,digest: Identity.invite_digest(code),hint: code}
       end
-      case Store.create_invites(records,actor,batch,expiry,Identity.now()) do
+      case Store.create_invites(records,actor,batch,expiry,Identity.now(),max_uses) do
         :ok -> {:ok,Enum.map(records,&Map.take(&1,[:id,:code,:hint]))}
-        {:error,:invite_collision} -> execute(actor,:generate,{count,batch,expiry})
+        {:error,:invite_collision} -> execute(actor,:generate,{count,batch,expiry,max_uses})
         error -> error
       end
     else
@@ -45,6 +50,12 @@ defmodule AuthServer.Admin do
   end
   def execute(actor,:policy,value) when is_boolean(value), do: Store.set_policy(value,actor,Identity.now())
   def execute(_actor,:list,filters), do: {:ok,Store.invites(filters)}
+  def execute(actor,:limit,{id,max_uses}) when is_integer(max_uses) and max_uses in 1..2_147_483_647 do
+    case Ecto.UUID.cast(id) do
+      {:ok,id} -> Store.set_invite_limit(id,max_uses,actor,Identity.now())
+      _ -> {:error,:invalid_request}
+    end
+  end
   def execute(actor,operation,id) when operation in [:delete,:revoke] do
     case Ecto.UUID.cast(id) do
       {:ok,id} -> Store.retire_invite(id,operation,actor,Identity.now())

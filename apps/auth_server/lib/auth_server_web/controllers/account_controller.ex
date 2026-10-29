@@ -35,13 +35,14 @@ defmodule AuthServerWeb.AccountController do
   def admin_policy(conn,p), do: respond(conn,Identity.administer(token(conn),:policy,p["invite_required"]))
   def invite_list(conn,p), do: respond(conn,Identity.administer(token(conn),:list,filters(p)))
   def invite_create(conn,p) do
-    case Identity.administer(token(conn),:generate,{p["count"],p["batch"] || "",p["expires_at"]}) do
+    case Identity.administer(token(conn),:generate,{p["count"],p["batch"] || "",p["expires_at"],Map.get(p,"max_uses",1)}) do
       {:ok,invites} -> conn |> put_status(201) |> json(%{invites: invites})
       error -> respond(conn,error)
     end
   end
   def invite_delete(conn,%{"id"=>id}), do: respond(conn,Identity.administer(token(conn),:delete,id))
   def invite_revoke(conn,%{"id"=>id}), do: respond(conn,Identity.administer(token(conn),:revoke,id))
+  def invite_limit(conn,%{"id"=>id}=p), do: respond(conn,Identity.administer(token(conn),:limit,{id,p["max_uses"]}))
   @doc false
   def token(conn) do
     case get_req_header(conn,"authorization") do

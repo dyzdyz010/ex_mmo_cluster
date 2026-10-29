@@ -1,4 +1,90 @@
-# 当前会话接力：Voxim M3 规划（2026-09-09）
+# 当前会话接力：世界分页与空间权威拆分（2026-10-28）
+
+**最终停点：S0 已按批准范围收口（2026-10-28）**。详细证据、复用范围与残余历史事项见[执行计划页首收口记录](../voxel-authority/2026-10-24-world-region-paging/execution-plan.md#s0-本轮收口2026-10-28覆盖下方历史停点)，覆盖下方执行中及更早摘要。最后ring投影修补已进入正常v3正式release，完整N1提交最大231.731ms／p99 128.717ms、最长World回合228.147ms，179笔0错误；G0、D11与当前v3近远景真实验收完成。当前发布物性全部88项材料已配置并由公共API核对。原矩阵、R4 1x/4x、R5不重跑；原失败与F0旧oracle范围保留，不声称所有历史用例全绿。源码与世界WIP原样保留，无提交／推送；本轮UE／BEAM与隔离PG已全部停止，未动如园保护库／备份。后续从既定S1a／Scene分块计划接续，天气／气候仍后移；本轮没有开始S1a。
+
+**新会话接管实跑更新（2026-10-28 18:18，工作仍在继续）**：完整接力依据为 `.demo/observe/s0-resume-20261028/HANDOFF-final.md`，覆盖下方较早停点。R4 1x/4x、R5与原1/2/4/8矩阵已有证据，不重跑。新G0/D11私有部署已按发布物性全部正ID配置88项生产材料、96MiB缓存、生成并发2；已消耗世界及失败报告完整保留，未补料、未提交／推送。
+
+- G0正式v2双端新04已完成采料、付费放置、点火、正常离窗及返回。修正判定器将“每次加热”误当“每次点燃”、将显式只读人物查询拒绝误当业务意图失败后，原始日志离线复判行为通过：36笔业务回执完整，离窗模型推进2.5秒／燃料消耗1MJ，返回同身份确认txn264。证据 `Voxim/Saved/Playtest/paging-20261024/runs/g0-s0-live-20261028-v2-04/clients/report.verify-20261028T101010423981Z.json`；原report不覆盖。真实煤块火焰／HUD已实看，未以此代替如园近远景验收。
+- 新单窗首次加载保持原矩阵profile／seq14615／120秒预热，0编辑、0错误、27区快照；最终Liquids指纹修补后的 `info:DOWN` 仍365.261ms，其中27区液体接纳363.929ms。未证解决原366.899ms回合，原N1稳态302.489ms也无批准豁免；S0性能仍未完成。证据 `Voxim/Saved/Playtest/paging-20261024/s0-firstload-20261028a/`，后续只针对已证接纳成本诊断，不追零GC或重跑完整矩阵。
+- D11已修发布凭证owner错配；新02第一次UE在登录前D3D12 PSO创建8007000e退出，世界前后seq3、样本未消费，按规则仅环境重试一次。重试实际完成26微格Prefab及第27单元付费建造txn28，但双方只读查询返回当前seq30／incarnation28，候选判定器混淆查询水位与建造事务，已中止并保留现场。第28拒绝／HUD尚未验收；正按真实几何事务与后续同身份查询合同修判定，未改生产规则。
+
+**同轮后续收口（18:32）**：D11新03已完整实跑，发布凭证按D3 owner、建造按双端确切canonical事务、后续查询按request与incarnation绑定；第27接纳／28拒绝、余额不误扣与空位判定通过。实看 `Captures/S0-20261028/d11-03-rejection.png`，中文“连接后电路规模超过上限”清晰且无幽灵方块；`d11-s0-live-20261028-v2-03/clients/visual-review.json`与新的`report.verify-*`通过，原未审图报告保留。如园同切点独占副本也经正式v2根正常出生／Ready，L0–L5显示完成、Net待办／missing／errors／rejected全0；实际查看玩家近景和俯瞰中的建筑、材质、植被、水面与远处地形。证据 `.demo/observe/s0-visual-20261028/run-01/visual-review.json`与 `Captures/S0-20261028/visual-{near-player,near-far-overview}-01.png`；仅改变相机，不将其冒称角色Far换窗（G0另有正常走离／返回证据）。本轮UE与两个WSL节点均已正常退出。
+
+当前只剩性能阻断，正在按既有M0/MemoryWatchdog运行一次27区接纳MFA／GC定向诊断（`.demo/observe/s0-adopt-profile-20261028/`），不编辑、不还原、不重跑矩阵。上述为执行中记录，不是S0完成声明。如园原库／备份未触及；20GiB host available护栏不变。新资源归属与更晚状态以本轮observe产物为准。
+
+**接续 `01a18069-5281-7b51-b860-dc8b84d8fb14` 的恢复核对（2026-10-28）**：原会话后半段因接口错误中断，以下m→n→o摘要不是最新停点。已落盘的后续为EpochChunk压紧、terrain ring差额和删除refined记录memo；q单窗完整action239.2064ms、完整read310.0672ms，仍未过全部性能门禁。memo删除直接4项通过／14排除，尚待其新同输入测量，不重跑已通过项。真实PG恢复与60秒Replica保留已有证据在 `.demo/observe/r5-pg-closure-20261028/`，不再按旧摘要视为未做；完整R4的H/A/B、真实双端和八窗仍待收口。D11潜在图候选已落盘，但玩家提交接线与实测默认上限尚未完成；用户已明确人工宏格／微格／附件槽各计1，上限按实测建议。当前继续S0至适用门禁闭合，仅做必要测试；具体结果仍以[执行计划](../voxel-authority/2026-10-24-world-region-paging/execution-plan.md)及原始证据为准。
+
+当前工作分支为 `paging-window-snapshot`，基点 `5957192b`，包含尚未提交的连续世界和分页收口增量。整体仍在 S0，S1a～S5、协议42与最终分发未完成。当前任务与依赖只在[执行计划](../voxel-authority/2026-10-24-world-region-paging/execution-plan.md)维护；现场资产保护、逐次提交／推送授权及运行目录见 [Voxim HANDOFF](../../../../Voxim/Saved/Playtest/paging-20261024/HANDOFF.md)。
+
+**最新执行优先级**：用户明确“天气和气候全部后移，先专注于内存占用平滑与世界分块(scene)”。现有天气成果保留，不在本主线新增气候／Sekai／天然初始化。先闭合内存与分页在途生命周期、恢复正确性及性能，再按既有Scene分块路线推进；历史热学参照只收尾已开始的小改动，不继续展开为内存前置。原失败、GeneratedStore阻退限制与整体未完成状态均保留。
+
+**最新性能接续（m→n→o，2026-10-28）**：用户再次要求继续S0并禁止非必要测试。已修两处确认的无谓分配：Residency先接纳owner结果，已知阻退时不再展开观察／整树闭包；RefinedSlots改为有序记录＋原枚举索引，Payloads直接复用记录前缀，不逐槽解码再编码。保留GeneratedStore保护、旧map持久、协议字节和HP／代表点；内部布局变更采用冷启动。10个必要直接用例通过、两处旧路径成本反例保留，独审无阻断；仅n/o两次同输入单窗，无全套／8窗。m→o完整action453.7344→259.7888ms、完整后读867.1232→392.192ms；n→o记录393.318→4.915ms，后读GC477.3888→159.5392ms。读取仍未过300ms，剩余GC在terrain时窗，不能宣称S0性能完成。RSS采样峰m1,906,995,200→o1,901,551,616B几乎不变，snapshot23.172608→23.4330112s回退保留。n/o源未漂／护栏未触发／trace清理、自有节点与PG均停。详见[执行计划接续](../voxel-authority/2026-10-24-world-region-paging/execution-plan.md#2026-10-28-接续驻留阻退结果先于闭包投影)与 `.demo/observe/refined-record-reuse-20261028/mno-comparison.json`。下一焦点是必要驻留堆与自然单元分配；epochs仅有历史大字段线索，无本次精确份额，不贸然扩大表示重构。下方m停点及早期记录均保留为历史，S0其余门禁仍未完成。
+
+**接续 `01a17fcc-018d-7803-beb0-f9530249d4b6` 的实际停点**：R1 异步等待生命周期与 RefinedSlots 紧凑表示已实现、直接测试通过且独审无确认阻断；j/k 同输入测量已完成并清理。RSS采样峰下降约19.9%，完整读取1878.528→638.6688ms，但单笔动作422.912→482.0992ms、事务369.664→424.960ms。接续已修碰撞判空多解码首槽，直接5项通过并完成l对照；l动作490.0864ms、事务432.845ms，300ms仍失败，资源已清理。当前推进R4/Q5安全采集；R5恢复、正式双端与8窗门禁仍待闭合。最新证据与后续顺序只在[执行计划的紧凑表示接续段](../voxel-authority/2026-10-24-world-region-paging/execution-plan.md#紧凑表示实测与当前接续点2026-10-28)维护；下方早期“R1未完成／尚待k”的记录不再代表现状。
+
+本次后续已交付两项增量：Q5有限页采集移除整World回传，8项直接及纯判定/护栏测试通过、独审无确认缺陷；完整Q5仍缺逐身份历史A与首次发布同切点资格，旧CLI在任何数据库恢复前明确拒绝。碰撞三模块改为只读变化宏格的旧占用、只物化真实变化的new chunk，14个不同直接用例通过且独审无确认问题。m同输入实跑已完成并清理，内部事务432.845→238.285ms、碰撞226.406→34.099ms、RSS采样峰2.038→1.907GB；但完整action仍453.7344ms、完整后读867.1232ms，不能将内部238ms当作完整300ms门禁通过。下一性能重点是完整操作中的GC与必要驻留工作集；S0、完整Q5/R5、双端/8窗及Scene拆分仍未完成。完整证据和余项继续在执行计划维护，本工作线全部新增改动仍未提交／推送。
+
+用户本轮要求**完成 S0**，并在天然初始化与气候草案的依赖明确后选择“**天然初态移到后续 Weather 阶段**”。该项及相应初始活动／气候身份／旧背景迁移不再是 S0 门禁，但仍未实现；不删 GeneratedStore 阻退保护，不宣称天然全域演化。S0保留显式活动、分页正确性、D11、F0适用失败、真实双端与原300ms／220ms／8窗不退化。执行计划已按 approved v7／M2a／M2b 原批准边界消除将S1a/P5全面拆行提前为G0前置的循环依赖。
+
+本次用户已选择天然世界“按气候生成平衡初态”，随后明确气候仍是草案，已有与 Sekai 联动讨论。已找到 [Voxim Weather.md](../../../../Voxim/Docs/Weather.md)：Sekai 提供离线区域月气候，Voxim 天气消费；P2 服务端权威迁移／P3 物理接入仍待细化。本选择不批准旧 e940 sampler 为正式来源，不直接合入或改旧背景能量；下文“初态待回复”已被此澄清覆盖。具体边界已写持续世界决策稿页首，气候事实源不在分页任务另建。
+
+本次P1电路接续已实跑：最终 `circuit-final-02` **57项通过**，原充放电／复制／重启／挖掘单例 `circuit-energy-02` **1项通过、4项排除**（真实时钟4.1s）。首段电观察先于新热行写回、热历史域与液体域外唤醒格引发反复装退页三处均已修；热循环原60s超时及三秒退休4万→12万、液体原回归失败保留，不改超时／原能量断言。冷回路、IO恢复、编辑排队及32／33槽对照已有证据；数值对照只满足各自原容差，非浮点逐位相等。命令／范围／测试前提裁决见执行计划P1段，源与差异在 `.demo/observe/p1-circuit-finish-20261028/`，运行在 `.demo/observe/p1-residency-20261028/`。护栏未触发、自有树全停；独立修补审查已完成，未发现确认的Critical／Important／Minor（内部报告 `task-p1-circuit-finish-review.md`）。不代表天然初始化、完整P1或性能验收。
+
+用户已明确世界无人时也必须持续演化，旧窗口／预算冻结、冷墙与绝热方案不再有效；D12 只统计角色当前分区拟态，旧分区拟态继续演化；天然雪采用真实寒冷气候、加热后自然融化。对应方案见[持续世界决策稿](../voxel-authority/2026-10-24-world-region-paging/continuous-world-decision.md)，不可沿下方旧记录恢复已撤销语义。
+
+当前优先原始内存尖峰／卡顿目标：修正测量工具整份 World 状态复制后，A/B/C 三轮同输入 cold 8 窗仍未通过性能门禁；C 的提交 p99 为 1376.871 ms。随后单中心窗首笔编辑复现 5 次 major GC，累计 1.6515 s，每次 major 后仍约 950 MiB used heap；这只是持有工作集证据，未确认反复 major 的触发根因。当前不重复跑 8 窗矩阵，先收口执行计划已有 P2 共享缓存与 P3 预制体按需读取，再选择相同场景复测。历史 M0 的 27 个 L0 region／1728 chunks 不能冒充默认近场 27 tiles／9261 chunks 的验收。
+
+最新实现：唯一共享 Cache 已承载 payload／prefab 原始字节；World 预制体目录改为轻描述，按 id 原字节／几何及草稿 compile／preview、失败与退出释放已有直接验证。缓存迁移相关23项通过；Parcel／定义驻留／Closure组17项通过，包含旧v1/v2原字节经过安装与冷重启保持；Scene真实接缝12项、NPC原17项及冷源丢失仍可读取轻目录1项均通过。上述为分组证据，不能相加当作全套或性能验收；源码身份、排除数、原生退出与护栏见 `.demo/observe/world-prefab-residency-20261028/`、`.demo/observe/cache-fixture-migration-20261028-01/` 与 `.demo/observe/prefab-callers-20261028-01/`。NPC首次因隔离PG凭据未注入而准备失败，保留原记录；纠正后新目录实跑，两个VM新库均已清理，隔离PG已停止，凭据未输出。
+
+本轮Core直接回归已收口：GM搬移同key重试、Parcel目标已知作者定义误套玩家上限、NPC最近目录误读raw三项均已修复并独立复核。最新Core组18项通过；Auth冷源失败首红2/3，最小修复后3项通过，显式503并保持原成功字节；L4共享预算单例1项通过、20项排除。NPC最近目录消费 `published_prefab_metadata` 与轻catalog，不为取得id加载全体raw定义；旧消费者最小变异实际0/1预期失败，逐字恢复后同例1项通过，最终文件SHA与原文一致。该短窗口在性能实验停止后运行，两个新库已清理、PG已停。各阶段证据、失败和未覆盖边界仍保留；不能据此标P1/P2/P3性能或整体重构完成。
+
+实际内存对照b已单轮完成且清理：`gc-unit-20261028b/run/comparison-with-a.json` 与 `cleanup-verification.json` 为证据，196项相关源／20项P2/P3差异已冻结，Native kernel／DLL、数据与单笔动作同a。World每次major后存活堆约950–954降为713–716 MiB，主BEAM生命周期OS高水位3.447降为2.914 GB；动作1972.224对1961.779 ms、事务1950.106对1940.275 ms基本不变。GC总span仍约1.65秒，b为5次major加1次268.8 ms minor；minor的old heap约712.891 MiB，不能只拿young 0.078 MiB报全部存活量。此次只证明历史单窗口探针，不证明8窗尾延迟或默认27tiles规模。prepare/run护栏均未触发、相关源未漂移，自有节点与隔离PG均已停止。
+
+GC证伪入口见 `.superpowers/sdd/voxel-authority-sharding/task-gc-trigger-audit.md` 与 `task-gc-setter-map.md`。同ERTS17.0.4／16:16 tiny canary单轮通过后，c已另获授权并单轮实际完成：生产196项逐项同b，唯一World PID／唯一session／唯一精确 `erts_internal:garbage_collect/1` arity-only，捕获5call分别紧邻5次major，另1minor无前置call，17事件／6完整GC对；请求参数和caller未观察。c/run的 `diagnostic-analysis.json`、`call-major-adjacency.json`、`cleanup-verification.json` 为证据；护栏未触发、源未漂移、trace清理完整，自有节点和PG均已停止。本轮为诊断，不能拿时延与b比性能。
+
+官方exact-tag后续审计给出最窄候选：`error_handler → code:ensure_loaded/1` 成功interactive加载后在当前进程同步GC，能在业务源码无显式GC时产生该BIF调用；具体caller／被加载模块仍未知。tiny caller能力校验已实际单轮native1：观察有效、清理完整，但普通GC与合成模块cold加载都只返回包装层 `{erlang,garbage_collect,0}`，无法区分来源；warm与未traced control均零事件。按约定停止该方案，未加到World，未扩栈或第二MFA。
+
+代码就绪d干预已单轮实跑并独立复核：固定三应用178模块中原有85个、一次补载93个，原snapshot后controller正常退出，seq/PID不漂；实际interactive，完整collector生命周期loaded760→760无任何集合／路径差异。原单动作0同步请求／0major／1minor约287.85 ms，action586.752 ms／事务565.351 ms；只支持本轮code-readiness关联，不能指定原五个模块或称自然cold达标。样本未包住整个collector的初版资格缺口已先反例红→修后13项纯绿并独立关闭，原失败保留。
+
+统筹随后按既有授权选择修复M0启动口径，具体计划在 execution-plan 页首小节：正式迁移后、World创建前，由小boot进程按标准三应用manifest一次加载，正常NIF on_load归启动边界，唯一小报告在World前写入，运行期只读；新profile为 `m0_manifest_ready_v1`，真实mode仍记录为interactive。boot／control／identity／README与专用helper已实现，6项Elixir／3项Python通过、独立审查无确认Critical/Important，旧交互式首加载与a–d证据保留。源码归档与最终SHA在 `.demo/observe/m0-startup-code-ready-20261028/`，这不是生产Topology或World计算更改。
+
+e正常新profile首笔已实际完成：manifest `17186ce620343627d07f322c98d327daab9db944d42d65231bc1fba8d227e9e3`，动态199源，仅6条授权bench代码变化，业务lib／NIF／SQL未漂；原observer＋原action，不加载d干预。迁移／冷两次ready与runtime启动事实绑定成功，World前代码就绪顺序成立。原action608.0512 ms、事务586.956 ms，0同步请求／0major／1minor289.3824 ms，仍未过300ms门禁。e/run及独立driver稿保留实际值；guard未触发、源未漂、自有PID与隔离PG均已停止，不自动8窗。
+
+后续两项只读审计已收口：`task-retained-state-audit.md` 说明713MiB不能归为单一字段，P1驻留只增不退与多项预算外缓存确有实现缺口，但未知e哪些页可退；`task-edit-cost-audit.md` 严格证明minor在collision，而无该次GC的l0_cache197.018ms包含仅为derived cache的整L0重压缩。非GC墙钟仍不能叫纯CPU。
+
+统筹已按execution-plan采纳一个最小候选并完成实现／直接验证：`Edits` 删除eager宏格载荷重写和无caller helper，原完整XYZ core/ring失效、canonical真值／结构／后像／collision／选择／seq守卫均保留，完整读者走既有按需重建。目标红例旧路径实际调用1次，修后4passed／91excluded／native0、guard未触发；独立审查无Critical/Important，L0没有因cache miss少验，Replica同seq与suffix正确。实现源SHA／历史／原生证据见 `.demo/observe/lazy-payload-cache-20261028/` 和 `task-lazy-payload-cache{,-review}.md`，首次大L0读取成本仍未覆盖。
+
+f已获单轮授权并实际失败，原始失败保留：manifest `fbb9d5d9ae1302c9ec41ff5a0e005629a14dd6fc797a1cfc350eb970c4d17faf`，199源相对e仅Edits改动。原action456.3968ms／事务433.766ms、seq14616和delta成功，minor319.3856ms；随后完整L0服务端回调1268.326ms、payload/miss，固定头身份被测试helper拒绝，actual header未落盘，不能猜具体字段，后续stats未执行。整轮run native1／后读RPC native2，guard未触发／源未漂／cleanup空，自有六PID与PG均已停。`gc-unit-20261028f/run/failed-run-analysis.json`／`cleanup-verification.json` 与 `task-lazy-payload-cache-driver.md` 为证据；不能因提交较快忽略整轮失败或1.27s读回调。
+
+连续世界合同核查发现测试的严格 `payload.seq == action.seq` 前提不成立：f日志已证14616后液体推进、prepare到14617、随后thermal14618；普通serve按region原子物化并带自己的seq，缓存命中也可合法落后global seq。正文在 `task-post-read-sequence-contract.md`：对这个确认修改目标core的probe，L为已确认action序号，U为同World serve返回后的公开seq fence，要求 `L≤R≤U`／`L≤U`，CV／level／完整XYZ仍严格；不暂停物理、不用无上界>=，旧f actual header仍未知。
+
+g已另获一次实际授权并完整通过身份校验／收尾：manifest `7229acb088d2c02ed3d7f011698229b41d86712f8cdfe143fc995b135216700a`，生产199源逐项同f，实际 `L14616 < R14617 < U14618`、同PID／CV／level／XYZ合格；固定actual header在gate前保存，f的未知header不反填。action404.7872ms／事务384.717ms，0同步请求／0major／1minor282.7264ms；完整读取public1298.944ms、单World callback1273.651ms，fence324.5056ms／stats9.6256ms另列，仍未过300ms。raw20,516,779B／body1,232,338B；读取后701页、overlay11769cell／36region、refined30822macro／instances2056、decoded15／base127、shared cache约4MB，只是该时点计数。g/run的fenced-post-read-analysis及cleanup-verification保存完整证据，guard未触发／源未漂／六自有PID死／PG已停。
+
+完整物化审计已收口为 `task-full-payload-cost-audit.md`：共用terrain→details→Canopy→encode→Cache，HTTP与可选Replica及CanonicalFeed均有活caller；全驻留refined owner枚举是源码事实，不是1.3秒的已证占比。下一观测已实现：`Payloads` 在现有构造点仅记录固定monotonic标量、已生成map/binary大小与既有header大小，source/hit/error不伪完整成功；返回／wire字节与旧摘要一致，最终5项绿，独审无Critical/Important。源Payloads SHA `c87dda910d059f6c0f62708e92a3af2b21887094f8d4b5e748f4613a5b16bb72`，证据 `.demo/observe/payload-construct-observe-20261028/`，未通过性能声明。
+
+h构造计量已另获一次实际授权并终态native0：manifest `d80a3e9d39bcf3f9f4755f0e1ddaafedfafb2b01655929d2e6436e546e97a190`，199源相对g仅Payloads固定观测变化；原g有界helper／原action／c observer及预算／数据不改。目标World PID、seq14617、CV、level0／XYZ与public read源时间包络匹配唯一完整事件，其内匹配唯一details事件。完整物化1249.178ms＝terrain5.735＋details1063.526＋Canopy3.379＋encode176.435＋cache小于微秒刻度（另约0.103ms阶段间隙）；这些都是墙钟，后读未trace GC，不能称CPU或将details直接归因某个子算法。
+
+实际已构造字段为refined8042／refined_records8042、instances652、attachments7264、liquid1262、canopy86／canopy_instances3／residual86；raw20,516,779／body1,232,338B。这些是本region构造输出，不是全局owner数量。h原action413.3888ms／GC292.352ms，public read1275.1872ms，仍未过门禁；L14616<R14617<U14618。guard未触发／源未漂／trace及cleanup完整，六自有PID与PG已停。原构造日志和完整身份保留在 `gc-unit-20261028h/run` 及其cold log，不能把微小轮间差异报算法优化。
+
+details审计已写 `task-payload-details-audit.md`：原Feed在相同region曾构造相同数量，不能证明内容或memo相等；其编码memo不回传World，World冷首读必须自足。当前缺真实hit/miss／槽记录规模与postread GC，不能将1063ms归为slot_records、全局owner扫描或冷memo。
+
+i已单轮终态native0：manifest `3faeab872d81f29d1fea3828b871b2bcdfac0a49087df149bc9a2cd42b9d908c`，动作404.1728ms／事务384.409ms，public read1288.6016ms／callback1264.230ms，原门禁仍失败。record冷循环1056.359ms、8042次miss／0hit、1,221,590槽／19,545,440B记录；顺序第二GC session的3minor＋2major合847.6672ms全部位于该循环，原action session已先完整销毁，无并存session。扣GC墙钟的残差208.6918ms不是CPU。完整分析及清理在 `gc-unit-20261028i/run/details-read-gc-analysis.json`、`cleanup-verification.json`；源未漂、护栏未触发、自有进程与PG已停。
+
+现已停止扩展诊断，进入执行计划既有P1的实质实现：`p1_residency_core` 负责required／持久发布资格／page generation与最后引用退休，`p1_activity_dependencies` 负责热、液体、投射物和待施法的真实当前与未来依赖。最初两个正常文件集成反例0/2预期红；最新生命周期文件11项实际通过，覆盖完整XYZ换窗／payload与碰撞重读、未发布cut、seq0只读、prepare到使用、跨页整树、取消暂存清理、准备回复超时、旧window迟到回灌、无人热源／液体与共享粗层片段最后owner。活动owner纯投影10项通过；这些是分组证据，不相加当全套或性能验收。
+
+直接共享回归曾在shared-02出现25/29通过、3排除、4失败：一个测试读取闸未清理，三项揭露真实显式液体步冷IO后未续行。现已沿原PageLoad／Admission运输并重放同一个 `:liquid_commit`，保留自然due，不新增强制步队列；动态洪泛累计已发现且重放仍读的页到同一不可变context，解决前段页被退后2↔5反复装页；attempt>0未闭合树的专门反例也已恢复并实跑。
+
+core本次最终联合四文件为42/43通过、3数据库用例排除（native2），唯一剩余是旧共享fixture仍等通用 `:wake`；只迁移为观察同一原强制输入并结束读取闸作用域，业务源码不变，随后同源定向1/1通过（native0）。不伪造单次联合43绿。各批20GiB护栏未触发、精确自有树全停，无PG／UE；源码SHA、原失败和清理在 `.demo/observe/p1-residency-20261028/`，独审 `task-p1-core-review.md` 已关闭本范围确认Important。现core代码／单VM租约已交还；fragment选择仍O(驻留fragment)，天然活动初始化、电路闭包与根级性能仍未完成，不能标完整P1或整体重构完成。
+
+统筹已向用户澄清天然热背景的产品初态：构造成气候平衡初态，或保留现生成初态并从开服全域演化；答案尚待回复，不得默默按前者修改模型。期间已将电路实际实现交activity：唯一CircuitGraph复用原seed／导体／附件端点图构造，缺页沿PageLoad接回原自然段，完整后交原Circuit.plan，不新增solver；其现child负责Attachments／Circuit纯helper，core转独立只读审查。业务数值保留每项既有容差及更严断言，不能将1e-8泛化或重录哈希。气候sampler与维护接纳仍为e940候选，只准备局部hunk移植，不整文件覆盖主线。没有启动新benchmark、PG或UE。
+
+其他已验证增量保留：World 调度时钟依赖有3个反例红→绿及24项默认路径回归；两项热学测试每步0.5秒前提恢复，但原冻结摘要仍失败，不能重录。第三轮正式双端瞄准通过后因实际客户端材料 `e63744…` 与服务端旧 `b4d8…` 错配受阻，尚无采料／点火成功证据。后续实际 publication 接纳与逐笔输入门禁已作有界修补并有直接测试，尚未重跑正式 QUIC 双端；本轮内存优先不取消该最终门禁。
+
+当前连续演化、接纳时序与显式 IO 恢复合并验证为48项通过、3项数据库测试排除；身体旧夹具修复10/10、生成源身份精确单例1/1。它们不替代正式双端、天然活动发现、冷恢复、性能及多分区验收。气候 sampler 仍是独立工作树候选，尚未合入正式 World。首次正式双端因护栏接线遗漏行政中断；补齐后第二轮两端均完成协议41 SessionStart/Ready，但首次采料准星被测试室墙体挡住，尚未采料或点火，连续演化仍未验收。原失败见 `Voxim/Saved/Playtest/paging-20261024/runs/g0-continuous-batch-20261027-02/`，本轮进程均已停止。
+
+## 以下为历史会话记录（不作为当前任务或阶段状态）
+
+### Voxim M3 规划（2026-09-09）
 
 当前主线 M1 / M2a 已验收。用户已确认下一会话实施每玩家 GenServer、只读碰撞版本、日志与 AOI／发送改造；本会话仅写规划，M3 尚未实现或验收。先读 [M3 服务端入口](../movement-sync/2026-09-09-voxim-m3.md) 与 [Voxim 下一会话说明](../../../../Voxim/Docs/M3/next-session.md)。完整计划和测试口径只有 Voxim `Docs/M3/plan.md` 一处。
 

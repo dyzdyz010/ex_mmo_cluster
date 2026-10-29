@@ -2,12 +2,10 @@
 url = "http://127.0.0.1:8000/mcp"
 
 [mcp_servers.playwright]
-type = "stdio"
 command = "npx"
 args = ["-y", "@playwright/mcp@latest"]
 
 [mcp_servers.filesystem]
-type = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 

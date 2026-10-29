@@ -12,14 +12,13 @@ defmodule AuthServerWeb.AccountAdminHTML do
   def state(invite) do
     cond do
       invite.deleted_at -> "已删除"
-      invite.used_at -> "已使用"
       invite.revoked_at -> "已停用"
       invite.expires_at && invite.expires_at <= AuthServer.Identity.now() -> "已过期"
-      true -> "未使用"
+      invite.use_count >= invite.max_uses -> "已用完"
+      true -> "可使用"
     end
   end
-  def tone("未使用"),do: "cyan"
-  def tone("已使用"),do: "positive"
+  def tone("可使用"),do: "cyan"
   def tone("已停用"),do: "gold"
   def tone(_),do: "dim"
 

@@ -1,4 +1,5 @@
 defmodule VoxelRegion.Structure do
+  alias VoxelRegion.RefinedSlots
   @moduledoc "全局系统：结构占用与方向性外表面的纯派生算法；World 提供唯一真值。"
   import Bitwise
   alias MmoContracts.Voxel.Structure, as: Wire
@@ -13,9 +14,9 @@ defmodule VoxelRegion.Structure do
       child = elem(children,div(x,@micro)+2*div(y,@micro)+4*div(z,@micro))
       value = case child do
         material when is_integer(material) -> material
-        slots -> case Map.get(slots,rem(x,@micro)+@micro*(rem(y,@micro)+@micro*rem(z,@micro))) do
-          nil -> 0
-          {material,_owner} -> material ||| Wire.flag()
+        slots -> case RefinedSlots.fetch(slots,rem(x,@micro)+@micro*(rem(y,@micro)+@micro*rem(z,@micro))) do
+          :error -> 0
+          {:ok, {material,_owner}} -> material ||| Wire.flag()
         end
       end
       <<value::16-little>>

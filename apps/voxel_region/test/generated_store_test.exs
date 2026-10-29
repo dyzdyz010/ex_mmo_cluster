@@ -114,8 +114,28 @@ defmodule VoxelRegion.GeneratedStoreTest do
   end
 
   test "native returns the existing raw payload body", _context do
-    assert Native.kernel_identity() ==
-             "worldgen_density_v3@1+sha256:290472a624b188e0422307c124fa765238531d2ab207afba040688a060e48a12"
+    # 源码身份随已接纳内核变化；输入清单只读构建脚本，不重钉历史 SHA 或复制清单。
+    crate = Path.expand("../native/voxim_worldgen", __DIR__)
+    build = File.read!(Path.join(crate, "build.rs"))
+    [_, declaration] = Regex.run(~r/for file in \[([^\]]+)\]/s, build)
+    assert Regex.replace(~r/"[^"]+"|[\s,]/, declaration, "") == ""
+    files = Regex.scan(~r/"([^"]+)"/, declaration, capture: :all_but_first) |> List.flatten()
+    assert files != [] and "build.rs" in files
+
+    input =
+      for file <- files do
+        source = crate |> Path.join(file) |> File.read!() |> String.replace("\r\n", "\n")
+        [file, 0, source]
+      end
+
+    identity = fn bytes ->
+      "worldgen_density_v3@1+sha256:" <>
+        Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    end
+
+    assert Native.kernel_identity() == identity.(input)
+    # 测试内最后一份源码字节只变一字节，身份即须拒绝；不改生产源码或已加载 NIF。
+    refute Native.kernel_identity() == identity.([input, 0])
 
     raw = Native.generate_region(0, {0, 0, 0}, config())
 

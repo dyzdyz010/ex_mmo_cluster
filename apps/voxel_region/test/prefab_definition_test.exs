@@ -2,6 +2,10 @@ defmodule VoxelRegion.PrefabDefinitionTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.Prefab
 
+  # 子件引用的定义 id 与生产契约一致：32 字节内容哈希（VXPD 编解码按 binary-size(32) 读写）。
+  @leaf <<1::256>>
+  @middle <<2::256>>
+
   test "不阻挡的荷材料保持宏微支撑定义与附件身份" do
     for material <- [65, 73], macro <- [false, true] do
       size = if macro, do: 8, else: 1
@@ -60,23 +64,23 @@ defmodule VoxelRegion.PrefabDefinitionTest do
 
   test "publication rejects macro collisions across nodes and mixed precision children" do
     leaf = %{cells: [], macro_cells: [{{0,0,0},11}], children: []}
-    ref = %{definition_id: :leaf, slot: 1, anchor: {0,0,0}, orientation: 0}
+    ref = %{definition_id: @leaf, slot: 1, anchor: {0,0,0}, orientation: 0}
     root = %{cells: [], macro_cells: [{{0,0,0},19}], children: [ref]}
-    assert {:error, :overlapping_definition} = Prefab.publish(%{root: root, leaf: leaf})
-    assert {:error, :overlapping_definition} = Prefab.publish(%{root: %{root | cells: [{{7,7,7},19}], macro_cells: []}, leaf: leaf})
-    assert {:ok, _} = Prefab.publish(%{root: %{root | children: [%{ref | anchor: {8,0,0}}]}, leaf: leaf})
+    assert {:error, :overlapping_definition} = Prefab.publish(%{:root => root, @leaf => leaf})
+    assert {:error, :overlapping_definition} = Prefab.publish(%{:root => %{root | cells: [{{7,7,7},19}], macro_cells: []}, @leaf => leaf})
+    assert {:ok, _} = Prefab.publish(%{:root => %{root | children: [%{ref | anchor: {8,0,0}}]}, @leaf => leaf})
   end
 
   test "alignment includes macro grandchildren even when the child has no own macro cells" do
     leaf = %{cells: [], macro_cells: [{{0,0,0},11}], children: []}
-    ref = %{definition_id: :leaf, slot: 1, anchor: {0,0,0}, orientation: 0}
+    ref = %{definition_id: @leaf, slot: 1, anchor: {0,0,0}, orientation: 0}
     middle = %{cells: [], children: [ref]}
     for anchor <- [{1,0,0}, {0,-1,0}, {0,0,7}] do
-      root = %{cells: [], children: [%{ref | definition_id: :middle, anchor: anchor}]}
-      assert {:error, :misaligned} = Prefab.publish(%{root: root, middle: middle, leaf: leaf})
+      root = %{cells: [], children: [%{ref | definition_id: @middle, anchor: anchor}]}
+      assert {:error, :misaligned} = Prefab.publish(%{:root => root, @middle => middle, @leaf => leaf})
     end
-    root = %{cells: [], children: [%{ref | definition_id: :middle, anchor: {-8,16,-24}}]}
-    assert {:ok, catalog} = Prefab.publish(%{root: root, middle: middle, leaf: leaf})
+    root = %{cells: [], children: [%{ref | definition_id: @middle, anchor: {-8,16,-24}}]}
+    assert {:ok, catalog} = Prefab.publish(%{:root => root, @middle => middle, @leaf => leaf})
     assert catalog.root.has_macro_cells
     assert Prefab.macro_footprint(catalog.root, {0,0,0}, 0) == [{{-1,2,-3},11}]
     assert {:ok, old} = Prefab.publish(%{root: %{cells: [{{1,0,0},11}], children: []}})
@@ -101,15 +105,15 @@ defmodule VoxelRegion.PrefabDefinitionTest do
 
   test "macro occurrences share preorder identities and apply child and placement transforms once" do
     leaf = %{cells: [{{16,0,0},19}], macro_cells: [{{-2,1,3},11}], children: []}
-    root = %{cells: [], children: [%{definition_id: :leaf, slot: 7, anchor: {-8,16,24}, orientation: 1}]}
-    assert {:ok, catalog} = Prefab.publish(%{root: root, leaf: leaf})
+    root = %{cells: [], children: [%{definition_id: @leaf, slot: 7, anchor: {-8,16,24}, orientation: 1}]}
+    assert {:ok, catalog} = Prefab.publish(%{:root => root, @leaf => leaf})
     [{root_id, root_metadata, []}, {leaf_id, metadata, cells}] =
       Prefab.macro_occurrences(catalog.root, {-128,-8,128}, 1, 9, {3,2}, 5)
     assert root_id == {9,0}
     assert root_metadata.parent_id == {3,2}
     assert root_metadata.component_slot == 5
     assert leaf_id == {9,1}
-    assert metadata == %{definition_id: :leaf, anchor: {-152,8,120}, orientation: 2, parent_id: {9,0}, component_slot: 7}
+    assert metadata == %{definition_id: @leaf, anchor: {-152,8,120}, orientation: 2, parent_id: {9,0}, component_slot: 7}
     assert cells == [{{-18,2,11},11}]
     assert [{^root_id, ^root_metadata, []}, {^leaf_id, ^metadata, [{{-169,8,119},19}]}] =
       Prefab.occurrences(catalog.root, {-128,-8,128}, 1, 9, {3,2}, 5)
@@ -129,19 +133,19 @@ defmodule VoxelRegion.PrefabDefinitionTest do
 
   test "publication rejects cycles, missing references and actual child overlap" do
     leaf = %{cells: [{{0,0,0},11}],children: []}
-    ref = %{definition_id: :leaf,slot: 2,anchor: {0,0,0},orientation: 0}
+    ref = %{definition_id: @leaf,slot: 2,anchor: {0,0,0},orientation: 0}
     root = %{cells: [],children: [ref]}
     assert {:error,:definition_not_found} = Prefab.publish(%{root: root})
-    assert {:error,:definition_cycle} = Prefab.publish(%{leaf: %{root | children: [%{ref | definition_id: :leaf}]}})
-    assert {:error,:overlapping_definition} = Prefab.publish(%{leaf: leaf,root: %{root | children: [ref,%{ref | slot: 7}]}})
-    assert {:ok,_} = Prefab.publish(%{leaf: leaf,root: %{root | children: [ref,%{ref | slot: 7,anchor: {1,0,0}}]}})
+    assert {:error,:definition_cycle} = Prefab.publish(%{@leaf => %{root | children: [%{ref | definition_id: @leaf}]}})
+    assert {:error,:overlapping_definition} = Prefab.publish(%{@leaf => leaf,:root => %{root | children: [ref,%{ref | slot: 7}]}})
+    assert {:ok,_} = Prefab.publish(%{@leaf => leaf,:root => %{root | children: [ref,%{ref | slot: 7,anchor: {1,0,0}}]}})
   end
 
   test "all composed rotations transform child anchors as points and cells as volumes" do
     leaf = %{cells: [{{-2,1,3},11},{{0,0,0},19}],children: []}
     for parent <- 0..23, child <- 0..23 do
-      reference = %{definition_id: :leaf,slot: 7,anchor: {-5,8,13},orientation: child}
-      assert {:ok,catalog} = Prefab.publish(%{leaf: leaf,root: %{cells: [],children: [reference]}})
+      reference = %{definition_id: @leaf,slot: 7,anchor: {-5,8,13},orientation: child}
+      assert {:ok,catalog} = Prefab.publish(%{@leaf => leaf,:root => %{cells: [],children: [reference]}})
       anchor = {-127,-1,127}
       [{_,_,[]},{_,node,cells}] = Prefab.occurrences(catalog.root,anchor,parent,9)
       assert node.anchor == Prefab.point(reference.anchor,anchor,parent)

@@ -102,6 +102,59 @@ def rpc(deploy, expression, timeout_ms=600_000):
         return out.stdout
 
 
+def validate_ready(ready, expected_node):
+    """在控制端 JSON 信任边界接纳新启动报告；不从本机重建应用 manifest。"""
+    def require(condition, field):
+        if not condition:
+            raise RuntimeError(f"M0 readiness rejected: invalid or missing {field}")
+
+    profile = "m0_manifest_ready_v1"
+    require(isinstance(ready, dict) and ready.get("startup_profile") == profile, "startup_profile")
+    require(ready.get("code_mode") in ("interactive", "embedded"), "code_mode")
+    require(ready.get("node") == expected_node, "node")
+    require(type(ready.get("os_pid")) is int and ready["os_pid"] > 0, "os_pid")
+    require(isinstance(ready.get("ready_utc"), str) and bool(ready["ready_utc"]), "ready_utc")
+    facts = ready.get("code_ready")
+    require(isinstance(facts, dict), "code_ready")
+    require(facts.get("profile") == profile and facts.get("status") == "ready", "code_ready.profile/status")
+    require(facts.get("code_mode") == ready["code_mode"], "code_ready.code_mode")
+    require(facts.get("ensure_modules_loaded_result") == "ok", "code_ready.ensure_modules_loaded_result")
+    count = facts.get("module_count")
+    require(type(count) is int and count > 0 and facts.get("loaded_count") == count, "code_ready.loaded_count")
+    manifests = facts.get("app_manifests")
+    require(isinstance(manifests, list) and len(manifests) == 3, "code_ready.app_manifests")
+    for app in manifests:
+        require(isinstance(app, dict) and isinstance(app.get("app"), str) and bool(app["app"]), "manifest.app")
+        require(isinstance(app.get("vsn"), str) and bool(app["vsn"]), "manifest.vsn")
+        require(isinstance(app.get("modules"), list) and bool(app["modules"]), "manifest.modules")
+        require(app.get("application_load_result") in ("loaded", "already_loaded"), "manifest.application_load_result")
+    for name in ("loaded_before", "loaded_after"):
+        require(isinstance(facts.get(name), list) and len(facts[name]) == count, f"code_ready.{name}")
+    require(all(isinstance(row, dict) and row.get("status") == "loaded" and bool(row.get("beam"))
+                for row in facts["loaded_after"]), "code_ready.loaded_after.results")
+    for name in ("started_utc", "completed_utc"):
+        require(isinstance(facts.get(name), str) and bool(facts[name]), f"code_ready.{name}")
+    phases = facts.get("phases")
+    require(isinstance(phases, dict), "code_ready.phases")
+    times = [phases.get(key) for key in ("started_us", "manifest_completed_us", "load_started_us", "load_completed_us", "completed_us")]
+    require(all(type(value) is int for value in times) and times == sorted(times), "code_ready.phases.order")
+    startup = ready.get("startup_phases")
+    require(isinstance(startup, dict), "startup_phases")
+    migration = [startup.get("migration_started_us"), startup.get("migration_completed_us")]
+    require(all(type(value) is int for value in migration) and migration[0] <= migration[1] <= times[0], "startup_phases.migration")
+    apps = startup.get("application_starts")
+    require(isinstance(apps, list) and bool(apps), "startup_phases.application_starts")
+    last = times[-1]
+    for app in apps:
+        require(isinstance(app, dict) and isinstance(app.get("app"), str), "application_starts.app")
+        began, ended = app.get("started_us"), app.get("completed_us")
+        require(type(began) is int and type(ended) is int and last <= began <= ended, "application_starts.order")
+        last = ended
+    require(sum(app["app"] == "voxel_region" for app in apps) == 1, "application_starts.voxel_region")
+    require(type(startup.get("ready_us")) is int and last <= startup["ready_us"], "startup_phases.ready_us")
+    return ready
+
+
 def start(deploy):
     deploy = Path(deploy)
     assert not status(deploy)["running"], "M0 node already running"
@@ -130,8 +183,13 @@ def start(deploy):
         samples.append({"t": round(time.monotonic() - began, 2), "rss": sum(r["rss"] for r in rows),
                         "beams": rows})
         if ready.exists():
-            r = json.loads(ready.read_text())
+            try:
+                r = json.loads(ready.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeError) as error:
+                raise RuntimeError(f"M0 readiness rejected: unreadable JSON; inspect {logpath}") from error
+            validate_ready(r, expected_node=cfg["node"])
             result = dict(rec, ready=r, ready_seconds=round(time.monotonic() - began, 1),
+                          startup_profile=r["startup_profile"], code_mode=r["code_mode"],
                           startup_peak_rss_sum=max(s["rss"] for s in samples),
                           peak_wset=[{"pid": b["pid"], "peak_wset": b["peak_wset"]} for b in rows])
             (logpath.with_suffix(".startup.json")).write_text(json.dumps(dict(result, samples=samples)))

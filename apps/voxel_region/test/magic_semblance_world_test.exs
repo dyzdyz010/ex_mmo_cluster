@@ -26,6 +26,7 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
   @leaf 28
   @battery 42
   @box {{-2, -2, -2}, {2, 2, 2}}
+  @simulation_box {{-2, 0, -2}, {9, 6, 9}}
   @cid 1001
   @stone_micro {20, 12, 4}
   @forward {0.0, 0.0, 1.0}
@@ -75,6 +76,7 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     w = start(root, backend)
     data = Jason.decode!(File.read!(Path.join(root, "magic.json")))
     presets = Map.new(data["presets"], &{&1["id"], &1["program"]})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     %{w: w, root: root, a: a, digest: Base.decode16!(@magic, case: :lower), presets: presets}
   end
 
@@ -628,6 +630,7 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     :ok = World.compact(w)
     w = restart(%{c | w: w})
     assert observe(w).semblances[{seq, 0}] == stored
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, @simulation_box)
     cooled = commit(w).semblances[{seq, 0}]
     assert cooled.temperature_k < stored.temperature_k and cooled.age_s > stored.age_s
   end

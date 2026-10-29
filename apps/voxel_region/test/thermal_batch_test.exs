@@ -109,6 +109,7 @@ defmodule VoxelRegion.ThermalBatchTest do
          ]}
       )
 
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-6, -1, -4}, {3, 2, 3}})
     %{w: w, root: root}
   end
 

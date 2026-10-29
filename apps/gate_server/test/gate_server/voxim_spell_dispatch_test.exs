@@ -35,12 +35,14 @@ defmodule GateServer.VoximSpellDispatchTest do
 
   @fixtures Path.expand("../../../voxel_region/test/fixtures", __DIR__)
 
-  # 只测试：Player 施法协议替身。报价 / 准备按真实 `SceneServer.Movement.Player` 的消息转给 World，World 回
-  # `cast_prepared` 后按前摇时长发 `authorize_cast`；前摇互斥与取消由真实 Player 负责（scene `cast_action_test`），
-  # 这里只接通 Gate → Player 协议 → World。
+  # 只测试：Player 施法协议替身。与真实 `SceneServer.Movement.Player` 同一消息：同步入口 `{:spell_request, ref, …}`、
+  # 异步入口 `{:spell, …, reply_to}`；报价 / 准备以 `{:player_spell_request, ref, relay, message}` 交给 World，
+  # World 的回执先回 Player 的本请求 relay `{self(), {:spell_reply, ref}}`，再由 Player 转交原调用方一次。
+  # World 回 `cast_prepared` 后按前摇时长发 `authorize_cast`；前摇互斥、超时取消与会话取消由真实 Player 负责
+  # （scene `cast_action_test`），这里只接通 Gate → Player 协议 → World。
   defmodule CastingPlayer do
     use GenServer
-    def start_link(state), do: GenServer.start_link(__MODULE__, Map.put(state, :requests, %{}))
+    def start_link(state), do: GenServer.start_link(__MODULE__, Map.merge(state, %{requests: %{}, waiters: %{}}))
     @impl true
     def init(state), do: {:ok, state}
 
@@ -48,8 +50,8 @@ defmodule GateServer.VoximSpellDispatchTest do
     def handle_call({:tool_context, id}, _, %{actor: %{identity: id} = actor} = state),
       do: {:reply, {:ok, Map.put(actor, :player, self())}, state}
 
-    def handle_call({:spell, identity, request, ingress}, from, state),
-      do: spell(identity, request, ingress, from, state)
+    def handle_call({:spell_request, ref, identity, request, ingress}, from, state),
+      do: spell(ref, identity, request, ingress, from, state)
 
     def handle_call(:hold_reply, _, state), do: {:reply, :ok, Map.put(state, :hold_reply, true)}
     def handle_call(:release_reply, _, %{held_reply: {from, result}} = state) do
@@ -59,7 +61,7 @@ defmodule GateServer.VoximSpellDispatchTest do
 
     @impl true
     def handle_cast({:spell, identity, request, ingress, from}, state),
-      do: spell(identity, request, ingress, from, state)
+      do: spell(make_ref(), identity, request, ingress, from, state)
 
     @impl true
     def handle_info({:cast_prepared, key, windup_s}, state) do
@@ -74,29 +76,34 @@ defmodule GateServer.VoximSpellDispatchTest do
 
     def handle_info({:cast_failed, _key}, state), do: {:noreply, state}
 
-    # 只测试：控制报价调用回复的到达顺序，不延迟 World 自己的权威状态出口。
-    def handle_info({ref, result}, %{reply_waiter: {ref, from}} = state) do
-      send(state.actor.test_owner, :caster_reply_held)
-      {:noreply, Map.put(state, :held_reply, {from, result})}
+    # World 回执经本请求 relay 到达；`hold_reply` 只控制转交给调用方的时机，不延迟 World 自己的权威状态出口。
+    def handle_info({{:spell_reply, ref}, result}, state) do
+      {from, waiters} = Map.pop!(state.waiters, ref)
+      state = %{state | waiters: waiters}
+
+      if Map.get(state, :hold_reply, false) do
+        send(state.actor.test_owner, :caster_reply_held)
+        {:noreply, Map.put(state, :held_reply, {from, result})}
+      else
+        GenServer.reply(from, result)
+        {:noreply, state}
+      end
     end
 
-    defp spell(identity, request, ingress, from, %{actor: %{identity: identity}} = state) do
-      case request.action do
-        0 ->
-          if Map.get(state, :hold_reply, false) do
-            ref = make_ref()
-            send(state.world, {:quote_cast, Map.merge(actor(state), ingress), request, {self(), ref}})
-            {:noreply, Map.put(state, :reply_waiter, {ref, from})}
-          else
-            send(state.world, {:quote_cast, Map.merge(actor(state), ingress), request, from})
-            {:noreply, state}
-          end
+    defp spell(ref, identity, request, ingress, from, %{actor: %{identity: identity}} = state) do
+      relay = {self(), {:spell_reply, ref}}
+      actor = Map.merge(actor(state), ingress)
 
-        1 ->
-          key = MmoContracts.Action.key(identity, request.client_intent_seq)
-          send(state.world, {:prepare_cast, key, Map.merge(actor(state), ingress), request, from})
-          {:noreply, put_in(state.requests[key], request)}
-      end
+      {message, state} =
+        case request.action do
+          0 -> {{:quote_cast, actor, request, relay}, state}
+          1 ->
+            key = MmoContracts.Action.key(identity, request.client_intent_seq)
+            {{:prepare_cast, key, actor, request, relay}, put_in(state.requests[key], request)}
+        end
+
+      send(state.world, {:player_spell_request, ref, relay, message})
+      {:noreply, put_in(state.waiters[ref], from)}
     end
 
     defp actor(state), do: Map.put(state.actor, :player, self())

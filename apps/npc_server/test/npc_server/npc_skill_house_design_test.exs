@@ -6,6 +6,7 @@ defmodule NpcServer.NpcSkillDesignTest do
   alias NpcServer.Skills.HouseDesign, as: Design
   alias SceneServer.Movement.Scene
   alias VoxelRegion.{World, Prefab}
+  alias VoxelRegion.World.Cache
   alias VoxelRegion.TestSupport.{Source, Actor}
 
   defmodule Clock do
@@ -14,6 +15,16 @@ defmodule NpcServer.NpcSkillDesignTest do
   end
 
   setup_all do
+    IO.puts(
+      "prefab_callers_database=" <>
+        Jason.encode!(%{
+          database: DataService.Repo.config()[:database],
+          hostname: DataService.Repo.config()[:hostname],
+          port: DataService.Repo.config()[:port],
+          owner_pid: System.pid()
+        })
+    )
+
     MmoTest.Database.start!()
     :ok
   end
@@ -62,6 +73,24 @@ defmodule NpcServer.NpcSkillDesignTest do
       })
     )
 
+    world_options =
+      if context[:cold_recent_catalog] do
+        bytes = recent_leaf(0)
+        id = :crypto.hash(:sha256, bytes)
+        {:ok, cache} = Cache.put(Cache.new(65_536), {:prefab, id}, bytes, id)
+        owner = make_ref()
+        {:ok, pinned} = Cache.pin(cache, [{:prefab, id}], owner)
+        budget = Cache.stats(pinned).bytes
+        released = Cache.release(pinned, owner)
+        other = recent_leaf(1)
+        other_id = :crypto.hash(:sha256, other)
+        {:ok, two} = Cache.put(released, {:prefab, other_id}, other, other_id)
+        assert Cache.stats(two).bytes > budget
+        [payload_cache_bytes: budget]
+      else
+        []
+      end
+
     world =
       start_supervised!(
         {World,
@@ -73,7 +102,7 @@ defmodule NpcServer.NpcSkillDesignTest do
            property_catalog_path: catalog,
            prefab_catalog_path: Path.join(root, "prefabs"),
            production_materials: [11]
-         ]}
+         ] ++ world_options}
       )
 
     # 在线检查不再使用模型假设的地面；需要可步行场地的用例一次安装真实作者地面。
@@ -87,26 +116,30 @@ defmodule NpcServer.NpcSkillDesignTest do
     body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
-      start_supervised!(
-        {Scene,
-         [
-           scene_id: 1,
-           scene_epoch: 1,
-           world_ref: world,
-           body_store: {MmoTest.BodyStore, store: body_store},
-           clock: {Clock, nil},
-           config: %{
-             "schema" => "voxim-m1-demo-v1",
-             "profile" => profile,
-             "l0_min" => [0, 0, 0],
-             "l0_max_exclusive" => [1, 1, 1],
-             "travel_min_m" => [0.5, 0.5, 0.5],
-             "travel_max_exclusive_m" => [63.0, 63.0, 63.0],
-             "spawn_probes_m" => [[30.5, 4.0, 30.5]],
-             "spawn_min_y_m" => 0.5
-           }
-         ]}
-      )
+      if context[:cold_recent_catalog] do
+        nil
+      else
+        start_supervised!(
+          {Scene,
+           [
+             scene_id: 1,
+             scene_epoch: 1,
+             world_ref: world,
+             body_store: {MmoTest.BodyStore, store: body_store},
+             clock: {Clock, nil},
+             config: %{
+               "schema" => "voxim-m1-demo-v1",
+               "profile" => profile,
+               "l0_min" => [0, 0, 0],
+               "l0_max_exclusive" => [1, 1, 1],
+               "travel_min_m" => [0.5, 0.5, 0.5],
+               "travel_max_exclusive_m" => [63.0, 63.0, 63.0],
+               "spawn_probes_m" => [[30.5, 4.0, 30.5]],
+               "spawn_min_y_m" => 0.5
+             }
+           ]}
+        )
+      end
 
     actor = %{
       cid: 1001,
@@ -123,6 +156,7 @@ defmodule NpcServer.NpcSkillDesignTest do
 
     %{
       world: world,
+      root: root,
       scene: scene,
       actor: actor,
       endpoint: %{model: "frozen", effort: "low"},
@@ -133,6 +167,37 @@ defmodule NpcServer.NpcSkillDesignTest do
 
   defp args,
     do: %{goal: "A sheltered room with a complete roof", anchor: {80, 8, 80}, orientation: 0}
+
+  defp recent_leaf(x),
+    do: Prefab.encode(%{cells: [{{x, 0, 0}, 19}], macro_cells: [], children: [], attachments: []})
+
+  @tag :cold_recent_catalog
+  test "recent publication metadata and bills survive a cold missing definition source", c do
+    first_bytes = recent_leaf(0)
+    second_bytes = recent_leaf(1)
+    assert {:ok, first} = World.publish_prefab(c.world, c.actor, first_bytes, "first")
+    assert {:ok, second} = World.publish_prefab(c.world, c.actor, second_bytes, "second")
+
+    assert {:ok, ^first_bytes} = World.prefab_definition(c.world, first)
+    before = World.stats(c.world).shared_cache
+    assert {:ok, ^second_bytes} = World.prefab_definition(c.world, second)
+
+    cache = World.stats(c.world).shared_cache
+    assert cache.namespaces.prefab.entries == 1
+    assert cache.evictions == before.evictions + 1
+
+    # 只测试：一个条目预算使首定义自然逐出；删除其冷源，不向 World 回填任何真值。
+    File.rm!(Path.join([c.root, "prefabs", Base.encode16(first, case: :lower) <> ".vxpd"]))
+
+    assert {:ok,
+            %{
+              total: 2,
+              prefabs: [
+                %{definition_id: ^second, publisher: 1001, name: "second", materials: %{19 => 1}},
+                %{definition_id: ^first, publisher: 1001, name: "first", materials: %{19 => 1}}
+              ]
+            }} = NpcServer.Perception.read(c.world, c.actor.cid, {:catalog, :prefabs, nil})
+  end
 
   @tag :context_contract
   test "designer receives explicit body dimensions and callable perception and memory", c do
@@ -782,16 +847,17 @@ defmodule NpcServer.NpcSkillDesignTest do
       %{op: "prefab", slot: 7, id: hex, anchor_micro: [0, 0, 0], orientation: 0}
     ]
 
-    context = %{c | budget: %{rounds: 4, tokens: 100, max_output_tokens: 30}}
+    context = %{c | budget: %{rounds: 5, tokens: 100, max_output_tokens: 30}}
 
     replies = [
       answer(1, "edit", %{ops: ops}),
       answer(2, "view", %{}),
-      answer(3, "slice", %{target: hex, axis: 2, at: 0}),
-      answer(4, "publish", %{})
+      answer(3, "slice", %{target: "draft", axis: 2, at: 0}),
+      answer(4, "slice", %{target: hex, axis: 2, at: 0}),
+      answer(5, "publish", %{})
     ]
 
-    assert {:error, :round_budget, %{rounds: 4}} = Design.run(script(context, replies), args())
+    assert {:error, :round_budget, %{rounds: 5}} = Design.run(script(context, replies), args())
 
     requests =
       for _ <- replies do
@@ -808,7 +874,14 @@ defmodule NpcServer.NpcSkillDesignTest do
              %{"count" => 1, "bounds" => [[0, 0, 0], [1, 1, 1]], "sample" => [[0, 0, 0]]}
 
     assert preview["views"]["layers"] == [%{"macro_y" => 0, "text" => "#"}]
-    slice = tool_result(Enum.at(requests, 3), "c3")
+
+    draft_slice = tool_result(Enum.at(requests, 3), "c3")
+    assert draft_slice["scope"] == "draft_local"
+
+    assert draft_slice["section"]["text"] ==
+             Enum.join(List.duplicate("########", 7) ++ ["+#######"], "\n")
+
+    slice = tool_result(Enum.at(requests, 4), "c4")
     assert slice["scope"] == "catalog_local" and slice["section"]["text"] == "+"
     assert slice["definition_id"] == hex
     assert Map.keys(World.prefab_catalog(c.world)) == [id]

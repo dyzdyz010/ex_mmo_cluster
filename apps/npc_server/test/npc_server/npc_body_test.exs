@@ -29,7 +29,10 @@ defmodule NpcServer.NpcBodyTest do
     end
 
     # 同一片平地（y=500 一层实心）经 World 只读快照的调用形状给出：Body 的寻路从这里取地形。
-    def handle_call({:prepare, _keys}, _, snapshot), do: {:reply, {nil, nil, []}, snapshot}
+    # 公共调用经 `World.PageLoad.call/3` 包成 `{:page_request, ref, message}`；ref 只在调用方超时时用于取消，本替身立即回复。
+    def handle_call({:page_request, _ref, message}, from, snapshot), do: handle_call(message, from, snapshot)
+    # 准备作用域：全驻留（missing 为空），调用方结束时 cast `{:release_preparation, token, caller}`。
+    def handle_call({:prepare, _keys}, _, snapshot), do: {:reply, {make_ref(), nil, nil, []}, snapshot}
     def handle_call({:adopt_liquid, _regions}, _, snapshot), do: {:reply, :ok, snapshot}
 
     def handle_call({:material_snapshot, _characters, cells}, _, snapshot) do
@@ -44,6 +47,8 @@ defmodule NpcServer.NpcBodyTest do
 
       {:reply, %{probe_occupancy: occupancy}, snapshot}
     end
+
+    def handle_cast({:release_preparation, _token, _caller}, snapshot), do: {:noreply, snapshot}
   end
 
   defmodule Route do

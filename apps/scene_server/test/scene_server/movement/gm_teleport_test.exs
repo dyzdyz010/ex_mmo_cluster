@@ -22,16 +22,14 @@ defmodule SceneServer.Movement.GmTeleportTest do
   end
 
   defmodule Source do
-    use GenServer
+    use MmoTest.WorldAuthorityDouble
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
     def init(opts), do: {:ok, opts}
     def authority_ref(pid), do: pid
     def canonical_snapshot_and_subscribe(pid, box, subscriber, ref, _include_chunks \\ true),
       do: GenServer.call(pid, {:canonical_snapshot, box, subscriber, ref})
     def ensure(_state, _level, _region), do: :ok
-    def handle_call({:prepare, _keys}, _, state), do: {:reply, {__MODULE__, nil, []}, state}
-    def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
-    def handle_call({:canonical_snapshot, box, subscriber, ref}, _, state) do
+    def world_call({:canonical_snapshot, box, subscriber, ref}, _, state) do
       send(subscriber, {:canonical_snapshot, ref, SceneServer.Movement.GmTeleportTest.snapshot(box)})
       {:reply, :ok, state}
     end

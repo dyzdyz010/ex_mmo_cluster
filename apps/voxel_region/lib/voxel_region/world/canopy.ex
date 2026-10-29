@@ -143,8 +143,7 @@ defmodule VoxelRegion.World.Canopy do
   defp candidates(state,regions) do
     for {cell,owner}<-macro_owners_in_regions(state,regions),
         instance=Map.fetch!(state.instances,owner),
-        definition=Map.fetch!(state.prefabs,instance.definition_id).definition,
-        bindings=Map.get(definition,:presentation_bindings,%{}),map_size(bindings)>0,
+        bindings=Map.fetch!(state.prefabs,instance.definition_id).presentation_bindings,map_size(bindings)>0,
         do: {cell,owner,bindings}
   end
 

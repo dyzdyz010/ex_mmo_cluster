@@ -128,6 +128,11 @@ flowchart LR
   公共只读目录：prefab 定义的材料单与尺寸（作者目录与运行时发布都查得到，没有这个 id 回 `definition_not_found`）、
   最近 20 条运行时发布、材料的名称 / 可食 / 配方（可食与配方只对生产材料给出，与 World 进食 / 合成门一致）、
   工具的动作 / 射程 / 间隔。不缓存，不经 Intent。
+  prefab 目录只读 `World.prefab_catalog/1` 的轻描述与材料计数，`prefab_row/3` 不获取或展开完整几何。
+  最近发布只读 `World.published_prefab_metadata/1` 的 id / publisher / name，按原发布顺序取最近 20 条；
+  材料单来自同一轻目录，不为列举读取原 VXPD 或重新 hash。某条定义冷源缺失不影响其已发布元信息与材料清单。
+  `design_house` 草稿编译、预览与指定 id 切面分别经 `World.compile_prefab/2`、`preview_prefab/2`、`prefab_geometry/2`
+  按当前请求取得几何；冷源读取、身份或编译错误原样进入既有工具 `error`，不隐式换定义或改写成检查成功。
 - **步行网格（Body 寻路）**：一格能不能踩、能不能穿过只看 `Perception.walk_kind/1`：挡路（与碰撞同一判据
   `VoxelMaterialCatalog.blocks_movement?/1`）、非液体、非细化的格能踩；不挡路（空气、花草）的格能穿过；液体与细化格既不能踩也不能
   穿过（不进寻路网格）——碰撞按 micro 几何，宏格网格只能保守地整格挡住细化格，也不站在 1/8 米的 micro 面板顶上。起点是身体的权威

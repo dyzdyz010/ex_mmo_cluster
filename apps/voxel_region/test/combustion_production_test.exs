@@ -42,7 +42,9 @@ defmodule VoxelRegion.CombustionProductionTest do
     opts = [source: Source, log: Log, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env, prefab_catalog_path: prefabs,
       production_materials: [@clay, @stone, @coal, @wood]]
-    {start_supervised!({World, opts}), prefabs}
+    w = start_supervised!({World, opts})
+    :ok = VoxelRegion.TestSupport.activate_simulation(w, {{0, 0, 0}, {4, 3, 3}})
+    {w, prefabs}
   end
 
   setup do

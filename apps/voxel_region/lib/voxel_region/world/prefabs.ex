@@ -1,4 +1,5 @@
 defmodule VoxelRegion.World.Prefabs do
+  alias VoxelRegion.RefinedSlots
   @moduledoc """
   全局系统功能：预制件：定义取格、对齐、放置树、部件子树、支付与回执、目录持久化。
 
@@ -14,8 +15,8 @@ defmodule VoxelRegion.World.Prefabs do
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
-  def definition_cells(state, id, anchor, orientation) do
-    with {:ok, definition} <- Map.fetch(state.prefabs, id), true <- orientation in 0..23,
+  def definition_cells(definition, anchor, orientation) do
+    with true <- orientation in 0..23,
          :ok <- prefab_alignment(definition, anchor) do
       # Callers use these samples to prepare/check macro bounds, never as micro volume.
       cells = Prefab.footprint(definition, anchor, orientation) ++
@@ -26,7 +27,6 @@ defmodule VoxelRegion.World.Prefabs do
         do: {:ok, cells, macros},
         else: {:error, :invalid_coordinate}
     else
-      :error -> {:error, :definition_not_found}
       false -> {:error, :invalid_orientation}
       {:error, reason} -> {:error, reason}
     end
@@ -76,7 +76,8 @@ defmodule VoxelRegion.World.Prefabs do
     next =
       Enum.reduce(cells, state, fn cell, s ->
         slots =
-          Map.get(s.refined, cell, %{})
+          Map.get(s.refined, cell, RefinedSlots.empty())
+          |> RefinedSlots.to_map()
           |> Map.reject(fn {_, {_, owner}} -> MapSet.member?(ids, owner) end)
 
         s = put_refined(s, cell, slots)
@@ -102,16 +103,12 @@ defmodule VoxelRegion.World.Prefabs do
     }
   end
 
-  def player_prefab(state, actor, :voxel_prefab_place_v1, r) do
+  def player_prefab(state, actor, :voxel_prefab_place_v1, r, definition) do
     actor = Map.merge(actor,%{operation_request: r, operation_kind: 2})
-    with {:ok, definition} <- Map.fetch(state.prefabs, r.definition_id) do
-      place_tree(state, state, definition, r.anchor, r.orientation, {0, 0}, 0, [], actor)
-    else
-      :error -> {:reply, {:error, :definition_not_found}, state}
-    end
+    place_tree(state, state, definition, r.anchor, r.orientation, {0, 0}, 0, [], actor)
   end
 
-  def player_prefab(state, actor, kind, r) do
+  def player_prefab(state, actor, kind, r, definition) do
     actor = Map.merge(actor,%{operation_request: r, operation_kind: if(kind == :voxel_prefab_remove_v1,do: 1,else: 2)})
     with {:ok, instance} <- fetch_instance(state, r.instance_id) do
       ids = subtree_ids(state, r.instance_id)
@@ -123,9 +120,7 @@ defmodule VoxelRegion.World.Prefabs do
           prefab_settle(state, next, cells, actor)
 
         :voxel_prefab_replace_v1 ->
-          case Map.fetch(state.prefabs, r.definition_id) do
-            {:ok, definition} ->
-              place_tree(
+          place_tree(
                 state,
                 next,
                 definition,
@@ -136,10 +131,6 @@ defmodule VoxelRegion.World.Prefabs do
                 cells,
                 actor
               )
-
-            :error ->
-              {:reply, {:error, :definition_not_found}, state}
-          end
       end
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -177,8 +168,8 @@ defmodule VoxelRegion.World.Prefabs do
         n = state.material_units_per_micro
 
         delta =
-          Enum.reduce(Map.get(before.refined, cell, %{}), delta, fn {slot, {m, owner}=value}, d ->
-            if Map.get(Map.get(state.refined,cell,%{}),slot)==value do
+          Enum.reduce(Map.get(before.refined, cell, RefinedSlots.empty()), delta, fn {slot, {m, owner}=value}, d ->
+            if RefinedSlots.fetch(Map.get(state.refined, cell, RefinedSlots.empty()),slot)=={:ok,value} do
               Map.update(d,m,n,&(&1+n))
             else
               row=%{micro: Prefab.micro_coord(cell,slot),granularity: 1,incarnation: elem(owner,0),owner: owner,material: m}
@@ -187,7 +178,7 @@ defmodule VoxelRegion.World.Prefabs do
             end
           end)
 
-        Enum.reduce(Map.get(state.refined, cell, %{}), delta, fn {_, {m, _}}, d ->
+        Enum.reduce(Map.get(state.refined, cell, RefinedSlots.empty()), delta, fn {_, {m, _}}, d ->
           Map.update(d, m, -n, &(&1 - n))
         end)
       end)
@@ -262,8 +253,8 @@ defmodule VoxelRegion.World.Prefabs do
     {source, other} = if actor.operation_kind == 1, do: {before,state}, else: {state,before}
     macro = for {cell,material} <- changed_prefab_macros(source,other,cells),
       do: {Observation.center_micro(cell),material,%{micro: Observation.center_micro(cell),material: material,granularity: 0}}
-    micro = for cell <- cells, {slot,{material,owner}=value} <- Map.get(source.refined,cell,%{}),
-      Map.get(Map.get(other.refined,cell,%{}),slot) != value,
+    micro = for cell <- cells, {slot,{material,owner}=value} <- Map.get(source.refined, cell, RefinedSlots.empty()),
+      RefinedSlots.fetch(Map.get(other.refined, cell, RefinedSlots.empty()),slot) != {:ok,value},
       do: {Prefab.micro_coord(cell,slot),material,%{micro: Prefab.micro_coord(cell,slot),material: material,granularity: 2,owner: owner}}
     attachments = for {{_,_,micro}=slot,{id,material}=value} <- source.attachments,
       Map.get(other.attachments,slot) != value, do: {micro,material,%{micro: micro,material: material,granularity: 3,incarnation: id,slot: slot}}
@@ -335,8 +326,8 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def changed_phase_micro(state,other,cells) do
-    for cell <- cells,{slot,{material,{birth,_}=owner}=value} <- Map.get(state.refined,cell,%{}),
-      Map.get(Map.get(other.refined,cell,%{}),slot) != value,phase_material?(state,material),
+    for cell <- cells,{slot,{material,{birth,_}=owner}=value} <- Map.get(state.refined, cell, RefinedSlots.empty()),
+      RefinedSlots.fetch(Map.get(other.refined, cell, RefinedSlots.empty()),slot) != {:ok,value},phase_material?(state,material),
       do: %{micro: Prefab.micro_coord(cell,slot),granularity: 1,incarnation: birth,owner: owner,material: material}
   end
 
@@ -424,14 +415,14 @@ defmodule VoxelRegion.World.Prefabs do
         |> then(fn result -> Enum.reduce_while(additions, result, fn
           _, {:error,_}=error -> {:halt,error}
           {cell, added}, {:ok, s} ->
-          slots = Map.get(s.refined, cell, %{})
+          slots = Map.get(s.refined, cell, RefinedSlots.empty())
 
           case cell_value(s, 0, cell) do
             {:ok, {0, _}, s} ->
-              if Enum.any?(added, fn {slot, _} -> Map.has_key?(slots, slot) end) do
+              if Enum.any?(added, fn {slot, _} -> RefinedSlots.fetch(slots, slot) != :error end) do
                 {:halt, {:error, :occupied}}
               else
-                s = put_refined(s, cell, Map.merge(slots, added))
+                s = put_refined(s, cell, Map.merge(RefinedSlots.to_map(slots), added))
                 {:cont, {:ok, Edits.put_overlay(s, 0, cell, {0, MmoContracts.Voxel.Skins.uniform(0)})}}
               end
 
@@ -509,13 +500,13 @@ defmodule VoxelRegion.World.Prefabs do
     changed = MapSet.new(macro_changes)
     material_changes =
       Enum.filter(cells, fn cell ->
-        old = Map.get(before.refined, cell, %{})
-        new = Map.get(state.refined, cell, %{})
+        old = Map.get(before.refined, cell, RefinedSlots.empty())
+        new = Map.get(state.refined, cell, RefinedSlots.empty())
 
-        MapSet.member?(changed, cell) or map_size(old) != map_size(new) or
+        MapSet.member?(changed, cell) or RefinedSlots.size(old) != RefinedSlots.size(new) or
           Enum.any?(old, fn {slot, {material, _}} ->
-            case Map.get(new, slot) do
-              {^material, _} -> false
+            case RefinedSlots.fetch(new, slot) do
+              {:ok, {^material, _}} -> false
               _ -> true
             end
           end)
@@ -524,7 +515,8 @@ defmodule VoxelRegion.World.Prefabs do
     state = Liquids.wake_liquid(state, cells)
     {state, attachment_keys, settlement} = AttachmentOps.prune_attachments(before, state, cells, settlement)
 
-    with {:ok, state, settlement} <- prefab_payment(before, state, cells, settlement) do
+    with {:ok, state} <- admit_player_connection(before, state, cells, settlement),
+         {:ok, state, settlement} <- prefab_payment(before, state, cells, settlement) do
       {phase_values,settlement} = Map.pop(settlement,:prefab_phase_values,%{})
       {phase_micro,settlement} = Map.pop(settlement,:prefab_phase_micro,[])
       {phase_preserved,settlement} = Map.pop(settlement,:prefab_phase_preserved,MapSet.new())
@@ -540,7 +532,7 @@ defmodule VoxelRegion.World.Prefabs do
       {coarse_txn, state} = Log.select_transaction(state, Enum.reject(coarse,fn {level,cell}->MapSet.member?(covered,{level,region_of(cell)}) end))
       macro_dirty = Enum.map(macro_changes,&{0,&1})
       # 宏格所在区域全都随本笔重编 L0 后像（l0_keys ⊇ 这些格的区域），后像直接在提交前缓存上改格，不先刷一遍地形缓存。
-      terrain_payloads = Map.merge(before.payloads,state.payloads)
+      terrain_payloads = Map.merge(Payloads.export_cached(before),Payloads.export_cached(state))
       {state, structure_keys, structure_cells} = Payloads.refresh_structure(state, cells)
       state = VoxelRegion.World.Canopy.refresh(before, state, cells, canopy_keys)
       structure_done = System.monotonic_time(:microsecond)
@@ -592,6 +584,12 @@ defmodule VoxelRegion.World.Prefabs do
     end
   end
 
+  defp admit_player_connection(before, state, cells, %{prefab_actor: _actor}) do
+    slots = for {slot, _value} <- changed_attachments(state, before), do: slot
+    VoxelRegion.World.CircuitAdmission.check(before, state, cells, slots, state.circuit_component_limit)
+  end
+  defp admit_player_connection(_before, state, _cells, _settlement), do: {:ok, state}
+
   # 世界串行接纳；先 .vxpd 后 .pub（<<序号::32, cid::64, 名称::binary>>）：两步之间崩溃只让定义暂不列出，重发即补记；
   # 重发保留首个发布者、名称与序号。
   def persist_prefab(state, cid, name, id, bytes) do
@@ -604,7 +602,7 @@ defmodule VoxelRegion.World.Prefabs do
            if(listed, do: :ok, else: write_new(stem <> ".pub", <<ordinal::32, cid::64, name::binary>>)) do
       if listed,
         do: {:ok, state.published},
-        else: {:ok, state.published ++ [%{id: id, publisher: cid, name: name, bytes: bytes}]}
+        else: {:ok, state.published ++ [%{id: id, publisher: cid, name: name}]}
     end
   end
 
@@ -628,18 +626,18 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   # Prefab 放置看足迹，拆除/替换看整棵子树现有格（替换再加新足迹）。
-  def prefab_intent_cells(state, :voxel_prefab_place_v1, r) do
-    case definition_cells(state, r.definition_id, r.anchor, r.orientation) do
+  def prefab_intent_cells(_state, :voxel_prefab_place_v1, r, definition) do
+    case definition_cells(definition, r.anchor, r.orientation) do
       {:ok, _, macros} -> macros
       _ -> []
     end
   end
 
-  def prefab_intent_cells(state, kind, r) do
+  def prefab_intent_cells(state, kind, r, definition) do
     replacement =
       with :voxel_prefab_replace_v1 <- kind,
            {:ok, instance} <- fetch_instance(state, r.instance_id),
-           {:ok, _, macros} <- definition_cells(state, r.definition_id, instance.anchor, instance.orientation),
+           {:ok, _, macros} <- definition_cells(definition, instance.anchor, instance.orientation),
            do: macros,
            else: (_ -> [])
 
