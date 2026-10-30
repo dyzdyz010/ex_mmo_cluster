@@ -726,6 +726,8 @@ defmodule VoxelRegion.World do
           # 传送信标（全局系统）：信标记录与角色调谐，随日志/检查点持久化（World.Beacons）。
           beacons: %{},
           beacon_attunements: %{},
+          # 开发期部署开关：全员视为已调谐全部信标；不持久化。
+          beacons_all_attuned: Keyword.get(opts, :beacons_all_attuned, VoxelRegion.World.Beacons.all_attuned?()),
           # 认领工具的待定第一角（玩家适配）：按 Player 进程保存，断开即忘，不持久化。
           claim_corners: %{},
           phase_inventory: %{},

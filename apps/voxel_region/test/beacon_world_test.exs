@@ -43,10 +43,10 @@ defmodule VoxelRegion.BeaconWorldTest do
     %{root: root, catalog: catalog}
   end
 
-  defp start(c) do
+  defp start(c, extra \\ []) do
     opts = [source: Source, log: Log, root: c.root, observer: self(), name: nil, property_catalog_path: c.catalog,
       thermal_environment_path: Path.join(c.root, "environment.json"), prefab_catalog_path: Path.join(c.root, "prefabs"),
-      production_materials: [@stone]]
+      production_materials: [@stone]] ++ extra
     start_supervised!({World, opts}, id: :world)
   end
 
@@ -154,5 +154,24 @@ defmodule VoxelRegion.BeaconWorldTest do
     assert {:error, :beacon_lost} = travel(w, :commit_beacon, near_q, go)
     assert {:error, :beacon_lost} = travel(w, :prepare_beacon, near_q, go)
     assert {:error, :beacon_lost} = travel(w, :prepare_beacon, {12.5, 1.9, 0.5}, %{from: "ruyuan", to: "qinglan"})
+  end
+
+  # 开发期部署开关（用户 2026-10-30）：未到访的角色也视为已调谐全部信标，不写调谐账；其余校验照旧。
+  test "全员已调谐开关：未到访角色目录全为已调谐、可直接出发，不写调谐账；距离与完好校验照旧", c do
+    w = c |> start(beacons_all_attuned: true) |> build()
+    {:ok, _} = World.beacon_install(w, "q1", @qinglan)
+    {:ok, _} = World.beacon_install(w, "r1", @ruyuan)
+    seq = World.seq(w)
+    near_q = {2.5, 1.9, 0.5}
+    go = %{from: "qinglan", to: "ruyuan"}
+
+    assert World.beacon_directory(w, @a) |> Enum.map(& &1.attuned) == [true, true]
+    assert {:ok, windup} = travel(w, :prepare_beacon, near_q, go)
+    assert_in_delta windup, 3.01, 1.0e-9
+    assert {:ok, {10.5, 3.5, 1.5}} = travel(w, :commit_beacon, near_q, go)
+    assert World.seq(w) == seq
+    assert {:error, :too_far} = travel(w, :prepare_beacon, {5.5, 1.9, 0.5}, go)
+    {:ok, _} = World.apply_edits(w, [{{10, 2, 0}, 0}])
+    assert {:error, :beacon_lost} = travel(w, :prepare_beacon, near_q, go)
   end
 end

@@ -6,7 +6,8 @@ defmodule VoxelRegion.World.Beacons do
     `core` 为核心内一个微格坐标（1/8 m），`landing` 为落点探针（canonical 米，Y-up）。只经维护入口 `install/3` 写入。
     信标是否可用只看 `core` 处当前材料是否为目录 `beacon_anchor` 材料——核心被挖掉或换掉即失效，不另存状态。
   - **调谐** `state.beacon_attunements`（cid => 已调谐 id 列表）随日志／检查点持久化；只经工具 `beacon.use`
-    （玩家 G 对准锚心石）写入。
+    （玩家 G 对准锚心石）写入。开发期部署开关 `VOXIM_BEACONS_ALL_ATTUNED=1`（`config :voxel_region, :beacons_all_attuned`，
+    测试用 World opt `:beacons_all_attuned`，不持久化）开启时，每个角色都视为已调谐全部信标，不写调谐账；关掉即回到只认调谐账。
   - **出发**：Player 是读条 owner；World 只在开始（`prepare/3`）与结束（`commit/3`）各校验一次，返回读条秒数与落点。
     读条 = 目录 `windup_base_s` + `windup_per_km_s` × 两核心距离（km）。
   """
@@ -66,14 +67,15 @@ defmodule VoxelRegion.World.Beacons do
     end
   end
 
+  @doc "部署开关：开发期全员视为已调谐全部信标（用户 2026-10-30）。"
+  def all_attuned?, do: Application.get_env(:voxel_region, :beacons_all_attuned, false) == true
+
   @doc "角色的信标目录：全部信标，按 id 排序，各带是否已调谐。"
   def directory(state, cid) do
-    attuned = Map.get(state.beacon_attunements, cid, [])
-
     state.beacons
     |> Map.values()
     |> Enum.sort_by(& &1.id)
-    |> Enum.map(&%{id: &1.id, name: &1.name, core: core_m(&1), landing: &1.landing, attuned: &1.id in attuned})
+    |> Enum.map(&%{id: &1.id, name: &1.name, core: core_m(&1), landing: &1.landing, attuned: attuned?(state, cid, &1.id)})
   end
 
   @doc "出发开始：源在可达距离内且完好、目的已调谐且完好；返回 `{{:ok, windup_s} | {:error, reason}, state}`。"
@@ -83,7 +85,7 @@ defmodule VoxelRegion.World.Beacons do
     with {:ok, source, state} <- intact(state, from),
          {:ok, dest, state} <- intact(state, to),
          true <- from != to || {:error, :same_beacon},
-         true <- to in Map.get(state.beacon_attunements, actor.cid, []) || {:error, :not_attuned},
+         true <- attuned?(state, actor.cid, to) || {:error, :not_attuned},
          true <- distance(actor.position, core_m(source)) <= tool["reach_m"] || {:error, :too_far} do
       km = distance(core_m(source), core_m(dest)) / 1000
       {{:ok, tool["windup_base_s"] + tool["windup_per_km_s"] * km}, state}
@@ -106,6 +108,9 @@ defmodule VoxelRegion.World.Beacons do
 
   def anchor_material?(state, material),
     do: Map.get(state.properties.materials[material] || %{}, "beacon_anchor", false) == true
+
+  defp attuned?(state, cid, id),
+    do: state.beacons_all_attuned or id in Map.get(state.beacon_attunements, cid, [])
 
   defp intact(state, id) do
     case Map.fetch(state.beacons, id) do

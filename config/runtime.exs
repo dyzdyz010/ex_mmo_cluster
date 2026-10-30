@@ -154,6 +154,9 @@ for {env, key} <- [
 # VOXIM_GM_TOOLS=1 才开启；分发配置不设，默认关闭。
 config :voxel_region, :gm_tools, System.get_env("VOXIM_GM_TOOLS") == "1"
 
+# 开发期便利（VoxelRegion.World.Beacons）：VOXIM_BEACONS_ALL_ATTUNED=1 时每个角色都视为已调谐全部传送信标，不必先到访。
+config :voxel_region, :beacons_all_attuned, System.get_env("VOXIM_BEACONS_ALL_ATTUNED") == "1"
+
 # 有限液体只在这个宏格盒内模拟（"x0,y0,z0,x1,y1,z1"）；不设即关闭液体。
 if bounds = System.get_env("VOXIM_LIQUID_BOUNDS") do
   [x0, y0, z0, x1, y1, z1] =
