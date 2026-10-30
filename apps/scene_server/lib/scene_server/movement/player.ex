@@ -764,12 +764,7 @@ defmodule SceneServer.Movement.Player do
           | queued_seq: snapshot.transaction_seq,
             window_pending: false,
             window_domains: [{0, domain}],
-            config: %{
-              state.config
-              | bounds: domain.bounds,
-                travel: domain.travel,
-                spawn_min_y: max(state.config.spawn_min_y, elem(elem(domain.travel, 0), 1))
-            }
+            config: %{state.config | bounds: domain.bounds, travel: domain.travel}
         }
 
         handle_info({:anchor, state.tick, updates, snapshot.content_version, snapshot}, state)
@@ -2121,17 +2116,16 @@ defmodule SceneServer.Movement.Player do
       Enum.all?(0..2, &(elem(lo, &1) >= elem(min, &1) and elem(hi, &1) < elem(max, &1)))
   end
 
+  # 从探针向下找落脚点，下沿 = 场景出生下限与目标移动域下沿取高：流送窗口之下没有碰撞世界。下沿按每次的目标域算，
+  # 不沿用首个窗口的（2026-10-30 青岚驿→如园：如园窗口比出生窗口低约 210 m，冻结的下沿使落点判 :outside、会话以原因 4 结束）。
   defp find_spawn(state, probe, domain \\ nil) do
+    domain = domain || domain_at(state, state.simulation_tick + 1)
+    floor = max(state.config.spawn_min_y, elem(elem(domain.travel, 0), 1))
     start = from_pod({probe, {0.0, 0.0, 0.0}, 0}, 0)
-    finish = %{start | position: put_elem(probe, 1, state.config.spawn_min_y)}
+    finish = %{start | position: put_elem(probe, 1, floor)}
 
     if query_allowed?(state, start, domain) and query_allowed?(state, finish, domain) do
-      state.updates.native.find_spawn(
-        state.updates.world,
-        state.config.profile_tuple,
-        probe,
-        state.config.spawn_min_y
-      )
+      state.updates.native.find_spawn(state.updates.world, state.config.profile_tuple, probe, floor)
     else
       :outside
     end

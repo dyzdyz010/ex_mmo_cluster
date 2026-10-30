@@ -55,25 +55,29 @@ defmodule SceneServer.Movement.BeaconTravelTest do
 
   @landing {70.5, 558.0, 40.5}
 
-  # y = 500 一层地面（同 ReviveRelocationTest）。
+  # y = 500 一层地面（同 ReviveRelocationTest）；y = 250 另一层，只在请求盒覆盖 y tile 3 时出现（“更低的窗口”用例）。
   def snapshot({{x0, y0, z0}, {x1, y1, z1}} = box) do
-    floor = for _z <- 0..15, cy <- 0..15, _x <- 0..15, into: <<>>, do: <<if(31 * 16 + cy == 500, do: 1, else: 0)>>
+    layer = fn h -> for _z <- 0..15, cy <- 0..15, _x <- 0..15, into: <<>>, do: <<if(cy == rem(h, 16), do: 1, else: 0)>> end
+    floors = %{31 => layer.(500), 15 => layer.(250)}
 
     chunks =
-      for x <- (x0 * 4)..(x1 * 4 - 1), y <- (y0 * 4)..(y1 * 4 - 1), z <- (z0 * 4)..(z1 * 4 - 1), y == 31,
-        do: %Voxel.ChunkOccupancy{coord: {x, y, z}, n: 16, scale_m: 1.0, origin_m: {x * 16.0, y * 16.0, z * 16.0}, cells: floor}
+      for x <- (x0 * 4)..(x1 * 4 - 1), y <- (y0 * 4)..(y1 * 4 - 1), z <- (z0 * 4)..(z1 * 4 - 1), Map.has_key?(floors, y),
+        do: %Voxel.ChunkOccupancy{coord: {x, y, z}, n: 16, scale_m: 1.0, origin_m: {x * 16.0, y * 16.0, z * 16.0},
+          cells: floors[y]}
 
     %Voxel.CanonicalSnapshot{content_version: 9, transaction_seq: 0, l0_min: elem(box, 0), l0_max_exclusive: elem(box, 1),
       chunks: chunks, regions: for(x <- x0..(x1 - 1), y <- y0..(y1 - 1), z <- z0..(z1 - 1), do: {{x, y, z}, <<>>})}
   end
 
-  defp config do
+  # bottom：场景最低 y tile；移动范围下沿与出生下限都取该 tile 底 + 16 m（青岚这两者远低于出生窗口）。
+  defp config(bottom) do
     path = Path.expand("../../../../../../Voxim/Docs/M0/fixtures/suite.json", __DIR__)
     profile = File.read!(path) |> Jason.decode!() |> Map.fetch!("profile") |> Map.put("fixed_hz", 60)
+    floor_y = bottom * 64 + 16.0
 
-    %{"schema" => "voxim-m1-demo-v1", "l0_min" => [-1, 7, -1], "l0_max_exclusive" => [2, 10, 2],
-      "travel_min_m" => [-48.0, 464.0, -48.0], "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
-      "spawn_probes_m" => [[40.0, 558.0, 40.0]], "spawn_min_y_m" => 464.0, "profile" => profile,
+    %{"schema" => "voxim-m1-demo-v1", "l0_min" => [-1, bottom, -1], "l0_max_exclusive" => [2, 10, 2],
+      "travel_min_m" => [-48.0, floor_y, -48.0], "travel_max_exclusive_m" => [112.0, 624.0, 112.0],
+      "spawn_probes_m" => [[40.0, 558.0, 40.0]], "spawn_min_y_m" => floor_y, "profile" => profile,
       "collision_window_radius_tiles" => 1}
   end
 
@@ -97,7 +101,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   # 入场、就绪，原地站 4 帧。
-  defp enter do
+  defp enter(bottom \\ 7) do
     clock = :atomics.new(1, signed: true)
     source = start_supervised!({Source, %{owner: self()}})
     body_store = start_supervised!({MmoTest.BodyStore, []})
@@ -105,7 +109,7 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     scene =
       start_supervised!(
         {Scene,
-         [scene_id: 1, scene_epoch: 7, world_ref: source, config: config(), clock: {Clock, clock}, sink: Sink,
+         [scene_id: 1, scene_epoch: 7, world_ref: source, config: config(bottom), clock: {Clock, clock}, sink: Sink,
           body_store: {MmoTest.BodyStore, store: body_store}, world_api: Source]}
       )
 
@@ -136,7 +140,37 @@ defmodule SceneServer.Movement.BeaconTravelTest do
   end
 
   test "放行：落点在当前窗口里，下一个 tick 直接 Relocate 到落点柱上的地面、不请求新窗口，回执一次" do
-    {ctx, p, start} = enter()
+    released(enter())
+  end
+
+  # 青岚驿 → 如园（出生窗口 y≈518，如园 y≈306）：落点在更低的窗口里。落脚点按新窗口的移动域向下找，不沿用首个窗口的下沿
+  # （2026-10-30 青岚实跑：下沿冻结在出生窗口 449.5 m，如园窗口里判 :outside → 会话以原因 4 结束）。
+  # 期望：先流送覆盖落点的窗口，Relocate 与该窗口同一 apply_tick、先于窗口下发；落脚点 = 落点 x/z、y 比出生点低 250（两层地面差）。
+  test "落点在更低的窗口：流送覆盖落点的窗口，在新窗口里找到地面，Relocate 先于同一 apply_tick 的窗口" do
+    {ctx, p, start} = enter(3)
+    {ref, key, request} = depart(p)
+    send(p, {:beacon_prepared, key, {:ok, 0.05}})
+    assert_receive {:authority, {:commit_beacon, ^key, _, ^request}}, 2000
+    send(p, {:beacon_committed, key, {:ok, {70.5, 280.0, 40.5}}})
+    assert_receive {^ref, {:ok, 0}}, 2000
+
+    # 覆盖落点的窗口异步到达：等它排进 Player 的 FIFO 再推进 tick（同 ReviveRelocationTest 流送用例）。
+    wait(fn ->
+      s = :sys.get_state(p)
+      s.revive == :window and :queue.len(s.updates.queue) > 0
+    end)
+
+    step(ctx, p, 5, 0)
+    assert_receive {:reliable, _, :voxel, %Voxel.Relocate{apply_tick: apply_tick, state: spawned}}, 2000
+    assert_receive {:reliable, _, :voxel, %Voxel.CollisionWindow{apply_tick: ^apply_tick, l0_min: {_, 3, _}}}, 2000
+    {_, start_y, _} = start.state.position
+    {sx, sy, sz} = spawned.position
+    assert {sx, sz} == {70.5, 40.5}
+    assert_in_delta sy, start_y - 250, 1.0e-9
+    assert :sys.get_state(p).failure == nil
+  end
+
+  defp released({ctx, p, start}) do
     {ref, key, request} = depart(p)
     assert {:error, :casting} = Player.tool_context(p, identity())
 
