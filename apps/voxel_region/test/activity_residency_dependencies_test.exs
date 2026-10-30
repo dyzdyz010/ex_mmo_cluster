@@ -65,6 +65,26 @@ defmodule VoxelRegion.ActivityResidencyDependenciesTest do
       Thermal.residency_dependencies(%{thermal_state() | source: VoxelRegion.GeneratedStore})
   end
 
+  test "静态资格只解除自身 exact pin，未知页不全局阻退且真实热域继续保有" do
+    alias VoxelRegion.World.{Pages, PageLoad}
+    p = {0, {-2, -3, -4}}
+    unknown = {0, {8, 9, 10}}
+    coarse = {5, {-1, -1, -1}}
+    state = thermal_state() |> Map.merge(%{source: VoxelRegion.GeneratedStore, static_l0_retirement: true,
+      resident: MapSet.new([p, unknown, coarse]), page_load: PageLoad.new(),
+      pages: Pages.new(), static_l0: %{VoxelRegion.World.StaticL0.Index.new() | eligible: MapSet.new([p])}})
+    assert {:ok, {[], exact, []}} = Thermal.residency_dependencies(state)
+    assert MapSet.new(exact) == MapSet.new([unknown, coarse])
+    # 原生未写回域与持续活动域各自足以 pin 已有资格的页，保留原祖页和扩邻语义。
+    pending = put_in(state.thermal_work.domain, %{state.thermal_work.domain | pending: true} |> Map.put(:cells, %{{-128, -192, -256} => 0}))
+    assert {:ok, {keys, ^exact, []}} = Thermal.residency_dependencies(pending)
+    assert p in keys
+    assert coarse in keys
+    active = state |> put_in([:thermal, :active], true) |> put_in([:thermal_work, :cells], MapSet.new([{-128, -192, -256}]))
+    assert {:ok, {keys, ^exact, []}} = Thermal.residency_dependencies(active)
+    assert p in keys
+  end
+
   test "真实电动势种子保留页，图准备owner维护实际跨页依赖，附件存在本身不阻塞" do
     state = thermal_state()
     row = %{micro: {0, 0, 0}, granularity: 0, owner: {0, 0}, incarnation: 0, material: 42, stored_j: 3.0}

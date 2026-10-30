@@ -27,6 +27,7 @@ defmodule VoxelRegion.World.Pages do
   """
   alias VoxelRegion.{Attachments, CollisionSource, Combustion, Damage, LogProjection, Prefab, ThermalWork}
   alias VoxelRegion.World.{Canonical, Edits, Payloads}
+  alias VoxelRegion.World.StaticL0.Index, as: StaticIndex
   import VoxelRegion.World.Canonical, only: [region_of: 1]
   import Bitwise
 
@@ -38,7 +39,12 @@ defmodule VoxelRegion.World.Pages do
     children: %{}, covers: %{}, remembered: Map.new(@remembered, &{&1, nil})}
 
   @doc "登记一个脏单元（写入口调用）。缺 `page_dirty` 的局部 state（单测夹具）也可用。"
-  def mark(state, unit), do: Map.update(state, :page_dirty, MapSet.new([unit]), &MapSet.put(&1, unit))
+  def mark(state, unit) do
+    state |> Map.update(:page_dirty, MapSet.new([unit]), &MapSet.put(&1, unit)) |> StaticIndex.changed([unit])
+  end
+
+  @doc "可见页段的 L0 归属（空值仍是记录，structure／canopy 按片段的 L0 页）。"
+  def recorded_keys(units), do: MapSet.new(units, fn {unit, _value} -> unit_key(unit) end)
 
   @doc "登记本笔碰过的身份（实例 id 或 `{:aid, aid}`）：`remember/2` 按根重算覆盖页集合。"
   def touch(state, id), do: Map.update(state, :owners_touched, MapSet.new([id]), &MapSet.put(&1, id))
@@ -184,6 +190,17 @@ defmodule VoxelRegion.World.Pages do
 
   @doc "批量退休已证明可退的内存表示；不走业务删除、不判脏、不删除持久页或定位行。"
   def retire(state, keys) do
+    state = StaticIndex.retire(state, keys)
+    release_cached_pages(state, keys)
+  end
+
+  @doc "PageLoad 丢弃本任务已暂存但从未接纳的页；这不是已驻留页的退休，不修改持久真值。"
+  def discard_staged(state, keys) do
+    state = StaticIndex.discard(state, keys)
+    release_cached_pages(state, keys)
+  end
+
+  defp release_cached_pages(state, keys) do
     resident = MapSet.difference(state.resident, keys)
     l0 = for {0, page} <- keys, into: MapSet.new(), do: page
     region_keys = MapSet.to_list(keys)
@@ -318,7 +335,8 @@ defmodule VoxelRegion.World.Pages do
   """
   def remember(state, txn) do
     index = state.pages
-    dirty = Map.get(state, :page_dirty, MapSet.new())
+    existing_dirty = Map.get(state, :page_dirty, MapSet.new())
+    dirty = MapSet.new()
     dirty = Enum.reduce(Map.keys(Map.get(txn, :epochs, %{})), dirty, &MapSet.put(&2, cell_unit(:epochs, &1)))
     dirty = Enum.reduce(Map.keys(Map.get(txn, :placed_by, %{})), dirty, &MapSet.put(&2, cell_unit(:placed_by, &1)))
     old_instances = index.remembered.instances || %{}
@@ -339,7 +357,8 @@ defmodule VoxelRegion.World.Pages do
     touched = Map.get(state, :owners_touched, MapSet.new()) |> Enum.concat(changed_ids) |> Enum.concat(Enum.map(changed_aids, &{:aid, &1}))
     {index, dirty} = covers(state, index, dirty, touched, old_instances, old_owners)
 
-    Map.merge(state, %{pages: index, page_dirty: dirty, owners_touched: MapSet.new()})
+    state = Map.merge(state, %{pages: index, page_dirty: MapSet.union(existing_dirty, dirty), owners_touched: MapSet.new()})
+    StaticIndex.changed(state, dirty)
   end
 
   defp instances(%{remembered: %{instances: same}} = index, dirty, same), do: {index, dirty, []}
@@ -754,9 +773,12 @@ defmodule VoxelRegion.World.Pages do
   已驻留的粗层片段跳过（内存为准）。返回 `{state, {后续页, 要定位的身份}, 装入的属性行}`：后续页 = 定位到的根 home 页、
   新驻留根的覆盖页中未驻留者；要定位的 = 新页上引用、内存里没有记录的实例 / 附件 id。
   """
-  def adopt(state, tokens, rows, located) do
+  def adopt(state, tokens, rows, located), do: adopt_units(state, tokens, Enum.map(rows, &unit_value/1), located)
+
+  @doc "同步装页复用同一次段解码结果，用于接纳与记录存在性证明。"
+  def adopt_units(state, tokens, units, located) do
     keys = for {key, gen} <- tokens, not resident?(state, key), gen == Map.get(state.page_generation, key, 0), uniq: true, do: key
-    {state, new_instances, loaded_rows} = install(state, MapSet.new(keys), Enum.map(rows, &unit_value/1))
+    {state, new_instances, loaded_rows} = install(state, MapSet.new(keys), units)
     state = mark_resident(state, keys)
     {state, follow_ups(state, keys, new_instances, located), loaded_rows}
   end
@@ -800,7 +822,7 @@ defmodule VoxelRegion.World.Pages do
 
   @doc "一次标记驻留（闭包已闭合的整批页）。"
   def mark_resident(%{resident: :all} = state, _keys), do: state
-  def mark_resident(state, keys), do: %{state | resident: Enum.into(keys, state.resident)}
+  def mark_resident(state, keys), do: StaticIndex.resident(%{state | resident: Enum.into(keys, state.resident)}, keys)
 
   @doc """
   提交前复核暂存页的树闭包：home 在这些页的实例，其根的覆盖页都已驻留或在本批里；缺的页返回（任务继续读）。
@@ -816,6 +838,7 @@ defmodule VoxelRegion.World.Pages do
 
   # 装入单元（只装 `wanted` 里的页的单元，已驻留的粗层片段跳过）：经同一写入口、不判脏，补页索引与 `remembered`。
   defp install(state, wanted, all_units) do
+    state = StaticIndex.changed(state, Enum.map(all_units, &elem(&1, 0)))
     units = for {unit, _} = pair <- all_units, adopt_unit?(state, wanted, unit), do: pair
     dirty = Map.get(state, :page_dirty, MapSet.new())
     touched = Map.get(state, :owners_touched, MapSet.new())

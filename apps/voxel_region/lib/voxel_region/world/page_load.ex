@@ -16,6 +16,7 @@ defmodule VoxelRegion.World.PageLoad do
     动态裁决已发现的页附在同一不可变输入的 `page_dependencies`，保持到真实使用／取消，防止多轮洪泛重放丢失前段页。
   """
   require Logger
+  alias VoxelRegion.World.StaticL0.Index, as: StaticIndex
   alias VoxelRegion.World.{Admission, Closure, Pages}
 
   @batch 1024
@@ -175,10 +176,27 @@ defmodule VoxelRegion.World.PageLoad do
   def caller?(state, ref), do: Enum.any?(state.page_load.callers, fn {_, c} -> c.monitor == ref end)
 
   defp drop_task(state, ref) do
+    state = discard_task_staging(state, ref)
     update_in(state.page_load, fn load ->
       %{load | tasks: Map.delete(load.tasks, ref), pending: Map.reject(load.pending, fn {_, by} -> by == ref end)}
     end)
   end
+
+  # 开启静态 L0 时，L0 页要等源摘要接纳后才标驻留，所以任务被取消／失败时可能留下“已暂存、未驻留、无 owner”的页。
+  # 这些页没有任何读者，也永远等不到摘要；若留着，它们会作为 unknown 一直钉在内存里。这里把它们按“丢弃未接纳的暂存”
+  # 释放（日志动作 discard），不计入静态退休，也不碰已驻留页、仍有其他读者的页或任何持久数据。
+  defp discard_task_staging(%{static_l0_retirement: true} = state, ref) do
+    keys =
+      for {key, ^ref} <- state.page_load.pending,
+          not Pages.resident?(state, key),
+          MapSet.member?(state.page_load.staged, key),
+          into: MapSet.new(),
+          do: key
+
+    if MapSet.size(keys) == 0, do: state, else: Pages.discard_staged(state, keys)
+  end
+
+  defp discard_task_staging(state, _ref), do: state
 
   @doc """
   同序键：同一动作（施法 / 信标的准备、授权、取消，动作键 `{身份, client_intent_seq}`）或同一身体（接触、摘离、死亡，按 cid）的消息
@@ -307,21 +325,40 @@ defmodule VoxelRegion.World.PageLoad do
 
   defp start(state, entries, request, attempt) do
     state = Enum.reduce(entries, state, &watch(&2, &1))
-    other = case request do
-      {keys, exact, _ids} -> pending_owner(state, Enum.uniq(Pages.expand(keys) ++ exact), nil)
-      :all -> nil
-    end
 
-    if other do
-      # 入闸时已有页读 owner 即挂到它；后续按自身闭包重放，不能让取消夹在新任务发令牌之前误杀共享读。
-      update_in(state.page_load.tasks[other].entries, &(&1 ++ entries))
-    else
-      world = self()
-      log = state.log
-      {pid, ref} = spawn_monitor(fn -> run(world, log, request) end)
-      put_in(state.page_load.tasks[ref], %{pid: pid, entries: entries, request: request, attempt: attempt, started: System.monotonic_time(:microsecond)})
+    case shared_task(state, request) do
+      nil ->
+        world = self()
+        log = state.log
+        source = classification_source(state)
+        {pid, ref} = spawn_monitor(fn -> run(world, log, request, source) end)
+        put_in(state.page_load.tasks[ref], %{pid: pid, entries: entries, request: request, attempt: attempt, started: System.monotonic_time(:microsecond)})
+
+      other ->
+        # 入闸时已有页读 owner 即挂到它；后续按自身闭包重放，不能让取消夹在新任务发令牌之前误杀共享读。
+        update_in(state.page_load.tasks[other].entries, &(&1 ++ entries))
     end
   end
+
+  # 新请求是否挂到已有任务上。开启静态 L0 时每个任务都要读源并分类，为了让全 World 的源生成／解码并发恒为 1
+  # （不另建线程池），任何新请求都挂到正在运行的任务上，等它结束后按自身闭包重放；关闭时只在页重叠时挂靠。
+  defp shared_task(state, request) do
+    cond do
+      classification_source(state) != nil and map_size(state.page_load.tasks) > 0 ->
+        state.page_load.tasks |> Map.keys() |> hd()
+
+      match?({_keys, _exact, _ids}, request) ->
+        {keys, exact, _ids} = request
+        pending_owner(state, Enum.uniq(Pages.expand(keys) ++ exact), nil)
+
+      true ->
+        nil
+    end
+  end
+
+  # 开启静态 L0 时把启动时已校验的源（含身份）交给装页任务；关闭时任务不读源。
+  defp classification_source(state),
+    do: if(Map.get(state, :static_l0_retirement, false), do: state.source_state)
 
   defp pending_owner(state, pages, owner),
     do: Enum.find_value(pages, fn key -> (by = state.page_load.pending[key]) != nil and by != owner and by end)
@@ -363,10 +400,22 @@ defmodule VoxelRegion.World.PageLoad do
   World 的 `{:page_stage, task, keys, units, ready}`：只装入发令牌时已归该任务的页；`keys` 保留批次观测接口。`ready`（粗层页与不带树身份 /
   引用的 L0 页，单元已全部装完）随本批标驻留、不再占住（`Pages.ready_batches/2`）。返回 `{state, 装入的属性行, 标驻留的页}`。
   """
-  def stage(state, task, _keys, units, ready) do
+  def stage(state, task, keys, units, ready), do: stage(state, task, keys, units, ready, [])
+
+  @doc "来源摘要随原任务暂存单元接纳；无有效 owner 的迟到结果不产生证明。"
+  def stage(state, task, _keys, units, ready, facts) do
     ref = owner(state, task)
+    stage_owned(state, ref, units, ready, facts)
+  end
+
+  # 任务已被取消或已让出（不再拥有任何页）：迟到的单元与源事实一概不接纳。
+  defp stage_owned(state, nil, _units, _ready, _facts), do: {state, [], []}
+
+  defp stage_owned(state, ref, units, ready, facts) do
     mine = for {key, ^ref} <- state.page_load.pending, into: MapSet.new(), do: key
     {state, loaded} = Pages.stage(state, mine, units)
+    facts = Enum.filter(facts, fn {key, _, _} -> MapSet.member?(mine, key) end)
+    state = StaticIndex.adopt(state, facts)
     ready = Enum.filter(ready, &MapSet.member?(mine, &1))
     state = update_in(state.page_load.staged, &MapSet.difference(MapSet.union(&1, mine), MapSet.new(ready)))
     {state |> Pages.mark_resident(ready) |> update_in([:page_load, :pending], &Map.drop(&1, ready)), loaded, ready}
@@ -413,6 +462,7 @@ defmodule VoxelRegion.World.PageLoad do
 
       {task, tasks} ->
         # 任务结束（正常提交后已清；失败 / 让出时）：它暂存而未标驻留的页撤销暂存，之后别的任务可以重新暂存（数据与 PG 相同，重装幂等）。
+        state = discard_task_staging(state, ref)
         pending = Map.reject(state.page_load.pending, fn {_, by} -> by == ref end)
         state = put_in(state.page_load, %{state.page_load | tasks: tasks, pending: pending})
         {entries, state} = if :wake in task.entries,
@@ -446,7 +496,10 @@ defmodule VoxelRegion.World.PageLoad do
   # ---- 任务进程
 
   @doc "装页任务主体（在任务进程里运行；只读 PG、经 World 调用接纳，不读写 World 状态）。"
-  def run(world, {backend, handle}, :all) do
+  def run(world, log, request), do: run(world, log, request, nil)
+
+  @doc "携带启动时冻结的源身份；分类与持久读取复用同一任务和取消边界。"
+  def run(world, {backend, handle}, :all, source) do
     keys =
       handle
       |> backend.page_keys()
@@ -455,13 +508,13 @@ defmodule VoxelRegion.World.PageLoad do
       end)
       |> Enum.uniq()
 
-    case loop(world, backend, handle, [], keys, [], empty()) do
+    case loop(world, backend, handle, [], keys, [], empty(source)) do
       :ok -> :ok = GenServer.call(world, :page_resident_all, :infinity)
       :yielded -> :ok
     end
   end
 
-  def run(world, {backend, handle}, {keys, exact, ids}), do: loop(world, backend, handle, keys, exact, ids, empty())
+  def run(world, {backend, handle}, {keys, exact, ids}, source), do: loop(world, backend, handle, keys, exact, ids, empty(source))
 
   # 闭包在任务里按 PG 行闭合（评审 A1 / F2）：每轮读页、在任务里解码、增量求闭包（`Pages.closure_add/2`），并把解码结果按固定规模分批
   # 交 World 暂存（`:page_stage`，每批一个 World 回合，回合有上界）；整树闭合后一次 `:page_commit` 标记驻留。暂存页在此之前不驻留，
@@ -470,7 +523,7 @@ defmodule VoxelRegion.World.PageLoad do
   @stage_bytes 64 * 1024
   @stage_rows 16
 
-  defp empty, do: %{pages: MapSet.new(), located: %{}, asked: MapSet.new(), closure: Pages.closure_new()}
+  defp empty(source), do: %{pages: MapSet.new(), located: %{}, asked: MapSet.new(), closure: Pages.closure_new(), source: source}
 
   defp loop(world, backend, handle, keys, exact, ids, acc) do
     exact = Enum.reject(exact, &MapSet.member?(acc.pages, &1))
@@ -503,7 +556,7 @@ defmodule VoxelRegion.World.PageLoad do
           located: Map.merge(acc.located, located)}
         {exact, ids} = Pages.closure_next(closure, acc.located, acc.pages, acc.asked)
         t4 = System.monotonic_time(:microsecond)
-        stages = stage(world, Enum.map(tokens, &elem(&1, 0)), units)
+        stages = stage(world, tokens, units, acc.source)
         # 装页任务每轮的耗时拆分（定位 / 读段 / 解码 / 求闭包 / 分批暂存），World 回合另见 `voxel_page_stage`。
         Logger.info("voxel_page_load_round pages=#{length(tokens)} ids=#{map_size(located)} rows=#{length(rows)} " <>
           "bytes=#{Enum.sum(Enum.map(rows, &byte_size(&1.payload)))} locate_us=#{t1 - t0} read_us=#{t2 - t1} decode_us=#{t3 - t2} " <>
@@ -513,18 +566,53 @@ defmodule VoxelRegion.World.PageLoad do
   end
 
   # 分批暂存：第一批带上本轮全部页键（空页也记为暂存）；按压缩字节与行数切批，每批一次 World 调用；平凡页随其最后一批标驻留。
-  defp stage(world, keys, units) do
+  defp stage(world, tokens, units, source) do
+    keys = Enum.map(tokens, &elem(&1, 0))
     batches = chunk(units, [], 0, [])
     batches = if batches == [], do: [[]], else: batches
+    readiness = Pages.ready_batches(keys, batches)
 
     batches
-    |> Enum.zip(Pages.ready_batches(keys, batches))
+    |> Enum.zip(readiness)
     |> Enum.with_index()
     |> Enum.each(fn {{batch, ready}, i} ->
-      {:ok, _} = GenServer.call(world, {:page_stage, self(), if(i == 0, do: keys, else: []), batch, ready}, :infinity)
+      first_keys = if i == 0, do: keys, else: []
+      {:ok, _} = GenServer.call(world, {:page_stage, self(), first_keys, batch, ready_without_l0(ready, source)}, :infinity)
     end)
 
+    if source, do: stage_source_facts(world, tokens, units, readiness, source)
     length(batches)
+  end
+
+  # 开启静态 L0 时，平凡 L0 页不随单元批次标驻留，而是推迟到它的源摘要一起接纳（见 stage_source_facts/5），
+  # 保证每个驻留 L0 页都已有证明记录；关闭时保持原批次语义。
+  defp ready_without_l0(ready, nil), do: ready
+  defp ready_without_l0(ready, _source), do: Enum.reject(ready, &match?({0, _}, &1))
+
+  # 本轮每个 L0 页一次 World 调用：带上它的源事实（有页段即 recorded，否则读源分类），并在原本可标驻留时一并标驻留。
+  # 逐页调用让 World 回合保持单页规模，分类在本任务进程里串行完成。
+  defp stage_source_facts(world, tokens, units, readiness, source) do
+    recorded = Pages.recorded_keys(Enum.map(units, &elem(&1, 0)))
+    ready = MapSet.new(List.flatten(readiness))
+
+    for {{0, _} = key, gen} <- tokens do
+      fact = source_fact(source, key, recorded)
+      ready_now = if MapSet.member?(ready, key), do: [key], else: []
+      {:ok, _} = GenServer.call(world, {:page_stage, self(), [], [], ready_now, [{key, gen, fact}]}, :infinity)
+    end
+  end
+
+  # 有持久页段的页直接记为 recorded，不再读源；无段页读源并分类。读源失败让任务以该原因退出，
+  # 由 World 的任务 DOWN 路径显式失败（同普通装页失败，不自动重试、不留证明）。
+  defp source_fact(source, key, recorded) do
+    if MapSet.member?(recorded, key) do
+      :recorded_page
+    else
+      case VoxelRegion.GeneratedStore.static_core(source, key) do
+        {:ok, fact} -> fact
+        {:error, reason} -> exit(reason)
+      end
+    end
   end
 
   defp chunk([], [], _bytes, out), do: Enum.reverse(out)
@@ -557,8 +645,23 @@ defmodule VoxelRegion.World.PageLoad do
         located = backend.locate(handle, Enum.map(ids, &Pages.locator_key/1))
         {batch, rest} = Enum.split(tokens, @batch)
         %{rows: rows} = backend.read_pages(handle, Enum.map(batch, &elem(&1, 0)), Pages.fragment_codes())
-        {state, {more, ids}, _rows} = adopt(state, batch, rows, located)
+        units = Enum.map(rows, &Pages.unit_value/1)
+        facts = sync_source_facts(state, batch, units)
+        {state, {more, ids}, _rows} = Pages.adopt_units(state, batch, units, located)
+        state = StaticIndex.adopt(state, facts)
         load_sync(state, [], Enum.map(rest, &elem(&1, 0)) ++ more, ids)
+    end
+  end
+
+  # 同步装页（冷启动）与异步任务产出同一种源事实；关闭时不读源。
+  defp sync_source_facts(state, batch, units) do
+    case classification_source(state) do
+      nil ->
+        []
+
+      source ->
+        recorded = Pages.recorded_keys(units)
+        for {{0, _} = key, gen} <- batch, do: {key, gen, source_fact(source, key, recorded)}
     end
   end
 end

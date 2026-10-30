@@ -154,6 +154,15 @@ for {env, key} <- [
 # VOXIM_GM_TOOLS=1 才开启；分发配置不设，默认关闭。
 config :voxel_region, :gm_tools, System.get_env("VOXIM_GM_TOOLS") == "1"
 
+# 静态 L0 退休仅启动时接纳；默认关闭，不提供在线热切换。
+static_l0_retirement =
+  case System.get_env("VOXIM_STATIC_L0_RETIREMENT", "false") do
+    value when value in ["true", "1"] -> true
+    value when value in ["false", "0"] -> false
+    value -> raise "invalid VOXIM_STATIC_L0_RETIREMENT: #{inspect(value)}"
+  end
+config :voxel_region, :static_l0_retirement, static_l0_retirement
+
 # 有限液体只在这个宏格盒内模拟（"x0,y0,z0,x1,y1,z1"）；不设即关闭液体。
 if bounds = System.get_env("VOXIM_LIQUID_BOUNDS") do
   [x0, y0, z0, x1, y1, z1] =

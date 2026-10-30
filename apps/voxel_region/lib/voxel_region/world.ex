@@ -756,6 +756,9 @@ defmodule VoxelRegion.World do
           page_generation: %{},
           page_load: VoxelRegion.World.PageLoad.new(),
           residency: Residency.new(),
+          static_l0: VoxelRegion.World.StaticL0.Index.new(),
+          static_l0_retirement: Keyword.get(opts, :static_l0_retirement,
+            Application.get_env(:voxel_region, :static_l0_retirement, false)),
           # structure 的 `(level, L0 页)` 片段索引、L1–L5 树冠片段与附件 id 的区域计数（M2b 派生，可由驻留真值重算）。
           structure_pages: %{},
           canopy: %{},
@@ -819,20 +822,24 @@ defmodule VoxelRegion.World do
           else
             state
           end
-        state = state |> VoxelRegion.World.PageCut.start_writer() |> VoxelRegion.World.PageCut.maybe_open()
-        # 重启时后缀可能已很长（上次写回卡住）：按恢复后的积压定级，接纳从第一条请求起生效。
-        state = VoxelRegion.World.PageCut.assess(state)
-        state = Thermal.rebuild_work(state)
+        with {:ok, state} <- VoxelRegion.World.StaticL0.Index.start(state) do
+          state = state |> VoxelRegion.World.PageCut.start_writer() |> VoxelRegion.World.PageCut.maybe_open()
+          # 重启时后缀可能已很长（上次写回卡住）：按恢复后的积压定级，接纳从第一条请求起生效。
+          state = VoxelRegion.World.PageCut.assess(state)
+          state = Thermal.rebuild_work(state)
 
-        Logger.info(
-          "voxel_region world #{FileStore.hex(state.cv)} ready, seq=#{state.seq}, resident=#{resident_count(state)}, " <>
-            "root=#{state.source.world_dir(state.source_state)}"
-        )
+          Logger.info(
+            "voxel_region world #{FileStore.hex(state.cv)} ready, seq=#{state.seq}, resident=#{resident_count(state)}, " <>
+              "root=#{state.source.world_dir(state.source_state)}"
+          )
 
-        state = schedule_liquid(state)
-        state = Thermal.wake(state)
-        state = VoxelRegion.World.Projectiles.wake(state)
-        {:ok, state}
+          state = schedule_liquid(state)
+          state = Thermal.wake(state)
+          state = VoxelRegion.World.Projectiles.wake(state)
+          {:ok, state}
+        else
+          {:error, reason} -> {:stop, reason}
+        end
 
       error -> error
     end
@@ -890,8 +897,11 @@ defmodule VoxelRegion.World do
     message = Admission.message(input)
     key = PageLoad.order_key(message)
     failure = PageLoad.failure(state)
+    static_error = VoxelRegion.World.StaticL0.change_error(state, message)
 
     cond do
+      static_error != nil ->
+        finish_input(input, {:reply, {:error, static_error}, state})
       physical_input?(message) and not confirmed_input?(message) and failure != nil ->
         reject_simulation_input(input, state, failure.reason, not (attempt == 0 and PageLoad.held?(state, key)))
       match?({:call, _, _}, entry) and backlog_rejects?(message, state) ->
@@ -923,9 +933,13 @@ defmodule VoxelRegion.World do
   end
 
   # 分批暂存（每批一个有上界的回合）、整树闭合后一次标驻留、撞上别的任务暂存页时让出（M2b 统筹第四轮）。
-  defp call({:page_stage, task, keys, units, ready}, _from, state) do
+  defp call({:page_stage, task, keys, units, ready}, from, state) do
+    call({:page_stage, task, keys, units, ready, []}, from, state)
+  end
+
+  defp call({:page_stage, task, keys, units, ready, facts}, _from, state) do
     started = System.monotonic_time(:microsecond)
-    {state, loaded, ready} = VoxelRegion.World.PageLoad.stage(state, task, keys, units, ready)
+    {state, loaded, ready} = VoxelRegion.World.PageLoad.stage(state, task, keys, units, ready, facts)
     Logger.info("voxel_page_stage pages=#{length(keys)} units=#{length(units)} ready=#{length(ready)} " <>
       "us=#{System.monotonic_time(:microsecond) - started}")
     state = Thermal.touch(state, loaded)

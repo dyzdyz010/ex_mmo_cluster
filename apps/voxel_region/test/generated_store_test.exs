@@ -51,6 +51,30 @@ defmodule VoxelRegion.GeneratedStoreTest do
     {:ok, root: root, manifest_path: manifest_path}
   end
 
+  test "静态摘要与真实完整 core 一致，混合页只生成一次并拒绝坏缓存", c do
+    {:ok, store} = GeneratedStore.open(root: c.root, manifest_path: c.manifest_path)
+    key = {0, {0, 7, 0}}
+    assert GeneratedStore.classify(store, 0, elem(key, 1)) == :mixed
+    assert {:ok, first} = GeneratedStore.static_core(store, key)
+    assert first.generated == 1
+    assert {:ok, second} = GeneratedStore.static_core(store, key)
+    assert second.generated == 0
+    assert first.body == second.body
+    assert first.source == store.identity
+    assert {:ok, bytes, header} = GeneratedStore.read(store, 0, elem(key, 1))
+    assert {:ok, payload} = Payload.decode(bytes)
+    expected = for x <- 1..64, y <- 1..64, z <- 1..64, into: MapSet.new(), do: Payload.material(payload, {x, y, z})
+    assert first.materials == Enum.sort(expected)
+    assert first.body == header.hash
+    assert {:ok, air} = GeneratedStore.static_core(store, {0, {0, 1000, 0}})
+    assert air.materials == [0]
+    assert air.body == {:uniform, 0}
+    assert air.generated == 0
+    # 只破坏本测试拥有的可重建缓存，不能把读取失败降成未知后伪装成功。
+    File.write!(GeneratedStore.path(store, 0, elem(key, 1)), <<0>>)
+    assert {:error, {:static_l0_source_read_failed, ^key, :invalid_cache}} = GeneratedStore.static_core(store, key)
+  end
+
   test "bake enumerates the world's columns, generates only mixed L1+ regions once, and later boots only verify",
        %{
          baked: baked,

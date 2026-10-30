@@ -22,6 +22,8 @@ defmodule VoxelRegion.GeneratedStore do
 
   @schema "voxim-worldgen-v1"
   @identity_schema "voxim-content-version-md5-64-v3"
+  # 静态 L0 只从 VXR4 载荷提取 core 材料；其他版本的缓存不作为证明来源。
+  @core_payload_version 4
   @fields ~w(seed min_height sea_level max_height soil_depth lowland_amplitude mountain_amplitude cave_max_depth)
   @lock_table :voxel_region_generation
   @bounds_table :voxel_region_column_bounds
@@ -79,6 +81,7 @@ defmodule VoxelRegion.GeneratedStore do
        content_version: version,
        world_dir: world_dir,
        config: config,
+       identity: {kernel, config, identity, version},
        extent: extent,
        index_path: index_path,
        index: load_index(index_path, extent),
@@ -146,6 +149,35 @@ defmodule VoxelRegion.GeneratedStore do
   @doc "本 store 打开以来实际执行的 NIF 生成次数。"
   def generated(store), do: :counters.get(store.generations, 1)
 
+  @doc """
+  为静态 L0 资格提取一页完整 64³ core 的材料集合（装页任务内串行调用）。
+
+  均匀页直接用完整空间分类的结论；混合页读取（缺缓存时生成）并校验 VXR4 后逐格取 core 材料。
+  返回紧凑事实 `%{source, materials, body, elapsed_us, generated}`，不保留载荷 binary，不改变生成 kernel 或 CV。
+  """
+  def static_core(store, {0, region}) do
+    started = System.monotonic_time(:microsecond)
+    generated_before = generated(store)
+
+    case core_materials(store, region) do
+      {:ok, materials, body} ->
+        {:ok,
+         %{source: store.identity, materials: materials, body: body,
+           elapsed_us: System.monotonic_time(:microsecond) - started,
+           generated: generated(store) - generated_before}}
+
+      {:error, reason} ->
+        {:error, {:static_l0_source_read_failed, {0, region}, reason}}
+    end
+  end
+
+  defp core_materials(store, region) do
+    case classify(store, 0, region) do
+      {:uniform, material} -> {:ok, [material], {:uniform, material}}
+      :mixed -> read_mixed(store, 0, region, :core)
+    end
+  end
+
   def content_version(store), do: store.content_version
   def world_dir(store), do: store.world_dir
 
@@ -169,14 +201,19 @@ defmodule VoxelRegion.GeneratedStore do
         {:ok, bytes, header}
 
       :mixed ->
-        path = path(store, level, region)
+        read_mixed(store, level, region, :payload)
+    end
+  end
 
-        case File.read(path) do
-          {:ok, bytes} -> read_cached(bytes, store.content_version, level, region)
-          {:error, :enoent} when level == 0 -> generate(store, path, level, region)
-          {:error, :enoent} -> {:error, :not_baked}
-          {:error, reason} -> {:error, {:cache_read_failed, reason}}
-        end
+  # 混合页的共用读取：缓存命中先校验再返回，L0 缺缓存时在线生成。`result` 选择返回形状：
+  # `:payload` 是原 `{:ok, bytes, header}`；`:core` 是静态 L0 用的 `{:ok, core 材料集合, body hash}`，复用同一次解码。
+  defp read_mixed(store, level, region, result) do
+    path = path(store, level, region)
+    case File.read(path) do
+      {:ok, bytes} -> read_cached(bytes, store.content_version, level, region, result)
+      {:error, :enoent} when level == 0 -> generate(store, path, level, region, result)
+      {:error, :enoent} -> {:error, :not_baked}
+      {:error, reason} -> {:error, {:cache_read_failed, reason}}
     end
   end
 
@@ -251,18 +288,18 @@ defmodule VoxelRegion.GeneratedStore do
   end
 
   # 同一 region 同时只有一个生成者；其余轮询锁释放后读取发布结果。生成者被外部杀死时锁随其 pid 失效，由下一个请求者接手。
-  defp generate(store, path, level, region) do
+  defp generate(store, path, level, region, result \\ :payload) do
     key = {store.world_dir, level, region}
 
     if :ets.insert_new(@lock_table, {key, self()}) do
       try do
-        generate_locked(store, path, level, region)
+        generate_locked(store, path, level, region, result)
       after
         :ets.delete(@lock_table, key)
       end
     else
       await_generation(key)
-      read(store, level, region)
+      read_mixed(store, level, region, result)
     end
   end
 
@@ -285,10 +322,10 @@ defmodule VoxelRegion.GeneratedStore do
     end
   end
 
-  defp generate_locked(store, path, level, region) do
+  defp generate_locked(store, path, level, region, result) do
     :counters.add(store.generations, 1, 1)
     raw = Native.generate_region(level, region, store.config)
-    {:ok, _payload} = Payload.decode_body(raw)
+    {:ok, payload} = Payload.decode_body(raw)
     bytes = Codec.encode_payload(level, region, 0, store.content_version, raw)
     File.mkdir_p!(Path.dirname(path))
 
@@ -302,13 +339,13 @@ defmodule VoxelRegion.GeneratedStore do
       :ok ->
         File.rm!(temporary)
         {:ok, header} = Codec.decode_payload_header(bytes)
-        {:ok, bytes, header}
+        source_result(result, bytes, header, payload)
 
       {:error, :eexist} ->
         File.rm!(temporary)
 
         case File.read(path) do
-          {:ok, published} -> read_cached(published, store.content_version, level, region)
+          {:ok, published} -> read_cached(published, store.content_version, level, region, result)
           {:error, reason} -> {:error, {:cache_read_failed, reason}}
         end
 
@@ -318,13 +355,13 @@ defmodule VoxelRegion.GeneratedStore do
     end
   end
 
-  defp read_cached(bytes, version, level, region) do
+  defp read_cached(bytes, version, level, region, result) do
     try do
-      with {:ok, header, _raw} <- Codec.decode_payload_body(bytes),
+      with {:ok, header, raw} <- Codec.decode_payload_body(bytes),
            true <-
              header.level == level and header.region == region and
                header.content_version == version do
-        {:ok, bytes, header}
+        cached_result(result, bytes, header, raw)
       else
         _ -> {:error, :invalid_cache}
       end
@@ -332,4 +369,19 @@ defmodule VoxelRegion.GeneratedStore do
       ErlangError -> {:error, :invalid_cache}
     end
   end
+
+  defp cached_result(:payload, bytes, header, _raw), do: {:ok, bytes, header}
+
+  defp cached_result(:core, bytes, header, raw) do
+    with true <- header.version == @core_payload_version,
+         {:ok, payload} <- Payload.decode_body(raw, @core_payload_version) do
+      source_result(:core, bytes, header, payload)
+    else
+      _ -> {:error, :invalid_source_body}
+    end
+  end
+
+  defp source_result(:payload, bytes, header, _payload), do: {:ok, bytes, header}
+  defp source_result(:core, _bytes, header, payload),
+    do: {:ok, VoxelRegion.World.StaticL0.core_materials(payload.cells), header.hash}
 end

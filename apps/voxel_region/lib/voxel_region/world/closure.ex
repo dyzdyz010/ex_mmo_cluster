@@ -28,7 +28,7 @@ defmodule VoxelRegion.World.Closure do
     ]
 
     none = [
-      {:page_need, 4}, {:page_need, 5}, {:page_stage, 5}, {:page_commit, 2},
+      {:page_need, 4}, {:page_need, 5}, {:page_stage, 5}, {:page_stage, 6}, {:page_commit, 2},
       {:page_yield, 3}, {:page_adopt, 4}, {:page_resident_all, 0}, {:content_version, 0},
       {:seq, 0}, {:simulation_windows, 0}, {:simulation_windows, 2}, {:interactions_since, 2}, {:admission_status, 0}, {:retry_simulation_io, 0},
       {:liquid_activity, 0}, {:source, 0}, {:author_regions, 2}, {:magic_range, 0},

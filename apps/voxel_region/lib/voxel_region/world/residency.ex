@@ -5,11 +5,12 @@ defmodule VoxelRegion.World.Residency do
   未发布切点和当前脏单元共同阻止退休；未知活动依赖显式保留，不按窗口猜测活动资格。
   """
   require Logger
+  alias VoxelRegion.World.StaticL0.Index, as: StaticIndex
   alias VoxelRegion.CollisionSource
   alias VoxelRegion.World.{Casting, Liquids, PageLoad, Pages, Projectiles, SimulationWindows, Thermal}
 
   @doc "World 构造时的派生维护状态；不保存第二份页内容或活动真值。"
-  def new, do: %{wanted: false, retired_pages: 0, last: %{status: :idle}}
+  def new, do: %{wanted: false, retired_pages: 0, retired_by_level: %{}, last: %{status: :idle}}
 
   @doc "合法生命周期边界请求一次维护，同回合多次请求合并。"
   def request(state), do: put_in(state.residency.wanted, true)
@@ -58,8 +59,10 @@ defmodule VoxelRegion.World.Residency do
   defp project(state, {keys, exact, ids}), do: Pages.residency_closure(state, Pages.expand(keys) ++ exact, ids)
 
   @doc "只投影一次维护结果，不导出canonical页、逐槽或全state。"
-  def observe(state), do: Map.merge(state.residency.last, %{retired_pages: state.residency.retired_pages,
+  def observe(state), do: state.residency.last |> Map.merge(%{retired_pages: state.residency.retired_pages,
+    retired_by_level: state.residency.retired_by_level,
     generation_pages: map_size(state.page_generation), preparations: map_size(state.page_load.preparations)})
+    |> Map.merge(StaticIndex.observe(state))
 
   @doc "有维护请求时在当前World合法回合中固定退休和generation，再开放后续输入。"
   def maintain(%{residency: %{wanted: false}} = state), do: state
@@ -72,10 +75,12 @@ defmodule VoxelRegion.World.Residency do
       resident = if state.resident == :all, do: MapSet.union(Pages.loaded_keys(state), required), else: state.resident
       candidates = resident |> MapSet.union(state.page_load.staged) |> MapSet.difference(required) |> MapSet.difference(blocked)
       state = %{state | resident: resident}
+      StaticIndex.audit(state, required, blocked, candidates)
       count = MapSet.size(candidates)
       state = if count == 0, do: state, else: state |> Pages.retire(candidates) |> Thermal.release_residency(candidates)
       if count > 0, do: Logger.info("voxel_page_retire pages=#{count} resident=#{MapSet.size(state.resident)} published=#{state.page_store.published}")
       %{state | residency: %{state.residency | retired_pages: state.residency.retired_pages + count,
+        retired_by_level: Map.merge(state.residency.retired_by_level, Enum.frequencies_by(candidates, &elem(&1, 0)), fn _, a, b -> a + b end),
         last: %{status: :ready, required_pages: MapSet.size(required), reasons: reasons,
           persistent_blocked_pages: MapSet.size(blocked), retired_last: count, resident_pages: MapSet.size(state.resident)}}}
     else

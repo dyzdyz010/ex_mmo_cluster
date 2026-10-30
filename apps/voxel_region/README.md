@@ -13,6 +13,32 @@
 设计与后续步骤（落库前按写集统一检查保护区、收回分散的 `Protection.permitted?`）见
 [统一授权设计稿](../../docs/10-active/cross-cutting/2026-10-30-server-authorization-design.md)。
 
+## 静态 L0 页保守退休（默认关闭，实施中）
+
+**解决什么问题**：GeneratedStore 世界里玩家走过的天然地形页会一直留在 World 内存里（青岚生产内存压力来源之一）。
+开启后，World 可以把"证明了不会自己变化、当前也没人读"的天然 L0 页从内存退掉，需要时按原装页路径重新装回。
+
+**什么页算静态**（规则在 `World.StaticL0`，纯函数）：本页及 26 个邻页的完整 64³ core 都满足——
+- 没有任何持久页段记录（包括空记录），本进程内也没被写过；被写过的页改回原样也不再算；
+- 源材料在当前固定均匀环境下没有驱动力：雪、冰、水、岩浆一律不算；可燃物须低于点燃温度；可相变固体须处于稳定相；
+- 粗层（L1–L5）一律不退。
+
+**谁维护证明**：`World.StaticL0.Index` 集中维护证明的接纳、失效和释放；Pages 只在页接纳／写入／退休边界调用它，
+PageLoad 在原装页任务内串行计算源摘要。证明只在内存里，不进数据库、cut 或网络协议。
+热、液体、观察、准备、dirty、未发布 cut 等原有保留原因全部不变，静态资格不能越过它们。
+
+**怎么开**：`VOXIM_STATIC_L0_RETIREMENT=true`（`config :voxel_region, :static_l0_retirement`），改后重启生效，不支持在线切换。
+开启后对环境／物性的在线修改会被拒绝（`static_l0_environment_change_requires_maintenance`）。
+
+**出问题看哪里**：
+- 启动失败：`voxel_static_l0_start_failed reason=...`，World 在启动 writer 之前停止；
+- 迟到或错源的源摘要：`voxel_static_l0_rejected page=... reason=...`；
+- 运行状态：`World.residency_status/1` 的 `static_l0_*`、`resident_by_level`、`retired_by_level` 字段；
+- 逐页事件与维护集合：Logger debug 级别的 `static_l0_event`（只在限定验收时打开；普通观测不估算证明表内存）。
+
+反例矩阵、进度与未完成门槛见
+[已批准设计](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/2026-10-30-static-l0-retirement-design.md)。
+
 驻留失败仍由`World.residency_status/1`持续可见；`voxel_page_retire_blocked`仅在连续阻退原因变化时告警，
 恢复后再失败重新告警。GeneratedStore天然活动未登记的保护仍保留，不表示生产页已可退休。
 World不再用payload缓存预算抬高`min_bin_vheap_size`，二进制GC沿用VM策略；缓存容量仍由Cache拥有。

@@ -6,6 +6,7 @@ defmodule VoxelRegion.World.Thermal do
   `VoxelRegion.World.Canonical` 读取 canonical 占用，派生工作集在 `VoxelRegion.ThermalWork`。
   一次提交完成时把待提交的记录交回 World，由 World 写日志、下发与处理几何后果。
   """
+  alias VoxelRegion.World.StaticL0.Index, as: StaticIndex
   alias VoxelRegion.{Combustion, Damage, Magic, Phase, Prefab, Protection, ThermalDomain, ThermalRecord,
     ThermalWork}
   import VoxelRegion.World.Canonical
@@ -71,9 +72,15 @@ defmodule VoxelRegion.World.Thermal do
   返回值沿用 Closure 的 `{扩邻页键, 精确页键, locator身份}`，会提交几何的 L0 种子附带既有粗层祖页。
   """
   def residency_dependencies(%{thermal: nil}), do: {:ok, {[], [], []}}
+  def residency_dependencies(%{source: VoxelRegion.GeneratedStore, static_l0_retirement: true} = state) do
+    with {:ok, exact} <- StaticIndex.required(state),
+         {:ok, {keys, [], ids}} <- activity_dependencies(state), do: {:ok, {keys, exact, ids}}
+  end
   def residency_dependencies(%{source: VoxelRegion.GeneratedStore}),
     do: {:error, {:natural_activity_unregistered, VoxelRegion.GeneratedStore}}
-  def residency_dependencies(state) do
+  def residency_dependencies(state), do: activity_dependencies(state)
+
+  defp activity_dependencies(state) do
     work = state.thermal_work
     visited = if state.thermal_run, do: state.thermal_run.visited, else: MapSet.new()
     electric = if work.electric, do: Enum.into(visited, work.electric), else: Map.keys(state.damage)
