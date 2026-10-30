@@ -198,13 +198,16 @@ defmodule VoxelRegion.World do
   @doc "运维的单格原始编辑（主体 `:operator`，不受保护区约束）：`{:ok, seq}`（no-op 时是当前 seq）/ `{:error, reason}`。"
   def apply_edit(server \\ @name, coord, material), do: apply_edit(server, :operator, coord, material)
 
-  @doc "以指定主体做单格原始编辑；谁能做、能改哪些格由 `VoxelRegion.Access` 判定（玩家角色一律拒绝）。"
+  @doc """
+  以指定主体做单格原始编辑；谁能做、能改哪些格由 `VoxelRegion.Access` 判定（玩家角色一律拒绝）。
+  无权的主体在装页准备之前就拒绝：注定被拒的请求不读页、不触发来源生成。
+  """
   def apply_edit(server, principal, {_, _, _} = coord, material)
       when is_integer(material) and material >= 0 and material <= 255 do
-    if valid_edit_coord?(coord) do
-      prepare(server, edit_keys([coord]), fn -> VoxelRegion.World.PageLoad.call(server, {:apply_edit, principal, coord, material}, 60_000) end)
-    else
-      {:error, :invalid_coordinate}
+    cond do
+      not valid_edit_coord?(coord) -> {:error, :invalid_coordinate}
+      (denied = Access.authorize(principal, :raw_edit)) != :ok -> denied
+      true -> prepare(server, edit_keys([coord]), fn -> VoxelRegion.World.PageLoad.call(server, {:apply_edit, principal, coord, material}, 60_000) end)
     end
   end
 
@@ -555,17 +558,23 @@ defmodule VoxelRegion.World do
   @doc "运维的多格原始编辑（主体 `:operator`）：原子提交，每级父格去重后规约。"
   def apply_edits(server \\ @name, edits), do: apply_edits(server, :operator, edits)
 
-  @doc "以指定主体做多格原始编辑；授权见 `VoxelRegion.Access`（创世 NPC 传 `{:genesis, cid}`）。"
+  @doc """
+  以指定主体做多格原始编辑；授权见 `VoxelRegion.Access`（创世 NPC 传 `{:genesis, cid}`）。
+  无权的主体在装页准备之前就拒绝（同 `apply_edit/4`）。
+  """
   def apply_edits(server, principal, edits) do
-    if Enum.all?(edits, fn
-         {{_, _, _} = coord, _material} -> valid_edit_coord?(coord)
-         _ -> false
-       end) do
-      prepare(server, edit_keys(Enum.map(edits, &elem(&1, 0))), fn ->
-        VoxelRegion.World.PageLoad.call(server, {:apply_edits, principal, edits}, 300_000)
-      end)
-    else
-      {:error, :invalid_coordinate}
+    valid = Enum.all?(edits, fn
+      {{_, _, _} = coord, _material} -> valid_edit_coord?(coord)
+      _ -> false
+    end)
+
+    cond do
+      not valid -> {:error, :invalid_coordinate}
+      (denied = Access.authorize(principal, :raw_edit)) != :ok -> denied
+      true ->
+        prepare(server, edit_keys(Enum.map(edits, &elem(&1, 0))), fn ->
+          VoxelRegion.World.PageLoad.call(server, {:apply_edits, principal, edits}, 300_000)
+        end)
     end
   end
 

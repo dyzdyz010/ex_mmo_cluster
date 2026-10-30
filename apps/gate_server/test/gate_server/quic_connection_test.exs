@@ -890,22 +890,46 @@ defmodule M4aGateTransferTest do
     def init(owner), do: {:ok, {owner, 0}}
 
     # 公共调用经 `World.PageLoad.call/3` 包成 `{:page_request, ref, message}`；ref 只在调用方超时时用于取消，本替身立即回复。
-    def handle_call({:page_request, _ref, message}, from, state), do: handle_call(message, from, state)
+    def handle_call({:page_request, _ref, message}, from, state),
+      do: handle_call(message, from, state)
 
-    # 准备作用域：回 `{token, source, source_state, missing}`，调用方结束时 cast `{:release_preparation, token, caller}`。
-    def handle_call({:prepare, keys}, _, {owner, _} = state),
-      do: {:reply, {make_ref(), BlockingEditStore, owner, keys}, state}
+    # 冷来源的角色意图：先回准备元组（缺一个 L0 来源，调用方在 World 外经 BlockingEditStore 补齐），
+    # 补齐后以 `prepared_intent` 提交；调用方结束时 cast `{:release_preparation, token, caller}`。
+    def handle_call({:prepare_intent, _message}, _, {owner, _} = state),
+      do:
+        {:reply, {:prepare, make_ref(), BlockingEditStore, owner, [], [{0, {0, 0, 0}}], []},
+         state}
 
-    # 冷编辑准备的既有液体接纳边界；此传输夹具没有液体源。
-    def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
-
-    # 授权在真实 World 的入口判定；本替身只记录 Gate 转来的主体与编辑。
-    def handle_call({:apply_edits, {:character, _cid}, edits}, _, {owner, seq}) do
-      send(owner, {:world_edit, edits})
+    def handle_call(
+          {:prepared_intent, _keys, {:production_intent, _actor, request}, _decoded},
+          _,
+          {owner, seq}
+        ) do
+      send(owner, {:world_edit, request.coord})
       {:reply, {:ok, seq + 1}, {owner, seq + 1}}
     end
 
+    # 放置成功后 Dispatch 补发余额；本替身没有余额行。
+    def handle_call({:material_balances, _cid}, _, state), do: {:reply, [], state}
+
     def handle_cast({:release_preparation, _token, _caller}, state), do: {:noreply, state}
+  end
+
+  # 角色 owner 替身：只给出接纳用的角色上下文（死亡门、施法互斥等不属于本传输用例）。
+  defmodule ContextPlayer do
+    use GenServer
+    def start_link(cid), do: GenServer.start_link(__MODULE__, cid)
+    def init(cid), do: {:ok, cid}
+    def handle_call({:tool_context, _identity}, _, cid), do: {:reply, {:ok, %{cid: cid}}, cid}
+  end
+
+  # 生产放置 0x7F（action 1、tool 1、材料 11）：冷来源时要在 World 外准备，用来让编辑 worker 慢下来。
+  defp production_event(scene, request, x) do
+    bytes =
+      <<0x7F, request::64, request::32, scene::64, 1::8, x::signed-32, 1::signed-32, 1::signed-32,
+        1::16, 11::16>>
+
+    {:quic, <<byte_size(bytes)::32, bytes::binary>>, :voxel_stream, %{}}
   end
 
   # 只替代 QUIC 的传输资源；实际帧解码、Dispatch、World.prepare 和结果 Sink 原样执行。
@@ -936,6 +960,7 @@ defmodule M4aGateTransferTest do
   test "cold edits preserve Gate input and transfer progress, FIFO and connection result ownership" do
     owner = self()
     world = start_supervised!({EditWorld, owner})
+    player = start_supervised!({ContextPlayer, 101})
 
     listener =
       spawn_link(fn ->
@@ -952,6 +977,7 @@ defmodule M4aGateTransferTest do
         voxim_overlay: true,
         bounds: {{0, 0, 0}, {16, 16, 16}},
         route: %{scene_ref: :source_scene, world_ref: world},
+        player: player,
         streams: %{
           voxel_stream: %{purpose: 2, buffer: <<>>, started: true},
           control_stream: %{purpose: 1, buffer: <<>>, started: true}
@@ -960,9 +986,9 @@ defmodule M4aGateTransferTest do
 
     gate = spawn(fn -> edit_gate(initial, owner) end)
     on_exit(fn -> Process.exit(gate, :kill) end)
-    send(gate, batch_event(1, 1, 1))
+    send(gate, production_event(1, 1, 1))
     assert_receive {:edit_preparing, first}, 2_000
-    send(gate, batch_event(1, 2, 2))
+    send(gate, production_event(1, 2, 2))
     send(gate, {:inspect_state, owner})
     assert_receive {:gate_state, queued}, 500
     assert queued.edit_pending == 2
@@ -1002,10 +1028,10 @@ defmodule M4aGateTransferTest do
     assert transferred.edit_ref == queued.edit_ref
 
     send(first, :continue)
-    assert_receive {:world_edit, [{{1, 1, 1}, 11}]}, 2_000
+    assert_receive {:world_edit, {1, 1, 1}}, 2_000
     assert_receive {:edit_preparing, second}, 2_000
     send(second, :continue)
-    assert_receive {:world_edit, [{{2, 1, 1}, 11}]}, 2_000
+    assert_receive {:world_edit, {2, 1, 1}}, 2_000
 
     # 来自worker的结果与完成事件保持同一发送者顺序，取到两次完成再观察队列。
     assert_receive {:gate_edit_completed, 2, completed}, 2_000

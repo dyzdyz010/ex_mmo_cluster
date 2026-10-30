@@ -205,6 +205,10 @@ sequenceDiagram
   - World `handle_call` 统一准入；原始编辑消息改为携带主体（`{:apply_edit, principal, coord, material}`、`{:apply_edits, principal, edits}`）；新增 `apply_edit/4`、`apply_edits/3`，旧 arity 即运维主体。
   - Gate 原始编辑以 `{:character, cid}` 转交 World，由 World 拒绝为 `forbidden`；Gate 不持有权限规则。
   - NPC 创世以 `{:genesis, cid}` 调用，受保护区约束。
-  - 与设计 §5.3 的偏差：Gate 不单独调用 `Access`，而是转交 World 由其唯一执行点判定。这样 Gate 与策略完全解耦，代价是被拒请求仍会先走一次装页准备；这与正常意图的成本同级，没有引入新的放大面。
+  - 与设计 §5.3 的偏差：Gate 不单独调用 `Access`，而是转交 World 判定，Gate 与策略完全解耦。
+  - 本地 Linux 彩排发现：被拒的原始编辑若先做装页准备，会为目标区域触发来源生成并写盘（彩排的只读 baseline 上报 `erofs`）。
+    因此 `World.apply_edit/4`、`apply_edits/3` 在装页准备之前先调用 `Access.authorize/2`，无权主体直接返回 `forbidden`，不读页、不生成；
+    `handle_call` 的统一准入仍是权威执行点（覆盖不经公共 API 直接发来的消息）。两处调用同一个决策函数，规则只在 `Access` 定义一次。
+    Gate 编辑队列的冷准备用例改用生产放置 `0x7F` 承载（原始编辑不再进入准备阶段）。
   - 主体白名单用源码扫描测试实现（gate / scene / npc 不得调用运维专用 World 写 API，原始编辑必须显式带主体）。
   - 验证（证据 `.demo/observe/qinglan-deploy-20261029/fix-20261030/raw-edit-protection/authz-step1/`）：`access_test`、`raw_edit_access_test`、`closure_entries_test` 全绿。`world_test` 9 项失败均为环境原因：8 项需要本机 PostgreSQL；GC 阈值 1 项在基线 `ab7fced0` 上同样失败。Gate 的 `movement_route_test` 与 `quic_connection_test` 中的编辑 worker 用例通过；`T1TransportTest` 在 Windows 上缺 quicer，未启动、未开套接字。NPC Body 的创世用例通过；注册表用例需要 PostgreSQL。
