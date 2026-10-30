@@ -1747,7 +1747,7 @@ defmodule VoxelRegion.DamageWorldTest do
     parent=self()
     spawn_link(fn -> send(parent,{:regions_result,World.serve(c.w,request)}) end)
     assert_receive {:region_read_started,owner,{10,0,0}},5_000
-    mutation=:gen_server.send_request(c.w,{:apply_edits,[{{703,1,1},11},{{704,1,1},19}]})
+    mutation=:gen_server.send_request(c.w,{:apply_edits,:operator,[{{703,1,1},11},{{704,1,1},19}]})
     send(owner,:continue_region_read)
     assert_receive {:region_read_started,^owner,{11,0,0}},5_000
     send(owner,:continue_region_read)

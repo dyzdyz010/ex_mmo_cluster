@@ -16,7 +16,7 @@ defmodule NpcServer.Body do
   与玩家连接共用 `EditBounds.prefab_within?/4`，越界回 `:out_of_bounds`。`say` 经同一执行进程调用 Scene.say；台词只认权威 Speech 回声。
   目录读取（`read_catalog`）经 `NpcServer.Perception.read/3` 读 World 的公共只读目录。
   创世编辑（`genesis_edit`，能力组 `:genesis`，见 `NpcServer.Genesis`）只在启动选项 `genesis: true` 时受理，否则
-  `:not_permitted`；`Genesis.prepare/3` 校验后由执行进程交给 `World.apply_edits/2`（与 0x78 原始编辑后门同一入口、同一语义）。
+  `:not_permitted`；`Genesis.prepare/3` 校验后由执行进程以主体 `{:genesis, cid}` 交给 `World.apply_edits/3`（授权与保护区见 `VoxelRegion.Access`）。
 
   正式生成入口是 `start/2`：名字即 NPC 的永久身份（同名永远同一 cid，同 cid 最后完成 claim 的 Body 留下），阵营档案取
   `DataService.Orgs.profile/1`（与玩家登录同一函数），claim 时作为 `profile` 交给 Scene，别人看到的名牌与关系由它算出。
@@ -1296,9 +1296,9 @@ defmodule NpcServer.Body do
   defp execute(session, {:sight, query}, _ingress),
     do: {Sight.read(session.world_ref, query), nil}
 
-  # 创世编辑：与 0x78 后门同一个 World 入口（不扣料、不记 placed_by），余额不变、不重取。
+  # 创世编辑：以创世主体做原始格编辑（不扣料、不记 placed_by，受保护区约束），余额不变、不重取。
   defp execute(session, {:genesis, edits}, _ingress) do
-    result = World.apply_edits(session.world_ref, edits)
+    result = World.apply_edits(session.world_ref, {:genesis, session.cid}, edits)
 
     Logger.info(
       "npc_genesis_edit cid=#{session.cid} cells=#{length(edits)} result=#{inspect(result)}"

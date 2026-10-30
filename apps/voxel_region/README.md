@@ -1,5 +1,18 @@
 # Voxim Region 真值
 
+## 授权：谁能改世界
+
+"谁（主体）能做哪类动作、能改哪些格"只在 `VoxelRegion.Access`（`lib/voxel_region/access.ex`）定义，
+该模块文档里一张表列出全部规则。World 在 `handle_call` 入口对每个请求调用 `Access.admit/1`：消息未登记或主体无权时直接拒绝，
+并打一行 `world_access_denied` 结构化日志。原始格编辑（`apply_edit/4`、`apply_edits/3`）显式携带主体：
+- 玩家会话的 `{:character, cid}` → `forbidden`；
+- 创世 NPC 的 `{:genesis, cid}` → 受保护区约束；
+- 运维默认 `:operator`（`apply_edit/3`、`apply_edits/2`）→ 不受保护区约束。
+
+新增 World 消息时，必须在 `Access` 的 `@messages` 里给它选一个动作类，否则 `test/access_test.exs` 变红。
+设计与后续步骤（落库前按写集统一检查保护区、收回分散的 `Protection.permitted?`）见
+[统一授权设计稿](../../docs/10-active/cross-cutting/2026-10-30-server-authorization-design.md)。
+
 驻留失败仍由`World.residency_status/1`持续可见；`voxel_page_retire_blocked`仅在连续阻退原因变化时告警，
 恢复后再失败重新告警。GeneratedStore天然活动未登记的保护仍保留，不表示生产页已可退休。
 World不再用payload缓存预算抬高`min_bin_vheap_size`，二进制GC沿用VM策略；缓存容量仍由Cache拥有。

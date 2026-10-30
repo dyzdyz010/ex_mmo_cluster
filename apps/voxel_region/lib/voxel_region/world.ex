@@ -28,7 +28,7 @@ defmodule VoxelRegion.World do
   import Bitwise
   alias VoxelRegion.{OverlayLog, Damage}
   alias VoxelRegion.{CollisionSource, FileStore, Prefab}
-  alias VoxelRegion.{Phase, Protection}
+  alias VoxelRegion.{Access, Phase, Protection}
   alias MmoContracts.Voxel.{Codec, Payload}
   alias VoxelRegion.World.{Admission, Cache, Clock, Residency, Thermal}
   import VoxelRegion.World.Canonical
@@ -195,11 +195,14 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  @doc "一次 canonical 编辑：`{:ok, seq}`（seq = 提交的日志序号；no-op 时是当前 seq）/ `{:error, reason}`。"
-  def apply_edit(server \\ @name, {_, _, _} = coord, material)
+  @doc "运维的单格原始编辑（主体 `:operator`，不受保护区约束）：`{:ok, seq}`（no-op 时是当前 seq）/ `{:error, reason}`。"
+  def apply_edit(server \\ @name, coord, material), do: apply_edit(server, :operator, coord, material)
+
+  @doc "以指定主体做单格原始编辑；谁能做、能改哪些格由 `VoxelRegion.Access` 判定（玩家角色一律拒绝）。"
+  def apply_edit(server, principal, {_, _, _} = coord, material)
       when is_integer(material) and material >= 0 and material <= 255 do
     if valid_edit_coord?(coord) do
-      prepare(server, edit_keys([coord]), fn -> VoxelRegion.World.PageLoad.call(server, {:apply_edit, coord, material}, 60_000) end)
+      prepare(server, edit_keys([coord]), fn -> VoxelRegion.World.PageLoad.call(server, {:apply_edit, principal, coord, material}, 60_000) end)
     else
       {:error, :invalid_coordinate}
     end
@@ -549,14 +552,17 @@ defmodule VoxelRegion.World do
     end)
   end
 
-  @doc "多格编辑原子提交；每级父格去重后规约。"
-  def apply_edits(server \\ @name, edits) do
+  @doc "运维的多格原始编辑（主体 `:operator`）：原子提交，每级父格去重后规约。"
+  def apply_edits(server \\ @name, edits), do: apply_edits(server, :operator, edits)
+
+  @doc "以指定主体做多格原始编辑；授权见 `VoxelRegion.Access`（创世 NPC 传 `{:genesis, cid}`）。"
+  def apply_edits(server, principal, edits) do
     if Enum.all?(edits, fn
          {{_, _, _} = coord, _material} -> valid_edit_coord?(coord)
          _ -> false
        end) do
       prepare(server, edit_keys(Enum.map(edits, &elem(&1, 0))), fn ->
-        VoxelRegion.World.PageLoad.call(server, {:apply_edits, edits}, 300_000)
+        VoxelRegion.World.PageLoad.call(server, {:apply_edits, principal, edits}, 300_000)
       end)
     else
       {:error, :invalid_coordinate}
@@ -844,12 +850,21 @@ defmodule VoxelRegion.World do
   # 装页任务与 World 的往来（M2b `World.PageLoad`）：不过闸、不写回热域。
   @page_calls [:page_need, :page_adopt, :page_stage, :page_commit, :page_yield, :window_input, :window_geometry, :window_finished, :simulation_windows, :prefab_inputs, :prefab_loaded, :prefab_known]
 
+  # 统一授权的执行点：每个请求先经 `VoxelRegion.Access.admit/1`（未登记的消息、无权的主体在这里拒绝），再进入接纳与装页。
   @impl true
-  def handle_call({:page_request, request, message}, from, state),
-    do: gate_input(Admission.input({:call, message, from}, Clock.monotonic(state), request), state, 0) |> continue_callback()
+  def handle_call({:page_request, request, message}, from, state) do
+    case Access.admit(message) do
+      :ok -> gate_input(Admission.input({:call, message, from}, Clock.monotonic(state), request), state, 0) |> continue_callback()
+      error -> {:reply, error, state}
+    end
+  end
 
-  def handle_call(message, from, state),
-    do: gate_input(Admission.input({:call, message, from}, Clock.monotonic(state)), state, 0) |> continue_callback()
+  def handle_call(message, from, state) do
+    case Access.admit(message) do
+      :ok -> gate_input(Admission.input({:call, message, from}, Clock.monotonic(state)), state, 0) |> continue_callback()
+      error -> {:reply, error, state}
+    end
+  end
 
   @impl true
   def handle_cast({:page_cancel, request}, state) do
@@ -1608,8 +1623,9 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp call({:apply_edit, coord, material}, from, state) do
-    result = with {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
+  defp call({:apply_edit, principal, coord, material}, from, state) do
+    result = with :ok <- Access.authorize_cells(principal, state.protection, [coord], :raw_edit),
+      {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
       do: do_apply_edit(state, coord, material)
     case result do
       {:ok, :noop, state} ->
@@ -1741,8 +1757,9 @@ defmodule VoxelRegion.World do
     end
   end
 
-  defp call({:apply_edits, edits}, from, state) do
-    result = with {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, edits)
+  defp call({:apply_edits, principal, edits}, from, state) do
+    result = with :ok <- Access.authorize_cells(principal, state.protection, Enum.map(edits, &elem(&1, 0)), :raw_edit),
+      {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, edits)
     case result do
       {:ok, next_state} ->
         if next_state.seq == state.seq, do: acknowledge_noop(next_state, from)

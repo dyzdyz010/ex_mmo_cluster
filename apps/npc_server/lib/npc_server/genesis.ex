@@ -2,9 +2,9 @@ defmodule NpcServer.Genesis do
   @moduledoc """
   全局系统功能：创世能力组 `:genesis`（docs/10-active/cross-cutting/2026-10-08-npc-placement-phase.md §3）。创世阶段的特权
   NPC 直接塑造地形：条目 `fill_box`（整数格闭区间全部写成一种材料）与 `set_cells`（逐格给材料）都构造同一个 Body 动词
-  `genesis_edit`，Body 的执行进程把它交给 `VoxelRegion.World.apply_edits/2`——与 0x78 原始编辑后门同一个 World 入口、
-  同一语义：不扣料、不记 placed_by、不查射程与保护区；液体规则与 refined 拒绝照 World。原始编辑后门保留到正式开放，
-  届时创世能力随它一起收回。
+  `genesis_edit`，Body 的执行进程以主体 `{:genesis, cid}` 交给 `VoxelRegion.World.apply_edits/3`（原始格编辑）：
+  不扣料、不记 placed_by、不查射程；**受保护区约束**（只能改野外与自己持有的区域，见 `VoxelRegion.Access`）；
+  液体规则与 refined 拒绝照 World。玩家会话不能做原始编辑，只有运维与创世 NPC 可以。
 
   授予只有一个来源——注册表行（`NpcServer.Registry`，llm 大脑 params `genesis: true`）同时给出 `profile.genesis`
   （本组条目只在它为真时投影）与 Body 启动选项 `genesis: true`（Body 只在它为真时受理，否则 `not_permitted`）。

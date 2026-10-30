@@ -216,11 +216,13 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  # 原始编辑（0x70 / 0x78）以会话的角色身份交给 World；能否执行只由 `VoxelRegion.Access` 判定
+  # （当前策略：原始编辑只给运维与创世 NPC，玩家角色一律回 `forbidden`），Gate 不持有任何权限规则。
   def handle(
         {:voxel_batch_edit_intent, request},
         %{status: :in_scene, voxim_overlay: true} = state
       ) do
-    case VoxelRegion.World.apply_edits(state.world_ref, request.edits) do
+    case VoxelRegion.World.apply_edits(state.world_ref, {:character, state.cid}, request.edits) do
       {:ok, seq} ->
         send_encoded(state, ResultFrame.accepted(request, seq))
 
@@ -240,7 +242,7 @@ defmodule GateServer.Session.Dispatch do
     [coord] = voxim_edit_coords({:voxel_edit_intent, request})
 
     case MmoContracts.VoxelMaterialCatalog.valid_id?(request.material_id) &&
-           VoxelRegion.World.apply_edit(state.world_ref, coord, request.material_id) do
+           VoxelRegion.World.apply_edit(state.world_ref, {:character, state.cid}, coord, request.material_id) do
       {:ok, seq} ->
         send_encoded(state, ResultFrame.accepted(request, seq))
 

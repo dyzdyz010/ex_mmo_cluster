@@ -78,8 +78,11 @@ defmodule GateServer.MovementRouteTest do
     assert World.seq(VoxelRegion.World) == 0
   end
 
-  # 上下文与 QuicConnection 编辑 worker 收到的相同：world_ref 取自配置路由；订阅直接挂在该 World 上观察提交。
-  test "both Voxim edit paths commit to the configured route world_ref", %{route: route} do
+  # 上下文与 QuicConnection 编辑 worker 收到的相同：world_ref 取自配置路由。原始编辑以会话角色身份交给 World，
+  # 由 `VoxelRegion.Access` 拒绝（原始编辑只给运维与创世 NPC）：回 forbidden 帧，不产生任何提交。
+  test "player raw edits on both Voxim paths are refused by World authorization", %{route: route} do
+    alias GateServer.Voxel.ResultFrame
+
     state = %{
       status: :in_scene,
       cid: 55,
@@ -88,21 +91,14 @@ defmodule GateServer.MovementRouteTest do
       sink: Sink.quic(self(), :edit)
     }
 
-    :ok = World.subscribe(route.world_ref, self(), 0, {{0, 1000, 0}, {0, 1000, 0}}, 1)
-
-    request = %{
+    batch = %{
       request_id: 1,
       client_intent_seq: 1,
       logical_scene_id: 7,
       edits: [{{1, 64_001, 1}, 11}]
     }
 
-    assert {:ok, ^state} = Dispatch.handle({:voxel_batch_edit_intent, request}, state)
-    assert World.seq(route.world_ref) == 1
-    assert_receive {:voxel_log_transaction_payload, transaction}
-    assert {:ok, %{seq: 1}} = Codec.decode_transaction(transaction)
-
-    request = %{
+    single = %{
       request_id: 2,
       client_intent_seq: 2,
       logical_scene_id: 7,
@@ -110,10 +106,14 @@ defmodule GateServer.MovementRouteTest do
       material_id: 0
     }
 
-    assert {:ok, ^state} = Dispatch.handle({:voxel_edit_intent, request}, state)
-    assert World.seq(route.world_ref) == 2
-    assert_receive {:voxel_log_entry_payload, entry}
-    assert {:ok, %{seq: 2, material: 0}} = Codec.decode_entry(entry)
+    for {kind, request} <- [voxel_batch_edit_intent: batch, voxel_edit_intent: single] do
+      assert {:ok, ^state} = Dispatch.handle({kind, request}, state)
+      assert_receive {:mmo_voxel_bytes, :edit, bytes}
+      {:ok, expected} = ResultFrame.error(request, :forbidden) |> Codec.encode()
+      assert bytes == IO.iodata_to_binary(expected)
+    end
+
+    assert World.seq(route.world_ref) == 0
     assert World.seq(VoxelRegion.World) == 0
   end
 end

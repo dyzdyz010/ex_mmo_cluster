@@ -152,7 +152,7 @@ defmodule VoxelRegion.Replica do
     end
   end
 
-  def handle_call({:apply_edits, _}, _from, state),
+  def handle_call({:apply_edits, _principal, _edits}, _from, state),
     do: {:reply, {:error, :read_only_replica}, state}
 
   @impl true

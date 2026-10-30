@@ -254,7 +254,7 @@ defmodule VoxelRegion.CollisionSourceTest do
     :sys.suspend(world)
     join = Task.async(fn -> GenServer.call(world, {:canonical_snapshot, @box, subscriber, request, true}, 300_000) end)
     queued(world, 1)
-    edit = Task.async(fn -> GenServer.call(world, {:apply_edits, [{{40, 558, 40}, 0}]}, 300_000) end)
+    edit = Task.async(fn -> GenServer.call(world, {:apply_edits, :operator, [{{40, 558, 40}, 0}]}, 300_000) end)
     queued(world, 2)
     :sys.resume(world)
     assert {:ok, 2} = Task.await(edit, 300_000)

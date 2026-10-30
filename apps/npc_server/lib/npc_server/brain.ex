@@ -112,7 +112,7 @@ defmodule NpcServer.Brain do
   回 `casting`，再施放回 `cast_too_soon`；同一角色同时只有一个前摇，`cancel_cast` 取消的是它。
 
   创世编辑 `genesis_edit`（能力组 `:genesis`，`NpcServer.Genesis`）：`edits` 是 macro 格与材料（0 = 空气），交给
-  `World.apply_edits/2`——与 0x78 原始编辑后门同一入口、同一语义（不扣料、不记 placed_by、不查射程与保护区）。授予只来自
+  `World.apply_edits/3`（主体 `{:genesis, cid}`；不扣料、不记 placed_by、不查射程，受保护区约束 → `protected_region`）。授予只来自
   注册表行（`NpcServer.Registry`）：Body 启动选项 `genesis: true` 才受理，否则 `not_permitted`；每次 1..4096 格、
   整数格与目录合法材料，否则 `invalid_command`；任一格某轴离自己超过 32 m → `too_far`；编辑盒外 → `out_of_bounds`。
 

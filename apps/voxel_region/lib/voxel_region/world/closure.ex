@@ -21,8 +21,8 @@ defmodule VoxelRegion.World.Closure do
       {:parcel_export, 2}, {:parcel_install, 5}, {:beacon_install, 3}, {:liquid_fill, 7},
       {:production_intent, 3}, {:attachment_intent, 3}, {:tool_intent, 3}, {:instance_cells, 2}, {:gm_prepare, 3},
       {:replacement_cells, 3}, {:place_prefab, 5}, {:prefab_intent, 5}, {:remove_prefab, 2},
-      {:replace_prefab, 3}, {:serve_item, 3}, {:apply_edit, 3}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
-      {:replica_snapshot, 3}, {:apply_edits, 2}, {:reference, 2}, {:body_contact, 4},
+      {:replace_prefab, 3}, {:serve_item, 3}, {:apply_edit, 4}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
+      {:replica_snapshot, 3}, {:apply_edits, 3}, {:reference, 2}, {:body_contact, 4},
       {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4},
       {:prepare_beacon, 4}, {:commit_beacon, 4}, {:liquid_commit, 0}, {:thermal_commit, 0}
     ]
@@ -68,8 +68,8 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks}), do: box(box)
   defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks, _token}), do: box(box)
   defp seeds(_state, {:replica_snapshot, box, _pid}), do: box(box)
-  defp seeds(_state, {:apply_edit, coord, _material}), do: {Edits.edit_keys([coord]), []}
-  defp seeds(_state, {:apply_edits, edits}), do: {Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), []}
+  defp seeds(_state, {:apply_edit, _principal, coord, _material}), do: {Edits.edit_keys([coord]), []}
+  defp seeds(_state, {:apply_edits, _principal, edits}), do: {Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), []}
   defp seeds(_state, {:liquid_experiment, edits}), do: {Edits.edit_keys(Enum.map(edits, &elem(&1, 0))), []}
   defp seeds(_state, {:liquid_fill, _cid, _key, _material, seed, _level, _max}), do: {Edits.edit_keys([seed]), []}
   defp seeds(state, :liquid_commit) do

@@ -463,7 +463,7 @@ defmodule VoxelRegion.WorldTest do
         assert Payload.material(payload, Payload.local(region, {6, 63, 5})) == 12
       end
       assert %{regions: 2, chunks: 128, transaction_seq: 2, authority_ref: ^world} = Replica.stats(replica)
-      assert {:error, :read_only_replica} = GenServer.call(replica, {:apply_edits, [{{5, 63, 5}, 11}]})
+      assert {:error, :read_only_replica} = GenServer.call(replica, {:apply_edits, :operator, [{{5, 63, 5}, 11}]})
       assert {:error, :outside_replica_region} =
         Replica.canonical_snapshot_and_subscribe(replica, {{-1, 0, 0}, {1, 2, 1}}, self(), make_ref())
     after

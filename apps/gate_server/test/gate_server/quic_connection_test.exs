@@ -899,7 +899,8 @@ defmodule M4aGateTransferTest do
     # 冷编辑准备的既有液体接纳边界；此传输夹具没有液体源。
     def handle_call({:adopt_liquid, _regions}, _, state), do: {:reply, :ok, state}
 
-    def handle_call({:apply_edits, edits}, _, {owner, seq}) do
+    # 授权在真实 World 的入口判定；本替身只记录 Gate 转来的主体与编辑。
+    def handle_call({:apply_edits, {:character, _cid}, edits}, _, {owner, seq}) do
       send(owner, {:world_edit, edits})
       {:reply, {:ok, seq + 1}, {owner, seq + 1}}
     end
