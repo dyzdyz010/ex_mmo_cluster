@@ -128,7 +128,8 @@ defmodule SceneServer.Movement.Scene do
     monotonic = clock_module.now(clock_ref)
     initial_ref = make_ref()
 
-    {:ok, players} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    # temporary子项不保留启动参数；监督者空闲后休眠，回收交接遗留的垃圾二进制引用。
+    {:ok, players} = DynamicSupervisor.start_link(strategy: :one_for_one, hibernate_after: 1000)
 
     {:ok, replication} =
       Replication.start_link(sink: Keyword.get(opts, :sink, MmoContracts.Session.Outbound))
@@ -1013,8 +1014,7 @@ defmodule SceneServer.Movement.Scene do
 
   defp runtime_event(state, event, facts) do
     level =
-      if event in [:input_arrival, :input_selected, :input_wait] or
-           (event == :region_tick and rem(state.tick, 60) != 0),
+      if event in [:input_arrival, :input_selected, :input_wait, :region_tick],
          do: :debug,
          else: :info
 

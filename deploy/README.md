@@ -109,3 +109,11 @@ L1–L5 baseline before anything listens) → Scenes (topology) → Auth + Gate.
 运维 RPC 入口改为 `NpcServer.Registry`，状态读 `NpcServer.Bootstrap.status()`。
 Gate 重启不重启 NPC；正式服务启动由 `NpcServer.Bootstrap` 恢复 enabled 登记。
 详见 [NPC 应用说明](../apps/npc_server/README.md)。升级请重启 release，旧 `GateServer.Npc.*` 名称不保留兼容转发。
+
+### 青岚内存兜底
+
+`qinglan-memory-guard.py` 是青岚部署运维脚本，安装于 `/data/voxim_qinglan/ops/`，dyz cron每分钟调用。
+原始cgroup v2 memory.current >3400MiB告警，>3900MiB持续180秒受控重启；每日UTC21:00也请求重启，所有自动重启共用一小时冷却与flock。
+日志按UTC日轮转、14天/16MiB上限；SMTP复用现有release.env，收件人由ops/notify.json指定。
+`--dry-run` 不重启、不发邮件、不写状态，仅真实采样和验证判定；停用删除crontab中 `# qinglan-memory-guard` 行。
+阈值及完整部署记录见 `.demo/observe/qinglan-deploy-20261029/RUNBOOK.md` §8。

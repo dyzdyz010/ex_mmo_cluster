@@ -623,14 +623,7 @@ defmodule VoxelRegion.World do
             Application.get_env(:voxel_region, :payload_cache_bytes, @default_cache_bytes)
           )
 
-        # 允许常驻载荷达到既有缓存预算，避免过小的二进制阈值反复触发全堆 GC；不预分配内存。
-        {:min_bin_vheap_size, min_bin_words} = Process.info(self(), :min_bin_vheap_size)
-
-        Process.flag(
-          :min_bin_vheap_size,
-          max(min_bin_words, div(cache_limit, :erlang.system_info(:wordsize)))
-        )
-
+        # 缓存容量由Cache维护；二进制GC阈值沿用VM策略，不由缓存预算抬高回收下限。
         state = %{
           clock: Keyword.get(opts, :clock, {Clock, nil}),
           circuit_component_limit: VoxelRegion.World.CircuitAdmission.configure(opts),

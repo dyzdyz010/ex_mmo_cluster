@@ -153,6 +153,10 @@ defmodule WorldServer.Movement.VoximTransferTest do
       end
 
       assert {:ok, target} = WorldServer.Movement.prepare_transfer(old, new, cut, self())
+      # 只读检查交接完成后不保存旧cut／tail副本；已导入历史仍由下方真实输入/碰撞断言覆盖。
+      imported = :sys.get_state(target)
+      refute Map.has_key?(imported, :import)
+      refute Map.has_key?(imported, :tail)
       assert Player.observe(target).physics_steps == 0
       refute Player.observe(target).active
       # 控制面 Ready 到达之前，新旧重复输入都不能激活目标。

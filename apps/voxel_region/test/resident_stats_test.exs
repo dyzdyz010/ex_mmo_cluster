@@ -7,6 +7,16 @@ defmodule VoxelRegion.ResidentStatsTest do
   alias VoxelRegion.{OverlayLog, World}
   alias VoxelRegion.TestSupport.Source
 
+  test "载荷缓存预算不改变World继承的二进制GC下限" do
+    root = Path.join(System.tmp_dir!(), "resident_gc_#{System.pid()}_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+    world = start_supervised!({World, source: Source, root: root, observer: self(),
+      name: nil, log: OverlayLog.File, payload_cache_bytes: 64 * 1024 * 1024})
+    assert {:min_bin_vheap_size, words} = Process.info(world, :min_bin_vheap_size)
+    assert {:min_bin_vheap_size, words} == :erlang.system_info(:min_bin_vheap_size)
+  end
+
   test "冷页统计明确局部覆盖且不装页，正常读入才改变驻留内容" do
     root = Path.join(System.tmp_dir!(), "resident_stats_#{System.pid()}_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)

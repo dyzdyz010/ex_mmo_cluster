@@ -337,6 +337,72 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert {:ok, %{seq: ^seq}} = Voxel.Codec.decode_transaction(bytes)
   end
 
+  @tag :idle_binary_release
+  test "Player监督者在交接后空闲释放temporary启动参数", ctx do
+    # 只读取得真实Scene创建的监督者；临时Task仅替代本测试不关注的Player业务初始化。
+    supervisor = :sys.get_state(ctx.scene).players
+    payload = :binary.copy(<<17>>, 2 * 1024 * 1024)
+    observer = self()
+    assert Player.child_spec([]).restart == :temporary
+
+    assert {:ok, child} =
+             DynamicSupervisor.start_child(
+               supervisor,
+               {Task,
+                fn ->
+                  send(observer, {:received_bytes, byte_size(payload)})
+                  receive do: (:stop -> :ok)
+                end}
+             )
+
+    assert_receive {:received_bytes, 2_097_152}
+    before = binary_bytes(supervisor)
+    deadline = System.monotonic_time(:millisecond) + 3000
+    await_hibernated(supervisor, deadline)
+    assert {:binary, binaries} = Process.info(supervisor, :binary)
+    assert Enum.all?(binaries, fn {_, size, _} -> size < 2 * 1024 * 1024 end)
+
+    if System.get_env("QINGLAN_MEMORY_EVIDENCE"),
+      do:
+        IO.puts(
+          "memory_evidence supervisor before_bytes=#{before} after_bytes=#{binary_bytes(supervisor)}"
+        )
+
+    assert Enum.any?(DynamicSupervisor.which_children(supervisor), &(elem(&1, 1) == child))
+    assert :ok = DynamicSupervisor.terminate_child(supervisor, child)
+  end
+
+  @tag :quiet_region_tick
+  test "正常region_tick在第60拍仍不写info", ctx do
+    previous = Logger.level()
+    Logger.configure(level: :info)
+
+    try do
+      log = ExUnit.CaptureLog.capture_log([level: :info], fn -> advance(ctx, 60) end)
+      refute log =~ "region_tick"
+      assert observe(ctx.scene).tick == 60
+    after
+      Logger.configure(level: previous)
+    end
+  end
+
+  defp await_hibernated(pid, deadline) do
+    # OTP29的hibernate/0保留调用栈，旧OTP的hibernate/3直接显示BIF。
+    if Process.info(pid, :current_function) not in [
+         {:current_function, {:gen_server, :loop_hibernate, 4}},
+         {:current_function, {:erlang, :hibernate, 3}}
+       ] do
+      assert System.monotonic_time(:millisecond) < deadline, "Player监督者未在空闲时休眠回收"
+      Process.sleep(10)
+      await_hibernated(pid, deadline)
+    end
+  end
+
+  defp binary_bytes(pid) do
+    {:binary, binaries} = Process.info(pid, :binary)
+    Enum.sum(for {_, size, _} <- binaries, do: size)
+  end
+
   @tag :input_recovery
   test "断流仍使用每个模拟tick的历史碰撞，迟到操作不重演", ctx do
     start = join(ctx)

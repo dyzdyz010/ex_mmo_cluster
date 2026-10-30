@@ -7,7 +7,13 @@ defmodule WorldServer.Session do
   alias MmoContracts.Session.Identity
 
   @doc "启动唯一会话登记处；生产由 WorldServer 监督，测试可使用独立名字。"
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
+  def start_link(opts),
+    do:
+      GenServer.start_link(
+        __MODULE__,
+        opts,
+        Keyword.put(Keyword.take(opts, [:name]), :hibernate_after, 1000)
+      )
 
   @doc "以调用进程占用角色并加入权威 Scene，替换同 cid 的旧会话。"
   def claim(server, scene, route, character),

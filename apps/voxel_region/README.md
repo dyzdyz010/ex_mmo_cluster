@@ -1,5 +1,10 @@
 # Voxim Region 真值
 
+驻留失败仍由`World.residency_status/1`持续可见；`voxel_page_retire_blocked`仅在连续阻退原因变化时告警，
+恢复后再失败重新告警。GeneratedStore天然活动未登记的保护仍保留，不表示生产页已可退休。
+World不再用payload缓存预算抬高`min_bin_vheap_size`，二进制GC沿用VM策略；缓存容量仍由Cache拥有。
+依据、最小测试及未验收的生产性能见[青岚内存专项](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+
 `RefinedSlots` 每宏格独立保存升序槽记录与原map枚举索引：普通枚举保留HP累加／代表点，
 `Payloads` 直接引用已接纳记录前缀，不再逐槽解码再编码。记录构造复用mmo_contracts的 `Refined.slot_record/1`，
 原memo生命周期与观测字段不变，旧持久和Parcel仍导出map、线上字节不变。

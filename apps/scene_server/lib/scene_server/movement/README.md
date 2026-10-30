@@ -1,5 +1,11 @@
 # Movement module map
 
+Player接纳移交后只保留已导入的碰撞／输入／有序队列，删除一次性的`import`与`tail`原件。
+Player仍为temporary，DynamicSupervisor不会保留其重启参数；该监督者空闲1000ms后休眠，
+回收交接时的垃圾二进制引用，活跃Player自身不增加休眠或强制GC。WorldServer.Session同样采用空闲休眠。
+常规`region_tick`只写debug，字段和Scene观察接口不变。最小反例、范围与剩余天然退休阻断见
+[青岚内存专项](../../../../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/execution-plan.md)。
+
 2026-10-27 P6 窗口贡献（Global system，尚未启用物理边界）：Player 从现有 `window_domains` 与 `requested_window` 派生完整盒集合，
 由 `CollisionStream` 转交 World；域保留来源 `l0_box`，不从浮点 bounds 反推。事件 ACK 仅释放缓冲，private tick 提前安装未来域也不退休旧域，
 只在 `simulation_tick` 消费后的现有裁剪点发布退休。`Player.observe/1` 增加 `simulation_windows`、`collision_queue_length`。

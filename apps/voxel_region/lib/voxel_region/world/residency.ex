@@ -81,8 +81,11 @@ defmodule VoxelRegion.World.Residency do
     else
       {:ok, :all, reasons} -> put_in(state.residency.last, %{status: :blocked, reason: :all_required, reasons: reasons})
       {:error, reason} ->
-        Logger.warning("voxel_page_retire_blocked reason=#{inspect(reason)}")
-        put_in(state.residency.last, %{status: :blocked, reason: inspect(reason)})
+        reason = inspect(reason)
+        # last只记录当前维护结果：连续同因不重复告警，恢复或原因变化后重新记录。
+        unless match?(%{status: :blocked, reason: ^reason}, state.residency.last),
+          do: Logger.warning("voxel_page_retire_blocked reason=#{reason}")
+        put_in(state.residency.last, %{status: :blocked, reason: reason})
     end
   end
 

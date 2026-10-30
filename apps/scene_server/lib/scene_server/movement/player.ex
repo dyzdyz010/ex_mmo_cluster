@@ -294,7 +294,8 @@ defmodule SceneServer.Movement.Player do
 
     Process.monitor(state.scene)
     Process.monitor(state.gate)
-    {:ok, state}
+    # cut与tail已分别导入碰撞/输入及有序队列；不再保留交接前的完整副本。
+    {:ok, Map.drop(state, [:import, :tail])}
   end
 
   @impl true

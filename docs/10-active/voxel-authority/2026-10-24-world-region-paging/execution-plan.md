@@ -1,5 +1,57 @@
 # 世界分页与空间权威拆分 Implementation Plan
 
+## 2026-10-30 青岚内存专项（小改动获准独立发布，天然阻退保留）
+
+本次用户授权在 `fix/page-retirement` 修复退休与日志，并允许天然初态无法安全独立完成时停下说明。
+逐 owner 核对后，不能把 `GeneratedStore` 的空活动集合视为天然稳态凭证：生成器只发布几何，
+热侧仍排除未记焓的暖环境雪／冰，液体侧仍按首次读取接纳有限数量；初始活动登记、气候身份和旧背景能量迁移尚缺。
+因此本轮保留 `natural_activity_unregistered`，不宣称问题1已修复；依据及后续选择记录在
+`.demo/observe/qinglan-deploy-20261029/fix-20261030/notes.md`。不改源世界、持久前缀、协议或生成身份。
+
+独立实现计划与最小验证合同：
+
+1. `Residency.maintain/1` 复用既有 `last`，同一连续阻退原因只警告一次；原因变化或恢复后再次阻退仍记录。
+   纯回调测试检验重复、变化和恢复，不向真实World注入状态；保留现有阻退、活动依赖与文件退休回归。
+2. Scene 的 `region_tick` 全部改 debug；真实 Scene + 假时钟推进到60 tick，验证仍运行且 info 无常规 tick。
+3. Player supervisor 和 Session 空闲1000ms后由OTP休眠，释放交接后的不可达二进制；繁忙期间不强制GC。
+   真实进程接收有限大二进制，经公开交接后等待可观察休眠／引用释放；Scene／路由替身只隔离非验证领域。
+   Player 接纳后释放一次性 import/tail，不影响已导入的碰撞历史与输入；真实移交测试核对行为和状态。
+4. World 不再把缓存预算写入 `min_bin_vheap_size`，保持VM既定GC策略与缓存自身容量分别管理。
+   真实小World验证预算不再抬高GC下限，文件分页回归检查数据与发布；完整生产性能尚未验收。
+
+依据：[OTP gen_server](https://www.erlang.org/doc/apps/stdlib/gen_server.html) 的 `hibernate_after` 仅在空闲触发，
+避免忙时每请求休眠的双GC成本；[OTP erlang](https://www.erlang.org/doc/apps/erts/erlang.html#process_flag/2)
+明确 `min_bin_vheap_size` 是字数单位的GC调优项，需以实测证明，而非业务缓存硬上限。
+本机 Elixir 1.20.2 `dynamic_supervisor.ex:784` 的 `mfa_for_restart/2` 对temporary子项将参数改为undefined，
+故不另造交接表或child spec协议；只补空闲回收。1000ms为本次工程选择，适用于低频登记／监督进程，
+不用于60Hz Player/Scene/World。移除缓存耦合有减少回收延迟的依据，但不保证RSS或尾延迟必降。
+
+所有本地命令置于4600MiB Windows Job内，`ERL_FLAGS=+S 2:2`，单命令600秒截止、退出清理子树。
+只跑 `--no-start` 的相关算法／真实模块集成，不启动客户端、QUIC、整世界快照或生产连接。
+本轮为定位交接与驻留故障，不用无关全套、客户端或大路线掩盖天然初始化尚未实现；结果另记证据目录。
+
+本次实跑结果：根级`MIX_ENV=test mix compile`成功（既有warning保留）；voxel驻留相关30项、
+World Session/真实移交5项通过；Scene/Player/碰撞/stream相关42/44通过，两条未改的profile_id／
+GeneratedStore CV冻结预期不匹配保留，未重捕获金样、未宣称整体全绿。3轮2MiB交接probe中，
+原Session及temporary监督者在每轮1300ms仍各引用2MiB，空闲休眠后3轮各0B；不是生产RSS或页退休实测。
+证据、命令、审查与限制均见上述notes。问题1未修复，不作为该问题的生产上线候选；其余改动未部署。
+
+### 2026-10-30 发布复核补记
+
+用户明确授权先装内存兜底，再复核、提交、快进master、推送与发布 `qinglan-20261030-mem`。
+独立 `1de80137` worktree 原样运行同五个Scene测试文件：40/42通过，两条失败与候选完全相同；
+已实证为基线既有失败，不重捕获profile/CV金样。候选重新验证30+5+42通过、同两条失败；
+根编译、选择性格式与diff检查通过。完整命令/退出码/上限在 `.demo/observe/qinglan-deploy-20261029/fix-20261030/ship/`。
+Linux同限额与生产验收继续按该目录原任务执行，最终结果见 `ship/summary.json`，不以本地测试冒充生产验证。
+
+兜底源码 `deploy/qinglan-memory-guard.py`，已安装dyz分钟cron；原始cgroup内存>3400MiB告警，
+>3900MiB持续180秒请求重启，每日北京时间05:00请求重启，共用一小时冷却与flock。
+计时由运维owner维护，异常断开高值连续性但保留冷却；状态解析失败不覆盖原记录。
+按Linux cgroup v2官方接口、Docker stats与flock约定实现（来源及口径见deploy README/发布RUNBOOK §8）。
+实际dry-run与隔离替身验证阈值/冷却、UTC调度每日去重、非零bake与代际变化拒绝、损坏状态及采样错误通过；无测试重启或邮件。
+独立审查无Critical/Important；较小缺口保留：容器停止/Restarting采样只报container_not_running，
+错误行不带inspect的OOMKilled/RestartCount，不改变正常采样记录或自动启动停止容器。
+
 ## S0 本轮收口（2026-10-28，覆盖下方历史停点）
 
 按本页已批准范围，S0 已收口；未启动 S1a 后续实施，也不将 Weather、天然初始化、协议42或最终分发写成已完成。最后正式服务端为 `/home/dyz/s0-formal-g0-20261028/build-v3/_build/rel/voxim_server`，冻结源清单SHA `4b9fda9a16c3ef74e15b18696233033fe53e47411f63011d7245572a5a343523`；客户端仍为已配对的 `e3a3896afb8c2dc44ecd381ebc901be5d9c12e5817014b9e9386ce1e43559333`。未提交或推送。

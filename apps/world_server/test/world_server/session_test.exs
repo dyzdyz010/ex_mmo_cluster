@@ -26,6 +26,53 @@ defmodule WorldServer.SessionTest do
     def commit_transfer(_old, _fresh), do: :ok
   end
 
+  @tag :idle_binary_release
+  test "移交成功或拒绝后空闲自动释放artifact二进制，休眠后仍可提交" do
+    server = start_supervised!({Session, route_module: Router})
+    route = %{scene_id: 1, scene_epoch: 7, scene_ref: self()}
+    {old, _} = Session.claim(server, Scene, route, %{id: 101})
+
+    for id <- [101, 102] do
+      artifact = %{id: id, collision_checkpoint: :binary.copy(<<23>>, 2 * 1024 * 1024)}
+      result = Session.prepare_transfer(server, old, 2, artifact)
+
+      if id == 101,
+        do: assert(match?({:ok, _, _, _}, result)),
+        else: assert(result == {:error, :stale_owner})
+
+      before = binary_bytes(server)
+      assert_hibernated(server, System.monotonic_time(:millisecond) + 3000)
+      assert {:binary, binaries} = Process.info(server, :binary)
+      assert Enum.all?(binaries, fn {_, size, _} -> size < 2 * 1024 * 1024 end)
+
+      if System.get_env("QINGLAN_MEMORY_EVIDENCE"),
+        do:
+          IO.puts(
+            "memory_evidence session id=#{id} before_bytes=#{before} after_bytes=#{binary_bytes(server)}"
+          )
+    end
+
+    assert {:ok, fresh, _, _} = Session.prepare_transfer(server, old, 2, %{id: 101})
+    assert :ok = Session.commit_transfer(server, old, fresh, 101)
+  end
+
+  defp assert_hibernated(server, deadline) do
+    # OTP29的hibernate/0保留调用栈，旧OTP的hibernate/3直接显示BIF。
+    if Process.info(server, :current_function) not in [
+         {:current_function, {:gen_server, :loop_hibernate, 4}},
+         {:current_function, {:erlang, :hibernate, 3}}
+       ] do
+      assert System.monotonic_time(:millisecond) < deadline, "Session未在空闲时休眠回收"
+      Process.sleep(10)
+      assert_hibernated(server, deadline)
+    end
+  end
+
+  defp binary_bytes(pid) do
+    {:binary, binaries} = Process.info(pid, :binary)
+    Enum.sum(for {_, size, _} <- binaries, do: size)
+  end
+
   test "共享入口保留真实调用者身份，另一个控制进程不能替它移交" do
     server = start_supervised!({Session, route_module: Router})
     route = %{scene_id: 1, scene_epoch: 7, scene_ref: self()}
