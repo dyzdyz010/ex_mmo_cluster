@@ -6,9 +6,15 @@ defmodule VoxelRegion.World.Catalogs do
   """
   require Logger
   alias VoxelRegion.Damage
+  alias VoxelRegion.{Climate, GeneratedStore}
+  alias VoxelRegion.Climate.Source
   alias VoxelRegion.Magic
   alias VoxelRegion.World.Thermal
   alias VoxelRegion.World.{Observation, Log, Liquids, AttachmentOps}
+
+  @snow_material MmoContracts.VoxelMaterialCatalog.table()
+    |> Enum.find_value(fn %{"id" => id, "name" => name} -> if name == "snow", do: id end)
+  @solver_fields ~w(tolerance_kelvin emissivity view_range_cells circuit_min_power_w)
 
   def load_properties(opts) do
     case Keyword.get(
@@ -28,15 +34,73 @@ defmodule VoxelRegion.World.Catalogs do
     end
   end
 
-  # 全局系统功能：平衡容差是求解分辨率，辐射参数与电路零功率阈值随各自变更引入、旧存档没有，均以环境资产为准；
-  # 回放的热账（环境温度、换热系数、能量账）保持存档值。
-  # 气候区同理以资产为准：资产没有该字段时回放后也没有（与引入前的配置逐字节相同）。
-  def environment_tolerance(%{thermal: %{config: config} = thermal} = state, %{config: asset}),
-    do: %{state | thermal: %{thermal | config: config
-      |> Map.merge(Map.take(asset, ~w(tolerance_kelvin emissivity view_range_cells circuit_min_power_w climate_zones)))
-      |> then(&if(Map.has_key?(asset, "climate_zones"), do: &1, else: Map.delete(&1, "climate_zones")))}}
+  @doc "组合边界接纳生成气候；恢复须与资产同身份，既有热账保留，只更新求解分辨率参数。"
+  def environment_tolerance(state, %{config: asset}) do
+    with {:ok, state} <- accept_generated_climate(state, asset) do
+      case state.thermal do
+        %{config: config} = thermal ->
+          config = Map.merge(config, Map.take(asset, @solver_fields))
+          # 旧手工气候区沿用历史资产合同；新生成源已经一次接纳，不能由区表覆盖。
+          config =
+            if Map.has_key?(config, "climate_source") do
+              config
+            else
+              if Map.has_key?(asset, "climate_zones"),
+                do: Map.put(config, "climate_zones", asset["climate_zones"]),
+                else: Map.delete(config, "climate_zones")
+            end
+          {:ok, %{state | thermal: %{thermal | config: config}}}
 
-  def environment_tolerance(state, _), do: state
+        nil ->
+          {:ok, state}
+      end
+    end
+  end
+
+  def environment_tolerance(state, nil) do
+    if climate_source(state), do: {:error, :climate_migration_required}, else: {:ok, state}
+  end
+
+  defp accept_generated_climate(state, asset) do
+    previous = climate_source(state)
+
+    case Map.fetch(asset, "generated_climate") do
+      :error ->
+        if previous, do: {:error, :climate_migration_required}, else: {:ok, state}
+
+      {:ok, parameters} ->
+        with {:ok, source} <- generated_source(state, parameters),
+             {:ok, config} <- Climate.bind(Map.delete(asset, "generated_climate"), source),
+             :ok <- accept_identity(state, previous, source),
+             :ok <- accept_initial_preset(state, previous, source) do
+          if previous,
+            do: {:ok, state},
+            else: {:ok, %{state | thermal: %{state.thermal | config: config}}}
+        end
+    end
+  end
+
+  defp generated_source(%{source: GeneratedStore, source_state: store}, parameters),
+    do: GeneratedStore.climate_source(store, parameters)
+  defp generated_source(_, _), do: {:error, :generated_climate_requires_generated_store}
+
+  defp climate_source(%{thermal: %{config: config}}), do: Map.get(config, "climate_source")
+  defp climate_source(_), do: nil
+
+  defp accept_identity(%{seq: 0, page_store: %{published: nil}}, nil, _), do: :ok
+  defp accept_identity(_, %Source{identity: identity}, %Source{identity: identity}), do: :ok
+  defp accept_identity(_, _, _), do: {:error, :climate_migration_required}
+
+  # 这是默认新世界冷雪preset与当前材料的组合校验，不是通用Source的数值限制。
+  defp accept_initial_preset(%{properties: %{materials: materials}}, nil,
+      %Source{kelvin_config: {cold, _, _, _}}) do
+    case Map.get(materials, @snow_material) do
+      %{"phase_transition_kelvin" => transition} when cold < transition -> :ok
+      _ -> {:error, :invalid_snow_climate_preset}
+    end
+  end
+  defp accept_initial_preset(_, nil, _), do: {:error, :invalid_snow_climate_preset}
+  defp accept_initial_preset(_, _, _), do: :ok
 
   # 辐射环境字段必须显式发布：发射率 ∈ [0, 1]（0 = 关闭辐射），视距为正整数宏格。
   def radiation_config?(config) do
@@ -58,7 +122,7 @@ defmodule VoxelRegion.World.Catalogs do
         config =
           Jason.decode!(File.read!(path))
           |> Map.take(~w(ambient_kelvin environment_w_per_m2_k tolerance_kelvin emissivity view_range_cells
-            circuit_min_power_w climate_zones))
+            circuit_min_power_w climate_zones generated_climate))
 
         # circuit_min_power_w：电路零功率判据（W），电源输出功率低于它的连通网络视为断流（`VoxelRegion.Circuit`）。
         true =

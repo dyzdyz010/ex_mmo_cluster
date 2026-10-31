@@ -79,12 +79,18 @@ defmodule VoxelRegion.GeneratedStore do
        content_version: version,
        world_dir: world_dir,
        config: config,
+       kernel_identity: kernel,
        extent: extent,
        index_path: index_path,
        index: load_index(index_path, extent),
        generations: :counters.new(1, [])
      }}
   end
+
+  @doc "从已接纳生成store构造独立气候源；不读材料/页面，不修改manifest或世界状态。"
+  @spec climate_source(map(), map()) :: {:ok, VoxelRegion.Climate.Source.t()} | {:error, atom()}
+  def climate_source(store, parameters), do: VoxelRegion.Climate.Source.new(
+    Map.take(store, [:content_version, :kernel_identity, :config]), parameters)
 
   defp load_index(path, extent) do
     case File.read(path) do

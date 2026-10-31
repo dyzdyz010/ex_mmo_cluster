@@ -11,6 +11,41 @@ defmodule VoxelRegion.World.Closure do
   alias VoxelRegion.World.{Edits, Pages, Prefabs, Tools}
   import VoxelRegion.World.Canonical, only: [region_of: 1]
 
+  @doc "开发期登记的 World 消息形状，区分页需求与显式无页；原子长度为 0，任务引用为 `:reference`。"
+  def registered_entries do
+    page = [
+      {:prepare, 2}, {:adopt_liquid, 2}, {:prepare_intent, 2}, {:prepared_intent, 4},
+      {:publish_properties, 2}, {:publish_parameters, 3}, {:thermal_experiment, 2},
+      {:sight_snapshot, 3}, {:material_snapshot, 3}, {:material_snapshot, 4}, {:simulation_snapshot, 3},
+      {:liquid_experiment, 2}, {:spell_intent, 3}, {:body_tool, 4}, {:gm, 4},
+      {:parcel_export, 2}, {:parcel_install, 4}, {:beacon_install, 3}, {:liquid_fill, 7},
+      {:production_intent, 3}, {:attachment_intent, 3}, {:tool_intent, 3}, {:instance_cells, 2},
+      {:replacement_cells, 3}, {:place_prefab, 5}, {:prefab_intent, 4}, {:remove_prefab, 2},
+      {:replace_prefab, 3}, {:serve_item, 3}, {:apply_edit, 3}, {:canonical_snapshot, 5},
+      {:replica_snapshot, 3}, {:apply_edits, 2}, {:reference, 2}, {:body_contact, 4},
+      {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4},
+      {:prepare_beacon, 4}, {:commit_beacon, 4}
+    ]
+
+    none = [
+      {:page_need, 4}, {:page_need, 5}, {:page_stage, 5}, {:page_commit, 2},
+      {:page_yield, 3}, {:page_adopt, 4}, {:page_resident_all, 0}, {:content_version, 0},
+      {:seq, 0}, {:simulation_windows, 0}, {:simulation_windows, 2}, {:interactions_since, 2}, {:admission_status, 0}, {:retry_simulation_io, 0},
+      {:liquid_activity, 0}, {:source, 0}, {:author_regions, 2}, {:magic_range, 0},
+      {:magic_digest, 0}, {:caster_state, 2}, {:send_caster_state, 4}, {:tool_range, 2},
+      {:tool_definition, 2}, {:material_balances, 2}, {:material_supply, 4}, {:beacon_directory, 2},
+      {:publish_prefabs, 2}, {:prefab_catalog, 0}, {:published_prefabs, 0}, {:material_catalog, 0},
+      {:publish_prefab, 4}, {:prefab_cells, 4}, {:stats, 0}, {:subscribe, 5},
+      {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3},
+      {:compact, 0}, {:timeout, 3}, {:projectile_tick, 0}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
+      {:liquid_commit, 0}, {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5},
+      {:cancel_cast, 3}, {:thermal_step, 2}, {:thermal_commit, 0}, {:DOWN, 5},
+      {:simulation_windows, 4}
+    ]
+
+    %{page: page, none: none}
+  end
+
   @doc "消息的读取闭包种子：`:none`、`:all` 或 `{扩 26 邻页的区域键, 只装本页的区域键, 身份}`。"
   def needs(state, message) do
     case seeds(state, message) do

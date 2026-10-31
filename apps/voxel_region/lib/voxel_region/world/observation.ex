@@ -113,9 +113,15 @@ defmodule VoxelRegion.World.Observation do
       ambient_kelvin: if(state.thermal, do: state.thermal.config["ambient_kelvin"], else: 0.0)
     }
 
-    if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
-      do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
-      else: context
+    case state.thermal do
+      %{config: %{"climate_source" => source}} ->
+        Map.merge(context, %{climate_source: source, climate_source_identity: source.identity})
+
+      _ ->
+        if state.thermal && VoxelRegion.Climate.zoned?(state.thermal.config),
+          do: Map.put(context, :climate_zones, state.thermal.config["climate_zones"]),
+          else: context
+    end
   end
 
   # only：只汇总这些 owner 的叶子（nil = 全部）。每个叶子的观察只取决于它自己的格，跳过其他 owner 的格

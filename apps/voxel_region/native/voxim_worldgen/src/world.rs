@@ -1,4 +1,5 @@
 //! 列画像、自然洞口、矿脉与粗层递归剪枝；所有生成路径共用同一分类规则。
+use crate::climate::{temperature_score, MOSS_SCORE, SNOW_SCORE};
 use crate::{
     noise::*,
     skin::{self, Value, EXTENT, OWNED},
@@ -145,18 +146,17 @@ fn profile(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
 }
 fn ground(x: i32, z: i32, height: i32, slope: i32, c: &Config) -> Profile {
     let seed = c.seed as u32;
-    let temperature = climate(x as f64, z as f64, 1536.0, seed.wrapping_add(300))
-        - (height - c.sea_level) as f64 * 0.0008;
+    let temperature = temperature_score(x, height, z, c);
     let moisture = climate(x as f64, z as f64, 768.0, seed.wrapping_add(400));
-    let desert = temperature >= 0.22 && moisture < 0.30;
+    let desert = temperature >= MOSS_SCORE && moisture < 0.30;
     let mut cover = 1;
     let mut soil = 7;
     if slope < 5 {
         if slope >= 3 {
             cover = 6;
-        } else if temperature < 0.10 {
+        } else if temperature < SNOW_SCORE {
             cover = 4;
-        } else if temperature < 0.22 {
+        } else if temperature < MOSS_SCORE {
             cover = 3;
         } else if desert {
             cover = 5;

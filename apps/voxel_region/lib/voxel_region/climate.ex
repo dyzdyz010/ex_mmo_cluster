@@ -4,7 +4,8 @@ defmodule VoxelRegion.Climate do
   未记录格默认温度、相变天然温度、静止判据、显热参考）与 Scene 身体的空气温度 / 风速都只经这里查询。
 
   `config` 是热环境配置（`DA_ThermalEnvironment` 发布的 environment.json，经 World 快照 `property_context` 到达 Scene）。
-  当前唯一提供者是资产里的静态“气候区”：
+  新世界可绑定 `Climate.Source`，使用与地表分类同源的XYZ气候分数及显式作者Kelvin参数；
+  新源的温度差不制造绝热边界，初始温差前沿由世界发布owner登记。旧资产提供者仍为静态“气候区”：
 
       "climate_zones": [{"min": [x0, z0], "max": [x1, z1], "ambient_kelvin": K, "wind_mps": v}]
 
@@ -17,22 +18,50 @@ defmodule VoxelRegion.Climate do
   2. **变化必须通知**：热模拟只在活动集合里推进，偏离环境超过容差的记录格才会被拉入。提供者改变某区的空气温度后，
      必须让 World 重新派生活动种子并唤醒热提交（World 内 `rebuild_thermal_work/1`：按新环境重算偏离的记录格，
      非空即置活动；冷启动已经走这条路）。不通知则静止格会停在旧温度。未记录格没有独立温度——它们按定义就在所在区的
-     空气温度，随提供者即时改变，不产生能量账目（大气是无限热库）。
-  3. **区边界是绝热切断**：两格 `region/2` 不同即热分区不同，导热、辐射视线、拟态接触都不跨（与受保护区域同为理想
-     绝热镜面）。否则两侧各在自己环境温度的未记录格会在两个无限热库之间持续导热、永不落定。时变提供者若给出连续
-     温度场，必须仍给出离散分区（或同等的静止判据），不能让相邻静止格之间出现持续温差流。
-  4. **冷重启以提供者状态为准**：配置里的气候由资产（将来是气候状态）决定，不从存档回放；世界存档只保存格的记录温度。
+     初态温度；更换source时必须明示初始化cut并结清背景热参考账，不得静默重置已有能量。
+  3. **旧气候区的历史绝热合同**：两格 `region/2` 不同即热分区不同，导热、辐射视线、拟态接触都不跨（与受保护区域同为理想
+     绝热镜面）。这是既有手工资产语义。新生成气候源返回统一边界身份，不用温度值切断接触；
+     非均匀初态的真实通量由发布活动登记处理，不能因各格等于当地空气温度就宣称稳态。
+  4. **源版本随接纳边界冻结**：新源绑定已接纳world CV、kernel/config及作者参数摘要，continuation不得刷新；
+     旧due步完成后再生效新版本。冷恢复须核对同一source身份与已有焓/有限预算，不能重置为天然温度。
   5. **账目参考不是气候**：无位置的库存相态、拟态账与报价以全局 `ambient_kelvin` 为固定参考温度，不随气候变化。
 
   风速目前只作用于身体对流（`SceneServer.Body.Thermo`）；格与空气的换热系数 `environment_w_per_m2_k` 仍为常数，
   不随风速变化（未建模）。
   """
 
+  alias VoxelRegion.{Native, Climate.Source}
+
   @type air :: %{air_k: number(), wind_mps: number()}
 
   @doc "格所在位置的空气：温度 K 与风速 m/s。区外（或无气候区）为全局 `ambient_kelvin`、风速 0。"
   @spec at(map(), {integer(), integer(), integer()}) :: air()
-  def at(config, cell) do
+  def at(config, cell), do: hd(at_many(config, [cell]))
+
+  @doc "同一已接纳气候版本下按输入顺序批次取样；不读目录、页面、材料或运行配置。"
+  @spec at_many(map(), [{integer(), integer(), integer()}]) :: [air()]
+  def at_many(%{"climate_source" => %Source{} = source}, cells) do
+    Native.climate_samples(cells, source.worldgen_config, source.kelvin_config)
+    |> Enum.map(fn {temperature, wind} -> %{air_k: temperature, wind_mps: wind} end)
+  end
+
+  def at_many(config, cells), do: Enum.map(cells, &legacy_at(config, &1))
+
+  @doc "绑定一次接纳的不可变气候源；同身份幂等，不同身份或旧绝热气候区显式拒绝，不承担版本发布。"
+  @spec bind(map(), Source.t()) :: {:ok, map()} | {:error, :conflicting_climate_sources | :climate_source_identity_conflict}
+  def bind(config, %Source{} = source) do
+    if Map.get(config, "climate_zones", []) != [] do
+      {:error, :conflicting_climate_sources}
+    else
+      case Map.fetch(config, "climate_source") do
+        :error -> {:ok, Map.put(config, "climate_source", source)}
+        {:ok, %Source{identity: identity}} when identity == source.identity -> {:ok, config}
+        {:ok, _} -> {:error, :climate_source_identity_conflict}
+      end
+    end
+  end
+
+  defp legacy_at(config, cell) do
     case region(config, cell) do
       nil -> %{air_k: config["ambient_kelvin"], wind_mps: 0}
       index -> zone_air(Enum.at(config["climate_zones"], index))
@@ -44,6 +73,8 @@ defmodule VoxelRegion.Climate do
   def air_k(config, cell), do: at(config, cell).air_k
 
   @doc "格所在气候区的下标；区外（或无气候区）为 nil。两格下标不同即热分区不同（绝热切断，见契约 3）。"
+  def region(%{"climate_source" => %Source{}}, _cell), do: nil
+
   def region(config, {x, _y, z}) do
     config
     |> Map.get("climate_zones", [])
@@ -54,6 +85,9 @@ defmodule VoxelRegion.Climate do
   def zoned?(config), do: Map.get(config, "climate_zones", []) != []
 
   @doc "气候区字段合法：列表，每项整数闭矩形（min ≤ max）、正区温、可选非负风速；缺省视为空列表。"
+  def valid?(%{"climate_source" => %Source{}} = config), do: Map.get(config, "climate_zones", []) == []
+  def valid?(%{"climate_source" => _}), do: false
+
   def valid?(config) do
     case Map.get(config, "climate_zones", []) do
       zones when is_list(zones) ->

@@ -111,9 +111,26 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     }
   end
 
-  setup do
+  setup context do
     clock = :atomics.new(1, signed: true)
-    source = start_supervised!({Source, %{snapshot: snapshot(), owner: self()}})
+    {snapshot, climate_source} =
+      if context[:climate_source_contract] do
+        kernel = VoxelRegion.Native.kernel_identity()
+        config = {1337, -200, 326, 586, 4, 381.77066, 1223.743774, 96}
+        descriptor = %{content_version: VoxelRegion.GeneratedStore.content_version(kernel, config),
+          kernel_identity: kernel, config: config}
+        parameters = %{"cold_kelvin" => 263.15, "warm_kelvin" => 293.15,
+          "sample_height_offset_m" => 1, "wind_mps" => 0}
+        {:ok, climate} = VoxelRegion.Climate.Source.new(descriptor, parameters)
+        property_context = %{hp_enabled: false, digest: <<0::256>>, thermal_enabled: true,
+          ambient_kelvin: 293.15, climate_source: climate, climate_source_identity: climate.identity}
+        value = snapshot() |> Map.put(:content_version, descriptor.content_version)
+          |> Map.put(:property_context, property_context)
+        {value, climate}
+      else
+        {snapshot(), nil}
+      end
+    source = start_supervised!({Source, %{snapshot: snapshot, owner: self()}})
     body_store = start_supervised!({MmoTest.BodyStore, []})
 
     scene =
@@ -132,7 +149,7 @@ defmodule SceneServer.Movement.VoximPlayerTest do
       )
 
     wait(fn -> Scene.observe(scene).initialized end)
-    %{scene: scene, source: source, clock: clock}
+    %{scene: scene, source: source, clock: clock, climate_source: climate_source}
   end
 
   defp wait(fun, attempts \\ 2000) do
@@ -188,6 +205,16 @@ defmodule SceneServer.Movement.VoximPlayerTest do
     end)
 
     {p, q, start}
+  end
+
+  @tag :climate_source_contract
+  test "正常入场快照交付的生成气候源由Player直接接纳，不退回全局20度", context do
+    # 只测试：World与身体存储为明确替身，真实Scene/Player执行正常snapshot/bootstrap交接。
+    # 此例只证明源身份交付；不证明真实World、QUIC、雪演化或新世界活动Ready。
+    {player, _start} = join(context, 1, 20, 1)
+    observed = Player.observe(player)
+    assert Map.get(observed, :climate_source_identity) == context.climate_source.identity
+    assert observed.state != nil
   end
 
   @tag :replication_phase

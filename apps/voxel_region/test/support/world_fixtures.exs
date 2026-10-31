@@ -3,6 +3,13 @@ defmodule VoxelRegion.TestSupport do
   alias MmoContracts.Voxel.{Payload, Codec}
   alias VoxelRegion.OverlayLog
 
+  @doc "只测试：以调用进程为来源，把宏格半开 XYZ 范围登记为覆盖它的 L0 模拟窗口；World 重启后须重新登记。"
+  def activate_simulation(world, {lo, {hx, hy, hz}}) do
+    alias VoxelRegion.World.Canonical
+    {rx, ry, rz} = Canonical.region_of({hx - 1, hy - 1, hz - 1})
+    VoxelRegion.World.set_simulation_windows(world, [{Canonical.region_of(lo), {rx + 1, ry + 1, rz + 1}}])
+  end
+
   defmodule LegacySave do
     @moduledoc """
     只测试：制造 M2a 之前的旧格式存档（单笔整世界检查点、无页表），验证冷启动经迁移路径识别旧格式。

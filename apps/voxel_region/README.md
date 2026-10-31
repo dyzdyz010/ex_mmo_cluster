@@ -1,5 +1,56 @@
 # Voxim Region 真值
 
+2026-10-27 气候接纳候选切片 A（尚未合回主仓／未作为正式发布验收）：
+环境资产可显式给出 `generated_climate` 四参数（`cold_kelvin`、`warm_kelvin`、`sample_height_offset_m`、`wind_mps`），
+由 `World.Catalogs` 在唯一 World 组合边界交给已接纳的 `GeneratedStore` descriptor 构造 Source。
+新世界必须同时没有事务与已发布页表前缀；默认冷雪 preset 由当前材料目录的雪融点接纳，不在通用 Source 内硬编码融点。
+接纳后 Source 只保存于既有 `thermal.config`，沿原日志／页表持久化；相同身份恢复保留已记焓、温度、燃料、有限预算与热账。
+已有世界增源、换身份或撤下源均明确失败 `climate_migration_required`，不在启动时偷偷改变未记录背景初能量。
+公开离线 `World.rebuild_coarse/1` 也在恢复globals后、装页/发布前复用同一接纳；新根从目录建立单位量子，
+已有持久前缀（包括seq0）量子不符时返回 `material_units_migration_required`，不重标库存或推进维护前缀。
+`property_context` 将同一不可变 Source 交给 Scene 身体；`World.stats/1`、该 context 与 `Player.observe/1` 的
+`climate_source_identity` 都是原 config 的只读派生摘要，旧无生成气候的 stats/Player 摘要为 nil。
+本切片不改变现行冻结 wire；客户端资产和正式发布环境未切换。
+
+```mermaid
+flowchart LR
+  Asset[显式环境作者参数] --> Accept[World.Catalogs 接纳]
+  Descriptor[GeneratedStore 已接纳描述符] --> Accept
+  Accept --> Config[唯一 thermal.config Source]
+  Config <--> Pages[既有日志与页表]
+  Config --> Context[property_context]
+  Context --> Player[Scene.Player 身体环境]
+```
+
+验证入口为 `mix test --no-start test/climate_world_test.exs test/climate_source_test.exs test/climate_test.exs`：
+真实 GeneratedStore／World／文件页表证明接纳、身份拒绝与有限相态库存／热账冷恢复；Scene 在其 `voxim_player_test.exs` 中
+用明确 World／身体存储替身验证正常 snapshot 交接，不能算真实 QUIC 或全链路验收。
+**天然雪静态排除的移除、初始梯度活动发布与 Ready、旧世界离线 copy/cut／背景热重基准仍未完成，不能仅凭本切片部署新气候。**
+
+2026-10-27 P6 窗口贡献与液体／热交换边界（Global system；完整热冻结／ticket／D11 尚未接入，整体未验收）：
+`World.simulation_windows/1` 返回完整 XYZ 的窗口页并集（窗口外加一圈）、来源及页数。`World.SimulationWindows` 只由 World 写，
+来源是随 Gate 存活的流；只读装页、普通 canonical 观察和 Replica 不登记窗口资格。Source DOWN 或显式释放立即退休贡献。
+`CollisionStream` 异步登记并在 World 回执后开始快照读取；接收 ACK 不退休旧窗，Player 实际消费后才发布退休。
+跨 Scene 仍是同一流；导出 cut 前只等流接纳既有请求，不等 World，避免同步等待环。详见
+[P6 实施记录](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/p6-simulation-scope.md)。
+验证：`mix test --no-start test/simulation_windows_test.exs test/world_test.exs --only streaming --only simulation_windows`。
+液体／散体定时步只消费有窗口资格的活动候选及格输入，冷页不流入也不取出；冻结候选仍由原 `liquid_active` 保存，
+没有资格不排程、不补算，重启不恢复玩家窗口。窗口并集变动按变化页及六邻页的 `liquid_regions` 唤醒，静水边界重开后正常继续。
+上一拍下落帧在冻结时仍显式清空一次；工具／作者显式写入口保持既有契约。模块 CLI 复用窗口、活动集、数量快照与下落帧，
+`active_cells` 含冻结候选，不等同于可推进候选数。测试夹具通过公开窗口入口显式登记，不新增生产兼容路径。
+液体接缝验证：`mix test --no-start test/liquid_scope_test.exs test/liquid_world_test.exs test/loose_world_test.exs test/phase_world_test.exs --exclude database`。
+世界热节点接触只在两端完整足迹都有窗口资格且原保护／气候分区一致时导热；辐射的起点和沿途遇无资格宏格都按遮挡处理。
+实际变化页由窗口 owner 派生一次，液体与热边界消费同一差集。热侧先 flush 已算原生工作副本，再失效边界／视线并在下一步重建，
+保留 canonical 暴露面与进行中 run 的剩余时间，不增加环境换热面或重放已放出的有限热源。
+这是交换边界增量，冷页有限源、燃烧、环境、电路与身体／拟态外加边的完整冻结尚未接入。
+验证：`mix test --no-start test/thermal_scope_test.exs test/liquid_scope_test.exs test/simulation_windows_test.exs`；证据与限制见 P6 记录 §7。
+
+2026-10-27 M2b R1（Global system；服务端定向验证）：`World.PageLoad` 在发出读取令牌时登记每页唯一 owner，后来的需求共享同一读取。
+挂起的 World 同步 caller 退出或公共 wrapper 显式报告超时后，只移除该请求；其他 caller／业务／模拟 `:wake` 仍需求的任务继续。
+独占取消释放任务与未驻留页占用，已接纳事务不回滚。`World.simulation_snapshot/4` 支持单次等待时限，默认 300 秒。
+普通 `GenServer.call` 超时本身不通知服务器；Player 直接发送的异步消息未走该同步 wrapper，其取消事实不在本轮验收内。
+所有权、Erlang 官方依据、红绿反例和日志位置见 [M2b §7 R1](../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#r1-同页读取与同步调用生命周期2026-10-27服务端定向验证)。
+
 2026-10-27 窗口快照组装（Global system，已实现及服务端隔离实跑，整体性能／双客户端未验收）：World 在一次回调中冻结窗口只读输入并登记 canonical 订阅；
 `World.WindowSnapshot` 按区域索引选择输入，跨窗叶子／附件保留整件数据，冻结引用留在 World 堆内。
 `CanonicalFeed` 按信用 1 分批拉取条目，在自己的进程重建派生索引、沿既有 `Payloads`／`Observation` 算法组装区域、属性与碰撞。
@@ -665,6 +716,21 @@ L0 不在门内：它按玩家位置在线生成（单块几十毫秒）。`Worl
 `World` 内有一个内存载荷缓存 `(level, region) → {bytes, header}`：source 原样字节与 overlay 物化字节都进它；L0–L3 按最近使用淘汰，字节上限
 `VOXEL_REGION_PAYLOAD_CACHE_MB`（默认 512），L4+ 常驻不计入上限；条目碰到的 region（含 ring 邻居）立即失效，region 快照重放时整个清空。命中不读盘、不解压。
 `stats` 里有 `entries / lru_bytes / resident_bytes / hits / misses / evictions`；本机可用 `elixir --sname probe --cookie <cookie> -e ':rpc.call(node, VoxelRegion.World, :stats, [])'` 读取。
+
+M2b R3 统计口径：`World.stats/1` 只观察当前 owner，不装页、不查 PG 或枚举磁盘页。
+新增 JSON 可编码的 `scope`：`canonical_data` 为 `resident_pages`（当前已接纳页）或 `loaded_persistent_state`（全部持久编辑状态已加载）；
+`cache=process_local`、`runtime=world`、`disk=not_counted`。有限驻留集即使碰巧覆盖现有磁盘页也保持 `resident_pages`，统计不猜全局覆盖。
+这只描述计数的数据覆盖，不改变 World 对未驻留内容的权威所有权，也不包括尚未物化的 procedural baseline 总量。
+
+- 受 `scope.canonical_data` 约束的内容计数是 `overlay_cells / overlay_regions / snapshot_regions / region_bases / refined_macros / attachment_slots / attachment_bytes / instances / damaged_targets / damage_state_bytes`。页冷时可能为零；不是全世界材料、实例或损伤总量，也不把缺失页解释为空气。
+- `resident_pages` 是当前已接纳驻留页数（跨 L0 与粗层），`:all` 是持久编辑状态已全部加载的哨兵，不表示整个生成世界已经物化；`page_loads` 是活动装页任务数，`page_waiters` 是 `PageLoad.callers` 索引中的同步等待调用数，含同序键排队及依赖ready后的物理接纳等待，不含异步模拟需求或 compact 等待者。
+- `World.admission_status/1` 只读当前ready输入、原arrival及本轮固定cutoff；冷页准备不占ready队列。热/液体在接纳前按最早due、同due热先液体后推进完整旧自然步，随后才执行新物理输入；PageLoad仅运输不可变上下文并复用唯一caller生命周期。此合同保持既有自然步量化，不表示亚步连续精确或跨流历史状态成立。
+- `World.stats/1` 的 `simulation_io` 明确区分idle/loading/failed，失败保留原因、原请求页及attempt；`World.retry_simulation_io/1`在依赖修复后只开始一次尝试，同一loading重复调用返回同attempt。只有完整依赖接纳并实际续原步才算恢复，调用返回loading不算成功。
+- 模拟IO持续failed期间不自动反复读取、不清due/run或假称自然稳态；普通未接纳物理请求明确返回`{:error, {:simulation_input_failed, reason}}`并退休等待。已确认死亡掉落只在原唯一context内保留/重试，不按cid覆盖、不新增outbox；这不是跨进程故障恰好一次交付的新承诺。
+- `entries / lru_bytes / resident_bytes / cache_limit / hits / misses / evictions / decoded_regions` 是进程本地派生缓存指标；其中旧名 `resident_bytes` 仅指载荷缓存常驻部分的字节，不能当权威页内存。`generated` 是 source 定义的当前生成计数，不是磁盘 region 总数。
+- `retained_transactions`、切点/积压字段（`checkpoint_scheduled / published_seq / dirty_units / checkpoints` 及 `PageCut.backlog` 字段）是该 World 的日志保留、持久进度和运行状态；`property_digest` 是全局属性目录身份。`published_seq` 是已发布全局前缀，不表示该前缀全部内容已驻留。`simulation_progress` 仍由各物理 owner 解释，不从驻留统计推断演化是否暂停。
+
+以上分类直接依据 [`World.Pages`](lib/voxel_region/world/pages.ex) 的页段/全局账归属、[`World.PageLoad`](lib/voxel_region/world/page_load.ex) 的驻留与等待 owner 和现有 stats 字段来源；保留旧字段及计算，元数据只声明覆盖。最小集成反例在 `test/resident_stats_test.exs`：正常编辑远处格 → compact → 重启 → stats 不装页 → 正常读回后驻留 base 计数增长。文件日志替代 PG，只证明上述统计边界，不证明物理或客户端流程。
 
 缓存生成先写入同目录、含 OS PID 与 BEAM 唯一值的临时文件，再用 [`File.ln/2`](https://www.erlang.org/doc/apps/kernel/file.html#make_link/2) 建立同文件系统 hardlink，完成拒绝覆盖的原子发布；目标已存在的生成者删除自己的临时文件并读取、校验胜者。文件系统不支持 hardlink 时明确返回 `cache_publish_failed`，没有 rename 或运行时生成 fallback。缓存命中会完整解压并复核 body 长度与 hash，避免截断或损坏的生成结果被永久复用；warm serve 的重复解压成本留给后续性能切片处理。
 

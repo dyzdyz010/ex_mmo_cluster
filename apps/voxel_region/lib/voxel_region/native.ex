@@ -12,6 +12,10 @@ defmodule VoxelRegion.Native do
   @spec generate_region(0..5, {integer(), integer(), integer()}, config()) :: binary()
   def generate_region(_level, _coord, _config), do: :erlang.nif_error(:nif_not_loaded)
 
+  @doc "同序纯XYZ气候取样；参数是已接纳生成八元组与显式{冷K,暖K,高度偏移m,风速m/s}；DirtyCpu。"
+  @spec climate_samples([{integer(), integer(), integer()}], config(), {float(), float(), integer(), float()}) :: [{float(), float()}]
+  def climate_samples(_cells, _config, _kelvin), do: :erlang.nif_error(:nif_not_loaded)
+
   @type bounds :: {integer(), integer(), integer(), integer()}
 
   @doc "一个 (level, rx, rz) 列 66-span 内列画像的折叠边界 {hmin, hmax, province_min, province_max}；DirtyCpu。"

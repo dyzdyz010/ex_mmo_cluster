@@ -10,7 +10,7 @@ defmodule VoxelRegion.World.PageCut do
   - **积压接纳**（§5.3）：积压量 = 日志后缀事务数（`seq − 已发布前缀`）与攒下的脏单元数，二者都只随提交增长、只因发布回落，
     所以只在提交与发布时重算级别。软上限：立即排切点、停发布后的按区压实；中上限：不开始新的热 / 液体 / 投射物步进
     （进行中的走到提交边界）；硬上限：World 在会产生新提交的入口处拒绝（`{:error, :persist_backlog}`）。
-    回落到中上限以下时由本模块恢复被暂停的调度，不等新输入。
+    回落到中上限以下时由本模块恢复被延后的调度，不等新输入；各物理owner的due与剩余步始终保留。
   - **Replica 退休**（§6.3）：只通知单调推进、确认已满 `replica_retain_s` 的最新前缀，无新切点时由定时器收尾。
   """
   require Logger
@@ -133,8 +133,13 @@ defmodule VoxelRegion.World.PageCut do
   def at_least?(%{page_store: %{level: level}}, floor), do: at_least?(level, floor)
   def at_least?(level, floor), do: Enum.find_index(@levels, &(&1 == level)) >= Enum.find_index(@levels, &(&1 == floor))
 
-  @doc "中上限下跳过了一次热 / 液体 / 投射物步进：记下，回落时由 `assess/1` 恢复调度。"
-  def pause(state), do: put_in(state.page_store.paused, true)
+  @doc "写回使自然步暂不能开始；只记录等待事实，不清物理进度，回落时由assess恢复原欠账。"
+  def pause(state) do
+    if not state.page_store.paused do
+      Logger.warning("voxel_simulation_wait reason=writeback seq=#{state.seq} thermal_due_ms=#{inspect(state.thermal_due)} liquid_due_ms=#{inspect(state.liquid_due)}")
+    end
+    put_in(state.page_store.paused, true)
+  end
 
   @doc "积压计量（`World.stats`）：级别、后缀事务数、脏单元数、冻结存活、在途批与字节、最老未持久提交的年龄。"
   def backlog(%{page_store: store} = state) do

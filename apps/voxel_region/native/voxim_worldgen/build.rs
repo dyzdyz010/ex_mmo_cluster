@@ -5,6 +5,7 @@ fn main() {
     for file in [
         "build.rs",
         "src/lib.rs",
+        "src/climate.rs",
         "src/noise.rs",
         "src/skin.rs",
         "src/tree_shapes.rs",

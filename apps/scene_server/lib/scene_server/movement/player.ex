@@ -241,7 +241,7 @@ defmodule SceneServer.Movement.Player do
             )
 
           Process.monitor(stream)
-          :ok = CollisionStream.attach(stream, self(), cut.stream_cursor)
+          :ok = CollisionStream.attach(stream, self(), cut.stream_cursor, simulation_windows(state))
           state
 
         nil ->
@@ -879,12 +879,18 @@ defmodule SceneServer.Movement.Player do
             state =
               case Map.get(snapshot, :property_context) do
                 %{thermal_enabled: true, ambient_kelvin: ambient} = context ->
+                  climate = %{
+                    "ambient_kelvin" => ambient,
+                    "climate_zones" => Map.get(context, :climate_zones, [])
+                  }
+                  # 同一World接纳的不可变Source随快照交接，身体不重读环境资产或重新猜测气候。
+                  climate = case Map.fetch(context, :climate_source) do
+                    {:ok, source} -> Map.put(climate, "climate_source", source)
+                    :error -> climate
+                  end
                   %{
                     state
-                    | climate: %{
-                        "ambient_kelvin" => ambient,
-                        "climate_zones" => Map.get(context, :climate_zones, [])
-                      }
+                    | climate: climate
                   }
 
                 _ ->
@@ -1067,6 +1073,8 @@ defmodule SceneServer.Movement.Player do
   end
 
   defp seal_body(state) do
+    # 同一发送者到流的屏障：cut 中的在途窗口请求必须已经被流接纳；不等待 World 或快照完成。
+    if state.stream, do: :ok = CollisionStream.synchronize(state.stream)
     state = persist_body(state)
     fence(state)
 
@@ -1941,6 +1949,12 @@ defmodule SceneServer.Movement.Player do
       old_identity: state.old_identity,
       substitutions: state.substitutions,
       mailbox: mailbox,
+      collision_queue_length: :queue.len(state.updates.queue),
+      simulation_windows: simulation_windows(state),
+      climate_source_identity: case state.climate do
+        %{"climate_source" => source} -> source.identity
+        _ -> nil
+      end,
       retained_versions: length(state.updates.revisions)
     }
   end
@@ -2080,6 +2094,7 @@ defmodule SceneServer.Movement.Player do
       |> List.to_tuple()
 
     %{
+      l0_box: {snapshot.l0_min, snapshot.l0_max_exclusive},
       bounds: {min, max},
       travel: {
         min |> Tuple.to_list() |> Enum.map(&(&1 + extent / 4)) |> List.to_tuple(),
@@ -2091,6 +2106,7 @@ defmodule SceneServer.Movement.Player do
   defp stream_window(%{stream: nil} = state), do: state
 
   defp stream_window(state) do
+    before = state
     {newer, older} =
       Enum.split_while(state.window_domains, fn {tick, _} -> tick > state.simulation_tick end)
 
@@ -2105,14 +2121,11 @@ defmodule SceneServer.Movement.Player do
           | revive: :window
         }
 
-      state.revive != nil ->
-        state
-
-      not state.window_pending and box != state.requested_window ->
+      state.revive == nil and not state.window_pending and box != state.requested_window ->
         request_window(state, box)
 
       true ->
-        state
+        publish_simulation_windows(before, state)
     end
   end
 
@@ -2123,8 +2136,22 @@ defmodule SceneServer.Movement.Player do
       server_time_us: System.system_time(:microsecond)
     })
 
-    CollisionStream.window(state.stream, box)
-    %{state | requested_window: box, window_pending: true}
+    state = %{state | requested_window: box, window_pending: true}
+    CollisionStream.window(state.stream, box, simulation_windows(state))
+    state
+  end
+
+  # 唯一来源是现有窗口序列与请求盒；收到事件的 ACK、private tick 的提前安装都不另造退休事实。
+  defp simulation_windows(%{stream: nil}), do: []
+  defp simulation_windows(state) do
+    (Enum.map(state.window_domains, fn {_, domain} -> domain.l0_box end) ++ List.wrap(state.requested_window))
+    |> Enum.uniq() |> Enum.sort()
+  end
+
+  defp publish_simulation_windows(before, state) do
+    windows = simulation_windows(state)
+    if windows != simulation_windows(before), do: CollisionStream.set_simulation_windows(state.stream, windows)
+    state
   end
 
   defp pod(state), do: {state.position, state.velocity, state.grounded}

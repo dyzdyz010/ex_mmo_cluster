@@ -14,13 +14,53 @@ defmodule VoxelRegion.World.Liquids do
 
   # Global system: material21 and its finite units share the existing World commit.
   def liquid_enabled?(state), do: state.liquid_bounds != nil and state.properties != nil and Map.get(state.properties, :liquid) != nil
+  @doc "按世界活动前沿或上一拍下落帧排程；自然达稳态且清帧后休眠，与玩家窗口无关。"
+  def schedule_liquid(%{page_load: %{sim: %{status: :failed}}} = state) do
+    if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
+    %{state | liquid_timer: nil}
+  end
   def schedule_liquid(state) do
-    if liquid_enabled?(state) and state.liquid_timer == nil and MapSet.size(state.liquid_active) > 0 do
-      %{state | liquid_timer: Process.send_after(self(), :liquid_commit,
-        max(1, round(state.properties.liquid["step_seconds"] * 1000)))}
-    else
-      state
+    pending = liquid_enabled?(state) and
+      (MapSet.size(state.liquid_active) > 0 or Enum.any?(state.liquid_falls, fn {_, falls} -> falls != [] end))
+    cond do
+      pending and state.liquid_timer == nil ->
+        now = System.monotonic_time(:millisecond)
+        due = state.liquid_due || now + interval_ms(state)
+        %{state | liquid_due: due, liquid_timer: Process.send_after(self(), {:liquid_tick, due}, max(due - now, 0))}
+      not pending ->
+        if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
+        %{state | liquid_timer: nil, liquid_due: nil}
+      true -> state
     end
+  end
+
+  @doc "液体目录所定义的自然步时长；投递与完成进度使用同一值。"
+  def interval_ms(state), do: max(1, round(state.properties.liquid["step_seconds"] * 1000))
+
+  @doc "自然步提交完成后消费该到期事件；显式强制步不消费未来定时事件。"
+  def completed(state, scheduled_due) do
+    if state.liquid_timer, do: Process.cancel_timer(state.liquid_timer)
+    due = if scheduled_due, do: scheduled_due + interval_ms(state), else: state.liquid_due
+    %{state | liquid_due: due, liquid_timer: nil} |> schedule_liquid()
+  end
+
+  @doc "只读液体调度前沿与欠账，不代表历史世界状态；单调毫秒仅同VM可比，自然稳态无待推进时间。"
+  def progress(state) do
+    due = state.liquid_due
+    now = System.monotonic_time(:millisecond)
+    interval = if due, do: interval_ms(state), else: 0
+    through = if due, do: due - interval
+    reason = cond do
+      VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
+      due == nil -> :rest
+      state.page_store.level in [:mid, :hard] -> :writeback
+      state.page_load.sim != nil -> :page_io
+      true -> :timer
+    end
+    %{next_due_ms: due, simulated_through_ms: through, target_through_ms: if(due, do: now),
+      lag_ms: if(through, do: max(now - through, 0), else: 0),
+      pending_steps: if(due && now >= due, do: div(now - due, interval) + 1, else: 0),
+      wait_reason: reason, active_cells: MapSet.size(state.liquid_active)}
   end
 
   def wake_liquid(state, cells) do
@@ -364,6 +404,7 @@ defmodule VoxelRegion.World.Liquids do
     state
   end
 
+  @doc "从实际活动前沿的物理邻域构造输入；空活动集仍清除上一拍下落帧。"
   def advance_liquid(state, active) do
     # Two stages need the downward cell and the horizontal neighbors of both levels.
     cells=for {x,y,z} <- active, dy <- [0,-1],

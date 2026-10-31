@@ -1,5 +1,21 @@
 # Movement module map
 
+2026-10-27 生成气候接纳候选切片 A（尚未合回主仓／未通过正式气候 Ready 验收）：
+Player 在正常 canonical snapshot／bootstrap 后直接接纳 World `property_context.climate_source` 的同一不可变 Source，
+身体仍经 `VoxelRegion.Climate.at/2` 按完整 XYZ 查询，不从本地环境文件或窗口重新推断空气温度。
+`Player.observe/1` 的 `climate_source_identity` 从已接纳环境派生，无生成源时为 nil，不增加每帧 NIF 取样。
+普通旧环境与手工气候区入口保持既有合同；现行客户端 wire 不变。
+定向反例在 `voxim_player_test.exs --only climate_source_contract`，使用真实 Scene／Player 和明确的 World／身体存储替身，
+只证明快照交接，不证明真实 World／QUIC、天然雪演化、初始活动登记或旧世界迁移；正式发布仍等后续完整接线验收。
+
+2026-10-27 P6 窗口贡献（Global system，尚未启用物理边界）：Player 从现有 `window_domains` 与 `requested_window` 派生完整盒集合，
+由 `CollisionStream` 转交 World；域保留来源 `l0_box`，不从浮点 bounds 反推。事件 ACK 仅释放缓冲，private tick 提前安装未来域也不退休旧域，
+只在 `simulation_tick` 消费后的现有裁剪点发布退休。`Player.observe/1` 增加 `simulation_windows`、`collision_queue_length`。
+seal 导出 cut 前调用流接纳屏障，目标 attach 接续完整集合并拒绝旧 owner 的迟到发布；流异步等 World 登记回执，不把等待环带回 Player。
+真实 Scene／Player 的跨窗、prepared 提前安装和 seal/import 验证在 `revive_relocation_test.exs` 的 `simulation_windows` 标签；
+替身只提供世界数据、可控时钟和身体存储，不代表真实网络／双客户端验收。完整范围见
+[P6 实施记录](../../../../../docs/10-active/voxel-authority/2026-10-24-world-region-paging/p6-simulation-scope.md)。
+
 2026-10-16 圆明园坡道换窗尖峰（Global system）：旧 `floor(position / 64)` 中心在 Y=512 两侧反复切换，
 真实 W 输入回放触发 66732 行 complete 属性批，客户端单帧 46–65 ms。依据
 [Box2D 2.4 fat AABB](https://box2d.org/doc_version_2_4/classb2_dynamic_tree.html) 的“在扩展边界内移动不重建”策略，

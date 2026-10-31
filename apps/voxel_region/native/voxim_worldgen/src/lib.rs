@@ -1,8 +1,11 @@
 //! Voxim 的纯世界生成器与 DirtyCpu NIF；坐标始终是 canonical Y-up。
+mod climate;
 mod noise;
 mod skin;
 mod tree_shapes;
 mod world;
+
+pub use climate::{climate_samples, temperature_score, ClimateConfig};
 
 use rustler::{Binary, Env, Error, NifResult, OwnedBinary, Term};
 pub use world::{
@@ -58,6 +61,17 @@ fn generate_region<'a>(
     level_ok(level)?;
     let config = decode_config(config)?;
     binary(env, generate_body(level, [coord.0, coord.1, coord.2], &config))
+}
+
+/// 已接纳配置与显式作者参数的同序XYZ取样；只做气候算术，不读取生成页面。
+#[rustler::nif(schedule = "DirtyCpu", name = "climate_samples")]
+fn climate_samples_nif(cells: Vec<(i32,i32,i32)>, config: Term, kelvin: (f64,f64,i32,f64))
+    -> NifResult<Vec<(f64,f64)>> {
+    let config = decode_config(config)?;
+    let kelvin = ClimateConfig::new(kelvin.0,kelvin.1,kelvin.2,kelvin.3).ok_or(Error::BadArg)?;
+    let cells: Vec<_> = cells.into_iter().map(|(x,y,z)| [x,y,z]).collect();
+    if !kelvin.accepts(&cells,&config) { return Err(Error::BadArg); }
+    Ok(climate_samples(&cells,&config,&kelvin))
 }
 
 /// 一列的折叠边界 `{hmin, hmax, province_min, province_max}`；L5 一列要算四百万个列高，走 DirtyCpu。

@@ -16,14 +16,14 @@ defmodule VoxelRegion.World.Thermal do
   @deposit_seconds 0.5
 
   @doc """
-  排下一次定时热提交：固定 500 ms 墙钟节拍，下一次到期 = 上次到期 + 500 ms，回调耗时不拉长周期；
-  落后时立即开始、不积压补跑。任何时刻至多一个待到期节拍（新排程取消旧的）。
+  投递下一尚未完成的500ms自然步；due只在该自然步完成时推进。过期时投递一次续行，不堆积tick或扩大dt。
+  装页失败由PageLoad明确保持failed，只有显式恢复后才重新投递。
   """
   def schedule(state) do
     if state.thermal_timer, do: Process.cancel_timer(state.thermal_timer)
     now = System.monotonic_time(:millisecond)
-    due = max((state.thermal_due || now) + 500, now)
-    %{state | thermal_due: due, thermal_timer: Process.send_after(self(), :thermal_tick, due - now)}
+    due = state.thermal_due || now + 500
+    %{state | thermal_due: due, thermal_timer: Process.send_after(self(), {:thermal_tick, due}, max(due - now, 0))}
   end
 
   @doc """
@@ -31,7 +31,8 @@ defmodule VoxelRegion.World.Thermal do
   `touch/2`（每笔事务，含热提交自己的事务）调用它；是否真的推进由下一拍的 `begin/1` 判定。
   """
   def wake(%{thermal: nil} = state), do: state
-  def wake(%{thermal_timer: nil, thermal_run: nil} = state), do: schedule(state)
+  def wake(%{thermal_timer: nil, thermal_run: nil} = state),
+    do: if(VoxelRegion.World.PageLoad.failure(state), do: state, else: schedule(state))
   def wake(state), do: state
 
   @doc """
@@ -95,9 +96,10 @@ defmodule VoxelRegion.World.Thermal do
   开始一次 0.5 模拟秒的定时提交：先移除 2.5 s 未更新的身体接触；无热活动、拟态、身体接触，且电路要么没有种子、
   要么自上次零功率提交以来没有新事务（`thermal_quiet_seq`）时不开提交（`thermal_run` 仍为 nil）。
   电路种子（有储能的蓄能石、带温度记录的热电石）本身不推进：零功率网络的解只随事务（开关、编辑、温度写回）变化。
+  scheduled_due只由到期事件传入；既有显式强制提交省略它，同一内核推进但不消费未来定时事件。
   """
-  def begin(state) do
-    now = System.monotonic_time(:millisecond)
+  def begin(state, scheduled_due \\ nil) do
+    now = scheduled_due || System.monotonic_time(:millisecond)
     bodies = Enum.reduce(state.bodies, state.bodies, fn {cid, body}, bodies ->
       if now - body.at > 2_500, do: detach_body(bodies, cid), else: bodies
     end)
@@ -105,7 +107,7 @@ defmodule VoxelRegion.World.Thermal do
 
     if state.thermal.active or semblances(state) != %{} or state.bodies != %{} or
          (state.thermal_quiet_seq != state.seq and circuit_seeds(state, []) != []) do
-      run = %{ref: make_ref(), damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
+      run = %{ref: make_ref(), scheduled_due: scheduled_due, damage: state.damage, semblances: semblances(state), visited: MapSet.new(),
         remaining: 0.5, segment: nil, seq: state.seq, busy_us: 0, steps: 0, impacts: %{},
         started: System.monotonic_time(:microsecond), powered: false, disturbed: false}
       # 燃烧行在提交之间可被工具、放置等事务改写（已由 touch 并入）或删除：首轮按当前记录过滤。
@@ -137,6 +139,8 @@ defmodule VoxelRegion.World.Thermal do
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
 
     if run.remaining < 1.0e-12 do
+      # 显式强制步与到期步共用内核；只有到期步完成才消费相应墙钟事件。
+      state = if run.scheduled_due, do: %{state | thermal_due: run.scheduled_due + 500}, else: state
       {state, commit} = settle_run(%{state | thermal_run: nil}, run)
       {:done, state, commit}
     else
@@ -1077,5 +1081,27 @@ defmodule VoxelRegion.World.Thermal do
     emissivity = if VoxelRegion.ThermalRadiation.enabled?(config), do: config["emissivity"], else: 0.0
     {domain, ordered} = ThermalDomain.index(work.domain, emissivity)
     %{work | domain: domain, ordered: ordered}
+  end
+
+  @doc "只读本地调度进度：lag从due和run剩余量派生，不是历史世界状态成立的承诺；单调毫秒不能跨重启比较。"
+  def progress(state) do
+    now = System.monotonic_time(:millisecond)
+    due = state.thermal_due
+    run = state.thermal_run
+    remaining = if run && run.scheduled_due != nil, do: run.segment || run.remaining, else: 0.5
+    through = if due, do: due - round(remaining * 1000)
+    reason = cond do
+      VoxelRegion.World.PageLoad.failure(state) != nil -> :page_io_failed
+      due == nil -> :rest
+      state.page_store.level in [:mid, :hard] and run == nil -> :writeback
+      state.page_load.sim != nil -> :page_io
+      run != nil -> :cpu
+      true -> :timer
+    end
+    %{next_due_ms: due, simulated_through_ms: through, target_through_ms: if(due, do: now),
+      lag_ms: if(through, do: max(now - through, 0), else: 0),
+      pending_steps: if(due && now >= due, do: div(now - due, 500) + 1, else: 0),
+      remaining_s: if(run, do: run.segment || run.remaining, else: 0.0), wait_reason: reason,
+      model_elapsed_s: if(state.thermal, do: state.thermal.elapsed_s, else: 0.0)}
   end
 end
