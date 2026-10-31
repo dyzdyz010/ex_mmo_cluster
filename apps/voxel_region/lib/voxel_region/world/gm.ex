@@ -142,7 +142,7 @@ defmodule VoxelRegion.World.Gm do
       else
         receipt = Map.merge(receipt, %{cells: length(changed)})
         next = prune_instances(audit(next, rkey, receipt))
-        reply(Prefabs.prefab_reply(state, next, Enum.reverse(changed), %{material_supplies: %{rkey => receipt}}), receipt)
+        reply(Prefabs.prefab_reply(state, next, :operator, Enum.reverse(changed), %{material_supplies: %{rkey => receipt}}), receipt)
       end
     end
   end
@@ -171,7 +171,7 @@ defmodule VoxelRegion.World.Gm do
           {state, settlement} = if finite?, do: finite_fill(state, targets, material), else: {state, %{}}
           state = audit(state, rkey, receipt)
           settlement = Map.put(settlement, :material_supplies, %{rkey => receipt})
-          with {:ok, next} <- Edits.apply_batch(state, Enum.map(targets, &{&1, material}), false, settlement),
+          with {:ok, next} <- Edits.apply_batch(state, :operator, Enum.map(targets, &{&1, material}), false, settlement),
             do: {:ok, receipt, next}
       end
     end
@@ -201,7 +201,7 @@ defmodule VoxelRegion.World.Gm do
           # 与作者填／放相同的新材料初态；旧属性／数量由普通编辑链失效，邻水不参与结算。
           {state, settlement} = if finite?, do: finite_fill(state, targets, to), else: {state, %{}}
           settlement = Map.put(settlement, :material_supplies, %{rkey => receipt})
-          with {:ok, next} <- Edits.apply_batch(audit(state, rkey, receipt), Enum.map(targets, &{&1, to}), false, settlement),
+          with {:ok, next} <- Edits.apply_batch(audit(state, rkey, receipt), :operator, Enum.map(targets, &{&1, to}), false, settlement),
             do: {:ok, receipt, next}
       end
     end
@@ -223,7 +223,7 @@ defmodule VoxelRegion.World.Gm do
          true <- targets != [] || {:error, :gm_noop} do
       receipt = Map.merge(receipt, %{cells: length(targets), units: Enum.sum(Enum.map(targets, &elem(&1, 1)))})
       # 复用液体删除提交：数量归零、相态记录随格删除、边界邻格唤醒；不搬入库存。
-      with {:ok, next} <- Liquids.commit_liquid(audit(state, rkey, receipt), Map.new(targets, fn {cell, _} -> {cell, 0} end),
+      with {:ok, next} <- Liquids.commit_liquid(audit(state, rkey, receipt), :operator, Map.new(targets, fn {cell, _} -> {cell, 0} end),
              %{material_supplies: %{rkey => receipt}}),
         do: {:ok, receipt, next}
     end

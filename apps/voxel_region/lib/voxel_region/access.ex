@@ -210,6 +210,19 @@ defmodule VoxelRegion.Access do
     end
   end
 
+  @doc """
+  提交前的写集检查（执行点 2，由唯一提交入口 `World.Log.append_journal/3` 调用）：本笔写到的每个宏格，主体都必须可写。
+  运维与系统不受保护区约束；没有保护区时直接通过。写集 `cells` 是零元函数，只在需要判定时才计算。
+  """
+  @spec authorize_writes(principal(), map(), (-> Enumerable.t())) :: :ok | {:error, :protected_region}
+  def authorize_writes(principal, protection, cells) do
+    cond do
+      principal in [:operator, :system] -> :ok
+      Protection.empty?(protection) -> :ok
+      true -> authorize_cells(principal, protection, Enum.to_list(cells.()), :commit)
+    end
+  end
+
   defp kind({kind, _cid}), do: kind
   defp kind(kind) when is_atom(kind), do: kind
 

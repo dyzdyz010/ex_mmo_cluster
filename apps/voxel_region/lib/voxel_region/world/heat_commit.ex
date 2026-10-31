@@ -21,7 +21,7 @@ defmodule VoxelRegion.World.HeatCommit do
     state =
       cond do
         dead == [] and map_size(phase_changes) > 0 ->
-          {:ok, state} = Liquids.commit_liquid(state, phase_changes, Map.merge(%{property_states: rows}, extra))
+          {:ok, state} = Liquids.commit_liquid(state, :system, phase_changes, Map.merge(%{property_states: rows}, extra))
           state
 
         dead == [] ->
@@ -35,7 +35,7 @@ defmodule VoxelRegion.World.HeatCommit do
           macros = for t <- dead, t.granularity == 0, do: {Damage.macro(t), 0}
           owners = MapSet.new(for t <- dead, t.granularity == 2, do: t.owner)
           attachments = MapSet.new(for t <- dead, t.granularity == 3, do: t.incarnation)
-          {:ok, state} = Liquids.commit_liquid(state, phase_changes, Map.merge(%{property_states: rows}, extra),
+          {:ok, state} = Liquids.commit_liquid(state, :system, phase_changes, Map.merge(%{property_states: rows}, extra),
             macros, owners, attachments)
           state
       end
@@ -72,7 +72,7 @@ defmodule VoxelRegion.World.HeatCommit do
     } |> Map.merge(extra)
 
     start = System.monotonic_time(:microsecond)
-    :ok = Log.append_log(before, state, txn)
+    :ok = Log.append_log(before, state, txn, :system)
     persisted = System.monotonic_time(:microsecond)
     state = Log.remember_entry(state, txn)
     remembered = System.monotonic_time(:microsecond)
@@ -162,7 +162,7 @@ defmodule VoxelRegion.World.HeatCommit do
       settlement = %{transform_products: products, property_states: Map.values(carried),
         prefab_phase_preserved: preserved}
 
-      case Prefabs.prefab_reply(state, next, cells, settlement) do
+      case Prefabs.prefab_reply(state, next, :system, cells, settlement) do
         {:reply, {:ok, _}, committed} ->
           Logger.info("voxel_transform seq=#{committed.seq} nodes=#{map_size(products)} transform_j=#{committed.thermal.transform_j}")
           committed
@@ -261,7 +261,7 @@ defmodule VoxelRegion.World.HeatCommit do
 
       state = %{state | seq: seq}
       txn = %{seq: seq, entries: [], coarse: [], property_states: rows}
-      :ok = Log.append_log(before, state, txn)
+      :ok = Log.append_log(before, state, txn, :system)
       Log.remember_entry(state, txn)
     end
   end

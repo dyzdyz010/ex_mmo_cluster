@@ -17,21 +17,35 @@ defmodule VoxelRegion.World.Log do
   @doc """
   追加一笔事务。实例表与附件归属只写本笔的按键增量（`instances_delta` / `attachment_owners_delta`：id => 新记录或 nil = 删除；M2b）：
   按需装页后内存里只有驻留的身份，整表不再是完整真值，回放只能按键合并。未改动时不写；每笔日志不随世界的实例／附件总数增长。
-  `before` 是本笔提交前的 World 状态。
+  `before` 是本笔提交前的 World 状态；`principal` 是这笔提交的主体（见 `append_journal/3`）。
   """
-  def append_log(before, state, txn) do
+  def append_log(before, state, txn, principal) do
     metadata = journal(state, txn)
     metadata = if state.instances == before.instances, do: metadata, else: Map.put(metadata, :instances_delta, delta(before.instances, state.instances))
     metadata = if state.attachment_owners == before.attachment_owners, do: metadata,
       else: Map.put(metadata, :attachment_owners_delta, delta(before.attachment_owners, state.attachment_owners))
-    append_journal(state, metadata)
+    append_journal(state, metadata, principal)
   end
 
   defp delta(old, now), do: for({id, _} <- Map.merge(old, now), Map.get(old, id) != Map.get(now, id), into: %{}, do: {id, Map.get(now, id)})
 
-  @doc "按已备好的日志表示追加；实时落体帧、待施放与操作反馈只随本次广播。"
-  def append_journal(%{log: {backend, handle}}, journal),
-    do: backend.append(handle, Map.drop(journal, [:liquid_falls, :casts, :operation]))
+  @doc """
+  按已备好的日志表示追加；实时落体帧、待施放与操作反馈只随本次广播。
+
+  这是唯一的提交入口，也是授权的第二个执行点：先对本笔写集做 `VoxelRegion.Access.authorize_writes/3`，
+  被拒时不落库、返回 `{:error, :protected_region}`，调用方照常回复 `before`。写集 = 写入口登记的宏格（`Pages.wrote/2`）
+  加上本笔属性行作用的宏格。新的写操作只要经写入口改格、经这里提交，就自动受检查。
+  """
+  def append_journal(%{log: {backend, handle}} = state, journal, principal) do
+    with :ok <- VoxelRegion.Access.authorize_writes(principal, state.protection, fn -> write_set(state, journal) end),
+      do: backend.append(handle, Map.drop(journal, [:liquid_falls, :casts, :operation]))
+  end
+
+  defp write_set(state, journal) do
+    rows = Map.get(journal, :property_states, [])
+    cells = Enum.flat_map(rows, &VoxelRegion.World.Claims.target_cells(state, &1))
+    Enum.into(cells, Map.get(state, :written, MapSet.new()))
+  end
 
   @doc "纯液体数量提交的日志元数据：实例表与附件归属未变，不写增量。"
   def liquid_journal(state, txn), do: journal(state, txn)
@@ -51,6 +65,8 @@ defmodule VoxelRegion.World.Log do
 
   # 事务正文唯一持有；区域索引只由成功提交、重放或压实的同一条目派生。
   def remember_entry(state, full) do
+    # 写集只属于刚提交的这一笔。
+    state = Map.put(state, :written, MapSet.new())
     state = VoxelRegion.World.Pages.remember(state, full)
     state = VoxelRegion.World.Interactions.apply(state, full)
     state = retain_entry(state, full)

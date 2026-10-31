@@ -119,7 +119,7 @@ defmodule VoxelRegion.World.Casting do
     record = %{live: 1, t0_us: System.system_time(:microsecond), steps: quote.steps, program: request.program,
       origin: {ex + dx * @hand_reach, ey + dy * @hand_reach, ez + dz * @hand_reach}}
 
-    case commit_casts(state, %{actor.cid => record}) do
+    case commit_casts(state, {:character, actor.cid}, %{actor.cid => record}) do
       {:ok, next} ->
         monitor = Process.monitor(actor.player)
         send(actor.player, {:cast_prepared, actor.action_key, quote.windup_s})
@@ -152,7 +152,7 @@ defmodule VoxelRegion.World.Casting do
       nil -> state
       {cid, pending} ->
         Process.demonitor(pending.monitor, [:flush])
-        {:ok, next} = commit_casts(state, %{cid => %{live: 0, outcome: 2}})
+        {:ok, next} = commit_casts(state, :system, %{cid => %{live: 0, outcome: 2}})
         GenServer.reply(pending.from, {:error, reason})
         %{next | pending_casts: Map.delete(next.pending_casts, cid)}
     end
@@ -164,7 +164,7 @@ defmodule VoxelRegion.World.Casting do
         settle_spell(next, pending.actor, pending.request, checked, pending.quote)
 
       {:error, reason} ->
-        case commit_casts(state, %{pending.actor.cid => %{live: 0, outcome: 2}}) do
+        case commit_casts(state, {:character, pending.actor.cid}, %{pending.actor.cid => %{live: 0, outcome: 2}}) do
           {:ok, next} ->
             Logger.info("voxel_cast_rejected seq=#{next.seq} cid=#{pending.actor.cid} request_id=#{pending.request.request_id} reason=#{reason}")
             {{:error, reason}, next}
@@ -176,11 +176,11 @@ defmodule VoxelRegion.World.Casting do
   end
 
   # 只带待施放记录的事务（同只带落体帧的事务）：日志里是空事务，保持 seq 连续；记录只随本次广播。
-  def commit_casts(state, casts) do
+  def commit_casts(state, principal, casts) do
     next = %{state | seq: state.seq + 1}
     txn = %{seq: next.seq, entries: [], coarse: [], casts: casts}
 
-    with :ok <- Log.append_log(state, next, txn) do
+    with :ok <- Log.append_log(state, next, txn, principal) do
       next = Log.remember_entry(next, txn)
       Observation.fanout(next, txn)
       Observation.fanout_canonical(next, txn, [], [], state)
@@ -399,7 +399,7 @@ defmodule VoxelRegion.World.Casting do
         casts: %{cid => %{live: 0, outcome: if(outcome, do: 1, else: 0)}}}
       |> Map.merge(Thermal.semblance_txn(Thermal.semblances(before), next))
 
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, {:character, cid}) do
       :ok ->
         unless previous, do: Process.monitor(actor.player)
         next = Log.remember_entry(next, txn)

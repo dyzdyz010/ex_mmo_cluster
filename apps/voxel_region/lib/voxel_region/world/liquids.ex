@@ -150,7 +150,7 @@ defmodule VoxelRegion.World.Liquids do
           if map_size(water)==0 do
             s
           else
-            {:ok,s}=commit_liquid(s,water,%{liquid_wake: false,liquid_material: material})
+            {:ok,s}=commit_liquid(s,:system,water,%{liquid_wake: false,liquid_material: material})
             s
           end
         end)
@@ -236,7 +236,7 @@ defmodule VoxelRegion.World.Liquids do
       {state,carried,inventory,units}=Phases.transfer_phase_inventory(state,cid,cell,material,action,transfer.transferred_units,balance)
       {state,settlement}=Production.settle_material(state,cid,material,units)
       settlement=Map.merge(settlement,%{phase_values: carried,phase_inventory: inventory,liquid_material: material})
-      commit_liquid(state,transfer.changes,settlement)
+      commit_liquid(state,{:character,cid},transfer.changes,settlement)
     end
   end
 
@@ -255,7 +255,7 @@ defmodule VoxelRegion.World.Liquids do
       end)
       {state,settlement}=Production.settle_material(state,cid,material,-units)
       receipt=%{seq: state.seq+1,material: material,units: units,cells: length(moved)}
-      fill_commit(state,moved,receipt_key,receipt,Map.merge(settlement,%{phase_values: values,phase_inventory: inventory}))
+      fill_commit(state,{:character,cid},moved,receipt_key,receipt,Map.merge(settlement,%{phase_values: values,phase_inventory: inventory}))
     else
       {:error,_}=error -> error
     end
@@ -281,7 +281,7 @@ defmodule VoxelRegion.World.Liquids do
       else
         {state,%{}}
       end
-      fill_commit(state,moved,receipt_key,Map.merge(receipt,%{units: units,cells: length(moved)}),%{phase_values: values})
+      fill_commit(state,:operator,moved,receipt_key,Map.merge(receipt,%{units: units,cells: length(moved)}),%{phase_values: values})
     end
   end
 
@@ -301,11 +301,11 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
 
-  defp fill_commit(state,moved,receipt_key,receipt,settlement) do
+  defp fill_commit(state,principal,moved,receipt_key,receipt,settlement) do
     material=receipt.material
     state=%{state | material_supplies: Map.put(state.material_supplies,receipt_key,receipt)}
     settlement=Map.merge(settlement,%{liquid_material: material,material_supplies: %{receipt_key => receipt}})
-    with {:ok,next} <- commit_liquid(state,Map.new(moved,fn {cell,_}->{cell,liquid_capacity(state)} end),settlement) do
+    with {:ok,next} <- commit_liquid(state,principal,Map.new(moved,fn {cell,_}->{cell,liquid_capacity(state)} end),settlement) do
       true=next.seq==receipt.seq
       {:ok,receipt,next}
     end
@@ -381,7 +381,7 @@ defmodule VoxelRegion.World.Liquids do
     end
   end
 
-  def commit_liquid(state, changes, settlement, extra_edits \\ [], owners \\ MapSet.new(), attachments \\ MapSet.new()) do
+  def commit_liquid(state, principal, changes, settlement, extra_edits \\ [], owners \\ MapSet.new(), attachments \\ MapSet.new()) do
     liquid_material=Map.get(settlement,:liquid_material,21)
     for {level,region}=key <- Enum.uniq(Edits.edit_keys(Map.keys(changes))), Edits.needs_source?(state,key),
       do: :ok=state.source.ensure(state.source_state,level,region)
@@ -400,7 +400,7 @@ defmodule VoxelRegion.World.Liquids do
     end
     state=fuel_ledger(state,liquid_material,values,next_values,changes)
     settlement=Map.merge(settlement,%{liquid_changes: changes,phase_values: next_values})
-    Edits.apply_batch(state,edits++extra_edits,false,settlement,owners,attachments)
+    Edits.apply_batch(state,principal,edits++extra_edits,false,settlement,owners,attachments)
   end
 
   # 燃料账：已初始化剩余燃料随数量搬运时总量不变；隐含满燃料的格与带燃料的量相遇即初始化（记入初始化账），
@@ -434,7 +434,7 @@ defmodule VoxelRegion.World.Liquids do
     before = state
     state = %{state | seq: state.seq + 1}
     txn = %{seq: state.seq, entries: [], coarse: []}
-    :ok = Log.append_log(before, state, txn)
+    :ok = Log.append_log(before, state, txn, :system)
     state = Log.remember_entry(state, txn)
     Observation.fanout(state, txn)
     Observation.fanout_canonical(state, txn, [], [], state)
@@ -475,7 +475,7 @@ defmodule VoxelRegion.World.Liquids do
     previous = Map.get(state.liquid_falls, material, [])
     settlement = if falls != [] or previous != [],
       do: Map.put(settlement, :liquid_falls, %{material: material, transfers: falls}), else: settlement
-    case commit_liquid(state,changes,settlement) do
+    case commit_liquid(state,:system,changes,settlement) do
       {:ok,next}->%{next | liquid_falls: Map.put(next.liquid_falls, material, falls)}
       {:error,reason}->Logger.error("voxel_liquid_commit failed=#{inspect(reason)}"); state
     end

@@ -166,7 +166,7 @@ defmodule VoxelRegion.World.Parcel do
       next = %{next | damage: Map.merge(next.damage, Map.new(rows, &{Damage.key(&1), &1})),
         material_supplies: Map.put(next.material_supplies, rkey, receipt)}
 
-      case Prefabs.prefab_reply(before, next, cells,
+      case Prefabs.prefab_reply(before, next, :operator, cells,
              %{material_supplies: %{rkey => receipt}, parcel_phase_values: values, property_states: rows}) do
         {:reply, {:ok, ^seq}, next} -> {:reply, {:ok, receipt}, next}
         {:reply, {:error, reason}, _} -> {:reply, {:error, reason}, before}

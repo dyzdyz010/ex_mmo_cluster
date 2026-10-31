@@ -50,7 +50,7 @@ defmodule VoxelRegion.World.Canonical do
     removed = MapSet.difference(old, new)
     refined = if RefinedSlots.size(slots) == 0, do: Map.delete(state.refined, cell), else: Map.put(state.refined, cell, slots)
 
-    state = Enum.reduce(MapSet.union(old, new), state, &Pages.touch(&2, &1))
+    state = Enum.reduce(MapSet.union(old, new), Pages.wrote(state, cell), &Pages.touch(&2, &1))
     state = Map.put(state, :refined_region_owners,
       index_region_owners(Map.get(state, :refined_region_owners, %{}), region_of(cell), added, removed))
     owners = state.refined_owners |> index_owners(cell, added, MapSet.new())
@@ -89,7 +89,7 @@ defmodule VoxelRegion.World.Canonical do
   def put_liquid(state, changes) do
     Enum.reduce(changes, state, fn {cell, quantity}, s ->
       region = region_of(cell)
-      s = Pages.mark(s, Pages.cell_unit(:liquid_units, cell))
+      s = s |> Pages.mark(Pages.cell_unit(:liquid_units, cell)) |> Pages.wrote(cell)
 
       if quantity == 0 do
         %{s | liquid_units: Map.delete(s.liquid_units, cell),
@@ -122,7 +122,7 @@ defmodule VoxelRegion.World.Canonical do
     old = Map.get(state.macro_owners, cell)
     region = region_of(cell)
     cells = state.macro_owner_cells |> index_cell_if(old, cell, false) |> index_cell_if(owner, cell, true)
-    state = Pages.mark(state, Pages.cell_unit(:macro_owners, cell))
+    state = state |> Pages.mark(Pages.cell_unit(:macro_owners, cell)) |> Pages.wrote(cell)
     state = Enum.reduce(Enum.reject([old, owner], &is_nil/1), state, &Pages.touch(&2, &1))
 
     if owner == nil do
@@ -171,7 +171,7 @@ defmodule VoxelRegion.World.Canonical do
 
   @doc "写入（新增或改值）附件槽，同步维护派生索引。"
   def put_attachments(state, entries) do
-    state = Enum.reduce(entries, state, fn {slot, _}, s -> Pages.mark(s, Pages.slot_unit(slot)) end)
+    state = Enum.reduce(entries, state, fn {slot, _}, s -> s |> Pages.mark(Pages.slot_unit(slot)) |> Pages.wrote(Pages.slot_cell(slot)) end)
     replaced = for {slot, _} <- entries, {:ok, old} <- [Map.fetch(state.attachments, slot)], do: {slot, old}
     regions = aid_slots(%{aid_regions: aid_slots(state, replaced, -1)}, entries, 1)
     state = Enum.reduce(replaced ++ Enum.to_list(entries), state, fn {_, {aid, _}}, s -> Pages.touch(s, {:aid, aid}) end)
@@ -183,7 +183,9 @@ defmodule VoxelRegion.World.Canonical do
   @doc "删除附件槽，同步维护派生索引。"
   def drop_attachments(state, slots) do
     dropped = for slot <- slots, {:ok, value} <- [Map.fetch(state.attachments, slot)], do: {slot, value}
-    marked = Enum.reduce(dropped, state, fn {slot, {aid, _}}, s -> s |> Pages.mark(Pages.slot_unit(slot)) |> Pages.touch({:aid, aid}) end)
+    marked = Enum.reduce(dropped, state, fn {slot, {aid, _}}, s ->
+      s |> Pages.mark(Pages.slot_unit(slot)) |> Pages.wrote(Pages.slot_cell(slot)) |> Pages.touch({:aid, aid})
+    end)
     Map.put(%{marked | attachments: Map.drop(state.attachments, slots),
       attachment_regions: Enum.reduce(dropped, state.attachment_regions, fn {slot, _}, index ->
         drop_region_cell(index, Attachments.region(slot), slot)

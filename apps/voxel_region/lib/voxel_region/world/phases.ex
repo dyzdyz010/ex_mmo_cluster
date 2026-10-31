@@ -139,7 +139,7 @@ defmodule VoxelRegion.World.Phases do
         |> Map.update(:phase_unused_j,result.unused_j,&(&1+result.unused_j))
       {state,settlement}=Production.settle_material(%{state | thermal: thermal},actor.cid,fuel,-units)
       settlement=Map.merge(settlement,%{phase_values: %{cell=>{result.energy,integrity}}})
-      case Liquids.commit_liquid(state,%{cell=>q},settlement) do
+      case Liquids.commit_liquid(state,{:character,actor.cid},%{cell=>q},settlement) do
         {:ok,next}->
           Logger.info("voxel_phase seq=#{next.seq} action=#{tool["action"]} cell=#{inspect(cell)} units=#{q} used_j=#{abs(result.supplied_j)} unused_j=#{result.unused_j}")
           {:reply,{:ok,next.seq},next}
@@ -180,7 +180,7 @@ defmodule VoxelRegion.World.Phases do
     end
     {state,changes,settlement}=settlement
     settlement=Map.merge(settlement,Observation.operation_metadata(before,actor,request,if(request.action==2 or target.hp==0.0,do: 1,else: 0),target))
-    case Liquids.commit_liquid(state,changes,settlement) do
+    case Liquids.commit_liquid(state,{:character,actor.cid},changes,settlement) do
       {:ok,next}->{:reply,{:ok,next.seq},next}
       {:error,reason}->{:reply,{:error,reason},before}
     end

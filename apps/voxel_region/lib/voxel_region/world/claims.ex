@@ -65,12 +65,12 @@ defmodule VoxelRegion.World.Claims do
           length(Protection.held(p, holder)) >= tool["region_max_count"] -> {:reply, {:error, :region_limit}, state}
           Protection.overlaps?(p, min, max) -> {:reply, {:error, :region_overlap}, state}
           region_occupied?(state, region, actor.cid) -> {:reply, {:error, :region_occupied}, state}
-          true -> commit_protection(state, state, %{{state.seq + 1, 1} => region})
+          true -> commit_protection(state, state, {:character, actor.cid}, %{{state.seq + 1, 1} => region})
         end
 
       match?({_, %{holder: ^holder}}, Protection.region_at(p, cell)) ->
         {id, _} = Protection.region_at(p, cell)
-        commit_protection(state, %{state | claim_corners: corners}, %{id => nil})
+        commit_protection(state, %{state | claim_corners: corners}, {:character, actor.cid}, %{id => nil})
 
       Protection.holder(p, cell) != nil ->
         {:reply, {:error, :region_overlap}, state}
@@ -94,14 +94,14 @@ defmodule VoxelRegion.World.Claims do
   end
 
   # 区域增量独立成一笔事务；边界改变后热工作集（接触图、视线缓存）整体重建，边界两侧液体重新唤醒。
-  def commit_protection(before, state, delta) do
+  def commit_protection(before, state, principal, delta) do
     next = %{state | seq: state.seq + 1, protection: Protection.apply(state.protection, delta)}
     rects = for {id, r} <- delta, r = r || before.protection.regions[id], do: r
     wet = for {cell, _} <- next.liquid_units, Enum.any?(rects, &Protection.contains?(&1, cell, 1)), do: cell
     next = next |> Thermal.rebuild_work() |> Liquids.wake_liquid(wet)
     txn = %{seq: next.seq, entries: [], coarse: [], protection: delta}
 
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, principal) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)

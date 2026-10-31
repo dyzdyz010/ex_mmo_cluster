@@ -76,7 +76,7 @@ defmodule VoxelRegion.World.CoarseRebuild do
     before = state
     state = %{state | seq: state.seq + 1}
     txn = %{seq: state.seq, entries: [], coarse: []}
-    :ok = Log.append_log(before, state, txn)
+    :ok = Log.append_log(before, state, txn, :system)
     state = Log.remember_entry(state, txn)
     published = PageCut.publish_now(state)
     true = Map.delete(Map.take(state, @metadata), :seq) === Map.delete(metadata, :seq)

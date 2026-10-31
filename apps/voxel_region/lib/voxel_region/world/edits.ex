@@ -47,10 +47,10 @@ defmodule VoxelRegion.World.Edits do
 
   def parent_of({x, y, z}), do: {floor_div(x, 2), floor_div(y, 2), floor_div(z, 2)}
 
-  def do_apply_edit(state, coord, material) do
+  def do_apply_edit(state, principal, coord, material) do
     old_seq = state.seq
 
-    case apply_batch(state, [{coord, material}], true) do
+    case apply_batch(state, principal, [{coord, material}], true) do
       {:ok, state} when state.seq == old_seq -> {:ok, :noop, state}
       {:ok, state} -> {:ok, Map.fetch!(state.entries, state.seq), state}
       error -> error
@@ -65,7 +65,7 @@ defmodule VoxelRegion.World.Edits do
 
       Enum.reduce(
         regions,
-        %{Pages.mark(state, Pages.overlay_unit(level, cell)) | overlay: Map.put(state.overlay, {level, cell}, value)},
+        %{written(Pages.mark(state, Pages.overlay_unit(level, cell)), level, cell) | overlay: Map.put(state.overlay, {level, cell}, value)},
         fn key, state ->
           %{
             Payloads.cache_delete(state, key)
@@ -77,8 +77,14 @@ defmodule VoxelRegion.World.Edits do
     end
   end
 
+  # 粗层格由 L0 写逐级归约而来，授权写集只记 L0 宏格。
+  defp written(state, 0, cell), do: Pages.wrote(state, cell)
+  defp written(state, _level, _cell), do: state
+
+  # `principal` 是这笔提交的主体，提交入口按它检查写集（`Log.append_journal/3`）。
   def apply_batch(
          state,
+         principal,
          edits,
          legacy \\ false,
          settlement \\ %{},
@@ -191,11 +197,11 @@ defmodule VoxelRegion.World.Edits do
 
       {[], state} when map_size(liquid_changes) == 0 ->
         cond do
-          removed_slots != [] -> AttachmentOps.commit_attachment(before, state, removed_slots, settlement)
+          removed_slots != [] -> AttachmentOps.commit_attachment(before, state, principal, removed_slots, settlement)
           Map.has_key?(settlement, :liquid_falls) ->
             next = %{state | seq: state.seq + 1}
             txn = %{seq: next.seq, entries: [], coarse: [], liquid_falls: settlement.liquid_falls}
-            with :ok <- Log.append_log(before, next, txn) do
+            with :ok <- Log.append_log(before, next, txn, principal) do
               next = Log.remember_entry(next, txn)
               Observation.fanout(next, txn)
               Observation.fanout_canonical(next, txn, [], [], before)
@@ -332,7 +338,7 @@ defmodule VoxelRegion.World.Edits do
                      {:ok,{m,_},_}=cell_value(state,0,c); MmoContracts.VoxelMaterialCatalog.blocks_movement?(m)
                    end))),
                  collided = System.monotonic_time(:microsecond),
-                 :ok <- append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
+                 :ok <- append_journal(before, state, principal, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
               appended = System.monotonic_time(:microsecond)
               state = Log.remember_entry(state, txn)
               Observation.fanout(state, txn)
@@ -365,7 +371,7 @@ defmodule VoxelRegion.World.Edits do
   # 持久日志的表示：区域后像只因液体数量变化而产生（无附件、实例、细化、移除）时，日志改记变化格——
   # 材料用既有 0x77 kind0 格条目，数量用 `liquid_units` 增量（0 = 删除），回放标记同一批区域为完整快照。
   # 日志体积随变化格数增长，不随区域大小；在线广播、订阅与 Replica 仍消费含后像的原事务。
-  defp append_journal(before, state, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
+  defp append_journal(before, state, principal, txn, afterimages, all, liquid_dirty, attachment_keys, removed_cells, canopy_keys) do
     if canopy_keys == [] and afterimages != [] and attachment_keys == [] and removed_cells == [] and state.instances == before.instances and
          state.attachment_owners == before.attachment_owners and state.refined == before.refined do
       covered = MapSet.new(Payloads.region_keys(liquid_dirty))
@@ -374,9 +380,9 @@ defmodule VoxelRegion.World.Edits do
           do: %{seq: state.seq, coord: cell, material: elem(Map.fetch!(state.overlay, {0, cell}), 0), coarse: []}
       units = Map.new(liquid_dirty, fn {0, cell} -> {cell, Map.get(state.liquid_units, cell, 0)} end)
       Log.append_journal(state, %{Log.liquid_journal(state, txn) | entries: (txn.entries -- afterimages) ++ cells}
-        |> Map.put(:liquid_units, units))
+        |> Map.put(:liquid_units, units), principal)
     else
-      Log.append_log(before, state, txn)
+      Log.append_log(before, state, txn, principal)
     end
   end
 

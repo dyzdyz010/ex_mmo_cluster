@@ -93,7 +93,7 @@ defmodule VoxelRegion.World.Production do
       phase_inventory: Map.merge(next.phase_inventory, inventory)}
     txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances,
       material_supplies: %{key => receipt}, phase_inventory: inventory, thermal: thermal}
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, :operator) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)
@@ -170,7 +170,7 @@ defmodule VoxelRegion.World.Production do
         txn = %{seq: next.seq, entries: [], coarse: [], material_balances: paid.material_balances,
           food_ledger: ledger, food_receipts: receipts}
 
-        case Log.append_log(before, next, txn) do
+        case Log.append_log(before, next, txn, {:character, actor.cid}) do
           :ok ->
             next = Log.remember_entry(next, txn)
             Observation.fanout(next, txn)
@@ -209,7 +209,7 @@ defmodule VoxelRegion.World.Production do
         next = %{state | seq: before.seq + 1, craft_ledger: ledger}
         txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances, craft_ledger: ledger}
 
-        case Log.append_log(before, next, txn) do
+        case Log.append_log(before, next, txn, {:character, actor.cid}) do
           :ok ->
             next = Log.remember_entry(next, txn)
             Observation.fanout(next, txn)
@@ -315,7 +315,7 @@ defmodule VoxelRegion.World.Production do
 
   def death_place(state, cid, cell, material) do
     {state, settlement} = settle_material(state, cid, material, -build_cost(state, material))
-    Edits.apply_batch(state, [{cell, material}], false, Map.put(settlement, :placed, %{cell => cid}))
+    Edits.apply_batch(state, {:character, cid}, [{cell, material}], false, Map.put(settlement, :placed, %{cell => cid}))
   end
 
   def build_material(before, actor, request) do
@@ -361,11 +361,11 @@ defmodule VoxelRegion.World.Production do
               inventory=%{{actor.cid,request.material}=>remaining}
               state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
               # Inventory Ice stays solid; any later thermal phase completion is ordinary simulation.
-              Edits.apply_batch(state,displaced++[{request.coord,request.material}],false,Map.merge(settlement,%{
+              Edits.apply_batch(state,{:character,actor.cid},displaced++[{request.coord,request.material}],false,Map.merge(settlement,%{
                 liquid_changes: Map.put(displacement.liquid_changes,request.coord,cost),
                 phase_values: Map.put(displacement.phase_values,request.coord,portion),phase_inventory: inventory}))
             else
-              Edits.apply_batch(state, displaced++[{request.coord, request.material}], false, Map.merge(settlement,displacement))
+              Edits.apply_batch(state, {:character, actor.cid}, displaced++[{request.coord, request.material}], false, Map.merge(settlement,displacement))
             end
           else
             :error -> {:error, :invalid_tool}

@@ -1208,7 +1208,7 @@ defmodule VoxelRegion.World do
       t |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
         |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
     end),else: nil
-    case apply_batch(%{state | thermal: thermal}, edits, false, %{liquid_changes: changes,phase_values: values}) do
+    case apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{liquid_changes: changes,phase_values: values}) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},state}
     end
@@ -1231,7 +1231,7 @@ defmodule VoxelRegion.World do
 
     if Enum.any?(delta, &(elem(&1, 1) == :overlap)),
       do: {:reply, {:error, :region_overlap}, state},
-      else: commit_protection(state, state, Map.new(delta))
+      else: commit_protection(state, state, :operator, Map.new(delta))
   end
 
   defp call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
@@ -1544,7 +1544,7 @@ defmodule VoxelRegion.World do
 
     case subtree_cells(state, ids) do
       [] -> {:reply, {:error, :instance_not_found}, state}
-      cells -> prefab_reply(state, clear_subtree(state, ids, cells), cells)
+      cells -> prefab_reply(state, clear_subtree(state, ids, cells), :operator, cells)
     end
   end
 
@@ -1634,10 +1634,10 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 原始编辑：主体是否可写这些格由提交入口的写集检查判定（`Log.append_journal/3`），这里不另算格。
   defp call({:apply_edit, principal, coord, material}, from, state) do
-    result = with :ok <- Access.authorize_cells(principal, state.protection, [coord], :raw_edit),
-      {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
-      do: do_apply_edit(state, coord, material)
+    result = with {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
+      do: do_apply_edit(state, principal, coord, material)
     case result do
       {:ok, :noop, state} ->
         acknowledge_noop(state, from)
@@ -1769,8 +1769,7 @@ defmodule VoxelRegion.World do
   end
 
   defp call({:apply_edits, principal, edits}, from, state) do
-    result = with :ok <- Access.authorize_cells(principal, state.protection, Enum.map(edits, &elem(&1, 0)), :raw_edit),
-      {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, edits)
+    result = with {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, principal, edits)
     case result do
       {:ok, next_state} ->
         if next_state.seq == state.seq, do: acknowledge_noop(next_state, from)
