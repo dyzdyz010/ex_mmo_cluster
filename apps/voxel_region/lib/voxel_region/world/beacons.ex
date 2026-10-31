@@ -33,7 +33,7 @@ defmodule VoxelRegion.World.Beacons do
           receipt = %{seq: state.seq + 1, beacon: id}
           next = %{state | beacons: Map.put(state.beacons, id, record),
             material_supplies: Map.put(state.material_supplies, rkey, receipt)}
-          commit(state, next, %{beacons: %{id => record}, material_supplies: %{rkey => receipt}}, receipt)
+          commit(state, next, :operator, %{beacons: %{id => record}, material_supplies: %{rkey => receipt}}, receipt)
         else
           {:reply, {:error, :not_an_anchor}, state}
         end
