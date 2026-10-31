@@ -67,7 +67,7 @@ defmodule VoxelRegion.Access do
     apply_edit: :raw_edit,
     apply_edits: :raw_edit,
 
-    # GM 施工（另需部署开关 VOXIM_GM_TOOLS，由 World.Gm 判定）
+    # GM 施工（另需部署开关 VOXIM_GM_TOOLS，见 `@requirements`）
     gm: :gm_build,
     gm_prepare: :gm_build,
 
@@ -152,11 +152,18 @@ defmodule VoxelRegion.Access do
     entries_after: :read
   }
 
+  # 动作类除主体类别外还要求的部署开关：动作类 => {开关属性, 开关关闭时的拒绝原因}。
+  # 开关的值由调用方从部署配置取来作为属性传入（`authorize/3`），这里只定义"要什么开关"。
+  @requirements %{gm_build: {:gm_tools, :gm_disabled}}
+
   @doc "登记表：消息标签 => 动作类（测试与观测用）。"
   def messages, do: @messages
 
   @doc "策略表：动作类 => 允许的主体类别（测试与观测用）。"
   def policy, do: @policy
+
+  @doc "部署开关要求：动作类 => {开关属性, 拒绝原因}（测试与观测用）。"
+  def requirements, do: @requirements
 
   # 准备包装本身不是动作，按里面的原消息判定（见 `admit/1`）。
   @wrappers [:prepare_intent, :prepared_intent]
@@ -165,13 +172,21 @@ defmodule VoxelRegion.Access do
   def wrappers, do: @wrappers
 
   @doc """
-  主体能否发起这类动作。拒绝时打一行 `world_access_denied` 结构化日志，返回 `{:error, :forbidden}`。
+  主体能否发起这类动作。先看主体类别（`@policy`），再看动作类要求的部署开关（`@requirements`，开关值由 `attributes` 传入）。
+  拒绝时打一行 `world_access_denied` 结构化日志，返回 `{:error, :forbidden}` 或开关对应的原因（如 `:gm_disabled`）。
   """
-  @spec authorize(principal(), action()) :: :ok | {:error, :forbidden}
-  def authorize(principal, action) do
-    case Map.fetch!(@policy, action) do
-      :any -> :ok
-      kinds -> if kind(principal) in kinds, do: :ok, else: deny(principal, action, :forbidden)
+  @spec authorize(principal(), action(), map()) :: :ok | {:error, :forbidden | :gm_disabled}
+  def authorize(principal, action, attributes \\ %{}) do
+    allowed =
+      case Map.fetch!(@policy, action) do
+        :any -> true
+        kinds -> kind(principal) in kinds
+      end
+
+    case {allowed, Map.get(@requirements, action)} do
+      {false, _} -> deny(principal, action, :forbidden)
+      {true, nil} -> :ok
+      {true, {switch, reason}} -> if Map.get(attributes, switch) == true, do: :ok, else: deny(principal, action, reason)
     end
   end
 

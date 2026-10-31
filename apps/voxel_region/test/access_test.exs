@@ -37,7 +37,9 @@ defmodule VoxelRegion.AccessTest do
       assert :ok = Access.authorize(:operator, :raw_edit)
       assert {:error, :forbidden} = Access.authorize({:character, 1}, :gm_build)
       assert {:error, :forbidden} = Access.authorize({:genesis, 1}, :world_authoring)
-      assert :ok = Access.authorize(:operator, :gm_build)
+      assert :ok = Access.authorize(:operator, :gm_build, %{gm_tools: true})
+      assert {:error, :gm_disabled} = Access.authorize(:operator, :gm_build)
+      assert {:error, :forbidden} = Access.authorize({:character, 1}, :gm_build, %{gm_tools: true})
       assert :ok = Access.authorize({:character, 1}, :read)
     end)
   end

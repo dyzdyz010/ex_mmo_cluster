@@ -4,7 +4,8 @@ defmodule VoxelRegion.World.Gm do
   只测试（Test-only）GM 施工工具，不进分发：一次清空、一次填满、一次灌满、盒内排液、实体换料、原样搬移 prefab 实例。
 
   - **开关**：只有部署显式设 `VOXIM_GM_TOOLS=1`（`config :voxel_region, :gm_tools`，测试可用 World opt `:gm_tools`）
-    时 World 才接受；分发配置不设，默认关闭，调用回 `{:error, :gm_disabled}`。不接 Gate，只经 harness rpc。
+    时 World 才接受（开关要求定义在 `VoxelRegion.Access` 的 `@requirements`）；分发配置不设，默认关闭，调用回 `{:error, :gm_disabled}`。
+    不接 Gate，只经 harness rpc。
   - **跳过**：耐久与 HP、工具冷却、射程与视线、库存扣减与退料、受保护区域。
   - **保留**：每个操作是一笔正常 World 提交，复用玩家／作者编辑的同一条链路——`Edits.apply_batch`（填）、
     `Prefabs.prefab_reply`（清，含细化格与实例）、`Prefabs.place_tree`（搬移）、`Liquids.commit_liquid`（灌／排液）——
@@ -33,15 +34,21 @@ defmodule VoxelRegion.World.Gm do
   @doc "部署开关（Scene 侧 GM 瞬移也读它）。"
   def enabled?, do: Application.get_env(:voxel_region, :gm_tools, false) == true
 
-  @doc "GM唯一前置裁决：开关、key与既有回执；准备和最终执行共用，不读取已退休实例来重做回执。"
-  def preflight(%{gm_tools: false}, _key), do: {:done, {:error, :gm_disabled}}
-  def preflight(state, key) when is_binary(key) and byte_size(key) > 0 do
+  @doc "GM唯一前置裁决：授权（含部署开关，规则在 `VoxelRegion.Access`）、key与既有回执；准备和最终执行共用，不读取已退休实例来重做回执。"
+  def preflight(state, key) do
+    case VoxelRegion.Access.authorize(:operator, :gm_build, %{gm_tools: state.gm_tools}) do
+      :ok -> receipt(state, key)
+      denied -> {:done, denied}
+    end
+  end
+
+  defp receipt(state, key) when is_binary(key) and byte_size(key) > 0 do
     case Map.fetch(state.material_supplies, {0, {:gm, key}}) do
       {:ok, receipt} -> {:done, {:ok, receipt}}
       :error -> :ready
     end
   end
-  def preflight(_state, _key), do: {:done, {:error, :invalid_gm_args}}
+  defp receipt(_state, _key), do: {:done, {:error, :invalid_gm_args}}
 
   @doc "移动的合法实例引用，供准备闭包与最终裁决共用。"
   def move_reference(%{instance: id, anchor: {x,y,z}, orientation: o})
