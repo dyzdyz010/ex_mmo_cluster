@@ -12,6 +12,8 @@ defmodule AuthServer.Accounts do
   exercisable without a full cluster.
   """
 
+  require Logger
+
   @spec find_by_username(binary()) :: {:ok, struct() | nil} | {:error, atom()}
   @doc "Looks up an account by username through the auth-owned data-service boundary."
   def find_by_username(username) when is_binary(username) do
@@ -50,10 +52,17 @@ defmodule AuthServer.Accounts do
         try do
           GenServer.call(target, message)
         catch
-          :exit, _reason -> {:error, :data_service_unavailable}
+          :exit, reason ->
+            # 退出原因里带着原消息（可能含凭据），日志只记请求类型和退出类别。
+            Logger.warning("auth_data_service_call_failed request=#{elem(message, 0)} reason=#{inspect(exit_kind(reason))}")
+            {:error, :data_service_unavailable}
         end
     end
   end
+
+  defp exit_kind({kind, {GenServer, :call, _args}}), do: kind
+  defp exit_kind(kind) when is_atom(kind), do: kind
+  defp exit_kind(_reason), do: :other
 
   defp data_service_target do
     if Process.whereis(DataService.Dispatcher),

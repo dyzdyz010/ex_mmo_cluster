@@ -225,7 +225,35 @@ defmodule MmoContracts.Session.Codec do
   @doc "SHA256(profile 前缀、规范 profile、raw32 blocking_hash)。"
   defdelegate profile_id(profile, blocking_hash), to: MmoContracts.Session.Wire
 
-  @doc "未分配 identity 的 application close code；13 仅用于认证拒绝。"
+  # SessionEnd 与 pre-auth close 的原因码（Voxim `Docs/M1/plan.md` §2.7）。0 与其他值保留，decoder 拒绝；
+  # auth_rejected 只用于未分配 identity 的 close，不进 SessionEnd。
+  @end_reasons [
+    client_leave: 1,
+    duplicate_character: 2,
+    transport_closed: 3,
+    unsupported_range: 4,
+    canonical_incomplete: 5,
+    history_unavailable: 6,
+    clock_start_missed: 7,
+    protocol_violation: 8,
+    identity_mismatch: 9,
+    spawn_unavailable: 10,
+    scene_unavailable: 11,
+    input_sequence_exhausted: 12,
+    auth_rejected: 13
+  ]
+
+  @doc "原因名 => 线上数值，例如 `end_reason(:protocol_violation) == 8`。"
+  def end_reason(name), do: Keyword.fetch!(@end_reasons, name)
+
+  @doc "线上数值 => 原因名；不在表里的数值返回 nil。"
+  def end_reason_name(code), do: Enum.find_value(@end_reasons, fn {name, value} -> if value == code, do: name end)
+
+  @doc "全部原因名与数值（测试与日志用）。"
+  def end_reasons, do: @end_reasons
+
+  @doc "未分配 identity 的 application close code；13（`:auth_rejected`）仅用于认证拒绝。接受原因名或数值。"
+  def pre_auth_close(reason) when is_atom(reason), do: pre_auth_close(end_reason(reason))
   def pre_auth_close(reason) when reason in 1..13, do: 0x10000 + reason
 
   @doc "canonical Y-up yaw 对应水平朝向。"

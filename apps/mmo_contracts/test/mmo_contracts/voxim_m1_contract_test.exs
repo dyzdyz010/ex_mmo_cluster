@@ -242,6 +242,32 @@ defmodule MmoContracts.VoximM1ContractTest do
     assert Codec.yaw_delta(65535, 0) == 1
   end
 
+  # 原因名与数值逐一对照 Voxim Docs/M1/plan.md §2.7，名字只是数值的别名，线上字节不变。
+  test "reason names match the frozen numbering" do
+    assert Codec.end_reasons() == [
+             client_leave: 1,
+             duplicate_character: 2,
+             transport_closed: 3,
+             unsupported_range: 4,
+             canonical_incomplete: 5,
+             history_unavailable: 6,
+             clock_start_missed: 7,
+             protocol_violation: 8,
+             identity_mismatch: 9,
+             spawn_unavailable: 10,
+             scene_unavailable: 11,
+             input_sequence_exhausted: 12,
+             auth_rejected: 13
+           ]
+
+    for {name, code} <- Codec.end_reasons() do
+      assert Codec.end_reason_name(code) == name
+      assert Codec.pre_auth_close(name) == Codec.pre_auth_close(code)
+    end
+
+    assert Codec.end_reason_name(0) == nil
+  end
+
   test "reasons have exact authenticated and pre-auth representation and reserve unknown values" do
     for reason <- 1..12 do
       value = %Session.SessionEnd{identity: VoximM1Vectors.identity(), reason: reason}
