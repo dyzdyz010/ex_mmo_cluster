@@ -20,6 +20,7 @@ defmodule VoxelRegion.World.Parcel do
   alias VoxelRegion.World.{Edits, Prefabs}
 
   @micro VoxelRegion.Spatial.micro_resolution()
+  @region VoxelRegion.Spatial.region_size()
 
   @doc "源世界盒内地块；返回 `{{:ok, parcel} | {:error, reason}, state}`（state 只多了解码缓存）。"
   def export(state, {lo, hi} = box) do
@@ -295,8 +296,8 @@ defmodule VoxelRegion.World.Parcel do
     do: for(x <- x0..(x1 - 1)//1, y <- y0..(y1 - 1)//1, z <- z0..(z1 - 1)//1, do: {x, y, z})
 
   defp regions({{x0, y0, z0}, {x1, y1, z1}}),
-    do: for(x <- floor_div(x0, 64)..floor_div(x1 - 1, 64)//1, y <- floor_div(y0, 64)..floor_div(y1 - 1, 64)//1,
-      z <- floor_div(z0, 64)..floor_div(z1 - 1, 64)//1, do: {x, y, z})
+    do: for(x <- floor_div(x0, @region)..floor_div(x1 - 1, @region)//1, y <- floor_div(y0, @region)..floor_div(y1 - 1, @region)//1,
+      z <- floor_div(z0, @region)..floor_div(z1 - 1, @region)//1, do: {x, y, z})
 
   defp inside?({x, y, z}, {{x0, y0, z0}, {x1, y1, z1}}),
     do: x >= x0 and x < x1 and y >= y0 and y < y1 and z >= z0 and z < z1

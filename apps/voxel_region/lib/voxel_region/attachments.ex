@@ -1,6 +1,7 @@
 defmodule VoxelRegion.Attachments do
   @moduledoc "全局系统功能：附件规范足迹、共享支撑与区域投影；World 唯一持有槽事实。"
   @micro VoxelRegion.Spatial.micro_resolution()
+  @region VoxelRegion.Spatial.region_size()
 
   @doc "附件权威身份：整件 HP 与逐槽热状态共用 kind／axis 及出生 ID。"
   def identity({kind,axis,anchor},{id,material}),do:
@@ -58,10 +59,10 @@ defmodule VoxelRegion.Attachments do
   end)
 
   @doc "规范槽归属区域，仅 anchor 所在 core 拥有事实。"
-  def region({_,_,p}), do: map(p,&Integer.floor_div(&1,64*@micro))
+  def region({_,_,p}), do: map(p,&Integer.floor_div(&1,@region*@micro))
   @doc "载荷包含 core 及既有一宏格 ring。"
   def extract(slots,{rx,ry,rz}) do
-    {ox,oy,oz}={rx*64*@micro,ry*64*@micro,rz*64*@micro}
+    {ox,oy,oz}={rx*@region*@micro,ry*@region*@micro,rz*@region*@micro}
     for {{_,_,{x,y,z}},_}=entry <- slots,
       x>=ox-@micro and x<ox+65*@micro and
       y>=oy-@micro and y<oy+65*@micro and

@@ -15,7 +15,7 @@ defmodule VoxelRegion.World.Payloads do
 
   alias VoxelRegion.World.Cache
 
-  @max_level 5
+  @max_level VoxelRegion.Spatial.max_level()
 
   # ---- 应答
 

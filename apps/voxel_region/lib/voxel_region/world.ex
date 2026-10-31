@@ -36,7 +36,7 @@ defmodule VoxelRegion.World do
   use GenServer
 
   @micro VoxelRegion.Spatial.micro_resolution()
-  @max_level 5
+  @max_level VoxelRegion.Spatial.max_level()
   @default_cache_bytes 512 * 1024 * 1024
   # 魔法增量 1：登录下发与无报价时的报价字段。
   @no_quote %{total_j: 0.0, structure: 0.0}

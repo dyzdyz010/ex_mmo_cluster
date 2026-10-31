@@ -109,7 +109,7 @@ defmodule VoxelRegion.OverlayLog do
     end)
   end
 
-  defp region_of({x, y, z}), do: {Integer.floor_div(x, 64), Integer.floor_div(y, 64), Integer.floor_div(z, 64)}
+  defp region_of(cell), do: VoxelRegion.Spatial.region_of(cell)
 
   defmodule Db do
     @moduledoc "DataService `voxel_overlay_log` 表后端（正式）。"

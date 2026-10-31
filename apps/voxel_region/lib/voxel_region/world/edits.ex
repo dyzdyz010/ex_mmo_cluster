@@ -14,12 +14,13 @@ defmodule VoxelRegion.World.Edits do
   import VoxelRegion.World.Canonical
   alias VoxelRegion.World.{Pages, Payloads, Observation, Log, Prefabs, Tools, Production, Phases, Liquids, AttachmentOps}
 
-  @max_level 5
+  @max_level VoxelRegion.Spatial.max_level()
+  @region VoxelRegion.Spatial.region_size()
 
   def valid_region?({x, y, z}, step) when is_integer(x) and is_integer(y) and is_integer(z) do
     Enum.all?([x, y, z], fn value ->
-      min = (value * 64 - 1) * step - 4
-      max = (value * 64 + 65) * step - 1 + 4
+      min = (value * @region - 1) * step - 4
+      max = (value * @region + @region + 1) * step - 1 + 4
       min >= -2_147_483_648 and max <= 2_147_483_647
     end)
   end

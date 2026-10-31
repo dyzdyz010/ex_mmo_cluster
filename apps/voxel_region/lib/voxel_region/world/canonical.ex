@@ -397,7 +397,7 @@ defmodule VoxelRegion.World.Canonical do
   end
 
   @doc "格所在的 64³ region 坐标。"
-  def region_of({x, y, z}), do: {floor_div(x, 64), floor_div(y, 64), floor_div(z, 64)}
+  defdelegate region_of(cell), to: VoxelRegion.Spatial
 
   @doc "向负无穷取整的整数除法。"
   def floor_div(a, b), do: div(a - rem(rem(a, b) + b, b), b)
