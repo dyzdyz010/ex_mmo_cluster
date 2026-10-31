@@ -195,19 +195,20 @@ defmodule VoxelRegion.Access do
 
   @doc """
   主体能否改这些宏格（保护区）。运维与系统不受保护区约束；角色与创世 NPC 只能改野外和自己持有的区域。
+  只查询、不记日志：玩法挑选落点时用（例如死亡掉落找一格能放的）。要拒绝请求时用 `authorize_cells/4`。
   """
-  @spec authorize_cells(principal(), map(), [{integer(), integer(), integer()}], action()) ::
+  @spec writable?(principal(), map(), [{integer(), integer(), integer()}]) :: boolean()
+  def writable?(principal, _protection, _cells) when principal in [:operator, :system], do: true
+  def writable?({kind, cid}, protection, cells) when kind in [:character, :genesis],
+    do: Protection.permitted?(protection, {:character, cid}, cells)
+
+  @doc "同 `writable?/3`，不可写时记拒绝日志并返回 `{:error, :protected_region}`。"
+  @spec authorize_cells(principal(), map(), [{integer(), integer(), integer()}], action() | :commit) ::
           :ok | {:error, :protected_region}
   def authorize_cells(principal, protection, cells, action) do
-    case principal do
-      p when p in [:operator, :system] ->
-        :ok
-
-      {kind, cid} when kind in [:character, :genesis] ->
-        if Protection.permitted?(protection, {:character, cid}, cells),
-          do: :ok,
-          else: deny(principal, action, :protected_region)
-    end
+    if writable?(principal, protection, cells),
+      do: :ok,
+      else: deny(principal, action, :protected_region)
   end
 
   @doc """

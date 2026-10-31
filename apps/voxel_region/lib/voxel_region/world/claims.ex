@@ -20,9 +20,8 @@ defmodule VoxelRegion.World.Claims do
   def target_cells(state, %{granularity: 2} = t), do: micro_owner_cells(state, MapSet.new([t.owner]))
   def target_cells(_state, t), do: [Damage.macro(t)]
 
-  # 附件放置的足迹必须落在同一持有者内（不跨区域边界）；拆除只看现有整件足迹。
+  # 附件放置的足迹必须落在同一持有者内（玩法规则：不跨区域边界）；拆除只看现有整件足迹。能否写这些格由 Access 判定。
   def attachment_protection(state, actor, r) do
-    holder = {:character, actor.cid}
     cells =
       if r.action == 0,
         do: Attachments.macros(Attachments.footprint(r.kind, r.axis, r.anchor, r.size)),
@@ -30,8 +29,8 @@ defmodule VoxelRegion.World.Claims do
     single = r.action != 0 or Protection.empty?(state.protection) or
       length(Enum.uniq_by(cells, &Protection.holder(state.protection, &1))) <= 1
 
-    if single and Protection.permitted?(state.protection, holder, cells),
-      do: :ok,
+    if single,
+      do: VoxelRegion.Access.authorize_cells({:character, actor.cid}, state.protection, cells, :character_intent),
       else: {:error, :protected_region}
   end
 

@@ -293,7 +293,7 @@ defmodule VoxelRegion.World.Liquids do
          {:ok,cells,state} <- flood(before,material,seed,level_y,max_cells,cid != nil),
          # 注入格的提交（后像 ring、逐级归约）读这些格所在页的邻页与各级粗层页：同样要已驻留。
          [] <- closure_missing(state,cells),
-         true <- cid == nil or Protection.permitted?(state.protection,{:character,cid},cells) || {:error,:protected_region},
+         :ok <- if(cid == nil, do: :ok, else: VoxelRegion.Access.authorize_cells({:character,cid},state.protection,cells,:character_intent)),
          {_open,water,state} = liquid_cells(state,cells,material),
          moved = for(cell <- cells, q = Map.get(water,cell,0), q < capacity, do: {cell,capacity-q}),
          true <- moved != [] || {:error,:no_liquid_transfer} do

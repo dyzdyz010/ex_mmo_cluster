@@ -6,7 +6,7 @@ defmodule VoxelRegion.World.Casting do
   """
   require Logger
   alias VoxelRegion.Damage
-  alias VoxelRegion.Protection
+  alias VoxelRegion.Access
   alias VoxelRegion.Magic
   alias VoxelRegion.World.Thermal
   import VoxelRegion.World.Canonical
@@ -102,10 +102,10 @@ defmodule VoxelRegion.World.Casting do
          {:ok, effect, state} <- spell_effect(state, actor, request, program),
          {:ok, foot, state} <- foot_target(state, actor),
          :ok <- spell_subject(state, effect),
-         true <- Protection.permitted?(state.protection, {:character, actor.cid}, effect.cells ++ [Damage.macro(foot)]) do
+         # 施法的作用格不全是本笔写集（拟态之后才作为物理对象落地），提交入口查不到，所以在意图处按作用格判定。
+         :ok <- Access.authorize_cells({:character, actor.cid}, state.protection, effect.cells ++ [Damage.macro(foot)], :character_intent) do
       {:ok, %{session: session, previous: previous, effect: effect, foot: foot}, state}
     else
-      false -> {:error, :protected_region}
       {:error, reason} -> {:error, reason}
       {:error, reason, _} -> {:error, reason}
     end

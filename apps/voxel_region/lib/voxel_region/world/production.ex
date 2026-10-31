@@ -118,7 +118,7 @@ defmodule VoxelRegion.World.Production do
         result = cond do
           request.action == 4 -> craft(before, actor, request)
           request.action == 5 -> consume(before, actor, request)
-          not Protection.permitted?(before.protection, {:character, actor.cid}, [request.coord]) ->
+          VoxelRegion.Access.authorize_cells({:character, actor.cid}, before.protection, [request.coord], :character_intent) != :ok ->
             {:error, :protected_region}
           request.action in [2,3] -> Liquids.transfer_liquid(before, actor, request)
           true -> build_material(before, actor, request)
@@ -250,7 +250,7 @@ defmodule VoxelRegion.World.Production do
       |> Enum.sort()
 
     cond do
-      not Protection.permitted?(state.protection, {:character, cid}, [cell]) ->
+      not VoxelRegion.Access.writable?({:character, cid}, state.protection, [cell]) ->
         {%{outcome: :protected, cell: cell}, state}
 
       roll >= state.death_drop_probability ->
@@ -297,7 +297,7 @@ defmodule VoxelRegion.World.Production do
     Enum.reduce_while(offsets, {nil, state}, fn {dx, dy, dz}, {nil, s} ->
       c = {x + dx, y + dy, z + dz}
 
-      if Protection.permitted?(s.protection, {:character, cid}, [c]) and not Map.has_key?(s.refined, c) and
+      if VoxelRegion.Access.writable?({:character, cid}, s.protection, [c]) and not Map.has_key?(s.refined, c) and
            (form == :place or Liquids.liquid_inside?(c, s.liquid_bounds)) do
         case cell_value(s, 0, c) do
           {:ok, {0, _}, s} ->

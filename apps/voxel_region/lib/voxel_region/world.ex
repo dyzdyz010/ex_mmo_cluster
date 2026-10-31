@@ -1417,9 +1417,9 @@ defmodule VoxelRegion.World do
           not same_tool_target?(target, request) ->
             {:reply, {:error, :stale_target}, state}
 
-          # 受保护区域许可：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
+          # 受保护区域许可（先于玩法原因报出）：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
           tool["action"] not in ["protection.claim", "beacon.use"] and
-              not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
+              Access.authorize_cells({:character, actor.cid}, state.protection, target_cells(state, target), :character_intent) != :ok ->
             {:reply, {:error, :protected_region}, state}
 
           true ->
@@ -1517,9 +1517,11 @@ defmodule VoxelRegion.World do
 
         true ->
           {:reply, reply, next} =
-            if Protection.permitted?(state.protection, {:character, actor.cid}, prefab_intent_cells(state, kind, request, geometry)),
-              do: player_prefab(state, actor, kind, request, geometry),
-              else: {:reply, {:error, :protected_region}, state}
+            case Access.authorize_cells({:character, actor.cid}, state.protection,
+                   prefab_intent_cells(state, kind, request, geometry), :character_intent) do
+              :ok -> player_prefab(state, actor, kind, request, geometry)
+              error -> {:reply, error, state}
+            end
           if match?({:error, {:pages_missing, _}}, reply) do
             missing_pages({:reply, reply, next}, message, from)
           else

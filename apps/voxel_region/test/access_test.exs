@@ -85,6 +85,43 @@ defmodule VoxelRegion.AccessTest do
     end)
   end
 
+  test "提交写集：运维与系统不算写集；角色写进别人的区域整笔拒绝；没有保护区时直接通过" do
+    p = reserved_square()
+    never = fn -> flunk("运维、系统或无保护区时不应计算写集") end
+
+    assert :ok = Access.authorize_writes(:operator, p, never)
+    assert :ok = Access.authorize_writes(:system, p, never)
+    assert :ok = Access.authorize_writes({:character, 1}, VoxelRegion.Protection.new(), never)
+    assert :ok = Access.authorize_writes({:character, 1}, p, fn -> [{20, 0, 20}] end)
+
+    capture_log(fn ->
+      assert {:error, :protected_region} =
+               Access.authorize_writes({:character, 1}, p, fn -> MapSet.new([{20, 0, 20}, {5, 0, 5}]) end)
+    end)
+
+    refute Access.writable?({:genesis, 1}, p, [{5, 0, 5}])
+    assert Access.writable?(:operator, p, [{5, 0, 5}])
+  end
+
+  # 两个执行点之外不再判保护区：规则只在 Access，提交只经 World.Log 一个入口。
+  test "保护区判定只在 Access，日志追加只在 World.Log" do
+    lib = Path.join(__DIR__, "../lib")
+    files = Path.wildcard(Path.join(lib, "**/*.ex"))
+    relative = &Path.relative_to(&1, lib)
+
+    permitted = for f <- files, File.read!(f) =~ "Protection.permitted?", do: relative.(f)
+    assert permitted == ["voxel_region/access.ex"]
+
+    appends = for f <- files, File.read!(f) =~ ~r/backend\.append\(/, do: relative.(f)
+    assert appends == ["voxel_region/world/log.ex"]
+  end
+
+  defp reserved_square do
+    VoxelRegion.Protection.apply(VoxelRegion.Protection.new(), %{
+      {1, 1} => %{holder: :reserved, min: {0, 0}, max: {9, 9}, created_seq: 1, created_by: nil}
+    })
+  end
+
   test "gate / scene / npc 不调用运维专用的 World 写 API，原始编辑显式带主体" do
     operator_only =
       for {tag, action} <- Access.messages(),
