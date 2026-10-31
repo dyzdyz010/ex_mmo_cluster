@@ -237,7 +237,11 @@ defmodule VoxelRegion.GeneratedStore do
     version
   end
 
-  defp ensure_tables do
+  @doc """
+  建立全节点共享的具名 ETS 表（生成锁、列边界缓存）；已存在则不动。表随创建它的进程消亡，
+  所以正式启动时由 `VoxelRegion.Application` 在常驻的启动进程里先建好，`open/1` 再调用只是兜底（单测里由测试进程持有）。
+  """
+  def ensure_tables do
     for {table, options} <- [{@lock_table, []}, {@bounds_table, [read_concurrency: true]}],
         :ets.whereis(table) == :undefined do
       try do
