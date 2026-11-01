@@ -289,9 +289,11 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
   @tag :simulation_windows
   @tag :simulation_handoff
   test "真实 seal/import 保留已接纳请求，prepared Player 提前安装也不退休未消费的旧域" do
-    ctx = setup_scene(1, %{"travel_max_exclusive_m" => [80.0,624.0,112.0]})
+    combat = [[-48.0,464.0,-48.0],[240.0,624.0,112.0]]
+    ctx = setup_scene(1, %{"travel_max_exclusive_m" => [80.0,624.0,112.0], "test_combat_bounds_m" => combat})
     target_config = Map.merge(config(1), %{"travel_min_m" => [80.0,464.0,-48.0],
-      "travel_max_exclusive_m" => [240.0,624.0,112.0], "spawn_probes_m" => [[100.0,558.0,40.0]]})
+      "travel_max_exclusive_m" => [240.0,624.0,112.0], "spawn_probes_m" => [[100.0,558.0,40.0]],
+      "test_combat_bounds_m" => combat})
     target = start_supervised!(Supervisor.child_spec({Scene, [scene_id: 2, scene_epoch: 7,
       world_ref: ctx.source, config: target_config, clock: {Clock,ctx.clock}, sink: Sink,
       body_store: {MmoTest.BodyStore, store: ctx.body_store}, world_api: Source]}, id: :scope_target_scene))
@@ -299,6 +301,12 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
     {:ok, endpoint} = Scene.neighbour_endpoint(target)
     :ok = Scene.connect_neighbour(ctx.scene, endpoint.pid, 0, endpoint)
     {ctx, player, _} = walk(ctx)
+    # 只测试作用接缝：经真实目标 owner 接纳工具伤害，World 授权/几何不在本例验证范围。
+    {:ok, target_context} = Player.hit_context(player)
+    hit = %{key: {identity(), 11}, target: target_context, request_id: 42, part: :torso,
+      impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0},
+      actor: %{identity: identity(), position: target_context.position, cid: 999, life_generation: 1}}
+    assert {:ok, receipt} = Player.receive_effect(player, hit)
     old = {{-1,7,-1},{2,10,2}}
     next_box = {{0,6,-1},{3,9,2}}
     [stream] = Map.keys(GenServer.call(ctx.source, :window_contributions))
@@ -322,8 +330,13 @@ defmodule SceneServer.Movement.ReviveRelocationTest do
         :sys.resume(stream)
         assert {:ok, cut} = Task.await(sealing, 2_000)
         assert cut.window_pending and cut.requested_window == next_box
+        assert cut.effect_receipts[hit.key] == receipt
         assert {:ok, imported} = Scene.prepare_transfer(target, next_identity, cut, self())
         assert Player.observe(imported).simulation_windows == [old,next_box]
+        saved_body = Player.body_snapshot(imported)
+        assert saved_body.effect_receipts[hit.key] == receipt
+        assert {:ok, ^receipt} = Player.receive_effect(imported, hit)
+        assert Player.body_snapshot(imported) == saved_body
         {cut, imported}
       after
         :sys.resume(ctx.source)

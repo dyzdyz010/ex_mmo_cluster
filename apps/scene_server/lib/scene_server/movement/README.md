@@ -364,3 +364,7 @@ Test-only：`dialogue_test.exs` 用受控时钟证明文本、三维距离、限
 ## 角色作用的投递与许可（2026-10-15）
 
 Global system：工具冲击与投射物热经同一入口 `Player.receive_effect/2`，目标 owner 统一去重、复核生命代次／会话身份／owner 状态与作用许可，回执 `effect_receipts` 随身体存档（版本 3，兼容读取版本 2 的投射物收据）与 Scene 移交，复活不清空。作用许可只在 `SceneServer.Movement.Harm` 判断，候选筛选、投射物扫掠和目标提交共用；当前语义仍是显式战斗范围。进入身体的热只经 `absorb_heat` 累计，投射物与 World 接触热共用。分层依据见 Voxim `Docs/Combat-Action-Design.md` §1.1；接触热仍走 World 的 `{:body_heat}` 通量路径，未带来源、不查许可。
+
+2026-11-01 候选整合：`effects-layer@b65b1904` 与启动短命任务、World 授权、可读性三分支一起从 `master@0dcb1457` 正常 merge，未移动 master、未部署。角色作用许可仍只归 `Harm`，不与 `VoxelRegion.Access` 的 World 写权限混合；保留当前 Player 三张移交字段清单 SSOT，仅把 `body_hits/projectile_hits` 替换为 `effect_receipts`。Snapshot v3 是身体持久化格式，不是 Session/Voxel wire 变更；v2 只迁移已有投射物收据，不凭空恢复旧版未保存的工具回执。依据沿用本节既有作用设计与唯一 owner 合同，不新增玩法或备用入口。
+
+本轮最小证明范围：先在合入前用正常 Mix 入口记录陈旧目标被接受、工具回执冷恢复后二次扣伤的两个红反例；合入后复用 `tool_action_test`（目标回调，不冒充完整链路）与 `body/snapshot_test` 的 v2/v3 小例，并在 `revive_relocation_test` 的真实 seal/import 用例增加正常 `receive_effect` 接纳、cut/新 owner 收据保留、重投不改身体断言。该真实 Scene/Player/NIF 接缝使用独占身体存储与 World 替身，不需 PostgreSQL，不等价于 `p0_body_lifecycle_test` 的真实 PostgreSQL 崩溃恢复；本轮不运行后者，也不声称玩家链路/性能/部署已验收。命令、原生退出码、版本与剩余旧失败见 `.demo/observe/integration-20261101/server/REPORT.md`。
