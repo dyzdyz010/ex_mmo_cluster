@@ -1,7 +1,9 @@
 # 结构应力、支撑与塌方（建筑 + 地形）方向稿
 
-状态：方向稿；**全局最低优先级**，其它主线收口后才进入实施；未实施，未写代码  
-日期：2026-10-16  
+状态：历史方向与用户决策保存稿；**全局最低优先级**，其它主线收口后才考虑实施；未实施，未写代码
+
+> 2026-11-01 候选整合仅保存 `origin/claude/code-review-ad8119` 的两笔文档历史，不批准新玩法、不提升优先级，也不把本文旧实现描述提升为当前事实。§2 的实现背景、旧 README 段落定位与后续方案在启动实施前必须重新核实；当前实现以 [`docs/00-current-truth/`](../../00-current-truth/README.md) 及各 owner 代码为准。本文保留当时“已定 / 暂定 / 未决”的区别；算法组合的原创决策仍需按 §3 在实施前报告，不能据本次文档 merge 视为技术验收。
+日期：2026-10-16
 归属：`field-emergence`（Phase 8 物理现象中的“结构完整度”，见
 [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](2026-05-16-phase8-physical-phenomenon-system-architecture.md)）
 
