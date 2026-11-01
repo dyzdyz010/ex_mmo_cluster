@@ -49,6 +49,7 @@
 - [`2026-05-16-phase7-local-field-runtime-roadmap.md`](field-emergence/2026-05-16-phase7-local-field-runtime-roadmap.md)
 - [`2026-05-16-phase8-physical-phenomenon-system-architecture.md`](field-emergence/2026-05-16-phase8-physical-phenomenon-system-architecture.md)
 - [`2026-05-19-prefab-field-participant-projection.md`](field-emergence/2026-05-19-prefab-field-participant-projection.md)
+- [`2026-10-16-structural-stress-and-collapse-direction.md`](field-emergence/2026-10-16-structural-stress-and-collapse-direction.md) — 结构应力与建筑/地形塌方、蓝图结构约束；方向稿，全局最低优先级，未实施
 
 ### infra
 
