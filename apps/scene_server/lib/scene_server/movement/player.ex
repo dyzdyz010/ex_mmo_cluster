@@ -8,6 +8,16 @@ defmodule SceneServer.Movement.Player do
   alias SceneServer.Body
   alias SceneServer.Body.Snapshot
 
+  # ---- 跨 Scene 移交（`seal_body/1` 导出、`init/1` 的 :import 分支导入，共用下面三张清单）
+  # 新 Scene 据此重建身份与时间轴；导入时逐项解释，不原样覆盖。
+  @timeline_fields [:id, :epoch, :kind, :profile, :identity, :state, :slots, :origin, :simulation_tick,
+    :simulation_revision, :config, :content_version]
+  # 有区域流时一并移交的流位置与窗口状态，导入时原样恢复。
+  @stream_fields [:stream, :stream_cursor, :window_domains, :requested_window, :window_pending, :queued_seq]
+  # 随角色走、原样带到新 Player 的状态。加一个跨 Scene 保留的字段只改这里。
+  @carried_fields [:body, :body_heat, :food_cursors, :body_exchange_j, :climate, :probe, :authority_ref,
+    :revive, :movement_scales, :life_generation, :body_hits, :projectile_hits, :tool_action]
+
   @doc "由 Scene 的 DynamicSupervisor 创建；断线不从派生状态重启。"
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   @doc "Gate 直接转发已鉴权输入并冻结服务端接收时刻；测试时钟通过同一参数传入。"
@@ -214,21 +224,7 @@ defmodule SceneServer.Movement.Player do
             resume_pending: true
           })
           |> Map.merge(
-            Map.take(cut, [
-              :body,
-              :body_heat,
-              :food_cursors,
-              :body_exchange_j,
-              :climate,
-              :probe,
-              :authority_ref,
-              :revive,
-              :movement_scales,
-              :life_generation,
-              :body_hits,
-              :projectile_hits,
-              :tool_action
-            ])
+            Map.take(cut, @carried_fields)
           )
           |> tap(fn _ -> schedule_body() end)
           |> enqueue_tail(Keyword.fetch!(opts, :tail))
@@ -240,14 +236,7 @@ defmodule SceneServer.Movement.Player do
           state =
             Map.merge(
               state,
-              Map.take(cut, [
-                :stream,
-                :stream_cursor,
-                :window_domains,
-                :requested_window,
-                :window_pending,
-                :queued_seq
-              ])
+              Map.take(cut, @stream_fields)
             )
 
           Process.monitor(stream)
@@ -1065,39 +1054,7 @@ defmodule SceneServer.Movement.Player do
         else: CollisionUpdates.export_checkpoint(state.updates, state.simulation_tick)
 
     cut =
-      Map.take(state, [
-        :id,
-        :epoch,
-        :kind,
-        :profile,
-        :identity,
-        :state,
-        :slots,
-        :origin,
-        :simulation_tick,
-        :simulation_revision,
-        :config,
-        :content_version,
-        :stream,
-        :stream_cursor,
-        :window_domains,
-        :requested_window,
-        :window_pending,
-        :queued_seq,
-        :body,
-        :body_heat,
-        :food_cursors,
-        :life_generation,
-        :body_hits,
-        :projectile_hits,
-        :tool_action,
-        :body_exchange_j,
-        :movement_scales,
-        :climate,
-        :probe,
-        :authority_ref,
-        :revive
-      ])
+      Map.take(state, @timeline_fields ++ @stream_fields ++ @carried_fields)
       |> Map.merge(%{
         transaction_seq: state.updates.transaction_seq,
         published_tick: state.tick,

@@ -574,7 +574,7 @@ D-9 精简格式、L4+ 全世界资产、客户端 dirty 写回 / 分服目录�
 
 正式 `VoxelRegion.Application` 改用显式 manifest 的 `GeneratedStore`，通过 Rustler DirtyCpu NIF 调用移植的 `worldgen_density_v3@1`，按需生成现有 VXR3。旧 `FileStore` 只用于既有 fixture 测试；`World` 继续拥有编辑、seq、订阅及日志重放。生成缓存和 `overlay.log` 位于同一新版本根，原开发世界日志不参与测试。客户端 Demo 使用资产配置的 canonical 出生点，运行时已不再调用本地 ColumnHeight。
 
-当前 Demo 的 `content_version=90316f7780959a9c`，输入包含完整生成配置、材质 identity 与带源码 digest 的 kernel identity；精确规范和启动命令见 `apps/voxel_region/README.md`。该版本仅冻结本首切片的生成身份，尚未完成全服务材质 catalog / content_version 统一。
+当前 Demo 的 `content_version=90316f7780959a9c`，输入包含完整生成配置、材质 identity 与带源码 digest 的 kernel identity；精确规范和启动命令见 [voxel_region 变更与执行记录](../voxel-authority/voxel-region-change-notes.md)（原写在 `apps/voxel_region/README.md`）。该版本仅冻结本首切片的生成身份，尚未完成全服务材质 catalog / content_version 统一。
 
 验证覆盖 3 份配置 × L0–L5 × 正负地表 region，共 36 份完整 66³ cells 和六向表皮：Rust 与独立 C++ oracle 一致，服务端生成 VXR3 后再次通过 UE 正式 codec 全量比对。服务端常规测试 18 项、客户端网络测试 20 项通过；完整 Demo 加载 607 个 region，无残留洞或重复覆盖，两笔放置/挖除完成 Accepted → Confirmed → Presented，重启恢复 seq=2 和已挖除的 Air。原始证据与命令在 `Voxim/Docs/R6.md`、`Voxim/Docs/R6/runtime/s4_*`。
 

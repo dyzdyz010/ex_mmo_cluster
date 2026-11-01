@@ -31,7 +31,7 @@ defmodule VoxelRegion.World.Pages do
   import Bitwise
 
   @remembered [:instances, :attachment_owners, :liquid_active, :sources]
-  @max_level 5
+  @max_level VoxelRegion.Spatial.max_level()
 
   @doc "空索引：World 构造时放入；回放经 `remember/2` 增量建满。"
   def new, do: %{damage_home: %{}, unit_damage: %{}, instance_home: %{}, home_instances: %{}, aid_home: %{}, home_aids: %{},

@@ -110,7 +110,7 @@ defmodule VoxelRegion.GeneratedStore do
 
   @doc "level 上落在世界范围内的所有 XZ 列 `{rx, rz}`（世界 = 以原点为中心、半边长 extent 米）。"
   def columns(store, level) do
-    size = 64 <<< level
+    size = VoxelRegion.Spatial.region_size() <<< level
     lo = Integer.floor_div(-store.extent, size)
     hi = Integer.floor_div(store.extent - 1, size)
     for rx <- lo..hi, rz <- lo..hi, do: {rx, rz}

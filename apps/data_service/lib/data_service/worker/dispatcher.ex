@@ -13,7 +13,7 @@ defmodule DataService.Dispatcher do
 
   @impl true
   def handle_info(:timeout, state) do
-    Logger.debug("New agent conneddddddddddddddcted.}")
+    Logger.debug("data_service_dispatcher_started")
     {:noreply, state}
   end
 
@@ -24,8 +24,9 @@ defmodule DataService.Dispatcher do
         try do
           GenServer.call(pid, {:register_account, username, password, email, phone})
         catch
-          e, r ->
-            IO.inspect("poolboy transaction caught error: #{inspect(e)}, #{inspect(r)}")
+          kind, _reason ->
+            # 失败原因里带着注册参数（含密码），日志只记失败类别。
+            Logger.error("data_service_register_account_failed kind=#{kind}")
             :err
         end
       end)

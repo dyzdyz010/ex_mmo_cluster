@@ -3,12 +3,15 @@ defmodule VoxelRegion.LogProjection do
   import Bitwise
   alias MmoContracts.Voxel.{Codec, Payload}
 
+  # region 边长（宏格）；core 末格是 `@region - 1`，远侧邻环格是 `@region + 1`。
+  @region VoxelRegion.Spatial.region_size()
+
   @doc "格变化触及的完整三维 core/ring 区域；与 World 的预备和失效范围共用。"
   def region_keys(cells) do
     for {level, {x, y, z}} <- cells,
-        rx <- floor_div(x - 1, 64)..floor_div(x + 1, 64),
-        ry <- floor_div(y - 1, 64)..floor_div(y + 1, 64),
-        rz <- floor_div(z - 1, 64)..floor_div(z + 1, 64),
+        rx <- floor_div(x - 1, @region)..floor_div(x + 1, @region),
+        ry <- floor_div(y - 1, @region)..floor_div(y + 1, @region),
+        rz <- floor_div(z - 1, @region)..floor_div(z + 1, @region),
         do: {level, {rx, ry, rz}}
   end
 
@@ -82,8 +85,8 @@ defmodule VoxelRegion.LogProjection do
 
     matches_span?(
       h.level,
-      {x * 64, y * 64, z * 64},
-      {x * 64 + 63, y * 64 + 63, z * 64 + 63},
+      {x * @region, y * @region, z * @region},
+      {x * @region + @region - 1, y * @region + @region - 1, z * @region + @region - 1},
       filter
     )
   end
@@ -107,9 +110,9 @@ defmodule VoxelRegion.LogProjection do
     step = 1 <<< level
 
     level >= min_level or
-      (floor_div(ax * step, 64) <= x1 + 1 and floor_div((bx + 1) * step - 1, 64) >= x0 - 1 and
-         floor_div(ay * step, 64) <= y1 + 1 and floor_div((by + 1) * step - 1, 64) >= y0 - 1 and
-         floor_div(az * step, 64) <= z1 + 1 and floor_div((bz + 1) * step - 1, 64) >= z0 - 1)
+      (floor_div(ax * step, @region) <= x1 + 1 and floor_div((bx + 1) * step - 1, @region) >= x0 - 1 and
+         floor_div(ay * step, @region) <= y1 + 1 and floor_div((by + 1) * step - 1, @region) >= y0 - 1 and
+         floor_div(az * step, @region) <= z1 + 1 and floor_div((bz + 1) * step - 1, @region) >= z0 - 1)
   end
 
   @doc "投影到指定层级的完整三维区域；含覆盖该区域的替换条目时返回 :region。"
@@ -125,8 +128,10 @@ defmodule VoxelRegion.LogProjection do
           {:ok, h} = Codec.decode_payload_header(bytes)
           {x, y, z} = h.region
 
-          h.level == level and x * 64 <= ox + 65 and x * 64 + 63 >= ox and y * 64 <= oy + 65 and
-            y * 64 + 63 >= oy and z * 64 <= oz + 65 and z * 64 + 63 >= oz
+          h.level == level and
+            x * @region <= ox + @region + 1 and x * @region + @region - 1 >= ox and
+            y * @region <= oy + @region + 1 and y * @region + @region - 1 >= oy and
+            z * @region <= oz + @region + 1 and z * @region + @region - 1 >= oz
 
         _ ->
           false
@@ -162,6 +167,6 @@ defmodule VoxelRegion.LogProjection do
 
   defp liquid_keys(txn), do: region_keys(Enum.map(Map.keys(Map.get(txn, :liquid_units, %{})), &{0, &1}))
 
-  defp region_of({x, y, z}), do: {floor_div(x, 64), floor_div(y, 64), floor_div(z, 64)}
+  defp region_of(cell), do: VoxelRegion.Spatial.region_of(cell)
   defp floor_div(a, b), do: div(a - rem(rem(a, b) + b, b), b)
 end

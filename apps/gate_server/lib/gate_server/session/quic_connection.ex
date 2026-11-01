@@ -136,7 +136,7 @@ defmodule GateServer.Session.QuicConnection do
   @impl true
   def handle_info({:DOWN, ref, :process, _, _}, %{auth_monitor: ref} = state)
       when is_reference(ref),
-      do: {:stop, :normal, close(state, 13)}
+      do: {:stop, :normal, close(state, :auth_rejected, "auth_session_down")}
 
   def handle_info({:quic, :new_stream, stream, %{flags: flags}}, state) do
     if flags == 0 and map_size(state.streams) < 2 do
@@ -144,7 +144,7 @@ defmodule GateServer.Session.QuicConnection do
       {:ok, _} = :quicer.async_accept_stream(state.conn, %{active: true})
       {:noreply, put_in(state.streams[stream], %{purpose: nil, buffer: <<>>, started: false})}
     else
-      {:noreply, close(state, 8)}
+      {:noreply, close(state, :protocol_violation, "unexpected_stream")}
     end
   end
 
@@ -153,7 +153,7 @@ defmodule GateServer.Session.QuicConnection do
       send(self(), :flush_datagrams)
       {:noreply, %{state | max_datagram: props.dgram_max_len}}
     else
-      {:noreply, close(state, 8)}
+      {:noreply, close(state, :protocol_violation, "datagram_disabled")}
     end
   end
 
@@ -165,12 +165,12 @@ defmodule GateServer.Session.QuicConnection do
         {:noreply, state}
 
       state.identity == nil ->
-        {:noreply, close(state, 13)}
+        {:noreply, close(state, :auth_rejected, "datagram_before_join")}
 
       true ->
         case Movement.Codec.decode(bytes) do
           {:ok, %Movement.InputBatch{} = message} -> {:noreply, forward_input(state, message)}
-          _ -> {:noreply, close(state, 8)}
+          _ -> {:noreply, close(state, :protocol_violation, "datagram_decode " <> frame_header(bytes))}
         end
     end
   end
@@ -186,8 +186,9 @@ defmodule GateServer.Session.QuicConnection do
     end
   end
 
-  def handle_info({:mmo_close, identity, reason}, %{identity: identity} = state),
-    do: {:noreply, close(state, reason)}
+  # 会话 owner（World 会话表、Scene）按线上数值要求断开本连接。
+  def handle_info({:mmo_close, identity, code}, %{identity: identity} = state),
+    do: {:noreply, close(state, Session.Codec.end_reason_name(code), "requested_by_owner")}
 
   def handle_info(
         {:mmo_transfer_request, identity, player, target_scene_id},
@@ -239,7 +240,7 @@ defmodule GateServer.Session.QuicConnection do
           "mmo_transfer_prepare_failed old_scene=#{identity.scene_id} target_scene=#{target_scene_id} reason=#{inspect(reason)}"
         )
 
-        {:noreply, close(state, 11)}
+        {:noreply, close(state, :scene_unavailable, "transfer_prepare_failed")}
     end
   end
 
@@ -374,7 +375,7 @@ defmodule GateServer.Session.QuicConnection do
                  max(state.queue_age_us, System.monotonic_time(:microsecond) - queued_at)
            }}
         else
-          {:noreply, close(state, 8)}
+          {:noreply, close(state, :protocol_violation, "snapshot_exceeds_datagram_limit")}
         end
     end
   end
@@ -393,7 +394,7 @@ defmodule GateServer.Session.QuicConnection do
         {:quic, :dgram_send_state, conn, %{state: :dgram_send_canceled}},
         %{conn: conn} = state
       ),
-      do: {:noreply, close(state, 3)}
+      do: {:noreply, close(state, :transport_closed, "datagram_canceled")}
 
   def handle_info({:quic, :closed, conn, _}, %{conn: conn} = state), do: {:stop, :normal, state}
 
@@ -402,11 +403,11 @@ defmodule GateServer.Session.QuicConnection do
       do: {:noreply, %{state | closing: true}}
 
   def handle_info({:quic, :peer_send_shutdown, _stream, _}, %{closing: false} = state),
-    do: {:noreply, close(state, 3)}
+    do: {:noreply, close(state, :transport_closed, "peer_send_shutdown")}
 
   def handle_info({:quic, event, _stream, _}, state)
       when event in [:peer_send_aborted, :peer_receive_aborted],
-      do: {:noreply, close(state, 3)}
+      do: {:noreply, close(state, :transport_closed, Atom.to_string(event))}
 
   def handle_info({:quic, _, _, _}, state), do: {:noreply, state}
   def handle_info({:mmo_reliable, _, _, _}, state), do: {:noreply, state}
@@ -515,7 +516,7 @@ defmodule GateServer.Session.QuicConnection do
           state = put_in(state.purposes[purpose], stream)
           consume(flush_reliable(state, purpose), stream)
         else
-          close(state, 8)
+          close(state, :protocol_violation, "stream_purpose purpose=#{purpose}")
         end
 
       %{purpose: purpose, buffer: <<length::32, payload::binary-size(length), tail::binary>>}
@@ -532,14 +533,14 @@ defmodule GateServer.Session.QuicConnection do
        when identity != nil do
     case Movement.Codec.decode(bytes) do
       {:ok, %Movement.InputBatch{} = message} -> forward_input(state, message)
-      _ -> close(state, 8)
+      _ -> close(state, :protocol_violation, "input_decode " <> frame_header(bytes))
     end
   end
 
   defp frame(state, 1, bytes) do
     case Session.Codec.decode(bytes) do
       {:ok, message} -> control(state, message)
-      _ -> close(state, 8)
+      _ -> close(state, :protocol_violation, "control_decode " <> frame_header(bytes))
     end
   end
 
@@ -566,14 +567,14 @@ defmodule GateServer.Session.QuicConnection do
         # World 按当前权威角色位置校验建造距离、材料与占用；固定 probe 盒不限制正式建造。
         if edit_scene?(state, request.logical_scene_id),
           do: enqueue_edit(state, message),
-          else: close(state, 4)
+          else: close(state, :unsupported_range, "edit_scene kind=#{kind}")
 
       {:ok, {kind, request} = message}
       when kind in [:voxel_tool_intent, :voxel_spell_intent, :voxel_beacon_travel, :voxel_prefab_publish_v1] and
              state.voxim_overlay ->
         if edit_scene?(state, request.logical_scene_id),
           do: enqueue_edit(state, message),
-          else: close(state, 4)
+          else: close(state, :unsupported_range, "edit_scene kind=#{kind}")
 
       {:ok, {kind, request} = message}
       when kind in [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1] and
@@ -586,7 +587,7 @@ defmodule GateServer.Session.QuicConnection do
                state.bounds
              ),
            do: enqueue_edit(state, message),
-           else: close(state, 4)
+           else: close(state, :unsupported_range, "prefab_bounds kind=#{kind}")
 
       {:ok, {kind, request} = message}
       when kind in [:voxel_edit_intent, :voxel_batch_edit_intent] and state.voxim_overlay ->
@@ -596,15 +597,16 @@ defmodule GateServer.Session.QuicConnection do
              Enum.all?(coords, &VoxelRegion.EditBounds.within?(&1, state.bounds)) do
           enqueue_edit(state, message)
         else
-          close(state, 4)
+          close(state, :unsupported_range, "edit_bounds kind=#{kind}")
         end
 
       _ ->
-        close(state, 8)
+        close(state, :protocol_violation, "voxel_decode " <> frame_header(bytes))
     end
   end
 
-  defp frame(state, _purpose, _bytes), do: close(state, 8)
+  defp frame(state, purpose, bytes),
+    do: close(state, :protocol_violation, "frame purpose=#{purpose} " <> frame_header(bytes))
 
   # M4a 两区共用同一 World；control/voxel 流之间无顺序保证，标签可先于或晚于 Ready。
   defp edit_scene?(state, scene_id) do
@@ -666,7 +668,7 @@ defmodule GateServer.Session.QuicConnection do
     if hello == state.hello do
       send_message(%{state | hello_seen: true}, 1, hello)
     else
-      close(state, 9)
+      close(state, :identity_mismatch, "hello")
     end
   end
 
@@ -696,10 +698,10 @@ defmodule GateServer.Session.QuicConnection do
           end
 
         _ ->
-          close(state, 11)
+          close(state, :scene_unavailable, "route scene_id=#{join.scene_id}")
       end
     else
-      _ -> close(state, 13)
+      _ -> close(state, :auth_rejected, "join")
     end
   end
 
@@ -737,15 +739,15 @@ defmodule GateServer.Session.QuicConnection do
             "mmo_transfer_commit_failed old_scene=#{state.identity.scene_id} target_scene=#{pending.identity.scene_id} reason=#{inspect(reason)}"
           )
 
-          close(state, 11)
+          close(state, :scene_unavailable, "transfer_commit_failed")
       end
     else
-      close(state, 8)
+      close(state, :protocol_violation, "transfer_ready_mismatch")
     end
   end
 
   defp control(%{transfer_committed: count} = state, %Session.Ready{}) when count > 0,
-    do: close(state, 8)
+    do: close(state, :protocol_violation, "ready_after_transfer")
 
   defp control(%{identity: identity} = state, %Session.Ready{identity: identity} = ready)
        when identity != nil do
@@ -789,9 +791,11 @@ defmodule GateServer.Session.QuicConnection do
 
   defp control(%{identity: identity} = state, %Session.SessionEnd{identity: identity, reason: 1})
        when identity != nil,
-       do: close(state, 1)
+       do: close(state, :client_leave, "client_leave")
 
-  defp control(state, _), do: close(state, 8)
+  # 只记消息类型：Join 等消息带凭据，不能整体写进日志。
+  defp control(state, %module{}),
+    do: close(state, :protocol_violation, "unexpected_control kind=#{inspect(module)}")
 
   defp forward_input(
          %{pending_transfer: pending} = state,
@@ -895,18 +899,36 @@ defmodule GateServer.Session.QuicConnection do
     end
   end
 
-  defp close(%{closing: true} = state, _reason), do: state
+  # 唯一的断连出口：原因名取自 `MmoContracts.Session.Codec.end_reasons/0`，每次断连打一行 `mmo_session_closed`，
+  # 联调时能从服务端日志直接看到客户端为什么被断开。`detail` 只放类型、长度等诊断字段，不放载荷与凭据。
+  defp close(%{closing: true} = state, _reason, _detail), do: state
 
-  defp close(%{identity: nil} = state, reason) do
-    :ok = :quicer.async_shutdown_connection(state.conn, 0, Session.Codec.pre_auth_close(reason))
+  defp close(state, reason, detail) do
+    code = Session.Codec.end_reason(reason)
+    level = if reason in [:client_leave, :transport_closed], do: :info, else: :warning
+
+    Logger.log(
+      level,
+      "mmo_session_closed reason=#{reason} code=#{code} cid=#{inspect(state.cid)} identity=#{inspect(state.identity)} detail=#{detail}"
+    )
+
+    shutdown(state, code)
+  end
+
+  defp shutdown(%{identity: nil} = state, code) do
+    :ok = :quicer.async_shutdown_connection(state.conn, 0, Session.Codec.pre_auth_close(code))
     %{state | closing: true}
   end
 
-  defp close(state, reason) do
-    {:ok, bytes} =
-      Session.Codec.encode(%Session.SessionEnd{identity: state.identity, reason: reason})
-
+  defp shutdown(state, code) do
+    {:ok, bytes} = Session.Codec.encode(%Session.SessionEnd{identity: state.identity, reason: code})
     state = send_bytes(state, 1, IO.iodata_to_binary(bytes), 4)
     %{state | closing: true}
   end
+
+  # 网络帧头的诊断描述（版本 255/1 之后的 domain 与 kind，以及总长度），不含载荷。
+  defp frame_header(<<255, 1::16, domain, kind, _::binary>> = bytes),
+    do: "domain=#{domain} kind=#{kind} bytes=#{byte_size(bytes)}"
+
+  defp frame_header(bytes), do: "bytes=#{byte_size(bytes)}"
 end
