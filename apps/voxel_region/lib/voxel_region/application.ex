@@ -43,9 +43,19 @@ defmodule VoxelRegion.Application do
           log: Application.get_env(:voxel_region, :log_backend, VoxelRegion.OverlayLog.Db)
         ]
 
-        {:ok, store} = VoxelRegion.GeneratedStore.open(opts)
-        {:ok, _store, _stats} = VoxelRegion.Bake.run(store)
+        # 生成锁与列边界缓存是共享的具名 ETS 表，表随创建者消亡：由本进程（随应用常驻）持有，World 重启也不丢。
+        :ok = VoxelRegion.GeneratedStore.ensure_tables()
+
+        # Bake 会产生大量临时数据。本进程启动后不再运行、永不触发 GC，在这里跑的话临时数据会一直占着
+        # （青岚生产实测约 47 MiB）。所以放进短命进程，跑完随进程整体释放；仍同步等待，Bake 完成前本应用不完成启动。
+        :ok = Task.async(fn -> bake(opts) end) |> Task.await(:infinity)
         [{VoxelRegion.World, opts}]
     end
+  end
+
+  defp bake(opts) do
+    {:ok, store} = VoxelRegion.GeneratedStore.open(opts)
+    {:ok, _store, _stats} = VoxelRegion.Bake.run(store)
+    :ok
   end
 end
