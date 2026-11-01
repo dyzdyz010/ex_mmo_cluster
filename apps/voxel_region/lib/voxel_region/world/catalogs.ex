@@ -100,7 +100,7 @@ defmodule VoxelRegion.World.Catalogs do
         do: {%{seq: next.seq, entries: [], coarse: []}, [], next},
         else: AttachmentOps.attachment_geometry(state, next, migration.slots)
       txn = Map.merge(txn, %{property_states: tombstones ++ rows, thermal: thermal})
-      case Log.append_log(state, next, txn) do
+      case Log.append_log(state, next, txn, :operator) do
         :ok ->
           next = Log.remember_entry(next, txn)
           Observation.fanout(next, txn)

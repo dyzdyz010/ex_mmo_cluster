@@ -219,6 +219,7 @@ defmodule VoxelRegion.World.Tools do
                 destroy_target(
                   before,
                   %{state | damage: Map.put(state.damage, Damage.key(target), target)},
+                  {:character, actor.cid},
                   target,
                   settlement |> Map.put(:recovery_cid, actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
                 )
@@ -239,7 +240,7 @@ defmodule VoxelRegion.World.Tools do
                 }
                 |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
 
-                case Log.append_log(before, state, txn) do
+                case Log.append_log(before, state, txn, {:character, actor.cid}) do
                   :ok ->
                     state = Log.remember_entry(state, txn)
                     Observation.fanout(state, txn)
@@ -271,7 +272,7 @@ defmodule VoxelRegion.World.Tools do
       next = %{state | seq: state.seq + 1, damage: Map.put(state.damage, Damage.key(row), row)}
       txn = %{seq: next.seq, entries: [], coarse: [], property_states: [row], epochs: %{}}
 
-      case Log.append_log(before, next, txn) do
+      case Log.append_log(before, next, txn, {:character, actor.cid}) do
         :ok ->
           next = Log.remember_entry(next, txn)
           Observation.fanout(next, txn)
@@ -380,11 +381,11 @@ defmodule VoxelRegion.World.Tools do
             {row, thermal}
           end
 
-        commit_combustion(before, %{state | thermal: thermal}, row, settlement)
+        commit_combustion(before, %{state | thermal: thermal}, {:character, actor.cid}, row, settlement)
     end
   end
 
-  def commit_combustion(before, state, row, settlement) do
+  def commit_combustion(before, state, principal, row, settlement) do
     row = %{row | seq: state.seq + 1, request_id: 0}
     thermal = %{state.thermal | active: true}
 
@@ -405,7 +406,7 @@ defmodule VoxelRegion.World.Tools do
         settlement
       )
 
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, principal) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)
@@ -432,7 +433,7 @@ defmodule VoxelRegion.World.Tools do
   def dismantle_target(before, state, actor, request, %{granularity: 0} = target) do
     units = recover_units(state,target,@micro*@micro*@micro*state.material_units_per_micro)
     {state,settlement} = Production.settle_material(state,actor.cid,target.material,units)
-    destroy_target(before,state,target,settlement |> Map.put(:recovery_cid,actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target)))
+    destroy_target(before,state,{:character,actor.cid},target,settlement |> Map.put(:recovery_cid,actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target)))
   end
 
   def dismantle_target(before, state, actor, request, target) do
@@ -460,7 +461,7 @@ defmodule VoxelRegion.World.Tools do
       # Include a tombstone even when a small leaf dies on its first hit.
       damaged = %{before | damage: Map.put(before.damage, Damage.key(target), target)}
 
-      case Prefabs.prefab_reply(damaged, Prefabs.clear_subtree(state, ids, cells), cells, settlement) do
+      case Prefabs.prefab_reply(damaged, Prefabs.clear_subtree(state, ids, cells), {:character, actor.cid}, cells, settlement) do
         {:reply, {:error, reason}, _} -> {:reply, {:error, reason}, before}
         result -> result
       end
@@ -481,8 +482,8 @@ defmodule VoxelRegion.World.Tools do
     end)
   end
 
-  def destroy_target(before, state, %{granularity: 0} = target, settlement) do
-    case Edits.apply_batch(state, [{Damage.macro(target), 0}], false, settlement) do
+  def destroy_target(before, state, principal, %{granularity: 0} = target, settlement) do
+    case Edits.apply_batch(state, principal, [{Damage.macro(target), 0}], false, settlement) do
       {:ok, next} -> {:reply, {:ok, next.seq}, next}
       {:error, reason} -> {:reply, {:error, reason}, before}
     end

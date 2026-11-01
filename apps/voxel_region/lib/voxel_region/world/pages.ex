@@ -40,6 +40,12 @@ defmodule VoxelRegion.World.Pages do
   @doc "登记一个脏单元（写入口调用）。缺 `page_dirty` 的局部 state（单测夹具）也可用。"
   def mark(state, unit), do: Map.update(state, :page_dirty, MapSet.new([unit]), &MapSet.put(&1, unit))
 
+  @doc """
+  登记本笔写到的 L0 宏格：授权写集，提交时由 `VoxelRegion.Access.authorize_writes/3` 判定。
+  与 `mark/2` 由同一批写入口调用；每笔提交后清空（`Log.remember_entry/2`），装页接纳不算写（`install/3` 恢复原值）。
+  """
+  def wrote(state, cell), do: Map.update(state, :written, MapSet.new([cell]), &MapSet.put(&1, cell))
+
   @doc "登记本笔碰过的身份（实例 id 或 `{:aid, aid}`）：`remember/2` 按根重算覆盖页集合。"
   def touch(state, id), do: Map.update(state, :owners_touched, MapSet.new([id]), &MapSet.put(&1, id))
 
@@ -47,7 +53,10 @@ defmodule VoxelRegion.World.Pages do
   def cell_unit(segment, cell), do: {:chunk, segment, CollisionSource.chunk_coord(cell)}
 
   @doc "附件槽归锚点宏格的子块（`attachments.ex:34`：事实归 anchor 所在 core）。"
-  def slot_unit(slot), do: cell_unit(:attachments, elem(Prefab.macro_slot(elem(slot, 2)), 0))
+  def slot_unit(slot), do: cell_unit(:attachments, slot_cell(slot))
+
+  @doc "附件槽的锚点宏格。"
+  def slot_cell(slot), do: elem(Prefab.macro_slot(elem(slot, 2)), 0)
 
   @doc "某级稀疏格的单元：L0 进逐格子块，L1+ 进该级页。"
   def overlay_unit(0, cell), do: cell_unit(:overlay, cell)
@@ -819,6 +828,7 @@ defmodule VoxelRegion.World.Pages do
     units = for {unit, _} = pair <- all_units, adopt_unit?(state, wanted, unit), do: pair
     dirty = Map.get(state, :page_dirty, MapSet.new())
     touched = Map.get(state, :owners_touched, MapSet.new())
+    written = Map.get(state, :written, MapSet.new())
     before_instances = state.instances
     before_owners = state.attachment_owners
 
@@ -837,7 +847,7 @@ defmodule VoxelRegion.World.Pages do
     # 只有真装入了内容的页才可能让此前按 baseline 物化的缓存过时（PG 无行 = 从未编辑 = baseline）。
     filled = for {unit, _} <- units, uniq: true, do: unit_key(unit)
     state = Enum.reduce(filled, state, &invalidate(&2, &1))
-    {Map.merge(state, %{page_dirty: dirty, owners_touched: touched}), new_instances, loaded_rows}
+    {Map.merge(state, %{page_dirty: dirty, owners_touched: touched, written: written}), new_instances, loaded_rows}
   end
 
   defp adopt_unit?(state, wanted, {:fragment, _, {level, page}}),

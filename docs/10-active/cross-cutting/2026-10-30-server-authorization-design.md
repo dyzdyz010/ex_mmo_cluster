@@ -1,7 +1,7 @@
 # 服务端统一授权设计（决策稿，待批准）
 
 - 日期：2026-10-30
-- 状态：**草案，等待用户批准**；批准前不改生产代码
+- 状态：用户 2026-10-30 批准；第 1 步已上线（`qinglan-20261030-authz`），第 2–4 步在 `feat/server-authorization` 实现中（见 §9）
 - 起因：原始体素编辑绕过如园保留区，已复现（`.demo/observe/qinglan-deploy-20261029/fix-20261030/raw-edit-protection/REPORT.md`）
 - 用户要求：权限不能散落在各个操作里，每加一种操作就要全仓扫一遍；要用成熟的做法，由一个模块从代码层面统一管理
 
@@ -212,3 +212,24 @@ sequenceDiagram
     Gate 编辑队列的冷准备用例改用生产放置 `0x7F` 承载（原始编辑不再进入准备阶段）。
   - 主体白名单用源码扫描测试实现（gate / scene / npc 不得调用运维专用 World 写 API，原始编辑必须显式带主体）。
   - 验证（证据 `.demo/observe/qinglan-deploy-20261029/fix-20261030/raw-edit-protection/authz-step1/`）：`access_test`、`raw_edit_access_test`、`closure_entries_test` 全绿。`world_test` 9 项失败均为环境原因：8 项需要本机 PostgreSQL；GC 阈值 1 项在基线 `ab7fced0` 上同样失败。Gate 的 `movement_route_test` 与 `quic_connection_test` 中的编辑 worker 用例通过；`T1TransportTest` 在 Windows 上缺 quicer，未启动、未开套接字。NPC Body 的创世用例通过；注册表用例需要 PostgreSQL。
+- 2026-10-31：第 2–4 步实现（分支 `feat/server-authorization`，已推送；静态 L0 暂停未合入，第 2 步直接基于 master）：
+  - **第 2 步，提交时写集检查**：`Log.append_journal/3` 是唯一提交入口，每笔提交显式带主体（约 20 处 `append_log` 与其上游
+    `Edits.apply_batch`、`Liquids.commit_liquid`、`Prefabs.prefab_reply` 等辅助函数都加了 `principal` 参数）。物理提交（热、液体、
+    粗层重建、来源检查）为 `:system`，作者 / GM / parcel / 属性目录发布为 `:operator`，角色意图为 `{:character, cid}`，原始编辑沿用消息里的主体。
+    写入口（`put_overlay` L0、`put_refined`、`put_liquid`、`put_macro_owner`、`put_attachments`、`drop_attachments`）经 `Pages.wrote/2`
+    记下宏格；写集 = 这些宏格 + 本笔属性行作用的宏格（`Claims.target_cells/2`），由 `Access.authorize_writes/3` 判定。每笔提交后清空，
+    装页接纳恢复原值不算写。
+  - 与 §5.3 的偏差 1：主体没有放进 World 状态隐式传递，而是每个提交点显式传入。原因：热 flush 会在玩家请求内部先做物理提交，
+    隐式继承请求主体会把物理提交误判为角色写入并在 `:ok =` 处崩溃。
+  - 与 §5.3 的偏差 2：写集不并入 `epochs` / `placed_by`。它们是分块嵌套表，总随同格几何写入出现，已被写入口覆盖。
+  - **第 3 步，与 §6 的偏差**：意图入口的早期检查**没有删除**，而是全部改为调用 `Access`（`authorize_cells/4`、`writable?/3`）。
+    原因：`protection_world_test` 的合同要求“拒绝原因固定为 `:protected_region`、无副作用”，先于玩法原因报出；删掉后熄灭非燃烧格
+    会先报 `:not_burning`、缺料建造先报 `:insufficient_material`。现状：`Protection.permitted?` 只在 `Access` 里出现（源码扫描测试钉住），
+    日志追加只在 `World.Log`（同一测试钉住）。原始编辑只靠提交检查。施法作用格保留意图处判定，因为拟态之后才作为物理对象落地，不在本笔写集里。
+    死亡掉落挑落点改用 `Access.writable?/3`（只查询，不记拒绝日志）。
+  - Gate 的 prefab 编辑盒同步检查（`EditBounds.prefab_within?`）**未动**：它管部署编辑范围而非保护区，挪进 World 会把“越界断开连接”
+    改成返回错误，属于可见行为变化，待用户决定。
+  - **第 4 步**：GM 开关成为 `Access` 的 `@requirements`（`gm_build => {:gm_tools, :gm_disabled}`），`Access.authorize/3` 以属性传入开关值，
+    `World.Gm.preflight` 改为询问 `Access`。创世授予仍由 NPC 注册表决定是否构造 `{:genesis, cid}`（§5.1 的“通道处构造主体”），策略表只列 `:genesis` 可做原始编辑。
+  - 验证：保护区相关 7 个测试文件 91 例中 88 例通过；其余 3 例（`loose_world_test:308` 游标过期、`magic_semblance_world_test:309/610`）
+    在 master `0dcb1457` 上同样失败、原因一致。

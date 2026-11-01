@@ -33,7 +33,7 @@ defmodule VoxelRegion.World.Beacons do
           receipt = %{seq: state.seq + 1, beacon: id}
           next = %{state | beacons: Map.put(state.beacons, id, record),
             material_supplies: Map.put(state.material_supplies, rkey, receipt)}
-          commit(state, next, %{beacons: %{id => record}, material_supplies: %{rkey => receipt}}, receipt)
+          commit(state, next, :operator, %{beacons: %{id => record}, material_supplies: %{rkey => receipt}}, receipt)
         else
           {:reply, {:error, :not_an_anchor}, state}
         end
@@ -61,7 +61,7 @@ defmodule VoxelRegion.World.Beacons do
             else
               list = attuned ++ [beacon.id]
               next = %{state | beacon_attunements: Map.put(state.beacon_attunements, actor.cid, list)}
-              commit(before, next, %{beacon_attunements: %{actor.cid => list}}, nil)
+              commit(before, next, {:character, actor.cid}, %{beacon_attunements: %{actor.cid => list}}, nil)
             end
         end
     end
@@ -150,11 +150,11 @@ defmodule VoxelRegion.World.Beacons do
     do: :math.sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by) + (az - bz) * (az - bz))
 
   # 不改几何的一笔提交（同 `Production.supply_materials`）。
-  defp commit(before, next, fields, receipt) do
+  defp commit(before, next, principal, fields, receipt) do
     next = %{next | seq: before.seq + 1}
     txn = Map.merge(%{seq: next.seq, entries: [], coarse: []}, fields)
 
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, principal) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)

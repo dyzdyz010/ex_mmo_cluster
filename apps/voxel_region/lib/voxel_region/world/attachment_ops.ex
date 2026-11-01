@@ -34,7 +34,7 @@ defmodule VoxelRegion.World.AttachmentOps do
                  state.circuit_component_limit) do
             target = %{material: request.material, micro: request.anchor, granularity: 3, incarnation: request.id}
             metadata = Observation.operation_metadata(before,actor,request,if(request.action == 0,do: 2,else: 1),target)
-            commit_attachment(before, state, slots, Map.merge(settlement,metadata))
+            commit_attachment(before, state, {:character, actor.cid}, slots, Map.merge(settlement,metadata))
           else
             :error -> {:error, :invalid_tool}
             error -> error
@@ -80,6 +80,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     case commit_attachment(
            before,
            state,
+           {:character, actor.cid},
            slots,
            settlement |> Map.put(:property_states, [tombstone]) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
          ) do
@@ -88,7 +89,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     end
   end
 
-  def commit_attachment(before, state, slots, settlement) do
+  def commit_attachment(before, state, principal, slots, settlement) do
     state = %{state | seq: before.seq + 1}
     {state, rows} = Tools.attachment_damage(before, state)
     settlement = Map.update(settlement, :property_states, rows, &(&1 ++ rows))
@@ -104,7 +105,7 @@ defmodule VoxelRegion.World.AttachmentOps do
     {txn, keys, state} = attachment_geometry(before, state, slots)
     txn = Map.merge(txn, settlement)
 
-    case Log.append_log(before, state, txn) do
+    case Log.append_log(before, state, txn, principal) do
       :ok ->
         state = Log.remember_entry(state, txn)
         Observation.fanout(state, txn)

@@ -138,11 +138,12 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def prefab_settle(before, state, cells, actor, settlement \\ %{})
-  def prefab_settle(before, state, cells, nil, settlement), do: prefab_reply(before, state, cells, settlement)
+  # 没有角色的放置来自运维、作者或 GM 入口。
+  def prefab_settle(before, state, cells, nil, settlement), do: prefab_reply(before, state, :operator, cells, settlement)
 
   def prefab_settle(before, state, cells, actor, _settlement) do
     case prefab_reach(state, actor, cells) do
-      :ok -> prefab_reply(before, state, cells, %{prefab_actor: actor})
+      :ok -> prefab_reply(before, state, {:character, actor.cid}, cells, %{prefab_actor: actor})
       {:error, reason} -> {:reply, {:error, reason}, before}
     end
   end
@@ -476,7 +477,7 @@ defmodule VoxelRegion.World.Prefabs do
     end
   end
 
-  def prefab_reply(before, state, cells, settlement \\ %{}) do
+  def prefab_reply(before, state, principal, cells, settlement \\ %{}) do
     started = System.monotonic_time(:microsecond)
     removed = Map.keys(before.attachments) -- Map.keys(state.attachments)
     cells = Enum.uniq(cells ++ Attachments.macros(removed))
@@ -562,7 +563,7 @@ defmodule VoxelRegion.World.Prefabs do
 
       with {:ok, chunks} <- Observation.canonical_changes(before, state, Enum.map(material_changes, &{0, &1})),
            collision_done = System.monotonic_time(:microsecond),
-           :ok <- Log.append_log(before, state, txn) do
+           :ok <- Log.append_log(before, state, txn, principal) do
         log_done = System.monotonic_time(:microsecond)
         state = Log.remember_entry(state, txn)
         Observation.fanout(state, txn)

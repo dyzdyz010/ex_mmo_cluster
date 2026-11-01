@@ -1208,7 +1208,7 @@ defmodule VoxelRegion.World do
       t |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
         |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
     end),else: nil
-    case apply_batch(%{state | thermal: thermal}, edits, false, %{liquid_changes: changes,phase_values: values}) do
+    case apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{liquid_changes: changes,phase_values: values}) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},state}
     end
@@ -1231,7 +1231,7 @@ defmodule VoxelRegion.World do
 
     if Enum.any?(delta, &(elem(&1, 1) == :overlap)),
       do: {:reply, {:error, :region_overlap}, state},
-      else: commit_protection(state, state, Map.new(delta))
+      else: commit_protection(state, state, :operator, Map.new(delta))
   end
 
   defp call(:magic_range, _, state), do: {:reply, state.magic && state.magic.range_m, state}
@@ -1417,9 +1417,9 @@ defmodule VoxelRegion.World do
           not same_tool_target?(target, request) ->
             {:reply, {:error, :stale_target}, state}
 
-          # 受保护区域许可：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
+          # 受保护区域许可（先于玩法原因报出）：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。
           tool["action"] not in ["protection.claim", "beacon.use"] and
-              not Protection.permitted?(state.protection, {:character, actor.cid}, target_cells(state, target)) ->
+              Access.authorize_cells({:character, actor.cid}, state.protection, target_cells(state, target), :character_intent) != :ok ->
             {:reply, {:error, :protected_region}, state}
 
           true ->
@@ -1517,9 +1517,11 @@ defmodule VoxelRegion.World do
 
         true ->
           {:reply, reply, next} =
-            if Protection.permitted?(state.protection, {:character, actor.cid}, prefab_intent_cells(state, kind, request, geometry)),
-              do: player_prefab(state, actor, kind, request, geometry),
-              else: {:reply, {:error, :protected_region}, state}
+            case Access.authorize_cells({:character, actor.cid}, state.protection,
+                   prefab_intent_cells(state, kind, request, geometry), :character_intent) do
+              :ok -> player_prefab(state, actor, kind, request, geometry)
+              error -> {:reply, error, state}
+            end
           if match?({:error, {:pages_missing, _}}, reply) do
             missing_pages({:reply, reply, next}, message, from)
           else
@@ -1544,7 +1546,7 @@ defmodule VoxelRegion.World do
 
     case subtree_cells(state, ids) do
       [] -> {:reply, {:error, :instance_not_found}, state}
-      cells -> prefab_reply(state, clear_subtree(state, ids, cells), cells)
+      cells -> prefab_reply(state, clear_subtree(state, ids, cells), :operator, cells)
     end
   end
 
@@ -1634,10 +1636,10 @@ defmodule VoxelRegion.World do
     end
   end
 
+  # 原始编辑：主体是否可写这些格由提交入口的写集检查判定（`Log.append_journal/3`），这里不另算格。
   defp call({:apply_edit, principal, coord, material}, from, state) do
-    result = with :ok <- Access.authorize_cells(principal, state.protection, [coord], :raw_edit),
-      {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
-      do: do_apply_edit(state, coord, material)
+    result = with {:ok, state} <- raw_liquid_edit(state, [{coord, material}]),
+      do: do_apply_edit(state, principal, coord, material)
     case result do
       {:ok, :noop, state} ->
         acknowledge_noop(state, from)
@@ -1769,8 +1771,7 @@ defmodule VoxelRegion.World do
   end
 
   defp call({:apply_edits, principal, edits}, from, state) do
-    result = with :ok <- Access.authorize_cells(principal, state.protection, Enum.map(edits, &elem(&1, 0)), :raw_edit),
-      {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, edits)
+    result = with {:ok, read} <- raw_liquid_edit(state, edits), do: apply_batch(read, principal, edits)
     case result do
       {:ok, next_state} ->
         if next_state.seq == state.seq, do: acknowledge_noop(next_state, from)

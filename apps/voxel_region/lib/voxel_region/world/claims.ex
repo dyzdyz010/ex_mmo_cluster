@@ -20,9 +20,8 @@ defmodule VoxelRegion.World.Claims do
   def target_cells(state, %{granularity: 2} = t), do: micro_owner_cells(state, MapSet.new([t.owner]))
   def target_cells(_state, t), do: [Damage.macro(t)]
 
-  # 附件放置的足迹必须落在同一持有者内（不跨区域边界）；拆除只看现有整件足迹。
+  # 附件放置的足迹必须落在同一持有者内（玩法规则：不跨区域边界）；拆除只看现有整件足迹。能否写这些格由 Access 判定。
   def attachment_protection(state, actor, r) do
-    holder = {:character, actor.cid}
     cells =
       if r.action == 0,
         do: Attachments.macros(Attachments.footprint(r.kind, r.axis, r.anchor, r.size)),
@@ -30,8 +29,8 @@ defmodule VoxelRegion.World.Claims do
     single = r.action != 0 or Protection.empty?(state.protection) or
       length(Enum.uniq_by(cells, &Protection.holder(state.protection, &1))) <= 1
 
-    if single and Protection.permitted?(state.protection, holder, cells),
-      do: :ok,
+    if single,
+      do: VoxelRegion.Access.authorize_cells({:character, actor.cid}, state.protection, cells, :character_intent),
       else: {:error, :protected_region}
   end
 
@@ -65,12 +64,12 @@ defmodule VoxelRegion.World.Claims do
           length(Protection.held(p, holder)) >= tool["region_max_count"] -> {:reply, {:error, :region_limit}, state}
           Protection.overlaps?(p, min, max) -> {:reply, {:error, :region_overlap}, state}
           region_occupied?(state, region, actor.cid) -> {:reply, {:error, :region_occupied}, state}
-          true -> commit_protection(state, state, %{{state.seq + 1, 1} => region})
+          true -> commit_protection(state, state, {:character, actor.cid}, %{{state.seq + 1, 1} => region})
         end
 
       match?({_, %{holder: ^holder}}, Protection.region_at(p, cell)) ->
         {id, _} = Protection.region_at(p, cell)
-        commit_protection(state, %{state | claim_corners: corners}, %{id => nil})
+        commit_protection(state, %{state | claim_corners: corners}, {:character, actor.cid}, %{id => nil})
 
       Protection.holder(p, cell) != nil ->
         {:reply, {:error, :region_overlap}, state}
@@ -94,14 +93,14 @@ defmodule VoxelRegion.World.Claims do
   end
 
   # 区域增量独立成一笔事务；边界改变后热工作集（接触图、视线缓存）整体重建，边界两侧液体重新唤醒。
-  def commit_protection(before, state, delta) do
+  def commit_protection(before, state, principal, delta) do
     next = %{state | seq: state.seq + 1, protection: Protection.apply(state.protection, delta)}
     rects = for {id, r} <- delta, r = r || before.protection.regions[id], do: r
     wet = for {cell, _} <- next.liquid_units, Enum.any?(rects, &Protection.contains?(&1, cell, 1)), do: cell
     next = next |> Thermal.rebuild_work() |> Liquids.wake_liquid(wet)
     txn = %{seq: next.seq, entries: [], coarse: [], protection: delta}
 
-    case Log.append_log(before, next, txn) do
+    case Log.append_log(before, next, txn, principal) do
       :ok ->
         next = Log.remember_entry(next, txn)
         Observation.fanout(next, txn)
