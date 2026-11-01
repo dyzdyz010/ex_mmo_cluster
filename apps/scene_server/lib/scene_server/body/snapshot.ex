@@ -4,17 +4,19 @@ defmodule SceneServer.Body.Snapshot do
   @fields [:body, :body_heat, :body_exchange_j, :life_generation, :food_cursors]
 
   @doc "从身体 owner 提取不可变存档数据。"
-  def take(state), do: Map.take(state, @fields ++ [:projectile_hits])
+  def take(state), do: Map.take(state, @fields ++ [:effect_receipts])
 
-  @doc "身体与消费游标同笔编码，避免重启后重复吸收食物。"
-  def encode(state), do: :erlang.term_to_binary({:body, if(Map.has_key?(state, :projectile_hits), do: 2, else: 1), take(state)})
+  @doc "身体、作用回执与消费游标同笔编码，避免重启后重复吸收食物或重复结算同一作用。"
+  def encode(state), do: :erlang.term_to_binary({:body, if(Map.has_key?(state, :effect_receipts), do: 3, else: 1), take(state)})
 
-  @doc "持久化加载边界：只接受已知版本；损坏存档不得冒充新角色。"
+  @doc "持久化加载边界：只接受已知版本；损坏存档不得冒充新角色。版本 2 的投射物收据按原 key 并入作用回执。"
   def decode!(bytes) do
     case :erlang.binary_to_term(bytes, [:safe]) do
+      {:body, 3, %{effect_receipts: receipts} = saved} when is_map(receipts) ->
+        with_receipts(saved, :effect_receipts, receipts)
+
       {:body, 2, %{projectile_hits: hits} = saved} when is_map(hits) ->
-        base = saved |> Map.delete(:projectile_hits) |> then(&:erlang.term_to_binary({:body, 1, &1})) |> decode!()
-        Map.put(base, :projectile_hits, hits)
+        with_receipts(saved, :projectile_hits, hits)
 
       {:body, 1,
        %{
@@ -31,5 +33,10 @@ defmodule SceneServer.Body.Snapshot do
       _ ->
         raise ArgumentError, "invalid body snapshot"
     end
+  end
+
+  defp with_receipts(saved, field, receipts) do
+    base = saved |> Map.delete(field) |> then(&:erlang.term_to_binary({:body, 1, &1})) |> decode!()
+    Map.put(base, :effect_receipts, receipts)
   end
 end

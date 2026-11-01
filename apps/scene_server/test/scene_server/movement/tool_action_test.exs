@@ -37,8 +37,7 @@ defmodule SceneServer.Movement.ToolActionTest do
       food_cursors: %{},
       body_sent: nil,
       life_generation: 99,
-      body_hits: %{},
-      projectile_hits: %{},
+      effect_receipts: %{},
       tool_action: nil,
       action: nil,
       tick: 40,
@@ -56,7 +55,7 @@ defmodule SceneServer.Movement.ToolActionTest do
     hit = %{
       key: MmoContracts.Action.key(identity, 11),
       actor: actor,
-      target: %{life_generation: 99, position: state.state.position},
+      target: %{id: 20, identity: identity, life_generation: 99, position: state.state.position},
       part: :torso,
       impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0},
       request_id: 42
@@ -67,7 +66,7 @@ defmodule SceneServer.Movement.ToolActionTest do
 
   test "同一作用重投只返回原回执，新生命拒绝旧作用", c do
     {:reply, {:ok, receipt}, after_hit} =
-      Player.handle_call({:receive_hit, c.hit}, c.from, c.state)
+      Player.handle_call({:receive_effect, c.hit}, c.from, c.state)
 
     assert receipt.body.life == 80
     assert receipt.action_seq == 11 and receipt.target_id == 20 and receipt.source_id == 10
@@ -75,20 +74,39 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert_receive {:wire, %Session.BodyState{life: 80, recoverable: 20}}
 
     assert {:reply, {:ok, ^receipt}, ^after_hit} =
-             Player.handle_call({:receive_hit, c.hit}, c.from, after_hit)
+             Player.handle_call({:receive_effect, c.hit}, c.from, after_hit)
 
     refute_receive {:wire, _}, 0
-    revived = %{after_hit | life_generation: 100, body: Body.revive(), body_hits: %{}}
+    # 复活不清空回执：旧作用重投仍只返回原回执、不再结算；旧生命的新作用拒绝。
+    revived = %{after_hit | life_generation: 100, body: Body.revive()}
+
+    assert {:reply, {:ok, ^receipt}, ^revived} =
+             Player.handle_call({:receive_effect, c.hit}, c.from, revived)
+
+    fresh = %{c.hit | key: MmoContracts.Action.key(c.identity, 12)}
 
     assert {:reply, {:error, :stale_life}, ^revived} =
-             Player.handle_call({:receive_hit, c.hit}, c.from, revived)
+             Player.handle_call({:receive_effect, fresh}, c.from, revived)
+  end
+
+  test "工具作用复核目标身份；回执随存档恢复后重投不再结算", c do
+    stale = put_in(c.hit, [:target, :identity], %{c.identity | session_epoch: 6})
+
+    state = c.state
+
+    assert {:reply, {:error, :stale_owner}, ^state} =
+             Player.handle_call({:receive_effect, stale}, c.from, state)
+
+    {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_effect, c.hit}, c.from, c.state)
+    recovered = Map.merge(c.state, SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next)))
+    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_effect, c.hit}, c.from, recovered)
   end
 
   test "投射物焦耳只入局部热一次；存档恢复仍去重，旧生命与 owner 拒绝", c do
     hit = %{key: {77, 15, 0}, actor: c.hit.actor,
       target: %{id: 20, identity: c.identity, life_generation: 99}, q_j: 2094.0,
       position: {1.5, 0.0, 0.0}}
-    assert {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_projectile, hit}, c.from, c.state)
+    assert {:reply, {:ok, receipt}, next} = Player.handle_call({:receive_effect, hit}, c.from, c.state)
     assert receipt.q_j == 2094.0
     assert next.body_heat.q_j == 2094.0
     assert next.body_heat.tissue_j == 2094.0
@@ -96,11 +114,11 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert next.body == c.state.body
     saved = SceneServer.Body.Snapshot.decode!(SceneServer.Body.Snapshot.encode(next))
     recovered = Map.merge(c.state, saved)
-    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_projectile, hit}, c.from, recovered)
+    assert {:reply, {:ok, ^receipt}, ^recovered} = Player.handle_call({:receive_effect, hit}, c.from, recovered)
     stale = put_in(hit.target.life_generation, 98)
-    assert {:reply, {:error, :stale_life}, _} = Player.handle_call({:receive_projectile, stale}, c.from, c.state)
+    assert {:reply, {:error, :stale_life}, _} = Player.handle_call({:receive_effect, stale}, c.from, c.state)
     old = put_in(hit.target.identity.session_epoch, 6)
-    assert {:reply, {:error, :stale_owner}, _} = Player.handle_call({:receive_projectile, old}, c.from, c.state)
+    assert {:reply, {:error, :stale_owner}, _} = Player.handle_call({:receive_effect, old}, c.from, c.state)
     {body, account} = SceneServer.Body.Thermo.step(next.body, 1.0, %{q_j: 2094.0, tissue_j: 2094.0, air_k: 293.15})
     # 0.06kg × 3490 J/(kg K) = 209.4 J/K；2094 J 独立手算升温 10 K。
     assert_in_delta body.tissue_k - c.state.body.tissue_k, 10.0, 1.0e-10
@@ -114,13 +132,13 @@ defmodule SceneServer.Movement.ToolActionTest do
           %{c.state | state: %{position: {6.0, 0.0, 0.0}}}
         ] do
       assert {:reply, {:error, :combat_not_permitted}, ^state} =
-               Player.handle_call({:receive_hit, c.hit}, c.from, state)
+               Player.handle_call({:receive_effect, c.hit}, c.from, state)
     end
 
     moved = %{c.state | state: %{position: {2.1, 0.0, 0.0}}}
 
     assert {:reply, {:ok, %{body: %{life: 80}}}, _} =
-             Player.handle_call({:receive_hit, c.hit}, c.from, moved)
+             Player.handle_call({:receive_effect, c.hit}, c.from, moved)
   end
 
   test "工具登记绑定完整会话与请求，完成后重投不再授权", c do
@@ -168,6 +186,6 @@ defmodule SceneServer.Movement.ToolActionTest do
     {target, monitor} = spawn_monitor(fn -> :ok end)
     assert_receive {:DOWN, ^monitor, :process, ^target, :normal}
     assert {:error, :invalid_state} = Player.hit_context(target)
-    assert {:error, :invalid_state} = Player.receive_hit(target, c.hit)
+    assert {:error, :invalid_state} = Player.receive_effect(target, c.hit)
   end
 end

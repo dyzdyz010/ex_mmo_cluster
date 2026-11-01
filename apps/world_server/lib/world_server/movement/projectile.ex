@@ -1,6 +1,6 @@
 defmodule WorldServer.Movement.Projectile do
   @moduledoc "全局系统功能：投射物查询/身体交付的组合边界，经显式 Scene 路由访问当前 Player；不持有拟态或身体真值。"
-  alias SceneServer.Movement.{Player, Scene, ToolHit}
+  alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
   alias VoxelRegion.Magic.Semblance
 
   @doc "在 World 异步工作中逐次采当前 owner；位置只归属这一实际采样时刻。"
@@ -32,7 +32,7 @@ defmodule WorldServer.Movement.Projectile do
     hits = if actor do
       for {t0, t1, a, b} <- Semblance.flight_segments(s, age),
           target <- targets, target.id != source.cid, target.status != :dead,
-          ToolHit.permitted?(target.scope, actor.position, target.position),
+          Harm.permitted?(target.scope, actor.position, target.position),
           {:ok, t} <- [ToolHit.sweep(a, b, s.radius_m, target.position, target.profile)],
           do: {(t0 + (t1 - t0) * t - s.age_s) / (age - s.age_s), target}
     else
@@ -48,7 +48,7 @@ defmodule WorldServer.Movement.Projectile do
     case WorldServer.Movement.character_owner(hit.target.id) do
       nil -> {:retry, :target_unavailable}
       target ->
-        case Player.receive_projectile(target.player, hit) do
+        case Player.receive_effect(target.player, hit) do
           {:error, :invalid_state} -> {:retry, :target_unavailable}
           result -> result
         end

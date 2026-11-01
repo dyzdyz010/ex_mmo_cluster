@@ -40,6 +40,23 @@ defmodule SceneServer.Body.SnapshotTest do
            }
   end
 
+  test "版本 2 投射物收据按原 key 并入作用回执；版本 3 原样往返" do
+    v1 = %{
+      body: Body.new(),
+      body_heat: %{q_j: 0.0, tissue_j: 0.0, max_contact_k: nil, sole_k: nil, immersed: 0.0},
+      body_exchange_j: 0.0,
+      life_generation: 5,
+      food_cursors: %{}
+    }
+
+    # 手写版本 2 字节：与改前 Snapshot.encode/1 写出的项相同。
+    v2 = :erlang.term_to_binary({:body, 2, Map.put(v1, :projectile_hits, %{{77, 15, 0} => :receipt})})
+    assert Snapshot.decode!(v2) == Map.put(v1, :effect_receipts, %{{77, 15, 0} => :receipt})
+
+    v3 = Map.put(v1, :effect_receipts, %{{:identity, 11} => :tool, {77, 15, 0} => :projectile})
+    assert Snapshot.decode!(Snapshot.encode(v3)) == v3
+  end
+
   test "不接受未知存档版本并重置为健康身体" do
     assert_raise ArgumentError, fn ->
       Snapshot.decode!(:erlang.term_to_binary({:body, 99, %{}}))
