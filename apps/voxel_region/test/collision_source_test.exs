@@ -125,7 +125,7 @@ defmodule VoxelRegion.CollisionSourceTest do
       served = serve(world, coord)
       assert payload.cells == served.cells
       assert payload.records == served.records
-      assert payload.maps == served.maps
+      assert Payload.persisted(payload).maps == Payload.persisted(served).maps
 
       for chunk <- snapshot.chunks, region_of(chunk.origin_m) == coord do
         assert chunk.n == 16 and chunk.scale_m == 1.0

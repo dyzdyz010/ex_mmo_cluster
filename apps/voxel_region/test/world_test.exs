@@ -185,7 +185,7 @@ defmodule VoxelRegion.WorldTest do
       [txn] = World.entries_after(world, 0)
       assert Enum.map(txn.entries, &{&1.coord, &1.material}) == edits
       assert {:ok, current} = Payload.decode(fetch_payload(world, 0, {0, 0, 0}))
-      assert map_size(current.records) == 1024
+      assert Payload.skin_count(current) == 1024
       for {cell, material} <- edits,
         do: assert(Payload.material(current, Payload.local(current.region, cell)) == material)
     after

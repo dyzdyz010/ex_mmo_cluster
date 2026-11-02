@@ -168,7 +168,7 @@ Replica 旧快照入口保持原路径。
 契约、取舍、测试和测量记录在 [M2b §8](../../10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#8-交接第-1-项窗口组装移出-world2026-10-27施工中)。
 相关验证：本 app 下 `mix test --no-start test/window_snapshot_test.exs test/world_refined_index_test.exs test/canopy_projection_test.exs test/collision_source_test.exs test/damage_world_test.exs test/page_on_demand_test.exs`。
 
-### 2026-11-02 公网首载调查（Global system，施工中）
+### 2026-11-02 公网首载调查（Global system，第二轮已实现，真实首载待复验）
 
 目标：消除登录窗口与显示区域下载的无关数据依赖和重计算排队；不改 Ready／完整近场门槛，不延长超时。
 现有 20261102 发布客户端实跑首载 129.883 s。对应生产日志：窗口冻结 28.608 ms，Feed 完成 126.150 s；
@@ -188,14 +188,15 @@ Replica 旧快照入口保持原路径。
 依据：[Erlang 官方进程效率指南](https://www.erlang.org/doc/system/eff_guide_processes.html#sending-messages)：
 进程消息复制普通项，同节点大 binary 可共享。因此先限制冻结输入的语义范围，保留现有有界运输；不直接发送整个 World。
 把纯编码放在调用者进程，使 World 只串行裁决／捕获／接纳，不让显示派生计算占用权威处理回合。
-验证不覆盖多人容量、全量玩法或发布。原始证据与执行日志在 Voxim `Saved/Tests/public-first-load-20261102/`；生产只读取日志，尚未部署改动。
+验证不覆盖多人容量或全量玩法。下述本机对照属于首轮候选 `b9041f44`，不能证明本节后续修复的真实首载。
+原始证据与执行日志在 Voxim `Saved/Tests/public-first-load-20261102/`；首轮候选后来进行过公网验证并失败，已回滚，详见下文。
 
 本机对照：同一 20261102 打包客户端、各自全新 UserDir、同一最新生产只读 dump 的两个独立数据库及可写世界副本；
 Linux 原生 release 串行运行，systemd scope 均为 CPUQuota=180%／MemoryMax=4600M，最多一个真实客户端，单服务 600 s 截止。
 基底生成缓存预先完整，两轮服务端派生缓存及客户端缓存均冷；不是冷生成测试。正式正常账号刷新与 game-ticket 登录，无真值注入。
 旧版首载 41.057 s，新版 31.654 s；主要 HTTP 批次 30.661／31.190 s → 22.902／12.174 s，响应字节数逐批相同。
 新版冻结窗口输入 19 次拉取／4.843 ms；完整 Feed 2.564 s（旧版 2.880 s）。本机没有复现公网 126 s 的 Feed 长尾，不能将本机改善冒称公网验收。
-两轮均由真实 `travel.loading ready → reveal → done` 完成，没有遮罩超时放行。当前尚未完成新版画面目检或公网发布验证。
+本机两轮均由真实 `travel.loading ready → reveal → done` 完成，没有遮罩超时放行。这只证明当时隔离本机场景，未完成新版画面目检。
 第一次环境准备失败：旧 dump 与后来轮换的登录 refresh 凭据不匹配，HTTP 401，未进入世界；日志保留于 `baseline/`。
 停止自有进程后只读获取新 dump，重建两份测试库，成功对照为 `baseline-fresh/` 与 `fixed/`，不覆盖原始失败。
 
@@ -203,6 +204,47 @@ Linux 原生 release 串行运行，systemd scope 均为 CPUQuota=180%／MemoryM
 `collision_source_test.exs --only window_assembly` 发现 13 项、执行 4 项、明确排除 9 项，全部通过，原生退出码均为 0。
 独立静态审查发现 `serve_result` 未豁免热域写回，已按其不读取属性的语义加入 `@unflushed` 后重新验证。
 性能、失败与构建命令保存在上述证据目录的 `comparison.json`、`run-test.py`、`test.sh`、`build.sh` 和原始日志。
+
+**首轮公网失败与回滚。** `b9041f44` 构建的 `voxim-server:20261102-firstload`
+（镜像 ID `sha256:60ab54d9846efffa25436d453eb3015a934d07da02cca3a01e8eae6ee01341c0`）
+公网首载未通过：登录 session 约 127 → 24 s，但主要 5.6 MB HTTP 批次约 85 → 60 s、20.36 MB 批次约 89 → 113 s；
+客户端约 84 s 时触发既有 60 s 等待期限并报告近场未完整，不能用登录提前或随后仍在接收数据判成功。
+原始失败保留在 `public/server-original.log`（UTF-16）和 `public/client/client.log`，未延长超时、放宽 Ready 或增加预热绕过。
+已恢复原 `voxim-server:20261102-qinglan`，镜像 ID `sha256:06df8b2597352cfd112891c43fe7581b026f33bd20fa45d1d0c516f04632481b`；
+回滚结果见 Voxim `Saved/Playtest/release-20261102-firstload/rollback-result.json`，协议仍为 41，seq 528129 → 528189，前后 players=0，
+健康检查通过且无 OOM／重启。回滚备份为 `/data/voxim_qinglan/releases/20261102-firstload-rollback/backup-20261102T132020Z`。
+
+**二次归因与最终修复边界。** 新旧公网日志都是 285 次不同区域的重编码；新版编码阶段累计墙钟 128.129 s，旧版 68.332 s，
+新版 607 次 prepare 累计 39.203 s。至少 87 个结果在编码结束前已被无关热事务推进全局 seq，但本轮没有同键重复编码，
+因此全局 seq 拒绝缓存是实证缺陷，不能把它单独写成这次首载退化的已证实根因。普通 map 跨进程复制及 CSR 重建则有离线 profile 支持。
+第二轮保留首轮的来源列投影与请求侧编码，进一步修复三个实际边界：
+
+1. **窗口 damage 输入按当前页索引定位。** 不再每 64 条扫描并过滤整个 `state.damage`；冻结时按窗口完整 XYZ chunk 键取逐格属性，
+   相交整件／附件仍按身份读取完整属性。`Thermal.flush` 和步结束在返回消息循环前补齐既有 `Pages` 查询索引，覆盖尚未正式提交的新行；
+   不提前标脏、不增设属性真值，正式提交仍由 `Pages.remember` 判脏与删除成员。回归包含 60,000 条远处记录、热步新行、当前值和删除退休。
+2. **紧凑不可变表皮 CSR。** `Payload.records` 的 `SkinField` 完整拥有平面与贴图池；接纳时检查池唯一、全部使用、首次使用顺序与均匀贴图收拢。
+   普通规范输入不再展开 map／排序／重建六面；合法非规范输入、旧 map 与真实覆盖共用原 canonicalizer，不信任任意原始正文，不维护会随 records 修改失效的 raw 镜像。
+   页加载 worker 在 `Pages.unit_value` 接纳旧 format2 map；写页时 `Pages.row` 投影回旧 map，旧 release 仍能读取，不改变协议 41 或持久格式。
+   同一真实 L4 `{1,0,2}` 的 22,535 条记录样本：旧版仅编码 346 ms，新版五轮解码＋编码总计 111–126 ms（编码约 67 ms），
+   堆展开大小 263,124 → 175 words，五轮正文逐字节相同。见 `profile.log`、`encode-eprof.txt`、`profile-skin.exs`、`profile-skin.log`；这不是在线延迟结论。
+3. **区域缓存结果归既有请求作用域。** `PageLoad.preparations` 在真正需要编码时持有该区域的 reference；既有 `Payloads.cache_delete` 撤销受影响区域（含 ring／细节）的在途凭证。
+   完成只消费仍匹配的凭证；无关热事务不废弃合法结果，作用域结束、取消／DOWN 随原生命周期释放，不新增全局世代表或监控进程。
+   返回字节仍属于冻结切点，已知 entries 基底不改；同区／邻区编辑和已结束作用域均不得回填旧字节。
+
+依据仍为上述 Erlang 消息复制契约、既有 `Payload` CSR／hash canonicalizer、`Pages` 属性键索引及 `PageLoad` 请求生命周期；
+采用类型化紧凑表示与既有失效入口，不通过超时、批量大小、增加并发或预热掩盖工作量。
+
+第二轮定向验证（WSL Linux，正式 Mix 构建图；下列不同批次有重叠，不相加成独立用例总数）：
+
+- `skin-final2.log`：57 项，0 失败，退出码 0；包含六种相关 Payload/协议测试文件、`skin_page`、`payload_candidate`、`terrain_projection`、`damage`。
+  新增用手写线格式覆盖全部 face mask、非规范池、空 CSR、旧页格式及替换 records；`skin-red.log` 保留改前失败。
+- `green-cache-admission.log`：12 项，0 失败，退出码 0；无关提交后命中、同区／ring 失效、作用域取消及既有读取语义；`red-cache-admission.log` 保留旧全局 seq 判定失败。
+- `verified-window-damage.log`：61 项，0 失败，退出码 0；窗口索引及热写回接缝；`red-window-damage*.log` 保留原失败。
+- `page-matrix-with-db.log`：真实 PostgreSQL 下 `page_store_matrix_test.exs skin_page_test.exs region_serve_snapshot_test.exs window_snapshot_test.exs`，
+  25 项，0 失败，原生退出码 0；执行入口 `run-db-tests.py` 复用 `test.sh`，不以无数据库通过替代恢复接缝。
+
+当前状态：三项修复**已实现并通过定向模块／PG 验证**；第二轮同资源限制、真实客户端冷首载**尚待本地实跑**，
+最新候选**尚未完成公网验收或部署**，不得沿用首轮 31.654 s 作为当前性能结论。后续候选名拟为 `20261102-firstload2`，本段不声明已有镜像产物。
 
 2026-10-17（Global system）：附件支撑、失支撑清理、定义接纳与 L1 投影统一消费
 `VoxelMaterialCatalog.supports_attachments?/1`；移动占用仍只消费 `blocks_movement?/1`。

@@ -202,10 +202,11 @@ defmodule VoxelRegion.World.Payloads do
     {x, y, z} = payload.region
     # 只取已经构造的表大小与二进制长度；不为观测再遍历槽、状态或编码正文。
     Logger.info(fn ->
+      skin = Payload.skin_stats(payload)
       "voxel_payload_details pid=#{:erlang.pid_to_list(self())} seq=#{state.seq} cv=#{state.cv} level=#{payload.level} x=#{x} y=#{y} z=#{z} source=with_refined " <>
         "details_start_us=#{started} details_end_us=#{details_end} canopy_end_us=#{canopy_end} details_us=#{details_end - started} canopy_us=#{canopy_end - details_end} " <>
-        "cells_bytes=#{byte_size(payload.cells)} fmi_bytes=#{byte_size(payload.fmi)} maps_bytes=#{byte_size(payload.maps)} " <>
-        "records_entries=#{map_size(payload.records)} refined_entries=#{refined_count(payload)} refined_records_entries=#{refined_count(payload)} instances_entries=#{map_size(payload.instances)} " <>
+        "cells_bytes=#{byte_size(payload.cells)} fmi_bytes=#{skin.fmi_bytes} maps_bytes=#{skin.maps_bytes} " <>
+        "records_entries=#{skin.records} refined_entries=#{refined_count(payload)} refined_records_entries=#{refined_count(payload)} instances_entries=#{map_size(payload.instances)} " <>
         "structure_entries=#{map_size(payload.structure)} attachments_entries=#{map_size(payload.attachments)} liquid_units_entries=#{map_size(payload.liquid_units)} " <>
         "canopy_entries=#{map_size(payload.canopy)} canopy_instances_entries=#{map_size(payload.canopy_instances)} canopy_residual_entries=#{map_size(payload.canopy_residual)} canopy_residual_structure_entries=#{map_size(payload.canopy_residual_structure)}"
     end)
@@ -497,7 +498,10 @@ defmodule VoxelRegion.World.Payloads do
   end
 
   @doc "权威失效显式退休payload；共享缓存中的prefab不受该键删除影响。"
-  def cache_delete(state, key), do: %{state | cache: Cache.delete(state.cache, {:payload, key})}
+  def cache_delete(state, key) do
+    state = VoxelRegion.World.PageLoad.invalidate_payload(state, key)
+    %{state | cache: Cache.delete(state.cache, {:payload, key})}
+  end
 
   # serve 与副本共用物化字节；快照头只推进到当前事务前缀。
   def canonical_region_bytes(state, coord) do

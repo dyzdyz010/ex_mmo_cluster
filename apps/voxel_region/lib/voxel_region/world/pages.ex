@@ -21,6 +21,8 @@ defmodule VoxelRegion.World.Pages do
   3. 整表值与上次记住的值按引用比较（`remember/2`）：instances、attachment_owners、liquid_active、thermal.sources。
      `append_log` 只在日志副本里写实例 / 归属增量，在线事务不带，所以不按事务字段判（评审 R1）。
   覆盖页集合由写入口登记的“碰过的身份”（`touch/2`）在 `remember/2` 里按根重算，变了才判脏；活动单元在开切点时按本批涉及的页补入（`with_activity/1`）。
+  热步在消息间写回的逐格属性先经 `index_live_damage/2` 补齐同一查询索引，让窗口按键取当前值；
+  不提前登记脏单元，正式提交仍经 `remember/2` 判脏与删除成员。
 
   **装页**（M2b `adopt/4`）：接纳的页经同一写入口装入、恢复 `snapshots`、增量补页索引与 `remembered`，不判脏；
   再按“驻留闭合”（实例树完整）给出后续要装的页与要定位的身份。
@@ -36,6 +38,24 @@ defmodule VoxelRegion.World.Pages do
   @doc "空索引：World 构造时放入；回放经 `remember/2` 增量建满。"
   def new, do: %{damage_home: %{}, unit_damage: %{}, instance_home: %{}, home_instances: %{}, aid_home: %{}, home_aids: %{},
     children: %{}, covers: %{}, remembered: Map.new(@remembered, &{&1, nil})}
+
+  @doc "热步写回后补齐逐格属性的查询索引；不提前判脏，提交仍由 remember/2 登记。整件属性直接按身份查找。"
+  def index_live_damage(state, keys) do
+    index = Enum.reduce(keys, state.pages, fn
+      {g, _, _, _, _} = key, index when g in [0, 1, 4] ->
+        # 逐格键含完整空间身份，已有成员的单元不会随温度/HP变化；步间被编辑删除的行交提交入口退休。
+        if Map.has_key?(index.damage_home, key) do
+          index
+        else
+          case Map.fetch(state.damage, key) do
+            {:ok, row} -> elem(damage({index, MapSet.new()}, key, row), 0)
+            :error -> index
+          end
+        end
+      _, index -> index
+    end)
+    %{state | pages: index}
+  end
 
   @doc "登记一个脏单元（写入口调用）。缺 `page_dirty` 的局部 state（单测夹具）也可用。"
   def mark(state, unit), do: Map.update(state, :page_dirty, MapSet.new([unit]), &MapSet.put(&1, unit))
@@ -700,6 +720,11 @@ defmodule VoxelRegion.World.Pages do
   def row({:chunk, segment, chunk} = _unit, value),
     do: %{level: 0, region: chunk_region(chunk), segment: Map.fetch!(@segment_codes, segment), chunk: chunk, payload: encode(value)}
 
+  # format2 仍写旧 Payload map；新表示只存在于接纳后的进程内，允许旧 release 回滚读取。
+  def row({:page, :base, {level, region}}, %MmoContracts.Voxel.Payload{} = value),
+    do: %{level: level, region: region, segment: Map.fetch!(@segment_codes, :base), chunk: {0, 0, 0},
+      payload: encode(MmoContracts.Voxel.Payload.persisted(value))}
+
   def row({:page, segment, {level, region}}, value),
     do: %{level: level, region: region, segment: Map.fetch!(@segment_codes, segment), chunk: {0, 0, 0}, payload: encode(value)}
 
@@ -722,6 +747,7 @@ defmodule VoxelRegion.World.Pages do
     value = case unit do
       {:chunk, :refined, _} -> Map.new(value, fn {cell, slots} -> {cell, RefinedSlots.from_map(slots)} end)
       {:chunk, :epochs, chunk} -> VoxelRegion.EpochChunk.from_map(chunk, value)
+      {:page, :base, _} when not is_nil(value) -> MmoContracts.Voxel.Payload.admit(value)
       _ -> value
     end
     {unit, value}

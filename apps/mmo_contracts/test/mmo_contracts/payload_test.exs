@@ -26,7 +26,7 @@ defmodule MmoContracts.PayloadTest do
     assert {:ok, _, raw} = Codec.unpack_payload_body(bytes)
     assert byte_size(raw) == 592_490
     assert {:ok, decoded} = Payload.decode(bytes)
-    assert Enum.sort(Map.keys(decoded.records)) == [{1, 2, 3}, {4, 5, 6}, {7, 8, 9}]
+    assert Enum.sort(Payload.skin_keys(decoded)) == [{1, 2, 3}, {4, 5, 6}, {7, 8, 9}]
   end
 
   test "uniform override removes the final record and its row_start" do
@@ -41,8 +41,8 @@ defmodule MmoContracts.PayloadTest do
     bytes = Payload.encode(payload, overrides, 0, 1)
     assert {:ok, _, raw} = Codec.unpack_payload_body(bytes)
     assert byte_size(raw) == 575_032
-    assert {:ok, %{records: records}} = Payload.decode(bytes)
-    assert records == %{}
+    assert {:ok, decoded} = Payload.decode(bytes)
+    assert Payload.skin_count(decoded) == 0
   end
 
   # 回归（圆明园 seq 26807 L0 {0,7,1}）：VXR8 解压 7_992_265 B 被只算 v4 地形的上限拒绝。

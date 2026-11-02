@@ -5,7 +5,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
   在自己的堆里重建派生索引并调用既有观察算法。运输批次不改变输入或快照语义。
   不捕获日志、模拟工作态或其他窗口的几何；跨窗整件保留完整微格／附件槽。
   """
-  alias VoxelRegion.{CollisionSource, PropertyObservation}
+  alias VoxelRegion.CollisionSource
   alias VoxelRegion.World.{Canonical, Observation, Payloads}
 
   # r125 运输回合非 GC 最长 21 ms；64 条减少同步往返，回合耗时与峰值仍由同一基准验证。
@@ -86,6 +86,13 @@ defmodule VoxelRegion.World.WindowSnapshot do
 
     chunks = Enum.flat_map(coords, &CollisionSource.chunk_coords/1)
 
+    # 页索引定位逐格键；整件与附件按相交几何的身份取完整属性，不受属性行最后命中坐标影响。
+    damage_keys =
+      for chunk <- chunks,
+          key <- Map.get(state.pages.unit_damage, {:chunk, :damage, chunk}, MapSet.new()),
+          do: key
+    damage_keys = damage_keys ++ Enum.map(owners, &{2, &1}) ++ Enum.map(aids, &{3, &1})
+
     overlay_keys =
       for key <- keys, cell <- Map.get(state.overlay_regions, key, MapSet.new()), do: {0, cell}
 
@@ -125,8 +132,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
         snapshots: MapSet.new(Enum.filter(keys, &MapSet.member?(state.snapshots, &1))),
         payloads: Payloads.export_cached(state, Enum.map(coords, &{0, &1})),
         cache_limit: VoxelRegion.World.Cache.stats(state.cache).limit_bytes,
-        # 热 run 的 flush 可在日志提交前增加属性行，持久页索引尚未接纳它们；冻结引用，按运输条目筛选，不能只读该索引。
-        damage: state.damage,
+        damage: Map.take(state.damage, damage_keys),
         # 自然chunk只运输不可变紧凑正文；发送端观察仍枚举原globalXYZ世代。
         epochs: Map.take(state.epochs, chunks),
         protection: %{regions: state.protection.regions},
@@ -137,10 +143,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
 
     %{
       fields: transport_fields(view),
-      entries: nil,
-      box: box,
-      owners: MapSet.new(owners),
-      aids: aids
+      entries: nil
     }
   end
 
@@ -187,10 +190,7 @@ defmodule VoxelRegion.World.WindowSnapshot do
         take(%{cursor | entries: nil}, left, items)
 
       {key, value, rest} ->
-        items =
-          if selected?(field, key, value, cursor),
-            do: [{:entry, field, key, value} | items],
-            else: items
+        items = [{:entry, field, key, value} | items]
 
         take(%{cursor | entries: {field, rest}}, left - 1, items)
     end
@@ -205,11 +205,6 @@ defmodule VoxelRegion.World.WindowSnapshot do
       take(%{cursor | fields: rest}, left - 1, [{:value, field, value} | items])
     end
   end
-
-  defp selected?(:damage, {2, owner}, _, cursor), do: MapSet.member?(cursor.owners, owner)
-  defp selected?(:damage, {3, aid}, _, cursor), do: MapSet.member?(cursor.aids, aid)
-  defp selected?(:damage, _, row, cursor), do: PropertyObservation.relevant?(row, cursor.box)
-  defp selected?(_, _, _, _), do: true
 
   @doc "发送进程接纳冻结条目；不验证或推断上游已冻结的事实。"
   def accept(view, items) do

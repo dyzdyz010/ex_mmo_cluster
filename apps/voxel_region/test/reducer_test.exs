@@ -18,8 +18,8 @@ defmodule VoxelRegion.ReducerTest do
 
   defp check_level(level, {rx, ry, rz} = parent) do
     {coarse, parent_us} = generate(level, parent)
-    assert map_size(coarse.records) > 0, "fixture must contain surface skin records"
-    assert byte_size(coarse.maps) > 0, "fixture must exercise non-uniform skin maps"
+    assert Payload.skin_count(coarse) > 0, "fixture must contain surface skin records"
+    assert Payload.skin_stats(coarse).maps_bytes > 0, "fixture must exercise non-uniform skin maps"
 
     {children, child_us} =
       for dz <- 0..1, dy <- 0..1, dx <- 0..1, reduce: {%{}, 0} do
@@ -57,7 +57,7 @@ defmodule VoxelRegion.ReducerTest do
     assert mismatches == [],
            "L#{level} #{inspect(parent)}: #{inspect(mismatches, limit: 5, printable_limit: 200)}"
 
-    coarse.map_extent
+    Payload.skin_extent(coarse)
   end
 
   defp format_ms(elapsed_us), do: Float.round(elapsed_us / 1_000, 3)

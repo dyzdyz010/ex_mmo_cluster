@@ -25,7 +25,7 @@ defmodule VoxelRegion.PayloadCandidateTest do
     assert Payloads.cached_keys(skipped) == []
     assert {:ok, bytes, _, cached} = Payloads.payload_bytes(state, 1, {0, 0, 0}, 630)
     assert {:ok, payload} = Payload.decode(bytes)
-    assert Map.keys(payload.records) == [{65, 3, 4}]
+    assert Payload.skin_keys(payload) == [{65, 3, 4}]
     assert Payload.skins(payload, {65, 3, 4}, 11) == Skins.uniform(19)
     # 缓存已有字节直接返回，最终仍由调用方按实际长度选择。
     assert {:ok, ^bytes, _, _} = Payloads.payload_bytes(cached, 1, {0, 0, 0}, 1)
@@ -36,6 +36,6 @@ defmodule VoxelRegion.PayloadCandidateTest do
       overlay: %{{1, {64, 2, 3}} => {11, Skins.uniform(11)}}}
     assert {:ok, bytes, _, _} = Payloads.payload_bytes(state, 1, {0, 0, 0}, 629)
     assert {:ok, payload} = Payload.decode(bytes)
-    assert payload.records == %{}
+    assert Payload.skin_count(payload) == 0
   end
 end

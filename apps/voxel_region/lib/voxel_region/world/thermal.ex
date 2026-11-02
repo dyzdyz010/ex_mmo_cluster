@@ -234,6 +234,8 @@ defmodule VoxelRegion.World.Thermal do
   end
 
   defp finish_tick(state, run, started) do
+    # 电路段与点燃可直接产生属性行；返回消息循环前，让同一页索引反映这些 canonical 写入。
+    state = Pages.index_live_damage(state, run.visited)
     run = %{run | seq: state.seq, steps: run.steps + 1, impacts: state.thermal_run.impacts,
       busy_us: run.busy_us + System.monotonic_time(:microsecond) - started}
 
@@ -678,8 +680,10 @@ defmodule VoxelRegion.World.Thermal do
       end)
 
     Logger.info("voxel_thermal_flush reason=#{inspect(reason)} rows=#{map_size(rows)} us=#{System.monotonic_time(:microsecond) - started}")
-    seen(%{state | damage: Map.merge(state.damage, rows),
-      thermal_work: %{state.thermal_work | domain: domain, extinguished: MapSet.new()}})
+    %{state | damage: Map.merge(state.damage, rows),
+      thermal_work: %{state.thermal_work | domain: domain, extinguished: MapSet.new()}}
+    |> Pages.index_live_damage(Map.keys(rows))
+    |> seen()
   end
 
   # 记下已与原生热域一致的记录与有限数量；此后的改写都来自其他事务。

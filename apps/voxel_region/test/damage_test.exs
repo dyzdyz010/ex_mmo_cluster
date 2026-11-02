@@ -9,14 +9,14 @@ defmodule VoxelRegion.DamageTest do
       base=%Payload{level: level,region: {0,0,0},map_extent: extent,
         cells: :binary.copy(<<11::16-little>>,Payload.extent() ** 3)}
       {:ok,empty}=Payload.decode(Payload.encode(base,%{},0,123))
-      assert empty.map_extent==1
+      assert Payload.skin_extent(empty)==1
       texels=:binary.copy(<<11,19>>,div(extent*extent,2))
       skin={extent,{{11,texels},{11,nil},{11,nil},{11,nil},{11,nil},{11,nil}}}
       first=%{{1,1,1}=>{11,skin}}
       bytes=Payload.encode(empty,first,1,123)
       {:ok,edited}=Payload.decode(bytes)
       assert Payload.skins(edited,{1,1,1},11)==skin
-      assert edited.map_extent==extent
+      assert Payload.skin_extent(edited)==extent
 
       next_texels=:binary.copy(<<19,11>>,div(extent*extent,2))
       next_skin={extent,{{19,next_texels},{11,nil},{11,nil},{11,nil},{11,nil},{11,nil}}}
@@ -29,7 +29,7 @@ defmodule VoxelRegion.DamageTest do
 
       clear=Map.new([{1,1,1},{2,1,1}],&{&1,{11,Skins.uniform(11)}})
       {:ok,empty_again}=Payload.decode(Payload.encode(both,clear,3,123))
-      assert empty_again.map_extent==1 and empty_again.records==%{}
+      assert Payload.skin_extent(empty_again)==1 and Payload.skin_count(empty_again)==0
       {:ok,restored}=Payload.decode(Payload.encode(empty_again,first,4,123))
       assert Payload.skins(restored,{1,1,1},11)==skin
     end

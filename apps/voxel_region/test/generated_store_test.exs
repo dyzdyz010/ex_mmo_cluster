@@ -597,7 +597,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
       assert generated.cells == oracle.cells, Map.fetch!(fixture, "file")
 
       for local <-
-            Map.keys(generated.records) |> Enum.concat(Map.keys(oracle.records)) |> Enum.uniq() do
+            Payload.skin_keys(generated) |> Enum.concat(Payload.skin_keys(oracle)) |> Enum.uniq() do
         material = Payload.material(generated, local)
 
         assert Payload.skins(generated, local, material) ==
@@ -654,7 +654,7 @@ defmodule VoxelRegion.GeneratedStoreTest do
       assert generated.cells == oracle.cells, name
 
       for local <-
-            Map.keys(generated.records) |> Enum.concat(Map.keys(oracle.records)) |> Enum.uniq() do
+            Payload.skin_keys(generated) |> Enum.concat(Payload.skin_keys(oracle)) |> Enum.uniq() do
         material = Payload.material(generated, local)
 
         assert Payload.skins(generated, local, material) == Payload.skins(oracle, local, material),

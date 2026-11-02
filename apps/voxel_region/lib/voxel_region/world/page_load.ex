@@ -35,8 +35,36 @@ defmodule VoxelRegion.World.PageLoad do
     {:input, context, _} = state.input_current
     request = context.request_ref
     put_in(state.page_load.preparations[token], %{caller: caller, monitor: Process.monitor(caller),
-      request: request, needs: {Pages.with_ancestors(keys), [], []}})
+      request: request, needs: {Pages.with_ancestors(keys), [], []}, payloads: %{}})
   end
+
+  @doc "冻结区域的派生计算凭证归现有请求作用域所有；完成、取消或 DOWN 一起释放。"
+  def capture_payload(state, token, key) do
+    ref = make_ref()
+    {ref, put_in(state.page_load.preparations[token].payloads[key], ref)}
+  end
+
+  @doc "消费一次派生结果凭证；只接受仍未被该区域内容失效撤销的结果。"
+  def finish_payload(state, token, key, ref) do
+    case state.page_load.preparations[token] do
+      %{payloads: payloads} ->
+        {is_reference(ref) and Map.get(payloads, key) == ref,
+         put_in(state.page_load.preparations[token].payloads, Map.delete(payloads, key))}
+      nil -> {false, state}
+    end
+  end
+
+  @doc "既有载荷失效入口撤销该区域在途结果；无关事务和缓存容量淘汰不撤销。"
+  def invalidate_payload(%{page_load: %{preparations: preparations}} = state, key) do
+    Enum.reduce(preparations, state, fn {token, %{payloads: payloads}}, acc ->
+      if Map.has_key?(payloads, key),
+        do: put_in(acc.page_load.preparations[token].payloads, Map.delete(payloads, key)),
+        else: acc
+    end)
+  end
+
+  # 冻结的只读组装视图没有请求生命周期；它的临时缓存不参与 World 在途结果接纳。
+  def invalidate_payload(state, _key), do: state
 
   @doc "准备作用域结束显式释放；owner退出由同一释放函数收尾，不靠TTL。"
   def release_preparation(state, token, caller) do

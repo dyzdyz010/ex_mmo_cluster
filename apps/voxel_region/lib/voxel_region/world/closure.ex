@@ -21,7 +21,7 @@ defmodule VoxelRegion.World.Closure do
       {:parcel_export, 2}, {:parcel_install, 5}, {:beacon_install, 3}, {:liquid_fill, 7},
       {:production_intent, 3}, {:attachment_intent, 3}, {:tool_intent, 3}, {:instance_cells, 2}, {:gm_prepare, 3},
       {:replacement_cells, 3}, {:place_prefab, 5}, {:prefab_intent, 5}, {:remove_prefab, 2},
-      {:replace_prefab, 3}, {:serve_item, 3}, {:apply_edit, 4}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
+      {:replace_prefab, 3}, {:serve_item, 4}, {:apply_edit, 4}, {:canonical_snapshot, 5}, {:canonical_snapshot, 6},
       {:replica_snapshot, 3}, {:apply_edits, 3}, {:reference, 2}, {:body_contact, 4},
       {:body_death, 3}, {:quote_cast, 4}, {:prepare_cast, 5}, {:authorize_cast, 4},
       {:prepare_beacon, 4}, {:commit_beacon, 4}, {:liquid_commit, 0}, {:thermal_commit, 0}
@@ -37,7 +37,7 @@ defmodule VoxelRegion.World.Closure do
       {:publish_prefabs, 2}, {:prefab_catalog, 0}, {:published_prefab_metadata, 0}, {:material_catalog, 0},
       {:parcel_prepare, 2}, {:prefab_request, 2}, {:prefab_inputs, 3}, {:prefab_loaded, 4}, {:prefab_ready, 3}, {:prefab_known, 3},
       {:publish_prefab, 4}, {:stats, 0}, {:residency_status, 0}, {:maintain_residency, 0}, {:subscribe, 5},
-      {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3}, {:serve_result, 5},
+      {:entries_after, 2}, {:window_input, 2}, {:window_finished, 4}, {:window_geometry, 3}, {:serve_result, 6},
       {:compact, 0}, {:timeout, 3}, {:projectile_tick, 0}, {:thermal_tick, 0}, {:thermal_tick, 2}, {:input_continue, 0}, {:retry_death_drop, 2},
       {:liquid_tick, 2}, {:body_detach, 4}, {:body_coherence, 5},
       {:cancel_cast, 3}, {:thermal_step, 2}, {:DOWN, 5},
@@ -64,7 +64,7 @@ defmodule VoxelRegion.World.Closure do
   defp seeds(_state, {:adopt_liquid, regions}), do: {Pages.with_ancestors(Enum.map(regions, &{0, &1})), []}
   defp seeds(state, {:prepare_intent, message}), do: intent(state, message)
   defp seeds(_state, {:prepared_intent, keys, _message, _decoded}), do: {keys, []}
-  defp seeds(_state, {:serve_item, _version, %{level: level, region: region}}), do: {[{level, region}], []}
+  defp seeds(_state, {:serve_item, _token, _version, %{level: level, region: region}}), do: {[{level, region}], []}
   defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks}), do: box(box)
   defp seeds(_state, {:canonical_snapshot, box, _pid, _request, _chunks, _token}), do: box(box)
   defp seeds(_state, {:replica_snapshot, box, _pid}), do: box(box)

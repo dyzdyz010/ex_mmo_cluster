@@ -10,7 +10,7 @@ defmodule MmoContracts.Voxel.Payload do
   """
 
   import Bitwise
-  alias MmoContracts.Voxel.Skins
+  alias MmoContracts.Voxel.{Skins, SkinField}
 
   @extent 66
   @cell_count @extent * @extent * @extent
@@ -21,6 +21,7 @@ defmodule MmoContracts.Voxel.Payload do
             seq: 0,
             content_version: 0,
             cells: <<>>,
+            # 旧 format2／作者 map 输入的伴随字段；紧凑 records 独自拥有这些数据，接纳后此处清空。
             map_extent: 1,
             records: %{},
             fmi: <<>>,
@@ -40,6 +41,44 @@ defmodule MmoContracts.Voxel.Payload do
             refined_encoding: nil,
             format_version: 4
 
+  @doc "旧持久／作者 map 表皮接纳为唯一紧凑规范表示；已接纳数据不重复规范化。"
+  def admit(%__MODULE__{records: %SkinField{}} = p), do: p
+  def admit(%__MODULE__{} = p) do
+    field = normalize_field(p, Enum.sort_by(p.records, fn {{x, y, z}, _} -> {z, y, x} end), p.map_extent)
+    %{p | records: field, fmi: <<>>, maps: <<>>, map_extent: 1}
+  end
+
+  @doc "投影为原 format2 持久 Payload，旧 release 仍可读取；不是在线缓存。"
+  def persisted(%__MODULE__{records: %SkinField{} = field} = p),
+    do: %{p | records: SkinField.to_map(field), map_extent: field.map_extent, fmi: field.fmi, maps: field.maps}
+  def persisted(%__MODULE__{} = p), do: p
+
+  @doc "表皮记录数，不展开紧凑表示。"
+  def skin_count(%__MODULE__{records: %SkinField{count: count}}), do: count
+  def skin_count(%__MODULE__{records: records}), do: map_size(records)
+
+  @doc "表皮坐标，用于离线比较与作者检查。"
+  def skin_keys(%__MODULE__{} = p), do: Map.keys(record_map(p))
+
+  @doc "表皮贴图尺寸。"
+  def skin_extent(%__MODULE__{records: %SkinField{map_extent: extent}}), do: extent
+  def skin_extent(%__MODULE__{map_extent: extent}), do: extent
+
+  @doc "有限表皮统计，不展开记录；字节数是各平面本身的逻辑长度。"
+  def skin_stats(%__MODULE__{} = p) do
+    source = skin_source(p)
+    %{records: skin_count(p), fmi_bytes: byte_size(source.fmi), maps_bytes: byte_size(source.maps)}
+  end
+
+  defp record_map(%{records: %SkinField{} = field}), do: SkinField.to_map(field)
+  defp record_map(%{records: records}), do: records
+  defp skin_source(%{records: %SkinField{} = field}), do: field
+  defp skin_source(p), do: p
+  defp record_fetch(%{records: %SkinField{} = field}, local), do: SkinField.fetch(field, local)
+  defp record_fetch(%{records: records}, local), do: Map.fetch(records, local)
+  defp record_present?(%{records: %SkinField{} = field}, local), do: SkinField.member?(field, local)
+  defp record_present?(%{records: records}, local), do: Map.has_key?(records, local)
+
   @doc "region 载荷每轴 cell 数（含边缘）。"
   def extent, do: @extent
 
@@ -48,8 +87,9 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "覆盖后地形的解压字节下界：完整 CSR 行索引与记录平面，省略贴图和细节尾部。"
   def min_body_bytes(%__MODULE__{} = p, overrides) do
-    {records, _extent} = updated_records(p, overrides)
-    count = map_size(records)
+    count = Enum.reduce(overrides, skin_count(p), fn {local, {material, skins}}, count ->
+      count - if(record_present?(p, local), do: 1, else: 0) + if(Skins.trivial?(skins, material), do: 0, else: 1)
+    end)
     rows = if count == 0, do: 0, else: (@extent * @extent + 1) * 4
     min_body_bytes() + rows + count * (2 + 6 + 2)
   end
@@ -170,10 +210,7 @@ defmodule MmoContracts.Voxel.Payload do
       {:ok,
        %__MODULE__{
          cells: cells,
-         map_extent: map_extent,
          records: records,
-         fmi: fmi,
-         maps: maps,
          refined: refined,
          instances: instances,
          structure: structure,
@@ -312,9 +349,16 @@ defmodule MmoContracts.Voxel.Payload do
         end
       end
 
-    if shape_ok and rows_ok,
-      do: {:ok, build_records(row_start, col_x, faces, masks)},
-      else: {:error, :invalid_payload}
+    if shape_ok and rows_ok do
+      case SkinField.admit(map_extent, row_start, col_x, faces, masks, fmi, maps) do
+        {:ok, field} -> {:ok, field}
+        :noncanonical ->
+          p = %__MODULE__{map_extent: map_extent, records: build_records(row_start, col_x, faces, masks), fmi: fmi, maps: maps}
+          {:ok, admit(p).records}
+      end
+    else
+      {:error, :invalid_payload}
+    end
   end
 
   defp array(bin, size) do
@@ -366,12 +410,13 @@ defmodule MmoContracts.Voxel.Payload do
 
   @doc "local 格的表皮（规范形）；没有记录 = 六面均匀 material。"
   def skins(%__MODULE__{} = p, local, material) do
-    case Map.fetch(p.records, local) do
+    source = skin_source(p)
+    case record_fetch(p, local) do
       :error ->
         Skins.uniform(material)
 
       {:ok, {ids, mask, base}} ->
-        ext = p.map_extent
+        ext = source.map_extent
 
         faces =
           for face <- 0..5 do
@@ -380,8 +425,8 @@ defmodule MmoContracts.Voxel.Payload do
 
             if (mask &&& bit) != 0 do
               slot = base + popcount(mask &&& bit - 1)
-              <<index::16-little>> = binary_part(p.fmi, slot * 2, 2)
-              {id, binary_part(p.maps, index * ext * ext, ext * ext)}
+              <<index::16-little>> = binary_part(source.fmi, slot * 2, 2)
+              {id, binary_part(source.maps, index * ext * ext, ext * ext)}
             else
               {id, nil}
             end
@@ -405,7 +450,7 @@ defmodule MmoContracts.Voxel.Payload do
     left_material = material(left, left_local)
     right_material = material(right, right_local)
     left_material == right_material and
-      ((not Map.has_key?(left.records, left_local) and not Map.has_key?(right.records, right_local)) or
+      ((not record_present?(left, left_local) and not record_present?(right, right_local)) or
         skins(left, left_local, left_material) == skins(right, right_local, right_material))
   end
 
@@ -415,7 +460,7 @@ defmodule MmoContracts.Voxel.Payload do
     right_cells = binary_part(right.cells, cell_index(right_local) * 2, count * 2)
 
     # 完整x行相等且没有表皮记录时无需构造逐格值；非空records仍逐格查键，不按行扫描整表。
-    if map_size(left.records) == 0 and map_size(right.records) == 0 and left_cells == right_cells,
+    if skin_count(left) == 0 and skin_count(right) == 0 and left_cells == right_cells,
       do: overrides,
       else: row_differences(left_cells, right_cells, left, right, left_local, right_local, overrides)
   end
@@ -425,7 +470,7 @@ defmodule MmoContracts.Voxel.Payload do
   defp row_differences(<<material::16-little, left_cells::binary>>, <<other::16-little, right_cells::binary>>,
          left, right, {x, y, z} = left_local, {rx, ry, rz} = right_local, overrides) do
     changed = material != other or
-      ((Map.has_key?(left.records, left_local) or Map.has_key?(right.records, right_local)) and
+      ((record_present?(left, left_local) or record_present?(right, right_local)) and
         not same_value?(left, left_local, right, right_local))
     overrides = if changed, do: Map.put(overrides, left_local, value(right, right_local)), else: overrides
     row_differences(left_cells, right_cells, left, right, {x + 1, y, z}, {rx + 1, ry, rz}, overrides)
@@ -455,37 +500,27 @@ defmodule MmoContracts.Voxel.Payload do
 
   # body 的地形段：格与表皮场 CSR；细节尾部由 encode_with_details/4 接在其后。
   defp terrain_raw(p, overrides) do
-    cells = splice_cells(p.cells, overrides)
-    {records, ext} = updated_records(p, overrides)
-    records = Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end)
+    field = if map_size(overrides) == 0 do
+      admit(p).records
+    else
+      {records, ext} = updated_records(p, overrides)
+      normalize_field(skin_source(p), Enum.sort_by(records, fn {{x, y, z}, _} -> {z, y, x} end), ext)
+    end
+    IO.iodata_to_binary([<<@cell_count::32-little>>, splice_cells(p.cells, overrides), SkinField.encode(field)])
+  end
 
-    {row_start, col_x, faces, masks, fmi, maps} = build_csr(records, p)
-
-    # 空场（L0，或编辑后没有非平凡格）与 Rust `skin::encode` / 客户端空 FVoxelSkinField 同字节：Extent 0、MapExtent 1。
-    # 客户端写回缓存的副本按同一规则编码，hash 才能与这里物化的载荷相等（否则重启后重发 payload 而不是 unchanged）。
-    {field_extent, field_map_extent} = if records == [], do: {0, 1}, else: {@extent, ext}
-
-    IO.iodata_to_binary([
-      <<@cell_count::32-little>>,
-      cells,
-      <<field_extent::32-little, field_extent::32-little, field_extent::32-little,
-        field_map_extent::32-little>>,
-      <<length(row_start)::32-little>>,
-      Enum.map(row_start, &<<&1::32-little>>),
-      <<length(col_x)::32-little>>,
-      Enum.map(col_x, &<<&1::16-little>>),
-      <<length(masks)::32-little>>,
-      faces,
-      Enum.map(masks, &<<&1::16-little>>),
-      <<length(fmi)::32-little>>,
-      Enum.map(fmi, &<<&1::16-little>>),
-      <<byte_size(maps)::32-little>>,
-      maps
-    ])
+  # 旧 map／非规范来源／真实覆盖统一走此构造，不另写一套编码语义。
+  defp normalize_field(p, records, ext) do
+    {rows, xs, faces, masks, fmi, maps} = build_csr(records, p)
+    SkinField.canonical(if(records == [], do: 1, else: ext),
+      IO.iodata_to_binary(Enum.map(rows, &<<&1::32-little>>)),
+      IO.iodata_to_binary(Enum.map(xs, &<<&1::16-little>>)), IO.iodata_to_binary(faces),
+      IO.iodata_to_binary(Enum.map(masks, &<<&1::16-little>>)),
+      IO.iodata_to_binary(Enum.map(fmi, &<<&1::16-little>>)), maps)
   end
 
   defp updated_records(p, overrides) do
-    base_records = Map.drop(p.records, Map.keys(overrides))
+    base_records = Map.drop(record_map(p), Map.keys(overrides))
 
     override_records =
       overrides
@@ -495,7 +530,7 @@ defmodule MmoContracts.Voxel.Payload do
     # 空CSR的贴图尺寸为1；首次加入非均匀表皮时，输出尺寸由新记录恢复。
     # 旧压紧记录仍按原p.map_extent读取，不能把输出尺寸用于解析旧池。
     ext =
-      Enum.reduce(override_records, p.map_extent, fn {_, {extent, _}}, current ->
+      Enum.reduce(override_records, skin_extent(p), fn {_, {extent, _}}, current ->
         max(current, extent)
       end)
 

@@ -1652,7 +1652,7 @@ defmodule VoxelRegion.DamageWorldTest do
     skins={1,{{19,nil},{11,nil},{11,nil},{11,nil},{11,nil},{11,nil}}}
     nonuniform=Payload.encode(p,%{{0,0,0}=>{11,skins}},1,123)
     {:ok,p}=Payload.decode(nonuniform)
-    assert map_size(p.records)==1
+    assert Payload.skin_count(p)==1
     assert Payload.replace_uniform_cells(nonuniform,materials,2,123)==Payload.encode(p,overrides,2,123)
   end
 

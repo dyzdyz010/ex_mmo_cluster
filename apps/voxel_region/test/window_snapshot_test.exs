@@ -1,8 +1,95 @@
 defmodule VoxelRegion.WindowSnapshotTest do
   use ExUnit.Case, async: true
-  alias VoxelRegion.World.{Cache, Payloads, WindowSnapshot}
+  alias VoxelRegion.World.{Cache, Pages, Payloads, Thermal, WindowSnapshot}
+  alias VoxelRegion.{Damage, ThermalDomain}
 
   @box {{0, 0, 0}, {1, 1, 1}}
+
+  # 只测试：冻结/运输不能遍历不相交属性；索引只定位键，属性值来自冻结时的 canonical damage。
+  test "固定窗口的完整运输回合数不随远处属性行增长" do
+    row = damage_row({0, 0, 0})
+    key = Damage.key(row)
+    base = %{empty() | damage: %{key => row}, pages: %{unit_damage: %{{:chunk, :damage, {0, 0, 0}} => MapSet.new([key])}}}
+    far = Enum.reduce(1..59_200, base, fn n, state ->
+      row = damage_row({n * 128, -128, 256})
+      key = Damage.key(row)
+      %{state | damage: Map.put(state.damage, key, row),
+        pages: %{unit_damage: Map.put(state.pages.unit_damage, {:chunk, :damage, {n, -1, 2}}, MapSet.new([key]))}}
+    end)
+    assert elem(transfer(WindowSnapshot.freeze(far, @box)), 0) == elem(transfer(WindowSnapshot.freeze(base, @box)), 0)
+    assert pulls(WindowSnapshot.freeze(far, @box)) == pulls(WindowSnapshot.freeze(base, @box))
+    small = reductions(fn -> WindowSnapshot.freeze(base, @box) end)
+    large = reductions(fn -> WindowSnapshot.freeze(far, @box) end)
+    assert large < small * 2 + 2_000
+  end
+
+  test "负 XYZ 子块精确投影，并保留命中整件与附件的跨窗属性" do
+    owner = {1, 1}
+    rows = [damage_row({-128, -128, -128}), damage_row({-513, -128, -128}),
+      %{damage_row({8192, 0, 0}) | granularity: 2, owner: owner},
+      %{damage_row({8192, 0, 0}) | granularity: 3, owner: {7, 0}, incarnation: 7}]
+    [inside, outside, component, attachment] = rows
+    state = %{empty() | refined: %{{-16, -16, -16} => %{0 => {11, owner}}},
+      instances: %{owner => %{definition_id: 1}}, prefabs: %{1 => %{presentation_bindings: %{}}},
+      attachments: %{{0, 0, {-128, -128, -128}} => {7, 11}},
+      damage: Map.new(rows, &{Damage.key(&1), &1}),
+      pages: %{unit_damage: %{{:chunk, :damage, {-1, -1, -1}} => MapSet.new([Damage.key(inside)]),
+        {:chunk, :damage, {-5, -1, -1}} => MapSet.new([Damage.key(outside)])}}}
+      |> VoxelRegion.World.Canonical.index_refined()
+      |> VoxelRegion.World.Canonical.index_attachments()
+    {view, _} = transfer(WindowSnapshot.freeze(state, {{-1, -1, -1}, {0, 0, 0}}))
+    assert view.damage == Map.new([inside, component, attachment], &{Damage.key(&1), &1})
+  end
+
+  test "原生热域首次写回的属性在日志提交前进入窗口索引，温度来自当前值" do
+    row = damage_row({0, 0, 0})
+    key = Damage.key(row)
+    node = %{contacts: [], cell: {0, 0, 0}, cells: [{0, 0, 0}], damage_key: key, default: row}
+    load = fn _ -> {{1.0, 1.0, 1000.0, 6.0, 293.15, nil, false, true, nil},
+      {293.15, 1.0, 1.0, nil, 0.0, false, nil, nil}} end
+    domain = ThermalDomain.sync(ThermalDomain.new(), %{hot: node}, :full, [], :test, nil, &{&1, false}, load)
+    {domain, _} = ThermalDomain.index(domain, 0.0)
+    domain = ThermalDomain.put_hot(domain, MapSet.new())
+    {domain, _} = ThermalDomain.step(domain, 0.1, 0.0, 0.001, [], %{hot: 100.0}, [], [], [], {[], []}, [])
+    state = empty() |> Map.put(:pages, Pages.new()) |> Map.put(:page_dirty, MapSet.new())
+      |> Map.put(:liquid_units, %{}) |> Map.put(:thermal_work, %{domain: domain, extinguished: MapSet.new()})
+    flushed = Thermal.flush(state, :window_test)
+    assert flushed.pages.unit_damage[{:chunk, :damage, {0, 0, 0}}] == MapSet.new([key])
+    assert flushed.page_dirty == MapSet.new()
+    assert flushed.seq == state.seq
+    {view, _} = transfer(WindowSnapshot.freeze(flushed, @box))
+    assert_in_delta view.damage[key].temperature_kelvin, 303.15, 1.0e-8
+  end
+
+  test "待提交逐格索引只定位键，后续值替换与正式删除沿同一页生命周期" do
+    for granularity <- [0, 1, 4] do
+      row = %{damage_row({-1, 128, -129}) | granularity: granularity}
+      key = Damage.key(row)
+      unit = {:chunk, :damage, {-1, 1, -2}}
+      state = %{empty() | pages: Pages.new(), damage: %{key => row}}
+        |> Map.merge(%{attachment_owners: %{}, liquid_active: MapSet.new(), page_dirty: MapSet.new()})
+        |> Pages.index_live_damage([key])
+      assert state.pages.unit_damage[unit] == MapSet.new([key])
+      assert state.page_dirty == MapSet.new()
+      newer = %{row | hp: 0.5}
+      {view, _} = transfer(WindowSnapshot.freeze(%{state | damage: %{key => newer}}, {{-1, 0, -1}, {0, 1, 0}}))
+      assert view.damage == %{key => newer}
+      deleted = Pages.remember(%{state | damage: %{}}, %{property_states: [row]})
+      refute Map.has_key?(deleted.pages.damage_home, key)
+      refute Map.has_key?(deleted.pages.unit_damage, unit)
+      assert MapSet.member?(deleted.page_dirty, unit)
+    end
+  end
+
+  defp damage_row(micro), do: %{granularity: 0, micro: micro, incarnation: 0,
+    owner: {0, 0}, material: 11, seq: 0, hp: 1.0, max_hp: 1.0}
+
+  defp pulls(cursor, n \\ 0) do
+    case WindowSnapshot.next(cursor) do
+      :done -> n
+      {_, next} -> pulls(next, n + 1)
+    end
+  end
 
   test "L0 窗口只运输实际读取列，不携带世界其余层级的生成索引" do
     local = for x <- -1..1, z <- -1..1, into: %{}, do: {{0, x, z}, {1, 2, 3, 4}}

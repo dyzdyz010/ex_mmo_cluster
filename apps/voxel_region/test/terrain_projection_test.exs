@@ -13,7 +13,7 @@ defmodule VoxelRegion.TerrainProjectionTest do
     plain = %Payload{level: 0, region: {2, -1, 3}, cells: :binary.copy(<<11, 0>>, 66 * 66 * 66)}
     skin = {2, {{11, <<11, 12, 11, 12>>}, {11, nil}, {11, nil}, {11, nil}, {11, nil}, {11, nil}}}
     {:ok, center} = plain |> Payload.encode(%{{3, 3, 3} => {11, skin}}, 0, 123) |> Payload.decode()
-    assert map_size(center.records) > 0
+    assert Payload.skin_count(center) > 0
     state = ring_state(center, %{})
     {result, calls} = count_value_comparisons(fn -> Payloads.terrain_materials(state, 0, center.region) end)
     assert {:ok, materials, overrides, ^state} = result

@@ -102,17 +102,17 @@ defmodule VoxelRegion.World do
     case Codec.decode_request(request) do
       {:ok, client_version, items} ->
         if Enum.all?(items, &valid_request_item?/1) do
-          prepare(server, Enum.map(items, &{&1.level, &1.region}), fn ->
+          prepare(server, Enum.map(items, &{&1.level, &1.region}), fn token ->
 
           # 一个 region（含 ring）在 owner 内原子冻结；请求进程编码期间，交互可以继续提交。
           # cv 在 World 生命周期内不变，每个 payload 自带其物化时的 seq/hash。
           cv = VoxelRegion.World.PageLoad.call(server, :content_version, 60_000)
 
           case Enum.reduce_while(items, {:ok, []}, fn item, {:ok, replies} ->
-                 case VoxelRegion.World.PageLoad.call(server, {:serve_item, client_version, item}, 60_000) do
+                 case VoxelRegion.World.PageLoad.call(server, {:serve_item, token, client_version, item}, 60_000) do
                    {:ok, job} ->
                      {reply, cache} = VoxelRegion.World.Payloads.encode_reply(job)
-                     :ok = VoxelRegion.World.PageLoad.call(server, {:serve_result, job.seq, item, cache, elem(reply, 0)}, 60_000)
+                     :ok = VoxelRegion.World.PageLoad.call(server, {:serve_result, token, job.cache_ref, item, cache, elem(reply, 0)}, 60_000)
                      {:cont, {:ok, [reply | replies]}}
                    {:error, _} = error -> {:halt, error}
                  end
@@ -1622,7 +1622,7 @@ defmodule VoxelRegion.World do
     {:reply, stats, state}
   end
 
-  defp call({:serve_item, client_version, item}, _from, state) do
+  defp call({:serve_item, token, client_version, item}, _from, state) do
     started = System.monotonic_time(:microsecond)
 
     case serve_item(state, client_version, item) do
@@ -1631,20 +1631,25 @@ defmodule VoxelRegion.World do
 
       # 浏览请求只保留最终载荷缓存，期间解码的源数据随本区域释放。
       {job, served} ->
+        {ref, served} = case job.input do
+          {:encode, _, _, _, _} -> VoxelRegion.World.PageLoad.capture_payload(served, token, {item.level, item.region})
+          _ -> {nil, served}
+        end
         Logger.info(
           "voxel_serve_prepare level=#{item.level} region=#{inspect(item.region)} " <>
             "hit=#{cached?(state, {item.level, item.region})} us=#{System.monotonic_time(:microsecond) - started}"
         )
 
-        {:reply, {:ok, job}, %{served | decoded: state.decoded}}
+        {:reply, {:ok, Map.put(job, :cache_ref, ref)}, %{served | decoded: state.decoded}}
     end
   end
 
-  defp call({:serve_result, _seq, _item, nil, :missing}, _from, state), do: {:reply, :ok, state}
-  defp call({:serve_result, seq, item, {bytes, header}, kind}, _from, state) do
+  defp call({:serve_result, _token, _ref, _item, nil, :missing}, _from, state), do: {:reply, :ok, state}
+  defp call({:serve_result, token, ref, item, {bytes, header}, kind}, _from, state) do
     key = {item.level, item.region}
-    # 编码不拥有世界。期间已有提交时只能返回冻结的响应，不能覆盖当前派生缓存。
-    state = if state.seq == seq and not cached?(state, key), do: cache_put(state, key, bytes, header), else: state
+    # 凭证只随该区域（含 ring／细节）的既有内容失效撤销；无关热属性提交不废弃合法字节。
+    {current, state} = VoxelRegion.World.PageLoad.finish_payload(state, token, key, ref)
+    state = if current and not cached?(state, key), do: cache_put(state, key, bytes, header), else: state
     # entries 沿用原来已知的客户端基底；完整响应才发布新的可核对头。
     state = if kind == :entries, do: state, else: %{state |
       served_headers: Map.put(state.served_headers, key, {header.seq, header.hash})}
