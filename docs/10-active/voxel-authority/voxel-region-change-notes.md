@@ -168,7 +168,7 @@ Replica 旧快照入口保持原路径。
 契约、取舍、测试和测量记录在 [M2b §8](../../10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#8-交接第-1-项窗口组装移出-world2026-10-27施工中)。
 相关验证：本 app 下 `mix test --no-start test/window_snapshot_test.exs test/world_refined_index_test.exs test/canopy_projection_test.exs test/collision_source_test.exs test/damage_world_test.exs test/page_on_demand_test.exs`。
 
-### 2026-11-02 公网首载调查（Global system，第二轮已实现，真实首载待复验）
+### 2026-11-02 公网首载调查（Global system，第二轮本地首载已实跑，公网待验收）
 
 目标：消除登录窗口与显示区域下载的无关数据依赖和重计算排队；不改 Ready／完整近场门槛，不延长超时。
 现有 20261102 发布客户端实跑首载 129.883 s。对应生产日志：窗口冻结 28.608 ms，Feed 完成 126.150 s；
@@ -192,9 +192,10 @@ Replica 旧快照入口保持原路径。
 原始证据与执行日志在 Voxim `Saved/Tests/public-first-load-20261102/`；首轮候选后来进行过公网验证并失败，已回滚，详见下文。
 
 本机对照：同一 20261102 打包客户端、各自全新 UserDir、同一最新生产只读 dump 的两个独立数据库及可写世界副本；
-Linux 原生 release 串行运行，systemd scope 均为 CPUQuota=180%／MemoryMax=4600M，最多一个真实客户端，单服务 600 s 截止。
+Linux 原生 release 串行运行，user systemd scope 虽声明 CPUQuota=180%，但实际未委派 CPU controller、没有 cpu.max，不能声称两轮受相同有效 1.8 CPU 限制。
+实际生效的是 MemoryMax=4600 MiB，BEAM 使用 2 个 scheduler 线程；最多一个真实客户端，单服务 600 s 截止。
 基底生成缓存预先完整，两轮服务端派生缓存及客户端缓存均冷；不是冷生成测试。正式正常账号刷新与 game-ticket 登录，无真值注入。
-旧版首载 41.057 s，新版 31.654 s；主要 HTTP 批次 30.661／31.190 s → 22.902／12.174 s，响应字节数逐批相同。
+首轮原始数值仅保留为历史参考：旧版首载 41.057 s，新版 31.654 s；主要 HTTP 批次 30.661／31.190 s → 22.902／12.174 s，响应字节数逐批相同。
 新版冻结窗口输入 19 次拉取／4.843 ms；完整 Feed 2.564 s（旧版 2.880 s）。本机没有复现公网 126 s 的 Feed 长尾，不能将本机改善冒称公网验收。
 本机两轮均由真实 `travel.loading ready → reveal → done` 完成，没有遮罩超时放行。这只证明当时隔离本机场景，未完成新版画面目检。
 第一次环境准备失败：旧 dump 与后来轮换的登录 refresh 凭据不匹配，HTTP 401，未进入世界；日志保留于 `baseline/`。
@@ -243,8 +244,26 @@ Linux 原生 release 串行运行，systemd scope 均为 CPUQuota=180%／MemoryM
 - `page-matrix-with-db.log`：真实 PostgreSQL 下 `page_store_matrix_test.exs skin_page_test.exs region_serve_snapshot_test.exs window_snapshot_test.exs`，
   25 项，0 失败，原生退出码 0；执行入口 `run-db-tests.py` 复用 `test.sh`，不以无数据库通过替代恢复接缝。
 
-当前状态：三项修复**已实现并通过定向模块／PG 验证**；第二轮同资源限制、真实客户端冷首载**尚待本地实跑**，
-最新候选**尚未完成公网验收或部署**，不得沿用首轮 31.654 s 作为当前性能结论。后续候选名拟为 `20261102-firstload2`，本段不声明已有镜像产物。
+**第二轮有效资源限制下的本地实跑（Test-only）。** 冻结产品源码为 `68097c607b1eadfc652851d3225a24d7c4f21f31`；
+证据以 Voxim `Saved/Tests/public-first-load-20261102/fixed-v2/metrics.json` 与 `fixed-v2/README.md` 为准。
+WSL 原生 release 在 root 独立 scope 内以 dyz 运行，实际 `cpu.max=180000 100000`、`memory.max=4823449600`（4600 MiB）。
+最新生产只读 dump 恢复到独立库后，经正常公共只读入口
+`VoxelRegion.World.simulation_snapshot(VoxelRegion.World, [], {{60,4,0},{64,5,5}}, 60_000)` 加载 21 个持久页，
+用时 25.320 s，damaged_targets 从 358 增至 59,203；没有写入属性或注入世界真值。
+既有同源码客户端 `release-20261102-firstload`、正常保存账号登录，冷首载 begin→done **28.597 s**，session 3.118 s，
+Ready 已发送，无 `travel.loading_timeout`；窗口 feed_input 为 15 pulls／10.576 ms。
+共同资源采样窗口 30.108 s，CPU 33.8668 s、throttled 2.51296 s，窗口内存峰值 1,348,132,864 bytes；
+累计编码与 prepare 墙钟详见 metrics，不能当 CPU 或端到端耗时。41.057／31.654 s 不构成相同有效 CPU 配额下的前后对照。
+
+本轮最多一个客户端、服务 600 s 硬截止，实际 304.777 s 后停止；自有客户端／scope、独立库和临时凭据已清理，27200／27203 无监听。
+Windows UDP 总量 101→101→102，原始按 PID 快照保留；生产保存凭据 fingerprint 未变化。
+`fixed-v2-resource-preflight/` 保留 user scope 无 cpu.max 的环境失败，`fixed-v2-launch-path/` 保留 runuser 路径失败，均未覆盖。
+全量 `mmo_contracts` 实际执行 **176 tests，0 failures，native_exit=0**，日志为同一证据根下 `protocol-full.log`。
+
+当前状态：三项修复**已实现并通过定向模块／PG 验证，且已完成上述本地真实客户端登录与首载**。
+本轮未验证移动／编辑或画面；既有客户端包的原生服务实跑不等于新分发镜像 smoke。
+第二版 `20261102-firstload2` 的本地分发 smoke 仍在进行，**尚未完成公网验收或部署**；公网仍为上述已回滚的 `voxim-server:20261102-qinglan`。
+本次文档更新不改变冻结产品 SHA，不因 doc-only HEAD 变化重新编译，也不沿用首轮数值宣称第二版公网通过。
 
 2026-10-17（Global system）：附件支撑、失支撑清理、定义接纳与 L1 投影统一消费
 `VoxelMaterialCatalog.supports_attachments?/1`；移动占用仍只消费 `blocks_movement?/1`。
