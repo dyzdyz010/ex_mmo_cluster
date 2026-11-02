@@ -87,7 +87,9 @@ defmodule VoxelRegion.CanonicalFeed do
   end
 
   defp assemble(world, token, box) do
-    with {:ok, view} <- input(world, token, %{}),
+    started = System.monotonic_time(:microsecond)
+    with {:ok, view, pulls} <- input(world, token, %{}, 0),
+         :ok <- log_input(started, pulls, view.seq),
          {:ok, snapshot, %{cache: _cache, snapshot_geometry: geometry} = prepared} <-
            WindowSnapshot.build(view, box) do
       for rows <- Enum.chunk_every(geometry, 16),
@@ -97,11 +99,16 @@ defmodule VoxelRegion.CanonicalFeed do
     end
   end
 
-  defp input(world, token, view) do
+  defp log_input(started, pulls, seq) do
+    Logger.info("voxel_window_stage stage=feed_input seq=#{seq} pulls=#{pulls} elapsed_us=#{System.monotonic_time(:microsecond) - started} pid=#{inspect(self())}")
+    :ok
+  end
+
+  defp input(world, token, view, pulls) do
     case GenServer.call(world, {:window_input, token}, 300_000) do
-      :done -> {:ok, view}
+      :done -> {:ok, view, pulls}
       {:error, _} = error -> error
-      items -> input(world, token, WindowSnapshot.accept(view, items))
+      items -> input(world, token, WindowSnapshot.accept(view, items), pulls + 1)
     end
   end
 end

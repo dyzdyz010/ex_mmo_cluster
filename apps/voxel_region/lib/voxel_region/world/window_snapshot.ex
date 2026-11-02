@@ -95,12 +95,12 @@ defmodule VoxelRegion.World.WindowSnapshot do
         :cv,
         :seq,
         :source,
-        :source_state,
         :material_units_per_micro,
         :properties,
         :food_receipts
       ])
       |> Map.merge(%{
+        source_state: source_view(state.source_state, keys),
         refined: Map.take(state.refined, MapSet.to_list(cells)),
         snapshot_geometry: geometry,
         snapshot_owners: missing,
@@ -143,6 +143,15 @@ defmodule VoxelRegion.World.WindowSnapshot do
       aids: aids
     }
   end
+
+  # 窗口只读 L0 区域及其 ring；GeneratedStore 的列索引是不可变来源元数据，
+  # 只携带本次读取可能使用的列。按键投影，不扫描全世界，也不改变未命中的原有读取语义。
+  defp source_view(%{index: %{bounds: bounds} = index} = source, keys) do
+    columns = Enum.map(keys, fn {level, {x, _y, z}} -> {level, x, z} end)
+    %{source | index: %{index | bounds: Map.take(bounds, columns)}}
+  end
+
+  defp source_view(source, _keys), do: source
 
   # 这些容器中的自然记录表单独运输；保留原始输入形状，不引入通用递归序列化器。
   defp transport_fields(view) do

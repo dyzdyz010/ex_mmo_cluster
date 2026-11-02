@@ -148,6 +148,7 @@ defmodule VoxelRegion.Access do
     canonical_snapshot: :read,
     replica_snapshot: :read,
     serve_item: :read,
+    serve_result: :read,
     subscribe: :read,
     entries_after: :read
   }

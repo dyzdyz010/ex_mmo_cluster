@@ -4,6 +4,15 @@ defmodule VoxelRegion.WindowSnapshotTest do
 
   @box {{0, 0, 0}, {1, 1, 1}}
 
+  test "L0 窗口只运输实际读取列，不携带世界其余层级的生成索引" do
+    local = for x <- -1..1, z <- -1..1, into: %{}, do: {{0, x, z}, {1, 2, 3, 4}}
+    remote = for x <- 1..21_824, into: %{}, do: {{1, x, 0}, {5, 6, 7, 8}}
+    source = %{index: %{extent: 8192, bounds: Map.merge(local, remote)}}
+    {view, _} = transfer(WindowSnapshot.freeze(%{empty() | source_state: source}, @box))
+    assert view.source_state.index == %{extent: 8192, bounds: local}
+    assert source.index.bounds[{1, 21_824, 0}] == {5, 6, 7, 8}
+  end
+
   # 只测试：纯输入抽取／运输算法，不启动 World、数据库或生成器。所有远处记录均在窗口及 ring 之外。
   test "固定窗口的冻结成本不随远处互不相交的叶子数增长" do
     base = empty()
@@ -72,12 +81,11 @@ defmodule VoxelRegion.WindowSnapshotTest do
     div(after_count - before, 10)
   end
 
-  test "GeneratedStore 的 index.bounds 按自然记录运输并保留 extent 与 nil" do
-    bounds = Map.new(1..1_000, fn n -> {{n, n}, {n, n + 1}} end)
+  test "GeneratedStore 的窗口列保留原值、extent 与未建索引的 nil" do
+    bounds = %{{0, -1, 1} => {1, 2, 3, 4}, {0, 1, -1} => {5, 6, 7, 8}}
     source = %{index: %{extent: 64, bounds: bounds}}
-    {view, max_words} = transfer(WindowSnapshot.freeze(%{empty() | source_state: source}, @box))
+    {view, _} = transfer(WindowSnapshot.freeze(%{empty() | source_state: source}, @box))
     assert view.source_state == source
-    assert max_words < div(:erts_debug.flat_size(bounds), 2)
     {view, _} = transfer(WindowSnapshot.freeze(%{empty() | source_state: %{index: nil}}, @box))
     assert view.source_state == %{index: nil}
   end

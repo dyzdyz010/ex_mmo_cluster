@@ -168,6 +168,42 @@ Replica 旧快照入口保持原路径。
 契约、取舍、测试和测量记录在 [M2b §8](../../10-active/voxel-authority/2026-10-24-world-region-paging/m2b-on-demand-pages.md#8-交接第-1-项窗口组装移出-world2026-10-27施工中)。
 相关验证：本 app 下 `mix test --no-start test/window_snapshot_test.exs test/world_refined_index_test.exs test/canopy_projection_test.exs test/collision_source_test.exs test/damage_world_test.exs test/page_on_demand_test.exs`。
 
+### 2026-11-02 公网首载调查（Global system，施工中）
+
+目标：消除登录窗口与显示区域下载的无关数据依赖和重计算排队；不改 Ready／完整近场门槛，不延长超时。
+现有 20261102 发布客户端实跑首载 129.883 s。对应生产日志：窗口冻结 28.608 ms，Feed 完成 126.150 s；
+607 次区域物化占 World 回合 93.433 s，其中 285 次重编码的编码阶段合计 68.332 s。
+本地同版本世界索引有 21,824 条 L1–L5 列；L0 窗口传输原先携带全表，每 64 条重新同步排 World 队列，至少多 341 次调用。
+账号刷新及 ticket 分别 46／69 ms，客户端碰撞基线 541 ms；不是这些环节消耗两分钟。
+
+设计与最小实施计划：
+
+- [x] `WindowSnapshot` 在冻结边界按实际 L0 + ring 读取键投影来源列索引；负 X/Z、原值、extent、nil 保持，原来源不变。
+  旧实现新增回归失败；Linux 正式 Mix 图 9 项通过。旧“全表传输”测试依据实际读取契约改为保留窗口列，不降低线数据断言。
+- [x] 区域请求的编码从 World 权威回合移到请求进程：World 冻结一个区域的合法输入与事务切点，编码仍走唯一 Payload 实现。
+  缓存回填必须拒绝旧切点，增量响应只能引用该切点内的日志；不复制整个 World、不增设第二真值。
+- [x] 定向模块测试覆盖冻结后编辑、稀疏 entries／完整载荷与取消生命周期；隔离 Linux 服务 + 真实客户端对齐首载阶段。
+  区分冷客户端缓存、冷服务端派生缓存与冷生成；相同源码／世界／资源限制比较，不用单测代替性能验收。
+
+依据：[Erlang 官方进程效率指南](https://www.erlang.org/doc/system/eff_guide_processes.html#sending-messages)：
+进程消息复制普通项，同节点大 binary 可共享。因此先限制冻结输入的语义范围，保留现有有界运输；不直接发送整个 World。
+把纯编码放在调用者进程，使 World 只串行裁决／捕获／接纳，不让显示派生计算占用权威处理回合。
+验证不覆盖多人容量、全量玩法或发布。原始证据与执行日志在 Voxim `Saved/Tests/public-first-load-20261102/`；生产只读取日志，尚未部署改动。
+
+本机对照：同一 20261102 打包客户端、各自全新 UserDir、同一最新生产只读 dump 的两个独立数据库及可写世界副本；
+Linux 原生 release 串行运行，systemd scope 均为 CPUQuota=180%／MemoryMax=4600M，最多一个真实客户端，单服务 600 s 截止。
+基底生成缓存预先完整，两轮服务端派生缓存及客户端缓存均冷；不是冷生成测试。正式正常账号刷新与 game-ticket 登录，无真值注入。
+旧版首载 41.057 s，新版 31.654 s；主要 HTTP 批次 30.661／31.190 s → 22.902／12.174 s，响应字节数逐批相同。
+新版冻结窗口输入 19 次拉取／4.843 ms；完整 Feed 2.564 s（旧版 2.880 s）。本机没有复现公网 126 s 的 Feed 长尾，不能将本机改善冒称公网验收。
+两轮均由真实 `travel.loading ready → reveal → done` 完成，没有遮罩超时放行。当前尚未完成新版画面目检或公网发布验证。
+第一次环境准备失败：旧 dump 与后来轮换的登录 refresh 凭据不匹配，HTTP 401，未进入世界；日志保留于 `baseline/`。
+停止自有进程后只读获取新 dump，重建两份测试库，成功对照为 `baseline-fresh/` 与 `fixed/`，不覆盖原始失败。
+
+当前验证：`region_serve_snapshot_test.exs window_snapshot_test.exs access_test.exs` 19 项通过；
+`collision_source_test.exs --only window_assembly` 发现 13 项、执行 4 项、明确排除 9 项，全部通过，原生退出码均为 0。
+独立静态审查发现 `serve_result` 未豁免热域写回，已按其不读取属性的语义加入 `@unflushed` 后重新验证。
+性能、失败与构建命令保存在上述证据目录的 `comparison.json`、`run-test.py`、`test.sh`、`build.sh` 和原始日志。
+
 2026-10-17（Global system）：附件支撑、失支撑清理、定义接纳与 L1 投影统一消费
 `VoxelMaterialCatalog.supports_attachments?/1`；移动占用仍只消费 `blocks_movement?/1`。
 65/73 保留支撑、选中和拆除，移动不阻挡；其他材料规则保持。兼容规范见 mmo_contracts README。

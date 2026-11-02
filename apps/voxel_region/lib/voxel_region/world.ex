@@ -13,7 +13,8 @@ defmodule VoxelRegion.World do
   - **载荷**：`serve/1` 从当前基底和 overlay 物化区域，按当前 seq 编码；未受编辑或相邻基底影响的区域原样读 source。
     两者都进 `World.Cache` 的 `{:payload, {level, region}}` 条目（元信息 `Cache.PayloadMetadata`），与原始 prefab 字节共用
     同一个可丢弃有界 LRU（字节上限 `:payload_cache_bytes`，各级一律按最近使用淘汰）；外部运输仍为 `{bytes, header}`，条目碰到的 region 立即失效。
-    冷 miss 的 baseline 生成在调用方进程里并发预备（`prepare/2`），GenServer 只做缓存查找与编码，不被生成阻塞。
+    冷 miss 的 baseline 生成在调用方进程里并发预备（`prepare/2`）；GenServer 冻结单区合法输入，
+    请求进程负责编码，World 接纳结果时拒绝旧切点缓存，不被生成或编码阻塞。
     记住每个 region 最近一次下发的 seq/hash；旧副本与此完全吻合、后续只有稀疏条目且更省字节才回 entries。
     entries 不写回客户端磁盘，服务端保留这个旧头供重复请求校验；缺失此头、hash 不同、跨过 region 替换时回完整载荷。
   - **订阅**：`subscribe(pid, have_seq, l0_box, coarse_min_level)`：先补 have_seq 之后落在 box（外扩 1 个 region，让 ring 也跟上）
@@ -103,13 +104,16 @@ defmodule VoxelRegion.World do
         if Enum.all?(items, &valid_request_item?/1) do
           prepare(server, Enum.map(items, &{&1.level, &1.region}), fn ->
 
-          # 一个 region（含 ring）在 owner 内原子物化；批次之间不独占 owner，交互可在区域之间提交。
+          # 一个 region（含 ring）在 owner 内原子冻结；请求进程编码期间，交互可以继续提交。
           # cv 在 World 生命周期内不变，每个 payload 自带其物化时的 seq/hash。
           cv = VoxelRegion.World.PageLoad.call(server, :content_version, 60_000)
 
           case Enum.reduce_while(items, {:ok, []}, fn item, {:ok, replies} ->
                  case VoxelRegion.World.PageLoad.call(server, {:serve_item, client_version, item}, 60_000) do
-                   {:ok, reply} -> {:cont, {:ok, [reply | replies]}}
+                   {:ok, job} ->
+                     {reply, cache} = VoxelRegion.World.Payloads.encode_reply(job)
+                     :ok = VoxelRegion.World.PageLoad.call(server, {:serve_result, job.seq, item, cache, elem(reply, 0)}, 60_000)
+                     {:cont, {:ok, [reply | replies]}}
                    {:error, _} = error -> {:halt, error}
                  end
                end) do
@@ -855,7 +859,7 @@ defmodule VoxelRegion.World do
   # 热提交进行中，原生热域可能有尚未写回的节点：调用先写回属性记录（唯一真值），读到的与逐步写回时相同。
   # 豁免的消息整条处理链都不读写属性记录（区域载荷、工具目录、版本号），不必写回；身体接触只读脚格温度，
   # 由 Thermal.body_contacts 直接读原生侧当前值。
-  @unflushed [:serve_item, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since,
+  @unflushed [:serve_item, :serve_result, :tool_definition, :content_version, :seq, :body_coherence, :body_contact, :interactions_since,
     :window_input, :window_geometry, :window_finished, :simulation_windows]
 
   # 装页任务与 World 的往来（M2b `World.PageLoad`）：不过闸、不写回热域。
@@ -1626,14 +1630,25 @@ defmodule VoxelRegion.World do
         {:reply, {:error, reason}, state}
 
       # 浏览请求只保留最终载荷缓存，期间解码的源数据随本区域释放。
-      {reply, served} ->
+      {job, served} ->
         Logger.info(
-          "voxel_serve_item level=#{item.level} region=#{inspect(item.region)} reply=#{elem(reply, 0)} " <>
+          "voxel_serve_prepare level=#{item.level} region=#{inspect(item.region)} " <>
             "hit=#{cached?(state, {item.level, item.region})} us=#{System.monotonic_time(:microsecond) - started}"
         )
 
-        {:reply, {:ok, reply}, %{served | decoded: state.decoded}}
+        {:reply, {:ok, job}, %{served | decoded: state.decoded}}
     end
+  end
+
+  defp call({:serve_result, _seq, _item, nil, :missing}, _from, state), do: {:reply, :ok, state}
+  defp call({:serve_result, seq, item, {bytes, header}, kind}, _from, state) do
+    key = {item.level, item.region}
+    # 编码不拥有世界。期间已有提交时只能返回冻结的响应，不能覆盖当前派生缓存。
+    state = if state.seq == seq and not cached?(state, key), do: cache_put(state, key, bytes, header), else: state
+    # entries 沿用原来已知的客户端基底；完整响应才发布新的可核对头。
+    state = if kind == :entries, do: state, else: %{state |
+      served_headers: Map.put(state.served_headers, key, {header.seq, header.hash})}
+    {:reply, :ok, state}
   end
 
   # 原始编辑：主体是否可写这些格由提交入口的写集检查判定（`Log.append_journal/3`），这里不另算格。

@@ -3,7 +3,8 @@ defmodule VoxelRegion.World.Payloads do
   @moduledoc """
   全局系统功能：区域载荷物化与 `World.Cache` 中可丢弃的载荷条目（各级一律按最近使用淘汰）、区域快照与结构条目。
 
-  由 `VoxelRegion.World` 拆出的状态函数：输入与返回都是 World 状态，真值归属与调用时机仍由 World 决定。
+  World 构造合法的单区域不可变输入；请求进程只消费该输入编码，不读取 World 状态。
+  内部同步物化与 HTTP 请求共用构造和编码算法，真值及缓存接纳仍由 World 决定。
   """
   alias VoxelRegion.{Attachments, LogProjection}
   require Logger
@@ -19,109 +20,92 @@ defmodule VoxelRegion.World.Payloads do
 
   # ---- 应答
 
-  def serve_item(state, client_version, %{
-         level: level,
-         region: region,
-         have_seq: have_seq,
-         have_hash: have_hash
-       }) do
-    case payload_bytes(state, level, region) do
-      {:ok, bytes, header, state} ->
-        key = {level, region}
-        known = Map.get(state.served_headers, key) == {have_seq, have_hash}
-
-        served = %{
-          state
-          | served_headers: Map.put(state.served_headers, key, {header.seq, header.hash})
-        }
-
-        cond do
-          client_version == state.cv and header.hash == have_hash and header.seq == have_seq ->
-            {{:unchanged, level, region}, served}
-
-          # 游标早于已发布前缀：其后的历史已退休（m2a §6.3），只能给整区载荷，不能用残缺的后缀冒充完整增量。
-          client_version != state.cv or have_seq == 0 or not known or expired?(state, have_seq) ->
-            {{:payload, level, region, bytes}, served}
-
-          true ->
-            transactions = LogProjection.since(state.entry_regions, state.entries, level, region, have_seq)
-            entry_reply = {:entries, level, region, transactions}
-            payload_reply = {:payload, level, region, bytes}
-
-            if transactions != :region and transactions != [] and
-                 IO.iodata_length(Codec.encode_reply(state.cv, [entry_reply])) <
-                   IO.iodata_length(Codec.encode_reply(state.cv, [payload_reply])) do
-              {entry_reply, state}
-            else
-              {payload_reply, served}
-            end
-        end
+  @doc "在权威回合冻结一个区域的编码输入和增量候选，不执行派生编码。"
+  def serve_item(state, client_version, %{level: level, region: region, have_seq: have_seq, have_hash: have_hash} = item) do
+    case payload_input(state, level, region, :infinity) do
+      {:ok, input, state} ->
+        known = Map.get(state.served_headers, {level, region}) == {have_seq, have_hash}
+        transactions =
+          if client_version == state.cv and have_seq != 0 and known and not expired?(state, have_seq),
+            do: LogProjection.since(state.entry_regions, state.entries, level, region, have_seq),
+            else: :region
+        {%{input: input, seq: state.seq, cv: state.cv, client_version: client_version,
+           item: item, transactions: transactions}, state}
 
       {:error, :missing, state} ->
-        {{:missing, level, region}, state}
+        {%{input: :missing, seq: state.seq, item: item}, state}
 
-      {:error, reason, state} ->
-        {:error, reason, state}
+      {:error, reason, state} -> {:error, reason, state}
     end
   end
 
-  @doc "缓存或来源字节直接返回；需物化时可用严格字节上限跳过已知不可能更小的候选。"
+  @doc "请求进程消费不可变输入；响应的区域、事务与正文均来自同一冻结切点。"
+  def encode_reply(%{input: :missing, item: item}), do: {{:missing, item.level, item.region}, nil}
+  def encode_reply(job) do
+    {:ok, bytes, header} = encode_input(job.input, :infinity)
+    %{level: level, region: region, have_seq: have_seq, have_hash: have_hash} = job.item
+    payload = {:payload, level, region, bytes}
+    entries = {:entries, level, region, job.transactions}
+    reply = cond do
+      job.client_version == job.cv and header.hash == have_hash and header.seq == have_seq ->
+        {:unchanged, level, region}
+      job.transactions != :region and job.transactions != [] and
+          IO.iodata_length(Codec.encode_reply(job.cv, [entries])) < IO.iodata_length(Codec.encode_reply(job.cv, [payload])) ->
+        entries
+      true -> payload
+    end
+    {reply, {bytes, header}}
+  end
+
+  @doc "缓存或来源字节直接返回；内部同步调用和外部区域服务共享相同的输入构造与编码。"
   def payload_bytes(state, level, region, byte_limit \\ :infinity) do
-    key = {level, region}
+    case payload_input(state, level, region, byte_limit) do
+      {:ok, {:bytes, bytes, header}, state} -> {:ok, bytes, header, state}
+      {:ok, input, state} ->
+        case encode_input(input, byte_limit) do
+          {:ok, bytes, header} -> {:ok, bytes, header, cache_put(state, {level, region}, bytes, header)}
+          :not_smaller -> {:not_smaller, state}
+        end
+      other -> other
+    end
+  end
 
-    case cache_fetch(state, key) do
-      {:ok, bytes, header, state} ->
-        {:ok, bytes, header, state}
-
+  defp payload_input(state, level, region, byte_limit) do
+    case cache_fetch(state, {level, region}) do
+      {:ok, bytes, header, state} -> {:ok, {:bytes, bytes, header}, state}
       {:miss, state} ->
-        started = System.monotonic_time(:microsecond)
         case terrain_input(state, level, region) do
-          :source -> source_bytes(state, level, region)
+          :source ->
+            case source_bytes(state, level, region) do
+              {:ok, bytes, header, state} -> {:ok, {:bytes, bytes, header}, state}
+              other -> other
+            end
           {:terrain, cells, bases} ->
-          case terrain(state, level, region, cells, bases) do
-            {:ok, payload, overrides, state} ->
-              terrain_end = System.monotonic_time(:microsecond)
-              if byte_limit != :infinity and
-                   Codec.payload_min_bytes(Payload.min_body_bytes(payload, overrides)) >= byte_limit do
+            with {:ok, payload, overrides, state} <- terrain(state, level, region, cells, bases) do
+              if byte_limit != :infinity and Codec.payload_min_bytes(Payload.min_body_bytes(payload, overrides)) >= byte_limit do
                 {:not_smaller, state}
               else
                 {payload, state} = with_refined(state, payload)
-                encode_start = System.monotonic_time(:microsecond)
-
-                # 有上限时先看地形段的压缩前缀：已不短于上限就不再编细节、压缩完整 body（结论与完整编码后比较相同）。
-                encoded =
-                  if byte_limit == :infinity,
-                    do: {:ok, Payload.encode(payload, overrides, state.seq, state.cv)},
-                    else: Payload.encode_below(payload, overrides, state.seq, state.cv, byte_limit)
-                encode_end = System.monotonic_time(:microsecond)
-
-                case encoded do
-                  :not_smaller ->
-                    {:not_smaller, state}
-
-                  {:ok, bytes} ->
-                    {:ok, header} = Codec.decode_payload_header(bytes)
-                    cache_start = System.monotonic_time(:microsecond)
-                    state = cache_put(state, key, bytes, header)
-                    cache_end = System.monotonic_time(:microsecond)
-                    {x, y, z} = region
-                    Logger.info(fn ->
-                      "voxel_payload_materialize pid=#{:erlang.pid_to_list(self())} seq=#{state.seq} cv=#{state.cv} level=#{level} x=#{x} y=#{y} z=#{z} source=materialize " <>
-                        "start_us=#{started} terrain_end_us=#{terrain_end} encode_start_us=#{encode_start} encode_end_us=#{encode_end} cache_start_us=#{cache_start} cache_end_us=#{cache_end} " <>
-                        "terrain_us=#{terrain_end - started} encode_us=#{encode_end - encode_start} cache_us=#{cache_end - cache_start} elapsed_us=#{cache_end - started} " <>
-                        "raw_bytes=#{header.raw_bytes} body_bytes=#{header.body_bytes} payload_bytes=#{byte_size(bytes)}"
-                    end)
-                    {:ok, bytes, header, state}
-                end
+                {:ok, {:encode, payload, overrides, state.seq, state.cv}, state}
               end
-
-            {:error, :missing, state} ->
-              {:error, :missing, state}
-
-            {:error, reason, state} ->
-              {:error, reason, state}
-          end
+            end
         end
+    end
+  end
+
+  defp encode_input({:bytes, bytes, header}, _limit), do: {:ok, bytes, header}
+  defp encode_input({:encode, payload, overrides, seq, cv}, limit) do
+    started = System.monotonic_time(:microsecond)
+    encoded = if limit == :infinity,
+      do: {:ok, Payload.encode(payload, overrides, seq, cv)},
+      else: Payload.encode_below(payload, overrides, seq, cv, limit)
+    case encoded do
+      {:ok, bytes} ->
+        {:ok, header} = Codec.decode_payload_header(bytes)
+        Logger.info("voxel_payload_encode pid=#{inspect(self())} seq=#{seq} level=#{payload.level} region=#{inspect(payload.region)} " <>
+          "encode_us=#{System.monotonic_time(:microsecond) - started} payload_bytes=#{byte_size(bytes)}")
+        {:ok, bytes, header}
+      :not_smaller -> :not_smaller
     end
   end
 
