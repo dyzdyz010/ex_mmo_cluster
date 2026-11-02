@@ -9,6 +9,8 @@
 
 ## 1. 项目与当前焦点
 
+**服务端平台硬约束：仅支持 Linux。** 服务端开发、构建、测试、性能采样与生产运行均在 Linux 执行；本机使用 WSL Linux。Windows 仅运行 UE 客户端及调用 Linux 的控制工具，不在 Windows 原生构建或运行服务端，不维护 Windows 服务端兼容分支，不移植 Windows QUIC。日常开发／测试使用 Linux 原生进程；Linux Docker 镜像仅用于分发／生产。常规 Linux 环境准备、依赖更新和匹配版本构建自主完成，不因缺少已启动服务而停止已授权的联调或采样。
+
 `ex_mmo_cluster` 是探索 MMORPG 风格分布式服务架构的 Elixir umbrella 项目（`gate_server`、`scene_server`、`world_server`、`voxel_region`、`npc_server`、`auth_server`、`data_service`、`mmo_contracts`），核心方向是**服务端权威**的移动、AOI、体素、局部场与物理现象运行时。当前推进重点是体素世界生产化（baseline = 算法基底 + delta + 轻量 H，见 [`docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md`](docs/10-active/cross-cutting/voxel-server-authority-phase-overview.md)）与局部场运行时（Phase 7+）。服务端以单个 `voxim_server` release 部署（`deploy/`），多 Scene 由拓扑文件在本机起 peer 节点。
 
 **客户端口径（统一到 `docs/00-current-truth/`，覆盖任何旧文档的相反表述）**：
