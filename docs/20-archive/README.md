@@ -4,7 +4,7 @@
 
 **收录标准**：有 closure / 进度日志已收 / 里程碑已达，且结论未被后续推翻。若结论被反转，改归 `90-obsolete/`；若仍是长期查阅的规范类，改归 `30-reference/`。
 
-> 上层文档地图见 [`../README.md`](../README.md)。本层共 **111** 篇（按子系统分组）。
+> 上层文档地图见 [`../README.md`](../README.md)。下列索引按子系统分组。
 
 ## 索引
 
@@ -34,6 +34,7 @@
 - [`2026-06-17-bevy-client-implementation-and-verification-plan.md`](client/2026-06-17-bevy-client-implementation-and-verification-plan.md)
 - [`2026-06-25-bevy-client-architecture-replan.md`](client/2026-06-25-bevy-client-architecture-replan.md)
 - [`2026-06-25-voxia-ue58-client-roadmap.md`](client/2026-06-25-voxia-ue58-client-roadmap.md)
+- [`2026-06-28-体素世界与远景渲染-历史整合.md`](client/2026-06-28-体素世界与远景渲染-历史整合.md)
 - [`2026-06-30-voxia-worldgen-preview-level-and-sliding-window.md`](client/2026-06-30-voxia-worldgen-preview-level-and-sliding-window.md)
 - [`phase-A1-playable-client-experience.md`](client/phase-A1-playable-client-experience.md)
 
@@ -54,6 +55,7 @@
 - [`2026-04-14-阶段进度总览.md`](cross-cutting/2026-04-14-阶段进度总览.md)
 - [`2026-05-10-multiplayer-hot-path-redesign.md`](cross-cutting/2026-05-10-multiplayer-hot-path-redesign.md)
 - [`phase-align-3-commit-replication-emergence.md`](cross-cutting/phase-align-3-commit-replication-emergence.md)
+- [`2026-11-03-voxim-runtime-historical-evidence.md`](cross-cutting/2026-11-03-voxim-runtime-historical-evidence.md)：旧 runtime 原文与当时状态的历史证据；已被现行 runtime 入口替换，不作为当前运行指南。
 
 ### field-emergence
 
@@ -130,7 +132,6 @@
 
 ### voxel-far-field
 
-- [`2026-06-28-体素世界与远景渲染-当前真相-整合.md`](voxel-far-field/2026-06-28-体素世界与远景渲染-当前真相-整合.md)
 - [`2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md`](voxel-far-field/2026-06-30-voxia-near-window-kernel-and-svo-roadmap.md)
 - [`2026-06-30-voxia-svo-preview-design.md`](voxel-far-field/2026-06-30-voxia-svo-preview-design.md)
 - [`2026-06-30-voxia-svo-preview-implementation.md`](voxel-far-field/2026-06-30-voxia-svo-preview-implementation.md)

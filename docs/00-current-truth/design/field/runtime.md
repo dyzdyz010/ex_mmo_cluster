@@ -1,8 +1,8 @@
-# 局部场与涌现系统当前事实
+# 局部场与涌现系统历史参考
 
-> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](../server/voxim-runtime.md)，本页不定义其生产真值或缺口。
+> **适用范围：已删除实现的历史 reference。** 旧 Scene ChunkProcess / FieldRuntime 及配套 Gate / World 链路已由提交 `af180c98` 删除，Voxia 已归档。下文保留当时设计、实现与缺口的证据，文中“当前”“现役”“已落地”均限定于该历史阶段，不表示相关 HTTP、wire 或内核仍在运行。Voxim 现行 canonical owner、bootstrap/Ready 与能力边界只认 [Voxim runtime](../server/voxim-runtime.md) 及其现行源码、验收索引，不能从本页推断。
 
-> 当前唯一事实文档。覆盖 Phase 7+ local field runtime、涌现系统、材料/光/结构/化学/表面元件的当前状态。
+> 历史范围：Phase 7+ 旧 local field runtime，以及材料/光/结构/化学/表面元件的当时状态。
 
 ## 体素权威基线
 
@@ -46,14 +46,14 @@ Field kernel 不直接改世界：
 - 不得绕过 ChunkProcess、事务、版本、fence 直接写 voxel/object/combat truth。
 - `write_voxel_attribute(:temperature)` 等写回必须经 chunk authority 应用。
 
-## 已落地能力
+## 旧链路曾落地的能力
 
-| 能力 | 当前事实 |
+| 能力 | 当时实现事实（已删除链路） |
 | --- | --- |
 | 温度 | signed delta field，set-temperature/cool 入口，回到环境阈值可销毁 region |
 | 材料物性 | thermal / electric / ignition / melting / freezing / boiling 等属性可由 catalog/effective attribute 读取 |
 | 电导服务端运行时 | `ConductionPathKernel`、`FieldRuntime.ensure_conduction_path/1` 已落地 |
-| 电导 HTTP 入口 | 现役服务端入口已落地；这是服务端事实，不代表现役客户端入口已完成 |
+| 电导 HTTP 入口 | 旧服务端入口当时已落地；不代表现行服务端或客户端入口已完成 |
 | 电导 Web CLI | 仅为归档 `web_client` 的历史实现和当时验证证据，不是默认验收门禁 |
 | 电导 Voxia 入口 | 等价入口尚未落地，不能写成客户端完成；如仍需要，须按 Voxia 当前路线另行排期，且不得自动纳入当前 A10 |
 | 电源 | `material_id=6` 的 power block 是默认物理电源，普通 iron 只做导线 |
@@ -67,7 +67,7 @@ Field kernel 不直接改世界：
 | 结构 | structural support/stress/collapse effect 已形成烧梁/放电毁梁 → 坍塌链路 |
 | SurfaceElement | 服务端数据与 wire 已通，含 catalog、Storage 面槽、ChunkProcess 权威 ops、snapshot TLV |
 
-## 尚未完成
+## 旧阶段尚未完成项（不直接作为现行待办）
 
 - generic persistent source owner 存活探测、持续预算扣减、自动续租。
 - 完整跨 chunk field orchestration：当前只支持有限相邻 shard，不做全地图搜索。
@@ -90,7 +90,7 @@ Field kernel 不直接改世界：
 | 旧结论 | 当前事实 |
 | --- | --- |
 | Phase 7 只是温度按钮 demo | 服务端已形成温度、电导、电热、闭合电路、击穿等可操作 runtime 起点；归档 Web 热烟可视化仅作历史表现证据，不是当前可操作 runtime 或现役客户端能力 |
-| 光只是客户端白炽派生 | 当前已有服务端权威光场 as-built |
+| 光只是客户端白炽派生 | 旧链路当时已有服务端权威光场 as-built；不表示现行 World 已接入 |
 | `state_flags` 承载 burning/frozen/wet/charred 外观 | 已被 material/tag/field 纯函数渲染方向取代 |
 | iron 锈蚀需要专门“锈了断电”规则 | iron → rust 通过 truth/material 属性自然退出导电 |
 
@@ -105,4 +105,4 @@ Field kernel 不直接改世界：
 - [`docs/20-archive/field-emergence/2026-06-23-light-as-orthogonal-system.md`](../../../20-archive/field-emergence/2026-06-23-light-as-orthogonal-system.md)
 - [`docs/20-archive/field-emergence/2026-06-23-mechanical-stress-structural-collapse.md`](../../../20-archive/field-emergence/2026-06-23-mechanical-stress-structural-collapse.md)
 - [`docs/10-active/voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md`](../../../10-active/voxel-authority/2026-06-17-unit-morphology-and-surface-element-layer.md)
-- [`clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`](../../../../clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md)
+- `clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`（历史资料；当前工作树缺失）

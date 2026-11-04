@@ -5,11 +5,11 @@ Hemifuture 体素 MMO 服务端**承重契约的单一来源**(纯库,无监督�
 `MmoContracts.Session.Outbound` 定义 Scene 发给连接 owner 的三个 OTP 消息，
 不依赖 Gate，不拥有队列、网络或世界状态；Gate 的 Sink 复用该契约并持有传输实现。
 
-承载冻结架构规范(`docs/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md`,含 v2.0.2 反哺修订)中
+承载[冻结架构规范](../../docs/30-reference/overview/HEMIFUTURE-MMO-架构设计规范-v2.0.1-冻结稿.md)（含 v2.0.2 反哺修订）中
 跨 app 共享的**信封与分类**,使 gate / world / scene / data 各层引用同一份定义。
 
-迁移主线见 `docs/voxel-server-authority/2026-06-14-architecture-triage-and-alignment.md`;
-本 app 由其**梯队 0 · 契约骨架前置**引入(`docs/voxel-server-authority/phase-align-0-contract-skeleton.md`)。
+迁移主线见[架构对齐记录](../../docs/20-archive/voxel-authority/2026-06-14-architecture-triage-and-alignment.md)；
+本 app 由其**梯队 0 · 契约骨架前置**引入（[契约骨架记录](../../docs/20-archive/infra/phase-align-0-contract-skeleton.md)）。
 
 ## 模块
 
@@ -40,7 +40,10 @@ Test-only 回归：本 app 的 `voxel_material_catalog_test.exs`，voxel_region 
 
 ## 测试
 
-R7-B6（Global system）：当前 Hello 为 9，在线拒绝 1–8；`voxel_property_state` 在温度与可选电路后追加
+当前工作区 Hello 为 43，唯一版本来源为 [`Session.Codec.protocol_version/0`](lib/mmo_contracts/session/codec.ex)，在线只接纳该版本；这表示源码状态，不代表已发布或本轮已实跑。
+Hello 42 追加公共生命字段，43 调整 g=6 区域战斗工具语义，见 [M1 唯一规范 §2.1](../../../Voxim/Docs/M1/plan.md#21-身份时间与-wire) 与 [交互设计 §6.3–6.4](../../../Voxim/Docs/Interaction-Targeting-Design.md)。
+
+R7-B6（Global system，Hello 9 时引入的增量字节）：`voxel_property_state` 在温度与可选电路后追加
 `burning u8 + remaining_fuel_j f64 + power_w f64`（大端，17 字节）。存在 `burning` 的合法权威行同时提供温度与两个数值，
 熄灭仍发送剩余燃料；纯燃烧帧为 146 字节，电路与燃烧共存为 208 字节，普通 HP/温度/电路前缀不变。
 `test/mmo_contracts/combustion_wire_test.exs`（Test-only）覆盖版本拒绝、能量量纲、熄灭、电路共存及属性批次传输。
@@ -53,7 +56,7 @@ mix test apps/mmo_contracts/test
 
 ## Voxim M1 G1：现行 wire owner
 
-当前客户端主线为同级 `Voxim`；`clients/Voxia` 是算法和历史行为参考。实施边界见
+当前唯一客户端为同级 `Voxim`；归档客户端不进入开发与验证。G1 抽取边界见
 [`2026-09-08-voxim-m1.md`](../../docs/10-active/movement-sync/2026-09-08-voxim-m1.md) 与
 [`G1 brief`](../../../Voxim/Docs/M1/briefs/G1.md)。此次依据原生产 serializers 和 G0 的 31 个冻结向量做机械抽取，
 没有设计新字节布局。纯编解码不依赖 sibling app；直接使用的 OTP `:crypto` 已声明，无监督树。
@@ -80,11 +83,11 @@ mix test apps/mmo_contracts/test
 
 Gate 的 `Session.Sink.encode/1` 只按 guard 选择上述 owner；QUIC 连接按通道直接调用对应 codec 解码。
 旧 `GateServer.Codec`（TCP/WS、fast-lane、chunk 协议）已于 2026-09-30 随旧客户端删除。
-新 Movement 的纯类型与 codec 由下述 C1 提供；固定 60 Hz 权威联调、QUIC 集成、bootstrap runtime 仍待后续阶段实施，不要求兼容旧移动协议。
+新 Movement 的纯类型与 codec 由下述 C1 提供；固定 60 Hz 权威移动、QUIC 与 canonical bootstrap/Ready 已接入正式链路，M1 完成状态与保留的性能缺口见 [验收记录](../../../Voxim/Docs/M1/acceptance.md)。G1 只记录早期字节 owner 抽取，不代表这些运行时仍待实施；新移动无旧协议兼容义务。
 
 G0 普通测试直接调用新 owner，期望仍为同级 Voxim 的原 31 个二进制文件；不再 require sibling 源码。
 历史 manifest 中的旧源路径/hash 只是捕获来源，不是现行所有权或测试前置条件。历史捕获由 Voxim 工具从固定 Git
-版本读原 serializers，写临时 corpus；不再用现行 owner 冒充抽取前来源。Windows scoped 验证：
+版本读原 serializers，写临时 corpus；不再用现行 owner 冒充抽取前来源。当前验证仅在 Linux/WSL 运行：
 `mix test --no-start`（本 app）；跨 app 回归见 Voxim `Docs/M1/reports/G1.md`。
 
 ## Voxim M1 C1：新领域消息与不可变值

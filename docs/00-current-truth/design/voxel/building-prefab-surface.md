@@ -1,8 +1,8 @@
-# 建设、Prefab、Object 与 SurfaceElement 当前事实
+# 建设、Prefab、Object 与 SurfaceElement 历史参考
 
-> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](../server/voxim-runtime.md)，本页不定义其生产真值或缺口。
+> **适用范围：已删除实现的历史 reference。** 旧 Scene ChunkProcess / FieldRuntime 及配套 Gate / World 链路已由提交 `af180c98` 删除，Voxia 已归档。下文保留当时设计、实现与缺口的证据，文中“当前”均限定于该历史阶段。Voxim 现行 canonical owner、bootstrap/Ready 与能力边界只认 [Voxim runtime](../server/voxim-runtime.md) 及其现行源码、验收索引，不能从本页推断。
 
-> 当前唯一事实文档。覆盖服务端建造原语、prefab 事务、object provenance、surface element 层。
+> 历史范围：旧服务端建造原语、prefab 事务、object provenance、surface element 层。
 
 ## 模块关系
 

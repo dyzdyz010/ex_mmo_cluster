@@ -1,5 +1,7 @@
 # AuthServer
 
+The server supports Linux only. Run the commands below from this directory in Linux (WSL on this Windows host), with the project toolchain and PostgreSQL available. From Windows, enter this directory with `wsl.exe --cd /mnt/d/hemifuture/ex_mmo_cluster/apps/auth_server`. See the [engineering guide](../../docs/30-reference/engineering/project-engineering-guide.md).
+
 To start your Phoenix server:
 
 * Run `mix setup` to install and setup dependencies
@@ -15,13 +17,13 @@ Ready to run in production? Please [check our deployment guides](https://hexdocs
 
 最小模块集成回归为 `test/auth_server_web/controllers/voxel_prefabs_controller_test.exs` 的 3 项：既有成功 golden 与开发鉴权、邀请码鉴权，以及合法 `.vxpd/.pub` 启动且 raw 缓存确认为空后删除源文件的故障注入。后者通过真实 Phoenix endpoint 断言 503 和诊断日志，不向 authority 写状态。World 使用真实 FileStore / 文件 overlay；Auth 启动会带起 DataService.Repo，测试复用 `MmoTest.Database` 创建并清理 `config/test.exs` 所属 VM 的新库，未替代 World、路由或 HTTP。此文件只证明 HTTP 接缝，不覆盖真实客户端呈现、性能或全玩家链路。
 
-从本目录以正常构建图执行 `mix.bat test --no-start test/auth_server_web/controllers/voxel_prefabs_controller_test.exs --trace`；需可用 PostgreSQL。本轮隔离环境只使用 `127.0.0.1:26810` 的 `voxim-pg-paging1024`，不设 `MMO_TEST_DB_NAME`。2026-10-28 已取得目标冷源失败首红（2/3 passed），修复后 3 项通过；精确环境、源身份和原始红绿证据记入根 `.superpowers/sdd/voxel-authority-sharding/task-prefab-http-failure.md`。
+从本目录在 Linux 以正常构建图执行 `mix test --no-start test/auth_server_web/controllers/voxel_prefabs_controller_test.exs --trace`；需可用 PostgreSQL。历史实跑（2026-10-28）使用 `127.0.0.1:26810` 的 `voxim-pg-paging1024`，未设 `MMO_TEST_DB_NAME`，取得目标冷源失败首红（2/3 passed），修复后 3 项通过；精确环境、源身份和原始红绿证据记入根 `.superpowers/sdd/voxel-authority-sharding/task-prefab-http-failure.md`。该历史环境不代表当前服务已启动。
 
 ## 邀请码完整显示
 
 管理后台 `/admin` 新签发的邀请码在生成结果、刷新后的列表及搜索结果中均完整显示。复用既有 `auth_invites.hint` 展示字段保存原码，摘要继续负责兑换匹配；历史仅有掩码的记录保持原样，不推测或补造原码。控制台 `AuthServer.Admin.list_invites/1` 读取同一展示值，无需数据库迁移。
 
-回归通过正常注册、管理员授权、网页登录、生成表单、重新 GET 与完整码搜索验证 HTTP 输出，并复用 Identity 的签发测试检查持久化读回。使用 `MmoTest.Database` 管理独占测试库与 TestMailer，真实 Auth、PostgreSQL、Phoenix endpoint；不覆盖浏览器视觉或部署。运行：`mix.bat test --no-start test/auth_server_web/controllers/account_controller_test.exs test/auth_server/identity_test.exs:85`（在本目录，需 PostgreSQL）。
+回归通过正常注册、管理员授权、网页登录、生成表单、重新 GET 与完整码搜索验证 HTTP 输出，并复用 Identity 的签发测试检查持久化读回。使用 `MmoTest.Database` 管理独占测试库与 TestMailer，真实 Auth、PostgreSQL、Phoenix endpoint；不覆盖浏览器视觉或部署。运行：`mix test --no-start test/auth_server_web/controllers/account_controller_test.exs test/auth_server/identity_test.exs:85`（在本目录的 Linux 环境，需 PostgreSQL）。
 
 ## 邀请码人数上限
 
@@ -31,9 +33,11 @@ Ready to run in production? Please [check our deployment guides](https://hexdocs
 
 决策、并发不变量及测试矩阵见 [人数额度决策](../../docs/10-active/infra/2026-10-28-invite-capacity.md)。本次 24 项真实数据库／HTTP／迁移测试通过；追加的网页多人注册与降额拒绝回归也通过。证据在 `.demo/observe/invite-capacity/`，不覆盖浏览器视觉或游戏玩法。
 
-## 部署记录
+## 历史部署记录（2026-10-28）
 
-当前线上为 `voxim-server:20261028-invite-capacity`：自定义人数与记录迁移已部署，登录页 HTTP 200；线上事务验证多人注册、用尽拒绝、提高上限后继续注册与后台 HTML，验证数据已回滚。发布源码、旧 Compose、数据库备份与结果在服务器 `/data/voxim_qinglan/releases/20261028-invite-capacity/`。此版本修改了账号表结构，不能只切回旧镜像；必须先停应用、执行本次迁移降级（多人历史存在时会拒绝），详见人数额度决策。
+以下保留当日实跑证据，不代表当前线上版本已重新核验。
+
+当日部署版本为 `voxim-server:20261028-invite-capacity`：自定义人数与记录迁移已部署，登录页 HTTP 200；线上事务验证多人注册、用尽拒绝、提高上限后继续注册与后台 HTML，验证数据已回滚。发布源码、旧 Compose、数据库备份与结果在服务器 `/data/voxim_qinglan/releases/20261028-invite-capacity/`。此版本修改了账号表结构，不能只切回旧镜像；必须先停应用、执行本次迁移降级（多人历史存在时会拒绝），详见人数额度决策。
 
 2026-10-28 已部署至 `https://account.hemifuture.cn/admin`：镜像 `voxim-server:20261028-invite-display` 基于线上 `20261008-qinglan`，仅重编译 `AuthServer.Admin`、`AccountAdminController`、`AccountAdminHTML` 三个模块，未携带当前开发树的其他变更。线上登录页 HTTP 200；RPC 经真实数据库验证签发、列表读回、完整码搜索与 HTML 输出，验证事务已回滚。服务器 `/data/voxim_qinglan/releases/20261028-invite-display/` 保存构建源码、数据库备份、旧 Compose、验证日志和部署结果；本地证据为 `.demo/observe/invite-display-deploy/`。回退可恢复该目录的 `docker-compose.before.yml` 到部署根后运行 `docker compose up -d --no-deps app`，本次无 schema 迁移。
 

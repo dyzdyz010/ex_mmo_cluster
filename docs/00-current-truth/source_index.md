@@ -15,6 +15,12 @@
 - [R7 工程整改与环境验收](../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)。
 - `config/runtime.exs` 与各 app Application 是组合配置的源码入口；旧日期稿“待实施”不覆盖已运行源码和后续验收。
 
+## 旧运行时历史证据
+
+- [旧 runtime 原文与历史证据](../20-archive/cross-cutting/2026-11-03-voxim-runtime-historical-evidence.md)：保存被现行入口替换的原文；其中旧 Voxia/Scene Chunk/Field、H-gated 与旧阶段状态仅供追溯，不表示仍有活调用或构成现行 Voxim 待办。
+- 旧 Scene Chunk/Field 及配套 Gate / World 实现已由 `af180c98` 删除；已删除源码以原路径和 `git show af180c98^:<历史路径>` 追溯，不改指无关现行实现。
+- 缺失的 Voxia 历史资料保留原路径并标明“当前工作树缺失”；本仓 `docs/` 未发现同名文件，不伪造替代来源。
+
 ## 分类规则
 
 ```mermaid
@@ -52,8 +58,8 @@ flowchart TD
 | 体素唯一事实源 | [`docs/10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md`](../10-active/voxel-authority/2026-06-28-权威体素唯一事实源-噪声降为migration.md) | WorldGen 噪声降级为 migration 的地基决策 |
 | WorldGen v2 三维材质体 | [`docs/10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md`](../10-active/voxel-authority/2026-08-24-worldgen-v2-3d-density-materialization.md) | 当前服务端 `worldgen_density_v2@1` 与 Voxia 本地 `voxia_mock_density_v2@2` 的独立算法身份、XYZ cheese-cave、Voxia 自然洞口、物化所有权、CLI/observe 与测试证据；不代表 Online cutover |
 | 体素/远景历史整合 | [`docs/20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md`](../20-archive/client/2026-06-28-体素世界与远景渲染-历史整合.md) | 历史近场/远景/LOD/skirt/远程交互整合稿；不再提供当前空间契约 |
-| Voxia streaming 历史证据 | [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md) | 旧近场窗口跟随、debug overlay、stdio CLI 与 route repair 证据；不定义当前 XYZ 窗口 |
-| 远景 LOD 历史根因 | [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md) | heightmap LOD 和拼接缝隙历史根因；取数源、空间与生产路线均已被后续决策取代 |
+| Voxia streaming 历史证据 | `clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`（历史资料；当前工作树缺失） | 旧近场窗口跟随、debug overlay、stdio CLI 与 route repair 证据；不定义当前 XYZ 窗口 |
+| 远景 LOD 历史根因 | `clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`（历史资料；当前工作树缺失） | heightmap LOD 和拼接缝隙历史根因；取数源、空间与生产路线均已被后续决策取代 |
 | baseline 边界决策 | [`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md) | 确定性 WorldGen + committed delta + hash 凭证；存储/流送/计算三边界；垂直分层 + 范围声明 |
 | baseline / streaming 历史实施计划 | [`docs/20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md`](../20-archive/voxel-authority/2026-06-30-voxel-generation-streaming-client-plan.md) | 历史 Phase 0-8 执行序列；H、H gate、canonical 术语仍可查证，旧窗口形状不再是当前契约 |
 | WorldGen v1 旧算法稿 | [`docs/20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md`](../20-archive/voxel-authority/2026-06-30-worldgen-v1-deterministic-terrain-design.md) | 历史 2.5D 算法输入；已被纯 3D canonical chunk 契约取代 |
@@ -83,7 +89,7 @@ flowchart TD
 ### 服务端控制面
 
 - [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)
-- [`apps/world_server/lib/world_server/voxel/README.md`](../../apps/world_server/lib/world_server/voxel/README.md)
+- `apps/world_server/lib/world_server/voxel/README.md`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/world_server/lib/world_server/voxel/README.md` 追溯）
 - [`docs/20-archive/voxel-authority/phase-A4-cross-region-prefab.md`](../20-archive/voxel-authority/phase-A4-cross-region-prefab.md)
 - [`docs/10-active/cross-cutting/_session-handoff.md`](../10-active/cross-cutting/_session-handoff.md)
 
@@ -136,9 +142,9 @@ flowchart TD
 
 ### 客户端与渲染
 
-- [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
-- [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
-- [`clients/Voxia/docs/2026-06-26-voxel-perf-optimization-directive.md`](../../clients/Voxia/docs/2026-06-26-voxel-perf-optimization-directive.md)
+- `clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`（历史资料；当前工作树缺失）
+- `clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`（历史资料；当前工作树缺失）
+- `clients/Voxia/docs/2026-06-26-voxel-perf-optimization-directive.md`（历史资料；当前工作树缺失）
 - [`docs/90-obsolete/voxel-far-field/2026-06-30-voxia-vhi-experiment-plan.md`](../90-obsolete/voxel-far-field/2026-06-30-voxia-vhi-experiment-plan.md)
 - [`docs/20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md`](../20-archive/voxel-far-field/2026-06-30-voxia-svo-preview-design.md)
 - [`docs/90-obsolete/client/2026-06-15-bevy-client-mainline-architecture.md`](../90-obsolete/client/2026-06-15-bevy-client-mainline-architecture.md)
@@ -161,7 +167,7 @@ flowchart TD
 | 运行时 snapshot/resync 可作为本地基线缺失兜底 | 本地基线校验失败必须拒绝入场，不允许 snapshot 兜底 | [`AGENTS.md`](../../AGENTS.md) §3、[`2026-06-25-voxel-world-production-architecture.md`](../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md) §3.2.0 |
 | 移动导致挖放失效 | 根因判据应按订阅覆盖与活性正交分析；移动常是红鲱鱼 | [`2026-06-27-架构设计指导思想-系统正交.md`](../30-reference/overview/2026-06-27-架构设计指导思想-系统正交.md) |
 | 27 tile 可按 27 chunk 估算，或相邻移动只进入 3 个 XZ columns | 1 tile = `7×7×7 = 343 chunks`；近场 `3×3×3 = 27 tiles = 9261 chunks`。单轴跨一 tile 的进入/退出面各为 `9 tiles = 3087 chunks`，保留 `18 tiles = 6174 chunks` | [`2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) |
-| `state_flags` 承载 burning/frozen/wet/charred 外观 | 客户端外观应为 material/tag/field 的纯函数，`state_flags` 不作为通用涌现外观位 | [`clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`](../../clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md) |
+| `state_flags` 承载 burning/frozen/wet/charred 外观 | 客户端外观应为 material/tag/field 的纯函数，`state_flags` 不作为通用涌现外观位 | `clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`（历史资料；当前工作树缺失） |
 | 客户端长期应本地重算 Online confirmed baseline（seed+maps+D+H，跨端 bit-exact） | 投影路线为终态：Online 客户端 snapshot/delta-only（近窗 1m + 远区 7m 投影），配方不跨 wire；离线 Mock 是显式 session-local authority，不改变生产路线 | [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../30-reference/contracts/2026-07-06-projection-route-final-decision.md) |
 | 远景 2.5D heightmap / VHI 是生产终态形态 | 当前唯一目标是完整 XYZ cube-shell + 3D canonical pages + exact surface；旧 2.5D 方案仅归档。A10 开发根已 live，但在线 production 尚未接线，不能把开发根或 probe 当 authority cutover | [`2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) |
 | WorldGen/streaming 可以保留 2.5D heightmap 或全高度 column 作为公共内容模型 | WorldGen 只公开三维 canonical chunk；streaming/LOD/cache/render 全部使用 XYZ cell/page identity，旧列路径只允许作为归档证据，不是兼容运行时 | [`2026-07-12-pure-3d-voxel-shell-migration.md`](../10-active/voxel-far-field/2026-07-12-pure-3d-voxel-shell-migration.md) |

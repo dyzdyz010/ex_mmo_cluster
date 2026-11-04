@@ -86,11 +86,12 @@
 
 ## 验证入口
 
-- 根常规：`mix compile`、`mix test`
-- Phoenix app：`cd apps/auth_server && mix precommit`、`cd apps/visualize_server && mix precommit`
+- 现行服务端命令均在 Linux / WSL 执行；Windows 只调用 Linux 控制工具，不原生运行服务端。
+- Linux / WSL 根常规：`mix compile`、`mix test`
+- Linux / WSL Phoenix app：`cd apps/auth_server && mix precommit`
 - 归档 Web / Bevy：不进入默认验证；显式点名后按各自 README 选择历史测试入口
 - Voxim：在同级客户端运行 `python Docs/R5/tools/run_tests.py --help` 选择本地/服务环境范围；真实双端与分发按对应阶段入口验收。
-- 以下 Voxia 命令仅为参考实现入口，不进入 Voxim 默认验收。
+- 以下 Voxia 命令仅保留为 historical 入口记录；旧链路已删除，不是当前可运行指南，不进入 Voxim 默认验收，也不在本轮运行。历史服务端命令同样仅适用于当时 Linux 环境。
 - Voxia client CLI：`node clients/Voxia/scripts/voxia_stdio_cli.js --cmd "..."`
   - 场景作者态：`--cmd "scene_composition; environment_state; voxel_editor_preview_state"`；runtime 中 preview 命令固定返回 `unsupported_in_runtime`
   - 唯一联合根：传 `-VoxiaWorldGenPreview`（可再显式传 `-VoxiaUnifiedVoxelWorld`），`--cmd "until_voxel_world_root_ready 300000; voxel_world_composition_state; voxel_world_root_state"`

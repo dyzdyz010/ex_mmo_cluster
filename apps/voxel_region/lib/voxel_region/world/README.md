@@ -22,7 +22,7 @@ sequenceDiagram
   H->>L: 一笔事务 append_log
   L-->>H: :ok → remember_entry（记脏页、保留事务）
   H->>O: fanout：订阅者与碰撞流
-  H-->>C: 回复；失败时回复原因并丢弃本次改动
+  H-->>C: 回复；持久化提交失败时回复原因并丢弃本次世界改动
 ```
 
 1. **入口**：公共函数把消息包成 `{:page_request, ref, message}` 交给 World。`handle_call` 先调 `Access.admit/1`。
@@ -55,7 +55,7 @@ sequenceDiagram
 1. **唯一写者**：只有 World 进程改世界状态；其他进程拿到的是快照或增量。
 2. **唯一提交入口**：每笔修改都经 `Log` 追加，`seq` 单调递增；启动时用同一套规则回放日志重建状态。
 3. **先装页再处理**：处理一条消息前，它读写的页都必须已驻留；缺页时挂起，不把“没装入”当成空气。
-4. **失败不留痕**：处理函数失败时返回 `before` 状态；只有成功提交的事务才改变世界。
+4. **持久化世界提交原子性**：提交失败时不留下本次未提交的 canonical／库存／能量等持久化真值；只有成功追加的事务才发布对应世界改动。运行状态按各入口契约处理失败，不承诺整份内存状态回到 `before`：例如工具频率已接纳后返回 `ineffective_tool`，仍保留已消耗的接纳额度；施法拒绝也可能提交结束预警记录。
 5. **消息必须登记**：新增一条 World 消息要同时在 `Access` 的 `@messages`（动作类）和 `Closure.registered_entries/0`（读取闭包）
    登记，`test/access_test.exs` 与 `test/closure_entries_test.exs` 守住这一点。
 

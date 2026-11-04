@@ -1,12 +1,12 @@
-# 服务端控制面当前事实：World / Region / Scene / Chunk
+# 服务端旧控制面历史参考：World / Region / Scene / Chunk
 
-> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](voxim-runtime.md)，本页不定义其生产真值或缺口。
+> **适用范围：已删除实现的历史 reference。** 旧 Scene ChunkProcess / FieldRuntime 及配套 Gate / World 链路已由提交 `af180c98` 删除，Voxia 已归档。下文保留当时设计、实现与缺口的证据，文中“当前”“已落地”均限定于该历史阶段。Voxim 现行 canonical owner、bootstrap/Ready 与能力边界只认 [Voxim runtime](voxim-runtime.md) 及其现行源码、验收索引，不能从本页推断。
 
 > **Voxim 当前主线**：同级 Voxim 为当前客户端，Voxia 仅作参考；[M1 现行边界](../../../10-active/movement-sync/2026-09-08-voxim-m1.md)以 Voxim 的 starter/plan/brief 为路线权威。Session/Voxel/Movement byte SSOT 在纯 mmo_contracts；31 个 G0 fixture 保持冻结。Movement、QUIC、CanonicalBootstrap/Ready 已实现并完成 M1 验收，M4a 受控移交亦已验收；后续材料/性能/分发按各自证据判断，没有旧移动兼容义务。下列 Voxia/SceneHost/RuntimeMock 细节仅描述参考实现，不构成 Voxim 当前生产路径或 M1 验收。
 
 
 
-> 当前唯一事实文档。原始阶段日志和实现记录见 [../../source_index.md](../../source_index.md)。
+> 旧链路的阶段日志和实现记录见 [../../source_index.md](../../source_index.md)。
 
 ## 状态总览
 
@@ -19,11 +19,10 @@
 | Region | 当前为 `RegionGrid` 隐式 3D lattice，`region = f(chunk_coord)` | 已落地 |
 | Scene owner | `SceneNodeRegistry` 仍是 join-order round-robin + sticky assignment；已补 stale owner repair | 部分 HA |
 
-## Voxim 当前 region 路径
+## 现行 Voxim region 路径入口
 
-Voxim 现行 region HTTP 请求、overlay 订阅与编辑由 Gate 会话层 / Auth HTTP 入口调用 `VoxelRegion.World`，
-其 FileStore/OverlayLog/GeneratedStore 与纯 `MmoContracts.Voxel.Codec`/`Payload` 单向协作；
-reduction、持久化与 World 状态仍在业务 app。下面 Scene/Chunk 路由仍服务旧业务，不能代替后续 M1 authority 接线。
+Voxim 现行 region、overlay 订阅、编辑与 QUIC / bootstrap / Ready 路径统一见 [Voxim runtime](voxim-runtime.md)。
+下面 Scene/Chunk 路由已删除，只保留历史证据；M1 authority 接线已实现并验收，不能据此列为待办。
 
 ## 既有 Scene 业务权威边界
 
@@ -126,11 +125,11 @@ Prefab / 跨 chunk / 跨 region 建造路径当前按具体 `{ChunkDirectory, sc
 ## 证据源
 
 - [`AGENTS.md`](../../../../AGENTS.md)
-- [`apps/world_server/lib/world_server/voxel/README.md`](../../../../apps/world_server/lib/world_server/voxel/README.md)
-- [`apps/world_server/lib/world_server/voxel/region_grid.ex`](../../../../apps/world_server/lib/world_server/voxel/region_grid.ex)
-- [`apps/world_server/lib/world_server/voxel/map_ledger.ex`](../../../../apps/world_server/lib/world_server/voxel/map_ledger.ex)
-- [`apps/world_server/lib/world_server/voxel/scene_node_registry.ex`](../../../../apps/world_server/lib/world_server/voxel/scene_node_registry.ex)
-- [`apps/gate_server/lib/gate_server/voxel/subscription_worker.ex`](../../../../apps/gate_server/lib/gate_server/voxel/subscription_worker.ex)
-- [`apps/gate_server/lib/gate_server/voxel/routing.ex`](../../../../apps/gate_server/lib/gate_server/voxel/routing.ex)
-- [`apps/scene_server/lib/scene_server/voxel/chunk_process.ex`](../../../../apps/scene_server/lib/scene_server/voxel/chunk_process.ex)
+- `apps/world_server/lib/world_server/voxel/README.md`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/world_server/lib/world_server/voxel/README.md` 追溯）
+- `apps/world_server/lib/world_server/voxel/region_grid.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/world_server/lib/world_server/voxel/region_grid.ex` 追溯）
+- `apps/world_server/lib/world_server/voxel/map_ledger.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/world_server/lib/world_server/voxel/map_ledger.ex` 追溯）
+- `apps/world_server/lib/world_server/voxel/scene_node_registry.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/world_server/lib/world_server/voxel/scene_node_registry.ex` 追溯）
+- `apps/gate_server/lib/gate_server/voxel/subscription_worker.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/gate_server/lib/gate_server/voxel/subscription_worker.ex` 追溯）
+- `apps/gate_server/lib/gate_server/voxel/routing.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/gate_server/lib/gate_server/voxel/routing.ex` 追溯）
+- `apps/scene_server/lib/scene_server/voxel/chunk_process.ex`（历史路径；由 `af180c98` 删除，可用 `git show af180c98^:apps/scene_server/lib/scene_server/voxel/chunk_process.ex` 追溯）
 - [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)

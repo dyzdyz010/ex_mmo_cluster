@@ -15,7 +15,7 @@ Scene 决定发言人与听众，Gate 不解释台词、调用模型或等待记
 | `dispatch.ex` | 角色世界意图（工具、生产 1..5、附件、Prefab 放 / 拆 / 换、发布）经 `SceneServer.Movement.Intent.run/3`（与 NPC Body 同一入口）裁决，本模块只按原帧编码回执与补发余额；施法 0x82 不经 Intent（施放 action 1 经 `Player.cast_spell/5`、回复交给独立的等待进程，与 NPC Body 同一入口；报价 / 取消 / 改向经 `Player.spell/4`），原始编辑 0x70 / 0x78 与余额查询（生产 action 0）直接调 `VoxelRegion.World` |
 | `sink.ex` | 出站契约：按现行领域 codec 编码后交给连接 owner |
 | `auth.ex` | token / cid / 角色档案，Gate 侧唯一鉴权信任边界 |
-| `claims.ex` | 会话身份与 epoch 分配 |
+| [`WorldServer.Session`](../../../../world_server/lib/world_server/session.ex)（跨 app 公共 API） | 角色会话占用的唯一 owner；分配 identity / session epoch、替换重复登录并提交移交；由 WorldServer 监督 |
 | `call.ex` | 跨进程调用，exit → 显式 error |
 
 B2 的 Ready 前材料库存查询与作者权限拒绝测试属于本会话边界，位于
@@ -39,9 +39,9 @@ B2 的 Ready 前材料库存查询与作者权限拒绝测试属于本会话边�
 初始 MTU 显式使用 QUIC 1200 B 最小载荷加 IPv6 / UDP 头的 1248 B，避免仅限制探测上限时握手仍使用库的较大默认初始值。
 Voxim 的 `FMmoQuicConnection` 同时限制客户端初始 / 最大 MTU，覆盖双向握手与上行探测；只改服务端的版本曾捕获到 1260 B UDP 握手包，因此配套客户端必须一并使用新的传输配置。
 
-入场时 listener 调用 `Scene.join/4`，将返回的唯一 Player PID 随 identity 交给连接保存。
+入场时连接先经 `Auth.join/2` 完成 token、cid 与角色归属鉴权，再调用 `WorldServer.Session.claim/4`；该唯一登记处调用 `Scene.join/4`，将返回的唯一 Player PID 随 identity 交给连接保存。listener 的 `claims` 配置默认指向 `WorldServer.Session`，不另建会话 owner。
 此后 InputBatch、Ready 与 TimeProbe 直接走 `SceneServer.Movement.Player` 的公开 API；
-不会逐输入经过 Scene 邮箱。Scene.leave 仍负责撤销成员，listener 先旧 leave 后新 join，
+不会逐输入经过 Scene 邮箱。Scene.leave 仍负责撤销成员，`WorldServer.Session` 先旧 leave 后新 join，
 旧 epoch 的输入/输出不能影响新路由。鉴权、角色归属和 wire decoder 仍在 Gate 完成。
 
 `quic_connection.ex` 拥有每连接的异步可靠流与可替换 datagram 队列。Snapshot 按实体替换尚未提交的旧记录，
@@ -70,12 +70,12 @@ OwnerAck 在树中单独置于快照之前，仍逐包获取 native 发送进展
 ## Voxim M4a 受控移交
 
 `QuicConnection` 在收到当前 Player 的越界请求后同步 `Player.seal/2`，使先前输入与 seal
-来自同一 Gate 发送者。listener 经现有 `route_module` 调用 World prepare，先预留新 session epoch，
+来自同一 Gate 发送者。连接调用 `WorldServer.Session.prepare_transfer/4`，登记处经现有 `route_module` 调用 World prepare，先预留新 session epoch，
 角色表仍保持旧 identity。连接可靠发送 `Session.Transfer`，等待客户端按切点 Fence、N/R 完成重绑。
 等待期间旧、新 identity 的 InputBatch 都改绑到被动目标 Player，datagram 与 control stream 共用同一入口；
 不再向源发送输入，不重编号输入序列或 tick，其他身份只计入 stale_identity。
 
-匹配新 identity 与移交 N/R 的 Ready 才触发 listener commit。listener 以 Gate PID 与旧 identity
+匹配新 identity 与移交 N/R 的 Ready 才触发 `WorldServer.Session.commit_transfer/4`。登记处以 Gate PID 与旧 identity
 比较当前角色 owner，World 完成源 detach / 目标 activate 后才更新 owner identity / scene_ref。
 重复登录改变 owner 会使旧 Gate prepare / commit 明确失败；连接结束显式清理源与待提交目标，
 Player 对 Gate 的 monitor 还负责连接退出后的生命周期清理。旧 Ready、错误 N/R 与提交后重复 Ready
@@ -84,7 +84,7 @@ Player 对 Gate 的 monitor 还负责连接退出后的生命周期清理。旧 
 提交清空旧待发 datagram 和 snapshot 索引，但保留 `datagram_busy`，由真实 native sent 事件释放发送槽。
 旧 Fence 在等待期间仍可正常下行，可靠 Control 与 Voxel 两条流不假设相互到达顺序。
 依据 [OTP Processes: Signals](https://www.erlang.org/doc/system/ref_man_processes.html#signals)
-的同发送者顺序语义，seal 必须由转发输入的 Gate 发起；listener 的单邮箱完成角色归属比较和提交，
+的同发送者顺序语义，seal 必须由转发输入的 Gate 发起；`WorldServer.Session` 的单邮箱完成角色归属比较和提交，
 不新增第二份 authority 目录。World / Scene 拥有目标准备与碰撞一致性，Gate 不复制该校验。
 
 `:stats` 提供 `transfer_prepared`、`transfer_committed`、`transfer_pending_inputs`、`transfer_last_us`，

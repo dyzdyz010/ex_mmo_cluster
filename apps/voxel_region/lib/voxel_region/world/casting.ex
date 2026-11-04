@@ -70,7 +70,7 @@ defmodule VoxelRegion.World.Casting do
   def warm_semblance(_program, _ambient), do: :ok
 
   # 施放前摇（§13.6）：立即校验（间隔、目标、施法域、脚下、权限）失败即刻拒绝；通过后不结算，记一条待施放并广播
-  # 施放记录，前摇到期（`{:settle_cast, …}`）再以开始时捕获的施法者与意图重做同一校验并结算。前摇中再施放 = cast_too_soon。
+  # 施放记录并通知 Player；Player 持有前摇 timer，到期携当前 actor_context 授权，World 再裁决与结算。前摇中再施放 = cast_too_soon。
   def prepare_spell(state, from, actor, request) do
     with true <- state.magic != nil and state.magic.digest == request.catalog_digest,
          {:ok, program} <- Magic.Program.parse(request.program, state.magic),

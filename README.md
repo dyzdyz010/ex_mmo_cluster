@@ -18,9 +18,9 @@ It is an experiment in answering one question: *what does an MMO look like when 
 
 - **🌍 Server-authoritative by construction.** Movement, voxel edits, physics, object state, and field interactions are all confirmed by the server. Clients render and predict — they never invent. Authentication and authority checks remain explicit trust boundaries.
 - **♾️ An unbounded, deterministic world.** Terrain is procedurally generated from a single seed — flat plains, sunken basins, and ridged mountains breaking **1 km** in height — across a 32 × 32 km showcase that is, mathematically, infinite. Voxim receives authoritative region payloads and overlay transactions; the server owns the explicit generation manifest and persists edits.
-- **⚡ Heavy math lives in Rust.** The hot paths — rigid-body physics, spatial indexing, terrain noise — are native NIFs. The terrain generator alone runs **~39× faster** than its Elixir prototype (a 1-million-cell heightmap in ~188 ms).
-- **🧬 A world with rules, not just geometry.** Light, heat, chemical reactions, and electric circuits are first-class field simulations. Place a torch, complete a circuit, start a fire — gameplay *emerges* from physics instead of being scripted.
-- **🛡️ Fault-tolerant and horizontally scalable.** Built on Erlang/OTP: a self-healing supervision tree, automatic cluster discovery, and a distributed registry that keeps the world coherent across nodes — and survives the loss of any one of them.
+- **⚡ Native simulation kernels.** Rust NIFs provide the shared Voxim movement kernel, thermal simulation, and world generation. Elixir owns runtime orchestration and authoritative commits.
+- **🧬 A world with rules, not just geometry.** The canonical World commits heat, combustion, phase changes, liquids, loose materials, and electric-circuit effects through its authoritative runtime. See the [voxel subsystem](apps/voxel_region/README.md) for ownership and implementation boundaries.
+- **🛡️ Explicit OTP ownership and topology.** Supervision trees own local processes. A configured JSON topology starts Scene peers on the same host and registers their routes; the canonical World remains on the main node. This deployment does not establish arbitrary-node-loss high availability.
 
 Current ownership, composition and acceptance boundaries: [Voxim runtime](docs/00-current-truth/design/server/voxim-runtime.md).
 
@@ -52,6 +52,7 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
 | `scene_server` | Movement authority, collision history, AOI and body simulation |
 | `voxel_region` | Voxim canonical World, material transactions, generated baseline, overlay persistence and read-only replicas |
 | `world_server` | Scene routing, cross-Scene transfer and the deployment topology (`WorldServer.Topology`) |
+| `npc_server` | Resident autonomous NPC perception, decisions and actions; Scene owns NPC bodies, movement and AOI ([runtime](apps/npc_server/README.md)) |
 | `data_service` | Canonical persistence (PostgreSQL via Ecto) |
 | `mmo_contracts` | Shared cross-app contracts |
 
@@ -60,19 +61,21 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
 | Layer | Choice |
 |-------|--------|
 | Runtime | Elixir 1.19 · Erlang/OTP 28 |
-| Clustering | `libcluster` (discovery) · `Horde` (distributed registry / supervisor) |
+| Topology | `WorldServer.Session` · optional `WorldServer.Topology` with explicit JSON routes and local OTP `:peer` nodes |
 | Web | Phoenix 1.8 · LiveView 1.1 · Bandit |
 | Persistence | PostgreSQL via Ecto |
-| Native compute | Rust via Rustler 0.37 — `rapier3d-f64` physics, octree, terrain noise |
-| Wire format | Voxim QUIC with Session/Movement/Voxel codecs in `mmo_contracts`; legacy TCP uses `packet:4` |
+| Native compute | Rust via Rustler 0.37.3 — shared Voxim movement, thermal simulation, world generation |
+| Wire format | Voxim QUIC with Session/Movement/Voxel codecs in `mmo_contracts` |
 
 ## Quickstart
+
+The server supports Linux only. Run development, builds and tests as native Linux processes; on this Windows host, use WSL Linux. Install the Erlang/Elixir versions in `.tool-versions`, Rust and the required Linux build dependencies, with PostgreSQL available for database commands. See the [engineering guide](docs/30-reference/engineering/project-engineering-guide.md) for commands and [deployment guide](deploy/README.md) for the single `voxim_server` release and Scene topology.
 
 ```bash
 mix deps.get
 mix compile
 mix ecto.migrate -r DataService.Repo
-# launch an interactive cluster node
+# launch an interactive development node
 iex --name scene1 --cookie mmo -S mix
 ```
 
@@ -82,7 +85,7 @@ Run the tests:
 mix test
 ```
 
-> **Windows note:** compile native NIFs from a VS Dev Command Prompt (`VsDevCmd.bat`) so `cl` / `nmake` are on PATH. See `CLAUDE.md` → *Windows 运行补充*.
+From Windows, enter the Linux workspace with `wsl.exe --cd /mnt/d/hemifuture/ex_mmo_cluster`, then run the commands above inside WSL. Windows runs the UE client and Linux control tools; Linux Docker images are used for distribution and production.
 
 ## The clients
 

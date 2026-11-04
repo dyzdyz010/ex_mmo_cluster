@@ -71,7 +71,7 @@ flowchart TD
 
 ## 证据源
 
-- [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
-- [`clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`](../../../../clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md)
-- [`clients/Voxia/Source/Voxia/Gameplay/README.md`](../../../../clients/Voxia/Source/Voxia/Gameplay/README.md)
+- `clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`（历史资料；当前工作树缺失）
+- `clients/Voxia/docs/2026-06-28-远景LOD-heightmap-设计与拼接缝隙根因.md`（历史资料；当前工作树缺失）
+- `clients/Voxia/Source/Voxia/Gameplay/README.md`（历史资料；当前工作树缺失）
 - [`clients/Voxia/Source/Voxia/Debug/README.md`](../../../../clients/Voxia/Source/Voxia/Debug/README.md)

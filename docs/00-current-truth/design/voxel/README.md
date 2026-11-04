@@ -1,8 +1,8 @@
-# 体素真值、基线与运行时 Diff 当前事实
+# 体素真值、基线与运行时 Diff 历史参考
 
-> **适用范围：legacy/reference。** 本页描述旧 ChunkProcess、FieldRuntime 或 Voxia 消费链路；其中仍有活调用，不能直接删除。Voxim 当前 canonical owner 与已实现的 bootstrap/Ready 见 [Voxim runtime](../server/voxim-runtime.md)，本页不定义其生产真值或缺口。
+> **适用范围：已删除实现的历史 reference。** 旧 Scene ChunkProcess / FieldRuntime 及配套 Gate / World 链路已由提交 `af180c98` 删除，Voxia 已归档。下文保留当时设计、实现与缺口的证据，文中“当前”均限定于该历史阶段。Voxim 现行 canonical owner、bootstrap/Ready 与能力边界只认 [Voxim runtime](../server/voxim-runtime.md) 及其现行源码、验收索引，不能从本页推断。
 
-> 当前唯一事实文档。它覆盖“世界是什么”的事实源、客户端基线校验、启动器/入场/运行时三阶段边界。
+> 历史范围：旧链路的体素事实源、客户端基线校验、启动器/入场/运行时三阶段边界。
 
 ## 当前最高层原则
 
@@ -141,7 +141,7 @@ flowchart LR
 - [`docs/00-current-truth/impl/2026-06-29-world-pack-streaming-handoff.md`](../../impl/2026-06-29-world-pack-streaming-handoff.md)
 - [`docs/30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md`](../../../30-reference/protocol/2026-06-28-voxel-tile-budget-runtime-diff-decision.md)
 - [`docs/30-reference/engineering/2026-06-25-voxel-world-production-architecture.md`](../../../30-reference/engineering/2026-06-25-voxel-world-production-architecture.md)
-- [`clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`](../../../../clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md)
+- `clients/Voxia/docs/2026-06-28-streaming-window-follow-fix.md`（历史资料；当前工作树缺失）
 - [`docs/30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md`](../../../30-reference/protocol/2026-06-29-voxel-baseline-streaming-boundary.md)
 - [`docs/30-reference/protocol/glossary.md`](../../../30-reference/protocol/glossary.md)
 - [`docs/30-reference/contracts/2026-07-06-projection-route-final-decision.md`](../../../30-reference/contracts/2026-07-06-projection-route-final-decision.md)

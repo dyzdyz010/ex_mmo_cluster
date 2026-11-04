@@ -1,20 +1,21 @@
 # data_service
 
-正式文档已迁移到 `docs/` 目录。
+PostgreSQL / Ecto 持久化应用，提供账号与角色数据、体素日志与页表等公共存储边界。
 
-- [2026-04-10-应用说明](docs/2026-04-10-应用说明.md)
-
-## 体素持久化栅栏
+## 当前运行时
 
 `DataService.Application` 启动：
 
-- `DataService.Voxel.WriteTokenStore`
-- `DataService.Voxel.ChunkSnapshotStore`
+- `DataService.Repo`
+- `DataService.DispatcherSup`
+- `DataService.UidGenerator`
 
-`WriteTokenStore` 保存每个体素区域当前由 World 发放的写入令牌，并通过
-`lease_id + owner_scene_instance_ref + owner_epoch` 校验区块写入。这里的
-写入令牌就是“当前谁可以写这个区域”的围栏数据，旧 Scene 持有的过期令牌会被拒绝。
+## 体素持久化
 
-`ChunkSnapshotStore` 在这道围栏之后保存区块快照载荷的第一版内存实现。后续替换为
-PostgreSQL 表时，Scene 写入仍然必须先通过同一组令牌字段校验，迁移期间的旧拥有者
-不能覆盖新拥有者的数据。
+当前 SQL 存储由 `DataService.Voxel.OverlayLogStore` 与 `DataService.Voxel.PageStore` 提供；
+`VoxelRegion.World` 拥有体素权威提交。存储契约、旧 chunk 链路退出边界与测试世界清理见
+[DataService 体素边界](lib/data_service/voxel/README.md)。
+
+## 历史参考
+
+- [2026-04-10-应用说明](docs/2026-04-10-应用说明.md)（历史设计，不作为当前运行时事实）

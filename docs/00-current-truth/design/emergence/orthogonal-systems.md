@@ -1,6 +1,6 @@
-# 正交涌现系统当前事实
+# 正交涌现系统历史参考
 
-> 当前唯一事实文档。覆盖材料属性向量驱动的热、电、光、化学、结构等系统，以及客户端外观读取边界。
+> **适用范围：已删除实现的历史 reference。** 本页记录旧 Scene ChunkProcess / FieldRuntime 的热、电、光、化学、结构与 Voxia 外观边界；旧链路已由提交 `af180c98` 删除。下文“当前”“已完成”“as-built”均指当时实现，不能据此宣称现行 `VoxelRegion.World` 具有旧光场、结构或化学系统。现行 owner 与实际能力以 [Voxim runtime](../server/voxim-runtime.md) 及其源码、验收索引为准。
 
 ## 核心原则
 
@@ -23,7 +23,7 @@ flowchart LR
 
 ## 材料与属性
 
-当前材料系统已支持多类物性：
+旧材料系统当时支持多类物性：
 
 - 热：`temperature`、`thermal_conductivity`、`density`、`specific_heat_capacity`、熔点/沸点/冻结点/点燃阈值。
 - 电：`electric_conductivity`、`dielectric_strength`、power source defaults。
@@ -33,15 +33,15 @@ flowchart LR
 
 ## 光系统
 
-当前事实：
+旧链路的当时实现事实：
 
 - 光已经从“客户端白炽/视觉派生”升级为服务端权威光场。
 - 相关能力包括 `:light` / `:light_color` wire、LightPropagationKernel、photo_sensor、illuminated tag、光门、光合、放大镜热效应等组合。
-- 旧的“光只是客户端 shader/白炽表现”只能作为渲染参考，不是当前系统事实。
+- 当时已用权威光场取代“光只是客户端 shader/白炽表现”的判断；这不是现行 World 的接入证据。
 
 ## 化学 / 氧化
 
-当前事实：
+旧链路的当时实现事实：
 
 - S4 化学氧化系统已完成。
 - 燃烧与铁氧化都收敛为 `ChemicalReaction` recipe。
@@ -49,13 +49,13 @@ flowchart LR
 
 ## 结构 / 坍塌
 
-当前事实：
+旧链路的当时实现事实：
 
 - 结构支撑/坍塌已有 as-built 能力。
 - `structural` 属性、`StructuralSupport`、`StructuralStressKernel`、`:collapse_block` effect、field-commit 后重 sweep 已形成链路。
 - 烧梁/放电毁梁可引发后续坍塌链路。
 
-仍未完成：
+旧阶段仍未完成项（不直接作为现行待办）：
 
 - 跨 chunk 支撑 v2。
 - 应力幅值和力学精度 v2。
@@ -70,10 +70,10 @@ flowchart LR
 
 ## 被取代的旧结论
 
-| 旧结论 | 当前事实 |
+| 旧结论 | 当时取代它的结论（历史范围） |
 | --- | --- |
 | `state_flags` 可承载 burning/frozen/wet/charred | 已被 material/tag/field 纯函数渲染取代 |
-| 光只是客户端白炽效果 | 已有服务端权威光场 as-built |
+| 光只是客户端白炽效果 | 旧链路当时已有服务端权威光场 as-built；不表示现行 World 已接入 |
 | 锈蚀断电需要专用规则 | iron/rust 材料属性变化自然退出导电 |
 | 每个装置可单独写规则 | 当前方向是正交物理系统 + 属性向量 |
 
@@ -83,4 +83,4 @@ flowchart LR
 - [`docs/20-archive/field-emergence/2026-06-17-S4-chemistry-oxidation-system.md`](../../../20-archive/field-emergence/2026-06-17-S4-chemistry-oxidation-system.md)
 - [`docs/20-archive/field-emergence/2026-06-23-light-as-orthogonal-system.md`](../../../20-archive/field-emergence/2026-06-23-light-as-orthogonal-system.md)
 - [`docs/20-archive/field-emergence/2026-06-23-mechanical-stress-structural-collapse.md`](../../../20-archive/field-emergence/2026-06-23-mechanical-stress-structural-collapse.md)
-- [`clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`](../../../../clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md)
+- `clients/Voxia/docs/2026-06-27-voxia-emergence-render-design.md`（历史资料；当前工作树缺失）

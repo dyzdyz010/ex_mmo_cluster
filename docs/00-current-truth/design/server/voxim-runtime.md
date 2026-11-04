@@ -1,34 +1,17 @@
 # Voxim 当前运行时边界
 
-本文是 Global system 的实现索引。Voxim 为同级主客户端；Voxia、旧 ChunkProcess/FieldRuntime 和旧 launcher/pages 专题是 reference/legacy，不用于判断 Voxim 是否已联网。
+本文按 owner、正常入口和验收边界组织当前实现。Voxim 是唯一客户端；服务端只在 Linux 开发、构建与运行。
 
 ## 当前事实
 
-- `World.material_supply(server, cid, supply_id, %{material_id => integer_units})` 是 server-only 作者供给入口，未接 Gate。每角色/来源 ID 只授予一次，返回原 `{:ok, seq}` 的重试不会补料；来源、精确数量、相态焓与完整度和余额同笔持久化，日志重放与 compact 都保留收据。数量由作者资产/调用者指定；液相温度不低于转变点，固相不高于转变点，外部相态量/焓进入既有 `phase_authored_units` / `phase_authored_energy_j` 账。普通消费仍走原建造/工具事务。
-- **液体侧流（2026-10-15 修订）**：液体 `side_threshold_units` 只是润湿门槛（流向干格须超出它，湿格之间按 floor(差/8) 平衡到相邻差 < 8 量子），连通水面有限步摊平；散体 `loose_threshold_units` 仍是休止角。内核 `VoxelRegion.Liquid.step_transfers/9` 的阈值参数取 `{:wetting, t}`／`{:repose, t}`。依据与旧行为反例见 Voxim `Docs/R8/liquid-activity.md` 2026-10-15 修订。
-- **液体日志表示**：纯液体数量提交（无附件/实例/细化/移除变化）的持久日志不写区域后像，改记 kind 0 变化格 + 元数据 `liquid_units` 增量（`World.Edits.append_journal`、`World.Log.replay_liquid/2`），体积随变化格数增长；回放将覆盖区域记为完整快照，压实写整区。线上广播与订阅事务不变。
-- `World.liquid_fill(server, cid, key, material, seed, level_y, max_cells: N)`：只测试作者注水入口，与 `material_supply` 同类、未接 Gate。种子宏格六邻洪泛液体可进的开放格（y ≤ level_y、液体域内、不跨受保护持有者、角色可建造），全部灌满，按实际注入量扣库存（相态焓随量搬入），不足/超上限/实体种子/受保护整笔拒绝；回执 `{cid, {:liquid_fill, key}}` 存 `material_supplies`，同 key 只执行一次。一笔正常液体提交。复跑：`apps/voxel_region` 下 `MMO_DB_PORT=<port> mix test --no-start test/liquid_world_test.exs test/phase_world_test.exs test/liquid_activity_test.exs test/loose_world_test.exs test/log_projection_test.exs`。
-- **提交属性投影只算变动身份（2026-10-15）**：`Observation.property_transaction` 原先每笔改动细化格的提交都两遍全量扫描世界细化格汇总叶子（`component_observations`），再对每一行各扫一遍 `micro_owner_cells`／`attachment_slots`，全世界的 owner 宏格也逐个物化后再过滤；测试服 140 万细化槽时一次 42 块叠石移除 World 阻塞 ~9 s，引发 Player.stop／Scene.leave／Session.claim 5 s 超时连锁崩溃（seq 41129）。现只汇总变动 owner、变动宏格，观察格一次建 owner/id → 格索引；输出逐项不变（用测试服导出世界对旧实现逐项比对相等），同类移除 3.6–5.7 s → 0.55–0.9 s。剩余线性项：两遍按 owner 过滤的细化槽遍历与 owner 索引，随世界细化槽总数线性增长。
-- **World 提交热路径去全量扫描（2026-10-15 第二轮）**：上一条的剩余线性项与同类全量物化已去掉，线格式与客户端不变。
-  ① `refined` 的派生索引 `refined_owners`（部件 => 宏格）、`refined_regions`（L0 区域 => 宏格）只由
-  `Canonical.put_refined/3` 随每次写入维护（`index_refined/1` 可整表重建），存活实例、部件格、`with_refined` 的跨度格与持有者都读索引；
-  需要原遍历次序的累加（叶子 HP、代表格、观察格）仍按整表的宏格层次序走，不展开槽。② 附件整件 HP 按组折算，`attachment_observations` 不再每组回扫附件表。
-  ③ 后像按格复用已编好的 refined 槽记录（`refined_encoded`，随写入失效）；要整区重编后像的区域不再先刷一遍地形缓存。
-  ④ 每次 `prepare` 的液体接纳只解格段（`Payload.decode_cells/1`），同一份载荷字节核对过即记入 `liquid_adopted` 跳过。
-  ⑤ 粗格稀疏/整区选择先用地形段的 zlib 前缀下界（`Payload.encode_below/5`、`Codec.compressed_prefix_bytes/1`）判定整区不更小，结论与完整编码后比较相同；
-  该情形不再顺带把 L1+ 区域载荷放进可丢弃缓存（客户端请求时按当时 seq 物化）。等价：同一测试服导出世界、同一输入序列（GM 清填、液体灌注与流动、作者与玩家 prefab 放拆、微格清），
-  基线源码整族改名后与新实现同 VM 锁步逐笔比较，应答、日志事务与行字节、订阅／canonical／副本广播、每笔后真值、检查点事务与日志回放全部相等
-  （Voxim `Saved/Yuanmingyuan/20261015-perf/`）。剩余：dense 区 L0 后像的 zlib 与 refined 变化格编码、L1+ 整区下界不成立时的完整编码、碰撞增量采样，均随受影响区域而非世界增长。
-- **GM 施工工具（只测试，不进分发）**：`World.gm(server, key, op, args)`（`VoxelRegion.World.Gm`：`:clear`／`:fill`／`:liquid_fill`／`:move_instance`）与 `SceneServer.Movement.Player.gm_teleport/2`。只有部署显式设 `VOXIM_GM_TOOLS=1`（`config :voxel_region, :gm_tools`）才接受，默认关闭回 `:gm_disabled`。跳过耐久、冷却、射程视线、库存与保护区；每个操作仍是一笔正常 World 提交（`Edits.apply_batch`／`Prefabs.prefab_reply`／`Prefabs.place_tree`／`Liquids.commit_liquid`），回执 `material_supplies[{0, {:gm, key}}]` 随事务持久化、同 key 只执行一次；单次 ≤ 4096 宏格。细化微格必须有活实例 owner（VXR5），故微格填只填整格覆盖的宏格。复跑：`apps/voxel_region` 下 `mix test --no-start test/gm_world_test.exs`；`apps/scene_server` 下 `mix test --no-start test/scene_server/movement/gm_teleport_test.exs`。用法见 Voxim `Docs/Gameplay/Yuanmingyuan/construction-api.md` §10。
-- **传送信标（`VoxelRegion.World.Beacons`，设计见 Voxim `Docs/Gameplay/Beacon.md`）**：信标只经维护入口 `World.beacon_install/3` 安装在锚心石上；调谐账只经工具 `beacon.use` 写入。开发期部署开关 `VOXIM_BEACONS_ALL_ATTUNED=1`（`config :voxel_region, :beacons_all_attuned`，不持久化）开启时每个角色都视为已调谐全部信标、不写调谐账，可达距离与信标完好校验不变；默认关闭。复跑：`apps/voxel_region` 下 `mix test --no-start test/beacon_world_test.exs`。
-- `publish_parameters` 允许修改液体 `side_threshold_units`（缺省 0），其他液体参数约束保持不变；改变阈值会唤醒现存液体并持久化工作集。发布新目录仍须将该版本作为下次启动的 `property_catalog_path`，与既有属性目录升级契约相同。即使没有属性实例，实际目录变化也追加事务。
-- 上述局部集成验证使用独立 World、真实公开供给/交易入口及文件持久化；供给恢复还经过正式数据库元数据编解码，source/player 为显式替身。复跑：在 `apps/voxel_region` 执行 `MMO_DB_PORT=5433 mix test --no-start test/phase_world_test.exs test/liquid_world_test.exs test/parameter_publication_test.exs`。它证明精确增量、消费后幂等、重启/压实及阈值唤醒，不替代 Demo 双客户端验收。
+### 组合根与权威边界
 
-- `VoxelRegion.Application` 在配置 root/manifest 后先完成 Bake，再启动唯一 `VoxelRegion.World`。canonical 真值来自 GeneratedStore 的显式生成基底与 OverlayLog 持久化事务；World 拥有材料、库存、损伤、热、燃烧、相变与电路的读取和提交。只读 `Replica` 消费权威结果，缺失不能变为第二真值。
-- `WorldServer` 提供 Scene/World 路由与受控移交编排；`SceneServer.Movement.Scene`、`Player` 与 `Replication` 分别维护场景成员、每玩家移动/碰撞历史与 AOI。它们从 canonical World 或本地只读副本构建碰撞派生物，不拥有第二份可写体素世界。
-- `NpcServer.Application` 是与 Gate 平级的常驻自治行为组合根，包含感知、决策、技能、情绪与记忆；随唯一 `voxim_server` release 启停。玩家与 NPC 共用 `WorldServer.Session` 的会话占用与移交，编辑边界共用 `VoxelRegion.EditBounds`；NPC 不依赖 Gate 进程生命周期。详见 [NPC 应用](../../../../apps/npc_server/README.md)。
-- `GateServer.Transport.QuicListener` 与 `Session.QuicConnection` 是当前正式网络入口。Hello/Join、鉴权、身份 epoch、Ready、可靠流与 DATAGRAM 都已有实现；旧 TCP/WS 入口与 `VOXIM_TRANSPORT`／`legacy_reference` 选择已于 `af180c98`（2026-09-30）删除，`transport/` 只剩 `quic_listener.ex`，没有其他入口或降级。
-- `MmoContracts.Session`、`Movement` 与 `Voxel` 是当前字节契约。CanonicalBootstrap 的完整 L0 payload 进入客户端既有 canonical 管线；规定 L0 驻留、初始 collider 和同 T/N/R 的 TimelineFence 接纳完成后才发 Ready。
+- 唯一服务端 release 是 `voxim_server`，由根 `config/runtime.exs` 与各 app 的 `Application` 组合。专用 probe 与作者工具不成为第二条生产路径。
+- `VoxelRegion.Application` 在配置 root / manifest 后先完成 Bake，再启动唯一 `VoxelRegion.World`。显式生成基底与持久化 overlay 构成 canonical 真值；World 拥有体素、材料、库存、损伤、热、燃烧、相变、电路与魔法世界效果的接纳和提交。只读 `Replica` 消费权威结果，不能补造缺失真值。
+- `WorldServer` 负责路由与受控移交；`SceneServer.Movement.Scene`、`Player`、`Replication` 分别负责场景成员、每玩家移动／身体／动作与碰撞历史、AOI。碰撞派生物从 canonical World 或本地只读副本建立，不拥有第二份可写体素世界。
+- `NpcServer.Application` 是与 Gate 平级的常驻自治行为组合根，随 release 启停。玩家与 NPC 共用 `WorldServer.Session` 会话占用与移交，编辑边界共用 `VoxelRegion.EditBounds`；NPC 不依赖 Gate 生命周期。详见 [NPC 应用](../../../../apps/npc_server/README.md)。
+- `GateServer.Transport.QuicListener` 与 `Session.QuicConnection` 是正式网络入口。Hello / Join、鉴权、身份 epoch、Ready、可靠流与 DATAGRAM 已实现。TCP / WS 与 `VOXIM_TRANSPORT` / `legacy_reference` 选择已删除。
+- `MmoContracts.Session`、`Movement`、`Voxel` 是当前字节契约。Hello 版本直接读取 [Session codec](../../../../apps/mmo_contracts/lib/mmo_contracts/session/codec.ex)，本页不维护第二份版本号。CanonicalBootstrap 的完整 L0 payload 进入客户端既有 canonical 管线，规定 L0 驻留、初始 collider 建好且同 T/N/R 的 TimelineFence 已接纳后才 Ready。
 
 ```mermaid
 flowchart LR
@@ -36,198 +19,68 @@ flowchart LR
   Gate --> Route[WorldServer 路由与移交]
   Gate --> Session[WorldServer.Session 共享会话]
   NPC[NpcServer 常驻自治行为] --> Session
-  NPC --> Movement
-  Session --> Movement
-  Gate --> Movement[Scene / Player / AOI]
+  Session --> Movement[Scene / Player / AOI]
+  Gate --> Movement
   Route --> Authority[VoxelRegion.World]
-  Movement -->|只读碰撞与历史| Authority
+  Movement -->|权威意图 / 只读碰撞与历史| Authority
   Authority --> Log[OverlayLog / DataService]
   Authority --> Replica[只读 Replica]
 ```
 
-## R8-07 散体增量 1（2026-09-24，分支 `r8-07-loose`，未合并，等客户端 Hello 23 增量）
+### World 的读取、提交与持续演化
 
-决策正文见 Voxim `Docs/R8/Design-decisions.md` §4「散体决策 D1–D9」。服务端事实：
+[World 子系统 README](../../../../apps/voxel_region/lib/voxel_region/world/README.md) 是目录职责与请求流程入口。`Access` 接纳主体与动作，`Closure` 定义读取闭包，`PageLoad` 在缺页时挂起请求、装页后重放；World 回合内不读库，不把未装入当空气。`Log` 统一追加事务，再发布订阅与 canonical 增量；`PageCut` / `PageWriter` 负责脏页切点与 PostgreSQL 写回，`CoarseRebuild` 负责粗层重建。旧整世界同步 compact 的性能数字不能代替当前分页写回验收。
 
-- **目录**：材料行 `loose_threshold_units`（整数 0..单格容量）即可倾倒；空气、液体、相态材料、地面花草不可，且须有液体步进参数（`Damage.load`）。可在线新增或调整、不可撤下（`ParameterEvolution`），改动唤醒全部有限格。样本目录 `7b69b79f…` = `b1aca503…` + 沙/煤 5/8 格、砾石/矿/产物 6/8 格。
-- **真值**：格有 `liquid_units` 数量记录即散体；天然地形与建造格静止、是墙。`World.finite_volume/2` 是唯一有限体积（q / 容量，无记录为 1），用于最大 HP、热采样与几何、燃烧燃料与功率、转化体积、参数热重标。换了材料而无随笔数量的格删除记录（挖掉、热毁、作者覆盖）。
-- **调度**：`advance_liquid` 按活跃邻域里出现的流动材料逐种调用同一 `Liquid.step_transfers`，侧向阈值按材料取；下落帧仍只发液体。散体不导电（D6）。
-- **搬运**：格值 `{能量, 完整度, 已烧燃料, 火}` 随通量搬运（`Phase.transport`）；带火流入即燃烧，功率 = 每宏格功率 × 体积；燃料初始化／舀出按显式燃料前后差记 `fuel_initialized_j`／`discarded_fuel_j`，舀出显热记 `removed_j`，入库 `floor(moved × 剩余 / 满燃料)`。
-- **意图**：工具 11/12 同时服务液体与散体；细分宏格回 `:needs_macro_opening`（D8）；散体格镐采／拆解回 `:use_liquid_tool`；转化接触按 1/8 m 实占用（下方散体不满 7/8 不接触），产物保留数量。
-- **协议**：VXRC（版本 12）允许任何非空气、非细分宏格带数量；液体／相态仍按原版本编码。Hello 22 → 23（客户端增量镜像后合并）。
-- 复跑：`apps/voxel_region` 下 `MMO_DB_PORT=5433 mix test test/loose_world_test.exs`（11 项）；本地炉模拟 `mix test test/loose_furnace_sim_test.exs --only sim`；100 m³ 倾倒 `mix test test/loose_pour_benchmark_test.exs --only benchmark`。只证明服务端范围，不代替双客户端实跑。
+热、液体、飞行体由 World 的模拟消息持续推进，没有在线玩家也保持已接纳的演化义务。材料内核只产出结果，由 World 统一提交；批次或观察窗口不成为第二真值。
 
-## 魔法增量 1：取能与远程点火（2026-09-25，分支 `magic-inc1`，未合并，等客户端 Hello 24 增量）
+- **液体与散体**均已进入当前实现。液体侧流用润湿门槛，湿格间按整数差量平衡；散体用材料 `loose_threshold_units` 休止角，共用 `Liquid.step_transfers`。有限格的 `liquid_units` 与 `World.finite_volume/2` 服务数量、热、燃料与损伤折算，数量和焓随权威通量搬运。工具 11 / 12 同时处理液体与散体。
+- **下落展示**由权威重力通量派生，按完整 XYZ 窗口投影，不构成第二份世界数量。当前线格式以 [Voxel codec](../../../../apps/mmo_contracts/lib/mmo_contracts/voxel/codec.ex) 为准；`liquid_falls` 与 `casts` 从持久日志和保留历史投影中排除，实时展示不参与冷恢复。
+- **提交热路径**使用 `Canonical.put_refined/3` 维护的 owner / region 派生索引、变动身份投影与随写入失效的编码缓存。早期全量扫描的修复过程、比较范围与实测数字见历史证据，不作为新的性能承诺。
 
-设计正文见 Voxim `Docs/Magic.md` §2、§4、§10。服务端事实：
+### 魔法与动作生命周期
 
-- **目录**：`VoxelRegion.Magic.Catalog` 读取部署的魔法目录（app env / World opt `:magic_catalog_path`，部署同属性目录：UE `DA_MagicCatalogV1` Publish 的 `Content/Voxel/Magic/Published/<sha256>.json` 拷进服务端并在 entry 里 `put_env`），digest = 文件字节 sha256；只接受已实现动词 `energy.draw`、`act.heat`。有魔法目录的世界必须有热环境。
-- **程序与成本**：`Magic.Program` 在信任边界解析 JSON IR（增量 1 只接受 aim / at_target / 1 步，失败一律 `:invalid_program`）；`Magic.Cost` 是成本、相干度、走火、取能分账的唯一实现，报价与施放共用。取能的控制开销从取得的能量里付（可支付 = 余额 + η·ΔE）。
-- **真值**：施法者能量 `caster_energy`（cid ⇒ J）在 World，与蓄能石 `stored_j` 同一笔事务原子改变，随日志（`caster_energy` 增量）与检查点持久化，不自动回复。施法的热只经 `thermal.sources` 有限热源进世界：`act.heat` 在目标宏格建源（功率 = 槽 `power_w`，已有源拒 `heat_source_busy`）；控制开销、走火支出、取能损耗以 能量/0.5 s 的功率落脚下宏格／石格（同格并入）。
-- **校验**（不扣能量）：施法间隔（同工具 GCRA，`cast_too_soon`）→ 眼睛射线 30 m 首个命中须为请求目标（`stale_target`）、格心距眼 ≤ 6 m（`out_of_domain`，无命中同）→ 脚下宏格须为带热容的未细分宏格（`no_footing`）→ 动词对象（`invalid_target`）→ 目标格与脚下宏格 `Protection.permitted?`（`protected_region`）。
-- **账**（`thermal_accounting`）：`caster_drawn_j`、`draw_loss_j`、`cast_waste_j`、`spell_heat_j`；石减少 = caster_drawn_j + draw_loss_j，施法支出 = spell_heat_j + cast_waste_j。
-- **协议**：上行 0x82 `voxel_spell_intent`、下行 0x83 `voxel_caster_state`（`MmoContracts.Voxel.Codec`，冻结样本 `magic_wire_test.exs`）；施放与走火回 0x68 accepted（reason `ok`／`misfire_energy`／`misfire_coherence`），拒绝回 0x68 rejected。QUIC 接纳 0x76 时经编辑 worker 下发一次 0x83。Hello 23 → 24。
-- 复跑：`apps/voxel_region` 下 `mix test --no-start test/magic_test.exs test/magic_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test --no-start test/gate_server/voxim_spell_dispatch_test.exs`。只证明服务端范围，不代替双客户端实跑。
+取能、远程点火、拟态、投掷、驱散、命中瓦解、前摇与符文预警均已有当前源码，不再等待 Hello 23 / 24 / 25 / 27 分支合并。规则正文见 [Voxim Magic](../../../../../Voxim/Docs/Magic.md)，本页只索引服务端边界：
 
-## 魔法增量 2：拟态运行时（2026-09-25，分支 `magic-inc2`，基于 `magic-inc1`，未合并，等客户端 Hello 25 增量）
+- [Magic.Catalog](../../../../apps/voxel_region/lib/voxel_region/magic/catalog.ex) 是发布目录的唯一服务端读取与校验入口。当前强制 **v4**，要求 `rest_pose`、`release_lead_s`；姿态为六关节整数角、5° 的倍数、绝对值不超过 175°。目录字节的 SHA-256 标识发布物；运行时不兼容旧 v2 四关节目录。
+- `Magic.Program` 在信任边界解析程序；`Magic.Cost` 是报价、构型损耗与前摇时长的共同计算源。`World.Casting` 接纳领域目标、权限与能量账并提交效果。施法者能量、蓄能石、热源与拟态沿既有 World 日志和检查点持久化。
+- **Player 拥有前摇与出手授权**：`Casting.begin_cast` 保存待支付领域负载并发送 `cast_prepared`；Player 设置 timer，到期从当前 `actor_context` 取位置、身份、身体状态与相干度，发送 `authorize_cast`。World 匹配同一动作与 Player，合入授权时 actor 与方向后重新裁决并结算，不按开始时姿态自动结算。
+- `pending_casts` 与符文 `casts` 是运行状态，冷重启不恢复未支付施法。取消／结算拒绝返回明确原因；成功提交的结束记录可以发布 `outcome 2`，不能把拒绝概括为所有内存与观察状态都毫无变化。`quote_windup_s` 来自同一次 `Cost.quote`，登录与结算状态为 0。
 
-设计正文见 Voxim `Docs/Magic.md` §3、§10。服务端事实：
+```mermaid
+sequenceDiagram
+  participant P as Movement.Player
+  participant W as World / Casting
+  P->>W: prepare_cast（动作身份、意图）
+  W->>W: 立即裁决并保存 pending_cast
+  W-->>P: cast_prepared（windup_s）
+  P->>P: timer 到期，读取当前 actor_context
+  P->>W: authorize_cast（同一动作、当前 actor、方向）
+  W->>W: 重裁目标与权限，提交支付和效果
+  W-->>P: 完成／明确拒绝
+```
 
-- **真值**：拟态表在 `thermal.semblances`（id ⇒ 记录，id = {创建事务 seq, 0}），与有限热源同属热状态，随每笔施法事务与每次热提交的 `thermal`（整表）落日志、进检查点、冷启动重放；`thermal_experiment`（Test-only）重置热状态时一并清空。记录与纯规则见 `VoxelRegion.Magic.Semblance`：施法者、形状（0 球 / 1 立方）、半径、质量、热容 = 质量 × 目录比热、温度、发光功率、寿命、已存在模拟时长、飞行动能、弹道（出发点、速度、服务端墙钟 t0_us、落点时刻 flight_s、落点）、接触节点。`solid` 恒 false（实体墙是增量 5）；没有需维持的拟态，断线与冷启动都不释放。
-- **动词**：`form.semblance`（emit = hand：眼前 0.5 m 成形；单步 = 静止在手边）、`act.throw`（同程序内接在形态后：沿眼睛方向 speed_mps 运动学抛出，重力 9.81，施法时对当时世界以 0.05 s 弦段求交，命中面解析解出落点时刻）、`act.dispel`（线上目标拟态 id；须存在且当前位置距眼 ≤ 本地施法域）。每名施法者同时至多 `max_semblances`（6）个，超出 `semblance_limit`；落点格与接触格、驱散对象格、脚下宏格都走 `Protection.permitted?`。抛出后 30 m 路程内无命中 `out_of_domain`；已不存在的驱散目标 `stale_target`。拟态温度低于环境 `invalid_program`（制冷待世界书提案）。
-- **成本**：E_phys = C·(T − T_amb) + glow_w·lifetime_s + ½·m·v²（`Semblance.form_j`／`kinetic_j`，报价与账同一实现），控制开销与走火同增量 1。
-- **推进**：挂既有 500 ms 热提交（入口条件加拟态非空）。每段内核演进前按寿命与落点端点截短段长；拟态作为外部节点 `{T,1,1,C,k_s,1e6,暴露面积,0,0,true}` 追加在世界节点之后：落地且接触节点在域内时连接触边 G = A/(r/k_s + d/k_o)（与 ThermalGeometry 同一串联式），球与接触节点按角系数 1/2 互换辐射、其余对天空，立方只导热；受保护区域持有者不同则不连。接触宏格并入热种子，点燃走既有 `ignite_heated_materials`。落地时飞行动能转为自身内能；发光按 W·dt 计光（不进热账）；寿命到期移除，剩余能量作为有限热源落入仍有效的接触宏格，否则散入空气。
-- **账**（`thermal_accounting`）：累计 `semblance_created_j`、`semblance_exchanged_j`（C·ΔT 流出 = 传给世界 + 散到环境，内核环境账不可拆分）、`semblance_light_j`、`semblance_released_j`；快照 `semblance_thermal_j`（ΣC(T − T_amb)）、`semblance_stored_j`（飞行动能 + 发光余量）。闭合：created = exchanged + light + released + thermal + stored；施法支出 = spell_heat_j + semblance_created_j + cast_waste_j。
-- **下行**：PropertyBatch 末尾新增 `semblances` 字节段（`Voxel.Codec.encode_semblances/1`，每条 134 B，完整批次为窗口内全部、增量批次为本事务变化，nil = 删除），窗口投影按出发点／落点宏格；客户端用 origin/velocity/t0_us/flight_s 按服务端时钟插值，不逐 tick 复制位置。0x82 在粒度后加目标拟态 id {seq u64, n u32}。Hello 24 → 25。
-- 复跑：`apps/voxel_region` 下 `mix test test/magic_semblance_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`。只证明服务端范围，不代替双客户端实跑。
+### 身体、库存与作者入口
 
-## 施放前摇与符文预警（2026-09-25，分支 `magic-windup`，未合并，等客户端 Hello 27）
+- Player 是唯一身体 owner；`SceneServer.Body` 负责体温、伤病合成、修复、营养、死亡与复活规则。[身体子系统 README](../../../../apps/scene_server/lib/scene_server/body/README.md) 保存规则与参数。DataService 按角色保存完整 Body、待吸收热、生命代次和分世界消费游标，session epoch 拒绝旧会话覆盖；离线冻结，在线后按既有节奏继续。
+- 进食由 World 扣料并同笔保存 `food_ledger` / `food_receipts`；Player 按 content version 游标吸收并保存身体，不向旧 PID 直接补发身体真值。Scene seal / 正常退出先等待热接触 fence。连续性边界见 [身体连续性 P0](../../../20-archive/cross-cutting/2026-10-05-body-continuity-p0.md)。
+- `World.material_supply` 与 `World.liquid_fill` 是 server-only 作者入口，未接 Gate；来源 key 回执与数量／焓同笔持久化，重试不能补料。有限作者样本不替代正常玩家消费，具体约束以对应公共 API 与测试为准。
+- `World.gm` 与 `Player.gm_teleport` 是 Test-only 工具；`VOXIM_GM_TOOLS=1` 显式开启，默认 `gm_disabled`，不进入分发。传送信标由 World 维护安装与调谐，Player 维护读条；`VOXIM_BEACONS_ALL_ATTUNED=1` 是开发期开关，不写调谐账，不放宽距离与完好校验。
 
-设计正文见 Voxim `Docs/Magic.md` §13.6。服务端事实：
+## 已删除的旧链路
 
-- **计价**：`Magic.Cost.quote/3` 用构型距离损耗取代控制开销：第 i 步姿态 q_i（目录，度 → 弧度，q_0 静息），d_i = ‖q_i − q_{i−1}‖，b_i = b0·(S_i + H_i/E_ref)^α（S、H 为前 i 步权重与物理能量之和），构型调整 T = d·√(η/b)、注能 T = E_i/P_max，损耗 L_i = 2d·√(ηb) + b·T_inj；报价返回 `loss_j`、`windup_s` 与各步 `{调整 s, 注能 s}`，E_loss 进 `cast_waste_j`（取能的损耗同样从取得能量里付）。同符号相邻两步 d = 0，合并反而比拆开便宜（超线性只对不同符号成立，形态待定）。
-- **目录**：版本 2。每个符号 `pose`（4 个整数度，45 的倍数，|q| ≤ 135），`cost` 为 `eta_j_s_per_rad2`、`b0_w`、`e_ref_j`、`alpha`，`caster.max_power_w`。
-- **待施放**：施放意图先做立即校验（间隔、目标、施法域、脚下、权限），失败立即拒绝；通过后 World 记 `pending_casts`（cid ⇒ 记录、调用方、开始时的施法者与意图），提交一笔只带 `casts` 的事务（日志里是空事务，保持 seq 连续），按 ⌈前摇 ms⌉ 定时 `{:settle_cast, cid, t0_us}`。到期用开始时的施法者与意图重做同一校验并走原结算路径（走火在此判定）；结算事务带 `casts: %{cid => live 0, outcome 0/1}`，结算时校验失败另提交 `outcome 2` 并拒绝、不扣能。前摇中同一施法者再施放 `cast_too_soon`；报价不受影响。`World.spell_intent/3` 的施放调用在结算后才返回；Gate Dispatch 对施放在独立进程里等待（编辑 worker 不被占住），因此紧挨着的两次施放到达 World 的先后不保证等于发送顺序。
-- **不持久化**：`casts` 不进日志、检查点、回放尾与 Replica 保留的增量；冷重启丢失待施放、未扣能。
-- **下行**：PropertyBatch 末尾（拟态之后）新增 `casts` 字节段（`Voxel.Codec.encode_casts/1`，按施法者升序）；完整批次为窗口内全部待施放（按手边出发点宏格投影），增量批次为本事务变化（已结算记录总保留）。Hello 26 → 27。
-- **报价前摇**（分支 `quote-windup`，Hello 27 → 28）：0x83 施法者状态末尾追加 `quote_windup_s`（f64 大端）= 报价程序的前摇 Σ(T_adj + T_inj)，取自与施放计时同一次 `Cost.quote` 的 `windup_s`；只有报价回复（0x82 action 0）非零，登录推送与施放结算后的状态为 0。0x83 以外布局不变。
-- 复跑：`apps/voxel_region` 下 `mix test test/magic_test.exs test/magic_semblance_test.exs test/magic_windup_world_test.exs test/magic_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test test/mmo_contracts/magic_wire_test.exs`；`apps/gate_server` 下 `mix test test/gate_server/voxim_spell_dispatch_test.exs`。
-
-## 身体闭环 H1：修复账 + 进食（2026-09-26；2026-10-05 P0 补齐连续性）
-
-设计正文见 Voxim `Docs/Magic.md` §6.5–6.7、§6.10；参数、依据与账见 `apps/scene_server/lib/scene_server/body/README.md`“修复账”。服务端事实：
-
-- **修复账**：`SceneServer.Body.Repair`（纯函数）。烧伤 / 冻伤 = 剂量 + 愈合进度 0..1；速率 M / T(严重度) × min(1, 循环)，受蛋白质与糖原 + 脂肪储备约束（付不起停在原处）；合成能按寒战同一份额取自糖原 / 脂肪，经 `Thermo.step/3` 新可选输入 `core_j` 进核心。Player 1 Hz 调 `Repair.tick/4`（M 恒 1）。
-- **时长与慢性影响**（2026-09-26 修订，取代统一压缩系数 K）：T = clamp(30 s × 真实愈合天数^0.7, 30 s, 1800 s)，真实天数是身体参数（`Body.params/0`，不进热环境）；烧伤循环上限 1 − 0.10 × √(T_1度 / T) × (1 − 进度)。热环境资产不再有 `heal_time_compression`，World / property_context / Player 不带 K；旧环境文件里若仍有该键，加载时被忽略。
-- **冻伤**：浅（≥ 300 K·s，待确认）/ 深（≥ 600 K·s），同一标签 `trauma.thermal.frostbite` 严重度 1 / 2，部位脚；本增量不压系统。
-- **进食**：0x7F action 5，material = 可食材料；World 查属性目录 `food`、扣一株 `place_units`、记 `food_ledger`，并在同笔日志保存 `food_receipts[cid][seq]`。canonical snapshot/delta 携带内部收据，Player 按 content_version 分桶游标吸收，完整身体和游标同笔保存；不再直接向旧 PID 发 `body_food`。拒绝 `not_edible` / `insufficient_material`，重发幂等。身体 owner、离线冻结、移交热 fence 与当前验证状态见 [身体连续性 P0](../../../20-archive/cross-cutting/2026-10-05-body-continuity-p0.md)。
-- **身体恢复**：Player 为唯一身体 owner，DataService 按角色保存完整 Body、待吸收热、生命代次和分世界消费游标；session_epoch 拒绝旧会话覆盖。离线冻结，重登／冷重启读回，在线后按既有 1 Hz 继续；重登入场沿用原出生规则。Scene seal／正常退出先等待 World 热接触 fence，再保存交接；异常退出时 World 注销死亡 PID。
-- **下行**：BodyState（kind 12）每条伤病严重度后追加 `heal` u8（0..100 %），体末尾追加 `protein_g` f64。该历史增量为 Hello 28 → 29；本轮 P0 未改变当前 wire。伤病标签 `nutrition.hunger`（蛋白 < 20 g）。
-- 复跑：`apps/scene_server` 下 `mix test test/scene_server/body`；`apps/voxel_region` 下 `mix test test/damage_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。只证明服务端范围，不代替双客户端实跑。
-
-## 身体闭环 H2：伤病合成、复活、死亡掉落、相干度系数（2026-09-26，2026-09-27 修订）
-
-设计正文见 Voxim `Docs/Magic.md` §6.10、§4.4；参数与手算见 `apps/scene_server/lib/scene_server/body/README.md`“身体闭环 H2”。服务端事实：
-
-- **伤病合成**：同一系统内各原因相乘（循环 = 体温带 × 烧伤上限 × 虚弱；神经 = 体温带，当前只有核心体温危及神经）；致命系统之间按缺损 p-范数，
-  致命水平 = 1 − min(1, (Σ dᵢ^p)^(1/p))，p = `lethal_norm_p`（默认 2），`Body.combined_level/2`。生命与濒死计时都读它。
-- **复活**：死亡那一秒 Player 照常下发 BodyState status 2，并发 `{:body_death, cid, 脚位}` 给 World、开始回会话出生点；下一秒身体换成
-  `Body.revive/0`（营养 0、糖原 0、脂肪 420.52 MJ、调定点体温、无伤口，虚弱 120 s、恍惚 40 s）。复活 debuff 走伤病表（`:timed`），线格式不变。
-- **复活瞬移（Hello 30 → 31）**：新增 M1 Voxel kind 6 `Voxel.Relocate {identity, apply_tick, state}`（同一可靠 voxel 流）：`apply_tick − 1`
-  的本人状态换成出生柱（`probe`）上按入场同一 `find_spawn` 重找的落脚点，`apply_tick` 起按原输入推进。流送会话先请求覆盖出生点的新窗口
-  （即使与当前窗口相同），窗口安装时找落脚点，Relocate 紧接在同一 `apply_tick` 的 CollisionWindow 之前发出；瞬移完成前不随位置换窗。
-  非流送会话在下一个模拟 tick 生效。找不到落脚点按入场同一失败（4 / 10）结束会话。移交切点新带 `probe`、`authority_ref`、`revive`
-  （修正：此前移交后的 Player 没有 `authority_ref`，身体接触热也停了）。
-- **相干度系数**（2026-09-27：疼痛、恍惚只降相干度，不进生命）：Player 每秒发 `{:body_coherence, cid, 神经 × 疼痛 × 恍惚}` 给 World
-  （`Body.coherence_factor/1`，疼痛 = 1 − 烧伤下压，恍惚 0.45）；World `caster_coherence`（派生、不持久化，未报按 1.0），
-  相干度 = 目录相干度 × 系数，报价 / 状态回复（0x83 `coherence`）与走火判定共用。
-- **死亡掉落**：World `death_drop/3`。死亡格 = 脚所在宏格，死者不被地块许可则不掉；确定性掷骰 `drop_roll(死亡格, 0)` < 启动参数 `death_drop_probability`（默认 0 = 不掉，2026-09-27 用户定先留接口）；候选 = 余额
-  ≥ 1/8 m³ 且 1/8 m³ 有世界形态的可放置材料——散体（倾倒成一格 1/8 m³ 的量，与玩家倾倒共用 `move_flowing/6`）或单次放置量恰为 1/8 m³ 的
-  材料（花草，与放置同一提交）；整格材料没有 1/8 m³ 形态，不参选。`drop_roll(死亡格, 1)` 在按 id 排序的候选里选一种；落点 = 死亡格
-  3×3×3 按（距离²、y、x、z）第一个许可、非细分的空气格。同一笔事务扣余额。日志 `voxel_death_drop outcome=…`。
-- 复跑：`apps/scene_server` 下 `mix test test/scene_server/body test/scene_server/movement/revive_relocation_test.exs`；`apps/voxel_region`
-  下 `mix test --no-start test/death_drop_world_test.exs test/magic_semblance_world_test.exs`；`apps/mmo_contracts` 下 `mix test`。
-- 双客户端实跑：Voxim `Docs/Magic.md` §10.18（`body_revive` 的 `revive-02` 复判 10/10；`body_heal`、`body_thermal`、`magic_editor` 回归），
-  Test-only 镜像 `voxim-gameplay:body-h2-20260927`。
-
-## 活跃兼容边界
-
-旧 `SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 仍服务旧协议、局部场与相关回归。保留它们的 owner、事务和只读接口，不按文件大小删除活调用；不得把这些旧 owner 描述为 Voxim canonical owner，也不得把旧状态作为 Voxim 缺失数据的兜底。退出条件是对应真实调用方完成迁移后再删除，不能仅凭主客户端已切 QUIC 推定整个 legacy 链路失活。
+`SceneServer.Voxel.ChunkProcess`、`ChunkDirectory`、`FieldRuntime`、`FieldTickWorker` 及服务归档客户端的旧 TCP / WS / chunk / field 链路已在 `af180c98` 删除。它们不是活跃兼容 owner，不应恢复为 Voxim 缺失数据的兜底。旧设计与操作日志只能作为归档证据。
 
 ## 证据源与验收边界
 
-- 源码组合配置：根 `config/runtime.exs`；`voxel_region`、`scene_server`、`world_server`、`gate_server`、`npc_server` 各自 `Application`。分发包装组合这些全局系统，测试入口不成为运行时依赖。
-- [M1 路线与验收入口](../../../../../Voxim/Docs/M1/plan.md)：bootstrap/Ready、移动与真实双客户端已实施；早期 G1 只抽字节 owner 的“待实施”记录不代表当前运行时。
-- [M4a 验收](../../../../../Voxim/Docs/M4a/acceptance.md)：两 Scene、本地 Replica、并发编辑历史与真实双端受控移交已验收。同主机多 VM 的结果不能扩为跨主机时钟与故障接管验收。
-- [R7 工程审计](../../../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)：本轮整改、测试、Linux/CI 与分发剩余事项。单测、已有 Demo 与当前版本分发验收分别记录。
+- **已实现**以当前源码、目录契约与正式组合根接线为准；实现存在不证明当前部署已更新。
+- **已实跑**须保留当次源码／协议／资产身份、日志与实际覆盖范围。局部 World、wire 或传输测试不代替真实双客户端。
+- **已验收**：[M1 路线与验收入口](../../../../../Voxim/Docs/M1/plan.md)覆盖 bootstrap / Ready、移动与真实双客户端；[M4a 验收](../../../../../Voxim/Docs/M4a/acceptance.md)覆盖两 Scene、本地 Replica 与受控移交。同主机多 VM 不扩为跨主机时钟或故障接管验收。
+- 魔法与身体的历史双端场景、目录身份及剩余视觉／性能边界见 [Magic](../../../../../Voxim/Docs/Magic.md) 与 [施法动作](../../../../../Voxim/Docs/Gameplay/CastActions.md)，各记录只证明其声明的版本、输入与窗口。
+- [R7 工程审计](../../../../../Voxim/Docs/R7/Engineering-audit-2026-09-19.md)保存 Linux / CI / cook 的当次证据。本地单测、cook、远端 CI、同版本镜像加打包客户端冒烟和最终分发各证明不同事实。
+- [迁出的 runtime 历史证据](../../../20-archive/cross-cutting/2026-11-03-voxim-runtime-historical-evidence.md)完整保存本页旧日志，包括早期散体／魔法分支、P0 下落展示、Hello14 / Hello15 与同步历史维护的命令、测试数、产物位置和限制。该快照不是当前运行指南。
 
-本轮已有本地 Linux QUIC `42 tests, 0 failures`，命令为在 `apps/gate_server` 执行
-`mix test test/gate_server/quic_connection_test.exs --no-start --seed 0`，使用生成的 TLS 证书和
-`VOXIM_TEST_QUIC_PORT=28443`。它覆盖真实传输与明确标注的回调组件测试，不替代双 UE 客户端验收。
-原始脚本、日志和退出码在同级 Voxim `Saved/EngineeringAudit/20260919/ci-quic-linux*`，
-是当次工作树的证据，后续变更按影响范围验证。
+## 被取代结论与后续缺口
 
-GitHub Actions 已启用且可访问；现有成功运行 `35415719776` 对应远端基线
-`4c60f3a752f33645f175e7b212f51aeae56b8d80`，不覆盖本轮本地提交及未提交修改。
-CI 仅由 push/pull_request 触发，没有 workflow_dispatch；未推送的整改不能声称通过远程 CI。
+“M1 authority / QUIC / bootstrap 尚未实施”“散体与魔法仍在未合并分支”“World timer 使用起手姿态结算”“v2 四关节魔法目录”和“旧 ChunkProcess / FieldRuntime 仍有活调用”均已被当前实现取代。
 
-Qinglan 本地 Development BuildCookRun 已成功，原 IoStore 清单包含唯一项目地图 `L_Qinglan`，
-也暴露了旧 B1 目录间接带入的 `/Game/Voxel/R7/B1/DA_TestAssembly`。
-已通过 Unreal MCP 将 Qinglan 改接现行 Global system `DA_MaterialCoverageV1`（`5f79a057…`），
-保存后回读确认移除 B1 目录依赖。修改后的 BuildCookRun 与 IoStore 列表均返回 0：
-唯一项目地图仍是 Qinglan，新全局目录在包内，B1 目录与 TestAssembly 均不在包内；
-已检查的测试 Actor/HUD、路线命令和人工延迟字段未出现在新包程序中。
-证据为同级 Voxim `Saved/EngineeringAudit/20260919/qinglan-cook-fixed.log`、
-`qinglan-iostore-fixed.csv`、`qinglan-cook-check.json` 与 `qinglan-asset-*.json`。
-同版本镜像与打包客户端冒烟、最终分发版本清单和发布仍未完成；本地 cook 不代表已发布或通过分发验收。
-
-被取代的结论是“M1 authority/QUIC/bootstrap 尚未实施”和“Scene/ChunkProcess 是 Voxim 体素 owner”。旧日期档案保留其历史上下文；现行索引以本页和上述实现/验收源为准。
-
-## P0 下落展示事务（2026-09-20，实施中）
-
-Global system。依据当前 `Liquid.step_transfers` 的重力阶段通量、`World.apply_batch` 的同步追加后广播、
-`PropertyObservation` 窗口投影与 `LogProjection` 源码，复用既有单向不可变事务；物理模型依据仍是
-Liquid 模块引用的 Forsyth 格点水量模型，不增加速度或第二份数量真值。
-Hello14 的事务粗格数组后可追加 `tag:u8=1, material:u16 LE, count:u32 LE, count * {x,y,z:i32 LE}`。
-无尾段不更新展示；尾段是该材料本步所有实际重力目的格（排序去重），空数组清除旧帧。
-World 只保留上一帧以在停止时清除一次；非空帧每个活跃步都发送，新订阅者下一步即得到完整帧。
-净数量不变但展示有变化仍走正常 seq、日志提交和 canonical fanout，清除不产生几何／碰撞改动。
-该字段仅用于实时展示，在追加持久化及内存历史正文时删除，不进入 snapshot 或区域补流；
-客户端会话边界清空。部分观察者收到按其完整 XYZ 窗口过滤的整帧（包含空清除）。
-
-最小充分验证：纯 wire 固定小端负坐标／无尾段／空清除／拒绝畸形尾段；纯通量含净零中间格与纯侧流；
-独立 World 经有限 liquid_experiment 作者样本，公开 canonical 订阅验证四步下落、守恒、一次 metadata-only
-清除及 timer 休眠、历史／冷恢复不激活展示。世界基底和玩家使用现有显式替身，停止生命周期使用真实隔离数据库，其他既有用例使用真实文件日志；
-不以此代替真实双 UE 展示验收。命令及原始红绿证据：`.demo/observe/p0-liquid-falls/`，正常 Mix 构建图。
-
-
-## P0 正式历史维护（2026-09-20，实施中）
-
-Global system。复用已实测 Demo 止损方式：World 完整前缀 `compact_log`、原子 DB replace，
-及 Erlang 官方 [Garbage Collection](https://www.erlang.org/doc/apps/erts/garbagecollection.html)
-的 old heap/full-sweep 行为。历史多于单个检查点时安排一次 60 秒维护；成功压实取消计时器，
-没有新事务就不再排队。显式 compact 使用同一边界；full GC 放到下一 handle_continue，旧 callback state
-不再引用历史。日志记录 seq、压实前后保留笔数、同步暂停时间和 GC 后进程内存；World.stats
-增加 retained_transactions、checkpoint_scheduled、checkpoints。不改变 seq、会话去重、世界量或焓。
-
-同步检查点会暂停 World；此前真实 Demo 297ms 是明确性能限制，不声称无停顿或 MMO 验收。
-本增量不增异步框架、可调阈值、重试或第二份世界。测试经公开有限供给/舀倒，实等生产60秒事件，
-比较数量、库存焓、热学账、会话收据；验证休眠、再次改动唤醒、显式 compact 取消和冷恢复。
-原始日志 `.demo/observe/p0-checkpoint/`，真实双端在线与工作负载停顿测量由 P0 联调另行记录。
-
-
-P0 本轮局部验证结果：Hello14 固定字节与 Session／液体／燃烧协议回归 26 项通过；
-World／通量／空间投影 20 项通过（真实隔离数据库清除提交、Replica转发与历史排除）；
-现有 compact 的 region 基底、ring／seq、冷恢复与有限供给 4 个选中用例通过；
-60秒生产计时器生命周期 1 项通过（61.4秒，34项未选中），不将排除项计为通过。
-先红后绿证据与原始环境失败保留在上述目录。协议回归 `test-wire.sh`；流动回归 `test-world.sh`；
-维护 `test-realtime.sh`；现有压实回归 `test-regression.sh`。
-正常 Linux Mix prod 构建 gate_server/auth_server 完成，独立目录
-`/home/dyz/.cache/voxim-p0-falls/build-checkpoint`，字节检查 Hello=14；源码/产物对应记录为目录内
-`source-version.json`。此处仅“已实现／局部实跑”，真实双端展示与真实工作负载周期维护尚待联调。
-
-
-P0 泄流尾部诊断：真实隔离服 `voxim-r8-p0-fall-02` 在 seq650 仍有一量子下落，
-只读后续观察已到 seq664、active=0、scheduled=false。用该快照的数量、完整域内实体占用和发布参数
-运行现有纯 Liquid，10步后休眠，每步守恒8,388,608量子，最终逐格数量与实服完全相等。
-因此没有修改物理或增加等待来隐藏非终止；这是有限整数尾流。0.1秒参数对应1秒模拟时间，
-不能当作含同步提交成本的墙钟上界。复现 `.demo/observe/p0-liquid-tail/replay.sh`。
-新增合法前提的纯测试：先落入中间格，在仍为空的下游格新增支撑后水柱停止且16量子保留；
-LiquidActivity文件5项通过。它不代表玩家能在已被水占用的位置放实体，后者仍遵守原建造规则。
-
-
-P0 坡面修正（Hello15，替代上述 Hello14 展示格式）：用户要求水柱厚度反映实际流量，
-不能在一量子尾流仍显示满宏格水柱。复用已有重力阶段 `{from,to,units}`，不修改 Liquid 的任何
-数量计算或搬运；每个目的格只有正上方一个来源，按目的格排序输出
-`liquid_falls: %{material: 21|22, transfers: [{{x,y,z},units}, ...]}`。
-事务尾段改为 `tag:u8=2, material:u16LE, count:u32LE`，每项为 `x/y/z:i32LE, units:u32LE`，16字节。
-Hello15 不接纳旧 tag1；无尾段／空整帧／停止清除／历史排除／checkpoint 语义不变。
-空间投影成对过滤坐标和量子，不将其提升为世界数量真值。依据是上述已存在权威通量和单向事务源码。
-验证：冻结负坐标、1量子和524288量子的wire、零量/旧tag拒绝、成对窗口筛选、实际World/Replica
-四步通量及清除／隔离数据库冷恢复；只修改服务端，真实台阶坡和视觉厚度由配对客户端联调验证。
-原始红绿日志 `.demo/observe/p0-liquid-flux/`；构建与已运行Hello14目录隔离。
-
-Hello15 本轮结果：协议26项、通量/投影/真实隔离DB World/Replica22项通过；红例均在改动前证伪旧格式。
-正常Mix prod gate_server/auth_server构建完成，验证Hello=15；目录
-`/home/dyz/.cache/voxim-p0-ramp/build`，对应记录 `source-version.json`。
-此前60秒检查点代码保留不变；本轮不重复宣称或重跑无关性能验收。未触碰已有live世界。
+性能、视觉、分发与部署状态须按各自版本证据判断。后续明确缺口统一见 [已知缺口](../../impl/known_gaps.md)，不以早期日志中的“实施中”推断当前未完成。
