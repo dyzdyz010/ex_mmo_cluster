@@ -10,7 +10,7 @@ defmodule VoxelRegion.BeaconWorldTest do
   """
   use ExUnit.Case, async: false
   alias VoxelRegion.World
-  alias VoxelRegion.TestSupport.{Actor, Log, Source}
+  alias VoxelRegion.TestSupport.{Actor, Log, Source, WorldClock}
 
   @current "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
   @fixtures Path.expand("fixtures", __DIR__)
@@ -40,11 +40,13 @@ defmodule VoxelRegion.BeaconWorldTest do
     File.write!(catalog, Jason.encode!(data))
     File.cp!(Path.join(@fixtures, "combustion/environment-radiation.json"), Path.join(root, "environment.json"))
     File.mkdir_p!(Path.join(root, "prefabs"))
-    %{root: root, catalog: catalog}
+    # 调谐不提交的断言只观察本次工具事务，不让墙钟触发的模拟提交插入窗口。
+    clock = start_supervised!({WorldClock, 0})
+    %{root: root, catalog: catalog, clock: clock}
   end
 
   defp start(c, extra \\ []) do
-    opts = [source: Source, log: Log, root: c.root, observer: self(), name: nil, property_catalog_path: c.catalog,
+    opts = [source: Source, log: Log, clock: {WorldClock, c.clock}, root: c.root, observer: self(), name: nil, property_catalog_path: c.catalog,
       thermal_environment_path: Path.join(c.root, "environment.json"), prefab_catalog_path: Path.join(c.root, "prefabs"),
       production_materials: [@stone]] ++ extra
     start_supervised!({World, opts}, id: :world)
@@ -61,7 +63,7 @@ defmodule VoxelRegion.BeaconWorldTest do
   defp next, do: System.unique_integer([:positive, :monotonic])
 
   # 正式工具路径：先查询命中，再以同一身份执行。position 是角色胶囊中心（信标可达距离按它算）。
-  defp use_tool(w, eye, position, direction, tool) do
+  defp query_tool(w, eye, position, direction, tool) do
     a = %{cid: @a, gate: self(), identity: make_ref(), refresh: &Actor.tool_context/2, eye: eye, position: position, tick_us: 16_667}
     a = Map.put(a, :player, start_supervised!({Actor, a}, id: make_ref()))
     seq = next()
@@ -71,15 +73,33 @@ defmodule VoxelRegion.BeaconWorldTest do
     case World.tool_intent(w, a, q) do
       {:ok, t} ->
         r = Map.merge(q, Map.take(t, [:micro, :granularity, :incarnation, :owner, :material]))
-        World.tool_intent(w, Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()}), %{r | action: 1})
+        {:ok, Map.merge(a, %{received_us: seq * 1_000_000, clock_node: node()}), %{r | action: 1}}
 
       error ->
         error
     end
   end
 
+  defp use_tool(w, eye, position, direction, tool) do
+    case query_tool(w, eye, position, direction, tool) do
+      {:ok, actor, request} -> World.tool_intent(w, actor, Map.put(request, :beacon_id, if(elem(request.micro,0) < 40, do: "qinglan", else: "ruyuan")))
+      error -> error
+    end
+  end
+
   # 站在信标 x+2 处朝 -x 看核心格。
   defp attune(w, x), do: use_tool(w, {x + 2.5, 2.5, 0.5}, {x + 2.5, 1.9, 0.5}, {-1.0, 0.0, 0.0}, @beacon)
+
+  test "explicit directory identity disambiguates two legal records on one macro", c do
+    w = c |> start() |> build()
+    b = %{@ruyuan | core: {5,20,4}, landing: {2.5,3.5,1.5}}
+    assert {:ok, _} = World.beacon_install(w, "shared-a", @qinglan)
+    assert {:ok, _} = World.beacon_install(w, "shared-b", b)
+    {:ok, actor, request} = query_tool(w, {2.5,2.5,0.5}, {2.5,1.9,0.5}, {-1.0,0.0,0.0}, @beacon)
+    assert {:error, :unknown_beacon} = World.tool_intent(w, actor, Map.put(request, :beacon_id, "missing"))
+    assert {:ok, _} = World.tool_intent(w, actor, Map.put(request, :beacon_id, "ruyuan"))
+    assert Enum.map(World.beacon_directory(w, @a), &{&1.id, &1.attuned}) == [{"qinglan", false}, {"ruyuan", true}]
+  end
 
   defp travel(w, message, position, request) do
     key = make_ref()
@@ -112,7 +132,7 @@ defmodule VoxelRegion.BeaconWorldTest do
            ]
   end
 
-  test "G 调谐：可达距离内的最近信标、重复调谐不提交、远了与非锚心拒绝、锚心石挖不动；冷重启后保留", c do
+  test "调谐命中身份对应的信标、重复调谐不提交、远了与非锚心拒绝、锚心石挖不动；冷重启后保留", c do
     w = c |> start() |> build()
     {:ok, _} = World.beacon_install(w, "q1", @qinglan)
     {:ok, _} = World.beacon_install(w, "r1", @ruyuan)
@@ -131,6 +151,25 @@ defmodule VoxelRegion.BeaconWorldTest do
 
     w = restart(c)
     assert attuned.(w) == [{"qinglan", true}, {"ruyuan", false}]
+  end
+
+  test "相邻信标按命中 B 调谐，B 失效后的已按下请求不转交更近的 A", c do
+    w = c |> start() |> build()
+    b = %{@ruyuan | core: {20, 20, 4}, landing: {2.5, 3.5, 1.5}}
+    {:ok, _} = World.apply_edits(w, [{{2, 2, 0}, @anchor}])
+    {:ok, _} = World.beacon_install(w, "q1", @qinglan)
+    {:ok, _} = World.beacon_install(w, "r1", b)
+    # 角色在 A 与 B 之间且更近 A，朝 +X 只命中 B；两核心均在 3 m 内。
+    {:ok, actor, request} = query_tool(w, {1.25, 2.5, 0.5}, {1.25, 1.9, 0.5}, {1.0, 0.0, 0.0}, @beacon)
+    request = Map.put(request, :beacon_id, "ruyuan")
+    assert {:ok, _} = World.tool_intent(w, actor, request)
+    assert Enum.map(World.beacon_directory(w, @a), &{&1.id, &1.attuned}) == [{"qinglan", false}, {"ruyuan", true}]
+
+    {:ok, _} = World.apply_edits(w, [{{2, 2, 0}, 0}])
+    seq = World.seq(w)
+    assert {:error, :no_target} = World.tool_intent(w, actor, request)
+    assert World.seq(w) == seq
+    assert Enum.map(World.beacon_directory(w, @a), &{&1.id, &1.attuned}) == [{"qinglan", false}, {"ruyuan", true}]
   end
 
   test "出发：开始校验可达、调谐与完好，读条按距离；结束只认目的完好；核心挖掉即失效", c do

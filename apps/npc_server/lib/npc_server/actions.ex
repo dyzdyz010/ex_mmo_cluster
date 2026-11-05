@@ -113,9 +113,9 @@ defmodule NpcServer.Actions do
       %{
         name: "scoop",
         group: :liquid,
-        description: "用液体盛取工具从格 (x, y, z) 盛起 material 液体，进自己的 balances。工具须是液体盛取工具。",
+        description: "用液体盛取工具盛起 target 对应数量格的材料。target 原样使用 inspect / probe_toward 返回的宏格身份，不用旧坐标替代对象。",
         done: "World 已提交（data.seq），balances 随之刷新。",
-        params: cell ++ [material: :integer, tool_id: :belt],
+        params: [tool_id: :belt, target: handle([0])],
         build: &production(:scoop, &1, &2)
       },
       %{
@@ -273,6 +273,12 @@ defmodule NpcServer.Actions do
       direction: target.direction && unit(target.direction),
       target: Map.delete(target, :direction)
     }
+
+  defp production(:scoop, %{tool_id: tool, target: target}, _) do
+    {coord, _slot} = VoxelRegion.Prefab.macro_slot(target.micro)
+    %{verb: :scoop, coord: coord, material: target.material,
+      tool_id: tool, target: Map.delete(target, :direction)}
+  end
 
   defp production(verb, args, _),
     do: %{

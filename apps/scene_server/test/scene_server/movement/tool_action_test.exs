@@ -1,3 +1,5 @@
+Code.require_file("../../../../voxel_region/test/support/world_fixtures.exs", __DIR__)
+
 defmodule SceneServer.Movement.ToolActionTest do
   use ExUnit.Case, async: true
   alias SceneServer.{Body, Movement.Player}
@@ -5,6 +7,24 @@ defmodule SceneServer.Movement.ToolActionTest do
 
   defmodule Sink do
     def reliable(pid, _, _, message), do: send(pid, {:wire, message})
+  end
+
+  defmodule Owner do
+    # 只测试：进程外壳委托真实Player回调；不启动移动/时钟，不冒充完整Scene登录。
+    use GenServer
+    def start_link(state), do: GenServer.start_link(__MODULE__, state)
+    def init(state), do: {:ok, state}
+    def handle_call(message, from, state), do: Player.handle_call(message, from, state)
+    def handle_info(_, state), do: {:noreply, state}
+  end
+
+  defmodule Members do
+    use GenServer
+    def start_link(_), do: GenServer.start_link(__MODULE__, [])
+    def init(players), do: {:ok, players}
+    def handle_call({:players, players}, _, _), do: {:reply, :ok, players}
+    def handle_call(:tool_candidates, _, :closed), do: {:reply, {:error, :combat_not_permitted}, :closed}
+    def handle_call(:tool_candidates, _, players), do: {:reply, {:ok, players}, players}
   end
 
   # Test-only：受控 owner 回调，不冒充真实网络／World 集成。
@@ -20,7 +40,7 @@ defmodule SceneServer.Movement.ToolActionTest do
       ready: true,
       transfer: nil,
       failure: nil,
-      state: %{position: {2.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}},
+      state: %{position: {2.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}, yaw: 0},
       scene: self(),
       gate: self(),
       sink: Sink,
@@ -187,5 +207,91 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert_receive {:DOWN, ^monitor, :process, ^target, :normal}
     assert {:error, :invalid_state} = Player.hit_context(target)
     assert {:error, :invalid_state} = Player.receive_effect(target, c.hit)
+  end
+
+  # 只测试：真实 World 与 Player 回调，Scene 成员由 Members 夹具给出。手算：攻击者站 {0,0,0}、眼点 (0,0.6,0)、yaw 0（前向 +X）；
+  # offset 2、radius 1 → 判定球心 (2,0.6,0)。A(20) 站 {2,0,0} 距中心 0；B(21) 站 {2,0,0.8} 距中心 0.8 ≤ 1+0.3。
+  defp area_world(c) do
+    root = Path.join(System.tmp_dir!(), "area_action_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+    catalog = Path.join(root, "properties.json")
+    materials = for id <- 0..23, do: %{material_id: id, max_hp_per_macro: 100.0,
+      defense: 2.0, tags: [], responses: [%{action: "damage", multiplier: 1.0}]}
+    area = %{tool_id: 23, id: "area", action: "damage", power: 30.0, target_mode: "direction",
+      range_macro: 3.0, interval_seconds: 0.8, area_radius_m: 1.0, area_offset_m: 2.0, aim_max_deg: 45.0,
+      body_impact: %{depth: 0.2, protein_g: 2.0, heal_s: 100.0}}
+    single = Map.merge(area, %{tool_id: 22, id: "melee", target_mode: "object", interval_seconds: 0.5})
+    File.write!(catalog, Jason.encode!(%{schema_version: 1, tags: [%{id: "damage"}],
+      materials: materials, tools: [single, area], definitions: []}))
+    world = start_supervised!({VoxelRegion.World, name: nil, source: VoxelRegion.TestSupport.Source,
+      log: VoxelRegion.TestSupport.Log, observer: self(), root: root, property_catalog_path: catalog})
+    # 判定球边界接触的墙 {3,0,0}：旧实现会扣它的 HP；不挡眼点到 A、B 的射线。
+    assert {:ok, _} = VoxelRegion.World.apply_edit(world, {3, 0, 0}, 19)
+    scene = start_supervised!(Members)
+    %{world: world, scene: scene, state: %{c.state | scene: scene, body_owned: false}}
+  end
+
+  defp owner(w, id, position, config \\ %{}) do
+    state = %{w.state | id: id, config: Map.merge(w.state.config, config),
+      state: %{position: position, velocity: {0.0, 0.0, 0.0}, yaw: 0}}
+    start_supervised!({Owner, state}, id: id)
+  end
+
+  defp swing(w, attacker, c, seq, at, changes \\ %{}) do
+    request = Map.merge(%{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 1,
+      granularity: 6, tool_id: 23, direction: {1.0, 0.0, 0.0}, owner: {0, 0},
+      incarnation: 0, material: 0, micro: {0, 0, 0}}, changes)
+    SceneServer.Movement.ToolAction.run(attacker, c.identity, w.world, request, %{received_us: at, clock_node: node()})
+  end
+
+  defp life(pid, id) do
+    {:ok, %{body: %{life: life}}} = Player.hit_context(pid, id)
+    life
+  end
+
+  defp damage(w), do: VoxelRegion.TestSupport.observe(w.world, [10], {{-1, -1, -1}, {6, 5, 5}}).damage
+
+  test "单体段经 g6 按提示/最近者只作用一个，范围段作用区内全部，重投不重复，墙不受损", c do
+    w = area_world(c)
+    attacker = owner(w, 10, {0.0, 0.0, 0.0})
+    a = owner(w, 20, {2.0, 0.0, 0.0})
+    b = owner(w, 21, {2.0, 0.0, 0.8})
+    assert :ok = GenServer.call(w.scene, {:players, [attacker, a, b]})
+    walls = damage(w)
+    # 单体招式不再经 g5 人物射线（设计 §6.4／§10：战斗招式一律 g6 判定区）。
+    assert {:error, :stale_or_forbidden_target} =
+      swing(w, attacker, c, 69, 1_000_000, %{granularity: 5, tool_id: 22, owner: {20, 0}, incarnation: 99})
+    assert {:area, _, [%{target_id: 21, body: %{life: 80}}]} =
+      swing(w, attacker, c, 70, 1_000_000, %{tool_id: 22, owner: {21, 0}, incarnation: 99})
+    assert life(a, 20) == 100
+    assert {:area, _, [%{target_id: 20, body: %{life: 80}}]} = swing(w, attacker, c, 71, 2_000_000, %{tool_id: 22})
+    assert {:area, _, receipts} = result = swing(w, attacker, c, 72, 3_000_000)
+    # 身体作用按既有乘数合成：两次 0.2 深度剩 0.8×0.8 = 64%。
+    assert Enum.sort(Enum.map(receipts, &{&1.target_id, &1.body.life})) == [{20, 64}, {21, 64}]
+    assert result == swing(w, attacker, c, 72, 3_000_000)
+    assert life(a, 20) == 64 and life(b, 21) == 64
+    assert damage(w) == walls
+  end
+
+  test "打空接纳频率，朝向超限不消耗频率，区内全部被拒与战斗关闭返回拒绝且不改生命", c do
+    w = area_world(c)
+    attacker = owner(w, 10, {0.0, 0.0, 0.0})
+    far = owner(w, 20, {2.0, 0.0, 3.0}) # 距中心 3.0，区外
+    assert :ok = GenServer.call(w.scene, {:players, [attacker, far]})
+    walls = damage(w)
+    assert {:area, _, []} = swing(w, attacker, c, 80, 1_000_000)
+    assert {:error, :tool_cooldown} = swing(w, attacker, c, 81, 1_000_000)
+    # 已确认 yaw 0；方向 -X 与前向差 180° > 45°。
+    assert {:error, :facing} = swing(w, attacker, c, 82, 2_000_000, %{direction: {-1.0, 0.0, 0.0}})
+    assert {:area, _, []} = swing(w, attacker, c, 83, 2_000_000)
+    guarded = owner(w, 22, {2.0, 0.0, 0.0}, %{combat_scope: nil})
+    assert :ok = GenServer.call(w.scene, {:players, [attacker, far, guarded]})
+    assert {:error, :combat_not_permitted} = swing(w, attacker, c, 84, 3_000_000)
+    assert life(guarded, 22) == 100
+    assert :ok = GenServer.call(w.scene, {:players, :closed})
+    assert {:error, :combat_not_permitted} = swing(w, attacker, c, 85, 4_000_000)
+    assert life(guarded, 22) == 100 and life(far, 20) == 100
+    assert damage(w) == walls
   end
 end

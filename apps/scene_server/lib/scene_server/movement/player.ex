@@ -1277,6 +1277,8 @@ defmodule SceneServer.Movement.Player do
       identity: state.identity,
       eye: eye_position(state.state.position),
       position: {x, y, z},
+      # 已确认姿态的 yaw（canonical Y-up 量化角）；战斗招式据此复核出招朝向（World.AreaTool）。
+      yaw: state.state.yaw,
       feet: {x, y - state.config.profile.half_height, z},
       tick_us: Clock.deadline(state, 1) - Clock.deadline(state, 0),
       coherence_factor: Body.coherence_factor(state.body),
@@ -1952,6 +1954,8 @@ defmodule SceneServer.Movement.Player do
       identity: state.identity,
       entity_id: state.id,
       entity_epoch: state.epoch,
+        life_generation: state.life_generation,
+        body_status: Body.status_code(state.body.status),
       kind: state.kind,
       profile: state.profile,
       player_pid: self(),

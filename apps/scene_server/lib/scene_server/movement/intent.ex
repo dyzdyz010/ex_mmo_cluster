@@ -40,6 +40,7 @@ defmodule SceneServer.Movement.Intent do
           | {:ok, map()}
           | {:ok, <<_::256>>}
           | {:body, map()}
+          | {:area, non_neg_integer(), [map()]}
           | {:error, term()}
 
   @prefab [:voxel_prefab_place_v1, :voxel_prefab_remove_v1, :voxel_prefab_replace_v1]
@@ -92,5 +93,6 @@ defmodule SceneServer.Movement.Intent do
   defp summary({:ok, seq}) when is_integer(seq), do: "ok seq=#{seq}"
   defp summary({:ok, _}), do: "ok"
   defp summary({:body, receipt}), do: "body target=#{receipt.target_id}"
+  defp summary({:area, seq, receipts}), do: "area seq=#{seq} bodies=#{length(receipts)}"
   defp summary({:error, reason}), do: "error reason=#{inspect(reason)}"
 end

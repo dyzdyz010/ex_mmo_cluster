@@ -381,6 +381,8 @@ defmodule SceneServer.Movement.VoximAoiTest do
       entity_id: id,
       entity_epoch: epoch,
       kind: 0,
+      life_generation: 1,
+      body_status: 0,
       state: %Session.State{position: position, velocity: {0.0, 0.0, 0.0}, grounded: 1, yaw: 0}
     }
   end
@@ -393,6 +395,21 @@ defmodule SceneServer.Movement.VoximAoiTest do
   end
 
   defp position(entity, point), do: %{entity | state: %{entity.state | position: point}}
+
+  test "public life follows existing AOI enter and snapshot without tool permission or HP" do
+    a = entity(10, {0.0, 500.0, 0.0})
+    b = %{entity(20, {1.0, 500.0, 0.0}) | life_generation: 7, body_status: 1}
+    {aoi, enters, _} = update(AOI.new(), [a, b], 40, 1)
+    assert %{life_generation: 7, body_status: 1} = Enum.find(enters, &(&1.identity == a.identity))
+    dead = %{b | body_status: 2}
+    {aoi, [], snapshots} = update(aoi, [a, dead], 43, 1)
+    seen = Enum.find(snapshots, &(&1.identity == a.identity))
+    assert [%{entity_id: 20, life_generation: 7, body_status: 2}] = seen.records
+    revived = %{b | life_generation: 8, body_status: 0}
+    {_, [], snapshots} = update(aoi, [a, revived], 46, 1)
+    seen = Enum.find(snapshots, &(&1.identity == a.identity))
+    assert [%{entity_id: 20, entity_epoch: 1, life_generation: 8, body_status: 0}] = seen.records
+  end
 
   @tag :m3_remaining
   test "one observer receives separate packets for distinct actual target ticks" do

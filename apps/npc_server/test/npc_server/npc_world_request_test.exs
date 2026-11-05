@@ -41,7 +41,7 @@ defmodule NpcServer.NpcWorldRequestTest do
   defp program_tail, do: <<byte_size(@ignite)::16, @ignite::binary>>
 
   defp same(hex, command, context \\ @context) do
-    assert {:ok, decoded} = Codec.decode(frame(hex))
+    assert {:ok, decoded} = Codec.decode(frame(if String.starts_with?(hex, "7D"), do: hex <> "00", else: hex))
     assert Codec.intent?(decoded)
     assert WorldRequest.build(command, context) == decoded
   end
@@ -193,13 +193,13 @@ defmodule NpcServer.NpcWorldRequestTest do
           {"03", :pour, "FFFFFFFD" <> "00000040" <> "0000000A", "0004", "0015"}
         ] do
       same(
-        "7F" <> @head <> action <> coord <> tool <> material,
-        %{
+        "7F" <> @head <> action <> coord <> tool <> material <> if(verb == :scoop, do: "FFFFFFFFFFFFFFE8" <> "0000000000000200" <> "0000000000000050" <> "0000000000000007" <> @zero64 <> "00000000" <> "0015" <> "00", else: ""),
+        Map.merge(if(verb == :scoop, do: %{target: %{micro: {-24,512,80}, granularity: 0, incarnation: 7, owner: {0,0}, material: 21}}, else: %{}), %{
           verb: verb,
           coord: {-3, 64, 10},
           tool_id: String.to_integer(tool, 16),
           material: String.to_integer(material, 16)
-        }
+        })
       )
     end
 

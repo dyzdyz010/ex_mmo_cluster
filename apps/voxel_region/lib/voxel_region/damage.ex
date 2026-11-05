@@ -106,6 +106,19 @@ defmodule VoxelRegion.Damage do
       end
     end)
 
+    # 非 precise 即战斗招式（object 单体段、direction 范围段）：同一判定球与出招朝向上限 aim_max_deg（客户端转身与服务端复核共用）。
+    true = Enum.all?(tools, fn {_, tool} ->
+      mode = Map.get(tool, "target_mode", "precise")
+      mode in ["precise", "object", "direction"] and
+        (mode != "object" or is_map(tool["body_impact"])) and
+        (mode == "precise" or
+          (String.starts_with?(tool["action"], "damage") and
+            is_number(tool["area_radius_m"]) and tool["area_radius_m"] > 0 and
+            is_number(tool["area_offset_m"]) and tool["area_offset_m"] >= tool["area_radius_m"] and
+            tool["area_offset_m"] + tool["area_radius_m"] <= tool["range_macro"] and
+            is_number(tool["aim_max_deg"]) and tool["aim_max_deg"] > 0 and tool["aim_max_deg"] <= 180))
+    end)
+
     # B1 已发布目录没有热字段；带热模型的材料必须完整提供有量纲参数。
     true =
       Enum.all?(materials, fn {_, m} ->
@@ -322,8 +335,15 @@ defmodule VoxelRegion.Damage do
     max(0.0, tool["power"] - material["defense"]) * response["multiplier"] * volume(granularity)
   end
 
-  @doc "GCRA：一个权威 tick 的相位借用，成功后按理论到达时间偿还；不累积空闲额度。"
+  @doc """
+  GCRA：早到最多借一个权威 tick（`tolerance`）的相位，按理论到达时间偿还。
+  晚到不超过两个 tick（`late_credit`）时保持原节拍（next = 理论时刻 + interval），吸收一次传输抖动后紧接的准点段；
+  晚于此（如空闲后）从到达时刻重新起算，不累积空闲额度。
+  两次接纳的最小间隔为 interval − late_credit − tolerance；长期速率仍不超过每 interval 一次。
+  """
   def admit_attack(previous, seq, now, interval, tolerance) do
+    late_credit = 2 * tolerance
+
     cond do
       previous != nil and seq <= previous.seq ->
         {:error, :replayed_attack}
@@ -332,7 +352,7 @@ defmodule VoxelRegion.Damage do
         {:error, :tool_cooldown}
 
       true ->
-        next = if previous, do: max(now, previous.next_us), else: now
+        next = if previous != nil and now - previous.next_us <= late_credit, do: previous.next_us, else: now
         {:ok, %{seq: seq, next_us: next + interval}}
     end
   end

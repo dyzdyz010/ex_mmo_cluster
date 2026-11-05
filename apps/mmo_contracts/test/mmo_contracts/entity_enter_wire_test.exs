@@ -2,13 +2,14 @@ defmodule MmoContracts.EntityEnterWireTest do
   @moduledoc """
   只测试：EntityEnter 在 Hello 39 末尾追加的阵营字段（Voxim Docs/Factions.md §10），大端。
   kind 之后依次：name utf8（u16 长度 + 字节）、guild_name utf8、nation_name utf8、relation u8、relation_source utf8。
+  Hello42 再追加 life_generation u64 和 body_status u8；本例生命 9、状态 2。
   手写字节："阿岚" = E9 98 BF E5 B2 9A（6 字节）；"敌" = E6 95 8C（3 字节）；空串 = 0000。
   客户端 `MmoSessionCodec` Automation 用同一串尾部字节。
   """
   use ExUnit.Case, async: true
   alias MmoContracts.Session
 
-  @tail Base.decode16!("00" <> "0006E998BFE5B29A" <> "0000" <> "0000" <> "04" <> "0003E6958C")
+  @tail Base.decode16!("00" <> "0006E998BFE5B29A" <> "0000" <> "0000" <> "04" <> "0003E6958C" <> "0000000000000009" <> "02")
 
   @value %Session.EntityEnter{
     identity: %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3},
@@ -22,7 +23,8 @@ defmodule MmoContracts.EntityEnterWireTest do
     guild_name: "",
     nation_name: "",
     relation: 4,
-    relation_source: "敌"
+    relation_source: "敌",
+    life_generation: 9, body_status: 2
   }
 
   test "阵营字段紧跟 kind 写在末尾，解码还原同一值" do

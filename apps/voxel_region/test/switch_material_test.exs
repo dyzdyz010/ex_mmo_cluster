@@ -213,6 +213,34 @@ defmodule VoxelRegion.SwitchMaterialTest do
     refute Map.get(cells, {16, 16, 0}, false)
   end
 
+  test "同叶构件的两个微格开关不能用B身份和A射线互相替代", c do
+    {w, root} = start(c, :switch_identity)
+    prefabs = Path.join(root, "prefabs")
+    File.mkdir_p!(prefabs)
+    bytes = <<"VXPD", 1::32-little, 2::32-little,
+      0::signed-little-32, 0::signed-little-32, 0::signed-little-32, @switch::16-little,
+      0::signed-little-32, 0::signed-little-32, 2::signed-little-32, @switch::16-little, 0::32-little>>
+    File.write!(Path.join(prefabs, "switches.vxpd"), bytes)
+    assert :ok = World.publish_prefabs(w, prefabs)
+    assert {:ok, _} = World.place_prefab(w, :crypto.hash(:sha256, bytes), {8, 8, 8}, 0)
+    a = actor({1.0625, 3.0, 1.0625})
+    query = %{request_id: 1, client_intent_seq: 1, logical_scene_id: 1, action: 0, tool_id: 7,
+      direction: {0.0, -1.0, 0.0}, micro: {8, 8, 8}, granularity: 2,
+      incarnation: 0, owner: {0, 0}, material: @switch}
+    assert {:ok, hit} = World.tool_intent(w, a, query)
+    correct = Map.merge(query, Map.take(hit, [:micro, :granularity, :incarnation, :owner, :material]))
+      |> Map.put(:action, 1)
+    assert {:error, :stale_target} = World.tool_intent(w, stamp(a, 1), %{correct | micro: {8, 8, 10}})
+    refute Enum.any?(observe(w).damage, fn {_, row} -> Map.get(row, :closed, false) end)
+    assert {:ok, _} = World.tool_intent(w, stamp(a, 2), %{correct | client_intent_seq: 2, request_id: 2})
+    closed = for {_, %{granularity: 1, closed: true} = row} <- observe(w).damage, do: row.micro
+    assert closed == [{8, 8, 8}]
+    b = actor({1.0625, 3.0, 1.3125})
+    assert {:ok, _} = use_tool(w, b, {8, 8, 10}, 7)
+    closed = for {_, %{granularity: 1, closed: true} = row} <- observe(w).damage, do: row.micro
+    assert Enum.sort(closed) == [{8, 8, 8}, {8, 8, 10}]
+  end
+
   describe "目录发布迁移（D8）" do
     # 纯函数：构造的设备行与逐槽热行（夹具，非世界真值）按目录映射迁移；期望逐项手算。
     test "retire_devices：开关保持开合、灯／加热器变电阻合金、冷板变铜，电源不动；槽行换材料键、HP 按每宏格 HP 之比、热容差计入重标账" do

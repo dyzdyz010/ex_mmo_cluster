@@ -77,7 +77,7 @@ defmodule NpcServer.Brain do
       %{id:, verb: :use_tool, direction:, tool_id:, target:}    # target = probe_toward 返回的 data；direction 可省（见下）
       %{id:, verb: :dismantle, direction:, tool_id:, target:}   # 拆解 prefab 构件，按剩余燃料退料；direction 可省
       %{id:, verb: :place, coord: {x, y, z}, material:, tool_id:}   # 花自己的余额放一个 macro 格
-      %{id:, verb: :scoop | :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
+      %{id:, verb: :scoop, coord:, material:, tool_id:, target:} / %{id:, verb: :pour, coord:, material:, tool_id:}     # 液体盛取 / 倾倒，工具须是对应的液体工具
       %{id:, verb: :craft, material:}                            # 按目录配方合成 material 一次
       %{id:, verb: :eat, material:}                              # 吃一株可食材料（一株 = 目录 place_units）
       %{id:, verb: :attach, kind:, axis:, size:, anchor: {x, y, z}, material:, tool_id:}   # anchor 是 micro 坐标

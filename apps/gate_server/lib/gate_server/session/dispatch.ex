@@ -279,6 +279,11 @@ defmodule GateServer.Session.Dispatch do
     )
   end
 
+  defp reply(state, request, {:area, seq, receipts}) do
+    Enum.each(receipts, &reply(state, request, {:body, &1}))
+    send_encoded(state, ResultFrame.accepted(request, seq))
+  end
+
   defp reply(state, _request, {:ok, %{} = target}),
     do: send_encoded(state, {:voxel_property_state, target})
 

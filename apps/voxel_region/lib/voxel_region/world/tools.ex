@@ -131,9 +131,17 @@ defmodule VoxelRegion.World.Tools do
   def same_tool_target?(hit, request), do: same_target?(hit, request)
 
   def attack_target(before, state, actor, request, target, tool) do
+    case admit_tool(state, actor, request, tool) do
+      {:ok, state} -> apply_attack(before, state, actor, request, target, tool)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @doc "接纳一次工具段并更新该工具的频率；范围内多个对象共用这次授权。"
+  def admit_tool(state, actor, request, tool) do
     # 同一会话只比较 Gate 入口时钟；World/Player 的处理抖动不改变输入相位。
     now = actor.received_us
-    previous = Map.get(state.tool_sessions, actor.player)
+    previous = tool_session(state, actor.player, request.tool_id)
     interval = ceil(tool["interval_seconds"] * 1_000_000)
 
     case Damage.admit_attack(previous, request.client_intent_seq, now, interval, actor.tick_us) do
@@ -142,119 +150,132 @@ defmodule VoxelRegion.World.Tools do
           "voxel_tool_rate request_id=#{request.request_id} client_seq=#{request.client_intent_seq} result=#{reason} clock_node=#{actor.clock_node} received_us=#{now} tat_us=#{previous.next_us} tick_us=#{actor.tick_us}"
         )
 
-        {:reply, {:error, reason}, state}
+        {:error, reason}
 
       {:ok, session} ->
-        unless previous != nil, do: Process.monitor(actor.player)
+        unless Map.has_key?(state.tool_sessions, actor.player), do: Process.monitor(actor.player)
 
         Logger.info(
           "voxel_tool_rate request_id=#{request.request_id} client_seq=#{request.client_intent_seq} result=admitted clock_node=#{actor.clock_node} received_us=#{now} next_us=#{session.next_us} borrowed_us=#{max(0, session.next_us - interval - now)} tick_us=#{actor.tick_us}"
         )
 
-        state = %{state | tool_sessions: Map.put(state.tool_sessions, actor.player, session)}
+        {:ok, put_tool_session(state, actor.player, request.tool_id, session)}
+    end
+  end
+
+  @doc """
+  工具频率按“角色 × 工具”各一份 GCRA（设计 §6.2：技能各自冷却，无公共冷却）；同一工具打人／挖地仍共用一份。
+  外层按角色进程分组：角色首次登记时监视一次，DOWN 时整组删除。
+  """
+  def tool_session(state, player, tool_id), do: state.tool_sessions[player][tool_id]
+
+  def put_tool_session(state, player, tool_id, session),
+    do: %{state | tool_sessions: Map.update(state.tool_sessions, player, %{tool_id => session}, &Map.put(&1, tool_id, session))}
+
+  # 同一范围段只在上层接纳一次；此处复用原材料作用与事务语义，不再按对象扣频率。
+  @doc "对一个已授权语义对象应用既有工具效果与事务，不重复接纳频率。"
+  def apply_attack(before, state, actor, request, target, tool) do
+    cond do
+      tool["action"] == "protection.claim" ->
+        Claims.claim_region(before, state, actor, request, target, tool)
+
+      tool["action"] == "circuit.toggle" ->
+        toggle_switch(before, state, actor, request, target)
+
+      tool["action"] == "beacon.use" ->
+        VoxelRegion.World.Beacons.use_tool(before, state, actor, request, target, tool)
+
+      # R8-04 增量 3：电源安装、补能与加热器投料退役（目录 retired_tools）。迁移前的旧目录仍可加载，其工具只被拒绝。
+      tool["action"] in ["circuit.install", "circuit.feed", "heat"] ->
+        {:reply, {:error, :retired_tool}, state}
+
+      String.starts_with?(tool["action"], "combustion.") ->
+        operate_combustion(before, state, actor, request, target, tool)
+
+      tool["action"] in ["phase.cool", "phase.heat"] ->
+        Phases.operate_phase(before, state, actor, request, target, tool)
+
+      phase_target?(state,target) and not Phase.liquid?(target.material) ->
+        Phases.damage_phase_solid(before, state, actor, request, target, tool)
+
+      true ->
+        material = Map.fetch!(state.properties.materials, target.material)
+
+        amount =
+          if target.granularity == 3,
+            do:
+              Damage.amount(material, tool, 0) * target.max_hp / material["max_hp_per_macro"],
+            else: Damage.amount(material, tool, target.granularity)
+
+        target = %{target | hp: max(0.0, target.hp - amount), seq: state.seq + 1}
 
         cond do
-          tool["action"] == "protection.claim" ->
-            Claims.claim_region(before, state, actor, request, target, tool)
+          target.granularity == 2 and not leaf_component?(state, target.owner) ->
+            {:reply, {:error, :not_a_leaf_component}, before}
 
-          tool["action"] == "circuit.toggle" ->
-            toggle_switch(before, state, actor, request, target)
+          amount == 0.0 ->
+            {:reply, {:error, :ineffective_tool}, state}
 
-          tool["action"] == "beacon.use" ->
-            VoxelRegion.World.Beacons.use_tool(before, state, actor, request, target, tool)
+          target.granularity == 3 and (request.action == 2 or target.hp == 0.0) ->
+            AttachmentOps.destroy_attachment(before, state, actor, request, target)
 
-          # R8-04 增量 3：电源安装、补能与加热器投料退役（目录 retired_tools）。迁移前的旧目录仍可加载，其工具只被拒绝。
-          tool["action"] in ["circuit.install", "circuit.feed", "heat"] ->
-            {:reply, {:error, :retired_tool}, state}
+          request.action == 2 ->
+            dismantle_target(before, state, actor, request, target)
 
-          String.starts_with?(tool["action"], "combustion.") ->
-            operate_combustion(before, state, actor, request, target, tool)
+          target.hp == 0.0 and target.granularity == 2 ->
+            dismantle_target(before, state, actor, request, target)
 
-          tool["action"] in ["phase.cool", "phase.heat"] ->
-            Phases.operate_phase(before, state, actor, request, target, tool)
+          target.hp == 0.0 ->
+            {state, settlement} =
+              if target.material in state.production_materials and Production.drop_table(state, target.material) == nil do
+                Production.settle_material(
+                  state,
+                  actor.cid,
+                  target.material,
+                  recover_units(state,target,@micro * @micro * @micro * state.material_units_per_micro)
+                )
+              else
+                {state, %{}}
+              end
 
-          phase_target?(state,target) and not Phase.liquid?(target.material) ->
-            Phases.damage_phase_solid(before, state, actor, request, target, tool)
+            destroy_target(
+              before,
+              %{state | damage: Map.put(state.damage, Damage.key(target), target)},
+              {:character, actor.cid},
+              target,
+              settlement |> Map.put(:recovery_cid, actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
+            )
 
           true ->
-            material = Map.fetch!(state.properties.materials, target.material)
+            state = %{
+              state
+              | seq: state.seq + 1,
+                damage: Map.put(state.damage, Damage.key(target), target)
+            }
 
-            amount =
-              if target.granularity == 3,
-                do:
-                  Damage.amount(material, tool, 0) * target.max_hp / material["max_hp_per_macro"],
-                else: Damage.amount(material, tool, target.granularity)
+            txn = %{
+              seq: state.seq,
+              entries: [],
+              coarse: [],
+              property_states: [target],
+              epochs: %{}
+            }
+            |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
 
-            target = %{target | hp: max(0.0, target.hp - amount), seq: state.seq + 1}
+            case Log.append_log(before, state, txn, {:character, actor.cid}) do
+              :ok ->
+                state = Log.remember_entry(state, txn)
+                Observation.fanout(state, txn)
+                Observation.fanout_canonical(state, txn, [], [], state)
 
-            cond do
-              target.granularity == 2 and not leaf_component?(state, target.owner) ->
-                {:reply, {:error, :not_a_leaf_component}, before}
-
-              amount == 0.0 ->
-                {:reply, {:error, :ineffective_tool}, state}
-
-              target.granularity == 3 and (request.action == 2 or target.hp == 0.0) ->
-                AttachmentOps.destroy_attachment(before, state, actor, request, target)
-
-              request.action == 2 ->
-                dismantle_target(before, state, actor, request, target)
-
-              target.hp == 0.0 and target.granularity == 2 ->
-                dismantle_target(before, state, actor, request, target)
-
-              target.hp == 0.0 ->
-                {state, settlement} =
-                  if target.material in state.production_materials and Production.drop_table(state, target.material) == nil do
-                    Production.settle_material(
-                      state,
-                      actor.cid,
-                      target.material,
-                      recover_units(state,target,@micro * @micro * @micro * state.material_units_per_micro)
-                    )
-                  else
-                    {state, %{}}
-                  end
-
-                destroy_target(
-                  before,
-                  %{state | damage: Map.put(state.damage, Damage.key(target), target)},
-                  {:character, actor.cid},
-                  target,
-                  settlement |> Map.put(:recovery_cid, actor.cid) |> Map.merge(Observation.operation_metadata(before,actor,request,1,target))
+                Logger.info(
+                  "voxel_damage seq=#{state.seq} target=#{inspect(target.micro)} material=#{target.material} hp=#{target.hp} max_hp=#{target.max_hp} geometry=false"
                 )
 
-              true ->
-                state = %{
-                  state
-                  | seq: state.seq + 1,
-                    damage: Map.put(state.damage, Damage.key(target), target)
-                }
+                {:reply, {:ok, state.seq}, state}
 
-                txn = %{
-                  seq: state.seq,
-                  entries: [],
-                  coarse: [],
-                  property_states: [target],
-                  epochs: %{}
-                }
-                |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
-
-                case Log.append_log(before, state, txn, {:character, actor.cid}) do
-                  :ok ->
-                    state = Log.remember_entry(state, txn)
-                    Observation.fanout(state, txn)
-                    Observation.fanout_canonical(state, txn, [], [], state)
-
-                    Logger.info(
-                      "voxel_damage seq=#{state.seq} target=#{inspect(target.micro)} material=#{target.material} hp=#{target.hp} max_hp=#{target.max_hp} geometry=false"
-                    )
-
-                    {:reply, {:ok, state.seq}, state}
-
-                  {:error, reason} ->
-                    {:reply, {:error, reason}, before}
-                end
+              {:error, reason} ->
+                {:reply, {:error, reason}, before}
             end
         end
     end
@@ -580,7 +601,7 @@ defmodule VoxelRegion.World.Tools do
   def current_actor(actor) do
     try do
       with {:ok, current} <- actor.refresh.(actor.player, actor.identity) do
-        {:ok, Map.merge(current, Map.take(actor, [:received_us, :clock_node]))}
+        {:ok, Map.merge(current, Map.take(actor, [:received_us, :clock_node, :area_targets]))}
       end
     catch
       :exit, _ -> {:error, :invalid_session}

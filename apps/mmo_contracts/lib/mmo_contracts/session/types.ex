@@ -116,7 +116,7 @@ defmodule MmoContracts.Session.EntityEnter do
     :relation,
     :relation_source
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [life_generation: 1, body_status: 0]
 end
 
 defmodule MmoContracts.Session.EntityLeave do

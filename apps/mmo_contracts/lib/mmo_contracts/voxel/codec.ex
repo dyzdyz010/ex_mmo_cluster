@@ -115,7 +115,12 @@ defmodule MmoContracts.Voxel.Codec do
   def tool_intent?(%{action: action, tool_id: tool, direction: {dx, dy, dz}} = request) do
     norm = dx * dx + dy * dy + dz * dz
 
-    action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3, 5] and
+    action in [0, 1, 2] and tool > 0 and Map.get(request, :granularity, 0) in [0, 1, 2, 3, 5, 6] and
+      # g=6 战斗招式：无提示 owner {0,0}+incarnation 0，或单体提示 owner {人物 id,0}+incarnation 生命代次；不成对拒绝（Hello 43）。
+      (Map.get(request, :granularity, 0) != 6 or
+         (action == 1 and request.material == 0 and request.micro == {0, 0, 0} and
+            ((match?({0, 0}, request.owner) and request.incarnation == 0) or
+               (match?({id, 0} when id > 0, request.owner) and request.incarnation > 0)))) and
       (Map.get(request, :granularity, 0) != 5 or
          (action in [0, 1] and match?({id, 0} when id > 0, request.owner) and
             (action == 0 or request.incarnation > 0))) and
@@ -123,8 +128,9 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29））的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用。"
-  def production_intent?(%{action: action, tool_id: tool}),
-    do: action in [0, 1, 2, 3, 4, 5] and tool > 0
+  def production_intent?(%{action: action, tool_id: tool} = request),
+    do: action in [0, 1, 2, 3, 4, 5] and tool > 0 and
+      (action != 2 or match?(%{granularity: 0, micro: {_, _, _}, incarnation: _, owner: {_, _}, material: _}, Map.get(request, :target)))
 
   @doc "附件意图的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用同一组约束。"
   def attachment_intent?(%{action: action, kind: kind, axis: axis, size: size, tool_id: tool}),
@@ -236,8 +242,14 @@ defmodule MmoContracts.Voxel.Codec do
 
   def decode(
         <<0x7F, rid::64, seq::32, scene::64, action::8, x::signed-32, y::signed-32, z::signed-32,
-          tool::16, material::16>>
+          tool::16, material::16, identity::binary>>
       ) do
+    target = case {action, identity} do
+      {2, <<mx::signed-64, my::signed-64, mz::signed-64, incarnation::64, birth::64, occurrence::32, mat::16, granularity::8>>} ->
+        %{micro: {mx, my, mz}, incarnation: incarnation, owner: {birth, occurrence}, material: mat, granularity: granularity}
+      {a, <<>>} when a != 2 -> nil
+      _ -> :invalid
+    end
     request = %{
       request_id: rid,
       client_intent_seq: seq,
@@ -248,7 +260,8 @@ defmodule MmoContracts.Voxel.Codec do
       material: material
     }
 
-    if production_intent?(request),
+    request = if target == nil, do: request, else: Map.put(request, :target, target)
+    if target != :invalid and production_intent?(request),
       do: {:ok, {:voxel_production_intent, request}},
       else: {:error, :invalid_message}
   end
@@ -258,7 +271,7 @@ defmodule MmoContracts.Voxel.Codec do
   def decode(
         <<0x7D, rid::64, seq::32, scene::64, action::8, dx::float-64, dy::float-64, dz::float-64,
           x::signed-64, y::signed-64, z::signed-64, incarnation::64, birth::64, occurrence::32,
-          material::16, tool::16, granularity::8>>
+          material::16, tool::16, granularity::8, id_size::8, beacon_id::binary-size(id_size)>>
       ) do
     request = %{
       request_id: rid,
@@ -271,10 +284,11 @@ defmodule MmoContracts.Voxel.Codec do
       owner: {birth, occurrence},
       material: material,
       tool_id: tool,
-      granularity: granularity
+      granularity: granularity,
+      beacon_id: beacon_id
     }
 
-    if tool_intent?(request),
+    if String.valid?(beacon_id) and tool_intent?(request),
       do: {:ok, {:voxel_tool_intent, request}},
       else: {:error, :invalid_message}
   end

@@ -4,7 +4,7 @@ defmodule MmoContracts.VoximM1ContractTest do
   alias MmoContracts.{Session, Movement, Voxel}
   @root Path.expand("../../../../../Voxim/Docs/M1", __DIR__)
   Code.require_file(Path.join(@root, "tools/capture_movement_wire.exs"))
-  @fixtures Path.join(@root, "fixtures/movement-wire")
+  @fixtures Path.join(@root, "fixtures/movement-wire-v42")
 
   defp replace(bytes, offset, value) do
     <<prefix::binary-size(^offset), _::binary-size(byte_size(^value)), rest::binary>> = bytes

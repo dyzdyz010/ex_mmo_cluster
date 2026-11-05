@@ -69,7 +69,7 @@ defmodule VoxelRegion.ThermistorCeramicWorldTest do
 
   defp intent(c, action, material, coord, tool) do
     seq = next()
-    World.production_intent(c.w, Map.merge(c.actor, %{received_us: seq * 1_000_000, clock_node: node()}),
+    VoxelRegion.TestSupport.confirmed_production_intent(c.w, Map.merge(c.actor, %{received_us: seq * 1_000_000, clock_node: node()}),
       %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: action, material: material,
         tool_id: tool, coord: coord})
   end

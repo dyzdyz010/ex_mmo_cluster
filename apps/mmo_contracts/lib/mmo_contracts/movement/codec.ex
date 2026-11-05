@@ -6,7 +6,9 @@ defmodule MmoContracts.Movement.Codec do
     entity_epoch: :u64,
     interest_generation: :u64,
     collision_revision: :u64,
-    state: :state
+    state: :state,
+    life_generation: :u64,
+    body_status: :u8
   ]
   @m1_messages %{
     1 =>
@@ -63,8 +65,11 @@ defmodule MmoContracts.Movement.Codec do
     MmoContracts.Session.Wire.ordered!(Enum.map(frames, & &1.input_seq))
   end
 
-  defp accept_m1(%Movement.Snapshot{records: records}),
-    do: MmoContracts.Session.Wire.ordered!(Enum.map(records, & &1.entity_id))
+  defp accept_m1(%Movement.Snapshot{records: records}) do
+    MmoContracts.Session.Wire.ordered!(Enum.map(records, & &1.entity_id))
+    true = Enum.all?(records, &(&1.life_generation > 0 and &1.body_status in 0..2))
+    :ok
+  end
 
   defp accept_m1(%Movement.SpeedScale{apply_tick: tick, factor: factor, input_limit: limit}) do
     true = tick > 0 and factor > 0.0 and factor <= 1.0 and limit > 0.0 and limit <= 1.0

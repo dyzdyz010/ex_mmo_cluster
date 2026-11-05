@@ -60,7 +60,7 @@ defmodule VoxelRegion.LooseWorldTest do
 
   defp intent(c, action, material, coord, tool) do
     seq = next()
-    World.production_intent(c.w, Map.merge(c.actor, %{received_us: seq * 1_000_000, clock_node: node()}),
+    VoxelRegion.TestSupport.confirmed_production_intent(c.w, Map.merge(c.actor, %{received_us: seq * 1_000_000, clock_node: node()}),
       %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: action, material: material,
         tool_id: tool, coord: coord})
   end
@@ -146,6 +146,16 @@ defmodule VoxelRegion.LooseWorldTest do
     ledger = s.thermal.supplied_j + s.thermal.environment_j - Map.get(s.thermal, :removed_j, 0.0) -
       Map.get(s.thermal, :transform_j, 0.0)
     assert_in_delta sensible, ledger, 1.0e-6 * max(1.0, s.thermal.supplied_j)
+  end
+
+  defp received_txn_with(pred) do
+    receive do
+      {:canonical_delta, %{transaction: txn}} ->
+        if Enum.any?(Map.get(txn, :property_states, []), pred),
+          do: txn, else: received_txn_with(pred)
+    after
+      1000 -> flunk("committed transformation missing from the subscribed canonical stream")
+    end
   end
 
   defp txn_with(w, from, pred), do: Enum.find(World.entries_after(w, from), &Enum.any?(Map.get(&1, :property_states, []), pred))
@@ -311,14 +321,15 @@ defmodule VoxelRegion.LooseWorldTest do
     assert {:ok, _} = pour(c, {2, 1, 2}, @ore)
     settle(c.w)
     heat(c, {2, 1, 2}, 50_000.0, 2.0e7)
-    from = World.seq(c.w)
+    assert :ok = World.canonical_snapshot_and_subscribe(c.w, {{0,0,0},{1,1,1}}, self(), :loose_transform, false)
+    assert_receive {:canonical_snapshot, :loose_transform, _}, 1000
     s = thermal(c.w, &(material_of(&1, {2, 1, 2}) == @copper))
     assert_in_delta s.thermal.transform_j, ore["transform_heat_per_macro_j"] / 4, 1.0e-6
     assert_in_delta s.thermal.transform_reductant_fuel_j,
       ore["transform_reductant_units_per_unit"] / 4 * c.materials[@coal]["fuel_energy_per_macro_j"], 1.0e-3
     assert s.thermal.transform_units == @quarter
     assert s.liquid_units[{2, 1, 2}] == @quarter
-    product = Enum.find(txn_with(c.w, from, &(&1.material == @copper and &1.flags == 0)).property_states,
+    product = Enum.find(received_txn_with(&(&1.material == @copper and &1.flags == 0)).property_states,
       &(&1.material == @copper))
     assert product.max_hp == c.materials[@copper]["max_hp_per_macro"] / 4
     assert_fuel_closes(s)

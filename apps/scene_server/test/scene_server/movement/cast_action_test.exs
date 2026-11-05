@@ -19,7 +19,7 @@ defmodule SceneServer.Movement.CastActionTest do
       ready: true,
       transfer: nil,
       failure: nil,
-      state: %{position: {1.0, 2.0, 3.0}},
+      state: %{position: {1.0, 2.0, 3.0}, yaw: 0},
       config: %{profile: %{half_height: 0.9}},
       gate: self(),
       authority_ref: self(),
@@ -78,7 +78,7 @@ defmodule SceneServer.Movement.CastActionTest do
     {:noreply, s} = Player.handle_info({:cast_prepared, key, 10.0}, s)
     aim = %{c.request | action: 3, direction: {0.0, 1.0, 0.0}}
     {:reply, {:ok, :controlled}, s} = Player.handle_call({:spell, c.id, aim, %{}}, c.from, s)
-    s = %{s | state: %{position: {4.0, 5.0, 6.0}}}
+    s = %{s | state: %{position: {4.0, 5.0, 6.0}, yaw: 0}}
     {:noreply, s} = Player.handle_info({:release_cast, key}, s)
     assert_receive {:authorize_cast, ^key, actor, request}
     assert actor.eye == {4.0, 5.6, 6.0}

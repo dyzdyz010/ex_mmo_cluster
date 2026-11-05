@@ -107,7 +107,9 @@ defmodule SceneServer.Movement.AOI do
                   guild_name: org_name(profile.guild),
                   nation_name: org_name(profile.nation),
                   relation: Relation.code(relation),
-                  relation_source: source
+                  relation_source: source,
+                  life_generation: entity.life_generation,
+                  body_status: entity.body_status
                 }
 
                 {gen, Map.put(seen, target, gen), [event | events]}
@@ -131,7 +133,9 @@ defmodule SceneServer.Movement.AOI do
               entity_epoch: entity.entity_epoch,
               interest_generation: visible[target],
               collision_revision: entity.collision_revision,
-              state: entity.state
+              state: entity.state,
+              life_generation: entity.life_generation,
+              body_status: entity.body_status
             }
 
             Map.update(groups, entity.simulation_tick, [record], &[record | &1])

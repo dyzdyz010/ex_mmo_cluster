@@ -17,11 +17,11 @@ defmodule MmoContracts.LiquidWireTest do
   end
 
   test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 41
-    hello = %Session.Hello{protocol_version: 41, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 43
+    hello = %Session.Hello{protocol_version: 43, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 41::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 43::16, tail::binary>> = packet
 
     for version <- [10, 15, 16, 17, 18, 19, 20, 21, 22] do
       assert {:error, :invalid_m1_message} =
@@ -33,7 +33,10 @@ defmodule MmoContracts.LiquidWireTest do
         <<0x7F, 19::64, 7::32, 1::64, action, -1::signed-32, 542::signed-32, 3::signed-32, 11::16,
           21::16>>
 
-      assert byte_size(wire) == 38
+      identity = <<-8::signed-64, 4336::signed-64, 24::signed-64, 23::64, 19::64, 7::32, 21::16, 0>>
+      if action == 2, do: assert({:error, :invalid_message} == Voxel.Codec.decode(wire))
+      wire = if action == 2, do: wire <> identity, else: wire
+      assert byte_size(wire) == if(action == 2, do: 85, else: 38)
 
       assert {:ok,
               {:voxel_production_intent, %{action: ^action, coord: {-1, 542, 3}, material: 21}}} =
@@ -42,6 +45,27 @@ defmodule MmoContracts.LiquidWireTest do
 
     assert {:error, :invalid_message} =
              Voxel.Codec.decode(<<0x7F, 19::64, 7::32, 1::64, 6, 0::96, 11::16, 21::16>>)
+  end
+
+  test "tool suffix freezes directory ID and g6 hint identity is constrained" do
+    prefix = <<0x7D, 1::64, 2::32, 3::64, 1, 1.0::float-64, 0.0::float-64, 0.0::float-64>>
+    area = <<0::signed-64, 0::signed-64, 0::signed-64, 0::64, 0::64, 0::32, 0::16, 23::16, 6>>
+    assert {:ok, {:voxel_tool_intent, %{granularity: 6, beacon_id: ""}}} = Voxel.Codec.decode(prefix <> area <> <<0>>)
+    assert {:error, :invalid_message} = Voxel.Codec.decode(prefix <> area)
+    assert {:error, :invalid_message} = Voxel.Codec.decode(prefix <> area <> <<2, "x">>)
+    beacon = <<0::signed-64, 16::signed-64, 0::signed-64, 7::64, 0::64, 0::32, 88::16, 21::16, 0>>
+    assert {:ok, {:voxel_tool_intent, %{beacon_id: "ruyuan"}}} = Voxel.Codec.decode(prefix <> beacon <> <<6, "ruyuan">>)
+    # Hello 43：单体提示 owner {人物 7, 0} + incarnation 生命代次 3，字节布局不变。
+    hint = <<0::signed-64, 0::signed-64, 0::signed-64, 3::64, 7::64, 0::32, 0::16, 22::16, 6>>
+    assert {:ok, {:voxel_tool_intent, %{granularity: 6, tool_id: 22, owner: {7, 0}, incarnation: 3}}} =
+      Voxel.Codec.decode(prefix <> hint <> <<0>>)
+    # 提示与生命代次必须成对；occurrence 非零、材料、微格与探测动作仍拒绝。
+    for field <- [%{action: 0}, %{owner: {1,0}}, %{incarnation: 1}, %{owner: {1,1}, incarnation: 1},
+        %{owner: {0,1}}, %{material: 1}, %{micro: {1,0,0}}, %{owner: {1,0}, incarnation: 1, material: 1}] do
+      request = Map.merge(%{action: 1, tool_id: 23, direction: {1.0,0.0,0.0}, granularity: 6,
+        owner: {0,0}, incarnation: 0, material: 0, micro: {0,0,0}}, field)
+      refute Voxel.Codec.tool_intent?(request)
+    end
   end
 
   test "VXR9 quantity uses same region seq/hash and sorted little-endian suffix" do

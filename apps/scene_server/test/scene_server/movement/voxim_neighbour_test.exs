@@ -9,6 +9,8 @@ defmodule SceneServer.Movement.VoximNeighbourTest do
       entity_id: id,
       entity_epoch: 1,
       kind: 0,
+      life_generation: 1,
+      body_status: 0,
       player_pid: self(),
       active: true,
       simulation_tick: tick,

@@ -201,15 +201,16 @@ defmodule VoxelRegion.World.Liquids do
     with true <- liquid_enabled?(before),
          true <- Phases.flowing_material?(before,request.material) and request.material in before.production_materials,
          true <- liquid_inside?(request.coord,before.liquid_bounds),
+         :ok <- scoop_identity(before, request),
          {:ok,tool} <- Map.fetch(before.properties.tools,request.tool_id),
          true <- tool["action"] == expected,
          :ok <- Production.build_reach(actor.eye,request.coord,tool["range_macro"]),
          :ok <- liquid_sight(before,actor.eye,request.coord),
          # D8：数量按宏格存储，细分宏格（micro 开口）不带数量；客户端据此提示“开口需至少 1 m”。
          :ok <- if(Map.has_key?(before.refined,request.coord),do: {:error,:needs_macro_opening},else: :ok),
-         {:ok,session} <- Damage.admit_attack(Map.get(before.tool_sessions,actor.player),
+         {:ok,session} <- Damage.admit_attack(Tools.tool_session(before,actor.player,request.tool_id),
            request.client_intent_seq,actor.received_us,ceil(tool["interval_seconds"]*1_000_000),actor.tick_us) do
-      state=%{before | tool_sessions: Map.put(before.tool_sessions,actor.player,session)}
+      state=Tools.put_tool_session(before,actor.player,request.tool_id,session)
       with {:ok,_}=result <- move_flowing(state,actor.cid,request.coord,request.material,request.action,tool["liquid_transfer_units"]) do
         unless Map.has_key?(before.tool_sessions,actor.player), do: Process.monitor(actor.player)
         result
@@ -220,6 +221,15 @@ defmodule VoxelRegion.World.Liquids do
       {:error,_}=error -> error
     end
   end
+
+  defp scoop_identity(state, %{action: 2} = request) do
+    {current, _} = target_at(Prefab.micro_coord(request.coord, 0), state)
+    target = Map.get(request, :target)
+    if current != nil and target != nil and current.granularity == 0 and
+         target.granularity == 0 and same_target?(current, target) and current.material == request.material,
+      do: :ok, else: {:error, :stale_target}
+  end
+  defp scoop_identity(_state, _request), do: :ok
 
   # 盛取（action 2）/ 倾倒（action 3）一格至多 limit 单位的流动材料：数量、相态账与余额同一笔提交。
   # 玩家盛倒（`transfer_liquid/3`）与死亡掉落（`death_drop/3`）共用。

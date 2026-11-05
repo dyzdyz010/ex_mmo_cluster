@@ -12,7 +12,7 @@ defmodule VoxelRegion.World.Beacons do
     读条 = 目录 `windup_base_s` + `windup_per_km_s` × 两核心距离（km）。
   """
   import VoxelRegion.World.Canonical
-  alias VoxelRegion.World.{Edits, Log, Observation}
+  alias VoxelRegion.World.{Edits, Log, Observation, Tools}
 
   @micro VoxelRegion.Spatial.micro_resolution()
 
@@ -42,26 +42,31 @@ defmodule VoxelRegion.World.Beacons do
 
   def install(state, _key, _record), do: {:reply, {:error, :invalid_beacon}, state}
 
-  @doc "工具 `beacon.use`：命中锚心石时调谐离角色最近、在可达距离内的信标；已调谐时不提交，回当前 seq。"
+  @doc "工具 `beacon.use`：按已裁决的锚心石身份调谐对应信标，仍检查角色可达距离；已调谐时不提交。"
   def use_tool(before, state, actor, request, target, tool) do
     cond do
       request.action != 1 or not anchor_material?(state, target.material) ->
         {:reply, {:error, :not_an_anchor}, before}
 
       true ->
-        case nearest(state, actor.position, tool["reach_m"]) do
-          nil ->
-            {:reply, {:error, :too_far}, before}
+        case at_target(state, target, Map.get(request, :beacon_id)) do
+          {nil, _state} ->
+            {:reply, {:error, :unknown_beacon}, before}
 
-          beacon ->
+          {beacon, state} ->
             attuned = Map.get(state.beacon_attunements, actor.cid, [])
 
-            if beacon.id in attuned do
-              {:reply, {:ok, state.seq}, state}
-            else
-              list = attuned ++ [beacon.id]
-              next = %{state | beacon_attunements: Map.put(state.beacon_attunements, actor.cid, list)}
-              commit(before, next, {:character, actor.cid}, %{beacon_attunements: %{actor.cid => list}}, nil)
+            cond do
+              distance(actor.position, core_m(beacon)) > tool["reach_m"] ->
+                {:reply, {:error, :too_far}, before}
+
+              beacon.id in attuned ->
+                {:reply, {:ok, state.seq}, state}
+
+              true ->
+                list = attuned ++ [beacon.id]
+                next = %{state | beacon_attunements: Map.put(state.beacon_attunements, actor.cid, list)}
+                commit(before, next, {:character, actor.cid}, %{beacon_attunements: %{actor.cid => list}}, nil)
             end
         end
     end
@@ -132,15 +137,15 @@ defmodule VoxelRegion.World.Beacons do
     {target != nil and anchor_material?(state, target.material), state}
   end
 
-  defp nearest(state, position, reach) do
-    state.beacons
-    |> Map.values()
-    |> Enum.map(&{distance(position, core_m(&1)), &1})
-    |> Enum.filter(fn {d, _} -> d <= reach end)
-    |> Enum.min_by(&elem(&1, 0), fn -> nil end)
-    |> case do
-      nil -> nil
-      {_, beacon} -> beacon
+  defp at_target(state, target, id) do
+    case Map.get(state.beacons, id) do
+      nil -> {nil, state}
+      beacon ->
+        {cell, _} = VoxelRegion.Prefab.macro_slot(beacon.core)
+        state = Edits.ensure_sources(state, [cell])
+        {core, state} = target_at(beacon.core, state)
+        if core != nil and Tools.same_tool_target?(core, target),
+          do: {beacon, state}, else: {nil, state}
     end
   end
 

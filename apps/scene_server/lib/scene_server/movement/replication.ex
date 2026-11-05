@@ -255,7 +255,9 @@ defmodule SceneServer.Movement.Replication do
               :profile,
               :state,
               :simulation_tick,
-              :collision_revision
+              :collision_revision,
+              :life_generation,
+              :body_status
             ]
           )
         )

@@ -213,7 +213,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     supplier=%{actor | gate: gate,identity: :supply,eye: {65.5,1.0625,1.5}}
     {:ok,player}=Actor.start_link(supplier)
     supplier=%{supplier | player: player}
-    {:ok,_}=World.production_intent(w,Map.merge(supplier,%{received_us: 1_000_000,clock_node: node()}),
+    {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(w,Map.merge(supplier,%{received_us: 1_000_000,clock_node: node()}),
       %{request_id: 1,client_intent_seq: 1,logical_scene_id: 1,action: 2,material: 21,tool_id: 18,coord: {65,1,3}})
     GenServer.stop(player)
     if context[:water_units] do
@@ -221,7 +221,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       {:ok,player}=Actor.start_link(remainder)
       remainder=%{remainder | player: player}
       for seq<-2..5 do
-        {:ok,_}=World.production_intent(w,Map.merge(remainder,%{received_us: seq*1_000_000,clock_node: node()}),
+        {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(w,Map.merge(remainder,%{received_us: seq*1_000_000,clock_node: node()}),
           %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: 2,material: 21,tool_id: 11,coord: {65,1,3}})
       end
       GenServer.stop(player)
@@ -363,7 +363,7 @@ defmodule VoxelRegion.PhaseWorldTest do
   end
 
   defp transfer(c,action,seq,cell) do
-    World.production_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),
+    VoxelRegion.TestSupport.confirmed_production_intent(c.w,Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),
       %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,action: action,material: 21,
         tool_id: if(action==2,do: 11,else: 12),coord: cell})
   end
@@ -403,7 +403,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert {:ok, _} = transfer(c, 3, 1, {63,1,2})
     before = observe(c.w)
     initial = row(c.w, {63,1,2})
-    build = fn seq, cell -> World.production_intent(c.w, c.actor,
+    build = fn seq, cell -> VoxelRegion.TestSupport.confirmed_production_intent(c.w, c.actor,
       %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
         action: 1, material: 15, tool_id: 1, coord: cell}) end
     assert :ok = World.canonical_snapshot_and_subscribe(c.w,{{0,0,0},{2,1,1}},self(),:audio,false)
@@ -463,7 +463,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     cell = {63,1,2}
     walls = for p <- VoxelRegion.Liquid.neighborhood([cell]), p != cell, do: {p,15}
     assert {:ok, _} = World.apply_edits(c.w, walls)
-    build = fn seq, at -> World.production_intent(c.w, c.actor,
+    build = fn seq, at -> VoxelRegion.TestSupport.confirmed_production_intent(c.w, c.actor,
       %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
         action: 1, material: 15, tool_id: 1, coord: at}) end
     before = observe(c.w)
@@ -497,11 +497,11 @@ defmodule VoxelRegion.PhaseWorldTest do
     :ok = GenServer.call(c.actor.player, {:eye, {64.5,1.5,2.5}})
     scoop = %{request_id: 2, client_intent_seq: 2, logical_scene_id: 1,
       action: 2, material: 22, tool_id: 11, coord: receiver}
-    assert {:ok, _} = World.production_intent(c.w,
+    assert {:ok, _} = VoxelRegion.TestSupport.confirmed_production_intent(c.w,
       Map.merge(c.actor, %{received_us: 2_000_000, clock_node: node()}), scoop)
     before = observe(c.w)
     assert before.liquid_units[receiver] == @capacity - @quarter
-    assert {:error, :occupied} = World.production_intent(c.w, c.actor,
+    assert {:error, :occupied} = VoxelRegion.TestSupport.confirmed_production_intent(c.w, c.actor,
       %{request_id: 3, client_intent_seq: 3, logical_scene_id: 1,
         action: 1, material: 15, tool_id: 1, coord: cell})
     assert observe(c.w) == before
@@ -852,7 +852,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert integrity<@capacity
     build=%{request_id: 3,client_intent_seq: 3,logical_scene_id: 1,action: 1,
       material: 20,tool_id: 1,coord: {64,1,2}}
-    assert {:ok,_}=World.production_intent(c.w,c.actor,build)
+    assert {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,c.actor,build)
     rebuilt=row(c.w,{64,1,2})
     assert rebuilt.material==20 and rebuilt.max_hp==100.0
     assert_in_delta rebuilt.hp/100.0,integrity/@capacity,1.0e-9
@@ -919,9 +919,9 @@ defmodule VoxelRegion.PhaseWorldTest do
       build=%{request_id: attacks+hits+1,client_intent_seq: attacks+hits+1,logical_scene_id: 1,
         action: 1,material: material,tool_id: 1,coord: cell}
       if hp==0.0 do
-        assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
+        assert {:error,:broken_material}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,c.actor,build)
       else
-        assert {:ok,_}=World.production_intent(c.w,c.actor,build)
+        assert {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,c.actor,build)
         rebuilt=row(c.w,cell)
         assert rebuilt.hp==hp
         assert rebuilt.phase_energy_j==energy
@@ -1029,7 +1029,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     for seq<-3..5,do: assert({:ok,_}=operate(c,19,seq))
     assert elem(observe(c.w).phase_inventory[{1001,13}],1)==0.0
     build=%{request_id: 6,client_intent_seq: 6,logical_scene_id: 1,action: 1,material: 13,tool_id: 1,coord: {63,1,2}}
-    assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
+    assert {:error,:broken_material}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,c.actor,build)
   end
 
   @tag :phase_coverage
@@ -1046,7 +1046,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     lava=row(c.w,{63,1,2})
     assert lava.material==22
     actor=Map.merge(c.actor,%{received_us: 2_000_000,clock_node: node()})
-    assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 2,client_intent_seq: 2,
+    assert {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,actor,%{request_id: 2,client_intent_seq: 2,
       logical_scene_id: 1,action: 2,material: 22,tool_id: 11,coord: {63,1,2}})
     saved=observe(c.w)
     assert saved.material_balances[{1001,22}]==@quarter
@@ -1058,7 +1058,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert observe(c.w).liquid_units[{65,1,2}]==@capacity
     # 普通倒入另一格并凝固，量与携带焓沿同一库存SSOT结算。
     actor=Map.merge(c.actor,%{received_us: 10_000_000,clock_node: node()})
-    assert {:ok,_}=World.production_intent(c.w,actor,%{request_id: 10,client_intent_seq: 10,
+    assert {:ok,_}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,actor,%{request_id: 10,client_intent_seq: 10,
       logical_scene_id: 1,action: 3,material: 22,tool_id: 12,coord: {64,1,2}})
     assert row(c.w,{64,1,2}).material==22
     assert_in_delta row(c.w,{64,1,2}).phase_energy_j,lava.phase_energy_j/4,1.0e-6
@@ -1090,7 +1090,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert elem(s.phase_inventory[{1001,20}],1)==0.0
     before=observe(c.w)
     build=%{request_id: 40,client_intent_seq: 40,logical_scene_id: 1,action: 1,material: 20,tool_id: 1,coord: {64,1,2}}
-    assert {:error,:broken_material}=World.production_intent(c.w,c.actor,build)
+    assert {:error,:broken_material}=VoxelRegion.TestSupport.confirmed_production_intent(c.w,c.actor,build)
     after_reject=observe(c.w)
     assert after_reject.material_balances==before.material_balances
     assert after_reject.phase_inventory==before.phase_inventory

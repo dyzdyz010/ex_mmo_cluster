@@ -64,7 +64,7 @@ defmodule VoxelRegion.LiquidWorldTest do
       supplier=%{supplier | player: player}
       for seq<-1..4 do
         {:ok,_}=World.production_intent(w,
-          Map.merge(supplier,%{received_us: seq*1_000_000,clock_node: node()}),request(2,seq,{65,1,3}))
+          Map.merge(supplier,%{received_us: seq*1_000_000,clock_node: node()}),request(w,2,seq,{65,1,3}))
       end
       GenServer.stop(player)
       send(gate,:stop)
@@ -73,10 +73,36 @@ defmodule VoxelRegion.LiquidWorldTest do
     %{w: w,opts: opts,actor: actor,root: root}
   end
 
-  defp request(action,seq,coord),do: %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,
+  defp request(w,action,seq,coord) do
+    request = %{request_id: seq,client_intent_seq: seq,logical_scene_id: 1,
     action: action,material: 21,tool_id: if(action==2,do: 11,else: 12),coord: coord}
+    if action == 2 do
+      snapshot = World.simulation_snapshot(w, [], {{0,0,0},{2,1,1}})
+      {x,y,z} = coord
+      micro = {x*8,y*8,z*8}
+      row = Enum.find(snapshot.property_states, &(&1.micro == micro and &1.granularity == 0))
+      target = %{micro: micro, granularity: 0, material: 21,
+        incarnation: Map.get(snapshot.epochs, coord, 0), owner: if(row, do: row.owner, else: {0,0})}
+      Map.put(request, :target, target)
+    else
+      request
+    end
+  end
   defp transfer(c,action,seq,coord),do: World.production_intent(c.w,
-    Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request(action,seq,coord))
+    Map.merge(c.actor,%{received_us: seq*1_000_000,clock_node: node()}),request(c.w,action,seq,coord))
+  test "scoop in flight rejects a replacement with identical cell and material", c do
+    assert {:ok, _} = transfer(c, 3, 10, {63,1,2})
+    frozen = request(c.w, 2, 11, {63,1,2})
+    assert {:ok, _} = transfer(c, 2, 12, {63,1,2})
+    assert {:ok, _} = transfer(c, 3, 13, {63,1,2})
+    prior = {World.seq(c.w), quantities(c.w), balance(c.w)}
+    actor = Map.merge(c.actor, %{received_us: 14_000_000, clock_node: node()})
+    stale = %{frozen | request_id: 14, client_intent_seq: 14}
+    assert {:error, :stale_target} = World.production_intent(c.w, actor, stale)
+    assert {World.seq(c.w), quantities(c.w), balance(c.w)} == prior
+    assert {:ok, _} = transfer(c, 2, 15, {63,1,2})
+  end
+
   defp balance(w),do: Enum.find(World.material_balances(w,1001),&(&1.material==21)).balance
   defp quantities(w),do: World.simulation_snapshot(w,[1001],{{0,0,0},{2,1,1}}).liquid_quantities
   defp total(w),do: Enum.sum(Map.values(quantities(w)))+balance(w)
@@ -507,7 +533,7 @@ defmodule VoxelRegion.LiquidWorldTest do
     File.rm!(path<>".reject")
     assert {:error,:use_liquid_tool}=World.apply_edit(c.w,{63,1,2},0)
     assert {:error,:use_liquid_tool}=World.apply_edits(c.w,[{{64,1,2},21}])
-    assert {:error,:unknown_resource}=World.production_intent(c.w,c.actor,request(1,3,{64,1,2}))
+    assert {:error,:unknown_resource}=World.production_intent(c.w,c.actor,request(c.w,1,3,{64,1,2}))
     assert {:error,:invalid_liquid_operation}=transfer(c,3,4,{66,1,2})
     assert total(c.w)==@capacity
     # A regular pickaxe must not credit a full macro for partial Water21.
@@ -527,8 +553,9 @@ defmodule VoxelRegion.LiquidWorldTest do
     assert {:ok,_}=World.apply_edit(c.w,{63,1,1},0)
     assert {:ok,seq}=transfer(c,3,2,{63,1,2})
     fast_actor=Map.merge(c.actor,%{received_us: 2_000_001,clock_node: node()})
-    assert {:ok,^seq}=World.production_intent(c.w,fast_actor,request(3,2,{63,1,2}))
-    assert {:error,:tool_cooldown}=World.production_intent(c.w,fast_actor,request(2,3,{63,1,2}))
+    assert {:ok,^seq}=World.production_intent(c.w,fast_actor,request(c.w,3,2,{63,1,2}))
+    # 频率按“角色 × 工具”（设计 §6.2）：紧跟的同一倾倒工具 12 被自己的冷却拒绝；舀取 11 另有一份，不再共用。
+    assert {:error,:tool_cooldown}=World.production_intent(c.w,fast_actor,request(c.w,3,3,{63,1,2}))
     assert quantities(c.w)==%{{63,1,2}=>@transfer}
     assert {:ok,_}=World.apply_edit(c.w,{63,1,1},11)
     assert {:error,:occluded_liquid}=transfer(c,2,4,{63,1,2})

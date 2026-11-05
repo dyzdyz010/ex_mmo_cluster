@@ -90,20 +90,20 @@ defmodule NpcServer.WorldRequest do
     if fields = target_fields(command, context),
       do:
         {:voxel_tool_intent,
-         common(context, Map.merge(fields, %{action: @tool[verb], tool_id: tool}))}
+         common(context, Map.merge(fields, %{action: @tool[verb], tool_id: tool, beacon_id: Map.get(command, :beacon_id, "")}))}
   end
 
-  defp shape(%{verb: verb, coord: {x, y, z}, material: material, tool_id: tool}, context)
+  defp shape(%{verb: verb, coord: {x, y, z}, material: material, tool_id: tool} = command, context)
        when is_map_key(@production, verb) and is_integer(x) and is_integer(y) and is_integer(z) and
               is_integer(material) and is_integer(tool),
        do:
          {:voxel_production_intent,
-          common(context, %{
+          common(context, Map.merge(if(verb == :scoop, do: %{target: Map.get(command, :target)}, else: %{}), %{
             action: @production[verb],
             coord: {x, y, z},
             material: material,
             tool_id: tool
-          })}
+          }))}
 
   defp shape(%{verb: verb, material: material}, context)
        when is_map_key(@inventory, verb) and is_integer(material),

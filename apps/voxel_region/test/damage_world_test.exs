@@ -2122,8 +2122,10 @@ defmodule VoxelRegion.DamageWorldTest do
     refute Enum.any?(removed.damage,fn {_,t}->t.granularity in [3,4] end)
     assert removed.material_balances==state.material_balances
     assert removed.thermal.removed_j>0
-    [txn]=World.entries_after(c.w,removed.seq-1)
-    assert Enum.any?(txn.property_states,&(&1.granularity==3 and &1.incarnation==id and &1.flags==1))
+    # 同一次热推进可在删除后继续提交宿主温度；精确观察本轮附件删除事务，不把“最后一笔”当作删除身份。
+    assert [txn] = World.entries_after(c.w,state.seq)
+      |> Enum.filter(fn txn -> Enum.any?(Map.get(txn,:property_states,[]),
+        &(&1.granularity==3 and &1.incarnation==id and &1.flags==1)) end)
     assert Enum.count(txn.property_states,&(&1.granularity==4 and &1.flags==1))==8
     stop_supervised(World)
     w=start_supervised!({World,c.opts})

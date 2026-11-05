@@ -1,5 +1,5 @@
 defmodule MmoContracts.Session.Codec do
-  @protocol_version 41
+  @protocol_version 43
   @doc "全局系统功能：当前 Hello 版本，部署组合与线编解码共用。"
   def protocol_version, do: @protocol_version
   alias MmoContracts.Session
@@ -68,7 +68,9 @@ defmodule MmoContracts.Session.Codec do
          guild_name: :utf8,
          nation_name: :utf8,
          relation: :u8,
-         relation_source: :utf8
+         relation_source: :utf8,
+         life_generation: :u64,
+         body_status: :u8
        ]},
     9 =>
       {Session.EntityLeave,
@@ -309,6 +311,11 @@ defmodule MmoContracts.Session.Codec do
          true =
            id > 0 and generation > 0 and part in ["head", "torso", "legs"] and
              life + recoverable <= 100
+
+  defp accept_m1(%Session.EntityEnter{life_generation: life, body_status: status}) do
+    true = life > 0 and status in 0..2
+    :ok
+  end
 
   defp accept_m1(_), do: :ok
 end

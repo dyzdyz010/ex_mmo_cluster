@@ -695,7 +695,7 @@ defmodule NpcServer.NpcBodyWorldTest do
            orientation: 0
          },
          %{verb: :place, coord: @pillar, material: @stone, tool_id: 1},
-         %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1},
+         %{verb: :scoop, coord: @pillar, material: @stone, tool_id: 1, target: %{micro: {128,520,80}, granularity: 0, incarnation: 1, owner: {0,0}, material: @stone}},
          %{verb: :look, min: {0, 0, 0}, max: {100, 100, 100}}
        ]
      }}
@@ -2410,7 +2410,7 @@ defmodule NpcServer.NpcBodyWorldTest do
       "use_tool" => %{"tool_id" => 1, "target" => pillar},
       "dismantle" => %{"tool_id" => 1, "target" => pillar},
       "place" => cell,
-      "scoop" => cell,
+      "scoop" => %{"tool_id" => 1, "target" => pillar},
       "pour" => cell,
       "craft" => %{"material" => @stone},
       "eat" => %{"material" => @stone},

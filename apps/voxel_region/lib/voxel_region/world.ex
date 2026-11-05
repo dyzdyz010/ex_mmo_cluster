@@ -1269,9 +1269,9 @@ defmodule VoxelRegion.World do
 
   defp call({:body_tool, actor, request, distance}, _, state) do
     tool = Map.fetch!(state.properties.tools, request.tool_id)
-    previous = state.tool_sessions[actor.player]
+    previous = VoxelRegion.World.Tools.tool_session(state, actor.player, request.tool_id)
     interval = ceil(tool["interval_seconds"] * 1_000_000)
-    # 和地形攻击共用 GCRA，不能交替打人／挖地规避频率。
+    # 同一工具和地形攻击共用 GCRA，不能交替打人／挖地规避频率。
     with true <- distance <= tool["range_macro"],
          {:error, :no_target, _} <- Damage.raycast(actor.eye, request.direction, distance, state, &target_at/2),
          {:ok, session} <- if(request.action == 0,
@@ -1279,8 +1279,8 @@ defmodule VoxelRegion.World do
       if session == nil do
         {:reply, :ok, state}
       else
-        if previous == nil, do: Process.monitor(actor.player)
-        {:reply, :ok, %{state | tool_sessions: Map.put(state.tool_sessions, actor.player, session)}}
+        unless Map.has_key?(state.tool_sessions, actor.player), do: Process.monitor(actor.player)
+        {:reply, :ok, VoxelRegion.World.Tools.put_tool_session(state, actor.player, request.tool_id, session)}
       end
     else
       false -> {:reply, {:error, :out_of_reach}, state}
@@ -1374,14 +1374,14 @@ defmodule VoxelRegion.World do
     tool = Map.fetch!(state.properties.tools, request.tool_id)
 
     result =
-      case current_actor(actor) do
+      case tool_actor(actor, request) do
         {:error, reason} ->
           {:reply, {:error, reason}, before}
 
         {:ok, actor} ->
           refreshed = System.monotonic_time(:microsecond)
 
-          # 刷新后的姿态决定射线与作用格（评审 A2）：按最终姿态复核闭包，缺页即挂起原消息（装齐重放时再刷新、再复核）。
+          # 普通工具用刷新姿态，范围即时段用Scene冻结姿态；均按实际裁决姿态复核闭包，缺页装齐重放。
           case posed(state, message, from, {:tool_intent, actor, request}) do
             {:deferred, _} = deferred -> deferred
             :ready -> tool_owner(before, state, actor, request, tool, started, refreshed)
@@ -1394,6 +1394,23 @@ defmodule VoxelRegion.World do
 
     result
   end
+
+  defp tool_actor(actor, %{granularity: 6}) do
+    # 即时段的源/目标几何共同冻结在Scene采样时；装页后只复核源身份，不混入另一时刻的位置。
+    with {:ok, current} <- current_actor(actor) do
+      if current.life_generation == actor.life_generation,
+        do: {:ok, Map.merge(current, Map.take(actor, [:eye, :position, :yaw]))},
+        else: {:error, :stale_life}
+    end
+  end
+  defp tool_actor(actor, _request), do: current_actor(actor)
+
+  defp tool_owner(before, state, actor, %{granularity: 6} = request, tool, _started, _refreshed),
+    do: VoxelRegion.World.AreaTool.run(before, state, actor, request, tool)
+
+  # 战斗招式只走 g=6 判定区，不经精确射线落到地形／构件／附件（设计 §6.4）。
+  defp tool_owner(before, _state, _actor, _request, %{"target_mode" => mode}, _started, _refreshed) when mode != "precise",
+    do: {:reply, {:error, :invalid_tool}, before}
 
   defp tool_owner(before, state, actor, request, tool, started, refreshed) do
     Logger.info(
@@ -1418,7 +1435,9 @@ defmodule VoxelRegion.World do
           loose_cell?(state, target) and String.starts_with?(tool["action"], "damage") ->
             {:reply, {:error, :use_liquid_tool}, before}
 
-          not same_tool_target?(target, request) ->
+          # 叶损伤按owner，开关却按微格存状态：B的声明不能因同leaf而授权射线实际命中的A。
+          not same_tool_target?(target, request) or
+              (tool["action"] == "circuit.toggle" and target.granularity == 2 and target.micro != request.micro) ->
             {:reply, {:error, :stale_target}, state}
 
           # 受保护区域许可（先于玩法原因报出）：认领工具自身的规则在其适配里裁决；信标调谐不改世界，不受区域限制。

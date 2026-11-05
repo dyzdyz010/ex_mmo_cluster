@@ -14,6 +14,24 @@ defmodule VoxelRegion.TestSupport do
     {Canonical.region_of(lo), {rx + 1, ry + 1, rz + 1}}
   end
 
+  @doc "只测试：从公共确认投影读取宏格身份，再经正式生产意图提交。"
+  def confirmed_production_intent(world, actor, %{action: 2, coord: {x,y,z} = cell} = request) do
+    request = if Map.has_key?(request, :target) do
+      request
+    else
+      snapshot = VoxelRegion.World.simulation_snapshot(world, [], tiles({cell,{x+1,y+1,z+1}}))
+      micro = VoxelRegion.Prefab.micro_coord(cell, 0)
+      row = Enum.find(snapshot.property_states, &(&1.micro == micro and &1.granularity == 0))
+      material = VoxelRegion.World.material_snapshot(world, [], [cell]).probe_occupancy |> hd() |> Map.fetch!(:material)
+      target = %{micro: micro, granularity: 0, material: material,
+        incarnation: Map.get(snapshot.epochs, cell, 0), owner: if(row, do: row.owner, else: {0,0})}
+      Map.put(request, :target, target)
+    end
+    VoxelRegion.World.production_intent(world, actor, request)
+  end
+  def confirmed_production_intent(world, actor, request),
+    do: VoxelRegion.World.production_intent(world, actor, request)
+
   defmodule LegacySave do
     @moduledoc """
     只测试：制造 M2a 之前的旧格式存档（单笔整世界检查点、无页表），验证冷启动经迁移路径识别旧格式。

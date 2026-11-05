@@ -368,3 +368,13 @@ Global system：工具冲击与投射物热经同一入口 `Player.receive_effec
 2026-11-01 候选整合：`effects-layer@b65b1904` 与启动短命任务、World 授权、可读性三分支一起从 `master@0dcb1457` 正常 merge，未移动 master、未部署。角色作用许可仍只归 `Harm`，不与 `VoxelRegion.Access` 的 World 写权限混合；保留当前 Player 三张移交字段清单 SSOT，仅把 `body_hits/projectile_hits` 替换为 `effect_receipts`。Snapshot v3 是身体持久化格式，不是 Session/Voxel wire 变更；v2 只迁移已有投射物收据，不凭空恢复旧版未保存的工具回执。依据沿用本节既有作用设计与唯一 owner 合同，不新增玩法或备用入口。
 
 本轮最小证明范围：先在合入前用正常 Mix 入口记录陈旧目标被接受、工具回执冷恢复后二次扣伤的两个红反例；合入后复用 `tool_action_test`（目标回调，不冒充完整链路）与 `body/snapshot_test` 的 v2/v3 小例，并在 `revive_relocation_test` 的真实 seal/import 用例增加正常 `receive_effect` 接纳、cut/新 owner 收据保留、重投不改身体断言。该真实 Scene/Player/NIF 接缝使用独占身体存储与 World 替身，不需 PostgreSQL，不等价于 `p0_body_lifecycle_test` 的真实 PostgreSQL 崩溃恢复；本轮不运行后者，也不声称玩家链路/性能/部署已验收。命令、原生退出码、版本与剩余旧失败见 `.demo/observe/integration-20261101/server/REPORT.md`。
+
+2026-11-02 Interaction targeting（Global system，实跑/视觉验收另记）；2026-11-03 增量 3 改为“战斗招式不伤体素”（设计 `Docs/Interaction-Targeting-Design.md` §6.3、§6.4，Hello 43）。
+- 非 `precise` 工具即战斗招式：工具 22 `object` 单体段、工具 23 `direction` 范围段，都只走 g6 判定区；精确射线路径（g0–g3）与 g5 人物射线攻击拒绝它们（`invalid_tool`／`stale_or_forbidden_target`），g5 探测（action 0）不变。
+- 目录是形状/频率/朝向唯一来源：球心 `authority.eye + aim * area_offset_m`，半径 `area_radius_m`，出招水平朝向上限 `aim_max_deg`（客户端转身与服务端复核共用）。
+- World（`VoxelRegion.World.AreaTool`）顺序：朝向复核（请求方向水平分量对已确认 yaw，超限 `{:error, :facing}` 且不消耗频率）→ 本工具 GCRA 一次 → 在提交前快照里用 canonical 射线判人物胶囊遮挡。体素只遮挡，不投递任何体素损伤、无新事务。
+- 单体段按 `AreaTool.select/3` 选一个：g6 提示 `{id, 生命代次}` 在可见集合里只选它；同 id 异生命代次剔除不替补；否则选判定中心到胶囊轴段最近者（同距 id 升序）。范围段作用全部可见对象，每段每对象一次。
+- 结果：区内无人 `{:area, seq, []}`（打空，已接纳）；有人但 `receive_effect` 全部拒绝返回首个拒绝；Scene 关闭战斗 `combat_not_permitted`（不调 World、不消耗频率）。
+- 频率按“角色 × 工具”各一份（§6.2 技能独立冷却）；同一工具打人／挖地仍共用。
+- 已知缺口：附件（薄面/线）不参与人物遮挡；俯仰不复核。
+验证：`apps/voxel_region` 下 `mix test --no-start test/area_tool_world_test.exs`，`apps/scene_server` 下 `test/scene_server/movement/tool_action_test.exs`；不替代 QUIC、双客户端输入、表现或性能验收。

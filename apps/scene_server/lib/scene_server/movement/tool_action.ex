@@ -5,15 +5,17 @@ defmodule SceneServer.Movement.ToolAction do
   """
   alias SceneServer.Movement.{Harm, Player, Scene, ToolHit}
   alias VoxelRegion.World
+  require Logger
 
   @doc "经当前角色 owner 登记后执行一次；重复请求读原结果。调用方只有 `SceneServer.Movement.Intent.run/3`。"
   def run(player, identity, world, request, ingress) do
     case Player.authorize_tool(player, identity, request, ingress) do
       {:ok, actor} ->
-        result =
-          if request.granularity == 5,
-            do: body_tool(world, actor, request),
-            else: World.tool_intent(world, actor, request)
+        result = case request.granularity do
+          5 -> body_tool(world, actor, request)
+          6 -> area_tool(world, actor, request)
+          _ -> World.tool_intent(world, actor, request)
+        end
 
         if request.action == 0,
           do: result,
@@ -27,10 +29,47 @@ defmodule SceneServer.Movement.ToolAction do
     end
   end
 
+  # 战斗招式（g=6）：World 复核朝向、频率与遮挡并选出受击人物（单体段一个、范围段全部）；
+  # 区内无人＝打空（已接纳）；区内有人但全部被拒＝首个拒绝原因。战斗关闭直接拒绝，不消耗频率。
+  defp area_tool(world, actor, request) do
+    with {:ok, tool} <- World.tool_definition(world, request.tool_id),
+         %{} = impact <- tool["body_impact"],
+         {:ok, players} <- Scene.tool_candidates(actor.scene) do
+      targets = for player <- players, player != actor.player,
+        {:ok, target} <- [Player.hit_context(player)], target.status != :dead,
+        do: target
+      case World.tool_intent(world, Map.put(actor, :area_targets, targets), request) do
+        {:area, seq, targets} ->
+          {receipts, errors} = Enum.reduce(targets, {[], []}, fn {target, part}, {receipts, errors} ->
+            result = Player.receive_effect(target.player, %{
+              key: actor.action_key, actor: actor, target: target, part: part,
+              request_id: request.request_id, impact: %{
+                depth: impact["depth"], protein_g: impact["protein_g"], heal_s: impact["heal_s"]}})
+            case result do
+              {:ok, receipt} -> {[receipt | receipts], errors}
+              {:error, reason} ->
+                Logger.info("area_body_target request_id=#{request.request_id} target=#{target.id} result=#{reason}")
+                {receipts, [reason | errors]}
+            end
+          end)
+          if receipts == [] and errors != [],
+            do: {:error, List.last(errors)},
+            else: {:area, seq, Enum.reverse(receipts)}
+        error -> error
+      end
+    else
+      nil -> {:error, :unsupported_body_tool}
+      :error -> {:error, :invalid_tool}
+      {:error, _} = error -> error
+    end
+  end
+
   defp body_tool(world, actor, request) do
     {target_id, 0} = request.owner
 
     with {:ok, tool} <- World.tool_definition(world, request.tool_id),
+         # 只有精确工具经人物射线攻击；战斗招式一律走 g=6 判定区。探测（action 0）任何工具照旧。
+         true <- request.action == 0 or Map.get(tool, "target_mode", "precise") == "precise",
          %{} = impact <- tool["body_impact"],
          {:ok, players} <- Scene.tool_candidates(actor.scene),
          {:ok, target, distance, part} <-
