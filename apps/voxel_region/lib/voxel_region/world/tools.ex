@@ -614,6 +614,35 @@ defmodule VoxelRegion.World.Tools do
     if is_number(result), do: result, else: {:error, :invalid_tool}
   end
 
+  @doc """
+  人物攻击遮挡（g5 人物射线与 g6 判定区共用）：眼点沿单位方向 `direction` 走 `distance` 米，途经实占宏格／微格／构件
+  或越过有附件的面槽即被挡（设计 §6.4）。液体对攻击透明（同 `tool_target/4` 对非相变工具的液体规则）；线槽无厚度不挡。
+  没有损伤许可的阻挡物也不当空气。返回 `{occluded?, state}`。
+  """
+  def body_occluded?(state, eye, direction, distance) do
+    case Damage.raycast(eye, direction, distance, state, &solid_at/2) do
+      {:ok, _, state} -> {true, state}
+      {:error, :no_target, state} ->
+        to = List.to_tuple(for i <- 0..2, do: elem(eye, i) + elem(direction, i) * distance)
+        {Enum.any?(Attachments.faces_crossed(eye, to), &Map.has_key?(state.attachments, &1)), state}
+    end
+  end
+
+  defp solid_at(micro, state) do
+    case target_at(micro, state) do
+      {%{material: material}, state} = hit -> if Phase.liquid?(material), do: {nil, state}, else: hit
+      miss -> miss
+    end
+  end
+
+  # g=6 战斗招式只读射程内遮挡，不落体素（micro 恒为 {0,0,0}，不是编辑坐标）。
+  def intent_keys(state, {:tool_intent, actor, %{granularity: 6} = request}) do
+    case tool_range(state, request.tool_id) do
+      range when is_number(range) -> {:ok, tool_regions(actor, range)}
+      error -> error
+    end
+  end
+
   def intent_keys(state, {:tool_intent, actor, request}) do
     with range when is_number(range) <- tool_range(state, request.tool_id),
          true <- Edits.valid_edit_coord?(Damage.macro(request)) do

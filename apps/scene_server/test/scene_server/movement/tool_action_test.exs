@@ -274,6 +274,17 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert damage(w) == walls
   end
 
+  test "单体段候选先经 Harm 许可：更近的禁伤人物不抢选，作用落到区内可伤者", c do
+    w = area_world(c)
+    attacker = owner(w, 10, {0.0, 0.0, 0.0})
+    # 手算：guarded(22) 站 {2,0,0} 距判定球心 0（最近）但自身战斗范围为空；B(21) 站 {2,0,0.8} 距中心 0.8，入区且许可。
+    guarded = owner(w, 22, {2.0, 0.0, 0.0}, %{combat_scope: nil})
+    b = owner(w, 21, {2.0, 0.0, 0.8})
+    assert :ok = GenServer.call(w.scene, {:players, [attacker, guarded, b]})
+    assert {:area, _, [%{target_id: 21, body: %{life: 80}}]} = swing(w, attacker, c, 90, 1_000_000, %{tool_id: 22})
+    assert life(guarded, 22) == 100
+  end
+
   test "打空接纳频率，朝向超限不消耗频率，区内全部被拒与战斗关闭返回拒绝且不改生命", c do
     w = area_world(c)
     attacker = owner(w, 10, {0.0, 0.0, 0.0})

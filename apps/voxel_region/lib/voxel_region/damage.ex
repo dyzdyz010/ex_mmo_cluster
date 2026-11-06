@@ -110,7 +110,7 @@ defmodule VoxelRegion.Damage do
     true = Enum.all?(tools, fn {_, tool} ->
       mode = Map.get(tool, "target_mode", "precise")
       mode in ["precise", "object", "direction"] and
-        (mode != "object" or is_map(tool["body_impact"])) and
+        (mode == "precise" or is_map(tool["body_impact"])) and
         (mode == "precise" or
           (String.starts_with?(tool["action"], "damage") and
             is_number(tool["area_radius_m"]) and tool["area_radius_m"] > 0 and

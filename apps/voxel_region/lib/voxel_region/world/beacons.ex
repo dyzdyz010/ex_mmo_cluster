@@ -49,25 +49,30 @@ defmodule VoxelRegion.World.Beacons do
         {:reply, {:error, :not_an_anchor}, before}
 
       true ->
-        case at_target(state, target, Map.get(request, :beacon_id)) do
-          {nil, _state} ->
-            {:reply, {:error, :unknown_beacon}, before}
+        # 先按记录核可达距离，再读核心格：远处信标不为一次拒绝装页。
+        beacon = Map.get(state.beacons, Map.get(request, :beacon_id))
+        cond do
+          beacon == nil -> {:reply, {:error, :unknown_beacon}, before}
+          distance(actor.position, core_m(beacon)) > tool["reach_m"] -> {:reply, {:error, :too_far}, before}
+          true -> attune(before, state, actor, target, beacon)
+        end
+    end
+  end
 
-          {beacon, state} ->
-            attuned = Map.get(state.beacon_attunements, actor.cid, [])
+  defp attune(before, state, actor, target, beacon) do
+    case core_target(state, beacon, target) do
+      {false, _state} ->
+        {:reply, {:error, :unknown_beacon}, before}
 
-            cond do
-              distance(actor.position, core_m(beacon)) > tool["reach_m"] ->
-                {:reply, {:error, :too_far}, before}
+      {true, state} ->
+        attuned = Map.get(state.beacon_attunements, actor.cid, [])
 
-              beacon.id in attuned ->
-                {:reply, {:ok, state.seq}, state}
-
-              true ->
-                list = attuned ++ [beacon.id]
-                next = %{state | beacon_attunements: Map.put(state.beacon_attunements, actor.cid, list)}
-                commit(before, next, {:character, actor.cid}, %{beacon_attunements: %{actor.cid => list}}, nil)
-            end
+        if beacon.id in attuned do
+          {:reply, {:ok, state.seq}, state}
+        else
+          list = attuned ++ [beacon.id]
+          next = %{state | beacon_attunements: Map.put(state.beacon_attunements, actor.cid, list)}
+          commit(before, next, {:character, actor.cid}, %{beacon_attunements: %{actor.cid => list}}, nil)
         end
     end
   end
@@ -137,16 +142,11 @@ defmodule VoxelRegion.World.Beacons do
     {target != nil and anchor_material?(state, target.material), state}
   end
 
-  defp at_target(state, target, id) do
-    case Map.get(state.beacons, id) do
-      nil -> {nil, state}
-      beacon ->
-        {cell, _} = VoxelRegion.Prefab.macro_slot(beacon.core)
-        state = Edits.ensure_sources(state, [cell])
-        {core, state} = target_at(beacon.core, state)
-        if core != nil and Tools.same_tool_target?(core, target),
-          do: {beacon, state}, else: {nil, state}
-    end
+  defp core_target(state, beacon, target) do
+    {cell, _} = VoxelRegion.Prefab.macro_slot(beacon.core)
+    state = Edits.ensure_sources(state, [cell])
+    {core, state} = target_at(beacon.core, state)
+    {core != nil and Tools.same_tool_target?(core, target), state}
   end
 
   defp core_m(%{core: {x, y, z}}), do: {(x + 0.5) / @micro, (y + 0.5) / @micro, (z + 0.5) / @micro}

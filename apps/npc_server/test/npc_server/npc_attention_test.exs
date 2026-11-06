@@ -232,7 +232,9 @@ defmodule NpcServer.NpcAttentionTest do
       guild_name: "",
       nation_name: "",
       relation: 0,
-      relation_source: ""
+      relation_source: "",
+      life_generation: 1,
+      body_status: 0
     }
 
     assert {:noreply, changed} =

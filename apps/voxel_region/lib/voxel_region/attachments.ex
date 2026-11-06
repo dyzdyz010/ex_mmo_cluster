@@ -46,6 +46,24 @@ defmodule VoxelRegion.Attachments do
   defp anchor_ranges(lo, hi, widened),
     do: List.to_tuple(for(i <- 0..2, do: (elem(lo, i) - if(i in widened, do: 1, else: 0))..elem(hi, i)//1))
 
+  @doc """
+  线段 a→b（canonical 米）越过的面槽地址：每越过某轴一个整微格平面记一面 `{0, axis, p}`，`p[axis]` 为该平面，
+  其余两轴取交点所在微格（与 `Damage.raycast/5` 的微格遍历同一取整，交点落在棱上不另造邻面）。
+  线槽没有厚度，不出现在结果里。只给地址，不判断槽是否存在。
+  """
+  def faces_crossed(a, b) do
+    for axis <- 0..2, d = elem(b, axis) - elem(a, axis), d != 0.0,
+        k <- planes(elem(a, axis) * @micro, elem(b, axis) * @micro) do
+      t = (k / @micro - elem(a, axis)) / d
+      {0, axis, List.to_tuple(for i <- 0..2, do: if(i == axis, do: k,
+        else: floor((elem(a, i) + t * (elem(b, i) - elem(a, i))) * @micro)))}
+    end
+  end
+
+  # 正向越过 (from, to] 内的整平面；负向从起点所在格的下界平面起越过 [to, from]。
+  defp planes(from, to) when to > from, do: (floor(from) + 1)..floor(to)//1
+  defp planes(from, to), do: ceil(to)..floor(from)//1
+
   @doc "面两侧／棱四周候选支撑。"
   def neighbors({0,axis,p}), do: [p,offset(p,axis,-1)]
   def neighbors({1,axis,p}) do

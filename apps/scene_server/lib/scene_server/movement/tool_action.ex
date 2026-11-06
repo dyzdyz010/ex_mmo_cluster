@@ -30,14 +30,16 @@ defmodule SceneServer.Movement.ToolAction do
   end
 
   # 战斗招式（g=6）：World 复核朝向、频率与遮挡并选出受击人物（单体段一个、范围段全部）；
-  # 区内无人＝打空（已接纳）；区内有人但全部被拒＝首个拒绝原因。战斗关闭直接拒绝，不消耗频率。
+  # 候选带 Harm 许可标记交 World：区内无人＝打空（已接纳）；区内有人但全都不可作用＝combat_not_permitted；
+  # 有可作用者时只在其中选；提交全部被目标 owner 拒绝＝首个拒绝原因。战斗关闭直接拒绝，不消耗频率。
   defp area_tool(world, actor, request) do
     with {:ok, tool} <- World.tool_definition(world, request.tool_id),
          %{} = impact <- tool["body_impact"],
          {:ok, players} <- Scene.tool_candidates(actor.scene) do
+      # Harm 许可随候选交 World（同投射物采样的判断）：禁伤人物不参与单体选择，但“区内有人”仍可区分于打空。
       targets = for player <- players, player != actor.player,
         {:ok, target} <- [Player.hit_context(player)], target.status != :dead,
-        do: target
+        do: Map.put(target, :permitted, Harm.permitted?(target.scope, actor.position, target.position))
       case World.tool_intent(world, Map.put(actor, :area_targets, targets), request) do
         {:area, seq, targets} ->
           {receipts, errors} = Enum.reduce(targets, {[], []}, fn {target, part}, {receipts, errors} ->

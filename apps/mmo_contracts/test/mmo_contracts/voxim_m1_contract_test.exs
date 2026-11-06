@@ -4,7 +4,9 @@ defmodule MmoContracts.VoximM1ContractTest do
   alias MmoContracts.{Session, Movement, Voxel}
   @root Path.expand("../../../../../Voxim/Docs/M1", __DIR__)
   Code.require_file(Path.join(@root, "tools/capture_movement_wire.exs"))
-  @fixtures Path.join(@root, "fixtures/movement-wire-v42")
+  # 当前黄金样本直接读 Hello 43；v42 只留作旧版本拒绝的反例。
+  @fixtures Path.join(@root, "fixtures/movement-wire-v43")
+  @v42 Path.join(@root, "fixtures/movement-wire-v42")
 
   defp replace(bytes, offset, value) do
     <<prefix::binary-size(^offset), _::binary-size(byte_size(^value)), rest::binary>> = bytes
@@ -13,16 +15,9 @@ defmodule MmoContracts.VoximM1ContractTest do
 
   defp packet(name) do
     {_, domain, value} = Enum.find(VoximM1Vectors.vectors(), &(elem(&1, 0) == name))
-    value = current(value)
     {:ok, bytes} = VoximM1Vectors.encode(domain, value)
     {domain, value, bytes}
   end
-
-  # 历史黄金样本保持原字节；当前会话显式升级 Hello，其他消息仍逐字节相等。
-  defp current(%Session.Hello{} = value),
-    do: %{value | protocol_version: Codec.protocol_version()}
-
-  defp current(value), do: value
 
   test "M1 rejects an unsupported envelope version at the network boundary" do
     assert Codec.decode(<<255, 0, 2, 1, 6, 0, 0, 0, 16, 0::128>>) ==
@@ -69,24 +64,22 @@ defmodule MmoContracts.VoximM1ContractTest do
   test "all domain messages consume actual both-endpoint golden bytes and encode identically" do
     for {name, domain, value} <- VoximM1Vectors.vectors(), producer <- ["elixir", "ue"] do
       golden = File.read!(Path.join(@fixtures, "#{producer}_#{name}.bin"))
-
-      golden =
-        if name == "hello" do
-          assert {:error, :invalid_m1_message} = Codec.decode(golden)
-          replace(golden, 9, <<Codec.protocol_version()::16>>)
-        else
-          golden
-        end
-
-      value = current(value)
       assert {:ok, ^value} = VoximM1Vectors.decode(domain, golden)
       assert {:ok, ^golden} = VoximM1Vectors.encode(domain, value)
     end
   end
 
+  test "both endpoints' v42 Hello is rejected; only the protocol byte differs from v43" do
+    for producer <- ["elixir", "ue"] do
+      old = File.read!(Path.join(@v42, "#{producer}_hello.bin"))
+      assert binary_part(old, 9, 2) == <<42::16>>
+      assert {:error, :invalid_m1_message} = Codec.decode(old)
+      assert replace(old, 9, <<43::16>>) == File.read!(Path.join(@fixtures, "#{producer}_hello.bin"))
+    end
+  end
+
   test "every envelope rejects truncation extra bytes and wrong framing fields" do
     for {_name, domain, value} <- VoximM1Vectors.vectors() do
-      value = current(value)
       {:ok, bytes} = VoximM1Vectors.encode(domain, value)
 
       for invalid <- [

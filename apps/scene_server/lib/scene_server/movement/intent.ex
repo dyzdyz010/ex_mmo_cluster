@@ -64,7 +64,8 @@ defmodule SceneServer.Movement.Intent do
     result =
       ToolAction.run(session.player, session.identity, session.world_ref, request, ingress)
 
-    {result, request.action in [1, 2] and request.granularity != 5}
+    # 人物作用（g5 人物射线、g6 战斗判定区）不改余额，不刷新。
+    {result, request.action in [1, 2] and request.granularity not in [5, 6]}
   end
 
   defp execute(session, kind, request, ingress) do

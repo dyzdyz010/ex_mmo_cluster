@@ -1273,7 +1273,7 @@ defmodule VoxelRegion.World do
     interval = ceil(tool["interval_seconds"] * 1_000_000)
     # 同一工具和地形攻击共用 GCRA，不能交替打人／挖地规避频率。
     with true <- distance <= tool["range_macro"],
-         {:error, :no_target, _} <- Damage.raycast(actor.eye, request.direction, distance, state, &target_at/2),
+         {false, _} <- VoxelRegion.World.Tools.body_occluded?(state, actor.eye, request.direction, distance),
          {:ok, session} <- if(request.action == 0,
            do: {:ok, nil}, else: Damage.admit_attack(previous, request.client_intent_seq, actor.received_us, interval, actor.tick_us)) do
       if session == nil do
@@ -1284,7 +1284,7 @@ defmodule VoxelRegion.World do
       end
     else
       false -> {:reply, {:error, :out_of_reach}, state}
-      {:ok, _, _} -> {:reply, {:error, :occluded}, state}
+      {true, _} -> {:reply, {:error, :occluded}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end

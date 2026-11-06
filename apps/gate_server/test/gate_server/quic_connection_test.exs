@@ -380,7 +380,9 @@ defmodule T1TransportTest do
         entity_epoch: 1,
         interest_generation: 1,
         collision_revision: 1,
-        state: %{player | yaw: seq}
+        state: %{player | yaw: seq},
+        life_generation: 1,
+        body_status: 0
       }
 
       snapshot = %MmoContracts.Movement.Snapshot{
@@ -695,7 +697,9 @@ defmodule T1TransportTest do
       guild_name: "",
       nation_name: "",
       relation: 0,
-      relation_source: ""
+      relation_source: "",
+      life_generation: 1,
+      body_status: 0
     }
 
     leave = %Session.EntityLeave{
@@ -814,7 +818,9 @@ defmodule T1TransportTest do
         velocity: {0.0, 0.0, 0.0},
         grounded: 1,
         yaw: id
-      }
+      },
+      life_generation: 1,
+      body_status: 0
     }
   end
 

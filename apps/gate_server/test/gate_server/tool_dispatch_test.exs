@@ -12,8 +12,7 @@ defmodule GateServer.ToolDispatchTest do
       do: {:reply, {:done, result}, result}
     def handle_call({:authorize_tool, _, _, _}, _, receipt),
       do: {:reply, {:done, {:body, receipt}}, receipt}
-    def handle_call({:page_request, _, {:material_balances, _}}, _, result),
-      do: {:reply, [], result}
+    # 不接余额查询：g5／g6 人物作用不刷新余额，误刷新即在此进程崩溃、用例失败。
   end
 
   test "范围逐目标发完整ToolState后回同一次意图的最终事务", _ do

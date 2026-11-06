@@ -269,7 +269,7 @@ Global system：`Intent.run/3` 是角色世界意图（工具、生产 1..5、�
 无进程无状态；玩家的 Gate 编辑 worker（`GateServer.Session.Dispatch`）与 NPC Body 的 FIFO worker 都只调它，
 交来与 `Codec.decode/1` 同形的 `{kind, request}` 和意图到达入口的时刻（`received_us`、`clock_node`）。
 工具走 `ToolAction.run/5`（`authorize_tool`），其余走 `Player.tool_context/2` 再进 World 公共 API；结果原样返回，
-另附“是否补发余额”（工具 action 1 / 2 且 granularity ≠ 5；生产 / 附件 / prefab 仅角色接纳通过；发布不补）。
+另附“是否补发余额”（工具 action 1 / 2 且 granularity 不是 5、6 的人物作用；生产 / 附件 / prefab 仅角色接纳通过；发布不补）。
 `tool_context` 在施法互斥之后加死亡门（`:dead`），施放 action 1 遇死亡也回 `:dead`（原为 `cast_too_soon`）；
 World 写意图与发布的 refresh 回调同一函数，所以“授权后、提交前死亡”同样得到 `dead`。同一函数也是 NPC
 技能上下文与 `design_house` 刷新 actor 的来源，死亡期间 NPC 技能无法开始，进行中的设计会话以 `dead` 结束。每次调用一行
@@ -371,10 +371,10 @@ Global system：工具冲击与投射物热经同一入口 `Player.receive_effec
 
 2026-11-02 Interaction targeting（Global system，实跑/视觉验收另记）；2026-11-03 增量 3 改为“战斗招式不伤体素”（设计 `Docs/Interaction-Targeting-Design.md` §6.3、§6.4，Hello 43）。
 - 非 `precise` 工具即战斗招式：工具 22 `object` 单体段、工具 23 `direction` 范围段，都只走 g6 判定区；精确射线路径（g0–g3）与 g5 人物射线攻击拒绝它们（`invalid_tool`／`stale_or_forbidden_target`），g5 探测（action 0）不变。
-- 目录是形状/频率/朝向唯一来源：球心 `authority.eye + aim * area_offset_m`，半径 `area_radius_m`，出招水平朝向上限 `aim_max_deg`（客户端转身与服务端复核共用）。
-- World（`VoxelRegion.World.AreaTool`）顺序：朝向复核（请求方向水平分量对已确认 yaw，超限 `{:error, :facing}` 且不消耗频率）→ 本工具 GCRA 一次 → 在提交前快照里用 canonical 射线判人物胶囊遮挡。体素只遮挡，不投递任何体素损伤、无新事务。
-- 单体段按 `AreaTool.select/3` 选一个：g6 提示 `{id, 生命代次}` 在可见集合里只选它；同 id 异生命代次剔除不替补；否则选判定中心到胶囊轴段最近者（同距 id 升序）。范围段作用全部可见对象，每段每对象一次。
-- 结果：区内无人 `{:area, seq, []}`（打空，已接纳）；有人但 `receive_effect` 全部拒绝返回首个拒绝；Scene 关闭战斗 `combat_not_permitted`（不调 World、不消耗频率）。
+- 目录是形状/频率/朝向唯一来源：球心 `authority.eye + bearing * area_offset_m`（`bearing` 为请求方向投影到水平面后归一化，俯仰丢弃），半径 `area_radius_m`，出招水平朝向上限 `aim_max_deg`（客户端转身与服务端复核共用）。所有非 `precise` 工具都须带 `body_impact`。
+- World（`VoxelRegion.World.AreaTool`）顺序：朝向复核（水平朝向对已确认 yaw，超限或近乎竖直 `{:error, :facing}` 且不消耗频率）→ 本工具 GCRA 一次 → 在提交前快照里判人物胶囊遮挡。体素只遮挡，不投递任何体素损伤、无新事务。g6 闭包只含眼点射程区域。
+- 遮挡与 g5 人物射线共用 `World.Tools.body_occluded?/4`：宏格、微格、构件和附件面挡；液体透明（同精确工具对非相变工具）；线附件无厚度不挡。
+- 候选由 Scene 冻结并带 `Harm.permitted?` 标记；单体段在区内可见且可作用者中按 `AreaTool.select/3` 选一个：g6 提示 `{id, 生命代次}` 只选它；同 id 异生命代次剔除不替补；否则选判定中心到胶囊轴段最近者（同距 id 升序）。范围段作用全部可见可作用对象，每段每对象一次。
+- 结果：区内无人 `{:area, seq, []}`（打空，已接纳）；区内有人但全都不可作用 `combat_not_permitted`（频率已消耗）；提交时 `receive_effect` 全部拒绝返回首个拒绝；Scene 关闭战斗 `combat_not_permitted`（不调 World、不消耗频率）。
 - 频率按“角色 × 工具”各一份（§6.2 技能独立冷却）；同一工具打人／挖地仍共用。
-- 已知缺口：附件（薄面/线）不参与人物遮挡；俯仰不复核。
 验证：`apps/voxel_region` 下 `mix test --no-start test/area_tool_world_test.exs`，`apps/scene_server` 下 `test/scene_server/movement/tool_action_test.exs`；不替代 QUIC、双客户端输入、表现或性能验收。

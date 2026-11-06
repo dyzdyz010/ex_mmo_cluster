@@ -114,9 +114,11 @@ defmodule MmoContracts.Session.EntityEnter do
     :guild_name,
     :nation_name,
     :relation,
-    :relation_source
+    :relation_source,
+    :life_generation,
+    :body_status
   ]
-  defstruct @enforce_keys ++ [life_generation: 1, body_status: 0]
+  defstruct @enforce_keys
 end
 
 defmodule MmoContracts.Session.EntityLeave do
