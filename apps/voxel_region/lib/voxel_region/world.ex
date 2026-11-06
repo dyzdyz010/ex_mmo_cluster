@@ -1399,7 +1399,7 @@ defmodule VoxelRegion.World do
     # 即时段的源/目标几何共同冻结在Scene采样时；装页后只复核源身份，不混入另一时刻的位置。
     with {:ok, current} <- current_actor(actor) do
       if current.life_generation == actor.life_generation,
-        do: {:ok, Map.merge(current, Map.take(actor, [:eye, :position, :yaw]))},
+        do: {:ok, Map.merge(current, Map.take(actor, [:eye, :position, :yaw, :sim_tick]))},
         else: {:error, :stale_life}
     end
   end

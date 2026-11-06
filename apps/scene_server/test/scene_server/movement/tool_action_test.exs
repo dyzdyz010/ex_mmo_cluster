@@ -41,6 +41,8 @@ defmodule SceneServer.Movement.ToolActionTest do
       transfer: nil,
       failure: nil,
       state: %{position: {2.0, 0.0, 0.0}, velocity: {0.0, 0.0, 0.0}, yaw: 0},
+      # 真实 Player 状态恒有该字段；工具上下文把它作为确认位置的 tick 交给观察日志。
+      simulation_tick: 0,
       scene: self(),
       gate: self(),
       sink: Sink,

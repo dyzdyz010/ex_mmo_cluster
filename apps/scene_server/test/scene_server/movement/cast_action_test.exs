@@ -20,6 +20,8 @@ defmodule SceneServer.Movement.CastActionTest do
       transfer: nil,
       failure: nil,
       state: %{position: {1.0, 2.0, 3.0}, yaw: 0},
+      # 真实 Player 状态恒有该字段；actor_context 把它作为确认位置的 tick 交给观察日志。
+      simulation_tick: 0,
       config: %{profile: %{half_height: 0.9}},
       gate: self(),
       authority_ref: self(),

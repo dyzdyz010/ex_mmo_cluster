@@ -95,6 +95,37 @@ defmodule VoxelRegion.AreaToolWorldTest do
     assert observe(c).damage == before.damage and observe(c).seq == before.seq
   end
 
+  test "观察日志：眼点、各候选位置／tick／遮挡结果、选中者与原因逐字段可读（只观测，不改裁决）", c do
+    assert {:ok, _} = World.apply_edit(c.world, {2, 1, 0}, 19)
+    behind = Map.put(body(1, {3.3, 1.5, 0.5}), :sim_tick, 70)
+    open = Map.put(body(2, {2.5, 1.5, 1.5}), :sim_tick, 71)
+    far = Map.put(body(3, {2.5, 1.5, 2.5}), :sim_tick, 72)
+    c = %{c | actor: Map.put(c.actor, :sim_tick, 77)}
+    previous = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous) end)
+    line = fn bodies, at, changes ->
+      ExUnit.CaptureLog.capture_log(fn -> swing(c, bodies, at, changes) end)
+    end
+
+    hit = line.([behind, open, far], 1_000_000, %{tool_id: 22, owner: {1, 0}, incarnation: 1})
+    assert hit =~ "actor_owner=1001 eye=0.500,1.500,0.500 actor_tick=77 hint=1/1 received_us=1000000 clock_node=#{node()} server_mono_us="
+    assert hit =~ " c=1:3.300,1.500,0.500:70:occluded;2:2.500,1.500,1.500:71:clear;3:2.500,1.500,2.500:72:out chosen=2 reason=hit"
+
+    blocked = line.([behind], 2_000_000, %{tool_id: 22})
+    assert blocked =~ "hint=none"
+    assert blocked =~ " c=1:3.300,1.500,0.500:70:occluded chosen=none reason=occluded"
+
+    missed = line.([far], 3_000_000, %{})
+    assert missed =~ " c=3:2.500,1.500,2.500:72:out chosen=none reason=miss_out_of_area"
+
+    protected = line.([%{open | permitted: false}], 4_000_000, %{})
+    assert protected =~ " c=2:2.500,1.500,1.500:71:clear chosen=none reason=not_permitted"
+
+    refused = line.([open], 5_000_000, %{direction: {-1.0, 0.0, 0.0}})
+    assert refused =~ "result=facing" and refused =~ "reason=facing" and refused =~ "eye=0.500,1.500,0.500 actor_tick=77"
+  end
+
   test "液体不遮挡人物攻击：眼在水下、对象在水中，g6 判定区与 g5 人物射线都照常命中", c do
     # 同“墙后对象”手算：眼点 (0.5,1.5,0.5) 在 {0,1,0}；a 在 {2,1,0}，behind 的射线穿过 {2,1,0}；石墙遮挡由“墙后对象”覆盖。
     # 精确工具里液体对非相变工具透明，人物攻击同规则。

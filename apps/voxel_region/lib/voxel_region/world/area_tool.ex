@@ -44,19 +44,20 @@ defmodule VoxelRegion.World.AreaTool do
         {:reply, {:error, :invalid_tool}, before}
 
       not facing?(actor.yaw, request.direction, tool["aim_max_deg"]) ->
-        Logger.info("voxel_area_tool request_id=#{request.request_id} client_seq=#{request.client_intent_seq} result=facing yaw=#{actor.yaw}")
+        Logger.info("voxel_area_tool request_id=#{request.request_id} client_seq=#{request.client_intent_seq} result=facing yaw=#{actor.yaw} reason=facing #{judged(actor, request)}")
         {:reply, {:error, :facing}, before}
 
       true ->
         case Tools.admit_tool(state, actor, request, tool) do
           {:ok, state} ->
-            {visible, state} = visible_bodies(state, actor.eye, request.direction, tool, Map.get(actor, :area_targets, []))
+            {judged_bodies, state} = visible_bodies(state, actor.eye, request.direction, tool, Map.get(actor, :area_targets, []))
+            visible = for {target, outcome} <- judged_bodies, outcome == :clear, do: target
             permitted = Enum.filter(visible, & &1.permitted)
             # owner {0,0} / incarnation 0 即无提示；人物 id 恒 > 0，不会与之相等。
             bodies = if tool["target_mode"] == "object",
               do: select(permitted, center(actor.eye, request.direction, tool), {elem(request.owner, 0), request.incarnation}),
               else: permitted
-            Logger.info("voxel_area_tool request_id=#{request.request_id} client_seq=#{request.client_intent_seq} mode=#{tool["target_mode"]} visible=#{length(visible)} permitted=#{length(permitted)} bodies=#{length(bodies)} seq=#{state.seq} elapsed_us=#{System.monotonic_time(:microsecond) - started}")
+            Logger.info("voxel_area_tool request_id=#{request.request_id} client_seq=#{request.client_intent_seq} mode=#{tool["target_mode"]} visible=#{length(visible)} permitted=#{length(permitted)} bodies=#{length(bodies)} seq=#{state.seq} elapsed_us=#{System.monotonic_time(:microsecond) - started} #{judged(actor, request)} c=#{candidates(judged_bodies)} chosen=#{chosen(bodies)} reason=#{reason(judged_bodies, visible, permitted, bodies)}")
             if visible != [] and permitted == [],
               do: {:reply, {:error, :combat_not_permitted}, state},
               else: {:reply, {:area, state.seq, Enum.map(bodies, &{&1, :torso})}, state}
@@ -110,21 +111,57 @@ defmodule VoxelRegion.World.AreaTool do
   end
 
   # 遮挡与 g5 人物射线同一判定（`Tools.body_occluded?/4`：体素、构件、附件面挡，液体透明）。
+  # 返回每个候选及其结果 `:out`（区外）／`:occluded`／`:clear`；只有 `:clear` 者可见。
   defp visible_bodies(state, eye, aim, tool, bodies) do
     center = center(eye, aim, tool)
     Enum.map_reduce(Enum.uniq_by(bodies, &{&1.id, &1.life_generation}), state, fn target, state ->
       if body_in_range?(center, tool["area_radius_m"], target) do
         {direction, distance} = toward(eye, axis_point(target, elem(eye, 1)))
         case Tools.body_occluded?(state, eye, direction, max(0.0, distance - target.profile.radius)) do
-          {false, state} -> {target, state}
-          {true, state} -> {nil, state}
+          {false, state} -> {{target, :clear}, state}
+          {true, state} -> {{target, :occluded}, state}
         end
       else
-        {nil, state}
+        {{target, :out}, state}
       end
     end)
-    |> then(fn {bodies, state} -> {Enum.reject(bodies, &is_nil/1), state} end)
   end
+
+  # ---- 观察日志字段（只读；坐标 canonical Y-up 米，三位小数；拿不到的值写 none）----
+
+  # 出招者、实际用于遮挡的眼点、该确认位置的模拟 tick、客户端提示与到达／裁决时刻。
+  # received_us 是 Gate 入口单调时钟（clock_node 上），server_mono_us 是 World 进程所在节点的单调时钟。
+  defp judged(actor, request) do
+    {owner, _} = request.owner
+    hint = if owner == 0 and request.incarnation == 0, do: "none", else: "#{owner}/#{request.incarnation}"
+    "actor_owner=#{Map.get(actor, :cid, "none")} eye=#{point(actor.eye)} actor_tick=#{Map.get(actor, :sim_tick, "none")} hint=#{hint} " <>
+      "received_us=#{Map.get(actor, :received_us, "none")} clock_node=#{Map.get(actor, :clock_node, "none")} server_mono_us=#{System.monotonic_time(:microsecond)}"
+  end
+
+  defp candidates(judged_bodies) do
+    case Enum.map_join(judged_bodies, ";", fn {target, outcome} ->
+           "#{target.id}:#{point(target.position)}:#{Map.get(target, :sim_tick, "none")}:#{outcome}"
+         end) do
+      "" -> "none"
+      line -> line
+    end
+  end
+
+  defp chosen([]), do: "none"
+  defp chosen(bodies), do: Enum.map_join(bodies, ",", & &1.id)
+
+  # 与实际返回同一分支：有人但全不可作用 → not_permitted；有受击者 → hit；否则区内全被挡 → occluded，其余打空 → miss_out_of_area。
+  defp reason(judged_bodies, visible, permitted, bodies) do
+    cond do
+      visible != [] and permitted == [] -> "not_permitted"
+      bodies != [] -> "hit"
+      Enum.any?(judged_bodies, &(elem(&1, 1) == :occluded)) -> "occluded"
+      true -> "miss_out_of_area"
+    end
+  end
+
+  defp point({x, y, z}), do: "#{coord(x)},#{coord(y)},#{coord(z)}"
+  defp coord(value), do: :erlang.float_to_binary(value * 1.0, decimals: 3)
 
   defp toward(a, b) do
     delta = map3(fn i -> elem(b, i) - elem(a, i) end)

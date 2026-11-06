@@ -381,6 +381,8 @@ defmodule SceneServer.Movement.Player do
         identity: state.identity,
         life_generation: state.life_generation,
         position: state.state.position,
+        # 该确认位置对应的模拟 tick；只进 voxel_area_tool 观察日志。
+        sim_tick: state.simulation_tick,
         velocity: state.state.velocity,
         profile: state.config.profile,
         scope: Map.get(state.config, :combat_scope),
@@ -1277,6 +1279,8 @@ defmodule SceneServer.Movement.Player do
       identity: state.identity,
       eye: eye_position(state.state.position),
       position: {x, y, z},
+      # 该确认位置对应的模拟 tick；只进 voxel_area_tool 观察日志。
+      sim_tick: state.simulation_tick,
       # 已确认姿态的 yaw（canonical Y-up 量化角）；战斗招式据此复核出招朝向（World.AreaTool）。
       yaw: state.state.yaw,
       feet: {x, y - state.config.profile.half_height, z},
