@@ -222,7 +222,7 @@ defmodule VoxelRegion.Bench.PagingEquiv do
   end
   def audit_hook(%{from: {from, _request}} = debug, {:out, reply, from, state}, _name) do
     result = try do
-      {:ok, projection(state, debug.mode, reply)}
+      {:ok, projection(state, debug.mode, page_reply(reply))}
     rescue
       error -> {:error, Atom.to_string(error.__struct__)}
     catch
@@ -233,11 +233,16 @@ defmodule VoxelRegion.Bench.PagingEquiv do
   end
   def audit_hook(debug, _event, _name), do: debug
 
+  # b9041f44 起 World 只回冻结的编码输入，字节由请求进程编码；审计在同一切点用唯一编码实现还原载荷回复。
+  defp page_reply({:ok, %{input: _} = job}), do: {:ok, elem(VoxelRegion.World.Payloads.encode_reply(job), 0)}
+  defp page_reply(reply), do: reply
+
   defp selected?(:fence, :seq), do: true
   defp selected?(:initialization, :liquid_activity), do: true
   defp selected?({:directory, _side}, :seq), do: true
   defp selected?({:full_fence, _side}, :seq), do: true
-  defp selected?({:page, {level, region}, cv}, {:serve_item, cv, %{level: level, region: region}}), do: true
+  # 消息形状 {:serve_item, 请求 token, 客户端版本, item}（68097c60 起带 token）。
+  defp selected?({:page, {level, region}, cv}, {:serve_item, _token, cv, %{level: level, region: region}}), do: true
   defp selected?(_, _), do: false
 
   defp identity(state) do

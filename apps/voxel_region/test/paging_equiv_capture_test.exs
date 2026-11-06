@@ -3,6 +3,8 @@ Code.require_file("../bench/paging_m0/equiv.ex", __DIR__)
 defmodule VoxelRegion.PagingEquivCaptureTest do
   @moduledoc "只测试：有限页采集的真实 File/World 读取、退休和诊断钩子生命周期；不证明完整迁移或性能。"
   use ExUnit.Case, async: false
+  # 采集器属 M3 迁移基准工具，不在默认回归内：`mix test --include bench` 显式运行。
+  @moduletag :bench
   alias VoxelRegion.{OverlayLog, Prefab, World}
   alias VoxelRegion.Bench.PagingEquiv
   alias VoxelRegion.TestSupport.Source

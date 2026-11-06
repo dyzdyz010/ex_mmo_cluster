@@ -1,9 +1,10 @@
 # 只测试：默认仅加载共享夹具；数据库由需要持久化的测试显式启动。
-ExUnit.start(exclude: [:oracle, :realtime, :benchmark, :sim])
+ExUnit.start(exclude: [:oracle, :realtime, :benchmark, :sim, :bench])
 Logger.configure(level: :warning)
 Code.require_file("support/world_fixtures.exs", __DIR__)
 Code.require_file("support/held_page_log.exs", __DIR__)
 Code.require_file("support/null_log.exs", __DIR__)
+Code.require_file("support/binary_retention.exs", __DIR__)
 Code.require_file("support/simulation_io_log.exs", __DIR__)
 Code.require_file("support/world_clock.exs", __DIR__)
 Code.require_file("../../data_service/test/support/database.exs", __DIR__)

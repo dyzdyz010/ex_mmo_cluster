@@ -10,6 +10,7 @@ defmodule VoxelRegion.RefinedCompactTest do
 
   alias VoxelRegion.World.{Canonical, Observation}
   alias VoxelRegion.RefinedSlots
+  alias VoxelRegion.TestSupport.BinaryRetention
 
   defp empty do
     %{refined: %{}, refined_owners: %{}, refined_regions: %{}}
@@ -34,7 +35,11 @@ defmodule VoxelRegion.RefinedCompactTest do
       assert RefinedSlots.reduce_sorted(value, [], fn row, rows -> [row | rows] end)
              |> Enum.reverse() == Enum.sort(input)
       for {slot, row} <- input, do: assert(RefinedSlots.fetch(value, slot) == {:ok, row})
-      assert :binary.referenced_byte_size(value.data) == byte_size(value.data)
+      # 独立值不得拖住更大的父 binary（含 <= 64 字节的小值；见 BinaryRetention）。
+      assert BinaryRetention.max_retained_bytes(fn ->
+               fresh = Canonical.put_refined(empty(), cell, input)
+               Map.fetch!(fresh.refined, cell).data
+             end) <= byte_size(value.data)
       if count == 512, do: assert(:erts_debug.flat_size(value) * 4 < :erts_debug.flat_size(input))
       assert state.refined_regions[{-1, 1, 2}][cell] == value
       assert RefinedSlots.fetch(value, count - 1) == Map.fetch(input, count - 1)

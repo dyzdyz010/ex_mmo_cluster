@@ -71,6 +71,8 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
     assert current.instances == before.instances
   end
 
+  # 观测契约（b9041f44）：完整编码在请求进程内执行并记 `voxel_payload_encode`；World 只记
+  # `voxel_serve_prepare`（hit 标记）与回合内的 `voxel_payload_details`／`voxel_payload_records`。
   test "full materialization records scalar stages while source and hits do not", c do
     region = {-1, 1, 2}
     previous_level = Logger.level()
@@ -78,10 +80,10 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
     on_exit(fn -> Logger.configure(level: previous_level) end)
 
     {source, source_log} = ExUnit.CaptureLog.with_log(fn -> serve(c.world, 0, region) end)
-    refute source_log =~ "voxel_payload_materialize "
+    refute source_log =~ "voxel_payload_encode "
     refute source_log =~ "voxel_payload_details "
     {^source, hit_log} = ExUnit.CaptureLog.with_log(fn -> serve(c.world, 0, region) end)
-    refute hit_log =~ "voxel_payload_materialize "
+    refute hit_log =~ "voxel_payload_encode "
     refute hit_log =~ "voxel_payload_details "
 
     assert {:ok, 1} = World.place_prefab(c.world, c.id, {-504, 520, 1040}, 0)
@@ -97,30 +99,25 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
     # 改前有效 miss 的完整字节摘要；只测试取证，不在生产路径重新 hash。
     assert Base.encode16(:crypto.hash(:sha256, bytes), case: :lower) ==
       "8036ab306af370a1cec2ec20496322e1fe7d382f6eb9c365c85cd738f47a1d73"
-    assert log =~ ~r/voxel_serve_item .*hit=false/
+    assert log =~ ~r/voxel_serve_prepare .*hit=false/
+
+    # 编码事件的 pid 是发起请求的本测试进程（不是 World），seq／区域／字节数与实际返回一致。
+    encode_pid = Regex.escape(inspect(self()))
+    assert log =~ ~r/voxel_payload_encode pid=#{encode_pid} seq=2 level=0 region=\{-1, 1, 2\} encode_us=\d+ payload_bytes=#{byte_size(bytes)}(\s|$)/
+    assert length(Regex.scan(~r/voxel_payload_encode /, log)) == 1
 
     [details] = scalar_events(log, "voxel_payload_details")
-    [full] = scalar_events(log, "voxel_payload_materialize")
-    identity = ~w(pid seq cv level x y z)
-    assert Map.take(details, identity) == Map.take(full, identity)
-    assert full["pid"] == List.to_string(:erlang.pid_to_list(c.world))
-    assert Map.take(full, ~w(seq cv level x y z)) == %{
+    assert Map.take(details, ~w(seq cv level x y z)) == %{
       "seq" => "2", "cv" => "123", "level" => "0", "x" => "-1", "y" => "1", "z" => "2"}
+    assert details["pid"] == List.to_string(:erlang.pid_to_list(c.world))
     assert details["source"] == "with_refined"
-    assert full["source"] == "materialize"
-    times = [full["start_us"], full["terrain_end_us"], details["details_start_us"],
-      details["details_end_us"], details["canopy_end_us"], full["encode_start_us"],
-      full["encode_end_us"], full["cache_start_us"], full["cache_end_us"]]
+    times = [details["details_start_us"], details["details_end_us"], details["canopy_end_us"]]
       |> Enum.map(&String.to_integer/1)
     assert times == Enum.sort(times)
-    for {event, duration, from, to} <- [
-      {full, "terrain_us", "start_us", "terrain_end_us"},
-      {details, "details_us", "details_start_us", "details_end_us"},
-      {details, "canopy_us", "details_end_us", "canopy_end_us"},
-      {full, "encode_us", "encode_start_us", "encode_end_us"},
-      {full, "cache_us", "cache_start_us", "cache_end_us"},
-      {full, "elapsed_us", "start_us", "cache_end_us"}] do
-      assert String.to_integer(event[duration]) == String.to_integer(event[to]) - String.to_integer(event[from])
+    for {duration, from, to} <- [
+      {"details_us", "details_start_us", "details_end_us"},
+      {"canopy_us", "details_end_us", "canopy_end_us"}] do
+      assert String.to_integer(details[duration]) == String.to_integer(details[to]) - String.to_integer(details[from])
     end
     for {field, expected} <- [cells_bytes: 574_992, fmi_bytes: 0, maps_bytes: 0,
       records_entries: 0, refined_entries: 1, refined_records_entries: 1, instances_entries: 1,
@@ -128,11 +125,8 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
       canopy_instances_entries: 0, canopy_residual_entries: 0, canopy_residual_structure_entries: 0] do
       assert details[Atom.to_string(field)] == Integer.to_string(expected)
     end
-    assert full["raw_bytes"] == Integer.to_string(header.raw_bytes)
-    assert full["body_bytes"] == Integer.to_string(header.body_bytes)
-    assert full["payload_bytes"] == Integer.to_string(byte_size(bytes))
     {^bytes, warmed_log} = ExUnit.CaptureLog.with_log(fn -> serve(c.world, 0, region) end)
-    refute warmed_log =~ "voxel_payload_materialize "
+    refute warmed_log =~ "voxel_payload_encode "
     refute warmed_log =~ "voxel_payload_details "
 
     # 只测试：离线来源失败接缝；不回填运行中的 authority，也不把失败写成物化成功。
@@ -143,7 +137,7 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
         VoxelRegion.World.Payloads.payload_bytes(probe, 0, {0, 1, -1})
       end)
       assert {:error, :test_unavailable, _} = failure
-      refute failure_log =~ "voxel_payload_materialize "
+      refute failure_log =~ "voxel_payload_encode "
       refute failure_log =~ "voxel_payload_details "
     end
   end
@@ -161,14 +155,14 @@ defmodule VoxelRegion.LazyPayloadCacheTest do
 
     {bytes, cold_log} = ExUnit.CaptureLog.with_log(fn -> serve(cold, 0, region) end)
     assert bytes == before
-    assert cold_log =~ ~r/voxel_serve_item .*hit=false/
+    assert cold_log =~ ~r/voxel_serve_prepare .*hit=false/
     [cold_records] = scalar_events(cold_log, "voxel_payload_records")
     assert_record_observation(cold_records, cold_log, cold, 2)
 
     # 正常非refined宏格编辑只失效完整载荷；未变槽仍从合法值直接投影同一记录字节。
     assert {:ok, 3} = World.apply_edits(cold, [{{-63, 65, 131}, 19}])
     {changed, warm_log} = ExUnit.CaptureLog.with_log(fn -> serve(cold, 0, region) end)
-    assert warm_log =~ ~r/voxel_serve_item .*hit=false/
+    assert warm_log =~ ~r/voxel_serve_prepare .*hit=false/
     [warm_records] = scalar_events(warm_log, "voxel_payload_records")
     assert_record_observation(warm_records, warm_log, cold, 3)
     assert {:ok, prior} = Payload.decode(bytes)

@@ -3,15 +3,21 @@ defmodule VoxelRegion.LiquidAdoptionSignatureTest do
   use ExUnit.Case, async: true
   alias VoxelRegion.World.{Cache, Liquids, Payloads}
   alias MmoContracts.Voxel.{Payload, Skins}
+  alias VoxelRegion.TestSupport.BinaryRetention
 
-  test "26个邻区的干地形检查只保留固定内容指纹" do
+  # 26 邻区共享同一个大父 binary 的切片；备忘若是其切片，就会把约 575 KB 父对象拖进 World 常驻。
+  defp dry_state do
     bytes = 66 * 66 * 66 * 2
     parent = :binary.copy(<<0>>, bytes * 2)
     cells = binary_part(parent, 0, bytes)
     bases = for x <- -1..1, y <- -1..1, z <- -1..1, into: %{},
       do: {{0, {x,y,z}}, %Payload{level: 0, region: {x,y,z}, cells: cells}}
-    state = %{region_bases: bases, overlay_regions: %{}, overlay: %{}, decoded: %{}, cache: Cache.new(0), snapshots: MapSet.new(Map.keys(bases)),
+    %{region_bases: bases, overlay_regions: %{}, overlay: %{}, decoded: %{}, cache: Cache.new(0), snapshots: MapSet.new(Map.keys(bases)),
       liquid_bounds: {{-1,-1,-1},{65,65,65}}, liquid_units: %{}, liquid_adopted: %{}}
+  end
+
+  test "26个邻区的干地形检查只保留固定内容指纹" do
+    state = dry_state()
     assert {:ok, _, overrides, _} = Payloads.terrain_materials(state, 0, {0,0,0})
     assert map_size(overrides) == 0
     checked = Liquids.adopt_liquid_sources(state, {0,0,0})
@@ -20,7 +26,10 @@ defmodule VoxelRegion.LiquidAdoptionSignatureTest do
       label: "LIQUID_ADOPTION_MEMO")
     assert is_binary(memo)
     assert byte_size(memo) == 32
-    assert :binary.referenced_byte_size(memo) == 32
+    # 不依赖 :binary.referenced_byte_size（OTP 27.2.4 对 <= 64 字节恒返回 8 倍）：备忘不得拖住材料平面父对象。
+    assert BinaryRetention.max_retained_bytes(fn ->
+             Map.fetch!(Liquids.adopt_liquid_sources(dry_state(), {0,0,0}).liquid_adopted, {0,0,0})
+           end) <= 32
     assert Liquids.adopt_liquid_sources(checked, {0,0,0}).liquid_adopted == checked.liquid_adopted
     # 已有合法数量的液体只改变地形身份，不需重复提交；内容变更不能复用旧干区指纹。
     water = {0,0,0}

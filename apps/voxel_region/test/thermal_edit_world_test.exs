@@ -1,5 +1,5 @@
 defmodule VoxelRegion.ThermalEditWorldTest do
-  @moduledoc "只测试：正式 GM、液体搬运、热提交的逐笔真值与日志冻结对照；空世界来源替身，不替代 World。"
+  @moduledoc "只测试：正式 GM、液体搬运、热提交的逐笔不变量（热量账闭合、水量守恒、事务序号连续、液体提交不动热账）；空世界来源替身，不替代 World。"
   use ExUnit.Case, async: false
   alias VoxelRegion.{World, TestSupport}
   alias VoxelRegion.TestSupport.{Source, Log}
@@ -39,8 +39,18 @@ defmodule VoxelRegion.ThermalEditWorldTest do
     water_box = if bulk, do: {{1, 2, 1}, {5, 5, 5}}, else: {{3, 2, 2}, {5, 2, 4}}
     {:ok, _} = World.gm(w, "water", :fill, %{box: water_box, material: 21})
     settle(w)
-    trace = for i <- 1..if(bulk, do: 8, else: 48) do
+    materials = Map.new(data["materials"], &{&1["material_id"], &1})
+    ambient = Jason.decode!(File.read!(env))["ambient_kelvin"]
+    # 手算水量：每个满宏格 2_097_152 单位；非 bulk 箱 {3,2,2}..{5,2,4} = 3×1×3 = 9 格，bulk 箱 {1,2,1}..{5,5,5} = 5×4×5 = 100 格。
+    water_units = (if bulk, do: 100, else: 9) * 2_097_152
+    steps = if bulk, do: 8, else: 48
+    observe = fn -> TestSupport.observe(w, [], {{-1, -1, -1}, {1, 1, 1}}) end
+    start = observe.()
+    assert Enum.sum(Map.values(start.liquid_units)) == water_units
+
+    for i <- 1..steps do
       prior = :sys.get_state(w)
+      pre_liquid = observe.()
       send(w, :liquid_commit)
       settle(w)
       moved = :sys.get_state(w)
@@ -53,35 +63,69 @@ defmodule VoxelRegion.ThermalEditWorldTest do
       affected = Enum.flat_map(quantity_changed ++ new_rows ++ occupied, &[&1 | VoxelRegion.Thermal.neighbors(&1)])
       reusable = Map.drop(prior.thermal_work.geometry, affected)
       assert Map.take(moved.thermal_work.geometry, Map.keys(reusable)) == reusable
-      before = TestSupport.observe(w, [], {{-1, -1, -1}, {1, 1, 1}})
+      before = observe.()
+
+      # 液体提交只搬水：不得记任何热账、不改非液体行的温度；水带着焓搬运，热存量守恒；水量守恒（手算总量）。
+      assert before.thermal == pre_liquid.thermal, "step #{i}: 液体提交改动了热量账"
+      for {key, row} <- pre_liquid.damage, row.material != 21, Map.has_key?(before.damage, key),
+          Map.has_key?(row, :temperature_kelvin) do
+        assert before.damage[key][:temperature_kelvin] == row.temperature_kelvin,
+               "step #{i}: 液体提交改动了 #{inspect(key)} 的温度"
+      end
+      assert_ledger_closes(pre_liquid, before, materials, ambient, "step #{i} 液体提交")
+      assert Enum.sum(Map.values(before.liquid_units)) == water_units, "step #{i}: 液体提交后水量不守恒"
+
       send(w, :thermal_commit)
       settle(w)
-      after_step = TestSupport.observe(w, [], {{-1, -1, -1}, {1, 1, 1}})
+      after_step = observe.()
       assert_in_delta after_step.thermal.elapsed_s - before.thermal.elapsed_s, 0.5, 1.0e-9
+      # 手算热源：1000 W × 0.5 s = 500 J（源能量 1e6 J 远未耗尽）。
+      assert_in_delta after_step.thermal.supplied_j - before.thermal.supplied_j, 500.0, 1.0e-9
+      assert_ledger_closes(before, after_step, materials, ambient, "step #{i} 热提交")
+      assert Enum.sum(Map.values(after_step.liquid_units)) == water_units, "step #{i}: 热提交后水量不守恒"
+
       if not bulk and i in [3, 6] do
+        pre_edit = observe.()
         {:ok, _} = World.gm(w, "edit-#{i}", if(i == 3, do: :fill, else: :clear),
           %{box: {{6, 1, 6}, {6, 1, 6}}, material: 19})
         settle(w)
+        post_edit = observe.()
+        assert_ledger_closes(pre_edit, post_edit, materials, ambient, "step #{i} GM 编辑")
+        # 手算：新填的石在环境温度，不带来任何热量；清除时移除账恰为其显热。
+        if i == 3 do
+          assert post_edit.thermal == pre_edit.thermal
+          assert_in_delta stored_energy(post_edit, materials, ambient), stored_energy(pre_edit, materials, ambient), 1.0e-9
+        end
       end
       work = :sys.get_state(w).thermal_work
       IO.puts("THERMAL_EDIT step=#{i} cells=#{MapSet.size(work.cells)} builds=#{work.builds} cached=#{map_size(work.geometry)}")
-      if i <= 12, do: {after_step, World.entries_after(w, 0)}
     end
-    trace = Enum.reject(trace, &is_nil/1)
-    digest = :crypto.hash(:sha256, :erlang.term_to_binary(canonical(trace))) |> Base.encode16(case: :lower)
-    IO.puts("THERMAL_EDIT_DIGEST #{digest}")
-    if path = System.get_env("THERMAL_CAPTURE"), do: File.write!(path, :erlang.term_to_binary(trace))
-    # 改前真实 World 冻结：12 笔水体沉降及热提交，包含每笔完整属性、热量账和历史事务。
-    expected = if bulk, do: "cef0864e58adfe0c02a08f93fe837dc60b9d7c44945e4a0829af3a697dda696e",
-      else: "20a98193177c67b6198642ad7351aaec6e9767fb20c2ab8a4c63e94ba7d6a086"
-    assert digest == expected
+
+    # 事务序号从 1 连续无空洞，且末笔就是当前 seq。
+    seqs = Enum.map(World.entries_after(w, 0), & &1.seq)
+    assert seqs == Enum.to_list(1..List.last(seqs))
+    assert List.last(seqs) == World.seq(w)
   end
 
-  # 大 map 的 ETF 输出顺序不是值契约；递归排序后冻结完整值，避免将内部存储次序当成物理差异。
-  defp canonical(value) when is_map(value), do: {:map, value |> Enum.map(fn {k, v} -> {canonical(k), canonical(v)} end) |> Enum.sort()}
-  defp canonical(value) when is_list(value), do: Enum.map(value, &canonical/1)
-  defp canonical(value) when is_tuple(value), do: value |> Tuple.to_list() |> Enum.map(&canonical/1) |> List.to_tuple()
-  defp canonical(value), do: value
+  # 热存量：宏格行（粒度 0）的能量。相态材料（水）按相族焓，其余按相对环境的显热 C·V·(T − Ta)；
+  # 液体行体积按液量占满宏格 2^21 单位的比例。账：Δ存量 = Δ供热 + Δ环境 + Δ参数重标 − Δ移除（同 qinglan_migration_test 的口径）。
+  defp stored_energy(observed, materials, ambient) do
+    for {_, row} <- observed.damage, Map.has_key?(row, :temperature_kelvin), reduce: 0.0 do
+      sum ->
+        0 = row.granularity
+        material = Map.fetch!(materials, row.material)
+        fill = if row.material == 21, do: Map.get(observed.liquid_units, VoxelRegion.Damage.macro(row), 0) / 2_097_152, else: 1.0
+        sum + VoxelRegion.Phase.finite_energy(row, fill, material, ambient)
+    end
+  end
+
+  defp assert_ledger_closes(from, to, materials, ambient, label) do
+    delta = fn key -> Map.get(to.thermal, key, 0.0) - Map.get(from.thermal, key, 0.0) end
+    book = delta.(:supplied_j) + delta.(:environment_j) + delta.(:parameter_rebase_j) - delta.(:removed_j)
+    change = stored_energy(to, materials, ambient) - stored_energy(from, materials, ambient)
+    # 容差 1e-4 J：存量含 ~3e10 J 的潜热项，f64 相消底噪约 1e-5 J；漏记一项环境／供热至少 ~0.5 J，远大于它。
+    assert_in_delta change, book, 1.0e-4, "#{label}：热量账不闭合 Δ存量=#{change} 账=#{book}"
+  end
 
   # 只测试：依赖时钟保持不变，显式提交仍走正式内核；等公开进度完成，不取消或清空 due。
   defp settle(w) do

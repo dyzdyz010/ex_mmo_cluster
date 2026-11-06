@@ -3,22 +3,32 @@ defmodule VoxelRegion.LiquidSignaturePlaneCopyTest do
   use ExUnit.Case, async: false
   alias VoxelRegion.World.{Cache, Liquids}
   alias MmoContracts.Voxel.Payload
+  alias VoxelRegion.TestSupport.BinaryRetention
 
   test "干区指纹不序列化整段材料平面，仍为固定32字节且内容变化失效" do
     cells = :binary.copy(<<0>>, 66 * 66 * 66 * 2)
     payload = %Payload{level: 0, region: {0, 0, 0}, cells: cells}
-    state = %{region_bases: %{{0, {0, 0, 0}} => payload}, overlay_regions: %{},
-      overlay: %{}, decoded: %{}, cache: Cache.new(0), snapshots: MapSet.new([{0, {0, 0, 0}}]),
-      liquid_bounds: {{-1, -1, -1}, {65, 65, 65}}, liquid_units: %{}, liquid_adopted: %{}}
+    state = state(payload)
     {checked, copies} = count_plane_serialization(fn -> Liquids.adopt_liquid_sources(state, {0, 0, 0}) end)
     signature = checked.liquid_adopted[{0, 0, 0}]
     assert byte_size(signature) == 32
-    assert :binary.referenced_byte_size(signature) == 32
+    # 不依赖 :binary.referenced_byte_size（OTP 27.2.4 对 <= 64 字节恒返回 8 倍）：指纹不得拖住材料平面。
+    assert BinaryRetention.max_retained_bytes(fn ->
+             # 大输入在闭包内构造，不能从外层捕获（否则闭包环境本身就拖住了它）。
+             plane = %Payload{level: 0, region: {0, 0, 0}, cells: :binary.copy(<<0>>, 66 * 66 * 66 * 2)}
+             Liquids.adopt_liquid_sources(state(plane), {0, 0, 0}).liquid_adopted[{0, 0, 0}]
+           end) <= 32
     assert checked.liquid_units == %{}
     assert copies == 0
     assert Liquids.adopt_liquid_sources(checked, {0, 0, 0}).liquid_adopted == checked.liquid_adopted
     changed = %{checked | region_bases: %{{0, {0, 0, 0}} => %{payload | cells: :binary.copy(<<11, 0>>, 66 * 66 * 66)}}}
     refute Liquids.adopt_liquid_sources(changed, {0, 0, 0}).liquid_adopted[{0, 0, 0}] == signature
+  end
+
+  defp state(payload) do
+    %{region_bases: %{{0, {0, 0, 0}} => payload}, overlay_regions: %{},
+      overlay: %{}, decoded: %{}, cache: Cache.new(0), snapshots: MapSet.new([{0, {0, 0, 0}}]),
+      liquid_bounds: {{-1, -1, -1}, {65, 65, 65}}, liquid_units: %{}, liquid_adopted: %{}}
   end
 
   defp count_plane_serialization(action) do

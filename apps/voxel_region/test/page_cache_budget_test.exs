@@ -295,6 +295,20 @@ defmodule VoxelRegion.PageCacheBudgetTest do
     assert :binary.referenced_byte_size(returned) == 8192
   end
 
+  # OTP 27.2.4 的 :binary.referenced_byte_size/1 对 <= 64 字节恒返回 8 倍；预算不得因此高估。手算：40 字节只收 40。
+  test "小于等于 64 字节的值按自身字节收费，不被位数口径放大 8 倍" do
+    slice = binary_part(:binary.copy(<<48>>, 8192), 100, 40)
+    {:ok, cache} = Cache.put(Cache.new(100_000), payload(1), slice, version())
+    assert Cache.stats(cache).value_bytes == 40
+    assert {:ok, %{bytes: ^slice}} = Cache.peek(cache, payload(1))
+    # 身份 binary 的父对象收费同口径：32 字节 prefab 身份与 32 字节版本各计 32（而不是 256）。
+    # 手算元信息权重 = ETF 字节数 × 8 字（term_to_binary 与被测实现无关）+ 32 + 32。
+    prefab = {:prefab, <<7::256>>}
+    {:ok, cache} = Cache.put(Cache.new(100_000), prefab, <<1>>, <<7::256>>)
+    etf_bytes = byte_size(:erlang.term_to_binary({prefab, <<7::256>>, :none}))
+    assert Cache.stats(cache).metadata_bytes == etf_bytes * 8 + 32 + 32
+  end
+
   test "小 typed 元信息权重覆盖最大协议标量夹具的独立 heap 测量" do
     key = {:payload, {5, {-2_147_483_648, 2_147_483_647, -1}}}
     max = 18_446_744_073_709_551_615

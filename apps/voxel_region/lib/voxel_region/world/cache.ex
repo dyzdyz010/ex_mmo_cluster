@@ -5,7 +5,8 @@ defmodule VoxelRegion.World.Cache do
   本模块只拥有可丢缓存。canonical truth、活动驻留与已捕获输入的在途生命周期归各自 owner。
   显式删除或替换退休旧条目及其 pin；pin 只阻止容量淘汰，不阻止权威内容失效。
 
-  字节保留原引用，按 `:binary.referenced_byte_size/1` 计完整父对象。有限 typed
+  字节保留原引用，按 `:binary.referenced_byte_size/1` 计完整父对象（<= 64 字节的 heap binary 按自身字节计，
+  见 `referenced_bytes/1`）。有限 typed
   key/version/metadata 与 pin 关系在构造时用 `:erlang.external_size/1 * wordsize`
   冻结保守声明权重，其中身份 binary 的父对象另计；共享对象允许重复计费。
   该权重不是整个 VM 或 RSS 上界，缓存索引与 allocator 余量须由根级测量覆盖。
@@ -354,16 +355,24 @@ defmodule VoxelRegion.World.Cache do
   end
 
   defp weight(key, bytes, version, metadata) do
-    {:binary.referenced_byte_size(bytes),
+    {referenced_bytes(bytes),
      term_weight({key, version, metadata}) + identity_parent_bytes(key) +
        identity_parent_bytes(version)}
   end
 
   # 只对接纳边界限定的有限小 term 计量；不产生 ETF 副本，也不接受任意嵌套容器。
   defp term_weight(term), do: :erlang.external_size(term) * :erlang.system_info(:wordsize)
-  defp identity_parent_bytes({:prefab, id}), do: :binary.referenced_byte_size(id)
-  defp identity_parent_bytes(id) when is_binary(id), do: :binary.referenced_byte_size(id)
+  defp identity_parent_bytes({:prefab, id}), do: referenced_bytes(id)
+  defp identity_parent_bytes(id) when is_binary(id), do: referenced_bytes(id)
   defp identity_parent_bytes(_), do: 0
+
+  # OTP 27.2.4 的 `:binary.referenced_byte_size/1` 对 <= 64 字节的 binary 恒返回 8 * byte_size（按位数，
+  # 实测 10 B -> 80、32 B -> 256，生产镜像正是此版本）。该长度的 binary 在 VM 中恒为独立 heap binary
+  # （binary_part／位串匹配切出的小片都会复制，不拖父对象），收费就是自身字节数；更大的才有父对象可言，
+  # 交给该 BIF 按完整父对象计。
+  @heap_binary_limit 64
+  defp referenced_bytes(bin) when byte_size(bin) <= @heap_binary_limit, do: byte_size(bin)
+  defp referenced_bytes(bin), do: :binary.referenced_byte_size(bin)
 
   defp validate_key({:payload, {level, region}}) when level in 0..5 do
     if coordinate?(region), do: :ok, else: {:error, :invalid_key}

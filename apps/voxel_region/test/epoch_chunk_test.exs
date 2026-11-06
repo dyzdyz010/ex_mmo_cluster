@@ -3,6 +3,7 @@ defmodule VoxelRegion.EpochChunkTest do
   use ExUnit.Case, async: false
   alias VoxelRegion.{EpochChunk, OverlayLog, World}
   alias VoxelRegion.World.Pages
+  alias VoxelRegion.TestSupport.BinaryRetention
 
   test "旧epoch页接纳后不再保留逐格map，原坐标与完整u64字节保持" do
     coord = {-2, 3, -4}
@@ -13,7 +14,11 @@ defmodule VoxelRegion.EpochChunkTest do
       assert EpochChunk.size(value) == count
       assert Map.new(value) == cells
       assert byte_size(value.data) == count * 10
-      assert :binary.referenced_byte_size(value.data) == byte_size(value.data)
+      # 独立值不得拖住更大的父 binary（含 <= 64 字节的小值；见 BinaryRetention）。
+      assert BinaryRetention.max_retained_bytes(fn ->
+               {_unit, fresh} = Pages.unit_value(stored(coord, cells))
+               fresh.data
+             end) <= byte_size(value.data)
       if count == 4096, do: assert(:erts_debug.flat_size(value) * 4 < :erts_debug.flat_size(cells))
       assert Pages.decode(Pages.row(unit, value).payload) == cells
       assert Pages.unit_value(Pages.row(unit, value)) == {unit, value}

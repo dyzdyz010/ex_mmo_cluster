@@ -1113,14 +1113,15 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     parsed = Scene.load_config!(path)
     assert %Session.Profile{fixed_hz: 60} = parsed.profile
 
-    # 46 项现行材质（R8-10 追加温敏陶瓷 45）的 blocking SHA256 为 57420f55…bfcc；按 Wire 声明的 15 个 f64 + 60Hz
-    # 在独立 Python struct/hashlib 中计算（同法复算 45 项得旧值 37158387…7AE0、44 项得 9153A612…BA85）。
-    # 更早的 65c215d1…来自 25 项目录。
+    # 89 项现行材质（id 0..88，含 supports_attachments）的 blocking SHA256 为 8e2dcb3d…24c7；
+    # profile_id = SHA256("voxim-profile-v1" LF || 15 个 f64 BE || 60Hz u16 BE || blocking_hash)，
+    # 由独立 Python struct/hashlib 按 Docs/M1/plan.md:211-213 重算（不调用本实现），结果与客户端
+    # Content/Playtest/Connection/session.json 钉住的 profile_id 一致。材质目录每追加一批，此值随之更换。
     assert Session.Codec.profile_id(
              parsed.profile,
              MmoContracts.VoxelMaterialCatalog.blocking_hash()
            ) ==
-             Base.decode16!("A299EAB440DF9E97D0C2F1570FE32799FCB6AA5086F7D842FA4356E439A086D5")
+             Base.decode16!("4A39E3B1789D020357CEBBF92F6964E04405F68AA408DEB30445914E28B09F1F")
 
     assert parsed.l0 == {{-1, 7, -1}, {1, 9, 1}} and tuple_size(parsed.profile_tuple) == 15
     File.write!(path, Jason.encode!(Map.delete(config(), "profile")))
@@ -1519,8 +1520,10 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
     assert length(snapshot.regions) == 8 and length(snapshot.chunks) == 512
 
     # 当前自然资源 kernel 的完整 body 金样（含 cells、CSR、面贴图）；旧 S1 快照保留给历史 FileStore 测试。
-    # 这些几何 body 金样继续保留；当前源码身份为 290472a6…e48a12（森林密度版本），
-    # 新世界 content_version 由该身份与八项生成参数决定，不沿用旧源码的 header 身份。
+    # 这些几何 body 金样继续保留；当前 kernel 源码身份为 2be89007…e278a
+    # （native/voxim_worldgen 六个源文件的 SHA256，见其 build.rs），新世界 content_version 由该身份与
+    # manifest 八项生成参数按 MD5-64 v3 决定（generated_store.ex 文档），不沿用旧源码的 header 身份。
+    # 期望值由独立 Python（hashlib/struct）按上述两处规格重算，不调用本实现；kernel 源码一变，此值必须随之更换。
     expected = %{
       {-1, 7, -1} => "ba92aa087fe9d3f1866bcdb1458ad510463d7d11618810fa230a2a1e096b68e8",
       {-1, 7, 0} => "3d1987152f0f4e4b855239e8693632f12356df120efcce6d0d4ada0ba01c5633",
@@ -1538,7 +1541,8 @@ defmodule SceneServer.Movement.VoximSceneRuntimeTest do
       assert Base.encode16(:crypto.hash(:sha256, body), case: :lower) ==
                Map.fetch!(expected, coord)
 
-      assert header.content_version == 0x4ECF1F7864707144 and header.seq == 0
+      assert header.content_version == 0x3B7FB6F35A422623
+      assert header.seq == 0
     end
 
     clock = :atomics.new(1, signed: true)

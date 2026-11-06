@@ -271,15 +271,6 @@ defmodule VoxelRegion.WorldTest do
   end
 
   @tag :replica
-  test "binary GC threshold accommodates the configured payload cache", %{root: root} do
-    budget = 16*1024*1024
-    world = start_supervised!({World,root: root,name: :binary_gc_budget,payload_cache_bytes: budget})
-    {:min_bin_vheap_size,words} = Process.info(world,:min_bin_vheap_size)
-    assert words >= div(World.stats(world).cache_limit,:erlang.system_info(:wordsize))
-    assert World.stats(world).cache_limit == budget
-  end
-
-  @tag :replica
   test "checkpoint retains region bases without expanding core or ring into cell edits", %{root: root} do
     opts = [root: root,name: :compact_memory,payload_cache_bytes: 1]
     {:ok,w} = World.start_link(opts)

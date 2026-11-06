@@ -135,7 +135,8 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
       )
 
   # 删除日志、错报原始轴/代际/到期槽、把累计成本当单步成本都会失败。
-  test "normal INFO retains lifecycle and one summary per second without per-input rows" do
+  # 契约（ab7fced0，movement/README.md）：常规 `region_tick` 只写 debug；INFO 下一整秒 60 拍也不得出现该行。
+  test "normal INFO retains lifecycle without per-input rows or any region_tick row" do
     log =
       capture_log([level: :info, format: "$message\n"], fn ->
         ctx = start_scene()
@@ -154,7 +155,7 @@ defmodule SceneServer.Movement.VoximInstrumentationTest do
     assert events(rows, "input_selected") == []
     assert events(rows, "input_wait") == []
     assert events(rows, "input_arrival") == []
-    assert Enum.map(events(rows, "region_tick"), & &1["server_tick"]) == [60]
+    assert events(rows, "region_tick") == []
   end
 
   test "ordinary Scene P1 operation emits exact lifecycle input and per-tick facts" do
