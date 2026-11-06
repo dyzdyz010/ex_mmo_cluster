@@ -2116,7 +2116,8 @@ defmodule VoxelRegion.DamageWorldTest do
     state=observe(c.w)
     removed=Enum.reduce_while(1..10,state,fn _,_ ->
       next=b3_tick(c.w)
-      if World.stats(c.w).attachment_slots==0,do: {:halt,next},else: {:cont,next}
+      # 显式热提交可被挂起后重放（如缺页），b3_tick 的观察可能先于它应答；以 stats 见到删除为准，再重新观察（此后的调用必见到删除）。
+      if World.stats(c.w).attachment_slots==0,do: {:halt,observe(c.w)},else: {:cont,next}
     end)
     assert World.stats(c.w).attachment_slots==0
     refute Enum.any?(removed.damage,fn {_,t}->t.granularity in [3,4] end)

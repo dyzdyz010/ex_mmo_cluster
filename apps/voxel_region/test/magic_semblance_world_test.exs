@@ -317,8 +317,9 @@ defmodule VoxelRegion.MagicSemblanceWorldTest do
     assert {:ok, %{outcome: nil, seq: seq}} = cast(c, program, {0.0, 1.0, 0.0}, at: 2_000_000)
     assert observe(c.w).semblances[{seq, 0}].flight_s > 1.0
     for _ <- 1..3, do: commit(c.w)
-    assert observe(c.w).semblances == %{}
+    # 显式热提交遇缺页会挂起、装齐后重放（World `info(:thermal_commit)`），观察不排在它后面：先等删除事务的下发，再看快照。
     assert_receive {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => nil}}}}, 5_000
+    assert observe(c.w).semblances == %{}
     refute_received {:canonical_delta, %{transaction: %{semblances: %{{^seq, 0} => %{live: 2}}}}}
   end
 

@@ -266,10 +266,11 @@ defmodule VoxelRegion.ProtectionWorldTest do
     defp place(w, a, id, {x, _, z}), do: prefab(w, a, :voxel_prefab_place_v1, x: x, z: z, definition_id: id, anchor: {x * 8, 8, z * 8}, orientation: 0)
     defp place_leaf(w, a, id, {x, _, z}), do: prefab(w, a, :voxel_prefab_place_v1, x: x, z: z, definition_id: id, anchor: {x * 8, 8, z * 8}, orientation: 0)
 
+    # 盛取（action 2）自 aead5052 起须带客户端确认的目标身份（线格式同步）；助手从公共确认投影读取后经同一正式入口提交。
     defp production(w, a, action, material, tool, {x, y, z} = coord) do
       a = move(a, {x + 0.5, y + 2.5, z + 0.5})
       seq = next()
-      World.production_intent(w, stamp(a, seq), %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
+      VoxelRegion.TestSupport.confirmed_production_intent(w, stamp(a, seq), %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1,
         action: action, material: material, tool_id: tool, coord: coord})
     end
 
@@ -367,7 +368,8 @@ defmodule VoxelRegion.ProtectionWorldTest do
       # 放行：B 在自己区域、A 在野外；灭火先点火，化冰先在杯里放冰；开关是材料面，直接切换。
       for {name, request} <- requests, name not in [:toggle, :extinguish], who <- [{b, 4}, {a, 20}] do
         {actor, x} = who
-        assert {:ok, _} = request.(actor, x), "#{name} by #{actor.cid} at x=#{x}"
+        result = request.(actor, x)
+        assert match?({:ok, _}, result), "#{name} by #{actor.cid} at x=#{x}: #{inspect(result)}"
       end
       for {actor, x} <- [{b, 4}, {a, 20}] do
         assert {:ok, _} = requests[:extinguish].(actor, x)
