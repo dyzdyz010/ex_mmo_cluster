@@ -1,5 +1,6 @@
 defmodule MmoContracts.PropertyBatchTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Codec
 
   # 只测试：与 UE 解码器共用新增属性批次黄金帧，不改变任何已冻结旧帧。

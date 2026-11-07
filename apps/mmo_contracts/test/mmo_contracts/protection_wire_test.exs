@@ -6,6 +6,7 @@ defmodule MmoContracts.ProtectionWireTest do
   删除 {5,2}；角色 42 的区域 {7,1} 矩形 (-3,16)..(15,31)；保留区域 {7,2} 矩形 (100,-200)..(163,-137)。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.{Session, Voxel}
 
   # 每条 37 B：id_seq:u64 id_n:u32 holder:u8 cid:u64 min_x:i32 min_z:i32 max_x:i32 max_z:i32（大端）。

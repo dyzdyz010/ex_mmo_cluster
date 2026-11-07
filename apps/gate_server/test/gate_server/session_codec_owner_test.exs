@@ -1,5 +1,6 @@
 defmodule GateServer.SessionCodecOwnerTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias GateServer.Session.Sink
 
   test "QUIC session sink encodes current session and voxel frames for the connection owner" do

@@ -1,5 +1,6 @@
 defmodule MmoContracts.CanopyTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.{Canopy, Payload, Codec, Skins}
   test "frozen sparse anchors preserve identity and residual skin bytes" do
     id = :binary.copy(<<9>>,32)

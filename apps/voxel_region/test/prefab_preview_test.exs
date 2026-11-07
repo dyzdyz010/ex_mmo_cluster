@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PrefabPreviewTest do
   @moduledoc "只测试：冲突草稿可查看，但预览不得改变发布规则或绕过运行时预算。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Prefab
 
   defp definition(fields), do: Map.merge(%{cells: [],macro_cells: [],children: [],attachments: []},Map.new(fields))

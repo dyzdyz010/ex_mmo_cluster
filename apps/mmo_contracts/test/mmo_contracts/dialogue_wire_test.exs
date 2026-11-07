@@ -1,6 +1,7 @@
 defmodule MmoContracts.DialogueWireTest do
   @moduledoc "只测试：固定手写字节验证新增对话，不以自编码自解码代替线契约。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
 
   @identity %Session.Identity{session_epoch: 1, scene_id: 2, scene_epoch: 3}

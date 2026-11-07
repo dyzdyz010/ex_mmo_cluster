@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ThermalRadiationTest do
   @moduledoc "只测试：灰体辐射内核项与视线合成；期望来自斯特藩-玻尔兹曼手算，不复用被测算法。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{ThermalNative, ThermalRadiation}
 
   # 手算：底面绝热、5 个暴露面的燃烧格，P = hA(T−Ta) + εσA(T⁴−Ta⁴)。

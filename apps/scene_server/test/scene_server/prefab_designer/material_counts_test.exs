@@ -1,6 +1,7 @@
 defmodule SceneServer.PrefabDesigner.MaterialCountsTest do
   @moduledoc "只测试：手算轻目录材料计数的计价，不启动 World、数据库、模型或渲染器。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.PrefabDesigner.Check
 
   @properties %{

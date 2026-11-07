@@ -3,6 +3,7 @@ defmodule VoxelRegion.CatalogBodyAxesTest do
   # 与命中（Scene ToolAction）时从目录现读，格行上不存与之相关的量，所以在线参数升级应接受“加上”与“调整”，其余守卫不变。
   # 真实案例：青岚世界停在 4b2c6abe，升到 249f2442 时这两项曾被拒为 property_version_in_use。
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{Damage, ParameterEvolution}
 
   @fixtures Path.expand("fixtures/combustion", __DIR__)

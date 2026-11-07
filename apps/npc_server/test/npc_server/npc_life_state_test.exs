@@ -4,6 +4,7 @@ defmodule NpcServer.NpcLifeStateTest do
   证明因果评价、同一毁坏过程去重、衰减、JSON 恢复及各维度的行为用途；不证明身体移动。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Life.State
 
   defp new, do: State.new(7, "world-a", 0, 0)

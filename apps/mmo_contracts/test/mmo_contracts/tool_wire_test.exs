@@ -1,6 +1,7 @@
 defmodule MmoContracts.ToolWireTest do
   @moduledoc "Test-only: Hello35 ToolState fixture: identity24 + request8 + source24 + action4 + target16 + part7 + body2 = 85 bytes."
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
 
   @sample Base.decode16!(

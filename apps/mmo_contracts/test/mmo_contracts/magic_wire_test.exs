@@ -5,6 +5,7 @@ defmodule MmoContracts.MagicWireTest do
   样本字节逐字段手写，f64 取 IEEE 754 大端位型。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
   alias MmoContracts.Voxel.Codec
   require Codec

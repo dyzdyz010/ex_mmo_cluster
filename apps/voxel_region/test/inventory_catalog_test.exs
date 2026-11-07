@@ -3,6 +3,7 @@ defmodule VoxelRegion.InventoryCatalogTest do
   # 不生效）。服务端不读这两项：重量只在客户端派生显示，类别是客户端显示数据。这里核对服务端照常加载新目录，并且在线参数升级
   # 接受“加上密度”与“调整密度”（密度不是格行上的状态），其余字段的守卫不变。
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{Damage, ParameterEvolution}
 
   @fixtures Path.expand("fixtures/combustion", __DIR__)

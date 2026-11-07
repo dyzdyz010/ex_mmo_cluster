@@ -1,6 +1,7 @@
 defmodule VoxelRegion.SkinPageTest do
   @moduledoc "只测试：真实 Pages format2 编解码边界，旧 map 的读兼容与写回滚兼容；无数据库替身。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.{Payload, SkinField, Skins}
   alias VoxelRegion.World.Pages
 

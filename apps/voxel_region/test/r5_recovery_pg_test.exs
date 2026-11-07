@@ -184,6 +184,8 @@ defmodule VoxelRegion.R5RecoveryPgTest do
       activity_advanced: true, database: database_counts()})
   end
 
+  # 慢层（单项 ≥ 45 s）：实测约 62 s（等满默认 60 s Replica 保留）（WSL +S 2:2）。
+  @tag :slow
   @tag :r5_retention
   @tag timeout: 110_000
   test "真实 PG 发布锁阻塞、接纳恢复与默认 60 秒 Replica 保留内存", c do

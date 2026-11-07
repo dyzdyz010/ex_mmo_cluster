@@ -1,6 +1,7 @@
 defmodule GateServer.ToolDispatchTest do
   @moduledoc "Test-only: receipt transport seam, with an explicitly completed owner result. Does not test hit authority."
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
 
   defmodule CompletedOwner do

@@ -9,6 +9,7 @@ defmodule VoxelRegion.AccessTest do
     原始编辑必须显式带角色或创世主体。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   import ExUnit.CaptureLog
   alias VoxelRegion.Access
   alias VoxelRegion.World.Closure

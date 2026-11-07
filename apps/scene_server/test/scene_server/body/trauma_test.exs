@@ -1,5 +1,6 @@
 defmodule SceneServer.Body.TraumaTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Body
 
   # Test-only：纯值小例，参数是明确夹具，不是第二份正式目录。

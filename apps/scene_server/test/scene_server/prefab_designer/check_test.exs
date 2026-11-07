@@ -1,6 +1,7 @@
 defmodule SceneServer.PrefabDesigner.CheckTest do
   @moduledoc "只测试：手算草稿几何，不启动 World、模型、数据库或渲染器。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.PrefabDesigner.Check
 
   @properties %{

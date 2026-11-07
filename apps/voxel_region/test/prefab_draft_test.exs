@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PrefabDraftTest do
   @moduledoc "只测试：草稿编辑的手算几何与内容寻址。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Prefab.Draft
 
   test "walls have no floor or ceiling and ordered edits leave a two-high doorway" do

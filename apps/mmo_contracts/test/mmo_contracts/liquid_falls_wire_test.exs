@@ -1,6 +1,7 @@
 defmodule MmoContracts.LiquidFallsWireTest do
   @moduledoc "只测试：Hello16 下落展示尾段；纯字节协议，不启动网络或数据库。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Codec
 
   test "full signed canonical frame and explicit empty clear have frozen little endian bytes" do

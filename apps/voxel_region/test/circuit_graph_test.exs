@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CircuitGraphTest do
   @moduledoc "只测试：读取图owner回调的小确定输入；不启动World、数据库或新求解器。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{Circuit, Damage, Protection, ThermalGeometry}
   alias VoxelRegion.World.{Canonical, CircuitGraph, Thermal}
 

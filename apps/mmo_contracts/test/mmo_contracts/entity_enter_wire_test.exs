@@ -7,6 +7,7 @@ defmodule MmoContracts.EntityEnterWireTest do
   客户端 `MmoSessionCodec` Automation 用同一串尾部字节。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
 
   @tail Base.decode16!("00" <> "0006E998BFE5B29A" <> "0000" <> "0000" <> "04" <> "0003E6958C" <> "0000000000000009" <> "02")

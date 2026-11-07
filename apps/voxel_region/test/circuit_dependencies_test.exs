@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CircuitDependenciesTest do
   @moduledoc "只测试：电路依赖发现复用的规范顶点、邻槽与接触资格；纯值输入，不启动World或数据库。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{Attachments, Circuit, ThermalGeometry}
 
   @environment %{"ambient_kelvin" => 293.15, "circuit_min_power_w" => 1.0}

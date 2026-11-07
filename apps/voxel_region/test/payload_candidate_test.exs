@@ -1,5 +1,6 @@
 defmodule VoxelRegion.PayloadCandidateTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.Voxel.{Payload, Skins}
   alias VoxelRegion.World.{Cache, Payloads}

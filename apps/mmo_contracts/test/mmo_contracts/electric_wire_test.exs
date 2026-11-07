@@ -1,5 +1,6 @@
 defmodule MmoContracts.ElectricWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel
 
   # 只测试：协议 20 发光导体后缀（电功率 W、穿过电流 A）。样本逐字段手写，与 Voxim `Voxim.R8.Electric.Wire` 同一份字节：

@@ -1,5 +1,6 @@
 defmodule MmoContracts.SourceWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.{Session, Voxel}
 
   # 只测试：协议 22（R8-04 增量 3）电源后缀。样本逐字段手写，与 Voxim `Voxim.R8.Source.Wire` 同一份字节：

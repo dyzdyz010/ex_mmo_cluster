@@ -5,6 +5,7 @@ defmodule SceneServer.Movement.FrostMovementTest do
   不覆盖真实 World 产伤或网络客户端。手算：基础速度 8，深冻伤 0.65 → 5.2，修复 25% → 6.6。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Movement.{Player, CollisionUpdates, InputSlots}

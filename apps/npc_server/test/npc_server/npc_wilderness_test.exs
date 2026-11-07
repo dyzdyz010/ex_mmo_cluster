@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcWildernessTest do
   @moduledoc "只测试：手排 Body 事件，快照替身仅验证技能终态读取边界；真实 World 另有集成用例。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Builder
   alias NpcServer.Skills.Wilderness
 

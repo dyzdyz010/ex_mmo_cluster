@@ -6,6 +6,7 @@ defmodule VoxelRegion.PageWriteBudgetTest do
   小参数只证明算法，不是生产预算参数的性能验收；单元超限反例在产生边界明确失败。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{PageCut, Pages, PageWriter}
 
   defmodule FailedPublish do

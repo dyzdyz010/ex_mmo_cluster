@@ -1,5 +1,6 @@
 defmodule MmoContracts.VoxelBoundedInflateTest do
   use ExUnit.Case, async: false
+  @moduletag :t0
   alias MmoContracts.Voxel.Codec
 
   test "underdeclared expansion stops at the declared output limit and closes the stream" do

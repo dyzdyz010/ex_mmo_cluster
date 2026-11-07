@@ -4,6 +4,7 @@ defmodule MmoContracts.RelationTest do
   硬规则 → 锁定 → 从具体到宽泛 → 反向只取敌对 → 中立，来源文字格式"甲 对 乙：关系（来源[，锁定]）"。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Relation
 
   @qinglan %{id: 1, name: "青岚国"}

@@ -6,6 +6,7 @@ defmodule MmoContracts.BeaconWireTest do
   - 下行 0x87 目录：request_id u64、条数 u16，每条 id（u8 长度）、站名（u16 长度 + UTF-8）、核心 x/y/z f64、已调谐 u8。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Codec
 
   test "上行出发帧解码；空 id 与截断拒绝" do

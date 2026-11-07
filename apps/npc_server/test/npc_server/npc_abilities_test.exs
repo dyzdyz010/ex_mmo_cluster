@@ -6,6 +6,7 @@ defmodule NpcServer.NpcAbilitiesTest do
   `additionalProperties: false` 且全部属性进 required，可空用 type 联合 "null"，枚举的可空值须在 enum 里。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Abilities
 
   @hex String.duplicate("2a", 32)

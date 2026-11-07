@@ -1,6 +1,7 @@
 defmodule VoxelRegion.TerrainProjectionTest do
   @moduledoc "只测试：不可变合法地形输入的区域基底、ring 与 overlay 优先级，不向运行中的 World 写真值。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{Canonical, Payloads}
   alias MmoContracts.Voxel.{Payload, Skins}
 

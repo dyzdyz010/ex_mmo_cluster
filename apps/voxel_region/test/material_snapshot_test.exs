@@ -1,6 +1,7 @@
 defmodule VoxelRegion.MaterialSnapshotTest do
   @moduledoc "只测试：材料观察不要求热、液体、数据库或全场景夹具。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World
   alias VoxelRegion.TestSupport.Source
 

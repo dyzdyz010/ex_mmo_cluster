@@ -1,6 +1,7 @@
 defmodule VoxelRegion.MagicDualArmTest do
   @moduledoc "Test-only: six coordinates, authored rest, and independent right-arm cost."
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost}
 
   test "v3 uses every coordinate and the authored rest pose" do

@@ -5,6 +5,7 @@ defmodule NpcServer.NpcSurveyTest do
   经真实 Body / World 的 survey 见 npc_expand_test 的台地用例与 npc_body_world_test 的接缝用例。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.{Abilities, Perception}
   alias NpcServer.Skills.Travel
 

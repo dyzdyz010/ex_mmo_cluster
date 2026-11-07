@@ -2,6 +2,7 @@ Code.require_file("../../../../voxel_region/test/support/world_fixtures.exs", __
 
 defmodule SceneServer.Movement.ToolActionTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.{Body, Movement.Player}
   alias MmoContracts.Session
 

@@ -1,6 +1,7 @@
 defmodule WorldServer.SessionTest do
   @moduledoc "只测试：真实会话进程与公共 API；Scene / 路由替身只记录占用和移交交接。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias WorldServer.Session
 
   defmodule Scene do

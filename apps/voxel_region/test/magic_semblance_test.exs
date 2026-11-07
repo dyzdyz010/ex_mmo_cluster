@@ -6,6 +6,7 @@ defmodule VoxelRegion.MagicSemblanceTest do
   期望值全部手算（成本按前摇契约 §2 手算表），写在断言旁。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program, Semblance}
 
   @digest "19c513f9ceb29b327ae1f5fb07edcea8e8001adc1a6f938078095e214aceba88"

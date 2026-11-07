@@ -16,6 +16,8 @@ defmodule WorldServer.Movement.VoximTransferTest do
     # 整例上限只覆盖夹具耗时：GitHub runner 上 edits=true 的 L1–L5 预烘焙 35–50 s、首次编辑冷生成 5 个源约 11 s
     # （CI 4daf50ca / c82777a9 日志）；内部各 await 的等待上限不变。
     @tag timeout: 180_000, edit_during_transfer: edit_during_transfer
+    # 慢层（单项 ≥ 45 s）：edits=true 本机实测约 54 s（WSL +S 2:2）；edits=false 约 3 s 留在默认集（排除按键存在判定，不能写 slow: false）。
+    @tag if(edit_during_transfer, do: [slow: true], else: [])
     test "a boundary cut transfers the unprocessed prefix and activates exactly one writer edits=#{edit_during_transfer}",
          %{edit_during_transfer: edit_during_transfer, base: base, body_store: body_store} do
       world =

@@ -1,6 +1,7 @@
 defmodule VoxelRegion.AttachmentsTest do
   @moduledoc "只测试：规范共享地址与客户端 VXR8 接缝。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   @moduletag :b4
   alias MmoContracts.Voxel.{Attachments,Payload,Codec}
 

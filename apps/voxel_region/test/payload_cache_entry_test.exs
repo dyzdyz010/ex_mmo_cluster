@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PayloadCacheEntryTest do
   @moduledoc "只测试：实际缓存owner维护条目检查结论的替换、删除、LRU生命周期，外部仍只运输字节与纯协议头。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{Cache, Payloads}
 
   test "检查结论不跨替换或淘汰，导出导入也不带标记" do

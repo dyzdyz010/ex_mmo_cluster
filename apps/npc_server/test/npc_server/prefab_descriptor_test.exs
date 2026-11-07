@@ -1,6 +1,7 @@
 defmodule NpcServer.PrefabDescriptorTest do
   @moduledoc "只测试：NPC 目录投影直接消费 World 轻描述；不启动 World、数据库、模型或渲染器。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Perception
 
   test "catalog row keeps dimensions and bill with no nodes or original definition" do

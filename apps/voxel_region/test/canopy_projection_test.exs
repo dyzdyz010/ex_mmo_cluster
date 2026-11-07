@@ -1,5 +1,6 @@
 defmodule VoxelRegion.CanopyProjectionTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.Canopy
   alias MmoContracts.Voxel.Skins
   defp state(cells,bound) do

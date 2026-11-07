@@ -1,5 +1,6 @@
 defmodule SceneServer.DialogueTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Dialogue
   alias MmoContracts.Session
 

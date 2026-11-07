@@ -1,5 +1,6 @@
 defmodule VoxelRegion.LiquidTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Liquid
 
   # Test-only：正式目录的 4096 量子/微格，8³ 微格/宏格；核只接受调用方给出的容量。

@@ -414,6 +414,8 @@ defmodule SceneServer.Movement.VoximCollisionTimelineTest do
     )
   end
 
+  # 慢层（单项 ≥ 45 s）：实测约 50 s（WSL +S 2:2）；模块已有 120 s 超时。
+  @tag :slow
   @tag generated: true
   test "out-of-domain actual GeneratedStore World transaction retains sequence and log without outside collider",
        ctx do

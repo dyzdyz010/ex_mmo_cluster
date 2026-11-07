@@ -1,5 +1,6 @@
 defmodule MmoContracts.SwitchWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.{Session, Voxel}
 
   # 只测试：协议 21（R8-04 增量 2）。样本逐字段手写，与 Voxim `Voxim.R8.Switch.Wire` 同一份字节：

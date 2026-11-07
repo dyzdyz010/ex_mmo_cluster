@@ -6,6 +6,7 @@ defmodule DataService.StateClassDeclarationTest do
   迁移期:随各梯队把更多持有者接入 StateClassed,本测试自动覆盖 data_service 的清单条目。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.StateRegistry
 

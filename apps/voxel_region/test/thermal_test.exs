@@ -1,5 +1,6 @@
 defmodule VoxelRegion.ThermalTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Thermal
 
   defp node_at(t), do: %{temperature: t,exposed_faces: 5,material: %{"heat_capacity_per_macro"=>1000.0,"thermal_conductivity"=>100.0}}

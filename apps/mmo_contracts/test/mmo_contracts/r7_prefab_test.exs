@@ -1,5 +1,6 @@
 defmodule MmoContracts.R7PrefabTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.{Codec, Payload}
 
   # 只测试：纯 Payload/Skins 协议，不启动 World、角色、目录或 prefab。

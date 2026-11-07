@@ -1,5 +1,6 @@
 defmodule MmoContracts.CodecOwnershipTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   test "current codec byte owners have no sibling app imports or application supervisor" do
     for module <- [

@@ -4,6 +4,7 @@ defmodule VoxelRegion.ClimateTest do
   期望手算：闭矩形边界、列表在前者优先、区外 / 无字段返回全局环境温度与风速 0（原值原样返回，不做类型转换）。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Climate
 
   @zones [%{"min" => [-10, 0], "max" => [-1, 20], "ambient_kelvin" => 248.15, "wind_mps" => 5.0},

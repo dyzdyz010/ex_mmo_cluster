@@ -20,6 +20,7 @@ defmodule SceneServer.Body.ReviveTest do
     各自 ≥ 0.1（旧“取最弱”不会濒死），合成 1 − √(0.561719² + 0.785714²) = 1 − √0.932875 = 0.034146（生命 3）→ 10 秒后濒死。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Body.Repair

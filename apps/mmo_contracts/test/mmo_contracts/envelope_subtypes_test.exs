@@ -1,5 +1,6 @@
 defmodule MmoContracts.EnvelopeSubtypesTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.Envelope.{EntityHandoff, CellMigration, BoundaryEvent, CandidateEffect}
 

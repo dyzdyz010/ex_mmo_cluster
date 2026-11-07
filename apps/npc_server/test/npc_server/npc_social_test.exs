@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcSocialTest do
   @moduledoc "只测试：纯 Social/Tree 接缝；权威 Outcome 控制取消与移动完成，不启动网络。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Brain.Social
   alias NpcServer.Life.State
 

@@ -113,6 +113,9 @@ defmodule VoxelRegion.TransformWorldTest do
 
   defp payloads(txn), do: for(%{payload: bytes} <- txn.entries, do: elem(Payload.decode(bytes), 1))
 
+  # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 101 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 200_000
   test "宏格矿石达到 X 且接触煤：同体积换成铜一次，煤按比例扣减，热账与燃料账闭合，事务与冷恢复可见", c do
     w = start(c)
     {:ok, _} = World.apply_edits(w, [{@ore_cell, @ore}, {@coal_cell, @coal}])
@@ -168,6 +171,9 @@ defmodule VoxelRegion.TransformWorldTest do
     assert balances[{1001, @coal}] == floor(c.macro_units * (1 - @ratio))
   end
 
+  # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 62 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 150_000
   test "低于 X 或无接触还原剂时不转化", c do
     # 热源总能量 1 MJ：绝热上限 Ta + 1e6/21360 = 339.97 K < X。
     w = start(c)

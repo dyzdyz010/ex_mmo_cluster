@@ -21,6 +21,7 @@ defmodule SceneServer.Body.RepairTest do
     进了蛋白储备的蛋白按 Atwater 4 kcal/g = 16 747.2 J/g 从能量里扣出：1.08 g → 18 086.976 J，进能量储备 57 275.424 J。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Body.{Repair, Thermo}

@@ -1,6 +1,7 @@
 defmodule MmoContracts.OperationWireTest do
   @moduledoc "Test-only: frozen hand-written P2 bytes, independent of the encoder."
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Codec
   @base Base.decode16!("08070605040302010000000000000000")
   @operation Base.decode16!("038877665544332211D4C3B2A1001400F7FFFFFFFFFFFFFF5300000000000000EFFFFFFFFFFFFFFF")

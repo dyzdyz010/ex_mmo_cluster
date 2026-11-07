@@ -294,6 +294,8 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
 
   # ---- 1. 整炉长时演化：点燃 → 峰值 → 燃尽 → 断流 → 休眠
 
+  # 慢层（单项 ≥ 45 s）：实测约 168 s（WSL +S 2:2）。
+  @tag :slow
   test "双热壁炉 1 m³ 煤盖石：K 点燃后峰值 Σε ≥ 48 V；燃尽后电源功率跌破 1 W 那一笔起 0 A、电账冻结；余温衰减到容差内热调度休眠、此后无热提交；逐笔账闭合", c do
     {f, s0, clicks} = furnace(c, :lamp, lamp_chain(), 4)
     t0 = System.monotonic_time(:millisecond)
@@ -388,6 +390,8 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
 
   @refuel_s 600.0
   @refuel_window_s 900.0
+  # 慢层（单项 ≥ 45 s）：实测约 82 s（WSL +S 2:2）。
+  @tag :slow
   test "续料孪生：两座 0.5 m³ 煤炉同样点燃盖石、600 s 时同样开盖再盖回，只有一座倒入 0.5 m³；续料后 Σε 高于对照同刻值，Δ燃料初始化 = 0.5 m³ × 8e8 J", c do
     {fa, sa, clicks_a} = furnace(c, :refuel, lamp_chain(), 2)
     {fb, sb, clicks_b} = furnace(c, :control, lamp_chain(), 2)
@@ -446,6 +450,8 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
 
   # ---- 3. 充电支路
 
+  # 慢层（单项 ≥ 45 s）：实测约 62 s（WSL +S 2:2）。
+  @tag :slow
   test "充电支路：两块串联蓄能石（正极 +Y）接在炉子外电路；Σε 越过 48 V 且 Σε·I ≥ 1 W 时 I = (Σε − 48)/ΣR，两块逐笔各充 24·I·0.5 J；Σε 回落到 48 V 止；充入 > 0、逐笔账闭合", c do
     {f, s0, _} = furnace(c, :charge, charge_chain(), 4)
     t0 = System.monotonic_time(:millisecond)
@@ -540,6 +546,8 @@ defmodule VoxelRegion.FurnaceGeneratorWorldTest do
     end
   end
 
+  # 慢层（单项 ≥ 45 s）：实测约 191 s（WSL +S 2:2）。
+  @tag :slow
   test "完全静止后由开关唤醒：炉经 S_c 充两块蓄能石后断开，燃尽冷却到休眠、定时器窗口 0 笔；闭合 S_d 的下一笔热事务 I = 48 V／ΣR，每块放 24·I·0.5 J", c do
     {f, s0, _} = furnace(c, :wake, wake_chain(), 4)
     t0 = System.monotonic_time(:millisecond)

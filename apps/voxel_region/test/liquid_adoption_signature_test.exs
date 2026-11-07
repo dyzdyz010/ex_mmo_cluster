@@ -1,6 +1,7 @@
 defmodule VoxelRegion.LiquidAdoptionSignatureTest do
   @moduledoc "只测试：合法不可变地形的纯 owner 回调；26 邻区不应使派生备忘常驻展开 ring 或大父二进制。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{Cache, Liquids, Payloads}
   alias MmoContracts.Voxel.{Payload, Skins}
   alias VoxelRegion.TestSupport.BinaryRetention

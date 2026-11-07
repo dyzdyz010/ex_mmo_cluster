@@ -1,6 +1,7 @@
 defmodule VoxelRegion.BinaryRetentionTest do
   @moduledoc "只测试：`BinaryRetention` 判定器本身必须能区分切片、独立小值与独立大值；纯函数，不启动 World。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.TestSupport.BinaryRetention
 
   # 手算：父对象 8192 字节（refc），切出 1024 字节 -> 切片存活时父对象的 8192 字节被拖住。

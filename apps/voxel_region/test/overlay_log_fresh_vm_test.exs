@@ -6,6 +6,7 @@ defmodule VoxelRegion.OverlayLogFreshVmTest do
   回归：magic-inc2 首次双端实跑（Voxim semblance-01）冷重启时 World 在 replay_log 里 `binary_to_term` 抛 ArgumentError 起不来。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Magic.Semblance
 
   test "带拟态与食物收据的事务元数据在全新 VM 里可解码" do

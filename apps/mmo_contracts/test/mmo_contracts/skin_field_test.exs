@@ -1,6 +1,7 @@
 defmodule MmoContracts.SkinFieldTest do
   @moduledoc "只测试：手写 CSR 线格式验证紧凑接纳、规范化与旧持久 Payload 迁移；不启动 World／网络。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   import Bitwise
   alias MmoContracts.Voxel.{Codec, Payload, Skins, SkinField}
 

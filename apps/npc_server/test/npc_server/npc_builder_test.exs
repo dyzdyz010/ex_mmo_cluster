@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcBrainBuilderTest do
   @moduledoc "只测试：荒野施工状态机（手工排的事件序列）、分诊与规划请求的形状。真实 World 见 npc_body_world_test 的 :wilderness_skill 用例。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Builder
 
   defmodule Memory do

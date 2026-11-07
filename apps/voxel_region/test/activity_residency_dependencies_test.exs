@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ActivityResidencyDependenciesTest do
   @moduledoc "只测试：物理 owner 的驻留种子投影，不启动 World、数据库或网络。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{Casting, Liquids, Projectiles, Thermal}
 
   defp thermal_state do

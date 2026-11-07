@@ -10,6 +10,7 @@ defmodule SceneServer.Body.ThermoTest do
   寒冷暴露的实测对照（冷水浸泡、冷空气）在 `cold_validation_test.exs`。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Body.Thermo

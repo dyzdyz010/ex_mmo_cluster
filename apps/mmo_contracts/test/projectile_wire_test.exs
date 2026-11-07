@@ -1,5 +1,6 @@
 defmodule MmoContracts.ProjectileWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
   alias Session.Codec
 

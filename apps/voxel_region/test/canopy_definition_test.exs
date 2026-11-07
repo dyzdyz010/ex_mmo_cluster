@@ -1,5 +1,6 @@
 defmodule VoxelRegion.CanopyDefinitionTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Prefab
   test "binding is explicit content addressed v4 while unbound definitions remain v3" do
     definition = %{cells: [],children: [],attachments: [],macro_cells: [{{-1,0,1},58}]}

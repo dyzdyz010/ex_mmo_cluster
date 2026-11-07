@@ -7,6 +7,7 @@ defmodule VoxelRegion.RefinedCompactTest do
   旧实现必须首先在 typed 值断言失败，不能用缺失函数异常代替首红。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias VoxelRegion.World.{Canonical, Observation}
   alias VoxelRegion.RefinedSlots

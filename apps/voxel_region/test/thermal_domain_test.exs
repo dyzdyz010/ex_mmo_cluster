@@ -4,6 +4,7 @@ defmodule VoxelRegion.ThermalDomainTest do
   遍历节点表、下标按 `Enum.to_list/1` 次序（超过 32 键的 map 两者互逆），辐射按 `ThermalRadiation.terms/4`。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{ThermalDomain, ThermalGeometry, ThermalNative, ThermalRadiation}
 
   defp key(i), do: {0, {i * 8, 0, 0}}

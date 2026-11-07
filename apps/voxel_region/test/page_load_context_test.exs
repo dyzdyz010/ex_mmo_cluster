@@ -5,6 +5,7 @@ defmodule VoxelRegion.PageLoadContextTest do
   实际 World ready 队列、输入生效和物理次序由 CW2 公共入口集成测试负责。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{PageLoad, Pages}
 
   defp state do

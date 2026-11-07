@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CircuitAdmissionTest do
   @moduledoc "只测试：潜在空间图与人工计数的小确定输入；不启动World、数据库或第二求解器。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{Circuit, Damage, Protection, RefinedSlots}
   alias VoxelRegion.World.{Canonical, CircuitAdmission, CircuitGraph}
 

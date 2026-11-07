@@ -163,6 +163,9 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
       w
     end
 
+    # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 125 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+    @tag :slow
+    @tag timeout: 250_000
     test "露天煤堆里的矿石比转化温度低至少 100 K，不转化；同一堆在石炉里炼成铜，炉体与铜都不被热毁", c do
       ore = c.materials[@ore]
       x = ore["transform_kelvin"]
@@ -200,6 +203,9 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
 
   # K 从 +x 侧点燃木柴层的边中格 (3,1,2) 或角格 (3,1,1)；两处都须把整张煤床引燃（石地上，炉膛地面同材料）。
   for {name, z} <- [edge: 2.5, corner: 1.5] do
+    # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 edge 63 s／corner 49 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+    @tag :slow
+    @tag timeout: 150_000
     test "一层木柴铺在 3×3 煤床下，从#{name}点一块木柴：木柴层与整张煤床都烧起来，都按燃料燃尽", c do
       kindling = for x <- 1..3, z <- 1..3, do: {{x, 1, z}, @wood}
       bed = for x <- 1..3, z <- 1..3, do: {{x, 2, z}, @coal}
@@ -220,6 +226,9 @@ defmodule VoxelRegion.FireFurnaceProductionTest do
     end
   end
 
+  # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 74 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 150_000
   test "整座木屋烧光后自行平息：每块木头都按燃料燃尽，无热毁，地面不毁，活动集清空", c do
     # 7×4×7 木屋：四面墙与屋顶一格厚，门 1×2、窗 1 格；地面草地。K 从屋外点燃门边墙根。
     house = for x <- 0..6, y <- 1..4, z <- 0..6, x in [0, 6] or z in [0, 6] or y == 4,

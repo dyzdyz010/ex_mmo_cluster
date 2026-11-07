@@ -1,5 +1,6 @@
 defmodule MmoContracts.VoximM1ContractTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session.Codec
   alias MmoContracts.{Session, Movement, Voxel}
   @root Path.expand("../../../../../Voxim/Docs/M1", __DIR__)

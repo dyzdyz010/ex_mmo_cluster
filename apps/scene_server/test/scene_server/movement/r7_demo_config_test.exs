@@ -1,5 +1,6 @@
 defmodule SceneServer.Movement.R7DemoConfigTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.Scene
 
   test "authoritative coverage can contain the entire spawn Near and its collision margin" do

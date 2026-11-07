@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CollisionMaterialTest do
   # 只测试：完整目录与宏格/微格占用投影的接缝。
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Payload
   alias MmoContracts.VoxelMaterialCatalog, as: Catalog
   alias VoxelRegion.CollisionSource

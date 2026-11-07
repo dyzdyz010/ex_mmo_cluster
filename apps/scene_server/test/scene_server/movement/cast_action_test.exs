@@ -1,5 +1,6 @@
 defmodule SceneServer.Movement.CastActionTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.Player
   alias SceneServer.Body
   alias MmoContracts.{Session, Movement}

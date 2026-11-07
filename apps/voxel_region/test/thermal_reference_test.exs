@@ -3,6 +3,7 @@ Code.require_file("support/thermal_reference.exs", __DIR__)
 defmodule VoxelRegion.ThermalReferenceTest do
   @moduledoc "只测试：纯历史判定反例；缺点、错值、错平台必须拒绝，不启动 World 或数据库。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.TestSupport.ThermalReference
 
   @windows %{10.0 => "windows-10", 20.0 => "common-20"}

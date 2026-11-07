@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ThermalGeometryInputTest do
   @moduledoc "只测试：canonical 热几何只消费冻结采样值，不访问 World 或读取回调。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{ThermalGeometry, ThermalAttachments, Combustion, Phase}
 
   @material %{"heat_capacity_per_macro" => 1000.0, "thermal_conductivity" => 10.0}

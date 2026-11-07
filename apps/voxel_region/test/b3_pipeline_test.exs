@@ -1,6 +1,7 @@
 defmodule VoxelRegion.B3PipelineTest do
   # 只测试：优化的载荷投影与日志恢复保持既有权威语义。
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Voxel.Payload
   alias VoxelRegion.{CollisionSource,OverlayLog}
   @moduletag :b3

@@ -1,5 +1,6 @@
 defmodule GateServer.TcpFramingTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   @moduledoc """
   Tests for TCP length-prefix framing (packet: 4).

@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PageCacheBudgetTest do
   @moduledoc "只测试：纯有界缓存的命名空间竞争、不可变输入、请求 pin 与原子失败；不启动 World、数据库或网络。"
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias VoxelRegion.World.Cache
 

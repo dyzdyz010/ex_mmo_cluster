@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcBlueprintTest do
   @moduledoc "全局系统功能的算法层测试：期望值都是手数的小例子。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Blueprint
 
   # 3×3 占地、两格高的空心墙（y 0..1），再挖一个一格宽、两格高的门洞。

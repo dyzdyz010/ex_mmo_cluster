@@ -1,5 +1,6 @@
 defmodule MmoContracts.CombustionWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.{Session, Voxel}
 
   # 只测试：与 Voxim ConfirmedCombustion 测试使用同一组目标、能量与温度。

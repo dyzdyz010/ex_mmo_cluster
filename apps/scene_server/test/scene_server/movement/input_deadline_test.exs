@@ -2,6 +2,7 @@
 defmodule SceneServer.Movement.InputDeadlineTest do
   @moduledoc false
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.InputSlots
   alias MmoContracts.{Movement, Session}
 

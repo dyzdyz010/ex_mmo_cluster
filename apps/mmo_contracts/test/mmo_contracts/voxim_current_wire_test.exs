@@ -164,6 +164,7 @@ end
 
 defmodule MmoContracts.VoximCurrentWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.VoximCurrentWireVectors, as: V
   @rid 0x0102030405060708
   @seq 0x1122334455667788

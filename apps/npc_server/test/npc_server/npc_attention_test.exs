@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcAttentionTest do
   @moduledoc "只测试：目标身份、独立观察、视锥及所有后端共用命令。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Attention
 
   @entities %{

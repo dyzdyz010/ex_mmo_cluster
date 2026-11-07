@@ -1,5 +1,6 @@
 defmodule VoxelRegion.DamageTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Damage
 
   test "first textured edit after empty CSR preserves texels and subsequent cached edits" do

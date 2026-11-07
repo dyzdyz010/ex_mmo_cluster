@@ -232,6 +232,9 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     200.0000000000003 => "db1cf591925423910b82d31b86e32499c56e73b90ab22f8f8f1859de3ccec2a6"
   }
 
+  # 慢层（单项 ≥ 45 s）：实测约 58 s（WSL +S 2:2），接近默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 120_000
   test "radiation catalog, eps 0.9: a burning house matches the full-rebuild digests commit by commit", c do
     os = :os.type()
     assert {:ok, reference} = ThermalReference.radiation(os, @radiation_windows, @radiation)
@@ -240,6 +243,9 @@ defmodule VoxelRegion.ThermalDomainEquivalenceTest do
     assert_recorded(trace, reference.recorded, :radiation)
   end
 
+  # 慢层（单项 ≥ 45 s）：实测约 56 s（WSL +S 2:2），接近默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 120_000
   test "earlier catalog, eps 0: a burning house matches the full-rebuild digests commit by commit", c do
     trace = burn(c, "fbd4f30106f1cecbd5ea73cb361b7e19058a531420fbaf86998ad89f43f6ba70", "environment.json")
     assert_recorded(trace, @zero, :zero)

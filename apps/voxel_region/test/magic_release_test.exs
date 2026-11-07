@@ -1,6 +1,7 @@
 defmodule VoxelRegion.MagicReleaseTest do
   @moduledoc "只测试：最终定形后的释放前置时长与维护费，期望由 1000 W × 0.25 s 手算。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost}
 
   test "最终符号无需调整时仍须等待出手帧，并且仅支付一次维护" do

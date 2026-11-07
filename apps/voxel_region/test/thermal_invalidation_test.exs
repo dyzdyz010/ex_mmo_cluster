@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ThermalInvalidationTest do
   @moduledoc "只测试：派生视线失效的局部性与空编辑复用；手算相距 100 格、视距 8 的两处热域。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.ThermalWork
 
   defp sample do

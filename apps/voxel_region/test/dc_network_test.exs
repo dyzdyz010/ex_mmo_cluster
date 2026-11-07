@@ -1,5 +1,6 @@
 defmodule VoxelRegion.DCNetworkTest do
   use ExUnit.Case,async: true
+  @moduletag :t0
   @moduletag :b5
   alias VoxelRegion.DCNetwork
   defp edge(a,b,r,emf \\ 0.0),do: %{a: a,b: b,r: r,emf: emf}

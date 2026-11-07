@@ -1,5 +1,6 @@
 defmodule VoxelRegion.WorldAttachmentIndexTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias VoxelRegion.Attachments
   alias VoxelRegion.World.{AttachmentOps, Canonical}

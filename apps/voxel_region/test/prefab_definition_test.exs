@@ -1,5 +1,6 @@
 defmodule VoxelRegion.PrefabDefinitionTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Prefab
 
   # 子件引用的定义 id 与生产契约一致：32 字节内容哈希（VXPD 编解码按 binary-size(32) 读写）。

@@ -1,6 +1,7 @@
 defmodule SceneServer.Movement.PathTest do
   @moduledoc "全局系统功能的算法层测试：冻结样例的期望路径是手算的，不由被测算法生成。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.Path, as: Walk
 
   @suite Path.expand("../../fixtures/movement_path_cases.json", __DIR__)

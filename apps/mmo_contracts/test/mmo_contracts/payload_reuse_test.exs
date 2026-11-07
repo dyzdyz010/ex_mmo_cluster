@@ -1,5 +1,6 @@
 defmodule MmoContracts.PayloadReuseTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.Voxel.{Codec, Payload, Refined}
 

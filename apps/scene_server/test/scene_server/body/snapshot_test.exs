@@ -1,6 +1,7 @@
 defmodule SceneServer.Body.SnapshotTest do
   @moduledoc "只测试：身体存档独立小例；不启动 World 或数据库。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Body
   alias SceneServer.Body.Snapshot
 

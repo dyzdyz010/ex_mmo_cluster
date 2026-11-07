@@ -13,7 +13,7 @@ defmodule VoxelRegion.EnergyMaterialTest do
   use ExUnit.Case, async: false
   @moduletag :energy_material
   alias VoxelRegion.{World, Damage, ParameterEvolution}
-  alias VoxelRegion.TestSupport.{Actor, Log, Source}
+  alias VoxelRegion.TestSupport.{Actor, Log, Source, WorldClock}
   alias MmoContracts.Voxel.Codec
 
   @digest "b1aca50376c972b4d40b75f19bc6fb36a535e897e0ae73223e8b0e52235aa3ec"
@@ -37,8 +37,10 @@ defmodule VoxelRegion.EnergyMaterialTest do
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     data = Jason.decode!(File.read!(Path.join(@fixtures, @digest <> ".json")))
+    # 不前进的时钟：热只按显式 `:thermal_commit` 推进。墙钟下自然步会插在两次观察之间（例如读 `left` 与挖掘之间多放电一步 960 J）。
+    clock = start_supervised!({WorldClock, 0})
     %{root: root, data: data, materials: Map.new(data["materials"], &{&1["material_id"], &1}),
-      tools: Map.new(data["tools"], &{&1["tool_id"], &1}), ambient: 293.15}
+      tools: Map.new(data["tools"], &{&1["tool_id"], &1}), ambient: 293.15, clock: clock}
   end
 
   defp start(c, name, digest \\ @digest) do
@@ -48,7 +50,7 @@ defmodule VoxelRegion.EnergyMaterialTest do
     unless File.exists?(catalog), do: File.cp!(Path.join(@fixtures, digest <> ".json"), catalog)
     env = Path.join(root, "environment.json")
     File.cp!(Path.join(@fixtures, "environment-radiation.json"), env)
-    w = start_supervised!({World, [source: Source, log: Log, root: root, observer: self(), name: nil,
+    w = start_supervised!({World, [source: Source, log: Log, clock: {WorldClock, c.clock}, root: root, observer: self(), name: nil,
       property_catalog_path: catalog, thermal_environment_path: env, production_materials: @materials]}, id: name)
     :ok = VoxelRegion.TestSupport.activate_simulation(w, {{-1, 0, 0}, {7, 4, 5}})
     {w, root}

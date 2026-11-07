@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcHindsightTest do
   @moduledoc "只测试：Hindsight HTTP 信任边界；外部服务由隔离 TCP HTTP 替身代替，不验证模型质量。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Life.Hindsight
 
   setup do

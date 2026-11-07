@@ -80,6 +80,9 @@ mix format                            # 代码格式化
 mix ecto.migrate -r DataService.Repo
 ```
 
+- 测试分级（各 app `test/test_helper.exs`）：默认 `mix test --no-start` 跑快层与集成层，排除 `:slow`；`--only t0` 只跑秒级纯逻辑（`@moduletag :t0`），
+  改动后先跑它；`:slow` 是单项实测 ≥ 45 s 的用例（各带 `@tag timeout:`），夜间与阶段验收用 `--include slow` 跑全量，或 `--only slow` 只跑慢层。
+  `:oracle`、`:benchmark`／`:bench`、`:sim`、`:realtime`、`:live_llm`、`:live_jev`、`:npc_scale`、`:npc_soak` 需外部环境或属测量，按各测试说明显式运行。
 - 含 PostgreSQL 的测试读 `MMO_DB_PORT` 等环境变量连本地测试库。
 - Gate 的真实 QUIC 用例在 Linux 的 `apps/gate_server` 目录执行：生成临时证书后 `VOXIM_TEST_CERTS=<dir> mix test --no-start --only quic_transport`
   （证书生成见 `.github/prepare-test-fixtures.py`）。

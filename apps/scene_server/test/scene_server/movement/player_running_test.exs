@@ -5,6 +5,7 @@ defmodule SceneServer.Movement.PlayerRunningTest do
   该节点已断开时 NPC Body 拿到的就是这种 pid。范围：不起真实 peer 节点，远端存活分支（`:erpc` 返回 true）不在此覆盖。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.Player
 
   # 不可达节点上的 pid：<<131, 88, 119, 名长, 名, id::32, serial::32, creation::32>>。

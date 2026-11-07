@@ -1,5 +1,6 @@
 defmodule VoxelRegion.WindowSnapshotTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.World.{Cache, Pages, Payloads, Thermal, WindowSnapshot}
   alias VoxelRegion.{Damage, ThermalDomain}
 

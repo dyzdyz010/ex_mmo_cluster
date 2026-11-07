@@ -10,6 +10,7 @@ defmodule MmoContracts.BodyWireTest do
   Hello 30 相对 Hello 29：生命后追加 recoverable u8，每条伤病 heal 后追加 remaining_s f64，共多 1 + 2 × 8 = 17 字节（102 → 119）。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Session
 
   @sample Base.decode16!(

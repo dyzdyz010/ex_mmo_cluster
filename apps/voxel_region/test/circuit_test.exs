@@ -1,5 +1,6 @@
 defmodule VoxelRegion.CircuitTest do
   use ExUnit.Case,async: true
+  @moduletag :t0
   @moduletag :b5
   alias VoxelRegion.{Circuit,Damage}
 

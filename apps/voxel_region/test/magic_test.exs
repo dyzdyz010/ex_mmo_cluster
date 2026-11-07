@@ -5,6 +5,7 @@ defmodule VoxelRegion.MagicTest do
   期望值全部按契约公式手算（前摇契约 §2 手算表，写在各断言旁），不取自被测函数。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Magic.{Catalog, Cost, Program}
 
   @digest "41d668f375b795ce9129dd3bbc1f9c70ce70278ded49f39c2441ccc540386bde"

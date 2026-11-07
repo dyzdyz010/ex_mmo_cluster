@@ -1,5 +1,6 @@
 defmodule SceneServer.Movement.ToolHitTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias SceneServer.Movement.ToolHit
 
   test "球扫掠当前胶囊：半径、起始重叠、短段外和移动后的擦过" do

@@ -15,6 +15,7 @@ defmodule SceneServer.Body.ContactTest do
   调定点身体 K_t = 5.28 + 1.163 × 6.3 = 12.6069 → G_i = 0.378207 W/K。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Body.Thermo

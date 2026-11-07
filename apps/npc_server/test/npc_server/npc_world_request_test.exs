@@ -6,6 +6,7 @@ defmodule NpcServer.NpcWorldRequestTest do
   浮点按 IEEE 754 双精度手写：0.6 = 3FE3333333333333、-0.8 = BFE999999999999A、±1.0 = 3FF… / BFF…。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.WorldRequest
   alias MmoContracts.Voxel.Codec
 

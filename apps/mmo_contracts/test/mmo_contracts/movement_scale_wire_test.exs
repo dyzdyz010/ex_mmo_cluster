@@ -1,6 +1,7 @@
 defmodule MmoContracts.MovementScaleWireTest do
   @moduledoc "只测试：Hello34 的权威移动系数冻结字节，不从被测编码器生成期望。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Movement
 
   # domain=2、kind=4、48字节；identity=(1,2,3)、tick=45、0.5=IEEE754 3FE0000000000000。

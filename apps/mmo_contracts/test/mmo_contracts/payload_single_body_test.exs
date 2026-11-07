@@ -1,6 +1,7 @@
 defmodule MmoContracts.PayloadSingleBodyTest do
   @moduledoc "只测试：refined片段到最终载荷只在Codec边界物化；手算原始段与完整压缩字节作独立期望。"
   use ExUnit.Case, async: false
+  @moduletag :t0
   alias MmoContracts.Voxel.{Codec, Payload, Refined}
 
   @cells 66 * 66 * 66

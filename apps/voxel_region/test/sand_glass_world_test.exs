@@ -154,6 +154,9 @@ defmodule VoxelRegion.SandGlassWorldTest do
       "transform_reductant_units_per_unit" => 0.25}))) end
   end
 
+  # 慢层：ab7fced0 取消 World 二进制 GC 下限后实测约 82 s（WSL +S 2:2），超默认 60 s；超时留约 2 倍余量。
+  @tag :slow
+  @tag timeout: 180_000
   test "a 0.25 m³ poured sand pile melts once into 0.25 m³ glass: heat, quantity, integrity, no fuel; irreversible; cold restart; scooped back", c do
     assert {:ok, _} = pour(c, {2, 0, 2})
     settle(c.w)

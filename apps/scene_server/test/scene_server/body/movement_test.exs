@@ -5,6 +5,7 @@ defmodule SceneServer.Body.MovementTest do
   修复 50% 起损失归零。这里不验证 Player、网络或客户端移动。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias SceneServer.Body
   alias SceneServer.Body.Repair

@@ -1,6 +1,7 @@
 defmodule MmoContracts.PublicLifeWireTest do
   @moduledoc "只测试：Hello42 公共生命字段的独立手写快照字节与拒绝边界。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.Movement
 
   # 体长：identity 24 + tick 8 + count 2 + record 92 = 126；state 固定 51 字节全零。

@@ -1,6 +1,7 @@
 defmodule VoxelRegion.LiquidActivityTest do
   @moduledoc "Test-only: finite-volume threshold and active/full step equivalence; pure values, no World or database."
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Liquid
   @capacity 2_097_152
   @threshold div(@capacity, 8)

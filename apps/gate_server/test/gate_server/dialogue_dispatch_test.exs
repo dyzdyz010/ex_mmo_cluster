@@ -1,6 +1,7 @@
 defmodule GateServer.DialogueDispatchTest do
   @moduledoc "只测试：正式 Gate 分帧/分发配 Scene 替身，验证身份与出口，不冒充世界或真实 QUIC 验收。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias GateServer.Session.{Dispatch, QuicConnection, Sink}
   alias MmoContracts.Session
 

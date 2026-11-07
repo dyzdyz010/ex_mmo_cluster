@@ -1,6 +1,7 @@
 defmodule VoxelRegion.CollisionStreamBoxTest do
   @moduledoc "只测试：窗口滞回的 XYZ、负坐标、边界与远距移动；不替代真实 Player 流送实跑。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.CollisionStream
 
   test "亭子坡道跨过 Y=512 时保留已覆盖的窗口" do

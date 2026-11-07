@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PhaseMaterialTest do
   @moduledoc "只测试：第二相族和雪的参考焓、身份与广延量运输。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Phase
   @moduletag :phase_coverage
 

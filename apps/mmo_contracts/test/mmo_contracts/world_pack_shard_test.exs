@@ -1,5 +1,6 @@
 defmodule MmoContracts.WorldPackShardTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.WorldPackShard
 

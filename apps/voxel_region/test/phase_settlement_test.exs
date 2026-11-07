@@ -1,6 +1,7 @@
 defmodule VoxelRegion.PhaseSettlementTest do
   @moduledoc "只测试：相变结算的有限供能、广延量守恒和材料身份边界。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.Phase
 
   defp materials do

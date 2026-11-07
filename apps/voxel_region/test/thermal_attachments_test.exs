@@ -1,6 +1,7 @@
 defmodule VoxelRegion.ThermalAttachmentsTest do
   @moduledoc "只测试：附件热容量、接触与能量守恒。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.{ThermalAttachments, ThermalGeometry, ThermalNative}
   @catalog %{materials: %{19 => %{"heat_capacity_per_macro" => 1000.0,
     "thermal_conductivity" => 10.0,"heat_resistance_kelvin" => 1000.0}},

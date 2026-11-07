@@ -7,6 +7,7 @@ defmodule VoxelRegion.PrefabPrepareLifecycleTest do
   不向运行中的 authority 注入状态；wrapper request 身份取消不等于真实 World 公共超时已验收。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias VoxelRegion.Prefab
   alias VoxelRegion.Prefab.Catalog

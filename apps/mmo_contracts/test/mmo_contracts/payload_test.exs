@@ -1,5 +1,6 @@
 defmodule MmoContracts.PayloadTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias MmoContracts.Voxel.{Codec, Payload, Skins}
 
@@ -108,6 +109,7 @@ end
 defmodule MmoContracts.PayloadCanonicalEncodingTest do
   # 只测试：call_count 属于 VM 全局追踪，独占串行用例；产品不增加计数或分支。
   use ExUnit.Case, async: false
+  @moduletag :t0
 
   alias MmoContracts.Voxel.{Codec, Payload, Skins}
 

@@ -1,6 +1,7 @@
 defmodule NpcServer.NpcAppraisalTest do
   @moduledoc "只测试：手算输入验证情绪接纳、来源消费和时间，不启动世界或模型。"
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias NpcServer.Life.{Appraisal, State}
 
   defp state do

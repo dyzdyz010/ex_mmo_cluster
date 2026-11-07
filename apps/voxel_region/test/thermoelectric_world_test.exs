@@ -168,6 +168,8 @@ defmodule VoxelRegion.ThermoelectricWorldTest do
     {%{c | w: w}, before, restored}
   end
 
+  # 慢层（单项 ≥ 45 s）：实测约 95 s（WSL +S 2:2）。
+  @tag :slow
   test "整格炉 + Test-only 有限热源：每笔账闭合、单笔做功 = Σε·I·Δt、卡诺上限、不越过耐热；热源耗尽后衰减；冷重启账逐项相同；生产环境下功率低于 1 W 断流、余温衰减后热调度休眠", c do
     # 炉膛 = 一格石（实验热源所在格），上盖一格石。
     generator(c, [{{3, 1, 2}, @stone}, {{3, 2, 2}, @stone}])

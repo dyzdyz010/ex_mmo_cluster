@@ -1,5 +1,6 @@
 defmodule MmoContracts.LiquidWireTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias MmoContracts.{Session, Voxel}
   alias MmoContracts.Voxel.Payload
 

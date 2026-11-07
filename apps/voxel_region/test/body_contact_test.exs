@@ -7,6 +7,7 @@ defmodule VoxelRegion.BodyContactTest do
   - 触碰：r 0.4 m、k_s 400 → 0.01 / (0.4/400) = 10 W/K。
   """
   use ExUnit.Case, async: true
+  @moduletag :t0
   alias VoxelRegion.BodyContact
 
   test "三类接触导热按串联式手算" do

@@ -1,5 +1,6 @@
 defmodule SceneServer.Movement.VoximReplicationTest do
   use ExUnit.Case, async: false
+  @moduletag :t0
   alias SceneServer.Movement.Replication
   alias MmoContracts.{Session, Movement}
 
@@ -135,6 +136,7 @@ end
 
 defmodule SceneServer.Movement.M4aReplicationTransferTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
   @moduletag :m4a_transfer
   alias SceneServer.Movement.{AOI, Replication}
   alias MmoContracts.{Session, Movement}

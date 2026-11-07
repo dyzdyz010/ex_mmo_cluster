@@ -1,5 +1,6 @@
 defmodule VoxelRegion.WorldRefinedIndexTest do
   use ExUnit.Case, async: true
+  @moduletag :t0
 
   alias VoxelRegion.World.Canonical
 
