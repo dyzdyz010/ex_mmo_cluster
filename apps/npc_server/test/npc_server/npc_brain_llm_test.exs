@@ -722,6 +722,16 @@ defmodule NpcServer.NpcBrainLlmTest do
     assert Enum.to_list(1..24) == Enum.map(listed, & &1.attachment_id) |> Enum.sort()
     assert 1 == hd(listed).attachment_id
 
+    # 等距（微格网格上常见）：截断与行序按 owner 定，不随上游行序（World 由 map 遍历产生）变化。
+    tied = for i <- 1..40, do: %{row | incarnation: i, owner: {i, 1}}
+
+    for rows <- [tied, Enum.reverse(tied)] do
+      assert [%{data: %{attachments: listed}}] =
+               NpcServer.Perception.project(%{outcome | data: %{seq: 9, property_states: rows}}, [], {12.0, 64.9, 10.0})
+
+      assert Enum.map(listed, & &1.attachment_id) == Enum.to_list(1..24)
+    end
+
     # 模型看到的是 JSON（Context.plain：元组 → 数组）；原样抄回 target 就得到对这件附件的命令。
     copied = NpcServer.Context.plain(thing)
 

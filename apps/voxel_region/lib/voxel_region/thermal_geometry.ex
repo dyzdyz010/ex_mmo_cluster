@@ -85,9 +85,9 @@ defmodule VoxelRegion.ThermalGeometry do
     end)
   end
 
-  @doc "每个真实接触只结算一次，边界不依赖 chunk 或 region。"
+  @doc "每个真实接触只结算一次，边界不依赖 chunk 或 region；按节点键序逐节点、逐接触发出（同 ThermalDomain 的内核次序）。"
   def contacts(nodes) do
-    for {id,n}<-nodes,{other,g}<-n.contacts,id<other,Map.has_key?(nodes,other),do: {id,other,g}
+    for {id,n}<-Enum.sort(nodes),{other,g}<-n.contacts,id<other,Map.has_key?(nodes,other),do: {id,other,g}
   end
 
   @doc "Y-up 实占用盒；有限宏格以数量比例决定底部液柱高度，微格保持原尺寸。"

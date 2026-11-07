@@ -77,7 +77,8 @@ defmodule VoxelRegion.World.CircuitGraph do
           {runs, state} = Enum.flat_map_reduce(faces, state, &face_targets/2)
           contacts = Circuit.solid_contacts(runs, state.properties, state.damage, environment(state), mode(graph))
           graph = %{graph | queue: rest, solids: MapSet.put(graph.solids, key)}
-          graph = Enum.reduce(contacts, graph, fn {other_key, {other, area}}, g ->
+          # 接触表按对方热键：入队与接触边次序按键序（≤32 项时与原 map 遍历相同），不取 map 遍历次序。
+          graph = Enum.reduce(Enum.sort(contacts), graph, fn {other_key, {other, area}}, g ->
             if MapSet.member?(g.solids, other_key) or
                  not Circuit.contact_allowed?(target, other, state.properties) or
                  not Protection.same_holder?(state.protection, Damage.macro(target), Damage.macro(other)) do

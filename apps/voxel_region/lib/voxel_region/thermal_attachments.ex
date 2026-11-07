@@ -50,9 +50,12 @@ defmodule VoxelRegion.ThermalAttachments do
       Map.has_key?(catalog.materials[material], "heat_capacity_per_macro")
     end)
 
+  # 槽按槽键序处理：宿主接触按此次序前插、宿主暴露面按此次序累减，决定内核的浮点求和次序。槽集合来自区域索引，
+  # 没有天然的加入次序，派生图又须与重建历史无关，故次序按键定义；不用 map 遍历次序（Erlang 不承诺）。
   defp derive(nodes,thermal,catalog,hosts) do
     thickness=if map_size(thermal)>0,do: catalog.attachments["face_thickness_m"],else: 0.0
     width=if map_size(thermal)>0,do: :math.sqrt(catalog.attachments["line_section_m2"]),else: 0.0
+    thermal=Enum.sort(thermal)
     nodes=Enum.reduce(thermal,nodes,fn {slot,value},all ->
       material=catalog.materials[elem(value,1)]
       target=Attachments.identity(slot,value) |> Map.put(:granularity,4)
@@ -71,7 +74,7 @@ defmodule VoxelRegion.ThermalAttachments do
     ports=Enum.reduce(thermal,%{},fn {slot,_},ports ->
       Enum.reduce(ports(slot),ports,fn p,acc->Map.update(acc,p,[slot],&[slot|&1]) end)
     end)
-    nodes=Enum.reduce(ports,nodes,fn {_,members},all ->
+    nodes=Enum.reduce(Enum.sort(ports),nodes,fn {_,members},all ->
       for a<-members,b<-members,a<b,reduce: all do
         all ->
           {area,da,db}=join_geometry(a,b,thickness,width)

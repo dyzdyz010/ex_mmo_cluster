@@ -62,9 +62,10 @@ defmodule VoxelRegion.ParameterEvolution do
   def thermal_reference(thermal, rows, old_catalog, catalog, fill \\ fn _ -> 1.0 end)
   def thermal_reference(nil, _rows, _old, _catalog, _fill), do: nil
 
+  # 本模块各账（参数／燃料重标、电源移除、弃置）的浮点和与输出列表按行键序累加，不取 map 遍历次序。
   def thermal_reference(thermal, rows, old_catalog, catalog, fill) do
     rebase =
-      Enum.reduce(rows, 0.0, fn {_, row}, sum ->
+      Enum.reduce(Enum.sort(rows), 0.0, fn {_, row}, sum ->
         old = old_catalog.materials[row.material]
         # 显热参考 = 行所在宏格的气候区环境温度（与热内核、默认温度同一取值）。
         ambient = VoxelRegion.Climate.air_k(thermal.config, Damage.macro(row))
@@ -99,7 +100,7 @@ defmodule VoxelRegion.ParameterEvolution do
   """
   def ambient_reference(thermal, config, rows, catalog, fill) do
     rebase =
-      Enum.reduce(rows, 0.0, fn {_, row}, sum ->
+      Enum.reduce(Enum.sort(rows), 0.0, fn {_, row}, sum ->
         m = catalog.materials[row.material]
 
         if row.granularity in [0, 1, 4] and Map.has_key?(row, :temperature_kelvin) and not Phase.enabled?(m) do
@@ -126,7 +127,7 @@ defmodule VoxelRegion.ParameterEvolution do
 
   def combustion(damage, thermal, old_catalog, catalog) do
     {damage, rebase} =
-      Enum.map_reduce(damage, 0.0, fn {key, row}, sum ->
+      Enum.map_reduce(Enum.sort(damage), 0.0, fn {key, row}, sum ->
         if Map.has_key?(row, :remaining_fuel_j) do
           old = old_catalog.materials[row.material]
           next = catalog.materials[row.material]
@@ -163,15 +164,15 @@ defmodule VoxelRegion.ParameterEvolution do
         do: {t.incarnation, {t.material, new.retired[c.tool_id], c.closed}}
 
     removed =
-      for {_, %{granularity: 3, circuit: c}} <- damage, Map.has_key?(new.retired, c.tool_id), reduce: 0.0,
+      for {_, %{granularity: 3, circuit: c}} <- Enum.sort(damage), Map.has_key?(new.retired, c.tool_id), reduce: 0.0,
         do: (sum -> sum + Map.get(c, :remaining_j, 0.0))
 
     heater? = Enum.any?(old.tools, fn {id, t} -> t["action"] == "heat" and Map.has_key?(new.retired, id) end)
-    discarded = if heater?, do: Enum.reduce(thermal.sources, 0.0, fn {_, source}, sum -> sum + source.remaining_j end), else: 0.0
+    discarded = if heater?, do: Enum.reduce(Enum.sort(thermal.sources), 0.0, fn {_, source}, sum -> sum + source.remaining_j end), else: 0.0
     thermal = if heater?, do: %{thermal | sources: %{}}, else: thermal
 
     {rows, {tombstones, rebase}} =
-      Enum.map_reduce(damage, {[], 0.0}, fn {key, row}, {tombstones, sum} ->
+      Enum.map_reduce(Enum.sort(damage), {[], 0.0}, fn {key, row}, {tombstones, sum} ->
         case {row.granularity, Map.get(moved, row.incarnation)} do
           {granularity, {from, to, closed}} when granularity in [3, 4] ->
             ratio = new.materials[to]["max_hp_per_macro"] / old.materials[from]["max_hp_per_macro"]
@@ -195,7 +196,7 @@ defmodule VoxelRegion.ParameterEvolution do
         end
       end)
 
-    slots = for {slot, {id, _}} <- attachments, Map.has_key?(moved, id), do: slot
+    slots = for {slot, {id, _}} <- Enum.sort(attachments), Map.has_key?(moved, id), do: slot
 
     %{
       damage: Map.new(rows),

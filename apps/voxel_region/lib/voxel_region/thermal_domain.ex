@@ -2,16 +2,21 @@ defmodule VoxelRegion.ThermalDomain do
   @moduledoc """
   全局系统功能：热内核的节点表与常驻原生热域（可丢弃的派生缓存）。
 
-  `table` 是本轮内核节点：节点键 => 已按受保护区域／气候分区过滤接触、并附默认记录等派生字段的节点，
-  其遍历次序就是内核次序（与原先 `Enum.to_list(nodes)` 相同）。节点按整数槽位、宏格按整数编号交给
-  `VoxelRegion.ThermalNative` 的热域资源：接触、辐射视线和节点工作副本只推送变化的部分，每轮把节点次序交给原生侧
-  生成内核边与辐射项（次序与数值同 `ThermalGeometry.contacts/1`、`ThermalRadiation.terms/4`），每步在原生侧演进与结算。
+  `table` 是本轮内核节点：节点键 => 已按受保护区域／气候分区过滤接触、并附默认记录等派生字段的节点（只作按键查找）。
+  `order` 是同一组节点键的有序集合（`:gb_sets`，按键的 Erlang 项序），节点进出 `table` 时同步增删；它就是内核次序，
+  决定内核下标与发边次序，从而决定内核里浮点求和的次序。次序按键定义而非按加入历史：本结构是可丢弃缓存，
+  同一节点集无论整表重建、同一提交内增量扩域还是闲置后重建，都必须得到逐位相同的内核输入；map 的遍历次序
+  不是 Erlang 承诺的契约（OTP 29 起超过 32 键的 map 遍历方向即已改变），不得用作内核次序。
+  节点按整数槽位（只是身份，不表示次序）、宏格按整数编号交给 `VoxelRegion.ThermalNative` 的热域资源：接触、辐射视线
+  和节点工作副本只推送变化的部分，每轮把 `order` 交给原生侧生成内核边与辐射项（次序与数值同按键遍历的
+  `ThermalGeometry.contacts/1`、`ThermalRadiation.terms/4`），每步在原生侧演进与结算。
 
   不读取 World：分区、派生字段与记录换算由调用方以函数给出；取回的节点值由调用方写回属性记录（唯一真值）。
   """
   alias VoxelRegion.{Combustion, ThermalNative}
 
-  defstruct native: nil, slots: %{}, keys: %{}, cells: %{}, cell_at: %{}, table: %{}, inputs: %{}, derived: [],
+  defstruct native: nil, slots: %{}, keys: %{}, cells: %{}, cell_at: %{}, table: %{}, order: :gb_sets.empty(),
+            inputs: %{}, derived: [],
             finite: MapSet.new(), phases: MapSet.new(), recorded: MapSet.new(), sights: %{}, tag: nil, hot: nil,
             seen: nil, pending: false, edges: 0, pairs: 0, sky: 0
 
@@ -30,7 +35,8 @@ defmodule VoxelRegion.ThermalDomain do
   def sync(domain, nodes, hint, derived, tag, bound, augment, load) do
     # 派生字段的标签变了：节点表整表重算；槽位与原生资源沿用，不在次序里的旧槽位不产生任何项。
     domain = if tag == domain.tag, do: domain,
-      else: %{domain | table: %{}, inputs: %{}, derived: [], finite: MapSet.new(), phases: MapSet.new(), tag: tag}
+      else: %{domain | table: %{}, order: :gb_sets.empty(), inputs: %{}, derived: [], finite: MapSet.new(),
+                       phases: MapSet.new(), tag: tag}
 
     {changed, removed} =
       case hint do
@@ -59,14 +65,16 @@ defmodule VoxelRegion.ThermalDomain do
         kernel = Map.put(kernel, :slot, slot)
         {static, dynamic} = load.(kernel)
         {d, static} = native_static(d, kernel, static)
-        d = %{d | table: Map.put(d.table, key, kernel), inputs: Map.put(d.inputs, key, node),
+        d = %{d | table: Map.put(d.table, key, kernel), order: :gb_sets.add_element(key, d.order),
+                  inputs: Map.put(d.inputs, key, node),
                   finite: if(finite?, do: MapSet.put(d.finite, key), else: MapSet.delete(d.finite, key)),
                   phases: if(elem(static, 9), do: MapSet.put(d.phases, kernel.damage_key),
                     else: MapSet.delete(d.phases, kernel.damage_key))}
         {d, [{slot, Enum.reverse(contacts)} | upserts], [{slot, static, dynamic} | loads]}
       end)
 
-    domain = %{domain | table: Map.drop(domain.table, removed), inputs: Map.drop(domain.inputs, removed),
+    domain = %{domain | table: Map.drop(domain.table, removed),
+      order: Enum.reduce(removed, domain.order, &:gb_sets.delete_any/2), inputs: Map.drop(domain.inputs, removed),
       finite: Enum.reduce(removed, domain.finite, &MapSet.delete(&2, &1)),
       phases: Enum.reduce(removed, domain.phases, &MapSet.delete(&2, domain.table[&1].damage_key))}
 
@@ -180,15 +188,11 @@ defmodule VoxelRegion.ThermalDomain do
     %{domain | sights: sights}
   end
 
-  @doc "按节点表次序重建原生内核边与辐射项；返回带边数／辐射项数的节点表和内核次序的节点列表 `[{键, 节点}]`。"
+  @doc "按 `order`（节点键序）重建原生内核边与辐射项；返回带边数／辐射项数的节点表和内核次序的节点列表 `[{键, 节点}]`。"
   def index(domain, emissivity) do
-    ordered = Enum.to_list(domain.table)
-    # 内核下标按 Enum.to_list 次序；接触按推导式遍历节点表的次序发出（超过 32 键的 map 两者互逆），
-    # 与原 ThermalWork.index/3 + ThermalGeometry.contacts/1 逐位相同。
-    emission = for {_, node} <- domain.table, do: node.slot
+    ordered = for key <- :gb_sets.to_list(domain.order), do: {key, Map.fetch!(domain.table, key)}
     {edges, pairs, sky} =
-      ThermalNative.domain_index(domain.native, Enum.map(ordered, fn {_, node} -> node.slot end), emission,
-        emissivity * 1.0)
+      ThermalNative.domain_index(domain.native, Enum.map(ordered, fn {_, node} -> node.slot end), emissivity * 1.0)
     {%{domain | edges: edges, pairs: pairs, sky: sky}, ordered}
   end
 

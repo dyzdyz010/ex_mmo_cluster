@@ -241,10 +241,7 @@ defmodule VoxelRegion.World.Prefabs do
       do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
     quantities = for {cell,m} <- added,Phase.liquid?(m) or phase_material?(state,m),into: %{},
       do: {cell,liquid_capacity(state)}
-    thermal = if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},thermal ->
-      thermal |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
-        |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
-    end)
+    thermal = Phases.authored(state.thermal,values)
     {:ok,%{put_liquid(state,quantities) | thermal: thermal},
       Map.put(settlement,:prefab_phase_values,values)}
   end
@@ -466,7 +463,8 @@ defmodule VoxelRegion.World.Prefabs do
           prefab_settle(
             before,
             next,
-            Enum.uniq(Map.keys(additions) ++ Map.keys(macro_additions) ++ changed ++ Attachments.macros(slots)),
+            # 格序决定相态库存逐格分摊（浮点）与事务行序；按格坐标键序（同 subtree_cells），不用 map 遍历次序。
+            Enum.uniq(Enum.sort(Map.keys(additions)) ++ Enum.sort(Map.keys(macro_additions)) ++ changed ++ Attachments.macros(slots)),
             actor,
             settlement
           )
@@ -479,7 +477,8 @@ defmodule VoxelRegion.World.Prefabs do
 
   def prefab_reply(before, state, principal, cells, settlement \\ %{}) do
     started = System.monotonic_time(:microsecond)
-    removed = Map.keys(before.attachments) -- Map.keys(state.attachments)
+    # 按区域索引只比较改动区域（每笔 O(涉及区域)），结果按槽排序；不全表做差、不取 map 遍历次序。
+    removed = dropped_attachments(before, state)
     cells = Enum.uniq(cells ++ Attachments.macros(removed))
 
     state = %{

@@ -580,4 +580,25 @@ defmodule VoxelRegion.CircuitTest do
       assert input.edges==[]
     end
   end
+
+  describe "求解次序按键定义，不取 map 遍历次序" do
+    # 只测试：40 > 32 键的表在 OTP 27 与 29 上遍历次序互逆、都不是键序；边序决定求解的浮点累加次序，
+    # 种子次序决定电路图入队次序。期望按定义（槽键序／行键序）独立构造。
+    test "准备的边按槽键序：同一槽表以 map 或升序列表给出，边列表逐项相同" do
+      slots=Map.new(0..39,fn x->{{1,0,{x,0,0}},{1,24}} end)
+      refute Enum.to_list(slots)==Enum.sort(slots)
+      from_map=Circuit.prepare(slots,%{},catalog(),0.5,@env)
+      from_sorted=Circuit.prepare(Enum.sort(slots),%{},catalog(),0.5,@env)
+      assert length(from_map.edges)==40
+      assert from_map.edges==from_sorted.edges
+    end
+
+    test "种子按行键序" do
+      batteries=for x<-0..39,do: macro({x,0,0},42)
+      damage=Map.new(batteries,&stored(&1,1.0))
+      refute Map.keys(damage)==Enum.sort(Map.keys(damage))
+      # 行键 {0, micro, incarnation, owner, material} 只有 micro 不同：x 升序即键序。
+      assert Circuit.seeds(damage,catalog())==Enum.map(batteries,&Map.take(&1,[:micro,:granularity,:incarnation,:owner,:material]))
+    end
+  end
 end

@@ -343,6 +343,16 @@ defmodule NpcServer.NpcAbilitiesTest do
           )
   end
 
+  test "every skill's tool_id enum is the one sorted belt schema, not the belt map's iteration order" do
+    # 40 > 32 tools: map iteration is not key order (OTP 27 and 29 reverse each other).
+    tools = Map.new(1..40, &{&1, "tool #{&1}"})
+    refute Map.keys(tools) == Enum.to_list(1..40)
+    profile = %{tools: tools}
+
+    assert NpcServer.Skills.Wilderness.definition(profile).parameters.properties.tool_id ==
+             %{type: "integer", enum: Enum.to_list(1..40)}
+  end
+
   test "grant conditions only shape the projection: groups, a non-empty belt, configured skills" do
     # 分组之外的条目对这个 profile 不存在。
     assert %{verb: :unknown_tool} = Abilities.command("scoop", %{}, 1, @demo)

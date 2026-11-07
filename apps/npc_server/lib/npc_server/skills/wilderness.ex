@@ -25,7 +25,7 @@ defmodule NpcServer.Skills.Wilderness do
       {:wilderness, "荒野逐格施工：给一句地形整理或铺路等目标，代码规划并逐格执行，最终报告世界实际还差什么。住宅优先用 design_house 和 build。",
        %{
          goal: %{type: "string"},
-         tool_id: %{type: "integer", enum: Map.keys(Map.get(profile, :tools, %{}))}
+         tool_id: NpcServer.Abilities.belt_schema(profile)
        }, ["goal", "tool_id"]}
 
     %{

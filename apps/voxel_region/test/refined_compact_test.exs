@@ -1,9 +1,10 @@
 defmodule VoxelRegion.RefinedCompactTest do
   @moduledoc """
-  只测试：每宏格紧凑槽值的构造、完整字段、旧枚举次序与有序编码投影。
+  只测试：每宏格紧凑槽值的构造、完整字段、slot 升序枚举与有序编码投影。
 
   纯算法层经 Canonical 的真实写入口产生槽值，不启动 World、数据库或网络。
-  输入来自小型合法槽集合；期望来自原 map 的既有次序及手算坐标、身份和边界。
+  输入来自小型合法槽集合；期望来自 slot 键序（槽次序的定义）及手算坐标、身份和边界，
+  不取 map 遍历次序（Erlang 不承诺；OTP 29 对超过 32 键的 map 反转了 `maps:to_list`）。
   旧实现必须首先在 typed 值断言失败，不能用缺失函数异常代替首红。
   """
   use ExUnit.Case, async: true
@@ -17,7 +18,7 @@ defmodule VoxelRegion.RefinedCompactTest do
     %{refined: %{}, refined_owners: %{}, refined_regions: %{}}
   end
 
-  test "canonical 接纳后只保存独立宏格紧凑值，保留完整字段与原枚举次序" do
+  test "canonical 接纳后只保存独立宏格紧凑值，保留完整字段，按 slot 升序枚举" do
     assert RefinedSlots.sorted_records(RefinedSlots.empty()) == <<>>
     for count <- [1, 32, 33, 512] do
       input = Map.new(0..(count - 1), fn slot ->
@@ -30,7 +31,7 @@ defmodule VoxelRegion.RefinedCompactTest do
       assert is_struct(value, RefinedSlots)
       assert RefinedSlots.size(value) == count
       assert RefinedSlots.reduce(value, [], fn row, rows -> [row | rows] end)
-             |> Enum.reverse() == Enum.to_list(input)
+             |> Enum.reverse() == for(slot <- 0..(count - 1), do: {slot, input[slot]})
       assert RefinedSlots.to_map(value) == input
       assert RefinedSlots.sorted_records(value) == MmoContracts.Voxel.Refined.slot_records(input)
       assert RefinedSlots.reduce_sorted(value, [], fn row, rows -> [row | rows] end)
@@ -100,32 +101,32 @@ defmodule VoxelRegion.RefinedCompactTest do
     end
   end
 
-  test "混合材料 HP 与同宏格代表微格保留原 map 枚举，拒绝槽排序变异" do
+  test "混合材料 HP 与同宏格代表微格按 slot 升序，不随 map 遍历次序，拒绝槽次序变异" do
     owner = {7, 3}
     cell = {1, -2, 3}
+    # 33 槽 > 32 键：map 遍历次序不是 slot 升序（OTP 27 与 29 互逆），旧实现在两版各给出不同的代表微格。
     input = Map.new(0..32, fn slot -> {slot, {11 + rem(slot, 2), owner}} end)
-    old_order = Enum.to_list(input)
-    refute old_order == Enum.sort(input)
+    refute Enum.to_list(input) == Enum.sort(input)
     materials = %{11 => %{"max_hp_per_macro" => 0.1}, 12 => %{"max_hp_per_macro" => 100_000.3}}
     state = Canonical.put_refined(empty(), cell, input)
       |> Map.put(:properties, %{digest: <<1::256>>, materials: materials})
     assert is_struct(state.refined[cell], RefinedSlots)
 
-    expected_hp = Enum.reduce(old_order, 0.0, fn {_, {material, _}}, hp ->
-      hp + VoxelRegion.Damage.max_hp(Map.fetch!(materials, material), 1)
+    # 期望按槽次序的定义（slot 升序）手工累加；代表微格是升序末槽 32（材料 11 + rem(32, 2) = 11）。
+    expected_hp = Enum.reduce(0..32, 0.0, fn slot, hp ->
+      hp + VoxelRegion.Damage.max_hp(Map.fetch!(materials, 11 + rem(slot, 2)), 1)
     end)
-    {last_slot, {last_material, _}} = List.last(old_order)
     assert Canonical.component_max_hp(state, owner) === expected_hp
     assert %{^owner => {^expected_hp, cells, [{^cell, representative}]}} =
       Observation.snapshot_component_geometry(state, nil, [owner])
     assert cells == MapSet.new([cell])
-    assert representative.micro == VoxelRegion.Prefab.micro_coord(cell, last_slot)
-    assert representative.material == last_material
+    assert representative.micro == VoxelRegion.Prefab.micro_coord(cell, 32)
+    assert representative.material == 11
 
-    # 只测试：在离线纯值内故意将记录改为 slot 升序，证明现观察断言确实拒绝顺序变异。
+    # 只测试：在离线纯值内故意将记录改为 slot 降序，证明现观察断言确实拒绝顺序变异。
     records = MmoContracts.Voxel.Refined.slot_records(input)
-    index = for position <- 0..32, into: <<>>, do: <<position::16-little>>
-    mutant = %{state.refined[cell] | data: records <> index}
+    reversed = for position <- 32..0//-1, into: <<>>, do: binary_part(records, position * 16, 16)
+    mutant = %{state.refined[cell] | data: reversed}
     mutated_state = put_in(state.refined[cell], mutant)
     assert_raise ExUnit.AssertionError, fn ->
       assert Observation.snapshot_component_geometry(mutated_state, nil, [owner]) ==

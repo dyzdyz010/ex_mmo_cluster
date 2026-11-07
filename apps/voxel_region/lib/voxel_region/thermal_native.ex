@@ -19,8 +19,8 @@ defmodule VoxelRegion.ThermalNative do
   @doc "写入变化节点的接触 `{槽位, [{伙伴槽位, 导热, 本端发出?}]}`、移除槽位、替换视线 `{槽位, [{伙伴槽位或 nil（天空）, 面积}]}`。"
   def domain_put(_domain, _nodes, _removed, _sights, _reset_sights), do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc "按本轮节点次序（槽位列表，决定内核下标）与发边次序重建内核边与辐射项；返回 `{边数, 互见半对数, 对天空面数}`。"
-  def domain_index(_domain, _order, _emission, _emissivity), do: :erlang.nif_error(:nif_not_loaded)
+  @doc "按本轮节点次序（槽位列表，按节点键序；决定内核下标与发边次序）重建内核边与辐射项；返回 `{边数, 互见半对数, 对天空面数}`。"
+  def domain_index(_domain, _order, _emissivity), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc "上次 `domain_index/3` 生成的 `{内核边, {互见半对, 对天空}}`（与 `ThermalGeometry.contacts/1`、`ThermalRadiation.terms/4` 核对用）。"
   def domain_terms(_domain), do: :erlang.nif_error(:nif_not_loaded)

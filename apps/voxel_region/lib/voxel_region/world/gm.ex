@@ -284,10 +284,7 @@ defmodule VoxelRegion.World.Gm do
     values = if phase_material?(state, material),
       do: Map.new(cells, &{&1, {Phase.energy(%{material: material}, 1.0, m, ambient_at(state, &1)), liquid_capacity(state) * 1.0}}),
       else: %{}
-    thermal = if state.thermal, do: Enum.reduce(values, state.thermal, fn {_, {energy, integrity}}, t ->
-      t |> Map.update(:phase_authored_energy_j, energy, &(&1 + energy))
-        |> Map.update(:phase_authored_units, round(integrity), &(&1 + round(integrity)))
-    end)
+    thermal = VoxelRegion.World.Phases.authored(state.thermal, values)
     {%{state | thermal: thermal}, %{liquid_changes: changes, phase_values: values, liquid_material: material}}
   end
 

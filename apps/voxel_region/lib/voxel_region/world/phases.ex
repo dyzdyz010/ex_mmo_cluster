@@ -17,6 +17,15 @@ defmodule VoxelRegion.World.Phases do
   def phase_enabled?(s), do: s.properties != nil and Enum.any?(s.properties.materials,fn {_,m}->Phase.enabled?(m) end)
   # 无位置的库存（供给、背包里的相态材料）按全局环境；落在格上的一律按该格气候区（ambient_at）。
   def phase_ambient(s), do: s.thermal.config["ambient_kelvin"]
+
+  @doc "作者初态的相态焓与数量记入 phase_authored 账（独立参考账，不算模拟供热）；浮点和按格键序累加，不取 map 遍历次序。"
+  def authored(nil, _values), do: nil
+  def authored(thermal, values) do
+    values |> Enum.sort() |> Enum.reduce(thermal, fn {_, {energy, integrity}}, t ->
+      t |> Map.update(:phase_authored_energy_j, energy, &(&1 + energy))
+        |> Map.update(:phase_authored_units, round(integrity), &(&1 + round(integrity)))
+    end)
+  end
   # 随数量流动的材料：液体与可倾倒散体（一格一种材料，互不混合）。
   def flowing_material?(s,m), do: Phase.liquid?(m) or loose_material?(s,m)
   def finite_enabled?(s), do: phase_enabled?(s) or (s.properties != nil and

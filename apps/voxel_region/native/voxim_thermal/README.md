@@ -54,16 +54,21 @@ Mass Transfer*（7th ed.）§13.3 漫灰两表面封闭腔（表 13.3 无限平�
 大火里 World 每个内核步都在 Elixir 重建约 2 万节点的接触编号、边界过滤与辐射项（以元组为键的 map 查找约 0.4 µs／次），
 单步约 100 ms，是 World 被热模拟占满的主因。`domain.rs` 把拓扑常驻为 `ResourceArc<Mutex<Domain>>`：World 用整数槽位
 标识节点键，只推送变化节点的接触 `{伙伴槽位, 导热, 本端发出?}` 与视线 `{伙伴槽位或 nil, 面积}`（`domain_put`），每轮给出
-节点次序与发边次序（`domain_index`），`domain_step` 用常驻的边与辐射项、外部节点（拟态、身体）的接触追加其后、外部
+节点次序（`domain_index`，次序契约见下），`domain_step` 用常驻的边与辐射项、外部节点（拟态、身体）的接触追加其后、外部
 辐射项排在前面，再进入与 `advance/7` 相同的校验与演化（`kernel.rs`）。资源只是派生缓存：温度、HP、燃料仍是 World 的属性记录，
 工作集丢弃（`ThermalWork.new/0`）即随之释放。依据：Rustler 资源（`ResourceArc`）是 NIF 跨调用保存原生状态的标准方式；
 按整数下标的连续数组替代散列查找是数据导向设计的常规做法（Fabian, *Data-Oriented Design*, 2018, ch.2/4）。
 
-逐位一致契约：内核下标按 World 节点表 `Enum.to_list/1` 的次序，边按推导式遍历节点表的次序发出——OTP 27 中超过 32 键的
-map 两者互逆（≤32 键相同，均与插入历史无关），与原 `ThermalWork.index/3` + `ThermalGeometry.contacts/1` 相同；
-辐射项按下标、同一节点内按 `{命中, 面积}` 项序（World 推送前排好），同 `ThermalRadiation.terms/4`。
-`cargo test` 覆盖发边次序与下标次序不同、伙伴缺席、移除与灰体系数（期望按 Elixir 规则手算）；Mix 端
-`thermal_domain_test.exs` 用 `domain_terms/1` 对照上述 Elixir 参考规则（含 40 节点大表，发边次序写错时失败）。
+次序契约（2026-11-07 改）：内核次序由 World 显式给出，是节点键按 Erlang 项序的次序——`ThermalDomain` 在节点进出节点表时
+同步维护一个按键有序的集合（`order`，`:gb_sets`），每轮按它给出槽位列表（`domain_index/3`）；内核下标与发边次序都是这一个次序
+（逐节点、逐接触，本端发出且伙伴在集内），辐射项按下标、同一节点内按 `{命中, 面积}` 项序（World 推送前排好），同按键遍历的
+`ThermalGeometry.contacts/1` 与 `ThermalRadiation.terms/4`。附件派生节点的宿主接触与暴露面也按附件槽键序累加。
+次序按键定义而不按加入历史：热域是可丢弃缓存，同一节点集无论整表重建、增量扩域还是闲置后重建，内核浮点求和次序都必须相同。
+此前内核下标取 `Enum.to_list/1`、发边取推导式遍历节点表的次序，依赖 Erlang 未承诺的 map 遍历次序（OTP 29 把超过 32 键的
+map 遍历方向整体反转，OTP 27 与 29 的结果因此末位不同）；现已不再依赖，节点集合 ≤32 键时新旧次序相同。
+`cargo test` 覆盖换次序后下标与边随之重排、伙伴缺席、移除与灰体系数（期望按 Elixir 规则手算）；Mix 端
+`thermal_domain_test.exs` 用 `domain_terms/1` 对照按键次序的参考规则（含 40 节点大表：其 map 遍历次序与键序不同，
+内核若按 map 遍历次序编号或发边即失败）。
 
 节点工作副本（同日，2B）：`sim.rs` 在资源里保存每个节点的静态量与动态量（`domain_load` 装入、`domain_reload` 按外部改写重装，
 `only_clean` 时跳过尚未写回的节点），`domain_step` 一步内按原 World 顺序执行演化、燃烧（燃料耗尽判据 ε 由调用方给出）、

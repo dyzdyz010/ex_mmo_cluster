@@ -462,10 +462,11 @@ defmodule NpcServer.Perception do
         outcomes,
         position
       ) do
-    # micro 坐标 / 8 = 米；按到自己的距离取最近的 @nearest 件。
+    # micro 坐标 / 8 = 米；按到自己的距离取最近的 @nearest 件。微格坐标在网格上，等距常见：同距按 owner（每件唯一）定序，
+    # 截断与行序不随上游 map 遍历次序变化。
     nearest = fn rows ->
       rows
-      |> Enum.sort_by(fn %{micro: {x, y, z}} -> distance({x / 8, y / 8, z / 8}, position) end)
+      |> Enum.sort_by(fn %{micro: {x, y, z}, owner: owner} -> {distance({x / 8, y / 8, z / 8}, position), owner} end)
       |> Enum.take(@nearest)
     end
 

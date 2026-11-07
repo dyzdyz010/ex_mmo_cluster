@@ -13,7 +13,8 @@ defmodule VoxelRegion.World.Projectiles do
     end
   end
 
-  defp shots(state), do: Enum.filter(Thermal.semblances(state), fn {_, s} -> Map.has_key?(s, :projectile_source) end)
+  # 采样结果按此次序逐个提交（world seq、命中先后）：拟态 id = {创建事务 seq, n} 即发射次序，按 id 排，不用 map 遍历次序。
+  defp shots(state), do: Thermal.semblances(state) |> Enum.filter(fn {_, s} -> Map.has_key?(s, :projectile_source) end) |> Enum.sort()
 
   @doc """
   活投射物未来至寿命端点的真实飞行弦段页种子。异步采样可能覆盖任一未完成段，不能按当前墙钟或窗口退休。

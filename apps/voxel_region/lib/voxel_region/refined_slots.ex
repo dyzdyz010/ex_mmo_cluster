@@ -2,8 +2,9 @@ defmodule VoxelRegion.RefinedSlots do
   @moduledoc """
   单宏格的不可变合法细化槽。构造时校验完整字段域，最多 512 槽。
 
-  独立 binary 前段按 slot 升序保存纯协议记录，尾段保存原 map 枚举次序的记录位置。
-  普通枚举保持 HP 累加和代表微格语义；查询直接读有序段，编码复用同一记录前缀。
+  独立 binary 按 slot 升序保存纯协议记录；枚举、查询与编码都读这一段。
+  槽没有天然的加入次序，次序按 slot 键定义：HP 浮点累加与代表微格（末个槽）由此确定，
+  不随 map 遍历次序变化（Erlang 不承诺该次序；OTP 29 对超过 32 键的 map 反转了 `maps:to_list`）。
   旧 map 只在局部编辑或持久编码边界临时导出，不作为第二份常驻真值。
   """
   defstruct count: 0, data: <<>>
@@ -12,15 +13,13 @@ defmodule VoxelRegion.RefinedSlots do
   @doc "空槽值；canonical owner 不为它保留宏格。"
   def empty, do: %__MODULE__{}
 
-  @doc "已接纳值直接传递；局部编辑或旧存储 map 在此一次冻结合法字段与原枚举次序。"
+  @doc "已接纳值直接传递；局部编辑或旧存储 map 在此一次冻结合法字段。"
   def new(%__MODULE__{} = value), do: value
   def new(slots), do: from_map(slots)
 
   @doc "外部旧格式只接纳普通 map，不能用伪造 struct 冒充已验证值。"
   def from_map(slots) when is_map(slots) and not is_struct(slots) and map_size(slots) <= 512 do
-    rows = Enum.to_list(slots)
-    ordered = Enum.sort(rows)
-    records = for row <- ordered, into: <<>> do
+    records = for row <- Enum.sort(slots), into: <<>> do
       case row do
         {slot, {material, {birth, occurrence}}}
         when is_integer(slot) and slot in 0..511 and is_integer(material) and material in 1..65_535
@@ -30,9 +29,7 @@ defmodule VoxelRegion.RefinedSlots do
         _ -> raise ArgumentError, "invalid refined slot: #{inspect(row)}"
       end
     end
-    positions = Map.new(Enum.with_index(ordered), fn {{slot, _}, position} -> {slot, position} end)
-    index = for {slot, _} <- rows, into: <<>>, do: <<Map.fetch!(positions, slot)::16-little>>
-    %__MODULE__{count: map_size(slots), data: IO.iodata_to_binary([records, index])}
+    %__MODULE__{count: map_size(slots), data: records}
   end
   def from_map(_), do: raise(ArgumentError, "refined slots require a map with at most 512 entries")
 
@@ -55,7 +52,7 @@ defmodule VoxelRegion.RefinedSlots do
     end
   end
 
-  @doc "以构造时原 map 枚举次序归约。"
+  @doc "按 slot 升序归约（与 `Enumerable` 同序）。"
   def reduce(%__MODULE__{} = value, acc, fun), do: Enum.reduce(value, acc, fun)
 
   @doc "按 slot 升序归约，直接读取有序记录，不重新排序。"
@@ -67,14 +64,9 @@ defmodule VoxelRegion.RefinedSlots do
   @doc "局部编辑／旧持久格式边界临时导出 map。"
   def to_map(%__MODULE__{} = value), do: reduce(value, %{}, fn {slot, row}, acc -> Map.put(acc, slot, row) end)
 
-  defp enumeration_row(%{data: data, count: count} = value, position) do
-    offset = count * 16 + position * 2
-    <<_::binary-size(offset), record::16-little, _::binary>> = data
-    row(value, record)
-  end
   defp row(%{data: data}, position) do
     offset = position * 16
-    <<_::binary-size(offset), slot::16-little, material::16-little, birth::64-little,
+    <<_::binary-size(^offset), slot::16-little, material::16-little, birth::64-little,
       occurrence::32-little, _::binary>> = data
     {slot, {material, {birth, occurrence}}}
   end
@@ -86,7 +78,7 @@ defmodule VoxelRegion.RefinedSlots do
     do: {:suspended, acc, &enumerable_reduce(value, &1, fun, position)}
   def enumerable_reduce(%{count: count}, {:cont, acc}, _fun, count), do: {:done, acc}
   def enumerable_reduce(value, {:cont, acc}, fun, position),
-    do: enumerable_reduce(value, fun.(enumeration_row(value, position), acc), fun, position + 1)
+    do: enumerable_reduce(value, fun.(row(value, position), acc), fun, position + 1)
 end
 
 defimpl Enumerable, for: VoxelRegion.RefinedSlots do

@@ -126,7 +126,8 @@ defmodule VoxelRegion.Prefab do
   end
 
   def publish(definitions) do
-    Enum.reduce_while(definitions,{:ok,%{}},fn {id,_},{:ok,catalog} ->
+    # 多个定义不合法时报告的是 id 序首个（不取 map 遍历次序）。
+    Enum.reduce_while(Enum.sort(Map.keys(definitions)),{:ok,%{}},fn id,{:ok,catalog} ->
       case publish_one(definitions,id) do
         {:ok,compiled} -> {:cont,{:ok,Map.put(catalog,id,compiled)}}
         error -> {:halt,error}

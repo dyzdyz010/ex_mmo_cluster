@@ -1208,10 +1208,7 @@ defmodule VoxelRegion.World do
     values = for {cell,m} <- edits, phase_material?(state,m), into: %{},
       do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
     # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
-    thermal=if state.thermal,do: Enum.reduce(values,state.thermal,fn {_,{energy,integrity}},t->
-      t |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
-        |> Map.update(:phase_authored_units,round(integrity),&(&1+round(integrity)))
-    end),else: nil
+    thermal=VoxelRegion.World.Phases.authored(state.thermal,values)
     case apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{liquid_changes: changes,phase_values: values}) do
       {:ok,next} -> {:reply,{:ok,next.seq},next}
       {:error,reason} -> {:reply,{:error,reason},state}

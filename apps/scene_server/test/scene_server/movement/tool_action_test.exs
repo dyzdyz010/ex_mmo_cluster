@@ -308,4 +308,19 @@ defmodule SceneServer.Movement.ToolActionTest do
     assert life(guarded, 22) == 100 and life(far, 20) == 100
     assert damage(w) == walls
   end
+
+  test "area-tool candidates come in character-id order, not character-map iteration order" do
+    # Test-only: the real Scene callback on a plain state. Candidate order decides receipt order and the
+    # reported "first rejection"; 40 > 32 characters make map iteration differ from id order.
+    characters =
+      Map.new(1..40, fn id ->
+        {%Session.Identity{session_epoch: 1000 - id, scene_id: 1, scene_epoch: 2}, %{id: id, player: {:player, id}}}
+      end)
+
+    state = %{config: %{combat_scope: {{-1.0, -1.0, -1.0}, {1.0, 1.0, 1.0}}}, characters: characters}
+    refute Enum.map(Map.values(characters), & &1.id) == Enum.to_list(1..40)
+
+    assert {:reply, {:ok, players}, ^state} = SceneServer.Movement.Scene.handle_call(:tool_candidates, nil, state)
+    assert players == for(id <- 1..40, do: {:player, id})
+  end
 end

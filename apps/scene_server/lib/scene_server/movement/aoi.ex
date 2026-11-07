@@ -35,12 +35,13 @@ defmodule SceneServer.Movement.AOI do
         end)
       end)
 
-    entities = by_key |> Map.values() |> Enum.sort_by(& &1.entity_id)
+    # 目标键是 {entity_id, entity_epoch}：同 id 的两代可能同帧，按完整键排序，不落回 map 遍历次序。
+    entities = by_key |> Map.values() |> Enum.sort_by(&key/1)
     grid = Enum.group_by(entities, &cell(&1.state.position))
     # 同格观察者复用排好序的候选集；关系顺序只在进入/离开时重建。
     candidates =
       Map.new(grid, fn {coord, _} ->
-        {coord, candidates(grid, coord) |> Enum.sort_by(& &1.entity_id)}
+        {coord, candidates(grid, coord) |> Enum.sort_by(&key/1)}
       end)
 
     %{entities: entities, by_key: by_key, candidates: candidates}

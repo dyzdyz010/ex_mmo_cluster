@@ -203,7 +203,8 @@ defmodule SceneServer.Movement.Scene do
   def handle_call(:tool_candidates, _, state) do
     if not SceneServer.Movement.Harm.open?(state.config.combat_scope),
       do: {:reply, {:error, :combat_not_permitted}, state},
-      else: {:reply, {:ok, for({_, c} <- state.characters, do: c.player)}, state}
+      # 候选次序决定受击回执与“首个拒绝原因”；人物表无加入次序，按人物 id 定义，不用 map 遍历次序。
+      else: {:reply, {:ok, state.characters |> Map.values() |> Enum.sort_by(& &1.id) |> Enum.map(& &1.player)}, state}
   end
 
   def handle_call({:character_owner, cid}, _, state) do

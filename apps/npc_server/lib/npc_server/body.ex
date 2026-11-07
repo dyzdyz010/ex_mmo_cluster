@@ -263,7 +263,8 @@ defmodule NpcServer.Body do
 
     # 施法的回复只按 reply_to 来、执行进程不再兜底：会话没了，在途施法在这里以 session_lost 结束（见 lose_casts/2）。
     # 其余世界调用照常各回结果。
-    casts = for {id, :cast_spell} <- state.world, do: id
+    # 在途表按命令 id 键（Brain 自增分配，键序即提交次序）；逐个 emit 的结果次序取键序，不用 map 遍历次序。
+    casts = for {id, :cast_spell} <- Enum.sort(state.world), do: id
 
     state = %{
       state
@@ -561,7 +562,7 @@ defmodule NpcServer.Body do
       # 旧 Player 已 seal：它处理过的施放都已回复（前摇中的被 seal 撤销，World 回 cast_cancelled），之后投给它的回
       # invalid_state；执行进程投递时它已退出的，没有任何回复。所以有在途施法时留着对旧 Player 的监视（见 retired）。
       # 旧会话的施法不能再取消（取消按新会话身份匹配），从 casts 里去掉。
-      casts = for {id, :cast_spell} <- state.world, do: id
+      casts = for {id, :cast_spell} <- Enum.sort(state.world), do: id
 
       retired =
         if casts == [] do
@@ -654,13 +655,13 @@ defmodule NpcServer.Body do
         body_state: state.body_state,
         caster: state.caster
       },
-      entities: for({id, e} <- state.entities, do: Map.put(e, :entity_id, id)),
+      entities: for({id, e} <- Enum.sort(state.entities), do: Map.put(e, :entity_id, id)),
       view: Attention.view(state.attention, Player.eye_position(state.position)),
       targets: Map.take(state.attention, [:enemy, :friendly, :mark]),
       balances: state.balances,
       pending:
         if(state.move, do: [Map.take(state.move, [:id, :verb])], else: []) ++
-          for({id, verb} <- state.world, do: %{id: id, verb: verb})
+          for({id, verb} <- Enum.sort(state.world), do: %{id: id, verb: verb})
     }
   end
 

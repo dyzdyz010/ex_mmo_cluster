@@ -1,11 +1,11 @@
 defmodule VoxelRegion.ThermalDomainTest do
   @moduledoc """
-  只测试：常驻热域的节点表与原生内核项必须与 World 端参考规则逐项相同——接触按 `ThermalGeometry.contacts/1`
-  遍历节点表、下标按 `Enum.to_list/1` 次序（超过 32 键的 map 两者互逆），辐射按 `ThermalRadiation.terms/4`。
+  只测试：常驻热域的节点表与原生内核项必须与参考规则逐项相同——内核次序是节点键序（参考在测试里按键显式构造，
+  与 map 遍历次序、节点加入历史都无关），接触按该次序逐节点、逐接触、本端发出且伙伴在集内，辐射按 `ThermalRadiation.terms/4`。
   """
   use ExUnit.Case, async: true
   @moduletag :t0
-  alias VoxelRegion.{ThermalDomain, ThermalGeometry, ThermalNative, ThermalRadiation}
+  alias VoxelRegion.{ThermalDomain, ThermalNative, ThermalRadiation}
 
   defp key(i), do: {0, {i * 8, 0, 0}}
 
@@ -22,10 +22,12 @@ defmodule VoxelRegion.ThermalDomainTest do
   defp load(_node),
     do: {{1.0, 1.0, 1000.0, 6.0, 293.15, nil, false, true, nil}, {293.15, 1.0, 1.0, nil, 0.0, false, nil, nil}}
 
+  # 参考规则（独立于被测实现）：内核次序 = 节点键按项序排列；边按该次序逐节点、逐接触，本端键较小且伙伴在集内。
   defp reference(nodes) do
-    ordered = Enum.to_list(nodes)
-    indices = ordered |> Enum.with_index() |> Map.new(fn {{k, _}, i} -> {k, i} end)
-    {Enum.map(ordered, &elem(&1, 0)), for({a, b, g} <- ThermalGeometry.contacts(nodes), do: {indices[a], indices[b], g}),
+    ordered = Enum.sort(Map.keys(nodes))
+    indices = ordered |> Enum.with_index() |> Map.new()
+    {ordered,
+     for(a <- ordered, {b, g} <- nodes[a].contacts, a < b, Map.has_key?(nodes, b), do: {indices[a], indices[b], g}),
      indices}
   end
 
@@ -35,7 +37,7 @@ defmodule VoxelRegion.ThermalDomainTest do
     {Enum.map(ordered, &elem(&1, 0)), edges, radiation}
   end
 
-  test "接触次序与下标同参考规则：小表（≤32 键）与大表（>32 键，推导式与 to_list 互逆）" do
+  test "内核下标与发边按节点键序：小表、map 遍历次序与键序不同的大表、逆键序逐个加入" do
     for size <- [10, 40] do
       nodes = chain(0..(size - 1))
       domain = ThermalDomain.sync(ThermalDomain.new(), nodes, :full, [], :tag, nil, &plain/1, &load/1)
@@ -45,6 +47,22 @@ defmodule VoxelRegion.ThermalDomainTest do
       assert edges == ref_edges
       assert length(edges) > size
     end
+
+    # 夹具前提（显式构造的两种错误次序都能被发现）：40 键表的 map 遍历次序不是键序，按 map 遍历编号或发边的实现
+    # 在上面必然不符；逐个按逆键序加入使槽位（加入历史）次序也不是键序，按加入次序编号的实现在下面必然不符。
+    nodes = chain(0..39)
+    assert Enum.map(nodes, &elem(&1, 0)) != Enum.sort(Map.keys(nodes))
+
+    descending =
+      Enum.reduce(39..0//-1, ThermalDomain.new(), fn i, domain ->
+        ThermalDomain.sync(domain, Map.take(nodes, Enum.map(i..39, &key/1)), :full, [], :tag, nil, &plain/1, &load/1)
+      end)
+
+    by_slot = for {k, _} <- Enum.sort_by(descending.slots, &elem(&1, 1)), Map.has_key?(nodes, k), do: k
+    assert by_slot == Enum.sort(Map.keys(nodes), :desc)
+    {keys, edges, _} = native(descending)
+    {ref_keys, ref_edges, _} = reference(nodes)
+    assert {keys, edges} == {ref_keys, ref_edges}
   end
 
   test "同一提交内增量扩域与整表比较得到同一节点表和内核边；离开的节点不再出现" do

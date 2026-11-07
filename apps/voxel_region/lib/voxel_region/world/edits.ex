@@ -122,11 +122,13 @@ defmodule VoxelRegion.World.Edits do
           end)
 
     # 地面花草失去支撑即消失：下方格变成不挡移动的材质（挖空、液体、花草）时，同一事务里清掉上面的花草。
+    # 本笔已写格的查找集合：逐格查上方是否也在本笔里（列表 keymember 会使大批量编辑 O(E²)）。
+    edited = MapSet.new(edits, &elem(&1, 0))
     with {:ok,unsupported,state} <-
       Enum.reduce_while(edits, {:ok,[],state}, fn {{x, y, z}, m}, {:ok,found,s} ->
         above = {x, y + 1, z}
 
-        if MmoContracts.VoxelMaterialCatalog.blocks_movement?(m) or List.keymember?(edits, above, 0) or is_map_key(s.refined, above) do
+        if MmoContracts.VoxelMaterialCatalog.blocks_movement?(m) or MapSet.member?(edited, above) or is_map_key(s.refined, above) do
           {:cont,{:ok,found,s}}
         else
           case cell_value(s,0,above) do

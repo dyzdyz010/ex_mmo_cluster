@@ -62,9 +62,12 @@ defmodule VoxelRegion.Circuit do
 
   @doc "只在给定行键里找种子（R8-05 增量候选，见 `candidate?/2`）；缺行的键略过。"
   def seeds(damage,catalog,keys) do
-    for key<-keys,%{granularity: g}=row<-[Map.get(damage,key)],g in [0,1],m=catalog.materials[row.material],
+    # 种子次序 = 电路图广度遍历的入队次序（决定接触边序与浮点累加）；种子是行集合、无加入次序，按行键序定义，
+    # 不取键集合（map／MapSet）的遍历次序。只排筛出的少数种子。
+    for(key<-keys,%{granularity: g}=row<-[Map.get(damage,key)],g in [0,1],m=catalog.materials[row.material],
         (battery?(m) and Map.get(row,:stored_j,0.0)>0.0) or (seebeck(m) != 0.0 and Map.has_key?(row,:temperature_kelvin)),
-        do: Map.take(row,[:micro,:granularity,:incarnation,:owner,:material])
+        do: Map.take(row,[:micro,:granularity,:incarnation,:owner,:material]))
+    |> Enum.sort_by(&Damage.key/1)
   end
 
   @doc """
@@ -85,7 +88,8 @@ defmodule VoxelRegion.Circuit do
   def prepare(slots,damage,catalog,duration,environment,domain \\ nil) do
     started=System.monotonic_time(:microsecond)
     section=catalog.attachments["line_section_m2"]
-    {edges,luminous}=Enum.reduce(slots,{[],%{}},fn {slot={kind,_,_},{id,material}},{edges,luminous}->
+    # 边序决定求解的浮点累加次序；附件槽表无天然次序，按槽键序定义（≤32 槽时与原 map 遍历相同），不取 map 遍历次序。
+    {edges,luminous}=Enum.reduce(Enum.sort(slots),{[],%{}},fn {slot={kind,_,_},{id,material}},{edges,luminous}->
       sigma=sigma(catalog,damage,environment,Attachments.identity(slot,{id,material}))
       if sigma>0 do
         key=VoxelRegion.ThermalAttachments.key(slot)
@@ -259,7 +263,8 @@ defmodule VoxelRegion.Circuit do
     done=Enum.reduce(cells,duration,fn {key,c},dt->
       if c.battery and c.power>0 and stored[key]>0,do: min(dt,stored[key]/c.power),else: dt
     end)
-    {cells,heat,supplied,charged}=Enum.reduce(cells,{cells,heat,0.0,0.0},fn {key,c},{all,heat,supplied,charged}->
+    # 放电／充入账的浮点和按格键序累加（不取 map 遍历次序）。
+    {cells,heat,supplied,charged}=Enum.reduce(Enum.sort(cells),{cells,heat,0.0,0.0},fn {key,c},{all,heat,supplied,charged}->
       cond do
         not c.battery -> {all,heat,supplied,charged}
         c.power>0 ->
@@ -296,7 +301,7 @@ defmodule VoxelRegion.Circuit do
     end)
     idle=for {n,w}<-power,w<minimum,into: %{},do: {n,w}
     {Enum.zip_with(edges,currents,fn e,i->if Map.has_key?(idle,network[e.a]),do: 0.0,else: i end),
-     {Enum.count(idle,fn {_,w}->w>0.0 end),Enum.sum([0.0|Map.values(idle)])}}
+     {Enum.count(idle,fn {_,w}->w>0.0 end),idle |> Enum.sort() |> Enum.reduce(0.0,fn {_,w},sum->sum+w end)}}
   end
 
   # 求解；放电方向上已空的蓄能石按电动势 0 重解；按 0 重解后电流反成充电方向的空格断开（电流 0）。直到状态不再变化；

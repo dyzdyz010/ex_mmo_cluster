@@ -538,4 +538,23 @@ defmodule SceneServer.Movement.VoximAoiTest do
 
     for event <- enters, do: assert({:ok, _} = MmoContracts.Session.Codec.encode(event))
   end
+
+  test "frame orders targets by the full {entity_id, entity_epoch} key, not by map iteration" do
+    # Test-only: 20 ids each present in two incarnations (reconnect while the old epoch is still in a bridge
+    # frame) = 40 targets, more than 32 keys, so map iteration is not key order (and OTP 27 vs 29 reverse it).
+    entities =
+      for id <- 1..20, epoch <- [1, 2] do
+        %{entity(id, {id * 1.0, 500.0, 0.0}, epoch) | identity: %Session.Identity{session_epoch: id * 10 + epoch, scene_id: 1, scene_epoch: 7}}
+        |> Map.merge(%{simulation_tick: 3, collision_revision: 1})
+      end
+
+    expected = for id <- 1..20, epoch <- [1, 2], do: {id, epoch}
+    frame = AOI.frame(Enum.reverse(entities))
+    assert Enum.map(frame.entities, &{&1.entity_id, &1.entity_epoch}) == expected
+
+    for {_cell, candidates} <- frame.candidates do
+      keys = Enum.map(candidates, &{&1.entity_id, &1.entity_epoch})
+      assert keys == Enum.sort(keys)
+    end
+  end
 end

@@ -36,9 +36,10 @@ defmodule VoxelRegion.DCNetwork do
   end
 
   # 块内电位各自以块内一点为零；沿桥从每个连通分量的一个块出发平移：桥上 i = 0，V_b = V_a − emf。
+  # 每个连通分量的零电位入口取其最小节点（键序；≤32 节点时与原 map 遍历相同），绝对电位不随 map 遍历次序变化。
   defp link(adjacency,edges,bridges,owner,members,local) do
     tuple=List.to_tuple(edges)
-    Enum.reduce(Map.keys(adjacency),{%{},MapSet.new()},fn start,{volts,seen}->
+    Enum.reduce(Enum.sort(Map.keys(adjacency)),{%{},MapSet.new()},fn start,{volts,seen}->
       if MapSet.member?(seen,Map.fetch!(owner,start)),do: {volts,seen},
         else: shift([{start,0.0}],adjacency,tuple,bridges,{owner,members},local,volts,MapSet.put(seen,Map.fetch!(owner,start)))
     end) |> elem(0)
@@ -89,7 +90,7 @@ defmodule VoxelRegion.DCNetwork do
   end
 
   @doc "无向图（节点 → 邻点列表）的连通分量，每个分量是一个节点 MapSet。"
-  def components(g),do: components(g,Map.keys(g),MapSet.new(),[])
+  def components(g),do: components(g,Enum.sort(Map.keys(g)),MapSet.new(),[])
   defp components(_g,[],_seen,result),do: result
   defp components(g,[n|rest],seen,result) do
     if MapSet.member?(seen,n),do: components(g,rest,seen,result),else:
@@ -107,7 +108,8 @@ defmodule VoxelRegion.DCNetwork do
       m |> stamp(e.a,e.b,g,g*e.emf,ground) |> stamp(e.b,e.a,g,-g*e.emf,ground)
     end)
     eliminate(matrix,[]) |> Enum.reduce(%{ground=>0.0},fn {node,diagonal,row,rhs},values ->
-      value=(rhs-Enum.reduce(row,0.0,fn {other,g},sum->sum+g*Map.fetch!(values,other) end))/diagonal
+      # 回代浮点和按节点键序（填充后的行可能超过 32 项）。
+      value=(rhs-Enum.reduce(Enum.sort(row),0.0,fn {other,g},sum->sum+g*Map.fetch!(values,other) end))/diagonal
       Map.put(values,node,value)
     end)
   end

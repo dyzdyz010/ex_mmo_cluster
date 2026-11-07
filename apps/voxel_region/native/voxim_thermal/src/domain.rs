@@ -59,10 +59,10 @@ impl Domain {
         }
     }
 
-    /// 按节点次序（`order`，决定内核下标）重建内核边与辐射项。边：按 `emission` 的节点次序逐节点、逐接触，
-    /// 本端发出且伙伴在节点集内（World 端两种遍历次序可能不同，由 World 分别给出）；
-    /// 辐射：按下标逐节点、逐视线，对天空 `ε·A`，伙伴在节点集内的半对 `ε/(2−ε)·A/2`，其余按域边界绝热。
-    pub fn index(&mut self, order: &[u32], emission: &[u32], emissivity: f64) {
+    /// 按节点次序（`order`，World 按节点键序给出，决定内核下标）重建内核边与辐射项。边：按同一次序逐节点、逐接触，
+    /// 本端发出且伙伴在节点集内；辐射：按下标逐节点、逐视线，对天空 `ε·A`，伙伴在节点集内的半对 `ε/(2−ε)·A/2`，
+    /// 其余按域边界绝热。
+    pub fn index(&mut self, order: &[u32], emissivity: f64) {
         self.position.iter_mut().for_each(|p| *p = 0);
         for (i, &slot) in order.iter().enumerate() {
             self.grow(slot);
@@ -70,8 +70,7 @@ impl Domain {
         }
         let grey = emissivity / (2.0 - emissivity);
         let (mut edges, mut pairs, mut sky) = (Vec::new(), Vec::new(), Vec::new());
-        for &slot in emission {
-            let Some(i) = self.at(slot) else { continue };
+        for (i, &slot) in order.iter().enumerate() {
             for &(other, g, emits) in self.contacts[slot as usize].as_deref().unwrap_or(&[]) {
                 if emits {
                     if let Some(j) = self.at(other) {
@@ -113,16 +112,16 @@ mod tests {
     fn edges_follow_node_order_and_skip_absent_partners() {
         let mut d = Domain::default();
         d.put(vec![(5, vec![(7, 2.0, true), (9, 1.0, true)]), (7, vec![(5, 2.0, false)])], vec![]);
-        d.index(&[7, 5], &[7, 5], 0.0);
+        d.index(&[7, 5], 0.0);
         assert_eq!(d.edges, vec![(1, 0, 2.0)]);
         d.put(vec![(9, vec![(5, 1.0, false)]), (4, vec![(9, 3.0, true)])], vec![]);
-        d.index(&[9, 5, 7, 4], &[9, 5, 7, 4], 0.0);
+        d.index(&[9, 5, 7, 4], 0.0);
         assert_eq!(d.edges, vec![(1, 2, 2.0), (1, 0, 1.0), (3, 0, 3.0)]);
-        // 发边次序与下标次序不同：边按发边次序排列，下标仍按节点次序。
-        d.index(&[9, 5, 7, 4], &[4, 7, 5, 9], 0.0);
-        assert_eq!(d.edges, vec![(3, 0, 3.0), (1, 2, 2.0), (1, 0, 1.0)]);
+        // 同一节点集换一个次序：下标与边的排列都随次序走（次序由 World 给出，内核不自行排序）。
+        d.index(&[4, 7, 5, 9], 0.0);
+        assert_eq!(d.edges, vec![(0, 3, 3.0), (2, 1, 2.0), (2, 3, 1.0)]);
         d.put(vec![], vec![7]);
-        d.index(&[9, 5], &[9, 5], 0.0);
+        d.index(&[9, 5], 0.0);
         assert_eq!(d.edges, vec![(1, 0, 1.0)]);
     }
 
@@ -132,7 +131,7 @@ mod tests {
         let mut d = Domain::default();
         d.put(vec![(1, vec![]), (2, vec![])], vec![]);
         d.put_sights(vec![(1, vec![(None, 0.25), (Some(2), 1.0), (Some(3), 1.0)])]);
-        d.index(&[2, 1], &[2, 1], 0.9);
+        d.index(&[2, 1], 0.9);
         assert_eq!(d.sky, vec![(1, 0.9 * 0.25)]);
         assert_eq!(d.pairs, vec![(1, 0, 0.9 / (2.0 - 0.9) * 1.0 / 2.0)]);
     }

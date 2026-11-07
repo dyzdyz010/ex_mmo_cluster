@@ -183,16 +183,16 @@ fn domain_hot(domain: ResourceArc<DomainResource>, cells: Vec<u32>) -> rustler::
     rustler::types::atom::ok()
 }
 
-// 本轮节点次序（槽位列表，决定内核下标）与发边次序（同一组槽位）；返回 {边数, 互见半对数, 对天空面数}。
+// 本轮节点次序（槽位列表，World 按节点键序给出；决定内核下标与发边次序）；返回 {边数, 互见半对数, 对天空面数}。
 #[cfg_attr(not(test), rustler::nif(schedule = "DirtyCpu"))]
-fn domain_index(domain: ResourceArc<DomainResource>, order: Vec<u32>, emission: Vec<u32>, emissivity: f64)
+fn domain_index(domain: ResourceArc<DomainResource>, order: Vec<u32>, emissivity: f64)
                 -> NifResult<(usize, usize, usize)> {
-    if !emissivity.is_finite() || !(0.0..2.0).contains(&emissivity) || emission.len() != order.len() {
+    if !emissivity.is_finite() || !(0.0..2.0).contains(&emissivity) {
         return Err(Error::BadArg);
     }
     let mut r = domain.0.lock().unwrap();
     if order.iter().any(|&slot| r.sim.node(slot).is_none()) { return Err(Error::BadArg); }
-    r.domain.index(&order, &emission, emissivity);
+    r.domain.index(&order, emissivity);
     Ok((r.domain.edges.len(), r.domain.pairs.len(), r.domain.sky.len()))
 }
 

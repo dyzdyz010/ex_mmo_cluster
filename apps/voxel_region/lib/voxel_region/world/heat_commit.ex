@@ -237,6 +237,8 @@ defmodule VoxelRegion.World.HeatCommit do
       state.damage
       |> Map.values()
       |> Enum.filter(&(&1.granularity == 1 and not Map.has_key?(&1, :temperature_kelvin)))
+      # 代表行（hd）、损失浮点和与事务行序按行键序定义（叶子无加入次序），不取整表 map 遍历次序。
+      |> Enum.sort_by(&Damage.key/1)
       |> Enum.group_by(& &1.owner)
 
     if legacy == %{} do
@@ -247,7 +249,7 @@ defmodule VoxelRegion.World.HeatCommit do
       seq = state.seq + 1
 
       {state, rows} =
-        Enum.reduce(legacy, {state, []}, fn {owner, rows}, {s, acc} ->
+        Enum.reduce(Enum.sort_by(legacy, &elem(&1, 0)), {state, []}, fn {owner, rows}, {s, acc} ->
           hp = component_max_hp(s, owner)
           lost = Enum.reduce(rows, 0.0, fn t, sum -> sum + t.max_hp - t.hp end)
           target = %{hd(rows) | granularity: 2, max_hp: hp, hp: hp - lost, seq: seq, request_id: 0}

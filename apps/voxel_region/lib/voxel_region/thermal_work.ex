@@ -193,7 +193,7 @@ defmodule VoxelRegion.ThermalWork do
           {work.solid_nodes, work.thermal_slots, false}
 
         plan.grown != nil ->
-          # 增量扩域：新格的节点与附件并入旧集合，与整域展开得到同一映射（键集相同，迭代次序相同）。
+          # 增量扩域：新格的节点与附件并入旧集合，与整域展开得到同一映射（内核次序由 ThermalDomain 按键给出，不取 map 遍历次序）。
           added = for cell <- plan.grown, pair <- Map.fetch!(geometry, cell), into: %{}, do: pair
           nodes = Map.merge(work.solid_nodes, added)
 

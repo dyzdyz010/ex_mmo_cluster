@@ -561,10 +561,12 @@ defmodule VoxelRegion.World.Tools do
             end
           end)
 
+        # 弃置账的浮点和按格键序累加（不取 map 遍历次序）。
         discarded =
-          Enum.reduce(state.thermal.sources, 0.0, fn {cell, s}, sum ->
-            sum + if(Map.has_key?(sources, cell), do: 0.0, else: s.remaining_j)
-          end)
+          state.thermal.sources
+          |> Enum.reject(fn {cell, _} -> Map.has_key?(sources, cell) end)
+          |> Enum.sort()
+          |> Enum.reduce(0.0, fn {_, s}, sum -> sum + s.remaining_j end)
 
         # 蓄能石随格移除时储能不进库存（材料单位不带电），记入移除账。
         stored_j = Enum.reduce(removed, 0.0, fn t, sum -> sum + Map.get(t, :stored_j, 0.0) end)

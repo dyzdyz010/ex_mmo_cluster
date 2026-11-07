@@ -48,4 +48,15 @@ defmodule VoxelRegion.DCNetworkTest do
     closed=DCNetwork.solve(edges++[edge({19,19},:dangling,2.0)])
     assert_in_delta hd(closed.currents),-24/3,24/3*1.0e-3
   end
+
+  test "连通分量的零电位入口是其最小节点（键序），绝对电位不随 map 遍历次序" do
+    # 只测试：40 节点的全桥链 0—1—…—39，每条桥电动势 1 V：桥上 i = 0，V_b = V_a − 1。
+    # 入口按键序取节点 0（0 V），手算 V_k = −k；40 > 32 键时邻接表的遍历次序不是键序（OTP 27 与 29 互逆）。
+    edges=for k<-0..38,do: edge(k,k+1,1.0,1.0)
+    adjacency=Map.new(0..39,&{&1,[]})
+    refute Map.keys(adjacency)==Enum.to_list(0..39)
+    result=DCNetwork.solve(edges)
+    assert result.volts==Map.new(0..39,&{&1,-&1*1.0})
+    assert Enum.all?(result.currents,&(&1==0.0))
+  end
 end

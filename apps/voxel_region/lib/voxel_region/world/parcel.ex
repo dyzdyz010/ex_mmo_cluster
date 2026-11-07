@@ -48,7 +48,7 @@ defmodule VoxelRegion.World.Parcel do
           {{:error, :attachment_crosses_boundary}, state}
 
         foreign != [] ->
-          {{:error, {:foreign_attachment, hd(foreign)}}, state}
+          {{:error, {:foreign_attachment, Enum.min(foreign)}}, state}
 
         true ->
           instances = Map.take(state.instances, MapSet.to_list(ids))
@@ -150,10 +150,7 @@ defmodule VoxelRegion.World.Parcel do
       values = Map.new(phase, fn {cell, {m, q}} ->
         {cell, {Phase.energy(%{material: m}, q / capacity, next.properties.materials[m], ambient_at(next, cell)), q * 1.0}}
       end)
-      thermal = if next.thermal, do: Enum.reduce(values, next.thermal, fn {_, {energy, integrity}}, t ->
-        t |> Map.update(:phase_authored_energy_j, energy, &(&1 + energy))
-          |> Map.update(:phase_authored_units, round(integrity), &(&1 + round(integrity)))
-      end)
+      thermal = VoxelRegion.World.Phases.authored(next.thermal, values)
       next = %{next | thermal: thermal}
 
       rows = for row <- parcel.property_rows, not (row.granularity == 0 and Map.has_key?(phase, shift(Damage.macro(row), delta))),
@@ -201,7 +198,7 @@ defmodule VoxelRegion.World.Parcel do
       # 先按盒筛：独立附件（玩家所挂）没有主人记录；盒内的这类附件不随任何被清的树移除，按越界拒绝。
       kept = for {slot, {aid, _}} <- state.attachments, Enum.any?(Attachments.macros([slot]), inside?),
         not removed_with_tree?(state.attachment_owners[aid], ids), do: aid
-      if kept == [], do: {:ok, ids}, else: {:error, {:target_attachment_crosses_boundary, hd(kept)}}
+      if kept == [], do: {:ok, ids}, else: {:error, {:target_attachment_crosses_boundary, Enum.min(kept)}}
     end
   end
 

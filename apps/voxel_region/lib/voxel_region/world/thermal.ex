@@ -304,7 +304,9 @@ defmodule VoxelRegion.World.Thermal do
     # 同一键集交给耗尽、相变与提交后的转化：耗尽归零只新增部件池行（粒度 2/3，HP 0），既非相变目标也不会转化。
     damage = state.damage
     settled = ThermalWork.settle_keys(state.thermal_work.pending, visited, damage)
-    exhausted = for key <- settled, {:ok, row} <- [Map.fetch(damage, key)], Combustion.exhausted?(row), do: row
+    # 同一部件的多条耗尽行折成一条池行时末行定代表微格：按行键序处理（只排耗尽行），不取 settled 集合的遍历次序。
+    exhausted = for(key <- settled, {:ok, row} <- [Map.fetch(damage, key)], Combustion.exhausted?(row), do: row)
+      |> Enum.sort_by(&Damage.key/1)
     # 燃料耗尽表示材料被消耗，不保留可重新采掘的整块木材。
     # 微格／附件沿已有最低层整件完整度语义归零，其余未燃料量记入移除账。
     {state, visited} = Enum.reduce(exhausted, {state, visited}, fn row, {s, keys} ->
@@ -466,9 +468,11 @@ defmodule VoxelRegion.World.Thermal do
   defp thermal_step(state, duration, powers) do
     # A zero-flight hit is published at creation, then released before any simulated
     # time passes, so observers receive its impact geometry without a glow/heat step.
-    state = Enum.reduce(semblances(state), state, fn {id, s}, state ->
-      if not Map.has_key?(s, :projectile_source) and Magic.Semblance.break_on_hit?(s), do: release_semblance(state, id, s, not Magic.Semblance.expired?(s)), else: state
-    end)
+    # 释放逐个沉积热与记账（浮点）：按拟态 id 序（同下方步进），不取 map 遍历次序。
+    state = semblances(state)
+      |> Enum.filter(fn {_, s} -> not Map.has_key?(s, :projectile_source) and Magic.Semblance.break_on_hit?(s) end)
+      |> Enum.sort()
+      |> Enum.reduce(state, fn {id, s}, state -> release_semblance(state, id, s, not Magic.Semblance.expired?(s)) end)
     started = System.monotonic_time(:microsecond)
     config = state.thermal.config
     state = refresh_native(state)
@@ -790,6 +794,7 @@ defmodule VoxelRegion.World.Thermal do
 
     kept
     |> Enum.filter(fn {_, s} -> not Map.has_key?(s, :projectile_source) and (Magic.Semblance.expired?(s) or Magic.Semblance.break_on_hit?(s)) end)
+    |> Enum.sort()
     |> Enum.reduce(state, fn {id, s}, state ->
       release_semblance(state, id, s, Magic.Semblance.break_on_hit?(s) and not Magic.Semblance.expired?(s))
     end)

@@ -100,12 +100,14 @@ defmodule VoxelRegion.OverlayLog do
     rows
     |> Enum.chunk_by(& &1.seq)
     |> Enum.map(fn [%{seq: seq} | _] = chunk ->
+      # 行已按 ordinal 升序：前插后整体反转，保持行序且每笔 O(行数)（逐行 `++ [x]` 为 O(行数²)）。
       Enum.reduce(chunk, %{seq: seq, entries: [], coarse: []}, fn
-        %{kind: 1, payload: bytes}, txn -> %{txn | entries: txn.entries ++ [%{seq: seq, payload: bytes}]}
-        %{kind: kind, payload: bytes}, txn when kind in [0,4] -> {:ok, cell} = Codec.decode_entry(bytes); %{txn | entries: txn.entries ++ [cell]}
+        %{kind: 1, payload: bytes}, txn -> %{txn | entries: [%{seq: seq, payload: bytes} | txn.entries]}
+        %{kind: kind, payload: bytes}, txn when kind in [0,4] -> {:ok, cell} = Codec.decode_entry(bytes); %{txn | entries: [cell | txn.entries]}
         %{kind: 3, payload: bytes}, txn -> Map.merge(txn,term(bytes))
-        %{kind: 2, payload: bytes}, txn -> {:ok, c} = Codec.decode_coarse(bytes); %{txn | coarse: txn.coarse ++ [c]}
+        %{kind: 2, payload: bytes}, txn -> {:ok, c} = Codec.decode_coarse(bytes); %{txn | coarse: [c | txn.coarse]}
       end)
+      |> then(&%{&1 | entries: Enum.reverse(&1.entries), coarse: Enum.reverse(&1.coarse)})
     end)
   end
 
