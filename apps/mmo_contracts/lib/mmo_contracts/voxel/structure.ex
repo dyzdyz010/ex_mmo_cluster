@@ -58,7 +58,7 @@ defmodule MmoContracts.Voxel.Structure do
   defp records_v2(<<i::32-little, count::32-little, rest::binary>>, n, previous, grids)
        when n > 0 and i > previous and i < 66 * 66 * 66 and count in [@samples, @samples * 7] and
               byte_size(rest) >= count * 2 do
-    <<g::binary-size(count * 2), tail::binary>> = rest
+    <<g::binary-size(^count * 2), tail::binary>> = rest
 
     if valid?(g),
       do: records_v2(tail, n - 1, i, Map.put(grids, i, g)),

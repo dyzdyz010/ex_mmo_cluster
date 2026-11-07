@@ -57,8 +57,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -66,8 +66,8 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
-          restore-keys: ${{ runner.os }}-otp27-mix-
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp29-mix-
 
       - name: Install dependencies
         run: mix deps.get
@@ -105,14 +105,14 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Cache deps
         uses: actions/cache@v4
         with:
           path: deps
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -155,8 +155,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -173,7 +173,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp29-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -223,8 +223,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -238,7 +238,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp29-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -286,8 +286,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -295,7 +295,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -344,8 +344,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -363,7 +363,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp29-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -430,8 +430,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -439,7 +439,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -487,8 +487,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -504,7 +504,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp29-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -554,8 +554,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -573,7 +573,7 @@ jobs:
             deps
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-otp27-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
+          key: ${{ runner.os }}-otp29-mix-rust-${{ hashFiles('**/mix.lock', '**/Cargo.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -600,8 +600,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.2.4"
-          elixir-version: "1.18.5"
+          otp-version: "29.1.2"
+          elixir-version: "1.20.5"
 
       - name: Cache deps
         uses: actions/cache@v4
@@ -609,7 +609,7 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-otp27-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('**/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get

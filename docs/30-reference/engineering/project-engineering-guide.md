@@ -14,7 +14,7 @@
 
 ## 技术栈
 
-- **语言**：本地开发 Erlang 28.3.1 / Elixir 1.19.5（`.tool-versions`）；release 镜像构建用 Elixir 1.18.5 / OTP 27.2.4（`deploy/` 的 Dockerfile）
+- **语言**：Erlang/OTP 29.1.2 / Elixir 1.20.5；本地开发（`.tool-versions`）、CI 与 release 镜像构建（`deploy/` 的 Dockerfile）一致
 - **传输**：QUIC，经 `quicer` 0.4.3（只在 Linux 构建，见 `apps/gate_server/mix.exs` 的 `quic_deps/0`）
 - **协议**：`mmo_contracts` 里的声明式二进制 codec（session / movement / voxel），见下文“客户端协议”
 - **Web**：Phoenix 1.8 + Bandit（`auth_server`：账号、邀请与 HTTP 体素载荷入口）

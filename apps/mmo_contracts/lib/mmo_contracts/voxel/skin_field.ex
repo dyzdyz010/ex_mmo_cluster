@@ -28,7 +28,7 @@ defmodule MmoContracts.Voxel.SkinField do
   defp canonical?(ext, _faces, <<>>, <<>>, <<>>, 0), do: ext == 1
   defp canonical?(ext, faces, masks, fmi, maps, n) do
     size = ext * ext
-    textures = for <<texture::binary-size(size) <- maps>>, do: texture
+    textures = for <<texture::binary-size(^size) <- maps>>, do: texture
     unique = MapSet.new(textures)
     if MapSet.size(unique) == length(textures) do
       uniforms = List.to_tuple(Enum.map(textures, fn t ->

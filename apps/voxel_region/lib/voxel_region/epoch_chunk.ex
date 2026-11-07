@@ -101,7 +101,7 @@ defmodule VoxelRegion.EpochChunk do
 
   defp record(%{data: data}, position) do
     offset = position * @record_bytes
-    <<_::binary-size(offset), local::16-little, epoch::64-little, _::binary>> = data
+    <<_::binary-size(^offset), local::16-little, epoch::64-little, _::binary>> = data
     {local, epoch}
   end
 

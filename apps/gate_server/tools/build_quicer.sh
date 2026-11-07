@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 当前部署固定为 OTP27 x86_64；只安装已验过的官方 NIF，不隐式切换本地源码构建。
-test "$(erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)), halt().')" = 27
+# 当前部署固定为 OTP29 x86_64；官方只发布 OTP27 构建的 NIF，经 OTP 29.1.2 实测可加载，只安装这份已验过的 NIF，不隐式切换本地源码构建。
+test "$(erl -noshell -eval 'io:put_chars(erlang:system_info(otp_release)), halt().')" = 29
 test "$(uname -m)" = x86_64
 package=libquicer-0.4.3-otp27-quictls-ubuntu22.04-x86_64.gz
 archive=${QUICER_NATIVE_ARCHIVE:-"$PWD/_packages/$package"}

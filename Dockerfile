@@ -17,7 +17,7 @@
 # ============================================================================
 # Stage 1 — Builder: Elixir + OTP + Rust + CMake (MsQuic for quicer)
 # ============================================================================
-FROM hexpm/elixir:1.18.5-erlang-27.2.4-debian-bookworm-20260824-slim AS builder
+FROM hexpm/elixir:1.20.5-erlang-29.1.2-debian-bookworm-20261104-slim AS builder
 
 ENV MIX_ENV=prod \
     LANG=C.UTF-8 \
@@ -66,7 +66,7 @@ RUN mix deps.get --only prod \
 # Stage 2 — Runtime
 # ============================================================================
 # Same Debian bookworm base as the builder (keeps OpenSSL / libstdc++ ABI identical to the build).
-FROM hexpm/elixir:1.18.5-erlang-27.2.4-debian-bookworm-20260824-slim AS runtime
+FROM hexpm/elixir:1.20.5-erlang-29.1.2-debian-bookworm-20261104-slim AS runtime
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \

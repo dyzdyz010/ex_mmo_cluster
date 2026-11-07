@@ -363,7 +363,7 @@ defmodule MmoContracts.Voxel.Payload do
 
   defp array(bin, size) do
     case bin do
-      <<n::32-little, data::binary-size(n * size), rest::binary>> -> {:ok, data, rest}
+      <<n::32-little, data::binary-size(n * ^size), rest::binary>> -> {:ok, data, rest}
       _ -> {:error, :invalid_payload}
     end
   end
@@ -573,7 +573,7 @@ defmodule MmoContracts.Voxel.Payload do
     case sections do
       {cells, {0, 0, 0}, 1, <<>>, <<>>, <<>>, <<>>, <<>>, <<>>} ->
         size = byte_size(cells)
-        <<_count::32-little, _cells::binary-size(size), suffix::binary>> = raw
+        <<_count::32-little, _cells::binary-size(^size), suffix::binary>> = raw
 
         raw =
           IO.iodata_to_binary([

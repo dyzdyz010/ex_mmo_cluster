@@ -887,7 +887,7 @@ defmodule MmoContracts.Voxel.Codec do
          true <-
            header.encoding in [0, 1] and
              header.raw_bytes <= MmoContracts.Voxel.Payload.max_body_bytes(header.version),
-         <<_::binary-size(@payload_header_bytes), body::binary-size(header.body_bytes)>> <- bytes,
+         <<_::binary-size(@payload_header_bytes), body::binary-size((^header).body_bytes)>> <- bytes,
          {:ok, raw} <- decode_raw_body(body, header.encoding, header.raw_bytes),
          true <- byte_size(raw) == header.raw_bytes do
       {:ok, header, raw}
@@ -1098,7 +1098,7 @@ defmodule MmoContracts.Voxel.Codec do
 
     {faces, rest} =
       Enum.reduce(1..6, {[], rest}, fn _, {faces, rest} ->
-        <<id::16-little, texels::binary-size(texel_bytes), rest::binary>> = rest
+        <<id::16-little, texels::binary-size(^texel_bytes), rest::binary>> = rest
         {[{id, if(texel_bytes == 0, do: nil, else: texels)} | faces], rest}
       end)
 

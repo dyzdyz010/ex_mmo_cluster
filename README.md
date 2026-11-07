@@ -60,7 +60,7 @@ A Mix umbrella of focused OTP applications, each a clean responsibility boundary
 
 | Layer | Choice |
 |-------|--------|
-| Runtime | Elixir 1.19 · Erlang/OTP 28 |
+| Runtime | Elixir 1.20 · Erlang/OTP 29 |
 | Topology | `WorldServer.Session` · optional `WorldServer.Topology` with explicit JSON routes and local OTP `:peer` nodes |
 | Web | Phoenix 1.8 · LiveView 1.1 · Bandit |
 | Persistence | PostgreSQL via Ecto |
