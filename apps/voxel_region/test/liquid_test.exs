@@ -16,10 +16,12 @@ defmodule VoxelRegion.LiquidTest do
     assert changes == %{cell => 0, {63, 0, 2} => 10, {64, 1, 2} => 7}
     assert Enum.sum(Map.values(Liquid.apply_changes(water, changes))) == 17
     assert Enum.sum(Enum.map(flows, &elem(&1, 2))) == 10
-    values = VoxelRegion.Phase.transport(%{cell => {70.0, 5.0}, {63,0,2} => {14.0, 7.0}}, water, flows)
-    assert values[cell] == {0.0, 0.0}
-    assert values[{63,0,2}] == {35.0, 8.5}
-    assert values[{64,1,2}] == {49.0, 3.5}
+    # 整数格值（Phase：µJ、完整度 ×1024）。cell 的 10 单位按 3 下、7 侧分出：70 J·3/10 = 21 J、5·1024·3/10 = 1536；
+    # 70 J·7/10 = 49 J、5120·7/10 = 3584，均整除；下格 14 J + 21 J = 35 J、7168 + 1536 = 8704（= 8.5 × 1024）。
+    values = VoxelRegion.Phase.transport(%{cell => {70_000_000, 5120}, {63,0,2} => {14_000_000, 7168}}, water, flows)
+    assert values[cell] === {0, 0}
+    assert values[{63,0,2}] === {35_000_000, 8704}
+    assert values[{64,1,2}] === {49_000_000, 3584}
     assert {:error, :occupied} = Liquid.displace(water, cell, 10, bounds, &(&1 == {63, 0, 2}))
     assert {:ok, %{^cell => 0, {63, 2, 2} => 10}, _} =
       Liquid.displace(%{cell => 10}, cell, 10, bounds, &(&1 == {63, 2, 2}))

@@ -278,12 +278,13 @@ defmodule VoxelRegion.World.Liquids do
       units=Enum.sum(Enum.map(moved,&elem(&1,1)))
       {state,values}=if phase_material?(state,material) do
         m=state.properties.materials[material]
-        energy=Phase.energy(%{material: material},units/liquid_capacity(state),m,max(Phases.phase_ambient(state),m["phase_transition_kelvin"]))
+        # 注入总量量化一次，按与液体外流同一的累计取整（Phase.portions）分给各格，全部分完；作者账记该整数的 J 值。
+        carried=Phase.quantize({Phase.energy(%{material: material},units/liquid_capacity(state),m,max(Phases.phase_ambient(state),m["phase_transition_kelvin"])),units})
+        {energy,_}=Phase.dequantize(carried)
         {values,state}=Phases.phase_values(state,Enum.map(moved,&elem(&1,0)))
-        {values,_}=Enum.reduce(moved,{values,{{energy,units*1.0},units}},fn {cell,n},{values,{carried,left}} ->
+        values=Enum.reduce(Phase.portions(moved,carried,units),values,fn {cell,{de,di}},values ->
           {e,i,b,f}=Map.fetch!(values,cell)
-          {{e,i},carried}=Phase.transfer({e,i},carried,left,n,:pour)
-          {Map.put(values,cell,{e,i,b,f}),{carried,left-n}}
+          Map.put(values,cell,{e+de,i+di,b,f})
         end)
         thermal=state.thermal |> Map.update(:phase_authored_energy_j,energy,&(&1+energy))
           |> Map.update(:phase_authored_units,units,&(&1+units))
@@ -414,20 +415,26 @@ defmodule VoxelRegion.World.Liquids do
   end
 
   # 燃料账：已初始化剩余燃料随数量搬运时总量不变；隐含满燃料的格与带燃料的量相遇即初始化（记入初始化账），
-  # 舀出已初始化燃料离开世界（记入弃置账）。前后之差只在可燃散体上非零。
+  # 舀出已初始化燃料离开世界（记入弃置账）。前后之差是燃料单位的整数精确和（纯搬运恰为 0），非零时一次换算成 J 入账。
   def fuel_ledger(%{thermal: nil}=state,_material,_before,_after,_changes), do: state
   def fuel_ledger(state,material,before,next,changes) do
     m=state.properties.materials[material]
     capacity=liquid_capacity(state)
-    delta=Enum.reduce(next,0.0,fn {cell,value},sum ->
-      old=Map.get(before,cell,{0.0,0.0,0.0,nil})
-      sum+Phase.explicit_fuel(value,m,Map.get(changes,cell,0)/capacity)-
-        Phase.explicit_fuel(old,m,Map.get(state.liquid_units,cell,capacity)/capacity)
+    delta=Enum.reduce(next,0,fn {cell,value},sum ->
+      old=Map.get(before,cell,{0,0,0,nil})
+      sum+Phase.explicit_fuel(value,m,Map.get(changes,cell,0))-
+        Phase.explicit_fuel(old,m,Map.get(state.liquid_units,cell,capacity))
     end)
-    cond do
-      delta > 0.0 -> %{state | thermal: Map.update(state.thermal,:fuel_initialized_j,delta,&(&1+delta))}
-      delta < 0.0 -> %{state | thermal: Map.update(state.thermal,:discarded_fuel_j,-delta,&(&1-delta))}
-      true -> state
+    key=cond do
+      delta > 0 -> :fuel_initialized_j
+      delta < 0 -> :discarded_fuel_j
+      true -> nil
+    end
+    if key do
+      joules=Phase.fuel_j(abs(delta),m,capacity)
+      %{state | thermal: Map.update(state.thermal,key,joules,&(&1+joules))}
+    else
+      state
     end
   end
 

@@ -21,7 +21,8 @@ defmodule VoxelRegion.World.Phases do
   @doc "作者初态的相态焓与数量记入 phase_authored 账（独立参考账，不算模拟供热）；浮点和按格键序累加，不取 map 遍历次序。"
   def authored(nil, _values), do: nil
   def authored(thermal, values) do
-    values |> Enum.sort() |> Enum.reduce(thermal, fn {_, {energy, integrity}}, t ->
+    values |> Enum.sort() |> Enum.reduce(thermal, fn {_, value}, t ->
+      {energy, integrity} = Phase.dequantize(value)
       t |> Map.update(:phase_authored_energy_j, energy, &(&1 + energy))
         |> Map.update(:phase_authored_units, round(integrity), &(&1 + round(integrity)))
     end)
@@ -31,7 +32,7 @@ defmodule VoxelRegion.World.Phases do
   def finite_enabled?(s), do: phase_enabled?(s) or (s.properties != nil and
     Enum.any?(s.properties.materials,fn {_,m}->Map.has_key?(m,"loose_threshold_units") end))
 
-  # 格值 {能量, 完整度, 已烧燃料 J, 火}（见 Phase）；非有限格为零值。
+  # 整数格值 {能量, 完整度, 已烧燃料, 火}（单位与取整见 Phase）；读行时量化一次，非有限格为零值。
   def phase_values(state,cells) do
     if finite_enabled?(state) do
       Enum.reduce(Enum.uniq(cells),{%{},state},fn cell,{values,s}->
@@ -43,11 +44,11 @@ defmodule VoxelRegion.World.Phases do
           volume=finite_volume(s,target)
           q=Map.get(s.liquid_units,cell,liquid_capacity(s))
           fuel=Map.get(row,:remaining_fuel_j)
-          {Phase.finite_energy(row,volume,m,s.thermal && ambient_at(s,cell)),q*row.hp/row.max_hp,
-            if(fuel,do: Combustion.capacity_j(m,volume)-fuel,else: 0.0),
-            if(fuel,do: Map.get(row,:burning,false),else: nil)}
+          Phase.quantize({Phase.finite_energy(row,volume,m,s.thermal && ambient_at(s,cell)),q*row.hp/row.max_hp,
+            fuel && fuel/Combustion.capacity_j(m,volume),
+            if(fuel,do: Map.get(row,:burning,false),else: nil)},q)
         else
-          {0.0,0.0,0.0,nil}
+          {0,0,0,nil}
         end
         {Map.put(values,cell,value),s}
       end)
@@ -88,17 +89,17 @@ defmodule VoxelRegion.World.Phases do
         value=Map.fetch!(values,cell)
         q=Map.fetch!(state.liquid_units,cell)
         m=state.properties.materials[material]
-        explicit=Phase.explicit_fuel(value,m,q/liquid_capacity(state))
         units=if elem(value,3)==nil,do: moved,
-          else: floor(moved*explicit/Combustion.capacity_j(m,q/liquid_capacity(state)))
-        removed=elem(value,0)*moved/q
+          else: div(moved*Phase.explicit_fuel(value,m,q),Phase.full_fuel(q))
+        portion=Phase.split(value,moved,q)
+        {removed,_}=Phase.dequantize(Phase.pair(portion))
         state=if state.thermal != nil and removed != 0.0,
           do: %{state | thermal: Map.update(state.thermal,:removed_j,removed,&(&1+removed))},else: state
-        {state,%{cell=>Phase.scale(value,1-moved/q)},%{},units}
+        {state,%{cell=>Phase.merge(value,Phase.scale(portion,-1))},%{},units}
 
       true ->
         {values,state}=phase_values(state,[cell])
-        {state,%{cell=>Phase.merge(Map.fetch!(values,cell),{0.0,moved*1.0,0.0,nil})},%{},-moved}
+        {state,%{cell=>Phase.merge(Map.fetch!(values,cell),Phase.quantize({0.0,moved,nil,nil},moved))},%{},-moved}
     end
   end
 
@@ -128,9 +129,9 @@ defmodule VoxelRegion.World.Phases do
     end)
   end
 
-  def at_rest?({energy,integrity},q), do: at_rest?({energy,integrity,0.0,nil},q)
-  def at_rest?({energy,integrity,burnt,fire},q),
-    do: energy == 0.0 and abs(integrity-q) <= 1.0e-9*q and burnt == 0.0 and fire == nil
+  # 整数等式：零焓、满完整度、燃料未初始化。
+  def at_rest?({energy,integrity},q), do: at_rest?({energy,integrity,0,nil},q)
+  def at_rest?(value,q), do: value == Phase.quantize({0.0,q,nil,nil},q)
 
   def operate_phase(before,state,actor,request,target,tool) do
     with true <- request.action==1 and phase_target?(state,target) and state.thermal != nil,
@@ -141,13 +142,13 @@ defmodule VoxelRegion.World.Phases do
       cell=Damage.macro(target)
       q=Map.get(state.liquid_units,cell,liquid_capacity(state))
       {values,state}=phase_values(state,[cell])
-      {energy,integrity,_,_}=Map.fetch!(values,cell)
+      {energy,integrity}=Phase.dequantize(Phase.pair(Map.fetch!(values,cell)))
       result=Phase.tool_energy(energy,q/liquid_capacity(state),state.properties.materials[target.material],tool)
       thermal=state.thermal |> Map.update(:phase_supplied_j,result.supplied_j,&(&1+result.supplied_j))
         |> Map.update(:phase_paid_j,result.paid_j,&(&1+result.paid_j))
         |> Map.update(:phase_unused_j,result.unused_j,&(&1+result.unused_j))
       {state,settlement}=Production.settle_material(%{state | thermal: thermal},actor.cid,fuel,-units)
-      settlement=Map.merge(settlement,%{phase_values: %{cell=>{result.energy,integrity}}})
+      settlement=Map.merge(settlement,%{phase_values: %{cell=>Phase.quantize({result.energy,integrity})}})
       case Liquids.commit_liquid(state,{:character,actor.cid},%{cell=>q},settlement) do
         {:ok,next}->
           Logger.info("voxel_phase seq=#{next.seq} action=#{tool["action"]} cell=#{inspect(cell)} units=#{q} used_j=#{abs(result.supplied_j)} unused_j=#{result.unused_j}")
@@ -168,22 +169,27 @@ defmodule VoxelRegion.World.Phases do
     {values,state}=phase_values(state,[cell])
     pick=request.action==1 and tool["action"]=="damage.impact.pick"
     target=if pick,do: Map.put_new(target,:pick_baseline_hp,target.hp),else: target
+    # 库存侧是浮点 {J, 数量单位}：格值反量化一次后入库，格上剩余按新 HP 量化回格值。
+    {energy,_}=current=Phase.dequantize(Phase.pair(values[cell]))
     carried=if pick and target.hp>0.0,
-      do: {elem(values[cell],0),q*target.pick_baseline_hp/target.max_hp},else: Phase.pair(values[cell])
+      do: {energy,q*target.pick_baseline_hp/target.max_hp},else: current
     amount=Damage.amount(material,tool,0)*q/liquid_capacity(state)
-    hp=max(0.0,target.hp-amount)
+    # 新 HP 先落到整数完整度格点上（与写回行同一换算），基准扣减与行上 HP 用同一个值。
+    {e,_}=Phase.pair(values[cell])
+    {_,integrity}=Phase.quantize({0.0,q*max(0.0,target.hp-amount)/target.max_hp})
+    hp=Phase.hp(target.max_hp,integrity,q)
     target=if pick or request.action==2,do: target,else: Damage.pick_baseline(target,hp)
     target=%{target | hp: hp,seq: state.seq+1,request_id: 0}
     state=%{state | damage: Map.put(state.damage,Damage.key(target),target)}
-    values=Map.put(values,cell,{elem(values[cell],0),q*target.hp/target.max_hp})
+    values=Map.put(values,cell,{e,integrity})
     settlement=if request.action==2 or target.hp==0.0 do
-      carried=if pick or request.action==2,do: carried,else: Phase.pair(values[cell])
+      carried=if pick or request.action==2,do: carried,else: Phase.dequantize({e,integrity})
       balance=Map.get(state.material_balances,{actor.cid,target.material},0)
       inventory=Phase.add(%{{actor.cid,target.material}=>inventory_phase(state,actor.cid,target.material,balance)},
         {actor.cid,target.material},carried)
       state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
       {state,paid}=Production.settle_material(state,actor.cid,target.material,q)
-      {state,%{cell=>0},Map.merge(paid,%{phase_inventory: inventory,phase_values: %{cell=>{0.0,0.0}}})}
+      {state,%{cell=>0},Map.merge(paid,%{phase_inventory: inventory,phase_values: %{cell=>{0,0}}})}
     else
       {state,%{cell=>q},%{phase_values: values}}
     end

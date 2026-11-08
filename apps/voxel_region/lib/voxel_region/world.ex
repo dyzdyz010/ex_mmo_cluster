@@ -1206,7 +1206,7 @@ defmodule VoxelRegion.World do
     changes = for {cell,m} <- edits, Phase.liquid?(m) or phase_material?(state,m) or Map.has_key?(state.liquid_units,cell),
       into: %{}, do: {cell,if(Phase.liquid?(m) or phase_material?(state,m),do: liquid_capacity(state),else: 0)}
     values = for {cell,m} <- edits, phase_material?(state,m), into: %{},
-      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
+      do: {cell,Phase.quantize({Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)})}
     # 一次作者初态沿原事务保存独立参考账，不能算成模拟供热。
     thermal=VoxelRegion.World.Phases.authored(state.thermal,values)
     case apply_batch(%{state | thermal: thermal}, :operator, edits, false, %{liquid_changes: changes,phase_values: values}) do

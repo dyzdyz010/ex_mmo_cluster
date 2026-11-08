@@ -368,14 +368,22 @@ defmodule VoxelRegion.LooseWorldTest do
     prior = World.entries_after(c.w, 0) |> Enum.filter(&(&1.seq < seq and Map.has_key?(&1, :thermal))) |> List.last()
     after_row = Enum.find(txn.property_states, &(&1.micro == micro({2, 0, 2})))
     fuel = c.materials[@coal]["fuel_energy_per_macro_j"]
-    # 舀走一半：剩余燃料按比例留一半，入库单位按舀取前剩余比例向下取整。
-    remaining_before = after_row.remaining_fuel_j * 2
-    assert balance(c.w, @coal) == units + floor(@quarter * remaining_before / (fuel / 2))
+    # 整数燃料单位（Phase：q 单位格满燃料 = q·2^18 个单位，读行四舍五入）。舀取前格 q = 2^20，满燃料 2^38 个单位，
+    # 舀取前最后提交的行剩余 r J 读作 R = round(r / (F·0.5) · 2^38) 个单位，已烧 b = 2^38 − R。
+    # 舀走一半数量（单笔，floor）：带走已烧 floor(b/2)，格留 ceil(b/2) = 2^37 − floor(R/2)，
+    # 即 0.25 m³ 格（满 2^37）剩 floor(R/2) 个单位、行上 F·0.25·floor(R/2)/2^37 J；
+    # 燃料账 floor(R/2) − R = −ceil(R/2) 个单位记弃置，= F·ceil(R/2)/2^39 J；入库 div(2^19·R, 2^38) = div(R, 2^19)。
+    prior_row = World.entries_after(c.w, 0) |> Enum.filter(&(&1.seq < seq))
+      |> Enum.flat_map(&Map.get(&1, :property_states, []))
+      |> Enum.filter(&(&1.granularity == 0 and &1.micro == micro({2, 0, 2}))) |> List.last()
+    r = round(prior_row.remaining_fuel_j / (fuel * 0.5) * (div(@cap, 2) * 262_144))
+    assert balance(c.w, @coal) === units + div(r, 524_288)
     assert balance(c.w, @coal) < units + @quarter
     assert after_row.burning and after_row.power_w == c.materials[@coal]["burn_power_per_macro_w"] / 4
     assert after_row.max_hp == c.materials[@coal]["max_hp_per_macro"] / 4
-    assert_in_delta txn.thermal.discarded_fuel_j - Map.get(prior.thermal, :discarded_fuel_j, 0.0),
-      after_row.remaining_fuel_j, 1.0e-3
+    assert after_row.remaining_fuel_j == fuel * 0.25 * (div(r, 2) / (@quarter * 262_144))
+    assert txn.thermal.discarded_fuel_j ==
+      Map.get(prior.thermal, :discarded_fuel_j, 0.0) + fuel * (div(r + 1, 2) / (@cap * 262_144))
     assert_in_delta txn.thermal.removed_j - Map.get(prior.thermal, :removed_j, 0.0),
       c.materials[@coal]["heat_capacity_per_macro"] / 4 * (after_row.temperature_kelvin - @ambient), 1.0e-3
     s = observe(c.w)
@@ -404,6 +412,104 @@ defmodule VoxelRegion.LooseWorldTest do
     end
     assert_fuel_closes(s)
     assert_energy_closes(c, s)
+  end
+
+  # 纯搬运的燃料账：已初始化（燃烧）的煤只在已初始化格与空格之间流动时，初始化／弃置账逐笔不变。
+  # 整数格值下燃料差是精确整数和，恰为 0；旧浮点和在 >32 格（map 不按键遍历）时带末位噪声并随 OTP 改记账方向。
+  @tag bounds: {{0, 0, 0}, {10, 2, 10}}
+  test "burning coal spreading over more than 32 cells books no fuel initialization or discard in its liquid steps", c do
+    {:ok, _} = World.material_supply(c.w, 1001, "loose-ledger", %{@coal => 120 * @cap})
+    for _ <- 1..2, do: assert({:ok, _} = pour(c, {5, 0, 5}, @coal))
+    settle(c.w)
+    for _ <- 1..2, do: assert({:ok, _} = tool(c, {5, 0, 5}, 9))
+    # 先烧一段，让搬运的已烧燃料非零。
+    thermal(c.w, &(&1.thermal.combustion_j > 1.0e6))
+    fuel = fn thermal -> Map.take(thermal, [:fuel_initialized_j, :discarded_fuel_j]) end
+    # 账以提交事务携带的 thermal 为准；倒入（玩家意图）合并未初始化的库存煤，可正当记初始化，之后以它为基准。
+    booked = fn from -> World.entries_after(c.w, from) |> Enum.filter(&Map.has_key?(&1, :thermal)) |> List.last() end
+    ref = fuel.(observe(c.w).thermal)
+    # 读入取整计数：液体提交（液体步与倒入）把数量变化的每一格读入一次（Liquids.commit_liquid 读 changes 的键），
+    # 每次读入的剩余燃料至多取整半个燃料单位。排空的源格不再写行，但它取整后的值已流进目标格，所以按读入格数计，
+    # 不按写回行数；事务的 liquid_units 就是这些格（0 = 排空），缺该字段时退回写回的已初始化煤行数（读入格的子集）。
+    reads = :counters.new(1, [])
+    count_reads = fn txns ->
+      :counters.add(reads, 1, Enum.sum(for txn <- txns, Map.get(txn, :entries, []) != [], do: max(
+        map_size(Map.get(txn, :liquid_units, %{})),
+        Enum.count(Map.get(txn, :property_states, []),
+          &(&1.granularity == 0 and &1.material == @coal and Map.has_key?(&1, :remaining_fuel_j))))))
+    end
+    # 一次液体步：本步每笔事务的燃料账与基准逐位相同；返回本步写下的煤行数。
+    step = fn ref ->
+      from = World.seq(c.w)
+      tick(c.w)
+      txns = World.entries_after(c.w, from)
+      for txn <- txns, Map.has_key?(txn, :thermal), do: assert(fuel.(txn.thermal) === ref)
+      count_reads.(txns)
+      for txn <- txns, r <- Map.get(txn, :property_states, []),
+        r.granularity == 0 and r.material == @coal, reduce: 0, do: (n -> n + 1)
+    end
+    rest = fn rest, ref, left ->
+      rows = step.(ref)
+      cond do
+        World.liquid_activity(c.w).active_cells == 0 -> rows
+        left == 0 -> flunk("loose cells did not come to rest")
+        true -> max(rows, rest.(rest, ref, left - 1))
+      end
+    end
+    pour_on = fn {x, _, z} = cell ->
+      from = World.seq(c.w)
+      eye(c, {x + 0.5, 1.5, z + 0.5})
+      assert {:ok, _} = pour(c, cell, @coal)
+      count_reads.(World.entries_after(c.w, from))
+      fuel.(booked.(from).thermal)
+    end
+    # 只往正在燃烧且未满的格上倒，新格只经流动带火得到燃料，堆长到 30 格以上。
+    grow = fn grow, ref ->
+      s = observe(c.w)
+      if map_size(s.liquid_units) >= 30 do
+        {s, ref}
+      else
+        {cell, _} = s.liquid_units |> Enum.filter(fn {cell, q} -> q <= @cap - @quarter and row(s, cell).burning end)
+          |> Enum.min_by(fn {cell, q} -> {q, cell} end)
+        ref = pour_on.(cell)
+        rest.(rest, ref, 2000)
+        grow.(grow, ref)
+      end
+    end
+    {s, ref} = grow.(grow, ref)
+    assert Enum.all?(s.liquid_units, fn {cell, _} -> row(s, cell).burning end)
+    # 堆边格都倒到超过散体阈值 t（与空邻格高差 > t 才外流；静止的堆边格 q ≤ t，倒 div(t − q, 1/4 格) + 1 次，
+    # 倒后 ≤ t + 1/4 格 ≤ 满格），下一步每个堆边格都向空邻格外流，要有超过 32 格同时搬运（values map 超过 32 键）。
+    # 热步由定时器推进、煤会受热损伤，堆形随墙钟时序变化，一轮不一定够；不够就等堆静止后再来一轮（至多 5 轮），前提逐轮断言。
+    t = c.materials[@coal]["loose_threshold_units"]
+    spread = fn spread, ref, rounds ->
+      s = observe(c.w)
+      edge = for {{x, 0, z} = cell, q} <- s.liquid_units, q <= t,
+        Enum.any?([{x - 1, 0, z}, {x + 1, 0, z}, {x, 0, z - 1}, {x, 0, z + 1}],
+          fn {a, _, b} = n -> a in 0..9 and b in 0..9 and not Map.has_key?(s.liquid_units, n) end), do: {cell, q}
+      ref = Enum.reduce(edge, ref, fn {cell, q}, ref ->
+        Enum.reduce(1..(div(t - q, @quarter) + 1), ref, fn _, _ -> pour_on.(cell) end)
+      end)
+      moved = step.(ref)
+      assert rest.(rest, ref, 2000) >= 0
+      cond do
+        moved > 32 -> moved
+        rounds == 1 -> flunk("no liquid step moved more than 32 cells (last #{moved})")
+        true -> spread.(spread, ref, rounds - 1)
+      end
+    end
+    assert spread.(spread, ref, 5) > 32
+    s = observe(c.w)
+    assert Enum.all?(s.liquid_units, fn {cell, _} -> row(s, cell).burning end)
+    # 全局燃料闭合（一期已知限制，见 Phase）：行仍是浮点，热内核改过的行在下次被液体步／倒入读入并写回时取整到燃料单位，
+    # 每次读入至多半个单位（1 单位 = 每宏格燃料 /(容量·2^18)），不入账。上界 = 点燃后液体提交读入的格数 × 半个单位，
+    # 加上既有 assert_fuel_closes 的 1e-3 J（热内核账自身的浮点和）。点燃前的煤燃料未初始化，读入不取整燃料。
+    unit = c.materials[@coal]["fuel_energy_per_macro_j"] / (@cap * 262_144)
+    writes = :counters.get(reads, 1)
+    left = for {_, row} <- s.damage, reduce: 0.0, do: (sum -> sum + Map.get(row, :remaining_fuel_j, 0.0))
+    assert_in_delta Map.get(s.thermal, :fuel_initialized_j, 0.0),
+      Map.get(s.thermal, :combustion_j, 0.0) + Map.get(s.thermal, :discarded_fuel_j, 0.0) +
+        Map.get(s.thermal, :transform_reductant_fuel_j, 0.0) + left, 1.0e-3 + writes * unit / 2
   end
 
   defp material_of(s, cell), do: (r = row(s, cell)) && r.material

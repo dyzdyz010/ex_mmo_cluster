@@ -148,7 +148,7 @@ defmodule VoxelRegion.World.Parcel do
         into: %{}, do: {shift(cell, delta), {m, q}}
       capacity = liquid_capacity(next)
       values = Map.new(phase, fn {cell, {m, q}} ->
-        {cell, {Phase.energy(%{material: m}, q / capacity, next.properties.materials[m], ambient_at(next, cell)), q * 1.0}}
+        {cell, Phase.quantize({Phase.energy(%{material: m}, q / capacity, next.properties.materials[m], ambient_at(next, cell)), q})}
       end)
       thermal = VoxelRegion.World.Phases.authored(next.thermal, values)
       next = %{next | thermal: thermal}

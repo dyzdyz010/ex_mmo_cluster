@@ -238,7 +238,7 @@ defmodule VoxelRegion.World.Prefabs do
     # 作者入口与既有 liquid_experiment 一样，首次给宏格建立有限相态。
     added = changed_prefab_macros(state,before,cells)
     values = for {cell,m} <- added,phase_material?(state,m),into: %{},
-      do: {cell,{Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)*1.0}}
+      do: {cell,Phase.quantize({Phase.energy(%{material: m},1.0,state.properties.materials[m],ambient_at(state,cell)),liquid_capacity(state)})}
     quantities = for {cell,m} <- added,Phase.liquid?(m) or phase_material?(state,m),into: %{},
       do: {cell,liquid_capacity(state)}
     thermal = Phases.authored(state.thermal,values)
@@ -288,7 +288,7 @@ defmodule VoxelRegion.World.Prefabs do
     end) ++ Enum.map(removed_micro,fn target ->
       row = property_state(before,target)
       energy = Phase.energy(row,Damage.volume(1),before.properties.materials[target.material],ambient_at(before,Damage.macro(target)))
-      {target.material,before.material_units_per_micro,{energy,before.material_units_per_micro*ratios[target.owner]}}
+      {target.material,before.material_units_per_micro,Phase.quantize({energy,before.material_units_per_micro*ratios[target.owner]})}
     end)
     {inventory,balances} = Enum.reduce(removed,{%{},state.material_balances},fn {m,q,value},{inventory,balances} ->
       key = {cid,m}
@@ -306,7 +306,7 @@ defmodule VoxelRegion.World.Prefabs do
       if not Phase.liquid?(m) and elem(carried,1) <= 0 do
         {:halt,{:error,:broken_material}}
       else
-        {value,carried} = Phase.transfer({0.0,0.0},carried,balance,q,:pour)
+        {value,carried} = Phase.transfer({0,0},carried,balance,q,:pour)
         {values,micro_values} = case address do
           {:macro,cell} -> {Map.put(values,cell,value),micro_values}
           {:micro,target} -> {values,[{target,value} | micro_values]}
@@ -330,7 +330,8 @@ defmodule VoxelRegion.World.Prefabs do
   end
 
   def put_prefab_phase_micro(state,values) do
-    {state,rows,pools} = Enum.reduce(values,{state,[],%{}},fn {target,{energy,integrity}},{s,rows,pools} ->
+    {state,rows,pools} = Enum.reduce(values,{state,[],%{}},fn {target,value},{s,rows,pools} ->
+      {energy,integrity} = Phase.dequantize(value)
       material = s.properties.materials[target.material]
       volume = Damage.volume(1)
       latent = if Phase.liquid?(target.material),do: material["latent_heat_per_macro_j"],else: 0.0

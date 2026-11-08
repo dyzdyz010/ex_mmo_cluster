@@ -32,9 +32,10 @@ defmodule VoxelRegion.PhaseMaterialTest do
 
   test "熔岩移动携带有限热和损伤，再凝固不补完整度" do
     p=properties()
-    values=Phase.transport(%{a: {10_150_000.0,80.0}},%{a: 100},[{:a,:b,25}])
-    assert values==%{a: {7_612_500.0,60.0},b: {2_537_500.0,20.0}}
-    assert Phase.material(22,0.0,0.25,p)==13
-    assert elem(values.b,1)/25==0.8
+    # 整数格值（µJ、完整度 ×1024）：10 150 000 J 的 25/100 = 2 537 500 J，80 单位完整度 ×1024 = 81 920 的 1/4 = 20 480，均整除。
+    values=Phase.transport(%{a: {10_150_000_000_000,81_920}},%{a: 100},[{:a,:b,25}])
+    assert values===%{a: {7_612_500_000_000,61_440},b: {2_537_500_000_000,20_480}}
+    assert Phase.material(22,0,0.25,p)==13
+    assert elem(values.b,1)/(25*1024)==0.8
   end
 end

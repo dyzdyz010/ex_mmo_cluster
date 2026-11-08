@@ -357,7 +357,7 @@ defmodule VoxelRegion.World.Production do
               cost=liquid_capacity(state)
               balance=balance_state(before,actor.cid,request.material).balance
               carried=Phases.inventory_phase(before,actor.cid,request.material,balance)
-              {portion,remaining}=Phase.transfer({0.0,0.0},carried,balance,cost,:pour)
+              {portion,remaining}=Phase.transfer({0,0},carried,balance,cost,:pour)
               inventory=%{{actor.cid,request.material}=>remaining}
               state=%{state | phase_inventory: Map.merge(state.phase_inventory,inventory)}
               # Inventory Ice stays solid; any later thermal phase completion is ordinary simulation.

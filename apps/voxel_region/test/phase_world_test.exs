@@ -6,6 +6,12 @@ defmodule VoxelRegion.PhaseWorldTest do
   alias VoxelRegion.TestSupport.{Source,Actor,Log}
   @capacity 2_097_152
   @quarter div(@capacity,4)
+  # 格值完整度是整数（单位 = 数量单位/1024，Kernel.round 四舍五入，见 Phase）：满格 q = 2^21 的 78 % HP
+  # 为 round(0.78 × 2^31) = round(1 675 037 245.44) = 1 675 037 245，写回 HP = 100 × 1 675 037 245 / 2^31。
+  @integrity78 1_675_037_245
+  @hp78 100 * @integrity78 / 2_147_483_648
+  # 512 个微格各 4096 单位、78 % HP：round(0.78 × 4096 × 1024) = round(3 271 557.12) = 3 271 557，合入宏格共 512 × 3 271 557。
+  @micro_hp78 100 * 512 * 3_271_557 / 2_147_483_648
 
   defmodule DatabaseMetadataLog do
     @moduledoc "只测试：经过正式数据库行编码，再以独立文件模拟持久存储和冷恢复。"
@@ -584,18 +590,18 @@ defmodule VoxelRegion.PhaseWorldTest do
     File.write!(deposits,Jason.encode!(%{classification: "Test-only",deposits: [%{macro: [63,1,2],material: 20}]}))
     assert {:ok,_} = World.liquid_experiment(c.w,deposits)
     assert {:ok,_} = operate(c,19,1)
-    assert row(c.w,{63,1,2}).hp == 78.0
+    assert row(c.w,{63,1,2}).hp == @hp78
     assert {:ok,_} = operate(c,1,2,{63,1,2},2)
     # Author ice starts with 1.93 MJ/K * 20 K; one impact removes 30-8 HP.
     energy = 38_600_000.0
-    integrity = @capacity*0.78
+    integrity = @integrity78/1024
     carried = observe(c.w)
     assert carried.material_balances[{1001,20}] == @capacity
     assert_in_delta elem(carried.phase_inventory[{1001,20}],0), energy, 0.001
     assert_in_delta elem(carried.phase_inventory[{1001,20}],1), integrity, 1.0e-6
     assert {:ok,birth} = place_macro_prefab(c,id,10)
     placed = row(c.w,{63,1,2})
-    assert placed.hp == 78.0 and placed.max_hp == 100.0
+    assert placed.hp == @hp78 and placed.max_hp == 100.0
     assert_in_delta placed.phase_energy_j, energy, 0.001
     assert observe(c.w).liquid_units == %{{63,1,2}=>@capacity}
     assert observe(c.w).material_balances[{1001,20}] == 0
@@ -603,7 +609,7 @@ defmodule VoxelRegion.PhaseWorldTest do
       %{instance_id: {birth,0},definition_id: id,client_intent_seq: 11})
     replaced = row(c.w,{63,1,2})
     assert replaced.owner == {replaced_birth,0}
-    assert replaced.hp == 78.0 and replaced.max_hp == 100.0
+    assert replaced.hp == @hp78 and replaced.max_hp == 100.0
     assert_in_delta replaced.phase_energy_j, energy, 0.001
     settled = observe(c.w)
     assert settled.liquid_units == %{{63,1,2}=>@capacity}
@@ -680,14 +686,14 @@ defmodule VoxelRegion.PhaseWorldTest do
       %{instance_id: {birth,0},definition_id: macro_id,client_intent_seq: 10})
     macro = row(c.w,{63,1,2})
     assert macro.owner == {macro_birth,0}
-    assert_in_delta macro.hp, component.hp, 1.0e-9
+    assert_in_delta macro.hp, @micro_hp78, 1.0e-9
     assert_in_delta macro.phase_energy_j, expected_energy, 0.001
     assert Map.get(observe(c.w).material_balances,{1001,20},0) == 0
     assert {:ok,micro_birth} = World.prefab_intent(c.w,c.actor,:voxel_prefab_replace_v1,
       %{instance_id: {macro_birth,0},definition_id: micro_id,client_intent_seq: 11})
     restored = observe(c.w)
     component_after = Enum.find(Map.values(restored.damage),&(&1.granularity==2 and &1.owner=={micro_birth,0}))
-    assert_in_delta component_after.hp, component.hp, 1.0e-9
+    assert_in_delta component_after.hp, @micro_hp78, 1.0e-9
     assert component_after.max_hp == component.max_hp
     fine = Enum.filter(Map.values(restored.damage),&(&1.granularity==1 and &1.owner=={micro_birth,0}))
     assert length(fine) == 512
@@ -793,11 +799,13 @@ defmodule VoxelRegion.PhaseWorldTest do
     assert_in_delta Enum.sum(for {_,r}<-after_step.damage,do: r.phase_energy_j),energy,0.001
     assert total(c.w)==@capacity
     # Actual synchronous flux API used by World, with a balanced intermediate cell.
-    q=%{a: 10,b: 10,c: 10}; values=%{a: {100.0,10.0},b: {0.0,5.0},c: {50.0,10.0}}
+    # 整数格值（µJ、完整度 ×1024）：a→b 5/10 = 50 J、5120；b 冻结 {0, 5120}，b→c 5/10 = 0、2560；
+    # b = {0 + 50 J, 5120 + 5120 − 2560 = 7680}（= 7.5 单位），总量精确为 150 J 与 25 × 1024 = 25 600。
+    q=%{a: 10,b: 10,c: 10}; values=%{a: {100_000_000,10_240},b: {0,5120},c: {50_000_000,10_240}}
     next=Phase.transport(values,q,[{:a,:b,5},{:b,:c,5}])
-    assert next.b=={50.0,7.5}
-    assert_in_delta Enum.sum(for {_,{e,_}}<-next,do: e),150.0,1.0e-9
-    assert_in_delta Enum.sum(for {_,{_,i}}<-next,do: i),25.0,1.0e-9
+    assert next.b==={50_000_000,7680}
+    assert Enum.sum(for {_,{e,_}}<-next,do: e)===150_000_000
+    assert Enum.sum(for {_,{_,i}}<-next,do: i)===25_600
   end
 
   test "conservative collision rounds only the top micro layer and leaves quantity exact" do
@@ -952,7 +960,7 @@ defmodule VoxelRegion.PhaseWorldTest do
     [pick_txn]=World.entries_after(c.w,picked.seq-1)
     [picked]=Enum.filter(pick_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
     assert picked.pick_baseline_hp==100.0
-    assert picked.hp==78.0
+    assert picked.hp==@hp78
     assert MmoContracts.Voxel.Codec.encode({:voxel_property_state,picked})==
       MmoContracts.Voxel.Codec.encode({:voxel_property_state,Map.delete(picked,:pick_baseline_hp)})
     # 正式DB元数据与测试文件日志均承载原始内部属性，不依赖客户端或额外存储。
@@ -1020,11 +1028,16 @@ defmodule VoxelRegion.PhaseWorldTest do
     send(c.w,:thermal_commit)
     [heat_txn]=World.entries_after(c.w,World.seq(c.w)-1)
     heated=Enum.find(heat_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
-    assert heated.hp<78.0
-    assert heated.pick_baseline_hp==100.0-(78.0-heated.hp)
+    assert heated.hp<@hp78
+    assert heated.pick_baseline_hp==100.0-(@hp78-heated.hp)
     assert {:ok,_}=operate(c,19,2)
     [attack_txn]=World.entries_after(c.w,World.seq(c.w)-1)
     attacked=Enum.find(attack_txn.property_states,&(&1.micro=={504,8,16} and &1.granularity==0))
+    # 伤害 = (工具 1 power 30 − 材料 13 defense 8) × multiplier 1 × 满格体积 1 = 22 HP（发布目录 ade8e630…）。
+    # 新 HP 先落到整数完整度格点（Phase）：满格 q = 2^21，i = round(2^21·(heated.hp − 22)/100·1024)，
+    # HP = 100·i/2^31（除以 2 的幂是精确的，只有乘 100 一次舍入）。基准扣减用同一个格点 HP，“基准差 = HP 差”精确成立。
+    i=round(2_097_152*(heated.hp-22.0)/100.0*1024)
+    assert attacked.hp==100*i/2_147_483_648
     assert attacked.pick_baseline_hp==heated.pick_baseline_hp-(heated.hp-attacked.hp)
     for seq<-3..5,do: assert({:ok,_}=operate(c,19,seq))
     assert elem(observe(c.w).phase_inventory[{1001,13}],1)==0.0

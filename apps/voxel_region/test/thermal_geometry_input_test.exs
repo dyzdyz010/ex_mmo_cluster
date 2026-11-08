@@ -37,8 +37,9 @@ defmodule VoxelRegion.ThermalGeometryInputTest do
   end
 
   test "固体建造复用相变库存取出规则，损伤与负焓完整守恒" do
-    {placed, remaining} = Phase.transfer({0.0, 0.0}, {-50.0, 75.0}, 100, 40, :pour)
-    assert placed == {-20.0, 30.0}
+    # 库存浮点 {J, 数量单位} 按 40/100 取出 {−20 J, 30 单位}，量化入格为 {−20 000 000 µJ, 30 × 1024}。
+    {placed, remaining} = Phase.transfer({0, 0}, {-50.0, 75.0}, 100, 40, :pour)
+    assert placed === {-20_000_000, 30_720}
     assert remaining == {-30.0, 45.0}
   end
 end
