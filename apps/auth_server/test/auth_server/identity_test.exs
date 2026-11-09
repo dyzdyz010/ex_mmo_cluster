@@ -30,13 +30,74 @@ defmodule AuthServer.IdentityTest do
     email = "account-#{suffix}@example.test"
     {:ok, [invite]} = AuthServer.Admin.generate_invites(1, "test-#{suffix}", nil)
     # 限流按来源计数且跨测试存活于同一 RateLimit 进程；每个测试独占一个来源，避免整套累计耗尽 mail_ip 限额。
-    %{email: email, invite: invite, password: "a correct long password #{suffix}", source: "test-source-#{suffix}"}
+    %{email: email, invite: invite, password: "test-password-123", source: "test-source-#{suffix}"}
   end
 
   defp proof(email, invite, source) do
     assert :ok = Identity.send_registration_email(email, invite, source)
     assert_receive {:account_mail, ^email, :registration, code}
     code
+  end
+
+  for {label, password} <- [
+        {"eight digits", "12345678"},
+        {"a formerly blocked password", "passwordpassword"},
+        {"eight Unicode characters", "一二三四五六七八"},
+        {"twenty characters", "12345678901234567890"},
+        {"twenty Unicode graphemes", String.duplicate("😀", 20)}
+      ] do
+    @tag :password_length
+    test "registration accepts #{label} and login uses the same password", c do
+      password = unquote(password)
+      code = proof(c.email, c.invite.code, c.source)
+      assert {:ok, account} = Identity.register(c.email, password, code, c.invite.code)
+      assert {:ok, session} = Identity.login(c.email, password, false)
+      assert session.account_id == Integer.to_string(account.id)
+    end
+  end
+
+  @tag :password_length
+  test "registration rejects passwords outside 8 to 20 characters without consuming the email proof", c do
+    code = proof(c.email, c.invite.code, c.source)
+
+    for password <- [nil, "", "1234567", "一二三四五六七", 12_345_678, [], %{},
+                     String.duplicate("a", 21), String.duplicate("😀", 21), String.duplicate("a", 513)] do
+      assert {:error, :invalid_password} =
+               Identity.register(c.email, password, code, c.invite.code)
+    end
+
+    refute DataService.AccountStore.account(c.email)
+    assert {:ok, _} = Identity.register(c.email, "12345678", code, c.invite.code)
+  end
+
+  @tag :password_length
+  test "previously stored long passwords still work for login and current-password confirmation", c do
+    password = String.duplicate("a", 513)
+    code = proof(c.email, c.invite.code, c.source)
+    assert {:ok, account} = Identity.register(c.email, c.password, code, c.invite.code)
+    # 只测试：用持久化 owner 的公开改密入口构造旧版已接纳的长密码，不绕过被测登录入口。
+    hash = Argon2.hash_pwd_salt(password, t_cost: 1, m_cost: 8, parallelism: 1)
+    assert {:ok, []} = DataService.AccountStore.change_password(account.id, account.password_hash, hash, Identity.now())
+    assert {:ok, session} = Identity.login(c.email, password, false)
+    assert :ok = Identity.change_password(session.access_token, password, "87654321")
+    assert {:error, :invalid_session} = Identity.authenticate(session.access_token)
+    assert {:ok, _} = Identity.login(c.email, "87654321", false)
+  end
+
+  @tag :password_length
+  test "oversized replacement passwords preserve the current session and reset proof", c do
+    code = proof(c.email, c.invite.code, c.source)
+    assert {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
+    assert {:ok, session} = Identity.login(c.email, c.password, false)
+    oversized = String.duplicate("a", 21)
+    assert {:error, :invalid_password} = Identity.change_password(session.access_token, c.password, oversized)
+    assert {:ok, _} = Identity.authenticate(session.access_token)
+    assert :ok = Identity.forgot_password(c.email, c.source)
+    assert_receive {:account_mail, _, :password_reset, reset}
+    assert {:error, :invalid_password} = Identity.reset_password(c.email, reset, oversized)
+    assert {:ok, _} = Identity.authenticate(session.access_token)
+    assert :ok = Identity.reset_password(c.email, reset, "12345678")
+    assert {:error, :invalid_session} = Identity.authenticate(session.access_token)
   end
 
   test "legacy ownership claim preserves identity and character and cannot be replayed", c do
@@ -265,8 +326,8 @@ defmodule AuthServer.IdentityTest do
     {:ok, _} = Identity.register(c.email, c.password, code, c.invite.code)
     assert :ok = Identity.forgot_password(c.email, "owner")
     assert_receive {:account_mail, _, :password_reset, reset}
-    for _ <- 1..8, do: assert({:error, :invalid_verification} = Identity.reset_password(c.email, "guess", "an attacker chosen password"))
-    assert :ok = Identity.reset_password(c.email, reset, "the owner's new long password")
+    for _ <- 1..8, do: assert({:error, :invalid_verification} = Identity.reset_password(c.email, "guess", "attacker-password"))
+    assert :ok = Identity.reset_password(c.email, reset, "owners-new-password")
   end
 
   test "registering an existing email answers the same and mails the owner a sign-in notice", c do
@@ -311,7 +372,7 @@ defmodule AuthServer.IdentityTest do
     {:ok,s}=Identity.login(c.email,c.password,true)
     assert :ok=Identity.forgot_password(c.email,"reset-source")
     assert_receive {:account_mail,_,:password_reset,reset}
-    next="a different long password"
+    next="12345678"
     assert :ok=Identity.reset_password(c.email,reset,next)
     assert {:error,:invalid_session}=Identity.authenticate(s.access_token)
     assert {:error,:invalid_credentials}=Identity.login(c.email,c.password,false)

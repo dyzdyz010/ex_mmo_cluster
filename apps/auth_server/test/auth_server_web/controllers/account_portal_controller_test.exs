@@ -16,7 +16,7 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
       Application.delete_env(:auth_server, :mail_adapter)
       Application.delete_env(:auth_server, :test_mail_recipient)
     end)
-    %{email: "portal-#{System.unique_integer([:positive])}@example.test", password: "portal horse battery staple!"}
+    %{email: "portal-#{System.unique_integer([:positive])}@example.test", password: "12345678"}
   end
 
   test "browser registration creates the same identity used by game login", c do
@@ -31,13 +31,20 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     refute conn.resp_body =~ c.password
     assert_receive {:account_mail, email, :registration, code}
     assert email == c.email
+    rejected = post(build_conn(), "/auth/register", Map.merge(params, %{code: code, password: "1234567"}))
+    assert html_response(rejected, 400) =~ "8–20"
+    rejected = post(build_conn(), "/auth/register", Map.merge(params, %{code: code, password: String.duplicate("a", 21)}))
+    assert html_response(rejected, 400) =~ "8–20"
     conn = post(build_conn(), "/auth/register", Map.put(params, :code, code))
     assert redirected_to(conn) == "/auth/login"
     {:ok, game} = Identity.login(c.email, c.password, false)
     conn = post(build_conn(), "/auth/login", %{email: c.email, password: c.password})
     assert redirected_to(conn) == "/auth"
     conn = recycle(conn) |> get("/auth")
-    assert html_response(conn, 200) =~ game.account_id
+    body = html_response(conn, 200)
+    assert body =~ game.account_id
+    assert body =~ ~s(minlength="8")
+    assert body =~ ~s(data-maxlength="20")
     assert conn.resp_body =~ c.email
     # 已登录：登录／注册页回到账号页，其他页面顶栏显示当前账号与退出，而不是登录／注册入口。
     assert recycle(conn) |> get("/auth/login") |> redirected_to() == "/auth"
@@ -46,14 +53,30 @@ defmodule AuthServerWeb.AccountPortalControllerTest do
     assert signed_in =~ c.email
     assert signed_in =~ ~s(action="/auth/logout")
     refute signed_in =~ ~s(href="/auth/register")
-    conn = recycle(conn) |> post("/auth/change-password", %{current_password: "incorrect", password: "replacement horse battery staple!"})
+    conn = recycle(conn) |> post("/auth/change-password", %{current_password: "incorrect", password: "87654321"})
     assert html_response(conn, 400) =~ "当前密码错误"
     assert {:ok, _} = Identity.authenticate(game.access_token)
-    conn = recycle(conn) |> post("/auth/change-password", %{current_password: c.password, password: "replacement horse battery staple!"})
+    conn = recycle(conn) |> post("/auth/change-password", %{current_password: c.password, password: "87654321"})
     assert redirected_to(conn) == "/auth/login"
     assert {:error, :invalid_session} = Identity.authenticate(game.access_token)
-    assert {:ok, replacement} = Identity.login(c.email, "replacement horse battery staple!", false)
+    assert {:ok, replacement} = Identity.login(c.email, "87654321", false)
     assert replacement.cid == game.cid
+  end
+
+  test "new password forms describe 8 to 20 graphemes without truncating Unicode input" do
+    for page <- ["register", "reset", "claim"] do
+      body = build_conn() |> get("/auth/" <> page) |> html_response(200)
+      [input] = Regex.run(~r/<input[^>]*name="password"[^>]*>/, body)
+      assert input =~ ~s(minlength="8")
+      assert input =~ ~s(data-maxlength="20")
+      refute Regex.match?(~r/\smaxlength=/, input)
+    end
+  end
+
+  test "login inputs do not block previously stored passwords beyond the new maximum" do
+    body = build_conn() |> get("/auth/login") |> html_response(200)
+    [input] = Regex.run(~r/<input[^>]*name="password"[^>]*>/, body)
+    refute input =~ "maxlength="
   end
 
   test "web legacy claim accepts the full email proof and keeps the original character", c do

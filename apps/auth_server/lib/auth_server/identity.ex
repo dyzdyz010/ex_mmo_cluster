@@ -47,6 +47,12 @@ defmodule AuthServer.Identity do
   @doc "当前注册界面所需的公开策略。"
   def registration_policy, do: %{invite_required: Store.policy()}
 
+  @doc "设置密码的最小字符数，供认证校验与网页约束共用。"
+  def password_min_length, do: 8
+
+  @doc "设置新密码的最大字符数，供认证校验与网页约束共用。"
+  def password_max_length, do: 20
+
   @doc "验证格式和注册资格后发送限时邮箱证明；仅投递层可替换。"
   def send_registration_email(email, invite, source) do
     with {:ok,email} <- normalize_email(email),
@@ -88,7 +94,7 @@ defmodule AuthServer.Identity do
   `web: true` 用于网页会话，访问令牌与会话同寿命（每次请求仍经服务端核验，撤销立即生效）。
   """
   def login(email,password,remember,opts \\ []) do
-    with {:ok,email} <- normalize_email(email), true <- is_binary(password) and byte_size(password) <= 512,
+    with {:ok,email} <- normalize_email(email), true <- is_binary(password),
          :ok <- AuthServer.RateLimit.take({:login,email,opts[:source]},10,60) do
       account = Store.account(email)
       verified = if account && account.password_hash, do: Argon2.verify_pass(password,account.password_hash), else: Argon2.no_user_verify(@password_options)
@@ -201,7 +207,7 @@ defmodule AuthServer.Identity do
   end
   @doc "当前密码确认后更改密码，清除所有设备会话。"
   def change_password(access,current,password) do
-    with {:ok,c} <- authenticate(access), :ok <- password_valid(password), true <- is_binary(current) and byte_size(current)<=512 do
+    with {:ok,c} <- authenticate(access), :ok <- password_valid(password), true <- is_binary(current) do
       {a,_}=Store.account_with_character(c.account_id)
       if Argon2.verify_pass(current,a.password_hash) do
         with {:ok,ids} <- Store.change_password(a.id,a.password_hash,Argon2.hash_pwd_salt(password,@password_options),now()),do: AuthServer.Connections.close_sessions(ids)
@@ -240,7 +246,7 @@ defmodule AuthServer.Identity do
   end
 
   defp password_valid(value) when is_binary(value) do
-    if byte_size(value) <= 512 and String.length(value) in 15..128 and String.downcase(value) not in ["passwordpassword","123456789012345","1234567890123456","qwertyuiopasdfgh"], do: :ok, else: {:error,:invalid_password}
+    if String.length(value) in password_min_length()..password_max_length(), do: :ok, else: {:error,:invalid_password}
   end
   defp password_valid(_), do: {:error,:invalid_password}
   defp credentials(expiry,access_ttl \\ 900) do

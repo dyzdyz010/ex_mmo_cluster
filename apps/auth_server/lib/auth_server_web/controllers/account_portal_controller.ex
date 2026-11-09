@@ -115,7 +115,7 @@ defmodule AuthServerWeb.AccountPortalController do
   defp source(conn), do: conn.remote_ip |> :inet.ntoa() |> to_string()
   defp error_text(:invalid_credentials), do: "邮箱或密码错误。"
   defp error_text(:invalid_email), do: "请输入有效邮箱。"
-  defp error_text(:invalid_password), do: "密码需为 15–128 个字符，避免常见弱密码。"
+  defp error_text(:invalid_password), do: "密码需为 #{Identity.password_min_length()}–#{Identity.password_max_length()} 个字符。"
   defp error_text(:invite_required), do: "当前需要邀请码，请填写后重试。"
   defp error_text(:invalid_invite), do: "邀请码不可用，请检查或联系发放者。"
   defp error_text(:invalid_legacy_claim), do: "旧邀请码无法认领，请检查是否已绑定或联系管理员。"

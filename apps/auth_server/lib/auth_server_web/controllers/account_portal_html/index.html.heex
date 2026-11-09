@@ -66,7 +66,7 @@
             <input id="code" name="code" class="ac-input ac-input--code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字" autofocus={@sent} required />
             <p class="ac-hint">验证码 10 分钟内有效。邀请码与邮箱验证码是两个不同的凭据。</p>
           </div>
-          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
+          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={AuthServer.Identity.password_min_length()} maxlength={AuthServer.Identity.password_max_length()} counter />
           <button id="step-submit" class="ac-btn ac-btn--primary ac-btn--block">创建账号<span class="ac-arrow" aria-hidden="true">→</span></button>
         </fieldset>
       </.form>
@@ -111,7 +111,7 @@
           <input id="code" name="code" class="ac-input ac-input--token" autocomplete="one-time-code" maxlength="128" spellcheck="false" required />
           <p class="ac-hint">重置码 30 分钟内有效。</p>
         </div>
-        <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={15} counter />
+        <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={AuthServer.Identity.password_min_length()} maxlength={AuthServer.Identity.password_max_length()} counter />
         <button class="ac-btn ac-btn--primary ac-btn--block">重置密码</button>
       </.form>
       <div class="ac-card-foot">
@@ -154,7 +154,7 @@
             <input id="code" name="code" autocomplete="one-time-code" maxlength="128" class="ac-input ac-input--token" spellcheck="false" required />
             <p class="ac-hint">验证码 10 分钟内有效；从邮件按钮打开时会自动填好。</p>
           </div>
-          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={15} counter />
+          <UI.secret id="password" name="password" label="设置密码" autocomplete="new-password" minlength={AuthServer.Identity.password_min_length()} maxlength={AuthServer.Identity.password_max_length()} counter />
           <button id="step-submit" class="ac-btn ac-btn--primary ac-btn--block">绑定原角色</button>
         </fieldset>
       </.form>
@@ -185,7 +185,7 @@
         <p class="ac-text">修改后所有设备与游戏连接都会退出，请使用新密码重新登录。</p>
         <.form for={%{}} action="/auth/change-password" class="ac-form">
           <UI.secret id="current" name="current_password" label="当前密码" autocomplete="current-password" />
-          <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={15} counter />
+          <UI.secret id="password" name="password" label="新密码" autocomplete="new-password" minlength={AuthServer.Identity.password_min_length()} maxlength={AuthServer.Identity.password_max_length()} counter />
           <button class="ac-btn ac-btn--primary">修改密码</button>
         </.form>
       </section>

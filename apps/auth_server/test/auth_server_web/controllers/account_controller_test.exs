@@ -18,7 +18,7 @@ defmodule AuthServerWeb.AccountControllerTest do
       Application.delete_env(:auth_server,:test_mail_recipient)
       Application.put_env(:auth_server,:playtest_access_file,old)
     end)
-    %{email: "http-#{System.unique_integer([:positive])}@example.test", password: "correct horse battery staple!"}
+    %{email: "http-#{System.unique_integer([:positive])}@example.test", password: "12345678"}
   end
   defp request(path,params,token \\ nil) do
     conn = build_conn() |> put_req_header("content-type","application/json")
@@ -33,6 +33,16 @@ defmodule AuthServerWeb.AccountControllerTest do
     assert %{"account_id"=>id}=request("/account/register",%{email: c.email,password: c.password,code: code,invite: invite.code}) |> json_response(201)
     assert is_binary(id)
     request("/account/login",%{email: c.email,password: c.password}) |> json_response(200)
+  end
+
+  test "registration API enforces both length boundaries before checking the email proof", c do
+    for {password, error} <- [{"1234567", "invalid_password"}, {"12345678", "invalid_verification"},
+                              {"12345678901234567890", "invalid_verification"},
+                              {"123456789012345678901", "invalid_password"}] do
+      assert %{"error" => ^error} =
+               request("/account/register", %{email: c.email, password: password, code: "000000", invite: ""})
+               |> json_response(400)
+    end
   end
   test "real HTTP register/login, admin permission, revoke, and no legacy route bypass", c do
     session=register(c)

@@ -11,6 +11,26 @@ Now you can visit [`localhost:20000`](http://localhost:20000) from your browser.
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
+## 密码长度规则（当前：8–20 字符）
+
+按本次产品要求，设置新密码只检查字符串长度为 8–20 个字符，不要求字符种类，也不使用常见密码名单。`AuthServer.Identity.password_min_length/0` 与 `password_max_length/0` 是范围的唯一来源，注册、旧账号认领、改密和重置共用；网页约束与错误提示读取同一范围。既有超过 20 字符的密码仍可登录，也可作为当前密码完成改密；上限只约束本次设置的新密码。
+
+字符计数沿用 [Elixir `String.length/1`](https://hexdocs.pm/elixir/1.19.5/String.html#length/1) 的 Unicode 字素语义；密码仍经既有 [Argon2 哈希与验证](https://hexdocs.pm/argon2_elixir/Argon2.html) 路径，不截断或改写输入。[HTML `maxlength`](https://html.spec.whatwg.org/multipage/input.html#attr-input-maxlength) 按 UTF-16 代码单元计数，直接设为 20 会误挡合法的 20 个 emoji，因此网页仅输出同源 `data-maxlength`，由既有脚本使用 [ECMA-402 `Intl.Segmenter`](https://tc39.es/ecma402/#segmenter-objects) 的 `grapheme` 分段实时提示并设置表单有效性。原生 `minlength=8` 可提前拦截明显过短的输入，其余按字素补齐校验；无脚本时仍可正常提交，由服务端作最终裁决。
+
+本次最小回归范围为 Identity 公共入口与 Phoenix 网页／JSON 注册入口的 7／8／20／21 字符边界、纯数字、原名单密码、中文、emoji 与组合字符，以及注册／认领／改密／重置共用范围、旧长密码登录和确认改密。依赖真实 Auth、PostgreSQL 和独占新测试库（`MmoTest.Database` 在退出时删除），只替换邮件投递为 TestMailer；网页检查实际 HTTP 表单属性、范围提示和既有脚本的字素计数／有效性，不据此声明浏览器视觉或部署通过。Linux 在本目录运行 `mix test --no-start test/auth_server/identity_test.exs test/auth_server_web/controllers/account_portal_controller_test.exs test/auth_server_web/controllers/account_controller_test.exs`；本轮原始日志写入根 `.demo/observe/password-range-20261104/`。
+
+本轮 WSL 回归为 `38 tests, 0 failures`；Linux Node 23.7 执行 `node --test test/auth_server_web/account_ui_test.mjs` 的 1 项真实脚本组件测试通过，覆盖 7／8／20／21 字素、emoji、组合字符和超长错误清除。组件测试只替换 DOM 运输面，执行生产 `account_ui.js` 并观察提示与 `validationMessage`，不证明浏览器视觉。红测记录与所有绿测、命令、源码摘要在上述观察目录；生产候选沿用实际运行镜像，仅追加 4 个 Auth BEAM，不携带工作树中的协议或其他功能改动。
+
+`2026-11-04 08:30 UTC` 已发布 `voxim-server:20261104-password-range`。生产内 8／20 字符（含 emoji）注册、登录通过，7／21 字符拒绝，513 字符旧凭据登录通过；自有测试事务已回滚，无账号／证明／邀请码遗留。公开 CSRF 表单与 JSON API 的四个长度边界通过，双 Scene 与 QUIC 就绪；实际协议 41、kernel/profile、13 条迁移、配置和挂载保持一致。镜像包、输入与证据在根 `.demo/observe/password-range-deploy-20261104/`，生产备份和回退说明在 `/data/voxim_qinglan/releases/20261104-password-range/`。
+
+### 2026-11-03 最小长度调整的历史验证与发布
+
+以下保留当时的验证与发布事实，不代表本轮 8–20 字符范围已经验证或部署；当时原始日志位于根 `.demo/observe/password-length-20261103/`。
+
+本轮在 WSL 以 Erlang/OTP 28.3.1、Elixir 1.19.5 实跑：修改前 33 项中 11 项因旧规则／表单约束失败；修改后同组 33 项全部通过。`red.log`／`green.log`、对应退出码与源码摘要、`environment.log` 和 `run.sh` 保存在上述目录，可用 `bash .demo/observe/password-length-20261103/run.sh green` 从仓库根复跑。
+
+生产发布：`2026-11-04 03:45 UTC` 已从 `voxim-server:20261102-beacon-motion` 更新为 `voxim-server:20261103-password-length`。沿用生产 OTP 27.2.4／Elixir 1.18.5，仅重编译 4 个 Auth 模块；生产协议 41、kernel/profile、13 条迁移、挂载与限额均未变。正式根的 baseline、两 Scene、QUIC 与公开网页已就绪；独占事务内的 4 类密码完成注册／登录／authenticate 后全部回滚，公网表单与 JSON API 的 7／8 字符边界也通过。镜像包、冻结输入与发布证据在根 `.demo/observe/password-length-deploy-20261103/`，生产配置备份与 46,692,861 字节数据库备份在 `/data/voxim_qinglan/releases/20261103-password-length/`；回退步骤见该处 `RUNBOOK.md`。
+
 ## Prefab HTTP 契约与回归
 
 `/ingame/voxel/prefabs`、`/game/prefabs` 与 `/playtest/prefabs` 复用同一 World 读取边界；成功响应仍使用原发布顺序、名称、发布者和冻结 VXPD 字节。P3 按需读取的源文件缺失、身份不符或缓存预算失败应返回 HTTP 503、稳定 JSON `{"error":"voxel_prefabs_unavailable"}`，并记录含 scene_id 与原 reason 的结构化 `voxel_prefabs_unavailable` 日志；不返回空列表或备用来源。

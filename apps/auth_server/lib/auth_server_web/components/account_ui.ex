@@ -137,6 +137,7 @@ defmodule AuthServerWeb.AccountUI do
   attr :label, :string, required: true
   attr :autocomplete, :string, required: true
   attr :minlength, :integer, default: nil
+  attr :maxlength, :integer, default: nil
   attr :autofocus, :boolean, default: false
   attr :counter, :boolean, default: false, doc: "显示长度提示（设置新密码时）"
   slot :aside, doc: "标签行右侧链接"
@@ -157,7 +158,7 @@ defmodule AuthServerWeb.AccountUI do
           class="ac-input"
           autocomplete={@autocomplete}
           minlength={@minlength}
-          maxlength="128"
+          data-maxlength={@maxlength}
           autofocus={@autofocus}
           aria-describedby={@counter && "#{@id}-hint"}
           required
@@ -165,7 +166,7 @@ defmodule AuthServerWeb.AccountUI do
         <button type="button" class="ac-reveal" data-reveal={@id} aria-pressed="false" hidden>显示</button>
       </div>
       <p :if={@counter} id={"#{@id}-hint"} class="ac-hint" data-count={@id}>
-        至少 {@minlength} 个字符。一句好记的短语比复杂符号更安全。
+        {@minlength}–{@maxlength} 个字符。
       </p>
     </div>
     """

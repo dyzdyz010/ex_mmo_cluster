@@ -15,14 +15,18 @@
     });
   });
 
-  // 密码长度实时提示，与服务端 minlength 保持同一来源。
+  // 按 Unicode 字素提示密码长度，范围读取服务端属性，避免 UTF-16 误计 emoji 和组合字符。
+  const graphemes = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
   all("[data-count]").forEach((hint) => {
     const input = document.getElementById(hint.dataset.count);
     const min = input.minLength;
+    const max = Number(input.dataset.maxlength);
     const update = () => {
-      const n = [...input.value].length;
-      hint.dataset.ok = String(n >= min);
-      hint.textContent = n === 0 ? hint.dataset.idle : n < min ? `已输入 ${n} 个字符，还差 ${min - n} 个` : `已输入 ${n} 个字符 · 长度符合要求`;
+      const n = [...graphemes.segment(input.value)].length;
+      const valid = n >= min && n <= max;
+      input.setCustomValidity(n === 0 || valid ? "" : `密码需为 ${min}–${max} 个字符。`);
+      hint.dataset.ok = String(valid);
+      hint.textContent = n === 0 ? hint.dataset.idle : n < min ? `已输入 ${n} 个字符，还差 ${min - n} 个` : n > max ? `已输入 ${n} 个字符，超出 ${n - max} 个` : `已输入 ${n} 个字符 · 长度符合要求`;
     };
     hint.dataset.idle = hint.textContent;
     input.addEventListener("input", update);
