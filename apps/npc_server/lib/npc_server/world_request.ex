@@ -85,7 +85,7 @@ defmodule NpcServer.WorldRequest do
 
   # action 0 = 沿方向探测实际命中；1 = 攻击 / 使用该目标身份；2 = 拆解构件（按剩余燃料退料）。
   # target 只能是身份 map 或缺省（缺省时交权威按射线裁决）；g3 附件按身份寻址，g5 是人物 `{cid, 0}`。
-  # NPC 动作不暴露信标（beacon.use 只由玩家 G 对准锚心石），beacon_id 恒为空串，与线解码同形。
+  # NPC 动作不暴露信标（beacon.use 只由玩家 G 对准信标整体），beacon_id 恒为空串，与线解码同形。
   defp shape(%{verb: verb, tool_id: tool} = command, context)
        when is_map_key(@tool, verb) and is_integer(tool) do
     if fields = target_fields(command, context),

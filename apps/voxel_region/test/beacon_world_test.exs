@@ -101,6 +101,43 @@ defmodule VoxelRegion.BeaconWorldTest do
     assert Enum.map(World.beacon_directory(w, @a), &{&1.id, &1.attuned}) == [{"qinglan", false}, {"ruyuan", true}]
   end
 
+  # 拼装件信标（同 2026-11-02 青岚／如园：锚心微格 + 框架微格同属一个 prefab 实例）。用户 2026-11-08：交互对象按 prefab 整体判定。
+  # 只测试 VXPD v3：锚心 2×2×2 微格（局部 x/y/z 0..1）+ 框架一层（局部 x 2，y/z 0..1），框架用非锚心实心材料 13。
+  defp publish(c, w, name, cells) do
+    body = for {{x, y, z}, m} <- cells, into: <<>>, do: <<x::signed-little-32, y::signed-little-32, z::signed-little-32, m::16-little>>
+    bytes = <<"VXPD", 3::32-little, length(cells)::32-little, body::binary, 0::32-little, 0::32-little, 0::32-little>>
+    File.write!(Path.join([c.root, "prefabs", name]), bytes)
+    :ok = World.publish_prefabs(w, Path.join(c.root, "prefabs"))
+    :crypto.hash(:sha256, bytes)
+  end
+
+  test "拼装件信标：首个命中为本实例框架微格即调谐；另一实例的微格挡在前面仍拒绝", c do
+    w = c |> start() |> build()
+    core = for x <- 0..1, y <- 0..1, z <- 0..1, do: {{x, y, z}, @anchor}
+    frame = for y <- 0..1, z <- 0..1, do: {{2, y, z}, 13}
+    station = publish(c, w, "station.vxpd", core ++ frame)
+    screen = publish(c, w, "screen.vxpd", for(y <- 0..1, z <- 0..1, do: {{0, y, z}, 13}))
+    # 锚点 (40,8,4)：锚心微格 x 40..41、框架 x 42（+X 面在 43/8 = 5.375 m），都在宏格 (5,1,0)，压在地面 y 0 上。
+    {:ok, birth} = World.place_prefab(w, station, {40, 8, 4}, 0)
+    # 另一实例：屏风微格 x 48（6.0..6.125 m，宏格 (6,1,0)）。
+    {:ok, other} = World.place_prefab(w, screen, {48, 8, 4}, 0)
+    {:ok, _} = World.beacon_install(w, "s1", %{id: "station", name: "驿站", core: {40, 8, 4}, landing: {7.5, 1.5, 0.5}})
+    seq = World.seq(w)
+
+    # 眼 (6.5, 1.1, 0.6) 朝 -X：先打到屏风微格 (48,8,4)；核心中心 (5.0625,1.0625,0.5625) 离角色 < 3 m。
+    {:ok, actor, request} = query_tool(w, {6.5, 1.1, 0.6}, {6.5, 1.9, 0.6}, {-1.0, 0.0, 0.0}, @beacon)
+    assert {request.micro, request.material, request.owner} == {{48, 8, 4}, 13, {other, 0}}
+    assert {:error, :not_an_anchor} = World.tool_intent(w, actor, Map.put(request, :beacon_id, "station"))
+    assert World.seq(w) == seq
+
+    # 眼 (5.9, 1.1, 0.6)：在屏风与框架之间，先打到本实例框架微格 (42,8,4)，不是锚心。
+    {:ok, actor, request} = query_tool(w, {5.9, 1.1, 0.6}, {5.9, 1.9, 0.6}, {-1.0, 0.0, 0.0}, @beacon)
+    assert {request.micro, request.material, request.owner} == {{42, 8, 4}, 13, {birth, 0}}
+    assert {:ok, attuned} = World.tool_intent(w, actor, Map.put(request, :beacon_id, "station"))
+    assert attuned == seq + 1 and World.seq(w) == attuned
+    assert Enum.map(World.beacon_directory(w, @a), &{&1.id, &1.attuned}) == [{"station", true}]
+  end
+
   defp travel(w, message, position, request) do
     key = make_ref()
     send(w, {message, key, %{cid: @a, player: self(), position: position}, request})
