@@ -5,7 +5,8 @@ defmodule MmoContracts.VoximM1ContractTest do
   alias MmoContracts.{Session, Movement, Voxel}
   @root Path.expand("../../../../../Voxim/Docs/M1", __DIR__)
   Code.require_file(Path.join(@root, "tools/capture_movement_wire.exs"))
-  # 当前黄金样本直接读 Hello 43；v42 只留作旧版本拒绝的反例。
+
+  # 历史双方样本保持冻结；Hello 44 仅变更版本字段，旧 Hello 必须在线拒绝。
   @fixtures Path.join(@root, "fixtures/movement-wire-v43")
   @v42 Path.join(@root, "fixtures/movement-wire-v42")
 
@@ -62,20 +63,28 @@ defmodule MmoContracts.VoximM1ContractTest do
              "83dc05376b0d77aa8d985969e33872cd1acc13c16b568460b76d0f29c05adc71"
   end
 
-  test "all domain messages consume actual both-endpoint golden bytes and encode identically" do
-    for {name, domain, value} <- VoximM1Vectors.vectors(), producer <- ["elixir", "ue"] do
+  test "非 Hello 消息仍消费实际双方冻结样本并逐字节相等" do
+    for {name, domain, value} <- VoximM1Vectors.vectors(),
+        name != "hello",
+        producer <- ["elixir", "ue"] do
       golden = File.read!(Path.join(@fixtures, "#{producer}_#{name}.bin"))
       assert {:ok, ^value} = VoximM1Vectors.decode(domain, golden)
       assert {:ok, ^golden} = VoximM1Vectors.encode(domain, value)
     end
   end
 
-  test "both endpoints' v42 Hello is rejected; only the protocol byte differs from v43" do
-    for producer <- ["elixir", "ue"] do
-      old = File.read!(Path.join(@v42, "#{producer}_hello.bin"))
-      assert binary_part(old, 9, 2) == <<42::16>>
+  test "历史双方 v42/v43 Hello 拒绝；Hello 44 只改变冻结样本的版本字段" do
+    {1, value, current} = packet("hello")
+    assert value.protocol_version == 44
+    assert {:ok, ^value} = Codec.decode(current)
+
+    for {version, fixtures} <- [{42, @v42}, {43, @fixtures}], producer <- ["elixir", "ue"] do
+      old = File.read!(Path.join(fixtures, "#{producer}_hello.bin"))
+      assert binary_part(old, 9, 2) == <<version::16>>
       assert {:error, :invalid_m1_message} = Codec.decode(old)
-      assert replace(old, 9, <<43::16>>) == File.read!(Path.join(@fixtures, "#{producer}_hello.bin"))
+
+      # 按已批准的字段变更构造独立期望，不改历史文件，也不冒充 UE 44 实际捕获。
+      assert replace(old, 9, <<44::16>>) == current
     end
   end
 

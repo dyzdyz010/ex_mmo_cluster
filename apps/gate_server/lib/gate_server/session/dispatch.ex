@@ -94,6 +94,39 @@ defmodule GateServer.Session.Dispatch do
     {:ok, state}
   end
 
+  # 徒手分选一份（生产 action 6，Voxim Docs/Items.md §3.2）：读条在角色 owner 里推进，回执在读条结束后才有，在独立进程里等（同信标）。
+  # 提交回 0x68 accepted(seq) 并补发余额；拒绝、取消与移动打断回 0x68 rejected（reason 同工具意图的 inspect 形式），不扣料。
+  def handle(
+        {:voxel_production_intent, %{action: 6} = request},
+        %{status: :in_scene, voxim_overlay: true} = state
+      ) do
+    reply_to =
+      await_result(state, fn
+        {:ok, seq} ->
+          send_encoded(state, ResultFrame.accepted(request, seq))
+          send_material_balances(state, state.cid, request.request_id)
+
+        {:error, reason} ->
+          send_encoded(state, ResultFrame.error(request, reason))
+      end)
+
+    SceneServer.Movement.Player.ore_sort(state.player, state.identity, request, reply_to)
+    {:ok, state}
+  end
+
+  # 取消当前分选（生产 action 7）：打断成功回 accepted(0)（被取消的那份另回 rejected cast_cancelled），没有可取消的分选回 rejected already_released。
+  def handle(
+        {:voxel_production_intent, %{action: 7} = request},
+        %{status: :in_scene, voxim_overlay: true} = state
+      ) do
+    case SceneServer.Movement.Player.cancel_sort(state.player, state.identity) do
+      :ok -> reply(state, request, {:ok, 0})
+      error -> reply(state, request, error)
+    end
+
+    {:ok, state}
+  end
+
   # 角色世界意图（工具、生产 1..5、附件、prefab 放 / 拆 / 换、发布）只经 Intent.run/3，与 NPC Body 同一条裁决。
   # 回执先发：余额是另一次 World 查询，按 BalanceSeq 独立生效，不必挡在回执前面；是否补发由 Intent 的唯一规则决定。
   def handle({kind, request} = intent, %{status: :in_scene, voxim_overlay: true} = state)
@@ -111,20 +144,13 @@ defmodule GateServer.Session.Dispatch do
   # 传送信标出发：读条在角色 owner 里推进，回执在读条结束后才有，在独立进程里等（同施放）；放行回 0x68 accepted(0)，
   # 拒绝与打断回 0x68 rejected（reason 同工具意图的 inspect 形式）。到达由 Voxel.Relocate 体现。
   def handle({:voxel_beacon_travel, request}, %{status: :in_scene, voxim_overlay: true} = state) do
-    ref = make_ref()
-
-    waiter =
-      spawn(fn ->
-        monitor = Process.monitor(state.player)
-
-        receive do
-          {^ref, {:ok, _}} -> send_encoded(state, ResultFrame.accepted(request, 0))
-          {^ref, {:error, reason}} -> send_encoded(state, ResultFrame.error(request, reason))
-          {:DOWN, ^monitor, :process, _, _} -> send_encoded(state, ResultFrame.error(request, :invalid_session))
-        end
+    reply_to =
+      await_result(state, fn
+        {:ok, _} -> send_encoded(state, ResultFrame.accepted(request, 0))
+        {:error, reason} -> send_encoded(state, ResultFrame.error(request, reason))
       end)
 
-    SceneServer.Movement.Player.beacon_travel(state.player, state.identity, request, {waiter, ref})
+    SceneServer.Movement.Player.beacon_travel(state.player, state.identity, request, reply_to)
     {:ok, state}
   end
 
@@ -265,6 +291,24 @@ defmodule GateServer.Session.Dispatch do
   # ── 内部辅助 ──
 
   defp send_encoded(state, message), do: Sink.send_encoded(state.sink, message)
+
+  # 读条类意图（信标、分选）的结果在读条结束后才有：独立进程等 Player 的唯一回复（`{:ok, _} | {:error, reason}`），
+  # 编辑 worker 不被占住；Player 先退出按 invalid_session 处理。返回交给 Player 的 `{waiter, ref}`。
+  defp await_result(state, on_result) do
+    ref = make_ref()
+
+    waiter =
+      spawn(fn ->
+        monitor = Process.monitor(state.player)
+
+        receive do
+          {^ref, result} -> on_result.(result)
+          {:DOWN, ^monitor, :process, _, _} -> on_result.({:error, :invalid_session})
+        end
+      end)
+
+    {waiter, ref}
+  end
 
   # Intent 结果 → 玩家帧：身体回执走 control 流 ToolState；工具探测命中回 0x7E；
   # 发布（id 即字节 sha256，客户端自行计算）回 accepted(0)；事务回 accepted(seq)；拒绝回 0x68 error。

@@ -40,8 +40,8 @@ Test-only 回归：本 app 的 `voxel_material_catalog_test.exs`，voxel_region 
 
 ## 测试
 
-当前工作区 Hello 为 43，唯一版本来源为 [`Session.Codec.protocol_version/0`](lib/mmo_contracts/session/codec.ex)，在线只接纳该版本；这表示源码状态，不代表已发布或本轮已实跑。
-Hello 42 追加公共生命字段，43 调整 g=6 区域战斗工具语义，见 [M1 唯一规范 §2.1](../../../Voxim/Docs/M1/plan.md#21-身份时间与-wire) 与 [交互设计 §6.3–6.4](../../../Voxim/Docs/Interaction-Targeting-Design.md)。
+当前物品线工作区 Hello 为 44，唯一版本来源为 [`Session.Codec.protocol_version/0`](lib/mmo_contracts/session/codec.ex)，在线只接纳该版本；这表示源码状态，不代表已发布或完成真实客户端验收。
+Hello 44 新增生产 action 6 徒手分选、7 取消（8 保留且拒绝），工具 24 `ore.sort`；Hello 42 追加公共生命字段，43 调整 g=6 区域战斗工具语义，见 [M1 唯一规范 §2.1](../../../Voxim/Docs/M1/plan.md#21-身份时间与-wire) 与 [交互设计 §6.3–6.4](../../../Voxim/Docs/Interaction-Targeting-Design.md)。
 
 R7-B6（Global system，Hello 9 时引入的增量字节）：`voxel_property_state` 在温度与可选电路后追加
 `burning u8 + remaining_fuel_j f64 + power_w f64`（大端，17 字节）。存在 `burning` 的合法权威行同时提供温度与两个数值，
@@ -111,3 +111,5 @@ G0 普通测试直接调用新 owner，期望仍为同级 Voxim 的原 31 个二
 C1 测试只检查其消息字节和值，不实现第二个槽运行时。
 
 VXRD/version13 是原terrain与版本化基础尾的显式包装，加中性的稀疏树冠身份/锚点、呈现残余及残余Structure。唯一编解码为 Voxel.Payload / Voxel.Canopy；布局与验证见 docs/10-active/cross-cutting/2026-09-21-prefab-macro-cells-design.md 的2026-10-17节。旧v4..12语义保持。
+
+物品线测试：`mix test --no-start test/mmo_contracts/ore_sort_wire_test.exs test/mmo_contracts/voxim_m1_contract_test.exs test/mmo_contracts/voxim_current_wire_test.exs`。历史 G0 与双方 v42/v43 文件不改写；Hello 44 以冻结样本只替换版本字段形成独立期望，拒绝 v42/v43，不将派生期望称为 UE 44 捕获。真实 UE 44 golden 与客户端端到端验收仍需联调。

@@ -977,3 +977,28 @@ B2 显式拆卸沿用工具请求 `0x7D` 的 action=2：服务器重新射线命
 通用稀疏树冠仅由VXPD4的 presentation_bindings 显式启用。World.Canopy读取现存macro_owners/instances与canonical值，派生所有LOD的同一1m锚点集合和去叶残余，不读模板重建；编辑、替换、采集、邻格变化经既有完整后像与检查点传播。详情及61项最小回归见2026-09-21-prefab-macro-cells-design.md的2026-10-17节，客户端/生产视觉验收另计。
 
 地块迁移（全局系统维护，Voxim `Docs/Playtest/terrain-transplant-design.md`）：`World.parcel_export(server, {lo, hi})` 在一个 seq 上读出半开宏格盒的完整 L0 真值——每格 `{material, skins}`（空气也是内容）、细化槽、宏格归属、有限数量、实例树、附件、相关属性行与所用定义字节；盒子切到任何实例树或附件时拒绝，不切半座建筑。`World.parcel_install(server, key, parcel, delta)` 以整米平移把目标盒整体换成地块内容，是一笔普通 `Prefabs.prefab_reply` 提交（后像、粗层、结构、碰撞、日志、广播照旧）；实例与附件取目标新身份，放置者归作者，数量与 HP 随地块，温度与相态焓按目标环境重设并计入 `phase_authored` 账；目标盒触及受保护区域或原有实例／附件越出盒界时整笔拒绝；回执 `material_supplies[{0, {:parcel, key}}]`（含安装前后材料净差）随事务持久，同 key 只装一次。缺失定义只写 `.vxpd` 进世界 prefabs 目录，不进玩家发布列表。两者只经 release rpc 在维护窗口调用，不接 Gate。回放需要回执原子在启动时存在，所以只能在含此模块的正式构建上安装（热加载模块装入的事务无法冷启动回放）。测试：`test/parcel_world_test.exs`。
+
+
+## 2026-11-10 物品线服务端测试收尾（items-ore 分支，未合并 master）
+
+范围：延续 `Voxim/Docs/Items.md` §3.2 已批准的混合矿与徒手分选；不新增协议布局、系统 owner 或生产配置。
+只在 `ex_mmo_cluster-items-ore` 工作树的 WSL Linux 上执行，内容随 items-ore 分支提交推送，尚未合并 master。
+
+收尾计划与证明边界：
+- [x] 用现有工具链复现 Hello 44 / v43 golden 失配，保持 G0 31 个冻结二进制不变。
+- [x] 非 Hello 继续逐字节比对双方 v43 golden；Hello 44 的独立期望只替换已冻结版本字段，并拒绝双方 v42/v43。这不是 UE 44 实际捕获。
+- [x] 复跑 World 分选、Player 读条/移动与主动取消、Gate 分派的最小用例。
+- [x] 新增 World 日志写入拒绝的整笔回滚/冷恢复用例及结算时余额重验；复用 `TestSupport.Log`，不注入 World 私有真值。
+- [x] 独立 Python `struct/hashlib` 按既有 `voxim-blocking-v2` 与 `voxim-profile-v1` 契约核对新增矿石后的身份，并更新陈旧断言：91 项材料（0..90），blocking hash `b413f85878ab08f46a5328a0286c6e121bc7c311591510d25d73b4f2e9195cf1`，测试 profile id `f45b1caa7d2048634496829d3367dabfe3daac4bbda6c5be8bed4b6225484df1`。不声称旧客户端连接配置已发布。
+- [ ] 按 app 扩大回归并记录真实计数；区分环境、当前物品线与无关既有失败，不用 suite 绿灯替代真实客户端验收。
+
+环境：Linux 工具链沿用 `/home/dyz/items-ore-tools/env.sh`，OTP 29.1.2 / Elixir 1.20.5。
+原 PostgreSQL 14 main 起初未运行；启动后发现仓库默认测试凭据认证失败。没有修改其角色、密码、数据库或生产配置。
+改为临时独立 PostgreSQL 14 集群 `/tmp/items-ore-pg-8u1mbte6`，仅监听本机 `127.0.0.1:55439`，保持 SCRAM 认证；
+测试沿用 `MmoTest.Database` 的每 VM 独占建库、迁移与 after-suite 清理。`/tmp/items-ore-test-env.sh` 仅导出测试端口、
+现成 E1/IS 夹具路径与按 `.github/prepare-test-fixtures.py` 规则创建的临时 CA/证书；世界 manifest 在临时副本中去掉旧 pinned content_version，
+客户端工作树及其发布文件保持只读。初轮缺 E1/IS 变量及主库密码不匹配的原始失败保留，不计为本线已完成或通过。
+
+测试分层：wire 不启动数据库；World 使用真实 World 与文件日志（独占作者样本/目录），不证明 SQL 故障原子性；
+Player 用现有权威替身证明动作槽与计时/取消，Gate 分派测试证明交接，真实 QUIC 套件证明传输。
+真实 UE、关背包、镐采→放回→分选及新世界发布身份仍须客户端联调，不由上述测试冒称完成。

@@ -61,6 +61,21 @@ defmodule SceneServer.Movement.Player do
     do: GenServer.cast(player, {:beacon, identity, request, reply_to})
 
   @doc """
+  徒手分选一份混合矿（0x7F action 6，Voxim Docs/Items.md §3.2）的角色 owner 入口：与信标同一读条——异步排进、与施法和信标共用动作槽，
+  World 校验开始与结束（`{:prepare_sort, ...}` / `{:commit_sort, ...}`），本进程计时；移动超过 0.25 m 或 `cancel_sort/2` 即打断、不扣料
+  （`cast_cancelled`）。request 同 0x7F 解码形（material = 矿）。结果恰好一个，经 `GenServer.reply(reply_to, {:ok, seq} | {:error, reason})`。
+  """
+  def ore_sort(player, identity, request, {waiter, _} = reply_to) when is_pid(waiter),
+    do: GenServer.cast(player, {:sort, identity, request, reply_to})
+
+  @doc "取消当前分选（0x7F action 7）：等 World 开始校验或读条中即打断，回 `:ok`；没有分选或已在提交回 `{:error, :already_released}`。"
+  def cancel_sort(player, identity), do: GenServer.call(player, {:cancel_sort, identity})
+
+  # 读条动作种类 → World 的开始 / 结束消息。
+  @channel_prepare %{beacon: :prepare_beacon, sort: :prepare_sort}
+  @channel_commit %{beacon: :commit_beacon, sort: :commit_sort}
+
+  @doc """
   施放（0x82 action 1）的角色 owner 入口：异步排进与 `spell/4` 同一处理，调用方不等前摇。前摇与授权由本进程推进，
   World结算先回Player的本请求relay，再向原reply_to转交一次 `{tag, {:ok, %{seq, outcome, caster}} | {:error, reason}}`；
   立即拒绝（`cast_too_soon`、`dead`、`invalid_state` 等）、取消（`cast_cancelled`）与会话结束（`invalid_session`）
@@ -295,6 +310,12 @@ defmodule SceneServer.Movement.Player do
   def handle_call({:spell, identity, request, ingress}, from, state),
     do: handle_spell(identity, request, ingress, from, make_ref(), state)
 
+  def handle_call({:cancel_sort, identity}, _, %{identity: identity, action: %{kind: :sort, phase: phase}} = state)
+      when phase in [:preparing, :windup],
+      do: {:reply, :ok, cancel_cast(state, :cast_cancelled)}
+
+  def handle_call({:cancel_sort, _}, _, state), do: {:reply, {:error, :already_released}, state}
+
   def handle_call({:tool_context, identity}, _, %{identity: identity, action: action} = state)
       when action != nil,
       do: {:reply, {:error, :casting}, state}
@@ -493,11 +514,12 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
+  # 信标与分选的读条：同一动作槽、同一防重放序号；开始交 World 校验，结果回 `{:beacon_prepared | :sort_prepared, key, result}`。
   def handle_cast(
-        {:beacon, identity, request, from},
+        {kind, identity, request, from},
         %{identity: identity, ready: true, transfer: nil, failure: nil} = state
       )
-      when state.authority_ref != nil do
+      when kind in [:beacon, :sort] and state.authority_ref != nil do
     cond do
       state.body.status == :dead ->
         GenServer.reply(from, {:error, :dead})
@@ -509,14 +531,14 @@ defmodule SceneServer.Movement.Player do
 
       true ->
         key = MmoContracts.Action.key(identity, request.client_intent_seq)
-        send(state.authority_ref, {:prepare_beacon, key, actor_context(state), request})
-        action = %{key: key, kind: :beacon, request: request, phase: :preparing, timer: nil, from: from, origin: nil}
+        send(state.authority_ref, {@channel_prepare[kind], key, actor_context(state), request})
+        action = %{key: key, kind: kind, request: request, phase: :preparing, timer: nil, from: from, origin: nil}
         next = %{state | action: action, action_seq: request.client_intent_seq}
         {:noreply, publish_movement_scale(next, next.body)}
     end
   end
 
-  def handle_cast({:beacon, _, _, from}, state) do
+  def handle_cast({kind, _, _, from}, state) when kind in [:beacon, :sort] do
     GenServer.reply(from, {:error, :invalid_state})
     {:noreply, state}
   end
@@ -601,7 +623,7 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:cast_prepared, _, _}, state), do: {:noreply, state}
 
-  # 传送信标：World 校验开始 → 读条；读条起点记下，移动超过 0.25 m 即打断（`interrupt_beacon/1`）。
+  # 传送信标：World 校验开始 → 读条；读条起点记下，移动超过 0.25 m 即打断（`interrupt_channel/1`）。
   def handle_info(
         {:beacon_prepared, key, result},
         %{action: %{key: key, kind: :beacon, phase: :preparing} = action} = state
@@ -627,11 +649,12 @@ defmodule SceneServer.Movement.Player do
 
   def handle_info({:beacon_prepared, _, _}, state), do: {:noreply, state}
 
-  def handle_info({:release_cast, key}, %{action: %{key: key, kind: :beacon, phase: :windup} = action} = state) do
+  def handle_info({:release_cast, key}, %{action: %{key: key, kind: kind, phase: :windup} = action} = state)
+      when kind in [:beacon, :sort] do
     if state.body.status == :dead or state.failure != nil or state.transfer != nil do
       {:noreply, cancel_cast(state, :cast_cancelled)}
     else
-      send(state.authority_ref, {:commit_beacon, key, actor_context(state), action.request})
+      send(state.authority_ref, {@channel_commit[kind], key, actor_context(state), action.request})
       {:noreply, %{state | action: %{action | phase: :committing, timer: nil}}}
     end
   end
@@ -658,6 +681,41 @@ defmodule SceneServer.Movement.Player do
   end
 
   def handle_info({:beacon_committed, _, _}, state), do: {:noreply, state}
+
+  # 徒手分选：World 校验开始 → 读条（起点同信标记下，移动即打断）→ World 重新校验并整笔提交，回执原样转给等待方。
+  def handle_info(
+        {:sort_prepared, key, result},
+        %{action: %{key: key, kind: :sort, phase: :preparing} = action} = state
+      ) do
+    case result do
+      {:ok, windup_s} ->
+        timer = Process.send_after(self(), {:release_cast, key}, ceil(windup_s * 1000))
+
+        character_event(state, state, :sort_channel, %{
+          client_intent_seq: action.request.client_intent_seq,
+          material: action.request.material,
+          windup_s: windup_s
+        })
+
+        {:noreply, %{state | action: %{action | phase: :windup, timer: timer, origin: state.state.position}}}
+
+      {:error, reason} ->
+        GenServer.reply(action.from, {:error, reason})
+        {:noreply, clear_cast(state)}
+    end
+  end
+
+  def handle_info({:sort_prepared, _, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:sort_committed, key, result},
+        %{action: %{key: key, kind: :sort, phase: :committing} = action} = state
+      ) do
+    GenServer.reply(action.from, result)
+    {:noreply, clear_cast(state)}
+  end
+
+  def handle_info({:sort_committed, _, _}, state), do: {:noreply, state}
 
   def handle_info({:cast_failed, key}, %{action: %{key: key}} = state),
     do: {:noreply, clear_cast(state)}
@@ -1371,7 +1429,7 @@ defmodule SceneServer.Movement.Player do
     })
 
     case state.action do
-      %{kind: :beacon, from: from} ->
+      %{kind: kind, from: from} when kind in [:beacon, :sort] ->
         GenServer.reply(from, {:error, reason})
         clear_cast(state)
       %{key: key} ->
@@ -1384,14 +1442,15 @@ defmodule SceneServer.Movement.Player do
     end
   end
 
-  # 传送信标读条中离开起点超过 0.25 m 即打断（Voxim Docs/Gameplay/Beacon.md §3）。
-  defp interrupt_beacon(%{action: %{kind: :beacon, phase: :windup, origin: {ox, oy, oz}}, state: %{position: {x, y, z}}} = state) do
+  # 传送信标与分选读条中离开起点超过 0.25 m 即打断（Voxim Docs/Gameplay/Beacon.md §3；分选 Docs/Items.md §3.2 回 cast_cancelled）。
+  defp interrupt_channel(%{action: %{kind: kind, phase: :windup, origin: {ox, oy, oz}}, state: %{position: {x, y, z}}} = state)
+       when kind in [:beacon, :sort] do
     if (x - ox) * (x - ox) + (y - oy) * (y - oy) + (z - oz) * (z - oz) > 0.0625,
-      do: cancel_cast(state, :beacon_moved),
+      do: cancel_cast(state, if(kind == :beacon, do: :beacon_moved, else: :cast_cancelled)),
       else: state
   end
 
-  defp interrupt_beacon(state), do: state
+  defp interrupt_channel(state), do: state
 
   defp clear_cast(state) do
     if state.action.timer, do: Process.cancel_timer(state.action.timer)
@@ -1623,7 +1682,7 @@ defmodule SceneServer.Movement.Player do
   defp advance(%{transfer: transfer} = state) when transfer != nil, do: state
 
   defp advance(state) do
-    state = state |> relocated() |> interrupt_beacon()
+    state = state |> relocated() |> interrupt_channel()
 
     cond do
       state.state == nil or state.simulation_tick >= state.tick ->

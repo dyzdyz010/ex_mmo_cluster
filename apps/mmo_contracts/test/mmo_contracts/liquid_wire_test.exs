@@ -18,11 +18,11 @@ defmodule MmoContracts.LiquidWireTest do
   end
 
   test "B7 Hello16 and explicit scoop/pour retain the production envelope" do
-    assert Session.Codec.protocol_version() == 43
-    hello = %Session.Hello{protocol_version: 43, kernel_id: <<1::256>>, profile_id: <<2::256>>}
+    assert Session.Codec.protocol_version() == 44
+    hello = %Session.Hello{protocol_version: 44, kernel_id: <<1::256>>, profile_id: <<2::256>>}
     {:ok, packet} = Session.Codec.encode(hello)
     assert {:ok, ^hello} = Session.Codec.decode(packet)
-    <<prefix::binary-size(9), 43::16, tail::binary>> = packet
+    <<prefix::binary-size(9), 44::16, tail::binary>> = packet
 
     for version <- [10, 15, 16, 17, 18, 19, 20, 21, 22] do
       assert {:error, :invalid_m1_message} =
@@ -44,8 +44,9 @@ defmodule MmoContracts.LiquidWireTest do
                Voxel.Codec.decode(wire)
     end
 
+    # 6 分选、7 取消分选自 Hello 44 起合法；8 仍非法。
     assert {:error, :invalid_message} =
-             Voxel.Codec.decode(<<0x7F, 19::64, 7::32, 1::64, 6, 0::96, 11::16, 21::16>>)
+             Voxel.Codec.decode(<<0x7F, 19::64, 7::32, 1::64, 8, 0::96, 11::16, 21::16>>)
   end
 
   test "tool suffix freezes directory ID and g6 hint identity is constrained" do

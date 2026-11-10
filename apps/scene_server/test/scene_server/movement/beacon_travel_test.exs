@@ -11,6 +11,13 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     落点在窗口外时走复活同一条流送路径（`ReviveRelocationTest` 覆盖）。
   - 读条中按 +x 走，离起点超过 0.25 m 即回 `{:error, :beacon_moved}`，不发结束校验、不瞬移。
   - 结束校验拒绝（目的核心已失）照实回原因，不瞬移，动作槽释放。
+
+  徒手分选（Voxim `Docs/Items.md` §3.2，0x7F action 6 / 7）与信标共用同一读条；本进程同样扮 World 收 `{:prepare_sort …}` /
+  `{:commit_sort …}`。World 只在结束校验时提交（`ore_sort_world_test` 核对扣料与产物），所以“没发结束校验”即“没有新事务、不扣料”：
+
+  - 放行：结束校验的事务 seq 原样回执一次，动作槽释放、原地不瞬移。
+  - 读条中再发分选或信标、或以不大于上次的 client_intent_seq 重放：`cast_too_soon`，不发新的开始校验。
+  - 读条中走开 0.25 m 以上、或 action 7 取消：回 `cast_cancelled`，不发结束校验；没有可取消的分选时取消回 `already_released`。
   """
   use ExUnit.Case, async: false
   alias SceneServer.Movement.{Scene, Player}
@@ -221,5 +228,82 @@ defmodule SceneServer.Movement.BeaconTravelTest do
     assert_receive {^ref, {:error, :beacon_lost}}, 2000
     assert {:ok, _} = Player.tool_context(p, identity())
     refute_receive {:reliable, _, :voxel, %Voxel.Relocate{}}, 50
+  end
+
+  defp start_sort(p, seq) do
+    ref = make_ref()
+    request = %{request_id: seq, client_intent_seq: seq, logical_scene_id: 1, action: 6, coord: {0, 0, 0}, tool_id: 24, material: 89}
+    Player.ore_sort(p, identity(), request, {self(), ref})
+    {ref, request}
+  end
+
+  test "分选放行：结束校验的事务 seq 原样回执一次，动作槽释放、不瞬移" do
+    {_ctx, p, _} = enter()
+    position = Player.observe(p).state.position
+    {ref, request} = start_sort(p, 60)
+    assert_receive {:authority, {:prepare_sort, key, actor, ^request}}, 2000
+    assert actor.cid == 20
+    assert {:error, :casting} = Player.tool_context(p, identity())
+    send(p, {:sort_prepared, key, {:ok, 0.01}})
+    assert_receive {:authority, {:commit_sort, ^key, _, ^request}}, 2000
+    send(p, {:sort_committed, key, {:ok, 77}})
+    assert_receive {^ref, {:ok, 77}}, 2000
+    assert {:ok, _} = Player.tool_context(p, identity())
+    assert Player.observe(p).state.position == position
+    refute_receive {^ref, _}, 50
+    refute_receive {:reliable, _, :voxel, %Voxel.Relocate{}}, 0
+  end
+
+  test "分选读条中再发分选或信标、重放旧序号：cast_too_soon，不发新的开始校验；开始校验拒绝照实回" do
+    {_ctx, p, _} = enter()
+    {ref, _} = start_sort(p, 60)
+    assert_receive {:authority, {:prepare_sort, key, _, _}}, 2000
+    {again, _} = start_sort(p, 61)
+    assert_receive {^again, {:error, :cast_too_soon}}, 2000
+    beacon = make_ref()
+    Player.beacon_travel(p, identity(), %{request_id: 3, client_intent_seq: 62, logical_scene_id: 1, from: "a", to: "b"}, {self(), beacon})
+    assert_receive {^beacon, {:error, :cast_too_soon}}, 2000
+    refute_receive {:authority, {:prepare_sort, _, _, _}}, 50
+    refute_receive {:authority, {:prepare_beacon, _, _, _}}, 0
+
+    send(p, {:sort_prepared, key, {:error, :insufficient_material}})
+    assert_receive {^ref, {:error, :insufficient_material}}, 2000
+    assert {:ok, _} = Player.tool_context(p, identity())
+    {replay, _} = start_sort(p, 60)
+    assert_receive {^replay, {:error, :cast_too_soon}}, 2000
+    refute_receive {:authority, {:prepare_sort, _, _, _}}, 50
+  end
+
+  test "分选读条中走开 0.25 m 以上即打断：cast_cancelled，不发结束校验" do
+    {ctx, p, _} = enter()
+    {ref, _} = start_sort(p, 60)
+    assert_receive {:authority, {:prepare_sort, key, _, _}}, 2000
+    send(p, {:sort_prepared, key, {:ok, 30.0}})
+    origin = Player.observe(p).state.position
+    Enum.reduce_while(5..80, nil, fn seq, _ ->
+      step(ctx, p, seq, 32767)
+      if :sys.get_state(p).action == nil, do: {:halt, seq}, else: {:cont, nil}
+    end)
+
+    assert_receive {^ref, {:error, :cast_cancelled}}, 2000
+    {x0, _, _} = origin
+    {x1, _, _} = Player.observe(p).state.position
+    assert x1 - x0 > 0.25
+    refute_receive {:authority, {:commit_sort, _, _, _}}, 50
+  end
+
+  test "取消分选：读条中取消回 cast_cancelled、不发结束校验；没有可取消的分选回 already_released" do
+    {_ctx, p, _} = enter()
+    assert {:error, :already_released} = Player.cancel_sort(p, identity())
+    {ref, _} = start_sort(p, 60)
+    assert_receive {:authority, {:prepare_sort, key, _, _}}, 2000
+    send(p, {:sort_prepared, key, {:ok, 30.0}})
+    wait(fn -> match?(%{phase: :windup}, :sys.get_state(p).action) end)
+    assert :ok = Player.cancel_sort(p, identity())
+    assert_receive {^ref, {:error, :cast_cancelled}}, 2000
+    assert {:error, :already_released} = Player.cancel_sort(p, identity())
+    assert {:ok, _} = Player.tool_context(p, identity())
+    refute_receive {:authority, {:commit_sort, _, _, _}}, 50
+    refute_receive {^ref, _}, 0
   end
 end

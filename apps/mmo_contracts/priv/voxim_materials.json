@@ -532,5 +532,17 @@
     "name": "anchor_stone",
     "blocks_movement": true,
     "supports_attachments": true
+  },
+  {
+    "id": 89,
+    "name": "lean_copper_ore",
+    "blocks_movement": true,
+    "supports_attachments": true
+  },
+  {
+    "id": 90,
+    "name": "rich_copper_ore",
+    "blocks_movement": true,
+    "supports_attachments": true
   }
 ]

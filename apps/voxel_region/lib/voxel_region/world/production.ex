@@ -198,28 +198,58 @@ defmodule VoxelRegion.World.Production do
 
       true ->
         delta = Map.put(Map.new(product["recipe_inputs"], &{&1["material_id"], -&1["units"]}), request.material, product["recipe_units"])
+        convert(before, actor, delta, "voxel_craft", "product=#{request.material}")
+    end
+  end
 
-        {state, balances} =
-          Enum.reduce(delta, {before, %{}}, fn {material, units}, {s, balances} ->
-            {s, paid} = settle_material(s, actor.cid, material, units)
-            {s, Map.merge(balances, paid.material_balances)}
-          end)
+  # 全局系统功能（Items 增量 1，Voxim Docs/Items.md §3.2）：徒手分选 = 生产意图 action 6，material = 混合矿（目录 composition），
+  # 一次一份 = 一微格（每微格单位），不足一份的零头保留。Player 是读条 owner（同信标）：开始时 `sort_windup/3` 只校验并给读条秒数，
+  # 读条结束时 `sort/3` 重新校验，整笔扣一份矿、按成分入库，与合成同记 craft_ledger。
+  def sort_windup(state, actor, request) do
+    with {:ok, tool, _ore} <- sortable(state, actor, request), do: {:ok, tool["windup_base_s"]}
+  end
 
-        ledger = Enum.reduce(delta, state.craft_ledger, fn {material, units}, l -> Map.update(l, material, units, &(&1 + units)) end)
-        next = %{state | seq: before.seq + 1, craft_ledger: ledger}
-        txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances, craft_ledger: ledger}
+  def sort(before, actor, request) do
+    with {:ok, _tool, ore} <- sortable(before, actor, request) do
+      delta = Map.put(Map.new(ore["composition"], &{&1["material_id"], &1["units"]}), request.material, -before.material_units_per_micro)
+      convert(before, actor, delta, "voxel_sort", "ore=#{request.material}")
+    end
+  end
 
-        case Log.append_log(before, next, txn, {:character, actor.cid}) do
-          :ok ->
-            next = Log.remember_entry(next, txn)
-            Observation.fanout(next, txn)
-            Observation.fanout_canonical(next, txn, [], [], before)
-            Logger.info("voxel_craft seq=#{next.seq} cid=#{actor.cid} product=#{request.material} delta=#{inspect(delta)}")
-            {:ok, next}
+  defp sortable(state, actor, request) do
+    tool = state.properties.tools[request.tool_id]
+    ore = Map.get(state.properties.materials, request.material, %{})
 
-          error ->
-            error
-        end
+    cond do
+      not match?(%{"action" => "ore.sort"}, tool) -> {:error, :invalid_tool}
+      not Map.has_key?(ore, "composition") or request.material not in state.production_materials -> {:error, :not_sortable}
+      balance_state(state, actor.cid, request.material).balance < state.material_units_per_micro -> {:error, :insufficient_material}
+      true -> {:ok, tool, ore}
+    end
+  end
+
+  # 库存内多材料转换（合成、分选）：各材料余额按 delta 结算，craft_ledger 记各材料累计净变化，一笔日志提交。
+  defp convert(before, actor, delta, event, detail) do
+    {state, balances} =
+      Enum.reduce(delta, {before, %{}}, fn {material, units}, {s, balances} ->
+        {s, paid} = settle_material(s, actor.cid, material, units)
+        {s, Map.merge(balances, paid.material_balances)}
+      end)
+
+    ledger = Enum.reduce(delta, state.craft_ledger, fn {material, units}, l -> Map.update(l, material, units, &(&1 + units)) end)
+    next = %{state | seq: before.seq + 1, craft_ledger: ledger}
+    txn = %{seq: next.seq, entries: [], coarse: [], material_balances: balances, craft_ledger: ledger}
+
+    case Log.append_log(before, next, txn, {:character, actor.cid}) do
+      :ok ->
+        next = Log.remember_entry(next, txn)
+        Observation.fanout(next, txn)
+        Observation.fanout_canonical(next, txn, [], [], before)
+        Logger.info("#{event} seq=#{next.seq} cid=#{actor.cid} #{detail} delta=#{inspect(delta)}")
+        {:ok, next}
+
+      error ->
+        error
     end
   end
 
@@ -324,8 +354,9 @@ defmodule VoxelRegion.World.Production do
                    do: :ok,
                    else: {:error, :unknown_resource}
                  ),
-               {:ok, tool} <- Map.fetch(before.properties.tools, request.tool_id),
-               :ok <- build_reach(actor.eye, request.coord, tool["range_macro"]),
+               # 只有带射程的工具能放置（徒手分选 ore.sort 没有射程，回 invalid_tool）。
+               range when is_number(range) <- VoxelRegion.World.Tools.tool_range(before, request.tool_id),
+               :ok <- build_reach(actor.eye, request.coord, range),
                :ok <-
                  if(
                    balance_state(before, actor.cid, request.material).balance >= build_cost(before, request.material),
@@ -368,7 +399,6 @@ defmodule VoxelRegion.World.Production do
               Edits.apply_batch(state, {:character, actor.cid}, displaced++[{request.coord, request.material}], false, Map.merge(settlement,displacement))
             end
           else
-            :error -> {:error, :invalid_tool}
             true -> {:error, :occupied}
             {:ok, _, _} -> {:error, :occupied}
             {:error, reason} -> {:error, reason}

@@ -57,6 +57,8 @@ defmodule VoxelRegion.Access do
     publish_prefab: :character_intent,
     prepare_beacon: :character_intent,
     commit_beacon: :character_intent,
+    prepare_sort: :character_intent,
+    commit_sort: :character_intent,
     body_contact: :character_intent,
     body_death: :character_intent,
     body_detach: :character_intent,

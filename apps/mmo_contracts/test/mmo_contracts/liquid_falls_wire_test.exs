@@ -31,6 +31,6 @@ defmodule MmoContracts.LiquidFallsWireTest do
       assert {:error, :invalid_transaction} = Codec.decode_transaction(old <> invalid)
     end
 
-    assert MmoContracts.Session.Codec.protocol_version() == 43
+    assert MmoContracts.Session.Codec.protocol_version() == 44
   end
 end

@@ -209,12 +209,13 @@ defmodule VoxelRegion.World.PageLoad do
   end
 
   @doc """
-  同序键：同一动作（施法 / 信标的准备、授权、取消，动作键 `{身份, client_intent_seq}`）或同一身体（接触、摘离、死亡，按 cid）的消息
+  同序键：同一动作（施法 / 信标 / 分选的准备、授权、取消，动作键 `{身份, client_intent_seq}`）或同一身体（接触、摘离、死亡，按 cid）的消息
   必须按到达顺序处理。前一条因装页挂起时，后到的排在它后面（`hold/2` 起排、`enqueue/3` 排队、`release/2` 取下）；其他消息 nil。
   """
   def order_key({:input, _context, entry}), do: order_key(message(entry))
   def order_key({tag, key, _, _, _}) when tag == :prepare_cast, do: {:action, key}
-  def order_key({tag, key, _, _}) when tag in [:authorize_cast, :prepare_beacon, :commit_beacon], do: {:action, key}
+  def order_key({tag, key, _, _}) when tag in [:authorize_cast, :prepare_beacon, :commit_beacon, :prepare_sort, :commit_sort],
+    do: {:action, key}
   def order_key({:cancel_cast, key, _reason}), do: {:action, key}
   def order_key({tag, cid, _, _}) when tag in [:body_contact, :body_detach], do: {:body, cid}
   def order_key({:body_death, cid, _feet}), do: {:body, cid}

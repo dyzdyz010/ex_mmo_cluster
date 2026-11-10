@@ -1924,6 +1924,16 @@ defmodule VoxelRegion.World do
     state
   end
 
+  defp page_failed({:prepare_sort, key, actor, _request}, error, state) do
+    send(actor.player, {:sort_prepared, key, {:error, error}})
+    state
+  end
+
+  defp page_failed({:commit_sort, key, actor, _request}, error, state) do
+    send(actor.player, {:sort_committed, key, {:error, error}})
+    state
+  end
+
   # 投射物采样：放掉这次采样（与年龄不符的旧采样同样处理），任务位清空、下一拍重新采样，不让死任务封住投射物。
   defp page_failed({ref, _results}, _error, %{projectile_task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
@@ -1973,6 +1983,11 @@ defmodule VoxelRegion.World do
 
   defp info({:prepare_beacon, key, actor, _request}, state) when state.page_store.level == :hard do
     send(actor.player, {:beacon_prepared, key, {:error, :persist_backlog}})
+    {:noreply, state}
+  end
+
+  defp info({:prepare_sort, key, actor, _request}, state) when state.page_store.level == :hard do
+    send(actor.player, {:sort_prepared, key, {:error, :persist_backlog}})
     {:noreply, state}
   end
 
@@ -2098,6 +2113,23 @@ defmodule VoxelRegion.World do
     {:noreply, state}
   end
 
+  # 徒手分选（Items 增量 1）：同信标，Player 是读条 owner；开始只校验并回读条秒数，结束重新校验、整笔提交并回事务 seq。
+  defp info({:prepare_sort, key, actor, request}, state) do
+    send(actor.player, {:sort_prepared, key, VoxelRegion.World.Production.sort_windup(state, actor, request)})
+    {:noreply, state}
+  end
+
+  defp info({:commit_sort, key, actor, request}, state) do
+    {result, state} =
+      case VoxelRegion.World.Production.sort(state, actor, request) do
+        {:ok, next} -> {{:ok, next.seq}, next}
+        error -> {error, state}
+      end
+
+    send(actor.player, {:sort_committed, key, result})
+    {:noreply, state}
+  end
+
   # 定时提交按内核步分成多条消息推进，步间先处理已排队的工具、建造和查询调用；整段仍作为一笔热事务提交。
   # 无可推进的状态时休眠：不再排下一拍，直到事务或身体接触唤醒（R8-05）。
   defp info({:thermal_tick, due}, %{thermal_due: due} = state),
@@ -2207,7 +2239,7 @@ defmodule VoxelRegion.World do
     tag = elem(message, 0)
     tag in (@commit_calls -- [:material_supply]) ++ [:prepare, :adopt_liquid, :prepare_intent, :prepared_intent,
       :body_tool, :body_contact, :body_detach, :body_death, :prepare_cast, :authorize_cast,
-      :prepare_beacon, :commit_beacon] or is_reference(tag)
+      :prepare_beacon, :commit_beacon, :prepare_sort, :commit_sort] or is_reference(tag)
   end
   defp physical_input?(_), do: false
 

@@ -78,11 +78,13 @@ defmodule VoxelRegion.Damage do
              food["protein_g"] >= 0 and is_number(food["energy_j"]) and food["energy_j"] >= 0)
       end)
 
+    # 徒手分选 ore.sort 不对准目标：没有威力、射程与频率（放置、附件按射程取工具时回 invalid_tool）。
     true =
       Enum.all?(tools, fn {id, t} ->
-        id in 1..65535 and t["power"] > 0 and
-          t["range_macro"] > 0 and t["interval_seconds"] > 0 and MapSet.member?(tags, t["action"]) and
-          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool protection.claim beacon.use) or
+        id in 1..65535 and MapSet.member?(tags, t["action"]) and
+          (t["action"] == "ore.sort" or
+             (t["power"] > 0 and t["range_macro"] > 0 and t["interval_seconds"] > 0)) and
+          (t["action"] in ~w(heat circuit.install circuit.toggle circuit.feed damage liquid.scoop liquid.pour phase.heat phase.cool protection.claim beacon.use ore.sort) or
              String.starts_with?(t["action"], "damage.") or
              String.starts_with?(t["action"], "combustion."))
       end)
@@ -169,6 +171,10 @@ defmodule VoxelRegion.Damage do
               is_number(t["windup_base_s"]) and t["windup_base_s"] > 0 and
               is_number(t["windup_per_km_s"]) and t["windup_per_km_s"] >= 0
 
+          # 徒手分选（Voxim Docs/Items.md §3.2）：读条秒数是已发布参数；不对准目标，没有距离。
+          "ore.sort" ->
+            is_number(t["windup_base_s"]) and t["windup_base_s"] > 0
+
           action when action in ["combustion.extinguish", "phase.cool"] ->
             Map.has_key?(materials, t["fuel_material_id"]) and t["fuel_material_id"] != 0 and
               is_integer(t["fuel_units"]) and t["fuel_units"] > 0 and
@@ -246,6 +252,22 @@ defmodule VoxelRegion.Damage do
                   Map.has_key?(materials, i["material_id"]) and i["material_id"] not in [0, id] and
                     is_integer(i["units"]) and i["units"] > 0
                 end)))
+      end)
+
+    # 混合矿（Voxim Docs/Items.md §3.1）：composition 是一微格的有序成分表（形状同 recipe_inputs），为空时不出现；
+    # 成分为其他非空气已有材料、不重复、正整数单位，合计恰为每微格单位（分选整数守恒）。
+    per_micro = if specification, do: specification["material_units_per_micro"], else: 1
+
+    true =
+      Enum.all?(materials, fn {id, m} ->
+        c = m["composition"]
+
+        c == nil or
+          (is_list(c) and c != [] and length(Enum.uniq_by(c, & &1["material_id"])) == length(c) and
+             Enum.all?(c, fn i ->
+               Map.has_key?(materials, i["material_id"]) and i["material_id"] not in [0, id] and
+                 is_integer(i["units"]) and i["units"] > 0
+             end) and Enum.sum(Enum.map(c, & &1["units"])) == per_micro)
       end)
 
     # R8-04 增量 3 储能轴（蓄能石）：每宏格储能 J 与每米电动势 V 成组、均为正，只在导体上，不与发光、开关、塞贝克同行。
