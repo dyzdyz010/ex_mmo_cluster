@@ -327,6 +327,52 @@ defmodule VoxelRegion.OreSortWorldTest do
     assert balances(w, @a) == before
   end
 
+  # 工具 24 没有 power／range_macro／interval_seconds（此前每个工具都有）。客户端能在任何工具意图里写任意 tool_id，
+  # 所以挖掘（g0）与范围段（g6）这两个世界入口必须拒绝它，而不是在算术处使 World 崩溃。
+  # 人物射线（g5）不在这里测：真实入口 `SceneServer.Movement.ToolAction` 要求工具带 body_impact（工具 24 没有），
+  # 在到达 `World.body_tool` 之前就回 :unsupported_body_tool；直接调 `World.body_tool` 绕过了该边界（试过：会在
+  # world.ex 的 interval 算术处崩溃），不是客户端可达路径，故不为它加防御。
+  test "分选工具不能用于挖掘或范围段", c do
+    w = start(c)
+
+    actor = %{
+      cid: @a,
+      gate: self(),
+      identity: make_ref(),
+      refresh: &VoxelRegion.TestSupport.Actor.tool_context/2,
+      eye: {0.5, 2.5, 0.5},
+      position: {0.5, 2.5, 0.5},
+      life_generation: 1,
+      tick_us: 16_667,
+      yaw: 0,
+      received_us: 1_000_000,
+      clock_node: node()
+    }
+
+    actor = Map.put(actor, :player, start_supervised!({VoxelRegion.TestSupport.Actor, actor}))
+    seq = World.seq(w)
+
+    dig = %{
+      request_id: 1,
+      client_intent_seq: 1,
+      logical_scene_id: 1,
+      action: 1,
+      granularity: 0,
+      direction: {1.0, 0.0, 0.0},
+      micro: {0, 0, 0},
+      incarnation: 0,
+      owner: {0, 0},
+      material: 0,
+      tool_id: @sort
+    }
+
+    for granularity <- [0, 6] do
+      assert {:error, :invalid_tool} = World.tool_intent(w, actor, %{dig | granularity: granularity})
+    end
+
+    assert Process.alive?(w) and World.seq(w) == seq
+  end
+
   test "开始校验不预扣或预占；结算时余额不足则整笔拒绝，不重复发产物", c do
     w = start(c)
     {:ok, _} = World.material_supply(w, @a, "fixture", %{@lean => 4096})
