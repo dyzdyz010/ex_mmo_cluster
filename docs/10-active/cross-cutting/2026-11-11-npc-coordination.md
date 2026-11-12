@@ -28,6 +28,13 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 | S1-B2：经历原文点名建筑（先离线验证推测，成立再改 Life 的经历文本） | `s1b2/report.md` | worktree 里未提交的代码与测试改动（`apps/npc_server`）；`tools/jev/` 或测试里的对照；自建 PG `npc-s1b2-pg-20261112`（55447）应已自删 | 读报告 → 看差异 → 自建 PG 重跑它触及的测试 → 提交。若报告说推测不成立，不改代码，把结论报给用户再定 |
 | S1-C 准备：真实 Hindsight、PG、场景设计与脚本（不跑 mix、不起节点） | `s1c/prep-report.md`、`s1c/plan.md` | 运行中的容器 `npc-s1-hindsight-20261112`（卷名以 `npc-s1-hindsight-` 开头）与 `npc-s1c-pg-20261112`（55448）；WSL `~/npc-s1-run/` 里的 `*-s1c*` 脚本 | 读报告与 `plan.md`，核对期望是运行前写的 → S1-B2 提交之后，派一个新子会话照 `plan.md` 做实跑与验收 (b)(c)（建库迁移、起节点 `npcs1a`、登记、破坏者、flush、离线对照、收尾清理） |
 
+**交接后补记**：S1-B2 在交接提交之后跑完了，结果已回到旧统筹会话，**未经统筹会话验证、未提交**（改动都在 worktree 里）。它的结论：
+推测成立——离线对照 28 次，经历原文点名建筑的四种写法 16 / 16 选 `build_hut`，去掉编号但不点名 0 / 4，现状 3 / 4 且概率只有 0.30–0.50；
+起作用的是点名，不是去编号。改法：World 的交互事件多带 `prefab`（目标所属根实例的定义 id，改了 `apps/voxel_region/lib/voxel_region/world/interactions.ex`），
+Life 读 `World.published_prefab_metadata/1` 取发布名，经历写成 `Actor <cid> damaged the building "<名字>" that I built, at …`；没有发布名时原文不变。
+预演三种快照改后各 2 / 2。它报的测试：npc_server 60 通过、2 排除；`world_interactions_test.exs` 4 通过、1 失败（称改前就失败，WSL 的 libsctp 警告混进子进程输出）——**接手后要自己核实这条“改前就失败”**。
+对 S1-C 的要求：**小屋的定义必须带名字发布**（作者目录定义没有发布名，可用同一份字节 `World.publish_prefab(world, actor, bytes, "small hut")` 补发布名，id 不变），候选判据用同一个叫法；
+把这条交给做实跑的子会话，并核对 `s1c/plan.md` 是否需要相应修改。`design_house` 发布为空名、NPC 自己设计的房子不会被点名，是独立的待定功能。
 文件不存在说明那个子会话没跑完：看 `git status`、`docker ps -a | grep npc-s1`、WSL `ls ~/npc-s1-run`、`pgrep -a beam` 判断做到哪，再按本页任务书的意思重新派。
 两个子任务的任务书要点都在本页“S1-B 结果”“薄片一的任务”和总纲里；实跑配方在“证据与复跑”。
 
