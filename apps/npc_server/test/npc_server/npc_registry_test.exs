@@ -95,6 +95,68 @@ defmodule NpcServer.NpcRegistryTest do
       end
     end
 
+    # 效用选择器决策稿 2026-11-10：可选的作息；配了换成 settler_daily 树，带家、广场与游戏日长度，不配中断策略。
+    test "settler: an optional daily (home, plaza, day_ms) switches to the daily tree" do
+    with_env(@llm_env, fn ->
+      params = %{
+        "definition" => @hex,
+        "sites" => [],
+        "revisit_ticks" => 600,
+        "tools" => %{"1" => "镐"},
+        "daily" => %{"home" => [2, -3.5], "plaza" => [10.0, 4], "day_ms" => 60_000}
+      }
+
+      assert {Brain.Tree,
+              %{
+                tree: &Trees.settler_daily/1,
+                definition: @hex,
+                sites: [],
+                quarries: %{},
+                revisit_ticks: 600,
+                tools: %{1 => "镐"},
+                skills: %{build: %{}, gather: %{}, travel: %{}},
+                home: [2, -3.5],
+                plaza: [10.0, 4],
+                utility: %{day_ms: 60_000}
+              }} == NpcRegistry.brain("settler", params)
+
+      # 只有 "plan": true 才接 LLM 日计划的 endpoint；不写 plan 时上面没有 endpoint 键（零模型调用）。
+      assert {Brain.Tree, %{endpoint: %{url: "http://127.0.0.1:9/responses", key: "test-key", model: "test-model"}}} =
+               NpcRegistry.brain("settler", put_in(params, ["daily", "plan"], true))
+
+      # 没有 daily：仍是原 Settler，没有作息键。
+      assert {Brain.Tree, plain} = NpcRegistry.brain("settler", Map.delete(params, "daily"))
+      assert plain.tree == (&Trees.settler/1)
+      refute Map.has_key?(plain, :home) or Map.has_key?(plain, :utility)
+      refute Map.has_key?(plain, :interrupt_policy)
+
+      daily = params["daily"]
+
+      for bad <- [
+            %{daily | "home" => [2]},
+            %{daily | "home" => ["2", 3]},
+            %{daily | "plaza" => nil},
+            %{daily | "day_ms" => 0},
+            %{daily | "day_ms" => 1.5},
+            Map.delete(daily, "plaza"),
+            Map.put(daily, "plan", "yes")
+          ] do
+        assert_raise_any(fn -> NpcRegistry.brain("settler", %{params | "daily" => bad}) end, bad)
+      end
+
+      # 没有模型接口：只用手写作息的登记照常成立；开了 plan 的才因缺 endpoint 被拒（与 llm 同一 endpoint 规则）。
+      with_env(%{@llm_env | "NPC_LLM_URL" => nil}, fn ->
+        assert {Brain.Tree, authored} = NpcRegistry.brain("settler", params)
+        refute Map.has_key?(authored, :endpoint)
+
+        assert_raise_any(
+          fn -> NpcRegistry.brain("settler", put_in(params, ["daily", "plan"], true)) end,
+          :no_endpoint
+        )
+      end)
+    end)
+    end
+
     test "llm: expand is registered without configuration and projected as a tool" do
       with_env(@llm_env, fn ->
         assert {Brain.Llm, %{skills: %{build: %{}, expand: %{}}} = profile} =

@@ -16,7 +16,7 @@ defmodule NpcServer.Brain.Llm do
   Runtime 给的最近 24 句独立进入 input.heard；本人回声与旁听只更新上下文，不唤醒。
   最新直接发言加入原有检索查询，Life 模式每轮仍恰好一次 Hindsight recall；没有第二个聊天大脑。
   询问节流：两次询问至少隔 1 秒；应答没有工具调用或请求失败时按 1、2、4…60 秒退避，拿到工具调用即清零；
-  每个 NPC 任意连续一小时内最多 `max_requests_per_hour` 次（缺省 600，滑动窗口），用完记一条日志，等最早那次滑出一小时。
+  每个 NPC 任意连续一小时内最多 `max_requests_per_hour` 次（缺省 60，与 Life 上限一致，滑动窗口），用完记一条日志，等最早那次滑出一小时。
   显式 `:infinity` 不保存额度时间序列；`cadence: :manual` 只消费 `step/4` 的单次许可，仍保持最小请求间隔。
   手动模式要求受理后的新空闲观察；不会因事件或失败自行重问，结果一次发送给 observer。
 
@@ -42,7 +42,7 @@ defmodule NpcServer.Brain.Llm do
   # 无工具调用或请求失败时的退避上限（毫秒）。
   @max_gap_ms 60_000
   # 每个 NPC 每小时询问上限的缺省值：曾两次出现模型原地空转、持续花费额度。
-  @max_requests_per_hour 600
+  @max_requests_per_hour 60
   @hour_ms 3_600_000
   # 实体走进这个距离（米）叫醒大脑；离开 @forget_m 才算走远，边界上来回不反复叫醒。
   @notice_m 6.0

@@ -19,7 +19,8 @@ defmodule NpcServer.Brain.Tree do
   | each | `{:each, 键, as, 子}` | 遍历黑板 `键` 的列表，每项写进黑板 `as` 再执行子节点；行为同 seq |
   | succeed / fail | `{:succeed, 子, opts}` / `{:fail, 子}` | 子结束后强制 SUCCESS / FAILURE；`succeed` 带 `log: 标签` 时子 FAILURE 记一行 `标签 entity= act= reason=`（取黑板 `:last_failure`），带 `context: 键` 时追加 `context=` 该黑板值 |
 
-  `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end`（tick 时求值）。
+  `act`：参数是 JSON 形 map（字符串键、数组，与 LLM 工具参数同形），或纯函数 `fn 黑板 -> map end` /
+  `fn 黑板, 观察 -> map end`（tick 时求值；后者用于取决于当前观察的参数，如走向附近的人）。
   id 由树单调分配（1, 2, …）。done → SUCCESS（`store: 键` 时把 `data` 写进黑板；`append: {键, fun}` 时把 `fun.(data)` 追加到
   黑板 `键` 的列表末尾，如 Settler 把扩张出来的新工地加进工地列表）；rejected / superseded → FAILURE，
   并把 `%{act: 名字, reason: 原因}` 写进黑板 `:last_failure`（superseded 的原因记 `:superseded`）。构造结果是
@@ -209,7 +210,12 @@ defmodule NpcServer.Brain.Tree do
 
   # 未开始：构造命令并发出（构造失败本地 FAILURE，不发给 Body）。
   defp tick({:act, name, args, _opts}, nil, ctx) do
-    args = if is_function(args, 1), do: args.(ctx.blackboard), else: args
+    args =
+      cond do
+        is_function(args, 1) -> args.(ctx.blackboard)
+        is_function(args, 2) -> args.(ctx.blackboard, ctx.observation)
+        true -> args
+      end
 
     case Abilities.command(name, args, ctx.next_id, ctx.profile) do
       %{verb: verb} when verb in [:unknown_tool, :invalid_tool_arguments] ->
@@ -337,7 +343,7 @@ defmodule NpcServer.Brain.Tree do
         )
 
     cond do
-      is_function(args, 1) ->
+      is_function(args, 1) or is_function(args, 2) ->
         :ok
 
       is_map(args) ->
@@ -352,7 +358,7 @@ defmodule NpcServer.Brain.Tree do
 
       true ->
         raise ArgumentError,
-              "behaviour tree act #{inspect(name)} arguments must be a map or a 1-arity function"
+              "behaviour tree act #{inspect(name)} arguments must be a map or a 1- or 2-arity function"
     end
   end
 

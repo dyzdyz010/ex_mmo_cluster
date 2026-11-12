@@ -41,6 +41,12 @@ defmodule NpcServer.Trees do
 
   # 瞬态原因之后等 1 秒（60 tick）。
   @pause 60
+  # 非工作活动的一次等待：与 Runtime 10 秒检查节拍一致（600 tick）。
+  @idle 600
+  # social 走到离对方多远停下（米）。
+  @approach 2.0
+  # social 的台词（有序，按次序轮换）。
+  @lines ["今天天气不错。", "最近还顺利吗？", "我刚忙完一阵。", "这附近挺安静的。", "有空一起歇会儿。"]
 
   @doc "Settler 树与黑板初值（`definition`、`sites`、`quarries`、`expansion`）；形状见 moduledoc。"
   def settler(profile) do
@@ -106,6 +112,107 @@ defmodule NpcServer.Trees do
        quarries: Map.get(profile, :quarries, %{}),
        expansion: expansion
      }}
+  end
+
+  @doc """
+  按作息工作的 Settler（N1 效用选择器的接线）：根 `sel` 的次序同 `Utility` 活动次序，每个分支由 `Utility.gate/3` 守卫。
+
+  | 活动 | 分支 |
+  |---|---|
+  | work | 原 `settler/1` 的一轮（含回访等待，不含外层 repeat）：每轮做完回到根，由选择器重新选活动 |
+  | rest | `travel` 回 `profile.home` `[x, z]`（LLM 日计划当前段给了 target 就去 target），等一个检查节拍（600 tick） |
+  | social | 观察里有别的角色（玩家或 NPC）：`move_to` 到最近者（水平距离）前方 2 米，`say` 台词表里的下一句，等一个节拍；没人：`travel` 到 `profile.plaza`（日计划当前段给了 target 就去 target）等一个节拍 |
+  | avoid | 原地等一个节拍（避险的真实移动由 `Brain.Social` 在有 `:life` 时接管，本树不重写） |
+
+  台词按 `@lines` 列表次序轮换：下一句是上次 `say` 被 Scene 接纳的那句（黑板 `:said`，即 done data）之后的一句，
+  没说过或说到末尾回到第一句。说话频率、距离与新话题间隔只由 Scene 裁决（`SceneServer.Dialogue.limits/0`）：
+  被拒（如 `topic_rate_limited`）不换句，记一行 `npc_daily_idle`，照常等待。分支内任一步失败都记 `npc_daily_idle` 后照常等待，
+  不让根 repeat 因失败结束，也不在同一节拍里重复发命令。
+
+  profile 额外键：`home`、`plaza`（`[x, z]`，米）与 `utility`（`Utility` 的 config，可缺省）。中断策略
+  `interrupt_policy: {NpcServer.Utility, 同一份 config}` 另行配置，技能运行中才会被中断回根。
+  """
+  def settler_daily(profile) do
+    {{:repeat, :forever, work}, board} = settler(profile)
+    config = Map.get(profile, :utility, %{})
+
+    # 失败只记一行，不终止分支：等待照常进行。
+    soft = fn act -> {:succeed, act, log: "npc_daily_idle"} end
+
+    rest = {:seq, [soft.({:act, "travel", &place_args(&1, &2, config, :home)}), {:wait, @idle}]}
+
+    social =
+      {:sel,
+       [
+         {:seq,
+          [
+            {:cond, &someone?/2},
+            soft.({:act, "move_to", &approach_args/2}),
+            soft.({:act, "say", &line_args/1, store: :said}),
+            {:wait, @idle}
+          ]},
+         {:seq, [soft.({:act, "travel", &place_args(&1, &2, config, :plaza)}), {:wait, @idle}]}
+       ]}
+
+    branches = %{
+      "avoid" => {:wait, @idle},
+      "work" => work,
+      "rest" => rest,
+      "social" => social
+    }
+
+    root =
+      {:repeat, :forever,
+       {:sel,
+        for activity <- NpcServer.Utility.default_activities() do
+          NpcServer.Utility.gate(activity, Map.fetch!(branches, activity), config)
+        end}}
+
+    {root, Map.merge(board, %{home: profile.home, plaza: profile.plaza, said: nil})}
+  end
+
+  @doc "social 的台词表（有序，按次序轮换）。"
+  def lines, do: @lines
+
+  # 去哪：当日 LLM 日计划当前段的 target（"home" / "plaza"）优先，没有计划或 target 为 null 时用分支的缺省地点。
+  defp place_args(board, observation, config, default) do
+    place =
+      case NpcServer.Utility.planned(observation, config) do
+        {_, _, _, "home"} -> :home
+        {_, _, _, "plaza"} -> :plaza
+        _ -> default
+      end
+
+    [x, z] = Map.fetch!(board, place)
+    %{"x" => x, "z" => z}
+  end
+
+  defp someone?(_board, observation), do: nearest(observation) != nil
+
+  # 停在最近者前方 2 米（沿水平连线）；已在 2 米内就停在原地。
+  defp approach_args(_board, %{self: %{position: {x, _, z}}} = observation) do
+    {ox, _, oz} = nearest(observation).position
+    d = :math.sqrt((ox - x) ** 2 + (oz - z) ** 2)
+    k = if d > @approach, do: (d - @approach) / d, else: 0.0
+    %{"x" => x + (ox - x) * k, "z" => z + (oz - z) * k}
+  end
+
+  # 水平距离最近的另一个角色；同距取观察列表里靠前者。
+  defp nearest(%{self: %{entity_id: me, position: {x, _, z}}, entities: entities}) do
+    case Enum.reject(entities, &(&1.entity_id == me)) do
+      [] -> nil
+      others -> Enum.min_by(others, fn %{position: {ox, _, oz}} -> (ox - x) ** 2 + (oz - z) ** 2 end)
+    end
+  end
+
+  defp line_args(%{said: said}) do
+    index =
+      case said && Enum.find_index(@lines, &(&1 == said.text)) do
+        nil -> 0
+        i -> rem(i + 1, length(@lines))
+      end
+
+    %{"text" => Enum.at(@lines, index)}
   end
 
   defp expand_args(%{definition: definition, expansion: expansion}),

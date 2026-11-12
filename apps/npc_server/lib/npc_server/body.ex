@@ -96,7 +96,12 @@ defmodule NpcServer.Body do
       DynamicSupervisor.start_child(
         NpcServer.BodySupervisor,
         {__MODULE__,
-         Keyword.merge(opts, cid: character.id, faction: faction, names: NpcServer.Names)}
+         Keyword.merge(opts,
+           cid: character.id,
+           name: name,
+           faction: faction,
+           names: NpcServer.Names
+         )}
       )
     end
   end
@@ -172,6 +177,8 @@ defmodule NpcServer.Body do
        mind:
          NpcServer.Runtime.init({brain, profile}, %{
            cid: Keyword.fetch!(opts, :cid),
+           # 注册表名（start/2 填写）；日计划提示词用它称呼 NPC。
+           name: Keyword.get(opts, :name),
            scene_id: Keyword.fetch!(opts, :scene_id),
            router: Keyword.get(opts, :route_module, WorldServer.Movement)
          }),

@@ -32,7 +32,16 @@ defmodule NpcServer.Runtime do
           life
         end
 
+      # 开了日计划的作息 NPC（profile.utility + endpoint，registry daily.plan）的 LLM 日计划 owner；计划经 {:day_plan, plan} 回来，挂到 observation.plan。
+      day_plan =
+        if Map.has_key?(profile, :utility) and Map.has_key?(profile, :endpoint) do
+          {:ok, pid} = NpcServer.DayPlan.start_link(self(), context, profile)
+          pid
+        end
+
       loop(%{
+        day_plan: day_plan,
+        plan: nil,
         body: body,
         backend: backend,
         mind: backend.init(profile),
@@ -73,6 +82,7 @@ defmodule NpcServer.Runtime do
         {:observation, observation} ->
           observation = Map.put(observation, :heard, state.heard)
           if state.life, do: NpcServer.Life.observation(state.life, observation)
+          observation = if state.plan, do: Map.put(observation, :plan, state.plan), else: observation
 
           observation =
             if state.life_state do
@@ -94,7 +104,11 @@ defmodule NpcServer.Runtime do
           deliver(%{state | observation: observation}, {:observation, observation})
 
         {:life_state, canonical, thanks} ->
+          if state.day_plan, do: NpcServer.DayPlan.life_state(state.day_plan, canonical)
           %{state | life_state: canonical, life_thanks: thanks}
+
+        {:day_plan, plan} ->
+          %{state | plan: plan}
 
         {:outcome, %{id: {:skill, id, step}} = outcome} ->
           case state.skill do
@@ -125,17 +139,23 @@ defmodule NpcServer.Runtime do
 
           if kind == :heard and Dialogue.direct?(message, cid) do
             if state.skill, do: send(self(), {:skill_check, state.skill.command.id})
+            if state.day_plan, do: NpcServer.DayPlan.speech(state.day_plan, message)
             deliver(state, {:heard, message})
           else
             state
           end
 
         {:"$gen_call", from, :observe} ->
-          GenServer.reply(from, %{heard: state.heard, skill: state.skill && state.skill.command})
+          GenServer.reply(from, %{
+            heard: state.heard,
+            skill: state.skill && state.skill.command,
+            plan: state.plan
+          })
+
           state
 
         {:observe_body, from, snapshot} ->
-          GenServer.reply(from, Map.put(snapshot, :dialogue, state.heard))
+          GenServer.reply(from, snapshot |> Map.put(:dialogue, state.heard) |> Map.put(:plan, state.plan))
           state
 
         {:"$gen_cast", {:command, command}} ->
@@ -190,6 +210,9 @@ defmodule NpcServer.Runtime do
         {:EXIT, life, reason} when life == state.life ->
           exit(reason)
 
+        {:EXIT, day_plan, reason} when day_plan == state.day_plan ->
+          exit(reason)
+
         {:EXIT, _, _} ->
           state
       end
@@ -204,6 +227,13 @@ defmodule NpcServer.Runtime do
   defp step(_, _, _, _), do: {:error, :unsupported_backend}
 
   defp deliver(state, event) do
+    if state.day_plan do
+      case event do
+        {:outcome, outcome} -> NpcServer.DayPlan.outcome(state.day_plan, outcome)
+        _ -> :ok
+      end
+    end
+
     if state.life do
       case event do
         {:outcome, outcome} -> NpcServer.Life.experience(state.life, outcome)

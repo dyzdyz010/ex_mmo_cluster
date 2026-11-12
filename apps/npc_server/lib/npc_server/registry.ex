@@ -13,7 +13,7 @@ defmodule NpcServer.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
+  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand；`daily`（可缺省：`{"home": [x, z], "plaza": [x, z], "day_ms": n > 0, "plan": 布尔，可缺省 false}`；plan 为 true 才每游戏日调一次 LLM 出日计划）换成 `Trees.settler_daily/1`，并由 `DayPlan` 每游戏日请求一次 LLM 日计划（endpoint 同 llm，取运行环境 `NPC_LLM_*`，缺失即 raise） |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
@@ -140,6 +140,13 @@ defmodule NpcServer.Registry do
 
         :error ->
           profile
+      end
+
+    # 可选的作息（效用选择器决策稿 2026-11-10）：配了就换成按作息的树，带家、广场与游戏日长度。不配中断策略。
+    profile =
+      case Map.fetch(params, "daily") do
+        {:ok, daily} -> Map.merge(%{profile | tree: &Trees.settler_daily/1}, daily(daily))
+        :error -> profile
       end
 
     # 建树即校验：能力名、静态参数（如 read_catalog 的定义 id）与节点形状，不合法 raise（与 Body 起树同一个函数）。
@@ -350,6 +357,18 @@ defmodule NpcServer.Registry do
        when is_integer(x0) and is_integer(z0) and is_integer(x1) and is_integer(z1) and
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}
+
+  # `"plan": true` 才接 LLM 日计划（取运行环境 endpoint，起 DayPlan）；不写则只用手写作息，零模型调用。
+  defp daily(%{"home" => [hx, hz] = home, "plaza" => [px, pz] = plaza, "day_ms" => day_ms} = daily)
+       when is_number(hx) and is_number(hz) and is_number(px) and
+              is_number(pz) and is_integer(day_ms) and day_ms > 0 do
+    profile = %{home: home, plaza: plaza, utility: %{day_ms: day_ms}}
+
+    case Map.get(daily, "plan", false) do
+      true -> Map.put(profile, :endpoint, endpoint())
+      false -> profile
+    end
+  end
 
   defp spell({name, program}) when is_binary(program), do: {name, program}
   defp flag(value) when is_boolean(value), do: value

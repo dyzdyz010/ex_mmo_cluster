@@ -150,7 +150,7 @@ flowchart LR
   Life 新接纳经历（`mind.affect.next_seq` 变化）也唤醒；旧规则模式按 `mind.evidence`，单纯情绪提交、衰减/观察时间变化不唤醒。
   请求期间到达的新情况保留至下一轮，旧响应不能把它清掉；仍受在途命令与滑动额度约束。
   两次询问至少隔 1 秒；应答没有工具调用或请求失败按 1、2、4…60 秒退避；
-  每 NPC 每小时最多 `max_requests_per_hour`（缺省 600）次，用完记 `npc_llm_budget_exhausted`。
+  每 NPC 每小时最多 `max_requests_per_hour`（缺省 60，2026-11-11 由 600 降下，与 Life 上限一致）次，用完记 `npc_llm_budget_exhausted`。
   工具表 = `Abilities.tools(profile) ++ [wait]`，全部 `strict: true`（2026-10-08 对当前代理 live 预检通过，设计稿 D-2）；
   `profile.groups` 可选裁剪（缺省全部组；Demo LLM NPC 取 `[:move, :sense, :act, :build, :memory, :skill]`，16 个条目 + wait）。
   参数不是 JSON 对象、形状不对或工具不存在（含被 groups 裁掉的）时，在本地回报 `invalid_tool_arguments` / `unknown_tool`
@@ -224,7 +224,7 @@ brain: {NpcServer.Brain.Routine, %{
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
   含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
-  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`。
+  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_utility_decision`、`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted`（作息 NPC 的 LLM 日计划见 `DayPlan` 与效用选择器决策稿 N2/N3 节）。
 
 ### 注册表（`Registry`，放置阶段 M1）
 
