@@ -3,6 +3,8 @@ defmodule NpcServer.Life do
   NPC 人生状态唯一 owner，跟随 Runtime 生命周期。canonical 心智、World 游标、待写经历与认识缓存
   原子保存在 NpcMemory 的 life/state 行；观察只派生衰减视图。World 读取与 Hindsight 使用独立 worker，
   慢记忆写入期间继续接纳权威事件。短经历先封成约 3000 字片段，失败重用原片段 id。
+  World 事件只带被动那一格所属建筑的定义 id（`prefab`）；读取 worker 向 World 的发布元信息查出名字写进事件（`building`），
+  经历原文由此说得出是哪座建筑（写法见 `Life.State`）。没有名字的定义与散格不点名。
   对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
@@ -366,7 +368,7 @@ defmodule NpcServer.Life do
                 route.world_ref,
                 loaded && loaded["state"]["cursor"]
               ) do
-         {:ok, %{row: loaded, events: events}}
+         {:ok, %{row: loaded, events: Map.update!(events, :events, &buildings(route.world_ref, &1))}}
        end
      end)}
   end
@@ -457,6 +459,22 @@ defmodule NpcServer.Life do
   end
 
   def handle_info({:EXIT, _, _}, s), do: {:noreply, s}
+
+  # 事件里 `prefab` 是所属建筑的定义 id（散格与 2026-11-12 之前提交的事件没有）；名字的 owner 是 World 的发布元信息，
+  # 这里读一次写进事件的 `building`。空名发布与作者目录里没发布过的定义没有名字。本批没有涉及建筑的事件就不读。
+  defp buildings(world, events) do
+    if Enum.any?(events, & &1[:prefab]) do
+      names =
+        for %{id: id, name: name} <- VoxelRegion.World.published_prefab_metadata(world),
+            name != "",
+            into: %{},
+            do: {id, name}
+
+      Enum.map(events, &Map.put(&1, :building, names[&1[:prefab]]))
+    else
+      events
+    end
+  end
 
   defp initial(cid, events, now),
     do: %{

@@ -198,7 +198,10 @@ defmodule NpcServer.NpcMindTest do
   # 薄片一 S1-B 的离线预演：同一张卡、同一候选表、同一处境与最近活动，三种快照只差“那件事”在哪一栏。
   #
   #   ① none     没有那件事：情绪、近期经历里都没有它，记忆为空。
-  #   ② fresh    刚发生：对 Brann 的愤怒与不信任，加近期经历里的原文（规则模式 Life 写出的原样句式）。
+  #   ② fresh    刚发生：对 Brann 的愤怒与不信任，加近期经历里的原文。句式是规则模式 Life 对“我放下的已发布建筑被破坏”
+  #              写出的原样（`npc_selector_test` 的集成用例 “damage to a part of a named prefab I placed” 的实际输出，
+  #              只换了时刻、角色、坐标、世界与事务号）；建筑的发布名是 “small hut”。2026-11-12 之前这句只有坐标与编号
+  #              （`… damaged construction I care about at (25, 518, 37), …`），那时本用例 ② 落空，对照见 tools/jev/episode.py。
   #   ③ recalled 很久以后：情绪与近期经历都没有，只有记忆召回里带这件事（手写的两条召回结果）。
   #
   # 期望在运行前手写：
@@ -256,8 +259,9 @@ defmodule NpcServer.NpcMindTest do
         ~s|repair or rebuild it if it has been damaged.). Result: completed.|
 
     damage =
-      "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged construction I care about at (25, 518, 37), " <>
-        "material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed."
+      "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
+        "at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). " <>
+        "I feel angry toward this actor; my trust changed."
 
     gathered =
       ~s|At 2026-11-12T03:10:05.000Z (UTC), I did "gather_stone" (Cut stone at the quarry for the village store. | <>

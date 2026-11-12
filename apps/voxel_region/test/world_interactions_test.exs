@@ -139,8 +139,8 @@ defmodule VoxelRegion.WorldInteractionsTest do
     assert result.cursor == 3
 
     assert [
-             %{seq: 2, actor: 1001, kind: :build, cell: {1, 1, 2}, material: 19, placed_by: nil},
-             %{seq: 3, actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001}
+             %{seq: 2, actor: 1001, kind: :build, cell: {1, 1, 2}, material: 19, placed_by: nil, prefab: nil},
+             %{seq: 3, actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: nil}
            ] = result.events
 
     assert Enum.all?(result.events, &is_integer(&1.at_ms))
@@ -149,6 +149,45 @@ defmodule VoxelRegion.WorldInteractionsTest do
     assert {:ok, %{cursor: 3, events: []}} = World.interactions_since(c.world, 3)
     assert {:error, :invalid_interaction_cursor} = World.interactions_since(c.world, -1)
     assert {:error, :invalid_interaction_cursor} = World.interactions_since(c.world, 4)
+  end
+
+  # 小屋 = 自己的一格（上）+ 一个子定义“门”的一格（下，锚点格）。视线沿 +Z 先打到锚点格 {1, 1, 2}，即子实例的那一格：
+  # 事件记的是整体放下的根实例的定义（小屋），不是子定义（门）。
+  test "damage to a part of a placed prefab records the definition of the root instance", c do
+    door = VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 19}], children: [], attachments: []})
+    assert {:ok, door_id} = World.publish_prefab(c.world, c.actor, door, "door")
+
+    hut =
+      VoxelRegion.Prefab.encode(%{
+        cells: [],
+        macro_cells: [{{0, 1, 0}, 19}],
+        children: [%{slot: 0, definition_id: door_id, anchor: {0, 0, 0}, orientation: 0}],
+        attachments: []
+      })
+
+    assert {:ok, hut_id} = World.publish_prefab(c.world, c.actor, hut, "small hut")
+    assert hut_id != door_id
+    assert {:ok, _} = World.material_supply(c.world, 1001, "finite-author-sample", %{19 => 1024})
+
+    assert {:ok, _} =
+             World.prefab_intent(c.world, c.actor, :voxel_prefab_place_v1, %{
+               definition_id: hut_id,
+               anchor: {8, 8, 16},
+               orientation: 0,
+               client_intent_seq: 1
+             })
+
+    assert {:ok, %{cursor: placed}} = World.interactions_since(c.world, nil)
+    assert {:ok, _} = hit(%{c | actor: other_actor(c)}, 2)
+
+    assert {:ok, %{events: [event]}} = World.interactions_since(c.world, placed)
+
+    assert %{actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: ^hut_id} =
+             event
+
+    # 名字不在事件里：按定义 id 查发布元信息。
+    assert [%{id: ^door_id, name: "door"}, %{id: ^hut_id, name: "small hut", publisher: 1001}] =
+             World.published_prefab_metadata(c.world)
   end
 
   test "compaction and a fresh World replay preserve events and database metadata rows", c do

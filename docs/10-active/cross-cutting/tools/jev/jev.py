@@ -1,9 +1,11 @@
-"""只测试：Jev（TypeSafe System One）的最小客户端。凭据取自仓库根目录的 .env；与 Jev 的交互一律用英文。"""
-import json, time, urllib.request, urllib.error
+"""只测试：Jev（TypeSafe System One）的最小客户端。凭据取自仓库根目录的 .env；与 Jev 的交互一律用英文。
+没有 .env 的检出（git worktree）读进程环境里的同名变量 TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL。"""
+import json, os, time, urllib.request, urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[5]
-ENV = dict(l.split('=', 1) for l in (ROOT / '.env').read_text(encoding='utf-8').splitlines() if '=' in l and not l.startswith('#'))
+ENV = (dict(l.split('=', 1) for l in (ROOT / '.env').read_text(encoding='utf-8').splitlines() if '=' in l and not l.startswith('#'))
+       if (ROOT / '.env').exists() else os.environ)
 
 def ask(state, questions, timeout=60):
     """返回 (answers, usage, seconds)；HTTP 错误返回 ({'error': code, 'body': ...}, None, seconds)。"""

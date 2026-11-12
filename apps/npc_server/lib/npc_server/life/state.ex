@@ -4,6 +4,13 @@ defmodule NpcServer.Life.State do
 
   输入消费 World 已排序的权威操作；状态全部使用 JSON 字符串键。关心格只是记忆，
   不作为当前几何真值。一次毁坏过程只评价首个 damage/destroy，同材料修复后重新计数。
+  经历原文说得出是哪座建筑：事件带 `building`（被动的那一格所属 prefab 的发布名，由 Life 向 World 查好写进事件；
+  散格、没有名字的定义都没有）时写 `the building "<名字>" that I built,`，并把名字记在关心格上，之后别人修这一格
+  （修上去的是散格，事件自己不带建筑）仍说得出修的是哪座；没有名字时照旧写 `construction I care about`。
+  例：`At <UTC> (UTC), Actor 21 damaged the building "small hut" that I built, at (25, 518, 37), material 11,
+  in world <world> (transaction 4711). I feel angry toward this actor; my trust changed.`
+  给模型选择的是名字：坐标、材料号、事务号留着不碍事，但只有它们时模型认不出是哪座建筑
+  （对照见 docs/10-active/cross-cutting/tools/jev/README.md 的 2026-11-12 一节）。
   情绪按经过时间衰减，关系与谨慎不随时间恢复；各数值系数是本轮游戏设计参数。
   canonical 状态只保留最近评价事件的情绪时刻锚，轮询时间不改锚。
   当前衰减值由 view/2 派生；观察不得回写，只有新评价接纳时先衰减再更新 canonical。
@@ -181,21 +188,28 @@ defmodule NpcServer.Life.State do
 
         if event.actor == state["cid"],
           do: {state, nil},
-          else: react(state, event, :help, emotion_owner)
+          else: react(state, event, :help, concern["building"], emotion_owner)
 
       event.actor != state["cid"] and event.kind in [:damage, :destroy] and
         (event.placed_by == state["cid"] or concern != nil) and
           (concern == nil or not concern["damaged"]) ->
-        concern = concern || %{"cell" => Tuple.to_list(event.cell), "material" => event.material}
+        concern = concern || new_concern(event)
         state = put_in(state, ["concerns", key], Map.put(concern, "damaged", true))
-        react(state, event, :damage, emotion_owner)
+        react(state, event, :damage, concern["building"], emotion_owner)
 
       true ->
         {state, nil}
     end
   end
 
-  defp react(state, event, reaction, emotion_owner) do
+  # 新的关心格；所属建筑有名字才记 "building"（旧持久行与散格的关心格都没有这个键）。
+  defp new_concern(event) do
+    concern = %{"cell" => Tuple.to_list(event.cell), "material" => event.material}
+    if event[:building], do: Map.put(concern, "building", event[:building]), else: concern
+  end
+
+  # building：关心格上记的建筑名字，没有为 nil。
+  defp react(state, event, reaction, building, emotion_owner) do
     state = if emotion_owner == :model, do: state, else: view(state, event.at_ms)
 
     {emotion, count_key, trust_change, drift} =
@@ -247,6 +261,12 @@ defmodule NpcServer.Life.State do
 
     verb = if reaction == :damage, do: "damaged", else: "repaired"
     feeling = if reaction == :damage, do: "angry", else: "grateful"
+
+    object =
+      if building,
+        do: ~s|the building "#{building}" that I built,|,
+        else: "construction I care about"
+
     {x, y, z} = event.cell
     at_utc = event.at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
 
@@ -256,7 +276,7 @@ defmodule NpcServer.Life.State do
       "at_ms" => event.at_ms,
       "actor" => event.actor,
       "text" =>
-        "At #{at_utc} (UTC), Actor #{event.actor} #{verb} construction I care about " <>
+        "At #{at_utc} (UTC), Actor #{event.actor} #{verb} #{object} " <>
           "at (#{x}, #{y}, #{z}), material #{event.material}, in world #{state["world_id"]} " <>
           "(transaction #{event.seq}). " <>
           if(emotion_owner == :model,

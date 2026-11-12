@@ -1,6 +1,6 @@
 # Jev（TypeSafe System One）评测 — 只测试
 
-凭据在仓库根目录的 `.env`（见 `.env.example`）。与 Jev 的交互一律用英文。
+凭据在仓库根目录的 `.env`（见 `.env.example`）；没有 `.env` 的检出（git worktree）读进程环境里的同名变量。与 Jev 的交互一律用英文。
 
 - `jev.py` 最小客户端；`probe.py` 连通性 / 延迟 / 计费口径 / state 上限；
 - `build_cases.py` → `cases.json`：70 条冻结情境，期望值按文件头的规则手工标注（数值题的算式写在注释里）；
@@ -112,6 +112,37 @@
   对重复的态度属于偏好，标准词表里没有，要写在角色卡的自由文本段。
 - 3 天与 7 天几乎没有差别：起作用的是“在重复”，不是重复了多久。
 - 上一节 tired 那句代码生成的感受因此不是必需的：角色卡写明了对重复的态度，原样的历史就够；它是角色卡没写时的另一条路。
+
+## 2026-11-12 “建设被破坏”的经历原文要点名建筑（`episode.py`）
+
+薄片一 S1-B 的预演里，愤怒 + 近期经历的快照没有让 Garen 稳定回去修小屋（一次 `gather_stone` 0.02、一次 `build_hut` 0.06）。
+推测是经历原文只有坐标与编号。对照：沿用那份快照（`npc_mind_test.exs` 的 `live_jev` 用例，fresh），state 逐字不变，
+只换破坏经历这一句；7 种写法各问 4 次，并发 3，28 次请求全部应答，`results-episode.json`，`python episode.py report` 离线重出。
+期望运行前写在脚本里：点名建筑的写法应 4 次都选 `build_hut`；A、C、D 只测量。句首的时刻与句尾的
+`I feel angry toward this actor; my trust changed.` 各写法相同，下表略去。
+
+| 写法 | 破坏经历 | 期望 | `build_hut` 次数 | 各次 top1（置信度） | `build_hut` 的概率 |
+|---|---|---|---|---|---|
+| A 现状 | `Actor 21 damaged construction I care about at (25, 518, 37), material 11, in world qinglan-test (transaction 4711).` | 只测量 | 3 / 4 | gather_stone 0.10、build_hut 0.22、0.25、0.09 | 0.30–0.50 |
+| B_place 点名 + 地点 | `Brann (actor 21) damaged the small hut I built on the plot by the square.` | build_hut | 4 / 4 | build_hut 0.77、0.74、0.80、0.74 | 0.83–0.87 |
+| B_name 点名（发布名） | `Actor 21 damaged the building "small hut" that I built.` | build_hut | 4 / 4 | build_hut 0.77、0.74、0.74、0.77 | 0.83–0.85 |
+| B_name_actor 再带人名 | `Brann (actor 21) damaged the building "small hut" that I built.` | build_hut | 4 / 4 | build_hut 0.76、0.74、0.73、0.72 | 0.81–0.84 |
+| B_activity 引活动名与判据 | `Actor 21 damaged what I built when I did "build_hut" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.).` | build_hut | **2 / 4（落空）** | gather_stone 0.06、build_hut 0.13、gather_stone 0.07、build_hut 0.24 | 0.34–0.49 |
+| C 去掉编号、不点名 | `Actor 21 damaged a building that I built.` | 只测量 | 0 / 4 | gather_stone 0.28、0.28、0.31、0.19 | 0.14–0.24 |
+| D 点名、留着编号 | `Actor 21 damaged the building "small hut" that I built, at (25, 518, 37), material 11, in world qinglan-test (transaction 4711).` | 只测量 | 4 / 4 | build_hut 0.74、0.73、0.74、0.72 | 0.81–0.83 |
+
+延迟 581–1973 ms（中位约 680 ms）。
+
+- 推测成立，而且起作用的只是“点名建筑”：点名的四种写法 16 / 16、概率 0.81–0.87；编号留不留没有差别（D 对 B_name）；
+  去掉编号但不点名反而一次都不选（C）。A 这一轮 3 / 4，但概率只有 0.30–0.50，与预演一样是在摇摆。
+- 名字要是一个直接的名词短语。引活动名与判据的写法（B_activity）运行前期望会中，实际 2 / 4：模型没有把
+  “做 build_hut 时建的东西”读成“那座小屋”。所以把事件对上活动经历这条路没有采用。
+- 人写成 `Actor 21` 还是 `Brann (actor 21)` 没有可测的差别（快照的情绪栏已经写了 `Brann (actor 21)`）。
+- 产品采用 D 的写法（`NpcServer.Life.State`）：名字取 World 里该 prefab 定义的发布名，其余原文不动。改后重跑预演
+  `npc_mind_test.exs --only live_jev`：none → gather_stone 2 / 2（0.85、0.85），fresh → build_hut 2 / 2（0.77、0.77），
+  recalled → build_hut 2 / 2（0.80、0.85）。原始输出 `.demo/observe/npc-slice1-20261112/s1b2/`。
+- 范围：一张卡、一个情境、每格 4 次；名字与候选判据用的是同一个叫法（“small hut”）。没有测名字与判据叫法不一致、
+  中文名字、多座同名建筑，也没有测 Hindsight 把这句抽成事实以后的召回文本。
 
 ## 调度问法的两条实测结论（`fanout.py`，`apps/gate_server/lib/gate_server/npc/jev.ex` 采用的就是结论）
 

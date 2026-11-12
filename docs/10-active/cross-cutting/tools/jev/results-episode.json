@@ -1,0 +1,492 @@
+{
+ "model": "jev-latest",
+ "repeats": 4,
+ "workers": 3,
+ "variants": {
+  "A_current": {
+   "expected": null,
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged construction I care about at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged construction I care about at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "B_place": {
+   "expected": "build_hut",
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Brann (actor 21) damaged the small hut I built on the plot by the square. I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Brann (actor 21) damaged the small hut I built on the plot by the square. I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "B_name": {
+   "expected": "build_hut",
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built. I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built. I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "B_activity": {
+   "expected": "build_hut",
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged what I built when I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged what I built when I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "B_name_actor": {
+   "expected": "build_hut",
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Brann (actor 21) damaged the building \"small hut\" that I built. I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Brann (actor 21) damaged the building \"small hut\" that I built. I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "C_no_noise_unnamed": {
+   "expected": null,
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged a building that I built. I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged a building that I built. I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  },
+  "D_named_with_noise": {
+   "expected": null,
+   "episode": "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed.",
+   "state": "Character: Garen, a builder. Personality: bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds. Likes his days to follow the usual routine.\nFeelings and relationships: Feels strong anger toward Brann (actor 21). Distrusts Brann (actor 21).\nWhat just happened: Oldest first. At 2026-11-12T03:02:10.000Z (UTC), I did \"build_hut\" (Build the small hut on the plot by the square; repair or rebuild it if it has been damaged.). Result: completed. At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed. At 2026-11-12T03:10:05.000Z (UTC), I did \"gather_stone\" (Cut stone at the quarry for the village store. Ordinary, steady work.). Result: completed.\nWhat I remember: Nothing relevant.\nCurrent situation: Standing at x=22.5, z=34.5 (height 520.0). Life 100 of 100. Nearby: Brann (player, 6.0 m away). Inventory: material 11: 4096 units.\nRecent activities: Oldest first. build_hut: completed. gather_stone: completed."
+  }
+ },
+ "rows": [
+  {
+   "variant": "A_current",
+   "repeat": 1,
+   "expected": null,
+   "latency_ms": 678,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.1,
+    "probabilities": {
+     "build_hut": 0.3,
+     "gather_stone": 0.4,
+     "work_far_field": 0.3
+    }
+   }
+  },
+  {
+   "variant": "A_current",
+   "repeat": 2,
+   "expected": null,
+   "latency_ms": 619,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.22,
+    "probabilities": {
+     "build_hut": 0.48,
+     "gather_stone": 0.27,
+     "work_far_field": 0.25
+    }
+   }
+  },
+  {
+   "variant": "A_current",
+   "repeat": 3,
+   "expected": null,
+   "latency_ms": 683,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.25,
+    "probabilities": {
+     "build_hut": 0.5,
+     "gather_stone": 0.26,
+     "work_far_field": 0.24
+    }
+   }
+  },
+  {
+   "variant": "A_current",
+   "repeat": 4,
+   "expected": null,
+   "latency_ms": 700,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.09,
+    "probabilities": {
+     "build_hut": 0.39,
+     "gather_stone": 0.31,
+     "work_far_field": 0.3
+    }
+   }
+  },
+  {
+   "variant": "B_place",
+   "repeat": 1,
+   "expected": "build_hut",
+   "latency_ms": 596,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.85,
+     "gather_stone": 0.07,
+     "work_far_field": 0.08
+    }
+   }
+  },
+  {
+   "variant": "B_place",
+   "repeat": 2,
+   "expected": "build_hut",
+   "latency_ms": 670,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "B_place",
+   "repeat": 3,
+   "expected": "build_hut",
+   "latency_ms": 581,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.87,
+     "gather_stone": 0.06,
+     "work_far_field": 0.07
+    }
+   }
+  },
+  {
+   "variant": "B_place",
+   "repeat": 4,
+   "expected": "build_hut",
+   "latency_ms": 1642,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "B_name",
+   "repeat": 1,
+   "expected": "build_hut",
+   "latency_ms": 611,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.85,
+     "gather_stone": 0.08,
+     "work_far_field": 0.07
+    }
+   }
+  },
+  {
+   "variant": "B_name",
+   "repeat": 2,
+   "expected": "build_hut",
+   "latency_ms": 591,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "B_name",
+   "repeat": 3,
+   "expected": "build_hut",
+   "latency_ms": 1383,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "B_name",
+   "repeat": 4,
+   "expected": "build_hut",
+   "latency_ms": 589,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.85,
+     "gather_stone": 0.09,
+     "work_far_field": 0.06
+    }
+   }
+  },
+  {
+   "variant": "B_activity",
+   "repeat": 1,
+   "expected": "build_hut",
+   "latency_ms": 1933,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.06,
+    "probabilities": {
+     "build_hut": 0.34,
+     "gather_stone": 0.37,
+     "work_far_field": 0.29
+    }
+   }
+  },
+  {
+   "variant": "B_activity",
+   "repeat": 2,
+   "expected": "build_hut",
+   "latency_ms": 1973,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.13,
+    "probabilities": {
+     "build_hut": 0.42,
+     "gather_stone": 0.35,
+     "work_far_field": 0.23
+    }
+   }
+  },
+  {
+   "variant": "B_activity",
+   "repeat": 3,
+   "expected": "build_hut",
+   "latency_ms": 672,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.07,
+    "probabilities": {
+     "build_hut": 0.35,
+     "gather_stone": 0.38,
+     "work_far_field": 0.27
+    }
+   }
+  },
+  {
+   "variant": "B_activity",
+   "repeat": 4,
+   "expected": "build_hut",
+   "latency_ms": 657,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.24,
+    "probabilities": {
+     "build_hut": 0.49,
+     "gather_stone": 0.28,
+     "work_far_field": 0.23
+    }
+   }
+  },
+  {
+   "variant": "B_name_actor",
+   "repeat": 1,
+   "expected": "build_hut",
+   "latency_ms": 667,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.84,
+     "gather_stone": 0.07,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "B_name_actor",
+   "repeat": 2,
+   "expected": "build_hut",
+   "latency_ms": 1027,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.09,
+     "work_far_field": 0.08
+    }
+   }
+  },
+  {
+   "variant": "B_name_actor",
+   "repeat": 3,
+   "expected": "build_hut",
+   "latency_ms": 840,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.73,
+    "probabilities": {
+     "build_hut": 0.82,
+     "gather_stone": 0.1,
+     "work_far_field": 0.08
+    }
+   }
+  },
+  {
+   "variant": "B_name_actor",
+   "repeat": 4,
+   "expected": "build_hut",
+   "latency_ms": 691,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.72,
+    "probabilities": {
+     "build_hut": 0.81,
+     "gather_stone": 0.08,
+     "work_far_field": 0.11
+    }
+   }
+  },
+  {
+   "variant": "C_no_noise_unnamed",
+   "repeat": 1,
+   "expected": null,
+   "latency_ms": 603,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.28,
+    "probabilities": {
+     "build_hut": 0.23,
+     "gather_stone": 0.52,
+     "work_far_field": 0.25
+    }
+   }
+  },
+  {
+   "variant": "C_no_noise_unnamed",
+   "repeat": 2,
+   "expected": null,
+   "latency_ms": 692,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.28,
+    "probabilities": {
+     "build_hut": 0.15,
+     "gather_stone": 0.52,
+     "work_far_field": 0.33
+    }
+   }
+  },
+  {
+   "variant": "C_no_noise_unnamed",
+   "repeat": 3,
+   "expected": null,
+   "latency_ms": 668,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.31,
+    "probabilities": {
+     "build_hut": 0.14,
+     "gather_stone": 0.54,
+     "work_far_field": 0.32
+    }
+   }
+  },
+  {
+   "variant": "C_no_noise_unnamed",
+   "repeat": 4,
+   "expected": null,
+   "latency_ms": 1014,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.19,
+    "probabilities": {
+     "build_hut": 0.24,
+     "gather_stone": 0.46,
+     "work_far_field": 0.3
+    }
+   }
+  },
+  {
+   "variant": "D_named_with_noise",
+   "repeat": 1,
+   "expected": null,
+   "latency_ms": 745,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "D_named_with_noise",
+   "repeat": 2,
+   "expected": null,
+   "latency_ms": 681,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.73,
+    "probabilities": {
+     "build_hut": 0.82,
+     "gather_stone": 0.08,
+     "work_far_field": 0.1
+    }
+   }
+  },
+  {
+   "variant": "D_named_with_noise",
+   "repeat": 3,
+   "expected": null,
+   "latency_ms": 694,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.83,
+     "gather_stone": 0.08,
+     "work_far_field": 0.09
+    }
+   }
+  },
+  {
+   "variant": "D_named_with_noise",
+   "repeat": 4,
+   "expected": null,
+   "latency_ms": 673,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.72,
+    "probabilities": {
+     "build_hut": 0.81,
+     "gather_stone": 0.08,
+     "work_far_field": 0.11
+    }
+   }
+  }
+ ]
+}

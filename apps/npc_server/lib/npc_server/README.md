@@ -422,6 +422,18 @@ flowchart LR
 - **经历**：进 Life 的是“做了什么、结果如何”——一项活动结束时 Runtime 调 `Life.activity/2` 记一条
   `At <UTC> (UTC), I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，与 World 事件
   （`… Actor <cid> damaged / repaired construction I care about …`）同样攒够约 3000 字封成片段写入 Hindsight。
+- **经历说得出是哪座建筑**：被破坏 / 被修的那一格属于一座有发布名的 prefab 时，World 事件的经历写成
+  `At <UTC> (UTC), Actor <cid> damaged / repaired the building "<发布名>" that I built, at (x, y, z), material <m>, in world <world> (transaction <seq>). I feel angry / grateful toward this actor; my trust changed.`
+  三段各有 owner：World 在操作构造边界把目标所属**根实例**的定义 id 冻进事件（`prefab`；整体放下的那一座，不是子定义；
+  散格为 nil）→ Life 的读取 worker 按 id 查 `World.published_prefab_metadata/1` 的名字写进事件（`building`）→
+  `Life.State` 写句子，并把名字记在关心格上（之后别人修这一格时修上去的是散格，仍说得出修的是哪座）。
+  **没有名字就不点名**（照旧 `construction I care about`）：空名发布（NPC 的 `design_house` 现在发布为空名）、
+  作者目录里没在运行时发布过的定义、散格都是这样。所以要让 NPC 认得出自己的建筑，定义须带名字发布，
+  且候选判据里用同一个叫法（判据写 “the small hut”，发布名就叫 “small hut”）。真实 Jev 的对照
+  （`tools/jev/episode.py`，2026-11-12）：只有坐标与编号时 `build_hut` 的概率 0.30–0.50、top1 摇摆；点名后 0.81–0.87、
+  4 / 4；去掉编号但不点名 0 / 4；编号留着不影响。人仍写 `Actor <cid>`（换成 `名字 (actor <cid>)` 没有可测的差别）。
+  同一段原文也是 `"life"`（模型评价情绪，结尾是 `My trust changed; emotional appraisal is pending.`，进它的评价来源）
+  与 `settler` + `life` 的经历：只有涉及有发布名的建筑时文本才变，规则、数值与行为都没变；已存的旧经历不重写。
   `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历；规则模式下 `Life.experience/2`（动作终态进情绪评价流水）不建流水，
   技能内部的每一步也不进经历。
 - **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、召回出错或超时）

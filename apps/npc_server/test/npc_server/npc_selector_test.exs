@@ -429,6 +429,12 @@ defmodule NpcServer.NpcSelectorTest do
           material: 11
         })
 
+      strike(world, npc, seq, cell)
+    end
+
+    # 只测试：另一角色（cid = npc + 10）站在 (4.5, 65.5, 8.5) 用镐朝 cell 的中心打一下（先查询命中目标，再按它出手）。
+    # 返回破坏者的 cid。
+    defp strike(world, npc, seq, cell) do
       attacker = NpcWorld.actor(npc + 10, {4.5, 65.5, 8.5})
       {x, y, z} = cell
 
@@ -703,6 +709,72 @@ defmodule NpcServer.NpcSelectorTest do
       assert log =~ ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=5 model=jev-test/
       assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}"
       assert log =~ ~r/npc_select cid=#{cid} trigger=retry \S+ chosen=alpha_build_south confidence=0.6 latency_ms=\d+ recall_ms=4 model=jev-test/
+    end
+
+    # 被破坏的是我整体放下的一座已发布建筑的一部分：经历原文要说得出是哪座（名字来自 World 的发布元信息）。
+    # 定义是两格石料 {0,0,0}、{1,0,0}，以 “small hut” 为名发布；锚点微格 (32, 512, 64) = 宏格 (4, 64, 8)（1 宏格 = 8 微格），
+    # 所以建筑占 (4, 64, 8) 与 (5, 64, 8)，被打的是前一格。
+    @tag timeout: 120_000
+    test "damage to a part of a named prefab I placed: the next question names the building",
+         %{profile: profile, cid: cid, fixture: fixture} do
+      {body, _runtime, _recall} = start(profile, cid)
+      world = fixture.world
+      brann = cid + 10
+
+      hut =
+        VoxelRegion.Prefab.encode(%{
+          cells: [],
+          macro_cells: [{{0, 0, 0}, 11}, {{1, 0, 0}, 11}],
+          children: [],
+          attachments: []
+        })
+
+      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, _} = World.material_supply(world, cid, "selector-hut-supply", %{11 => 1024})
+
+      {:ok, _} =
+        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
+          definition_id: id,
+          anchor: {32, 512, 64},
+          orientation: 0,
+          client_intent_seq: 1
+        })
+
+      # 第 1 次发问：还没有事发生。
+      event(body, {:observation, observation(1, cid)})
+      assert_receive {:jev_request, worker, request}
+      assert request.state =~ "
+What just happened: Nothing new.
+"
+      send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
+      assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+      # 活动进行中：Brann 打了小屋的一格（真实 World 事务）；Life 按规则接纳。
+      ^brann = strike(world, cid, 1, {4, 64, 8})
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"evidence" => %{"damage_count" => 1}}}}, Life.observe(cid))
+      end)
+
+      # 关心格记下了建筑的名字。
+      assert {:ok, %{state: %{"concerns" => %{"4,64,8" => %{"building" => "small hut", "damaged" => true}}}}} =
+               Life.observe(cid)
+
+      # 第 2 次发问：近期经历一栏。时刻、世界身份、事务号是运行时的值，换成占位后整栏与手写的句子逐字相同。
+      skill_step(body, 2, :done, nil)
+      assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
+      event(body, {:observation, observation(3, cid)})
+      assert_receive {:jev_request, _worker, request}
+
+      [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
+
+      assert "What just happened: Oldest first. " <>
+               "At <t> (UTC), Actor #{brann} damaged the building \"small hut\" that I built, at (4, 64, 8), " <>
+               "material 11, in world <w> (transaction <n>). I feel angry toward this actor; my trust changed. " <>
+               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed." ==
+               happened
+               |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
+               |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
     end
 
     test "without cached models the mind is unreadable: the selection fails explicitly and Jev is not asked",

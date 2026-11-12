@@ -17,6 +17,12 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第三个统筹会话接手后（2026-11-12）
+
+下面“交接”一节是第二个统筹会话结束时的原文，其中两件事已经变了：**S1-B2 已由统筹会话验证并提交**（见“S1-B2 结果”）；
+**材料来源用户已确认**：GM `:fill` 一次放 12 Stone + 3 Limestone 的料堆，NPC 用 `gather` 自采，不用 `World.material_supply`。
+其余待用户确认的两项（名字层与编号层分开、开服前背景写多少）仍未答复。现在在做 S1-C 实跑，进展看“进度记录”末尾。
+
 ### 交接（2026-11-12，第二个统筹会话因上下文超过 300k 结束）
 
 分支 `npc-life-20261111` 未推送，HEAD 见 `git log`（本次交接提交之前是 `461ede3f`）。S1-A、S1-B 已提交；薄片一还差实跑与验收 (b)(c)。
@@ -78,6 +84,7 @@ Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1
 | S1-0 | 实跑配方（只读侦察） | 本机 WSL 原生起服务端、登记一个 NPC、rpc 与日志观察的准确做法 | 配方写进本页“证据与复跑” | 完成，S1-A 实跑用过 |
 | S1-A | 选择链接通 | 一个登记的 NPC：人格卡进注册参数；候选活动来自注册参数（技能与去处），代码先滤可行性；活动结束或连续失败时异步问 Jev，应答经 Runtime 进观察，树根按它执行；每次选择一行日志。时钟打分、写死台词随之删掉 | 验收 (a)：同一处境两张人格卡选得不同（`live_jev` 用例，期望值先手写）；真实服务端里看到“选择 → 执行 → 再选择”的日志 | **已实现、已实跑、验收 (a) 通过**；实跑只走了“去处”候选的成功路径，见下 |
 | S1-B | 心智与记忆进快照 | 快照加上 Life 的情绪与关系（规则模式）、未封存的近期经历、Hindsight 的认识与一次召回；`"npc"` 登记时带 Life，Outcome 与世界事件照常进 Life 与 Hindsight。实现、测试，加一次带真实 Hindsight 的短实跑（NPC 真的建一次东西，快照各栏在日志里可见） | 冻结快照文本的 `live_jev` 用例：加上“被破坏”的情绪与经历后 top1 改变，期望值先手写；实跑里看到四栏都有内容 | **已实现、已测试、未实跑**；预演 6 次里 1 次落空，见下 |
+| S1-B2 | 经历原文点名被破坏 / 被修的建筑 | World 的交互事件带目标所属根实例的定义 id（`prefab`）；Life 查发布名写进经历：`Actor <cid> damaged the building "<名字>" that I built, at …`；没有发布名时原文不变 | 离线对照（期望运行前写）；手写期望句子的单测；真实 World 事务的集成用例 | **已实现、已测试、统筹已验证并提交；未实跑**，见下 |
 | S1-C | 薄片一验收实跑 | 第二个 NPC 经正常入口拆第一个 NPC 的建筑；记录 (b) 事件前后的选择、(c) 情绪衰减且经历封存写入后的选择；命令、日志位置、原始结果写回本页 | 验收 (b)、(c)，区分已实现 / 已实跑 / 已验收 | 未开始 |
 
 **S1-A 结果（2026-11-12，提交见“进度记录”）**
@@ -108,8 +115,8 @@ Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1
 - **预演（冻结快照、真实 Jev，期望运行前写入）**：`npc_mind_test.exs --only live_jev`，卡 Garen（builder）。
   ① 没有那件事 → `gather_stone` 2 / 2（置信度 0.86）；③ 只有记忆召回 → `build_hut` 2 / 2（0.80、0.83）；
   ② 愤怒 + 近期经历 → 期望 `build_hut`，实际一次 `gather_stone`（0.02）、一次 `build_hut`（0.06），**落空**。用例保留为失败（`live_jev` 缺省不跑），原始日志
-  `.demo/observe/npc-slice1-20261112/s1b/live-jev-20261112.log`。
-  推测（未验证）：规则模式写出的经历原文是 `Actor 21 damaged construction I care about at (25, 518, 37), material 11 … (transaction 4711)`，
+  `.demo/observe/npc-slice1-20261112/s1b/live-jev-20261112.log`。**后续：推测已由 S1-B2 验证成立并改了经历原文，见“S1-B2 结果”。**
+  当时的推测：规则模式写出的经历原文是 `Actor 21 damaged construction I care about at (25, 518, 37), material 11 … (transaction 4711)`，
   只有坐标与编号，Jev 无从知道被拆的就是那座小屋；③ 的召回句明说了“the small hut I built”。
 - 已知情况：信任不衰减，一次破坏后 `Distrusts …` 一直留在情绪栏，验收 (c) 要看 state 全文区分各栏的贡献；新 NPC 在 Hindsight 建好 bank 与四份认识之前
   每 10 秒显式失败一次（`life_models_unavailable`）；Hindsight 对片段抽不出事实时 `retain` 返回 `empty_facts`、自动写入停住，重复的活动经历会不会触发要实跑才知道。
@@ -117,6 +124,22 @@ Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1
 - 统筹会话复核：看过 Life / Runtime / Selector / Registry 的差异；自建 PG（55446，已删）重跑
   `npc_selector / mind / registry / life / life_state / life_registry / social / tree` 97 通过、2 按标签排除。
   自建 PG（55444，已删）重跑 `npc_registry / settler / abilities` 35 通过。验收 (a) 与实跑没有重跑，以子会话留下的日志为准。
+
+**S1-B2 结果（2026-11-12，提交 `NPC slice one, S1-B2: …`）**
+
+- S1-B 预演 ② 落空的推测**已验证成立**：真实 Jev 离线对照 28 次（`tools/jev/episode.py`，结果 `results-episode.json`），经历原文点名建筑的四种写法
+  16 / 16 选 `build_hut`（概率 0.81–0.87）；只有坐标与编号的现状 3 / 4、概率 0.30–0.50；去掉编号但不点名 0 / 4。起作用的是点名，不是去编号。
+  事先期望会中的 B_activity（引活动名与判据）2 / 4，**落空**，那条路没有采用。改后预演三种快照各 2 / 2（子会话所跑，统筹会话没有重跑 `live_jev`）。
+- 改法：`World.Interactions.capture` 在操作构造边界多冻结一个 `prefab`（目标所属根实例的定义 id，散格为 nil；旧事件没有这个键）；
+  Life 的读取 worker 按 id 查 `World.published_prefab_metadata/1` 的名字写进事件 `building`；`Life.State` 写句子并把名字记在关心格上。
+  坐标、材料号、world、事务号留在原文里。`"life"` 与 `settler + life` 共用这段原文，只有涉及有发布名的建筑时文本才变。
+- 前提：**定义必须带名字发布**，候选判据用同一个叫法。作者目录定义、空名发布（`design_house`）、散格都不点名——NPC 自己设计的房子不会被点名，是独立的待定功能。
+- 没测的边界：发布名与判据叫法不一致、中文名、多座同名建筑、Hindsight 把这句抽成事实后的召回文本（最后一条 S1-C 实跑会碰到）。
+- 统筹会话复核：逐文件看过差异；自建 PG（55449，已删）重跑 `apps/npc_server` 的 `npc_mind / life / emotion_life / life_state / selector` 60 通过、2 按标签排除；
+  `apps/voxel_region` 的 `world_interactions_test.exs` 改后 4 / 5、改前（`git stash` 掉 `apps/voxel_region`）3 / 4，失败的是同一条
+  `compaction and a fresh World replay…`：WSL 工具链缺 `libsctp.so.1`，子 VM 的警告经 `stderr_to_stdout` 混进输出，比较值本身是 `true`——**确是改前就有的环境问题**。
+  把 `libsctp1` 的 deb 免 root 解到 `~/npc-s1-run/libsctp/` 并设 `LD_LIBRARY_PATH` 后同一文件 **5 / 5 通过**。
+  原始输出与脚本在 `.demo/observe/npc-slice1-20261112/s1b2/verify/`。
 
 不在薄片一里：LLM 规划、说话、游戏时刻对齐、步骤边界打断、人格漂移、多个 NPC。`DayPlan` / `LlmBudget` 留着不启用，薄片二再改。
 
@@ -221,3 +244,5 @@ Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1
   `2026-11-12-npc-architecture-overview.html` 一并提交。下一步 S1-B。
 - 2026-11-12（接手会话）：S1-B 的实现与测试完成并提交（未实跑）。下一步两件事并行准备、串行落地：
   (1) 破坏 / 帮助事件的经历原文要说得出“是哪座建筑”（先离线验证推测，再改）；(2) 带真实 Hindsight 的实跑与验收 (b)(c)，即 S1-C。
+- 2026-11-12（第三个统筹会话）：接手。S1-B2 验证通过并提交（结果见“S1-B2 结果”；`world_interactions_test.exs` 那条失败核实为改前就有的 WSL 环境问题，补 `libsctp` 后 5 / 5）。
+  用户确认 S1-C 的材料来源：GM `:fill` 放料堆、NPC 自采。验证用的临时 PG（55449）已删，容器 / 卷数仍为 154 / 163。下一步派 S1-C 实跑。

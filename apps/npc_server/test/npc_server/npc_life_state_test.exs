@@ -103,6 +103,49 @@ defmodule NpcServer.NpcLifeStateTest do
              %{"id" => "world-a:22", "seq" => 22, "at_ms" => 1_791_699_081_234}
   end
 
+  # 期望句子手写。时刻：2026-11-12T03:09:40Z = 1_794_452_980_000 ms，03:12:00Z = 1_794_453_120_000 ms。
+  # building 是 Life 向 World 查好写进事件的发布名；修上去的那一格是散格，事件自己不带建筑。
+  test "经历原文点名被动的建筑，名字记在关心格上，别人修好时仍说得出是哪座；散格照旧不点名" do
+    hut = [cell: {25, 518, 37}, material: 11]
+
+    events = [
+      event(4711, :damage, 21, hut ++ [at_ms: 1_794_452_980_000, building: "small hut"]),
+      event(4712, :build, 22, hut ++ [at_ms: 1_794_453_120_000, placed_by: nil]),
+      # 我放的一格散格（没有所属建筑；prefab 没有名字时 Life 给的 building 同样是 nil）。
+      event(4713, :damage, 21, cell: {4, 64, 8}, material: 11, at_ms: 1_794_453_120_000, building: nil)
+    ]
+
+    {state, [damage, help, loose]} = State.advance(new(), events, 4713, 1_794_453_120_000)
+
+    assert damage["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4711). " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert help["text"] ==
+             "At 2026-11-12T03:12:00.000Z (UTC), Actor 22 repaired the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4712). " <>
+               "I feel grateful toward this actor; my trust changed."
+
+    assert loose["text"] ==
+             "At 2026-11-12T03:12:00.000Z (UTC), Actor 21 damaged construction I care about " <>
+               "at (4, 64, 8), material 11, in world world-a (transaction 4713). " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert state["concerns"] == %{
+             "25,518,37" => %{"cell" => [25, 518, 37], "material" => 11, "building" => "small hut", "damaged" => false},
+             "4,64,8" => %{"cell" => [4, 64, 8], "material" => 11, "damaged" => true}
+           }
+
+    # 模型评价情绪的路径共用同一句的前半，只有结尾不同。
+    {_, [pending]} = State.advance(new(), [hd(events)], 4711, 1_794_452_980_000, :model)
+
+    assert pending["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4711). " <>
+               "My trust changed; emotional appraisal is pending."
+  end
+
   test "伤害、修复、再次伤害分别归因，第三轮才缓慢漂移" do
     events = [
       event(1, :destroy, 11),
