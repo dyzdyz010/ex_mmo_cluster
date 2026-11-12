@@ -35,6 +35,8 @@ Life 读 `World.published_prefab_metadata/1` 取发布名，经历写成 `Actor 
 预演三种快照改后各 2 / 2。它报的测试：npc_server 60 通过、2 排除；`world_interactions_test.exs` 4 通过、1 失败（称改前就失败，WSL 的 libsctp 警告混进子进程输出）——**接手后要自己核实这条“改前就失败”**。
 对 S1-C 的要求：**小屋的定义必须带名字发布**（作者目录定义没有发布名，可用同一份字节 `World.publish_prefab(world, actor, bytes, "small hut")` 补发布名，id 不变），候选判据用同一个叫法；
 把这条交给做实跑的子会话，并核对 `s1c/plan.md` 是否需要相应修改。`design_house` 发布为空名、NPC 自己设计的房子不会被点名，是独立的待定功能。
+**关于结果文件**：子会话不能自己写报告文件（运行环境限制）。`s1b2/report.md` 是旧统筹会话代存的子会话原文。S1-C 准备的结果同样只会回到旧统筹会话，由它代存为 `s1c/prep-report.md`；交接时该子会话仍在跑，若接手时这个文件还没有，就以 `s1c/services.txt`、`s1c/scripts/`、`s1c/plan.md`（若有）和 WSL `~/npc-s1-run/` 的 `*-s1c*` 脚本为准，缺的部分重新派人调研。
+
 文件不存在说明那个子会话没跑完：看 `git status`、`docker ps -a | grep npc-s1`、WSL `ls ~/npc-s1-run`、`pgrep -a beam` 判断做到哪，再按本页任务书的意思重新派。
 两个子任务的任务书要点都在本页“S1-B 结果”“薄片一的任务”和总纲里；实跑配方在“证据与复跑”。
 
