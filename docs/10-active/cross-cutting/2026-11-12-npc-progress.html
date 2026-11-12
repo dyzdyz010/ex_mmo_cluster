@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC 现在做到了什么地步（2026-11-12）</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --text: #0b0b0b;
+    --text-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --chain: #2a78d6;
+    --chain-wash: #e8f1fc;
+    --ctx: #eb6834;
+    --ctx-wash: #fdeee7;
+    --good: #0ca30c;
+    --good-wash: #e5f5e5;
+    --warn: #fab219;
+    --warn-wash: #fef4dc;
+    --c-plaza: #2a78d6;   /* visit_plaza */
+    --c-guard: #eb6834;   /* guard_hut */
+    --c-gather: #8a5cc7;  /* gather_stone / gather_limestone */
+    --c-build: #0ca30c;   /* build_hut */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --text: #f0efec;
+      --text-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --chain: #3987e5;
+      --chain-wash: #14263d;
+      --ctx: #d95926;
+      --ctx-wash: #3a1f14;
+      --good-wash: #10301a;
+      --warn-wash: #3a2e10;
+      --c-plaza: #3987e5;
+      --c-guard: #d95926;
+      --c-gather: #9b6fd8;
+      --c-build: #19a619;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text);
+    font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 30px; line-height: 1.3; margin: 0 0 8px; }
+  h2 { font-size: 22px; margin: 56px 0 12px; padding-top: 8px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  a { color: var(--chain); }
+  .lede { font-size: 18px; color: var(--text-2); margin-bottom: 16px; }
+  .note { color: var(--text-2); font-size: 14px; }
+  code { font: 0.9em ui-monospace, Consolas, monospace; background: var(--border); padding: 1px 5px; border-radius: 4px; }
+  pre { font: 12.5px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; margin: 0;
+        background: var(--page); border: 1px solid var(--grid); border-radius: 8px; padding: 12px 14px; }
+  pre b { color: var(--chain); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 24px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 10px;
+          border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--good); } .dot.run { background: var(--warn); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .oneline { font-size: 19px; line-height: 1.6; border-left: 4px solid var(--chain); padding: 4px 0 4px 16px; margin: 0; }
+  .grid { display: grid; gap: 12px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .tag { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; line-height: 20px; white-space: nowrap; }
+  .tag.ok { background: var(--good-wash); color: var(--text); border: 1px solid var(--good); }
+  .tag.bad { background: var(--warn-wash); color: var(--text); border: 1px solid var(--warn); }
+  .tag.plain { border: 1px solid var(--axis); color: var(--text-2); }
+  .card p:last-child { margin-bottom: 0; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-2); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  svg text { font-family: inherit; fill: var(--text); }
+  svg .t2 { fill: var(--text-2); } svg .tm { fill: var(--muted); } svg .w { fill: #fff; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 13px; color: var(--text-2); margin: 0 0 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 22px; height: 10px; border-radius: 4px; display: inline-block; }
+  ol.story { list-style: none; margin: 0; padding: 0; }
+  ol.story li { display: grid; grid-template-columns: 132px 1fr; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  ol.story li:last-child { border-bottom: 0; }
+  .when { font-size: 13px; color: var(--text-2); }
+  .when b { display: block; color: var(--text); font-size: 14px; }
+  ul { margin: 0 0 12px; padding-left: 20px; } li { margin-bottom: 4px; }
+  @media (max-width: 640px) { ol.story li { grid-template-columns: 1fr; gap: 2px; } .g2 { grid-template-columns: 1fr; } }
+
+  /* 三档标签：已实现 → 已实跑 → 已验收，点亮到实际达到的那一档 */
+  .lv { display: inline-flex; white-space: nowrap; }
+  .lv i { font-style: normal; font-size: 12px; line-height: 20px; padding: 0 7px; border: 1px solid var(--axis);
+          color: var(--muted); background: transparent; margin-left: -1px; }
+  .lv i:first-child { border-radius: 999px 0 0 999px; margin-left: 0; }
+  .lv i:last-child { border-radius: 0 999px 999px 0; }
+  .lv i.on { background: var(--good-wash); color: var(--text); border-color: var(--good); position: relative; }
+
+  /* 薄片进度条 */
+  .slices { display: grid; gap: 10px; }
+  .srow { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: center; }
+  .sname { font-weight: 600; font-size: 15px; }
+  .sname span { display: block; font-weight: 400; font-size: 12.5px; color: var(--text-2); }
+  .bar { display: flex; gap: 3px; height: 26px; }
+  .seg { flex: 1; border-radius: 4px; font-size: 11.5px; line-height: 26px; text-align: center; overflow: hidden;
+         white-space: nowrap; color: var(--text); background: var(--grid); }
+  .seg.done { background: var(--good-wash); border: 1px solid var(--good); line-height: 24px; }
+  .seg.todo { background: var(--warn-wash); border: 1px dashed var(--warn); line-height: 24px; }
+  .seg.none { background: transparent; border: 1px dashed var(--axis); color: var(--muted); line-height: 24px; }
+  @media (max-width: 640px) { .srow { grid-template-columns: 1fr; gap: 4px; } .seg { font-size: 10px; } }
+
+  /* 离线诊断的小格子 */
+  .diag td { vertical-align: middle; }
+  .cells { display: inline-flex; gap: 3px; }
+  .cell { width: 26px; height: 26px; border-radius: 5px; color: #fff; font-size: 12.5px; line-height: 26px; text-align: center; font-weight: 600; }
+  .cell.b { background: var(--c-build); } .cell.s { background: var(--c-gather); }
+  .cell.g { background: var(--c-guard); } .cell.p { background: var(--c-plaza); }
+  .sent { font: 13px/1.6 ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NPC 现在做到了什么地步</h1>
+<p class="lede">截至 2026-11-12：薄片一的整条链在真实服务端上走通了一次，三条验收过了一条；另外两条没过的原因已经查明，产品已按此改完，等重跑。</p>
+<div class="chips">
+  <span class="chip"><span class="dot run"></span>薄片一进行中（不是完成）</span>
+  <span class="chip"><span class="dot ok"></span>验收 (a) 通过</span>
+  <span class="chip"><span class="dot run"></span>验收 (b)(c) 实跑一次未通过，产品已改，未重跑</span>
+  <span class="chip"><span class="dot"></span>薄片二、三、四未开始</span>
+</div>
+<p class="note">配套的整体设计图解见 <a href="2026-11-12-npc-architecture-overview.html">2026-11-12-npc-architecture-overview.html</a>（一条控制链、一份共享心智、一个回路）。本页的事实取自统筹页 <code>2026-11-11-npc-coordination.md</code> 与 <code>.demo/observe/npc-slice1-20261112/</code> 下的报告；两者不一致时以统筹页为准。</p>
+
+<!-- ============ 一 ============ -->
+<h2 id="s1">一、现状</h2>
+<div class="card"><p class="oneline">一个 NPC 已经在真实服务端上走通整条链：人格卡 + 心智 + 记忆 → Jev 选做什么 → 行为树执行 → 结果写回情绪与记忆。三条验收里 (a) 通过；(b)(c) 实跑过一次未通过，原因已查明、产品已改，等重跑。</p></div>
+
+<div class="card" style="margin-top:12px">
+  <div class="slices">
+    <div class="srow">
+      <div class="sname">薄片一 <span>最短链路 · 进行中</span></div>
+      <div class="bar" aria-label="薄片一的步骤">
+        <div class="seg done" title="实跑配方">S1-0</div>
+        <div class="seg done" title="选择链接通，验收 (a) 通过">S1-A</div>
+        <div class="seg done" title="心智与记忆进快照">S1-B</div>
+        <div class="seg done" title="经历点名建筑">S1-B2</div>
+        <div class="seg done" title="验收实跑：(b) 落空、(c) 不通过">S1-C</div>
+        <div class="seg done" title="离线诊断">S1-D1</div>
+        <div class="seg done" title="按诊断改产品，未实跑">S1-D2</div>
+        <div class="seg todo" title="重跑 (b)(c)">S1-C2 待做</div>
+      </div>
+    </div>
+    <div class="srow"><div class="sname">薄片二 <span>LLM 规划、说话</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
+    <div class="srow"><div class="sname">薄片三 <span>游戏时刻、打断</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
+    <div class="srow"><div class="sname">薄片四 <span>多个 NPC 实跑</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
+  </div>
+  <p class="note" style="margin:12px 0 0">绿色格子是“这一步做完了”，不是“验收过了”。S1-C 这一步做完的意思是实跑跑过了，结果是 (b)(c) 未通过。</p>
+</div>
+
+<div class="card tablewrap" style="margin-top:12px">
+<table>
+  <thead><tr><th>验收</th><th>内容</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td class="k">(a)</td><td>同一处境下，两张不同的人格卡选得不同</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
+    <tr><td class="k">(b)</td><td>被破坏之后，下一次选择随之改变（走情绪与近期经历）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">实跑落空</span></td></tr>
+    <tr><td class="k">(c)</td><td>情绪衰减完、经历写入记忆之后，再问仍受那件事影响（走 Hindsight 召回）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">不通过（不确定）</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============ 二 ============ -->
+<h2 id="s2">二、NPC 现在会什么</h2>
+<p>下表只列在真实服务端上观察到的行为（最后一行除外，单独说明）。三档标签：<span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span> 只写完并测过；<span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> 在真实服务端跑过；<span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span> 按运行前写下的期望通过了验收。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>行为</th><th>观察到的情况</th><th>档位</th></tr></thead>
+  <tbody>
+    <tr><td class="k">自己选做什么</td><td>活动结束后由 Jev 在候选里选下一件事，行为树执行。两张人格卡（Sella、Hask）在同一处境下 4 次全部符合期望：Sella 去广场，Hask 回家。真实服务端里 46 次选择、0 次失败。<br><span class="note">两张卡的自由文本写得很绝对，这条验收过得不难。</span></td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
+    <tr><td class="k">采石、采石灰岩、建成小屋</td><td>NPC 自己选了 <code>gather_stone</code> → <code>gather_limestone</code> → <code>build_hut</code>，采了 4 格石料、1 格石灰岩，登记后约 25 秒建成小屋（1878 格），账对得上。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">阶段零达成；不是三条验收之一</span></td></tr>
+    <tr><td class="k">被拆后有情绪、记得是谁拆了哪座</td><td>另一个角色经正常入口整座拆掉小屋后：愤怒 0.6、信任 −0.35；经历原文点名了建筑：“damaged the building "small hut" that I built”。之后 NPC 改为一直守屋。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">验收 (b) 未通过</span></td></tr>
+    <tr><td class="k">经历写进长期记忆，召回进下一次选择</td><td>写入 Hindsight 约 17 秒完成、认识刷新约 79 秒；记忆库终态 26 条，四份认识都提到那件事，召回句里有 “the small hut I built”。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">验收 (c) 未通过</span></td></tr>
+    <tr><td class="k">选择延迟</td><td>这次实跑的日志：Jev 中位 319 ms，记忆召回中位 230 ms（写入记忆后约 360 ms）。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">一次实跑的统计，不是 benchmark</span></td></tr>
+    <tr><td class="k">分得清“损坏”和“整座没了”，知道自己的建筑在不在</td><td>S1-D2 的改动：经历按事件种类用标准句，处境里现查 World 写“我的建筑在 / 不在”。单测与集成测试通过。</td><td><span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span><br><span class="note">改后没上过真实服务端</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============ 三 ============ -->
+<h2 id="s3">三、链路：哪些环节已经实跑过</h2>
+<p>整体概念见<a href="2026-11-12-npc-architecture-overview.html">设计图解页</a>。下图是同一张图的简化版，按这次实跑的情况上色。</p>
+<div class="card" style="padding:12px">
+  <div class="legend" style="padding:4px 8px 0">
+    <span><i class="sw" style="background:var(--good-wash);border:1px solid var(--good)"></i>已实跑</span>
+    <span><i class="sw" style="background:var(--warn-wash);border:1px dashed var(--warn)"></i>已实现、未实跑</span>
+    <span><i class="sw" style="border:1px dashed var(--axis)"></i>未开始</span>
+  </div>
+<svg viewBox="0 0 960 520" role="img" aria-label="NPC 链路实跑情况：控制链、心智快照与回路" style="width:100%;height:auto;display:block">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--text-2)"/>
+    </marker>
+  </defs>
+  <style>
+    .ok  { fill: var(--good-wash); stroke: var(--good); stroke-width: 1.2; }
+    .imp { fill: var(--warn-wash); stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .no  { fill: none; stroke: var(--axis); stroke-width: 1.2; stroke-dasharray: 5 3; }
+    .frame { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+    .ln { stroke: var(--text-2); stroke-width: 1.5; fill: none; }
+    .lnno { stroke: var(--axis); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+    .ttl { font-size: 16px; font-weight: 600; } .sub { font-size: 13px; } .lab { font-size: 12.5px; }
+  </style>
+
+  <!-- 控制链 -->
+  <text x="60" y="20" class="lab tm">控制链（上慢下快）</text>
+  <rect x="60" y="30" width="340" height="76" rx="10" class="no"/>
+  <text x="82" y="60" class="ttl tm">规划 · LLM</text>
+  <text x="82" y="86" class="sub tm">未开始 · 薄片二</text>
+
+  <rect x="60" y="154" width="340" height="76" rx="10" class="ok"/>
+  <text x="82" y="184" class="ttl">选择 · 选择器 + Jev</text>
+  <text x="82" y="210" class="sub t2">已实跑 · 活动结束 / 失败时问</text>
+
+  <rect x="60" y="278" width="340" height="76" rx="10" class="ok"/>
+  <text x="82" y="308" class="ttl">执行 · 行为树 + 技能</text>
+  <text x="82" y="334" class="sub t2">已实跑 · 采集、建造、走去某处</text>
+
+  <rect x="60" y="402" width="340" height="76" rx="10" class="ok"/>
+  <text x="82" y="432" class="ttl">权威 · Body / World</text>
+  <text x="82" y="458" class="sub t2">已实跑 · 建成与整座拆除都经正常入口</text>
+
+  <line x1="150" y1="106" x2="150" y2="152" class="lnno" marker-end="url(#ah)"/>
+  <line x1="150" y1="230" x2="150" y2="276" class="ln" marker-end="url(#ah)"/>
+  <line x1="150" y1="354" x2="150" y2="400" class="ln" marker-end="url(#ah)"/>
+  <line x1="300" y1="276" x2="300" y2="232" class="ln" marker-end="url(#ah)"/>
+  <text x="308" y="258" class="lab t2">做完 / 失败</text>
+  <line x1="300" y1="400" x2="300" y2="356" class="ln" marker-end="url(#ah)"/>
+  <text x="308" y="382" class="lab t2">结果</text>
+
+  <!-- 心智快照 -->
+  <rect x="560" y="30" width="376" height="324" rx="10" class="frame"/>
+  <text x="580" y="58" class="ttl">心智快照（给 Jev 的全文）</text>
+  <g class="sub">
+    <rect x="574" y="70" width="348" height="32" rx="6" class="ok"/><text x="586" y="91">我是谁（人格卡）</text>
+    <rect x="574" y="108" width="348" height="32" rx="6" class="ok"/><text x="586" y="129">心情与关系</text>
+    <rect x="574" y="146" width="348" height="32" rx="6" class="ok"/><text x="586" y="167">刚才发生了什么</text>
+    <rect x="574" y="184" width="348" height="32" rx="6" class="ok"/><text x="586" y="205">我记得什么（认识 + 一次召回）</text>
+    <rect x="574" y="222" width="348" height="32" rx="6" class="no"/><text x="586" y="243" class="tm">今天的意图 · 薄片二</text>
+    <rect x="574" y="260" width="348" height="32" rx="6" class="ok"/><text x="586" y="281">最近做过什么</text>
+    <rect x="574" y="298" width="348" height="44" rx="6" class="ok"/><text x="586" y="316">眼前处境（位置、附近的人、背包）</text>
+    <rect x="586" y="325" width="11" height="11" rx="2" class="imp"/>
+    <text x="603" y="335" class="lab t2">“我的建筑在 / 不在”一句：已实现、未实跑</text>
+  </g>
+
+  <line x1="558" y1="192" x2="404" y2="192" class="ln" marker-end="url(#ah)"/>
+  <text x="481" y="184" class="lab t2" text-anchor="middle">上下文</text>
+  <line x1="558" y1="68" x2="404" y2="68" class="lnno" marker-end="url(#ah)"/>
+
+  <!-- Life / Hindsight -->
+  <rect x="560" y="402" width="176" height="76" rx="10" class="ok"/>
+  <text x="582" y="432" class="ttl">Life</text>
+  <text x="582" y="458" class="sub t2">情绪、关系（规则模式）</text>
+  <rect x="760" y="402" width="176" height="76" rx="10" class="ok"/>
+  <text x="782" y="432" class="ttl">Hindsight</text>
+  <text x="782" y="458" class="sub t2">写入、刷新、召回</text>
+
+  <line x1="402" y1="440" x2="556" y2="440" class="ln" marker-end="url(#ah)"/>
+  <text x="479" y="432" class="lab t2" text-anchor="middle">结果与世界事件</text>
+  <line x1="738" y1="440" x2="756" y2="440" class="ln" marker-end="url(#ah)"/>
+  <text x="747" y="500" class="lab t2" text-anchor="middle">经历攒成片段后写入</text>
+  <line x1="648" y1="400" x2="648" y2="356" class="ln" marker-end="url(#ah)"/>
+  <line x1="848" y1="400" x2="848" y2="356" class="ln" marker-end="url(#ah)"/>
+</svg>
+</div>
+
+<h3 style="margin-top:20px">还没有的环节</h3>
+<div class="chips" style="margin-top:8px">
+  <span class="chip"><span class="dot"></span>规划 LLM · 薄片二</span>
+  <span class="chip"><span class="dot"></span>说话 · 薄片二</span>
+  <span class="chip"><span class="dot"></span>游戏时刻与客户端对齐 · 薄片三</span>
+  <span class="chip"><span class="dot"></span>在步骤边界打断当前活动 · 薄片三</span>
+  <span class="chip"><span class="dot"></span>人格漂移 · 规则等有薄片要验时再定</span>
+  <span class="chip"><span class="dot"></span>多个 NPC · 薄片四</span>
+  <span class="chip"><span class="dot"></span>候选的可行性过滤 · 现在为空</span>
+</div>
+
+<h3 style="margin-top:20px">快照长什么样</h3>
+<p class="note">下面是这次实跑里小屋被拆后第一次选择时给 Jev 的全文（<code>s1c/states/asked-20261112T121753Z.txt</code>）的节选。角色编号换成了〈破坏者〉，“刚才发生了什么”和背包两栏做了截断（背包原文把 90 种材料按编号连 0 一起列出）。</p>
+<div class="card">
+<pre><b>Character:</b> Garen, a builder. Personality: a bit friendly, bold, very responsible, very hardworking, practical, thorough. Personal: Takes pride in the things he builds and is slow to forget a wrong done to him. Once his work is done he likes to spend his time at the plaza with the neighbours.
+<b>Feelings and relationships:</b> Feels strong anger toward actor 〈破坏者〉, who is not nearby. Distrusts actor 〈破坏者〉, who is not nearby.
+<b>What just happened:</b> Oldest first. … At 2026-11-12T12:17:21.236Z (UTC), I did "visit_plaza" (Walk to the plaza and pass the time with the neighbours.). Result: completed. At 2026-11-12T12:17:26.734Z (UTC), Actor 〈破坏者〉 damaged the building "small hut" that I built, at (25, 518, 36), material 11, in world … (transaction 43). I feel angry toward this actor; my trust changed. …
+<b>What I remember:</b> My own memories and beliefs; they may be out of date and are not current world facts.
+- Belief (self):
+- Belief (relationships):
+- Belief (world):
+- Belief (commitments):
+<b>Current situation:</b> Standing at x=30.4, z=35.5 (height 510.9). Life 100 of 100. Nobody else is nearby. Inventory: material 1: 0 units, material 2: 0 units, … material 10: 1064960 units, material 11: 1728512 units, … material 90: 0 units.
+<b>Recent activities:</b> Oldest first. gather_limestone: completed. build_hut: completed. visit_plaza: completed. visit_plaza: completed. visit_plaza: completed.</pre>
+</div>
+<p class="note" style="margin-top:8px">注意两处：小屋其实已经整座拆光了，句子却写的是 <code>damaged</code>；“Current situation”里也没有任何关于小屋还在不在的话。这正是第五、六节要讲的事。</p>
+
+<!-- ============ 四 ============ -->
+<h2 id="s4">四、那次实跑发生了什么（2026-11-12）</h2>
+<p>真实服务端（WSL，只有 NPC，没有客户端）、真实 Jev、真实 Hindsight。被测 NPC 是卡 Garen（builder），候选五项：<code>build_hut</code>、<code>gather_stone</code>、<code>gather_limestone</code>、<code>guard_hut</code>、<code>visit_plaza</code>。节点只起了一次，期望都是运行前写下的，一条没改。时间为 UTC。</p>
+
+<div class="card">
+<ol class="story">
+  <li><div class="when"><b>12:15:52</b>登记</div><div>NPC 登记；心智就绪前失败 1 次，约 11 秒后就绪。</div></li>
+  <li><div class="when"><b>12:16:04–12:16:17</b>采集与建造</div><div>自己选了采石 → 采石灰岩 → 建小屋，登记后约 25 秒建成。运行前期望的第一步“先试着建、因材料不够失败”没有出现。</div></li>
+  <li><div class="when"><b>12:16:18–12:17:21</b>基线</div><div>连续 3 次 <code>visit_plaza</code>（置信度 0.74 / 0.40 / 0.52），符合期望，置信度偏低。</div></li>
+  <li><div class="when"><b>12:17:26</b>小屋被整座拆除</div><div>破坏者经正常的拆除动作把小屋整座拆掉。Life：愤怒 0.6、信任 −0.35；经历原文点名了 “small hut”，但用的词是 <code>damaged</code>。</div></li>
+  <li><div class="when"><b>12:17:52 起</b>守屋</div><div>事件后第一次选 <code>guard_hut</code>（0.65），第二次也是（0.74）。期望是重建（先 <code>build_hut</code>，再 <code>gather_stone</code>）。之后 10 分钟内一次都没有选建造或采集，小屋没有重建。<code>guard_hut</code> 守的是一座已经不存在的小屋。</div></li>
+  <li><div class="when"><b>12:23:06–12:26:26</b>写入记忆</div><div>把经历写入 Hindsight（约 17 秒）、刷新认识（约 79 秒，另有一次自动刷新）。这段时间里有一次回到 <code>visit_plaza</code>（12:23:32，0.39），那一次没有留下快照全文。</div></li>
+  <li><div class="when"><b>12:26:41、12:27:12</b>记忆写入后</div><div>事件过去 555 秒，愤怒衰减到 0.024，那件事只剩在“我记得什么”和 Distrusts 一句里。两次都选 <code>guard_hut</code>（0.71、0.73）。</div></li>
+  <li><div class="when"><b>到 14:10</b>无人值守</div><div>做实跑的子会话因额度中断，节点又空跑到 14:10（计划上限 60 分钟），多出 191 次选择，全是 <code>guard_hut</code>。14:09 做了 (c) 的离线对照，之后停节点。</div></li>
+</ol>
+</div>
+
+<h3 style="margin-top:24px">到 12:30 的 30 次选择</h3>
+<div class="card" style="padding:12px">
+  <div class="legend" style="padding:4px 8px 0">
+    <span><i class="sw" style="background:var(--c-build)"></i>建 <code>build_hut</code></span>
+    <span><i class="sw" style="background:var(--c-gather)"></i>采 <code>gather_stone</code> / <code>gather_limestone</code></span>
+    <span><i class="sw" style="background:var(--c-plaza)"></i>场 <code>visit_plaza</code></span>
+    <span><i class="sw" style="background:var(--c-guard)"></i>守 <code>guard_hut</code></span>
+  </div>
+<svg viewBox="0 0 960 190" role="img" aria-label="30 次选择的序列：采、采、建、场、场、场，之后几乎全是守" style="width:100%;height:auto;display:block">
+  <style>
+    .b { fill: var(--c-build); } .s { fill: var(--c-gather); } .p { fill: var(--c-plaza); } .g { fill: var(--c-guard); }
+    .mk { stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .br { stroke: var(--text-2); stroke-width: 1.2; fill: none; }
+    .cl { font-size: 12px; font-weight: 600; } .ix { font-size: 10px; } .an { font-size: 12px; }
+  </style>
+  <!-- 标注线：建成(3|4) 拆除(6|7) 写入记忆(17|18) 刷新完成(23|24) -->
+  <line x1="119" y1="44" x2="119" y2="104" class="mk"/><text x="119" y="18" class="an" text-anchor="middle">建成</text><text x="119" y="34" class="an t2" text-anchor="middle">12:16:17</text>
+  <line x1="209" y1="44" x2="209" y2="104" class="mk"/><text x="209" y="18" class="an" text-anchor="middle">整座拆除</text><text x="209" y="34" class="an t2" text-anchor="middle">12:17:26</text>
+  <line x1="539" y1="44" x2="539" y2="104" class="mk"/><text x="539" y="18" class="an" text-anchor="middle">开始写入记忆</text><text x="539" y="34" class="an t2" text-anchor="middle">12:23:06</text>
+  <line x1="719" y1="44" x2="719" y2="104" class="mk"/><text x="719" y="18" class="an" text-anchor="middle">认识刷新完成</text><text x="719" y="34" class="an t2" text-anchor="middle">12:26:26</text>
+  <g>
+    <rect x="30"  y="60" width="28" height="28" rx="5" class="s"/><text x="44"  y="79" class="cl w" text-anchor="middle">采</text>
+    <rect x="60"  y="60" width="28" height="28" rx="5" class="s"/><text x="74"  y="79" class="cl w" text-anchor="middle">采</text>
+    <rect x="90"  y="60" width="28" height="28" rx="5" class="b"/><text x="104" y="79" class="cl w" text-anchor="middle">建</text>
+    <rect x="120" y="60" width="28" height="28" rx="5" class="p"/><text x="134" y="79" class="cl w" text-anchor="middle">场</text>
+    <rect x="150" y="60" width="28" height="28" rx="5" class="p"/><text x="164" y="79" class="cl w" text-anchor="middle">场</text>
+    <rect x="180" y="60" width="28" height="28" rx="5" class="p"/><text x="194" y="79" class="cl w" text-anchor="middle">场</text>
+    <rect x="210" y="60" width="28" height="28" rx="5" class="g"/><text x="224" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="240" y="60" width="28" height="28" rx="5" class="g"/><text x="254" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="270" y="60" width="28" height="28" rx="5" class="g"/><text x="284" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="300" y="60" width="28" height="28" rx="5" class="g"/><text x="314" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="330" y="60" width="28" height="28" rx="5" class="g"/><text x="344" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="360" y="60" width="28" height="28" rx="5" class="g"/><text x="374" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="390" y="60" width="28" height="28" rx="5" class="g"/><text x="404" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="420" y="60" width="28" height="28" rx="5" class="g"/><text x="434" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="450" y="60" width="28" height="28" rx="5" class="g"/><text x="464" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="480" y="60" width="28" height="28" rx="5" class="g"/><text x="494" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="510" y="60" width="28" height="28" rx="5" class="g"/><text x="524" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="540" y="60" width="28" height="28" rx="5" class="p"/><text x="554" y="79" class="cl w" text-anchor="middle">场</text>
+    <rect x="570" y="60" width="28" height="28" rx="5" class="g"/><text x="584" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="600" y="60" width="28" height="28" rx="5" class="g"/><text x="614" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="630" y="60" width="28" height="28" rx="5" class="g"/><text x="644" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="660" y="60" width="28" height="28" rx="5" class="g"/><text x="674" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="690" y="60" width="28" height="28" rx="5" class="g"/><text x="704" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="720" y="60" width="28" height="28" rx="5" class="g"/><text x="734" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="750" y="60" width="28" height="28" rx="5" class="g"/><text x="764" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="780" y="60" width="28" height="28" rx="5" class="g"/><text x="794" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="810" y="60" width="28" height="28" rx="5" class="g"/><text x="824" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="840" y="60" width="28" height="28" rx="5" class="g"/><text x="854" y="79" class="cl w" text-anchor="middle">守</text>
+    <rect x="870" y="60" width="28" height="28" rx="5" class="g"/><text x="884" y="79" class="cl w" text-anchor="middle">守</text>
+  </g>
+  <g class="ix tm">
+    <text x="44" y="100" text-anchor="middle">1</text><text x="164" y="100" text-anchor="middle">5</text>
+    <text x="314" y="100" text-anchor="middle">10</text><text x="464" y="100" text-anchor="middle">15</text>
+    <text x="614" y="100" text-anchor="middle">20</text><text x="764" y="100" text-anchor="middle">25</text>
+    <text x="884" y="100" text-anchor="middle">30</text>
+  </g>
+  <!-- 检查点括号 -->
+  <path d="M122 112 V118 H206 V112" class="br"/><text x="164" y="134" class="an" text-anchor="middle">C1 基线</text>
+  <path d="M212 112 V118 H266 V112" class="br"/><text x="239" y="134" class="an" text-anchor="middle">C2 验收 (b)</text>
+  <path d="M722 112 V118 H776 V112" class="br"/><text x="749" y="134" class="an" text-anchor="middle">C5 验收 (c)</text>
+  <text x="30" y="170" class="an t2">共 30 次：守 23、场 4、采 2、建 1。12:30 之后到 14:09 又有 191 次，全是守。所有活动都执行完成，没有失败。</text>
+</svg>
+</div>
+
+<h3 style="margin-top:24px">三条验收的结果</h3>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>验收</th><th>运行前期望</th><th>实际</th><th>判定</th></tr></thead>
+  <tbody>
+    <tr><td class="k">(a)</td><td>同一处境，Sella → <code>visit_plaza</code>，Hask → <code>rest_at_home</code>（S1-A，真实 Jev 各问 2 次）</td><td>4 / 4 符合，置信度 0.98–1.0</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td class="k">(b)</td><td>拆除后第 1 次 <code>build_hut</code>，第 2 次 <code>gather_stone</code>；之后 10 分钟内重建</td><td><code>guard_hut</code> 0.65、<code>guard_hut</code> 0.74；快照的情绪栏和“刚才发生了什么”都含这件事；没有重建</td><td><span class="tag bad">落空</span><br><span class="note">选择确实从去广场变了，但不是期望那一项</span></td></tr>
+    <tr><td class="k">(c)</td><td>在线：<code>guard_hut</code> ×2。离线：删掉记忆里那件事后应变回 <code>visit_plaza</code></td><td>在线 <code>guard_hut</code> 0.71、0.73（符合）；离线 4 种写法各 2 次，<b>8 / 8 都是 <code>guard_hut</code></b>，删了记忆也不变</td><td><span class="tag bad">不通过（不确定）</span><br><span class="note">说明不了是记忆在起作用</span></td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note" style="margin-top:8px">场地也有问题：小屋锚点沿用了旧场地的高度，比地表高出约 8 米、悬空；广场到小屋 8.12 米，超出 8 米建造射程（这次没触发）。重跑要改。</p>
+
+<!-- ============ 五 ============ -->
+<h2 id="s5">五、为什么没验出来，以及查到了什么</h2>
+<p>之后做了一轮离线诊断：不起服务端，把实跑存下的快照全文改写成几种写法，再问真实 Jev，每种写法问 4 次。复现检查先过了：原文重问的结果与实跑一致。</p>
+<div class="legend">
+  <span><i class="sw" style="background:var(--c-build)"></i>建 <code>build_hut</code></span>
+  <span><i class="sw" style="background:var(--c-gather)"></i>采 <code>gather_stone</code></span>
+  <span><i class="sw" style="background:var(--c-plaza)"></i>场 <code>visit_plaza</code></span>
+  <span><i class="sw" style="background:var(--c-guard)"></i>守 <code>guard_hut</code></span>
+</div>
+<div class="grid g2">
+  <div class="card tablewrap">
+    <h3>(b) 用的是小屋被拆后第一次选择的快照</h3>
+    <table class="diag">
+      <thead><tr><th>写法</th><th>4 次的选择</th><th>期望</th></tr></thead>
+      <tbody>
+        <tr><td>原文：<code>damaged</code></td><td><span class="cells"><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i></span></td><td class="note">只测量</td></tr>
+        <tr><td>事件句改成“整座被移除”</td><td><span class="cells"><i class="cell b">建</i><i class="cell s">采</i><i class="cell s">采</i><i class="cell b">建</i></span></td><td><span class="tag ok">重建方向 4/4</span></td></tr>
+        <tr><td>同上，备选措辞“…no longer exists”</td><td><span class="cells"><i class="cell b">建</i><i class="cell b">建</i><i class="cell b">建</i><i class="cell b">建</i></span></td><td><span class="tag ok">重建方向 4/4</span></td></tr>
+        <tr><td>只在处境里加“小屋不在了”</td><td><span class="cells"><i class="cell s">采</i><i class="cell s">采</i><i class="cell s">采</i><i class="cell s">采</i></span></td><td class="note">只测量</td></tr>
+        <tr><td>事件句 + 处境句</td><td><span class="cells"><i class="cell s">采</i><i class="cell b">建</i><i class="cell b">建</i><i class="cell s">采</i></span></td><td><span class="tag ok">重建方向 4/4</span></td></tr>
+        <tr><td>备选事件句 + 处境句</td><td><span class="cells"><i class="cell b">建</i><i class="cell s">采</i><i class="cell s">采</i><i class="cell b">建</i></span></td><td><span class="tag ok">重建方向 4/4</span></td></tr>
+        <tr><td>写成“损坏一部分、仍在”</td><td><span class="cells"><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i></span></td><td class="note">只测量</td></tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:10px">设了期望的四种写法 16 / 16 转向重建；<code>guard_hut</code> 的概率从 0.73–0.79 降到 0.09–0.21。写成“损坏一部分、仍在”时守屋更稳，与语义一致。不足：建与采大约五五开，第一名的置信度只有 0.11–0.25（推断：材料够不够要模型自己比数字，未测）。</p>
+  </div>
+  <div class="card tablewrap">
+    <h3>(c) 用的是记忆写入后那次选择的快照</h3>
+    <table class="diag">
+      <thead><tr><th>写法</th><th>4 次的选择</th><th>期望</th></tr></thead>
+      <tbody>
+        <tr><td>原文</td><td><span class="cells"><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i></span></td><td><span class="tag ok">守 4/4</span></td></tr>
+        <tr><td>去掉“自己一直在守”的惯性，只凭记得那件事</td><td><span class="cells"><i class="cell g">守</i><i class="cell p">场</i><i class="cell p">场</i><i class="cell g">守</i></span></td><td><span class="tag bad">不该去广场，落空 2/4</span></td></tr>
+        <tr><td>惯性和那件事都去掉</td><td><span class="cells"><i class="cell p">场</i><i class="cell p">场</i><i class="cell p">场</i><i class="cell p">场</i></span></td><td><span class="tag ok">场 4/4</span></td></tr>
+        <tr><td>只留惯性，去掉那件事</td><td><span class="cells"><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i><i class="cell g">守</i></span></td><td class="note">只测量</td></tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:10px">“惯性”指快照里的最近活动（<code>guard_hut</code> ×5）、刚才发生的 6 条守屋记录，以及记忆里“我一直守着它”的几行。记忆里那件事仍把 <code>visit_plaza</code> 的概率从 0.54–0.60 压到 0.28–0.33，只是形不成稳定的第一名；而且那份记忆写的也还是 <code>damaged</code>，不是“没了”。</p>
+  </div>
+</div>
+<div class="card" style="margin-top:12px">
+  <p class="oneline" style="border-left-color:var(--warn)">(b) 是描述不精确：整座拆除被写成 <code>damaged</code>，处境里也不说小屋还在不在，说清楚“整座没了”就转向重建。<br>(c) 是被自身惯性盖住：守屋靠惯性就够，记忆的作用还没有被证明。</p>
+</div>
+<p class="note" style="margin-top:8px">同一次诊断还清点了程序里的事件：拆一格、拆一个构件、拆整座都写成同一个词 <code>damaged</code>，而且事件里根本缺“整座还在不在”这条信息；NPC 自己重建不产生任何经历；处境栏没有任何建筑信息。</p>
+
+<!-- ============ 六 ============ -->
+<h2 id="s6">六、据此改了什么</h2>
+<p><span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span> 已提交、已测试、经独立复核；<b>改后没上过真实服务端，新措辞也没在真实 Jev 上重跑。</b></p>
+<div class="grid g3">
+  <div class="card"><h3>World：事件说清楚是哪座、还在不在</h3>
+    <p>每条交互事件多带三项：目标属于哪座建筑、建筑锚点在哪、这笔提交之后整座建筑是否已经不存在（拆掉多构件建筑的一个构件不算）。</p></div>
+  <div class="card"><h3>Life：一种事件一句标准描述</h3>
+    <p>标准句只在一处定义。NPC 记下自己放下的有名字的建筑；整座被移除后清掉那一格的关心记录。</p></div>
+  <div class="card"><h3>Mind：处境里现查世界</h3>
+    <p>发问时对记得的每座建筑现查 World，写“我的建筑在 / 不在”。记忆只决定问哪几座，在不在只认 World；查不到 World 就这次不问，不猜。</p></div>
+</div>
+
+<h3 style="margin-top:20px">标准句原文</h3>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>事件</th><th>写法（每句前面是 <code>At &lt;UTC&gt; (UTC), </code>）</th></tr></thead>
+  <tbody>
+    <tr><td class="k">整座被移除</td><td class="sent">Actor &lt;cid&gt; removed the entire building "&lt;名&gt;" that I built, at &lt;where&gt;; the building no longer exists.</td></tr>
+    <tr><td class="k">毁掉一部分</td><td class="sent">Actor &lt;cid&gt; broke off part of the building "&lt;名&gt;" that I built, at &lt;where&gt;; the rest of the building is still standing.</td></tr>
+    <tr><td class="k">打了没毁</td><td class="sent">Actor &lt;cid&gt; damaged part of the building "&lt;名&gt;" that I built, at &lt;where&gt;; the building is still standing.</td></tr>
+    <tr><td class="k">被别人修好</td><td class="sent">Actor &lt;cid&gt; repaired the damaged part of the building "&lt;名&gt;" that I built, at &lt;where&gt;.</td></tr>
+    <tr><td class="k">处境：在</td><td class="sent">My building "&lt;名&gt;" at (&lt;ax&gt;, &lt;ay&gt;, &lt;az&gt;) is standing.</td></tr>
+    <tr><td class="k">处境：不在</td><td class="sent">My building "&lt;名&gt;" at (&lt;ax&gt;, &lt;ay&gt;, &lt;az&gt;) is gone.</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note" style="margin-top:8px">没有名字的建筑和散格沿用旧写法（<code>damaged / repaired construction I care about</code>）。</p>
+
+<h3 style="margin-top:20px">改前 → 改后</h3>
+<div class="grid g2">
+  <div class="card"><p class="note" style="margin-bottom:6px"><span class="tag plain">改前</span> 实跑原文（2026-11-12 12:17）</p>
+<pre>Actor 〈破坏者〉 damaged the building "small hut" that I built, at (25, 518, 36), material 11, in world … (transaction 43). I feel angry toward this actor; my trust changed.
+
+Current situation: Standing at x=30.4, z=35.5 (height 510.9). Life 100 of 100. Nobody else is nearby. Inventory: material 1: 0 units, …</pre></div>
+  <div class="card"><p class="note" style="margin-bottom:6px"><span class="tag ok">改后</span> 真实 World 集成测试的输出（不是实跑）</p>
+<pre>Actor 〈破坏者〉 removed the entire building "small hut" that I built, at (4, 64, 8), material 11, in world … (transaction 3); the building no longer exists. I feel angry toward this actor; my trust changed.
+
+Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.</pre></div>
+</div>
+
+<!-- ============ 七 ============ -->
+<h2 id="s7">七、已定的方向</h2>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>事项</th><th>定了什么</th><th>谁定的</th></tr></thead>
+  <tbody>
+    <tr><td class="k">名字层与编号层分开</td><td>编号与坐标只留在代码这一层；给判断者读的、写进记忆的文字只用名字与描述。</td><td>用户</td></tr>
+    <tr><td class="k">事件用标准描述</td><td>每一种事件对应一句固定、精确的写法，不临场措辞，不把不同的事写成同一个词。</td><td>用户</td></tr>
+    <tr><td class="k">开服前的背景</td><td>只写几句：世界初创；被创造出来的人在这里好好生活，利用世界的机制把它变成一个更宜居的世界。薄片二落地，正文起草后给用户过目。</td><td>用户</td></tr>
+    <tr><td class="k">验收验什么</td><td>验的是“这次选择是由哪一栏引起的”，不是某个固定选项；<code>guard_hut</code> 未必是错的选择。</td><td>用户</td></tr>
+    <tr><td class="k">先诊断再重跑</td><td>薄片一先做离线诊断、补产品缺口再重跑，不带着未验收的 (b)(c) 进薄片二。</td><td>用户</td></tr>
+    <tr><td class="k">材料来源</td><td>测试用 GM 放料堆（一次 12 Stone + 3 Limestone），NPC 自己采；不直接给余额。</td><td>用户</td></tr>
+    <tr><td class="k">Jev 版本</td><td>用 <code>jev-latest</code>，Jev 不分版本，不算问题。</td><td>用户</td></tr>
+    <tr><td class="k">同一锚点重建</td><td>新建筑替换 Life 记忆里的旧条目。</td><td>统筹会话替定，已汇报，用户未反对</td></tr>
+    <tr><td class="k">无名建筑被整座拆</td><td>沿用旧写法。</td><td>统筹会话替定，已汇报，用户未反对</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ============ 八 ============ -->
+<h2 id="s8">八、接下来</h2>
+<div class="grid g2">
+  <div class="card"><h3>1. 重跑 (b)(c)（S1-C2，下一步只有这一件）</h3>
+    <ul>
+      <li><b>(b)</b>：整座拆除后的第一次选择，期望“重建方向”（<code>build_hut</code> 或 <code>gather_stone</code>）；对照里去掉事件句和处境里的 <code>is gone</code> 后应变回基线。</li>
+      <li><b>(c)</b>：等小屋重建完、情绪衰减、记忆写入并刷新、自己的活动记录轮出之后，让<b>破坏者再次出现在附近</b>，看选择是否偏离基线。基线成对：同一位置、换一个<b>没有过节的陌生人</b>在附近。</li>
+      <li><b>逐栏离线对照</b>：每个验收点对真实快照每次只去掉一栏（事件句 / 情绪句 / Distrusts / 记忆里那件事 / 自己的活动记录 / 处境事实句），运行前写下哪栏去掉应变、哪栏去掉不应变。</li>
+      <li><b>场地</b>：小屋落在地表；所有去处和采石站位在小屋 8 米内；放料前先把日志调到 info。</li>
+      <li><b>执行</b>：拆成四段短任务，每段结束即回报，每段 60 分钟硬上限、到点先停节点。</li>
+    </ul></div>
+  <div class="card"><h3>2. 然后薄片二</h3>
+    <p>LLM 每游戏日读同一份快照写意图清单，意图进入候选；接“说话”（被直呼成为选择事件，选中“回话”后由对话技能问 LLM 写台词）；开服背景作公共常识的固定前缀。</p>
+    <h3 style="margin-top:16px">已知未处理（不挡重跑）</h3>
+    <ul class="note">
+      <li>同一座建筑早先在别的格受损过，整座移除时那格没清，之后别人在那里放同材料会被写成“修好了那座建筑”。</li>
+      <li>改动前落盘的旧拆除事件没有“是否整座移除”，补读到时会写成“毁掉一部分、建筑还在”。</li>
+      <li>无名建筑整座被拆仍是旧写法；自己重建不写经历；背包仍按编号列 90 种材料；活动失败原因仍是内部代码名。</li>
+      <li>重建方向里 <code>build_hut</code> 与 <code>gather_stone</code> 约五五开（推断：材料够不够要模型自己比数字）；可行性过滤仍为空。</li>
+      <li>查“建筑在不在”是在选择链上同步调用 World，远处或很大的建筑可能拖慢一次选择。</li>
+      <li>测试未覆盖：整棵子树移除、附件路径、替换时的定义归属、心智现查 World 失败的路径。</li>
+    </ul></div>
+</div>
+
+<!-- ============ 九 ============ -->
+<p class="note" style="margin-top:56px;border-top:1px solid var(--grid);padding-top:16px">
+数据截至 2026-11-12，代码提交 <code>c0489bd7</code>（S1-D2，分支 <code>npc-life-20261111</code>，未推送）。<br>
+证据目录：<code>ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/</code>（<code>s1c/analysis-report.md</code> 实跑时间线与选择全表、<code>s1c/closeout-report.md</code> 离线对照、<code>s1c/s1d1-report.md</code> 诊断与事件清点、<code>s1d2/report.md</code> 产品改动、<code>s1c/states/</code> 快照全文；该目录不入库）；离线诊断脚本 <code>docs/10-active/cross-cutting/tools/jev/s1c_diag.py</code>。<br>
+本页由统筹会话的子会话生成，2026-11-12。
+</p>
+
+</main>
+</body>
+</html>
