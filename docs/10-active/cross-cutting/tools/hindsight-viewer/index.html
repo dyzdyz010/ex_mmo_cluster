@@ -1,0 +1,504 @@
+<!doctype html>
+<!-- 分类：只测试（Test-only）。Hindsight 只读查看器页面；不引用任何外部资源，不是分发运行时依赖。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hindsight 记忆查看器（只读）</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --text: #0b0b0b; --text-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --chain: #2a78d6; --chain-wash: #e8f1fc; --ctx: #eb6834; --ctx-wash: #fdeee7;
+    --good: #0ca30c; --good-wash: #e5f5e5; --warn: #fab219; --warn-wash: #fef4dc;
+    --purple: #8a5cc7; --bad: #d23c3c; --bad-wash: #fbe7e7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --chain: #3987e5; --chain-wash: #14263d; --ctx: #d95926; --ctx-wash: #3a1f14;
+      --good-wash: #10301a; --warn-wash: #3a2e10; --purple: #9b6fd8; --bad: #e05a5a; --bad-wash: #3a1616;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text);
+         font: 15px/1.65 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 24px 80px; }
+  h1 { font-size: 24px; line-height: 1.3; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 24px 0 10px; }
+  h3 { font-size: 15.5px; margin: 0 0 6px; }
+  p { margin: 0 0 10px; }
+  .note { color: var(--text-2); font-size: 13.5px; }
+  code { font: 0.9em ui-monospace, Consolas, monospace; background: var(--border); padding: 1px 5px; border-radius: 4px; }
+  pre { font: 12.5px/1.6 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; margin: 0;
+        background: var(--page); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 10px;
+          border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2); }
+  button.chip { cursor: pointer; font: inherit; font-size: 13px; }
+  button.chip.on { border-color: var(--chain); background: var(--chain-wash); color: var(--text); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--good); } .dot.run { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .grid { display: grid; gap: 12px; }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .num { font-size: 28px; font-weight: 600; line-height: 1.2; }
+  .lbl { font-size: 13px; color: var(--text-2); }
+  .sub { font-size: 12.5px; color: var(--text-2); margin-top: 6px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; line-height: 20px; white-space: nowrap;
+         border: 1px solid var(--axis); color: var(--text-2); }
+  .tag.ok { background: var(--good-wash); color: var(--text); border-color: var(--good); }
+  .tag.warn { background: var(--warn-wash); color: var(--text); border-color: var(--warn); }
+  .tag.bad { background: var(--bad-wash); color: var(--text); border-color: var(--bad); }
+  .tag.t-experience { background: var(--chain-wash); color: var(--text); border-color: var(--chain); }
+  .tag.t-observation { color: var(--text); border-color: var(--purple); }
+  .tag.t-world { background: var(--good-wash); color: var(--text); border-color: var(--good); }
+  .tag.t-opinion { background: var(--ctx-wash); color: var(--text); border-color: var(--ctx); }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-2); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.k { font-weight: 600; white-space: nowrap; color: var(--text-2); font-size: 13px; }
+  td.v { word-break: break-word; }
+  tr.failed td { background: var(--bad-wash); }
+  tr.failed td.st { color: var(--bad); font-weight: 600; }
+  .when { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+  header.top { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding-bottom: 12px;
+               border-bottom: 1px solid var(--grid); margin-bottom: 4px; }
+  select, input[type=search] { font: inherit; font-size: 14px; padding: 4px 8px; border: 1px solid var(--axis);
+               border-radius: 8px; background: var(--surface); color: var(--text); }
+  input[type=search] { min-width: 240px; }
+  button.btn { font: inherit; font-size: 14px; padding: 4px 14px; border: 1px solid var(--axis); border-radius: 8px;
+               background: var(--surface); color: var(--text); cursor: pointer; }
+  button.btn:hover { border-color: var(--chain); }
+  label.sw { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--text-2); }
+  nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--grid); margin: 14px 0 16px; flex-wrap: wrap; }
+  nav.tabs button { font: inherit; font-size: 14.5px; background: none; border: 0; border-bottom: 2px solid transparent;
+                    padding: 8px 14px; color: var(--text-2); cursor: pointer; }
+  nav.tabs button.on { color: var(--text); border-bottom-color: var(--chain); font-weight: 600; }
+  .banner { border-left: 4px solid var(--warn); background: var(--warn-wash); padding: 8px 14px; border-radius: 6px; margin: 10px 0; }
+  .banner.err { border-left-color: var(--bad); background: var(--bad-wash); }
+  .banner.info { border-left-color: var(--chain); background: var(--chain-wash); }
+  ol.mem { list-style: none; margin: 0; padding: 0; }
+  ol.mem > li { border-bottom: 1px solid var(--grid); padding: 10px 4px; cursor: pointer; }
+  ol.mem > li:hover { background: var(--surface); }
+  .memhead { display: grid; grid-template-columns: 150px 110px 1fr; gap: 12px; align-items: baseline; }
+  .memtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li.open .memtext { white-space: normal; }
+  .detail { margin-top: 10px; cursor: auto; }
+  .md h1, .md h2, .md h3, .md h4 { font-size: 15.5px; margin: 14px 0 6px; }
+  .md h1:first-child, .md h2:first-child, .md h3:first-child { margin-top: 0; }
+  .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; } .md li { margin-bottom: 3px; }
+  .mmhead { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 10px; }
+  .mmhead h3 { margin: 0; font-size: 17px; }
+  details summary { cursor: pointer; color: var(--text-2); font-size: 13px; margin-top: 10px; }
+  .hidden { display: none; }
+  @media (max-width: 640px) { .memhead { grid-template-columns: 1fr; gap: 2px; } .g2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hindsight 记忆查看器</h1>
+  <p class="note">只测试工具，只读：只向 Hindsight 发 GET。看 NPC 的长期记忆、认识、人和物与后台任务。</p>
+
+  <header class="top">
+    <span class="chip"><span class="dot" id="connDot"></span><span id="connText">未连接</span></span>
+    <span class="note">Hindsight：<code id="upstream">?</code></span>
+    <label class="note">记忆库 <select id="bankSel"></select></label>
+    <button class="btn" id="refreshBtn">刷新</button>
+    <label class="sw"><input type="checkbox" id="autoChk"> 每 10 秒自动刷新</label>
+    <span style="flex:1"></span>
+    <button class="btn" id="openBtn">打开导出文件…</button>
+    <input type="file" id="fileInp" accept=".json,application/json" multiple class="hidden">
+    <button class="btn hidden" id="liveBtn">回到在线模式</button>
+  </header>
+  <div id="msg"></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="on">概览</button>
+    <button data-tab="memories">记忆</button>
+    <button data-tab="models">认识</button>
+    <button data-tab="entities">人和物</button>
+    <button data-tab="operations">后台任务</button>
+  </nav>
+  <section id="view"></section>
+</main>
+
+<script>
+"use strict";
+
+// ---------- 小工具：所有数据文字都作为文本节点插入 ----------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.appendChild(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+function fmtTime(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  return isNaN(d) ? String(s) : d.toLocaleString("zh-CN", { hour12: false });
+}
+function timeEl(s) { return h("span", { class: "when", title: s || "" }, fmtTime(s)); }
+function val(v) {
+  if (v == null) return "—";
+  if (typeof v === "object") return h("pre", {}, JSON.stringify(v, null, 2));
+  return String(v);
+}
+function kvTable(obj, skip) {
+  const rows = Object.entries(obj || {}).filter(([k]) => !(skip || []).includes(k));
+  return h("div", { class: "tablewrap" }, h("table", {},
+    rows.map(([k, v]) => h("tr", {}, h("td", { class: "k" }, k), h("td", { class: "v" }, val(v))))));
+}
+function typeTag(t) { return h("span", { class: "tag t-" + String(t || "").replace(/[^a-z_]/gi, "") }, t || "?"); }
+
+// 极简 Markdown：标题、无序/有序列表、加粗、段落
+function inline(text) {
+  const out = [];
+  String(text).split(/(\*\*[^*]+\*\*)/).forEach(part => {
+    if (/^\*\*[^*]+\*\*$/.test(part)) out.push(h("b", {}, part.slice(2, -2)));
+    else if (part) out.push(document.createTextNode(part));
+  });
+  return out;
+}
+function renderMd(src) {
+  const root = h("div", { class: "md" });
+  let list = null, para = [];
+  const flushPara = () => { if (para.length) { root.appendChild(h("p", {}, inline(para.join(" ")))); para = []; } };
+  const endList = () => { list = null; };
+  for (const raw of String(src || "").split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushPara(); endList(); continue; }
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); endList(); root.appendChild(h("h" + Math.min(4, m[1].length + 1), {}, inline(m[2]))); continue; }
+    if ((m = line.match(/^\s*[-*]\s+(.*)$/)) || (m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+      flushPara();
+      const tag = /^\s*\d/.test(line) ? "ol" : "ul";
+      if (!list || list.tagName.toLowerCase() !== tag) { list = h(tag, {}); root.appendChild(list); }
+      list.appendChild(h("li", {}, inline(m[1])));
+      continue;
+    }
+    endList(); para.push(line.trim());
+  }
+  flushPara();
+  return root;
+}
+
+// ---------- 离线导出文件识别（纯函数，便于脚本自测） ----------
+// BEGIN classify
+function classifyExport(name, data) {
+  const n = String(name || "").toLowerCase();
+  const items = data && Array.isArray(data.items) ? data.items : null;
+  const first = items && items.length ? items[0] : null;
+  if (data && Array.isArray(data.banks)) return { kind: "banks" };
+  if (data && (n.includes("stats") || ("total_nodes" in data && "nodes_by_fact_type" in data))) return { kind: "stats" };
+  if (data && Array.isArray(data.operations)) return { kind: "operations" };
+  if (items && (n.includes("memories") || (first && "fact_type" in first))) return { kind: "memories" };
+  if (items && (n.includes("entities") || (first && "canonical_name" in first))) return { kind: "entities" };
+  if (items && (n.includes("mental-model") || (first && "source_query" in first))) return { kind: "models" };
+  if (data && !Array.isArray(data) && "id" in data && "name" in data && ("content" in data || "source_query" in data || n.includes("mental-model")))
+    return { kind: "model" };
+  return { kind: "unknown" };
+}
+// END classify
+
+// ---------- 状态 ----------
+const S = {
+  mode: "live",            // live | offline
+  tab: "overview",
+  bank: "",
+  busy: false,
+  timer: null,
+  data: { stats: null, memories: null, models: [], entities: null, operations: null },
+  errors: {},              // 各数据源的错误说明
+  memFilter: { types: new Set(), q: "" },
+  openMem: new Set(),
+  offlineFiles: [],
+};
+const MODEL_ORDER = ["self", "relationships", "world", "commitments"];
+const MODEL_LABEL = { self: "自我", relationships: "人际", world: "世界", commitments: "承诺" };
+
+const $ = id => document.getElementById(id);
+function setConn(kind, text) { $("connDot").className = "dot " + kind; $("connText").textContent = text; }
+function setMsg(kind, ...kids) { const m = $("msg"); m.replaceChildren(); if (kids.length) m.appendChild(h("div", { class: "banner " + kind }, kids)); }
+
+async function getJson(path) {
+  const r = await fetch("/api" + path, { method: "GET", cache: "no-store" });
+  const t = await r.text();
+  if (!r.ok) throw new Error(`HTTP ${r.status}：${t.slice(0, 300)}`);
+  return JSON.parse(t);
+}
+
+// ---------- 在线加载（串行） ----------
+async function loadBanks() {
+  try {
+    const info = await (await fetch("/viewer-info", { cache: "no-store" })).json();
+    $("upstream").textContent = info.hindsight;
+  } catch (e) { $("upstream").textContent = "（未知）"; }
+  let banks;
+  try {
+    banks = (await getJson("/v1/default/banks?limit=500")).banks || [];
+    setConn("ok", "已连通");
+  } catch (e) {
+    setConn("bad", "连不上");
+    setMsg("err", "无法获取记忆库列表：" + e.message);
+    return;
+  }
+  const sel = $("bankSel");
+  const prev = S.bank || sel.value;
+  sel.replaceChildren();
+  if (!banks.length) {
+    sel.appendChild(h("option", { value: "" }, "（无）"));
+    S.bank = "";
+    setMsg("warn", "还没有记忆库：NPC 登记后才会出现。");
+    clearData(); render();
+    return;
+  }
+  banks.forEach(b => sel.appendChild(h("option", { value: b.bank_id },
+    b.bank_id + (b.name && b.name !== b.bank_id ? `（${b.name}）` : "") + (b.fact_count != null ? ` · ${b.fact_count} 条` : ""))));
+  S.bank = banks.some(b => b.bank_id === prev) ? prev : banks[0].bank_id;
+  sel.value = S.bank;
+  setMsg("");
+}
+
+function clearData() { S.data = { stats: null, memories: null, models: [], entities: null, operations: null }; S.errors = {}; }
+
+async function loadBank() {
+  if (!S.bank) return;
+  const base = "/v1/default/banks/" + encodeURIComponent(S.bank);
+  const next = { stats: null, memories: null, models: [], entities: null, operations: null };
+  const errs = {};
+  const tryGet = async (key, path) => { try { return await getJson(path); } catch (e) { errs[key] = e.message; return null; } };
+  next.stats = await tryGet("stats", base + "/stats");
+  next.memories = await tryGet("memories", base + "/memories/list?limit=1000");
+  const list = await tryGet("models", base + "/mental-models");
+  for (const it of (list && list.items) || []) {
+    const full = await tryGet("models", base + "/mental-models/" + encodeURIComponent(it.id));
+    next.models.push(full || it);
+  }
+  next.entities = await tryGet("entities", base + "/entities?limit=500");
+  next.operations = await tryGet("operations", base + "/operations?limit=200");
+  S.data = next; S.errors = errs;
+  setConn(Object.keys(errs).length ? "run" : "ok", Object.keys(errs).length ? "部分请求失败" : "已连通 · " + new Date().toLocaleTimeString("zh-CN", { hour12: false }));
+}
+
+async function refresh() {
+  if (S.busy || S.mode !== "live") return;
+  S.busy = true; $("refreshBtn").disabled = true;
+  try { await loadBanks(); await loadBank(); render(); }
+  finally { S.busy = false; $("refreshBtn").disabled = false; }
+}
+
+// 自动刷新：上一轮完成后才排下一轮
+function scheduleAuto() {
+  clearTimeout(S.timer);
+  if (!$("autoChk").checked || S.mode !== "live") return;
+  S.timer = setTimeout(async () => { await refresh(); scheduleAuto(); }, 10000);
+}
+
+// ---------- 离线模式 ----------
+async function openFiles(files) {
+  const next = { stats: null, memories: null, models: [], entities: null, operations: null };
+  const report = [];
+  for (const f of files) {
+    let data;
+    try { data = JSON.parse(await f.text()); } catch (e) { report.push(`${f.name}：不是合法 JSON`); continue; }
+    const { kind } = classifyExport(f.name, data);
+    if (kind === "stats") next.stats = data;
+    else if (kind === "memories") next.memories = data;
+    else if (kind === "entities") next.entities = data;
+    else if (kind === "operations") next.operations = data;
+    else if (kind === "model") next.models.push(data);
+    else if (kind === "models") next.models.push(...data.items);
+    report.push(`${f.name} → ${({ stats: "概览", memories: "记忆", entities: "人和物", operations: "后台任务", model: "认识", models: "认识", banks: "记忆库列表（离线不用）", unknown: "无法识别，已忽略" })[kind]}`);
+  }
+  S.mode = "offline"; clearTimeout(S.timer); $("autoChk").checked = false; $("autoChk").disabled = true;
+  S.data = next; S.errors = {};
+  S.bank = (next.stats && next.stats.bank_id) || (next.models[0] && next.models[0].bank_id) || "";
+  $("bankSel").replaceChildren(h("option", {}, S.bank ? S.bank + "（离线）" : "（离线）")); $("bankSel").disabled = true;
+  $("refreshBtn").disabled = true; $("liveBtn").classList.remove("hidden");
+  setConn("run", "离线模式");
+  setMsg("info", h("b", {}, `已打开 ${files.length} 个导出文件（不经过服务）：`), h("ul", {}, report.map(r => h("li", {}, r))));
+  render();
+}
+function backToLive() {
+  S.mode = "live"; $("bankSel").disabled = false; $("autoChk").disabled = false; $("refreshBtn").disabled = false;
+  $("liveBtn").classList.add("hidden"); setMsg(""); clearData(); refresh();
+}
+
+// ---------- 页签渲染 ----------
+function emptyNote(key, what) {
+  if (S.errors[key]) return h("div", { class: "banner err" }, `读取${what}失败：${S.errors[key]}`);
+  return h("p", { class: "note" }, S.mode === "offline" ? `导出文件里没有${what}。` : (S.bank ? `没有${what}。` : "先选择记忆库。"));
+}
+
+function statCard(label, num, sub, cls) {
+  return h("div", { class: "card" }, h("div", { class: "lbl" }, label), h("div", { class: "num" + (cls ? " " + cls : "") }, num == null ? "—" : String(num)), sub ? h("div", { class: "sub" }, sub) : null);
+}
+function chipsOf(obj) {
+  const e = Object.entries(obj || {});
+  return e.length ? h("div", { class: "chips" }, e.map(([k, v]) => h("span", { class: "chip" }, k + " " + v))) : null;
+}
+function renderOverview() {
+  const s = S.data.stats;
+  if (!s) return emptyNote("stats", "统计数据");
+  const known = ["bank_id", "total_nodes", "nodes_by_fact_type", "total_documents", "total_links", "links_by_link_type",
+    "pending_operations", "failed_operations", "operations_by_status", "last_memory_write_at", "last_consolidated_at",
+    "pending_consolidation", "failed_consolidation", "total_observations"];
+  const failedOps = s.failed_operations || 0, failedCons = s.failed_consolidation || 0;
+  return h("div", {},
+    h("div", { class: "grid g4" },
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "记忆总数"), h("div", { class: "num" }, String(s.total_nodes ?? "—")),
+        h("div", { class: "chips" }, Object.entries(s.nodes_by_fact_type || {}).map(([k, v]) => h("span", {}, typeTag(k), " ", String(v))))),
+      statCard("文档数", s.total_documents),
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "链接数"), h("div", { class: "num" }, String(s.total_links ?? "—")), chipsOf(s.links_by_link_type)),
+      statCard("观察（observation）", s.total_observations),
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "后台任务：待处理 / 失败"),
+        h("div", { class: "num" }, `${s.pending_operations ?? "—"} / `, h("span", { style: failedOps ? "color:var(--bad)" : "" }, String(s.failed_operations ?? "—"))),
+        chipsOf(s.operations_by_status)),
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "巩固：待处理 / 失败"),
+        h("div", { class: "num" }, `${s.pending_consolidation ?? "—"} / `, h("span", { style: failedCons ? "color:var(--bad)" : "" }, String(s.failed_consolidation ?? "—")))),
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "最近写入"), h("div", {}, timeEl(s.last_memory_write_at))),
+      h("div", { class: "card" }, h("div", { class: "lbl" }, "最近巩固"), h("div", {}, timeEl(s.last_consolidated_at)))),
+    h("h2", {}, "其他字段"),
+    h("div", { class: "card" }, kvTable(s, known.filter(k => k !== "bank_id"))));
+}
+
+function memTime(m) { return m.occurred_start || m.date || m.mentioned_at || m.updated_at || ""; }
+function renderMemories() {
+  const d = S.data.memories;
+  const items = d && Array.isArray(d.items) ? d.items : null;
+  if (!items) return emptyNote("memories", "记忆");
+  const types = [...new Set(items.map(m => m.fact_type || "?"))];
+  const f = S.memFilter;
+  const q = f.q.trim().toLowerCase();
+  // 按时间排序：次序按定义就是时间键序（新的在前）
+  const shown = items
+    .filter(m => !f.types.size || f.types.has(m.fact_type || "?"))
+    .filter(m => !q || JSON.stringify(m).toLowerCase().includes(q))
+    .slice().sort((a, b) => String(memTime(b)).localeCompare(String(memTime(a))));
+  const search = h("input", { type: "search", placeholder: "关键字搜索（全文与全部字段）", value: f.q,
+    oninput: e => { f.q = e.target.value; rerenderKeepFocus(); } });
+  search.id = "memSearch";
+  return h("div", {},
+    h("div", { class: "chips" },
+      h("span", { class: "note" }, "类型："),
+      types.map(t => h("button", { class: "chip" + (f.types.has(t) ? " on" : ""),
+        onclick: () => { f.types.has(t) ? f.types.delete(t) : f.types.add(t); render(); } }, typeTag(t), " ", String(items.filter(m => (m.fact_type || "?") === t).length))),
+      search,
+      h("span", { class: "note" }, `显示 ${shown.length} / ${items.length}` + (d.total != null && d.total !== items.length ? `（服务端共 ${d.total}）` : ""))),
+    h("ol", { class: "mem" }, shown.map(m => {
+      const key = m.id || JSON.stringify(m).slice(0, 80);
+      const open = S.openMem.has(key);
+      return h("li", { class: open ? "open" : "", onclick: e => {
+          if (e.target.closest(".detail")) return;
+          open ? S.openMem.delete(key) : S.openMem.add(key); render(); } },
+        h("div", { class: "memhead" }, timeEl(memTime(m)), h("span", {}, typeTag(m.fact_type), m.state && m.state !== "valid" ? h("span", { class: "tag warn" }, m.state) : null),
+          h("span", { class: "memtext" }, m.text || "（无正文）")),
+        open ? h("div", { class: "detail card" }, kvTable(m)) : null);
+    })));
+}
+function rerenderKeepFocus() {
+  const pos = $("memSearch") ? $("memSearch").selectionStart : null;
+  render();
+  const s = $("memSearch"); if (s) { s.focus(); if (pos != null) s.setSelectionRange(pos, pos); }
+}
+
+function renderModels() {
+  const ms = S.data.models || [];
+  if (!ms.length) return emptyNote("models", "认识（mental model）");
+  const rank = m => { const i = MODEL_ORDER.indexOf(m.id || m.name); return i < 0 ? 99 : i; };
+  const sorted = ms.slice().sort((a, b) => rank(a) - rank(b));
+  return h("div", {},
+    S.errors.models ? h("div", { class: "banner err" }, "部分认识读取失败：" + S.errors.models) : null,
+    h("div", { class: "grid g2" }, sorted.map(m => {
+      const stale = m.is_stale;
+      return h("div", { class: "card" },
+        h("div", { class: "mmhead" },
+          h("h3", {}, (MODEL_LABEL[m.id] ? MODEL_LABEL[m.id] + " · " : "") + (m.name || m.id)),
+          stale === true ? h("span", { class: "tag warn" }, "已过期") : stale === false ? h("span", { class: "tag ok" }, "最新") : h("span", { class: "tag" }, "过期状态未知"),
+          m.last_refresh_failed_at ? h("span", { class: "tag bad" }, "上次刷新失败 " + fmtTime(m.last_refresh_failed_at)) : null),
+        h("div", { class: "note" }, "上次刷新：", timeEl(m.last_refreshed_at), "　最近见到的记忆：", timeEl(m.last_memory_seen_at)),
+        m.source_query ? h("p", { class: "note" }, "问题：" + m.source_query) : null,
+        m.content ? renderMd(m.content) : h("p", { class: "note" }, "（无正文）"),
+        h("details", {}, h("summary", {}, "全部字段"), kvTable(m, ["content"])));
+    })));
+}
+
+function renderEntities() {
+  const d = S.data.entities;
+  const items = d && Array.isArray(d.items) ? d.items : null;
+  if (!items) return emptyNote("entities", "人和物");
+  if (!items.length) return h("p", { class: "note" }, "没有人和物。");
+  const sorted = items.slice().sort((a, b) => (b.mention_count || 0) - (a.mention_count || 0));
+  const known = ["id", "canonical_name", "mention_count", "first_seen", "last_seen"];
+  return h("div", { class: "card tablewrap" }, h("table", {},
+    h("tr", {}, ["名称", "提及次数", "首次", "最近", "其他字段"].map(t => h("th", {}, t))),
+    sorted.map(e => h("tr", {},
+      h("td", { title: e.id || "" }, e.canonical_name || e.name || e.id || "?"),
+      h("td", {}, String(e.mention_count ?? "—")),
+      h("td", {}, timeEl(e.first_seen)), h("td", {}, timeEl(e.last_seen)),
+      h("td", {}, Object.keys(e).some(k => !known.includes(k)) ? kvTable(e, known) : "—")))),
+    d.total != null ? h("p", { class: "note" }, `共 ${d.total} 个`) : null);
+}
+
+function renderOperations() {
+  const d = S.data.operations;
+  const ops = d && Array.isArray(d.operations) ? d.operations : null;
+  if (!ops) return emptyNote("operations", "后台任务");
+  if (!ops.length) return h("p", { class: "note" }, "没有后台任务。");
+  const sorted = ops.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const isFail = o => /fail|error/i.test(o.status || "") || !!o.error_message;
+  const nFail = sorted.filter(isFail).length;
+  const known = ["id", "task_type", "operation_type", "status", "created_at", "updated_at", "error_message"];
+  return h("div", {},
+    h("div", { class: "chips" }, h("span", { class: "chip" }, `共 ${d.total ?? ops.length}`),
+      h("span", { class: "chip" }, h("span", { class: "dot " + (nFail ? "bad" : "ok") }), `失败 ${nFail}`)),
+    h("div", { class: "card tablewrap" }, h("table", {},
+      h("tr", {}, ["类型", "状态", "创建", "更新", "错误", "其他字段"].map(t => h("th", {}, t))),
+      sorted.map(o => h("tr", { class: isFail(o) ? "failed" : "" },
+        h("td", { title: o.id || "" }, (o.task_type || "?") + (o.operation_type && o.operation_type !== o.task_type ? " / " + o.operation_type : "")),
+        h("td", { class: "st" }, o.status || "?"),
+        h("td", {}, timeEl(o.created_at)), h("td", {}, timeEl(o.updated_at)),
+        h("td", { class: "v" }, o.error_message || "—"),
+        h("td", {}, h("details", {}, h("summary", {}, "展开"), kvTable(o, known))))))));
+}
+
+function render() {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === S.tab));
+  const fn = { overview: renderOverview, memories: renderMemories, models: renderModels, entities: renderEntities, operations: renderOperations }[S.tab];
+  $("view").replaceChildren(fn());
+}
+
+// ---------- 事件 ----------
+$("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { S.tab = b.dataset.tab; render(); } });
+$("bankSel").addEventListener("change", async e => {
+  if (S.busy) return;
+  S.bank = e.target.value; S.openMem.clear(); clearData(); render();
+  S.busy = true; try { await loadBank(); render(); } finally { S.busy = false; }
+});
+$("refreshBtn").addEventListener("click", refresh);
+$("autoChk").addEventListener("change", scheduleAuto);
+$("openBtn").addEventListener("click", () => $("fileInp").click());
+$("fileInp").addEventListener("change", e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) openFiles(fs); });
+$("liveBtn").addEventListener("click", backToLive);
+
+render();
+if (location.protocol === "file:") { setConn("run", "未经服务打开：只能用离线模式"); $("upstream").textContent = "（无）"; }
+else refresh();
+</script>
+</body>
+</html>
