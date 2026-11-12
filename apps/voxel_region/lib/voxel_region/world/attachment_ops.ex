@@ -103,7 +103,7 @@ defmodule VoxelRegion.World.AttachmentOps do
       if state.thermal, do: Map.put(settlement, :thermal, state.thermal), else: settlement
 
     {txn, keys, state} = attachment_geometry(before, state, slots)
-    txn = Map.merge(txn, settlement)
+    txn = txn |> Map.merge(settlement) |> VoxelRegion.World.Interactions.settle(state)
 
     case Log.append_log(before, state, txn, principal) do
       :ok ->

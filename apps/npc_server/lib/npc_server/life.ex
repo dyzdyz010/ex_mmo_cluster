@@ -4,7 +4,8 @@ defmodule NpcServer.Life do
   原子保存在 NpcMemory 的 life/state 行；观察只派生衰减视图。World 读取与 Hindsight 使用独立 worker，
   慢记忆写入期间继续接纳权威事件。短经历先封成约 3000 字片段，失败重用原片段 id。
   World 事件只带被动那一格所属建筑的定义 id（`prefab`）；读取 worker 向 World 的发布元信息查出名字写进事件（`building`），
-  经历原文由此说得出是哪座建筑（写法见 `Life.State`）。没有名字的定义与散格不点名。
+  经历原文由此说得出是哪座建筑、是整座没了还是毁掉一部分（标准描述表见 `Life.State`）。没有名字的定义与散格不点名。
+  自己放下的有名字的建筑记进状态的 `"buildings"`（记忆）；`mind/2` 发问时逐座现查 World 此刻在不在，不用记忆冒充现状。
   对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
@@ -81,13 +82,18 @@ defmodule NpcServer.Life do
       models         缓存的认识 `[{id, 正文}]`，按 `Life.Hindsight.model_ids/0` 的次序
       memories       本次召回的结果（Hindsight 的原始行，正文在 `"text"`）
       recall_ms      本次召回耗时
+      buildings      我放下的有名字的建筑此刻在不在 `[%{name:, anchor: {x, y, z}, standing: boolean}]`，按放下的次序。
+                     问哪几座来自 Life 的记忆（`Life.State` 的 `"buildings"`）；在不在只认这一刻现查 World 的结果
+                     （`VoxelRegion.World.instance_cells/2`：有格 = 在，`:instance_not_found` = 不在）
 
   读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
-  {:life_models_unavailable, 原因} | 召回的失败原因}`。新 NPC 的空 bank 召回为空是正常结果。
+  {:life_models_unavailable, 原因} | 召回的失败原因 | World 路由或查询的失败原因}`。新 NPC 的空 bank 召回为空是正常结果。
+  World 读不到时不写“在”或“不在”，整份视图失败（World 调用退出时发问 worker 随之退出，同样是显式失败）。
   """
   def mind(cid, query) do
     with {:ok, snapshot, recalled} <-
-           recollect(cid, query, &Map.put(&1, :timeout_ms, @mind_recall_timeout_ms)) do
+           recollect(cid, query, &Map.put(&1, :timeout_ms, @mind_recall_timeout_ms)),
+         {:ok, buildings} <- standing(snapshot) do
       {:ok,
        %{
          feelings: State.feelings(snapshot.mind, snapshot.now_ms),
@@ -100,10 +106,35 @@ defmodule NpcServer.Life do
              do: {id, text}
            ),
          memories: recalled.results,
-         recall_ms: recalled.latency_ms
+         recall_ms: recalled.latency_ms,
+         buildings: buildings
        }}
     end
   end
+
+  # 记得的每座“我的建筑”此刻在不在：逐座现查 World。没有记得的建筑就不路由、不查。
+  defp standing(%{mind: %{"buildings" => []}}), do: {:ok, []}
+
+  defp standing(%{mind: %{"buildings" => remembered}, context: context}) do
+    with {:ok, route} <- context.router.route(context.scene_id) do
+      Enum.reduce_while(remembered, {:ok, []}, fn building, {:ok, acc} ->
+        [birth, occurrence] = building["instance"]
+
+        case VoxelRegion.World.instance_cells(route.world_ref, {birth, occurrence}) do
+          {:ok, _cells} -> {:cont, {:ok, [view(building, true) | acc]}}
+          {:error, :instance_not_found} -> {:cont, {:ok, [view(building, false) | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, views} -> {:ok, Enum.reverse(views)}
+        error -> error
+      end
+    end
+  end
+
+  defp view(building, standing),
+    do: %{name: building["name"], anchor: List.to_tuple(building["anchor"]), standing: standing}
 
   # 读一次 owner 快照，再在调用者进程里恰好召回一次；召回的成败记回 owner 供 observe 查看。
   defp recollect(cid, query, configure) do
@@ -235,6 +266,8 @@ defmodule NpcServer.Life do
           now_ms: s.now.(),
           mind: State.view(s.row["state"], s.now.()),
           cache: s.row["cache"],
+          # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
+          context: s.context,
           # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部。
           recent: Enum.map(s.row["fragments"] ++ s.row["pending"], & &1["text"])
         }}, s}

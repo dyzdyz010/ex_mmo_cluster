@@ -44,7 +44,7 @@ defmodule NpcServer.NpcMindTest do
 
   defp alone, do: %{observation() | entities: [], balances: nil} |> put_in([:self, :body_state], nil)
 
-  @empty %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0}
+  @empty %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0, buildings: []}
 
   @damage "At 2026-11-12T03:10:00.000Z (UTC), Actor 21 damaged construction I care about at (4, 64, 8), " <>
             "material 11, in world w1 (transaction 9). I feel angry toward this actor; my trust changed."
@@ -66,7 +66,12 @@ defmodule NpcServer.NpcMindTest do
           %{"id" => "fact-1", "text" => "Mara repaired my wall.", "type" => "experience"},
           %{"id" => "fact-2", "text" => "Brann destroyed my wall.", "type" => "experience"}
         ],
-        recall_ms: 12
+        recall_ms: 12,
+        # 我的建筑（Life.mind 现查 World 的结果）：每座一句，放在背包之前；坐标是锚点宏格，负坐标原样写。
+        buildings: [
+          %{name: "small hut", anchor: {25, 518, 37}, standing: false},
+          %{name: "shed", anchor: {-3, 64, -12}, standing: true}
+        ]
       }
 
       history = [
@@ -90,6 +95,7 @@ defmodule NpcServer.NpcMindTest do
                {"Current situation",
                 "Standing at x=1.0, z=3.0 (height 2.0). Life 80 of 100. " <>
                   "Nearby: Mara (player, 5.0 m away); someone unnamed (NPC, 13.0 m away). " <>
+                  ~s|My building "small hut" at (25, 518, 37) is gone. My building "shed" at (-3, 64, -12) is standing. | <>
                   "Inventory: material 11: 512 units, material 4: 0 units."},
                {"Recent activities", "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
              ] == Mind.snapshot(profile(), observation(), history, life)
@@ -202,6 +208,8 @@ defmodule NpcServer.NpcMindTest do
   #              写出的原样（`npc_selector_test` 的集成用例 “damage to a part of a named prefab I placed” 的实际输出，
   #              只换了时刻、角色、坐标、世界与事务号）；建筑的发布名是 “small hut”。2026-11-12 之前这句只有坐标与编号
   #              （`… damaged construction I care about at (25, 518, 37), …`），那时本用例 ② 落空，对照见 tools/jev/episode.py。
+  #              2026-11-12（S1-D2）起这句是标准描述表的 `:damaged`（`damaged part of the building … ; the building is still
+  #              standing.`）；本用例按新原文更新后尚未重跑真实 Jev。
   #   ③ recalled 很久以后：情绪与近期经历都没有，只有记忆召回里带这件事（手写的两条召回结果）。
   #
   # 期望在运行前手写：
@@ -259,8 +267,8 @@ defmodule NpcServer.NpcMindTest do
         ~s|repair or rebuild it if it has been damaged.). Result: completed.|
 
     damage =
-      "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
-        "at (25, 518, 37), material 11, in world qinglan-test (transaction 4711). " <>
+      "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+        "at (25, 518, 37), material 11, in world qinglan-test (transaction 4711); the building is still standing. " <>
         "I feel angry toward this actor; my trust changed."
 
     gathered =

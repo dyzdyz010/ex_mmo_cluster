@@ -261,6 +261,7 @@ defmodule VoxelRegion.World.Tools do
               epochs: %{}
             }
             |> Map.merge(Observation.operation_metadata(before,actor,request,0,target))
+            |> VoxelRegion.World.Interactions.settle(state)
 
             case Log.append_log(before, state, txn, {:character, actor.cid}) do
               :ok ->

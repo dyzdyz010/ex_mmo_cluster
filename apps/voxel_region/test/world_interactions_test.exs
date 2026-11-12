@@ -86,7 +86,8 @@ defmodule VoxelRegion.WorldInteractionsTest do
     })
   end
 
-  defp hit(c, n) do
+  # action：1 = 用镐打一下，2 = 拆卸（拆下命中的构件）。
+  defp hit(c, n, action \\ 1) do
     query = %{
       request_id: n,
       client_intent_seq: n,
@@ -108,7 +109,7 @@ defmodule VoxelRegion.WorldInteractionsTest do
       c.world,
       actor,
       Map.merge(query, Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
-      |> Map.put(:action, 1)
+      |> Map.put(:action, action)
     )
   end
 
@@ -138,9 +139,12 @@ defmodule VoxelRegion.WorldInteractionsTest do
     assert {:ok, result} = World.interactions_since(c.world, 0)
     assert result.cursor == 3
 
+    # 散格：没有所属实例（instance / anchor 为 nil，也就谈不上“整座被移除”）。
     assert [
-             %{seq: 2, actor: 1001, kind: :build, cell: {1, 1, 2}, material: 19, placed_by: nil, prefab: nil},
-             %{seq: 3, actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: nil}
+             %{seq: 2, actor: 1001, kind: :build, cell: {1, 1, 2}, material: 19, placed_by: nil, prefab: nil,
+               instance: nil, anchor: nil, instance_removed: false},
+             %{seq: 3, actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: nil,
+               instance: nil, anchor: nil, instance_removed: false}
            ] = result.events
 
     assert Enum.all?(result.events, &is_integer(&1.at_ms))
@@ -152,8 +156,10 @@ defmodule VoxelRegion.WorldInteractionsTest do
   end
 
   # 小屋 = 自己的一格（上）+ 一个子定义“门”的一格（下，锚点格）。视线沿 +Z 先打到锚点格 {1, 1, 2}，即子实例的那一格：
-  # 事件记的是整体放下的根实例的定义（小屋），不是子定义（门）。
-  test "damage to a part of a placed prefab records the definition of the root instance", c do
+  # 事件记的是整体放下的根实例（小屋）的定义与身份，不是子实例（门）的。实例身份 = {放下它的事务序号, 节点序}，根是 0
+  # （同 prefab_macro_world_test）。锚点微格 (8, 8, 16) / 8 = 宏格 (1, 1, 2)。
+  # 打一下没毁 → :damage，小屋还在；再拆掉门这个叶子构件 → :destroy，门没了但根（小屋）还有自己那一格，仍在。
+  test "damage and dismantling a leaf of a placed prefab record the root instance, which remains", c do
     door = VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 19}], children: [], attachments: []})
     assert {:ok, door_id} = World.publish_prefab(c.world, c.actor, door, "door")
 
@@ -178,16 +184,53 @@ defmodule VoxelRegion.WorldInteractionsTest do
              })
 
     assert {:ok, %{cursor: placed}} = World.interactions_since(c.world, nil)
-    assert {:ok, _} = hit(%{c | actor: other_actor(c)}, 2)
+    other = %{c | actor: other_actor(c)}
+    assert {:ok, _} = hit(other, 2)
+    assert {:ok, _} = hit(other, 3, 2)
 
-    assert {:ok, %{events: [event]}} = World.interactions_since(c.world, placed)
+    assert {:ok, %{events: [damage, destroy]}} = World.interactions_since(c.world, placed)
 
-    assert %{actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: ^hut_id} =
-             event
+    assert %{actor: 2002, kind: :damage, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: ^hut_id,
+             instance: {^placed, 0}, anchor: {1, 1, 2}, instance_removed: false} = damage
+
+    assert %{actor: 2002, kind: :destroy, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: ^hut_id,
+             instance: {^placed, 0}, anchor: {1, 1, 2}, instance_removed: false} = destroy
+
+    # 与事件同一判据的现查：小屋只剩自己那一格。
+    assert {:ok, [{1, 2, 2}]} = World.instance_cells(c.world, {placed, 0})
 
     # 名字不在事件里：按定义 id 查发布元信息。
     assert [%{id: ^door_id, name: "door"}, %{id: ^hut_id, name: "small hut", publisher: 1001}] =
              World.published_prefab_metadata(c.world)
+  end
+
+  # 只有一个构件（一格细化石料，锚点微格 (8, 8, 16) = 宏格 (1, 1, 2) 的 0 号槽）的小屋：放下的 build 事件带刚放下的这座
+  # （所属建筑按提交后取；placed_by 仍是提交前的空槽 nil）；另一角色对它拆卸（action 2，拆下整个叶子构件，
+  # S1-C 实跑走的就是这条）→ 根实例没了。
+  test "dismantling the only component of a placed prefab removes the whole building", c do
+    hut = VoxelRegion.Prefab.encode(%{cells: [{{0, 0, 0}, 19}], macro_cells: [], children: [], attachments: []})
+    assert {:ok, hut_id} = World.publish_prefab(c.world, c.actor, hut, "small hut")
+    assert {:ok, _} = World.material_supply(c.world, 1001, "finite-author-sample", %{19 => 1024})
+    assert {:ok, %{cursor: before}} = World.interactions_since(c.world, nil)
+
+    assert {:ok, placed} =
+             World.prefab_intent(c.world, c.actor, :voxel_prefab_place_v1, %{
+               definition_id: hut_id,
+               anchor: {8, 8, 16},
+               orientation: 0,
+               client_intent_seq: 1
+             })
+
+    assert {:ok, _} = hit(%{c | actor: other_actor(c)}, 2, 2)
+    assert {:ok, %{events: [build, destroy]}} = World.interactions_since(c.world, before)
+
+    assert %{seq: ^placed, actor: 1001, kind: :build, cell: {1, 1, 2}, material: 19, placed_by: nil, prefab: ^hut_id,
+             instance: {^placed, 0}, anchor: {1, 1, 2}, instance_removed: false} = build
+
+    assert %{actor: 2002, kind: :destroy, cell: {1, 1, 2}, material: 19, placed_by: 1001, prefab: ^hut_id,
+             instance: {^placed, 0}, anchor: {1, 1, 2}, instance_removed: true} = destroy
+
+    assert {:error, :instance_not_found} = World.instance_cells(c.world, {placed, 0})
   end
 
   test "compaction and a fresh World replay preserve events and database metadata rows", c do

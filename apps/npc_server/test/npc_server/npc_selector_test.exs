@@ -432,9 +432,9 @@ defmodule NpcServer.NpcSelectorTest do
       strike(world, npc, seq, cell)
     end
 
-    # 只测试：另一角色（cid = npc + 10）站在 (4.5, 65.5, 8.5) 用镐朝 cell 的中心打一下（先查询命中目标，再按它出手）。
-    # 返回破坏者的 cid。
-    defp strike(world, npc, seq, cell) do
+    # 只测试：另一角色（cid = npc + 10）站在 (4.5, 65.5, 8.5) 用镐朝 cell 的中心出手（先查询命中目标，再按它出手）：
+    # action 1 = 打一下，2 = 拆卸（拆下命中的整个构件）。返回破坏者的 cid。
+    defp strike(world, npc, seq, cell, action \\ 1) do
       attacker = NpcWorld.actor(npc + 10, {4.5, 65.5, 8.5})
       {x, y, z} = cell
 
@@ -460,7 +460,7 @@ defmodule NpcServer.NpcSelectorTest do
           Map.merge(attacker, %{received_us: seq * 1_000_000, clock_node: node()}),
           query
           |> Map.merge(Map.take(target, [:micro, :granularity, :incarnation, :owner, :material]))
-          |> Map.put(:action, 1)
+          |> Map.put(:action, action)
         )
 
       npc + 10
@@ -769,12 +769,86 @@ What just happened: Nothing new.
       [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
 
       assert "What just happened: Oldest first. " <>
-               "At <t> (UTC), Actor #{brann} damaged the building \"small hut\" that I built, at (4, 64, 8), " <>
-               "material 11, in world <w> (transaction <n>). I feel angry toward this actor; my trust changed. " <>
+               "At <t> (UTC), Actor #{brann} damaged part of the building \"small hut\" that I built, at (4, 64, 8), " <>
+               "material 11, in world <w> (transaction <n>); the building is still standing. " <>
+               "I feel angry toward this actor; my trust changed. " <>
                "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed." ==
                happened
                |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
                |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
+    end
+
+    # 我放下一座有名字的建筑 → 发问的处境说它还在 → 另一角色经正常入口（镐的拆卸）把它整座拆掉 → 下一次发问的经历写
+    # 整座移除的标准句，处境说它没了。定义只有一格石料 {0,0,0}，以 “small hut” 为名发布；锚点微格 (32, 512, 64) =
+    # 宏格 (4, 64, 8)（1 宏格 = 8 微格），这一格就是整座建筑，拆下它根实例就没了。实例身份 = {放下它的事务序号, 0}。
+    # 期望句子手写（标准描述表 `:removed` 与处境句，原文同离线对照 s1c_diag.py 的 WHOLE_ALT、SIT_GONE）。
+    @tag timeout: 120_000
+    test "a named building I placed is removed entirely: the experience says so and the situation says it is gone",
+         %{profile: profile, cid: cid, fixture: fixture} do
+      {body, _runtime, _recall} = start(profile, cid)
+      world = fixture.world
+
+      hut =
+        VoxelRegion.Prefab.encode(%{cells: [], macro_cells: [{{0, 0, 0}, 11}], children: [], attachments: []})
+
+      {:ok, id} = World.publish_prefab(world, NpcWorld.actor(cid + 20, {0.0, 0.0, 0.0}), hut, "small hut")
+      {:ok, _} = World.material_supply(world, cid, "selector-hut-supply", %{11 => 1024})
+
+      {:ok, placed} =
+        World.prefab_intent(world, NpcWorld.actor(cid, {4.5, 65.5, 8.5}), :voxel_prefab_place_v1, %{
+          definition_id: id,
+          anchor: {32, 512, 64},
+          orientation: 0,
+          client_intent_seq: 1
+        })
+
+      # Life 从自己放下的那条 World 事件记下这座建筑（记忆，不是现状）。
+      NpcWorld.await(fn ->
+        match?(
+          {:ok, %{state: %{"buildings" => [%{"name" => "small hut", "instance" => [^placed, 0], "anchor" => [4, 64, 8]}]}}},
+          Life.observe(cid)
+        )
+      end)
+
+      # 第 1 次发问：现查 World，它在。
+      event(body, {:observation, observation(1, cid)})
+      assert_receive {:jev_request, worker, request}
+
+      assert [~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
+                ~s|My building "small hut" at (4, 64, 8) is standing. Inventory: not checked yet.|] ==
+               Regex.run(~r/^Current situation: .*$/m, request.state)
+
+      send(worker, {:jev_reply, answer("alpha_build_south", 0.7)})
+      assert_receive {:command, %{id: {:skill, 2, 1}, verb: :prefab_place}}
+
+      # 活动进行中：Brann 拆掉这一格（真实 World 事务），整座没了。
+      brann = strike(world, cid, 1, {4, 64, 8}, 2)
+      assert {:error, :instance_not_found} = World.instance_cells(world, {placed, 0})
+
+      NpcWorld.await(fn ->
+        match?({:ok, %{state: %{"evidence" => %{"damage_count" => 1}}}}, Life.observe(cid))
+      end)
+
+      # 第 2 次发问。时刻、世界身份、事务号是运行时的值，换成占位后与手写的句子逐字相同。
+      skill_step(body, 2, :done, nil)
+      assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
+      event(body, {:observation, observation(3, cid)})
+      assert_receive {:jev_request, _worker, request}
+
+      [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
+      [situation] = Regex.run(~r/^Current situation: .*$/m, request.state)
+
+      assert "What just happened: Oldest first. " <>
+               "At <t> (UTC), Actor #{brann} removed the entire building \"small hut\" that I built, at (4, 64, 8), " <>
+               "material 11, in world <w> (transaction <n>); the building no longer exists. " <>
+               "I feel angry toward this actor; my trust changed. " <>
+               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed." ==
+               happened
+               |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
+               |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
+
+      assert ~s|Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. | <>
+               ~s|My building "small hut" at (4, 64, 8) is gone. Inventory: not checked yet.| == situation
     end
 
     test "without cached models the mind is unreadable: the selection fails explicitly and Jev is not asked",
@@ -854,7 +928,7 @@ What just happened: Nothing new.
         {:ok, card} = Persona.new(json)
         profile = %{who: who, persona: card, activities: activities, jev: jev}
         # 验收 (a) 只比人格卡：情绪、近期经历、记忆三栏都是空的。
-        life = %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0}
+        life = %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0, buildings: []}
         state = NpcServer.Mind.text(NpcServer.Mind.snapshot(profile, observation, [], life))
         {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "start")
 

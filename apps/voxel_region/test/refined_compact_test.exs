@@ -60,7 +60,10 @@ defmodule VoxelRegion.RefinedCompactTest do
     assert RefinedSlots.fetch(value, 511) == {:ok, {12, {6, 1}}}
     {target, _} = Canonical.target_at({512, -8, 1024}, before)
     assert target == %{micro: {512, -8, 1024}, granularity: 2, incarnation: 5, owner: {5, 0}, material: 11}
-    source = Map.merge(before, %{seq: 3, instances: %{{5, 0} => %{placed_by: 42}}})
+    # 实例记录取 Prefab.occurrences 的真实形状（放置时总带 definition_id / anchor / orientation / parent_id）。
+    instance = %{definition_id: :binary.copy(<<42>>, 32), anchor: {512, -8, 1024}, orientation: 0,
+                 parent_id: {0, 0}, component_slot: 0, placed_by: 42}
+    source = Map.merge(before, %{seq: 3, instances: %{{5, 0} => instance}})
     assert %{placed_by: 42, cell: ^cell} = VoxelRegion.World.Interactions.capture(source, %{cid: 7}, 2, target)
     assert VoxelRegion.ThermalGeometry.faces(cell, before.refined)
            |> Enum.map(fn {micro, neighbors} -> {micro, length(neighbors)} end) ==

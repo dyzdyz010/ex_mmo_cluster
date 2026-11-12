@@ -258,8 +258,9 @@ defmodule VoxelRegion.World.Prefabs do
       Map.get(other.attachments,slot) != value, do: {micro,material,%{micro: micro,material: material,granularity: 3,incarnation: id,slot: slot}}
     {_micro,_material,target} = Enum.min(macro ++ micro ++ attachments)
     # operation 原有 prefab 坐标保持 footprint 微格，不按宏格居中改写。
+    # 目标所属建筑取目标存在的那一侧（拆除取提交前，放置 / 替换取提交后，与 target 的来源 source 相同）；placed_by 仍取提交前。
     %{operation: Observation.operation(actor,actor.operation_request,actor.operation_kind,Map.drop(target,[:granularity])),
-      interaction: VoxelRegion.World.Interactions.capture(before,actor,actor.operation_kind,target)}
+      interaction: VoxelRegion.World.Interactions.capture(before,actor,actor.operation_kind,target,source)}
   end
 
   def changed_prefab_macros(state, other, cells) do
@@ -560,6 +561,7 @@ defmodule VoxelRegion.World.Prefabs do
         Map.merge(%{coarse_txn | entries: entries ++ coarse_txn.entries}, metadata)
         |> Map.merge(settlement)
         |> Production.ownership_metadata(before,state,cells)
+        |> VoxelRegion.World.Interactions.settle(state)
 
       with {:ok, chunks} <- Observation.canonical_changes(before, state, Enum.map(material_changes, &{0, &1})),
            collision_done = System.monotonic_time(:microsecond),

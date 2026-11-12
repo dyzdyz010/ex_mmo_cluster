@@ -62,11 +62,13 @@ defmodule NpcServer.NpcLifeStateTest do
     assert State.behavior(low, stranger, 0) == State.behavior(high, stranger, 0)
   end
 
-  test "旧合法心智仅补亲和初值，不追算历史，不修改已有认识或证据" do
-    old = new() |> update_in(["traits"], &Map.delete(&1, "sociability"))
+  # 2026-11-12（S1-D2）起旧持久行还缺“我的建筑”表：升级补成空表，不从旧事件补记。
+  test "旧合法心智仅补亲和初值与空的建筑表，不追算历史，不修改已有认识或证据" do
+    old = new() |> update_in(["traits"], &Map.delete(&1, "sociability")) |> Map.delete("buildings")
     migrated = State.upgrade(old)
     assert migrated["traits"]["sociability"] == 0.5
-    assert update_in(migrated, ["traits"], &Map.delete(&1, "sociability")) == old
+    assert migrated["buildings"] == []
+    assert migrated |> update_in(["traits"], &Map.delete(&1, "sociability")) |> Map.delete("buildings") == old
     assert State.upgrade(migrated) == migrated
   end
 
@@ -118,12 +120,12 @@ defmodule NpcServer.NpcLifeStateTest do
     {state, [damage, help, loose]} = State.advance(new(), events, 4713, 1_794_453_120_000)
 
     assert damage["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
-               "at (25, 518, 37), material 11, in world world-a (transaction 4711). " <>
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4711); the building is still standing. " <>
                "I feel angry toward this actor; my trust changed."
 
     assert help["text"] ==
-             "At 2026-11-12T03:12:00.000Z (UTC), Actor 22 repaired the building \"small hut\" that I built, " <>
+             "At 2026-11-12T03:12:00.000Z (UTC), Actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
                "at (25, 518, 37), material 11, in world world-a (transaction 4712). " <>
                "I feel grateful toward this actor; my trust changed."
 
@@ -141,9 +143,134 @@ defmodule NpcServer.NpcLifeStateTest do
     {_, [pending]} = State.advance(new(), [hd(events)], 4711, 1_794_452_980_000, :model)
 
     assert pending["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged the building \"small hut\" that I built, " <>
-               "at (25, 518, 37), material 11, in world world-a (transaction 4711). " <>
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4711); the building is still standing. " <>
                "My trust changed; emotional appraisal is pending."
+  end
+
+  # 标准描述表的四种有名字的句子，期望全文手写（`:removed` 与 `:damaged` 的原文取自离线对照 s1c_diag.py 的 WHOLE_ALT、PART）。
+  # 时刻 2026-11-12T03:09:40Z = 1_794_452_980_000 ms。小屋是我（cid 7）放下的根实例 {40, 0}，锚点宏格 (25, 518, 37)；
+  # c1 = (25, 518, 36)、c2 = (26, 518, 36) 是它的两格。building 是 Life 查好写进事件的发布名，修上去的那一格是散格。
+  @t 1_794_452_980_000
+  @hut [material: 11, at_ms: @t, building: "small hut", instance: {40, 0}, anchor: {25, 518, 37}, instance_removed: false]
+
+  test "标准描述表：打了没毁、毁掉一部分、修好、先受损后整座移除，各写各的句子；整座移除那条不再评价情绪" do
+    loose = [building: nil, instance: nil, anchor: nil, instance_removed: false]
+
+    events = [
+      event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]),
+      event(41, :damage, 21, @hut ++ [cell: {25, 518, 36}]),
+      event(42, :destroy, 21, @hut ++ [cell: {26, 518, 36}]),
+      event(43, :build, 22, loose ++ [cell: {26, 518, 36}, material: 11, at_ms: @t, placed_by: nil]),
+      # 同一格 c1 已在 41 评价过；这次整座被移除。
+      event(44, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])
+    ]
+
+    {state, [damaged, broken, repaired, removed]} = State.advance(new(), events, 44, @t)
+
+    assert damaged["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+               "at (25, 518, 36), material 11, in world world-a (transaction 41); the building is still standing. " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert broken["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 broke off part of the building \"small hut\" that I built, " <>
+               "at (26, 518, 36), material 11, in world world-a (transaction 42); the rest of the building is still standing. " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert repaired["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
+               "at (26, 518, 36), material 11, in world world-a (transaction 43). " <>
+               "I feel grateful toward this actor; my trust changed."
+
+    # 情绪与信任没有再评价，所以不带情绪句。
+    assert removed["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+               "at (25, 518, 36), material 11, in world world-a (transaction 44); the building no longer exists."
+
+    assert Map.take(removed, ["id", "seq", "actor"]) == %{"id" => "world-a:44", "seq" => 44, "actor" => 21}
+
+    # 数值规则不变：21 只评价了 41、42 两次（−0.35 × 2），22 的帮助一次；44 没有再计。
+    assert state["evidence"]["damage_count"] == 2
+    assert state["evidence"]["help_count"] == 1
+    assert_in_delta state["relationships"]["21"]["trust"], -0.7, 1.0e-12
+    assert state["relationships"]["21"]["source_seq"] == 42
+
+    # 我放下的有名字的建筑记在 "buildings"。
+    assert state["buildings"] == [%{"name" => "small hut", "instance" => [40, 0], "anchor" => [25, 518, 37]}]
+  end
+
+  test "整座移除是这一格的第一次破坏时照常评价并带情绪句（S1-C 实跑的情形）；模型评价模式只换句尾" do
+    events = [
+      event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]),
+      event(41, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])
+    ]
+
+    {state, [removed]} = State.advance(new(), events, 41, @t)
+
+    assert removed["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+               "at (25, 518, 36), material 11, in world world-a (transaction 41); the building no longer exists. " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert state["evidence"]["damage_count"] == 1
+
+    {_, [pending]} = State.advance(new(), events, 41, @t, :model)
+
+    assert pending["text"] ==
+             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+               "at (25, 518, 36), material 11, in world world-a (transaction 41); the building no longer exists. " <>
+               "My trust changed; emotional appraisal is pending."
+  end
+
+  test "整座被移除后那一格的关心结束：之后别人在那里放同材料不是修好那座建筑，不写经历、感激与信任不变" do
+    later = [building: nil, instance: nil, anchor: nil, instance_removed: false, material: 11, at_ms: @t, placed_by: nil]
+
+    # 两条写“整座被移除”的路径：先受损后整座移除（41 已评价过），与整座移除是第一次破坏。
+    for removal <- [
+          [event(41, :damage, 21, @hut ++ [cell: {25, 518, 36}]),
+           event(42, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])],
+          [event(42, :destroy, 21, Keyword.put(@hut, :instance_removed, true) ++ [cell: {25, 518, 36}])]
+        ] do
+      {before, episodes} =
+        State.advance(new(), [event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]) | removal], 42, @t)
+
+      assert List.last(episodes)["text"] =~ "the building no longer exists."
+
+      {state, after_removal} = State.advance(before, [event(43, :build, 22, later ++ [cell: {25, 518, 36}])], 43, @t)
+
+      assert after_removal == []
+      assert state["concerns"] == %{}
+      assert state["emotions"]["gratitude"] == 0.0
+      assert state["evidence"]["help_count"] == 0
+      assert state["relationships"]["22"] == nil
+      assert state["relationships"]["21"] == before["relationships"]["21"]
+    end
+  end
+
+  test "我的建筑按放下的次序记，同一锚点重建时新的一座取代旧的；别人放下的与没有名字的不记" do
+    shed = [material: 11, at_ms: @t, building: "shed", instance: {41, 0}, anchor: {-3, 64, -12}, instance_removed: false]
+
+    events = [
+      event(40, :build, 7, @hut ++ [cell: {25, 518, 36}, placed_by: nil]),
+      event(41, :build, 7, shed ++ [cell: {-3, 64, -12}, placed_by: nil]),
+      # 别人放下的。
+      event(42, :build, 22, Keyword.merge(shed, instance: {42, 0}, anchor: {9, 64, 9}) ++ [cell: {9, 64, 9}, placed_by: nil]),
+      # 没有名字的。
+      event(43, :build, 7, Keyword.merge(shed, building: nil, instance: {43, 0}, anchor: {5, 64, 5}) ++ [cell: {5, 64, 5}, placed_by: nil]),
+      # 小屋没了之后在同一锚点重建：新的实例 {44, 0}。
+      event(44, :build, 7, Keyword.put(@hut, :instance, {44, 0}) ++ [cell: {25, 518, 36}, placed_by: nil])
+    ]
+
+    {state, []} = State.advance(new(), events, 44, @t)
+
+    assert state["buildings"] == [
+             %{"name" => "shed", "instance" => [41, 0], "anchor" => [-3, 64, -12]},
+             %{"name" => "small hut", "instance" => [44, 0], "anchor" => [25, 518, 37]}
+           ]
+
+    # JSON 往返后仍是同一份（Life 的持久行是 JSON）。
+    assert state |> Jason.encode!() |> Jason.decode!() == state
   end
 
   test "伤害、修复、再次伤害分别归因，第三轮才缓慢漂移" do

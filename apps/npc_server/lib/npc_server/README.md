@@ -410,33 +410,63 @@ flowchart LR
   | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
   | What just happened | Life 手里还没写进 Hindsight 的经历原文（已封存待写的片段 + 未封存的尾部，旧在前）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加针对当前处境的一次召回（`- Recalled: …`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
-  | Current situation | 位置、生命、附近的人与距离、背包 | World / Scene（Observation） |
+  | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包 | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
   情绪强度由代码转成词（≥ 0.4 strong、≥ 0.2 moderate、其余 faint；Life 衰减到 0.1 及以下的不给出：一次破坏后约 70 秒内 strong、
   约 190 秒内 moderate、约 310 秒后消失）。信任不随时间恢复（≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 四档，其间不写）。
   人写成 `名字 (actor <cid>)`，不在附近的写 `actor <cid>, who is not nearby`：经历与记忆的原文只用 cid 指人。
+  “Current situation”里，Life 记得的每座“我的有名字的建筑”各一句，放在背包之前：`My building "<发布名>" at (<ax>, <ay>, <az>) is standing.`
+  或 `… is gone.`（坐标是锚点所在宏格；`is gone.` 是离线实测过的 `SIT_GONE` 原文）。问哪几座来自 Life 的记忆，在不在只认
+  `Life.mind/2` 在发问 worker 里现查 `World.instance_cells/2` 的结果（有格 = 在，`:instance_not_found` = 不在）；没有这样的建筑就一句不写。
+  “受损但还在”不写（要逐格 HP，没有便宜的读法）。
+  已知限制：发问时对每座记得的建筑各做一次同步的 `World.instance_cells/2`；建筑所在的页不在内存或建筑很大时可能很慢，
+  会拖长这一次选择（目标 2–4 秒）。现在不加超时或缓存：已登记的 NPC 的建筑都在身边，等真的出现再处理。
+  句子里的坐标是 Life 记下的锚点（记忆），不是现查的；建筑被整体挪动后坐标会与现状不符。“在 / 不在”只认 World。
   候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
 - **召回**：一次选择恰好召回一次（`Life.mind/2`，单次请求最多等 10 秒）。问句由处境拼出（`Mind.recall_query/2`）：
   `I am deciding what to do next. Nearby: <名字 (actor cid), …>. What I could do: <各候选的判据>. What do I remember about these people, places and tasks?`
 - **经历**：进 Life 的是“做了什么、结果如何”——一项活动结束时 Runtime 调 `Life.activity/2` 记一条
   `At <UTC> (UTC), I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，与 World 事件
-  （`… Actor <cid> damaged / repaired construction I care about …`）同样攒够约 3000 字封成片段写入 Hindsight。
-- **经历说得出是哪座建筑**：被破坏 / 被修的那一格属于一座有发布名的 prefab 时，World 事件的经历写成
-  `At <UTC> (UTC), Actor <cid> damaged / repaired the building "<发布名>" that I built, at (x, y, z), material <m>, in world <world> (transaction <seq>). I feel angry / grateful toward this actor; my trust changed.`
-  三段各有 owner：World 在操作构造边界把目标所属**根实例**的定义 id 冻进事件（`prefab`；整体放下的那一座，不是子定义；
-  散格为 nil）→ Life 的读取 worker 按 id 查 `World.published_prefab_metadata/1` 的名字写进事件（`building`）→
-  `Life.State` 写句子，并把名字记在关心格上（之后别人修这一格时修上去的是散格，仍说得出修的是哪座）。
-  **没有名字就不点名**（照旧 `construction I care about`）：空名发布（NPC 的 `design_house` 现在发布为空名）、
-  作者目录里没在运行时发布过的定义、散格都是这样。所以要让 NPC 认得出自己的建筑，定义须带名字发布，
-  且候选判据里用同一个叫法（判据写 “the small hut”，发布名就叫 “small hut”）。真实 Jev 的对照
-  （`tools/jev/episode.py`，2026-11-12）：只有坐标与编号时 `build_hut` 的概率 0.30–0.50、top1 摇摆；点名后 0.81–0.87、
-  4 / 4；去掉编号但不点名 0 / 4；编号留着不影响。人仍写 `Actor <cid>`（换成 `名字 (actor <cid>)` 没有可测的差别）。
-  同一段原文也是 `"life"`（模型评价情绪，结尾是 `My trust changed; emotional appraisal is pending.`，进它的评价来源）
-  与 `settler` + `life` 的经历：只有涉及有发布名的建筑时文本才变，规则、数值与行为都没变；已存的旧经历不重写。
+  （下面的标准描述表）同样攒够约 3000 字封成片段写入 Hindsight。
+- **经历按标准描述表写**（owner 是 `Life.State`，表只在它的 moduledoc 与 `account/4` 一处定义）：程序里一种 World 事件
+  对应一句固定、精确的英文，不同事件不写成同一个词。整句 = `At <UTC> (UTC), ` + 下表原文 + 情绪句（规则模式
+  `I feel angry / grateful toward this actor; my trust changed.`，`"life"` 模型评价模式 `My trust changed; emotional appraisal is pending.`），
+  `<where>` = `(x, y, z), material <m>, in world <world> (transaction <seq>)`：
+
+  | 事件 | 原文 |
+  |---|---|
+  | 有名字的建筑被 `:destroy`，根实例已不在（整座被移除） | `Actor <cid> removed the entire building "<发布名>" that I built, at <where>; the building no longer exists.` |
+  | 有名字的建筑被 `:destroy`，根实例还在（毁掉一部分） | `Actor <cid> broke off part of the building "<发布名>" that I built, at <where>; the rest of the building is still standing.` |
+  | 有名字的建筑被 `:damage`（打了没毁） | `Actor <cid> damaged part of the building "<发布名>" that I built, at <where>; the building is still standing.` |
+  | 别人在有名字的建筑受损的那一格修上同一材料 | `Actor <cid> repaired the damaged part of the building "<发布名>" that I built, at <where>.` |
+  | 没有名字（散格、空名发布）被 `:damage` / `:destroy` | `Actor <cid> damaged construction I care about at <where>.` |
+  | 没有名字的那一格被别人修好 | `Actor <cid> repaired construction I care about at <where>.` |
+
+  第一句与第三句是离线对照实测过的原文（`tools/jev/s1c_diag.py` 的 `WHOLE_ALT`、`PART`；2026-11-12 S1-D1：写明“整座没了”后
+  16 / 16 转向重建方向）。三段各有 owner：
+  - **World 给事实**：操作构造边界（`Interactions.capture`）冻结目标所属**根实例**——`prefab`（它的定义 id；整体放下的那一座，
+    不是子定义）、`instance`（实例身份 `{birth, occurrence}`）、`anchor`（锚点所在宏格）；散格为 nil。提交处
+    （`Interactions.settle/2`，提交后的状态已定、落盘之前）补 `instance_removed`：这笔之后根实例是否已不在 World。按根实例判断：
+    多构件建筑拆掉一个叶子构件，根还有格就是 false。prefab 放置 / 替换的 build 事件按提交后取所属建筑（刚放下的那座），
+    `placed_by` 仍按提交前。2026-11-12（S1-D2）之前提交的事件没有这三个键。
+  - **Life 写句子**：读取 worker 按 `prefab` 查 `World.published_prefab_metadata/1` 的名字写进事件（`building`）→ `Life.State`
+    按上表写句子，并把名字记在关心格上（之后别人修这一格时修上去的是散格，仍说得出修的是哪座）。一个关心格在一次毁坏过程里
+    只评价第一次破坏；**评价过之后整座被移除**（先被打一下、再整座拆掉）时，情绪与信任不再评价一次，但“整座被移除”这条经历
+    照样写出，且不带情绪句（没有发生评价）。没有名字时这一条不另写（无名的写法不在本次范围）。
+  - **Life 记住“我的建筑”**：自己放下有名字的 prefab 的那条 build 事件，记进状态的 `"buildings"`：`[%{"name", "instance",
+    "anchor"}]`，按放下的次序，同一锚点重建时新的一座取代旧的。这是记忆，不是世界真值；旧持久行加载时补成空表，
+    升级前放下的建筑不补记。自己建造不写经历句。
+  **没有名字就不点名**：空名发布（NPC 的 `design_house` 现在发布为空名）、作者目录里没在运行时发布过的定义、散格都是这样。
+  所以要让 NPC 认得出自己的建筑，定义须带名字发布，且候选判据里用同一个叫法（判据写 “the small hut”，发布名就叫 “small hut”）。
+  真实 Jev 的对照（`tools/jev/episode.py`，2026-11-12）：只有坐标与编号时 `build_hut` 的概率 0.30–0.50、top1 摇摆；点名后
+  0.81–0.87、4 / 4；去掉编号但不点名 0 / 4；编号留着不影响。人仍写 `Actor <cid>`（换成 `名字 (actor <cid>)` 没有可测的差别）。
+  同一段原文也是 `"life"`（进它的评价来源）与 `settler` + `life` 的经历：涉及有发布名的建筑时文本随表变，规则、数值与行为都没变；
+  已存的旧经历不重写。
   `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历；规则模式下 `Life.experience/2`（动作终态进情绪评价流水）不建流水，
   技能内部的每一步也不进经历。
-- **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、召回出错或超时）
+- **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、召回出错或超时、
+  “我的建筑”现查 World 时路由或查询失败——不写“在”或“不在”；World 调用退出时发问 worker 随之退出，记 `select_worker_failed`）
   记为 `{:mind_unavailable, 细节}`，**不发 Jev 请求**，不把读不到的记忆当成“没有记忆”；新 NPC 的空 bank 召回为空是正常结果。
   HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
   记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
@@ -588,8 +618,9 @@ NpcServer.Registry.put("LifeBuilder", %{
 
 统一形态（`"npc"`）必带 Life，用法与上面两种都不同：大脑仍是原 Tree（不包 `Brain.Social`，不问决策模型），Life 按规则模式运行；
 Life 对它多给两个入口——`Life.mind(cid, query)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历原文、
-缓存认识与恰好一次召回；读不到显式失败），`Life.activity(pid, text)` 接纳“做了什么、结果如何”的活动经历。
-`context/2` 的返回与 `Brain.Llm` 的输入不变。详见上文“统一形态”。
+缓存认识与恰好一次召回，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity(pid, text)` 接纳
+“做了什么、结果如何”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
+详见上文“统一形态”。
 
 ```mermaid
 flowchart LR

@@ -12,7 +12,7 @@ defmodule NpcServer.Mind do
   | Feelings and relationships | 此刻仍活跃的情绪（对谁、什么情绪、多强）与对各角色的信任 | Life（`Life.mind/2` 的 `feelings`、`relationships`） |
   | What just happened | 还没写进 Hindsight 的近期经历原文（权威事件、已结束的活动） | Life（`Life.mind/2` 的 `recent`） |
   | What I remember | 缓存的认识（mental models）与针对当前处境的一次召回 | Hindsight，经 Life 的适配器（`Life.mind/2` 的 `models`、`memories`） |
-  | Current situation | 位置、生命、附近的人、背包 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值） |
+  | Current situation | 位置、生命、附近的人、我的建筑在不在、背包 | World / Scene，经 Body 的 Observation（派生缓存，不是世界真值）；建筑在不在是发问时现查 World（`Life.mind/2` 的 `buildings`） |
   | Recent activities | 最近做过的几件事及结果 | 选择器（`NpcServer.Selector` 的历史） |
 
   数值由代码转成给模型读的写法，模型不做算术、不读原始数值：
@@ -28,6 +28,9 @@ defmodule NpcServer.Mind do
   人格只来自人格卡：Life 状态里的 `caution` / `sociability` 不进快照（并入人格卡要迁移持久状态并牵动 `Brain.Social`，待做）。
   记忆与认识只是“我记得”，不是世界真值，这一栏的开头写明。与模型的交互一律英文；角色名字原样写入。
   背包只有材料号与单位数：材料名在 World 的目录里，不在 Observation 里，这里不另查。
+  我放下的有名字的建筑，每座一句，在背包之前：`My building "<名>" at (<ax>, <ay>, <az>) is standing.` 或 `… is gone.`
+  （坐标是锚点所在宏格；`is gone.` 是离线对照实测过的原文，见 docs/10-active/cross-cutting/tools/jev/s1c_diag.py 的 `SIT_GONE`）。
+  哪几座来自 Life 的记忆，在不在只认发问那一刻 World 的现查结果；没有这样的建筑就一句不写。“受损但还在”不写（没有便宜的逐格读法）。
 
   `recall_query/2` 由处境拼出那一次召回的问句（附近的人 + 各候选的判据），一次选择只召回一次。
   """
@@ -45,7 +48,7 @@ defmodule NpcServer.Mind do
       {"Feelings and relationships", feelings(life, observation.entities)},
       {"What just happened", happened(life.recent)},
       {"What I remember", remembered(life)},
-      {"Current situation", situation(observation)},
+      {"Current situation", situation(observation, life.buildings)},
       {"Recent activities", recent(history)}
     ]
   end
@@ -126,16 +129,21 @@ defmodule NpcServer.Mind do
     )
   end
 
-  # 眼前的处境：只用 Observation 里现有的字段。
-  defp situation(%{self: %{position: {x, y, z} = position} = self} = observation) do
+  # 眼前的处境：Observation 里现有的字段，加 Life.mind 现查 World 得到的“我的建筑”在不在。
+  defp situation(%{self: %{position: {x, y, z} = position} = self} = observation, buildings) do
     others = Enum.reject(observation.entities, &(&1.entity_id == self.entity_id))
 
     Enum.join(
       ["Standing at x=#{metres(x)}, z=#{metres(z)} (height #{metres(y)})."] ++
-        life(self.body_state) ++ [nearby(others, position), inventory(observation.balances)],
+        life(self.body_state) ++
+        [nearby(others, position)] ++
+        Enum.map(buildings, &building/1) ++ [inventory(observation.balances)],
       " "
     )
   end
+
+  defp building(%{name: name, anchor: {ax, ay, az}, standing: standing}),
+    do: ~s|My building "#{name}" at (#{ax}, #{ay}, #{az}) is #{if standing, do: "standing", else: "gone"}.|
 
   # 本会话还没收到身体状态（nil）时不写这一句。
   defp life(nil), do: []

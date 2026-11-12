@@ -336,6 +336,8 @@ defmodule VoxelRegion.World.Edits do
                   ),
                 else: txn
 
+            txn = VoxelRegion.World.Interactions.settle(txn, state)
+
             with {:ok, collision_chunks} <- Observation.canonical_changes(before, state, Enum.uniq(geometry_changed ++
                    Enum.filter(liquid_dirty,fn {0,c}->
                      {:ok,{m,_},_}=cell_value(state,0,c); MmoContracts.VoxelMaterialCatalog.blocks_movement?(m)

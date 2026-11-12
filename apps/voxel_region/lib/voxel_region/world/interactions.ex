@@ -12,19 +12,33 @@ defmodule VoxelRegion.World.Interactions do
   `placed_by` 是放下目标的角色；`prefab` 是目标所属建筑的定义 id——目标属于某个 prefab 实例时取它的根实例
   （整体放下的那一个）的定义，散格、细化空槽、无主附件为 nil。定义的名字不在这里：读者按 id 查
   `VoxelRegion.World.published_prefab_metadata/1`。2026-11-12 之前提交的事件没有 `prefab` 键。
+
+  `instance` 是那个根实例的 id（`{birth, occurrence}`，与 `World.instance_cells/2`、`voxel_prefab_remove_v1` 同一身份），
+  `anchor` 是根实例锚点所在的宏格；散格等没有所属实例时都为 nil。`instance_removed` 不在这里：它要提交后的状态，
+  由提交处的 `settle/2` 补上。这三个键 2026-11-12（S1-D2）之前提交的事件没有。
+
+  `placed_by` 总按提交前（`state`）取。所属建筑（`prefab` / `instance` / `anchor`）按 `holder`——目标存在的那一侧——取，
+  缺省就是 `state`：damage / destroy 被打的是原来那座；prefab 放置 / 替换的目标提交后才存在，由 `Prefabs` 传提交后的
+  状态，于是这类 build 带的是刚放下的那座。散格建造与附件建造没有所属建筑。
   """
-  def capture(state, actor, kind, target) do
-    {placed_by, prefab} =
+  def capture(state, actor, kind, target), do: capture(state, actor, kind, target, state)
+
+  def capture(state, actor, kind, target, holder) do
+    placed_by =
       case origin(state, target) do
-        {:instance, id} ->
-          {Map.get(Map.get(state.instances, id, %{}), :placed_by), root_definition(state, id)}
-
-        {:cell, cell} ->
-          {Canonical.chunk_get(state.placed_by, cell), root_definition(state, Map.get(state.macro_owners, cell))}
-
-        nil ->
-          {nil, nil}
+        {:instance, id} -> Map.get(Map.get(state.instances, id, %{}), :placed_by)
+        {:cell, cell} -> Canonical.chunk_get(state.placed_by, cell)
+        nil -> nil
       end
+
+    root =
+      case origin(holder, target) do
+        {:instance, id} -> root(holder, id)
+        {:cell, cell} -> root(holder, Map.get(holder.macro_owners, cell))
+        nil -> nil
+      end
+
+    instance = root && Map.fetch!(holder.instances, root)
 
     %{
       seq: state.seq + 1,
@@ -34,9 +48,21 @@ defmodule VoxelRegion.World.Interactions do
       cell: Damage.macro(target),
       material: target.material,
       placed_by: placed_by,
-      prefab: prefab
+      prefab: instance && instance.definition_id,
+      instance: root,
+      anchor: instance && elem(Prefab.macro_slot(instance.anchor), 0)
     }
   end
+
+  @doc """
+  提交处（事务已构造、提交后的状态已定、尚未落盘）补上 `instance_removed`：这笔提交之后根实例 `instance` 已不在
+  World（整座被移除——World 裁掉失去全部格且没有存活后代的实例，`Payloads.prune_instances/1`）。按根实例判断：
+  多构件建筑拆掉一个叶子构件，根还在就是 false。没有所属实例为 false。不带经历的事务原样返回。
+  """
+  def settle(%{interaction: event} = txn, state),
+    do: %{txn | interaction: Map.put(event, :instance_removed, event.instance != nil and not Map.has_key?(state.instances, event.instance))}
+
+  def settle(txn, _state), do: txn
 
   # 提交前目标的归属：`{:instance, 实例 id}`（细化槽、附件）、`{:cell, 宏格}`（宏格：放置溯源按格记，
   # 所属实例在 macro_owners 里，散格没有）或 nil（细化空槽、无主附件）。
@@ -74,16 +100,16 @@ defmodule VoxelRegion.World.Interactions do
 
   defp origin(_state, target), do: {:cell, elem(Prefab.macro_slot(target.micro), 0)}
 
-  # 沿父链到根实例，取它的定义 id；没有所属实例（散格的 nil）或实例记录不在（与 placed_by 同样读作无主）为 nil。
-  defp root_definition(state, id) do
+  # 沿父链到根实例，取它的 id；没有所属实例（散格的 nil）或实例记录不在（与 placed_by 同样读作无主）为 nil。
+  defp root(state, id) do
     case Map.get(state.instances, id) do
       nil ->
         nil
 
       instance ->
         case Map.get(instance, :parent_id, {0, 0}) do
-          {0, 0} -> instance.definition_id
-          parent -> root_definition(state, parent)
+          {0, 0} -> id
+          parent -> root(state, parent)
         end
     end
   end

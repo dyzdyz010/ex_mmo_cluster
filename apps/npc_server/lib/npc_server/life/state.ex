@@ -3,14 +3,33 @@ defmodule NpcServer.Life.State do
   NPC 自有心智的纯规则与派生行为，不查询世界、不持久化、不调用模型。
 
   输入消费 World 已排序的权威操作；状态全部使用 JSON 字符串键。关心格只是记忆，
-  不作为当前几何真值。一次毁坏过程只评价首个 damage/destroy，同材料修复后重新计数。
-  经历原文说得出是哪座建筑：事件带 `building`（被动的那一格所属 prefab 的发布名，由 Life 向 World 查好写进事件；
-  散格、没有名字的定义都没有）时写 `the building "<名字>" that I built,`，并把名字记在关心格上，之后别人修这一格
-  （修上去的是散格，事件自己不带建筑）仍说得出修的是哪座；没有名字时照旧写 `construction I care about`。
-  例：`At <UTC> (UTC), Actor 21 damaged the building "small hut" that I built, at (25, 518, 37), material 11,
-  in world <world> (transaction 4711). I feel angry toward this actor; my trust changed.`
-  给模型选择的是名字：坐标、材料号、事务号留着不碍事，但只有它们时模型认不出是哪座建筑
-  （对照见 docs/10-active/cross-cutting/tools/jev/README.md 的 2026-11-12 一节）。
+  不作为当前几何真值。一次毁坏过程只评价首个 damage/destroy，同材料修复后重新计数；评价过之后整座有名字的建筑
+  被移除时，不再评价情绪与信任，但照样写出“整座没了”的经历（不带情绪句）。整座有名字的建筑被移除后，被移除的那一格的
+  关心格删除：之后别人在这里放东西不是修那座建筑。
+
+  经历原文按下面的**标准描述表**写（唯一定义处 `account/4`）：每种 World 事件对应一句固定的英文，不同事件不共用一个词。
+  事件带 `building`（被动那一格所属 prefab 的发布名，由 Life 向 World 查好写进事件；散格、没有名字的定义都没有）时
+  按建筑细分，并把名字记在关心格上，之后别人修这一格（修上去的是散格，事件自己不带建筑）仍说得出修的是哪座。
+  整句 = `At <UTC> (UTC), ` + 原文 + 情绪句（规则模式 `I feel angry / grateful toward this actor; my trust changed.`，
+  模型评价模式 `My trust changed; emotional appraisal is pending.`）；`<where>` =
+  `(x, y, z), material <m>, in world <world> (transaction <seq>)`：
+
+  | 种类 | 事件 | 原文 |
+  |---|---|---|
+  | `:removed` | 有名字的建筑被 `:destroy` 且根实例已不在（事件的 `instance_removed`） | `Actor <cid> removed the entire building "<名>" that I built, at <where>; the building no longer exists.` |
+  | `:broken` | 有名字的建筑被 `:destroy`，根实例还在 | `Actor <cid> broke off part of the building "<名>" that I built, at <where>; the rest of the building is still standing.` |
+  | `:damaged` | 有名字的建筑被 `:damage`（打了没毁） | `Actor <cid> damaged part of the building "<名>" that I built, at <where>; the building is still standing.` |
+  | `:repaired` | 别人在有名字的建筑受损的那一格修上同一材料 | `Actor <cid> repaired the damaged part of the building "<名>" that I built, at <where>.` |
+  | `:damaged_unnamed` | 没有名字（散格、空名发布）被 `:damage` / `:destroy` | `Actor <cid> damaged construction I care about at <where>.` |
+  | `:repaired_unnamed` | 没有名字的那一格被别人修好 | `Actor <cid> repaired construction I care about at <where>.` |
+
+  `:removed`、`:damaged` 是离线对照实测过的原文（docs/10-active/cross-cutting/tools/jev/s1c_diag.py 的 `WHOLE_ALT`、`PART`）。
+  给模型选择的是名字与“还在 / 没了”：坐标、材料号、事务号留着不碍事，但只有它们时模型认不出是哪座建筑
+  （对照见 docs/10-active/cross-cutting/tools/jev/README.md 的 2026-11-12 两节）。
+
+  `"buildings"` 记“我放下的有名字的建筑”（自己的 prefab 放置事件）：`[%{"name", "instance" => [birth, occurrence],
+  "anchor" => [x, y, z] 锚点所在宏格}]`，按放下的次序，同一锚点只留最新的一座。这只是记忆：此刻在不在由发问时现查
+  World 回答（`NpcServer.Life.mind/2`），不在这里推断。
   情绪按经过时间衰减，关系与谨慎不随时间恢复；各数值系数是本轮游戏设计参数。
   canonical 状态只保留最近评价事件的情绪时刻锚，轮询时间不改锚。
   当前衰减值由 view/2 派生；观察不得回写，只有新评价接纳时先衰减再更新 canonical。
@@ -29,12 +48,17 @@ defmodule NpcServer.Life.State do
       "traits" => %{"caution" => 0.2, "sociability" => 0.5},
       "relationships" => %{},
       "concerns" => %{},
+      "buildings" => [],
       "evidence" => %{"damage_count" => 0, "help_count" => 0, "anger" => nil, "gratitude" => nil}
     }
   end
 
-  @doc "升级旧合法持久心智：只补亲和初值，不重放旧事件，不推算历史增益。仅在加载边界调用。"
-  def upgrade(state), do: update_in(state, ["traits"], &Map.put_new(&1, "sociability", 0.5))
+  @doc """
+  升级旧合法持久心智：只补亲和初值与空的“我的建筑”表，不重放旧事件，不推算历史增益（升级前放下的建筑不补记）。
+  仅在加载边界调用。
+  """
+  def upgrade(state),
+    do: state |> update_in(["traits"], &Map.put_new(&1, "sociability", 0.5)) |> Map.put_new("buildings", [])
 
   @doc """
   按权威顺序消费新操作，返回 canonical 事件态和可批量写入记忆的英文经历。
@@ -178,6 +202,7 @@ defmodule NpcServer.Life.State do
     do: :math.sqrt((x - ex) ** 2 + (y - ey) ** 2 + (z - ez) ** 2)
 
   defp appraise(state, event, emotion_owner) do
+    state = remember_building(state, event)
     key = cell_key(event.cell)
     concern = state["concerns"][key]
 
@@ -194,13 +219,43 @@ defmodule NpcServer.Life.State do
         (event.placed_by == state["cid"] or concern != nil) and
           (concern == nil or not concern["damaged"]) ->
         concern = concern || new_concern(event)
-        state = put_in(state, ["concerns", key], Map.put(concern, "damaged", true))
+
+        # 整座有名字的建筑被移除：它不在了，这一格上关于它的关心随之结束（之后别人在这里放东西不是修它）。
+        state =
+          if what(:damage, event, concern["building"]) == :removed,
+            do: Map.update!(state, "concerns", &Map.delete(&1, key)),
+            else: put_in(state, ["concerns", key], Map.put(concern, "damaged", true))
+
         react(state, event, :damage, concern["building"], emotion_owner)
+
+      # 这一格已在这次毁坏过程里评价过（先被打过一下），之后整座有名字的建筑被移除：情绪与信任不再评价一次
+      # （数值规则仍是“一次毁坏过程只评价首个”），但“整座没了”这条经历照样写出；没有发生评价，所以不带情绪句。
+      # 关心格同样随这座建筑结束。
+      event.actor != state["cid"] and event.kind == :destroy and event[:instance_removed] == true and
+        concern != nil and concern["damaged"] and concern["building"] != nil ->
+        state = Map.update!(state, "concerns", &Map.delete(&1, key))
+        {state, episode(state, event, account(:removed, event, concern["building"], state["world_id"]))}
 
       true ->
         {state, nil}
     end
   end
+
+  # 我放下的有名字的建筑（自己的 prefab 放置事件，Life 已按 `prefab` 查好发布名写进 `building`）：记下名字、根实例与
+  # 锚点所在宏格，按放下的次序。这是记忆——此刻在不在只由发问时现查 World 回答（`NpcServer.Life.mind/2`）。
+  # 同一锚点同时只能有一座，所以在同一锚点重建时新的一座取代旧的那条。
+  defp remember_building(state, %{kind: :build, building: name, instance: {_, _} = instance, anchor: {_, _, _} = anchor} = event)
+       when is_binary(name) do
+    if event.actor == state["cid"] do
+      anchor = Tuple.to_list(anchor)
+      kept = Enum.reject(state["buildings"], &(&1["anchor"] == anchor))
+      %{state | "buildings" => kept ++ [%{"name" => name, "instance" => Tuple.to_list(instance), "anchor" => anchor}]}
+    else
+      state
+    end
+  end
+
+  defp remember_building(state, _event), do: state
 
   # 新的关心格；所属建筑有名字才记 "building"（旧持久行与散格的关心格都没有这个键）。
   defp new_concern(event) do
@@ -259,33 +314,50 @@ defmodule NpcServer.Life.State do
         state
       end
 
-    verb = if reaction == :damage, do: "damaged", else: "repaired"
     feeling = if reaction == :damage, do: "angry", else: "grateful"
 
-    object =
-      if building,
-        do: ~s|the building "#{building}" that I built,|,
-        else: "construction I care about"
+    tail =
+      if emotion_owner == :model,
+        do: "My trust changed; emotional appraisal is pending.",
+        else: "I feel #{feeling} toward this actor; my trust changed."
 
+    {state, episode(state, event, account(what(reaction, event, building), event, building, state["world_id"]) <> " " <> tail)}
+  end
+
+  # 这件事属于标准描述表里的哪一种。有名字的建筑才细分；没有名字（散格、空名发布）照旧只分破坏与修好。
+  defp what(:help, _event, nil), do: :repaired_unnamed
+  defp what(:help, _event, _building), do: :repaired
+  defp what(:damage, _event, nil), do: :damaged_unnamed
+  defp what(:damage, %{kind: :damage}, _building), do: :damaged
+  defp what(:damage, %{kind: :destroy} = event, _building),
+    do: if(event[:instance_removed] == true, do: :removed, else: :broken)
+
+  defp account(what, event, name, world) do
     {x, y, z} = event.cell
+    a = event.actor
+    where = "(#{x}, #{y}, #{z}), material #{event.material}, in world #{world} (transaction #{event.seq})"
+
+    case what do
+      :removed -> ~s|Actor #{a} removed the entire building "#{name}" that I built, at #{where}; the building no longer exists.|
+      :broken -> ~s|Actor #{a} broke off part of the building "#{name}" that I built, at #{where}; the rest of the building is still standing.|
+      :damaged -> ~s|Actor #{a} damaged part of the building "#{name}" that I built, at #{where}; the building is still standing.|
+      :repaired -> ~s|Actor #{a} repaired the damaged part of the building "#{name}" that I built, at #{where}.|
+      :damaged_unnamed -> "Actor #{a} damaged construction I care about at #{where}."
+      :repaired_unnamed -> "Actor #{a} repaired construction I care about at #{where}."
+    end
+  end
+
+  # 一条经历：句首标权威时刻，身份与时间取自事件。
+  defp episode(state, event, text) do
     at_utc = event.at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
 
-    episode = %{
+    %{
       "id" => state["world_id"] <> ":" <> to_string(event.seq),
       "seq" => event.seq,
       "at_ms" => event.at_ms,
       "actor" => event.actor,
-      "text" =>
-        "At #{at_utc} (UTC), Actor #{event.actor} #{verb} #{object} " <>
-          "at (#{x}, #{y}, #{z}), material #{event.material}, in world #{state["world_id"]} " <>
-          "(transaction #{event.seq}). " <>
-          if(emotion_owner == :model,
-            do: "My trust changed; emotional appraisal is pending.",
-            else: "I feel #{feeling} toward this actor; my trust changed."
-          )
+      "text" => "At #{at_utc} (UTC), " <> text
     }
-
-    {state, episode}
   end
 
   defp cell_key({x, y, z}), do: "#{x},#{y},#{z}"
