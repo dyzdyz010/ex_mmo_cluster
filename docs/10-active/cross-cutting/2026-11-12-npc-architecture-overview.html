@@ -104,8 +104,8 @@
 <p class="lede">行为树、选择器、Jev、LLM、Hindsight 不是五个并列的大脑，而是同一个 NPC 里在不同时间尺度上起作用的部件。</p>
 <div class="chips">
   <span class="chip"><span class="dot ok"></span>概念已确认（2026-11-12）</span>
-  <span class="chip"><span class="dot run"></span>薄片一：验收 (a) 通过；(b)(c) 未通过，待决定重设计再跑还是先进薄片二</span>
-  <span class="chip"><span class="dot"></span>三条验收只过了第一条</span>
+  <span class="chip"><span class="dot run"></span>薄片一：验收 (a)(b) 已验收；(c) 已实跑、未验收（S1-C2 不通过），待用户决定</span>
+  <span class="chip"><span class="dot"></span>三条验收过了两条（(b) 基线少取 1 次）</span>
 </div>
 <p class="note">本页是总纲 <code>2026-11-12-npc-architecture-overview.md</code> 的图解版，写于 2026-11-12；两者不一致时以那份文档为准。</p>
 
@@ -349,7 +349,9 @@
     <tr><td class="k">S1-A</td><td>选择链接通：人格卡与候选活动进注册参数，活动结束时问 Jev，行为树执行，每次选择一行日志</td><td>已实现、已实跑（只走了“去处”候选的成功路径）；验收第一条通过</td></tr>
     <tr><td class="k">S1-B</td><td>Life 的情绪与近期经历、Hindsight 的认识与召回进快照，并验证经历写回</td><td>已实现、已测试；预演落空的原因已由 S1-B2 查明并修正</td></tr>
     <tr><td class="k">S1-B2</td><td>经历原文点名被破坏的建筑</td><td>已实现、已测试、已提交（b08a7c45）；实跑里生效（事件句写的是 damaged the building "small hut" that I built）</td></tr>
-    <tr><td class="k">S1-C</td><td>完整实跑记录，三条验收的原始结果</td><td>已实跑（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）。阶段零：NPC 自己采石、采石灰岩、建成小屋，达成。验收 (b)：按运行前期望落空，小屋被拆后选择确实变了（visit_plaza → guard_hut），但运行前写下的期望是 build_hut。验收 (c)：不通过（不确定），情绪衰减、经历写入记忆后在线 2 / 2 选 guard_hut，但离线对照里删掉记忆中那件事后仍选 guard_hut，说明不了是记忆在起作用</td></tr>
+    <tr><td class="k">S1-C</td><td>完整实跑记录，三条验收的原始结果</td><td>已实跑（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）。阶段零：NPC 自己采石、采石灰岩、建成小屋，达成。验收 (b)：按运行前期望落空，小屋被拆后选择确实变了（visit_plaza → guard_hut），但运行前写下的期望是 build_hut。验收 (c)：不通过（不确定），情绪衰减、经历写入记忆后在线 2 / 2 选 guard_hut，但离线对照里删掉记忆中那件事后仍选 guard_hut，说明不了是记忆在起作用（这是第一次实跑的结果，已被下面两行取代）</td></tr>
+    <tr><td class="k">S1-D2</td><td>产品改动：一种事件一句标准描述；处境里写“我的建筑在不在”；Life 登记建筑，同锚点重建会替换</td><td>已实现、已测试、已提交；已在 S1-C2 里第一次在真实服务端上实跑，三样都起了作用</td></tr>
+    <tr><td class="k">S1-C2</td><td>重设计后重跑 (b)(c)（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）</td><td>(b) 已验收（基线少取 1 次）：重建的选择由“整座被移除”的经历句与处境里的 is gone 引起，任一句单独就够。(c) 已实跑、未验收（不通过）：重建后 27 次选择里 26 次 guard_hut，陌生人、无人、破坏者在附近都一样，区分不出记忆的作用。事后离线诊断 24 次：3 条期望成立、3 条落空</td></tr>
   </tbody>
 </table>
 </div>

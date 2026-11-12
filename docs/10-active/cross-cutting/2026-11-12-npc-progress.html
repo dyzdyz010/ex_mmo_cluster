@@ -136,18 +136,18 @@
 <main>
 
 <h1>NPC 现在做到了什么地步</h1>
-<p class="lede">截至 2026-11-12：薄片一的整条链在真实服务端上走通了一次，三条验收过了一条；另外两条没过的原因已经查明，产品已按此改完，等重跑。</p>
+<p class="lede">截至 2026-11-12：薄片一的整条链在真实服务端上走通了一次，三条验收过了两条（(a)、(b)），(c) 在第二次实跑（S1-C2）里仍不通过。下一步待用户定。</p>
 <div class="chips">
   <span class="chip"><span class="dot run"></span>薄片一进行中（不是完成）</span>
-  <span class="chip"><span class="dot ok"></span>验收 (a) 通过</span>
-  <span class="chip"><span class="dot run"></span>验收 (b)(c) 实跑一次未通过，产品已改，未重跑</span>
+  <span class="chip"><span class="dot ok"></span>验收 (a) 已验收；(b) 已验收（S1-C2，基线少取 1 次）</span>
+  <span class="chip"><span class="dot run"></span>验收 (c) 已实跑、未验收（S1-C2 不通过）</span>
   <span class="chip"><span class="dot"></span>薄片二、三、四未开始</span>
 </div>
 <p class="note">配套的整体设计图解见 <a href="2026-11-12-npc-architecture-overview.html">2026-11-12-npc-architecture-overview.html</a>（一条控制链、一份共享心智、一个回路）。本页的事实取自统筹页 <code>2026-11-11-npc-coordination.md</code> 与 <code>.demo/observe/npc-slice1-20261112/</code> 下的报告；两者不一致时以统筹页为准。</p>
 
 <!-- ============ 一 ============ -->
 <h2 id="s1">一、现状</h2>
-<div class="card"><p class="oneline">一个 NPC 已经在真实服务端上走通整条链：人格卡 + 心智 + 记忆 → Jev 选做什么 → 行为树执行 → 结果写回情绪与记忆。三条验收里 (a) 通过；(b)(c) 实跑过一次未通过，原因已查明、产品已改，等重跑。</p></div>
+<div class="card"><p class="oneline">一个 NPC 已经在真实服务端上走通整条链：人格卡 + 心智 + 记忆 → Jev 选做什么 → 行为树执行 → 结果写回情绪与记忆。三条验收里 (a)(b) 已验收；(c) 实跑了两次都没通过：第二次（S1-C2）重建之后不管附近是谁都选守屋，看不出记忆的作用。</p></div>
 
 <div class="card" style="margin-top:12px">
   <div class="slices">
@@ -160,15 +160,15 @@
         <div class="seg done" title="经历点名建筑">S1-B2</div>
         <div class="seg done" title="验收实跑：(b) 落空、(c) 不通过">S1-C</div>
         <div class="seg done" title="离线诊断">S1-D1</div>
-        <div class="seg done" title="按诊断改产品，未实跑">S1-D2</div>
-        <div class="seg todo" title="重跑 (b)(c)">S1-C2 待做</div>
+        <div class="seg done" title="按诊断改产品，已在 S1-C2 实跑">S1-D2</div>
+        <div class="seg done" title="重跑 (b)(c)：(b) 已验收，(c) 不通过">S1-C2</div>
       </div>
     </div>
     <div class="srow"><div class="sname">薄片二 <span>LLM 规划、说话</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
     <div class="srow"><div class="sname">薄片三 <span>游戏时刻、打断</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
     <div class="srow"><div class="sname">薄片四 <span>多个 NPC 实跑</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
   </div>
-  <p class="note" style="margin:12px 0 0">绿色格子是“这一步做完了”，不是“验收过了”。S1-C 这一步做完的意思是实跑跑过了，结果是 (b)(c) 未通过。</p>
+  <p class="note" style="margin:12px 0 0">绿色格子是“这一步做完了”，不是“验收过了”。S1-C 做完的意思是第一次实跑跑过了，结果是 (b)(c) 未通过；S1-C2 做完的意思是第二次实跑跑过了，结果是 (b) 已验收、(c) 未通过。</p>
 </div>
 
 <div class="card tablewrap" style="margin-top:12px">
@@ -176,8 +176,8 @@
   <thead><tr><th>验收</th><th>内容</th><th>状态</th></tr></thead>
   <tbody>
     <tr><td class="k">(a)</td><td>同一处境下，两张不同的人格卡选得不同</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
-    <tr><td class="k">(b)</td><td>被破坏之后，下一次选择随之改变（走情绪与近期经历）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">实跑落空</span></td></tr>
-    <tr><td class="k">(c)</td><td>情绪衰减完、经历写入记忆之后，再问仍受那件事影响（走 Hindsight 召回）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">不通过（不确定）</span></td></tr>
+    <tr><td class="k">(b)</td><td>被破坏之后，下一次选择随之改变（走情绪与近期经历）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span> <span class="tag ok">S1-C2 通过</span><br><span class="note">第一次实跑落空；基线少取 1 次</span></td></tr>
+    <tr><td class="k">(c)</td><td>情绪衰减完、经历写入记忆之后，再问仍受那件事影响（走 Hindsight 召回）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">S1-C2 不通过</span><br><span class="note">第一次实跑也不通过</span></td></tr>
   </tbody>
 </table>
 </div>
@@ -191,10 +191,10 @@
   <tbody>
     <tr><td class="k">自己选做什么</td><td>活动结束后由 Jev 在候选里选下一件事，行为树执行。两张人格卡（Sella、Hask）在同一处境下 4 次全部符合期望：Sella 去广场，Hask 回家。真实服务端里 46 次选择、0 次失败。<br><span class="note">两张卡的自由文本写得很绝对，这条验收过得不难。</span></td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
     <tr><td class="k">采石、采石灰岩、建成小屋</td><td>NPC 自己选了 <code>gather_stone</code> → <code>gather_limestone</code> → <code>build_hut</code>，采了 4 格石料、1 格石灰岩，登记后约 25 秒建成小屋（1878 格），账对得上。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">阶段零达成；不是三条验收之一</span></td></tr>
-    <tr><td class="k">被拆后有情绪、记得是谁拆了哪座</td><td>另一个角色经正常入口整座拆掉小屋后：愤怒 0.6、信任 −0.35；经历原文点名了建筑：“damaged the building "small hut" that I built”。之后 NPC 改为一直守屋。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">验收 (b) 未通过</span></td></tr>
-    <tr><td class="k">经历写进长期记忆，召回进下一次选择</td><td>写入 Hindsight 约 17 秒完成、认识刷新约 79 秒；记忆库终态 26 条，四份认识都提到那件事，召回句里有 “the small hut I built”。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">验收 (c) 未通过</span></td></tr>
+    <tr><td class="k">被拆后有情绪、记得是谁拆了哪座</td><td>另一个角色经正常入口整座拆掉小屋后：愤怒 0.6、信任 −0.35；经历原文点名了建筑：“damaged the building "small hut" that I built”。之后 NPC 改为一直守屋。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">以上是第一次实跑；验收 (b) 当时未通过，S1-C2 通过（见第四节末）</span></td></tr>
+    <tr><td class="k">经历写进长期记忆，召回进下一次选择</td><td>写入 Hindsight 约 17 秒完成、认识刷新约 79 秒；记忆库终态 26 条，四份认识都提到那件事，召回句里有 “the small hut I built”。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">以上是第一次实跑；验收 (c) 未通过，S1-C2 仍未通过</span></td></tr>
     <tr><td class="k">选择延迟</td><td>这次实跑的日志：Jev 中位 319 ms，记忆召回中位 230 ms（写入记忆后约 360 ms）。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">一次实跑的统计，不是 benchmark</span></td></tr>
-    <tr><td class="k">分得清“损坏”和“整座没了”，知道自己的建筑在不在</td><td>S1-D2 的改动：经历按事件种类用标准句，处境里现查 World 写“我的建筑在 / 不在”。单测与集成测试通过。</td><td><span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span><br><span class="note">改后没上过真实服务端</span></td></tr>
+    <tr><td class="k">分得清“损坏”和“整座没了”，知道自己的建筑在不在</td><td>S1-D2 的改动：经历按事件种类用标准句，处境里现查 World 写“我的建筑在 / 不在”。单测与集成测试通过。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">已在 S1-C2 的真实服务端上实跑，起了作用；(b) 因此验收通过</span></td></tr>
   </tbody>
 </table>
 </div>
@@ -261,8 +261,8 @@
     <rect x="574" y="222" width="348" height="32" rx="6" class="no"/><text x="586" y="243" class="tm">今天的意图 · 薄片二</text>
     <rect x="574" y="260" width="348" height="32" rx="6" class="ok"/><text x="586" y="281">最近做过什么</text>
     <rect x="574" y="298" width="348" height="44" rx="6" class="ok"/><text x="586" y="316">眼前处境（位置、附近的人、背包）</text>
-    <rect x="586" y="325" width="11" height="11" rx="2" class="imp"/>
-    <text x="603" y="335" class="lab t2">“我的建筑在 / 不在”一句：已实现、未实跑</text>
+    <rect x="586" y="325" width="11" height="11" rx="2" class="ok"/>
+    <text x="603" y="335" class="lab t2">“我的建筑在 / 不在”一句：已实跑（S1-C2）</text>
   </g>
 
   <line x1="558" y1="192" x2="404" y2="192" class="ln" marker-end="url(#ah)"/>
@@ -395,7 +395,7 @@
 </svg>
 </div>
 
-<h3 style="margin-top:24px">三条验收的结果</h3>
+<h3 style="margin-top:24px">三条验收的结果（第一次实跑，S1-C；第二次实跑 S1-C2 的结果见第四节末）</h3>
 <div class="card tablewrap">
 <table>
   <thead><tr><th>验收</th><th>运行前期望</th><th>实际</th><th>判定</th></tr></thead>
@@ -406,7 +406,51 @@
   </tbody>
 </table>
 </div>
-<p class="note" style="margin-top:8px">场地也有问题：小屋锚点沿用了旧场地的高度，比地表高出约 8 米、悬空；广场到小屋 8.12 米，超出 8 米建造射程（这次没触发）。重跑要改。</p>
+<p class="note" style="margin-top:8px">场地也有问题：小屋锚点沿用了旧场地的高度，比地表高出约 8 米、悬空；广场到小屋 8.12 米，超出 8 米建造射程（这次没触发）。S1-C2 已改：小屋落在地表，所有去处在小屋 8 米内。</p>
+
+<h3 style="margin-top:24px">第二次实跑（S1-C2，2026-11-12）：(b) 通过，(c) 仍不通过</h3>
+<p>在 S1-D2 的产品改动之后重跑，仍是真实服务端、真实 Jev、真实 Hindsight（16:54–17:21 UTC，节点只起了一次，49 次选择成功、2 次显式失败）。期望与判定规则都是运行前写在计划里的，起节点后一条没改。名词说明：<b>S</b> = 重建之后“陌生人 Tobin 在附近”时的那份真实快照；<b>V</b> = 同样位置、“破坏者 Corvin 在附近”时的那份；“基线”指没有特殊刺激时的正常选择。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>验收</th><th>运行前期望</th><th>实际</th><th>判定</th></tr></thead>
+  <tbody>
+    <tr><td class="k">(b)</td><td>小屋被整座拆掉后，第一次选择走重建方向；快照里含两句事实；去掉它们后应不再走重建方向</td><td>基线 <code>visit_plaza</code> 0.50、0.44（<b>只取到 2 次，计划是 3 次</b>，子会话的等待命令出错）；拆除后第一次选 <code>build_hut</code> 0.46；快照含“整座被移除”的经历句与处境里的 <code>is gone</code>；事件后 32 秒新小屋建成</td><td><span class="tag ok">通过</span><br><span class="note">基线少取 1 次，记为偏差</span></td></tr>
+    <tr><td class="k">(c)</td><td>重建完、情绪与事件句退去后，破坏者在附近时的选择不同于陌生人在附近时（S 应选 <code>visit_plaza</code> ×3，V 第 1 次选 <code>guard_hut</code> 且不同于 S）</td><td>S：<code>guard_hut</code> 0.73、0.70、0.74；无人在附近：<code>guard_hut</code> 0.40；V：<code>guard_hut</code> 0.60、0.60、0.59。两边相同；重建后 27 次选择里 26 次 <code>guard_hut</code>（只有 17:05:10 一次 <code>visit_plaza</code>）</td><td><span class="tag bad">不通过</span><br><span class="note">连“有差别”这个前提都没出现</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 style="margin-top:20px">(b) 为什么通过：起作用的是哪两句事实</h3>
+<ul>
+  <li>快照里的经历句：<span class="sent">Actor … removed the entire building "small hut" that I built, …; the building no longer exists.</span></li>
+  <li>处境里的一句：<span class="sent">My building "small hut" at (25, 510, 36) is gone.</span></li>
+  <li><b>任一句单独就够</b>：离线对照里去掉其中一句，仍然选 <code>build_hut</code>（各 4 / 4）；两句都去掉，变回 <code>visit_plaza</code>（4 / 4）。愤怒句、Distrusts（对破坏者的不信任）、自己的活动记录去掉后选择都不变。</li>
+</ul>
+
+<h3 style="margin-top:20px">(c) 为什么不通过：离线对照与事后诊断排除了什么</h3>
+<ul>
+  <li><b>离线对照</b>（节点停后，16 种改写各问 4 次，共 64 次请求）：S 与 V 的原文都复现了在线结果（各 4 / 4 <code>guard_hut</code>）。V 去掉 Distrusts 后仍是 <code>guard_hut</code> 0.60–0.65，与 S 的基线相同；把“附近”改成无人也仍是 <code>guard_hut</code> ×4；去掉自己的活动记录反而更高（0.81–0.85）。</li>
+  <li><b>事后离线诊断</b>（探索性，不是验收，24 次请求）：单独清空整个记忆栏、单独去掉 Distrusts、单独去掉含 <code>guard</code> 的记忆条目，都仍是 <code>guard_hut</code>（0.58–0.90）；清空四份认识后概率反而更高。<b>唯一能改变选择的组合</b>是“整个记忆栏清空 + 去掉 Distrusts”一起做，也只有 3 / 4 回到 <code>visit_plaza</code>，而且很勉强（<code>visit_plaza</code> 0.47–0.52 对 <code>guard_hut</code> 0.34–0.47）。</li>
+  <li><b>推断（未验证）</b>：重建之后的守屋由记忆栏与 Distrusts 多处同时支撑，去掉任何一处另一处都还够；人格卡里“slow to forget a wrong”和候选判据本身也可能有份，没有单独去掉过。所以在现在的候选表下，用“破坏者在不在附近”撬不动 <code>guard_hut</code>。</li>
+</ul>
+
+<h3 style="margin-top:20px">运行前写下的期望，哪些落空了</h3>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>期望</th><th>实际</th><th>判定</th></tr></thead>
+  <tbody>
+    <tr><td>S（陌生人在附近）选 <code>visit_plaza</code> ×3</td><td><code>guard_hut</code> 0.73、0.70、0.74</td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>无人在附近选 <code>visit_plaza</code></td><td><code>guard_hut</code> 0.40</td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>V（破坏者在附近）的选择与 S 的基线不同</td><td>与 S 相同，都是 <code>guard_hut</code></td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>离线 <code>nobody_nearby</code>（V 改成无人）选 <code>visit_plaza</code></td><td><code>guard_hut</code> ×4（0.58–0.71）</td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>事后诊断：“记忆栏整体是守屋的来源”（S 清空记忆栏应选 <code>visit_plaza</code>）</td><td><code>guard_hut</code> ×4（0.67–0.75）</td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>事后诊断：“主要是四份认识在起作用”（清空认识应选 <code>visit_plaza</code>）</td><td><code>guard_hut</code> ×4（0.84–0.87）</td><td><span class="tag bad">落空</span></td></tr>
+    <tr><td>事后诊断：“是记忆里守过很多次的内容”（删掉含 <code>guard</code> 的条目应选 <code>visit_plaza</code>）</td><td><code>guard_hut</code> ×4（0.86–0.90）</td><td><span class="tag bad">落空</span></td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note" style="margin-top:8px">另有一项离线对照 <code>memory_blank_no_distrust</code>（V 清空记忆栏并去掉 Distrusts，期望回到基线）也落空：4 次里 3 次 <code>visit_plaza</code>、1 次 <code>guard_hut</code>，只作记录。事后诊断 6 条期望里 3 条成立（召回句全删仍守、去掉 Distrusts 仍守、V 清空记忆栏仍守）、3 条落空，即上表后三行。</p>
+<p class="note" style="margin-top:8px">偏差与未查的小问题：V 的三次选择落在一次自动认识刷新进行中；Hindsight 在新库建好前返回过 4 次 404；小屋发布记录里的发布者编号与测试角色的编号不是同一个数；<code>survey</code> 脚本显示的材料成本与场地参数不一致（建造与余额都对）。</p>
 
 <!-- ============ 五 ============ -->
 <h2 id="s5">五、为什么没验出来，以及查到了什么</h2>
@@ -455,7 +499,7 @@
 
 <!-- ============ 六 ============ -->
 <h2 id="s6">六、据此改了什么</h2>
-<p><span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span> 已提交、已测试、经独立复核；<b>改后没上过真实服务端，新措辞也没在真实 Jev 上重跑。</b></p>
+<p><span class="lv"><i class="on">已实现</i><i>已实跑</i><i>已验收</i></span> 已提交、已测试、经独立复核；<b>写这一节时改后没上过真实服务端；之后已在 S1-C2 实跑，三样都起了作用（见第四节末）。</b></p>
 <div class="grid g3">
   <div class="card"><h3>World：事件说清楚是哪座、还在不在</h3>
     <p>每条交互事件多带三项：目标属于哪座建筑、建筑锚点在哪、这笔提交之后整座建筑是否已经不存在（拆掉多构件建筑的一个构件不算）。</p></div>
@@ -515,17 +559,15 @@ Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby.
 <!-- ============ 八 ============ -->
 <h2 id="s8">八、接下来</h2>
 <div class="grid g2">
-  <div class="card"><h3>1. 重跑 (b)(c)（S1-C2，下一步只有这一件）</h3>
+  <div class="card"><h3>1. 两件事待用户定（S1-C2 已做完，不再有“下一步只有重跑”）</h3>
     <ul>
-      <li><b>(b)</b>：整座拆除后的第一次选择，期望“重建方向”（<code>build_hut</code> 或 <code>gather_stone</code>）；对照里去掉事件句和处境里的 <code>is gone</code> 后应变回基线。</li>
-      <li><b>(c)</b>：等小屋重建完、情绪衰减、记忆写入并刷新、自己的活动记录轮出之后，让<b>破坏者再次出现在附近</b>，看选择是否偏离基线。基线成对：同一位置、换一个<b>没有过节的陌生人</b>在附近。</li>
-      <li><b>逐栏离线对照</b>：每个验收点对真实快照每次只去掉一栏（事件句 / 情绪句 / Distrusts / 记忆里那件事 / 自己的活动记录 / 处境事实句），运行前写下哪栏去掉应变、哪栏去掉不应变。</li>
-      <li><b>场地</b>：小屋落在地表；所有去处和采石站位在小屋 8 米内；放料前先把日志调到 info。</li>
-      <li><b>执行</b>：拆成四段短任务，每段结束即回报，每段 60 分钟硬上限、到点先停节点。</li>
+      <li><b>(c) 怎么再设计</b>（统筹会话的建议，用户尚未回复）：这一版设计区分不出“记得那件事”的作用。建议先做一轮只打 Jev 的离线设计，用存下的 S、V 两份快照，改候选表，加一项<b>只在针对那个人时才合理</b>的选项；离线能区分了，再做一次只验 (c) 的短实跑；不建议原样再跑。</li>
+      <li><b>破坏之后一直守屋，这个产品行为要不要</b>：这次看到 NPC 重建完就一直守屋（27 次里 26 次），信任不衰减，记忆里“守过 N 次”越积越多，没有看到它自己回到照常过日子。是不是想要的行为，待用户定。</li>
+      <li>用户此前定过“不带着未验收的 (b)(c) 进薄片二”；现在 (c) 仍未验收，所以薄片二是否先开工也待用户定。</li>
     </ul></div>
   <div class="card"><h3>2. 然后薄片二</h3>
     <p>LLM 每游戏日读同一份快照写意图清单，意图进入候选；接“说话”（被直呼成为选择事件，选中“回话”后由对话技能问 LLM 写台词）；开服背景作公共常识的固定前缀。</p>
-    <h3 style="margin-top:16px">已知未处理（不挡重跑）</h3>
+    <h3 style="margin-top:16px">已知未处理</h3>
     <ul class="note">
       <li>同一座建筑早先在别的格受损过，整座移除时那格没清，之后别人在那里放同材料会被写成“修好了那座建筑”。</li>
       <li>改动前落盘的旧拆除事件没有“是否整座移除”，补读到时会写成“毁掉一部分、建筑还在”。</li>
@@ -538,9 +580,9 @@ Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby.
 
 <!-- ============ 九 ============ -->
 <p class="note" style="margin-top:56px;border-top:1px solid var(--grid);padding-top:16px">
-数据截至 2026-11-12，代码提交 <code>c0489bd7</code>（S1-D2，分支 <code>npc-life-20261111</code>，未推送）。<br>
-证据目录：<code>ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/</code>（<code>s1c/analysis-report.md</code> 实跑时间线与选择全表、<code>s1c/closeout-report.md</code> 离线对照、<code>s1c/s1d1-report.md</code> 诊断与事件清点、<code>s1d2/report.md</code> 产品改动、<code>s1c/states/</code> 快照全文；该目录不入库）；离线诊断脚本 <code>docs/10-active/cross-cutting/tools/jev/s1c_diag.py</code>。<br>
-本页由统筹会话的子会话生成，2026-11-12。
+数据截至 2026-11-12（S1-C2 之后），产品代码提交 <code>c0489bd7</code>（S1-D2，分支 <code>npc-life-20261111</code>，未推送）；S1-C2 没有改产品代码。<br>
+证据目录：<code>ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/</code>（<code>s1c/analysis-report.md</code> 实跑时间线与选择全表、<code>s1c/closeout-report.md</code> 离线对照、<code>s1c/s1d1-report.md</code> 诊断与事件清点、<code>s1d2/report.md</code> 产品改动、<code>s1c2/</code> 第二次实跑（<code>plan.md</code> 运行前定稿、<code>seg1-report.md</code>–<code>seg4-report.md</code>、<code>states/</code>、<code>counterfactual/</code>、<code>postdiag/</code>）、<code>s1c/states/</code> 快照全文；该目录不入库）；离线脚本 <code>docs/10-active/cross-cutting/tools/jev/</code> 下的 <code>s1c_diag.py</code>、<code>s1c2_pilot.py</code>、<code>s1c2_counterfactual.py</code>、<code>s1c2_postdiag.py</code>。<br>
+本页由统筹会话的子会话生成，2026-11-12；最后更新：S1-C2 之后（2026-11-12）。
 </p>
 
 </main>

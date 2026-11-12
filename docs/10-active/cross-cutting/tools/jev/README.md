@@ -192,3 +192,26 @@ C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。�
 - (c)：按规则，c_no_inertia 落空 → 记忆里的那件事不足以稳定改变选择。去掉惯性后它仍把 visit_plaza 从 0.54–0.60 压到 0.28–0.33，
   但 top1 在 guard_hut / visit_plaza / build_hut 三者间摇摆。只有惯性（c_inertia_only，删掉所有破坏与“要守”的记忆）就足以 4/4 守屋。
 - 范围：一张卡、一个情境、每格 4 次；离线诊断，不是验收。没有测把“材料不够”写成事实句、Hindsight 把新句子抽成记忆后的召回文本。
+
+## 2026-11-12 S1-D2 之后、S1-C2 实跑之前的预检（`s1c2_pilot.py`）
+
+只问 Jev（HTTPS），不起服务端。state 取自 S1-C 的 C2 发问，只改两处使之等于 S1-D2 提交 `c0489bd7` 之后产品写出的文本：整座移除的标准经历句与处境里的 `is gone`。
+8 个变体（base / no_event / no_gone / no_event_no_gone / no_anger / no_distrust / no_own_activity / all_removed）各 4 次，共 32 次；期望由统筹会话运行前写在脚本文档字符串里，
+“重建方向”= top1 ∈ {build_hut, gather_stone}，4 次里至少 3 次算成立。
+用法：`python -B s1c2_pilot.py prepare | run | report`（`report` 离线重出表格）。结果文件：`results-s1c2-pilot.json`。
+结论：8 个变体全部符合运行前期望（两句事实任一句单独就够，两句都去掉则离开重建方向）。这是实跑前的预检，不是验收。
+
+## 2026-11-12 S1-C2 实跑后的逐栏对照（`s1c2_counterfactual.py`）
+
+只问 Jev，不起服务端。用 S1-C2 实跑存下的三份真实 state（B = 拆除后第一次选择，S = 陌生人在附近，V = 破坏者在附近），16 个变体各 4 次，共 64 次，全部应答。
+期望与判定规则逐字抄自运行前定稿的 `s1c2/plan.md`，不许改；落空如实记落空。请求体与 `NpcServer.Selector.body/2` 一致，instructions 与候选表取自 `--template` 的 JSON。
+用法：`python -B s1c2_counterfactual.py prepare | run | report`。结果文件：`results-s1c2-counterfactual.json`。
+结论：(b) 通过——事件句与 `is gone` 任一句单独就够，两句都去掉回到 `visit_plaza`，愤怒、Distrusts、自己的活动记录去掉不变。(c) 不通过——S 与 V 原文都复现为 `guard_hut` 4/4，V 去掉 Distrusts 仍与 S 基线相同；
+`nobody_nearby`（期望 `visit_plaza`，实际 `guard_hut` ×4）与 `memory_blank_no_distrust`（期望回到 S 基线，实际 3/4 `visit_plaza`）两项记录项落空。
+
+## 2026-11-12 S1-C2 事后诊断（`s1c2_postdiag.py`）
+
+探索性，不是验收。只问 Jev，24 次（6 个变体各 4 次），复用 `s1c2_counterfactual.py` 的分栏与删改办法（import，不改它）。问题：重建后的守屋来自记忆栏的哪一部分。
+用法：`python -B s1c2_postdiag.py prepare --s S.txt --v V.txt --vandal-cid CID --vandal-name Corvin --template T.json`，之后 `run | report`。结果文件：`results-s1c2-postdiag.json`。
+结论：运行前写定的 6 条期望，3 条成立（`S_recalled_removed`、`S_no_distrust`、`V_memory_blank` 都仍是 `guard_hut`），3 条落空
+（`S_memory_blank`、`S_beliefs_blank`、`S_no_guard_memory` 期望 `visit_plaza`，实际都是 `guard_hut` ×4，0.67–0.90）。记忆栏与 Distrusts 任何一处单独去掉，守屋都不变；见统筹页“S1-C2 事后离线诊断”。

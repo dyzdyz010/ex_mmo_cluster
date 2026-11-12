@@ -1,0 +1,456 @@
+{
+ "model": "jev-latest",
+ "repeats": 4,
+ "workers": 3,
+ "timeout_s": 60,
+ "template": "D:/hemifuture/ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/s1c2/export/request-template.json",
+ "candidates": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza"
+ ],
+ "variants": {
+  "S_memory_blank": {
+   "expected": "visit_plaza",
+   "why": "记忆栏整体是守屋的来源",
+   "state_file": "s1c2/postdiag/S_memory_blank.txt"
+  },
+  "S_beliefs_blank": {
+   "expected": "visit_plaza",
+   "why": "起作用的主要是四份认识，不是召回句",
+   "state_file": "s1c2/postdiag/S_beliefs_blank.txt"
+  },
+  "S_recalled_removed": {
+   "expected": "guard_hut",
+   "why": "只删召回句不够",
+   "state_file": "s1c2/postdiag/S_recalled_removed.txt"
+  },
+  "S_no_guard_memory": {
+   "expected": "visit_plaza",
+   "why": "起作用的是记忆里“守过很多次”的内容",
+   "state_file": "s1c2/postdiag/S_no_guard_memory.txt"
+  },
+  "S_no_distrust": {
+   "expected": "guard_hut",
+   "why": "不变",
+   "state_file": "s1c2/postdiag/S_no_distrust.txt"
+  },
+  "V_memory_blank": {
+   "expected": "guard_hut",
+   "why": "记忆不占主导时，不信任的人就在附近仍足以让他守屋",
+   "state_file": "s1c2/postdiag/V_memory_blank.txt"
+  }
+ },
+ "rows": [
+  {
+   "variant": "S_memory_blank",
+   "repeat": 1,
+   "latency_ms": 1686,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.59,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.06,
+     "guard_hut": 0.67,
+     "visit_plaza": 0.19
+    }
+   }
+  },
+  {
+   "variant": "S_memory_blank",
+   "repeat": 2,
+   "latency_ms": 1425,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.69,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.04,
+     "gather_limestone": 0.04,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.16
+    }
+   }
+  },
+  {
+   "variant": "S_memory_blank",
+   "repeat": 3,
+   "latency_ms": 1434,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.62,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.04,
+     "gather_limestone": 0.04,
+     "guard_hut": 0.7,
+     "visit_plaza": 0.21
+    }
+   }
+  },
+  {
+   "variant": "S_memory_blank",
+   "repeat": 4,
+   "latency_ms": 693,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.59,
+    "probabilities": {
+     "build_hut": 0.02,
+     "gather_stone": 0.06,
+     "gather_limestone": 0.05,
+     "guard_hut": 0.67,
+     "visit_plaza": 0.2
+    }
+   }
+  },
+  {
+   "variant": "S_beliefs_blank",
+   "repeat": 1,
+   "latency_ms": 729,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.84,
+     "visit_plaza": 0.16
+    }
+   }
+  },
+  {
+   "variant": "S_beliefs_blank",
+   "repeat": 2,
+   "latency_ms": 551,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.84,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.87,
+     "visit_plaza": 0.13
+    }
+   }
+  },
+  {
+   "variant": "S_beliefs_blank",
+   "repeat": 3,
+   "latency_ms": 706,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.82,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.86,
+     "visit_plaza": 0.14
+    }
+   }
+  },
+  {
+   "variant": "S_beliefs_blank",
+   "repeat": 4,
+   "latency_ms": 696,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.82,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.86,
+     "visit_plaza": 0.14
+    }
+   }
+  },
+  {
+   "variant": "S_recalled_removed",
+   "repeat": 1,
+   "latency_ms": 624,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.04,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.76,
+     "visit_plaza": 0.17
+    }
+   }
+  },
+  {
+   "variant": "S_recalled_removed",
+   "repeat": 2,
+   "latency_ms": 688,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.06,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.81,
+     "visit_plaza": 0.1
+    }
+   }
+  },
+  {
+   "variant": "S_recalled_removed",
+   "repeat": 3,
+   "latency_ms": 708,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.05,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.76,
+     "visit_plaza": 0.15
+    }
+   }
+  },
+  {
+   "variant": "S_recalled_removed",
+   "repeat": 4,
+   "latency_ms": 1084,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.68,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.08,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.74,
+     "visit_plaza": 0.14
+    }
+   }
+  },
+  {
+   "variant": "S_no_guard_memory",
+   "repeat": 1,
+   "latency_ms": 704,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.84,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.87,
+     "visit_plaza": 0.13
+    }
+   }
+  },
+  {
+   "variant": "S_no_guard_memory",
+   "repeat": 2,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.85,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.88,
+     "visit_plaza": 0.12
+    }
+   }
+  },
+  {
+   "variant": "S_no_guard_memory",
+   "repeat": 3,
+   "latency_ms": 584,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.82,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.86,
+     "visit_plaza": 0.14
+    }
+   }
+  },
+  {
+   "variant": "S_no_guard_memory",
+   "repeat": 4,
+   "latency_ms": 689,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.87,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.9,
+     "visit_plaza": 0.1
+    }
+   }
+  },
+  {
+   "variant": "S_no_distrust",
+   "repeat": 1,
+   "latency_ms": 716,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.69,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.24
+    }
+   }
+  },
+  {
+   "variant": "S_no_distrust",
+   "repeat": 2,
+   "latency_ms": 581,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.76,
+     "visit_plaza": 0.22
+    }
+   }
+  },
+  {
+   "variant": "S_no_distrust",
+   "repeat": 3,
+   "latency_ms": 724,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.66,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.73,
+     "visit_plaza": 0.26
+    }
+   }
+  },
+  {
+   "variant": "S_no_distrust",
+   "repeat": 4,
+   "latency_ms": 700,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.69,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.24
+    }
+   }
+  },
+  {
+   "variant": "V_memory_blank",
+   "repeat": 1,
+   "latency_ms": 579,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.47,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.06,
+     "guard_hut": 0.58,
+     "visit_plaza": 0.28
+    }
+   }
+  },
+  {
+   "variant": "V_memory_blank",
+   "repeat": 2,
+   "latency_ms": 695,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.5,
+    "probabilities": {
+     "build_hut": 0.02,
+     "gather_stone": 0.06,
+     "gather_limestone": 0.06,
+     "guard_hut": 0.6,
+     "visit_plaza": 0.26
+    }
+   }
+  },
+  {
+   "variant": "V_memory_blank",
+   "repeat": 3,
+   "latency_ms": 714,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.04,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.76,
+     "visit_plaza": 0.16
+    }
+   }
+  },
+  {
+   "variant": "V_memory_blank",
+   "repeat": 4,
+   "latency_ms": 586,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.49,
+    "probabilities": {
+     "build_hut": 0.01,
+     "gather_stone": 0.06,
+     "gather_limestone": 0.06,
+     "guard_hut": 0.59,
+     "visit_plaza": 0.28
+    }
+   }
+  }
+ ]
+}
