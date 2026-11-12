@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC 整体设计：一条控制链、一份共享心智、一个回路</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --text: #0b0b0b;
+    --text-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --chain: #2a78d6;      /* 控制链 */
+    --chain-wash: #e8f1fc;
+    --ctx: #eb6834;        /* 上下文（心智与记忆） */
+    --ctx-wash: #fdeee7;
+    --good: #0ca30c;
+    --warn: #fab219;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --text: #f0efec;
+      --text-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --chain: #3987e5;
+      --chain-wash: #14263d;
+      --ctx: #d95926;
+      --ctx-wash: #3a1f14;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--text);
+    font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 80px; }
+  h1 { font-size: 30px; line-height: 1.3; margin: 0 0 8px; }
+  h2 { font-size: 22px; margin: 56px 0 12px; padding-top: 8px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  .lede { font-size: 18px; color: var(--text-2); margin-bottom: 16px; }
+  .note { color: var(--text-2); font-size: 14px; }
+  code { font: 0.9em ui-monospace, Consolas, monospace; background: var(--border); padding: 1px 5px; border-radius: 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 24px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 3px 10px;
+          border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--good); } .dot.run { background: var(--warn); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .oneline { font-size: 19px; line-height: 1.6; border-left: 4px solid var(--chain); padding: 4px 0 4px 16px; margin: 0; }
+  .grid { display: grid; gap: 12px; }
+  .g3 { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .role { font-size: 13px; color: var(--text-2); margin: 0 0 6px; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 8px; border-radius: 999px; line-height: 20px; white-space: nowrap; }
+  .tag.chain { background: var(--chain-wash); color: var(--text); border: 1px solid var(--chain); }
+  .tag.ctx { background: var(--ctx-wash); color: var(--text); border: 1px solid var(--ctx); }
+  .tag.plain { border: 1px solid var(--axis); color: var(--text-2); }
+  .card p:last-child { margin-bottom: 0; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-2); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  .typical { background: var(--chain-wash); font-weight: 600; }
+  svg text { font-family: inherit; fill: var(--text); }
+  svg .t2 { fill: var(--text-2); } svg .tm { fill: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 13px; color: var(--text-2); margin: 0 0 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 22px; height: 10px; border-radius: 4px; display: inline-block; }
+  .sw.hollow { background: none; border: 2px solid var(--text-2); }
+  #tip { position: fixed; pointer-events: none; z-index: 10; max-width: 320px; background: var(--surface); color: var(--text);
+         border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.55;
+         box-shadow: 0 6px 24px rgba(0,0,0,0.18); display: none; }
+  #tip b { display: block; font-size: 14px; margin-bottom: 2px; }
+  #tip span { color: var(--text-2); }
+  ol.story { list-style: none; margin: 0; padding: 0; }
+  ol.story li { display: grid; grid-template-columns: 132px 1fr; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--grid); }
+  ol.story li:last-child { border-bottom: 0; }
+  .when { font-size: 13px; color: var(--text-2); }
+  .when b { display: block; color: var(--text); font-size: 14px; }
+  .slice { font-size: 12px; color: var(--muted); margin-left: 6px; white-space: nowrap; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .step .n { font-size: 13px; color: var(--text-2); }
+  ul { margin: 0 0 12px; padding-left: 20px; } li { margin-bottom: 4px; }
+  @media (max-width: 640px) { ol.story li { grid-template-columns: 1fr; gap: 2px; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NPC 整体设计：一条控制链、一份共享心智、一个回路</h1>
+<p class="lede">行为树、选择器、Jev、LLM、Hindsight 不是五个并列的大脑，而是同一个 NPC 里在不同时间尺度上起作用的部件。</p>
+<div class="chips">
+  <span class="chip"><span class="dot ok"></span>概念已确认（2026-11-12）</span>
+  <span class="chip"><span class="dot run"></span>薄片一：选择链已接通并实跑，心智与记忆未接</span>
+  <span class="chip"><span class="dot"></span>三条验收只过了第一条</span>
+</div>
+<p class="note">本页是总纲 <code>2026-11-12-npc-architecture-overview.md</code> 的图解版，写于 2026-11-12；两者不一致时以那份文档为准。</p>
+
+<div class="card"><p class="oneline">一个 NPC 只有一种形态。慢的层给快的层提供上下文，快的层把经历和例外交给慢的层；任何一层在等更慢的层时都继续手头的事，慢层从不阻塞快层。</p></div>
+
+<h2 id="s1">一、整体：谁决定、谁提供上下文、经历怎么回来</h2>
+<p>左边是<b>控制链</b>：三个位置按时间尺度从慢到快排列，各回答一个问题，最后由权威层裁决动作成不成立。右边是<b>心智快照</b>：每一层发问时读的都是同一份东西。下方的 Life 与 Hindsight 接住权威结果，把经历变成下一次发问的上下文，这就是回路。</p>
+<div class="card" style="padding:12px">
+<svg viewBox="0 0 960 520" role="img" aria-label="NPC 整体结构图：控制链、心智快照与回路" style="width:100%;height:auto;display:block">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--text-2)"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+    .bar-chain { fill: var(--chain); } .bar-ctx { fill: var(--ctx); }
+    .ln { stroke: var(--text-2); stroke-width: 1.5; fill: none; }
+    .dash { stroke-dasharray: 5 4; }
+    .ttl { font-size: 16px; font-weight: 600; } .sub { font-size: 13px; } .lab { font-size: 12.5px; }
+    .rowline { stroke: var(--grid); stroke-width: 1; }
+  </style>
+
+  <text x="24" y="60" class="lab tm">慢</text>
+  <line x1="32" y1="72" x2="32" y2="432" class="ln" style="stroke:var(--axis)" marker-end="url(#ah)"/>
+  <text x="24" y="456" class="lab tm">快</text>
+
+  <!-- 控制链 -->
+  <g>
+    <rect x="60" y="30" width="340" height="76" rx="10" class="bx"/><rect x="60" y="30" width="6" height="76" rx="3" class="bar-chain"/>
+    <text x="82" y="60" class="ttl">规划 · LLM</text>
+    <text x="82" y="86" class="sub t2">今天想做成什么 · 每游戏日一次 · 3–30 秒</text>
+
+    <rect x="60" y="154" width="340" height="76" rx="10" class="bx"/><rect x="60" y="154" width="6" height="76" rx="3" class="bar-chain"/>
+    <text x="82" y="184" class="ttl">选择 · 选择器 + Jev</text>
+    <text x="82" y="210" class="sub t2">现在做哪件事 · 有事件才问 · 约 0.6 秒</text>
+
+    <rect x="60" y="278" width="340" height="76" rx="10" class="bx"/><rect x="60" y="278" width="6" height="76" rx="3" class="bar-chain"/>
+    <text x="82" y="308" class="ttl">执行 · 行为树 + 技能</text>
+    <text x="82" y="334" class="sub t2">这件事的下一步怎么做 · 每 tick · 不用模型</text>
+
+    <rect x="60" y="402" width="340" height="76" rx="10" class="bx"/><rect x="60" y="402" width="6" height="76" rx="3" style="fill:var(--muted)"/>
+    <text x="82" y="432" class="ttl">权威 · Body / Scene / World</text>
+    <text x="82" y="458" class="sub t2">这个动作成不成立 · 每 tick · 世界真值只在这里</text>
+  </g>
+
+  <!-- 向下：上下文 -->
+  <line x1="150" y1="106" x2="150" y2="152" class="ln" marker-end="url(#ah)"/>
+  <text x="142" y="134" class="lab t2" text-anchor="end">意图进候选</text>
+  <line x1="150" y1="230" x2="150" y2="276" class="ln" marker-end="url(#ah)"/>
+  <text x="142" y="258" class="lab t2" text-anchor="end">当前活动</text>
+  <line x1="150" y1="354" x2="150" y2="400" class="ln" marker-end="url(#ah)"/>
+  <text x="142" y="382" class="lab t2" text-anchor="end">命令</text>
+
+  <!-- 向上：例外与结果 -->
+  <line x1="300" y1="152" x2="300" y2="108" class="ln" marker-end="url(#ah)"/>
+  <text x="308" y="134" class="lab t2">都不合适</text>
+  <line x1="300" y1="276" x2="300" y2="232" class="ln" marker-end="url(#ah)"/>
+  <text x="308" y="258" class="lab t2">做完 / 连续失败</text>
+  <line x1="300" y1="400" x2="300" y2="356" class="ln" marker-end="url(#ah)"/>
+  <text x="308" y="382" class="lab t2">结果</text>
+
+  <!-- 心智快照 -->
+  <rect x="560" y="30" width="376" height="324" rx="10" class="bx"/>
+  <text x="580" y="60" class="ttl">心智快照</text>
+  <text x="916" y="60" class="lab tm" text-anchor="end">发问时现读，不另存</text>
+  <g class="sub">
+    <line x1="560" y1="74" x2="936" y2="74" class="rowline"/>
+    <text x="580" y="100">我是谁（人格卡）</text><text x="916" y="100" class="t2" text-anchor="end">Life</text>
+    <line x1="580" y1="114" x2="916" y2="114" class="rowline"/>
+    <text x="580" y="140">心情与关系</text><text x="916" y="140" class="t2" text-anchor="end">Life</text>
+    <line x1="580" y1="154" x2="916" y2="154" class="rowline"/>
+    <text x="580" y="180">刚才发生了什么</text><text x="916" y="180" class="t2" text-anchor="end">Life</text>
+    <line x1="580" y1="194" x2="916" y2="194" class="rowline"/>
+    <text x="580" y="220">我记得什么</text><text x="916" y="220" class="t2" text-anchor="end">Hindsight</text>
+    <line x1="580" y1="234" x2="916" y2="234" class="rowline"/>
+    <text x="580" y="260">今天的意图</text><text x="916" y="260" class="t2" text-anchor="end">规划写入</text>
+    <line x1="580" y1="274" x2="916" y2="274" class="rowline"/>
+    <text x="580" y="300">正在做什么</text><text x="916" y="300" class="t2" text-anchor="end">选择器写入</text>
+    <line x1="580" y1="314" x2="916" y2="314" class="rowline"/>
+    <text x="580" y="340">眼前处境</text><text x="916" y="340" class="t2" text-anchor="end">World 现查</text>
+  </g>
+
+  <!-- 快照 → 控制链 -->
+  <line x1="558" y1="68" x2="404" y2="68" class="ln" marker-end="url(#ah)"/>
+  <text x="481" y="60" class="lab t2" text-anchor="middle">上下文</text>
+  <line x1="558" y1="192" x2="404" y2="192" class="ln" marker-end="url(#ah)"/>
+  <text x="481" y="184" class="lab t2" text-anchor="middle">上下文</text>
+  <line x1="558" y1="316" x2="404" y2="316" class="ln dash" marker-end="url(#ah)"/>
+  <text x="481" y="308" class="lab t2" text-anchor="middle">要台词 / 设计时</text>
+
+  <!-- Life / Hindsight -->
+  <rect x="560" y="402" width="176" height="76" rx="10" class="bx"/><rect x="560" y="402" width="6" height="76" rx="3" class="bar-ctx"/>
+  <text x="582" y="432" class="ttl">Life</text>
+  <text x="582" y="458" class="sub t2">情绪 · 关系 · 人格卡</text>
+  <rect x="760" y="402" width="176" height="76" rx="10" class="bx"/><rect x="760" y="402" width="6" height="76" rx="3" class="bar-ctx"/>
+  <text x="782" y="432" class="ttl">Hindsight</text>
+  <text x="782" y="458" class="sub t2">记忆与认识</text>
+
+  <line x1="402" y1="440" x2="556" y2="440" class="ln" marker-end="url(#ah)"/>
+  <text x="479" y="432" class="lab t2" text-anchor="middle">结果与世界事件</text>
+  <line x1="738" y1="440" x2="756" y2="440" class="ln" marker-end="url(#ah)"/>
+  <text x="747" y="498" class="lab t2" text-anchor="middle">经历攒成片段后写入</text>
+  <line x1="648" y1="400" x2="648" y2="358" class="ln" marker-end="url(#ah)"/>
+  <line x1="848" y1="400" x2="848" y2="358" class="ln" marker-end="url(#ah)"/>
+</svg>
+</div>
+<p class="note" style="margin-top:10px">事件（被直呼、情绪过线）也会从 Life 触发一次选择；图中为了清楚没有画这条线。</p>
+
+<h2 id="s2">二、五个组件各是什么角色</h2>
+<div class="grid g3">
+  <div class="card"><p class="role"><span class="tag chain">控制链 · 执行位置</span></p><h3>行为树 + 技能</h3>
+    <p>把选定的一件事拆成一步步的命令，每 tick 推进，不用模型。它不决定“做哪件事”，只负责把这件事稳定做完。</p></div>
+  <div class="card"><p class="role"><span class="tag chain">控制链 · 选择位置本身</span></p><h3>选择器</h3>
+    <p>它是一个位置，不是一个判断者：管什么时候问、候选是什么、选定后保持多久、过期的应答怎么丢。</p></div>
+  <div class="card"><p class="role"><span class="tag chain">控制链 · 坐在选择位置上</span></p><h3>Jev</h3>
+    <p>在别人列好的候选里选一个。读人格、心情、记忆写成的英文上下文，第一名就是决定。它不产出参数、文本或理由。</p></div>
+  <div class="card"><p class="role"><span class="tag chain">控制链 · 规划位置</span></p><h3>LLM</h3>
+    <p>回答开放的问题：今天想做成什么。台词和房屋设计也由它写，但那是某项活动里的一步，由技能去问，不属于规划。</p></div>
+  <div class="card"><p class="role"><span class="tag ctx">上下文 · 长期</span></p><h3>Hindsight</h3>
+    <p>不在控制链上，不做决定。它让做决定的层知道“我经历过什么、我怎么看这些事”。</p></div>
+  <div class="card"><p class="role"><span class="tag ctx">上下文 · 短期与人格</span></p><h3>Life 与人格卡</h3>
+    <p>情绪、关系、未封存的近期经历，以及人格卡（52 对标准形容词各 1–9 级，加一段自由文本）。人格只有这一个来源。</p></div>
+</div>
+
+<h2 id="s3">三、时间尺度：每一层多快应答，一个决定管多久</h2>
+<p>各层不抢同一件事，是因为它们的时间尺度错开了：越往上应答越慢，但一个决定管得越久。</p>
+<div class="card">
+  <div class="legend">
+    <span><i class="sw" style="background:var(--chain)"></i>控制链</span>
+    <span><i class="sw" style="background:var(--ctx)"></i>上下文（心智与记忆）</span>
+    <span><i class="sw hollow"></i>空心：单次应答要多久</span>
+    <span><i class="sw" style="background:var(--text-2)"></i>实心：一个决定或一段内容管多久</span>
+  </div>
+  <div id="chart"></div>
+  <p class="note" style="margin:8px 0 0">横轴是对数刻度的现实时间。“管多久”取自总纲里的量级描述，是示意而不是测量值；Jev 的延迟来自离线实验（3 个并发下中位 0.58–0.64 秒），其余延迟是文档记录的范围。把鼠标移到某一行可以看说明，下表是同一份内容。</p>
+</div>
+<div class="card tablewrap" style="margin-top:12px">
+<table>
+  <thead><tr><th>层</th><th>回答的问题</th><th>单次应答</th><th>何时运行</th><th>管多久</th></tr></thead>
+  <tbody>
+    <tr><td class="k">权威</td><td>这个动作成不成立</td><td>每 tick</td><td>每 tick</td><td>一步</td></tr>
+    <tr><td class="k">执行</td><td>这件事的下一步怎么做</td><td>每 tick，无模型；要台词或设计的那一步 3–30 秒</td><td>每 tick</td><td>几秒到几分钟（一项活动）</td></tr>
+    <tr><td class="k">选择</td><td>现在做哪件事</td><td>Jev 约 0.6 秒；连同一次记忆召回约 2–4 秒（两个数字相加，未实测）</td><td>活动结束、连续失败、被直呼、情绪过线、时段变化</td><td>几十秒到几十分钟</td></tr>
+    <tr><td class="k">规划</td><td>今天想做成什么</td><td>3–30 秒</td><td>每游戏日一次；选择层报告“都不合适”时</td><td>一个游戏日及以上</td></tr>
+    <tr><td class="k">情绪与关系</td><td>我现在什么心情</td><td>接纳经历时即时更新</td><td>每个权威事件</td><td>几分钟（半衰期 120 秒）</td></tr>
+    <tr><td class="k">近期经历</td><td>刚才发生了什么</td><td>即时记入</td><td>每个权威事件、每句听到或说过的话</td><td>几分钟到几小时（封存进 Hindsight 之前）</td></tr>
+    <tr><td class="k">记忆与认识</td><td>我经历过什么、我怎么看</td><td>召回 1–3 秒；写入与巩固在后台 10–60 秒</td><td>经历攒够约 3000 字才写；认识最多每 10 分钟刷新</td><td>整个一生</td></tr>
+    <tr><td class="k">人格卡</td><td>我是什么样的人</td><td>—</td><td>经历累积后漂移（规则未定）</td><td>以天计</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="s4">四、位置和判断者是两个维度</h2>
+<p>位置按时间尺度分，判断者按问题类型分：能算的归代码，封闭但要综合判断的归 Jev，答案开放的归 LLM。“规划用 LLM、选择用 Jev、执行用行为树”只是每个位置上最常见的搭配（下表加底色的格），不是全部。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>位置 ＼ 判断者</th><th>代码（能算的）</th><th>Jev（封闭，要判断）</th><th>LLM（开放）</th></tr></thead>
+  <tbody>
+    <tr><td class="k">规划</td><td>意图清单的整份校验</td><td>—</td><td class="typical">今天想做成什么</td></tr>
+    <tr><td class="k">选择</td><td>可行性过滤、紧急避险</td><td class="typical">现在做哪件事，包括要不要放下手头的事</td><td>—</td></tr>
+    <tr><td class="k">执行</td><td class="typical">行为树与技能的每一步</td><td>技能内部的封闭判断：打法、换目标</td><td>技能内部的开放内容：台词、房屋设计</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="s5">五、共享心智：所有层读同一份快照</h2>
+<p>快照是发问那一刻从各个负责方现读拼出的只读视图。每一栏只有一个负责方，其余层只读。Jev 和 LLM 看到的是同一份快照的英文转写，只是被问的问题不同。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>栏</th><th>内容</th><th>谁负责</th><th>变化速度</th></tr></thead>
+  <tbody>
+    <tr><td class="k">我是谁</td><td>人格卡：标准特质 + 自由文本</td><td><span class="tag ctx">Life</span></td><td>天</td></tr>
+    <tr><td class="k">心情与关系</td><td>对各个对象的情绪、信任</td><td><span class="tag ctx">Life</span></td><td>分钟</td></tr>
+    <tr><td class="k">刚才发生了什么</td><td>还没封存进 Hindsight 的近期经历原文：权威事件、听到与说过的话</td><td><span class="tag ctx">Life</span></td><td>分钟到小时</td></tr>
+    <tr><td class="k">我记得什么</td><td>缓存的认识，加上针对当前处境的一次召回</td><td><span class="tag ctx">Hindsight</span></td><td>小时到天</td></tr>
+    <tr><td class="k">今天的意图</td><td>做什么、去哪、找谁、为什么</td><td><span class="tag chain">规划</span></td><td>游戏日</td></tr>
+    <tr><td class="k">正在做什么</td><td>当前活动、最近做过的几件事</td><td><span class="tag chain">选择器</span></td><td>分钟</td></tr>
+    <tr><td class="k">眼前处境</td><td>观察、余额、游戏时刻、附近的人和物</td><td><span class="tag plain">World，现查</span></td><td>秒</td></tr>
+  </tbody>
+</table>
+</div>
+<p style="margin-top:12px">“刚才发生了什么”这一栏补的是时间上的缺口。一件事发生后，情绪立刻变，但那只是带对象的数值；Hindsight 要等经历攒够、后台写入、认识刷新之后才查得到。中间这几分钟到几小时由 Life 手里未封存的经历原文承担，否则 NPC 知道“我生某人的气”，却说不出为什么。</p>
+
+<h2 id="s6">六、一件事怎样走完整条链</h2>
+<p>以“一个玩家拆了 NPC 盖的墙”为例。左栏小字是这一步由哪一层负责；选项与结果是示意，不是实测。</p>
+<div class="card">
+<ol class="story">
+  <li><div class="when"><b>那一刻</b>权威</div><div>World 裁决拆除成立，产生一个世界事件。</div></li>
+  <li><div class="when"><b>立刻</b>Life</div><div>按规则评价这件事：对那个玩家的愤怒升高。经历原文记入“刚才发生了什么”。<span class="slice">薄片一</span></div></li>
+  <li><div class="when"><b>接下来几秒到几分钟</b>执行</div><div>行为树继续做手头的活动，不被这件事卡住。<span class="slice">薄片三起，情绪过线可以在步骤边界打断</span></div></li>
+  <li><div class="when"><b>活动结束时</b>选择</div><div>选择器列出候选（现有技能、几个去处），代码先滤掉做不了的，再把快照和候选交给 Jev。人格不同，选得不同：比如负责的人回去修墙，胆小的人去别处。<span class="slice">薄片一</span></div></li>
+  <li><div class="when"><b>随后几分钟</b>执行、权威</div><div>行为树把“修墙”拆成走过去、取料、放置，每一步仍由 World 裁决。<span class="slice">薄片一</span></div></li>
+  <li><div class="when"><b>几分钟到几小时后</b>Hindsight</div><div>经历攒成片段写入，后台巩固，认识刷新：“这个人拆过我的墙”。</div></li>
+  <li><div class="when"><b>情绪退去之后</b>选择</div><div>愤怒已经衰减，但再遇到这个玩家时，召回会带出这件事，选择仍受影响。这一步证明起作用的是记忆，不只是情绪。<span class="slice">薄片一的第三条验收</span></div></li>
+  <li><div class="when"><b>第二个游戏日</b>规划</div><div>LLM 读同一份快照写当天的意图，例如把墙修好并加固；意图成为候选的一部分。<span class="slice">薄片二</span></div></li>
+  <li><div class="when"><b>很久以后</b>Life</div><div>类似的经历累积到一定程度，人格卡上对应特质的级别漂移。<span class="slice">规则未定</span></div></li>
+</ol>
+</div>
+
+<h2 id="s7">七、现状为什么是碎的</h2>
+<p>五个组件都已经存在，但分别装在几种互不相通的 NPC 里，没有一个走完整条链。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>现有形态</th><th>有什么</th><th>缺什么</th></tr></thead>
+  <tbody>
+    <tr><td class="k"><code>life</code></td><td>记忆、情绪、LLM</td><td>LLM 每一步都问一次，同时占了规划和选择两个位置；没有行为树的稳定执行，没有 Jev</td></tr>
+    <tr><td class="k"><code>settler</code></td><td>行为树与技能，执行稳定</td><td>没有选择、心智、记忆</td></tr>
+    <tr><td class="k"><code>settler</code> + 作息</td><td>选择器接缝、日计划</td><td>选择只看时钟；日计划没有任何心智输入；没有记忆和人格。从未实跑，薄片一里被替换</td></tr>
+    <tr><td class="k">Jev</td><td>判断者</td><td>只用在“技能运行中要不要打断”，没有坐到选择位置上</td></tr>
+    <tr><td class="k">人格卡</td><td>调研与离线实验（4,076 次请求）</td><td>没有进运行时</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="s8">八、实施顺序：先让一个 NPC 走通整条链，再逐层加厚</h2>
+<div class="steps">
+  <div class="card step"><p class="n"><span class="chip" style="padding:0 8px"><span class="dot run"></span>进行中</span></p><h3>薄片一：最短链路</h3>
+    <p>一个 NPC：人格卡、Life、Hindsight 组成快照，Jev 在活动结束时选，行为树执行，结果写回情绪与记忆。不调用 LLM 做决定，也不说话。</p></div>
+  <div class="card step"><p class="n">未开始</p><h3>薄片二：LLM 进场</h3>
+    <p>每游戏日写意图清单，意图进入候选。同一片里接说话：被直呼成为选择事件，选中“回话”后由对话技能问 LLM 写台词。</p></div>
+  <div class="card step"><p class="n">未开始</p><h3>薄片三：时间与反应</h3>
+    <p>NPC 的游戏时刻与客户端一致；事件能在步骤边界打断当前活动。</p></div>
+  <div class="card step"><p class="n">未开始</p><h3>薄片四：多个 NPC 实跑</h3>
+    <p>3–5 张不同人格卡，在真实客户端里看差别与成本。</p></div>
+</div>
+
+<h3 style="margin-top:24px">薄片一的三条验收</h3>
+<ul>
+  <li>同一处境下，两张不同的人格卡选得不同。</li>
+  <li>被帮助或被破坏之后，下一次选择随之改变（走情绪与近期经历）。</li>
+  <li>情绪衰减完、经历已写入之后再问一次，选择仍受那件事影响（走 Hindsight 召回）。</li>
+</ul>
+
+<h3 style="margin-top:20px">薄片一的进度</h3>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>步骤</th><th>内容</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td class="k">S1-0</td><td>本机实跑配方：怎样在 WSL 里起服务端、登记一个 NPC、用日志观察</td><td>已完成，S1-A 实跑用过</td></tr>
+    <tr><td class="k">S1-A</td><td>选择链接通：人格卡与候选活动进注册参数，活动结束时问 Jev，行为树执行，每次选择一行日志</td><td>已实现、已实跑（只走了“去处”候选的成功路径）；验收第一条通过</td></tr>
+    <tr><td class="k">S1-B</td><td>Life 的情绪与近期经历、Hindsight 的认识与召回进快照，并验证经历写回</td><td>未开始</td></tr>
+    <tr><td class="k">S1-C</td><td>完整实跑记录，三条验收的原始结果</td><td>未开始</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="s9">九、已确认的决定与还没解决的事</h2>
+<div class="grid g3">
+  <div class="card"><h3>已确认</h3>
+    <ul>
+      <li>人格只有一个来源：Life 原有的两个慢变量并入人格卡。</li>
+      <li>情绪评价是经历进来时的独立一步，不依附任何一次决策请求。能算的继续用规则；对话类经历交给 Jev，放在薄片二。</li>
+      <li>选择位置上只有一个判断者。原来只看时钟的打分不保留为并列选项。</li>
+      <li>薄片一不说话，不调用 LLM 做决定。</li>
+      <li>原来逐步问 LLM 的形态，将来收编成“一项由 LLM 执行的活动”，不是另一种 NPC。</li>
+    </ul></div>
+  <div class="card"><h3>还没解决</h3>
+    <ul>
+      <li>Jev 的模型版本没法锁定：环境里只有 <code>jev-latest</code>，没有找到已确认的固定版本名。</li>
+      <li>用 Jev 评价对话类经历的情绪，需要先做一轮离线实验。</li>
+      <li>人格漂移的规则怎样落到 1–9 的整数级别上，等到有薄片要验它时再定。</li>
+      <li>NPC 的游戏时刻现在按服务器墙钟算，与客户端昼夜无关联，薄片三处理。</li>
+      <li>所有内容目前只有离线实验和单元测试的依据，真实观察和真实记忆文本作为上下文时的表现还没有验证过。</li>
+    </ul></div>
+</div>
+
+</main>
+<div id="tip"></div>
+
+<script>
+(function () {
+  // 时间尺度图。单位：秒。lat = 单次应答范围；span = 一个决定或一段内容管多久；open = 向右不封口。
+  var F = 1 / 60;
+  var rows = [
+    { name: '权威', sub: 'Body · Scene · World', g: 'chain', lat: [F, F], span: [F, F],
+      tl: '每 tick（60 Hz）', ts: '一步', tw: '每 tick' },
+    { name: '执行', sub: '行为树 + 技能', g: 'chain', lat: [F, F], span: [3, 300],
+      tl: '每 tick，不用模型', ts: '几秒到几分钟（一项活动）', tw: '每 tick' },
+    { name: '选择', sub: '选择器 + Jev', g: 'chain', lat: [0.6, 4], span: [30, 1800],
+      tl: 'Jev 约 0.6 秒；连同一次召回约 2–4 秒', ts: '几十秒到几十分钟', tw: '活动结束、连续失败、被直呼、情绪过线' },
+    { name: '规划', sub: 'LLM', g: 'chain', lat: [3, 30], span: [1440, null],
+      tl: '3–30 秒', ts: '一个游戏日及以上', tw: '每游戏日一次；选择层报告“都不合适”时' },
+    { name: '情绪与关系', sub: 'Life', g: 'ctx', lat: [F, F], span: [120, 600],
+      tl: '接纳经历时即时更新', ts: '几分钟（半衰期 120 秒）', tw: '每个权威事件' },
+    { name: '近期经历', sub: 'Life，未封存', g: 'ctx', lat: [F, F], span: [60, 7200],
+      tl: '即时记入', ts: '几分钟到几小时，直到封存进 Hindsight', tw: '每个权威事件、每句话' },
+    { name: '记忆与认识', sub: 'Hindsight', g: 'ctx', lat: [1, 3], span: [600, null],
+      tl: '召回 1–3 秒；写入与巩固在后台 10–60 秒', ts: '整个一生', tw: '经历攒够才写；认识最多每 10 分钟刷新' },
+    { name: '人格卡', sub: 'Life', g: 'ctx', lat: null, span: [86400, null],
+      tl: '不涉及应答', ts: '以天计', tw: '经历累积后漂移（规则未定）' }
+  ];
+  var ticks = [[F, '1 帧'], [1, '1 秒'], [10, '10 秒'], [60, '1 分钟'], [600, '10 分钟'], [3600, '1 小时'], [86400, '1 天'], [864000, '10 天']];
+  var W = 960, left = 190, right = 40, top = 34, rowH = 44, H = top + rows.length * rowH + 40;
+  var lo = Math.log10(0.008), hi = Math.log10(2000000);
+  function x(v) { return left + (Math.log10(v) - lo) / (hi - lo) * (W - left - right); }
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, text) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': '各层的应答延迟与作用时长（对数时间轴）', style: 'width:100%;height:auto;display:block' });
+  var bottom = top + rows.length * rowH;
+  ticks.forEach(function (t) {
+    svg.appendChild(el('line', { x1: x(t[0]), x2: x(t[0]), y1: top - 6, y2: bottom, stroke: 'var(--grid)', 'stroke-width': 1 }));
+    svg.appendChild(el('text', { x: x(t[0]), y: bottom + 20, 'text-anchor': 'middle', 'font-size': 12, style: 'fill:var(--muted)' }, t[1]));
+  });
+  svg.appendChild(el('line', { x1: left, x2: W - right, y1: bottom, y2: bottom, stroke: 'var(--axis)', 'stroke-width': 1 }));
+  // 游戏日标注
+  svg.appendChild(el('line', { x1: x(1440), x2: x(1440), y1: top - 6, y2: bottom, stroke: 'var(--axis)', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
+  svg.appendChild(el('text', { x: x(1440), y: top - 12, 'text-anchor': 'middle', 'font-size': 12, style: 'fill:var(--muted)' }, '1 游戏日（现默认 24 分钟）'));
+
+  var tip = document.getElementById('tip');
+  rows.forEach(function (r, i) {
+    var cy = top + i * rowH + rowH / 2, color = r.g === 'chain' ? 'var(--chain)' : 'var(--ctx)';
+    if (i === 4) svg.appendChild(el('line', { x1: 0, x2: W - right, y1: top + i * rowH, y2: top + i * rowH, stroke: 'var(--axis)', 'stroke-width': 1 }));
+    svg.appendChild(el('text', { x: 12, y: cy - 2, 'font-size': 14, 'font-weight': 600 }, r.name));
+    svg.appendChild(el('text', { x: 12, y: cy + 15, 'font-size': 12, style: 'fill:var(--text-2)' }, r.sub));
+    // 实心：管多久
+    var x1 = x(r.span[0]), open = r.span[1] == null, x2 = open ? W - right : x(r.span[1]);
+    if (x2 - x1 < 10) { x1 -= 5; x2 += 5; }
+    svg.appendChild(el('rect', { x: x1, y: cy - 5, width: x2 - x1, height: 10, rx: 4, fill: color }));
+    if (open) svg.appendChild(el('path', { d: 'M' + (x2 - 2) + ' ' + (cy - 9) + ' L' + (x2 + 10) + ' ' + cy + ' L' + (x2 - 2) + ' ' + (cy + 9) + ' z', fill: color }));
+    // 空心：单次应答（权威一行两者重合，只画实心）
+    if (r.lat && !(r.lat[0] === r.span[0] && r.lat[1] === r.span[1])) {
+      var a = x(r.lat[0]), b = x(r.lat[1]);
+      if (b - a < 12) { a -= 6; b += 6; }
+      svg.appendChild(el('rect', { x: a, y: cy - 6, width: b - a, height: 12, rx: 6, fill: 'var(--surface)', stroke: color, 'stroke-width': 2 }));
+    }
+    var hit = el('rect', { x: 0, y: top + i * rowH, width: W, height: rowH, fill: 'transparent' });
+    hit.addEventListener('mousemove', function (ev) {
+      tip.innerHTML = '<b>' + r.name + '（' + r.sub + '）</b><span>单次应答：</span>' + r.tl + '<br><span>管多久：</span>' + r.ts + '<br><span>何时运行：</span>' + r.tw;
+      tip.style.display = 'block';
+      var tx = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+      var ty = Math.min(ev.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+      tip.style.left = tx + 'px'; tip.style.top = ty + 'px';
+    });
+    hit.addEventListener('mouseleave', function () { tip.style.display = 'none'; });
+    svg.appendChild(hit);
+  });
+  document.getElementById('chart').appendChild(svg);
+})();
+</script>
+</body>
+</html>
