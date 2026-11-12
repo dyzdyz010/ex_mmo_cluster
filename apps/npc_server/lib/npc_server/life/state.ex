@@ -63,6 +63,27 @@ defmodule NpcServer.Life.State do
   end
 
   @doc """
+  给心智快照的只读投影（规则模式的状态）：此刻仍活跃的情绪，各带来源角色与衰减后的强度，
+  `[%{emotion: "anger" | "gratitude", actor: cid, intensity: 0.1..1.0}]`，固定按 anger、gratitude 的次序。
+  衰减到阈值（0.1，与 `behavior/3` 判定“活跃”同一个值）及以下的不出现。纯观察，不回写。
+  """
+  def feelings(state, now_ms) do
+    state = view(state, now_ms)
+
+    for emotion <- ["anger", "gratitude"],
+        intensity = state["emotions"][emotion],
+        intensity > @emotion_threshold,
+        do: %{emotion: emotion, actor: state["evidence"][emotion]["actor"], intensity: intensity}
+  end
+
+  @doc "给心智快照的只读投影：对各角色的信任 `[%{actor: cid, trust: -1.0..1.0}]`，按角色 id 排列（关系表以角色为键，没有别的次序）。"
+  def relationships(state) do
+    state["relationships"]
+    |> Enum.map(fn {actor, relation} -> %{actor: String.to_integer(actor), trust: relation["trust"]} end)
+    |> Enum.sort_by(& &1.actor)
+  end
+
+  @doc """
   从当前 Body 观察选择社交模式和期望距离，位置仅使用 observation 的完整 XYZ。
 
   活跃愤怒优先回避其可见来源，回避模式在已达安全距离后仍保留，防止工作动作走回伤害者。

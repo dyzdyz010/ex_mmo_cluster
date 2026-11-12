@@ -37,7 +37,7 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 |---|---|---|---|---|
 | S1-0 | 实跑配方（只读侦察） | 本机 WSL 原生起服务端、登记一个 NPC、rpc 与日志观察的准确做法 | 配方写进本页“证据与复跑” | 完成，S1-A 实跑用过 |
 | S1-A | 选择链接通 | 一个登记的 NPC：人格卡进注册参数；候选活动来自注册参数（技能与去处），代码先滤可行性；活动结束或连续失败时异步问 Jev，应答经 Runtime 进观察，树根按它执行；每次选择一行日志。时钟打分、写死台词随之删掉 | 验收 (a)：同一处境两张人格卡选得不同（`live_jev` 用例，期望值先手写）；真实服务端里看到“选择 → 执行 → 再选择”的日志 | **已实现、已实跑、验收 (a) 通过**；实跑只走了“去处”候选的成功路径，见下 |
-| S1-B | 心智与记忆进快照 | 快照加上 Life 的情绪与关系（规则模式）、未封存的近期经历、Hindsight 的认识与一次召回；`"npc"` 登记时带 Life，Outcome 与世界事件照常进 Life 与 Hindsight。实现、测试，加一次带真实 Hindsight 的短实跑（NPC 真的建一次东西，快照各栏在日志里可见） | 冻结快照文本的 `live_jev` 用例：加上“被破坏”的情绪与经历后 top1 改变，期望值先手写；实跑里看到四栏都有内容 | 进行中 |
+| S1-B | 心智与记忆进快照 | 快照加上 Life 的情绪与关系（规则模式）、未封存的近期经历、Hindsight 的认识与一次召回；`"npc"` 登记时带 Life，Outcome 与世界事件照常进 Life 与 Hindsight。实现、测试，加一次带真实 Hindsight 的短实跑（NPC 真的建一次东西，快照各栏在日志里可见） | 冻结快照文本的 `live_jev` 用例：加上“被破坏”的情绪与经历后 top1 改变，期望值先手写；实跑里看到四栏都有内容 | **已实现、已测试、未实跑**；预演 6 次里 1 次落空，见下 |
 | S1-C | 薄片一验收实跑 | 第二个 NPC 经正常入口拆第一个 NPC 的建筑；记录 (b) 事件前后的选择、(c) 情绪衰减且经历封存写入后的选择；命令、日志位置、原始结果写回本页 | 验收 (b)、(c)，区分已实现 / 已实跑 / 已验收 | 未开始 |
 
 **S1-A 结果（2026-11-12，提交见“进度记录”）**
@@ -54,6 +54,28 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - 没做的：可行性过滤为空（现有观察里没有能判定候选做不成的依据）；背包栏只有材料号。Jev 模型用 `jev-latest`（Jev 本就不分版本，2026-11-12 用户确认，不算遗留问题）。
 - 子会话自定的三处：参数 `who`（英文自称，注册名不进模型）、Jev 请求超时 10 秒、发问失败后隔 600 tick 再问。统筹会话认可。
 - 统筹会话复核：逐文件看过差异；重跑 `npc_persona / selector / tree / day_plan / llm_budget / jev` 48 通过、3 按标签排除；
+
+**S1-B 结果（2026-11-12，提交见“进度记录”）**
+
+- 快照现在六栏：Character → Feelings and relationships → What just happened → What I remember → Current situation → Recent activities。
+  情绪按强弱三档写成句子，衰减到 0.1 及以下不写；信任按 ±0.2 / ±0.6 写成 Trusts / Distrusts 等；记忆栏首行声明“只是我的记忆，不是当前世界事实”。
+- `"npc"` 必带 Life（规则模式，不套 `Brain.Social`）；`life: false` 被拒，Hindsight 地址取 `NPC_LIFE_HINDSIGHT_URL` 或显式参数。
+- Life 新增只读入口 `Life.mind(cid, query)`（与 `context/2` 共用一次读取和恰好一次召回，召回单次超时 10 秒）与 `Life.activity/2`
+  （一项活动结束时记一条“做了什么、结果如何”）。后者是子会话自定的：规则模式下 `Life.experience/2` 是空操作，NPC 自己做的事原先没有任何路径进记忆。统筹会话认可。
+- “刚才发生了什么”= 已封存待写的片段 + 未封存的尾部（否则写入期间有缺口）。
+- 观察：`Body.observe(pid).select.asked` = `%{state: 给 Jev 的全文, recall_query:, recall_ms:}`；`npc_select` 加 `recall_ms=`；
+  心智读不到是 `npc_select_failed reason={:mind_unavailable, …}`，不发 Jev 请求。
+- **预演（冻结快照、真实 Jev，期望运行前写入）**：`npc_mind_test.exs --only live_jev`，卡 Garen（builder）。
+  ① 没有那件事 → `gather_stone` 2 / 2（置信度 0.86）；③ 只有记忆召回 → `build_hut` 2 / 2（0.80、0.83）；
+  ② 愤怒 + 近期经历 → 期望 `build_hut`，实际一次 `gather_stone`（0.02）、一次 `build_hut`（0.06），**落空**。用例保留为失败（`live_jev` 缺省不跑），原始日志
+  `.demo/observe/npc-slice1-20261112/s1b/live-jev-20261112.log`。
+  推测（未验证）：规则模式写出的经历原文是 `Actor 21 damaged construction I care about at (25, 518, 37), material 11 … (transaction 4711)`，
+  只有坐标与编号，Jev 无从知道被拆的就是那座小屋；③ 的召回句明说了“the small hut I built”。
+- 已知情况：信任不衰减，一次破坏后 `Distrusts …` 一直留在情绪栏，验收 (c) 要看 state 全文区分各栏的贡献；新 NPC 在 Hindsight 建好 bank 与四份认识之前
+  每 10 秒显式失败一次（`life_models_unavailable`）；Hindsight 对片段抽不出事实时 `retain` 返回 `empty_facts`、自动写入停住，重复的活动经历会不会触发要实跑才知道。
+- Life 状态里的 `caution` / `sociability` 统一形态不读；从 Life 里并掉待做。
+- 统筹会话复核：看过 Life / Runtime / Selector / Registry 的差异；自建 PG（55446，已删）重跑
+  `npc_selector / mind / registry / life / life_state / life_registry / social / tree` 97 通过、2 按标签排除。
   自建 PG（55444，已删）重跑 `npc_registry / settler / abilities` 35 通过。验收 (a) 与实跑没有重跑，以子会话留下的日志为准。
 
 不在薄片一里：LLM 规划、说话、游戏时刻对齐、步骤边界打断、人格漂移、多个 NPC。`DayPlan` / `LlmBudget` 留着不启用，薄片二再改。
@@ -157,3 +179,5 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   至此 voxim-9c 相关的 9 个测试文件都跑到了断言；仍是单测范围，未实跑。
 - 2026-11-12（接手会话）：S1-0 配方完成；S1-A 完成并提交（结果见“薄片一的任务”下的“S1-A 结果”）；图解页
   `2026-11-12-npc-architecture-overview.html` 一并提交。下一步 S1-B。
+- 2026-11-12（接手会话）：S1-B 的实现与测试完成并提交（未实跑）。下一步两件事并行准备、串行落地：
+  (1) 破坏 / 帮助事件的经历原文要说得出“是哪座建筑”（先离线验证推测，再改）；(2) 带真实 Hindsight 的实跑与验收 (b)(c)，即 S1-C。

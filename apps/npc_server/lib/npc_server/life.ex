@@ -6,6 +6,9 @@ defmodule NpcServer.Life do
   对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
+  统一形态（注册表 `"npc"`，规则模式）经两个入口用它：`mind/2` 是心智快照的只读视图（情绪与关系、还没写进 Hindsight 的
+  经历原文、缓存认识与一次召回），`activity/2` 接纳“做了什么、结果如何”的活动经历。统一形态不读状态里的
+  `traits`（`caution` / `sociability`）：人格只来自人格卡，这两个值并入人格卡待做。
   """
   use GenServer
   require Logger
@@ -13,6 +16,8 @@ defmodule NpcServer.Life do
   alias NpcServer.Life.Appraisal
   @fragment_chars 3000
   @refresh_ms 600_000
+  # 心智快照那一次召回的单次请求超时（毫秒）；写入与认识刷新仍用适配器的长超时。
+  @mind_recall_timeout_ms 10_000
 
   @doc "由 Runtime 建立关联 owner；context 包含 cid、scene_id 和路由模块。"
   def start_link(owner, context, profile) do
@@ -43,32 +48,72 @@ defmodule NpcServer.Life do
   def refresh(cid), do: call(cid, :refresh)
   @doc "读取缓存认识并恰好召回一次；由 CLI 或模型请求 worker 调用。"
   def context(cid, query) do
+    with {:ok, snapshot, recalled} <- recollect(cid, query, & &1) do
+      context = %{
+        mind: Appraisal.mind(snapshot.mind),
+        mental_models: snapshot.cache["models"],
+        model_metadata: snapshot.cache["metadata"],
+        model_cached_at_ms: snapshot.cache["at_ms"],
+        memories: recalled.results,
+        recall_latency_ms: recalled.latency_ms,
+        memory_retrieval: :hindsight_once,
+        memory_truth: "Subjective memory; not current numeric world truth."
+      }
+
+      {:ok,
+       if(snapshot.mind["affect"],
+         do: Map.put(context, :emotion_context, Appraisal.context(snapshot.mind)),
+         else: context
+       )}
+    end
+  end
+
+  @doc """
+  心智快照（`NpcServer.Mind`）用的只读视图，由选择位置的发问 worker 调用；读的是规则模式的状态。
+  与 `context/2` 同样读缓存认识并恰好召回一次（单次请求最多等 #{@mind_recall_timeout_ms} 毫秒：选择是秒级决策），
+  另给出还没写进 Hindsight 的经历原文。返回 `{:ok, 视图}`：
+
+      feelings       此刻仍活跃的情绪 `[%{emotion:, actor:, intensity:}]`（`Life.State.feelings/2`）
+      relationships  对各角色的信任 `[%{actor:, trust:}]`（`Life.State.relationships/1`）
+      recent         还没写进 Hindsight 的经历原文（已封存待写的片段在前，未封存的尾部在后；各自旧在前）
+      models         缓存的认识 `[{id, 正文}]`，按 `Life.Hindsight.model_ids/0` 的次序
+      memories       本次召回的结果（Hindsight 的原始行，正文在 `"text"`）
+      recall_ms      本次召回耗时
+
+  读不到就是显式失败，不冒充“没有记忆”：`{:error, :life_not_running | :life_not_ready |
+  {:life_models_unavailable, 原因} | 召回的失败原因}`。新 NPC 的空 bank 召回为空是正常结果。
+  """
+  def mind(cid, query) do
+    with {:ok, snapshot, recalled} <-
+           recollect(cid, query, &Map.put(&1, :timeout_ms, @mind_recall_timeout_ms)) do
+      {:ok,
+       %{
+         feelings: State.feelings(snapshot.mind, snapshot.now_ms),
+         relationships: State.relationships(snapshot.mind),
+         recent: snapshot.recent,
+         models:
+           for(
+             id <- Hindsight.model_ids(),
+             text = snapshot.cache["models"][id],
+             do: {id, text}
+           ),
+         memories: recalled.results,
+         recall_ms: recalled.latency_ms
+       }}
+    end
+  end
+
+  # 读一次 owner 快照，再在调用者进程里恰好召回一次；召回的成败记回 owner 供 observe 查看。
+  defp recollect(cid, query, configure) do
     with {:ok, snapshot} <- call(cid, :context) do
-      case snapshot.adapter.recall(snapshot.config, query, snapshot.now_ms) do
+      case snapshot.adapter.recall(configure.(snapshot.config), query, snapshot.now_ms) do
         {:ok, recalled} ->
           GenServer.cast(
             name(cid),
             {:recall, Map.put(Map.drop(recalled, [:results]), :status, :done)}
           )
 
-          {:ok,
-           %{
-             mind: Appraisal.mind(snapshot.mind),
-             mental_models: snapshot.cache["models"],
-             model_metadata: snapshot.cache["metadata"],
-             model_cached_at_ms: snapshot.cache["at_ms"],
-             memories: recalled.results,
-             recall_latency_ms: recalled.latency_ms,
-             memory_retrieval: :hindsight_once,
-             memory_truth: "Subjective memory; not current numeric world truth."
-           }}
-          |> then(fn {:ok, context} ->
-            {:ok,
-             if(snapshot.mind["affect"],
-               do: Map.put(context, :emotion_context, Appraisal.context(snapshot.mind)),
-               else: context
-             )}
-          end)
+          {:ok, snapshot, recalled}
 
         {:error, reason} ->
           GenServer.cast(name(cid), {:recall, %{status: :failed, error: reason}})
@@ -85,8 +130,14 @@ defmodule NpcServer.Life do
   @doc "接纳 Body 实际收到的权威 Speech；只保存主观经历，不推进 World 游标或修改心智。"
   def speech(pid, message), do: GenServer.cast(pid, {:speech, message})
 
-  @doc "接纳真实 Runtime 的动作终态，供下一次情绪评价引用。"
+  @doc "接纳真实 Runtime 的动作终态，供下一次情绪评价引用（只在模型评价情绪时使用；规则模式不建这条流水）。"
   def experience(pid, outcome), do: GenServer.cast(pid, {:experience, outcome})
+
+  @doc """
+  接纳一项已结束的活动（做了什么、结果如何，一句英文）作为主观经历：与 World 事件、Speech 同样进未封存的尾部，
+  攒够一个片段后写入 Hindsight。由统一形态的 Runtime 在活动结束时调用一次；不改 World 游标、情绪或关系。
+  """
+  def activity(pid, text), do: GenServer.cast(pid, {:activity, text})
 
   @doc "提交本次模型情绪评价；持久化完成才返回成功，调用方随后才执行动作。"
   def appraise(cid, through, entries), do: call(cid, {:appraise, through, entries})
@@ -181,7 +232,9 @@ defmodule NpcServer.Life do
           config: s.config,
           now_ms: s.now.(),
           mind: State.view(s.row["state"], s.now.()),
-          cache: s.row["cache"]
+          cache: s.row["cache"],
+          # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部。
+          recent: Enum.map(s.row["fragments"] ++ s.row["pending"], & &1["text"])
         }}, s}
     else
       {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
@@ -275,6 +328,23 @@ defmodule NpcServer.Life do
   end
 
   def handle_cast({:recall, data}, s), do: {:noreply, %{s | recall: data}}
+
+  # 活动只能在一次成功的选择之后结束，而选择要先读到本 owner 的视图，所以此时 row 必已加载。
+  def handle_cast({:activity, text}, s) do
+    at_ms = s.now.()
+    at_utc = at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+
+    episode = %{
+      "id" => "activity:#{at_ms}",
+      "at_ms" => at_ms,
+      "text" => "At #{at_utc} (UTC), " <> text
+    }
+
+    case save(s, seal(Map.update!(s.row, "pending", &(&1 ++ [episode])), false)) do
+      {:ok, s} -> {:noreply, automatic(s)}
+      {:error, s} -> {:noreply, s}
+    end
+  end
 
   def handle_cast({:speech, message}, s) do
     s = %{s | speech_pending: s.speech_pending ++ [message]}

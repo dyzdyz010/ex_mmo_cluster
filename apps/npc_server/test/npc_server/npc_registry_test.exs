@@ -37,6 +37,8 @@ defmodule NpcServer.NpcRegistryTest do
     "TYPESAFE_API_KEY" => "test-key",
     "TYPESAFE_MODEL" => "jev-test"
   }
+  # 只测试：统一形态必带 Life，Hindsight 的地址取自运行环境；集成用例里指向本文件起的本机 HTTP 替身。
+  @npc_env Map.put(@jev_env, "NPC_LIFE_HINDSIGHT_URL", "http://life.test.invalid")
   @npc %{
     "who" => "Lin, a builder",
     "persona" => %{"traits" => %{"thrifty" => 8, "extraverted" => 3}, "personal" => "Dislikes crowds."},
@@ -116,9 +118,9 @@ defmodule NpcServer.NpcRegistryTest do
       end
     end
 
-    # 统一形态（总纲 2026-11-12，薄片一 S1-A）：人格卡与有序候选表来自注册参数，Jev 的 endpoint 来自运行环境。
-    test "npc: persona card, ordered activities and derived skills from the row, the Jev endpoint from the environment" do
-      with_env(@jev_env, fn ->
+    # 统一形态（总纲 2026-11-12，薄片一）：人格卡与有序候选表来自注册参数，Jev 的 endpoint 与 Hindsight 的地址来自运行环境。
+    test "npc: persona card, ordered activities and derived skills from the row, the Jev endpoint and Life from the environment" do
+      with_env(@npc_env, fn ->
         assert {Brain.Tree,
                 %{
                   tree: &Trees.npc/1,
@@ -137,8 +139,14 @@ defmodule NpcServer.NpcRegistryTest do
                   ],
                   tools: %{1 => "镐"},
                   skills: %{gather: %{}, travel: %{}},
-                  jev: %{url: "http://127.0.0.1:9/jev", key: "test-key", model: "jev-test", timeout_ms: 10_000}
+                  jev: %{url: "http://127.0.0.1:9/jev", key: "test-key", model: "jev-test", timeout_ms: 10_000},
+                  # 必带 Life：行里没写 life，地址取运行环境。大脑仍是 Tree，不套 Social。
+                  life: %{url: "http://life.test.invalid"}
                 }} == NpcRegistry.brain("npc", @npc)
+
+        # 行里显式给地址。
+        assert {Brain.Tree, %{life: %{url: "http://hindsight.example:8888"}}} =
+                 NpcRegistry.brain("npc", Map.put(@npc, "life", %{"url" => "http://hindsight.example:8888"}))
 
         # 只有技能候选：技能表里没有 travel。
         assert {Brain.Tree, %{skills: %{gather: %{}}}} =
@@ -161,15 +169,23 @@ defmodule NpcServer.NpcRegistryTest do
               %{@npc | "activities" => [%{rest | "stay_ticks" => 0}]},
               %{@npc | "activities" => [Map.put(rest, "skill", "travel")]},
               Map.delete(@npc, "who"),
-              Map.delete(@npc, "tools")
+              Map.delete(@npc, "tools"),
+              # 统一形态不能关掉 Life；地址不是 http(s) URL。
+              Map.put(@npc, "life", false),
+              Map.put(@npc, "life", %{"url" => "hindsight:8888"})
             ] do
           assert_raise_any(fn -> NpcRegistry.brain("npc", bad) end, bad)
         end
       end)
 
       # 运行环境没有 Jev 接口：登记不了。
-      with_env(%{@jev_env | "TYPESAFE_API_URL" => nil}, fn ->
+      with_env(%{@npc_env | "TYPESAFE_API_URL" => nil}, fn ->
         assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, :no_jev_url)
+      end)
+
+      # 运行环境没有 Hindsight 地址、行里也没给：登记不了。
+      with_env(%{@npc_env | "NPC_LIFE_HINDSIGHT_URL" => nil}, fn ->
+        assert_raise System.EnvError, ~r/NPC_LIFE_HINDSIGHT_URL/, fn -> NpcRegistry.brain("npc", @npc) end
       end)
     end
 
@@ -430,14 +446,14 @@ defmodule NpcServer.NpcRegistryTest do
     test "bad params are rejected at put: no row, no character, no Body" do
       name = "坏参数#{System.unique_integer([:positive])}"
 
-      with_env(@jev_env, fn ->
+      with_env(@npc_env, fn ->
       for {brain, params} <- [
             {"settler",
              %{"definition" => "zz", "sites" => [], "revisit_ticks" => 1, "tools" => %{}}},
             {"patrol", %{"route" => [[4.0, 10.0]]}},
             # 元组不是 JSON：参数先按 JSON 规范化，存的和解析的是同一份。
             {"patrol", %{"route" => [{4.0, 10.0}, {8.0, 10.0}]}},
-            # 统一形态：坏人格卡、空候选表、重名候选（运行环境里有 Jev 接口，被拒只因参数）。
+            # 统一形态：坏人格卡、空候选表、重名候选（运行环境里有 Jev 接口与 Hindsight 地址，被拒只因参数）。
             {"npc", %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}},
             {"npc", %{@npc | "activities" => []}},
             {"npc", %{@npc | "activities" => List.duplicate(hd(@npc["activities"]), 2)}},
@@ -471,16 +487,41 @@ defmodule NpcServer.NpcRegistryTest do
       assert [] == DynamicSupervisor.which_children(NpcServer.BodySupervisor)
     end
 
-    # 统一形态经正式入口：真实 Body / Scene / World / Runtime / Tree / 技能 / HTTP 发送器；替身只有 Jev 服务本身
-    # （本机 HTTP 监听，每个请求回同一份冻结应答，形状取自官方 HTTP 文档）。证明真实观察能拼成发问、应答被执行；
-    # 不证明真实 Jev 的选择（那是 :live_jev 用例与服务端实跑）。
-    test "an npc row asks Jev from the real Body and runs the chosen activity in the real Scene" do
-      answer =
-        Jason.encode!(%{
-          "answers" => %{"activity" => %{"type" => "choice", "choice" => "walk_east", "confidence" => 0.4}}
-        })
+    # 统一形态经正式入口：真实 Body / Scene / World / Runtime / Tree / 技能 / Life / NpcMemory / 两个 HTTP 发送器；
+    # 替身只有两个外部服务本身——Jev（每个请求回同一份冻结应答，形状取自官方 HTTP 文档）与 Hindsight（冻结应答，形状取自
+    # `npc_hindsight_test` 的 0.10.3 接口样本）。证明真实观察与真实 Hindsight 适配器读回的认识、召回能拼成发问，应答被执行；
+    # 不证明真实 Jev 的选择与真实 Hindsight 的内容（那是 :live_jev 用例与服务端实跑）。
+    @tag timeout: 120_000
+    test "an npc row reads its mind through Life, asks Jev from the real Body and runs the chosen activity" do
+      answer = %{"answers" => %{"activity" => %{"type" => "choice", "choice" => "walk_east", "confidence" => 0.4}}}
+      test = self()
 
-      url = jev_stub(answer)
+      jev =
+        http_stub(fn :post, "/jev", body ->
+          send(test, {:jev_http, body})
+          answer
+        end) <> "/jev"
+
+      hindsight =
+        http_stub(fn
+          :put, "/v1/default/banks/npc-life-" <> _cid, _ ->
+            %{}
+
+          :get, "/v1/default/banks/npc-life-" <> rest, _ ->
+            cond do
+              rest =~ "/mental-models/self?" -> %{"content" => "I keep to myself and save what I can."}
+              rest =~ "/mental-models/" -> %{"content" => "Nothing recorded yet."}
+              rest =~ "/operations?" -> %{"operations" => [], "total" => 0}
+              rest =~ "/llm-requests?" -> %{"items" => [], "total" => 0}
+              rest =~ "/stats" -> %{}
+            end
+
+          :post, "/v1/default/banks/npc-life-" <> rest, body ->
+            true = String.ends_with?(rest, "/memories/recall")
+            send(test, {:hindsight_recall, body})
+            %{"results" => [%{"id" => "fact-1", "text" => "The east post is quiet in the morning.", "type" => "world"}]}
+        end)
+
       name = "住民#{System.unique_integer([:positive])}"
 
       params = %{
@@ -491,16 +532,34 @@ defmodule NpcServer.NpcRegistryTest do
           ]
       }
 
-      with_env(%{@jev_env | "TYPESAFE_API_URL" => url}, fn ->
+      with_env(%{@npc_env | "TYPESAFE_API_URL" => jev, "NPC_LIFE_HINDSIGHT_URL" => hindsight}, fn ->
         assert {:ok, %{cid: cid, pid: pid}} =
                  NpcRegistry.put(name, %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "npc", params: params})
 
         assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] = rows(name)
 
-        # 发问来自真实观察：人格描述、位置与候选次序都在请求里。
+        # 一次选择恰好召回一次：问句由处境拼出（附近没人、两项候选的判据），预算与时间锚按适配器的契约。
+        assert_receive {:hindsight_recall, recall}, 30_000
+
+        assert recall["query"] ==
+                 "I am deciding what to do next. Nobody is nearby. What I could do: Stay where you are. " <>
+                   "Walk to the east post. What do I remember about these people, places and tasks?"
+
+        assert recall["budget"] == "mid"
+
+        # 发问来自真实观察与真实读回的心智：人格描述、认识（四份，按建立次序）、召回、位置都在请求里。
         assert_receive {:jev_http, request}, 20_000
         assert request["model"] == "jev-test"
         assert request["state"] =~ "Character: Lin, a builder. Personality: introverted, very thrifty."
+        assert request["state"] =~ "\nFeelings and relationships: Nothing notable.\nWhat just happened: Nothing new.\n"
+
+        assert request["state"] =~
+                 "What I remember: My own memories and beliefs; they may be out of date and are not current " <>
+                   "world facts.\n- Belief (self): I keep to myself and save what I can.\n" <>
+                   "- Belief (relationships): Nothing recorded yet.\n- Belief (world): Nothing recorded yet.\n" <>
+                   "- Belief (commitments): Nothing recorded yet.\n" <>
+                   "- Recalled: The east post is quiet in the morning.\n"
+
         assert request["state"] =~ "Current situation: Standing at x=4.0, z=10.0"
 
         # 被选中的是登记在后的 walk_east：走到 (8, 10)。
@@ -513,12 +572,22 @@ defmodule NpcServer.NpcRegistryTest do
         {x, _, z} = travel.data.position
         assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
 
-        # 活动结束后再次发问，带上一项的结局；observe 读得到当前活动与最近的选择。
+        # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历。
         assert_receive {:jev_http, %{"state" => again}}, 20_000
         assert again =~ "Recent activities: Oldest first. walk_east: completed."
+        assert again =~ ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\.\n/
 
-        assert %{select: %{activities: [%{activity: "walk_east", trigger: "start", confidence: 0.4} | _]}} =
-                 Body.observe(pid)
+        # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与召回问句。
+        assert %{
+                 select: %{
+                   activities: [%{activity: "walk_east", trigger: "start", confidence: 0.4, recall_ms: recall_ms} | _],
+                   asked: %{state: asked, recall_query: query}
+                 }
+               } = Body.observe(pid)
+
+        assert is_integer(recall_ms) and recall_ms >= 0
+        assert asked =~ "Character: Lin, a builder."
+        assert query == recall["query"]
 
         assert :ok = NpcRegistry.remove(name)
       end)
@@ -589,23 +658,31 @@ defmodule NpcServer.NpcRegistryTest do
 
   # 只测试：本机 HTTP 监听，逐个连接读完一个 POST、把请求体（JSON）交给测试进程、回同一份应答后关闭连接。
   # 监听与在途连接随本进程退出关闭；只用回环 TCP。
-  defp jev_stub(answer) do
+  # 只测试：本机 HTTP 替身。每个请求交给 `handler.(方法, 路径, JSON 体 | nil)`，它返回的 map 以 200 JSON 回给调用方。
+  # 返回服务根地址。
+  defp http_stub(handler) do
     {:ok, listen} =
       :gen_tcp.listen(0, [:binary, packet: :http_bin, active: false, ip: {127, 0, 0, 1}])
 
     {:ok, port} = :inet.port(listen)
-    test = self()
-    server = spawn_link(fn -> jev_accept(listen, answer, test) end)
+    server = spawn_link(fn -> http_accept(listen, handler) end)
     :ok = :gen_tcp.controlling_process(listen, server)
-    "http://127.0.0.1:#{port}/jev"
+    "http://127.0.0.1:#{port}"
   end
 
-  defp jev_accept(listen, answer, test) do
+  defp http_accept(listen, handler) do
     {:ok, socket} = :gen_tcp.accept(listen)
-    length = jev_headers(socket, 0)
+    {:ok, {:http_request, method, {:abs_path, path}, _}} = :gen_tcp.recv(socket, 0)
+    length = http_headers(socket, 0)
     :ok = :inet.setopts(socket, packet: :raw)
-    {:ok, body} = :gen_tcp.recv(socket, length)
-    send(test, {:jev_http, Jason.decode!(body)})
+
+    body =
+      if length > 0 do
+        {:ok, bytes} = :gen_tcp.recv(socket, length)
+        Jason.decode!(bytes)
+      end
+
+    answer = Jason.encode!(handler.(%{GET: :get, PUT: :put, POST: :post}[method], path, body))
 
     :ok =
       :gen_tcp.send(socket, [
@@ -615,14 +692,14 @@ defmodule NpcServer.NpcRegistryTest do
       ])
 
     :ok = :gen_tcp.close(socket)
-    jev_accept(listen, answer, test)
+    http_accept(listen, handler)
   end
 
-  defp jev_headers(socket, length) do
+  defp http_headers(socket, length) do
     case :gen_tcp.recv(socket, 0) do
-      {:ok, {:http_header, _, :"Content-Length", _, value}} -> jev_headers(socket, String.to_integer(value))
+      {:ok, {:http_header, _, :"Content-Length", _, value}} -> http_headers(socket, String.to_integer(value))
       {:ok, :http_eoh} -> length
-      {:ok, _} -> jev_headers(socket, length)
+      {:ok, _} -> http_headers(socket, length)
     end
   end
 

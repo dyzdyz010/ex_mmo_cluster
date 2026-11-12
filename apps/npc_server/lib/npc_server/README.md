@@ -56,12 +56,13 @@
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
   `Skill.call/2`（编步号、等 Outcome）；一个技能组合另一个技能（expand 调 gather 的 `run/3`）时给被组合的那次一个步号命名空间。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
-- 统一形态 NPC 的“选择 → 执行”（总纲
-  [`2026-11-12-npc-architecture-overview.md`](../../../../docs/10-active/cross-cutting/2026-11-12-npc-architecture-overview.md)，薄片一 S1-A）：
-  `Persona` 是人格卡（52 对形容词 × 9 级 + 英文自由文本）的唯一校验与英文转写；`Mind` 把人格、眼前处境、最近做过的事拼成
-  心智快照（发问时现读的只读视图，给模型的英文 state 只在这里拼）；`Selector` 是选择位置：一项活动结束时把快照与有序候选交给
+- 统一形态 NPC 的“心智 → 选择 → 执行”（总纲
+  [`2026-11-12-npc-architecture-overview.md`](../../../../docs/10-active/cross-cutting/2026-11-12-npc-architecture-overview.md)，薄片一 S1-A / S1-B）：
+  `Persona` 是人格卡（52 对形容词 × 9 级 + 英文自由文本）的唯一校验与英文转写；`Mind` 把人格、情绪与关系、近期经历、
+  记忆（认识 + 一次召回）、眼前处境、最近做过的事拼成心智快照（发问时现读的只读视图，给模型的英文 state 只在这里拼；
+  情绪、经历、记忆三栏经 `Life.mind/2` 向 Life 这个 owner 现读）；`Selector` 是选择位置：一项活动结束时把快照与有序候选交给
   Jev，直接取 top1（不设置信度门槛，`Jev.top1/1`；0.85 门槛只留给中断与 harm 护栏的 `Jev.verdict/3`），并持有“正在做什么、
-  最近选过什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
+  最近选过什么、最近一次问了什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
 - `DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）**未接线**：读计划的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、
   注册参数 `daily` 与写死的轮换台词已随 S1-A 删除，没有注册表入口会启动它们；代码与单测留到薄片二改成规划位置的外壳。
 - `Memory` 提供模型记忆工具与上下文投影；`DataService.NpcMemory` 按永久 cid 持久化、检索，并拥有保留上限。
@@ -232,7 +233,8 @@ brain: {NpcServer.Brain.Routine, %{
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
   含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
-  `activity`、`trigger`、`confidence`、`latency_ms`、`result`；`result` 为 nil 的末项是正在做的活动）与最近一次发问失败的原因 `failure`。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
+  `activity`、`trigger`、`confidence`、`latency_ms`、`recall_ms`、`result`；`result` 为 nil 的末项是正在做的活动）、最近一次发问失败的原因
+  `failure`，以及最近一次问 Jev 的内容 `asked`（`state` 给 Jev 的 state 全文、`recall_query` 召回问句、`recall_ms` 召回耗时）。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
   `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted` 属于 `DayPlan` / `LlmBudget`：两者目前未接线（没有注册表入口会启动），这些行不会出现。
 
 ### 注册表（`Registry`，放置阶段 M1）
@@ -255,7 +257,8 @@ NpcServer.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, bra
 NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
 # 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：每次解析取运行环境
-# TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）。不需要任何 LLM 接口。
+# TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）。必带 Life：Hindsight 地址取运行环境 NPC_LIFE_HINDSIGHT_URL
+# （必须），或在参数里写 "life" => %{"url" => ...}；不能写 "life" => false。NPC 自己不需要任何 LLM 接口。
 NpcServer.Registry.put("阿林", %{scene_id: 1, spawn: {22.5, 520.0, 34.5}, brain: "npc",
   params: %{
     "who" => "Lin, a builder",
@@ -368,17 +371,23 @@ brain: {NpcServer.Brain.Tree, %{
 采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
 探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
 
-### 统一形态（`Trees.npc/1` 与 `Selector`，薄片一 S1-A）
+### 统一形态（`Trees.npc/1`、`Selector`、`Mind` 与 Life，薄片一 S1-A / S1-B）
 
-注册表 brain `"npc"`：一个 NPC 的控制链“选择 → 执行”。规划（LLM）、说话、情绪与记忆进快照是后续薄片；本增量不调用任何 LLM。
+注册表 brain `"npc"`：一个 NPC 的“心智 → 选择 → 执行”。规划（LLM）、说话、活动进行中的打断是后续薄片；NPC 自己不调用任何 LLM
+（Hindsight 服务的后台巩固用它自己的模型）。
 
 ```mermaid
 flowchart LR
   T[Trees.npc<br/>树根] -- choose_activity（上一项怎样结束） --> R[Runtime]
-  R -- 心智快照 + 有序候选 --> W[发问 worker] -- HTTPS --> J[Jev]
+  R -- 起 worker --> W[发问 worker]
+  W -- 刚结束的活动（经历）--> L[Life<br/>规则模式]
+  W -- mind：情绪 关系 近期经历 认识 + 一次召回 --> L
+  L -- 召回 --> H[(Hindsight)]
+  W -- 心智快照 + 有序候选 HTTPS --> J[Jev]
   J -- top1 --> W -- 结果 --> R
   R -- Outcome: 候选名 --> T
   T -- 被选中的分支：技能 / travel + wait --> R
+  World[World 事件：建设被帮助 / 被破坏] --> L
 ```
 
 - **参数**：`who`（英文自称，如 `"Lin, a builder"`；注册名可以是中文，不进模型）、`persona`（人格卡
@@ -386,18 +395,48 @@ flowchart LR
   `activities`（有序、非空、名字唯一；次序即给 Jev 的次序）。每个候选有 `name`、`criterion`（给 Jev 当判据的一句英文）和“怎么做”：
   `{"skill": "build" | "gather" | "expand" | "travel", "args": 技能参数}`，或 `{"place": [x, z], "stay_ticks": n}`（travel 过去再待
   n tick，60 Hz）。技能表由候选推出，不另写 `skills`。坏人格卡、空候选表、重名候选、未知技能在 `put/2` 被拒并说明原因。
-- **什么时候问**：只在一项活动结束（成功或失败）回到树根时。发问在独立 worker 里，不阻塞权威帧；等应答期间树不发命令，
-  身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
-- **问什么**：state 是 `Mind` 的心智快照，现有三栏——Character（人格描述）、Current situation（位置、生命、附近的人与距离、
-  背包）、Recent activities（最近 5 项活动及结果，上一项失败时带失败的动作与原因）。候选次序原样进请求体。
-  没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据，做不成的候选靠失败结果进入“最近做过的事”。
-- **失败**：HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃都是显式失败：`choose_activity` 的 Outcome 为
-  rejected，记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
+- **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
+  `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
+  只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；
+  `settler` + `life`（Social）的行为不变。Life 状态里的 `traits`（`caution` / `sociability`）统一形态不读——人格只来自人格卡，
+  把这两个值并入人格卡要迁移持久状态并牵动 Social，**待做**。
+- **什么时候问**：只在一项活动结束（成功或失败）回到树根时。读心智、召回、发问都在独立 worker 里，不阻塞权威帧；等应答期间树不发
+  命令，身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
+- **问什么**：state 是 `Mind` 的心智快照，发问那一刻从各 owner 现读，不另存。六栏，次序如下（写法与数值档位的正文在 `Mind` 的 moduledoc）：
+
+  | 栏 | 内容 | owner |
+  |---|---|---|
+  | Character | 人格描述 | 人格卡 |
+  | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
+  | What just happened | Life 手里还没写进 Hindsight 的经历原文（已封存待写的片段 + 未封存的尾部，旧在前）；没有写 `Nothing new.` | Life |
+  | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加针对当前处境的一次召回（`- Recalled: …`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
+  | Current situation | 位置、生命、附近的人与距离、背包 | World / Scene（Observation） |
+  | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
+
+  情绪强度由代码转成词（≥ 0.4 strong、≥ 0.2 moderate、其余 faint；Life 衰减到 0.1 及以下的不给出：一次破坏后约 70 秒内 strong、
+  约 190 秒内 moderate、约 310 秒后消失）。信任不随时间恢复（≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 四档，其间不写）。
+  人写成 `名字 (actor <cid>)`，不在附近的写 `actor <cid>, who is not nearby`：经历与记忆的原文只用 cid 指人。
+  候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
+- **召回**：一次选择恰好召回一次（`Life.mind/2`，单次请求最多等 10 秒）。问句由处境拼出（`Mind.recall_query/2`）：
+  `I am deciding what to do next. Nearby: <名字 (actor cid), …>. What I could do: <各候选的判据>. What do I remember about these people, places and tasks?`
+- **经历**：进 Life 的是“做了什么、结果如何”——一项活动结束时 Runtime 调 `Life.activity/2` 记一条
+  `At <UTC> (UTC), I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，与 World 事件
+  （`… Actor <cid> damaged / repaired construction I care about …`）同样攒够约 3000 字封成片段写入 Hindsight。
+  `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历；规则模式下 `Life.experience/2`（动作终态进情绪评价流水）不建流水，
+  技能内部的每一步也不进经历。
+- **失败**：心智读不到（Life 还没加载完 `life_not_ready`、认识还没有缓存 `{:life_models_unavailable, 原因}`、召回出错或超时）
+  记为 `{:mind_unavailable, 细节}`，**不发 Jev 请求**，不把读不到的记忆当成“没有记忆”；新 NPC 的空 bank 召回为空是正常结果。
+  HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃同样是显式失败：`choose_activity` 的 Outcome 为 rejected，
+  记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
+  新登记的 NPC 在 Hindsight 建好 bank 与四份认识之前（真实服务要几十秒到几分钟）每 10 秒失败一次，属于这一条。
+- **观察**：`Body.observe(pid).select.asked` 是最近一次问 Jev 的内容：`state`（给 Jev 的全文）、`recall_query`、`recall_ms`；
+  在 Jev 请求发出前记下，Jev 随后失败或 worker 崩溃也留着；心智读不到的那次没有发问，仍是上一次的。
+  `Life.observe(cid)` 照旧给出情绪原值与衰减值、`pending_episodes`、`pending_fragments`、`retained`、认识缓存、最近一次召回的成败与耗时。
 - **日志**：每次选择一行
-  `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= model=`；trigger 为 `start`（首次）、`completed` / `failed`
-  （上一项活动的结局）、`retry`（上次发问失败后重问）。技能候选另有既有的 `npc_skill_outcome`。
-- **模型版本**：取运行环境 `TYPESAFE_MODEL`，随每行 `npc_select` 记录。调研稿要求锁定固定版本；目前环境给的是 `jev-latest`，
-  尚未找到已确认的固定版本名，**未锁定**。
+  `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= recall_ms= model=`；trigger 为 `start`（首次）、`completed` / `failed`
+  （上一项活动的结局）、`retry`（上次发问失败后重问）；`latency_ms` 是 Jev 请求，`recall_ms` 是那一次记忆召回。state 全文不进日志。
+  技能候选另有既有的 `npc_skill_outcome`；Life 与 Hindsight 的既有日志（`npc_life_error`、`npc_life_memory_error`、`npc_hindsight_failed`）照旧。
+- **模型**：取运行环境 `TYPESAFE_MODEL`，随每行 `npc_select` 记录。模型名就是 `jev-latest`（Jev 不分版本）。
 
 ### 持续扩张（`expand` 技能与 Settler 的 `expansion`，放置阶段 §7）
 
@@ -534,6 +573,11 @@ NpcServer.Registry.put("LifeBuilder", %{
 关闭 Life 的原有解析档案与 600 次/小时缺省不变。
 也可写 `"life" => true`，但此时必须部署 `NPC_LIFE_HINDSIGHT_URL`；没有配置会明确拒绝登记。
 全局实现没有实验实例名、端口或测试服务默认值。
+
+统一形态（`"npc"`）必带 Life，用法与上面两种都不同：大脑仍是原 Tree（不包 `Brain.Social`，不问决策模型），Life 按规则模式运行；
+Life 对它多给两个入口——`Life.mind(cid, query)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历原文、
+缓存认识与恰好一次召回；读不到显式失败），`Life.activity(pid, text)` 接纳“做了什么、结果如何”的活动经历。
+`context/2` 的返回与 `Brain.Llm` 的输入不变。详见上文“统一形态”。
 
 ```mermaid
 flowchart LR

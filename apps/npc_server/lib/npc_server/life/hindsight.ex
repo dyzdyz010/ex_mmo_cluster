@@ -20,6 +20,9 @@ defmodule NpcServer.Life.Hindsight do
     {"commitments", "What promises have I made or received, and which are open or fulfilled?"}
   ]
 
+  @doc "四份认识文档的 id，按建立次序（self、relationships、world、commitments）；给模型列认识时用这个次序。"
+  def model_ids, do: Enum.map(@queries, &elem(&1, 0))
+
   @doc "建立 bank 与缺失的四份认识文档；已有文档不重建、不刷新。"
   def ensure(config, name) do
     with {:ok, _} <-

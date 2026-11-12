@@ -1,0 +1,304 @@
+defmodule NpcServer.NpcMindTest do
+  @moduledoc """
+  只测试：心智快照 `NpcServer.Mind` 的六栏英文转写、召回问句，以及 Life 给快照的只读投影
+  （`Life.State.feelings/2`、`relationships/1`）。
+
+  范围与替身：
+  - 纯函数用例直接构造输入（人格卡、Observation、选择器历史、`Life.mind/2` 形状的视图）；期望的英文全文按 `Mind` 的
+    栏定义手写，数值档位按 moduledoc 里的阈值手算。不启动 Life、Hindsight、World 或数据库。
+  - Life 的投影用例经公共入口 `Life.State.advance/5` 接纳一条手写的 World 事件，期望值按规则模式的设计参数手算
+    （一次破坏：愤怒 +0.6、信任 −0.35；半衰期 120 秒；活跃阈值 0.1）。
+  - `:live_jev` 用例问真实 Jev（薄片一 S1-B 的离线预演），只在显式 `--include live_jev` 时运行；
+    它不替代真实服务端里的验收 (b)、(c)。
+  """
+  use ExUnit.Case, async: true
+  alias NpcServer.{Mind, Persona, Selector}
+  alias NpcServer.Life.State
+
+  defp profile do
+    {:ok, card} = Persona.new(%{"traits" => %{"bold" => 8}, "personal" => "Keeps promises."})
+
+    %{
+      who: "Lin, a builder",
+      persona: card,
+      activities: [
+        %{name: "build_north", criterion: "Build the hut on the north plot."},
+        %{name: "rest_at_home", criterion: "Go home and rest."}
+      ]
+    }
+  end
+
+  # 自己在 (1, 2, 3)；Mara 在 (4, 2, 7)，差 (3, 0, 4) → 5.0 米；无名 NPC 在 (1, 14, 8)，差 (0, 12, 5) → 13.0 米。
+  defp observation do
+    %{
+      self: %{entity_id: 7, position: {1.0, 2.0, 3.0}, tick: 1, grounded: true, body_state: %{life: 80}},
+      pending: [],
+      entities: [
+        %{entity_id: 7, kind: 1, name: "self", position: {1.0, 2.0, 3.0}},
+        %{entity_id: 21, kind: 0, name: "Mara", position: {4.0, 2.0, 7.0}},
+        %{entity_id: 22, kind: 1, name: "", position: {1.0, 14.0, 8.0}}
+      ],
+      balances: [%{material: 11, balance: 512, cost: 512, seq: 3}, %{material: 4, balance: 0, cost: 512, seq: 3}]
+    }
+  end
+
+  defp alone, do: %{observation() | entities: [], balances: nil} |> put_in([:self, :body_state], nil)
+
+  @empty %{feelings: [], relationships: [], recent: [], models: [], memories: [], recall_ms: 0}
+
+  @damage "At 2026-11-12T03:10:00.000Z (UTC), Actor 21 damaged construction I care about at (4, 64, 8), " <>
+            "material 11, in world w1 (transaction 9). I feel angry toward this actor; my trust changed."
+  @built ~s|At 2026-11-12T03:11:00.000Z (UTC), I did "build_north" (Build the hut on the north plot.). Result: completed.|
+
+  describe "snapshot" do
+    test "six sections in order; every number is written out in words by code" do
+      life = %{
+        # 0.6 → strong；0.15 → faint。来源 21 还在附近（有名字），30 不在。
+        feelings: [
+          %{emotion: "anger", actor: 21, intensity: 0.6},
+          %{emotion: "gratitude", actor: 30, intensity: 0.15}
+        ],
+        # −0.7 → Deeply distrusts；0.1 接近中立，不写；0.25 → Trusts。
+        relationships: [%{actor: 21, trust: -0.7}, %{actor: 22, trust: 0.1}, %{actor: 30, trust: 0.25}],
+        recent: [@damage, @built],
+        models: [{"self", "I am a careful builder."}, {"relationships", "Mara has helped me before."}],
+        memories: [
+          %{"id" => "fact-1", "text" => "Mara repaired my wall.", "type" => "experience"},
+          %{"id" => "fact-2", "text" => "Brann destroyed my wall.", "type" => "experience"}
+        ],
+        recall_ms: 12
+      }
+
+      history = [
+        %{activity: "build_north", result: :completed},
+        %{activity: "rest_at_home", result: {:failed, "travel", "no_path"}}
+      ]
+
+      assert [
+               {"Character", "Lin, a builder. Personality: very bold. Personal: Keeps promises."},
+               {"Feelings and relationships",
+                "Feels strong anger toward Mara (actor 21). " <>
+                  "Feels faint gratitude toward actor 30, who is not nearby. " <>
+                  "Deeply distrusts Mara (actor 21). Trusts actor 30, who is not nearby."},
+               {"What just happened", "Oldest first. " <> @damage <> " " <> @built},
+               {"What I remember",
+                "My own memories and beliefs; they may be out of date and are not current world facts.\n" <>
+                  "- Belief (self): I am a careful builder.\n" <>
+                  "- Belief (relationships): Mara has helped me before.\n" <>
+                  "- Recalled: Mara repaired my wall.\n" <>
+                  "- Recalled: Brann destroyed my wall."},
+               {"Current situation",
+                "Standing at x=1.0, z=3.0 (height 2.0). Life 80 of 100. " <>
+                  "Nearby: Mara (player, 5.0 m away); someone unnamed (NPC, 13.0 m away). " <>
+                  "Inventory: material 11: 512 units, material 4: 0 units."},
+               {"Recent activities", "Oldest first. build_north: completed. rest_at_home: failed (travel: no_path)."}
+             ] == Mind.snapshot(profile(), observation(), history, life)
+    end
+
+    test "nothing felt, nothing new, nothing remembered: each section says so; the state is one line per section" do
+      assert "Character: Lin, a builder. Personality: very bold. Personal: Keeps promises.\n" <>
+               "Feelings and relationships: Nothing notable.\n" <>
+               "What just happened: Nothing new.\n" <>
+               "What I remember: Nothing relevant.\n" <>
+               "Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby. " <>
+               "Inventory: not checked yet.\n" <>
+               "Recent activities: None yet." == Mind.text(Mind.snapshot(profile(), alone(), [], @empty))
+    end
+
+    test "strength and trust bands at their thresholds" do
+      feelings = fn life ->
+        {"Feelings and relationships", text} = Enum.at(Mind.snapshot(profile(), alone(), [], life), 1)
+        text
+      end
+
+      # 强度：≥ 0.4 strong，≥ 0.2 moderate，其余 faint。
+      for {intensity, word} <- [{0.4, "strong"}, {0.39, "moderate"}, {0.2, "moderate"}, {0.19, "faint"}] do
+        assert "Feels #{word} anger toward actor 5, who is not nearby." ==
+                 feelings.(%{@empty | feelings: [%{emotion: "anger", actor: 5, intensity: intensity}]})
+      end
+
+      # 信任：≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 各一档，其间不写。
+      for {trust, text} <- [
+            {-0.6, "Deeply distrusts actor 5, who is not nearby."},
+            {-0.59, "Distrusts actor 5, who is not nearby."},
+            {-0.2, "Distrusts actor 5, who is not nearby."},
+            {-0.19, "Nothing notable."},
+            {0.19, "Nothing notable."},
+            {0.2, "Trusts actor 5, who is not nearby."},
+            {0.6, "Deeply trusts actor 5, who is not nearby."}
+          ] do
+        assert text == feelings.(%{@empty | relationships: [%{actor: 5, trust: trust}]})
+      end
+    end
+
+    test "only models, or only recalled memories, still make the memory section" do
+      memory = fn life ->
+        {"What I remember", text} = Enum.at(Mind.snapshot(profile(), alone(), [], life), 3)
+        text
+      end
+
+      header = "My own memories and beliefs; they may be out of date and are not current world facts."
+      assert header <> "\n- Belief (world): The quarry is north." == memory.(%{@empty | models: [{"world", "The quarry is north."}]})
+      assert header <> "\n- Recalled: I built a hut." == memory.(%{@empty | memories: [%{"text" => "I built a hut."}]})
+    end
+  end
+
+  describe "recall_query" do
+    test "the people nearby (name and actor id) and every candidate's criterion, in registration order" do
+      assert "I am deciding what to do next. Nearby: Mara (actor 21), someone unnamed (actor 22). " <>
+               "What I could do: Build the hut on the north plot. Go home and rest. " <>
+               "What do I remember about these people, places and tasks?" ==
+               Mind.recall_query(profile(), observation())
+
+      assert "I am deciding what to do next. Nobody is nearby. " <>
+               "What I could do: Build the hut on the north plot. Go home and rest. " <>
+               "What do I remember about these people, places and tasks?" == Mind.recall_query(profile(), alone())
+    end
+  end
+
+  describe "Life.State projections for the snapshot" do
+    # 一条手写的 World 事件：角色 21 在 t0 破坏了角色 7 放下的一格。
+    defp damaged(t0) do
+      event = %{seq: 5, kind: :damage, actor: 21, placed_by: 7, cell: {4, 64, 8}, material: 11, at_ms: t0}
+      {state, [_episode]} = State.advance(State.new(7, "w1", 0, t0), [event], 5, t0)
+      state
+    end
+
+    test "feelings decay with the 120 s half-life and disappear at the 0.1 threshold; trust stays" do
+      t0 = 1_800_000_000_000
+      state = damaged(t0)
+
+      # 事件时刻：+0.6。
+      assert [%{emotion: "anger", actor: 21, intensity: at_event}] = State.feelings(state, t0)
+      assert_in_delta 0.6, at_event, 1.0e-9
+
+      # 一个半衰期后：0.3。
+      assert [%{emotion: "anger", actor: 21, intensity: halved}] = State.feelings(state, t0 + 120_000)
+      assert_in_delta 0.3, halved, 1.0e-9
+
+      # 三个半衰期后 0.075 ≤ 0.1：不再给出。
+      assert [] == State.feelings(state, t0 + 360_000)
+
+      # 关系不随时间恢复：一次破坏 −0.35。
+      assert [%{actor: 21, trust: -0.35}] == State.relationships(state)
+      # 纯观察不回写：再读事件时刻仍是原值。
+      assert [%{intensity: again}] = State.feelings(state, t0)
+      assert_in_delta 0.6, again, 1.0e-9
+    end
+
+    test "relationships are listed by actor id" do
+      state =
+        State.new(7, "w1", 0, 0)
+        |> put_in(["relationships"], %{"30" => %{"trust" => 0.25, "source_seq" => 2}, "4" => %{"trust" => -1.0, "source_seq" => 9}})
+
+      assert [%{actor: 4, trust: -1.0}, %{actor: 30, trust: 0.25}] == State.relationships(state)
+    end
+  end
+
+  # 薄片一 S1-B 的离线预演：同一张卡、同一候选表、同一处境与最近活动，三种快照只差“那件事”在哪一栏。
+  #
+  #   ① none     没有那件事：情绪、近期经历里都没有它，记忆为空。
+  #   ② fresh    刚发生：对 Brann 的愤怒与不信任，加近期经历里的原文（规则模式 Life 写出的原样句式）。
+  #   ③ recalled 很久以后：情绪与近期经历都没有，只有记忆召回里带这件事（手写的两条召回结果）。
+  #
+  # 期望在运行前手写：
+  #   ① → gather_stone   小屋已经建好（最近活动里 build_hut: completed），卡上写着喜欢按平常的次序过日子 → 照常干活。
+  #   ② → build_hut      在意自己盖的东西、胆子不小（不躲）→ 回去修 / 重建。
+  #   ③ → build_hut      记得小屋被 Brann 弄坏过 → 仍回去修 / 重建。
+  # 卡的自由文本没有“无论如何都…”这类绝对说法（调研稿人格卡一节第 5 条）。每种问 2 次，串行（并发 1）。
+  @tag :live_jev
+  @tag timeout: 120_000
+  test "the real Jev: one card, one candidate list, one situation; the event in no section, fresh, or only recalled" do
+    {:ok, _} = Application.ensure_all_started(:inets)
+    {:ok, _} = Application.ensure_all_started(:ssl)
+
+    jev = %{
+      url: System.fetch_env!("TYPESAFE_API_URL"),
+      key: System.fetch_env!("TYPESAFE_API_KEY"),
+      model: System.fetch_env!("TYPESAFE_MODEL"),
+      timeout_ms: 10_000
+    }
+
+    {:ok, card} =
+      Persona.new(%{
+        "traits" => %{"hardworking" => 8, "responsible" => 8, "thorough" => 7, "bold" => 7, "practical" => 7},
+        "personal" => "Takes pride in the things he builds. Likes his days to follow the usual routine."
+      })
+
+    profile = %{
+      who: "Garen, a builder",
+      persona: card,
+      jev: jev,
+      activities: [
+        %{name: "build_hut",
+          criterion: "Build the small hut on the plot by the square; repair or rebuild it if it has been damaged."},
+        %{name: "gather_stone", criterion: "Cut stone at the quarry for the village store. Ordinary, steady work."},
+        %{name: "work_far_field",
+          criterion: "Walk out to the far field beyond the village and work there alone, away from the square."}
+      ]
+    }
+
+    # Brann 在 (26.1, 520, 39.3)，差 (3.6, 0, 4.8) → 6.0 米。
+    observation = %{
+      self: %{entity_id: 7, position: {22.5, 520.0, 34.5}, tick: 1, grounded: true, body_state: %{life: 100}},
+      pending: [],
+      entities: [
+        %{entity_id: 7, kind: 1, name: "Garen", position: {22.5, 520.0, 34.5}},
+        %{entity_id: 21, kind: 0, name: "Brann", position: {26.1, 520.0, 39.3}}
+      ],
+      balances: [%{material: 11, balance: 4096, cost: 512, seq: 3}]
+    }
+
+    history = [%{activity: "build_hut", result: :completed}, %{activity: "gather_stone", result: :completed}]
+
+    built =
+      ~s|At 2026-11-12T03:02:10.000Z (UTC), I did "build_hut" (Build the small hut on the plot by the square; | <>
+        ~s|repair or rebuild it if it has been damaged.). Result: completed.|
+
+    damage =
+      "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged construction I care about at (25, 518, 37), " <>
+        "material 11, in world qinglan-test (transaction 4711). I feel angry toward this actor; my trust changed."
+
+    gathered =
+      ~s|At 2026-11-12T03:10:05.000Z (UTC), I did "gather_stone" (Cut stone at the quarry for the village store. | <>
+        ~s|Ordinary, steady work.). Result: completed.|
+
+    snapshots = [
+      {"none", "gather_stone", %{@empty | recent: [built, gathered]}},
+      {"fresh", "build_hut",
+       %{
+         @empty
+         | feelings: [%{emotion: "anger", actor: 21, intensity: 0.58}],
+           relationships: [%{actor: 21, trust: -0.35}],
+           recent: [built, damage, gathered]
+       }},
+      {"recalled", "build_hut",
+       %{
+         @empty
+         | memories: [
+             %{"text" => "I built the small hut on the plot by the square on 2026-11-12."},
+             %{"text" =>
+                 "On 2026-11-12 Actor 21 damaged the small hut I built on the plot by the square, " <>
+                   "at (25, 518, 37); I felt angry toward Actor 21 and my trust in them dropped."}
+           ]
+       }}
+    ]
+
+    results =
+      for {label, expected, life} <- snapshots, repeat <- 1..2 do
+        state = Mind.text(Mind.snapshot(profile, observation, history, life))
+        if repeat == 1, do: IO.puts("live_jev mind snapshot=#{label} state:\n#{state}\n")
+        {:ok, selection} = Selector.ask(profile, %{state: state, recall_ms: 0}, "completed")
+
+        IO.puts(
+          "live_jev mind snapshot=#{label} repeat=#{repeat} expected=#{expected} chosen=#{selection.activity} " <>
+            "confidence=#{selection.confidence} latency_ms=#{selection.latency_ms} model=#{selection.model}"
+        )
+
+        {label, expected, selection.activity}
+      end
+
+    assert 6 == length(results)
+    assert Enum.all?(results, fn {_label, expected, chosen} -> expected == chosen end), inspect(results)
+  end
+end

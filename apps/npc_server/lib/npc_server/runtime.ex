@@ -6,9 +6,11 @@ defmodule NpcServer.Runtime do
   移动停稳且该技能已投递的世界调用全部有了结果，终态之后不再有这次调用引起的世界变化。
   取消期间到达的技能内部结果原样放进终态的 `settled`，已提交的事务不撤销、也不隐瞒。
   中断策略只来自 `profile.interrupt_policy`；策略失败只记一笔，不中断正在进行的技能。
-  活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里问 Jev，
-  应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；发问失败或 worker 崩溃是 rejected）。
-  等应答期间本进程照常处理观察与其他命令。
+  活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
+  （含一次记忆召回）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
+  发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
+  一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”作为一条经历交给 Life
+  （`Life.activity/2`）；`choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
   """
   require Logger
   alias NpcServer.{Body, Dialogue, Memory, Selector, Skills, Scheduler}
@@ -187,6 +189,10 @@ defmodule NpcServer.Runtime do
         {:skill_verdict, id, verdict} ->
           decide_skill(state, id, verdict)
 
+        # 发问 worker 读完心智、发 Jev 请求之前报来的“这次问的是什么”；它一定先于同一个 worker 的结果与 DOWN 到达。
+        {:select_asked, question} ->
+          %{state | select: Selector.asked(state.select, question)}
+
         {:select_finished, id, result} ->
           case state.selecting do
             %{id: ^id, ref: ref} ->
@@ -338,7 +344,7 @@ defmodule NpcServer.Runtime do
     emit(state, Memory.execute(state.memory, actor.entity_id, actor.position, command))
   end
 
-  # 活动选择：先记下上一项活动的结局，再在独立 worker 里发问（Jev 请求不阻塞本进程）。
+  # 活动选择：先记下上一项活动的结局，再在独立 worker 里发问（Life 的读取、记忆召回与 Jev 请求都不阻塞本进程）。
   # 同一时刻只有一次发问：树只有一个 choose_activity 叶子，拿到它的 Outcome 之前不会再发。
   defp execute(state, %{verb: :choose_activity} = command) do
     {trigger, select} = Selector.ended(state.select, command.ended)
@@ -346,10 +352,22 @@ defmodule NpcServer.Runtime do
     %{profile: profile, observation: observation} = state
     history = Selector.history(select)
 
+    # 经历是“做了什么、结果如何”：一项活动刚结束时记一条。发问失败后的重问（retry）带的是同一份报告，不再记。
+    experience = if trigger in ["completed", "failed"], do: Selector.experience(select, profile)
+    life = state.life
+
     {_pid, ref} =
       :erlang.spawn_opt(
         fn ->
-          result = Selector.ask(profile, observation, history, trigger)
+          # 由同一个进程先交经历、再读视图：Life 按到达次序处理，所以这次的快照一定含刚结束的那项活动。
+          if experience, do: NpcServer.Life.activity(life, experience)
+
+          result =
+            with {:ok, question} <- Selector.question(profile, observation, history) do
+              send(parent, {:select_asked, question})
+              Selector.ask(profile, question, trigger)
+            end
+
           send(parent, {:select_finished, command.id, result})
         end,
         [:link, :monitor]
