@@ -153,3 +153,42 @@
 - 不另问“是否出乎计划”：着火也出乎计划，它会把十足把握的 `move_to_safety` 改成先问规划者。
 - 同一请求两次的置信度会差 0.1 左右（0.65 / 0.77），阈值附近的情境会时过时不过——升级给规划者是安全的那一侧。
 - 验收用例：`mix test test/gate_server/npc_jev_test.exs --include live_jev`，本模块原样问法过 35 条：33 条自动、零错。
+
+## 2026-11-12 小屋被整座拆除后为什么一直守屋（`s1c_diag.py`，S1-D1 离线诊断）
+
+S1-C 实跑：Garen 的小屋被另一角色整座拆除（一次 dismantle，World 一条 `:destroy` 事件），之后它一直选 `guard_hut`。
+经历原文只写 `damaged the building "small hut"`，快照也不说小屋还在不在。来源 state 是实跑时 Selector 实际发给 Jev 的全文
+（证据目录 `E = .demo/observe/npc-slice1-20261112/s1c`：C2 = `states/asked-20261112T121753Z.txt`，破坏后第一次发问；
+C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。变体只做行内替换 / 删行，全文在 `E/diag/<变体>.txt`，
+逐行改动在 `E/diag/edits.txt`。请求体同 `NpcServer.Selector.body/2`（instructions 逐字、五个候选按 params 求值后的判据与次序）。
+期望由统筹会话运行前写定，抄在脚本文档字符串里。“重建方向”= top1 ∈ {build_hut, gather_stone}；“成立”= 4 次里至少 3 次。
+每个变体 4 次，并发 3；先跑 b_original / c_original 做复现检查（通过），再跑其余 9 个，共 44 次请求全部应答，延迟 575–2052 ms。
+复跑：`python -B s1c_diag.py prepare`（只写 `E/diag/`）、`run [变体 ...]`（只问结果文件里还没有应答的变体）、`report`（离线）。
+
+所用标准句（`{…}` 里是程序里已有的字段；破坏句前的时刻与句尾 `I feel angry toward this actor; my trust changed.` 不动）：
+
+- 整座拆除 WHOLE：`Actor {actor} demolished the whole building "{building}" that I built, at ({x}, {y}, {z}), material {m}, in world {world} (transaction {seq}). The building "{building}" is gone; nothing of it is left.`
+- 整座拆除备选 WHOLE_ALT：`Actor {actor} removed the entire building "{building}" that I built, at (…), material {m}, in world {world} (transaction {seq}); the building no longer exists.`
+- 损坏一部分 PART：`Actor {actor} damaged part of the building "{building}" that I built, at (…), …; the building is still standing.`
+- 处境事实句：`My building "{building}" at (25, 518, 37) is gone.` / `… is standing but damaged.`（插在 “Inventory:” 之前）
+
+| 变体 | 来源 | 期望 | 结果 | 各次 top1（置信度） | 重建方向概率和 / guard_hut 概率 |
+|---|---|---|---|---|---|
+| b_original | C2 | 只测量 | — | guard_hut 0.74、0.66、0.66、0.69 | 0.14–0.18 / 0.73–0.79 |
+| b_event | C2 | 重建方向 | 成立 4/4 | build_hut 0.14、gather_stone 0.14、gather_stone 0.11、build_hut 0.25 | 0.56–0.63 / 0.11–0.16 |
+| b_event_alt | C2 | 重建方向 | 成立 4/4 | build_hut 0.16、0.18、0.19、0.25 | 0.61–0.67 / 0.09–0.10 |
+| b_situation | C2 | 只测量 | — | gather_stone 0.14、0.24、0.25、0.16 | 0.58–0.65 / 0.17–0.21 |
+| b_event_situation | C2 | 重建方向 | 成立 4/4 | gather_stone 0.18、build_hut 0.20、build_hut 0.16、gather_stone 0.22 | 0.60–0.69 / 0.11–0.15 |
+| b_event_situation_alt | C2 | 重建方向 | 成立 4/4 | build_hut 0.24、gather_stone 0.20、gather_stone 0.20、build_hut 0.21 | 0.63–0.70 / 0.09–0.12 |
+| b_partial | C2 | 只测量 | — | guard_hut 0.80、0.80、0.76、0.76 | 0.10–0.13 / 0.81–0.84 |
+| c_original | C5 | guard_hut | 成立 4/4 | guard_hut 0.70、0.74、0.74、0.77 | — / 0.76–0.82 |
+| c_no_inertia | C5 | top1 ≠ visit_plaza | **落空 2/4** | guard_hut 0.16、visit_plaza 0.16、visit_plaza 0.15、guard_hut 0.18 | visit_plaza 0.28–0.33、guard_hut 0.29–0.34、build_hut 0.28–0.29 |
+| c_no_inertia_no_event | C5 | visit_plaza | 成立 4/4 | visit_plaza 0.44、0.42、0.46、0.50 | visit_plaza 0.54–0.60 |
+| c_inertia_only | C5 | 只测量 | — | guard_hut 0.56、0.59、0.61、0.57 | guard_hut 0.65–0.69、visit_plaza 0.23–0.28 |
+
+- (b)：说清“整座没了”——无论写在经历句还是处境事实句——guard_hut 从 0.73–0.79 掉到 0.09–0.21，top1 全部转到重建方向；
+  但 build_hut 与 gather_stone 几乎五五开，top1 的置信度只有 0.11–0.25。备选措辞（removed the entire … no longer exists）
+  build_hut 4/4、guard_hut 最低，略好于 WHOLE；只有 4 次，差别不大。“损坏一部分、建筑仍在”让守屋更稳（0.76–0.80），方向与语义一致。
+- (c)：按规则，c_no_inertia 落空 → 记忆里的那件事不足以稳定改变选择。去掉惯性后它仍把 visit_plaza 从 0.54–0.60 压到 0.28–0.33，
+  但 top1 在 guard_hut / visit_plaza / build_hut 三者间摇摆。只有惯性（c_inertia_only，删掉所有破坏与“要守”的记忆）就足以 4/4 守屋。
+- 范围：一张卡、一个情境、每格 4 次；离线诊断，不是验收。没有测把“材料不够”写成事实句、Hindsight 把新句子抽成记忆后的召回文本。
