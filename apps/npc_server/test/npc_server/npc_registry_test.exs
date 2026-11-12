@@ -31,6 +31,27 @@ defmodule NpcServer.NpcRegistryTest do
     "NPC_LLM_TIMEOUT_MS" => nil
   }
 
+  # 只测试：Jev 的接口取自运行环境；集成用例里指向本文件起的本机 HTTP 替身。
+  @jev_env %{
+    "TYPESAFE_API_URL" => "http://127.0.0.1:9/jev",
+    "TYPESAFE_API_KEY" => "test-key",
+    "TYPESAFE_MODEL" => "jev-test"
+  }
+  @npc %{
+    "who" => "Lin, a builder",
+    "persona" => %{"traits" => %{"thrifty" => 8, "extraverted" => 3}, "personal" => "Dislikes crowds."},
+    "tools" => %{"1" => "镐"},
+    "activities" => [
+      %{
+        "name" => "gather_stone",
+        "criterion" => "Cut stone at the quarry.",
+        "skill" => "gather",
+        "args" => %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}
+      },
+      %{"name" => "rest_at_home", "criterion" => "Go home and rest.", "place" => [2, -3.5], "stay_ticks" => 600}
+    ]
+  }
+
   describe "brain/2" do
     test "settler: the row's JSON becomes the Settler tree profile; skills build / gather are fixed" do
       params = %{
@@ -95,66 +116,61 @@ defmodule NpcServer.NpcRegistryTest do
       end
     end
 
-    # 效用选择器决策稿 2026-11-10：可选的作息；配了换成 settler_daily 树，带家、广场与游戏日长度，不配中断策略。
-    test "settler: an optional daily (home, plaza, day_ms) switches to the daily tree" do
-    with_env(@llm_env, fn ->
-      params = %{
-        "definition" => @hex,
-        "sites" => [],
-        "revisit_ticks" => 600,
-        "tools" => %{"1" => "镐"},
-        "daily" => %{"home" => [2, -3.5], "plaza" => [10.0, 4], "day_ms" => 60_000}
-      }
+    # 统一形态（总纲 2026-11-12，薄片一 S1-A）：人格卡与有序候选表来自注册参数，Jev 的 endpoint 来自运行环境。
+    test "npc: persona card, ordered activities and derived skills from the row, the Jev endpoint from the environment" do
+      with_env(@jev_env, fn ->
+        assert {Brain.Tree,
+                %{
+                  tree: &Trees.npc/1,
+                  who: "Lin, a builder",
+                  # 特质按词表次序（extraverted 在 thrifty 前），不是 JSON 键的次序。
+                  persona: %{traits: [{"extraverted", 3}, {"thrifty", 8}], personal: "Dislikes crowds."},
+                  activities: [
+                    %{
+                      name: "gather_stone",
+                      criterion: "Cut stone at the quarry.",
+                      run:
+                        {:skill, "gather",
+                         %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}}
+                    },
+                    %{name: "rest_at_home", criterion: "Go home and rest.", run: {:place, [2, -3.5], 600}}
+                  ],
+                  tools: %{1 => "镐"},
+                  skills: %{gather: %{}, travel: %{}},
+                  jev: %{url: "http://127.0.0.1:9/jev", key: "test-key", model: "jev-test", timeout_ms: 10_000}
+                }} == NpcRegistry.brain("npc", @npc)
 
-      assert {Brain.Tree,
-              %{
-                tree: &Trees.settler_daily/1,
-                definition: @hex,
-                sites: [],
-                quarries: %{},
-                revisit_ticks: 600,
-                tools: %{1 => "镐"},
-                skills: %{build: %{}, gather: %{}, travel: %{}},
-                home: [2, -3.5],
-                plaza: [10.0, 4],
-                utility: %{day_ms: 60_000}
-              }} == NpcRegistry.brain("settler", params)
+        # 只有技能候选：技能表里没有 travel。
+        assert {Brain.Tree, %{skills: %{gather: %{}}}} =
+                 NpcRegistry.brain("npc", %{@npc | "activities" => [hd(@npc["activities"])]})
 
-      # 只有 "plan": true 才接 LLM 日计划的 endpoint；不写 plan 时上面没有 endpoint 键（零模型调用）。
-      assert {Brain.Tree, %{endpoint: %{url: "http://127.0.0.1:9/responses", key: "test-key", model: "test-model"}}} =
-               NpcRegistry.brain("settler", put_in(params, ["daily", "plan"], true))
+        [gather, rest] = @npc["activities"]
 
-      # 没有 daily：仍是原 Settler，没有作息键。
-      assert {Brain.Tree, plain} = NpcRegistry.brain("settler", Map.delete(params, "daily"))
-      assert plain.tree == (&Trees.settler/1)
-      refute Map.has_key?(plain, :home) or Map.has_key?(plain, :utility)
-      refute Map.has_key?(plain, :interrupt_policy)
-
-      daily = params["daily"]
-
-      for bad <- [
-            %{daily | "home" => [2]},
-            %{daily | "home" => ["2", 3]},
-            %{daily | "plaza" => nil},
-            %{daily | "day_ms" => 0},
-            %{daily | "day_ms" => 1.5},
-            Map.delete(daily, "plaza"),
-            Map.put(daily, "plan", "yes")
-          ] do
-        assert_raise_any(fn -> NpcRegistry.brain("settler", %{params | "daily" => bad}) end, bad)
-      end
-
-      # 没有模型接口：只用手写作息的登记照常成立；开了 plan 的才因缺 endpoint 被拒（与 llm 同一 endpoint 规则）。
-      with_env(%{@llm_env | "NPC_LLM_URL" => nil}, fn ->
-        assert {Brain.Tree, authored} = NpcRegistry.brain("settler", params)
-        refute Map.has_key?(authored, :endpoint)
-
-        assert_raise_any(
-          fn -> NpcRegistry.brain("settler", put_in(params, ["daily", "plan"], true)) end,
-          :no_endpoint
-        )
+        for bad <- [
+              # 人格卡：键不在词表、级别越界、personal 不是字符串。
+              %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}},
+              %{@npc | "persona" => %{"traits" => %{"thrifty" => 10}, "personal" => ""}},
+              %{@npc | "persona" => %{"traits" => %{"thrifty" => 8}, "personal" => nil}},
+              # 候选表：空、重名、缺判据、未知技能（design_house 要 LLM，不能作候选）、去处不是 [x, z]、停留不是正整数、
+              # 一项里同时写技能与去处。
+              %{@npc | "activities" => []},
+              %{@npc | "activities" => [gather, %{rest | "name" => "gather_stone"}]},
+              %{@npc | "activities" => [Map.delete(gather, "criterion")]},
+              %{@npc | "activities" => [%{gather | "skill" => "design_house"}]},
+              %{@npc | "activities" => [%{rest | "place" => [2]}]},
+              %{@npc | "activities" => [%{rest | "stay_ticks" => 0}]},
+              %{@npc | "activities" => [Map.put(rest, "skill", "travel")]},
+              Map.delete(@npc, "who"),
+              Map.delete(@npc, "tools")
+            ] do
+          assert_raise_any(fn -> NpcRegistry.brain("npc", bad) end, bad)
+        end
       end)
-    end)
+
+      # 运行环境没有 Jev 接口：登记不了。
+      with_env(%{@jev_env | "TYPESAFE_API_URL" => nil}, fn ->
+        assert_raise_any(fn -> NpcRegistry.brain("npc", @npc) end, :no_jev_url)
+      end)
     end
 
     test "llm: expand is registered without configuration and projected as a tool" do
@@ -414,12 +430,17 @@ defmodule NpcServer.NpcRegistryTest do
     test "bad params are rejected at put: no row, no character, no Body" do
       name = "坏参数#{System.unique_integer([:positive])}"
 
+      with_env(@jev_env, fn ->
       for {brain, params} <- [
             {"settler",
              %{"definition" => "zz", "sites" => [], "revisit_ticks" => 1, "tools" => %{}}},
             {"patrol", %{"route" => [[4.0, 10.0]]}},
             # 元组不是 JSON：参数先按 JSON 规范化，存的和解析的是同一份。
             {"patrol", %{"route" => [{4.0, 10.0}, {8.0, 10.0}]}},
+            # 统一形态：坏人格卡、空候选表、重名候选（运行环境里有 Jev 接口，被拒只因参数）。
+            {"npc", %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}},
+            {"npc", %{@npc | "activities" => []}},
+            {"npc", %{@npc | "activities" => List.duplicate(hd(@npc["activities"]), 2)}},
             {"dancer", %{}}
           ] do
         assert {:error, {:invalid_params, message}} =
@@ -433,9 +454,74 @@ defmodule NpcServer.NpcRegistryTest do
         assert is_binary(message)
       end
 
+      # 说明里带原因：坏人格卡指出是哪个键。
+      assert {:error, {:invalid_params, message}} =
+               NpcRegistry.put(name, %{
+                 scene_id: 1,
+                 spawn: {4.0, 66.0, 10.0},
+                 brain: "npc",
+                 params: %{@npc | "persona" => %{"traits" => %{"brave" => 8}, "personal" => ""}}
+               })
+
+      assert message =~ "persona" and message =~ ~s({:unknown_trait, "brave"})
+      end)
+
       assert [] == rows(name)
       assert nil == DataService.Repo.get_by(Character, name: name)
       assert [] == DynamicSupervisor.which_children(NpcServer.BodySupervisor)
+    end
+
+    # 统一形态经正式入口：真实 Body / Scene / World / Runtime / Tree / 技能 / HTTP 发送器；替身只有 Jev 服务本身
+    # （本机 HTTP 监听，每个请求回同一份冻结应答，形状取自官方 HTTP 文档）。证明真实观察能拼成发问、应答被执行；
+    # 不证明真实 Jev 的选择（那是 :live_jev 用例与服务端实跑）。
+    test "an npc row asks Jev from the real Body and runs the chosen activity in the real Scene" do
+      answer =
+        Jason.encode!(%{
+          "answers" => %{"activity" => %{"type" => "choice", "choice" => "walk_east", "confidence" => 0.4}}
+        })
+
+      url = jev_stub(answer)
+      name = "住民#{System.unique_integer([:positive])}"
+
+      params = %{
+        @npc
+        | "activities" => [
+            %{"name" => "stay_here", "criterion" => "Stay where you are.", "place" => [4.0, 10.0], "stay_ticks" => 60},
+            %{"name" => "walk_east", "criterion" => "Walk to the east post.", "place" => [8.0, 10.0], "stay_ticks" => 60}
+          ]
+      }
+
+      with_env(%{@jev_env | "TYPESAFE_API_URL" => url}, fn ->
+        assert {:ok, %{cid: cid, pid: pid}} =
+                 NpcRegistry.put(name, %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "npc", params: params})
+
+        assert [%{cid: ^cid, brain: "npc", params: ^params, enabled: true, running: true}] = rows(name)
+
+        # 发问来自真实观察：人格描述、位置与候选次序都在请求里。
+        assert_receive {:jev_http, request}, 20_000
+        assert request["model"] == "jev-test"
+        assert request["state"] =~ "Character: Lin, a builder. Personality: introverted, very thrifty."
+        assert request["state"] =~ "Current situation: Standing at x=4.0, z=10.0"
+
+        # 被选中的是登记在后的 walk_east：走到 (8, 10)。
+        travel =
+          NpcWorld.await(
+            fn -> Enum.find(Body.observe(pid).outcomes, &match?(%{verb: :travel, status: :done}, &1)) end,
+            20_000
+          )
+
+        {x, _, z} = travel.data.position
+        assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
+
+        # 活动结束后再次发问，带上一项的结局；observe 读得到当前活动与最近的选择。
+        assert_receive {:jev_http, %{"state" => again}}, 20_000
+        assert again =~ "Recent activities: Oldest first. walk_east: completed."
+
+        assert %{select: %{activities: [%{activity: "walk_east", trigger: "start", confidence: 0.4} | _]}} =
+                 Body.observe(pid)
+
+        assert :ok = NpcRegistry.remove(name)
+      end)
     end
 
     # M2 授予（决策稿 §3）：唯一来源是注册表行。llm 行 genesis: true → Body 受理 genesis_edit 并经 World 写格；
@@ -499,6 +585,45 @@ defmodule NpcServer.NpcRegistryTest do
       end,
       20_000
     )
+  end
+
+  # 只测试：本机 HTTP 监听，逐个连接读完一个 POST、把请求体（JSON）交给测试进程、回同一份应答后关闭连接。
+  # 监听与在途连接随本进程退出关闭；只用回环 TCP。
+  defp jev_stub(answer) do
+    {:ok, listen} =
+      :gen_tcp.listen(0, [:binary, packet: :http_bin, active: false, ip: {127, 0, 0, 1}])
+
+    {:ok, port} = :inet.port(listen)
+    test = self()
+    server = spawn_link(fn -> jev_accept(listen, answer, test) end)
+    :ok = :gen_tcp.controlling_process(listen, server)
+    "http://127.0.0.1:#{port}/jev"
+  end
+
+  defp jev_accept(listen, answer, test) do
+    {:ok, socket} = :gen_tcp.accept(listen)
+    length = jev_headers(socket, 0)
+    :ok = :inet.setopts(socket, packet: :raw)
+    {:ok, body} = :gen_tcp.recv(socket, length)
+    send(test, {:jev_http, Jason.decode!(body)})
+
+    :ok =
+      :gen_tcp.send(socket, [
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n",
+        "content-length: #{byte_size(answer)}\r\n\r\n",
+        answer
+      ])
+
+    :ok = :gen_tcp.close(socket)
+    jev_accept(listen, answer, test)
+  end
+
+  defp jev_headers(socket, length) do
+    case :gen_tcp.recv(socket, 0) do
+      {:ok, {:http_header, _, :"Content-Length", _, value}} -> jev_headers(socket, String.to_integer(value))
+      {:ok, :http_eoh} -> length
+      {:ok, _} -> jev_headers(socket, length)
+    end
   end
 
   defp assert_raise_any(fun, label) do

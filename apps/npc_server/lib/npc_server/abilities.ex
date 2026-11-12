@@ -5,11 +5,11 @@ defmodule NpcServer.Abilities do
 
   组合各域条目：`Actions`（移动、工具、建造、液体、背包；施法 `spells/1`）、`Genesis`（创世 fill_box / set_cells）、
   `Perception`（look / survey / inspect / query_balances / read_catalog）、`Attention`（关注与目标组）、`Memory`（长期记忆）、
-  `Skills`（已配置的长技能）。每个条目只有
+  `Skills`（已配置的长技能）、`Selector`（选择下一项活动，只在 profile 带候选表时）。每个条目只有
   `%{name, group, done, description, params, build}`：
 
   - `name`：稳定 snake_case 英文，即 LLM 工具名、行为树 act 名、技能名；
-  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :dialogue | :memory | :skill`，供 `profile.groups` 裁剪；
+  - `group`：`:move | :sense | :attend | :act | :build | :liquid | :inventory | :magic | :genesis | :dialogue | :memory | :skill | :select`，供 `profile.groups` 裁剪；
   - `done`：done 的确切含义（一句话），`description`：给模型看的说明，数字由各域的源常量插值；
   - `params`：一份手写参数规格，同时生成 strict JSON Schema（`tools/1`）与参数译码（`command/4`）；
     技能是 `{:skill, schema}`，schema 原样取自技能的 `definition/1`，参数透传给技能；
@@ -33,7 +33,7 @@ defmodule NpcServer.Abilities do
 
   授予条件也只约束投影：`profile.groups`（缺省全部）、带 `:belt` 的条目要求 `profile.tools` 非空、技能条目要求
   配置在 `profile.skills`、施法条目要求 `profile.spells`（作者法术带 `%{名字 => 程序字节}`）非空、创世条目要求 `profile.genesis`
-  为真（唯一来源是注册表行，Body 另凭同源的启动选项受理）。schema 只依赖 profile，
+  为真（唯一来源是注册表行，Body 另凭同源的启动选项受理）、选择条目要求 `profile.activities`（候选表）。schema 只依赖 profile，
   不随余额等观察状态增删（保护提示缓存）。
 
   `Dialogue` 提供 `say`（`:dialogue` 组），与工作能力由同一个 Brain 选择。
@@ -42,7 +42,7 @@ defmodule NpcServer.Abilities do
   的 `act` 叶子（与 LLM 共用同一组规格，句柄 granularity 0..3；静态参数在建树时经 `command/4` 译码一次）。g5 只由直接产出
   规范命令的代码 Brain（如 Routine）发出；Patrol / Routine 不经这里，Intent 与 World 不读它。
   """
-  alias NpcServer.{Actions, Attention, Dialogue, Genesis, Memory, Perception, Skills}
+  alias NpcServer.{Actions, Attention, Dialogue, Genesis, Memory, Perception, Selector, Skills}
 
   # D-2：2026-10-08 对当前代理做过一次 strict 工具 live 请求（enum、nullable、定长数组、嵌套对象），代理接受并按 schema 调用。
   @strict true
@@ -60,6 +60,7 @@ defmodule NpcServer.Abilities do
           | :memory
           | :dialogue
           | :skill
+          | :select
   @type spec ::
           :integer
           | :number
@@ -80,7 +81,7 @@ defmodule NpcServer.Abilities do
           build: (map(), map() -> map())
         }
 
-  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Dialogue、Memory、Skills）。"
+  @doc "通过 groups 与授予条件的条目，顺序固定（Actions、施法、创世、Perception、Attention、Dialogue、Memory、Skills、Selector）。"
   @spec entries(map()) :: [entry()]
   def entries(profile) do
     groups = Map.get(profile, :groups)
@@ -92,7 +93,8 @@ defmodule NpcServer.Abilities do
             Genesis.entries(profile) ++
             Perception.entries() ++
             Attention.entries() ++
-            Dialogue.entries() ++ Memory.entries() ++ Skills.entries(profile),
+            Dialogue.entries() ++
+            Memory.entries() ++ Skills.entries(profile) ++ Selector.entries(profile),
         groups == nil or entry.group in groups,
         map_size(belt) > 0 or not belt?(entry.params),
         do: entry

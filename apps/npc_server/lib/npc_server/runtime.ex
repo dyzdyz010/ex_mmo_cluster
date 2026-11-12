@@ -6,9 +6,12 @@ defmodule NpcServer.Runtime do
   移动停稳且该技能已投递的世界调用全部有了结果，终态之后不再有这次调用引起的世界变化。
   取消期间到达的技能内部结果原样放进终态的 `settled`，已提交的事务不撤销、也不隐瞒。
   中断策略只来自 `profile.interrupt_policy`；策略失败只记一笔，不中断正在进行的技能。
+  活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里问 Jev，
+  应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；发问失败或 worker 崩溃是 rejected）。
+  等应答期间本进程照常处理观察与其他命令。
   """
   require Logger
-  alias NpcServer.{Body, Dialogue, Memory, Skills, Scheduler}
+  alias NpcServer.{Body, Dialogue, Memory, Selector, Skills, Scheduler}
 
   # 中断检查间隔；对话尾部不属于技能生命周期。
   @check_ms 10_000
@@ -53,6 +56,9 @@ defmodule NpcServer.Runtime do
         policy: Scheduler.configured(profile),
         observation: nil,
         skill: nil,
+        # 选择器状态（正在做的活动与最近几次选择）；在途的一次发问 `%{id: 命令号, ref: worker 的 monitor}`。
+        select: Selector.new(),
+        selecting: nil,
         # 按权威接收顺序保留本人、直接与旁听发言。
         heard: []
       })
@@ -65,7 +71,7 @@ defmodule NpcServer.Runtime do
     {[], runtime}
   end
 
-  @doc "读取近期对话和正在进行的技能；不触发决策或外部调用。"
+  @doc "读取近期对话、正在进行的技能与选择器状态（`select`，形状见 `NpcServer.Selector`）；不触发决策或外部调用。"
   def observe(runtime), do: GenServer.call(runtime, :observe)
 
   defp loop(state) do
@@ -149,13 +155,21 @@ defmodule NpcServer.Runtime do
           GenServer.reply(from, %{
             heard: state.heard,
             skill: state.skill && state.skill.command,
-            plan: state.plan
+            plan: state.plan,
+            select: state.select
           })
 
           state
 
         {:observe_body, from, snapshot} ->
-          GenServer.reply(from, snapshot |> Map.put(:dialogue, state.heard) |> Map.put(:plan, state.plan))
+          GenServer.reply(
+            from,
+            snapshot
+            |> Map.put(:dialogue, state.heard)
+            |> Map.put(:plan, state.plan)
+            |> Map.put(:select, state.select)
+          )
+
           state
 
         {:"$gen_cast", {:command, command}} ->
@@ -172,6 +186,21 @@ defmodule NpcServer.Runtime do
 
         {:skill_verdict, id, verdict} ->
           decide_skill(state, id, verdict)
+
+        {:select_finished, id, result} ->
+          case state.selecting do
+            %{id: ^id, ref: ref} ->
+              Process.demonitor(ref, [:flush])
+              finish_select(state, result)
+
+            _ ->
+              state
+          end
+
+        # 发问 worker 没交结果就退出（如应答不是 JSON）：同样是一次显式失败，不让树一直等。
+        {:DOWN, ref, :process, _pid, reason}
+        when is_map(state.selecting) and ref == state.selecting.ref ->
+          finish_select(state, {:error, {:select_worker_failed, exit_kind(reason)}})
 
         {:DOWN, ref, :process, _pid, reason} ->
           case state.skill do
@@ -309,9 +338,48 @@ defmodule NpcServer.Runtime do
     emit(state, Memory.execute(state.memory, actor.entity_id, actor.position, command))
   end
 
+  # 活动选择：先记下上一项活动的结局，再在独立 worker 里发问（Jev 请求不阻塞本进程）。
+  # 同一时刻只有一次发问：树只有一个 choose_activity 叶子，拿到它的 Outcome 之前不会再发。
+  defp execute(state, %{verb: :choose_activity} = command) do
+    {trigger, select} = Selector.ended(state.select, command.ended)
+    parent = self()
+    %{profile: profile, observation: observation} = state
+    history = Selector.history(select)
+
+    {_pid, ref} =
+      :erlang.spawn_opt(
+        fn ->
+          result = Selector.ask(profile, observation, history, trigger)
+          send(parent, {:select_finished, command.id, result})
+        end,
+        [:link, :monitor]
+      )
+
+    %{state | select: select, selecting: %{id: command.id, ref: ref}}
+  end
+
   defp execute(state, command) do
     Body.command(state.body, command)
     state
+  end
+
+  defp finish_select(%{selecting: %{id: id}} = state, result) do
+    cid = state.observation.self.entity_id
+
+    {select, outcome} =
+      case result do
+        {:ok, selection} ->
+          {Selector.chose(state.select, selection, state.profile, cid),
+           %{status: :done, reason: nil, data: %{activity: selection.activity}}}
+
+        {:error, reason} ->
+          {Selector.failed(state.select, reason, cid), %{status: :rejected, reason: reason, data: nil}}
+      end
+
+    emit(
+      %{state | select: select, selecting: nil},
+      Map.merge(outcome, %{id: id, verb: :choose_activity})
+    )
   end
 
   defp emit(state, outcome) do

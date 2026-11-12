@@ -13,10 +13,23 @@ defmodule NpcServer.Registry do
 
   | brain | 模块 | params（JSON） |
   |---|---|---|
-  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand；`daily`（可缺省：`{"home": [x, z], "plaza": [x, z], "day_ms": n > 0, "plan": 布尔，可缺省 false}`；plan 为 true 才每游戏日调一次 LLM 出日计划）换成 `Trees.settler_daily/1`，并由 `DayPlan` 每游戏日请求一次 LLM 日计划（endpoint 同 llm，取运行环境 `NPC_LLM_*`，缺失即 raise） |
+  | `"npc"` | `Brain.Tree` + `Trees.npc/1` | 统一形态（控制链“选择 → 执行”，见下）：`who`、`persona`、`activities`、`tools`（必填）。Jev 的 endpoint 不入库：每次解析时取运行环境 `TYPESAFE_API_URL` / `TYPESAFE_API_KEY` / `TYPESAFE_MODEL`（必须） |
+  | `"settler"` | `Brain.Tree` + `Trees.settler/1` | `definition`、`sites`、`quarries`（可缺省）、`revisit_ticks`、`tools`、`expansion`（可缺省：`{"region": [[x0, z0], [x1, z1]], "spacing": n ≥ 0, "tool_id": t}`）；技能固定 build / gather / travel，配了 expansion 再加 expand |
   | `"llm"` | `Brain.Llm` | `goal`、`tools`（必填）；`groups`、`skills`（build / gather / expand / travel；design_house 带会话预算 `design_budget`，缺省 12 轮 / 240 000 token / 每轮输出 4096）、`spells`、`max_requests_per_hour`、`genesis`（可选）。endpoint 不入库：每次解析时取运行环境 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL`（必须）与 `NPC_LLM_EFFORT` / `NPC_LLM_CACERTFILE` / `NPC_LLM_TIMEOUT_MS`（可选） |
   | `"life"` | `Brain.Llm` + `Life` + `Memory` | 独立可选的人生后端，复用 `llm` 参数；强制启用 `life`，省略时从 `NPC_LIFE_HINDSIGHT_URL` 取服务地址，也可显式给 `life: %{"url" => ...}`。默认 60 次/小时，上限 60；当前意图、笔记、心智与 Hindsight 由既有 owner 提供 |
   | `"patrol"` | `Brain.Patrol` | `route`（≥ 2 个 `[x, z]`）、`dig`（可缺省） |
+
+  `"npc"` 的参数（目标形态，以后的薄片把其余形态并进来）：
+
+      who         英文自称（名字与身份，如 "Lin, a builder"），给 Jev 的人格描述以它开头；注册名可以是中文，不进模型。
+      persona     人格卡 {"traits": {高标记形容词: 1..9}, "personal": 英文自由文本}，由 `NpcServer.Persona.new/1` 校验。
+      activities  有序候选表（非空，名字唯一；次序即给 Jev 的次序）。每项：
+                    {"name": 候选名, "criterion": 给 Jev 当判据的一句英文, "skill": 技能名, "args": 技能参数（JSON 形，原样透传）}
+                    {"name": 候选名, "criterion": 同上, "place": [x, z], "stay_ticks": 待多久（tick，60 Hz，正整数）}
+                  技能只能是 build / gather / expand / travel（参数见 `NpcServer.Brain` 的共用技能命令）；去处由 travel 走过去。
+      tools       工具带（同 settler）。
+
+  profile 的技能表由候选推出（用到哪些技能就配哪些；有去处就加 travel），不另写 `skills`。不需要任何 LLM 接口。
 
   JSON 里工具带与采石盒的键是字符串化的整数（`{"1": "镐"}`）。创世授予（`NpcServer.Genesis`）只来自 llm / life 行的
   `genesis: true`：它同时成为 `profile.genesis`（投影创世条目）与 Body 启动选项 `genesis`（Body 受理 `genesis_edit`）。
@@ -27,7 +40,7 @@ defmodule NpcServer.Registry do
   """
   require Logger
   alias DataService.NpcSpecs
-  alias NpcServer.{Abilities, Body, Brain, Trees}
+  alias NpcServer.{Abilities, Body, Brain, Persona, Trees}
 
   @names NpcServer.Names
   # 注册表可登记的技能：build / gather / expand / travel 无配置；design_house 的配置只有会话预算（params 的 `design_budget`，缺省同
@@ -40,6 +53,10 @@ defmodule NpcServer.Registry do
     "design_house" => :design_house
   }
   @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
+  # 统一形态的候选活动可用的技能：都不需要模型接口（design_house 要 LLM，不在其中）。
+  @activity_skills %{"build" => :build, "gather" => :gather, "expand" => :expand, "travel" => :travel}
+  # 一次 Jev 请求的超时（毫秒）。选择是秒级决策（离线实验 4,076 次里最慢 3.12 秒），不沿用给 LLM 定的 60 秒缺省。
+  @jev_timeout_ms 10_000
   @life_llm_limit 60
 
   @type spec :: %{
@@ -108,8 +125,49 @@ defmodule NpcServer.Registry do
   @doc """
   注册表行的大脑名与 JSON 形参数 → `{大脑模块, profile}`（形状见 moduledoc 的表）。参数不合法时 raise：缺必填键、类型不对、
   建树失败（`Brain.Tree.init/1`）、工具表投影失败（`Abilities.tools/1`）、巡逻路线不足两点（`Brain.Patrol.init/1`）、
-  组名不在本 profile 的条目里、llm 的运行环境没有模型接口。
+  组名不在本 profile 的条目里、llm 的运行环境没有模型接口；npc 的人格卡不合法、候选表为空或重名、运行环境没有 Jev 接口。
   """
+  def brain("npc", %{"who" => who, "persona" => persona, "activities" => activities, "tools" => tools})
+      when is_binary(who) and is_list(activities) do
+    card =
+      case Persona.new(persona) do
+        {:ok, card} -> card
+        {:error, reason} -> raise ArgumentError, "persona 不合法：#{inspect(reason)}"
+      end
+
+    activities = Enum.map(activities, &activity/1)
+    names = Enum.map(activities, & &1.name)
+
+    if activities == [], do: raise(ArgumentError, "activities 不能为空")
+
+    if names != Enum.uniq(names),
+      do: raise(ArgumentError, "activities 的 name 重复：#{inspect(names -- Enum.uniq(names))}")
+
+    profile = %{
+      tree: &Trees.npc/1,
+      who: who,
+      persona: card,
+      activities: activities,
+      tools: belt(tools),
+      # 技能表由候选推出：技能候选用到的技能，去处候选用 travel。
+      skills:
+        Map.new(activities, fn
+          %{run: {:skill, name, _}} -> {Map.fetch!(@activity_skills, name), %{}}
+          %{run: {:place, _, _}} -> {:travel, %{}}
+        end),
+      jev: %{
+        url: System.fetch_env!("TYPESAFE_API_URL"),
+        key: System.fetch_env!("TYPESAFE_API_KEY"),
+        model: System.fetch_env!("TYPESAFE_MODEL"),
+        timeout_ms: @jev_timeout_ms
+      }
+    }
+
+    # 建树即校验：能力名与节点形状（与 Body 起树同一个函数）。
+    Brain.Tree.init(profile)
+    {Brain.Tree, profile}
+  end
+
   def brain(
         "settler",
         %{
@@ -140,13 +198,6 @@ defmodule NpcServer.Registry do
 
         :error ->
           profile
-      end
-
-    # 可选的作息（效用选择器决策稿 2026-11-10）：配了就换成按作息的树，带家、广场与游戏日长度。不配中断策略。
-    profile =
-      case Map.fetch(params, "daily") do
-        {:ok, daily} -> Map.merge(%{profile | tree: &Trees.settler_daily/1}, daily(daily))
-        :error -> profile
       end
 
     # 建树即校验：能力名、静态参数（如 read_catalog 的定义 id）与节点形状，不合法 raise（与 Body 起树同一个函数）。
@@ -358,17 +409,19 @@ defmodule NpcServer.Registry do
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}
 
-  # `"plan": true` 才接 LLM 日计划（取运行环境 endpoint，起 DayPlan）；不写则只用手写作息，零模型调用。
-  defp daily(%{"home" => [hx, hz] = home, "plaza" => [px, pz] = plaza, "day_ms" => day_ms} = daily)
-       when is_number(hx) and is_number(hz) and is_number(px) and
-              is_number(pz) and is_integer(day_ms) and day_ms > 0 do
-    profile = %{home: home, plaza: plaza, utility: %{day_ms: day_ms}}
+  # 统一形态的一项候选：技能调用，或去一个地点待一段时间。
+  defp activity(%{"name" => name, "criterion" => criterion, "skill" => skill, "args" => args} = json)
+       when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
+              is_map_key(@activity_skills, skill) and is_map(args),
+       do: %{name: name, criterion: criterion, run: {:skill, skill, args}}
 
-    case Map.get(daily, "plan", false) do
-      true -> Map.put(profile, :endpoint, endpoint())
-      false -> profile
-    end
-  end
+  defp activity(
+         %{"name" => name, "criterion" => criterion, "place" => [x, z] = place, "stay_ticks" => ticks} =
+           json
+       )
+       when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
+              is_number(x) and is_number(z) and is_integer(ticks) and ticks > 0,
+       do: %{name: name, criterion: criterion, run: {:place, place, ticks}}
 
   defp spell({name, program}) when is_binary(program), do: {name, program}
   defp flag(value) when is_boolean(value), do: value

@@ -56,6 +56,14 @@
   `Skills.Expand`，见下文“持续扩张”）、`wilderness`（荒野逐格施工，驱动纯状态机 `Builder`）。技能内部的一步原子动作统一用
   `Skill.call/2`（编步号、等 Outcome）；一个技能组合另一个技能（expand 调 gather 的 `run/3`）时给被组合的那次一个步号命名空间。
 - `Scheduler` 定义中断策略 `decide/2`，`Jev` 是现有实现；分类器不能操作世界。
+- 统一形态 NPC 的“选择 → 执行”（总纲
+  [`2026-11-12-npc-architecture-overview.md`](../../../../docs/10-active/cross-cutting/2026-11-12-npc-architecture-overview.md)，薄片一 S1-A）：
+  `Persona` 是人格卡（52 对形容词 × 9 级 + 英文自由文本）的唯一校验与英文转写；`Mind` 把人格、眼前处境、最近做过的事拼成
+  心智快照（发问时现读的只读视图，给模型的英文 state 只在这里拼）；`Selector` 是选择位置：一项活动结束时把快照与有序候选交给
+  Jev，直接取 top1（不设置信度门槛，`Jev.top1/1`；0.85 门槛只留给中断与 harm 护栏的 `Jev.verdict/3`），并持有“正在做什么、
+  最近选过什么”；`Trees.npc/1` 是执行它的树。见下文“统一形态”。
+- `DayPlan`（LLM 日计划）与 `LlmBudget`（每游戏日额度）**未接线**：读计划的效用选择器 `Utility`、作息树 `Trees.settler_daily/1`、
+  注册参数 `daily` 与写死的轮换台词已随 S1-A 删除，没有注册表入口会启动它们；代码与单测留到薄片二改成规划位置的外壳。
 - `Memory` 提供模型记忆工具与上下文投影；`DataService.NpcMemory` 按永久 cid 持久化、检索，并拥有保留上限。
 
 ```mermaid
@@ -223,8 +231,9 @@ brain: {NpcServer.Brain.Routine, %{
 - 查看：`Abilities.entries(profile)` / `Abilities.tools(profile)` 返回能力条目及 strict 参数；
   JSON 形参数的后端（LLM、design_house 的共享工具、I3 的行为树）用 `Abilities.command(name, args, id, profile)` 构造命令。
   `Body.observe(body).outcomes`
-  含最近 32 条结果。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
-  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_utility_decision`、`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted`（作息 NPC 的 LLM 日计划见 `DayPlan` 与效用选择器决策稿 N2/N3 节）。
+  含最近 32 条结果；`Body.observe(body).select`（`Runtime.observe/1` 同）是选择器状态：最近 5 项活动（旧在前，各带
+  `activity`、`trigger`、`confidence`、`latency_ms`、`result`；`result` 为 nil 的末项是正在做的活动）与最近一次发问失败的原因 `failure`。日志：`character_intent`、`npc_intent_rejected`、`npc_genesis_edit`、`npc_registry_start`、`npc_session_lost`、`npc_claim_failed`、`npc_skill_outcome`、`npc_settler_idle`、`npc_expand`、`npc_interrupt_check`、
+  `npc_interrupt_check_failed`、`npc_llm_no_tool_call`、`npc_llm_request_failed`、`npc_llm_budget_exhausted`、`npc_select`、`npc_select_failed`（活动选择，见下文“统一形态”）。`npc_day_plan_accepted`、`npc_day_plan_rejected`、`npc_day_plan_request_failed`、`npc_llm_usage`、`npc_llm_usage_unknown`、`npc_llm_day_budget_exhausted` 属于 `DayPlan` / `LlmBudget`：两者目前未接线（没有注册表入口会启动），这些行不会出现。
 
 ### 注册表（`Registry`，放置阶段 M1）
 
@@ -245,6 +254,23 @@ NpcServer.Registry.put("建设者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, bra
 # 模型接口不入库：每次解析取运行环境 NPC_LLM_URL / NPC_LLM_KEY / NPC_LLM_MODEL（必须）与 NPC_LLM_EFFORT / NPC_LLM_CACERTFILE。
 NpcServer.Registry.put("住民", %{scene_id: 1, spawn: {12.0, 66.0, 10.0}, brain: "llm",
   params: %{"goal" => "在出生点附近盖一间小屋", "tools" => %{"1" => "镐"}, "skills" => ["build"]}})
+# 统一形态（目标形态，见下文“统一形态”）：who、persona、activities、tools 必填。Jev 接口不入库：每次解析取运行环境
+# TYPESAFE_API_URL / TYPESAFE_API_KEY / TYPESAFE_MODEL（必须）。不需要任何 LLM 接口。
+NpcServer.Registry.put("阿林", %{scene_id: 1, spawn: {22.5, 520.0, 34.5}, brain: "npc",
+  params: %{
+    "who" => "Lin, a builder",
+    "persona" => %{
+      "traits" => %{"impulsive" => 2, "thrifty" => 8, "organized" => 8, "thorough" => 8, "responsible" => 9,
+                    "extraverted" => 3, "talkative" => 3},
+      "personal" => "Dislikes crowds and noise. Always keeps the promises she makes."},
+    "tools" => %{"1" => "镐"},
+    "activities" => [
+      %{"name" => "build_hut", "criterion" => "Build the small hut on the plot east of the square. Steady, useful work.",
+        "skill" => "build", "args" => %{"definition" => definition_hex, "anchor_micro" => [200, 4144, 296], "orientation" => 0}},
+      %{"name" => "visit_plaza", "criterion" => "Walk to the plaza and spend a while among the neighbours.",
+        "place" => [30.0, 36.0], "stay_ticks" => 1200},
+      %{"name" => "rest_at_home", "criterion" => "Go home and rest quietly for a while.",
+        "place" => [21.0, 33.0], "stay_ticks" => 1200}]}})
 # 巡逻：route ≥ 2 个 [x, z]；dig 可缺省。
 NpcServer.Registry.put("巡逻者", %{scene_id: 1, spawn: {4.0, 66.0, 10.0}, brain: "patrol",
   params: %{"route" => [[4.0, 10.0], [14.0, 10.0]]}})
@@ -307,7 +333,7 @@ end
 - **常用能力名**：`move_to`、`stop`、`look`、`inspect`、`query_balances`、`read_catalog`、`probe_toward`、`use_tool`、`dismantle`、
   `place`、`craft`、`eat`、`attach`、`detach`、`prefab`，以及已配置的技能名（`build`、`gather`、`expand`、`travel`、`design_house`、`wilderness`）；
   每个名字的参数与 done 含义见 `Abilities.tools(profile)`。
-- **黑板**：`store: 键` 把 done 的 `data` 写进黑板；`append: {键, fun}` 把 `fun.(data)` 追加到黑板 `键` 的列表末尾（`each`
+- **黑板**：`{:succeed, 子, store: 键}` 把子节点的结局（`:success` / `:failure`）写进黑板；`act` 的 `store: 键` 把 done 的 `data` 写进黑板；`append: {键, fun}` 把 `fun.(data)` 追加到黑板 `键` 的列表末尾（`each`
   开始时取一次列表，追加的项下一次遍历才出现）；`each` 把当前项写进 `as`；任一 `act` 失败写
   `:last_failure = %{act: 名字, reason: 原因}`，`cond` 与 `succeed log:` 都读它。黑板不写别的东西。
 - **retry**：`retry: ticks` 只对 `invalid_session` / `dead` / `session_lost`（`Tree.transient/0`）生效：不判失败，`ticks` 后用
@@ -341,6 +367,37 @@ brain: {NpcServer.Brain.Tree, %{
 作者保证：定义（宏格或 micro 构件均可）占着锚点格；站位离锚点格在工具射程内；各站位与采石盒站位两两水平距离不超过 `Perception.reach()`；
 采石盒是地表以上的料堆或深度不超过 1 层，材料属于生产材料且没有 drop_table。`gather` 只挖采石盒里没有放置记录的天然格，
 探测命中作者 prefab 宏格（owner 不是 `{0, 0}`）也不挖；真正的护栏是作者给定的采石盒。
+
+### 统一形态（`Trees.npc/1` 与 `Selector`，薄片一 S1-A）
+
+注册表 brain `"npc"`：一个 NPC 的控制链“选择 → 执行”。规划（LLM）、说话、情绪与记忆进快照是后续薄片；本增量不调用任何 LLM。
+
+```mermaid
+flowchart LR
+  T[Trees.npc<br/>树根] -- choose_activity（上一项怎样结束） --> R[Runtime]
+  R -- 心智快照 + 有序候选 --> W[发问 worker] -- HTTPS --> J[Jev]
+  J -- top1 --> W -- 结果 --> R
+  R -- Outcome: 候选名 --> T
+  T -- 被选中的分支：技能 / travel + wait --> R
+```
+
+- **参数**：`who`（英文自称，如 `"Lin, a builder"`；注册名可以是中文，不进模型）、`persona`（人格卡
+  `{"traits": {高标记形容词: 1..9}, "personal": 英文自由文本}`，键只能取自 `Persona.pairs/0` 的 52 个高标记词）、`tools`、
+  `activities`（有序、非空、名字唯一；次序即给 Jev 的次序）。每个候选有 `name`、`criterion`（给 Jev 当判据的一句英文）和“怎么做”：
+  `{"skill": "build" | "gather" | "expand" | "travel", "args": 技能参数}`，或 `{"place": [x, z], "stay_ticks": n}`（travel 过去再待
+  n tick，60 Hz）。技能表由候选推出，不另写 `skills`。坏人格卡、空候选表、重名候选、未知技能在 `put/2` 被拒并说明原因。
+- **什么时候问**：只在一项活动结束（成功或失败）回到树根时。发问在独立 worker 里，不阻塞权威帧；等应答期间树不发命令，
+  身体原地不动。选定后执行到该活动的终止条件为止，不按定时器改选，活动进行中不打断（打断是后续薄片）。
+- **问什么**：state 是 `Mind` 的心智快照，现有三栏——Character（人格描述）、Current situation（位置、生命、附近的人与距离、
+  背包）、Recent activities（最近 5 项活动及结果，上一项失败时带失败的动作与原因）。候选次序原样进请求体。
+  没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据，做不成的候选靠失败结果进入“最近做过的事”。
+- **失败**：HTTP 出错 / 超时（10 秒）、应答不成形、top1 不在候选里、worker 崩溃都是显式失败：`choose_activity` 的 Outcome 为
+  rejected，记 `npc_select_failed cid= reason=`，这一轮不执行任何活动，600 tick（10 秒）后照常再问；不换别的选择器、不取缺省活动。
+- **日志**：每次选择一行
+  `npc_select cid= trigger= candidates= chosen= confidence= latency_ms= model=`；trigger 为 `start`（首次）、`completed` / `failed`
+  （上一项活动的结局）、`retry`（上次发问失败后重问）。技能候选另有既有的 `npc_skill_outcome`。
+- **模型版本**：取运行环境 `TYPESAFE_MODEL`，随每行 `npc_select` 记录。调研稿要求锁定固定版本；目前环境给的是 `jev-latest`，
+  尚未找到已确认的固定版本名，**未锁定**。
 
 ### 持续扩张（`expand` 技能与 Settler 的 `expansion`，放置阶段 §7）
 

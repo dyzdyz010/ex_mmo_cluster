@@ -10,6 +10,10 @@ defmodule NpcServer.Jev do
 
   选中的 activity 保持字符串，必须属于 profile；其技能含义由调用方解释。
   harm 护栏独立于活动：可能损坏他人放置物时禁止动作。
+
+  两类问题的门槛分开：中断与 harm 护栏用 `verdict/3`（置信度不足交回大脑）；偏好类选择（`NpcServer.Selector`
+  的“现在做哪件事”）用 `top1/1` 直接取 top1，不设门槛。后者的 `activities` 可以是 `Jason.OrderedObject`，
+  候选次序原样进请求体。
   endpoint: `%{url:, key:, model:, cacertfile: 可选}`。
   """
   @confidence 0.85
@@ -118,6 +122,13 @@ defmodule NpcServer.Jev do
       true -> {:act, activity["choice"]}
     end
   end
+
+  @doc "偏好类选择的读法：应答里 `activity` 问题的 top1 与它的置信度，不设门槛；应答不成形 → `{:error, :malformed_response}`。"
+  def top1(%{"answers" => %{"activity" => %{"choice" => choice, "confidence" => confidence}}})
+      when is_binary(choice) and is_number(confidence),
+      do: {:ok, choice, confidence}
+
+  def top1(_response), do: {:error, :malformed_response}
 
   @doc "问一次，返回 {:ok, verdict, response} 或 {:error, reason}；HTTP 与 LLM 共用发送函数。"
   def ask(

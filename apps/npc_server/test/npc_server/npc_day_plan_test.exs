@@ -3,10 +3,13 @@ defmodule NpcServer.NpcDayPlanTest do
   只测试：LLM 日计划（N2）与重新规划（N3）。请求函数一律替换为本地假应答（profile.request），不发 HTTP、不调用真实模型。
   day_ms 取 1_000_000，千分位 = rem(now, day_ms) / 1000，期望值按此手算。
   "没有请求"的断言用同一发送者的后续消息做同步点（进程邮箱按发送次序处理），不靠固定等待。
+  2026-11-12（薄片一 S1-A）：读计划的 `Utility` 与作息树 `Trees.settler_daily/1` 已删除，原先经它们断言的三处
+  （计划当前段的选取与权重、决策日志的 plan_source、Runtime 用例里按计划选 avoid）随被测对象一起去掉；
+  DayPlan 自己的请求、校验、拼接、额度与 Runtime 的挂接仍在这里验证。
   """
   use ExUnit.Case, async: false
   import ExUnit.CaptureLog
-  alias NpcServer.{DayPlan, LlmBudget, Runtime, Utility}
+  alias NpcServer.{DayPlan, LlmBudget, Runtime}
   alias NpcServer.Life.State
 
   @day_ms 1_000_000
@@ -18,8 +21,8 @@ defmodule NpcServer.NpcDayPlanTest do
   ]
 
   setup do
-    for module <- [DayPlan, LlmBudget, Utility], do: Logger.put_module_level(module, :info)
-    on_exit(fn -> for m <- [DayPlan, LlmBudget, Utility], do: Logger.delete_module_level(m) end)
+    for module <- [DayPlan, LlmBudget], do: Logger.put_module_level(module, :info)
+    on_exit(fn -> for m <- [DayPlan, LlmBudget], do: Logger.delete_module_level(m) end)
     {:ok, clock} = Agent.start_link(fn -> 0 end)
     {:ok, replies} = Agent.start_link(fn -> [] end)
     %{clock: clock, replies: replies}
@@ -84,17 +87,11 @@ defmodule NpcServer.NpcDayPlanTest do
 
   defp done(id), do: %{id: id, verb: :travel, status: :done, reason: nil, data: %{}}
 
-  # 观察：没有 Life，时刻取 utility config 的 clock。
-  defp obs(plan),
-    do: %{self: %{entity_id: 1, tick: 1, position: {0.0, 64.0, 0.0}}, entities: [], plan: plan}
-
-  defp config(now), do: %{day_ms: @day_ms, clock: fn -> now end}
-
   describe "N2 日计划" do
-    test "接受的计划：给定时刻落到手算的段；跨日后计划失效，回到手写日程", ctx do
+    test "接受的计划：按应答的次序与边界发给 owner", ctx do
       start(ctx, 0, [reply(@plan)])
       assert_receive {:request, _}
-      assert_receive {:day_plan, %{day: 0, slots: slots} = plan}
+      assert_receive {:day_plan, %{day: 0, slots: slots}}
 
       assert slots == [
                {0, 300, "rest", "home"},
@@ -102,24 +99,6 @@ defmodule NpcServer.NpcDayPlanTest do
                {650, 800, "social", "plaza"},
                {800, 1000, "rest", "home"}
              ]
-
-      # 299_999 ms → 千分位 299（rest 段末）；300_000 → 300（work 段首）；799_999 → 799（social）。
-      assert {0, 300, "rest", "home"} = Utility.planned(obs(plan), config(299_999))
-      assert {300, 650, "work", nil} = Utility.planned(obs(plan), config(300_000))
-      assert {650, 800, "social", "plaza"} = Utility.planned(obs(plan), config(799_999))
-      # 第 1 天千分位 650：计划属于第 0 天，不用。
-      assert nil == Utility.planned(obs(plan), config(1_650_000))
-
-      # 千分位 100：手写日程是 rest，计划说 work → 选 work，来源 llm。
-      at_100 = %{
-        obs(%{plan | slots: [{0, 1000, "work", nil}]})
-        | self: %{entity_id: 1, tick: 1, position: {0.0, 64.0, 0.0}}
-      }
-
-      assert %{slot: %{"work" => 0.8}, source: :llm} = Utility.inputs(at_100, config(100_000))
-
-      assert %{source: :authored, slot: %{"rest" => 0.8}} =
-               Utility.inputs(obs(nil), config(100_000))
     end
 
     test "缺口、重叠、未知活动、未知去处、不到 1000、没有工具调用：整份拒绝并记原因，不发计划", ctx do
@@ -190,20 +169,7 @@ defmodule NpcServer.NpcDayPlanTest do
       refute_received {:request, _}
     end
 
-    test "决策日志带 plan_source：有今天的计划为 llm，没有为 authored" do
-      plan = %{day: 0, slots: [{0, 1000, "work", nil}]}
-
-      log =
-        capture_log([level: :info], fn ->
-          Utility.decide(%{skill: "build", observation: obs(plan), heard: []}, config(100_000))
-          Utility.decide(%{skill: "build", observation: obs(nil), heard: []}, config(100_000))
-        end)
-
-      assert log =~ "chosen=work switched=false plan_source=llm"
-      assert log =~ "chosen=rest switched=true plan_source=authored"
-    end
-
-    test "Runtime 把计划挂到观察上：手写日程是 work 的时刻按计划选 avoid", ctx do
+    test "Runtime 为带 utility + endpoint 的 profile 起 DayPlan，并把被接受的计划挂到自己的 observe 上", ctx do
       Agent.update(ctx.clock, fn _ -> 400_000 end)
 
       Agent.update(ctx.replies, fn _ ->
@@ -212,29 +178,15 @@ defmodule NpcServer.NpcDayPlanTest do
 
       profile =
         Map.merge(profile(ctx), %{
-          tree: &NpcServer.Trees.settler_daily/1,
+          tree: &NpcServer.Trees.settler/1,
           definition: String.duplicate("AB", 32),
           sites: [],
-          revisit_ticks: 600,
-          home: [-20, 5],
-          plaza: [30.0, -4.0]
+          revisit_ticks: 600
         })
 
       runtime = Runtime.init({NpcServer.Brain.Tree, profile}, %{cid: 1, name: "阿青"})
       assert_receive {:request, _}
       assert %{plan: %{day: 0, slots: [{0, 1000, "avoid", nil}]}} = wait_plan(runtime, 100)
-
-      log =
-        capture_log([level: :info], fn ->
-          send(runtime, {:observation, Map.put(obs(nil), :pending, []) |> Map.delete(:plan)})
-          # Runtime 按次序处理：observe 的回复在观察处理之后。
-          Runtime.observe(runtime)
-        end)
-
-      assert log =~ "chosen=avoid switched=false plan_source=llm"
-
-      # avoid 分支只等待，不发命令（手写日程下这一刻会是 work 的 read_catalog）。
-      refute_received {:"$gen_cast", {:command, _}}
     end
   end
 

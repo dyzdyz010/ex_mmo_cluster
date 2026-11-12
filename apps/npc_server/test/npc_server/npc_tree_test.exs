@@ -317,4 +317,24 @@ defmodule NpcServer.NpcTreeTest do
     assert state.finished == :failure
     assert state.blackboard.last_failure == %{act: "look", reason: :invalid_tool_arguments}
   end
+
+  # succeed 的 store：把子节点的结局写进黑板（`:last_failure` 只增不清，“刚才这一段是否失败”读这个键）。
+  test "succeed with store: writes the child's end state to the blackboard" do
+    state =
+      tree(
+        {:seq,
+         [
+           {:succeed, {:act, "stop", %{}}, store: :first},
+           {:succeed, {:act, "inspect", %{}}, store: :second}
+         ]}
+      )
+      |> script([
+        {obs(0), [%{id: 1, verb: :stop}]},
+        {rejected(1, :stop, :stuck), [%{id: 2, verb: :inspect}]},
+        {done(2, :inspect), []}
+      ])
+
+    assert state.finished == :success
+    assert %{first: :failure, second: :success} = state.blackboard
+  end
 end

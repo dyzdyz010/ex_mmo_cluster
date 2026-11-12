@@ -3,6 +3,11 @@ defmodule NpcServer.DayPlan do
   全局系统功能：作息 NPC 每游戏日一份 LLM 日计划（N2）与当日重新规划（N3）的唯一 owner。
   决策稿：docs/10-active/cross-cutting/2026-11-10-npc-utility-selector.md（N2/N3 节）。
 
+  > 现状（2026-11-12，薄片一 S1-A）：**未接线，没有任何注册表入口会启动它。** 读计划的效用选择器 `Utility`、
+  > 作息树与注册参数 `daily` 已删除（选择位置改由 `NpcServer.Selector` 问 Jev）。本模块与它在 Runtime 里的挂接
+  > （`profile.utility` + `profile.endpoint`）原样留到薄片二改成规划位置的外壳；下文提到 `Utility` 的地方是历史说明。
+  > 活动名表原来取自 `Utility.default_activities/0`，现在是本模块的 `@activities`。
+
   由 `NpcServer.Runtime` 为带 `profile.utility` 的 NPC（注册表 `settler` + `daily`）在 Life 旁边起一个链接进程；
   计划只经 `{:day_plan, plan}` 发回 Runtime，Runtime 把它挂到 `observation.plan`，`NpcServer.Utility` 读当前时段。
 
@@ -20,7 +25,7 @@ defmodule NpcServer.DayPlan do
   - 不持久化：重启后当日没有计划，再请求一次（多花一次调用）。
   """
   require Logger
-  alias NpcServer.{Abilities, LlmBudget, Responses, Utility}
+  alias NpcServer.{Abilities, LlmBudget, Responses}
 
   # 每 NPC 每游戏日调用上限：1 次日计划 + 4 次升级。
   @cap 5
@@ -29,6 +34,8 @@ defmodule NpcServer.DayPlan do
   # Scene 的角色种类码：0 = 玩家，1 = NPC（SceneServer.Movement.Scene 填写 actor.kind）。
   @player_kind 0
   @targets ["home", "plaza", nil]
+  # 计划里允许的活动名（有序，进工具 schema 的枚举）。
+  @activities ["avoid", "work", "rest", "social"]
 
   @doc "每 NPC 每游戏日的 LLM 调用上限（计划 + 升级）。"
   def cap, do: @cap
@@ -231,7 +238,7 @@ defmodule NpcServer.DayPlan do
     cond do
       from != at -> {:error, {:invalid, if(from > at, do: :gap, else: :overlap)}}
       to <= from or to > 1000 -> {:error, {:invalid, :bad_bounds}}
-      activity not in Utility.default_activities() -> {:error, {:invalid, :unknown_activity}}
+      activity not in @activities -> {:error, {:invalid, :unknown_activity}}
       target not in @targets -> {:error, {:invalid, :unknown_target}}
       true -> slots(rest, to, [{from, to, activity, target} | acc])
     end
@@ -291,7 +298,7 @@ defmodule NpcServer.DayPlan do
             properties: %{
               from: %{type: "integer"},
               to: %{type: "integer"},
-              activity: %{type: "string", enum: Utility.default_activities()},
+              activity: %{type: "string", enum: @activities},
               target: %{type: ["string", "null"], enum: @targets}
             }
           }

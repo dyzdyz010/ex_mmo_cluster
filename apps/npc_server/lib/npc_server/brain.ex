@@ -24,6 +24,10 @@ defmodule NpcServer.Brain do
       %{id:, verb: :remember, key:, text:}
       %{id:, verb: :recall, key:}
       %{id:, verb: :search_memory, query:}
+      %{id:, verb: :choose_activity, ended: nil | :completed | {:failed, 动作名, 原因文字}}   # 只有带候选表的 profile（注册表 "npc"）
+
+  `choose_activity` 由 Runtime 受理（`NpcServer.Selector`）：在独立 worker 里问 Jev，done 的 data 是 `%{activity: 候选名}`；
+  发问失败（传输错误、应答不成形、选项不在候选里、worker 崩溃）是 rejected，原因原样。等应答期间不阻塞其他事件。
 
   参数契约由 `NpcServer.Abilities` 给出（技能条目的 schema 原样取自技能的 `definition/1`）；Skills 的每个模块实现 Skill behaviour。
   技能终态的 verb 是所调用的技能名。取消命令有自己的 Outcome：受理为 done（data.call），没有对应在途技能为

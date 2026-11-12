@@ -1,5 +1,15 @@
 # NPC 活动选择器（效用打分，N1）
 
+> **2026-11-12 更新（薄片一 S1-A）：本稿的 N1 已被取代，以下内容只作历史记录。**
+> 按用户确认的总纲 [`2026-11-12-npc-architecture-overview.md`](2026-11-12-npc-architecture-overview.md)，选择位置上只有一个判断者 Jev。
+> 已删除：`NpcServer.Utility`（时钟打分、默认日程、惯性与紧急覆盖、`gate/3`、`decide/2`、日志 `npc_utility_decision`）、
+> `Trees.settler_daily/1`（含 rest / social / avoid 分支与写死的轮换台词 `@lines`、日志 `npc_daily_idle`）、注册参数 `daily`、
+> 测试 `npc_utility_test.exs`，以及 `Brain.Tree` 里只为 social 分支加的两参数函数形 `act` 参数。这些从未实跑过。
+> 取代它们的是 `NpcServer.Selector`（活动结束时异步问 Jev，取 top1）、`NpcServer.Mind`（心智快照）、`NpcServer.Persona`（人格卡）、
+> `Trees.npc/1` 与注册表 brain `"npc"`，说明在 `apps/npc_server/lib/npc_server/README.md` 的“统一形态”一节。
+> 仍在但**未接线**：N2 / N3 的 `DayPlan` 与 `LlmBudget`（没有注册表入口会启动；`DayPlan` 的活动名表改为自己的常量，
+> 其测试里经 `Utility` 断言的三处随之去掉），留到薄片二改成规划位置的外壳。
+
 分类：全局系统功能；测试 `npc_utility_test.exs` 为 Test-only。日期：2026-11-10。
 状态：**已实现；纯函数与 Scheduler／Tree 接缝测试已跑通（`npc_utility_test.exs` 12 项；连同 jev、skill_brain、social、tree、life_state 共 80 通过，2 项按标签排除）。
 未做真实客户端或生产运行，"看起来有生活感"完全未验证。**
