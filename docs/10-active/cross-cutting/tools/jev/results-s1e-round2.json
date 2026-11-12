@@ -1,0 +1,332 @@
+{
+ "model": "jev-latest",
+ "repeats": 4,
+ "workers": 3,
+ "timeout_s": 60,
+ "round": 2,
+ "template": "D:\\hemifuture\\ex_mmo_cluster-npc\\.demo\\observe\\npc-slice1-20261112\\s1e\\round2\\template.json",
+ "candidates": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "variants": {
+  "P_C1a": {
+   "expected": "top1 in {visit_plaza}",
+   "why": "破坏之前的基线，原文 + T1",
+   "record_only": false,
+   "state_file": "s1e/round2/P_C1a.txt"
+  },
+  "P_C1b": {
+   "expected": "top1 in {visit_plaza}",
+   "why": "破坏之前的基线，原文 + T1",
+   "record_only": false,
+   "state_file": "s1e/round2/P_C1b.txt"
+  },
+  "P_B": {
+   "expected": "top1 in {build_hut, gather_stone}",
+   "why": "破坏后第 1 次选择（破坏者已离场），原文 + T1",
+   "record_only": false,
+   "state_file": "s1e/round2/P_B.txt"
+  },
+  "P_R": {
+   "expected": "not_confront",
+   "why": "刚重建完、破坏者不在附近，原文 + T1",
+   "record_only": false,
+   "state_file": "s1e/round2/P_R.txt"
+  }
+ },
+ "rows": [
+  {
+   "variant": "P_C1a",
+   "repeat": 1,
+   "latency_ms": 1457,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.58,
+    "probabilities": {
+     "build_hut": 0.06,
+     "gather_stone": 0.06,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.21,
+     "visit_plaza": 0.65,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1a",
+   "repeat": 2,
+   "latency_ms": 784,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.53,
+    "probabilities": {
+     "build_hut": 0.09,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.21,
+     "visit_plaza": 0.61,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1a",
+   "repeat": 3,
+   "latency_ms": 1416,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.62,
+    "probabilities": {
+     "build_hut": 0.05,
+     "gather_stone": 0.05,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.2,
+     "visit_plaza": 0.68,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1a",
+   "repeat": 4,
+   "latency_ms": 697,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.56,
+    "probabilities": {
+     "build_hut": 0.04,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.23,
+     "visit_plaza": 0.63,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1b",
+   "repeat": 1,
+   "latency_ms": 2723,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.56,
+    "probabilities": {
+     "build_hut": 0.03,
+     "gather_stone": 0.08,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.24,
+     "visit_plaza": 0.63,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1b",
+   "repeat": 2,
+   "latency_ms": 716,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.51,
+    "probabilities": {
+     "build_hut": 0.02,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.29,
+     "visit_plaza": 0.59,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1b",
+   "repeat": 3,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.53,
+    "probabilities": {
+     "build_hut": 0.04,
+     "gather_stone": 0.07,
+     "gather_limestone": 0.03,
+     "guard_hut": 0.25,
+     "visit_plaza": 0.61,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_C1b",
+   "repeat": 4,
+   "latency_ms": 720,
+   "answer": {
+    "type": "choice",
+    "choice": "visit_plaza",
+    "confidence": 0.52,
+    "probabilities": {
+     "build_hut": 0.03,
+     "gather_stone": 0.08,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.27,
+     "visit_plaza": 0.6,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "P_B",
+   "repeat": 1,
+   "latency_ms": 693,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.29,
+    "probabilities": {
+     "build_hut": 0.41,
+     "gather_stone": 0.31,
+     "gather_limestone": 0.12,
+     "guard_hut": 0.02,
+     "visit_plaza": 0.13,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_B",
+   "repeat": 2,
+   "latency_ms": 666,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.39,
+    "probabilities": {
+     "build_hut": 0.49,
+     "gather_stone": 0.27,
+     "gather_limestone": 0.1,
+     "guard_hut": 0.01,
+     "visit_plaza": 0.12,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_B",
+   "repeat": 3,
+   "latency_ms": 721,
+   "answer": {
+    "type": "choice",
+    "choice": "gather_stone",
+    "confidence": 0.3,
+    "probabilities": {
+     "build_hut": 0.32,
+     "gather_stone": 0.42,
+     "gather_limestone": 0.12,
+     "guard_hut": 0.01,
+     "visit_plaza": 0.12,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_B",
+   "repeat": 4,
+   "latency_ms": 689,
+   "answer": {
+    "type": "choice",
+    "choice": "build_hut",
+    "confidence": 0.4,
+    "probabilities": {
+     "build_hut": 0.5,
+     "gather_stone": 0.28,
+     "gather_limestone": 0.08,
+     "guard_hut": 0.01,
+     "visit_plaza": 0.12,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_R",
+   "repeat": 1,
+   "latency_ms": 728,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.42,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.06,
+     "guard_hut": 0.52,
+     "visit_plaza": 0.4,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_R",
+   "repeat": 2,
+   "latency_ms": 713,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.39,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.05,
+     "guard_hut": 0.49,
+     "visit_plaza": 0.44,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_R",
+   "repeat": 3,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.44,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.07,
+     "guard_hut": 0.53,
+     "visit_plaza": 0.37,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "P_R",
+   "repeat": 4,
+   "latency_ms": 714,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.45,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.08,
+     "guard_hut": 0.54,
+     "visit_plaza": 0.35,
+     "confront_wrecker": 0.01
+    }
+   }
+  }
+ ]
+}

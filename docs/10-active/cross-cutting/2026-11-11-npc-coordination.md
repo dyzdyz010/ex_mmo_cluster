@@ -17,6 +17,46 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 第五个统筹会话（2026-11-12）——S1-E 已做完，接手先读这一节
+
+**S1-E 结果（离线，只打 Jev，探索性、不是验收；64 次请求全部应答；期望都在发问前写进 `tools/jev/s1e_design.py` 顶部，一条未改）**
+
+候选表 T1 = S1-C2 的 5 个候选原样 + 第 6 项 `confront_wrecker`，判据：
+`Walk over to the person standing nearby, stand in front of them and watch them closely, to make it plain I have not forgotten what they did. Only do this when that person is someone who once destroyed or removed something I built; otherwise there is no reason to.`
+`guard_hut` 保留不动（陌生人在附近的基线仍是它，只看新候选是否成为 top1）。“去掉记忆栏里那件事”用规则 E（物理行级，删含破坏者 cid 或词干
+remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的行；不含 rebuil、guard；V 上删 4 条召回句、留 11 条，四份认识删 15 行）。
+
+第 1 轮（S / 无人 / V 三份真实 state，12 个变体各 4 次）。A 族 = 现行 state 写法；B 族 = 只把处境栏改成 `Nearby: <名> (NPC, actor <cid>, 5.0 m away).`，其余同 A 族。
+
+| 变体 | 发问前期望 | 实际（4 次 top1；`confront_wrecker` 概率） | 判定 |
+|---|---|---|---|
+| A_S 陌生人在附近 | not confront | `guard_hut` ×4（0.01） | 成立 |
+| A_N 无人 | not confront | `guard_hut` ×2、`visit_plaza` ×2（0.00） | 成立 |
+| A_V 破坏者在附近 | confront | `confront_wrecker` ×4（0.61–0.74） | 成立 |
+| A_V_no_event 去掉记忆里那件事 | not confront | `guard_hut` ×4（0.14–0.22） | 成立 |
+| A_V_no_distrust 只去掉 Distrusts | 设计要求 confront；预测落空 | `guard_hut` ×4（0.10–0.14） | **落空（与预测一致）** |
+| A_V_no_event_no_distrust | not confront | `guard_hut` ×4（0.03–0.04） | 成立 |
+| A_V_memory_blank（记录项） | not confront | `guard_hut` ×4（0.10–0.12） | 成立 |
+| B_S | not confront | `guard_hut` ×4（0.00–0.01） | 成立 |
+| B_V | confront | `confront_wrecker` ×4（0.81–0.86） | 成立 |
+| B_V_no_event | not confront | `guard_hut` ×4（0.17–0.21） | 成立 |
+| B_V_no_distrust | confront | `confront_wrecker` ×4（0.82–0.87） | 成立 |
+| B_V_no_event_no_distrust | not confront | `guard_hut` ×4（0.03–0.05） | 成立 |
+
+第 2 轮（T1 会不会妨碍实跑前半段；四份 S1-C2 真实 state 原文只换候选表，各 4 次）：破坏之前的基线两份 `visit_plaza` 4/4（期望 `visit_plaza`）；
+破坏后第 1 次选择 `build_hut` ×3、`gather_stone` ×1（期望重建方向）；刚重建完、破坏者不在附近 `guard_hut` ×4（期望 not confront，`confront_wrecker` 0.01）。四行全部成立。
+
+- **事实**：现行写法下，“破坏者在附近”与“陌生人在附近”的 top1 已经稳定不同（A_V `confront_wrecker` 4/4 对 A_S `guard_hut` 4/4），去掉记忆里那件事回到基线；
+  但只去掉 Distrusts 也回到基线。B 族里记忆栏是必要且充分的：有那件事 + Nearby 的 cid 就选 `confront_wrecker`（有没有 Distrusts 都一样），没有那件事就不选（有 Distrusts 也不选）。
+- **原因（代码事实）**：记忆与经历原文只用 cid 指人；处境栏 `Nearby` 只写名字（`mind.ex:157`）；把名字与 cid 对上的只有情绪栏那一句 `Distrusts <名> (actor <cid>)`（`mind.ex:24-25` 的注释写明是有意的）。
+  去掉 Distrusts 就同时去掉了“他是谁”。所以按用户定的判定（只去掉 Distrusts 不回到基线），**现行写法下离线区分不出，需要改产品里 Nearby 的一句渲染**（带上 `actor <cid>`）。
+- **“破坏之后一直守屋”的影响（未决项，没有为它改任何东西）**：陌生人在附近的基线仍是 `guard_hut`（0.78–0.83），不是 `visit_plaza`；无人时 `guard_hut` / `visit_plaza` 各半。
+  新候选只是绕开了这一点（看 `confront_wrecker` 是否成为 top1），没有解决它。
+- **离线到实跑之间还没验证的**：实跑里 Hindsight 的认识与召回句会重新生成，措辞不同；召回问句会带上新候选的判据；选过一次 `confront_wrecker` 之后它会进自己的活动记录（所以只看破坏者出现后的第 1 次选择）。
+- **状态**：S1-E 第一步做完。A 族落空一行、B 族成立 → 按任务约定，改 `apps/` 之前先向用户汇报；**用户的答复见本节末尾**。S1-C3 未开始。本线没有容器、节点、tmux 会话；容器 / 卷 152 / 160。
+- 证据：`.demo/observe/npc-slice1-20261112/s1e/round1/`、`round2/`（变体全文、`template.json`、`edits.txt`、`report.txt`）；`tools/jev/s1e_design.py`、`results-s1e-round1.json`、`results-s1e-round2.json`（`report --round N` 离线重出）。
+  统筹会话的复核：三份原文逐字节相同、模板只在末尾多一项、规则 E 删后的记忆栏全文看过、B 族只改了 Nearby 一处；64 次请求都是统筹会话自己发的。
+
 ### 第四个统筹会话的结果（2026-11-12）——接手先读这一节，下面第三个会话的“交接”已执行完
 
 **S1-C2 已实跑**（16:54–17:21 UTC，原始结果见“S1-C2 结果”与“S1-C2 事后离线诊断”）：**(b) 按运行前的规则通过**（重建的选择由“整座被移除”的经历句与处境里的 `is gone` 引起，任一句单独就够）；

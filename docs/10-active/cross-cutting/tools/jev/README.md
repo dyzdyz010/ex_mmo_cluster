@@ -215,3 +215,15 @@ C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。�
 用法：`python -B s1c2_postdiag.py prepare --s S.txt --v V.txt --vandal-cid CID --vandal-name Corvin --template T.json`，之后 `run | report`。结果文件：`results-s1c2-postdiag.json`。
 结论：运行前写定的 6 条期望，3 条成立（`S_recalled_removed`、`S_no_distrust`、`V_memory_blank` 都仍是 `guard_hut`），3 条落空
 （`S_memory_blank`、`S_beliefs_blank`、`S_no_guard_memory` 期望 `visit_plaza`，实际都是 `guard_hut` ×4，0.67–0.90）。记忆栏与 Distrusts 任何一处单独去掉，守屋都不变；见统筹页“S1-C2 事后离线诊断”。
+
+## 2026-11-12 S1-E：验收 (c) 的离线设计（`s1e_design.py`）
+
+探索性，不是验收。只问 Jev，不起服务端。素材是 S1-C2 存下的真实 state；每轮的候选表、变体、期望在脚本的 `ROUNDS` 里按轮取，期望由统筹会话发问前写在脚本文档字符串里。
+候选表 T1 = S1-C2 的 5 个候选 + `confront_wrecker`（走到附近那个人面前盯住他；判据写明只在那个人曾经毁过我建的东西时才这么做）。
+“去掉记忆栏里那件事”用规则 E（物理行级：含破坏者 cid 或词干 remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的行删掉；不含 rebuil、guard）。
+用法：`python -B s1e_design.py prepare | run | report --round N`。结果文件：`results-s1e-round1.json`、`results-s1e-round2.json`；变体全文、`edits.txt`、`report.txt` 在 `.demo/observe/npc-slice1-20261112/s1e/roundN/`。
+- 第 1 轮（12 个变体各 4 次，48 次全部应答）：A 族（现行 state 写法）只落空一行——`A_V_no_distrust` 0/4（`guard_hut` 0.48–0.54，`confront_wrecker` 0.10–0.14），与发问前的预测一致：
+  去掉 Distrusts 后 state 里没有一句把附近的 `Corvin` 与记忆里的 `Actor <cid>` 对上。B 族（假设处境栏写成 `Nearby: Corvin (NPC, actor <cid>, 5.0 m away).`）5 行全部 4/4：
+  破坏者在附近 `confront_wrecker` 0.81–0.86；去掉记忆里那件事回到 `guard_hut`；只去掉 Distrusts 仍是 `confront_wrecker` 0.82–0.87；陌生人在附近 `guard_hut`、`confront_wrecker` ≤ 0.01。
+- 第 2 轮（4 份原文换成 T1，16 次全部应答）：破坏之前的基线 `visit_plaza` 4/4 ×2；破坏后第 1 次选择在重建方向 4/4；刚重建完、破坏者不在附近 `guard_hut` 4/4（`confront_wrecker` 0.01）。T1 不妨碍实跑的前半段。
+结论：离线能区分，但“只去掉 Distrusts 不回到基线”这一条要求处境栏的 Nearby 带上 cid（`apps/npc_server/lib/npc_server/mind.ex` 的一句渲染），属于产品改动，待用户确认。见统筹页“S1-E 结果”。
