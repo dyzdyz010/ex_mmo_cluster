@@ -128,8 +128,9 @@ defmodule MmoContracts.Voxel.Codec do
   end
 
   @doc "生产意图（0 余额、1 放置、2 盛取、3 倾倒、4 按目录配方合成 material 一次、5 吃一株可食材料 material（Hello 29）、6 徒手分选一份混合矿 material（tool = ore.sort，coord 忽略）、7 取消当前分选（Hello 44））的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用。"
+  # Voxim 交互设计“2026-11-09 修订”第 3 步：合成 4 与吃 5 不携带工具（tool 0 合法，旧客户端的非零工具也照收；两者从不读工具），字节格式不变。
   def production_intent?(%{action: action, tool_id: tool} = request),
-    do: action in [0, 1, 2, 3, 4, 5, 6, 7] and tool > 0 and
+    do: action in [0, 1, 2, 3, 4, 5, 6, 7] and (tool > 0 or action in [4, 5]) and
       (action != 2 or match?(%{granularity: 0, micro: {_, _, _}, incarnation: _, owner: {_, _}, material: _}, Map.get(request, :target)))
 
   @doc "附件意图的合法性，线解码与进程内调用方（`NpcServer.WorldRequest`，经 `intent?/1`）共用同一组约束。"
