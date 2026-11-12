@@ -37,6 +37,15 @@ Life 读 `World.published_prefab_metadata/1` 取发布名，经历写成 `Actor 
 把这条交给做实跑的子会话，并核对 `s1c/plan.md` 是否需要相应修改。`design_house` 发布为空名、NPC 自己设计的房子不会被点名，是独立的待定功能。
 **关于结果文件**：子会话不能自己写报告文件（运行环境限制）。`s1b2/report.md` 是旧统筹会话代存的子会话原文。S1-C 准备的结果同样只会回到旧统筹会话，由它代存为 `s1c/prep-report.md`；交接时该子会话仍在跑，若接手时这个文件还没有，就以 `s1c/services.txt`、`s1c/scripts/`、`s1c/plan.md`（若有）和 WSL `~/npc-s1-run/` 的 `*-s1c*` 脚本为准，缺的部分重新派人调研。
 
+**S1-C 准备已完成并代存**（`s1c/prep-report.md`，子会话原文；`s1c/plan.md` 与 `s1c/scripts/` 齐全，`.exs` 未经语法检查）。要点：
+Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1-hindsight-20261112-pg` / `-hf`），PG 容器 `npc-s1c-pg-20261112` 在 55448（带一个匿名卷，库未建）；
+容器 / 卷数现为 154 / 163。更早那次实跑建设者从未建成（106 次 `insufficient_material`）；新角色余额为 0。
+`"npc"` 树的 `build` 候选不会先走到工地，建筑足迹要在眼睛 8 米内才放得下。被测卡 Garen，候选 `build_hut` / `gather_stone` / `gather_limestone` / `guard_hut` / `visit_plaza`，各检查点期望已写在 `plan.md`。
+准备子会话留的四个待定，旧统筹会话的建议（**未经用户确认**，接手后向用户说明再执行）：
+(1) 材料来源：用 Test-only 的 GM `:fill` 一次放一堆 12 Stone + 3 Limestone（正常 World 提交、有回执与日志、需 `VOXIM_GM_TOOLS=1`），NPC 自己用 `gather` 采——建议接受，不用 `World.material_supply`（那是回填余额）；
+(2) 实跑必须等 S1-B2 验证并提交之后，用那次提交；并且小屋要带名字发布（见上一段），`plan.md` / `register-s1c.exs` 要相应补一步；
+(3) mix 与构建目录在 S1-B2 提交后即空闲；(4) 实跑结束后删除 Hindsight 与 PG 容器及其卷，证据以文件为准（需要保留 bank 内容时先把 `Life.observe` 与 Hindsight 的事实导出成文件）。
+
 文件不存在说明那个子会话没跑完：看 `git status`、`docker ps -a | grep npc-s1`、WSL `ls ~/npc-s1-run`、`pgrep -a beam` 判断做到哪，再按本页任务书的意思重新派。
 两个子任务的任务书要点都在本页“S1-B 结果”“薄片一的任务”和总纲里；实跑配方在“证据与复跑”。
 
