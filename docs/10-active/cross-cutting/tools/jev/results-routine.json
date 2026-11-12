@@ -1,0 +1,3247 @@
+{
+ "model": "jev-latest",
+ "days": 10,
+ "window": 5,
+ "rows": [
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.51,
+    0.54,
+    0.53,
+    0.54,
+    0.51,
+    0.59,
+    0.52,
+    0.46,
+    0.57,
+    0.57
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.58,
+    0.51,
+    0.58,
+    0.54,
+    0.54,
+    0.54,
+    0.5,
+    0.57,
+    0.56,
+    0.52
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.56,
+    0.94,
+    0.95,
+    0.93,
+    0.94,
+    0.94,
+    0.94,
+    0.94,
+    0.94,
+    0.95
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.53,
+    0.93,
+    0.95,
+    0.94,
+    0.95,
+    0.94,
+    0.94,
+    0.94,
+    0.93,
+    0.95
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.76,
+    0.8,
+    0.78,
+    0.8,
+    0.78,
+    0.78,
+    0.8,
+    0.78,
+    0.77,
+    0.77
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.8,
+    0.82,
+    0.78,
+    0.78,
+    0.81,
+    0.77,
+    0.78,
+    0.8,
+    0.78,
+    0.8
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.8,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.78,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.3,
+    0.29,
+    0.3,
+    0.32,
+    0.29,
+    0.28,
+    0.3,
+    0.27,
+    0.32,
+    0.28
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.27,
+    0.27,
+    0.3,
+    0.34,
+    0.34,
+    0.28,
+    0.36,
+    0.34,
+    0.3,
+    0.27
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.27,
+    0.53,
+    0.68,
+    0.77,
+    0.68,
+    0.66,
+    0.64,
+    0.66,
+    0.64,
+    0.65
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.29,
+    0.53,
+    0.7,
+    0.75,
+    0.7,
+    0.68,
+    0.71,
+    0.64,
+    0.69,
+    0.66
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.87,
+    0.89,
+    0.87,
+    0.84,
+    0.88,
+    0.87,
+    0.86,
+    0.87,
+    0.88,
+    0.87
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.86,
+    0.84,
+    0.87,
+    0.83,
+    0.87,
+    0.86,
+    0.87,
+    0.86,
+    0.86,
+    0.89
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.87,
+    0.96,
+    0.96,
+    0.94,
+    0.93,
+    0.93,
+    0.94,
+    0.93,
+    0.93,
+    0.94
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.86,
+    0.95,
+    0.96,
+    0.95,
+    0.93,
+    0.93,
+    0.94,
+    0.94,
+    0.94,
+    0.94
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.46,
+    0.45,
+    0.47,
+    0.42,
+    0.48,
+    0.51,
+    0.45,
+    0.45,
+    0.42,
+    0.48
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.46,
+    0.42,
+    0.44,
+    0.42,
+    0.45,
+    0.47,
+    0.39,
+    0.44,
+    0.42,
+    0.45
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.41,
+    0.51,
+    0.59,
+    0.42,
+    0.34,
+    0.44,
+    0.41,
+    0.39,
+    0.46,
+    0.38
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.47,
+    0.54,
+    0.62,
+    0.46,
+    0.41,
+    0.38,
+    0.39,
+    0.4,
+    0.48,
+    0.3
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.89,
+    0.9,
+    0.9,
+    0.87,
+    0.88,
+    0.88,
+    0.9,
+    0.89,
+    0.89,
+    0.87
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.88,
+    0.86,
+    0.88,
+    0.92,
+    0.87,
+    0.92,
+    0.9,
+    0.88,
+    0.89,
+    0.88
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.88,
+    0.98,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.88,
+    0.98,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.5,
+    0.58,
+    0.53,
+    0.51,
+    0.54,
+    0.56,
+    0.57,
+    0.52,
+    0.54,
+    0.47
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.59,
+    0.56,
+    0.52,
+    0.52,
+    0.57,
+    0.5,
+    0.51,
+    0.53,
+    0.51,
+    0.54
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.52,
+    0.68,
+    0.72,
+    0.76,
+    0.72,
+    0.74,
+    0.8,
+    0.78,
+    0.76,
+    0.76
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.51,
+    0.71,
+    0.74,
+    0.75,
+    0.8,
+    0.76,
+    0.76,
+    0.77,
+    0.75,
+    0.78
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.94,
+    0.94,
+    0.92,
+    0.92,
+    0.94,
+    0.92,
+    0.92,
+    0.9,
+    0.92,
+    0.93
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.9,
+    0.92,
+    0.93,
+    0.94,
+    0.94,
+    0.93,
+    0.92,
+    0.93,
+    0.92,
+    0.93
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.94,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.98,
+    0.99,
+    0.98,
+    0.99
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.9,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.99,
+    0.98,
+    0.99,
+    0.99,
+    0.99
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.57,
+    0.58,
+    0.53,
+    0.59,
+    0.54,
+    0.59,
+    0.58,
+    0.56,
+    0.58,
+    0.56
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.54,
+    0.56,
+    0.58,
+    0.54,
+    0.58,
+    0.6,
+    0.57,
+    0.57,
+    0.58,
+    0.56
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.58,
+    0.84,
+    0.89,
+    0.88,
+    0.81,
+    0.86,
+    0.88,
+    0.82,
+    0.8,
+    0.81
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.57,
+    0.83,
+    0.88,
+    0.88,
+    0.8,
+    0.76,
+    0.88,
+    0.82,
+    0.87,
+    0.83
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.63,
+    0.6,
+    0.65,
+    0.68,
+    0.65,
+    0.66,
+    0.65,
+    0.6,
+    0.62,
+    0.63
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.68,
+    0.68,
+    0.65,
+    0.6,
+    0.64,
+    0.65,
+    0.63,
+    0.64,
+    0.64,
+    0.63
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.6,
+    0.94,
+    0.89,
+    0.95,
+    0.92,
+    0.9,
+    0.92,
+    0.89,
+    0.92,
+    0.9
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.64,
+    0.95,
+    0.89,
+    0.94,
+    0.89,
+    0.88,
+    0.88,
+    0.88,
+    0.87,
+    0.87
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.63,
+    0.64,
+    0.64,
+    0.6,
+    0.62,
+    0.62,
+    0.64,
+    0.64,
+    0.64,
+    0.59
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.63,
+    0.62,
+    0.6,
+    0.65,
+    0.62,
+    0.6,
+    0.68,
+    0.62,
+    0.7,
+    0.6
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.65,
+    0.99,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.62,
+    0.99,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.48,
+    0.5,
+    0.5,
+    0.44,
+    0.52,
+    0.47,
+    0.53,
+    0.5,
+    0.42,
+    0.5
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.51,
+    0.52,
+    0.48,
+    0.5,
+    0.44,
+    0.5,
+    0.45,
+    0.41,
+    0.48,
+    0.5
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "market_square"
+   ],
+   "confidences": [
+    0.45,
+    0.41,
+    0.2,
+    0.24,
+    0.17,
+    0.21,
+    0.2,
+    0.2,
+    0.17,
+    0.16
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "market_square",
+    "hilltop",
+    "lakeshore",
+    "quarry_road",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.44,
+    0.41,
+    0.26,
+    0.21,
+    0.18,
+    0.2,
+    0.11,
+    0.15,
+    0.3,
+    0.22
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "lakeshore",
+    "quarry_road",
+    "stay_home",
+    "quarry_road",
+    "lakeshore",
+    "stay_home",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.26,
+    0.24,
+    0.23,
+    0.23,
+    0.26,
+    0.24,
+    0.23,
+    0.24,
+    0.22,
+    0.22
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "quarry_road",
+    "stay_home",
+    "quarry_road",
+    "lakeshore",
+    "quarry_road",
+    "quarry_road",
+    "lakeshore",
+    "stay_home",
+    "stay_home",
+    "stay_home"
+   ],
+   "confidences": [
+    0.22,
+    0.26,
+    0.22,
+    0.26,
+    0.23,
+    0.22,
+    0.22,
+    0.23,
+    0.23,
+    0.24
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.21,
+    0.72,
+    0.76,
+    0.83,
+    0.74,
+    0.75,
+    0.65,
+    0.7,
+    0.72,
+    0.74
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.23,
+    0.8,
+    0.86,
+    0.83,
+    0.8,
+    0.81,
+    0.8,
+    0.86,
+    0.81,
+    0.82
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.96,
+    0.98
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.96,
+    0.96,
+    0.96,
+    0.95,
+    0.96,
+    0.96,
+    0.95,
+    0.96,
+    0.96,
+    0.95
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.96,
+    0.84,
+    0.87,
+    0.72,
+    0.65,
+    0.6,
+    0.69,
+    0.69,
+    0.62,
+    0.62
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.96,
+    0.88,
+    0.87,
+    0.82,
+    0.69,
+    0.69,
+    0.68,
+    0.63,
+    0.65,
+    0.66
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    0.99,
+    0.99,
+    0.95,
+    0.92,
+    0.89,
+    0.89,
+    0.9,
+    0.9,
+    0.89
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    1.0,
+    0.99,
+    0.93,
+    0.89,
+    0.88,
+    0.9,
+    0.88,
+    0.87,
+    0.9
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.36,
+    0.35,
+    0.38,
+    0.33,
+    0.36,
+    0.36,
+    0.34,
+    0.38,
+    0.34,
+    0.38
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.35,
+    0.38,
+    0.34,
+    0.36,
+    0.36,
+    0.35,
+    0.36,
+    0.34,
+    0.35,
+    0.36
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.38,
+    0.87,
+    0.75,
+    0.62,
+    0.58,
+    0.52,
+    0.51,
+    0.53,
+    0.51,
+    0.5
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.34,
+    0.71,
+    0.84,
+    0.86,
+    0.76,
+    0.8,
+    0.78,
+    0.75,
+    0.76,
+    0.8
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home"
+   ],
+   "confidences": [
+    0.6,
+    0.63,
+    0.63,
+    0.6,
+    0.62,
+    0.63,
+    0.58,
+    0.57,
+    0.6,
+    0.6
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home"
+   ],
+   "confidences": [
+    0.59,
+    0.62,
+    0.58,
+    0.66,
+    0.6,
+    0.64,
+    0.57,
+    0.56,
+    0.63,
+    0.62
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home"
+   ],
+   "confidences": [
+    0.66,
+    0.93,
+    0.94,
+    0.93,
+    0.93,
+    0.93,
+    0.93,
+    0.95,
+    0.93,
+    0.93
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "stay_home"
+   ],
+   "confidences": [
+    0.57,
+    0.94,
+    0.93,
+    0.93,
+    0.92,
+    0.95,
+    0.95,
+    0.94,
+    0.93,
+    0.93
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "none",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "hilltop",
+    "hilltop",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.39,
+    0.4,
+    0.38,
+    0.39,
+    0.4,
+    0.39,
+    0.38,
+    0.39,
+    0.36,
+    0.38
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "none",
+   "repeat": 1,
+   "choices": [
+    "hilltop",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "hilltop",
+    "hilltop",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.38,
+    0.36,
+    0.38,
+    0.36,
+    0.42,
+    0.4,
+    0.38,
+    0.38,
+    0.36,
+    0.39
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "log",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.39,
+    0.69,
+    0.8,
+    0.7,
+    0.56,
+    0.62,
+    0.65,
+    0.7,
+    0.59,
+    0.6
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "log",
+   "repeat": 1,
+   "choices": [
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "hilltop"
+   ],
+   "confidences": [
+    0.38,
+    0.44,
+    0.64,
+    0.7,
+    0.58,
+    0.56,
+    0.58,
+    0.63,
+    0.64,
+    0.58
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "bread_and_cheese",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.51,
+    0.94,
+    0.95,
+    0.56,
+    0.47,
+    0.71,
+    0.64,
+    0.54,
+    0.69,
+    0.77
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "bread_and_cheese",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.58,
+    0.93,
+    0.95,
+    0.62,
+    0.53,
+    0.78,
+    0.63,
+    0.52,
+    0.72,
+    0.8
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.83,
+    1.0,
+    1.0,
+    0.32,
+    0.28,
+    0.27,
+    0.52,
+    0.88,
+    0.89,
+    0.63
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew"
+   ],
+   "confidences": [
+    0.81,
+    0.99,
+    1.0,
+    0.35,
+    0.6,
+    0.87,
+    0.93,
+    0.68,
+    0.5,
+    0.74
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.3,
+    0.54,
+    0.72,
+    0.6,
+    0.3,
+    0.53,
+    0.52,
+    0.68,
+    0.47,
+    0.51
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.28,
+    0.62,
+    0.72,
+    0.57,
+    0.35,
+    0.47,
+    0.51,
+    0.63,
+    0.5,
+    0.56
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "grill_fish",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "grill_fish",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.86,
+    0.95,
+    0.96,
+    0.75,
+    0.8,
+    0.9,
+    0.86,
+    0.78,
+    0.77,
+    0.88
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "lin",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "grill_fish",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "grill_fish",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.88,
+    0.95,
+    0.98,
+    0.74,
+    0.81,
+    0.84,
+    0.83,
+    0.75,
+    0.74,
+    0.88
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.47,
+    0.57,
+    0.59,
+    0.41,
+    0.45,
+    0.53,
+    0.62,
+    0.6,
+    0.53,
+    0.44
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "garrick",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.48,
+    0.57,
+    0.54,
+    0.4,
+    0.45,
+    0.48,
+    0.68,
+    0.58,
+    0.53,
+    0.48
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "tavern_stew",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "tavern_stew",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.89,
+    0.96,
+    0.99,
+    0.69,
+    0.83,
+    0.95,
+    0.96,
+    0.78,
+    0.86,
+    0.95
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "sella",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "tavern_stew",
+    "share_meal",
+    "share_meal",
+    "share_meal",
+    "tavern_stew",
+    "share_meal",
+    "share_meal"
+   ],
+   "confidences": [
+    0.92,
+    0.96,
+    0.99,
+    0.63,
+    0.86,
+    0.94,
+    0.96,
+    0.83,
+    0.84,
+    0.94
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.54,
+    0.7,
+    0.75,
+    0.22,
+    0.48,
+    0.69,
+    0.72,
+    0.62,
+    0.62,
+    0.68
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "ode",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "forage_mushrooms",
+    "tavern_stew",
+    "forage_mushrooms",
+    "forage_mushrooms"
+   ],
+   "confidences": [
+    0.52,
+    0.62,
+    0.71,
+    0.22,
+    0.51,
+    0.66,
+    0.74,
+    0.56,
+    0.64,
+    0.71
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.93,
+    0.99,
+    0.99,
+    0.38,
+    0.39,
+    0.38,
+    0.41,
+    0.48,
+    0.46,
+    0.47
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "hask",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese",
+    "bread_and_cheese"
+   ],
+   "confidences": [
+    0.94,
+    0.99,
+    0.99,
+    0.36,
+    0.48,
+    0.4,
+    0.4,
+    0.45,
+    0.36,
+    0.45
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "grill_fish",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "grill_fish",
+    "grill_fish",
+    "grill_fish"
+   ],
+   "confidences": [
+    0.57,
+    0.82,
+    0.88,
+    0.4,
+    0.35,
+    0.46,
+    0.51,
+    0.66,
+    0.27,
+    0.34
+   ]
+  },
+  {
+   "scenario": "meal",
+   "persona": "brenna",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "grill_fish",
+    "tavern_stew",
+    "tavern_stew",
+    "tavern_stew",
+    "grill_fish",
+    "grill_fish",
+    "grill_fish"
+   ],
+   "confidences": [
+    0.59,
+    0.84,
+    0.87,
+    0.38,
+    0.34,
+    0.52,
+    0.51,
+    0.62,
+    0.27,
+    0.42
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.66,
+    0.95,
+    0.9,
+    0.54,
+    0.8,
+    0.74,
+    0.86,
+    0.9,
+    0.66,
+    0.81
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.58,
+    0.95,
+    0.9,
+    0.52,
+    0.82,
+    0.76,
+    0.72,
+    0.89,
+    0.62,
+    0.81
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.66,
+    0.96,
+    1.0,
+    0.22,
+    0.94,
+    0.96,
+    0.98,
+    0.71,
+    0.74,
+    0.98
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore",
+    "market_square",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.64,
+    0.99,
+    1.0,
+    0.23,
+    0.95,
+    0.96,
+    0.99,
+    0.77,
+    0.77,
+    0.98
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "market_square",
+    "forest_ruins",
+    "market_square",
+    "forest_ruins",
+    "market_square",
+    "forest_ruins",
+    "market_square"
+   ],
+   "confidences": [
+    0.47,
+    0.27,
+    0.3,
+    0.52,
+    0.14,
+    0.39,
+    0.23,
+    0.44,
+    0.45,
+    0.41
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "market_square",
+    "hilltop",
+    "lakeshore",
+    "quarry_road",
+    "market_square",
+    "forest_ruins",
+    "market_square"
+   ],
+   "confidences": [
+    0.48,
+    0.34,
+    0.29,
+    0.53,
+    0.14,
+    0.15,
+    0.28,
+    0.24,
+    0.7,
+    0.24
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "lakeshore",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "lakeshore",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.27,
+    0.78,
+    0.89,
+    0.44,
+    0.64,
+    0.68,
+    0.62,
+    0.75,
+    0.53,
+    0.71
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "lin",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "lakeshore",
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "lakeshore",
+    "quarry_road",
+    "quarry_road"
+   ],
+   "confidences": [
+    0.22,
+    0.81,
+    0.87,
+    0.39,
+    0.68,
+    0.64,
+    0.69,
+    0.7,
+    0.53,
+    0.62
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "hilltop",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "hilltop",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.95,
+    0.84,
+    0.86,
+    0.68,
+    0.69,
+    0.46,
+    0.4,
+    0.64,
+    0.75,
+    0.48
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "garrick",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "hilltop",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "hilltop",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.96,
+    0.87,
+    0.86,
+    0.7,
+    0.77,
+    0.47,
+    0.4,
+    0.57,
+    0.77,
+    0.56
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "lakeshore",
+    "market_square",
+    "market_square",
+    "market_square",
+    "lakeshore",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    0.99,
+    0.99,
+    0.44,
+    0.94,
+    0.87,
+    0.84,
+    0.7,
+    0.94,
+    0.88
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "sella",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "market_square",
+    "market_square",
+    "market_square",
+    "lakeshore",
+    "market_square",
+    "market_square",
+    "market_square",
+    "lakeshore",
+    "market_square",
+    "market_square"
+   ],
+   "confidences": [
+    1.0,
+    0.99,
+    0.99,
+    0.46,
+    0.92,
+    0.83,
+    0.84,
+    0.7,
+    0.95,
+    0.84
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.38,
+    0.84,
+    0.75,
+    0.63,
+    0.36,
+    0.53,
+    0.28,
+    0.53,
+    0.41,
+    0.59
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "ode",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins",
+    "quarry_road",
+    "forest_ruins",
+    "forest_ruins",
+    "forest_ruins"
+   ],
+   "confidences": [
+    0.38,
+    0.87,
+    0.76,
+    0.63,
+    0.36,
+    0.28,
+    0.53,
+    0.45,
+    0.4,
+    0.53
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "lakeshore",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.57,
+    0.92,
+    0.94,
+    0.87,
+    0.44,
+    0.76,
+    0.66,
+    0.9,
+    0.52,
+    0.71
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "hask",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "lakeshore",
+    "stay_home",
+    "stay_home",
+    "stay_home",
+    "lakeshore",
+    "lakeshore",
+    "lakeshore"
+   ],
+   "confidences": [
+    0.58,
+    0.93,
+    0.94,
+    0.84,
+    0.42,
+    0.71,
+    0.64,
+    0.93,
+    0.47,
+    0.75
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "tired",
+   "repeat": 0,
+   "choices": [
+    "quarry_road",
+    "quarry_road",
+    "quarry_road",
+    "hilltop",
+    "quarry_road",
+    "hilltop",
+    "quarry_road",
+    "hilltop",
+    "quarry_road",
+    "hilltop"
+   ],
+   "confidences": [
+    0.4,
+    0.68,
+    0.77,
+    0.53,
+    0.33,
+    0.52,
+    0.33,
+    0.63,
+    0.51,
+    0.64
+   ]
+  },
+  {
+   "scenario": "walk",
+   "persona": "brenna",
+   "arm": "tired",
+   "repeat": 1,
+   "choices": [
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "quarry_road",
+    "hilltop",
+    "hilltop",
+    "hilltop",
+    "quarry_road",
+    "hilltop",
+    "hilltop"
+   ],
+   "confidences": [
+    0.36,
+    0.39,
+    0.64,
+    0.33,
+    0.57,
+    0.53,
+    0.46,
+    0.33,
+    0.46,
+    0.54
+   ]
+  }
+ ]
+}

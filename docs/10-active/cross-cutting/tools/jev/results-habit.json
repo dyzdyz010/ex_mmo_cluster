@@ -1,0 +1,4165 @@
+{
+ "model": "jev-latest",
+ "rows": [
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.35,
+    "bread_and_cheese": 0.59,
+    "grill_fish": 0.04,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.3,
+    "bread_and_cheese": 0.62,
+    "grill_fish": 0.05,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.96,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.98,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.93,
+    "bread_and_cheese": 0.06,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.92,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.04,
+    "bread_and_cheese": 0.94,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.03,
+    "bread_and_cheese": 0.95,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.04,
+    "bread_and_cheese": 0.93,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.04,
+    "bread_and_cheese": 0.94,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.04,
+    "bread_and_cheese": 0.12,
+    "grill_fish": 0.83,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.04,
+    "bread_and_cheese": 0.14,
+    "grill_fish": 0.81,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.08,
+    "bread_and_cheese": 0.21,
+    "grill_fish": 0.69,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.09,
+    "bread_and_cheese": 0.19,
+    "grill_fish": 0.7,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.14,
+    "bread_and_cheese": 0.28,
+    "grill_fish": 0.02,
+    "forage_mushrooms": 0.54,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.12,
+    "bread_and_cheese": 0.3,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.53,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.11,
+    "bread_and_cheese": 0.31,
+    "grill_fish": 0.02,
+    "forage_mushrooms": 0.53,
+    "share_meal": 0.02,
+    "skip_meal": 0.01
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.09,
+    "bread_and_cheese": 0.24,
+    "grill_fish": 0.02,
+    "forage_mushrooms": 0.63,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.94,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.95,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.02,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.94,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.02,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.93,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.24,
+    "bread_and_cheese": 0.41,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.05,
+    "skip_meal": 0.27
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.29,
+    "bread_and_cheese": 0.42,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.05,
+    "skip_meal": 0.21
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.24,
+    "bread_and_cheese": 0.35,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.06,
+    "skip_meal": 0.32
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "none",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.25,
+    "bread_and_cheese": 0.39,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.07,
+    "skip_meal": 0.26
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.14,
+    "bread_and_cheese": 0.81,
+    "grill_fish": 0.02,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.1,
+    "bread_and_cheese": 0.85,
+    "grill_fish": 0.02,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 1.0,
+    "bread_and_cheese": 0.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.99,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 1.0,
+    "bread_and_cheese": 0.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 1.0,
+    "bread_and_cheese": 0.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 1.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 1.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 0,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 1.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 1,
+   "choice": "bread_and_cheese",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 1.0,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.95,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.95,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.96,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.95,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.02,
+    "bread_and_cheese": 0.17,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.79,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.02,
+    "bread_and_cheese": 0.16,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.8,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.09,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.9,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.08,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.91,
+    "share_meal": 0.0,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.98,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.99,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.99,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.0,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.0,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.99,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "skip_meal",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.35,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.56
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "skip_meal",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.38,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.03,
+    "skip_meal": 0.52
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "skip_meal",
+   "probabilities": {
+    "tavern_stew": 0.05,
+    "bread_and_cheese": 0.21,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.71
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "predictable",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "skip_meal",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.24,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.0,
+    "share_meal": 0.02,
+    "skip_meal": 0.67
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.31,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.13,
+    "forage_mushrooms": 0.45,
+    "share_meal": 0.06,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.34,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.13,
+    "forage_mushrooms": 0.43,
+    "share_meal": 0.06,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.68,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.17,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.69,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.12,
+    "forage_mushrooms": 0.15,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.45,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.2,
+    "forage_mushrooms": 0.24,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.53,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.16,
+    "forage_mushrooms": 0.23,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.39,
+    "bread_and_cheese": 0.16,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.2,
+    "share_meal": 0.14,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.36,
+    "bread_and_cheese": 0.21,
+    "grill_fish": 0.1,
+    "forage_mushrooms": 0.19,
+    "share_meal": 0.14,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.37,
+    "bread_and_cheese": 0.15,
+    "grill_fish": 0.09,
+    "forage_mushrooms": 0.2,
+    "share_meal": 0.19,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.39,
+    "bread_and_cheese": 0.15,
+    "grill_fish": 0.08,
+    "forage_mushrooms": 0.15,
+    "share_meal": 0.23,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.17,
+    "bread_and_cheese": 0.06,
+    "grill_fish": 0.43,
+    "forage_mushrooms": 0.29,
+    "share_meal": 0.05,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.15,
+    "bread_and_cheese": 0.06,
+    "grill_fish": 0.45,
+    "forage_mushrooms": 0.3,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.23,
+    "bread_and_cheese": 0.06,
+    "grill_fish": 0.28,
+    "forage_mushrooms": 0.39,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.23,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.34,
+    "forage_mushrooms": 0.32,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.1,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.03,
+    "forage_mushrooms": 0.8,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.13,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.04,
+    "forage_mushrooms": 0.76,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.14,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.05,
+    "forage_mushrooms": 0.73,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.13,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.72,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.17,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.21,
+    "share_meal": 0.53,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "share_meal",
+   "probabilities": {
+    "tavern_stew": 0.19,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.24,
+    "share_meal": 0.49,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.23,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.09,
+    "forage_mushrooms": 0.34,
+    "share_meal": 0.31,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.3,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.08,
+    "forage_mushrooms": 0.33,
+    "share_meal": 0.26,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.31,
+    "bread_and_cheese": 0.09,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.26,
+    "share_meal": 0.12,
+    "skip_meal": 0.07
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.3,
+    "bread_and_cheese": 0.09,
+    "grill_fish": 0.14,
+    "forage_mushrooms": 0.25,
+    "share_meal": 0.14,
+    "skip_meal": 0.08
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.32,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.13,
+    "forage_mushrooms": 0.28,
+    "share_meal": 0.13,
+    "skip_meal": 0.07
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "spontaneous",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.32,
+    "bread_and_cheese": 0.08,
+    "grill_fish": 0.13,
+    "forage_mushrooms": 0.25,
+    "share_meal": 0.11,
+    "skip_meal": 0.11
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.08,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.08,
+    "forage_mushrooms": 0.79,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.09,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.79,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.25,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.57,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.24,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.58,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.19,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.16,
+    "forage_mushrooms": 0.61,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.2,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.6,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.16,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.61,
+    "share_meal": 0.11,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.16,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.57,
+    "share_meal": 0.16,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.19,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.5,
+    "share_meal": 0.19,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.18,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.54,
+    "share_meal": 0.18,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.07,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.22,
+    "forage_mushrooms": 0.66,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.07,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.23,
+    "forage_mushrooms": 0.67,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.09,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.72,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.1,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.12,
+    "forage_mushrooms": 0.73,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.07,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.05,
+    "forage_mushrooms": 0.82,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.04,
+    "forage_mushrooms": 0.86,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.08,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.79,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.08,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.05,
+    "forage_mushrooms": 0.81,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.05,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.69,
+    "share_meal": 0.19,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.06,
+    "forage_mushrooms": 0.67,
+    "share_meal": 0.2,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.05,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.09,
+    "forage_mushrooms": 0.8,
+    "share_meal": 0.05,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.06,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.09,
+    "forage_mushrooms": 0.77,
+    "share_meal": 0.07,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.13,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.64,
+    "share_meal": 0.07,
+    "skip_meal": 0.03
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.1,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.1,
+    "forage_mushrooms": 0.66,
+    "share_meal": 0.08,
+    "skip_meal": 0.03
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.13,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.1,
+    "forage_mushrooms": 0.6,
+    "share_meal": 0.1,
+    "skip_meal": 0.04
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "curious_spontaneous",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.13,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.62,
+    "share_meal": 0.08,
+    "skip_meal": 0.03
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.24,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.61,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.3,
+    "bread_and_cheese": 0.02,
+    "grill_fish": 0.12,
+    "forage_mushrooms": 0.54,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.61,
+    "forage_mushrooms": 0.26,
+    "share_meal": 0.05,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "tavern_stew",
+   "days": 3,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.07,
+    "grill_fish": 0.61,
+    "forage_mushrooms": 0.28,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 0,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.09,
+    "grill_fish": 0.61,
+    "forage_mushrooms": 0.24,
+    "share_meal": 0.05,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "tavern_stew",
+   "days": 7,
+   "repeat": 1,
+   "choice": "grill_fish",
+   "probabilities": {
+    "tavern_stew": 0.01,
+    "bread_and_cheese": 0.1,
+    "grill_fish": 0.58,
+    "forage_mushrooms": 0.26,
+    "share_meal": 0.05,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.68,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.09,
+    "forage_mushrooms": 0.15,
+    "share_meal": 0.07,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "bread_and_cheese",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.7,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.07,
+    "forage_mushrooms": 0.13,
+    "share_meal": 0.09,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.68,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.08,
+    "forage_mushrooms": 0.15,
+    "share_meal": 0.08,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "bread_and_cheese",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.67,
+    "bread_and_cheese": 0.01,
+    "grill_fish": 0.08,
+    "forage_mushrooms": 0.15,
+    "share_meal": 0.09,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.6,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.35,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "grill_fish",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.6,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.34,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.62,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.32,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "grill_fish",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.58,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.01,
+    "forage_mushrooms": 0.37,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.69,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.2,
+    "forage_mushrooms": 0.05,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "forage_mushrooms",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.69,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.2,
+    "forage_mushrooms": 0.05,
+    "share_meal": 0.02,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.71,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.19,
+    "forage_mushrooms": 0.03,
+    "share_meal": 0.03,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "forage_mushrooms",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.7,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.18,
+    "forage_mushrooms": 0.03,
+    "share_meal": 0.04,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.48,
+    "bread_and_cheese": 0.05,
+    "grill_fish": 0.16,
+    "forage_mushrooms": 0.3,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "share_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.47,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.16,
+    "forage_mushrooms": 0.32,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.49,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.13,
+    "forage_mushrooms": 0.34,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "share_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.55,
+    "bread_and_cheese": 0.04,
+    "grill_fish": 0.14,
+    "forage_mushrooms": 0.26,
+    "share_meal": 0.01,
+    "skip_meal": 0.0
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 0,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.45,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.12,
+    "forage_mushrooms": 0.32,
+    "share_meal": 0.06,
+    "skip_meal": 0.02
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "skip_meal",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.38,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.42,
+    "share_meal": 0.05,
+    "skip_meal": 0.01
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forage_mushrooms",
+   "probabilities": {
+    "tavern_stew": 0.36,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.15,
+    "forage_mushrooms": 0.39,
+    "share_meal": 0.06,
+    "skip_meal": 0.01
+   }
+  },
+  {
+   "scenario": "meal",
+   "persona": "likes_novelty",
+   "repeated": "skip_meal",
+   "days": 7,
+   "repeat": 1,
+   "choice": "tavern_stew",
+   "probabilities": {
+    "tavern_stew": 0.44,
+    "bread_and_cheese": 0.03,
+    "grill_fish": 0.11,
+    "forage_mushrooms": 0.36,
+    "share_meal": 0.04,
+    "skip_meal": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.67,
+    "market_square": 0.11,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.2
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.72,
+    "market_square": 0.09,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.17
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.97,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.9,
+    "market_square": 0.05,
+    "forest_ruins": 0.01,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.88,
+    "market_square": 0.07,
+    "forest_ruins": 0.01,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.88,
+    "market_square": 0.07,
+    "forest_ruins": 0.01,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.11,
+    "market_square": 0.81,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.06
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.13,
+    "market_square": 0.79,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.01,
+    "stay_home": 0.07
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.09,
+    "market_square": 0.83,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.06
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.85,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.05
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.01,
+    "forest_ruins": 0.9,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.01,
+    "forest_ruins": 0.92,
+    "hilltop": 0.0,
+    "quarry_road": 0.01,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.02,
+    "forest_ruins": 0.85,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.05
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.02,
+    "forest_ruins": 0.85,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.05
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 0,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.11,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.81,
+    "quarry_road": 0.01,
+    "stay_home": 0.05
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 1,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.12,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.8,
+    "quarry_road": 0.01,
+    "stay_home": 0.05
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 0,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.83,
+    "quarry_road": 0.01,
+    "stay_home": 0.06
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 1,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.86,
+    "quarry_road": 0.0,
+    "stay_home": 0.04
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 0,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.91,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 1,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.07,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.89,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 0,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.02,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.9,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 1,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.93,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 0,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.23,
+    "market_square": 0.12,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.63
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 1,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.29,
+    "market_square": 0.13,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.56
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 0,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.14,
+    "market_square": 0.1,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.74
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "none",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 1,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.14,
+    "market_square": 0.11,
+    "forest_ruins": 0.0,
+    "hilltop": 0.01,
+    "quarry_road": 0.01,
+    "stay_home": 0.73
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.68,
+    "market_square": 0.08,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.01,
+    "stay_home": 0.23
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 0.68,
+    "market_square": 0.09,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.01,
+    "stay_home": 0.22
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 1.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 1.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 0,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 1.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 1,
+   "choice": "lakeshore",
+   "probabilities": {
+    "lakeshore": 1.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.99,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.99,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 1.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.99,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.99,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 1.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 1.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.99,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 0,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.98,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 1,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.98,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 0,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.98,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 1,
+   "choice": "hilltop",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.99,
+    "quarry_road": 0.0,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 0,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 1.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 1,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 1.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 0,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 1.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 1,
+   "choice": "quarry_road",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.0,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 1.0,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 0,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.95
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 1,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.96
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 0,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.97
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "predictable",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 1,
+   "choice": "stay_home",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.01,
+    "forest_ruins": 0.0,
+    "hilltop": 0.0,
+    "quarry_road": 0.0,
+    "stay_home": 0.98
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.33,
+    "forest_ruins": 0.55,
+    "hilltop": 0.05,
+    "quarry_road": 0.03,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.28,
+    "forest_ruins": 0.61,
+    "hilltop": 0.05,
+    "quarry_road": 0.02,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.26,
+    "market_square": 0.3,
+    "forest_ruins": 0.29,
+    "hilltop": 0.09,
+    "quarry_road": 0.05,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.24,
+    "market_square": 0.34,
+    "forest_ruins": 0.29,
+    "hilltop": 0.07,
+    "quarry_road": 0.05,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.2,
+    "market_square": 0.34,
+    "forest_ruins": 0.3,
+    "hilltop": 0.09,
+    "quarry_road": 0.06,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.22,
+    "market_square": 0.33,
+    "forest_ruins": 0.31,
+    "hilltop": 0.08,
+    "quarry_road": 0.05,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.13,
+    "market_square": 0.16,
+    "forest_ruins": 0.48,
+    "hilltop": 0.14,
+    "quarry_road": 0.07,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.13,
+    "market_square": 0.15,
+    "forest_ruins": 0.48,
+    "hilltop": 0.15,
+    "quarry_road": 0.07,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.2,
+    "forest_ruins": 0.47,
+    "hilltop": 0.14,
+    "quarry_road": 0.07,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.12,
+    "market_square": 0.17,
+    "forest_ruins": 0.49,
+    "hilltop": 0.14,
+    "quarry_road": 0.06,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.15,
+    "market_square": 0.29,
+    "forest_ruins": 0.32,
+    "hilltop": 0.14,
+    "quarry_road": 0.07,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.12,
+    "market_square": 0.27,
+    "forest_ruins": 0.39,
+    "hilltop": 0.14,
+    "quarry_road": 0.05,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.14,
+    "market_square": 0.3,
+    "forest_ruins": 0.28,
+    "hilltop": 0.18,
+    "quarry_road": 0.06,
+    "stay_home": 0.04
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.15,
+    "market_square": 0.34,
+    "forest_ruins": 0.26,
+    "hilltop": 0.16,
+    "quarry_road": 0.06,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.21,
+    "forest_ruins": 0.45,
+    "hilltop": 0.19,
+    "quarry_road": 0.04,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.11,
+    "market_square": 0.23,
+    "forest_ruins": 0.48,
+    "hilltop": 0.13,
+    "quarry_road": 0.04,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.2,
+    "forest_ruins": 0.45,
+    "hilltop": 0.2,
+    "quarry_road": 0.05,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.09,
+    "market_square": 0.19,
+    "forest_ruins": 0.43,
+    "hilltop": 0.22,
+    "quarry_road": 0.05,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.25,
+    "forest_ruins": 0.41,
+    "hilltop": 0.09,
+    "quarry_road": 0.14,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.13,
+    "market_square": 0.27,
+    "forest_ruins": 0.35,
+    "hilltop": 0.1,
+    "quarry_road": 0.14,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.26,
+    "forest_ruins": 0.41,
+    "hilltop": 0.12,
+    "quarry_road": 0.1,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.26,
+    "forest_ruins": 0.41,
+    "hilltop": 0.12,
+    "quarry_road": 0.1,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.34,
+    "forest_ruins": 0.44,
+    "hilltop": 0.11,
+    "quarry_road": 0.05,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.3,
+    "forest_ruins": 0.49,
+    "hilltop": 0.11,
+    "quarry_road": 0.04,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.26,
+    "forest_ruins": 0.53,
+    "hilltop": 0.11,
+    "quarry_road": 0.04,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "spontaneous",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.27,
+    "forest_ruins": 0.52,
+    "hilltop": 0.11,
+    "quarry_road": 0.04,
+    "stay_home": 0.03
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.1,
+    "forest_ruins": 0.85,
+    "hilltop": 0.01,
+    "quarry_road": 0.03,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.11,
+    "forest_ruins": 0.82,
+    "hilltop": 0.02,
+    "quarry_road": 0.04,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.19,
+    "forest_ruins": 0.63,
+    "hilltop": 0.07,
+    "quarry_road": 0.05,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.18,
+    "forest_ruins": 0.62,
+    "hilltop": 0.08,
+    "quarry_road": 0.06,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.17,
+    "forest_ruins": 0.68,
+    "hilltop": 0.06,
+    "quarry_road": 0.05,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.15,
+    "forest_ruins": 0.7,
+    "hilltop": 0.06,
+    "quarry_road": 0.05,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.09,
+    "forest_ruins": 0.76,
+    "hilltop": 0.06,
+    "quarry_road": 0.07,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.07,
+    "forest_ruins": 0.74,
+    "hilltop": 0.08,
+    "quarry_road": 0.08,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.08,
+    "forest_ruins": 0.78,
+    "hilltop": 0.06,
+    "quarry_road": 0.06,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.07,
+    "forest_ruins": 0.76,
+    "hilltop": 0.08,
+    "quarry_road": 0.07,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.12,
+    "forest_ruins": 0.6,
+    "hilltop": 0.14,
+    "quarry_road": 0.05,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.08,
+    "market_square": 0.14,
+    "forest_ruins": 0.55,
+    "hilltop": 0.15,
+    "quarry_road": 0.07,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.09,
+    "market_square": 0.16,
+    "forest_ruins": 0.48,
+    "hilltop": 0.19,
+    "quarry_road": 0.07,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.1,
+    "market_square": 0.17,
+    "forest_ruins": 0.46,
+    "hilltop": 0.18,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.08,
+    "forest_ruins": 0.77,
+    "hilltop": 0.08,
+    "quarry_road": 0.04,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.08,
+    "forest_ruins": 0.79,
+    "hilltop": 0.07,
+    "quarry_road": 0.03,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.06,
+    "forest_ruins": 0.76,
+    "hilltop": 0.12,
+    "quarry_road": 0.04,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.06,
+    "forest_ruins": 0.79,
+    "hilltop": 0.1,
+    "quarry_road": 0.03,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.1,
+    "forest_ruins": 0.67,
+    "hilltop": 0.05,
+    "quarry_road": 0.15,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.11,
+    "forest_ruins": 0.72,
+    "hilltop": 0.06,
+    "quarry_road": 0.09,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.11,
+    "forest_ruins": 0.71,
+    "hilltop": 0.06,
+    "quarry_road": 0.1,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.11,
+    "forest_ruins": 0.71,
+    "hilltop": 0.06,
+    "quarry_road": 0.09,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.12,
+    "forest_ruins": 0.76,
+    "hilltop": 0.04,
+    "quarry_road": 0.06,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.11,
+    "forest_ruins": 0.78,
+    "hilltop": 0.04,
+    "quarry_road": 0.05,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.08,
+    "forest_ruins": 0.82,
+    "hilltop": 0.04,
+    "quarry_road": 0.04,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "curious_spontaneous",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.1,
+    "forest_ruins": 0.8,
+    "hilltop": 0.04,
+    "quarry_road": 0.04,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": null,
+   "days": 0,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.09,
+    "forest_ruins": 0.83,
+    "hilltop": 0.03,
+    "quarry_road": 0.05,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": null,
+   "days": 0,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.0,
+    "market_square": 0.1,
+    "forest_ruins": 0.81,
+    "hilltop": 0.04,
+    "quarry_road": 0.05,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.3,
+    "forest_ruins": 0.38,
+    "hilltop": 0.2,
+    "quarry_road": 0.1,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "lakeshore",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.32,
+    "forest_ruins": 0.4,
+    "hilltop": 0.18,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.29,
+    "forest_ruins": 0.45,
+    "hilltop": 0.16,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "lakeshore",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.27,
+    "forest_ruins": 0.45,
+    "hilltop": 0.18,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.01,
+    "forest_ruins": 0.66,
+    "hilltop": 0.2,
+    "quarry_road": 0.1,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "market_square",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.01,
+    "forest_ruins": 0.66,
+    "hilltop": 0.2,
+    "quarry_road": 0.1,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.01,
+    "forest_ruins": 0.71,
+    "hilltop": 0.17,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "market_square",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.01,
+    "forest_ruins": 0.69,
+    "hilltop": 0.18,
+    "quarry_road": 0.09,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.06,
+    "market_square": 0.48,
+    "forest_ruins": 0.01,
+    "hilltop": 0.31,
+    "quarry_road": 0.13,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "forest_ruins",
+   "days": 3,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.05,
+    "market_square": 0.47,
+    "forest_ruins": 0.01,
+    "hilltop": 0.33,
+    "quarry_road": 0.13,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 0,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.05,
+    "market_square": 0.49,
+    "forest_ruins": 0.02,
+    "hilltop": 0.31,
+    "quarry_road": 0.12,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "forest_ruins",
+   "days": 7,
+   "repeat": 1,
+   "choice": "market_square",
+   "probabilities": {
+    "lakeshore": 0.04,
+    "market_square": 0.5,
+    "forest_ruins": 0.02,
+    "hilltop": 0.32,
+    "quarry_road": 0.11,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.17,
+    "forest_ruins": 0.73,
+    "hilltop": 0.0,
+    "quarry_road": 0.07,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "hilltop",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.17,
+    "forest_ruins": 0.74,
+    "hilltop": 0.0,
+    "quarry_road": 0.06,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.17,
+    "forest_ruins": 0.72,
+    "hilltop": 0.01,
+    "quarry_road": 0.07,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "hilltop",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.18,
+    "forest_ruins": 0.72,
+    "hilltop": 0.01,
+    "quarry_road": 0.07,
+    "stay_home": 0.0
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.21,
+    "forest_ruins": 0.63,
+    "hilltop": 0.12,
+    "quarry_road": 0.01,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "quarry_road",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.2,
+    "forest_ruins": 0.63,
+    "hilltop": 0.13,
+    "quarry_road": 0.01,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.03,
+    "market_square": 0.21,
+    "forest_ruins": 0.59,
+    "hilltop": 0.15,
+    "quarry_road": 0.01,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "quarry_road",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.02,
+    "market_square": 0.23,
+    "forest_ruins": 0.57,
+    "hilltop": 0.16,
+    "quarry_road": 0.01,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.24,
+    "forest_ruins": 0.58,
+    "hilltop": 0.08,
+    "quarry_road": 0.08,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "stay_home",
+   "days": 3,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.23,
+    "forest_ruins": 0.59,
+    "hilltop": 0.08,
+    "quarry_road": 0.07,
+    "stay_home": 0.02
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 0,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.25,
+    "forest_ruins": 0.61,
+    "hilltop": 0.06,
+    "quarry_road": 0.06,
+    "stay_home": 0.01
+   }
+  },
+  {
+   "scenario": "walk",
+   "persona": "likes_novelty",
+   "repeated": "stay_home",
+   "days": 7,
+   "repeat": 1,
+   "choice": "forest_ruins",
+   "probabilities": {
+    "lakeshore": 0.01,
+    "market_square": 0.2,
+    "forest_ruins": 0.64,
+    "hilltop": 0.08,
+    "quarry_road": 0.05,
+    "stay_home": 0.02
+   }
+  }
+ ]
+}
