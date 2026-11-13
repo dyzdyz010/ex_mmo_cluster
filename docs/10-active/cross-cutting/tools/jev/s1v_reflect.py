@@ -119,8 +119,34 @@ def save(key, value):
     os.replace(tmp, RESULTS)
 
 
+class QuotaStop(SystemExit):
+    pass
+
+
+class GuardedHindsight(s1q.Hindsight):
+    """429 / 认证类错误：记下时刻与原文后立即停在当前阶段，不重试（网关与本机会话共用额度）。"""
+
+    def call(self, *args, **kwargs):
+        out = super().call(*args, **kwargs)
+        if out["status"] in (401, 403, 429):
+            msg = f"STOP quota/auth status={out['status']} at={now_iso()} path={args[1]} error={out['error']}"
+            log(msg)
+            raise QuotaStop(msg)
+        return out
+
+
 def hs():
-    return s1q.Hindsight(s1q.BASE, LOG)
+    return GuardedHindsight(s1q.BASE, LOG)
+
+
+def configure(bank_id, out_dir):
+    """--bank / --out：把副本库名与落盘目录指过去（第二次执行用 s1v-copy2-20261113 与 s1v/run2）。"""
+    global COPY_BANK, OUT, RAW, VARIANTS_DIR, REFLECTIONS, BELIEFS, RECALL_DIR, RESULTS, LOG
+    COPY_BANK = bank_id
+    OUT = Path(out_dir) if Path(out_dir).is_absolute() else s1q.S1 / out_dir
+    RAW, VARIANTS_DIR, REFLECTIONS = OUT / "raw", OUT / "variants", OUT / "reflections"
+    BELIEFS, RECALL_DIR, RESULTS, LOG = OUT / "beliefs", OUT / "recall", OUT / "results.json", OUT / "run.log"
+    s1q.RAW = RAW
 
 
 def must(out, what):
@@ -274,7 +300,16 @@ def cmd_setup(a):
     info["replay_wait"] = wait_drained(h, REPLAY_CAP_S, "S_replay")
     log(f"replay wait {info['replay_wait']}")
     save("setup", info)
-    _, info["memories_after_replay"] = export_memories(h, "replay")
+    rows, info["memories_after_replay"] = export_memories(h, "replay")
+    # 只记录：第一人称比例、实体里的 assistant / user、认识类事实与带次数的条数（同 s1q mission 的判法）
+    ents, _ = s1q.list_all(h, COPY_BANK, "/entities", "items", tag="entities")
+    (RAW / "S_entities.json").write_text(json.dumps(ents, ensure_ascii=False), encoding="utf8")
+    r = s1q.bank_readings(rows, ents)
+    info["mission_readings"] = {k: v for k, v in r.items() if k not in ("rows", "entity_tokens")}
+    log("mission readings fp={first_person}/{n} ratio={first_person_ratio:.3f} obs={observations} counted={observations_counted} "
+        "au_exact={entities_assistant_or_user_exact} au_contains={entities_mentioning_assistant_or_user}".format(**r)
+        + f" endpoint_au={r.get('entities_endpoint', {}).get('assistant_or_user')}")
+    save("setup", info)
     b0 = refresh_models(h, "B0")
     info["B0"] = {k: v for k, v in b0.items() if k != "content"}
     log(f"B0 chars {b0['chars']}")
@@ -383,8 +418,13 @@ def cmd_reflect(a):
     rows = []
     for qname, (question, _) in QUESTIONS.items():
         for k in range(1, REPEATS + 1):  # 串行：一次一个
-            out = h.call("POST", bank("/reflect"), dict(query=question, include=dict(facts={})),
-                         raw_name=f"F_{qname}_{k}.json", timeout=REFLECT_TIMEOUT_S)
+            try:
+                out = h.call("POST", bank("/reflect"), dict(query=question, include=dict(facts={})),
+                             raw_name=f"F_{qname}_{k}.json", timeout=REFLECT_TIMEOUT_S)
+            except QuotaStop as stop:  # 额度 / 认证：落下已有读数后停
+                save("reflect", dict(questions={q: v[0] for q, v in QUESTIONS.items()}, timeout_s=REFLECT_TIMEOUT_S,
+                                     stopped=str(stop), runs=rows))
+                raise
             j = out["json"] or {}
             bo = j.get("based_on") or {}
             text = j.get("text") if out["ok"] else None
@@ -400,6 +440,7 @@ def cmd_reflect(a):
             log(f"reflect {qname} {k}: ok={row['ok']} s={row['seconds']} usage={row['usage']} "
                 f"based_on={row['based_on_counts']} err={row['error']}")
     save("reflect", dict(questions={q: v[0] for q, v in QUESTIONS.items()}, request_shape="query + include.facts={}",
+                         bank=COPY_BANK,
                          timeout_s=REFLECT_TIMEOUT_S, finished=now_iso(), runs=rows))
 
 
@@ -517,7 +558,7 @@ def cmd_jev(a):
         return
     data = s1q.run_jev(texts, ORDER, notes)
     for v in data["variants"]:
-        v["state_file"] = f"s1v/variants/{v['variant']}.txt"
+        v["state_file"] = str((VARIANTS_DIR / f"{v['variant']}.txt").relative_to(s1q.S1))
     save("jev", data)
     for v in data["variants"]:
         log(f"jev {v['variant']} chars={v['state_chars']} top1={v['top1_counts']} "
@@ -616,10 +657,16 @@ def cmd_judge(a):
 
 
 def main():
+    global REFLECT_TIMEOUT_S
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=["setup", "recall0", "reflect", "writeback", "recall1", "jev", "judge"])
     ap.add_argument("--dryrun", action="store_true")
+    ap.add_argument("--bank", default=COPY_BANK)
+    ap.add_argument("--out", default="s1v", help="相对 npc-slice1-20261112/ 或绝对路径")
+    ap.add_argument("--reflect-timeout", type=int, default=REFLECT_TIMEOUT_S)
     a = ap.parse_args()
+    REFLECT_TIMEOUT_S = a.reflect_timeout
+    configure(a.bank, a.out)
     for d in (OUT, RAW):
         d.mkdir(parents=True, exist_ok=True)
     log(f"START {a.stage}")
