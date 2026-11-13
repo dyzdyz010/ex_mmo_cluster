@@ -568,27 +568,14 @@ def jev_ask(state, questions, timeout=HTTP_TIMEOUT):
         return {"error": e.code, "body": e.read().decode("utf8", "replace")[:300]}, time.perf_counter() - t
 
 
-def cmd_jev(a):
-    recall = load_section("recall")
-    if not recall:
-        raise SystemExit("run `recall` first")
-    VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
-    RAW.mkdir(parents=True, exist_ok=True)
-    texts, notes = build_variants(recall)
-    for name in ORDER:
-        (VARIANTS_DIR / f"{name}.txt").write_bytes(texts[name].encode("utf8"))
-    (VARIANTS_DIR / "notes.json").write_text(json.dumps(notes, ensure_ascii=False, indent=1), encoding="utf8")
-    for name in ORDER:
-        print(f"{name}: chars={len(texts[name])}")
-    if a.dryrun:
-        print("dryrun: variants written to", VARIANTS_DIR)
-        return
+def run_jev(texts, order, notes):
+    """每变体 JEV_REPEATS 次、并发 <= MAX_INFLIGHT 地问 Jev；返回读数 dict（jev 与 jev-addendum 共用）。"""
     tpl = json.loads(TEMPLATE.read_text(encoding="utf8"))
     q = {"activity": {"criteria": {c["name"]: c["criterion"] for c in tpl["candidates"]},
                       "instructions": tpl["instructions"], "type": "choice"}}
     load_env()
     model = os.environ["TYPESAFE_MODEL"]
-    cells = [(n, r + 1) for n in ORDER for r in range(JEV_REPEATS)]
+    cells = [(n, r + 1) for n in order for r in range(JEV_REPEATS)]
     started = now_iso()
 
     def one(cell):
@@ -619,7 +606,7 @@ def cmd_jev(a):
     for name, row in got:
         by.setdefault(name, []).append(row)
     variants = []
-    for name in ORDER:
+    for name in order:
         rows = sorted(by[name], key=lambda r: r["repeat"])
         ok = [r for r in rows if r["ok"]]
         top = {}
@@ -632,11 +619,94 @@ def cmd_jev(a):
                 candidates=cands, started=started, finished=now_iso(), requests=len(got),
                 answered=sum(r["ok"] for _, r in got), failed=sum(not r["ok"] for _, r in got),
                 variant_notes=notes, variants=variants)
+    return data
+
+
+def cmd_jev(a):
+    recall = load_section("recall")
+    if not recall:
+        raise SystemExit("run `recall` first")
+    VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
+    RAW.mkdir(parents=True, exist_ok=True)
+    texts, notes = build_variants(recall)
+    for name in ORDER:
+        (VARIANTS_DIR / f"{name}.txt").write_bytes(texts[name].encode("utf8"))
+    (VARIANTS_DIR / "notes.json").write_text(json.dumps(notes, ensure_ascii=False, indent=1), encoding="utf8")
+    for name in ORDER:
+        print(f"{name}: chars={len(texts[name])}")
+    if a.dryrun:
+        print("dryrun: variants written to", VARIANTS_DIR)
+        return
+    data = run_jev(texts, ORDER, notes)
     save_section("jev", data)
-    for v in variants:
+    print_jev(data)
+    print(f"results: {RESULTS} [jev]")
+
+
+def print_jev(data):
+    for v in data["variants"]:
         print(v["variant"], v["state_chars"], v["top1_counts"], {k: round(x, 3) for k, x in v["avg_probs"].items() if x},
               "failed", v["failed"])
-    print(f"results: {RESULTS} [jev]")
+
+
+# ---------------------------------------------------------------- J2：plan-addendum 补测（按 Hindsight 返回次序重算的清单）
+
+REMERGE = OUT / "remerge-rank-order.json"
+RESULTS_ADDENDUM = OUT / "results-addendum.json"
+ADDENDUM_ORDER = ["N_recall_rank", "T_recall_rank", "V_recall_rank",
+                  "N_recall_rank_no_stale", "T_recall_rank_no_stale", "V_recall_rank_no_stale"]
+
+
+def build_addendum_variants(recall):
+    merged = json.loads(REMERGE.read_text(encoding="utf8"))["merged"]
+    when = {}  # id -> 条目发生时刻（occurred_start，缺则 mentioned_at），取自 recall.cells 的首轮各路返回
+    for c in recall["cells"]:
+        for items in c["first_run_routes"].values():
+            for it in items:
+                when.setdefault(it["id"], it.get("occurred_start") or it.get("mentioned_at"))
+    v_asked = asked_at("V")
+    out, notes = {}, {}
+    for s in ("N", "T", "V"):
+        text = state_text(s)
+        h, b, r = memory_parts(next(lines for title, lines in sections(text) if title == MEM))
+        items, dropped = merged[s], []
+        if s == "V":  # 同 V_recall_new3：晚于基准 state 的剔除；无时刻的保留并列出
+            dropped = [it for it in items if when.get(it["id"]) and _iso_key(when[it["id"]]) > _iso_key(v_asked)]
+            items = [it for it in items if it not in dropped]
+        stale = [it for it in items if STALE in it["text"]]
+        for name, kept in ((f"{s}_recall_rank", items),
+                           (f"{s}_recall_rank_no_stale", [it for it in items if it not in stale])):
+            out[name] = with_memory(text, [h] + b + recalled_lines(kept))
+            notes[name] = dict(replaced_recalled_lines=len(r), new_lines=len(kept),
+                               dropped_later=[dict(id=i["id"], at=when.get(i["id"]), text=i["text"]) for i in dropped],
+                               undated_kept=[i["id"] for i in kept if not when.get(i["id"])],
+                               removed_stale=[dict(id=i["id"], text=i["text"]) for i in stale] if name.endswith("no_stale") else [])
+            a, b2 = dict(sections(text)), dict(sections(out[name]))  # 自检：只有 What I remember 栏变，栏头不变
+            assert {t for t in TITLES if a.get(t) != b2.get(t)} <= {MEM}, name
+            assert b2[MEM][0] == a[MEM][0], f"{name}: What I remember header changed"
+    return out, notes
+
+
+def cmd_jev_addendum(a):
+    recall = load_section("recall")
+    if not recall:
+        raise SystemExit("run `recall` first")
+    VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
+    RAW.mkdir(parents=True, exist_ok=True)
+    texts, notes = build_addendum_variants(recall)
+    for name in ADDENDUM_ORDER:
+        path = VARIANTS_DIR / f"{name}.txt"
+        if path.exists() and path.read_bytes() != texts[name].encode("utf8") and not a.dryrun:
+            raise SystemExit(f"refusing to overwrite a different existing variant: {path}")
+        path.write_bytes(texts[name].encode("utf8"))
+        print(f"{name}: chars={len(texts[name])} recalled={notes[name]['new_lines']}")
+    if a.dryrun:
+        print("dryrun: variants written to", VARIANTS_DIR)
+        return
+    data = run_jev(texts, ADDENDUM_ORDER, notes)
+    RESULTS_ADDENDUM.write_text(json.dumps(dict(jev=data), ensure_ascii=False, indent=1), encoding="utf8")
+    print_jev(data)
+    print(f"results: {RESULTS_ADDENDUM}")
 
 
 # ---------------------------------------------------------------- M：mission
@@ -856,6 +926,9 @@ def main():
     j = sub.add_parser("jev")
     j.add_argument("--dryrun", action="store_true")
     j.set_defaults(fn=cmd_jev)
+    ja = sub.add_parser("jev-addendum")
+    ja.add_argument("--dryrun", action="store_true")
+    ja.set_defaults(fn=cmd_jev_addendum)
     m = sub.add_parser("mission")
     m.add_argument("--base", default=BASE)
     m.add_argument("--dryrun", action="store_true", help="只对上文档、分批，不发请求")
