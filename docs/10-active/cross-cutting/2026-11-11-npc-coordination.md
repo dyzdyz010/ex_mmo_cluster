@@ -17,6 +17,36 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
+### 交接（2026-11-13，第七个统筹会话 → 第八个，因上下文接近 300k）——接手先读这一节，再读紧接着的“第七个统筹会话的进展”页首引用块
+
+**一句话**：产品侧已提交两步——`8dfb567b`（`Life.Hindsight`：带过滤的召回、tags、mission）与 `b41c0590`（Life 写入侧：期间事实、人名、tags、逐条成文档、Registry 可选地名）。npc_server 缺省全套 430 通过、18 排除（`.demo/observe/npc-slice1-20261112/s1m/t2-full.log`）。**都没有在真实服务端实跑过**；分支未推送；工作区交接时干净。
+用户 2026-11-13 的两条更正是本线现在的方法论（正文在下面的引用块与“工程约束”）：**测量不生造数据**；**先看整条链**（数据有没有产生者、能不能进到 prompt），不在局部死磕。
+
+**`b41c0590` 的核对状态（如实）**：统筹会话只逐行看了 `life.ex` 的改动，`life/state.ex`、`dialogue.ex`、`registry.ex`、`runtime.ex`、`selector.ex`、`mind.ex` 与测试的 diff **没有逐行核对**，接手后先补。子会话回报的要点与偏离：
+- 新入口 `Life.activity_started/1`（`Runtime.finish_select` 选定后调用）；`Life.activity/2` 入参改为 `%{text:, place:}`（`Selector.experience/2` 的返回）；`State.advance/6` 末尾加 `names`；`Dialogue.episode/3`；Registry 活动候选可选键 `"place_name"`（只进 tags，不进给 Jev 的候选）。
+- 名字、距离、“谁算人”的函数挪到了 `Life.State`（`person/2`、`person_name/1`、`others/1`、`distance/2`、`approach/2`、`during/2`），`Mind` 改为调用它们——任务书写的是不改 `mind.ex`，子会话为避免复制而改了；`npc_mind_test` 未改且通过。
+- **要修（第一件事）**：说话的经历现在只从观察取说话人名字，丢掉了消息自带的 `speaker_name`——说话人不在视野里就没名字。应改为说话人名字取消息自带的，对方的名字才取观察。
+- 旧形状的片段（只有 `"text"`）不转换：一旦开始 retain 或读 `mind` / `context`，Life 进程崩溃并带着 Runtime、Body 反复重启。**实跑必须用全新的库**；这是“清空重建不写兼容”的直接后果，没有做成显式拒绝。
+- 每条经历单独成文档后，Hindsight 对某份文档抽不出事实时 `retain/2` 整批报 `:empty_facts`，Life 记 `job_error` 并停掉自动写入，直到手动 flush——短句更容易触发，**未在真实服务上验证**，实跑时重点看。
+- 开始 / 结束信号来自不同进程（Runtime 与发问 worker），次序靠本节点投递，未另加保证。`npc_life_state_test`、`npc_selector_test`、`npc_registry_test` 在 HEAD 上本来就不合格式，新行未用 formatter 核对。
+
+**“看到的”——NPC 一侧实际拿得到什么（只读侦察的结论，行号按 `b41c0590`；设计草案还没写，用户已同意单独设计、要他点头）**
+- **能直接用**：约每 50 毫秒一份观察（Player 每 3 tick 发 OwnerAck，`scene_server/movement/player.ex:916-932`；Body 每收到一次就发观察，`npc_server/body.ex:386-396`）；视野 = AOI，30 米进、34 米出（`scene_server/movement/aoi.ex:9-11`）；每个实体只有 `entity_id`、`entity_epoch`、`kind`（0 玩家 / 1 NPC）、`name`、`relation`、`position`、`tick`（`body.ex:430-438`）。
+  Life 每秒 poll 到的是**全世界**的 build / damage / destroy 事件（带 actor、格子、材料、建筑名），但 `Life.State.appraise` 只留“动我的建筑”的，其余丢掉（`life/state.ex:306-351`）。
+- **要做差才有**：谁进入 / 离开视野（协议有 `EntityEnter` / `EntityLeave`，Body 收到后只增删缓存、不往 Runtime 转发）；别人靠近 / 走远 / 停留多久（位置序列）；别人在我附近建造 / 拆除（World 事件的格子与我的位置比距离）。
+- **已下发但被 Body 丢掉**（要改 Body）：别人的速度、朝向、生死状态码（`body_status` 0 存活 / 1 濒死 / 2 死亡）；`:voxel` 流里的逐笔操作；工具 / 投射物回执。
+- **系统里根本没有**：别人此刻的动作 / 技能 / 动画状态；别人施法或受伤的通知；别人的所持物、生命值。
+- “谁算人”现在没有按 `kind` 过滤（玩家与 NPC 都算）；距离是三维直线距离。
+
+**下一步（按此顺序）**
+1. 补核 `b41c0590` 其余文件的 diff；修说话人名字（小任务，WSL 跑 dialogue 相关测试 + 全套）。
+2. 写“看到的”规范草案（放内容规范页，新一节）：只用上面“能直接用 / 做差可得”的数据起草——候选：有人进入 / 离开我附近、某人在我附近建造 / 拆除（World 事件按距离筛）、某人濒死 / 死亡（要改 Body）；每类写明产生者、存哪、经哪条路进 prompt、频率上限（观察 20 Hz，必须按事件而不是按帧成条）。交用户定。
+3. **真实服务端 NPC-only 短实跑**（不起 QUIC、不起客户端；全新 PG 与新 Hindsight bank；沿用 S1-C3 的三种处境与脚本 `s1c3/scripts/`；`confront_wrecker` 改 `"person": "distrusted"`、给 `guard_hut` 等活动登记 `place_name`）：跑到越过封存阈值（约 17 次活动以上），逐次选择看期间事实是经“What just happened”、召回还是认识进的 prompt，在哪一步丢；看 `:empty_facts`、mission 生效、观察节奏。计划与期望先写 `.demo/observe/npc-slice1-20261112/s1n/plan.md`。
+4. 在真实导出上重测（只做删减 / 换写法）：mission 效果、单路对三路召回、期间事实对选择的作用；之后才定 T4（三路召回接线，方案见下文“第 4 项的实现拆分”）。T3（Mind 的 Now 栏、相对游戏时间、背包去零、召回去噪）依据的是真实数据的变换，可在第 3 步前后做。
+5. 约定、“多久没跟人相处”、关系史一句、反思写回：产品里有产生者之前不测、不进产品。
+
+**环境**：本线只有一个容器 `npc-s1g-hindsight-20261113`（127.0.0.1:18933），bank：`smoke-s1g`、`s1i-m0/m1/m2`、`s1l-m1/m2`（都是本线建的手写材料库，按用户更正不再当依据，可按名字删）。临时 PG `npc-s1m/s1n/s1o-pg-20261113` 都已删。没有节点、tmux。WSL 跑测试的做法见 `s1m/` 各日志开头。跨会话记忆新增一条“测试数据必须是产品能产生的”。推送前须知不变（见第六个会话的交接：rebase 冲突点、CI 全绿、先向用户确认）。
+
 ### 第七个统筹会话的进展（2026-11-13）——接手先读这一节；下面第六个会话的“交接”里“下一步”第 1–3 项已做完
 
 > **用户更正（2026-11-13，晚于本节下面的全部离线结论，以此为准）：测量时不能凭空生造数据。** 正式环境产生不了的数据，测出来的结果没有意义。
@@ -79,7 +109,7 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 **用户答复（2026-11-13，经提问框逐项选择）**：(a) **活动期间逐帧记每人最小距离**（不加新通道；超出规范“起止各取一次”的原文，用户已点头）；(b) 靠近半径 **6 米**（原创取值，实跑后可调）；(c) **Registry 的活动候选加可选地名字段**，登记边界校验一次；(d) **清空重建，不写兼容**——只清本线自己的开发库与 NPC 的 Life 片段，代码里不留旧片段转换。
 **T1 已实现、已测、已提交 `8dfb567b`（未推送；未在真实服务端实跑）**——连同 `npc_registry_test.exs` 里 HTTP 替身认识 `PATCH` 的修补，npc_server 缺省全套 422 通过、18 排除（`s1m/fix-full.log`）；下面是修补之前的读数：`recall/3` 接受一路召回的描述（过渡期仍接受字符串问句，T4 后删）；召回结果在适配器边界规范化为 `%{"id","text","type","at_ms","tags"}`（**保留字符串键**——`mind.ex` 与多处测试按 `"text"` 读；只留这五个键）；retain item 透传 `"tags"`；`ensure` 在 PUT 后 `PATCH /config` 写两条 mission（常量 `@retain_mission` / `@observations_mission`，去掉了角色名 Garen，这一处差异未离线测过）。
 `npc_hindsight_test.exs` 18 通过；全套 418/422：2 条是 `npc_registry_test.exs` 自带的 HTTP 替身不认识 PATCH（连带 1 条 `NpcSelectorTest` 环境变量断言被污染），1 条 `NpcHindsightTest` “operation deadline bounds an in-flight poll request” 在全套负载下超时、单独跑通过（**原因按时序抖动记，未查清**）。替身的修补另派子会话。日志 `.demo/observe/npc-slice1-20261112/s1m/`。
-**T2（Life 写入侧）已派出、进行中**（任务书要点，接手时若工作区有未提交的 `apps/npc_server` 改动就是它的）：经历条目 `%{"id","at_ms","text","tags"}`、正文不烤时间前缀，组 retain 内容时在唯一一处加 `At <UTC> (UTC), `；片段带 `episodes`、每条经历一个 item；人名 `名字 (actor cid)`；tags；Registry 活动候选加可选地名字段；
+**T2（Life 写入侧）已实现、已测、已提交 `b41c0590`（状态与偏离见页首交接；下面是派出时的任务书要点）**（任务书要点，接手时若工作区有未提交的 `apps/npc_server` 改动就是它的）：经历条目 `%{"id","at_ms","text","tags"}`、正文不烤时间前缀，组 retain 内容时在唯一一处加 `At <UTC> (UTC), `；片段带 `episodes`、每条经历一个 item；人名 `名字 (actor cid)`；tags；Registry 活动候选加可选地名字段；
 期间事实句式由统筹会话定（**没有离线测过这几句的原文**，离线材料写的是相对屋子的 `came within 6 m of the hut and then walked away`）：` During it: nobody came near.` / `During it: <名> (actor <cid>) came within <N> m and then moved away.` / `… and was still there at the end.`，距离是到 NPC 自己的最小距离向上取整，最多 3 人；没有开始信号或期间没有观察就不写。测试日志将在 `s1m/t2-targeted.log`、`t2-full.log`，临时 PG 名 `npc-s1o-pg-20261113`（用完即删）。
 T2 之后：T3 + T4（Mind 渲染与三路召回接线）合成一个任务串行做——各任务都在本 worktree 里跑 WSL 测试，不并行。
 其它风险（方案会话指出，未处理）：每条经历单独成 document 后短句可能抽不出 fact（`document/2` 报 `:empty_facts` 会让 retain 卡住重试）；并行召回与后台 retain 争用同一个 Hindsight 没测过；`ensure` 每个 job 多一次 PATCH；`npc_mind_test.exs`、`npc_selector_test.exs`、`npc_life_test.exs` 等有全文断言要重写。
@@ -825,3 +855,5 @@ Hindsight 容器 `npc-s1-hindsight-20261112` 在 `127.0.0.1:18930`（卷 `npc-s1
   本线容器与卷已删（152 / 160）。图解页与进展页已更新。下一步待用户定，见页首“第四个统筹会话的结果”。
 - 2026-11-13（第七个统筹会话）：交接“下一步”第 1–3 项的离线测量做完——S1-I 反思两轮（36 + 48 条产出、盲评、Jev 124 + 152 次）、S1-J 召回对照（120 次 recall）、S1-K 游戏时间措辞与叠加（Jev 68 次）。全部探索性，期望发问前写定、落空如实记，没有动 `apps/`。
   结论与“站不站得住”的判断见页首“第七个统筹会话的进展”；证据 `.demo/observe/npc-slice1-20261112/s1i|s1j|s1k/`。
+- 2026-11-13（第七个统筹会话）：S1-L bank mission 离线测量；产品改动 `8dfb567b`（Hindsight 适配器）与 `b41c0590`（Life 写入侧），全套 430 通过，未实跑。用户更正：测量不生造数据、先看整条链；据此把依据手写材料的离线结论降为假设，顺序改为“先实跑导出再重测”。用户同意把“看到的”单独设计。因上下文接近 300k 交接给第八个统筹会话，见页首。
+
