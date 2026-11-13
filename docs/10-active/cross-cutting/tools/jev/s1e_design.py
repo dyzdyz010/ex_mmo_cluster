@@ -100,18 +100,19 @@ def nearby_cid(name, cid):
 STEMS_E = ['remov', 'destr', 'dismantl', 'demolish', 'vandal', 'harm', 'angr', 'anger', 'trust']
 
 
-def hits_e(line):
+def hits_in_line(line, needles, stems):
+    """needles = [(标签, 字面量)]，按子串、不分大小写；stems 同样不分大小写。返回命中的标签 / 词干（needles 在前）。"""
     low = line.lower()
-    return (['cid ' + VANDAL_CID] if VANDAL_CID in line else []) + [s for s in STEMS_E if s in low]
+    return [label for label, lit in needles if lit.lower() in low] + [s for s in stems if s in low]
 
 
-def rule_e(st, cx):
+def strip_event(st, cx, needles, stems, tag='rule E'):
     head, items = c.memory_items(st)
     out, deleted, cleared, kept_rec, belief_stat = [], [], [], [], []
     for item in items:
         belief = c.ITEM.match(item[0]).group(1) is not None
         if not belief:  # `- Recalled:` 行（一行一条）
-            h = hits_e(item[0])
+            h = hits_in_line(item[0], needles, stems)
             if h:
                 deleted.append((item[0], h))
             else:
@@ -121,7 +122,7 @@ def rule_e(st, cx):
         label = '- Belief (%s): ' % c.ITEM.match(item[0]).group(1)
         new, n_del = [], 0
         for i, line in enumerate(item):
-            h = hits_e(line)
+            h = hits_in_line(line, needles, stems)
             if not h:
                 new.append(line)
             elif i == 0:  # 条目首行：保留标签，只清标签后的文字
@@ -133,7 +134,7 @@ def rule_e(st, cx):
         belief_stat.append((label.strip(), len(item), n_del, len(new), sum(1 for l in new if l.strip())))
         out.append(new)
     if not deleted and not cleared:
-        raise c.Missing('rule E: no line in "What I remember" matched')
+        raise c.Missing('%s: no line in "What I remember" matched' % tag)
     cx.log('"What I remember" header line kept: ' + head)
     cx.log('DELETED / CLEARED lines (%d deleted, %d belief first-lines cleared):' % (len(deleted), len(cleared)))
     for line, h in deleted:
@@ -146,8 +147,11 @@ def rule_e(st, cx):
     for lab, total, nd, nk, nk_nb in belief_stat:
         cx.log('Belief %s: %d physical lines, deleted %d, kept %d (%d non-blank)' % (lab, total, nd, nk, nk_nb))
     st.sec[MEM] = '\n'.join([head] + [l for item in out for l in item])
-    after = st.sec[MEM]
-    assert VANDAL_CID not in after and not [s for s in STEMS_E if s in after.lower()], 'rule E left a hit in the memory column'
+    assert not hits_in_line(st.sec[MEM], needles, stems), '%s left a hit in the memory column' % tag
+
+
+def rule_e(st, cx):
+    strip_event(st, cx, [('cid ' + VANDAL_CID, VANDAL_CID)], STEMS_E)
 
 
 # ---------------------------------------------------------------- 变体表（次序即报告 / 发问次序）
