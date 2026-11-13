@@ -35,6 +35,23 @@ B 族（假设处境栏 Nearby 带上 cid，其余同 A 族）：
 四行都成立 → T1 不妨碍前半段。任何一行落空 → 如实记，T1 不能原样上实跑，先调整候选表再问（期望另写）。
 ==== 抄录结束 ====
 
+==== 第 3 轮期望（统筹会话 2026-11-13 发问前写定；原样抄录，不得修改；落空如实记落空） ====
+问题（用户提出）：重建之后一直守屋，是不是因为 state 里没有足够的环境信息与驱动信息——没有“过了多久”、没有需求、没有计划，模型就只知道守屋。
+素材：S1-C3 的三份真实 state（无人 N3、陌生人在附近 S3、破坏者在附近 V3），候选表 T1。每个变体只加一句，不删原文；各问 4 次，>= 3 次符合算成立。
+- N_original：guard_hut（复现在线 0.80）。
+- N_quiet_10min：guard_hut（才过 10 分钟，守着是合理的）。
+- N_quiet_6h：visit_plaza（知道已经平安过了半天，回到照常生活）。
+- N_quiet_3d：visit_plaza。
+- N_drive：visit_plaza（有一个想去广场的需求）。
+- N_plan：visit_plaza（有一份今天的计划，且现在已是下午）。
+- N_quiet_3d_drive：visit_plaza。
+- S_quiet_3d_drive：not confront（陌生人；top1 是什么另记）。
+- V_quiet_3d_drive：confront（过了三天、也想去广场，但那个人就在眼前，仍针对他——记忆的作用不被环境与驱动信息盖掉）。
+- V_plan：confront。
+统筹会话的预测（不是判定）：时间一句在 6 小时档可能不够、3 天档够；需求与计划各自单独就够。
+全部成立 → 用户的判断成立：缺的是环境与驱动信息，补上后既能回到照常生活、又保留对那个人的反应。哪一类信息单独不够，照落空的行如实记。
+==== 抄录结束 ====
+
 规则 E（“去掉记忆栏里那件事”，物理行级，只作用于 What I remember 栏）：行内（不分大小写，子串）含破坏者 cid 或词干
 remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 即命中（不含 rebuil、guard）。
 栏头说明句永不删；`- Recalled:` 行命中整行删；Belief 条目内物理行命中删该行，命中的是条目首行则保留标签 `- Belief (xxx): `、
@@ -64,6 +81,10 @@ SOURCES = {'S': STATES / 'asked-20261112T171536.032Z.txt',
            'V': STATES / 'asked-20261112T171740.597Z.txt'}
 SOURCES.update({'C1a': STATES / 'asked-20261112T170129.048Z.txt', 'C1b': STATES / 'asked-20261112T170159.681Z.txt',
                 'B': STATES / 'asked-20261112T170230.812Z.txt', 'R': STATES / 'asked-20261112T170245.418Z.txt'})
+LEGACY_SOURCES = list(SOURCES)  # 第 1、2 轮 edits.txt 的 sources 行列这些键（保持其产物逐字节不变）
+STATES3 = DEMO / 's1c3/states'
+SOURCES.update({'N3': STATES3 / 'asked-20261113T011250.994Z.txt', 'S3': STATES3 / 'asked-20261113T011117.526Z.txt',
+                'V3': STATES3 / 'asked-20261113T011353.298Z.txt'})
 TEMPLATE = DEMO / 's1c2/export/request-template.json'
 VANDAL_CID, VANDAL_NAME = '1845497958402', 'Corvin'
 STRANGER_CID, STRANGER_NAME = '5128442613763', 'Tobin'
@@ -154,6 +175,48 @@ def rule_e(st, cx):
     strip_event(st, cx, [('cid ' + VANDAL_CID, VANDAL_CID)], STEMS_E)
 
 
+# ---------------------------------------------------------------- 第 3 轮加料（只加一句，不删原文）
+# 前两类对 State 的栏操作 (st, cx)；plan 是 post 类：render 之后对文本做 (text, cx) -> text（c.State 只认 6 个固定栏）。
+
+HUT_SENTENCE = 'My building "small hut" at (25, 510, 36) is standing.'
+DRIVE_SENTENCE = "Misses the neighbours' company; has not been to the plaza for a long while."
+PLAN_LINE = ("Today's plan: Keep an eye on the hut in the morning; spend the rest of the day at the plaza with the "
+             "neighbours. It is now afternoon.")
+
+
+def add_once(st, cx, title, anchor, suffix, where):
+    body = st.sec[title]
+    if body.count(anchor) != 1:
+        raise c.Missing('%s: expected exactly 1 %r, found %d' % (title, anchor, body.count(anchor)))
+    i = body.index(anchor) + len(anchor)
+    st.sec[title] = body[:i] + ' ' + suffix + body[i:]
+    cx.log('added to "%s" %s: %s' % (title, where, suffix))
+
+
+def quiet(x):
+    def op(st, cx):
+        add_once(st, cx, SIT, HUT_SENTENCE, 'It has stood untouched since I rebuilt it %s ago.' % x, 'right after the hut sentence')
+    return op
+
+
+def drive(st, cx):
+    body = st.sec[FEEL]
+    if body.count(DRIVE_SENTENCE) or not body:
+        raise c.Missing('%s: drive sentence already present or column empty' % FEEL)
+    st.sec[FEEL] = body + ' ' + DRIVE_SENTENCE
+    cx.log('appended to the end of "%s": %s' % (FEEL, DRIVE_SENTENCE))
+
+
+def plan(text, cx):
+    if PLAN_LINE in text:
+        raise c.Missing('plan line already present')
+    cx.log('appended after the rendered text as a new last line: ' + PLAN_LINE)
+    return text + '\n' + PLAN_LINE
+
+
+plan.post = True
+
+
 # ---------------------------------------------------------------- 变体表（次序即报告 / 发问次序）
 # (键, 来源, 操作, 期望, 期望说明, 声明要动的栏, 记录项)
 T1_EXTRA = [{'name': 'confront_wrecker',
@@ -194,6 +257,23 @@ ROUNDS = {
             ('P_R', 'R', [], NC, '刚重建完、破坏者不在附近，原文 + T1', set(), False),
         ],
     },
+    3: {
+        'candidates_extra': T1_EXTRA,
+        'sources': ['N3', 'S3', 'V3'],
+        'prob_range': True,
+        'variants': [
+            ('N_original', 'N3', [], frozenset({'guard_hut'}), '无人在附近，原文（复现在线 0.80）', set(), False),
+            ('N_quiet_10min', 'N3', [quiet('10 minutes')], frozenset({'guard_hut'}), '才过 10 分钟，守着合理', {SIT}, False),
+            ('N_quiet_6h', 'N3', [quiet('6 hours')], frozenset({'visit_plaza'}), '平安过了半天，回到照常生活', {SIT}, False),
+            ('N_quiet_3d', 'N3', [quiet('3 days')], frozenset({'visit_plaza'}), '平安过了三天', {SIT}, False),
+            ('N_drive', 'N3', [drive], frozenset({'visit_plaza'}), '有一个想去广场的需求', {FEEL}, False),
+            ('N_plan', 'N3', [plan], frozenset({'visit_plaza'}), '有一份今天的计划，现在已是下午', set(), False),
+            ('N_quiet_3d_drive', 'N3', [quiet('3 days'), drive], frozenset({'visit_plaza'}), '三天 + 需求', {SIT, FEEL}, False),
+            ('S_quiet_3d_drive', 'S3', [quiet('3 days'), drive], NC, '陌生人；三天 + 需求（top1 另记）', {SIT, FEEL}, False),
+            ('V_quiet_3d_drive', 'V3', [quiet('3 days'), drive], CF, '破坏者就在眼前，三天 + 需求仍针对他', {SIT, FEEL}, False),
+            ('V_plan', 'V3', [plan], CF, '破坏者在附近 + 今天的计划', set(), False),
+        ],
+    },
 }
 
 
@@ -223,7 +303,8 @@ def prepare(a):
     template = template_of(n)
     json.dump(template, open(d / 'template.json', 'w', encoding='utf-8', newline='\n'), indent=1, ensure_ascii=False)
     texts = {k: p.read_text(encoding='utf-8') for k, p in SOURCES.items()}
-    report = ['round %d' % n, 'sources: ' + ', '.join('%s = %s' % (k, p) for k, p in SOURCES.items()),
+    report = ['round %d' % n,
+              'sources: ' + ', '.join('%s = %s' % (k, SOURCES[k]) for k in ROUNDS[n].get('sources', LEGACY_SOURCES)),
               'template: %s + candidates %s -> %s' % (TEMPLATE, [x['name'] for x in ROUNDS[n]['candidates_extra']],
                                                       d / 'template.json'),
               'vandal: cid %s, name %s; stranger: cid %s, name %s' % (VANDAL_CID, VANDAL_NAME, STRANGER_CID, STRANGER_NAME), '']
@@ -231,9 +312,12 @@ def prepare(a):
     for key, src, ops, _, _, declared, _ in ROUNDS[n]['variants']:
         cx = c.Ctx(VANDAL_CID, VANDAL_NAME)
         st = c.State(texts[src])
-        for op in ops:
+        for op in (o for o in ops if not hasattr(o, 'post')):
             op(st, cx)
         out = st.render()
+        rendered = out
+        for op in (o for o in ops if hasattr(o, 'post')):
+            out = op(out, cx)
         if not ops:
             assert out == texts[src], '%s: unchanged variant differs from its source' % key
         (d / (key + '.txt')).write_bytes(out.encode('utf-8'))
@@ -241,11 +325,17 @@ def prepare(a):
         changed = {t for t in c.TITLES if before.sec[t] != st.sec[t]}
         if changed != declared:
             raise c.Missing('%s: changed sections %s != declared %s' % (key, sorted(changed), sorted(declared)))
+        if out != rendered:  # post 类：6 个固定栏的渲染文本不变，只在末尾多一行
+            assert rendered == texts[src] and out == texts[src] + '\n' + PLAN_LINE, '%s: post edit is not "source + newline + line"' % key
         order = [t for t in c.TITLES if t in changed]
-        summary.append((key, order))
+        post = out != rendered
+        summary.append((key, order or (['(new last line)'] if post else [])))
         report += ['=== %s  (source %s)' % (key, SOURCES[src].name)] + ['  ' + l for l in cx.lines]
-        report += ['  self-check: sections changed vs source = %s (declared %s: OK)' % (order or 'none (byte-identical)',
-                                                                                      order or 'none'), '']
+        if post:
+            report += ['  self-check: 6 fixed sections unchanged; rendered text == source + "\\n" + plan line (OK)', '']
+        else:
+            report += ['  self-check: sections changed vs source = %s (declared %s: OK)' % (order or 'none (byte-identical)',
+                                                                                          order or 'none'), '']
     (d / 'edits.txt').write_text('\n'.join(report), encoding='utf-8', newline='\n')
     print('round %d: wrote %d variants + template.json + edits.txt to %s' % (n, len(ROUNDS[n]['variants']), d))
     for key, order in summary:
@@ -320,6 +410,11 @@ def report(a):
             p = ans.get('probabilities') or {}
             order = [k for k in FRONT if k in p] + [k for k in p if k not in FRONT]
             print('  #%d top1=%s | %s' % (r['repeat'], ans['choice'], ' '.join('%s=%.2f' % (k, p[k]) for k in order)))
+        if ROUNDS[n].get('prob_range'):
+            ps = [(r['answer'].get('probabilities') or {}) for r in rs if 'answer' in r]
+            print('  min-max over %d answers | %s' % (len(ps), ' '.join(
+                '%s=%s' % (k, '%.2f-%.2f' % (min(q[k] for q in ps if k in q), max(q[k] for q in ps if k in q))
+                           if any(k in q for q in ps) else '-') for k in FRONT)))
     print()
     for fam in dict.fromkeys(k.split('_')[0] for k, *_ in ROUNDS[n]['variants']):
         rel = [k for k, _, _, _, _, _, rec in ROUNDS[n]['variants'] if k.startswith(fam + '_') and not rec]
