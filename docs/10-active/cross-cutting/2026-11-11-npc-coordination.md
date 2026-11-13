@@ -28,7 +28,14 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **第 3 项（真实服务端 NPC-only 短实跑 S1-N）进行中**：计划 `.demo/observe/npc-slice1-20261112/s1n/plan.md`（13 条期望运行前写定；四段；新 PG `npc-s1n-pg-20261113` 127.0.0.1:55462，复用 Hindsight 容器 18933，bank `npc-life-<cid>` 不删）。
   - **第 ① 段已实跑（未验收，明细 `s1n/seg1-report.md`）**：节点 `npcs1n`（tmux `npc-s1n`，2026-11-13T07:12:50Z 起，看门狗 09:42:50Z 无条件停）；被测 NPC `S1NGaren` cid 312999940097，bank `npc-life-312999940097`；小屋 07:14:45Z 建成。
     到 07:25Z：24 次选择（建成后一直 `visit_plaza`），活动经历 20 / 20 条带 `During it: nobody came near.`；没有崩溃、`job_error`、`empty_facts`；还没有发生自动封存（bank 文档数 0）；UDP 端点 95（基线 93）。
-  - **第 ② 段（三种处境）已派出**，结果回来后存 `s1n/seg2-report.md`。**接手时若节点还在**：先看 `tmux ls` 与 `pgrep beam`；停节点用 `~/npc-s1-run/rpc-s1n.sh stop-s1n.exs`；结束后只按名字删 `npc-s1n-pg-20261113` 及其匿名卷。
+  - **第 ② 段第一次派出的子会话中断了**（额度用尽，没有回报）：它只做完 07:26:53–58Z 的破坏与 Corvin 离场（V = 3494090117122，读回 0 格）。之后约 48 分钟无人操作，节点照常跑：Garen 07:27:39Z 重建 → `visit_plaza` ×13 → 07:34:55Z 起一直 `guard_hut`。
+    偏差已记在 `s1n/plan.md` 末尾“运行中的偏差”（期望一条未改）。08:15Z 重新派出一个子会话连续做 ② 余下三步与 ③，并在末尾做需要节点的导出；结果回来后存 `s1n/seg23-report.md`。
+  - **无人照看那段的读数（统筹会话从 `s1n/states/` 与 Hindsight 只读得到，逐次计数表 `s1n/chain-raw-0714-0812.tsv`；未验收）**：
+    活动经历全部带期间事实（都是 `nobody came near.`，有人在场的还没有读数）；拆屋事件写成 `Corvin (actor 3494090117122) removed the entire building "small hut" …`，带名字。
+    自动封存 4 次（07:25、07:34、07:47、08:01Z，各 21–24 条经历），retain 都成功，文档逐条带 tags（如 `kind:activity`、`place:small hut`），`job_error` / `empty_facts` / 崩溃为 0；bank 里三条 mission 都在。
+    **拆屋事件封存后在召回行里的条数是 2 → 1 → 0（08:03Z 起为 0）**：36 条召回行里 33–34 条是几乎相同的“守屋，没人来”，把它挤掉了；此后它只经认识文档与情绪栏的 Distrusts 留在 prompt 里。
+    **召回耗时随库增长**：按 10 分钟平均 389 → 1386 → 1950 → 2534 → 3229 → 3599 → 4820 毫秒，08:12:58Z 一次 9611 毫秒（与一次 retain 同时）；state 全文从 3.7 KB 涨到 24 KB。
+  - **接手时若节点还在**：先看 `tmux ls` 与 `pgrep beam`；停节点用 `~/npc-s1-run/rpc-s1n.sh stop-s1n.exs`；结束后只按名字删 `npc-s1n-pg-20261113` 及其匿名卷。
 
 ### 交接（2026-11-13，第七个统筹会话 → 第八个，因上下文接近 300k）——接手先读这一节，再读紧接着的“第七个统筹会话的进展”页首引用块
 
