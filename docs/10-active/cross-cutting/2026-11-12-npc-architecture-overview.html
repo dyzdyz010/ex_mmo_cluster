@@ -104,8 +104,8 @@
 <p class="lede">行为树、选择器、Jev、LLM、Hindsight 不是五个并列的大脑，而是同一个 NPC 里在不同时间尺度上起作用的部件。</p>
 <div class="chips">
   <span class="chip"><span class="dot ok"></span>概念已确认（2026-11-12）</span>
-  <span class="chip"><span class="dot run"></span>薄片一：验收 (a)(b) 已验收；(c) 已实跑、未验收（S1-C2 不通过），待用户决定</span>
-  <span class="chip"><span class="dot"></span>三条验收过了两条（(b) 基线少取 1 次）</span>
+  <span class="chip"><span class="dot ok"></span>薄片一：三条验收均已验收（(c) 在 S1-C3，2026-11-13 通过）</span>
+  <span class="chip"><span class="dot"></span>(b) 基线少取 1 次；薄片二未开工，待用户定</span>
 </div>
 <p class="note">本页是总纲 <code>2026-11-12-npc-architecture-overview.md</code> 的图解版，写于 2026-11-12；两者不一致时以那份文档为准。</p>
 
@@ -284,7 +284,7 @@
     <tr><td class="k">我记得什么</td><td>缓存的认识，加上针对当前处境的一次召回</td><td><span class="tag ctx">Hindsight</span></td><td>小时到天</td></tr>
     <tr><td class="k">今天的意图</td><td>做什么、去哪、找谁、为什么</td><td><span class="tag chain">规划</span></td><td>游戏日</td></tr>
     <tr><td class="k">正在做什么</td><td>当前活动、最近做过的几件事</td><td><span class="tag chain">选择器</span></td><td>分钟</td></tr>
-    <tr><td class="k">眼前处境</td><td>观察、余额、游戏时刻、附近的人和物</td><td><span class="tag plain">World，现查</span></td><td>秒</td></tr>
+    <tr><td class="k">眼前处境</td><td>观察、余额、游戏时刻、附近的人和物。附近的人带 actor 编号，使记忆里的编号能对上在场的人</td><td><span class="tag plain">World，现查</span></td><td>秒</td></tr>
   </tbody>
 </table>
 </div>
@@ -300,7 +300,7 @@
   <li><div class="when"><b>活动结束时</b>选择</div><div>选择器列出候选（现有技能、几个去处），代码先滤掉做不了的，再把快照和候选交给 Jev。人格不同，选得不同：比如负责的人回去修墙，胆小的人去别处。<span class="slice">薄片一</span></div></li>
   <li><div class="when"><b>随后几分钟</b>执行、权威</div><div>行为树把“修墙”拆成走过去、取料、放置，每一步仍由 World 裁决。<span class="slice">薄片一</span></div></li>
   <li><div class="when"><b>几分钟到几小时后</b>Hindsight</div><div>经历攒成片段写入，后台巩固，认识刷新：“这个人拆过我的墙”。</div></li>
-  <li><div class="when"><b>情绪退去之后</b>选择</div><div>愤怒已经衰减，但再遇到这个玩家时，召回会带出这件事，选择仍受影响。这一步证明起作用的是记忆，不只是情绪。<span class="slice">薄片一的第三条验收</span></div></li>
+  <li><div class="when"><b>情绪退去之后</b>选择</div><div>愤怒已经衰减，但再遇到这个玩家时，召回会带出这件事，选择仍受影响。这一步证明起作用的是记忆，不只是情绪。<span class="slice">薄片一的第三条验收，已在 S1-C3 验收</span></div></li>
   <li><div class="when"><b>第二个游戏日</b>规划</div><div>LLM 读同一份快照写当天的意图，例如把墙修好并加固；意图成为候选的一部分。<span class="slice">薄片二</span></div></li>
   <li><div class="when"><b>很久以后</b>Life</div><div>类似的经历累积到一定程度，人格卡上对应特质的级别漂移。<span class="slice">规则未定</span></div></li>
 </ol>
@@ -325,7 +325,7 @@
 <div class="steps">
   <div class="card step"><p class="n"><span class="chip" style="padding:0 8px"><span class="dot run"></span>进行中</span></p><h3>薄片一：最短链路</h3>
     <p>一个 NPC：人格卡、Life、Hindsight 组成快照，Jev 在活动结束时选，行为树执行，结果写回情绪与记忆。不调用 LLM 做决定，也不说话。</p></div>
-  <div class="card step"><p class="n">未开始</p><h3>薄片二：LLM 进场</h3>
+  <div class="card step"><p class="n">未开始（是否开工待用户定）</p><h3>薄片二：LLM 进场</h3>
     <p>每游戏日写意图清单，意图进入候选。同一片里接说话：被直呼成为选择事件，选中“回话”后由对话技能问 LLM 写台词。</p></div>
   <div class="card step"><p class="n">未开始</p><h3>薄片三：时间与反应</h3>
     <p>NPC 的游戏时刻与客户端一致；事件能在步骤边界打断当前活动。</p></div>
@@ -349,9 +349,11 @@
     <tr><td class="k">S1-A</td><td>选择链接通：人格卡与候选活动进注册参数，活动结束时问 Jev，行为树执行，每次选择一行日志</td><td>已实现、已实跑（只走了“去处”候选的成功路径）；验收第一条通过</td></tr>
     <tr><td class="k">S1-B</td><td>Life 的情绪与近期经历、Hindsight 的认识与召回进快照，并验证经历写回</td><td>已实现、已测试；预演落空的原因已由 S1-B2 查明并修正</td></tr>
     <tr><td class="k">S1-B2</td><td>经历原文点名被破坏的建筑</td><td>已实现、已测试、已提交（b08a7c45）；实跑里生效（事件句写的是 damaged the building "small hut" that I built）</td></tr>
-    <tr><td class="k">S1-C</td><td>完整实跑记录，三条验收的原始结果</td><td>已实跑（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）。阶段零：NPC 自己采石、采石灰岩、建成小屋，达成。验收 (b)：按运行前期望落空，小屋被拆后选择确实变了（visit_plaza → guard_hut），但运行前写下的期望是 build_hut。验收 (c)：不通过（不确定），情绪衰减、经历写入记忆后在线 2 / 2 选 guard_hut，但离线对照里删掉记忆中那件事后仍选 guard_hut，说明不了是记忆在起作用（这是第一次实跑的结果，已被下面两行取代）</td></tr>
+    <tr><td class="k">S1-C</td><td>完整实跑记录，三条验收的原始结果</td><td>已实跑（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）。阶段零：NPC 自己采石、采石灰岩、建成小屋，达成。验收 (b)：按运行前期望落空，小屋被拆后选择确实变了（visit_plaza → guard_hut），但运行前写下的期望是 build_hut。验收 (c)：不通过（不确定），情绪衰减、经历写入记忆后在线 2 / 2 选 guard_hut，但离线对照里删掉记忆中那件事后仍选 guard_hut，说明不了是记忆在起作用（这是第一次实跑的结果，已被下面几行取代）</td></tr>
     <tr><td class="k">S1-D2</td><td>产品改动：一种事件一句标准描述；处境里写“我的建筑在不在”；Life 登记建筑，同锚点重建会替换</td><td>已实现、已测试、已提交；已在 S1-C2 里第一次在真实服务端上实跑，三样都起了作用</td></tr>
-    <tr><td class="k">S1-C2</td><td>重设计后重跑 (b)(c)（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）</td><td>(b) 已验收（基线少取 1 次）：重建的选择由“整座被移除”的经历句与处境里的 is gone 引起，任一句单独就够。(c) 已实跑、未验收（不通过）：重建后 27 次选择里 26 次 guard_hut，陌生人、无人、破坏者在附近都一样，区分不出记忆的作用。事后离线诊断 24 次：3 条期望成立、3 条落空</td></tr>
+    <tr><td class="k">S1-C2</td><td>重设计后重跑 (b)(c)（2026-11-12，真实服务端 + 真实 Jev + 真实 Hindsight）</td><td>(b) 已验收（基线少取 1 次）：重建的选择由“整座被移除”的经历句与处境里的 is gone 引起，任一句单独就够。(c) 当时已实跑、未验收（不通过）：重建后 27 次选择里 26 次 guard_hut，陌生人、无人、破坏者在附近都一样，区分不出记忆的作用。事后离线诊断 24 次：3 条期望成立、3 条落空（(c) 的现状见下面 S1-C3 一行）</td></tr>
+    <tr><td class="k">S1-E</td><td>(c) 的离线设计（只打 Jev，探索性，不是验收）：候选表加一项只针对那个人的 <code>confront_wrecker</code></td><td>已做完（2026-11-12）：现行写法下“只去掉 Distrusts”也回到基线，区分不出；原因是记忆里只用编号指人，而处境栏“附近的人”只写名字。用户批准改产品里 Nearby 一句，带上 actor 编号（提交 <code>4cbdeb34</code>，未推送）</td></tr>
+    <tr><td class="k">S1-C3</td><td>只验 (c) 的短实跑（2026-11-13，真实 Jev + 真实 Hindsight，一个 NPC）</td><td>(c) 已验收：破坏者出现后的第 1 次选择是 <code>confront_wrecker</code>（0.74），陌生人在附近 3 次、无人 1 次都不是；离线逐栏对照里，起作用的是记忆栏里那件事，Distrusts 有没有都一样。范围：一个 NPC、一次破坏、事件后约 12 分钟、只判第 1 次选择；<code>confront_wrecker</code> 的去处是固定点的夹具近似。至此薄片一三条验收均已验收，薄片二未开工、待用户定</td></tr>
   </tbody>
 </table>
 </div>

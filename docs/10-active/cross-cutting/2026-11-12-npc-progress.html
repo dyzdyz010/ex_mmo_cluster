@@ -136,18 +136,18 @@
 <main>
 
 <h1>NPC 现在做到了什么地步</h1>
-<p class="lede">截至 2026-11-12：薄片一的整条链在真实服务端上走通了一次，三条验收过了两条（(a)、(b)），(c) 在第二次实跑（S1-C2）里仍不通过。下一步待用户定。</p>
+<p class="lede">截至 2026-11-13：薄片一的整条链在真实服务端上走通，三条验收都已验收：(a)、(b) 早已通过，(c) 在第三次实跑（S1-C3，2026-11-13）里通过。下一步（薄片二是否开工等三件事）待用户定。</p>
 <div class="chips">
-  <span class="chip"><span class="dot run"></span>薄片一进行中（不是完成）</span>
+  <span class="chip"><span class="dot ok"></span>薄片一三条验收均已验收</span>
   <span class="chip"><span class="dot ok"></span>验收 (a) 已验收；(b) 已验收（S1-C2，基线少取 1 次）</span>
-  <span class="chip"><span class="dot run"></span>验收 (c) 已实跑、未验收（S1-C2 不通过）</span>
+  <span class="chip"><span class="dot ok"></span>验收 (c) 已验收（S1-C3；S1-C2 当时不通过）</span>
   <span class="chip"><span class="dot"></span>薄片二、三、四未开始</span>
 </div>
 <p class="note">配套的整体设计图解见 <a href="2026-11-12-npc-architecture-overview.html">2026-11-12-npc-architecture-overview.html</a>（一条控制链、一份共享心智、一个回路）。本页的事实取自统筹页 <code>2026-11-11-npc-coordination.md</code> 与 <code>.demo/observe/npc-slice1-20261112/</code> 下的报告；两者不一致时以统筹页为准。</p>
 
 <!-- ============ 一 ============ -->
 <h2 id="s1">一、现状</h2>
-<div class="card"><p class="oneline">一个 NPC 已经在真实服务端上走通整条链：人格卡 + 心智 + 记忆 → Jev 选做什么 → 行为树执行 → 结果写回情绪与记忆。三条验收里 (a)(b) 已验收；(c) 实跑了两次都没通过：第二次（S1-C2）重建之后不管附近是谁都选守屋，看不出记忆的作用。</p></div>
+<div class="card"><p class="oneline">一个 NPC 已经在真实服务端上走通整条链：人格卡 + 心智 + 记忆 → Jev 选做什么 → 行为树执行 → 结果写回情绪与记忆。三条验收都已验收：(c) 前两次实跑没通过（S1-C2 重建之后不管附近是谁都选守屋，看不出记忆的作用），第三次（S1-C3）先在离线设计里加了一项只针对那个人的候选，并把“附近的人”一句改成带 actor 编号，再短实跑：破坏者回来时第 1 次选择是走去面对他，陌生人在附近或无人时都不是，通过。</p></div>
 
 <div class="card" style="margin-top:12px">
   <div class="slices">
@@ -162,13 +162,15 @@
         <div class="seg done" title="离线诊断">S1-D1</div>
         <div class="seg done" title="按诊断改产品，已在 S1-C2 实跑">S1-D2</div>
         <div class="seg done" title="重跑 (b)(c)：(b) 已验收，(c) 不通过">S1-C2</div>
+        <div class="seg done" title="(c) 的离线设计（只打 Jev，探索性）：加一项只针对那个人的候选；现行写法下“只去掉 Distrusts”也回到基线，区分不出，于是改了产品里 Nearby 一句">S1-E</div>
+        <div class="seg done" title="只验 (c) 的短实跑：通过">S1-C3</div>
       </div>
     </div>
     <div class="srow"><div class="sname">薄片二 <span>LLM 规划、说话</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
     <div class="srow"><div class="sname">薄片三 <span>游戏时刻、打断</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
     <div class="srow"><div class="sname">薄片四 <span>多个 NPC 实跑</span></div><div class="bar"><div class="seg none">未开始</div></div></div>
   </div>
-  <p class="note" style="margin:12px 0 0">绿色格子是“这一步做完了”，不是“验收过了”。S1-C 做完的意思是第一次实跑跑过了，结果是 (b)(c) 未通过；S1-C2 做完的意思是第二次实跑跑过了，结果是 (b) 已验收、(c) 未通过。</p>
+  <p class="note" style="margin:12px 0 0">绿色格子是“这一步做完了”，不是“验收过了”。S1-C 做完的意思是第一次实跑跑过了，结果是 (b)(c) 未通过；S1-C2 做完的意思是第二次实跑跑过了，结果是 (b) 已验收、(c) 未通过；S1-E 做完的意思是离线设计跑完、产品里改了 Nearby 一句，它本身不是验收；S1-C3 做完的意思是只验 (c) 的实跑跑过了，结果是 (c) 已验收。</p>
 </div>
 
 <div class="card tablewrap" style="margin-top:12px">
@@ -177,7 +179,7 @@
   <tbody>
     <tr><td class="k">(a)</td><td>同一处境下，两张不同的人格卡选得不同</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
     <tr><td class="k">(b)</td><td>被破坏之后，下一次选择随之改变（走情绪与近期经历）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span> <span class="tag ok">S1-C2 通过</span><br><span class="note">第一次实跑落空；基线少取 1 次</span></td></tr>
-    <tr><td class="k">(c)</td><td>情绪衰减完、经历写入记忆之后，再问仍受那件事影响（走 Hindsight 召回）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span> <span class="tag bad">S1-C2 不通过</span><br><span class="note">第一次实跑也不通过</span></td></tr>
+    <tr><td class="k">(c)</td><td>情绪衰减完、经历写入记忆之后，再问仍受那件事影响（走 Hindsight 召回）</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span> <span class="tag ok">S1-C3 通过</span><br><span class="note">前两次实跑（S1-C、S1-C2）不通过；S1-C3（2026-11-13）按运行前的规则通过，范围见第四节末</span></td></tr>
   </tbody>
 </table>
 </div>
@@ -192,7 +194,8 @@
     <tr><td class="k">自己选做什么</td><td>活动结束后由 Jev 在候选里选下一件事，行为树执行。两张人格卡（Sella、Hask）在同一处境下 4 次全部符合期望：Sella 去广场，Hask 回家。真实服务端里 46 次选择、0 次失败。<br><span class="note">两张卡的自由文本写得很绝对，这条验收过得不难。</span></td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span></td></tr>
     <tr><td class="k">采石、采石灰岩、建成小屋</td><td>NPC 自己选了 <code>gather_stone</code> → <code>gather_limestone</code> → <code>build_hut</code>，采了 4 格石料、1 格石灰岩，登记后约 25 秒建成小屋（1878 格），账对得上。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">阶段零达成；不是三条验收之一</span></td></tr>
     <tr><td class="k">被拆后有情绪、记得是谁拆了哪座</td><td>另一个角色经正常入口整座拆掉小屋后：愤怒 0.6、信任 −0.35；经历原文点名了建筑：“damaged the building "small hut" that I built”。之后 NPC 改为一直守屋。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">以上是第一次实跑；验收 (b) 当时未通过，S1-C2 通过（见第四节末）</span></td></tr>
-    <tr><td class="k">经历写进长期记忆，召回进下一次选择</td><td>写入 Hindsight 约 17 秒完成、认识刷新约 79 秒；记忆库终态 26 条，四份认识都提到那件事，召回句里有 “the small hut I built”。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">以上是第一次实跑；验收 (c) 未通过，S1-C2 仍未通过</span></td></tr>
+    <tr><td class="k">经历写进长期记忆，召回进下一次选择</td><td>写入 Hindsight 约 17 秒完成、认识刷新约 79 秒；记忆库终态 26 条，四份认识都提到那件事，召回句里有 “the small hut I built”。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">以上是第一次实跑；验收 (c) 当时未通过，S1-C2 仍未通过，之后 S1-C3 通过（见第四节末）</span></td></tr>
+    <tr><td class="k">事件句与愤怒退去后，仍因记忆里那件事针对那个人</td><td>S1-C3：重建之后事件句与愤怒都已退去，破坏者 Corvin 回到 5.0 米处，NPC 第 1 次选择是 <code>confront_wrecker</code>（0.74），并走到他旁边的固定点；陌生人在附近 3 次、无人 1 次都是 <code>guard_hut</code>。去处是固定点，产品还没有“走向某个角色”的活动形态。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i class="on">已验收</i></span><br><span class="note">范围见第四节末；只判第 1 次选择</span></td></tr>
     <tr><td class="k">选择延迟</td><td>这次实跑的日志：Jev 中位 319 ms，记忆召回中位 230 ms（写入记忆后约 360 ms）。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">一次实跑的统计，不是 benchmark</span></td></tr>
     <tr><td class="k">分得清“损坏”和“整座没了”，知道自己的建筑在不在</td><td>S1-D2 的改动：经历按事件种类用标准句，处境里现查 World 写“我的建筑在 / 不在”。单测与集成测试通过。</td><td><span class="lv"><i class="on">已实现</i><i class="on">已实跑</i><i>已验收</i></span><br><span class="note">已在 S1-C2 的真实服务端上实跑，起了作用；(b) 因此验收通过</span></td></tr>
   </tbody>
@@ -395,7 +398,7 @@
 </svg>
 </div>
 
-<h3 style="margin-top:24px">三条验收的结果（第一次实跑，S1-C；第二次实跑 S1-C2 的结果见第四节末）</h3>
+<h3 style="margin-top:24px">三条验收的结果（第一次实跑，S1-C；第二次实跑 S1-C2 与第三次 S1-C3 的结果见第四节后部与末尾）</h3>
 <div class="card tablewrap">
 <table>
   <thead><tr><th>验收</th><th>运行前期望</th><th>实际</th><th>判定</th></tr></thead>
@@ -409,6 +412,7 @@
 <p class="note" style="margin-top:8px">场地也有问题：小屋锚点沿用了旧场地的高度，比地表高出约 8 米、悬空；广场到小屋 8.12 米，超出 8 米建造射程（这次没触发）。S1-C2 已改：小屋落在地表，所有去处在小屋 8 米内。</p>
 
 <h3 style="margin-top:24px">第二次实跑（S1-C2，2026-11-12）：(b) 通过，(c) 仍不通过</h3>
+<p class="note">这一节与下面两节是 S1-C2 当时的结论，保留为历史；之后的 S1-C3（2026-11-13）里 (c) 已通过，见本章末“(c) 怎么验过的”。</p>
 <p>在 S1-D2 的产品改动之后重跑，仍是真实服务端、真实 Jev、真实 Hindsight（16:54–17:21 UTC，节点只起了一次，49 次选择成功、2 次显式失败）。期望与判定规则都是运行前写在计划里的，起节点后一条没改。名词说明：<b>S</b> = 重建之后“陌生人 Tobin 在附近”时的那份真实快照；<b>V</b> = 同样位置、“破坏者 Corvin 在附近”时的那份；“基线”指没有特殊刺激时的正常选择。</p>
 <div class="card tablewrap">
 <table>
@@ -427,7 +431,8 @@
   <li><b>任一句单独就够</b>：离线对照里去掉其中一句，仍然选 <code>build_hut</code>（各 4 / 4）；两句都去掉，变回 <code>visit_plaza</code>（4 / 4）。愤怒句、Distrusts（对破坏者的不信任）、自己的活动记录去掉后选择都不变。</li>
 </ul>
 
-<h3 style="margin-top:20px">(c) 为什么不通过：离线对照与事后诊断排除了什么</h3>
+<h3 style="margin-top:20px">(c) 为什么不通过：离线对照与事后诊断排除了什么（S1-C2 当时）</h3>
+<p class="note">以下是 S1-C2 当时的诊断；(c) 之后在 S1-C3 通过，见本章末。</p>
 <ul>
   <li><b>离线对照</b>（节点停后，16 种改写各问 4 次，共 64 次请求）：S 与 V 的原文都复现了在线结果（各 4 / 4 <code>guard_hut</code>）。V 去掉 Distrusts 后仍是 <code>guard_hut</code> 0.60–0.65，与 S 的基线相同；把“附近”改成无人也仍是 <code>guard_hut</code> ×4；去掉自己的活动记录反而更高（0.81–0.85）。</li>
   <li><b>事后离线诊断</b>（探索性，不是验收，24 次请求）：单独清空整个记忆栏、单独去掉 Distrusts、单独去掉含 <code>guard</code> 的记忆条目，都仍是 <code>guard_hut</code>（0.58–0.90）；清空四份认识后概率反而更高。<b>唯一能改变选择的组合</b>是“整个记忆栏清空 + 去掉 Distrusts”一起做，也只有 3 / 4 回到 <code>visit_plaza</code>，而且很勉强（<code>visit_plaza</code> 0.47–0.52 对 <code>guard_hut</code> 0.34–0.47）。</li>
@@ -452,8 +457,77 @@
 <p class="note" style="margin-top:8px">另有一项离线对照 <code>memory_blank_no_distrust</code>（V 清空记忆栏并去掉 Distrusts，期望回到基线）也落空：4 次里 3 次 <code>visit_plaza</code>、1 次 <code>guard_hut</code>，只作记录。事后诊断 6 条期望里 3 条成立（召回句全删仍守、去掉 Distrusts 仍守、V 清空记忆栏仍守）、3 条落空，即上表后三行。</p>
 <p class="note" style="margin-top:8px">偏差与未查的小问题：V 的三次选择落在一次自动认识刷新进行中；Hindsight 在新库建好前返回过 4 次 404；小屋发布记录里的发布者编号与测试角色的编号不是同一个数；<code>survey</code> 脚本显示的材料成本与场地参数不一致（建造与余额都对）。</p>
 
+<h3 style="margin-top:28px">(c) 怎么验过的：S1-E 离线设计与第三次实跑（S1-C3，2026-11-13）</h3>
+<p><b>上一版为什么区分不出</b>：见上面“(c) 为什么不通过”，候选表里没有任何一项只在针对那个人时才合理，守屋靠多处同时支撑，用“破坏者在不在附近”撬不动。<b>这次的做法</b>：候选表在 S1-C2 的 5 项之外加第 6 项 <code>confront_wrecker</code>；<code>guard_hut</code> 保留不动（陌生人在附近的基线仍是它，只看新候选是否成为第一名）。</p>
+<p class="sent" style="margin:8px 0"><code>confront_wrecker</code> 的判据原文：Walk over to the person standing nearby, stand in front of them and watch them closely, to make it plain I have not forgotten what they did. Only do this when that person is someone who once destroyed or removed something I built; otherwise there is no reason to.</p>
+
+<h4 style="margin-top:16px">S1-E：离线设计（只打 Jev，探索性、不是验收）</h4>
+<p>64 次请求全部应答；期望都在发问前写进脚本顶部，一条未改。结果：</p>
+<ul>
+  <li>现行写法下，“破坏者在附近”与“陌生人在附近”的第一名已经稳定不同（<code>confront_wrecker</code> 4 / 4 对 <code>guard_hut</code> 4 / 4），去掉记忆里那件事回到基线；<b>但只去掉 Distrusts 也回到基线</b>（<code>guard_hut</code> ×4，期望是仍然面对，预测就落空，与预测一致）。</li>
+  <li>原因（代码事实）：记忆与经历原文只用编号（cid）指人，处境栏“附近的人”只写名字；把名字与编号对上的只有情绪栏那一句 <code>Distrusts &lt;名&gt; (actor &lt;cid&gt;)</code>。去掉 Distrusts 就同时去掉了“他是谁”。</li>
+  <li>只把处境栏改成 <code>Nearby: &lt;名&gt; (NPC, actor &lt;cid&gt;, 5.0 m away).</code> 之后，记忆栏是必要且充分的：有那件事就选 <code>confront_wrecker</code>（有没有 Distrusts 都一样），没有就不选。</li>
+  <li>第 2 轮确认新候选不妨碍实跑前半段：破坏之前基线 <code>visit_plaza</code> 4 / 4；破坏后第 1 次是 <code>build_hut</code> ×3、<code>gather_stone</code> ×1；刚重建完、破坏者不在附近是 <code>guard_hut</code> 4 / 4。</li>
+  <li>所以按用户定的判定（只去掉 Distrusts 不回到基线），现行写法下离线区分不出，需要改产品里 Nearby 一句。<b>用户 2026-11-12 批准</b>，已改：处境栏写成 <code>&lt;名&gt; (&lt;kind&gt;, actor &lt;cid&gt;, &lt;d&gt; m away)</code>，两处测试期望跟着改，22 通过、2 项按 <code>live_jev</code> 标签排除，提交 <code>4cbdeb34</code>（未推送）。</li>
+</ul>
+
+<h4 style="margin-top:16px">S1-C3：只验 (c) 的短实跑（2026-11-13 00:57–01:16 UTC）</h4>
+<p>产品代码 <code>4cbdeb34</code>；WSL 节点只起了一次（NPC-only，无 QUIC / 客户端），运行 19 分 15 秒，看门狗未触发；真实 Jev、真实 Hindsight、新库。被测 NPC <code>S1C3Garen</code>，破坏者 <code>Corvin</code>，陌生人 <code>Tobin</code>。期望与判定规则运行前写在计划里，起节点后一条未改。全程 40 次选择成功、1 次显式失败（登记时心智未就绪）。首次建成小屋（登记后 30 秒）、拆除后重建（事件后 27 秒）都按期望达成；(c) 的前提也都满足：重建完、事件句与愤怒已退去，情绪栏只剩 <code>Distrusts actor V, who is not nearby.</code>，记忆栏里同时有破坏者与那件事。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>检查点</th><th>运行前期望</th><th>实际</th><th>判定</th></tr></thead>
+  <tbody>
+    <tr><td class="k">陌生人在附近（3 次）</td><td>不选 <code>confront_wrecker</code></td><td><code>guard_hut</code> 0.66、0.71、0.77；<code>Nearby: Tobin (NPC, actor 3297670860803, 5.2 m away).</code>，情绪栏里没有 Tobin</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k">无人在附近（1 次）</td><td>不选 <code>confront_wrecker</code></td><td><code>guard_hut</code> 0.80</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k">破坏者回来，第 1 次</td><td>第一名是 <code>confront_wrecker</code></td><td><b><code>confront_wrecker</code> 0.74</b>；<code>Nearby: Corvin (NPC, actor V, 5.0 m away).</code>，<code>Distrusts Corvin (actor V).</code>；近期经历里没有事件句、情绪栏里没有愤怒；执行 <code>completed</code>（走到固定点，下一次快照里 Corvin 1.6 米）</td><td><span class="tag ok">成立（验收 (c)）</span></td></tr>
+    <tr><td class="k">破坏者回来，第 2、3 次</td><td>未定义期望</td><td><code>guard_hut</code> 0.54、0.71</td><td><span class="tag plain">记录项</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p style="margin-top:16px"><b>离线逐栏对照</b>（节点停后，9 个变体各问 4 次，共 36 次请求全部应答；素材是在线 S 第 1 次与 V 第 1 次的快照全文）。<b>判定项 5 个</b>（<code>S_original</code>、<code>V_original</code>、<code>V_no_event</code>、<code>V_no_distrust</code>、<code>V_no_event_no_distrust</code>），<b>记录项 4 个</b>（<code>V_memory_blank</code>、<code>V_no_own_activity</code>、<code>V_nearby_no_cid</code>、<code>V_nearby_no_cid_no_distrust</code>）。</p>
+<div class="card tablewrap">
+<table>
+  <thead><tr><th>变体</th><th>期望</th><th>实际（4 次第一名；<code>confront_wrecker</code> 概率）</th><th>判定</th></tr></thead>
+  <tbody>
+    <tr><td class="k"><code>S_original</code></td><td>不面对，多数 = 在线</td><td><code>guard_hut</code> ×4（0.00–0.01）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_original</code></td><td>面对</td><td><code>confront_wrecker</code> ×4（0.76–0.80）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_no_event</code>（去掉记忆栏里那件事）</td><td>不面对</td><td><code>guard_hut</code> ×4（0.10–0.14）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_no_distrust</code>（只去掉 Distrusts）</td><td>面对</td><td><code>confront_wrecker</code> ×4（0.77–0.81）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_no_event_no_distrust</code></td><td>不面对</td><td><code>guard_hut</code> ×4（0.02–0.03）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_memory_blank</code>（记录项）</td><td>不面对</td><td><code>guard_hut</code> ×4（0.08–0.11）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_no_own_activity</code>（记录项）</td><td>面对</td><td><code>confront_wrecker</code> ×4（0.68–0.76）</td><td><span class="tag ok">成立</span></td></tr>
+    <tr><td class="k"><code>V_nearby_no_cid</code>（记录项；Nearby 改回旧写法，Distrusts 保留）</td><td>面对</td><td><code>guard_hut</code> ×3、<code>confront_wrecker</code> ×1（0.30–0.47）</td><td><span class="tag bad">落空（记录项）</span></td></tr>
+    <tr><td class="k"><code>V_nearby_no_cid_no_distrust</code>（记录项）</td><td>不面对</td><td><code>guard_hut</code> ×4（0.03–0.04）</td><td><span class="tag ok">成立</span></td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note" style="margin-top:8px"><code>V_nearby_no_cid</code> 的期望是照 S1-E 里 A_V 4 / 4 推的，这次真实快照上只有 1 / 4：Nearby 不带编号时，即使有 <code>Distrusts Corvin (actor V)</code> 一句，模型多数也不认；S1-E 里旧快照上是认的。它是记录项，不影响判定，但说明带编号的写法比 S1-E 估计的更要紧。</p>
+
+<div class="card" style="margin-top:12px"><p class="oneline"><b>结论</b>：(c) 按运行前的规则通过（判定 1–7 全部成立）。起作用的是记忆栏里 Hindsight 召回 / 归纳的那件事；Distrusts（Life 的不衰减信任）有没有都一样。</p></div>
+
+<p style="margin-top:12px"><b>验收的范围</b>（限制）：</p>
+<ul>
+  <li>一个 NPC、一次破坏、事件后约 12 分钟、记忆只有 10 条事实；判的是“破坏者出现后的第 1 次选择”。</li>
+  <li>第 2、3 次回到 <code>guard_hut</code>（选过一次后它进了自己的活动记录，Corvin 仍在附近）；是不是想要的行为没有定义过期望，只记录。</li>
+  <li><code>confront_wrecker</code> 的去处是破坏者站位旁的固定点：产品没有“走向某个角色”的活动形态（去处活动只收 4 个键），这是夹具近似，执行不在 (c) 的判定里。</li>
+</ul>
+
+<p style="margin-top:12px"><b>偏差与干扰</b>：</p>
+<ul>
+  <li>01:04:28–01:04:58 之间发生过一次自动封存（尾部满 3000 字），那件事是这次写进 Hindsight 的，不是后来的显式 flush（它只写走之后的一小段）；其后有没有自动刷新没查到。前提四项是直接在快照上核对的，不受影响。</li>
+  <li>显式 flush 比计划晚约 70 秒。</li>
+  <li>01:05:30–01:06:35 出现过 <code>visit_plaza</code> ×3（0.40–0.46；事件句刚被封存走、认识还没刷新的那一段），其余重建后的选择除那次 <code>confront_wrecker</code> 外都是 <code>guard_hut</code>。</li>
+  <li>刚建成 / 刚重建后 0.6 秒取的那次快照，处境分别缺 <code>is standing</code> / 仍写 <code>is gone</code>，下一次才对（Life 还没收进新实例；S1-C2 隔 1.2 秒时是对的；未查）。</li>
+  <li>S1-C2 的两项旧问题再现：Hindsight 新库头 3 秒 4 次 404；小屋发布记录的发布者编号与测试角色编号不同。</li>
+  <li>Hindsight 容器第一次启动因新卷下载模型撞上 300 秒初始化上限而退出，重启同一容器后正常。</li>
+  <li>Corvin 到位前 6 秒的那次选择（01:13:22 <code>guard_hut</code> 0.82）的 Nearby 句没有单独核对。没有发现直接改余额、情绪、记忆或替被测 NPC 行动的操作。</li>
+</ul>
+<p class="note" style="margin-top:8px">复核范围：统筹会话读过 01:02 之后的全部选择记录、S 第 1 次与 V 第 1 次两份快照的情绪栏 / 近期经历 / Nearby / 建筑句，并亲自跑了离线 36 次请求；四段的其余在线读数以子会话回报为准，没有逐条复核原始日志。</p>
+
 <!-- ============ 五 ============ -->
 <h2 id="s5">五、为什么没验出来，以及查到了什么</h2>
+<p class="note">本章是第一次实跑之后的离线诊断，保留为历史；(b) 在 S1-C2、(c) 在 S1-C3 之后都已验收。</p>
 <p>之后做了一轮离线诊断：不起服务端，把实跑存下的快照全文改写成几种写法，再问真实 Jev，每种写法问 4 次。复现检查先过了：原文重问的结果与实跑一致。</p>
 <div class="legend">
   <span><i class="sw" style="background:var(--c-build)"></i>建 <code>build_hut</code></span>
@@ -550,6 +624,7 @@ Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby.
     <tr><td class="k">先诊断再重跑</td><td>薄片一先做离线诊断、补产品缺口再重跑，不带着未验收的 (b)(c) 进薄片二。</td><td>用户</td></tr>
     <tr><td class="k">材料来源</td><td>测试用 GM 放料堆（一次 12 Stone + 3 Limestone），NPC 自己采；不直接给余额。</td><td>用户</td></tr>
     <tr><td class="k">Jev 版本</td><td>用 <code>jev-latest</code>，Jev 不分版本，不算问题。</td><td>用户</td></tr>
+    <tr><td class="k">处境栏的 Nearby 带编号</td><td>“附近的人”写成 <code>&lt;名&gt; (&lt;kind&gt;, actor &lt;cid&gt;, &lt;d&gt; m away)</code>，使记忆里的编号能对上在场的人（提交 <code>4cbdeb34</code>）。</td><td>用户（2026-11-12 批准）</td></tr>
     <tr><td class="k">同一锚点重建</td><td>新建筑替换 Life 记忆里的旧条目。</td><td>统筹会话替定，已汇报，用户未反对</td></tr>
     <tr><td class="k">无名建筑被整座拆</td><td>沿用旧写法。</td><td>统筹会话替定，已汇报，用户未反对</td></tr>
   </tbody>
@@ -559,11 +634,11 @@ Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby.
 <!-- ============ 八 ============ -->
 <h2 id="s8">八、接下来</h2>
 <div class="grid g2">
-  <div class="card"><h3>1. 两件事待用户定（S1-C2 已做完，不再有“下一步只有重跑”）</h3>
+  <div class="card"><h3>1. 三件事待用户定（第五个统筹会话没有自行处理）</h3>
     <ul>
-      <li><b>(c) 怎么再设计</b>（统筹会话的建议，用户尚未回复）：这一版设计区分不出“记得那件事”的作用。建议先做一轮只打 Jev 的离线设计，用存下的 S、V 两份快照，改候选表，加一项<b>只在针对那个人时才合理</b>的选项；离线能区分了，再做一次只验 (c) 的短实跑；不建议原样再跑。</li>
-      <li><b>破坏之后一直守屋，这个产品行为要不要</b>：这次看到 NPC 重建完就一直守屋（27 次里 26 次），信任不衰减，记忆里“守过 N 次”越积越多，没有看到它自己回到照常过日子。是不是想要的行为，待用户定。</li>
-      <li>用户此前定过“不带着未验收的 (b)(c) 进薄片二”；现在 (c) 仍未验收，所以薄片二是否先开工也待用户定。</li>
+      <li><b>“破坏之后一直守屋”</b>：仍是未决的产品行为。S1-C3 里重建之后陌生人在附近 / 无人时的基线都是 <code>guard_hut</code> 而不是回广场（只在事件句刚封存走、认识未刷新的一分钟里出现过 3 次 <code>visit_plaza</code>）。这次验收是绕开它做的：只看针对那个人的候选是否成为第一名。</li>
+      <li><b>“走向某个角色”的活动形态</b>：现在只能写固定去处。要不要做成产品能力（薄片二或之后），由用户定。</li>
+      <li><b>薄片二是否开工</b>：三条验收都已验收，按此前约定可以谈薄片二（LLM 规划层）；范围与顺序以总纲为准，待用户确认。</li>
     </ul></div>
   <div class="card"><h3>2. 然后薄片二</h3>
     <p>LLM 每游戏日读同一份快照写意图清单，意图进入候选；接“说话”（被直呼成为选择事件，选中“回话”后由对话技能问 LLM 写台词）；开服背景作公共常识的固定前缀。</p>
@@ -580,9 +655,9 @@ Current situation: Standing at x=1.0, z=3.0 (height 2.0). Nobody else is nearby.
 
 <!-- ============ 九 ============ -->
 <p class="note" style="margin-top:56px;border-top:1px solid var(--grid);padding-top:16px">
-数据截至 2026-11-12（S1-C2 之后），产品代码提交 <code>c0489bd7</code>（S1-D2，分支 <code>npc-life-20261111</code>，未推送）；S1-C2 没有改产品代码。<br>
+数据截至 2026-11-13（S1-C3 之后），产品代码提交 <code>4cbdeb34</code>（Nearby 带 actor 编号；此前 S1-D2 为 <code>c0489bd7</code>，分支 <code>npc-life-20261111</code>），未推送；S1-C2 没有改产品代码。<br>
 证据目录：<code>ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/</code>（<code>s1c/analysis-report.md</code> 实跑时间线与选择全表、<code>s1c/closeout-report.md</code> 离线对照、<code>s1c/s1d1-report.md</code> 诊断与事件清点、<code>s1d2/report.md</code> 产品改动、<code>s1c2/</code> 第二次实跑（<code>plan.md</code> 运行前定稿、<code>seg1-report.md</code>–<code>seg4-report.md</code>、<code>states/</code>、<code>counterfactual/</code>、<code>postdiag/</code>）、<code>s1c/states/</code> 快照全文；该目录不入库）；离线脚本 <code>docs/10-active/cross-cutting/tools/jev/</code> 下的 <code>s1c_diag.py</code>、<code>s1c2_pilot.py</code>、<code>s1c2_counterfactual.py</code>、<code>s1c2_postdiag.py</code>。<br>
-本页由统筹会话的子会话生成，2026-11-12；最后更新：S1-C2 之后（2026-11-12）。
+本页由统筹会话的子会话生成，2026-11-12；最后更新：S1-C3 之后（2026-11-13）。S1-E、S1-C3 的证据在 <code>s1e/</code>、<code>s1c3/</code>（<code>plan.md</code>、<code>states/</code>、<code>counterfactual/</code>），脚本 <code>tools/jev/s1e_design.py</code>、<code>s1c3_counterfactual.py</code>；复跑离线表格：<code>python -B tools/jev/s1c3_counterfactual.py report</code>。
 </p>
 
 </main>
