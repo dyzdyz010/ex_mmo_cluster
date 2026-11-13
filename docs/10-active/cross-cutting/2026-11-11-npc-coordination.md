@@ -177,9 +177,30 @@ remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的�
 4. **离线先行**：用 S1-C2 / S1-C3 存下的真实 state 与导出的记忆（`s1c3/export/`）做驱动力测量——每次只动一个驱动来源，记录各候选概率的移动，不设“必须选某项”。脚本蓝本 `tools/jev/s1e_design.py`（第 3 轮的加料与概率区间输出可复用）。
 5. 离线站得住再改产品、再上真实服务端短实跑；之后才是 LLM 规划层（总纲的薄片二原范围）。每一步的期望改成“方向与归因”，运行前写定。
 
-**S1-F：“走向某个角色”并入 `travel`（进行中；本段在实现提交后由结果替换）**：方案 `.demo/observe/npc-slice1-20261112/s1f/approach-plan.md`（注册参数写选择器 `"person": "distrusted"`，`Mind.person/2` 按确定规则选人，
-`travel` 每段重读目标位置、水平 ≤ 2.0 m 即到达、预算 = 起步段数 + 2，`Body.move_to` 不动）。实现与测试已派给子会话。本线为测试起了临时容器 `npc-s1f-pg-20261113`（55452，匿名卷 `ad163f645e82…`），用完即删；
-此刻容器 / 卷基线因别的会话（voxim-d4 的发版冒烟）多了 1 / 1，本线清理后应回到开工时读到的 153 / 161（不是 152 / 160）。WSL 里与 voxim-d4 按“同一时间一个 beam”错开。
+**交接（2026-11-13，第五个统筹会话因上下文接近 300k 结束）——第六个统筹会话从这里接手，先做 A 再做 B**
+
+**A. S1-F：“走向某个角色”并入 `travel`——已实现、未测试、未提交（先把它收掉）**
+- 方案：`.demo/observe/npc-slice1-20261112/s1f/approach-plan.md`（注册参数 `"person": "distrusted"`；`Mind.person/2` 按确定规则选人；`travel` 每段重读目标位置、水平 ≤ 2.0 m 到达、预算 = 起步段数 + 2；`Body.move_to` 不动）。
+- 现场：实现子会话已把代码与测试写进工作区（**未提交**，`git status` 里 12 个文件：`apps/npc_server/lib/npc_server/` 的 `skills/travel.ex`、`brain/tree.ex`、`trees.ex`、`mind.ex`、`registry.ex`、`brain/social.ex`、`brain.ex`、`README.md`，
+  与 `test/npc_server/` 的 `npc_mind_test.exs`、`npc_expand_test.exs`、`npc_selector_test.exs`、`npc_registry_test.exs`；+490 / −50）。**一次测试都没跑过**（WSL 被别的会话占着）；它的最终回报没有等到，
+  所以“与方案的偏离”“`brain/social.ex` 为什么改”都没有书面记录——接手后先自己读 diff 对照方案（或派只读评审），不要假定它符合方案。
+- 跑测试的前提（与统筹会话 voxim-d4 的约定，它在做发版）：**voxim-d4 发来「WSL 已空」之后才能在 WSL 里跑 mix**，窗口 30 分钟；跑完回它一句「NPC mix test 已结束、WSL 已空」。没有收到之前不要跑。
+  用 ListAgents 找 `voxim-d4`，SendMessage 告诉它“NPC 线已换新会话接手，等你的 WSL 已空”。
+- 测试命令（临时 PG 已起：容器 `npc-s1f-pg-20261113`，`127.0.0.1:55452`，口令 postgres，匿名卷 `ad163f645e82242288a44d1ae535fe20de15d2d01b41f838f76e24c7f61c5d40`）：
+  `wsl -e bash -lc "source /home/dyz/npc-env-a.sh && export LD_LIBRARY_PATH=\$HOME/npc-s1-run/libsctp/x/usr/lib/x86_64-linux-gnu MMO_DB_HOST=127.0.0.1 MMO_DB_PORT=55452 MMO_DB_USER=postgres MMO_DB_PASSWORD=postgres MMO_TEST_DB_NAME=npc_s1f_unittest && cd /mnt/d/hemifuture/ex_mmo_cluster-npc/apps/npc_server && mix test --no-start <文件…> > /mnt/d/hemifuture/ex_mmo_cluster-npc/.demo/observe/npc-slice1-20261112/s1f/<名>.log 2>&1; echo exit=\$?"`
+  先跑四个涉及的测试文件，再跑 `apps/npc_server` 整套缺省测试；失败就修到通过（不删测试、不放宽断言），通过后提交（不推送）。
+- 之后：`docker rm -f npc-s1f-pg-20261113 && docker volume rm ad163f645e82242288a44d1ae535fe20de15d2d01b41f838f76e24c7f61c5d40`（只删这两个）。容器 / 卷数：本线不再占用时应比当时别的会话的占用少 1 / 1——
+  第五个会话起这个 PG 之前读到 153 / 161（其中 1 / 1 是 voxim-d4 的），起之后 154 / 162；别的会话的数会变，**以“本线的这一个容器、一个卷已不在”为准，不要按总数去删别人的东西**。
+- 用到它的实跑（`confront_wrecker` 改用 `"person": "distrusted"` 取代固定坐标）不单独做，并入 B 的第一次服务端短实跑。
+
+**B. 薄片二：先“内容与召回”，再 LLM 规划**——依据与五步见上面“用户 2026-11-13 的方向”与“下一步（第六个统筹会话）”。
+
+**其它须知**
+- voxim-d4 转达（2026-11-13，本会话未向用户核实）：用户新约束“每次推送前必须确保该提交全部 CI 任务通过（本地按 `.github/workflows/ci.yml` 全部 job 跑等价检查，推送后用 gh 核对；已有红灯也须先修绿或经用户同意）”；
+  ex 仓库 master 的 CI 自 11-10 起红（Format、Test voxel_region）。本线不推送；将来要推 `npc-life-20261111` 之前先核对 CI 并向用户确认。
+- 本线此刻没有节点、tmux 会话；只有上面那一个临时 PG 容器。WSL `~/npc-s1-run/*-s1c3.*` 留着脚本，下次实跑以它为蓝本。
+- 分支 `npc-life-20261111` 未推送；本会话的提交：`675b472f`（S1-E）、`4cbdeb34`（Nearby 带 cid）、`a54d0175`、`3c960d2e`、`791dd4bd`（S1-C3 结果）、`1d39611a`（两份 HTML）、`3988b557`（第 3 轮）、`fba7d85a`、`417b9729`（用户方向）及本条交接。
+  图解页与进展页还没有反映“用户 2026-11-13 的方向”与 S1-F，B 的内容规范定稿后一并更新。
 
 ### 第四个统筹会话的结果（2026-11-12）——接手先读这一节，下面第三个会话的“交接”已执行完
 
