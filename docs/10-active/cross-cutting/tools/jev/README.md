@@ -238,3 +238,14 @@ C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。�
 用法：`python -B s1c3_counterfactual.py prepare --s S.txt --v V.txt --vandal-cid CID --vandal-name Corvin --template T.json --s-online-top1 NAME --v-online-top1 NAME`，之后 `run | report`。结果文件：`results-s1c3-counterfactual.json`。
 结论：5 个判定项全部成立——S 原文 `guard_hut` 4/4；V 原文 `confront_wrecker` 4/4（0.76–0.80）；去掉记忆栏里那件事 `guard_hut` 4/4；只去掉 Distrusts 仍是 `confront_wrecker` 4/4（0.77–0.81）；两处都去掉 `guard_hut` 4/4。
 记录项里 `V_nearby_no_cid`（Nearby 改回不带 cid 的旧写法、Distrusts 保留）期望 confront，实际 1/4，落空；其余 3 个记录项成立。连同在线条件，(c) 按运行前的规则通过，见统筹页“S1-C3 结果”。
+
+## 2026-11-13 S1-H：内容形态与驱动来源的离线测量（`s1h_design.py`）
+
+探索性，不是验收。只问 Jev，不起服务端。素材 = S1-C3 的三份真实 state（无人 N3、陌生人 S3、破坏者 V3，同 S1-E 第 3 轮），候选表 T1，读数与区间输出沿用 `s1e_design.py`（脚本 import 它与 `s1c2_counterfactual.py`）。
+测量计划与发问前的 8 条期望在 `.demo/observe/npc-slice1-20261112/s1h/plan.md`，原文抄在脚本文档字符串顶部。16 个变体（F 组：合并 / 去零 / 去噪 / 三项同时；D 组：栏尾加一句事实或推断），每变体 4 次、并发 <= 3，共 64 次。
+D 组与 F1 句子里的次数按所在 state 的实际守屋句数写（N3 = 10、V3 = 12、S3 = 7，plan.md 写的是 12），见变体目录里的 `edits.txt`。
+用法（在本目录下；`-X utf8` 为 Windows 控制台输出中文所需）：
+- `python -I -B -X utf8 s1h_design.py dryrun`：只生成变体、`edits.txt`、`dryrun.txt` 并逐变体核对改动范围，不发任何请求。产物在 `.demo/observe/npc-slice1-20261112/s1h/round1/`。
+- `python -I -B s1h_design.py run`：发问，结果写 `results-s1h-round1.json`（已存在则拒绝覆盖）。
+- `python -I -B -X utf8 s1h_design.py report [--results PATH]`：离线出表（各变体 top1 次数、每候选平均 / 最小 / 最大概率）并逐条判定 plan.md 的期望 1–7（期望 8 为汇报格式，不判定）。
+状态：第 1 轮尚未运行（干跑已完成，未向任何服务发请求）。

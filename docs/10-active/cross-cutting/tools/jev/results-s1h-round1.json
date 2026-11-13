@@ -1,0 +1,1219 @@
+{
+ "model": "jev-latest",
+ "repeats": 4,
+ "workers": 3,
+ "timeout_s": 60,
+ "template": "D:\\hemifuture\\ex_mmo_cluster-npc\\.demo\\observe\\npc-slice1-20261112\\s1h\\round1\\template.json",
+ "candidates": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "variants": {
+  "N3_F0": {
+   "state_file": "s1h/round1/N3_F0.txt"
+  },
+  "V3_F0": {
+   "state_file": "s1h/round1/V3_F0.txt"
+  },
+  "N3_F1": {
+   "state_file": "s1h/round1/N3_F1.txt"
+  },
+  "N3_F2": {
+   "state_file": "s1h/round1/N3_F2.txt"
+  },
+  "N3_F3": {
+   "state_file": "s1h/round1/N3_F3.txt"
+  },
+  "N3_F123": {
+   "state_file": "s1h/round1/N3_F123.txt"
+  },
+  "V3_F123": {
+   "state_file": "s1h/round1/V3_F123.txt"
+  },
+  "N3_D1": {
+   "state_file": "s1h/round1/N3_D1.txt"
+  },
+  "N3_D1r": {
+   "state_file": "s1h/round1/N3_D1r.txt"
+  },
+  "N3_D2": {
+   "state_file": "s1h/round1/N3_D2.txt"
+  },
+  "N3_D12": {
+   "state_file": "s1h/round1/N3_D12.txt"
+  },
+  "N3_D12r": {
+   "state_file": "s1h/round1/N3_D12r.txt"
+  },
+  "V3_D1": {
+   "state_file": "s1h/round1/V3_D1.txt"
+  },
+  "V3_D12": {
+   "state_file": "s1h/round1/V3_D12.txt"
+  },
+  "S3_F0": {
+   "state_file": "s1h/round1/S3_F0.txt"
+  },
+  "S3_D12": {
+   "state_file": "s1h/round1/S3_D12.txt"
+  }
+ },
+ "rows": [
+  {
+   "variant": "N3_F0",
+   "repeat": 1,
+   "latency_ms": 857,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.8,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F0",
+   "repeat": 2,
+   "latency_ms": 750,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.81,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.84,
+     "visit_plaza": 0.14,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F0",
+   "repeat": 3,
+   "latency_ms": 858,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.75,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.79,
+     "visit_plaza": 0.18,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F0",
+   "repeat": 4,
+   "latency_ms": 618,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.78,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.82,
+     "visit_plaza": 0.14,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "V3_F0",
+   "repeat": 1,
+   "latency_ms": 711,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.18,
+     "visit_plaza": 0.01,
+     "confront_wrecker": 0.8
+    }
+   }
+  },
+  {
+   "variant": "V3_F0",
+   "repeat": 2,
+   "latency_ms": 766,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.72,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.2,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.77
+    }
+   }
+  },
+  {
+   "variant": "V3_F0",
+   "repeat": 3,
+   "latency_ms": 632,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.72,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.2,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.77
+    }
+   }
+  },
+  {
+   "variant": "V3_F0",
+   "repeat": 4,
+   "latency_ms": 730,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.21,
+     "visit_plaza": 0.03,
+     "confront_wrecker": 0.75
+    }
+   }
+  },
+  {
+   "variant": "N3_F1",
+   "repeat": 1,
+   "latency_ms": 719,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.86,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.88,
+     "visit_plaza": 0.1,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F1",
+   "repeat": 2,
+   "latency_ms": 967,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.87,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.89,
+     "visit_plaza": 0.09,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F1",
+   "repeat": 3,
+   "latency_ms": 712,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.84,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.87,
+     "visit_plaza": 0.11,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F1",
+   "repeat": 4,
+   "latency_ms": 719,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.88,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.9,
+     "visit_plaza": 0.08,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F2",
+   "repeat": 1,
+   "latency_ms": 616,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.78,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.82,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F2",
+   "repeat": 2,
+   "latency_ms": 712,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.8,
+     "visit_plaza": 0.18,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F2",
+   "repeat": 3,
+   "latency_ms": 700,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.81,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.84,
+     "visit_plaza": 0.14,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F2",
+   "repeat": 4,
+   "latency_ms": 593,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.81,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.84,
+     "visit_plaza": 0.15,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F3",
+   "repeat": 1,
+   "latency_ms": 710,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.83,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.86,
+     "visit_plaza": 0.1,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F3",
+   "repeat": 2,
+   "latency_ms": 701,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.83,
+     "visit_plaza": 0.14,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F3",
+   "repeat": 3,
+   "latency_ms": 590,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.81,
+     "visit_plaza": 0.16,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F3",
+   "repeat": 4,
+   "latency_ms": 722,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.83,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.86,
+     "visit_plaza": 0.11,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F123",
+   "repeat": 1,
+   "latency_ms": 692,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.84,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.87,
+     "visit_plaza": 0.12,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F123",
+   "repeat": 2,
+   "latency_ms": 627,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.87,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.89,
+     "visit_plaza": 0.1,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F123",
+   "repeat": 3,
+   "latency_ms": 703,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.87,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.89,
+     "visit_plaza": 0.1,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_F123",
+   "repeat": 4,
+   "latency_ms": 717,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.88,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.9,
+     "visit_plaza": 0.09,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "V3_F123",
+   "repeat": 1,
+   "latency_ms": 617,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.6,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.31,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.67
+    }
+   }
+  },
+  {
+   "variant": "V3_F123",
+   "repeat": 2,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.63,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.29,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.69
+    }
+   }
+  },
+  {
+   "variant": "V3_F123",
+   "repeat": 3,
+   "latency_ms": 712,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.6,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.32,
+     "visit_plaza": 0.01,
+     "confront_wrecker": 0.67
+    }
+   }
+  },
+  {
+   "variant": "V3_F123",
+   "repeat": 4,
+   "latency_ms": 932,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.6,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.0,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.32,
+     "visit_plaza": 0.01,
+     "confront_wrecker": 0.67
+    }
+   }
+  },
+  {
+   "variant": "N3_D1",
+   "repeat": 1,
+   "latency_ms": 711,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.63,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.69,
+     "visit_plaza": 0.29,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1",
+   "repeat": 2,
+   "latency_ms": 701,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.68,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.73,
+     "visit_plaza": 0.23,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1",
+   "repeat": 3,
+   "latency_ms": 965,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.22,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1",
+   "repeat": 4,
+   "latency_ms": 706,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.21,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1r",
+   "repeat": 1,
+   "latency_ms": 708,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.75,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.79,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1r",
+   "repeat": 2,
+   "latency_ms": 885,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.8,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1r",
+   "repeat": 3,
+   "latency_ms": 738,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.8,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D1r",
+   "repeat": 4,
+   "latency_ms": 724,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.78,
+     "visit_plaza": 0.19,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D2",
+   "repeat": 1,
+   "latency_ms": 707,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.68,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.73,
+     "visit_plaza": 0.23,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D2",
+   "repeat": 2,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.72,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.77,
+     "visit_plaza": 0.2,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D2",
+   "repeat": 3,
+   "latency_ms": 940,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.83,
+     "visit_plaza": 0.15,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D2",
+   "repeat": 4,
+   "latency_ms": 695,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.75,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.79,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12",
+   "repeat": 1,
+   "latency_ms": 715,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.78,
+     "visit_plaza": 0.19,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12",
+   "repeat": 2,
+   "latency_ms": 840,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.66,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.72,
+     "visit_plaza": 0.24,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12",
+   "repeat": 3,
+   "latency_ms": 699,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.65,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.03,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.71,
+     "visit_plaza": 0.24,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12",
+   "repeat": 4,
+   "latency_ms": 861,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.65,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.71,
+     "visit_plaza": 0.26,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12r",
+   "repeat": 1,
+   "latency_ms": 609,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.94,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.95,
+     "visit_plaza": 0.03,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12r",
+   "repeat": 2,
+   "latency_ms": 728,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.93,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.94,
+     "visit_plaza": 0.04,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12r",
+   "repeat": 3,
+   "latency_ms": 695,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.93,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.94,
+     "visit_plaza": 0.04,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "N3_D12r",
+   "repeat": 4,
+   "latency_ms": 591,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.95,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.96,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "V3_D1",
+   "repeat": 1,
+   "latency_ms": 709,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.78,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.15,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.82
+    }
+   }
+  },
+  {
+   "variant": "V3_D1",
+   "repeat": 2,
+   "latency_ms": 713,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.14,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.83
+    }
+   }
+  },
+  {
+   "variant": "V3_D1",
+   "repeat": 3,
+   "latency_ms": 582,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.16,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.81
+    }
+   }
+  },
+  {
+   "variant": "V3_D1",
+   "repeat": 4,
+   "latency_ms": 752,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.14,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.83
+    }
+   }
+  },
+  {
+   "variant": "V3_D12",
+   "repeat": 1,
+   "latency_ms": 1014,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.14,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.83
+    }
+   }
+  },
+  {
+   "variant": "V3_D12",
+   "repeat": 2,
+   "latency_ms": 728,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.18,
+     "visit_plaza": 0.03,
+     "confront_wrecker": 0.78
+    }
+   }
+  },
+  {
+   "variant": "V3_D12",
+   "repeat": 3,
+   "latency_ms": 701,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.78,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.14,
+     "visit_plaza": 0.03,
+     "confront_wrecker": 0.82
+    }
+   }
+  },
+  {
+   "variant": "V3_D12",
+   "repeat": 4,
+   "latency_ms": 721,
+   "answer": {
+    "type": "choice",
+    "choice": "confront_wrecker",
+    "confidence": 0.8,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.0,
+     "guard_hut": 0.14,
+     "visit_plaza": 0.02,
+     "confront_wrecker": 0.83
+    }
+   }
+  },
+  {
+   "variant": "S3_F0",
+   "repeat": 1,
+   "latency_ms": 625,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.76,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.8,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "S3_F0",
+   "repeat": 2,
+   "latency_ms": 701,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.74,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.78,
+     "visit_plaza": 0.18,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "S3_F0",
+   "repeat": 3,
+   "latency_ms": 634,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.77,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.81,
+     "visit_plaza": 0.17,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "S3_F0",
+   "repeat": 4,
+   "latency_ms": 750,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.75,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.02,
+     "guard_hut": 0.79,
+     "visit_plaza": 0.16,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "S3_D12",
+   "repeat": 1,
+   "latency_ms": 737,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.68,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.73,
+     "visit_plaza": 0.24,
+     "confront_wrecker": 0.01
+    }
+   }
+  },
+  {
+   "variant": "S3_D12",
+   "repeat": 2,
+   "latency_ms": 618,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.66,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.01,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.72,
+     "visit_plaza": 0.26,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "S3_D12",
+   "repeat": 3,
+   "latency_ms": 625,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.68,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.73,
+     "visit_plaza": 0.24,
+     "confront_wrecker": 0.0
+    }
+   }
+  },
+  {
+   "variant": "S3_D12",
+   "repeat": 4,
+   "latency_ms": 604,
+   "answer": {
+    "type": "choice",
+    "choice": "guard_hut",
+    "confidence": 0.7,
+    "probabilities": {
+     "build_hut": 0.0,
+     "gather_stone": 0.02,
+     "gather_limestone": 0.01,
+     "guard_hut": 0.75,
+     "visit_plaza": 0.22,
+     "confront_wrecker": 0.0
+    }
+   }
+  }
+ ]
+}
