@@ -57,6 +57,13 @@ remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的�
 - 证据：`.demo/observe/npc-slice1-20261112/s1e/round1/`、`round2/`（变体全文、`template.json`、`edits.txt`、`report.txt`）；`tools/jev/s1e_design.py`、`results-s1e-round1.json`、`results-s1e-round2.json`（`report --round N` 离线重出）。
   统筹会话的复核：三份原文逐字节相同、模板只在末尾多一项、规则 E 删后的记忆栏全文看过、B 族只改了 Nearby 一处；64 次请求都是统筹会话自己发的。
 
+**用户的答复（2026-11-12，看过 S1-E 结果后）：改 Nearby 带上 cid。** 已做：`mind.ex` 的处境栏写成 `<名> (<kind>, actor <cid>, <d> m away)`，两处测试期望跟着改，
+`npc_mind_test.exs` + `npc_selector_test.exs` 在本线临时 PG 上 22 通过、2 项按 `live_jev` 标签排除；提交 `4cbdeb34`。
+
+**S1-C3 进行中（本段在实跑结束后由结果一节替换）**：plan 已定稿 `.demo/observe/npc-slice1-20261112/s1c3/plan.md`；离线对照脚本 `tools/jev/s1c3_counterfactual.py` 已在实跑前提交（`a54d0175`，期望抄在顶部）；
+本线起了两个容器 `npc-s1c3-pg-20261112`（55451）、`npc-s1c3-hindsight-20261112`（18932）与三个卷（清理命令在 `s1c3/services.txt`，删完应回到 152 / 160）；
+WSL 节点 `npcs1c3`（tmux `npc-s1c3`，带 120 分钟看门狗）。若接手时这段还在：先 `wsl -e bash -lc "pgrep -a beam; tmux ls"` 看节点是否还在，在就先停（`cd ~/npc-s1-run && bash rpc-s1c3.sh stop-s1c3.exs`、`tmux kill-session -t npc-s1c3`），再按 services.txt 清理。
+
 ### 第四个统筹会话的结果（2026-11-12）——接手先读这一节，下面第三个会话的“交接”已执行完
 
 **S1-C2 已实跑**（16:54–17:21 UTC，原始结果见“S1-C2 结果”与“S1-C2 事后离线诊断”）：**(b) 按运行前的规则通过**（重建的选择由“整座被移除”的经历句与处境里的 `is gone` 引起，任一句单独就够）；
