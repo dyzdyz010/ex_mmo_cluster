@@ -129,15 +129,16 @@ defmodule NpcServer.NpcDialogueTest do
     assert Dialogue.episode(speech(5, 7, 9), 7, %{})["text"] =~ "I said"
   end
 
-  # 人名取自 Life 此刻的观察（%{cid => 名字}）：有名 `名字 (actor <cid>)`、空名 `someone unnamed (actor <cid>)`、取不到 `actor <cid>`。
+  # 说话人的名字取自消息自带的 speaker_name（覆盖观察里的写法）；对象的名字取自观察（%{cid => 名字}）：
+  # 有名 `名字 (actor <cid>)`、空名 `someone unnamed (actor <cid>)`、取不到 `actor <cid>`。
   # 时刻不在原文里（只在 at_ms）。tags：kind:conversation 加对方——听到的是说话人，说出的是对象，对象为 0（附近）时没有对方。
-  test "speech episodes name people from the observation and carry conversation tags" do
+  test "speech episodes name the speaker from the message, the target from the observation, and carry conversation tags" do
     heard = %{speech(4, 9, 7) | text: "hello"}
 
     assert %{
              "at_ms" => 1004,
              "text" =>
-               ~s|I heard: Mara (actor 9) said to someone unnamed (actor 7) in conversation 81, turn 4: "hello". | <>
+               ~s|I heard: 住民9 (actor 9) said to someone unnamed (actor 7) in conversation 81, turn 4: "hello". | <>
                  "This is a character's statement, not verified world facts.",
              "tags" => ["kind:conversation", "actor:9"]
            } = Dialogue.episode(heard, 7, %{9 => "Mara", 7 => ""})
@@ -145,11 +146,22 @@ defmodule NpcServer.NpcDialogueTest do
     said = Dialogue.episode(%{speech(5, 7, 9) | text: "hi"}, 7, %{})
 
     assert said["text"] ==
-             ~s|I said: actor 7 said to actor 9 in conversation 81, turn 5: "hi". | <>
+             ~s|I said: 住民7 (actor 7) said to actor 9 in conversation 81, turn 5: "hi". | <>
                "This is a character's statement, not verified world facts."
 
     assert said["tags"] == ["kind:conversation", "actor:9"]
     assert Dialogue.episode(speech(6, 7, 0), 7, %{})["tags"] == ["kind:conversation"]
+  end
+
+  test "speech episodes keep the message's speaker name when the speaker is out of sight, and leave an unseen target as actor <cid>" do
+    heard = %{speech(7, 9, 12) | text: "hi", speaker_name: "Mara"}
+
+    assert Dialogue.episode(heard, 7, %{})["text"] ==
+             ~s|I heard: Mara (actor 9) said to actor 12 in conversation 81, turn 7: "hi". | <>
+               "This is a character's statement, not verified world facts."
+
+    assert Dialogue.episode(%{heard | speaker_name: ""}, 7, %{})["text"] =~
+             "I heard: someone unnamed (actor 9) said to actor 12"
   end
 
   defp runtime(backend, profile) do

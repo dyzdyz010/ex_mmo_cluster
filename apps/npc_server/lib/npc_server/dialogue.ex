@@ -4,6 +4,7 @@ defmodule NpcServer.Dialogue do
   Runtime 拥有最近 24 句；Life 保存带来源的主观经历，原话不作为已验证世界事实。
   """
   alias NpcServer.Life.State
+
   @history 24
 
   @doc "说话能力；范围和频率直接引用 Scene 的唯一规则。"
@@ -60,8 +61,9 @@ defmodule NpcServer.Dialogue do
 
       I said | I heard: <说话人> said to <对象> in conversation <id>, turn <n>: "<原话>". This is a character's statement, not verified world facts.
 
-  人按 `Life.State.person/2` 写成 `名字 (actor <cid>)`；`names` 是 `%{cid => 名字}`，由 Life 取自它此刻持有的观察，
-  取不到写 `actor <cid>`（`target_id` 为 0 即“附近”，写 `actor 0`）。tags：`kind:conversation` 与对方 `actor:<cid>`——
+  人按 `Life.State.person/2` 写成 `名字 (actor <cid>)`。说话人的名字取自消息自带的 `speaker_name`（说话人不必在视野里，
+  也覆盖观察里的写法）；对象的名字只取自 `names`——`%{cid => 名字}`，由 Life 取自它此刻持有的观察，取不到写 `actor <cid>`
+  （`target_id` 为 0 即“附近”，写 `actor 0`）。空名写 `someone unnamed`。tags：`kind:conversation` 与对方 `actor:<cid>`——
   我说的话对方是 `target_id`（为 0 时没有对方），我听到的话对方是说话人。
   """
   def episode(message, cid, names) do
@@ -71,13 +73,14 @@ defmodule NpcServer.Dialogue do
         else: {"I heard", message.speaker_id}
 
     source = message |> Jason.encode!() |> Jason.decode!()
+    speaker_names = Map.put(names, message.speaker_id, message.speaker_name)
 
     %{
       "id" => "speech:#{message.conversation_id}:#{message.turn}",
       "at_ms" => message.at_ms,
       "speech" => source,
       "text" =>
-        "#{perspective}: #{State.person(message.speaker_id, names)} " <>
+        "#{perspective}: #{State.person(message.speaker_id, speaker_names)} " <>
           "said to #{State.person(message.target_id, names)} in conversation #{message.conversation_id}, " <>
           "turn #{message.turn}: " <>
           Jason.encode!(message.text) <>

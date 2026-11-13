@@ -279,8 +279,9 @@ defmodule NpcServer.NpcDialogueLifeTest do
              "At 1970-01-01T00:00:04.000Z (UTC), " <> done <> " During it: nobody came near."
   end
 
-  # 名字取自 Life 此刻持有的观察：说话人 9 在观察里叫 Mara；自己（7）不在观察里，只写 actor 7。
-  test "speech and World episodes name people from the current observation and carry tags; retain sends one document each" do
+  # 说话人的名字取自消息（9 叫“邻居”）；World 事件里的人和 Speech 对象取自 Life 此刻持有的观察（9 在观察里叫 Mara）；
+  # 自己（7）不在观察里，只写 actor 7。
+  test "speech episodes name the speaker from the message, World episodes name people from the observation; retain sends one document each" do
     s = %{state() | observation: seen([person(9, "Mara", 1.0)])}
     s = Map.merge(s, %{adapter: Retainer, config: %{owner: self()}, status: nil})
     {:noreply, s} = Life.handle_cast({:speech, speech(1)}, s)
@@ -303,7 +304,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
       )
 
     heard =
-      ~s|I heard: Mara (actor 9) said to actor 7 in conversation 81, turn 1: "我声称已经修好". | <>
+      ~s|I heard: 邻居 (actor 9) said to actor 7 in conversation 81, turn 1: "我声称已经修好". | <>
         "This is a character's statement, not verified world facts."
 
     damaged =
