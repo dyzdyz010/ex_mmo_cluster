@@ -9,8 +9,9 @@ defmodule NpcServer.Runtime do
   活动选择（`choose_activity` 命令，`NpcServer.Selector`）也在这里受理：本层持有选择器状态，在独立 worker 里向 Life 读心智
   （含一次记忆召回）再问 Jev，应答以同一命令号的 Outcome 回给 Brain（done 的 data 是 `%{activity: 候选名}`；心智读不到、
   发问失败或 worker 崩溃是 rejected）。等应答期间本进程照常处理观察与其他命令。
-  一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”作为一条经历交给 Life
-  （`Life.activity/2`）；`choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
+  选定一项新活动时本层通知 Life 这项活动开始了（`Life.activity_started/1`，Life 从此记期间谁靠近过）；
+  一项活动结束时（下一个 `choose_activity` 带来它的结局）本层把“做了什么、结果如何”与候选登记的地名作为一条经历交给 Life
+  （`Life.activity/2`，`Selector.experience/2` 的结果）；`choose_activity` 自己的 Outcome 是选择器内部往来，不是经历。
   """
   require Logger
   alias NpcServer.{Body, Dialogue, Memory, Selector, Skills, Scheduler}
@@ -96,7 +97,9 @@ defmodule NpcServer.Runtime do
             |> Map.put(:world_time, MmoContracts.WorldTime.at(now * 1000))
 
           if state.life, do: NpcServer.Life.observation(state.life, observation)
-          observation = if state.plan, do: Map.put(observation, :plan, state.plan), else: observation
+
+          observation =
+            if state.plan, do: Map.put(observation, :plan, state.plan), else: observation
 
           observation =
             if state.life_state do
@@ -391,11 +394,15 @@ defmodule NpcServer.Runtime do
     {select, outcome} =
       case result do
         {:ok, selection} ->
+          # 新活动从这里开始：Life 从此记它期间谁靠近过，结束时写进这项活动的经历。
+          NpcServer.Life.activity_started(state.life)
+
           {Selector.chose(state.select, selection, state.profile, cid),
            %{status: :done, reason: nil, data: %{activity: selection.activity}}}
 
         {:error, reason} ->
-          {Selector.failed(state.select, reason, cid), %{status: :rejected, reason: reason, data: nil}}
+          {Selector.failed(state.select, reason, cid),
+           %{status: :rejected, reason: reason, data: nil}}
       end
 
     emit(

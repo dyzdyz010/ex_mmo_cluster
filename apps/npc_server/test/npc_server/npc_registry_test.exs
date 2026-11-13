@@ -133,9 +133,10 @@ defmodule NpcServer.NpcRegistryTest do
                       criterion: "Cut stone at the quarry.",
                       run:
                         {:skill, "gather",
-                         %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}}
+                         %{"box" => [[10, 64, 4], [13, 64, 6]], "material" => 11, "units" => 512, "tool_id" => 1}},
+                      place_name: nil
                     },
-                    %{name: "rest_at_home", criterion: "Go home and rest.", run: {:place, [2, -3.5], 600}}
+                    %{name: "rest_at_home", criterion: "Go home and rest.", run: {:place, [2, -3.5], 600}, place_name: nil}
                   ],
                   tools: %{1 => "镐"},
                   skills: %{gather: %{}, travel: %{}},
@@ -159,9 +160,29 @@ defmodule NpcServer.NpcRegistryTest do
 
         assert {Brain.Tree,
                 %{
-                  activities: [%{name: "confront", criterion: "Face the person I distrust.", run: {:person, :distrusted, 60}}],
+                  activities: [
+                    %{name: "confront", criterion: "Face the person I distrust.", run: {:person, :distrusted, 60}, place_name: nil}
+                  ],
                   skills: %{travel: %{}}
                 }} = NpcRegistry.brain("npc", %{@npc | "activities" => [confront]})
+
+        # 可选的地名（第五个键 place_name）：三种形状都能带，进 profile 的 place_name；不写是 nil（上面）。
+        assert {Brain.Tree,
+                %{
+                  activities: [
+                    %{name: "gather_stone", place_name: "the quarry", run: {:skill, "gather", _}},
+                    %{name: "rest_at_home", place_name: "home", run: {:place, [2, -3.5], 600}},
+                    %{name: "confront", place_name: "wherever they are", run: {:person, :distrusted, 60}}
+                  ]
+                }} =
+                 NpcRegistry.brain("npc", %{
+                   @npc
+                   | "activities" => [
+                       Map.put(gather, "place_name", "the quarry"),
+                       Map.put(rest, "place_name", "home"),
+                       Map.put(confront, "place_name", "wherever they are")
+                     ]
+                 })
 
         for bad <- [
               # 走向一个角色：未知选择器、选择器不是字符串、与去处同写。
@@ -181,6 +202,11 @@ defmodule NpcServer.NpcRegistryTest do
               %{@npc | "activities" => [%{rest | "place" => [2]}]},
               %{@npc | "activities" => [%{rest | "stay_ticks" => 0}]},
               %{@npc | "activities" => [Map.put(rest, "skill", "travel")]},
+              # 地名：空串、不是字符串；地名不能顶替缺的键（四个键仍要齐）。
+              %{@npc | "activities" => [Map.put(rest, "place_name", "")]},
+              %{@npc | "activities" => [Map.put(rest, "place_name", 7)]},
+              %{@npc | "activities" => [Map.put(rest, "place_name", nil)]},
+              %{@npc | "activities" => [rest |> Map.delete("stay_ticks") |> Map.put("place_name", "home")]},
               Map.delete(@npc, "who"),
               Map.delete(@npc, "tools"),
               # 统一形态不能关掉 Life；地址不是 http(s) URL。
@@ -589,10 +615,10 @@ defmodule NpcServer.NpcRegistryTest do
         {x, _, z} = travel.data.position
         assert abs(x - 8.0) <= 0.5 and abs(z - 10.0) <= 0.5
 
-        # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历。
+        # 活动结束后再次发问：带上一项的结局，刚结束的活动也成了 Life 手里的一条经历（真实 Body 的观察里没有别人：nobody came near）。
         assert_receive {:jev_http, %{"state" => again}}, 20_000
         assert again =~ "Recent activities: Oldest first. walk_east: completed."
-        assert again =~ ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\.\n/
+        assert again =~ ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "walk_east" \(Walk to the east post\.\)\. Result: completed\. During it: nobody came near\.\n/
 
         # observe 读得到当前活动、最近的选择，以及最近一次问 Jev 的全文与召回问句。
         assert %{
@@ -666,7 +692,7 @@ defmodule NpcServer.NpcRegistryTest do
         assert again =~ "Recent activities: Oldest first. confront: failed (travel: nobody_distrusted)."
 
         assert again =~
-                 ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\.\n/
+                 ~r/What just happened: Oldest first\. At \S+ \(UTC\), I did "confront" \(Face the person I distrust\.\)\. Result: failed \(travel: nobody_distrusted\)\. During it: nobody came near\.\n/
 
         # 没有发出过 travel：身体没有任何 travel 的终态。
         refute Enum.any?(Body.observe(pid).outcomes, &(&1.verb == :travel))

@@ -3,6 +3,7 @@ defmodule NpcServer.Dialogue do
   NPC 对话能力与已接收 Speech 的纯投影。权威接纳、文本约束和听众裁决只在 SceneServer.Dialogue。
   Runtime 拥有最近 24 句；Life 保存带来源的主观经历，原话不作为已验证世界事实。
   """
+  alias NpcServer.Life.State
   @history 24
 
   @doc "说话能力；范围和频率直接引用 Scene 的唯一规则。"
@@ -53,10 +54,22 @@ defmodule NpcServer.Dialogue do
     end
   end
 
-  @doc "权威已发生的 Speech 转成带原话与身份的主观经历；没有 World seq，不评价心智数值。"
-  def episode(message, cid) do
-    at_utc = message.at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
-    perspective = if message.speaker_id == cid, do: "I said", else: "I heard"
+  @doc """
+  权威已发生的 Speech 转成带原话与身份的主观经历 `%{"id", "at_ms", "speech", "text", "tags"}`；没有 World seq，
+  不评价心智数值。时刻只在 `"at_ms"`（交给 Hindsight 与心智快照时由 Life 加前缀）。原文：
+
+      I said | I heard: <说话人> said to <对象> in conversation <id>, turn <n>: "<原话>". This is a character's statement, not verified world facts.
+
+  人按 `Life.State.person/2` 写成 `名字 (actor <cid>)`；`names` 是 `%{cid => 名字}`，由 Life 取自它此刻持有的观察，
+  取不到写 `actor <cid>`（`target_id` 为 0 即“附近”，写 `actor 0`）。tags：`kind:conversation` 与对方 `actor:<cid>`——
+  我说的话对方是 `target_id`（为 0 时没有对方），我听到的话对方是说话人。
+  """
+  def episode(message, cid, names) do
+    {perspective, other} =
+      if message.speaker_id == cid,
+        do: {"I said", message.target_id},
+        else: {"I heard", message.speaker_id}
+
     source = message |> Jason.encode!() |> Jason.decode!()
 
     %{
@@ -64,11 +77,12 @@ defmodule NpcServer.Dialogue do
       "at_ms" => message.at_ms,
       "speech" => source,
       "text" =>
-        "At #{at_utc} (UTC), #{perspective}: actor #{message.speaker_id} " <>
-          "(#{message.speaker_name}, epoch #{message.speaker_epoch}, kind #{message.speaker_kind}) " <>
-          "said to actor #{message.target_id} in conversation #{message.conversation_id}, turn #{message.turn}: " <>
+        "#{perspective}: #{State.person(message.speaker_id, names)} " <>
+          "said to #{State.person(message.target_id, names)} in conversation #{message.conversation_id}, " <>
+          "turn #{message.turn}: " <>
           Jason.encode!(message.text) <>
-          ". This is a character's statement, not verified world facts."
+          ". This is a character's statement, not verified world facts.",
+      "tags" => ["kind:conversation"] ++ if(other in [0, cid], do: [], else: ["actor:#{other}"])
     }
   end
 end

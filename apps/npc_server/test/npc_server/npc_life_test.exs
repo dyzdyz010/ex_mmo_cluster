@@ -22,11 +22,12 @@ defmodule NpcServer.NpcLifeTest do
       {:ok, %{results: [%{"text" => "remembered"}], latency_ms: 1}}
     end
 
-    def retain(config, fragments) do
-      send(config.owner, {:retain_started, self(), fragments})
+    # 收到的是逐条经历的文档（每条经历一份），不是片段。
+    def retain(config, documents) do
+      send(config.owner, {:retain_started, self(), documents})
 
       receive do
-        :complete -> {:ok, %{retained: length(fragments), facts: 1}}
+        :complete -> {:ok, %{retained: length(documents), facts: 1}}
         :fail -> {:error, :service_failed}
       end
     end
@@ -55,7 +56,7 @@ defmodule NpcServer.NpcLifeTest do
   defmodule RestoredHindsight do
     @moduledoc "只测试：旧模型只读；刷新替身被挂起，以观察 Life 的待刷新义务与持久缓存。"
     def ensure(_, _), do: {:ok, %{}}
-    def retain(_, fragments), do: {:ok, %{retained: length(fragments), facts: 1}}
+    def retain(_, documents), do: {:ok, %{retained: length(documents), facts: 1}}
     def models(_), do: {:ok, %{models: %{"self" => "old model"}, metadata: %{}}}
     def status(_), do: {:ok, %{stats: %{"memory_unit_count" => 1}, usage: %{}}}
 
@@ -420,9 +421,16 @@ defmodule NpcServer.NpcLifeTest do
       "pending" => [],
       "fragments" => [
         %{
-          "id" => "restored-world:#{cid}:fragment:1-3",
+          "id" => "restored-world:1:fragment:restored-world:3",
           "at_ms" => 0,
-          "text" => "Actor 2 damaged my construction."
+          "episodes" => [
+            %{
+              "id" => "restored-world:1",
+              "at_ms" => 0,
+              "text" => "actor 2 damaged my construction.",
+              "tags" => ["kind:event", "actor:2"]
+            }
+          ]
         }
       ],
       "cache" => nil,
@@ -496,8 +504,19 @@ defmodule NpcServer.NpcLifeTest do
     end)
 
     assert {:ok, %{status: :started}} = Life.flush(cid)
-    assert_receive {:retain_started, worker, [fragment]}, 5000
-    assert fragment["id"] =~ "fragment:"
+
+    # 一个片段里的一条经历 → 一份文档，文档 id 就是经历 id（不是片段 id）。
+    assert_receive {:retain_started, worker, [document]}, 5000
+
+    assert [
+             %{
+               "id" => "" <> fragment,
+               "episodes" => [%{"id" => id, "tags" => ["kind:event", "actor:" <> _]}]
+             }
+           ] =
+             DataService.NpcMemory.get(cid, "life", "state")["fragments"]
+
+    assert fragment =~ "fragment:" and document["id"] == id
     damage(fixture.world, cid, 2, {5, 64, 8})
 
     NpcWorld.await(fn ->
@@ -582,7 +601,7 @@ defmodule NpcServer.NpcLifeTest do
     end)
 
     assert {:ok, %{status: :started}} = Life.flush(cid)
-    assert_receive {:retain_started, worker, [fragment]}, 5000
+    assert_receive {:retain_started, worker, [document]}, 5000
     send(worker, :fail)
 
     NpcWorld.await(fn ->
@@ -592,12 +611,17 @@ defmodule NpcServer.NpcLifeTest do
 
     {:ok, s} = Life.observe(cid)
     assert s.pending_fragments == 1 and s.retained == 0
-    assert DataService.NpcMemory.get(cid, "life", "state")["fragments"] == [fragment]
+
+    # 失败后原片段原样留着，重发的是同一份文档（同一 id、正文、时刻与 tags）。
+    assert [%{"episodes" => [%{"id" => id}]}] =
+             DataService.NpcMemory.get(cid, "life", "state")["fragments"]
+
+    assert document["id"] == id
     Body.command(body, %{id: :after_failure, verb: :stop})
     assert_receive {:life_outcome, %{id: :after_failure}}, 5000
     refute_receive {:retain_started, _, _}, 100
     assert {:ok, %{status: :started}} = Life.flush(cid)
-    assert_receive {:retain_started, retry, [^fragment]}, 5000
+    assert_receive {:retain_started, retry, [^document]}, 5000
     send(retry, :complete)
 
     NpcWorld.await(fn ->
@@ -622,9 +646,15 @@ defmodule NpcServer.NpcLifeTest do
 
     refute_receive {:retain_started, _, _}, 100
     {:ok, %{status: :started}} = Life.flush(cid)
-    assert_receive {:retain_started, worker, [fragment]}, 5000
-    assert fragment["text"] =~ "transaction 3"
-    assert fragment["text"] =~ "transaction 6"
+
+    # 两条经历封在一个片段里，retain 时各成一份文档，正文各带时刻前缀。
+    assert_receive {:retain_started, worker, [first, second]}, 5000
+    assert first["text"] =~ ~r/^At \S+ \(UTC\), .*transaction 3/
+    assert second["text"] =~ ~r/^At \S+ \(UTC\), .*transaction 6/
+
+    assert [%{"episodes" => [_, _]}] =
+             DataService.NpcMemory.get(cid, "life", "state")["fragments"]
+
     send(worker, :complete)
     assert_receive :refresh_called, 5000
 

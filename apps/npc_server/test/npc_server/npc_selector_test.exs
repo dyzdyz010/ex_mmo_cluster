@@ -37,8 +37,9 @@ defmodule NpcServer.NpcSelectorTest do
       %{"name" => "zeta_build_north", "criterion" => "Build the hut on the north plot.", "skill" => "build",
         "args" => @north},
       %{"name" => "alpha_build_south", "criterion" => "Build the hut on the south plot.", "skill" => "build",
-        "args" => @south},
-      %{"name" => "rest_at_home", "criterion" => "Go home and rest.", "place" => [3.0, -4.0], "stay_ticks" => 120}
+        "args" => @south, "place_name" => "the south plot"},
+      %{"name" => "rest_at_home", "criterion" => "Go home and rest.", "place" => [3.0, -4.0], "stay_ticks" => 120,
+        "place_name" => "home"}
     ]
   }
 
@@ -252,8 +253,8 @@ defmodule NpcServer.NpcSelectorTest do
       assert nil == Selector.current(state)
       assert [%{activity: "rest_at_home", result: ^failure}] = Selector.history(state)
 
-      # 刚结束的活动写成一句经历：候选名、它的判据、结局。
-      assert ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).| ==
+      # 刚结束的活动写成一句经历：候选名、它的判据、结局；候选登记的地名一并交给 Life（作 place: tag）。
+      assert %{text: ~s|I did "rest_at_home" (Go home and rest.). Result: failed (travel: no_path).|, place: "home"} ==
                Selector.experience(state, profile)
 
       # 发问失败后树带着同一份报告重问：不重复记账，trigger 是 retry。
@@ -265,7 +266,8 @@ defmodule NpcServer.NpcSelectorTest do
       assert %{failure: nil} = state
       assert {"completed", state} = Selector.ended(state, :completed)
 
-      assert ~s|I did "zeta_build_north" (Build the hut on the north plot.). Result: completed.| ==
+      # 没登记地名的候选：place 为 nil。
+      assert %{text: ~s|I did "zeta_build_north" (Build the hut on the north plot.). Result: completed.|, place: nil} ==
                Selector.experience(state, profile)
 
       assert [
@@ -700,8 +702,9 @@ defmodule NpcServer.NpcSelectorTest do
                    "\nFeelings and relationships: Feels strong anger toward Brann (actor #{brann}). " <>
                      "Distrusts Brann (actor #{brann}).\n"
 
+          # 经历里的人按 Life 当时持有的观察写名字（Brann 在观察里）；活动期间 Brann 一直在 5 米处，结束时还在。
           assert request.state =~
-                   ~r/\nWhat just happened: Oldest first\. At \S+ \(UTC\), Actor #{brann} damaged construction I care about at \(4, 64, 8\), material 11, in world \S+ \(transaction \d+\)\. I feel angry toward this actor; my trust changed\. At \S+ \(UTC\), I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\.\n/
+                   ~r/\nWhat just happened: Oldest first\. At \S+ \(UTC\), Brann \(actor #{brann}\) damaged construction I care about at \(4, 64, 8\), material 11, in world \S+ \(transaction \d+\)\. I feel angry toward this actor; my trust changed\. At \S+ \(UTC\), I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\n/
 
           assert request.state =~
                    "- Belief (self): I am a careful builder.\n- Recalled: Brann once carried stone for me.\n"
@@ -744,7 +747,7 @@ defmodule NpcServer.NpcSelectorTest do
 
           # 两项已结束的活动各是一条经历，重问没有重复记；四次 choose_activity 的往来一条也不在里面。
           assert request.state =~
-                   ~r/I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. At \S+ \(UTC\), I did "zeta_build_north" \(Build the hut on the north plot\.\)\. Result: completed\.\nWhat I remember/
+                   ~r/I did "alpha_build_south" \(Build the hut on the south plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\. At \S+ \(UTC\), I did "zeta_build_north" \(Build the hut on the north plot\.\)\. Result: completed\. During it: Brann \(actor #{brann}\) came within 5 m and was still there at the end\.\nWhat I remember/
 
           refute request.state =~ "choose_activity"
           send(worker, {:jev_reply, answer("alpha_build_south", 0.6)})
@@ -755,6 +758,14 @@ defmodule NpcServer.NpcSelectorTest do
       # Life 手里的经历恰好三条：一次破坏、两项活动。
       assert {:ok, %{pending_episodes: 3, pending_fragments: 0, unsaved_experiences: 0, error: nil}} =
                Life.observe(cid)
+
+      # 三条经历的 tags：登记的地名（只有 alpha_build_south 登记了）与期间靠近过的 Brann 都进了活动经历——
+      # 注册参数 → Selector → Runtime → Life 的真实接缝。
+      assert [
+               ["kind:event", "actor:#{brann}"],
+               ["kind:activity", "actor:#{brann}", "place:the south plot"],
+               ["kind:activity", "actor:#{brann}"]
+             ] == Enum.map(DataService.NpcMemory.get(cid, "life", "state")["pending"], & &1["tags"])
 
       assert log =~ ~r/npc_select cid=#{cid} trigger=completed \S+ chosen=zeta_build_north confidence=0.8 latency_ms=\d+ recall_ms=5 model=jev-test/
       assert log =~ "npc_select_failed cid=#{cid} reason={:mind_unavailable, :transport_error}"
@@ -811,6 +822,7 @@ What just happened: Nothing new.
                Life.observe(cid)
 
       # 第 2 次发问：近期经历一栏。时刻、世界身份、事务号是运行时的值，换成占位后整栏与手写的句子逐字相同。
+      # Brann 不在观察里（观察的 entities 为空）：人写 `actor <cid>`；活动期间观察里没有别人：nobody came near。
       skill_step(body, 2, :done, nil)
       assert_receive {:runtime_outcome, %{id: 2, verb: :build, status: :done}}
       event(body, {:observation, observation(3, cid)})
@@ -819,10 +831,11 @@ What just happened: Nothing new.
       [happened] = Regex.run(~r/^What just happened: .*$/m, request.state)
 
       assert "What just happened: Oldest first. " <>
-               "At <t> (UTC), Actor #{brann} damaged part of the building \"small hut\" that I built, at (4, 64, 8), " <>
+               "At <t> (UTC), actor #{brann} damaged part of the building \"small hut\" that I built, at (4, 64, 8), " <>
                "material 11, in world <w> (transaction <n>); the building is still standing. " <>
                "I feel angry toward this actor; my trust changed. " <>
-               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed." ==
+               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
+               "During it: nobody came near." ==
                happened
                |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
                |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")
@@ -889,10 +902,11 @@ What just happened: Nothing new.
       [situation] = Regex.run(~r/^Current situation: .*$/m, request.state)
 
       assert "What just happened: Oldest first. " <>
-               "At <t> (UTC), Actor #{brann} removed the entire building \"small hut\" that I built, at (4, 64, 8), " <>
+               "At <t> (UTC), actor #{brann} removed the entire building \"small hut\" that I built, at (4, 64, 8), " <>
                "material 11, in world <w> (transaction <n>); the building no longer exists. " <>
                "I feel angry toward this actor; my trust changed. " <>
-               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed." ==
+               "At <t> (UTC), I did \"alpha_build_south\" (Build the hut on the south plot.). Result: completed. " <>
+               "During it: nobody came near." ==
                happened
                |> String.replace(~r/At \S+ \(UTC\)/, "At <t> (UTC)")
                |> String.replace(~r/in world \S+ \(transaction \d+\)/, "in world <w> (transaction <n>)")

@@ -22,7 +22,9 @@ defmodule NpcServer.Mind do
   - 信任（−1..1，不随时间恢复）：≤ −0.6 `Deeply distrusts`，≤ −0.2 `Distrusts`，≥ 0.2 `Trusts`，≥ 0.6 `Deeply trusts`，
     其间不写。规则模式一次破坏 −0.35、一次帮助 +0.25。
   - 角色的写法：还在观察里的写 `名字 (actor <cid>)`，不在的写 `actor <cid>, who is not nearby`。
-    带上 cid 是因为近期经历与记忆的原文只用 cid 指人（`Actor <cid> damaged …`），模型要靠它把两处对上。
+    带上 cid 是因为近期经历与记忆的原文也按 `名字 (actor <cid>)` 写人（写经历时取不到名字就只有 `actor <cid>`），模型要靠 cid 把两处对上。
+    名字的写法（空名写 `someone unnamed`）、“附近的人”（观察里除自己以外的每个人）与距离都用 `Life.State` 的
+    `person_name/1`、`others/1`、`distance/2`：写经历与写快照是同一套。
     处境栏的 `Nearby` 也写 `<名字> (<kind>, actor <cid>, <距离> m away)`：不能只靠情绪栏那一句把名字与 cid 对上
     （2026-11-12 S1-E 离线实测：去掉 Distrusts 一句后模型认不出附近的人就是记忆里的那个 actor；见 docs/10-active/cross-cutting/tools/jev/s1e_design.py）。
   - 与旁人的距离由代码算好。
@@ -72,9 +74,9 @@ defmodule NpcServer.Mind do
   记忆原文用 cid 指人，所以问句里带 cid。
   """
   @spec recall_query(map(), map()) :: String.t()
-  def recall_query(profile, %{self: self, entities: entities}) do
+  def recall_query(profile, %{entities: entities} = observation) do
     people =
-      case Enum.reject(entities, &(&1.entity_id == self.entity_id)) do
+      case State.others(observation) do
         [] -> "Nobody is nearby."
         others -> "Nearby: " <> Enum.map_join(others, ", ", &actor(&1.entity_id, entities)) <> "."
       end
@@ -89,16 +91,16 @@ defmodule NpcServer.Mind do
   `:distrusted`：观察里除自己以外、Life 信任 ≤ −0.2 的人中信任最低者；同值取近的（与处境栏同一距离），再同取 entity_id 小的。
   没有这样的人 → `:nobody_distrusted`；观察里还没有 Life 的规范状态（Runtime 还没收到）→ `:life_not_ready`。
   """
-  @spec person(:distrusted, map()) :: {:ok, map()} | {:error, :nobody_distrusted | :life_not_ready}
-  def person(:distrusted, %{life: %{state: state}, self: self, entities: entities}) do
+  @spec person(:distrusted, map()) ::
+          {:ok, map()} | {:error, :nobody_distrusted | :life_not_ready}
+  def person(:distrusted, %{life: %{state: state}, self: self} = observation) do
     trust = Map.new(State.relationships(state), &{&1.actor, &1.trust})
 
     candidates =
-      for e <- entities,
-          e.entity_id != self.entity_id,
+      for e <- State.others(observation),
           value = Map.get(trust, e.entity_id),
           value <= @distrusts,
-          do: {{value, distance(self.position, e.position), e.entity_id}, e}
+          do: {{value, State.distance(self.position, e.position), e.entity_id}, e}
 
     case candidates do
       [] ->
@@ -147,7 +149,7 @@ defmodule NpcServer.Mind do
   defp actor(cid, entities) do
     case Enum.find(entities, &(&1.entity_id == cid)) do
       nil -> "actor #{cid}, who is not nearby"
-      entity -> "#{name(entity.name)} (actor #{cid})"
+      entity -> "#{State.person_name(entity.name)} (actor #{cid})"
     end
   end
 
@@ -168,7 +170,7 @@ defmodule NpcServer.Mind do
 
   # 眼前的处境：Observation 里现有的字段，加 Life.mind 现查 World 得到的“我的建筑”在不在。
   defp situation(%{self: %{position: {x, y, z} = position} = self} = observation, buildings) do
-    others = Enum.reject(observation.entities, &(&1.entity_id == self.entity_id))
+    others = State.others(observation)
 
     Enum.join(
       ["Standing at x=#{metres(x)}, z=#{metres(z)} (height #{metres(y)})."] ++
@@ -180,7 +182,8 @@ defmodule NpcServer.Mind do
   end
 
   defp building(%{name: name, anchor: {ax, ay, az}, standing: standing}),
-    do: ~s|My building "#{name}" at (#{ax}, #{ay}, #{az}) is #{if standing, do: "standing", else: "gone"}.|
+    do:
+      ~s|My building "#{name}" at (#{ax}, #{ay}, #{az}) is #{if standing, do: "standing", else: "gone"}.|
 
   # 本会话还没收到身体状态（nil）时不写这一句。
   defp life(nil), do: []
@@ -191,12 +194,9 @@ defmodule NpcServer.Mind do
   defp nearby(others, origin) do
     "Nearby: " <>
       Enum.map_join(others, "; ", fn other ->
-        "#{name(other.name)} (#{kind(other.kind)}, actor #{other.entity_id}, #{metres(distance(origin, other.position))} m away)"
+        "#{State.person_name(other.name)} (#{kind(other.kind)}, actor #{other.entity_id}, #{metres(State.distance(origin, other.position))} m away)"
       end) <> "."
   end
-
-  defp name(""), do: "someone unnamed"
-  defp name(name), do: name
 
   # Scene 的角色种类码：0 = 玩家，1 = NPC。
   defp kind(0), do: "player"
@@ -221,9 +221,6 @@ defmodule NpcServer.Mind do
         "#{activity}: #{result(result)}."
       end)
   end
-
-  defp distance({x, y, z}, {ox, oy, oz}),
-    do: :math.sqrt((x - ox) ** 2 + (y - oy) ** 2 + (z - oz) ** 2)
 
   defp metres(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1)
 end

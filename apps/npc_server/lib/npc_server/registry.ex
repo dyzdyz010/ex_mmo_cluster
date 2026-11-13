@@ -30,6 +30,9 @@ defmodule NpcServer.Registry do
                   技能只能是 build / gather / expand / travel（参数见 `NpcServer.Brain` 的共用技能命令）；去处由 travel 走过去。
                   “去找某人”的选择器只有 "distrusted"（附近信任 ≤ −0.2 中最低的那个人，`NpcServer.Mind.person/2`），
                   选中时由 travel 走到他身边再待 stay_ticks。每项恰好四个键：place 与 person 同写、未知选择器都被拒。
+                  三种形状都可以另加第五个键 "place_name"：这项活动在哪里的名字（非空字符串，如 "the plaza"）。
+                  它只进记忆：活动结束时 Life 把它写成那条经历的 `place:<地名>` tag，召回按地点调取（`NpcServer.Life.activity/2`）；
+                  不进给 Jev 的候选，也不决定去哪里。空串、非字符串被拒；不写就是没有地名（profile 里为 nil）。
       tools       工具带（同 settler）。
       life        可省略。统一形态必带 Life：情绪与关系、近期经历、Hindsight 的认识与召回都经它进心智快照（`NpcServer.Mind`）。
                   省略或 true → Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`（没有即拒绝登记）；`{"url": 地址}` 显式给出；
@@ -61,7 +64,12 @@ defmodule NpcServer.Registry do
   }
   @design_budget %{rounds: 12, tokens: 240_000, max_output_tokens: 4096}
   # 统一形态的候选活动可用的技能：都不需要模型接口（design_house 要 LLM，不在其中）。
-  @activity_skills %{"build" => :build, "gather" => :gather, "expand" => :expand, "travel" => :travel}
+  @activity_skills %{
+    "build" => :build,
+    "gather" => :gather,
+    "expand" => :expand,
+    "travel" => :travel
+  }
   # “去找某人”候选可用的选择器（`NpcServer.Mind.person/2`）：现在只有 confront_wrecker 要用的 distrusted。
   @people %{"distrusted" => :distrusted}
   # 一次 Jev 请求的超时（毫秒）。选择是秒级决策（离线实验 4,076 次里最慢 3.12 秒），不沿用给 LLM 定的 60 秒缺省。
@@ -134,12 +142,14 @@ defmodule NpcServer.Registry do
   @doc """
   注册表行的大脑名与 JSON 形参数 → `{大脑模块, profile}`（形状见 moduledoc 的表）。参数不合法时 raise：缺必填键、类型不对、
   建树失败（`Brain.Tree.init/1`）、工具表投影失败（`Abilities.tools/1`）、巡逻路线不足两点（`Brain.Patrol.init/1`）、
-  组名不在本 profile 的条目里、llm 的运行环境没有模型接口；npc 的人格卡不合法、候选表为空或重名、运行环境没有 Jev 接口、
+  组名不在本 profile 的条目里、llm 的运行环境没有模型接口；npc 的人格卡不合法、候选表为空或重名、候选的地名不是非空字符串、
+  运行环境没有 Jev 接口、
   `life` 为 false 或没有 Hindsight 地址。
   """
   def brain(
         "npc",
-        %{"who" => who, "persona" => persona, "activities" => activities, "tools" => tools} = params
+        %{"who" => who, "persona" => persona, "activities" => activities, "tools" => tools} =
+          params
       )
       when is_binary(who) and is_list(activities) do
     if Map.get(params, "life") == false,
@@ -182,6 +192,7 @@ defmodule NpcServer.Registry do
 
     # 建树即校验：能力名与节点形状（与 Body 起树同一个函数）。
     Brain.Tree.init(profile)
+
     # 必带 Life：不套 Brain.Social，Runtime 按规则模式起 Life，心智经快照进选择。
     {Brain.Tree, with_life(profile, Map.put_new(params, "life", true))}
   end
@@ -427,26 +438,44 @@ defmodule NpcServer.Registry do
               is_integer(spacing) and spacing >= 0 and is_integer(tool),
        do: %{region: region, spacing: spacing, tool_id: tool}
 
-  # 统一形态的一项候选：技能调用，去一个地点待一段时间，或去找某人（按选择器）待一段时间。
-  defp activity(%{"name" => name, "criterion" => criterion, "skill" => skill, "args" => args} = json)
-       when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
-              is_map_key(@activity_skills, skill) and is_map(args),
-       do: %{name: name, criterion: criterion, run: {:skill, skill, args}}
+  # 统一形态的一项候选：技能调用，去一个地点待一段时间，或去找某人（按选择器）待一段时间；可选的地名 place_name
+  # （非空字符串）先拿出来，其余四个键按三种形状之一校验。没写地名的候选 place_name 为 nil。
+  defp activity(%{"place_name" => place_name} = json)
+       when is_binary(place_name) and place_name != "",
+       do: %{activity(Map.delete(json, "place_name")) | place_name: place_name}
 
   defp activity(
-         %{"name" => name, "criterion" => criterion, "place" => [x, z] = place, "stay_ticks" => ticks} =
+         %{"name" => name, "criterion" => criterion, "skill" => skill, "args" => args} = json
+       )
+       when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
+              is_map_key(@activity_skills, skill) and is_map(args),
+       do: %{name: name, criterion: criterion, run: {:skill, skill, args}, place_name: nil}
+
+  defp activity(
+         %{
+           "name" => name,
+           "criterion" => criterion,
+           "place" => [x, z] = place,
+           "stay_ticks" => ticks
+         } =
            json
        )
        when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
               is_number(x) and is_number(z) and is_integer(ticks) and ticks > 0,
-       do: %{name: name, criterion: criterion, run: {:place, place, ticks}}
+       do: %{name: name, criterion: criterion, run: {:place, place, ticks}, place_name: nil}
 
   defp activity(
-         %{"name" => name, "criterion" => criterion, "person" => person, "stay_ticks" => ticks} = json
+         %{"name" => name, "criterion" => criterion, "person" => person, "stay_ticks" => ticks} =
+           json
        )
        when map_size(json) == 4 and is_binary(name) and name != "" and is_binary(criterion) and
               is_map_key(@people, person) and is_integer(ticks) and ticks > 0,
-       do: %{name: name, criterion: criterion, run: {:person, Map.fetch!(@people, person), ticks}}
+       do: %{
+         name: name,
+         criterion: criterion,
+         run: {:person, Map.fetch!(@people, person), ticks},
+         place_name: nil
+       }
 
   defp spell({name, program}) when is_binary(program), do: {name, program}
   defp flag(value) when is_boolean(value), do: value

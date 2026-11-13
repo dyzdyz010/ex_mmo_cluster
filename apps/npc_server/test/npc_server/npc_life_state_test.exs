@@ -85,7 +85,8 @@ defmodule NpcServer.NpcLifeStateTest do
     %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
   end
 
-  test "每条伤害与帮助经历直接给出权威 UTC 毫秒时刻并保留事件身份" do
+  # 时刻只在条目的 "at_ms"：原文不带时刻前缀（交给 Hindsight 与快照时由 Life 加，见 npc_dialogue_life_test / npc_life_test）。
+  test "每条伤害与帮助经历的时刻只在 at_ms，原文不带时刻前缀，保留事件身份并带 tags" do
     events = [
       event(6, :damage, 11, at_ms: 1_791_698_780_067),
       event(22, :build, 12, at_ms: 1_791_699_081_234, placed_by: nil)
@@ -93,16 +94,97 @@ defmodule NpcServer.NpcLifeStateTest do
 
     {_, [damage, help]} = State.advance(new(), events, 22, 1_791_699_120_000)
 
-    assert damage["text"] =~ "2026-10-11T06:06:20.067Z (UTC)"
-    assert help["text"] =~ "2026-10-11T06:11:21.234Z (UTC)"
-    refute damage["text"] =~ "1791698780067 ms"
-    refute help["text"] =~ "1791699081234 ms"
+    assert damage["text"] ==
+             "actor 11 damaged construction I care about at (1, 2, 3), material 4, in world world-a (transaction 6). " <>
+               "I feel angry toward this actor; my trust changed."
 
-    assert Map.take(damage, ["id", "seq", "at_ms"]) ==
-             %{"id" => "world-a:6", "seq" => 6, "at_ms" => 1_791_698_780_067}
+    refute help["text"] =~ "(UTC)"
+    refute help["text"] =~ "2026-10-11"
 
-    assert Map.take(help, ["id", "seq", "at_ms"]) ==
-             %{"id" => "world-a:22", "seq" => 22, "at_ms" => 1_791_699_081_234}
+    assert Map.take(damage, ["id", "seq", "at_ms", "tags"]) ==
+             %{"id" => "world-a:6", "seq" => 6, "at_ms" => 1_791_698_780_067, "tags" => ["kind:event", "actor:11"]}
+
+    assert Map.take(help, ["id", "seq", "at_ms", "tags"]) ==
+             %{"id" => "world-a:22", "seq" => 22, "at_ms" => 1_791_699_081_234, "tags" => ["kind:event", "actor:12"]}
+  end
+
+  # 名字取自 Life 此刻的观察，由调用方作为 %{cid => 名字} 传入：有名写 `名字 (actor <cid>)`，空名写 `someone unnamed (actor <cid>)`，
+  # 表里没有的人写 `actor <cid>`。涉及有名字的建筑时 tags 加 `place:<建筑名>`，散格没有。
+  test "World 事件的经历按传入的名字写人：有名、空名、取不到；tags 是 kind、actor 与建筑名" do
+    hut = [cell: {25, 518, 37}, material: 11, at_ms: 1_794_452_980_000]
+
+    events = [
+      event(4711, :damage, 21, hut ++ [building: "small hut"]),
+      event(4712, :build, 22, hut ++ [placed_by: nil]),
+      event(4713, :damage, 23, cell: {4, 64, 8}, material: 11, at_ms: 1_794_452_980_000, building: nil)
+    ]
+
+    {_, [damage, help, loose]} = State.advance(new(), events, 4713, 0, :rules, %{21 => "Brann", 22 => "", 99 => "Mara"})
+
+    assert damage["text"] ==
+             "Brann (actor 21) damaged part of the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4711); the building is still standing. " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert help["text"] ==
+             "someone unnamed (actor 22) repaired the damaged part of the building \"small hut\" that I built, " <>
+               "at (25, 518, 37), material 11, in world world-a (transaction 4712). " <>
+               "I feel grateful toward this actor; my trust changed."
+
+    assert loose["text"] ==
+             "actor 23 damaged construction I care about at (4, 64, 8), material 11, in world world-a (transaction 4713). " <>
+               "I feel angry toward this actor; my trust changed."
+
+    assert damage["tags"] == ["kind:event", "actor:21", "place:small hut"]
+    assert help["tags"] == ["kind:event", "actor:22", "place:small hut"]
+    assert loose["tags"] == ["kind:event", "actor:23"]
+  end
+
+  # 活动期间的最近距离账与期间事实一句。自己（cid 7）在原点；半径 6 米；<N> = 最小距离向上取整（最小 1）。
+  describe "activity facts during an activity" do
+    defp at(id, name, x), do: %{entity_id: id, name: name, position: {x, 0.0, 0.0}}
+    defp seen(entities), do: %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
+
+    defp track(frames),
+      do: Enum.reduce(frames, %{}, fn entities, closest -> State.approach(closest, seen(entities)) end)
+
+    test "nobody came within 6 m (only people further away, and myself): nobody came near" do
+      closest = track([[at(7, "Lin", 0.0), at(21, "Brann", 9.0)], [at(21, "Brann", 6.5)]])
+      assert %{21 => %{metres: 6.5, name: "Brann"}} == closest
+      refute Map.has_key?(closest, 7)
+      assert {"During it: nobody came near.", []} == State.during(closest, seen([at(21, "Brann", 6.5)]))
+    end
+
+    test "someone came close and then moved away (or left the observation)" do
+      closest = track([[at(21, "Brann", 10.0)], [at(21, "Brann", 2.3)], [at(21, "Brann", 8.0)]])
+
+      assert {"During it: Brann (actor 21) came within 3 m and then moved away.", [21]} ==
+               State.during(closest, seen([at(21, "Brann", 8.0)]))
+
+      # 结束时已不在观察里，同样是“走了”。
+      assert {"During it: Brann (actor 21) came within 3 m and then moved away.", [21]} ==
+               State.during(closest, seen([]))
+    end
+
+    test "someone came close and was still within 6 m at the end; under a metre is written as 1 m" do
+      closest = track([[at(21, "Brann", 0.4)], [at(21, "Brann", 6.0)]])
+
+      assert {"During it: Brann (actor 21) came within 1 m and was still there at the end.", [21]} ==
+               State.during(closest, seen([at(21, "Brann", 6.0)]))
+    end
+
+    test "several people: nearest first, at most three in one sentence, every one of them tagged" do
+      closest =
+        track([
+          [at(24, "Dara", 5.5), at(22, "", 3.0), at(23, "Cole", 1.2), at(21, "Brann", 4.0), at(25, "Eve", 12.0)],
+          [at(24, "Dara", 5.5), at(21, "Brann", 4.0)]
+        ])
+
+      assert {"During it: Cole (actor 23) came within 2 m and then moved away; " <>
+                "someone unnamed (actor 22) came within 3 m and then moved away; " <>
+                "Brann (actor 21) came within 4 m and was still there at the end.",
+              [23, 22, 21, 24]} == State.during(closest, seen([at(24, "Dara", 5.5), at(21, "Brann", 4.0)]))
+    end
   end
 
   # 期望句子手写。时刻：2026-11-12T03:09:40Z = 1_794_452_980_000 ms，03:12:00Z = 1_794_453_120_000 ms。
@@ -120,17 +202,17 @@ defmodule NpcServer.NpcLifeStateTest do
     {state, [damage, help, loose]} = State.advance(new(), events, 4713, 1_794_453_120_000)
 
     assert damage["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+             "actor 21 damaged part of the building \"small hut\" that I built, " <>
                "at (25, 518, 37), material 11, in world world-a (transaction 4711); the building is still standing. " <>
                "I feel angry toward this actor; my trust changed."
 
     assert help["text"] ==
-             "At 2026-11-12T03:12:00.000Z (UTC), Actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
+             "actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
                "at (25, 518, 37), material 11, in world world-a (transaction 4712). " <>
                "I feel grateful toward this actor; my trust changed."
 
     assert loose["text"] ==
-             "At 2026-11-12T03:12:00.000Z (UTC), Actor 21 damaged construction I care about " <>
+             "actor 21 damaged construction I care about " <>
                "at (4, 64, 8), material 11, in world world-a (transaction 4713). " <>
                "I feel angry toward this actor; my trust changed."
 
@@ -143,7 +225,7 @@ defmodule NpcServer.NpcLifeStateTest do
     {_, [pending]} = State.advance(new(), [hd(events)], 4711, 1_794_452_980_000, :model)
 
     assert pending["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+             "actor 21 damaged part of the building \"small hut\" that I built, " <>
                "at (25, 518, 37), material 11, in world world-a (transaction 4711); the building is still standing. " <>
                "My trust changed; emotional appraisal is pending."
   end
@@ -169,23 +251,23 @@ defmodule NpcServer.NpcLifeStateTest do
     {state, [damaged, broken, repaired, removed]} = State.advance(new(), events, 44, @t)
 
     assert damaged["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 damaged part of the building \"small hut\" that I built, " <>
+             "actor 21 damaged part of the building \"small hut\" that I built, " <>
                "at (25, 518, 36), material 11, in world world-a (transaction 41); the building is still standing. " <>
                "I feel angry toward this actor; my trust changed."
 
     assert broken["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 broke off part of the building \"small hut\" that I built, " <>
+             "actor 21 broke off part of the building \"small hut\" that I built, " <>
                "at (26, 518, 36), material 11, in world world-a (transaction 42); the rest of the building is still standing. " <>
                "I feel angry toward this actor; my trust changed."
 
     assert repaired["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
+             "actor 22 repaired the damaged part of the building \"small hut\" that I built, " <>
                "at (26, 518, 36), material 11, in world world-a (transaction 43). " <>
                "I feel grateful toward this actor; my trust changed."
 
     # 情绪与信任没有再评价，所以不带情绪句。
     assert removed["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+             "actor 21 removed the entire building \"small hut\" that I built, " <>
                "at (25, 518, 36), material 11, in world world-a (transaction 44); the building no longer exists."
 
     assert Map.take(removed, ["id", "seq", "actor"]) == %{"id" => "world-a:44", "seq" => 44, "actor" => 21}
@@ -209,7 +291,7 @@ defmodule NpcServer.NpcLifeStateTest do
     {state, [removed]} = State.advance(new(), events, 41, @t)
 
     assert removed["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+             "actor 21 removed the entire building \"small hut\" that I built, " <>
                "at (25, 518, 36), material 11, in world world-a (transaction 41); the building no longer exists. " <>
                "I feel angry toward this actor; my trust changed."
 
@@ -218,7 +300,7 @@ defmodule NpcServer.NpcLifeStateTest do
     {_, [pending]} = State.advance(new(), events, 41, @t, :model)
 
     assert pending["text"] ==
-             "At 2026-11-12T03:09:40.000Z (UTC), Actor 21 removed the entire building \"small hut\" that I built, " <>
+             "actor 21 removed the entire building \"small hut\" that I built, " <>
                "at (25, 518, 36), material 11, in world world-a (transaction 41); the building no longer exists. " <>
                "My trust changed; emotional appraisal is pending."
   end
@@ -290,7 +372,7 @@ defmodule NpcServer.NpcLifeStateTest do
     assert state["relationships"]["12"]["trust"] == 0.5
     assert state["evidence"]["damage_count"] == 3
     assert Enum.map(episodes, & &1["id"]) == Enum.map(1..5, &"world-a:#{&1}")
-    assert hd(episodes)["text"] =~ "Actor 11"
+    assert hd(episodes)["text"] =~ "actor 11"
     assert hd(episodes)["seq"] == 1
     assert hd(episodes)["at_ms"] == 0
     assert state["evidence"]["anger"]["seq"] == 5

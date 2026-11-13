@@ -352,11 +352,13 @@ defmodule NpcServer.NpcDialogueWorldTest do
     assert after_speech.pending_episodes == 1
 
     assert {:ok, %{status: :started}} = Life.flush(cid)
+
+    # retain 收到的是这条经历自己的文档：id 是经历 id，正文带时刻前缀，tags 是对话与对方。
     assert_receive {:retain, worker, [fragment]}, 5000
-    assert fragment["text"] =~ "I said"
+    assert fragment["text"] =~ ~r/^At \S+ \(UTC\), I said: /
     assert fragment["text"] =~ "not verified world facts"
-    assert fragment["id"] =~ "speech:#{speech.conversation_id}:#{speech.turn}"
-    refute fragment["id"] =~ "fragment:0-0"
+    assert fragment["id"] == "speech:#{speech.conversation_id}:#{speech.turn}"
+    assert fragment["tags"] == ["kind:conversation", "actor:#{peer}"]
 
     Body.command(other, %{
       id: :reply,

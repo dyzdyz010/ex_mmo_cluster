@@ -19,13 +19,14 @@ defmodule NpcServer.Selector do
     W->>J: ask/3：HTTPS（心智快照 + 有序候选）
     J-->>W: top1
     W-->>R: 结果
+    R->>L: activity_started（选定了才发：从此记这项活动期间谁靠近过）
     R-->>T: Outcome done %{activity:}（或 rejected）
     T->>T: 写进黑板，执行被选中的分支直到结束
   ```
 
   - **什么时候问**：一项活动结束（成功或失败）回到树根时。树发 `choose_activity` 命令（能力条目 `entries/1`），
     参数是上一项活动怎样结束。Runtime 在独立 worker 里发问，不阻塞权威帧；等应答期间树停在这一步，身体原地不动。
-  - **候选**：`profile.activities`，有序列表 `[%{name:, criterion:, run:}]`（注册参数给出，见 `NpcServer.Registry`）。
+  - **候选**：`profile.activities`，有序列表 `[%{name:, criterion:, run:, place_name:}]`（注册参数给出，见 `NpcServer.Registry`）。
     次序由列表承载，原样进请求体。当前没有可行性过滤：现有 Observation 里没有能判定某个候选做不成的依据
     （材料单、地块占用都要另查 World），做不成的候选由执行失败后写进“最近做过的事”来体现。
   - **判断**：给 Jev 的 state 是 `NpcServer.Mind` 的心智快照（六栏），发问那一刻现读：`question/3` 先向 Life 取情绪与关系、
@@ -112,7 +113,9 @@ defmodule NpcServer.Selector do
     case List.last(activities) do
       %{result: nil} = current when ended != nil ->
         trigger = if ended == :completed, do: "completed", else: "failed"
-        {trigger, %{state | activities: List.replace_at(activities, -1, %{current | result: ended})}}
+
+        {trigger,
+         %{state | activities: List.replace_at(activities, -1, %{current | result: ended})}}
 
       _ ->
         {if(state.failure, do: "retry", else: "start"), state}
@@ -120,13 +123,17 @@ defmodule NpcServer.Selector do
   end
 
   @doc """
-  刚结束的那项活动写成一句英文经历（做了什么、结果如何），交给 Life；`state` 是 `ended/2` 记完账的状态。
-  候选的判据一并写上：候选名只是标识，判据才说得清做的是什么。
+  刚结束的那项活动的经历，交给 Life（`Life.activity/2`）；`state` 是 `ended/2` 记完账的状态。返回
+  `%{text: 一句英文（做了什么、结果如何）, place: 候选登记的地名 | nil}`。候选的判据一并写进句子：候选名只是标识，
+  判据才说得清做的是什么。地名来自注册参数的 `place_name`（`NpcServer.Registry`），Life 把它写成这条经历的 `place:` tag。
   """
   def experience(state, profile) do
     %{activity: name, result: result} = List.last(history(state))
-    %{criterion: criterion} = Enum.find(profile.activities, &(&1.name == name))
-    ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|
+
+    %{criterion: criterion, place_name: place} =
+      Enum.find(profile.activities, &(&1.name == name))
+
+    %{text: ~s|I did "#{name}" (#{criterion}). Result: #{Mind.result(result)}.|, place: place}
   end
 
   @doc """
@@ -184,7 +191,9 @@ defmodule NpcServer.Selector do
   @doc "请求体：`state` 是心智快照的英文转写，候选按 `profile.activities` 的次序（有序 JSON 对象）。"
   def body(profile, state) do
     candidates =
-      Jason.OrderedObject.new(for activity <- profile.activities, do: {activity.name, activity.criterion})
+      Jason.OrderedObject.new(
+        for activity <- profile.activities, do: {activity.name, activity.criterion}
+      )
 
     Jev.body(profile.jev, %{instructions: @instructions, activities: candidates}, state)
   end
@@ -201,7 +210,11 @@ defmodule NpcServer.Selector do
         "recall_ms=#{selection.recall_ms} model=#{selection.model}"
     )
 
-    entry = selection |> Map.take([:activity, :trigger, :confidence, :latency_ms, :recall_ms]) |> Map.put(:result, nil)
+    entry =
+      selection
+      |> Map.take([:activity, :trigger, :confidence, :latency_ms, :recall_ms])
+      |> Map.put(:result, nil)
+
     %{state | activities: Enum.take(state.activities ++ [entry], -@recent), failure: nil}
   end
 

@@ -1,7 +1,22 @@
 defmodule NpcServer.NpcDialogueLifeTest do
-  @moduledoc "只测试：Life 回调的并发/写失败反例；合法持久行与事件作为纯输入，存储替身不声称真实冷恢复。"
+  @moduledoc """
+  只测试：Life 回调的并发/写失败反例，以及写入侧的形状（经历条目、人名写法、tags、活动的期间事实、retain 每条经历一份文档）；
+  合法持久行与事件作为纯输入，直接调 Life 的回调，存储替身不声称真实冷恢复。Hindsight 只替适配器模块（`Retainer`）。
+  """
   use ExUnit.Case, async: false
   alias NpcServer.{Life, Memory}
+
+  # 只测试：Hindsight 适配器替身，retain 收到的文档原样交给测试进程。
+  defmodule Retainer do
+    def ensure(_, _), do: {:ok, %{}}
+    def status(_), do: {:ok, %{}}
+    def refresh(_), do: {:ok, %{models: %{}, metadata: %{}}}
+
+    def retain(config, documents) do
+      send(config.owner, {:retain, documents})
+      {:ok, %{retained: length(documents)}}
+    end
+  end
 
   defmodule Store do
     use Agent
@@ -171,6 +186,7 @@ defmodule NpcServer.NpcDialogueLifeTest do
       appraise: false,
       observation: nil,
       experience_pending: [],
+      activity: nil,
       row: %{
         "state" => Life.State.new(7, "world", 6, 0),
         "pending" => [],
@@ -182,6 +198,160 @@ defmodule NpcServer.NpcDialogueLifeTest do
         "thanked_seq" => 0
       }
     }
+  end
+
+  # 自己（cid 7）在原点的一帧观察。
+  defp seen(entities), do: %{self: %{entity_id: 7, position: {0.0, 0.0, 0.0}}, entities: entities}
+  defp person(id, name, x), do: %{entity_id: id, name: name, position: {x, 0.0, 0.0}}
+
+  # 期间事实只在“收到过开始信号、且期间收到过观察”时写；每项活动的经历时刻取 Life 的时钟（这里每读一次走 1 秒）。
+  test "activity facts: none without a start signal or without observations; nearest approach and tags otherwise" do
+    clock = start_supervised!({Agent, fn -> 1000 end})
+
+    s = %{
+      state()
+      | now: fn -> Agent.get_and_update(clock, &{&1, &1 + 1000}) end,
+        context: %{cid: 7, scene_id: 1}
+    }
+
+    # 心智快照的读入口还要适配器与配置（这里不发召回，只读视图）。
+    s = Map.merge(s, %{adapter: Retainer, config: %{owner: self()}})
+
+    done = ~s|I did "guard_hut" (Guard the hut.). Result: completed.|
+
+    # 1. 没有开始信号：观察照常收到，不记账，不写期间事实。地名照样进 tags。
+    {:noreply, s} = Life.handle_cast({:observation, seen([person(21, "Brann", 2.0)])}, s)
+    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: "the hut"}}, s)
+    # 2. 开始了，但期间一帧观察都没有。
+    {:noreply, s} = Life.handle_cast(:activity_started, s)
+    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: nil}}, s)
+
+    # 3. 开始之后 Brann 从 9 米走到 2.5 米又退到 7 米。开始之前那一帧（2 米）不算。
+    {:noreply, s} = Life.handle_cast(:activity_started, s)
+
+    s =
+      Enum.reduce([9.0, 2.5, 7.0], s, fn x, s ->
+        {:noreply, s} = Life.handle_cast({:observation, seen([person(21, "Brann", x)])}, s)
+        s
+      end)
+
+    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: "the hut"}}, s)
+    # 4. 开始了，期间只有 6 米外的人。
+    {:noreply, s} = Life.handle_cast(:activity_started, s)
+    {:noreply, s} = Life.handle_cast({:observation, seen([person(21, "Brann", 6.5)])}, s)
+    {:noreply, s} = Life.handle_cast({:activity, %{text: done, place: nil}}, s)
+    assert s.activity == nil
+
+    assert [
+             %{
+               "id" => "activity:1000",
+               "at_ms" => 1000,
+               "text" => done,
+               "tags" => ["kind:activity", "place:the hut"]
+             },
+             %{
+               "id" => "activity:2000",
+               "at_ms" => 2000,
+               "text" => done,
+               "tags" => ["kind:activity"]
+             },
+             %{
+               "id" => "activity:3000",
+               "at_ms" => 3000,
+               "text" =>
+                 done <> " During it: Brann (actor 21) came within 3 m and then moved away.",
+               "tags" => ["kind:activity", "actor:21", "place:the hut"]
+             },
+             %{
+               "id" => "activity:4000",
+               "at_ms" => 4000,
+               "text" => done <> " During it: nobody came near.",
+               "tags" => ["kind:activity"]
+             }
+           ] == s.row["pending"]
+
+    # 心智快照读到的正文带时刻前缀（UTC 取条目的 at_ms），条目本身不带。
+    {:reply, {:ok, snapshot}, _} = Life.handle_call(:context, nil, s)
+
+    assert hd(snapshot.recent) == "At 1970-01-01T00:00:01.000Z (UTC), " <> done
+
+    assert List.last(snapshot.recent) ==
+             "At 1970-01-01T00:00:04.000Z (UTC), " <> done <> " During it: nobody came near."
+  end
+
+  # 名字取自 Life 此刻持有的观察：说话人 9 在观察里叫 Mara；自己（7）不在观察里，只写 actor 7。
+  test "speech and World episodes name people from the current observation and carry tags; retain sends one document each" do
+    s = %{state() | observation: seen([person(9, "Mara", 1.0)])}
+    s = Map.merge(s, %{adapter: Retainer, config: %{owner: self()}, status: nil})
+    {:noreply, s} = Life.handle_cast({:speech, speech(1)}, s)
+
+    world = %{
+      seq: 7,
+      at_ms: 9000,
+      kind: :damage,
+      actor: 9,
+      placed_by: 7,
+      cell: {1, 2, 3},
+      material: 11
+    }
+
+    {:noreply, s} =
+      Life.handle_info(
+        {:result, :poll,
+         {:ok, %{row: s.row, events: %{world_id: "world", cursor: 7, events: [world]}}}},
+        s
+      )
+
+    heard =
+      ~s|I heard: Mara (actor 9) said to actor 7 in conversation 81, turn 1: "我声称已经修好". | <>
+        "This is a character's statement, not verified world facts."
+
+    damaged =
+      "Mara (actor 9) damaged construction I care about at (1, 2, 3), material 11, in world world (transaction 7). " <>
+        "I feel angry toward this actor; my trust changed."
+
+    assert [
+             %{
+               "id" => "speech:81:1",
+               "at_ms" => 1001,
+               "text" => ^heard,
+               "tags" => ["kind:conversation", "actor:9"]
+             },
+             %{
+               "id" => "world:7",
+               "at_ms" => 9000,
+               "text" => ^damaged,
+               "tags" => ["kind:event", "actor:9"]
+             }
+           ] = s.row["pending"]
+
+    # 封存成一个片段（运输批次），retain 时每条经历一份文档：id、时刻、tags 取自条目，正文加时刻前缀。
+    {:reply, {:ok, %{status: :started}}, s} = Life.handle_call(:flush, nil, s)
+
+    assert [%{"id" => "speech:81:1:fragment:world:7", "at_ms" => 1001, "episodes" => [_, _]}] =
+             s.row["fragments"]
+
+    assert_receive {:retain, documents}, 5000
+
+    assert [
+             %{
+               "id" => "speech:81:1",
+               "at_ms" => 1001,
+               "text" => "At 1970-01-01T00:00:01.001Z (UTC), " <> heard,
+               "tags" => ["kind:conversation", "actor:9"]
+             },
+             %{
+               "id" => "world:7",
+               "at_ms" => 9000,
+               "text" => "At 1970-01-01T00:00:09.000Z (UTC), " <> damaged,
+               "tags" => ["kind:event", "actor:9"]
+             }
+           ] == documents
+
+    # 写成功后清理照旧：只删发出去的片段，retained 计片段数，缓存变 dirty。
+    assert_receive {:result, :job, result}, 5000
+    {:noreply, s} = Life.handle_info({:result, :job, result}, s)
+    assert s.row["fragments"] == [] and s.row["retained"] == 1 and s.row["dirty"]
   end
 
   defp speech(turn),

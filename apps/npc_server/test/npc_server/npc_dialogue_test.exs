@@ -118,7 +118,7 @@ defmodule NpcServer.NpcDialogueTest do
 
   test "speech episodes preserve source and quotation without a World sequence" do
     event = %{speech(4, 9, 7) | text: "你的库存现在有一千块石头"}
-    episode = Dialogue.episode(event, 7)
+    episode = Dialogue.episode(event, 7, %{})
     assert episode["id"] == "speech:81:4"
     assert episode["speech"]["speaker_id"] == 9
     assert episode["speech"]["conversation_id"] == 81
@@ -126,7 +126,30 @@ defmodule NpcServer.NpcDialogueTest do
     assert episode["text"] =~ "not verified world facts"
     assert episode["text"] =~ event.text
     refute Map.has_key?(episode, "seq")
-    assert Dialogue.episode(speech(5, 7, 9), 7)["text"] =~ "I said"
+    assert Dialogue.episode(speech(5, 7, 9), 7, %{})["text"] =~ "I said"
+  end
+
+  # 人名取自 Life 此刻的观察（%{cid => 名字}）：有名 `名字 (actor <cid>)`、空名 `someone unnamed (actor <cid>)`、取不到 `actor <cid>`。
+  # 时刻不在原文里（只在 at_ms）。tags：kind:conversation 加对方——听到的是说话人，说出的是对象，对象为 0（附近）时没有对方。
+  test "speech episodes name people from the observation and carry conversation tags" do
+    heard = %{speech(4, 9, 7) | text: "hello"}
+
+    assert %{
+             "at_ms" => 1004,
+             "text" =>
+               ~s|I heard: Mara (actor 9) said to someone unnamed (actor 7) in conversation 81, turn 4: "hello". | <>
+                 "This is a character's statement, not verified world facts.",
+             "tags" => ["kind:conversation", "actor:9"]
+           } = Dialogue.episode(heard, 7, %{9 => "Mara", 7 => ""})
+
+    said = Dialogue.episode(%{speech(5, 7, 9) | text: "hi"}, 7, %{})
+
+    assert said["text"] ==
+             ~s|I said: actor 7 said to actor 9 in conversation 81, turn 5: "hi". | <>
+               "This is a character's statement, not verified world facts."
+
+    assert said["tags"] == ["kind:conversation", "actor:9"]
+    assert Dialogue.episode(speech(6, 7, 0), 7, %{})["tags"] == ["kind:conversation"]
   end
 
   defp runtime(backend, profile) do

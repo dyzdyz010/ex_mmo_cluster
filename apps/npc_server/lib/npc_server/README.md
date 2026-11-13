@@ -398,8 +398,9 @@ flowchart LR
   `{"skill": "build" | "gather" | "expand" | "travel", "args": 技能参数}`，或 `{"place": [x, z], "stay_ticks": n}`（travel 过去再待
   n tick，60 Hz），或 `{"person": "distrusted", "stay_ticks": n}`（选中时从当时的观察与 Life 信任里选附近信任 ≤ −0.2 中最低的人，
   `Mind.person/2`，travel 走到他身边再待 n tick；选不到人以 `failed (travel: nobody_distrusted)` 结束，Life 状态还没到是
-  `life_not_ready`）。技能表由候选推出，不另写 `skills`。坏人格卡、空候选表、重名候选、未知技能、未知选择器、place 与 person
-  同写在 `put/2` 被拒并说明原因。
+  `life_not_ready`）。每个候选还可以带可选的 `"place_name"`（这项活动在哪里的名字，非空字符串）：只进记忆——活动结束时成为
+  那条经历的 `place:<地名>` tag，召回按地点调取；不进给 Jev 的候选，也不决定去哪里。技能表由候选推出，不另写 `skills`。
+  坏人格卡、空候选表、重名候选、未知技能、未知选择器、place 与 person 同写、地名为空或不是字符串在 `put/2` 被拒并说明原因。
 - **必带 Life**：不是可选项。`life` 省略或 `true` 时 Hindsight 地址取运行环境 `NPC_LIFE_HINDSIGHT_URL`，也可写
   `"life" => %{"url" => ...}`；没有地址或写 `false` 都拒绝登记。Runtime 按规则模式起 Life（`emotion_owner: :construction_rules`：
   只认 World 来源的建设被帮助 / 被破坏）。**不套 `Brain.Social`**：情绪只通过快照影响 Jev 的选择，不在树之前接管移动；
@@ -413,14 +414,16 @@ flowchart LR
   |---|---|---|
   | Character | 人格描述 | 人格卡 |
   | Feelings and relationships | 此刻仍活跃的情绪（`Feels strong / moderate / faint anger / gratitude toward …`）与信任（`Deeply distrusts / Distrusts / Trusts / Deeply trusts …`）；都没有写 `Nothing notable.` | Life |
-  | What just happened | Life 手里还没写进 Hindsight 的经历原文（已封存待写的片段 + 未封存的尾部，旧在前）；没有写 `Nothing new.` | Life |
+  | What just happened | Life 手里还没写进 Hindsight 的经历正文（`At <UTC> (UTC), <原文>`；已封存待写的片段 + 未封存的尾部，旧在前）；没有写 `Nothing new.` | Life |
   | What I remember | 缓存的四份认识（`- Belief (self / relationships / world / commitments): …`）加针对当前处境的一次召回（`- Recalled: …`），开头写明“只是我的记忆，不是当前世界事实”；都没有写 `Nothing relevant.` | Hindsight，经 Life |
   | Current situation | 位置、生命、附近的人与距离、我的建筑在不在、背包 | World / Scene（Observation）；建筑在不在是发问时现查 World |
   | Recent activities | 最近 5 项活动及结果，上一项失败时带失败的动作与原因 | 选择器 |
 
   情绪强度由代码转成词（≥ 0.4 strong、≥ 0.2 moderate、其余 faint；Life 衰减到 0.1 及以下的不给出：一次破坏后约 70 秒内 strong、
   约 190 秒内 moderate、约 310 秒后消失）。信任不随时间恢复（≤ −0.6 / ≤ −0.2 / ≥ 0.2 / ≥ 0.6 四档，其间不写）。
-  人写成 `名字 (actor <cid>)`，不在附近的写 `actor <cid>, who is not nearby`：经历与记忆的原文只用 cid 指人。
+  人写成 `名字 (actor <cid>)`，不在附近的写 `actor <cid>, who is not nearby`：经历与记忆的原文同样写 `名字 (actor <cid>)`
+  （写经历时取不到名字就只有 `actor <cid>`），模型靠 cid 把两处对上。名字写法（空名 `someone unnamed`）、“附近的人”与距离
+  由 `Life.State` 的 `person_name/1`、`others/1`、`distance/2` 一处定义，写经历与写快照共用。
   “Current situation”里，Life 记得的每座“我的有名字的建筑”各一句，放在背包之前：`My building "<发布名>" at (<ax>, <ay>, <az>) is standing.`
   或 `… is gone.`（坐标是锚点所在宏格；`is gone.` 是离线实测过的 `SIT_GONE` 原文）。问哪几座来自 Life 的记忆，在不在只认
   `Life.mind/2` 在发问 worker 里现查 `World.instance_cells/2` 的结果（有格 = 在，`:instance_not_found` = 不在）；没有这样的建筑就一句不写。
@@ -431,22 +434,34 @@ flowchart LR
   候选次序原样进请求体。没有可行性过滤：做不成的候选靠失败结果进入“最近做过的事”。
 - **召回**：一次选择恰好召回一次（`Life.mind/2`，单次请求最多等 10 秒）。问句由处境拼出（`Mind.recall_query/2`）：
   `I am deciding what to do next. Nearby: <名字 (actor cid), …>. What I could do: <各候选的判据>. What do I remember about these people, places and tasks?`
-- **经历**：进 Life 的是“做了什么、结果如何”——一项活动结束时 Runtime 调 `Life.activity/2` 记一条
-  `At <UTC> (UTC), I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，与 World 事件
-  （下面的标准描述表）同样攒够约 3000 字封成片段写入 Hindsight。
-- **经历按标准描述表写**（owner 是 `Life.State`，表只在它的 moduledoc 与 `account/4` 一处定义）：程序里一种 World 事件
-  对应一句固定、精确的英文，不同事件不写成同一个词。整句 = `At <UTC> (UTC), ` + 下表原文 + 情绪句（规则模式
+- **经历**：进 Life 的是“做了什么、结果如何、期间谁来过”——选定一项活动时 Runtime 调 `Life.activity_started/1`，
+  它结束时调 `Life.activity/2`（`%{text:, place:}`，`Selector.experience/2`）记一条
+  `I did "<候选名>" (<判据>). Result: completed | failed (<动作>: <原因>).`，末尾加一句**期间事实**：活动期间 Life 每收到一帧
+  观察就记下自己以外每个人到我的最小距离（不加新观察通道），结束时写 `During it: nobody came near.`，或
+  `During it: <名字> (actor <cid>) came within <N> m and then moved away.` / `… and was still there at the end.`
+  （`<N>` = 最小距离向上取整、最小 1；多人近的在前、最多 3 人，用 `; ` 连成一句）。靠近半径 6 米是用户 2026-11-13 定的原创取值，
+  没有外部依据，实跑后可调（`Life.State` 的 `@near_m`）。没有收到开始信号或期间没有观察就不写这句（没有真值）；
+  距离账只在 Life 进程里，Life 重启时正在进行的那项活动不写期间事实。这几句英文没有离线测过。
+- **经历条目与写入 Hindsight**：每条经历是 `%{"id", "at_ms", "text", "tags"}`（World 事件另有 `seq` / `actor`，对话另有 `speech`）。
+  `"text"` 不带时刻；交给 Hindsight 与快照的正文由 `Life` 的一处函数加离线测过的 `At <UTC> (UTC), ` 前缀。tags：
+  World 事件 `kind:event` + `actor:<cid>` + 涉及有名字的建筑时 `place:<建筑名>`；对话 `kind:conversation` + 对方 `actor:<cid>`；
+  活动 `kind:activity` + 期间进过 6 米内的每个人 `actor:<cid>` + 候选登记了地名（注册参数 `place_name`）时 `place:<地名>`。
+  经历照旧按原文字数攒到约 3000 字封成片段（`%{"id", "at_ms", "episodes"}`，只是运输批次），retain 时**每条经历一份文档**
+  （document_id = 经历 id，timestamp = 它的 `at_ms`，tags = 它的 tags）。旧形状（片段只有 `"text"`）不转换：开发数据清空重建（用户 2026-11-13 定）。
+- **经历按标准描述表写**（owner 是 `Life.State`，表只在它的 moduledoc 与 `account/5` 一处定义）：程序里一种 World 事件
+  对应一句固定、精确的英文，不同事件不写成同一个词。原文 = 下表句子 + 情绪句（规则模式
   `I feel angry / grateful toward this actor; my trust changed.`，`"life"` 模型评价模式 `My trust changed; emotional appraisal is pending.`），
-  `<where>` = `(x, y, z), material <m>, in world <world> (transaction <seq>)`：
+  `<where>` = `(x, y, z), material <m>, in world <world> (transaction <seq>)`，`<who>` = `名字 (actor <cid>)`（名字取自 Life 此刻的观察，
+  取不到写 `actor <cid>`）：
 
   | 事件 | 原文 |
   |---|---|
-  | 有名字的建筑被 `:destroy`，根实例已不在（整座被移除） | `Actor <cid> removed the entire building "<发布名>" that I built, at <where>; the building no longer exists.` |
-  | 有名字的建筑被 `:destroy`，根实例还在（毁掉一部分） | `Actor <cid> broke off part of the building "<发布名>" that I built, at <where>; the rest of the building is still standing.` |
-  | 有名字的建筑被 `:damage`（打了没毁） | `Actor <cid> damaged part of the building "<发布名>" that I built, at <where>; the building is still standing.` |
-  | 别人在有名字的建筑受损的那一格修上同一材料 | `Actor <cid> repaired the damaged part of the building "<发布名>" that I built, at <where>.` |
-  | 没有名字（散格、空名发布）被 `:damage` / `:destroy` | `Actor <cid> damaged construction I care about at <where>.` |
-  | 没有名字的那一格被别人修好 | `Actor <cid> repaired construction I care about at <where>.` |
+  | 有名字的建筑被 `:destroy`，根实例已不在（整座被移除） | `<who> removed the entire building "<发布名>" that I built, at <where>; the building no longer exists.` |
+  | 有名字的建筑被 `:destroy`，根实例还在（毁掉一部分） | `<who> broke off part of the building "<发布名>" that I built, at <where>; the rest of the building is still standing.` |
+  | 有名字的建筑被 `:damage`（打了没毁） | `<who> damaged part of the building "<发布名>" that I built, at <where>; the building is still standing.` |
+  | 别人在有名字的建筑受损的那一格修上同一材料 | `<who> repaired the damaged part of the building "<发布名>" that I built, at <where>.` |
+  | 没有名字（散格、空名发布）被 `:damage` / `:destroy` | `<who> damaged construction I care about at <where>.` |
+  | 没有名字的那一格被别人修好 | `<who> repaired construction I care about at <where>.` |
 
   第一句与第三句是离线对照实测过的原文（`tools/jev/s1c_diag.py` 的 `WHOLE_ALT`、`PART`；2026-11-12 S1-D1：写明“整座没了”后
   16 / 16 转向重建方向）。三段各有 owner：
@@ -465,7 +480,8 @@ flowchart LR
   **没有名字就不点名**：空名发布（NPC 的 `design_house` 现在发布为空名）、作者目录里没在运行时发布过的定义、散格都是这样。
   所以要让 NPC 认得出自己的建筑，定义须带名字发布，且候选判据里用同一个叫法（判据写 “the small hut”，发布名就叫 “small hut”）。
   真实 Jev 的对照（`tools/jev/episode.py`，2026-11-12）：只有坐标与编号时 `build_hut` 的概率 0.30–0.50、top1 摇摆；点名后
-  0.81–0.87、4 / 4；去掉编号但不点名 0 / 4；编号留着不影响。人仍写 `Actor <cid>`（换成 `名字 (actor <cid>)` 没有可测的差别）。
+  0.81–0.87、4 / 4；去掉编号但不点名 0 / 4；编号留着不影响。当时人写 `Actor <cid>`（换成 `名字 (actor <cid>)` 没有可测的差别）；
+  2026-11-13 起按用户同意的写入侧写法改为 `名字 (actor <cid>)`，使记忆与处境栏用同一写法。
   同一段原文也是 `"life"`（进它的评价来源）与 `settler` + `life` 的经历：涉及有发布名的建筑时文本随表变，规则、数值与行为都没变；
   已存的旧经历不重写。
   `choose_activity` 自己的 Outcome 是选择器内部往来，不是经历；规则模式下 `Life.experience/2`（动作终态进情绪评价流水）不建流水，
@@ -623,8 +639,8 @@ NpcServer.Registry.put("LifeBuilder", %{
 
 统一形态（`"npc"`）必带 Life，用法与上面两种都不同：大脑仍是原 Tree（不包 `Brain.Social`，不问决策模型），Life 按规则模式运行；
 Life 对它多给两个入口——`Life.mind(cid, query)` 是心智快照的只读视图（此刻活跃的情绪与信任、还没写进 Hindsight 的经历原文、
-缓存认识与恰好一次召回，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity(pid, text)` 接纳
-“做了什么、结果如何”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
+缓存认识与恰好一次召回，加记得的“我的建筑”此刻在不在——现查 World；读不到显式失败），`Life.activity_started(pid)` 与
+`Life.activity(pid, %{text:, place:})` 标出一项活动的开始与结束，结束时接纳“做了什么、结果如何、期间谁来过”的活动经历。`context/2` 的返回与 `Brain.Llm` 的输入不变。
 详见上文“统一形态”。
 
 ```mermaid
@@ -645,9 +661,10 @@ Runtime 初始化收到 Body 的永久 cid、scene_id 与路由模块。Life 与
 世界身份不符、操作历史 gap 和存储错误都显式报告。游标、canonical 事件态、短经历尾部、封存片段、感谢确认序号和认识缓存
 原子写在同一行。`State.view/2` 的只读衰减视图进入观察和模型输入；接纳新评价时先衰减再写 canonical，纯观察不落盘。
 
-短经历积累约 3000 字后封成一个不可变片段，文档 id 由首尾经历本身的唯一 id 构成；手动 flush 可以封存不足长度的尾片段。
+短经历积累约 3000 字后封成一个不可变片段（`%{"id", "at_ms", "episodes"}`，片段 id 由首尾经历本身的唯一 id 构成）；
+手动 flush 可以封存不足长度的尾片段。片段只是运输批次：retain 时片段里每条经历单独成一份 Hindsight 文档（document_id 是经历 id）。
 retain 完成只从当前行删除已发送的片段 id，不以发送前快照覆盖期间的新事件。HTTP 失败保留原片段与诊断，由显式 flush
-重试相同 id；同一身份在外部服务重复抽取的语义依赖 Hindsight 的 document_id 接口，不能承诺跨系统事务的 exactly-once。
+重发同一批经历文档（id 不变）；同一身份在外部服务重复抽取的语义依赖 Hindsight 的 document_id 接口，不能承诺跨系统事务的 exactly-once。
 首次 retain 成功后刷新认识，后续新事实使缓存 dirty，最多每 10 分钟后台刷新；CLI refresh 可显式提前刷新。
 恢复时封存片段与 nil 缓存可以并存；retain 后读取已有 models 只填缓存，保留 dirty，既有后台调度随即接续首次 refresh。
 只有成功 refresh 才清除该义务并保存新认识；读取旧模型不能证明新事实已进入认识。
@@ -710,10 +727,11 @@ Llm 的独立 `input.heard` 保留 speaker/target/conversation/turn/time/原话�
 不可信角色声明。最新直接叫到本角色的话并入原检索查询，Life 模式仍仅一次 Hindsight recall，请求在途的新话仍留到下轮。
 
 Life 只消费 Body 收到的已确认 Speech，经历 id 为 `speech:<conversation_id>:<turn>`；原话标明“I said/I heard”及发言人、
-对象和时间，不改 World cursor、人格、情绪或关系。慢 World poll 只返回本轮新增 World 经历，owner 合并进当前 outbox，
+对象（写成 `名字 (actor <cid>)`，名字取自 Life 此刻的观察，取不到写 `actor <cid>`；`NpcServer.Dialogue.episode/3`），时刻在条目的 `at_ms`，
+tags 为 `kind:conversation` 与对方 `actor:<cid>`；不改 World cursor、人格、情绪或关系。慢 World poll 只返回本轮新增 World 经历，owner 合并进当前 outbox，
 不会复制旧对话或覆盖同时到达的新话；retain 完成仍只删除实际发送的片段。初次加载与数据库写失败期间的输入保留在
 `unsaved_speech`，失败通过 `error` 可见；尚未成功落盘不能声称重启记得。Scene 已保证一次权威投递，Life 不复制第二套会话去重表。
-Hindsight 仍固定0.10.3/flashrank及原批量封存/refresh规则，本轮没有逐句 retain 或第二记忆检索路径。
+Hindsight 仍固定0.10.3/flashrank及原批量封存/refresh规则；2026-11-13 起封存的片段在 retain 时逐条经历成文档，没有第二记忆检索路径。
 
 可操作入口：`Body.command(pid, %{id: :hello, verb: :say, text: "你好", target_id: 0, conversation_id: 0})`；
 `Body.observe(pid).dialogue` 读近期尾部，`Life.observe(cid)` 读持久状态/未落盘数；`Life.flush(cid)` 封存短尾部。

@@ -2,15 +2,32 @@ defmodule NpcServer.Life do
   @moduledoc """
   NPC 人生状态唯一 owner，跟随 Runtime 生命周期。canonical 心智、World 游标、待写经历与认识缓存
   原子保存在 NpcMemory 的 life/state 行；观察只派生衰减视图。World 读取与 Hindsight 使用独立 worker，
-  慢记忆写入期间继续接纳权威事件。短经历先封成约 3000 字片段，失败重用原片段 id。
+  慢记忆写入期间继续接纳权威事件。
+
+  经历条目（`"pending"` 与片段里）是 `%{"id", "at_ms", "text", "tags", …}`：`"text"` 是不带时刻的原文，时刻只在 `"at_ms"`，
+  `"tags"` 是字符串列表（`kind:event | activity | conversation`、`actor:<cid>`、`place:<名>`，召回按人、按地点精确调取）。
+  交给 Hindsight 与心智快照的正文是离线测过的 `At <UTC> (UTC), <原文>`，只由本模块的 `dated/1` 一处加前缀。
+  短经历先按原文字数攒到约 3000 字封成片段 `%{"id", "at_ms", "episodes" => [经历条目]}`（片段只是运输批次）；
+  retain 时每条经历单独成一份 Hindsight 文档（document_id = 经历 id，timestamp = 该条 `at_ms`，tags = 该条 tags），
+  失败重发原片段里的同一批经历（文档 id 不变）。片段只有 `"text"` 的旧形状不做转换（用户 2026-11-13 定：开发数据清空重建）。
+
+  记忆里的人一律写 `名字 (actor <cid>)`（`Life.State.person/2`，用户 2026-11-13 同意）：名字取自本 owner 此刻持有的观察
+  （`observation.entities`），取不到写 `actor <cid>`；不建全局名字表。World 事件的经历见 `Life.State` 的标准描述表，说话的经历见
+  `NpcServer.Dialogue.episode/3`。
+
+  活动的期间事实：Runtime 选定新活动后调 `activity_started/1`，本 owner 从那一刻起每收到一帧观察就记下自己以外每个人
+  到我的最小距离（`Life.State.approach/2`）；`activity/2` 接纳这项活动的经历时在原文末尾加一句期间事实（`Life.State.during/2`：
+  谁进过 6 米内、结束时还在不在，或 `nobody came near`）。没有收到开始信号、或期间一帧观察都没有，就没有真值，不写这句。
+  这份距离账只在进程内：Life 重启会丢掉正在进行的活动的账，那一条经历就不写期间事实（可接受，不持久化）。
   World 事件只带被动那一格所属建筑的定义 id（`prefab`）；读取 worker 向 World 的发布元信息查出名字写进事件（`building`），
   经历原文由此说得出是哪座建筑、是整座没了还是毁掉一部分（标准描述表见 `Life.State`）。没有名字的定义与散格不点名。
   自己放下的有名字的建筑记进状态的 `"buildings"`（记忆）；`mind/2` 发问时逐座现查 World 此刻在不在，不用记忆冒充现状。
   对话只接纳已发生的 Speech，以 conversation_id/turn 标识来源，不改 World 游标或心智数值；
   初次加载与存储失败期间保留未落盘输入，并以 unsaved_speech/error 显式呈现。
   CLI observe/flush/refresh/context 以永久 cid 定位本节点 owner；网络调用不会占用 Body 邮箱。
-  统一形态（注册表 `"npc"`，规则模式）经两个入口用它：`mind/2` 是心智快照的只读视图（情绪与关系、还没写进 Hindsight 的
-  经历原文、缓存认识与一次召回），`activity/2` 接纳“做了什么、结果如何”的活动经历。统一形态不读状态里的
+  统一形态（注册表 `"npc"`，规则模式）经三个入口用它：`mind/2` 是心智快照的只读视图（情绪与关系、还没写进 Hindsight 的
+  经历正文、缓存认识与一次召回），`activity_started/1` 与 `activity/2` 标出一项活动的开始与结束（结束时接纳“做了什么、
+  结果如何、期间谁来过”的活动经历）。统一形态不读状态里的
   `traits`（`caution` / `sociability`）：人格只来自人格卡，这两个值并入人格卡待做。
   """
   use GenServer
@@ -78,7 +95,7 @@ defmodule NpcServer.Life do
 
       feelings       此刻仍活跃的情绪 `[%{emotion:, actor:, intensity:}]`（`Life.State.feelings/2`）
       relationships  对各角色的信任 `[%{actor:, trust:}]`（`Life.State.relationships/1`）
-      recent         还没写进 Hindsight 的经历原文（已封存待写的片段在前，未封存的尾部在后；各自旧在前）
+      recent         还没写进 Hindsight 的经历正文（`At <UTC> (UTC), <原文>`；已封存待写的片段在前，未封存的尾部在后；各自旧在前）
       models         缓存的认识 `[{id, 正文}]`，按 `Life.Hindsight.model_ids/0` 的次序
       memories       本次召回的结果（Hindsight 的原始行，正文在 `"text"`）
       recall_ms      本次召回耗时
@@ -167,10 +184,19 @@ defmodule NpcServer.Life do
   def experience(pid, outcome), do: GenServer.cast(pid, {:experience, outcome})
 
   @doc """
-  接纳一项已结束的活动（做了什么、结果如何，一句英文）作为主观经历：与 World 事件、Speech 同样进未封存的尾部，
-  攒够一个片段后写入 Hindsight。由统一形态的 Runtime 在活动结束时调用一次；不改 World 游标、情绪或关系。
+  一项新活动开始了（由统一形态的 Runtime 在选定新活动后调用一次）：从这一刻起每帧观察都记进这项活动的最近距离账，
+  直到 `activity/2` 结束它。再次调用即重新开始一份空账。不改持久状态。
   """
-  def activity(pid, text), do: GenServer.cast(pid, {:activity, text})
+  def activity_started(pid), do: GenServer.cast(pid, :activity_started)
+
+  @doc """
+  接纳一项已结束的活动作为主观经历：`%{text: 做了什么、结果如何（一句英文）, place: 活动的地名 | nil}`
+  （`NpcServer.Selector.experience/2`）。与 World 事件、Speech 同样进未封存的尾部，攒够一个片段后写入 Hindsight。
+  原文末尾加一句期间事实（见 moduledoc；没有开始信号或期间没有观察则不加）；tags 是 `kind:activity`、期间进过 6 米内的
+  每个人 `actor:<cid>`、有地名时 `place:<地名>`。由 Runtime 在活动结束时调用一次；不改 World 游标、情绪或关系。
+  """
+  def activity(pid, %{text: _, place: _} = experience),
+    do: GenServer.cast(pid, {:activity, experience})
 
   @doc "提交本次模型情绪评价；持久化完成才返回成功，调用方随后才执行动作。"
   def appraise(cid, through, entries), do: call(cid, {:appraise, through, entries})
@@ -219,7 +245,9 @@ defmodule NpcServer.Life do
        recall: nil,
        status: nil,
        job_error: nil,
-       speech_pending: []
+       speech_pending: [],
+       # 正在进行的活动的最近距离账：nil = 没有收到开始信号；`%{observed: 期间收到过观察, closest: Life.State.approach/2 的账}`。
+       activity: nil
      }}
   end
 
@@ -268,8 +296,8 @@ defmodule NpcServer.Life do
           cache: s.row["cache"],
           # 现查 World 用（`mind/2` 在调用者进程里查“我的建筑”此刻在不在）。
           context: s.context,
-          # 还没写进 Hindsight 的经历：已封存待写的片段，加未封存的尾部。
-          recent: Enum.map(s.row["fragments"] ++ s.row["pending"], & &1["text"])
+          # 还没写进 Hindsight 的经历正文：已封存待写的片段，加未封存的尾部。
+          recent: Enum.map(sealed(s.row["fragments"]) ++ s.row["pending"], &dated/1)
         }}, s}
     else
       {:reply, {:error, {:life_models_unavailable, s.job_error || s.error}}, s}
@@ -326,7 +354,7 @@ defmodule NpcServer.Life do
   @impl true
   def handle_cast({:observation, o}, s) do
     context = %{s.context | scene_id: Map.get(o.self, :scene_id, s.context.scene_id)}
-    s = %{s | observation: o, context: context}
+    s = %{s | observation: o, context: context, activity: approach(s.activity, o)}
 
     s =
       if s.appraise and s.row != nil and s.row["state"]["affect"]["next_seq"] == 0 and
@@ -364,16 +392,34 @@ defmodule NpcServer.Life do
 
   def handle_cast({:recall, data}, s), do: {:noreply, %{s | recall: data}}
 
+  def handle_cast(:activity_started, s),
+    do: {:noreply, %{s | activity: %{observed: false, closest: %{}}}}
+
   # 活动只能在一次成功的选择之后结束，而选择要先读到本 owner 的视图，所以此时 row 必已加载。
-  def handle_cast({:activity, text}, s) do
+  def handle_cast({:activity, %{text: text, place: place}}, s) do
     at_ms = s.now.()
-    at_utc = at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()
+
+    # 期间事实：有开始信号且期间收到过观察才有真值；没有就不写这句、也没有 actor 标签。
+    {text, people} =
+      case s.activity do
+        %{observed: true, closest: closest} ->
+          {sentence, people} = State.during(closest, s.observation)
+          {text <> " " <> sentence, people}
+
+        _ ->
+          {text, []}
+      end
 
     episode = %{
       "id" => "activity:#{at_ms}",
       "at_ms" => at_ms,
-      "text" => "At #{at_utc} (UTC), " <> text
+      "text" => text,
+      "tags" =>
+        ["kind:activity"] ++
+          Enum.map(people, &"actor:#{&1}") ++ if(place, do: ["place:#{place}"], else: [])
     }
+
+    s = %{s | activity: nil}
 
     case save(s, seal(Map.update!(s.row, "pending", &(&1 ++ [episode])), false)) do
       {:ok, s} -> {:noreply, automatic(s)}
@@ -401,7 +447,8 @@ defmodule NpcServer.Life do
                 route.world_ref,
                 loaded && loaded["state"]["cursor"]
               ) do
-         {:ok, %{row: loaded, events: Map.update!(events, :events, &buildings(route.world_ref, &1))}}
+         {:ok,
+          %{row: loaded, events: Map.update!(events, :events, &buildings(route.world_ref, &1))}}
        end
      end)}
   end
@@ -551,7 +598,8 @@ defmodule NpcServer.Life do
         events.events,
         events.cursor,
         s.now.(),
-        if(s.appraise, do: :model, else: :rules)
+        if(s.appraise, do: :model, else: :rules),
+        names(s)
       )
 
     canonical =
@@ -581,6 +629,16 @@ defmodule NpcServer.Life do
         s
     end
   end
+
+  # 写经历时人名的来源：本 owner 此刻持有的观察里的 `%{cid => 名字}`（还没收到观察时为空，人一律写 `actor <cid>`）。
+  defp names(%{observation: nil}), do: %{}
+  defp names(%{observation: o}), do: Map.new(o.entities, &{&1.entity_id, &1.name})
+
+  # 活动进行中每帧观察更新最近距离账；没有开始信号（nil）时不记。
+  defp approach(nil, _observation), do: nil
+
+  defp approach(%{closest: closest}, observation),
+    do: %{observed: true, closest: State.approach(closest, observation)}
 
   defp targets(%{observation: nil, context: context}), do: [context.cid]
 
@@ -619,7 +677,7 @@ defmodule NpcServer.Life do
 
   defp save_speech(s) do
     # Scene 已保证一次权威投递；存储失败不提交 row，不清空输入，原 outbox 重试无需第二套去重状态。
-    episodes = Enum.map(s.speech_pending, &Dialogue.episode(&1, s.context.cid))
+    episodes = Enum.map(s.speech_pending, &Dialogue.episode(&1, s.context.cid, names(s)))
     row = Map.update!(s.row, "pending", &(&1 ++ episodes))
 
     canonical =
@@ -664,11 +722,7 @@ defmodule NpcServer.Life do
       last = List.last(chunk)
       id = first["id"] <> ":fragment:" <> last["id"]
 
-      fragment = %{
-        "id" => id,
-        "at_ms" => first["at_ms"],
-        "text" => Enum.map_join(chunk, "\n", & &1["text"])
-      }
+      fragment = %{"id" => id, "at_ms" => first["at_ms"], "episodes" => chunk}
 
       fragments(rest, force, [fragment | acc])
     else
@@ -719,6 +773,11 @@ defmodule NpcServer.Life do
     config = s.config
     fragments = s.row["fragments"]
 
+    # 每条经历一份 Hindsight 文档：id、时刻、tags 取自经历条目，正文加时刻前缀。
+    documents =
+      for episode <- sealed(fragments),
+          do: episode |> Map.take(["id", "at_ms", "tags"]) |> Map.put("text", dated(episode))
+
     s =
       worker(s, :job, fn ->
         {:ok, _} = Application.ensure_all_started(:inets)
@@ -727,7 +786,7 @@ defmodule NpcServer.Life do
         with {:ok, _} <- adapter.ensure(config, "NPC #{s.context.cid}"),
              {:ok, result} <-
                (case kind do
-                  :retain -> adapter.retain(config, fragments)
+                  :retain -> adapter.retain(config, documents)
                   :refresh -> adapter.refresh(config)
                   :models -> adapter.models(config)
                 end),
@@ -743,6 +802,15 @@ defmodule NpcServer.Life do
         row: if(kind == :refresh, do: Map.put(s.row, "refresh_at_ms", s.now.()), else: s.row)
     }
   end
+
+  # 已封存片段里的经历条目，按片段与片段内的次序（旧在前）。
+  defp sealed(fragments), do: Enum.flat_map(fragments, & &1["episodes"])
+
+  # 经历条目交给 Hindsight 与心智快照的正文：`At <UTC> (UTC), <原文>`，UTC 取条目的 "at_ms"（ISO 8601 毫秒）。
+  # 离线测过的就是这个写法；前缀只在这里加，条目的 "text" 不带时刻。
+  defp dated(%{"at_ms" => at_ms, "text" => text}),
+    do:
+      "At #{at_ms |> DateTime.from_unix!(:millisecond) |> DateTime.to_iso8601()} (UTC), " <> text
 
   defp worker(s, slot, fun) do
     owner = self()
