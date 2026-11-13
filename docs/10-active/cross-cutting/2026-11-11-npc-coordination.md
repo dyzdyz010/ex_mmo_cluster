@@ -25,7 +25,10 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   唯一失败是 `NpcEmotionMovementTest` 因本次脚本没设 `NPC_LLM_URL` 而报 `System.EnvError`，带占位的 `NPC_LLM_*` 单独跑通过；**没有带这些变量重跑全套**。日志 `.demo/observe/npc-slice1-20261112/s1n/fix-speaker-*.log`。临时 PG `npc-s1p-pg-20261113` 已删。
 - **第 2 项（“看到的”规范草案）已写，待用户定，未实现**：[内容规范](2026-11-13-npc-mind-content-spec.md) §9——三类所见（A 相遇、B 附近的建造 / 拆除、C 倒下 / 死亡，C 要改 Body），每类的产生者、存储、进 prompt 的路径、成条时机与频率上限；门槛都是原创取值。
   要用户定的五条在 §9.6，**用户尚未答复**（没有答复就是没定）。
-- **第 3 项（真实服务端 NPC-only 短实跑 S1-N）计划已写，尚未起任何节点或容器**：`.demo/observe/npc-slice1-20261112/s1n/plan.md`（13 条期望运行前写定；四段；新 PG `npc-s1n-pg-20261113` 127.0.0.1:55462，复用 Hindsight 容器 18933，bank `npc-life-<cid>` 不删）。
+- **第 3 项（真实服务端 NPC-only 短实跑 S1-N）进行中**：计划 `.demo/observe/npc-slice1-20261112/s1n/plan.md`（13 条期望运行前写定；四段；新 PG `npc-s1n-pg-20261113` 127.0.0.1:55462，复用 Hindsight 容器 18933，bank `npc-life-<cid>` 不删）。
+  - **第 ① 段已实跑（未验收，明细 `s1n/seg1-report.md`）**：节点 `npcs1n`（tmux `npc-s1n`，2026-11-13T07:12:50Z 起，看门狗 09:42:50Z 无条件停）；被测 NPC `S1NGaren` cid 312999940097，bank `npc-life-312999940097`；小屋 07:14:45Z 建成。
+    到 07:25Z：24 次选择（建成后一直 `visit_plaza`），活动经历 20 / 20 条带 `During it: nobody came near.`；没有崩溃、`job_error`、`empty_facts`；还没有发生自动封存（bank 文档数 0）；UDP 端点 95（基线 93）。
+  - **第 ② 段（三种处境）已派出**，结果回来后存 `s1n/seg2-report.md`。**接手时若节点还在**：先看 `tmux ls` 与 `pgrep beam`；停节点用 `~/npc-s1-run/rpc-s1n.sh stop-s1n.exs`；结束后只按名字删 `npc-s1n-pg-20261113` 及其匿名卷。
 
 ### 交接（2026-11-13，第七个统筹会话 → 第八个，因上下文接近 300k）——接手先读这一节，再读紧接着的“第七个统筹会话的进展”页首引用块
 
