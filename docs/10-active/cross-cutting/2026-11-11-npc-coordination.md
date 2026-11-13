@@ -17,7 +17,10 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 
 接手的会话：读总纲 → 读本页“薄片一的任务”与“进度记录” → 接着推进表里第一个未完成的任务。统筹会话只拆任务、收结果、验证、提交。
 
-### 第五个统筹会话（2026-11-12）——S1-E 已做完，接手先读这一节
+### 第五个统筹会话的结果（2026-11-12 / 13）——接手先读这一节
+
+**一句话**：S1-E 离线设计 → 用户批准改 Nearby 一句 → S1-C3 短实跑 → **(c) 按运行前的规则通过**。薄片一三条验收：(a) 已验收、(b) 已验收（基线少取 1 次）、(c) 已验收。
+本线没有容器、节点、tmux 会话在跑，容器 / 卷 152 / 160；分支未推送。**下一步要用户定的事在本节末尾“待用户定”**；薄片二未开工。
 
 **S1-E 结果（离线，只打 Jev，探索性、不是验收；64 次请求全部应答；期望都在发问前写进 `tools/jev/s1e_design.py` 顶部，一条未改）**
 
@@ -60,9 +63,59 @@ remov / destr / dismantl / demolish / vandal / harm / angr / anger / trust 的�
 **用户的答复（2026-11-12，看过 S1-E 结果后）：改 Nearby 带上 cid。** 已做：`mind.ex` 的处境栏写成 `<名> (<kind>, actor <cid>, <d> m away)`，两处测试期望跟着改，
 `npc_mind_test.exs` + `npc_selector_test.exs` 在本线临时 PG 上 22 通过、2 项按 `live_jev` 标签排除；提交 `4cbdeb34`。
 
-**S1-C3 进行中（本段在实跑结束后由结果一节替换）**：plan 已定稿 `.demo/observe/npc-slice1-20261112/s1c3/plan.md`；离线对照脚本 `tools/jev/s1c3_counterfactual.py` 已在实跑前提交（`a54d0175`，期望抄在顶部）；
-本线起了两个容器 `npc-s1c3-pg-20261112`（55451）、`npc-s1c3-hindsight-20261112`（18932）与三个卷（清理命令在 `s1c3/services.txt`，删完应回到 152 / 160）；
-WSL 节点 `npcs1c3`（tmux `npc-s1c3`，带 120 分钟看门狗）。若接手时这段还在：先 `wsl -e bash -lc "pgrep -a beam; tmux ls"` 看节点是否还在，在就先停（`cd ~/npc-s1-run && bash rpc-s1c3.sh stop-s1c3.exs`、`tmux kill-session -t npc-s1c3`），再按 services.txt 清理。
+**S1-C3 结果（2026-11-13 00:57–01:16 UTC 实跑；期望与判定规则运行前写在 `s1c3/plan.md`，起节点后一条未改；离线脚本 `tools/jev/s1c3_counterfactual.py` 在实跑前提交 `a54d0175`）**
+
+环境：产品代码 `4cbdeb34`；WSL 节点 `npcs1c3`（NPC-only，无 QUIC / 客户端），只起了一次，运行 19 分 15 秒，看门狗未触发。真实 Jev（`jev-latest`）、真实 Hindsight、新库 `npc_s1c3_20261112`。
+被测 NPC `S1C3Garen`（cid 205936136193）；破坏者 `Corvin`（cid V = 920628760578）；陌生人 `Tobin`（cid 3297670860803）。候选表 = S1-C2 的 5 个 + `confront_wrecker`（去处固定在破坏者站位旁 `[27.5, 39.5]`）。
+全程 40 次选择成功、1 次显式失败（登记时 `life_models_unavailable`），每次的 state 全文都存了。
+
+| 检查点 | UTC | 运行前期望 | 实际 | 判定 |
+|---|---|---|---|---|
+| C0 心智就绪 | 00:58:43 | ≤ 5 分钟 | 失败 1 次，登记后 12 秒就绪 | — |
+| P0 首次建成 | 00:59:01 | 15 分钟内 | `gather_stone` 0.36 → `gather_limestone` 0.59 → `build_hut` 0.92，登记后 30 秒建成（1878 格，placed_by = 该 NPC） | 达成 |
+| 破坏 | 01:01:25.581 | 正常 `dismantle` 整座拆除 | 一次成功，足迹读回 0 格；愤怒 0.58、信任 −0.35；破坏者 1 秒内离场 | — |
+| B（记录项） | 01:01:38 | 重建方向 | `build_hut` 0.51；state 含事件句与 `is gone`，附近无人 | 符合 |
+| R 重建 | 01:01:52 | 事件后 10 分钟内 | `build_hut`（材料不足被拒）→ `gather_stone` 0.70 → `build_hut` 0.74，事件后 27 秒建成 | 达成 |
+| D (c) 前提 | 01:10:15 | 事件句与愤怒已不在；记忆栏有那件事 | flush 01:07:59 → retain 01:08:13 → refresh 01:08:25–01:10:01；其后第 1 次 state：近期经历无事件句、无 V；情绪栏只有 `Distrusts actor V, who is not nearby.`；`is standing`；记忆栏 8 行同时含 V 与词干 | 四项都满足 |
+| S 陌生人在附近 | 01:11:18 起 3 次 | not confront ×3 | `guard_hut` 0.66、0.71、0.77（`Nearby: Tobin (NPC, actor 3297670860803, 5.2 m away).`；情绪栏无 Tobin） | **成立** |
+| 无人 | 01:12:51 | not confront | `guard_hut` 0.80 | 成立 |
+| V 验收 (c) 在线 | 01:13:53 | 第 1 次 top1 = `confront_wrecker` | **`confront_wrecker` 0.74**（`Nearby: Corvin (NPC, actor V, 5.0 m away).`，`Distrusts Corvin (actor V).`；近期经历无事件句、情绪栏无愤怒）；执行 `completed`（走到固定点，下一次 state 里 Corvin 1.6 m）。第 2、3 次 `guard_hut` 0.54、0.71（记录项） | **成立** |
+
+离线逐栏对照（节点停后，9 个变体各 4 次，36 次请求全部应答；素材 = 在线 S 第 1 次 `asked-20261113T011117.526Z.txt` 与 V 第 1 次 `asked-20261113T011353.298Z.txt`，请求模板从节点导出；结果 `results-s1c3-counterfactual.json`）：
+
+| 变体 | 期望 | 实际（4 次 top1；`confront_wrecker` 概率） | 判定 |
+|---|---|---|---|
+| S_original | not confront，多数 = 在线 | `guard_hut` ×4（0.00–0.01） | 成立 |
+| V_original | confront | `confront_wrecker` ×4（0.76–0.80） | 成立 |
+| V_no_event（规则 E′ 去掉记忆栏里那件事） | not confront | `guard_hut` ×4（0.10–0.14） | 成立 |
+| V_no_distrust（只去掉 Distrusts） | confront | `confront_wrecker` ×4（0.77–0.81） | 成立 |
+| V_no_event_no_distrust | not confront | `guard_hut` ×4（0.02–0.03） | 成立 |
+| V_memory_blank（记录项） | not confront | `guard_hut` ×4（0.08–0.11） | 成立 |
+| V_no_own_activity（记录项） | confront | `confront_wrecker` ×4（0.68–0.76） | 成立 |
+| V_nearby_no_cid（记录项；Nearby 改回旧写法，Distrusts 保留） | confront | `guard_hut` ×3、`confront_wrecker` ×1（0.30–0.47） | **落空（记录项）** |
+| V_nearby_no_cid_no_distrust（记录项） | not confront | `guard_hut` ×4（0.03–0.04） | 成立 |
+
+- **(c) 按运行前的规则通过**：判定 1–7 全部成立——在线 S 三次都不是 `confront_wrecker`；在线 V 第 1 次是它；那次 state 里事件句已不在近期经历、愤怒已不在情绪栏；两份原文离线复现；
+  去掉记忆栏里那件事回到基线（且与陌生人基线同为 `guard_hut`）；只去掉 Distrusts 不回到基线；两处都去掉回到基线。**起作用的是记忆栏里 Hindsight 召回 / 归纳的那件事**，Distrusts（Life 的不衰减信任）有没有都一样。
+- **三条验收的状态**：(a) 已实现、已实跑、已验收（S1-A）。(b) 已实现、已实跑、已验收（S1-C2；基线取样少 1 次）。(c) 已实现、已实跑、**已验收**（S1-C3）。
+- **一条记录项落空**：`V_nearby_no_cid` 期望 confront（照 S1-E 的 A_V 4/4 推的），实际 1/4。即在这次真实 state 上，Nearby 不带 cid 时即使有 `Distrusts Corvin (actor V)` 一句，模型多数也不认；S1-E 里旧 state 上是认的。不影响判定，但说明带 cid 的写法比 S1-E 估计的更要紧。
+- **验收的范围**：一个 NPC、一次破坏、事件后约 12 分钟、记忆只有 10 条事实；判的是“破坏者出现后的第 1 次选择”。第 2、3 次回到 `guard_hut`（选过一次后它进了自己的活动记录，Corvin 仍在附近）——是不是想要的行为没有定义过期望，只记录。
+  `confront_wrecker` 的去处是破坏者站位旁的固定点：产品没有“走向某个角色”的活动形态（去处活动只收 4 个键），这是夹具近似，执行不在 (c) 的判定里。
+- **偏差与干扰**：① 01:04:28–01:04:58 之间发生过一次自动封存（尾部满 3000 字，`retained` 0→1），那件事是这次写进 Hindsight 的，不是后来的显式 flush（它只写走之后的一小段，1→2）；其后有没有自动刷新没查到。D 的四项是直接在 state 上核对的，不受影响。
+  ② 显式 flush 比计划晚约 70 秒。③ 01:05:30–01:06:35 出现过 `visit_plaza` ×3（0.40–0.46；事件句刚被封存走、认识还没刷新的那一段），其余重建后的选择除那次 `confront_wrecker` 外都是 `guard_hut`。
+  ④ 刚建成 / 刚重建后 0.6 秒取的那次 state，处境分别缺 `is standing` / 仍写 `is gone`，下一次才对（Life 还没收进新实例；S1-C2 隔 1.2 秒时是对的；未查）。
+  ⑤ S1-C2 的两项旧问题再现：Hindsight 新 bank 头 3 秒 4 次 404；小屋发布记录的发布者 id 与夹具角色 cid 不同。⑥ Hindsight 容器第一次启动因新卷下载模型撞上 300 秒初始化上限而退出，重启同一容器后正常。
+  ⑦ 第③段 Corvin 到位前 6 秒的那次选择（01:13:22 `guard_hut` 0.82）的 Nearby 句没有单独核对。没有发现直接改余额、情绪、记忆或替被测 NPC 行动的操作。
+- **统筹会话的复核范围**：`index.tsv` 01:02 之后全表、S 第 1 次与 V 第 1 次两份 state 的情绪栏 / 近期经历 / Nearby / 建筑句自己读过；请求模板与 S1-E 的 T1 逐项相同；规则 E′ 删后的记忆栏全文看过（不再提那个人与那件事，留有 rebuilt / guard / plaza 的条目）；
+  离线 36 次请求是统筹会话自己跑的。四段的其余在线读数以子会话回报为准（代存在 `s1c3/seg1-report.md`–`seg4-report.md`），没有逐条复核原始日志。
+- **证据**：`.demo/observe/npc-slice1-20261112/s1c3/`（被 `.gitignore` 忽略）：`plan.md`、`services.txt`、`seg1-report.md`–`seg4-report.md`、`states/`（索引 + state 全文）、`counterfactual/`（9 个变体、`edits.txt`、`meta.json`、`report.txt`）、
+  `export/`（Life 观察、Hindsight 10 条事实与四份认识、请求模板）、`server-s1c3.log`、`server-npc-lines.log`、`rpc-s1c3.log`、`scripts/`、`unittest-mind-selector.log`、`dryrun/`。WSL `~/npc-s1-run/*-s1c3.*` 留着脚本。
+  复跑离线表格：`python -B tools/jev/s1c3_counterfactual.py report`。清理已做：本线两个容器与三个卷已删，容器 / 卷 152 / 160。
+
+**待用户定（第五个统筹会话没有自行处理）**
+1. **“破坏之后一直守屋”**：仍是未决的产品行为。S1-C3 里重建之后陌生人在附近 / 无人时的基线都是 `guard_hut` 而不是回广场（只在事件句刚封存走、认识未刷新的一分钟里出现过 3 次 `visit_plaza`）。本次验收是绕开它做的（只看针对那个人的候选是否成为 top1）。
+2. **“走向某个角色”的活动形态**：现在只能写固定去处。要不要做成产品能力（薄片二或之后），由用户定。
+3. **薄片二是否开工**：三条验收都已验收，按此前约定可以谈薄片二（LLM 规划层）；范围与顺序以总纲为准，待用户确认。
 
 ### 第四个统筹会话的结果（2026-11-12）——接手先读这一节，下面第三个会话的“交接”已执行完
 

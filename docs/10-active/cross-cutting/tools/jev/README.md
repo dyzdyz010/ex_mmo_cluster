@@ -226,4 +226,12 @@ C5 = `states/asked-20261112T122643Z.txt`，情绪衰减、记忆写入后）。�
   去掉 Distrusts 后 state 里没有一句把附近的 `Corvin` 与记忆里的 `Actor <cid>` 对上。B 族（假设处境栏写成 `Nearby: Corvin (NPC, actor <cid>, 5.0 m away).`）5 行全部 4/4：
   破坏者在附近 `confront_wrecker` 0.81–0.86；去掉记忆里那件事回到 `guard_hut`；只去掉 Distrusts 仍是 `confront_wrecker` 0.82–0.87；陌生人在附近 `guard_hut`、`confront_wrecker` ≤ 0.01。
 - 第 2 轮（4 份原文换成 T1，16 次全部应答）：破坏之前的基线 `visit_plaza` 4/4 ×2；破坏后第 1 次选择在重建方向 4/4；刚重建完、破坏者不在附近 `guard_hut` 4/4（`confront_wrecker` 0.01）。T1 不妨碍实跑的前半段。
-结论：离线能区分，但“只去掉 Distrusts 不回到基线”这一条要求处境栏的 Nearby 带上 cid（`apps/npc_server/lib/npc_server/mind.ex` 的一句渲染），属于产品改动，待用户确认。见统筹页“S1-E 结果”。
+结论：离线能区分，但“只去掉 Distrusts 不回到基线”这一条要求处境栏的 Nearby 带上 cid（`apps/npc_server/lib/npc_server/mind.ex` 的一句渲染）。用户已批准，产品改动提交 `4cbdeb34`。见统筹页“S1-E 结果”。
+
+## 2026-11-13 S1-C3 实跑后的逐栏对照（`s1c3_counterfactual.py`）
+
+验收 (c) 的离线部分。只问 Jev，不起服务端。素材是 S1-C3 实跑存下的两份真实 state（S = 陌生人在附近的第 1 次，V = 破坏者在附近的第 1 次）与从节点导出的请求模板（6 个候选）。
+期望逐字抄自运行前定稿的 `s1c3/plan.md`，脚本在实跑前提交；9 个变体各 4 次，共 36 次，全部应答。规则 E′ = `s1e_design.strip_event` 带一张更宽的词干表（防新措辞漏删）。
+用法：`python -B s1c3_counterfactual.py prepare --s S.txt --v V.txt --vandal-cid CID --vandal-name Corvin --template T.json --s-online-top1 NAME --v-online-top1 NAME`，之后 `run | report`。结果文件：`results-s1c3-counterfactual.json`。
+结论：5 个判定项全部成立——S 原文 `guard_hut` 4/4；V 原文 `confront_wrecker` 4/4（0.76–0.80）；去掉记忆栏里那件事 `guard_hut` 4/4；只去掉 Distrusts 仍是 `confront_wrecker` 4/4（0.77–0.81）；两处都去掉 `guard_hut` 4/4。
+记录项里 `V_nearby_no_cid`（Nearby 改回不带 cid 的旧写法、Distrusts 保留）期望 confront，实际 1/4，落空；其余 3 个记录项成立。连同在线条件，(c) 按运行前的规则通过，见统筹页“S1-C3 结果”。
