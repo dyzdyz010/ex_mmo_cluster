@@ -270,3 +270,9 @@ D 组与 F1 句子里的次数按所在 state 的实际守屋句数写（N3 = 10
 探索性。只问 Jev。17 个变体 × 4 次 = 68 次，全部应答；“多久以前”由脚本按 `MmoContracts.WorldTime` 的公式（真实经过 × 72）换成词。计划 `.demo/observe/npc-slice1-20261112/s1k/plan.md`，判定 `s1k/results.md`，结果 `results-s1k.json`。
 用法：`python -I -B -X utf8 s1k_design.py dryrun`，再 `run`。
 结论：写法（相对时间、Now 行）不改 top1；到点的约定单独就把 top1 换成 `visit_plaza`（0.56，未到点 0.18）；“多久没跟人相处”方向相反；“他 X 前拆了我的屋”这句本身加固守屋；不含约定的三项叠加只到 0.22。
+
+## 2026-11-13 S1-L：bank mission 的离线测量（`s1l_mission.py`）
+
+探索性。在本线 Hindsight 容器新建 `s1l-m1` / `s1l-m2`（材料与 `s1i-m1` / `s1i-m2` 逐字相同，复用 `s1i_materials.py`），retain 之前 `PATCH /config` 写 `retain_mission` 与 `observations_mission`；与无 mission 的 `s1i-*` 用同一段代码算读数（第一人称比例、“没人来” / “靠近过”的条数、认识里有没有次数、实体里有没有 assistant / user），并在 `s1l-m2` 上按 S1-J 的三路 + 认识优先召回一次。`--recreate` 只删这两个 bank。不需要凭据。
+计划 `.demo/observe/npc-slice1-20261112/s1l/plan.md`，判定 `s1l/results.md`。结论：mission 把人称完全校正（1.00 对 0.11 / 0.14），认识里有了次数；副作用是更多事实被抽成 `world` 类型，召回不要按 `types` 过滤。
+

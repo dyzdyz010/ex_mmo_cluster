@@ -50,9 +50,24 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **还站不住，先不进产品**：反思写回（结论不稳定跟证据、对选择的增量小且在约定面前为零、会把份额从对质挪到守屋）；“多久没跟人相处”的写法；关系史一句（会加固守屋，要想清楚要不要）；连续活动合并成一句（S1-H 里它使 `guard_hut` 0.81 → 0.89，仍未单独评估）。
 - **改产品前还缺的离线项**：bank mission（第一人称、保留“没发生什么”）的效果；更大的库上的召回选择质量。
 
+**S1-L bank mission（已做；计划与判定 `s1l/plan.md`、`s1l/results.md`，脚本 `tools/jev/s1l_mission.py`）**：同材料新建 `s1l-m1` / `s1l-m2`，retain 前 `PATCH /config`（请求体 `{"updates": {"retain_mission": …, "observations_mission": …}}`，mission 原文在 `s1l/plan.md`）。
+第一人称比例 1.00 / 1.00（缺省 0.11 / 0.14）；认识里有了次数与“twice”；实体里不再有 assistant / user，`Corvin (actor 920628760578)` 成为一个实体；三路 + 认识优先在 `s1l-m2` 上召回 7 条、全第一人称、含“被拆”与“靠近过”。5 条期望 4 成立；L2 按字面落空（“没人来”的经历 7 条 < 我写的 8 条，另 3 条被归成 `world` 类型，事实没丢）。
+**副作用：带 mission 后更多事实被抽成 `world` 类型**——落地时三路召回不要按 `types` 过滤。mission 原文里写了角色名 Garen，产品里要换成通用写法或按角色代入（这一点差异没有离线测过）。
+
+**第 4 项的实现拆分（只读方案会话基于 `523c7962` 给出，统筹会话整理；尚未开工的部分以此为准）**
+现状要点：召回在发问 worker 里做（`Selector.question/3` → `Life.mind/2` → `recollect/3` → `Hindsight.recall/3`，一次、budget mid、2048、超时 10 s），不在 Life 的慢 worker；经历文本句首烤进 `At <UTC> (UTC), `，进 `pending`，攒到 3000 字 `seal/2` 拼成一个片段，一个片段一个 document、无 tags；`ensure` 每个 retain job 前都 PUT bank。
+先冻结两个契约：经历条目 `%{"id","at_ms","text","tags"}`；召回结果 `%{id:, text:, type:, at_ms: integer | nil, tags:}`（在适配器边界规范化一次）。
+- **T1 `Life.Hindsight` 适配器**（只动 `life/hindsight.ex` 与 `npc_hindsight_test.exs`）：`recall` 接受 `%{query:, tags:, tags_match:, types:, prefer_observations:, max_tokens:}`（nil 不进请求体）；结果规范化出 `at_ms`；`retain` 的 item 透传 `tags`；`ensure` 的 mission 收成常量并在 PUT 后 `PATCH /config`。
+- **T2 Life 写入侧**（`life.ex`、`life/state.ex`、`dialogue.ex`、`runtime.ex`、`selector.ex` 的 `experience/2`）：人名 `名字 (actor cid)`（`State.advance` 多收一个 `names` 映射，取不到写 `actor <cid>`）；tags（事件 `kind:event` + `actor:` + 有建筑时 `place:`；说话 `kind:conversation`；活动 `kind:activity`）；期间事实 ` During it: nobody came near.` / `During it: <名> (actor cid) came within <N> m.`（`Life.activity_started/1` 记起点）；片段改成带 `episodes` 列表、retain 时每条经历一个 item。
+- **T3 Mind 纯渲染**（只动 `mind.ex` 与 `npc_mind_test.exs`）：Now 栏（时段边界同 S1-K）；`ago(at_ms, now_ms)` 用 `WorldTime.game_us` 之差（不往 WorldTime 加函数），措辞同 S1-K；背包只列非零；召回条目从第一个 ` | When:` 起去掉后缀并前缀相对时间；`recall_queries/2`（R1 最近至多 2 人各一路 `actor:` tag、R2 我的建筑 `place:` tag、R3 不加 tag，都 `prefer_observations`，缺对象就省那一路）；`merge/2`（按 id 去重、每路取最新 K 条）。
+- **T4 接线**（`life.ex` 的 `mind/2` / `recollect/3` / `:context`、`selector.ex` 的 `question` / `asked`、各测试的假适配器）：三路在调用者进程里 `Task.async_stream`（并发 3、每路 10 s）；视图加 `now_ms`、`recent` 改成 `[%{at_ms, text}]`、`memories` 按路分；`asked.recall_query` → `recall_queries`。必须排在 T1–T3 之后；T1 / T2 / T3 文件无交集，可并行。
+统筹会话已定（依据离线证据，报用户知悉）：① 存进 Hindsight 的正文**保持**离线测过的 `At <UTC> (UTC), …` 写法——条目里另存 `at_ms`，前缀在组 retain 内容时加，Mind 用 `at_ms` 渲染相对时间，不解析前缀；② 三路召回不按 `types` 过滤；③ 每路 `max_tokens` 先用 S1-J 的 700 / 700 / 600，每路配额 K 先取 4（**K 没有离线依据，是原创取值**，实跑后再调）；④ 规范 §4 的合并规则改为“按路配额、路内新的优先”（依据 S1-J），总纲 :116–118“写进记忆的文字不带 id”按用户已同意的 `名字 (actor cid)` 同步改，随实现提交。
+**要用户定、T2 开工前必须有答案的**（已于本会话提问，答复见下方“用户答复”；没有答复就是还没定）：(a) 期间事实的真值——活动期间逐帧记每人最小距离（能抓到“来了又走”，不加新通道，但超出规范“起止各取一次”的原文）还是只取起止两次；(b) “靠近”的半径 `@near_m`（无离线依据；S1-I 材料写的是 6 m）；(c) 活动的 `place:` 名从哪来——Registry 候选加可选地名字段（登记契约扩展）还是按坐标就近匹配我的建筑；(d) 已有的 Life 片段与无 tags 的旧记忆——清空重建不写兼容，还是加载时一次性转换。
+其它风险（方案会话指出，未处理）：每条经历单独成 document 后短句可能抽不出 fact（`document/2` 报 `:empty_facts` 会让 retain 卡住重试）；并行召回与后台 retain 争用同一个 Hindsight 没测过；`ensure` 每个 job 多一次 PATCH；`npc_mind_test.exs`、`npc_selector_test.exs`、`npc_life_test.exs` 等有全文断言要重写。
+
 **下一步**
-1. bank mission 的离线测量（新 bank、同材料、配 `retain_mission` / `observations_mission`，看人称与“没发生什么”是否保留）。
-2. 第 4 项里站得住的那部分改产品（任务拆给子会话，服务端只在 WSL 构建与测试），再上真实服务端短实跑（并入 `confront_wrecker` 改 `"person": "distrusted"` 的实跑）。
+1. （已做，见上）bank mission 的离线测量。
+2. 第 4 项里站得住的那部分改产品：按上面的 T1 → T4（T1、T3 不依赖用户答复，可先做；T2 等 (a)–(d)），服务端只在 WSL 构建与测试；再上真实服务端短实跑（并入 `confront_wrecker` 改 `"person": "distrusted"` 的实跑）。
 3. 反思：若继续，离线第 3 轮要换读数（把“对屋的判断”与“对人的判断”分开读，不再压成一个立场标签），并加大采样；触发计数（担忧被证伪 N 次）可以先只记录不写回。
 4. 规划层与“Plans and promises”的内容来源（原第 5 项）——S1-K 说明它是最有力的驱动。
 
