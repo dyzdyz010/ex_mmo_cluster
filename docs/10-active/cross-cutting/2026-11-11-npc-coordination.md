@@ -24,7 +24,9 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   修补：`Dialogue.episode/3` 的说话人名字取消息自带的 `speaker_name`（也覆盖观察里的），对象仍只取观察。测试（WSL）：dialogue 三个文件 21 通过；npc_server 缺省全套 430 / 431 通过、18 排除——
   唯一失败是 `NpcEmotionMovementTest` 因本次脚本没设 `NPC_LLM_URL` 而报 `System.EnvError`，带占位的 `NPC_LLM_*` 单独跑通过；**没有带这些变量重跑全套**。日志 `.demo/observe/npc-slice1-20261112/s1n/fix-speaker-*.log`。临时 PG `npc-s1p-pg-20261113` 已删。
 - **第 2 项（“看到的”规范草案）已写，待用户定，未实现**：[内容规范](2026-11-13-npc-mind-content-spec.md) §9——三类所见（A 相遇、B 附近的建造 / 拆除、C 倒下 / 死亡，C 要改 Body），每类的产生者、存储、进 prompt 的路径、成条时机与频率上限；门槛都是原创取值。
-  要用户定的五条在 §9.6，**用户尚未答复**（没有答复就是没定）。
+  要用户定的五条在 §9.6，**用户已答复“可以，都没问题”**（先做 A、B，C 暂不做；其余按草案；逐条见 §9.6 末）。**A、B 尚未实现**：实现要在本 worktree 跑 WSL 测试，等 S1-N 节点停了再派。
+  用户同时问“召回太多，能否用 LLM 精炼记忆、Hindsight 有没有自带”：实跑库里 Hindsight 已自动巩固出 9 条认识类事实（`fact_type: observation`，如 `I guarded the small hut 66 times; nobody came near during any of the watches.`、拆屋与对 Corvin 的愤怒各一条），
+  而产品现行的一次泛问没有带 `prefer_observations`，拿回来的是上百条原始经历——即精炼已经有了，缺的是召回接线（T4）。是否够用要在真实导出上重测（第 4 项）。
 - **第 3 项（真实服务端 NPC-only 短实跑 S1-N）进行中**：计划 `.demo/observe/npc-slice1-20261112/s1n/plan.md`（13 条期望运行前写定；四段；新 PG `npc-s1n-pg-20261113` 127.0.0.1:55462，复用 Hindsight 容器 18933，bank `npc-life-<cid>` 不删）。
   - **第 ① 段已实跑（未验收，明细 `s1n/seg1-report.md`）**：节点 `npcs1n`（tmux `npc-s1n`，2026-11-13T07:12:50Z 起，看门狗 09:42:50Z 无条件停）；被测 NPC `S1NGaren` cid 312999940097，bank `npc-life-312999940097`；小屋 07:14:45Z 建成。
     到 07:25Z：24 次选择（建成后一直 `visit_plaza`），活动经历 20 / 20 条带 `During it: nobody came near.`；没有崩溃、`job_error`、`empty_facts`；还没有发生自动封存（bank 文档数 0）；UDP 端点 95（基线 93）。
