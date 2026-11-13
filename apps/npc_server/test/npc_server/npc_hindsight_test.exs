@@ -68,6 +68,48 @@ defmodule NpcServer.NpcHindsightTest do
     assert Enum.count(requests, fn {method, _, _} -> method == :post end) == 1
   end
 
+  test "retain passes non-empty tags through to the item and omits the field otherwise" do
+    cfg =
+      server(fn
+        :post, "/v1/default/banks/probe/memories", _ ->
+          {200, %{"success" => true, "items_count" => 3, "async" => false}}
+
+        :get, "/v1/default/banks/probe/documents/" <> id, _ ->
+          {200, %{"id" => id, "memory_unit_count" => 1}}
+
+        :get, "/v1/default/banks/probe/operations?limit=100&offset=0", _ ->
+          {200, %{"operations" => [], "total" => 0}}
+      end)
+
+    episodes = [
+      Map.put(Enum.at(@episodes, 0), "tags", ["actor:7", "place:hut"]),
+      Map.put(Enum.at(@episodes, 1), "tags", []),
+      %{
+        "id" => "no-tags",
+        "text" => "Nothing tagged.",
+        "at_ms" => 1_791_676_920_000,
+        "tags" => nil
+      }
+    ]
+
+    assert {:ok, %{retained: 3}} = Hindsight.retain(cfg, episodes)
+    assert [{:post, _, %{"items" => [first, second, third]}} | _] = requests(5)
+    assert first["tags"] == ["actor:7", "place:hut"]
+    refute Map.has_key?(second, "tags")
+    refute Map.has_key?(third, "tags")
+  end
+
+  test "retain rejects malformed tags before any request" do
+    cfg = server(fn _, _, _ -> flunk("must not be requested") end)
+
+    for tags <- ["actor:7", [1], [""]] do
+      episode = Map.put(Enum.at(@episodes, 0), "tags", tags)
+      assert {:error, :invalid_episodes} = Hindsight.retain(cfg, [episode])
+    end
+
+    refute_receive {:http_request, _, _, _}, 30
+  end
+
   test "retain rejects empty extracted facts even after HTTP success" do
     cfg =
       server(fn
@@ -128,6 +170,145 @@ defmodule NpcServer.NpcHindsightTest do
     refute_receive {:http_request, _, _, _}, 30
   end
 
+  test "recall description puts optional filters in the request only when given" do
+    cfg =
+      server(fn :post, "/v1/default/banks/probe/memories/recall", body ->
+        _ = body
+        {200, %{"results" => []}}
+      end)
+
+    description = %{
+      query: "Who helped me?",
+      tags: ["actor:920628760578"],
+      tags_match: "any_strict",
+      types: ["observation"],
+      prefer_observations: false,
+      max_tokens: 512
+    }
+
+    assert {:ok, %{results: []}} = Hindsight.recall(cfg, description, 1_791_676_800_000)
+    assert [{:post, _, body}] = requests(1)
+
+    assert body == %{
+             "query" => "Who helped me?",
+             "budget" => "mid",
+             "max_tokens" => 512,
+             "query_timestamp" => "2026-10-11T00:00:00.000Z",
+             "tags" => ["actor:920628760578"],
+             "tags_match" => "any_strict",
+             "types" => ["observation"],
+             "prefer_observations" => false
+           }
+
+    # nil 的键与缺省的键一样不进请求体，max_tokens 回到缺省值。
+    nils = %{
+      query: "q",
+      tags: nil,
+      tags_match: nil,
+      types: nil,
+      prefer_observations: nil,
+      max_tokens: nil
+    }
+
+    assert {:ok, _} = Hindsight.recall(cfg, nils, 1_791_676_800_000)
+    assert [{:post, _, body}] = requests(1)
+
+    assert body == %{
+             "query" => "q",
+             "budget" => "mid",
+             "max_tokens" => 2048,
+             "query_timestamp" => "2026-10-11T00:00:00.000Z"
+           }
+  end
+
+  test "recall rejects a description without a string query before any request" do
+    cfg = server(fn _, _, _ -> flunk("must not be requested") end)
+
+    assert {:error, :invalid_query} = Hindsight.recall(cfg, %{tags: ["a"]}, 0)
+    assert {:error, :invalid_query} = Hindsight.recall(cfg, nil, 0)
+    refute_receive {:http_request, _, _, _}, 30
+  end
+
+  test "recall normalizes each result once: at_ms from occurred_start, else mentioned_at, else nil" do
+    cfg =
+      server(fn :post, "/v1/default/banks/probe/memories/recall", _ ->
+        {200,
+         %{
+           "results" => [
+             %{
+               "id" => "a",
+               "text" => "I guarded the hut.",
+               "type" => "experience",
+               "occurred_start" => "2026-10-11T00:00:00Z",
+               "mentioned_at" => "2026-10-12T00:00:00Z",
+               "tags" => ["actor:1", "place:hut"],
+               "context" => "dropped by normalization"
+             },
+             %{
+               "id" => "b",
+               "text" => "Mara repaired my wall.",
+               "type" => "observation",
+               "occurred_start" => nil,
+               "mentioned_at" => "2026-10-11T00:01:00.500+00:00",
+               "tags" => nil
+             },
+             %{"id" => "c", "text" => "No time at all.", "type" => "world"}
+           ]
+         }}
+      end)
+
+    assert {:ok, %{results: results}} = Hindsight.recall(cfg, "q", 0)
+
+    assert results == [
+             %{
+               "id" => "a",
+               "text" => "I guarded the hut.",
+               "type" => "experience",
+               "at_ms" => 1_791_676_800_000,
+               "tags" => ["actor:1", "place:hut"]
+             },
+             %{
+               "id" => "b",
+               "text" => "Mara repaired my wall.",
+               "type" => "observation",
+               "at_ms" => 1_791_676_860_500,
+               "tags" => []
+             },
+             %{
+               "id" => "c",
+               "text" => "No time at all.",
+               "type" => "world",
+               "at_ms" => nil,
+               "tags" => []
+             }
+           ]
+  end
+
+  test "recall fails explicitly when a result carries an invalid time string" do
+    cfg =
+      server(fn :post, _, _ ->
+        {200,
+         %{
+           "results" => [
+             %{
+               "id" => "ok",
+               "text" => "fine",
+               "type" => "world",
+               "occurred_start" => "2026-10-11T00:00:00Z"
+             },
+             %{
+               "id" => "bad",
+               "text" => "broken",
+               "type" => "world",
+               "occurred_start" => "yesterday"
+             }
+           ]
+         }}
+      end)
+
+    assert {:error, :invalid_response} = Hindsight.recall(cfg, "q", 0)
+  end
+
   test "timeouts are explicit and sanitized" do
     cfg =
       server(fn _, _, _ ->
@@ -173,6 +354,9 @@ defmodule NpcServer.NpcHindsightTest do
         :put, _, _ ->
           {200, %{"bank_id" => "probe"}}
 
+        :patch, "/v1/default/banks/probe/config", _ ->
+          {200, %{"bank_id" => "probe"}}
+
         :get, "/v1/default/banks/probe/mental-models/" <> _, _ ->
           {404, %{"detail" => "absent"}}
 
@@ -186,7 +370,54 @@ defmodule NpcServer.NpcHindsightTest do
       end)
 
     assert {:ok, %{bank: "probe"}} = Hindsight.ensure(cfg, "Lin")
-    assert Enum.count(requests(13), fn {method, _, _} -> method == :post end) == 4
+    assert Enum.count(requests(14), fn {method, _, _} -> method == :post end) == 4
+  end
+
+  # 离线测过的两条 mission（S1-L）与产品里的唯一差异是 retain_mission 去掉了角色名；
+  # 这里钉住文本，改动必须是有意的。
+  test "ensure writes bank mission, then PATCHes retain and observations missions" do
+    cfg =
+      server(fn
+        :put, "/v1/default/banks/probe", _ -> {200, %{"bank_id" => "probe"}}
+        :patch, "/v1/default/banks/probe/config", _ -> {200, %{"bank_id" => "probe"}}
+        :get, "/v1/default/banks/probe/mental-models/" <> id, _ -> {200, %{"id" => id}}
+      end)
+
+    assert {:ok, %{bank: "probe"}} = Hindsight.ensure(cfg, "Lin")
+    assert [{:put, _, put}, {:patch, patch_path, patch} | _] = requests(6)
+    assert put["mission"] =~ "My first-person builder journal."
+    assert patch_path == "/v1/default/banks/probe/config"
+
+    assert patch == %{
+             "updates" => %{
+               "retain_mission" =>
+                 "These are the first-person memories of a character in a game world. " <>
+                   "Write every fact in the first person (\"I\"), never as \"the user\" or \"the assistant\". " <>
+                   "Keep people's names together with their actor id exactly as written, for example \"Corvin (actor 920628760578)\". " <>
+                   "Keep counts and times. " <>
+                   "Keep statements that something did not happen (for example \"nobody came near the hut\") as facts in their own right. " <>
+                   "Do not treat me as a separate entity called \"assistant\" or \"user\". " <>
+                   "Write in English.",
+               "observations_mission" =>
+                 "Consolidate my memories into first-person observations (\"I\"). " <>
+                   "When several memories repeat the same activity, say how many times it happened and what did or did not happen during them. " <>
+                   "Keep an event that happened only once or twice as its own observation; do not fold it into the majority. " <>
+                   "Keep names with their actor ids. " <>
+                   "Write in English."
+             }
+           }
+  end
+
+  test "ensure fails when the config PATCH fails and creates no mental models" do
+    cfg =
+      server(fn
+        :put, _, _ -> {200, %{"bank_id" => "probe"}}
+        :patch, _, _ -> {422, %{"detail" => "private-secret"}}
+      end)
+
+    assert {:error, {:http_status, 422}} = Hindsight.ensure(cfg, "Lin")
+    assert [{:put, _, _}, {:patch, _, _}] = requests(2)
+    refute_receive {:http_request, _, _, _}, 30
   end
 
   test "ensure keeps existing mental models and status reports token aggregates" do
@@ -194,6 +425,9 @@ defmodule NpcServer.NpcHindsightTest do
       server(fn
         :put, "/v1/default/banks/probe", body ->
           assert body["name"] == "Lin"
+          {200, %{"bank_id" => "probe"}}
+
+        :patch, "/v1/default/banks/probe/config", _ ->
           {200, %{"bank_id" => "probe"}}
 
         :get, "/v1/default/banks/probe/mental-models/" <> id, _ ->
@@ -228,7 +462,7 @@ defmodule NpcServer.NpcHindsightTest do
               usage: %{"retain" => %{input_tokens: 120, output_tokens: 10, requests: 1}}
             }} = Hindsight.status(cfg)
 
-    assert Enum.count(requests(8), fn {method, _, _} -> method == :put end) == 1
+    assert Enum.count(requests(9), fn {method, _, _} -> method == :put end) == 1
   end
 
   # 端口由 OS 分配，每个测试独占；替身只替代外部 HTTP，实际 :httpc 和 JSON 编解码仍运行。
@@ -253,7 +487,9 @@ defmodule NpcServer.NpcHindsightTest do
     case :gen_tcp.accept(listener) do
       {:ok, socket} ->
         {:ok, {:http_request, method, {:abs_path, path}, _}} = :gen_tcp.recv(socket, 0, 1000)
-        method = %{GET: :get, PUT: :put, POST: :post}[method]
+
+        # Erlang 的 HTTP 解析器只把标准方法解成原子，PATCH 以二进制 "PATCH" 给出。
+        method = %{:GET => :get, :PUT => :put, :POST => :post, "PATCH" => :patch}[method]
         size = headers(socket, 0)
         :ok = :inet.setopts(socket, packet: :raw)
 

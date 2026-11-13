@@ -520,6 +520,10 @@ defmodule NpcServer.NpcRegistryTest do
           :put, "/v1/default/banks/npc-life-" <> _cid, _ ->
             %{}
 
+          :patch, "/v1/default/banks/npc-life-" <> rest, _ ->
+            true = String.ends_with?(rest, "/config")
+            %{}
+
           :get, "/v1/default/banks/npc-life-" <> rest, _ ->
             cond do
               rest =~ "/mental-models/self?" -> %{"content" => "I keep to myself and save what I can."}
@@ -623,6 +627,10 @@ defmodule NpcServer.NpcRegistryTest do
       hindsight =
         http_stub(fn
           :put, "/v1/default/banks/npc-life-" <> _cid, _ ->
+            %{}
+
+          :patch, "/v1/default/banks/npc-life-" <> rest, _ ->
+            true = String.ends_with?(rest, "/config")
             %{}
 
           :get, "/v1/default/banks/npc-life-" <> rest, _ ->
@@ -756,7 +764,7 @@ defmodule NpcServer.NpcRegistryTest do
         Jason.decode!(bytes)
       end
 
-    answer = Jason.encode!(handler.(%{GET: :get, PUT: :put, POST: :post}[method], path, body))
+    answer = Jason.encode!(handler.(%{"PATCH" => :patch, GET: :get, PUT: :put, POST: :post}[method], path, body))
 
     :ok =
       :gen_tcp.send(socket, [
