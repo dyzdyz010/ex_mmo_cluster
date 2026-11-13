@@ -276,3 +276,11 @@ D 组与 F1 句子里的次数按所在 state 的实际守屋句数写（N3 = 10
 探索性。在本线 Hindsight 容器新建 `s1l-m1` / `s1l-m2`（材料与 `s1i-m1` / `s1i-m2` 逐字相同，复用 `s1i_materials.py`），retain 之前 `PATCH /config` 写 `retain_mission` 与 `observations_mission`；与无 mission 的 `s1i-*` 用同一段代码算读数（第一人称比例、“没人来” / “靠近过”的条数、认识里有没有次数、实体里有没有 assistant / user），并在 `s1l-m2` 上按 S1-J 的三路 + 认识优先召回一次。`--recreate` 只删这两个 bank。不需要凭据。
 计划 `.demo/observe/npc-slice1-20261112/s1l/plan.md`，判定 `s1l/results.md`。结论：mission 把人称完全校正（1.00 对 0.11 / 0.14），认识里有了次数；副作用是更多事实被抽成 `world` 类型，召回不要按 `types` 过滤。
 
+
+## 2026-11-13 S1-Q：在真实实跑导出上重测（`s1q_real_export.py`）
+
+探索性。输入只有 S1-N 真实实跑的导出（真实 bank `npc-life-312999940097`、真实 state、真实请求模板），不手写任何材料。三个子命令各自可单独重跑：`recall`（现行一次泛问 / 加认识优先 / 三路，只对真实 bank 发 recall）、
+`jev`（对真实 state 只做删除或换召回行，12 个变体 × 4 次）、`mission`（真实 133 份文档原样重放进不带 mission 的新库 `s1q-nomission-20261113`）。计划 `.demo/observe/npc-slice1-20261112/s1q/plan.md`，判定 `s1q/results.md`。
+用法：`python -I -B -X utf8 s1q_real_export.py recall`（`jev`、`mission` 同）。凭据同前：只读主检出 `.env` 进本进程环境，值不打印、不写文件。
+结论：三路 + 认识优先把召回从 6–7 秒降到 2.3–2.8 秒、state 少约 6 KB、三种处境的选择不变；但“路内新的优先”的配额截掉了拆屋事实（合并规则要改成保持 Hindsight 返回的次序）；
+无人时召回行对选择几乎没有作用，四份认识才是守屋的主要来源；mission 把第一人称从 0.49 校到 0.99 并保住了次数。
