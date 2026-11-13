@@ -46,7 +46,9 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **第 4 项（在真实导出上重测，S1-Q）已派出，结果未回**（2026-11-13T09:20Z）：计划与期望发问前写定在 `.demo/observe/npc-slice1-20261112/s1q/plan.md`——R 召回方案对照（现行一次泛问 / 加认识优先 / 三路，打真实 bank）、J 各栏对选择的作用（对真实 state 只做删除或换召回行）、M mission 效果（真实 133 份文档重放进不带 mission 的新库 `s1q-nomission-20261113`，本线自己建的，可按名字删）。
   脚本将在 `tools/jev/s1q_real_export.py`，读数落 `s1q/`。结果回来后统筹会话写 `s1q/results.md` 并在这里记判定；没有那个文件就是还没判。
 - **“看到的”A、B 的实现已派出（只写代码与测试，未编译、未测）**：新模块 `NpcServer.Life.Sight` 与 `life.ex` 接线、`npc_life_sight_test.exs`。**voxim-d4 正在跑真实客户端冒烟，要求全机不编译，等它通知“冒烟结束”才能跑 mix**（2026-11-13T09:10Z 的跨会话消息）；
-  在那之前工作区里 `apps/npc_server` 的未提交改动就是这项任务的，**没有通过任何测试，不要提交**。放行后：起临时 PG `npc-s1r-pg-20261113`（127.0.0.1:55463），WSL 跑 sight 相关文件与全套（脚本写法见 `s1n/fix-speaker-*.log` 对应的那次任务：要设 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL` 占位值，否则 `NpcEmotionMovementTest` 报 `System.EnvError`），日志存 `s1r/`。
+  在那之前工作区里 `apps/npc_server` 的未提交改动就是这项任务的，**没有通过任何测试，不要提交**。
+  **两个子会话都在 09:3x–13:00Z 之间因网关认证错误中断过，13:05Z 带原上下文续跑**：中断时 S1-Q 的 R 部分已跑完并落盘（`s1q/recall.log` 末行 `DONE V NEW3 …`、`s1q/results.json`、`s1q/raw/` 72 个文件），J、M 未做（没有 `s1q/variants/`，bank `s1q-nomission-20261113` 不存在）；
+  “看到的”已有 `life/sight.ex`（469 行）与 `life.ex` 接线，`npc_life_sight_test.exs` 尚未建。13:03Z 已问 voxim-d4 冒烟是否结束，**未收到答复前仍不编译**。放行后：起临时 PG `npc-s1r-pg-20261113`（127.0.0.1:55463），WSL 跑 sight 相关文件与全套（脚本写法见 `s1n/fix-speaker-*.log` 对应的那次任务：要设 `NPC_LLM_URL` / `NPC_LLM_KEY` / `NPC_LLM_MODEL` 占位值，否则 `NpcEmotionMovementTest` 报 `System.EnvError`），日志存 `s1r/`。
 
 ### 交接（2026-11-13，第七个统筹会话 → 第八个，因上下文接近 300k）——接手先读这一节，再读紧接着的“第七个统筹会话的进展”页首引用块
 
