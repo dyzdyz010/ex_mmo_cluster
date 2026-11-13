@@ -1,0 +1,2710 @@
+{
+ "model": "jev-latest",
+ "repeats_note": "reference variants 4 requests; product variants 2 requests",
+ "workers": 3,
+ "timeout_s": 60,
+ "max_retries": 2,
+ "candidates": [
+  "build_hut",
+  "gather_stone",
+  "gather_limestone",
+  "guard_hut",
+  "visit_plaza",
+  "confront_wrecker"
+ ],
+ "started": "2026-11-13T03:37:45+00:00",
+ "finished": "2026-11-13T03:38:14+00:00",
+ "requests": 124,
+ "answered": 124,
+ "failed": 0,
+ "variants": [
+  {
+   "variant": "N3_F0",
+   "source": "N3",
+   "key": null,
+   "state_file": "s1i/jev/N3_F0.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 899,
+     "error": null,
+     "time": "2026-11-13T03:37:46+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 973,
+     "error": null,
+     "time": "2026-11-13T03:37:46+00:00"
+    },
+    {
+     "repeat": 3,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.85,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 781,
+     "error": null,
+     "time": "2026-11-13T03:37:46+00:00"
+    },
+    {
+     "repeat": 4,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.8,
+      "visit_plaza": 0.17,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 644,
+     "error": null,
+     "time": "2026-11-13T03:37:46+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:46+00:00"
+  },
+  {
+   "variant": "N3_D2",
+   "source": "N3",
+   "key": null,
+   "state_file": "s1i/jev/N3_D2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 816,
+     "error": null,
+     "time": "2026-11-13T03:37:46+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 860,
+     "error": null,
+     "time": "2026-11-13T03:37:47+00:00"
+    },
+    {
+     "repeat": 3,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 599,
+     "error": null,
+     "time": "2026-11-13T03:37:47+00:00"
+    },
+    {
+     "repeat": 4,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 706,
+     "error": null,
+     "time": "2026-11-13T03:37:47+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:47+00:00"
+  },
+  {
+   "variant": "N3_D12r",
+   "source": "N3",
+   "key": null,
+   "state_file": "s1i/jev/N3_D12r.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.96,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 709,
+     "error": null,
+     "time": "2026-11-13T03:37:47+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.95,
+      "visit_plaza": 0.03,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 694,
+     "error": null,
+     "time": "2026-11-13T03:37:47+00:00"
+    },
+    {
+     "repeat": 3,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.95,
+      "visit_plaza": 0.03,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 704,
+     "error": null,
+     "time": "2026-11-13T03:37:48+00:00"
+    },
+    {
+     "repeat": 4,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.0,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.98,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 826,
+     "error": null,
+     "time": "2026-11-13T03:37:48+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:48+00:00"
+  },
+  {
+   "variant": "V3_F0",
+   "source": "V3",
+   "key": null,
+   "state_file": "s1i/jev/V3_F0.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.18,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 566,
+     "error": null,
+     "time": "2026-11-13T03:37:48+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.22,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.75
+     },
+     "attempts": 1,
+     "latency_ms": 704,
+     "error": null,
+     "time": "2026-11-13T03:37:49+00:00"
+    },
+    {
+     "repeat": 3,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.18,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 593,
+     "error": null,
+     "time": "2026-11-13T03:37:49+00:00"
+    },
+    {
+     "repeat": 4,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.2,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 919,
+     "error": null,
+     "time": "2026-11-13T03:37:49+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:49+00:00"
+  },
+  {
+   "variant": "N3_m0-R-1",
+   "source": "N3",
+   "key": "m0-R-1",
+   "state_file": "s1i/jev/N3_m0-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.77,
+      "visit_plaza": 0.2,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 775,
+     "error": null,
+     "time": "2026-11-13T03:37:49+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.78,
+      "visit_plaza": 0.2,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 605,
+     "error": null,
+     "time": "2026-11-13T03:37:49+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:49+00:00"
+  },
+  {
+   "variant": "N3_m0-R-2",
+   "source": "N3",
+   "key": "m0-R-2",
+   "state_file": "s1i/jev/N3_m0-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.8,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 999,
+     "error": null,
+     "time": "2026-11-13T03:37:50+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.17,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 607,
+     "error": null,
+     "time": "2026-11-13T03:37:50+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:50+00:00"
+  },
+  {
+   "variant": "N3_m0-R-3",
+   "source": "N3",
+   "key": "m0-R-3",
+   "state_file": "s1i/jev/N3_m0-R-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.76,
+      "visit_plaza": 0.21,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 726,
+     "error": null,
+     "time": "2026-11-13T03:37:50+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.79,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 612,
+     "error": null,
+     "time": "2026-11-13T03:37:50+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:50+00:00"
+  },
+  {
+   "variant": "N3_m0-R-4",
+   "source": "N3",
+   "key": "m0-R-4",
+   "state_file": "s1i/jev/N3_m0-R-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.72,
+      "visit_plaza": 0.24,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 858,
+     "error": null,
+     "time": "2026-11-13T03:37:51+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.77,
+      "visit_plaza": 0.2,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 731,
+     "error": null,
+     "time": "2026-11-13T03:37:51+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:51+00:00"
+  },
+  {
+   "variant": "N3_m0-C-1",
+   "source": "N3",
+   "key": "m0-C-1",
+   "state_file": "s1i/jev/N3_m0-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.74,
+      "visit_plaza": 0.23,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 596,
+     "error": null,
+     "time": "2026-11-13T03:37:51+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.79,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 771,
+     "error": null,
+     "time": "2026-11-13T03:37:52+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:52+00:00"
+  },
+  {
+   "variant": "N3_m0-C-2",
+   "source": "N3",
+   "key": "m0-C-2",
+   "state_file": "s1i/jev/N3_m0-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 944,
+     "error": null,
+     "time": "2026-11-13T03:37:52+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 703,
+     "error": null,
+     "time": "2026-11-13T03:37:52+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:52+00:00"
+  },
+  {
+   "variant": "N3_m0-C-3",
+   "source": "N3",
+   "key": "m0-C-3",
+   "state_file": "s1i/jev/N3_m0-C-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 767,
+     "error": null,
+     "time": "2026-11-13T03:37:52+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 997,
+     "error": null,
+     "time": "2026-11-13T03:37:53+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:53+00:00"
+  },
+  {
+   "variant": "N3_m0-C-4",
+   "source": "N3",
+   "key": "m0-C-4",
+   "state_file": "s1i/jev/N3_m0-C-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 654,
+     "error": null,
+     "time": "2026-11-13T03:37:52+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.85,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 789,
+     "error": null,
+     "time": "2026-11-13T03:37:53+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:53+00:00"
+  },
+  {
+   "variant": "N3_m0-T-1",
+   "source": "N3",
+   "key": "m0-T-1",
+   "state_file": "s1i/jev/N3_m0-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 794,
+     "error": null,
+     "time": "2026-11-13T03:37:53+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.85,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 776,
+     "error": null,
+     "time": "2026-11-13T03:37:54+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:54+00:00"
+  },
+  {
+   "variant": "N3_m0-T-2",
+   "source": "N3",
+   "key": "m0-T-2",
+   "state_file": "s1i/jev/N3_m0-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 767,
+     "error": null,
+     "time": "2026-11-13T03:37:54+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 753,
+     "error": null,
+     "time": "2026-11-13T03:37:54+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:54+00:00"
+  },
+  {
+   "variant": "N3_m0-T-3",
+   "source": "N3",
+   "key": "m0-T-3",
+   "state_file": "s1i/jev/N3_m0-T-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 705,
+     "error": null,
+     "time": "2026-11-13T03:37:54+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 781,
+     "error": null,
+     "time": "2026-11-13T03:37:55+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:55+00:00"
+  },
+  {
+   "variant": "N3_m0-T-4",
+   "source": "N3",
+   "key": "m0-T-4",
+   "state_file": "s1i/jev/N3_m0-T-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 783,
+     "error": null,
+     "time": "2026-11-13T03:37:55+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.88,
+      "visit_plaza": 0.1,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 622,
+     "error": null,
+     "time": "2026-11-13T03:37:55+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:55+00:00"
+  },
+  {
+   "variant": "N3_m1-R-1",
+   "source": "N3",
+   "key": "m1-R-1",
+   "state_file": "s1i/jev/N3_m1-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.8,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 768,
+     "error": null,
+     "time": "2026-11-13T03:37:55+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 759,
+     "error": null,
+     "time": "2026-11-13T03:37:56+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:56+00:00"
+  },
+  {
+   "variant": "N3_m1-R-2",
+   "source": "N3",
+   "key": "m1-R-2",
+   "state_file": "s1i/jev/N3_m1-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 628,
+     "error": null,
+     "time": "2026-11-13T03:37:55+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.17,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 782,
+     "error": null,
+     "time": "2026-11-13T03:37:56+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:56+00:00"
+  },
+  {
+   "variant": "N3_m1-R-3",
+   "source": "N3",
+   "key": "m1-R-3",
+   "state_file": "s1i/jev/N3_m1-R-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.78,
+      "visit_plaza": 0.2,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 673,
+     "error": null,
+     "time": "2026-11-13T03:37:56+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.8,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 757,
+     "error": null,
+     "time": "2026-11-13T03:37:56+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:56+00:00"
+  },
+  {
+   "variant": "N3_m1-R-4",
+   "source": "N3",
+   "key": "m1-R-4",
+   "state_file": "s1i/jev/N3_m1-R-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 667,
+     "error": null,
+     "time": "2026-11-13T03:37:57+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 756,
+     "error": null,
+     "time": "2026-11-13T03:37:57+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:57+00:00"
+  },
+  {
+   "variant": "N3_m1-C-1",
+   "source": "N3",
+   "key": "m1-C-1",
+   "state_file": "s1i/jev/N3_m1-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.16,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 747,
+     "error": null,
+     "time": "2026-11-13T03:37:57+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 590,
+     "error": null,
+     "time": "2026-11-13T03:37:57+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:57+00:00"
+  },
+  {
+   "variant": "N3_m1-C-2",
+   "source": "N3",
+   "key": "m1-C-2",
+   "state_file": "s1i/jev/N3_m1-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 752,
+     "error": null,
+     "time": "2026-11-13T03:37:58+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 821,
+     "error": null,
+     "time": "2026-11-13T03:37:58+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:58+00:00"
+  },
+  {
+   "variant": "N3_m1-C-3",
+   "source": "N3",
+   "key": "m1-C-3",
+   "state_file": "s1i/jev/N3_m1-C-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.8,
+      "visit_plaza": 0.17,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 582,
+     "error": null,
+     "time": "2026-11-13T03:37:58+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.82,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 819,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:59+00:00"
+  },
+  {
+   "variant": "N3_m1-C-4",
+   "source": "N3",
+   "key": "m1-C-4",
+   "state_file": "s1i/jev/N3_m1-C-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 755,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 598,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:59+00:00"
+  },
+  {
+   "variant": "N3_m1-T-1",
+   "source": "N3",
+   "key": "m1-T-1",
+   "state_file": "s1i/jev/N3_m1-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.79,
+      "visit_plaza": 0.19,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 720,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 612,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:37:59+00:00"
+  },
+  {
+   "variant": "N3_m1-T-2",
+   "source": "N3",
+   "key": "m1-T-2",
+   "state_file": "s1i/jev/N3_m1-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.78,
+      "visit_plaza": 0.18,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 724,
+     "error": null,
+     "time": "2026-11-13T03:37:59+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 651,
+     "error": null,
+     "time": "2026-11-13T03:38:00+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:00+00:00"
+  },
+  {
+   "variant": "N3_m1-T-3",
+   "source": "N3",
+   "key": "m1-T-3",
+   "state_file": "s1i/jev/N3_m1-T-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.77,
+      "visit_plaza": 0.19,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 681,
+     "error": null,
+     "time": "2026-11-13T03:38:00+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 727,
+     "error": null,
+     "time": "2026-11-13T03:38:00+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:00+00:00"
+  },
+  {
+   "variant": "N3_m1-T-4",
+   "source": "N3",
+   "key": "m1-T-4",
+   "state_file": "s1i/jev/N3_m1-T-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 688,
+     "error": null,
+     "time": "2026-11-13T03:38:01+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 644,
+     "error": null,
+     "time": "2026-11-13T03:38:01+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:01+00:00"
+  },
+  {
+   "variant": "N3_m2-R-1",
+   "source": "N3",
+   "key": "m2-R-1",
+   "state_file": "s1i/jev/N3_m2-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 716,
+     "error": null,
+     "time": "2026-11-13T03:38:01+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.14,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 669,
+     "error": null,
+     "time": "2026-11-13T03:38:01+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:01+00:00"
+  },
+  {
+   "variant": "N3_m2-R-2",
+   "source": "N3",
+   "key": "m2-R-2",
+   "state_file": "s1i/jev/N3_m2-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.92,
+      "visit_plaza": 0.07,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 655,
+     "error": null,
+     "time": "2026-11-13T03:38:01+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.89,
+      "visit_plaza": 0.1,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 705,
+     "error": null,
+     "time": "2026-11-13T03:38:02+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:02+00:00"
+  },
+  {
+   "variant": "N3_m2-R-3",
+   "source": "N3",
+   "key": "m2-R-3",
+   "state_file": "s1i/jev/N3_m2-R-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 658,
+     "error": null,
+     "time": "2026-11-13T03:38:02+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.85,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 663,
+     "error": null,
+     "time": "2026-11-13T03:38:02+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:02+00:00"
+  },
+  {
+   "variant": "N3_m2-R-4",
+   "source": "N3",
+   "key": "m2-R-4",
+   "state_file": "s1i/jev/N3_m2-R-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 628,
+     "error": null,
+     "time": "2026-11-13T03:38:02+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 637,
+     "error": null,
+     "time": "2026-11-13T03:38:02+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:02+00:00"
+  },
+  {
+   "variant": "N3_m2-C-1",
+   "source": "N3",
+   "key": "m2-C-1",
+   "state_file": "s1i/jev/N3_m2-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.81,
+      "visit_plaza": 0.17,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 735,
+     "error": null,
+     "time": "2026-11-13T03:38:03+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.79,
+      "visit_plaza": 0.19,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 657,
+     "error": null,
+     "time": "2026-11-13T03:38:03+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:03+00:00"
+  },
+  {
+   "variant": "N3_m2-C-2",
+   "source": "N3",
+   "key": "m2-C-2",
+   "state_file": "s1i/jev/N3_m2-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 652,
+     "error": null,
+     "time": "2026-11-13T03:38:03+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 645,
+     "error": null,
+     "time": "2026-11-13T03:38:03+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:03+00:00"
+  },
+  {
+   "variant": "N3_m2-C-3",
+   "source": "N3",
+   "key": "m2-C-3",
+   "state_file": "s1i/jev/N3_m2-C-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.02,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 700,
+     "error": null,
+     "time": "2026-11-13T03:38:04+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.85,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 672,
+     "error": null,
+     "time": "2026-11-13T03:38:04+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:04+00:00"
+  },
+  {
+   "variant": "N3_m2-C-4",
+   "source": "N3",
+   "key": "m2-C-4",
+   "state_file": "s1i/jev/N3_m2-C-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 708,
+     "error": null,
+     "time": "2026-11-13T03:38:04+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.88,
+      "visit_plaza": 0.1,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 650,
+     "error": null,
+     "time": "2026-11-13T03:38:04+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:04+00:00"
+  },
+  {
+   "variant": "N3_m2-T-1",
+   "source": "N3",
+   "key": "m2-T-1",
+   "state_file": "s1i/jev/N3_m2-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.88,
+      "visit_plaza": 0.1,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 672,
+     "error": null,
+     "time": "2026-11-13T03:38:04+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.89,
+      "visit_plaza": 0.09,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 603,
+     "error": null,
+     "time": "2026-11-13T03:38:05+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:05+00:00"
+  },
+  {
+   "variant": "N3_m2-T-2",
+   "source": "N3",
+   "key": "m2-T-2",
+   "state_file": "s1i/jev/N3_m2-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 707,
+     "error": null,
+     "time": "2026-11-13T03:38:05+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.92,
+      "visit_plaza": 0.06,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 641,
+     "error": null,
+     "time": "2026-11-13T03:38:05+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:05+00:00"
+  },
+  {
+   "variant": "N3_m2-T-3",
+   "source": "N3",
+   "key": "m2-T-3",
+   "state_file": "s1i/jev/N3_m2-T-3.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.83,
+      "visit_plaza": 0.15,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 601,
+     "error": null,
+     "time": "2026-11-13T03:38:05+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.02,
+      "guard_hut": 0.84,
+      "visit_plaza": 0.13,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 617,
+     "error": null,
+     "time": "2026-11-13T03:38:05+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:05+00:00"
+  },
+  {
+   "variant": "N3_m2-T-4",
+   "source": "N3",
+   "key": "m2-T-4",
+   "state_file": "s1i/jev/N3_m2-T-4.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.86,
+      "visit_plaza": 0.12,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 686,
+     "error": null,
+     "time": "2026-11-13T03:38:06+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "guard_hut",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.01,
+      "guard_hut": 0.87,
+      "visit_plaza": 0.11,
+      "confront_wrecker": 0.0
+     },
+     "attempts": 1,
+     "latency_ms": 612,
+     "error": null,
+     "time": "2026-11-13T03:38:06+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:06+00:00"
+  },
+  {
+   "variant": "V3_m0-R-1",
+   "source": "V3",
+   "key": "m0-R-1",
+   "state_file": "s1i/jev/V3_m0-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.24,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.73
+     },
+     "attempts": 1,
+     "latency_ms": 660,
+     "error": null,
+     "time": "2026-11-13T03:38:06+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.18,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 674,
+     "error": null,
+     "time": "2026-11-13T03:38:06+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:06+00:00"
+  },
+  {
+   "variant": "V3_m0-R-2",
+   "source": "V3",
+   "key": "m0-R-2",
+   "state_file": "s1i/jev/V3_m0-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.19,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.78
+     },
+     "attempts": 1,
+     "latency_ms": 700,
+     "error": null,
+     "time": "2026-11-13T03:38:07+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.2,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 726,
+     "error": null,
+     "time": "2026-11-13T03:38:07+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:07+00:00"
+  },
+  {
+   "variant": "V3_m0-C-1",
+   "source": "V3",
+   "key": "m0-C-1",
+   "state_file": "s1i/jev/V3_m0-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.76
+     },
+     "attempts": 1,
+     "latency_ms": 763,
+     "error": null,
+     "time": "2026-11-13T03:38:07+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.76
+     },
+     "attempts": 1,
+     "latency_ms": 630,
+     "error": null,
+     "time": "2026-11-13T03:38:07+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:07+00:00"
+  },
+  {
+   "variant": "V3_m0-C-2",
+   "source": "V3",
+   "key": "m0-C-2",
+   "state_file": "s1i/jev/V3_m0-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.19,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 644,
+     "error": null,
+     "time": "2026-11-13T03:38:08+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.19,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 697,
+     "error": null,
+     "time": "2026-11-13T03:38:08+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:08+00:00"
+  },
+  {
+   "variant": "V3_m0-T-1",
+   "source": "V3",
+   "key": "m0-T-1",
+   "state_file": "s1i/jev/V3_m0-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 690,
+     "error": null,
+     "time": "2026-11-13T03:38:08+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 688,
+     "error": null,
+     "time": "2026-11-13T03:38:08+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:08+00:00"
+  },
+  {
+   "variant": "V3_m0-T-2",
+   "source": "V3",
+   "key": "m0-T-2",
+   "state_file": "s1i/jev/V3_m0-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.24,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.73
+     },
+     "attempts": 1,
+     "latency_ms": 756,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.76
+     },
+     "attempts": 1,
+     "latency_ms": 752,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:09+00:00"
+  },
+  {
+   "variant": "V3_m1-R-1",
+   "source": "V3",
+   "key": "m1-R-1",
+   "state_file": "s1i/jev/V3_m1-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.19,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.78
+     },
+     "attempts": 1,
+     "latency_ms": 618,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.16,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.82
+     },
+     "attempts": 1,
+     "latency_ms": 575,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:09+00:00"
+  },
+  {
+   "variant": "V3_m1-R-2",
+   "source": "V3",
+   "key": "m1-R-2",
+   "state_file": "s1i/jev/V3_m1-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.76
+     },
+     "attempts": 1,
+     "latency_ms": 644,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.76
+     },
+     "attempts": 1,
+     "latency_ms": 643,
+     "error": null,
+     "time": "2026-11-13T03:38:09+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:09+00:00"
+  },
+  {
+   "variant": "V3_m1-C-1",
+   "source": "V3",
+   "key": "m1-C-1",
+   "state_file": "s1i/jev/V3_m1-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.2,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 632,
+     "error": null,
+     "time": "2026-11-13T03:38:10+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 735,
+     "error": null,
+     "time": "2026-11-13T03:38:10+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:10+00:00"
+  },
+  {
+   "variant": "V3_m1-C-2",
+   "source": "V3",
+   "key": "m1-C-2",
+   "state_file": "s1i/jev/V3_m1-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 706,
+     "error": null,
+     "time": "2026-11-13T03:38:10+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 635,
+     "error": null,
+     "time": "2026-11-13T03:38:10+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:10+00:00"
+  },
+  {
+   "variant": "V3_m1-T-1",
+   "source": "V3",
+   "key": "m1-T-1",
+   "state_file": "s1i/jev/V3_m1-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.15,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.82
+     },
+     "attempts": 1,
+     "latency_ms": 682,
+     "error": null,
+     "time": "2026-11-13T03:38:11+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.17,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.8
+     },
+     "attempts": 1,
+     "latency_ms": 658,
+     "error": null,
+     "time": "2026-11-13T03:38:11+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:11+00:00"
+  },
+  {
+   "variant": "V3_m1-T-2",
+   "source": "V3",
+   "key": "m1-T-2",
+   "state_file": "s1i/jev/V3_m1-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.18,
+      "visit_plaza": 0.02,
+      "confront_wrecker": 0.79
+     },
+     "attempts": 1,
+     "latency_ms": 640,
+     "error": null,
+     "time": "2026-11-13T03:38:11+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.21,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.77
+     },
+     "attempts": 1,
+     "latency_ms": 663,
+     "error": null,
+     "time": "2026-11-13T03:38:11+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:11+00:00"
+  },
+  {
+   "variant": "V3_m2-R-1",
+   "source": "V3",
+   "key": "m2-R-1",
+   "state_file": "s1i/jev/V3_m2-R-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.31,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.67
+     },
+     "attempts": 1,
+     "latency_ms": 664,
+     "error": null,
+     "time": "2026-11-13T03:38:11+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.3,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.68
+     },
+     "attempts": 1,
+     "latency_ms": 646,
+     "error": null,
+     "time": "2026-11-13T03:38:12+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:12+00:00"
+  },
+  {
+   "variant": "V3_m2-R-2",
+   "source": "V3",
+   "key": "m2-R-2",
+   "state_file": "s1i/jev/V3_m2-R-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.0,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.29,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.7
+     },
+     "attempts": 1,
+     "latency_ms": 651,
+     "error": null,
+     "time": "2026-11-13T03:38:12+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.32,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.66
+     },
+     "attempts": 1,
+     "latency_ms": 648,
+     "error": null,
+     "time": "2026-11-13T03:38:12+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:12+00:00"
+  },
+  {
+   "variant": "V3_m2-C-1",
+   "source": "V3",
+   "key": "m2-C-1",
+   "state_file": "s1i/jev/V3_m2-C-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.28,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.7
+     },
+     "attempts": 1,
+     "latency_ms": 627,
+     "error": null,
+     "time": "2026-11-13T03:38:12+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.25,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.73
+     },
+     "attempts": 1,
+     "latency_ms": 644,
+     "error": null,
+     "time": "2026-11-13T03:38:13+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:13+00:00"
+  },
+  {
+   "variant": "V3_m2-C-2",
+   "source": "V3",
+   "key": "m2-C-2",
+   "state_file": "s1i/jev/V3_m2-C-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.24,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.74
+     },
+     "attempts": 1,
+     "latency_ms": 628,
+     "error": null,
+     "time": "2026-11-13T03:38:13+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.24,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.74
+     },
+     "attempts": 1,
+     "latency_ms": 681,
+     "error": null,
+     "time": "2026-11-13T03:38:13+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:13+00:00"
+  },
+  {
+   "variant": "V3_m2-T-1",
+   "source": "V3",
+   "key": "m2-T-1",
+   "state_file": "s1i/jev/V3_m2-T-1.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.32,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.66
+     },
+     "attempts": 1,
+     "latency_ms": 638,
+     "error": null,
+     "time": "2026-11-13T03:38:13+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.3,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.68
+     },
+     "attempts": 1,
+     "latency_ms": 616,
+     "error": null,
+     "time": "2026-11-13T03:38:13+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:13+00:00"
+  },
+  {
+   "variant": "V3_m2-T-2",
+   "source": "V3",
+   "key": "m2-T-2",
+   "state_file": "s1i/jev/V3_m2-T-2.txt",
+   "model": "jev-latest",
+   "requests": [
+    {
+     "repeat": 1,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.28,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.7
+     },
+     "attempts": 1,
+     "latency_ms": 607,
+     "error": null,
+     "time": "2026-11-13T03:38:14+00:00"
+    },
+    {
+     "repeat": 2,
+     "ok": true,
+     "top1": "confront_wrecker",
+     "probs": {
+      "build_hut": 0.0,
+      "gather_stone": 0.01,
+      "gather_limestone": 0.0,
+      "guard_hut": 0.29,
+      "visit_plaza": 0.01,
+      "confront_wrecker": 0.69
+     },
+     "attempts": 1,
+     "latency_ms": 611,
+     "error": null,
+     "time": "2026-11-13T03:38:14+00:00"
+    }
+   ],
+   "time": "2026-11-13T03:38:14+00:00"
+  }
+ ]
+}

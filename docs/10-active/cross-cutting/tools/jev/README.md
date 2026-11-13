@@ -248,4 +248,25 @@ D 组与 F1 句子里的次数按所在 state 的实际守屋句数写（N3 = 10
 - `python -I -B -X utf8 s1h_design.py dryrun`：只生成变体、`edits.txt`、`dryrun.txt` 并逐变体核对改动范围，不发任何请求。产物在 `.demo/observe/npc-slice1-20261112/s1h/round1/`。
 - `python -I -B s1h_design.py run`：发问，结果写 `results-s1h-round1.json`（已存在则拒绝覆盖）。
 - `python -I -B -X utf8 s1h_design.py report [--results PATH]`：离线出表（各变体 top1 次数、每候选平均 / 最小 / 最大概率）并逐条判定 plan.md 的期望 1–7（期望 8 为汇报格式，不判定）。
-状态：第 1 轮尚未运行（干跑已完成，未向任何服务发请求）。
+状态：第 1 轮已运行（64 次全部应答，结果 `results-s1h-round1.json`；8 条期望 7 成立、1 落空，见统筹页“第六个统筹会话的进展”）。此行原写“尚未运行”，第七个统筹会话 2026-11-13 更正。
+
+## 2026-11-13 S1-I：反思的离线测量（`s1i_materials.py`、`s1i_reflect.py`、`s1i_design.py`）
+
+探索性，不是验收。计划与发问前的期望在 `.demo/observe/npc-slice1-20261112/s1i/plan.md`（第 1 轮）与 `plan-round2.md`（第 2 轮），逐条判定在同目录 `results.md`。
+- `s1i_materials.py`：在本线 Hindsight 容器（127.0.0.1:18933）建三个材料库 `s1i-m0` / `s1i-m1` / `s1i-m2`（S1-C3 导出的 10 条事实 + 10 条守屋活动，期间事实三种写法；带内容规范 §3 的 tags 与人名写法，不配 mission），等巩固完成后导出全量。`--recreate` 只删这三个 bank；`--smoke N` 只对 `s1i-m1` 做 reflect 冒烟。不需要凭据。
+- `s1i_reflect.py run`：第 1 轮，3 库 × 产出者 R（Hindsight `reflect`）/ C（聚焦问题 → recall → LLM 带引用洞见）/ T（自动提问的论文两步法）× 4 次 = 36 条；`run --round 2`：只留 R、C，回答规则换成 A1（要拿主意）/ A2（人格 + A1），48 条。
+  自写提示打 `NPC_LLM_*`（只从主检出 `.env` 读进进程，值不打印不落盘）。产物在 `s1i/outputs/`、`s1i/outputs2/`（含两份给盲评的乱序清单与对照表）。
+- `s1i_design.py dryrun|run [--round 2]`：把每条产出作为一行 `- Reflection (my own conclusion, may be wrong): …` 加到 N3 / V3 的“What I remember”末尾向 Jev 发问（第 1 轮 124 次、第 2 轮 152 次，全部应答）。结果 `results-s1i.json`、`results-s1i-round2.json`。
+结论（详见统筹页“第七个统筹会话的进展”）：第 1 轮 36 条产出盲评全是“不下结论”（共用的回答规则压掉了结论）；第 2 轮 81% 有立场且不编造，但结论不稳定地跟着证据走，放进 state 的移动方向对、量小（两组 `visit_plaza` 差 0.076），没有一条改变 top1。
+
+## 2026-11-13 S1-J：召回对照（`s1j_recall.py`）
+
+探索性。只读 `s1i-m1` / `s1i-m2`，不需要凭据。旧单路（`Mind.recall_query/2` 的问句、`max_tokens` 2048）对内容规范 §4 的三路（人 / 地点 / 未了，按 tag 精确取）对三路都加 `prefer_observations`；2 库 × 2 处境 × 3 方案 × 5 次 = 120 次 recall。
+用法：`python -I -B -X utf8 s1j_recall.py run`，产物在 `.demo/observe/npc-slice1-20261112/s1j/`（`results.json`、`raw/`、`run.log`）；计划 `s1j/plan.md`，判定 `s1j/results.md`。
+结论：库太小，旧单路等于整库返回，比不出选择质量；“按路优先、旧的在前、上限 12”的合并规则截掉了最近的守屋事实；三路都认识优先最干净（5–7 条、无重复）；三路并行墙钟 0.5–0.9 秒，比单路快。
+
+## 2026-11-13 S1-K：按游戏时间措辞的驱动与叠加（`s1k_design.py`）
+
+探索性。只问 Jev。17 个变体 × 4 次 = 68 次，全部应答；“多久以前”由脚本按 `MmoContracts.WorldTime` 的公式（真实经过 × 72）换成词。计划 `.demo/observe/npc-slice1-20261112/s1k/plan.md`，判定 `s1k/results.md`，结果 `results-s1k.json`。
+用法：`python -I -B -X utf8 s1k_design.py dryrun`，再 `run`。
+结论：写法（相对时间、Now 行）不改 top1；到点的约定单独就把 top1 换成 `visit_plaza`（0.56，未到点 0.18）；“多久没跟人相处”方向相反；“他 X 前拆了我的屋”这句本身加固守屋；不含约定的三项叠加只到 0.22。
