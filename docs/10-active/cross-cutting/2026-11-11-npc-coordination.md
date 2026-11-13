@@ -24,6 +24,10 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
   （`Process.monitor` 在 worker 已退出后才挂，收到 `:noproc` 而非 `:shutdown`；该测试不涉及 travel，本次没动它，在 `full-1` 里通过）。**这一项没有在隔离环境重跑确认**（WSL 被别的会话的 CI 占用，没再抢）。
   `s1f/full-1.log` 是交叠的两次运行，**不是证据**；`s1f/impl-report.md` 里“iso-1 / full-2 没跑过”的说法与目录不符，那两份日志是本会话重新生成的（`iso-1.log` 内容为本会话跑的 16/17，失败项 `NpcEmotionMovementTest` 是未设 `NPC_LLM_URL`，设占位后在 `full-2` 通过）。
   真实服务端上的 `confront_wrecker` 改用 `"person":"distrusted"` 尚未实跑，并入 B 的第一次服务端短实跑。临时 PG `npc-s1f-pg-20261113` 与其匿名卷已删。
+- **推送前须知（voxim-d4 通报 2026-11-13，未在本线复核）**：ex `origin/master` 已到 `29531ea4`，GitHub CI 12 个 job 全绿（run 43355282806）。它为修 CI 动了 NPC 相关 13 个文件，本分支 rebase 前留意：
+  仅格式 — `apps/npc_server` 的 `actions.ex`、`perception.ex`、`world_request.ex`，测试 `npc_abilities`、`npc_body_cast`、`npc_body`、`npc_body_world`、`npc_brain_llm`、`npc_cast_world`、`npc_wilderness`、`npc_world_request`；
+  实际改动 — `brain/social.ex`（删去类型检查证明不可达的 `s.social != nil` 分支；**本线 S1-F 也改了这个文件的 `target/3`，会有冲突**）、`npc_emotion_movement_test.exs`（dry-run 用例临时设占位 `NPC_LLM_*`）；
+  可能冲突 — `voxel_region/.../world/prefabs.ex`（它删了未用的 `Liquid` alias，本分支也改了这个文件）。CI 有 Format job：本分支 rebase 后推送前要 `mix format` 并按 `ci.yml` 全部 job 本地跑绿，推送后核对该提交 CI，向用户确认。**本线现在不推送、不 rebase。**
 - **B1（读接口）已做**：本线 Hindsight 容器 `npc-s1g-hindsight-20261113`（127.0.0.1:18933，卷 `npc-s1g-hindsight-20261113-pg` / `-hf`，**仍在运行**，bank `smoke-s1g` 只是冒烟）。能力清单 `s1g/hindsight-capabilities.md`，openapi 全文 `s1g/hindsight-openapi.json`。
   要点：recall 支持 `types` / `tags`+`tags_match` / `tag_groups` / `prefer_observations` / `min_scores` / `temporal_window` / `include.entities|chunks|source_facts`；retain 支持 `context` / `tags` / `entities` / `metadata` / `observation_scopes` / `strategy`；有 reflect、directives、bank 配置（各类 mission）、实体与别名接口；
   没有按实体过滤的 recall 字段（按实体取事实只能用 `memories/list?entity_id=`）；多路只能多次 recall 再合并。未实测：reflect、mental-model、observation 召回内容。
@@ -32,7 +36,9 @@ voxim-9c 的代码按原样提交）。决定的正文在总纲“已确认的�
 - **用户同日提出：借鉴“AI 小镇”加反思、分层计划（周→日→半小时）。** 调研与借鉴清单见 [`2026-11-13-npc-planning-reflection-borrowing.md`](2026-11-13-npc-planning-reflection-borrowing.md)（草案，待用户过目）：
   论文（Park et al. 2023）有日→小时→5–15 分的计划与“重要性累计 > 150”触发的带引用反思，没有周层；a16z AI Town 只有对话总结 + 反思、没有计划。结论：反思先于计划，先离线；半小时层就是 Jev 选择器，不加 LLM 层；游戏钟与计划持久化是前提。
   **用户 2026-11-13 回复：游戏钟要做（服务端权威的世界时间属世界基础设施）；洞见写回按推荐理解。** 侦察已做（客户端已有以服务端墙钟为输入的确定性昼夜：×72、一昼夜日 = 现实 20 分钟，不是选择器文档写的 24 分钟；服务端只发墙钟、没有游戏钟）。
-  游戏钟设计页：[`2026-11-13-world-clock-design.md`](2026-11-13-world-clock-design.md)（草案，待用户过目）：纯函数 `game_us = game0 + (t − epoch) × 72`，不持久化、不广播；第一阶段服务端实现同公式（不改协议），第二阶段 `SessionStart` 带参数（协议 44 → 45，另排并与发版线对齐）。待用户定 3 条见该页 §5。**用户 2026-11-13 三条全部按建议**（NPC 看游戏时间、Hindsight 存真实时间戳；天 = 昼夜日 20 分钟、周 = 7 个昼夜日；第二阶段排在发版 `20261112-qinglan` 生产切换并公网冒烟通过之后，对接人 voxim-d4）。客户端对账已由 voxim-d4 完成（Voxim main `93a9cb27`）。第一阶段服务端实现由子会话进行中（未提交）。
+  游戏钟设计页：[`2026-11-13-world-clock-design.md`](2026-11-13-world-clock-design.md)（草案，待用户过目）：纯函数 `game_us = game0 + (t − epoch) × 72`，不持久化、不广播；第一阶段服务端实现同公式（不改协议），第二阶段 `SessionStart` 带参数（协议 44 → 45，另排并与发版线对齐）。待用户定 3 条见该页 §5。**用户 2026-11-13 三条全部按建议**（NPC 看游戏时间、Hindsight 存真实时间戳；天 = 昼夜日 20 分钟、周 = 7 个昼夜日；第二阶段排在发版 `20261112-qinglan` 生产切换并公网冒烟通过之后，对接人 voxim-d4）。客户端对账已由 voxim-d4 完成（Voxim main `93a9cb27`）。**第一阶段服务端已实现、已测试、已提交**：`MmoContracts.WorldTime`（`params/0`、`game_us/2`、`at/2`，41 行）+ 设计页 §3 七行手算表的单测（mmo_contracts 全套 192 通过）+ NPC `Runtime` 观察新增 `world_time`（npc_server 缺省全套 414 通过、18 项按标签排除；`NpcBodyWorldTest` 那条 `:noproc` 用例这次没失败）。
+  日志 `.demo/observe/npc-slice1-20261112/clock/`。没有可注入的时钟，Runtime 的测试用调用前后的墙钟围出可能时刻（子会话如实说明）。`runtime.ex` 的 `--check-formatted` 不通过，两处是 HEAD 上就有的旧行，没动（推送前整体 `mix format` 时处理）。
+  第一阶段的“已实现 / 已实跑 / 已验收”：已实现、已单测与集成测过；**未在真实服务端上实跑，也没有更新选择器文档里的“24 分钟”**。”Now” 栏还没读它（内容规范的实现在后）。
 - **S1-H 第 1 轮（离线、只打 Jev、探索性、不是验收；64 次全部应答；期望写在 `.demo/observe/npc-slice1-20261112/s1h/plan.md`，发问前写定、一条未改；脚本 `tools/jev/s1h_design.py`，结果 `tools/jev/results-s1h-round1.json`，逐条判定 `s1h/round1/report.txt`）**：8 条期望里 7 成立、1 落空。素材 = S1-C3 的三份真实 state，每个变体只动一栏一处。
   - **写法（F 组）都在阈值内，但不是零影响**：压缩 / 去零 / 去后缀后 top1 不变；其中把 10 句守屋流水合并成一句使 `guard_hut` 0.81 → 0.89、`visit_plaza` 0.16 → 0.10；三项同时用在破坏者场景使 `confront_wrecker` 0.77 → 0.68、`guard_hut` 0.20 → 0.31。合并一句像“反复守屋”的强化，改写法也会动选择，定稿前要单独评估。
   - **期间事实（没人来）**：`guard_hut` 0.81 → 0.73、`visit_plaza` 0.16 → 0.24，方向对、量小，不改变 top1。反向（有人来过又走）`guard_hut` 0.79，与基线 0.81 几乎无差（基线已高，没有上升空间）。

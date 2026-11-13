@@ -88,14 +88,18 @@ defmodule NpcServer.Runtime do
           state
 
         {:observation, observation} ->
-          observation = Map.put(observation, :heard, state.heard)
+          now = System.system_time(:millisecond)
+
+          observation =
+            observation
+            |> Map.put(:heard, state.heard)
+            |> Map.put(:world_time, MmoContracts.WorldTime.at(now * 1000))
+
           if state.life, do: NpcServer.Life.observation(state.life, observation)
           observation = if state.plan, do: Map.put(observation, :plan, state.plan), else: observation
 
           observation =
             if state.life_state do
-              now = System.system_time(:millisecond)
-
               observation
               |> Map.put(:life, %{state: state.life_state, now_ms: now, thanks: state.life_thanks})
               |> Map.put(:mind, NpcServer.Life.State.view(state.life_state, now))
